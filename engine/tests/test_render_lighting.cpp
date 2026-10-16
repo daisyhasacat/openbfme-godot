@@ -139,7 +139,10 @@ TEST_CASE("render lighting: classic W3D surfaces are lit like defaultw3d.fxo, in
 	k.PriGradient = W3D_GRADIENT_MODULATE;
 	k.HasDCG = true;
 	const std::string code = Generate_W3D_Shader_Code(k);
-	CHECK(has(code, "unshaded"));
+	CHECK_FALSE(has(code, "unshaded"));
+	CHECK(has(code, "ambient_light_disabled"));
+	CHECK(has(code, "EMISSION = ALBEDO * (1.0 - w3d_shadow_strength);"));
+	CHECK(has(code, "DIFFUSE_LIGHT += ALBEDO * ATTENUATION"));
 	CHECK_FALSE(has(code, "source_color")); // the retail arithmetic runs on the stored texel values
 	CHECK(has(code, "global uniform vec3 w3d_amb_obj;"));
 	CHECK(has(code, "global uniform mat3 w3d_lcol_inf;"));
@@ -156,6 +159,8 @@ TEST_CASE("render lighting: classic W3D surfaces are lit like defaultw3d.fxo, in
 	u.PriGradient = W3D_GRADIENT_DISABLE;
 	u.Unshaded = true;
 	const std::string unlit = Generate_W3D_Shader_Code(u);
+	CHECK(has(unlit, "unshaded"));
+	CHECK(has(unlit, "shadows_disabled"));
 	CHECK(has(unlit, "\tcur = t0;"));
 	CHECK(has(unlit, "ALBEDO = w3d_to_linear(clamp(cur.rgb, 0.0, 1.0));"));
 }

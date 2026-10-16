@@ -7,6 +7,9 @@ set "HERE=%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%..\retail_oracle\helper_stale.ps1" -Name x87_oracle
 if errorlevel 2 exit /b 1
 if not errorlevel 1 echo up to date: x87_oracle & exit /b 0
+rem The retail host already selected x86. Re-entering vcvars grows PATH and
+rem can exceed cmd.exe's 8191-character limit on hosted runners.
+if /i "%VSCMD_ARG_TGT_ARCH%"=="x86" goto have_msvc
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" goto no_msvc
 for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
@@ -14,6 +17,7 @@ if not defined VSDIR goto no_msvc
 set "PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer;%PATH%"
 call "%VSDIR%\VC\Auxiliary\Build\vcvars32.bat" >nul
 if errorlevel 1 goto no_msvc
+:have_msvc
 if not exist "%HERE%build" mkdir "%HERE%build"
 cl /nologo /EHsc /O1 /arch:IA32 /Fo"%HERE%build\\" /Fe"%HERE%build\x87_oracle.exe" "%HERE%x87_oracle.cpp"
 if errorlevel 1 exit /b 1

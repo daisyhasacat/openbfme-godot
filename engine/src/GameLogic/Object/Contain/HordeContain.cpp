@@ -455,8 +455,6 @@ const FieldParse *HordeContainModuleData::getFieldParse()
 		{ "BackupPercentage", INI::parsePercentToReal, nullptr, offsetof(HordeContainModuleData, m_backupPercentage) },
 		{ "CowerRadius", INI::parseReal, nullptr, offsetof(HordeContainModuleData, m_cowerRadius) },
 		{ "AttributeModifiers", INI::parseAsciiStringVector, nullptr, offsetof(HordeContainModuleData, m_attributeModifiers) },
-		{ "UsePorcupineBody", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_usePorcupineBody) },
-		{ "UpdateWeaponSetFlagsOnHordeToo", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_updateWeaponSetFlagsOnHordeToo) },
 		{ "IsPorcupineFormation", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_isPorcupineFormation) },
 		{ "ForcedLocomotorSet", INI::parseIndexList, TheLocomotorSetNames, offsetof(HordeContainModuleData, m_forcedLocomotorSet) },
 		{ "MachineAllowed", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_machineAllowed) },
@@ -488,6 +486,13 @@ void HordeContainModuleData::buildFieldParse(MultiIniFieldParse &p, unsigned ext
 {
 	TransportContainModuleData::buildFieldParse(p, extraOffset + (unsigned)offsetof(HordeContainModuleData, m_transport));
 	p.add(getFieldParse(), extraOffset);
+	// BFME1 compatibility fields are separate from the exact RotWK table.
+	static const FieldParse legacy[] = {
+		{ "UsePorcupineBody", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_usePorcupineBody) },
+		{ "UpdateWeaponSetFlagsOnHordeToo", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_updateWeaponSetFlagsOnHordeToo) },
+		{ nullptr, nullptr, nullptr, 0 }
+	};
+	p.add(legacy, extraOffset);
 }
 
 void HordeContainModuleData::parseFromINI(INI *ini)
