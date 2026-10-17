@@ -47,5 +47,6 @@ private:
 	size_t m_builtCount = 0;
 	unsigned m_builtTransitions = 0; // GameLogic::containWorldTransitions at the build: a contain's rider leaving or entering the world (lane GARRISON-1) rebuilds
 	size_t m_count = 0;
+	float m_maxRadius = 0.0f;
 	std::map<std::pair<int, int>, std::vector<ObjectID>> m_cells;
 };

@@ -2003,8 +2003,14 @@ bool checkRetreat(GameLogic &logic, AISkirmishPlayer &ai, AIBrainState &b, AITac
 // RW 0x8F28DD (the tactic's update) + RW 0x8F11DA (ready / launch / the started update)
 void updateTactic(GameLogic &logic, AISkirmishPlayer &ai, AIBrainState &b, AITactic &tac, AIBrainState &owner)
 {
-	// RW 0x8F28DD: teams without a living member are dropped (RW 0x7A0956(0))
-	tac.teams.erase(std::remove_if(tac.teams.begin(), tac.teams.end(), [&](const AITacticTeam &team) { return !teamAlive(logic, team); }), tac.teams.end());
+	// BFME2 AITactic.cpp::NotifyTeamCreated (0x4ED6D2): pending prototypes are separate
+	// from created teams. Our AITacticTeam represents both, so an empty recruiting
+	// prototype must survive until hand-over. Otherwise a tactic loses its teams
+	// while waiting for production / the ten-second recruitment age and never launches.
+	// RW 0x8F28DD drops only created teams without a living member.
+	tac.teams.erase(std::remove_if(tac.teams.begin(), tac.teams.end(), [&](const AITacticTeam &team) {
+		return team.handedOver && !teamAlive(logic, team);
+	}), tac.teams.end());
 	AITarget *t = !tac.targetless && tac.targetIndex >= 0 && tac.targetIndex < (int)owner.targets.size() ? &owner.targets[(size_t)tac.targetIndex] : nullptr;
 	if (!tac.started)
 	{

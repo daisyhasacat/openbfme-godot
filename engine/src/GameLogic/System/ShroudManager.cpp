@@ -956,10 +956,14 @@ ShroudManager::TemplateVision ShroudManager::templateVision(const ThingTemplate 
 	}
 	v.visionSide = real(F_SIDE, 1.0f);
 	v.visionRear = real(F_REAR, 1.0f);
+	// the ThingTemplate constructor's defaults for the rows a template leaves out (Open-BFME-2 ThingTemplateConstructor.cpp: MaxVisionBonusPercent 0.5,
+	// MinVisionBonusPercent -0.5, VisionBonusTestRadius 100, VisionBonusTestSegments 8). With 0 segments the ground reference was 0, so a unit with only
+	// VisionBonusPercentPerFoot counted its whole height above sea level: a Gondor archer horde on Evendim's shore saw (and acquired targets) 1140 away
 	v.bonusPerFoot = real(F_PERFOOT, 0.0f);
-	v.bonusTestRadius = real(F_RADIUS, 0.0f);
-	v.maxBonus = real(F_MAX, 0.0f);
-	v.minBonus = real(F_MIN, 0.0f);
+	v.bonusTestRadius = real(F_RADIUS, 100.0f);
+	v.maxBonus = real(F_MAX, 0.5f);
+	v.minBonus = real(F_MIN, -0.5f);
+	v.bonusTestSegments = 8;
 	if (const FieldValue *f = field(F_SEGMENTS))
 	{
 		if (const long long *i = std::get_if<long long>(f))

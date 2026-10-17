@@ -55,6 +55,12 @@ const char *WallBalance::requiredAttackerKind(const Object &target) {
  return mode == 0 ? nullptr : mode == 1 ? "CAN_ATTACK_WALLS" : "SIEGEENGINE";
 }
 
+const char *WallBalance::fortressAttackerKind(const GameLogic &logic) {
+ const auto &r = logic.settings().wallBalance;
+ if (!r.enabled || r.fortressDamage == 0) return nullptr;
+ return r.fortressDamage == 1 ? "CAN_ATTACK_WALLS" : "SIEGEENGINE";
+}
+
 struct WallEnclosureCache {
  std::uint64_t signature = 0;
  std::map<int,WallNavigationRegions::Regions> regions;

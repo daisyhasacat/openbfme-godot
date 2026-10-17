@@ -11,6 +11,7 @@
 #include "Common/Thing/RawModuleData.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/AI/AIGuard.h"
 #include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/Combat/CombatQueries.h"
 #include "GameLogic/Combat/CombatState.h"
@@ -442,7 +443,7 @@ unsigned AIUpdateInterface::moodCheckInterval() const
 {
 	const Object &obj = *getObject();
 	const CombatNames::Status &st = CombatNames::statuses();
-	if (!obj.logic().combat().autoAcquireEnabled() || m_combat.autoAcquire == 0 || (m_combat.autoAcquire & 4u) || !obj.getWeapons() || obj.testStatus((unsigned)st.hordeMember))
+	if (!obj.logic().combat().autoAcquireEnabled() || !(m_combat.autoAcquire & 1u) || (m_combat.autoAcquire & 4u) || !obj.getWeapons() || obj.testStatus((unsigned)st.hordeMember))
 	{
 		return 0; // no AutoAcquire flag, "No", no weapon, or a horde member (its horde decides)
 	}
@@ -540,11 +541,13 @@ unsigned AIUpdateInterface::moodAdjustment(int action) const
 	}
 }
 
-// ZH getNextMoodTarget (the vision range scan): the nearest attackable enemy within the template's VisionRange
-Object *AIUpdateInterface::nextMoodTarget()
+// BFME2 donor: Object/Update/AIUpdateInterfaceGetNextMoodTarget.cpp (0x268EB8).
+// Idle acquisition requires YES; attack-move uses the same safety gates without the idle-only flags.
+Object *AIUpdateInterface::nextMoodTarget(bool duringIdle)
 {
 	Object &obj = *getObject();
-	if (moodCheckInterval() == 0)
+	if ((duringIdle && moodCheckInterval() == 0) || !obj.getWeapons() || obj.isEffectivelyDead() || obj.isDestroyed() ||
+		obj.testStatus((unsigned)CombatNames::statuses().hordeMember) || ((m_combat.autoAcquire & 8u) && isAttacking()))
 	{
 		return nullptr;
 	}
@@ -590,7 +593,7 @@ Object *AIUpdateInterface::nextMoodTarget()
 	// lane STEALTH-1 (RW 0x66844A, the idle branch RW 0x6685F7 .. 0x668676): a CAMOUFLAGE object scans unless its StancesBehavior's stance class is 3 (RW 0x861D8E); any other
 	// object that is stealthed and undetected (RW 0x694C0D, no viewer) scans only with AutoAcquireEnemiesWhenIdle STEALTHED (flag 2); the container's slot 0xB0 exception
 	// (RW 0x668653) is not ported (S-1040)
-	if (InvisibilityManager::invisibilityType(obj) == InvisibilityNugget::CAMOUFLAGE)
+	if (duringIdle && InvisibilityManager::invisibilityType(obj) == InvisibilityNugget::CAMOUFLAGE)
 	{
 		if (const StancesBehavior *sb = dynamic_cast<const StancesBehavior *>(obj.findModule("StancesBehavior")))
 		{
@@ -600,18 +603,17 @@ Object *AIUpdateInterface::nextMoodTarget()
 			}
 		}
 	}
-	else if (InvisibilityManager::isStealthedAndUndetected(obj, nullptr) && !(m_combat.autoAcquire & 2u))
+	else if (duringIdle && InvisibilityManager::isStealthedAndUndetected(obj, nullptr) && !(m_combat.autoAcquire & 2u))
 	{
 		return nullptr;
 	}
 	// the range first (RW 0x668716 .. 0x668726, before the mood branches; review r1)
-	float range = 0.0f;
-	if (const FieldValue *v = obj.getTemplate()->getFinalOverride()->findField("VisionRange"))
+	// The guard already ports RW 0x6FF412 / BFME2 AIGetAdjustedVisionRange.cpp:
+	// runtime vision modifiers and the computer unit's mood apply to acquisition too.
+	float range = AIGuardMachine::getAdjustedVisionRange(obj);
+	if (const Object *container = obj.getContainedBy())
 	{
-		if (const float *f = std::get_if<float>(v))
-		{
-			range = *f;
-		}
+		range = SimMath::addf32(range, CombatQueries::boundingCircleRadius(*container));
 	}
 	if (range <= 0.0f)
 	{
@@ -630,7 +632,7 @@ Object *AIUpdateInterface::nextMoodTarget()
 		return nullptr;
 	}
 	unsigned flags = 0;
-	if (m_combat.autoAcquire & 16u)
+	if (!duringIdle || (m_combat.autoAcquire & 16u))
 	{
 		flags |= TargetFinder::ALLOW_STRUCTURES;
 	}
@@ -664,30 +666,7 @@ bool AIUpdateInterface::armAttackMove(const Coord3D &goal, CommandSourceType sou
 // the attack-move's scan: the nearest attackable enemy within the vision range, buildings included (the AutoAcquire flags are for idle units)
 Object *AIUpdateInterface::attackMoveTarget()
 {
-	Object &obj = *getObject();
-	if (!obj.getWeapons())
-	{
-		return nullptr;
-	}
-	float range = 0.0f;
-	if (const FieldValue *v = obj.getTemplate()->getFinalOverride()->findField("VisionRange"))
-	{
-		if (const float *f = std::get_if<float>(v))
-		{
-			range = *f;
-		}
-	}
-	if (range <= 0.0f)
-	{
-		return nullptr;
-	}
-	unsigned flags = TargetFinder::ALLOW_STRUCTURES;
-	flags |= obj.isKindOf((unsigned)CombatNames::kinds().horde) ? TargetFinder::HORDES_ONLY : TargetFinder::MEMBERS_ONLY;
-	if (obj.testStatus((unsigned)CombatNames::statuses().hordeMember))
-	{
-		return nullptr; // a horde member marches with its horde
-	}
-	return obj.logic().combat().targets().findClosestEnemy(obj, range, flags, CMD_FROM_AI);
+	return nextMoodTarget(false);
 }
 
 bool AIUpdateInterface::resumeAttackMove()

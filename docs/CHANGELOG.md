@@ -5,6 +5,26 @@ area). The release pages on [GitHub](https://github.com/Open-BFME/openbfme-godot
 the download table and the known issues of that build; this file keeps the history that used to sit in the README, and the first
 alpha builds' notes. The rules for writing the lines are in [RELEASE.md](RELEASE.md), "Notes".
 
+## Unreleased
+
+### Added
+
+**Interface**
+- The main menu's Games / Mods screen switches between BFME1 and RotWK, remembers the choice, and can select BFME1's installation folder.
+
+### Bug fixes
+
+**Units and heroes**
+- Nearby enemy acquisition now respects vision bonuses and computer unit moods.
+- Attack-move respects hold fire and pauses target acquisition while units use abilities.
+- Units can acquire large buildings when their edge is within sight.
+
+**Interface**
+- BFME1's Palantir, skirmish rank icons, and menu logo load their installed textures correctly.
+
+**AI**
+- Attack teams keep recruiting while waiting for units to be trained or become available, instead of stalling permanently.
+
 ## v0.4.0-alpha.4
 
 ### Added

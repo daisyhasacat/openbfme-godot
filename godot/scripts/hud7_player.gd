@@ -588,3 +588,105 @@ func hero_entries(prod: Dictionary) -> int:
 		if int(e.quantity_total) > 0:
 			n += 1
 	return n
+
+
+# groundpower: a hero's ability that targets the ground (Boromir's Captain of Gondor, NEED_TARGET_POS): its button pressed, a click on open ground; the
+# power must run (the button recharges)
+func _scenario_groundpower() -> String:
+	var f := fortress()
+	if f.is_empty():
+		return "no own fortress citadel"
+	# --gp=<template>:<button name part> (default Boromir's Captain of Gondor)
+	var tmpl := "GondorBoromir"
+	var part := "CaptainOfGondor"
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--gp="):
+			var kv := a.substr(5).split(":")
+			tmpl = kv[0]
+			part = kv[1]
+	var off := 400.0
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--gpoff="):
+			off = float(a.substr(8))
+	# the side of the fortress where the unit and its target are on the map's grid (the start position is random)
+	var at := Vector2(float(f.x) + off, float(f.y))
+	for dir in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
+		var c: Vector2 = Vector2(float(f.x), float(f.y)) + dir * off
+		var ok := true
+		for q in [c, c + Vector2(150, 60), c + Vector2(300, 120)]:
+			var cell: Dictionary = world.debug_pathfind_cell(q.x, q.y)
+			ok = ok and cell.get("ok", false) and int(cell.get("type", 0)) == 0
+		if ok:
+			at = c
+			break
+	var made = world.create_object(tmpl, game._local_index, at.x, at.y, 0.0)
+	await game._step(40)
+	var hero := find_own(func(o): return str(o.template) == tmpl)
+	if hero.is_empty():
+		return tmpl + " was not created: " + str(made)
+	world.debug_set_object_rank(int(hero.id), 10)
+	await game._step(10)
+	if not await select_object(hero):
+		return "Boromir could not be selected"
+	var button := {}
+	for b in hud.get_command_buttons():
+		if str(b.name).find(part) >= 0:
+			button = b
+	if button.is_empty():
+		var names := []
+		for b in hud.get_command_buttons():
+			names.append("%s(%s,%s)" % [b.name, b.power, b.state])
+		return "no " + part + " button: " + ", ".join(names)
+	print("HUD7 groundpower: button %s state %s timer %s" % [button.name, button.state, button.timer])
+	# the button's pixel on the Palantir: a real click on it (as the player presses it)
+	var size: Vector2 = game.get_viewport().get_visible_rect().size
+	var hit := Vector2(-1, -1)
+	for y in range(int(size.y * 0.5), int(size.y), 6):
+		for x in range(0, int(size.x), 6):
+			var under: Dictionary = hud.command_button_at(Vector2(x, y))
+			if under.get("found", false) and str(under.get("name", "")) == str(button.name):
+				hit = Vector2(x, y)
+				break
+		if hit.x >= 0:
+			break
+	if hit.x < 0:
+		print("HUD7 groundpower: the button has no pixel on the Palantir; pressed through the bar (GAME TEST HOOK)")
+		if not hud.press_command_button(str(button.name)):
+			return "the button press was refused"
+	else:
+		print("HUD7 groundpower: clicking the button at ", hit)
+		await click_pixel(hit)
+	await game._step(4)
+	var ground := Vector2(float(hero.x) + 150.0, float(hero.y) + 60.0)
+	await click_pixel(hud.world_to_pixel(ground))
+	hud.inject_mouse_move(Vector2(60, 60))
+	print("HUD7 groundpower: clicked the ground at %s (unit at %.0f,%.0f), cell %s" % [ground, float(hero.x), float(hero.y), world.debug_pathfind_cell(ground.x, ground.y)])
+	for oid in world.get_object_ids():
+		var o: Dictionary = world.get_object(oid)
+		if o.get("ok", false) and Vector2(o.x, o.y).distance_to(ground) < 300 and int(oid) != int(hero.id):
+			print("HUD7 groundpower: near the point: %s#%d at %.0f,%.0f (%.0f away)" % [o.template, int(oid), o.x, o.y, Vector2(o.x, o.y).distance_to(ground)])
+	print("HUD7 groundpower: path ", world.debug_find_path(int(hero.id), ground.x, ground.y))
+	for i in 10:
+		await game._step(30)
+		var h1: Dictionary = world.get_object(int(hero.id))
+		var changed := false
+		for b in hud.get_command_buttons():
+			if str(b.name) == str(button.name) and (b.state != button.state or b.timer != button.timer):
+				changed = true
+		print("HUD7 groundpower: +%d frames: unit at %.0f,%.0f ai %s goal %s weapon %s fired %s" % [(i + 1) * 30, float(h1.x), float(h1.y), h1.get("ai_state_id"), h1.get("ai_goal"),
+			h1.get("weapon_slot"), h1.get("weapon_last_fire")])
+		# a fire order (FIRE_WEAPON) shows no recharge: the button's weapon slot firing is its effect
+		if str(button.command).find("FIRE_WEAPON") >= 0 and int(h1.get("weapon_last_fire", 0)) != int(hero.get("weapon_last_fire", 0)):
+			print("HUD7 groundpower: the order's weapon fired")
+			return ""
+		if changed:
+			break
+	for b in hud.get_command_buttons():
+		if str(b.name) == str(button.name):
+			print("HUD7 groundpower: after the click: state %s timer %s" % [b.state, b.timer])
+			var h2: Dictionary = world.get_object(int(hero.id))
+			print("HUD7 groundpower: unit ai state %s %s goal %s" % [h2.get("ai_state_id"), h2.get("ai_state"), h2.get("ai_goal")])
+			if b.state == button.state and b.timer == button.timer:
+				return "the power did not run: the button is unchanged"
+			return ""
+	return "the button is gone after the click"

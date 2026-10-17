@@ -200,6 +200,10 @@ TEST_CASE("skirmish ai base: the base faces the map centre (RW 0x90D3C7)")
 TEST_CASE("skirmish ai base: the layout filter of RW 0x9BCA8E (map name, <ANY>, PlayerPositions)")
 {
 	AIBaseTemplate any, onMap, onMapPos2, other;
+	for (AIBaseTemplate *t : { &any, &onMap, &onMapPos2, &other })
+	{
+		t->layoutLoaded = true; // lane MODS-1: a base whose .bse did not load is never a candidate
+	}
 	any.gameMapToUseOn = "<ANY>";
 	onMap.gameMapToUseOn = "map wor erebor.map";
 	onMapPos2.gameMapToUseOn = "map wor erebor.map";

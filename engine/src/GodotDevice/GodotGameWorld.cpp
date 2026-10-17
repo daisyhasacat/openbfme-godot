@@ -21,6 +21,7 @@
 #include <godot_cpp/classes/quad_mesh.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include "GameLogic/Map/TerrainLogic.h"
+#include "GameLogic/BuildPlacement.h"
 #include "GameClient/GUI/TributeInfo.h"
 
 #include "Common/Prefetch.h"
@@ -71,6 +72,8 @@
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/GameMessage.h"
 #include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/Combat/ObjectWeapons.h"
+#include "GameLogic/WeaponState.h"
 #include "GameLogic/Module/DozerAIUpdate.h"
 #include "GameLogic/Economy.h"
 #include "GameLogic/Construction.h"
@@ -281,6 +284,10 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("get_player_status_state"), &GameWorld::get_player_status_state); // lane HUD-5
 	ClassDB::bind_method(D_METHOD("self_destruct", "transfer"), &GameWorld::self_destruct);
 	ClassDB::bind_method(D_METHOD("debug_kill_player_objects", "player", "keep"), &GameWorld::debug_kill_player_objects);
+	ClassDB::bind_method(D_METHOD("debug_find_path", "id", "x", "y"), &GameWorld::debug_find_path);
+	ClassDB::bind_method(D_METHOD("debug_pathfind_cell", "x", "y"), &GameWorld::debug_pathfind_cell);
+	ClassDB::bind_method(D_METHOD("get_ai_build_report"), &GameWorld::get_ai_build_report);
+	ClassDB::bind_method(D_METHOD("debug_placement", "template_name", "x", "y", "angle", "options", "builder_id"), &GameWorld::debug_placement);
 	ClassDB::bind_method(D_METHOD("debug_damage_object", "id", "amount", "source_id"), &GameWorld::debug_damage_object);
 	ClassDB::bind_method(D_METHOD("debug_set_object_status", "id", "status", "on"), &GameWorld::debug_set_object_status); // lane SPELL-3
 	ClassDB::bind_method(D_METHOD("debug_clear_weather"), &GameWorld::debug_clear_weather);                                // lane SPELL-3
@@ -2785,6 +2792,54 @@ Dictionary GameWorld::get_object(int64_t id) const
 	if (const HordeContain *hc = dynamic_cast<const HordeContain *>(o->getContain()))
 	{
 		d["horde_melee"] = hc->meleeEngaged();
+	}
+	// the current weapon (debugging fire orders): its slot and the frame it last fired
+	if (const ObjectWeapons *ow = o->getWeapons())
+	{
+		d["weapon_slot"] = (int64_t)ow->curSlot();
+		const ::Weapon *cw = ow->weaponInSlot(ow->curSlot());
+		d["weapon_last_fire"] = (int64_t)(cw ? cw->lastFireFrame() : 0u);
+	}
+	// the AI's state (debugging the skirmish AI and unit behaviour): the current and temporary state, the victim, the goal and the last command's source
+	if (const AIUpdateInterface *ai = o->getAIUpdateInterface())
+	{
+		if (const AIStateMachine *m = ai->stateMachineOrNull())
+		{
+			d["ai_state_id"] = (int64_t)m->currentStateId();
+			d["ai_state"] = m->currentState() ? toGodot(m->currentState()->name()) : String();
+			d["ai_temporary_state_id"] = (int64_t)m->temporaryStateId();
+			d["ai_goal_object"] = (int64_t)m->goalObjectID();
+			d["ai_goal"] = Vector2(m->goalPosition().x, m->goalPosition().y);
+		}
+		const AIMover &mv = ai->mover();
+		d["ai_waiting_for_path"] = mv.isWaitingForPath();
+		d["ai_has_path"] = mv.path() != nullptr;
+		d["ai_blocked"] = mv.isBlocked();
+		d["ai_blocked_frames"] = (int64_t)mv.blockedFrames();
+		d["ai_moving"] = mv.isMoving();
+		d["ai_path_frame"] = (int64_t)mv.pathTimestamp();
+		d["ai_queue_for_path_frame"] = (int64_t)mv.queueForPathFrame();
+		d["ai_mover_goal"] = Vector2(mv.goalPosition().x, mv.goalPosition().y);
+		Array pathNodes;
+		if (const Path *path = mv.path())
+		{
+			for (const PathNode *n = path->getFirstNode(); n && pathNodes.size() < 64; n = n->getNextOptimized())
+			{
+				pathNodes.push_back(Vector2(n->getPosition()->x, n->getPosition()->y));
+			}
+		}
+		d["ai_path"] = pathNodes;
+		d["ai_victim"] = (int64_t)ai->currentVictimId();
+		d["vision_range"] = AIUpdateInterface::objectVisionRangeOf(const_cast<::Object &>(*o));
+		if (ShroudManager *sm = m_game->logic().shroud())
+		{
+			const ShroudManager::TemplateVision tv = ShroudManager::templateVision(*o->getTemplate()->getFinalOverride());
+			d["vision_bonus_per_foot"] = tv.bonusPerFoot;
+			d["vision_max_bonus"] = tv.maxBonus;
+			d["vision_min_bonus"] = tv.minBonus;
+			d["vision_ground_reference"] = sm->groundReferenceFor(*o, tv);
+		}
+		d["ai_command_source"] = (int64_t)ai->lastCommandSource();
 	}
 	d["destroyed"] = o->isDestroyed();
 	d["structure"] = o->isKindOfName("STRUCTURE");
@@ -5325,6 +5380,96 @@ void GameWorld::refresh_shroud(bool force)
 	}
 }
 
+int64_t GameWorld::debug_placement(const String &template_name, double x, double y, double angle, int64_t options, int64_t builder_id)
+{
+	if (!m_game)
+	{
+		return -1;
+	}
+	GameLogic &logic = m_game->logic();
+	const ThingTemplate *tt = logic.things().findTemplate(toNative(template_name));
+	::Object *builder = logic.findObjectByID((::ObjectID)builder_id);
+	if (!tt)
+	{
+		return -2;
+	}
+	Coord3D pos{ (float)x, (float)y, logic.getGroundHeight((float)x, (float)y) };
+	return (int64_t)BuildPlacement::isLocationLegalToBuild(logic, pos, *tt->getFinalOverride(), (float)angle, (unsigned)options, builder,
+		builder ? builder->getControllingPlayer() : nullptr);
+}
+
+Array GameWorld::get_ai_build_report() const
+{
+	Array out;
+	if (!m_game)
+	{
+		return out;
+	}
+	GameLogic &logic = m_game->logic();
+	auto requestDict = [&logic](const AIBuildRequest &r) {
+		Dictionary d;
+		d["template"] = String(r.templateName.c_str());
+		d["unit"] = r.unit;
+		d["farm"] = r.farm;
+		d["state"] = r.state;
+		d["last_check"] = r.lastCheck;
+		d["priority"] = r.priority;
+		d["effective_priority"] = r.effectivePriority;
+		d["reserve"] = r.reserveMoney;
+		const Coord3D site = r.unit ? Coord3D{ 0.0f, 0.0f, 0.0f } : r.sitePosition(logic);
+		d["site"] = Vector2(site.x, site.y);
+		return d;
+	};
+	for (const auto &g : logic.skirmishAI().groups())
+	{
+		for (const auto &kv : g->players)
+		{
+			const AISkirmishPlayer &ai = *kv.second;
+			const AIBuildState &s = ai.build;
+			Dictionary d;
+			d["player"] = ai.playerIndex;
+			d["phase"] = s.phase;
+			d["money_reserve"] = (int64_t)s.moneyReserve;
+			d["reserve_saved"] = (int64_t)s.reserveSaved;
+			d["reserve_drawn"] = (int64_t)s.reserveDrawn;
+			d["units_made"] = (int64_t)s.units.made;
+			d["units_executed"] = (int64_t)s.units.executed;
+			d["heroes_made"] = (int64_t)s.units.heroesMade;
+			d["fortress_attacker_requests"] = (int64_t)s.units.fortressAttackerRequests;
+			d["attacker_factory_requests"] = (int64_t)s.units.attackerFactoryRequests;
+			Dictionary eco;
+			eco["made"] = (int64_t)s.economy.made;
+			eco["built"] = (int64_t)s.economy.built;
+			eco["in_flight"] = (int64_t)s.economy.inFlight;
+			eco["no_site"] = (int64_t)s.economy.noSite;
+			eco["refused_by_difficulty"] = (int64_t)s.economy.refusedByDifficulty;
+			d["economy"] = eco;
+			Dictionary factories;
+			for (const auto &f : s.units.factories)
+			{
+				const ::Object *o = logic.findObjectByID(f.second);
+				const String name = o ? toGodot(o->getTemplate()->getName()) : String("?");
+				factories[name] = (int64_t)factories.get(name, 0) + 1;
+			}
+			d["factory_entries"] = factories;
+			Array pending;
+			for (const auto &r : s.pending)
+			{
+				pending.push_back(requestDict(*r));
+			}
+			d["pending"] = pending;
+			Array unitRequests;
+			for (const auto &r : s.units.requests)
+			{
+				unitRequests.push_back(requestDict(*r));
+			}
+			d["unit_requests"] = unitRequests;
+			out.push_back(d);
+		}
+	}
+	return out;
+}
+
 Array GameWorld::get_ai_report() const
 {
 	Array out;
@@ -6033,6 +6178,75 @@ Dictionary GameWorld::debug_kill_player_objects(const String &player, const Stri
 	out["ok"] = true;
 	out["killed"] = (int64_t)victims.size();
 	return out;
+}
+
+Dictionary GameWorld::debug_pathfind_cell(double x, double y)
+{
+	Dictionary d;
+	d["ok"] = false;
+	if (!m_game || !m_game->logic().aiWorld())
+	{
+		return d;
+	}
+	Pathfinder &pf = m_game->logic().aiWorld()->pathfinder();
+	const Coord3D p{ (float)x, (float)y, 0.0f };
+	const PathfindCell *c = pf.getCell(LAYER_GROUND, &p);
+	if (!c)
+	{
+		return d;
+	}
+	d["ok"] = true;
+	d["type"] = (int64_t)c->getType();
+	d["zone"] = (int64_t)c->getZone();
+	d["pinched"] = c->getPinched();
+	d["ground"] = m_game->logic().getGroundHeight((float)x, (float)y);
+	float waterZ = 0.0f;
+	if (const TerrainLogic *t = m_game->logic().terrain())
+	{
+		if (t->getStandingWaterHeight((float)x, (float)y, waterZ))
+		{
+			d["water_height"] = waterZ;
+		}
+	}
+	return d;
+}
+
+Dictionary GameWorld::debug_find_path(int64_t id, double x, double y)
+{
+	Dictionary d;
+	d["ok"] = false;
+	if (!m_game || !m_game->logic().aiWorld())
+	{
+		return d;
+	}
+	::Object *o = m_game->logic().findObjectByID((::ObjectID)id);
+	AIUpdateInterface *ai = o ? o->getAIUpdateInterface() : nullptr;
+	if (!ai)
+	{
+		return d;
+	}
+	Pathfinder &pf = m_game->logic().aiWorld()->pathfinder();
+	const PathfindLocomotorInfo loco = ai->locomotorInfo();
+	PathfindObject &po = ai->pathfindObject();
+	const Coord3D from = *o->getPosition();
+	Coord3D to{ (float)x, (float)y, (float)m_game->logic().getGroundHeight((float)x, (float)y) };
+	d["quick_path_exists"] = pf.clientSafeQuickDoesPathExist(loco, &from, &to);
+	d["valid_destination"] = pf.validMovementPosition(&po, loco, LAYER_GROUND, &to);
+	bool partial = false;
+	Path *path = pf.findPath(&po, loco, &from, &to, &partial);
+	Array nodes;
+	if (path)
+	{
+		for (const PathNode *n = path->getFirstNode(); n && nodes.size() < 128; n = n->getNextOptimized())
+		{
+			nodes.push_back(Vector2(n->getPosition()->x, n->getPosition()->y));
+		}
+		delete path;
+	}
+	d["nodes"] = nodes;
+	d["partial"] = partial;
+	d["ok"] = true;
+	return d;
 }
 
 Dictionary GameWorld::debug_damage_object(int64_t id, double amount, int64_t source_id)
