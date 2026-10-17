@@ -6,10 +6,12 @@ set(OPENBFME_SKIRMISH_AI_SOURCES
     src/GameLogic/SkirmishAI/SkirmishAIManager.cpp
     src/GameLogic/SkirmishAI/AIBaseBuilder.cpp
     src/GameLogic/SkirmishAI/AITacticalAI.cpp
+    src/GameLogic/SkirmishAI/AIFortification.cpp
     src/GameLogic/SkirmishAI/AIThreatFinder.cpp
     src/GameLogic/SkirmishAI/AIStatCollector.cpp)
 
 set(OPENBFME_SKIRMISH_AI_TESTS
+    tests/test_ai_fortifications.cpp
     tests/test_skirmish_ai_data.cpp
     tests/test_skirmish_ai_manager.cpp
     tests/test_skirmish_ai_base.cpp

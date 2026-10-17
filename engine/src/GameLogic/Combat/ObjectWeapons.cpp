@@ -831,6 +831,9 @@ const char *ObjectWeapons::choiceStopLine()
 // with 16 attackers or more, then a castle partition test) is not ported (no retail weapon sets it: noted); then RW 0x6CB779 on the template's nuggets
 bool ObjectWeapons::canDamage(const Weapon &w, Object &victim) const
 {
+	// The optional siege-only rule is enforced by damage delivery too. Weapon choice must see the same immunity.
+	if (!WallBalance::attackerAllowed(victim, *m_owner) ||
+		(victim.getBodyModule() && victim.getBodyModule()->isIndestructible())) return false;
 	const WeaponTemplate *t = w.getTemplate();
 	if (!t)
 	{
@@ -1164,7 +1167,7 @@ bool ObjectWeapons::canAttackObject(const Object &victim, CommandSourceType sour
 	const unsigned mask = victimAntiMask(victim);
 	for (const std::unique_ptr<Weapon> &w : m_weapons)
 	{
-		if (w && w->getTemplate() && (w->getTemplate()->m_antiMask & mask) != 0)
+		if (w && w->getTemplate() && (w->getTemplate()->m_antiMask & mask) != 0 && canDamage(*w, *const_cast<Object *>(&victim)))
 		{
 			return true;
 		}

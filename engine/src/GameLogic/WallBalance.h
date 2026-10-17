@@ -27,4 +27,5 @@ struct WallBalance
  static int healthCategory(const Object &o);
  static int costCategory(const ThingTemplate &tt);
  static bool attackerAllowed(const Object &target, const Object &attacker);
+ static const char *requiredAttackerKind(const Object &target);
 };
