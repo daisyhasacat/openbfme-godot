@@ -24,6 +24,13 @@ no copy into the application bundle is needed. An existing macOS AIO installatio
 is also detected. The command-line equivalent is `--game=bfme1 --play` on the
 launcher; the selection persists. Downloads retain per-file MD5 and size checks.
 
+The main menu's **Games / Mods** link also switches between BFME1 and
+RotWK/BFME II. Choose the game and press **Restart to apply**. **BFME1 files…**
+selects an existing installation if it was not detected. The last selection is
+remembered in `user://game-selection.cfg`; an explicit `--game=...` takes
+precedence. RotWK mod choices are retained while BFME1 runs, and BFME1 never
+mounts those mods. Switching back restores the RotWK menu and its profiles.
+
 BFME1 has separate `bfme1-Options.ini` and `bfme1-Skirmish.ini` settings.
 `--game=bfme1` and `--bfme1-install=...` are normal player options, so profiles persist between launches.
 Automation flags such as `--auto` still use an isolated temporary profile file.
@@ -133,3 +140,30 @@ BFME1_INSTALL="/path/to/BFME1" godot --headless --path godot -- --game=bfme1 --a
 ```
 
 `godot/tests/bfme1_quit_test.gd` checks the camp-floor material and all six pause-menu buttons with real movie clicks, including confirmations.
+
+`godot/tests/bfme1_actions_test.gd` clicks a castle plot, builds a production
+building, recruits a battalion through its command bar, verifies combat damage,
+moves the battalion to a neutral outpost, verifies ownership changes, and unpacks
+that outpost into faction build plots. It passes for all four factions on Fords
+of Isen. Select a faction with `-- --faction-index=3` (Rohan), `4` (Gondor), `5`
+(Isengard), or `6` (Mordor). The fixture supplies starting cash and a nearby enemy;
+it uses player commands for construction, recruitment, movement and combat.
+
+`game_switcher_test.gd` checks both selector choices and restart argument handling.
+`game_switcher_mount_test.gd -- --game=bfme1` (or `bfme2`) checks that the selected
+game mounts its own archives and opens the corresponding main menu and selector.
+
+The BFME1 texture loader recognizes DDS, TGA, PNG and JPEG by their signatures:
+the installed data includes TGA and PNG content named `.dds`. Mapped-image movie
+operations and shell gadgets share that loader and BFME1's flat texture paths.
+Skirmish rank/progression bars still have no battle-honors provider; their
+`LevelBar*` errors remain explicit in the shell report. Profile statistics and
+Living World campaigns remain outside the implemented gameplay flow.
+
+Validation on 2026-10-17: all four faction action checks, BFME1 object/castle
+smoke, HUD buttons/tooltips, pause menus, and both game-selection mount checks
+passed. The packaged BFME1 app reached a skirmish with zero load and texture
+errors; six LevelBar reads remain unresolved. The broader RotWK smoke check
+reported seven failures across sort priorities, object setup, menu captions,
+instance counts and move-order state hashes; it is not recorded as passing.
+Those failures have not been isolated against an unchanged baseline. No simulation code was changed in this update.

@@ -287,19 +287,35 @@ func set_in_game(in_game: bool) -> void:
 
 ## Mounts the retail archives (RetailFileSystem `fs`) from the environment, the remembered folders or the first-run screen. Returns the
 ## mount report ({ok, errors, ...}); with ok false the caller fails with the errors.
+func selected_game() -> String:
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--game="):
+			return "bfme1" if arg.trim_prefix("--game=")=="bfme1" else "bfme2"
+	var cfg := ConfigFile.new()
+	cfg.load("user://game-selection.cfg")
+	return "bfme1" if cfg.get_value("game", "selected", "bfme2")=="bfme1" else "bfme2"
+
+
+func bfme1_install() -> String:
+	var candidates: Array[String] = []
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--bfme1-install="): candidates.append(arg.trim_prefix("--bfme1-install="))
+	candidates.append(OS.get_environment("BFME1_INSTALL"))
+	for file in ["user://install-paths.cfg", "user://downloaded-installs.cfg"]:
+		if not FileAccess.file_exists(file): continue
+		for line in FileAccess.get_file_as_string(file).split("\n"):
+			if line.begins_with("BFME1_INSTALL="): candidates.append(line.trim_prefix("BFME1_INSTALL=").strip_edges())
+	if OS.get_name()=="macOS":
+		for prefix in ["BFME1CrossOverPrefix", "CrossOverPrefix"]:
+			candidates.append(OS.get_data_dir().path_join("BFMELauncher/Installation/"+prefix+"/drive_c/BFME/BFME1"))
+	for path in candidates:
+		if not path.is_empty() and DirAccess.dir_exists_absolute(path): return path
+	return ""
+
+
 func mount_retail(fs: RefCounted) -> Dictionary:
-	if OS.get_cmdline_user_args().has("--game=bfme1"):
-		var install := OS.get_environment("BFME1_INSTALL")
-		for arg in OS.get_cmdline_user_args():
-			if arg.begins_with("--bfme1-install="): install = arg.trim_prefix("--bfme1-install=")
-		if install.is_empty():
-			for file in ["user://install-paths.cfg", "user://downloaded-installs.cfg"]:
-				if not FileAccess.file_exists(file): continue
-				for line in FileAccess.get_file_as_string(file).split("\n"):
-					if line.begins_with("BFME1_INSTALL="):
-						install = line.trim_prefix("BFME1_INSTALL=").strip_edges()
-				if not install.is_empty(): break
-		return fs.mount_bfme1_path(install)
+	if selected_game()=="bfme1":
+		return fs.mount_bfme1_path(bfme1_install())
 	# Portable macOS packages carry installs beside the PCK. Resolve at launch so
 	# moving the .app never leaves absolute paths in the user's configuration.
 	var bundle_root := OS.get_executable_path().get_base_dir()
@@ -544,8 +560,8 @@ func _add_watermark() -> void:
 	_watermark.add_child(logs)
 	# lane MODS-1: the mod manager, under the Logs link (menus only, like the rest of the corner)
 	var mods := LinkButton.new()
-	mods.text = "Mods (%d)" % active_mods.size() if not active_mods.is_empty() else "Mods"
-	mods.tooltip_text = "Choose the RotWK mods OpenBFME loads (applies after a restart)"
+	mods.text = "Games / Mods (%d)" % active_mods.size() if not active_mods.is_empty() else "Games / Mods"
+	mods.tooltip_text = "Switch between BFME1 and RotWK, or choose RotWK mods"
 	mods.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
 	mods.add_theme_font_size_override("font_size", 13)
 	mods.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
@@ -601,4 +617,4 @@ func open_mod_manager() -> void:
 func set_active_mods(mods: Array) -> void:
 	active_mods = mods
 	if _mods_link != null:
-		_mods_link.text = "Mods (%d)" % mods.size() if not mods.is_empty() else "Mods"
+		_mods_link.text = "Games / Mods (%d)" % mods.size() if not mods.is_empty() else "Games / Mods"

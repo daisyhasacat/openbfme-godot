@@ -791,7 +791,7 @@ struct AptMenuPlayer::Impl
 					ch = (char)std::tolower((unsigned char)ch);
 				}
 				bool paired = false;
-				Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*source, "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
+				Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*source, fs.is_valid() && fs->is_bfme1() ? "art/textures/" + stem : "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
 				if (paired)
 				{
 					sm.deviceUnverified.insert("[S-1482] texture " + img->filename + ": the packed .jpg's colour with its .png as the alpha (the loader's merge of the two streams was not read)");
@@ -3543,7 +3543,7 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 						ch = (char)std::tolower((unsigned char)ch);
 					}
 					bool paired = false;
-					Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*m->source, "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
+					Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*m->source, m->fs.is_valid() && m->fs->is_bfme1() ? "art/textures/" + stem : "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
 					if (packed.is_valid())
 					{
 						it = m->godotTextures.emplace(img->filename, ImageTexture::create_from_image(packed)).first;
@@ -3913,59 +3913,9 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 					Ref<ImageTexture> tex;
 					if (img)
 					{
-						auto it = m->godotTextures.find(img->filename);
-						if (it == m->godotTextures.end())
-						{
-							const AptTextureStore::Entry &entry = m->textures->get(img->filename);
-							if (entry.ok && !entry.rgba.empty())
-							{
-								PackedByteArray px;
-								px.resize((int64_t)entry.rgba.size());
-								memcpy(px.ptrw(), entry.rgba.data(), entry.rgba.size());
-								Ref<godot::Image> image = godot::Image::create_from_data(entry.width, entry.height, false, godot::Image::FORMAT_RGBA8, px);
-								it = m->godotTextures.emplace(img->filename, ImageTexture::create_from_image(image)).first;
-								m->textures->releasePixels(img->filename);
-								m->textureLoads += 1;
-							}
-							else
-							{
-								// lane CAH-1: the packed DDS of the mapped image's texture (art\compiledtextures\<first two letters>\<stem>.dds, as the HUD's
-								// button images: the Create-a-Hero class / type / power icons)
-								std::string stem = img->filename.substr(0, img->filename.find_last_of('.'));
-								for (char &ch : stem)
-								{
-									ch = (char)std::tolower((unsigned char)ch);
-								}
-								std::vector<std::uint8_t> dds;
-								std::string ddsError;
-								Ref<godot::Image> image;
-								if (stem.size() > 2 && m->fs.is_valid() && m->fs->archive_fs() &&
-									m->fs->menu_archive_fs()->readFile("art/compiledtextures/" + stem.substr(0, 2) + "/" + stem + ".dds", dds, &ddsError))
-								{
-									PackedByteArray data;
-									data.resize((int64_t)dds.size());
-									memcpy(data.ptrw(), dds.data(), dds.size());
-									image.instantiate();
-									if (image->load_dds_from_buffer(data) != OK)
-									{
-										image.unref();
-									}
-								}
-								if (image.is_valid())
-								{
-									it = m->godotTextures.emplace(img->filename, ImageTexture::create_from_image(image)).first;
-									m->textureLoads += 1;
-								}
-								else
-								{
-									m->shell->gadgetErrors.insert("texture '" + img->filename + "' of image '" + *record + "': " + entry.error);
-								}
-							}
-						}
-						if (it != m->godotTextures.end())
-						{
-							tex = it->second;
-						}
+						// Mapped-image movie ops use the same archive layout and format
+						// decoding as native gadgets (BFME1 keeps flat art/textures).
+						tex = m->imageTexture(*m->shell, img, *record);
 					}
 					if (tex.is_valid())
 					{

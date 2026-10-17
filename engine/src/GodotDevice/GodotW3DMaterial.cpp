@@ -42,7 +42,11 @@ Error decodeTexture(const Ref<Image> &image, const PackedByteArray &buffer, bool
 		return image->load_png_from_buffer(buffer);
 	if (buffer.size() >= 3 && buffer[0] == 0xff && buffer[1] == 0xd8 && buffer[2] == 0xff)
 		return image->load_jpg_from_buffer(buffer);
-	return dds ? image->load_dds_from_buffer(buffer) : image->load_tga_from_buffer(buffer);
+	// BFME1 Textures.big ships palantira.dds as an uncompressed TGA. The
+	// extension is not reliable; DDS has an unambiguous four-byte signature.
+	if (buffer.size() >= 4 && std::memcmp(buffer.ptr(), "DDS ", 4) == 0)
+		return image->load_dds_from_buffer(buffer);
+	return image->load_tga_from_buffer(buffer);
 }
 
 String toGodot(const std::string &s)

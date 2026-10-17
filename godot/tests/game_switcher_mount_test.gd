@@ -1,0 +1,22 @@
+extends SceneTree
+func _initialize() -> void: call_deferred("_run")
+func _run() -> void:
+ var release=root.get_node("Release")
+ var fs=ClassDB.instantiate("RetailFileSystem")
+ var report:Dictionary=await release.mount_retail(fs)
+ assert(report.ok,str(report))
+ var bfme1:bool=release.selected_game()=="bfme1"
+ assert(fs.is_bfme1()==bfme1)
+ var world=ClassDB.instantiate("GameWorld")
+ root.add_child(world)
+ assert(world.setup(fs).ok)
+ var shell=ClassDB.instantiate("AptMenuPlayer")
+ root.add_child(shell)
+ assert(shell.boot_shell(fs,world,{"skirmish_ini":"/tmp/openbfme-switcher-mount-test.ini"}).ok)
+ assert(shell.shell_push("MainMenu.apt"))
+ for i in 90:shell.tick(0.033)
+ release.open_mod_manager()
+ var manager=root.get_node("ModManagerLayer")
+ assert(manager._game_picker.selected==(1 if bfme1 else 0))
+ print("GAME SWITCHER MOUNT PASS: ",release.selected_game()," correct archives, main menu and game selector")
+ quit()
