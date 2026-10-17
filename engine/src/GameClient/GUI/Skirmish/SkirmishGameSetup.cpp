@@ -146,6 +146,7 @@ bool SkirmishGameSetup::init(const std::u16string &userName, std::uint32_t seed,
 	m_info.startingCash = -1;
 	m_info.rules = MpGameRules::defaults(rulesMode());
 	m_info.legendaryHeroes = LegendaryHeroes::kOff;
+	m_info.fortressConstruction = false;
 	m_info.peaceTimeMinutes = PeaceTime::kOff;
 	m_info.simulationProfile = m_simulationProfile; // lane UBER-1: the player's option, not a rule: a reset keeps it
 	m_info.seed = seed;
@@ -654,6 +655,7 @@ void SkirmishGameSetup::resetRules()
 {
 	m_info.rules = MpGameRules::defaults(rulesMode());
 	m_info.legendaryHeroes = LegendaryHeroes::kOff;
+	m_info.fortressConstruction = false;
 	m_info.peaceTimeMinutes = PeaceTime::kOff;
 }
 

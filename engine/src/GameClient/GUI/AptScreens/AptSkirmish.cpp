@@ -522,12 +522,14 @@ void AptSkirmish::reloadGameForProfile()
 }
 
 // OpenBFME's own entries beside RotWK's record (not retail: RotWK's GameInfo text stays as retail writes it)
+static const char *const kFortressKey = "OpenBFMEFortressConstruction";
 static const char *const kPeaceKey = "OpenBFMEPeaceTimeMinutes";
 static const char *const kLegendaryKey = "OpenBFMELegendaryHeroes"; // the Legendary Heroes factor, 1 .. 4
 static const char *const kHeroesKey = "OpenBFMEHeroes";             // per slot: "-" none, "random", or the hero's unique id; ',' between slots
 
 void AptSkirmish::restoreExtensions(int mode)
 {
+	m_setup->setFortressConstruction(m_profiles->profileValue(mode, kFortressKey) == "1");
 	const std::string peace = m_profiles->profileValue(mode, kPeaceKey);
 	if (!peace.empty() && !m_setup->setPeaceTimeMinutes(std::atoi(peace.c_str())))
 		windows().note("skirmish-kept-game", "invalid kept peace time: Off");
@@ -598,6 +600,7 @@ void AptSkirmish::keepGame()
 	m_profiles->setProfileValue(mode, "Map", map);
 	m_profiles->setProfileValue(mode, "GameInfo", SkirmishGameInfoToString(m_setup->info(), mode));
 	m_profiles->setProfileValue(mode, "HeroIndexes", SkirmishHeroIndexesString());
+	m_profiles->setProfileValue(mode, kFortressKey, m_setup->info().fortressConstruction ? "1" : "0");
 	m_profiles->setProfileValue(mode, kPeaceKey, std::to_string(m_setup->info().peaceTimeMinutes));
 	m_profiles->setProfileValue(mode, kLegendaryKey, std::to_string(m_setup->info().legendaryHeroes)); // lane UI-6 review: OpenBFME's own keys
 	m_profiles->setProfileValue(mode, kHeroesKey, extensionHeroes());

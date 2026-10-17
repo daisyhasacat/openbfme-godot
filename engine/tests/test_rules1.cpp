@@ -190,6 +190,7 @@ TEST_CASE("rules1: the rules and the Legendary Heroes factor travel in the game 
 	m.game.rules = MpGameRules::defaults(RULES_MODE_SKIRMISH);
 	m.game.rules[RULE_INITIAL_RESOURCES] = 2500;
 	m.game.legendaryHeroes = 4;
+	m.game.fortressConstruction = true;
 	m.game.peaceTimeMinutes = 10;
 	NetByteWriter w;
 	NetPacket::writeNewGameMessage(w, m);
@@ -200,6 +201,7 @@ TEST_CASE("rules1: the rules and the Legendary Heroes factor travel in the game 
 	CHECK(back.game == m.game);
 	CHECK(back.game.rules[RULE_INITIAL_RESOURCES] == 2500);
 	CHECK(back.game.legendaryHeroes == 4);
+	CHECK(back.game.fortressConstruction);
 	CHECK(back.game.peaceTimeMinutes == 10);
 	// the factor is the last i32 of the GameInfo: 5 is refused (a peer of another rule set refuses the options instead of desyncing)
 	std::vector<std::uint8_t> bad = w.data();
@@ -228,6 +230,7 @@ TEST_CASE("rules1: the rules and the Legendary Heroes factor travel in the game 
 	REQUIRE_MESSAGE(ReplayFile::load(path, f, &error), error);
 	std::remove(path.c_str());
 	CHECK(f.header.game.game.legendaryHeroes == 4);
+	CHECK(f.header.game.game.fortressConstruction);
 	CHECK(f.header.game.game.peaceTimeMinutes == 10);
 	CHECK(f.header.game.game.rules == m.game.rules);
 }

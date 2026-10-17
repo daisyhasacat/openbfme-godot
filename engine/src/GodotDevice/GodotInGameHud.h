@@ -92,6 +92,10 @@ public:
 	// tests: the control bar button whose Palantir content is under the window pixel: { found, arc, slot, name }
 	Dictionary command_button_at(const Vector2 &pixel);
 	void set_controller_layout(bool active);
+	void set_native_hud_visible(bool visible);
+	Dictionary get_adaptive_minimap();
+	Dictionary get_adaptive_resources() const;
+	bool adaptive_minimap_click(const Vector2 &uv, bool order);
 	void set_controller_hover(int slot, bool arc, int64_t unit, int spell);
 	bool activate_command(int slot, bool in_palantir, bool cancel);
 	Ref<Texture2D> get_command_icon(const String &name);

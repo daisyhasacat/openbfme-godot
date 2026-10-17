@@ -112,13 +112,14 @@ Display names currently expose the definition's native INI value, which may be a
 
 | Method | Behavior |
 | --- | --- |
+| `object:setInvulnerable(enabled)` | Boolean; queue native indestructibility on/off, including current contained units (battalion members or garrison). Returns a mutation ticket. |
 | `object:kill()` | Normal death |
 | `object:destroy()` | Native destruction and cleanup |
 | `unit:construct(building, position, speed, onComplete)` | This unit builds for its owner; see [Construction](#construction) |
 | `building:trainUnit(unit, count)` | Queue recruitment; see [Training units](#training-units) |
 
 Fields include `id`, `objectId`, `typeId`, `type` / `template` (a UnitType/BuildingType handle), `playerId` / `player`, `ownerPlayer` (a Player handle),
-`faction`, `displayName`, `position = {x,y,z}`, `x`, `y`, `z`, `rotation`, `health`, `maxHealth`, and `level`. Buildings also expose `underConstruction`, `constructionPercent`, and `builderId`.
+`faction`, `displayName`, `position = {x,y,z}`, `x`, `y`, `z`, `rotation`, `health`, `maxHealth`, `invulnerable` (read only native body flag), and `level`. Buildings also expose `underConstruction`, `constructionPercent`, and `builderId`.
 Coordinates use SAGE world axes. Position and health are read only; modifying a position copy does not move the unit.
 `ownerPlayer` accepts an engine player ID or Player handle, and `level` uses the object's native experience system. Unsupported levels return a failed ticket.
 
@@ -131,6 +132,62 @@ for _, building in ipairs(bfme.players.localPlayer:buildings()) do
 end
 ```
 
+```lua
+local object = bfme.selection.first()
+if object then
+    object:setInvulnerable(true)
+    -- Later: object:setInvulnerable(false)
+end
+```
+
+This uses the existing body indestructibility flag: damage (including `:kill()`)
+is blocked; explicit `:destroy()` still removes the object. It does not heal,
+prevent targeting, or change other armor/modifier immunities. New contained units
+follow the engine's native creation rules; the call updates current contents.
+
+## Timing callbacks
+
+`bfme.timing` intercepts durations **once, immediately before work starts** in a
+local live match. It covers builder/plot/fortress/self-building construction and
+ordinary unit recruitment queues. UI estimates never invoke callbacks. Queued
+training that is waiting for another item or command points calls its callback
+when it actually starts, rather than when purchased.
+
+```lua
+local timing = require('bfme.timing')
+timing.onBuild(function(context)
+    if context.playerId == bfme.players.localPlayer.id then
+        context.seconds = context.seconds / 2
+    end
+end)
+timing.onTrain(function(context)
+    if context.typeId == 'GondorSoldier' then
+        return 3 -- seconds; returning a number overrides context.seconds
+    end
+end)
+-- timing.onBuild(nil)  -- remove only the building callback
+-- timing.clear()       -- remove both callbacks
+```
+
+The mutable context contains `kind` (`build` or `train`), `typeId`, `playerId`,
+`producerId`, `objectId`, `baseSeconds`, and `seconds`. IDs are engine IDs, with
+0 for an absent producer/object; a unit has not been created when training
+starts. Edit `seconds`, return a replacement number, or return nil to use the
+edited context. Durations must be finite and positive; they round up to a whole
+logic frame (0.2 seconds). Other context fields are informational.
+
+One callback per kind is active; registering another replaces it. Already
+started operations retain their chosen duration when a callback is replaced or
+removed. Errors and invalid durations are reported by the engine and leave that
+operation's native duration in place. Callbacks have the console's execution
+budget. They are cleared on a new match. They do not change template defaults,
+prices, research/upgrade timers, or hero revival timers.
+
+Callbacks run on the main Lua thread: while registered, simulation uses the main
+thread, and restores its previous worker setting when removed. Registration is
+refused in network matches and replay playback; these are local scripting hooks.
+
+
 ## Libraries
 
 | Library | Functions |
@@ -142,6 +199,7 @@ end
 | `bfme.debug` | `getSelectedBuilding()`, `getSelectedUnit()`, `inspect(handle)` |
 | `bfme.console` | `reload()`, `log(text)` |
 | `bfme.orders` | the unit and building orders below, for a handle or a list of handles of one player |
+| `bfme.timing` | `onBuild(fn)`, `onTrain(fn)`, `clear()`; see timing callbacks above |
 | `bfme.ai` | `list()`, `setEnabled(player, enabled)`, `isEnabled(player)`, `getStatus(player)` |
 | `bfme.events` | `onUpdate(name, fn, intervalMs)`, `remove(name)`, `list()` |
 | `bfme.map` | `getStartPositions()`, `getFarmSites()`, `getGroundHeight(x, y)`, `distance(a, b)` |
@@ -474,3 +532,10 @@ script enables it for local matches and reapplies it after changing matches;
 immobile structures without capture/gameplay roles. Placement ignores their
 footprints, and accepted construction removes only overlapping scenery through
 the native site-cleanup path. Previewing or cancelling placement removes nothing.
+
+## Build-mode classification
+
+`bfme.buildMode.list(options)`, `classify(templateOrInstance)`, and
+`matches(templateOrInstance, options)` classify buildings, units, foundations,
+markers, helpers, and unfinished content from mounted template/command data.
+See [Build-mode filter](BUILD_MODE_FILTER.md) for flags, evidence, and examples.

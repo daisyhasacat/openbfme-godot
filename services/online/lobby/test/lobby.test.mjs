@@ -1210,6 +1210,13 @@ test('ONLINE-5 (Sol r1): an emptied slot keeps no choices: a reopened AI slot\'s
   void c;
 });
 
+test('Fortress construction is an opt-in rule preserved by setup validation', () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  assert.equal(lobby.checkSetup(setup, true).fortressConstruction, false);
+  assert.equal(lobby.checkSetup({ ...setup, fortressConstruction: true }, true).fortressConstruction, true);
+  assert.throws(() => lobby.checkSetup({ ...setup, fortressConstruction: 1 }, true), /must be boolean/);
+});
+
 test('peace time: setup accepts Off and 5/10/15/20, defaults Off and rejects other durations', () => {
   const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
   assert.equal(lobby.checkSetup(setup, true).peaceTimeMinutes, 0);

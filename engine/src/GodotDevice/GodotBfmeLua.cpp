@@ -1,5 +1,6 @@
 // OpenBFME. GPL-3.0. The bfme companion's adapter to live engine objects.
 #include "Common/BuildAssistant.h"
+#include "GameLogic/BuildModeFilter.h"
 #include "Common/Upgrade.h"
 #include "GameLogic/Module/CastleModules.h"
 #include "GameLogic/Module/ConstructionModules.h"
@@ -59,6 +60,16 @@ Table definition(const ThingTemplate &tt)
 			{"visionRange", field(tt, "VisionRange")},
 			{"shroudClearingRange", field(tt, "ShroudClearingRange")}};
 }
+// Companion API: use the same body flag and contained-object propagation as
+// ScriptActionsUnits.cpp affectObjectPanelFlag("Indestructible", ...).
+void setInvulnerable(Object &obj, bool enabled, int depth = 0)
+{
+	if (auto body = obj.getBodyModule()) body->setIndestructible(enabled);
+	auto contain = obj.getContain();
+	if (!contain || depth > 16 || !contain->getContainedItemsList()) return;
+	for (auto member : *contain->getContainedItemsList())
+		if (member) setInvulnerable(*member, enabled, depth + 1);
+}
 bool kind(const ObjectTemplateInfo &info, int bit)
 {
 	return (info.kindOf[bit / 32] & (1u << (bit % 32))) != 0;
@@ -87,11 +98,18 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 	out.paused = m_paused;
 	if (!m_world)
 		return out;
+	const auto buildClasses = BuildModeFilter::classify(m_world->things(), m_world->commands(), m_world->modules());
 	for (auto master : m_world->things().templates())
 	{
 		const auto tt = master->getFinalOverride();
 		auto info = ObjectTemplateInfoBuilder::build(*tt);
 		auto r = definition(*tt);
+		const auto &c = buildClasses.at(tt->getName());
+		auto list = [](const std::vector<std::string> &items) { Value::List out; for (const auto &item : items) out.emplace_back(item); return out; };
+		r["buildMode"] = Table{{"building",c.building},{"unit",c.unit},{"plot",c.plot},{"marker",c.marker},{"placeholder",c.placeholder},
+			{"scenery",c.scenery},{"builderBuildable",c.builderBuildable},{"plotBuildable",c.plotBuildable},{"enhancedPlotBuildable",c.enhancedPlotBuildable},
+			{"unfinishedContent",c.unfinishedContent},{"unsupported",c.unsupported},{"recommended",c.recommended},
+			{"builders",list(c.builders)},{"plots",list(c.plots)},{"enhancedPlots",list(c.enhancedPlots)},{"reasons",list(c.reasons)},{"warnings",list(c.warnings)}};
 		out.collections["templates"][tt->getName()] = r;
 		if (kind(info, 7))
 			out.collections["buildingTypes"][tt->getName()] = r;
@@ -169,6 +187,7 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 		{
 			r["health"] = double(body->getHealth());
 			r["maxHealth"] = double(body->getMaxHealth());
+			r["invulnerable"] = body->isIndestructible();
 		}
 		if (auto xp = obj->getExperienceTracker())
 			r["level"] = xp->getRank();
@@ -415,6 +434,14 @@ std::string GameWorld::bfme_apply(const BfmeLuaRuntime::Mutation &m)
 		auto obj = logic.findObjectByID(numberId(m.id));
 		if (!obj || obj->isDestroyed())
 			return "expired object";
+		if (m.field == ":setInvulnerable")
+		{
+			auto enabled = std::get_if<bool>(&m.value.data);
+			if (!enabled) return "expected boolean";
+			if (!obj->getBodyModule()) return "object has no body";
+			setInvulnerable(*obj, *enabled);
+			return {};
+		}
 		if (m.field == ":giveUpgrade")
 		{
 			auto name = std::get_if<std::string>(&m.value.data);

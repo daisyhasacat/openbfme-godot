@@ -72,6 +72,7 @@ Dictionary newGameToDictionary(const NewGameMessage &m)
 	}
 	d["rules"] = rules;
 	d["legendary_heroes"] = m.game.legendaryHeroes;
+	d["fortress_construction"] = m.game.fortressConstruction;
 	d["peace_time_minutes"] = m.game.peaceTimeMinutes;
 	d["simulation_profile"] = (int)m.game.simulationProfile; // lane UBER-1: 0 Faithful, 1 Uber (Common/SimulationProfile.h)
 	Array slots;
@@ -158,6 +159,7 @@ bool newGameFromDictionary(const Dictionary &d, NewGameMessage &out, std::string
 			m.game.rules[(size_t)i] = (std::int32_t)(int64_t)rules[i];
 		}
 	}
+	m.game.fortressConstruction = (bool)d.get("fortress_construction", false);
 	m.game.peaceTimeMinutes = (int)(int64_t)d.get("peace_time_minutes", (int64_t)PeaceTime::kOff);
 	if (!PeaceTime::valid(m.game.peaceTimeMinutes)) return fail("Invalid peace_time_minutes (Off, 5, 10, 15 or 20)");
 	m.game.legendaryHeroes = (int)(int64_t)d.get("legendary_heroes", (int64_t)LegendaryHeroes::kOff);

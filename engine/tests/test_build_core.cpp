@@ -8,6 +8,9 @@
 #include "doctest.h"
 
 #include "ProdTestUtil.h"
+#include "PathfindTestUtil.h"
+#include "GameClient/ControlBar.h"
+#include "GameClient/MessageStream/MessageStream.h"
 
 #include "Common/StateHash.h"
 #include "GameLogic/BitFlags.h"
@@ -884,4 +887,125 @@ TEST_CASE("construction: optional neutral scenery clearing preserves capturable 
 	CHECK_FALSE(BuildPlacement::isLocationClearOfObjects(*f.logic,position,*building,0,nullptr,LLF_NO_OBJECT_OVERLAP));
 	f.logic->settings().clearNeutralDecorations = false;
 	CHECK_FALSE(ConstructionSite::isNeutralDecoration(*f.logic,*owned));
+}
+
+TEST_CASE("fortress construction: opt-in menu uses template data without a live builder and starts paid self-building foundations")
+{
+	BuildFx f;
+	f.load("Object TemplateBuilder\n KindOf = DOZER SELECTABLE\n CommandSet = FortressBuilderSet\nEnd\n"
+		"Object Fortress\n KindOf = STRUCTURE IMMOBILE SELECTABLE CASTLE_KEEP\n CommandSet = FortressSet\n"
+		" Body = ActiveBody Body\n MaxHealth = 1000\n MaxHealthDamaged = 500\n MaxHealthReallyDamaged = 100\n End\nEnd\n"
+		"CommandButton BuildHallWithoutBuilder\n Command = DOZER_CONSTRUCT\n Object = Hall\n Radial = Yes\nEnd\n"
+		"CommandButton FortressStop\n Command = STOP\n Radial = Yes\nEnd\n"
+		"CommandSet FortressSet\n 1 = FortressStop\nEnd\n"
+		"CommandSet FortressBuilderSet\n 1 = BuildHallWithoutBuilder\nEnd\n");
+	// Synthetic faction data: there is no TemplateBuilder object in the world.
+	auto faction = const_cast<PlayerTemplate *>(f.alice()->getPlayerTemplate());
+	REQUIRE(faction);
+	faction->m_startingUnit[0] = "TemplateBuilder";
+	auto fortress = f.make("Fortress", f.teamOf("Alice")); REQUIRE(fortress);
+	auto hall = f.w.get("Hall"); REQUIRE(hall);
+	f.players.setLocalPlayer(f.alice());
+	f.select(fortress);
+	CHECK_FALSE(BuildAssistant::isFortressBuilder(*fortress));
+	CHECK(BuildAssistant::fortressBuildSet(*fortress) == nullptr);
+	CHECK(BuildAssistant::canMakeUnit(*fortress, hall, -1) == CANMAKE_NO_PREREQUISITES);
+	f.logic->setFortressConstruction(true);
+	CHECK(BuildAssistant::isFortressBuilder(*fortress));
+	REQUIRE(BuildAssistant::fortressBuildSet(*fortress));
+	CHECK(BuildAssistant::canMakeUnit(*fortress, hall, -1) == CANMAKE_OK);
+	CHECK(f.find("TemplateBuilder") == nullptr);
+	PinholeView view; InGameUI ui; MessageStream stream;
+	HudContext ctx{*f.logic, nullptr, view, ui, stream, &f.ProdWorld::commands, {}};
+	ui.selectObject(fortress->getID());
+	ControlBar bar(ctx); bar.update();
+	REQUIRE(bar.sideButtons().size() == 1);
+	CHECK(bar.sideButtons()[0].button->m_command == GUI_COMMAND_DOZER_CONSTRUCT);
+	REQUIRE(bar.radialButtons().size() == 1);
+	CHECK(bar.radialButtons()[0].button->m_command == GUI_COMMAND_STOP);
+	CHECK(bar.pressButton(bar.sideButtons()[0].slot, false));
+	CHECK(ui.isPlacing());
+	CHECK(ui.placeBuildSource() == fortress->getID());
+	CHECK(ui.placeBuildTemplate() == "Hall");
+	pathtest::SyntheticTerrain terrain(128,128);
+	AIWorldConfig config; config.pathfind = pathtest::testConfig();
+	INIMacroTable macros; AIWorld ai(*f.logic, config, macros); ai.attach(); ai.newMap(terrain);
+	const auto money = f.alice()->getMoney()->countMoney();
+	GameMessage order(MSG_DOZER_CONSTRUCT, f.alice()->getPlayerIndex());
+	order.appendIntegerArgument((int)hall->getTemplateID());
+	order.appendLocationArgument({300,300,0}); order.appendRealArgument(0);
+	f.alice()->withdrawMoney(money, true);
+	f.dispatch.dispatch(order);
+	CHECK(f.find("Hall") == nullptr);
+	CHECK(f.alice()->getMoney()->countMoney() == 0u);
+	f.alice()->depositMoney(money);
+	GameMessage illegal(MSG_DOZER_CONSTRUCT, f.alice()->getPlayerIndex());
+ illegal.appendIntegerArgument((int)hall->getTemplateID());
+ illegal.appendLocationArgument({2000,300,0}); illegal.appendRealArgument(0);
+	f.dispatch.dispatch(illegal);
+	CHECK(f.find("Hall") == nullptr);
+	CHECK(f.alice()->getMoney()->countMoney() == money);
+	f.dispatch.dispatch(order);
+	auto building = f.find("Hall"); REQUIRE(building);
+	CHECK(f.alice()->getMoney()->countMoney() == money - 300);
+	CHECK(building->isUnderConstruction());
+	CHECK(building->getBodyModule()->getHealth() == 1.0f);
+	auto gb = dynamic_cast<GettingBuiltBehavior *>(building->findModule("GettingBuiltBehavior")); REQUIRE(gb);
+	CHECK(gb->isConstructing());
+	CHECK(gb->buildFrames() == 100u);
+	f.frames(120);
+	CHECK_FALSE(building->isUnderConstruction());
+	CHECK(building->getBodyModule()->getHealth() == 1000.0f);
+	// A forged order after disabling the rule cannot build from the fortress.
+	f.logic->setFortressConstruction(false);
+	f.dispatch.dispatch(order);
+	CHECK(f.alice()->getMoney()->countMoney() == money - 300);
+	f.logic->reset();
+}
+
+TEST_CASE("timing build: one callback before self-building starts, duration is captured through completion")
+{
+	BuildFx f;
+	int calls = 0;
+	f.logic->setTimingHook("build", [&](const GameLogic::TimingRequest &r) {
+		++calls;
+		CHECK(r.kind == "build"); CHECK(r.type.getName() == "Hall");
+		CHECK(r.player == f.alice()); REQUIRE(r.object);
+		CHECK(r.frames == 100);
+		return 5;
+	});
+	auto building = Construction::constructWithoutBuilder(*f.logic, *f.w.get("Hall"), {300,300,0}, 0, *f.alice());
+	REQUIRE(building);
+	CHECK(calls == 1);
+	auto gb = dynamic_cast<GettingBuiltBehavior *>(building->findModule("GettingBuiltBehavior")); REQUIRE(gb);
+	CHECK(gb->buildFrames() == 5u);
+	f.logic->setTimingHook("build", {});
+	f.frames(4); CHECK(building->isUnderConstruction());
+	f.frames(1); CHECK_FALSE(building->isUnderConstruction());
+	CHECK(calls == 1);
+	CHECK(building->getBodyModule()->getHealth() == 1000.0f);
+}
+
+TEST_CASE("timing build: callback errors are reported and preserve the native duration")
+{
+	BuildFx f;
+	f.logic->setTimingHook("build", [](const GameLogic::TimingRequest &) -> int { throw std::runtime_error("bad timing"); });
+	auto building = Construction::constructWithoutBuilder(*f.logic, *f.w.get("Hall"), {300,300,0}, 0, *f.alice()); REQUIRE(building);
+	auto gb = dynamic_cast<GettingBuiltBehavior *>(building->findModule("GettingBuiltBehavior")); REQUIRE(gb);
+	CHECK(gb->buildFrames() == 100u);
+	const auto report = f.logic->report();
+	REQUIRE_FALSE(report.errors.empty());
+	CHECK(report.errors.back().find("bad timing") != std::string::npos);
+}
+
+TEST_CASE("timing build: registering a callback after builder work starts does not retime that operation")
+{
+	BuildFx f;
+	auto structure = f.make("Hall", f.teamOf("Alice")); REQUIRE(structure);
+	auto gb = dynamic_cast<GettingBuiltBehavior *>(structure->findModule("GettingBuiltBehavior")); REQUIRE(gb);
+	CHECK(gb->scriptBuildFrames(100, nullptr) == 100);
+	int calls = 0;
+	f.logic->setTimingHook("build", [&](const GameLogic::TimingRequest &) { ++calls; return 5; });
+	CHECK(gb->scriptBuildFrames(100, nullptr) == 100);
+	CHECK(calls == 0);
 }

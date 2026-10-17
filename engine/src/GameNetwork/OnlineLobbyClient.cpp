@@ -367,7 +367,7 @@ std::string slotChoices(int faction, int color, int startPos, int team)
 std::string setupFields(const SkirmishGameInfo &s)
 {
 	std::string out = "\"map\":" + OnlineLobbyClient::jsonQuote(s.mapName) + ",\"startingCash\":" + std::to_string(s.startingCash) +
-		",\"superweaponRestriction\":" + std::to_string(s.superweaponRestriction) + ",\"legendaryHeroes\":" + std::to_string(s.legendaryHeroes) + ",\"peaceTimeMinutes\":" + std::to_string(s.peaceTimeMinutes) + ",\"rules\":";
+		",\"superweaponRestriction\":" + std::to_string(s.superweaponRestriction) + ",\"legendaryHeroes\":" + std::to_string(s.legendaryHeroes) + ",\"peaceTimeMinutes\":" + std::to_string(s.peaceTimeMinutes) + ",\"fortressConstruction\":" + (s.fortressConstruction ? "true" : "false") + ",\"rules\":";
 	if (MpGameRules::isNone(s.rules))
 	{
 		out += "null";
@@ -669,6 +669,11 @@ bool OnlineLobbyClient::readGameView(const JsonValue &g, std::string *error, boo
 	info.startingCash = (int)cash;
 	info.superweaponRestriction = (int)sw;
 	info.legendaryHeroes = (int)lh;
+	info.fortressConstruction = false;
+	if (const auto flag = setup->get("fortressConstruction")) {
+		if (flag->type != JsonValue::BOOL) return fail("fortressConstruction must be boolean");
+		info.fortressConstruction = flag->boolean;
+	}
 	long long peace = 0;
 	if (const JsonValue *value = setup->get("peaceTimeMinutes"))
 		if (!intOf(value, 0, 20, peace) || !PeaceTime::valid((int)peace)) return fail("invalid peaceTimeMinutes");

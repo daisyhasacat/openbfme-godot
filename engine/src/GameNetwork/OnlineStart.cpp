@@ -243,6 +243,10 @@ bool parse(const std::string &json, const ProfileIdentity &ownProfile, const Lim
 	g.startingCash = (int)cash;
 	g.superweaponRestriction = (int)sw;
 	g.legendaryHeroes = (int)lh;
+	if (const auto flag = setup->get("fortressConstruction")) {
+		if (flag->type != JsonValue::BOOL) return fail(error, "fortressConstruction must be boolean");
+		g.fortressConstruction = flag->boolean;
+	}
 	long long peace = 0;
 	if (setup->get("peaceTimeMinutes") && (!intField(*setup, "peaceTimeMinutes", 0, 20, peace, &sub) || !PeaceTime::valid((int)peace)))
 		return fail(error, "invalid peaceTimeMinutes");

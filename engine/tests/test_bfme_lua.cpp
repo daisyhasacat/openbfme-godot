@@ -6,6 +6,7 @@
 #include <chrono>
 #include <stdexcept>
 #include <map>
+#include <stdexcept>
 #include <thread>
 
 namespace
@@ -311,7 +312,7 @@ TEST_CASE("bfme Lua: libraries are read-only objects reachable through bfme, imp
 	BfmeFixture f;
 	CHECK(f.run("return bfme.debug==import('bfme.debug'), bfme.debug==require('bfme.debug'), tostring(bfme.debug)") ==
 		  "true\ttrue\tbfme.debug\n");
-	CHECK(f.run("return table.concat(bfme.capabilities.libraries,',')") == "ai,console,debug,events,graphics,input,layouts,map,match,mutations,orders,selection\n");
+	CHECK(f.run("return table.concat(bfme.capabilities.libraries,',')") == "ai,buildMode,console,debug,events,graphics,input,layouts,map,match,mutations,orders,selection,timing\n");
 	CHECK(f.run("bfme.capabilities.libraries[1]='x'; return bfme.capabilities.libraries[1]") == "ai\n");
 	CHECK(f.run("return getmetatable(bfme.selection), getmetatable(bfme), type(bfme.match.getFrame), bfme.debug.missing") ==
 		  "bfme library\tbfme module\tfunction\tnil\n");
@@ -503,6 +504,93 @@ TEST_CASE("bfme Lua: layout restoration retains plot ID, completion callback and
 	CHECK(std::get<std::string>(f.applied[1].value.data) == "Upgrade_Test");
 	CHECK(f.applied[2].field == ":linkWallPiece");
 	CHECK(std::get<double>(f.applied[2].value.data) == 777);
+}
+
+TEST_CASE("bfme Lua: invulnerability is a validated queued unit and building action")
+{
+	BfmeFixture f;
+	f.snapshot.collections["buildingInstances"]["777"] = {{"id", 777}};
+	CHECK(f.run("t=bfme.unitInstances[1234]:setInvulnerable(true);return bfme.mutations.getStatus(t)") == "pending\n");
+	CHECK(f.applied.empty());
+	f.vm->flush();
+	REQUIRE(f.applied.size() == 1);
+	CHECK(f.applied.back().collection == "unitInstances");
+	CHECK(f.applied.back().field == ":setInvulnerable");
+	CHECK(std::get<bool>(f.applied.back().value.data));
+	CHECK(f.run("return bfme.mutations.getStatus(t)") == "applied\n");
+	f.run("bfme.buildingInstances[777]:setInvulnerable(false)");
+	f.vm->flush();
+	CHECK(f.applied.back().collection == "buildingInstances");
+	CHECK_FALSE(std::get<bool>(f.applied.back().value.data));
+	for (const char *value : {"nil", "1", "'true'", "{}"})
+		CHECK_FALSE(f.vm->execute(std::string("bfme.unitInstances[1234]:setInvulnerable(") + value + ")").ok);
+	CHECK_FALSE(f.vm->hasPending());
+	f.run("u=bfme.unitInstances[1234]");
+	f.snapshot.collections["unitInstances"].clear();
+	CHECK_FALSE(f.vm->execute("u:setInvulnerable(true)").ok);
+}
+
+TEST_CASE("bfme timing: callbacks can edit seconds or return a duration; removal, validation, errors and match lifetime")
+{
+	BfmeFixture f;
+	CHECK(f.run("return bfme.timing==import('bfme.timing'),bfme.timing==require('bfme.timing')") == "true\ttrue\n");
+	CHECK_FALSE(f.vm->hasTimingHooks());
+	f.run("calls=0;bfme.timing.onBuild(function(c) calls=calls+1;seen=c; seenFrame=bfme.match.getFrame(); c.seconds=c.seconds/2 end)");
+	CHECK(f.vm->hasTimingHook("build"));
+	f.snapshot.frame = 42;
+	CHECK(f.vm->adjustTiming("build", {{"typeId","Hall"},{"playerId",1}}, 100) == 50);
+	CHECK(f.run("return seenFrame") == "42\n");
+	CHECK(f.run("return calls,seen.typeId,seen.playerId,seen.baseSeconds,seen.kind") == "1\tHall\t1\t20\tbuild\n");
+	CHECK(f.vm->adjustTiming("train", {}, 100) == 100);
+	f.run("bfme.timing:onTrain(function(c) return 0.21 end)");
+	CHECK(f.vm->adjustTiming("train", {}, 100) == 2); // seconds round up to whole logic frames
+	CHECK_FALSE(f.vm->execute("bfme.timing.onBuild(3)").ok);
+	for (const char *result : {"0", "-1", "math.huge", "0/0", "'3'", "{}"}) {
+		f.run(std::string("bfme.timing.onBuild(function(c) return ") + result + " end)");
+		CHECK_THROWS(f.vm->adjustTiming("build", {}, 100));
+	}
+	f.run("bfme.timing.onBuild(function(c) error('timing failure') end)");
+	CHECK_THROWS(f.vm->adjustTiming("build", {}, 100));
+	CHECK(f.run("return 7*8") == "56\n");
+	f.run("bfme.timing.onBuild(function(c) c.seconds=nil;setmetatable(c,{__index=function()error('unprotected read')end}) end)");
+	CHECK_THROWS(f.vm->adjustTiming("build", {}, 100));
+	f.run("bfme.timing.onBuild(function(c) while true do end end)");
+	CHECK_THROWS(f.vm->adjustTiming("build", {}, 100));
+	CHECK(f.run("return 6*7") == "42\n");
+	f.run("bfme.timing.onBuild(nil)");
+	CHECK_FALSE(f.vm->hasTimingHook("build"));
+	CHECK(f.vm->hasTimingHook("train"));
+	f.vm->invalidate();
+	CHECK_FALSE(f.vm->hasTimingHooks());
+	for (int mode = 0; mode != 3; ++mode) {
+		f.snapshot.ready = mode != 0; f.snapshot.networkGame = mode == 1; f.snapshot.replay = mode == 2;
+		CHECK_FALSE(f.vm->execute("bfme.timing.onBuild(function(c) return 1 end)").ok);
+	}
+	f.run("bfme.timing.clear()");
+}
+
+TEST_CASE("bfme Lua: build mode filters keep template completeness and live construction separate")
+{
+ BfmeFixture f;
+ using V=BfmeLuaValue;
+ V::Table flags{{"building",true},{"unit",false},{"plot",false},{"marker",false},{"placeholder",false},{"scenery",false},
+  {"builderBuildable",true},{"plotBuildable",false},{"enhancedPlotBuildable",true},{"unfinishedContent",false},
+  {"unsupported",false},{"recommended",true},{"reasons",V::List{"offered_by_builder_command"}},{"warnings",V::List{}}};
+ f.snapshot.collections["templates"]["Barracks"]={{"id","Barracks"},{"name","Barracks"},{"buildMode",flags}};
+ f.snapshot.collections["buildingInstances"]["9"]={{"id",9},{"typeId","Barracks"},{"underConstruction",true}};
+ CHECK(f.run(R"lua(
+ local filter=require('bfme.buildMode')
+ local all=filter.list();assert(#all==1 and all[1].name=='Barracks')
+ assert(filter.matches('Barracks',{builderBuildable=true,unfinished=false}))
+ local b=bfme.buildingInstances[9]
+ local c=filter.classify(b)
+ assert(c.underConstruction and c.unfinished and not c.unfinishedContent)
+ assert(not filter.matches(b,{unfinished=false}))
+ c.recommended=false
+ assert(filter.classify(b).recommended) -- detached classification
+ assert(not pcall(function()filter.matches('Barracks',{bogus=true})end))
+ return #filter.list({plotBuildable=true})
+ )lua")=="0\n");
 }
 
 TEST_CASE("bfme Lua: synchronized tickets wait for committed outcomes and guest failure never writes locally")

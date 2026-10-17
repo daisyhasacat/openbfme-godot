@@ -400,6 +400,22 @@ public:
 	// OpenBFME's Legendary Heroes factor (1 = off). Both are part of the state hash only when set, so a game without them keeps its hashes
 	void setGameRules(const GameRules &rules) { m_gameRules = rules; }
 	const GameRules &gameRules() const { return m_gameRules; }
+	// OpenBFME local scripting: called once at the start of an operation, not by UI estimates.
+	struct TimingRequest
+	{
+		std::string kind;
+		const ThingTemplate &type;
+		const Player *player;
+		const Object *producer;
+		const Object *object;
+		int frames;
+	};
+	using TimingHook = std::function<int(const TimingRequest &)>;
+	void setTimingHook(const std::string &kind, TimingHook hook) { if (hook) m_timingHooks[kind] = std::move(hook); else m_timingHooks.erase(kind); }
+	bool hasTimingHook(const std::string &kind) const { return m_timingHooks.count(kind) != 0; }
+	int interceptTiming(const TimingRequest &request);
+	void setFortressConstruction(bool enabled) { m_fortressConstruction = enabled; }
+	bool fortressConstruction() const { return m_fortressConstruction; }
 	void setLegendaryHeroes(int factor) { m_legendaryHeroes = factor; }
 	int legendaryHeroes() const { return m_legendaryHeroes; }
 	void setPeaceTimeMinutes(int minutes);
@@ -742,6 +758,8 @@ private:
 	UnsignedInt m_frame = 0;
 	int m_gameDifficulty = 1;     ///< lane CAMP-1H: RW GameLogic + 0xA4
 	GameRules m_gameRules = MpGameRules::none(); ///< lane RULES-1
+	std::map<std::string, TimingHook> m_timingHooks;
+	bool m_fortressConstruction = false;
 	int m_peaceTimeMinutes = PeaceTime::kOff;
 	std::vector<ObjectID> m_peaceFortresses; // derived index in creation order; objects already carry the hashed state
 	int m_legendaryHeroes = LegendaryHeroes::kOff; ///< lane RULES-1 (OpenBFME)

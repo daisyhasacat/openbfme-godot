@@ -283,6 +283,7 @@ bool LiveGame::load(const Options &options, std::string *error)
 		m_logic->economy().context().sandbox = options.start->message.game.isSandbox(options.start->localSlot);
 	}
 	m_logic->setGameRules(gameRules);
+	m_logic->setFortressConstruction(options.start && options.start->message.game.fortressConstruction);
 	m_logic->setLegendaryHeroes(options.start ? options.start->message.game.legendaryHeroes : LegendaryHeroes::kOff);
 	m_logic->setPeaceTimeMinutes(options.start ? options.start->message.game.peaceTimeMinutes : PeaceTime::kOff);
 	if (options.start && options.start->message.game.luaAuthoritySlot >= 0)

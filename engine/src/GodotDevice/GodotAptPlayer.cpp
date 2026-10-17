@@ -2678,6 +2678,7 @@ Dictionary AptMenuPlayer::lobby_state()
  }
  out["rule_definitions"] = definitions; out["legendary_heroes"] = g.legendaryHeroes; out["peace_time_minutes"] = g.peaceTimeMinutes;
  out["peace_time_choices"] = entries(setup.peaceTimeEntries());
+	out["fortress_construction"] = g.fortressConstruction;
 
 	Array slots;
 	for (const SkirmishGameSlot &s : g.slots)
@@ -2846,6 +2847,7 @@ Dictionary AptMenuPlayer::lobby_apply(const Dictionary &spec)
 		}
 	}
 
+	if (spec.has("browser_fortress_construction") && !screen->setBrowserFortressConstruction(bool(spec["browser_fortress_construction"]))) errors.push_back("Cannot change Fortress construction");
  if (spec.has("browser_peace_time") && !screen->setBrowserPeaceTime(int(spec["browser_peace_time"]))) errors.push_back("Invalid peace time");
  if (spec.has("browser_legendary") && !screen->setBrowserLegendary(int(spec["browser_legendary"]))) errors.push_back("Invalid Legendary Heroes factor");
  const Array browserRules = spec.get("browser_rules", Array());

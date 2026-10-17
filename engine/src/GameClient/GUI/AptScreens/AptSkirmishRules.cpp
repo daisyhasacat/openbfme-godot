@@ -111,7 +111,7 @@ int AptSkirmish::ruleComboCount() const
 		return 0;
 	}
 	const int mode = m_setup->rulesMode();
-	return MpGameRules::numComboBoxes(mode) + (mode == RULES_MODE_SKIRMISH ? 2 : 0);
+	return MpGameRules::numComboBoxes(mode) + (mode == RULES_MODE_SKIRMISH ? 3 : 0);
 }
 
 void AptSkirmish::initRuleGadget(const std::string &name, GameWindow *window)
@@ -161,6 +161,7 @@ void AptSkirmish::refileRules()
 	m_rulesPopulated = false;
 	m_ruleWindows.fill(nullptr);
 	m_legendaryCombo = nullptr;
+	m_fortressCombo = nullptr;
 	m_peaceCombo = nullptr;
 	tryPopulateRules();
 }
@@ -251,6 +252,14 @@ void AptSkirmish::populateRuleCombos()
 	}
 	if (mode == RULES_MODE_SKIRMISH && (std::size_t)row < m_ruleCombos.size() && m_ruleCombos[(std::size_t)row])
 	{
+		m_fortressCombo = m_ruleCombos[(std::size_t)row];
+		windows().setAptText("APT:RuleComboBox_" + std::to_string(row++), "Fortress construction (OpenBFME rule)");
+		fillRuleCombo(m_fortressCombo, {{u"Off", 0xFFFFFFFFu, 0}, {u"On", 0xFFFFFFFFu, 1}});
+		m_fortressCombo->winHide(false);
+		updateLegendaryGadget();
+	}
+	if (mode == RULES_MODE_SKIRMISH && (std::size_t)row < m_ruleCombos.size() && m_ruleCombos[(std::size_t)row])
+	{
 		GameWindow *window = m_ruleCombos[(std::size_t)row];
 		m_peaceCombo = window;
 		windows().setAptText("APT:RuleComboBox_" + std::to_string(row++), toUtf8(PeaceTime::label()));
@@ -328,6 +337,7 @@ void AptSkirmish::enableRuleGadgets()
 {
 	// the 0x57E97A twin: a window is enabled when the game exists, its host test holds and the rule's state is 1
 	const bool host = m_setup && amIHost();
+	if (m_fortressCombo) m_fortressCombo->winEnable(host);
 	m_ruleInput = false;
 	for (std::size_t rule = 0; rule < m_ruleWindows.size(); ++rule)
 	{
@@ -373,6 +383,10 @@ void AptSkirmish::updateLegendaryGadget()
 		return;
 	}
 	m_ruleInput = false;
+	if (m_fortressCombo) {
+		selectComboValue(m_fortressCombo, m_setup->info().fortressConstruction ? 1 : 0);
+		m_fortressCombo->winEnable(amIHost());
+	}
 	selectComboValue(m_legendaryCombo, m_setup->info().legendaryHeroes);
 	m_legendaryCombo->winEnable(amIHost());
 	m_ruleInput = true;
@@ -407,6 +421,14 @@ bool AptSkirmish::onRuleGadget(GameWindow *gadget)
 	if (!gadget || !m_setup)
 	{
 		return false;
+	}
+	if (gadget == m_fortressCombo)
+	{
+		const int value = comboValue(gadget);
+		if (m_ruleInput && !m_refreshing && amIHost() && (value == 0 || value == 1)) {
+			m_setup->setFortressConstruction(value != 0); ruleChanged(-3, false);
+		}
+		updateLegendaryGadget(); return true;
 	}
 	if (gadget == m_legendaryCombo)
 	{
@@ -489,7 +511,7 @@ void AptSkirmish::ruleChanged(int kind, bool reset)
 	}
 	else
 	{
-		notice = fetchOrMissing(m_env.gameText, "GUI:RuleChangeWarning") + u" " + (kind == -2 ? PeaceTime::label() : (kind < 0 ? LegendaryHeroes::label() : m_setup->ruleName(kind)));
+		notice = fetchOrMissing(m_env.gameText, "GUI:RuleChangeWarning") + u" " + (kind == -3 ? std::u16string(u"Fortress construction (OpenBFME rule)") : kind == -2 ? PeaceTime::label() : (kind < 0 ? LegendaryHeroes::label() : m_setup->ruleName(kind)));
 	}
 	if (!notice.empty())
 	{
@@ -543,6 +565,7 @@ void AptSkirmish::pruneRuleGadgets(const std::set<const GameWindow *> &alive)
 		check(w);
 	}
 	check(m_legendaryCombo);
+	check(m_fortressCombo);
 	check(m_peaceCombo);
 	if (lost)
 	{
@@ -550,6 +573,7 @@ void AptSkirmish::pruneRuleGadgets(const std::set<const GameWindow *> &alive)
 		m_rulesPopulated = false;
 		m_ruleWindows.fill(nullptr);
 		m_legendaryCombo = nullptr;
+	m_fortressCombo = nullptr;
 		m_peaceCombo = nullptr;
 	}
 }
@@ -567,6 +591,15 @@ bool AptSkirmish::setBrowserRule(int rule, int value)
  ruleChanged(rule, false);
  refreshRuleGadgets();
  return true;
+}
+
+bool AptSkirmish::setBrowserFortressConstruction(bool enabled)
+{
+	if (!m_setup || !amIHost()) return false;
+	m_setup->setFortressConstruction(enabled);
+	ruleChanged(-3, false);
+	refreshRuleGadgets();
+	return true;
 }
 
 bool AptSkirmish::setBrowserLegendary(int value)

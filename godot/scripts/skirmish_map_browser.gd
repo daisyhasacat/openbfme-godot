@@ -369,7 +369,7 @@ func _commit() -> bool:
   slots.append(change)
  var rules=[]
  for key in rule_edits:rules.append({'id':int(key),'value':rule_edits[key]})
- var result:Dictionary=shell.lobby_apply({'map_search':'','map':selected.key,'slots':slots,'browser_rules':rules,'browser_legendary':draft.get('legendary_heroes',1),'browser_peace_time':draft.get('peace_time_minutes',0)})
+ var result:Dictionary=shell.lobby_apply({'map_search':'','map':selected.key,'slots':slots,'browser_rules':rules,'browser_fortress_construction':draft.get('fortress_construction',false),'browser_legendary':draft.get('legendary_heroes',1),'browser_peace_time':draft.get('peace_time_minutes',0)})
  if not result.get('ok',false):message.text=str(result.get('errors',[]))
  return result.get('ok',false)
 
@@ -414,6 +414,11 @@ func _setup_tabs():
  var peace_row=HBoxContainer.new();rows.add_child(peace_row)
  var peace_label=Label.new();peace_label.text='Peace Time';peace_label.size_flags_horizontal=Control.SIZE_EXPAND_FILL;peace_row.add_child(peace_label)
  _choice(peace_row,draft.get('peace_time_choices',[]),int(draft.get('peace_time_minutes',0)),func(value):draft.peace_time_minutes=value)
+
+ # The fortress offers the faction builder's menu and starts paid foundations immediately.
+ var fortress=CheckButton.new();fortress.text='Fortress construction';fortress.button_pressed=bool(draft.get('fortress_construction',false));rows.add_child(fortress)
+ fortress.tooltip_text='Select a fortress to place buildings without a builder. Normal prices and build times apply.'
+ fortress.toggled.connect(func(on):draft.fortress_construction=on)
 
 func _owner(start: int) -> int:
  for key in assignments:
