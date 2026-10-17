@@ -35,20 +35,22 @@ public:
 	// row-major 3x3, columns X, Y, Z
 	const float *getBasis() const { return m_basis; }
 
-	void setPosition(const Coord3D *pos);
+	void setPosition(const Coord3D *pos, bool swept = true);
 	// rotation about +Z (the basis is rebuilt from the angle)
 	void setOrientation(float angle);
 	// lane PERF-3: setOrientation with the cosine and sine of `angle` computed beforehand (SimMath::cosf32 / sinf32 of it: the values setOrientation
 	// computes), so a caller can compute them on another thread and apply them in its own order
 	void setOrientationTrig(float angle, float c, float s);
 	// position and a full basis (an object aligned to the terrain); the angle is atan2 of the X axis
-	void setTransform(const Coord3D *pos, const float basis[9]);
+	void setTransform(const Coord3D *pos, const float basis[9], bool swept = true);
 
 	// ZH Thing.h Object / Drawable down-casts (the modules take a Thing* and need the kind)
 	virtual Object *asObject() { return nullptr; }
 	virtual Drawable *asDrawable() { return nullptr; }
 
 protected:
+	// Enhanced game rules may reject a move before any transform or spatial bookkeeping changes.
+	virtual bool allowsPositionChange(const Coord3D &, bool) const { return true; }
 	// ZH Thing::reactToTransformChange: called after the position or the orientation changed
 	virtual void reactToTransformChange(const Coord3D * /*oldPos*/, float /*oldAngle*/) {}
 

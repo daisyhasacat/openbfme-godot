@@ -325,6 +325,12 @@ void Object::buildModules()
 	}
 }
 
+bool Object::allowsPositionChange(const Coord3D &position, bool swept) const
+{
+	// Initial placements have no movement segment; teleports still check their destination.
+	return m_logic.peaceExclusionAllows(*this, position, swept && m_recordedValid);
+}
+
 void Object::reactToTransformChange(const Coord3D *oldPos, float)
 {
 	if (m_ai)
@@ -1172,11 +1178,12 @@ void Object::teleportGather()
 // RW 0x696E63 (Object.h)
 void Object::teleportTo(const Coord3D *pos, bool keepAI)
 {
-	setPosition(pos);
+	if (!allowsPositionChange(*pos, false)) return;
+	setPosition(pos, false);
 	recordTransform(m_logic.getFrame());
 	recordTransform(m_logic.getFrame());
 	teleportGather();
-	setPosition(pos);
+	setPosition(pos, false);
 	updateShroudNow();
 	if (m_contain)
 	{
@@ -1201,11 +1208,12 @@ void Object::teleportTo(const Coord3D *pos, bool keepAI)
 // RW 0x68DA67 (Object.h)
 void Object::teleportTransform(const Coord3D *pos, const float basis[9])
 {
-	setTransform(pos, basis);
+	if (!allowsPositionChange(*pos, false)) return;
+	setTransform(pos, basis, false);
 	recordTransform(m_logic.getFrame());
 	recordTransform(m_logic.getFrame());
 	teleportGather();
-	setTransform(pos, basis);
+	setTransform(pos, basis, false);
 	updateShroudNow();
 	if (m_contain)
 	{

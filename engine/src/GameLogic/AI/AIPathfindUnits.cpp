@@ -255,6 +255,7 @@ bool Pathfinder::validMovementPosition(const PathfindMovement &mv, const Pathfin
 
 bool Pathfinder::validMovementPosition(const PathfindObject *obj, const PathfindLocomotorInfo &loco, PathfindLayerEnum layer, const Coord3D *pos)
 {
+	if (obj && !obj->canEnterPosition(*pos)) return false;
 	const int x = SimMath::truncToInt32(SimMath::mulf32(pos->x, 0.1f));
 	const int y = SimMath::truncToInt32(SimMath::mulf32(pos->y, 0.1f));
 	const PathfindMovement mv = makeMovement(obj, loco);
@@ -323,6 +324,12 @@ bool Pathfinder::checkForMovement(const PathfindObject *obj, PathfindCheckMoveme
 	if (!obj)
 	{
 		return true;
+	}
+	if (obj->hasMovementRestrictions())
+	{
+		Coord3D candidate{};
+		adjustCoordToCell(info.cell.x, info.cell.y, info.center, candidate, info.layer);
+		if (!obj->canEnterPosition(candidate)) return false;
 	}
 	const SearcherFacts self = (m_memoActive && obj == m_memoObj) ? m_memoSelf : searcherFacts(obj);
 	const bool isHuman = self.isHuman;

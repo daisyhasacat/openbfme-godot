@@ -402,6 +402,10 @@ public:
 	void setPeaceTimeMinutes(int minutes);
 	int peaceTimeMinutes() const { return m_peaceTimeMinutes; }
 	bool peaceTimeActive() const { return m_frame < PeaceTime::frames(m_peaceTimeMinutes); }
+	// OpenBFME: enemy units cannot enter living fortresses' peace-time circles. Swept moves
+	// also test the segment; teleports/placements test the destination. Units caught inside may leave.
+	bool hasPeaceExclusion(const Object &unit) const;
+	bool peaceExclusionAllows(const Object &unit, const Coord3D &position, bool swept = false, float clearance = 0.0f) const;
 	// lane UBER-1: the simulation profile (Common/SimulationProfile.h; set before the first frame). Hashed only when Uber, so a Faithful game keeps its hash
 	void setSimulationProfile(SimulationProfile p) { m_simulationProfile = p; }
 	SimulationProfile simulationProfile() const { return m_simulationProfile; }
@@ -735,6 +739,7 @@ private:
 	int m_gameDifficulty = 1;     ///< lane CAMP-1H: RW GameLogic + 0xA4
 	GameRules m_gameRules = MpGameRules::none(); ///< lane RULES-1
 	int m_peaceTimeMinutes = PeaceTime::kOff;
+	std::vector<ObjectID> m_peaceFortresses; // derived index in creation order; objects already carry the hashed state
 	int m_legendaryHeroes = LegendaryHeroes::kOff; ///< lane RULES-1 (OpenBFME)
 	SimulationProfile m_simulationProfile = SimulationProfile::Faithful; ///< lane UBER-1 (OpenBFME)
 	bool m_frameAdvance = true;   ///< RW GameLogic + 0x44

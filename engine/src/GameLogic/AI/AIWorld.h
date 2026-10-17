@@ -73,6 +73,8 @@ public:
 	// ---- PathfindObject ----
 	PathfindObjectID getID() const override;
 	const Coord3D &getPosition() const override;
+	bool hasMovementRestrictions() const override;
+	bool canEnterPosition(const Coord3D &position) const override;
 	float getOrientation() const override;
 	PathfindLayerEnum getLayer() const override { return m_layer; }
 	void setLayer(PathfindLayerEnum layer) { m_layer = layer; }

@@ -135,6 +135,7 @@ std::u16string choiceText(int factor);
 // Minutes of simulation time from frame zero; zero preserves normal play.
 namespace PeaceTime
 {
+constexpr float kFortressExclusionRadius = 600.0f; // world units, plus the entering unit's footprint
 constexpr int kOff = 0;
 constexpr std::array<int, 5> kChoices{{0, 5, 10, 15, 20}};
 inline bool valid(int minutes) { return minutes == 0 || minutes == 5 || minutes == 10 || minutes == 15 || minutes == 20; }

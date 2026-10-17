@@ -7,8 +7,9 @@
 
 #include <cstring>
 
-void Thing::setPosition(const Coord3D *pos)
+void Thing::setPosition(const Coord3D *pos, bool swept)
 {
+	if (!allowsPositionChange(*pos, swept)) return;
 	const Coord3D old = m_position;
 	m_position = *pos;
 	reactToTransformChange(&old, m_angle);
@@ -52,8 +53,9 @@ void Thing::setOrientationTrig(float angle, float c, float s)
 	reactToTransformChange(&old, oldAngle);
 }
 
-void Thing::setTransform(const Coord3D *pos, const float basis[9])
+void Thing::setTransform(const Coord3D *pos, const float basis[9], bool swept)
 {
+	if (!allowsPositionChange(*pos, swept)) return;
 	const Coord3D old = m_position;
 	const float oldAngle = m_angle;
 	m_position = *pos;

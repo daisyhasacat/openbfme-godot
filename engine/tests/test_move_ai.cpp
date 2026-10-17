@@ -344,3 +344,153 @@ TEST_CASE("move: the collision pass finds overlapping units whatever their size 
 	mw.ai->processCollisions();
 	CHECK(mw.ai->collisionPairsLastFrame() == 2);
 }
+
+namespace
+{
+const char kPeaceObjects[] =
+ "Object PeaceFortress\n KindOf = STRUCTURE DOZER_FACTORY SELECTABLE\n"
+ " Geometry = CYLINDER\n GeometryMajorRadius = 80\n GeometryHeight = 100\n"
+ " Body = ActiveBody B\n MaxHealth = 1000\n End\nEnd\n"
+ "ChildObject PeaceFlyer Walker\n KindOf = AIRCRAFT SELECTABLE\nEnd\n"
+ "ChildObject PeaceSiege Walker\n KindOf = MACHINE SELECTABLE\nEnd\n";
+struct PeaceZoneWorld : MoveWorld
+{
+ Object *fortress;
+ PeaceZoneWorld() : MoveWorld(320, 320, kPeaceObjects)
+ {
+  fortress = spawn("PeaceFortress", 1505.0f, 1505.0f);
+  buildMap();
+ }
+ Object *enemy(const char *name = "Walker") { return spawn(name, 505.0f, 1505.0f, 0.0f, teamOf("Bob")); }
+};
+}
+
+TEST_CASE("peace exclusion: player and computer enemies are blocked, allied units pass, and footprints respect the boundary")
+{
+ PeaceZoneWorld f;
+ Object *unit = f.enemy();
+ f.frames(2);
+ f.logic->setPeaceTimeMinutes(5);
+ Object *newUnit = f.make("Walker", f.teamOf("Bob"));
+ const Coord3D forbiddenSpawn{1505.0f, 1505.0f, 0.0f};
+ newUnit->setPosition(&forbiddenSpawn);
+ CHECK(newUnit->getPosition()->x == 0.0f);
+ Player *bob = f.players.findPlayerWithName("Bob");
+ Player *alice = f.players.findPlayerWithName("Alice");
+ const Coord3D boundary{897.0f, 1505.0f, 0.0f}; // 600 zone + 8 unit radius
+ const Coord3D inside{898.0f, 1505.0f, 0.0f};
+ for (PlayerType type : {PLAYER_HUMAN, PLAYER_COMPUTER})
+ {
+  bob->setPlayerType(type, true);
+  CHECK_FALSE(f.logic->peaceExclusionAllows(*unit, inside));
+ }
+ unit->setPosition(&boundary);
+ CHECK(unit->getPosition()->x == 897.0f);
+ unit->setPosition(&inside);
+ CHECK(unit->getPosition()->x == 897.0f);
+ unit->setTransform(&inside, unit->getBasis());
+ CHECK(unit->getPosition()->x == 897.0f);
+ bob->setPlayerRelationship(alice, ALLIES);
+ unit->setPosition(&inside);
+ CHECK(unit->getPosition()->x == 898.0f);
+}
+
+TEST_CASE("peace exclusion: teleports and airborne units cannot land inside, swept moves cannot jump across")
+{
+ PeaceZoneWorld f;
+ f.logic->setPeaceTimeMinutes(5);
+ for (const char *name : {"Walker", "PeaceFlyer", "PeaceSiege", "Horde"})
+ {
+  CAPTURE(name);
+  Object *unit = f.enemy(name);
+  unit->recordTransform(f.logic->getFrame());
+  const Coord3D inside{1505.0f, 1505.0f, 1000.0f};
+  unit->teleportTo(&inside, true);
+  CHECK(unit->getPosition()->x == 505.0f);
+  unit->teleportTransform(&inside, unit->getBasis());
+  CHECK(unit->getPosition()->x == 505.0f);
+  const Coord3D beyond{2505.0f, 1505.0f, 0.0f};
+  unit->setTransform(&beyond, unit->getBasis());
+  CHECK(unit->getPosition()->x == 505.0f);
+  // Instant travel between two legal destinations does not traverse the protected area.
+  unit->teleportTo(&beyond, true);
+  CHECK(unit->getPosition()->x == 2505.0f);
+ }
+}
+
+TEST_CASE("peace exclusion: overlapping fortresses, ownership changes, destruction and newly created fortresses use current state")
+{
+ PeaceZoneWorld f;
+ Object *unit = f.enemy();
+ f.frames(2);
+ f.logic->setPeaceTimeMinutes(5);
+ const Coord3D inside{1505.0f, 1505.0f, 0.0f};
+ CHECK_FALSE(f.logic->peaceExclusionAllows(*unit, inside));
+ f.fortress->setTeam(f.teamOf("Bob"));
+ CHECK(f.logic->peaceExclusionAllows(*unit, inside));
+ f.fortress->setTeam(f.teamOf("Alice"));
+ Object *second = f.spawn("PeaceFortress", 1605.0f, 1505.0f);
+ f.logic->destroyObject(f.fortress);
+ CHECK_FALSE(f.logic->peaceExclusionAllows(*unit, inside));
+ f.logic->destroyObject(second);
+ CHECK(f.logic->peaceExclusionAllows(*unit, inside));
+ f.frames(2);
+ Object *fresh = f.spawn("PeaceFortress", 1505.0f, 1505.0f);
+ CHECK_FALSE(f.logic->peaceExclusionAllows(*unit, inside));
+ fresh->friend_setEffectivelyDead(true);
+ CHECK(f.logic->peaceExclusionAllows(*unit, inside));
+}
+
+TEST_CASE("peace exclusion: units already inside can leave, and the rule disappears on the exact expiry frame")
+{
+ PeaceZoneWorld f;
+ Object *unit = f.enemy();
+ const Coord3D caught{1305.0f, 1505.0f, 0.0f};
+ unit->teleportTo(&caught, true); // peace Off
+ f.frames(2);
+ const float caughtX = unit->getPosition()->x; // the idle state's initial footprint-cell snap has completed
+ f.logic->setPeaceTimeMinutes(5);
+ const Coord3D deeper{1405.0f, 1505.0f, 0.0f}, outward{1205.0f, 1505.0f, 0.0f}, outside{505.0f, 1505.0f, 0.0f};
+ unit->setPosition(&deeper);
+ CHECK(unit->getPosition()->x == caughtX);
+ unit->setPosition(&outward);
+ CHECK(unit->getPosition()->x == 1205.0f);
+ unit->setPosition(&outside);
+ CHECK(unit->getPosition()->x == 505.0f);
+ while (f.logic->getFrame() != 1499) f.frames(1);
+ unit->teleportTo(&caught, true);
+ CHECK(unit->getPosition()->x == 505.0f);
+ f.frames(1);
+ unit->teleportTo(&caught, true);
+ CHECK(unit->getPosition()->x == 1305.0f);
+}
+
+TEST_CASE("peace exclusion: a ground path routes around the circle and reaches the destination")
+{
+ PeaceZoneWorld f;
+ Object *unit = f.enemy();
+ f.frames(2);
+ f.logic->setPeaceTimeMinutes(5);
+ auto *ai = unit->getAIUpdateInterface();
+ REQUIRE(ai);
+ const Coord3D start = *unit->getPosition(), goal{2505.0f, 1505.0f, 0.0f};
+ bool partial = false;
+ std::unique_ptr<Path> path(f.ai->pathfinder().findPath(&ai->adapter(), {1u, false, false}, &start, &goal, &partial));
+ REQUIRE(path);
+ CHECK_FALSE(partial);
+ CHECK(std::abs(path->getLastNode()->getPosition()->x - goal.x) <= 10.0f); // tolerance: path goals are rounded to the footprint's 10-unit cell grid
+ for (const PathNode *n = path->getFirstNode(); n; n = n->getNext())
+ {
+  const double x = n->getPosition()->x - 1505.0, y = n->getPosition()->y - 1505.0;
+  CHECK(x*x + y*y >= 608.0*608.0); // tolerance: every path node must clear the fixed zone plus the unit's footprint
+ }
+ ai->aiMoveToPosition(goal, CMD_FROM_PLAYER);
+ for (int frame = 0; frame < 600; ++frame)
+ {
+  f.frames(1);
+  const double x = unit->getPosition()->x - 1505.0, y = unit->getPosition()->y - 1505.0;
+  CHECK(x*x + y*y >= 608.0*608.0); // tolerance: actual movement may approach the boundary but must never enter
+ }
+ CHECK(std::abs(unit->getPosition()->x - goal.x) <= 11.0f); // tolerance: 10-unit cell rounding plus the locomotor's 1-unit CloseEnoughDist
+ CHECK(std::abs(unit->getPosition()->y - goal.y) <= 11.0f); // tolerance: 10-unit cell rounding plus the locomotor's 1-unit CloseEnoughDist
+}
