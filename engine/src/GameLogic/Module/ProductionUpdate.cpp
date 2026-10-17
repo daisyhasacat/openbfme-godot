@@ -18,6 +18,7 @@
 #include "Common/GameCommon.h"
 #include "Common/NumericState.h"
 #include "Common/Player.h"
+#include "Common/PlayerList.h"
 #include "Common/PlayerHeroList.h"
 #include "Common/StateHash.h"
 #include "Common/Team.h"
@@ -584,7 +585,7 @@ void ProductionUpdate::cancelUpgrade(const UpgradeTemplate *upgrade)
 	}
 }
 
-// RW 0x8A2015 .. 0x8A22FD (the castle refund RW 0x79D322 / 0x79D833, the UI messages, the research sound and Eva event are not ported: S-486)
+// RW 0x8A2015 .. 0x8A22FD (the castle refund RW 0x79D322 / 0x79D833, the UI messages are not ported: S-486)
 void ProductionUpdate::completeUpgrade(ProductionEntry *entry, Player *player)
 {
 	const UpgradeTemplate *upgrade = entry->upgradeToResearch;
@@ -593,6 +594,27 @@ void ProductionUpdate::completeUpgrade(ProductionEntry *entry, Player *player)
 		// lane FX-2: RW 0x8A223B .. 0x8A22B4: a non-empty UpgradeFX (+0x3C, RW 0x4DD1D9) is looked up in the FXList store (RW 0x5E20A2: an unknown name plays
 		// nothing) and played as doFXObj(fx, the producer, null) through RW 0x4B1B5A, before the upgrade is granted
 		GameLogic &logic = getObject()->logic();
+		// DONOR: Open-BFME-2 ProductionUpdateQueue.cpp, PRODUCTION_UPGRADE (BFME2 1.06).
+		// RW completion range above: only the local producer reports research audio. Either explicit
+		// cue suppresses generic UpgradeComplete, even if playback is dropped; UnitSpecificSound is additional.
+		if (player && player == logic.players().getLocalPlayer())
+		{
+			const bool hasEva = upgrade->m_researchCompleteEvaEvent != -1;
+			const bool hasSound = !upgrade->m_researchSound.empty();
+			if (hasEva)
+			{
+				AudioApi::reportEva(upgrade->m_researchCompleteEvaEvent, getObject()->getPosition());
+			}
+			if (hasSound)
+			{
+				AudioApi::playSoundForObject(upgrade->m_researchSound, getObject()->getID());
+			}
+			if (!hasEva && !hasSound)
+			{
+				AudioApi::reportEva("UpgradeComplete", getObject()->getPosition());
+			}
+			AudioApi::playSoundForObject(upgrade->m_unitSpecificSound, getObject()->getID());
+		}
 		logic.fxEvents().emit(FXEventLog::objectEvent(FXEvent::OBJECT_FX, "UpgradeFX", logic.getFrame(), upgrade->m_upgradeFX, *getObject()));
 		if (upgrade->getUpgradeType() == UPGRADE_TYPE_PLAYER)
 		{
@@ -1275,7 +1297,14 @@ void ProductionUpdate::completeUnit(ProductionEntry *entry, Player *player, Unsi
 		{
 			continue;
 		}
-		break; // RW 0x8A2DF9: the entry is complete (the producer's contain notification RW 0x8A2E18 is the horde lane's)
+		// DONOR: Open-BFME-2 ProductionUpdateQueue.cpp: after the last member exits, the
+		// container with horde AI speaks VoiceFullyCreated, with the producer for From overrides.
+		Object *container = newObj->getContainedBy();
+		if (container && hordeOf(container) && container->getAIUpdateInterface())
+		{
+			AudioApi::postUnitVoice(0x7E2, container->getID(), us->getID());
+		}
+		break; // RW 0x8A2DF9: the entry is complete
 	}
 	if (entry->quantityRemaining() == 0)
 	{

@@ -3,6 +3,8 @@
 #include "doctest.h"
 
 #include "IniTestUtil.h"
+#include "ProdTestUtil.h"
+#include "Common/Audio/AudioEntryPoints.h"
 #include "RetailTestMount.h"
 
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
@@ -12,6 +14,7 @@
 #include "GameClient/Eva.h"
 
 #include <cstring>
+#include <thread>
 
 namespace
 {
@@ -264,4 +267,72 @@ TEST_CASE("eva retail: BuildingStolen for the Elves plays CampElfBuildingLost th
 	}
 	CHECK(heard == 7);
 	CHECK(audio.report().playFailures == 0);
+}
+
+TEST_CASE("completion audio: upgrade explicit cues suppress generic EVA and remote research stays silent")
+{
+	// DONOR expectation: Open-BFME-2 ProductionUpdateQueue.cpp PRODUCTION_UPGRADE.
+	// Also cover an explicit cue rejected at playback: no generic retry.
+	for (bool local : {false, true})
+	for (bool explicitEva : {false, true})
+	for (const std::string research : {"", "ElfLost", "MissingResearchSound"})
+	{
+		const bool researchSound = !research.empty();
+		CAPTURE(local);
+		CAPTURE(explicitEva);
+		CAPTURE(research);
+		EvaRig r;
+		prodtest::ProdWorld f;
+		f.load(prodtest::kBarracksObjects);
+		f.load("Upgrade TestResearch\n Type = PLAYER\n BuildTime = 1\nEnd\n");
+		auto *upgrade = const_cast<UpgradeTemplate *>(f.upgradeCenter.findUpgrade("TestResearch"));
+		REQUIRE(upgrade);
+		upgrade->m_researchCompleteEvaEvent = explicitEva ? r.eva->findEvent("BuildingLost") : -1;
+		upgrade->m_researchSound = research;
+		upgrade->m_unitSpecificSound = "Help";
+		f.players.setLocalPlayer(local ? f.alice() : f.players.findPlayerWithName("Bob"));
+		Object *producer = f.make("Barracks", f.teamOf("Alice"));
+		REQUIRE(producer);
+		struct Binding {
+			AudioManager *audio = AudioApi::current();
+			Eva *eva = AudioApi::currentEva();
+			~Binding() { AudioApi::install(audio); AudioApi::installEva(eva); }
+		} binding;
+		AudioApi::install(r.audio.get());
+		AudioApi::installEva(r.eva.get());
+		REQUIRE(producer->getProductionUpdate()->queueUpgrade(upgrade));
+		f.frames(20);
+		CHECK(f.alice()->hasUpgradeComplete(upgrade));
+		CHECK(r.eva->counters().reported == (local && (explicitEva || !researchSound) ? 1 : 0));
+		CHECK(r.eva->pendingCount() == (local && (explicitEva || !researchSound) ? 1 : 0));
+		r.audio->update(40.0);
+		CHECK(r.audio->playingCount(VoiceKind::Sample2D) == (local ? (research == "ElfLost" ? 2 : 1) : 0));
+	}
+}
+
+TEST_CASE("completion audio: indexed EVA reports from the logic worker copy their position until the owner drains")
+{
+	EvaRig r;
+	struct Binding {
+		AudioManager *audio = AudioApi::current();
+		Eva *eva = AudioApi::currentEva();
+		~Binding() { AudioApi::install(audio); AudioApi::installEva(eva); }
+	} binding;
+	AudioApi::install(r.audio.get());
+	AudioApi::installEva(r.eva.get());
+	const int event = r.eva->findEvent("BuildingLost");
+	std::thread worker([&]() {
+		Coord3D position{123.0f, 456.0f, 0.0f};
+		AudioApi::reportEva(event, &position);
+		position.x = -1.0f;
+	});
+	worker.join();
+	CHECK(r.eva->counters().reported == 0);
+	AudioApi::drainDeferred();
+	CHECK(r.eva->counters().reported == 1);
+	r.run(10.0);
+	Coord3D played{};
+	CHECK(r.eva->lastPlayedPosition(event, &played));
+	CHECK(played.x == 123.0f);
+	CHECK(played.y == 456.0f);
 }
