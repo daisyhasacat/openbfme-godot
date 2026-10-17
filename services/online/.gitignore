@@ -7,3 +7,5 @@ keys.txt
 wrangler.toml
 .wrangler/
 node_modules/
+.state/
+.build/
