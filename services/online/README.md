@@ -81,3 +81,10 @@ npm --prefix services/online test
 ```
 
 `OPENBFME_RELAY_BIN=/path/to/openbfme_relay` can select another build for the integration tests. The server tests use real HTTP and UDP sockets: guest sign-in, profile and slot setup, peace time in START, relay HELLO/WELCOME, forwarding a transport frame, refusing slot takeover, replay upload/download, restart persistence, lock exclusion, startup failures and relay failure shutdown. They require no retail game files. A live game through the graphical client and an internet/NAT deployment remain separate acceptance checks.
+
+
+### Lua authority
+
+The lobby stamps `setup.luaAuthoritySlot` from the actual host slot in every START, spectator/rejoin setup and archived replay START. The host runs gameplay Lua; resulting bounded typed actions travel through the command relay and command log. Clients check their stamped sender against that fixed authority. Peers and replays apply actions through the portable engine adapter without loading host scripts.
+
+The lobby/relay currently has no world simulation or Lua VM. It transports and records commands; it does not take over Lua on host disconnect. A future dedicated simulation server can use the same portable executor, but needs world loading, ticking and an authenticated server authority assignment first. Do not execute uploaded scripts in the lobby process.

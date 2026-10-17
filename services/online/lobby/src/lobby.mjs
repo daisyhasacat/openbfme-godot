@@ -683,6 +683,7 @@ export class Lobby {
       rules: g.setup.rules,
       legendaryHeroes: g.setup.legendaryHeroes,
       peaceTimeMinutes: g.setup.peaceTimeMinutes,
+      luaAuthoritySlot: g.hostSlot, // fixed by the service, never taken from a client setup
       slots: g.slots.slice(0, last).map((s) => (s.state === 'player' || AI_STATES.has(s.state)
         ? { state: s.state, name: s.name, faction: s.faction, color: s.color, startPos: s.startPos, team: s.team }
         : { state: s.state })),

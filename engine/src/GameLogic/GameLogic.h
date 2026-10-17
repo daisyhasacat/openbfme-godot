@@ -93,6 +93,7 @@ class ShroudManager;
 class PartitionManager;
 class EmotionWorld;
 class ScriptEngine;
+class BfmeLuaActionState;
 struct CrushTemplateInfo;
 struct LuaEventArgs;
 
@@ -309,6 +310,8 @@ public:
 	const GlobalWeatherSystem &weather() const { return *m_weather; }
 	// lane SCRIPT-1: TheScriptEngine (RW 0xDE3BAC), the map script engine: idle until a game loads its scripts (ScriptEngine::newGame); its update runs
 	// first in phase 1's subsystem row (RW 0x62E6AF); hashed (section "script engine") once loaded
+	BfmeLuaActionState &luaActions();
+	int luaAuthorityPlayer() const;
 	ScriptEngine &scriptEngine() { return *m_scriptEngine; }
 	const ScriptEngine &scriptEngine() const { return *m_scriptEngine; }
 	// lane STEALTH-1: TheGameLogic + 0x178, the InvisibilityManager (update in phase 1 before the command list, RW 0x62E8DA)
@@ -693,6 +696,7 @@ private:
 	std::unique_ptr<InvisibilityManager> m_invisibility; // lane STEALTH-1
 	std::unique_ptr<DOTManager> m_dot;                   // lane DECOMP-1
 	std::unique_ptr<TerrainTrees> m_trees;               // lane SPELL-3
+	std::unique_ptr<BfmeLuaActionState> m_luaActions;
 	std::unique_ptr<ScriptEngine> m_scriptEngine;        // lane SCRIPT-1
 	CastleTemplateStore m_castleTemplates;
 	std::set<std::string> m_notedStops;

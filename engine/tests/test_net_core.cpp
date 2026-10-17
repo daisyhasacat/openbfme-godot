@@ -1,3 +1,4 @@
+#include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 // OpenBFME unit tests. GPL-3.0.
 // Lane MP-1: the lockstep network without retail data: the GameMessage / net command encoding, the frame model (run-ahead, frame infos, the readiness rule,
 // the slot-then-issue order of a frame's commands, the sender's player), the CRC exchange and the desync report, a leaving player, the replay file, and
@@ -1165,4 +1166,36 @@ TEST_CASE("net core r3 (fix 2): an ancient ack after more than 2^31 records issu
 	CHECK_FALSE(rig.tb->allAcked(0));
 	rig.send(craftPacket(0, 0x80000003u, 0, {}));
 	CHECK(rig.tb->allAcked(0));
+}
+
+TEST_CASE("net core: Lua decisions keep lockstep order and stamp the real sender")
+{
+ Hub hub(2); hub.setDelay(0,1,2);
+ std::vector<std::unique_ptr<Network>> nets;
+ std::vector<CommandList> pending(2);
+ std::vector<UnsignedInt> frames(2,0);
+ std::vector<std::vector<std::string>> seen(2);
+ BfmeLuaRuntime::Mutation mutation; mutation.collection="players"; mutation.id="10"; mutation.field="money"; mutation.value=42;
+ for(int p=0;p<2;++p) {
+  nets.push_back(std::make_unique<Network>(configFor(p,2,3,0),hub.endpoint(p)));
+  pending[p].append(BfmeLuaActions::encode(10,1,mutation)); // guest attempts to claim host's player ID
+ }
+ for(int tick=0;tick<80;++tick) {
+  for(int p=0;p<2;++p) {
+   nets[p]->update(frames[p],pending[p]);
+   if(frames[p]<10 && nets[p]->isFrameReady(frames[p])) {
+    CommandList out; nets[p]->relayCommands(frames[p],out);
+    for(const auto &message:out.messages()) if(message.getType()==MSG_OPENBFME_LUA_ACTION) {
+     std::uint64_t request=0; BfmeLuaRuntime::Mutation decoded; std::string error;
+     REQUIRE(BfmeLuaActions::decode(message,request,decoded,error));
+     CHECK(request==1);
+     seen[p].push_back(std::to_string(frames[p])+":"+std::to_string(message.getPlayerIndex()));
+    }
+    ++frames[p];
+   }
+  }
+  hub.tick();
+ }
+ CHECK(seen[0]==seen[1]); REQUIRE(seen[0].size()==2);
+ CHECK(seen[0][0]=="3:10"); CHECK(seen[0][1]=="3:11");
 }

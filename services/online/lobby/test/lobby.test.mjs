@@ -96,6 +96,7 @@ test('a game from sign-in to START: the profile check, ready flags, chat, one ti
   const sa = started.body.start;
   assert.equal(sa.kind, 'openbfme-start');
   assert.equal(sa.slot, 0);
+  assert.equal(sa.setup.luaAuthoritySlot, 0);
   assert.equal(sa.relay, '192.0.2.10:7350');
   assert.equal(sa.profile, PROFILE);
   assert.equal(sa.setup.slots.length, 3);
@@ -105,6 +106,7 @@ test('a game from sign-in to START: the profile check, ready flags, chat, one ti
   // the joiner's poll gets its own START: same setup and seed, its slot, its ticket
   const polled = (await call(lobby, 'GET', `/v1/games/${id}?since=0`, { token: b.token })).body;
   assert.equal(polled.start.slot, 1);
+  assert.equal(polled.start.setup.luaAuthoritySlot, 0);
   assert.equal(polled.start.setup.seed, sa.setup.seed);
   assert.notEqual(polled.start.ticket, sa.ticket);
   const ticket = base64UrlDecode(polled.start.ticket);
@@ -125,6 +127,7 @@ test('a game from sign-in to START: the profile check, ready flags, chat, one ti
   assert.equal(replayStart.slot, undefined);
   assert.equal(replayStart.relay, undefined);
   assert.equal(replayStart.setup.seed, sa.setup.seed);
+  assert.equal(replayStart.setup.luaAuthoritySlot, 0);
   assert.ok(!JSON.stringify(replayStart).includes(sa.ticket) && !JSON.stringify(replayStart).includes(polled.start.ticket));
 });
 
@@ -1213,4 +1216,27 @@ test('peace time: setup accepts Off and 5/10/15/20, defaults Off and rejects oth
     assert.equal(lobby.checkSetup({ ...setup, peaceTimeMinutes: minutes }, true).peaceTimeMinutes, minutes);
   for (const minutes of [-1, 1, 4, 6, 21, '10', 10.5])
     assert.throws(() => lobby.checkSetup({ ...setup, peaceTimeMinutes: minutes }, true));
+});
+
+test('Lua authority uses the actual nonzero host slot including archived START', async () => {
+  const env = fakeEnv();
+  const lobby = new Lobby(env, configFromEnv(ENV));
+  const a = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Host' } })).body;
+  const b = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Guest' } })).body;
+  const custom = structuredClone(setup);
+  custom.slots[0].state = 'open'; custom.slots[1].state = 'player';
+  custom.luaAuthoritySlot = 0; // cannot nominate another authority
+  const created = await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'Lua', profile: PROFILE, hostSlot: 1, setup: custom } });
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  const id = created.body.id;
+  const joined = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: PROFILE } });
+  assert.equal(joined.body.slot, 0);
+  await call(lobby, 'POST', `/v1/games/${id}/ready`, { token: b.token, body: { ready: true } });
+  const started = await call(lobby, 'POST', `/v1/games/${id}/start`, { token: a.token });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  assert.equal(started.body.start.setup.luaAuthoritySlot, 1);
+  const guest = (await call(lobby, 'GET', `/v1/games/${id}?since=0`, { token: b.token })).body;
+  assert.equal(guest.start.setup.luaAuthoritySlot, 1);
+  const replay = JSON.parse(new TextDecoder().decode(env.blobs.get(`starts/${id}.json`)));
+  assert.equal(replay.setup.luaAuthoritySlot, 1);
 });

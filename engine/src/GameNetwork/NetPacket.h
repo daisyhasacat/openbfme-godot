@@ -127,9 +127,9 @@ bool writeGameMessage(NetByteWriter &w, const GameMessage &m, std::string *error
 std::unique_ptr<GameMessage> readGameMessage(NetByteReader &r, std::string *error);
 
 void writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g);
-bool readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool withPeaceTime = true);
+bool readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool withPeaceTime = true, bool withLuaAuthority = true);
 void writeNewGameMessage(NetByteWriter &w, const NewGameMessage &m);
-bool readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool withPeaceTime = true);
+bool readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool withPeaceTime = true, bool withLuaAuthority = true);
 } // namespace NetPacket
 
 // One network command (ZH NetCommandMsg and its subclasses, reduced to the commands this lane exchanges)

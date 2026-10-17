@@ -147,6 +147,7 @@ struct SkirmishGameInfo
 	GameRules rules = MpGameRules::none();
 	// lane RULES-1, OpenBFME (not retail): the Legendary Heroes factor, 1 (off) .. 4 (LegendaryHeroes in Common/MpGameRules.h)
 	int legendaryHeroes = LegendaryHeroes::kOff;
+	int luaAuthoritySlot = -1; // OpenBFME: fixed host slot for replicated Lua actions; -1 disables the channel
 	int peaceTimeMinutes = PeaceTime::kOff; // OpenBFME extension, separate from the ten retail rules
 	// lane UBER-1, OpenBFME (not retail): the simulation profile (Common/SimulationProfile.h): Faithful, or the opt-in Uber performance mode the host's
 	// OpenBFME option chose; every peer's profile identity must say the same (GameNetwork/ProfileIdentity.h), so a mismatch is refused at the lobby
@@ -275,7 +276,7 @@ struct SkirmishGameInfo
 		}
 		return mapName == o.mapName && mapCRC == o.mapCRC && mapSize == o.mapSize && mapMask == o.mapMask && seed == o.seed && startingCash == o.startingCash
 			&& superweaponRestriction == o.superweaponRestriction && inProgress == o.inProgress && rules == o.rules && legendaryHeroes == o.legendaryHeroes
-			&& peaceTimeMinutes == o.peaceTimeMinutes && simulationProfile == o.simulationProfile;
+			&& luaAuthoritySlot == o.luaAuthoritySlot && peaceTimeMinutes == o.peaceTimeMinutes && simulationProfile == o.simulationProfile;
 	}
 };
 

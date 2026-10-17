@@ -16,7 +16,7 @@ enum : std::uint8_t
 	LOBBY_START_ACK = 5
 };
 constexpr std::uint64_t kResendMs = 150;
-constexpr std::uint8_t kLobbyVersion = 3; // 2: JOIN / START carry the lobby version and the profile identity; 3 (lane HERO-2): the slots' Create-a-Hero records
+constexpr std::uint8_t kLobbyVersion = 4; // 4: Lua authority slot in setup; 2: JOIN / START carry the lobby version and the profile identity; 3 (lane HERO-2): the slots' Create-a-Hero records
 
 NetByteWriter header(std::uint8_t kind)
 {
@@ -133,6 +133,7 @@ LANLobbyHost::LANLobbyHost(UDP &socket, const NewGameMessage &game, int hostSlot
 {
 	m_start.profile = profile;
 	m_start.game = game;
+	m_start.game.game.luaAuthoritySlot = hostSlot;
 	m_start.game.game.simulationProfile = profile.simulationProfile(); // lane UBER-1: the host's game runs the host's profile (its identity's)
 	m_start.localSlot = hostSlot;
 	m_start.runAhead = runAhead;

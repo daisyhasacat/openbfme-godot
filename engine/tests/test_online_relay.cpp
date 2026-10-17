@@ -267,6 +267,15 @@ TEST_CASE("online2: the online START becomes a LobbyStart; another profile, a mi
 	CHECK(s.networkSlot[2]);
 	CHECK_FALSE(s.networkSlot[3]);
 	CHECK(s.profile == own);
+	CHECK(s.game.game.luaAuthoritySlot == -1); // legacy START does not grant Lua authority
+	auto withAuthority = start(own.digest, 1, slots3);
+	const auto setupAt = withAuthority.find("\"setup\":{") + std::string("\"setup\":{").size();
+	withAuthority.insert(setupAt, "\"luaAuthoritySlot\":1,");
+	REQUIRE_MESSAGE(OnlineStart::parse(withAuthority, own, limits, s, &error), error);
+	CHECK(s.game.game.luaAuthoritySlot == 1);
+	withAuthority.replace(setupAt, std::string("\"luaAuthoritySlot\":1,").size(), "\"luaAuthoritySlot\":3,");
+	CHECK_FALSE(OnlineStart::parse(withAuthority, own, limits, s, &error)); // AI cannot be authority
+	CHECK(error == "online START: Lua authority is not a human slot");
 	// the other profile, the slot the ticket is not for, a mask that differs from the human slots, bad fields
 	CHECK_FALSE(OnlineStart::parse(start("00000000000000000000000000000000", 1, slots3), own, limits, s, &error));
 	CHECK(error.find("profile identity") != std::string::npos);

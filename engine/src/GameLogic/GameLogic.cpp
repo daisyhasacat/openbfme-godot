@@ -40,6 +40,7 @@
 #include "GameLogic/System/InvisibilityManager.h"
 #include "GameLogic/System/DOTManager.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
+#include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 
 #include "GameLogic/Object/PartitionManager.h"
 #include "GameLogic/Module/AreaScanModules.h"
@@ -1016,6 +1017,7 @@ std::uint32_t GameLogic::hashState(std::vector<StateHashSection> *sections, std:
 	auto section = [&](const std::string &name, std::function<void(StateHasher &)> feed) { pending.push_back(PendingSection{ name, std::move(feed) }); };
 	section("frame, object ids, RNG", [&](StateHasher &x) {
 		x.addU32(m_frame);
+		if (luaAuthorityPlayer() >= 0) { x.addU32(0x4c554141u); x.addI32(luaAuthorityPlayer()); x.addU64(m_luaActions->lastRequest); }
 		x.addBool(m_frameAdvance); // RW GameLogic + 0x44: when false the frame counter does not advance
 		x.addI32(m_gameDifficulty); // lane CAMP-1H: RW GameLogic + 0xA4
 		// lane RULES-1: the game rules and the Legendary Heroes factor, only when the game has them (a game without keeps its hash)
@@ -1491,3 +1493,10 @@ bool GameLogic::peaceExclusionAllows(const Object &unit, const Coord3D &position
 	}
 	return true;
 }
+
+BfmeLuaActionState &GameLogic::luaActions()
+{
+	if (!m_luaActions) m_luaActions = std::make_unique<BfmeLuaActionState>();
+	return *m_luaActions;
+}
+int GameLogic::luaAuthorityPlayer() const { return m_luaActions ? m_luaActions->authorityPlayer : -1; }

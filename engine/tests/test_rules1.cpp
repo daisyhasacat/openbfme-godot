@@ -203,7 +203,7 @@ TEST_CASE("rules1: the rules and the Legendary Heroes factor travel in the game 
 	CHECK(back.game.peaceTimeMinutes == 10);
 	// the factor is the last i32 of the GameInfo: 5 is refused (a peer of another rule set refuses the options instead of desyncing)
 	std::vector<std::uint8_t> bad = w.data();
-	bad[bad.size() - 12] = 5; // peace time and simulation profile i32s follow it
+	bad[bad.size() - 16] = 5; // peace time, Lua authority and simulation profile follow it
 	NetByteReader r2(bad);
 	CHECK_FALSE(NetPacket::readNewGameMessage(r2, back, &error));
 	CHECK(error.find("Legendary Heroes") != std::string::npos);
@@ -553,12 +553,12 @@ TEST_CASE("peace time: pre-rule replay game headers default to Off")
  NetPacket::writeNewGameMessage(w, m);
  auto legacy = w.data();
  // The old layout has Legendary Heroes and simulation profile as the last two i32s.
- legacy.erase(legacy.end() - 8, legacy.end() - 4);
+ legacy.erase(legacy.end() - 12, legacy.end() - 4);
  NetByteReader r(legacy);
  NewGameMessage back;
  back.game.peaceTimeMinutes = 20;
  std::string error;
- REQUIRE_MESSAGE(NetPacket::readNewGameMessage(r, back, &error, false), error);
+ REQUIRE_MESSAGE(NetPacket::readNewGameMessage(r, back, &error, false, false), error);
  CHECK(back.game.peaceTimeMinutes == 0);
  CHECK(back.game.legendaryHeroes == 3);
  CHECK(r.atEnd());

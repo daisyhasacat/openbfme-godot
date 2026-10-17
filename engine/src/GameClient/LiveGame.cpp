@@ -2,6 +2,7 @@
 // See GameClient/LiveGame.h.
 
 #include "GameClient/LiveGame.h"
+#include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 
 #include "GameClient/FrameCensus.h"
 #include "GameLogic/TributeCommands.h"
@@ -284,6 +285,13 @@ bool LiveGame::load(const Options &options, std::string *error)
 	m_logic->setGameRules(gameRules);
 	m_logic->setLegendaryHeroes(options.start ? options.start->message.game.legendaryHeroes : LegendaryHeroes::kOff);
 	m_logic->setPeaceTimeMinutes(options.start ? options.start->message.game.peaceTimeMinutes : PeaceTime::kOff);
+	if (options.start && options.start->message.game.luaAuthoritySlot >= 0)
+	{
+		const int slot = options.start->message.game.luaAuthoritySlot;
+		const Player *authority = (size_t)slot < m_report.startSlotPlayers.size() ? m_players->findPlayerWithName(m_report.startSlotPlayers[(size_t)slot]) : nullptr;
+		if (!authority) { if (error) *error = "Lua authority slot has no loaded player"; return false; }
+		m_logic->luaActions().authorityPlayer = authority->getPlayerIndex();
+	}
 	// lane UBER-1: the game setup's simulation profile (a game without a start message, a map viewer or a tool, is Faithful unless its options say Uber)
 	m_logic->setSimulationProfile(options.start ? options.start->message.game.simulationProfile : options.simulationProfile);
 	m_logic->economy().initAllCommandPoints();
