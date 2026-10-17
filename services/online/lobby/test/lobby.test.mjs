@@ -255,6 +255,7 @@ test('ONLINE-2 r2 (Sol): the Durable Object runs one request at a time, even whe
   const obj = new LobbyObject(state, { ...ENV, LOGS: { put: async () => {}, get: async () => null } });
   const req = (path, body, token) => new Request(`http://lobby${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
   const a = await (await obj.fetch(req('/v1/auth/guest', { name: 'Ann' }))).json();
+  order.length = 0; // isolate game writes after the persisted guest directory entry
   const [r1, r2] = await Promise.all([
     obj.fetch(req('/v1/games', { name: 'one', profile: PROFILE, setup }, a.token)).then((r) => { order.push('done 1'); return r; }),
     obj.fetch(req('/v1/games', { name: 'two', profile: PROFILE, setup }, a.token)).then((r) => { order.push('done 2'); return r; }),
