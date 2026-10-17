@@ -6,6 +6,7 @@
 #include "doctest.h"
 
 #include "PeImage.h"
+#include "LogicTestUtil.h"
 #include "StartTestUtil.h"
 
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
@@ -190,6 +191,7 @@ TEST_CASE("rules1: the rules and the Legendary Heroes factor travel in the game 
 	m.game.rules[RULE_INITIAL_RESOURCES] = 2500;
 	m.game.legendaryHeroes = 4;
 	m.game.fortressConstruction = true;
+	m.game.peaceTimeMinutes = 10;
 	NetByteWriter w;
 	NetPacket::writeNewGameMessage(w, m);
 	NetByteReader r(w.data());
@@ -200,9 +202,10 @@ TEST_CASE("rules1: the rules and the Legendary Heroes factor travel in the game 
 	CHECK(back.game.rules[RULE_INITIAL_RESOURCES] == 2500);
 	CHECK(back.game.legendaryHeroes == 4);
 	CHECK(back.game.fortressConstruction);
+	CHECK(back.game.peaceTimeMinutes == 10);
 	// the factor is the last i32 of the GameInfo: 5 is refused (a peer of another rule set refuses the options instead of desyncing)
 	std::vector<std::uint8_t> bad = w.data();
-	bad[bad.size() - 8] = 5; // lane UBER-1: the simulation profile i32 follows it
+	bad[bad.size() - 16] = 5; // peace time, Lua authority and simulation profile follow it
 	NetByteReader r2(bad);
 	CHECK_FALSE(NetPacket::readNewGameMessage(r2, back, &error));
 	CHECK(error.find("Legendary Heroes") != std::string::npos);
@@ -228,6 +231,7 @@ TEST_CASE("rules1: the rules and the Legendary Heroes factor travel in the game 
 	std::remove(path.c_str());
 	CHECK(f.header.game.game.legendaryHeroes == 4);
 	CHECK(f.header.game.game.fortressConstruction);
+	CHECK(f.header.game.game.peaceTimeMinutes == 10);
 	CHECK(f.header.game.game.rules == m.game.rules);
 }
 
@@ -497,4 +501,68 @@ TEST_CASE("rules1 retail: Legendary Heroes 4x: a player's heroes get 4x health a
 	g.game->advance(0.2);
 	CHECK(g.game->logic().legendaryHeroes() == LegendaryHeroes::kOff);
 	CHECK(g.game->logic().computeStateHash() != hashes[0][0]);
+}
+
+TEST_CASE("peace time: simulation timer ends at the exact selected minute and changes the state hash")
+{
+ for (int minutes : {5, 10, 15, 20})
+ {
+  logictest::LogicWorld f;
+  CHECK_FALSE(f.logic->peaceTimeActive());
+  const auto offHash = f.logic->computeStateHash();
+  f.logic->setPeaceTimeMinutes(minutes);
+  CHECK(f.logic->computeStateHash() != offHash);
+  CHECK(f.logic->peaceTimeActive());
+  const unsigned end = (unsigned)minutes * 300u;
+  while (f.logic->getFrame() != end - 1) f.logic->runLogicFrame();
+  CHECK(f.logic->peaceTimeActive());
+  f.logic->setFrameAdvance(false);
+  f.logic->runLogicFrame();
+  CHECK(f.logic->getFrame() == end - 1);
+  CHECK(f.logic->peaceTimeActive());
+  f.logic->setFrameAdvance(true);
+  f.logic->runLogicFrame();
+  CHECK(f.logic->getFrame() == end);
+  CHECK_FALSE(f.logic->peaceTimeActive());
+ }
+ logictest::LogicWorld f;
+ CHECK_THROWS(f.logic->setPeaceTimeMinutes(4));
+ CHECK_THROWS(f.logic->setPeaceTimeMinutes(21));
+ CHECK_THROWS(f.logic->setPeaceTimeMinutes(-1));
+}
+
+TEST_CASE("peace time: invalid game setup durations are rejected by the wire reader")
+{
+ for (int minutes : {-1, 1, 4, 6, 21, 1000})
+ {
+  NewGameMessage m;
+  m.game.peaceTimeMinutes = minutes;
+  NetByteWriter w;
+  NetPacket::writeNewGameMessage(w, m);
+  NetByteReader r(w.data());
+  NewGameMessage back;
+  std::string error;
+  CHECK_FALSE(NetPacket::readNewGameMessage(r, back, &error));
+  CHECK(error == "GameInfo invalid peace time");
+ }
+}
+
+TEST_CASE("peace time: pre-rule replay game headers default to Off")
+{
+ NewGameMessage m;
+ m.game.mapName = "legacy-map";
+ m.game.legendaryHeroes = 3;
+ NetByteWriter w;
+ NetPacket::writeNewGameMessage(w, m);
+ auto legacy = w.data();
+ // The old layout has Legendary Heroes and simulation profile as the last two i32s.
+ legacy.erase(legacy.end() - 12, legacy.end() - 4);
+ NetByteReader r(legacy);
+ NewGameMessage back;
+ back.game.peaceTimeMinutes = 20;
+ std::string error;
+ REQUIRE_MESSAGE(NetPacket::readNewGameMessage(r, back, &error, false, false), error);
+ CHECK(back.game.peaceTimeMinutes == 0);
+ CHECK(back.game.legendaryHeroes == 3);
+ CHECK(r.atEnd());
 }

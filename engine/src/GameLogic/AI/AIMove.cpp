@@ -28,6 +28,9 @@ const char *const kStopDistance =
 const char *const kStopRequests =
 	"S-166 the approach request (RW 0x6638FC), melee approach request (RW 0x6639CF), safe request (RW 0x663C6B) and findClosestPath are not ported (the attack request "
 	"RW 0x663802 and allied clearing RW 0x6F503B are lane PHYS-1's, S-784 / S-785)";
+const char *const kStopClosest =
+	"S-166 computePath's FindClosestPath (RW 0x665C33 -> pathfinder slot + 4, RW 0x6FB869) is findPath here: its goal step-back and the internal search's closest "
+	"cell when the goal is not a valid destination stand in for the unported body";
 const char *const kStopGroup =
 	"S-166 blockedBy skips the group / formation sort key (obj+0x42C / +0x430, unresolved)";
 
@@ -39,7 +42,7 @@ inline float hypot2(float x, float y)
 
 std::vector<std::string> AIMover::allStops()
 {
-	return { kStopSpecialLayer, kStopUpdate, kStopPatch, kStopExplicit, kStopDistance, kStopRequests, kStopGroup };
+	return { kStopSpecialLayer, kStopUpdate, kStopPatch, kStopExplicit, kStopDistance, kStopRequests, kStopGroup, kStopClosest };
 }
 
 void AIMover::note(const char *stop)
@@ -576,6 +579,9 @@ bool AIMover::computePath(const Coord3D &destIn)
 		}
 	}
 	Path *np = nullptr;
+	// RW 0x665C33 (Open-BFME-2 AIUpdateInterface_computePath.cpp): tryClosest stays set unless the plain search ran (an invalid destination or the blocked
+	// patch); with no new path and none kept, FindClosestPath (pathfinder slot + 4, RW 0x6FB869) walks the unit to the reachable cell nearest the destination
+	bool tryClosest = true;
 	if (m_pf.validMovementPosition(&obj, info, LAYER_GROUND, &dest))
 	{
 		const Coord3D pos = obj.getPosition();
@@ -584,11 +590,24 @@ bool AIMover::computePath(const Coord3D &destIn)
 		{
 			note(kStopPatch); // patchPath is replaced by a full search
 		}
+		else
+		{
+			tryClosest = false;
+		}
 		np = m_pf.findPath(&obj, info, &pos, &dest, &partial);
 		if (partial)
 		{
 			m_retryPath = true;
 		}
+	}
+	if (np == nullptr && m_path == nullptr && tryClosest)
+	{
+		// S-166: FindClosestPath is not ported; findPath stands in for it: its goal steps back toward the unit and its search accepts the closest cell when
+		// the goal cell is not a valid destination (internalFindPath's approximate goal), which is what FindClosestPath returns
+		const Coord3D pos = obj.getPosition();
+		note(kStopClosest);
+		np = m_pf.findPath(&obj, info, &pos, &dest, nullptr);
+		m_retryPath = true;
 	}
 	if (np == nullptr && m_path == nullptr)
 	{

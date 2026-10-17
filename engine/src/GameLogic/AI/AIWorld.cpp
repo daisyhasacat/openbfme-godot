@@ -430,6 +430,11 @@ AIUpdateInterface *ObjectPathfindAdapter::ai() const
 
 PathfindObjectID ObjectPathfindAdapter::getID() const { return m_object->getID(); }
 const Coord3D &ObjectPathfindAdapter::getPosition() const { return *m_object->getPosition(); }
+bool ObjectPathfindAdapter::hasMovementRestrictions() const { return m_object->logic().hasPeaceExclusion(*m_object); }
+bool ObjectPathfindAdapter::canEnterPosition(const Coord3D &position) const
+{
+	return m_object->logic().peaceExclusionAllows(*m_object, position, false, 8.0f); // half a 10-unit cell diagonal, rounded up for shortcuts
+}
 float ObjectPathfindAdapter::getOrientation() const { return m_object->getOrientation(); }
 
 float ObjectPathfindAdapter::getHeightAboveTerrain() const

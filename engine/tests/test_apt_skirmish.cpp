@@ -1104,12 +1104,12 @@ TEST_CASE("stops S-178 / S-179: the lobby reports its inferences, the profile ga
 	REQUIRE(hero);
 	CHECK(GadgetComboBoxGetLength(hero) == 0);
 	CHECK(GadgetComboBoxGetLength(fx.screen->slotGadget(0, "Handicap")) == 0);
-	// lane RULES-1: the rule rows of mode 0 (RW 0x960A46 / 0x960A5D: 2 combos + OpenBFME's Legendary Heroes row, 3 check boxes); the clan tab answers 0
+	// lane RULES-1: the rule rows of mode 0 (RW 0x960A46 / 0x960A5D: 2 combos + OpenBFME's Legendary Heroes, Fortress construction and Peace Time rows, 3 check boxes); the clan tab answers 0
 	std::string value;
 	REQUIRE(fx.wm->getExtern("MpGameRules::NumCheckBoxes", value) == AptExternResult::Value);
 	CHECK(value == "3");
 	REQUIRE(fx.wm->getExtern("MpGameRules::NumComboBoxes", value) == AptExternResult::Value);
-	CHECK(value == "4");
+	CHECK(value == "5");
 	REQUIRE(fx.wm->getExtern("AptMpGameRules::ShowClans", value) == AptExternResult::Value);
 	CHECK(value == "0");
 	// SuppressStrategicPromo is remembered nowhere ([S-179])
@@ -1673,11 +1673,12 @@ TEST_CASE("rules1 setup: the Rules tab model: the mode's defaults, the rows' tex
 	CHECK(setup.info().rules == MpGameRules::defaults(RULES_MODE_SKIRMISH));
 	// RW 0x986B1C: the label's text formatted with the value, " *" on the default
 	const std::vector<SkirmishComboEntry> cash = setup.ruleComboEntries(*MpGameRules::findCombo(RULES_MODE_SKIRMISH, RULE_INITIAL_RESOURCES));
-	REQUIRE(cash.size() == 11);
+	REQUIRE(cash.size() == 12); // eleven retail entries plus the existing Infinite extension
 	CHECK(cash[0].text == u"500");
 	CHECK(cash[0].itemData == 500);
 	CHECK(cash[2].text == u"1000 *");
 	CHECK(cash[10].itemData == 4000);
+	CHECK(cash[11].itemData == InfiniteResources::kValue);
 	const std::vector<SkirmishComboEntry> cp = setup.ruleComboEntries(*MpGameRules::findCombo(RULES_MODE_SKIRMISH, RULE_COMMAND_POINT_FACTOR));
 	CHECK(cp[0].text == u"1/3X");
 	CHECK(cp[2].text == u"1X *");
@@ -1702,10 +1703,19 @@ TEST_CASE("rules1 setup: the Rules tab model: the mode's defaults, the rows' tex
 	CHECK(legendary[0].text == u"Off *");
 	CHECK(legendary[3].text == u"4x");
 	CHECK(legendary[3].itemData == 4);
+	CHECK(setup.setPeaceTimeMinutes(20));
+	CHECK_FALSE(setup.setPeaceTimeMinutes(21));
+	CHECK(setup.info().peaceTimeMinutes == 20);
+	const auto peace = setup.peaceTimeEntries();
+	REQUIRE(peace.size() == 5);
+	CHECK(peace[0].text == u"Off *");
+	CHECK(peace[4].text == u"20 minutes");
+	CHECK(peace[4].itemData == 20);
 	// Reset: the mode's defaults and Legendary Heroes off
 	setup.resetRules();
 	CHECK(setup.info().rules == MpGameRules::defaults(RULES_MODE_SKIRMISH));
 	CHECK(setup.info().legendaryHeroes == LegendaryHeroes::kOff);
+	CHECK(setup.info().peaceTimeMinutes == 0);
 	// strategic mode takes the War of the Ring defaults
 	setup.setStrategicMode(true);
 	CHECK(setup.rulesMode() == RULES_MODE_WOTR);
@@ -1755,10 +1765,14 @@ TEST_CASE("rules1 retail lobby: the Rules tab shows RotWK's rows (Initial Resour
 	CHECK(GadgetComboBoxGetLength(fortress) == 2);
 	GadgetComboBoxSetSelectedPos(fortress, 1, false);
 	CHECK(fx.screen->setup()->info().fortressConstruction);
-	for (int i = 4; i < 6; ++i)
-	{
-		CHECK(fx.screen->ruleComboWindow(i)->winIsHidden());
-	}
+	auto peace = fx.screen->ruleComboWindow(4);
+	REQUIRE(peace);
+	CHECK_FALSE(peace->winIsHidden());
+	CHECK(GadgetComboBoxGetLength(peace) == 5);
+	GadgetComboBoxSetSelectedPos(peace, 2, false);
+	CHECK(fx.screen->setup()->info().peaceTimeMinutes == 10);
+	CHECK(fx.screen->setup()->info().fortressConstruction);
+	CHECK(fx.screen->ruleComboWindow(5)->winIsHidden());
 	CHECK(GadgetComboBoxGetLength(cash) == 11);
 	CHECK(GadgetComboBoxGetLength(cp) == 7);
 	CHECK(GadgetComboBoxGetLength(legendary) == 4);

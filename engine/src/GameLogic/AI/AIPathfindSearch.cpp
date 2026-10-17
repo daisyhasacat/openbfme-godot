@@ -747,6 +747,12 @@ int Pathfinder::examineNeighboringCells(PathfindCell *parentCell, PathfindCell *
 				continue; // the compare direction was not verified (S-163)
 			}
 		}
+		if (obj && obj->hasMovementRestrictions())
+		{
+			Coord3D candidate{};
+			adjustCoordToCell(nc.x, nc.y, centerInCell, candidate, n->getLayer());
+			if (!obj->canEnterPosition(candidate)) continue;
+		}
 		const bool mvOK = validMovementPosition(mv, n);
 		const bool tl = m_isTunneling; // same layer: the ground only
 		if (!mvOK && !tl)
@@ -877,6 +883,9 @@ int Pathfinder::examineNeighboringCells(PathfindCell *parentCell, PathfindCell *
 // ---------------------------------------------------------------------------------------------------------
 Path *Pathfinder::findPath(PathfindObject *obj, const PathfindLocomotorInfo &loco, const Coord3D *from, const Coord3D *rawTo, bool *partial)
 {
+	// Enhanced peace zones are player-specific and absent from the shared terrain-zone corridor.
+	// Use the full cell search so the dynamic restriction can be routed around.
+	if (obj && obj->hasMovementRestrictions()) return findPathWithoutCorridor(obj, loco, from, rawTo, partial);
 	// TARGET RW 0x6FE7CB (lane PATHPERF-1, read from the disassembly; the old reading 0x6FE7FE is inside it):
 	//   * *partial = 0; isHuman: the controlling player is not a computer (RW 0x68B678, player + 0x5C == 1 -> 0);
 	//   * the goal copy; no quick path (RW 0x6F5BB0, the port's clientSafeQuickDoesPathExist) -> *partial = 1 and the goal steps back toward `from`:

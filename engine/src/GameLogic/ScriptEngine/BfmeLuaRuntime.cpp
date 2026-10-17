@@ -484,7 +484,7 @@ library('match',{
  setGameSpeed=function(value) numeric(value,0,100,false); return queue('match','',':setGameSpeed',value) end,
  getStatus=function()
   return {ready=view.ready or false,generation=generation,frame=view.frame or 0,paused=view.paused or false,localPlayerId=view.localPlayerId,
-   networkGame=view.networkGame or false,replay=view.replay or false,
+   networkGame=view.networkGame or false,replay=view.replay or false,luaAuthority=view.luaAuthority or false,peaceTimeActive=view.peaceTimeActive or false,
    playerCount=count('players'),templateCount=count('templates'),unitCount=count('unitInstances'),buildingCount=count('buildingInstances'),selectionCount=#selected(nil)}
  end,
 })
@@ -637,6 +637,7 @@ struct BfmeLuaRuntime::Impl
 		int callback = LUA_NOREF;
 	};
 	std::deque<Pending> pending;
+	std::map<unsigned long long, Pending> deferred;
 	struct ConstructionJob { unsigned id; int callback; };
 	std::map<unsigned long long, ConstructionJob> constructions;
 	std::map<unsigned long long, unsigned> constructionResults;
@@ -749,7 +750,7 @@ struct BfmeLuaRuntime::Impl
 		{
 			auto s = self(L).host.snapshot();
 			V::Table t{{"ready", s.ready}, {"paused", s.paused}, {"frame", s.frame}, {"cursorPosition", s.cursorPosition},
-				{"networkGame", s.networkGame}, {"replay", s.replay}};
+				{"networkGame", s.networkGame}, {"replay", s.replay}, {"luaAuthority", s.luaAuthority}, {"peaceTimeActive", s.peaceTimeActive}};
 			V::List selection;
 			for (auto id : s.selection)
 				selection.emplace_back(id);
@@ -779,7 +780,7 @@ struct BfmeLuaRuntime::Impl
 		try
 		{
 			auto &s = self(L);
-			if (s.pending.size() + s.constructions.size() >= 128)
+			if (s.pending.size() + s.constructions.size() + s.deferred.size() >= 128)
 				throw std::runtime_error("bfme mutation queue full (128)");
 			Mutation m;
 			m.collection = luaL_checkstring(L, 1);
@@ -1012,7 +1013,7 @@ BfmeLuaRuntime::Result BfmeLuaRuntime::execute(const std::string &code)
 }
 bool BfmeLuaRuntime::hasPending() const
 {
-	if (!m->pending.empty() || !m->constructions.empty())
+	if (!m->pending.empty() || !m->constructions.empty() || !m->deferred.empty())
 		return true;
 	const auto now = std::chrono::steady_clock::now();
 	for (const auto &kv : m->updates)
@@ -1033,6 +1034,12 @@ void BfmeLuaRuntime::flush()
 		std::string error;
 		try
 		{
+			if (m->host.submit && m->host.submit(p.ticket, p.mutation))
+			{
+				if (!m->host.poll) throw std::runtime_error("synchronized mutation status interface unavailable");
+				m->deferred.emplace(p.ticket, std::move(p));
+				continue;
+			}
 			if (p.mutation.field == ":construct")
 			{
 				unsigned id = m->host.construct(p.mutation);
@@ -1048,6 +1055,23 @@ void BfmeLuaRuntime::flush()
 		}
 		if (p.callback != LUA_NOREF) luaL_unref(m->L, LUA_REGISTRYINDEX, p.callback);
 		m->results[p.ticket] = error.empty() ? (p.mutation.field == ":construct" ? "building" : "applied") : error;
+	}
+	for (auto it = m->deferred.begin(); it != m->deferred.end();)
+	{
+		const auto ticket = it->first;
+		Host::Outcome outcome;
+		try { outcome = m->host.poll(ticket); }
+		catch (const std::exception &e) { outcome.status = e.what(); }
+		if (outcome.status == "pending") { ++it; continue; }
+		m->results[ticket] = outcome.status;
+		const int callback = it->second.callback;
+		if (it->second.mutation.field == ":construct" && outcome.object && outcome.status == "building")
+		{
+			m->constructionResults[ticket] = outcome.object;
+			m->constructions[ticket] = {outcome.object, callback};
+		}
+		else if (callback != LUA_NOREF) luaL_unref(m->L, LUA_REGISTRYINDEX, callback);
+		it = m->deferred.erase(it);
 	}
 	for (auto it = m->constructions.begin(); it != m->constructions.end();)
 	{
@@ -1168,6 +1192,12 @@ void BfmeLuaRuntime::invalidate()
 	for (const auto &hook : m->timingHooks) luaL_unref(m->L, LUA_REGISTRYINDEX, hook.second);
 	m->timingHooks.clear();
 	if (m->host.onTimingChanged) m->host.onTimingChanged();
+	for (auto &entry : m->deferred)
+	{
+		m->results[entry.first] = "expired registry";
+		if (entry.second.callback != LUA_NOREF) luaL_unref(m->L, LUA_REGISTRYINDEX, entry.second.callback);
+	}
+	m->deferred.clear();
 	for (auto &p : m->pending)
 	{
 		m->results[p.ticket] = "expired registry";

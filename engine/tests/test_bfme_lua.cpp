@@ -4,6 +4,7 @@
 #include "doctest.h"
 
 #include <chrono>
+#include <stdexcept>
 #include <map>
 #include <stdexcept>
 #include <thread>
@@ -590,4 +591,43 @@ TEST_CASE("bfme Lua: build mode filters keep template completeness and live cons
  assert(not pcall(function()filter.matches('Barracks',{bogus=true})end))
  return #filter.list({plotBuildable=true})
  )lua")=="0\n");
+}
+
+TEST_CASE("bfme Lua: synchronized tickets wait for committed outcomes and guest failure never writes locally")
+{
+ BfmeLuaRuntime::Snapshot snapshot; snapshot.ready=true; snapshot.localPlayerId=1;
+ snapshot.collections["players"]["1"]={{"id",1},{"money",1000}};
+ snapshot.collections["buildingTypes"]["TestBuilding"]={{"id","TestBuilding"}};
+ std::map<unsigned long long, BfmeLuaRuntime::Host::Outcome> outcomes;
+ int submissions=0, localWrites=0; bool allowed=true; std::string constructionState="building";
+ BfmeLuaRuntime::Host host;
+ host.snapshot=[&]{return snapshot;};
+ host.apply=[&](const auto &){++localWrites; return std::string();};
+ host.submit=[&](unsigned long long ticket, const auto &){
+  if (!allowed) throw std::runtime_error("only the match host may submit gameplay Lua actions");
+  ++submissions; outcomes[ticket]={}; return true;
+ };
+ host.poll=[&](unsigned long long ticket){return outcomes.at(ticket);};
+ host.construct=[&](const auto &)->unsigned{++localWrites; return 0;};
+ host.constructionStatus=[&](unsigned id){CHECK(id==777); return constructionState;};
+ BfmeLuaRuntime vm(std::move(host));
+ auto run=[&](const std::string &code){auto r=vm.execute(code); CHECK_MESSAGE(r.ok,r.output); return r.output;};
+ CHECK(run("t=bfme.players[1]:set('money',42);return bfme.mutations.getStatus(t)")=="pending\n");
+ vm.flush(); CHECK(submissions==1); CHECK(localWrites==0);
+ CHECK(run("return bfme.mutations.getStatus(t),bfme.players[1].money")=="pending\t1000\n");
+ outcomes[1]={"applied",0}; vm.flush();
+ CHECK(run("return bfme.mutations.getStatus(t)")=="applied\n");
+ run("b=bfme.players[1]:construct('TestBuilding',{x=10,y=20},2,function(o) calls=(calls or 0)+1 end)");
+ vm.flush(); CHECK(submissions==2);
+ CHECK(run("return calls,bfme.mutations.getStatus(b)")=="nil\tpending\n");
+ snapshot.collections["buildingInstances"]["777"]={{"id",777},{"playerId",1},{"underConstruction",true}};
+ outcomes[2]={"building",777}; vm.flush();
+ CHECK(run("return calls,bfme.mutations.getStatus(b)")=="nil\tbuilding\n");
+ constructionState="complete"; vm.flush(); vm.flush();
+ CHECK(run("return calls,bfme.mutations.getStatus(b)")=="1\tcomplete\n");
+ allowed=false; run("denied=bfme.players[1]:set('money',99)"); vm.flush();
+ CHECK(run("return bfme.mutations.getStatus(denied)").find("only the match host")!=std::string::npos);
+ CHECK(localWrites==0);
+ allowed=true; run("pending=bfme.players[1]:set('money',90)"); vm.flush(); vm.invalidate();
+ CHECK(run("return bfme.mutations.getStatus(pending)")=="expired registry\n");
 }

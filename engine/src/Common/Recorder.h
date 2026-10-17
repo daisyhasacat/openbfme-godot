@@ -11,8 +11,8 @@
 // OpenBFME DIFFERENCES (enhanced profile, PLAN: "own replays"): the file format is OpenBFME's (retail .BfME2Replay playback is REPLAY-1, stop S-722), and
 // besides the CRC messages every frame's state hash is recorded, so playback names the FIRST frame that differs.
 //
-// Format version 5 (little-endian, NetPacket's byte writer; 3: lane HERO-2's slot Create-a-Heroes in the GameInfo; 4: lane RULES-1's game rules and Legendary Heroes factor;
-// 5: lane UBER-1's simulation profile): "OBFMEREP" (8 bytes), u32 version 3, str profile identity (GameNetwork/ProfileIdentity.h: the
+// Format version 8 (little-endian, NetPacket's byte writer; 3: lane HERO-2's slot Create-a-Heroes in the GameInfo; 4: lane RULES-1's game rules and Legendary Heroes factor;
+// 5: simulation profile; 6: profile-switch records; 7: peace time; 8: fixed Lua authority): "OBFMEREP" (8 bytes), u32 version, str profile identity (GameNetwork/ProfileIdentity.h: the
 // text; playback refuses a replay of another identity before loading the game), the NewGameMessage (NetPacket::writeNewGameMessage), i32 recording slot,
 // u32 RNG algorithm, 8 x i32 slot -> player index of the network players, i32 run-ahead, i32 CRC interval; then records:
 //   u8 1  frame:  u32 frame, u32 n, n x GameMessage (NetPacket::writeGameMessage, format 2: u32 argument counts)   (only frames with commands)

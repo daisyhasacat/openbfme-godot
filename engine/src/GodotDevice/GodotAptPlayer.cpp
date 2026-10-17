@@ -791,7 +791,7 @@ struct AptMenuPlayer::Impl
 					ch = (char)std::tolower((unsigned char)ch);
 				}
 				bool paired = false;
-				Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*source, "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
+				Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*source, fs.is_valid() && fs->is_bfme1() ? "art/textures/" + stem : "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
 				if (paired)
 				{
 					sm.deviceUnverified.insert("[S-1482] texture " + img->filename + ": the packed .jpg's colour with its .png as the alpha (the loader's merge of the two streams was not read)");
@@ -2676,7 +2676,9 @@ Dictionary AptMenuPlayer::lobby_state()
   d["default"] = defaults[(size_t)i]; d["value"] = g.rules[(size_t)i];
   d["choices"] = combo ? entries(setup.ruleComboEntries(*combo)) : Array(); definitions.push_back(d);
  }
-	out["rule_definitions"] = definitions; out["legendary_heroes"] = g.legendaryHeroes; out["fortress_construction"] = g.fortressConstruction;
+ out["rule_definitions"] = definitions; out["legendary_heroes"] = g.legendaryHeroes; out["peace_time_minutes"] = g.peaceTimeMinutes;
+ out["peace_time_choices"] = entries(setup.peaceTimeEntries());
+	out["fortress_construction"] = g.fortressConstruction;
 
 	Array slots;
 	for (const SkirmishGameSlot &s : g.slots)
@@ -2808,6 +2810,20 @@ Dictionary AptMenuPlayer::lobby_apply(const Dictionary &spec)
 			GadgetComboBoxSetSelectedPos(combo, row, false);
 		}
 	}
+	if (spec.has("peace_time_minutes"))
+	{
+		// lane RULES-1: the Rules tab's Peace Time combo (placed once the movie shows the tab): its entry, so the screen's own handler runs
+		GameWindow *combo = screen->peaceTimeWindow();
+		const int row = combo ? itemRow(combo, (std::intptr_t)(int64_t)spec["peace_time_minutes"]) : -1;
+		if (row < 0)
+		{
+			errors.push_back(combo ? "the Peace Time combo has no such duration" : "the Rules tab's Peace Time row is not placed (open the tab first)");
+		}
+		else
+		{
+			GadgetComboBoxSetSelectedPos(combo, row, false);
+		}
+	}
 	if (spec.has("map"))
 	{
 		const std::string key = toNative(String(spec["map"]));
@@ -2832,6 +2848,7 @@ Dictionary AptMenuPlayer::lobby_apply(const Dictionary &spec)
 	}
 
 	if (spec.has("browser_fortress_construction") && !screen->setBrowserFortressConstruction(bool(spec["browser_fortress_construction"]))) errors.push_back("Cannot change Fortress construction");
+ if (spec.has("browser_peace_time") && !screen->setBrowserPeaceTime(int(spec["browser_peace_time"]))) errors.push_back("Invalid peace time");
  if (spec.has("browser_legendary") && !screen->setBrowserLegendary(int(spec["browser_legendary"]))) errors.push_back("Invalid Legendary Heroes factor");
  const Array browserRules = spec.get("browser_rules", Array());
  for (int64_t i = 0; i < browserRules.size(); ++i) {
@@ -3544,7 +3561,7 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 						ch = (char)std::tolower((unsigned char)ch);
 					}
 					bool paired = false;
-					Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*m->source, "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
+					Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*m->source, m->fs.is_valid() && m->fs->is_bfme1() ? "art/textures/" + stem : "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
 					if (packed.is_valid())
 					{
 						it = m->godotTextures.emplace(img->filename, ImageTexture::create_from_image(packed)).first;
@@ -3914,59 +3931,9 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 					Ref<ImageTexture> tex;
 					if (img)
 					{
-						auto it = m->godotTextures.find(img->filename);
-						if (it == m->godotTextures.end())
-						{
-							const AptTextureStore::Entry &entry = m->textures->get(img->filename);
-							if (entry.ok && !entry.rgba.empty())
-							{
-								PackedByteArray px;
-								px.resize((int64_t)entry.rgba.size());
-								memcpy(px.ptrw(), entry.rgba.data(), entry.rgba.size());
-								Ref<godot::Image> image = godot::Image::create_from_data(entry.width, entry.height, false, godot::Image::FORMAT_RGBA8, px);
-								it = m->godotTextures.emplace(img->filename, ImageTexture::create_from_image(image)).first;
-								m->textures->releasePixels(img->filename);
-								m->textureLoads += 1;
-							}
-							else
-							{
-								// lane CAH-1: the packed DDS of the mapped image's texture (art\compiledtextures\<first two letters>\<stem>.dds, as the HUD's
-								// button images: the Create-a-Hero class / type / power icons)
-								std::string stem = img->filename.substr(0, img->filename.find_last_of('.'));
-								for (char &ch : stem)
-								{
-									ch = (char)std::tolower((unsigned char)ch);
-								}
-								std::vector<std::uint8_t> dds;
-								std::string ddsError;
-								Ref<godot::Image> image;
-								if (stem.size() > 2 && m->fs.is_valid() && m->fs->archive_fs() &&
-									m->fs->menu_archive_fs()->readFile("art/compiledtextures/" + stem.substr(0, 2) + "/" + stem + ".dds", dds, &ddsError))
-								{
-									PackedByteArray data;
-									data.resize((int64_t)dds.size());
-									memcpy(data.ptrw(), dds.data(), dds.size());
-									image.instantiate();
-									if (image->load_dds_from_buffer(data) != OK)
-									{
-										image.unref();
-									}
-								}
-								if (image.is_valid())
-								{
-									it = m->godotTextures.emplace(img->filename, ImageTexture::create_from_image(image)).first;
-									m->textureLoads += 1;
-								}
-								else
-								{
-									m->shell->gadgetErrors.insert("texture '" + img->filename + "' of image '" + *record + "': " + entry.error);
-								}
-							}
-						}
-						if (it != m->godotTextures.end())
-						{
-							tex = it->second;
-						}
+						// Mapped-image movie ops use the same archive layout and format
+						// decoding as native gadgets (BFME1 keeps flat art/textures).
+						tex = m->imageTexture(*m->shell, img, *record);
 					}
 					if (tex.is_valid())
 					{

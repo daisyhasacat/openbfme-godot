@@ -47,7 +47,8 @@ class BfmeLuaRuntime
 	struct Snapshot
 	{
 		bool ready = false, paused = false;
-		bool networkGame = false, replay = false; // lane LUAAI-1: orders and the AI switch are refused in both
+		bool networkGame = false, replay = false; // Gameplay changes require the host in multiplayer; replay consumes recorded actions.
+		bool luaAuthority = false, peaceTimeActive = false;
 		int localPlayerId = -1;
 		unsigned frame = 0;
 		Value cursorPosition; // nil when no active terrain hit; SAGE x/y/z otherwise
@@ -65,6 +66,11 @@ class BfmeLuaRuntime
 		std::function<Snapshot()> snapshot;
 		// Empty string = success. Resolve IDs again; never retain an Object* in a queued request.
 		std::function<std::string(const Mutation &)> apply;
+		// True: queued into a synchronized frame. False: use the normal local adapter.
+		// Permission/encoding failures throw and become failed tickets, never local writes.
+		std::function<bool(unsigned long long, const Mutation &)> submit;
+		struct Outcome { std::string status = "pending"; unsigned object = 0; };
+		std::function<Outcome(unsigned long long)> poll;
 		std::function<void()> onMutation;
 		std::function<unsigned(const Mutation &)> construct;
 		// "building", "complete", or a terminal error; resolve the ID every time.

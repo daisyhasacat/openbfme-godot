@@ -130,3 +130,21 @@ float damageDealtFactor(int factor);
 std::u16string label();
 std::u16string choiceText(int factor);
 }
+
+// OpenBFME extension: AI opponents build their economy and army before hostilities begin.
+// Minutes of simulation time from frame zero; zero preserves normal play.
+namespace PeaceTime
+{
+constexpr float kFortressExclusionRadius = 600.0f; // world units, plus the entering unit's footprint
+constexpr int kOff = 0;
+constexpr std::array<int, 5> kChoices{{0, 5, 10, 15, 20}};
+inline bool valid(int minutes) { return minutes == 0 || minutes == 5 || minutes == 10 || minutes == 15 || minutes == 20; }
+inline std::uint32_t frames(int minutes) { return (std::uint32_t)minutes * 60u * 5u; }
+inline std::u16string label() { return u"Peace Time (OpenBFME rule)"; }
+inline std::u16string choiceText(int minutes)
+{
+ if (!minutes) return u"Off";
+ const std::string text = std::to_string(minutes);
+ return std::u16string(text.begin(), text.end()) + u" minutes";
+}
+}

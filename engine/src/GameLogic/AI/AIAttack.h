@@ -152,6 +152,12 @@ private:
 	bool m_follow;
 	Coord3D m_prevVictimPos{ 0.0f, 0.0f, 0.0f };
 	unsigned m_approachFrame = 0;
+	// BFME2 AIAttackApproachTargetState (Open-BFME-2 AIAttackApproachTargetStateOnEnter.cpp, updateInternal): the owner's position at onEnter (+ 0x58) and the
+	// wait for an unreachable victim (m_waiting, m_waitFrame): the approach gives up 10 seconds after a move that ended out of range, with neither side moved,
+	// at a victim CanApproachToTarget refuses
+	Coord3D m_ownerPosition{ 0.0f, 0.0f, 0.0f };
+	bool m_waiting = false;
+	unsigned m_waitFrame = 0;
 };
 
 class AIAttackAimState : public AIState

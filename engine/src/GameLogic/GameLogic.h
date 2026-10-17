@@ -93,6 +93,7 @@ class ShroudManager;
 class PartitionManager;
 class EmotionWorld;
 class ScriptEngine;
+class BfmeLuaActionState;
 struct CrushTemplateInfo;
 struct LuaEventArgs;
 
@@ -309,6 +310,8 @@ public:
 	const GlobalWeatherSystem &weather() const { return *m_weather; }
 	// lane SCRIPT-1: TheScriptEngine (RW 0xDE3BAC), the map script engine: idle until a game loads its scripts (ScriptEngine::newGame); its update runs
 	// first in phase 1's subsystem row (RW 0x62E6AF); hashed (section "script engine") once loaded
+	BfmeLuaActionState &luaActions();
+	int luaAuthorityPlayer() const;
 	ScriptEngine &scriptEngine() { return *m_scriptEngine; }
 	const ScriptEngine &scriptEngine() const { return *m_scriptEngine; }
 	// lane STEALTH-1: TheGameLogic + 0x178, the InvisibilityManager (update in phase 1 before the command list, RW 0x62E8DA)
@@ -415,6 +418,13 @@ public:
 	bool fortressConstruction() const { return m_fortressConstruction; }
 	void setLegendaryHeroes(int factor) { m_legendaryHeroes = factor; }
 	int legendaryHeroes() const { return m_legendaryHeroes; }
+	void setPeaceTimeMinutes(int minutes);
+	int peaceTimeMinutes() const { return m_peaceTimeMinutes; }
+	bool peaceTimeActive() const { return m_frame < PeaceTime::frames(m_peaceTimeMinutes); }
+	// OpenBFME: enemy units cannot enter living fortresses' peace-time circles. Swept moves
+	// also test the segment; teleports/placements test the destination. Units caught inside may leave.
+	bool hasPeaceExclusion(const Object &unit) const;
+	bool peaceExclusionAllows(const Object &unit, const Coord3D &position, bool swept = false, float clearance = 0.0f) const;
 	// lane UBER-1: the simulation profile (Common/SimulationProfile.h; set before the first frame). Hashed only when Uber, so a Faithful game keeps its hash
 	void setSimulationProfile(SimulationProfile p) { m_simulationProfile = p; }
 	SimulationProfile simulationProfile() const { return m_simulationProfile; }
@@ -702,6 +712,7 @@ private:
 	std::unique_ptr<InvisibilityManager> m_invisibility; // lane STEALTH-1
 	std::unique_ptr<DOTManager> m_dot;                   // lane DECOMP-1
 	std::unique_ptr<TerrainTrees> m_trees;               // lane SPELL-3
+	std::unique_ptr<BfmeLuaActionState> m_luaActions;
 	std::unique_ptr<ScriptEngine> m_scriptEngine;        // lane SCRIPT-1
 	CastleTemplateStore m_castleTemplates;
 	std::set<std::string> m_notedStops;
@@ -749,6 +760,8 @@ private:
 	GameRules m_gameRules = MpGameRules::none(); ///< lane RULES-1
 	std::map<std::string, TimingHook> m_timingHooks;
 	bool m_fortressConstruction = false;
+	int m_peaceTimeMinutes = PeaceTime::kOff;
+	std::vector<ObjectID> m_peaceFortresses; // derived index in creation order; objects already carry the hashed state
 	int m_legendaryHeroes = LegendaryHeroes::kOff; ///< lane RULES-1 (OpenBFME)
 	SimulationProfile m_simulationProfile = SimulationProfile::Faithful; ///< lane UBER-1 (OpenBFME)
 	bool m_frameAdvance = true;   ///< RW GameLogic + 0x44

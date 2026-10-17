@@ -111,7 +111,7 @@ int AptSkirmish::ruleComboCount() const
 		return 0;
 	}
 	const int mode = m_setup->rulesMode();
-	return MpGameRules::numComboBoxes(mode) + (mode == RULES_MODE_SKIRMISH ? 2 : 0);
+	return MpGameRules::numComboBoxes(mode) + (mode == RULES_MODE_SKIRMISH ? 3 : 0);
 }
 
 void AptSkirmish::initRuleGadget(const std::string &name, GameWindow *window)
@@ -162,6 +162,7 @@ void AptSkirmish::refileRules()
 	m_ruleWindows.fill(nullptr);
 	m_legendaryCombo = nullptr;
 	m_fortressCombo = nullptr;
+	m_peaceCombo = nullptr;
 	tryPopulateRules();
 }
 
@@ -257,6 +258,15 @@ void AptSkirmish::populateRuleCombos()
 		m_fortressCombo->winHide(false);
 		updateLegendaryGadget();
 	}
+	if (mode == RULES_MODE_SKIRMISH && (std::size_t)row < m_ruleCombos.size() && m_ruleCombos[(std::size_t)row])
+	{
+		GameWindow *window = m_ruleCombos[(std::size_t)row];
+		m_peaceCombo = window;
+		windows().setAptText("APT:RuleComboBox_" + std::to_string(row++), toUtf8(PeaceTime::label()));
+		fillRuleCombo(window, m_setup->peaceTimeEntries());
+		window->winHide(false);
+		updatePeaceGadget();
+	}
 	const int rows = ruleComboCount();
 	while (row < rows && (std::size_t)row < m_ruleCombos.size())
 	{
@@ -340,6 +350,7 @@ void AptSkirmish::enableRuleGadgets()
 	{
 		m_legendaryCombo->winEnable(host);
 	}
+	if (m_peaceCombo) m_peaceCombo->winEnable(host);
 	m_ruleInput = true;
 }
 
@@ -381,6 +392,18 @@ void AptSkirmish::updateLegendaryGadget()
 	m_ruleInput = true;
 }
 
+void AptSkirmish::updatePeaceGadget()
+{
+	if (!m_peaceCombo || !m_setup)
+	{
+		return;
+	}
+	m_ruleInput = false;
+	selectComboValue(m_peaceCombo, m_setup->info().peaceTimeMinutes);
+	m_peaceCombo->winEnable(amIHost());
+	m_ruleInput = true;
+}
+
 void AptSkirmish::refreshRuleGadgets()
 {
 	// AptMpGameRules::rva0057E6C1: every rule's UpdateRuleGadget
@@ -389,6 +412,7 @@ void AptSkirmish::refreshRuleGadgets()
 		updateRuleGadget(rule);
 	}
 	updateLegendaryGadget();
+	updatePeaceGadget();
 }
 
 bool AptSkirmish::onRuleGadget(GameWindow *gadget)
@@ -402,7 +426,7 @@ bool AptSkirmish::onRuleGadget(GameWindow *gadget)
 	{
 		const int value = comboValue(gadget);
 		if (m_ruleInput && !m_refreshing && amIHost() && (value == 0 || value == 1)) {
-			m_setup->setFortressConstruction(value != 0); ruleChanged(-2, false);
+			m_setup->setFortressConstruction(value != 0); ruleChanged(-3, false);
 		}
 		updateLegendaryGadget(); return true;
 	}
@@ -416,6 +440,19 @@ bool AptSkirmish::onRuleGadget(GameWindow *gadget)
 				return true;
 			}
 			ruleChanged(-1, false);
+		}
+		return true;
+	}
+	if (gadget == m_peaceCombo)
+	{
+		if (m_ruleInput && !m_refreshing)
+		{
+			if (!amIHost() || !m_setup->setPeaceTimeMinutes(comboValue(gadget)))
+			{
+				updatePeaceGadget(); // a client's or an unknown choice shows the model again
+				return true;
+			}
+			ruleChanged(-2, false);
 		}
 		return true;
 	}
@@ -474,7 +511,7 @@ void AptSkirmish::ruleChanged(int kind, bool reset)
 	}
 	else
 	{
-		notice = fetchOrMissing(m_env.gameText, "GUI:RuleChangeWarning") + u" " + (kind == -2 ? std::u16string(u"Fortress construction (OpenBFME rule)") : kind < 0 ? LegendaryHeroes::label() : m_setup->ruleName(kind));
+		notice = fetchOrMissing(m_env.gameText, "GUI:RuleChangeWarning") + u" " + (kind == -3 ? std::u16string(u"Fortress construction (OpenBFME rule)") : kind == -2 ? PeaceTime::label() : (kind < 0 ? LegendaryHeroes::label() : m_setup->ruleName(kind)));
 	}
 	if (!notice.empty())
 	{
@@ -529,6 +566,7 @@ void AptSkirmish::pruneRuleGadgets(const std::set<const GameWindow *> &alive)
 	}
 	check(m_legendaryCombo);
 	check(m_fortressCombo);
+	check(m_peaceCombo);
 	if (lost)
 	{
 		// the movie took the rows away (a tab or a frame change): the rules are filed again when it places them anew
@@ -536,6 +574,7 @@ void AptSkirmish::pruneRuleGadgets(const std::set<const GameWindow *> &alive)
 		m_ruleWindows.fill(nullptr);
 		m_legendaryCombo = nullptr;
 	m_fortressCombo = nullptr;
+		m_peaceCombo = nullptr;
 	}
 }
 
@@ -558,7 +597,7 @@ bool AptSkirmish::setBrowserFortressConstruction(bool enabled)
 {
 	if (!m_setup || !amIHost()) return false;
 	m_setup->setFortressConstruction(enabled);
-	ruleChanged(-2, false);
+	ruleChanged(-3, false);
 	refreshRuleGadgets();
 	return true;
 }
@@ -566,6 +605,14 @@ bool AptSkirmish::setBrowserFortressConstruction(bool enabled)
 bool AptSkirmish::setBrowserLegendary(int value)
 {
  if (!m_setup || !m_setup->setLegendaryHeroes(value)) return false;
+ refreshRuleGadgets();
+ return true;
+}
+
+bool AptSkirmish::setBrowserPeaceTime(int value)
+{
+ if (!m_setup || !amIHost() || !m_setup->setPeaceTimeMinutes(value)) return false;
+ ruleChanged(-2, false);
  refreshRuleGadgets();
  return true;
 }

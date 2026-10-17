@@ -174,6 +174,14 @@ public:
 	// template `keep` (empty: none), through Object::kill (the death path, no score credit)
 	Dictionary debug_kill_player_objects(const String &player, const String &keep);
 	Dictionary debug_damage_object(int64_t id, double amount, int64_t source_id);
+	// AI debugging: the path the object's own locomotor would get from its position to (x, y): { ok, nodes, partial, quick_path_exists, valid_destination }
+	Dictionary debug_find_path(int64_t id, double x, double y);
+	// AI debugging: the pathfinder cell at (x, y) on the ground layer: { ok, type, zone, pinched, ground, water_height (when standing water covers it) }
+	Dictionary debug_pathfind_cell(double x, double y);
+	// AI debugging: each computer player's build state: phase, money reserve, the unit builder's factories and requests, the pending queue with last check codes
+	Array get_ai_build_report() const;
+	// AI debugging: BuildPlacement::isLocationLegalToBuild for `template_name` at (x, y) with `options` for builder `builder_id` (its player): the LegalBuildCode
+	int64_t debug_placement(const String &template_name, double x, double y, double angle, int64_t options, int64_t builder_id);
 	Dictionary debug_set_object_status(int64_t id, const String &status, bool on); // lane SPELL-3: a test hook (start option test_hooks): an object status by name
 	// lane SPELL-3 (review r3): a test hook (start option test_hooks): the global weather back to none, its map attribute modifier removed from every object
 	// (GlobalWeatherSystem::clear, RW 0x71A04F) - the spell harness isolates the weather powers' casts with it

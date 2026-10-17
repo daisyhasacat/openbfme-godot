@@ -147,6 +147,7 @@ bool SkirmishGameSetup::init(const std::u16string &userName, std::uint32_t seed,
 	m_info.rules = MpGameRules::defaults(rulesMode());
 	m_info.legendaryHeroes = LegendaryHeroes::kOff;
 	m_info.fortressConstruction = false;
+	m_info.peaceTimeMinutes = PeaceTime::kOff;
 	m_info.simulationProfile = m_simulationProfile; // lane UBER-1: the player's option, not a rule: a reset keeps it
 	m_info.seed = seed;
 	setSlotStateInternal(m_info.slots[0], SLOT_PLAYER, userName);
@@ -655,6 +656,7 @@ void SkirmishGameSetup::resetRules()
 	m_info.rules = MpGameRules::defaults(rulesMode());
 	m_info.legendaryHeroes = LegendaryHeroes::kOff;
 	m_info.fortressConstruction = false;
+	m_info.peaceTimeMinutes = PeaceTime::kOff;
 }
 
 bool SkirmishGameSetup::setLegendaryHeroes(int factor)
@@ -674,6 +676,31 @@ std::vector<SkirmishComboEntry> SkirmishGameSetup::legendaryHeroesEntries() cons
 	{
 		std::u16string text = LegendaryHeroes::choiceText(factor);
 		if (factor == LegendaryHeroes::kOff)
+		{
+			text += label("VALUE:Default");
+		}
+		out.push_back({ text, 0xFFFFFFFFu, factor });
+	}
+	return out;
+}
+
+bool SkirmishGameSetup::setPeaceTimeMinutes(int factor)
+{
+	if (!PeaceTime::valid(factor))
+	{
+		return false;
+	}
+	m_info.peaceTimeMinutes = factor;
+	return true;
+}
+
+std::vector<SkirmishComboEntry> SkirmishGameSetup::peaceTimeEntries() const
+{
+	std::vector<SkirmishComboEntry> out;
+	for (int factor : PeaceTime::kChoices)
+	{
+		std::u16string text = PeaceTime::choiceText(factor);
+		if (factor == PeaceTime::kOff)
 		{
 			text += label("VALUE:Default");
 		}

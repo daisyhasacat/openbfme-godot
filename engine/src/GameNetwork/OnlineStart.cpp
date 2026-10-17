@@ -247,6 +247,13 @@ bool parse(const std::string &json, const ProfileIdentity &ownProfile, const Lim
 		if (flag->type != JsonValue::BOOL) return fail(error, "fortressConstruction must be boolean");
 		g.fortressConstruction = flag->boolean;
 	}
+	long long peace = 0;
+	if (setup->get("peaceTimeMinutes") && (!intField(*setup, "peaceTimeMinutes", 0, 20, peace, &sub) || !PeaceTime::valid((int)peace)))
+		return fail(error, "invalid peaceTimeMinutes");
+	g.peaceTimeMinutes = (int)peace;
+	long long luaAuthority = -1;
+	if (setup->get("luaAuthoritySlot") && !intField(*setup, "luaAuthoritySlot", -1, MAX_SLOTS - 1, luaAuthority, &sub)) return fail(error, "invalid luaAuthoritySlot");
+	g.luaAuthoritySlot = (int)luaAuthority;
 	if (!LegendaryHeroes::valid(g.legendaryHeroes))
 	{
 		return fail(error, "\"legendaryHeroes\" " + std::to_string(lh) + " is not a known factor");
@@ -343,6 +350,7 @@ bool parse(const std::string &json, const ProfileIdentity &ownProfile, const Lim
 			s.networkSlot[i] = true;
 		}
 	}
+	if (g.luaAuthoritySlot >= 0 && !s.networkSlot[(size_t)g.luaAuthoritySlot]) return fail(error, "Lua authority is not a human slot");
 	g.clearCreateAHeroesIfNotAllowed();
 	if (replay)
 	{

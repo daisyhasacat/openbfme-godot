@@ -152,7 +152,7 @@ public:
 	// the first for which the target has a contact point (Object::getWorldspaceBestContactPoint RW 0x690BD2, mode 0) gives `out`; false when none has one
 	bool findNearestLabeledContactPointOnTarget(const Object &target, Coord3D &out, const Coord3D &callerPos, bool preferred) const;
 	// ZH getNextMoodTarget: the nearest attackable enemy within the vision range, null when this unit does not look for targets (no weapon, no AutoAcquire flag, a horde member)
-	Object *nextMoodTarget();
+	Object *nextMoodTarget(bool duringIdle = true);
 	// the idle scan: due every MoodAttackCheckRate frames; returns the frames until the next check (0 when this unit never scans)
 	unsigned moodCheckInterval() const;
 	// ---- lane SCRIPT-3: the attitude (RW AI + 0x218, 0 at creation, RW 0x66EF64): -3 (RotWK's mood 0x2000), -2 sleep, -1 passive, 0 normal, 1 alert,

@@ -24,8 +24,8 @@ The theme has a separate presentation archive view; gameplay data retains RotWK 
 Press **backtick (`)** in game to open the Lua console; **Escape** or **backtick** closes it. Ctrl+Shift+C also toggles it. The powers-menu shortcut is unbound. Enter runs a Lua (LuaJIT) command, `=1 + 2` displays an expression,
 and Up / Down browse command history. Shift+Enter inserts a new line; Run executes the entire script. Command and Log tabs have separate Clear controls. The console is scaled 2×. **Ctrl+Shift+F5** or **Reload scripts** rereads `.lua` files in `godot/dev/` and `user://dev/` without restarting; `bfme.console.reload()` does the same. `print("hello")` writes to the console; `clear` clears its output. The console's persistent companion VM exposes
 the [bfme library](BFME_LUA.md), including `bfme.players.localPlayer.money = 10000`. Retail gameplay scripts retain their Lua 4.0.1 state.
-Lua console use does not change save availability. Console edits are not included in command-log saves.
-Console commands also run during multiplayer, replay playback and save catch-up; edits are local and are not synchronized or recorded.
+Lua console use does not change save availability. Offline console edits are not fully included in command-log saves; multiplayer host actions are recorded (see [Lua authority](BFME_LUA.md)).
+In multiplayer only the host may change gameplay. Replay playback permits inspection and local graphics settings; new gameplay writes are refused.
 
 ## What changed for macOS
 

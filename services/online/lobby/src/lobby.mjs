@@ -1,3 +1,4 @@
+import { webResponse } from './webui.mjs';
 // OpenBFME online lobby. GPL-3.0.
 //
 // The lobby's logic (lane ONLINE-2, docs/ONLINE.md phase O1), without a platform: the Cloudflare Worker + Durable Object (worker.mjs) and the self-hosted
@@ -211,6 +212,7 @@ export class Lobby {
     for (const r of this.config.relays) {
       if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$/.test(r.address)) throw new Error(`lobby: relay address ${r.address} must be a.b.c.d:port`);
     }
+    this.users = new Map(); // persisted guest identities and moderation revisions; never session tokens
     this.games = new Map(); // id -> game
     this.buckets = new Map(); // rate limit key -> { tokens, at }
     this.relayStatus = new Map(); // INFRA-2 r2: relay address -> its uploader's last status (relayStatus())
@@ -229,6 +231,8 @@ export class Lobby {
       if (this.present.size >= MAX_PRESENT) return;
     }
     this.present.set(accountId, now);
+    const user = this.users.get(accountId);
+    if (user) user.lastSeenAt = now;
   }
   // counts only: no names, no addresses, no ids in the answer
   stats() {
@@ -287,7 +291,14 @@ export class Lobby {
 
   load(games, relayStatus = []) {
     for (const g of games) this.games.set(g.id, g);
-    for (const r of relayStatus) this.relayStatus.set(r.relay, r);
+    for (const r of relayStatus) {
+      if (r.kind === 'user') this.users.set(r.id, r);
+      else if (r.relay) this.relayStatus.set(r.relay, r);
+    }
+    // Existing matches predate the directory; recover their display identities without credentials.
+    for (const g of games) for (const slot of g.slots) if (slot.account && !this.users.has(slot.account)) {
+      this.users.set(slot.account, { kind: 'user', id: slot.account, name: slot.name, accountKind: 'guest', revision: 0, tokenVersion: 0, banned: false, createdAt: g.created });
+    }
   }
 
   // ---- rate limits (token buckets: per account and per address) ----
@@ -330,8 +341,13 @@ export class Lobby {
     if (diff) throw new LobbyError(401, 'signed_out', 'the session token is not this lobby\'s');
     const a = JSON.parse(dec.decode(body));
     if (!(a.exp > this.env.now() / 1000)) throw new LobbyError(401, 'signed_out', 'the session expired: sign in again');
-    if (typeof a.id === 'string') this.seen(a.id); // ONLINECOUNT-1
-    return a;
+    if (typeof a.id !== 'string' || typeof a.name !== 'string') throw new LobbyError(401, 'signed_out', 'invalid account');
+    let user = this.users.get(a.id);
+    if (!user) user = await this.saveUser({ kind: 'user', id: a.id, name: a.name, accountKind: a.kind, revision: 0, tokenVersion: 0, banned: false, createdAt: this.env.now() });
+    if (user.banned) throw new LobbyError(403, 'banned', 'this account is suspended');
+    if ((a.tokenVersion ?? 0) !== user.tokenVersion) throw new LobbyError(401, 'revoked', 'this session was revoked: sign in again');
+    this.seen(a.id);
+    return { ...a, name: user.name };
   }
 
   async guest(body, ip) {
@@ -340,8 +356,73 @@ export class Lobby {
     if (!name) throw bad('bad_field', 'name must not be blank');
     const id = `guest:${bytesToHex(this.env.randomBytes(8))}`;
     const account = { id, name, kind: 'guest' };
+    await this.saveUser({ kind: 'user', id, name, accountKind: 'guest', revision: 0, tokenVersion: 0, banned: false, createdAt: this.env.now() });
     this.seen(id); // ONLINECOUNT-1
     return { v: VERSION, token: await this.makeToken(account), account };
+  }
+
+  // ---- browser dashboard and account moderation ----
+  async saveUser(user) {
+    await this.env.store.saveMeta?.(`user:${user.id}`, user);
+    this.users.set(user.id, user);
+    return user;
+  }
+  onlineUsers() {
+    this.sweep();
+    const now = this.env.now();
+    const online = new Map();
+    for (const [id, seenAt] of this.present) {
+      if (now - seenAt > PRESENCE_S * 1000) { this.present.delete(id); continue; }
+      const user = this.users.get(id);
+      if (user && !user.banned) online.set(id, { name: user.name, kind: user.accountKind, status: 'In lobby' });
+    }
+    for (const g of this.games.values()) if (g.state === 'started' && !g.finished) {
+      for (const slot of g.slots) if (slot.state === 'player' && slot.account) {
+        online.set(slot.account, { name: this.users.get(slot.account)?.name ?? slot.name, kind: 'guest', status: 'In game' });
+      }
+    }
+    return online;
+  }
+  dashboard() {
+    const online = this.onlineUsers();
+    const games = [...this.games.values()].filter((g) => g.state === 'open' || (g.state === 'started' && !g.finished))
+      .map((g) => ({ ...this.publicGame(g), createdAt: g.created, startedAt: g.startedAt ?? null,
+        capacity: g.slots.filter((slot) => slot.state !== 'closed').length,
+        roster: g.slots.filter((slot) => slot.state === 'player' || AI_STATES.has(slot.state)).map((slot) => ({ name: slot.name, computer: AI_STATES.has(slot.state) })) }));
+    return { v: VERSION, asOf: this.env.now(), games, users: [...online.values()].sort((a,b) => a.name.localeCompare(b.name)),
+      presenceNote: 'Online presence is estimated from activity in the last 150 seconds and unfinished games (up to 3 hours).',
+      moderationEnabled: !!this.config.adminKey };
+  }
+  adminUsers(query) {
+    const online = this.onlineUsers();
+    const search = String(query.get('search') ?? '').toLowerCase().slice(0, 100);
+    const after = String(query.get('after') ?? '');
+    const limit = intIn(Number(query.get('limit') ?? 50), 1, 100, 'limit');
+    const rows = [...this.users.values()].filter((u) => u.id > after && (!search || u.name.toLowerCase().includes(search) || u.id.toLowerCase().includes(search)))
+      .sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).slice(0, limit + 1);
+    return { v: VERSION, users: rows.slice(0, limit).map((u) => ({ ...u, online: online.has(u.id), lastSeenAt: u.lastSeenAt ?? null })),
+      next: rows.length > limit ? rows[limit-1].id : null };
+  }
+  async moderateUser(id, body) {
+    const user = this.users.get(id);
+    if (!user) throw new LobbyError(404, 'no_user', 'unknown user');
+    if (body.revision !== user.revision) throw new LobbyError(409, 'revision', 'account changed: refresh before trying again');
+    const next = { ...user, revision: user.revision + 1, updatedAt: this.env.now() };
+    if (body.action === 'ban') { next.banned = true; next.tokenVersion += 1; }
+    else if (body.action === 'unban') next.banned = false;
+    else if (body.action === 'revoke') next.tokenVersion += 1;
+    else if (body.action === 'rename') {
+      next.name = str(body.name, 24, 'name').trim();
+      if (!next.name) throw bad('bad_field', 'name must not be blank');
+    } else throw bad('bad_field', 'unknown user action');
+    await this.saveUser(next);
+    if (body.action === 'ban' || body.action === 'revoke') this.present.delete(id);
+    for (const g of [...this.games.values()]) if (g.state === 'open' && this.slotOf(g, user) >= 0) {
+      if (body.action === 'ban' || body.action === 'revoke') await this.leave(user, g.id);
+      else if (body.action === 'rename') { g.slots[this.slotOf(g, user)].name = next.name; await this.save(g); }
+    }
+    this.statsCache = null;
+    return { v: VERSION, user: next };
   }
 
   // ---- games ----
@@ -438,11 +519,13 @@ export class Lobby {
       superweaponRestriction: intIn(setup.superweaponRestriction ?? 0, 0, 1, 'setup.superweaponRestriction'),
       legendaryHeroes: intIn(setup.legendaryHeroes ?? 1, 1, 4, 'setup.legendaryHeroes'),
       fortressConstruction: setup.fortressConstruction ?? false,
+      peaceTimeMinutes: intIn(setup.peaceTimeMinutes ?? 0, 0, 20, 'setup.peaceTimeMinutes'),
       // lane ONLINE-3: how far behind the players the spectators watch (seconds of game time; the relay holds the log back that far)
       spectatorDelay: intIn(setup.spectatorDelay ?? 0, 0, 600, 'setup.spectatorDelay'),
       rules: setup.rules ?? null,
     };
     if (typeof out.fortressConstruction !== 'boolean') throw bad('bad_field', 'setup.fortressConstruction must be boolean');
+    if (![0, 5, 10, 15, 20].includes(out.peaceTimeMinutes)) throw bad('bad_field', 'peaceTimeMinutes must be Off, 5, 10, 15 or 20');
     if (out.rules !== null) {
       if (!Array.isArray(out.rules) || out.rules.length !== 10) throw bad('bad_field', 'setup.rules must be null or 10 integers');
       out.rules.forEach((r, i) => intIn(r, -2147483648, 2147483647, `setup.rules[${i}]`));
@@ -683,6 +766,8 @@ export class Lobby {
       rules: g.setup.rules,
       legendaryHeroes: g.setup.legendaryHeroes,
       fortressConstruction: g.setup.fortressConstruction,
+      peaceTimeMinutes: g.setup.peaceTimeMinutes,
+      luaAuthoritySlot: g.hostSlot, // fixed by the service, never taken from a client setup
       slots: g.slots.slice(0, last).map((s) => (s.state === 'player' || AI_STATES.has(s.state)
         ? { state: s.state, name: s.name, faction: s.faction, color: s.color, startPos: s.startPos, team: s.team }
         : { state: s.state })),
@@ -990,6 +1075,8 @@ export async function route(lobby, req) {
         throw bad('bad_json', 'the body must be JSON');
       }
     };
+    const web = webResponse(req.method, req.path);
+    if (web) return web;
     const v1 = p[0] === 'v1';
     if (m === 'GET' && p[0] === 'j' && p.length === 2 && /^[0-9a-f]{16}$/.test(p[1])) {
       // the invite page: the openbfme:// link (the launcher's handler) and the id for the debug join
@@ -1004,6 +1091,22 @@ export async function route(lobby, req) {
       lobby.limit(`stats:${req.ip}`, 60, 20);
       if (req.headers.authorization) await lobby.account(req.headers.authorization).catch(() => {});
       return { status: 200, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': `public, max-age=${STATS_CACHE_S}` }, body: JSON.stringify(lobby.stats()) };
+    }
+    if (m === 'GET' && p[1] === 'dashboard' && p.length === 2) {
+      lobby.limit(`dashboard:${req.ip}`, 30, 10);
+      return json(200, lobby.dashboard());
+    }
+    if (p[1] === 'admin' && p[2] === 'users') {
+      lobby.limit(`moderation:${req.ip}`, 60, 20);
+      const raw = await req.bytes();
+      await lobby.adminCheck(req, raw);
+      if (m === 'GET' && p.length === 3) return json(200, lobby.adminUsers(req.query));
+      if (m === 'POST' && p.length === 4) {
+        let id;
+        try { id = decodeURIComponent(p[3]); } catch { throw bad('bad_field', 'invalid user id'); }
+        return json(200, await lobby.moderateUser(id, await body()));
+      }
+      return json(404, { v: VERSION, error: 'not_found', message: 'unknown user management path' });
     }
     if (m === 'GET' && p[1] === 'motd' && p.length === 2) return json(200, { v: VERSION, motd: lobby.config.motd || null });
     if (m === 'POST' && p[1] === 'auth' && p[2] === 'guest') return json(200, await lobby.guest(await body(), req.ip));

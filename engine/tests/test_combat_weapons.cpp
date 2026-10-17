@@ -472,3 +472,28 @@ TEST_CASE("combat weapons (DECOMP-1 r4): a Radius 0 warhead delivered at a posit
 	DeliverNuggets(*d.w.logic, d.a->getID(), *sword, WeaponBonus{}, nullptr, &at, true, nullptr);
 	CHECK(d.w.health(d.b) < 100.0f);
 }
+
+TEST_CASE("peace time: computer units cannot target players until expiry, humans and neutral resources are unaffected")
+{
+ Duel d;
+ Player *attacker = d.a->getControllingPlayer();
+ Player *victim = d.b->getControllingPlayer();
+ REQUIRE(attacker);
+ REQUIRE(victim);
+ attacker->setPlayerType(PLAYER_COMPUTER, true);
+ d.w.logic->setPeaceTimeMinutes(5);
+ CHECK_FALSE(d.ow->canAttackObject(*d.b, CMD_FROM_AI, false));
+ CHECK_FALSE(d.ow->canAttackObject(*d.b, CMD_FROM_PLAYER, true));
+ victim->setPlayerType(PLAYER_COMPUTER, true);
+ CHECK_FALSE(d.ow->canAttackObject(*d.b, CMD_FROM_AI, false));
+ attacker->setPlayerType(PLAYER_HUMAN, true);
+ CHECK(d.ow->canAttackObject(*d.b, CMD_FROM_PLAYER, false));
+ attacker->setPlayerType(PLAYER_COMPUTER, true);
+ d.b->setTeam(d.w.players.getNeutralPlayer()->getDefaultTeam());
+ CHECK(d.ow->canAttackObject(*d.b, CMD_FROM_AI, true));
+ d.b->setTeam(victim->getDefaultTeam());
+ while (d.w.logic->getFrame() != 1499) d.w.frames(1);
+ CHECK_FALSE(d.ow->canAttackObject(*d.b, CMD_FROM_AI, false));
+ d.w.frames(1);
+ CHECK(d.ow->canAttackObject(*d.b, CMD_FROM_AI, false));
+}

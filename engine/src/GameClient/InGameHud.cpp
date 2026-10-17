@@ -884,6 +884,19 @@ bool InGameHud::commandContentAt(int x, int y)
 	return b && m_palantirRef && m_palantirRef->contentSlotAt(b->targetPath(), arc, slot);
 }
 
+bool InGameHud::commandSlotAt(int x, int y, bool &arc, int &slot)
+{
+	AptStageMapping m;
+	m.windowW = (float)m_windowW;
+	m.windowH = (float)m_windowH;
+	float sx, sy;
+	m.windowToStage((float)x, (float)y, sx, sy);
+	AptButtonInst *b = m_wm ? m_wm->apt().input().hitTestButtons(sx, sy) : nullptr;
+	arc = false;
+	slot = -1;
+	return b && m_palantirRef && m_palantirRef->contentSlotAt(b->targetPath(), arc, slot);
+}
+
 bool InGameHud::isOverGui(int x, int y)
 {
 	if (hud6OverGui(x, y)) // lane HUD-6: the radial bubbles

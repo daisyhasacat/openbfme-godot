@@ -1251,6 +1251,7 @@ void InGameHudNode::_bind_methods()
 	ClassDB::bind_method(D_METHOD("get_adaptive_resources"), &InGameHudNode::get_adaptive_resources);
 	ClassDB::bind_method(D_METHOD("adaptive_minimap_click", "uv", "order"), &InGameHudNode::adaptive_minimap_click, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("get_command_buttons"), &InGameHudNode::get_command_buttons);
+	ClassDB::bind_method(D_METHOD("command_button_at", "pixel"), &InGameHudNode::command_button_at);
 	ClassDB::bind_method(D_METHOD("activate_command", "slot", "in_palantir", "cancel"), &InGameHudNode::activate_command, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("get_command_icon", "name"), &InGameHudNode::get_command_icon);
 	ClassDB::bind_method(D_METHOD("get_controller_objects", "role"), &InGameHudNode::get_controller_objects);
@@ -3405,6 +3406,36 @@ Array InGameHudNode::get_controller_objects(const String &role) const
         result.push_back(entry);
     }
     return result;
+}
+
+Dictionary InGameHudNode::command_button_at(const Vector2 &pixel)
+{
+	waitLogic(d.get());
+	Dictionary r;
+	r["found"] = false;
+	if (!d->ready)
+	{
+		return r;
+	}
+	const auto context = d->hud->enterContext();
+	bool arc = false;
+	int slot = -1;
+	if (!d->hud->commandSlotAt((int)pixel.x, (int)pixel.y, arc, slot))
+	{
+		return r;
+	}
+	r["found"] = true;
+	r["arc"] = arc;
+	r["slot"] = slot;
+	const std::vector<ControlBarButton> &list = arc ? d->hud->controlBar().palantirButtons() : d->hud->controlBar().sideButtons();
+	for (const ControlBarButton &b : list)
+	{
+		if (b.slot == slot && b.button)
+		{
+			r["name"] = toGodot(b.button->m_name);
+		}
+	}
+	return r;
 }
 
 Array InGameHudNode::get_command_buttons() const

@@ -132,6 +132,9 @@ public:
 	virtual ~PathfindObject() {}
 	virtual PathfindObjectID getID() const = 0;
 	virtual const Coord3D &getPosition() const = 0;
+	// OpenBFME dynamic movement restrictions, independent of terrain and ignored obstacles.
+	virtual bool hasMovementRestrictions() const { return false; }
+	virtual bool canEnterPosition(const Coord3D &) const { return true; }
 	virtual float getOrientation() const = 0;
 	virtual PathfindLayerEnum getLayer() const = 0;
 	virtual float getHeightAboveTerrain() const = 0;

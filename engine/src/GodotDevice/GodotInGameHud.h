@@ -89,6 +89,8 @@ public:
 	// command (the retail Command name), template, upgrade, power, state (ButtonState: 0 hidden, 1 enabled, 2 restricted, 3 can't afford, 4 not ready, 5 active),
 	// cost, queued, frame (the movie clip of its position: a click there is the player's press) }
 	Array get_command_buttons() const;
+	// tests: the control bar button whose Palantir content is under the window pixel: { found, arc, slot, name }
+	Dictionary command_button_at(const Vector2 &pixel);
 	void set_controller_layout(bool active);
 	void set_native_hud_visible(bool visible);
 	Dictionary get_adaptive_minimap();

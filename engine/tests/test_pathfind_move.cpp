@@ -351,6 +351,31 @@ TEST_CASE("ai move: a unit ordered across open ground gets a path from the queue
 	CHECK(u.ai->path() == nullptr);                  // and the AI's update consumed the movement-complete flag, destroying the path
 }
 
+TEST_CASE("ai move: a destination inside a cliff is not a dead end: computePath falls back to the closest path (RW 0x665C33, lane AI-4)")
+{
+	// Open-BFME-2 AIUpdateInterface_computePath.cpp: an invalid destination skips the plain search and FindClosestPath walks the unit to the nearest
+	// reachable cell. Before, the request failed and the unit never left its cell (an attack team stood at Evendim's lake shore for ten minutes)
+	Sim sim(60, 30);
+	for (int x = 40; x < 50; ++x)
+	{
+		for (int y = 10; y < 20; ++y)
+		{
+			sim.terrain.cliff.insert({ x, y });
+		}
+	}
+	sim.build();
+	Unit &u = sim.add(1, 25.0f, 155.0f);
+	// the attack approach's move: the destination is not adjusted to a valid cell first (AIAttackApproachState for a unit that is not a HORDE)
+	u.state = std::make_unique<AIMoveToState>(*u.ai, Coord3D{ 455.0f, 155.0f, 0.0f }, false);
+	REQUIRE(u.state->onEnter() == STATE_CONTINUE);
+	for (int f = 0; f < 300 && u.state; ++f)
+	{
+		sim.step(false);
+	}
+	CHECK(u.obj.pos.x > 300.0f);                   // it walked toward the destination
+	CHECK(distTo(u, 455.0f, 155.0f) < 100.0f);     // and stands at the cliff's edge, the reachable cell nearest the goal
+}
+
 TEST_CASE("ai move: the same orders give the same positions every frame twice (determinism)")
 {
 	auto run = [](std::vector<float> &trace) {
@@ -501,7 +526,7 @@ TEST_CASE("ai move: the repath cadence: a path found from the queue is not asked
 	// onEnter queued one request; after the path came, update asked for none or one more (the quick path leaves pathGoal stale)
 	CHECK(u.state->pathRequests() <= 2);
 	CHECK(u.ai->path() != nullptr);
-	CHECK(AIMover::allStops().size() == 7);
+	CHECK(AIMover::allStops().size() == 8); // lane AI-4: + kStopClosest (computePath's FindClosestPath stand-in)
 	for (const std::string &s : AIMover::allStops())
 	{
 		CHECK(s.compare(0, 6, "S-166 ") == 0);

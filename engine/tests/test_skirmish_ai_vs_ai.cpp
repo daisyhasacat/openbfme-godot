@@ -720,7 +720,10 @@ TEST_CASE("skirmish ai vs ai: Evendim, 30 game-minutes: every pairing ends - Mor
 	// PERF-1 and Uber vectors already match the merged tree), re-measured once on the merged tree 3631817a with remote-measure.sh (jpc): seeds 2 and 1234
 	// are open at 9000 (still fighting, no stall), seed 7 ends with Men's defeat (start position 0) at 5029, as BACKLOG-1 pinned. ATTACK-1's 7842 (seed 2)
 	// and 8656 (seed 1234) are superseded. Engine pins, not retail values.
-	for (const Game &g : { Game{ "FactionMordor", "FactionMen", 2u, -1, -1 }, Game{ "FactionMen", "FactionMordor", 7u, 0, 4697 }, Game{ "FactionMordor", "FactionMen", 1234u, -1, -1 } })
+	// Lane AI-4 (computePath's closest-path fallback RW 0x665C33, the approach's unreachable-victim wait, the vision bonus defaults, the money reserve RW
+	// 0x8F0502 / 0x961975 / 0x96190B and the farm marker pre-check), measured on the macOS tree: seed 2 is open at 9000, seed 7 now ends with the second
+	// player's defeat (Mordor, start position 1) at 4451, seed 1234 with the second player's defeat (Men, start position 1) at 4045. Engine pins, not retail values.
+	for (const Game &g : { Game{ "FactionMordor", "FactionMen", 2u, -1, -1 }, Game{ "FactionMen", "FactionMordor", 7u, 1, 4451 }, Game{ "FactionMordor", "FactionMen", 1234u, 1, 4045 } })
 	{
 		INFO(g.a << " vs " << g.b << " seed " << g.seed);
 		VersusRun run;

@@ -141,6 +141,9 @@ struct AIUnitBuilderState
 	int heroCost = -1;                                   ///< + 0x48: the chosen hero's cost (calcCostToBuild)
 	bool heroInProgress = false;                         ///< + 0x34: a hero request is out (cleared when a HERO request finishes, RW 0x9A0D9C)
 	unsigned long long heroesMade = 0;                   ///< hero requests made (report)
+	unsigned long long fortressAttackerRequests = 0; ///< OpenBFME (lane AI-4): requests made for a wall-balance fortress attacker (report)
+	std::shared_ptr<AIBuildRequest> attackerFactory; ///< OpenBFME (lane AI-4): the structure requested to train a wall-balance fortress attacker (one at a time)
+	unsigned long long attackerFactoryRequests = 0;   ///< report
 };
 
 // the economy builder (AIPlayer + 0xB4, its sub system at + 0xC0, vtable RW 0xC79574, ctor RW 0x8EF287, update RW 0x8EEF8F)
@@ -184,6 +187,11 @@ struct AIBuildState
 	std::uint32_t nextSerial = 1;       ///< port only: the next AIBuildRequest::serial
 	unsigned long long rebuilds = 0, requeuedForDozerDeath = 0; ///< lane AI-2: RW 0x90D16A restarts; RW 0x8F0C03 requests sent back after their dozer died
 	unsigned long long fortressRebuilds = 0; ///< lane BACKLOG6: fortress rebuild tasks made by RW 0x9BC882 (report)
+	// the money reserve (RotWK only, S-413): the player info record's economy stats + 0x14 (RW 0x99E738), kept here. The saver RW 0x8F0502 (every 2 seconds,
+	// AIPlayer + 0x158) moves money into it; requests with + 0x21 count it as spendable and draw their shortfall from it (RW 0x9ED82A / 0x9ED951 -> 0x99E79A)
+	std::uint32_t moneyReserve = 0;
+	unsigned nextSaveFrame = 0;         ///< AIPlayer + 0x158
+	unsigned long long reserveSaved = 0, reserveDrawn = 0; ///< report
 };
 
 namespace AIBaseBuilder

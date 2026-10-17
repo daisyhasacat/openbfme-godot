@@ -23,7 +23,7 @@
 // RW 0x780AD3 / 0x7812B2), the pause pass (RW 0x8A0669), the ready entry of currentEntry (RW 0x8A078A), the record's progress as the completion gate with the
 // hero countdown (RW 0x8A1F12), the object from the record (RW 0x78142F) and the revive hand-off (RW 0x8A2C98: RespawnUpdate::onRevived, the level cap,
 // countdown 4 * LOGICFRAMES_PER_SECOND, NO_COLLISIONS RW 0x6907D7), cancel by index (RW 0x8A047B / 0x8A03EC) and the record's cancel (RW 0x8A1460).
-// NOT PORTED (stop S-203): the experience tracker (XP to the producer, VeteranUnitsFromVeteranFactory), audio (speed bonus loop, voices), the EVA messages,
+// NOT PORTED (stop S-203): the experience tracker (XP to the producer, VeteranUnitsFromVeteranFactory), the speed bonus audio loop and queue-blocked EVA messages,
 // the attribute modifiers of the producer (the progress rate is 1.0f), the player upgrades applied to a new unit (RW 0x6936FE), the entry name /
 // script naming (RW +0x40), the horde-join of entry + 0x3C, the BuildFadeInOnCreateList extra objects' drawables, SecondaryQueue selection of the
 // dispatcher is ported but hero queues are not.

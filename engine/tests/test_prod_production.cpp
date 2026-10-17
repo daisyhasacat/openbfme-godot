@@ -4,6 +4,9 @@
 
 #include "doctest.h"
 #include "ProdTestUtil.h"
+#include "Common/Audio/AudioEntryPoints.h"
+#include "GameLogic/Object/Contain/HordeContainRuntime.h"
+#include "GameLogic/AI/AIWorld.h"
 
 #include "GameLogic/GameLogicDispatch.h"
 
@@ -786,4 +789,70 @@ TEST_CASE("timing train: callbacks run when each queue entry starts and retain t
 	f.frames(40);
 	CHECK(f.count("Soldier") == 2);
 	CHECK(calls == 2);
+}
+
+// Independent expectation: Open-BFME-2 ProductionUpdateQueue.cpp, PRODUCTION_UNIT:
+// 0x7DA for the first object, 0x7E2 for its container only after the last member exits.
+TEST_CASE("completion audio: a horde speaks created once and fully created after its last member exits")
+{
+	BarracksFx f;
+	AIWorldConfig config;
+	INIMacroTable macros;
+	AIWorld ai(*f.logic, config, macros);
+	ai.attach();
+	f.load("Object TestHorde\n BuildCost = 100\n BuildTime = 1\n KindOf = HORDE SELECTABLE\n"
+		" Behavior = HordeAIUpdate AI\n End\n"
+		" Behavior = HordeContain HC\n"
+		"  RankInfo = RankNumber:1 UnitType:Soldier Position:X:0 Y:0 Position:X:0 Y:20\n"
+		"  Slots = 2\n  InitialPayload = Soldier 2\n End\nEnd\n");
+	f.load("CommandButton BuildTestHorde\n Command = UNIT_BUILD\n Object = TestHorde\nEnd\n"
+		"CommandSet TestHordeSet\n 1 = BuildTestHorde\nEnd\n"
+		"ChildObject HordeBarracks Barracks\n CommandSet = TestHordeSet\nEnd\n");
+	f.barracks = f.make("HordeBarracks", f.teamOf("Alice"));
+	struct Event { int type; ObjectID object, producer; unsigned frame; };
+	std::vector<Event> events;
+	struct Registration {
+		~Registration() { AudioApi::uninstallUnitVoiceHandler(this); }
+	} registration;
+	AudioApi::installUnitVoiceHandler([&](int type, ObjectID object, ObjectID producer) {
+		events.push_back({type, object, producer, f.logic->getFrame()});
+		if (type == 0x7E2)
+		{
+			Object *horde = f.logic->findObjectByID(object);
+			REQUIRE(horde);
+			REQUIRE(horde->getContain());
+			CHECK(horde->getContain()->getContainedItemsList()->size() == 2);
+		}
+	}, &registration);
+	auto *pu = f.barracks->getProductionUpdate();
+	REQUIRE(pu->queueCreateUnit(f.w.get("TestHorde"), -1, pu->requestUniqueUnitID(), -1, false, {}, false));
+	for (int i = 0; i < 250 && pu->getProductionCount(); ++i) f.frames(1);
+	REQUIRE(pu->getProductionCount() == 0);
+	REQUIRE(events.size() == 2);
+	CHECK(events[0].type == 0x7DA);
+	CHECK(events[1].type == 0x7E2);
+	CHECK(events[0].object == events[1].object);
+	CHECK(events[0].producer == f.barracks->getID());
+	CHECK(events[1].producer == f.barracks->getID());
+	CHECK(events[1].frame > events[0].frame); // tolerance: horde readiness must follow creation; door delays determine the exact gap
+	f.frames(20);
+	CHECK(events.size() == 2);
+	f.logic->reset(); // destroy AI modules while their world is still alive
+}
+
+TEST_CASE("completion audio: a standalone unit speaks created once without a horde ready event")
+{
+	BarracksFx f;
+	std::vector<int> events;
+	struct Registration {
+		~Registration() { AudioApi::uninstallUnitVoiceHandler(this); }
+	} registration;
+	AudioApi::installUnitVoiceHandler([&](int type, ObjectID, ObjectID producer) {
+		CHECK(producer == f.barracks->getID());
+		events.push_back(type);
+	}, &registration);
+	auto *pu = f.barracks->getProductionUpdate();
+	REQUIRE(pu->queueCreateUnit(f.w.get("Soldier"), -1, pu->requestUniqueUnitID(), -1, false, {}, false));
+	f.frames(100);
+	CHECK(events == std::vector<int>{0x7DA});
 }

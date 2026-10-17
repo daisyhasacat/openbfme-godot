@@ -435,6 +435,7 @@ list(APPEND OPENBFME_SIM_SOURCES
     src/GameClient/MapPathfindObjects.cpp)
 # ---- register the manifest once (after every lane's block above) and write it for the audit ----
 list(REMOVE_DUPLICATES OPENBFME_SIM_SOURCES)
+list(APPEND OPENBFME_SIM_SOURCES src/GameLogic/ScriptEngine/BfmeLuaActions.cpp)
 target_sources(openbfme_core PRIVATE ${OPENBFME_SIM_SOURCES})
 target_sources(openbfme_core PRIVATE src/GameLogic/ScriptEngine/BfmeLuaRuntime.cpp) # console companion, outside automatic retail simulation
 target_sources(openbfme_core PRIVATE ${OPENBFME_SPELL_CLIENT_SOURCES}) # lane SPELL-2 (client sources, Spell.cmake)
@@ -738,6 +739,7 @@ add_executable(openbfme_tests
     tests/test_mapobj_retail.cpp
     # ---- LUA-1 (Lua scripting) ----
     tests/test_lua_runtime.cpp
+    tests/test_bfme_lua_network.cpp
     tests/test_bfme_lua.cpp
     tests/test_lua_events.cpp
     tests/test_lua_engine.cpp

@@ -6,6 +6,7 @@
 #include "GameLogic/AI/TurretAI.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 
+#include "Common/GameCommon.h"
 #include "Common/StateHash.h"
 #include "GameLogic/AI/AIMove.h"
 #include "GameLogic/AI/AIPathfind.h"
@@ -422,6 +423,8 @@ StateReturnType AIAttackApproachState::onEnter()
 	{
 		return STATE_SUCCESS; // already killed the victim
 	}
+	m_ownerPosition = *source.getPosition(); // BFME2 onEnter: + 0x58 and the wait cleared before any early return
+	m_waiting = false;
 	m_prevVictimPos = Coord3D{ 0.0f, 0.0f, 0.0f };
 	m_approachFrame = a.frame() >= kMinRecomputeFrames ? a.frame() - kMinRecomputeFrames : 0u;
 	ObjectWeapons *w = source.getWeapons();
@@ -444,8 +447,10 @@ StateReturnType AIAttackApproachState::onEnter()
 	// weapon reach, reserved, instead of a move to the victim's centre (the destination is not adjusted). A HORDE object attacks through its horde machine (the approach
 	// state 0xC9, computePath RW 0x74A594, S-590); a HORDE that reaches this generic approach keeps the move to the victim (RW 0x749A3E's branch distinctions and the
 	// melee machine 0xE1 / 0xE9 of RW 0x744B71 are not ported: S-784 / S-786)
+	// A position attack takes the attack path whatever the kind (BFME2 AIAttackApproachTargetState_computePath_Bfme.cpp, the goal position branch:
+	// requestAttackPath(INVALID_ID, goal)): a horde's bombard at a point inside its minimum range backs off to a cell in reach instead of walking onto it
 	static const int kHorde = ObjectTemplateInfoBuilder::kindOfIndex("HORDE");
-	if (source.isKindOf((unsigned)kHorde))
+	if (source.isKindOf((unsigned)kHorde) && victim)
 	{
 		m_move = std::make_unique<AIMoveToState>(a.mover(), goal, true);
 		return m_move->onEnter();
@@ -478,6 +483,10 @@ StateReturnType AIAttackApproachState::update()
 	{
 		return STATE_FAILURE;
 	}
+	if (m_waiting)
+	{
+		return a.frame() > m_waitFrame ? STATE_FAILURE : STATE_CONTINUE; // BFME2: the unreachable victim's wait runs out
+	}
 	const Coord3D goal = victim ? *victim->getPosition() : machine().goalPosition();
 	if (victim && a.frame() - m_approachFrame >= kMinRecomputeFrames)
 	{
@@ -492,7 +501,29 @@ StateReturnType AIAttackApproachState::update()
 	const StateReturnType code = m_move->update();
 	if (code != STATE_CONTINUE)
 	{
-		return STATE_SUCCESS; // always success: failure would leave the attack (the aim state re-checks the range)
+		// BFME2 updateInternal (Open-BFME-2 AIAttackApproachTargetStateOnEnter.cpp): the move ended out of range. Success (the aim / fire states re-check the range)
+		// when the victim or the owner moved more than 10 since the path / onEnter; else a victim CanApproachToTarget (RW 0x6FB754) refuses is waited on for
+		// 10 seconds and then given up (FAILURE leaves the attack: a team's attack-move goes on instead of standing at the cliff edge nearest the victim)
+		if (victim)
+		{
+			const Coord3D &self = *owner().getPosition();
+			const bool ownerMoved = CombatQueries::centerDistanceSquared2D(self, m_ownerPosition) > 100.0f;
+			const bool victimMoved = CombatQueries::centerDistanceSquared2D(*victim->getPosition(), m_prevVictimPos) > 100.0f;
+			if (!ownerMoved && !victimMoved)
+			{
+				const Weapon *w = owner().getWeapons() ? owner().getWeapons()->currentWeapon() : nullptr;
+				AIWorld *world = owner().logic().aiWorld();
+				if (w && w->getTemplate() && world &&
+					!world->pathfinder().canApproachToTarget(a.pathfindObject(), a.locomotorInfo(), *victim->getPosition(), w->getTemplate()->m_attackRange,
+						w->getTemplate()->m_meleeWeapon))
+				{
+					m_waiting = true;
+					m_waitFrame = a.frame() + 10u * (unsigned)LOGICFRAMES_PER_SECOND;
+					return STATE_CONTINUE;
+				}
+			}
+		}
+		return STATE_SUCCESS; // failure would leave the attack (the aim state re-checks the range)
 	}
 	return STATE_CONTINUE;
 }
@@ -515,6 +546,10 @@ void AIAttackApproachState::crc(StateHasher &h) const
 	h.addFloat(m_prevVictimPos.y);
 	h.addFloat(m_prevVictimPos.z);
 	h.addU32(m_approachFrame);
+	h.addFloat(m_ownerPosition.x);
+	h.addFloat(m_ownerPosition.y);
+	h.addBool(m_waiting);
+	h.addU32(m_waitFrame);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------

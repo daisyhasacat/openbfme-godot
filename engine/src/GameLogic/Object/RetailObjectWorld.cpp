@@ -567,9 +567,7 @@ RetailObjectWorld::MapIniResult RetailObjectWorld::applyMapIni(const std::string
 	{
 		reloadState(); // also for a game being loaded: it holds nothing of the world before its map.ini
 	}
-	// a game changes the world (its end reloads it); outside one, only a map.ini or solo.ini does: a map without either leaves the fresh load
-	// as it is, so the next map needs no reload (the skirmish map browser previews map after map with one world)
-	m_dirty = m_gameLive;
+	m_dirty = true;
 	m_gameMapApplied = m_gameLive;
 	const size_t defsBefore = m_s->m_things->definitions().size();
 	const size_t recordsBefore = m_s->m_recorder.records.size();
@@ -582,7 +580,6 @@ RetailObjectWorld::MapIniResult RetailObjectWorld::applyMapIni(const std::string
 			continue;
 		}
 		(file[0] == 'm' ? result.mapIniFound : result.soloIniFound) = true;
-		m_dirty = true;
 		INI ini(m_s->m_env);
 		try
 		{
