@@ -13,6 +13,7 @@ set(OPENBFME_FACTA_TESTS
     tests/test_hud_facta_sell.cpp
     tests/test_hud_facta_production.cpp
     tests/test_hud_facta_abilities.cpp
+    tests/test_ground_powers.cpp
     tests/test_hud_facta_stops.cpp
     tests/test_hud_facta_commands.cpp)
 

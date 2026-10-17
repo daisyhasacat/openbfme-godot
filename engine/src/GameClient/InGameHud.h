@@ -97,6 +97,7 @@ public:
 	void key(int keyCode, int keyState, char32_t character = 0); // lane INPUT-1: the layout's character (the command button hotkeys)
 	// true when the pointer is over the Palantir (a button of the movie, the radar or the frame): the world does not get that click
 	bool isOverGui(int x, int y);
+	bool commandSlotAt(int x, int y, bool &arc, int &slot); // the Palantir command button content under the window point: its arc flag and slot (tests)
 	// the radar picture's square in window pixels (the largest square inside the movie's RenderRadar clip, centred); false before the movie shows it
 	bool radarSquare(float out[4]);
 	// a click at a window pixel inside the radar square: the left button moves the view there, the right button orders the selection to that ground point (MSG_DO_MOVETO) when it is

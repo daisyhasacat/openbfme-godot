@@ -5,6 +5,9 @@
 #include "GameLogic/SkirmishAI/AIBaseBuilder.h"
 
 #include "Common/BuildAssistant.h"
+#include "Common/GameCommon.h"
+#include "GameClient/ControlBarCommands.h"
+#include "GameLogic/WallBalance.h"
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/StateHash.h"
@@ -517,7 +520,7 @@ namespace
 {
 const float kRushUnitPriority = 500.0f;   // RW 0xBDD97C (a phase 0 request's priority, RW 0x9A0F66 / 0x9A0D4F)
 const float kFortressClearRadiusSq = 122500.0f; // RW 0xC8A4B4 (350^2; lane BACKLOG6)
-const float kReservedCost = 1000.0f;      // RW 0xC88214 (cost >= it: the request draws on the money reserve, + 0x21; not ported, S-413)
+const float kReservedCost = 1000.0f;      // RW 0xC88214 (cost >= it: the request draws on the money reserve, + 0x21; lane AI-4)
 
 // RW 0x9A0705: the first factory of the unit (multimap order) that exists, is alive (object + 0x458 bit 0), has a production interface and, unless
 // `ignoreBusy`, is not disabled (slot 25) and has an empty queue (slot 17); one whose id is in `exclude` is skipped
@@ -664,6 +667,100 @@ bool hasFreeFactory(GameLogic &logic, const AISkirmishPlayer &ai, const std::str
 	return findFactory(logic, ai, unit, &claimed, false) != nullptr;
 }
 
+int requestsOf(const AIUnitBuilderState &u, const std::string &name);
+void startRequest(AIBuildState &s, const std::shared_ptr<AIBuildRequest> &req, bool front);
+
+// OpenBFME (not retail; lane AI-4): the structure one of the player's builders (KindOf DOZER) can construct whose own command set trains `unit` (its
+// template's CommandSet: a UNIT_BUILD button offering the unit, NeededUpgrade not tested), and that builder
+const ThingTemplate *factoryTemplateFor(GameLogic &logic, const Player &player, const ThingTemplate &unit, Object *&builderOut)
+{
+	if (!TheCommandStore)
+	{
+		return nullptr;
+	}
+	static const int dozer = KindOfTokens::indexOf("DOZER");
+	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+	{
+		if (o->getControllingPlayer() != &player || o->isEffectivelyDead() || dozer < 0 || !o->isKindOf((unsigned)dozer))
+		{
+			continue;
+		}
+		const CommandSet *builds = TheCommandStore->findCommandSet(o->getCommandSetName());
+		for (int i = 0; builds && i < CommandSet::MAX_BUTTONS; ++i)
+		{
+			const CommandButton *b = builds->getCommandButton(i);
+			const ThingTemplate *structure = b && (b->m_command == GUI_COMMAND_DOZER_CONSTRUCT || b->m_command == GUI_COMMAND_FOUNDATION_CONSTRUCT) ? b->getThingTemplate() : nullptr;
+			if (!structure)
+			{
+				continue;
+			}
+			const FieldValue *v = structure->getFinalOverride()->findField("CommandSet");
+			const std::string *setName = v ? std::get_if<std::string>(v) : nullptr;
+			const CommandSet *trains = setName ? TheCommandStore->findCommandSet(*setName) : nullptr;
+			for (int j = 0; trains && j < CommandSet::MAX_BUTTONS; ++j)
+			{
+				const CommandButton *t = trains->getCommandButton(j);
+				if (t && t->m_command == GUI_COMMAND_UNIT_BUILD && t->getThingTemplate() && BuildAssistant::isEquivalentTo(t->getThingTemplate(), &unit))
+				{
+					builderOut = o;
+					return structure->getFinalOverride();
+				}
+			}
+		}
+	}
+	return nullptr;
+}
+
+// OpenBFME (not retail; lane AI-4): the base layout holds no structure that trains a wall-balance fortress attacker; one is requested at the first legal site
+// on rings around the base (300 .. 1200, 16 directions), with the processor's own check options. One request is out at a time
+void requestAttackerFactory(GameLogic &logic, AISkirmishPlayer &ai, const Player &player, const std::vector<const ThingTemplate *> &attackers)
+{
+	AIUnitBuilderState &u = ai.build.units;
+	if (u.attackerFactory && !u.attackerFactory->finished())
+	{
+		return;
+	}
+	for (const ThingTemplate *unit : attackers)
+	{
+		Object *builder = nullptr;
+		const ThingTemplate *structure = factoryTemplateFor(logic, player, *unit, builder);
+		if (!structure || ownedCount(logic, player, structure->getName()) != 0)
+		{
+			continue;
+		}
+		const Coord3D base = ai.build.bases.empty() ? ai.build.startPosition : ai.build.bases.front().position;
+		const float baseAngle = ai.build.bases.empty() ? 0.0f : ai.build.bases.front().angle;
+		for (int ring = 3; ring <= 12; ++ring)
+		{
+			const float r = (float)ring * 100.0f;
+			for (int k = 0; k < 16; ++k)
+			{
+				double sn = 0.0, cs = 0.0;
+				SimMath::sinCosDet((double)k * (6.283185307179586 / 16.0), sn, cs);
+				Coord3D site{ SimMath::addf32(base.x, (float)(cs * r)), SimMath::addf32(base.y, (float)(sn * r)), 0.0f };
+				site.z = logic.getGroundHeight(site.x, site.y);
+				if (BuildPlacement::isLocationLegalToBuild(logic, site, *structure, baseAngle, kCheckLegalOptions, builder, const_cast<Player *>(&player)) != LBC_OK)
+				{
+					continue;
+				}
+				auto req = std::make_shared<AIBuildRequest>();
+				req->serial = ai.build.nextSerial++;
+				req->templateName = structure->getName();
+				req->basePosition = base;
+				req->offset = Coord3D{ SimMath::subf32(site.x, base.x), SimMath::subf32(site.y, base.y), site.z };
+				req->baseAngle = baseAngle;
+				req->angle = 0.0f;
+				req->priority = SimMath::mulf32(2.0f, ai.army->defaultUnitPriority);
+				req->reserveMoney = !((float)BuildAssistant::calcCostToBuild(*structure, &player, builder, -1) < kReservedCost);
+				startRequest(ai.build, req, false);
+				u.attackerFactory = req;
+				++u.attackerFactoryRequests;
+				return;
+			}
+		}
+	}
+}
+
 // RW 0x9A0BC0 + RW 0x9A0F66
 std::shared_ptr<AIBuildRequest> chooseUnit(GameLogic &logic, AISkirmishPlayer &ai, const Player &player)
 {
@@ -698,6 +795,38 @@ std::shared_ptr<AIBuildRequest> chooseUnit(GameLogic &logic, AISkirmishPlayer &a
 			pool.push_back(m.unit);
 		}
 	}
+	// OpenBFME (not retail; lane AI-4): under a wall-balance profile only units of one KindOf damage a fortress (WallBalance::attackerAllowed). Past the Rush
+	// phase an AI that owns and has requested none of its army's units of that kind trains one, so its attacks can end a game the retail picks never could
+	if (const char *kind = WallBalance::fortressAttackerKind(logic); kind && ai.build.phase >= 1)
+	{
+		const int bit = KindOfTokens::indexOf(kind);
+		std::vector<std::string> attackers;
+		std::vector<const ThingTemplate *> attackerTemplates;
+		bool have = false;
+		for (const ArmyMemberDefinition &m : ai.army->members)
+		{
+			const ThingTemplate *tt = logic.things().findTemplate(m.unit);
+			if (!tt || bit < 0 || !MaskTest(logic.templateInfo(tt->getFinalOverride()).kindOf, (unsigned)bit))
+			{
+				continue;
+			}
+			attackerTemplates.push_back(tt->getFinalOverride());
+			have = have || ownedCount(logic, player, m.unit) != 0 || requestsOf(u, m.unit) != 0;
+			if (hasFreeFactory(logic, ai, m.unit))
+			{
+				attackers.push_back(m.unit);
+			}
+		}
+		if (!have && !attackers.empty())
+		{
+			pool = attackers;
+			++u.fortressAttackerRequests;
+		}
+		else if (!have && attackers.empty())
+		{
+			requestAttackerFactory(logic, ai, player, attackerTemplates);
+		}
+	}
 	if (pool.empty())
 	{
 		return nullptr;
@@ -710,7 +839,12 @@ std::shared_ptr<AIBuildRequest> chooseUnit(GameLogic &logic, AISkirmishPlayer &a
 	req->templateName = pick;
 	req->commandPoints = tt ? BuildAssistant::commandPoints(*tt) : 0;
 	req->priority = ai.build.phase == 0 ? kRushUnitPriority : ai.army->defaultUnitPriority; // RW 0x9A0FC4 .. 0x9A0FD9
-	(void)kReservedCost;
+	// RW 0xC88214 (lane AI-4, S-413): a unit that costs 1000 or more draws on the money reserve (+ 0x21)
+	if (tt)
+	{
+		Object *factory = findFactory(logic, ai, pick, nullptr, true);
+		req->reserveMoney = !((float)BuildAssistant::calcCostToBuild(*tt->getFinalOverride(), &player, factory, -1) < kReservedCost);
+	}
 	return req;
 }
 
@@ -770,7 +904,7 @@ int heroIndexFor(GameLogic &logic, AISkirmishPlayer &ai, const Player &player)
 
 // RW 0x9A0993 (createBestHeroToBuild; BFME2 decomp attempt 0x0059858c.cpp, tier B edited: RotWK drops BFME2's queued-quantity term): the hero of
 // heroIndexFor, its factory (RW 0x9A0705, busy ones too); when it is neither owned nor requested and has a factory: its cost (+ 0x48, RW 0x73C25F with the
-// factory) and, when the player's money (the player info record's RW 0x99E766: money + its reserve adjustment, taken as 0: S-413) reaches it and its
+// factory) and, when the player's money (the player info record's RW 0x99E766: money + its reserve, lane AI-4) reaches it and its
 // CommandPoints are below the remaining command points (limit - used, RW 0x6A7F6A; signed), a unit request with priority -1.0 (RW 0xBD19DC), + 0x21 set,
 // its CommandPoints, the index recorded as built (+ 0x3C) and + 0x38 / + 0x48 reset; else (owned, requested or no factory) + 0x38 = -1. A request marks
 // a hero out (+ 0x34)
@@ -802,7 +936,9 @@ std::shared_ptr<AIBuildRequest> createBestHero(GameLogic &logic, AISkirmishPlaye
 		return nullptr;
 	}
 	u.heroCost = BuildAssistant::calcCostToBuild(*tt->getFinalOverride(), &player, factory, -1);
-	if (!((std::uint32_t)player.getMoney()->countMoney() >= (std::uint32_t)u.heroCost) || !fits)
+	// the player info record's money (RW 0x99E766): the player's money plus the reserve (S-413, lane AI-4)
+	const std::uint64_t spendable = (std::uint64_t)player.getMoney()->countMoney() + ai.build.moneyReserve;
+	if (!(spendable >= (std::uint64_t)(std::uint32_t)u.heroCost) || !fits)
 	{
 		return nullptr;
 	}
@@ -877,6 +1013,67 @@ void updateUnitBuilder(GameLogic &logic, AISkirmishPlayer &ai, const Player &pla
 	}
 }
 
+// the cost a request pays at `factory`: what canMakeUnit / queueCreateUnit charge (a hero of the player's hero list: its record's cost, RW 0x780AD3;
+// else calcCostToBuild, RW 0x73C25F)
+std::uint32_t requestCost(GameLogic &logic, const AIBuildRequest &req, const Object *factory)
+{
+	const ThingTemplate *tt = logic.things().findTemplate(req.templateName);
+	Player *owner = factory ? factory->getControllingPlayer() : nullptr;
+	if (!tt)
+	{
+		return 0u;
+	}
+	if (req.unit && owner && factory)
+	{
+		const int index = owner->heroes().findIndex(*tt, (std::uint32_t)-1, 0);
+		if (index != -1)
+		{
+			return (std::uint32_t)owner->heroes().costAt(logic, *owner, index, factory);
+		}
+	}
+	return (std::uint32_t)BuildAssistant::calcCostToBuild(*tt->getFinalOverride(), owner, factory, -1);
+}
+
+// RW 0x961975 (the processor's check, lane AI-4, S-413): a request with + 0x21 is checked with the reserve deposited into the player's money (Money::deposit
+// RW 0x7B18B8) and withdrawn again after it (RW 0x7B17EF), so the check's own cost rules decide
+template <class Check>
+int checkWithReserve(AISkirmishPlayer &ai, const AIBuildRequest &req, Player *payer, Check check)
+{
+	if (!req.reserveMoney || !payer || ai.build.moneyReserve == 0)
+	{
+		return check();
+	}
+	payer->getMoney()->deposit(ai.build.moneyReserve, nullptr, false);
+	const int code = check();
+	payer->getMoney()->withdraw(ai.build.moneyReserve, nullptr, false);
+	return code;
+}
+
+// RW 0x96190B (the processor's execute, lane AI-4, S-413): a + 0x21 request draws what the money lacks of its cost from the reserve (RW 0x99E79A)
+void drawReserve(GameLogic &logic, AISkirmishPlayer &ai, const AIBuildRequest &req, const Object *payer)
+{
+	Player *owner = payer ? payer->getControllingPlayer() : nullptr;
+	if (!req.reserveMoney || !owner || ai.build.moneyReserve == 0)
+	{
+		return;
+	}
+	const std::uint32_t cost = requestCost(logic, req, payer);
+	const std::uint32_t money = owner->getMoney()->countMoney();
+	if (money >= cost)
+	{
+		return;
+	}
+	// RW 0x96194B .. 0x961961: the shortfall is drawn only when the reserve holds all of it (RW 0x99E79A refuses more than it holds)
+	const std::uint32_t draw = cost - money;
+	if (draw > ai.build.moneyReserve)
+	{
+		return;
+	}
+	ai.build.moneyReserve -= draw;
+	owner->getMoney()->deposit(draw, nullptr, false);
+	ai.build.reserveDrawn += draw;
+}
+
 // RW 0x9EDBC6 (the check of a unit request)
 int checkUnitRequest(GameLogic &logic, const AIBuildRequest &req)
 {
@@ -920,6 +1117,43 @@ bool executeUnitRequest(GameLogic &logic, AIBuildRequest &req)
 	}
 	req.productionID = id;
 	return true;
+}
+
+// RW 0x8F0502 (RotWK only, lane AI-4, S-413): every 2 seconds (AIPlayer + 0x158), once the AI has more than 2 economy structures and its reserve is below
+// max(the unit builder's hero cost + 0x48, difficulty * 5000): PercentToSave of the phase / (3 - difficulty) of the money moves into the reserve (an amount above
+// 1); read in the disassembly (RW 0x8F0502 .. 0x8F05FD, 0x99E773): the difficulty is clamped to 2, the cap test is the reserve against the cap (-1: none), the
+// amount is the money (Player + 0x94, unsigned) times PercentToSave[phase] / (3 - difficulty) in x87, saved only above 1 and with more than 2 economy structures
+void updateMoneySaver(GameLogic &logic, AISkirmishPlayer &ai, Player &player)
+{
+	AIBuildState &s = ai.build;
+	const unsigned frame = logic.getFrame();
+	if (s.nextSaveFrame > frame)
+	{
+		return;
+	}
+	s.nextSaveFrame = frame + 2u * (unsigned)LOGICFRAMES_PER_SECOND;
+	if (!ai.army)
+	{
+		return;
+	}
+	// RW 0x8F053D .. 0x8F0557: the difficulty, 2 at most (Brutal saves as Hard)
+	const int difficulty = std::min(2, player.getSkirmishDifficulty() < 0 ? 0 : player.getSkirmishDifficulty());
+	const std::int64_t cap = std::max<std::int64_t>((std::int64_t)s.units.heroCost, (std::int64_t)difficulty * 5000);
+	if ((std::int64_t)s.moneyReserve >= cap)
+	{
+		return;
+	}
+	const int phase = s.phase < 0 ? 0 : (s.phase > 2 ? 2 : s.phase);
+	const float fraction = SimMath::divf32(ai.army->percentToSave[phase], (float)std::max(1, 3 - difficulty));
+	const float amount = SimMath::mulf32((float)player.getMoney()->countMoney(), fraction);
+	if (!(amount > 1.0f) || economyStructureCount(logic, player) <= 2)
+	{
+		return;
+	}
+	std::uint32_t move = SimMath::ftol2Low32((double)amount);
+	move = player.getMoney()->withdraw(move, nullptr, false); // RW 0x99E773: Money::withdraw (RW 0x7B17EF), the reserve + 0x14 += the amount
+	s.moneyReserve += move;
+	s.reserveSaved += move;
 }
 
 // ---- the economy builder (AIPlayer + 0xC0) ----------------------------------------------------------------------------------------------------------
@@ -1048,9 +1282,18 @@ std::shared_ptr<AIBuildRequest> chooseFarmSite(GameLogic &logic, const AISkirmis
 		}
 	}
 	const float radius = ai.store->data().defenseTreeNodeRadius; // manager + 0x984
+	const ThingTemplate *farmTemplate = ai.army && !ai.army->economyTemplate.empty() ? logic.things().findTemplate(ai.army->economyTemplate) : nullptr;
 	for (const auto &c : byDistance)
 	{
 		const Coord3D p = c.second->sitePosition(logic);
+		// OpenBFME (lane AI-4, INFERENCE): a marker the economy structure cannot stand on because something already stands there (two of Evendim's markers are
+		// 70 apart: a tree on one blocks the other) is passed over instead of sending a builder whose request then fails the overlap test (RW: code 10, the
+		// site skipped once, then requested again: 82 requests for 7 farms in a 20-minute game)
+		if (farmTemplate && BuildPlacement::isLocationLegalToBuild(logic, p, *farmTemplate->getFinalOverride(), c.second->siteAngle(), LLF_NO_OBJECT_OVERLAP, nullptr,
+			const_cast<Player *>(&player)) != LBC_OK)
+		{
+			continue;
+		}
 		if (fortress)
 		{
 			const float dx = SimMath::subf32(p.x, fortress->getPosition()->x), dy = SimMath::subf32(p.y, fortress->getPosition()->y),
@@ -1581,8 +1824,14 @@ void processRequests(GameLogic &logic, AISkirmishPlayer &ai, Player &player)
 			req->producer = pickDozer(logic, s, req->sitePosition(logic));
 		}
 		assigned = true;
-		const int code = req->unit ? checkUnitRequest(logic, *req) : checkRequest(logic, *req, player);
+		const int code = checkWithReserve(ai, *req, logic.players().getNthPlayer(ai.playerIndex), [&] {
+			return req->unit ? checkUnitRequest(logic, *req) : checkRequest(logic, *req, player);
+		}); // RW 0x961975
 		req->lastCheck = code;
+		if (code == 0)
+		{
+			drawReserve(logic, ai, *req, logic.findObjectByID(req->producer)); // RW 0x9ED951
+		}
 		if (code == 0 && req->unit)
 		{
 			if (executeUnitRequest(logic, *req)) // RW 0x96190B -> vslot 0x3C
@@ -1768,7 +2017,8 @@ void AIBaseBuilder::update(GameLogic &logic, AISkirmishPlayer &ai)
 	// RW 0x8F1104 .. 0x8F1130: finished requests leave the queue; RW 0x8F1138: the dozer manager
 	s.pending.erase(std::remove_if(s.pending.begin(), s.pending.end(), [](const std::shared_ptr<AIBuildRequest> &r) { return r->finished(); }), s.pending.end());
 	updateDozerManager(logic, ai, *player);
-	// RW 0x8F113F: the money saver (RW 0x8F0502, every 2 seconds: + 0x158 = frame + 2 * LOGICFRAMES_PER_SECOND) is not ported (S-413)
+	// RW 0x8F113F: the money saver (RW 0x8F0502, lane AI-4)
+	updateMoneySaver(logic, ai, *player);
 }
 
 // ---- the AIPlayer's object events (lane AI-2) -----------------------------------------------------------------------------------------------------------
@@ -1954,6 +2204,8 @@ void AIBaseBuilder::crc(const AIBuildState &s, StateHasher &h)
 	h.addFloat(s.phaseFraction);
 	h.addBool(s.ringHero);
 	h.addU32(s.nextSerial);
+	h.addU32(s.moneyReserve);
+	h.addU32(s.nextSaveFrame);
 	// the complete state of a request; the queues below hash the stable identities (serial) in queue order
 	auto request = [&h](const AIBuildRequest &r) { AIBaseBuilder::crcRequest(r, h); };
 	h.addU32((std::uint32_t)s.bases.size());

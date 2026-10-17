@@ -695,8 +695,9 @@ TEST_CASE("move retail: a skirmish map's own units and hordes obey a move messag
 		}
 		CHECK(a.hashes.front() != a.hashes.back());
 		// the hordes settle on their slots; a few end with a member 40-60 units ahead of its slot, which waits there (UseSlowHordeMovement: a member ahead of its
-		// slot waits for the formation, and a parked formation does not move on; stop S-222): 5 of 62 on this map
-		CHECK(a.hordesOffSlot * 10 <= a.hordes);
+		// slot waits for the formation, and a parked formation does not move on; stop S-222): 5 of 62 on this map; lane AI-4: 8 of 62 since computePath's
+		// closest-path fallback (RW 0x665C33): a member whose slot cell is not reachable stands on the nearest reachable cell instead of failing its move
+		CHECK(a.hordesOffSlot * 100 <= a.hordes * 15);
 		CHECK(a.worstHordeError < 80.0f);
 		if (!lobby)
 		{

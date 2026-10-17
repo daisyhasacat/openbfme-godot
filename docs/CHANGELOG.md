@@ -5,6 +5,18 @@ area). The release pages on [GitHub](https://github.com/Open-BFME/openbfme-godot
 the download table and the known issues of that build; this file keeps the history that used to sit in the README, and the first
 alpha builds' notes. The rules for writing the lines are in [RELEASE.md](RELEASE.md), "Notes".
 
+## Unreleased
+
+### Bug fixes
+
+**Units and heroes**
+- Nearby enemy acquisition now respects vision bonuses and computer unit moods.
+- Attack-move respects hold fire and pauses target acquisition while units use abilities.
+- Units can acquire large buildings when their edge is within sight.
+
+**AI**
+- Attack teams keep recruiting while waiting for units to be trained or become available, instead of stalling permanently.
+
 ## v0.4.0-alpha.4
 
 ### Added

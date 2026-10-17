@@ -836,6 +836,30 @@ TEST_CASE("shroud objects: GeometryOffset reads X, Y, Z in order with scanned va
 	CHECK(m[0].offsetZ == 3.0f);
 }
 
+TEST_CASE("shroud: the vision bonus rows a template leaves out take the ThingTemplate constructor's defaults (lane AI-4)")
+{
+	// Open-BFME-2 ThingTemplateConstructor.cpp: MaxVisionBonusPercent 0.5, MinVisionBonusPercent -0.5, VisionBonusTestRadius 100, VisionBonusTestSegments 8.
+	// Before, a template with only VisionBonusPercentPerFoot got 0 segments, so the ground reference was 0 and its whole height counted as elevation (a Gondor
+	// archer horde on Evendim's shore saw 1140 instead of 370)
+	Fx f;
+	std::string err = f.w.load("Object Watcher\n  KindOf = INFANTRY SELECTABLE\n  VisionRange = 370\n  VisionBonusPercentPerFoot = 1%\n  Geometry = CYLINDER\n"
+		"  GeometryMajorRadius = 5\nEnd\n");
+	REQUIRE_MESSAGE(err.empty(), err);
+	const ShroudManager::TemplateVision v = ShroudManager::templateVision(*f.w.get("Watcher")->getFinalOverride());
+	CHECK(v.bonusPerFoot == doctest::Approx(0.01f));
+	CHECK(v.maxBonus == 0.5f);
+	CHECK(v.minBonus == -0.5f);
+	CHECK(v.bonusTestRadius == 100.0f);
+	CHECK(v.bonusTestSegments == 8);
+	err = f.w.load("Object Watcher2\n  KindOf = INFANTRY SELECTABLE\n  VisionBonusPercentPerFoot = 1%\n  MaxVisionBonusPercent = 300%\n  VisionBonusTestRadius = 200\n"
+		"  VisionBonusTestSegments = 4\n  Geometry = CYLINDER\n  GeometryMajorRadius = 5\nEnd\n");
+	REQUIRE_MESSAGE(err.empty(), err);
+	const ShroudManager::TemplateVision w = ShroudManager::templateVision(*f.w.get("Watcher2")->getFinalOverride());
+	CHECK(w.maxBonus == doctest::Approx(3.0f)); // the rows a template gives are its own
+	CHECK(w.bonusTestRadius == 200.0f);
+	CHECK(w.bonusTestSegments == 4);
+}
+
 TEST_CASE("shroud objects: the template values are read at every use: an in-place INI overwrite of the range and a later bad geometry row are seen, whatever was read before")
 {
 	// the range: 100 (3 cells), then the same template overwritten to 500 (13 cells)

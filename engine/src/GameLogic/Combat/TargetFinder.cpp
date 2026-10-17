@@ -11,6 +11,8 @@
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
 
+#include <algorithm>
+
 namespace
 {
 const float kCell = 60.0f;
@@ -26,12 +28,14 @@ void TargetFinder::reset()
 	m_builtFrame = 0xFFFFFFFFu;
 	m_builtCount = 0;
 	m_count = 0;
+	m_maxRadius = 0.0f;
 }
 
 void TargetFinder::rebuild()
 {
 	m_cells.clear();
 	m_count = 0;
+	m_maxRadius = 0.0f;
 	for (Object *o = m_logic.getFirstObject(); o; o = o->getNextObject())
 	{
 		if (!CombatQueries::isAttackable(*o))
@@ -40,6 +44,7 @@ void TargetFinder::rebuild()
 		}
 		const Coord3D &p = *o->getPosition();
 		m_cells[{ cellOf(p.x), cellOf(p.y) }].push_back(o->getID());
+		m_maxRadius = std::max(m_maxRadius, CombatQueries::boundingCircleRadius(*o));
 		++m_count;
 	}
 	m_builtFrame = m_logic.getFrame();
@@ -97,9 +102,15 @@ Object *TargetFinder::findClosestEnemyNear(const Object &seeker, const Coord3D &
 	{
 		return nullptr;
 	}
-	// the widest object may be `maxRadius` away at its centre and still have its edge in range: the box adds a margin
+	// Range is measured to the target's edge (BFME2 AIClosestEnemySearch.cpp,
+	// partition distance mode 1). Build before reading the margin: a fortress or
+	// modded structure may be much larger than the old fixed 80-unit allowance.
+	if (m_builtFrame != m_logic.getFrame() || m_builtCount != m_logic.getObjectCount() || m_builtTransitions != m_logic.containWorldTransitions())
+	{
+		rebuild();
+	}
 	std::vector<Object *> near;
-	collectInRadius(center, SimMath::addf32(range, 80.0f), near);
+	collectInRadius(center, SimMath::addf32(range, m_maxRadius), near);
 	Object *best = nullptr;
 	float bestD = 0.0f;
 	for (Object *o : near)

@@ -27,4 +27,6 @@ struct WallBalance
  static int healthCategory(const Object &o);
  static int costCategory(const ThingTemplate &tt);
  static bool attackerAllowed(const Object &target, const Object &attacker);
+ // the KindOf an attacker needs to damage a fortress under this profile (nullptr when any attacker may)
+ static const char *fortressAttackerKind(const GameLogic &logic);
 };

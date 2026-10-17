@@ -2,6 +2,11 @@
 // the command list and the AI of a dead unit. Synthetic data (combattest::CombatWorld), no retail files.
 #include "doctest.h"
 #include "CombatTestUtil.h"
+#include "GameLogic/Combat/CombatNames.h"
+#include "GameLogic/AttributeModifiers.h"
+#include "GameLogic/Object/AttributeModifierPool.h"
+#include "GameLogic/SkirmishAI/SkirmishAIManager.h"
+#include "GameLogic/SkirmishAI/SkirmishAIData.h"
 
 using namespace combattest;
 
@@ -245,4 +250,130 @@ TEST_CASE("combat ai: two swordsmen ordered onto each other fight to the death o
 	CHECK(std::fmod(lost, 5.0f) == doctest::Approx(0.0f)); // whole 5s
 	w.frames(4);
 	CHECK(survivor->getAIUpdateInterface()->isIdle());
+}
+
+TEST_CASE("combat ai: idle and attack-move acquisition use runtime vision and computer mood")
+{
+	CombatWorld w;
+	Object *a = w.unit("Swordsman", 'A', 300, 300);
+	Object *enemy = w.unit("Dummy", 'B', 540, 300);
+	AIUpdateInterface *ai = a->getAIUpdateInterface();
+	w.playerOf('A')->setPlayerType(PLAYER_COMPUTER, true);
+	w.logic->settings().alertRangeModifier = 2.0f;
+	w.logic->settings().aggressiveRangeModifier = 3.0f;
+	CHECK(ai->nextMoodTarget() == nullptr);
+	CHECK(ai->attackMoveTarget() == nullptr);
+	ai->setAttitude(1);
+	CHECK(ai->nextMoodTarget() == enemy);
+	CHECK(ai->attackMoveTarget() == enemy);
+	ai->setAttitude(-2);
+	CHECK(ai->nextMoodTarget() == nullptr);
+	CHECK(ai->attackMoveTarget() == nullptr);
+	// Human control ignores AI attitude range scaling.
+	w.playerOf('A')->setPlayerType(PLAYER_HUMAN, true);
+	ai->setAttitude(2);
+	CHECK(ai->nextMoodTarget() == nullptr);
+}
+
+TEST_CASE("combat ai: attack-move respects hold fire and ability busy acquisition gates")
+{
+	CombatWorld w;
+	Object *a = w.unit("Swordsman", 'A', 300, 300);
+	Object *enemy = w.unit("Dummy", 'B', 380, 300);
+	AIUpdateInterface *ai = a->getAIUpdateInterface();
+	CHECK(ai->attackMoveTarget() == enemy);
+	for (const char *name : { "NO_AUTO_ACQUIRE", "SPECIAL_ABILITY_PACKING_UNPACKING_OR_USING", "IGNORE_AI_COMMAND" })
+	{
+		const unsigned status = (unsigned)CombatNames::status(name);
+		a->setStatus(status, true);
+		CHECK(ai->nextMoodTarget() == nullptr);
+		CHECK(ai->attackMoveTarget() == nullptr);
+		a->setStatus(status, false);
+		CHECK(ai->attackMoveTarget() == enemy);
+	}
+}
+
+TEST_CASE("skirmish ai: pending tactic teams survive production delays; destroyed handed-over teams end")
+{
+	CombatWorld w;
+	SkirmishAIStore store(w.w.keys);
+	ArmyDefinition army;
+	AISkirmishPlayer ai;
+	ai.playerIndex = w.playerIndex("Alice");
+	ai.store = &store;
+	ai.army = &army;
+	AITactic tactic;
+	tactic.kind = "SimpleAttack";
+	tactic.teams.emplace_back();
+	ai.brain.tactics.push_back(tactic);
+	for (int frame = 0; frame < 60; ++frame)
+	{
+		AITacticalAI::updateBrain(*w.logic, ai, &ai);
+		w.frames(1);
+	}
+	REQUIRE(ai.brain.tactics.size() == 1);
+	REQUIRE(ai.brain.tactics[0].teams.size() == 1);
+	CHECK(ai.brain.tactics[0].teams[0].wantsMembers);
+	CHECK_FALSE(ai.brain.tactics[0].started);
+	// Once a team was created and launched, losing its last member ends the tactic.
+	ai.brain.tactics[0].teams[0].handedOver = true;
+	ai.brain.tactics[0].teams[0].wantsMembers = false;
+	ai.brain.tactics[0].started = true;
+	AITacticalAI::updateBrain(*w.logic, ai, &ai);
+	CHECK(ai.brain.tactics[0].ended);
+}
+
+TEST_CASE("combat ai: acquisition includes large targets whose edge is in vision range")
+{
+	CombatWorld w("Object LargeTarget\n KindOf = STRUCTURE IMMOBILE\n Geometry = CYLINDER\n GeometryMajorRadius = 200\n GeometryHeight = 20\n Body = ActiveBody ModuleTag_Body\n MaxHealth = 1000\n End\nEnd\n");
+	Object *a = w.unit("Swordsman", 'A', 300, 300);
+	Object *target = w.unit("LargeTarget", 'B', 630, 300);
+	// Centre is outside vision + 80; its edge is only 130 away (vision 150).
+	CHECK(a->getAIUpdateInterface()->attackMoveTarget() == target);
+}
+
+TEST_CASE("combat ai: idle-only acquisition flags do not enable idle scanning without YES")
+{
+	// Give a copy of the swordsman a different acquisition flag through the INI parser.
+	std::string objects = kCombatObjects;
+	objects = objects.substr(objects.find("Object Swordsman"));
+	objects.resize(objects.find("Object Dummy"));
+	objects.replace(objects.find("Object Swordsman"), std::string("Object Swordsman").size(), "Object FlaggedSwordsman");
+	const auto flag = objects.find("AutoAcquireEnemiesWhenIdle = Yes");
+	REQUIRE(flag != std::string::npos);
+	objects.replace(flag, std::string("AutoAcquireEnemiesWhenIdle = Yes").size(), "AutoAcquireEnemiesWhenIdle = ATTACK_BUILDINGS");
+	CombatWorld w(objects.c_str());
+	Object *a = w.unit("FlaggedSwordsman", 'A', 300, 300);
+	Object *enemy = w.unit("Dummy", 'B', 380, 300);
+	CHECK(a->getAIUpdateInterface()->moodCheckInterval() == 0);
+	CHECK(a->getAIUpdateInterface()->nextMoodTarget() == nullptr);
+	// An explicit attack-move still fights even if idle acquisition is disabled.
+	CHECK(a->getAIUpdateInterface()->attackMoveTarget() == enemy);
+}
+
+TEST_CASE("combat ai: a runtime VISION buff expands nearby acquisition and removing it restores range")
+{
+	CombatWorld w;
+	AttributeModifierStore modifiers;
+	modifiers.registerBlock(w.w.fx.env.blocks);
+	AttributeModifierPool::registerClass(w.w.modules);
+	struct RestoreStore
+	{
+		AttributeModifierStore *saved = TheAttributeModifierStore;
+		~RestoreStore() { TheAttributeModifierStore = saved; }
+	} restore;
+	TheAttributeModifierStore = &modifiers;
+	REQUIRE(w.w.load("ModifierList FarSight\n Category = BUFF\n Duration = 0\n Modifier = VISION 100%\nEnd\n"
+		"ChildObject Scout Swordsman\n Behavior = AttributeModifierPoolUpdate ModuleTag_Pool\n End\nEnd\n").empty());
+	Object *scout = w.unit("Scout", 'A', 300, 300);
+	Object *enemy = w.unit("Dummy", 'B', 540, 300);
+	AIUpdateInterface *ai = scout->getAIUpdateInterface();
+	CHECK(ai->nextMoodTarget() == nullptr);
+	REQUIRE(scout->addAttributeModifier("FarSight", -1));
+	w.frames(1);
+	CHECK(ai->nextMoodTarget() == enemy);
+	CHECK(ai->attackMoveTarget() == enemy);
+	scout->removeAttributeModifier("FarSight");
+	CHECK(ai->nextMoodTarget() == nullptr);
+	CHECK(ai->attackMoveTarget() == nullptr);
 }
