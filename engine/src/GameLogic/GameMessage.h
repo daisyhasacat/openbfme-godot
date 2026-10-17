@@ -171,7 +171,8 @@ enum GameMessageType : int
 	MSG_ADD_TO_TEAM7 = 1145,
 	MSG_ADD_TO_TEAM8 = 1146,
 	MSG_ADD_TO_TEAM9 = 1147,
-	MSG_END_NETWORK_MESSAGES = 1148
+	MSG_END_NETWORK_MESSAGES = 1148,
+	MSG_OPENBFME_LUA_ACTION = 0x7000 // enhanced command; never a retail message number
 };
 
 // RW recorder readArgument order

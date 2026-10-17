@@ -4,6 +4,9 @@
 #include "GameLogic/GameLogic.h"
 
 #include "Common/Player.h"
+#include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/Object/ObjectGeometry.h"
+#include "GameLogic/SimMath.h"
 #include "Common/PlayerList.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/NotifyCrushModules.h"
@@ -37,6 +40,7 @@
 #include "GameLogic/System/InvisibilityManager.h"
 #include "GameLogic/System/DOTManager.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
+#include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 
 #include "GameLogic/Object/PartitionManager.h"
 #include "GameLogic/Module/AreaScanModules.h"
@@ -260,6 +264,7 @@ void GameLogic::linkObject(Object *obj)
 	}
 	m_objectTail = obj;
 	++m_objectCount;
+	if (obj->isKindOfName("STRUCTURE") && obj->isKindOfName("DOZER_FACTORY")) m_peaceFortresses.push_back(obj->getID());
 }
 
 void GameLogic::unlinkObject(Object *obj)
@@ -283,6 +288,7 @@ void GameLogic::unlinkObject(Object *obj)
 	}
 	obj->friend_setListLinks(nullptr, nullptr);
 	--m_objectCount;
+	m_peaceFortresses.erase(std::remove(m_peaceFortresses.begin(), m_peaceFortresses.end(), obj->getID()), m_peaceFortresses.end());
 }
 
 Object *GameLogic::findObjectByID(ObjectID id) const
@@ -1011,6 +1017,7 @@ std::uint32_t GameLogic::hashState(std::vector<StateHashSection> *sections, std:
 	auto section = [&](const std::string &name, std::function<void(StateHasher &)> feed) { pending.push_back(PendingSection{ name, std::move(feed) }); };
 	section("frame, object ids, RNG", [&](StateHasher &x) {
 		x.addU32(m_frame);
+		if (luaAuthorityPlayer() >= 0) { x.addU32(0x4c554141u); x.addI32(luaAuthorityPlayer()); x.addU64(m_luaActions->lastRequest); }
 		x.addBool(m_frameAdvance); // RW GameLogic + 0x44: when false the frame counter does not advance
 		x.addI32(m_gameDifficulty); // lane CAMP-1H: RW GameLogic + 0xA4
 		// lane RULES-1: the game rules and the Legendary Heroes factor, only when the game has them (a game without keeps its hash)
@@ -1020,6 +1027,10 @@ std::uint32_t GameLogic::hashState(std::vector<StateHashSection> *sections, std:
 			{
 				x.addI32(v);
 			}
+		}
+		if (m_peaceTimeMinutes != PeaceTime::kOff)
+		{
+			x.addI32(m_peaceTimeMinutes);
 		}
 		if (m_legendaryHeroes != LegendaryHeroes::kOff)
 		{
@@ -1411,3 +1422,81 @@ GameLogic::Report GameLogic::report() const
 	}
 	return r;
 }
+
+void GameLogic::setPeaceTimeMinutes(int minutes)
+{
+ if (!PeaceTime::valid(minutes)) throw std::invalid_argument("Peace time must be Off, 5, 10, 15 or 20 minutes");
+ m_peaceTimeMinutes = minutes;
+}
+
+// OpenBFME extension, independent of the retail terrain classification and simulation RNG.
+bool GameLogic::hasPeaceExclusion(const Object &unit) const
+{
+	if (!peaceTimeActive() || unit.isDestroyed() || unit.isEffectivelyDead() || !unit.getControllingPlayer() ||
+		unit.isKindOfName("STRUCTURE") || unit.isKindOfName("PROJECTILE")) return false;
+	for (ObjectID id : m_peaceFortresses)
+	{
+		const Object *fortress = findObjectByID(id);
+		if (fortress && !fortress->isDestroyed() && !fortress->isEffectivelyDead() && fortress->getControllingPlayer() &&
+			unit.getRelationship(*fortress) == ENEMIES) return true;
+	}
+	return false;
+}
+
+bool GameLogic::peaceExclusionAllows(const Object &unit, const Coord3D &position, bool swept, float clearance) const
+{
+	if (!hasPeaceExclusion(unit)) return true;
+	float footprint = 0.0f;
+	if (m_aiWorld)
+	{
+		footprint = m_aiWorld->movementInfo(*unit.getTemplate()).geometry.boundingCircleRadius();
+	}
+	else
+	{
+		PathfindGeometry geometry;
+		ObjectGeometry::fillPathfindGeometry(*unit.getTemplate(), geometry);
+		footprint = geometry.boundingCircleRadius();
+	}
+	const float radius = SimMath::addf32(SimMath::addf32(PeaceTime::kFortressExclusionRadius, footprint), clearance);
+	const float radiusSq = SimMath::mulf32(radius, radius);
+	for (ObjectID id : m_peaceFortresses)
+	{
+		const Object *fortress = findObjectByID(id);
+		if (!fortress || fortress->isDestroyed() || fortress->isEffectivelyDead() || !fortress->getControllingPlayer() ||
+			unit.getRelationship(*fortress) != ENEMIES) continue;
+		const Coord3D &center = *fortress->getPosition(), &from = *unit.getPosition();
+		const float ax = SimMath::subf32(from.x, center.x), ay = SimMath::subf32(from.y, center.y);
+		const float bx = SimMath::subf32(position.x, center.x), by = SimMath::subf32(position.y, center.y);
+		const float fromSq = SimMath::addf32(SimMath::mulf32(ax, ax), SimMath::mulf32(ay, ay));
+		const float toSq = SimMath::addf32(SimMath::mulf32(bx, bx), SimMath::mulf32(by, by));
+		// A newly built/captured fortress may cover a unit: permit escape, never deeper entry.
+		if (fromSq < radiusSq && unit.hasRecordedTransform())
+		{
+			if (toSq < fromSq) return false;
+			if (swept)
+			{
+				const float dx = SimMath::subf32(bx, ax), dy = SimMath::subf32(by, ay);
+				if (SimMath::addf32(SimMath::mulf32(ax, dx), SimMath::mulf32(ay, dy)) < 0.0f) return false;
+			}
+			continue;
+		}
+		if (toSq < radiusSq) return false;
+		if (!swept) continue;
+		const float dx = SimMath::subf32(bx, ax), dy = SimMath::subf32(by, ay);
+		const float lengthSq = SimMath::addf32(SimMath::mulf32(dx, dx), SimMath::mulf32(dy, dy));
+		if (!(lengthSq > 0.0f)) continue;
+		const float dot = SimMath::addf32(SimMath::mulf32(ax, dx), SimMath::mulf32(ay, dy));
+		const float t = SimMath::divf32(SimMath::subf32(0.0f, dot), lengthSq);
+		if (!(t > 0.0f && t < 1.0f)) continue;
+		const float x = SimMath::addf32(ax, SimMath::mulf32(t, dx)), y = SimMath::addf32(ay, SimMath::mulf32(t, dy));
+		if (SimMath::addf32(SimMath::mulf32(x, x), SimMath::mulf32(y, y)) < radiusSq) return false;
+	}
+	return true;
+}
+
+BfmeLuaActionState &GameLogic::luaActions()
+{
+	if (!m_luaActions) m_luaActions = std::make_unique<BfmeLuaActionState>();
+	return *m_luaActions;
+}
+int GameLogic::luaAuthorityPlayer() const { return m_luaActions ? m_luaActions->authorityPlayer : -1; }

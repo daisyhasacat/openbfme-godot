@@ -8,6 +8,7 @@
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include "GodotDevice/GodotGameWorld.h"
+#include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 #include "GodotDevice/LuaGDExtensionRegister.h"
 #include <godot_cpp/classes/config_file.hpp>
 
@@ -3915,6 +3916,37 @@ void GameWorld::ensureConsoleRuntime()
 		BfmeLuaRuntime::Host host;
 		host.snapshot = [this] { return bfme_snapshot(); };
 		host.apply = [this](const BfmeLuaRuntime::Mutation &mutation) { return bfme_apply(mutation); };
+		struct LuaSubmissions { std::uint64_t sequence = 0; std::map<unsigned long long, std::uint64_t> requests; };
+		auto submissions = std::make_shared<LuaSubmissions>();
+		host.submit = [this, submissions](unsigned long long ticket, const BfmeLuaRuntime::Mutation &mutation) {
+			if (BfmeLuaActions::presentationOnly(mutation)) return false;
+			if (m_replayPlayback) throw std::runtime_error("gameplay Lua writes are disabled during replay playback");
+			if (!bfme_network_game()) return false;
+			if (!m_game || !m_netSession || m_netSession->spectating() || m_netSession->rejoining())
+				throw std::runtime_error("synchronized Lua requires a live multiplayer session");
+			const auto *local = m_game->logic().players().getLocalPlayer();
+			if (!local || local->getPlayerIndex() != m_game->logic().luaAuthorityPlayer())
+				throw std::runtime_error("only the match host may submit gameplay Lua actions");
+			if (mutation.collection == "match" && mutation.field != ":construct" && mutation.field != ":clearNeutralDecorations")
+				throw std::runtime_error("this match control is not supported by synchronized Lua");
+			// A reconnecting host has a fresh VM but a caught-up simulation sequence.
+			const auto previous = std::max(submissions->sequence, m_game->logic().luaActions().lastRequest);
+			if (previous == UINT64_MAX) throw std::runtime_error("Lua action sequence exhausted");
+			const auto request = previous + 1;
+			m_game->commands().append(BfmeLuaActions::encode(local->getPlayerIndex(), request, mutation));
+			submissions->sequence = request;
+			submissions->requests[ticket] = request;
+			while (submissions->requests.size() > 256) submissions->requests.erase(submissions->requests.begin());
+			return true;
+		};
+		host.poll = [this, submissions](unsigned long long ticket) {
+			if (!m_game) return BfmeLuaRuntime::Host::Outcome{"match ended", 0};
+			const auto it = submissions->requests.find(ticket);
+			if (it == submissions->requests.end()) return BfmeLuaRuntime::Host::Outcome{"expired action result", 0};
+			const auto outcome = m_game->logic().luaActions().outcome(it->second);
+			if (outcome.status != "pending") submissions->requests.erase(it);
+			return BfmeLuaRuntime::Host::Outcome{outcome.status, outcome.object};
+		};
 		host.construct = [this](const auto &mutation) { return bfme_construct(mutation); };
 		host.constructionStatus = [this](unsigned id) { return bfme_construction_status(id); };
 		host.query = [this](const std::string &name, const std::vector<BfmeLuaRuntime::Value> &args) { return bfme_query(name, args); };

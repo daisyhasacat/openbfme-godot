@@ -192,7 +192,8 @@ export class LobbyObject {
     state.blockConcurrencyWhile(async () => {
       const games = await state.storage.list({ prefix: 'game:' });
       const relays = await state.storage.list({ prefix: 'relay-status:' });
-      this.lobby.load([...games.values()], [...relays.values()]);
+      const users = await state.storage.list({ prefix: 'user:' });
+      this.lobby.load([...games.values()], [...relays.values(), ...users.values()]);
     });
   }
   async fetch(request) {

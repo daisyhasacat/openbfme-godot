@@ -43,12 +43,16 @@ int WallBalance::costCategory(const ThingTemplate &tt) {
  return kind(tt,"WALL_SEGMENT") || kind(tt,"DEFENSIVE_WALL") || kind(tt,"WALL_GATE") ? 0 : -1;
 }
 bool WallBalance::attackerAllowed(const Object &target, const Object &attacker) {
+ const char *required = requiredAttackerKind(target);
+ return !required || attacker.isKindOfName(required);
+}
+const char *WallBalance::requiredAttackerKind(const Object &target) {
  const auto &r = target.logic().settings().wallBalance;
- if (!r.enabled) return true;
+ if (!r.enabled) return nullptr;
  const bool fortress = target.isKindOfName("COMMANDCENTER") && target.isKindOfName("STRUCTURE");
  const bool expansion = target.isKindOfName("STRUCTURE") && (target.isKindOfName("BASE_DEFENSE_FOUNDATION") || (target.isKindOfName("FS_BASE_DEFENSE") && target.getTemplate()->getName().find("Expansion") != std::string::npos));
  const int mode = fortress || expansion ? r.fortressDamage : wall(target) ? r.wallDamage : 0;
- return mode == 0 || attacker.isKindOfName(mode == 1 ? "CAN_ATTACK_WALLS" : "SIEGEENGINE");
+ return mode == 0 ? nullptr : mode == 1 ? "CAN_ATTACK_WALLS" : "SIEGEENGINE";
 }
 
 const char *WallBalance::fortressAttackerKind(const GameLogic &logic) {

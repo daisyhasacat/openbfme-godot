@@ -192,7 +192,7 @@ std::vector<std::uint8_t> NetByteReader::bytes()
 
 bool NetPacket::writeGameMessage(NetByteWriter &w, const GameMessage &m, std::string *error)
 {
-	if (m.getType() <= MSG_BEGIN_NETWORK_MESSAGES || m.getType() >= MSG_END_NETWORK_MESSAGES)
+	if (m.getType() != MSG_OPENBFME_LUA_ACTION && (m.getType() <= MSG_BEGIN_NETWORK_MESSAGES || m.getType() >= MSG_END_NETWORK_MESSAGES))
 	{
 		return failWith(error, "GameMessage type " + std::to_string(m.getType()) + " is not a logic message (1001 .. 1147)");
 	}
@@ -200,7 +200,7 @@ bool NetPacket::writeGameMessage(NetByteWriter &w, const GameMessage &m, std::st
 	{
 		return failWith(error, "GameMessage player index " + std::to_string(m.getPlayerIndex()) + " out of range");
 	}
-	if (m.getArgumentCount() > NetPacket::kMaxGameMessageArguments)
+	if ((m.getType() == MSG_OPENBFME_LUA_ACTION && m.getArgumentCount() > 4097) || m.getArgumentCount() > NetPacket::kMaxGameMessageArguments)
 	{
 		return failWith(error, "GameMessage with " + std::to_string(m.getArgumentCount()) + " arguments (at most " +
 			std::to_string(NetPacket::kMaxGameMessageArguments) + ")");
@@ -249,13 +249,13 @@ std::unique_ptr<GameMessage> NetPacket::readGameMessage(NetByteReader &r, std::s
 		return nullptr;
 	}
 	// every argument takes at least two bytes (its type and a boolean): a count the remaining bytes cannot hold is refused before anything is allocated
-	if (argc > NetPacket::kMaxGameMessageArguments || (size_t)argc * 2 > r.remaining())
+	if ((type == MSG_OPENBFME_LUA_ACTION && argc > 4097) || argc > NetPacket::kMaxGameMessageArguments || (size_t)argc * 2 > r.remaining())
 	{
 		failWith(error, "GameMessage argument count " + std::to_string(argc) + " (at most " + std::to_string(NetPacket::kMaxGameMessageArguments) +
 			", and the bytes left hold " + std::to_string(r.remaining() / 2) + ")");
 		return nullptr;
 	}
-	if (type <= MSG_BEGIN_NETWORK_MESSAGES || type >= MSG_END_NETWORK_MESSAGES)
+	if (type != MSG_OPENBFME_LUA_ACTION && (type <= MSG_BEGIN_NETWORK_MESSAGES || type >= MSG_END_NETWORK_MESSAGES))
 	{
 		failWith(error, "GameMessage type " + std::to_string(type) + " is not a logic message (1001 .. 1147)");
 		return nullptr;
@@ -344,10 +344,12 @@ void NetPacket::writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g)
 		w.i32(v);
 	}
 	w.i32(g.legendaryHeroes);
+	w.i32(g.peaceTimeMinutes);
+	w.i32(g.luaAuthoritySlot);
 	w.i32((std::int32_t)g.simulationProfile); // lane UBER-1: the simulation profile (Common/SimulationProfile.h)
 }
 
-bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error)
+bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool withPeaceTime, bool withLuaAuthority)
 {
 	for (SkirmishGameSlot &s : g.slots)
 	{
@@ -401,6 +403,8 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 		v = r.i32();
 	}
 	g.legendaryHeroes = r.i32();
+	g.peaceTimeMinutes = withPeaceTime ? r.i32() : PeaceTime::kOff;
+	g.luaAuthoritySlot = withLuaAuthority ? r.i32() : -1;
 	const std::int32_t profile = r.i32();
 	if (r.failed())
 	{
@@ -425,6 +429,8 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 	}
 	// lane RULES-1: the rules are retail ints (retail accepts any value); the Legendary Heroes factor is OpenBFME's and must be one it knows: a peer that
 	// sees another refuses the game options (a refused game, never a desync)
+	if (g.luaAuthoritySlot < -1 || g.luaAuthoritySlot >= MAX_SLOTS || (g.luaAuthoritySlot >= 0 && !g.slots[g.luaAuthoritySlot].isHuman())) return failWith(error, "invalid Lua authority slot");
+	if (!PeaceTime::valid(g.peaceTimeMinutes)) return failWith(error, "GameInfo invalid peace time");
 	if (!LegendaryHeroes::valid(g.legendaryHeroes))
 	{
 		return failWith(error, "GameInfo Legendary Heroes factor " + std::to_string(g.legendaryHeroes));
@@ -457,7 +463,7 @@ void NetPacket::writeNewGameMessage(NetByteWriter &w, const NewGameMessage &m)
 	writeGameInfo(w, m.game);
 }
 
-bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error)
+bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool withPeaceTime, bool withLuaAuthority)
 {
 	const std::uint8_t mode = r.u8();
 	if (mode > 1)
@@ -467,7 +473,7 @@ bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::str
 	m.mode = mode ? NewGameMode::Skirmish : NewGameMode::SinglePlayer;
 	m.difficulty = r.i32();
 	m.rankPoints = r.i32();
-	return readGameInfo(r, m.game, error);
+	return readGameInfo(r, m.game, error, withPeaceTime, withLuaAuthority);
 }
 
 std::vector<std::uint8_t> NetPacket::encodeCommand(const NetCommandMsg &c, std::string *error)

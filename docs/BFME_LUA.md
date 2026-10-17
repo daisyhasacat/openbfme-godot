@@ -148,7 +148,7 @@ end
 
 ### bfme.match
 
-`getStatus()` returns `{ready, generation, frame, paused, localPlayerId, networkGame, replay, playerCount, templateCount, unitCount, buildingCount, selectionCount}`.
+`getStatus()` returns `{ready, generation, frame, paused, localPlayerId, networkGame, replay, luaAuthority, peaceTimeActive, playerCount, templateCount, unitCount, buildingCount, selectionCount}`.
 `getFrame()` is the current logic frame and `getTimeMs()` a monotonic clock.
 
 `setGameSpeed(0..100)` sets the simulation speed multiplier: 0 stops time, 1 normal, 2 twice as fast, 100 one hundred times as fast.
@@ -225,7 +225,7 @@ checks it, including a path to it. Sites already ordered are reserved until thei
 refuses is avoided for two minutes, and the next think picks another. A foundation that stops progressing gets an idle
 builder sent to finish it. `luaai.stats` counts placed and refused constructions.
 It is off by default, so computer players use the native AI. Set `luaai.config.autoEnable = true` to take over every
-computer player at the start of each skirmish, except in network games and during replay playback, where the native AI plays and orders and the AI switch are refused.
+computer player at the start of each skirmish, on the host in multiplayer. Guests cannot submit gameplay changes; replay playback consumes recorded actions. During peace time the example continues economy and production and suppresses combat orders.
 `luaai.disableAll()` (or **Computers: native AI** in the console's Cheats tab) hands them back until the next match, and
 `luaai.enableAll()` takes them again.
 `luaai.status()` reports each player. It sees the whole map, ignoring the shroud.
@@ -289,9 +289,7 @@ Buildings also have `isEconomy`, `isFactory`, `radius` (how far its footprint re
 
 ### Limits
 
-Orders and the AI switch are local. They are refused in network games, where they would desync the other players.
-A replay of a game with a Lua-controlled player is not exact: its orders are recorded, but the AI switch and the script
-are not. Update callbacks run on wall-clock time, so a Lua AI is not deterministic.
+In multiplayer the host runs Lua callbacks and submits typed actions, including orders and the AI switch, into synchronized logic frames. Peers and replays execute those recorded actions without running the host script. Callbacks may use wall-clock time because only their committed actions affect simulation. Offline edits retain their local behavior and are not fully recorded.
 
 ## Construction
 
@@ -322,7 +320,7 @@ Layout scripts in `res://dev/building_record.lua` and `building_replay.lua` use
 pad coordinates and linked wall IDs. `building:giveUpgrade(name)` grants an object
 upgrade immediately through native upgrade modules (no research cost/time), and
 `building:linkWallPiece(other)` restores a wall neighborhood link. Both return
-mutation tickets. These are local scripting helpers, not network-safe orders.
+mutation tickets. In multiplayer these use the host-authoritative action channel.
 
 For an expansion, `player:construct` also accepts `position.plotId`: a living,
 owned foundation ID. This uses native plot construction and attachment bookkeeping,
@@ -347,9 +345,7 @@ point between simulation frames. It is not called if construction is cancelled o
 building is destroyed. Callback errors appear in the ticket status. A callback can enqueue
 more Lua actions; those apply at the next safe point. The existing 250 ms Lua execution
 budget applies to callbacks. Requests and callbacks are discarded on registry/match reset.
-They and the speed override are session-only: no save hooks or save format changes are
-introduced, and they are not replayed through command-log saves. Script reload retains
-already registered callbacks; a new match/load invalidates them.
+Callbacks are session-only and are not serialized. Multiplayer construction actions include their speed override in the command log; offline construction retains its local behavior. Script reload retains already registered callbacks; a new match/load invalidates them.
 
 ## Training units
 
@@ -384,12 +380,15 @@ their output appears in Log. Gold and CP additions respect their supported limit
 Reads use detached snapshots taken when a console chunk starts. Assignments and actions enqueue mutations; they do not update reads within that chunk.
 Mutations re-resolve engine IDs between simulation frames with the logic worker held. Missing objects and expired registries fail explicitly.
 Inspection and position tables are detached copies.
-Lua console use does not change save availability. Console edits are not included in command-log saves. Console execution and mutations are allowed in multiplayer, replay playback, replay recordings, and save catch-up.
-These console edits are local and are not added to the synchronized network stream or replay command log. A chunk that fails after queuing writes does not roll those writes back.
+Lua console use does not change save availability. In multiplayer only the host identified in START may change gameplay. The transport stamps each sender's player index and peers check it against this fixed authority. Guests may inspect snapshots and change local graphics. Replay playback rejects new gameplay writes.
+
+Host gameplay changes, orders, construction, production and AI control enter the lockstep stream and replay log as bounded typed actions. Tickets remain `pending` until their synchronized frame executes; construction callbacks wait for the committed building to complete. Peers never receive or execute arbitrary Lua source. Match pause and speed controls are currently refused in multiplayer. There is no Lua host migration. Older START records without authority metadata disable this channel.
+
+Offline edits retain their local behavior and are not fully included in command-log saves. A chunk that fails after queuing writes does not roll those writes back.
 
 This does **not** implement Second Age's complete API: selection edits and command UI,
 diplomacy/team edits, power catalogs/unlocks, durability edits, shared values/messages, JSON/dialogs,
-controller/camera routing, save sync, or multiplayer script synchronization.
+controller/camera routing, save sync, or shared script state/source synchronization.
 Second Age's flat helpers (`ExecuteAction`, `GetFrame`, global `setGameSpeed`) are not provided; use the handle methods and libraries above.
 `require` loads only `bfme` and `bfme.<library>`; IO, OS, debug and native module loading are not exposed.
 Console execution has a 250 ms Lua instruction-hook budget and a bounded output buffer; this is not a transactional script sandbox.

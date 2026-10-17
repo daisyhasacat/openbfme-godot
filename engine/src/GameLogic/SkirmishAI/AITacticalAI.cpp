@@ -2,6 +2,7 @@
 // See GameLogic/SkirmishAI/AITacticalAI.h for the RW facts, the inferences (S-418) and what is not ported (S-417).
 
 #include "GameLogic/SkirmishAI/AITacticalAI.h"
+#include "GameLogic/SkirmishAI/AIFortification.h"
 
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
@@ -634,6 +635,7 @@ bool offensiveAllowed(GameLogic &logic, const AISkirmishPlayer &ai, const Player
 
 bool inAnyTeamOf(const AIBrainState &b, ObjectID id)
 {
+	if (b.siegeUnits.count(id)) return true;
 	for (const AITactic &tac : b.tactics)
 	{
 		for (const AITacticTeam &team : tac.teams)
@@ -670,6 +672,8 @@ constexpr float kFlankMinDistanceSq = 2000000.0f; // RW 0xC89630
 // an EASY AI in the Rush phase refuses a living DOZER_FACTORY target
 bool commonApplies(GameLogic &logic, const AISkirmishPlayer &ai, const AIBrainState &b, const AITarget &t, const Player &player, bool siegeTactic)
 {
+	// Enhanced fortification response owns immune targets; ordinary squads keep other jobs.
+	if (t.object != INVALID_ID && t.object == b.fortificationTarget) return false;
 	const Kinds &k = kinds();
 	bool reachable = false;
 	const Object *last = nullptr;
@@ -2368,6 +2372,8 @@ void dispatchIdleUnits(GameLogic &logic, AISkirmishPlayer &ai, const std::vector
 
 void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 {
+	// OpenBFME peace rule: keep AIBaseBuilder (expansion, units and economy) running, hold combat teams.
+	if (logic.peaceTimeActive()) return;
 	AIBrainState &b = ai.brain;
 	const Player *player = playerOf(logic, ai.playerIndex);
 	if (!player || ai.store->data().disableTeamBuilding)
@@ -2375,6 +2381,7 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 		return;
 	}
 	const std::vector<ObjectID> army = recordOf(logic, ai.playerIndex).army(); // the record + 0 -> + 4 (a copy: the loops below give orders)
+	if (!ai.store->data().disableTacticalAI) AIFortification::update(logic, ai);
 	const Kinds &k = kinds();
 	static const std::vector<int> supportHorde = { k.support, kindBit("HORDE") };
 	for (AITactic &tac : b.tactics)
@@ -2460,6 +2467,8 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 
 void AITacticalAI::updateBrain(GameLogic &logic, AISkirmishPlayer &ai, AISkirmishPlayer *first)
 {
+	// OpenBFME peace rule: keep AIBaseBuilder (expansion, units and economy) running, hold combat teams.
+	if (logic.peaceTimeActive()) return;
 	AIBrainState &b = ai.brain;
 	Player *player = playerOf(logic, ai.playerIndex);
 	if (!player || !ai.army || !ai.store || ai.store->data().disableTacticalAI)
@@ -2558,6 +2567,13 @@ void AITacticalAI::makeGenerator(GameLogic &logic, AISkirmishPlayer &ai)
 
 void AITacticalAI::crc(const AIBrainState &b, StateHasher &h)
 {
+	if (b.fortificationTarget != INVALID_ID || !b.siegeUnits.empty())
+	{
+		h.addU32(0x53494547u); // "SIEG": extension state only when used
+		h.addU32(b.fortificationTarget);
+		h.addU32((std::uint32_t)b.siegeUnits.size());
+		for (ObjectID id : b.siegeUnits) h.addU32(id);
+	}
 	h.addU32(0x41494252u); // "AIBR"
 	h.addBool(b.chooser);
 	h.addBool(b.chooserInitialised);

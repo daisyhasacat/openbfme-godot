@@ -78,7 +78,7 @@ std::vector<std::string> FXEventLog::stops()
 		"[S-681] damage FX: ActiveBody::doDamageFX (RW 0x8C2F02) plays the armour set's DamageFX; the per damage type ObjectCreationLists of the loop after it "
 		"(body + 0xE0, RW 0x5F0126) are not created (no OCL store); the throttle fields (+0x38 / +0x3C) are not in the state hash",
 		"[S-683] effects not played: the FXEvent entries of MODEL CONDITION states and the FXEvents routed to the timed particle list (FXList byte +8, "
-		"the second loop of RW 0x4BCE68; the animation state entries play since FX-2), the research sound of a finished upgrade (S-486), "
+		"the second loop of RW 0x4BCE68; the animation state entries play since FX-2), "
 		"LevelUpFX (no experience logic merged), the OCLs of death / collapse phases, the FXList LOD / cull settings of the options",
 		"[S-685] slow death phases: RW 0x8609A8 is ported for the draws (the FX and Sound picks are client draws made by the player, the OCL and Weapon picks "
 		"logic draws, all behind the resolved-entry mask +0x18C); the mask's OCL and Weapon bits are taken from the names (inference), the picked OCL is created "

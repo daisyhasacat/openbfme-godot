@@ -367,7 +367,7 @@ std::string slotChoices(int faction, int color, int startPos, int team)
 std::string setupFields(const SkirmishGameInfo &s)
 {
 	std::string out = "\"map\":" + OnlineLobbyClient::jsonQuote(s.mapName) + ",\"startingCash\":" + std::to_string(s.startingCash) +
-		",\"superweaponRestriction\":" + std::to_string(s.superweaponRestriction) + ",\"legendaryHeroes\":" + std::to_string(s.legendaryHeroes) + ",\"rules\":";
+		",\"superweaponRestriction\":" + std::to_string(s.superweaponRestriction) + ",\"legendaryHeroes\":" + std::to_string(s.legendaryHeroes) + ",\"peaceTimeMinutes\":" + std::to_string(s.peaceTimeMinutes) + ",\"rules\":";
 	if (MpGameRules::isNone(s.rules))
 	{
 		out += "null";
@@ -669,6 +669,10 @@ bool OnlineLobbyClient::readGameView(const JsonValue &g, std::string *error, boo
 	info.startingCash = (int)cash;
 	info.superweaponRestriction = (int)sw;
 	info.legendaryHeroes = (int)lh;
+	long long peace = 0;
+	if (const JsonValue *value = setup->get("peaceTimeMinutes"))
+		if (!intOf(value, 0, 20, peace) || !PeaceTime::valid((int)peace)) return fail("invalid peaceTimeMinutes");
+	info.peaceTimeMinutes = (int)peace;
 	const JsonValue *rules = setup->get("rules");
 	info.rules = MpGameRules::none();
 	if (rules && rules->type != JsonValue::NUL)

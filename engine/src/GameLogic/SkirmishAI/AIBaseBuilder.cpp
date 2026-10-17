@@ -3,6 +3,7 @@
 // The skirmish AI's base builder and build request queue (lane AI-1, step 2). See AIBaseBuilder.h for the binary facts; each function cites the RW function it ports.
 
 #include "GameLogic/SkirmishAI/AIBaseBuilder.h"
+#include "GameLogic/SkirmishAI/AIFortification.h"
 
 #include "Common/BuildAssistant.h"
 #include "Common/GameCommon.h"
@@ -331,7 +332,8 @@ void updateSlot(GameLogic &logic, AISkirmishPlayer &ai, AIBaseSlot &slot, int di
 	{
 		for (auto &e : slot.entries) // RW 0x9EFC29
 		{
-			if (e->state == 0)
+			// An enhanced siege response can bring a factory forward before this slot starts.
+			if (e->state == 0 && std::find(s.pending.begin(), s.pending.end(), e) == s.pending.end())
 			{
 				startRequest(s, e, false);
 			}
@@ -958,6 +960,57 @@ std::shared_ptr<AIBuildRequest> createBestHero(GameLogic &logic, AISkirmishPlaye
 }
 
 // RW 0x9A1196 (AIUnitBuilder update; the living world part RW 0x9A0426 is skipped in a skirmish)
+// OpenBFME extension: reserve two useful breach units before composition-based recruiting.
+// Their requests still pass the normal money, prerequisite, queue and command-point checks.
+std::shared_ptr<AIBuildRequest> chooseBreachUnit(GameLogic &logic, AISkirmishPlayer &ai, const Player &player)
+{
+	if (ai.store->data().disableTacticalAI) return nullptr;
+	Object *target = AIFortification::findTarget(logic, ai);
+	if (!target) return nullptr;
+	int count = 0;
+	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+		if (o->getControllingPlayer() == &player && !o->isDestroyed() && !o->isEffectivelyDead() &&
+			!o->isKindOfName("STRUCTURE") && AIFortification::canBreach(*o, *target)) ++count;
+	for (const auto &r : ai.build.units.requests)
+	{
+		const ThingTemplate *tt = logic.things().findTemplate(r->templateName);
+		if (!r->finished() && tt && AIFortification::canBreach(logic, *tt->getFinalOverride(), *target, &player)) ++count;
+	}
+	if (count >= 2) return nullptr;
+	for (const ArmyMemberDefinition &m : ai.army->members)
+	{
+		const ThingTemplate *tt = logic.things().findTemplate(m.unit);
+		if (!tt || !AIFortification::canBreach(logic, *tt->getFinalOverride(), *target, &player) || !hasFreeFactory(logic, ai, m.unit)) continue;
+		Object *factory = findFactory(logic, ai, m.unit, nullptr, false);
+		const CanMakeType code = BuildAssistant::canMakeUnit(*factory, tt->getFinalOverride(), -1);
+		if (code != CANMAKE_OK && code != CANMAKE_NO_MONEY) continue;
+		auto req = std::make_shared<AIBuildRequest>();
+		req->serial = ai.build.nextSerial++;
+		req->unit = true;
+		req->templateName = m.unit;
+		req->commandPoints = BuildAssistant::commandPoints(*tt);
+		req->priority = 1000.0f;
+		return req;
+	}
+	// Bring forward an appropriate production building from the faction's base layout,
+	// retaining its legal site and dozer workflow, even if its usual phase has not begun.
+	if (!ai.build.baseBuilderDisabled)
+		for (auto &base : ai.build.bases)
+			for (auto &slot : base.slots)
+				for (const auto &r : slot.entries)
+				{
+					const ThingTemplate *tt = logic.things().findTemplate(r->templateName);
+					if (!tt || !AIFortification::factoryCanBreach(logic, *tt->getFinalOverride(), *target, &player)) continue;
+					if (r->state == 0)
+					{
+						r->priority = std::max(r->priority, 1000.0f);
+						if (std::find(ai.build.pending.begin(), ai.build.pending.end(), r) == ai.build.pending.end()) startRequest(ai.build, r, false);
+					}
+					return nullptr;
+				}
+	return nullptr;
+}
+
 void updateUnitBuilder(GameLogic &logic, AISkirmishPlayer &ai, const Player &player)
 {
 	AIUnitBuilderState &u = ai.build.units;
@@ -1000,7 +1053,8 @@ void updateUnitBuilder(GameLogic &logic, AISkirmishPlayer &ai, const Player &pla
 		}
 	}
 	// RW 0x9A1051: one new request per frame: a hero (RW 0x9A03A1 -> 0x9A0993, lane DECOMP-2), else a unit (RW 0x9A0F66)
-	std::shared_ptr<AIBuildRequest> req = shouldBuildHero(logic, ai, player) ? createBestHero(logic, ai, player) : nullptr;
+	std::shared_ptr<AIBuildRequest> req = chooseBreachUnit(logic, ai, player);
+	if (!req) req = shouldBuildHero(logic, ai, player) ? createBestHero(logic, ai, player) : nullptr;
 	if (!req)
 	{
 		req = chooseUnit(logic, ai, player);

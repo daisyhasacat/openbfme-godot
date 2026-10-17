@@ -1,13 +1,13 @@
 -- Lua skirmish AI (lane LUAAI-1): plays a computer player through the bfme API instead of the native skirmish AI.
 -- Off by default: computer players keep the native AI. Set luaai.config.autoEnable = true to opt in each match
--- (not in network games or replays, where the native AI keeps playing). By hand:
+-- (only on the host in network games; disabled during replay playback). By hand:
 --   luaai.enableAll()          every computer player
 --   luaai.enable(player)       one (a Player handle or id); luaai.disable(player) / luaai.disableAll() hand it back
 --                              (until the next match; set luaai.config.autoEnable = false to keep the native AI)
 --   luaai.status()             one line per controlled player
 -- The native AI keeps its state while switched off and resumes from it. Only the functions in docs/BFME_LUA.md are used,
 -- so this file is also the worked example of a Lua AI. It sees the whole map (no shroud), like a cheating AI.
--- Local only: orders and the AI switch are refused in network games.
+-- Multiplayer: the host runs Lua; gameplay actions are synchronized to all peers.
 
 luaai = luaai or { players = {} }
 luaai.stats = luaai.stats or { placed = 0, refused = 0 } -- constructions the engine started / refused (every match)
@@ -375,6 +375,7 @@ end
 -- ---- army ---------------------------------------------------------------------------------------------------------
 
 local function command(p, state, c, base)
+    if bfme.match.getStatus().peaceTimeActive then return end
     local enemyBuildings, enemyUnits = enemyObjects(p)
     -- defend: an enemy near the base draws every idle unit (and the attack, when it is small)
     local intruder, distance = nearest(enemyUnits, base)
@@ -468,7 +469,7 @@ function luaai.thinkAll()
     if cfg.autoEnable and luaai.autoGeneration ~= status.generation then
         luaai.autoGeneration = status.generation
         luaai.players = {}
-        if not status.networkGame and not status.replay then luaai.enableAll() end
+        if (not status.networkGame or status.luaAuthority) and not status.replay then luaai.enableAll() end
     end
     for id, state in pairs(luaai.players) do
         -- a new match (or a loaded save) has other players behind the same ids: enable them again there

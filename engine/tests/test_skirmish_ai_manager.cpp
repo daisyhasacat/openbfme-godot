@@ -451,3 +451,24 @@ TEST_CASE("skirmish ai manager: two runs of the same AI skirmish agree on every 
 	CHECK(a.hashes == b.hashes);
 	CHECK(a.hashes.size() == 16);
 }
+
+TEST_CASE("peace time: the AI economy and production update while its tactical brain waits until expiry")
+{
+ AIFixture fx({ {"H", "FactionA", true, 0, 0, 0}, {"C", "FactionA", false, 1, 0, 1} });
+ fx.logic->setPeaceTimeMinutes(5);
+ auto &manager = fx.logic->skirmishAI();
+ REQUIRE(manager.newGame(true) == 1);
+ const auto *ai = manager.findAI(fx.indexOf("C"));
+ REQUIRE(ai);
+ CHECK_FALSE(ai->brain.chooserInitialised);
+ while (fx.logic->getFrame() != 1499) fx.logic->runLogicFrame();
+ CHECK(manager.counters().aiPlayerUpdates == 1490);
+ CHECK(ai->build.baseBuilderInitialised);
+ CHECK_FALSE(ai->brain.chooserInitialised);
+ CHECK(ai->brain.tactics.empty());
+ CHECK(ai->brain.attacksLaunched == 0);
+ CHECK(ai->brain.idleDispatches == 0);
+ fx.logic->runLogicFrame();
+ CHECK(manager.counters().aiPlayerUpdates == 1491);
+ CHECK(ai->brain.chooserInitialised);
+}

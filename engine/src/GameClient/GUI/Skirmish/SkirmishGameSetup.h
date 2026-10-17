@@ -120,6 +120,7 @@ public:
 	void resetRules();
 	// OpenBFME's Legendary Heroes factor (1 off .. 4); false for a factor the rule does not offer
 	bool setLegendaryHeroes(int factor);
+	bool setPeaceTimeMinutes(int minutes);
 	// lane UBER-1: the simulation profile of the games this setup starts (the player's OpenBFME option; kept through init / reset)
 	void setSimulationProfile(SimulationProfile profile)
 	{
@@ -128,6 +129,7 @@ public:
 	}
 	// the Legendary Heroes combo's entries: Off, 2x, 3x, 4x (item data = the factor; Off carries the " *" default mark like a retail row)
 	std::vector<SkirmishComboEntry> legendaryHeroesEntries() const;
+	std::vector<SkirmishComboEntry> peaceTimeEntries() const;
 
 	// ---- lane MP-2: the LAN game setup (AptLanLobby) ----
 	// a network game: the local player is `localSlot` and every human slot is a player (its combo shows the name, never the slot states)

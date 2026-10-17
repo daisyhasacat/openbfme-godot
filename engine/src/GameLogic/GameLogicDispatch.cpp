@@ -2,6 +2,7 @@
 // See GameLogic/GameLogicDispatch.h.
 
 #include "GameLogic/GameLogicDispatch.h"
+#include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
@@ -45,6 +46,7 @@ bool GameLogicDispatch::executedHere(int type)
 		case MSG_QUEUE_UNIT_CREATE:
 		case MSG_CANCEL_UNIT_CREATE:
 		case MSG_SET_RALLY_POINT:
+		case MSG_OPENBFME_LUA_ACTION:
 			return true;
 		default:
 			return false;
@@ -166,6 +168,12 @@ void GameLogicDispatch::dispatch(const GameMessage &m)
 {
 	switch (m.getType())
 	{
+		case MSG_OPENBFME_LUA_ACTION:
+		{
+			const auto reason = BfmeLuaActions::dispatch(m_logic, *this, m);
+			if (!reason.empty()) error(m, reason);
+			break;
+		}
 		case MSG_CREATE_SELECTED_GROUP:
 		case MSG_CREATE_SELECTED_GROUP_NO_SOUND:
 		case MSG_CREATE_SELECTED_GROUP_IDLE_WORKER_VOICE:

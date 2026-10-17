@@ -66,6 +66,7 @@ public:
 	bool setLobbyStartPosition(int slot, int position);
 	bool setBrowserRule(int rule, int value);
 	bool setBrowserLegendary(int value);
+	bool setBrowserPeaceTime(int value);
 	SkirmishProfileStore &profiles() { return *m_profiles; }
 	// lane UI-6: the kept game (SkirmishGameRecord.h): what the lobby restored at its start ("" when it began from the defaults), and the stop of a kept
 	// game it could not use
@@ -129,6 +130,7 @@ public:
 	// the gadget that shows a rule (AptMpGameRules + 0x7C), and OpenBFME's Legendary Heroes combo
 	GameWindow *ruleWindow(int rule) const { return (unsigned)rule < (unsigned)NUM_GAME_RULES ? m_ruleWindows[(size_t)rule] : nullptr; }
 	GameWindow *legendaryHeroesWindow() const { return m_legendaryCombo; }
+	GameWindow *peaceTimeWindow() const { return m_peaceCombo; }
 	bool rulesPopulated() const { return m_rulesPopulated; }
 	// the rule warning boxes shown (title, text), for tests
 	const std::vector<std::pair<std::u16string, std::u16string>> &ruleWarnings() const { return m_ruleWarnings; }
@@ -256,11 +258,12 @@ private:
 	void enableRuleGadgets();                                         ///< RW 0x57E97A's RotWK twin: enabled = host and shown
 	void updateRuleGadget(int rule);                                  ///< RW 0x986624
 	void updateLegendaryGadget();
+	void updatePeaceGadget();
 	bool onRuleGadget(GameWindow *gadget);                            ///< RW 0x986776: true when `gadget` is a rule gadget
 	void ruleChanged(int kind, bool reset);                           ///< RW 0x8421E0
 	void resetRules();                                                ///< AptMpGameRules::Reset RW 0x98674C
 	void pruneRuleGadgets(const std::set<const GameWindow *> &alive);
-	int ruleComboCount() const;                                       ///< MpGameRules::NumComboBoxes: the mode's rows, + 1 for Legendary Heroes in mode 0
+	int ruleComboCount() const;                                       ///< MpGameRules::NumComboBoxes: the mode's rows, + 2 for Legendary Heroes and Peace Time in mode 0
 	bool amIHost() const { return m_hostMode; }
 	// lane FB7-1: a click on a start spot of the map window (RW 0x845830, messages 0x4008 / 0x4009 = GBM_SELECTED / GBM_SELECTED_RIGHT); true when
 	// `button` is one of the spots
@@ -362,6 +365,7 @@ private:
 	std::array<GameWindow *, NUM_GAME_RULES> m_ruleWindows{};
 	std::array<int, NUM_GAME_RULES> m_ruleStates{};
 	GameWindow *m_legendaryCombo = nullptr;
+	GameWindow *m_peaceCombo = nullptr;
 	bool m_ruleInput = true;
 	bool m_rulesPopulated = false;
 	std::unique_ptr<AptMessageBox> m_ruleBox;

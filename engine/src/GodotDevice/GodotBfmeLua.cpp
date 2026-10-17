@@ -110,6 +110,9 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 	}
 	auto &logic = m_game->logic();
 	out.frame = logic.getFrame();
+	out.peaceTimeActive = logic.peaceTimeActive();
+	const auto *localAuthority = logic.players().getLocalPlayer();
+	out.luaAuthority = localAuthority && logic.luaAuthorityPlayer() >= 0 && localAuthority->getPlayerIndex() == logic.luaAuthorityPlayer();
 	auto &players = logic.players();
 	if (auto p = players.getLocalPlayer())
 		out.localPlayerId = p->getPlayerIndex();

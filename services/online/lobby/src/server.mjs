@@ -59,7 +59,7 @@ export function nodeEnv(store) {
   };
 }
 
-export function startServer(env = readEnv(), { log = console.log } = {}) {
+export function startServer(env = readEnv(), { log = console.log, health = null } = {}) {
   const dataDir = env.LOBBY_DATA;
   if (!dataDir) throw new Error('LOBBY_DATA (a directory) is required');
   const store = fileStore(dataDir);
@@ -69,6 +69,12 @@ export function startServer(env = readEnv(), { log = console.log } = {}) {
   // one request at a time through the lobby (as a Durable Object serialises them)
   let chain = Promise.resolve();
   const server = createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/healthz' && health) {
+      const state = health();
+      res.writeHead(state.ok ? 200 : 503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(state));
+      return;
+    }
     // ONLINE-2 r2 (Sol: a chunked 20 KB JSON body passed the 16 KiB check): the bytes are counted as they arrive; beyond the route's limit the
     // request is answered 413 at once and the rest is not read
     const limit = req.url.startsWith('/v1/relay/logs/') || req.url.startsWith('/v1/admin/blobs/') ? MAX_LOG_BYTES : MAX_JSON_BYTES;
@@ -126,10 +132,14 @@ export function startServer(env = readEnv(), { log = console.log } = {}) {
       });
     });
   });
-  return new Promise((resolve) => server.listen(Number(port), host, () => {
-    log(`openbfme lobby: listening on ${host}:${server.address().port}, data ${dataDir}, relays ${env.RELAYS}`);
-    resolve({ server, lobby, port: server.address().port });
-  }));
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(Number(port), host, () => {
+      server.removeListener('error', reject);
+      log(`openbfme lobby: listening on ${host}:${server.address().port}, data ${dataDir}, relays ${env.RELAYS}`);
+      resolve({ server, lobby, port: server.address().port });
+    });
+  });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

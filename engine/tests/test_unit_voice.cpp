@@ -472,3 +472,29 @@ TEST_CASE("unit voice review r1: no charge voice while the unit is ATTACKING (RW
 	CHECK(r.voice->pickAndPlay({ fresh }, MSG_DO_ATTACK_OBJECT, nullptr));
 	CHECK(r.sink.sounds.back() == "SoldierCharge");
 }
+
+TEST_CASE("completion audio: producer-specific created and ready voices precede the generic rows")
+{
+	VoiceRig r;
+	REQUIRE(r.f.w.load("Object Producer\nEnd\nObject OtherProducer\nEnd\n"
+		"Object Recruit\n KindOf = INFANTRY SELECTABLE\n"
+		" VoiceCreated = Created\n VoiceFullyCreated = Ready\n"
+		" UnitSpecificSounds\n VoiceCreatedFromProducer = FromCreated\n VoiceFullyCreatedFromProducer = FromReady\n End\nEnd\n").empty());
+	for (const char *name : {"Created", "Ready", "FromCreated", "FromReady"}) r.sink.known.insert(name);
+	const ObjectID unit = r.make("Recruit");
+	UnitVoiceResponse::Info info;
+	info.producer = r.make("Producer");
+	for (int event : {UnitVoiceResponse::VOICE_EVENT_CREATED, UnitVoiceResponse::VOICE_EVENT_FULLY_CREATED})
+	{
+		r.sink.clear();
+		CHECK(r.voice->pickAndPlay({unit}, event, &info));
+		CHECK(r.sink.sounds == std::vector<std::string>{event == UnitVoiceResponse::VOICE_EVENT_CREATED ? "FromCreated" : "FromReady"});
+	}
+	info.producer = r.make("OtherProducer");
+	for (int event : {UnitVoiceResponse::VOICE_EVENT_CREATED, UnitVoiceResponse::VOICE_EVENT_FULLY_CREATED})
+	{
+		r.sink.clear();
+		CHECK(r.voice->pickAndPlay({unit}, event, &info));
+		CHECK(r.sink.sounds == std::vector<std::string>{event == UnitVoiceResponse::VOICE_EVENT_CREATED ? "Created" : "Ready"});
+	}
+}

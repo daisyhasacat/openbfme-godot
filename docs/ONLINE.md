@@ -1,5 +1,7 @@
 # Online play
 
+For the runnable combined lobby and relay server, see [services/online/README.md](../services/online/README.md).
+
 Online play is a **test feature**. OpenBFME plays skirmish, the campaign
 and **LAN** games (the game's Multiplayer menu); the main menu's **Online**
 opens RotWK's own online screens on the OpenBFME lobby (phase O2, below), and

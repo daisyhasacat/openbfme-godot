@@ -54,6 +54,8 @@ bool NewGame::prepareNewGame(const NewGameMessage &in, const PlayerTemplateStore
 	NewGameStart start(algorithm);
 	start.message = in;
 	SkirmishGameInfo &info = start.message.game;
+	if (info.luaAuthoritySlot < -1 || info.luaAuthoritySlot >= MAX_SLOTS || (info.luaAuthoritySlot >= 0 && !info.slots[info.luaAuthoritySlot].isHuman())) return failWith(error, "invalid Lua authority slot");
+	if (!PeaceTime::valid(info.peaceTimeMinutes)) return failWith(error, "invalid peace time");
 	if (info.numPlayers() == 0)
 	{
 		return failWith(error, "the game has no occupied slot");

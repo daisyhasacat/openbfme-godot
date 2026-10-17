@@ -1,0 +1,10 @@
+{
+  "name": "openbfme-online-server",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=18.2" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test lobby/test/*.test.mjs test/*.test.mjs"
+  }
+}

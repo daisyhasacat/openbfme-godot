@@ -483,6 +483,7 @@ public:
 protected:
 	// ZH Object::setPosition / setOrientation: a container (the horde contain) moves what it holds
 	void reactToTransformChange(const Coord3D *oldPos, float oldAngle) override;
+	bool allowsPositionChange(const Coord3D &position, bool swept) const override;
 
 private:
 	friend struct XpTestAccess; // lane XP-1 tests: isolated state hash mutations
