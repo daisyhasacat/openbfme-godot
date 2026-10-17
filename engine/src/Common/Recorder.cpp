@@ -10,7 +10,7 @@
 namespace
 {
 const char kMagic[8] = { 'O', 'B', 'F', 'M', 'E', 'R', 'E', 'P' };
-constexpr std::uint32_t kVersion = 6; // 6 (lane SAVE-2): the execution profile switch record, duplicate records refused; 2: the profile identity, GameMessage format 2 (u32 argument counts), lost-command records; 3 (lane HERO-2): the GameInfo slots' Create-a-Hero records; 4 (lane RULES-1): the GameInfo's game rules and Legendary Heroes factor; 5 (lane UBER-1): the GameInfo's simulation profile
+constexpr std::uint32_t kVersion = 7; // 7: peace time in the OpenBFME game setup; 6 (lane SAVE-2): the execution profile switch record, duplicate records refused; 2: the profile identity, GameMessage format 2 (u32 argument counts), lost-command records; 3 (lane HERO-2): the GameInfo slots' Create-a-Hero records; 4 (lane RULES-1): the GameInfo's game rules and Legendary Heroes factor; 5 (lane UBER-1): the GameInfo's simulation profile
 enum : std::uint8_t
 {
 	RECORD_FRAME = 1,
@@ -59,14 +59,14 @@ bool ReplayFile::parse(const std::vector<std::uint8_t> &bytes, ReplayFile &out, 
 	}
 	NetByteReader r(bytes.data() + sizeof(kMagic), bytes.size() - sizeof(kMagic));
 	const std::uint32_t version = r.u32();
-	if (version != kVersion && version != 5)
+	if (version != kVersion && version != 5 && version != 6)
 	{
 		// lane SAVE-2: format 6 only adds the profile switch record, so a format 5 replay (UBER-1) still reads (without that record)
-		return failWith(error, "replay version " + std::to_string(version) + " (this build reads 5 and " + std::to_string(kVersion) + ")");
+		return failWith(error, "replay version " + std::to_string(version) + " (this build reads 5, 6 and " + std::to_string(kVersion) + ")");
 	}
 	ReplayHeader &h = out.header;
 	h.profile = ProfileIdentity::fromText(r.str());
-	if (!NetPacket::readNewGameMessage(r, h.game, error))
+	if (!NetPacket::readNewGameMessage(r, h.game, error, version >= 7))
 	{
 		return false;
 	}

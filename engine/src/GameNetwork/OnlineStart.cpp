@@ -243,6 +243,10 @@ bool parse(const std::string &json, const ProfileIdentity &ownProfile, const Lim
 	g.startingCash = (int)cash;
 	g.superweaponRestriction = (int)sw;
 	g.legendaryHeroes = (int)lh;
+	long long peace = 0;
+	if (setup->get("peaceTimeMinutes") && (!intField(*setup, "peaceTimeMinutes", 0, 20, peace, &sub) || !PeaceTime::valid((int)peace)))
+		return fail(error, "invalid peaceTimeMinutes");
+	g.peaceTimeMinutes = (int)peace;
 	if (!LegendaryHeroes::valid(g.legendaryHeroes))
 	{
 		return fail(error, "\"legendaryHeroes\" " + std::to_string(lh) + " is not a known factor");

@@ -1505,7 +1505,7 @@ void AptOnlineShell::lobbyChanged()
 	const SkirmishGameInfo &now = model->info();
 	const SkirmishGameInfo &was = m_client->gameInfo();
 	if (m_client->amIHost() && (now.mapName != was.mapName || now.startingCash != was.startingCash || now.superweaponRestriction != was.superweaponRestriction ||
-								   now.legendaryHeroes != was.legendaryHeroes || now.rules != was.rules))
+								   now.legendaryHeroes != was.legendaryHeroes || now.peaceTimeMinutes != was.peaceTimeMinutes || now.rules != was.rules))
 	{
 		m_client->setSetup(now);
 	}

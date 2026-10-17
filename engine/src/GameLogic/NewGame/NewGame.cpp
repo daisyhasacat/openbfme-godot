@@ -54,6 +54,7 @@ bool NewGame::prepareNewGame(const NewGameMessage &in, const PlayerTemplateStore
 	NewGameStart start(algorithm);
 	start.message = in;
 	SkirmishGameInfo &info = start.message.game;
+	if (!PeaceTime::valid(info.peaceTimeMinutes)) return failWith(error, "invalid peace time");
 	if (info.numPlayers() == 0)
 	{
 		return failWith(error, "the game has no occupied slot");

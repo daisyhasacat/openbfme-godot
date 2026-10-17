@@ -1021,6 +1021,10 @@ std::uint32_t GameLogic::hashState(std::vector<StateHashSection> *sections, std:
 				x.addI32(v);
 			}
 		}
+		if (m_peaceTimeMinutes != PeaceTime::kOff)
+		{
+			x.addI32(m_peaceTimeMinutes);
+		}
 		if (m_legendaryHeroes != LegendaryHeroes::kOff)
 		{
 			x.addI32(m_legendaryHeroes);
@@ -1410,4 +1414,10 @@ GameLogic::Report GameLogic::report() const
 		r.stops.push_back("[S-147] OnCreated: no LuaScriptEngine::sendObjectCreated (setObjectCreatedProc) was installed; " + std::to_string(m_creationsWithoutDispatch) + " objects were created without the script world entry and the OnCreated dispatch");
 	}
 	return r;
+}
+
+void GameLogic::setPeaceTimeMinutes(int minutes)
+{
+ if (!PeaceTime::valid(minutes)) throw std::invalid_argument("Peace time must be Off, 5, 10, 15 or 20 minutes");
+ m_peaceTimeMinutes = minutes;
 }

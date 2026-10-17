@@ -6,6 +6,7 @@
 
 #include "Common/Audio/AudioRequests.h"
 #include "Common/Player.h"
+#include "Common/PlayerTemplate.h"
 #include "Common/GameCommon.h"
 #include "Common/PlayerList.h"
 #include "Common/StateHash.h"
@@ -1100,6 +1101,16 @@ bool ObjectWeapons::chooseBestWeaponForTarget(const Object *victimIn, WeaponChoi
 
 bool ObjectWeapons::canAttackObject(const Object &victim, CommandSourceType source, bool forced) const
 {
+	// OpenBFME peace rule also covers idle acquisition and turrets. Neutral creeps and resources
+	// remain available; human players retain their orders. This cannot stop the economy's harvests.
+	const Player *attackerPlayer = m_owner->getControllingPlayer();
+	const Player *victimPlayer = victim.getControllingPlayer();
+	if (m_owner->logic().peaceTimeActive() && attackerPlayer && attackerPlayer->getPlayerType() == PLAYER_COMPUTER &&
+		victimPlayer && victimPlayer != attackerPlayer && victimPlayer->getPlayerTemplate() && victimPlayer->getPlayerTemplate()->m_playableSide)
+	{
+		return false;
+	}
+
 	const CombatNames::Status &st = CombatNames::statuses();
 	if (!WallBalance::attackerAllowed(victim,*m_owner)) return false;
 	if (&victim == m_owner || !CombatQueries::isAlive(*m_owner) || !CombatQueries::isAlive(victim))

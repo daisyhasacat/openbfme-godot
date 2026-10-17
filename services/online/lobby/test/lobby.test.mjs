@@ -1205,3 +1205,12 @@ test('ONLINE-5 (Sol r1): an emptied slot keeps no choices: a reopened AI slot\'s
   assert.deepEqual([lobby.games.get(made.body.id).slots[1].startPos, lobby.games.get(made.body.id).slots[1].color], [-1, -1]);
   void c;
 });
+
+test('peace time: setup accepts Off and 5/10/15/20, defaults Off and rejects other durations', () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  assert.equal(lobby.checkSetup(setup, true).peaceTimeMinutes, 0);
+  for (const minutes of [0, 5, 10, 15, 20])
+    assert.equal(lobby.checkSetup({ ...setup, peaceTimeMinutes: minutes }, true).peaceTimeMinutes, minutes);
+  for (const minutes of [-1, 1, 4, 6, 21, '10', 10.5])
+    assert.throws(() => lobby.checkSetup({ ...setup, peaceTimeMinutes: minutes }, true));
+});

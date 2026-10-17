@@ -708,6 +708,9 @@ AutoAbilityBehavior *AutoAbilityBehavior::forPower(Object &obj, const std::strin
 bool AutoAbilityBehavior::canAct(const CommandButton &b) const
 {
 	Object *obj = getObject();
+	// OpenBFME peace time: automatic computer abilities must not bypass the held combat teams.
+	const Player *player = obj->getControllingPlayer();
+	if (obj->logic().peaceTimeActive() && player && player->getPlayerType() == PLAYER_COMPUTER) return false;
 	const ObjectStatusMaskType &forbidden = m_data->m_forbiddenStatus;
 	bool anyForbidden = false;
 	for (unsigned i = 0; i < 128; ++i)

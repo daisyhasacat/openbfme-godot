@@ -647,3 +647,22 @@ TEST_CASE("skirmish ai script control: a script-controlled computer builds and t
 	CHECK(handedBack.executed >= 1);
 	CHECK(handedBack.completed >= 1);
 }
+
+TEST_CASE("peace time retail: a computer expands and trains its army during a ten-minute peace period")
+{
+ OPENBFME_REQUIRE_START(s);
+ auto message = aiMessage(*s, "FactionMen");
+ message.game.peaceTimeMinutes = 10;
+ BaseRun run;
+ runBaseGame(*s, message, 1500, run, false, [&](GameLogic &logic) {
+  CHECK(logic.peaceTimeActive());
+  for (const auto &group : logic.skirmishAI().groups())
+   for (const auto &entry : group->players)
+   {
+    CHECK(entry.second->brain.attacksLaunched == 0);
+    CHECK(entry.second->brain.idleDispatches == 0);
+   }
+ });
+ CHECK(run.executed >= 1); // tolerance: expansion must progress; the selected layout determines the number of structures
+ CHECK(run.unitsQueued >= 1); // tolerance: the peaceful AI must train units; army composition determines the count
+}

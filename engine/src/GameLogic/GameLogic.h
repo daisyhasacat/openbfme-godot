@@ -399,6 +399,9 @@ public:
 	const GameRules &gameRules() const { return m_gameRules; }
 	void setLegendaryHeroes(int factor) { m_legendaryHeroes = factor; }
 	int legendaryHeroes() const { return m_legendaryHeroes; }
+	void setPeaceTimeMinutes(int minutes);
+	int peaceTimeMinutes() const { return m_peaceTimeMinutes; }
+	bool peaceTimeActive() const { return m_frame < PeaceTime::frames(m_peaceTimeMinutes); }
 	// lane UBER-1: the simulation profile (Common/SimulationProfile.h; set before the first frame). Hashed only when Uber, so a Faithful game keeps its hash
 	void setSimulationProfile(SimulationProfile p) { m_simulationProfile = p; }
 	SimulationProfile simulationProfile() const { return m_simulationProfile; }
@@ -731,6 +734,7 @@ private:
 	UnsignedInt m_frame = 0;
 	int m_gameDifficulty = 1;     ///< lane CAMP-1H: RW GameLogic + 0xA4
 	GameRules m_gameRules = MpGameRules::none(); ///< lane RULES-1
+	int m_peaceTimeMinutes = PeaceTime::kOff;
 	int m_legendaryHeroes = LegendaryHeroes::kOff; ///< lane RULES-1 (OpenBFME)
 	SimulationProfile m_simulationProfile = SimulationProfile::Faithful; ///< lane UBER-1 (OpenBFME)
 	bool m_frameAdvance = true;   ///< RW GameLogic + 0x44

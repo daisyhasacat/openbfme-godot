@@ -2362,6 +2362,8 @@ void dispatchIdleUnits(GameLogic &logic, AISkirmishPlayer &ai, const std::vector
 
 void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 {
+	// OpenBFME peace rule: keep AIBaseBuilder (expansion, units and economy) running, hold combat teams.
+	if (logic.peaceTimeActive()) return;
 	AIBrainState &b = ai.brain;
 	const Player *player = playerOf(logic, ai.playerIndex);
 	if (!player || ai.store->data().disableTeamBuilding)
@@ -2454,6 +2456,8 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 
 void AITacticalAI::updateBrain(GameLogic &logic, AISkirmishPlayer &ai, AISkirmishPlayer *first)
 {
+	// OpenBFME peace rule: keep AIBaseBuilder (expansion, units and economy) running, hold combat teams.
+	if (logic.peaceTimeActive()) return;
 	AIBrainState &b = ai.brain;
 	Player *player = playerOf(logic, ai.playerIndex);
 	if (!player || !ai.army || !ai.store || ai.store->data().disableTacticalAI)

@@ -283,6 +283,7 @@ bool LiveGame::load(const Options &options, std::string *error)
 	}
 	m_logic->setGameRules(gameRules);
 	m_logic->setLegendaryHeroes(options.start ? options.start->message.game.legendaryHeroes : LegendaryHeroes::kOff);
+	m_logic->setPeaceTimeMinutes(options.start ? options.start->message.game.peaceTimeMinutes : PeaceTime::kOff);
 	// lane UBER-1: the game setup's simulation profile (a game without a start message, a map viewer or a tool, is Faithful unless its options say Uber)
 	m_logic->setSimulationProfile(options.start ? options.start->message.game.simulationProfile : options.simulationProfile);
 	m_logic->economy().initAllCommandPoints();

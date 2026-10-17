@@ -94,6 +94,10 @@ LoadScreenInfo makeLoadScreenInfo(const SkirmishGameInfo &game, const SkirmishSe
 	{
 		info.rulesSummary = LegendaryHeroes::label() + u": " + LegendaryHeroes::choiceText(game.legendaryHeroes);
 	}
+	if (game.peaceTimeMinutes != PeaceTime::kOff)
+	{
+		info.rulesSummary += (info.rulesSummary.empty() ? u"" : u"; ") + PeaceTime::label() + u": " + PeaceTime::choiceText(game.peaceTimeMinutes);
+	}
 	// lane UBER-1: the Uber performance mode is on the load screen too, so nobody is surprised the game is not the original's simulation
 	if (game.simulationProfile == SimulationProfile::Uber)
 	{

@@ -344,10 +344,11 @@ void NetPacket::writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g)
 		w.i32(v);
 	}
 	w.i32(g.legendaryHeroes);
+	w.i32(g.peaceTimeMinutes);
 	w.i32((std::int32_t)g.simulationProfile); // lane UBER-1: the simulation profile (Common/SimulationProfile.h)
 }
 
-bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error)
+bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool withPeaceTime)
 {
 	for (SkirmishGameSlot &s : g.slots)
 	{
@@ -401,6 +402,7 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 		v = r.i32();
 	}
 	g.legendaryHeroes = r.i32();
+	g.peaceTimeMinutes = withPeaceTime ? r.i32() : PeaceTime::kOff;
 	const std::int32_t profile = r.i32();
 	if (r.failed())
 	{
@@ -425,6 +427,7 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 	}
 	// lane RULES-1: the rules are retail ints (retail accepts any value); the Legendary Heroes factor is OpenBFME's and must be one it knows: a peer that
 	// sees another refuses the game options (a refused game, never a desync)
+	if (!PeaceTime::valid(g.peaceTimeMinutes)) return failWith(error, "GameInfo invalid peace time");
 	if (!LegendaryHeroes::valid(g.legendaryHeroes))
 	{
 		return failWith(error, "GameInfo Legendary Heroes factor " + std::to_string(g.legendaryHeroes));
@@ -457,7 +460,7 @@ void NetPacket::writeNewGameMessage(NetByteWriter &w, const NewGameMessage &m)
 	writeGameInfo(w, m.game);
 }
 
-bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error)
+bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool withPeaceTime)
 {
 	const std::uint8_t mode = r.u8();
 	if (mode > 1)
@@ -467,7 +470,7 @@ bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::str
 	m.mode = mode ? NewGameMode::Skirmish : NewGameMode::SinglePlayer;
 	m.difficulty = r.i32();
 	m.rankPoints = r.i32();
-	return readGameInfo(r, m.game, error);
+	return readGameInfo(r, m.game, error, withPeaceTime);
 }
 
 std::vector<std::uint8_t> NetPacket::encodeCommand(const NetCommandMsg &c, std::string *error)
