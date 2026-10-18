@@ -10,6 +10,9 @@
 #include "ProdTestUtil.h"
 #include "PathfindTestUtil.h"
 #include "GameClient/ControlBar.h"
+#include "GameClient/PlacementIcons.h"
+#include "GameClient/MessageStream/PlaceEventTranslator.h"
+#include "GameClient/MessageStream/MetaEvent.h"
 #include "GameClient/MessageStream/MessageStream.h"
 
 #include "Common/StateHash.h"
@@ -1107,4 +1110,79 @@ TEST_CASE("walls: wall command can pay for a gap even when a whole hub is unaffo
  for(auto *o=f.logic->getFirstObject();o;o=o->getNextObject())
   if(o->getTemplate()->getName()=="WallSeg" && o->getPosition()->x==p.x && o->getPosition()->y==p.y)found=true;
  CHECK(found);
+}
+
+TEST_CASE("placement repeat: Shift and controller snap keep the building and its rotation")
+{
+	for (int mode = 0; mode != 4; ++mode)
+	{
+		BuildFx f;
+		pathtest::SyntheticTerrain terrain(128,128);
+		AIWorldConfig config; config.pathfind = pathtest::testConfig();
+		INIMacroTable macros;
+		AIWorld ai(*f.logic, config, macros); ai.attach(); ai.newMap(terrain);
+		PinholeView view({500,200,500}, {500,600,0}, 1024, 768, 0.7f);
+		InGameUI ui;
+		MessageStream stream;
+		HudContext ctx{*f.logic, &ai, view, ui, stream, &f.ProdWorld::commands, {}};
+		PlaceEventTranslator placement(ctx);
+		const Coord3D pos = *f.plot->getPosition();
+		const ICoord2D pixel{512,384};
+		ui.placeBuildAvailable("Hall", f.plot->getID());
+		ui.setPlaceGhostPose(pos, 0.75f, 0.75f);
+		ui.setPlacementStart(&pixel);
+		ui.placementSnap = mode == 3;
+		const int modifiers[] = {0, KEY_STATE_LSHIFT, KEY_STATE_RSHIFT, 0};
+		ClientMessage click(CMSG_MOUSE_LEFT_CLICK);
+		click.appendPixelRegion({pixel,pixel});
+		click.appendInteger(modifiers[mode]);
+		CHECK(placement.translate(click) == MessageDisposition::Destroy);
+		CHECK(placement.stats().placed == 1);
+		CHECK(stream.pending() == 1);
+		const bool repeating[] = {false, true, true, true};
+		CHECK(ui.isPlacing() == repeating[mode]);
+		CHECK_FALSE(ui.isPlacementAnchored());
+		if (mode != 0)
+		{
+			CHECK(ui.placeBuildTemplate() == "Hall");
+			CHECK(ui.placeBuildSource() == f.plot->getID());
+			CHECK(ui.placeAngle() == 0.75f);
+			CHECK(ui.placeSlotAngle() == 0.75f);
+			// A second placement keeps that rotation too; cancelling remains explicit.
+			ui.setPlacementStart(&pixel);
+			placement.translate(click);
+			CHECK(placement.stats().placed == 2);
+			CHECK(ui.placeAngle() == 0.75f);
+			ClientMessage cancel(CMSG_RAW_KEY_DOWN);
+			cancel.appendInteger(KEY_ESC);
+			placement.translate(cancel);
+			CHECK_FALSE(ui.isPlacing());
+		}
+	}
+}
+
+TEST_CASE("placement exit preview: production coordinates come from the exit module without creating an object")
+{
+	ProdWorld f;
+	f.load("Object ExitPreview\n Behavior = QueueProductionExitUpdate Exit\n"
+		" UnitCreatePoint = X:10 Y:20 Z:3\n NaturalRallyPoint = X:90 Y:40 Z:0\n End\nEnd\n"
+		"Object NoExitPreview\n KindOf = STRUCTURE\nEnd\n"
+		"Object DefaultExitPreview\n Behavior = DefaultProductionExitUpdate Exit\n"
+		" UnitCreatePoint = X:4 Y:5 Z:6\n NaturalRallyPoint = X:40 Y:50 Z:0\n End\nEnd\n");
+	Coord3D create, rally;
+	REQUIRE(PlacementIcons::productionExit(*f.w.get("ExitPreview"), create, rally));
+	CHECK(create.x == 10.0f);
+	CHECK(create.y == 20.0f);
+	CHECK(create.z == 3.0f);
+	CHECK(rally.x == 90.0f);
+	CHECK(rally.y == 40.0f);
+	CHECK(rally.z == 0.0f);
+	CHECK_FALSE(PlacementIcons::productionExit(*f.w.get("NoExitPreview"), create, rally));
+	REQUIRE(PlacementIcons::productionExit(*f.w.get("DefaultExitPreview"), create, rally));
+	CHECK(create.x == 4.0f);
+	CHECK(create.y == 5.0f);
+	CHECK(create.z == 6.0f);
+	CHECK(rally.x == 40.0f);
+	CHECK(rally.y == 50.0f);
+	CHECK(rally.z == 0.0f);
 }

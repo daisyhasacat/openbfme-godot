@@ -83,6 +83,7 @@ private:
 	void applyTint(IconView &view, const Color &tint);
 	void updateBib(PlacementIcons::Icon &icon, IconView &view);
 	void updateArrow(const InGameUI &ui);
+	void updateExitDirections();
 	void updateResources(const InGameUI &ui, bool idle);
 	void updateGrid(LiveGame &game, const InGameUI &ui, bool idle);
 	void updateFootprints(LiveGame &game, const InGameUI &ui, bool idle);
@@ -128,6 +129,9 @@ private:
 	unsigned m_modelLoads = 0;
 	std::map<std::string, Ref<Texture2D>> m_textures;
 	Ref<W3DModelBuilder> m_textureLoader;
+	MeshInstance3D *m_exitDirections = nullptr;
+	uint64_t m_exitDirectionsId = 0;
+	int m_exitDirectionCount = 0;
 	W3DInstancer *m_arrow = nullptr;
 	uint64_t m_arrowId = 0;
 	int64_t m_arrowModel = -2, m_arrowInstance = -1;

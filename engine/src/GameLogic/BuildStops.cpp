@@ -26,7 +26,7 @@ std::vector<std::string> BuildStops::lines()
 		"removes the unplaced structure with a refund when the task is cancelled before arrival, but does not repeat its legality test, flags 0x15)",
 		"[S-306] placement mode (lane BUILD-5: RotWK's PlaceEventTranslator RW 0x83E486 and placement update RW 0x6A2AE5 are ported: the right button is tracked "
 		"and passed on (right-drag scrolls), a right click cancels unless it was a drag held DragToleranceMS, the left press anchors, a 5 pixel drag turns the ghost, "
-		"the left click places with the options 0x49F or shows the code's label and BadBuildingPlacementSound, no shift to keep placing, the ghost's legality "
+		"the left click places with the options 0x49F or shows the code's label and BadBuildingPlacementSound; OpenBFME Shift / snap placement keeps the building and rotation (retail ends the mode), the ghost's legality "
 		"on odd client frames with 0x48F; r2: a PORT's site and angle snap to the shore (getPortTransform RW 0x794C63) and a PORT's footprint must straddle water "
 		"and land, ratio 6 at most (RW 0x796C0B)); not ported: the options' bits 0x80 and 0x400, the message 0x7EB of a refused click and the one RW 0x83EA10 appends "
 		"after the construct, the PlacementProjection start point of getPlacementPoints, Escape (kept from BUILD-1: RotWK's translator has no key case); FINDING "

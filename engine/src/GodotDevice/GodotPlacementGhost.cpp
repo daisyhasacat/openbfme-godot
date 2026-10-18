@@ -131,6 +131,10 @@ void PlacementGhostRenderer::error(const std::string &e)
 
 void PlacementGhostRenderer::clear()
 {
+	freeNode(m_exitDirectionsId);
+	m_exitDirectionsId = 0;
+	m_exitDirections = nullptr;
+	m_exitDirectionCount = 0;
 	freeNode(m_formationId); m_formationId=0; m_formation=nullptr;
 	for (IconView &v : m_views)
 	{
@@ -429,6 +433,54 @@ void PlacementGhostRenderer::updateBib(PlacementIcons::Icon &icon, IconView &vie
 	view.bib->set_visible(true);
 }
 
+// OpenBFME placement aid: static production exits, rendered from preview drawables only.
+void PlacementGhostRenderer::updateExitDirections()
+{
+	m_exitDirectionCount = 0;
+	if (m_exitDirections) m_exitDirections->hide();
+	if (!m_icons) return;
+	Ref<ImmediateMesh> mesh;
+	mesh.instantiate();
+	Ref<StandardMaterial3D> material;
+	material.instantiate();
+	material->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+	material->set_flag(BaseMaterial3D::FLAG_DISABLE_DEPTH_TEST, true);
+	material->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
+	material->set_albedo(Color(0.2f, 1.0f, 0.35f));
+	bool begun = false;
+	for (const auto &icon : m_icons->icons())
+	{
+		Coord3D create, rally;
+		if (!icon.tt || !icon.drawable || !PlacementIcons::productionExit(*icon.tt, create, rally)) continue;
+		const Drawable &drawable = *icon.drawable;
+		const Transform3D transform = toTransform(drawable.getBasis(), *drawable.getPosition(), drawable.getInstanceScale());
+		const Vector3 start = transform.xform(Vector3(create.x, create.z + 3.0f, -create.y));
+		Vector3 direction(rally.x - create.x, 0, -(rally.y - create.y));
+		if (direction.length_squared() == 0) continue; // no defined exit direction
+		direction = transform.basis.xform(direction).normalized();
+		const Vector3 tip = start + direction * 60.0f;
+		const Vector3 side(-direction.z, 0, direction.x);
+		const Vector3 neck = tip - direction * 15.0f;
+		if (!begun) { mesh->surface_begin(Mesh::PRIMITIVE_TRIANGLES, material); begun = true; }
+		for (const Vector3 &vertex : {start - side * 2, start + side * 2, neck + side * 2,
+			start - side * 2, neck + side * 2, neck - side * 2,
+			neck - side * 8, neck + side * 8, tip}) mesh->surface_add_vertex(vertex);
+		++m_exitDirectionCount;
+	}
+	if (!begun) return;
+	mesh->surface_end();
+	if (!m_exitDirections)
+	{
+		m_exitDirections = memnew(MeshInstance3D);
+		m_exitDirections->set_name("PlacementUnitExits");
+		m_exitDirections->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+		m_parent->add_child(m_exitDirections);
+		m_exitDirectionsId = m_exitDirections->get_instance_id();
+	}
+	m_exitDirections->set_mesh(mesh);
+	m_exitDirections->show();
+}
+
 void PlacementGhostRenderer::updateArrow(const InGameUI &ui)
 {
 	// W3DInGameUI::drawPlaceAngle (RW 0x48EAD8): not anchored -> both out of the scene (RW 0x48EB53); anchored -> W_Arrow (the anchor below 5 pixels, the
@@ -536,6 +588,7 @@ void PlacementGhostRenderer::sync(LiveGame &game, const InGameUI &ui, double del
 		}
 	}
 	updateArrow(ui);
+	updateExitDirections();
 	updateResources(ui, judge);
 	updateGrid(game, ui, judge);
 	updateFootprints(game, ui, judge);
@@ -977,6 +1030,7 @@ Dictionary PlacementGhostRenderer::state() const
 	s["castle"] = m_icons && m_icons->castle();
 	s["anchored"] = m_anchored;
 	s["arrow"] = m_arrowShown;
+	s["unit_exit_arrows"] = m_exitDirectionCount;
 	Array icons;
 	if (m_icons)
 	{

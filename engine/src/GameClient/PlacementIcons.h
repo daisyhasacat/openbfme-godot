@@ -101,6 +101,9 @@ public:
 	const std::vector<std::string> &notes() const { return m_notes; }
 
 	// the player colour the ghost's drawable takes (RW 0x69C731: the night colour at night); 0 when there is no builder
+	// Client-only preview of the template-defined unit creation point and natural rally point.
+	// False for exits without static coordinates (for example bone-driven spawn points).
+	static bool productionExit(const ThingTemplate &tt, Coord3D &create, Coord3D &rally);
 	static std::uint32_t indicatorColor(const GameLogic &logic, ObjectID builder);
 
 private:

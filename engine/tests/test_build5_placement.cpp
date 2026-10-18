@@ -384,7 +384,7 @@ TEST_CASE("build5 placement with a scroll: a right drag held past DragToleranceM
 	CHECK(r.place().stats().cancelled == 2);
 }
 
-TEST_CASE("build5 placement: the left press anchors, a 5 pixel drag turns the ghost, the click places at the anchor with that angle and always ends the mode")
+TEST_CASE("build5 placement: the left press anchors, a 5 pixel drag turns the ghost, the Shift click places at the anchor and keeps the building and angle")
 {
 	if (!haveWorld("build5 placement rotate"))
 	{
@@ -416,15 +416,17 @@ TEST_CASE("build5 placement: the left press anchors, a 5 pixel drag turns the gh
 	REQUIRE(r.cam->screenToTerrain(at, r.game->logic(), anchorWorld));
 	CHECK(r.ui().placeLocation().x == doctest::Approx(anchorWorld.x).epsilon(0.001));
 	CHECK(r.ui().placeLocation().y == doctest::Approx(anchorWorld.y).epsilon(0.001));
-	// the release's click places it (with shift held: RotWK has no shift to keep placing)
+	// OpenBFME Shift repeat placement keeps the building and final rotation.
 	const size_t before = r.count("MSG_DOZER_CONSTRUCT");
 	r.button(HudInput::Button::Left, false, at.x, at.y + 30, 20, KEY_STATE_LSHIFT);
 	const LegalBuildCode code = (LegalBuildCode)r.ui().placeLegalCode();
 	if (r.place().stats().refused == 0)
 	{
 		CHECK(r.count("MSG_DOZER_CONSTRUCT") == before + 1);
-		CHECK_FALSE(r.ui().isPlacing());
-		CHECK(r.ui().cursor() == std::string(MouseCursorName::Arrow));
+		CHECK(r.ui().isPlacing());
+		CHECK_FALSE(r.ui().isPlacementAnchored());
+		CHECK(r.ui().placeAngle() == a1);
+		CHECK(r.ui().placeSlotAngle() == a1);
 	}
 	else
 	{

@@ -232,7 +232,6 @@ MessageDisposition PlaceEventTranslator::releaseLineBuild(const ThingTemplate &t
 
 MessageDisposition PlaceEventTranslator::leftClick(const ClientMessage &msg)
 {
-	(void)msg;
 	// RW 0x83E6C7: the pending template (vslot 0xE0); not anchored: the click is not the placement's
 	const ThingTemplate *tt = m_ctx.logic.things().findTemplate(m_ctx.ui.placeBuildTemplate());
 	if (!m_ctx.ui.isPlacing() || !m_ctx.ui.isPlacementAnchored())
@@ -307,7 +306,14 @@ MessageDisposition PlaceEventTranslator::leftClick(const ClientMessage &msg)
 	m.appendReal(placeAngle);
 	++m_stats.placed;
 	m_ctx.ui.setLineBuildStarted(false); // RW 0x83EA21: vslot 0x100(0)
-	endPlacement();                       // RW 0x83EA35 -> 0x83E6A4: the mode always ends (no shift to keep placing)
+	// OpenBFME repeat placement: Shift / controller snap mode keeps the chosen
+	// building and final rotation, while releasing the old position anchor.
+	if (m_ctx.ui.placementSnap || (msg.arg(1).integer & KEY_STATE_SHIFT))
+	{
+		m_ctx.ui.setPlacementStart(nullptr);
+		m_ctx.ui.setPlaceGhostPose(location, placeAngle, placeAngle);
+	}
+	else endPlacement(); // RW 0x83EA35 -> 0x83E6A4
 	return MessageDisposition::Destroy;
 }
 

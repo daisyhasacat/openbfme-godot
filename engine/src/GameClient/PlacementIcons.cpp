@@ -2,6 +2,8 @@
 // See PlacementIcons.h (lane BUILD-5 r2; RotWK RW 0x69C5E6, RW 0x6A2AE5).
 
 #include "GameClient/PlacementIcons.h"
+#include "GameLogic/Module/QueueProductionExitUpdate.h"
+#include "GameLogic/Module/ProductionExitModules.h"
 
 #include "Common/AsciiString.h"
 #include "Common/BuildAssistant.h"
@@ -420,4 +422,21 @@ void PlacementIcons::update(const InGameUI &ui, double elapsedMs, unsigned ghost
 			icon.bib = BIB_HIGHLIGHT;
 		}
 	}
+}
+
+// The same template coordinates used by the production exit modules; no simulated object is created.
+bool PlacementIcons::productionExit(const ThingTemplate &tt, Coord3D &create, Coord3D &rally)
+{
+	for (const auto &module : tt.getFinalOverride()->behaviorModules().nuggets())
+	{
+		if (const auto *data = dynamic_cast<const QueueProductionExitUpdateModuleData *>(module.data.get()))
+		{
+			create = data->m_unitCreatePoint; rally = data->m_naturalRallyPoint; return true;
+		}
+		if (const auto *data = dynamic_cast<const DefaultProductionExitUpdateModuleData *>(module.data.get()))
+		{
+			create = data->m_unitCreatePoint; rally = data->m_naturalRallyPoint; return true;
+		}
+	}
+	return false;
 }

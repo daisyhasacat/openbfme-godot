@@ -56,6 +56,8 @@
 // check for every build (RW 0x83E771) and, r2, the PORT snap (template + 0x11F & 0x10, BuildAssistant::getPortTransform RW 0x794C63) of the ghost (RW 0x6A37AD)
 // and of the click after its legality test (RW 0x83E8D4).
 
+// OpenBFME input improvement: Shift or placement snap mode repeats ordinary building
+// placement with the same template and final rotation, dropping only the position anchor.
 #pragma once
 
 #include "GameLogic/BuildPlacement.h"
