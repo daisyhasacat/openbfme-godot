@@ -27,7 +27,7 @@ func _run():
   assert(material.get_shader_parameter('paving_enabled'))
   assert(material.get_shader_parameter('paving_texture') is Texture2D)
   assert(material.get_shader_parameter('paving_mask') is Texture2D)
- # Ordinary structures also change the navigation topology used by the mask.
+ # Buildings must never punch holes in enclosed paving.
  var before=int(terrain.get_meta('paving_cells'))
  var image:Image=materials[0].get_shader_parameter('paving_mask').get_image()
  var site=Vector2.ZERO
@@ -54,11 +54,25 @@ func _run():
  # tolerance: object IDs depend on the retail map and starting payload; any allocated nonzero ID is valid.
  assert(statue>0)
  for i in 2:world.advance(.2)
- # tolerance: the statue must remove some navigable cells; its exact footprint rasterization is covered by placement tests.
- assert(int(terrain.get_meta('paving_cells'))<before,'A new structure must invalidate the paving mask')
+ assert(int(terrain.get_meta('paving_cells'))==before,'Paving remains continuous beneath a new building')
+ var covered:Image=materials[0].get_shader_parameter('paving_mask').get_image()
+ assert(covered.get_pixel(int(site.x/10),int(site.y/10)).r==1.0,'Building footprint is paved')
+ var soft_edge=false
+ for y in image.get_height():
+  for x in image.get_width():
+   var value=image.get_pixel(x,y).r
+   if value>0.0 and value<1.0:soft_edge=true;break
+  if soft_edge:break
+ assert(soft_edge,'Paving mask has a softened boundary')
  assert(world.destroy_object(statue))
  for i in 2:world.advance(.2)
  assert(int(terrain.get_meta('paving_cells'))==before,'Removing the structure restores the paving mask')
+ var wall_parts:Array=[]
+ var origin=Vector2.ZERO
+ for id in world.get_object_ids():
+  var obj=world.get_object(id)
+  if 'FortressCitadel' in str(obj.get('template','')):origin=Vector2(obj.x,obj.y)
+  if 'Wall' in str(obj.get('template','')):wall_parts.append(obj)
  # Removing the entire wall ring restores native terrain, without editing its tiles.
  for id in world.get_object_ids():
   var obj=world.get_object(id)
@@ -66,5 +80,22 @@ func _run():
  for i in 2:world.advance(.2)
  assert(int(terrain.get_meta('paving_cells',-1))==0)
  for material in materials:assert(not material.get_shader_parameter('paving_enabled'))
+ # Recreate the completed enclosure around a real map tree to exercise vegetation clearing.
+ var vegetation_checked=false
+ var attempts=0
+ for tree in world.get_logic_trees(image.get_width()*5,image.get_height()*5,10000):
+  if tree.x<600 or tree.y<600 or tree.x>image.get_width()*10-600 or tree.y>image.get_height()*10-600:continue
+  attempts+=1
+  if attempts>6:break
+  var placed:Array=[]
+  for part in wall_parts:
+   placed.append(world.create_object(part.template,int(part.player_id),part.x-origin.x+tree.x,part.y-origin.y+tree.y,part.angle))
+  for i in 2:world.advance(.2)
+  vegetation_checked=bool(int(terrain.get_meta('paving_hidden_plants',0)))
+  for id in placed:world.destroy_object(id)
+  for i in 2:world.advance(.2)
+  assert(int(terrain.get_meta('paving_hidden_plants',-1))==0,'Vegetation restores after the enclosure is removed')
+  if vegetation_checked:break
+ assert(vegetation_checked,'A courtyard around map vegetation must clear its visible plants')
  world.free()
  print('WALL PAVING PASS');quit()

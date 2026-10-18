@@ -148,21 +148,37 @@ bool WallBalance::enclosed(GameLogic &logic,const Player &owner,const Coord3D &p
 }
 std::vector<std::uint8_t> WallBalance::pavingMask(GameLogic &logic,int &width,int &height) {
  width=height=0;
- std::vector<const Player *> owners;
+ auto *ai=logic.aiWorld();if(!ai || !ai->pathfinder().terrainView())return {};
+ std::vector<Object *> walls;
  for(Object *o=logic.getFirstObject();o;o=o->getNextObject())
-  if(wall(*o)&&!o->isDestroyed()&&!o->isEffectivelyDead()&&!o->isUnderConstruction()&&o->isInWorld())
-   if(const Player *owner=o->getControllingPlayer();owner&&std::find(owners.begin(),owners.end(),owner)==owners.end())owners.push_back(owner);
- std::vector<std::uint8_t> mask;
- for(const Player *owner:owners) {
-  enclosed(logic,*owner,{0,0,0}); // refresh the owner's topology once, never once per terrain cell
-  const auto &cache=logic.settings().wallBalance.enclosureCache;
-  if(!cache)continue;
-  const auto found=cache->regions.find(owner->getPlayerIndex());if(found==cache->regions.end())continue;
-  const auto &regions=found->second;width=regions.width;height=regions.height;
-  if(mask.empty())mask.resize((size_t)width*height);
-  for(int y=0;y<height;++y)for(int x=0;x<width;++x)
-   if(regions.pavingEnclosed(x,y))mask[(size_t)y*width+x]=255;
+  if(wall(*o)&&!o->isDestroyed()&&!o->isEffectivelyDead()&&!o->isUnderConstruction()&&o->isInWorld())walls.push_back(o);
+ if(walls.empty())return {};
+ const auto &pf=ai->pathfinder();const auto *extent=pf.getExtent();
+ const int w=extent->x+1,h=extent->y+1;
+ if(w<=0||h<=0||(long long)w*h>4000000)return {};
+ width=w;height=h;
+ // Paving is ground decoration: ordinary buildings and vegetation must not punch holes in the courtyard.
+ // Keep the gameplay placement topology separate, including its ordinary navigation obstacles.
+ const auto *terrain=pf.terrainView();
+ std::vector<unsigned char> natural((size_t)w*h),wallCells((size_t)w*h);
+ for(int y=0;y<h;++y)for(int x=0;x<w;++x) {
+  const float wx=(x+.5f)*10,wy=(y+.5f)*10;float water=0,ground=0;
+  natural[(size_t)y*w+x]=!terrain->isCliffCell(wx,wy)&&!terrain->impassableToPlayers(wx,wy)&&!terrain->isUnderwater(wx,wy,&water,&ground);
  }
+ auto passable=natural;
+ for(Object *o:walls) {
+  std::vector<BuildPlacement::Footprint> footprints;
+  BuildPlacement::footprintsOf(logic,*o->getTemplate(),*o->getPosition(),o->getOrientation(),footprints);
+  for(const auto &f:footprints) {
+   const float radius=std::max(f.major,f.minor)*1.5f;
+   for(int y=std::max(0,(int)std::floor((f.y-radius)/10));y<=std::min(h-1,(int)std::ceil((f.y+radius)/10));++y)
+    for(int x=std::max(0,(int)std::floor((f.x-radius)/10));x<=std::min(w-1,(int)std::ceil((f.x+radius)/10));++x)
+     if(footprintContains(f,(x+.5f)*10,(y+.5f)*10)){passable[(size_t)y*w+x]=0;wallCells[(size_t)y*w+x]=1;}
+  }
+ }
+ WallNavigationRegions::Regions regions;regions.build(w,h,passable,natural,wallCells);
+ std::vector<std::uint8_t> mask((size_t)w*h);
+ for(int y=0;y<h;++y)for(int x=0;x<w;++x)if(regions.pavingEnclosed(x,y))mask[(size_t)y*w+x]=255;
  return mask;
 }
 bool WallBalance::placementAllowed(GameLogic &logic,const ThingTemplate &tt,const Coord3D &point,const Object *builder,const Player *owner) {

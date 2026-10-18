@@ -617,6 +617,7 @@ private:
 	String m_pavingError;
 	float m_pavingTileSize = 80;
 	Ref<Texture2D> m_pavingTexture;
+	std::vector<std::pair<int64_t, Vector2>> m_pavingPlants;
 	std::uint64_t m_pavingSignature = 0;
 	unsigned m_pavingFrame = ~0u;
 	// VIS-1: the local player's shroud as a cell texture on the terrain materials (S-567)

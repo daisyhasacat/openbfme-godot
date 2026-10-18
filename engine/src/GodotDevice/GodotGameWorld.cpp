@@ -711,7 +711,7 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 void GameWorld::clear_scene()
 {
 	m_mapWeatherId = 0;
-	m_pavingTexture.unref();m_pavingSignature=0;m_pavingFrame=~0u;m_pavingError=String();
+	m_pavingPlants.clear();m_pavingTexture.unref();m_pavingSignature=0;m_pavingFrame=~0u;m_pavingError=String();
 	m_endGame.reset(); // lane END-1: the end sequence of the game that goes
 	m_endGameRequests.clear();
 	m_endGameFrame = 0;
@@ -845,6 +845,9 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 			continue;
 		}
 		++instances;
+		if(d.info && (d.info->tree || d.info->shrub || d.info->shrubbery || d.info->clearedByBuild)
+			&& !d.info->kindOf_test(MapObjectCreation::kindOfIndex("STRUCTURE")))
+			m_pavingPlants.push_back({instance,Vector2(d.position.x,d.position.y)});
 		// lane SPELL-3: a tree the logic may topple (its TerrainTrees client id is the map object index + 1, S-930)
 		if (p.kind == W3D_DRAWKIND_TREE && p.module < d.draws.size())
 		{
@@ -2252,7 +2255,7 @@ void GameWorld::refresh_wall_paving()
  std::uint64_t signature=1469598103934665603ULL;
  auto hash=[&](std::uint64_t value){signature=(signature^value)*1099511628211ULL;};
  hash(terrain->get_instance_id());hash(m_pavingEnabled);
- for(::Object *o=logic.getFirstObject();o;o=o->getNextObject())if(WallBalance::wall(*o)||o->isKindOfName("STRUCTURE")) {
+ for(::Object *o=logic.getFirstObject();o;o=o->getNextObject())if(WallBalance::wall(*o)) {
   hash(o->getID());hash(o->isDestroyed());hash(o->isEffectivelyDead());hash(o->isUnderConstruction());hash(o->isInWorld());
   hash(o->getControllingPlayer()?o->getControllingPlayer()->getPlayerIndex()+1:0);
   hash((std::int64_t)(o->getPosition()->x*100));hash((std::int64_t)(o->getPosition()->y*100));hash((std::int64_t)(o->getOrientation()*10000));
@@ -2270,9 +2273,30 @@ void GameWorld::refresh_wall_paving()
   else {m_pavingError=String(loaded.get("error",String("Cannot load paving texture")));UtilityFunctions::push_error("Wall paving: "+m_pavingError);}
  }
  enabled=enabled && m_pavingTexture.is_valid();
+ int hiddenPlants=0;
+ if(auto *plants=instancerOf(m_staticId)) {
+  for(const auto &plant:m_pavingPlants) {
+   const int x=(int)std::floor(plant.second.x/10),y=(int)std::floor(plant.second.y/10);
+   const bool hidden=enabled&&x>=0&&y>=0&&x<width&&y<height&&!cells.empty()&&cells[(size_t)y*width+x]!=0;
+   plants->set_instance_opacity(plant.first,hidden?0.0:1.0);hiddenPlants+=hidden;
+  }
+  plants->update_now();
+ }
+ terrain->set_meta("paving_hidden_plants",hiddenPlants);
+
  Ref<ImageTexture> mask;
  if(enabled) {
-  PackedByteArray bytes;bytes.resize(cells.size());std::memcpy(bytes.ptrw(),cells.data(),cells.size());
+  // Smooth once when topology changes, rather than adding nine mask samples to every rendered terrain pixel.
+  PackedByteArray bytes;bytes.resize(cells.size());auto *out=bytes.ptrw();
+  for(int y=0;y<height;++y)for(int x=0;x<width;++x) {
+   unsigned sum=0;
+   for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx) {
+    const int nx=x+dx,ny=y+dy;
+    if(nx>=0&&ny>=0&&nx<width&&ny<height)
+     sum+=cells[(size_t)ny*width+nx]*(dx==0?2:1)*(dy==0?2:1);
+   }
+   out[(size_t)y*width+x]=(sum+8)/16;
+  }
   mask=ImageTexture::create_from_image(Image::create_from_data(width,height,false,Image::FORMAT_L8,bytes));
  }
  std::vector<Node *> nodes{terrain};

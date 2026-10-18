@@ -192,7 +192,7 @@ vec3 shade_layer(vec2 uv_unwrapped, vec4 rect, vec4 vcol, float lod) {
 
 // Optional client-only paving over wall-enclosed navigation cells.
 uniform bool paving_enabled = false;
-uniform sampler2D paving_mask : filter_nearest, repeat_disable;
+uniform sampler2D paving_mask : filter_linear, repeat_disable;
 uniform sampler2D paving_texture : filter_linear_mipmap, repeat_enable;
 uniform vec2 paving_extent = vec2(1.0);
 uniform float paving_tile_size = 80.0;
@@ -229,7 +229,8 @@ vec3 terrain_output(vec2 uv0, vec4 vcol, vec2 sage_xy) {
 		comp = mix(comp, shade_layer(uv2, rect2, vcol, lod2), alpha2);
 	}
 	if (paving_enabled && all(greaterThanEqual(sage_xy, vec2(0.0))) && all(lessThan(sage_xy, paving_extent))) {
-		float mask = texture(paving_mask, sage_xy / paving_extent).r;
+		// The CPU supplies a Gaussian-smoothed mask; interpolate its contour across diagonal grid steps.
+		float mask = smoothstep(0.2, 0.8, texture(paving_mask, sage_xy / paving_extent).r);
 		vec3 albedo = texture(paving_texture, sage_xy / paving_tile_size).rgb;
 		vec3 sun = overbright ? 0.5 * sun_color : sun_color;
 		vec3 lit = (vcol.rgb + 0.5 * lightning_color + sun * max(normalize(v_lts).z, 0.0)) * albedo;
