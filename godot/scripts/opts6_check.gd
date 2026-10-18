@@ -32,7 +32,7 @@ const REQUIRED_ROWS := {
 		"Retail.MovieVolume", "Retail.MusicVolume", "Retail.SoundFxVolume", "Retail.VoiceVolume"],
 	"Camera": ["OpenBFMEConfineMouse", "OpenBFMEEdgeScroll", "OpenBFMEFreeCamera", "OpenBFMEInvertDragScroll", "OpenBFMEMaxZoomOut", "OpenBFMERotateSpeed",
 		"Retail.ScrollSpeed"],
-	"Interface": ["AlternateMouseSetup", "OpenBFMEGameClock", "OpenBFMEHealthBars", "OpenBFMEUIScale", "Retail.HealthBars"],
+	"Interface": ["AlternateMouseSetup", "OpenBFMEGameClock", "OpenBFMEHealthBars", "OpenBFMEMainMenuStyle", "OpenBFMEMapSiteMarkers", "OpenBFMEUIScale", "Retail.HealthBars"],
 	"Online": ["OpenBFMEShareResults", "Retail.OnlineIp", "Retail.OnlinePortNum", "Retail.RefreshNat", "Retail.SendDelay"],
 	"Performance": ["OpenBFMEUberPerformance"],
 	"Controls": [],
