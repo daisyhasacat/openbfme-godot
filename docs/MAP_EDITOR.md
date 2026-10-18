@@ -43,6 +43,15 @@ square brush footprints and the object-brush lattice; the map heightfield itself
 retains its fixed grid. Fog rendering is temporarily disabled in the editor so
 new neutral objects remain visible while the simulation is paused.
 
+## Texture boxes with road borders
+
+Choose **Border box**, select a ground texture in the library and a road type
+in the inspector, then drag between opposite corners on the map. The preview
+shows a rectangle aligned to the map axes. Release to paint its interior and add
+four road segments along its borders. Existing roads remain; Undo removes the
+whole box as one action. Boxes are included in Save/Load edit overlays.
+Road corners use the existing straight-strip renderer.
+
 ## Roads and terrain paths
 
 Choose **Edit roads / paths** to show the map's road centerlines and endpoint

@@ -124,7 +124,12 @@ class Outline extends Control:
    for id in editor.selected_objects:
     var obj:Dictionary=editor.world.get_object(id)
     if obj.get('ok',false):draw_circle(editor.hud.world_to_pixel(Vector2(obj.x,obj.y)),12,Color(1,.8,.2),false,3)
-  if editor.dragging and editor.tool.selected in [0,9]:
+  if editor.dragging and editor.tool.selected==10 and not editor.points.is_empty():
+   var corners=editor._box_corners(editor.points[0],editor.hud.pixel_to_world(editor.cursor))
+   var border=PackedVector2Array()
+   for point in corners:border.append(editor.hud.world_to_pixel(point))
+   border.append(border[0]);draw_colored_polygon(border,Color(.3,1,.6,.15));draw_polyline(border,Color(1,.8,.2),3)
+  elif editor.dragging and editor.tool.selected in [0,9]:
    draw_rect(Rect2(editor.start,editor.cursor-editor.start).abs(),Color(1,.3,.2,.15),true)
    draw_rect(Rect2(editor.start,editor.cursor-editor.start).abs(),Color(1,.4,.3),false,2)
   elif editor.tool.selected>=2 and editor.tool.selected<7:
@@ -149,7 +154,7 @@ func _ready():
  var heading=Label.new();heading.text='MAP EDITOR · simulation paused';box.add_child(heading)
  var close=Button.new();close.text='Exit editor';close.pressed.connect(func():set_active(false));box.add_child(close)
  tool=OptionButton.new()
- for text in ['Delete objects','Place object','Object brush','Raise terrain','Lower terrain','Flatten terrain','Paint ground texture','Pick terrain texture','Edit roads / paths','Select objects / owner']: tool.add_item(text)
+ for text in ['Delete objects','Place object','Object brush','Raise terrain','Lower terrain','Flatten terrain','Paint ground texture','Pick terrain texture','Edit roads / paths','Select objects / owner','Texture box with road border']: tool.add_item(text)
  tool.item_selected.connect(func(_i):hovered_texture='';_clear_preview();_update_controls());box.add_child(tool)
  shape=OptionButton.new();shape.add_item('Block / square');shape.add_item('Brush / circle');box.add_child(shape)
  grid_rotation=CheckButton.new();grid_rotation.text='Rotate brush grid 45°';box.add_child(grid_rotation)
@@ -196,8 +201,8 @@ func _build_workspace(ui_theme: Theme,background: StyleBoxFlat):
  toolbar=PanelContainer.new();toolbar.theme=ui_theme;toolbar.add_theme_stylebox_override('panel',background);add_child(toolbar)
  var rows=VBoxContainer.new();toolbar.add_child(rows)
  var modes=HFlowContainer.new();rows.add_child(modes)
- var names=['Delete','Object','Object brush','Raise','Lower','Flatten','Paint','Pick texture','Roads','Select']
- var icons=['⌫','⬡','▦','▲','▼','▬','▧','⌖','⌁','↖']
+ var names=['Delete','Object','Object brush','Raise','Lower','Flatten','Paint','Pick texture','Roads','Select','Border box']
+ var icons=['⌫','⬡','▦','▲','▼','▬','▧','⌖','⌁','↖','▣']
  for i in names.size():
   var button=Button.new();button.text=icons[i]+'\n'+names[i];button.tooltip_text=tool.get_item_text(i);button.toggle_mode=true;button.custom_minimum_size=Vector2(96,78)
   var block=StyleBoxFlat.new();block.bg_color=Color('#24343f');block.set_corner_radius_all(6);block.set_content_margin_all(8);button.add_theme_stylebox_override('normal',block)
@@ -348,24 +353,25 @@ func _update_controls():
  var placing=tool.selected in [1,2]
  tool.hide()
  for i in mode_buttons.size():mode_buttons[i].set_pressed_no_signal(i==tool.selected)
- lookup.visible=active and tool.selected in [1,2,6,7]
+ lookup.visible=active and tool.selected in [1,2,6,7,10]
  lookup_title.text='OBJECT LIBRARY' if placing else 'TERRAIN LIBRARY'
  if placing:texture_caption.text=_selected()
- if tool.selected==6:_texture_selected(texture.selected)
+ if tool.selected in [6,10]:_texture_selected(texture.selected)
  object_image.visible=placing and not grid_mode and not _selected().is_empty()
  object_view.render_target_update_mode=SubViewport.UPDATE_ALWAYS if placing and active and not grid_mode else SubViewport.UPDATE_DISABLED
- texture_caption.visible=(placing and not grid_mode) or tool.selected in [6,7]
- road_controls.visible=tool.selected==8
+ texture_caption.visible=(placing and not grid_mode) or tool.selected in [6,7,10]
+ road_controls.visible=tool.selected in [8,10]
+ for control in road_controls.get_children():control.visible=tool.selected==8 or control==road_type
  _field_visible(angle_control,placing);_field_visible(owner_slot,placing or tool.selected==9);apply_owner.visible=tool.selected==9
  _field_visible(radius,tool.selected>=2 and tool.selected<7);shape.visible=tool.selected>=2 and tool.selected<7;grid_rotation.visible=tool.selected>=2 and tool.selected<7
  _field_visible(strength,tool.selected in [2,3,4])
- search.visible=placing;objects.hide();object_filters.visible=placing;view_toggle.visible=placing;object_tree.visible=placing and not grid_mode;object_results.visible=placing and grid_mode;paging.visible=placing;texture.visible=tool.selected==6;texture_search.visible=tool.selected==6;texture_category.visible=tool.selected==6;texture_subcategory.visible=tool.selected==6;texture_preview.visible=tool.selected in [6,7];texture_caption.visible=(placing and not grid_mode) or tool.selected in [6,7]
+ search.visible=placing;objects.hide();object_filters.visible=placing;view_toggle.visible=placing;object_tree.visible=placing and not grid_mode;object_results.visible=placing and grid_mode;paging.visible=placing;texture.visible=tool.selected in [6,10];texture_search.visible=tool.selected in [6,10];texture_category.visible=tool.selected in [6,10];texture_subcategory.visible=tool.selected in [6,10];texture_preview.visible=tool.selected in [6,7,10];texture_caption.visible=(placing and not grid_mode) or tool.selected in [6,7,10]
  panel.reset_size()
 
 func set_active(enabled: bool):
  if active==enabled:return
  if not enabled and inspector!=null:inspector.hide()
- active=enabled;active_changed.emit(enabled);panel.visible=enabled;toolbar.visible=enabled;lookup.visible=enabled and tool.selected in [1,2,6,7];set_process(enabled)
+ active=enabled;active_changed.emit(enabled);panel.visible=enabled;toolbar.visible=enabled;lookup.visible=enabled and tool.selected in [1,2,6,7,10];set_process(enabled)
  if enabled:
   was_paused=world.is_paused();hud_was_processing=hud.is_processing_input();world.set_paused(true);was_shroud=world.get_shroud_report().get('displayed',true);world.set_shroud_drawn(false);hud.deselect_all();hud.set_process_input(false)
   terrain_info=world.map_editor_terrain({});_load_texture_catalog()
@@ -811,6 +817,9 @@ func _apply_owner():
  if inspector.visible:_inspect_selection()
 
 func _apply():
+ if tool.selected==10:
+  if not points.is_empty():_apply_bordered_box(points[0],hud.pixel_to_world(cursor))
+  return
  if tool.selected==9:
   selected_objects=_delete_ids()
   if not selected_objects.is_empty():owner_slot.value=world.get_object(selected_objects[0]).get('player_id',0)
@@ -848,6 +857,33 @@ func _apply():
   world.map_editor_terrain({'sync':true});status.text='Placed %d objects'%ids.size();return
  _paint_live()
  _finish_terrain_stroke()
+
+func _box_corners(a: Vector2,b: Vector2) -> Array[Vector2]:
+ var lo=Vector2(minf(a.x,b.x),minf(a.y,b.y));var hi=Vector2(maxf(a.x,b.x),maxf(a.y,b.y))
+ return [lo,Vector2(hi.x,lo.y),hi,Vector2(lo.x,hi.y)]
+
+func _apply_bordered_box(a: Vector2,b: Vector2,saved: Dictionary={}):
+ for point in [a,b]:
+  if not is_finite(point.x) or not is_finite(point.y) or absf(point.x)>1e7 or absf(point.y)>1e7:return false
+ if saved.is_empty() and (texture.selected<0 or road_type.selected<0):status.text='Choose a ground texture and border road.';return false
+ var corners=_box_corners(a,b)
+ if corners[2].x-corners[0].x<10 or corners[2].y-corners[0].y<10:status.text='Drag a box at least one terrain cell wide and high.';return false
+ var name=str(saved.texture) if saved.has('texture') else str(texture_filtered[texture.selected].name)
+ var border_name=str(saved.road) if saved.has('road') else road_type.get_item_text(road_type.selected)
+ var command={'mode':'paint','texture':name,'points':[(a+b)*.5],'rectangle':[corners[0].x,corners[0].y,corners[2].x,corners[2].y]}
+ var painted:Dictionary=world.map_editor_terrain(command)
+ if not painted.get('ok',false):status.text=str(painted.get('error'));return false
+ var bordered=roads.duplicate(true)
+ for i in 4:
+  var p=corners[i];var q=corners[(i+1)%4]
+  bordered.append({'name':border_name,'points':[[p.x,p.y],[q.x,q.y]]})
+ var result:Dictionary=world.map_editor_terrain({'roads':bordered})
+ if not result.get('ok',false):
+  world.map_editor_terrain({'patch':painted.undo});status.text=str(result.get('error'));return false
+ undo_stack.append({'terrain':painted.undo,'roads':result.undo_roads})
+ overlay.append({'bordered_box':{'a':[a.x,a.y],'b':[b.x,b.y],'texture':name,'road':border_name}})
+ roads=bordered;_refresh_roads();_refresh_camera();status.text='Painted box with four road borders.'
+ return true
 
 func _undo():
  if undo_stack.is_empty():return
@@ -904,6 +940,10 @@ func _load():
  if not document is Dictionary or document.get('version',0)!=1 or document.get('map','')!=terrain_info.get('map',''):
   status.text='Invalid edit file or different map.';return
  for action in document.get('operations',[]):
+  if action.has('bordered_box'):
+   var box=action.bordered_box
+   if not _apply_bordered_box(Vector2(box.a[0],box.a[1]),Vector2(box.b[0],box.b[1]),box):return
+   continue
   if action.has('terrain'):
    var command:Dictionary=action.terrain.duplicate(true);var samples:Array[Vector2]=[]
    for p in command.points:samples.append(Vector2(p[0],p[1]))

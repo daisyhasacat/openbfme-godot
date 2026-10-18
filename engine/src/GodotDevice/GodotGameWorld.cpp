@@ -3251,11 +3251,19 @@ Dictionary GameWorld::map_editor_terrain(const Dictionary &operation)
 			if(!std::isfinite(point.x) || !std::isfinite(point.y) || std::abs(point.x)>1e7 || std::abs(point.y)>1e7) continue;
 			const double angle=double(operation.get("grid_angle",0.0));
 			int cx=int(point.x/10)+hm.m_borderSize, cy=int(point.y/10)+hm.m_borderSize, r=int(radius*(square?1.415:1.0)/10)+1;
+			Array rectangle=operation.get("rectangle",Array());
+			if (rectangle.size()==4) {
+				for(int k=0;k<4;++k) if(!std::isfinite(double(rectangle[k])) || std::abs(double(rectangle[k]))>1e7) {result["ok"]=false;result["error"]="Invalid paint rectangle";return result;}
+				r=int(std::max(double(rectangle[2])-double(rectangle[0]),double(rectangle[3])-double(rectangle[1]))/10)+2;
+			}
 			for(int y=std::max(0,cy-r);y<std::min(hm.m_height,cy+r+1);++y) for(int x=std::max(0,cx-r);x<std::min(hm.m_width,cx+r+1);++x)
 			{
 				double dx=(x-hm.m_borderSize)*10-point.x,dy=(y-hm.m_borderSize)*10-point.y;
 				const double rx=dx*std::cos(angle)+dy*std::sin(angle),ry=-dx*std::sin(angle)+dy*std::cos(angle);
-				if(square ? std::max(std::abs(rx),std::abs(ry))>radius : dx*dx+dy*dy>radius*radius) continue;
+				if(rectangle.size()==4) {
+					const double wx=(x-hm.m_borderSize)*10,wy=(y-hm.m_borderSize)*10;
+					if(wx<double(rectangle[0]) || wx>=double(rectangle[2]) || wy<double(rectangle[1]) || wy>=double(rectangle[3])) continue;
+				} else if(square ? std::max(std::abs(rx),std::abs(ry))>radius : dx*dx+dy*dy>radius*radius) continue;
 				int i=y*hm.m_width+x; if(!changed.insert(i).second) continue; save(i);
 				if(mode=="paint" && tile>=0 && i<(int)hm.m_tileNdxes.size()) {// A 64px source tile supplies four 32px terrain cells. Anchor the
 					// complete class pattern to map coordinates so separate strokes join.
