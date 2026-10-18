@@ -540,7 +540,8 @@ func _process(_delta):
  if not is_instance_valid(hud):queue_free();return
  if tool.selected==7 and not _over_editor(cursor):_pick_terrain(false)
  var pixels=get_viewport().get_visible_rect().size
- var ui_scale=clampf(pixels.y/1080.0,.75,2.5)
+ # Keep the editor compact; large displays should expose more map rather than enlarge every control.
+ var ui_scale=clampf(pixels.y/1440.0,.6,1.0)
  var screen=pixels/ui_scale
  for window in [toolbar,panel,lookup]:window.scale=Vector2.ONE*ui_scale
  var toolbar_width=minf(1160,screen.x-24)

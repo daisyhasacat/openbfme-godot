@@ -4,6 +4,9 @@ Start a local skirmish, open the Lua console, then click **Map editor**. Editing
 pauses the simulation and captures gameplay input. **Exit editor** or **Esc**
 restores the previous pause state and gameplay HUD visibility. The normal command UI, minimap, and controller overlay hide while editing. Network games, replays and campaigns are excluded.
 
+The editor uses compact panels that shrink on smaller windows and stop growing
+at 1440 pixels of viewport height, leaving more of the map visible on large displays.
+
 - **Delete objects:** click an object, or drag a rectangle to delete objects whose
   origins fall inside it. This includes objects you cannot normally select.
 - **Place object:** search the template list, select an item, then click the map.
