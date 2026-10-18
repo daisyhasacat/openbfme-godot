@@ -18,6 +18,8 @@
 #include "GameLogic/Map/SidesList.h"
 
 #include "StartGolden.h"
+#include "CombatTestUtil.h"
+#include "GameLogic/Map/TerrainLogic.h"
 
 #include <array>
 #include <cfenv>
@@ -533,4 +535,103 @@ TEST_CASE("round2 review: tied start distances preserve slots and all seed words
    CHECK(run(mode) == nearest);
   }
  }
+}
+
+namespace
+{
+struct InwardStartMap
+{
+	WorldHeightMap map;
+	MapChunks chunks;
+	TerrainLogic terrain;
+	InwardStartMap()
+	{
+		map.m_width = map.m_height = 100;
+		map.m_dataSize = 10000;
+		map.m_data.assign(10000, 0);
+		map.m_boundaries = {{100,100}};
+	}
+	void add(const char *name, float x, float y, int type = 0)
+	{
+		MapObject point;
+		point.m_isWaypoint = true;
+		point.m_location = {x,y,0};
+		point.m_properties.setInt("waypointID", (int)chunks.objects.size() + 1);
+		point.m_properties.setAsciiString("waypointName", name);
+		point.m_properties.setInt("waypointType", type);
+		chunks.objects.push_back(point);
+	}
+	void init() { terrain.init(map, chunks); }
+};
+}
+
+TEST_CASE("starting base facing: default faces the average start area rather than a fixed template angle")
+{
+	InwardStartMap m;
+	m.add("Player_1_Start", 100, 300);
+	m.add("Player_2_Start", 900, 300);
+	m.add("Player_1_Rally", 100, 900);
+	m.add("Player_X_Start", 900, 900);
+	m.add("Player_0_Start", 900, 900);
+	m.init();
+	CHECK(StartingBase::inwardFacing(m.terrain, {100,300,0}, 0.25f) == 0.0f);
+	CHECK(StartingBase::inwardFacing(m.terrain, {900,300,0}, 0.25f) == 3.1415927410125732f);
+	CHECK(StartingBase::inwardFacing(m.terrain, {500,100,0}, 0.25f) == 1.5707963705062866f);
+	CHECK(StartingBase::inwardFacing(m.terrain, {500,500,0}, 0.25f) == -1.5707963705062866f);
+	// A start at the average uses the map center to get a useful direction.
+	CHECK(StartingBase::inwardFacing(m.terrain, {500,300,0}, 0.25f) == 1.5707963705062866f);
+}
+
+TEST_CASE("starting base facing: single starts empty starts and center starts have defined orientations")
+{
+	InwardStartMap m;
+	SUBCASE("no starts") {}
+	SUBCASE("one start") { m.add("Player_1_Start", 100, 500); }
+	SUBCASE("no playable boundary") { m.map.m_boundaries.clear(); }
+	m.init();
+	CHECK(StartingBase::inwardFacing(m.terrain, {100,500,0}, 0.25f) == 0.0f);
+	CHECK(StartingBase::inwardFacing(m.terrain, {500,500,0}, 0.25f) == 0.25f);
+}
+
+TEST_CASE("starting base facing: placement rotates the starting building and preserves unit placement and authored bases")
+{
+	InwardStartMap m;
+	m.add("Player_1_Start", 100, 300);
+	m.add("Player_2_Start", 900, 300);
+	int type = 0;
+	SUBCASE("ordinary skirmish start") {}
+	SUBCASE("map-authored fortress") { type = 5; m.chunks.objects[0].m_properties.setInt("waypointType", type); }
+	m.init();
+	combattest::CombatWorld w(
+		"Object StartKeep\n KindOf = STRUCTURE IMMOBILE\n PlacementViewAngle = 90\n"
+		" Geometry = BOX\n GeometryMajorRadius = 10\n GeometryMinorRadius = 10\n GeometryHeight = 20\n"
+		" Body = ActiveBody Body\n MaxHealth = 100\n End\nEnd\n"
+		"Object StartWorker\n KindOf = INFANTRY SELECTABLE\n PlacementViewAngle = 90\n"
+		" Geometry = CYLINDER\n GeometryMajorRadius = 2\n GeometryHeight = 10\nEnd\n");
+	w.logic->setTerrain(&m.terrain);
+	Player *owner = w.teamA()->getControllingPlayer();
+	PlayerTemplate faction;
+	faction.m_startingBuilding = "StartKeep";
+	faction.m_startingUnit[0] = "StartWorker";
+	faction.m_startingUnitOffset[0] = {100,0,0};
+	SkirmishGameSlot slot;
+	slot.startPos = 0;
+	StartingBase::Result result;
+	StartingBase::placeForPlayer(*w.logic, 0, slot, *owner, faction, result);
+	CHECK(result.errors.empty());
+	const size_t expected = type == 0 ? 2 : 1;
+	REQUIRE(result.placed.size() == expected);
+	if (type == 0)
+	{
+		Object *keep = w.logic->findObjectByID(result.placed[0].id);
+		REQUIRE(keep != nullptr);
+		CHECK(keep->getOrientation() == 0.0f);
+		CHECK(keep->getName() == "BASE_FLAG_1");
+	}
+	Object *worker = w.logic->findObjectByID(result.placed.back().id);
+	REQUIRE(worker != nullptr);
+	CHECK(worker->getOrientation() == 1.5707963705062866f);
+	const Coord3D expectedPosition = StartingBase::unitPositionFromOffset({100,300,0}, {100,0,0});
+	CHECK(worker->getPosition()->x == expectedPosition.x);
+	CHECK(worker->getPosition()->y == expectedPosition.y);
 }

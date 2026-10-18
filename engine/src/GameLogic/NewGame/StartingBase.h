@@ -19,6 +19,9 @@
 //     south-east side whatever the offset says except through A.)  With a ZERO offset retail searches the partition manager (findPositionAround around the rally
 //     point, radii from the CastleBehavior or the geometry): not ported, a template with one is an error here (S-272).  A unit then gets Player::onUnitCreated
 //     (RW 0x6AA688).
+// OPENBFME DEFAULT: generated starting buildings face the average of the map start
+// locations (map center when needed), before creation callbacks and castle unpack.
+// Starting unit offsets and orientations and map-authored fortresses keep their rules.
 // INFERENCE / not ported (S-272): Player::onStructureCreated / ConstructionComplete / onUnitCreated, the team activation, the pathfinder registration and the
 // adjusted destination of mobile units, the waypoint flag, the CRT parity of acos / sin / cos (S-081 / S-167).
 
@@ -51,6 +54,9 @@ struct Result
 };
 // RW 0x62AC17 for one slot (`slotNum` is its index); the placed objects and every problem are in `result` (never silent)
 void placeForPlayer(GameLogic &logic, int slotNum, const SkirmishGameSlot &slot, Player &player, const PlayerTemplate &pt, Result &result);
+// OpenBFME default: face the average of map start locations, or the map center.
+// At the center itself there is no direction, so preserve the template angle.
+float inwardFacing(const TerrainLogic &terrain, const Coord3D &position, float placementAngle);
 // the unit offset arithmetic alone (tests pin it): the position of a starting unit from the structure position and the template's offset
 Coord3D unitPositionFromOffset(const Coord3D &structurePos, const Coord3D &offset);
 std::vector<std::string> stopLines();

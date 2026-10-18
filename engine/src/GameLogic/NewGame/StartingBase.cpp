@@ -21,7 +21,7 @@
 namespace
 {
 // RW 0x629DD9 (ZH placeObjectAtPosition): the parts this layer has; the rest is S-272
-Object *placeObjectAtPosition(GameLogic &logic, Player &player, const std::string &name, const Coord3D &pos, StartingBase::Result &result)
+Object *placeObjectAtPosition(GameLogic &logic, Player &player, const std::string &name, const Coord3D &pos, StartingBase::Result &result, bool faceCenter = false)
 {
 	const ThingTemplate *tt = logic.things().findTemplate(name);
 	if (!tt)
@@ -48,6 +48,7 @@ Object *placeObjectAtPosition(GameLogic &logic, Player &player, const std::strin
 			angle = *f;
 		}
 	}
+	if (faceCenter) angle = StartingBase::inwardFacing(*logic.terrain(), pos, angle);
 	obj->setOrientation(angle);
 	Coord3D p = pos;
 	obj->setPosition(&p);
@@ -71,6 +72,48 @@ Object *placeObjectAtPosition(GameLogic &logic, Player &player, const std::strin
 	return obj;
 }
 } // namespace
+
+// OpenBFME starting-base improvement: the engine's local +X facing points inward.
+// Use every map start, so the layout does not depend on which lobby slots are occupied.
+float StartingBase::inwardFacing(const TerrainLogic &terrain, const Coord3D &position, float placementAngle)
+{
+	Coord3D center{0.0f, 0.0f, 0.0f};
+	unsigned count = 0;
+	for (const Waypoint &wp : terrain.waypoints())
+	{
+		const std::string &name = wp.name;
+		if (name.size() < 14 || name.compare(0, 7, "Player_") != 0 || name.compare(name.size() - 6, 6, "_Start") != 0 || name[7] == '0') continue;
+		bool start = true;
+		for (size_t i = 7; i < name.size() - 6; ++i) start = start && name[i] >= '0' && name[i] <= '9';
+		if (!start) continue;
+		center.x = SimMath::addf32(center.x, wp.location.x);
+		center.y = SimMath::addf32(center.y, wp.location.y);
+		++count;
+	}
+	if (count > 1)
+	{
+		center.x = SimMath::divf32(center.x, (float)count);
+		center.y = SimMath::divf32(center.y, (float)count);
+	}
+	if (count < 2 || (center.x == position.x && center.y == position.y))
+	{
+		float x, y;
+		if (terrain.getLargestExtent(x, y))
+		{
+			center.x = SimMath::mulf32(x, 0.5f);
+			center.y = SimMath::mulf32(y, 0.5f);
+		}
+		else
+		{
+			float loX, loY, hiX, hiY;
+			terrain.getMapExtentIncludingBorder(loX, loY, hiX, hiY);
+			center.x = SimMath::mulf32(SimMath::addf32(loX, hiX), 0.5f);
+			center.y = SimMath::mulf32(SimMath::addf32(loY, hiY), 0.5f);
+		}
+	}
+	const float dx = SimMath::subf32(center.x, position.x), dy = SimMath::subf32(center.y, position.y);
+	return dx == 0.0f && dy == 0.0f ? placementAngle : SimMath::fstpDword(SimMath::atan2d(dy, dx));
+}
 
 Coord3D StartingBase::unitPositionFromOffset(const Coord3D &base, const Coord3D &off)
 {
@@ -131,7 +174,7 @@ void StartingBase::placeForPlayer(GameLogic &logic, int slotNum, const SkirmishG
 	// units are placed around the start waypoint (RW 0x62AE37: the base point is the waypoint's location when no structure was made)
 	if (!pt.m_startingBuilding.empty() && pt.hasStartingBuilding() && wp->type == 0)
 	{
-		conYard = placeObjectAtPosition(logic, player, pt.m_startingBuilding, pos, result);
+		conYard = placeObjectAtPosition(logic, player, pt.m_startingBuilding, pos, result, true);
 		if (conYard)
 		{
 			conYard->setName("BASE_FLAG_" + std::to_string(slot.startPos + 1));
@@ -181,7 +224,7 @@ void StartingBase::placeForPlayer(GameLogic &logic, int slotNum, const SkirmishG
 std::vector<std::string> StartingBase::stopLines()
 {
 	return {
-		"[S-272] starting base: ported from the RotWK 2.01 disassembly (RW 0x62AC17; S-001 caveat). Not ported: Player::onStructureCreated / onStructureConstructionComplete / "
+		"[S-272] starting base: ported from the RotWK 2.01 disassembly (RW 0x62AC17; S-001 caveat). OpenBFME default: generated starting buildings face the map start centroid, or map center, instead of PlacementViewAngle. Not ported: Player::onStructureCreated / onStructureConstructionComplete / "
 		"onUnitCreated, the team activation, the pathfinder registration and the adjusted destination of mobile units, the partition search of a "
 		"zero-offset starting unit (an error), and the CRT acos / sin / cos parity (S-081 / S-167)",
 	};
