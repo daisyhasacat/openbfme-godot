@@ -30,7 +30,8 @@ function player:construct(template,pos,speed,cb)
 end
 local saved={}
 bfme={layouts={save=function(k,v) saved[k]=v; return k end,load=function(k)return saved[k]end,list=function()return {'test'}end},players={[1]=player,localPlayer=player},buildingInstances=live,
- match={getStartPositions=function() return {{x=100,y=20,playerId=1}} end,getStatus=function() return {generation=generation} end},
+ map={getStartPositions=function() return {{x=100,y=20,playerId=1}} end},
+ match={getStatus=function() return {generation=generation} end},
  mutations={getStatus=function(id) return statuses[id] end,getBuilding=function(id) return started[id] end},
  events={onUpdate=function(_,fn) tick=fn end,remove=function() tick=nil end}}
 local function pump()

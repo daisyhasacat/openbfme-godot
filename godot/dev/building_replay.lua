@@ -50,7 +50,7 @@ function replayBuildings(name, options)
                 if building.castle then anchor = building; break end
             end
             local best
-            for _, position in ipairs(bfme.match.getStartPositions()) do
+            for _, position in ipairs(bfme.map.getStartPositions()) do
                 local candidate = position.playerId and bfme.players[position.playerId]
                 if candidate and anchor then
                     local distance = (position.x-anchor.x)^2 + (position.y-anchor.y)^2
