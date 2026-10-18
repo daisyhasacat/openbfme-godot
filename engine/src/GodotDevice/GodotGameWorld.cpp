@@ -1113,7 +1113,12 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	Ref<ConfigFile> wallConfig; wallConfig.instantiate();
 	wallConfig->load("res://dev/wall_balance.cfg");
 	Ref<ConfigFile> savedWalls; savedWalls.instantiate();
-	if (savedWalls->load("user://wall_balance.cfg") == OK) wallConfig = savedWalls;
+	if (savedWalls->load("user://wall_balance.cfg") == OK)
+ {
+  for (const String &section : savedWalls->get_sections())
+   for (const String &key : savedWalls->get_section_keys(section))
+    wallConfig->set_value(section,key,savedWalls->get_value(section,key));
+ }
 	auto setting = [&](const char *key, const Variant &fallback) { return wallConfig->get_value("walls",key,fallback); };
 	auto scalar = [&](const char *key, float fallback, float lo, float hi) {
 		const float value = setting(key,fallback);
