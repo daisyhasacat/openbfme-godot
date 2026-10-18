@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 
 namespace
@@ -409,6 +410,44 @@ bool WindowManager::hideAptWindow(int index)
 	return true;
 }
 
+bool WindowManager::unloadAptMovie(int index)
+{
+	// AptPlayer::HideLevel (RW 0x622463): the cursor tooltip is cleared (TheMouse), a loaded level is unloaded (UnloadLevel, flags & 0xF5: loaded and focus off)
+	if ((unsigned)index >= (unsigned)kAptWindowCount)
+	{
+		return false;
+	}
+	m_services.setCursorTooltip(std::string());
+	m_tooltipLabel.clear();
+	if (m_windows[index].index == -1)
+	{
+		return false;
+	}
+	if (!(m_windows[index].flags & APTWIN_LOADED))
+	{
+		// a movie still waiting to load does not load under the screen that covered it (INFERENCE: retail's flag stays and the movie would come up hidden-less)
+		const bool pending = (m_windows[index].flags & APTWIN_LOAD_PENDING) != 0;
+		m_windows[index].flags = (std::uint8_t)(m_windows[index].flags & ~APTWIN_LOAD_PENDING);
+		return pending;
+	}
+	m_apt->unloadLevel(index);
+	m_windows[index].flags = (std::uint8_t)(m_windows[index].flags & ~(APTWIN_LOADED | APTWIN_FOCUS | APTWIN_HIDDEN));
+	m_focusDirty = true;
+	return true;
+}
+
+bool WindowManager::reloadAptMovie(int index)
+{
+	// AptPlayer::ShowLevel (RW 0x6221E0): a level whose movie is not loaded is flagged to load again (flags |= 1), the next update loads it
+	if ((unsigned)index >= (unsigned)kAptWindowCount || m_windows[index].index == -1 || (m_windows[index].flags & APTWIN_LOADED))
+	{
+		return false;
+	}
+	m_windows[index].flags = (std::uint8_t)(m_windows[index].flags | APTWIN_LOAD_PENDING);
+	m_windowsDirty = true;
+	return true;
+}
+
 bool WindowManager::showAptWindow(int index)
 {
 	if ((unsigned)index >= (unsigned)kAptWindowCount || !(m_windows[index].flags & APTWIN_LOADED))
@@ -552,6 +591,13 @@ std::vector<std::string> keysOf(const Map &m)
 } // namespace
 
 std::vector<std::string> WindowManager::commandNames() const { return keysOf(m_commands); }
+
+std::vector<std::string> WindowManager::takeInvokedCommands()
+{
+	std::vector<std::string> out;
+	out.swap(m_invokedCommands);
+	return out;
+}
 std::vector<std::string> WindowManager::providerNames() const { return keysOf(m_providers); }
 std::vector<std::string> WindowManager::componentNames() const { return keysOf(m_components); }
 std::vector<std::string> WindowManager::screenRefNames() const
@@ -573,9 +619,14 @@ bool WindowManager::invokeCallback(const std::string &name, const std::string &a
 		return false; // WindowManager::invokeCallback: a null name returns
 	}
 	auto it = m_commands.find(name);
+	const std::string line = name + (argument.empty() ? std::string() : " (" + argument + ")");
+	if (m_invokedCommands.size() < 1000)
+	{
+		m_invokedCommands.push_back(it == m_commands.end() ? "unhandled:" + line : line);
+	}
 	if (it == m_commands.end())
 	{
-		note("command-unhandled", name + (argument.empty() ? std::string() : " (" + argument + ")"));
+		note("command-unhandled", line);
 		return false;
 	}
 	// copy: the handler may unregister itself (a screen closing from its own command)
@@ -741,6 +792,84 @@ bool WindowManager::setAptRootMember(int level, const std::string &name, const A
 		return false;
 	}
 	root->setMember(name, value);
+	return true;
+}
+
+bool WindowManager::setAptVisible(int level, const std::string &path, bool visible, std::string *error)
+{
+	AptSpriteInst *root = levelRoot(level);
+	// "<path>#<depth>": the child placed at that depth of the clip at <path> (an unnamed child: a field frame drawn by a shape)
+	const std::size_t hash = path.find('#');
+	AptCharacterInst *inst = root ? m_apt->resolvePath(root, path.substr(0, hash)) : nullptr;
+	if (inst && hash != std::string::npos)
+	{
+		const int depth = std::atoi(path.c_str() + hash + 1);
+		AptSpriteInst *sprite = inst->asSprite();
+		inst = nullptr;
+		for (AptCharacterInst *child : sprite ? sprite->children() : std::vector<AptCharacterInst *>())
+		{
+			inst = child->depth() == depth ? child : inst;
+		}
+	}
+	if (!inst)
+	{
+		if (error)
+		{
+			*error = root ? "path '" + path + "' does not resolve in _level" + std::to_string(level) : "no movie in _level" + std::to_string(level);
+		}
+		return false;
+	}
+	inst->visible = visible;
+	return true;
+}
+
+bool WindowManager::hasAptPath(int level, const std::string &path)
+{
+	AptSpriteInst *root = levelRoot(level);
+	return root && m_apt->resolvePath(root, path) != nullptr;
+}
+
+bool WindowManager::setAptMember(int level, const std::string &path, const std::string &name, const AptValue &value, std::string *error)
+{
+	AptSpriteInst *root = levelRoot(level);
+	const std::size_t hash = path.find('#');
+	AptCharacterInst *inst = root ? m_apt->resolvePath(root, path.substr(0, hash)) : nullptr;
+	if (inst && hash != std::string::npos)
+	{
+		const int depth = std::atoi(path.c_str() + hash + 1);
+		AptSpriteInst *sprite = inst->asSprite();
+		inst = nullptr;
+		for (AptCharacterInst *child : sprite ? sprite->children() : std::vector<AptCharacterInst *>())
+		{
+			inst = child->depth() == depth ? child : inst;
+		}
+	}
+	if (!inst)
+	{
+		if (error)
+		{
+			*error = root ? "path '" + path + "' does not resolve in _level" + std::to_string(level) : "no movie in _level" + std::to_string(level);
+		}
+		return false;
+	}
+	inst->setMember(name, value);
+	return true;
+}
+
+bool WindowManager::setAptFieldText(int level, const std::string &path, const std::string &text, std::string *error)
+{
+	AptSpriteInst *root = levelRoot(level);
+	AptTextInst *field = root ? dynamic_cast<AptTextInst *>(m_apt->resolvePath(root, path)) : nullptr;
+	if (!field)
+	{
+		if (error)
+		{
+			*error = "no text field '" + path + "' in _level" + std::to_string(level);
+		}
+		return false;
+	}
+	field->text = text;
+	field->textAssigned = true;
 	return true;
 }
 
@@ -1246,6 +1375,26 @@ void WindowManager::enableComponents(const std::string &path, bool enable)
 		if (enabled != enable)
 		{
 			rec.window->winEnable(enable);
+		}
+	}
+}
+
+void WindowManager::setCapturesMouse(bool captures, int level)
+{
+	m_capturesMouse = captures;
+	m_apt->input().setInputFloor(captures ? level : -1);
+	for (int l : m_captureHidden)
+	{
+		showAptWindow(l); // the levels the last capture hid (a level unloaded since answers false)
+	}
+	m_captureHidden.clear();
+	for (int l = 1; captures && l < level && l < kAptWindowCount; ++l) // level 0 is AptLevel0, the manager's own root movie (init), never a screen
+	{
+		if (l != m_backgroundLevel && isAptWindowLoaded(l) && !(m_windows[l].flags & APTWIN_HIDDEN) && hideAptWindow(l))
+		{
+			m_captureHidden.push_back(l);
+			note("capture-hides", "[S-4982] " + m_windows[level].file + " covers the stage: " + m_windows[l].file + " under it is hidden and takes no pointer input "
+				"until it closes (OpenBFME's modal screen, not retail)");
 		}
 	}
 }

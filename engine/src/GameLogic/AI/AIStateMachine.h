@@ -55,6 +55,7 @@ enum AIStateType
 	AI_MOVE_OUT_OF_THE_WAY = 26,
 	AI_MOVE_AND_TIGHTEN = 27,
 	AI_BUSY = 42,
+	AI_FOLLOW_PATH_AS_TEAM = 54, // lane BACKLOG-8 r2: RotWK's state 54 (decomp AIStateMachineCtor.cpp: AIFollowPathAsTeamState, the formation march)
 	AI_NO_STATE = 0xF423F
 };
 static const unsigned INVALID_STATE_ID = 0xFFFFFFFFu;
@@ -85,6 +86,10 @@ public:
 	virtual void crc(class StateHasher &hasher) const { (void)hasher; }
 	// lane MODULES-3: the fields a state keeps between its activations (RW keeps the state objects), hashed while it is neither the current nor the temporary state
 	virtual void crcPersistent(class StateHasher &hasher) const { (void)hasher; }
+	// lane SAVE-4c (obfme:AIWorld): every field the state keeps, current or not (retail keeps the state objects and StateMachine::xfer RW 0x8DBAEC saves each
+	// one). Pure: every state class says what it keeps, a state without fields writes its version only (xferNoFields)
+	virtual void xfer(class Xfer &x) = 0;
+	static void xferNoFields(class Xfer &x);
 	// lane MODULES-3 r2: RW State slot 0x1C, called on the current state when a temporary state ends by itself (RW 0x751D9A); nothing for most states, the move
 	// states clear their internal move's "waiting for a path" (RW 0x740C97)
 	virtual void onTemporaryStateEnded() {}
@@ -180,6 +185,18 @@ public:
 	const Coord3D *goalPathPosition(int index) const;
 	// the OpenBFME state hash of the machine: the current and temporary state, the sleep, the lock, the goals
 	void crc(class StateHasher &hasher) const;
+	// lane SAVE-4c (AIStateMachineSnapshot.cpp): what crc covers, then every defined state's own xfer in id order. A load goes into a machine made by the same
+	// constructor (the class's makeStateMachine): its states must be the saved ones, by id
+	void xfer(class Xfer &x);
+	// lane SAVE-4c: while a guard lives (a snapshot load on this thread), a machine that goes away (one a load replaces) drops its states without running
+	// their exits: the exits would change the object (model conditions, statuses, the turret) that the load is restoring
+	struct LoadGuard
+	{
+		LoadGuard();
+		~LoadGuard();
+		LoadGuard(const LoadGuard &) = delete;
+		LoadGuard &operator=(const LoadGuard &) = delete;
+	};
 
 private:
 	friend class AIState;
@@ -219,6 +236,7 @@ public:
 	StateReturnType update() override;
 	bool isIdle() const override { return true; }
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override;
 
 private:
 	void doInitIdleState();
@@ -236,6 +254,7 @@ public:
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override;
 	void onTemporaryStateEnded() override; // RW 0x740C97
 
 protected:
@@ -254,6 +273,7 @@ public:
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override;
 	void onTemporaryStateEnded() override; // RW 0x740C97
 
 private:
@@ -271,6 +291,7 @@ class AIWaitState : public AIState
 public:
 	explicit AIWaitState(AIStateMachine &m) : AIState(m, "AIWaitState") {}
 	StateReturnType update() override { return STATE_CONTINUE; }
+	void xfer(class Xfer &x) override { xferNoFields(x); }
 };
 
 // AIBusyState (id 0x2A, which AIMover::blockedBy tests): the unit is busy and takes no moves aside
@@ -279,4 +300,5 @@ class AIBusyState : public AIState
 public:
 	explicit AIBusyState(AIStateMachine &m) : AIState(m, "AIBusyState") {}
 	StateReturnType update() override { return STATE_CONTINUE; }
+	void xfer(class Xfer &x) override { xferNoFields(x); }
 };

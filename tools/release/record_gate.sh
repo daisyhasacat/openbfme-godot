@@ -10,14 +10,15 @@
 # line (verify.sh prints it since AUTOREL-1 r2) must be the sha; a log from before that has only `RESULT commit <abbrev> <subject>`,
 # whose abbreviation must be the prefix of exactly one object of this repository, that commit (an object prefix, never a ref name). Anything else records
 # nothing and exits 1. A line already present is not written twice.
-# Environment (defaults): OPENBFME_RELEASE_STATE (~/.local/state/openbfme-release), OPENBFME_RELEASE_LOGS (~/.cache/openbfme-recover/logs),
-#   OPENBFME_REMOTE_VERIFY (~/.cache/openbfme-recover/remote-verify.sh).
+# Environment (defaults): OPENBFME_RELEASE_STATE (~/.local/state/openbfme-release); required (PUBLISH-2: the operator's private release
+#   environment, the public tree names no private path): OPENBFME_RELEASE_LOGS (the gate logs' folder), OPENBFME_REMOTE_VERIFY (the gate
+#   runner, called with --result <name>).
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 STATE=${OPENBFME_RELEASE_STATE:-$HOME/.local/state/openbfme-release}
-LOGS=${OPENBFME_RELEASE_LOGS:-$HOME/.cache/openbfme-recover/logs}
-REMOTE_VERIFY=${OPENBFME_REMOTE_VERIFY:-$HOME/.cache/openbfme-recover/remote-verify.sh}
 fail() { echo "RECORD GATE FAIL: $*" >&2; exit 1; }
+LOGS=${OPENBFME_RELEASE_LOGS:-}; REMOTE_VERIFY=${OPENBFME_REMOTE_VERIFY:-}
+[ -n "$LOGS" ] && [ -n "$REMOTE_VERIFY" ] || fail "OPENBFME_RELEASE_LOGS and OPENBFME_REMOTE_VERIFY must be set (the operator's private release environment)"
 [ $# = 2 ] || fail "usage: record_gate.sh <sha> <remote-verify name>"
 SHA=$(git -C "$REPO" rev-parse -q --verify "$1^{commit}") || fail "$1 is not a commit of this repository"
 NAME=$2

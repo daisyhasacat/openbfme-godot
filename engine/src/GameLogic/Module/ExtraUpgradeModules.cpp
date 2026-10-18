@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/ExtraUpgradeModules.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "GameLogic/Object/Object.h"
 
@@ -42,4 +43,12 @@ void AttributeModifierUpgrade::processUpgradeRemoval()
 	setCustomAnim(false);                                          // RW 0x8BA8F1
 	getObject()->removeAttributeModifier(m_data->m_attributeModifier); // RW 0x68F259
 	setUpgradeExecuted(false);                                     // slot 9 (0)
+}
+
+// ---- lane SAVE-4b: the snapshots (UpgradeModule's: the classes keep no state of their own) ----
+
+void AttributeModifierUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
 }

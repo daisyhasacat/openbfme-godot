@@ -69,4 +69,6 @@ python3 -c "import sys; v = lambda s: tuple(map(int, s.split('.'))); sys.exit(0 
 # lane DEP-2: the export map keeps every symbol local but the entry point (engine/cmake/openbfme-linux-exports.ver)
 exports=$("$SDK/bin/x86_64-godot-linux-gnu-nm" -D --defined-only "$SO" | awk '{print $3}' | tr '\n' ' ') || fail "cannot read the dynamic symbols of $SO"
 [ "$exports" = "openbfme_library_init " ] || fail "$SO exports more than openbfme_library_init: ${exports:0:300}"
+# lane RELFIX-1: the package audit's developer-path rule on the library alone (a build path leaking into it fails here, not at packaging)
+python3 "$ROOT/tools/release/audit_package.py" "$SO" || fail "$SO fails the package audit"
 echo "BUILT: $SO (requires GLIBC $need)"

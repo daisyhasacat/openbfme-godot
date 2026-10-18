@@ -50,6 +50,7 @@ public:
 class DestroyDie : public BehaviorModule, public DieModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(DestroyDie) // lane SAVE-4b: BehaviorModule's (no state)
 	DestroyDie(Thing *thing, const DestroyDieModuleData *data) : BehaviorModule(thing, data), m_data(data) {}
 	DieModuleInterface *getDie() override { return this; }
 	void onDie(const DieModuleInterface::Event &event) override;
@@ -70,6 +71,7 @@ public:
 class KeepObjectDie : public BehaviorModule, public DieModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(KeepObjectDie) // lane SAVE-4b: BehaviorModule's (no state)
 	KeepObjectDie(Thing *thing, const KeepObjectDieModuleData *data) : BehaviorModule(thing, data), m_data(data) {}
 	DieModuleInterface *getDie() override { return this; }
 	void onDie(const DieModuleInterface::Event &) override {}
@@ -90,6 +92,7 @@ public:
 class FXListDie : public BehaviorModule, public DieModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(FXListDie) // lane SAVE-4b: BehaviorModule's (no state)
 	FXListDie(Thing *thing, const FXListDieModuleData *data) : BehaviorModule(thing, data), m_data(data) {}
 	DieModuleInterface *getDie() override { return this; }
 	void onDie(const DieModuleInterface::Event &event) override;
@@ -114,6 +117,7 @@ public:
 class PorcupineFormationBody : public ActiveBody
 {
 public:
+	OBFME_MODULE_XFER(PorcupineFormationBody) // lane SAVE-4b: ActiveBody's
 	PorcupineFormationBody(Thing *thing, const PorcupineFormationBodyModuleData *data) : ActiveBody(thing, data), m_porcupine(data) {}
 	const PorcupineFormationBodyModuleData *porcupineData() const { return m_porcupine; }
 
@@ -146,6 +150,7 @@ public:
 	std::vector<std::string> m_fx[SDPHASE_COUNT];     ///< FX = <phase> <names...> (one entry per name)
 	std::vector<std::string> m_ocl[SDPHASE_COUNT];
 	std::vector<std::string> m_weapon[SDPHASE_COUNT];
+	int m_resolvedLogicMask = 0; ///< RW +0x18C bits 2/4, set by the OCL/weapon list parsers
 	std::vector<std::string> m_sound;                  ///< Sound = <phase> <name> (kept as written)
 	std::vector<std::string> m_sounds[SDPHASE_COUNT];  ///< lane FX-2: every name of the Sound lines per phase (RW + 0xE8 + 12 * phase)
 	float m_flingForce = 0.0f, m_flingForceVariance = 0.0f; ///< +0x118 / +0x11C
@@ -164,6 +169,7 @@ public:
 class SlowDeathBehavior : public UpdateModule, public DieModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(SlowDeathBehavior) // lane SAVE-4b
 	SlowDeathBehavior(Thing *thing, const SlowDeathBehaviorModuleData *data);
 	DieModuleInterface *getDie() override { return this; }
 	void onDie(const DieModuleInterface::Event &event) override;

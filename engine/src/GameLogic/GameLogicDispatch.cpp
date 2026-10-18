@@ -313,6 +313,13 @@ const char *GameLogicDispatch::containRallyStopLine()
 	return kStopContainRally;
 }
 
+Object *GameLogicDispatch::issuerObject(GameLogic &logic, const GameMessage &m, ObjectID id)
+{
+	Object *obj = logic.findObjectByID(id);
+	const Player *issuer = logic.players().getNthPlayer(m.getPlayerIndex());
+	return obj && issuer && obj->getControllingPlayer() == issuer ? obj : nullptr;
+}
+
 // RW 0x77A26C / 0x779544 / 0x7798D5
 void GameLogicDispatch::setRallyPoint(const GameMessage &m)
 {
@@ -323,7 +330,7 @@ void GameLogicDispatch::setRallyPoint(const GameMessage &m)
 		error(m, "expected { object id, location, bool global, object id target }");
 		return;
 	}
-	Object *obj = m_logic.findObjectByID(a0->objectID);
+	Object *obj = issuerObject(m_logic, m, a0->objectID); // OpenBFME (review DEVPORT-7e): another player's object is not the issuer's to rally
 	Object *target = a3->objectID != INVALID_ID ? m_logic.findObjectByID(a3->objectID) : nullptr;
 	if (!obj)
 	{

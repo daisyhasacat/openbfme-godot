@@ -2,6 +2,7 @@
 // See GameLogic/Module/EmotionModules.h for the target facts and the stops S-1021 / S-1022.
 
 #include "GameLogic/Module/EmotionModules.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
 
 #include "Common/AsciiString.h"
@@ -971,4 +972,58 @@ bool EmotionModules::visibleToScans(const Object &o)
 bool EmotionModules::canSeeObject(Object &self, Object &other, float range)
 {
 	return canSee(self, other, range);
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------
+// The tracker's nuggets are made by its constructor from the data (the same list for the object a load makes): each loads its state, the current one is
+// its index (-1: none).
+void EmotionTrackerUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	for (int i = 0; i < EMOTION_TYPE_COUNT; ++i)
+	{
+		bool requested = !x.isLoading() && m_requested[(size_t)i];
+		x.xferBool(&requested);
+		m_requested[(size_t)i] = requested;
+		x.xferUnsignedInt(&m_requestEnd[(size_t)i]);
+		x.xferObjectID(&m_source[(size_t)i]);
+	}
+	std::uint32_t count = x.isLoading() ? 0 : (std::uint32_t)m_nuggets.size();
+	x.xferUnsignedInt(&count);
+	if (count != m_nuggets.size())
+	{
+		throw XferException("the snapshot's emotion tracker has " + std::to_string(count) + " nuggets, this one " + std::to_string(m_nuggets.size()));
+	}
+	std::int32_t current = -1;
+	for (size_t i = 0; i < m_nuggets.size(); ++i)
+	{
+		m_nuggets[i]->xfer(x);
+		current = (!x.isLoading() && m_nuggets[i].get() == m_current) ? (std::int32_t)i : current;
+	}
+	x.xferInt(&current);
+	if (x.isLoading())
+	{
+		if (current < -1 || current >= (std::int32_t)m_nuggets.size())
+		{
+			throw XferException("the snapshot's emotion tracker's current nugget is " + std::to_string(current));
+		}
+		m_current = current < 0 ? nullptr : m_nuggets[(size_t)current].get();
+	}
+	x.xferInt(&m_scanCountdown);
+	SnapshotXfer::enumIn(x, m_forcedType, -1, EMOTION_TYPE_COUNT - 1, "an emotion tracker's forced emotion");
+	x.xferInt(&m_forcedFrames);
+	x.xferObjectID(&m_forcedSource);
+	x.xferUnsignedInt(&m_nextHeroCheer);
+	x.xferBool(&m_heroFlag);
+}
+
+// retail's RadiateFearUpdate::xfer (RW 0x89F91F, (1, 1)) is UpdateModule::xfer, the version, the mux; OpenBFME adds its counters (native)
+void RadiateFearUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	xferMux(x);
+	x.xferUnsignedInt(&m_pulses);
+	SnapshotXfer::u64(x, m_requests);
 }

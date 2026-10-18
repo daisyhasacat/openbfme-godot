@@ -3,8 +3,10 @@
 ## the render list), the real game shows no developer text (game.gd _dev_text_on_screen) and a cinematic's letterbox hides the Palantir as retail's
 ## doLetterBoxMode (RW 0x7BC8B7: HideControlBar). scenes/game.tscn runs as a child process:
 ##   1. the main menu's Bonus campaign (AptMainMenu::BonusCampaign), its mission won by the test hooks, the way back to the main menu;
-##   2. --campaign=ANGMAR_CAMPAIGN --mission=2 (Amon Sul) won, the next mission (Dark Eye) starts; with --dev-overlay (the check sees the overlay);
-##   3. the main menu's Continue (AptMainMenu::ContinueCampaign: the progress run 2 saved);
+##   2. --campaign=ANGMAR_CAMPAIGN --mission=2 (Amon Sul) won, the next mission (Dark Eye) starts; with --dev-overlay (the check sees the overlay); lane
+##   CAMPSAVE-1: between them the score screen and CampaignMenu.apt (the shell's pictures are back there), Next Mission clicked by --campaign-win;
+##   3. the main menu's Continue (AptMainMenu::ContinueCampaign, RW 0x91B50D: lane CAMPSAVE-1, it loads 00000000.sav when the Save folder holds it,
+##   which RotWK never writes: nothing starts; the campaign is continued from Load Game, tests/campsave1 scenario "continue");
 ##   4. a skirmish from the menu, its score screen's Continue, the main menu's Load Replay and the replay;
 ##   5. the movies: the bonus mission's intro movie whole (frames, length, audio events); 6. the campaign's opening movie skipped as by Esc; 7. the
 ##   start-up movies.
@@ -116,7 +118,10 @@ func _run() -> int:
 		print("CAMP2 SKIP: ROTWK_INSTALL / BFME2_INSTALL are not set")
 		return 77
 	# 1. the main menu's campaign button, the mission, the way back
-	var t1 := _game(["--campaign-menu=BonusCampaign:N", "--campaign-win", "--movies=off", "--shell-pictures-quit=3"])
+	# lane CAMPSAVE-1: the won bonus mission writes the bonus unlock (BCU) to Options.ini: the run's own file, never the tester's
+	var options := OS.get_temp_dir().path_join("openbfme-camp2-options-%d.ini" % OS.get_process_id())
+	var t1 := _game(["--campaign-menu=BonusCampaign:N", "--campaign-win", "--movies=off", "--options-file=" + options, "--shell-pictures-quit=3"])
+	DirAccess.remove_absolute(options)
 	_check(t1.contains("GAME campaign menu: AptMainMenu::BonusCampaign") and t1.contains("CAMPAIGN start ANGMAR_BONUS_CAMPAIGN"), "1: the main menu started the bonus campaign")
 	_in_game_clean(t1, "campaign ANGMAR_BONUS_CAMPAIGN 0")
 	_check(t1.contains("CAMPAIGN back to the main menu"), "1: the campaign returned to the main menu")
@@ -124,14 +129,22 @@ func _run() -> int:
 	# the cinematic's letterbox hides the Palantir (HideControlBar) and its end shows it again, read from the render list
 	_check(t1.contains("GAME control bar drawn after the hide: false"), "1: the letterbox hid the Palantir (RW 0x7BC8B7)")
 	_check(t1.contains("GAME control bar drawn after the show: true"), "1: the letterbox's end showed the Palantir again")
-	# 2. a mission won, the next one starts (the progress is saved for 3)
-	var t2 := _game(["--campaign=ANGMAR_CAMPAIGN", "--mission=2", "--campaign-win", "--movies=off", "--dev-overlay", "--shell-pictures-quit=2"])
+	# 2. a mission won, the score screen and the campaign menu (the shell's pictures back), the next one starts
+	var save_dir := OS.get_temp_dir().path_join("openbfme-camp2-save-%d" % OS.get_process_id())
+	DirAccess.make_dir_recursive_absolute(save_dir)
+	var t2 := _game(["--campaign=ANGMAR_CAMPAIGN", "--mission=2", "--campaign-win", "--movies=off", "--dev-overlay", "--save-dir=" + save_dir,
+		"--shell-pictures-quit=3"])
 	_in_game_clean(t2, "campaign ANGMAR_CAMPAIGN 2", true)
+	_check(t2.contains("CAMPAIGN menu: ANGMAR_CAMPAIGN mission 3"), "2: CampaignMenu.apt named the next mission")
+	_back_in_shell(t2)
 	_in_game_clean(t2, "campaign ANGMAR_CAMPAIGN 3", true)
-	# 3. the main menu's Continue
-	var t3 := _game(["--campaign-menu=ContinueCampaign", "--movies=off", "--shell-pictures-quit=2"])
-	_check(t3.contains("CAMPAIGN continue ANGMAR_CAMPAIGN mission 3"), "3: Continue loaded the saved progress")
-	_in_game_clean(t3, "campaign ANGMAR_CAMPAIGN 3")
+	# 3. the main menu's Continue (RW 0x91B50D): no 00000000.sav in the Save folder, nothing starts; run 2's auto-save copied there, it loads
+	var t3 := _game(["--campsave-test=continue_command", "--movies=off", "--save-dir=" + save_dir])
+	_check(t3.contains("CAMPAIGN continue: no 00000000.sav in the Save folder"), "3: Continue found no 00000000.sav and started nothing")
+	_check(t3.contains("CAMPSAVE1 RESULT: ok"), "3: with run 2's auto-save as 00000000.sav Continue showed CampaignMenu.apt")
+	for f in DirAccess.get_files_at(save_dir):
+		DirAccess.remove_absolute(save_dir.path_join(f))
+	DirAccess.remove_absolute(save_dir)
 	# 5. lane CAMP-2's movies: the bonus campaign's mission intro (Angmar_Campaign_BonusOpen, BABMO.vp6) plays whole after the loading screen: every
 	# frame shown, its length the file's, its narration / music events started; then the mission with no shell pictures
 	var t5 := _game(["--campaign-menu=BonusCampaign:N", "--shell-pictures-quit=2"])

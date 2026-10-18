@@ -498,7 +498,7 @@ TEST_CASE("hero determinism: the same recruit / death / revive script gives the 
 // byte-matched GlobalWeatherSystem bodies (Rva00318333.cpp) and the port follows them; what stays open is S-922's. S-862 is closed too: the emotion request
 // RW 0x68F37F is tier A to the decomp's Object::rva0028EC68 (the outermost container's tracker), as EmotionTrackerUpdate::requestEmotion does; what the emotion
 // does is S-1021 / S-1022 / S-1027's
-TEST_CASE("hero stops: S-850 .. S-863 (but S-857 and S-862, closed) are reported and have a row in docs/STOPS.md")
+TEST_CASE("hero stops: S-850 .. S-863 (but S-853, S-857 and S-862, closed) are reported and have a row in docs/STOPS.md")
 {
 	const std::vector<std::string> lines = HeroSystem::stopLines();
 	std::ifstream in(std::string(OPENBFME_DOCS_DIR) + "/STOPS.md");
@@ -506,12 +506,13 @@ TEST_CASE("hero stops: S-850 .. S-863 (but S-857 and S-862, closed) are reported
 	std::stringstream ss;
 	ss << in.rdbuf();
 	const std::string docs = ss.str();
-	REQUIRE(lines.size() == 12);
+	REQUIRE(lines.size() == 11);
+	CHECK(lines[2].find("forced drawable model-condition refresh on creation") != std::string::npos);
 	size_t k = 0;
 	for (int i = 0; i < 14; ++i)
 	{
 		const std::string id = "S-8" + std::to_string(50 + i);
-		if (id == "S-857" || id == "S-862")
+		if (id == "S-853" || id == "S-857" || id == "S-862")
 		{
 			CHECK(docs.find("| " + id + " |") == std::string::npos);
 			continue;
@@ -892,8 +893,27 @@ TEST_CASE("AttributeModifierAuraUpdate: the targets are applied nearest first, w
 // to an unharmed healer is healed; a healer just hit heals nobody until LOGICFRAMES_PER_SECOND frames pass
 TEST_CASE("AutoHealBehavior: the under-attack test reads the healer's last damage frame, the target's health and KindOf decide the rest (RW 0x855533)")
 {
+	AutoHealBehaviorModuleData defaults;
+	for (std::uint32_t word : defaults.m_kindOf)
+	{
+		CHECK(word == 0xFFFFFFFFu); // RW 0x654B36 -> 0x6532EC; omitted KindOf includes all kinds.
+	}
 	AuraFx f;
 	Object *healer = f.at("GuardHero", "Alice", 0.0f);
+	const AutoHealBehaviorModuleData *data = nullptr;
+	for (const auto &nugget : static_cast<const ThingTemplate *>(healer->getTemplate())->behaviorModules().nuggets())
+	{
+		if (const auto *healData = dynamic_cast<const AutoHealBehaviorModuleData *>(nugget.data.get()))
+		{
+			data = healData;
+		}
+	}
+	REQUIRE(data);
+	const unsigned infantry = (unsigned)ObjectTemplateInfoBuilder::kindOfIndex("INFANTRY");
+	for (unsigned i = 0; i < data->m_kindOf.size(); ++i)
+	{
+		CHECK(data->m_kindOf[i] == (i == infantry / 32 ? (1u << (infantry % 32)) : 0u));
+	}
 	Object *target = f.at("WoundedMan", "Alice", 60.0f);
 	AutoHealBehavior *heal = dynamic_cast<AutoHealBehavior *>(healer->findModule("AutoHealBehavior"));
 	REQUIRE(heal);

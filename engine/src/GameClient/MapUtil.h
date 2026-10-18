@@ -85,6 +85,7 @@ struct LoadedMap
 struct MapReadOptions
 {
 	bool strict = true;
+	bool bfme1 = false; ///< community PR #36: the file comes from BFME1 data (isBfme1Data of the file system it was read from): BFME1's chunk forms
 };
 
 namespace MapReader

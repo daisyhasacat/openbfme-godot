@@ -127,9 +127,12 @@ bool writeGameMessage(NetByteWriter &w, const GameMessage &m, std::string *error
 std::unique_ptr<GameMessage> readGameMessage(NetByteReader &r, std::string *error);
 
 void writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g);
-bool readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool withPeaceTime = true, bool withLuaAuthority = true);
+// Enhanced setup tail: peace time, Lua authority slot, simulation profile/fortress flag, then eight slot handicaps.
+// profileOptionalAtEnd is only for an announcement ending before that entire tail (defaults to Faithful).
+// Replay readers select each legacy layout explicitly; ordinary network readers require all current fields.
+bool readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool profileOptionalAtEnd = false, bool slotHandicaps = true, bool withPeaceTime = true, bool withLuaAuthority = true);
 void writeNewGameMessage(NetByteWriter &w, const NewGameMessage &m);
-bool readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool withPeaceTime = true, bool withLuaAuthority = true);
+bool readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool slotHandicaps = true, bool withPeaceTime = true, bool withLuaAuthority = true);
 } // namespace NetPacket
 
 // One network command (ZH NetCommandMsg and its subclasses, reduced to the commands this lane exchanges)

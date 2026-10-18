@@ -112,6 +112,9 @@ public:
 	ObjectID nemesis() const { return m_nemesis; }
 	void setNemesis(ObjectID id) { m_nemesis = id; }
 	void crcGuard(class StateHasher &h) const;
+	// lane SAVE-4c (obfme:AIWorld): retail AIGuardMachine::xfer RW 0x949872 is (1, 3) (StateMachine's, then the nemesis, the guard target and position, ...);
+	// OpenBFME layout (S-4220): crcGuard's fields, then the machine with every state
+	void xferGuard(class Xfer &x);
 
 private:
 	Coord3D m_positionToGuard{ 0.0f, 0.0f, 0.0f }; // + 0x48
@@ -132,6 +135,7 @@ public:
 	bool isIdle() const override;
 	bool isActive() const override { return true; } // RW 0x8BD372
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override; // lane SAVE-4c: the guard machine (made again, then loaded)
 	AIGuardMachine *guardMachine() const { return m_guardMachine.get(); }
 
 private:
@@ -145,6 +149,7 @@ public:
 	explicit AIGoingIdleState(AIStateMachine &m) : AIState(m, "AIGoingIdleState") {}
 	StateReturnType onEnter() override;
 	StateReturnType update() override { return STATE_FAILURE; } // RW 0x74388C
+	void xfer(class Xfer &x) override { xferNoFields(x); }
 };
 
 const char *guardStopLine();

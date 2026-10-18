@@ -1,0 +1,88 @@
+# The public pull request checks (CONTRIBUTING.md, "What we check"). They run on GitHub's own runners with no secrets and a read-only
+# token: the trigger is pull_request, so a pull request from a fork gets neither the repository's secrets nor write access, and nothing here
+# asks for them (tools/release/public_workflows.py enforces that on every workflow of this folder). Pushes to main run them too, which also
+# keeps the compiler cache warm for the pull requests (a pull request reads main's cache, never writes it).
+name: Pull request checks
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Commit gate, public tree audit, Python tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install pytest
+        run: python3 -m pip install --disable-pip-version-check --no-input "pytest==9.1.1"
+      - name: Git identity for the tests' throwaway repositories
+        run: |
+          git config --global user.name "pr-checks"
+          git config --global user.email "pr-checks@example.invalid"
+          git config --global init.defaultBranch main
+      - name: Commit gate on the pull request's changes
+        if: github.event_name == 'pull_request'
+        # the checkout is GitHub's merge of the pull request into main: its first parent is main, so the merge's changes are exactly the
+        # pull request's; they are staged against main and the gate checks them as a commit would
+        run: |
+          git reset -q --soft HEAD^1
+          python3 tools/precommit.py
+          git reset -q --soft "$GITHUB_SHA"
+      - name: Public tree audit (the built-in rules)
+        run: python3 tools/release/pr_audit.py --tree "$GITHUB_SHA^{tree}"
+      - name: Python tests that need no game files
+        run: python3 tools/release/pr_pytest.py
+
+  engine:
+    name: Linux engine build and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ninja-build ccache
+      - name: Compiler cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ccache
+          key: ccache-ubuntu-24.04-${{ github.sha }}
+          restore-keys: ccache-ubuntu-24.04-
+      - name: Configure
+        run: >-
+          cmake -S engine -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPENBFME_BUILD_GODOT=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache" CCACHE_MAXSIZE=2G
+          ccache -z
+          cmake --build engine/build
+          ccache -s
+      - name: Unit tests (the tests that need the game skip)
+        # the five MP3 decoder tests read synthetic streams that lame encodes at build time and compare them with numbers mpg123 1.33
+        # derived (engine/tests/data/audio/mp3_golden.tsv); this runner has neither tool in that version, so they run in the project's
+        # full test run only
+        run: engine/build/openbfme_tests --test-case-exclude="audio decode: MP3 *,audio decode: corrupted MP3 fixtures*"

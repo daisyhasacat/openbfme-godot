@@ -2,10 +2,13 @@
 // See GameClient/GUI/AptScreens/AptTimeLine.h (lane END-1).
 
 #include "GameClient/GUI/AptScreens/AptTimeLine.h"
+#include "GameClient/GUI/PlatformIcons.h"
 
 #include "GameClient/GUI/GameTextSource.h"
 #include "GameClient/GUI/LoadScreenInfo.h"
 #include "GameClient/GUI/ShellEnvironment.h"
+#include "GameClient/GUI/Skirmish/RealTimeStats.h"
+#include "GameClient/GUI/Skirmish/SkirmishSetup.h"
 #include "GameClient/GUI/ShellServices.h"
 #include "GameClient/GUI/AptGadgetLayer.h"
 #include "GameClient/GUI/Gadgets.h"
@@ -234,6 +237,10 @@ void AptTimeLine::runInit()
 	populate();
 }
 
+// lane PLATFORMICON-1: a standings row's name field starts at stage x 757 right after the row's faction icon (which ends at 753): the platform icon sits at
+// the field's left edge, not before it (over the faction icon)
+constexpr int kStandingsBadgeDx = 20;
+
 // RW 0x92632E: the names (and the faction icon images, not ported)
 void AptTimeLine::populate()
 {
@@ -243,14 +250,75 @@ void AptTimeLine::populate()
 		windows().note("timeline-unwired", "no ScoreScreenData: the score screen shows the movie's own texts [S-1063]");
 		return;
 	}
+	for (int i = 0; i < MAX_SLOTS; ++i)
+	{
+		windows().clearTextBadge("TimeLine:PlayerName:" + std::to_string(i)); // lane PLATFORMICON-1: an earlier game's icons
+	}
 	for (size_t i = 0; i < d->entries.size(); ++i)
 	{
 		windows().setAptText("TimeLine:PlayerName:" + std::to_string(i), d->entries[i].name);
+		// lane PLATFORMICON-1 (OpenBFME): the player's system as an icon left of the name's text field
+		const PlatformKind kind = d->entries[i].platform;
+		if (kind != PlatformKind::None)
+		{
+			if (AptGadgetLayer *layer = windows().gadgetLayer())
+			{
+				if (MappedImageCollection *images = layer->gadgets().mutableImages())
+				{
+					registerPlatformIcons(*images);
+				}
+			}
+			windows().setTextBadge("TimeLine:PlayerName:" + std::to_string(i), TextBadge{ platformImageName(kind), kPlatformIconStage, platformHelpText(kind), kStandingsBadgeDx, kStandingsBadgeDx });
+		}
+		else
+		{
+			windows().clearTextBadge("TimeLine:PlayerName:" + std::to_string(i));
+		}
 		windows().setAptImage("TimeLine:PlayerFactionIcon:" + std::to_string(i), "AptIcon" + d->entries[i].side); // RW 0x92632E (lane END-2)
 	}
 	graph(4);
+	recordHonors();
 	// lane END-2: the statistics rows (RW 0x9CDEC1 per entry), formatted with the game text
 	m_rows = d->statRows([this](const std::string &label) { return loadScreenU16ToUtf8(fetchOrMissing(m_env.gameText, label)); });
+}
+
+// lane OWNERFIX-3: CollectPlayerData (RW 0x9270AD) for the local player of a skirmish (type 2, RW 0x927205) runs the real-time stats reporter (RW 0x9CE8F3),
+// whose battle honors part is ported (GUI/Skirmish/RealTimeStats.h): the current profile's RealTimeStats.ini gets the map's counter and is written. Once per
+// game: the screen fills twice (OnInitialized and the init), retail collects once
+void AptTimeLine::recordHonors()
+{
+	ScoreScreenData *d = m_env.scoreScreen && m_env.scoreScreen->valid ? m_env.scoreScreen : nullptr;
+	if (!d || d->honorsRecorded || d->type != 2 || d->localIsObserver)
+	{
+		return;
+	}
+	d->honorsRecorded = true;
+	if (!m_env.skirmishHonors || !m_env.profiles)
+	{
+		windows().note("map-honors", "[S-5041] the battle honors are not recorded: the host gave no skirmish game or no Skirmish profiles");
+		return;
+	}
+	RealTimeStatsPreferences stats;
+	std::string error, what;
+	if (!stats.load(m_env.profiles->folder(), m_env.profiles->current(), &error))
+	{
+		windows().note("map-honors", "[S-5041] the battle honors are not recorded: " + error);
+		return;
+	}
+	const bool recorded = recordSkirmishHonors(stats, *m_env.skirmishHonors, d->localAlliedVictory, &what);
+	m_env.skirmishHonors->valid = false; // the game is recorded once
+	if (!recorded)
+	{
+		windows().note("map-honors", "no battle honors: " + what);
+		return;
+	}
+	// RW 0x9CE8F3 writes the file whatever it changed (UserPreferences::write RW 0x7B274C)
+	if (!stats.write(&error))
+	{
+		windows().note("map-honors", "[S-5041] the battle honors were not written: " + error);
+		return;
+	}
+	windows().note("map-honors", "battle honors: " + what + " (" + stats.path() + ")");
 }
 
 GameWindow *AptTimeLine::statsList()

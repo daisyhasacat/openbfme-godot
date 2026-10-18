@@ -52,6 +52,23 @@ bool isBase64UrlChar(char c)
 	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
 }
 
+// lane ONLINEHUB-1: lobby.mjs ROOM_CODE
+bool validRoomCode(const std::string &code)
+{
+	if (code.size() < 6 || code.size() > 32)
+	{
+		return false;
+	}
+	for (char c : code)
+	{
+		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 bool isHexId(const std::string &id)
 {
 	if (id.size() != 16)
@@ -385,8 +402,13 @@ std::string setupFields(const SkirmishGameInfo &s)
 }
 } // namespace
 
-void OnlineLobbyClient::createGame(const std::u16string &name, const std::string &password, const SkirmishGameInfo &setup, int hostSlot)
+void OnlineLobbyClient::createGame(const std::u16string &name, const std::string &password, const SkirmishGameInfo &setup, int hostSlot, const std::string &roomCode)
 {
+	if (!roomCode.empty() && (!validRoomCode(roomCode) || !password.empty()))
+	{
+		refuse("create", "bad_field", "a room code is 6 .. 32 characters of A-Z a-z 0-9 _ - and has no password beside it");
+		return;
+	}
 	// lobby.mjs create: the slots up to the last one that is not closed; the host's "player", the other human places "open"
 	int last = MAX_SLOTS;
 	while (last > 2 && setup.slots[last - 1].state == SLOT_CLOSED)
@@ -409,14 +431,67 @@ void OnlineLobbyClient::createGame(const std::u16string &name, const std::string
 		}
 		slots += "}";
 	}
-	std::string body = "{\"name\":" + jsonQuote(utf16ToUtf8(name)) + ",\"profile\":" + jsonQuote(m_options.profileDigest) + ",\"hostSlot\":" +
+	std::string body = "{\"name\":" + jsonQuote(utf16ToUtf8(name)) + ",\"profile\":" + jsonQuote(m_options.profileDigest) + ",\"mode\":\"" +
+		modeName(m_options.profile) + "\"" + platformField() + ",\"hostSlot\":" +
 		std::to_string(hostSlot) + ",\"setup\":{" + setupFields(setup) + ",\"slots\":[" + slots + "]}";
 	if (!password.empty())
 	{
 		body += ",\"password\":" + jsonQuote(password);
 	}
+	if (!roomCode.empty())
+	{
+		body += ",\"room_code\":" + jsonQuote(roomCode);
+	}
 	body += "}";
 	queue("create", "POST", "/v1/games", body);
+}
+
+void OnlineLobbyClient::joinByCode(const std::string &roomCode)
+{
+	if (!validRoomCode(roomCode))
+	{
+		refuse("join", "bad_field", "a room code is 6 .. 32 characters of A-Z a-z 0-9 _ -");
+		return;
+	}
+	queue("join:code", "POST", "/v1/rooms/" + roomCode + "/join", "{\"profile\":" + jsonQuote(m_options.profileDigest) + ",\"mode\":\"" + modeName(m_options.profile) + "\"" + platformField() + "}");
+}
+
+bool OnlineLobbyClient::parseMode(const std::string &name, SimulationProfile *out)
+{
+	if (name == "normal")
+	{
+		*out = SimulationProfile::Faithful;
+		return true;
+	}
+	if (name == "uber")
+	{
+		*out = SimulationProfile::Uber;
+		return true;
+	}
+	return false;
+}
+
+bool OnlineLobbyClient::setProfile(SimulationProfile profile, const std::string &digest, std::string *why)
+{
+	if (inGame())
+	{
+		*why = "the performance mode cannot change inside a room (leave it first)";
+		return false;
+	}
+	if (!simulationProfileValid((std::int32_t)profile) || digest.size() != 32)
+	{
+		*why = "the performance mode needs a known profile and its identity's digest";
+		return false;
+	}
+	m_options.profile = profile;
+	m_options.profileDigest = digest;
+	return true;
+}
+
+std::string OnlineLobbyClient::platformField() const
+{
+	// lane PLATFORMICON-1: lobby.mjs checkPlatform: windows / linux / macos or absent
+	return m_options.platform == PlatformKind::None ? std::string() : std::string(",\"platform\":\"") + platformName(m_options.platform) + "\"";
 }
 
 void OnlineLobbyClient::joinGame(const std::string &id, const std::string &password)
@@ -426,7 +501,7 @@ void OnlineLobbyClient::joinGame(const std::string &id, const std::string &passw
 		refuse("join", "bad_field", "a game id is 16 hex digits");
 		return;
 	}
-	std::string body = "{\"profile\":" + jsonQuote(m_options.profileDigest);
+	std::string body = "{\"profile\":" + jsonQuote(m_options.profileDigest) + ",\"mode\":\"" + modeName(m_options.profile) + "\"" + platformField();
 	if (!password.empty())
 	{
 		body += ",\"password\":" + jsonQuote(password);
@@ -527,6 +602,32 @@ void OnlineLobbyClient::start()
 	queue("start", "POST", "/v1/games/" + m_gameId + "/start", "");
 }
 
+std::string OnlineLobbyClient::finishGame()
+{
+	const std::string id = m_playedGame;
+	m_playedGame.clear();
+	if (id.empty())
+	{
+		return id;
+	}
+	queue("leave", "POST", "/v1/games/" + id + "/leave", "");
+	m_mine.erase(std::remove_if(m_mine.begin(), m_mine.end(), [&](const Listing &l) { return l.id == id; }), m_mine.end());
+	if (m_gameId == id)
+	{
+		leftGame("finished");
+	}
+	return id;
+}
+
+void OnlineLobbyClient::forgetPlayedGame()
+{
+	if (inGame())
+	{
+		leftGame("game_failed"); // the started game's room: no leave (no "Removed" box: the shell shows the reason it was given)
+	}
+	m_playedGame.clear();
+}
+
 void OnlineLobbyClient::dropStart()
 {
 	if (inGame())
@@ -534,6 +635,7 @@ void OnlineLobbyClient::dropStart()
 		leftGame("start_dropped"); // also forgets the START
 	}
 	m_startJson.clear();
+	m_playedGame.clear(); // lane ONLINEUX-1 r2 (F2): an unplayed START is no played game (no leave is sent for it)
 }
 
 void OnlineLobbyClient::update(std::uint64_t nowMs)
@@ -667,6 +769,15 @@ bool OnlineLobbyClient::readGameView(const JsonValue &g, std::string *error, boo
 		return fail("the setup's map / startingCash / superweaponRestriction / legendaryHeroes");
 	}
 	info.startingCash = (int)cash;
+	// lane UBERJOIN-1: the room's mode (absent: "normal"); a room's mode is the host's, so it's the game's simulation profile in the staging room's model
+	info.simulationProfile = SimulationProfile::Faithful;
+	if (const JsonValue *mode = g.get("mode"))
+	{
+		if (!mode->isString() || !parseMode(mode->string, &info.simulationProfile))
+		{
+			return fail("\"mode\" is neither \"normal\" nor \"uber\"");
+		}
+	}
 	info.superweaponRestriction = (int)sw;
 	info.legendaryHeroes = (int)lh;
 	info.fortressConstruction = false;
@@ -745,6 +856,26 @@ bool OnlineLobbyClient::readGameView(const JsonValue &g, std::string *error, boo
 			return fail(at + "\"ready\" / \"you\" must be true or false");
 		}
 		gs.accepted = ready->boolean;
+		// lane PLATFORMICON-1: lobby.mjs gameView `platform`: null / absent (an older lobby, an AI, an open slot) or windows / linux / macos. Display data:
+		// anything else is no icon, named in platformNotes (a view is never refused for it)
+		gs.platform = PlatformKind::None;
+		if (const JsonValue *plat = js.get("platform"); plat && plat->type != JsonValue::NUL)
+		{
+			PlatformKind kind = PlatformKind::None;
+			if (plat->isString() && state == "player" && platformFromName(plat->string, kind))
+			{
+				gs.platform = kind;
+			}
+			else
+			{
+				const std::string note = at + "platform " + (plat->isString() ? "\"" + plat->string.substr(0, 24) + "\"" : std::string("(not a string)")) +
+					(state == "player" ? " is not windows, linux or macos" : " on a slot that is not a player's");
+				if (m_platformNotes.size() < kMaxPlatformNotes && (m_platformNotes.empty() || m_platformNotes.back() != note))
+				{
+					m_platformNotes.push_back(note);
+				}
+			}
+		}
 		views[(size_t)i] = SlotView{ state, ready->boolean, you->boolean };
 		if (you->boolean)
 		{
@@ -974,10 +1105,27 @@ void OnlineLobbyClient::handle(const Pending &p, int, const JsonValue &root)
 			}
 			l.name = u16(strOf(g.get("name")));
 			l.host = u16(strOf(g.get("host")));
+			if (const JsonValue *hp = g.get("hostPlatform"); hp && hp->isString())
+			{
+				platformFromName(hp->string, l.hostPlatform); // display data: another value is no icon
+			}
 			l.map = strOf(g.get("map"));
 			l.players = (int)players;
 			l.openSlots = (int)open;
 			l.password = pw->boolean;
+			// lane UBERJOIN-1: the game's "mode" is optional (absent: "normal", a room of an old client); a value outside the two names is a protocol refusal
+			if (const JsonValue *mode = g.get("mode"))
+			{
+				if (!mode->isString() || !parseMode(mode->string, &l.mode))
+				{
+					if (kind == "session")
+					{
+						m_token.clear();
+					}
+					refuse(kind, "protocol", "a listed game's \"mode\" is neither \"normal\" nor \"uber\"");
+					return;
+				}
+			}
 			l.state = strOf(g.get("state"));
 			l.slot = (int)slot;
 			list.push_back(l);
@@ -988,7 +1136,32 @@ void OnlineLobbyClient::handle(const Pending &p, int, const JsonValue &root)
 			m_events.push_back(Event{ Event::GameList });
 			return;
 		}
+		// lane ONLINEUX-1 r2 (Sol 4): the games the account left (optional: an older lobby has no "left"); a list beyond kMaxMine or a non-id entry is
+		// refused by name, as a bad "games"
+		std::vector<std::string> left;
+		if (const JsonValue *lv = root.get("left"))
+		{
+			bool good = lv->isArray() && lv->array.size() <= kMaxMine;
+			for (size_t i = 0; good && i < lv->array.size(); ++i)
+			{
+				good = lv->array[i].isString() && isHexId(lv->array[i].string);
+				if (good)
+				{
+					left.push_back(lv->array[i].string);
+				}
+			}
+			if (!good)
+			{
+				if (kind == "session")
+				{
+					m_token.clear();
+				}
+				refuse(kind, "protocol", "\"left\" is not a list of at most " + std::to_string(kMaxMine) + " game ids");
+				return;
+			}
+		}
 		m_mine = list;
+		m_mineLeft = std::move(left);
 		if (kind == "session")
 		{
 			// the kept session is valid: signed in as its account (lane ONLINE-4: a restarted game is the same player, so it can rejoin)

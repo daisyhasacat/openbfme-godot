@@ -4,6 +4,7 @@
 #include "Common/PlayerList.h"
 
 #include "Common/StateHash.h"
+#include "Common/Xfer.h"
 #include "GameLogic/Map/SidesList.h"
 
 #include <sstream>
@@ -170,6 +171,7 @@ std::vector<std::string> PlayerList::newGame(const SidesList &sides, std::uint32
 		}
 		p->setPlayerType(human ? PLAYER_HUMAN : PLAYER_COMPUTER, !human && skirmish);
 		p->setMultiplayerStartIndex(d.getInt("multiplayerStartIndex"));
+		p->setHandicap(d.getInt("playerHandicap")); // lane OWNERFIX-2: RW 0x6B09C2 .. 0x6B09DE (Dict::getInt, 0 when absent) -> Player + 0x29C
 		if (d.getBool("multiplayerIsLocal", &exists) && exists)
 		{
 			setLocalPlayer(p);
@@ -393,4 +395,30 @@ void PlayerList::crc(StateHasher &h) const
 void PlayerList::localCrc(StateHasher &h) const
 {
 	h.addI32(m_local ? m_local->getPlayerIndex() : -1);
+}
+
+// lane SAVE-4a. TARGET PlayerList::DoXfer RW 0x6A8788 (tier A, (1, 1)): the version, the player count (an int), then each player's snapshot; ZH's
+// PlayerList::xfer refuses a count other than the game's ("Invalid player count"). OpenBFME native block (its players are native, Player::xfer); the
+// teams are their own block (obfme:TeamFactory, retail's CHUNK_TeamFactory comes before CHUNK_Players too).
+void PlayerList::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	std::int32_t count = (std::int32_t)m_players.size();
+	x.xferInt(&count);
+	if (count != (std::int32_t)m_players.size())
+	{
+		throw XferException("the snapshot has " + std::to_string(count) + " players, this game " + std::to_string(m_players.size()));
+	}
+	for (std::unique_ptr<Player> &p : m_players)
+	{
+		p->xfer(x, m_teams);
+	}
+	if (x.isLoading())
+	{
+		for (const std::unique_ptr<Player> &p : m_players)
+		{
+			p->checkLoadedIndices((int)m_players.size()); // lane SAVE-4e (closed sets)
+		}
+	}
 }

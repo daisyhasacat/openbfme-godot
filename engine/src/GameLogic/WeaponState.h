@@ -110,6 +110,7 @@ public:
 };
 
 class StateHasher;
+class Xfer;
 
 class Weapon
 {
@@ -202,6 +203,7 @@ public:
 
 	// the OpenBFME state hash: every field of the instance (lane COMBAT-1)
 	void crc(StateHasher &hasher) const;
+	void xfer(Xfer &x); // lane SAVE-4b (OpenBFME native, S-4190)
 
 private:
 	const WeaponTemplate *m_template;
@@ -326,6 +328,7 @@ public:
 	int getShotsAtTarget(bool hasVictim, unsigned victimID, const Coord3D &pos) const;
 	// the OpenBFME state hash (lane COMBAT-1)
 	void crc(StateHasher &hasher) const;
+	void xfer(Xfer &x); // lane SAVE-4b (OpenBFME native, S-4190)
 
 	int shotCount() const { return m_count; }               // +0x20
 	std::uint32_t autoReloadDeadline() const { return m_autoReloadDeadline; } // +0x40

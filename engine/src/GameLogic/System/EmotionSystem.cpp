@@ -2,6 +2,10 @@
 // See GameLogic/System/EmotionSystem.h for the target facts and the stop S-1021.
 
 #include "GameLogic/System/EmotionSystem.h"
+#include "GameLogic/SnapshotXfer.h"
+#include "Common/Thing/ThingFactory.h"
+
+#include <type_traits>
 
 #include "Common/AsciiString.h"
 #include "Common/INIException.h"
@@ -656,4 +660,29 @@ std::vector<std::string> EmotionWorld::report() const
 		              ", taunt / point / alert scans run " + std::to_string(m_tauntScans));
 	}
 	return out;
+}
+
+// ---- lane SAVE-4b: an EmotionTrackerUpdate's nugget (OpenBFME native, S-4190): its crc's fields, the maps in key order ---------------------------------
+void EmotionNugget::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	std::string name = x.isLoading() ? std::string() : m_template->name;
+	x.xferAsciiString(&name);
+	if (name != m_template->name)
+	{
+		throw XferException("the snapshot's emotion nugget '" + name + "' is not this tracker's '" + m_template->name + "'");
+	}
+	x.xferObjectID(&m_sourceID);
+	x.xferUnsignedShort(&m_sourceTemplateID);
+	if (x.isLoading() && m_sourceTemplateID != 0 && !m_object->logic().things().findByTemplateID(m_sourceTemplateID))
+	{
+		throw XferException("an emotion nugget's source template id " + std::to_string(m_sourceTemplateID) + " is not a template of this game's data");
+	}
+	x.xferUnsignedInt(&m_inactiveUntil);
+	x.xferUnsignedInt(&m_endFrame);
+	x.xferUnsignedInt(&m_startFrame);
+	SnapshotXfer::map(x, m_sameObject, 8, "an emotion nugget's same-object timers", [&](ObjectID &id) { x.xferObjectID(&id); },
+		[&](UnsignedInt &f) { x.xferUnsignedInt(&f); });
+	SnapshotXfer::map(x, m_sameType, 6, "an emotion nugget's same-type timers", [&](unsigned short &t) { x.xferUnsignedShort(&t); },
+		[&](UnsignedInt &f) { x.xferUnsignedInt(&f); });
 }

@@ -164,8 +164,8 @@ void EvaEventStore::parseRecord(INI *ini, EvaEventRecord &record, const AudioEve
 void EvaEventStore::parsePredefined(INI *ini, const AudioEventInfoStore &audio)
 {
 	const std::string name = ini->getNextToken();
-	// BFME1 Eva.cpp names three events absent from RotWK's predefined table.
-	const bool bfme1 = ini->environment().fileSystem && ini->environment().fileSystem->doesFileExist("Data\\INI\\Default\\SubsystemLegend.ini") && !ini->environment().fileSystem->doesFileExist("Data\\INI\\Default\\SubsystemLegendExpansion1.ini");
+	// community PR #36: BFME1 Eva.cpp names three events absent from RotWK's predefined table (BFME1 data only, Common/BfmeGame.h)
+	const bool bfme1 = ini->bfme1Data();
 	if (bfme1)
 		for (const char *event : { "BaseUnderAttack", "AllyUnderAttack", "EnemyCampSighted" })
 			if (findIndex(event, false) < 0) createRecord(event, false);

@@ -50,11 +50,11 @@ struct HordeGarrisonContainModuleData
 	HordeGarrisonContainModuleData(); // BFME2 0x0047A251 (RW data proc 0x64B7B6)
 
 	GarrisonContainModuleData m_garrison; // RW base (first member)
-	int m_maxHordeCapacity = 1; // BFME1
 	unsigned m_exitDelay;                 // +0xAC ExitDelay (frames)
 	Coord3D m_entryOffset;                // +0xB0 EntryOffset
 	Coord3D m_entryPosition;              // +0xBC EntryPosition
 	Coord3D m_exitOffset;                 // +0xC8 ExitOffset
+	int m_maxHordeCapacity = 1;           // community PR #36: BFME1 data only (MaxHordeCapacity), not in RotWK's layout; no consumer yet
 
 	static void buildFieldParse(MultiIniFieldParse &p, unsigned extraOffset = 0);
 	static const FieldParse *getFieldParse();

@@ -36,6 +36,7 @@ template <class Base, bool Horde>
 class SiegeEngineContainT : public Base
 {
 public:
+	OBFME_MODULE_XFER(SiegeEngineContainT) // lane SAVE-4b
 	SiegeEngineContainT(Thing *thing, const ModuleData *data, const SiegeEngineContainModuleData &siege, const DieMuxData &dieMux);
 
 	void crc(StateHasher &hasher) const override;

@@ -724,7 +724,7 @@ TEST_CASE("shroud stops: S-560 .. S-567 are the exact stop lines and reach GameL
 		"conditions and the INVISIBLE_DETECTED statuses) is lane STEALTH-1's (S-1040 .. S-1042); the shroud does not change for a stealthed object",
 		"[S-567] shroud drawing: one texel per cell with bilinear filtering multiplies the terrain, the water, rivers and roads by ShroudColor * level / 255 "
 		"(ClearAlpha / FogAlpha / ShroudAlpha) inside W3DShroud's one-texel border at ShroudAlpha (RW 0x472480 / 0x472EF4 / 0x472792, lane ZOOM-1); objects the "
-		"local player cannot see are not drawn, fogged ones are not darkened; the roads' shroud is inferred (ZH's road buffer has no shroud pass); the radar "
+		"local player cannot see are not drawn, fogged ones are lit by the fogged light (S-4970); the roads' shroud is inferred (ZH's road buffer has no shroud pass); the radar "
 		"picture is multiplied per pixel; W3DShroud's filter and 4444 texel and W3DRadar's own texture were not read",
 	};
 	CHECK(ShroudManager::stopLines() == expected);
@@ -736,17 +736,19 @@ TEST_CASE("shroud stops: S-560 .. S-567 are the exact stop lines and reach GameL
 	}
 }
 
-TEST_CASE("shroud objects: omitted clearing range defaults to vision, explicit zero stays blind")
+TEST_CASE("shroud objects: an omitted clearing range defaults to VisionRange in BFME1 data only (community PR #36); RotWK keeps 0, an explicit 0 stays blind")
 {
-	Fx f;
-	REQUIRE(f.w.load("Object Keep\n KindOf = STRUCTURE IMMOBILE\n VisionRange = 100\n Geometry = CYLINDER\n GeometryMajorRadius = 9\nEnd\n"
-		"Object BlindKeep\n KindOf = STRUCTURE IMMOBILE\n VisionRange = 100\n ShroudClearingRange = 0\n Geometry = CYLINDER\n GeometryMajorRadius = 9\nEnd\n").empty());
-	Object *keep = f.place("Keep", "Alice", 300.0f, 300.0f);
-	f.place("BlindKeep", "Bob", 700.0f, 300.0f);
-	f.shroud.update();
-	CHECK(f.shroud.getObjectStatus(*keep, f.idx("Alice")) == OBJECTSHROUD_CLEAR);
-	CHECK(f.shroud.getCellStatus(f.idx("Alice"), 7, 7) == CELLSHROUD_CLEAR);
-	CHECK(f.shroud.getCellStatus(f.idx("Bob"), 17, 7) == CELLSHROUD_SHROUDED);
+	const char *objects = "Object Keep\n KindOf = STRUCTURE IMMOBILE\n VisionRange = 100\n Geometry = CYLINDER\n GeometryMajorRadius = 9\nEnd\n"
+		"Object BlindKeep\n KindOf = STRUCTURE IMMOBILE\n VisionRange = 100\n ShroudClearingRange = 0\n Geometry = CYLINDER\n GeometryMajorRadius = 9\nEnd\n";
+	objtest::World rotwk;
+	REQUIRE(rotwk.load(objects).empty());
+	CHECK(ShroudManager::templateVision(*rotwk.get("Keep")).shroudClearingRange == 0.0f);
+	CHECK(ShroudManager::templateVision(*rotwk.get("BlindKeep")).shroudClearingRange == 0.0f);
+	objtest::World bfme1(true);
+	REQUIRE(bfme1.load(objects).empty());
+	CHECK(bfme1.get("Keep")->bfme1Data());
+	CHECK(ShroudManager::templateVision(*bfme1.get("Keep")).shroudClearingRange == 100.0f); // Open-BFME-1 Object::initObject
+	CHECK(ShroudManager::templateVision(*bfme1.get("BlindKeep")).shroudClearingRange == 0.0f);
 }
 
 TEST_CASE("shroud objects: a GeometryOffset with a blank after the colon parses like retail's colon sub-tokens (RotWK mumakilpen.ini `X: -10.0`)")
@@ -1008,4 +1010,19 @@ TEST_CASE("shroud objects (DECOMP-1): a SHROUD_CLEARING modifier widens the look
 	f.shroud.update();
 	CHECK(f.shroud.getCellStatus(alice, 15, 10) == CELLSHROUD_CLEAR);
 	CHECK(f.shroud.getCellStatus(alice, 16, 10) == CELLSHROUD_SHROUDED);
+}
+
+TEST_CASE("shroud: diagnostic ground-height queries preserve authoritative cache state")
+{
+	Fx f;
+	Object *scout = f.place("Hiller", "Alice", 420.0f, 420.0f);
+	const auto vision = ShroudManager::templateVision(*scout->getTemplate()->getFinalOverride());
+	const auto before = hashOf(f.shroud);
+	const float reference = f.shroud.groundReferenceFor(*scout, vision, false);
+	CHECK(hashOf(f.shroud) == before);
+	CHECK(f.shroud.groundReferenceFor(*scout, vision) == reference);
+	CHECK_FALSE(hashOf(f.shroud) == before);
+	const auto cached = hashOf(f.shroud);
+	CHECK(f.shroud.groundReferenceFor(*scout, vision, false) == reference);
+	CHECK(hashOf(f.shroud) == cached);
 }

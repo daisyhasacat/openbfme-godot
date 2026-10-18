@@ -2,6 +2,7 @@
 # Included from engine/CMakeLists.txt so the lane's file lists stay out of the shared list.
 
 set(OPENBFME_PROD_SOURCES
+    src/Common/ProductionPrerequisite.cpp
     src/GameLogic/GameMessage.cpp
     src/GameLogic/GameLogicDispatch.cpp
     src/GameLogic/Module/SMCHelper.cpp

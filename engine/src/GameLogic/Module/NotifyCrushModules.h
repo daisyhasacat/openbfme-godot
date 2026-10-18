@@ -54,6 +54,7 @@ public:
 class NotifyCrushUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(NotifyCrushUpdate) // lane SAVE-4b
 	NotifyCrushUpdate(Thing *thing, const NotifyCrushModuleData *data, bool horde);
 	UpdateSleepTime update() override; ///< RW 0x8D3225 / 0x8D3167
 	void crc(StateHasher &h) const override;

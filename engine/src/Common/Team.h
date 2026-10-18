@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -142,8 +143,12 @@ public:
 	void friend_removeMember(Object *obj);
 
 	void crc(StateHasher &hasher) const;
+	// lane SAVE-4a: the team's state; the members are saved as ids and linked again by TeamFactory::loadPostProcess
+	void xfer(class Xfer &x);
 
 private:
+	friend class TeamFactory;
+	std::vector<ObjectID> m_loadedMembers; ///< lane SAVE-4a: the member ids a load read, until the post-process links them
 	TeamPrototype *m_proto;
 	TeamID m_id;
 	Object *m_head = nullptr, *m_tail = nullptr;
@@ -162,6 +167,9 @@ private:
 // 0xDA2B14 ..: teamOnCreateScript + 0xC0, teamEventsList + 0xC4, teamOnIdleScript + 0xC8, teamInitialIdleSeconds + 0xCC (x 5 frames), teamEnemySightedScript
 // + 0xD0, teamAllClearScript + 0xD4, teamOnUnitDestroyedScript + 0xD8, teamOnDestroyedScript + 0xDC, teamDestroyedThreshold + 0xE0 (real),
 // teamGenericScriptHook0 .. 31 + 0x118 (the key "teamGenericScriptHook%d", RW 0xC1222C)
+// lane SAVE-4a (Player.cpp): retail's TeamRelationMap::xfer (RW 0x7A56B6) then PlayerRelationMap::xfer (RW 0x6AE9B7), the two override maps
+void xferRelationMaps(class Xfer &x, std::map<TeamID, Relationship> &teams, std::map<int, Relationship> &players);
+
 struct TeamTemplateScripts
 {
 	std::string onCreate, eventsList, onIdle, enemySighted, allClear, onUnitDestroyed, onDestroyed;
@@ -229,8 +237,19 @@ public:
 	Team *findTeam(const std::string &name);
 	Team *findTeamByID(TeamID id) const;
 	const std::vector<std::unique_ptr<TeamPrototype>> &prototypes() const { return m_prototypes; }
+	size_t teamCount() const { return m_teams.size(); } ///< lane SAVE-4e (tests)
 
 	void crc(StateHasher &hasher) const;
+	// lane SAVE-4a (Common/Xfer.h): the id counters, the prototypes (which must be this game's: the START and the map made them), every team in creation
+	// order (a team the game does not have yet is created with its saved id) and its state
+	void xfer(class Xfer &x);
+	// after every block loaded: each team's members linked again in their saved order (`findObject` is GameLogic::findObjectByID); a member that does not
+	// exist or whose object names another team is an error
+	void loadPostProcess(const std::function<Object *(ObjectID)> &findObject);
+	// lane SAVE-4b: the member ids each team's load read, in team order (GameLogic::xferObjects loads the teams a second time after making the objects; the
+	// post-process must link the snapshot's members, not the ones that second load reads from the live lists)
+	std::vector<std::vector<ObjectID>> friend_loadedMembers() const;
+	void friend_setLoadedMembers(const std::vector<std::vector<ObjectID>> &members);
 
 private:
 	std::vector<std::unique_ptr<TeamPrototype>> m_prototypes;
@@ -238,4 +257,5 @@ private:
 	std::deque<Team> m_teams;               ///< stable addresses, creation order
 	TeamID m_nextTeamID = 1;
 	int m_nextPrototypeID = 1;
+	size_t m_loadedTeamCount = (size_t)-1; ///< lane SAVE-4e: the teams the snapshot being loaded holds (-1: no load)
 };

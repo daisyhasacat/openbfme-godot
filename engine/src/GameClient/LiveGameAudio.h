@@ -29,6 +29,7 @@ class MusicScripts;
 class ThingTemplate;
 class LiveGame;
 struct ScriptClientRequest;
+struct LogicSnapshot;
 class Object;
 
 // The header carries no audio type: simulation-input files (GodotGameWorld.cpp) include it, and the audio headers' client arithmetic must not reach the audit.
@@ -75,6 +76,9 @@ public:
 
 	// the ambient sound the object should have now ("" = none): ZH getAmbientSoundByDamage with the pristine fallback
 	static std::string ambientSoundFor(const Object &obj);
+	// the shroud query of the audio manager (RW 0x452003): the presented snapshot's cell status for `playerIndex` at `pos` is CLEAR. Lane VISUAL-2 r2: an
+	// omniscient view (an all-vision observer or a replay, ShroudView::localPlayer -2) sees every cell clear whatever local index the caller asks for
+	static bool shroudClearFor(const LogicSnapshot *snapshot, int playerIndex, const Coord3D &pos);
 
 private:
 	// lane PERF-1 r2: ambientSoundFor per template (it reads nothing else); lookups only, never iterated

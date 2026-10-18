@@ -351,6 +351,84 @@ void clickAt(BookRig &b, int x, int y)
 }
 } // namespace
 
+TEST_CASE("hud6 recovered spell and builder help retail")
+{
+	if (!haveWorld("hud6 auxiliary help"))
+	{
+		return;
+	}
+	SharedWorld &s = shared();
+	BookRig b(s, "FactionMen");
+	b.hud->setWindowSize(1024, 768);
+	b.rig.view.setScreen(1024, 768);
+	auto ctx = b.hud->enterContext();
+	const ThingTemplate *cit = s.world->things().findTemplate("MenFortressCitadel");
+	REQUIRE(cit);
+	Object *fort = b.rig.logic().newObject(cit, b.rig.local->getDefaultTeam(), ObjectStatusMaskType{});
+	REQUIRE(fort);
+	Coord3D at{ 600, 600, 0 };
+	fort->setPosition(&at);
+	fort->friend_onBuildComplete();
+	b.frames(40);
+	std::string error;
+	REQUIRE_MESSAGE(b.hud->openSpellStore(&error), error);
+	b.frames(40);
+	AptSpellStore *store = b.hud->spellStore();
+	REQUIRE(store);
+	int available = -1;
+	for (const SpellStoreModel::Button &button : store->model().buttons())
+	{
+		if (button.state == SpellStoreModel::STATE_AVAILABLE)
+		{
+			available = button.index;
+			break;
+		}
+	}
+	REQUIRE(available >= 0); // tolerance: the first available spell index comes from the retail store model.
+	REQUIRE(store->click(available));
+	b.hud->closeSpellStore();
+	b.frames(40);
+	AptPalantir *pal = b.hud->palantir();
+	REQUIRE(pal->spellBookShown());
+	REQUIRE(pal->spellSlotButton(0) >= 0); // tolerance: the displayed slot is assigned from the purchased retail spell.
+	std::vector<HelpDrawOp> ops;
+	b.hud->helpBoxRender(0, 0, 360, 120, ops);
+	b.frames(2);
+	int x = 0, y = 0;
+	REQUIRE(hitPoint(*b.hud, pal->level(), pal->spellBookPath() + ".Spell1", x, y));
+	b.hud->mouseMove(x, y);
+	b.frames(4);
+	CHECK(b.hud->windows().hoverPath() == "Palantir/SpellBookUI/Spell1/"); // RW 0x931698 registers "Palantir/<clip>/Spell%d/"
+	CHECK(b.hud->helpBox().provider().bar == 3);
+	CHECK(b.hud->helpBox().isShown());
+	REQUIRE(b.hud->helpBox().help());
+	CHECK_FALSE(b.hud->helpBox().help()->name().empty());
+	const CommandButton *spell = nullptr;
+	for (const InGameSpellBookModel::Button &button : b.hud->spellBar().buttons())
+	{
+		if (button.index == pal->spellSlotButton(0))
+		{
+			spell = button.button;
+		}
+	}
+	CHECK(b.hud->helpBox().provider().button == spell);
+	b.hud->mouseMove(5, 5);
+	b.frames(10);
+	CHECK_FALSE(b.hud->helpBox().isShown());
+
+	b.rig.make("MenPorter", 800, 800);
+	b.frames(40);
+	REQUIRE(b.hud->heroSelect()->slot(0).builder);
+	REQUIRE(hitPoint(*b.hud, pal->level(), b.hud->heroSelect()->name() + ".Hero1", x, y));
+	b.hud->mouseMove(x, y);
+	b.frames(4);
+	CHECK(b.hud->helpBox().provider().bar == 3); // lane HOVER-1's windowless command provider (RW 0x92BF34 -> RW 0x807A00(0, button))
+	CHECK(b.hud->helpBox().provider().button == s.world->commands().findCommandButton("NonCommand_SelectNearestBuilder"));
+	CHECK(b.hud->helpBox().isShown());
+	REQUIRE(b.hud->helpBox().help());
+	CHECK_FALSE(b.hud->helpBox().help()->name().empty());
+}
+
 TEST_CASE("play1 spell store by the mouse: the Palantir's button opens it, a power is bought, RESET undoes it, ACCEPT buys and closes, the locked powers are drawn grey")
 {
 	if (!haveWorld("play1 spell store mouse"))

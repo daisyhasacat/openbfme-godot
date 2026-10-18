@@ -2,7 +2,9 @@
 // See GameLogic/Module/HeroAbilityModules.h (lane HERO-2).
 
 #include "GameLogic/Module/HeroAbilityModules.h"
+#include "GameLogic/Module/BloodthirstyUpdate.h"
 #include "GameLogic/AttributeModifiers.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/GiantBirdAIUpdate.h"
 
 #include "Common/INI.h"
@@ -30,6 +32,8 @@
 #include "GameLogic/FXEvents.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/AI/AIEmotionStates.h"
+#include "GameLogic/AI/AIPathfind.h"
+#include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/Weapon.h"
@@ -993,9 +997,14 @@ UpdateSleepTime AutoAbilityBehavior::update()
 	// RW 0x85DD6B: the AI's + 0x48 := 2 (the field is not identified: S-1227)
 	// RW 0x85D930: the auto ability sound (client) unless NO_PLAY_UNIT_SPECIFIC_SOUND_FOR_AUTO_ABILITY
 	Coord3D pos = *target->getPosition();
-	if (ai && m_data->m_adjustAttackMeleePosition)
+	// RW 0x85DDA4 .. 0x85DDCC (lane BACKLOG-8): with an AI, AdjustAttackMeleePosition (data + 0x5E) and a target whose geometry is not small (Object + 0xAC, the
+	// GeometryInfo's second field), Pathfinder::adjustToMeleeDestination (RW 0x6EEBC1) with the AI's locomotor set (AI + 0x1CC) moves the cast position to a free
+	// footprint the caster can reach; its result is not read: the cast takes the position the helper leaves, also after a refusal (the spiral writes every
+	// candidate cell's coordinate before it tests the cell, so a refused search can end on the last candidate, not on the target's position)
+	if (ai && m_data->m_adjustAttackMeleePosition && !ai->world().movementInfo(*target->getTemplate()).geometry.isSmall)
 	{
-		++stats().meleeAdjust; // RW 0x6EEBC1 (the melee position offset from large objects) is not ported (S-1227)
+		++stats().meleeAdjust;
+		ai->world().pathfinder().adjustToMeleeDestination(ai->pathfindObject(), ai->locomotorInfo(), &pos);
 	}
 	if (b->m_options & kOptTargetPos)
 	{
@@ -2331,6 +2340,7 @@ void SpecialPowerTimerRefreshSpecialPower::crc(StateHasher &h) const
 // ---------------------------------------------------------------------------------------------------------------------------------
 void HeroAbilityModules::registerAll(ModuleFactory &modules)
 {
+	bindRuntime<BloodthirstyUpdate, BloodthirstyUpdateModuleData>(modules, "BloodthirstyUpdate");
 	bindRuntime<ShareExperienceBehavior, ShareExperienceBehaviorModuleData>(modules, "ShareExperienceBehavior");
 	bindRuntime<DamageFilteredCreateObjectDie, DamageFilteredCreateObjectDieModuleData>(modules, "DamageFilteredCreateObjectDie");
 	bindRuntime<AutoAbilityBehavior, AutoAbilityBehaviorModuleData>(modules, "AutoAbilityBehavior");
@@ -2349,6 +2359,35 @@ void HeroAbilityModules::registerAll(ModuleFactory &modules)
 
 void HeroAbilityModules::registerHandlers(GameLogicDispatch &d)
 {
+	d.registerHandler(MSG_SACRIFICE, "FACT-B", [&d](GameLogic &logic, const GameMessage &m) {
+		const GameMessageArgument *a0 = m.getArgument(0);
+		if (!a0 || a0->type != ARGUMENTDATATYPE_OBJECTID || m.getArgument(1))
+		{
+			return false;
+		}
+		Object *target = logic.findObjectByID(a0->objectID);
+		Player *player = logic.players().getNthPlayer(m.getPlayerIndex());
+		if (!target || !player)
+		{
+			return true;
+		}
+		Object *source = nullptr;
+		for (ObjectID id : d.selection(m.getPlayerIndex()))
+		{
+			Object *selected = logic.findObjectByID(id);
+			if (selected && selected->getControllingPlayer() == player)
+			{
+				source = selected;
+				break;
+			}
+		}
+		BloodthirstyUpdate *module = source ? BloodthirstyUpdate::find(*source) : nullptr;
+		if (module && module->isSacrificeTargetFor(*player, target)) // OpenBFME (review DEVPORT-7e): the client's checks again, for the issuing player
+		{
+			module->sacrificeHorde(target, CMD_FROM_PLAYER);
+		}
+		return true;
+	});
 	d.registerHandler(MSG_DO_AUTO_ABILITY, "HERO-2", [](GameLogic &logic, const GameMessage &m) {
 		const GameMessageArgument *a0 = m.getArgument(0), *a1 = m.getArgument(1);
 		if (!a0 || !a1 || a0->type != ARGUMENTDATATYPE_INTEGER || a1->type != ARGUMENTDATATYPE_OBJECTID)
@@ -2356,7 +2395,7 @@ void HeroAbilityModules::registerHandlers(GameLogicDispatch &d)
 			return false;
 		}
 		const SpecialPowerTemplate *t = TheSpecialPowerStore ? TheSpecialPowerStore->findSpecialPowerTemplateByID((unsigned)a0->integer) : nullptr; // RW 0x7B1B05
-		Object *obj = logic.findObjectByID(a1->objectID); // RW 0x449681
+		Object *obj = GameLogicDispatch::issuerObject(logic, m, a1->objectID); // RW 0x449681 (review DEVPORT-7e: only the issuer's object)
 		const CommandSet *set = obj && TheCommandStore ? TheCommandStore->findCommandSet(obj->getCommandSetName()) : nullptr; // RW 0x69156B / 0x71EFA2
 		if (!t || !set)
 		{
@@ -2386,7 +2425,7 @@ void HeroAbilityModules::registerHandlers(GameLogicDispatch &d)
 		{
 			return false;
 		}
-		Object *obj = logic.findObjectByID(a1->objectID);
+		Object *obj = GameLogicDispatch::issuerObject(logic, m, a1->objectID); // review DEVPORT-7e: only the issuer's object
 		const CommandSet *set = obj && TheCommandStore ? TheCommandStore->findCommandSet(obj->getCommandSetName()) : nullptr;
 		if (!set)
 		{
@@ -2431,7 +2470,7 @@ std::vector<std::string> HeroAbilityModules::stopLines()
 		"ability ends when the AI idles; AI vslot 0x1D0 is not identified",
 		"[S-1227] AutoAbilityBehavior (lane HERO-2): the auto cast runs (RW 0x85D9D1 with RW 0x85D5EA / 0x85D4B5, MSG_DO_AUTO_ABILITY RW 0x77B9BA, StartsActive); "
 		"INFERENCE / not ported: the closest enemy of a module without Query (RW 0x701443 flags 0x4A read as the closest alive enemy it can see), the AI + 0x34 / "
-		"+ 0x48 fields (+ 0x34 read as 0, + 0x48 := 2 not written), the melee position offset (AdjustAttackMeleePosition, RW 0x6EEBC1), the command types other than "
+		"+ 0x48 fields (+ 0x34 read as 0, + 0x48 := 2 not written), the command types other than "
 		"SPECIAL_POWER / SPELL_BOOK (a FIRE_WEAPON auto button is toggled by MSG_DO_AUTO_ABILITY_WEAPON, RW 0x77B8EE, lane AUTOCAST-1, but not fired), the vision "
 		"range modifiers (RW 0x68E43B), the auto sound (client), a disabled object's auto cast exception (RW 0x68E5A3 with 0x20000000); the control bar's "
 		"right press toggle and glow are lane AUTOCAST-1's (ControlBar::rightPressButton, S-3460)",
@@ -2444,4 +2483,132 @@ std::vector<std::string> HeroAbilityModules::stopLines()
 		"other powers are not ready, RW 0x896C83, until something finishes it; RW 0x693919 aborts only abilities in use, RW 0x851C92): kept as read, "
 		"pending a retail trace; a follower id that is gone is skipped in the LevelUp pass (RW 0x8B0B24 reads it)",
 	};
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190, unless noted) ----------------------------------------------------------------------------------
+void ShareExperienceBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	SnapshotXfer::u64(x, m_shares);
+}
+
+// retail's layout (DamageFilteredCreateObjectDie::xfer RW 0x88927E, tier A, (1, 1): the version, the base xfer, u32, i32): + 0x18 the frame of the last
+// hit that passed the filter, + 0x1C its player. The creation count is the report's, not saved.
+void DamageFilteredCreateObjectDie::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	x.xferUnsignedInt(&m_hitFrame);
+	x.xferInt(&m_hitPlayer);
+	SnapshotXfer::checkRange(m_hitPlayer, -1, getObject()->logic().players().getPlayerCount() - 1, "a damage-filtered die's hitting player");
+}
+
+void AutoAbilityBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferAsciiString(&m_button);
+	SnapshotXfer::coord3D(x, m_startPos);
+	x.xferBool(&m_haveStartPos);
+	SnapshotXfer::u64(x, m_castRecord.casts);
+	x.xferAsciiString(&m_castRecord.power);
+	x.xferObjectID(&m_castRecord.target);
+	x.xferUnsignedInt(&m_castRecord.frame);
+}
+
+void WeaponModeSpecialPowerUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_readyFrame);
+	x.xferInt(&m_pauseCount);
+	x.xferUnsignedInt(&m_pauseFrame);
+	x.xferReal(&m_pausedPercent);
+	x.xferBool(&m_active);
+}
+
+void DualWeaponBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferBool(&m_closeRequest);
+	x.xferUnsignedInt(&m_lastSwitch);
+	x.xferUnsignedInt(&m_switches);
+}
+
+void TemporarilyDefectUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_endFrame);
+	x.xferUnsignedInt(&m_startFrame);
+	x.xferObjectID(&m_dominator);
+	x.xferBool(&m_ended);
+}
+
+void DominateEnemySpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	x.xferUnsignedInt(&m_dominated);
+}
+
+void ActivateModuleSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	x.xferUnsignedInt(&m_activations);
+}
+
+void ArrowStormUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	SnapshotXfer::ids(x, m_targets);
+	x.xferObjectID(&m_current);
+	x.xferInt(&m_shotsAtCurrent);
+	x.xferInt(&m_shots);
+	x.xferBool(&m_done);
+}
+
+void CurseSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	x.xferUnsignedInt(&m_cursed);
+}
+
+void FellBeastSwoopPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	x.xferBool(&m_started);
+	x.xferUnsignedInt(&m_commands);
+}
+
+void RousingSpeechUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	SnapshotXfer::ids(x, m_followers);
+	x.xferUnsignedInt(&m_endFrame);
+	x.xferBool(&m_started);
+	x.xferReal(&m_inner);
+	x.xferReal(&m_outer);
+	x.xferUnsignedInt(&m_inspired);
+}
+
+void TeleportSpecialAbilityUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	x.xferUnsignedInt(&m_teleports);
+}
+
+void SpecialPowerTimerRefreshSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	x.xferUnsignedInt(&m_refreshed);
 }

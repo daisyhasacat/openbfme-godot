@@ -23,6 +23,7 @@
 // word, LARGE_RECTANGLE_PATHFIND's offset goal and the patch mode.
 
 #include "GameLogic/AI/AIPathfind.h"
+#include "GameLogic/AI/AIPathfindLine.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/AI/AIPathfindStops.h"
 
@@ -136,66 +137,6 @@ bool clipLine2D(const ICoord2D *p1, const ICoord2D *p2, ICoord2D *c1, ICoord2D *
 	return true;
 }
 
-// RW Bresenham (0x6F7F7D for the shortcut, 0x6F03B1 for the passability walk): N = max(|dx|, |dy|) + 1 cells, the decision variable
-// d = 2 * minor - major, incE = 2 * minor, incNE = 2 * (minor - major); d >= 0 steps both axes. `visit(from, to, x, y)` returns true to
-// stop; the walk ends (returning false) at a cell outside the grid. `from` is the previous cell, null at the first.
-template <class Grid, class Visit>
-bool walkLine(Grid &grid, PathfindLayerEnum layer, const ICoord2D &start, const ICoord2D &end, Visit visit)
-{
-	int dx = std::abs(end.x - start.x);
-	int dy = std::abs(end.y - start.y);
-	const int sx = end.x >= start.x ? 1 : -1;
-	const int sy = end.y >= start.y ? 1 : -1;
-	int x = start.x, y = start.y;
-	PathfindCell *from = nullptr;
-	if (dx >= dy)
-	{
-		int d = 2 * dy - dx;
-		const int incE = 2 * dy, incNE = 2 * (dy - dx);
-		for (int k = 0; k <= dx; k++)
-		{
-			PathfindCell *to = grid.getCell(layer, x, y);
-			if (to == nullptr) return false;
-			if (visit(from, to, x, y)) return true;
-			from = to;
-			if (d >= 0)
-			{
-				x += sx;
-				y += sy;
-				d += incNE;
-			}
-			else
-			{
-				x += sx;
-				d += incE;
-			}
-		}
-	}
-	else
-	{
-		int d = 2 * dx - dy;
-		const int incE = 2 * dx, incNE = 2 * (dx - dy);
-		for (int k = 0; k <= dy; k++)
-		{
-			PathfindCell *to = grid.getCell(layer, x, y);
-			if (to == nullptr) return false;
-			if (visit(from, to, x, y)) return true;
-			from = to;
-			if (d >= 0)
-			{
-				x += sx;
-				y += sy;
-				d += incNE;
-			}
-			else
-			{
-				y += sy;
-				d += incE;
-			}
-		}
-	}
-	return false;
-}
 } // namespace
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1020,6 +961,8 @@ Path *Pathfinder::internalFindPath(PathfindObject *obj, const PathfindLocomotorI
 	worldToCell(to, true, &goalNdx);
 	bool approx = false;
 	{
+		// TARGET RW 0x6FD306 .. 0x6FD3EC: checkDestination (RW 0x6F1584) with the unit's footprint, then checkForMovement (RW 0x6EB792) with the info's
+		// radius 1 (RW 0x6FD341: the literal, not the footprint radius; lane BACKLOG5), flags 0xC for a HERO else 0x1C, transient, the AI's ignored obstacle
 		int out = 0;
 		const bool destOK = checkDestination(obj, goalNdx.x, goalNdx.y, destinationLayer, radius, centerInCell, &out, true);
 		bool moveOK = true;
@@ -1028,7 +971,7 @@ Path *Pathfinder::internalFindPath(PathfindObject *obj, const PathfindLocomotorI
 			PathfindCheckMovement info;
 			info.cell = goalNdx;
 			info.layer = destinationLayer;
-			info.radius = radius;
+			info.radius = 1;
 			info.center = centerInCell;
 			info.flags = obj->isKindOf(PK_HERO) ? 0x0Cu : 0x1Cu;
 			info.transient = true;
@@ -1095,7 +1038,7 @@ Path *Pathfinder::internalFindPath(PathfindObject *obj, const PathfindLocomotorI
 		info.layer = layer;
 		info.radius = radius;
 		info.center = centerInCell;
-		info.flags = obj->isKindOf(PK_HERO) ? 0x0Cu : 0x1Cu;
+		info.flags = 0; // TARGET RW 0x6FD8DF: the start's check has the mode flags 0 (the port had the goal's 0xC / 0x1C here; lane BACKLOG5)
 		info.transient = true;
 		info.ignoreId = obj->hasAI() ? obj->getIgnoredObstacleID() : PATHFIND_INVALID_ID;
 		info.mv = mv;
@@ -1122,6 +1065,7 @@ Path *Pathfinder::internalFindPath(PathfindObject *obj, const PathfindLocomotorI
 		if (c == goalCell)
 		{
 			m_isTunneling = false;
+			note(pathstops::kPartialRebuild); // RW 0x6FDCDA: the rebuild of the complete path (RW 0x767B0E) is not ported
 			Path *path = buildActualPath(obj, loco.validSurfaces, from, goalCell, centerInCell, false);
 			parentCell->releaseInfo(m_pool);
 			cleanOpenAndClosedLists();
@@ -1186,6 +1130,7 @@ Path *Pathfinder::internalFindPath(PathfindObject *obj, const PathfindLocomotorI
 		{
 			continue; // too far from the goal to be worth expanding
 		}
+		checkChangeLayers(c, obj); // RW 0x6FDBDD
 		cellCount += examineNeighboringCells(c, goalCell, loco, isHuman, centerInCell, radius, startCellNdx, obj, hierarchical);
 	}
 	// failure or budget: a path to the closest valid cell, else nothing

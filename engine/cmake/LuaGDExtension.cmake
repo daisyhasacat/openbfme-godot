@@ -64,7 +64,7 @@ set_target_properties(openbfme_tree_sitter PROPERTIES POSITION_INDEPENDENT_CODE 
 add_library(openbfme_luagd STATIC ${OPENBFME_LUAGD_SOURCES} ${OPENBFME_LUAGD_GENERATED} ${CMAKE_CURRENT_SOURCE_DIR}/src/GodotDevice/LuaGDExtensionRegister.cpp)
 target_include_directories(openbfme_luagd PRIVATE ${OPENBFME_LUAGD_STAGE}/src ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/sol2/include)
-target_link_libraries(openbfme_luagd PUBLIC godot-cpp openbfme_luajit openbfme_tree_sitter)
+target_link_libraries(openbfme_luagd PUBLIC godot-cpp openbfme_luajit openbfme_tree_sitter openbfme_sim_fp)
 # the defines stay private: nothing outside this library includes the addon or sol2
 # upstream SConstruct + tools/luajit.py + tools/sol2.py
 target_compile_definitions(openbfme_luagd PRIVATE LUAJIT SOL_LUAJIT=1 SOL_USING_CXX_LUA=0 SOL_EXCEPTIONS_SAFE_PROPAGATION=1 SOL_NO_NIL=0)

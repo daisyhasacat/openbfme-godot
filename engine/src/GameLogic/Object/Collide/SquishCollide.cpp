@@ -3,6 +3,7 @@
 // See GameLogic/Module/SquishCollide.h for the target facts (RW 0x8BFBAE, 0x68D4D0, 0x695070, 0x68D524, 0x69320D).
 
 #include "GameLogic/Module/SquishCollide.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/AsciiString.h"
 #include "Common/GameCommon.h"
@@ -716,4 +717,17 @@ void HordeMemberCollide::onCollide(Object *other, const Coord3D *, const Coord3D
 	{
 		h->refreshMeleeReadiness(*target);
 	}
+}
+
+// ---- lane SAVE-4b: the snapshots (BehaviorModule's: the collide modules keep no state) ------------------------------------------------------------------
+void SquishCollide::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+}
+
+void HordeMemberCollide::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
 }

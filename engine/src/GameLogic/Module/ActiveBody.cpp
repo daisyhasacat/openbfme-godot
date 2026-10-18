@@ -13,6 +13,7 @@
 
 #include "Common/Player.h"
 #include "Common/StateHash.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/Armor.h"
 #include "GameLogic/Combat/CombatNames.h"
@@ -21,6 +22,9 @@
 #include "GameLogic/Damage.h"
 #include "GameLogic/DamageFX.h"
 #include "GameLogic/Module/DamageModule.h"
+#include "Common/PlayerList.h"
+#include "GameLogic/Module/BloodthirstyUpdate.h"
+#include "GameLogic/Module/HeroModules.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Object/Object.h"
@@ -49,6 +53,13 @@ void parseDamageCreation(INI *ini, void *, void *store, const void *)
 	list->push_back(std::move(tokens));
 }
 
+// lane OWNERFIX-1: HealingBuffFx (RW 0x73A302, + 0x48) replaces the GameData default the constructor took (RW 0x8C373F); "None" stores none
+void parseHealingBuffFx(INI *ini, void *data, void *store, const void *)
+{
+	parseFXName(ini, data, store, nullptr);
+	static_cast<ActiveBodyModuleData *>(data)->m_healingBuffFxSet = true;
+}
+
 #define AB_OFF(member) (int)offsetof(ActiveBodyModuleData, member)
 const FieldParse kActiveBodyFieldParse[] = {
 	{ "MaxHealth", INI::parseReal, nullptr, AB_OFF(m_maxHealth) },
@@ -65,7 +76,7 @@ const FieldParse kActiveBodyFieldParse[] = {
 	{ "GrabOffset", INI::parseCoord2D, nullptr, AB_OFF(m_grabOffset) },
 	{ "UseDefaultDamageSettings", INI::parseBool, nullptr, AB_OFF(m_useDefaultDamageSettings) },
 	{ "DamageCreationList", parseDamageCreation, nullptr, AB_OFF(m_damageCreationList) },
-	{ "HealingBuffFx", parseFXName, nullptr, AB_OFF(m_healingBuffFx) },
+	{ "HealingBuffFx", parseHealingBuffFx, nullptr, AB_OFF(m_healingBuffFx) },
 	{ "DamagedAttributeModifier", INI::parseAsciiString, nullptr, AB_OFF(m_damagedAttributeModifier) },
 	{ "ReallyDamagedAttributeModifier", INI::parseAsciiString, nullptr, AB_OFF(m_reallyDamagedAttributeModifier) },
 	{ "CheerRadius", INI::parseReal, nullptr, AB_OFF(m_cheerRadius) },
@@ -405,6 +416,19 @@ void ActiveBody::attemptDamage(DamageInfo &info)
 	{
 		amount = SimMath::mulf32(amount, m_damageScalar);
 	}
+	if (Object *source = logic.findObjectByID(info.m_input.m_sourceID))
+	{
+		const unsigned bloodthirsty = (unsigned)CombatNames::status("BLOODTHIRSTY");
+		Object *sourceHorde = source->getHordeObject(false);
+		if (source->testStatus(bloodthirsty) && sourceHorde)
+		{
+			if (BloodthirstyUpdate *module = BloodthirstyUpdate::find(*sourceHorde); module && module->isValidSacrifice(&obj))
+			{
+				info.m_input.m_kill = true;
+				module->addSacrifice(&obj);
+			}
+		}
+	}
 	const float previous = m_currentHealth;
 	if (amount > 0.0f || info.m_input.m_kill)
 	{
@@ -460,15 +484,19 @@ void ActiveBody::attemptDamage(DamageInfo &info)
 			{
 				killer->scoreTheKill(obj);
 			}
-			DieModuleInterface::Event event;
-			event.sourceId = info.m_input.m_sourceID;
-			event.deathType = info.m_input.m_deathType;
-			event.damageType = type;
-			event.damageSubType = info.m_input.m_damageSubType; // lane HERO-2
-			event.damageAmount = info.m_input.m_amount;
-			event.actualDamageDealt = info.m_output.m_actualDamageDealt;
-			event.actualDamageClipped = info.m_output.m_actualDamageClipped;
-			obj.friend_onDie(event);
+			// RW 0x8C4593: RespawnBody owns the death callback when RespawnUpdate exists.
+			if (!dynamic_cast<RespawnUpdate *>(obj.findModule("RespawnUpdate")))
+			{
+				DieModuleInterface::Event event;
+				event.sourceId = info.m_input.m_sourceID;
+				event.deathType = info.m_input.m_deathType;
+				event.damageType = type;
+				event.damageSubType = info.m_input.m_damageSubType; // lane HERO-2
+				event.damageAmount = info.m_input.m_amount;
+				event.actualDamageDealt = info.m_output.m_actualDamageDealt;
+				event.actualDamageClipped = info.m_output.m_actualDamageClipped;
+				obj.friend_onDie(event);
+			}
 		}
 		// lane XP-1: RW 0x8C46A9 .. 0x8C46EA: the attacker's player earns skill points for the share of the victim's maximum health the hit took (capped at
 		// 1.0), after the kill credit and the death (ExperienceWorld::awardSkillPointsForDamage)
@@ -569,5 +597,60 @@ void ActiveBody::attemptHealing(DamageInfo &info)
 		internalChangeHealth(amount);
 		info.m_output.m_actualDamageDealt = amount;
 		info.m_output.m_actualDamageClipped = SimMath::subf32(m_previousHealth, m_currentHealth);
+		// lane OWNERFIX-1 (the owner: no particles show the heroes healing): RW 0x8C30B1 .. 0x8C3118 (BFME2 decomp ActiveBody.cpp attemptHealing, tier B
+		// same-shape): when the health went up (after the damage modules' onHealing, which this port does not call here), the module data's healing FX (+ 0x48: HealingBuffFx, else GameData's
+		// DefaultUnitHealingBuffFxList, RW 0x8C373F) plays on the object (RW 0x4B1B5A, no secondary) unless its template is a STRUCTURE (template + 0x108
+		// bit 7) or its status has AIRBORNE_TARGET (Object + 0x94 bit 6). A client effect: the logic's FX log, nothing hashed changes
+		if (m_currentHealth > m_previousHealth)
+		{
+			Object &obj = *getObject();
+			GameLogic &logic = obj.logic();
+			const std::string &fx = m_data->m_healingBuffFxSet ? m_data->m_healingBuffFx : logic.settings().defaultUnitHealingBuffFxList;
+			static const int kStructure = CombatNames::kindOf("STRUCTURE");
+			static const int kAirborneTarget = CombatNames::status("AIRBORNE_TARGET");
+			if (FXEventLog::isFXName(fx) && !obj.isKindOf((unsigned)kStructure) && !obj.testStatus((unsigned)kAirborneTarget))
+			{
+				logic.fxEvents().emit(FXEventLog::objectEvent(FXEvent::OBJECT_FX, "HealingBuffFx", logic.getFrame(), fx, obj));
+			}
+		}
 	}
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) -----------------------------------------------------------------------------------------------
+// Retail's ActiveBody::xfer (RW 0x8C3388, tier A, (1, 1)) transfers RotWK's body (six reals, the damage and side-destroyed types, the particle systems, the
+// subdual and armour bits ...); this body is the port's subset: its fields in the crc's order, then what the crc leaves out (the damage FX throttle). The
+// current DamageInfo pointer is null outside a hit (a snapshot is taken between frames); the armour report flag is the report's.
+void ActiveBody::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	x.xferReal(&m_currentHealth);
+	x.xferReal(&m_previousHealth);
+	x.xferReal(&m_reviveReference);
+	x.xferBool(&m_indestructible);
+	x.xferReal(&m_initialHealth);
+	x.xferReal(&m_maxHealth);
+	x.xferReal(&m_damagedFraction);
+	x.xferReal(&m_reallyDamagedFraction);
+	x.xferReal(&m_damageScalar);
+	x.xferUnsignedInt(&m_lastDamageFrame);
+	x.xferObjectID(&m_lastDamager);
+	SnapshotXfer::maskWithin(x, m_lastDamagerPlayerMask, SnapshotXfer::lowBits(getObject()->logic().players().getPlayerCount()), "a body's last damager players",
+		"this game's players"); // lane SAVE-4e
+	x.xferBool(&m_lastAttackerTaken); // lane PLAY-4's + 0xB6
+	SnapshotXfer::enumIn(x, m_curDamageState, BODY_PRISTINE, BODY_RUBBLE, "a body's damage state");
+	SnapshotXfer::enumIn(x, m_lastDamageFXType, 0, SnapshotXfer::nameCount(TheDamageFXTypeNames) - 1, "a body's last damage FX type");
+	x.xferUnsignedInt(&m_damageFXThrottleUntil);
+}
+
+void ImmortalBody::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	ActiveBody::xfer(x);
+}
+
+void HighlanderBody::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	ActiveBody::xfer(x);
 }

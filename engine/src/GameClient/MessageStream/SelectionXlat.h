@@ -52,8 +52,6 @@ public:
 
 private:
 	bool selectSingleWithoutSound(Object &obj);
-	// the selection's templates on the screen (or the map); the number of objects it added
-	int selectMatching(Object *picked, bool acrossMap);
 	void buildRegion(const ICoord2D &a, const ICoord2D &b, IRegion2D &out) const;
 	void viewSquad(int group);
 	// The squads as they stand once the queued create-group messages have run: the translator creates a group and may read it again before the
@@ -64,7 +62,6 @@ private:
 	// RW 0xD9F608 (TARGET FACT, the dword 5): a second press of the same group key within this many logic frames looks at the group (ZH: 20)
 	static constexpr unsigned kGroupDoublePressFrames = 5;
 	MessageDisposition leftClick(const ClientMessage &msg);
-	MessageDisposition doubleClick(const ClientMessage &msg);
 
 	HudContext &m_ctx;
 	CommandTranslator &m_commands;

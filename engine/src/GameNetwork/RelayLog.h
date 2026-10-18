@@ -77,6 +77,7 @@ struct Assembled
 	std::vector<Network::MembershipEvent> membership;  ///< drops, leaves, rejoins and hand-overs, in log order
 	std::map<UnsignedInt, int> runAheadChanges;        ///< frame -> the RUNAHEAD it ran with (in effect from the frame after)
 	int runAheadAfter(UnsignedInt frame, int initial) const; ///< the run-ahead in effect after `frame` ran
+	std::uint8_t disconnectedSlotsAt(UnsignedInt nextFrame) const; ///< score presentation at this playback boundary; a graceful leave is not a disconnect
 	struct SlotFrame
 	{
 		std::vector<std::shared_ptr<GameMessage>> commands;

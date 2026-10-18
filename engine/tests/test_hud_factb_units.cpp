@@ -1021,6 +1021,14 @@ void unitsOf(const std::string &faction, Results &res)
 		std::string enemyName = "GondorFighterHorde";
 		ObjectID uid = INVALID_ID, enemyUnitId = INVALID_ID, enemyBuildingId = INVALID_ID, allyId = INVALID_ID, ownHordeId = INVALID_ID;
 		auto clear = [&]() {
+			// Targeted commands (including Bloodthirsty, RW 0x940435) keep taking clicks until a target or a right-click cancellation.
+			// Destroying this fixture is not a player cancellation; do that through the HUD before trying to select the next unit.
+			if (const CommandButton *pending = g.hud->input().ui().getGUICommand())
+			{
+				INFO("cancel pending fixture command " << pending->m_name);
+				g.clickAt(c, HudInput::Button::Right);
+				REQUIRE(g.hud->input().ui().getGUICommand() == nullptr);
+			}
 			for (ObjectID id : { uid, enemyUnitId, enemyBuildingId, allyId, ownHordeId })
 			{
 				if (Object *o = id != INVALID_ID ? g.logic().findObjectByID(id) : nullptr)
@@ -1044,7 +1052,7 @@ void unitsOf(const std::string &faction, Results &res)
 			again(enemyBuildingId, tg.enemyBuilding, "GondorBarracks", -30.0f, 220.0f, enemy);
 			again(allyId, tg.allyUnit, e->name.c_str(), -120.0f, -60.0f, nullptr);
 		};
-		auto spawn = [&]() -> bool {
+		auto spawn = [&](int levelsToGain = 10) -> bool {
 			clear();
 			const Coord3D home = g.home();
 			const float r = 600.0f + 250.0f * (float)((n / 7) % 2); // the old site's objects are gone: the sites repeat, close to the base
@@ -1066,7 +1074,7 @@ void unitsOf(const std::string &faction, Results &res)
 			// the top level: a hero's abilities and a horde's level powers unlock with the level
 			if (ExperienceTracker *xp = u->getExperienceTracker())
 			{
-				xp->gainExpForLevel(10, false);
+				xp->gainExpForLevel(levelsToGain, false);
 			}
 			g.step(5);
 			return true;
@@ -1161,7 +1169,7 @@ void unitsOf(const std::string &faction, Results &res)
 					break;
 				}
 				enemyName = attempt == 1 ? "GondorBoromir" : firstEnemy;
-				if (!spawn())
+				if (!spawn(upgrade ? 0 : 10))
 				{
 					res.fail(item, "the unit left the world in its first 20 frames");
 					continue;
@@ -1196,9 +1204,17 @@ void unitsOf(const std::string &faction, Results &res)
 					}
 					continue;
 				}
-				if (b.state != ButtonState::Enabled && b.state != ButtonState::Active)
+				// lane DEVPORT-3C: a button with an EnableOnModelCondition mask (ROTWK-C's port of RW 0x942733's model condition gate: Lurtz's Carnage needs
+				// WEAPONSET_TOGGLE_1, the Goblin King's stinger MOUNTED or HERO) is restricted until the player's weapon toggle / mount below; it is checked after them
+				bool modelGated = false;
+				for (std::uint32_t w : cb->m_enableOnModelCondition)
 				{
-					res.fail(item, str("state %d at level 10 (not enabled)", (int)b.state));
+					modelGated = modelGated || w != 0;
+				}
+				modelGated = modelGated && !upgrade && b.state == ButtonState::Restricted;
+				if (b.state != ButtonState::Enabled && b.state != ButtonState::Active && !modelGated)
+				{
+					res.fail(item, str("state %d at level %d (not enabled)", (int)b.state, u->getExperienceTracker() ? u->getExperienceTracker()->getRank() : 0));
 					continue;
 				}
 				const auto unportedBefore = g.hud->controlBar().unportedPresses();
@@ -1402,6 +1418,11 @@ void unitsOf(const std::string &faction, Results &res)
 						res.fail(item, "the button left the bar after the mount");
 						continue;
 					}
+				}
+				if (b.state != ButtonState::Enabled && b.state != ButtonState::Active)
+				{
+					res.fail(item, str("state %d at level 10%s (not enabled)", (int)b.state, modelGated ? " after the weapon toggle / mount" : ""));
+					continue;
 				}
 				// a position power whose result is on own units (a level grant, a heal) is cast at an own horde made there; one whose result is on
 				// enemies (a dominate, a hit, a curse, a terror, a grab) at the enemy unit; the others at the ground by the unit
@@ -1705,7 +1726,7 @@ TEST_CASE("factb units: every Isengard unit, horde and hero ability and upgrade 
 	unitsOf("FactionIsengard", r);
 	r.print("units FactionIsengard");
 	r.check({ { "* Command_ToggleStance", "S-289" }, { "MordorWorker Command_Harvest", "S-1993" }, { "IsengardPorter Command_PorterExtinguishFire", "S-1997" },
-		{ "IsengardBallista Command_BombardEvil", "S-1990" }, { "IsengardFighterHorde Command_IsengardBloodThirstySacrifice", "S-1991" }, { "IsengardSaruman Command_SarumanThunderBolt", "S-180 (the bolt's damage lands; its WeaponOCLNugget makes nothing)" },
+		{ "IsengardBallista Command_BombardEvil", "S-1990" }, { "IsengardSaruman Command_SarumanThunderBolt", "S-180 (the bolt's damage lands; its WeaponOCLNugget makes nothing)" },
 		{ "IsengardSharku Command_SpecialAbilitySharkuManEater", "S-180 (GrabNugget delivery)" } });
 }
 
@@ -1720,8 +1741,7 @@ TEST_CASE("factb units: every Mordor unit, horde and hero ability and upgrade bu
 	r.print("units FactionMordor");
 	// lane FLY-1: the fell beasts' dismounts land and fire (GiantBirdAIUpdate, MOVING_TO_DISMOUNT): S-1994's pins went
 	r.check({ { "* Command_ToggleStance", "S-289" }, { "MordorWorker Command_Harvest", "S-1993" }, { "MordorPorter Command_PorterExtinguishFire", "S-1997" },
-		{ "MordorHaradrimArcherHorde Command_HaradrimArcherBarbedArrowAbility", "S-1997" },
-		{ "MordorBlackOrcHorde Command_BloodThirstySacrifice", "S-1991" }, { "MordorFighterHorde Command_BloodThirstySacrifice", "S-1991" } });
+		{ "MordorHaradrimArcherHorde Command_HaradrimArcherBarbedArrowAbility", "S-1997" } });
 }
 
 // The pick of a click on a siege engine (the train sweep could not select Isengard's battering ram or Mordor's catapult with a click): the hits at
@@ -2070,6 +2090,22 @@ void fightsOf(const std::string &faction, Results &res)
 				++n;
 				Object *u = g.rig.make(e->name, c.x, c.y);
 				Object *target = g.rig.make(wallsOnly ? "GondorBarracks" : "GondorFighterHorde", c.x + off, c.y + 30.0f, enemy);
+				// Stage a fight, not an automatic charge before the HUD's order.
+				const unsigned noAuto = (unsigned)ObjectTemplateInfoBuilder::objectStatusIndex("NO_AUTO_ACQUIRE");
+				for (Object *actor : { u, target })
+				{
+					actor->setStatus(noAuto, true);
+					if (const auto *contain = actor->getContain())
+					{
+						if (const auto *members = contain->getContainedItemsList())
+						{
+							for (Object *member : *members)
+							{
+								member->setStatus(noAuto, true);
+							}
+						}
+					}
+				}
 				const ObjectID uid = u->getID(), tid = target->getID();
 				g.step(15);
 				const float before = healthOf(g.logic(), tid);
@@ -2508,8 +2544,25 @@ void spellBookOf(const std::string &faction, Results &res, bool viaStore = false
 		}
 		g.step(5);
 	}
+	std::map<const SpecialPowerTemplate *, EffectProbe> purchaseEffects;
 	if (viaStore)
 	{
+		for (const InGameSpellBookModel::Button &btn : bar.buttons())
+		{
+			if (!btn.power)
+			{
+				continue;
+			}
+			EffectProbe before = EffectProbe::take(g.logic(), book, btn.power);
+			for (const EffectProbe::Expect &effect : before.expects)
+			{
+				if (effect.kind == EffectProbe::BOUNTY)
+				{
+					purchaseEffects.emplace(btn.power, before);
+					break;
+				}
+			}
+		}
 		// the points a player earns over the ten ranks (RW 0x782764 adds them; the store's prices are the sciences' SciencePurchasePointCost)
 		g.rig.local->science().addSciencePurchasePoints(200);
 		int bought = 0;
@@ -2564,6 +2617,21 @@ void spellBookOf(const std::string &faction, Results &res, bool viaStore = false
 		if (!owned)
 		{
 			res.fail(item, "the store did not sell its science");
+			continue;
+		}
+		const auto purchased = purchaseEffects.find(btn.power);
+		if (purchased != purchaseEffects.end())
+		{
+			std::string missing;
+			const std::string effect = purchased->second.compare(EffectProbe::take(g.logic(), book, btn.power), missing);
+			if (effect.empty() || !missing.empty())
+			{
+				res.fail(item, "purchase did not activate the passive power: " + missing);
+			}
+			else
+			{
+				res.pass(item, "activated on purchase: " + effect);
+			}
 			continue;
 		}
 		// the scene: an own horde (wounded: a heal shows), an enemy horde and an enemy structure around the point. It is played twice from the same
@@ -2765,7 +2833,7 @@ TEST_CASE("factb spell book: every Isengard spell book power cast through the HU
 	Results r;
 	spellBookOf("FactionIsengard", r);
 	r.print("spell book FactionIsengard");
-	r.check({ { "spell SpellBookDevastation", "S-921 (SPELL-3)" }, { "spell SpellBookIsengardTaint", "S-1997" }, { "spell SpellBookIndustry", "S-1997" },
+	r.check({ { "spell SpellBookDevastation", "S-921 (SPELL-3)" }, { "spell SpellBookIndustry", "S-1997" },
 		{ "spell SpellBookFueltheFires", "S-1997" }, { "spell SpellBookDragonStrike", "S-1997" } });
 }
 
@@ -3629,9 +3697,7 @@ TEST_CASE("factc fights: every Goblin and Angmar unit, horde and hero attacks an
 	{
 		return;
 	}
-	// lane FLY-1: Drogoth flies and fights (S-1994 closed); merge q8: on the site on clear ground (PATHPERF-1's placement rules) the click on the
-	// horde is a move for Drogoth (the horde is fogged for the player, S-565), so he deals no damage
-	factcCase("fights", "FactionWild", fightsOf, { { "fight Drogoth", "S-565|lost no health" } });
+	factcCase("fights", "FactionWild", fightsOf, {});
 	// lane PLAY-4 r3: the sites are kept on the map, where the enemy is in sight: the clicks are attack orders (S-565's fogged target, a move, no longer
 	// happens here); the Necromancers stop short of the enemy as in the damage sweep (S-2005)
 	factcCase("fights", "FactionAngmar", fightsOf, { { "fight AngmarNecromancerHorde", "S-2005|lost no health" } });

@@ -23,11 +23,15 @@
 #include "GameLogic/System/ShroudManager.h"
 #include "GameLogic/Module/UpgradeModule.h"
 #include "GameLogic/ObjectFilter.h"
+#include "GameLogic/ObjectFilterMatch.h"
 #include "GameLogic/SimMath.h"
 
 #include "Common/Player.h"
 #include "Common/PlayerTemplate.h"
 #include "Common/StateHash.h"
+#include "Common/Xfer.h"
+#include "GameLogic/SnapshotXfer.h"
+#include "Common/MpGameRules.h"
 #include "Common/Team.h"
 #include "Common/Thing/ModuleFactory.h"
 #include "Common/Thing/ThingFactory.h"
@@ -91,6 +95,7 @@ Object::Object(GameLogic &logic, const ThingTemplate *tt, const ObjectStatusMask
 	}
 	const ObjectTemplateInfo &info = logic.templateInfo(m_template);
 	m_kindOf = info.kindOf;
+	m_scriptSelectable = isKindOfName("SELECTABLE"); // RW 0x69A648..0x69A652: template KindOf bit 1 initializes Object +0x454
 	m_id = id != INVALID_ID ? id : logic.allocateObjectID(); // RW 0x699E4A .. 0x699E5D
 	if (id != INVALID_ID)
 	{
@@ -556,6 +561,10 @@ void Object::setTeam(Team *team)
 		if (oldOwner != newOwner)
 		{
 			onOwnerChanged(oldOwner, newOwner);
+			if (m_client && oldOwner && newOwner)
+			{
+				m_client->observerEvent(*this, ObserverEvent::Capture);
+			}
 		}
 		// lane FACT-B (FACT-C's bdf99d54 finding): RW 0x69954A Object::setTeam (tier B, BFME2 decomp ObjectSetTeam.cpp) ends, for a non-null team,
 		// with updateUpgradeModules (RW 0x699658 -> RW 0x6936FE): the upgrade modules run against the new owner's upgrades, so a captured building takes
@@ -893,6 +902,10 @@ void Object::friend_onDie(const DieModuleInterface::Event &event)
 {
 	// RW 0x698F06 (the dead flag RW + 0x458 bit 0 first: from now on the object is no target and takes no more damage)
 	m_effectivelyDead = true;
+	if (m_client)
+	{
+		m_client->observerEvent(*this, ObserverEvent::Death);
+	}
 	for (size_t i = 0; i < m_modules.size(); ++i)
 	{
 		if (DieModuleInterface *d = m_modules[i]->getDie())
@@ -1302,6 +1315,25 @@ void Object::friend_initObject()
 	}
 	// lane SPELL-2: RW 0x694065 .. 0x694073: TheGlobalWeatherSystem gives a new object the active weather-based modifier (RW 0x719C69)
 	m_logic.weather().apply(*this, false);
+	// lane OWNERFIX-2: RW 0x694078 .. 0x694130 (BFME2 decomp ObjectInitObject.cpp Object::initObject, tier B: RotWK adds the SHIP test): in a multiplayer game
+	// (RW 0x625456) an object that is a STRUCTURE, an FS_POWER / FS_FACTORY / FS_BASE_DEFENSE / FS_TECHNOLOGY / FS_CASH_PRODUCER (RW 0x68DAE6), INFANTRY,
+	// CAVALRY, MONSTER, MACHINE, HERO or SHIP (template + 0x11F & 0x80) takes "HandicapPercent<n>" (n = -(the controlling player's + 0x29C), only for
+	// 0 < n <= 100 and n % 5 == 0) through RW 0x68F1A8 with the list's own duration; a list the data lacks is no modifier (RW 0x68F1A8 finds none)
+	if (Player *owner = getControllingPlayer(); owner && m_logic.economy().isMultiplayerGame())
+	{
+		static const char *const kHandicapKinds[] = { "STRUCTURE", "FS_POWER", "FS_FACTORY", "FS_BASE_DEFENSE", "FS_TECHNOLOGY", "FS_CASH_PRODUCER", "INFANTRY",
+			"CAVALRY", "MONSTER", "MACHINE", "HERO", "SHIP" };
+		bool kind = false;
+		for (const char *k : kHandicapKinds)
+		{
+			kind = kind || isKindOfName(k);
+		}
+		const int n = -owner->getHandicap(); // neg eax (RW 0x6940E4); the handicap is one of the lobby values (no overflow)
+		if (kind && n > 0 && n <= 100 && n % 5 == 0)
+		{
+			addAttributeModifier("HandicapPercent" + std::to_string(n), -1);
+		}
+	}
 	// lane RULES-1, OpenBFME (not retail): the Legendary Heroes rule scales a player's hero once its record, level and modifiers are in (nothing at Off)
 	LegendaryHeroesGame::applyAtCreation(*this);
 	// lane END-1: RW 0x694130 .. 0x694140: the controlling player's ScoreKeeper::addObjectBuilt(this, 1) (RW 0x79F0E1), last in initObject
@@ -1466,7 +1498,47 @@ bool Object::affectedByUpgrade(const UpgradeTemplate *upgrade) const
 	}
 	static const ObjectFilter kDefaultFilter; // the template constructor's filter (RW 0x76406F: the parser default)
 	const ObjectFilter &filter = upgrade->m_requiredObjectFilter ? *upgrade->m_requiredObjectFilter : kDefaultFilter;
-	if (!player->hasObjectMatching(filter, true)) // RW 0x694965 (the clauses before and after it are S-486)
+	// RW 0x6939DF / 0x693A1A: an attached horde member can use its horde's upgrade.
+	const Object *producer = logic().findObjectByID(getProducerID());
+	static const int kHordeMember = CombatNames::status("HORDE_MEMBER"); // RW 0x6939DF: status bit 0x26
+	const bool attached = getProducerID() != INVALID_ID &&
+		(testStatus((unsigned)kHordeMember) || (producer && producer->isKindOfName("HORDE")));
+	const Object *horde = attached ? getHordeObject(false) : nullptr;
+	bool requiredObject = horde && horde->hasUpgrade(upgrade);
+	// RW 0x6ABD0B / 0x7A075A(filter, 1): a live object that is no MINE (template + 0x10E bit 7) and, as a STRUCTURE (+ 0x108 bit 7), has neither
+	// AWAITING_CONSTRUCTION nor PARTIALLY_CONSTRUCTED (Object + 0x114 bits 3 / 4 = model conditions 67 / 68), allowed by the filter without a context; then
+	// RW 0x6ABDC2 / 0x7A089B: a live object that is no STRUCTURE, PROJECTILE (+ 0x108 bit 25) or IGNORE_FOR_VICTORY (+ 0x11A bit 4), allowed with the
+	// owner's context
+	static const int kMine = ObjectTemplateInfoBuilder::kindOfIndex("MINE");
+	static const int kStructure = ObjectTemplateInfoBuilder::kindOfIndex("STRUCTURE");
+	static const int kProjectile = ObjectTemplateInfoBuilder::kindOfIndex("PROJECTILE");
+	static const int kIgnoreForVictory = ObjectTemplateInfoBuilder::kindOfIndex("IGNORE_FOR_VICTORY");
+	static const int kAwaiting = CombatNames::modelCondition("AWAITING_CONSTRUCTION");
+	static const int kPartial = CombatNames::modelCondition("PARTIALLY_CONSTRUCTED");
+	if (kMine < 0 || kStructure < 0 || kProjectile < 0 || kIgnoreForVictory < 0)
+	{
+		throw std::logic_error("Object::affectedByUpgrade: a KindOf name of RW 0x7A075A / 0x7A089B is not registered");
+	}
+	for (const Object *object = logic().getFirstObject(); object && !requiredObject; object = object->getNextObject())
+	{
+		if (object->getControllingPlayer() != player || object->isEffectivelyDead() || object->isDestroyed())
+		{
+			continue;
+		}
+		const KindOfMaskType &kind = object->getKindOf();
+		const bool structure = MaskTest(kind, (unsigned)kStructure);
+		if (!MaskTest(kind, (unsigned)kMine) && (!structure || (!object->testModelCondition(kAwaiting) && !object->testModelCondition(kPartial))) &&
+			ObjectFilterMatch::allows(logic(), filter, *object, nullptr))
+		{
+			requiredObject = true;
+		}
+		else if (!structure && !MaskTest(kind, (unsigned)kProjectile) && !MaskTest(kind, (unsigned)kIgnoreForVictory) &&
+		         ObjectFilterMatch::allows(logic(), filter, *object, player))
+		{
+			requiredObject = true;
+		}
+	}
+	if (!requiredObject)
 	{
 		return false;
 	}
@@ -1647,10 +1719,16 @@ void Object::doAttemptDamage(DamageInfo &info)
 	if (!m_effectivelyDead && m_body)
 	{
 		m_body->attemptDamage(info);
+		if (m_client && info.m_output.m_actualDamageDealt > 0.0f &&
+			info.m_input.m_damageType != DAMAGE_HEALING && info.m_input.m_damageType != DAMAGE_PENALTY &&
+			info.m_input.m_deathType != DEATH_FADED && info.m_input.m_sourceID != INVALID_ID && info.m_input.m_sourceID != getID())
+		{
+			m_client->observerEvent(*this, ObserverEvent::Damage, nullptr, {}, info.m_output.m_actualDamageDealt);
+		}
 	}
 	if (!m_effectivelyDead || info.m_input.m_shockWaveAmount > 0.0f)
 	{
-		ObjectKnockback::shockWave(*this, info);
+		const bool notifyDrawable = ObjectKnockback::shockWave(*this, info);
 		// lane RADAR-1: the tail of RW 0x6968BC hands the hit to the drawable (RW 0x696E4D -> RW 0x67B4B7), whose radar half is: not for a template both
 		// UNATTACKABLE (+ 0x10E & 0x40) and MOVE_ONLY (+ 0x118 & 0x40); the damage dealt (D + 0x70) above 0.0f (RW 0xC1B594); not a PENALTY (10) or HEALING (7)
 		// hit, not the death type FADED (0x16), not the sub type 2; the controlling player's bit not in the source mask; ShouldPlayUnderAttackEva (D + 0x25).
@@ -1660,10 +1738,17 @@ void Object::doAttemptDamage(DamageInfo &info)
 		const Player *owner = getControllingPlayer();
 		const bool exempt = kUnattackable >= 0 && kMoveOnly >= 0 && isKindOf((unsigned)kUnattackable) && isKindOf((unsigned)kMoveOnly);
 		if (!exempt && owner && info.m_output.m_actualDamageDealt > 0.0f && info.m_input.m_damageType != DAMAGE_PENALTY && info.m_input.m_damageType != DAMAGE_HEALING &&
-		    info.m_input.m_deathType != DEATH_FADED && info.m_input.m_damageSubType != 2 && (info.m_input.m_sourcePlayerMask & (1u << (owner->getPlayerIndex() & 31))) == 0 &&
-		    info.m_input.m_shouldPlayUnderAttackEva)
+		    info.m_input.m_deathType != DEATH_FADED && info.m_input.m_damageSubType != 2 && (info.m_input.m_sourcePlayerMask & (1u << (owner->getPlayerIndex() & 31))) == 0)
 		{
-			m_radarAttackFrame = m_logic.getFrame();
+			if (info.m_input.m_shouldPlayUnderAttackEva)
+			{
+				m_radarAttackFrame = m_logic.getFrame();
+			}
+			// RW 0x67B78C: the HERO effect is outside ShouldPlayUnderAttackEva and the radar-list gate.
+			if (notifyDrawable && m_client && owner == m_logic.players().getLocalPlayer() && isKindOfName("HERO"))
+			{
+				m_client->heroAttacked(*this);
+			}
 		}
 	}
 }
@@ -2078,6 +2163,11 @@ bool Object::attributeModifierProduct(int type, const char *name, bool innate, f
 
 void Object::crc(StateHasher &h) const
 {
+	crcOmittingModules(h, nullptr);
+}
+
+void Object::crcOmittingModules(StateHasher &h, const std::function<bool(const BehaviorModule &)> &omit) const
+{
 	h.addU32(m_id);
 	h.addU32(m_template ? (std::uint32_t)static_cast<const ThingTemplate *>(m_template)->getTemplateID() : 0u);
 	h.addU32(m_team ? m_team->getID() : 0u);
@@ -2099,9 +2189,9 @@ void Object::crc(StateHasher &h) const
 	{
 		h.addU32(0x5C000000u | m_scriptStatus); // lane SCRIPT-2: hashed only when set (a game without scripts keeps its hash)
 	}
-	if (!m_scriptSelectable)
+	if (m_scriptSelectable != isKindOfName("SELECTABLE"))
 	{
-		h.addU32(0x5E1Eu);
+		h.addU32(m_scriptSelectable ? 0x5E1Fu : 0x5E1Eu); // hash a change from the template-derived default, as for the other script fields
 	}
 	if (!m_geometryActive.empty()) // lane HUD-5: the object's own shape flags (a gate's open / closed geometry), hashed once changed
 	{
@@ -2204,6 +2294,10 @@ void Object::crc(StateHasher &h) const
 	h.addU32((std::uint32_t)m_modules.size());
 	for (const std::unique_ptr<BehaviorModule> &m : m_modules)
 	{
+		if (omit && omit(*m))
+		{
+			continue;
+		}
 		h.addU32(m->getModuleClassHash());
 		m->crc(h);
 	}
@@ -2296,5 +2390,239 @@ void Object::setScriptStatus(std::uint8_t bits, bool set)
 		{
 			clearDisabled(10);
 		}
+	}
+}
+
+// ---- lane SAVE-4b: the object's snapshot (see Object.h) ---------------------------------------------------------------------------------------------------
+// OpenBFME native layout (S-4190): RotWK's Object::xfer (RW 0x697F28, (1, 29)) transfers RotWK's object (its drawable id, the formation, the living-world
+// army, ...); this Object is the port's subset, so its own fields follow its crc's order with the state the crc leaves out (the geometry version, the radar
+// frame, the trigger cell, ...). Its modules are retail's loop: a count (u16), then per module its tag name and a block with the module's xfer
+// (RW 0x698775 .. 0x6987A5). OpenBFME is strict where retail skips: the snapshot's modules must be this object's, in its order (S-4191).
+// Not saved, rebuilt: the KindOf mask, the helper count and the module interface caches (the template's, at construction), the client hooks, the list links
+// (the Objects block's order) and the team links (the TeamFactory's post-process).
+void Object::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	// a load never reads its destination: the save-side values are built from the members only when saving (SAVES.md, rules for xfer authors)
+	const bool saving = !x.isLoading();
+	ObjectID id = saving ? m_id : (ObjectID)INVALID_ID;
+	x.xferObjectID(&id);
+	std::string templateName = saving ? m_template->getName() : std::string();
+	x.xferAsciiString(&templateName);
+	TeamID team = saving && m_team ? m_team->getID() : TEAM_ID_INVALID;
+	x.xferUnsignedInt(&team);
+	if (x.isLoading() && (id != m_id || templateName != m_template->getName() || team != (m_team ? m_team->getID() : TEAM_ID_INVALID)))
+	{
+		throw XferException("the snapshot's object " + std::to_string(id) + " '" + templateName + "' of team " + std::to_string(team) + " is loaded into object "
+			+ std::to_string(m_id) + " '" + m_template->getName() + "'");
+	}
+	// the transform first: setting it runs reactToTransformChange (the trigger areas, the shroud and partition marks), whose effects the fields below overwrite
+	Coord3D pos = saving ? *getPosition() : Coord3D{};
+	float angle = saving ? getOrientation() : 0.0f;
+	float basis[9] = {};
+	for (int i = 0; i < 9 && saving; ++i)
+	{
+		basis[i] = getBasis()[i];
+	}
+	SnapshotXfer::coord3D(x, pos);
+	x.xferReal(&angle);
+	for (float &b : basis)
+	{
+		x.xferReal(&b);
+	}
+	if (x.isLoading())
+	{
+		friend_setTransformExact(pos, angle, basis);
+	}
+	// the weapons next: loading selects the weapon set the flags select, which clears the weapons' model conditions (the conditions below are the saved ones)
+	bool hasWeapons = saving && m_weapons != nullptr;
+	x.xferBool(&hasWeapons);
+	if (hasWeapons != (m_weapons != nullptr))
+	{
+		throw XferException(std::string("the snapshot's object ") + std::to_string(m_id) + (hasWeapons ? " has" : " lacks") + " weapons, this one "
+			+ (m_weapons ? "has" : "lacks") + " them");
+	}
+	if (m_weapons)
+	{
+		m_weapons->xfer(x);
+	}
+	// lane SAVE-4e (merge with BACKLOG4): the recorded original team is its prototype (by id, -1: none) and the team id it had when recorded (hashed;
+	// the team itself may be gone since, as RW 0x69959D keeps only its name)
+	std::int32_t originalProto = saving && m_originalTeamProto ? m_originalTeamProto->getID() : -1;
+	x.xferInt(&originalProto);
+	std::uint32_t originalID = saving ? m_originalTeamID : 0;
+	x.xferUnsignedInt(&originalID);
+	if (x.isLoading())
+	{
+		const TeamPrototype *proto = nullptr;
+		for (const std::unique_ptr<TeamPrototype> &p : m_logic.players().teams().prototypes())
+		{
+			proto = p->getID() == originalProto ? p.get() : proto;
+		}
+		if (originalProto != -1 && !proto)
+		{
+			throw XferException("the snapshot's object " + std::to_string(m_id) + " names original team prototype " + std::to_string(originalProto)
+				+ ", which this game lacks");
+		}
+		m_originalTeamProto = proto;
+		m_originalTeamID = originalID;
+	}
+	x.xferObjectID(&m_speechLeader);
+	x.xferBool(&m_receivingDifficultyBonus);
+	x.xferByte(&m_legendaryFactor);
+	SnapshotXfer::checkRange(m_legendaryFactor, LegendaryHeroes::kOff, LegendaryHeroes::kMax, "an object's Legendary Heroes factor");
+	x.xferObjectID(&m_capturerID);
+	x.xferUnsignedInt(&m_undeadKillFrame);
+	SnapshotXfer::maskWords(x, m_status, SnapshotXfer::nameCount(TheObjectStatusNames), "an object's status", "the object status names"); // lane SAVE-4e
+	x.xferUnsignedInt(&m_disabled);
+	SnapshotXfer::checkRange(m_disabled, 0, (1u << DISABLED_TYPE_COUNT) - 1, "an object's disabled mask");
+	SnapshotXfer::words(x, m_disabledExpire);
+	x.xferUnsignedInt(&m_ignoreAIExpire);
+	SnapshotXfer::maskWords(x, m_weaponlessSetFlags, SnapshotXfer::nameCount(TheWeaponConditionNames), "an object's weapon set flags",
+		"the weapon set conditions");
+	x.xferUnsignedInt(&m_noCollisionsExpire);
+	x.xferUnsignedInt(&m_creationFrame);
+	x.xferInt(&m_creationSeed);
+	std::string name = saving ? m_name : std::string();
+	x.xferAsciiString(&name);
+	if (x.isLoading() && name != m_name)
+	{
+		setName(name); // the script engine's name index (ScriptEngine::objectNamed) follows the name
+	}
+	std::uint8_t scriptStatus = saving ? m_scriptStatus : 0;
+	x.xferUnsignedByte(&scriptStatus);
+	SnapshotXfer::checkMask(scriptStatus, 0x1F, "an object's script status", "the five script status bits"); // ZH ObjectScriptStatusBit 1 .. 0x10
+	m_scriptStatus = scriptStatus;
+	x.xferBool(&m_scriptSelectable);
+	x.xferInt(&m_triggerCount);
+	if (m_triggerCount < 0 || m_triggerCount > MAX_TRIGGERS_IN)
+	{
+		throw XferException("the snapshot's object " + std::to_string(m_id) + " is inside " + std::to_string(m_triggerCount) + " triggers");
+	}
+	for (TriggerEntry &e : m_triggers)
+	{
+		x.xferInt(&e.trigger);
+		SnapshotXfer::checkRange(e.trigger, -1, 0x7FFFFFFF, "an object's trigger entry"); // -1: none; else the script engine's trigger (SAVE-4d)
+		x.xferBool(&e.entered);
+		x.xferBool(&e.exited);
+		x.xferBool(&e.inside);
+	}
+	x.xferUnsignedInt(&m_enteredOrExitedFrame);
+	x.xferInt(&m_triggerCellX);
+	x.xferInt(&m_triggerCellY);
+	// the shapes' active flags: none (the template's), or one per shape of the template (setGeometryActive), each 0 or 1
+	std::vector<std::uint8_t> active = saving ? m_geometryActive : std::vector<std::uint8_t>();
+	x.xferVectorSize(active, 1);
+	const size_t templateShapes = x.isLoading() ? ObjectGeometry::shapesOf(*getTemplate()).size() : active.size();
+	if (!active.empty() && active.size() != templateShapes)
+	{
+		throw XferException("the snapshot's object " + std::to_string(m_id) + " has " + std::to_string(active.size()) + " shape flags, its template "
+			+ std::to_string(templateShapes) + " shapes");
+	}
+	for (std::uint8_t &a : active)
+	{
+		x.xferUnsignedByte(&a);
+		if (a > 1)
+		{
+			throw XferException("the snapshot's object " + std::to_string(m_id) + " has a shape flag of " + std::to_string(a));
+		}
+	}
+	m_geometryActive = active;
+	x.xferUnsignedInt(&m_geometryVersion);
+	SnapshotXfer::maskWords(x, m_upgradeMask.words, TheUpgradeCenter ? TheUpgradeCenter->nextMaskBit() : 0, "an object's upgrades",
+		"the upgrades of this game's data");
+	x.xferReal(&m_upgradeCostPaid);
+	x.xferAsciiString(&m_commandSetOverride);
+	SnapshotXfer::maskWords(x, m_modelCondition, SnapshotXfer::nameCount(TheModelConditionNames), "an object's model conditions", "the model conditions");
+	x.xferReal(&m_instanceScale);
+	SnapshotXfer::maskWords(x, m_placementConditions, SnapshotXfer::nameCount(TheModelConditionNames), "an object's placement conditions", "the model conditions");
+	x.xferBool(&m_hasShroudClearingRange);
+	x.xferReal(&m_shroudClearingRange);
+	x.xferUnsignedInt(&m_radarAttackFrame);
+	SnapshotXfer::containerPointer(x, m_logic, m_containedBy, m_id);
+	x.xferBool(&m_inWorld);
+	x.xferUnsignedInt(&m_containedFrame);
+	x.xferBool(&m_drawableHidden);
+	x.xferObjectID(&m_producerID);
+	x.xferObjectID(&m_builderID);
+	x.xferObjectID(&m_soleHealingBenefactorID);
+	x.xferUnsignedInt(&m_soleHealingBenefactorExpiry);
+	x.xferBool(&m_commandPointsCounted);
+	x.xferReal(&m_buildCostPaid);
+	x.xferReal(&m_constructionPercent);
+	x.xferBool(&m_scored);
+	std::uint8_t experienceFlags = saving ? m_experienceFlags : 0;
+	x.xferUnsignedByte(&experienceFlags);
+	SnapshotXfer::checkMask(experienceFlags, 0x1, "an object's experience flags", "the gained-a-level flag"); // the one bit Object sets (+ 0x49C)
+	m_experienceFlags = experienceFlags;
+	x.xferBool(&m_effectivelyDead);
+	SnapshotXfer::maskWithin(x, m_armorSetFlags, SnapshotXfer::lowBits(SnapshotXfer::nameCount(TheArmorSetNames)), "an object's armor set flags",
+		"the " + std::to_string(SnapshotXfer::nameCount(TheArmorSetNames)) + " armor set conditions");
+	SnapshotXfer::maskWithin(x, m_weaponBonusMask, SnapshotXfer::lowBits(WEAPONBONUS_CONDITION_COUNT), "an object's weapon bonus conditions",
+		"the " + std::to_string(WEAPONBONUS_CONDITION_COUNT) + " conditions");
+	x.xferBool(&m_recordedValid);
+	x.xferUnsignedInt(&m_recordedFrame);
+	SnapshotXfer::coord3D(x, m_recordedPosition);
+	x.xferReal(&m_recordedAngle);
+	for (float &b : m_recordedBasis)
+	{
+		x.xferReal(&b);
+	}
+	x.xferBool(&m_previousValid);
+	SnapshotXfer::coord3D(x, m_previousPosition);
+	SnapshotXfer::each(x, m_pendingDamage, SnapshotXfer::kDamageInfoBytes, [&](PendingDamage &pd) { SnapshotXfer::damageInfo(x, pd.info); });
+	bool hasTracker = saving && m_experienceTracker != nullptr;
+	x.xferBool(&hasTracker);
+	if (hasTracker != (m_experienceTracker != nullptr))
+	{
+		throw XferException("the snapshot's object " + std::to_string(m_id) + " differs in its experience tracker");
+	}
+	if (m_experienceTracker)
+	{
+		m_experienceTracker->xfer(x);
+	}
+	// the modules (RW 0x697F28's loop): u16 count, then per module the tag and a block
+	std::uint16_t count = saving ? (std::uint16_t)m_modules.size() : 0;
+	x.xferUnsignedShort(&count);
+	if (count != m_modules.size())
+	{
+		throw XferException("the snapshot's object " + std::to_string(m_id) + " '" + m_template->getName() + "' has " + std::to_string(count)
+			+ " modules, this one " + std::to_string(m_modules.size()));
+	}
+	for (const std::unique_ptr<BehaviorModule> &m : m_modules)
+	{
+		std::string tag = saving ? m->getModuleTagName() : std::string();
+		x.xferAsciiString(&tag);
+		if (tag != m->getModuleTagName())
+		{
+			throw XferException("the snapshot's object " + std::to_string(m_id) + " '" + m_template->getName() + "' has the module '" + tag + "' where this one has '"
+				+ m->getModuleTagName() + "'");
+		}
+		if (m_logic.snapshotOmitsModule(*m))
+		{
+			// tests only (GameLogic::setSnapshotModuleFilter): a module another lane's xfer will cover leaves an empty block
+			if (x.isLoading())
+			{
+				x.skipBlock();
+			}
+			else
+			{
+				x.beginBlock();
+				x.endBlock();
+			}
+			continue;
+		}
+		if (m->xferClass() == typeid(Module))
+		{
+			m->xfer(x); // Module::xfer: the named "has no xfer" refusal
+		}
+		if (m->xferClass() != typeid(*m))
+		{
+			throw XferException("the module class " + m->getModuleClassName() + " (tag '" + tag + "') of '" + m_template->getName()
+				+ "' has no xfer of its own (it would inherit its base class's)");
+		}
+		x.beginBlock();
+		m->xfer(x);
+		x.endBlock();
 	}
 }

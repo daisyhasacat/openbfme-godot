@@ -91,6 +91,17 @@ struct FieldParse
 	int offset;
 };
 
+// community PR #36 (docs/BFME1.md, Common/BfmeGame.h): BFME1's rows of a table that RotWK's table does not have (its legacy fields). Registered once
+// per table (`bfme1Rows` ends with a null token; its offsets are the table's); INI::initFromINIMulti looks a field up in them only when the
+// environment reads BFME1 data (INIEnvironment::bfme1Data), after the table's own rows and before its catch-all row. RotWK / BFME2 tables stay exactly
+// the binary's, and RotWK / BFME2 data still fails on these fields as retail does.
+void RegisterBfme1FieldRows(const FieldParse *table, const FieldParse *bfme1Rows);
+const FieldParse *Bfme1FieldRows(const FieldParse *table); // nullptr: the table has none
+struct Bfme1FieldRowsRegistration
+{
+	Bfme1FieldRowsRegistration(const FieldParse *table, const FieldParse *bfme1Rows) { RegisterBfme1FieldRows(table, bfme1Rows); }
+};
+
 // ZH Include/Common/INI.h:132-157, at most 16 tables.
 class MultiIniFieldParse
 {
@@ -175,6 +186,11 @@ struct INIEnvironment
 	ArchiveFileSystem *fileSystem = nullptr; ///< where files and #includes come from
 	INIMacroTable macros;
 	INIBlockRegistry blocks;
+	// community PR #36: the file system holds BFME1's data (isBfme1Data, Common/BfmeGame.h); asked once, then cached (false without a file system)
+	bool bfme1Data();
+
+private:
+	int m_bfme1 = -1;
 };
 
 // loadDirectory options. ExcludePath / IncludePathCinematics come from the subsystem legend.
@@ -233,6 +249,7 @@ public:
 	unsigned getLineNum() const { return m_lineNum; }
 	bool isEOF() const { return m_endOfFile; }
 	INIEnvironment &environment() { return m_env; }
+	bool bfme1Data() { return m_env.bfme1Data(); } // community PR #36: see INIEnvironment::bfme1Data
 	const char *getSeps() const { return m_seps; }
 	const char *getSepsPercent() const { return m_sepsPercent; }
 	const char *getSepsColon() const { return m_sepsColon; }

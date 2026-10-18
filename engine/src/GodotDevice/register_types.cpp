@@ -14,6 +14,7 @@
 #include "GodotDevice/GodotPostEffects.h"
 #include "GodotDevice/GodotRelease.h"
 #include "Common/ConsoleFilter.h"
+#include "Common/WindowsCrashDump.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
 #include "GodotDevice/GodotW3DInstancer.h"
 #include "GodotDevice/GodotTextureOverrides.h"
@@ -62,6 +63,7 @@ static void uninitialize_openbfme(ModuleInitializationLevel p_level)
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE)
 	{
 		LuaGDExtension::uninitialize(); // LUAGD-1
+		WindowsCrashDump::uninstall();
 		ConsoleFilter::uninstall(); // RELEASE-1: the original stdout / stderr back before the extension's code goes
 		GammaComposite::shutdown();
 		W3D_Clear_Texture_Overrides();

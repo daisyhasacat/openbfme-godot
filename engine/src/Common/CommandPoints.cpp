@@ -4,6 +4,7 @@
 #include "Common/CommandPoints.h"
 
 #include "GameLogic/ObjectFilterMatch.h"
+#include "Common/Xfer.h"
 
 void CommandPoints::reset()
 {
@@ -114,5 +115,29 @@ void CommandPoints::crc(StateHasher &h) const
 		h.addI32(r.value);
 		h.addU32(r.objectId);
 		ObjectFilterMatch::crc(h, r.filter.get());
+	}
+}
+
+// lane SAVE-4a: OpenBFME native layout (the RotWK command point block of the player is not inventoried by name, docs/SAVES-RETAIL.md): the fields crc hashes,
+// in its order, the records in list order
+void CommandPoints::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferInt(&m_base);
+	x.xferInt(&m_usage);
+	x.xferInt(&m_bonus);
+	x.xferInt(&m_cap);
+	x.xferInt(&m_playerIndex);
+	x.xferInt(&m_territoryGood);
+	x.xferInt(&m_territoryEvil);
+	x.xferBool(&m_scriptSet);
+	x.xferBool(&m_initialized);
+	x.xferVectorSize(m_records, 4 + 4 + 2); // value, object id, an absent filter (its version and flag)
+	for (Record &r : m_records)
+	{
+		x.xferInt(&r.value);
+		x.xferObjectID(&r.objectId); // an object id (the same u32)
+		ObjectFilterMatch::xfer(x, r.filter);
 	}
 }

@@ -45,23 +45,202 @@ def cpp_body(source: str, start: int) -> str:
     raise AssertionError("unterminated body")
 
 
-def waiting_methods() -> dict:
-    """{bound name: C++ method} of GameWorld / InGameHudNode whose body reaches the live logic."""
+GAMECLIENT = ROOT / "engine" / "src" / "GameClient"
+DEF = r"^[\w:<>,\s\*&]*\b(\w+)::(\w+)\([^;{{]*\)\s*(?:const\s*)?\{{"
+
+
+def cpp_definitions(paths, classes) -> dict:
+    """{(class, method): body} of the member functions of `classes` defined in `paths`"""
     out = {}
-    sources = {p: p.read_text(encoding="utf-8") for p in DEVICE.glob("*.cpp")}
-    binds = []
-    for text in sources.values():
-        binds += re.findall(r'bind_method\(D_METHOD\("(\w+)"[^)]*\)\s*,\s*&(GameWorld|InGameHudNode)::(\w+)', text)
-    for name, cls, method in binds:
-        for text in sources.values():
-            m = re.search(r"^[\w:<>,\s\*&]*\b" + cls + r"::" + method + r"\([^;{]*\)\s*(const\s*)?\{", text, re.M)
-            if m:
-                body = cpp_body(text, m.start())
-                # a body that reads the live logic only after asking whether it is held (logicHeld) does not wait
-                if WAITING.search(body) and "logicHeld()" not in body:
-                    out[name] = f"{cls}::{method}"
-                break
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        for m in re.finditer(DEF.format(), text, re.M):
+            if m.group(1) in classes:
+                out[(m.group(1), m.group(2))] = cpp_body(text, m.start())
     return out
+
+
+def _balanced(text: str, open_at: int) -> int:
+    """the index just past the bracket that closes the one at `open_at`"""
+    depth = 0
+    for i in range(open_at, len(text)):
+        if text[i] in "([{":
+            depth += 1
+        elif text[i] in ")]}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return len(text)
+
+
+def _top_level_split(text: str, sep: str) -> list:
+    """`text` cut at `sep` where no bracket is open"""
+    parts, depth, last, i = [], 0, 0, 0
+    while i < len(text):
+        if text[i] in "([{":
+            depth += 1
+        elif text[i] in ")]}":
+            depth -= 1
+        elif depth == 0 and text.startswith(sep, i):
+            parts.append(text[last:i])
+            last = i + len(sep)
+            i += len(sep) - 1
+        i += 1
+    parts.append(text[last:])
+    return parts
+
+
+HELD_C = r"(?:\w+(?:->|\.))*logicHeld\(\)"
+
+
+def establishes_held(cond: str) -> bool:
+    """the condition is true only where the logic is held: no top-level `||`, and one `&&` conjunct is `logicHeld()` itself (review r2, DEVPORT-5: `logicHeld() ||
+    x` is true while a frame runs)"""
+    if len(_top_level_split(cond, "||")) > 1:
+        return False
+    return any(re.fullmatch(r"\s*\(?\s*" + HELD_C + r"\s*\)?\s*", c) for c in _top_level_split(cond, "&&"))
+
+
+def leaves_when_not_held(cond: str) -> bool:
+    """the condition is true whenever the logic is NOT held (a top-level `||` disjunct is `!logicHeld()`): an `if` on it that returns leaves only held code behind"""
+    return any(re.fullmatch(r"\s*!\s*" + HELD_C + r"\s*", c) for c in _top_level_split(cond, "||"))
+
+
+def _if_condition(header: str):
+    found = list(re.finditer(r"\bif\s*\(", header))
+    if not found:
+        return None
+    start = found[-1].end() - 1
+    return header[start + 1:_balanced(header, start) - 1]
+
+
+def guarded_spans(body: str) -> list:
+    """[(start, end)] of the body where the logic is known to be held (reviews r1 / r2, DEVPORT-5), each respecting the block it is in:
+      - the block of an `if (cond)` whose cond establishes_held (not `held || x`, not `else`);
+      - what follows an `if (cond)` block, up to the end of the ENCLOSING block, when cond leaves_when_not_held and the block ends in a return;
+      - an expression's `logicHeld() &&` tail / `logicHeld() ?` true arm, up to the end of its bracket group (or statement), unless that group has a top-level `||`.
+    A body is never exempted wholesale for containing logicHeld() somewhere."""
+    spans = []
+    stack = []   # frames: {"start", "header", "after": [offsets where an early-return guard starts in this block]}
+    last = 0     # the start of the current statement / header
+    for i, c in enumerate(body):
+        if c == "{":
+            stack.append({"start": i, "header": body[last:i], "after": []})
+            last = i + 1
+        elif c == "}":
+            if stack:
+                frame = stack.pop()
+                cond = _if_condition(frame["header"])
+                inner = body[frame["start"] + 1:i]
+                if cond is not None and establishes_held(cond):
+                    spans.append((frame["start"], i))
+                if cond is not None and leaves_when_not_held(cond) and re.search(r"\breturn\b[^;{}]*;\s*$", inner) and stack:
+                    stack[-1]["after"].append(i + 1)
+                for offset in frame["after"]:
+                    spans.append((offset, i))  # to the end of the block that held the early return
+            last = i + 1
+        elif c == ";":
+            last = i + 1
+    for m in re.finditer(r"(" + HELD_C + r")\s*(&&|\?)", body):
+        if body[:m.start()].rstrip().endswith("!"):
+            continue
+        # the bracket group (or statement) the expression sits in
+        depth, gs = 0, 0
+        for j in range(m.start() - 1, -1, -1):
+            if body[j] in ")]}":
+                depth += 1
+            elif body[j] in "([{":
+                if depth == 0:
+                    gs = j + 1
+                    break
+                depth -= 1
+            elif body[j] == ";" and depth == 0:
+                gs = j + 1
+                break
+        ge = len(body)
+        depth = 0
+        for j in range(m.end(), len(body)):
+            if body[j] in "([{":
+                depth += 1
+            elif body[j] in ")]}":
+                if depth == 0:
+                    ge = j
+                    break
+                depth -= 1
+            elif body[j] == ";" and depth == 0:
+                ge = j
+                break
+        if len(_top_level_split(body[gs:ge], "||")) > 1:
+            continue
+        if m.group(2) == "?":
+            colon = _top_level_split(body[m.end():ge], ":")
+            ge = m.end() + len(colon[0])  # the true arm only
+        spans.append((m.end(), ge))
+    return spans
+
+
+def unguarded_reads(body: str, callees) -> list:
+    """what in a C++ body reaches the live logic where it is not known to be held: direct reads (WAITING) and calls of `callees` (names of waiting functions)"""
+    body = re.sub(r"//[^\n]*", lambda m: " " * len(m.group(0)), body)  # a comment that names a call is not one
+    spans = guarded_spans(body)
+    pattern = WAITING.pattern
+    if callees:
+        pattern += r"|(?<![\w.>:])(" + "|".join(sorted(re.escape(c) for c in callees)) + r")\("  # a method of the same class called as itself (a name on another object is not it)
+    out = []
+    for m in re.finditer(pattern, body):
+        if not any(a <= m.start() < b for a, b in spans):
+            out.append(m.group(0))
+    return out
+
+
+def full_waits() -> set:
+    """names of LiveGame functions that wait for EVERY requested frame (waitIdle / drainFrames, transitively): a held client window does not make these safe, they
+    lift it and run the queued frames (LiveGame::waitIdle). holdLogic() does not."""
+    defs = cpp_definitions(list(GAMECLIENT.glob("LiveGame*.cpp")), {"LiveGame"})
+    names = {m for (c, m), b in defs.items() if re.search(r"\b(waitIdle|drainFrames)\(", b) and m not in ("waitIdle", "holdLogic")}
+    names |= {"waitIdle", "drainFrames"}
+    changed = True
+    while changed:
+        changed = False
+        for (c, m), b in defs.items():
+            if m not in names and m != "holdLogic" and re.search(r"(?<![\w])(" + "|".join(map(re.escape, names)) + r")\(", b):
+                names.add(m)
+                changed = True
+    return names
+
+
+def device_functions() -> dict:
+    return cpp_definitions(list(DEVICE.glob("*.cpp")), {"GameWorld", "InGameHudNode"})
+
+
+def waiting_methods(with_full: bool = False, defs: dict = None, full: set = None) -> dict:
+    """{bound name: C++ method} of GameWorld / InGameHudNode that reach the live logic where it is not known to be held, directly or through another of their
+    methods (a nested call: GameWorld::net_status -> net_observed). with_full=True: instead the bound methods that reach a full wait (see full_waits), through
+    a LiveGame call on any member (m_game->report()) or through another method of their own class called as itself (net_observed()), guarded or not: a held
+    window does not make a full wait safe. `defs` / `full` let a test run the analysis on mutated bodies."""
+    defs = device_functions() if defs is None else defs
+    full = full_waits() if full is None else full
+    waiting = set()
+    changed = True
+    while changed:
+        changed = False
+        for (cls, method), body in defs.items():
+            if method in waiting:
+                continue
+            code = re.sub(r"//[^\n]*", lambda m: " " * len(m.group(0)), body)
+            if with_full:
+                hit = re.search(r"(?:->|\.)(" + "|".join(map(re.escape, sorted(full))) + r")\(", code)
+                if not hit and waiting:
+                    hit = re.search(r"(?:(?<![\w.>:])|\bthis->)(" + "|".join(map(re.escape, sorted(waiting))) + r")\(", code)
+            else:
+                hit = unguarded_reads(body, waiting)
+            if hit:
+                waiting.add(method)
+                changed = True
+    binds = []
+    for path in DEVICE.glob("*.cpp"):
+        binds += re.findall(r'bind_method\(D_METHOD\("(\w+)"[^)]*\)\s*,\s*&(GameWorld|InGameHudNode)::(\w+)', path.read_text(encoding="utf-8"))
+    return {name: f"{cls}::{method}" for name, cls, method in binds if method in waiting}
 
 
 def gd_function(source: str, name: str) -> str:
@@ -73,10 +252,10 @@ HELD_CALL = r"(?:[\w.]+\.)?is_logic_held\(\)"
 
 
 def _indent(line: str) -> int:
-    return len(line) - len(line.lstrip("\t"))
+    return len(line) - len(line.lstrip("\t "))
 
 
-def unguarded_waiting_calls(source: str, body: str, waiting: dict, entry_guarded: bool = False, _depth: int = 0) -> list:
+def unguarded_waiting_calls(source: str, body: str, waiting: dict, entry_guarded: bool = False, _depth: int = 0, ignore_guards: bool = False) -> list:
     """the waiting calls of `body` (a function's lines; its helpers in `source` are followed) made where the control flow has not established that the
     logic is held"""
     funcs = set(re.findall(r"^func (\w+)\(", source, re.M))
@@ -111,11 +290,12 @@ def unguarded_waiting_calls(source: str, body: str, waiting: dict, entry_guarded
         for m in list(re.finditer(r"\b[\w]+\.(\w+)\(", text)) + list(re.finditer(r"(?<![\w.])(\w+)\(", text)):
             name = m.group(1)
             guarded = base or (from_col is not None and m.start() >= from_col) or (until_col is not None and m.start() < until_col)
+            guarded = guarded and not ignore_guards  # a full wait lifts the held window: the guard does not make it safe
             if "." in m.group(0) and name in waiting:
                 if not guarded:
                     out.append(name)
             elif "." not in m.group(0) and name in funcs and not text.startswith("func ") and _depth < 4:
-                out += unguarded_waiting_calls(source, gd_function(source, name), waiting, guarded, _depth + 1)
+                out += unguarded_waiting_calls(source, gd_function(source, name), waiting, guarded, _depth + 1, ignore_guards)
         if positive and text.startswith("if "):
             inside_held.append(d)
         if re.fullmatch(r"if not " + held + r":(?:\s*#.*)?", text) and k + 1 < len(lines) and _indent(lines[k + 1]) == d + 1 \
@@ -168,6 +348,19 @@ def test_the_waiting_set_is_found():
         assert name not in waiting, f"{name} reaches the live logic ({waiting.get(name)}): it must not wait, scripts call it every frame"
 
 
+def per_frame_violations(waiting: dict, full: dict) -> list:
+    """what the per-frame scripts call that waits: a waiting method where the logic is not known to be held, or a full-wait method even guarded"""
+    bad = []
+    for script, func, source, body in per_frame_functions():
+        for name in unguarded_waiting_calls(source, body, waiting):
+            if name not in ONE_OFF and name not in NOT_THE_WORLD:
+                bad.append(f"{script} {func} calls {name} ({waiting[name]}) where the logic is not known to be held")
+        for name in unguarded_waiting_calls(source, body, full, ignore_guards=True):
+            if name not in ONE_OFF and name not in NOT_THE_WORLD:
+                bad.append(f"{script} {func} calls {name} ({full[name]}), which waits for every queued frame even in a held window")
+    return bad
+
+
 def test_per_frame_scripts_never_call_a_waiting_method_unguarded():
     waiting = waiting_methods()
     found = per_frame_functions()
@@ -177,10 +370,121 @@ def test_per_frame_scripts_never_call_a_waiting_method_unguarded():
     bad = []
     for script, func, source, body in found:
         for name in unguarded_waiting_calls(source, body, waiting):
-            if name in ONE_OFF:
+            if name in ONE_OFF or name in NOT_THE_WORLD:
                 continue
             bad.append(f"{script} {func} calls {name} ({waiting[name]}) where the logic is not known to be held")
     assert not bad, "per-frame render paths that wait for the logic worker:\n" + "\n".join(bad)
+
+
+# a script object's own method of the same name as a bound method that is not called on the world (campaign_flow.gd's tick calls _cine.setup)
+NOT_THE_WORLD = {"setup"}
+
+
+def test_per_frame_scripts_never_call_a_full_wait_method_even_guarded():
+    """review r1 (DEVPORT-5): `is_logic_held()` is true inside a client window that still holds queued frames, and LiveGame::waitIdle / drainFrames lift that window
+    and run them. A bound method that reaches one of those (the old observeNextPlayer behind the Tab key) is not made safe by the script's guard."""
+    full = waiting_methods(with_full=True)
+    assert "set_logic_thread" in full and "start_new_game" in full, "the full-wait parser of this test is broken"
+    bad = []
+    for script, func, source, body in per_frame_functions():
+        for name in unguarded_waiting_calls(source, body, full, ignore_guards=True):
+            if name not in ONE_OFF and name not in NOT_THE_WORLD:
+                bad.append(f"{script} {func} calls {name} ({full[name]}), which waits for every queued frame even in a held window")
+    assert not bad, "\n".join(bad)
+
+
+def test_a_status_the_overlay_asks_every_frame_does_not_wait_through_a_nested_call():
+    """review r1 (DEVPORT-5): GameWorld::net_status (game.gd's _net_tick, every frame) kept its hash behind logicHeld() and then called net_observed() outside it;
+    the old classification exempted the whole body for containing logicHeld() and did not follow the nested call"""
+    waiting = waiting_methods()
+    assert "net_observed" in waiting and "net_status" not in waiting, "net_status must reach net_observed only through net_observed_unwaiting"
+    assert "net_observed_unwaiting" not in waiting
+    assert "caster_status" not in waiting_methods(with_full=True), "caster_status (the caster bar, 5 Hz) must not use LiveGame::report(), a full wait"
+
+
+def test_the_cpp_guard_analysis():
+    guarded = "void f() {\n\tif (g->logicHeld())\n\t{\n\t\tx = g->players();\n\t}\n}"
+    assert unguarded_reads(guarded, set()) == []
+    # a guard elsewhere in the body does not cover a read outside it (the wholesale exemption this replaces)
+    nested = "void f() {\n\tif (g->logicHeld())\n\t{\n\t\th = 1;\n\t}\n\tx = g->players();\n}"
+    assert unguarded_reads(nested, set()) == ["->players("]
+    assert unguarded_reads("void f() {\n\tj = net_observed();\n}", {"net_observed"}) == ["net_observed("]
+    assert unguarded_reads("void f() {\n\tif (g->logicHeld())\n\t{\n\t\tj = net_observed();\n\t}\n}", {"net_observed"}) == []
+    # an early return on a negated guard covers the rest of the block; one that does not return does not
+    early = "void f() {\n\tif (!g->logicHeld())\n\t{\n\t\treturn;\n\t}\n\tx = g->players();\n}"
+    assert unguarded_reads(early, set()) == []
+    assert unguarded_reads(early.replace("return;", "y = 1;"), set()) == ["->players("]
+    # the positive condition's else arm is not guarded
+    other = "void f() {\n\tif (g->logicHeld())\n\t{\n\t\ty = 1;\n\t}\n\telse\n\t{\n\t\tx = g->players();\n\t}\n}"
+    assert unguarded_reads(other, set()) == ["->players("]
+    assert unguarded_reads("void f() {\n\tx = g->logicHeld() && g->players() != nullptr;\n}", set()) == []
+    assert unguarded_reads("void f() {\n\tx = g->players() != nullptr && g->logicHeld();\n}", set()) == ["->players("]
+
+
+def _mutated(key, old, new):
+    defs = dict(device_functions())
+    assert old in defs[key], f"{key} no longer contains {old!r}: update the mutation"
+    defs[key] = defs[key].replace(old, new, 1)
+    return defs
+
+
+def _violations(defs):
+    full_set = full_waits()
+    return per_frame_violations(waiting_methods(defs=defs, full=full_set), waiting_methods(with_full=True, defs=defs, full=full_set))
+
+
+def test_the_real_tree_has_no_per_frame_violation():
+    assert per_frame_violations(waiting_methods(), waiting_methods(with_full=True)) == []
+
+
+def test_mutation_a_full_wait_inside_a_nested_same_class_call_is_followed():
+    """review r2 #1: report() added to net_observed() (waits for every frame) reaches net_status() and caster_status() through plain calls of their own class"""
+    defs = _mutated(("GameWorld", "net_observed"), "{", "{\n\tm_game->report();", )
+    full = waiting_methods(with_full=True, defs=defs)
+    for name in ("net_observed", "net_status", "caster_status"):
+        assert name in full, f"{name} reaches report() through net_observed() but is not found"
+    assert any("net_status" in v for v in _violations(defs))
+    # the safe variant: a read behind a proper held block is not a full wait (nor a violation)
+    safe = _mutated(("GameWorld", "net_status"), "if (m_game->logicHeld())\n\t{", "if (m_game->logicHeld())\n\t{\n\t\tconst auto *held = &m_game->players();")
+    assert _violations(safe) == []
+
+
+def test_mutation_a_guard_that_is_true_while_a_frame_runs_is_not_a_guard():
+    """review r2 #2: `logicHeld() || observed >= 0` lets net_observed() read the live logic during a running frame"""
+    defs = _mutated(("GameWorld", "net_observed_unwaiting"), "if (m_game->logicHeld())", "if (m_game->logicHeld() || observed >= 0)")
+    waiting = waiting_methods(defs=defs)
+    assert "net_status" in waiting  # reached through the helper (net_observed_unwaiting is not bound)
+    assert any("net_status" in v for v in _violations(defs))
+    # a conjunct keeps it a guard
+    ok = _mutated(("GameWorld", "net_observed_unwaiting"), "if (m_game->logicHeld())", "if (observed >= 0 && m_game->logicHeld())")
+    assert _violations(ok) == []
+
+
+def test_the_cpp_guard_analysis_respects_conditions_and_block_boundaries():
+    def reads(body, callees=()):
+        return unguarded_reads("void f() {\n" + body + "\n}", set(callees))
+    read = "x = g->players();"
+    assert reads("if (g->logicHeld()) { " + read + " }") == []
+    assert reads("if (a && g->logicHeld()) { " + read + " }") == []
+    assert reads("if (g->logicHeld() && a) { " + read + " }") == []
+    assert reads("if (g->logicHeld() || a) { " + read + " }") == ["->players("]
+    assert reads("if (a || g->logicHeld()) { " + read + " }") == ["->players("]
+    assert reads("if (!g->logicHeld()) { " + read + " }") == ["->players("]
+    assert reads("if (g->logicHeld()) { y = 1; } else { " + read + " }") == ["->players("]
+    assert reads("if (g->logicHeld()) { y = 1; } else if (a) { " + read + " }") == ["->players("]
+    # an early return covers the rest of ITS block only
+    assert reads("if (!g->logicHeld()) { return; }\n" + read) == []
+    assert reads("if (!g->logicHeld() || a) { return; }\n" + read) == []
+    assert reads("if (a) { if (!g->logicHeld()) { return; } }\n" + read) == ["->players("]
+    assert reads("if (a) { if (!g->logicHeld()) { return; } " + read + " }\n" + read) == ["->players("]
+    assert reads("if (!g->logicHeld()) { if (b) { return; } }\n" + read) == ["->players("]
+    assert reads("if (!g->logicHeld() && a) { return; }\n" + read) == ["->players("]
+    # expressions: the tail of a held conjunction, the true arm of a conditional; a disjunction in the group is not a guard
+    assert reads("x = g->logicHeld() && g->players() != nullptr;") == []
+    assert reads("x = !g->logicHeld() && g->players() != nullptr;") == ["->players("]
+    assert reads("x = g->logicHeld() ? g->players() : nullptr;") == []
+    assert reads("x = g->logicHeld() ? nullptr : g->players();") == ["->players("]
+    assert reads("x = (g->logicHeld() || a) && g->players() != nullptr;") == ["->players("]
 
 
 def test_the_script_audio_of_a_request_waits_for_a_held_logic():
@@ -237,3 +541,10 @@ def test_every_deferred_list_of_renderwait1_is_cleared_when_the_scene_goes():
     body = cpp_body(text, text.index("void GameWorld::clear_scene()"))
     for member in ("m_pendingScriptAudio.clear()", "m_pendingScriptRequests.clear()", "m_fxPendingDt = 0.0", "m_netHash = 0"):
         assert member in body, f"clear_scene() leaves {member.split('.')[0].split(' ')[0]} of the old game for the next one"
+
+
+def test_space_indented_per_frame_guard_is_recognized():
+    source = "func _process(delta):\n var held: bool = hud.is_logic_held()\n if not held:\n  return\n hud.get_state()\n"
+    assert unguarded_waiting_calls(source, gd_function(source, "_process"), {"get_state": "HUD"}) == []
+    unguarded = source.replace(" if not held:\n  return\n", "")
+    assert unguarded_waiting_calls(unguarded, gd_function(unguarded, "_process"), {"get_state": "HUD"}) == ["get_state"]

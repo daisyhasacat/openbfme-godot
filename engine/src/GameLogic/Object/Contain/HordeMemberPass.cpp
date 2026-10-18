@@ -19,7 +19,8 @@
 // leash command (0, 2) of the order (B1 0x1F1370, "pull a member off its target") is AI command 0x31, busy (lane AI-2: RW 0x852E2A -> RW 0x66498A), counted only (S-892);
 // the member pass re-arms itself while any member walked, turned or waited (the retail bookkeeping H+0xE8 / H+0xD8 is only partly known); the RotWK-only
 // crowded-slot search of the near arm (RW 0x874C63-0x874EE9: it walks a probe point from the member towards a crowded slot cell and keeps it in its own locals;
-// no write of the destination or of the member was found, so leaving it out changes nothing: inference) and the frozen / melee branches (H+0x1FC, H+0x204) are not
+// no write of the destination or of the member was found, so leaving it out changes nothing; lane BACKLOG-8: the BFME2 decomp's byte-matched
+// HordeContain::_updatePosition confirms it: the candidate and its best cost are locals nothing reads after the loop) and the frozen / melee branches (H+0x1FC, H+0x204) are not
 // ported; the slot's kind-1 reservation (RW 0x68B399 -> 0x8E2615, S-164) is not made. Lane SMOOTH-3: the near arm is RotWK's (RW 0x874F09 .. 0x8751C1), not
 // BFME1's: turn first, snap only while the horde stands, no walk to a free cell (that walk is the BFME1 hub's block 22).
 
@@ -594,8 +595,8 @@ bool HordeContain::slotCellClear(Object &member) const
 	return true;
 }
 
-// RW 0x871897 (the member order's destination step): unless the horde scales a wall (contain slot 0x238, RW 0x86BD54: wall scaling is not ported, S-084, so
-// that branch RW 0x86E214 is never taken) the pathfinder's RW 0x6F0889 (lane MOVE-2: Pathfinder::adjustHordeMemberDestination). Before MOVE-2 the port tested
+// RW 0x871897 (the member order's destination step): unless the horde scales a wall (contain slot 0x238, RW 0x86BD54) and the member is KindOf
+// CAN_CLIMB_WALLS (that branch is RW 0x86E214, lane BACKLOG-8: HordeWallScaling.cpp, S-4461) the pathfinder's RW 0x6F0889 (lane MOVE-2: Pathfinder::adjustHordeMemberDestination). Before MOVE-2 the port tested
 // only the slot's own cell (trunc, not the footprint), slid toward the horde's centre and, when nothing passed, left the slot as it was: a member whose slot lay
 // on a cliff or behind an obstacle walked into it, its straight steps refused, and stood at the end of a fallback path for good (a member of a
 // MordorFighterHorde never left its spawn on "map mp fall back 4p", 1809 from its slot at the end of the march). RW also refuses a slot whose cell line to
@@ -604,6 +605,13 @@ bool HordeContain::adjustMemberDestination(Object &member, Coord3D &dest) const
 {
 	AIUpdateInterface *ai = member.getAIUpdateInterface();
 	AIUpdateInterface *hordeAi = getObject()->getAIUpdateInterface();
+	// lane BACKLOG-8, RW 0x8718A5 .. 0x8718CC: a horde scaling a wall gives a KindOf CAN_CLIMB_WALLS member (template + 0x11F bit 0) the climb's position
+	static const int canClimbWalls = ObjectTemplateInfoBuilder::kindOfIndex("CAN_CLIMB_WALLS");
+	if (isScalingWall() && member.isKindOf((unsigned)canClimbWalls))
+	{
+		const_cast<HordeContain *>(this)->wallScalingMemberPosition(member, dest, *getObject());
+		return true;
+	}
 	if (!ai || !hordeAi || !ai->world().mapReady())
 	{
 		return true;
@@ -667,8 +675,9 @@ bool HordeContain::runMemberPass()
 			continue; // a member without a slot stands where creation put it (S-149)
 		}
 		float slotAngle = 0.0f;
+		// lane BACKLOG-8 r2: the slot keeps the horde's height (RW 0x877D89 -> RW 0x875847: x / y the horde's position plus the turned offset, z the horde's
+		// position + 0x40); the port put it on the ground, so the near arm's FLOATING_Z rule (RW 0x874F30: the slot as it is) never showed
 		Coord3D slot = m_core->getSlotWorldPos(m->getID(), owner, &slotAngle);
-		slot.z = horde->logic().getGroundHeight(slot.x, slot.y);
 		// lane MOVE-2 r3: the pass's slot is the contain's slot 0x1C (RW 0x874080 -> 0x877D89): in a melee the member's melee destination (RW 0x98F819)
 		if (meleeHai)
 		{
@@ -694,6 +703,7 @@ bool HordeContain::runMemberPass()
 		}
 		memberOrder(*m, slot, angle, force);
 	}
+	checkWallScalingDone(); // RW 0x874681 (lane BACKLOG-8)
 	return m_workDone;
 }
 
@@ -854,6 +864,11 @@ void HordeContain::moveHub(Object &member, const Coord3D &destIn, float orientat
 	{
 		a->aiIdle(CMD_FROM_AI); // lane MOVE-2 r3: RW 0x874967 .. 0x87498C, the H + 0x2A0 branch: a member neither idle nor active goes idle (RW 0x5E821A)
 	}
+	// lane BACKLOG-8, RW 0x8747AE .. 0x874B1A: a SCALING_WALLS member of a horde that scales a wall is put on its position (HordeWallScaling.cpp)
+	if (wallScalingHub(member, destIn, orientation))
+	{
+		return;
+	}
 	AIWorld &world = a->world();
 	Pathfinder &pf = world.pathfinder();
 	LocomotorHost &host = a->locomotorHost();
@@ -890,7 +905,9 @@ void HordeContain::moveHub(Object &member, const Coord3D &destIn, float orientat
 		// ---- the near arm (RotWK RW 0x874F09 .. 0x8751C1; lane SMOOTH-3 replaced the BFME1 form) ----
 		// q: the slot at the member's height, on the ground where the member may stand there (RW 0x874F30 .. 0x874F9C)
 		Coord3D q = dest;
-		if (l->getTemplate().m_appearance != LOCO_TREADS)
+		// lane BACKLOG-8: RW 0x874F30 tests the locomotor template's + 0x70, the ZAxisBehavior, against 8 (FLOATING_Z); the port read it as the Appearance
+		// (+ 0x74) TREADS, so a member on treads kept the slot's own height and a floating one lost it
+		if (l->getTemplate().m_zAxisBehavior != Z_FLOATING_Z)
 		{
 			q.z = oldPosition.z;
 			if (world.mapReady() && pf.validMovementPosition(&a->adapter(), a->locomotorInfo(), a->adapter().getLayer(), &q))
@@ -926,6 +943,13 @@ void HordeContain::moveHub(Object &member, const Coord3D &destIn, float orientat
 			a->mover().endingMove(); // RW 0x6627CB
 		}
 		member.setModelConditionState(bits().moving, false);
+		if (hordeData().m_isPorcupineFormation)
+		{
+			// lane BACKLOG-8, RW 0x87510F .. 0x875130: a porcupine formation (contain slot 0xF0, RW 0x872BB8) sets the member's PORCUPINE (model condition
+			// 0x71, RW 0x5E3BA5) once it stands on its slot
+			static const int porcupine = AIUpdateInterface::modelConditionBit("PORCUPINE");
+			member.setModelConditionState(porcupine, true);
+		}
 		a->setLocomotorGoalNone(); // vslot 0x220
 		++m_stats.snaps;
 		// RW 0x875183: only while the horde stands is the member put on its slot (0x70C201), its pending position set (+0x198 / +0x1A6) and its pathfinder goal

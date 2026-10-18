@@ -718,6 +718,7 @@ Node3D *MapObjectBuilder::build_objects(const Ref<RetailFileSystem> &fsRef, cons
 		rd["data_defects"] = countsToDict(rrep.dataDefects);
 		rd["hide_misses"] = countsToDict(rrep.hideMisses);
 		rd["ignored_draw_fields"] = countsToDict(rrep.ignoredDrawFields);
+		rd["inferred_draw_fields"] = countsToDict(rrep.inferredDrawFields); // S-5015
 		rd["scripts_run"] = (int64_t)rrep.scriptsRun;
 		rd["creation_hook_objects"] = (int64_t)rrep.creationHookObjects;
 		rd["creation_handlers"] = countsToDict(rrep.creationHandlers);

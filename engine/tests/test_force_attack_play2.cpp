@@ -300,7 +300,8 @@ TEST_CASE("play2 force attack object: the player's own object is attacked by a w
 	w.forceObjectMessage(alice, farmB);
 	w.frames(1);
 	CHECK(w.aiCommands.stats().forceAttacks == 2);
-	CHECK(w.aiCommands.stats().attackOrdersAccepted == 2);
+	// The ally-sparing weapon is refused at admission by canAttackObject.
+	CHECK(w.aiCommands.stats().attackOrdersAccepted == 1);
 	CHECK(w.state(both) == (unsigned)AI_FORCE_ATTACK_OBJECT);
 	CHECK(w.state(spare) != (unsigned)AI_FORCE_ATTACK_OBJECT);
 	w.runUntil([&] { return w.shots(both) >= 2; }, 400);

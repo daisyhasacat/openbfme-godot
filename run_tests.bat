@@ -25,7 +25,7 @@ set "UNIT=%ERRORLEVEL%"
 popd
 if not "%UNIT%"=="0" goto unit_failed
 
-echo == Simulation floating-point audit (flags of every compile command, manifest, type-aware AST scan; needs python and the libclang package)
+echo == Simulation floating-point audit (needs Python clang bindings and LLVM 19+ on Windows; see tools\sim\README.md)
 rem SIM_AUDIT_ARGS=--ast=skip runs the flags and manifest checks only (exit 3: reported loudly, never a pass of the AST check)
 rem the audit needs the MSVC environment (INCLUDE) for cl's compile commands: set it up as build.bat does when cl is not on PATH (GitHub #23)
 where cl >nul 2>nul

@@ -1,7 +1,7 @@
 """Lane AUTOREL-1: tools/release/autorelease.sh, record_gate.sh, publish_release.sh --execute / --confirm-tag, the release notes and the
 public sync's privacy audit. Everything runs against throwaway repositories: a fake archive repository holding copies of the release
-scripts, a local bare repository as the public remote, gh_stand_in.py as gh, a throwaway key, and OPENBFME_RELEASE_STANDIN for the build
-on the reference PC and the Deck's package checks. Never the real key, the real repository or GitHub.
+scripts, a local bare repository as the public remote, gh_stand_in.py as gh, a throwaway key, a fictional private denylist, and
+OPENBFME_RELEASE_STANDIN for the build and the signing machine's package checks. Never the real key, the real repository or GitHub.
 Round 2 (Sol r1 REJECT): each finding has a test here, real mode included (round 1 tested --plan only, and every real run aborted)."""
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import fcntl
 import gzip
 import hashlib
 import io
+import struct
 import zipfile
 import zlib
 import json
@@ -28,12 +29,27 @@ sys.path.insert(0, str(HERE))
 import autorelease  # noqa: E402
 import ed25519  # noqa: E402
 import make_manifest  # noqa: E402
+import release_assets  # noqa: E402
 from launcher_test_server import tiny_package  # noqa: E402
 
 GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t",
            "GIT_COMMITTER_EMAIL": "t@example.invalid", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 TARGET = "Test/repo"
 ARCHIVE_LINE = "previous codebase is kept in `archive/` as reference only.\n"
+def ip(*parts: int) -> str:
+    """a synthetic address, built at run time: the CI mirror's own denylist scans this file's text and refuses literal LAN addresses"""
+    return ".".join(map(str, parts))
+
+
+# PUBLISH-2: a fictional private denylist in the operator's format (the CI mirror's rule kinds)
+# (this file, copied into the test archive with the release scripts, spells the fictional names: allowed like test data)
+OWN = ["tools/release/test_autorelease.py"]
+TEST_DENYLIST = {"rules": [
+    {"id": "hosts", "kind": "word", "pattern": ["buildbox-7", "lab-vm-q"], "severity": "warn", "allow": OWN},
+    {"id": "accounts", "kind": "user", "pattern": ["opsuser"], "allow": OWN},
+    {"id": "account-ids", "kind": "regex", "pattern": r"\b998877665544\b", "allow": OWN},
+    {"id": "ops-files", "kind": "regex", "pattern": r"(?:^|/)runbook-[^/]*$", "paths": True, "allow": OWN},
+]}
 
 
 def git(repo: Path, *args: str) -> str:
@@ -79,6 +95,43 @@ def package_dir(d: Path, version: str, extra: bool = False, legacy: bool = True)
     return d
 
 
+def mac_package_dir(checkout: Path, version: str, out: Path, fault: str = "", commit: str = "") -> Path:
+    """MACREL-1: the Mac build host's output as package_macos.py writes it (<stem>.zip, .zip.sha256, .inventory.txt, README-MAC.txt), a
+    package that passes the strict macos-arm64 audit (test_macos_release.generic_package) with VERSION naming the checkout's commit and a
+    launcher whose build_info.json trusts the checkout's launcher/release_key.pub. `fault`: what a broken build host returns instead"""
+    import tempfile
+    import make_archive
+    import test_macos_preview
+    import test_macos_release
+    commit = commit or git(checkout, "rev-parse", "HEAD")   # `commit`: the tagged public commit the host built (mac_publish_dir)
+    key = (checkout / "launcher/release_key.pub").read_text().strip()
+    info = {"version": version, "display_version": f"{version} Mac Unstable Preview (Apple Silicon)", "commit": commit, "date": "2026-10-16",
+            "repo": TARGET, "release_key": key, "test_build": False, "local_trial": False, "macos_preview": False, "macos_updates": True}
+    if fault == "wrong-key":
+        info["release_key"] = "ab" * 32
+    if fault == "wrong-repo":
+        info["repo"] = "Other/repo"
+    with tempfile.TemporaryDirectory() as t:
+        root, files = test_macos_release.generic_package(Path(t), version)
+        files["VERSION"] = f"OpenBFME {version} Mac Unstable Preview (Apple Silicon)\ncommit {'0' * 40 if fault == 'wrong-commit' else commit}\n" \
+            "committed 2026-10-16\n".encode()
+        files["OpenBFME Launcher.app/Contents/Resources/OpenBFME Launcher.pck"] = test_macos_preview.game_pck(
+            "build_info.json", (json.dumps(info, indent=2, sort_keys=True) + "\n").encode())
+        if fault == "extra-file":
+            files["OpenBFME.app/Contents/Resources/extra.txt"] = b"not a file of the package\n"
+        for name, data in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_bytes(data)
+        out.mkdir(parents=True, exist_ok=True)
+        archive = out / f"{root.name}.zip"
+        make_archive.zip_file(root, archive, 1_700_000_000)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    (out / f"{archive.name}.sha256").write_text(f"{'0' * 64 if fault == 'bad-checksum' else digest}  {archive.name}\n", encoding="ascii")
+    (out / f"{root.name}.inventory.txt").write_text(f"Archive: {archive.name}\nSHA-256: {digest}\n")
+    (out / "README-MAC.txt").write_text("OpenBFME for Mac\n")
+    return archive
+
+
 def zip_of(members: dict[str, bytes]) -> bytes:
     b = io.BytesIO()
     with zipfile.ZipFile(b, "w") as z:
@@ -95,11 +148,14 @@ class World:
         self.repo = tmp / "archive"
         self.remote = tmp / "public.git"
         self.state = tmp / "state"
-        # r6: autorelease.sh takes only the configured key path, ~/.config/openbfme-release/release-ed25519.pem: the runs get a HOME of
-        # their own whose configured key is a throwaway one
+        # r6 / PUBLISH-2: autorelease.sh takes only the configured key path (OPENBFME_RELEASE_KEY, absolute and normalised): the runs get
+        # a HOME of their own and a throwaway key in it
         self.home = tmp / "testhome"
-        self.key = self.home / ".config" / "openbfme-release" / "release-ed25519.pem"
+        self.key = self.home / "release-keys" / "release-ed25519.pem"
         self.key.parent.mkdir(parents=True)
+        # PUBLISH-2: the operator's private denylist (fictional names; the real list is kept outside the repository)
+        self.denylist = tmp / "denylist.json"
+        self.denylist.write_text(json.dumps(TEST_DENYLIST))
         pub = run(sys.executable, HERE / "sign_manifest.py", "--generate-key", self.key)
         assert pub.returncode == 0, pub.stderr
         # the public repository: main without PRIVACY.md (the owner removed it, PR #34)
@@ -135,8 +191,28 @@ package_dir(Path(sys.argv[3]), sys.argv[2], extra=os.environ.get("STANDIN_EXTRA"
             legacy=os.environ.get("OPENBFME_RELEASE_LEGACY_LAUNCHERS", "1") == "1")
 """)
         (self.standin / "verify").write_text('#!/bin/bash\necho "stand-in verify $3"; [ "${STANDIN_TAMPERED:-0}" = 0 ]\n')
-        for f in ("build", "verify"):
+        # MACREL-1: the Mac build host's package (the Deck's Mac checks run on it as on a real one), and a stand-in ssh for the readiness
+        # check: FAKE_MAC=down answers like an unreachable host (ssh's 255), notready like a host without Godot; every call is logged
+        (self.standin / "build-mac").write_text(f"""#!{sys.executable}
+import sys; sys.path.insert(0, {str(HERE)!r})
+from pathlib import Path
+from test_autorelease import mac_package_dir
+import os
+open(os.environ["FAKE_MAC_LOG"], "a").write("build-mac " + sys.argv[2] + "\\n")
+mac_package_dir(Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]), os.environ.get("STANDIN_MAC_FAULT", ""))
+""")
+        (self.standin / "ssh").write_text('''#!/bin/bash
+echo "ssh $*" >> "$FAKE_MAC_LOG"
+cat > /dev/null
+case "${FAKE_MAC:-up}" in
+  down) echo "ssh: connect to host mac port 22: Operation timed out" >&2; exit 255 ;;
+  notready) echo "MAC NOT READY: Godot is '', not 4.7.2.stable"; exit 1 ;;
+  *) echo "MAC READY 26.6 arm64 Godot 4.7.2.stable.official.test"; exit 0 ;;
+esac
+''')
+        for f in ("build", "verify", "build-mac", "ssh"):
             (self.standin / f).chmod(0o755)
+        self.mac_log = tmp / "mac.log"
         self.gh = tmp / "bin" / "gh"
         self.gh.parent.mkdir()
         self.gh.write_text(f"#!/bin/bash\nexec {sys.executable} {HERE / 'gh_stand_in.py'} \"$@\"\n")
@@ -156,9 +232,11 @@ package_dir(Path(sys.argv[3]), sys.argv[2], extra=os.environ.get("STANDIN_EXTRA"
         return {"GH": str(self.gh), "FAKE_GH_STATE": str(self.gh_state), "FAKE_GH_REMOTE": str(self.remote), "FAKE_GH_LOG": str(self.gh_log),
                 "OPENBFME_RELEASE_STATE": str(self.state), "OPENBFME_RELEASE_WORK": str(self.tmp / "work"),
                 "OPENBFME_RELEASE_LOGS": str(self.tmp / "logs"), "HOME": str(self.home),
+                "OPENBFME_RELEASE_KEY": str(self.key), "OPENBFME_RELEASE_DENYLIST": str(self.denylist),
                 # the stand-in build imports this module: pytest from the user site of the real home
                 "PYTHONPATH": str(Path(pytest.__file__).resolve().parents[1]),
                 "OPENBFME_RELEASE_STANDIN": str(self.standin), "BFME_COMMUNITY": str(self.tmp / "no-community"),
+                "OPENBFME_RELEASE_MAC_SSH": str(self.standin / "ssh"), "FAKE_MAC_LOG": str(self.mac_log), "OPENBFME_RELEASE_MAC_ROOT": "ci-root",
                 "OPENBFME_RELEASE_MIN_COMMIT": self.first,
                 "PATH": f"{self.gh.parent}:{os.environ['PATH']}", **extra}
 
@@ -190,7 +268,9 @@ def test_real_release_end_to_end(world):
     assert rel["name"] == "OpenBFME Alpha 0.4.5", "VERSION-1: the first release is a plain number, a full release (no bridge any more)"
     assert sorted(a["name"] for a in rel["assets"]) == sorted(
         [make_manifest.asset_name(k, "v0.4.5", p) for k in ("game", "launcher") for p in ("linux-x64", "windows-x64")]
-        + ["SHA256SUMS-v0.4.5.txt", "manifest.json", "manifest.json.sig"])
+        + ["SHA256SUMS-v0.4.5.txt", "manifest.json", "manifest.json.sig"]
+        + ["openbfme-v0.4.5-macos-arm64.zip", "manifest-macos.json", "manifest-macos.json.sig"])   # MACREL-1
+    check_mac_release(world, world.tmp / "work/v0.4.5/pkg", "v0.4.5", pr_merge(world))
     assert "Units walk around trees instead of through them" in rel["body"]
     # lane ONEZIP-1: the notes say which file to get, with a direct link per platform (never "(link removed)"), and name the rest once
     base = f"https://github.com/{TARGET}/releases/download/v0.4.5"
@@ -198,7 +278,11 @@ def test_real_release_end_to_end(world):
         assert f"| **[{name}]({base}/{name})** | **OpenBFME for " in rel["body"], rel["body"]
     assert "## Which file to download" in rel["body"] and "(link removed)" not in rel["body"]
     assert ("| openbfme-launcher-v0.4.5-windows-x64.zip, openbfme-launcher-v0.4.5-linux-x64.tar.gz, "
-            "SHA256SUMS-v0.4.5.txt, manifest.json, manifest.json.sig | Used by OpenBFME to update itself") in rel["body"]
+            "SHA256SUMS-v0.4.5.txt, manifest.json, manifest.json.sig, manifest-macos.json, manifest-macos.json.sig | Used by OpenBFME to update "
+            "itself") in rel["body"]
+    mac = "openbfme-v0.4.5-macos-arm64.zip"
+    assert f"| **[{mac}]({base}/{mac})** | **OpenBFME for Mac (Apple Silicon, macOS 13 or later), an unstable preview.**" in rel["body"]
+    assert world.mac_log.read_text().splitlines()[-1] == "build-mac v0.4.5" and "MAC READY mac" in r.stdout
     # the PR merged on the public main, its tree the archive's without archive/ plus the README line, no PRIVACY.md; the branch deleted
     (pr,) = gh["prs"].values()
     main_tree = git(world.repo, "ls-tree", "--name-only", f"{pr['merge']}")
@@ -238,6 +322,42 @@ def test_real_release_end_to_end(world):
     assert world.gh_data()["repo"]["homepage"] == f"https://github.com/{TARGET}/releases/tag/v0.4.6"
 
 
+def pr_merge(world) -> str:
+    (pr,) = world.gh_data()["prs"].values()
+    return pr["merge"]
+
+
+def check_mac_release(world, pkg: Path, version: str, public: str) -> None:
+    """MACREL-1: the release's Mac package and its separately signed manifest; the Windows / Linux manifest is byte for byte the one of
+    the Windows / Linux packages alone (what a release without the Mac package has), so the released launchers read what they always read"""
+    import tempfile
+    import make_macos_manifest
+    pub = bytes.fromhex(git(world.repo, "show", "HEAD:launcher/release_key.pub"))
+    zip_name = f"openbfme-{version}-macos-arm64.zip"
+    mac_bytes = (pkg / "manifest-macos.json").read_bytes()
+    assert ed25519.verify(pub, mac_bytes, (pkg / "manifest-macos.json.sig").read_bytes()), "manifest-macos.json is signed with the release key"
+    mac = json.loads(mac_bytes)
+    main = json.loads((pkg / "manifest.json").read_bytes())
+    assert {k: mac[k] for k in ("version", "repo", "commit", "date", "format")} == \
+        {"version": version, "repo": TARGET, "commit": public, "date": main["date"], "format": 3}
+    (entry,) = mac["assets"]["game"].values()
+    data = (pkg / zip_name).read_bytes()
+    assert list(mac["assets"]["game"]) == ["macos-arm64"] and entry["name"] == zip_name
+    assert (entry["size"], entry["sha256"]) == (len(data), hashlib.sha256(data).hexdigest())
+    assert f"{hashlib.sha256(data).hexdigest()}  {zip_name}" in (pkg / f"SHA256SUMS-{version}.txt").read_text().splitlines()
+    assert "macos" not in (pkg / "manifest.json").read_text()
+    with tempfile.TemporaryDirectory() as t:
+        alone = Path(t)
+        for f in pkg.iterdir():
+            if f.name.startswith(("openbfme-", "SHA256SUMS-")) and "macos" not in f.name:
+                shutil.copy2(f, alone / f.name)
+        sums = alone / f"SHA256SUMS-{version}.txt"
+        sums.write_text("".join(ln + "\n" for ln in sums.read_text().splitlines() if zip_name not in ln))
+        rebuilt = make_manifest.build(alone, version, TARGET, main["commit"], main["date"], main["format"])
+        assert make_manifest.dumps(rebuilt) == (pkg / "manifest.json").read_bytes(), "the Windows / Linux manifest is unchanged by the Mac package"
+    assert make_macos_manifest.check_dir(pkg, git(world.repo, "show", "HEAD:launcher/release_key.pub")) == []
+
+
 def test_a_failed_homepage_update_is_a_warning(world):
     """RELTEST-1: the release is out when the About link cannot be set: the run passes and the summary says to set it by hand"""
     sha = world.change({"engine/a.cpp": "2\n"}, "X-1: something new for players to see")
@@ -247,6 +367,192 @@ def test_a_failed_homepage_update_is_a_warning(world):
     assert "AUTORELEASE WARNING: the repository's About link could not be set" in r.stdout
     gh = world.gh_data()
     assert gh["releases"][0]["draft"] is False and gh.get("repo", {}).get("homepage", "") == ""
+
+
+# ---- MACREL-1: the macOS package -------------------------------------------------------------------------------------------------------
+def nothing_published(world) -> bool:
+    """no PR, no sync branch, no tag, no release, no open intent: nothing left the Deck"""
+    return (world.gh_data() == {"prs": {}, "releases": []} and world.remote_refs("refs/heads/sync/*") == ""
+            and world.remote_refs("refs/tags/*") == "" and not (world.state / "intent").exists())
+
+
+@pytest.mark.parametrize("fake,why", [
+    ("down", "the Mac build host 'mac' does not answer over ssh"),
+    ("notready", "MAC NOT READY: Godot is ''"),
+])
+def test_a_release_without_a_ready_mac_host_stops_before_anything_is_published(world, fake, why):
+    sha = world.change({"engine/a.cpp": "2\n"}, "X-1: something new for players to see")
+    world.gate(sha)
+    for extra in ((), ("--dry-run",)):
+        r = world.release(sha, "--since", world.first, *extra, FAKE_MAC=fake)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert why in r.stdout + r.stderr
+        assert "AUTORELEASE FAIL at step mac-check (v0.4.5): the Mac build host (mac) is not ready (above): nothing was pushed or published" in r.stdout
+        assert "OPENBFME_RELEASE_SKIP_MAC=1 to release without the macOS package" in r.stdout
+        assert nothing_published(world), extra
+    assert "build-mac" not in world.mac_log.read_text(), "no build was started"
+    # the host comes back: the same sha is released, Mac package included
+    r = world.release(sha, "--since", world.first)
+    assert r.returncode == 0 and "AUTORELEASE OK v0.4.5" in r.stdout, r.stdout + r.stderr
+    check_mac_release(world, world.tmp / "work/v0.4.5/pkg", "v0.4.5", pr_merge(world))
+
+
+def test_skip_mac_is_explicit_and_said(world):
+    sha = world.change({"engine/a.cpp": "2\n"}, "X-1: something new for players to see")
+    world.gate(sha)
+    for bad in ("yes", "true", "2", " 1"):
+        r = world.release(sha, "--since", world.first, OPENBFME_RELEASE_SKIP_MAC=bad, FAKE_MAC="down")
+        assert r.returncode == 2 and "OPENBFME_RELEASE_SKIP_MAC is 1" in r.stderr and nothing_published(world), bad
+    r = world.release(sha, "--since", world.first, OPENBFME_RELEASE_SKIP_MAC="1", FAKE_MAC="down")
+    assert r.returncode == 0 and "AUTORELEASE OK v0.4.5" in r.stdout, r.stdout + r.stderr
+    warning = "AUTORELEASE WARNING: OPENBFME_RELEASE_SKIP_MAC=1: v0.4.5 is released WITHOUT the macOS package"
+    assert warning in r.stdout and "AUTORELEASE WARNING: v0.4.5 has no macOS package (OPENBFME_RELEASE_SKIP_MAC=1)" in r.stdout
+    summary = (world.tmp / "logs/autorelease-summary.log").read_text()
+    assert warning in summary and "has no macOS package" in summary
+    assert not world.mac_log.exists(), "the Mac host is not asked anything"
+    (rel,) = world.gh_data()["releases"]
+    names = sorted(a["name"] for a in rel["assets"])
+    assert "openbfme-v0.4.5-macos-arm64.zip" not in names and {"manifest-macos.json", "manifest-macos.json.sig"} <= set(names)
+    assert "macos-arm64.zip" not in rel["body"] and "manifest-macos.json" in rel["body"]
+    pkg = world.tmp / "work/v0.4.5/pkg"
+    mac = json.loads((pkg / "manifest-macos.json").read_bytes())
+    assert mac["assets"] == {"game": {}}, "a signed manifest naming no Mac package: the Mac launchers see no update, nothing to guess"
+    pub = bytes.fromhex(git(world.repo, "show", "HEAD:launcher/release_key.pub"))
+    assert ed25519.verify(pub, (pkg / "manifest-macos.json").read_bytes(), (pkg / "manifest-macos.json.sig").read_bytes())
+
+
+@pytest.mark.parametrize("fault,why", [
+    ("wrong-key", "the Mac launcher's build_info.json has release_key"),
+    ("wrong-repo", "the Mac launcher's build_info.json has repo 'Other/repo'"),
+    ("wrong-commit", "VERSION says"),
+    ("extra-file", "extra.txt is not a file of the release"),
+    ("bad-checksum", "does not exactly match"),
+])
+def test_a_bad_mac_package_is_refused_before_signing(world, fault, why):
+    sha = world.change({"engine/a.cpp": "2\n"}, "X-1: something new for players to see")
+    world.gate(sha)
+    r = world.release(sha, "--since", world.first, STANDIN_MAC_FAULT=fault)
+    assert r.returncode == 1 and why in r.stdout, r.stdout + r.stderr
+    assert "AUTORELEASE FAIL at step deck-verify (v0.4.5): openbfme-v0.4.5-macos-arm64.zip failed the Deck's checks" in r.stdout
+    assert world.gh_data()["releases"] == [] and not (world.tmp / "work/v0.4.5/pkg/manifest-macos.json").exists()
+
+
+def mac_publish_dir(tmp: Path, version: str, world: World, sha: str) -> Path:
+    """publish_dir plus the Mac package, its checksum line and its signed manifest-macos.json (what autorelease.sh hands publish_release.sh)"""
+    d = publish_dir(tmp, version, world, sha)
+    m = json.loads((d / "manifest.json").read_bytes())
+    date, public = m["date"], m["commit"]   # PUBLISH-2: publish_dir's manifest names the tagged public commit (the sync tree of sha)
+    out = tmp / f"mac-{version}"
+    archive = mac_package_dir(world.repo, version, out, commit=public)
+    shutil.copy2(archive, d / archive.name)
+    # MACPLAY-1: sealed like autorelease.sh seals it (payload.json inside the ZIP under the release key), then its own checksum
+    import seal_package
+    from sign_manifest import load_secret
+    seal_package.seal_archive(d / archive.name, load_secret(Path(world.key)), TARGET)
+    sealed = tmp / f"{archive.name}.sealed.sha256"
+    sealed.write_text(f"{hashlib.sha256((d / archive.name).read_bytes()).hexdigest()}  {archive.name}\n")
+    with open(d / f"SHA256SUMS-{version}.txt", "a") as f:
+        f.write(sealed.read_text())
+    r = run(sys.executable, world.repo / "tools/release/make_macos_manifest.py", "--version", version, "--repo", TARGET, "--commit", public,
+            "--date", date, "--archive", d / archive.name, "--checksum", sealed, "--out", d / "manifest-macos.json")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert run(sys.executable, world.repo / "tools/release/sign_manifest.py", "--key", world.key, d / "manifest-macos.json").returncode == 0
+    return d
+
+
+def resign(world, path: Path) -> None:
+    assert run(sys.executable, world.repo / "tools/release/sign_manifest.py", "--key", world.key, path).returncode == 0
+
+
+def test_publish_checks_the_mac_manifest(world, tmp_path):
+    """publish_release.sh refuses a Mac manifest that does not verify, does not match the folder's Mac package, or names another release,
+    each before gh is asked anything; the untouched folder publishes the Mac package with the others"""
+    sha = git(world.repo, "rev-parse", "HEAD")
+    tool = world.repo / "tools/release/publish_release.sh"
+    good = mac_publish_dir(tmp_path, "v0.4.5", world, sha)
+
+    def edit_manifest(d, change):
+        m = json.loads((d / "manifest-macos.json").read_bytes())
+        change(m)
+        (d / "manifest-macos.json").write_text(json.dumps(m, indent=2, sort_keys=True) + "\n")
+        resign(world, d / "manifest-macos.json")
+
+    def other_zip(d):
+        version_dir = tmp_path / "other"
+        world.change({"engine/a.cpp": "9\n"}, "another build")
+        a = mac_package_dir(world.repo, "v0.4.5", version_dir)
+        git(world.repo, "reset", "-q", "--hard", sha)
+        shutil.copy2(a, d / a.name)
+
+    cases = {
+        "a changed byte, the old signature": (lambda d: (d / "manifest-macos.json").write_bytes((d / "manifest-macos.json").read_bytes() + b" "),
+                                              "the signature of manifest-macos.json does not verify"),
+        "another key's signature": (lambda d: (d / "manifest-macos.json.sig").write_bytes(
+            ed25519.sign(os.urandom(32), (d / "manifest-macos.json").read_bytes())), "the signature of manifest-macos.json does not verify"),
+        "no signature": (lambda d: (d / "manifest-macos.json.sig").unlink(), "manifest-macos.json and manifest-macos.json.sig come together"),
+        "no Mac manifest, a Mac package": (lambda d: [(d / n).unlink() for n in ("manifest-macos.json", "manifest-macos.json.sig")],
+                                            "a Mac package is in"),
+        "re-signed with a wrong digest": (lambda d: edit_manifest(d, lambda m: m["assets"]["game"]["macos-arm64"].update(sha256="0" * 64)),
+                                          "is not the manifest of openbfme-v0.4.5-macos-arm64.zip"),
+        "re-signed for another commit": (lambda d: edit_manifest(d, lambda m: m.update(commit="1" * 40)), "manifest-macos.json has commit"),
+        "re-signed with no entry": (lambda d: edit_manifest(d, lambda m: m["assets"].update(game={})),
+                                    "manifest-macos.json names no Mac package, but openbfme-v0.4.5-macos-arm64.zip is in"),
+        "another Mac package under the name": (other_zip, "does not list openbfme-v0.4.5-macos-arm64.zip with its digest"),
+    }
+    for label, (tamper, why) in cases.items():
+        d = tmp_path / "tampered"
+        shutil.rmtree(d, ignore_errors=True)
+        shutil.copytree(good, d)
+        tamper(d)
+        r = run("bash", tool, d, "--repo", TARGET, "--execute", "--confirm-tag", "v0.4.5", env=world.env())
+        assert r.returncode != 0 and why in r.stdout + r.stderr, (label, r.stdout + r.stderr)
+        assert not world.gh_log.exists(), label
+    r = run("bash", tool, good, "--repo", TARGET, "--execute", "--confirm-tag", "v0.4.5", env=world.env())
+    assert r.returncode == 0 and "PUBLISHED v0.4.5" in r.stdout, r.stdout + r.stderr
+    (rel,) = world.gh_data()["releases"]
+    assert {"openbfme-v0.4.5-macos-arm64.zip", "manifest-macos.json", "manifest-macos.json.sig"} <= {a["name"] for a in rel["assets"]}
+
+
+def test_the_dry_run_signs_the_mac_manifest_with_the_throwaway_key(world):
+    sha = world.change({"engine/a.cpp": "2\n"}, "X-1: something new for players to see")
+    world.gate(sha)
+    r = world.release(sha, "--since", world.first, "--dry-run")
+    assert r.returncode == 0 and "AUTORELEASE DRY RUN OK v0.4.5" in r.stdout, r.stdout + r.stderr
+    assert "WOULD RUN: python3" in r.stdout and "sign_manifest.py --key \\<release\\ key\\> " in r.stdout
+    assert r.stdout.count("manifest-macos.json") >= 2 and nothing_published(world)
+    pkg = world.tmp / "work/v0.4.5-dryrun/pkg"
+    throwaway = bytes.fromhex((world.tmp / "work/v0.4.5-dryrun/dry-key/throwaway.pub").read_text().strip())
+    for m in ("manifest.json", "manifest-macos.json"):
+        assert ed25519.verify(throwaway, (pkg / m).read_bytes(), (pkg / f"{m}.sig").read_bytes()), m
+    assert json.loads((pkg / "manifest-macos.json").read_bytes())["assets"]["game"]["macos-arm64"]["name"] == "openbfme-v0.4.5-macos-arm64.zip"
+
+
+def test_the_public_tree_keeps_the_commit_gate_path_rule_and_packages_the_strict_one():
+    """DEVPORT-6: audit_package's LOCAL_PATH (any /tmp/<dir>/, /home/<user>/, /Users/<user>/) is for release packages; the public source tree
+    keeps tools/precommit.py's rule, which the commit gate already holds every file to (LOCAL_PATH refused the tree's own tests)"""
+    import audit_package
+    for text, package_flags, tree_flags in [
+        (b"see /tmp/build/out for the log\n", True, False),
+        (b"fixture /Users/u/.cargo/registry\n", True, False),
+        (b"a path /" + b"home/deck/notes.txt\n", True, True),   # built here: this file itself passes the commit gate
+        (b"C:" + b"\\Users\\someone\\x\n", True, True),
+        (b"nothing private here\n", False, False),
+    ]:
+        pkg, tree = audit_package.Audit(), autorelease.SyncAudit()
+        pkg.blob("a.txt", text)
+        tree.blob("a.txt", text)
+        assert bool(pkg.problems) is package_flags and bool(tree.problems) is tree_flags, (text, pkg.problems, tree.problems)
+
+
+def test_the_download_table_has_the_mac_row_only_with_the_mac_package():
+    base = "https://github.com/Open-BFME/openbfme-godot/releases/download/v0.4.7"
+    without = "\n".join(autorelease.download_section("v0.4.7"))
+    with_mac = "\n".join(autorelease.download_section("v0.4.7", mac=True))
+    assert "macos" not in without
+    name = "openbfme-v0.4.7-macos-arm64.zip"
+    assert f"| **[{name}]({base}/{name})** | **OpenBFME for Mac (Apple Silicon, macOS 13 or later), an unstable preview.**" in with_mac
+    assert "Intel Macs are not supported." in with_mac and "manifest.json.sig, manifest-macos.json, manifest-macos.json.sig |" in with_mac
+    assert with_mac.replace(with_mac.split("\n")[6] + "\n", "", 1).replace(", manifest-macos.json, manifest-macos.json.sig", "") == without
 
 
 def test_gate_record_is_required(world):
@@ -466,9 +772,12 @@ def test_sync_drops_a_stray_privacy_md_of_the_public_main(world):
 
 
 def test_audit_tree_of_the_real_public_tree():
-    tree = subprocess.run("git ls-tree HEAD | grep -vP '\\tarchive$' | git mktree", shell=True, cwd=REPO, capture_output=True, text=True,
-                          check=True).stdout.strip()
-    assert autorelease.audit_tree(str(REPO), tree) == []
+    """the public tree of this checkout's HEAD (the sync recipe) passes the audit: the built-in rules, plus the operator's private
+    denylist when OPENBFME_RELEASE_DENYLIST names it on this machine"""
+    tree = autorelease.sync_tree(str(REPO), "HEAD")
+    private = os.environ.get("OPENBFME_RELEASE_DENYLIST")
+    rules = autorelease.load_denylist(Path(private)) if private else []
+    assert autorelease.audit_tree(str(REPO), tree, rules) == []
 
 
 # ---- the returned artifacts (Sol r1: whatever arrived was signed) -----------------------------------------------------------------------
@@ -526,7 +835,9 @@ def test_publish_outcomes_are_read_back(world, fault, ok, left, why):
 
 
 def publish_dir(tmp: Path, version: str, world: World, sha: str) -> Path:
-    """a signed package folder for version, at a tagged commit of the archive repository (publish_release.sh run from there)"""
+    """a signed package folder for version, at a tagged public commit (the sync tree of sha, as autorelease.sh tags it: publish_release.sh's
+    privacy gate audits the tag's tree) of the archive repository (publish_release.sh run from there)"""
+    sha = git(world.repo, "commit-tree", autorelease.sync_tree(str(world.repo), sha), "-p", sha, "-m", f"public {version}")
     git(world.repo, "tag", "-a", version, "-m", "t", sha)
     git(world.repo, "push", "-q", "origin", f"refs/tags/{version}")
     d = package_dir(tmp / f"pkg-{version}", version)
@@ -805,12 +1116,14 @@ def test_a_release_without_the_legacy_launcher_archives(world):
     (rel,) = world.gh_data()["releases"]
     v = rel["tag_name"]
     assert sorted(a["name"] for a in rel["assets"]) == sorted(
-        [f"openbfme-{v}-linux-x64.tar.gz", f"openbfme-{v}-windows-x64.zip", f"SHA256SUMS-{v}.txt", "manifest.json", "manifest.json.sig"])
+        [f"openbfme-{v}-linux-x64.tar.gz", f"openbfme-{v}-windows-x64.zip", f"SHA256SUMS-{v}.txt", "manifest.json", "manifest.json.sig",
+         f"openbfme-{v}-macos-arm64.zip", "manifest-macos.json", "manifest-macos.json.sig"])   # MACREL-1: the Mac package and its sidecar
     (found,) = (world.tmp / "work").rglob("pkg/manifest.json")
     manifest = json.loads(found.read_bytes())
     assert manifest["format"] == 3 and sorted(manifest["assets"]) == ["game"]
     assert "OpenBFMELauncher.exe" in manifest["assets"]["game"]["windows-x64"]["files"]
-    assert "openbfme-launcher-" not in rel["body"] and f"| SHA256SUMS-{v}.txt, manifest.json, manifest.json.sig | Used by OpenBFME" in rel["body"]
+    assert "openbfme-launcher-" not in rel["body"] and \
+        f"| SHA256SUMS-{v}.txt, manifest.json, manifest.json.sig, manifest-macos.json, manifest-macos.json.sig | Used by OpenBFME" in rel["body"]
 
 
 # ---- round 3 (Sol r2 REJECT) ----------------------------------------------------------------------------------------------------------------
@@ -875,7 +1188,7 @@ def test_an_intents_own_draft_is_resumed_never_deleted(world):
     r = world.release(sha)
     assert r.returncode == 0 and "the intent's own draft" in r.stdout and "resuming the draft release" in r.stdout, r.stdout + r.stderr
     rels = world.gh_data()["releases"]
-    assert [(x["tag_name"], x["draft"], len(x["assets"])) for x in rels] == [("v0.4.5", False, 7)]
+    assert [(x["tag_name"], x["draft"], len(x["assets"])) for x in rels] == [("v0.4.5", False, 10)]   # 7 + MACREL-1's Mac package and sidecar
     assert "--method DELETE" not in world.gh_log.read_text()
 
 
@@ -982,26 +1295,35 @@ def test_the_key_path_is_never_printed(world):
     r2 = world.release(sha, "--since", world.first)
     assert r2.returncode != 0 and "is not mode 600" in r2.stdout
     world.key.chmod(0o600)
-    # r6: only the configured key path is used; another override, also a relative one (Sol r5: ./keyrepo/release.pem leaked its
-    # normalised path through the signer), is refused without echoing it
+    # r6 / PUBLISH-2: the key is named by one exact path: a relative one (Sol r5: ./keyrepo/release.pem leaked its normalised path through
+    # the signer), one with a '..' part or a symbolic link, or none at all, is refused without echoing it
     inside = world.tmp / "keyrepo"
     git(world.tmp, "init", "-q", str(inside))
     shutil.copy2(world.key, inside / "release.pem")
     (inside / "release.pem").chmod(0o600)
-    r3 = world.release(sha, "--since", world.first, OPENBFME_RELEASE_KEY=str(inside / "release.pem"))
+    r3 = world.release(sha, "--since", world.first, OPENBFME_RELEASE_KEY=str(inside / ".." / "keyrepo" / "release.pem"))
     assert r3.returncode == 2 and "is not the configured release key" in r3.stderr, r3.stdout + r3.stderr
+    (world.tmp / "keylink").symlink_to(world.key.parent)
+    r3b = world.release(sha, "--since", world.first, OPENBFME_RELEASE_KEY=str(world.tmp / "keylink" / world.key.name))
+    assert r3b.returncode == 2 and "is not the configured release key" in r3b.stderr, r3b.stdout + r3b.stderr
+    r3c = world.release(sha, "--since", world.first, OPENBFME_RELEASE_KEY="")
+    assert r3c.returncode == 2 and "OPENBFME_RELEASE_KEY is not set" in r3c.stderr, r3c.stdout + r3c.stderr
+    # the configured key inside a git work tree: the signer refuses it (below, r6) without naming it
+    r3d = world.release(sha, "--since", world.first, OPENBFME_RELEASE_KEY=str(inside / "release.pem"))
+    assert r3d.returncode != 0 and "<release key> is inside a git work tree" in r3d.stdout + r3d.stderr, r3d.stdout + r3d.stderr
     r4 = run("bash", world.repo / "tools/release/autorelease.sh", sha, "--since", world.first, "--repo", TARGET, "--remote", "origin",
              env=world.env(OPENBFME_RELEASE_KEY="./keyrepo/release.pem"), cwd=world.tmp)
     assert r4.returncode == 2 and "is not the configured release key" in r4.stderr
     r5 = world.release(sha, "--since", world.first, "--dry-run", OPENBFME_RELEASE_KEY=str(world.key))
     assert "is not the configured release key" not in r5.stdout + r5.stderr, "the configured path itself is accepted"
     # the signer's own diagnostics name the key: the configured key inside a git work tree is refused by sign_manifest.py itself
-    git(world.home, "init", "-q", str(world.home / ".config"))
+    git(world.home, "init", "-q", str(world.key.parent))
     r6 = world.release(sha, "--since", world.first)
-    shutil.rmtree(world.home / ".config" / ".git")
+    shutil.rmtree(world.key.parent / ".git")
     assert r6.returncode != 0 and "cannot read the release key's public half" in r6.stdout
     assert "<release key> is inside a git work tree" in r6.stdout + r6.stderr, r6.stdout + r6.stderr
     texts = [r.stdout, r.stderr, r2.stdout, r2.stderr, r3.stdout, r3.stderr, r4.stdout, r4.stderr, r6.stdout, r6.stderr]
+    texts += [x for rr in (r3b, r3c, r3d) for x in (rr.stdout, rr.stderr)]
     texts += [p.read_text() for p in (world.tmp / "logs").glob("*.log")]
     for t in texts:
         for path in (key, str(world.key.resolve()), str(world.key.parent), str(world.home), str(inside / "release.pem"), "keyrepo/release.pem"):
@@ -1188,7 +1510,7 @@ def test_the_public_tree_is_text_only(world, name, data):
 def test_public_metadata_fails_rather_than_redacts(world):
     """Sol r5: a Release-note with a private path and the key path reached the commit message, the PR body and the release notes"""
     for note in ("see /" + "home/deck/secrets for the maps", f"signed with {world.key}", "ask me at someone@example.org",
-                 "built on steamdeck"):
+                 "built on buildbox-7", "account 998877665544", "on " + ip(192, 168, 4, 4)):
         sha = world.change({"engine/a.cpp": note + "\n"}, "X-1: a change", )
         git(world.repo, "commit", "-q", "--amend", "-m", "X-1: a change", "-m", "Release-note: " + note)
         sha = git(world.repo, "rev-parse", "HEAD")
@@ -1202,19 +1524,25 @@ def test_public_text_rules():
     t = autorelease.public_text_problems
     assert t("x", "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n1760627+Ancalgonn@users.noreply.github.com") == []
     assert t("x", "Horde movement as RotWK does it\\.") == []
-    for bad in ("/" + "home/x/y", "C:" + "\\Users\\x", "~/.config/openbfme-release", "a\\@b\\.example\\.org", "me＠evil.example.org",
-                str(autorelease.KEY_PATH).replace(".", "\\.")):
+    for bad in ("/" + "home/x/y", "C:" + "\\Users\\x", "a\\@b\\.example\\.org", "me＠evil.example.org"):
         assert t("x", bad), bad
+    # PUBLISH-2: the key's path and folder come from the operator's OPENBFME_RELEASE_KEY
+    os.environ["OPENBFME_RELEASE_KEY"] = "/srv/keys-q/release.pem"
+    try:
+        for bad in ("/srv/keys-q/release.pem".replace(".", "\\."), "/srv/keys-q", "release.pem"):
+            assert t("x", bad), bad
+    finally:
+        del os.environ["OPENBFME_RELEASE_KEY"]
+    assert t("x", "/srv/keys-q") == [], "without OPENBFME_RELEASE_KEY no key path is known"
 
 
 def test_the_redactor_takes_escaped_and_url_encoded_forms(world):
     import urllib.parse  # noqa: PLC0415
-    script = (world.repo / "tools/release/autorelease.sh").read_text()
-    code = script.split("REDACT_PY='")[1].split("\n'\n")[0]
     key = str(world.key)
     env = {**os.environ, "AR_KEY": key, "AR_KEYDIR": str(world.key.parent), "AR_HOME": str(world.home)}
     text = "\n".join([key, autorelease.markdown(key), urllib.parse.quote(key), urllib.parse.quote(key, safe=""), str(world.home) + "/x"])
-    out = subprocess.run([sys.executable, "-u", "-c", code], input=text.encode(), capture_output=True, env=env).stdout.decode()
+    out = subprocess.run([sys.executable, "-u", HERE / "autorelease.py", "redact", "--denylist", world.denylist], input=text.encode(),
+                         capture_output=True, env=env).stdout.decode()
     assert out.splitlines() == ["<release key>"] * 4 + ["~/x"], out
 
 
@@ -1235,7 +1563,7 @@ def test_no_production_script_writes_to_the_terminal_or_its_own_log():
     ("~deck/x", False),
 ])
 def test_user_names_count_only_as_accounts(text, ok, monkeypatch):
-    monkeypatch.setattr(autorelease, "_PRIVATE_WORDS", ({"deck", "jonathan"}, {"steamdeck"}))
+    monkeypatch.setattr(autorelease, "_PRIVATE_WORDS", ({"deck", "jonathan"}, {"buildbox-7"}))
     assert (autorelease.public_text_problems("note", text) == []) == ok, autorelease.public_text_problems("note", text)
 
 
@@ -1298,13 +1626,14 @@ def test_note_warnings_name_what_to_fix():
     w = autorelease.note_warnings
     assert w("Added [Online]: A short, single change.") == []
     assert w("Fix: A short fix.") == []
-    assert any("unknown area [Nowhere]" in x for x in w("Added [Nowhere]: x"))
+    assert any("unknown area in brackets" in x for x in w("Added [Nowhere]: x"))
     assert any("';'" in x for x in w("Added [Online]: one thing; another thing"))
     assert any("201 characters" in x for x in w("Added: " + "x" * 201)) and w("Added: " + "x" * 200) == []
     assert w("Ends with;") == [], "a ';' joins clauses only when something follows"
     c = {"sha": "0123456789abcdef", "subject": "S", "body": "Body.\nRelease-note: Added [Foo]: a; b\nRelease-note: Fine.\nRelease-note: none\n"}
     ws = autorelease.release_warnings(c)
-    assert len(ws) == 2 and all(x.startswith("NOTES WARNING 0123456789: ") for x in ws), ws
+    assert ws == ["NOTES WARNING 0123456789 note 1: unknown area in brackets (it goes under General; areas: " + ", ".join(autorelease.AREAS) + ")",
+                  "NOTES WARNING 0123456789 note 1: a ';' joins clauses: one note, one change"], ws
     hostile = {"sha": "0123456789abcdef", "body": "Release-note: Added [@evil https://x.example]: a; b see #12"}
     assert not any(bad in "".join(autorelease.release_warnings(hostile)) for bad in ("@", "#1", "https"))
 
@@ -1496,3 +1825,840 @@ def test_notes_have_no_backslash_escapes():
     notes, _ = autorelease.release_notes("v0.4.0-alpha.6", commits, [{"text": "A known (issue) with under-attack.", "area": "Gameplay"}])
     assert "\\" not in notes
     assert "- The original. Radar (pings) and under-attack lines" in notes or "original. Radar (pings)" in notes
+
+
+# ---- PUBLISH-2: the sync recipe's exclusions and the denylist (after the 2026-10-15 history scrub) ------------------------------------------
+def tree_paths(repo: Path, tree: str) -> list[str]:
+    return git(repo, "ls-tree", "-r", "--name-only", tree).split("\n")
+
+
+def test_sync_tree_drops_the_excluded_paths(world):
+    """the CI configuration and the online deploy folder never reach the public tree (in step with the CI mirror); the sha's own list"""
+    sha = world.change({".gitea/workflows/ci.yml": "on: push\n", "services/online/deploy/setup.sh": "echo\n", "services/online/DEPLOY.md": "d\n",
+                        "services/online/relay/relay.cpp": "1\n", "engine/b.cpp": "2\n"}, "X-1: deploy and CI files")
+    tree = autorelease.sync_tree(str(world.repo), sha)
+    paths = tree_paths(world.repo, tree)
+    assert "services/online/relay/relay.cpp" in paths and "engine/b.cpp" in paths and "README.md" in paths
+    for gone in (".gitea/workflows/ci.yml", "services/online/deploy/setup.sh", "services/online/DEPLOY.md", "archive/old.txt"):
+        assert gone not in paths, gone
+    assert git(world.repo, "cat-file", "blob", f"{tree}:README.md").endswith("(tag `legacy-final`).")
+    # the whole run: the merged public commit has the same tree (a release of a tree with the excluded folders would be refused by the audit)
+    world.gate(sha)
+    r = world.release(sha, "--since", world.first)
+    assert r.returncode == 0, r.stdout + r.stderr
+    (pr,) = world.gh_data()["prs"].values()
+    assert git(world.repo, "rev-parse", f"{pr['merge']}^{{tree}}") == tree
+
+
+def test_sync_tree_without_its_exclusion_list_is_refused(world):
+    sha = world.change({"engine/b.cpp": "2\n"}, "X-1: a change")
+    git(world.repo, "rm", "-q", "tools/release/sync_exclude.txt")
+    git(world.repo, "commit", "-q", "-m", "X-2: no list")
+    sha = git(world.repo, "rev-parse", "HEAD")
+    with pytest.raises(SystemExit, match="has no tools/release/sync_exclude.txt"):
+        autorelease.sync_tree(str(world.repo), sha)
+    world.gate(sha)
+    r = world.release(sha, "--since", world.first)
+    assert r.returncode != 0 and "could not build the public tree" in r.stdout and world.remote_refs("refs/heads/sync/*") == "", r.stdout
+
+
+@pytest.mark.parametrize("line", ["/services", "services/", "a/../b", "a\\\\b", "./x"])
+def test_sync_exclusion_lines_must_be_repository_paths(world, line):
+    sha = world.change({"tools/release/sync_exclude.txt": f"# x\n{line}\n"}, "X-1: a bad list")
+    with pytest.raises(SystemExit, match="is not a repository-relative path"):
+        autorelease.sync_tree(str(world.repo), sha)
+
+
+# one case per built-in rule and per kind of private rule: (file, content, rule id that must catch it); every case is also audited
+# without that rule and must then pass (so the rule, not something else, is what refuses it)
+PRIVATE = autorelease.compile_rules(TEST_DENYLIST["rules"], "test")
+DENY_CASES = [
+    ("docs/net.md", f"the hub at {ip(192, 168, 7, 20)} serves it\n", "lan-192.168"),
+    ("docs/net.md", f"reach {ip(10, 20, 30, 40)} first\n", "lan-10"),
+    ("docs/net.md", f"the VM is {ip(172, 20, 1, 9)}\n", "lan-172"),
+    ("docs/net.md", f"over {ip(100, 101, 102, 103)}\n", "cgnat-tailnet-ip"),
+    ("docs/net.md", "ssh to box.tail1234." + "ts.net\n", "tailnet-name"),
+    ("tools/x.sh", "cp key ~/.ssh/id_x\n", "private-path"),
+    ("tools/x.sh", "cd /mnt/c/Users/someone/x\n", "private-path"),
+    ("tools/x.py", 'ACCOUNT = "arn:aws:iam::1:role/x"\n', "aws-account"),
+    ("tools/x.py", "aws account: 1234-5678-9012\n", "aws-account"),
+    ("tools/x.py", "account_id = " + "ab" * 16 + "\n", "cloudflare-account"),
+    ("docs/who.md", "mail owner.private@mailhost.net\n", "e-mail"),
+    ("services/online/DEPLOY-notes.md", "x\n", "operational-file"),
+    ("tools/net/backup_lobby.py", "x\n", "operational-file"),
+    ("tools/run.log", "x\n", "operational-file"),
+    ("docs/STATUS.md", "built on buildbox-7 today\n", "hosts"),
+    ("docs/STATUS.md", "see ~opsuser/notes\n", "accounts"),
+    ("docs/STATUS.md", "billing 998877665544\n", "account-ids"),
+    ("docs/runbook-relay.md", "x\n", "ops-files"),
+]
+
+
+@pytest.mark.parametrize("path,text,rule", DENY_CASES)
+def test_denylist_rule_catches_its_case(world, path, text, rule, monkeypatch):
+    sha = world.change({path: text}, "X-1: a private detail")
+    tree = autorelease.sync_tree(str(world.repo), sha)
+    problems = autorelease.audit_tree(str(world.repo), tree, PRIVATE)
+    hits = [p for p in problems if p.startswith(f"denylisted ({rule})")]
+    assert hits, problems
+    assert all(p.startswith("denylisted") for p in problems), problems
+    # without the rule: the same tree passes (the other rules do not see it)
+    monkeypatch.setattr(autorelease, "BUILTIN", [r for r in autorelease.BUILTIN if r[0] != rule])
+    assert autorelease.audit_tree(str(world.repo), tree, [r for r in PRIVATE if r[0] != rule]) == []
+
+
+@pytest.mark.parametrize("path,text", [
+    ("engine/tests/test_lan.cpp", f'addr = "{ip(192, 168, 1, 5)}";\n'),          # synthetic LAN addresses in the game's own LAN tests
+    ("docs/a.md", "Steam Deck and the lab VM\n"),                       # ordinary words
+    ("docs/a.md", "1760627+Ancalgonn@users.noreply.github.com, noreply@anthropic.com, me@example.org\n"),
+    ("docs/a.md", "version 1.10.20.3 and 3.192.168.1.40 are not addresses\n"),
+    ("docs/a.md", "the opsuser group\n"),                                 # an account name only counts as /name, ~name or name@host
+    ("tools/net/online_client.py", "x\n"), ("services/online/relay/upload_logs.py", "x\n"),
+    ("docs/a.md", "buildbox-70 and xbuildbox-7\n"),                      # word boundaries
+])
+def test_denylist_leaves_ordinary_text_alone(world, path, text):
+    sha = world.change({path: text}, "X-1: ordinary text")
+    tree = autorelease.sync_tree(str(world.repo), sha)
+    assert [p for p in autorelease.audit_tree(str(world.repo), tree, PRIVATE) if p.startswith("denylisted")] == []
+
+
+def test_a_denylisted_tree_is_not_released(world):
+    """the whole run: autorelease.sh hands its private denylist to the audit (a fictional host name in a doc stops the sync); --plan too"""
+    sha = world.change({"docs/notes.md": "measured on lab-vm-q\n"}, "X-1: notes")
+    world.gate(sha)
+    r = world.release(sha, "--since", world.first)
+    assert r.returncode != 0 and "denylisted (hosts) in docs/notes.md:1 (<8 chars>)" in r.stdout and "nothing pushed" in r.stdout, r.stdout
+    assert world.remote_refs("refs/heads/sync/*") == "" and not world.gh_state.exists()
+    assert "lab-vm-q" not in r.stdout + r.stderr, "the audit does not print what it found"
+    r = world.release(sha, "--since", world.first, "--plan")
+    assert r.returncode != 0 and "failed the privacy audit" in r.stdout, r.stdout
+    sha = world.change({"docs/notes.md": "measured on a lab VM\n"}, "X-2: notes")
+    world.gate(sha)
+    r = world.release(sha, "--since", world.first, "--plan")
+    tree = autorelease.sync_tree(str(world.repo), sha)
+    assert r.returncode == 0 and f"public tree {tree}" in r.stdout and "SYNC AUDIT ok" in r.stdout, r.stdout
+    assert world.remote_refs("refs/heads/sync/*") == "" and not world.gh_state.exists()
+
+
+@pytest.mark.parametrize("var", ["OPENBFME_RELEASE_DENYLIST", "OPENBFME_RELEASE_LOGS", "OPENBFME_RELEASE_KEY"])
+def test_the_private_release_environment_is_required(world, var):
+    sha = world.change({"engine/b.cpp": "2\n"}, "X-1: a change")
+    world.gate(sha)
+    for mode in ([], ["--plan"]):
+        r = world.release(sha, "--since", world.first, *mode, **{var: ""})
+        assert r.returncode == 2 and f"{var} is not set" in r.stderr, r.stdout + r.stderr
+    assert world.remote_refs("refs/heads/sync/*") == "" and not world.gh_state.exists()
+
+
+@pytest.mark.parametrize("content,why", [
+    (None, "cannot read the private denylist"),
+    ("", "is not JSON"),
+    ('{"rules": []}', "has no rules"),
+    ('{"other": 1}', "an object with a rules list"),
+    ('{"rules": [{"id": "x", "kind": "glob", "pattern": "a"}]}', "needs a kind"),
+    ('{"rules": [{"id": "x", "kind": "word", "pattern": []}]}', "an empty or malformed pattern"),
+    ('{"rules": [{"id": "x", "kind": "word", "pattern": [""]}]}', "an empty or malformed pattern"),
+    ('{"rules": [{"id": "x", "kind": "regex", "pattern": "(unclosed"}]}', "is not a valid regular expression"),
+    # PUBLISH-2 r2 (Sol r1 P2): a strict schema
+    ('{"rules": [{"id": "x", "kind": "regex", "pattern": "a", "paths": "false"}]}', "paths is true or false"),
+    ('{"rules": [{"id": "x", "kind": "word", "pattern": ["a"], "paths": true}]}', "paths applies to regex rules only"),
+    ('{"rules": [{"id": "x", "kind": "word", "pattern": ["a"], "path": false}]}', "unknown field"),
+    ('{"rules": [{"id": "x", "kind": "word", "pattern": ["a"], "severity": "info"}]}', "severity is fail or warn"),
+    ('{"rules": [{"id": "", "kind": "word", "pattern": ["a"]}]}', "needs an id"),
+    ('{"rules": ["x"]}', "is not an object"),
+    ('{"rules": [{"id": "x", "kind": "word", "pattern": ["a"]}], "extra": 1}', "an object with a rules list"),
+    ("\ufeff".encode("utf-16"), "is UTF-16"),
+    ('{"rules": [{"id": "x", "kind": "regex", "pattern": "a", "allow": "docs/**"}]}', "allow is a list"),
+])
+def test_a_broken_private_denylist_is_an_error(tmp_path, content, why):
+    f = tmp_path / "deny.json"
+    if isinstance(content, bytes):
+        f.write_bytes(content)
+    elif content is not None:
+        f.write_text(content)
+    with pytest.raises(SystemExit, match=re.escape(why)):
+        autorelease.load_denylist(f)
+
+
+def test_a_broken_private_denylist_stops_the_release(world):
+    sha = world.change({"engine/b.cpp": "2\n"}, "X-1: a change")
+    world.gate(sha)
+    world.denylist.write_text('{"rules": []}')
+    r = world.release(sha, "--since", world.first)
+    assert r.returncode != 0 and "has no rules" in r.stdout + r.stderr and world.remote_refs("refs/heads/sync/*") == "", r.stdout
+
+
+def test_audit_cli_reports_and_masks(world, tmp_path):
+    sha = world.change({"docs/a.md": "on buildbox-7\n"}, "X-1: a")
+    tree = autorelease.sync_tree(str(world.repo), sha)
+    r = run(sys.executable, HERE / "autorelease.py", "--git-dir", world.repo, "audit-tree", "--tree", tree, "--denylist", world.denylist)
+    assert r.returncode == 1 and "SYNC AUDIT: denylisted (hosts) in docs/a.md:1 (<10 chars>)" in r.stdout and "buildbox-7" not in r.stdout
+    # PUBLISH-2 r2 (Sol r1 P2): no denylist is a refusal, never a pass; the built-in rules alone only when asked, and labelled
+    r = run(sys.executable, HERE / "autorelease.py", "--git-dir", world.repo, "audit-tree", "--tree", tree)
+    assert r.returncode == 2 and "no private denylist" in r.stderr, r.stdout + r.stderr
+    r = run(sys.executable, HERE / "autorelease.py", "--git-dir", world.repo, "audit-tree", "--tree", tree, "--builtin-only")
+    assert r.returncode == 0 and "NOT a publishing check" in r.stdout, r.stdout
+    note = tmp_path / "notes.md"
+    note.write_text(f"Fixed on buildbox-7 at {ip(10, 1, 2, 3)}\n")
+    r = run(sys.executable, HERE / "autorelease.py", "audit-text", note, "--denylist", world.denylist)
+    assert r.returncode == 1 and "denylisted (hosts)" in r.stdout and "denylisted (lan-10)" in r.stdout, r.stdout
+
+
+# ---- PUBLISH-2 r2 (Sol r1 REJECT): one privacy gate for every publishing path, nothing private printed, no fail-open mode -------------
+def test_the_manual_publisher_runs_the_privacy_gate(world, tmp_path):
+    """P1: publish_release.sh audits the tag's tree (what GitHub's source archives hold), the notes and the name with the private list"""
+    tool = world.repo / "tools/release/publish_release.sh"
+    leak = world.change({"docs/notes.md": "measured on lab-vm-q\n"}, "X-1: a private doc")
+    d = publish_dir(tmp_path, "v0.3.0-preview.20", world, leak)
+    r = run("bash", tool, d, "--repo", TARGET, "--execute", "--confirm-tag", "v0.3.0-preview.20", env=world.env())
+    assert r.returncode != 0 and "privacy gate refused the tag's tree" in r.stderr and not world.gh_state.exists(), r.stdout + r.stderr
+    assert "lab-vm-q" not in r.stdout + r.stderr
+    r = run("bash", tool, d, "--repo", TARGET, env=world.env())   # the dry run too
+    assert r.returncode != 0 and "privacy gate refused" in r.stderr
+    clean = world.change({"docs/notes.md": "measured on a lab VM\n"}, "X-2: fixed")
+    d = publish_dir(tmp_path, "v0.3.0-preview.21", world, clean)
+    notes = tmp_path / "notes.md"
+    notes.write_text("Fixed for opsuser@buildbox-7\n")
+    r = run("bash", tool, d, "--repo", TARGET, "--notes-file", notes, "--execute", "--confirm-tag", "v0.3.0-preview.21", env=world.env())
+    assert r.returncode != 0 and "privacy gate refused" in r.stderr and not world.gh_state.exists(), r.stdout + r.stderr
+    r = run("bash", tool, d, "--repo", TARGET, "--execute", "--confirm-tag", "v0.3.0-preview.21", env=world.env(OPENBFME_RELEASE_DENYLIST=""))
+    assert r.returncode != 0 and "no private denylist" in r.stderr and not world.gh_state.exists()
+    # a tag on an archive commit (archive/ and the excluded paths in its tree) is refused: only a sync tree is a public tree
+    git(world.repo, "tag", "-a", "v0.3.0-preview.22", "-m", "t", clean)
+    d2 = package_dir(tmp_path / "pkg-raw", "v0.3.0-preview.22")
+    assert run(sys.executable, world.repo / "tools/release/make_manifest.py", d2, "--repo", TARGET, "--commit", clean).returncode == 0
+    assert run(sys.executable, world.repo / "tools/release/sign_manifest.py", "--key", world.key, d2 / "manifest.json").returncode == 0
+    r = run("bash", tool, d2, "--repo", TARGET, "--execute", "--confirm-tag", "v0.3.0-preview.22", env=world.env())
+    assert r.returncode != 0 and "not a public top-level entry: archive" in r.stdout and not world.gh_state.exists(), r.stdout + r.stderr
+    r = run("bash", tool, d, "--repo", TARGET, "--execute", "--confirm-tag", "v0.3.0-preview.21", env=world.env())
+    assert r.returncode == 0 and "PUBLISHED v0.3.0-preview.21" in r.stdout, r.stdout + r.stderr
+
+
+def test_every_publishing_audit_call_passes_the_private_list():
+    """P2: no audit call of the release scripts runs without the private denylist (the final notes check did)"""
+    calls = 0
+    for name in ("autorelease.sh", "publish_release.sh"):
+        for line in (HERE / name).read_text().replace("\\\n", " ").splitlines():   # continuation lines joined
+            if re.search(r"python3 .*autorelease\.py\"? .*\b(audit-tree|audit-text|privacy-gate)\b", line.split(" #")[0]):
+                calls += 1
+                assert "--denylist" in line, (name, line)
+    assert calls >= 6, calls
+
+
+@pytest.mark.parametrize("note", ["Fixed login for opsuser@localhost.", "Fixed [Online]: works on buildbox-7#2 now",
+                                  "Fixed: see ~opsuser/notes"])
+def test_private_rules_see_through_note_neutralisation(world, note):
+    """P1: neutral() writes '@' / '#' full-width and markdown() '~' as a look-alike: the private rules check the original and every form"""
+    assert autorelease.denylist_hits("n", autorelease.markdown(autorelease.neutral(note)), PRIVATE, check_path=False, metadata=True)
+    sha = world.change({"engine/a.cpp": "5\n"}, "X-1: a change")
+    git(world.repo, "commit", "-q", "--amend", "-m", "X-1: a change", "-m", "Release-note: " + note)
+    sha = git(world.repo, "rev-parse", "HEAD")
+    world.gate(sha)
+    r = world.release(sha, "--since", world.first)
+    assert r.returncode != 0 and "the public metadata failed the privacy audit: nothing pushed" in r.stdout, r.stdout
+    assert world.remote_refs("refs/heads/sync/*") == "" and not world.gh_state.exists()
+    logs = "".join(p.read_text() for p in (world.tmp / "logs").glob("*.log"))
+    for secret in ("opsuser", "buildbox-7"):
+        assert secret not in r.stdout + r.stderr + logs, secret
+
+
+def test_note_sources_are_the_unneutralised_inputs(world):
+    sha = world.change({"engine/a.cpp": "6\n"}, "X-1: a change")
+    git(world.repo, "commit", "-q", "--amend", "-m", "X-1: a change", "-m", "Release-note: Fixed for a@b; and more")
+    sha = git(world.repo, "rev-parse", "HEAD")
+    src = autorelease.note_sources(autorelease.first_parent_commits(str(world.repo), world.first, sha), [{"text": "known", "area": ""}])
+    assert src == ["Fixed for a@b; and more", "known"]
+
+
+def test_nothing_rejected_is_printed(world, tmp_path, monkeypatch):
+    """P1: file names, host / account diagnostics, note warnings and parser errors never print a rejected value, short ones included"""
+    assert autorelease._mask("ab") == "<2 chars>" and "ab" not in autorelease._mask("ab")
+    sha = world.change({"docs/buildbox-7/notes.md": "x\n", "docs/b.md": "on lab-vm-q\n"}, "X-1: names")
+    tree = autorelease.sync_tree(str(world.repo), sha)
+    r = run(sys.executable, HERE / "autorelease.py", "--git-dir", world.repo, "audit-tree", "--tree", tree, "--denylist", world.denylist)
+    assert r.returncode == 1 and "denylisted (hosts) in a file name" in r.stdout, r.stdout
+    assert "buildbox-7" not in r.stdout + r.stderr and "lab-vm-q" not in r.stdout + r.stderr, r.stdout
+    monkeypatch.setattr(autorelease, "_PRIVATE_WORDS", ({"zq"}, {"hostq7"}))
+    probs = autorelease.public_text_problems("x", "built on hostq7 by ~zq")
+    assert len(probs) == 2 and not any("hostq7" in p or "zq" in p.split(":", 1)[1] for p in probs), probs
+    # the note warnings: masked, and printed only after the metadata audit passed (here it fails first: never printed)
+    sha = world.change({"engine/a.cpp": "7\n"}, "X-2: a change")
+    git(world.repo, "commit", "-q", "--amend", "-m", "X-2: a change", "-m", "Release-note: Fixed on buildbox-7; and on lab-vm-q too")
+    sha = git(world.repo, "rev-parse", "HEAD")
+    w = run(sys.executable, HERE / "autorelease.py", "--git-dir", world.repo, "warnings", "--from", world.first, "--to", sha,
+            "--denylist", world.denylist)
+    assert "NOTES WARNING" in w.stdout and "buildbox-7" not in w.stdout and "lab-vm-q" not in w.stdout, w.stdout
+    world.gate(sha)
+    r = world.release(sha, "--since", world.first)
+    assert r.returncode != 0 and "NOTES WARNING" not in r.stdout and "buildbox-7" not in r.stdout + r.stderr, r.stdout
+    # a YAML denylist that does not parse: its position, never its text
+    pytest.importorskip("yaml")
+    y = tmp_path / "deny.yml"
+    y.write_text("rules:\n  - id: h\n    kind: word\n    pattern: [secret-host-q, \n")
+    with pytest.raises(SystemExit) as e:
+        autorelease.load_denylist(y)
+    assert "secret-host-q" not in str(e.value) and "not valid YAML" in str(e.value)
+
+
+def test_the_redactor_masks_private_rule_matches(world):
+    out = subprocess.run([sys.executable, "-u", HERE / "autorelease.py", "redact", "--denylist", world.denylist],
+                         input=b"first: docs/x on buildbox-7\nplain\n", capture_output=True).stdout.decode()
+    assert out == "first: docs/x on <10 chars>\nplain\n", out
+
+
+def test_pinned_binaries_and_container_members_pass_the_private_rules(world, tmp_path, monkeypatch):
+    """P2: a hash-pinned binary's strings and a pinned container's members are scanned (a pinned hash never exempts a file)"""
+    blob = b"\x00\x01ELF" + b"built on buildbox-7\x00\x01\x02" + "lab-vm-q".encode("utf-16-le") + b"\x00\x00"
+    zipped = zip_of({"docs/inner.txt": b"from lab-vm-q\n"})
+    sha = world.change({"docs/tool.bin": blob, "docs/pack.zip": zipped}, "X-1: binaries", force=True)
+    allow = tmp_path / "public_binaries.txt"
+    allow.write_text(f"{hashlib.sha256(blob).hexdigest()}  docs/tool.bin  test binary\n{hashlib.sha256(zipped).hexdigest()}  docs/pack.zip  test zip\n")
+    monkeypatch.setattr(autorelease, "ALLOWLIST", allow)
+    probs = autorelease.audit_tree(str(world.repo), autorelease.sync_tree(str(world.repo), sha), PRIVATE)
+    assert any(p.startswith("denylisted (hosts) in docs/tool.bin") for p in probs), probs
+    assert sum(p.startswith("denylisted (hosts) in docs/tool.bin") for p in probs) == 2, "the ASCII and the UTF-16 string"
+    assert any("denylisted (hosts) in docs/pack.zip:docs/inner.txt" in p for p in probs), probs
+
+
+def test_symlinks_and_unapproved_submodules_are_refused(world, tmp_path, monkeypatch):
+    """P2: no symbolic link; submodules only as approved (path, commit, url)"""
+    (world.repo / "docs").mkdir(exist_ok=True)
+    os.symlink("../../etc/passwd", world.repo / "docs/link")
+    git(world.repo, "add", "docs/link")
+    git(world.repo, "commit", "-q", "-m", "X-1: a link")
+    probs = autorelease.audit_tree(str(world.repo), autorelease.sync_tree(str(world.repo), git(world.repo, "rev-parse", "HEAD")), PRIVATE)
+    assert "a symbolic link in the public tree: docs/link" in probs, probs
+    git(world.repo, "rm", "-q", "docs/link")
+    sub = world.first
+    (world.repo / ".gitmodules").write_text('[submodule "engine/dep"]\n\tpath = engine/dep\n\turl = https://example.org/dep\n')
+    git(world.repo, "add", ".gitmodules")
+    git(world.repo, "update-index", "--add", "--cacheinfo", f"160000,{sub},engine/dep")
+    git(world.repo, "commit", "-q", "-m", "X-2: a submodule")
+    tree = autorelease.sync_tree(str(world.repo), git(world.repo, "rev-parse", "HEAD"))
+    lst = tmp_path / "subs.txt"
+    monkeypatch.setattr(autorelease, "SUBMODULES", lst)
+    lst.write_text("# none\n")
+    probs = autorelease.audit_tree(str(world.repo), tree, PRIVATE)
+    assert "a submodule that is not in subs.txt: engine/dep" in probs, probs
+    lst.write_text(f"{'0' * 40}  engine/dep  https://example.org/dep\n")
+    assert "the submodule engine/dep is at another commit than subs.txt approves" in autorelease.audit_tree(str(world.repo), tree, PRIVATE)
+    lst.write_text(f"{sub}  engine/dep  https://example.org/other\n")
+    assert any(".gitmodules declares a submodule" in p for p in autorelease.audit_tree(str(world.repo), tree, PRIVATE))
+    lst.write_text(f"{sub}  engine/dep  https://example.org/dep\n")
+    assert autorelease.audit_tree(str(world.repo), tree, PRIVATE) == []
+
+
+@pytest.mark.parametrize("data,why", [
+    ("lab-vm-q here\n".encode("utf-16"), "is UTF-16"),
+    (b"fine\x00lab-vm-q\n", "holds NUL bytes"),
+    (b"\xff\xfeno", "is UTF-16"),
+    (b"caf\xe9 lab-vm-q\n", "is not UTF-8"),
+])
+def test_metadata_is_strict_utf8(world, tmp_path, data, why):
+    """P2: no replacement decoding: UTF-16, NUL bytes and other encodings are refused, not read around"""
+    f = tmp_path / "notes.md"
+    f.write_bytes(data)
+    r = run(sys.executable, HERE / "autorelease.py", "audit-text", f, "--denylist", world.denylist)
+    assert r.returncode == 1 and why in r.stdout, r.stdout
+
+
+# ---- PUBLISH-2 r3 (review F1-F5 ACCEPT WITH FIXES, Sol r2 REJECT): the uploaded assets, masking in every form, fail-closed parsing ------
+def every_form(text: str) -> str:
+    return "\n".join(autorelease.text_forms(text))
+
+
+def _leaks(text: str, secrets=("buildbox-7", "lab-vm-q", "opsuser")) -> list[str]:
+    return [s for s in secrets if s in every_form(text).lower()]
+
+
+def leaky_package(d: Path, version: str, member: bytes, name: str = "README_TESTERS.txt") -> Path:
+    """package_dir with one member of the Linux game archive replaced (checksum file updated)"""
+    package_dir(d, version)
+    n = make_manifest.asset_name("game", version, "linux-x64")
+    (d / n).write_bytes(tiny_package(n, {"OpenBFMELauncher.x86_64": f"the launcher of {version} for linux-x64".encode(),
+                                         "OpenBFME.x86_64": f"{n} bytes".encode(), "VERSION": f"OpenBFME {version}\n".encode(), name: member}))
+    sums = "".join(f"{hashlib.sha256((d / a).read_bytes()).hexdigest()}  {a}\n" for a in sorted(p.name for p in d.glob("openbfme-*")))
+    (d / f"SHA256SUMS-{version}.txt").write_text(sums)
+    return d
+
+
+def test_f1_the_uploaded_assets_pass_the_private_rules(world, tmp_path):
+    """F1 (both reviews): an archive member that names a private host stops publish_release.sh, the dry run too; nothing is created"""
+    tool = world.repo / "tools/release/publish_release.sh"
+    sha = git(world.repo, "rev-parse", "HEAD")
+    for i, member in enumerate([b"built on buildbox-7\n", "lab-vm-q".encode("utf-16-be"), b"\x00\x01" + "lab-vm-q".encode("utf-32-le")]):
+        v = f"v0.3.0-preview.{40 + i}"
+        d = publish_dir(tmp_path, v, world, sha)
+        leaky_package(d, v, member, "README_TESTERS.txt" if i == 0 else "data.bin")
+        r = run(sys.executable, world.repo / "tools/release/make_manifest.py", d, "--repo", TARGET, "--commit",
+                git(world.repo, "rev-parse", f"{v}^{{commit}}"))
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert run(sys.executable, world.repo / "tools/release/sign_manifest.py", "--key", world.key, d / "manifest.json").returncode == 0
+        for args in ([], ["--execute", "--confirm-tag", v]):
+            r = run("bash", tool, d, "--repo", TARGET, *args, env=world.env())
+            assert r.returncode != 0 and "or an asset: nothing published" in r.stderr and not world.gh_state.exists(), (i, r.stdout + r.stderr)
+            assert "in a release asset: denylisted (hosts) in openbfme-" in r.stdout, r.stdout
+            assert not _leaks(r.stdout + r.stderr), r.stdout + r.stderr
+    clean = publish_dir(tmp_path, "v0.3.0-preview.43", world, sha)
+    r = run("bash", tool, clean, "--repo", TARGET, "--execute", "--confirm-tag", "v0.3.0-preview.43", env=world.env())
+    assert r.returncode == 0 and "PUBLISHED v0.3.0-preview.43" in r.stdout and "7 release assets" in r.stdout, r.stdout + r.stderr
+
+
+def elf_image(body: bytes, shnum: int = 4) -> bytes:
+    """a 64-bit ELF: its header, body, then the section header table (where Godot's export sets the pck section's offset and size)"""
+    head = bytearray(64)
+    head[:6] = b"\x7fELF\x02\x01"
+    struct.pack_into("<Q", head, 0x28, 64 + len(body))
+    struct.pack_into("<HH", head, 0x3A, 64, shnum)
+    return bytes(head) + body + bytes(64 * shnum)
+
+
+def pe_image(body: bytes) -> bytes:
+    """a PE: MZ header, PE signature, COFF and optional header, its headers 0x400 bytes long (SizeOfHeaders), then the body"""
+    head = bytearray(0x400)
+    head[:2] = b"MZ"
+    struct.pack_into("<I", head, 0x3C, 0x40)
+    head[0x40:0x44] = b"PE\0\0"
+    struct.pack_into("<I", head, 0x40 + 24 + 60, 0x400)
+    return bytes(head) + body
+
+
+# upstream bytes that match the private rules by chance (as Godot's locale tables do), and a "host-3" that starts at file offset 8192 (a
+# block boundary of the r3 diff) in both images, which a changed byte before it may extend
+def upstream(head: int) -> bytes:
+    body = bytes(range(256)) * 16 + b"\x00NIQ lab-vm-q tlc\x00"
+    return body + bytes(8192 - head - len(body)) + b"host-3 tail\x00" + bytes(4096)
+
+
+UPSTREAM = upstream(64)
+PLANTED = autorelease.compile_rules([{"id": "planted", "kind": "word", "pattern": ["secrethost-3"]}], "t")
+
+
+def _templates(tmp_path: Path, files: dict[str, tuple[bytes, str]]) -> dict:
+    pins = tmp_path / "pins.txt"
+    pins.write_text("".join(f"{hashlib.sha256(t).hexdigest()}  {n}  {exe}  test template\n" for n, (t, exe) in files.items()))
+    for n, (t, _) in files.items():
+        (tmp_path / n).write_bytes(t)
+    return autorelease.load_templates(tmp_path, pins)
+
+
+def _with_pack(image: bytes) -> bytes:
+    from test_release_tools import pck  # noqa: PLC0415
+    pack = pck([("res://a.gd", b"extends Node\n")])
+    return image + pack + struct.pack("<Q", len(pack)) + b"GDPC"
+
+
+def _hosts(hits: list[str]) -> list[str]:
+    return [h for h in hits if "denylisted (hosts)" in h]
+
+
+@pytest.mark.parametrize("kind", ["elf", "pe"])
+def test_f1_godot_templates_are_upstream_but_what_differs_is_scanned(tmp_path, kind):
+    """the pinned templates' own bytes are not scanned (Godot's tables match short words by chance), but only for the executable each is
+    pinned for; a copy with its pack added may differ from the template in the export region only, which is scanned whole"""
+    image, region = (elf_image(UPSTREAM), lambda t: (len(t) - 256, len(t))) if kind == "elf" else (pe_image(UPSTREAM), lambda t: (0, 0x400))
+    exe = "OpenBFMELauncher.x86_64" if kind == "elf" else "OpenBFMELauncher.exe"
+    templates = _templates(tmp_path, {"tpl": (image, exe)})
+    assert [v[1] for v in templates.values()] == [exe]
+    assert autorelease.export_region(image) == region(image)
+    rules = autorelease.BUILTIN + PRIVATE
+    assert autorelease.content_hits(f"x/{exe}", image, rules, templates) == []
+    assert _hosts(autorelease.content_hits(f"x/{exe}", image, rules, {})), "without its template it is scanned whole"
+    a, b = region(image)
+    benign = image[:b - 16] + bytes(range(1, 9)) + image[b - 8:]   # Godot sets the pck section's offset and size
+    assert autorelease.content_hits(f"x/{exe}", _with_pack(benign), rules, templates) == []
+    private = image[:a + 8] + b"from buildbox-7" + image[a + 23:]
+    hits = autorelease.content_hits(f"x/{exe}", _with_pack(private), rules, templates)
+    assert len(hits) == 1 and "denylisted (hosts)" in hits[0] and "buildbox-7" not in hits[0], hits
+    (tmp_path / "tpl").write_bytes(image + b"x")
+    assert autorelease.load_templates(tmp_path, tmp_path / "pins.txt") == {}, "a file with another sha256 is not the template"
+
+
+@pytest.mark.parametrize("kind", ["elf", "pe"])
+def test_sol_r3_1_a_template_exempts_nothing_it_does_not_explain(tmp_path, kind):
+    """Sol r3 P2 (1): a denylisted string across two adjacent changed blocks and across a changed / unchanged boundary was found without
+    the exemption and missed with it (the r3 diff joined changed 4096-byte blocks with a NUL and dropped unchanged ones); a template's
+    bytes were exempt under any name (a same-sized project library). Now each is found, and the privacy gate's asset audit refuses it."""
+    image = elf_image(upstream(64)) if kind == "elf" else pe_image(upstream(0x400))
+    exe = "OpenBFMELauncher.x86_64" if kind == "elf" else "OpenBFMELauncher.exe"
+    templates = _templates(tmp_path, {"tpl": (image, exe)})
+    rules = autorelease.BUILTIN + PRIVATE + PLANTED
+    assert image.index(b"host-3") == 8192
+    adjacent = image[:4096 - 6] + b"secrethost-3" + image[4096 + 6:]
+    boundary = image[:8192 - 6] + b"secret" + image[8192:]
+    for case, data, name, rid in (("adjacent changed blocks", adjacent, exe, "planted"),
+                                  ("changed / unchanged boundary", boundary, exe, "planted"),
+                                  ("the template as a same-sized library", image, "openbfme.linux.template_debug.x86_64.so", "hosts"),
+                                  ("the template under another executable's name", image, "OpenBFME.x86_64", "hosts")):
+        found = lambda hits: [h for h in hits if f"denylisted ({rid})" in h]  # noqa: E731
+        assert found(autorelease.content_hits(f"x/{name}", data, rules, {})), case
+        assert found(autorelease.content_hits(f"x/{name}", _with_pack(data), rules, templates)), case
+        asset = tmp_path / "openbfme-v0.4.7-linux-x64.zip"
+        asset.write_bytes(zip_of({f"openbfme-v0.4.7-linux-x64/{name}": _with_pack(data)}))
+        probs = autorelease.asset_problems([asset], rules, templates)
+        assert found(probs) and not _leaks("\n".join(probs)) and "secrethost" not in "\n".join(probs), (case, probs)
+
+
+def test_sol_r3_1_the_real_launchers_differ_from_their_templates_in_the_export_region_only():
+    """the measured fact export_region() rests on (v0.4.6's launchers, Godot 4.7.2's templates): SKIPS LOUDLY without them"""
+    if not os.environ.get("OPENBFME_TEST_RELEASE_DIR"):
+        pytest.skip("SKIP: OPENBFME_TEST_RELEASE_DIR (a folder with the v0.4.6 packages unpacked) is not set")
+    rel = Path(os.environ["OPENBFME_TEST_RELEASE_DIR"])
+    tpl = Path.home() / ".local/share/godot/export_templates/4.7.2.stable"
+    lin = rel / "openbfme-v0.4.6-linux-x64/OpenBFMELauncher.x86_64"
+    if not (lin.is_file() and (tpl / "linux_release.x86_64").is_file()):
+        pytest.skip("SKIP: the v0.4.6 Linux package or the Godot 4.7.2 templates are not here")
+    templates = autorelease.load_templates(tpl)
+    import audit_package  # noqa: PLC0415
+    for data, exe in [(lin.read_bytes(), "OpenBFMELauncher.x86_64")] + \
+            [(zipfile.ZipFile(z).read("openbfme-v0.4.6-windows-x64/OpenBFMELauncher.exe"), "OpenBFMELauncher.exe")
+             for z in [rel / "openbfme-v0.4.6-windows-x64.zip"] if z.is_file()]:
+        image = data[:audit_package.embedded_pck_base(data)]
+        (f, _), = [v for v in templates.values() if v[1] == exe]
+        t = f.read_bytes()
+        a, b = autorelease.export_region(t)
+        assert len(image) == len(t) and image[:a] == t[:a] and image[b:] == t[b:] and image != t, exe
+        assert autorelease.content_hits(f"x/{exe}", data, autorelease.BUILTIN, templates) == [], exe
+
+
+def _pack_mutations():
+    """(case, a format-4 pack holding one permitted script with a private host name in one header or directory field)"""
+    from test_release_tools import pck  # noqa: PLC0415
+    good = pck([("res://a.gd", b"extends Node\n")])
+    d = 4 + 5 * 4 + 16 + 64 + len(b"extends Node\n")   # the directory's offset
+    name_len = 12   # "res://a.gd" + NUL, padded to 4
+    def put(at: int, value: bytes) -> bytes:
+        return good[:at] + value + good[at + len(value):]
+    return good, [
+        ("reserved header words", put(40 + 8, b"buildbox-7")),
+        ("version numbers", put(8, b"lab-vm-q")),
+        ("pack flags", put(20, b"lab\x00")),
+        ("files offset", put(24, b"lab-vm-q")),
+        ("entry MD5", put(d + 8 + name_len + 16, b"buildbox-7")),
+        ("entry flags", put(d + 8 + name_len + 32, b"lab\x00")),
+        ("bytes after the entry name", put(d + 8 + 11, b"x")),
+    ]
+
+
+def test_sol_r3_2_every_pack_header_and_directory_byte_is_checked(tmp_path):
+    """Sol r3 P2 (2): a host name in a pack's reserved header words gave zero privacy and zero allowlist findings; so did every other
+    free field (pattern 7: each sibling). Each is refused by the package audit, so the privacy gate's asset audit fails."""
+    import audit_package  # noqa: PLC0415
+    good, cases = _pack_mutations()
+    assert audit_package.pck_entries(good) == [("res://a.gd", b"extends Node\n")]
+    rules = autorelease.BUILTIN + PRIVATE
+    asset = tmp_path / "openbfme-v0.4.7-linux-x64.zip"
+    asset.write_bytes(zip_of({"openbfme-v0.4.7-linux-x64/OpenBFME.pck": good}))
+    assert autorelease.asset_problems([asset], rules, {}) == []
+    for case, data in cases:
+        with pytest.raises(ValueError):
+            audit_package.pck_entries(data)
+        asset.write_bytes(zip_of({"openbfme-v0.4.7-linux-x64/OpenBFME.pck": data}))
+        probs = autorelease.asset_problems([asset], rules, {})
+        assert probs and not _leaks("\n".join(probs)), (case, probs)
+        a = audit_package.Audit()
+        a.blob("OpenBFME.pck", data)
+        assert a.problems, case
+
+
+def _gzip_member(payload: bytes, name: bytes = b"", comment: bytes = b"", extra: bytes = b"", mtime: bytes = bytes(4)) -> bytes:
+    flags = (8 if name else 0) | (16 if comment else 0) | (4 if extra else 0)
+    head = b"\x1f\x8b\x08" + bytes([flags]) + mtime + b"\x00\xff"
+    if extra:
+        head += len(extra).to_bytes(2, "little") + extra
+    head += (name + b"\0" if name else b"") + (comment + b"\0" if comment else b"")
+    c = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return head + c.compress(payload) + c.flush() + struct.pack("<II", zlib.crc32(payload), len(payload))
+
+
+@pytest.mark.parametrize("field", ["name", "comment", "extra", "mtime"])
+def test_sol_r3_3_every_gzip_members_header_is_checked(tmp_path, field):
+    """Sol r3 P2 (3): two valid gzip members with clean payloads, a host name only in the second member's file name: zero findings, and
+    the tree's metadata check accepted it; the comment, extra field and time of a later member too"""
+    rules = autorelease.BUILTIN + PRIVATE + autorelease.compile_rules([{"id": "short", "kind": "word", "pattern": ["qvz"]}], "t")
+    value = b"qvz\x00" if field == "mtime" else b"lab-vm-q"
+    data = _gzip_member(b"clean one\n") + _gzip_member(b"clean two\n", **{field: value})
+    assert gzip.decompress(data) == b"clean one\nclean two\n"
+    assert [f for f, _ in autorelease.gzip_headers(data)] == [0, {"name": 8, "comment": 16, "extra": 4, "mtime": 0}[field]]
+    hits = autorelease.content_hits("x.gz", data, rules)
+    assert hits and not _leaks("\n".join(hits)), hits
+    asset = tmp_path / "BUILDINFO.gz"
+    asset.write_bytes(data)
+    assert autorelease.asset_problems([asset], rules, {}), "the privacy gate's asset audit"
+    if field != "mtime":
+        probs = autorelease.container_metadata_problems("docs/a.gz", data)
+        assert probs == [f"docs/a.gz: gzip member 2's header has a file name, comment or extra field"], probs
+    clean = _gzip_member(b"clean one\n") + _gzip_member(b"clean two\n")
+    assert autorelease.content_hits("x.gz", clean, rules) == [] and autorelease.container_metadata_problems("docs/a.gz", clean) == []
+
+
+FULL_WIDTH = "".join(chr(ord(c) + 0xFEE0) if c.isalnum() else c for c in "buildbox-7")   # ｂｕｉｌｄｂｏｘ-７
+
+
+@pytest.mark.parametrize("enc", ["utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
+@pytest.mark.parametrize("text", [FULL_WIDTH, "buildbox\u20117", "ｌａｂ\u2011ｖｍ\u2011ｑ"])
+def test_sol_r3_4_normalised_spellings_are_found_in_every_encoding(tmp_path, enc, text):
+    """Sol r3 P2 (4): a full-width host name was found in UTF-8 but not in UTF-16 / UTF-32 (the privacy gate passed the UTF-16 case); the
+    non-breaking hyphen (U+2011 normalises to U+2010, not '-') was missed in UTF-8 binaries too; every alignment"""
+    rules = autorelease.BUILTIN + PRIVATE
+    for pad in range(4):
+        data = b"\x00\xfe" + bytes(pad) + text.encode(enc) + b"\x00\xfe\x01"
+        assert _hosts(autorelease.content_hits("x/data.bin", data, rules)), (enc, pad)
+    asset = tmp_path / "openbfme-v0.4.7-linux-x64.zip"
+    asset.write_bytes(zip_of({"openbfme-v0.4.7-linux-x64/data.bin": b"\x00\x01" + text.encode(enc) + b"\x00"}))
+    probs = autorelease.asset_problems([asset], rules, {})
+    assert any("denylisted (hosts)" in p for p in probs) and not _leaks("\n".join(probs)), probs
+
+
+def test_f2_warnings_quote_nothing_and_masking_sees_every_form(world):
+    """F2: a warning prints nothing of the note (a `Release-note: none` commit's, and --plan's, have passed no audit); sanitize masks a
+    full-width '@' form too"""
+    c = {"sha": "0123456789abcdef", "body": "Release-note: none\nRelease-note: Added [opsuser＠buildbox-7]: one; two\n"}
+    out = "\n".join(autorelease.release_warnings(c))
+    assert out and not _leaks(out), out
+    masked = autorelease.sanitize("NOTES: opsuser＠buildbox-7 and \\b\\u\\i\\l\\d\\b\\o\\x-7", PRIVATE)
+    assert not _leaks(masked) and "<" in masked, masked
+    sha = world.change({"engine/a.cpp": "7\n"}, "X-1: a change")
+    git(world.repo, "commit", "-q", "--amend", "-m", "X-1: a change", "-m", "Release-note: none\nRelease-note: Fixed for opsuser＠buildbox-7; more")
+    sha = git(world.repo, "rev-parse", "HEAD")
+    world.gate(sha)
+    git(world.repo, "tag", "v0.3.0-preview.4", world.first)
+    git(world.repo, "push", "-q", "origin", "refs/tags/v0.3.0-preview.4")
+    r = world.release(sha, "--plan", "--since", world.first)
+    assert r.returncode == 0 and "NOTES WARNING" in r.stdout and not _leaks(r.stdout + r.stderr), r.stdout + r.stderr
+
+
+def test_f3_schema_errors_quote_no_field_name(tmp_path):
+    f = tmp_path / "d.json"
+    f.write_text(json.dumps({"rules": [{"id": "x", "kind": "word", "pattern": ["a"], "lab-vm-q.internal": 1}]}))
+    with pytest.raises(SystemExit) as e:
+        autorelease.load_denylist(f)
+    assert "1 unknown field(s)" in str(e.value) and "lab-vm" not in str(e.value), e.value
+
+
+def test_f4_file_names_are_checked_and_masked_in_every_form(world):
+    """F4: a full-width file name passes the rules as written; the NFKC form is checked, and printed masked"""
+    wide = "docs/ｌａｂ-vm-q.txt"
+    hits = autorelease.denylist_hits(wide, None, PRIVATE)
+    assert hits and "denylisted (hosts) in a file name" in hits[0] and not _leaks(hits[0]), hits
+    sha = world.change({wide: "x\n"}, "X-1: a wide name")
+    tree = autorelease.sync_tree(str(world.repo), sha)
+    r = run(sys.executable, HERE / "autorelease.py", "--git-dir", world.repo, "audit-tree", "--tree", tree, "--denylist", world.denylist)
+    assert r.returncode == 1 and "denylisted (hosts) in a file name" in r.stdout and not _leaks(r.stdout), r.stdout
+
+
+def test_f5_an_unloadable_list_stops_before_anything_is_printed(world, tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"rules": [ {"id": "x", "kind": "word", "pattern": ["buildbox-7"] ')
+    r = world.release(git(world.repo, "rev-parse", "HEAD"), "--plan", "--since", world.first, OPENBFME_RELEASE_DENYLIST=str(bad))
+    assert r.returncode == 2 and "OPENBFME_RELEASE_DENYLIST cannot be loaded: autorelease: the private denylist is not JSON" in r.stderr, r.stderr
+    assert "AUTORELEASE " not in r.stdout and not _leaks(r.stdout + r.stderr), r.stdout + r.stderr
+    # the redactor alone: fail closed, nothing of its input passes
+    r = subprocess.run([sys.executable, HERE / "autorelease.py", "redact", "--denylist", bad], input=b"on buildbox-7\nplain\n",
+                       capture_output=True)
+    assert r.returncode == 3 and b"REDACTOR FAILED" in r.stdout and b"plain" not in r.stdout and b"buildbox" not in r.stdout, r.stdout
+
+
+def test_sol1_a_resumed_draft_publishes_the_audited_name_and_body(world, tmp_path):
+    """Sol r2 P2: the draft an earlier run left with private text in its name and body is published with the audited ones (replaced and
+    checked), never with its own"""
+    tool = world.repo / "tools/release/publish_release.sh"
+    v = "v0.3.0-preview.44"
+    d = publish_dir(tmp_path, v, world, git(world.repo, "rev-parse", "HEAD"))
+    world.gh_state.write_text(json.dumps({"prs": {}, "next": 8, "releases": [
+        {"id": 7, "tag_name": v, "name": "OpenBFME opsuser@buildbox-7", "draft": True, "prerelease": True, "body": "built on lab-vm-q",
+         "assets": []}]}))
+    notes = tmp_path / "notes.md"
+    notes.write_text("The audited notes.\n")
+    r = run("bash", tool, d, "--repo", TARGET, "--notes-file", notes, "--execute", "--confirm-tag", v, "--resume-id", "7", env=world.env())
+    assert r.returncode == 0 and "PUBLISHED" in r.stdout and "replacing them" in r.stdout, r.stdout + r.stderr
+    rel = world.gh_data()["releases"][0]
+    assert rel["draft"] is False and rel["name"] == autorelease.release_title(v) and rel["body"] == "The audited notes.\n", rel
+    # the read-back check refuses a release whose name or body is not the audited one
+    want = release_assets.expected(d, v)
+    assert "the release's body is not the audited notes" in release_assets.check({**rel, "body": "x"}, want, v, False, True, TARGET,
+                                                                                 name=rel["name"], body="The audited notes.\n")
+
+
+@pytest.mark.parametrize("text,suffix", [
+    ('{"rules": [{"id": "x", "kind": "word", "pattern": ["buildbox-7"], "pattern": ["harmless"]}]}', ".json"),
+    ('{"rules": [{"id": "x", "kind": "word", "pattern": ["buildbox-7"]}], "rules": [{"id": "y", "kind": "word", "pattern": ["z"]}]}', ".json"),
+    ("rules:\n  - id: x\n    kind: word\n    pattern: [buildbox-7]\n    pattern: [harmless]\n", ".yml"),
+    ("rules:\n  - {id: x, kind: word, pattern: [a]}\nrules:\n  - {id: y, kind: word, pattern: [b]}\n", ".yml"),
+])
+def test_sol2_a_key_given_twice_is_an_error(tmp_path, text, suffix):
+    if suffix == ".yml":
+        pytest.importorskip("yaml", reason="SKIP: no PyYAML here (a YAML list is then refused by name: test_a_broken_private_denylist_is_an_error)")
+    f = tmp_path / f"d{suffix}"
+    f.write_text(text)
+    with pytest.raises(SystemExit) as e:
+        autorelease.load_denylist(f)
+    assert "gives a key twice" in str(e.value) and "buildbox" not in str(e.value), e.value
+
+
+@pytest.mark.parametrize("member", [
+    b"\x01\x02qvz\x00\x03",                         # a 3-character literal alone between binary bytes
+    "lab-vm-q".encode("utf-16-be"), b"\x00" + "lab-vm-q".encode("utf-16-le"), "lab-vm-q".encode("utf-32-le"),
+    b"\x00\x00" + "lab-vm-q".encode("utf-32-be"), b"\xff\x00" + "gästhost".encode("utf-8"),
+])
+def test_sol3_binary_members_are_read_in_every_encoding(member):
+    rules = PRIVATE + autorelease.compile_rules([{"id": "short", "kind": "word", "pattern": ["qvz", "gästhost"]}], "t")
+    a = autorelease.SyncAudit(rules)
+    a.blob("p.zip", zip_of({"data.bin": b"\x00\x01" + member + b"\x00\xfe"}))
+    assert any(p.startswith("denylisted (") and "data.bin" in p for p in a.problems), a.problems
+
+
+def test_sol3_a_text_member_in_another_encoding_is_refused():
+    a = autorelease.SyncAudit(PRIVATE)
+    a.blob("p.zip", zip_of({"notes.txt": "fine".encode("utf-16"), "ok.txt": b"fine\n"}))
+    assert [p for p in a.problems if "not UTF-8" in p] == ["a text file that is not UTF-8 without NUL bytes (an encoding the audit does not "
+                                                           "read): p.zip:notes.txt"], a.problems
+
+
+def test_sol4_the_standalone_publisher_redacts_from_its_first_line(world):
+    """Sol r2 P2: a dry run printed the package folder's absolute path; a private word in it, or the home folder, is masked"""
+    tool = world.repo / "tools/release/publish_release.sh"
+    sha = git(world.repo, "rev-parse", "HEAD")
+    d = publish_dir(world.home / "buildbox-7", "v0.3.0-preview.45", world, sha)
+    r = run("bash", tool, d, "--repo", TARGET, env=world.env())
+    assert r.returncode == 0 and "DRY RUN" in r.stdout, r.stdout + r.stderr
+    assert str(world.home) not in r.stdout + r.stderr and "~/<10 chars>/pkg-v0.3.0-preview.45" in r.stdout, r.stdout
+    assert not _leaks(r.stdout + r.stderr)
+    # a helper's error that names a private member is masked too
+    (d / "manifest.json").write_text((d / "manifest.json").read_text().replace("openbfme-v0.3.0-preview.45-linux-x64", "openbfme-buildbox-7-linux-x64"))
+    r = run("bash", tool, d, "--repo", TARGET, env=world.env())
+    assert r.returncode != 0 and not _leaks(r.stdout + r.stderr), r.stdout + r.stderr
+
+
+def test_sol5_anchored_path_rules_are_masked_inside_messages(world, tmp_path):
+    """Sol r2 P2: a rule anchored at the path's start (`^docs/<private folder>/`) matched the file name, never a message that quotes it"""
+    rule = {"id": "private-folder", "kind": "regex", "pattern": "^docs/runbook/"}
+    rules = PRIVATE + autorelease.compile_rules([rule], "t")
+    line = autorelease.sanitize("retail-format file name in the public tree: docs/runbook/a.dds", rules)
+    assert "runbook" not in line and "<" in line, line
+    deny = tmp_path / "deny.json"
+    deny.write_text(json.dumps({"rules": TEST_DENYLIST["rules"] + [rule]}))
+    sha = world.change({"docs/runbook/a.dds": "x\n"}, "X-1: a retail-named file")
+    tree = autorelease.sync_tree(str(world.repo), sha)
+    r = run(sys.executable, HERE / "autorelease.py", "--git-dir", world.repo, "audit-tree", "--tree", tree, "--denylist", deny)
+    assert r.returncode == 1 and "denylisted (private-folder) in a file name" in r.stdout and "retail" in r.stdout, r.stdout
+    assert "runbook" not in r.stdout, r.stdout
+
+
+SPACED = [
+    ({"id": "private-folder", "kind": "regex", "pattern": "^docs/private folder/"}, "docs/private folder/"),
+    ({"id": "private-file", "kind": "regex", "pattern": "/secret plan\\.md$"}, "/secret plan.md"),
+    ({"id": "private-path", "kind": "regex", "pattern": "^docs/private folder/a b\\.md$"}, "private folder/a b.md"),
+]
+
+
+@pytest.mark.parametrize("rule,secret", SPACED)
+def test_sol_r3_5_anchored_rules_mask_paths_with_spaces_inside_messages(rule, secret):
+    """Sol r3 P2 (5): `^docs/private folder/` found the file name but could not mask it inside a diagnostic (words split at spaces); a
+    rule anchored at the end, or at both ends, likewise. In every quoting a message gives a path, and in a full-width form."""
+    rules = PRIVATE + autorelease.compile_rules([rule], "t")
+    path = "docs/private folder/a b.md" if rule["id"] == "private-path" else \
+        ("docs/private folder/notes.md" if rule["id"] == "private-folder" else "docs/secret plan.md")
+    assert autorelease.denylist_hits(path, None, rules), "the rule finds the file name"
+    for line in (f"make_manifest: x.tar.gz: member {path!r} is not a file of the package folder top",
+                 f"PUBLISH FAIL: {path} is missing", f'error at "{path}": unreadable', f"({path})", f"a: {path}: b",
+                 f"x {path.replace('/', '／')} y"):
+        out = autorelease.sanitize(line, rules)
+        assert secret not in out and secret.replace("/", "／") not in out and "<" in out, (line, out)
+
+
+def test_sol_r3_5_the_publisher_masks_a_helpers_diagnostic_with_a_spaced_path(world, tmp_path):
+    """the reviewer's example through the real entry point: make_manifest.py (run before the privacy gate, so no file name of it is
+    recorded yet) quotes a package member under `docs/private folder/`; publish_release.sh's redactor masks it"""
+    tool = world.repo / "tools/release/publish_release.sh"
+    sha = git(world.repo, "rev-parse", "HEAD")
+    d = publish_dir(tmp_path, "v0.3.0-preview.46", world, sha)
+    n = make_manifest.asset_name("game", "v0.3.0-preview.46", "linux-x64")
+    (d / n).write_bytes(_tar_gz({"docs/private folder/notes.md": b"x\n"}))
+    sums = "".join(f"{hashlib.sha256((d / a).read_bytes()).hexdigest()}  {a}\n" for a in sorted(p.name for p in d.glob("openbfme-*")))
+    (d / "SHA256SUMS-v0.3.0-preview.46.txt").write_text(sums)
+    deny = tmp_path / "deny.json"
+    deny.write_text(json.dumps({"rules": TEST_DENYLIST["rules"] + [SPACED[0][0]]}))
+    r = run("bash", tool, d, "--repo", TARGET, env=world.env(OPENBFME_RELEASE_DENYLIST=str(deny)))
+    assert r.returncode != 0 and "manifest.json is not the manifest of these archives" in r.stderr, r.stdout + r.stderr
+    assert "member '<" in r.stdout + r.stderr, r.stdout + r.stderr   # the helper's line arrived, masked
+    assert "private folder" not in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def _tar_gz(members: dict[str, bytes]) -> bytes:
+    import tarfile  # noqa: PLC0415
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as t:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def test_sol_r3_6_rejected_arguments_are_not_printed_before_the_redactor_runs(world):
+    """Sol r3 P3 (6): an unknown option was printed before the denylist was loaded and the redactor started (publish_release.sh,
+    autorelease.sh alike); the sibling: autorelease.sh's legacy-launcher check printed its answer (git's error quoting the remote) before
+    the redactor too"""
+    tool = world.repo / "tools/release/publish_release.sh"
+    for cmd in (["bash", tool, "--from-buildbox-7", "x"],
+                ["bash", world.repo / "tools/release/autorelease.sh", git(world.repo, "rev-parse", "HEAD"), "--lab-vm-q=1"]):
+        r = run(*cmd, env=world.env())
+        assert r.returncode == 2 and "an unknown option" in r.stderr and not _leaks(r.stdout + r.stderr), r.stdout + r.stderr
+    r = world.release(git(world.repo, "rev-parse", "HEAD"), "--plan", "--remote", "lab-vm-q", OPENBFME_RELEASE_LEGACY_LAUNCHERS="0")
+    assert r.returncode == 2 and "OPENBFME_RELEASE_LEGACY_LAUNCHERS=0 is refused" in r.stderr, r.stdout + r.stderr
+    assert not _leaks(r.stdout + r.stderr), r.stdout + r.stderr
+
+
+def test_export_subst_is_refused(world):
+    sha = world.change({".gitattributes": "VERSION export-subst\n"}, "X-1: attributes")
+    probs = autorelease.audit_tree(str(world.repo), autorelease.sync_tree(str(world.repo), sha), PRIVATE)
+    assert any(p.startswith("an export-subst attribute") for p in probs), probs
+
+
+def test_a_listed_gzip_is_read_by_its_content():
+    import gzip  # noqa: PLC0415
+    data = gzip.compress(b"plain text\n", mtime=0)
+    assert autorelease.container_metadata_problems("docs/a.gz", data) == []
+    assert autorelease.container_metadata_problems("docs/a.gz", data[:-4]) != []
+
+
+def test_the_note_sources_reach_the_metadata_audit():
+    """the review's weak spot: nothing checked that autorelease.sh audits note-sources.txt"""
+    text = (HERE / "autorelease.sh").read_text().replace("\\\n", " ")
+    audit = next(line for line in text.splitlines() if "autorelease.py\" audit-text" in line and "pr-title.txt" in line)
+    assert '"$WORK/note-sources.txt"' in audit and "--denylist" in audit, audit
+
+
+def test_the_asset_audit_refuses_nothing_and_missing_files(tmp_path, world):
+    """a checker that passes on nothing: --assets without a file is a usage error, a missing file a finding"""
+    r = run(sys.executable, HERE / "autorelease.py", "privacy-gate", "--no-tree", "--assets", "--denylist", world.denylist)
+    assert r.returncode == 2, r.stdout + r.stderr
+    r = run(sys.executable, HERE / "autorelease.py", "privacy-gate", "--no-tree", "--assets", tmp_path / "gone.zip", "--denylist", world.denylist)
+    assert r.returncode == 1 and "a release asset cannot be read" in r.stdout, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("root, why", [
+    (None, "OPENBFME_RELEASE_MAC_ROOT is not set"),
+    ("", "OPENBFME_RELEASE_MAC_ROOT is not set"),
+    ("../elsewhere", "is not a folder relative to the host's home"),
+    ("ci/../../x", "is not a folder relative to the host's home"),
+    ("/abs/ci", "is not a folder relative to the host's home"),
+    ("ci root", "is not a folder relative to the host's home"),
+])
+def test_the_mac_build_host_folder_comes_from_the_private_environment(tmp_path, root, why):
+    """merge queue q21: build_macos_release.sh names no private folder of the Mac host; its CI folder is the operator's
+    OPENBFME_RELEASE_MAC_ROOT, refused by name when unset or not a plain relative folder, before ssh is ever run"""
+    log = tmp_path / "ssh.log"
+    ssh = tmp_path / "ssh"
+    ssh.write_text(f'#!/bin/bash\necho "ssh $*" >> {log}\ncat > /dev/null\necho "MAC READY test"\n')
+    ssh.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k != "OPENBFME_RELEASE_MAC_ROOT"}
+    env["OPENBFME_RELEASE_MAC_SSH"] = str(ssh)
+    if root is not None:
+        env["OPENBFME_RELEASE_MAC_ROOT"] = root
+    r = subprocess.run(["bash", str(HERE / "build_macos_release.sh"), "--check"], capture_output=True, text=True, env=env)
+    assert r.returncode == 1 and why in r.stderr and not log.exists(), (r.returncode, r.stdout, r.stderr)
+    env["OPENBFME_RELEASE_MAC_ROOT"] = "ci-root"   # the control: a plain folder reaches the host, and the check names that folder
+    r = subprocess.run(["bash", str(HERE / "build_macos_release.sh"), "--check"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and "MAC READY" in r.stdout and log.exists(), (r.stdout, r.stderr)

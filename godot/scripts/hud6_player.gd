@@ -5,6 +5,8 @@
 ##   help     the pointer on a bubble, then on a Palantir arc button: the help box shows the button's name, shortcut, cost and description (retail-5.png)
 ##   heroes   the fortress's hero bubble pressed (PUSH_VISIBLE_COMMAND_RANGE): the ring of hero portraits (retail-2.png)
 ##   sidebar  a builder selected: the build list in the side bar's carved frame (retail-3.png)
+##   queue    (lane OWNERFIX-3) a Men barracks of the player's: three presses of its soldiers' bubble, the bubble and the Palantir show "3" (RW 0x4A4CD3 / 0x9D7054)
+##   enemy    (lane OWNERFIX-3) the enemy's barracks and hero, selected by a click: the Palantir shows their command set, every button disabled (RW 0x94397F)
 extends RefCounted
 
 var game: Node
@@ -93,6 +95,28 @@ func bubble_centre(b: Dictionary) -> Vector2:
 
 func fortress() -> Dictionary:
 	return find_own(func(o): return str(o.template).find("Fortress") >= 0 and str(o.template).find("Citadel") >= 0)
+
+
+# lane RELFIX-2: the open ground 450 units beside the fortress, on the side towards the map's middle. Evendim's Men start sits at the east edge (fortress
+# x 4602 of a 5000-unit map), where fortress.x + 450 is off the map: an object there covers no shroud cell, so its owner sees it SHROUDED (RW 0xB4E890) and
+# InGameUI::update deselects it on the next 30th client frame (RW 0x6A2449, no owner test: VISUAL-2 r2), which left the barracks scenario without bubbles
+func beside_fortress(f: Dictionary, dy: float = 0.0) -> Vector2:
+	var census: Dictionary = world.get_census()
+	var side := 1.0
+	if census.has("extent_x") and float(f.x) > float(census.extent_x) * 0.5:
+		side = -1.0
+	return Vector2(float(f.x) + side * 450.0, float(f.y) + dy)
+
+
+# lane RELFIX-2: an object a scenario created is on the map and seen clear by the local player (its own sight or the player's), else why not
+func check_seen(id: int, what: String) -> String:
+	var census: Dictionary = world.get_census()
+	if not census.has("extent_x"):
+		return "no playable extent in the census"
+	var st: int = world.get_object_shroud_status(id)
+	if st != 1 and st != 2:
+		return "%s %d is not seen clear by the local player (shroud status %d, playable extent %s x %s)" % [what, id, st, str(census.extent_x), str(census.extent_y)]
+	return ""
 
 
 func wait_help_shown() -> bool:
@@ -223,11 +247,14 @@ func _scenario_barracks() -> String:
 	var f := fortress()
 	if f.is_empty():
 		return "no own fortress citadel"
-	var at := Vector2(f.x + 450.0, f.y)
+	var at := beside_fortress(f)
 	var id: int = world.create_object("GondorBarracks", game._local_index, at.x, at.y, 0.0)
 	if id < 0:
 		return "create_object GondorBarracks failed"
 	await game._step(10)
+	var unseen := check_seen(id, "the barracks")
+	if unseen != "":
+		return unseen
 	var o := find_own(func(x): return int(x.id) == id)
 	if o.is_empty() or not await select_object(o):
 		return "the barracks could not be selected"
@@ -263,4 +290,109 @@ func _scenario_barracks() -> String:
 	# the box keeps its text: drawn again in the last frames (draws grows) with at least the name line
 	if int(h.get("text_ops", 0)) < 1 or int(h.get("draws", 0)) < 30:
 		return "the help box drew no text (draws %d, text_ops %d)" % [int(h.get("draws", 0)), int(h.get("text_ops", 0))]
+	return ""
+
+
+# ---- lane OWNERFIX-3 -------------------------------------------------------------------------------------------------------------------------------------
+
+func _enemy() -> Dictionary:
+	for p in world.get_economy().players:
+		if p.playable and p.name != game._local_name:
+			return p
+	return {}
+
+
+# a barracks of the player's beside the fortress, its soldiers' bubble (ShowProductionCount = Yes) pressed three times: the bubble's count and the
+# Palantir's say 3 (entries, not soldiers: a horde is one entry)
+func _scenario_queue() -> String:
+	var f := fortress()
+	if f.is_empty():
+		return "no own fortress citadel"
+	var at := beside_fortress(f)
+	var id: int = world.create_object("GondorBarracks", game._local_index, at.x, at.y, 0.0)
+	if id < 0:
+		return "create_object GondorBarracks failed"
+	await game._step(10)
+	var unseen := check_seen(id, "the barracks")
+	if unseen != "":
+		return unseen
+	var o := find_own(func(x): return int(x.id) == id)
+	if o.is_empty() or not await select_object(o):
+		return "the barracks could not be selected"
+	hud.camera_set_height(330.0)
+	await look(o.x, o.y)
+	hud.inject_mouse_move(Vector2(60, 60))
+	await game._step(30)
+	var target := {}
+	for b in radial().get("buttons", []):
+		if str(b.name) == "Command_ConstructGondorFighterHorde":
+			target = b
+	if target.is_empty():
+		return "no soldiers' bubble over the barracks: " + JSON.stringify(radial())
+	for i in 3:
+		await click_pixel(bubble_centre(target))
+		hud.inject_mouse_move(Vector2(60, 60))
+		await game._step(6)
+	await game._step(20)
+	var r := radial()
+	var texts: Array = r.get("texts", [])
+	print("HUD6 queue: bubble texts %s, errors %s" % [JSON.stringify(texts), JSON.stringify(r.get("errors", []))])
+	var palantir := -1
+	for b in hud.get_command_buttons():
+		if str(b.name) == "Command_ConstructGondorFighterHorde" and bool(b.in_palantir):
+			palantir = int(b.production_count)
+	print("HUD6 queue: Palantir production_count %d" % palantir)
+	shot("queue")
+	if texts.size() != 1 or str(texts[0].text) != "3" or int(texts[0].slot) != int(target.slot):
+		return "the soldiers' bubble does not show 3: " + JSON.stringify(texts)
+	if (r.get("errors", []) as Array).size() > 0:
+		return "radial errors: " + str(r.errors)
+	if palantir != -1 and palantir != 3:
+		return "the Palantir's soldiers button counts %d" % palantir
+	return ""
+
+
+# the enemy's barracks and a hero of theirs beside the player's fortress, each selected by a click: the bar shows their command set (foreign_view), every
+# button disabled (state 2, Restricted), no bubbles; a press sends nothing
+func _scenario_enemy() -> String:
+	var f := fortress()
+	var e := _enemy()
+	if f.is_empty() or e.is_empty():
+		return "no own fortress or no enemy player"
+	for t in ["GondorBarracks", "MordorGothmog"]:
+		var at := beside_fortress(f, 0.0 if t == "GondorBarracks" else 160.0) # the open ground beside the fortress (the queue scenario's spot)
+		var id: int = world.create_object(t, int(e.index), at.x, at.y, 0.0)
+		if id < 0:
+			return "create_object %s for the enemy failed" % t
+		await game._step(10)
+		var o := {}
+		for x in world.get_player_objects(str(e.name)):
+			if int(x.id) == id:
+				o = x
+		if o.is_empty():
+			o = {"id": id, "x": at.x, "y": at.y, "template": t}
+		if not await select_object(o):
+			return "the enemy %s could not be selected" % t
+		hud.camera_set_height(330.0)
+		await look(o.x, o.y)
+		hud.inject_mouse_move(Vector2(60, 60))
+		await game._step(30)
+		var bar: Dictionary = hud.get_state().get("control_bar", {})
+		var buttons: Array = hud.get_command_buttons()
+		var states := []
+		for b in buttons:
+			states.append("%s=%d" % [str(b.name), int(b.state)])
+		print("HUD6 enemy %s: command_set %s foreign_view %s buttons %s bubbles %d" % [t, str(bar.get("command_set", "")), str(bar.get("foreign_view", false)), str(states), int(radial().get("count", 0))])
+		shot("enemy-" + t.to_lower())
+		if not bool(bar.get("foreign_view", false)) or str(bar.get("command_set", "")) == "":
+			return "the enemy %s shows no command set" % t
+		if buttons.is_empty():
+			return "the enemy %s's set shows no buttons" % t
+		for b in buttons:
+			if int(b.state) != 2:
+				return "the enemy %s's button %s is not disabled (state %d)" % [t, str(b.name), int(b.state)]
+		if int(radial().get("count", 0)) != 0:
+			return "bubbles over the enemy %s" % t
+		world.destroy_object(id)
+		await game._step(5)
 	return ""

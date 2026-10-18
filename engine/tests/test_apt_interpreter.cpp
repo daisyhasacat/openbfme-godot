@@ -5,6 +5,7 @@
 // format specification v19 and the retail disassembly in the spec, never from this engine's output.
 // GPL-3.0.
 
+#include "Common/BfmeGame.h"
 #include "doctest.h"
 #include "AptTestUtil.h"
 #include "AptRetail.h"
@@ -452,6 +453,13 @@ TEST_CASE("VM: a function defined inside a function keeps reading and writing th
 
 TEST_CASE("VM: BFME1 PushData lookup constants read the active pool")
 {
+	// community PR #36: BFME1 mounted only (Common/BfmeGame.h); RotWK keeps S-013 (the test below)
+	struct Bfme1Mode
+	{
+		bool was = bfme1Mounted();
+		Bfme1Mode() { setBfme1Mounted(true); }
+		~Bfme1Mode() { setBfme1Mounted(was); }
+	} bfme1;
 	Fx fx;
 	REQUIRE(fx.run([&](TestMovie &m, Asm &a) {
 		a.constantPool({ "Options", "Resume Game" });
@@ -1474,7 +1482,7 @@ TEST_CASE("VM: faults and skipped operations are reported with the opcode and fi
 			std::uint32_t lookup = m.constTyped(APT_CONST_LOOKUP, 3);
 			a.pushDataIdx({ lookup });
 		}));
-		CHECK(fx.vm.errors()[0].find("constant pool index 3") != std::string::npos);
+		CHECK(fx.vm.errors()[0].find("constant type 8") != std::string::npos); // RotWK keeps the unverified type-8 acceptance stop
 	}
 	{
 		// runaway recursion is cut off

@@ -3,6 +3,7 @@
 // Lane STEALTH-2: ToggleHiddenSpecialAbilityUpdate and InvisibilitySpecialPower (see the header for the binary facts).
 
 #include "GameLogic/Module/StealthAbilityModules.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "Common/INI.h"
 #include "Common/SpecialPower.h"
 #include "Common/StateHash.h"
@@ -319,4 +320,22 @@ std::vector<std::string> StealthAbilityModules::stopLines()
 	return { "[S-1043] stealth abilities (lane STEALTH-2): ToggleHiddenSpecialAbilityUpdate (RW 0x8B1909 / 0x8B19AC / 0x8B1A70 / 0x8B1962) and "
 		"InvisibilitySpecialPower (RW 0x8C65D2 / 0x8C66EB) run; not ported: ShowPalantirTimer and the EffectDuration report to the player (the palantir "
 		"timer, client), the hide's room test for the garrison enums 0x27 / 0x28 (no retail ToggleHidden ability uses them: counted, no hide)" };
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190; ToggleHiddenSpecialAbilityUpdate's + 0x88 is retail's xfer RW 0x8B1938 field) ------------
+void ToggleHiddenSpecialAbilityUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	x.xferUnsignedInt(&m_hideFrame);
+	x.xferUnsignedInt(&m_hides);
+	x.xferUnsignedInt(&m_unhides);
+}
+
+void InvisibilitySpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	SnapshotXfer::ids(x, m_lastAffected);
+	SnapshotXfer::u64(x, m_given);
 }

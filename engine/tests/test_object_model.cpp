@@ -774,10 +774,11 @@ TEST_CASE("blocks: ArmorSet / WeaponSet (typed) / LocomotorSet / Prerequisites a
 		"  ArmorSet\n    Conditions = None\n    Armor = HeroArmor\n    DamageFX = SomeFX\n  End\n"
 		"  WeaponSet\n    Conditions = None\n    Weapon = PRIMARY Sword\n  End\n"
 		"  LocomotorSet\n    Locomotor = Walk\n    Condition = NORMAL\n    Speed = 30\n  End\n"
-		"  Prerequisites\n    Object = A B\n    Science = X\n  End\n"
+		"  Prerequisites\n    Object = A B\n    Object = C\n  End\n"
 		"  BuildCost = 11\n"
 		"End\n").empty());
 	const ThingTemplate *t = w.get("Foo");
+	REQUIRE(t != nullptr);
 	CHECK(std::get<long long>(*t->findField("BuildCost")) == 11);
 	REQUIRE(t->rawBlocks().size() == 4);
 	CHECK(t->rawBlocks()[0].field == "ArmorSet");
@@ -796,6 +797,10 @@ TEST_CASE("blocks: ArmorSet / WeaponSet (typed) / LocomotorSet / Prerequisites a
 	CHECK(t->armorTemplateSets()[0].m_damageFXName == "SomeFX");
 	REQUIRE(t->weaponTemplateSets().size() == 1);
 	CHECK(t->weaponTemplateSets()[0].unresolvedWeapons == std::vector<std::string>{ "Sword" });
+	// lane DEVPORT-3C: a Prerequisites Science row is looked up while parsing (RW 0x7404E0 -> TheScienceStore, ROTWK-C's typed rows): without the
+	// store, or with an unknown science, the load is refused
+	World w2;
+	CHECK_FALSE(w2.load("Object Bar\n  Prerequisites\n    Science = X\n  End\nEnd\n").empty());
 }
 
 TEST_CASE("blocks: an unknown field inside a nested block is an error from the block's own table")
@@ -1128,7 +1133,7 @@ TEST_CASE("stops: the report is pinned line by line (docs/STOPS.md S-070 .. S-07
 	const std::vector<std::string> expected = {
 		"S-070: 329 of 329 registered module classes keep their body as RawModuleData (field values not parsed; only the body extent and field names are checked)",
 		"S-073: the name of the ModuleData vtable slot 7 predicate (ChildObject body replacement) and the meaning of interface mask 0x2000 (PillageModule) are unverified",
-		"S-071: 10 object-level nested blocks (LocomotorSet, Prerequisites, UnitSpecificSounds/FX, AutoResolve*, ...) are kept as raw lines",
+		"S-071: 10 object-level nested blocks (LocomotorSet, UnitSpecificSounds/FX, AutoResolve*, ...) are kept as raw lines; Prerequisites also retain raw lines for diagnostics while typed rows are parsed",
 		"S-072: 101 object-table rows have parse functions with no typed port and are kept as raw tokens; field defaults of a fresh template are not ported (unset fields read as absent)",
 		"S-074: nested-block extents come from static analysis of the binary (238 parse functions, 2 conditional, 1 dispatching, 3 null-guarded, reviewed by hand); an indirect-call block opener would read as a line",
 		"S-075: a module declaration naming a class the binary does not register crashes RotWK (NULL dereference at RW 0x73F496); this port raises an INI error",

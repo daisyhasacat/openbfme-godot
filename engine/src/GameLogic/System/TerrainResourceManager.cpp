@@ -5,11 +5,15 @@
 
 #include "Common/NumericState.h"
 #include "Common/Player.h"
+#include "Common/PlayerList.h"
 #include "GameLogic/GameLogic.h"
 #include "Common/Thing/ThingTemplate.h"
+#include "Common/Xfer.h"
 #include "GameLogic/Module/TerrainResourceBehavior.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/System/ShroudManager.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace
@@ -149,7 +153,7 @@ TerrainResourceManager::Disc TerrainResourceManager::makeDisc(float x, float y, 
 }
 
 template <class Visitor>
-void TerrainResourceManager::forEachInDisc(const Disc &d, Visitor &&visit)
+void TerrainResourceManager::forEachInDisc(const Disc &d, Visitor &&visit) const
 {
 	// RW 0x75B4BA: the state of the retail loop in the registers (x counter [ebp-4], x1 ebx, x0 [ebp+8], y edi, error esi); the rows are visited from
 	// the middle outward by RW 0x75B3AE (x0 .. x1 at one y)
@@ -505,9 +509,81 @@ void TerrainResourceManager::onBuildComplete(Object &obj)
 	}
 }
 
-float TerrainResourceManager::previewShare(float x, float y, float radius, bool complete, ObjectID objectId, int playerIndex)
+bool TerrainResourceManager::previewUsable(int x, int y, int filter) const
 {
-	// RW 0x75B561 with the counting visitor RW 0xC2BA38 (0x75C523): the same disc and the same usability test, nothing written
+	// RW 0x75C02D as the preview's visitor RW 0x75C523 calls it: mask = the HighPriority mask, object 0, complete 0, filter = the player. The mask and the
+	// object are read only for a complete claimant, so with complete 0 they do not change the answer.
+	if (!inGrid(x, y))
+	{
+		return false;
+	}
+	const ShroudManager *shroud = m_logic.shroud();
+	CellShroudStatus cellShroud = CELLSHROUD_CLEAR;
+	if (filter >= 0 && shroud)
+	{
+		// RW 0x75C02D: the cell's centre ((x + 0.5) * cell + origin) asked of the shroud for the filter player (RW 0xB4D9A0 -> 0xB4FB20);
+		// a shrouded cell (2) is not usable. A logic without a shroud manager (unit rigs) answers every cell clear
+		const float wx = NumericState::sseAdd(NumericState::sseMul(NumericState::sseAdd((float)x, kHalf), m_cellSize), m_originX);
+		const float wy = NumericState::sseAdd(NumericState::sseMul(NumericState::sseAdd((float)y, kHalf), m_cellSize), m_originY);
+		cellShroud = shroud->getStatusAt(filter, wx, wy);
+		if (cellShroud == CELLSHROUD_SHROUDED)
+		{
+			return false;
+		}
+	}
+	const Cell &c = m_cells[(size_t)y * (size_t)m_width + (size_t)x];
+	switch (c.state)
+	{
+	case CELL_FREE:
+		return true;
+	case CELL_SHARED:
+		// RW 0x75C02D, state 2: a clear cell the filter player already shares is not claimable for it again
+		if (filter != -1 && cellShroud == CELLSHROUD_CLEAR)
+		{
+			for (const ClaimEntry &e : c.claims)
+			{
+				if (e.playerIndex == filter)
+				{
+					return false;
+				}
+			}
+		}
+		return true;
+	case CELL_OWNED:
+		if (cellShroud != CELLSHROUD_CLEAR)
+		{
+			return true; // RW 0x75C02D, state 3: a fogged owned cell looks claimable
+		}
+		if (c.claims.empty())
+		{
+			return true; // RW 0x75C13B also sets the state to free: not written here (see the file comment)
+		}
+		if (filter >= 0)
+		{
+			const Object *owner = m_logic.findObjectByID(c.claims.front().objectId);
+			if (!owner)
+			{
+				return true; // RW 0x75C02D also erases the entries and frees the cell: not written here
+			}
+			// RW 0x75C02D: the owner's shroud status for the filter player (Object RW 0x68D8F7 -> RW 0xB4E890) fogged (3) or shrouded (4): it looks free.
+			// clientObjectStatus answers it without the cached status write (SMOOTH-1)
+			const ObjectShroudStatus s = shroud ? shroud->clientObjectStatus(*owner, filter) : OBJECTSHROUD_INVALID;
+			if (s == OBJECTSHROUD_FOGGED || s == OBJECTSHROUD_SHROUDED)
+			{
+				return true;
+			}
+		}
+		return false; // complete 0: an owned cell is not claimable
+	default:
+		return false;
+	}
+}
+
+float TerrainResourceManager::previewShare(float x, float y, float radius, bool highPriority, int playerIndex) const
+{
+	// RW 0x75B561 with the counting visitor RW 0xC2BA38 (0x75C523, made by RW 0x75B357: mask = highPriority ? 0x7FFFF43 : 0, the player, complete 0): the
+	// same disc as a claim; every disc cell counts toward the total, the usable ones toward the claimed; nothing written
+	(void)highPriority; // the mask matters only for a complete claimant (previewUsable)
 	if (m_cells.empty())
 	{
 		return 0.0f;
@@ -520,12 +596,11 @@ float TerrainResourceManager::previewShare(float x, float y, float radius, bool 
 	DiscCounts counts;
 	forEachInDisc(disc, [&](int cx, int cy) {
 		++counts.total;
-		if (usable(cx, cy, 0u, objectId, complete))
+		if (previewUsable(cx, cy, playerIndex))
 		{
 			++counts.claimed;
 		}
 	});
-	(void)playerIndex;
 	return counts.total == 0 ? 0.0f : NumericState::fstpDword(NumericState::pc24DivW((double)counts.claimed, (double)counts.total));
 }
 
@@ -576,4 +651,219 @@ void TerrainResourceManager::crc(StateHasher &h) const
 			}
 		}
 	}
+}
+
+// lane SAVE-4d. TARGET FACTS (RW 0x75C7AE, tier B edited against BFME2's TerrainResourceManagerDoXfer.cpp; read from the RotWK disassembly): version (1, 3);
+// the claimant list (+ 0x14): an int count, then per node its object id (XferObjectID, node + 8), its radius (real, + 0xC) and, from version 2, its
+// visible flag (bool, + 0x10); the region (+ 0x1C, Region3D: the low corner then the high corner, six reals); the width (+ 0x34) and height (+ 0x38)
+// ints; the cell size (+ 0x3C) and the largest radius (+ 0x18) reals; an int, width * height; then every cell (16 bytes, + 0x40): from version 3 its state
+// (int, cell + 0xC) and its entry count (int), each entry its player index (int) and object id (XferObjectID); before version 3 one object id that loads
+// as an OWNED cell of player -1. A load allocates the cells anew from the saved size.
+// RETAIL QUIRK, NOT KEPT (S-4253): the node's complete flag (+ 0x11) is not in the layout, so a retail load leaves it uninitialised (the local record at
+// RW 0x75C816 is pushed with that byte unset). The port keeps it: after the retail layout an OpenBFME trailer (its own version) holds every claimant's
+// complete flag in list order.
+// The load (SAVE-4a review r1 rules, SAVES.md section 8) reads into temporaries and checks before anything changes: the grid (region, size, cell size)
+// and its blocked cells are the ones this game's START made (RW 0x75BE66 / 0x75B7BB); a claimant's id is not 0 and listed once (that the object exists
+// is checked by finishLoad, after every block loaded, before the manager takes the staged state); a cell's state is one of the four, its entries' player indices -1 .. 19.
+void TerrainResourceManager::xfer(Xfer &x)
+{
+	const bool loading = x.isLoading();
+	if (loading)
+	{
+		m_pending.reset(); // an earlier load that never finished is dropped
+	}
+	XferVersion v{ 1, 3 };
+	x.xferVersion(v);
+	std::vector<Claimant> loadedClaimants;
+	std::vector<Claimant> &claimants = loading ? loadedClaimants : m_claimants; // saving reads the members, loading fills temporaries
+	x.xferVectorSize(claimants, v.current >= 2 ? 9 : 8);
+	for (Claimant &c : claimants)
+	{
+		x.xferObjectID(&c.id);
+		x.xferReal(&c.radius);
+		if (v.current >= 2)
+		{
+			x.xferBool(&c.visible);
+		}
+	}
+	float region[6] = {};
+	std::int32_t width = 0, height = 0;
+	float cellSize = 0.0f, maxRadius = 0.0f;
+	if (!loading)
+	{
+		const float r[6] = { m_originX, m_originY, m_originZ, m_extentX, m_extentY, m_extentZ };
+		std::copy(r, r + 6, region);
+		width = m_width;
+		height = m_height;
+		cellSize = m_cellSize;
+		maxRadius = m_maxRadius;
+	}
+	for (float &r : region)
+	{
+		x.xferReal(&r);
+	}
+	x.xferInt(&width);
+	x.xferInt(&height);
+	x.xferReal(&cellSize);
+	x.xferReal(&maxRadius);
+	if (loading)
+	{
+		const float mine[6] = { m_originX, m_originY, m_originZ, m_extentX, m_extentY, m_extentZ };
+		if (width != m_width || height != m_height || !std::equal(region, region + 6, mine) || cellSize != m_cellSize)
+		{
+			throw XferException("terrain resource manager: the snapshot's grid is " + std::to_string(width) + " x " + std::to_string(height) +
+				", this game's " + std::to_string(m_width) + " x " + std::to_string(m_height) + " (another map or data)");
+		}
+	}
+	std::vector<Cell> loadedCells;
+	std::vector<Cell> &cells = loading ? loadedCells : m_cells;
+	x.xferVectorSize(cells, v.current >= 3 ? 8 : 4);
+	if (loading && cells.size() != m_cells.size())
+	{
+		throw XferException("terrain resource manager: " + std::to_string(cells.size()) + " cells for a grid of " + std::to_string(m_cells.size()));
+	}
+	for (size_t i = 0; i < cells.size(); ++i)
+	{
+		Cell &c = cells[i];
+		if (loading && v.current < 3)
+		{
+			ClaimEntry e;
+			x.xferObjectID(&e.objectId);
+			c.state = CELL_OWNED; // RW 0x75C9C6
+			c.claims.assign(1, e);
+		}
+		else
+		{
+			std::int32_t state = loading ? 0 : c.state;
+			x.xferInt(&state);
+			x.xferVectorSize(c.claims, 8);
+			for (ClaimEntry &e : c.claims)
+			{
+				x.xferInt(&e.playerIndex);
+				x.xferObjectID(&e.objectId);
+			}
+			if (loading)
+			{
+				c.state = state;
+			}
+		}
+		if (!loading)
+		{
+			continue;
+		}
+		const std::string cell = "terrain resource manager: cell " + std::to_string(i);
+		if (c.state < CELL_FREE || c.state > CELL_OWNED)
+		{
+			throw XferException(cell + " has the state " + std::to_string(c.state));
+		}
+		if ((c.state == CELL_BLOCKED) != (m_cells[i].state == CELL_BLOCKED))
+		{
+			throw XferException(cell + (c.state == CELL_BLOCKED ? " is blocked in the snapshot, not in this game's map" : " is blocked in this game's map, not in the snapshot"));
+		}
+		for (const ClaimEntry &e : c.claims)
+		{
+			if (e.playerIndex < -1 || e.playerIndex >= 20)
+			{
+				throw XferException(cell + " has an entry of player index " + std::to_string(e.playerIndex));
+			}
+		}
+		if (c.state == CELL_BLOCKED && !c.claims.empty())
+		{
+			throw XferException(cell + " is blocked and holds " + std::to_string(c.claims.size()) + " entries"); // RW 0x75C02D: nothing claims one
+		}
+	}
+	// the OpenBFME trailer (S-4253)
+	XferVersion own{ 1, 1 };
+	x.xferVersion(own);
+	for (Claimant &c : claimants)
+	{
+		x.xferBool(&c.complete);
+	}
+	if (!loading)
+	{
+		return;
+	}
+	for (size_t i = 0; i < claimants.size(); ++i)
+	{
+		if (claimants[i].id == INVALID_ID)
+		{
+			throw XferException("terrain resource manager: claimant " + std::to_string(i) + " has no object id");
+		}
+		for (size_t j = 0; j < i; ++j)
+		{
+			if (claimants[j].id == claimants[i].id)
+			{
+				throw XferException("terrain resource manager: object " + std::to_string(claimants[i].id) + " claims twice");
+			}
+		}
+	}
+	// the active entries (a SHARED cell's, an OWNED cell's owner): a tombstone {-1, 0} (RW 0x75C461 clears a released entry in place) or a claimant's
+	// object with a player of this game; an OWNED cell's live owner is a complete claimant (only a complete claim takes a cell, RW 0x75C5D2). A FREE cell's
+	// entries are the stale ones a release leaves behind (cleared by the next claim) and are not references
+	const PlayerList &players = m_logic.players();
+	auto isPlayer = [&](std::int32_t index) {
+		for (int n = 0; n < players.getPlayerCount(); ++n)
+		{
+			const Player *p = players.getNthPlayer(n);
+			if (p && p->getPlayerIndex() == index)
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+	for (size_t i = 0; i < loadedCells.size(); ++i)
+	{
+		const Cell &c = loadedCells[i];
+		if (c.state != CELL_SHARED && c.state != CELL_OWNED)
+		{
+			continue;
+		}
+		const std::string cell = "terrain resource manager: cell " + std::to_string(i);
+		for (size_t k = 0; k < c.claims.size(); ++k)
+		{
+			const ClaimEntry &e = c.claims[k];
+			if (e.playerIndex == -1 && e.objectId == INVALID_ID)
+			{
+				continue;
+			}
+			auto claimant = std::find_if(claimants.begin(), claimants.end(), [&](const Claimant &cl) { return cl.id == e.objectId; });
+			if (e.objectId == INVALID_ID || claimant == claimants.end())
+			{
+				throw XferException(cell + " names the object " + std::to_string(e.objectId) + ", which claims no ground");
+			}
+			if (!isPlayer(e.playerIndex))
+			{
+				throw XferException(cell + " names player index " + std::to_string(e.playerIndex) + ", which this game lacks");
+			}
+			if (c.state == CELL_OWNED && k == 0 && !claimant->complete)
+			{
+				throw XferException(cell + " is owned by the object " + std::to_string(e.objectId) + ", whose claim is not complete");
+			}
+		}
+	}
+	// staged until finishLoad: the claimants' objects are checked after every block loaded, then the manager takes the state
+	m_pending = std::make_unique<Pending>();
+	m_pending->claimants = std::move(loadedClaimants);
+	m_pending->cells = std::move(loadedCells);
+	m_pending->maxRadius = maxRadius;
+}
+
+void TerrainResourceManager::finishLoad()
+{
+	std::unique_ptr<Pending> pending = std::move(m_pending);
+	if (!pending)
+	{
+		throw XferException("terrain resource manager: nothing loaded to finish");
+	}
+	for (const Claimant &c : pending->claimants)
+	{
+		if (!m_logic.findObjectByID(c.id))
+		{
+			throw XferException("terrain resource manager: the claimant object " + std::to_string(c.id) + " does not exist");
+		}
+	}
+	m_claimants = std::move(pending->claimants);
+	m_cells = std::move(pending->cells);
+	m_maxRadius = pending->maxRadius;
 }

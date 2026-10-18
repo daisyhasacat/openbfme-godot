@@ -175,7 +175,7 @@ TEST_CASE("hud input: a drag box selects the units inside, shift adds and toggle
 	CHECK(r.input->ui().getSelectCount() == 1);
 	r.leftClick(p1.x, p1.y, true);
 	CHECK(r.input->ui().getSelectCount() >= 3);
-	CHECK(logHas(*r.input, "MSG_AREA_SELECTION"));
+	CHECK_FALSE(logHas(*r.input, "MSG_AREA_SELECTION"));
 	r.frame(1);
 	CHECK(selectionOf(r).size() == r.input->ui().selected().size());
 }
@@ -538,4 +538,108 @@ TEST_CASE("hud input: army drag selection prefers combat units, worker-only boxe
 		r.leftClick(b.x,b.y);
 		CHECK(r.input->ui().selected() == std::vector<ObjectID>{ worker->getID() });
 	}
+}
+
+TEST_CASE("rotwk-c pick retail: a structure double click does not expand selection")
+{
+	if (!haveWorld("rotwk-c pick"))
+	{
+		return;
+	}
+	Rig r(shared());
+	const Coord3D c = r.freeSpot(center(r).x, center(r).y, 600.0f);
+	Object *a = r.make("GondorBarracks", c.x, c.y);
+	Object *b = r.make("GondorBarracks", c.x + 180.0f, c.y);
+	r.lookAt({ c.x + 90.0f, c.y, 0.0f }, 300.0f, 380.0f);
+	r.frame(2);
+	const ICoord2D px = r.screenOf({ a->getPosition()->x, a->getPosition()->y, a->getPosition()->z + 6.0f });
+	r.leftClick(px.x, px.y);
+	REQUIRE(r.input->ui().isSelected(a->getID()));
+	REQUIRE_FALSE(r.input->ui().isSelected(b->getID()));
+	r.leftClick(px.x, px.y, true);
+	CHECK(r.input->ui().selected() == std::vector<ObjectID>{ a->getID() });
+	r.frame(1);
+	CHECK(selectionOf(r) == std::vector<ObjectID>{ a->getID() });
+}
+
+TEST_CASE("rotwk-c pick retail: double click expands current selection, not the picked type, and ignores Alt")
+{
+	if (!haveWorld("rotwk-c current selection"))
+	{
+		return;
+	}
+	Rig r(shared());
+	const Coord3D c = r.freeSpot(center(r).x, center(r).y, 600.0f);
+	Object *seed = r.make("GondorFighter", c.x, c.y);
+	Object *match = r.make("GondorFighter", c.x + 80.0f, c.y);
+	Object *picked = r.make("GondorArcher", c.x + 200.0f, c.y);
+	Object *far = r.make("GondorFighter", c.x + 2000.0f, c.y);
+	r.lookAt({ c.x + 100.0f, c.y, 0.0f }, 300.0f, 380.0f);
+	r.frame(2);
+	auto pixel = [&](Object *o) { return r.screenOf({ o->getPosition()->x, o->getPosition()->y, o->getPosition()->z + 6.0f }); };
+	const ICoord2D seedPixel = pixel(seed), pickedPixel = pixel(picked);
+	REQUIRE(HudObjects::pickForDoubleClick(r.input->context(), pickedPixel) == picked);
+	r.leftClick(seedPixel.x, seedPixel.y);
+	r.frame();
+	REQUIRE(r.input->ui().selected() == std::vector<ObjectID>{ seed->getID() });
+	std::vector<int> types;
+	r.input->setLogicMessageObserver([&](const GameMessage &m) { types.push_back(m.getType()); });
+	auto doubleClick = [&]() {
+		ClientMessage &m = r.input->stream().append(CMSG_MOUSE_LEFT_DOUBLE_CLICK);
+		m.appendPixelRegion({ pickedPixel, pickedPixel });
+		m.appendInteger(KEY_STATE_ALT);
+		r.input->update();
+	};
+	r.input->ui().setForceAttackMode(true);
+	doubleClick();
+	CHECK(r.input->ui().selected() == std::vector<ObjectID>{ seed->getID() });
+	r.input->ui().setForceAttackMode(false);
+	doubleClick();
+	CHECK(r.input->ui().isSelected(seed->getID()));
+	CHECK(r.input->ui().isSelected(match->getID()));
+	CHECK_FALSE(r.input->ui().isSelected(picked->getID()));
+	CHECK_FALSE(r.input->ui().isSelected(far->getID()));
+	const std::vector<int> expected{ MSG_CREATE_SELECTED_GROUP_NO_SOUND };
+	CHECK(types == expected); // no replace-selection or MSG_AREA_SELECTION
+	r.frame();
+	CHECK(std::find(r.local->selection().begin(), r.local->selection().end(), match->getID()) != r.local->selection().end());
+	r.input->ui().deselectAll(false);
+	types.clear();
+	doubleClick();
+	CHECK(r.input->ui().selected().empty());
+	CHECK(types.empty());
+	r.input->setLogicMessageObserver({});
+}
+
+TEST_CASE("rotwk-c pick retail: special-power wall selectability overrides only the script flag")
+{
+	if (!haveWorld("rotwk-c selectability"))
+	{
+		return;
+	}
+	Rig r(shared(), "map wor helms deep");
+	Object *wall = nullptr;
+	for (Object *o = r.logic().getFirstObject(); o; o = o->getNextObject())
+	{
+		if (o->getTemplate()->getName() == "HelmsDeepGatehouseCenter")
+		{
+			wall = o;
+			break;
+		}
+	}
+	REQUIRE(wall);
+	REQUIRE(wall->isKindOfName("WALK_ON_TOP_OF_WALL"));
+	CHECK_FALSE(wall->isScriptSelectable()); // RW 0x69A648: the initial flag comes from SELECTABLE, not a universal true
+	wall->setScriptSelectable(true);
+	CHECK(HudObjects::isSelectable(*wall)); // an explicit script override can select a non-SELECTABLE template
+	CommandButton command;
+	command.m_command = GUI_COMMAND_SPECIAL_POWER;
+	wall->setScriptSelectable(false);
+	CHECK_FALSE(HudObjects::isSelectable(*wall));
+	CHECK(HudObjects::isSelectable(*wall, &command));
+	wall->setStatus(3, true);
+	CHECK_FALSE(HudObjects::isSelectable(*wall, &command));
+	wall->setStatus(3, false);
+	command.m_command = GUI_COMMAND_ATTACK_MOVE;
+	CHECK_FALSE(HudObjects::isSelectable(*wall, &command));
 }

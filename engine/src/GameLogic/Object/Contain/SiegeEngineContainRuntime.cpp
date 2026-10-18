@@ -4,6 +4,7 @@
 // SiegeEngineContain / HordeSiegeEngineContain at runtime. See GameLogic/Object/Contain/SiegeEngineContainRuntime.h for the target facts and the stops. Lane GARRISON-2.
 
 #include "GameLogic/Object/Contain/SiegeEngineContainRuntime.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/GameCommon.h"
 #include "Common/Player.h"
@@ -407,6 +408,19 @@ void SiegeEngineContainT<Base, Horde>::crc(StateHasher &h) const
 	h.addI32(m_crewCount);
 	h.addBool(m_hasMinePassenger);
 	h.addBool(m_exitBlocked);
+}
+
+// lane SAVE-4b: the snapshot (OpenBFME native, S-4190): the transport's, then the crew as ids, its count and the two flags
+template <class Base, bool Horde>
+void SiegeEngineContainT<Base, Horde>::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	Base::xfer(x);
+	SnapshotXfer::objectPointers(x, this->getObject()->logic(), m_crew, "a siege engine's crew member", this->getObject()->getID());
+	x.xferInt(&m_crewCount);
+	SnapshotXfer::checkRange(m_crewCount, 0, m_siege->m_crewMax, "a siege engine's crew count");
+	x.xferBool(&m_hasMinePassenger);
+	x.xferBool(&m_exitBlocked);
 }
 
 template class SiegeEngineContainT<TransportContain, false>;

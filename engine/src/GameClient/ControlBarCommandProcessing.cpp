@@ -16,6 +16,9 @@
 #include "GameClient/MessageStream/MessageStream.h"
 #include "GameLogic/GameMessage.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/Contain/HordeContainRuntime.h"
+
+#include <map>
 
 bool ControlBar::pressButton(int slot, bool inPalantir)
 {
@@ -197,6 +200,44 @@ bool ControlBar::pressButton(int slot, bool inPalantir)
 		}
 		case GUI_COMMAND_HORDE_TOGGLE_FORMATION:
 		{
+			// RW 0x940435 case 0x24: multi-select votes on the NEXT template id; ties keep the lowest id.
+			// Explicit set messages preserve already-matching and incompatible formations in simulation.
+			if (m_ctx.ui.selected().size() > 1)
+			{
+				std::map<unsigned short, unsigned> votes;
+				std::vector<ObjectID> hordes;
+				for (ObjectID id : m_ctx.ui.selected())
+				{
+					Object *selected = m_ctx.logic.findObjectByID(id);
+					auto *hc = selected ? dynamic_cast<HordeContain *>(selected->getContain()) : nullptr;
+					if (!hc) continue;
+					hordes.push_back(id);
+					if (const ThingTemplate *next = hc->alternateFormationTemplate())
+					{
+						++votes[next->getTemplateID()];
+					}
+				}
+				unsigned most = 0;
+				unsigned short target = 0;
+				for (const auto &vote : votes)
+				{
+					if (vote.second > most)
+					{
+						most = vote.second;
+						target = vote.first;
+					}
+				}
+				if (most)
+				{
+					for (ObjectID id : hordes)
+					{
+						ClientMessage &m = m_ctx.stream.append(MSG_HORDE_SET_FORMATION);
+						m.appendObjectID(id);
+						m.appendInteger(target);
+					}
+				}
+				return true;
+			}
 			// lane HORDE-2: the logic case (RW 0x77BE83) reads argument 0 as the horde's object id: the control bar's source object
 			ClientMessage &m = m_ctx.stream.append(MSG_HORDE_TOGGLE_FORMATION);
 			m.appendObjectID(m_source);
@@ -315,6 +356,9 @@ bool ControlBar::pressButton(int slot, bool inPalantir)
 			m.appendInteger(b.m_maxShotsToFire);
 			return true;
 		}
+		case GUI_COMMAND_BLOODTHIRSTY:
+			m_ctx.ui.setGUICommand(&b);
+			return true;
 		case GUI_COMMAND_SPECIAL_POWER:
 		{
 			// lane HERO-1 (S-850): a hero ability. A button that needs a target waits for it (GUICommandTranslator), the others go out at once:
@@ -360,7 +404,7 @@ bool ControlBar::pressButton(int slot, bool inPalantir)
 	}
 }
 
-bool ControlBar::cancelQueued(int slot, bool inPalantir)
+bool ControlBar::cancelQueued(int slot, bool inPalantir, bool shift)
 {
 	const ControlBarButton *cb = find(slot, inPalantir);
 	if (cb && cb->button && cb->button->m_command == GUI_COMMAND_REVIVE)
@@ -386,20 +430,34 @@ bool ControlBar::cancelQueued(int slot, bool inPalantir)
 	{
 		return false;
 	}
+	Object *obj = m_ctx.logic.findObjectByID(m_source);
+	const ThingTemplate *tt = cb->button->getThingTemplate();
+	if (!tt || !cb->button->hasOption(COMMAND_OPTION_CANCELABLE) || !obj || obj->getControllingPlayer() != m_ctx.localPlayer()
+		|| !obj->getProductionUpdate())
+	{
+		return false;
+	}
 	// MSG_CANCEL_UNIT_CREATE, RotWK layout (RW 0x77A844): { byte byIndex, int templateId, byte all }
 	ClientMessage &m = m_ctx.stream.append(MSG_CANCEL_UNIT_CREATE);
 	m.appendBoolean(false);
-	m.appendInteger((int)cb->button->getThingTemplate()->getTemplateID());
-	m.appendBoolean(false);
+	m.appendInteger((int)tt->getTemplateID());
+	// RW 0x940CB7 .. 0x940CE2: the u16 at ThingTemplate + 0x5F0 is MaxSimultaneousOfType, not HERO.
+	m.appendBoolean(shift && BuildAssistant::maxSimultaneousOfType(*tt) == 0);
 	return true;
 }
 
 
-bool ControlBar::rightPressButton(int slot, bool inPalantir)
+bool ControlBar::rightPressButton(int slot, bool inPalantir, bool shift)
 {
 	const ControlBarButton *cb = find(slot, inPalantir);
 	Object *obj = m_ctx.logic.findObjectByID(m_source);
 	if (!cb || !cb->button || !obj)
+	{
+		return false;
+	}
+	// lane OWNERFIX-3 (INFERENCE, stop S-5040): another player's command set is shown disabled (ControlBar::foreignDisable, RW 0x94397F); a CANCELABLE
+	// button's right press would still reach processCommandUI for that object, whose messages the logic refuses for a non-owner: none is sent
+	if (m_foreignView)
 	{
 		return false;
 	}
@@ -459,7 +517,7 @@ bool ControlBar::rightPressButton(int slot, bool inPalantir)
 		}
 		case GUI_COMMAND_UNIT_BUILD:
 		case GUI_COMMAND_REVIVE: // lane HUD-7: the same case in RotWK (RW 0x940B0E)
-			return cancelable && cancelQueued(slot, inPalantir); // RW 0x940C59 .. 0x940C70 (the production cancel, lane HUD-6)
+			return cancelable && cancelQueued(slot, inPalantir, shift); // RW 0x940C59 .. 0x940C70 (the production cancel, lane HUD-6)
 		default:
 			return false; // INFERENCE / not ported here: the other right press cases (upgrade cancel RW 0x940FB3, ...) stay the left press handlers' (S-3460)
 	}

@@ -711,7 +711,7 @@ TEST_CASE("economy report: every stop of the lane is a line of the logic report 
 	{
 		all += s + "\n";
 	}
-	for (int id = 250; id <= 261; ++id)
+	for (int id = 250; id <= 260; ++id)
 	{
 		const std::string tag = "[S-" + std::to_string(id) + "]";
 		INFO(tag);
@@ -816,7 +816,7 @@ TEST_CASE("bounty: the victim's BountyValue times the killer's percentage, the m
 	CHECK(bob->getMoney()->countMoney() == fx.player("Bob")->getMoney()->countMoney());
 }
 
-TEST_CASE("bounty: a HERO victim's value grows with its experience level through the hook, without it the unscaled value is paid and counted (S-261)")
+TEST_CASE("bounty: missing hero levels leave the value unchanged and an explicit scale hook preserves PC24 arithmetic")
 {
 	Fx fx(kBountyObjects);
 	Player *alice = fx.player("Alice");
@@ -830,7 +830,7 @@ TEST_CASE("bounty: a HERO victim's value grows with its experience level through
 	{
 		counted = counted || s.find("[S-261] 1 bounties") != std::string::npos;
 	}
-	CHECK(counted);
+	CHECK_FALSE(counted);
 	// level data 3 / 4: value = trunc(100 * 3 / 4 + 100) = 175
 	fx.economy().setHeroBountyScale([](const Object &, int &n, int &d) {
 		n = 3;

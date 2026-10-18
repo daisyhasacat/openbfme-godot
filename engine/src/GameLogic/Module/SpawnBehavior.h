@@ -107,6 +107,7 @@ public:
 class SpawnBehavior : public UpdateModule, public UpgradeMux, public DieModuleInterface, public DamageModuleInterface, public SpawnBehaviorInterface
 {
 public:
+	OBFME_MODULE_XFER(SpawnBehavior) // lane SAVE-4b
 	SpawnBehavior(Thing *thing, const SpawnBehaviorModuleData *data); // RW 0x862606
 	UpgradeMux *getUpgrade() override { return this; }
 	DieModuleInterface *getDie() override { return this; }

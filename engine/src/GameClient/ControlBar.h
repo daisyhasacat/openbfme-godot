@@ -29,6 +29,7 @@
 #include <map>
 
 class Player;
+class ProductionUpdateInterface;
 class SpecialPowerTemplate;
 struct HeroRecord;
 #include <string>
@@ -65,6 +66,7 @@ struct ControlBarButton
 	ObjectID rider = INVALID_ID;            ///< lane UI-1: an EXIT_CONTAINER button's rider (MSG_EXIT's argument 0); a rider's extra slots carry it too, disabled
 	int position = -1;                      ///< lane HUD-4: the arc's window (slot - range start, 0 .. 5) or the side bar's packed position (0 ..)
 	bool autoAbility = false;               ///< lane AUTOCAST-1: the glow (RW 0x9D2D0E -> SetAutoAbilityOverlayState): the source object's AutoAbilityBehavior auto casts this button
+	int productionCount = 0;                ///< lane OWNERFIX-3: the count the window shows (RW 0x729D9A; 0 none): ShowProductionCount buttons only
 };
 
 struct ControlBarQueueEntry
@@ -118,6 +120,12 @@ public:
 	// lane PLAY-4: the selection is in RotWK's under-construction context (evaluateContextUI RW 0x71EBDA -> switchToContext(6) -> populateUnderConstruction
 	// RW 0x944EFB): the command set is not shown, only the cancel construction button
 	bool underConstruction() const { return m_underConstruction; }
+	// lane OWNERFIX-3: the source object is another player's while the local player is active (RW 0x94397F's view): its command set is shown, every button
+	// disabled, and presses are refused
+	bool foreignView() const { return m_foreignView; }
+	static bool localPlayerActive(const Player *local);
+	// RW 0x729D9A: the production count of a command window showing `b` for an object with the production interface `pu` (0: none shown)
+	static int productionCountOf(const CommandButton &b, const ProductionUpdateInterface *pu);
 	// RW 0x71EE67 .. 0x71EF1E: the object's GettingBuiltBehavior (behavior slot 0x80, RW 0x68C3E6) rebuilds it (+ 0x35, slot 14 RW 0x71C2EA) or has + 0x36 set
 	// (slot 11 RW 0x8227A4) while it is UNDER_CONSTRUCTION, or has + 0x36 set when it is not; or the object has the model condition BASE_BUILD (RW 0x46E918(0xDB))
 	static bool isUnderConstructionContext(const Object &obj);
@@ -128,22 +136,50 @@ public:
 	// ---- input ----
 	// ZH ControlBar::processCommandUI: the press of the button in `slot`. Returns false when the slot has no usable button (counted, reported through ui messages).
 	bool pressButton(int slot, bool inPalantir);
-	// right press on a build button: cancels one queued unit of that template (MSG_CANCEL_UNIT_CREATE by type); lane HUD-7: on a REVIVE button the hero record by
+	// right press on a build button: cancels one queued unit, or all with Shift and no MaxSimultaneousOfType (RW 0x940CD0); on a REVIVE button the hero record by
 	// its index (RW 0x940C57)
-	bool cancelQueued(int slot, bool inPalantir);
+	bool cancelQueued(int slot, bool inPalantir, bool shift = false);
 	// lane AUTOCAST-1: the right press of a command button: the clip's gate (RW 0x9D28D4: a _disabled / _cantAfford button only when CANCELABLE) and
 	// processCommandUI's right press (RW 0x940435 with its second argument 0): an AutoAbility (+ 0x10C) or CANCELABLE button of the source object sends
 	// MSG_DO_AUTO_ABILITY { power id, object } (SPECIAL_POWER / SPECIAL_POWER_TOGGLE, RW 0x941511 / 0x9418F7) or MSG_DO_AUTO_ABILITY_WEAPON { weapon slot,
 	// object } (FIRE_WEAPON, RW 0x941391); a CANCELABLE build button cancels (cancelQueued); a target-needing button without either cancels the GUI command mode
 	// (RW 0x94089C with null). true when a message went out
-	bool rightPressButton(int slot, bool inPalantir);
+	bool rightPressButton(int slot, bool inPalantir, bool shift = false);
 	unsigned autoAbilityToggles() const { return m_autoToggles; }
 	const std::map<std::string, unsigned> &unportedPresses() const { return m_unported; }
+
+	// ---- lane DEVPORT-8 (FALSEDEF-1): the under-attack blink of the control bar ----
+	// TARGET FACTS (RotWK game.dat, caveat S-001; BFME2 decomp ControlBarRva0031AEC9.cpp / ControlBarBlink0031AEFF.cpp, tier B same-shape: RotWK's fields
+	// are + 0x298 / + 0x29C / + 0x2A0 where BFME2 has + 0x290 / + 0x294 / + 0x298; checked in Ghidra):
+	//   * the window (+ 0x2A0) is ControlBar.wnd:WinUAttack, looked up by name when the control bar is made (RW 0x71E1E7 at RW 0x71E8C4); no window, no blink
+	//   * start (RW 0x71C7E4, called only by Radar::tryUnderAttackEvent RW 0x6D9BF3 after a new UNDER_ATTACK event): the flag (+ 0x298) set, the count
+	//     (+ 0x29C) 150, and the window disabled when its status has ENABLED (bit 3)
+	//   * tick (RW 0x71C81A, the first call of ControlBar::update RW 0x71FC08, once per client frame): with the flag and the window: --count; at <= 0 the
+	//     flag cleared and the window enabled; else on count % 15 == 0 the window's ENABLED status toggled
+	// The window's look is its WND draw data (the default draw: the enabled / disabled image of its state); InGameHud reads the window, the device draws it.
+	struct AttackFlash
+	{
+		bool window = false;        ///< ControlBar.wnd:WinUAttack exists (RW + 0x2A0 non-null)
+		bool windowEnabled = true;  ///< the window's WIN_STATUS_ENABLED
+		bool on = false;            ///< + 0x298
+		int count = 0;              ///< + 0x29C
+		unsigned starts = 0;        ///< RW 0x71C7E4 calls that found the window (OpenBFME's count, for the report)
+		unsigned toggles = 0;       ///< the window's enabled state changes (OpenBFME's count)
+	};
+	void setAttackFlashWindow(bool present, bool enabled)
+	{
+		m_flash.window = present;
+		m_flash.windowEnabled = enabled;
+	}
+	void startAttackFlash(); ///< RW 0x71C7E4
+	void tickAttackFlash();  ///< RW 0x71C81A (one client frame)
+	const AttackFlash &attackFlash() const { return m_flash; }
 
 	static std::vector<std::string> acceptanceStops();
 
 private:
-	ButtonState evaluate(const CommandButton &b, Object &obj);
+	void setAttackWindowEnabled(bool enabled);
+	ButtonState evaluate(const CommandButton &b, Object &obj, bool ignoreDisabled = false);
 	static const SpecialPowerTemplate *specialPowerOf(const CommandButton &b);
 	// lane FACT-C: the castle object of a castle member (its CastleMemberBehavior's castle id, module + 0x18; RW 0x943140 .. 0x94318E), or null
 	static Object *castleOfMember(Object &obj);
@@ -162,6 +198,7 @@ private:
 	// RW 0x944EFB: window 0 shows Command_CancelConstruction (RW 0xC80400) unless the template is DONT_USE_CANCEL_BUILD_BUTTON (+ 0x122 & 4); enabled for the
 	// object's controller
 	void populateUnderConstruction(Object &obj, bool mine);
+	void foreignDisable(ControlBarButton &cb) const;
 
 	HudContext &m_ctx;
 	ObjectID m_source = INVALID_ID;
@@ -177,4 +214,6 @@ private:
 	std::map<std::string, unsigned> m_unported;
 	unsigned m_autoToggles = 0;
 	bool m_underConstruction = false;
+	AttackFlash m_flash;
+	bool m_foreignView = false;
 };

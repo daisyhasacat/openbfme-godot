@@ -452,9 +452,13 @@ bool AptGadgetLayer::mouseMove(float x, float y)
 	ICoord2D pos;
 	pos.x = (int)x;
 	pos.y = (int)y;
+	// lane OPTS-6: the drag's step is the change of the integer position the windows see (ZH: the mouse's pixel minus the last one), so the dragged
+	// thumb follows the pointer to the pixel. A window larger than the stage gives moves under one stage pixel each (2560 wide: 0.4 per window
+	// pixel), and the truncated float difference of each move was 0: the thumb stayed behind while the pointer went far off the slider (the owner,
+	// 2026-10-15)
 	ICoord2D delta;
-	delta.x = (int)(x - m_mouseX);
-	delta.y = (int)(y - m_mouseY);
+	delta.x = pos.x - (int)m_mouseX;
+	delta.y = pos.y - (int)m_mouseY;
 	m_mouseX = x;
 	m_mouseY = y;
 	if (m_leftDown)

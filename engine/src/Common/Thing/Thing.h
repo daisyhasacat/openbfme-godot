@@ -43,6 +43,8 @@ public:
 	void setOrientationTrig(float angle, float c, float s);
 	// position and a full basis (an object aligned to the terrain); the angle is atan2 of the X axis
 	void setTransform(const Coord3D *pos, const float basis[9], bool swept = true);
+	// lane SAVE-4b: a snapshot's transform as saved (the position, the angle and the basis by their bits, none recomputed), then reactToTransformChange
+	void friend_setTransformExact(const Coord3D &pos, float angle, const float basis[9]);
 
 	// ZH Thing.h Object / Drawable down-casts (the modules take a Thing* and need the kind)
 	virtual Object *asObject() { return nullptr; }

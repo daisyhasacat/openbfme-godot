@@ -4,10 +4,10 @@
 #include "Libraries/Source/Apt/AptValue.h"
 
 #include "Common/NumericState.h"
+#include "Common/FloatFromChars.h"
 
 #include "Libraries/Source/Apt/AptObject.h"
 
-#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -316,7 +316,7 @@ double AptAtofDouble(const std::string &text)
 			buf += exp;
 		}
 	}
-	// std::from_chars is locale independent (strtod would honour a decimal comma) and correctly rounded.
+	// FloatFromChars is locale independent (strtod would honour a decimal comma) and correctly rounded.
 	const char *begin = buf.c_str();
 	bool negative = false;
 	if (*begin == '+' || *begin == '-')
@@ -332,7 +332,7 @@ double AptAtofDouble(const std::string &text)
 						"rounds correctly (acceptance stop S-017)";
 	}
 	double value = 0.0;
-	auto res = std::from_chars(begin, buf.c_str() + buf.size(), value);
+	auto res = FloatFromChars(begin, buf.c_str() + buf.size(), value);
 	if (res.ec == std::errc::result_out_of_range)
 	{
 		// atof: HUGE_VAL on overflow, 0 on underflow.  Which one is decided by the MAGNITUDE of the value the text

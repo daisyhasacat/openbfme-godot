@@ -19,6 +19,7 @@
 #include "GameLogic/Object/Object.h"
 #include "GameNetwork/DisconnectManager.h"
 #include "GameNetwork/LockstepDriver.h"
+#include "GameNetwork/NetGameSession.h"
 #include "GameNetwork/NetPacket.h"
 #include "GameNetwork/Network.h"
 #include "GameNetwork/OnlineStart.h"
@@ -669,6 +670,40 @@ TEST_CASE("online3: the relay reports silent slots (STATUS), binds a newer rejoi
 	std::filesystem::remove_all(dir);
 }
 
+TEST_CASE("online3: rejoin before first bind is refused without claiming the slot or losing a later valid rejoin")
+{
+	using namespace RelayProtocol;
+	const std::filesystem::path dir = tempDir("before_bind");
+	RelayCore::Options o;
+	o.keys = testRing();
+	o.logDir = dir.string();
+	RelayCore relay(o);
+	auto hello = [&](std::uint16_t port, std::uint8_t slot, std::uint16_t generation) {
+		auto d = encodeHello(ticketBytes(testTicket(slot, 0x03, generation)));
+		return relay.handle(addr(port), d.data(), d.size(), 1000, 1700000000u).reply;
+	};
+	REQUIRE(sessionTokenOf(hello(10, 0, 0)).size() == kSessionTokenBytes);
+	// The original joiner dies before sending HELLO; only its replacement's ticket reaches the relay.
+	CHECK(hello(20, 1, 1) == encodeRefused(REFUSE_REJOIN_BEFORE_BIND));
+	CHECK(hello(21, 1, 2) == encodeRefused(REFUSE_REJOIN_BEFORE_BIND));
+	CHECK(relay.stats().refused == 2);
+	CHECK(relay.stats().rejoins == 0);
+	CHECK(std::string(refuseReasonName(REFUSE_REJOIN_BEFORE_BIND)) == "cannot rejoin: the original player never connected to the relay");
+	REQUIRE(sessionTokenOf(hello(11, 1, 0)).size() == kSessionTokenBytes);
+	REQUIRE(sessionTokenOf(hello(20, 1, 1)).size() == kSessionTokenBytes);
+	CHECK(relay.stats().rejoins == 1);
+	RelayLogFile log;
+	std::string error;
+	REQUIRE_MESSAGE(RelayLogFile::parse(fetchLog(relay, addr(10), 2000), log, &error, true), error);
+	REQUIRE(log.rejoins.size() == 1);
+	CHECK(log.rejoins[0].slot == 1);
+	CHECK(log.rejoins[0].generation == 1);
+	auto bye = encodeEmpty(BYE);
+	relay.handle(addr(10), bye.data(), bye.size(), 3000, 1700000000u);
+	relay.handle(addr(20), bye.data(), bye.size(), 3000, 1700000000u);
+	std::filesystem::remove_all(dir);
+}
+
 TEST_CASE("online3: the relay serves its log in LOG_CHUNKs to a bound client of the game only, refuses without a log, logs the decider's "
 		  "DISCONNECTPLAYER once, and logs and acknowledges a log-only stream")
 {
@@ -754,6 +789,9 @@ TEST_CASE("online3: the relay serves its log in LOG_CHUNKs to a bound client of 
 	CHECK(bare.handle(addr(10), r2.data(), r2.size(), 1000, 1700000000u).reply == encodeRefused(REFUSE_NO_LOG));
 	std::vector<std::uint8_t> data = encodeData(1, transportPacket(0, 0, { 1 }));
 	CHECK(bare.handle(addr(10), data.data(), data.size(), 1000, 1700000000u).reply != encodeEmpty(NOT_BOUND));
+	CHECK(relay.openLogHandles() == 2);
+	relay.shutdown(2000);
+	CHECK(relay.openLogHandles() == 0);
 	std::filesystem::remove_all(dir);
 }
 
@@ -1220,6 +1258,7 @@ void runRejoinGame(int n, bool oldAlive = false, std::vector<int> restarts = {})
 	g.hub.generation[(size_t)X] = gen;
 	g.hub.silentAtRelay[(size_t)X] = false;
 	Peer &x = g.peers[(size_t)X];
+	x.pending.reset(); // a process restart discards its unsent commands with the old Network
 	x.net = std::make_unique<Network>(configFor(X, n, true, kCrc), g.hub.endpoint(X));
 	{
 		Hub *h = &g.hub;
@@ -1497,6 +1536,8 @@ void runRejoinGame(int n, bool oldAlive = false, std::vector<int> restarts = {})
 	}
 	// tolerance: the claim is that CRCs after the rejoin are in the log; their number depends on the pacing
 	CHECK(lateHashes > 3);
+	relay.shutdown(0);
+	CHECK(relay.openLogHandles() == 0);
 	std::filesystem::remove_all(dir);
 	g_game = nullptr;
 }
@@ -1615,7 +1656,7 @@ namespace
 // mocks restart no sequence numbers and drop no queues). Three players; the slots in `restarts` crash in turn (their process stops answering) and
 // start again with a rejoin ticket: catch-up from the relay's log, REJOINREQUEST and frames on the new process's streams before the switch, then
 // beginLive with the log's membership (a later one rebuilds the earlier rejoins) and lockstep with CRC exchanges after it
-void runRealRejoins(const std::vector<int> &restarts)
+void runRealRejoins(const std::vector<int> &restarts, bool crashWithPendingCrc)
 {
 	const int n = 3, kCrc = 10;
 	const std::uint8_t mask = 0x07;
@@ -1655,6 +1696,7 @@ void runRealRejoins(const std::vector<int> &restarts)
 			}
 		}
 		Peer &peer = peers[(size_t)slot];
+		peer.pending.reset(); // a process restart discards its unsent commands with the old Network
 		peer.net = std::make_unique<Network>(configFor(slot, n, true, kCrc), *pr.transport);
 		peer.frame = 0;
 		peer.running = true;
@@ -1726,6 +1768,19 @@ void runRealRejoins(const std::vector<int> &restarts)
 		REQUIRE(X != 0);
 		const int gen = ++generations[(size_t)X];
 		INFO("round " << round << ": slot " << X << " restarts (generation " << gen << ")");
+		if (crashWithPendingCrc)
+		{
+			auto hasPendingCrc = [&] {
+				const auto &messages = peers[(size_t)X].pending.messages();
+				return std::any_of(messages.begin(), messages.end(), [](const GameMessage &m) { return m.getType() == MSG_LOGIC_CRC; });
+			};
+			const std::uint64_t waitingSince = NetMilliseconds();
+			while (!hasPendingCrc() && NetMilliseconds() - waitingSince < 30000)
+			{
+				step(-1);
+			}
+			REQUIRE(hasPendingCrc());
+		}
 		// the crash: the process stops (no BYE); after a few seconds a new one binds with the rejoin ticket
 		peers[(size_t)X].running = false;
 		dead.push_back(std::move(live[(size_t)X]));
@@ -1911,6 +1966,8 @@ void runRealRejoins(const std::vector<int> &restarts)
 	}
 	live.clear();
 	dead.clear();
+	relay.shutdown(0);
+	CHECK(relay.openLogHandles() == 0);
 	std::filesystem::remove_all(dir);
 }
 } // namespace
@@ -1918,7 +1975,14 @@ void runRealRejoins(const std::vector<int> &restarts)
 TEST_CASE("online3 r2 (Sol r2: rejoins over real UDP): slot 1 rejoins, then slot 2, whose switch rebuilds slot 1's drop and rejoin from the log "
 		  "without touching its current streams; every peer's CRC exchange after each switch passes, and the frames match")
 {
-	runRealRejoins({ 1, 2 });
+	SUBCASE("crash at an arbitrary frame")
+	{
+		runRealRejoins({ 1, 2 }, false);
+	}
+	SUBCASE("crash with an unsent CRC")
+	{
+		runRealRejoins({ 1, 2 }, true);
+	}
 }
 
 TEST_CASE("online3 r1 (Sol: repeated rejoins): the same player rejoins three times; each rejoin's frames, CRCs and log match the others'")
@@ -1945,7 +2009,7 @@ TEST_CASE("netlag1: with the lobby's run-ahead 1, pause and resume, a rejoin (in
 	SUBCASE("rejoin of 3") { runRejoinGame(3); }
 	SUBCASE("rejoin in a 1v1") { runRejoinGame(2); }
 	SUBCASE("repeated rejoins") { runRejoinGame(3, false, { 2, 2, 2 }); }
-	SUBCASE("rejoins over real UDP") { runRealRejoins({ 1, 2 }); }
+	SUBCASE("rejoins over real UDP") { runRealRejoins({ 1, 2 }, false); }
 }
 
 TEST_CASE("online3: the acceptance stops of the lane are reported (S-3900, S-3901, S-3902)")
@@ -2040,6 +2104,265 @@ void moveCommands(LiveGame &game, CommandList &out)
 	}
 }
 } // namespace
+
+TEST_CASE("online3: a rejoin ticket of an unknown game is refused before a game or a log is allocated (maxGames 1 stays free)")
+{
+	using namespace RelayProtocol;
+	const std::filesystem::path dir = tempDir("unknown_game_rejoin");
+	RelayCore::Options o;
+	o.keys = testRing();
+	o.logDir = dir.string();
+	o.maxGames = 1;
+	RelayCore relay(o);
+	auto helloOf = [&](std::uint64_t game, std::uint16_t port, std::uint16_t generation) {
+		Ticket t = testTicket(0, 0x03, generation);
+		t.gameId = game;
+		auto d = encodeHello(ticketBytes(t));
+		return relay.handle(addr(port), d.data(), d.size(), 1000, 1700000000u).reply;
+	};
+	auto filesIn = [&] {
+		size_t n = 0;
+		for (const auto &e : std::filesystem::directory_iterator(dir))
+		{
+			(void)e;
+			++n;
+		}
+		return n;
+	};
+	for (int round = 0; round < 3; ++round) // repeated refusals must not accumulate anything
+	{
+		CHECK(helloOf(kGame + 1, (std::uint16_t)(30 + round), 1) == encodeRefused(REFUSE_REJOIN_BEFORE_BIND));
+	}
+	CHECK(relay.stats().gamesOpened == 0);
+	CHECK(relay.stats().refused == 3);
+	CHECK(filesIn() == 0);
+	// the single game slot is still free: an unrelated first join is welcomed, and then a second game is the full one
+	REQUIRE(sessionTokenOf(helloOf(kGame, 10, 0)).size() == kSessionTokenBytes);
+	CHECK(relay.stats().gamesOpened == 1);
+	CHECK(helloOf(kGame + 2, 11, 0) == encodeRefused(REFUSE_FULL));
+	auto bye = encodeEmpty(BYE);
+	relay.handle(addr(10), bye.data(), bye.size(), 3000, 1700000000u);
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("online3 retail: rejoin before first bind fails explicitly with a refusal or a legacy log missing REJOINED")
+{
+	using namespace RelayProtocol;
+	OPENBFME_REQUIRE_START(s);
+	NewGameMessage m;
+	m.game.mapName = "maps/map mp evendim/map mp evendim.map";
+	m.game.seed = 9876u;
+	m.game.startingCash = 1500;
+	auto &human = m.game.slots[0];
+	human.state = SLOT_PLAYER;
+	human.name = u"Human";
+	human.playerTemplate = factionIndex(s->world->playerTemplates(), "FactionMen");
+	human.startPos = 0;
+	human.color = 0;
+	human.teamNumber = 0;
+	auto &ai = m.game.slots[1];
+	ai.state = SLOT_MED_AI;
+	ai.name = u"Computer";
+	ai.playerTemplate = factionIndex(s->world->playerTemplates(), "FactionMordor");
+	ai.startPos = 1;
+	ai.color = 1;
+	ai.teamNumber = 1;
+	RetailGame g;
+	loadRetail(*s, m, g);
+	bool legacy = false;
+	SUBCASE("named relay refusal") {}
+	SUBCASE("legacy relay welcomes a first incarnation") { legacy = true; }
+	UDP socket, relaySocket;
+	std::string error;
+	REQUIRE(socket.bind(0x7F000001u, 0, &error));
+	REQUIRE(relaySocket.bind(0x7F000001u, 0, &error));
+	const auto dir = tempDir("session_before_bind");
+	RelayCore::Options ro;
+	ro.keys = testRing();
+	ro.logDir = dir.string();
+	RelayCore relay(ro);
+	auto initial = encodeHello(ticketBytes(testTicket(0, 0x01)));
+	relay.handle(addr(10), initial.data(), initial.size(), 1000, 1700000000u);
+	const auto log = fetchLog(relay, addr(10), 2000);
+	auto bye = encodeEmpty(BYE);
+	relay.handle(addr(10), bye.data(), bye.size(), 3000, 1700000000u);
+	LobbyStart start;
+	start.game = m;
+	start.localSlot = 0;
+	start.networkSlot[0] = true;
+	start.online = true;
+	start.onlineGameId = kGame;
+	start.relay = relaySocket.localAddress();
+	start.rejoinGeneration = 1;
+	start.ticket = ticketBytes(testTicket(0, 0x01, 1));
+	NetGameSession session(socket, start, NetGameSession::Options{});
+	REQUIRE_MESSAGE(session.beginRejoin(*g.game, &error), error);
+	auto state = NetGameSession::RejoinState::Binding;
+	for (int step = 0; step < 100 && state != NetGameSession::RejoinState::Failed; ++step)
+	{
+		state = session.rejoinStep(*g.game, 0);
+		NetAddress from;
+		std::vector<std::uint8_t> d;
+		while (relaySocket.receiveFrom(from, d))
+		{
+			REQUIRE(isRelayDatagram(d));
+			std::vector<std::uint8_t> reply;
+			if (d[3] == HELLO)
+			{
+				reply = legacy ? encodeWelcome(kGame, 0, {}) : encodeRefused(REFUSE_REJOIN_BEFORE_BIND);
+			}
+			else if (d[3] == LOG_REQUEST)
+			{
+				reply = encodeLogChunk(0, (std::uint32_t)log.size(), log.data(), log.size());
+			}
+			if (!reply.empty())
+			{
+				relaySocket.sendTo(from, reply.data(), reply.size());
+			}
+		}
+		NetSleepMilliseconds(1);
+	}
+	CHECK(state == NetGameSession::RejoinState::Failed);
+	CHECK(session.rejoinReport().framesCaughtUp == 0);
+	CHECK(session.rejoinReport().failure == (legacy ? "cannot rejoin: the relay log has no REJOINED record for this player"
+		: "the relay refused the rejoin ticket: cannot rejoin: the original player never connected to the relay"));
+	CHECK(session.rejoinStep(*g.game, 0) == NetGameSession::RejoinState::Failed);
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("onlineux1 r2 (Sol 1) retail: a rejoin that fails before it is live leaves nothing behind: its finish sends the relay no frame counts and no "
+		  "PLAYERLEAVE (it never was a member), so the player keeps the slot")
+{
+	using namespace RelayProtocol;
+	OPENBFME_REQUIRE_START(s);
+	NewGameMessage m;
+	m.game.mapName = "maps/map mp evendim/map mp evendim.map";
+	m.game.seed = 9876u;
+	m.game.startingCash = 1500;
+	for (int i = 0; i < 2; ++i)
+	{
+		auto &h = m.game.slots[(size_t)i];
+		h.state = SLOT_PLAYER;
+		h.name = i == 0 ? u"Rejoiner" : u"Other";
+		h.playerTemplate = factionIndex(s->world->playerTemplates(), i == 0 ? "FactionMen" : "FactionMordor");
+		h.startPos = i;
+		h.color = i;
+		h.teamNumber = i;
+	}
+	RetailGame g;
+	loadRetail(*s, m, g);
+	UDP socket, relaySocket;
+	std::string error;
+	REQUIRE(socket.bind(0x7F000001u, 0, &error));
+	REQUIRE(relaySocket.bind(0x7F000001u, 0, &error));
+	// the relay's log of the game: the slot's first incarnation only (no REJOINED of this client: the rejoin fails once the log is read)
+	const auto dir = tempDir("ux1_unjoined");
+	RelayCore::Options ro;
+	ro.keys = testRing();
+	ro.logDir = dir.string();
+	RelayCore relay(ro);
+	auto initial = encodeHello(ticketBytes(testTicket(0, 0x03)));
+	relay.handle(addr(10), initial.data(), initial.size(), 1000, 1700000000u);
+	const auto log = fetchLog(relay, addr(10), 2000);
+	LobbyStart start;
+	start.game = m;
+	start.localSlot = 0;
+	start.networkSlot[0] = true;
+	start.networkSlot[1] = true;
+	start.addresses[1] = relaySocket.localAddress();
+	start.online = true;
+	start.onlineGameId = kGame;
+	start.relay = relaySocket.localAddress();
+	start.rejoinGeneration = 1;
+	start.ticket = ticketBytes(testTicket(0, 0x03, 1));
+	NetGameSession session(socket, start, NetGameSession::Options{});
+	REQUIRE_MESSAGE(session.beginRejoin(*g.game, &error), error);
+	auto state = NetGameSession::RejoinState::Binding;
+	int dataDuringRejoin = 0;
+	// the lockstep commands of a leave in a DATA datagram (the relay envelope, then the transport packet: Transport.h "Packet (version 2)"): frame counts
+	// (FRAMEINFO) and PLAYERLEAVE; acks, keep-alives and resends of other records are not counted (a loaded machine times those differently)
+	auto leaveCommands = [](const std::vector<std::uint8_t> &d) {
+		int found = 0;
+		auto u16 = [&](size_t at) { return (unsigned)d[at] | ((unsigned)d[at + 1] << 8); };
+		auto u32 = [&](size_t at) { return (std::uint32_t)(u16(at) | (u16(at + 2) << 16)); };
+		size_t q = kHeaderBytes + 1 + 12; // the envelope (header, target slot); CRC, magic, version, sender, ack
+		if (d.size() < q + 2)
+		{
+			return found;
+		}
+		const unsigned count = u16(q);
+		q += 2;
+		for (unsigned i = 0; i < count && q + 12 <= d.size(); ++i)
+		{
+			const unsigned fragments = u16(q + 6);
+			const std::uint32_t len = u32(q + 8);
+			q += 12;
+			if (q + len > d.size())
+			{
+				break;
+			}
+			NetCommandMsg c;
+			if (fragments == 1 && NetPacket::decodeCommand(std::vector<std::uint8_t>(d.begin() + (long)q, d.begin() + (long)(q + len)), c, nullptr) &&
+				(c.type == NETCOMMANDTYPE_FRAMEINFO || c.type == NETCOMMANDTYPE_PLAYERLEAVE))
+			{
+				++found;
+			}
+			q += len;
+		}
+		return found;
+	};
+	auto relayTurn = [&]() {
+		int data = 0;
+		NetAddress from;
+		std::vector<std::uint8_t> d;
+		while (relaySocket.receiveFrom(from, d))
+		{
+			REQUIRE(isRelayDatagram(d));
+			std::vector<std::uint8_t> reply;
+			if (d[3] == HELLO)
+			{
+				reply = encodeWelcome(kGame, 0, {});
+			}
+			else if (d[3] == LOG_REQUEST)
+			{
+				reply = encodeLogChunk(0, (std::uint32_t)log.size(), log.data(), log.size());
+			}
+			else if (d[3] == DATA)
+			{
+				data += leaveCommands(d);
+			}
+			if (!reply.empty())
+			{
+				relaySocket.sendTo(from, reply.data(), reply.size());
+			}
+		}
+		return data;
+	};
+	for (int step = 0; step < 200 && state != NetGameSession::RejoinState::Failed; ++step)
+	{
+		state = session.rejoinStep(*g.game, 0);
+		dataDuringRejoin += relayTurn();
+		NetSleepMilliseconds(1);
+	}
+	REQUIRE(state == NetGameSession::RejoinState::Failed);
+	CHECK(session.rejoinReport().failure == "cannot rejoin: the relay log has no REJOINED record for this player");
+	CHECK(session.rejoinUnjoined());
+	NetSleepMilliseconds(5);
+	relayTurn();
+	// the host's teardown (GameWorld::net_finish): finish, then the transport serviced while it would wait for acks
+	session.finish(*g.game);
+	int dataAfterFinish = 0;
+	for (int i = 0; i < 20; ++i)
+	{
+		session.service();
+		NetSleepMilliseconds(2);
+		dataAfterFinish += relayTurn();
+	}
+	// before r2: Network::leave announced frames 0 .. the catch-up's execution frame and a PLAYERLEAVE, all as DATA to the relay
+	CHECK_MESSAGE(dataAfterFinish == 0, "frame counts / PLAYERLEAVE sent by the failed rejoin's finish: " << dataAfterFinish << " (during the rejoin: " << dataDuringRejoin << ")");
+	CHECK(dataDuringRejoin == 0); // a rejoining incarnation announces no frames
+	std::filesystem::remove_all(dir);
+}
 
 TEST_CASE("online3 retail: the catch-up runs a game's frames from its command log and reaches the same state, the CRCs compared on the way; a wrong "
 		  "CRC is reported")

@@ -20,6 +20,7 @@
 #include <godot_cpp/classes/cpu_particles3d.hpp>
 #include <godot_cpp/classes/quad_mesh.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
+#include "GameClient/ReplaySeek.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/BuildPlacement.h"
 #include "GameLogic/WallBalance.h"
@@ -27,6 +28,7 @@
 
 #include "Common/Prefetch.h"
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
+#include "GameLogic/Module/HordeContain.h"
 #include "GameLogic/CreateAHeroSystem.h"
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
 
@@ -42,9 +44,11 @@
 #include "GameClient/StealthLook.h"
 #include "GameClient/MusicScripts.h"
 #include "GameClient/LiveFX.h"
+#include "GameClient/Visual2Stops.h"
 #include "GodotDevice/GodotFXPlayer.h"
 #include "Common/Audio/AudioRequests.h"
 #include "Common/JobSystem.h"
+#include "Common/WindowsCrashDump.h"
 #include "Common/Upgrade.h"
 #include "GameLogic/Combat/CombatState.h"
 #include "GameLogic/Module/ProjectileModules.h"
@@ -62,7 +66,9 @@
 #include "Common/Player.h"
 #include "Common/Team.h"
 #include "GameClient/DrawableManager.h"
+#include "GameClient/GameRecords.h"
 #include "GameClient/LiveGame.h"
+#include "GameNetwork/OnlineLobbyClient.h"
 #include "GameClient/MapObjectRuntime.h"
 #include "GameClient/TreeTopple.h"
 #include "GameLogic/Map/TerrainTrees.h"
@@ -82,6 +88,7 @@
 #include "GameLogic/Damage.h"
 #include "GameClient/LogicSnapshot.h"
 #include "GameLogic/Module/CastleModules.h"
+#include "GameLogic/Object/AttributeModifierPool.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
@@ -261,6 +268,14 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("is_paused"), &GameWorld::is_paused);
 	ClassDB::bind_method(D_METHOD("set_time_scale", "scale"), &GameWorld::set_time_scale);
 	ClassDB::bind_method(D_METHOD("get_time_scale"), &GameWorld::get_time_scale);
+	ClassDB::bind_method(D_METHOD("caster_playback", "paused", "speed"), &GameWorld::caster_playback);
+	ClassDB::bind_method(D_METHOD("caster_step"), &GameWorld::caster_step);
+	ClassDB::bind_method(D_METHOD("caster_transport_status"), &GameWorld::caster_transport_status);
+	ClassDB::bind_method(D_METHOD("caster_restart_live", "options"), &GameWorld::caster_restart_live, DEFVAL(Dictionary()));
+	ClassDB::bind_method(D_METHOD("caster_seek_step", "target", "budget_ms"), &GameWorld::caster_seek_step, DEFVAL(20));
+	ClassDB::bind_method(D_METHOD("caster_events", "from_frame"), &GameWorld::caster_events, DEFVAL(0));
+	ClassDB::bind_method(D_METHOD("caster_metrics", "from_frame"), &GameWorld::caster_metrics, DEFVAL(0));
+	ClassDB::bind_method(D_METHOD("replay_seek_step", "target", "budget_ms"), &GameWorld::replay_seek_step, DEFVAL(20));
 	ClassDB::bind_method(D_METHOD("get_frame"), &GameWorld::get_frame);
 	ClassDB::bind_method(D_METHOD("get_presented_frame"), &GameWorld::get_presented_frame); // lane PATHPERF-1: never waits for the worker
 	ClassDB::bind_method(D_METHOD("get_state_hash"), &GameWorld::get_state_hash);
@@ -291,7 +306,8 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("debug_placement", "template_name", "x", "y", "angle", "options", "builder_id"), &GameWorld::debug_placement);
 	ClassDB::bind_method(D_METHOD("debug_damage_object", "id", "amount", "source_id"), &GameWorld::debug_damage_object);
 	ClassDB::bind_method(D_METHOD("debug_set_object_status", "id", "status", "on"), &GameWorld::debug_set_object_status); // lane SPELL-3
-	ClassDB::bind_method(D_METHOD("debug_clear_weather"), &GameWorld::debug_clear_weather);                                // lane SPELL-3
+	ClassDB::bind_method(D_METHOD("debug_clear_weather"), &GameWorld::debug_clear_weather);
+	ClassDB::bind_method(D_METHOD("debug_set_use_formations", "on"), &GameWorld::debug_set_use_formations); // lane BACKLOG-8 r2                                // lane SPELL-3
 	ClassDB::bind_method(D_METHOD("get_player_objects", "player"), &GameWorld::get_player_objects);
 	ClassDB::bind_method(D_METHOD("get_logic_trees", "x", "y", "radius"), &GameWorld::get_logic_trees); // lane SPELL-3
 	ClassDB::bind_method(D_METHOD("destroy_object", "id"), &GameWorld::destroy_object);
@@ -348,6 +364,8 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("get_frame_hashes"), &GameWorld::get_frame_hashes);
 	ClassDB::bind_method(D_METHOD("get_render_interpolation"), &GameWorld::get_render_interpolation);
 	ClassDB::bind_method(D_METHOD("get_render_pose", "id"), &GameWorld::get_render_pose);
+	ClassDB::bind_method(D_METHOD("get_particles_near", "x", "y", "radius"), &GameWorld::get_particles_near);
+	ClassDB::bind_method(D_METHOD("get_tree_sway"), &GameWorld::get_tree_sway);
 	ClassDB::bind_method(D_METHOD("get_economy"), &GameWorld::get_economy);
 	ClassDB::bind_method(D_METHOD("get_report"), &GameWorld::get_report);
 	ClassDB::bind_method(D_METHOD("get_live_report"), &GameWorld::get_live_report);
@@ -366,9 +384,15 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("net_resume"), &GameWorld::net_resume);
 	ClassDB::bind_method(D_METHOD("net_observe_next", "forward"), &GameWorld::net_observe_next, DEFVAL(true));
 	ClassDB::bind_method(D_METHOD("net_observed"), &GameWorld::net_observed);
+	ClassDB::bind_method(D_METHOD("caster_status"), &GameWorld::caster_status);
+	ClassDB::bind_method(D_METHOD("caster_observe", "player", "team"), &GameWorld::caster_observe, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("lan_open", "options"), &GameWorld::lan_open); // lane MP-2
 	ClassDB::bind_method(D_METHOD("set_simulation_profile", "name"), &GameWorld::set_simulation_profile); // lane UBER-1
 	ClassDB::bind_method(D_METHOD("simulation_profile"), &GameWorld::simulation_profile);                 // lane UBER-1
+	ClassDB::bind_method(D_METHOD("restore_simulation_profile"), &GameWorld::restore_simulation_profile); // lane UBERJOIN-1
+	ClassDB::bind_method(D_METHOD("profile_switched"), &GameWorld::profile_switched);                     // lane UBERJOIN-1
+	ClassDB::bind_method(D_METHOD("leave_lan_room_and_restore_profile"), &GameWorld::leave_lan_room_and_restore_profile); // lane UBERJOIN-1
+	ClassDB::bind_method(D_METHOD("switch_simulation_profile_for_game", "name"), &GameWorld::switch_simulation_profile_for_game); // lane UBERJOIN-1 (the lobby screens' switch, for the headless lifecycle test)
 	ClassDB::bind_method(D_METHOD("get_census"), &GameWorld::get_census);                                 // lane UBER-1
 	ClassDB::bind_method(D_METHOD("lan_close"), &GameWorld::lan_close);
 	ClassDB::bind_method(D_METHOD("lan_begin"), &GameWorld::lan_begin);
@@ -481,7 +505,10 @@ Dictionary GameWorld::get_audio_report() const
 	return d;
 }
 
-GameWorld::GameWorld() = default;
+GameWorld::GameWorld()
+{
+	m_choice.identityFor = [this](SimulationProfile p) { return profileIdentityFor(p); }; // lane UBERJOIN-1
+}
 
 GameWorld::~GameWorld()
 {
@@ -802,6 +829,8 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 	m_clientRuntime->build(m_game->clientOnly(), false);
 	m_treeTopple.reset(new TreeTopple()); // lane SPELL-3
 	m_treeViews.clear();
+	m_vegSway.reset(); // lane VISUAL-2
+	m_swayTypeCounts.fill(0);
 	m_treeEventsSeen = 0;
 	size_t instances = 0, missing = 0;
 	for (MapPlacedModel &p : m_clientRuntime->models())
@@ -853,6 +882,15 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 		{
 			if (const W3DTreeDrawModuleData *td = dynamic_cast<const W3DTreeDrawModuleData *>(d.draws[p.module].data))
 			{
+				// lane VISUAL-2: RW 0x4EC93A, the tree's sway type (TaintedTree: none, else GameClientRandomValue(1, 10)); the buffer's sway starts with
+				// the first tree (W3DVegetationSway.h)
+				const int swayType = W3DVegetationSway::treeSwayType(td->m_taintedTree, m_clientRuntime->random());
+				staticInst->set_instance_sway(instance, swayType);
+				++m_swayTypeCounts[(size_t)swayType];
+				if (!m_vegSway)
+				{
+					m_vegSway.reset(new W3DVegetationSway());
+				}
 				m_treeTopple->add((std::uint32_t)d.objectIndex + 1u, d.position, td);
 				ToppleTreeView v;
 				v.instance = instance;
@@ -882,6 +920,8 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 
 Dictionary GameWorld::load_map(const String &map_name, const Dictionary &options)
 {
+	if (WindowsCrashDump::reassertHandlers())
+		UtilityFunctions::push_warning("CRASH a crash handler was replaced; restored OpenBFME handlers before match loading");
 	LiveGame::Options lo;
 	lo.mapName = toNative(map_name);
 	lo.seed = (std::uint32_t)optInt(options, "seed", 1);
@@ -963,11 +1003,11 @@ Dictionary GameWorld::prepare_new_game(const Dictionary &message)
 		errors.push_back(toGodot(error));
 		return result;
 	}
-	if (in.game.simulationProfile != m_simulationProfile)
+	if (in.game.simulationProfile != m_choice.current)
 	{
 		// lane UBER-1: the game's profile is the setup's (the player's option or the LAN host's); this world runs and records another: refused, never mixed
 		errors.push_back(toGodot(std::string("the game's simulation profile is ") + simulationProfileName(in.game.simulationProfile) + ", this player's is " +
-			simulationProfileName(m_simulationProfile) + " (the OpenBFME option Uber performance mode)"));
+			simulationProfileName(m_choice.current) + " (the OpenBFME option Uber performance mode)"));
 		return result;
 	}
 	auto start = std::make_unique<NewGameStart>(RandomAlgorithm::ZH_CarryChain);
@@ -985,6 +1025,8 @@ Dictionary GameWorld::prepare_new_game(const Dictionary &message)
 		start->observer = m_netStart.spectatorIndex >= 0; // lane ONLINE-3: a spectator watches as the ReplayObserver side
 	}
 	result["resolved"] = newGameToDictionary(start->message);
+	m_recordMessage = start->message; // lane ONLINEHUB-1
+	m_recordLocalSlot = start->observer ? -1 : start->localSlot;
 	result["map"] = toGodot(start->mapName);
 	result["local_slot"] = start->localSlot;
 	result["notes"] = toArray(start->notes);
@@ -1008,13 +1050,13 @@ Dictionary GameWorld::start_new_game(const Dictionary &options)
 		report["ok"] = false;
 		return report;
 	}
-	if (m_start->message.game.simulationProfile != m_simulationProfile)
+	if (m_start->message.game.simulationProfile != m_choice.current)
 	{
 		// lane UBER-1 (review): the profile changed between prepare and start (set_simulation_profile in between): the prepared game is not started
 		Dictionary report;
 		Array errors;
 		errors.push_back(toGodot(std::string("the prepared game runs the simulation profile ") + simulationProfileName(m_start->message.game.simulationProfile) +
-			", this player now runs " + simulationProfileName(m_simulationProfile)));
+			", this player now runs " + simulationProfileName(m_choice.current)));
 		report["errors"] = errors;
 		report["ok"] = false;
 		return report;
@@ -1373,7 +1415,7 @@ void fragment() {
 	}
 	dyn->set_house_colors_enabled(m_houseColors);
 	dyn->set_playing(false); // time only enters through set_instance_pose
-	dyn->set_pose_culling(m_perf3Client); // lane PERF-3: the main camera is the only one that sees this world's live objects
+	dyn->set_pose_culling(m_perf3Client); // PiP supplies an additional frustum when a second camera sees the live objects.
 	timings["static_layer_ms"] = timing::elapsedMs(t0);
 
 	t0 = nowMs();
@@ -1739,33 +1781,22 @@ void GameWorld::refresh_views(double deltaMs)
 		const Coord3D shownAt = *d->getPosition();
 		const Transform3D xf = toTransform(d->getBasis(), shownAt, d->getInstanceScale());
 		const bool xfChanged = !v.haveXf || !(xf == v.lastXf);
-		// VIS-1: an object the local player cannot see is not drawn (RW 0xB4E890 SHROUDED: never seen, or a mobile / unseen object in the fog, RW 0x68EDD0)
-		// SMOOTH-1: from the presented snapshot's record (the snapshot builder asked the shroud manager between frames)
-		bool fogHidden = false;
-		bool stealthHidden = false;
+		// VIS-1 / STEALTH-1 / GARRISON-1 / lane VISUAL-2: what the presented snapshot leaves undrawn and the fogged ghost's light (Drawable::presentedLook,
+		// shared with the attached particle systems, the buffs and the streaks)
+		const Drawable::PresentedLook look = d->presentedLook(presented.get(), m_shroudDrawn);
+		const bool fogHidden = look.nonStealthHidden;
+		const bool fogLook = look.fogLook;
 		const ObjectSnapshot *stealthRec = nullptr;
 		if (presented)
 		{
 			bool synced = false;
-			const ObjectSnapshot *rec = d->syncedRecord(*presented, synced); // lane PERF-3: the record syncTransforms found in this snapshot
+			stealthRec = d->syncedRecord(*presented, synced);
 			if (!synced)
 			{
-				rec = presented->find(d->getObjectID());
+				stealthRec = presented->find(d->getObjectID());
 			}
-			if (m_shroudDrawn)
-			{
-				fogHidden = rec && rec->shroudedForLocal;
-			}
-			// lane STEALTH-1 (RW 0x81AA03 -> the drawable state RW 0x6760F9, GameClient/StealthLook): an invisible object an enemy looks at is not drawn; one a friend
-			// looks at pulses between GameData InvisibilityOpacityMin and Max
-			if (rec && StealthLook::hidden(*rec)) stealthHidden = true;
-			// lane GARRISON-1: the drawable's hidden flag the logic sets (RW 0x6718FB: a rider of an ENCLOSED container, a horde member gone into a garrison)
-			if (rec && rec->drawableHidden)
-			{
-				fogHidden = true;
-			}
-			stealthRec = rec;
 		}
+		const bool stealthHidden = stealthRec && StealthLook::hidden(*stealthRec);
 		const bool fogChanged = (fogHidden || stealthHidden) != v.fogHidden;
 		v.fogHidden = fogHidden || stealthHidden;
 		const bool flagsChanged = d->getChangeCount() != v.seenChange || fogChanged;
@@ -1810,6 +1841,17 @@ void GameWorld::refresh_views(double deltaMs)
 					ev.tireChanges = e.tireChanges;
 					ev.tireInstance = ev.instance;
 				};
+				// lane VISUAL-2: RW 0x46F48E (renderOneObject): an object fogged for the local player (its last sight) is lit by the fogged light environment,
+				// the lights and the ambient times FogAlpha / ClearAlpha (RW 0x46DFD0)
+				auto applyFogLook = [&]() {
+					if (ev.instance < 0 || (ev.fogLook == fogLook && ev.fogLookInstance == ev.instance))
+					{
+						return;
+					}
+					dyn->set_instance_fogged(ev.instance, fogLook);
+					ev.fogLook = fogLook;
+					ev.fogLookInstance = ev.instance;
+				};
 				const bool animatedNow = e.animated && m_animations;
 				animated += animatedNow ? 1 : 0;
 				// lane CAH-2: a new colour set (Drawable::setCustomColors, RW 0x6727B0) chooses another model below
@@ -1830,6 +1872,7 @@ void GameWorld::refresh_views(double deltaMs)
 						}
 					}
 					applyTires();
+					applyFogLook();
 					continue;
 				}
 				W3DDrawPoseView &f = m_viewPose; // lane PERF-3: the frame's pose request and model by reference (frame() copied every name of the module)
@@ -1851,11 +1894,16 @@ void GameWorld::refresh_views(double deltaMs)
 					std::snprintf(opt, sizeof(opt), "#%d&%d&%d&%d", d->customColorKind(), (int)d->customColors()[0], (int)d->customColors()[1], (int)d->customColors()[2]);
 					coloredModel = "#" + ev.rawLowered + opt;
 				}
-				// stop S-4832: the state's `Texture = A B` swaps (a building's SNOW state on a snowy map) make another model variant, "<model>#tex&a=b"
+				// stop S-5015: the state's `Texture = A B` swaps (a building's SNOW state on a snowy map) make another model variant, "<model>#tex&a=b"
 				std::string swappedModel;
 				if (shown && !f.textureSwaps->empty())
 				{
-					swappedModel = (!coloredModel.empty() ? coloredModel : ev.rawLowered) + W3DInstancer::Texture_Swap_Suffix(*f.textureSwaps);
+					if (ev.swapSource != f.textureSwaps || flagsChanged)
+					{
+						ev.swapSource = f.textureSwaps;
+						ev.swapSuffix = W3DInstancer::Texture_Swap_Suffix(*f.textureSwaps); // once per state change (Sol review r1: not every frame)
+					}
+					swappedModel = (!coloredModel.empty() ? coloredModel : ev.rawLowered) + ev.swapSuffix;
 				}
 				const std::string &model = !swappedModel.empty() ? swappedModel : !coloredModel.empty() ? coloredModel : shown ? ev.rawLowered : kNoModel;
 				if (model != ev.model)
@@ -1948,6 +1996,7 @@ void GameWorld::refresh_views(double deltaMs)
 						}
 					}
 					applyTires();
+					applyFogLook();
 					// PROJ-2: the drawable's fade (a launched stone hidden for its InvisibleFrames, then faded in: GameClient/DrawableFade)
 					const float opacity = StealthLook::drawOpacity(d->drawOpacity(), entryStealth, presented.get(), m_stealthClockMs); // lane STEALTH-1: the friend's invisibility pulse
 					if (opacity != ev.opacity)
@@ -2009,6 +2058,12 @@ void GameWorld::refresh_views(double deltaMs)
 				{
 					dyn->set_instance_transform(ev.instance, entryXf);
 				}
+				if (ev.instance >= 0 && (ev.fogLook != fogLook || ev.fogLookInstance != ev.instance)) // lane VISUAL-2: the fogged light (as above)
+				{
+					dyn->set_instance_fogged(ev.instance, fogLook);
+					ev.fogLook = fogLook;
+					ev.fogLookInstance = ev.instance;
+				}
 				if (ev.instance >= 0) // lane STEALTH-1: a friend's invisible object pulses, a revealed one returns to full opacity (GameClient/StealthLook)
 				{
 					const float opacity = StealthLook::drawOpacity(1.0f, entryStealth, presented.get(), m_stealthClockMs);
@@ -2049,8 +2104,23 @@ void GameWorld::advance(double delta)
 		if (m_netSession)
 		{
 			// SMOOTH-1 (review r4): a network game keeps its transport and protocol pumped while paused (a presentation-only advance: no batch runs)
-			m_netSession->service();
-			m_game->advance(0.0);
+			if (m_netSpectating)
+			{
+				const NetGameSession::SpectateState st = m_netSession->spectateStep(*m_game, 0);
+				m_netLoaded = st == NetGameSession::SpectateState::Following || st == NetGameSession::SpectateState::Ended;
+				if (m_netSession->spectatorFailed())
+				{
+					m_paused = true;
+				}
+			}
+			else
+			{
+				m_netSession->service();
+			}
+			if (!m_netSpectating || !m_netSession->spectatorFailed())
+			{
+				m_game->advance(0.0);
+			}
 		}
 		refresh_streaks(false);
 		m_game->endClientWindow(); // RENDERWAIT-1: no frames are queued while paused
@@ -2062,7 +2132,6 @@ void GameWorld::advance(double delta)
 	{
 		// MP-1: the network first (the frame data that arrived, late lobby datagrams), then the scripted player of a demo / test peer. SMOOTH-1: this
 		// thread is the protocol owner (LiveGame::advance pumps the driver on every call, also while the worker runs a frame or the lockstep stalls)
-		m_netSession->service();
 		if (m_lan)
 		{
 			// lane MP-2: the LAN lobby answers a repeated GAME_START while the game runs (a lost GAME_START_ACK keeps the host waiting)
@@ -2073,23 +2142,27 @@ void GameWorld::advance(double delta)
 		{
 			// lane ONLINE-3: a spectator: the catch-up runs the relay's log at full speed (about 40 ms of frames per process call); once at the log's
 			// edge the step only fetches and assembles, and advance below runs the frames at the game's pace (the presentation interpolates)
-			const bool catchingUp = m_netSession->spectateReport().caughtUpMs == 0;
+			const bool catchingUp = m_netSession->spectatorAutoCatchupInProgress();
 			const NetGameSession::SpectateState st = m_netSession->spectateStep(*m_game, catchingUp ? 40 : 0);
 			m_netLoaded = st == NetGameSession::SpectateState::Following || st == NetGameSession::SpectateState::Ended;
 		}
-		else if (m_netRejoining)
+		else
 		{
-			// lane ONLINE-3: the rejoin's catch-up: the relay's log at full speed (about 40 ms of frames per process call), then lockstep
-			const NetGameSession::RejoinState rs = m_netSession->rejoinStep(*m_game, 40);
-			if (rs == NetGameSession::RejoinState::Live || rs == NetGameSession::RejoinState::Failed)
+			m_netSession->service();
+			if (m_netRejoining)
 			{
-				m_netRejoining = false;
-				m_netLoaded = rs == NetGameSession::RejoinState::Live;
+				// lane ONLINE-3: the rejoin's catch-up: the relay's log at full speed (about 40 ms per process call), then lockstep
+				const NetGameSession::RejoinState rs = m_netSession->rejoinStep(*m_game, 40);
+				if (rs == NetGameSession::RejoinState::Live || rs == NetGameSession::RejoinState::Failed)
+				{
+					m_netRejoining = false;
+					m_netLoaded = rs == NetGameSession::RejoinState::Live;
+				}
 			}
-		}
-		else if (!m_netLoaded)
-		{
-			m_netLoaded = m_netSession->pollLoaded();
+			else if (!m_netLoaded)
+			{
+				m_netLoaded = m_netSession->pollLoaded();
+			}
 		}
 		if (m_netScript && m_game->frame() != m_netScriptFrame && m_game->logicHeld()) // RENDERWAIT-1: its commands only where the logic is held
 		{
@@ -2098,7 +2171,12 @@ void GameWorld::advance(double delta)
 		}
 	}
 	// lane ONLINE-3: rejoinStep runs the catch-up frames itself; so does spectateStep until the spectator reaches the log's edge
-	const bool spectatorCatchingUp = m_netSpectating && m_netSession && m_netSession->spectateReport().caughtUpMs == 0;
+	const bool spectatorCatchingUp = m_netSpectating && m_netSession && m_netSession->spectatorAutoCatchupInProgress();
+	const bool spectatorFailed = m_netSpectating && m_netSession && m_netSession->spectatorFailed();
+	if (spectatorFailed)
+	{
+		m_paused = true;
+	}
 	// lane RENDERWAIT-1: with the logic on its worker, the client work that reads the live logic (the audio, the effects' logic part, the tree events) runs
 	// in the client window, before this render frame's logic frames are queued: LiveGame::advance ends the window (the worker may then run them while
 	// this thread presents and draws). A render frame without a window (the worker inside a frame) skips it; nothing here waits for the worker.
@@ -2109,7 +2187,11 @@ void GameWorld::advance(double delta)
 	{
 		heldClientWork();
 	}
-	m_lastLogicFrames = m_netRejoining || spectatorCatchingUp ? 0 : m_game->advance(dt);
+	m_lastLogicFrames = m_netRejoining || spectatorCatchingUp || spectatorFailed ? 0 : m_game->advance(dt);
+	if (m_replayPlayback && m_replayPlayback->hasMismatch())
+	{
+		m_paused = true;
+	}
 	updateEndGame(); // lane END-1: the end sequence reads the presented frame
 	if (!threaded)
 	{
@@ -2125,6 +2207,7 @@ void GameWorld::advance(double delta)
 	const double tf = nowMs();
 	m_lastViewsMs = timing::spanMs(tf, tv);
 	updateTreeTopple(dt); // lane SPELL-3
+	updateTreeSway(dt);   // lane VISUAL-2
 	const double t2 = nowMs();
 	m_lastFxMs = timing::spanMs(t2, tf);
 	if (m_textureAnimation)
@@ -2192,6 +2275,7 @@ void GameWorld::syncBuffs(double dt)
 	static const float kIdentity[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
 	std::set<uint64_t> live;
 	std::vector<::ObjectID> gone;
+	const std::shared_ptr<const LogicSnapshot> presented = m_game->presentedSnapshot(); // lane VISUAL-2 r2
 	for (const auto &kv : buffs.buffs())
 	{
 		const ClientBuffs::Buff &b = kv.second;
@@ -2221,9 +2305,15 @@ void GameWorld::syncBuffs(double dt)
 		}
 		if (inst->second >= 0)
 		{
+			// lane VISUAL-2 r2: a TBuff shows only while its drawable is visible (RW 0x4D12FA reads the drawable's visible byte +0x441; INFERENCE, S-4642:
+			// it follows the drawable every frame like the position): a buffed object gone into the shroud, invisible or hidden by its container shows none
+			const bool hidden = d->presentedLook(presented.get(), m_shroudDrawn).hidden;
 			dyn->set_instance_transform(inst->second, toTransform(kIdentity, *d->getPosition(), d->getInstanceScale()));
-			dyn->set_instance_opacity(inst->second, b.opacity);
-			++m_buffsDrawn;
+			dyn->set_instance_opacity(inst->second, hidden ? 0.0f : b.opacity);
+			if (!hidden)
+			{
+				++m_buffsDrawn;
+			}
 		}
 	}
 	for (::ObjectID id : gone)
@@ -2362,6 +2452,32 @@ void GameWorld::heldClientWork()
 
 // lane SPELL-3: the logic's tree events (TerrainTrees: Devastation's topple and the lumber taken) drive the falling trees of the static layer (TreeTopple);
 // the events are read where the logic is held (heldClientWork), the fall is drawn every frame
+// lane VISUAL-2: RW 0x4ED508's sway update (skipped while the game is paused: advance returns before this) with the presented breeze, then the
+// vegetation effect's SwayOffsets (RW 0x4E61EE) for every rigid W3D shader (W3DVegetationSway.h, w3dshadergen.cpp)
+void GameWorld::updateTreeSway(double dt)
+{
+	if (!m_vegSway || !m_game || !m_clientRuntime)
+	{
+		return;
+	}
+	const std::shared_ptr<const LogicSnapshot> presented = m_game->presentedSnapshot();
+	if (!presented)
+	{
+		return;
+	}
+	m_vegSway->advanceSeconds(presented->breeze, m_clientRuntime->random(), dt);
+	W3DVegetationSway::Vec3 sway[W3DVegetationSway::MAX_SWAY_TYPES + 1];
+	m_vegSway->swayOffsets(sway);
+	float offsets[10][3];
+	for (int i = 0; i < 10; ++i)
+	{
+		offsets[i][0] = sway[i + 1].x;
+		offsets[i][1] = sway[i + 1].y;
+		offsets[i][2] = sway[i + 1].z;
+	}
+	W3D_Set_Sway_Offsets(offsets);
+}
+
 void GameWorld::updateTreeTopple(double dt)
 {
 	if (!m_treeTopple || !m_game)
@@ -2422,6 +2538,7 @@ int64_t GameWorld::get_presented_frame() const
 
 int64_t GameWorld::get_state_hash() const
 {
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
 	return m_game ? (int64_t)m_game->logic().computeStateHash() : -1;
 }
 
@@ -2635,6 +2752,7 @@ void GameWorld::refresh_streaks(bool record)
 			kv.second.seen = false;
 		}
 		DrawableManager &dm = m_game->drawables();
+		const std::shared_ptr<const LogicSnapshot> presented = m_game->presentedSnapshot(); // lane VISUAL-2 r2
 		for (size_t id = 1; id < dm.slotCount(); ++id)
 		{
 			const Drawable *d = dm.find((DrawableID)id);
@@ -2642,6 +2760,9 @@ void GameWorld::refresh_streaks(bool record)
 			{
 				continue;
 			}
+			// lane VISUAL-2 r2: a W3DStreakDraw is a draw module: a drawable that is not drawn (in the shroud, invisible to the local player, hidden by its
+			// container) neither records its trail nor shows it (its points stay for when it is drawn again)
+			const bool hidden = d->presentedLook(presented.get(), m_shroudDrawn).hidden;
 			const std::vector<DrawEntry> &entries = d->entries();
 			DrawableView *view = id < m_views.size() && m_views[id].valid ? &m_views[id] : nullptr;
 			for (size_t k = 0; k < entries.size() && k < 256; ++k)
@@ -2671,6 +2792,11 @@ void GameWorld::refresh_streaks(bool record)
 				sv.data = data;
 				sv.seen = true;
 				sv.opacity = d->drawOpacity();
+				sv.hidden = hidden;
+				if (hidden)
+				{
+					continue;
+				}
 				const Coord3D &p = *d->getPosition();
 				const float pos[3] = { p.x, p.y, p.z };
 				sv.trail.update(*data, pos);
@@ -2712,6 +2838,10 @@ void GameWorld::refresh_streaks(bool record)
 	std::map<std::string, std::vector<const StreakView *>> groups;
 	for (const auto &kv : m_streaks)
 	{
+		if (kv.second.hidden)
+		{
+			continue; // lane VISUAL-2 r2
+		}
 		groups[std::string(kv.second.data->m_additive ? "A|" : "B|") + W3DStreakTexture(*kv.second.data, weather)].push_back(&kv.second);
 	}
 	for (const auto &g : groups)
@@ -2855,6 +2985,7 @@ Array GameWorld::get_projectiles() const
 
 Dictionary GameWorld::get_object(int64_t id) const
 {
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
 	Dictionary d;
 	d["ok"] = false;
 	if (!m_game || id <= 0)
@@ -2868,6 +2999,7 @@ Dictionary GameWorld::get_object(int64_t id) const
 	}
 	d["ok"] = true;
 	d["id"] = id;
+	d["drawable_hidden"] = o->isDrawableHidden();
 	d["template"] = toGodot(o->getTemplate()->getName());
 	d["team"] = o->getTeam() ? toGodot(o->getTeam()->getName()) : String();
 	d["owner"] = o->getControllingPlayer() ? toGodot(o->getControllingPlayer()->getPlayerName()) : String();
@@ -2903,6 +3035,10 @@ Dictionary GameWorld::get_object(int64_t id) const
 	if (const HordeContain *hc = dynamic_cast<const HordeContain *>(o->getContain()))
 	{
 		d["horde_melee"] = hc->meleeEngaged();
+		// lane DEVPORT-7: the formation a horde stands in (its HordeContain's IsPorcupineFormation) and the template its formation button switches to
+		d["horde_porcupine"] = hc->hordeData().m_isPorcupineFormation;
+		const ThingTemplate *next = hc->alternateFormationTemplate();
+		d["horde_next_formation"] = next ? toGodot(next->getName()) : String();
 	}
 	// the current weapon (debugging fire orders): its slot and the frame it last fired
 	if (const ObjectWeapons *ow = o->getWeapons())
@@ -2941,18 +3077,31 @@ Dictionary GameWorld::get_object(int64_t id) const
 		}
 		d["ai_path"] = pathNodes;
 		d["ai_victim"] = (int64_t)ai->currentVictimId();
-		d["vision_range"] = AIUpdateInterface::objectVisionRangeOf(const_cast<::Object &>(*o));
+		// HUD/debug queries must not warm simulation caches or change the lockstep hash.
+		d["vision_range"] = AIUpdateInterface::objectVisionRangeOf(const_cast<::Object &>(*o), false);
 		if (ShroudManager *sm = m_game->logic().shroud())
 		{
 			const ShroudManager::TemplateVision tv = ShroudManager::templateVision(*o->getTemplate()->getFinalOverride());
 			d["vision_bonus_per_foot"] = tv.bonusPerFoot;
 			d["vision_max_bonus"] = tv.maxBonus;
 			d["vision_min_bonus"] = tv.minBonus;
-			d["vision_ground_reference"] = sm->groundReferenceFor(*o, tv);
+			d["vision_ground_reference"] = sm->groundReferenceFor(*o, tv, false);
 		}
 		d["ai_command_source"] = (int64_t)ai->lastCommandSource();
 	}
 	d["destroyed"] = o->isDestroyed();
+	{
+		// lane OWNERFIX-2: the attribute modifier lists the object's pool holds (a horde's are its HordeContain's: RW 0x68F1A8), in entry order
+		Array lists;
+		if (const AttributeModifierPool *pool = dynamic_cast<const AttributeModifierPool *>(o->findModule("AttributeModifierPoolUpdate")))
+		{
+			for (const std::string &n : pool->listNames())
+			{
+				lists.append(String(n.c_str()));
+			}
+		}
+		d["modifiers"] = lists;
+	}
 	d["structure"] = o->isKindOfName("STRUCTURE");
 	d["selectable"] = HudObjects::isSelectable(*o); // lane IDLE-1: the HUD's rule (a projectile, an AI marker, a ping, a NoSelect worker: a player cannot select it)
 	// MOVE-1: what the movement code says about the object, and the model conditions the logic has set on it
@@ -4193,6 +4342,44 @@ Array GameWorld::get_frame_hashes() const
 	return out;
 }
 
+Dictionary GameWorld::get_tree_sway() const
+{
+	Dictionary d;
+	Array counts;
+	for (int64_t c : m_swayTypeCounts)
+	{
+		counts.push_back(c);
+	}
+	d["trees_by_type"] = counts;
+	d["active"] = m_vegSway != nullptr;
+	Array offsets;
+	if (m_vegSway)
+	{
+		d["version"] = (int64_t)m_vegSway->version();
+		W3DVegetationSway::Vec3 sway[W3DVegetationSway::MAX_SWAY_TYPES + 1];
+		m_vegSway->swayOffsets(sway);
+		for (int i = 1; i <= W3DVegetationSway::MAX_SWAY_TYPES; ++i)
+		{
+			offsets.push_back(Vector3(sway[i].x, sway[i].y, sway[i].z));
+		}
+	}
+	d["offsets"] = offsets;
+	return d;
+}
+
+Dictionary GameWorld::get_particles_near(double x, double y, double radius) const
+{
+	Dictionary d;
+	long long systems = 0, particles = 0;
+	if (m_fxPlayer && m_fxPlayer->playback())
+	{
+		m_fxPlayer->playback()->particlesNear((float)x, (float)y, (float)radius, systems, particles);
+	}
+	d["systems"] = (int64_t)systems;
+	d["particles"] = (int64_t)particles;
+	return d;
+}
+
 Dictionary GameWorld::get_render_pose(int64_t id) const
 {
 	// SMOOTH-1: the drawable (render side) and its object's record in the presented snapshot: no wait for the logic worker
@@ -4219,6 +4406,26 @@ Dictionary GameWorld::get_render_pose(int64_t id) const
 	d["logic_z"] = rec->position.z;
 	d["logic_angle"] = rec->angle;
 	d["frame"] = (int64_t)snap->frame;
+	d["presented_shrouded"] = rec->shroudedForLocal;
+	const size_t view = (size_t)dr->getID();
+	d["view_valid"] = view < m_views.size() && m_views[view].valid;
+	d["view_hidden"] = view < m_views.size() && m_views[view].fogHidden;
+	d["fully_obscured"] = dr->shroudLook().fullyObscured; // lane VISUAL-2: RW Drawable + 0x440 (the attached particle systems do not emit)
+	// lane VISUAL-2 r2: the model instances handed the fogged light (RW 0x46F48E) and the drawn ones (instance >= 0)
+	int64_t fogLit = 0, drawn = 0;
+	if (view < m_views.size() && m_views[view].valid)
+	{
+		for (const EntryView &ev : m_views[view].entries)
+		{
+			if (ev.instance >= 0)
+			{
+				++drawn;
+				fogLit += ev.fogLook && ev.fogLookInstance == ev.instance ? 1 : 0;
+			}
+		}
+	}
+	d["instances"] = drawn;
+	d["fog_lit_instances"] = fogLit;
 	return d;
 }
 
@@ -4255,6 +4462,10 @@ Dictionary GameWorld::get_economy() const
 		d["cp_used"] = p->commandPoints().getUsage();
 		d["cp_limit"] = p->commandPointLimit();
 		d["cp_available"] = p->commandPointsAvailable();
+		d["cp_cap"] = p->commandPoints().getCap();     // lane OWNERFIX-2: + 0x10, the ceiling the lobby's Command Points factor scales (RW 0x6A7DE2)
+		d["cp_base"] = p->commandPoints().getBase();   // + 4
+		d["cp_bonus"] = p->commandPoints().getBonus(); // + 0xC
+		d["handicap"] = p->getHandicap();              // lane OWNERFIX-2: Player + 0x29C
 		players.push_back(d);
 	}
 	e["players"] = players;
@@ -4496,6 +4707,7 @@ Dictionary GameWorld::net_begin(const Dictionary &options)
 			return r;
 		}
 		m_netSpectating = true;
+		m_game->enableObserverEvents();
 		m_netRejoining = false;
 		m_netLoaded = false;
 		m_netScript = false;
@@ -4588,7 +4800,8 @@ Dictionary GameWorld::net_status() const
 		static const char *const kStates[] = {"binding", "following", "ended", "failed"};
 		Dictionary j;
 		const int st = (int)s.spectateState();
-		j["state"] = st == (int)NetGameSession::SpectateState::Following && sr.caughtUpMs == 0 ? "catching_up" : st == (int)NetGameSession::SpectateState::Following ? "live" : kStates[st];
+		j["state"] = st == (int)NetGameSession::SpectateState::Following && s.spectatorAutoCatchupInProgress() ? "catching_up" :
+			st == (int)NetGameSession::SpectateState::Following ? "live" : kStates[st];
 		j["index"] = m_netStart.spectatorIndex;
 		j["delay"] = m_netStart.spectatorDelay;
 		j["frame"] = (int64_t)sr.reached;
@@ -4599,7 +4812,7 @@ Dictionary GameWorld::net_status() const
 		j["crc_mismatches"] = (int64_t)sr.crcMismatches;
 		j["catch_up_ms"] = (int64_t)(sr.caughtUpMs > sr.startedMs ? sr.caughtUpMs - sr.startedMs : 0);
 		j["failure"] = toGodot(sr.failure);
-		j["observed"] = net_observed();
+		j["observed"] = net_observed_unwaiting();
 		r["spectate"] = j;
 		Dictionary relay;
 		relay["address"] = toGodot(m_netStart.relay.text());
@@ -4699,6 +4912,7 @@ Dictionary GameWorld::net_status() const
 			j["crc_mismatches"] = (int64_t)rr.crcMismatches;
 			j["catch_up_ms"] = (int64_t)(rr.liveMs > rr.startedMs ? rr.liveMs - rr.startedMs : 0);
 			j["failure"] = toGodot(rr.failure);
+			j["attempt"] = (int64_t)rr.startedMs; // lane ONLINEUX-1 r2: new for every beginRejoin (game.gd's rejoin watch starts afresh on it)
 			r["rejoin"] = j;
 		}
 		Array held, handed;
@@ -4726,6 +4940,12 @@ Dictionary GameWorld::net_status() const
 		relay["refusal"] = (int64_t)s.transport().relayRefusal();
 		relay["hellos"] = (int64_t)s.transport().stats().relayHellos;
 		relay["round_trip_ms"] = (int64_t)s.network().maxRoundTripMs();
+		// lane ONLINEUX-1: something came from the relay within the disconnect time (Network::pingTest through the relay, ONLINE-3): false = the
+		// relay link is lost (game.gd says so to the player)
+		relay["heard"] = s.network().pingTest();
+		// while the multiplayer load screen is up nothing is read from the relay (the map loads): the link is not judged then (DisconnectManager's
+		// own rule, RW 0x8D8B82)
+		relay["judged"] = !s.network().disconnectManager().loadScreenUp();
 		r["relay"] = relay;
 	}
 	r["desyncs"] = desyncs;
@@ -4826,6 +5046,12 @@ Dictionary GameWorld::net_observe_next(bool forward)
 	}
 	// LiveGame::observeNextPlayer: retail's precondition (RW 0x6A87F5): the local player is not an active one (an observer or a defeated player)
 	r["ok"] = m_game->observeNextPlayer(forward);
+	if ((bool)r["ok"])
+	{
+		const auto context = m_world->enterContext();
+		refresh_shroud(true);
+		refresh_views(0);
+	}
 	r["observed"] = net_observed();
 	return r;
 }
@@ -4855,6 +5081,94 @@ Dictionary GameWorld::net_observed() const
 	d["skill_points"] = (double)p->science().getSkillPoints();
 	d["power_points"] = p->science().getSciencePurchasePoints();
 	d["defeated"] = p->isDefeated();
+	m_observedRead = d;
+	return d;
+}
+
+Dictionary GameWorld::net_observed_unwaiting() const
+{
+	// RENDERWAIT-1: _net_tick asks net_status() every render frame; net_observed() reads the observed player's live resources (players(): a wait for the
+	// worker outside the client window). Every view switch (net_observe_next, caster_observe) runs where the logic is held and refreshes the read.
+	const int observed = m_game ? m_game->observedPlayer() : -1;
+	if (observed < 0)
+	{
+		Dictionary all; // the observer's own view: nothing of a player to read
+		all["index"] = -1;
+		all["all"] = true;
+		return all;
+	}
+	if (m_game->logicHeld())
+	{
+		return net_observed(); // stores the read
+	}
+	if (!m_observedRead.is_empty() && (int)m_observedRead.get("index", -1) == observed)
+	{
+		return m_observedRead; // the last read for this player
+	}
+	Dictionary pending; // no read for this player yet (no held frame since the switch): named, not invented
+	pending["index"] = observed;
+	pending["all"] = false;
+	pending["pending"] = true;
+	return pending;
+}
+
+bool GameWorld::caster_observe(int64_t player, bool team)
+{
+	if (!m_game || (!m_replayPlayback && !m_netSpectating) || player < -1 || player > 255)
+	{
+		return false;
+	}
+	bool inGame = player == -1;
+	for (const std::string &name : m_game->startSlotPlayers())
+	{
+		if (name.empty())
+		{
+			continue;
+		}
+		const Player *p = m_game->players().findPlayerWithName(name);
+		inGame = inGame || (p && p->getPlayerIndex() == player);
+	}
+	if (!inGame || !m_game->observePlayer((int)player, team))
+	{
+		return false;
+	}
+	const auto context = m_world->enterContext();
+	refresh_shroud(true);
+	refresh_views(0);
+	return true;
+}
+
+Dictionary GameWorld::caster_status() const
+{
+	Dictionary d;
+	d["active"] = m_game && (m_replayPlayback || m_netSpectating);
+	if (!(bool)d["active"])
+	{
+		return d;
+	}
+	d["live"] = m_netSpectating;
+	d["observed"] = net_observed();
+	d["team"] = m_game->observedTeam();
+	d["camera_recorded"] = false; // Recorder and RelayLog currently have no camera channel.
+	Array players;
+	int slot = 0;
+	for (const std::string &name : m_game->startSlotPlayers())
+	{
+		const Player *p = name.empty() ? nullptr : m_game->players().findPlayerWithName(name);
+		if (p && !p->isObserver())
+		{
+			Dictionary row;
+			row["slot"] = slot;
+			row["index"] = p->getPlayerIndex();
+			row["name"] = toGodot(p->getPlayerDisplayName());
+			row["faction"] = toGodot(p->getPlayerTemplate() ? p->getPlayerTemplate()->getName() : std::string());
+			row["color"] = (int64_t)p->getPlayerColor();
+			row["defeated"] = p->isDefeated();
+			players.push_back(row);
+		}
+		++slot;
+	}
+	d["players"] = players;
 	return d;
 }
 
@@ -4862,7 +5176,7 @@ ProfileIdentity GameWorld::net_profile() const
 {
 	// the profile identity of this peer: the mounted archives in mount order with their verified md5, the build, the RNG prepare_new_game uses
 	return ProfileIdentity::compute(m_fs.is_valid() ? m_fs->mountedArchives() : std::vector<MountedArchive>(), RandomAlgorithm::ZH_CarryChain, {},
-		m_simulationProfile); // lane UBER-1: "profile uber" in the Uber performance mode
+		m_choice.current); // lane UBER-1: "profile uber" in the Uber performance mode
 }
 
 Dictionary GameWorld::set_simulation_profile(const String &name)
@@ -4883,23 +5197,53 @@ Dictionary GameWorld::set_simulation_profile(const String &name)
 		r["error"] = "unknown simulation profile '" + name + "' (faithful or uber)";
 		return r;
 	}
-	if (p != m_simulationProfile && m_lan && m_lan->currentGame())
+	std::string why;
+	if (!m_choice.setOwn(p, &why))
 	{
-		r["error"] = "the simulation profile cannot change inside a LAN game (leave it first)";
+		r["error"] = toGodot(why);
 		return r;
-	}
-	m_simulationProfile = p;
-	if (m_lan)
-	{
-		m_lan->setProfile(net_profile()); // the lobby list announces the new identity
 	}
 	r["ok"] = true;
 	return r;
 }
 
+bool GameWorld::switch_profile_for_game(SimulationProfile profile, std::string *why)
+{
+	return m_choice.switchForGame(profile, why);
+}
+
+void GameWorld::restore_simulation_profile()
+{
+	m_choice.restore();
+}
+
+Dictionary GameWorld::switch_simulation_profile_for_game(const String &name)
+{
+	Dictionary r;
+	r["ok"] = false;
+	if (name != "faithful" && name != "uber")
+	{
+		r["error"] = "unknown simulation profile '" + name + "' (faithful or uber)";
+		return r;
+	}
+	std::string why;
+	if (!m_choice.switchForGame(name == "uber" ? SimulationProfile::Uber : SimulationProfile::Faithful, &why))
+	{
+		r["error"] = toGodot(why);
+		return r;
+	}
+	r["ok"] = true;
+	return r;
+}
+
+void GameWorld::leave_lan_room_and_restore_profile()
+{
+	m_choice.leaveRoomAndRestore();
+}
+
 String GameWorld::simulation_profile() const
 {
-	return simulationProfileName(m_simulationProfile);
+	return simulationProfileName(m_choice.current);
 }
 
 Dictionary GameWorld::get_census() const
@@ -4955,7 +5299,8 @@ void GameWorld::net_finish()
 	{
 		m_netSession->finish(*m_game); // the local player leaves (PLAYERLEAVE), the recording gets its end record
 		const std::uint64_t t0 = NetMilliseconds();
-		while (!m_netSpectating && !m_netSession->allAcked() && NetMilliseconds() - t0 < 2000) // lane ONLINE-3: a spectator sent nothing
+		// lane ONLINE-3: a spectator sent nothing; lane ONLINEUX-1 r2: nor did a rejoin that never went live
+		while (!m_netSpectating && !m_netSession->rejoinUnjoined() && !m_netSession->allAcked() && NetMilliseconds() - t0 < 2000)
 		{
 			m_netSession->service();
 			NetSleepMilliseconds(2);
@@ -5420,7 +5765,7 @@ Dictionary GameWorld::get_spellbook(int64_t player) const
 // TARGET FACTS: the local player's cell edges reach the display and the radar through the shroud manager's callback (RW + 0x6C, RW 0xB52E10); GameData ClearAlpha
 // (255, the constructor), FogAlpha 127 and ShroudAlpha 0 are the cell's level ("0 is opaque, 255 is clear", gamedata.ini) and ShroudColor 255 255 255.
 // INFERENCE (stop S-567): one texel per cell, bilinear filtering, the terrain colour multiplied by level / 255 (maps-and-terrain spec 3.9: `out.rgb = col * shroud.r`);
-// retail's W3DShroud filtering was not read; objects in fog are not darkened (hidden or drawn).
+// retail's W3DShroud filtering was not read; a fogged object that is drawn is lit by the fogged light (lane VISUAL-2, S-4970).
 // lane ZOOM-1, the border. TARGET FACTS (tier A, identical to BFME2 1.06 per tools/re/rw2decomp.py): the shroud's render body RW 0x472EF4 (BFME2 0x473628)
 // fills the whole texture once with the border level (W3DShroud + 0x36, the constructor's GlobalData ShroudAlpha) through RW 0x472792 (BFME2 0x472E84, ZH
 // fillBorderShroudData: the level raised to at least ShroudAlpha, the texel of RW 0x47266B / BFME2 0x472D5D) and copies the cells at texel (1, 1); W3DShroud::init
@@ -5493,6 +5838,9 @@ void GameWorld::refresh_shroud(bool force)
 	const Vector2 origin(SimMath::subf32(sm.originX, sm.cellSize), SimMath::subf32(sm.originY, sm.cellSize));
 	const Vector2 extent(SimMath::mulf32(sm.cellSize, (float)tw), SimMath::mulf32(sm.cellSize, (float)th)); // the audited file's float rule (client values)
 	const Color color(vs.shroudRed, vs.shroudGreen, vs.shroudBlue);
+	// lane VISUAL-2: the fogged light fraction, RW 0x46DFD0 / 0x46F533: (float) GlobalData + 0xBE9 (FogAlpha) / (float) + 0xBE8 (ClearAlpha); a ClearAlpha of 0
+	// divides by zero as retail's divss does
+	W3D_Set_Fogged_Light_Frac(SimMath::divf32((float)vs.fogAlpha, (float)vs.clearAlpha));
 	std::vector<Node *> stack{ terrain };
 	while (!stack.empty())
 	{
@@ -5909,6 +6257,10 @@ Dictionary GameWorld::get_fx_report() const
 	{
 		stops.push_back(toGodot(line));
 	}
+	for (const std::string &line : visual2StopLines()) // lane VISUAL-2 (S-4970 .. S-4974)
+	{
+		stops.push_back(toGodot(line));
+	}
 	if (m_fxPlayer)
 	{
 		// lane RENDER-3: the renderer's own stops (S-198 fog / sorting, S-831 the gamma-space compositing remainder) reach the live report
@@ -6067,6 +6419,13 @@ Dictionary GameWorld::get_player_status_state()
 		sl["connected"] = true;
 		slots.push_back(sl);
 	}
+	// lane PLATFORMICON-1: each slot's system (PlatformKind 0 .. 3: display data from the LAN lobby / the online START, none in single player)
+	Array platforms;
+	for (int i = 0; i < MAX_SLOTS; ++i)
+	{
+		platforms.push_back(m_netStarted && m_netSession ? (int64_t)m_netStart.game.game.slots[i].platform : (int64_t)PlatformKind::None);
+	}
+	d["platforms"] = platforms;
 	d["orig"] = orig;
 	d["slots"] = slots;
 	d["local_slot"] = m_start->localSlot;
@@ -6154,6 +6513,11 @@ void GameWorld::updateEndGame()
 	}
 }
 
+int GameWorld::hud_end_game_timer() const
+{
+	return m_endGame ? m_endGame->endGameTimer() : -1;
+}
+
 Dictionary GameWorld::get_end_game_state() const
 {
 	Dictionary d;
@@ -6222,6 +6586,80 @@ Array GameWorld::take_end_game_requests()
 	return out;
 }
 
+// lane ONLINEHUB-1: the game's record as far as the engine knows it (GameClient/GameRecords.h: the host adds the id, the kind, the mode and the clock
+// times): the map, the game's own duration (logic frames / 5), every occupied slot's player (its name, the faction it played: the PlayerTemplate of
+// the slot's player, the team: a slot without one has its own, human or computer) and the winning team (the team of the players the score screen
+// calls victorious; -1 when there are none or they are not one team). Empty when the local side was an observer or the game had no start message
+Dictionary GameWorld::gameRecordBase(GameLogic &logic, const std::vector<int> &slotPlayers) const
+{
+	Dictionary r;
+	if (m_recordLocalSlot < 0 || m_recordLocalSlot >= MAX_SLOTS || m_scoreScreen.localIsObserver)
+	{
+		return r;
+	}
+	const SkirmishGameInfo &g = m_recordMessage.game;
+	std::vector<GameRecord::Player> players;
+	std::vector<int> results;
+	for (int s = 0; s < MAX_SLOTS; ++s)
+	{
+		const SkirmishGameSlot &slot = g.slots[s];
+		if (!slot.isOccupied() || slot.playerTemplate == PLAYERTEMPLATE_OBSERVER)
+		{
+			continue;
+		}
+		GameRecord::Player p;
+		p.slot = s;
+		p.nick = OnlineLobbyClient::utf16ToUtf8(slot.name);
+		p.team = slot.teamNumber;
+		p.human = slot.state == SLOT_PLAYER;
+		const int index = s < (int)slotPlayers.size() ? slotPlayers[(std::size_t)s] : -1;
+		const ::Player *pl = index >= 0 ? logic.players().getNthPlayer(index) : nullptr;
+		p.faction = pl && pl->getPlayerTemplate() ? pl->getPlayerTemplate()->getName() : std::string();
+		if (p.faction.empty() && m_world)
+		{
+			// a slot whose player the logic no longer names (it left before the end): the start message's resolved template
+			const PlayerTemplate *t = m_world->playerTemplates().getNthPlayerTemplate(slot.playerTemplate);
+			p.faction = t ? t->getName() : std::string("Unknown");
+		}
+		int result = 3;
+		for (const ScoreScreenData::Entry &e : m_scoreScreen.entries)
+		{
+			result = e.playerIndex == index ? e.result : result;
+		}
+		players.push_back(p);
+		results.push_back(result);
+	}
+	GameRecords::normaliseTeams(players);
+	int winner = -1;
+	bool split = false;
+	for (std::size_t i = 0; i < players.size(); ++i)
+	{
+		if (results[i] == 0)
+		{
+			split = split || (winner >= 0 && winner != players[i].team);
+			winner = players[i].team;
+		}
+	}
+	Array list;
+	for (const GameRecord::Player &p : players)
+	{
+		Dictionary d;
+		d["slot"] = p.slot;
+		d["nick"] = String::utf8(p.nick.c_str());
+		d["faction"] = toGodot(p.faction);
+		d["team"] = p.team;
+		d["human"] = p.human;
+		list.push_back(d);
+	}
+	r["v"] = 1;
+	r["map"] = toGodot(g.mapName);
+	r["duration_s"] = (int64_t)(logic.getFrame() / 5);
+	r["players"] = list;
+	r["me"] = m_recordLocalSlot;
+	r["winner_team"] = split ? -1 : winner;
+	return r;
+}
+
 Dictionary GameWorld::clear_game_data(bool show_score_screen)
 {
 	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
@@ -6246,8 +6684,31 @@ Dictionary GameWorld::clear_game_data(bool show_score_screen)
 			const ::Player *sp = name.empty() ? nullptr : logic.players().findPlayerWithName(name);
 			slotPlayers.push_back(sp ? sp->getPlayerIndex() : -1);
 		}
-		std::vector<int> disconnected; // RW 0x90313E: the slots the network marked as gone (MP-1's session has no such list yet: S-1064)
+		if (slotPlayers.empty() && !m_campaignStart.campaign.empty())
+		{
+			// lane CAMPSAVE-1 (stop S-4902, INFERENCE): a campaign game starts from no game slots (the map's own sides); its score screen lists the local
+			// player, as retail's campaign game info holds the local player's slot only
+			if (const ::Player *local = logic.players().getLocalPlayer())
+			{
+				slotPlayers.push_back(local->getPlayerIndex());
+			}
+		}
+		const std::vector<int> disconnected = m_netSession ? m_netSession->disconnectedPlayerIndices() : std::vector<int>(); // RW 0x90313E
 		m_scoreScreen = ScoreScreenData::build(logic, type, slotPlayers, disconnected);
+		// lane PLATFORMICON-1: each human's system, from the network game's start (display data; none in single player)
+		if (m_netStarted && m_netSession)
+		{
+			for (std::size_t slot = 0; slot < slotPlayers.size() && slot < (std::size_t)MAX_SLOTS; ++slot)
+			{
+				for (ScoreScreenData::Entry &e : m_scoreScreen.entries)
+				{
+					if (slotPlayers[slot] >= 0 && e.playerIndex == slotPlayers[slot] && m_netStart.game.game.slots[slot].isHuman())
+					{
+						e.platform = m_netStart.game.game.slots[slot].platform;
+					}
+				}
+			}
+		}
 		Dictionary sd;
 		sd["type"] = m_scoreScreen.type;
 		sd["frames"] = (int64_t)m_scoreScreen.frames;
@@ -6278,8 +6739,10 @@ Dictionary GameWorld::clear_game_data(bool show_score_screen)
 		}
 		sd["entries"] = entries;
 		out["score_screen"] = sd;
+		out["record"] = gameRecordBase(logic, slotPlayers); // lane ONLINEHUB-1
 		out["state_hash"] = (int64_t)logic.computeStateHash();
 	}
+	m_recordLocalSlot = -1; // lane ONLINEHUB-1: a game's start message records that game only (a replay's start does not set it)
 	// the teardown: the network session (the local player leaves first), the audio side, the effects, the HUD's game objects and the live game (its worker
 	// joined in ~LiveGame)
 	net_finish();
@@ -6483,6 +6946,21 @@ Dictionary GameWorld::debug_set_object_status(int64_t id, const String &status, 
 	return out;
 }
 
+Dictionary GameWorld::debug_set_use_formations(bool on)
+{
+	Dictionary out;
+	out["ok"] = false;
+	if (!m_game || !m_testHooks || m_netHost || m_netClient || m_netStarted || m_netSession)
+	{
+		out["error"] = "refused (no game, test_hooks off or a network game)";
+		return out;
+	}
+	out["before"] = m_game->logic().settings().useFormations;
+	m_game->logic().settings().useFormations = on;
+	out["ok"] = true;
+	return out;
+}
+
 Dictionary GameWorld::debug_clear_weather()
 {
 	Dictionary out;
@@ -6567,6 +7045,7 @@ Dictionary GameWorld::lan_open(const Dictionary &options)
 	o.broadcast = (bool)options.get("broadcast", o.broadcast);
 	o.runAhead = (int)(int64_t)options.get("run_ahead", (int64_t)o.runAhead);
 	o.crcInterval = (int)(int64_t)options.get("crc_interval", (int64_t)o.crcInterval);
+	o.platform = localPlatform(); // lane PLATFORMICON-1: the one value told about this machine
 	if (!m_world || !m_settings)
 	{
 		r["error"] = "lan_open needs setup() first (the faction and colour counts check the players' requests)";
@@ -6593,6 +7072,7 @@ Dictionary GameWorld::lan_open(const Dictionary &options)
 	{
 		wname.push_back((char16_t)name[i]);
 	}
+	m_choice.lan = nullptr;
 	m_lan.reset();
 	auto lan = std::make_unique<LANAPI>(net_profile(), wname, o);
 	std::string error;
@@ -6604,13 +7084,16 @@ Dictionary GameWorld::lan_open(const Dictionary &options)
 	r["lobby_port"] = (int64_t)lan->lobbyPort();
 	r["game_port"] = (int64_t)lan->gameSocket().localAddress().port;
 	m_lan = std::move(lan);
+	m_choice.lan = m_lan.get(); // lane UBERJOIN-1: the profile follows the lobby's announcements and a held room pins it
 	r["ok"] = true;
 	return r;
 }
 
 void GameWorld::lan_close()
 {
+	m_choice.lan = nullptr;
 	m_lan.reset();
+	m_choice.restore(); // lane UBERJOIN-1: no room is held any more: a switch for a LAN game ends with the lobby
 }
 
 Dictionary GameWorld::lan_set_create_a_hero(const PackedByteArray &record)
@@ -6684,6 +7167,7 @@ Dictionary GameWorld::lan_status() const
 		return r;
 	}
 	r["in_game"] = !m_lan->inLobby();
+	r["identity"] = toGodot(m_lan->profile().digest); // lane UBERJOIN-1: what the lobby announces and sends at a join
 	r["host"] = m_lan->amIHost();
 	r["slot"] = m_lan->localSlot();
 	r["started"] = m_lan->started();
@@ -6731,7 +7215,10 @@ Dictionary GameWorld::prepare_replay(const String &path)
 	const std::string mismatch = file->profileMismatch(net_profile());
 	if (!mismatch.empty())
 	{
-		errors.push_back(toGodot("the replay was recorded by another profile: " + mismatch));
+		const char *recorded = file->header.profile.simulationProfile() == SimulationProfile::Uber ? "Uber" : "Faithful";
+		const char *current = net_profile().simulationProfile() == SimulationProfile::Uber ? "Uber" : "Faithful";
+		errors.push_back(toGodot(std::string("Replay profile: ") + recorded + ". Current profile: " + current +
+			".\nThe replay was recorded by another profile: " + mismatch));
 		return r;
 	}
 	auto start = std::make_unique<NewGameStart>(file->header.algorithm);
@@ -6779,6 +7266,11 @@ Dictionary GameWorld::start_replay(const Dictionary &options)
 	m_replayPlayback = std::make_unique<ReplayPlayback>(*m_replayFile);
 	RegisterLogicCRCHandler(m_game->dispatch());
 	m_game->setFrameDriver(m_replayPlayback.get());
+	m_game->enableReplayObserver();
+	// retail playback (GameLogic::startNewGame tail, RW 0x6282F0, BFME2 decomp GameLogicInit.cpp rva0023F52C, tier B same-shape) makes the
+	// "ReplayObserver" side the local player and reveals the whole map for it (RW 0x62F91A, rva002469A5, tier A): a replay opens on all vision.
+	// Here the recording slot stays the local player (S-4932); only the presented view is the observer's
+	m_game->observePlayer(-1);
 	report["replay"] = toGodot(m_replayPath);
 	report["final_frame"] = (int64_t)m_replayFile->finalFrame;
 	report["commands"] = (int64_t)m_replayFile->commandCount();
@@ -6803,6 +7295,376 @@ Dictionary GameWorld::replay_status() const
 	r["first_mismatch_frame"] = m_replayPlayback->hasMismatch() ? (int64_t)m_replayPlayback->firstMismatch().frame : (int64_t)-1;
 	r["lost"] = (int64_t)m_replayFile->lost.size();
 	return r;
+}
+
+static Dictionary observerCounters(const ObserverCounters &p)
+{
+	Dictionary row;
+	row["index"] = p.player;
+	row["money"] = (int64_t)p.money;
+	row["cp_used"] = p.cpUsed;
+	row["cp_limit"] = p.cpLimit;
+	row["power_points"] = p.powerPoints;
+	row["army_value"] = (int64_t)p.armyValue;
+	row["army_complete"] = p.armyComplete;
+	row["income"] = (int64_t)p.resourceIncome;
+	row["income_complete"] = p.incomeComplete;
+	row["units_lost"] = p.unitsLost;
+	return row;
+}
+
+Dictionary GameWorld::caster_metrics(int64_t from_frame) const
+{
+	Dictionary out;
+	out["active"] = m_game && (m_replayPlayback || m_netSpectating);
+	if (!(bool)out["active"])
+	{
+		return out;
+	}
+	const ObserverMetrics &metrics = m_game->observerMetrics();
+	out["frame"] = (int64_t)metrics.frame();
+	Array players;
+	for (const auto &p : metrics.players())
+	{
+		Dictionary row = observerCounters(p);
+		Array army, production, heroes;
+		for (const auto &a : p.army)
+		{
+			Dictionary item;
+			item["name"] = toGodot(a.first);
+			item["label"] = toGodot(a.second.label);
+			item["count"] = a.second.count;
+			army.push_back(item);
+		}
+		for (const auto &q : p.production)
+		{
+			Dictionary item;
+			item["producer"] = (int64_t)q.producer;
+			item["name"] = toGodot(q.name);
+			item["kind"] = toGodot(q.kind);
+			item["percent"] = q.percent;
+			item["remaining"] = q.remaining;
+			production.push_back(item);
+		}
+		for (const auto &h : p.heroes)
+		{
+			Dictionary item;
+			item["object"] = (int64_t)h.object;
+			item["name"] = toGodot(h.name);
+			item["state"] = toGodot(h.state);
+			item["rank"] = h.rank;
+			item["health"] = h.health;
+			item["max_health"] = h.maxHealth;
+			heroes.push_back(item);
+		}
+		row["army"] = army;
+		row["production"] = production;
+		row["heroes"] = heroes;
+		players.push_back(row);
+	}
+	out["players"] = players;
+	Array history;
+	for (const auto &point : metrics.history())
+	{
+		if ((int64_t)point.frame < from_frame)
+		{
+			continue;
+		}
+		Dictionary sample;
+		sample["frame"] = (int64_t)point.frame;
+		Array values;
+		for (const auto &p : point.players)
+		{
+			values.push_back(observerCounters(p));
+		}
+		sample["players"] = values;
+		history.push_back(sample);
+	}
+	out["history"] = history;
+	return out;
+}
+
+Array GameWorld::caster_events(int64_t from_frame) const
+{
+	Array out;
+	if (!m_game || (!m_replayPlayback && !m_netSpectating))
+	{
+		return out;
+	}
+	for (const ObserverEvent &event : m_game->observerTimeline().events())
+	{
+		if ((int64_t)event.frame < from_frame)
+		{
+			continue;
+		}
+		Dictionary item;
+		item["kind"] = (int)event.kind;
+		item["frame"] = (int64_t)event.frame;
+		item["object"] = (int64_t)event.object;
+		item["player"] = event.player;
+		item["position"] = Vector2(event.position.x, event.position.y);
+		item["name"] = toGodot(event.name);
+		item["hero"] = event.hero;
+		item["structure"] = event.structure;
+		item["base"] = event.base;
+		item["weight"] = event.weight;
+		out.push_back(item);
+	}
+	return out;
+}
+
+bool GameWorld::caster_playback(bool paused, double speed)
+{
+	if (!m_game || (!m_replayPlayback && !m_netSpectating) || !(speed >= 0.25 && speed <= 8.0))
+	{
+		return false;
+	}
+	if (!paused && m_replayPlayback && m_replayPlayback->hasMismatch())
+	{
+		return false;
+	}
+	if (m_netSpectating)
+	{
+		if (!m_netSession || m_netSession->spectatorFailed())
+		{
+			m_paused = true;
+			return false;
+		}
+		const auto context = m_world->enterContext();
+		m_game->drainFrames();
+		m_netSession->spectateStep(*m_game, 0);
+		if (m_netSession->spectatorFailed())
+		{
+			m_paused = true;
+			return false;
+		}
+		m_netSession->disableSpectatorAutoCatchup();
+	}
+	else if (paused)
+	{
+		m_game->drainFrames();
+	}
+	m_paused = paused;
+	m_timeScale = speed;
+	return true;
+}
+
+Dictionary GameWorld::caster_transport_status() const
+{
+	if (m_replayPlayback)
+	{
+		Dictionary r = replay_status();
+		r["live"] = false;
+		const bool complete = (bool)r.get("complete", false);
+		const int64_t lost = (int64_t)r.get("lost", 0);
+		r["seekable"] = complete && lost == 0;
+		return r;
+	}
+	Dictionary r;
+	const bool active = m_game && m_netSpectating && m_netSession;
+	r["active"] = active;
+	r["live"] = active;
+	if (!active)
+	{
+		return r;
+	}
+	const NetGameSession::SpectateReport &sr = m_netSession->spectateReport();
+	const UnsignedInt edge = m_netSession->spectatorFinalFrame();
+	const UnsignedInt frame = m_game->protocolFrame();
+	r["frame"] = (int64_t)frame;
+	r["final_frame"] = (int64_t)edge;
+	r["finished"] = sr.logComplete && frame >= edge;
+	r["complete"] = sr.logComplete;
+	r["seekable"] = !m_netSession->spectatorFailed();
+	r["hashes_compared"] = (int64_t)sr.crcsCompared;
+	r["mismatches"] = (int64_t)sr.crcMismatches;
+	r["failure"] = toGodot(sr.failure);
+	r["first_mismatch_frame"] = sr.firstMismatchFrame;
+	r["lost"] = (int64_t)0;
+	r["delay"] = m_netStart.spectatorDelay;
+	r["path"] = "Live received log";
+	return r;
+}
+
+Dictionary GameWorld::caster_restart_live(const Dictionary &options)
+{
+	Dictionary r;
+	r["ok"] = false;
+	if (!m_game || !m_netSpectating || !m_netSession || !m_netStarted)
+	{
+		r["error"] = "Live restart requires an active spectator session";
+		return r;
+	}
+	if (m_netSession->spectatorFailed())
+	{
+		r["error"] = "The spectator session has failed";
+		return r;
+	}
+	const Dictionary prepared = prepare_new_game(newGameToDictionary(m_netStart.game));
+	if (!(bool)prepared.get("ok", false))
+	{
+		return prepared;
+	}
+	std::string error;
+	if (!m_netSession->detachSpectator(*m_game, &error))
+	{
+		r["error"] = toGodot(error);
+		return r;
+	}
+	std::unique_ptr<NetGameSession> retained = std::move(m_netSession);
+	r = start_new_game(options);
+	m_netSession = std::move(retained);
+	if (!(bool)r.get("ok", false))
+	{
+		m_netLoaded = false;
+		return r;
+	}
+	if (!m_game || !m_netSession->attachSpectator(*m_game, &error))
+	{
+		r["ok"] = false;
+		r["error"] = toGodot(error.empty() ? "the replacement game could not attach to the spectator session" : error);
+		m_netLoaded = false;
+		return r;
+	}
+	m_game->enableObserverEvents();
+	m_netSession->disableSpectatorAutoCatchup();
+	m_paused = true;
+	m_netLoaded = true;
+	return r;
+}
+
+Dictionary GameWorld::caster_step()
+{
+	Dictionary out;
+	out["ok"] = false;
+	if (!m_game || (!m_replayPlayback && !m_netSpectating))
+	{
+		out["error"] = "Frame step requires a replay or live spectator";
+		return out;
+	}
+	if (m_replayPlayback && m_replayPlayback->hasMismatch())
+	{
+		out["error"] = "Replay hash mismatch; playback stopped";
+		return out;
+	}
+	if (!caster_playback(true, m_timeScale))
+	{
+		out["error"] = m_netSpectating ? "Spectator session failed; playback stopped" : "Replay hash mismatch; playback stopped";
+		return out;
+	}
+	const auto context = m_world->enterContext();
+	out["ok"] = m_game->stepFrame() == 1;
+	out["frame"] = (int64_t)m_game->frame();
+	if (m_replayPlayback && m_replayPlayback->hasMismatch())
+	{
+		out["ok"] = false;
+		out["error"] = "Replay hash mismatch; playback stopped";
+	}
+	if (m_netSpectating)
+	{
+		m_netSession->spectateStep(*m_game, 0);
+		if (m_netSession->spectatorFailed())
+		{
+			out["ok"] = false;
+			out["error"] = "Spectator session failed; playback stopped";
+		}
+	}
+	refresh_shroud(true);
+	refresh_views(0);
+	return out;
+}
+
+Dictionary GameWorld::caster_seek_step(int64_t target, int64_t budget_ms)
+{
+	if (!m_netSpectating)
+	{
+		return replay_seek_step(target, budget_ms);
+	}
+	Dictionary out;
+	out["ok"] = false;
+	out["ready"] = false;
+	out["target"] = target;
+	if (!m_game || !m_netSession || target < 1 || target > (int64_t)m_netSession->spectatorFinalFrame())
+	{
+		out["error"] = "Seek requires a received live frame";
+		return out;
+	}
+	if (m_netSession->spectatorFailed())
+	{
+		out["error"] = "Spectator session failed; playback stopped";
+		return out;
+	}
+	if (!caster_playback(true, m_timeScale))
+	{
+		out["error"] = "Spectator session failed; playback stopped";
+		out["frame"] = (int64_t)m_game->protocolFrame();
+		const auto context = m_world->enterContext();
+		refresh_shroud(true);
+		refresh_views(0);
+		return out;
+	}
+	m_paused = true;
+	const UnsignedInt initial = m_game->protocolFrame();
+	if (target < (int64_t)initial)
+	{
+		out["error"] = "Backward live seeks require caster_restart_live first";
+		out["frame"] = (int64_t)initial;
+		return out;
+	}
+	const auto context = m_world->enterContext();
+	const unsigned budget = (unsigned)std::max<int64_t>(1, std::min<int64_t>(budget_ms, 50));
+	const std::uint64_t started = NetMilliseconds();
+	std::string error;
+	while ((int64_t)m_game->protocolFrame() < target && NetMilliseconds() - started < budget)
+	{
+		if (m_game->stepFrame() != 1)
+		{
+			break;
+		}
+		m_netSession->spectateStep(*m_game, 0);
+		if (m_netSession->spectatorFailed())
+		{
+			error = "Spectator session failed; playback stopped";
+			break;
+		}
+	}
+	const int64_t frame = (int64_t)m_game->protocolFrame();
+	out["frame"] = frame;
+	out["ready"] = error.empty() && frame >= target;
+	out["ok"] = error.empty();
+	out["error"] = toGodot(error);
+	if (!error.empty() || (bool)out["ready"])
+	{
+		refresh_shroud(true);
+		refresh_views(0);
+	}
+	return out;
+}
+
+Dictionary GameWorld::replay_seek_step(int64_t target, int64_t budget_ms)
+{
+	Dictionary out;
+	out["ok"] = false;
+	if (!m_game || !m_replayPlayback || !m_replayFile || target < 0 || target > m_replayFile->finalFrame)
+	{
+		out["error"] = "Seek requires a recorded frame in the current replay";
+		return out;
+	}
+	caster_playback(true, m_timeScale);
+	const auto context = m_world->enterContext();
+	const auto result = ReplaySeek::step(*m_game, *m_replayPlayback, *m_replayFile, (UnsignedInt)target,
+		(unsigned)std::max<int64_t>(1, std::min<int64_t>(budget_ms, 50)));
+	out["ok"] = result.error.empty();
+	out["ready"] = result.ready;
+	out["frame"] = (int64_t)result.reached;
+	out["target"] = target;
+	out["error"] = toGodot(result.error);
+	if (result.ready || !result.error.empty())
+	{
+		refresh_shroud(true);
+		refresh_views(0);
+	}
+	return out;
 }
 
 Dictionary GameWorld::recording_status() const

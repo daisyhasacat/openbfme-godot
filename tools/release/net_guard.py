@@ -57,6 +57,8 @@ ALLOWED_LAUNCHER = {"launcher/scripts/net/http_fetch.gd": {"HTTPClient"},
                     "launcher/scripts/core/self_update.gd": {"OS.create_process", "OS.execute"},
                     # lane GLIBC-1: OS.execute `getconf GNU_LIBC_VERSION` / `ldd --version`, the system's GLIBC before Play (Linux)
                     "launcher/scripts/core/glibc_check.gd": {"OS.execute"},
+                    # lane mac-release-1: the authenticated external helper syncs durable update receipts and journals
+                    "launcher/scripts/core/macos_update.gd": {"OS.execute", "OS.create_process"},
                     # lane ONLINE-2: `reg add` under HKCU (Windows) / xdg-mime + update-desktop-database (Linux), only on --register-url-handler
                     "launcher/scripts/core/url_handler.gd": {"OS.execute"}}
 # lane ONLINE-2: game file -> the findings it may have: the online lobby client (its requests: online_lobby_problems)
@@ -64,7 +66,9 @@ ALLOWED_LAUNCHER = {"launcher/scripts/net/http_fetch.gd": {"HTTPClient"},
 # lane ONEZIP-1: a game started directly runs the OpenBFME Launcher beside it once (the one updater; the game itself still opens no
 # connection): OS.create_process in scripts/release/update_handover.gd alone
 # lane ONLINECOUNT-1: the menus' "N players online" (scripts/online_stats.gd): one GET of the lobby's /v1/stats, the same request rule
-ALLOWED_GAME = {"godot/scripts/online_lobby.gd": {"HTTPRequest", "HTTPClient"}, "godot/scripts/online_http.gd": {"HTTPRequest", "HTTPClient"},
+# The iOS first-run installer reuses the launcher's policy-checked HTTP client.
+# Every request and redirect is checked by scripts/net/net_policy.gd, with pinned AIO files.
+ALLOWED_GAME = {"godot/scripts/net/http_fetch.gd": {"HTTPClient"}, "godot/scripts/online_lobby.gd": {"HTTPRequest", "HTTPClient"}, "godot/scripts/online_http.gd": {"HTTPRequest", "HTTPClient"},
                 "godot/scripts/online_stats.gd": {"HTTPRequest"},
                 "godot/scripts/release/update_handover.gd": {"OS.create_process"}}
 ONLINE_LOBBY = "godot/scripts/online_lobby.gd"
@@ -330,6 +334,11 @@ FILE_MANAGER_METHODS = {"shell_open", "shell_show_in_file_manager"}
 # opens only an existing local folder that is the launcher's data folder (or inside it) or one of the game folders it found
 FILE_MANAGER_OWNERS = {("godot/scripts/release/release.gd", "_show_in_file_manager"), ("launcher/scripts/ui/paths.gd", "show_in_file_manager")}
 
+# Windows launcher lock: only the system executable and this literal read-only argument list, in its owning function.
+EXCLUDED_PORT_QUERY = [(kind, value) for kind, value, _, _ in lex_gd_stream(
+    'OS.execute(OS.get_environment("SystemRoot").path_join("System32/netsh.exe"), '
+    '["int", "ipv4", "show", "excludedportrange", "protocol=tcp"], output, true)')]
+
 
 def gdscript_findings(text: str, path: str | None = None) -> list[str]:
     stream = lex_gd_stream(text)
@@ -350,6 +359,9 @@ def gdscript_findings(text: str, path: str | None = None) -> list[str]:
         if GODOT_NET.match(value) and not (k and stream[k - 1][1] == "."):
             found.append(f"line {line}: {value}")
         if value in GODOT_OS_CALLS and k >= 2 and stream[k - 1][1] == "." and stream[k - 2][1] == "OS":
+            if (path == "launcher/scripts/core/instance_lock.gd" and function == "_windows_exclusions"
+                    and [(t[0], t[1]) for t in stream[k - 2:k - 2 + len(EXCLUDED_PORT_QUERY)]] == EXCLUDED_PORT_QUERY):
+                continue
             if value in FILE_MANAGER_METHODS and (path, function) in FILE_MANAGER_OWNERS:
                 continue
             nxt = stream[k + 1:k + 4]
@@ -370,11 +382,11 @@ def scan() -> dict[str, list[str]]:
         if src.is_file() and src.suffix.lower() in SOURCE_SUFFIXES:
             f = native_findings(src.read_text(encoding="utf-8", errors="replace"))
             if f:
-                out[str(src.relative_to(REPO))] = f
+                out[src.relative_to(REPO).as_posix()] = f
     for gd in sorted((REPO / "godot").rglob("*.gd")):
         if "tests" in gd.relative_to(REPO / "godot").parts:
             continue
-        rel = str(gd.relative_to(REPO))
+        rel = gd.relative_to(REPO).as_posix()
         f = gdscript_findings(gd.read_text(encoding="utf-8", errors="replace"), rel)
         if f:
             out[rel] = f
@@ -388,9 +400,10 @@ def scan_launcher() -> dict[str, list[str]]:
         rel = gd.relative_to(REPO / "launcher").parts
         if rel[0] in ("tests", ".godot"):
             continue
-        f = gdscript_findings(gd.read_text(encoding="utf-8", errors="replace"), str(gd.relative_to(REPO)).replace("\\", "/"))
+        path = gd.relative_to(REPO).as_posix()
+        f = gdscript_findings(gd.read_text(encoding="utf-8", errors="replace"), path)
         if f:
-            out[str(gd.relative_to(REPO))] = f
+            out[path] = f
     return out
 
 

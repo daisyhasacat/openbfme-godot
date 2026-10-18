@@ -2,6 +2,7 @@
 // See GameLogic/Object/Contain/HordeContainRuntime.h.
 
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/HordeAIUpdate.h"
 #include "GameLogic/SimMath.h"
 
@@ -12,6 +13,7 @@
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/Object/Contain/HordeContainBehaviorData.h"
 #include "GameLogic/Object/Contain/HordeContainCore.h"
 #include "GameLogic/Object/Object.h"
@@ -343,6 +345,8 @@ bool HordeContain::addToContain(Object *obj)
 	}
 	m_members.push_back(obj);
 	obj->friend_setContainedBy(getObject());
+	// RW 0x872D0A: onContaining records the horde as the member's producer.
+	obj->setProducer(getObject());
 	const int bit = hordeMemberStatusBit();
 	if (bit >= 0)
 	{
@@ -393,6 +397,7 @@ bool HordeContain::acceptCreatedMember(Object *obj)
 	}
 	m_members.push_back(obj);
 	obj->friend_setContainedBy(getObject());
+	obj->setProducer(getObject());
 	const int bit = hordeMemberStatusBit();
 	if (bit >= 0)
 	{
@@ -564,6 +569,12 @@ void HordeContain::removeMember(Object *obj, bool keepSlot)
 	else
 	{
 		m_core->removeMember(obj->getID(), false);
+		// RW 0x8737EE / 0x873885: remember the removed member's source at removal time, not hit time.
+		if (const auto *body = dynamic_cast<const ActiveBody *>(obj->getBodyModule()))
+		{
+			m_removedMemberAttacker = body->lastDamager();
+		}
+		m_lastMemberRemovedFrame = getObject()->logic().getFrame();
 		m_dirty = true; // the ranks behind a dead man close up (the member pass refills the slot)
 	}
 	if (m_data->horde.m_forcedLocomotorSet != -1 && m_movementEnabled)
@@ -706,7 +717,14 @@ void HordeContain::crc(StateHasher &h) const
 	h.addBool(m_workDone);
 	h.addBool(m_propagatedMoving);
 	h.addBool(m_meleeEngaged); // COMBAT-1: the formation is frozen while the horde melees
+	crcWallScaling(h);         // lane BACKLOG-8
 	h.addU32(m_formationRefreshFrame);
+	if (m_lastMemberRemovedFrame != 0xFFFFFFFFu) // lane DEVPORT-3C: ROTWK-C's removal record (RW H+0x298 / + 0x29C), hashed once written (a horde that never lost a member keeps its hash)
+	{
+		h.addU32(0x29800000u);
+		h.addU32(m_lastMemberRemovedFrame);
+		h.addU32(m_removedMemberAttacker);
+	}
 	h.addBool(m_payloadCreated);
 	h.addU32((std::uint32_t)m_garrisonEntering.size()); // lane GARRISON-1
 	for (ObjectID id : m_garrisonEntering)
@@ -803,4 +821,91 @@ void HordeContain::crc(StateHasher &h) const
 		h.addU32(mb->m_delayRandomActivateMin);
 		h.addU32(mb->m_delayRandomActivateMax);
 	}
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) ---------------------------------------------------------------------------------------------------
+// The members as ids in contain order (the Objects block has made them), the core, then the crc's fields and the flags the crc leaves out. The stance's
+// MeleeBehavior (slot 0x260) is template data the stance selected: its configuration travels by value and a load keeps a copy (only its fields are read;
+// the AI's melee runtime is the AI update's, SAVE-4c). The pass, exit and attack statistics are the report's.
+void HordeContain::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	GameLogic &logic = getObject()->logic();
+	SnapshotXfer::objectPointers(x, logic, m_members, "a horde's member", getObject()->getID());
+	m_core->xfer(x);
+	SnapshotXfer::map(x, m_experiencePools, 6, "a horde's experience pools", [&](unsigned short &k) { x.xferUnsignedShort(&k); },
+		[&](float &v) { x.xferReal(&v); });
+	SnapshotXfer::ids(x, m_producedMembers);
+	x.xferBool(&m_payloadCreated);
+	SnapshotXfer::u64(x, m_membersRefusedAfterDelete);
+	x.xferBool(&m_movementEnabled);
+	x.xferBool(&m_dirty);
+	x.xferBool(&m_workDone);
+	x.xferBool(&m_meleeEngaged);
+	x.xferBool(&m_deleting);
+	x.xferBool(&m_locomoting);
+	x.xferBool(&m_propagatedMoving);
+	x.xferUnsignedInt(&m_formationRefreshFrame);
+	SnapshotXfer::reals(x, m_flankAngles);
+	x.xferUnsignedInt(&m_flankIndex);
+	// lane SAVE-4e (closed sets): the next angle slot once the angles are full (HordeFlank RW: m_flankAngles[m_flankIndex])
+	SnapshotXfer::checkRange(m_flankIndex, 0, m_flankAngles.empty() ? 0 : (std::int64_t)m_flankAngles.size() - 1, "a horde's flank angle index");
+	SnapshotXfer::map(x, m_flankers, 8, "a horde's flankers", [&](ObjectID &id) { x.xferObjectID(&id); }, [&](unsigned &f) { x.xferUnsignedInt(&f); });
+	x.xferBool(&m_canFlank);
+	x.xferObjectID(&m_bannerCarrier);
+	x.xferUnsignedInt(&m_bannerCountdown);
+	SnapshotXfer::ids(x, m_garrisonEntering);
+	x.xferUnsignedInt(&m_lastMemberEnteredFrame);
+	x.xferBool(&m_garrisoned);
+	bool melee = !x.isLoading() && m_stanceMeleeBehavior != nullptr;
+	x.xferBool(&melee);
+	if (!melee)
+	{
+		if (x.isLoading())
+		{
+			m_stanceMeleeBehavior.reset();
+		}
+	}
+	else
+	{
+		MeleeBehaviorModuleData::Kind kind = x.isLoading() ? MeleeBehaviorModuleData::SWARM : m_stanceMeleeBehavior->m_kind;
+		SnapshotXfer::enumIn(x, kind, MeleeBehaviorModuleData::SWARM, MeleeBehaviorModuleData::AMOEBA, "a horde's melee behaviour kind");
+		std::shared_ptr<MeleeBehaviorModuleData> loaded = x.isLoading() ? std::make_shared<MeleeBehaviorModuleData>(kind) : m_stanceMeleeBehavior;
+		MeleeBehaviorModuleData &mb = *loaded;
+		x.xferBool(&mb.m_followLeader);
+		x.xferReal(&mb.m_distanceToActiveLeader);
+		x.xferReal(&mb.m_distanceToPassiveLeader);
+		x.xferReal(&mb.m_facingBonus);
+		x.xferReal(&mb.m_angleLimitCos);
+		x.xferReal(&mb.m_innerRange);
+		x.xferReal(&mb.m_outerRange);
+		x.xferReal(&mb.m_outerRangeBuildings);
+		SnapshotXfer::maskWords(x, mb.m_idleModelConditions, SnapshotXfer::modelConditionCount(), "a horde member's idle model conditions", "the model conditions");
+		x.xferUnsignedInt(&mb.m_delayUntilIdle);
+		x.xferUnsignedInt(&mb.m_delayRandomActivateMin);
+		x.xferUnsignedInt(&mb.m_delayRandomActivateMax);
+		m_stanceMeleeBehavior = loaded;
+	}
+	SnapshotXfer::map(x, m_backUp, 16, "a horde's back-up records", [&](ObjectID &id) { x.xferObjectID(&id); }, [&](BackUpEntry &e) {
+		SnapshotXfer::coord3D(x, e.position);
+		x.xferUnsignedInt(&e.delay);
+	});
+	x.xferObjectID(&m_scarer);
+	x.xferBool(&m_cowering);
+	SnapshotXfer::coord3D(x, m_facePoint);
+	x.xferBool(&m_hasFacePoint);
+	x.xferObjectID(&m_quarrelA);
+	x.xferObjectID(&m_quarrelB);
+	SnapshotXfer::maskWords(x, m_quarrelFighterFlags, SnapshotXfer::modelConditionCount(), "a horde's quarrel fighter conditions", "the model conditions"); // lane SAVE-4e
+	SnapshotXfer::maskWords(x, m_quarrelSpectatorFlags, SnapshotXfer::modelConditionCount(), "a horde's quarrel spectator conditions", "the model conditions");
+	SnapshotXfer::map(x, m_quarrelDistance, 8, "a horde's quarrel distances", [&](ObjectID &id) { x.xferObjectID(&id); }, [&](int &d) { x.xferInt(&d); });
+	// lane SAVE-4e (merge q20): the state the archive's lanes added after SAVE-4b, each part of crc() above: DEVPORT-3C's member removal record (RW H+0x298 /
+	// + 0x29C) and BACKLOG-8's wall scaling (H + 0x2F0 / + 0x2F4 / + 0x2EC)
+	x.xferUnsignedInt(&m_lastMemberRemovedFrame);
+	x.xferObjectID(&m_removedMemberAttacker);
+	x.xferObjectID(&m_wallToScale);
+	x.xferInt(&m_wallIdlePasses);
+	SnapshotXfer::checkRange(m_wallIdlePasses, 0, 4, "a horde's wall scaling idle passes"); // checkWallScalingDone: the fifth idle pass ends the scaling and resets it
+	x.xferReal(&m_scalingReach);
 }

@@ -149,6 +149,9 @@ public:
 	bool isWeaponSlotOkToFire(int slot) const override { return isWeaponSlotOnTurret(slot); }     // RW 0x8DCA11
 
 	void crc(class StateHasher &hasher) const;
+	// lane SAVE-4c (obfme:AIWorld): retail TurretAI::xfer RW 0x8DC2C3 (1, 1) transfers the machine, the angle and pitch, the target and the flags; OpenBFME
+	// layout (S-4220): what crc covers in its order, the victim's team as its id (found again in the TeamFactory), the machine with every state, the counters
+	void xfer(class Xfer &x);
 	unsigned sleepUntil() const { return m_sleepUntil; }
 
 	struct Stats

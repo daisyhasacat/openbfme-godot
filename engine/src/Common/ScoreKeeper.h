@@ -241,6 +241,7 @@ public:
 	const Counters &counters() const { return m_counters; }
 
 	void crc(StateHasher &h) const;
+	void xfer(class Xfer &x); // lane SAVE-4a
 
 private:
 	static bool isScoringStructure(const Object &obj, bool forDestroy);

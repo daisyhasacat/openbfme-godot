@@ -2,6 +2,7 @@
 // See GameLogic/Module/NotifyCrushModules.h for the sources and what is inference.
 
 #include "GameLogic/Module/NotifyCrushModules.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/GameCommon.h"
 #include "Common/StateHash.h"
@@ -507,4 +508,14 @@ void NotifyCrushModules::registerAll(ModuleFactory &modules)
 			return std::make_unique<NotifyCrushUpdate>(thing, typed, horde);
 		});
 	}
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) ---------------------------------------------------------------------------------------------------
+void NotifyCrushUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferBool(&m_horde);
+	x.xferUnsignedInt(&m_scans);
+	x.xferUnsignedInt(&m_warned);
 }

@@ -512,7 +512,7 @@ TEST_CASE("attack1 heroes retail: the mounted Witch-king and Mouth of Sauron, or
 	// The strike, kill, blocked-frame and distance totals are MEASURED ENGINE PINS of this scene (lane ATTACK-1, the archive ad9bec05 merged), not retail
 	// values; the hit sizes are the INI's: the Witch-king's mace 400 x HERO 200% = 800 and KnightCrush 80 x CRUSH 140% = 112, the Mouth of Sauron's sword
 	// 320 x 200% = 640 and HeroCrush 160 x 200% = 320 against a MordorFighter (75 health each, 20 members); against the troll's armour (HERO 200%) 800 and 640
-	// Merge queue q12 (the q11 ATTACK-1 / BACKLOG-1 pins against this batch, measured on the merged tree on pve; the lane that moved them was not separated): the swing, kill, blocked and distance
+	// Merge queue q12 (the q11 ATTACK-1 / BACKLOG-1 pins against this batch, measured on the merged tree on a CI host; the lane that moved them was not separated): the swing, kill, blocked and distance
 	// pins moved. The CRUSHER_LEVEL -1 case is no longer blocked (blocked 0 frames; the Witch-king makes no swing at all and stays 69.9 away, the Mouth of Sauron swings once
 	// from 41.3): a change of behaviour to review, not only of numbers.
 	for (const Case &c : { Case{ "FactionAngmar", "AngmarWitchking", 5u, 12u, 225.0f, { 800.0f, 112.0f }, 2u, 450.0f, 675.0f, { { 1500.0f, 800.0f }, { 700.0f, 700.0f } }, 0, -1, 0u, 0.0f, 69.9072f, 0.789662f },

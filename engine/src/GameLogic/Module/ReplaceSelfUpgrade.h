@@ -53,6 +53,7 @@ public:
 class ReplaceSelfUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(ReplaceSelfUpgrade) // lane SAVE-4b: UpgradeModule's
 	ReplaceSelfUpgrade(Thing *thing, const ReplaceSelfUpgradeModuleData *data) : UpgradeModule(thing, data), m_data(data) {}
 	bool wouldUpgrade(const UpgradeMaskType &mask) const override; // RW 0x8BB23F
 	static void registerClass(ModuleFactory &modules);

@@ -6,10 +6,10 @@
 // options UI, the retail LANMessage encoding) is NET-2 / XPLAY-2 (stop S-724); this one joins by address.
 //
 // Datagrams (on the game's UDP socket, before the Transport takes it over): u16 magic 0x4C42 ("BL"), u8 kind, then
-//   JOIN       u8 lobby version 2, wstr name, str profile identity   (player -> host, repeated until ACCEPT / REFUSE)
+//   JOIN       u8 lobby version (kVersion), wstr name, str profile identity   (player -> host, repeated until ACCEPT / REFUSE)
 //   ACCEPT     i32 slot                                     (host -> player)
 //   REFUSE     str reason                                   (host -> player: the game is full or already started, another lobby version, another profile)
-//   START      u8 lobby version 2, str profile identity, NewGameMessage, i32 run-ahead, i32 CRC interval, 8 x (u8 used, u32 ip, u16 port)
+//   START      u8 lobby version (kVersion), str profile identity, NewGameMessage, i32 run-ahead, i32 CRC interval, 8 x (u8 used, u32 ip, u16 port)
 //                                                           (host -> every player, repeated until START_ACK)
 //   START_ACK  i32 slot
 // The START's address of the host's own slot is 0:0; a player uses the address it joined.
@@ -53,6 +53,9 @@ struct LobbyStart
 
 namespace LANLobby
 {
+// the JOIN / START version: 2: JOIN / START carry the lobby version and the profile identity; 3 (lane HERO-2): the slots' Create-a-Hero records;
+// 4 (lane OWNERFIX-2): the GameInfo slots' handicaps; 5: merged peace time, Lua authority and fortress construction
+constexpr std::uint8_t kVersion = 5;
 // the encoded datagrams (exposed for the tests)
 std::vector<std::uint8_t> encodeStart(const LobbyStart &s);
 bool decodeStart(const std::vector<std::uint8_t> &d, LobbyStart &out, std::string *error);

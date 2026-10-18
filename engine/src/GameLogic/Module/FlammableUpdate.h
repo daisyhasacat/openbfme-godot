@@ -97,6 +97,7 @@ public:
 class FlammableUpdate : public UpdateModule, public DamageModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(FlammableUpdate) // lane SAVE-4b
 	enum FlammabilityStatus
 	{
 		FS_NORMAL = 0,
@@ -148,6 +149,7 @@ public:
 class FireSpreadUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(FireSpreadUpdate) // lane SAVE-4b
 	FireSpreadUpdate(Thing *thing, const FireSpreadUpdateModuleData *data);
 	UpdateSleepTime update() override;
 	void startFireSpreading(); ///< RW 0x88EFA9

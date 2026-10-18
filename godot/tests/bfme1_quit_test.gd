@@ -25,7 +25,7 @@ func _run() -> void:
 	root.add_child(instancer)
 	assert(instancer.setup(fs).ok)
 	var floor_id: int = instancer.add_model("GBCampFloor")
-	assert(floor_id >= 0)
+	assert(floor_id >= 0)  # tolerance: an index: any found index is valid
 	assert(instancer.get_model_report(floor_id).errors.is_empty())
 	print("BFME1 CAMP FLOOR PASS")
 	for name in ["Options", "Save", "Load", "Resume", "Restart", "ExitMission"]:

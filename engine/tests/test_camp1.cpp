@@ -204,7 +204,7 @@ TEST_CASE("camp1 retail: TheLinearCampaignManager holds BFME2 and expansion camp
 	CHECK(bonus->missions[0].map == "MAP ANG Bonus");
 }
 
-TEST_CASE("camp1 stops: the lane's stops are reported with their ids (S-1360 .. S-1366)")
+TEST_CASE("camp1 stops: the lane's stops are reported with their ids (S-1360 .. S-1366, CAMPSAVE-1's S-4900 .. S-4903)")
 {
 	std::vector<std::string> lines = LinearCampaignManager::stopLines();
 	for (const std::string &l : AttachUpdate::stopLines())
@@ -215,21 +215,21 @@ TEST_CASE("camp1 stops: the lane's stops are reported with their ids (S-1360 .. 
 	{
 		lines.push_back(l);
 	}
-	REQUIRE(lines.size() == 8);
-	// lane CAMP-1H: S-1362 (ENEMY_SIGHTED's sight filter) is ported (Object::canSee RW 0x68FA3D); S-1711 and S-1712 joined
-	const char *ids[] = { "[S-1360]", "[S-1364]", "[S-1711]", "[S-1361]", "[S-1363]", "[S-1365]", "[S-1366]", "[S-1712]" };
-	for (size_t i = 0; i < 8; ++i)
+	REQUIRE(lines.size() == 11);
+	// lane CAMP-1H: S-1362 (ENEMY_SIGHTED's sight filter) is ported (Object::canSee RW 0x68FA3D); S-1711 and S-1712 joined; lane CAMPSAVE-1: S-4900 .. S-4903;
+	// lane DEVPORT-7: S-1366 (GATE_OPEN / GATE_CLOSE) is closed
+	const char *ids[] = { "[S-1360]", "[S-1364]", "[S-4900]", "[S-4901]", "[S-4902]", "[S-4903]", "[S-1711]", "[S-1361]", "[S-1363]", "[S-1365]", "[S-1712]" };
+	for (size_t i = 0; i < 11; ++i)
 	{
 		CHECK(lines[i].rfind(ids[i], 0) == 0);
 	}
-	CHECK(lines[0].find("00000000.sav") != std::string::npos);
+	CHECK(lines[0].find("campaign menu save point") != std::string::npos); // lane CAMPSAVE-1: the auto-save and the menu's saves are OpenBFME saves
 	CHECK(lines[1].find("S-2340") != std::string::npos); // lane CAMP-2: the movies show their VP6 picture (S-1710 no longer lists it)
-	CHECK(lines[2].find("MilitaryCaptionDelayMS") != std::string::npos);
-	CHECK(lines[3].find("HordeContain + 0x54") != std::string::npos);
-	CHECK(lines[4].find("PLAYER_SET_MAX_SPELLPOINTS") != std::string::npos);
-	CHECK(lines[5].find("RW 0x7A208C") != std::string::npos);
-	CHECK(lines[6].find("GateOpenAndCloseBehavior") != std::string::npos);
-	CHECK(lines[7].find("RW 0x6AD2B5") != std::string::npos);
+	CHECK(lines[6].find("MilitaryCaptionDelayMS") != std::string::npos);
+	CHECK(lines[7].find("HordeContain + 0x54") != std::string::npos);
+	CHECK(lines[8].find("SET_PLAYER_KILLS_OF_TYPE_TO_COUNTER") != std::string::npos); // lane OWNERFIX-1: PLAYER_SET_MAX_SPELLPOINTS is ported
+	CHECK(lines[9].find("RW 0x7A208C") != std::string::npos);
+	CHECK(lines[10].find("RW 0x6AD2B5") != std::string::npos);
 	// lane CAMP-1H: the movies' stop (GameWorld.get_movie's report)
 	REQUIRE(VideoPlayer::stopLines().size() == 1);
 	CHECK(VideoPlayer::stopLines()[0].rfind("[S-1710]", 0) == 0);

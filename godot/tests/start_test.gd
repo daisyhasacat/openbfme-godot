@@ -112,4 +112,43 @@ func _run() -> int:
 	_check(text.contains("palantir-initialized"), "AptPalantir::OnInitialized fired")
 	# AUDIO-2 review r1 fix 2: the real game attaches its audio side (owners, player filter, Eva side, the in-game music scripts)
 	_check(text.contains("GAME audio attached: ") and text.contains("\"ok\": true"), "the game flow attached the live game's audio")
+	# lane UBERJOIN-1: the world's performance mode through its lifecycle (switch, restore, an online START of an Uber player), in its own process
+	var uj_output: Array = []
+	var uj_code := OS.execute(godot_path, ["--headless", "--path", project, "--script", "res://tests/uberjoin1_test.gd"], uj_output, true)
+	_check(uj_code == 0 and "".join(uj_output).contains("UBERJOIN1 PASS"), "tests/uberjoin1_test.gd passes (exit %d)" % uj_code)
+	if uj_code != 0:
+		print("".join(uj_output))
+	# lane PLATFORMICON-1: the three platform icons load as Godot resources, current pictures (its own process)
+	# the gate's checkout imports the project only once (when .godot/extension_list.cfg is missing): import the icons added since, as a fresh clone does
+	for _attempt in 2:
+		var import_output: Array = []
+		if OS.execute(godot_path, ["--headless", "--path", project, "--import"], import_output, true) == 0:
+			break
+	var pi_output: Array = []
+	var pi_code := OS.execute(godot_path, ["--headless", "--path", project, "--script", "res://tests/platformicon1_test.gd"], pi_output, true)
+	_check(pi_code == 0 and "".join(pi_output).contains("PLATFORMICON1 PASS"), "tests/platformicon1_test.gd passes (exit %d)" % pi_code)
+	if pi_code != 0:
+		print("".join(pi_output))
+	# lane DEVPORT-7: a replay of another simulation profile is refused on the replay list, by name; the game stays up (its own processes)
+	var rr_output: Array = []
+	var rr_code := OS.execute(godot_path, ["--headless", "--path", project, "--script", "res://tests/replay_refusal_test.gd"], rr_output, true)
+	_check(rr_code == 0 and "".join(rr_output).contains("REPLAY REFUSAL PASS"), "tests/replay_refusal_test.gd passes (exit %d)" % rr_code)
+	if rr_code != 0:
+		print("".join(rr_output))
+	# lane UBERJOIN-1 (round 2): the real LAN lifecycle of a Normal player in an Uber game: join, play, Quit, score, Continue (two processes)
+	var uj_dir := OS.get_user_data_dir().path_join("uberjoin1-lan")
+	DirAccess.make_dir_recursive_absolute(uj_dir)
+	FileAccess.open(uj_dir.path_join("host.ini"), FileAccess.WRITE).store_string("OpenBFMEUberPerformance = yes\n")
+	FileAccess.open(uj_dir.path_join("join.ini"), FileAccess.WRITE).store_string("")
+	var uj_port := 47300 + (Time.get_ticks_msec() % 500) * 2
+	var uj_common := ["--lan-players=2", "--lan-targets=127.0.0.1", "--lan-port-base=%d" % uj_port]
+	var uj_host: int = OS.create_process(godot_path, ["--headless", "--path", project, "--log-file", uj_dir.path_join("host.log"), "--", "--lan=host", "--net-name=UjHost",
+		"--options-file=" + uj_dir.path_join("host.ini"), "--map=maps/map mp evendim/map mp evendim.map"] + uj_common)
+	var uj_join_out: Array = []
+	var uj_join_code := OS.execute(godot_path, ["--headless", "--path", project, "--script", "res://tests/uberjoin1_lan_test.gd", "--", "--lan=join", "--net-name=UjJoiner",
+		"--options-file=" + uj_dir.path_join("join.ini")] + uj_common, uj_join_out, true)
+	OS.kill(uj_host)
+	_check(uj_join_code == 0 and "".join(uj_join_out).contains("UBERJOIN1LAN PASS"), "tests/uberjoin1_lan_test.gd passes (exit %d)" % uj_join_code)
+	if uj_join_code != 0:
+		print("".join(uj_join_out))
 	return 0 if _failures == 0 else 1

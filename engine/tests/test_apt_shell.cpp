@@ -532,7 +532,8 @@ TEST_CASE("Shell: the A4 factory table holds MainMenu, Skirmish, LoadScreen, Opt
 		"SaveLoad.apt", "LanLobby.apt", // lane MP-2: the replay page, the LAN lobby
 		"PlayerTribute.apt", // lane PLAY-1: the Palantir flag's screen
 		"CreateAHero.apt", // lane CAH-1: the Create-a-Hero builder
-		"OnlineShell.apt" }); // lane ONLINE-4: the online screens
+		"OnlineShell.apt", // lane ONLINE-4: the online screens
+		"CampaignMenu.apt" }); // lane CAMPSAVE-1: the campaign between missions
 	CHECK(fx.factories.has("mainmenu.APT"));
 	fx.wm->init();
 	fx.shell->push("AptLevel0.apt");
@@ -902,6 +903,23 @@ TEST_CASE("stops S-174: ActionRandom has no client RNG behind it in the shell; t
 	CHECK(other.wm->random() == a);
 }
 
+TEST_CASE("menustyle: BFME2 campaign commands preserve alignment and difficulty in the host request")
+{
+	ShellFx fx;
+	fx.addMovie("MainMenu", {});
+	registerAptScreenFactories(fx.factories);
+	fx.wm->init();
+	fx.shell->push("MainMenu.apt");
+	fx.tick();
+	for (const auto &entry : { std::make_pair("GoodCampaign", "good"), std::make_pair("EvilCampaign", "evil") })
+	{
+		REQUIRE(fx.wm->invokeCallback(std::string("AptMainMenu::") + entry.first, "2"));
+		REQUIRE_FALSE(fx.services.requests.empty());
+		CHECK(fx.services.requests.back().action == ShellAction::LoadCampaign);
+		CHECK(fx.services.requests.back().argument == std::string("bfme2:") + entry.second + ":2");
+	}
+}
+
 TEST_CASE("stops S-175: handlers with no decompiled body report 'unported-command'; every main-menu action is still a request the engine can see")
 {
 	ShellFx fx;
@@ -984,8 +1002,8 @@ TEST_CASE("BFME2 main menu: Good and Evil campaign callbacks retain difficulty")
  REQUIRE(fx.wm->invokeCallback("AptMainMenu::GoodCampaign", "E"));
  REQUIRE(fx.wm->invokeCallback("AptMainMenu::EvilCampaign", "H"));
  REQUIRE(fx.services.requests.size() == 2);
- CHECK(fx.services.requests[0].action == ShellAction::GoodCampaign);
- CHECK(fx.services.requests[0].argument == "E");
- CHECK(fx.services.requests[1].action == ShellAction::EvilCampaign);
- CHECK(fx.services.requests[1].argument == "H");
+ CHECK(fx.services.requests[0].action == ShellAction::LoadCampaign);
+ CHECK(fx.services.requests[0].argument == "bfme2:good:E");
+ CHECK(fx.services.requests[1].action == ShellAction::LoadCampaign);
+ CHECK(fx.services.requests[1].argument == "bfme2:evil:H");
 }

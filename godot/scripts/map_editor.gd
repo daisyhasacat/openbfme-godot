@@ -535,6 +535,8 @@ func _clear_preview():
  preview=null;preview_instance=-1;preview_template=''
 
 func _process(_delta):
+ if not world.is_logic_held():
+  return
  stroke_clock+=_delta
  if dragging and tool.selected in [3,4,5,6] and points.size()>stroke_count and stroke_clock>=0.1:_paint_live()
  if not is_instance_valid(hud):queue_free();return

@@ -8,6 +8,7 @@
 #include "Common/INI.h"
 #include "Common/INIException.h"
 #include "Common/INI/INIBlockStubs.h"
+#include "GameClient/GlobalLanguage.h"
 
 #include <algorithm>
 #include <cmath>
@@ -99,8 +100,32 @@ void skipField(INI *ini, void *, void *, const void *)
 struct LoadState
 {
 	std::map<std::string, RadiusDecalTemplate> *out = nullptr;
+	TerrainResourceUiSettings *resourceUi = nullptr; // lane OWNERFIX-2
 	bool inGameUi = false;
 };
+
+// lane OWNERFIX-2: the resource claim rows (RW 0xC12860 .. 0xC12890)
+void parseResourceClaimDecal(INI *ini, void *instance, void *, const void *)
+{
+	INI::parseAsciiString(ini, nullptr, &static_cast<LoadState *>(instance)->resourceUi->claimDecal, nullptr); // RW 0x69C374 -> 0x42EE5E
+}
+void parseResourcePlaceDecal(INI *ini, void *instance, void *, const void *)
+{
+	INI::parseAsciiString(ini, nullptr, &static_cast<LoadState *>(instance)->resourceUi->placeDecal, nullptr); // RW 0x42EE5E
+}
+void parseResourcePlaceFont(INI *ini, void *instance, void *, const void *)
+{
+	FontDesc f;
+	GlobalLanguage::parseFontDesc(ini, nullptr, &f, nullptr); // RW 0x778C93
+	TerrainResourceUiSettings &ui = *static_cast<LoadState *>(instance)->resourceUi;
+	ui.fontName = f.name;
+	ui.fontSize = f.size;
+	ui.fontBold = f.bold;
+}
+void parseResourcePlaceFontColor(INI *ini, void *instance, void *, const void *)
+{
+	INI::parseColorInt(ini, nullptr, &static_cast<LoadState *>(instance)->resourceUi->fontColor, nullptr); // RW 0x42F13E
+}
 
 // RW 0x6A4E27 (InGameUI::parseNamedRadiusDecalTemplate): the name, a default template (RW 0x732888) parsed with RW 0xC24278; a duplicate replaces the earlier
 void parseNamedRadiusDecalTemplate(INI *ini, void *instance, void *, const void *)
@@ -113,16 +138,23 @@ void parseNamedRadiusDecalTemplate(INI *ini, void *instance, void *, const void 
 
 const FieldParse kInGameUiFields[] = {
 	{ "RadiusCursorTemplate", parseNamedRadiusDecalTemplate, nullptr, 0 },
+	{ "TerrainResourceClaimDecal", parseResourceClaimDecal, nullptr, 0 },
+	{ "PlaceTerrainResourceClaimantDecal", parseResourcePlaceDecal, nullptr, 0 },
+	{ "PlaceTerrainResourceClaimantFont", parseResourcePlaceFont, nullptr, 0 },
+	{ "PlaceTerrainResourceClaimantFontColor", parseResourcePlaceFontColor, nullptr, 0 },
 	{ nullptr, skipField, nullptr, 0 },
 };
 
-bool run(ArchiveFileSystem *fs, const std::string &path, const std::string *memory, std::map<std::string, RadiusDecalTemplate> &out, std::string *error)
+bool run(ArchiveFileSystem *fs, const std::string &path, const std::string *memory, std::map<std::string, RadiusDecalTemplate> &out, TerrainResourceUiSettings &ui,
+	std::string *error)
 {
 	INIEnvironment env;
 	env.fileSystem = fs;
 	INIBlockRecorder recorder;
 	LoadState state;
 	state.out = &out;
+	ui = TerrainResourceUiSettings();
+	state.resourceUi = &ui;
 	RegisterRecordingBlockStubs(env.blocks, recorder, { "InGameUI" }, StubExtent::Lenient);
 	env.blocks.registerBlock("InGameUI", [&state](INI *ini) {
 		state.inGameUi = true;
@@ -172,13 +204,13 @@ bool RadiusCursorTemplates::load(ArchiveFileSystem &fs, std::string *error)
 		return false;
 	}
 	m_templates.clear();
-	return run(&fs, file, nullptr, m_templates, error);
+	return run(&fs, file, nullptr, m_templates, m_resourceUi, error);
 }
 
 bool RadiusCursorTemplates::scan(const std::string &inGameUiIni, std::string *error)
 {
 	m_templates.clear();
-	return run(nullptr, "ingameui.ini", &inGameUiIni, m_templates, error);
+	return run(nullptr, "ingameui.ini", &inGameUiIni, m_templates, m_resourceUi, error);
 }
 
 const RadiusDecalTemplate *RadiusCursorTemplates::find(const std::string &name) const

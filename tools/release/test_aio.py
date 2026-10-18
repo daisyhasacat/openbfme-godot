@@ -55,6 +55,45 @@ def test_aio_pins_are_current():
     assert any("_patch201.big" in e for e in aio_pins.check_tables(broken))
 
 
+def _gd_packages(text: str, const: str) -> dict:
+    """the rows of one constant of the generated aio_pins.gd, read from its text (not through aio_pins.render)"""
+    block = text.split(f"const {const} := [", 1)[1].split("\n]\n", 1)[0]
+    out, guid = {}, None
+    for line in block.splitlines():
+        if line.startswith("\t{"):
+            guid = json.loads("{" + line.strip()[1:].split(', "files": [')[0] + "}")["guid"]
+            out[guid] = []
+        elif line.startswith("\t\t["):
+            out[guid].append(json.loads(line.strip().rstrip(",")))
+    return out
+
+
+def test_aio_bfme1_pins_match_the_package_json_and_stay_optional():
+    """community PR #36 (restored on the owner's decision, 2026-10-18): the 346 BFME1 pins in the launcher are exactly the package json's,
+    with its metadata (aio_bfme1_package.json), and only in BFME1_PACKAGES: never in the base download PACKAGES"""
+    text = (LAUNCHER / "scripts" / "core" / "aio_pins.gd").read_text()
+    files = json.loads((HERE / "aio_package_files.json").read_text())
+    meta = json.loads((HERE / "aio_bfme1_package.json").read_text())
+    assert meta["package"] == {"guid": "original-BFME1", "name": "Vanilla (1.03)"} and meta["language"] == "EN"
+    assert meta["source"] == "https://bfmeladder.com/api/workshop/download?guid=original-BFME1"
+    base, optional = _gd_packages(text, "PACKAGES"), _gd_packages(text, "BFME1_PACKAGES")
+    assert list(base) == ["original-RotWK", "original-BFME2"] and list(optional) == ["original-BFME1"]
+    assert optional["original-BFME1"] == files["original-BFME1"]
+    assert base == {g: files[g] for g in base}
+    row = next(ln for ln in text.splitlines() if '"guid": "original-BFME1"' in ln)
+    assert '"key": "bfme1"' in row and '"game": 0' in row and '"folder": "BFME1"' in row and f'"owner": "{OWNER}"' in row
+    assert f'"bytes": {sum(r[2] for r in files["original-BFME1"])}' in row
+    names = {r[0].lower() for r in files["original-BFME1"]}
+    assert {"lotrbfme.exe", "worldbuilder.exe", "dsound.dll"} <= names
+    # the checker refuses a BFME1 table that is missing, empty, malformed or has a name twice
+    for broken, why in [({k: v for k, v in files.items() if k != "original-BFME1"}, "expected"),
+                        ({**files, "original-BFME1": []}, "no pinned files"),
+                        ({**files, "original-BFME1": files["original-BFME1"] + [files["original-BFME1"][0]]}, "pinned twice"),
+                        ({**files, "original-BFME1": [["x.big", "zz", 1]]}, "not [name, md5, size]"),
+                        ({**files, "original-BFME9": [["x.big", "0" * 32, 1]]}, "expected")]:
+        assert any(why in e for e in aio_pins.check_tables(broken)), why
+
+
 # ---- the stand-in service ---------------------------------------------------------------------------------------------------------------
 
 def _file(name: str, data: bytes, language: str = "ALL", pinned: bool = False, size: int | None = None) -> dict:
@@ -77,6 +116,14 @@ def packages() -> list[dict]:
             _file("INI.big", r(60000), pinned=True),
             _file("lang\\German.big", r(10000), "DE"),
             _file("lotrbfme2.exe", r(9000)),
+        ]},
+        # community PR #36: the optional BFME1 package (its pins ride along in every test: the base download must never take it)
+        {"key": "bfme1", "guid": "original-BFME1", "name": "Vanilla (1.03)", "game": 0, "folder": "BFME1", "files": [
+            _file("ini.big", r(50000)),
+            _file("lang\\english.big", r(20000), "EN"),
+            _file("lang\\french.big", r(8000), "FR"),
+            _file("lotrbfme.exe", r(16000)),
+            _file("dsound.dll", r(7000)),
         ]},
     ]
 
@@ -199,7 +246,10 @@ def test_aio_installs_both_games_and_checks_every_file(tmp_path, service):
     r = install(tmp_path, service)
     assert r.code == 0 and r.has("LAUNCHER AIO done: 7 files downloaded, 0 already there"), r
     assert r.has("AIO consent given: The game files are downloaded from the servers of the All In One BFME Launcher"), r
+    assert not (target(tmp_path) / "BFME1").exists()  # community PR #36: the optional BFME1 package is never part of it
     for p in service.pkgs:
+        if p["key"] == "bfme1":
+            continue
         for f in p["files"]:
             path = on_disk(tmp_path, p["folder"], f["name"])
             english = f["language"] == "ALL" or "EN" in f["language"].split()
@@ -389,3 +439,144 @@ def test_aio_a_stop_after_the_last_check_hands_nothing_off(tmp_path, service, ho
     r = install(tmp_path, service)
     assert r.code == 0 and r.has("0 files downloaded, 7 already there"), r
     assert (tmp_path / "game-user" / "downloaded-installs.cfg").exists()
+
+
+# ---- community PR #36: the optional BFME1 package -------------------------------------------------------------------------------------
+
+def bfme1_install(tmp: Path, service: Service, *extra: str) -> Run:
+    return launch(tmp, service, "--game=bfme1", "--aio=on", "--aio-package=bfme1", f"--aio-install={target(tmp)}", "--aio-consent", *extra)
+
+
+def guids_asked(service: Service) -> list[str]:
+    return [p.split("guid=", 1)[1] for p, _ in service.server.requests if p.startswith("/api/workshop/download")]
+
+
+BFME1_EN = ["ini.big", "lang\\english.big", "lotrbfme.exe", "dsound.dll"]
+
+
+@needs_godot
+def test_aio_bfme1_is_refused_unless_bfme1_is_the_chosen_game(tmp_path, service):
+    """opt-in only: the BFME1 package needs the BFME1 game chosen, the setting and the consent; nothing is asked of the service otherwise"""
+    r = launch(tmp_path, service, "--game=bfme2", "--aio=on", "--aio-package=bfme1", f"--aio-install={target(tmp_path)}", "--aio-consent")
+    assert r.code == 1 and r.has("offered only when Battle for Middle-earth I is the chosen game"), r
+    r = launch(tmp_path, service, "--aio=on", "--aio-package=bfme1", f"--aio-install={target(tmp_path)}", "--aio-consent")
+    assert r.code == 1 and r.has("offered only when Battle for Middle-earth I is the chosen game"), r  # the remembered game is bfme2
+    r = launch(tmp_path, service, "--game=bfme1", "--aio=on", "--aio-package=bfme1", f"--aio-install={target(tmp_path)}")
+    assert r.code == 1 and r.has("has not agreed"), r
+    r = launch(tmp_path, service, "--game=bfme1", "--aio=off", "--aio-package=bfme1", f"--aio-install={target(tmp_path)}", "--aio-consent")
+    assert r.code == 1 and r.has("is off"), r
+    r = launch(tmp_path, service, "--game=bfme1", "--aio=on", "--aio-package=rotwk-mod", f"--aio-install={target(tmp_path)}", "--aio-consent")
+    assert r.code == 1 and r.has("no download 'rotwk-mod'"), r
+    assert service.server.requests == [] and not target(tmp_path).exists()
+
+
+@needs_godot
+def test_aio_base_download_never_takes_bfme1(tmp_path, service):
+    """the base download is unchanged with BFME1 chosen too: RotWK + BFME2 only, the BFME1 package is never asked for"""
+    r = launch(tmp_path, service, "--game=bfme1", "--aio=on", f"--aio-install={target(tmp_path)}", "--aio-consent")
+    assert r.code == 0 and r.has("LAUNCHER AIO done: 7 files downloaded, 0 already there"), r
+    assert guids_asked(service) == ["original-RotWK", "original-BFME2"]
+    assert not (target(tmp_path) / "BFME1").exists() and not r.has("BFME Arena")
+    assert not (tmp_path / "game-user" / "downloaded-bfme1.cfg").exists()
+
+
+@needs_godot
+def test_aio_bfme1_installs_only_bfme1_with_its_own_handoff(tmp_path, service):
+    # a base download first: its handoff must survive the BFME1 one untouched (the game's readDownloaded refuses a BFME1_INSTALL key)
+    assert install(tmp_path, service).code == 0
+    marker = tmp_path / "game-user" / "downloaded-installs.cfg"
+    before = marker.read_text()
+    service.server.requests.clear()
+    r = bfme1_install(tmp_path, service)
+    assert r.code == 0 and r.has("LAUNCHER AIO done: 4 files downloaded, 0 already there"), r
+    assert r.has("AIO consent given: Optional: Battle for Middle-earth I is downloaded from BFME Arena (bfmeladder.com), a third-party "
+                 "service. OpenBFME does not host or distribute it."), r
+    assert guids_asked(service) == ["original-BFME1"]
+    pkg = next(p for p in service.pkgs if p["key"] == "bfme1")
+    for f in pkg["files"]:
+        path = on_disk(tmp_path, "BFME1", f["name"])
+        assert path.exists() == (f["name"] in BFME1_EN), path
+        if path.exists():
+            assert path.read_bytes() == f["data"]
+    assert marker.read_text() == before and "BFME1" not in before
+    handoff = (tmp_path / "game-user" / "downloaded-bfme1.cfg").read_text().splitlines()
+    assert handoff[1:] == ["SOURCE=All In One BFME Launcher service: original-BFME1", f"BFME1_INSTALL={target(tmp_path) / 'BFME1'}"], handoff
+    data = tmp_path / "data" / "OpenBFMELauncher"
+    assert json.loads((data / "aio-install-bfme1.json").read_text())["folders"] == {"bfme1": str(target(tmp_path) / "BFME1")}
+    assert json.loads((data / "aio-install.json").read_text())["folders"].keys() == {"rotwk", "bfme2"}
+    # a second run checks what is there and downloads nothing
+    r = bfme1_install(tmp_path, service)
+    assert r.code == 0 and r.has("0 files downloaded, 4 already there"), r
+
+
+@needs_godot
+@pytest.mark.parametrize("change,why", [
+    (lambda s: s.entry("original-BFME1", "lotrbfme.exe").update(Md5="0" * 32, Url=f"{s.server.origin}/{OWNER}/" + "0" * 32),
+     "lists lotrbfme.exe with MD5 00000000000000000000000000000000; BFME1 test has"),
+    (lambda s: s.entry("original-BFME1", "dsound.dll").update(Size=7001), "lists dsound.dll with 7001 bytes; BFME1 test has 7000"),
+    (lambda s: s.manifests["original-BFME1"]["Files"].append({**s.entry("original-BFME1", "dsound.dll"), "Name": "dsoal-aldrv.dll"}),
+     "lists dsoal-aldrv.dll, which OpenBFME's list of BFME1 test does not have"),
+    (lambda s: s.manifests["original-BFME1"].update(Game=1), "is no longer the base game package (Game 1"),
+])
+def test_aio_bfme1_a_changed_package_downloads_nothing(tmp_path, service, change, why):
+    change(service)
+    service.publish()
+    r = bfme1_install(tmp_path, service)
+    assert r.code == 3 and r.has(why) and r.has("Nothing was downloaded" if "Game" not in why else "Try again later"), r
+    assert service.file_requests() == []
+    assert not (tmp_path / "game-user" / "downloaded-bfme1.cfg").exists()
+
+
+@needs_godot
+def test_aio_bfme1_a_file_with_other_bytes_or_size_is_deleted(tmp_path, service):
+    """the service's bytes are checked against the pins, not the manifest: other bytes of the same size are deleted, a longer file refused"""
+    exe = service.data("lotrbfme.exe")
+    service.server.files[file_path(exe)] = bytes(len(exe))
+    r = bfme1_install(tmp_path, service)
+    assert r.code == 3 and r.has("BFME1/lotrbfme.exe from the service has MD5") and r.has("it was deleted"), r
+    dest = on_disk(tmp_path, "BFME1", "lotrbfme.exe")
+    assert not dest.exists() and not Path(str(dest) + ".part").exists()
+    service.server.files[file_path(exe)] = exe + b"x"
+    r = bfme1_install(tmp_path, service)
+    assert r.code == 3 and r.has("BFME1/lotrbfme.exe: the service answered something OpenBFME does not recognise"), r
+    assert not dest.exists() and not (tmp_path / "game-user" / "downloaded-bfme1.cfg").exists()
+    # a file already in the folder that is not the pinned one is never overwritten
+    service.server.files[file_path(exe)] = exe
+    dll = on_disk(tmp_path, "BFME1", "dsound.dll")
+    dll.write_bytes(b"the player's own DSOAL")
+    r = bfme1_install(tmp_path, service)
+    assert r.code == 3 and r.has("already exists and is not original-BFME1's file"), r
+    assert dll.read_bytes() == b"the player's own DSOAL"
+
+
+@needs_godot
+def test_aio_bfme1_window_offers_it_only_when_chosen(tmp_path, service):
+    """the real window (scripts/main.gd, headless, offline): the Game files screen offers the base download until the Play card's game
+    picker is set to Battle for Middle-earth I; then it offers the optional BFME1 package (labelled BFME Arena, third party) and its
+    Download press installs only that; back on BFME II / RotWK, the base offer and the base download again (tests/bfme1_offer_test.gd)"""
+    env = dict(os.environ, XDG_DATA_HOME=str(tmp_path / "data"), OPENBFME_GAME_USER_DIR=str(tmp_path / "game-user"), HOME=str(tmp_path / "home"),
+               BFME1_INSTALL="")
+    (tmp_path / "home").mkdir()
+    cmd = [GODOT, "--headless", "--path", str(LAUNCHER), "--script", "res://tests/bfme1_offer_test.gd", "--", "--offline",
+           f"--aio-base={service.server.origin}", f"--aio-pins={service.pins_file}", f"--bfme1-offer-target={target(tmp_path)}"]
+    r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "BFME1 OFFER OK" in out, out[-4000:]
+    # BFME1 (paused), the refused resume (nothing asked), BFME1 again (completed), then the base download
+    assert guids_asked(service) == ["original-BFME1", "original-BFME1", "original-RotWK", "original-BFME2"], guids_asked(service)
+    for name in BFME1_EN:
+        assert on_disk(tmp_path, "BFME1", name).read_bytes() == service.data(name)
+    assert on_disk(tmp_path, "RotWK", "_patch201.big").read_bytes() == service.data("_patch201.big")
+    assert "BFME1" not in (tmp_path / "game-user" / "downloaded-installs.cfg").read_text()
+
+
+@needs_godot
+def test_bfme1_assets_script(tmp_path):
+    """launcher/tests/bfme1_assets_test.gd: the real pins accept the package's own manifest and refuse a changed one; the downloaded
+    BFME1 folder is found and passed to the game"""
+    env = dict(os.environ, BFME1_INSTALL="", XDG_DATA_HOME=str(tmp_path / "data"), HOME=str(tmp_path))
+    env.pop("BFME1_TEST_MANIFEST", None)
+    r = subprocess.run([GODOT, "--headless", "--path", str(LAUNCHER), "--script", "res://tests/bfme1_assets_test.gd"], capture_output=True,
+                       text=True, timeout=300, stdin=subprocess.DEVNULL, env=env)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "BFME1 ASSETS OK" in out, out[-4000:]

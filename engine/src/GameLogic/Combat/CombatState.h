@@ -22,6 +22,7 @@ class ObjectProjectileLauncher;
 class GameLogic;
 class Object;
 class StateHasher;
+class Xfer;
 
 class CombatState
 {
@@ -116,6 +117,7 @@ public:
 	}
 	const std::vector<CastleBreach> &castleBreaches() const { return m_breaches; }
 	void crc(StateHasher &hasher) const;
+	void xfer(Xfer &x); // lane SAVE-4b: obfme:Combat (OpenBFME native, S-4190)
 
 	// the stop lines that apply to a game (docs/STOPS.md S-320 .. S-339)
 	static std::vector<std::string> stops();

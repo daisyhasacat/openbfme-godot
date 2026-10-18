@@ -10,6 +10,76 @@ sys.path.insert(0, str(HERE))
 
 import net_guard  # noqa: E402
 
+
+def test_scanners_use_portable_owner_paths_without_widening_permissions(tmp_path, monkeypatch):
+    from pathlib import PureWindowsPath
+
+    owner = 'func _show_in_file_manager(path):\n\tOS.shell_show_in_file_manager(path)\n'
+    launcher_owner = 'static func show_in_file_manager(path):\n\tOS.shell_show_in_file_manager(path)\n'
+    sources = {
+        "engine/src/GameNetwork/Transport.cpp": "void f() { socket(); }",
+        "engine/src/Other.cpp": "void f() { socket(); }",
+        "godot/scripts/release/release.gd": owner,
+        "godot/scripts/other.gd": owner,
+        "godot/scripts/online_lobby.gd": "var request = HTTPRequest.new()",
+        "godot/tests/ignored.gd": owner,
+        "launcher/scripts/ui/paths.gd": launcher_owner,
+        "launcher/scripts/other.gd": launcher_owner,
+        "launcher/scripts/core/instance_lock.gd": "var server = TCPServer.new()\nvar request = HTTPRequest.new()",
+        "launcher/tests/ignored.gd": launcher_owner,
+    }
+    for relative, source in sources.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    path_type = type(tmp_path)
+    relative_to = path_type.relative_to
+    # Exercise Windows separators even on POSIX, without changing real file access.
+    with monkeypatch.context() as patch:
+        patch.setattr(net_guard, "REPO", tmp_path)
+        patch.setattr(path_type, "relative_to", lambda self, *args, **kwargs:
+                      PureWindowsPath(*relative_to(self, *args, **kwargs).parts))
+        game = net_guard.scan()
+        launcher = net_guard.scan_launcher()
+    assert set(game) == {
+        "engine/src/GameNetwork/Transport.cpp", "engine/src/Other.cpp",
+        "godot/scripts/other.gd", "godot/scripts/online_lobby.gd",
+    }
+    assert set(launcher) == {"launcher/scripts/other.gd", "launcher/scripts/core/instance_lock.gd"}
+    allowed = lambda path, finding: path in net_guard.ALLOWED_NATIVE or net_guard.game_finding_allowed(path, finding)
+    assert all(allowed("engine/src/GameNetwork/Transport.cpp", f) for f in game["engine/src/GameNetwork/Transport.cpp"])
+    assert not any(allowed("engine/src/Other.cpp", f) for f in game["engine/src/Other.cpp"])
+    assert not any(allowed("godot/scripts/other.gd", f) for f in game["godot/scripts/other.gd"])
+    assert all(allowed("godot/scripts/online_lobby.gd", f) for f in game["godot/scripts/online_lobby.gd"])
+    lock = "launcher/scripts/core/instance_lock.gd"
+    assert {f.split(": ", 1)[1] for f in launcher[lock]} == {"TCPServer", "HTTPRequest"}
+    assert net_guard.launcher_finding_allowed(lock, "line 1: TCPServer")
+    assert not net_guard.launcher_finding_allowed(lock, "line 2: HTTPRequest")
+    assert not any(net_guard.launcher_finding_allowed("launcher/scripts/other.gd", f)
+                   for f in launcher["launcher/scripts/other.gd"])
+
+
+def test_launcher_excluded_ports_query_is_exact_and_read_only():
+    path = "launcher/scripts/core/instance_lock.gd"
+    query = ('OS.execute(OS.get_environment("SystemRoot").path_join("System32/netsh.exe"), '
+             '["int", "ipv4", "show", "excludedportrange", "protocol=tcp"], output, true)')
+    source = "func _windows_exclusions():\n\tvar code := " + query + "\n"
+    assert net_guard.gdscript_findings(source, path) == []
+    assert net_guard.gdscript_findings(source.replace("OS.execute(", "OS . execute ("), path) == []
+    assert net_guard.gdscript_findings(source, "launcher/scripts/main.gd")
+    assert net_guard.gdscript_findings(source.replace("func _windows_exclusions", "func other"), path)
+    for old, new in [('"show"', '"add"'), ('"protocol=tcp"', '"protocol=udp"'),
+                     ('"System32/netsh.exe"', '"netsh.exe"'), ('"SystemRoot"', '"CUSTOM_ROOT"'),
+                     ('"excludedportrange"', 'command'), ('output, true)', 'output, true, true)'),
+                     ('OS.execute(', 'OS.create_process(')]:
+        changed = source.replace(old, new)
+        assert changed != source and net_guard.gdscript_findings(changed, path)
+    assert net_guard.gdscript_findings(source + 'func other():\n\tOS.execute("netsh", args)\n', path)
+    assert net_guard.gdscript_findings('func other():\n\tOS.execute("netsh", args) # ' + query, path)
+    assert net_guard.gdscript_findings('var fake = """' + source + '"""\nfunc f():\n\tOS.execute("netsh", args)', path)
+    findings = net_guard.gdscript_findings((REPO / path).read_text(encoding="utf-8"), path)
+    assert not [f for f in findings if "OS.execute" in f]
+
 RELEASE = "godot/scripts/release/release.gd"
 OWNER = "func _show_in_file_manager(path: String) -> Error:\n\treturn OS.shell_show_in_file_manager(path, true)\n"
 
@@ -33,10 +103,6 @@ def test_only_the_owner_function_of_release_gd_may_call_the_file_manager():
 def test_sol_r3_bypasses_fail():
     """wincrash1-review/r3: a URL reassigned to the allowed variable, a parameter shadowing the allowed const, a fake const inside a multiline
     string, a safe-looking comment after a spaced call; and every argument shape r2 / r3 listed."""
-    review = Path.home() / ".cache/openbfme-recover/wincrash1-review/r3"  # Sol r3 probe files, when this machine has them
-    for name in ("comment.gd", "fake.gd", "shadow.gd"):
-        if (review / name).is_file():
-            assert calls((review / name).read_text()), name
     comment = 'func _init():\n\tOS .shell_open("https://example.com") # OS.shell_open(ProjectSettings.globalize_path("user://logs"))\n'
     fake = 'var doc := """\nfunc _show_in_file_manager(p):\n"""\nfunc _init():\n\tOS.shell_open("https://example.com")\n'
     shadow = 'const LOG_DIR := "user://logs"\nfunc candidate(LOG_DIR: String):\n\tOS.shell_open(ProjectSettings.globalize_path(LOG_DIR))\n'

@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0.
 // See GodotDevice/GodotPathfindView.h.
 
+#include "Common/BfmeGame.h"
 #include "GodotDevice/GodotPathfindView.h"
 
 #include "Common/ArchiveFileSystem.h"
@@ -199,6 +200,7 @@ Dictionary PathfindView::build(const Ref<RetailFileSystem> &fsRef, const String 
 	I.map.reset(new LoadedMap());
 	{
 		MapReadOptions mro;
+		mro.bfme1 = rfs.archive_fs() && isBfme1Data(*rfs.archive_fs()); // community PR #36
 		if (!MapReader::load(bytes, path, mro, *I.map, &error))
 		{
 			return fail(error);

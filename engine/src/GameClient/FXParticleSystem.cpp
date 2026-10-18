@@ -25,17 +25,34 @@ const char *const WindMotionNames[] = { "NONE", "Unused", "PingPong", "Circular"
 namespace
 {
 
-// BFME1 Rva00D10180.cpp has semantic priorities rather than RotWK quality
-// thresholds. Keep its critical effects visible; quality tiers approximate the
-// older budget categories until a separate BFME1 particle budget is implemented.
-void parsePriority(INI *ini, void *, void *store, const void *)
+// RotWK / BFME2: INI::parseIndexList over the binary's names. community PR #36, BFME1 data only (Common/BfmeGame.h): BFME1 (Open-BFME-1
+// Rva00D10180.cpp) has semantic priorities rather than RotWK's quality thresholds; INFERENCE (S-5017): CRITICAL / ALWAYS_RENDER map to RotWK's tier 6,
+// the others to tier 2 (BFME1's particle budget is not reproduced)
+void parsePriority(INI *ini, void *instance, void *store, const void *userData)
 {
+	if (!ini->bfme1Data())
+	{
+		INI::parseIndexList(ini, instance, store, userData);
+		return;
+	}
 	const char *token = ini->getNextToken();
 	const char *const bfme1[] = { "NONE", "WEAPON_EXPLOSION", "SCORCHMARK", "DUST_TRAIL", "BUILDUP", "DEBRIS_TRAIL", "UNIT_DAMAGE_FX", "DEATH_EXPLOSION", "SEMI_CONSTANT", "CONSTANT", "WEAPON_TRAIL", "AREA_EFFECT", "CRITICAL", "ALWAYS_RENDER", nullptr };
 	for (int i = 0; ParticlePriorityNames[i]; ++i)
-		if (AsciiStringUtil::compareNoCase(token, ParticlePriorityNames[i]) == 0) { *(int *)store = i; return; }
+	{
+		if (AsciiStringUtil::compareNoCase(token, ParticlePriorityNames[i]) == 0)
+		{
+			*(int *)store = i;
+			return;
+		}
+	}
 	for (int i = 1; bfme1[i]; ++i)
-		if (AsciiStringUtil::compareNoCase(token, bfme1[i]) == 0) { *(int *)store = i >= 12 ? 6 : 2; return; }
+	{
+		if (AsciiStringUtil::compareNoCase(token, bfme1[i]) == 0)
+		{
+			*(int *)store = i >= 12 ? 6 : 2;
+			return;
+		}
+	}
 	*(int *)store = INI::scanIndexList(token, ParticlePriorityNames);
 }
 

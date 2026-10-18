@@ -8,6 +8,9 @@
 #include "Libraries/WWVegas/WW3D2/w3dshadergen.h"
 
 #include <string>
+#include <map>
+#include <set>
+#include <sstream>
 
 namespace
 {
@@ -50,4 +53,70 @@ TEST_CASE("shader text: the view-space mappers keep the model-view normal")
 	const std::string code = Generate_W3D_Shader_Code(envKey(false, W3D_TEXGEN_CAMERA_REFLECTION));
 	CHECK(has(code, "v_vnrm = normalize((MODELVIEW_NORMAL_MATRIX * NORMAL));"));
 	CHECK(has(code, "reflect(normalize(v_vpos), normalize(v_vnrm))"));
+}
+
+TEST_CASE("shader text: W3D sampler permutations share configurations and Metal never addresses slot 16 or 17")
+{
+	// Godot 4.7.2 scene_forward_clustered_inc.glsl declares six preceding samplers, then these
+	// shared configurations. rendering_shader_container_metal.cpp assigns slots before dead-code removal.
+	const std::map<std::string, int> slots = {
+		{"filter_nearest, repeat_disable", 6},
+		{"filter_linear, repeat_disable", 7},
+		{"filter_linear_mipmap, repeat_disable", 9},
+		{"filter_linear_mipmap_anisotropic, repeat_disable", 11},
+		{"filter_linear, repeat_enable", 13},
+		{"filter_linear_mipmap, repeat_enable", 15},
+		{"filter_linear_mipmap_anisotropic, repeat_enable", 17},
+	};
+	for (const auto policy : { W3DSamplerPolicy::Anisotropic, W3DSamplerPolicy::Metal16 })
+	{
+		for (unsigned bits = 0; bits != 1024; ++bits)
+		{
+			CAPTURE(bits);
+			W3DShaderKey k;
+			for (int stage = 0; stage != 2; ++stage)
+			{
+				k.Tex[stage] = (bits & (1u << (stage * 4))) != 0;
+				k.NoLod[stage] = (bits & (2u << (stage * 4))) != 0;
+				k.ClampU[stage] = (bits & (4u << (stage * 4))) != 0;
+				k.ClampV[stage] = (bits & (8u << (stage * 4))) != 0;
+			}
+			k.NormalMap = (bits & 256u) != 0;
+			k.HouseColor = (bits & 512u) != 0;
+			const auto code = Generate_W3D_Shader_Code(k, policy);
+			std::set<int> used;
+			std::istringstream lines(code);
+			std::string line;
+			unsigned uniforms = 0;
+			while (std::getline(lines, line))
+			{
+				if (line.find("uniform sampler2D ") != 0) continue;
+				++uniforms;
+				const auto start = line.find(" : ") + 3;
+				const auto hint = line.substr(start, line.find(';', start) - start);
+				CAPTURE(hint);
+				const auto slot = slots.find(hint);
+				REQUIRE(slot != slots.end());
+				used.insert(slot->second);
+				if (policy == W3DSamplerPolicy::Metal16)
+				{
+					CHECK(slot->second < 16); // tolerance: Metal's hard per-stage sampler index limit is 0..15
+				}
+			}
+			CHECK(uniforms == unsigned(1 + k.Tex[0] + k.Tex[1] + k.NormalMap + k.HouseColor));
+			CHECK(6 + used.size() <= 16); // tolerance: six Godot reserved samplers plus W3D's distinct live configurations fit 16 on every driver
+			for (int stage = 0; stage != 2; ++stage)
+			{
+				if (!k.Tex[stage]) continue;
+				const bool clamp = k.ClampU[stage] && k.ClampV[stage];
+				const std::string filter = k.NoLod[stage] ? "filter_linear" :
+					(policy == W3DSamplerPolicy::Metal16 && !clamp ? "filter_linear_mipmap" : "filter_linear_mipmap_anisotropic");
+				CHECK(has(code, "uniform sampler2D w3d_tex" + std::to_string(stage) + " : " + filter + (clamp ? ", repeat_disable;" : ", repeat_enable;")));
+			}
+			const std::string repeatFilter = policy == W3DSamplerPolicy::Metal16 ? "filter_linear_mipmap" : "filter_linear_mipmap_anisotropic";
+			if (k.NormalMap) CHECK(has(code, "uniform sampler2D w3d_normal : " + repeatFilter + ", repeat_enable;"));
+			if (k.HouseColor) CHECK(has(code, "uniform sampler2D w3d_hc_tex : " + repeatFilter + ", repeat_enable;"));
+			if (policy == W3DSamplerPolicy::Anisotropic) CHECK(code == Generate_W3D_Shader_Code(k));
+		}
+	}
 }

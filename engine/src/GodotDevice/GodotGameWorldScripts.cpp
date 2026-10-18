@@ -57,6 +57,7 @@ void GameWorld::bindScriptMethods()
 	ClassDB::bind_method(D_METHOD("get_waypoint", "name"), &GameWorld::get_waypoint);
 	ClassDB::bind_method(D_METHOD("debug_script_place", "name", "where"), &GameWorld::debug_script_place);
 	ClassDB::bind_method(D_METHOD("debug_script_kill", "name"), &GameWorld::debug_script_kill);
+	ClassDB::bind_method(D_METHOD("debug_script_victory"), &GameWorld::debug_script_victory); // lane CAMPSAVE-1 (test hooks)
 	ClassDB::bind_method(D_METHOD("debug_script_unit", "name"), &GameWorld::debug_script_unit);
 	ClassDB::bind_method(D_METHOD("debug_script_team", "name"), &GameWorld::debug_script_team);
 	ClassDB::bind_method(D_METHOD("debug_script_place_at", "name", "x", "y"), &GameWorld::debug_script_place_at);
@@ -353,6 +354,30 @@ Dictionary GameWorld::debug_script_kill(const String &name)
 		return out;
 	}
 	killThroughMembers(*o);
+	out["ok"] = true;
+	return out;
+}
+
+// lane CAMPSAVE-1: the decisive moment of any mission by the cheat hook: the VICTORY script action's own effect (ScriptActions: QUICKVICTORY, RW 0x7BE0A2),
+// which the end sequence, the score screen and the campaign flow then take as they take a map script's. The missions' own scripts win them in
+// test_camp1_missions.cpp; the flow tests (scripts/campaign_save_test.gd "eight") need all eight to end, which only the flow is under test in
+Dictionary GameWorld::debug_script_victory()
+{
+	Dictionary out;
+	out["ok"] = false;
+	if (!m_game || !m_testHooks || m_netHost || m_netClient || m_netStarted || m_netSession)
+	{
+		out["error"] = "refused (no game, test_hooks off or a network game)";
+		return out;
+	}
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	ScriptEngine &engine = m_game->logic().scriptEngine();
+	if (!engine.endRequests().empty())
+	{
+		out["error"] = "the mission has ended already";
+		return out;
+	}
+	engine.addEndRequest(true, "QUICKVICTORY");
 	out["ok"] = true;
 	return out;
 }

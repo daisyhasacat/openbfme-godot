@@ -46,6 +46,7 @@ public:
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override; // lane SAVE-4c (AIAttackSnapshot.cpp)
 	bool computePath(); // RW 0x746DB6 (vslot 0x44)
 
 private:
@@ -66,6 +67,7 @@ public:
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override; // lane SAVE-4c (AIAttackSnapshot.cpp)
 	bool computePath(); // RW 0x7471CF (vslot 0x44)
 	// test access: the last engagement search found no destination (+ 0x71), the wait (+ 0x70 / + 0x6C)
 	bool noDestination() const { return m_noDest; }
@@ -92,6 +94,7 @@ public:
 	StateReturnType onEnter() override;
 	StateReturnType update() override { return STATE_SUCCESS; }
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override; // lane SAVE-4c (AIAttackSnapshot.cpp)
 
 private:
 	unsigned m_lastFrame = 0; // + 0x20

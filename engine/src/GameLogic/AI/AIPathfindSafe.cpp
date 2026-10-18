@@ -11,7 +11,7 @@
 //   * the start cell starts the search with no goal cell (RW 0x934400(0)); every popped cell (RW 0x6F4AF2): its centre (RW 0x6EA0A1), the SSE squared 2D distance to
 //     each repulsor (dy^2 + dx^2, the nearer of the two), "ok" when it is above radius^2 (mulss), or when the open list is empty (RW 0x6F1B2A) after any cell was
 //     examined, or (with the distance a new farthest) when more than 2000 cells were examined; an ok cell whose footprint is free (RW 0x6F3082: checkDestination with
-//     no other unit's goal) ends the search with the path RW 0x6F1A31 builds from the unit's position; else the cell is closed (RW 0x6F6286) and expanded (RW
+//     no other unit's goal) ends the search with the path RW 0x6F1A31 builds from the unit's position; else the cell is closed (RW 0x934594), its layer links are expanded (RW 0x6F6286) and its neighbours (RW
 //     0x6F9850, no goal cell), its count added to the examined cells.
 // INFERENCE: the zone manager's setAllPassable is the port's PathfindZoneManager::setAllPassable (PATH-2); RW 0x6F3082 is checkDestination with a zero crowd count, as
 // PHYS-1 reads it (AIPathfindMoveAway.cpp, S-785).
@@ -87,6 +87,7 @@ Path *Pathfinder::findSafePath(const PathfindObject *obj, const PathfindLocomoto
 			break;
 		}
 		markClosed(c);
+		checkChangeLayers(c, obj); // RW 0x6F6286 (lane BACKLOG5)
 		cellCount += examineNeighboringCells(c, nullptr, loco, isHuman, center, radius, startNdx, obj);
 	}
 	cleanOpenAndClosedLists();

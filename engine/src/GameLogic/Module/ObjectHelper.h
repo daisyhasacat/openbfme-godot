@@ -35,6 +35,9 @@ public:
 
 	bool isUnported() const override { return true; }
 	bool isHelper() const override { return true; }
+	const std::string &getModuleTagName() const override { return m_tag; } // lane SAVE-4b
+	// lane SAVE-4b: OpenBFME native (the helper's behaviour is not ported, S-141): UpdateModule::xfer, then the shell's call count (the report reads it)
+	OBFME_MODULE_XFER(ObjectHelperShell)
 	const std::string &helperName() const { return m_name; }
 	const std::string &tag() const { return m_tag; }
 	UpdateSleepTime update() override;

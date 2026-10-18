@@ -7,6 +7,7 @@
 // ROTWK_INSTALL / BFME2_INSTALL.
 
 #include "doctest.h"
+#include "ProcessTestUtil.h"
 
 #include "RetailTestMount.h"
 
@@ -20,7 +21,6 @@
 #include <vector>
 
 #ifndef _WIN32
-#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -88,17 +88,7 @@ long long counter(const std::string &line, const std::string &key)
 	return -1;
 }
 
-int runCommand(const std::string &cmdIn)
-{
-	std::string cmd = cmdIn;
-#ifdef _WIN32
-	cmd = "\"" + cmd + "\"";
-	return std::system(cmd.c_str());
-#else
-	const int rc = std::system(cmd.c_str());
-	return WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
-#endif
-}
+using processtest::runCommand;
 
 std::string peerBase()
 {

@@ -46,6 +46,7 @@
 
 #pragma once
 
+#include "GameNetwork/PlatformKind.h"
 #include "Common/GameCommon.h"
 #include "Common/ScoreKeeper.h"
 #include "GameLogic/VictoryConditions.h"
@@ -210,6 +211,7 @@ struct ScoreScreenData
 		std::string side;             ///< + 0xC
 		int result = 3;               ///< + 0x10: 0 victorious, 1 defeated, 2 disconnected, 3 none
 		bool local = false;
+		PlatformKind platform = PlatformKind::None; ///< lane PLATFORMICON-1 (OpenBFME): the player's system, the icon before the name (display data; network games)
 		int score = 0;                ///< ScoreKeeper::computeScore at the end (RW 0x79DFFA)
 		std::vector<ScoreKeeper::PerFrameStats> perFrame;
 		std::vector<int> fortressMarks;
@@ -230,6 +232,8 @@ struct ScoreScreenData
 	};
 	int type = 2;                    ///< the screen's game type (+ 0x284): 2 skirmish, 3 LAN, 4 Internet
 	bool localIsObserver = false;    ///< + 0x294
+	bool localAlliedVictory = false; ///< lane OWNERFIX-3: TheVictoryConditions' isLocalAlliedVictory when the game was left (RW 0x9CE8F3's gate)
+	bool honorsRecorded = false;     ///< lane OWNERFIX-3: the score screen recorded (or refused) the battle honors of this game once (RW 0x9270AD runs once)
 	bool valid = false;
 	unsigned frames = 0;             ///< the logic frames the game ran
 	std::vector<Entry> entries;
@@ -237,7 +241,16 @@ struct ScoreScreenData
 	// RW 0x9275EC for a game started from game slots: the players in slot order (the local player first, RW 0x9270AD); `slotPlayerIndices` lists the player
 	// index of every occupied slot in slot order (-1: no player), `disconnected` the indices whose slot says so (RW 0x90313E)
 	// RW 0x927898's screen type: 3 for a LAN game (the economy's mode 1, or a network session whatever the logic's mode says), 4 for the Internet (mode 5), else 2
-	static int typeFor(int gameMode, bool lanSession) { return (gameMode == 1 || lanSession) ? 3 : (gameMode == 5 ? 4 : 2); }
+	// lane CAMPSAVE-1: RW 0x927898's single player branch (RW 0x6253BF: game modes 0 and 6) is type 1, which the screen's destructor (RW 0x926E0A) tests
+	// to run the campaign's end (RW 0x927EC6); a replay (type 5) is not told apart here
+	static int typeFor(int gameMode, bool lanSession)
+	{
+		if (!lanSession && (gameMode == 0 || gameMode == 6))
+		{
+			return 1;
+		}
+		return (gameMode == 1 || lanSession) ? 3 : (gameMode == 5 ? 4 : 2);
+	}
 	static ScoreScreenData build(GameLogic &logic, int type, const std::vector<int> &slotPlayerIndices, const std::vector<int> &disconnected);
 
 	// RW 0x9257F2: the graph's modes ("Units" 0, "Structures" 1, "Resources" 2, "Territories" 3, "FinalScore" 4 and anything else) and the value of one entry

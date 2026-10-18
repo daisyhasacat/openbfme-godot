@@ -792,7 +792,7 @@ TEST_CASE("placement: RotWK's clear-path gate applies to a DOZER builder (RW 0x7
 	Object *dozer = f.make("ImmDozer", f.teamOf("Alice")); // an IMMOBILE DOZER without an AI cannot reach any site
 	Object *walker = f.make("Walker", f.teamOf("Alice"));  // a mobile non-DOZER: no clear-path test at all
 	const ThingTemplate &seg = *f.w.get("WallSeg")->getFinalOverride();
-	const Coord3D site{ 3000.0f, 3000.0f, 0.0f };
+	const Coord3D site{ 2000.0f, 2000.0f, 0.0f }; // inside the 256-cell synthetic map
 	CHECK(BuildPlacement::isLocationLegalToBuild(*f.logic, site, seg, 0.0f, LLF_CLEAR_PATH, dozer, f.alice()) == LBC_NO_CLEAR_PATH);
 	CHECK(BuildPlacement::isLocationLegalToBuild(*f.logic, site, seg, 0.0f, LLF_CLEAR_PATH, walker, f.alice()) == LBC_OK);
 	CHECK(BuildPlacement::isLocationLegalToBuild(*f.logic, site, seg, 0.0f, 0, dozer, f.alice()) == LBC_OK);

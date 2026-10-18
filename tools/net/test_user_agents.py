@@ -1,5 +1,6 @@
 # Lane INFRA-2: every Python client of play.openbfme.com sends its own User-Agent. Cloudflare's browser integrity check answers Python's default
 # ("Python-urllib/3.x") with 403, error 1010 (found 2026-10-13: the relay's log uploads and the test client were refused by the live lobby).
+# The operator's own backup and monitor clients are kept outside this repository, with their own copy of this check.
 import http.server
 import json
 import sys
@@ -7,10 +8,8 @@ import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-for d in ("tools/net", "services/online/relay", "services/online/deploy"):
+for d in ("tools/net", "services/online/relay"):
     sys.path.insert(0, str(ROOT / d))
-import lobby_backup  # noqa: E402
-import monitor  # noqa: E402
 import online_client  # noqa: E402
 import upload_logs  # noqa: E402
 
@@ -45,8 +44,6 @@ def test_no_client_sends_pythons_default_user_agent(tmp_path):
         log.write_bytes(b"OBFMERLG")
         assert upload_logs.upload(log, url, b"k" * 32) == ""
         online_client.Lobby(url).call("GET", "/v1/health")
-        lobby_backup.Admin(url, b"k" * 32).list_all()
-        monitor.check_lobby(url, "x", "x")
     finally:
         srv.shutdown()
-    assert len(seen) == 4 and all(ua and not ua.startswith("Python-urllib") for ua in seen), seen
+    assert len(seen) == 2 and all(ua and not ua.startswith("Python-urllib") for ua in seen), seen

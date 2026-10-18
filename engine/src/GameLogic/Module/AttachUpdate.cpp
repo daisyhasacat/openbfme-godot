@@ -2,6 +2,7 @@
 // See GameLogic/Module/AttachUpdate.h (lane CAMP-1).
 
 #include "GameLogic/Module/AttachUpdate.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/AsciiString.h"
 #include "Common/INIException.h"
@@ -320,4 +321,13 @@ void AttachUpdate::registerClass(ModuleFactory &modules)
 std::vector<std::string> AttachUpdate::stopLines()
 {
 	return { kStop };
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190; retail AttachUpdate::xfer RW 0x894F38 (1, 3) also holds a bool this port lacks) -------------
+void AttachUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferObjectID(&m_parentID);
+	x.xferAsciiString(&m_diedEva);
 }

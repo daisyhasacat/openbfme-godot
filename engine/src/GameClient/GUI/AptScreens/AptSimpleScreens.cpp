@@ -7,6 +7,7 @@
 #include "GameClient/GUI/Gadgets.h"
 #include "GameClient/GUI/LoadScreenInfo.h"
 #include "GameClient/GUI/PlayerStatusInfo.h"
+#include "GameClient/GUI/PlatformIcons.h"
 #include "GameClient/GUI/ShellServices.h"
 #include "GameClient/GameLODManager.h"
 #include "GameClient/GUI/TributeInfo.h"
@@ -266,6 +267,7 @@ void AptPlayerTribute::dropStatusPage()
 		if (m_status->rowShown[i])
 		{
 			windows().unregisterProvider("_level" + std::to_string(level()) + "." + m_status->rowPath[i] + "_color");
+			windows().clearTextBadge("APT:_level" + std::to_string(level()) + "." + m_status->rowPath[i] + "_field0"); // lane PLATFORMICON-1
 		}
 	}
 	for (const char *n : { "_OnRowShown", "_OnRowHidden" })
@@ -279,6 +281,10 @@ void AptPlayerTribute::dropStatusPage()
 	m_status.reset();
 	m_statusName.clear();
 }
+
+// lane PLATFORMICON-1: the Status page's name field starts at stage x 299 and its frame's left border (the StatusPage clip) is at 291.9: the icon sits in the gutter left of the
+// border (its right edge two pixels before the border), not over it
+constexpr int kStatusPageBadgeDx = -7;
 
 // RW 0x915E00 (OnRowShown) -> the row object RW 0x915BF6
 void AptPlayerTribute::rowShown(const std::string &params)
@@ -312,6 +318,24 @@ void AptPlayerTribute::rowShown(const std::string &params)
 	{
 		windows().setAptText("APT:_level" + std::to_string(level()) + "." + path + "_field" + std::to_string(f), row.fields[f]);
 	}
+	// lane PLATFORMICON-1 (OpenBFME): the player's system as an icon left of the name's text field (field 0), network games only
+	if (row.platform != PlatformKind::None)
+	{
+		if (AptGadgetLayer *layer = windows().gadgetLayer())
+		{
+			if (MappedImageCollection *images = layer->gadgets().mutableImages())
+			{
+				registerPlatformIcons(*images);
+			}
+		}
+		if (!m_status->platformNoted)
+		{
+			m_status->platformNoted = true;
+			windows().note("platform-icon", "the players screen shows the players' systems as icons; no hover text [S-4850]");
+		}
+		windows().setTextBadge("APT:_level" + std::to_string(level()) + "." + path + "_field0",
+			TextBadge{ platformImageName(row.platform), kPlatformIconStage, platformHelpText(row.platform), 0, kStatusPageBadgeDx });
+	}
 	const std::int32_t color = row.color;
 	registerProvider("_level" + std::to_string(level()) + "." + path + "_color", [color](const std::string &, std::string &value, bool setting) {
 		if (!setting)
@@ -336,6 +360,7 @@ void AptPlayerTribute::rowHidden(const std::string &params)
 		return;
 	}
 	windows().unregisterProvider("_level" + std::to_string(level()) + "." + m_status->rowPath[(size_t)index] + "_color");
+	windows().clearTextBadge("APT:_level" + std::to_string(level()) + "." + m_status->rowPath[(size_t)index] + "_field0"); // lane PLATFORMICON-1
 	m_status->rowShown[(size_t)index] = false;
 }
 
@@ -1027,7 +1052,8 @@ AptOptionsScreen::AptOptionsScreen(WindowManager &windows, Shell &shell, ShellEn
 		reset();
 	});
 	windows.setMouseFilter([this](int kind, float x, float y) { return mouseFilter(kind, x, y); });
-	windows.setCapturesMouse(true); // lane OPTS-5: Options covers the stage: over a game every press is its (the HUD asks, InGameHud::isOverGui)
+	windows.setCapturesMouse(true, level()); // lane OPTS-5: Options covers the stage: over a game every press is its (the HUD asks, InGameHud::isOverGui); lane OPTS-6: the levels under it (the Palantir) hear no click
+	windows.setNavigationSource(this); // lane OPTS-6: the page's tabs and rows for the keyboard / controller (navTargets checks the page is up)
 	// lane OPTS-5: after every update of the movies (their timelines place the basic page's frames) the frames stay hidden until the menu is up, so no
 	// frame of the retail page is ever drawn
 	windows.addUpdateListener(this, [this]() {
@@ -1563,6 +1589,10 @@ AptOptionsScreen::~AptOptionsScreen()
 	// lane OPTS-3: nothing of this screen may run after it is gone
 	windows().setMouseFilter(nullptr);
 	windows().setCapturesMouse(false);
+	if (windows().navigationSource() == this)
+	{
+		windows().setNavigationSource(nullptr); // lane OPTS-6
+	}
 	if (AptGadgetLayer *layer = windows().gadgetLayer())
 	{
 		layer->setDecorator(nullptr);
@@ -2327,6 +2357,87 @@ std::vector<OpenBFMEPageEvent> AptOptionsScreen::takeExtensionEvents()
 	std::vector<OpenBFMEPageEvent> out;
 	out.swap(m_extensionEvents);
 	return out;
+}
+
+// lane OPTS-6 (not retail): see AptSimpleScreens.h
+void AptOptionsScreen::navTargets(std::vector<MenuNavTarget> &targets)
+{
+	if (!extensionOpen() || isHidden() || !m_page || !m_page->shown())
+	{
+		return;
+	}
+	const OpenBFMEPageSpec &spec = m_page->spec();
+	for (std::size_t i = 0; i < spec.tabs.size(); ++i)
+	{
+		std::array<int, 4> r{};
+		const std::string id = "tab:" + std::to_string(i);
+		if (m_page->rect(id, r))
+		{
+			MenuNavTarget t;
+			t.kind = MenuNavTarget::Kind::Item;
+			t.id = id;
+			t.x0 = (float)r[0], t.y0 = (float)r[1], t.x1 = (float)r[2], t.y1 = (float)r[3];
+			targets.push_back(std::move(t));
+		}
+	}
+	for (const OpenBFMEPageRow &row : spec.rows)
+	{
+		GameWindow *w = m_page->gadget(row.key);
+		std::array<int, 4> r{};
+		if (!w || !w->winGetEnabled() || !m_page->rect(row.key, r))
+		{
+			continue; // a heading, a read-only value or a greyed row
+		}
+		MenuNavTarget t;
+		t.kind = MenuNavTarget::Kind::Gadget;
+		t.id = "row:" + row.key;
+		t.window = w;
+		t.x0 = (float)r[0], t.y0 = (float)r[1], t.x1 = (float)r[2], t.y1 = (float)r[3];
+		targets.push_back(std::move(t));
+	}
+	std::array<int, 4> r{};
+	if (spec.hasList && m_page->gadget("list") && m_page->rect("list", r))
+	{
+		MenuNavTarget t;
+		t.kind = MenuNavTarget::Kind::Gadget;
+		t.id = "list";
+		t.window = m_page->gadget("list");
+		t.x0 = (float)r[0], t.y0 = (float)r[1], t.x1 = (float)r[2], t.y1 = (float)r[3];
+		targets.push_back(std::move(t));
+	}
+}
+
+bool AptOptionsScreen::navKey(MenuNavKey key, const MenuNavTarget *)
+{
+	if (!extensionOpen() || isHidden() || !m_page || !m_page->shown())
+	{
+		return false;
+	}
+	const OpenBFMEPageSpec &spec = m_page->spec();
+	switch (key)
+	{
+		case MenuNavKey::Back:
+			extensionCancel(); // as Esc (AptMenuPlayer): the page's CANCEL
+			return true;
+		case MenuNavKey::PageNext:
+		case MenuNavKey::PagePrevious:
+		{
+			const int n = (int)spec.tabs.size();
+			if (n > 1)
+			{
+				const int tab = (spec.tab + (key == MenuNavKey::PageNext ? 1 : n - 1)) % n;
+				m_page->push({ OpenBFMEPageEvent::Kind::Tab, std::string(), tab }); // the event a click on that tab sends (OpenBFMEOptionsPage::mouse)
+			}
+			return true;
+		}
+		default:
+			return false;
+	}
+}
+
+std::string AptOptionsScreen::navFirst() const
+{
+	return m_page && m_page->shown() ? "tab:" + std::to_string(m_page->spec().tab) : std::string();
 }
 
 bool AptOptionsScreen::mouseFilter(int kind, float x, float y)

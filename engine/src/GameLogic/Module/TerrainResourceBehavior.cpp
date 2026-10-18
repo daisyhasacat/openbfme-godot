@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/TerrainResourceBehavior.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/NumericState.h"
 #include "Common/Player.h"
@@ -169,4 +170,14 @@ void TerrainResourceBehavior::crc(StateHasher &h) const
 	h.addBool(m_claimed);
 	h.addBool(m_needToRunOnBuildComplete);
 	h.addFloat(m_share);
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) ---------------------------------------------------------------------------------------------------
+void TerrainResourceBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferBool(&m_claimed);
+	x.xferBool(&m_needToRunOnBuildComplete);
+	x.xferReal(&m_share);
 }

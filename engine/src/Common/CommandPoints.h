@@ -117,6 +117,7 @@ public:
 	const std::vector<Record> &records() const { return m_records; }
 
 	void crc(StateHasher &h) const;
+	void xfer(class Xfer &x); // lane SAVE-4a
 
 private:
 	int m_base = 0;      // +4

@@ -253,6 +253,14 @@ void buildInfo(const ThingTemplate &tt, INIEnvironment &env, ObjectMovementInfo 
 	{
 		out.slopeLimitIndex = (int)v;
 	}
+	if (intField(tt, "FormationWidth", v, errs))
+	{
+		out.formationWidth = (int)v;
+	}
+	if (intField(tt, "FormationDepth", v, errs))
+	{
+		out.formationDepth = (int)v;
+	}
 	bool gates = false;
 	if (boolField(tt, "CanPathThroughGates", gates))
 	{
@@ -1007,6 +1015,10 @@ void AIWorld::crc(StateHasher &h)
 	h.addBool(m_mapReady);
 	m_pathfinder->crc(h); // grid, occupancy, reservations, zones, queues
 	h.addU32((std::uint32_t)m_ais.size());
+	if (m_nextFormationId != 1)
+	{
+		h.addI32(m_nextFormationId); // lane BACKLOG-8: only once a formation was made (a game without one keeps its hash)
+	}
 }
 
 // ---- per frame -------------------------------------------------------------------------------------------------------------------

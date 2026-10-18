@@ -4,6 +4,7 @@
 
 #include "GameLogic/ScriptEngine/ScriptConditions.h"
 #include "GameLogic/Module/EmotionModules.h"
+#include "GameLogic/Module/GateModules.h"
 
 #include "Common/AsciiString.h"
 #include "Common/Player.h"
@@ -31,6 +32,10 @@
 #include "GameLogic/System/ShroudManager.h"
 
 #include <cctype>
+#include <cstdlib>
+#include <iostream>
+#include <set>
+#include <sstream>
 
 namespace
 {
@@ -115,7 +120,8 @@ enum ConditionType
 	SKIRMISH_PLAYER_IS_OUTSIDE_AREA = 98,             // lane CAMP-1
 	ENEMY_SIGHTED_BY_TEAM = 133,                      // lane CAMP-1
 	TEAM_CREATED = 25,                                // lane CAMP-1
-	NAMED_TOTALLY_DEAD = 57                           // lane CAMP-1
+	NAMED_TOTALLY_DEAD = 57,                          // lane CAMP-1
+	GATE_IS_OPEN = 135
 };
 
 int kindOfBit(const char *name)
@@ -274,6 +280,89 @@ void forPlayerTeamMembers(GameLogic &logic, const Player *p, F f)
 			}
 		}
 	}
+}
+
+// Opt-in diagnostic only; no condition is re-evaluated and no simulation state is changed.
+void traceObjectComparison(ScriptEngine &engine, const ScriptCondition &c, const std::vector<Player *> &owners,
+	const std::vector<const ThingTemplate *> &types, int count)
+{
+	static const std::string selected = [] {
+		const char *value = std::getenv("OPENBFME_TRACE_SCRIPT_CONDITIONS");
+		return value ? std::string(value) : std::string();
+	}();
+	if (selected.empty() || selected != engine.currentScriptName())
+	{
+		return;
+	}
+	GameLogic &logic = engine.logic();
+	std::ostringstream out;
+	const bool raw = !types.empty() && compare(param(c, 1).intValue, count, param(c, 2).intValue);
+	out << "SCRIPTCOND frame=" << logic.getFrame() << " script=\"" << selected << "\" side=" << engine.currentSideName()
+		<< " condition=" << c.internalName << " count=" << count << " op=" << param(c, 1).intValue << " threshold=" << param(c, 2).intValue
+		<< " inverted=" << c.flagB4D << " result=" << (c.flagB4D ? !raw : raw) << '\n';
+	for (const ScriptParameter &p : c.params)
+	{
+		out << " parameter type=" << p.type << " text=\"" << p.stringValue << "\" int=" << p.intValue << " real=" << p.realValue << '\n';
+	}
+	for (const ThingTemplate *tt : types)
+	{
+		out << " resolved_template=" << tt->getName() << '\n';
+	}
+	out << " predicate=player-team-members/template-equivalence/alive/not-under-construction"
+		<< " named_lookup=not-used kindof=not-used player_defeated=not-used\n";
+	std::set<ObjectID> traversed;
+	for (const Player *p : owners)
+	{
+		int objects = 0, structures = 0;
+		forPlayerTeamMembers(logic, p, [&](Object &o) {
+			++objects;
+			structures += o.isKindOfName("STRUCTURE") ? 1 : 0;
+			traversed.insert(o.getID());
+		});
+		out << " player=" << p->getPlayerName() << " defeated=" << p->isDefeated() << " objects=" << objects << " structures=" << structures
+			<< " counted=" << ScriptConditions::countPlayerObjects(logic, *p, types) << '\n';
+		for (const auto &proto : logic.players().teams().prototypes())
+		{
+			if (proto->getControllingPlayer() != p)
+			{
+				continue;
+			}
+			for (const Team *team : proto->teams())
+			{
+				out << " team=\"" << team->getName() << "\" prototype=\"" << proto->getName() << "\" members=";
+				for (const Object *o = team->getFirstMember(); o; o = o->friend_teamNext())
+				{
+					out << o->getID() << ',';
+				}
+				out << '\n';
+			}
+		}
+	}
+	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+	{
+		bool matches = false;
+		for (const ThingTemplate *tt : types)
+		{
+			matches = matches || ScriptConditions::equivalentTemplates(o->getTemplate(), tt);
+		}
+		const auto *castle = dynamic_cast<const CastleBehavior *>(o->findModule("CastleBehavior"));
+		if (!matches && !castle && !o->isKindOfName("BASE_FOUNDATION"))
+		{
+			continue;
+		}
+		const Team *team = o->getTeam();
+		const Player *owner = o->getControllingPlayer();
+		const Player *protoOwner = team && team->getPrototype() ? team->getPrototype()->getControllingPlayer() : nullptr;
+		const Object *named = engine.getUnitNamed(o->getName());
+		out << " object=" << o->getID() << " template=" << o->getTemplate()->getName() << " name=\"" << o->getName()
+			<< "\" named_lookup_id=" << (named ? named->getID() : INVALID_ID) << " owner=" << (owner ? owner->getPlayerName() : "<none>")
+			<< " team=\"" << (team ? team->getName() : "<none>") << "\" prototype_owner=" << (protoOwner ? protoOwner->getPlayerName() : "<none>")
+			<< " template_match=" << matches << " traversed=" << traversed.count(o->getID()) << " health=" << (o->getBodyModule() ? o->getBodyModule()->getHealth() : -1)
+			<< " dead=" << o->isEffectivelyDead() << " destroyed=" << o->isDestroyed() << " under_construction=" << o->testStatus(OBJECT_STATUS_UNDER_CONSTRUCTION)
+			<< " kindof_structure=" << o->isKindOfName("STRUCTURE") << " kindof_foundation=" << o->isKindOfName("BASE_FOUNDATION")
+			<< " keep=" << (castle ? castle->keepId() : INVALID_ID) << '\n';
+	}
+	std::cerr << out.str();
 }
 
 // lane CAMP-1: a player parameter as its mask (RW 0x75968D: 1 << Player + 0x54 for each player of the parameter)
@@ -653,6 +742,12 @@ bool ScriptConditions::evaluate(ScriptEngine &engine, const ScriptCondition &c)
 	}
 	case NAMED_CREATED: // RW 0x7E4B1E
 		return engine.getUnitNamed(param(c, 0).stringValue) != nullptr;
+	case GATE_IS_OPEN: // RW 0x7E4AA0; BFME2 ScriptConditions_evaluateNamedUnit.cpp, rva003E3EC3
+	{
+		const Object *o = engine.getUnitNamed(param(c, 0).stringValue);
+		const auto *gate = o ? dynamic_cast<const GateOpenAndCloseBehavior *>(o->findModule("GateOpenAndCloseBehavior")) : nullptr;
+		return gate && gate->isOpen();
+	}
 	case NAMED_OWNED_BY_PLAYER: // RW 0x7E4CAF
 	{
 		const Object *o = engine.getUnitNamed(param(c, 0).stringValue);
@@ -941,16 +1036,14 @@ bool ScriptConditions::evaluate(ScriptEngine &engine, const ScriptCondition &c)
 				types.push_back(tt);
 			}
 		}
-		if (types.empty())
-		{
-			return false;
-		}
 		std::int32_t count = 0;
-		for (Player *p : players(engine, param(c, 0).stringValue))
+		const std::vector<Player *> owners = types.empty() ? std::vector<Player *>() : players(engine, param(c, 0).stringValue);
+		for (Player *p : owners)
 		{
 			count += countPlayerObjects(logic, *p, types);
 		}
-		return compare(param(c, 1).intValue, count, param(c, 2).intValue);
+		traceObjectComparison(engine, c, owners, types, count);
+		return !types.empty() && compare(param(c, 1).intValue, count, param(c, 2).intValue);
 	}
 	case PLAYER_HAS_COMPARISON_UNIT_TYPE_IN_TRIGGER_AREA:              // RW 0x7E6D81(.., no upgrade, false)
 	case PLAYER_HAS_COMPARISON_UNIT_TYPE_IN_TRIGGER_AREA_WITH_UPGRADE: // (.., the upgrade, false)

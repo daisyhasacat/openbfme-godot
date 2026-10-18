@@ -88,6 +88,7 @@ public:
 	std::uint32_t logicFrame() const override;
 	float groundHeight(float x, float y) override;
 	bool isWater(float, float) override { return false; }
+	// lane VISUAL-2: the shroud as the presented snapshot shows it to the local player (the view the drawn shroud is made of)
 	int shroudStatusAt(const Coord3D &pos) override;
 	bool objectShroudedForLocalPlayer(const FXObject &obj) override;
 	FXParticleSystem::ParticleAttachInfo attachedDrawable(std::uint32_t drawableId, const std::string &boneName) override;

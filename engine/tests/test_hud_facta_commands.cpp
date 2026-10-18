@@ -47,6 +47,7 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <tuple>
 #include <string>
 #include <vector>
 
@@ -1110,7 +1111,7 @@ TEST_CASE("FACT-A heroes: every hero and the ring hero recruited from the fortre
 		Object *keep = r.logic().findObjectByID(castle->keepId());
 		REQUIRE(keep);
 		const PlayerTemplate *pt = r.local()->getPlayerTemplate();
-		// the ring hero's slot shows with its NeededUpgrade (RW 0x943D6F): the player is given it, as when the Ring reaches the fortress
+		// RW 0x9428CB: the ring slot requires both the player's Ring upgrade and the receiving fortress's OBJECT upgrade, as when the Ring arrives.
 		if (const CommandButton *ring = TheCommandStore->findCommandButton("Command_RingHeroReviveSlot"))
 		{
 			for (const std::string &n : ring->m_neededUpgrade)
@@ -1119,6 +1120,10 @@ TEST_CASE("FACT-A heroes: every hero and the ring hero recruited from the fortre
 				if (u && u->getUpgradeType() == UPGRADE_TYPE_PLAYER && !r.local()->hasUpgradeComplete(u))
 				{
 					r.local()->addCompletedUpgrade(n);
+				}
+				else if (u && u->getUpgradeType() == UPGRADE_TYPE_OBJECT && !keep->hasUpgrade(u))
+				{
+					keep->giveUpgrade(u);
 				}
 			}
 		}
@@ -1258,10 +1263,9 @@ void toughen(Object &o)
 }
 
 // the hits an attacker lands on a victim, as the world shows them: ordered onto the victim (AIUpdateInterface::aiAttackObject, a player's command),
-// each frame's health drop of one of the victim's bodies whose last damage that frame came from one of the attacker's bodies (ActiveBody's record,
-// RW + 0xAC). Nothing else fights: the sweep turns the idle mood scan off, both sides are toughened and hold their fire. The measure is the health
-// the victim loses a hit in 150 frames, from 60 frames after the first hit (a single hit is no measure: two soldiers striking one body in a frame, a flank's 50 %, a
-// projectile's splash and its fire make several sizes)
+// ActiveBody's damage observer measures each source/victim/frame, combining one weapon's damage nuggets but not different soldiers' hits. A body's
+// net health drop conflates simultaneous arrows and healing. Nothing else fights: both sides are toughened and hold their fire. Sample 150 frames,
+// from 60 frames after the first hit (flanks and splash make several sizes).
 struct Landed
 {
 	static constexpr int kWindow = 150;
@@ -1287,8 +1291,30 @@ Landed landedHits(FactRig &r, ObjectID attackerId, ObjectID victimId, int guard 
 	{
 		return out;
 	}
-	std::map<ObjectID, float> health;
+	std::map<std::tuple<unsigned, ObjectID, ObjectID>, float> damage;
+	std::set<ObjectID> attackers, victims;
 	int first = -1;
+	int sample = 0;
+	struct RestoreTrace
+	{
+		CombatState &combat;
+		CombatState::DamageTrace previous;
+		~RestoreTrace() { combat.setDamageTrace(previous); }
+	} restore{ r.logic().combat(), r.logic().combat().damageTrace() };
+	r.logic().combat().setDamageTrace([&](const Object &victim, std::uint32_t source, float dealt, float taken) {
+		if (taken > 0.0f && attackers.count(source) && victims.count(victim.getID()))
+		{
+			first = first < 0 ? sample : first;
+			if (sample >= first + Landed::kSettle)
+			{
+				damage[{ r.logic().getFrame(), source, victim.getID() }] += taken;
+			}
+		}
+		if (restore.previous)
+		{
+			restore.previous(victim, source, dealt, taken);
+		}
+	});
 	for (int k = 0; k < guard && (first < 0 || k < first + Landed::kSettle + Landed::kWindow); ++k)
 	{
 		a = r.logic().findObjectByID(attackerId);
@@ -1297,35 +1323,27 @@ Landed landedHits(FactRig &r, ObjectID attackerId, ObjectID victimId, int guard 
 		{
 			break;
 		}
-		if (k > 0 && ((k % 100 == 0 && out.hits.empty() && first < 0) || (k % 20 == 0 && a->getAIUpdateInterface()->stateId() == 0)))
+		if (k > 0 && ((k % 100 == 0 && first < 0) || (k % 20 == 0 && a->getAIUpdateInterface()->stateId() == 0)))
 		{
 			a->getAIUpdateInterface()->aiAttackObject(v, CMD_FROM_PLAYER); // a player clicks again when the order did not start a fight or lapsed
 		}
-		std::set<ObjectID> attackers;
+		attackers.clear();
+		victims.clear();
 		for (Object *b : bodies(*a))
 		{
 			attackers.insert(b->getID());
 		}
 		for (Object *b : bodies(*v))
 		{
-			const ActiveBody *body = dynamic_cast<const ActiveBody *>(b->getBodyModule());
-			if (!body)
-			{
-				continue;
-			}
-			auto it = health.find(b->getID());
-			if (it != health.end() && body->getHealth() < it->second && body->lastDamageFrame() == r.logic().getFrame() && attackers.count(body->lastDamager()))
-			{
-				first = first < 0 ? k : first;
-				if (k >= first + Landed::kSettle)
-				{
-					out.hits.push_back(it->second - body->getHealth());
-					out.total += it->second - body->getHealth();
-				}
-			}
-			health[b->getID()] = body->getHealth();
+			victims.insert(b->getID());
 		}
+		sample = k;
 		r.frames(1);
+	}
+	for (const auto &hit : damage)
+	{
+		out.hits.push_back(hit.second);
+		out.total += hit.second;
 	}
 	a = r.logic().findObjectByID(attackerId);
 	v = r.logic().findObjectByID(victimId);
@@ -1660,7 +1678,7 @@ TEST_CASE("FACT-A unit upgrades: every upgrade on a battalion's or unit's bar bo
 					const int rankAfter = o->getExperienceTracker() ? o->getExperienceTracker()->getRank() : -1;
 					const int expect = std::max(rankBefore, std::min(rankBefore + levelUp->m_levelsToGain, levelUp->m_levelCap));
 					measured += " rank " + std::to_string(rankBefore) + " -> " + std::to_string(rankAfter) + " (LevelsToGain " + std::to_string(levelUp->m_levelsToGain)
-						+ ", LevelCap " + std::to_string(levelUp->m_levelCap) + "; the members' levels are stop S-635);";
+						+ ", LevelCap " + std::to_string(levelUp->m_levelCap) + ");";
 					if (rankAfter != expect || rankAfter <= rankBefore)
 					{
 						p.add(tag + ": Basic Training: the battalion's rank " + std::to_string(rankBefore) + " -> " + std::to_string(rankAfter) + ", expected "

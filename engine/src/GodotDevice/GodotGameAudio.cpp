@@ -31,6 +31,8 @@ namespace godot
 
 namespace
 {
+constexpr int64_t kShellAudioHandleTag = 1LL << 32;
+
 String toGodot(const std::string &s)
 {
 	return String::utf8(s.c_str(), (int64_t)s.size());
@@ -63,6 +65,21 @@ float toDb(float linear)
 {
 	return linear <= 0.0001f ? -80.0f : 20.0f * std::log10(linear);
 }
+
+int64_t tagShellAudioHandle(int64_t handle)
+{
+	return handle >= AHSV_FirstHandle ? handle | kShellAudioHandleTag : handle;
+}
+
+bool isShellAudioHandle(int64_t handle)
+{
+	return (handle & kShellAudioHandleTag) != 0;
+}
+
+AudioHandle untagShellAudioHandle(int64_t handle)
+{
+	return (AudioHandle)(handle & ~kShellAudioHandleTag);
+}
 } // namespace
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -70,13 +87,14 @@ float toDb(float linear)
 // ---------------------------------------------------------------------------------------------------------------------------------
 GodotAudioDevice::GodotAudioDevice(Node *owner, AudioAssetCache *cache, int poolSize) : m_owner(owner), m_cache(cache)
 {
+	m_busPrefix = String("OBFME_Voice_") + String::num_int64((int64_t)m_owner->get_instance_id()) + "_";
 	AudioServer *server = AudioServer::get_singleton();
 	for (int i = 0; i < poolSize; ++i)
 	{
 		Slot slot;
 		slot.bus = server->get_bus_count();
 		server->add_bus();
-		server->set_bus_name(slot.bus, String("OBFME_Voice_") + String::num_int64(i));
+		server->set_bus_name(slot.bus, m_busPrefix + String::num_int64(i));
 		server->set_bus_send(slot.bus, "Master");
 		slot.amplify.instantiate();
 		slot.amplify->set_volume_db(-80.0f); // before the bus instantiates it: an instance starts its ramp at its effect's volume (unity by default)
@@ -111,7 +129,7 @@ GodotAudioDevice::~GodotAudioDevice()
 	// remove the voice buses from the back (indices shift as buses go)
 	for (size_t i = m_slots.size(); i-- > 0;)
 	{
-		const int idx = server->get_bus_index(String("OBFME_Voice_") + String::num_int64((int64_t)i));
+		const int idx = server->get_bus_index(m_busPrefix + String::num_int64((int64_t)i));
 		if (idx >= 0)
 		{
 			server->remove_bus(idx);
@@ -381,6 +399,8 @@ void GameAudio::tearDown()
 {
 	m_processing = false;
 	m_logPath.clear();
+	destroyShellAudio();
+	m_shellFs.unref();
 	if (m_manager && AudioApi::current() == m_manager.get())
 	{
 		AudioApi::install(nullptr); // the engine entry points must not outlive the manager they call
@@ -396,6 +416,20 @@ void GameAudio::tearDown()
 	m_ini.reset();
 	m_menuMusic.clear();
 	m_env.reset();
+}
+
+void GameAudio::destroyShellAudio()
+{
+	if (m_shellAudio)
+	{
+		m_shellAudio->shutdown();
+		if (m_shellAudio->get_parent())
+		{
+			m_shellAudio->get_parent()->remove_child(m_shellAudio);
+		}
+		memdelete(m_shellAudio);
+		m_shellAudio = nullptr;
+	}
 }
 
 void GameAudio::_notification(int what)
@@ -414,6 +448,7 @@ void GameAudio::_notification(int what)
 void GameAudio::_bind_methods()
 {
 	ClassDB::bind_method(D_METHOD("boot", "fs", "config"), &GameAudio::boot);
+	ClassDB::bind_method(D_METHOD("set_shell_source", "fs"), &GameAudio::set_shell_source);
 	ClassDB::bind_method(D_METHOD("is_booted"), &GameAudio::is_booted);
 	ClassDB::bind_method(D_METHOD("set_eva_local_player", "side", "player_index"), &GameAudio::set_eva_local_player);
 	ClassDB::bind_method(D_METHOD("set_eva_home_base", "position", "valid"), &GameAudio::set_eva_home_base);
@@ -472,6 +507,7 @@ Dictionary GameAudio::boot(const Ref<RetailFileSystem> &fs, const Dictionary &co
 		return result;
 	}
 	m_fs = fs;
+	m_shellOnly = (bool)config.get("shell_only", false);
 	ArchiveFileSystem *archive = fs->archive();
 	m_env = std::make_unique<INIEnvironment>();
 	m_env->fileSystem = archive;
@@ -481,17 +517,10 @@ Dictionary GameAudio::boot(const Ref<RetailFileSystem> &fs, const Dictionary &co
 	{
 		INI ini(*m_env);
 		m_ini->loadAll(ini);
-		m_ini->loadEva(ini); // AUDIO-2: TheEva's tables (Default\Eva.ini then Eva.ini, RW 0x5DE837) for the in-game announcer
-		m_ini->loadLargeGroupAudio(ini); // AUDIO-2: LargeGroupAudio.ini (RW 0x60D70E) for the group sounds of a live game
-		if (fs->menu_archive_fs() != archive)
+		if (!m_shellOnly)
 		{
-			INIEnvironment menuEnv;
-			menuEnv.fileSystem = fs->menu_archive_fs();
-			AudioIniState menuAudio;
-			menuAudio.registerBlocks(menuEnv.blocks);
-			INI menuIni(menuEnv);
-			menuAudio.loadAll(menuIni);
-			m_menuMusic = m_ini->installMenuMusic(menuAudio);
+			m_ini->loadEva(ini); // AUDIO-2: TheEva's tables (Default\Eva.ini then Eva.ini, RW 0x5DE837) for the in-game announcer
+			m_ini->loadLargeGroupAudio(ini); // AUDIO-2: LargeGroupAudio.ini (RW 0x60D70E) for the group sounds of a live game
 		}
 	}
 	catch (const INIException &e)
@@ -523,13 +552,17 @@ Dictionary GameAudio::boot(const Ref<RetailFileSystem> &fs, const Dictionary &co
 	m_manager = std::make_unique<AudioManager>(*m_ini, *m_cache, *m_device, algorithm, seed);
 	// lane AUDIO-4 (QA-1 U21): the shell's player list until a live game binds its own (LiveGameAudio), and again after it detaches
 	m_manager->setIdleWorldQueries(AudioWorldQueries::noGamePlayerList());
-	AudioApi::install(m_manager.get());
-	m_eva = std::make_unique<Eva>(*m_ini, *m_manager);
-	AudioApi::installEva(m_eva.get());
+	if (!m_shellOnly)
+	{
+		AudioApi::install(m_manager.get());
+		m_eva = std::make_unique<Eva>(*m_ini, *m_manager);
+		AudioApi::installEva(m_eva.get());
+	}
 	m_processing = true;
 	set_process(true);
 	// lane OPTS-4: the request log from the first menu on (AUDIO-3's log began with the game: the Options screen's samples and volumes were not in it)
 	m_logPath.clear();
+	if (!m_shellOnly)
 	if (const char *logPath = std::getenv("OPENBFME_AUDIO_LOG"); logPath && *logPath)
 	{
 		if (std::FILE *f = std::fopen(logPath, "w"))
@@ -552,6 +585,63 @@ Dictionary GameAudio::boot(const Ref<RetailFileSystem> &fs, const Dictionary &co
 	result["sample_count_3d"] = s.sampleCount3D;
 	result["stream_count"] = s.streamCount;
 	result["pool_size"] = (int64_t)m_device->poolSize();
+	result["errors"] = errors;
+	return result;
+}
+
+Dictionary GameAudio::set_shell_source(const Ref<RetailFileSystem> &fs)
+{
+	Dictionary result;
+	PackedStringArray errors;
+	result["ok"] = false;
+	if (fs.is_null())
+	{
+		destroyShellAudio();
+		m_shellFs.unref();
+		result["ok"] = true;
+		result["errors"] = errors;
+		return result;
+	}
+	if (!m_manager || !fs->is_mounted() || !fs->is_shell_source())
+	{
+		errors.push_back("set_shell_source requires a booted normal manager and a mounted BFME2 shell source");
+		result["errors"] = errors;
+		return result;
+	}
+	destroyShellAudio();
+	GameAudio *child = memnew(GameAudio);
+	Dictionary cfg;
+	cfg["shell_only"] = true;
+	cfg["seed"] = (int64_t)1;
+	Dictionary booted = child->boot(fs, cfg);
+	if (!(bool)booted.get("ok", false))
+	{
+		Variant childErrors = booted.get("errors", PackedStringArray());
+		errors.push_back("shell audio boot failed");
+		if (childErrors.get_type() == Variant::PACKED_STRING_ARRAY)
+		{
+			PackedStringArray a = childErrors;
+			for (int i = 0; i < a.size(); ++i)
+			{
+				errors.push_back(a[i]);
+			}
+		}
+		memdelete(child);
+		result["errors"] = errors;
+		return result;
+	}
+	m_shellAudio = child;
+	m_shellFs = fs;
+	add_child(child);
+	for (int slider : { SLIDER_SOUNDFX, SLIDER_VOICE, SLIDER_MUSIC, SLIDER_AMBIENT, SLIDER_MOVIE })
+	{
+		m_shellAudio->m_manager->setSliderVolume(slider, m_manager->getSliderVolume(slider));
+	}
+	for (unsigned affect : { (unsigned)AudioAffect_Music, (unsigned)AudioAffect_Sound, (unsigned)AudioAffect_Speech, (unsigned)AudioAffect_AmbientStream })
+	{
+		m_shellAudio->m_manager->setOn(m_manager->isOn(affect), affect);
+	}
+	result["ok"] = true;
 	result["errors"] = errors;
 	return result;
 }
@@ -652,6 +742,10 @@ int64_t GameAudio::play_sound_for_player(const String &n, int player_index)
 int64_t GameAudio::play_music(const String &n)
 {
 	REQUIRE_BOOTED(AHSV_Error)
+	if (m_shellAudio)
+	{
+		m_shellAudio->m_manager->stopMusic(false);
+	}
 	return (int64_t)m_manager->playMusic(toNative(n));
 }
 
@@ -659,22 +753,46 @@ void GameAudio::stop_music(bool fade)
 {
 	REQUIRE_BOOTED()
 	m_manager->stopMusic(fade);
+	if (m_shellAudio)
+	{
+		m_shellAudio->m_manager->stopMusic(fade);
+	}
 }
 
 void GameAudio::remove_event(int64_t h)
 {
 	REQUIRE_BOOTED()
+	if (isShellAudioHandle(h))
+	{
+		if (m_shellAudio && m_shellAudio->m_manager)
+		{
+			m_shellAudio->m_manager->removeAudioEvent(untagShellAudioHandle(h));
+		}
+		return;
+	}
 	m_manager->removeAudioEvent((AudioHandle)h);
 }
 
 void GameAudio::kill_event(int64_t h)
 {
 	REQUIRE_BOOTED()
+	if (isShellAudioHandle(h))
+	{
+		if (m_shellAudio && m_shellAudio->m_manager)
+		{
+			m_shellAudio->m_manager->killAudioEventImmediately(untagShellAudioHandle(h));
+		}
+		return;
+	}
 	m_manager->killAudioEventImmediately((AudioHandle)h);
 }
 
 bool GameAudio::is_playing(int64_t h) const
 {
+	if (isShellAudioHandle(h))
+	{
+		return m_shellAudio && m_shellAudio->m_manager && m_shellAudio->m_manager->isCurrentlyPlaying(untagShellAudioHandle(h));
+	}
 	return m_manager && m_manager->isCurrentlyPlaying((AudioHandle)h);
 }
 
@@ -686,8 +804,12 @@ bool GameAudio::is_valid_event(const String &n) const
 int64_t GameAudio::play_misc(const String &field)
 {
 	REQUIRE_BOOTED(AHSV_Error)
-	const auto menu = m_menuMusic.find(toNative(field));
-	const std::string &name = menu == m_menuMusic.end() ? m_manager->miscAudio(toNative(field)) : menu->second;
+	if (m_shellAudio && toNative(field) == "CreditsMusic")
+	{
+		m_manager->stopMusic(false);
+		return tagShellAudioHandle((int64_t)m_shellAudio->play_misc(field));
+	}
+	const std::string &name = m_manager->miscAudio(toNative(field));
 	if (name.empty())
 	{
 		return AHSV_NoSound; // the slot is NoSound
@@ -707,21 +829,35 @@ int64_t GameAudio::play_shell_sound(const String &n)
 
 int64_t GameAudio::play_shell_music(bool shell_map)
 {
+	if (m_shellAudio)
+	{
+		m_manager->stopMusic(false);
+		return tagShellAudioHandle((int64_t)m_shellAudio->play_misc(shell_map ? "HighLODShellMusic" : "LowLODShellMusic"));
+	}
 	return play_misc(shell_map ? "HighLODShellMusic" : "LowLODShellMusic");
 }
 
 int64_t GameAudio::play_submenu_music()
 {
+	if (m_shellAudio)
+	{
+		m_manager->stopMusic(false);
+		return tagShellAudioHandle((int64_t)m_shellAudio->play_misc("FullScreenSubMenuMusic"));
+	}
 	return play_misc("FullScreenSubMenuMusic");
 }
 
 bool GameAudio::is_music_playing() const
 {
-	return m_manager && m_manager->isMusicPlaying();
+	return (m_manager && m_manager->isMusicPlaying()) || (m_shellAudio && m_shellAudio->m_manager && m_shellAudio->m_manager->isMusicPlaying());
 }
 
 String GameAudio::get_music_track() const
 {
+	if (m_shellAudio && m_shellAudio->m_manager && m_shellAudio->m_manager->isMusicPlaying())
+	{
+		return toGodot(m_shellAudio->m_manager->getMusicTrackName());
+	}
 	return m_manager ? toGodot(m_manager->getMusicTrackName()) : String();
 }
 
@@ -795,6 +931,10 @@ void GameAudio::set_volume(const String &slider, double v)
 	if (slider.to_lower() == "movie")
 	{
 		m_manager->setSliderVolume(SLIDER_MOVIE, (float)v); // lane OPTS-4: the MOVIE submix slider has no AudioAffect bit
+		if (m_shellAudio)
+		{
+			m_shellAudio->m_manager->setSliderVolume(SLIDER_MOVIE, (float)v);
+		}
 		return;
 	}
 	const unsigned affect = affectFor(slider);
@@ -804,6 +944,10 @@ void GameAudio::set_volume(const String &slider, double v)
 		return;
 	}
 	m_manager->setVolume((float)v, affect | AudioAffect_SystemSetting);
+	if (m_shellAudio)
+	{
+		m_shellAudio->m_manager->setVolume((float)v, affect | AudioAffect_SystemSetting);
+	}
 }
 
 PackedFloat32Array GameAudio::get_default_volumes() const
@@ -841,6 +985,10 @@ void GameAudio::set_enabled(const String &affect, bool on)
 	if (a)
 	{
 		m_manager->setOn(on, a);
+		if (m_shellAudio)
+		{
+			m_shellAudio->m_manager->setOn(on, a);
+		}
 	}
 }
 
@@ -854,6 +1002,11 @@ void GameAudio::stop_all(const String &affect)
 {
 	REQUIRE_BOOTED()
 	m_manager->stopAudio(affect.to_lower() == "all" ? (unsigned)AudioAffect_All : affectFor(affect));
+	if (m_shellAudio)
+	{
+		m_shellAudio->m_manager->stopAudio(affect.to_lower() == "all" ? (unsigned)AudioAffect_All : affectFor(affect));
+		m_shellAudio->m_manager->stopMusic(false);
+	}
 }
 
 void GameAudio::shutdown()
@@ -875,6 +1028,11 @@ void GameAudio::shutdown()
 	m_manager->stopMusic(false);
 	m_device->stopAll();
 	m_device->process(0.0);
+	if (m_shellAudio)
+	{
+		destroyShellAudio();
+		m_shellFs.unref();
+	}
 }
 
 Dictionary GameAudio::get_report() const
@@ -1008,6 +1166,10 @@ PackedStringArray GameAudio::get_event_names(int type) const
 
 Dictionary GameAudio::get_event_info(const String &n) const
 {
+	if (m_shellAudio && m_shellAudio->m_manager && m_shellAudio->m_manager->isMusicPlaying() && m_shellAudio->m_manager->getMusicTrackName() == toNative(n))
+	{
+		return m_shellAudio->get_event_info(n);
+	}
 	Dictionary d;
 	if (!m_ini)
 	{

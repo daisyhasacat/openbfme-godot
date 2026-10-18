@@ -75,6 +75,8 @@ public:
 
 	// the gate is logic state (the modules' notification test reads it): GameLogic::hashState hashes it (review r1)
 	void crc(StateHasher &h) const;
+	// lane SAVE-4d: the block obfme:LargeGroupAudio (OpenBFME native layout, S-4250): the gate (+ 0x38, + 0x3C); the sink and the counts are the client's
+	void xfer(class Xfer &x);
 
 	void setSink(LargeGroupAudioSink *sink) { m_sink = sink; }
 	LargeGroupAudioSink *sink() const { return m_sink; }

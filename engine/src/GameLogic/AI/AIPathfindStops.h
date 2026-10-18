@@ -24,7 +24,9 @@ const char *const kLayers =
 	"nor the bridge-layer classifiers' writes of cell types 5 / 6 (RW 0x7688ED, 0x768ACC, 0x93503A: the port never makes a CELL_IMPASSABLE cell)";
 // lane MOVE-3: the blocked unit's path patch (S-1830)
 const char *const kPatchLayers =
-	"S-1830 patchPath (RW 0x6F7938) expands no layer links or portals (RW 0x6F6286, S-161: only the ground layer exists)";
+	"S-1830 the layer-change step of the cell searches (RW 0x6F6286) implements only its ground-connection case, which opens nothing (the cell's own index is the closed "
+	"parent): the bridge-layer cell lookup (RW 0x5E2E9C) and the waypoint link expansion (RW 0x68229C, 0x93443D) are not implemented, and the four-bit connection "
+	"field cannot hold a wall layer (16 and up); a patch or a search never crosses a layer or a portal (S-161)";
 // S-162 zones and the hierarchical search
 const char *const kZoneProfiles =
 	"S-162 the zone tables are built lazily per locomotor profile with the terrain variant read as obstacles-count-as-ground (INFERRED from the RW call sites); RW updates them incrementally and in a budgeted order";
@@ -35,9 +37,12 @@ const char *const kHierarchical =
 	"a goal inside the obstacle the unit ignores (a builder's own site) gets no corridor (INFERENCE: the port's builders aim inside the footprint)";
 // S-163 search
 const char *const kLargeRectGoal =
-	"S-163 the LARGE_RECTANGLE_PATHFIND goal offset of internalFindPath (RW 0x6FD3F8, 20 units along the heading) is not ported";
+	"S-163 the LARGE_RECTANGLE_PATHFIND goal offset of internalFindPath (RW 0x6FD1FE .. 0x6FD29D: 20 behind the goal along the goal slot's angle + pi, the goal itself as "
+	"the fallback, RW 0x6FD2CD / 0x6FD3F8) is read but not applied: it was ported and a horde ordered north while facing east ended 20 west of its goal, because the goal slot's "
+	"angle is renewed only by the group move (test_move_horde: the final position and the 90 degree reform; test_camp1_missions moved too); the next step is S-166's: port the "
+	"binary-backed callers of the angle update RW 0x68B3CF, not a refresh on every direct order";
 const char *const kPartialRebuild =
-	"S-163 a partial path (to the closest valid cell) skips the turn-radius rebuild RW applies to it (0x767B0E), and the closest cell's third test (RW 0x6EF3C3) is not ported";
+	"S-163 a complete path skips the rebuild RW applies to it from the unit's facing (RW 0x767B0E, called at RW 0x6FDCDA; the path to the closest cell gets none), the closest cell's third test (RW 0x6EF3C3) and the search-free path of an object whose + 0x4AC flag is set (RW 0x6FD66D) are not ported";
 const char *const kGroupDestination =
 	"S-163 adjustDestination with a group destination: the group tighten / path cost check (RW 0x6FDDE5, 0x6F70D5) is not ported";
 // S-164 footprints, reservations, queue

@@ -3,8 +3,11 @@
 
 #include "Common/Team.h"
 
+#include <algorithm>
+
 #include "Common/Player.h"
 #include "Common/StateHash.h"
+#include "Common/Xfer.h"
 #include "GameLogic/Object/Object.h"
 
 #include <stdexcept>
@@ -319,5 +322,268 @@ void TeamFactory::crc(StateHasher &h) const
 	for (const Team &t : m_teams)
 	{
 		t.crc(h);
+	}
+}
+
+// ---- lane SAVE-4a: the teams' snapshot --------------------------------------------------------------------------------------------------------
+// OpenBFME native layout: retail's TeamFactory::xfer (RW 0x7A634B, tier B, (1, 3)) and TeamPrototype::xfer (RW 0x7A7184, tier D, (1, 2)) transfer RotWK's
+// team instances with their AI and script fields; this Team is the port's subset (no recruitment, no AI attack state), so the blocks are native. The
+// relation maps are retail's sub-records (xferRelationMaps). Members are ids (ZH Team::xfer saves the member ids and Team::loadPostProcess finds them).
+void Team::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	xferRelationMaps(x, m_teamRelations, m_playerRelations);
+	x.xferAsciiString(&m_state);
+	std::uint32_t n = (std::uint32_t)m_customStates.size();
+	x.xferCount(&n, 1, sizeof(std::string) + Xfer::kNodeBytes);
+	if (!x.isLoading())
+	{
+		for (const std::string &c : m_customStates)
+		{
+			std::string s = c;
+			x.xferAsciiString(&s);
+		}
+	}
+	else
+	{
+		m_customStates.clear();
+		for (std::uint32_t i = 0; i < n; ++i)
+		{
+			std::string s;
+			x.xferAsciiString(&s);
+			m_customStates.insert(s);
+		}
+	}
+	x.xferUnsignedInt(&m_teamTarget);
+	x.xferInt(&m_currentWaypoint);
+	x.xferBool(&m_hadMembers);
+	x.xferBool(&m_script.active);
+	x.xferBool(&m_script.created);
+	x.xferBool(&m_script.ready);
+	x.xferBool(&m_script.checkEnemySighted);
+	x.xferBool(&m_script.seeEnemy);
+	x.xferBool(&m_script.prevSeeEnemy);
+	x.xferBool(&m_script.wasIdle);
+	x.xferInt(&m_script.destroyThreshold);
+	x.xferInt(&m_script.curUnits);
+	x.xferBool(&m_script.beingBuilt);
+	x.xferBool(&m_script.wasBuilt);
+	for (int i = 0; i < 32; ++i)
+	{
+		x.xferBool(&m_script.attemptGeneric[i]);
+		x.xferUnsignedInt(&m_script.genericNextFrame[i]);
+	}
+	// the members, head to tail (the list order is state: AIPOW-1 walks it)
+	std::vector<ObjectID> members;
+	for (const Object *o = m_head; o; o = o->friend_teamNext())
+	{
+		members.push_back(o->getID());
+	}
+	x.xferVectorSize(members, 4);
+	for (ObjectID &id : members)
+	{
+		x.xferObjectID(&id);
+	}
+	if (x.isLoading())
+	{
+		m_loadedMembers = members;
+	}
+}
+
+void TeamFactory::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferUnsignedInt(&m_nextTeamID);
+	x.xferInt(&m_nextPrototypeID);
+	// the prototypes: the map and the START made them (initTeam), so they are checked, never created
+	std::uint32_t count = (std::uint32_t)m_prototypes.size();
+	x.xferCount(&count, 7, 0); // id, two empty names, the singleton flag; checked, nothing allocated
+	if (count != m_prototypes.size())
+	{
+		throw XferException("the snapshot has " + std::to_string(count) + " team prototypes, this game " + std::to_string(m_prototypes.size()));
+	}
+	for (const std::unique_ptr<TeamPrototype> &tp : m_prototypes)
+	{
+		std::int32_t id = tp->getID();
+		std::string name = tp->getName();
+		std::string owner = tp->getControllingPlayer() ? tp->getControllingPlayer()->getPlayerName() : std::string();
+		bool singleton = tp->getIsSingleton();
+		x.xferInt(&id);
+		x.xferAsciiString(&name);
+		x.xferAsciiString(&owner);
+		x.xferBool(&singleton);
+		const std::string ownNow = tp->getControllingPlayer() ? tp->getControllingPlayer()->getPlayerName() : std::string();
+		if (id != tp->getID() || name != tp->getName() || owner != ownNow || singleton != tp->getIsSingleton())
+		{
+			throw XferException("the snapshot's team prototype " + std::to_string(id) + " '" + owner + "/" + name + "' is not this game's "
+				+ std::to_string(tp->getID()) + " '" + ownNow + "/" + tp->getName() + "'");
+		}
+	}
+	// every team in creation order: (id, prototype id); a team past the game's own is created with its saved id (ZH TeamPrototype::xfer creates a team
+	// it does not find)
+	// lane SAVE-4e review r2: while a load that trims the later teams is pending (its post-process removes them), a save of the factory (the Objects
+	// block's copy of the core blocks, reloaded mid-load) holds the snapshot's teams only, so that reload keeps them pending too
+	const size_t saved = m_loadedTeamCount != (size_t)-1 && m_loadedTeamCount < m_teams.size() ? m_loadedTeamCount : m_teams.size();
+	std::uint32_t teams = (std::uint32_t)saved;
+	x.xferCount(&teams, 8, sizeof(Team)); // (id, prototype id); each team's own state follows after the list
+	// lane SAVE-4e: a snapshot with fewer teams than this game (an older moment of the same game: a refused load's put-back, LiveGame::loadSnapshot) loads
+	// too: its teams must be this game's first ones; the later ones lose their state now and are removed by the post-process (they must hold no
+	// member by then: the snapshot's objects never name them)
+	if (x.isLoading())
+	{
+		m_loadedTeamCount = (size_t)teams; // a save keeps a pending trim (the Objects block saves the core blocks mid-load)
+	}
+	for (std::uint32_t i = 0; i < teams; ++i)
+	{
+		std::uint32_t id = i < m_teams.size() ? m_teams[i].getID() : 0;
+		std::int32_t proto = i < m_teams.size() ? m_teams[i].getPrototype()->getID() : 0;
+		x.xferUnsignedInt(&id);
+		x.xferInt(&proto);
+		if (!x.isLoading())
+		{
+			continue;
+		}
+		if (i < m_teams.size())
+		{
+			if (id != m_teams[i].getID() || proto != m_teams[i].getPrototype()->getID())
+			{
+				throw XferException("the snapshot's team " + std::to_string(i) + " is " + std::to_string(id) + " of prototype " + std::to_string(proto)
+					+ ", this game's is " + std::to_string(m_teams[i].getID()) + " of prototype " + std::to_string(m_teams[i].getPrototype()->getID()));
+			}
+			continue;
+		}
+		TeamPrototype *tp = nullptr;
+		for (const std::unique_ptr<TeamPrototype> &p : m_prototypes)
+		{
+			tp = p->getID() == proto ? p.get() : tp;
+		}
+		if (!tp || id == TEAM_ID_INVALID || findTeamByID(id) || (tp->getIsSingleton() && !tp->m_teams.empty()))
+		{
+			throw XferException("the snapshot's team " + std::to_string(id) + " of prototype " + std::to_string(proto) + " cannot be created");
+		}
+		m_teams.emplace_back(tp, id);
+		tp->m_teams.push_back(&m_teams.back());
+	}
+	if (x.isLoading()) // lane SAVE-4e (closed sets): the id counters are past every team and prototype (a lower one would issue an id twice)
+	{
+		for (size_t i = 0; i < m_teams.size() && i < teams; ++i)
+		{
+			if (m_teams[i].getID() >= m_nextTeamID)
+			{
+				throw XferException("the snapshot's next team id " + std::to_string(m_nextTeamID) + " is not past team " + std::to_string(m_teams[i].getID()));
+			}
+		}
+		for (const std::unique_ptr<TeamPrototype> &tp : m_prototypes)
+		{
+			if (tp->getID() >= m_nextPrototypeID)
+			{
+				throw XferException("the snapshot's next team prototype id " + std::to_string(m_nextPrototypeID) + " is not past prototype "
+					+ std::to_string(tp->getID()));
+			}
+		}
+	}
+	size_t stated = 0;
+	for (Team &t : m_teams)
+	{
+		if (stated >= teams) // a load: a team past the snapshot's; a save: past the pending load's (see above)
+		{
+			if (x.isLoading())
+			{
+				t.m_loadedMembers.clear(); // a team past the snapshot's (removed by the post-process)
+			}
+			continue;
+		}
+		t.xfer(x);
+		++stated;
+	}
+}
+
+void TeamFactory::loadPostProcess(const std::function<Object *(ObjectID)> &findObject)
+{
+	// review r1: every saved link is validated before any list is touched (a member listed twice, in one team or in two, would make the intrusive
+	// list loop): each id names an existing object, whose own team is the listing team, listed once in all
+	std::vector<std::vector<Object *>> members(m_teams.size());
+	std::map<ObjectID, TeamID> listedIn;
+	size_t i = 0;
+	for (Team &t : m_teams)
+	{
+		const std::string team = "team " + std::to_string(t.getID()) + " '" + t.getName() + "'";
+		for (ObjectID id : t.m_loadedMembers)
+		{
+			const auto seen = listedIn.find(id);
+			if (seen != listedIn.end())
+			{
+				throw XferException(team + ": its member object " + std::to_string(id) + " is listed twice (also in team " + std::to_string(seen->second) + ")");
+			}
+			listedIn[id] = t.getID();
+			Object *o = findObject(id);
+			if (!o)
+			{
+				throw XferException(team + ": its member object " + std::to_string(id) + " does not exist");
+			}
+			if (o->getTeam() != &t)
+			{
+				throw XferException(team + ": its member object " + std::to_string(id) + " belongs to another team");
+			}
+			members[i].push_back(o);
+		}
+		++i;
+	}
+	// then every list emptied and each team's members linked in their saved order
+	for (Team &t : m_teams)
+	{
+		while (Object *o = t.getFirstMember())
+		{
+			t.friend_removeMember(o);
+		}
+	}
+	i = 0;
+	for (Team &t : m_teams)
+	{
+		for (Object *o : members[i])
+		{
+			t.friend_addMember(o);
+		}
+		t.m_loadedMembers.clear();
+		++i;
+	}
+	// lane SAVE-4e: the teams past the snapshot's (see xfer) go, last first; each must be empty
+	while (m_loadedTeamCount != (size_t)-1 && m_teams.size() > m_loadedTeamCount)
+	{
+		Team &t = m_teams.back();
+		if (t.getFirstMember())
+		{
+			throw XferException("team " + std::to_string(t.getID()) + " '" + t.getName() + "', past the snapshot's teams, still has a member");
+		}
+		std::vector<Team *> &list = t.getPrototype()->m_teams;
+		list.erase(std::remove(list.begin(), list.end(), &t), list.end());
+		m_teams.pop_back();
+	}
+	m_loadedTeamCount = (size_t)-1;
+}
+
+// ---- lane SAVE-4b (see Team.h) ------------------------------------------------------------------------------------------------------------------------------
+std::vector<std::vector<ObjectID>> TeamFactory::friend_loadedMembers() const
+{
+	std::vector<std::vector<ObjectID>> out;
+	for (const Team &t : m_teams)
+	{
+		out.push_back(t.m_loadedMembers);
+	}
+	return out;
+}
+
+void TeamFactory::friend_setLoadedMembers(const std::vector<std::vector<ObjectID>> &members)
+{
+	if (members.size() != m_teams.size())
+	{
+		throw XferException("the teams' loaded members are of " + std::to_string(members.size()) + " teams, the game has " + std::to_string(m_teams.size()));
+	}
+	size_t i = 0;
+	for (Team &t : m_teams)
+	{
+		t.m_loadedMembers = members[i++];
 	}
 }

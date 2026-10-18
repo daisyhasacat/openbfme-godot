@@ -100,6 +100,7 @@ public:
 class StancesBehavior : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(StancesBehavior) // lane SAVE-4b
 	StancesBehavior(Thing *thing, const StancesBehaviorModuleData *data);
 	static void registerClass(ModuleFactory &modules);
 	// MSG_CHANGE_STANCE (RW 0x77BC59 -> AIGroup::setStance RW 0x76FF27)

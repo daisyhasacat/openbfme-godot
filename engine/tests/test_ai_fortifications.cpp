@@ -146,6 +146,13 @@ struct Scenario
 			" PercentageOfArmyPhase1 = 0\n PercentageOfArmyPhase2 = 0\n PercentageOfArmyPhase3 = 0\n End\nEnd\n").empty());
 		bot.army = store.findArmy("Test");
 	}
+ Object *factory(const char *name, char team, float x, float y)
+ {
+  Object *o = w.unit(name, team, x, y);
+  // This fixture owns a detached AI; forward the manager's object event explicitly.
+  AIBaseBuilder::onObjectEntered(*w.logic, bot, *o);
+  return o;
+ }
 	~Scenario() { TheCommandStore = savedCommands; }
 	void restrict(int mode = 2)
 	{
@@ -264,7 +271,7 @@ TEST_CASE("fortification AI: production requests useful siege even with zero com
 	Scenario s;
 	s.restrict();
 	Object *target = s.w.unit("BreachFortress", 'B', 850, 500);
-	Object *factory = s.w.unit("BreachWorkshop", 'A', 100, 500);
+	Object *factory = s.factory("BreachWorkshop", 'A', 100, 500);
 	s.w.frames(2);
 	s.bot.build.baseBuilderDisabled = true;
 	s.bot.build.economy.disabled = true;
@@ -324,7 +331,7 @@ TEST_CASE("fortification AI: six melee engines satisfy demand and policy changes
 	Object *b = s.w.unit("BreachEngine", 'A', 320, 500);
 	Object *c = s.w.unit("BreachEngine", 'A', 340, 500);
  for(int i=0;i<2;++i)s.w.unit("BreachEngine",'A',360+i*20,500);
-	s.w.unit("BreachWorkshop", 'A', 100, 500);
+	s.factory("BreachWorkshop", 'A', 100, 500);
 	s.w.unit("Swordsman", 'A', 350, 500);
 	s.w.frames(2);
 	s.bot.build.baseBuilderDisabled = true;
@@ -499,7 +506,7 @@ TEST_CASE("offensive AI: midgame maintains siege without a protected target or c
 {
  Scenario s;
  s.w.unit("BreachEngine",'A',150,500);
- auto *factory=s.w.unit("BreachWorkshop",'A',100,500);
+ auto *factory=s.factory("BreachWorkshop",'A',100,500);
  s.w.frames(2);
  s.bot.build.baseBuilderDisabled=true;s.bot.build.economy.disabled=true;s.bot.build.phase=1;
  REQUIRE(AIFortification::findTarget(*s.w.logic,s.bot)==nullptr);
@@ -515,7 +522,7 @@ TEST_CASE("offensive AI: ranged siege takes priority over existing melee breach 
  REQUIRE(s.w.w.load("CommandButton TrainCatapult\n Command = UNIT_BUILD\n Object = BreachCatapult\nEnd\nCommandSet RangedWorkshopCommands\n 1 = TrainBreach\n 2 = TrainCatapult\nEnd\nChildObject RangedWorkshop BreachWorkshop\n CommandSet = RangedWorkshopCommands\nEnd\nArmyDefinition RangedArmy\n Side = Ranged\n ArmyMemberDefinition Ram\n Unit = WallAttacker\n End\n ArmyMemberDefinition Catapult\n Unit = BreachCatapult\n End\nEnd\n").empty());
  s.bot.army=s.store.findArmy("Ranged");
  s.w.unit("BreachFortress",'B',850,500);
- auto *factory=s.w.unit("RangedWorkshop",'A',100,500);
+ auto *factory=s.factory("RangedWorkshop",'A',100,500);
  for(int i=0;i<6;++i)s.w.unit("WallAttacker",'A',200+i*20,500);
  s.w.frames(2);s.bot.build.baseBuilderDisabled=true;s.bot.build.economy.disabled=true;
  AIBaseBuilder::update(*s.w.logic,s.bot);
@@ -553,7 +560,7 @@ CommandSet BusyWorkshopCommands
  2 = BuySiegeLevel
 End
 )ini").empty());
- auto *factory=s.w.unit("BusyWorkshop",'A',100,500);
+ auto *factory=s.factory("BusyWorkshop",'A',100,500);
  auto *pu=factory->getProductionUpdate();
  auto *unit=s.w.w.things.findTemplate("BreachEngine");
  REQUIRE(pu->queueCreateUnit(unit,-1,pu->requestUniqueUnitID(),-1,false,std::string(),false));
@@ -601,7 +608,7 @@ End
  REQUIRE(types.scan("Upgrade Upgrade_TestFactoryArtillery\n Type = OBJECT\nEnd\n",&error));
  s.w.logic->setUpgradeTypes(&types);
  s.bot.army=s.store.findArmy("Unlocking");
- auto *factory=s.w.unit("UnlockingWorkshop",'A',100,500);
+ auto *factory=s.factory("UnlockingWorkshop",'A',100,500);
  s.w.frames(2);s.bot.build.baseBuilderDisabled=true;s.bot.build.economy.disabled=true;
  AIBaseBuilder::update(*s.w.logic,s.bot);
  auto key=s.store.keyOf("BreachCatapult");

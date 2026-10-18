@@ -5,6 +5,7 @@ tools/precommit.py refuse a .pdb and any MSF bytes). So its content is not valid
 (CodeView GUID + age) and holds no home folder path (the scrub below), so an archived file stays matched and free of the builder's name.
 
     python3 tools/release/pdb_tools.py scrub <file.pdb>          blank every home folder prefix in the PDB (in place)
+    python3 tools/release/pdb_tools.py scrub-dll <file.dll>      make the toolchain's build paths in the DLL relative (in place)
     python3 tools/release/pdb_tools.py check <file.dll> <file.pdb>  the PDB is the DLL's (CodeView GUID + age), no home folder path
 
 The compiler side keeps build paths out of the debug info (engine/CMakeLists.txt: prefix maps, no command lines), but lld still records
@@ -12,6 +13,14 @@ the toolchain's library archives, the linker's own path and its command line wit
 folder prefix (/home/<user>, /Users/<user>, C:\\Users\\<user>) with as many underscores (Sol r1: a "/home/____" prefix left the absolute
 layout): the strings keep their length, so every offset of the MSF file stays valid (DbgHelp maps addresses to functions and lines without
 those strings). `check` refuses any home folder prefix, a blanked user name included.
+
+Lane RELFIX-1: the DLL itself links the __FILE__ strings of the pinned llvm-mingw's prebuilt static libc++abi (its assertion messages:
+<GitHub runner's home>/work/llvm-mingw/llvm-mingw/llvm-project/libcxxabi/src/cxa_personality.cpp and five more: upstream's build root).
+Every release DLL had them (v0.4.6's too); since DEVPORT-6 applies audit_package.py's LOCAL_PATH to binaries the package audit refuses
+them ("developer-machine path"), and it exempts no project-built library (MACPLAY-1). `scrub-dll` rewrites that build root in
+place into a relative path of the same length (./././././././././llvm-mingw/llvm-mingw/llvm-project/...): the strings keep their start
+and length, so every reference (and a tail-merged suffix) stays valid; the PE checksum of the DLL is 0 (lld). `check` then refuses any
+home folder path in the DLL, the toolchain's included; in the PDB (never packaged) the toolchain's stays.
 """
 from __future__ import annotations
 
@@ -26,6 +35,9 @@ HOME_PATHS = [re.compile(rb"(/home/)([^/\\\x00\s\"']+)"), re.compile(rb"(/Users/
               re.compile(rb"([A-Za-z]:[\\/]+Users[\\/]+)([^/\\\x00\s\"']+)", re.IGNORECASE)]
 # the pinned llvm-mingw release's prebuilt libc++abi carries the __FILE__ paths of its GitHub Actions build (the runner's, nobody's home)
 TOOLCHAIN_PATHS = (b"/home" b"/runner/work/llvm-mingw/",)  # split: tools/precommit.py rejects a home path in a committed file
+# what scrub-dll writes over each of them: a relative path of the same length
+DLL_TOOLCHAIN_PATHS = {t: b"./" * ((len(t) - len(b"llvm-mingw/")) // 2) + b"llvm-mingw/" for t in TOOLCHAIN_PATHS}
+assert all(len(t) == len(r) for t, r in DLL_TOOLCHAIN_PATHS.items())
 
 
 def msf_streams(data: bytes) -> list[bytes]:
@@ -105,12 +117,13 @@ def pe_codeview(data: bytes) -> tuple[bytes, int, str]:
     raise ValueError("no CodeView (RSDS) debug record")
 
 
-def home_paths(data: bytes) -> list[str]:
-    """The distinct home folder prefixes in `data` (a blanked user name counts: the scrub blanks the whole prefix)."""
+def home_paths(data: bytes, toolchain_ok: bool = True) -> list[str]:
+    """The distinct home folder prefixes in `data` (a blanked user name counts: the scrub blanks the whole prefix); the toolchain's
+    build root (TOOLCHAIN_PATHS) only when not `toolchain_ok`."""
     found = set()
     for rx in HOME_PATHS:
         for m in rx.finditer(data):
-            if not any(data.startswith(t, m.start()) for t in TOOLCHAIN_PATHS):
+            if not (toolchain_ok and any(data.startswith(t, m.start()) for t in TOOLCHAIN_PATHS)):
                 found.add((m.group(1) + m.group(2)).decode("utf-8", "replace"))
     return sorted(found)
 
@@ -122,6 +135,13 @@ def scrub(data: bytes) -> bytes:
         return b"_" * len(m.group(0))
     for rx in HOME_PATHS:
         data = rx.sub(blank, data)
+    return data
+
+
+def scrub_dll(data: bytes) -> bytes:
+    """`data` (a DLL) with the toolchain's build root made relative, same length (DLL_TOOLCHAIN_PATHS); nothing else changes"""
+    for t, r in DLL_TOOLCHAIN_PATHS.items():
+        data = data.replace(t, r)
     return data
 
 
@@ -138,8 +158,8 @@ def check(dll: bytes, pdb: bytes) -> list[str]:
             problems.append(f"the DLL records the PDB with a folder ({name}): link with -pdbaltpath:%_PDB%")
     except (ValueError, struct.error) as e:
         problems.append(str(e))
-    for what, data in (("PDB", pdb), ("DLL", dll)):
-        paths = home_paths(data)
+    for what, data, toolchain_ok in (("PDB", pdb, True), ("DLL", dll, False)):
+        paths = home_paths(data, toolchain_ok)
         if paths:
             problems.append(f"the {what} holds home folder paths: {', '.join(paths[:3])}")
     return problems
@@ -154,6 +174,16 @@ def main(argv: list[str]) -> int:
         msf_streams(out)
         p.write_bytes(out)
         print(f"PDB scrubbed: {p.name} ({len(home_paths(data))} home folder path(s) blanked)")
+        return 0
+    if len(argv) == 3 and argv[1] == "scrub-dll":
+        p = Path(argv[2])
+        data = p.read_bytes()
+        pe_codeview(data)  # a PE image with its CodeView record before and after
+        out = scrub_dll(data)
+        pe_codeview(out)
+        if out != data:
+            p.write_bytes(out)
+        print(f"DLL scrubbed: {p.name} ({sum(data.count(t) for t in TOOLCHAIN_PATHS)} toolchain build path(s) made relative)")
         return 0
     if len(argv) == 4 and argv[1] == "check":
         problems = check(Path(argv[2]).read_bytes(), Path(argv[3]).read_bytes())

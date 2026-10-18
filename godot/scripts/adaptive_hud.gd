@@ -127,6 +127,10 @@ func _palette(open:bool):
   open_section('')
 
 func _process(delta):
+ var current_hud:Node=hud.call() if hud.is_valid() else null
+ var held: bool = current_hud.is_logic_held() if is_instance_valid(current_hud) else true
+ if not held:
+  return
  _reload_elapsed+=delta
  if _reload_elapsed>=float(_sizes.reload_interval_seconds):
   _reload_elapsed=0

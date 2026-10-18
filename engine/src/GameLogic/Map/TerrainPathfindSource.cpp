@@ -17,6 +17,7 @@
 
 #include "GameLogic/Map/TerrainPathfindSource.h"
 #include "GameLogic/AI/AIPathfindStops.h"
+#include "Common/NumericState.h"
 #include "GameLogic/SimMath.h"
 
 #include <algorithm>
@@ -145,6 +146,22 @@ bool TerrainPathfindSource::thirdPlane(float x, float y) const
 {
 	const PlaneCell c = planeCell(m_map, x, y);
 	return m_map.planeBit(m_map.m_planeTaint, c.x, c.y);
+}
+
+// RW 0x4627C1 (BFME2 decomp W3DTerrainLogicCellQueries.cpp rva00063082, tier A): the position plus the border (RW 0x46255F: border cells * 10, x87), each
+// axis clamped to [0, extent * 10] (INFERENCE: W3DTerrainLogic + 0x1C / + 0x20 taken as the height map's extents), floored at 0.1 (x87 under PC24, then
+// fistp of the floored value), the bit of the plane at WorldHeightMap + 0x5C (RW 0x4625CD: false outside the plane)
+bool TerrainPathfindSource::passagePlane(const Coord3D &pos) const
+{
+	const float border = NumericState::pc24MulD((double)m_map.getBorderSize(), 10.0f);
+	float x = SimMath::addf32(pos.x, border);               // SSE (RW 0x4627DA)
+	float y = NumericState::pc24Add(border, pos.y);           // x87 (RW 0x4627D4)
+	const float maxX = SimMath::mulf32((float)m_map.getXExtent(), 10.0f), maxY = SimMath::mulf32((float)m_map.getYExtent(), 10.0f);
+	x = x < 0.0f ? 0.0f : (x > maxX ? maxX : x);
+	y = y < 0.0f ? 0.0f : (y > maxY ? maxY : y);
+	const int cx = SimMath::floorToInt(NumericState::pc24Mul(x, 0.1f));
+	const int cy = SimMath::floorToInt(NumericState::pc24Mul(y, 0.1f));
+	return m_map.planeBit(m_map.m_planeB, cx, cy);
 }
 
 bool TerrainPathfindSource::isUnderwater(float x, float y, float *waterZ, float *terrainZ) const

@@ -11,9 +11,11 @@
 #include "Common/AsciiString.h"
 #include "Common/INIException.h"
 #include "Common/Player.h"
+#include "Common/PlayerList.h"
 #include "Common/StateHash.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "Common/Upgrade.h"
+#include "Common/Xfer.h"
 #include "GameClient/ControlBarCommands.h"
 #include "GameLogic/Economy.h"
 #include "GameLogic/GameLogic.h"
@@ -544,7 +546,10 @@ void CreateAHeroSystem::finishSubClass(CreateAHeroSubClass &s, const CreateAHero
 }
 
 // ---- the game side ------------------------------------------------------------------------------------------------------------------------------------------------
-bool CreateAHeroSystem::validateHero(const CreateAHeroHero &h, const CommandStore &commands, std::string *why) const
+// lane SAVE-4e review r1 (closed sets): the record's references into this system and the command store: the class and subclass, each power (empty, or a
+// button at a rank 0 .. 14 on a command set slot 0 .. 32; the button's name looked up when `commands` is given), every bling group once, of the
+// subclass, with an index within its list. False + *why naming the field
+bool CreateAHeroSystem::validateHeroContent(const CreateAHeroHero &h, const CommandStore *commands, std::string *why) const
 {
 	auto fail = [&](const std::string &w) {
 		if (why)
@@ -553,14 +558,6 @@ bool CreateAHeroSystem::validateHero(const CreateAHeroHero &h, const CommandStor
 		}
 		return false;
 	};
-	if (h.version != CreateAHeroHero::XFER_VERSION || !h.valid || h.checksum != h.computeChecksum() || h.flags != CreateAHeroHero::LOAD_FLAGS)
-	{
-		return fail("not a version 8 record with its checksum and the load flags");
-	}
-	if (h.name.empty())
-	{
-		return fail("no name");
-	}
 	const CreateAHeroSubClass *sub = subClass(h.classIndex, h.subClassIndex);
 	if (!sub)
 	{
@@ -578,7 +575,7 @@ bool CreateAHeroSystem::validateHero(const CreateAHeroHero &h, const CommandStor
 			}
 			continue;
 		}
-		if (!commands.findCommandButton(p.commandButton))
+		if (commands && !commands->findCommandButton(p.commandButton))
 		{
 			return fail(at + "names the unknown button " + p.commandButton);
 		}
@@ -610,6 +607,30 @@ bool CreateAHeroSystem::validateHero(const CreateAHeroHero &h, const CommandStor
 		{
 			return fail("the bling group " + group + " index " + std::to_string(h.bling[i].second) + " of " + std::to_string(list->size()));
 		}
+	}
+	return true;
+}
+
+bool CreateAHeroSystem::validateHero(const CreateAHeroHero &h, const CommandStore &commands, std::string *why) const
+{
+	auto fail = [&](const std::string &w) {
+		if (why)
+		{
+			*why = "Create-a-Hero record: " + w;
+		}
+		return false;
+	};
+	if (h.version != CreateAHeroHero::XFER_VERSION || !h.valid || h.checksum != h.computeChecksum() || h.flags != CreateAHeroHero::LOAD_FLAGS)
+	{
+		return fail("not a version 8 record with its checksum and the load flags");
+	}
+	if (h.name.empty())
+	{
+		return fail("no name");
+	}
+	if (!validateHeroContent(h, &commands, why))
+	{
+		return false;
 	}
 	if (h.uniqueID.empty())
 	{
@@ -1038,6 +1059,124 @@ std::uint32_t CreateAHeroGame::crc() const
 		}
 	}
 	return h.value();
+}
+
+// lane SAVE-4d: OpenBFME native layout (S-4255): retail keeps the game's heroes in TheCreateAHeroSystem's slot records (RW 0x61B083 / 0x61B2DF), whose
+// save is not identified. Every field crc hashes: per player index (ascending) the record in retail's own record layout (CreateAHeroHero::xfer, RW 0x80B4F5),
+// then the record's version byte, validity and dirty flags (+ 0x71, + 0x38: the game's, not the file's); then the choices (+ 0x74) per player index. The
+// statistics are not saved. The load (SAVE-4a review r1 rules, SAVES.md section 8) fills temporary maps and checks them (each player index a player of
+// this game, listed once; the record's version 1 .. 8; the dirty flags within 0x2FF) before the game's heroes change.
+void CreateAHeroGame::xfer(Xfer &x)
+{
+	const bool loading = x.isLoading();
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	auto checkPlayer = [this](std::int32_t player, const char *what) {
+		const PlayerList &list = m_logic.players();
+		for (int n = 0; n < list.getPlayerCount(); ++n)
+		{
+			const Player *p = list.getNthPlayer(n);
+			if (p && p->getPlayerIndex() == player)
+			{
+				return;
+			}
+		}
+		throw XferException(std::string("create-a-hero: ") + what + " of player index " + std::to_string(player) + ", which this game lacks");
+	};
+	std::map<int, CreateAHeroHero> loadedHeroes;
+	std::map<int, CreateAHeroHero> &heroes = loading ? loadedHeroes : m_heroes;
+	std::uint32_t n = loading ? 0 : (std::uint32_t)heroes.size();
+	// one entry: the player index (4), the shortest record (version 1 .. 6: 173 bytes), the version byte, validity and flags (6)
+	x.xferCount(&n, 4 + 173 + 6, sizeof(std::pair<const int, CreateAHeroHero>) + Xfer::kNodeBytes);
+	auto it = heroes.begin();
+	for (std::uint32_t i = 0; i < n; ++i)
+	{
+		std::int32_t player = loading ? 0 : it->first;
+		CreateAHeroHero record;
+		if (!loading)
+		{
+			record = it->second;
+			++it;
+		}
+		x.xferInt(&player);
+		record.xfer(x);
+		std::uint8_t version = loading ? 0 : record.version;
+		bool valid = loading ? false : record.valid;
+		std::uint32_t flags = loading ? 0 : record.flags;
+		x.xferUnsignedByte(&version);
+		x.xferBool(&valid);
+		x.xferUnsignedInt(&flags);
+		if (!loading)
+		{
+			continue;
+		}
+		checkPlayer(player, "a hero");
+		if (version < 1 || version > CreateAHeroHero::XFER_VERSION)
+		{
+			throw XferException("create-a-hero: the hero of player index " + std::to_string(player) + " has the record version " + std::to_string(version));
+		}
+		if ((flags & ~(std::uint32_t)CreateAHeroHero::LOAD_FLAGS) != 0)
+		{
+			// the dirty bits RW 0x80ACE3 consumes (1 / 2 class, 4 bling, 8 colours, 0x80, 0x200 ...) are all in the load's 0x2FF (RW 0x80BAB7)
+			char hex[16];
+			std::snprintf(hex, sizeof(hex), "0x%X", flags);
+			throw XferException("create-a-hero: the hero of player index " + std::to_string(player) + " has the dirty flags " + hex);
+		}
+		std::string why;
+		if (TheCreateAHeroSystem && !TheCreateAHeroSystem->validateHeroContent(record, nullptr, &why)) // lane SAVE-4e: class, powers, bling in their sets
+		{
+			throw XferException("create-a-hero: the hero of player index " + std::to_string(player) + ": " + why);
+		}
+		record.version = version;
+		record.valid = valid;
+		record.flags = flags;
+		if (!heroes.emplace(player, std::move(record)).second)
+		{
+			throw XferException("create-a-hero: player index " + std::to_string(player) + " twice");
+		}
+	}
+	std::map<int, std::vector<std::pair<std::string, std::vector<int>>>> loadedChoices;
+	auto &choices = loading ? loadedChoices : m_choices;
+	n = loading ? 0 : (std::uint32_t)choices.size();
+	x.xferCount(&n, 4 + 4, sizeof(std::pair<const int, std::vector<std::pair<std::string, std::vector<int>>>>) + Xfer::kNodeBytes);
+	auto ct = choices.begin();
+	for (std::uint32_t i = 0; i < n; ++i)
+	{
+		std::int32_t player = loading ? 0 : ct->first;
+		std::vector<std::pair<std::string, std::vector<int>>> groups;
+		if (!loading)
+		{
+			groups = ct->second;
+			++ct;
+		}
+		x.xferInt(&player);
+		x.xferVectorSize(groups, 1 + 4); // a group name (its length byte) and its button count
+		for (auto &g : groups)
+		{
+			x.xferAsciiString(&g.first);
+			x.xferVectorSize(g.second, 4);
+			for (int &b : g.second)
+			{
+				std::int32_t value = loading ? 0 : b;
+				x.xferInt(&value);
+				b = value;
+			}
+		}
+		if (!loading)
+		{
+			continue;
+		}
+		checkPlayer(player, "the choices");
+		if (!choices.emplace(player, std::move(groups)).second)
+		{
+			throw XferException("create-a-hero: the choices of player index " + std::to_string(player) + " twice");
+		}
+	}
+	if (loading)
+	{
+		m_heroes = std::move(loadedHeroes);
+		m_choices = std::move(loadedChoices);
+	}
 }
 
 std::vector<std::string> CreateAHeroGame::stopLines()

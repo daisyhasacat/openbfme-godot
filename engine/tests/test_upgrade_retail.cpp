@@ -331,7 +331,7 @@ TEST_CASE("upgrade retail: a building level upgrade (OBJECT) runs the building's
 	MESSAGE("GondorBarracks level 2: " << executedBefore << " -> " << executedAfter << " executed upgrade modules, command set '" << barracks->getCommandSetName() << "'");
 	CHECK(executedAfter > executedBefore);
 	const GameLogic::Report r = g.logic->report();
-	for (const char *id : { "[S-480]", "[S-481]", "[S-482]", "[S-483]", "[S-484]", "[S-485]", "[S-486]" })
+	for (const char *id : { "[S-480]", "[S-482]", "[S-483]", "[S-484]", "[S-485]", "[S-486]" })
 	{
 		bool found = false;
 		for (const std::string &s : r.stops)

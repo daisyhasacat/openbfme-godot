@@ -60,5 +60,5 @@ echo "BUILT: $LIB (macOS $MIN_MACOS+, $ARCH) and $B/openbfme_tests"
 echo "TEST:  (cd $B && ./openbfme_tests)"
 
 GODOT_BIN=${GODOT:-/Applications/Godot.app/Contents/MacOS/Godot}
-python3 "$ROOT/tools/release/package_macos.py" --build-dir "$B" --godot "$GODOT_BIN" \
+python3 "$ROOT/tools/release/package_macos_standalone.py" --build-dir "$B" --godot "$GODOT_BIN" \
   --output "${OPENBFME_MACOS_APP:-$B/macos/OpenBFME.app}" || fail "macOS app packaging failed"

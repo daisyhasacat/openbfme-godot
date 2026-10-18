@@ -537,7 +537,7 @@ struct NuggetHost : NuggetDamageHost
 	Coord3D sourcePosition() override { return sourcePos; }
 	bool sourceHasContain() override { return hasContain; }
 	int sourcePassengerCount() override { return passengers; }
-	bool filterAllowsVictim(const ObjectFilter &f) override { return scalarAllows || (forceKill && f.rule == ObjectFilter::RULE_ANY); }
+	bool filterAllowsVictim(const ObjectFilter &f) override { return f.rule != ObjectFilter::RULE_NONE && (scalarAllows || (forceKill && f.rule == ObjectFilter::RULE_ANY)); }
 	bool sourceAdditive(int, float &out) override
 	{
 		out = addValue;
@@ -760,4 +760,55 @@ TEST_CASE("FillDamageInfo: the taper-off chain stays wide in the x87 register un
 	const Coord3D center{ 0, 0, 0 };
 	REQUIRE(FillDamageInfo(n, weapon, host, false, &center, out));
 	CHECK(out.m_input.m_amount == 0.0f); // narrowing the span first gives inf and amount = -inf
+}
+
+TEST_CASE("FALSEDEF-1 damage: source modifiers precede armor and body scaling for each hit")
+{
+	// Synthetic, exactly representable inputs; not the missing retail sling/fortress data.
+	DamageNugget nugget;
+	nugget.m_damage = 200.0f;
+	nugget.m_damageType = DAMAGE_SIEGE;
+	nugget.m_acceptDamageAdd = true;
+	DamageScalarEntry first;
+	first.scalar = 0.5f;
+	nugget.m_damageScalar.push_back(first);
+	DamageScalarEntry second;
+	second.scalar = 0.25f;
+	nugget.m_damageScalar.push_back(second);
+	WeaponTemplate weapon;
+	NuggetHost source;
+	source.scalarAllows = true;
+	source.addFound = true;
+	source.addValue = 20.0f;
+	source.multFound = true;
+	source.multValue = 1.5f;
+	ArmorTemplate armor = armorWith(DAMAGE_SIEGE, 0.25f, 0.0f, 0.5f);
+	ArmorHost victim;
+	victim.modifierSum = 0.5f;
+	BodyHealth body;
+	body.health = body.maxHealth = 200.0f;
+	for (float remaining : { 177.5f, 155.0f })
+	{
+		DamageInfo info;
+		REQUIRE(FillDamageInfo(nugget, weapon, source, true, nullptr, info));
+		CHECK(info.m_input.m_damageType == DAMAGE_SIEGE);
+		CHECK(info.m_input.m_amount == 180.0f); // (200 * first scalar + 20) * 1.5
+		CHECK(source.multType == ATTRIBUTE_MODIFIER_DAMAGE_MULT);
+		const float adjusted = AdjustDamage(&armor, &armor, info.m_input, true, victim);
+		CHECK(adjusted == 11.25f); // 180 * DamageScalar .5 * SIEGE .25 * (1 - ARMOR .5)
+		REQUIRE(ActiveBodyApplyDamage(body, info, adjusted, 2.0f, false));
+		CHECK(info.m_output.m_actualDamageDealt == 22.5f);
+		CHECK(info.m_output.m_actualDamageClipped == 22.5f);
+		CHECK(body.health == remaining);
+	}
+	DamageInfo force;
+	force.m_input = input(DAMAGE_FORCE, 180.0f);
+	armor.m_damageCoefficient[DAMAGE_FORCE] = 0.25f;
+	CHECK(AdjustDamage(&armor, &armor, force.m_input, true, victim) == 22.5f); // FORCE skips ARMOR modifiers, not the coefficient
+	DamageInfo unresistable;
+	unresistable.m_input = input(DAMAGE_UNRESISTABLE, 20.0f);
+	const float adjusted = AdjustDamage(&armor, &armor, unresistable.m_input, true, victim);
+	CHECK(adjusted == 10.0f); // UNRESISTABLE retains DamageScalar
+	REQUIRE(ActiveBodyApplyDamage(body, unresistable, adjusted, 2.0f, false));
+	CHECK(body.health == 145.0f); // but bypasses the body scalar
 }

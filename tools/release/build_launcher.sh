@@ -1,12 +1,11 @@
 #!/bin/bash
 # Lane LAUNCH-1: the OpenBFME Launcher packages (package.sh runs this; the launcher tests run it with --test-build).
 #
-#   tools/release/build_launcher.sh --out DIR --version TAG --commit SHA --repo OWNER/NAME --key-file FILE [--mtime UNIX] [--platforms linux,windows]
+#   tools/release/build_launcher.sh --out DIR --version TAG --commit SHA --repo OWNER/NAME --key-file FILE [--mtime UNIX] [--platforms linux,windows,macos]
 #                                   [--godot BIN] [--worktree | --source COMMIT] [--test-build] [--stage-reverse]
 #
-# Writes DIR/openbfme-launcher-<TAG>-linux-x64.tar.gz and/or DIR/openbfme-launcher-<TAG>-windows-x64.zip, each holding
-#   OpenBFMELauncher.x86_64 | OpenBFMELauncher.exe (the pack embedded: one file, so a self-update replaces it in one rename), README.txt,
-#   LICENSE, NOTICE, VERSION
+# Writes DIR/openbfme-launcher-<TAG>-<platform> archive(s): Linux and Windows contain the embedded-pack executable and README.txt;
+# macOS contains OpenBFMELauncher.app and README.txt. All include LICENSE, NOTICE, VERSION.
 # The project is exported from `git archive HEAD launcher` (--worktree: the working tree's launcher/, for the tests; --source COMMIT: that
 # commit's, for the tests of the launchers already published, RELNAME-1) with a generated
 # res://build_info.json: version, commit, date, repo (the GitHub repository it updates from: a build-time setting), release_key (the
@@ -72,11 +71,19 @@ EOF
   rm -rf "$WORK/stage.sorted"
 fi
 P="$WORK/stage/launcher"
-DATE=$(date -u -d "@$MTIME" +%Y-%m-%d)
+DATE=$(python3 - "$MTIME" <<'PY'
+from datetime import datetime, timezone
+import sys
+print(datetime.fromtimestamp(int(sys.argv[1]), timezone.utc).strftime("%Y-%m-%d"))
+PY
+)
 python3 - "$P/build_info.json" "$VERSION" "$COMMIT" "$DATE" "$TARGET" "$KEY" "$TEST_BUILD" <<'EOF'
 import json, sys
+from pathlib import Path
 path, version, commit, date, repo, key, test = sys.argv[1:]
 info = {"version": version, "commit": commit, "date": date, "repo": repo, "release_key": key, "test_build": test == "true"}
+official_key = Path(path).with_name("release_key.pub")
+info["local_trial"] = not official_key.is_file() or key != official_key.read_text().strip()
 open(path, "w", encoding="utf-8").write(json.dumps(info, indent=2, sort_keys=True) + "\n")
 EOF
 python3 "$REPO/tools/release/audit_package.py" "$P" >/dev/null || { python3 "$REPO/tools/release/audit_package.py" "$P"; fail "the staged launcher failed the audit"; }
@@ -84,30 +91,50 @@ python3 "$REPO/tools/release/audit_package.py" "$P" >/dev/null || { python3 "$RE
 "$GODOT_BIN" --headless --path "$P" --import >"$WORK/import2.log" 2>&1 || { tail -20 "$WORK/import2.log"; fail "godot --import"; }
 for p in ${PLATFORMS//,/ }; do
   case "$p" in
-    linux) preset="Linux x64"; exe="OpenBFMELauncher.x86_64"; ext="tar.gz"; start="./OpenBFMELauncher.x86_64" ;;
-    windows) preset="Windows x64"; exe="OpenBFMELauncher.exe"; ext="zip"; start="OpenBFMELauncher.exe" ;;
-    *) fail "unknown platform $p (linux, windows)" ;;
+    linux) preset="Linux x64"; exe="OpenBFMELauncher.x86_64"; ext="tar.gz"; suffix="linux-x64"; start="./OpenBFMELauncher.x86_64" ;;
+    windows) preset="Windows x64"; exe="OpenBFMELauncher.exe"; ext="zip"; suffix="windows-x64"; start="OpenBFMELauncher.exe" ;;
+    macos) preset="macOS Universal"; exe="OpenBFMELauncher.app"; ext="zip"; suffix="macos-universal"; start="OpenBFMELauncher.app"; readme="$P/README_LAUNCHER_MACOS.txt" ;;
+    *) fail "unknown platform $p (linux, windows, macos)" ;;
   esac
-  name="openbfme-launcher-$VERSION-$p-x64"
+  name="openbfme-launcher-$VERSION-$suffix"
   dir="$WORK/$name"
   mkdir -p "$dir"
   "$GODOT_BIN" --headless --path "$P" --export-release "$preset" "$dir/$exe" >"$WORK/export-$p.log" 2>&1 \
     || { tail -30 "$WORK/export-$p.log"; fail "export $preset"; }
-  [ -f "$dir/$exe" ] && [ ! -e "$dir/OpenBFMELauncher.pck" ] || { tail -30 "$WORK/export-$p.log"; fail "export $preset did not produce $exe with its pack embedded"; }
+  if [ "$p" = macos ]; then
+    [ -f "$dir/$exe/Contents/MacOS/OpenBFME Launcher" ] || { tail -30 "$WORK/export-$p.log"; fail "export $preset did not produce $exe"; }
+    LAUNCHER_BINARY="$dir/$exe/Contents/MacOS/OpenBFME Launcher"
+    LAUNCHER_PCK="$dir/$exe/Contents/Resources/OpenBFME Launcher.pck"
+    chmod 0755 "$dir" "$dir/$exe" "$LAUNCHER_BINARY"
+    lipo "$LAUNCHER_BINARY" -verify_arch arm64 x86_64 || fail "the launcher export is not universal"
+    codesign --verify --deep --strict "$dir/$exe" || fail "the exported launcher app signature is invalid"
+  else
+    [ -f "$dir/$exe" ] && [ ! -e "$dir/OpenBFMELauncher.pck" ] || { tail -30 "$WORK/export-$p.log"; fail "export $preset did not produce $exe with its pack embedded"; }
+    LAUNCHER_BINARY="$dir/$exe"
+    LAUNCHER_PCK=""
+    chmod 0755 "$dir" "$dir/$exe"
+  fi
+  # lane OWNERFIX-3: the Windows executable's icon is the OpenBFME icon (export preset application/icon), not Godot's
+  if [ "$p" = windows ]; then python3 "$REPO/tools/release/app_icon.py" --check-exe "$dir/$exe" || fail "export $preset: the executable's icon"; fi
   # lane REPRO-1: the editor plugin addons/pack_files picks the pack's files instead of the preset's include / exclude filters (those
   # follow the host's directory order): its errors fail the export, and the pack must hold the staged build_info.json and font licences
   # once each
   ! grep -q "PACK FILES FAIL" "$WORK/export-$p.log" || { grep "PACK FILES FAIL" "$WORK/export-$p.log"; fail "export $preset: addons/pack_files"; }
-  python3 - "$REPO/tools/release" "$dir/$exe" "$P" <<'EOF' || fail "export $preset: the pack does not hold the staged build_info.json and font licences"
+python3 - "$REPO/tools/release" "$LAUNCHER_BINARY" "$P" "$LAUNCHER_PCK" <<'EOF' || fail "export $preset: the pack does not hold the staged build_info.json and font licences"
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import audit_package as ap
-data = Path(sys.argv[2]).read_bytes()
-base = ap.embedded_pck_base(data)
-if base is None:
-    sys.exit(f"{sys.argv[2]}: no embedded pack")
-listed = ap.pck_entries(data, base, len(data) - 12)  # the pack, then <u64 size> "GDPC"
+if sys.argv[4]:
+    data = Path(sys.argv[4]).read_bytes()
+    base, end = 0, len(data)
+else:
+    data = Path(sys.argv[2]).read_bytes()
+    base = ap.embedded_pck_base(data)
+    if base is None:
+        sys.exit(f"{sys.argv[2]}: no embedded pack")
+    end = len(data) - 12  # the pack, then <u64 size> "GDPC"
+listed = ap.pck_entries(data, base, end)
 entries = dict(listed)
 if len(entries) != len(listed):
     sys.exit(f"the pack lists a file twice: {sorted(k for k, _ in listed if [n for n, _ in listed].count(k) > 1)}")
@@ -118,14 +145,23 @@ got = {k: v for k, v in entries.items() if k == "build_info.json" or (k.startswi
 if got != want:
     sys.exit(f"pack holds {sorted(got)}, staged {sorted(want)} (or different bytes)")
 EOF
-  sed -e "s|@VERSION@|$VERSION|g" -e "s|@REPO@|$TARGET|g" -e "s|@START@|$start|g" "$P/README_LAUNCHER.txt" > "$dir/README.txt"
+  if [ "$p" != macos ]; then readme="$P/README_LAUNCHER.txt"; fi
+  sed -e "s|@VERSION@|$VERSION|g" -e "s|@REPO@|$TARGET|g" -e "s|@START@|$start|g" "$readme" > "$dir/README.txt"
+  python3 - "$P/build_info.json" "$dir/README.txt" <<'EOF'
+import json, sys
+from pathlib import Path
+if json.loads(Path(sys.argv[1]).read_text())["local_trial"]:
+    readme = Path(sys.argv[2])
+    readme.write_text("LOCAL TRIAL - NOT AN OFFICIAL RELEASE\nSigned payloads trust a local test key, not the project's release key.\n\n" + readme.read_text())
+EOF
   cp "$WORK/stage/LICENSE" "$WORK/stage/NOTICE" "$dir/"
   printf 'OpenBFME Launcher %s\ncommit %s\ncommitted %s\nupdates from %s\n' "$VERSION" "$COMMIT" "$DATE" "$TARGET" > "$dir/VERSION"
+  release_platform="$p"
+  [ "$p" != macos ] || release_platform=macos-universal
   python3 "$REPO/tools/release/audit_package.py" "$dir" || fail "$name failed the content audit"
-  python3 "$REPO/tools/release/audit_package.py" --release "launcher-$p" "$dir" || fail "$name is not the launcher's file set"
-  chmod 0755 "$dir" "$dir/$exe"
+  python3 "$REPO/tools/release/audit_package.py" --release "launcher-$release_platform" "$dir" || fail "$name is not the launcher's file set"
   rm -f "$OUT/$name.$ext"
   python3 "$REPO/tools/release/make_archive.py" "$dir" "$OUT/$name.$ext" --mtime "$MTIME" || fail "archive $name"
-  python3 "$REPO/tools/release/audit_package.py" --release "launcher-$p" "$OUT/$name.$ext" || fail "$name.$ext failed the launcher allowlist"
+  python3 "$REPO/tools/release/audit_package.py" --release "launcher-$release_platform" "$OUT/$name.$ext" || fail "$name.$ext failed the launcher allowlist"
   echo "LAUNCHER PACKAGE $OUT/$name.$ext"
 done

@@ -8,7 +8,9 @@
 // the batch's acquire, issue to its completion: the effect in the world). SKIP loudly without ROTWK_INSTALL / BFME2_INSTALL.
 
 #include "doctest.h"
+#include "TestChild.h"
 
+#include "ProcessTestUtil.h"
 #include "StartTestUtil.h"
 
 #include "Common/Recorder.h"
@@ -57,17 +59,9 @@ std::string field(const std::string &report, const std::string &key)
 	return "";
 }
 
-int runCommand(const std::string &cmdIn)
-{
-	std::string cmd = cmdIn;
-#ifdef _WIN32
-	cmd = "\"" + cmd + "\"";
-	return std::system(cmd.c_str());
-#else
-	const int rc = std::system(cmd.c_str());
-	return WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
-#endif
-}
+// DEVPORT-6: runAll starts the host and the joiner from two threads; macOS's system() holds a process-wide lock while it waits, so the joiner
+// never started before the host gave up (the Mac gate's two failing cases): every peer is spawned on its own (ProcessTestUtil.h)
+using processtest::runCommand;
 
 std::string peerBase()
 {
@@ -209,10 +203,16 @@ TEST_CASE("netlag1 net retail: a 2-player LAN game on real UDP with 5 Hz clocks:
 	checkGame(adaptive, -1, "LAN, adaptive run-ahead from 1");
 }
 
-// lane NETLAG-1 (Sol's review): a recording made by the build BEFORE this lane (archive 593e83cd, run-ahead 2, its own engine id) still plays back here,
+// lane NETLAG-1 (Sol's review): a recording made by the build BEFORE this lane (the q19 tree with NETLAG-1's command-delay sources reverted, run-ahead 2, its own engine id) still plays back here,
 // with every frame's hash equal: the fixture was recorded by that build (a 2-player LAN game of openbfme_peer, 150 frames), not by this one
-// (merge queue q15: re-recorded by the archive build 593e83cd with the same command line; the earlier fixture, recorded at de94ba60, stopped matching when q12-q14 changed the simulation)
-TEST_CASE("netlag1 replay: a recording made by the pre-lane build (archive 593e83cd, run-ahead 2) plays back on this build with every hash equal")
+// (merge queue q18: re-recorded with the same command line as lanGame("lan2", "--run-ahead 2 --fixed-run-ahead", "--record ...") by a build of the merged tree with NETLAG-1's engine/src changes
+// (commit 071b38c9c, reverse-applied except ControlBar.cpp's stop text) taken out, so it has the pre-lane command path and the merged simulation: DEVPORT-3C's castle keep gate moved the
+// simulation, so the q15 recording, made by archive 593e83cd, no longer replays; engine id computed by cmake -DOPENBFME_ID_ROOT=<that tree's engine dir> -P cmake/EngineId.cmake)
+// (merge queue q19: re-recorded again the same way, with the same command line, from the merged tree b093e098 = q18 + BACKLOG-8 + DEVPORT-5 with NETLAG-1's engine/src
+// changes (071b38c9c) reverse-applied except ControlBar.cpp's stop text: BACKLOG-8 hashes the formation / march settings rows and moves the march, so the q18
+// recording no longer replays; both peers ended on final_hash 0x0B2383BD; engine id recomputed independently with cmake -DOPENBFME_ID_ROOT=<that tree's engine dir>
+// -P cmake/EngineId.cmake and equal to the one in the recording)
+TEST_CASE("netlag1 replay: a recording made by the pre-lane build (q19 tree without NETLAG-1's delay, run-ahead 2) plays back on this build with every hash equal")
 {
 	OPENBFME_REQUIRE_START(s);
 	(void)s;
@@ -223,7 +223,7 @@ TEST_CASE("netlag1 replay: a recording made by the pre-lane build (archive 593e8
 	CHECK(file.header.network.runAhead == 2);
 	CHECK(file.complete);
 	// it names the pre-lane build's engine id, which is not this build's, and that id is a verified one
-	const std::string preLane = "976a1229ea71f55c95f05da0b8530fc7b5a5b181663ede0396ee43ae3b6be361";
+	const std::string preLane = "e2a8e912ec797b1969fafeb7df6d18a264b9aa2723ced5109490ff5b2ce0bfbb";
 	CHECK(file.header.profile.text.find("\nengine " + preLane + "\n") != std::string::npos);
 	CHECK(std::string(ProfileIdentity::buildId()) != preLane);
 	CHECK(ProfileIdentity::verifiedReplayEngines().front().id == preLane);
@@ -334,14 +334,10 @@ TEST_CASE("netlag1 net retail: a 2-player online game through the relay process 
 	const std::uint16_t port = freePort();
 	const std::string relayAddr = "127.0.0.1:" + std::to_string(port), keys = (dir / "keys.txt").string(), logs = (dir / "log").string(),
 					  status = (dir / "status.json").string();
-	const pid_t relay = fork();
-	REQUIRE(relay >= 0); // tolerance: fork gives any process id, -1 is its failure
-	if (relay == 0)
-	{
-		execl(OPENBFME_RELAY_EXE, OPENBFME_RELAY_EXE, "--bind", relayAddr.c_str(), "--keys", keys.c_str(), "--log-dir", logs.c_str(), "--status",
-			status.c_str(), "--stats-s", "0", "--idle-s", "60", (char *)nullptr);
-		_exit(127);
-	}
+	// lane DEVPORT-7: the relay stops with this scope (a failed REQUIRE too), dies with the test, and never holds its output (TestChild.h)
+	TestChild relay(OPENBFME_RELAY_EXE, { "--bind", relayAddr, "--keys", keys, "--log-dir", logs, "--status", status, "--stats-s", "0", "--idle-s", "60" },
+		(dir / "relay.log").string());
+	REQUIRE(relay.started());
 	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 	// the lobby service's START for each player (services/online/lobby: kind openbfme-start, its run-ahead 1)
 	const std::uint64_t game = 0x0B0E7A9100000001ull;
@@ -390,9 +386,7 @@ TEST_CASE("netlag1 net retail: a 2-player online game through the relay process 
 		commands.push_back(peerBase() + " --online-start \"" + file + "\" --bind 127.0.0.1 --frames 150");
 	}
 	Run r = runAll("relay", commands);
-	kill(relay, SIGTERM);
-	int st = 0;
-	waitpid(relay, &st, 0);
+	relay.stop();
 	REQUIRE(r.reports.size() == 3);
 	const std::string spectator = r.reports[2];
 	r.reports.pop_back();

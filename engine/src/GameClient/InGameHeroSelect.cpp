@@ -3,6 +3,11 @@
 
 #include "GameClient/InGameHeroSelect.h"
 
+#include "Common/ArchiveFileSystem.h"
+#include "Common/AsciiString.h"
+#include "Common/INI.h"
+#include "Common/INIException.h"
+#include "Common/INI/INIBlockStubs.h"
 #include "Common/Player.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameClient/HudContext.h"
@@ -16,16 +21,117 @@
 #include "GameLogic/Module/DozerAIUpdate.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/PlayerCommands.h"
+#include "GameLogic/SimMath.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <cstdlib>
+#include <cstdint>
+#include <exception>
 #include <variant>
 
 namespace
 {
 // ObjectStatus 92 (RW 0x92BC07: testStatus(0x5C))
 constexpr unsigned kStatusNoHeroProperties = 92;
+
+std::string num(int value)
+{
+	return std::to_string(value);
+}
+
+struct CycleTimeoutState
+{
+	unsigned timeoutMs = 0;
+	bool seen = false;
+	bool inGameUi = false;
+};
+
+size_t fieldIndent(const std::string &line)
+{
+	const size_t first = line.find_first_not_of(" \t");
+	return first == std::string::npos ? line.size() : first;
+}
+
+std::string withoutIniComment(const std::string &line)
+{
+	size_t cut = line.find(';');
+	const size_t slash = line.find("//");
+	if (slash != std::string::npos && (cut == std::string::npos || slash < cut))
+	{
+		cut = slash;
+	}
+	return cut == std::string::npos ? line : line.substr(0, cut);
+}
+
+bool isEndField(const std::string &line)
+{
+	const std::string uncommented = withoutIniComment(line);
+	const size_t begin = uncommented.find_first_not_of(" \t");
+	if (begin == std::string::npos)
+	{
+		return false;
+	}
+	const size_t end = uncommented.find_first_of(" \t=", begin);
+	return AsciiStringUtil::compareNoCase(uncommented.substr(begin, end == std::string::npos ? std::string::npos : end - begin), "End") == 0;
+}
+
+void skipCycleTimeoutNestedBlock(INI *ini, void *, void *, const void *userData)
+{
+	for (;;)
+	{
+		const std::string *next = ini->peekNextLine();
+		if (!next)
+		{
+			throw INIException(4, "Missing 'END' token.\n\nError parsing nested block '%s' in file '%s', line %i.\n", static_cast<const char *>(userData),
+				ini->getFilename().c_str(), ini->currentSourceLine());
+		}
+		const std::string line = *next;
+		ini->readLine();
+		if (isEndField(line))
+		{
+			return;
+		}
+	}
+}
+
+void skipCycleTimeoutField(INI *ini, void *, void *, const void *userData)
+{
+	const std::string header = ini->currentLineText();
+	if (withoutIniComment(header).find('=') != std::string::npos)
+	{
+		return;
+	}
+	const size_t headerIndent = fieldIndent(header);
+	for (;;)
+	{
+		const std::string *next = ini->peekNextLine();
+		if (!next)
+		{
+			throw INIException(4, "Missing 'END' token.\n\nError parsing nested block '%s' in file '%s', line %i.\n", static_cast<const char *>(userData),
+				ini->getFilename().c_str(), ini->currentSourceLine());
+		}
+		const std::string line = *next;
+		ini->readLine();
+		if (isEndField(line) && fieldIndent(line) <= headerIndent)
+		{
+			return;
+		}
+	}
+}
+
+void parseCycleTimeout(INI *ini, void *instance, void *store, const void *)
+{
+	INI::parseUnsignedInt(ini, instance, store, nullptr);
+	static_cast<CycleTimeoutState *>(instance)->seen = true;
+}
+
+const FieldParse kCycleTimeoutFields[] = {
+	{ "SelectNearestBuilderCycleTimeOut", parseCycleTimeout, nullptr, (int)offsetof(CycleTimeoutState, timeoutMs) },
+	{ "RadiusCursorTemplate", skipCycleTimeoutNestedBlock, "RadiusCursorTemplate", 0 },
+	{ nullptr, skipCycleTimeoutField, "InGameUI", 0 }
+};
 
 int heroSortOrder(const Object &obj)
 {
@@ -60,6 +166,69 @@ const Object *hordeOf(const Object &obj)
 	return c && c->isKindOfName("HORDE") ? c : nullptr;
 }
 } // namespace
+
+InGameHeroSelect::InGameHeroSelect(HudContext &ctx, unsigned timeoutMs)
+	: m_ctx(ctx)
+	, m_builderTimeoutFrames((unsigned)SimMath::pc24MulW((double)timeoutMs, (double)0.03f))
+{
+}
+
+bool InGameHeroSelect::loadCycleTimeout(ArchiveFileSystem &fs, unsigned &ms, std::string *error)
+{
+	const char *file = "data\\ini\\ingameui.ini";
+	if (!fs.doesFileExist(file))
+	{
+		if (error)
+		{
+			*error = std::string(file) + ": file not found in any mounted archive";
+		}
+		return false;
+	}
+	INIEnvironment env;
+	env.fileSystem = &fs;
+	INIBlockRecorder recorder;
+	RegisterRecordingBlockStubs(env.blocks, recorder, { "InGameUI" }, StubExtent::Lenient);
+	CycleTimeoutState state;
+	env.blocks.registerBlock("InGameUI", [&state](INI *ini) {
+		state.inGameUi = true;
+		ini->initFromINI(&state, kCycleTimeoutFields);
+	});
+	try
+	{
+		INI ini(env);
+		ini.load(file, INI_LOAD_OVERWRITE);
+	}
+	catch (const std::exception &e)
+	{
+		if (error)
+		{
+			*error = std::string(file) + ": " + e.what();
+		}
+		return false;
+	}
+	if (!state.inGameUi || !state.seen)
+	{
+		if (error)
+		{
+			*error = std::string(file) + ": missing InGameUI.SelectNearestBuilderCycleTimeOut";
+		}
+		return false;
+	}
+	ms = state.timeoutMs;
+	return true;
+}
+
+void InGameHeroSelect::flashHeroButton(const std::string &templateName, int frames)
+{
+	// RW 0x92C876: case-sensitive template name; a shorter request never truncates a running flash.
+	for (Hero &hero : m_heroes)
+	{
+		if (hero.templateName == templateName && hero.flashFrames < frames)
+		{
+			hero.flashFrames = frames;
+		}
+	}
+}
 
 std::string InGameHeroSelect::buttonImage(const Object &obj)
 {
@@ -117,6 +286,7 @@ void InGameHeroSelect::addObject(const Object &obj)
 		}
 		Hero entry;
 		entry.id = id;
+		entry.templateName = obj.getTemplate()->getName();
 		float progress = 0.0f;
 		PalantirCommandUI::objectRankAndProgress(obj, entry.rank, progress); // RW 0x92C77A -> RW 0x9D25B7
 		if (m_ctx.logic.getFrame() < 6)
@@ -492,6 +662,10 @@ void InGameHeroSelect::hideSelectAll()
 
 void InGameHeroSelect::onButtonPressed(const std::string &param)
 {
+	if (!m_ctx.ui.getInputEnabled())
+	{
+		return; // lane OWNERFIX-1 (INFERENCE, S-4964): the hero bar selects nothing while a script has the input off (retail drops the logic half in the stream)
+	}
 	if (param.compare(0, 4, "Hero") != 0)
 	{
 		return;
@@ -563,6 +737,10 @@ void InGameHeroSelect::onButtonPressed(const std::string &param)
 
 void InGameHeroSelect::selectAllHeroes()
 {
+	if (!m_ctx.ui.getInputEnabled())
+	{
+		return; // lane OWNERFIX-1 (INFERENCE, S-4964): the hero bar selects nothing while a script has the input off (retail drops the logic half in the stream)
+	}
 	bool clear = !m_ctx.ui.isInPreferSelectionMode();
 	auto eligible = [&](int i, const Object *&out) {
 		if (m_slots[i].builder || m_slots[i].hero == INVALID_ID)
@@ -610,6 +788,22 @@ void InGameHeroSelect::selectAllHeroes()
 		m.appendObjectID(hero->getID());
 		m_ctx.ui.selectObject(hero->getID());
 		clear = false;
+	}
+}
+
+void InGameHeroSelect::onHeroAttacked(ObjectID id)
+{
+	if (id == INVALID_ID)
+	{
+		return;
+	}
+	for (int i = 0; i < kSlots; ++i)
+	{
+		if (m_slots[i].hero == id)
+		{
+			movieCall("PlayButtonAttackedEffect", { num(i + 1) }); // RW 0x92BFED: first matching visible slot
+			return;
+		}
 	}
 }
 
@@ -668,11 +862,15 @@ InGameHeroSelect::Builder *InGameHeroSelect::findReadyLocalBuilder(const std::ve
 
 void InGameHeroSelect::selectNearestBuilder(bool noCamera)
 {
+	if (!m_ctx.ui.getInputEnabled())
+	{
+		return; // lane OWNERFIX-1 (INFERENCE, S-4964): the hero bar selects nothing while a script has the input off (retail drops the logic half in the stream)
+	}
 	if (m_ctx.ui.isInPreferSelectionMode())
 	{
 		noCamera = true; // TheKeyboard->isShift() (INFERENCE: the port's Shift is InGameUI's prefer-selection state)
 	}
-	if (m_ctx.ui.selected().size() > 1)
+	if (m_ctx.ui.selected().size() > 1 || (m_builderUsed && m_builderDeadline <= m_clientFrame))
 	{
 		resetBuilderRound();
 	}
@@ -704,4 +902,5 @@ void InGameHeroSelect::selectNearestBuilder(bool noCamera)
 	}
 	entry->used = true;
 	m_builderUsed = true;
+	m_builderDeadline = m_clientFrame + m_builderTimeoutFrames;
 }

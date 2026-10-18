@@ -84,6 +84,9 @@ public:
 	const std::vector<Record> &records() const { return m_records; }
 
 	void crc(StateHasher &h) const;
+	// lane SAVE-4c (obfme:AIWorld, OpenBFME layout: S-4220): every record (control point, duration, the steps and samples build() made) and the walk;
+	// a load fills a fresh spline (the caller's staging)
+	void xfer(class Xfer &x);
 
 private:
 	std::vector<Record> m_records; // + 0x2C

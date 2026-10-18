@@ -175,8 +175,11 @@ public:
 	// lane EXIT-1: the node of the last computePointAhead (RW PathPoint.node) has a next optimised node (RW node + 8): the horde member update RW 0x66CDC9
 	// keeps the path while the point ahead is not on the last node
 	bool lastAheadHasNext() const { return m_lastAheadNode && m_lastAheadNode->m_nextOpti; }
+	// lane SAVE-4c (AIPathfindSnapshot.cpp): the nodes in chain order with their optimised links and the follower's place, as indices into the chain
+	void xfer(class Xfer &x);
 
 private:
+	void xferLoad(class Xfer &x);
 	PathNode *m_path;
 	PathNode *m_pathTail;
 	bool m_isOptimized;
@@ -242,6 +245,7 @@ public:
 	int freeCount() const;
 	bool exhaustedOnce() const { return m_exhausted; }
 	PathfindOccupant *newOccupant();
+	void setExhausted(bool on) { m_exhausted = on; } ///< lane SAVE-4c: a loaded game keeps the flag of the saved one
 	void freeOccupant(PathfindOccupant *o);
 	size_t occupantsInUse() const { return m_occupantsInUse; }
 
@@ -430,6 +434,8 @@ public:
 	unsigned zoneCount() const { return (unsigned)m_zones.size(); }
 	size_t adjacencyCount() const { return m_adjacent.size(); }
 	void getExtent(ICoord2D &extent) const { extent = m_zoneBlockExtent; }
+	// lane SAVE-4c: everything crc covers; the lazily built equivalence tables are a cache (cleared at a load)
+	void xfer(class Xfer &x);
 
 private:
 	struct ZoneInfo
@@ -551,6 +557,8 @@ public:
 		m_head = (m_head + 1) % PATHFIND_QUEUE_LEN;
 		return id;
 	}
+	// lane SAVE-4c: the head, the tail and the queued ids (the free slots hold no state)
+	void xfer(class Xfer &x);
 
 private:
 	std::vector<PathfindObjectID> m_slots;
@@ -736,6 +744,10 @@ public:
 	// lane MOVE-3 (AIPathfindPatch.cpp): pathfinder vtable 0xC1B8D8 slot 0x18 (RW 0x6F7938): a blocked unit's patch from its cell to `point` or to the cell of
 	// one of the raw nodes after `node` (null: none found); the patch keeps every cell
 	Path *patchPath(PathfindObject &obj, const PathfindLocomotorInfo &loco, const Coord3D &point, const PathNode *node);
+	// lane BACKLOG5: RW 0x6FC9DA (pathfinder vtable slot 0x10, ZH Pathfinder::patchPath): computePath's patch for a unit with blocked frames: a search from
+	// the unit to the nearest node of `originalPath` it can stand on, joined to the rest of that path; null when no node is free or none is reached within
+	// GameData MaxCellsPatchPath cells. `originalPath` is not changed
+	Path *patchPath(PathfindObject *obj, const PathfindLocomotorInfo &loco, Path *originalPath, bool blocked);
 	// RW 0x6EDFD7: the unit's footprint at `point` is passable, checkForMovement accepts it and no goal, position or horde position of a unit of at least its
 	// priority lies in it
 	bool patchPointIsFree(PathfindObject &obj, const PathfindLocomotorInfo &loco, const Coord3D &point);
@@ -743,6 +755,18 @@ public:
 	float goalAngle(PathfindObjectID id) const;
 	// RW 0x68B43B (lane MOVE-3): the layer of the unit's goal slot (ground without a goal)
 	PathfindLayerEnum goalLayer(PathfindObjectID id) const;
+	// ---- lane BACKLOG-8 r2: the group ground path (AIPathfindGround.cpp) ----
+	// RW 0x6E8BBA: the diameter of the square of cells around (x, y) that every cell clears (exact: 0 when the full one does not, else the next smaller)
+	int clearCellForDiameter(unsigned crusher, int x, int y, PathfindLayerEnum layer, int diameter, bool exact);
+	// RW 0x6FAA6D: a ground path of `diameter` for `obj` (a group's march leader) between the points, null when none; `formationColumnWidth` is AIData
+	// + 0xA0 (the corner spread of buildGroundPath)
+	Path *findGroundPath(PathfindObject *obj, const Coord3D *from, const Coord3D *rawTo, int diameter, float formationColumnWidth);
+	// RW 0x6F0AFE: every cell of the line clears `diameter`
+	bool isGroundPathPassable(const Coord3D &start, PathfindLayerEnum layer, const Coord3D &end, int diameter);
+	// RW 0x6F2F8F: the cell line from `from` to `to` is blocked for `obj` with `surfaces` (terrain only: units do not block)
+	bool isLineBlocked(const PathfindObject *obj, unsigned surfaces, PathfindLayerEnum layer, const Coord3D &from, const Coord3D &to);
+	// RW 0x6EF387: `pos` cut back to the last cell of the line from `from` that clears diameter 4; true when it was cut
+	bool adjustGroundPathPosition(const Coord3D &from, Coord3D *pos);
 	// RW 0x6FE456 (ring search 0x6FA2A4, checkForAdjust 0x6F66D9)
 	bool adjustDestination(PathfindObject &obj, const PathfindLocomotorInfo &loco, Coord3D *dest, const Coord3D *groupDest = nullptr);
 	bool adjustToPossibleDestination(PathfindObject &obj, const PathfindLocomotorInfo &loco, Coord3D *dest);
@@ -793,8 +817,12 @@ public:
 	// (passability class, layer, the cell bits, pinch, zone, obstacle identity and flags, the five ordered occupant chains), the zone manager, the queues and
 	// every unit's reservation slots. Excluded: the pointers, the pool's free list and the open / closed search scratch.
 	void crc(StateHasher &hasher) const;
+	// lane SAVE-4c (AIPathfindSnapshot.cpp): the part of the obfme:AIWorld block crc covers, loaded into the grid the game's map made (its extents and
+	// configuration must be the saved ones)
+	void xfer(class Xfer &x);
 
 private:
+	std::uint32_t configHash() const; ///< the configuration and extent part of crc (a snapshot of another map or AIData is refused)
 	struct Slot
 	{
 		bool occupied = false;
@@ -830,6 +858,10 @@ private:
 	void internal_classifyObjectFootprint(PathfindObject &obj, bool insert);
 	void classifyFence(PathfindObject &obj, bool insert);
 	void cleanOpenAndClosedLists();
+	// lane BACKLOG-8 r2 (AIPathfindGround.cpp): RW 0x6E8BBA's cell test, RW 0x6F0DA3 and RW 0x765BF6
+	bool groundCellClear(const PathfindCell *cell, unsigned crusher) const;
+	Path *buildGroundPath(const Coord3D *from, PathfindCell *goalCell, bool center, int diameter, float formationColumnWidth);
+	void optimizeGroundPath(Path &path, int diameter);
 	Path *buildActualPath(const PathfindObject *obj, unsigned acceptableSurfaces, const Coord3D *fromPos, PathfindCell *goalCell, bool center, bool blocked);
 	void prependCells(Path *path, const Coord3D *fromPos, PathfindCell *goalCell, bool center);
 	int examineNeighboringCells(PathfindCell *parentCell, PathfindCell *goalCell, const PathfindLocomotorInfo &loco, bool isHuman, bool centerInCell,
@@ -863,6 +895,8 @@ private:
 	const OccupantFacts *occupantFacts(const PathfindObject *obj, PathfindObjectID id);
 	SearcherFacts searcherFacts(const PathfindObject *obj) const;
 	struct SearchMemoScope; // internalFindPath's activation of the memo
+	// lane BACKLOG5: RW 0x6F6286, the layer-change expansion of a closed cell (see AIPathfindPatch.cpp)
+	void checkChangeLayers(PathfindCell *parentCell, const PathfindObject *obj);
 	// lane MOVE-3: RW 0x6ED46C, the footprint cost of a patch step (-1: blocked); `parent` null counts every footprint cell
 	int patchCellCost(const PathfindObject &obj, const ICoord2D *parent, const ICoord2D &cell, PathfindLayerEnum layer, int r, int n, bool skipHordePositions);
 	// RW 0x6ECFC5: the footprint of RW 0x6ED071 is centred on a cell (its size is odd)

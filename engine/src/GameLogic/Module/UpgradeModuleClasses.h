@@ -58,6 +58,7 @@ public:
 class StatusBitsUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(StatusBitsUpgrade) // lane SAVE-4b: UpgradeModule's
 	StatusBitsUpgrade(Thing *thing, const StatusBitsUpgradeModuleData *data) : UpgradeModule(thing, data), m_data(data) {}
 
 protected:
@@ -81,6 +82,7 @@ public:
 class ModelConditionUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(ModelConditionUpgrade) // lane SAVE-4b: UpgradeModule's
 	ModelConditionUpgrade(Thing *thing, const ModelConditionUpgradeModuleData *data) : UpgradeModule(thing, data), m_data(data) {}
 
 protected:
@@ -103,6 +105,7 @@ public:
 class ArmorUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(ArmorUpgrade) // lane SAVE-4b: UpgradeModule's
 	ArmorUpgrade(Thing *thing, const ArmorUpgradeModuleData *data) : UpgradeModule(thing, data), m_data(data) {}
 	// RW 0xDB1AB0: the model condition an armor set flag shows
 	static int modelConditionOfArmorSetFlag(int flag);
@@ -126,6 +129,7 @@ public:
 class WeaponSetUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(WeaponSetUpgrade) // lane SAVE-4b: UpgradeModule's
 	WeaponSetUpgrade(Thing *thing, const WeaponSetUpgradeModuleData *data) : UpgradeModule(thing, data), m_data(data) {}
 
 protected:
@@ -146,6 +150,7 @@ public:
 class CommandSetUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(CommandSetUpgrade) // lane SAVE-4b: UpgradeModule's
 	CommandSetUpgrade(Thing *thing, const CommandSetUpgradeModuleData *data) : UpgradeModule(thing, data), m_data(data) {}
 	void postUpgradeCheck() override;
 
@@ -181,6 +186,7 @@ public:
 class SubObjectsUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(SubObjectsUpgrade) // lane SAVE-4b
 	SubObjectsUpgrade(Thing *thing, const SubObjectsUpgradeModuleData *data) : UpgradeModule(thing, data), m_data(data) {}
 	bool hasShown() const { return m_shown; }
 	void crc(StateHasher &hasher) const override;
@@ -213,6 +219,7 @@ public:
 class RemoveUpgradeUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(RemoveUpgradeUpgrade) // lane SAVE-4b: UpgradeModule's
 	RemoveUpgradeUpgrade(Thing *thing, const RemoveUpgradeUpgradeModuleData *data) : UpgradeModule(thing, data), m_data(data) {}
 
 protected:
@@ -240,6 +247,7 @@ public:
 class GrantUpgradeCreate : public BehaviorModule, public CreateModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(GrantUpgradeCreate) // lane SAVE-4b
 	GrantUpgradeCreate(Thing *thing, const GrantUpgradeCreateModuleData *data) : BehaviorModule(thing, data), m_data(data) {}
 	CreateModuleInterface *getCreate() override { return this; }
 	void onCreate() override;

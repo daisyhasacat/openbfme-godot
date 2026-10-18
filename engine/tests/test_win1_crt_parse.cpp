@@ -4,9 +4,16 @@
 // RwGrammar float probe and strtof / strtod in the module parsers). A Windows build reaches the UCRT, a Linux build glibc, and they differ (Wine's UCRT
 // strtof / sscanf are not correctly rounded on hard inputs). Lane WIN-1 replaced every one of those calls: INI reals are read the way RETAIL reads
 // them, with MSVCR71's own converter ported (Common/INI/Msvcr71Real.h, tests/test_win1_msvcr71_real.cpp), and the correctly rounded reading
-// scanRealText / strtodPortable (Common/INI/HostRealText.h, the C++ library's std::from_chars) is what the port uses for a double retail does not read
-// through the CRT. This file pins scanRealText to correct rounding straight to the target type on every build; the host CRT is only compared for
-// information.
+// scanRealText / strtodPortable (Common/INI/HostRealText.h, the pinned FloatFromChars parser) is what the port uses for a double retail does not read
+// through the CRT. This file checks the scanRealText integration on every build; tools/sim/compare_float_chars.cpp independently checks the parser
+// against the standard library. The host CRT is only compared for information.
+//
+// The vectors test at the end compares every platform against tests/data/win1_real_vectors.txt: expected bits computed by an independent exact
+// oracle (tools/sim/gen_real_vectors.py, Python Fractions, no engine / fast_float / C++ library code), so nothing is derived from the code under test.
+// Run it natively (Windows MSVC and macOS, where the coordinator's Devin boxes report):
+//   build the openbfme_tests target (build.bat / cmake as docs/WINDOWS.md and docs/MACOS.md say), then from the repository root
+//   engine/build/openbfme_tests -tc="win1 crt parse*"            (Windows: engine\build\openbfme_tests.exe -tc="win1 crt parse*")
+// and send back the doctest totals. OPENBFME_TEST_DATA_DIR is compiled in; no retail files are needed.
 
 #include "doctest.h"
 
@@ -18,6 +25,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <map>
 #include <random>
 #include <string>
 #include <system_error>
@@ -39,6 +48,11 @@ std::uint64_t bitsOf(double d)
 	return u;
 }
 
+} // namespace
+
+#if !defined(__APPLE__) // macOS before 26 has no floating-point std::from_chars: there the frozen vectors (below) are the oracle
+namespace
+{
 // the decimal texts an INI file can hold, the hard ones included: short and long mantissas, signs, leading / trailing zeros, exponents across the
 // whole range (subnormals and overflow to the boundary excluded: the INI values are not there, and an implementation may flag ERANGE differently),
 // exact halfway points between adjacent floats and doubles written out in full
@@ -85,7 +99,7 @@ std::vector<std::string> corpus()
 		const std::uint32_t u = (std::uint32_t)(rng() % 0x7E000000u) + 0x00800000u; // normal floats
 		float lo;
 		std::memcpy(&lo, &u, sizeof lo);
-		const double mid = ((double)lo + (double)std::nextafter(lo, HUGE_VALF)) / 2.0; // exact in binary64 (3.5e38f, the old target, is out of float range: MSVC C2177)
+		const double mid = ((double)lo + (double)std::nextafter(lo, std::numeric_limits<float>::infinity())) / 2.0; // exact in binary64
 		char buf[64];
 		std::snprintf(buf, sizeof buf, "%.40g", mid);
 		out.push_back(buf);
@@ -142,6 +156,7 @@ TEST_CASE("win1 crt parse: scanRealText (the simulation's sscanf(\"%f\") / strto
 						  << hostStrtod << " of them (information: the simulation does not call it)");
 	CHECK(bad == 0);
 }
+#endif
 
 TEST_CASE("win1 crt parse: scanRealText reads the prefix sscanf / strtod read (it stops at the first character outside the number)")
 {
@@ -209,4 +224,176 @@ TEST_CASE("win1 crt parse (Sol r1): scanRealText rounds a float subnormal once, 
 	CHECK(bitsOf(d) == 0x0000000000000000ull);
 	REQUIRE(scanRealText("1e400", d) != nullptr);
 	CHECK(bitsOf(d) == 0x7FF0000000000000ull);
+}
+
+namespace
+{
+struct RealVector
+{
+	std::string category, text;
+	int end = -1;
+	std::uint32_t fbits = 0;
+	std::uint64_t dbits = 0;
+	bool fRange = false, dRange = false;
+};
+
+std::string hexDecode(const std::string &hex)
+{
+	REQUIRE(hex.size() % 2 == 0);
+	std::string out;
+	for (size_t i = 0; i < hex.size(); i += 2)
+	{
+		out += (char)std::stoi(hex.substr(i, 2), nullptr, 16);
+	}
+	return out;
+}
+
+std::vector<std::string> splitTabs(const std::string &line)
+{
+	std::vector<std::string> out;
+	size_t from = 0;
+	for (;;)
+	{
+		const size_t t = line.find('\t', from);
+		out.push_back(line.substr(from, t == std::string::npos ? std::string::npos : t - from));
+		if (t == std::string::npos)
+		{
+			return out;
+		}
+		from = t + 1;
+	}
+}
+} // namespace
+
+TEST_CASE("win1 crt parse: scanRealText and FloatFromChars match the frozen independent vectors (every platform; no expectation comes from the code under test)")
+{
+	const std::string path = std::string(OPENBFME_TEST_DATA_DIR) + "/win1_real_vectors.txt";
+	std::ifstream in(path, std::ios::binary);
+	REQUIRE_MESSAGE(in.good(), "missing vector file " << path);
+	std::string line;
+	size_t count = 0;
+	std::uint64_t digest = 0xCBF29CE484222325ull, wantDigest = 0;
+	std::map<std::string, size_t> wantCategories, gotCategories;
+	std::vector<RealVector> vectors;
+	bool haveCount = false, haveDigest = false;
+	while (std::getline(in, line))
+	{
+		if (!line.empty() && line.back() == '\r')
+		{
+			FAIL("the vector file has CR line ends: " << path);
+		}
+		if (line.empty() || line[0] == '#')
+		{
+			continue;
+		}
+		if (line.rfind("count ", 0) == 0)
+		{
+			count = (size_t)std::stoull(line.substr(6));
+			haveCount = true;
+		}
+		else if (line.rfind("fnv1a64 ", 0) == 0)
+		{
+			wantDigest = std::stoull(line.substr(8), nullptr, 16);
+			haveDigest = true;
+		}
+		else if (line.rfind("category ", 0) == 0)
+		{
+			const size_t sp = line.rfind(' ');
+			wantCategories[line.substr(9, sp - 9)] = (size_t)std::stoull(line.substr(sp + 1));
+		}
+		else
+		{
+			for (const char c : line + "\n")
+			{
+				digest = (digest ^ (unsigned char)c) * 0x100000001B3ull;
+			}
+			const std::vector<std::string> f = splitTabs(line);
+			REQUIRE_MESSAGE(f.size() == 7, line.substr(0, 80));
+			RealVector v;
+			v.category = f[0];
+			v.text = hexDecode(f[1]);
+			v.end = std::stoi(f[2]);
+			if (v.end >= 0)
+			{
+				v.fbits = (std::uint32_t)std::stoul(f[3], nullptr, 16);
+				v.dbits = std::stoull(f[4], nullptr, 16);
+				v.fRange = f[5] == "R";
+				v.dRange = f[6] == "R";
+			}
+			++gotCategories[v.category];
+			vectors.push_back(std::move(v));
+		}
+	}
+	// the file must be the whole file: header counts, digest and every named category present (an emptied or truncated file fails here)
+	REQUIRE(haveCount);
+	REQUIRE(haveDigest);
+	REQUIRE(count == 1932);
+	REQUIRE(vectors.size() == count);
+	REQUIRE(digest == wantDigest);
+	const std::map<std::string, size_t> inventory = { { "exact_d", 22 }, { "exact_f", 22 }, { "long", 5 }, { "midpoint_d", 66 }, { "midpoint_f", 316 }, { "overflow_d", 3 }, { "overflow_f", 3 }, { "plain", 48 }, { "random", 1200 }, { "range", 35 }, { "special", 45 }, { "syntax", 17 }, { "wide", 150 } };
+	REQUIRE(gotCategories == inventory); // every category by name with its exact count
+	REQUIRE(wantCategories == inventory);
+	size_t noNumber = 0, rangeF = 0, rangeD = 0, direct = 0;
+	for (const RealVector &v : vectors)
+	{
+		INFO(v.category << " text(" << v.text.size() << " bytes) " << v.text.substr(0, 60));
+		float f = 12345.0f; // an untouched output keeps these bits
+		double d = 12345.0;
+		const char *ef = scanRealText(v.text.c_str(), f);
+		const char *ed = scanRealText(v.text.c_str(), d);
+		if (v.end < 0)
+		{
+			++noNumber;
+			CHECK(ef == nullptr);
+			CHECK(ed == nullptr);
+			CHECK(bitsOf(f) == bitsOf(12345.0f));
+			CHECK(bitsOf(d) == bitsOf(12345.0));
+			continue;
+		}
+		REQUIRE(ef != nullptr);
+		REQUIRE(ed != nullptr);
+		CHECK(ef - v.text.c_str() == v.end);
+		CHECK(ed - v.text.c_str() == v.end);
+		CHECK(bitsOf(f) == v.fbits);
+		CHECK(bitsOf(d) == v.dbits);
+		rangeF += v.fRange;
+		rangeD += v.dRange;
+		// the caller-visible result of FloatFromChars itself (the Lua, Apt and INI callers): the span of the number without white space and '+'
+		const char *b = v.text.c_str();
+		while (std::isspace((unsigned char)*b))
+		{
+			++b;
+		}
+		b += *b == '+';
+		const char *digitsAt = b + (*b == '-');
+		if (*digitsAt == 'i' || *digitsAt == 'I')
+		{
+			continue; // inf is read by scanRealText's own code, not by the parser
+		}
+		const char *e = v.text.c_str() + v.end;
+		float pf = 12345.0f;
+		double pd = 12345.0;
+		const std::from_chars_result rf = FloatFromChars(b, e, pf);
+		const std::from_chars_result rd = FloatFromChars(b, e, pd);
+		++direct;
+		CHECK(rf.ptr == e);
+		CHECK(rd.ptr == e);
+		CHECK((rf.ec == std::errc::result_out_of_range) == v.fRange);
+		CHECK((rd.ec == std::errc::result_out_of_range) == v.dRange);
+		if (!v.fRange)
+		{
+			// on a range error the standard requires the destination to stay unmodified, but implementations differ (libstdc++ keeps it, libc++ and
+			// fast_float store 0 or infinity): the exclusion accommodates that, and the caller-visible results (ec, end offset) are checked above
+			CHECK(bitsOf(pf) == v.fbits);
+		}
+		if (!v.dRange)
+		{
+			CHECK(bitsOf(pd) == v.dbits);
+		}
+	}
+	// the exact inventory of the checks that carried weight: a vector set that stopped exercising them would fail here
+	CHECK(noNumber == 29);
+	CHECK(rangeF == 430);
+	CHECK(rangeD == 26);
+	CHECK(direct == 1873);
 }

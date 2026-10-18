@@ -2,6 +2,7 @@
 // See GameLogic/Module/SpawnBehavior.h for the sources and what is inference.
 
 #include "GameLogic/Module/SpawnBehavior.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/GameCommon.h"
 #include "Common/Player.h"
@@ -630,4 +631,30 @@ void SpawnBehavior::registerClass(ModuleFactory &modules)
 std::vector<std::string> SpawnBehavior::stopLines()
 {
 	return { kStop };
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190: the crc's fields; retail's SpawnBehavior::xfer RW 0x863636 (1, 3) carries the same lists) ----
+void SpawnBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	xferMux(x);
+	x.xferInt(&m_oneShotCountdown);
+	x.xferInt(&m_framesToWait);
+	SnapshotXfer::each(x, m_replacementFrames, 4, [&](unsigned &f) { x.xferUnsignedInt(&f); });
+	SnapshotXfer::ids(x, m_spawnIDs);
+	x.xferBool(&m_active);
+	x.xferBool(&m_aggregateHealth);
+	x.xferBool(&m_initialized);
+	x.xferInt(&m_spawnCount);
+	x.xferInt(&m_selfTaskingSpawnCount);
+	x.xferInt(&m_initialBurstTimes);
+	std::uint32_t next = x.isLoading() ? 0 : (std::uint32_t)m_nextTemplateName;
+	x.xferUnsignedInt(&next);
+	if (next != 0 && next >= m_data->m_spawnTemplateNames.size())
+	{
+		throw XferException("a spawn behaviour's next template " + std::to_string(next) + " is not one of its " + std::to_string(m_data->m_spawnTemplateNames.size())
+			+ " SpawnTemplateName entries");
+	}
+	m_nextTemplateName = next;
 }

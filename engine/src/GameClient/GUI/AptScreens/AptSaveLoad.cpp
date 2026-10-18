@@ -92,7 +92,20 @@ bool sameName(const std::string &a, const std::string &b)
 AptSaveLoad::AptSaveLoad(WindowManager &windows, Shell &shell, ShellEnvironment &environment)
 	: AptScreen(windows, shell, "SaveLoad.apt", "AptSaveLoad"), m_env(environment)
 {
-	windows.setBackground(1); // lane FB7-1: the constructor shows the front-end background (RW 0x818BDC .. 0x818BDE)
+	// lane FB7-1: the constructor shows the front-end background (RW 0x818BDC .. 0x818BDE); lane SAVE-UI1: only when none is up (RW 0x818BBD .. 0x818BCE:
+	// + 0x2A4 = the window manager's + 0x31C is 0; over the quit menu its in-game background stays), and the dtor hides what it showed
+	m_showedBackground = windows.backgroundMode() == 0;
+	if (m_showedBackground)
+	{
+		windows.setBackground(1);
+	}
+	// lane SAVE-UI1 (OPTS-6's modal screen): the page covers the whole stage over a game: the levels under it (the Palantir, whose radar / portraits the HUD
+	// draws itself) are hidden and take no pointer input until it closes, every press is the page's and the world draws no decoration over it (the owner's
+	// capture: the HUD and the health bars over the save screen). NOT RETAIL (S-4982)
+	if (level() >= 0)
+	{
+		windows.setCapturesMouse(true, level());
+	}
 	registerCommand("AptSaveLoad::OnInitialized", [this](const std::string &) {
 		m_state = 0; // RW 0x816157 (the decomp's 0x00433DF1: state 1, which the update turns into the lists enabled and state 0)
 		populate();
@@ -131,6 +144,12 @@ AptSaveLoad::AptSaveLoad(WindowManager &windows, Shell &shell, ShellEnvironment 
 		else if (name == "AutoSaveList")
 		{
 			m_autoSaveList = w;
+			// lane CAMPSAVE-1: SaveLoad.apt places the saved-game pages' AutoSaveList after their GameList (sprite 118: frame 30 after 19); the lists are
+			// filled again with it, as the update's state 2 refills them (RW 0x6E04AD with both lists), so the campaign's auto-saves are listed
+			if (m_populated && m_gameType != 4)
+			{
+				m_populated = false;
+			}
 		}
 		else if (name == "FileNameTextEntry")
 		{
@@ -219,7 +238,40 @@ AptSaveLoad::AptSaveLoad(WindowManager &windows, Shell &shell, ShellEnvironment 
 	m_generation = m_env.saveLoad ? m_env.saveLoad->generation : 0;
 }
 
-AptSaveLoad::~AptSaveLoad() = default;
+AptSaveLoad::~AptSaveLoad()
+{
+	windows().setCapturesMouse(false); // lane SAVE-UI1: the levels the capture hid are shown again
+	// lane SAVE-UI1: RW 0x818501 .. 0x818512: + 0x2A4 -> RW 0x622C88(instant), the background the constructor showed goes with its animation (instant only
+	// after a state-6 confirmation of a kind this port does not have)
+	if (m_state == 10)
+	{
+		// lane SAVE-UI1: RW 0x8184BB .. 0x8184C1: a screen closed after its save (state 10) closes the quit menu with code 0 (RW 0x9216B1: back to the
+		// game); the host owns the quit menu, so it is asked as the menu's Resume asks
+		if (m_env.services)
+		{
+			m_env.services->request(ShellRequest{ ShellAction::QuitMenuReturn, std::string() });
+		}
+	}
+	if (m_showedBackground)
+	{
+		windows().hideBackground(false);
+	}
+}
+
+bool AptSaveLoad::inputMessage(std::uint32_t msg, WindowMsgData data1, WindowMsgData data2)
+{
+	// lane SAVE-UI1: the screen window's input procedure (vtable 0xC501D8 slot 1, RW 0x816627): GWM_CHAR of KEY_ESC is used; its release in state 0 closes
+	// the screen (RW 0x81608D -> RW 0x62215B, the shell pops it), as Cancel does. OpenBFME's own result / refusal box counts as a state (S-4003)
+	if (msg != GWM_CHAR || (data1 & 0xFFu) != KEY_ESC)
+	{
+		return false;
+	}
+	if ((data2 & KEY_STATE_UP) && m_state == 0 && !m_boxOpen)
+	{
+		windows().requestShellPop();
+	}
+	return true;
+}
 
 void AptSaveLoad::runInit()
 {
@@ -269,7 +321,7 @@ void AptSaveLoad::populate()
 {
 	prune();
 	// the replay page waits for both lists (RW 0x818D41 fills both); the saved-game list needs the GameList only (populateSaveGameListbox takes a null
-	// AutoSaveList: the movie's Load page has none)
+	// AutoSaveList) and is filled again when the AutoSaveList arrives
 	if (m_populated || !m_gameList || (m_gameType == 4 && !m_autoSaveList) || !m_env.saveLoad)
 	{
 		return;
@@ -279,6 +331,7 @@ void AptSaveLoad::populate()
 	m_gameListPaths.clear();
 	m_autoSavePaths.clear();
 	m_gameListSaves.clear();
+	m_autoSaveSaves.clear();
 	for (GameWindow *list : { m_gameList, m_autoSaveList })
 	{
 		if (!list)
@@ -323,9 +376,11 @@ void AptSaveLoad::populateReplays()
 
 void AptSaveLoad::populateSaves()
 {
-	// GameState::populateSaveGameListbox (RW 0x6E04AD; the decomp's GameStateAutoSave.cpp): the new-save row on the save page, then the files of the type
-	auto addRow = [this](const std::u16string &c0, const std::string &c0Utf8, const SaveLoadInfo::Save *s, Color colour, int index) {
-		const int row = GadgetListBoxAddEntryText(m_gameList, c0, colour, -1, 0);
+	// GameState::populateSaveGameListbox (RW 0x6E04AD; the decomp's GameStateAutoSave.cpp): the new-save row on the save page, then the files of the type;
+	// lane CAMPSAVE-1: an auto-save (SaveGameInfo IsAutoSaveOrNot == 1) goes to the AutoSaveList, and is left out when the page has none ("if (!list)
+	// continue")
+	auto addRow = [this](GameWindow *list, const std::u16string &c0, const std::string &c0Utf8, const SaveLoadInfo::Save *s, Color colour, int index) {
+		const int row = GadgetListBoxAddEntryText(list, c0, colour, -1, 0);
 		std::string c1, c2, c3;
 		if (s)
 		{
@@ -333,19 +388,20 @@ void AptSaveLoad::populateSaves()
 			c2 = s->timeUtf8;
 			c3 = s->dateUtf8;
 		}
-		GadgetListBoxAddEntryText(m_gameList, toU16(c1), colour, row, 1);
-		GadgetListBoxAddEntryText(m_gameList, toU16(c2), colour, row, 2);
-		GadgetListBoxAddEntryText(m_gameList, toU16(c3), colour, row, 3);
-		m_gameListSaves.push_back(index);
-		m_gameListPaths.push_back(s ? s->path : std::string());
+		GadgetListBoxAddEntryText(list, toU16(c1), colour, row, 1);
+		GadgetListBoxAddEntryText(list, toU16(c2), colour, row, 2);
+		GadgetListBoxAddEntryText(list, toU16(c3), colour, row, 3);
+		const bool autoList = list == m_autoSaveList;
+		(autoList ? m_autoSaveSaves : m_gameListSaves).push_back(index);
+		(autoList ? m_autoSavePaths : m_gameListPaths).push_back(s ? s->path : std::string());
 		char hex[16];
 		std::snprintf(hex, sizeof(hex), "%08X", colour);
-		m_rows.push_back("GameList|" + c0Utf8 + "|" + c1 + "|" + c2 + "|" + c3 + "|" + hex);
+		m_rows.push_back(std::string(autoList ? "AutoSaveList" : "GameList") + "|" + c0Utf8 + "|" + c1 + "|" + c2 + "|" + c3 + "|" + hex);
 	};
 	if (m_env.saveLoad->mode == 3)
 	{
 		const std::u16string newSave = text("GUI:NewSaveGame");
-		addRow(newSave, loadScreenU16ToUtf8(newSave), nullptr, kNewSave, -1);
+		addRow(m_gameList, newSave, loadScreenU16ToUtf8(newSave), nullptr, kNewSave, -1);
 	}
 	const std::vector<SaveLoadInfo::Save> &saves = m_env.saveLoad->saves;
 	for (size_t i = 0; i < saves.size(); ++i)
@@ -355,15 +411,20 @@ void AptSaveLoad::populateSaves()
 		{
 			continue;
 		}
+		GameWindow *list = s.autoSave ? m_autoSaveList : m_gameList;
+		if (!list)
+		{
+			continue;
+		}
 		Color colour = s.gameKind == 1 ? kCampaignSave : kCompatible;
 		if (!s.loadable || s.retailImport)
 		{
 			colour = kIncompatible; // OpenBFME: a save this build cannot load, a retail save (import is SAVE-7)
 		}
 		const std::string map = mapName(s);
-		addRow(toU16(map), map, &s, colour, (int)i);
+		addRow(list, toU16(map), map, &s, colour, (int)i);
 	}
-	// the GameList's first row selected (OpenBFME saves no auto-saves: the AutoSaveList stays empty, S-4003)
+	// the GameList's first row selected, else the AutoSaveList's (RW 0x6E04AD's end)
 	if (GadgetListBoxGetNumEntries(m_gameList) > 0)
 	{
 		GadgetListBoxSetSelected(m_gameList, 0);
@@ -372,6 +433,13 @@ void AptSaveLoad::populateSaves()
 			GadgetListBoxSetSelected(m_autoSaveList, -1);
 		}
 		m_selectedList = m_gameList;
+		m_selectedRow = 0;
+	}
+	else if (m_autoSaveList && GadgetListBoxGetNumEntries(m_autoSaveList) > 0)
+	{
+		GadgetListBoxSetSelected(m_gameList, -1);
+		GadgetListBoxSetSelected(m_autoSaveList, 0);
+		m_selectedList = m_autoSaveList;
 		m_selectedRow = 0;
 	}
 	setDefaultFileName();
@@ -402,17 +470,26 @@ std::string AptSaveLoad::mapName(const SaveLoadInfo::Save &save) const
 
 int AptSaveLoad::selectedSave()
 {
+	// RW 0x8162E5: the GameList's selection, else the AutoSaveList's (lane CAMPSAVE-1: the campaign's auto-saves)
 	prune();
 	int row = -1;
 	if (m_gameList)
 	{
 		GadgetListBoxGetSelected(m_gameList, &row);
+		if (row >= 0)
+		{
+			return row < (int)m_gameListSaves.size() ? m_gameListSaves[(size_t)row] : -1;
+		}
 	}
-	if (row < 0 || row >= (int)m_gameListSaves.size())
+	if (m_autoSaveList)
 	{
-		return -1;
+		GadgetListBoxGetSelected(m_autoSaveList, &row);
+		if (row >= 0 && row < (int)m_autoSaveSaves.size())
+		{
+			return m_autoSaveSaves[(size_t)row];
+		}
 	}
-	return m_gameListSaves[(size_t)row];
+	return -1;
 }
 
 void AptSaveLoad::setDefaultFileName()
@@ -503,13 +580,17 @@ void AptSaveLoad::showBox(const std::u16string &title, const std::u16string &bod
 	enableLists(false);
 	m_box->show(AptMessageBox::TYPE_OK, title, body, [this](int) {
 		m_boxOpen = false;
-		m_state = 0;
-		refreshButtons();
 		if (m_closeAfterBox)
 		{
-			windows().requestShellPop(); // retail state 9 after the save: the screen goes
+			// retail state 9 after the save: the box's Ok sets state 10 and the screen goes (RW 0x816847 .. 0x816883); lane SAVE-UI1: the dtor then
+			// closes the quit menu (RW 0x8184C0) and the game goes on
+			m_state = 10;
+			windows().requestShellPop();
+			return;
 		}
-		else if (!m_boxButton.empty())
+		m_state = 0;
+		refreshButtons();
+		if (!m_boxButton.empty())
 		{
 			revealButton(m_boxButton);
 		}

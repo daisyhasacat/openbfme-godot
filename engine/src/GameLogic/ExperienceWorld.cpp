@@ -9,9 +9,11 @@
 #include "Common/GameCommon.h"
 #include "Common/Player.h"
 #include "Common/StateHash.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Economy.h"
 #include "GameLogic/ExperienceLevels.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Module/SlavedUpdate.h"
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
@@ -194,6 +196,12 @@ bool ExperienceWorld::awardSkillPointsForDamage(Object &attacker, Object &victim
 	{
 		return false;
 	}
+	// RW 0x8A4ED8: query the attacker's own slaved interface, not its horde's.
+	const SlavedUpdateInterface *slaved = SlavedUpdateInterface::of(attacker);
+	if (slaved && slaved->dieOnMastersDeath())
+	{
+		return false;
+	}
 	if (victim.getControllingPlayer() == player) // RW 0x6AB071
 	{
 		return false;
@@ -249,8 +257,6 @@ std::vector<std::string> ExperienceWorld::report() const
 		std::to_string(c.levelUpOclNotCreated) + " LevelUpOCL not created, " + std::to_string(c.informUpdateModuleNotRun) +
 		" InformUpdateModule calls (BannerCarrierUpdate RW 0x89A468), " + std::to_string(c.emotionsNotRun) + " EmotionType emotions (RW 0x68F37F), " +
 		"the selection decal (client, RW 0x672C32); " + std::to_string(c.createAHeroRanks) + " Create-A-Hero ranks built their command sets (RW 0x809FFB, lane HERO-2)");
-	out.push_back("[S-635] experience details not identified: the attacker's skill point veto (RW 0x8A4ED8: module slot 0x68, vslot 0x20) is not evaluated; the experience "
-		"listener module of a kill (RW 0x88305B: slot 0xA4) is ShareExperienceBehavior (lane HERO-2; " + std::to_string(c.listenerCalls) + " shares)");
 	return out;
 }
 
@@ -264,4 +270,26 @@ void ExperienceWorld::crc(StateHasher &hasher) const
 		hasher.addBool(p.feedback);
 	}
 	hasher.addBool(m_suspended);
+}
+
+// ---- lane SAVE-4b: obfme:Experience (OpenBFME native, S-4190): TheDelayedExperienceLevelGrantSystem's queue (each grant's object, its level by name, the
+// feedback flag) and the suspension switch. The counters are the report's, not state.
+void ExperienceWorld::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SnapshotXfer::each(x, m_pending, 6, [&](Pending &p) { // id, level name, flag
+		x.xferObjectID(&p.id);
+		std::string level = (!x.isLoading() && p.level) ? p.level->m_name : std::string();
+		x.xferAsciiString(&level);
+		if (x.isLoading())
+		{
+			p.level = TheExperienceLevelSystem ? TheExperienceLevelSystem->findLevel(level) : nullptr;
+			if (!p.level)
+			{
+				throw XferException("the snapshot's delayed level grant names the experience level '" + level + "', which this game's data lacks");
+			}
+		}
+		x.xferBool(&p.feedback);
+	});
+	x.xferBool(&m_suspended);
 }

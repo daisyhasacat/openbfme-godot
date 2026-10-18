@@ -90,7 +90,8 @@ public:
 		VOICE_EVENT_FULLY_CREATED = 0x7E2,  ///< VoiceFullyCreatedFrom<producer template>, else VoiceFullyCreated
 		VOICE_EVENT_ENTER_STATE_ATTACK = 0x7E6,
 		VOICE_EVENT_ENTER_STATE_MOVE = 0x7E7,
-		VOICE_EVENT_ENTER_STATE_ATTACKMOVE = 0x7E8
+		VOICE_EVENT_ENTER_STATE_ATTACKMOVE = 0x7E8,
+		VOICE_EVENT_BLOODTHIRSTY = 0x7E9
 	};
 
 	// one voice slot: RW's {Eva event id, audio event}
@@ -255,4 +256,3 @@ public:
 
 // The HUD's voice: what HudInput's logic-message observer calls (the message's target object and location become the Info) with the client selection.
 void PlayUnitVoiceForMessage(UnitVoiceResponse &voice, const std::vector<ObjectID> &selection, const GameMessage &msg);
-

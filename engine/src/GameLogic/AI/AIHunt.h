@@ -61,6 +61,7 @@ public:
 	// RW slot 9 = RW 0x740ECD (the attack state's): the hunt machine's current state is not idle
 	bool isActive() const override;
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override; // lane SAVE-4c: the scan frame and the hunt machine (made again by its constructor, then loaded)
 
 	AIStateMachine *huntMachine() const { return m_huntMachine.get(); }
 	unsigned nextEnemyScanFrame() const { return m_nextEnemyScanTime; }
@@ -71,6 +72,7 @@ public:
 
 private:
 	Object *findVictim(Object &owner);
+	std::unique_ptr<AIStateMachine> makeHuntMachine();
 	std::unique_ptr<AIStateMachine> m_huntMachine; ///< + 0x20
 	unsigned m_nextEnemyScanTime = 0;               ///< + 0x24
 };

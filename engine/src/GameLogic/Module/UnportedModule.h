@@ -3,7 +3,8 @@
 // Unported modules (lane LOGIC-1, stop S-140). The binary registers 329 module classes; the live object layer ports the few the
 // creation path needs. Every other class is created as one of these instances so an object of any template is complete: its module
 // list has the same length and order as retail's, the scheduler holds its update module, the interface masks are the registry's.
-// An unported module does NOTHING, says so (Module::isUnported), is counted by class in ModuleFactory::unportedCreated and in
+// SpawnUnitBehavior exposes its S-207 template offer but retains this unported update and reporting.
+// An unported update does NOTHING, says so (Module::isUnported), is counted by class in ModuleFactory::unportedCreated and in
 // GameLogic::report(), and reaches every runtime report as a stop. It is never a silent default:
 //   * an unported UPDATE class is registered with the scheduler like a retail one but sleeps forever from creation (its next call
 //     frame is UPDATE_SLEEP_FOREVER), so registerObject files it in the sleeping vector; update() counts a call if anything wakes it;
@@ -24,6 +25,7 @@
 class UnportedBehaviorModule : public BehaviorModule
 {
 public:
+	OBFME_MODULE_XFER(UnportedBehaviorModule) // lane SAVE-4b
 	UnportedBehaviorModule(Thing *thing, const ModuleData *data, int interfaceMask)
 		: BehaviorModule(thing, data)
 		, m_mask(interfaceMask)
@@ -39,6 +41,7 @@ private:
 class UnportedUpdateModule : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(UnportedUpdateModule) // lane SAVE-4b
 	UnportedUpdateModule(Thing *thing, const ModuleData *data, int interfaceMask);
 	bool isUnported() const override { return true; }
 	int interfaceMask() const { return m_mask; }

@@ -10,6 +10,7 @@
 #include "GameClient/MapCache.h"
 
 #include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/classes/ref.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
@@ -50,9 +51,14 @@ public:
 	// lane RELEASE-1: the same mount from two folders the player picked on the first-run screen (nothing is read from the
 	// environment or the config file; remembering the pick is InstallSetup.remember's job once this succeeded).
 	Dictionary mount_retail_paths(const String &rotwk, const String &bfme2);
+	// Build a presentation-only source from the verified BFME2 install of this
+	// normal RotWK mount. The returned source never becomes a GameWorld source.
+	Ref<RetailFileSystem> create_bfme2_shell();
 
 	String content_signature() const;
 	bool is_mounted() const { return m_mounted; }
+	bool is_shell_source() const { return m_shellSource; }
+	String install_root() const;
 	bool file_exists(const String &path) const;
 	PackedByteArray read_file(const String &path);
 	String get_archive_for_file(const String &path) const;
@@ -60,7 +66,7 @@ public:
 
 	// Engine-side access for other device classes.
 	ArchiveFileSystem *archive_fs() const;
-	// Presentation-only archive view. Gameplay always reads archive_fs().
+	// Compatibility alias for archive_fs(); shell styles pass a separate mounted presentation source.
 	ArchiveFileSystem *menu_archive_fs() const;
 	bool readBytes(const std::string &path, std::vector<uint8_t> &out, std::string *error);
 	bool existsNative(const std::string &path) const;
@@ -85,10 +91,12 @@ protected:
 
 private:
 	Dictionary mountFrom(const std::string &rotwkRoot, const std::string &bfme2Root, PackedStringArray errors);
+	Dictionary mountBfme2Shell(const std::string &bfme2Root);
 
 	std::unique_ptr<Win32BIGFileSystem> m_fs;
-	std::unique_ptr<Win32BIGFileSystem> m_menuFs;
 	bool m_mounted = false;
+	bool m_shellSource = false;
+	std::string m_installRoot;
 	bool m_bfme1 = false;
 	std::string m_bfme1Root;
 	String m_lastError;

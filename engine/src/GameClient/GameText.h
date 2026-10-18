@@ -41,6 +41,7 @@ public:
 
 	// Case-insensitive lookup; the text is UTF-8.
 	bool lookup(const std::string &label, std::string &text) const;
+	void setOverride(const std::string &label, const std::string &text);
 	std::size_t size() const { return m_strings.size(); }
 	const std::vector<std::string> &duplicateLabels() const { return m_duplicates; }
 

@@ -76,6 +76,7 @@ PlayerStatusInfo makePlayerStatusInfo(const PlayerStatusInput &in, const Skirmis
 		const PlayerStatusSlotState &live = in.slots[i];
 		PlayerStatusRow row;
 		row.slot = i;
+		row.platform = slot.isHuman() ? in.platforms[i] : PlatformKind::None; // lane PLATFORMICON-1
 		row.fields[0] = loadScreenU16ToUtf8(slot.name); // RW 0x915C51: GameSlot + 0x30
 		// RW 0x80147D getApparentPlayerTemplateDisplayName
 		const bool ally = isSlotLocalAlly(game, i, in.localSlot);

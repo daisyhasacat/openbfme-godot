@@ -14,6 +14,7 @@ const GameOptions := preload("res://scripts/core/game_options.gd")
 
 const CONFIG := "install-paths.cfg"           # InstallLocator::remember (GodotRelease.cpp InstallSetup::config_path)
 const MARKER := "downloaded-installs.cfg"     # InstallLocator::kDownloadedMarkerName
+const BFME1_MARKER := "downloaded-bfme1.cfg"  # community PR #36: the optional BFME1 download's handoff (aio_install.gd BFME1_MARKER)
 
 
 static func is_windows() -> bool:
@@ -119,6 +120,8 @@ static func show_in_file_manager(path: String) -> String:
 	var data := OS.get_user_data_dir().replace("\\", "/").simplify_path()
 	var g := game_folders()
 	var games := [String(g.rotwk).replace("\\", "/").simplify_path(), String(g.bfme2).replace("\\", "/").simplify_path()] if g.found else []
+	if bfme1_folder() != "":
+		games.append(bfme1_folder().replace("\\", "/").simplify_path())  # community PR #36: the BFME1 folder the Game files screen lists
 	if not (p == data or p.begins_with(data + "/") or p in games):
 		return "not a folder the launcher shows"
 	if not DirAccess.dir_exists_absolute(p):
@@ -137,7 +140,7 @@ static func default_games_dir() -> String:
 ## remembered/downloaded installs; also reuse the AIO launcher's macOS install.
 static func bfme1_folder(user_dir: String = GameOptions.game_user_dir()) -> String:
 	var candidates := [OS.get_environment("BFME1_INSTALL")]
-	for name in [CONFIG, MARKER]:
+	for name in [CONFIG, MARKER, BFME1_MARKER]:
 		candidates.append(read_cfg(user_dir.path_join(name)).get("BFME1_INSTALL", ""))
 	candidates.append(default_games_dir().path_join("BFME1"))
 	if OS.get_name() == "macOS":

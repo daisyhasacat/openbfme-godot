@@ -32,6 +32,7 @@
 
 class Object;
 class StateHasher;
+class Xfer;
 class WeaponTemplateSet;
 
 // RotWK's WeaponChoiceCriteria (the names WeaponNames.cpp lists for DefaultWeaponChoiceCritera, + 5 = the template set's default, RW 0x6C8A57)
@@ -220,6 +221,7 @@ public:
 
 	// the OpenBFME state hash: the set flags, the slot, the lock and every weapon's timing state, the tracker
 	void crc(StateHasher &hasher) const;
+	void xfer(Xfer &x); // lane SAVE-4b (OpenBFME native, S-4190)
 
 private:
 	void applySlotCondition(int slot, int cond);

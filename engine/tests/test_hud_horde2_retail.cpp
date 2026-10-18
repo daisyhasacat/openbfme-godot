@@ -28,6 +28,7 @@
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
+#include "GameNetwork/NetPacket.h"
 
 #include "PathfindTestUtil.h"
 #include "RetailTestMount.h"
@@ -433,7 +434,7 @@ TEST_CASE("horde2 retail: the formation swap gives the horde object the alternat
 	REQUIRE(hc->canToggleFormation());
 	GameLogicDispatch dispatch(a.logic);
 	HordeCommands::registerHandlers(dispatch);
-	GameMessage msg(MSG_HORDE_TOGGLE_FORMATION, 0);
+	GameMessage msg(MSG_HORDE_TOGGLE_FORMATION, a.player(0)->getPlayerIndex());
 	msg.appendObjectIDArgument(id);
 	dispatch.dispatch(msg);
 	REQUIRE(a.logic.findObjectByID(id) == h); // the same object
@@ -466,6 +467,68 @@ TEST_CASE("horde2 retail: the formation swap gives the horde object the alternat
 	for (const Object *m : *back->getContainedItemsList())
 	{
 		CHECK(m->testModelCondition(CombatNames::modelCondition("PRIMARY_FORMATION")));
+	}
+}
+
+// review DEVPORT-7e (Sol #1): a formation command names its horde in argument 0, and the network stamps only the sender's player (Network.cpp: the slot's
+// player index). A message of player 1 naming player 0's horde, through the packet codec, leaves that horde, its contain, its stance and the state hash
+// untouched, for both message types; the owner's identical message then swaps it (the control case: the message itself is valid)
+TEST_CASE("horde2 retail: a forged MSG_HORDE_TOGGLE_FORMATION / MSG_HORDE_SET_FORMATION naming another player's horde is refused at dispatch")
+{
+	if (!haveWorld())
+	{
+		return;
+	}
+	for (const GameMessageType type : { MSG_HORDE_TOGGLE_FORMATION, MSG_HORDE_SET_FORMATION })
+	{
+		CAPTURE((int)type);
+		Arena a(shared(), "FactionMen", "FactionMordor");
+		Object *h = a.place("GondorTowerShieldGuardHorde", 0, 600.0f, 600.0f, 0.0f);
+		for (int i = 0; i < 20; ++i)
+		{
+			a.logic.runLogicFrame();
+		}
+		HordeContain *hc = hordeContainOf(h);
+		REQUIRE(hc);
+		REQUIRE(hc->canToggleFormation());
+		REQUIRE_FALSE(hc->hordeData().m_isPorcupineFormation);
+		const ThingTemplate *alternate = hc->alternateFormationTemplate();
+		REQUIRE(alternate);
+		StancesBehavior *st = StancesBehavior::of(*h);
+		REQUIRE(st);
+		REQUIRE(st->getStance() == STANCE_BATTLE);
+		GameLogicDispatch dispatch(a.logic);
+		HordeCommands::registerHandlers(dispatch);
+		StancesBehavior::registerHandlers(dispatch);
+		auto viaNetwork = [&](int playerIndex) {
+			GameMessage m(type, playerIndex);
+			m.appendObjectIDArgument(h->getID());
+			if (type == MSG_HORDE_SET_FORMATION)
+			{
+				m.appendIntegerArgument((int)alternate->getTemplateID());
+			}
+			NetByteWriter writer;
+			std::string error;
+			REQUIRE_MESSAGE(NetPacket::writeGameMessage(writer, m, &error), error);
+			NetByteReader reader(writer.data());
+			std::unique_ptr<GameMessage> decoded = NetPacket::readGameMessage(reader, &error);
+			REQUIRE_MESSAGE(decoded, error);
+			decoded->friend_setPlayerIndex(playerIndex); // what Network::file does with the sender's slot
+			return *decoded;
+		};
+		REQUIRE(a.player(0)->getPlayerIndex() != a.player(1)->getPlayerIndex());
+		REQUIRE(h->getControllingPlayer() == a.player(0));
+		const std::uint32_t before = a.logic.computeStateHash();
+		dispatch.dispatch(viaNetwork(a.player(1)->getPlayerIndex()));
+		CHECK(hordeContainOf(h) == hc);
+		CHECK_FALSE(hordeContainOf(h)->hordeData().m_isPorcupineFormation);
+		CHECK(st->getStance() == STANCE_BATTLE);
+		CHECK(a.logic.computeStateHash() == before);
+		CHECK(dispatch.unhandled().count((int)type) == 0); // refused as a hostile command, not as a malformed one
+		dispatch.dispatch(viaNetwork(a.player(0)->getPlayerIndex()));
+		REQUIRE(hordeContainOf(h) != hc);
+		CHECK(hordeContainOf(h)->hordeData().m_isPorcupineFormation);
+		CHECK(st->getStance() == STANCE_PORCUPINE);
 	}
 }
 
@@ -658,4 +721,219 @@ TEST_CASE("horde2 retail: stances: the porcupine formation sets the Porcupine st
 	CHECK_FALSE(hp->hasList("PikeHordeStancePorcupine"));
 	CHECK(hp->hasList(pike->entries[STANCE_AGGRESSIVE].attributeModifier));
 	CHECK(back->meleeBehaviorData() == pike->entries[STANCE_AGGRESSIVE].meleeBehavior.get());
+}
+
+// ---- lane BACKLOG-8: the rest of HordeContain::_updatePosition (RW 0x87468B) and the wall scaling member position (RW 0x86E214) ----
+TEST_CASE("backlog8 retail: a porcupine formation's members take PORCUPINE once they stand on their slots (RW 0x875121) and lose it when the formation is "
+		  "toggled back (RW 0x8762A4)")
+{
+	if (!haveWorld())
+	{
+		return;
+	}
+	Arena a(shared(), "FactionMen", "FactionMordor");
+	Object *h = a.place("GondorTowerShieldGuardHorde", 0, 600.0f, 600.0f, 0.0f);
+	const int porcupine = AIUpdateInterface::modelConditionBit("PORCUPINE");
+	auto count = [&](Object *horde) {
+		int n = 0;
+		for (ObjectID id : a.memberIds(horde))
+		{
+			const Object *m = a.logic.findObjectByID(id);
+			n += (m && m->testModelCondition(porcupine)) ? 1 : 0;
+		}
+		return n;
+	};
+	for (int i = 0; i < 40; ++i)
+	{
+		a.logic.runLogicFrame();
+	}
+	const int members = (int)a.memberIds(h).size();
+	REQUIRE(members == 15);
+	CHECK(count(h) == 0); // the line formation: no member is in the porcupine pose
+	GameLogicDispatch dispatch(a.logic);
+	HordeCommands::registerHandlers(dispatch);
+	StancesBehavior::registerHandlers(dispatch);
+	GameMessage toggle(MSG_HORDE_TOGGLE_FORMATION, a.player(0)->getPlayerIndex());
+	toggle.appendObjectIDArgument(h->getID());
+	dispatch.dispatch(toggle);
+	REQUIRE(hordeContainOf(h)->hordeData().m_isPorcupineFormation);
+	CHECK(count(h) == 0); // nobody stands on a porcupine slot yet
+	for (int i = 0; i < 200; ++i)
+	{
+		a.logic.runLogicFrame();
+	}
+	CHECK(count(h) == members); // every member reached its slot and took the pose
+	dispatch.dispatch(toggle);
+	REQUIRE_FALSE(hordeContainOf(h)->hordeData().m_isPorcupineFormation);
+	CHECK(count(h) == 0);
+	CHECK_FALSE(h->testModelCondition(porcupine));
+	for (int i = 0; i < 200; ++i)
+	{
+		a.logic.runLogicFrame();
+	}
+	CHECK(count(h) == 0); // the line formation's slots give it to nobody
+}
+
+TEST_CASE("backlog8 retail: a goblin horde that keeps a wall to scale (RW 0x86C61E / 0x86BCF9) lifts its members up the wall's face to its top "
+		  "(RW 0x86E214, the hub's RW 0x8747AE); without the wall kept nobody leaves the ground")
+{
+	if (!haveWorld())
+	{
+		return;
+	}
+	const int climbing = AIUpdateInterface::modelConditionBit("CLIMBING");
+	const int rappelling = AIUpdateInterface::modelConditionBit("RAPPELLING");
+	const int scalingWall = AIUpdateInterface::modelConditionBit("SCALING_WALL");
+	const int scalingWallHorde = AIUpdateInterface::modelConditionBit("SCALING_WALL_HORDE");
+	struct Run
+	{
+		float highest = 0.0f, endHighest = 0.0f;
+		int climbers = 0, rappellers = 0, marked = 0;
+		bool keptAtEnd = false, hordeCondition = false, refusedTurned = false, refusedOther = false, stop = false;
+		float reach = 0.0f;
+	};
+	auto run = [&](bool keepWall) {
+		Run r;
+		Arena a(shared(), "FactionWild", "FactionMen");
+		Object *h = a.place("GoblinFighterHorde", 0, 600.0f, 600.0f, 0.0f);
+		Object *other = a.place("GondorFighterHorde", 1, 900.0f, 900.0f, 0.0f);
+		Object *wall = a.place("DolGoldurWallSegmentSmall", 1, 700.0f, 600.0f, 0.0f);
+		a.ai->addObjectToPathfindMap(*wall);
+		for (int i = 0; i < 40; ++i)
+		{
+			a.logic.runLogicFrame();
+		}
+		const PathfindCell *cell = a.ai->pathfinder().getCell(LAYER_GROUND, wall->getPosition());
+		REQUIRE(cell != nullptr);
+		REQUIRE(cell->getType() == PathfindCell::CELL_OBSTACLE);
+		REQUIRE((ObjectID)cell->getObstacleID() == wall->getID());
+		HordeContain *hc = hordeContainOf(h);
+		REQUIRE(hc != nullptr);
+		REQUIRE(h->getAIUpdateInterface()->curLocomotor()->getTemplate().m_scalesWalls);
+		CHECK_FALSE(hc->isScalingWall());
+		// who becomes the wall: not an object that is no SCALEABLE_WALL, not a wall the horde faces sideways (|dot| < 0.5)
+		hc->collideWithWall(other);
+		r.refusedOther = hc->wallToScale() == 0;
+		wall->setOrientation(1.5707964f);
+		hc->collideWithWall(wall);
+		r.refusedTurned = hc->wallToScale() == 0;
+		wall->setOrientation(0.0f);
+		if (keepWall)
+		{
+			hc->collideWithWall(wall);
+			REQUIRE(hc->wallToScale() == wall->getID());
+			REQUIRE(hc->isScalingWall());
+			r.hordeCondition = h->testModelCondition(scalingWall);
+		}
+		// the horde object is put behind the wall (it cannot cross it itself: S-4461) and its members back where they stood, so their slots lie across the wall
+		std::map<ObjectID, Coord3D> stood;
+		for (ObjectID id : a.memberIds(h))
+		{
+			stood[id] = *a.logic.findObjectByID(id)->getPosition();
+		}
+		const Coord3D beyond{ 800.0f, 600.0f, 0.0f };
+		h->setPosition(&beyond);
+		for (const auto &kv : stood)
+		{
+			a.logic.findObjectByID(kv.first)->setPosition(&kv.second);
+		}
+		std::map<ObjectID, int> seen;
+		for (int f = 0; f < 300; ++f)
+		{
+			if (keepWall)
+			{
+				hc->collideWithWall(wall); // what the collision pass does every frame the horde touches the wall (RW 0x86D170 lets go of it after five idle passes)
+			}
+			a.logic.runLogicFrame();
+			for (ObjectID id : a.memberIds(h))
+			{
+				const Object *m = a.logic.findObjectByID(id);
+				if (!m)
+				{
+					continue;
+				}
+				r.highest = m->getPosition()->z > r.highest ? m->getPosition()->z : r.highest;
+				seen[id] |= (m->testModelCondition(climbing) ? 1 : 0) | (m->testModelCondition(rappelling) ? 2 : 0) | (m->testModelCondition(scalingWallHorde) ? 4 : 0);
+			}
+		}
+		for (const auto &kv : seen)
+		{
+			r.climbers += (kv.second & 1) ? 1 : 0;
+			r.rappellers += (kv.second & 2) ? 1 : 0;
+			r.marked += (kv.second & 4) ? 1 : 0;
+		}
+		for (ObjectID id : a.memberIds(h))
+		{
+			const Object *m = a.logic.findObjectByID(id);
+			r.endHighest = (m && m->getPosition()->z > r.endHighest) ? m->getPosition()->z : r.endHighest;
+		}
+		r.keptAtEnd = hc->wallToScale() != 0;
+		r.reach = hc->scalingReach();
+		for (const std::string &l : a.logic.report().stops)
+		{
+			r.stop = r.stop || l.rfind("[S-4461]", 0) == 0;
+		}
+		return r;
+	};
+	const Run control = run(false);
+	const Run scaled = run(true);
+	std::printf("  info: wall scaling: control highest %.3f climbers %d; scaled highest %.3f climbers %d rappellers %d marked %d kept %d reach %.3f\n", control.highest,
+		control.climbers, scaled.highest, scaled.climbers, scaled.rappellers, scaled.marked, scaled.keptAtEnd ? 1 : 0, scaled.reach);
+	CHECK(control.refusedOther);
+	CHECK(control.refusedTurned);
+	CHECK(control.highest == 0.0f); // nobody leaves the ground while the horde keeps no wall
+	CHECK(control.climbers == 0);
+	CHECK(control.rappellers == 0);
+	CHECK_FALSE(control.stop);
+	CHECK(scaled.hordeCondition);
+	CHECK(scaled.stop);
+	CHECK(scaled.highest == 40.0f); // the wall's top: its base (0) + GeometryHeight 40, never above (RW 0x86E214's clamp)
+	CHECK(scaled.climbers == 5); // the five of the twenty whose way to their slots crosses the wall's cells; the others walk past it on the ground
+	CHECK(scaled.marked == 5);   // every member that climbed got SCALING_WALL_HORDE with CLIMBING
+	CHECK(scaled.rappellers == 5); // and came down the far side with RAPPELLING
+	CHECK(scaled.endHighest == 0.0f); // everybody is back on the ground at the end
+	CHECK(scaled.reach == 90.0f); // H + 0x2EC: the largest distance to a slot, capped (RW 0x86BC41)
+}
+
+TEST_CASE("backlog8 retail: the FLOATING_Z horde members of the retail data: the Mumakil's Haradrim archers (speed 0) never reach the hub's near arm; the "
+		  "Oathbreakers' AODHordeContain is unbound, so their horde has no contain and no members")
+{
+	if (!haveWorld())
+	{
+		return;
+	}
+	const std::map<std::string, size_t> &unported = shared().world->modules().unportedCreated();
+	const size_t aodBefore = unported.count("AODHordeContain") ? unported.at("AODHordeContain") : 0;
+	Arena a(shared(), "FactionMordor", "FactionMen");
+	Object *mumak = a.place("MordorMumakil", 0, 600.0f, 600.0f, 0.0f);
+	Object *dead = a.place("RohanOathbreakerHorde", 1, 900.0f, 600.0f, 0.0f);
+	for (int i = 0; i < 60; ++i)
+	{
+		a.logic.runLogicFrame();
+	}
+	// AODHordeContain (ArmyOfTheDeadLocomotor members, FLOATING_Z) has no port: the factory counts it (S-140) and the object gets no contain module, so the
+	// Oathbreakers are a horde object without members: the member pass, and with it the height rule, never runs for them
+	CHECK(unported.at("AODHordeContain") == aodBefore + 1);
+	CHECK(dead->getContain() == nullptr);
+	CHECK(hordeContainOf(dead) == nullptr);
+	// the archers on the Mumakil: a HordeContain inside the Mumakil's HordeTransportContain; FloatingCatapultLocomotor (FLOATING_Z) with speed 0, so the
+	// snap threshold min(acceleration, 0.2 * speed) is 0 and no distance is below it: the near arm (where the FLOATING_Z rule lives) is never taken
+	const ContainModuleInterface *howdah = mumak->getContain();
+	REQUIRE(howdah != nullptr);
+	REQUIRE(howdah->getContainCount() == 1);
+	Object *archers = const_cast<Object *>(howdah->getContainedItemsList()->front());
+	CHECK(archers->getTemplate()->getName() == "MordorHaradrimArcherHordeOnMumakil");
+	HordeContain *hc = hordeContainOf(archers);
+	REQUIRE(hc != nullptr);
+	REQUIRE(a.memberIds(archers).size() == 6);
+	for (ObjectID id : a.memberIds(archers))
+	{
+		const Object *m = a.logic.findObjectByID(id);
+		AIUpdateInterface *ai = const_cast<Object *>(m)->getAIUpdateInterface();
+		REQUIRE(ai->curLocomotor() != nullptr);
+		CHECK(ai->curLocomotor()->getTemplate().m_zAxisBehavior == Z_FLOATING_Z);
+		CHECK(ai->curLocomotor()->getMaxSpeedForCondition(ai->locomotorHost()) == 0.0f);
+	}
+	CHECK(hc->passStats().snaps == 0);
+	CHECK(hc->passStats().walks == 0);
 }

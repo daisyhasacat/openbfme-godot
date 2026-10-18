@@ -34,7 +34,8 @@ public:
 	// the loader that reads "Bases\<name>\<name>.bse" from the mounted archives (lowercase file name as in the archives); `fs` must outlive the store
 	static Loader fileSystemLoader(ArchiveFileSystem &fs);
 	// parses one .bse (a map file) and returns its CastleTemplates chunk(s); false + *error when the file does not parse or has no chunk named `name`
-	static bool parseBse(const std::vector<std::uint8_t> &bytes, const std::string &sourceName, const std::string &name, CastleTemplate &out, std::string *error);
+	// bfme1 (community PR #36): the bytes come from BFME1 data (MapReadOptions::bfme1)
+	static bool parseBse(const std::vector<std::uint8_t> &bytes, const std::string &sourceName, const std::string &name, CastleTemplate &out, std::string *error, bool bfme1 = false);
 
 	// the template, loaded on first use; null + *error when it cannot be had
 	const CastleTemplate *find(const std::string &name, std::string *error);

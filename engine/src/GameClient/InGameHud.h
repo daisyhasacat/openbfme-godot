@@ -34,6 +34,7 @@
 #include "GameClient/SelectionDecals.h"
 #include "GameClient/Radar.h"
 #include "GameClient/RadiusCursor.h"
+#include "GameClient/TerrainResourceFeedback.h"
 #include "GameClient/UnitVoiceResponse.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
 #include "GameLogic/GameLogicDispatch.h"
@@ -67,6 +68,7 @@ public:
 		// table (AptScreenFactories: "Palantir.apt" -> AptPalantir). The HUD then finds that screen instead of making its own, and the owner steps the window manager.
 		WindowManager *windows = nullptr;
 		Shell *shell = nullptr;
+		std::function<int()> endGameTimer; ///< RW 0x80786B; the host owns EndGameController, absent before a game starts.
 	};
 	explicit InGameHud(Config config);
 	// the retail world's context (its command store, locomotor / weapon stores, audio validator) for a scope: every entry point below holds one, because the control bar and the
@@ -89,6 +91,7 @@ public:
 	void setWindowSize(int width, int height);
 	void updateRadarEvents(); ///< lane RADAR-1
 	int windowWidth() const { return m_windowW; } ///< lane RADAR-1: TheDisplay's width (the view box band, RW 0x503CDA)
+	int windowHeight() const { return m_windowH; } ///< lane OWNERFIX-2: the placement text's clamp (updateStringPos)
 
 	// ---- raw input in window pixels; the HUD decides whether the pointer is over its own movie (then the movie gets the event) or over the world ----
 	void mouseMove(int x, int y, int keyState = 0);
@@ -99,8 +102,17 @@ public:
 	// true when the pointer is over the Palantir (a button of the movie, the radar or the frame): the world does not get that click
 	bool isOverGui(int x, int y);
 	bool commandSlotAt(int x, int y, bool &arc, int &slot); // the Palantir command button content under the window point: its arc flag and slot (tests)
+	// lane OPTS-6: a shell screen covers the whole stage over the game (Options.apt: WindowManager::capturesMouse): the world's decorations (health bars,
+	// veterancy marks, floating texts, the drag box) are not drawn over it (the owner, 2026-10-15: health bars on top of the settings panel)
+	bool menuCoversStage() const { return m_booted && m_wm && m_wm->capturesMouse(); }
+	// lane OPTS-6 (not retail): a menu is the input's top over the game (the quit menu and what it opens, Options, the tribute screen): the pointer reaches the
+	// menus' movies and gadgets only, never the world (no selection, order, drag, edge scroll, radar click or wheel zoom behind it); entering it cancels what
+	// the world held (HudInput::cancelHeld), the host releases the buttons it saw down first
+	void setModal(bool modal);
+	bool modal() const { return m_modal; }
 	// the radar picture's square in window pixels (the largest square inside the movie's RenderRadar clip, centred); false before the movie shows it
 	bool radarSquare(float out[4]);
+	void setBroadcastClean(bool clean) { m_broadcastClean = clean; }
 	// a click at a window pixel inside the radar square: the left button moves the view there, the right button orders the selection to that ground point (MSG_DO_MOVETO) when it is
 	// controllable. True when the click was the radar's.
 	bool radarClick(HudInput::Button button, int x, int y, int timeMs);
@@ -112,11 +124,16 @@ public:
 	AptPalantir *palantir() { return m_palantirRef; }
 	HudInput &input() { return *m_input; }
 	ControlBar &controlBar() { return *m_bar; }
+	std::uint32_t rallyPointDrawableId() const { return m_rallyPointDrawable; }
 	Radar &radar() { return *m_radar; }
 	// AUDIO-2: the unit voices of the local player's selection and commands (through the installed audio manager and Eva)
 	UnitVoiceResponse &voice() { return *m_voice; }
 	const std::vector<std::string> &errors() const { return m_errors; }
 	std::vector<std::string> stops() const;
+
+	// ---- lane OWNERFIX-1: the map scripts' DISABLE_INPUT / ENABLE_INPUT (the in-game cutscenes): InGameUI::applyScriptInput ----
+	void scriptInput(bool enable);
+	bool scriptMouseHidden() const { return m_input->ui().scriptMouseHidden(); } ///< DISABLE_INPUT's Mouse::setVisibility(false): the device shows no pointer
 
 	// ---- lane SPELL-2: the spell book (the Palantir's InGameSpellBook and the SpellStore.apt screen) ----
 	// the cast bar's press (the movie's OnAptInGameSpellBookButtonPressed, by command set slot): a no-target power casts, a NEED_TARGET_POS one starts the
@@ -130,6 +147,9 @@ public:
 	// lane SPELL-4: the aiming marker of a spell book power waiting for its target (GameClient/RadiusCursor.h), updated each update(); the device draws it
 	const RadiusCursor &radiusCursor() const { return m_radiusCursor; }
 	const RadiusCursorTemplates &radiusCursorTemplates() const { return m_radiusTemplates; }
+	// lane OWNERFIX-2: the resource claim feedback (GameClient/TerrainResourceFeedback.h): the placement's claimable percentage and decal, the selected
+	// resource building's claim decals
+	const TerrainResourceFeedback &resourceFeedback() const { return m_resourceFeedback; }
 	// lane UI-4: the selection markers of this frame (SelectionDecals.h); the device gives GameData's settings and draws them
 	void setSelectionDecalSettings(const SelectionDecalSettings &s) { m_decalSettings = s; }
 	const std::vector<SelectionDecal> &selectionDecals() const { return m_selectionDecals; }
@@ -178,6 +198,25 @@ public:
 	// the device draws the help box's content clip (its `_type` is helpBox().renderName()) at (x, y, w, h) window pixels: RW 0x92E2AC
 	void helpBoxRender(float x, float y, float w, float h, std::vector<HelpDrawOp> &out);
 	int tooltipDelayMs() const { return m_tooltipDelayMs; }
+	// lane DEVPORT-8 (FALSEDEF-1): ControlBar.wnd:WinUAttack, the window of the control bar's under-attack blink (ControlBar::AttackFlash; RW 0x71E1E7 keeps
+	// it at ControlBar + 0x2A0), read from window\controlbar.wnd at boot: its SCREENRECT, STATUS and the first image of its enabled / disabled draw data
+	// ("NoImage" = none, as the WND loader reads it). Its look is the default draw's image branch (W3DGameWinDefaultDraw, ZH): the enabled or the
+	// disabled image at the rect; RotWK's file (BFME2's window.big) gives NoImage in both, so the blink draws nothing there
+	struct AttackWindow
+	{
+		bool present = false;      ///< the file has the window
+		bool imageStatus = false;  ///< STATUS has IMAGE (the default draw's image branch)
+		bool enabledStatus = false; ///< STATUS has ENABLED (the blink's start state)
+		bool hidden = false;       ///< STATUS has HIDDEN
+		int x0 = 0, y0 = 0, x1 = 0, y1 = 0; ///< SCREENRECT in its CREATIONRESOLUTION
+		int resX = 800, resY = 600;
+		std::string enabledImage, disabledImage;
+	};
+	const AttackWindow &attackWindow() const { return m_attackWindow; }
+	// the image the window shows now ("" nothing): the default draw's image branch for the blink's enabled state; and its rect in window pixels
+	std::string attackWindowImage() const;
+	bool attackWindowRect(int width, int height, int &x, int &y, int &w, int &h) const;
+	unsigned long long attackFlashRequests() const { return m_attackFlashRequests; }
 
 private:
 	void bootHud6();
@@ -202,6 +241,8 @@ private:
 	DefaultFontMetrics m_hud6DefaultMetrics;
 	std::uint32_t m_hud6ClockMs = 0;
 	int m_tooltipDelayMs = 0;
+	AttackWindow m_attackWindow;
+	unsigned long long m_attackFlashRequests = 0;
 	std::vector<std::string> m_hud6Errors;
 	unsigned long long m_skippedUpdates = 0;
 	// lane RENDERWAIT-1: movie presses that came while the logic was not held (replayed in order by the next update that holds it)
@@ -209,6 +250,12 @@ private:
 	unsigned long long m_deferredPressCount = 0;
 	void whenHeld(std::function<void()> f);
 	Config m_config;
+	void updateRallyPoint();
+	std::uint32_t m_rallyPointDrawable = 0;
+	ObjectID m_rallyPointSource = INVALID_ID;
+	float m_downwindAngle = 0.0f;
+	bool m_haveDownwindAngle = false;
+	bool m_rallyPointConstruction = false;
 	AptArchiveFileSource m_source;
 	ShellEnvironment m_environment;
 	AptScreenFactoryTable m_factories;
@@ -258,16 +305,21 @@ private:
 	void syncSpellBook();
 	// lane SPELL-4: InGameUI's radius cursor for the spell book's targeting (RW 0x6A3B77 -> RW 0x6A077A, RadiusDecal::update RW 0x732926)
 	void updateRadiusCursor();
+	void updateResourceFeedback(); // lane OWNERFIX-2
+	TerrainResourceFeedback m_resourceFeedback;
 	RadiusCursorTemplates m_radiusTemplates;
 	RadiusCursor m_radiusCursor;
 	int m_pointerX = 0, m_pointerY = 0;
 	bool m_pointerSeen = false;
+	bool m_modal = false; // lane OPTS-6
 	bool m_targetingCursor = false; ///< the spell book's targeting set the pointer (it is given back at its end)
 	std::set<std::string> m_cursorStopPowers; ///< the powers whose unported location test the cursor met (S-4641), once each
 	std::vector<std::string> m_cursorStops;
 	void send(const std::vector<GameMessage> &msgs);
 	int m_windowW = 1024, m_windowH = 768;
 	bool m_booted = false;
+	int m_keyState = 0;
+	bool m_broadcastClean = false;
 	bool m_rightPosted = false;                    // lane AUTOCAST-1: a right press went into the Apt (its release follows it)
 	bool commandContentAt(int x, int y);           // lane AUTOCAST-1: a Palantir command button content is under the window point
 };

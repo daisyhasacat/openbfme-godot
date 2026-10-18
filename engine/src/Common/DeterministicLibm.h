@@ -6,7 +6,7 @@
 //
 // WHAT IT COMPUTES: the results of glibc 2.39's libm (sysdeps/ieee754/dbl-64) as glibc runs on x86-64 Linux with an FMA-capable CPU, i.e. the
 // `*_fma` variants glibc's ifunc selects there (sysdeps/x86_64/fpu/multiarch, compiled with -mfma -mavx2). That is what the simulation computed on
-// Linux before DEP-2: the Deck (glibc 2.41), pve and the reference PC (glibc 2.39) give the same bits. The port spells every multiply-add that GCC fused
+// Linux before DEP-2: the Deck (glibc 2.41), a CI host and the reference PC (glibc 2.39) give the same bits. The port spells every multiply-add that GCC fused
 // in those variants as an explicit fused multiply-add (DetLibm::fma: one rounding in integer arithmetic, no FMA instruction and no libm, so no compiler or CPU feature decides the result) and every other operation as written;
 // tests/test_deterministic_libm.cpp compares it with the host libm over a sweep and pins a hash of its results.
 // The functions take and return IEEE binary64 under the canonical environment (round to nearest). errno is never set. NaN results: a NaN operand

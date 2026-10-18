@@ -2,6 +2,10 @@
 // See HudInput.h.
 
 #include "GameClient/HudInput.h"
+#include "Common/Thing/ThingTemplate.h"
+
+#include <stdexcept>
+#include <string>
 #include "GameLogic/ObjectTemplateInfo.h"
 
 #include "Common/Player.h"
@@ -98,6 +102,15 @@ void HudInput::resetKeys()
 	}
 }
 
+void HudInput::cancelHeld()
+{
+	resetKeys();
+	if (m_lookAt)
+	{
+		m_lookAt->cancelHeld();
+	}
+}
+
 void HudInput::mouseWheel(int spin, int x, int y)
 {
 	ClientMessage &m = m_stream.append(CMSG_RAW_MOUSE_WHEEL);
@@ -142,12 +155,81 @@ size_t HudInput::update()
 			gone.push_back(id);
 		}
 	}
+	// lane VISUAL-2 r2, TARGET FACT (InGameUI::update, RW 0x6A2449 .. 0x6A24BF): when the client frame is a multiple of 30 (DAT 0xD9F60C), every selected
+	// drawable whose object's shroud status for the local player (RW 0x68D8F7) is FOGGED or SHROUDED is deselected (vslot 0x10C, deselectDrawable): an
+	// enemy selected while seen does not stay selected in the fog. Once per client frame; the status is clientObjectStatus while the shroud is displayed
+	const ShroudManager *sm = m_logic.shroud();
+	const Player *local = m_logic.players().getLocalPlayer();
+	if (sm && sm->displayed() && local && m_ui.clientFrame() % 30 == 0 && m_ui.clientFrame() != m_fogDeselectFrame)
+	{
+		m_fogDeselectFrame = m_ui.clientFrame();
+		for (ObjectID id : m_ui.selected())
+		{
+			const Object *o = m_logic.findObjectByID(id);
+			const ObjectShroudStatus st = o ? sm->clientObjectStatus(*o, local->getPlayerIndex()) : OBJECTSHROUD_INVALID;
+			if (st == OBJECTSHROUD_FOGGED || st == OBJECTSHROUD_SHROUDED)
+			{
+				gone.push_back(id);
+			}
+		}
+	}
 	for (ObjectID id : gone)
 	{
 		m_ui.forgetObject(id);
 	}
 	m_formation.frame();
 	m_place.frame(); // lane QA2-FIX: the placement update's line build step (RW 0x6A2D12) runs in InGameUI::update, before the stream (ZH GameEngine::update)
+	const size_t n = flush();
+	// lane BUILD-5: the placement update's ghost step (RW 0x6A2AE5) runs in the client's draw, after this frame's input (it reads the live pointer); a device
+	// defers it until its displayed camera is set (setPlacementDeferred)
+	if (!m_placementDeferred)
+	{
+		m_place.handleBuildPlacements();
+	}
+	return n;
+}
+
+// lane OWNERFIX-1: the GameMessage as a stream message (the reverse of toGameMessage); an argument kind the HUD does not send is an error
+void HudInput::submit(const GameMessage &message)
+{
+	ClientMessage &m = m_stream.append(message.getType());
+	for (size_t i = 0; i < message.getArgumentCount(); ++i)
+	{
+		const GameMessageArgument &a = *message.getArgument(i);
+		switch (a.type)
+		{
+			case ARGUMENTDATATYPE_INTEGER: m.appendInteger(a.integer); break;
+			case ARGUMENTDATATYPE_REAL: m.appendReal(a.real); break;
+			case ARGUMENTDATATYPE_BOOLEAN: m.appendBoolean(a.boolean); break;
+			case ARGUMENTDATATYPE_OBJECTID: m.appendObjectID(a.objectID); break;
+			case ARGUMENTDATATYPE_LOCATION: m.appendLocation(a.location); break;
+			default: throw std::logic_error("HudInput::submit: message " + std::to_string(message.getType()) + " argument " + std::to_string(i) + " has a kind the stream does not carry");
+		}
+	}
+}
+
+void HudInput::scriptInput(bool enable, const std::function<void()> &controlBarReset)
+{
+	m_scriptSteps.clear();
+	m_ui.setStepLog(&m_scriptSteps);
+	m_ui.applyScriptInput(enable);
+	if (enable)
+	{
+		return;
+	}
+	if (controlBarReset)
+	{
+		controlBarReset(); // RW 0x7BC5D9 -> RW 0x8076CD, before the LookAt flags (RW 0x7BC5E4 -> RW 0x83AB5D): the order of RW 0x7BC586's tail
+	}
+	if (m_lookAt)
+	{
+		m_lookAt->clearFlags(); // RW 0x83AB5D
+		m_scriptSteps.push_back("lookAtFlags");
+	}
+}
+
+size_t HudInput::flush()
+{
 	const int local = m_ctx.localPlayer() ? m_ctx.localPlayer()->getPlayerIndex() : 0;
 	std::vector<ClientMessage> out = m_stream.propagate();
 	if (m_formation.consumed()) {
@@ -172,12 +254,6 @@ size_t HudInput::update()
 		}
 	}
 	m_sent += n;
-	// lane BUILD-5: the placement update's ghost step (RW 0x6A2AE5) runs in the client's draw, after this frame's input (it reads the live pointer); a device
-	// defers it until its displayed camera is set (setPlacementDeferred)
-	if (!m_placementDeferred)
-	{
-		m_place.handleBuildPlacements();
-	}
 	return n;
 }
 
@@ -268,8 +344,10 @@ std::vector<std::string> HudInput::acceptanceStops()
 		"A is the Attack Move button's hotkey); BEGIN_ / END_FORCEATTACK set the force-attack mode as ZH does, an OpenBFME addition: RotWK's table sends them to the default case (S-1675; its Ctrl + left press is S-4360); ORDERMODE sends MSG_CHANGE_ORDERMODE, the "
 		"logic stores the order mode, whose AiOrdersManager queue is not ported (S-281: the orders ignore it)",
 
-		"[S-288] selection filters: the shroud (VIS-1) is not applied to what a pick or a drag may select (an enemy's invisible, undetected object is not picked: lane STEALTH-1, "
-		"InvisibilityManager::clientLook); the double click selects the matching units of the screen by template identity, across the map with the alt key",
+		"[S-288] selection filters: a click picks only what the device layer draws (QA-1's pickRay: not SHROUDED, FOGGED, invisible or hidden by a container); a drag box "
+		"leaves out an enemy / neutral object the local player sees FOGGED or worse (lane VISUAL-2 r2: addDrawableToList's rule from the ZH / BFME2 decomp source, "
+		"INFERENCE that RotWK keeps it: its RotWK site was not located) and an enemy's invisible, undetected object (lane STEALTH-1, InvisibilityManager::clientLook); "
+		"the double click selects the matching units of the screen by template identity, across the map with the alt key",
 	};
 	for (const std::string &s : PlaceEventTranslator::stopLines()) // lane QA2-FIX
 	{
@@ -280,11 +358,13 @@ std::vector<std::string> HudInput::acceptanceStops()
 				  "not ported: RW 0x690E97's held / disabled tests (only IMMOBILE), the pathfinder's acceptance of the spot (RW 0x66403D -> 0x6F5BB0: taken as accepted), "
 				  "the lift to the water surface (TerrainLogic vslot 0x4C)");
 	out.push_back("[S-1954] RotWK's pick (HUD-5): the cast's collision types (RW 0x4B583C), the hit order (RW 0x48AB28 / 0x489BE6) and each caller's pick types are ported: "
-				  "RW 0x71083F (SELECTABLE, FORCEATTACKABLE when forcing, SHRUBBERY / ROCK from the GUI command or the selection, RW 0x71077B), the point selection | OWN "
+				  "RW 0x71083F (SELECTABLE | SCRIPT_TARGETABLE, FORCEATTACKABLE when forcing, SHRUBBERY / ROCK from the GUI command or the selection, RW 0x71077B), the point selection | OWN "
 				  "(RW 0x485CB8), the hover forced (RW 0x83CC13), the order click (RW 0x81FBB3), the double click SELECTABLE (RW 0x81F7C5), a GUI command's object target "
-				  "(RW 0x83D41A); not ported: the double click's own route (RotWK's CommandTranslator case RW 0x81F791 -> ControlBar RW 0x9403ED / InGameUI vslot 0x188; "
-				  "the port keeps ZH's select-matching in the SelectionTranslator), pickDrawable's forceAttack argument (the cast flag RW 0x48ABFF), the model draw's own "
-				  "override (W3DModelDraw + 0x214), the object status bits that clear the type (RW 0x4B5988 / 0x4B59CE, taken as effectively dead), the 0x40 type");
+				  "(RW 0x83D41A); the double click runs in CommandTranslator (RW 0x81F791), promotes HORDE_MEMBER and expands the current selection across the screen "
+				  "(RW 0x9403ED / 0x69D90C); client selectability uses RW 0x68DE58 including the wall special-power override. Not ported: the Living World input lock, "
+				  "pickDrawable's forceAttack argument (the cast flag RW 0x48ABFF), the model draw's own "
+				  "override (W3DModelDraw + 0x214), drawable rubble state and final draw-module collision suppression (RW 0x4B59BD / 0x4B59E4); "
+				  "SCRIPT_TARGETABLE's type replacement and the KeepSelectableWhenDead exception are ported");
 	out.push_back("[S-3302] building placement ghost (PLAY-1, PLAY-3, BUILD-5): the ghost is drawables of the template (PlacementIcons: RW 0x69C5E6 / 0x6A2AE5) with "
 				  "BUILD_PLACEMENT_CURSOR, opacity 0.45, the builder's colour (RW 0x674504) and the draw module's own model, animation and BeginScript; a castle's layout "
 				  "pieces turned by the ghost's angle, its BASE_SITE slots judged one by one; the tint through the W3D lighting (ZH W3DScene's colorTint); the faction bib "

@@ -11,6 +11,7 @@
 #include "GameClient/GUI/Shell/ShellLayering.h"
 #include "Libraries/Source/Apt/AptRenderList.h"
 
+#include <functional>
 #include <string>
 
 using namespace starttest;

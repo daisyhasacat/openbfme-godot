@@ -62,6 +62,7 @@ struct MapRuntimeReport
 	// (retail's Get_Sub_Object_By_Name returns NULL for those and nothing happens; ZH doHideShowSubObjs). Counted per message / name.
 	std::map<std::string, size_t> dataDefects;  ///< "animation X of state S ... is not registered" / "model X is not available ..." -> entries
 	std::map<std::string, size_t> hideMisses;   ///< lower-cased name -> requests that matched no sub object (some name a draw module tag: HideSubObject("ModuleTag_DrawFloor"); no retail object has such a module hidden at map start)
+	std::map<std::string, size_t> inferredDrawFields; ///< "W3DFloorDraw WeatherTexture" -> placed models whose static draw module sets a field the renderer applies by inference (S-5015)
 	std::map<std::string, size_t> ignoredDrawFields; ///< "W3DFloorDraw WeatherTexture" ... -> placed models whose static draw module sets a field that is stored but not applied (S-115)
 	std::vector<std::string> stops;  ///< stop lines of the draw runtime that were hit (first occurrence of each), and the reports of the Lua script engine and the Lua draw host ("[S-124] ...")
 	size_t scriptsRun = 0;           ///< BeginScript bodies the Lua draw host ran (each state entry counts)

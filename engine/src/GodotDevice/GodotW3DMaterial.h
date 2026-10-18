@@ -140,6 +140,10 @@ void W3D_Apply_Object_Lighting(const W3DObjectLighting &lighting);
 // globals w3d_fog / w3d_fog_color, W3DHardwareFog.h); colour 0..1 in retail's gamma space
 void W3D_Apply_Fog(bool enabled, const float color[3], float start, float end);
 // lane PLAY-1: the free camera moves every fog range out by `shift` world units (the global w3d_fog_shift; 0 = retail)
+// lane VISUAL-2: the vegetation SwayOffsets 1 .. 10 (W3D axes) the rigid W3D shaders read (w3dshadergen.cpp)
+void W3D_Set_Sway_Offsets(const float offsets[10][3]);
+// lane VISUAL-2: the fogged light fraction (RW 0x46DFD0: FogAlpha / ClearAlpha) a fogged instance's lights and ambient are scaled by
+void W3D_Set_Fogged_Light_Frac(float frac);
 void W3D_Set_Fog_Shift(float shift);
 // The light of the model viewers that show no map (not retail data): ambient 0.3 (defaultw3d.fxo's own AmbientLightColor default),
 // one white light toward (-0.5, -0.5, 0.7) SAGE, for both sets.

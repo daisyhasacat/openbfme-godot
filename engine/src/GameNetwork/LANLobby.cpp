@@ -16,7 +16,7 @@ enum : std::uint8_t
 	LOBBY_START_ACK = 5
 };
 constexpr std::uint64_t kResendMs = 150;
-constexpr std::uint8_t kLobbyVersion = 4; // 4: Lua authority slot in setup; 2: JOIN / START carry the lobby version and the profile identity; 3 (lane HERO-2): the slots' Create-a-Hero records
+constexpr std::uint8_t kLobbyVersion = LANLobby::kVersion;
 
 NetByteWriter header(std::uint8_t kind)
 {

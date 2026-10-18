@@ -507,6 +507,39 @@ TEST_CASE("camera: the wheel zooms by the retail steps between the retail height
 	CHECK(c.getHeightAboveGround() > low);
 }
 
+// lane OPTS-6 (the review: hold Right, open the pause menu, release Right under it: the camera went on moving). A modal menu cancels what the world held:
+// no key counts as down, no scroll / rotate / zoom goes on, and a later press of the same key works again.
+TEST_CASE("camera: input held when a modal menu opens is cancelled (HudInput::cancelHeld); the keys work again afterwards")
+{
+	if (!haveWorld("camera held input"))
+	{
+		return;
+	}
+	CamRig r(shared());
+	TacticalCamera &c = *r.cam;
+	r.key(kKeyRight, true);
+	r.frame(2);
+	const Coord3D moving = c.position();
+	REQUIRE(r.input->lookAt()->isScrolling());
+	r.input->cancelHeld(); // a menu became the input's top
+	CHECK_FALSE(r.input->lookAt()->isScrolling());
+	CHECK_FALSE(r.input->ui().isScrolling());
+	CHECK_FALSE(r.input->isKeyDown(kKeyRight));
+	r.frame(3);
+	CHECK(c.position().x == moving.x); // exact: no scroll tick moved it
+	CHECK(c.position().y == moving.y);
+	// the release the menu swallowed never arrives; the key is usable again by its next press (and the held rotate / zoom keys went with it)
+	r.key(kKeyRight, true);
+	r.frame(1);
+	CHECK(c.position().x > moving.x); // tolerance: it scrolled again (the distance is the previous test's property)
+	r.key(kKeyRight, false);
+	r.key(kKeyKp8, true);
+	r.input->cancelHeld();
+	const float height = c.getHeightAboveGround();
+	r.frame(3);
+	CHECK(c.getHeightAboveGround() == height);
+}
+
 TEST_CASE("camera: the arrow keys scroll by the retail tick and the speed grows with the zoom")
 {
 	if (!haveWorld("camera keys"))

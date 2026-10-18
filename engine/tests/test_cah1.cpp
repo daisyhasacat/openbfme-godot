@@ -530,7 +530,8 @@ TEST_CASE("cah1 retail lobby: the Skirmish lobby's Hero combo lists '-', Random 
 	REQUIRE(tpos >= 0);
 	starttest::chooseComboRow(fx, tcombo, tpos);
 	GameWindow *hero = screen->slotGadget(0, "Hero");
-	REQUIRE(hero);
+	REQUIRE(hero != nullptr);
+	CHECK(static_cast<ComboBoxData *>(hero->winGetUserData())->maxDisplay == 8); // RW 0x72414F, slot 0
 	REQUIRE(GadgetComboBoxGetLength(hero) == 2 + 8);
 	// stop S-1406: reported once by the lobby
 	CHECK(fx.wm->noteCount("create-a-hero-stop") == 1);
@@ -1020,4 +1021,72 @@ TEST_CASE("ui6 cah1 retail lobby: the chosen Create-a-Hero is kept with the lobb
 	CHECK(screen->slotHero(0) == chosen);
 	REQUIRE(screen->setup()->info().slots[0].hasCreateAHero);
 	CHECK(screen->setup()->info().slots[0].createAHero.uniqueID == id);
+}
+
+// Lane MENUWORK-1: the hero list's headers sort it as RotWK's Manager does (RW 0x9C4EBD keys, RW 0x9C54C4 comparator, RW 0x9C5A66 list); a row is
+// still its own hero after the sort; Take Picture, Play Game and the awards tell the player they are not available (S-4755)
+TEST_CASE("menuwork1 cah retail shell: the hero list's headers sort it (RW 0x9C4EBD / 0x9C54C4); Take Picture, Play Game and awards say they are not available")
+{
+	OPENBFME_REQUIRE_START(s);
+	CahShellFx c(s, true);
+	AptCreateAHero *scr = c.screen();
+	REQUIRE(scr);
+	REQUIRE(scr->heroList());
+	const int rows = GadgetListBoxGetNumEntries(scr->heroList());
+	REQUIRE(rows == 8);
+	auto lower = [](std::u16string t) {
+		for (char16_t &ch : t)
+		{
+			ch = (ch >= u'A' && ch <= u'Z') ? (char16_t)(ch + 32) : ch;
+		}
+		return t;
+	};
+	auto rowNames = [&] {
+		std::vector<std::u16string> out;
+		for (int r = 0; r < rows; ++r)
+		{
+			out.push_back(lower(GadgetListBoxGetText(scr->heroList(), r, 1)));
+		}
+		return out;
+	};
+	const std::vector<std::u16string> before = rowNames();
+	// Name: ascending without case (key 2, the old key 0 the second)
+	REQUIRE(c.fx->wm->invokeCallback("Mission::OnSortName", ""));
+	CHECK(scr->heroSortKey0() == 2);
+	CHECK(scr->heroSortKey1() == 0);
+	std::vector<std::u16string> sorted = before;
+	std::sort(sorted.begin(), sorted.end());
+	CHECK(rowNames() == sorted);
+	CHECK(rowNames() != before); // the press changed the order
+	// Name again: descending (key 3)
+	REQUIRE(c.fx->wm->invokeCallback("Mission::OnSortName", ""));
+	CHECK(scr->heroSortKey0() == 3);
+	CHECK(scr->heroSortKey1() == 0); // the old key was the new key's twin: the second stays
+	std::reverse(sorted.begin(), sorted.end());
+	CHECK(rowNames() == sorted);
+	// Type: class / subclass ascending (key 4); the rows' heroes follow their names (a row selects its own hero)
+	REQUIRE(c.fx->wm->invokeCallback("Mission::OnSortType", ""));
+	CHECK(scr->heroSortKey0() == 4);
+	CHECK(scr->heroSortKey1() == 3);
+	const CreateAHeroHeroList &list = c.heroes;
+	REQUIRE(scr->rowEntries().size() == (size_t)rows);
+	for (int r = 1; r < rows; ++r)
+	{
+		const CreateAHeroHero &a = list.entries()[(size_t)scr->rowEntries()[(size_t)r - 1]].hero;
+		const CreateAHeroHero &b = list.entries()[(size_t)scr->rowEntries()[(size_t)r]].hero;
+		CHECK(a.classIndex * 100 + a.subClassIndex <= b.classIndex * 100 + b.subClassIndex); // tolerance: the order between neighbours is the property
+		CHECK(lower(GadgetListBoxGetText(scr->heroList(), r, 1)) == lower(b.name));
+	}
+	int selected = -1;
+	GadgetListBoxGetSelected(scr->heroList(), &selected);
+	REQUIRE(selected >= 0); // tolerance: whichever row; the property is that it holds the selected hero
+	CHECK(scr->selectedHero() == scr->rowEntries()[(size_t)selected]);
+	CHECK(c.fx->wm->noteCount("command-unhandled") == 0);
+	// the controls with nothing behind them say so
+	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::OnTakePicture", ""));
+	CHECK(scr->lastMessage() == "OpenBFME: Taking a hero portrait is not available yet: the hero keeps its class's picture.");
+	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::Manager::OnPlayGame", ""));
+	CHECK(scr->lastMessage() == "OpenBFME: Trying a hero on a test map is not available yet: play a skirmish with the hero instead.");
+	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::Manager::OnSelectAward", "1"));
+	CHECK(scr->lastMessage() == "OpenBFME: Hero awards are not available yet: OpenBFME does not record them.");
 }

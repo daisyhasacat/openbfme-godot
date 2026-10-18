@@ -169,7 +169,13 @@ public:
 	void setEventTrace(std::vector<ObjectEvent> *trace) { m_eventTrace = trace; }
 
 	void crc(StateHasher &h) const;
+	// lane SAVE-4c: the obfme:SkirmishAI block (SkirmishAISnapshot.cpp): the groups, every AI's builders and brain, the player info records, the farm site pool
+	// and the counters; every build request once, in a table the lists refer to by index (they share requests)
+	void xfer(class Xfer &x);
 	std::vector<std::string> report() const;
+	// lane SAVE-4c: the transferred state (a load fills a fresh manager, which checkLoaded validates before this one takes it)
+	void xferState(class Xfer &x, bool hooksInstalled);
+	void checkLoaded() const;
 	static std::vector<std::string> stopLines();
 	// lane AI-3: the attacked-at records' running id (RW 0xDE4A08: cleared by RW 0x6A922D, incremented by RW 0x6C6F01)
 	std::uint32_t &attackedAtIds() { return m_attackedAtIds; }

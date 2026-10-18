@@ -15,10 +15,10 @@ get_filename_component(OPENBFME_RELAY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../servic
 # called once openbfme_core, openbfme_tests and openbfme_peer exist
 macro(openbfme_online2_targets)
     target_sources(openbfme_core PRIVATE ${OPENBFME_ONLINE2_HOST_SOURCES})
-    # the relay's core runs in the unit tests on every platform (driven datagram by datagram); the relay process is Linux only
+    # the relay's core runs in the unit tests on every platform; the relay process runs on Linux and macOS
     target_sources(openbfme_tests PRIVATE ${OPENBFME_ONLINE2_TESTS} ${OPENBFME_RELAY_DIR}/RelayCore.cpp)
     target_include_directories(openbfme_tests PRIVATE ${OPENBFME_RELAY_DIR})
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         add_subdirectory(${OPENBFME_RELAY_DIR} ${CMAKE_BINARY_DIR}/relay)
         # the simulation audit's flag rule covers every translation unit of the build (tools/sim/sim_audit.py): the relay has no floating point,
         # it takes the same flags anyway

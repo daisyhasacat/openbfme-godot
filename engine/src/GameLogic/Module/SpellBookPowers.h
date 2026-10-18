@@ -64,6 +64,7 @@ public:
 class PlayerUpgradeSpecialPower : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(PlayerUpgradeSpecialPower) // lane SAVE-4b: SpecialPowerModule's
 	PlayerUpgradeSpecialPower(Thing *thing, const PlayerUpgradeSpecialPowerModuleData *data) : SpecialPowerModule(thing, data), m_data(data) {}
 	void doSpecialPower(unsigned options) override;                                    // RW 0x8CC0CC
 	void doSpecialPowerAtObject(Object *, unsigned options) override { doSpecialPower(options); }            // RW 0x8C82E2
@@ -123,6 +124,7 @@ public:
 class WeatherFamilySpecialPower : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(WeatherFamilySpecialPower) // lane SAVE-4b: SpecialPowerModule's
 	WeatherFamilySpecialPower(Thing *thing, const SpecialPowerModuleData *data) : SpecialPowerModule(thing, data) {}
 	void doSpecialPower(unsigned options) override;
 	void doSpecialPowerAtObject(Object *target, unsigned options) override;
@@ -141,6 +143,7 @@ protected:
 class DarknessSpecialPower : public WeatherFamilySpecialPower
 {
 public:
+	OBFME_MODULE_XFER(DarknessSpecialPower) // lane SAVE-4b: SpecialPowerModule's
 	DarknessSpecialPower(Thing *thing, const DarknessSpecialPowerModuleData *data) : WeatherFamilySpecialPower(thing, data), m_data(data) {}
 	void doSpecialPowerAtLocation(const Coord3D &loc, unsigned options) override; // RW 0x8C93A5
 
@@ -150,6 +153,7 @@ private:
 class FreezingRainSpecialPower : public WeatherFamilySpecialPower
 {
 public:
+	OBFME_MODULE_XFER(FreezingRainSpecialPower) // lane SAVE-4b: SpecialPowerModule's
 	FreezingRainSpecialPower(Thing *thing, const FreezingRainSpecialPowerModuleData *data) : WeatherFamilySpecialPower(thing, data), m_data(data) {}
 	void doSpecialPowerAtLocation(const Coord3D &loc, unsigned options) override; // RW 0x8C918D
 
@@ -159,6 +163,7 @@ private:
 class CloudBreakSpecialPower : public WeatherFamilySpecialPower
 {
 public:
+	OBFME_MODULE_XFER(CloudBreakSpecialPower) // lane SAVE-4b
 	CloudBreakSpecialPower(Thing *thing, const CloudBreakSpecialPowerModuleData *data) : WeatherFamilySpecialPower(thing, data), m_data(data) {}
 	void doSpecialPowerAtLocation(const Coord3D &loc, unsigned options) override; // RW 0x8C8CE4
 	unsigned long long sunbeamsMade() const { return m_sunbeams; }
@@ -171,6 +176,7 @@ private:
 class TaintSpecialPower : public WeatherFamilySpecialPower
 {
 public:
+	OBFME_MODULE_XFER(TaintSpecialPower) // lane SAVE-4b
 	TaintSpecialPower(Thing *thing, const TaintSpecialPowerModuleData *data) : WeatherFamilySpecialPower(thing, data), m_data(data) {}
 	void doSpecialPowerAtLocation(const Coord3D &loc, unsigned options) override; // RW 0x8C8FF5
 	ObjectID lastAreaObject() const { return m_lastObject; }
@@ -182,6 +188,7 @@ private:
 class ElvenWoodSpecialPower : public WeatherFamilySpecialPower
 {
 public:
+	OBFME_MODULE_XFER(ElvenWoodSpecialPower) // lane SAVE-4b
 	ElvenWoodSpecialPower(Thing *thing, const ElvenWoodSpecialPowerModuleData *data) : WeatherFamilySpecialPower(thing, data), m_data(data) {}
 	void doSpecialPowerAtLocation(const Coord3D &loc, unsigned options) override; // RW 0x8C7FA2
 	ObjectID lastAreaObject() const { return m_lastObject; }
@@ -203,6 +210,7 @@ public:
 class ProductionSpeedBonus : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(ProductionSpeedBonus) // lane SAVE-4b
 	ProductionSpeedBonus(Thing *thing, const ProductionSpeedBonusModuleData *data) : SpecialPowerModule(thing, data), m_data(data) {}
 	void doSpecialPower(unsigned options) override; // RW 0x8C7171
 	// the bonus RW 0x6AF3C8 records per template name: (frames, time factor); kept here, the production side is not ported (S-921)
@@ -224,6 +232,7 @@ public:
 class ScavengerSpecialPower : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(ScavengerSpecialPower) // lane SAVE-4b
 	ScavengerSpecialPower(Thing *thing, const ScavengerSpecialPowerModuleData *data) : SpecialPowerModule(thing, data), m_data(data) {}
 	void doSpecialPower(unsigned options) override; // RW 0x8C88A0
 	void pauseCountdown(bool pause) override;       // RW 0x8C88CF
@@ -239,6 +248,7 @@ private:
 class UntamedAllegianceSpecialPower : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(UntamedAllegianceSpecialPower) // lane SAVE-4b
 	UntamedAllegianceSpecialPower(Thing *thing, const SpecialPowerModuleData *data) : SpecialPowerModule(thing, data) {}
 	unsigned long long defected() const { return m_defected; }
 
@@ -263,6 +273,7 @@ public:
 class DevastateSpecialPower : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(DevastateSpecialPower) // lane SAVE-4b: SpecialPowerModule's
 	DevastateSpecialPower(Thing *thing, const DevastateSpecialPowerModuleData *data) : SpecialPowerModule(thing, data), m_data(data) {}
 	void doSpecialPower(unsigned options) override;                               // RW 0x8CC658
 	void doSpecialPowerAtObject(Object *target, unsigned options) override;       // RW 0x8CC6FD

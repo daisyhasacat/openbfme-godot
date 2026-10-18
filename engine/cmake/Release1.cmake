@@ -16,6 +16,7 @@ set(OPENBFME_RELEASE1_SOURCES
     src/Common/System/LogPrivacy.cpp
     src/Common/System/ConsoleFilter.cpp
     src/Common/System/FreezeWatchdog.cpp
+    src/Common/System/WindowsCrashDump.cpp
     src/Common/System/BuildVersion.cpp
     ${OPENBFME_RELEASE1_VERSION_CPP}
 )

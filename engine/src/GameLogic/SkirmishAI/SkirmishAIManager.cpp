@@ -4,6 +4,9 @@
 
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
 
+#include <algorithm>
+#include <iterator>
+
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/PlayerTemplate.h"
@@ -406,6 +409,34 @@ void SkirmishAIManager::objectAdded(Object &obj)
 	{
 		r->registerObject(obj);
 	}
+	// lane SAVE-4c (review r3 .. r5): an object that becomes another player's (a capture, RW 0x854712 / 0x85474D, or any change of owner: Object::joinTeam
+	// runs objectRemoved with the old owner, then this) is out of every other AI's tactic teams (in retail a Team object: the owner change takes the unit
+	// out of it, and the brain, which a shut-down AI still runs, orders members by id) and free dozers (the port's: the old owner's AI gives it no more
+	// build orders). The unit and dozer factories and the info records follow the owner change through the events (RW 0x8F0C69, RW 0x8F0C47, RW 0x8E480C)
+	if (m_started && obj.getControllingPlayer())
+	{
+		const int owner = obj.getControllingPlayer()->getPlayerIndex();
+		const ObjectID id = obj.getID();
+		for (auto &g : m_groups)
+		{
+			for (auto &kv : g->players)
+			{
+				if (kv.first == owner)
+				{
+					continue;
+				}
+				AIBuildState &b = kv.second->build;
+				b.freeDozers.erase(std::remove(b.freeDozers.begin(), b.freeDozers.end(), id), b.freeDozers.end());
+				for (AITactic &tac : kv.second->brain.tactics)
+				{
+					for (AITacticTeam &team : tac.teams)
+					{
+						team.members.erase(std::remove(team.members.begin(), team.members.end(), id), team.members.end());
+					}
+				}
+			}
+		}
+	}
 }
 
 void SkirmishAIManager::objectRemoved(Object &obj)
@@ -652,8 +683,8 @@ std::vector<std::string> SkirmishAIManager::stopLines()
 		"money test RW 0x99E766 reads the player's money alone; S-413), the living world part (RW 0x9A0426), RotWK's second unit check RW 0x9ED764 (a "
 		"GetGameLogicRandomValue(600, 1000) money floor; its request class is not identified); lane BACKLOG6: the effective priority RW 0x9EDA17 (S-419) "
 		"agrees with the BFME2 byte-matched source, RotWK's row offset + 0xC4",
-		"[S-416] skirmish ai unit builder inference: a structure enters the factory map when it is first seen complete (RW: its completion event), a unit "
-		"request is complete when its factory no longer holds its queue entry (RW: the production event), the phase blend of RW 0x82FCAB is computed in double "
+		"[S-416] skirmish ai unit builder inference: (lane SAVE-4c r5: a structure enters the factory map in its object event, RW 0x8F06BF -> 0x9A0838, and "
+		"leaves it in its leave event, RW 0x8F0C69 -> 0x9A051D, both ported) a unit request is complete when its factory no longer holds its queue entry (RW: the production event), the phase blend of RW 0x82FCAB is computed in double "
 		"for the x87 chain; (lane DECOMP-3: the owned count is the player info record's per-template count RW 0x8E3FD6, kept by Register / UnRegister)",
 		"[S-413] skirmish ai base builder: the game phase (RW 0x6C7677), the start position, the angle facing the map centre, the layout choice (RW 0x9BCA8E, one "
 		"logic random draw), the slots, the structure requests, the request order and processor (RW 0x8F0F7E ..) and the check / execute path through BUILD-1 "
@@ -677,8 +708,9 @@ std::vector<std::string> SkirmishAIManager::stopLines()
 		"hand-off (RW 0x89E169 -> slot 0x14 RW 0x87594C, S-1501); open: H + 0x2A0 is taken as the melee freeze and its branch (RW 0x874967: a member neither idle "
 		"nor active gets aiIdle) is not run (no member pass in a melee)",
 		"[S-1500] horde member slot destination inference (lane MOVE-2): RW 0x6F0889 (via RW 0x871897) is ported for the ground layer; pathfinder + 0x48, which "
-		"it clears first, is taken as the ignored obstacle id; a cell of another layer than the horde's fails (the raised-layer tests RW 0x6E82B3 / 0x5E2F24 and "
-		"the wall-scaling branch RW 0x86E214 are not ported: S-161, S-084)",
+		"it clears first, is taken as the ignored obstacle id; a cell of another layer than the horde's fails (the raised-layer tests RW 0x6E82B3 / 0x5E2F24 are "
+		"not ported: S-161); the wall-scaling branch RW 0x86E214 is ported (lane BACKLOG-8, HordeContain::wallScalingMemberPosition) and taken while the horde keeps "
+		"a wall to scale (S-4461)",
 		"[S-1501] horde command hand-off inference (lane MOVE-2 r2): RW 0x89E169's container test (the container's contain vslot 0x10) is taken as \"the horde "
 		"is contained\"; its porcupine / stance branch (contain vslots 0xF0 / 0x5C / 0x60, RW 0x89DE81 / 0x89DF11) is not read; slot 0x10 RW 0x8759FF(0) is "
 		"run as acceptMemberFromGarrison for every member on its way (no re-form snap); the port's move variants without an identified RotWK command number "

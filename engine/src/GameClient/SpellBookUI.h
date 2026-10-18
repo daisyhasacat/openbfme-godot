@@ -20,10 +20,10 @@
 //     first science (button + 0xA4) not owned by the proxy and RW 0x5FED5B (the root prerequisites and the cost against the proxy's points): a click sound
 //     (RW 0x90BE00) and the science is pending (RW 0x82355F: appended, + 0x14 += its cost);
 //   * OnBttnReset (RW 0x823484): the pending list is cleared (RW 0x8232A1 / 0x5FF9D3);
-//   * the destructor (RW 0x8232ED): every pending science goes to the logic (RW 0x940435(science, 1, 0) for each, in order) when TheControlBar exists.
+//   * the destructor (RW 0x8232ED): every pending button goes to RW 0x940435(button, 1, 0), in order, when TheControlBar exists. The purchase case emits
+//     MSG_PURCHASE_SCIENCE, then MSG_DO_SPELLBOOK_SPECIAL_POWER {power ID, options, object ID 0} for each CommandTrigger (+0x188), in order.
 // INFERENCE (S-923): the store's command set is the local player's PlayerTemplate PurchaseScienceCommandSetMP in a skirmish / multiplayer game, else
-// PurchaseScienceCommandSet (RW 0x822AB3 reads it through RW 0x71F933 from an object of TheControlBar, not traced); RW 0x940435 is taken as the
-// MSG_PURCHASE_SCIENCE message of the player (what SPELL-1's handler executes; RW 0x940435 is ControlBar::processCommandUI of the pending button). The
+// PurchaseScienceCommandSet (RW 0x822AB3 reads it through RW 0x71F933 from an object of TheControlBar, not traced). The
 // per-button state values the movie is sent are AptSpellStore's (RW 0xC50BF8, GameClient/GUI/AptScreens/AptSpellStore.h).
 
 #pragma once
@@ -75,10 +75,12 @@ public:
 	bool click(int index);
 	// RW 0x823484
 	void reset();
-	// RW 0x8232ED: the purchase messages of the pending sciences, in click order; the store is closed after
+	// RW 0x8232ED -> 0x940435: each pending purchase followed by its CommandTrigger spell-book messages, in click order
 	std::vector<GameMessage> close();
 
 	const std::vector<Button> &buttons() const { return m_buttons; }
+	// content errors met by close(): a CommandTrigger that names no special power button (kept across opens)
+	const std::vector<std::string> &errors() const { return m_errors; }
 	const std::string &commandSetName() const { return m_setName; }
 	// the proxy's points (RW 0x822843): the player's purchase points minus the pending cost (APT:SpellStoreSpellPoints)
 	int points() const;
@@ -90,11 +92,14 @@ private:
 	struct Proxy;
 	bool proxyHas(ScienceType st) const;
 	GameLogic *m_logic = nullptr;
+	const CommandStore *m_commands = nullptr;
 	Player *m_player = nullptr;
 	std::string m_setName;
 	std::vector<Button> m_buttons;
 	std::vector<ScienceType> m_pending; ///< proxy + 8
+	std::vector<const CommandButton *> m_pendingButtons; ///< RW AptSpellStore +0x27C: actual clicked buttons
 	int m_pendingCost = 0;              ///< proxy + 0x14
+	std::vector<std::string> m_errors; ///< lane DEVPORT-7: what close() could not send
 };
 
 class InGameSpellBookModel

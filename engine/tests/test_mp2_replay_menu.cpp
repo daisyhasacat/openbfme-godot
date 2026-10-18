@@ -92,11 +92,75 @@ TEST_CASE("mp2 retail: Load Replay shows SaveLoad.apt's replay page: the files i
 	// nothing selected: Load does nothing (noted)
 	fx.wm->fscommand("AptSaveLoad::Load", "");
 	CHECK(fx.services.countRequests(ShellAction::LoadReplayFile) == 0);
-	// a row chosen in the GameList (the list's own selection message), then Load
-	GadgetListBoxSetSelected(games, 0);
-	fx.tick(2);
-	fx.wm->fscommand("AptSaveLoad::Load", "");
+	GadgetDrawList drawn;
+	fx.layer->buildDrawList(drawn);
+	const ListboxData &data = *static_cast<ListboxData *>(games->winGetUserData());
+	CHECK(data.displayPos == 0);
+	for (const std::u16string &name : { u"Last Replay", u"duel", u"old" })
+	{
+		bool visible = false;
+		for (const GadgetDrawCommand &command : drawn.commands)
+		{
+			visible = visible || (command.kind == GadgetDrawCommand::Kind::Text && command.text == name);
+		}
+		CHECK_MESSAGE(visible, "replay filename is drawn: " << std::string(name.begin(), name.end()));
+	}
+	GameWindow *chosen = games;
+	GameWindow *other = autos;
+	int row = 0;
+	std::string path = "/r/duel.replay";
+	SUBCASE("named replay") {}
+	SUBCASE("last replay")
+	{
+		chosen = autos;
+		other = games;
+		path = "/r/Last Replay.replay";
+	}
+	SUBCASE("incompatible replay still reaches the host's validation")
+	{
+		row = 1;
+		path = "/r/old.replay";
+	}
+	starttest::wheelAndClickRow(fx, other, 0);
+	starttest::wheelAndClickRow(fx, chosen, row);
+	int selected = -1;
+	GadgetListBoxGetSelected(chosen, &selected);
+	REQUIRE(selected == row);
+	GadgetListBoxGetSelected(other, &selected);
+	CHECK(selected == -1);
+	fx.tick(10);
+	AptButtonInst *load = starttest::firstButtonIn(fx.at(screen->level(), "MainButtons.Load"));
+	REQUIRE(load);
+	starttest::clickButton(fx, *load);
+	fx.tick(60);
 	REQUIRE(fx.services.countRequests(ShellAction::LoadReplayFile) == 1);
+	CHECK(fx.services.requests.back().argument == path);
+	CHECK(screen->loaded() == path);
+	// The host's profile refusal uses the same modal as a refused saved game, without leaving the replay list (DEVPORT-7; the rows chosen and Load
+	// pressed through the real list and button, as above).
+	starttest::wheelAndClickRow(fx, autos, 0);
+	starttest::wheelAndClickRow(fx, games, 1);
+	fx.tick(10);
+	starttest::clickButton(fx, *load);
+	fx.tick(60);
+	REQUIRE(fx.services.countRequests(ShellAction::LoadReplayFile) == 2);
+	REQUIRE(fx.services.requests.back().argument == "/r/old.replay");
+	screen->loadRefused("old", "Replay profile: Uber. Current profile: Faithful.");
+	CHECK(screen->boxText() == u"Replay profile: Uber.\nCurrent profile: Faithful.");
+	CHECK_FALSE(games->winGetEnabled());
+	fx.tick(20);
+	const int boxLevel = fx.wm->findAptMovieIndex("GuiFX.apt");
+	// tolerance: the refusal modal must have a live movie level to receive its dismissal callback
+	REQUIRE(boxLevel >= 0);
+	fx.wm->fscommand("_level" + std::to_string(boxLevel) + ".MessageBox_OnButtonOk", "");
+	fx.tick(5);
+	CHECK(fx.shell->top() == screen);
+	CHECK(screen->rows() == expected);
+	CHECK(games->winGetEnabled());
+	starttest::wheelAndClickRow(fx, games, 0);
+	fx.tick(10);
+	starttest::clickButton(fx, *load);
+	fx.tick(60);
+	CHECK(fx.services.countRequests(ShellAction::LoadReplayFile) == 3);
 	CHECK(fx.services.requests.back().argument == "/r/duel.replay");
-	CHECK(screen->loaded() == "/r/duel.replay");
 }

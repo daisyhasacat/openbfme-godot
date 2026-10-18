@@ -287,6 +287,7 @@ Path *Pathfinder::patchPath(PathfindObject &obj, const PathfindLocomotorInfo &lo
 		{
 			break;
 		}
+		checkChangeLayers(c, &obj); // RW 0x6F6286 (lane BACKLOG5)
 		bool accepted[4] = { false, false, false, false };
 		for (int i = 0; i < 8; i++)
 		{
@@ -360,5 +361,216 @@ Path *Pathfinder::patchPath(PathfindObject &obj, const PathfindLocomotorInfo &lo
 	{
 		targets[t]->releaseInfo(m_pool); // the target the search ended on was neither open nor closed
 	}
+	return result;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Lane BACKLOG5: the layer-change expansion and computePath's patch
+// ---------------------------------------------------------------------------------------------------------
+void Pathfinder::checkChangeLayers(PathfindCell *parentCell, const PathfindObject *obj)
+{
+	// TARGET RW 0x6F6286 (tier A for BFME2 decomp PathfinderCheckChangeLayers.cpp Pathfinder::CheckChangeLayers, the donor), called by every cell search
+	// after a cell is closed and before its neighbours are examined (RW 0x6FDBDD internalFindPath, 0x6FCD22 patchPath, findSafePath, RW 0x6F7938):
+	//   * a cell that connects to a layer (cell + 0xC bits 10 .. 15): the cell at the same index on that layer, or on the ground when the connection is
+	//     the ground or a wall layer (RW 0x76550F: layer 1 or >= 16), is opened unless it is open or closed already (RW 0x6E7F85 / 0x6E7F98): it gets a
+	//     record (RW 0x6E9FF8; an existing record has its parent cleared), the closed cell as its parent (RW 0x93442F) and the parent's cost so far and
+	//     total cost unchanged: a layer change costs nothing;
+	//   * a cell with a pathfind waypoint (cell + 0x14) the unit may use (RW 0x68229C): the waypoint's id is taken off the end of the pending hops
+	//     (pathfinder + 0x1C1CC) and the ground cell under each of its links is opened the same way, with the waypoint recorded (RW 0x93443D).
+	// PORT (what is and is not here, S-161 / S-1830): only the GROUND-connection subset of the first rule. The lookup of a cell on a bridge layer
+	// (RW 0x5E2E9C with the connection) is not implemented: no layer but the ground holds cells. The second rule (the waypoint expansion, RW 0x68229C /
+	// 0x93443D and the hop list) is not implemented: cells carry no waypoints. The wall layers (connection >= 16, RW 0x76550F) cannot be represented: the
+	// port's connection field has four bits (PathfindCell::m_connectsToLayer). The one case that runs, a connection to the ground, names the cell's own index on
+	// the ground, which is the closed parent: nothing is opened, so on today's maps the call changes no search. It is here so the call sites match RW's.
+	(void)obj;
+	if (parentCell->getConnectLayer() != LAYER_GROUND)
+	{
+		return;
+	}
+	const ICoord2D ndx = { (int)parentCell->getXIndex(), (int)parentCell->getYIndex() };
+	PathfindCell *cell = getCell(LAYER_GROUND, ndx.x, ndx.y);
+	if (cell == nullptr || (cell->hasInfo() && (cell->getOpen() || cell->getClosed())))
+	{
+		return;
+	}
+	if (!cell->hasInfo())
+	{
+		if (!cell->allocateInfo(m_pool, ndx))
+		{
+			return;
+		}
+	}
+	else
+	{
+		cell->clearParentCell();
+	}
+	cell->setParentCell(parentCell);
+	cell->setCostSoFar(parentCell->getCostSoFar());
+	cell->setTotalCost(parentCell->getTotalCost());
+	m_open.push(cell);
+}
+
+Path *Pathfinder::patchPath(PathfindObject *obj, const PathfindLocomotorInfo &loco, Path *originalPath, bool blocked)
+{
+	// TARGET RW 0x6FC9DA (pathfinder vtable 0xC1B8D8 slot 0x10, the call of computePath RW 0x6663F4 for a unit with blocked frames; BFME2 decomp
+	// pathfinder.cpp Pathfinder::PatchPath as donor, tier B: one byte longer in RotWK, the logic read from the RotWK disassembly):
+	//   * no original path: nothing. The footprint radius / centring RW 0x6ED071; isHuman (player + 0x5C != 1); the pending hops emptied and every block
+	//     made passable (RW 0x937C65); the unit's centred cell (RW 0x6E8CE6) and the clipped cell of its layer (RW 0x6EA076): none, or no AI
+	//     (object + 0x260): nothing. Tunnelling off; the start gets a record, starts with no goal cell (RW 0x934400(0)) and is pushed;
+	//   * the original path is walked from its LAST node back to (not including) its first: a node whose footprint the unit cannot stand on ends the walk
+	//     (checkForMovement RW 0x6EB792 on the node's layer with the footprint radius, flags 1 for a HERO else 0x10, | 2; transient = `blocked` only while
+	//     the node's cell is within 2 cells of the unit's on both axes); of the nodes that pass, the one nearest the unit (dy^2 + dx^2, SSE, strictly
+	//     nearer than the last node and than the earlier ones) is the goal position. The walk stopped on the last node: the lists are cleaned, nothing;
+	//   * the ground cell under the goal position gets a record (RotWK does not test it for null; the port returns nothing then);
+	//   * every popped cell (RW 0x6F4AF2): its centre (RW 0x6EA0A1) equal (x and y) to the position of a node the walk passed (last .. the node after
+	//     the stop) ends the search: a new path gets the original's nodes after that node (RW 0x6653DC, from the last back), then the cells from the
+	//     unit's position (RW 0x6EF591), and is optimised with `blocked` (RW 0x7661A3). Else the cell is closed, and while fewer cells than GameData
+	//     MaxCellsPatchPath (+ 0x120C, row RW 0xC01170; unsigned) were examined its layer links (RW 0x6F6286) and neighbours (RW 0x6F9850, no goal
+	//     cell) are expanded.
+	// The original path is not changed: computePath replaces it with the patch.
+	if (originalPath == nullptr || obj == nullptr)
+	{
+		return nullptr;
+	}
+	note(pathstops::kPatchLayers);
+	int radius = 0;
+	bool centerInCell = false;
+	getRadiusAndCenter(obj, radius, centerInCell);
+	const bool isHuman = !obj->isComputerControlled();
+	m_zoneManager.setAllPassable();
+	unsigned cellCount = 0;
+	const Coord3D currentPosition = obj->getPosition();
+	ICoord2D startCellNdx;
+	worldToCell(&currentPosition, true, &startCellNdx);
+	Coord3D clipped = currentPosition;
+	PathfindCell *parentCell = getClippedCell(obj->getLayer(), &clipped);
+	if (parentCell == nullptr || !obj->hasAI())
+	{
+		return nullptr;
+	}
+	m_isTunneling = false;
+	if (!parentCell->hasInfo())
+	{
+		if (!parentCell->allocateInfo(m_pool, startCellNdx))
+		{
+			return nullptr;
+		}
+	}
+	else
+	{
+		parentCell->clearParentCell();
+	}
+	PathfindCell *const startCell = parentCell;
+	parentCell->startPathfind(nullptr);
+	m_open.clear();
+	m_closedList = nullptr;
+	m_open.push(parentCell);
+
+	const PathNode *const lastNode = originalPath->getLastNode();
+	const PathNode *const firstNode = originalPath->getFirstNode();
+	Coord3D goalPos = *lastNode->getPosition();
+	float goalDeltaSqr;
+	{
+		const float dy = SimMath::subf32(goalPos.y, currentPosition.y), dx = SimMath::subf32(goalPos.x, currentPosition.x);
+		goalDeltaSqr = SimMath::addf32(SimMath::mulf32(dy, dy), SimMath::mulf32(dx, dx));
+	}
+	const PathfindMovement mv = makeMovement(obj, loco);
+	const PathNode *startNode;
+	for (startNode = lastNode; startNode != firstNode; startNode = startNode->getPrevious())
+	{
+		PathfindCheckMovement info;
+		worldToCell(startNode->getPosition(), true, &info.cell);
+		info.layer = startNode->getLayer();
+		info.radius = radius;
+		info.center = centerInCell;
+		const int cx = info.cell.x - startCellNdx.x, cy = info.cell.y - startCellNdx.y;
+		info.transient = blocked && cx >= -2 && cx <= 2 && cy >= -2 && cy <= 2;
+		info.flags = (obj->isKindOf(PK_HERO) ? 1u : 0x10u) | 2u;
+		info.ignoreId = obj->getIgnoredObstacleID();
+		info.mv = mv;
+		if (!checkForMovement(obj, info, nullptr))
+		{
+			break;
+		}
+		const float dx = SimMath::subf32(startNode->getPosition()->x, currentPosition.x), dy = SimMath::subf32(startNode->getPosition()->y, currentPosition.y);
+		const float dist = SimMath::addf32(SimMath::mulf32(dy, dy), SimMath::mulf32(dx, dx));
+		if (goalDeltaSqr > dist)
+		{
+			goalPos = *startNode->getPosition();
+			goalDeltaSqr = dist;
+		}
+	}
+	if (startNode == lastNode)
+	{
+		cleanOpenAndClosedLists();
+		startCell->releaseInfo(m_pool);
+		return nullptr;
+	}
+	PathfindCell *candidateGoal = getCell(LAYER_GROUND, &goalPos);
+	if (candidateGoal == nullptr)
+	{
+		cleanOpenAndClosedLists();
+		startCell->releaseInfo(m_pool);
+		return nullptr;
+	}
+	if (!candidateGoal->hasInfo())
+	{
+		ICoord2D goalNdx;
+		worldToCell(&goalPos, true, &goalNdx);
+		if (!candidateGoal->allocateInfo(m_pool, goalNdx))
+		{
+			cleanOpenAndClosedLists();
+			startCell->releaseInfo(m_pool);
+			return nullptr;
+		}
+	}
+	else
+	{
+		candidateGoal->clearParentCell();
+	}
+	m_shortcutCounter = 0;
+	Path *result = nullptr;
+	while (!m_open.empty())
+	{
+		parentCell = m_open.pop();
+		Coord3D cellCenter;
+		adjustCoordToCell(parentCell->getXIndex(), parentCell->getYIndex(), centerInCell, cellCenter, parentCell->getLayer());
+		const PathNode *matchNode;
+		bool found = false;
+		for (matchNode = lastNode; matchNode != startNode; matchNode = matchNode->getPrevious())
+		{
+			if (cellCenter.x == matchNode->getPosition()->x && cellCenter.y == matchNode->getPosition()->y)
+			{
+				found = true;
+				break;
+			}
+		}
+		if (found)
+		{
+			m_isTunneling = false;
+			result = new Path();
+			for (const PathNode *node = lastNode; node != matchNode; node = node->getPrevious())
+			{
+				result->prependNode(node->getPosition(), node->getLayer());
+			}
+			prependCells(result, &currentPosition, parentCell, centerInCell);
+			result->optimize(*this, obj, loco.validSurfaces, blocked, nullptr);
+			break;
+		}
+		markClosed(parentCell);
+		if (cellCount < (unsigned)m_config.patchPathLimit)
+		{
+			checkChangeLayers(parentCell, obj);
+			cellCount += (unsigned)examineNeighboringCells(parentCell, nullptr, loco, isHuman, centerInCell, radius, startCellNdx, obj);
+		}
+	}
+	m_isTunneling = false;
+	cleanOpenAndClosedLists();
+	if (result)
+	{
+		parentCell->releaseInfo(m_pool);
+	}
+	startCell->releaseInfo(m_pool);
+	candidateGoal->releaseInfo(m_pool);
 	return result;
 }

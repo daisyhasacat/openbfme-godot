@@ -62,6 +62,7 @@ public:
 class WallHubBehavior : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(WallHubBehavior) // lane SAVE-4b: UpdateModule's (no state of its own)
 	WallHubBehavior(Thing *thing, const WallHubBehaviorModuleData *data);
 	UpdateSleepTime update() override { return UPDATE_SLEEP_FOREVER; } // RW 0x88B211
 	void crc(StateHasher &hasher) const override;

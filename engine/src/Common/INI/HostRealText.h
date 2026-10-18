@@ -6,14 +6,14 @@
 // and the edge forms "3e", "0x." and "nan" read differently), so the simulation calls neither:
 //   * strtofPortable is retail's reading of a real: MSVCR71's sscanf("%f") ported instruction by instruction (Common/INI/Msvcr71Real.h). The INI
 //     reals of the port's own field re-parsers go through it, like INI::scanReal (retail reads every such field with sscanf "%f").
-//   * scanRealText / strtodPortable are the correctly rounded reading (the C++ library's std::from_chars, implemented in libc++, libstdc++ and the
-//     MSVC STL themselves): for a double the port needs that retail does not read through the CRT.
+//   * scanRealText / strtodPortable are the correctly rounded reading (Common/FloatFromChars.h, the same pinned parser on every platform): for a
+//     double the port needs that retail does not read through the CRT.
 #pragma once
 
 #include "Common/INI/Msvcr71Real.h"
+#include "Common/FloatFromChars.h"
 
 #include <cctype>
-#include <charconv>
 #include <limits>
 #include <system_error>
 
@@ -112,10 +112,10 @@ inline const char *scanRealText(const char *text, T &out)
 		}
 	}
 	T v = T(0);
-	const std::from_chars_result r = std::from_chars(number, p, v, std::chars_format::general);
+	const std::from_chars_result r = FloatFromChars(number, p, v);
 	if (r.ec == std::errc::result_out_of_range)
 	{
-		// the libraries report a result that overflows, or one that rounds to zero, as out of range (and leave v alone): the decimal exponent of the
+		// the parser reports a result that overflows, or one that rounds to zero, as out of range: the decimal exponent of the
 		// leading digit tells which (a value of T's subnormal range is in range and converted above, never here)
 		const bool overflow = seenNonZero && leadExponent + exponent > 0;
 		out = overflow ? (negative ? -inf : inf) : (negative ? -T(0) : T(0));

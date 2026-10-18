@@ -191,6 +191,11 @@ bool SkirmishGameSetup::restoreSaved(const SkirmishGameInfo &saved, const std::s
 	for (int i = 0; i < MAX_SLOTS; ++i)
 	{
 		SkirmishGameSlot slot = saved.slots[i];
+		// lane OWNERFIX-2: retail's parser takes + 0x20 in -100 .. 0 (RW 0x802DBA); the lobby's combo offers 0, -5 .. -95 only (RW 0x840B9D)
+		if (!SkirmishGameSlot::handicapValid(slot.handicap))
+		{
+			return fail("the kept game's slot " + std::to_string(i) + " has the handicap " + std::to_string(slot.handicap) + ", which the lobby does not offer (0, -5 .. -95)");
+		}
 		if (!slot.isHuman())
 		{
 			slot.name = stateText(slot.state); // GameSlot::setState gives a computer, open or closed slot its state's text
@@ -325,6 +330,17 @@ std::vector<SkirmishComboEntry> SkirmishGameSetup::teamEntries() const
 	for (int c = 0; c < MAX_SLOTS / 2; ++c)
 	{
 		out.push_back({ label("Team:" + std::to_string(c + 1)), 0xFFFFFFFFu, c });
+	}
+	return out;
+}
+
+std::vector<SkirmishComboEntry> SkirmishGameSetup::handicapEntries() const
+{
+	std::vector<SkirmishComboEntry> out;
+	for (int h = 0; h >= -0x5F; h -= 5) // RW 0x840BF6 .. 0x840C2F
+	{
+		const std::string text = std::to_string(h) + "%"; // u"%d%%"
+		out.push_back({ std::u16string(text.begin(), text.end()), 0xFFFFFFFFu, h });
 	}
 	return out;
 }
@@ -543,6 +559,16 @@ bool SkirmishGameSetup::setSlotTeam(int slot, int team)
 		return false;
 	}
 	m_info.slots[slot].teamNumber = team;
+	return true;
+}
+
+bool SkirmishGameSetup::setSlotHandicap(int slot, int handicap)
+{
+	if (slot < 0 || slot >= MAX_SLOTS || !SkirmishGameSlot::handicapValid(handicap))
+	{
+		return false;
+	}
+	m_info.slots[slot].handicap = handicap;
 	return true;
 }
 

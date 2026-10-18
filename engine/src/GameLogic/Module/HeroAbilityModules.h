@@ -140,6 +140,7 @@ public:
 class ShareExperienceBehavior : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(ShareExperienceBehavior) // lane SAVE-4b
 	ShareExperienceBehavior(Thing *thing, const ShareExperienceBehaviorModuleData *data); // RW 0x88314A
 	UpdateSleepTime update() override { return UPDATE_SLEEP_FOREVER; }
 	void share(float value); // RW 0x8832F0
@@ -178,6 +179,7 @@ public:
 class DamageFilteredCreateObjectDie : public BehaviorModule, public DieModuleInterface, public DamageModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(DamageFilteredCreateObjectDie) // lane SAVE-4b: retail's layout (RW 0x88927E, (1, 1))
 	DamageFilteredCreateObjectDie(Thing *thing, const DamageFilteredCreateObjectDieModuleData *data) : BehaviorModule(thing, data), m_data(data) {}
 	DieModuleInterface *getDie() override { return this; }
 	DamageModuleInterface *getDamage() override { return this; }
@@ -250,6 +252,7 @@ public:
 class AutoAbilityBehavior : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(AutoAbilityBehavior) // lane SAVE-4b
 	AutoAbilityBehavior(Thing *thing, const AutoAbilityBehaviorModuleData *data); // RW 0x85D7FD
 	UpdateSleepTime update() override;                                           // RW 0x85D9D1
 	void onObjectCreated() override;                                              // the StartsActive part of the constructor (needs the command set)
@@ -334,6 +337,7 @@ public:
 class WeaponModeSpecialPowerUpdate : public UpdateModule, public SpecialPowerModuleInterface, public SpecialPowerUpdateInterface
 {
 public:
+	OBFME_MODULE_XFER(WeaponModeSpecialPowerUpdate) // lane SAVE-4b
 	WeaponModeSpecialPowerUpdate(Thing *thing, const WeaponModeSpecialPowerUpdateModuleData *data); // RW 0x8982D5
 	SpecialPowerModuleInterface *getSpecialPower() override { return this; }
 	bool drivesSpecialPower(const SpecialPowerTemplate *t) const override { return t && t == m_data->m_specialPowerTemplate; } // RW 0x89827C
@@ -396,6 +400,7 @@ public:
 class DualWeaponBehavior : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(DualWeaponBehavior) // lane SAVE-4b
 	DualWeaponBehavior(Thing *thing, const DualWeaponBehaviorModuleData *data); // RW 0x85DEC9
 	UpdateSleepTime update() override;                                         // RW 0x85DF88
 	void crc(StateHasher &h) const override;
@@ -419,6 +424,7 @@ public:
 class TemporarilyDefectUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(TemporarilyDefectUpdate) // lane SAVE-4b
 	TemporarilyDefectUpdate(Thing *thing, const TemporarilyDefectUpdateModuleData *data); // RW 0x8D0B0D
 	UpdateSleepTime update() override;                                                    // RW 0x8D0CE0
 	void crc(StateHasher &h) const override;
@@ -428,6 +434,7 @@ public:
 	void friend_markEnded() { m_ended = true; }
 	static TemporarilyDefectUpdate *of(Object &obj); // RW 0x68BDA5("TemporarilyDefectUpdate")
 	unsigned endFrame() const { return m_endFrame; }
+	unsigned startFrame() const { return m_startFrame; } // RW 0x92F83E
 	ObjectID dominator() const { return m_dominator; }
 
 private:
@@ -453,6 +460,7 @@ public:
 class DominateEnemySpecialPower : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(DominateEnemySpecialPower) // lane SAVE-4b
 	DominateEnemySpecialPower(Thing *thing, const DominateEnemySpecialPowerModuleData *data);
 	unsigned dominated() const { return m_dominated; }
 	void crc(StateHasher &h) const override;
@@ -481,6 +489,7 @@ public:
 class ActivateModuleSpecialPower : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(ActivateModuleSpecialPower) // lane SAVE-4b
 	ActivateModuleSpecialPower(Thing *thing, const ActivateModuleSpecialPowerModuleData *data);
 	void onObjectCreated() override;                            // RW 0x8D238D
 	void finishAbility(bool ownerDying, bool aborted) override; // RW 0x8D2370
@@ -511,6 +520,7 @@ public:
 class ArrowStormUpdate : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(ArrowStormUpdate) // lane SAVE-4b
 	ArrowStormUpdate(Thing *thing, const ArrowStormUpdateModuleData *data); // RW 0x894063
 	unsigned shots() const { return (unsigned)m_shots; }
 	size_t targetsQueued() const { return m_targets.size(); }
@@ -544,6 +554,7 @@ public:
 class CurseSpecialPower : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(CurseSpecialPower) // lane SAVE-4b
 	CurseSpecialPower(Thing *thing, const CurseSpecialPowerModuleData *data);
 	unsigned cursed() const { return m_cursed; }
 	void crc(StateHasher &h) const override;
@@ -560,6 +571,7 @@ private:
 class FellBeastSwoopPower : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(FellBeastSwoopPower) // lane SAVE-4b
 	FellBeastSwoopPower(Thing *thing, const SpecialAbilityUpdateModuleData *data); // RW 0x8CB0A8
 	UpdateSleepTime update() override;                          // RW 0x8CB2CE
 	void finishAbility(bool ownerDying, bool aborted) override; // RW 0x8CB194
@@ -593,6 +605,7 @@ public:
 class RousingSpeechUpdate : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(RousingSpeechUpdate) // lane SAVE-4b
 	RousingSpeechUpdate(Thing *thing, const RousingSpeechUpdateModuleData *data); // RW 0x8B05EA
 	UpdateSleepTime update() override;                                            // RW 0x8B068D
 	unsigned followersInspired() const { return m_inspired; }
@@ -627,6 +640,7 @@ public:
 class TeleportSpecialAbilityUpdate : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(TeleportSpecialAbilityUpdate) // lane SAVE-4b
 	TeleportSpecialAbilityUpdate(Thing *thing, const TeleportSpecialAbilityUpdateModuleData *data);
 	unsigned teleports() const { return m_teleports; }
 	void crc(StateHasher &h) const override;
@@ -645,6 +659,7 @@ private:
 class SpecialPowerTimerRefreshSpecialPower : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(SpecialPowerTimerRefreshSpecialPower) // lane SAVE-4b
 	SpecialPowerTimerRefreshSpecialPower(Thing *thing, const SpecialPowerModuleData *data) : SpecialPowerModule(thing, data) {}
 	unsigned refreshed() const { return m_refreshed; }
 	void crc(StateHasher &h) const override;

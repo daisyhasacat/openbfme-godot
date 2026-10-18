@@ -7,12 +7,14 @@
 #include "Common/NumericState.h"
 #include "Common/Player.h"
 #include "Common/StateHash.h"
+#include "Common/Upgrade.h"
 #include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
+#include "Common/Xfer.h"
 
 const HeroRecord *PlayerHeroList::at(int index) const
 {
@@ -192,6 +194,31 @@ double PlayerHeroList::progressAt(GameLogic &logic, const Player &owner, int ind
 	return (double)SimMath::divf32((float)elapsed, (float)time);
 }
 
+// RW 0x780D22: an idle record returns one and writes cost; an active record leaves cost alone, and a nonpositive duration returns zero.
+double PlayerHeroList::availabilityAt(GameLogic &logic, const Player &owner, int index, const Object *producer, unsigned *cost) const
+{
+	const HeroRecord *r = at(index);
+	if (!r)
+	{
+		return 0.0;
+	}
+	if (r->startFrame == -1)
+	{
+		if (cost)
+		{
+			*cost = (unsigned)recordCost(logic, owner, *r, producer);
+		}
+		return 1.0;
+	}
+	const int time = recordFrames(logic, owner, *r, producer);
+	if (time <= 0)
+	{
+		return 0.0;
+	}
+	const double elapsed = SimMath::pc24SubD((double)logic.getFrame(), (double)r->startFrame);
+	return SimMath::pc24DivD(elapsed, (double)time);
+}
+
 // RW 0x78131E
 int PlayerHeroList::findIndex(const ThingTemplate &tt, std::uint32_t productionID, int nth) const
 {
@@ -234,5 +261,40 @@ void PlayerHeroList::crc(StateHasher &h) const
 		h.addFloat(r.uiFactor);
 		h.addString(r.objectName);
 		h.addString(r.templateName);
+	}
+}
+
+// lane SAVE-4a: OpenBFME native layout of the hero records (RW Player + 0x758; retail transfers them inside Player::DoXfer RW 0x6B205F, not inventoried
+// field by field): every field of every record, in list order
+void PlayerHeroList::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	// a record's fixed bytes: experience, rank, base rank, the upgrade mask (0x24 words), cost, start frame, seconds, two flags, production id, level
+	// cap, UI factor, two empty names
+	x.xferVectorSize(m_records, 4 + 4 + 4 + 4 * UpgradeMaskType::WORDS + 4 + 4 + 4 + 1 + 1 + 4 + 4 + 4 + 1 + 1);
+	for (HeroRecord &r : m_records)
+	{
+		x.xferReal(&r.experience);
+		x.xferInt(&r.rank);
+		x.xferInt(&r.baseRank);
+		for (std::uint32_t &w : r.upgradeMask.words)
+		{
+			x.xferUnsignedInt(&w);
+		}
+		if (x.isLoading())
+		{
+			checkLoadedUpgradeMask(r.upgradeMask, "a hero record's upgrades"); // lane SAVE-4e (closed sets)
+		}
+		x.xferUnsignedInt(&r.cost);
+		x.xferInt(&r.startFrame);
+		x.xferInt(&r.seconds);
+		x.xferBool(&r.dead);
+		x.xferBool(&r.objectFlag);
+		x.xferUnsignedInt(&r.productionID);
+		x.xferInt(&r.levelCap);
+		x.xferReal(&r.uiFactor);
+		x.xferAsciiString(&r.objectName);
+		x.xferAsciiString(&r.templateName);
 	}
 }

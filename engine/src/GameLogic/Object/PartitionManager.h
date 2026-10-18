@@ -234,6 +234,10 @@ public:
 	size_t entryCount() const { return m_entryCount; }
 
 	void crc(StateHasher &h) const;
+	// lane SAVE-4c: the obfme:Partition block (PartitionManager.cpp). A load reads the state into a pending record; the post-process (after every
+	// block, so the objects exist) rebuilds the entries, the dirty list and every node list in their saved order, each entry linked to its object by id
+	void xfer(class Xfer &x);
+	void loadPostProcess();
 	static std::vector<std::string> stopLines();
 	// tests: the range walk's double-precision pre-reject (surelyBeyond) on or off; the results are the same either way (not state)
 	void setPreReject(bool on) { m_preReject = on; }
@@ -289,6 +293,28 @@ private:
 	mutable std::unordered_map<const ThingTemplate *, Geometry> m_geometry; ///< looked up only (never iterated); element references stay valid
 	mutable std::vector<std::vector<PartitionHit>> m_hitPool;              ///< the buffers of finished queries (PartitionHits)
 	bool m_preReject = true;
+	// lane SAVE-4c: the state a load read, until its post-process builds it (PartitionManager.cpp)
+	struct PendingLoad
+	{
+		struct SavedEntry
+		{
+			ObjectID id;
+			std::int32_t layerPlus1;
+			std::uint32_t x, y, mask;
+		};
+		struct SavedNode
+		{
+			std::uint32_t index; ///< tree * kNodes + node
+			std::int32_t below;
+			std::vector<ObjectID> list;
+		};
+		float loX, loY, hiX, hiY, scale;
+		bool regionSet;
+		std::vector<SavedEntry> entries; ///< the entry list's order (newest first)
+		std::vector<ObjectID> dirty;     ///< the dirty list's order (head first)
+		std::vector<SavedNode> nodes;    ///< the nodes holding or leading to entries, in index order
+	};
+	std::unique_ptr<PendingLoad> m_pendingLoad;
 	mutable bool m_walkPreReject = true; ///< this walk's: off when the query rectangle is the whole grid (every candidate is near: the bound would only cost)
 	int m_mineBit = -1;
 };

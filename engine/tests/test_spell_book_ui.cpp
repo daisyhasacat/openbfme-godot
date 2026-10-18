@@ -14,11 +14,13 @@
 #include "Common/Science.h"
 #include "Common/SpecialPower.h"
 #include "Common/Team.h"
+#include "GameClient/ControlBarCommands.h"
 #include "GameClient/SpellBookUI.h"
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/GameLogicDispatch.h"
 #include "GameLogic/Module/SpecialPowerModules.h"
+#include "GameLogic/Module/SpellBookPowers.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SpellCommands.h"
 
@@ -88,6 +90,101 @@ struct UiGame
 	}
 };
 } // namespace
+
+TEST_CASE("stops-b S-932 retail: buying passives emits CommandTrigger after the science purchase")
+{
+	OPENBFME_REQUIRE_START(shared);
+	auto ctx = shared->world->enterContext();
+	UiGame g(*shared);
+	for (int faction : { 5, 3 })
+	{
+		const bool scavenger = faction == 5;
+		const char *scienceName = scavenger ? "SCIENCE_Scavenger" : "SCIENCE_FueltheFires";
+		INFO(scienceName);
+		Player &p = *g.player(faction);
+		const ScienceType science = TheScienceStore->getScienceFromInternalName(scienceName);
+		const ScienceInfo *info = TheScienceStore->findScienceInfo(science);
+		REQUIRE(info);
+		REQUIRE_FALSE(info->m_prereqSciences.empty());
+		for (ScienceType prerequisite : info->m_prereqSciences.front())
+		{
+			if (!p.science().hasScience(prerequisite))
+				REQUIRE(p.science().addScience(prerequisite));
+		}
+		p.science().addSciencePurchasePoints(100);
+		SpellStoreModel store;
+		std::string error;
+		REQUIRE_MESSAGE(store.open(shared->world->commands(), *g.logic, p, &error), error);
+		const SpellStoreModel::Button *purchase = nullptr;
+		for (const auto &b : store.buttons())
+			if (b.science == science)
+				purchase = &b;
+		REQUIRE(purchase);
+		const std::string availability = std::string("science=") + scienceName + ", points=" + std::to_string(p.science().getSciencePurchasePoints())
+			+ ", cost=" + std::to_string(purchase->cost) + ", prerequisites="
+			+ std::to_string(TheScienceStore->playerHasPrereqsForScience(p.science(), science)) + ", disabled=" + std::to_string(p.isScienceDisabled(science))
+			+ ", hidden=" + std::to_string(p.isScienceHidden(science));
+		REQUIRE_MESSAGE(purchase->state == SpellStoreModel::STATE_AVAILABLE, availability);
+		const int index = purchase->index;
+		REQUIRE(purchase->button);
+		REQUIRE(purchase->button->m_commandTrigger.size() == 1);
+		const CommandButton *trigger = shared->world->commands().findCommandButton(purchase->button->m_commandTrigger.front());
+		REQUIRE(trigger);
+		REQUIRE(trigger->hasOption(COMMAND_OPTION_NONPRESSABLE));
+		const SpecialPowerTemplate *power = TheSpecialPowerStore->findSpecialPowerTemplate(trigger->m_specialPowerName);
+		REQUIRE(power);
+		Object *book = SpecialPowerModules::findSpellBookObject(*g.logic, p);
+		REQUIRE(book);
+		auto *sp = dynamic_cast<SpecialPowerModule *>(SpecialPowerModules::findModule(*book, power));
+		REQUIRE(sp);
+		const auto *scav = dynamic_cast<ScavengerSpecialPower *>(sp);
+		REQUIRE((scavenger ? scav != nullptr : std::string(sp->getModuleClassName()) == "SpecialPowerModule"));
+		CHECK(sp->triggers() == 0);
+		const auto before = g.logic->computeStateHash();
+		REQUIRE(store.click(index));
+		CHECK_FALSE(store.click(index));
+		store.reset();
+		CHECK(store.close().empty());
+		CHECK(g.logic->computeStateHash() == before);
+		REQUIRE(store.open(shared->world->commands(), *g.logic, p, &error));
+		REQUIRE(store.click(index));
+		const auto messages = store.close();
+		CHECK(g.logic->computeStateHash() == before);
+		CHECK_FALSE(p.science().hasScience(science));
+		CHECK(sp->triggers() == 0);
+		CHECK(messages.size() == 2);
+		REQUIRE_FALSE(messages.empty());
+		CHECK(messages[0].getType() == MSG_PURCHASE_SCIENCE);
+		if (messages.size() == 2)
+		{
+			const GameMessage &m = messages[1];
+			CHECK(m.getType() == MSG_DO_SPELLBOOK_SPECIAL_POWER);
+			CHECK(m.getPlayerIndex() == p.getPlayerIndex());
+			REQUIRE(m.getArgument(0));
+			REQUIRE(m.getArgument(1));
+			REQUIRE(m.getArgument(2));
+			CHECK(m.getArgument(0)->integer == (int)power->getID());
+			CHECK(m.getArgument(1)->integer == (int)trigger->m_options);
+			CHECK(m.getArgument(2)->type == ARGUMENTDATATYPE_OBJECTID);
+			CHECK(m.getArgument(2)->objectID == INVALID_ID);
+		}
+		g.send(messages);
+		CHECK(p.science().hasScience(science));
+		CHECK(sp->triggers() == 1);
+		if (scav)
+		{
+			const auto *data = dynamic_cast<const ScavengerSpecialPowerModuleData *>(sp->getModuleData());
+			REQUIRE(data);
+			REQUIRE(data->m_bountyPercent == 1.0f);
+			CHECK(scav->active());
+			CHECK(p.getBountyPercent() == data->m_bountyPercent);
+		}
+		REQUIRE(store.open(shared->world->commands(), *g.logic, p, &error));
+		CHECK_FALSE(store.click(index));
+		CHECK(store.close().empty());
+		CHECK(sp->triggers() == 1);
+	}
+}
 
 TEST_CASE("SPELL-2 retail: each faction's spell store lists its purchase buttons with MP costs; clicks are pending until the store closes")
 {
@@ -245,4 +342,45 @@ TEST_CASE("SPELL-2 retail: the cast bar shows a bought power ready; a NEED_TARGE
 	REQUIRE(now.size() == 1u);
 	g.send(now);
 	CHECK(wild.getBountyPercent() > 0.0f);
+}
+
+// lane DEVPORT-7: a CommandTrigger that names no button (a mod's typo) is reported by name; the purchase and the valid triggers still go out (retail
+// would dereference the missing button in RW 0x940435 case 0x19)
+TEST_CASE("stops-b S-932 retail: a CommandTrigger naming no button is reported, the purchase and the other triggers are sent")
+{
+	OPENBFME_REQUIRE_START(shared);
+	auto ctx = shared->world->enterContext();
+	UiGame g(*shared);
+	Player &p = *g.player(5);
+	const ScienceType science = TheScienceStore->getScienceFromInternalName("SCIENCE_Scavenger");
+	const ScienceInfo *info = TheScienceStore->findScienceInfo(science);
+	REQUIRE(info);
+	REQUIRE_FALSE(info->m_prereqSciences.empty());
+	for (ScienceType prerequisite : info->m_prereqSciences.front())
+	{
+		if (!p.science().hasScience(prerequisite))
+			REQUIRE(p.science().addScience(prerequisite));
+	}
+	p.science().addSciencePurchasePoints(100);
+	SpellStoreModel store;
+	std::string error;
+	REQUIRE_MESSAGE(store.open(shared->world->commands(), *g.logic, p, &error), error);
+	const SpellStoreModel::Button *purchase = nullptr;
+	for (const auto &b : store.buttons())
+		if (b.science == science)
+			purchase = &b;
+	REQUIRE(purchase);
+	REQUIRE(purchase->button);
+	auto &triggers = const_cast<CommandButton *>(purchase->button)->m_commandTrigger;
+	REQUIRE(triggers.size() == 1);
+	triggers.insert(triggers.begin(), "Command_DevPort7NoSuchButton");
+	REQUIRE(store.click(purchase->index));
+	CHECK(store.errors().empty());
+	const auto messages = store.close();
+	triggers.erase(triggers.begin()); // the shared world's button as it was
+	REQUIRE(messages.size() == 2);
+	CHECK(messages[0].getType() == MSG_PURCHASE_SCIENCE);
+	CHECK(messages[1].getType() == MSG_DO_SPELLBOOK_SPECIAL_POWER);
+	REQUIRE(store.errors().size() == 1);
+	CHECK(store.errors()[0] == "spell store: CommandTrigger Command_DevPort7NoSuchButton of " + purchase->button->m_name + " names no special power button");
 }

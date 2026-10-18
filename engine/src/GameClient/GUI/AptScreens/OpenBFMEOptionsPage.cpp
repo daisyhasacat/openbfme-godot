@@ -100,7 +100,9 @@ std::array<int, 4> OpenBFMEOptionsPage::gadgetRect(std::size_t index) const
 		case OpenBFMEPageRow::Kind::Choice:
 			return { x0, y, x1, y + kRowHeight };
 		case OpenBFMEPageRow::Kind::Check:
-			return { x0, y + (kRowHeight - kCheckSize) / 2, x0 + kCheckSize, y + (kRowHeight - kCheckSize) / 2 + kCheckSize };
+			// lane OPTS-6: as wide as the box it draws (W3DGadgetCheckBoxImageDraw: a (height - 6) square from the left edge, 3 down), so a press right of
+			// the box is no click; above and below the box the window keeps its 3 stage pixels (the skin's inset, kCheckBoxMargin)
+			return { x0, y + (kRowHeight - kCheckSize) / 2, x0 + kCheckSize - 2 * kCheckBoxMargin, y + (kRowHeight - kCheckSize) / 2 + kCheckSize };
 		case OpenBFMEPageRow::Kind::Slider:
 			// a narrow column keeps 50 pixels right of the slider for its value
 			return { x0, y, b.narrow ? std::min(x0 + kSliderWidth, x1 - 50) : x0 + kSliderWidth, y + kRowHeight };
@@ -177,6 +179,14 @@ bool OpenBFMEOptionsPage::show(const OpenBFMEPageSpec &spec, std::string *error)
 		if (row.kind == OpenBFMEPageRow::Kind::Choice)
 		{
 			GadgetComboBoxSetMaxDisplay(w, kComboMaxDisplay);
+			// lane OPTS-6: combobox.wnd's drop-down button is 30 high, the row's box 26: it hung 4 stage pixels under the box, where a press found no
+			// window. The button takes the box's height, so the combo box draws exactly the window that takes its clicks
+			if (GameWindow *button = GadgetComboBoxGetDropDownButton(w))
+			{
+				int bw = 0, bh = 0;
+				button->winGetSize(&bw, &bh);
+				button->winSetSize(bw, r[3] - r[1]);
+			}
 		}
 		else if (row.kind == OpenBFMEPageRow::Kind::Slider)
 		{
@@ -406,7 +416,7 @@ int OpenBFMEOptionsPage::rowAt(float x, float y) const
 
 int OpenBFMEOptionsPage::tabAt(float x, float y) const
 {
-	if (x < kTabsLeft + 8 || x >= kTabsRight - 8)
+	if (x < kTabsLeft + 12 || x >= kTabsRight - 12) // lane OPTS-6: the drawn bar (decorate: the selection image kTabsLeft + 12 .. kTabsRight - 12); OPTS-3 took 4 more each side
 	{
 		return -1;
 	}

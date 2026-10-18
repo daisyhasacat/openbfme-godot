@@ -21,6 +21,7 @@
 
 #include "Common/GameCommon.h"
 #include "Common/StateHash.h"
+#include "GameLogic/AI/AIXfer.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/AI/AIAttack.h"
 #include "GameLogic/AI/AIAttackMelee.h"
@@ -33,6 +34,7 @@
 #include "GameLogic/Combat/ObjectWeapons.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Module/HordeContain.h"
+#include "GameLogic/Module/BloodthirstyUpdate.h"
 #include "GameLogic/Module/SquishCollide.h"
 #include "GameLogic/Object/Contain/HordeContainBehaviorData.h"
 #include "GameLogic/Object/Contain/HordeContainCore.h"
@@ -331,6 +333,17 @@ struct HordeSquishState : AIState
 		h.addFloat(m_victimPos.z);
 		h.addU32(m_pathFrame);
 		h.addBool(m_flagSet);
+	}
+	// lane SAVE-4c (obfme:AIWorld): AIAttackMeleeSquishState::xfer RW 0x74243F is (1, 1): the internal move, a position, a cell, a frame and a bool; OpenBFME layout
+	// (S-4220): crc's fields
+	void xfer(Xfer &x) override
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		xferMove(x, ai().mover(), m_move);
+		AIXfer::coord(x, m_victimPos);
+		x.xferUnsignedInt(&m_pathFrame);
+		x.xferBool(&m_flagSet);
 	}
 };
 
@@ -697,6 +710,17 @@ struct HordeMeleeApproachState : AIState
 		h.addBool(m_failed); // lane PHYS-1
 		h.addU32(m_keptRequests);
 	}
+	void xfer(Xfer &x) override // lane SAVE-4c (obfme:AIWorld, OpenBFME layout: S-4220)
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		xferMove(x, ai().mover(), m_move);
+		AIXfer::coord(x, m_prev);
+		AIXfer::coord(x, m_goal);
+		x.xferUnsignedInt(&m_repathFrame);
+		x.xferBool(&m_failed);
+		x.xferUnsignedInt(&m_keptRequests);
+	}
 };
 
 // B1 AIAttackMeleeHordeWaitState: the melee phase
@@ -754,6 +778,12 @@ struct HordeMeleeWaitState : AIState
 		}
 	}
 	void crc(StateHasher &h) const override { h.addU32(m_waitUntil); }
+	void xfer(Xfer &x) override // lane SAVE-4c: AIAttackMeleeHordeWaitState::xfer RW 0x7420C7 is (1, 1): the frame
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		x.xferUnsignedInt(&m_waitUntil);
+	}
 };
 
 // B1 AIAttackMeleeHordeWaitPathState
@@ -793,15 +823,27 @@ struct HordeMeleeWaitPathState : AIState
 		h.addU32(m_nextCheck);
 		h.addI32(m_failures);
 	}
+	void xfer(Xfer &x) override // lane SAVE-4c: AIAttackMeleeHordeWaitPathState::xfer RW 0x7420F9 is (1, 2): u32, i32 (these two)
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		x.xferUnsignedInt(&m_nextCheck);
+		x.xferInt(&m_failures);
+	}
 };
 } // namespace
 
-std::unique_ptr<AIStateMachine> HordeAIUpdate::makeHordeAttackMachine(AIAttackState *att)
+std::unique_ptr<AIStateMachine> HordeAIUpdate::makeHordeAttackMachine(AIAttackState *att, int meleeChoice, bool *madeMelee)
 {
 	std::unique_ptr<AIStateMachine> m = std::make_unique<AIStateMachine>(*this, "AIHordeMachine");
 	ObjectWeapons *w = getObject()->getWeapons();
 	Weapon *weapon = w ? w->currentWeapon() : nullptr;
-	const bool melee = getObject()->isKindOf((unsigned)CombatNames::kinds().meleeHorde) && weapon && weapon->getTemplate() && weapon->getTemplate()->m_meleeWeapon;
+	const bool melee = meleeChoice >= 0 ? meleeChoice != 0
+	                                    : getObject()->isKindOf((unsigned)CombatNames::kinds().meleeHorde) && weapon && weapon->getTemplate() && weapon->getTemplate()->m_meleeWeapon;
+	if (madeMelee)
+	{
+		*madeMelee = melee;
+	}
 	m->defineState(HORDE_SQUISH, std::make_unique<HordeSquishState>(*m), HORDE_APPROACH, MACHINE_DONE_FAILURE);
 	if (melee)
 	{
@@ -1021,9 +1063,22 @@ static Object *amoebaReach(Object &m, Object &target)
 	}
 	Object *best = nullptr;
 	float bestD = 0.0f;
+	ObjectID sacrificeTarget = INVALID_ID;
+	if (m.testStatus((unsigned)CombatNames::status("BLOODTHIRSTY")))
+	{
+		if (Object *horde = m.getHordeObject(false))
+		{
+			if (BloodthirstyUpdate *bloodthirsty = BloodthirstyUpdate::find(*horde))
+			{
+				sacrificeTarget = bloodthirsty->bestTargetID();
+			}
+		}
+	}
 	for (Object *e : cands)
 	{
-		if (m.getRelationship(*e) != ENEMIES || !w->isWithinAttackRange(*e))
+		// RW 0x6F2956: the recorded victim or an object it produced bypasses the relationship veto.
+		const bool sacrifice = sacrificeTarget != INVALID_ID && (e->getID() == sacrificeTarget || e->getProducerID() == sacrificeTarget);
+		if ((!sacrifice && m.getRelationship(*e) != ENEMIES) || !w->isWithinAttackRange(*e))
 		{
 			continue;
 		}

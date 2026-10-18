@@ -23,6 +23,10 @@ found (see "Lane UI-3" at the end). Research date: 2026-10-10.
 - **Permanent URLs: unknown, so pin them.** The MD5-named file URL from the manifest is the pin, and
   the service's file owner is pinned per package. A changed owner or URL stops the install.
 - **Bandwidth: fine.**
+- **BFME1 1.03 as an optional download (the owner, 2026-10-18; community PR #36):** "it's fine to download the first game
+  but add it as OPTIONAL for the BFME1 menu; we don't distribute it, it's downloaded from BFME Arena, they take the legal
+  risk." The `original-BFME1` package (346 English files, lotrbfme.exe, worldbuilder.exe and the DSOAL dsound.dll among them)
+  is pinned like the others but kept apart (`BFME1_PACKAGES`); see "BFME1 (optional)" below.
 
 ## Short answer
 
@@ -453,3 +457,24 @@ text. In the window that is a dialog after the folder pick; on the command line 
 - `--aio-install=<folder> --aio-consent` is unchanged; the refusal for a switched-off setting now names
   it "Offer to download the games".
 
+
+## BFME1 (optional, community PR #36; restored 2026-10-18)
+
+- **Pins:** `tools/release/aio_package_files.json` holds the 346 English files of `original-BFME1` (name, MD5, size; captured
+  2026-10-16 by the PR's author and checked by the PR review against a BFME1 install from the same service). Its metadata is
+  `tools/release/aio_bfme1_package.json`; `tools/release/aio_pins.py` generates them into `BFME1_PACKAGES` in
+  `launcher/scripts/core/aio_pins.gd`, never into `PACKAGES` (the base download stays RotWK + BFME2).
+- **Opt-in, BFME1 only:** the Game files screen offers it only while the Play card's game picker is on *Battle for Middle-earth I*
+  (the panel reads "Battle for Middle-earth I (optional)", "Downloaded from BFME Arena (bfmeladder.com), a third-party service.
+  OpenBFME does not host or distribute it."); the base offer is shown otherwise. The command line is
+  `--game=bfme1 --aio-package=bfme1 --aio-install=<folder> --aio-consent`. `AioInstall.install` refuses it unless BFME1 is the
+  chosen game, on every path (window, Resume, command line). A paused BFME1 download keeps its package on the panel.
+- **Same checks:** the same service, pinned owner and URLs, manifest checks, MD5 / size per file, `.part` resume, never overwriting a
+  file it did not write; the consent adds the BFME Arena line.
+- **Its own handoff:** `<game user dir>/downloaded-bfme1.cfg` (`SOURCE`, `BFME1_INSTALL`), read by the launcher (`Paths.bfme1_folder`)
+  and the game (`release.gd mount_retail`). Never `downloaded-installs.cfg`: the game's `InstallLocator::readDownloaded` refuses any
+  key but `SOURCE`, `ROTWK_INSTALL` and `BFME2_INSTALL`, so a BFME1 line there would lose the RotWK / BFME2 first-run offer.
+  Its record is `aio-install-bfme1.json`.
+- **Never in our packages:** `tools/release/audit_package.py` refuses any file (any name, any container, any pack entry, and every file
+  of a `--release` package) whose MD5 and size are one of the AIO pins, the BFME1 package's included.
+- BFME1 keeps working with the player's own install: `BFME1_INSTALL`, a remembered folder, `<games>/BFME1`.

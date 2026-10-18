@@ -7,6 +7,9 @@
 #include "Common/NumericState.h"
 #include "Common/Player.h"
 #include "Common/StateHash.h"
+#include "GameLogic/SnapshotXfer.h"
+
+#include <set>
 #include "Common/Thing/ModuleFactory.h"
 #include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/Damage.h"
@@ -383,4 +386,70 @@ void TunnelContain::crc(StateHasher &h) const
 			t->crc(h);
 		}
 	}
+}
+
+// ---- lane SAVE-4b: TunnelTracker::xfer (RW 0x8FA569, tier A, (1, 1); ZH TunnelTracker::xfer is the donor of its first part) ---------------------------
+// version, the tunnel ids (xferSTLObjectIDList), the rider count (i32) and the riders' ids, the tunnel count (u32), then RotWK's two additions: an object id
+// and a u32 (inference: the nemesis + 0x20 and its frame + 0x24, the fields after the tunnel count + 0x1C; not ported, S-1107: written as 0, and a load of
+// anything else is refused). The riders are objects of the snapshot, made by the Objects block before this block loads. The heal count is a statistic.
+void TunnelTracker::xfer(Xfer &x, GameLogic &logic)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SnapshotXfer::stlObjectIDList(x, m_tunnelIds);
+	std::int32_t riders = x.isLoading() ? 0 : (std::int32_t)m_riders.size();
+	x.xferInt(&riders);
+	if (!x.isLoading())
+	{
+		for (Object *o : m_riders)
+		{
+			ObjectID id = o->getID();
+			x.xferObjectID(&id);
+		}
+	}
+	else
+	{
+		// retail's i32 count, checked and charged like any count; the riders are read, each validated (an object of the snapshot, listed once), into a
+		// temporary list, which replaces the riders only when all are valid
+		if (riders < 0)
+		{
+			throw XferException("the snapshot's tunnel network has " + std::to_string(riders) + " riders");
+		}
+		x.checkLoadedCount((std::uint64_t)riders, 4, sizeof(Object *) + Xfer::kNodeBytes); // retail's i32 count, checked and charged like any count
+		ContainedItemsList loaded;
+		std::set<ObjectID> seen;
+		for (std::int32_t i = 0; i < riders; ++i)
+		{
+			ObjectID id = 0;
+			x.xferObjectID(&id);
+			Object *o = SnapshotXfer::findObject(logic, id, "a tunnel network's rider");
+			if (!o)
+			{
+				throw XferException("the snapshot's tunnel network has a rider without an object id");
+			}
+			if (!seen.insert(id).second)
+			{
+				throw XferException("the snapshot's tunnel network lists rider " + std::to_string(id) + " twice");
+			}
+			loaded.push_back(o);
+		}
+		m_riders.swap(loaded);
+	}
+	x.xferUnsignedInt(&m_tunnelCount);
+	ObjectID nemesis = INVALID_ID;
+	std::uint32_t nemesisFrame = 0;
+	x.xferObjectID(&nemesis);
+	x.xferUnsignedInt(&nemesisFrame);
+	if (nemesis != INVALID_ID || nemesisFrame != 0)
+	{
+		throw XferException("the snapshot's tunnel network has a nemesis (object " + std::to_string(nemesis) + "), which OpenBFME does not port (S-1107)");
+	}
+}
+
+// lane SAVE-4b: the tunnel's snapshot (OpenBFME native, S-4190): GarrisonContain's, then its two flags; the network is obfme:TunnelTracker's
+void TunnelContain::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	GarrisonContain::xfer(x);
+	x.xferBool(&m_doBuildComplete);
+	x.xferBool(&m_registered);
 }

@@ -35,6 +35,7 @@
 
 class GameLogic;
 class StateHasher;
+class Xfer;
 
 class DOTManager
 {
@@ -56,6 +57,7 @@ public:
 	void update();
 	void reset();
 	void crc(StateHasher &h) const;
+	void xfer(Xfer &x); // lane SAVE-4b: obfme:DamageOverTime (OpenBFME native, S-4190)
 	bool empty() const { return m_entries.empty(); }
 	const std::map<ObjectID, Record> &entries() const { return m_entries; }
 	// RW 0x8208D4: the incoming record is stronger than the current one at `now`

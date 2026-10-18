@@ -197,7 +197,7 @@ std::vector<std::string> LiveFX::stops()
 	std::vector<std::string> out = FXEventLog::stops();
 	out.push_back("[S-682] live FX: bone positions of ParticleSysBone systems and fire FX come from the model's bind pose (FollowBone systems do not follow the "
 			 "animation); ParticleSysBone FXTrigger / Persist / PersistID / HouseColor are ignored and OnlyIfOnWater systems are not created; the shooter's "
-			 "stealth (RW 0x694C0D, NULL viewer) is read when the effect plays, not at the shot (lane STEALTH-1); muzzle flashes and recoil are not drawn; isWater is false");
+			 "stealth (RW 0x694C0D, NULL viewer) is read when the effect plays, not at the shot (lane STEALTH-1); muzzle flashes and recoil are not drawn; isWater is false (the shroud: S-4971)");
 	out.push_back("[S-686] TransitionDamageFX: the module class (RW data table 0xC08D10, 117 rows: Damaged / ReallyDamaged / Rubble FXList, OCL and "
 				  "ParticleSystem 1..12 with Loc / Bone + RandomBone, the Damage*Types flags, RubbleNeighbor, the sub object show / hide lists; 150 retail uses) "
 				  "is raw (S-070) and has no runtime: its damage state transition effects are not played (the draw states' EnteringStateFX and ParticleSysBone are)");
@@ -361,19 +361,48 @@ bool LiveFX::modelBone(const RenderObjPrototype *proto, const std::string &bone,
 	return true;
 }
 
+namespace
+{
+// lane VISUAL-2: the presented snapshot's shroud view while a shroud is displayed for a local player (VIS-1: a bare map load, an all-vision observer
+// and a game without a displayed shroud see everything)
+const ShroudView *displayedShroud(const LogicSnapshot *snap)
+{
+	const ShroudView *v = snap ? snap->shroud.get() : nullptr;
+	return v && v->displayed && v->localPlayer >= 0 ? v : nullptr;
+}
+} // namespace
+
+// lane VISUAL-2 (S-682's shroud part). TARGET FACTS: the FX and particle code asks the local player's cell status at a point (RW 0xB4D990 / 0xB4D9A0: 0
+// clear, 1 fogged, 2 shrouded; FXList::doFXPos skips a list without PlayEvenIfShrouded unless clear, RW 0x5E21D8 area; a ShroudEmitter particle is not
+// created where the cell is SHROUDED: RW 0x5FC39A `cmp eax, 1; jg`, a fogged cell still creates it, ParticleSys.cpp). INFERENCE (S-4971): it reads the presented snapshot's view, the one the drawn shroud shows (GodotGameWorld::
+// refresh_shroud), not the logic's live cells (a logic frame may be ahead of the picture); the view holds the local player's cells (and an observed
+// player's allies', CASTER-1)
 int LiveFX::shroudStatusAt(const Coord3D &pos)
 {
- auto &shroud = m_game.shroud();
- const Player *local = m_game.players().getLocalPlayer();
- return shroud.displayed() && local ? (int)shroud.getStatusAt(local->getPlayerIndex(), pos.x, pos.y) : 0;
+	const std::shared_ptr<const LogicSnapshot> snap = m_game.presentedSnapshot();
+	const ShroudView *v = displayedShroud(snap.get());
+	return v ? (int)v->statusAt(pos.x, pos.y) : (int)FX_SHROUD_CLEAR;
 }
 
+// RW 0x5E2282 (FXList::doFXObj's test): the object's status for the local player (RW 0x68D8F7) above PARTIAL_CLEAR; an object without partition data
+// (Object + 0x4E4 == 0: a contained object) asks its position's cell, not CLEAR: skipped (RW 0x5E22C4 .. 0x5E22F9). INFERENCE (S-4971): the status is the
+// presented record's (ObjectSnapshot::shroudRecord stands for the partition data); an object the presented snapshot does not hold yet (created this
+// frame) asks its position's cell
 bool LiveFX::objectShroudedForLocalPlayer(const FXObject &obj)
 {
- const Object *o = object(obj.objectId());
- const Player *local = m_game.players().getLocalPlayer();
- return o && local && m_game.shroud().displayed() &&
-  m_game.shroud().clientObjectStatus(*o, local->getPlayerIndex()) >= OBJECTSHROUD_FOGGED;
+	const std::shared_ptr<const LogicSnapshot> snap = m_game.presentedSnapshot();
+	const ShroudView *v = displayedShroud(snap.get());
+	if (!v)
+	{
+		return false;
+	}
+	const ObjectSnapshot *rec = snap->find(obj.objectId());
+	if (rec && rec->shroudRecord)
+	{
+		return rec->objectShroud > (int)OBJECTSHROUD_PARTIAL_CLEAR;
+	}
+	const Coord3D p = obj.position();
+	return v->statusAt(p.x, p.y) != CELLSHROUD_CLEAR;
 }
 
 FXParticleSystem::ParticleAttachInfo LiveFX::attachedDrawable(std::uint32_t drawableId, const std::string &boneName)
@@ -385,11 +414,14 @@ FXParticleSystem::ParticleAttachInfo LiveFX::attachedDrawable(std::uint32_t draw
 		return info;
 	}
 	info.found = true;
- if (const auto snapshot = m_game.presentedSnapshot())
-  if (const auto *record = snapshot->find(d->getObjectID())) {
-   info.shrouded = record->shroudedForLocal;
-   info.hidden = record->drawableHidden || record->stealthLook == 5;
-  }
+	// lane VISUAL-2, RW 0x5FA2CE: a system on a drawable does not emit while the drawable is fully obscured by the shroud (+0x440, RW 0x64849E's
+	// grace-adjusted >= FOGGED: GameClient/DrawableShroud.h) or not visible (+0x441 == 0, RW 0x5FA380: r2, Drawable::presentedLook: a drawable a
+	// container hid, an enemy's invisible object, one in the shroud)
+	info.shrouded = d->shroudLook().fullyObscured;
+	{
+		const std::shared_ptr<const LogicSnapshot> snap = m_game.presentedSnapshot();
+		info.hidden = d->presentedLook(snap.get(), displayedShroud(snap.get()) != nullptr).hidden;
+	}
 	info.position = *d->getPosition();
 	info.transform = thingMatrix(info.position, d->getBasis());
 	if (!boneName.empty())
@@ -422,7 +454,22 @@ FXParticleSystem::ParticleAttachInfo LiveFX::attachedObject(std::uint32_t object
   }
 	info.position = *o->getPosition();
 	info.transform = thingMatrix(info.position, o->getBasis());
+	// lane VISUAL-2, RW 0x5FA2CE: a system on an object does not emit while the object's status for the local player is FOGGED or SHROUDED (no grace);
+	// the presented record's status, else (not presented yet) its position's cell (S-4971). RW 0x68D8F7 answers CLEAR for an object without partition
+	// data (a contained one, record status 0 here); its drawable's visible byte decides then (below)
+	const std::shared_ptr<const LogicSnapshot> snap = m_game.presentedSnapshot();
+	const ShroudView *v = displayedShroud(snap.get());
+	if (v)
+	{
+		const ObjectSnapshot *rec = snap->find(o->getID());
+		info.shrouded = rec ? rec->objectShroud >= (int)OBJECTSHROUD_FOGGED : v->statusAt(info.position.x, info.position.y) != CELLSHROUD_CLEAR;
+	}
 	const Drawable *od = m_game.drawables().findByObject(o->getID());
+	// r2, RW 0x5FA6DD .. 0x5FA6F2: the object's drawable (RW 0x70E013) not visible (+0x441 == 0): hidden (Drawable::presentedLook)
+	if (od)
+	{
+		info.hidden = od->presentedLook(snap.get(), v != nullptr).hidden;
+	}
 	if (!boneName.empty() && od)
 	{
 		for (const DrawEntry &e : od->entries())
@@ -639,8 +686,8 @@ void LiveFX::play(const Pending &pending)
 	AudioLog::Scope logScope([&] { return std::string("fx ") + e.site + " " + *name + " obj " + std::to_string((unsigned)e.primary); });
 	if (e.kind == FXEvent::OBJECT_SOUND)
 	{
-		// the sound on the object (RW TheAudio + 100 with the object's id): played at the object's position of the call
-		if (playSound(*name, &e.position, pending.primary ? pending.primary->owner : -1))
+		// RW 0x860AD5 -> 0x6DB5B3: retain the object ID for the audio owner's position query.
+		if (AudioApi::playSoundForObject(*name, e.primary, pending.primary ? pending.primary->owner : -1))
 		{
 			++m_stats.played[e.site];
 		}

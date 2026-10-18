@@ -91,8 +91,24 @@ AptView3DViewers::~AptView3DViewers()
 
 void AptView3DViewers::setOwner(Node *owner, const Ref<RetailFileSystem> &fs)
 {
+	if (m_owner == owner && m_fs.ptr() == fs.ptr())
+	{
+		return;
+	}
+	for (auto &kv : m_slots)
+	{
+		release(kv.second);
+	}
+	m_slots.clear();
+	m_errors.clear();
+	m_notes.clear();
 	m_owner = owner;
 	m_fs = fs;
+}
+
+String AptView3DViewers::sourceStyle() const
+{
+	return m_fs.is_valid() && m_fs->is_shell_source() ? "bfme2-106" : "rotwk-201";
 }
 
 void AptView3DViewers::release(Slot &slot)

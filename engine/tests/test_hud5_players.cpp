@@ -5,6 +5,7 @@
 
 #include "doctest.h"
 #include "AptRetail.h"
+#include "PlatformIconLayout.h"
 
 #include "GameClient/AptCanvas.h"
 #include "GameClient/GameText.h"
@@ -14,6 +15,8 @@
 #include "GameClient/GUI/AptScreens/AptSimpleScreens.h"
 #include "GameClient/GUI/Gadget.h"
 #include "GameClient/GUI/LoadScreenInfo.h"
+#include "GameClient/EndGame.h"
+#include "GameClient/GUI/PlatformIcons.h"
 #include "GameClient/GUI/PlayerStatusInfo.h"
 #include "GameClient/GUI/Shell/Shell.h"
 #include "GameClient/GUI/ShellEnvironment.h"
@@ -23,6 +26,9 @@
 #include "Libraries/Source/Apt/Apt.h"
 #include "Libraries/Source/Apt/AptRenderList.h"
 
+#include <cmath>
+#include <map>
+#include <tuple>
 #include <memory>
 #include <string>
 
@@ -249,4 +255,199 @@ TEST_CASE("hud5 players retail: PlayerTribute.apt loads its Status page, shows a
 		}
 	}
 	CHECK(written == 4);
+}
+
+TEST_CASE("platformicon1 retail: the players screen's Status page puts each network player's system icon left of its name field, none for a computer or an old peer")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	IniSkirmishSetupSource setup;
+	std::string error;
+	REQUIRE_MESSAGE(setup.load(mount.fs, &error), error);
+	GameTextTableSource text;
+	std::vector<std::uint8_t> bytes;
+	REQUIRE_MESSAGE(mount.fs.readFile("data/lotr.str", bytes, &error), error);
+	REQUIRE_MESSAGE(text.table.parse(bytes, &error), error);
+	// the rows come from the game's slots: slot 0 a Linux human, slot 1 a macOS human, slot 2 a human that told nothing, slot 3 a computer (a platform
+	// handed to a computer's slot is dropped: display data of humans only)
+	SkirmishGameInfo game = ownersGame(setup);
+	game.slots[1].state = SLOT_PLAYER;
+	game.slots[1].name = u"Mac";
+	game.slots[2].state = SLOT_PLAYER;
+	game.slots[2].name = u"Old";
+	PlayerStatusInput in;
+	in.game = &game;
+	in.localSlot = 0;
+	in.network = true;
+	in.platforms[0] = PlatformKind::Linux;
+	in.platforms[1] = PlatformKind::MacOS;
+	in.platforms[3] = PlatformKind::Windows;
+	for (int i = 0; i < 4; ++i)
+	{
+		in.slots[i].hasPlayer = true;
+	}
+	PlayerStatusInfo info = makePlayerStatusInfo(in, setup, &text);
+	REQUIRE(info.rows.size() == 4);
+	CHECK(info.rows[0].platform == PlatformKind::Linux);
+	CHECK(info.rows[1].platform == PlatformKind::MacOS);
+	CHECK(info.rows[2].platform == PlatformKind::None);
+	CHECK(info.rows[3].platform == PlatformKind::None);
+	PlayersFx fx(mount);
+	fx.environment.playerStatus = &info;
+	fx.tick(2);
+	fx.shell->push("PlayerTribute.apt");
+	fx.tick(60);
+	auto *screen = dynamic_cast<AptPlayerTribute *>(fx.shell->top());
+	REQUIRE(screen);
+	REQUIRE(screen->statusRowsShown() == 4);
+	CHECK(fx.wm->textBadges().size() == 2);
+	// the render list's name fields, each with its icon: the right edge two stage pixels left of the field, inside the stage
+	AptRenderList rl;
+	fx.wm->apt().buildRenderList(rl);
+	GadgetDrawList icons;
+	appendTextBadges(rl, fx.wm->textBadges(), icons);
+	REQUIRE(icons.commands.size() == 2);
+	// the render list's order is not the rows' (Table.1 comes before Table.0): each icon is found by the row its field belongs to
+	std::map<int, const GadgetDrawCommand *> byRow;
+	for (const GadgetDrawCommand &c : icons.commands)
+	{
+		MESSAGE("icon: " << c.x0 << "," << c.y0 << " - " << c.x1 << "," << c.y1 << " for " << c.window << " " << c.image);
+		const std::size_t at = c.window.find(".Table.");
+		REQUIRE(at != std::string::npos);
+		byRow[std::atoi(c.window.c_str() + at + 7)] = &c;
+		CHECK(c.kind == GadgetDrawCommand::Kind::Image);
+		CHECK(c.x1 - c.x0 == kPlatformIconStage);
+		CHECK(c.y1 - c.y0 == kPlatformIconStage);
+	}
+	REQUIRE(byRow.size() == 2);
+	REQUIRE(byRow.count(0));
+	REQUIRE(byRow.count(1));
+	CHECK(byRow[0]->image == "OpenBFMEPlatformLinux");
+	CHECK(byRow[1]->image == "OpenBFMEPlatformMacOS");
+	// the rows' name fields start at stage x 299 (the icon's right edge two pixels before the table's border, 292: the gutter) and are 26 stage pixels apart (measured: the page's layout)
+	CHECK(std::make_tuple(byRow[0]->x0, byRow[0]->y0, byRow[0]->x1, byRow[0]->y1) == std::make_tuple(274, 212, 290, 228));
+	CHECK(std::make_tuple(byRow[1]->x0, byRow[1]->y0, byRow[1]->x1, byRow[1]->y1) == std::make_tuple(274, 238, 290, 254));
+	icons.commands = { *byRow[0], *byRow[1] };
+	// the icons overlap no part of the table: the page's frame (the table's border) is at stage x 291.9 and the icon's right edge is two pixels before it
+	platformlayout::Rect table;
+	REQUIRE(platformlayout::stageRect(platformlayout::clipAtPath(fx.wm->apt(), screen->level(), "OuterFrame.Pages.StatusPage"), table));
+	CHECK(std::lround(table.x0) == 292);
+	for (const auto &row : byRow)
+	{
+		const platformlayout::Rect icon{ (float)row.second->x0, (float)row.second->y0, (float)row.second->x1, (float)row.second->y1 };
+		CHECK_FALSE(icon.overlaps(table));
+		CHECK(row.second->x1 == std::lround(table.x0) - 2);
+	}
+	// the icons are drawn at different heights (one per row)
+	CHECK(icons.commands[0].y0 != icons.commands[1].y0);
+	bool noted = false;
+	for (const WindowManagerNote &n : fx.wm->notes())
+	{
+		noted = noted || (n.kind == "platform-icon" && n.detail.find("[S-4850]") != std::string::npos);
+	}
+	CHECK(noted);
+}
+
+TEST_CASE("platformicon1 retail: the score screen puts each network player's system icon left of its name field and none for a computer or an old peer")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	PlayersFx fx(mount);
+	ScoreScreenData data;
+	data.valid = true;
+	data.type = 3;
+	const char *names[3] = { "Ann", "Bea", "Computer" };
+	const PlatformKind kinds[3] = { PlatformKind::Windows, PlatformKind::None, PlatformKind::None };
+	for (int i = 0; i < 3; ++i)
+	{
+		ScoreScreenData::Entry e;
+		e.playerIndex = i + 1;
+		e.name = i == 0 ? std::string(24, 'W') : names[i]; // the first player's name is the longest legal one (24 bytes), in the widest letter
+		e.side = "Men";
+		e.platform = i == 0 ? PlatformKind::Linux : kinds[i];
+		e.local = i == 0;
+		data.entries.push_back(e);
+	}
+	data.entries[1].platform = PlatformKind::MacOS;
+	fx.environment.scoreScreen = &data;
+	fx.tick(2);
+	fx.shell->push("TimeLine.apt");
+	fx.tick(90);
+	REQUIRE(fx.shell->top());
+	CHECK(fx.wm->textBadges().size() == 2);
+	AptRenderList rl;
+	fx.wm->apt().buildRenderList(rl);
+	GadgetDrawList icons;
+	appendTextBadges(rl, fx.wm->textBadges(), icons);
+	REQUIRE(icons.commands.size() == 2);
+	std::map<std::string, const GadgetDrawCommand *> byName;
+	for (const GadgetDrawCommand &c : icons.commands)
+	{
+		MESSAGE("icon: " << c.x0 << "," << c.y0 << " - " << c.x1 << "," << c.y1 << " " << c.image << " for " << c.window);
+		byName[c.image] = &c;
+	}
+	REQUIRE(byName.count("OpenBFMEPlatformLinux"));
+	REQUIRE(byName.count("OpenBFMEPlatformMacOS"));
+	CHECK(byName["OpenBFMEPlatformLinux"]->y0 != byName["OpenBFMEPlatformMacOS"]->y0);
+	// the standings rows: the faction icon (an unnamed child of the row's button) ends at stage x 753; the icon sits right of it, at the name field's left edge
+	for (int row = 0; row < 2; ++row)
+	{
+		AptCharacterInst *button = platformlayout::clipAtPath(fx.wm->apt(), fx.shell->top()->level(), "Main.Button" + std::to_string(row));
+		REQUIRE(button);
+		std::vector<AptCharacterInst *> unnamed;
+		for (AptCharacterInst *k : button->asSprite()->children())
+		{
+			unnamed.push_back(k->instName().empty() ? k : nullptr);
+		}
+		platformlayout::Rect faction;
+		bool found = false;
+		for (AptCharacterInst *k : unnamed)
+		{
+			platformlayout::Rect r;
+			if (k && platformlayout::stageRect(k, r) && std::lround(r.x1) == 753)
+			{
+				faction = r;
+				found = true;
+			}
+		}
+		REQUIRE(found); // the faction icon's clip
+		const GadgetDrawCommand *icon = row == 0 ? byName["OpenBFMEPlatformLinux"] : byName["OpenBFMEPlatformMacOS"];
+		const platformlayout::Rect box{ (float)icon->x0, (float)icon->y0, (float)icon->x1, (float)icon->y1 };
+		CHECK_FALSE(box.overlaps(faction));
+		CHECK(icon->x0 == 759);
+		CHECK(icon->x1 == 775);
+	}
+	// a name as long as the lobby allows (24 W's) never runs under the icon: the field's box is reserved at the icon, whatever the string's width (a wide
+	// string is squeezed into the rest of the box, a narrow one centred in it)
+	AptTextureStore textures(fx.source);
+	AptTextRecordLookup lookup = [&fx](const std::string &name, std::string &utf8) { return fx.wm->aptTextShown(name, utf8); };
+	AptCanvasInputs canvasIn;
+	canvasIn.textures = &textures;
+	canvasIn.text = &fx.text.table;
+	canvasIn.textRecords = &lookup;
+	canvasIn.textBadges = &fx.wm->textBadges();
+	AptCanvasList canvas;
+	BuildAptCanvas(rl, canvasIn, canvas);
+	int checkedFields = 0;
+	for (const AptCanvasOp &op : canvas.ops)
+	{
+		if (op.kind != AptCanvasOp::Kind::Text || op.path.find(".GUIPlayer") == std::string::npos || op.text.empty())
+		{
+			continue;
+		}
+		float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+		op.matrix.apply(op.bounds[0], op.bounds[1], x0, y0);
+		op.matrix.apply(op.bounds[2], op.bounds[3], x1, y1);
+		const bool badged = op.text == std::string(24, 'W') || op.text == "Bea";
+		for (const float width : { 20.0f, 150.0f, 400.0f, 1000.0f }) // a short, a fitting, the 24 W's (about 300 px) and an absurd string
+		{
+			const AptTextPlacement place = PlaceAptText(x0, y0, x1, y1, width, 14.0f, op.alignment, op.multiline, op.wordWrap);
+			const platformlayout::Rect text{ place.x, 0.0f, place.x + width * place.squeezeX, 1.0f };
+			const platformlayout::Rect iconBox{ 759.0f, 0.0f, 775.0f, 1.0f };
+			if (badged)
+			{
+				CHECK_MESSAGE(!text.overlaps(iconBox), op.text << " at width " << width << " starts at " << place.x);
+			}
+		}
+		++checkedFields;
+	}
+	CHECK(checkedFields == 3); // Ann (24 W's), Bea, Medium: the three rows' name fields
 }

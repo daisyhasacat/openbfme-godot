@@ -2,6 +2,10 @@
 // See GodotPlacementGhost.h (lane BUILD-5 r2).
 
 #include "GodotDevice/GodotPlacementGhost.h"
+#include "GameClient/CommandButtonHelp.h"
+#include "GameClient/GUI/Image.h"
+#include <godot_cpp/classes/viewport.hpp>
+#include <cmath>
 
 #include "Common/AsciiString.h"
 #include "Common/Thing/ThingTemplate.h"
@@ -35,6 +39,7 @@
 #include <godot_cpp/classes/camera3d.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <cmath>
+#include <godot_cpp/classes/decal.hpp>
 #include <godot_cpp/classes/geometry_instance3d.hpp>
 #include <godot_cpp/classes/multi_mesh_instance3d.hpp>
 #include <godot_cpp/core/object.hpp>
@@ -136,10 +141,16 @@ void PlacementGhostRenderer::clear()
 	m_exitDirections = nullptr;
 	m_exitDirectionCount = 0;
 	freeNode(m_formationId); m_formationId=0; m_formation=nullptr;
+	freeNode(m_resourceDecalId);
+	freeNode(m_resourceLabelId);
+	m_resourceDecalId = m_resourceLabelId = 0;
+	m_resourceDecal = nullptr;
+	m_resourceLabel = nullptr;
 	for (IconView &v : m_views)
 	{
 		freeNode(v.instId);
 		freeNode(v.bibId);
+		freeNode(v.shadowDecalId); // lane OWNERFIX-2
 	}
 	m_views.clear();
 	freeNode(m_footprintId);
@@ -324,6 +335,68 @@ void PlacementGhostRenderer::drawIcon(size_t i, PlacementIcons::Icon &icon, Icon
 	}
 	applyTint(view, tint);
 	updateBib(icon, view);
+	updateShadowDecal(icon, view);
+}
+
+void PlacementGhostRenderer::updateShadowDecal(PlacementIcons::Icon &icon, IconView &view)
+{
+	// lane OWNERFIX-2: a model state's decal shadow (W3DModelDraw's Shadow = SHADOW_ALPHA_DECAL 0x20 / SHADOW_ADDITIVE_DECAL 0x40 / their _DYNAMIC forms 0x400 /
+	// 0x800, bits of RW 0xD99EB0; ShadowTexture, ShadowSizeX / Y, ShadowOffsetX / Y; RW 0x4B92D3 parses them) is a projected decal under the drawable: the
+	// retail data gives the well's / statue's BUILD_PLACEMENT_CURSOR state its area of effect (decal_hero_good, GONDOR_WELL_AOE_RADIUS_DECAL = 440).
+	// INFERENCE (stop S-5032): drawn as the selection decals are (a Godot Decal on the terrain layer, S-2522) at the texture's own alpha, not faded by the
+	// drawable's 0.45 opacity (the shadow's ShadowOpacity* fade is not run); only the placement ghost draws them (every other drawable's shadow is S-3304)
+	const ModelShadowInfo *sh = nullptr;
+	for (DrawEntry &e : icon.drawable->entries())
+	{
+		if (e.kind == W3D_DRAWKIND_MODEL && e.draw && !e.moduleHidden)
+		{
+			const ModelConditionInfo *info = e.draw->currentModelState();
+			if (info && info->hasShadow && (info->shadow.type & 0xC60) && !info->shadow.texture.empty())
+			{
+				sh = &info->shadow;
+				break;
+			}
+		}
+	}
+	Decal *decal = view.shadowDecalId ? Object::cast_to<Decal>(ObjectDB::get_instance(godot::ObjectID(view.shadowDecalId))) : nullptr;
+	if (!sh)
+	{
+		if (decal)
+		{
+			decal->set_visible(false);
+		}
+		view.shadowTexture.clear();
+		return;
+	}
+	const std::string file = sh->texture.find('.') == std::string::npos ? sh->texture + ".tga" : sh->texture;
+	Ref<Texture2D> tex = texture(file);
+	if (tex.is_null())
+	{
+		return; // texture() reported it
+	}
+	if (!decal)
+	{
+		decal = memnew(Decal);
+		decal->set_name("PlacementShadowDecal");
+		m_parent->add_child(decal);
+		view.shadowDecalId = decal->get_instance_id();
+	}
+	if (view.shadowTexture != file)
+	{
+		decal->set_texture(Decal::TEXTURE_ALBEDO, tex);
+		view.shadowTexture = file;
+	}
+	const Coord3D &p = *icon.drawable->getPosition();
+	// SAGE (x, y, z up) -> Godot (x, z, -y); projected down over a box 200 units deep
+	decal->set_position(Vector3(p.x + sh->offsetX, p.z, -(p.y + sh->offsetY)));
+	decal->set_size(Vector3(sh->sizeX, 200.0f, sh->sizeY));
+	decal->set_albedo_mix(1.0f);
+	decal->set_cull_mask(1u << 19); // the terrain's layer (GodotMapTerrain)
+	decal->set_upper_fade(0.0f);
+	decal->set_lower_fade(0.0f);
+	decal->set_visible(true);
+	view.shadowSizeX = sh->sizeX;
+	view.shadowSizeY = sh->sizeY;
 }
 
 void PlacementGhostRenderer::applyTint(IconView &view, const Color &tint)
@@ -386,8 +459,18 @@ void PlacementGhostRenderer::updateBib(PlacementIcons::Icon &icon, IconView &vie
 	{
 		return;
 	}
+	if (view.bib && view.bibTemplate != icon.tt)
+	{
+		// Sol review r1 (community PR #37): the quad is the template's footprint (PlacementGhost::bibOf); a reused wall slot that now shows another
+		// template (a hub, a segment) gets a new one
+		freeNode(view.bibId);
+		view.bib = nullptr;
+		view.bibId = 0;
+		view.bibTexture.clear();
+	}
 	if (!view.bib)
 	{
+		view.bibTemplate = icon.tt;
 		Ref<ArrayMesh> mesh;
 		mesh.instantiate();
 		PackedVector3Array v;
@@ -913,25 +996,6 @@ void PlacementGhostRenderer::updateResources(const InGameUI &ui, bool idle)
 		if (m_resourceLabel) m_resourceLabel->hide();
 		return;
 	}
-	if (!m_resourceDecal)
-	{
-		m_resourceDecal = memnew(Decal);
-		m_parent->add_child(m_resourceDecal);
-		m_resourceDecalId = m_resourceDecal->get_instance_id();
-		// Retail farmreticle02 mapped image: the whole BuildingRadialButtons_003 texture.
-		m_resourceDecal->set_texture(Decal::TEXTURE_ALBEDO, texture("BuildingRadialButtons_003.tga"));
-		m_resourceDecal->set_cull_mask(1u << 19);
-		m_resourceDecal->set_albedo_mix(1);
-		m_resourceDecal->set_upper_fade(0);
-		m_resourceDecal->set_lower_fade(0);
-		m_resourceLabel = memnew(Label);
-		m_resourceLabel->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
-		m_resourceLabel->add_theme_font_size_override("font_size", 14);
-		m_resourceLabel->add_theme_color_override("font_outline_color", Color(0,0,0,1));
-		m_resourceLabel->add_theme_constant_override("outline_size", 2);
-		m_parent->add_child(m_resourceLabel);
-		m_resourceLabelId = m_resourceLabel->get_instance_id();
-	}
  // Read authoritative claimant data only while the logic worker is idle.
  // Reuse decal nodes between frames, just as the placement reticle is reused.
  if (idle && m_game)
@@ -978,25 +1042,8 @@ void PlacementGhostRenderer::updateResources(const InGameUI &ui, bool idle)
   }
   for (size_t i=count;i<m_existingResourceRings.size();++i) m_existingResourceRings[i].decal->hide();
  }
-	const float share = m_icons->resourceShare();
-	const Color color = share > .75f ? Color(0,1,0) : share >= .5f ? Color(1,1,0) : share >= .25f ? Color(1,0,0) : Color(0,0,0);
-	const Coord3D &p = ui.placeLocation();
-	m_resourceDecal->set_position(Vector3(p.x,p.z,-p.y));
-	const float diameter = 2 * m_icons->resourceRadius();
-	m_resourceDecal->set_size(Vector3(diameter, 200, diameter));
-	m_resourceDecal->set_modulate(Color(color.r,color.g,color.b,128.0f/255));
-	m_resourceDecal->show();
-	m_resourceLabel->set_text(String::num_int64((int)std::floor(share*100+.5f)) + "%");
-	m_resourceLabel->add_theme_color_override("font_color", color);
-	const Vector2 size = m_resourceLabel->get_minimum_size();
-	m_resourceLabel->set_size(size);
-	Viewport *viewport = m_parent->get_viewport();
-	Vector2 at = viewport->get_mouse_position() - Vector2(size.x/2, 20+size.y);
-	const Vector2 extent = viewport->get_visible_rect().size;
-	at.x = std::max(0.0f, std::min(at.x, extent.x-size.x));
-	at.y = std::max(0.0f, std::min(at.y, extent.y-size.y));
-	m_resourceLabel->set_position(at);
-	m_resourceLabel->show();
+	// The active placement decal and text come from the HUD TerrainResourceFeedback.
+
 }
 
 Dictionary PlacementGhostRenderer::state() const
@@ -1065,6 +1112,9 @@ Dictionary PlacementGhostRenderer::state() const
 			d["house_color"] = icon.drawable ? (int64_t)icon.drawable->getHouseColor() : (int64_t)0;
 			d["opacity"] = icon.drawable ? icon.drawable->drawOpacity() : 0.0f;
 			d["instances"] = i < m_views.size() ? m_views[i].instances : 0;
+			d["bib_template"] = i < m_views.size() && m_views[i].bib && m_views[i].bibTemplate ? toGodotString(m_views[i].bibTemplate->getName()) : String();
+			d["shadow_decal"] = i < m_views.size() ? toGodotString(m_views[i].shadowTexture) : String(); // lane OWNERFIX-2
+			d["shadow_decal_size"] = i < m_views.size() ? m_views[i].shadowSizeX : 0.0f;
 			icons.push_back(d);
 		}
 	}

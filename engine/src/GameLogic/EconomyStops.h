@@ -39,9 +39,6 @@ inline std::vector<std::string> lines()
 		"re-templated them first; map scripts do not run in this build and the lobby's slot count is not consulted, so the tier follows the map's own player list (RotWK 2.01 "
 		"retail behaviour on that point was not verified in a running game)",
 		"[S-260] SalvageCrateCollide (RW create 0x651052, data 0x655980) has typed data but no runtime: the collide interface and the crate pickup belong to the collision / crate lane; "
-		"a salvage crate does not pay money or upgrade a weapon in this build",
-		"[S-261] Economy::awardBounty (RW 0x6AC06F) scales a HERO victim's BountyValue by its experience level through Economy::setHeroBountyScale (RW 0x68DDF1: the level tables behind "
-		"Object + 0x26c are not ported); without the hook the unscaled value is paid and counted in the run report. The kill credit that calls it (Object::scoreTheKill, RW 0x6955BC, "
-		"and the 0x695743 call site) is the combat lane's" };
+		"a salvage crate does not pay money or upgrade a weapon in this build" };
 }
 } // namespace EconomyStops

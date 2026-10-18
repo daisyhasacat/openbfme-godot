@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from package_macos import ensure_bundle_stopped
+from package_macos_standalone import ensure_bundle_stopped
 
 
 class RunningBundleTest(unittest.TestCase):
@@ -16,7 +16,7 @@ class RunningBundleTest(unittest.TestCase):
             (app / 'Contents/MacOS').mkdir(parents=True)
             (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable': 'OpenBFME'}))
             executable = str((app / 'Contents/MacOS/OpenBFME').resolve())
-            with patch('package_macos.subprocess.run') as run:
+            with patch('package_macos_standalone.subprocess.run') as run:
                 run.return_value.stdout = executable + '-other\n/usr/bin/python3\n'
                 ensure_bundle_stopped(app)
                 run.return_value.stdout = executable + '\n'
@@ -29,7 +29,7 @@ class RunningBundleTest(unittest.TestCase):
             app = Path(temp) / 'Game.app'
             (app / 'Contents').mkdir(parents=True)
             (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable': 'OpenBFME'}))
-            with patch('package_macos.subprocess.run', side_effect=subprocess.CalledProcessError(1, 'ps')):
+            with patch('package_macos_standalone.subprocess.run', side_effect=subprocess.CalledProcessError(1, 'ps')):
                 with self.assertRaises(subprocess.CalledProcessError):
                     ensure_bundle_stopped(app)
 

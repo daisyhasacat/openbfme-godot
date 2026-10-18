@@ -86,7 +86,7 @@ re-implementing that for systems older than 2013; Godot itself needs 2.28.
 
 - **Same bits as Linux today:** 0 differences from the host libm over:
   - 100M samples per range on the Deck (glibc 2.41);
-  - 7.8M per test run on the reference PC and pve (glibc 2.39), in an Ubuntu 22.04 container (glibc 2.35) and on the Deck.
+  - 7.8M per test run on the reference PC and a CI host (glibc 2.39), in an Ubuntu 22.04 container (glibc 2.35) and on the Deck.
 - **The integer fma:** 0 differences from the CPU's FMA instruction over 1.8 billion targeted cases.
 - **The same pinned results everywhere** (exact-bit hashes of every function over fixed sweeps, special values, Lua cases):
   - natively on x86-64 with FMA;

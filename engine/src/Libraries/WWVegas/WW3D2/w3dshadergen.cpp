@@ -94,10 +94,13 @@ std::string W3DShaderKey::Id() const
 	return id;
 }
 
-std::string Generate_W3D_Shader_Code(const W3DShaderKey &k)
+std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy samplers)
 {
 	std::string c;
 	auto line = [&](const std::string &s) { c += s; c += "\n"; };
+	// Godot 4.7.2 Forward+: shared anisotropic-repeat uses Metal slot 17, even with one texture.
+	// Clamp's anisotropic sampler is slot 11 and remains usable; linear-mipmap-repeat is slot 15.
+	const std::string repeatMipFilter = samplers == W3DSamplerPolicy::Metal16 ? "filter_linear_mipmap" : "filter_linear_mipmap_anisotropic";
 
 	line("shader_type spatial;");
 	// ---- render modes ----
@@ -161,13 +164,23 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k)
 	line("global uniform vec3 w3d_amb_inf;");
 	line("global uniform mat3 w3d_lcol_inf;");
 	line("global uniform mat3 w3d_ldir_inf;");
+	line("global uniform float w3d_fogged_frac;"); // lane VISUAL-2: RW 0x46DFD0 FogAlpha / ClearAlpha
+	if (!k.Skin && k.Camera == 0)
+	{
+		// lane VISUAL-2: the vegetation SwayOffsets (RW 0x4E61EE; W3DVegetationSway.h), entries 1 .. 10 (0 is no sway)
+		for (int i = 1; i <= 10; ++i)
+		{
+			line("global uniform vec4 w3d_sway" + std::to_string(i) + ";");
+		}
+	}
 	for (int s = 0; s < 2; ++s)
 	{
 		if (k.Tex[s])
 		{
 			// no source_color: the retail arithmetic runs on the stored (gamma space) texel values
-			std::string hint = k.NoLod[s] ? "filter_linear" : "filter_linear_mipmap_anisotropic";
-			hint += (k.ClampU[s] && k.ClampV[s]) ? ", repeat_disable" : ", repeat_enable";
+			const bool clamp = k.ClampU[s] && k.ClampV[s];
+			std::string hint = k.NoLod[s] ? "filter_linear" : (clamp ? "filter_linear_mipmap_anisotropic" : repeatMipFilter);
+			hint += clamp ? ", repeat_disable" : ", repeat_enable";
 			line("uniform sampler2D w3d_tex" + std::to_string(s) + " : " + hint + ";");
 		}
 		line("uniform vec4 w3d_m" + std::to_string(s) + "r0 = vec4(1.0, 0.0, 0.0, 0.0);");
@@ -175,11 +188,11 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k)
 	}
 	if (k.NormalMap)
 	{
-		line("uniform sampler2D w3d_normal : filter_linear_mipmap_anisotropic, repeat_enable;");
+		line("uniform sampler2D w3d_normal : " + repeatMipFilter + ", repeat_enable;");
 	}
 	if (k.HouseColor)
 	{
-		line("uniform sampler2D w3d_hc_tex : filter_linear_mipmap_anisotropic, repeat_enable; // housecolor.ini texture: the team colour mask is its alpha");
+		line("uniform sampler2D w3d_hc_tex : " + repeatMipFilter + ", repeat_enable; // housecolor.ini texture: the team colour mask is its alpha");
 		line("varying flat float v_house;");
 	}
 	line("varying vec2 v_uv0;");
@@ -191,6 +204,7 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k)
 	line("varying vec3 v_wnrm;");
 	line("varying vec3 v_wview;");
 	line("varying flat float v_inf;"); // 1: the instance is lit by the infantry set (the instancer stores -(palette base + 1))
+	line("varying flat float v_fogfrac;"); // lane VISUAL-2: the fogged light (INSTANCE_CUSTOM.w bit 14: w3d_fogged_frac, else 1)
 	line("varying vec3 v_wpos;");
 	if (k.Fx)
 	{
@@ -246,6 +260,9 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k)
 	line("\tfloat px = INSTANCE_CUSTOM.x;");
 	line("\tint base = px < 0.0 ? int(-px + 0.5) - 1 : int(px + 0.5);");
 	line("\tv_inf = px < 0.0 ? 1.0 : 0.0;");
+	// lane VISUAL-2: INSTANCE_CUSTOM.w = rigid bone + 1024 * sway type + 16384 * fogged (W3DInstancer)
+	line("\tint wi = int(INSTANCE_CUSTOM.w + 0.5);");
+	line("\tv_fogfrac = (wi & 16384) != 0 ? w3d_fogged_frac : 1.0;");
 	line("\tvec3 p; vec3 n;");
 	if (k.Skin)
 	{
@@ -269,7 +286,7 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k)
 	}
 	else
 	{
-		line("\tint b = int(INSTANCE_CUSTOM.w + 0.5);");
+		line("\tint b = wi & 1023;"); // lane VISUAL-2: the rigid bone below the sway type and the fogged bit
 		if (k.Camera != 0)
 		{
 			// ZH dx8renderer.cpp:1818-1847: only the mesh position is kept; the orientation faces the camera.
@@ -303,6 +320,17 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k)
 		}
 	}
 	line("\tVERTEX = w3d_to_godot(p);");
+	if (!k.Skin && k.Camera == 0)
+	{
+		// lane VISUAL-2: vegetation.fxo's vertex shader (blob 5): position += (position.z - the tree's base z) * SwayOffsets[type], in world space (W3D Z up
+		// = Godot Y); the base is the instance's origin (W3DTreeBuffer's tree location, RW 0x4EC93A). The normal is not changed (retail's is not)
+		line("\tint sway = (wi >> 10) & 15;");
+		line("\tif (sway > 0) {");
+		line("\t\tvec4 sw = sway == 1 ? w3d_sway1 : sway == 2 ? w3d_sway2 : sway == 3 ? w3d_sway3 : sway == 4 ? w3d_sway4 : sway == 5 ? w3d_sway5 : sway == 6 ? w3d_sway6 : sway == 7 ? w3d_sway7 : sway == 8 ? w3d_sway8 : sway == 9 ? w3d_sway9 : w3d_sway10;");
+		line("\t\tfloat h = (MODEL_MATRIX * vec4(VERTEX, 1.0)).y - MODEL_MATRIX[3].y;");
+		line("\t\tVERTEX += inverse(mat3(MODEL_MATRIX)) * (w3d_to_godot(sw.xyz) * h);");
+		line("\t}");
+	}
 	line("\tNORMAL = normalize(w3d_to_godot(n));");
 	if (k.Tangents)
 	{
@@ -364,6 +392,7 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k)
 		line("\t\tmat3 ld = inf ? w3d_ldir_inf : w3d_ldir_obj;");
 		line("\t\tvec3 amb = inf ? w3d_amb_inf : w3d_amb_obj;");
 		line("\t\tlc[0] += w3d_tint; lc[1] += w3d_tint; lc[2] += w3d_tint; amb += w3d_tint;");
+		line("\t\tlc *= v_fogfrac; amb *= v_fogfrac;"); // lane VISUAL-2: the fogged light environment (RW 0x46DFBA: the lights' diffuse and ambient times the fraction)
 		line("\t\tvec3 dsum = vec3(0.0);");
 		line("\t\tvec3 ssum = vec3(0.0);");
 		line("\t\tfor (int i = 0; i < 3; i++) {");
@@ -470,6 +499,7 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k)
 		line("\tmat3 lc = inf ? w3d_lcol_inf : w3d_lcol_obj;");
 		line("\tvec3 amb = inf ? w3d_amb_inf : w3d_amb_obj;");
 		line("\tlc[0] += w3d_tint; lc[1] += w3d_tint; lc[2] += w3d_tint; amb += w3d_tint;");
+		line("\tlc *= v_fogfrac; amb *= v_fogfrac;"); // lane VISUAL-2: the fogged light environment
 		line("\tvec3 base = t0.rgb * w3d_diffuse.rgb;");
 		line("\tvec3 col = t0.rgb * clamp(amb * w3d_ambient_mat * 0.5, 0.0, 1.0) * 2.0;");
 		line("\tfor (int i = 0; i < 3; i++) {");
@@ -557,4 +587,3 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k)
 	if (shadowReceiver) line("void light() { if (LIGHT_IS_DIRECTIONAL) DIFFUSE_LIGHT += ALBEDO * ATTENUATION; }");
 	return c;
 }
-

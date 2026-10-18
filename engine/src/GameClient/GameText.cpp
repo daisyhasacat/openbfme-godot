@@ -8,6 +8,7 @@
 #include <codecvt>
 #include <locale>
 #include "Common/ArchiveFileSystem.h"
+#include "Common/BfmeGame.h"
 
 namespace
 {
@@ -238,9 +239,12 @@ bool GameTextTable::parseCSF(const std::uint8_t *data, std::size_t size, std::st
 
 bool GameTextTable::loadRetail(ArchiveFileSystem &fs, std::string *error)
 {
+	// RotWK / BFME2: data/lotr.str (a missing file is the read's error). community PR #36: BFME1 data keeps its strings in lang/<language>/lotr.csf
 	std::vector<std::uint8_t> bytes;
-	if (fs.doesFileExist("data/lotr.str"))
+	if (!isBfme1Data(fs))
+	{
 		return fs.readFile("data/lotr.str", bytes, error) && parse(bytes, error);
+	}
 	FilenameList candidates;
 	fs.getFileListInDirectory("lang", "", "lotr.csf", candidates, true);
 	std::string path = "lang/english/lotr.csf";
@@ -368,6 +372,11 @@ bool GameTextTable::parse(const std::uint8_t *data, std::size_t size, std::strin
 		}
 	}
 	return true;
+}
+
+void GameTextTable::setOverride(const std::string &label, const std::string &text)
+{
+	m_strings[lowerAscii(label)] = text;
 }
 
 bool GameTextTable::lookup(const std::string &label, std::string &text) const

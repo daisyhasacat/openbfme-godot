@@ -26,12 +26,14 @@
 #pragma once
 
 #include "Common/GameCommon.h"
+#include "GameClient/ObserverMetrics.h"
 #include "Common/INIDataTypes.h"
 #include "Common/ModelState.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/ObjectTypes.h"
 #include "Common/Thing/ModuleFactory.h"
 #include "GameClient/DrawableScriptTarget.h"
+#include "GameClient/ObserverTimeline.h"
 
 #include <cstdint>
 #include <set>
@@ -56,6 +58,9 @@ struct ClientEvent
 		MODEL_FLUSH,     ///< lane ANIM-1 (RW 0x67449C / 0x6759C4): the drawable's changed flags reach its draw modules; scriptTarget, weapon timing
 		FADE_IN,         ///< lane BUILD-4 (RW 0x670AA2): fadeFrames client frames
 		CUSTOM_COLORS,   ///< lane CAH-2 (RW 0x80AF0B -> 0x6727B0): customKind and customColors, the drawable's house colour set
+		HERO_ATTACKED,   ///< RW 0x67B78C: the local hero-select bar's attacked effect
+		HERO_FLASH,      ///< RW 0x7BDD7A: name = exact template name, flashFrames = signed client-frame duration
+		MODEL_CONDITIONS, ///< lane SAVE-4e: flags, the object's whole set stored (Drawable::replaceModelConditionFlags RW 0x679512 takes a whole set)
 	};
 	Kind kind = CREATED;
 	UnsignedInt frame = 0;   ///< the logic frame that made it (0 during the load)
@@ -87,6 +92,7 @@ struct ClientEvent
 	bool setFlags = false, setScale = false, mirror = false;
 	float scale = 1.0f;
 	UnsignedInt fadeFrames = 0;
+	int flashFrames = 0;
 	int customKind = 0;                             ///< CUSTOM_COLORS (lane CAH-2)
 	std::uint32_t customColors[3] = { 0u, 0u, 0u }; ///< CUSTOM_COLORS: ARGB
 };
@@ -95,6 +101,11 @@ class ClientEventRecorder : public ObjectClientHooks
 {
 public:
 	explicit ClientEventRecorder(GameLogic &logic) : m_logic(logic) {}
+	void observe() { m_observing = true; captureObserverFrame(); }
+	void captureObserverFrame() { if (m_observing) { m_metrics.capture(m_logic); } }
+	const ObserverMetrics &observerMetrics() const { return m_metrics; }
+	void observerEvent(Object &obj, ObserverEvent::Kind kind, const Coord3D *at, const std::string &name, float weight) override;
+	const ObserverTimeline &observerTimeline() const { return m_timeline; }
 
 	void objectCreated(Object &obj) override;
 	void objectDestroyed(Object &obj) override;
@@ -106,8 +117,14 @@ public:
 	void replaceDrawable(Object &obj, const ThingTemplate *tmpl, bool hasColor, std::uint32_t color) override;
 	void fadeIn(Object &obj, UnsignedInt frames) override;
 	void setCustomColors(Object &obj, int kind, std::uint32_t c0, std::uint32_t c1, std::uint32_t c2) override; // lane CAH-2
+	void heroAttacked(Object &obj) override;
+	void flashHeroButton(const std::string &templateName, int frames) override;
 	// MapObjectLoop's afterCreate for a map object (DrawableManager::applyPlacement): the client part of the placement
 	void placement(Object &obj, const MapObjectDrawable &placement);
+	// lane SAVE-4e: a snapshot load set the object's model conditions without the hooks (Object::xfer): its whole set goes to the drawable
+	// (MODEL_CONDITIONS), then a flush (MODEL_FLUSH), so the drawable shows the loaded state. Not a retail path (retail's load makes the drawables
+	// from the loaded objects, ZH GameClient::xfer): INFERENCE that the stored set + flush gives the same draw state
+	void loadedObject(Object &obj);
 
 	// the events since the last take, in order (called by the simulation owner when it publishes a frame). Lane ANIM-1: with `endOfFrame` the objects whose
 	// flags changed since their last flush get their MODEL_FLUSH first, in the order of their first change (the end of the logic frame: RW 0x6759C4); the
@@ -128,6 +145,9 @@ private:
 	std::set<ObjectID> m_dirtySet;
 
 	GameLogic &m_logic;
+	bool m_observing = false;
+	ObserverTimeline m_timeline;
+	ObserverMetrics m_metrics;
 	std::vector<ClientEvent> m_events;
 	std::uint32_t m_seq = 0;
 };

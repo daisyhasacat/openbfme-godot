@@ -8,8 +8,6 @@
 #include "GameClient/SoundSelectorClientBehavior.h"
 
 #include "Common/AsciiString.h"
-#include "Common/ArchiveFileSystem.h"
-#include <iostream>
 #include "Common/INIException.h"
 #include "Common/Thing/ModuleFactory.h"
 #include "Common/Thing/ThingTemplate.h"
@@ -45,8 +43,11 @@ bool startsNoCase(const std::string &s, const char *prefix)
 	return s.size() >= n && AsciiStringUtil::compareNoCase(s.substr(0, n), prefix) == 0;
 }
 
-// RW 0x73AB45: one value into a record that already holds the row's earlier value
-void parseValue(const std::string &token, SoundSelector::Record &r, INI *ini)
+// RW 0x73AB45: one value into a record that already holds the row's earlier value. `unresolved` (community PR #36, BFME1 data's UnitSpecificSounds
+// lines only): the name is stored without asking TheAudio, as BFME1's parsePerUnitSounds -> parseArbitrarySoundsIntoMap does (Open-BFME-1
+// ThingTemplate_parseArbitrarySoundsIntoMap.cpp: AudioEventRTS::setEventName, no lookup); BFME1 1.03's Faramir names FaramirKnightVoiceGarrison,
+// which no AudioEvent defines
+void parseValue(const std::string &token, SoundSelector::Record &r, bool unresolved = false)
 {
 	if (AsciiStringUtil::compareNoCase(token, "NoSound") == 0) // RW 0x73AB5D: _strcmpi with RW 0xC24EC8
 	{
@@ -75,16 +76,9 @@ void parseValue(const std::string &token, SoundSelector::Record &r, INI *ini)
 	{
 		throw INIException(8, "sound selector: TheAudio's event table is not installed");
 	}
-	if (!exists(name)) // RW 0x73AC45: TheAudio vslot 0x12C answers null
+	if (!unresolved && !exists(name)) // RW 0x73AC45: TheAudio vslot 0x12C answers null
 	{
-		// BFME1's shipped Faramir mounted SoundState refers to an event absent
-		// from Voice.ini. Preserve this cosmetic reference without losing the
-		// rest of Faramir's template; other unknown sounds remain errors.
-		if (name == "FaramirKnightVoiceGarrison" && ini->environment().fileSystem &&
-			ini->environment().fileSystem->doesFileExist("Data\\INI\\Default\\SubsystemLegend.ini") &&
-			!ini->environment().fileSystem->doesFileExist("Data\\INI\\Default\\SubsystemLegendExpansion1.ini"))
-			std::clog << "BFME1: unresolved shipped voice FaramirKnightVoiceGarrison (retained, silent until defined)\n";
-		else throw INIException(3, "Invalid Sound '%s'", name.c_str()); // RW 0xC2500C
+		throw INIException(3, "Invalid Sound '%s'", name.c_str()); // RW 0xC2500C
 	}
 	r.sound = name;
 	if (!plusSound)
@@ -100,7 +94,7 @@ void parseRow(INI *ini, void *, void *store, const void *userData)
 	SoundSelector::SoundSet *set = static_cast<SoundSelector::SoundSet *>(store);
 	const std::string token = ini->getNextToken();
 	SoundSelector::Record &r = set->rows[(size_t)row];
-	parseValue(token, r, ini);
+	parseValue(token, r);
 	if (row >= kFirstSoundRow && !r.eva.empty())
 	{
 		throw INIException(3, "This is not a valid place to use the EVA: sound syntax: %s", token.c_str()); // RW 0xC250A4
@@ -114,7 +108,7 @@ void parseUnitSpecificLine(INI *ini, void *, void *store, const void *userData)
 	const std::string key = static_cast<const char *>(userData);
 	const std::string token = ini->getNextToken(); // RW 0x73F5E0
 	SoundSelector::Record r;
-	parseValue(token, r, ini);
+	parseValue(token, r, ini->bfme1Data());
 	(*map)[key] = r; // a later line of the block replaces an earlier one (UnitSpecificSound.h's reading of the template map)
 }
 
@@ -138,17 +132,18 @@ void parseVoicePriority(INI *ini, void *, void *store, const void *)
 	set->hasVoicePriority = true;
 }
 
-// every row a SoundSet answers to: UnitSpecificSounds, VoicePriority, then the audio table's 56 rows (store = the SoundSet)
+// community PR #36, BFME1 data only: BFME1's second voice rows (Open-BFME-1 RandomSoundSelectorFieldParse.cpp) are kept under their names in the
+// SoundSet's unit specific map
 void parseLegacyVoice(INI *ini, void *, void *store, const void *name)
 {
 	auto &set = *static_cast<SoundSelector::SoundSet *>(store);
-	parseValue(ini->getNextToken(), set.unitSpecific[static_cast<const char *>(name)], ini);
+	parseValue(ini->getNextToken(), set.unitSpecific[static_cast<const char *>(name)]);
 }
 
+// every row a SoundSet answers to: UnitSpecificSounds, VoicePriority, then the audio table's 56 rows (store = the SoundSet)
 const FieldParse *soundSetTable()
 {
-	static const char *legacy[] = { "VoiceSelect2", "VoiceSelectGroup2", "VoiceSelectBattle2", "VoiceAttack2", "VoiceMove2", "VoiceAmbushed", "SoundAmbientReallyDamaged2", "SoundAmbient2", nullptr };
-	static FieldParse table[SoundSelector::AUDIO_ROW_COUNT + 11];
+	static FieldParse table[SoundSelector::AUDIO_ROW_COUNT + 3];
 	static bool built = false;
 	if (!built)
 	{
@@ -158,13 +153,19 @@ const FieldParse *soundSetTable()
 		{
 			table[2 + i] = { kRowNames[i], parseRow, (const void *)(std::intptr_t)i, 0 };
 		}
-		int next = SoundSelector::AUDIO_ROW_COUNT + 2;
-		for (const auto *name : legacy)
-		{
-			if (!name) break;
-			table[next++] = {name, parseLegacyVoice, name, 0};
-		}
-		table[next] = { nullptr, nullptr, nullptr, 0 };
+		table[SoundSelector::AUDIO_ROW_COUNT + 2] = { nullptr, nullptr, nullptr, 0 };
+		static const FieldParse bfme1Rows[] = {
+			{ "VoiceSelect2", parseLegacyVoice, "VoiceSelect2", 0 },
+			{ "VoiceSelectGroup2", parseLegacyVoice, "VoiceSelectGroup2", 0 },
+			{ "VoiceSelectBattle2", parseLegacyVoice, "VoiceSelectBattle2", 0 },
+			{ "VoiceAttack2", parseLegacyVoice, "VoiceAttack2", 0 },
+			{ "VoiceMove2", parseLegacyVoice, "VoiceMove2", 0 },
+			{ "VoiceAmbushed", parseLegacyVoice, "VoiceAmbushed", 0 },
+			{ "SoundAmbientReallyDamaged2", parseLegacyVoice, "SoundAmbientReallyDamaged2", 0 },
+			{ "SoundAmbient2", parseLegacyVoice, "SoundAmbient2", 0 },
+			{ nullptr, nullptr, nullptr, 0 },
+		};
+		RegisterBfme1FieldRows(table, bfme1Rows);
 		built = true;
 	}
 	return table;

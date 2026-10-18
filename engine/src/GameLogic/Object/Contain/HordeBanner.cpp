@@ -17,8 +17,10 @@
 // (RW 0x873ACF, HordeContainExperience.cpp).
 
 #include "GameLogic/Module/BannerCarrierUpdate.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/GameCommon.h"
+#include "Common/Player.h"
 #include "Common/StateHash.h"
 #include "Common/Thing/ModuleFactory.h"
 #include "Common/Thing/ThingFactory.h"
@@ -26,6 +28,7 @@
 #include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/Combat/ObjectWeapons.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/FXEvents.h"
 #include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/HordeContain.h"
@@ -34,6 +37,7 @@
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/PartitionManager.h"
 #include "GameLogic/SimMath.h"
 
 #include <algorithm>
@@ -45,7 +49,8 @@ const char *const kStop =
 	"[S-587] banner carriers: the spawn (RW 0x8719E4 / 0x870204: countdown, BannerCarrierMinLevel below the veterancy level, no shot for 4 seconds, BannerCarriersAllowed[0], "
 	"the countdown from MeleeFreeBannerReSpawnTime; the rank is XP-1's ExperienceTracker rank, and a horde's rank gain forces the check, RW 0x873ACF) and BannerCarrierUpdate's "
 	"replenishment (RW 0x89ACE4 / 0x89A392: every IdleSpawnRate, out of combat for MeleeFreeUnitSpawnTime, a new payload member at the carrier while the horde is not full) are "
-	"ported; NOT ported: RW 0x8B50A5, the AllowBannerSpawnUpgrade test, ReplenishNearbyHorde (RW 0x89AB8F), the copied upgrades / experience, the producer's exit, MorphCondition / ExpLevelDraw "
+	"ported, as is nearby replenishment (RW 0x89AB8F: allied hordes in distance order, capacity, one/all, shroud/UnitSpawnFX, expedited banner countdown); "
+	"NOT ported: RW 0x8B50A5, the AllowBannerSpawnUpgrade test, the copied upgrades / experience, the producer's exit, MorphCondition / ExpLevelDraw "
 	"grammars (raw tokens) and the FX; INFERENCE: the carrier stands at its BannerCarrierPosition, the carrier id is cleared when it leaves, 'in combat' is a member damaged or "
 	"attacking within the window (RW 0x68C933 not read)";
 
@@ -138,7 +143,48 @@ UpdateSleepTime BannerCarrierUpdate::update()
 	}
 	if (m_data->m_replenishNearbyHorde)
 	{
-		return sleep; // RW 0x89AB8F (S-587)
+		Player *owner = obj->getControllingPlayer();
+		if (!owner)
+		{
+			return sleep;
+		}
+		GameLogic &logic = obj->logic();
+		PartitionFilterFn allies([&](Object &o) {
+			return o.isKindOfName("HORDE") && owner->getRelationship(o.getTeam()) == ALLIES;
+		});
+		const auto hits = logic.partition().iterateObjectsInRange(*obj->getPosition(), m_data->m_scanHordeDistance,
+			FROM_CENTER_2D, { &allies }, ITER_SORTED_NEAR_TO_FAR); // RW 0x89AB8F
+		for (const PartitionHit &hit : hits)
+		{
+			Object *target = hit.object;
+			HordeContain *hc = hordeContainOf(target);
+			if (!hc || target->testStatus(2)) // UNDER_CONSTRUCTION
+			{
+				continue;
+			}
+			if ((int)hc->payloadCount() < hc->getSlotCapacity())
+			{
+				if (Object *member = hc->spawnReplacementMember(*target->getPosition()))
+				{
+					member->updateShroudNow();
+					if (FXEventLog::isFXName(m_data->m_unitSpawnFX))
+					{
+						logic.fxEvents().emit(FXEventLog::objectEvent(FXEvent::OBJECT_FX,
+							"BannerCarrierUpdate UnitSpawnFX", logic.getFrame(), m_data->m_unitSpawnFX, *member));
+					}
+					++m_spawned;
+				}
+				if (!m_data->m_replenishAllNearbyHordes)
+				{
+					break;
+				}
+			}
+			else
+			{
+				hc->expediteBannerRespawn();
+			}
+		}
+		return sleep;
 	}
 	if (obj->testModelCondition(0x25) || obj->testModelCondition(0x3D))
 	{
@@ -322,4 +368,44 @@ bool HordeContain::wasInCombatWithin(unsigned frames) const
 		}
 	}
 	return false;
+}
+
+unsigned HordeContain::payloadCount() const
+{
+	return (unsigned)(m_members.size() + m_garrisonEntering.size()) - (m_bannerCarrier != 0 ? 1u : 0u);
+}
+
+unsigned HordeContain::lastMemberDamageFrame() const
+{
+	unsigned last = 0xFFFFFFFFu;
+	const auto read = [&](const Object *member) {
+		if (member)
+		{
+			if (const auto *body = dynamic_cast<const ActiveBody *>(member->getBodyModule()))
+			{
+				const unsigned frame = body->lastDamageFrame();
+				if (last == 0xFFFFFFFFu || last < frame)
+				{
+					last = frame;
+				}
+			}
+		}
+	};
+	for (const Object *member : m_members)
+	{
+		read(member);
+	}
+	for (ObjectID id : m_garrisonEntering)
+	{
+		read(getObject()->logic().findObjectByID(id));
+	}
+	return last;
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) ---------------------------------------------------------------------------------------------------
+void BannerCarrierUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	SnapshotXfer::u64(x, m_spawned);
 }

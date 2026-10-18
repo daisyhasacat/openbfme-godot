@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/FlammableUpdate.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Object/PartitionManager.h"
 
 #include "Common/AsciiString.h"
@@ -527,4 +528,28 @@ void FireSpreadUpdate::crc(StateHasher &hasher) const
 {
 	UpdateModule::crc(hasher);
 	hasher.addU32(m_spreads);
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190: each class's fields in its crc's order) ---------------------------------------------------
+void FlammableUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	SnapshotXfer::enumIn(x, m_status, FS_NORMAL, FS_BURNED, "a flammable status");
+	x.xferUnsignedInt(&m_aflameEndFrame);
+	x.xferUnsignedInt(&m_burnedEndFrame);
+	x.xferUnsignedInt(&m_damageEndFrame);
+	x.xferReal(&m_flameDamageLimit);
+	x.xferUnsignedInt(&m_lastFlameDamage);
+	x.xferBool(&m_runningToWater);
+	x.xferUnsignedInt(&m_customAnimEndFrame);
+	x.xferObjectID(&m_lastFlameDamager);
+	x.xferUnsignedInt(&m_aflameDamageTicks);
+}
+
+void FireSpreadUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_spreads);
 }

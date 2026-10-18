@@ -521,7 +521,7 @@ TEST_CASE("mapobj creation: map.ini overrides (load type 2) decide the model; Ki
 	CHECK(s3.out.drawables[0].draws[0].model == "CastleOld");
 }
 
-TEST_CASE("mapobj creation: the GameData switches are read by name from the first GameData block; a missing key is an error")
+TEST_CASE("mapobj creation: the GameData switches are read by name; omitted rows keep GlobalData constructor defaults")
 {
 	MapObjectOptions o;
 	std::string err;
@@ -529,9 +529,12 @@ TEST_CASE("mapobj creation: the GameData switches are read by name from the firs
 	CHECK(o.forceModelsToFollowTimeOfDay);
 	CHECK_FALSE(o.forceModelsToFollowWeather);
 	MapObjectOptions p;
-	CHECK_FALSE(MapObjectGameData::scanText("GameData\n  ForceModelsToFollowWeather = Yes\nEnd\n", p, &err));
-	CHECK(err.find("ForceModelsToFollowTimeOfDay") != std::string::npos);
-	CHECK_FALSE(MapObjectGameData::scanText("Weather\n  ForceModelsToFollowTimeOfDay = Yes\n  ForceModelsToFollowWeather = Yes\nEnd\n", p, &err)); // not in a GameData block
+	CHECK(MapObjectGameData::scanText("GameData\n  ForceModelsToFollowWeather = Yes\nEnd\n", p, &err));
+	CHECK(p.forceModelsToFollowTimeOfDay);
+	CHECK(p.forceModelsToFollowWeather);
+	CHECK(MapObjectGameData::scanText("Weather\n  ForceModelsToFollowTimeOfDay = No\n  ForceModelsToFollowWeather = No\nEnd\n", p, &err)); // other blocks do not change the defaults
+	CHECK(p.forceModelsToFollowTimeOfDay);
+	CHECK(p.forceModelsToFollowWeather);
 }
 
 TEST_CASE("mapobj creation: horde members stand on the formation slots, rotated by the horde's angle (HordeContainCore, RW 0x875847)")
@@ -812,7 +815,8 @@ TEST_CASE("mapobj runtime: floor WeatherTexture / ForceToBack / StaticModelLODMo
 	CHECK(r.floorDraws == 3);
 	CHECK(r.ignoredDrawFields == std::map<std::string, size_t>({
 		{ "W3DFloorDraw DistanceFog = No", 1 }, { "W3DFloorDraw ForceToBack", 2 }, { "W3DFloorDraw StaticModelLODMode", 1 },
-		{ "W3DFloorDraw WeatherTexture", 1 }, { "W3DPropDraw DistanceFog = No", 2 } }));
+		{ "W3DPropDraw DistanceFog = No", 2 } }));
+	CHECK(r.inferredDrawFields == std::map<std::string, size_t>({ { "W3DFloorDraw WeatherTexture", 1 } })); // S-5015 (community PR #37)
 	CHECK(r.scriptsRun == 0);
 	for (const std::string &st : r.stops)
 	{
@@ -821,7 +825,8 @@ TEST_CASE("mapobj runtime: floor WeatherTexture / ForceToBack / StaticModelLODMo
 	bool s115 = false;
 	for (const std::string &line : s.out.report.stops)
 	{
-		s115 = s115 || (line.rfind("[S-115]", 0) == 0 && line.find("WeatherTexture") != std::string::npos && line.find("ForceToBack") != std::string::npos && line.find("DistanceFog") != std::string::npos);
+		s115 = s115 || (line.rfind("[S-115]", 0) == 0 && line.find("ForceToBack") != std::string::npos && line.find("DistanceFog") != std::string::npos &&
+			line.find("WeatherTexture (the snowy / normal texture swap) is drawn by inference (S-5015") != std::string::npos);
 	}
 	CHECK(s115);
 }

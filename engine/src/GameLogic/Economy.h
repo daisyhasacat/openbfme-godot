@@ -59,6 +59,7 @@ public:
 	EconomyContext &context() { return m_context; }
 	const EconomyContext &context() const { return m_context; }
 	TerrainResourceManager &resources() { return m_resources; }
+	const TerrainResourceManager &resources() const { return m_resources; } // lane OWNERFIX-2: the client feedback reads the grid
 	// GameData's keep-score switch: the context's and every player's score keeper (hashed)
 	void setScoring(bool on);
 	// a new game: the grid, the claims and the log go (the settings stay)
@@ -96,6 +97,7 @@ public:
 	// list order (INFERENCE: the order of RW's team walk was not reproduced; stop S-482)
 	void updateUpgradeModulesOfPlayer(const Player &player) override;
 	void removeUpgradeFromObjectsOfPlayer(const Player &player, const UpgradeTemplate &upgrade) override;
+	void reportUpgradeEva(const Player &player, const UpgradeTemplate &upgrade, bool gained) override;
 
 	// ---- what the players ask the world --------------------------------------------------------------------------------------
 	bool hasObjectMatching(const Player &player, const ObjectFilter &filter, bool completedOnly) const override;   // RW 0x6ABD0B
@@ -106,7 +108,7 @@ public:
 	// ---- bounty --------------------------------------------------------------------------------------------------------------
 	// RW 0x6AC06F Player::awardBounty(killer, victim) on the player that gets the credit: the number of cash paid (0 when nothing was). Nothing for a missing killer or a
 	// victim still under construction (RW 0x44DDEC with status 2). value = the victim template's BountyValue (RW + 0x580); a HERO victim (KindOf bit 90, RW 0x68DDF1) is scaled
-	// by its experience level: value = trunc(value + value * n / d) in x87 at 24 bits, n / d from the hook (stop S-261: without the hook the unscaled value is used and counted).
+	// by its experience level: value = trunc(value + value * n / d) in x87 at 24 bits; n is its rank, d the last valid level's rank (RW 0x689045).
 	// percent = the killer's BOUNTY_PERCENTAGE modifier sum (starts 0.0), or the player's own bounty percent when that is exactly 0.0; amount = ceil(value * percent) (x87,
 	// MSVCR71 ceil, fstp dword, fistp); in a multiplayer game amount = ftol(amount * MultiPlayMoneyMult[n - 1]); then the handicap; a non-zero amount is deposited (score keeper,
 	// sound) and logged as an income event (the floating text at the victim, RW 0x6AC185 .. 0x6AC1E4). The kill credit that calls it is the combat lane's (stop S-257).
@@ -151,10 +153,15 @@ public:
 	void setIncomeListener(IncomeListener l) { m_incomeListener = std::move(l); }
 	void noteIncome(Object &obj, Player &owner, int amount);
 	const std::deque<IncomeEvent> &incomeLog() const { return m_incomeLog; }
+	unsigned long long incomePayments() const { return m_incomePayments; }
 	void clearIncomeLog() { m_incomeLog.clear(); }
 
 	// ---- state hash and reports -----------------------------------------------------------------------------------------------
 	void crc(StateHasher &hasher) const;
+	// lane SAVE-4d: the block obfme:Economy (see Economy.cpp, S-4253): the settings checked, the context, the terrain resource manager
+	void xfer(class Xfer &x);
+	// lane SAVE-4d: the block's post-process (after every block loaded): the manager's staged state checked and taken, then the context's switch
+	void finishLoad();
 	// the stop lines that apply to a run (EconomyStops.h) plus the run-time counts of what was dropped
 	std::vector<std::string> report() const;
 
@@ -173,4 +180,5 @@ private:
 	std::deque<IncomeEvent> m_incomeLog;
 	unsigned long long m_droppedExperience = 0;
 	unsigned long long m_incomePayments = 0;
+	bool m_hasPendingScoring = false, m_pendingScoring = false; ///< lane SAVE-4d: a load's keep-score switch until finishLoad (not state)
 };

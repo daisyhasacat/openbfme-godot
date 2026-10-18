@@ -39,6 +39,7 @@ class CastleTemplateStore;
 class Drawable;
 struct DrawServices;
 class GameLogic;
+class GameTextSource;
 class InGameUI;
 class ThingTemplate;
 
@@ -93,8 +94,15 @@ public:
 	const std::string &templateName() const { return m_template; }
 	bool castle() const { return m_castle; }
 	bool wall() const { return m_wall; } ///< a line build (a wall span dragged from a hub)
+	// the farm placement feedback (BFME2 PlaceTerrainResourceClaimantFeedback, community PR #37): the ghost's TerrainResourceBehavior Radius (0: none)
+	// and the share a claim there would get (TerrainResourceManager::previewShare), read on idle frames
 	float resourceRadius() const { return m_resourceRadius; }
 	float resourceShare() const { return m_resourceShare; }
+	// BFME2 0x4E6455 (Impl::update): the label, GUI:TerrainResourcePercentageClaimable (UnicodeString::format) with the share in percent
+	// (WWMath::Float_To_Long(floor(share * 100 + 0.5))), and its colour (ARGB): green above 0.75, yellow from 0.5, red from 0.25, else black; the decal
+	// takes the same RGB at opacity 0x80 (createPotentialClaimDecal 0x4E65CF)
+	static std::u16string claimantText(const GameTextSource *text, float share);
+	static std::uint32_t claimantColor(float share);
 	// problems (a draw module that does not build, a layout that does not load), each reported once
 	const std::vector<std::string> &errors() const { return m_errors; }
 	// the draw modules' counted problems (a hidden sub object the model lacks; an animation that does not resolve is an error, r4), each once

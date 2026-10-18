@@ -4,7 +4,7 @@
 // Configuration (environment; secrets also from files: X_FILE=path reads the variable from that file):
 //   LOBBY_BIND (default 127.0.0.1:8787), LOBBY_DATA (a directory: games, START records and relay logs), TICKET_KEYS (the relay's key ring),
 //   SESSION_KEY, UPLOAD_KEY, ADMIN_KEY (hex; ADMIN_KEY: INFRA-2's backup export), RELAYS ("id=a.b.c.d:port,..."), PUBLIC_URL
-// Usage: node server.mjs   (services/online/DEPLOY.md runs it under systemd)
+// Usage: node server.mjs   (the deploy notes run it under systemd)
 
 import { createServer } from 'node:http';
 import { createHmac, randomBytes } from 'node:crypto';

@@ -28,6 +28,7 @@
 #pragma once
 
 #include "GameClient/GUI/AptScreens/AptSkirmish.h"
+#include "GameNetwork/GameSorter.h"
 #include "GameNetwork/Transport.h"
 
 #include <memory>
@@ -55,7 +56,11 @@ public:
 	}
 	// the rows of the games list (tests): "name|players|map|status"
 	const std::vector<std::string> &gameRows() const { return m_gameRows; }
+	const GameSorter &sorter() const { return m_sorter; } // lane MENUWORK-1
+	int listFills() const { return m_listFills; }          // lane MENUWORK-1: the game list's refills
+	static const char16_t *const kStrategicUnavailable;    // lane MENUWORK-1 (S-4753)
 	const std::vector<std::string> &chatLines() const { return m_chat; }
+	const std::vector<std::string> &boxesShown() const { return m_boxes; } ///< lane UBERJOIN-1: the mode box's text (tests)
 
 protected:
 	WindowMsgHandledType gadgetMessage(GameWindow *from, std::uint32_t msg, WindowMsgData data1, WindowMsgData data2) override;
@@ -81,6 +86,9 @@ private:
 	void backToLobby();
 	void pruneLan();
 	void requestJoinSelected();
+	void restoreMode(); // lane UBERJOIN-1
+	void refreshJoinButton();
+	void refreshReadyControls();
 	// lane UI-1
 	AptMessageBox &box();
 	std::u16string text(const std::string &label) const;
@@ -98,7 +106,12 @@ private:
 	bool m_listDirty = true;
 	std::vector<std::string> m_gameRows;
 	std::vector<NetAddress> m_listedHosts; ///< the host of each row of the list
+	std::vector<size_t> m_listedGames;     ///< lane MENUWORK-1: the LAN game (TheLAN's index) of each row of the (sorted) list
+	int m_listFills = 0;
+	bool m_strategic = false;              ///< lane MENUWORK-1: the War of the Ring page is up (OnLoadScreen("LanStrategic"))
+	GameSorter m_sorter;                   ///< lane MENUWORK-1: RotWK's AptLanLobby member (decomp AptLanLobbyDestructor.cpp)
 	std::vector<std::string> m_chat;
+	std::vector<std::string> m_boxes;
 	bool m_ready = false;
 	// lane UI-1
 	std::unique_ptr<AptMessageBox> m_box;

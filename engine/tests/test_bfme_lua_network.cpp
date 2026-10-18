@@ -76,6 +76,7 @@ TEST_CASE("Lua network: recorded action plays without Lua and retains START auth
 		BfmeLuaRuntime::Mutation m; m.collection="players"; m.id=std::to_string(host); m.field="money"; m.value=9876;
 		CommandList commands; commands.append(BfmeLuaActions::encode(host, 1, m));
 		ReplayHeader h; h.game.game.slots[0].state = SLOT_PLAYER; h.game.game.luaAuthoritySlot = 0;
+		h.game.game.peaceTimeMinutes = 5; h.game.game.fortressConstruction = true; h.game.game.slots[0].handicap = -50;
 		ReplayWriter writer; writer.setKeepCopy(true); std::string error;
 		REQUIRE_MESSAGE(writer.open("", h, &error), error);
 		writer.recordFrame(0, commands);
@@ -87,17 +88,32 @@ TEST_CASE("Lua network: recorded action plays without Lua and retains START auth
 	ReplayFile replay; std::string error;
 	REQUIRE_MESSAGE(ReplayFile::parse(bytes, replay, &error), error);
 	CHECK(replay.header.game.game.luaAuthoritySlot == 0);
+	CHECK(replay.header.game.game.peaceTimeMinutes == 5);
+	CHECK(replay.header.game.game.fortressConstruction);
+	CHECK(replay.header.game.game.slots[0].handicap == -50);
 	// Old replay versions omit authority; v5/v6 also omit peace time.
 	NetByteReader header(bytes); for (int i=0;i<12;++i) header.u8(); header.str();
 	NewGameMessage setup; REQUIRE(NetPacket::readNewGameMessage(header, setup, &error));
 	const auto setupEnd = bytes.size() - header.remaining();
-	for (int version : {5,6,7}) {
+	for (int version : {5,6,7,8}) {
 		auto legacy=bytes; legacy[8]=(std::uint8_t)version;
-		const size_t first=setupEnd-(version==7?8:12);
-		legacy.erase(legacy.begin()+first,legacy.begin()+setupEnd-4);
+		const size_t tail = setupEnd - 4 * MAX_SLOTS - 12; // peace, authority, profile, handicaps
+		legacy.erase(legacy.begin()+setupEnd-4*MAX_SLOTS, legacy.begin()+setupEnd);
+		if (version < 8) legacy.erase(legacy.begin()+tail+4, legacy.begin()+tail+8);
+		if (version < 7) legacy.erase(legacy.begin()+tail, legacy.begin()+tail+4);
+		ReplayFile old; REQUIRE_MESSAGE(ReplayFile::parse(legacy,old,&error),error);
+		const int expectedAuthority = version == 8 ? 0 : -1;
+		CHECK(old.header.game.game.luaAuthoritySlot == expectedAuthority);
+		const int expectedPeace = version == 5 || version == 6 ? 0 : 5;
+		CHECK(old.header.game.game.peaceTimeMinutes == expectedPeace);
+	}
+	// Upstream's version 7 kept handicaps but had neither enhanced setting.
+	{
+		auto legacy=bytes; legacy[8]=7;
+		legacy.erase(legacy.begin()+setupEnd-4*MAX_SLOTS-12, legacy.begin()+setupEnd-4*MAX_SLOTS-4);
 		ReplayFile old; REQUIRE_MESSAGE(ReplayFile::parse(legacy,old,&error),error);
 		CHECK(old.header.game.game.luaAuthoritySlot==-1);
-		CHECK(old.header.game.game.peaceTimeMinutes==0);
+		CHECK(old.header.game.game.slots[0].handicap==-50);
 	}
 	combattest::CombatWorld w; w.logic->luaActions().authorityPlayer = host;
 	REQUIRE(replay.frames.at(0).size() == 1);

@@ -40,6 +40,7 @@ struct OpenContainModuleData;
 class OpenContain : public UpdateModule, public ContainModuleInterface, public DieModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(OpenContain) // lane SAVE-4b
 	OpenContain(Thing *thing, const ModuleData *data, const OpenContainModuleData &open, const DieMuxData &dieMux);
 	~OpenContain() override;
 

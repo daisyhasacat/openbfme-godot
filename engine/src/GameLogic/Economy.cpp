@@ -4,14 +4,18 @@
 #include "GameLogic/Economy.h"
 
 #include "Common/NumericState.h"
+#include "Common/Audio/AudioRequests.h"
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/Thing/ThingTemplate.h"
+#include "Common/Xfer.h"
 #include "GameLogic/EconomyStops.h"
+#include "GameLogic/ExperienceLevels.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/ObjectFilter.h"
 #include "GameLogic/ObjectFilterMatch.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 
 #include <stdexcept>
@@ -184,7 +188,21 @@ int Economy::awardBounty(Player &killerOwner, Object *killer, const Object &vict
 	if (templateKindOf(tt, "HERO"))
 	{
 		int num = 0, den = 0;
-		if (m_heroBountyScale && m_heroBountyScale(victim, num, den) && den != 0)
+		bool scaled = false;
+		if (m_heroBountyScale)
+		{
+			scaled = m_heroBountyScale(victim, num, den) && den != 0;
+		}
+		else if (const ExperienceTracker *tracker = victim.getExperienceTracker(); tracker && TheExperienceLevelSystem)
+		{
+			if (const ExperienceLevelTemplate *last = TheExperienceLevelSystem->lastLevel(tracker->levelTargetName(), tracker->levelsForMultiplayer()))
+			{
+				num = tracker->getRank();
+				den = last->m_rank;
+				scaled = true;
+			}
+		}
+		if (scaled)
 		{
 			double x = NumericState::pc24DivW((double)num, (double)den); // fild n; fidiv d
 			x = NumericState::pc24MulW(x, (double)value);                 // fmul value
@@ -389,6 +407,24 @@ void Economy::removeUpgradeFromObjectsOfPlayer(const Player &player, const Upgra
 	}
 }
 
+void Economy::reportUpgradeEva(const Player &player, const UpgradeTemplate &upgrade, bool gained)
+{
+	// RW 0x6AE483 / 0x6AE546: local player's relationship TO the owner's default team; neutral uses the enemy cue.
+	const Player *local = m_logic.players().getLocalPlayer();
+	int event = -1;
+	if (local == &player)
+	{
+		event = gained ? upgrade.m_localPlayerGainsUpgradeEvaEvent : upgrade.m_localPlayerLosesUpgradeEvaEvent;
+	}
+	else if (local && player.getDefaultTeam())
+	{
+		const bool allied = local->getRelationship(player.getDefaultTeam()) == ALLIES;
+		event = gained ? (allied ? upgrade.m_alliedPlayerGainsUpgradeEvaEvent : upgrade.m_enemyPlayerGainsUpgradeEvaEvent)
+			: (allied ? upgrade.m_alliedPlayerLosesUpgradeEvaEvent : upgrade.m_enemyPlayerLosesUpgradeEvaEvent);
+	}
+	AudioApi::reportEva(event, nullptr);
+}
+
 bool Economy::hasObjectMatching(const Player &player, const ObjectFilter &filter, bool completedOnly) const
 {
 	// RW 0x6ABD0B -> 0x7A19AB -> 0x7A075A over the player's teams' members
@@ -535,6 +571,70 @@ void Economy::crc(StateHasher &h) const
 	m_resources.crc(h);
 }
 
+// lane SAVE-4d: OpenBFME native layout (the economy is the port's own grouping; S-4253). The settings are configuration (GameData, set before the game
+// starts, never written by the simulation): not saved, their state hash is checked so that a snapshot of other data is refused by name. The game context
+// (the mode, kind, Living World, game info, lobby command point percent, the keep-score switch, sandbox) follows: all of it is the game's START except the
+// keep-score switch (setScoring), so a load checks the rest against this game's (a closed set: the START's values) and takes the switch. Then the
+// TerrainResourceManager in retail's layout (TerrainResourceManager::xfer). The seams, the income log and the counts are the client's or statistics.
+void Economy::xfer(Xfer &x)
+{
+	const bool loading = x.isLoading();
+	if (loading)
+	{
+		m_hasPendingScoring = false;
+	}
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	StateHasher settings;
+	m_settings.crc(settings);
+	std::uint32_t settingsHash = loading ? 0 : settings.value();
+	x.xferUnsignedInt(&settingsHash);
+	if (loading && settingsHash != settings.value())
+	{
+		throw XferException("economy: the snapshot's GameData economy settings differ from this game's (another data set)");
+	}
+	EconomyContext c;
+	if (!loading)
+	{
+		c = m_context;
+	}
+	x.xferInt(&c.gameMode);
+	x.xferInt(&c.gameKind);
+	x.xferBool(&c.livingWorld);
+	x.xferBool(&c.gameInfoPresent);
+	x.xferInt(&c.lobbyCommandPointPercent);
+	x.xferBool(&c.scoring);
+	x.xferBool(&c.sandbox);
+	if (loading)
+	{
+		const EconomyContext &m = m_context;
+		if (c.gameMode != m.gameMode || c.gameKind != m.gameKind || c.livingWorld != m.livingWorld || c.gameInfoPresent != m.gameInfoPresent ||
+			c.lobbyCommandPointPercent != m.lobbyCommandPointPercent || c.sandbox != m.sandbox)
+		{
+			throw XferException("economy: the snapshot's game (mode " + std::to_string(c.gameMode) + ", kind " + std::to_string(c.gameKind) +
+				", command points " + std::to_string(c.lobbyCommandPointPercent) + "%) is not this game's (mode " + std::to_string(m.gameMode) + ", kind " +
+				std::to_string(m.gameKind) + ", command points " + std::to_string(m.lobbyCommandPointPercent) + "%)");
+		}
+	}
+	m_resources.xfer(x);
+	if (loading)
+	{
+		m_hasPendingScoring = true; // staged with the manager's state until finishLoad
+		m_pendingScoring = c.scoring;
+	}
+}
+
+void Economy::finishLoad()
+{
+	const bool has = m_hasPendingScoring;
+	m_hasPendingScoring = false;
+	m_resources.finishLoad(); // throws, the economy unchanged, when a claimant's object does not exist
+	if (has)
+	{
+		m_context.scoring = m_pendingScoring; // the context's own switch (setScoring also sets the players' score keepers, whose state obfme:Players holds)
+	}
+}
+
 std::vector<std::string> Economy::report() const
 {
 	std::vector<std::string> lines = EconomyStops::lines();
@@ -545,10 +645,6 @@ std::vector<std::string> Economy::report() const
 	if (m_droppedExperience != 0)
 	{
 		lines.push_back("[S-256] " + std::to_string(m_droppedExperience) + " experience grants of resource buildings were dropped (no ExperienceTracker hook installed)");
-	}
-	if (m_unscaledHeroBounties != 0)
-	{
-		lines.push_back("[S-261] " + std::to_string(m_unscaledHeroBounties) + " bounties of HERO victims were paid at the unscaled BountyValue (no experience level scale hook installed)");
 	}
 	return lines;
 }

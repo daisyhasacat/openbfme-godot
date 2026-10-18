@@ -40,6 +40,8 @@
 class AIWorld;
 class ModuleFactory;
 class TurretAI;
+class Object;
+bool cancelBloodthirstyCommand(Object &object, int command, Object *target);
 struct TurretAIData;
 class ObjectPathfindAdapter;
 struct ObjectMovementInfo;
@@ -81,6 +83,15 @@ public:
 	void onObjectCreated() override;
 	void onDelete() override;
 	void crc(StateHasher &hasher) const override;
+	// lane SAVE-4c (AIUpdateSnapshot.cpp): the AI module's state in the obfme:AIWorld block (the object's other modules are obfme:Objects'): every field crc
+	// covers but the update module's sleep (the scheduler's), the locomotor set made again from its id, the turret, the mover and the state machine. A subclass
+	// adds its own fields after the base's. A load goes into the module of the same object, made from the same template
+	void xferAIState(class Xfer &x); ///< the module as one transaction (a refused load leaves it as it was: AIXfer::transaction)
+	virtual void xferAIStateBody(class Xfer &x);
+	// lane SAVE-4e: the module's part of Object::xfer's module list (obfme:Objects): its own version, then UpdateModule's (the next call frame); every
+	// other field is xferAIState's in obfme:AIWorld (SAVE-4c), which a subclass extends through xferAIStateBody. Native (S-4220: retail's
+	// AIUpdateInterface::xfer RW 0x667416 holds the AI state here)
+	OBFME_MODULE_XFER(AIUpdateInterface)
 	UpdateSleepTime update() override;
 	// lane IDLE-1 r2: every AI update class's vslot 0x30 is RW 0x851E97 (`xor eax, eax; ret`): the scheduler files it in updates[0] (phases 3 / 4), so the
 	// AI (and the horde member update RW 0x66C748) runs before the horde contains of updates[1] (tools/rw_object_model/update_phases.py)
@@ -187,7 +198,14 @@ public:
 	unsigned moodAdjustment(int action) const;
 	// the attack machine the AIAttackState builds for this module (the horde object builds the horde machine)
 	virtual AttackMachineKind attackMachineKind() const { return ATTACK_MACHINE_NORMAL; }
-	virtual std::unique_ptr<AIStateMachine> makeHordeAttackMachine(AIAttackState *) { return nullptr; }
+	// lane SAVE-4c: `melee` -1 decides by the current weapon (the attack's entry), 1 / 0 makes the melee / ranged states (a load makes the saved machine again);
+	// `madeMelee` receives which states were made
+	virtual std::unique_ptr<AIStateMachine> makeHordeAttackMachine(AIAttackState *, int melee = -1, bool *madeMelee = nullptr)
+	{
+		(void)melee;
+		(void)madeMelee;
+		return nullptr;
+	}
 	// lane FLY-1: the AI machine's vslot 0x24, the attack-then-idle machine of the hunt state (the base RW 0x74D3F4 -> RW 0x74D326, which AIHuntState builds when
 	// this returns null; GiantBirdAIUpdate's machine RW 0x769C31 -> RW 0x769335 AIAttackSwoopThenIdleStateMachine). `attackStateId` is the id the caller sets for
 	// the attack
@@ -266,6 +284,21 @@ public:
 	float curLocomotorSpeed() const;          // per frame, at the unit's damage state
 	float locomotorSetSpeed() const { return m_locomotorSetSpeed; } // raw distance per second (RW ai+0x1F8)
 	const ObjectMovementInfo &movementInfo() const { return *m_info; }
+
+	// lane BACKLOG-8: the formation slot AIGroup::createFormation (RW 0x94FCBA) gives a group member. RW keeps it on the Object (+ 0x42C the formation id, 0 =
+	// none; + 0x430 / + 0x434 the offset); every writer and reader goes through an object with an AI, and the port's Object keeps its size (see m_legendaryFactor)
+	// lane BACKLOG-8 r2: AI command 0x24 (RW 0x66AB94 -> vslot 0x7C, RW 0x66BB9D): the formation march along `path`, facing `angle` at its end (state 54)
+	void aiFollowPathAsTeam(const std::vector<Coord3D> &path, Object *ignoreObject, float angle, CommandSourceType source);
+	// AI vslot 0x224 (RW 0x667144): a unit whose current locomotor set is not air-only, that has a locomotor not flying (template surfaces without AIR) and
+	// is not held (Object + 0x1C8 bit 3) marches along a path (command 0x24 / 0x25); any other takes a plain move
+	bool canFollowTeamPath() const;
+	float teamPathAngle() const { return m_teamPathAngle; }               ///< AI + 0x1A0
+	int currentGoalPathIndex() const { return m_currentGoalPathIndex; }   ///< AI + 0x194
+	void setCurrentGoalPathIndex(int i) { m_currentGoalPathIndex = i; }
+	int formationId() const { return m_formationId; }
+	void setFormationId(int id) { m_formationId = id; }
+	const Coord2D &formationOffset() const { return m_formationOffset; }
+	void setFormationOffset(const Coord2D &o) { m_formationOffset = o; }
 
 	// ---- the movement component ----
 	AIMover &mover() { return *m_mover; }
@@ -365,6 +398,7 @@ public:
 			return false;
 		}
 		stancesOnCommand(source);
+		cancelBloodthirstyCommand(*getObject(), command, target);
 		commandAccepted(source, command, target);
 		return true;
 	}
@@ -387,7 +421,7 @@ public:
 	unsigned maxCowerTime() const { return m_maxCowerTime; }
 	// RW 0x68E43B: the object's vision range (Object + 0x1B0, the template's VisionRange: S-1027) x (1 + the attribute modifier sum of type 16) x the height bonus
 	float objectVisionRange() const;
-	static float objectVisionRangeOf(Object &object); ///< the same for any object (RW 0x68E43B is Object's; lane CAMP-1H)
+	static float objectVisionRangeOf(Object &object, bool updateGroundCache = true); ///< the same for any object (RW 0x68E43B is Object's; lane CAMP-1H)
 	// AIMoveHost (lane MODULES-3: the safe path of the run-away-panic state)
 	bool repulsorPosition(PathfindObjectID id, Coord3D &out) override;
 	float safePathRadius() override;
@@ -443,6 +477,10 @@ private:
 	std::unique_ptr<AIStateMachine> m_defectedMachine; ///< lane BACKLOG4: RW AI + 0x38
 	std::vector<std::unique_ptr<Locomotor>> m_locomotors; // the current set, in set order (B1 m_locomotorSet)
 	Locomotor *m_curLocomotor = nullptr;
+	int m_formationId = 0;        ///< Object + 0x42C (hashed with the offset once either is set)
+	float m_teamPathAngle = 0.0f;     ///< lane BACKLOG-8 r2: AI + 0x1A0 (hashed when the march used it)
+	int m_currentGoalPathIndex = -1;  ///< AI + 0x194
+	Coord2D m_formationOffset{};  ///< Object + 0x430 / + 0x434
 	int m_curLocomotorSet = -1;
 	float m_locomotorSetSpeed = 0.0f;
 	bool m_upgradedLocomotors = false;

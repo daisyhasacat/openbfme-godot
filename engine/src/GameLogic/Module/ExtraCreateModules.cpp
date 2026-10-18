@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/ExtraCreateModules.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Object/PartitionManager.h"
 
 #include "Common/Player.h"
@@ -142,4 +143,26 @@ void InheritUpgradeCreate::crc(StateHasher &hasher) const
 {
 	hasher.addBool(m_needToRunOnBuildComplete);
 	hasher.addU32(m_inherited);
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------
+void ExperienceLevelCreate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+}
+
+void LockWeaponCreate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	x.xferBool(&m_needToRunOnBuildComplete);
+}
+
+void InheritUpgradeCreate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	x.xferBool(&m_needToRunOnBuildComplete);
+	x.xferUnsignedInt(&m_inherited);
 }

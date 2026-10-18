@@ -98,6 +98,24 @@ func run(p_game: Node, p_shots: String) -> int:
 		var help := str(page().get("help", ""))
 		check("the Uber performance mode row warns in its help line", help.begins_with("Not compatible with the original game"), help)
 		await shot("opts2-uber-help-%dx%d" % [root.size.x, root.size.y])
+		# lane UBERJOIN-1: inside a lobby room (online or LAN) the row is greyed with the reason, and a change is refused by name
+		var uber_key := "OpenBFMEUberPerformance"
+		var uber_was = screen.extra_value(uber_key)
+		for room in ["an online room", "a LAN room"]:
+			screen.room_getter = func() -> String: return room
+			screen._sync()
+			await game._step(4)
+			var locked_row: Dictionary = page().get("rows", {}).get(uber_key, {})
+			check("in %s the Uber performance mode row is disabled" % room, locked_row.has("enabled") and not bool(locked_row.enabled), JSON.stringify(locked_row))
+			check("... with the reason in its help (%s)" % room, str(locked_row.get("help", "")).contains("You are in %s" % room) and str(locked_row.get("help", "")).contains("Leave the room first"), str(locked_row.get("help", "")))
+			screen.set_extra(uber_key, "yes" if str(uber_was) == "no" else "no")
+			check("a change inside %s is refused: the value stays %s" % [room, str(uber_was)], str(screen.extra_value(uber_key)) == str(uber_was), str(screen.extra_value(uber_key)))
+		await shot("opts2-uber-locked-%dx%d" % [root.size.x, root.size.y])
+		screen.room_getter = Callable()
+		screen._sync()
+		await game._step(4)
+		var open_row: Dictionary = page().get("rows", {}).get(uber_key, {})
+		check("out of a room the row is enabled again", bool(open_row.get("enabled", false)), JSON.stringify(open_row))
 	else:
 		check("the Uber performance mode row is on the Performance tab", false, str(uber_rows.keys()))
 
@@ -105,10 +123,17 @@ func run(p_game: Node, p_shots: String) -> int:
 	await click_tab("Graphics")
 	await select("OpenBFMEAntiAliasing", 3) # MSAA 4x
 	check("anti-aliasing MSAA 4x is applied to the window", root.msaa_3d == Viewport.MSAA_4X and screen.extra_value("OpenBFMEAntiAliasing") == "msaa4", str(root.msaa_3d))
+	# lane OWNERFIX-1: TAA is FSR 2's temporal anti-aliasing (Godot's use_taa blurred the moving picture); leaving it gives the display's scaler back
+	var scaler_before := root.scaling_3d_mode
+	await select("OpenBFMEAntiAliasing", 4) # TAA
+	check("anti-aliasing TAA is FSR 2 at the render scale, not Godot's blurring TAA", root.scaling_3d_mode == Viewport.SCALING_3D_MODE_FSR2 and not root.use_taa
+		and root.msaa_3d == Viewport.MSAA_DISABLED, "scaling %d use_taa %s" % [root.scaling_3d_mode, str(root.use_taa)])
 	await select("OpenBFMEAntiAliasing", 1) # FXAA
 	check("anti-aliasing FXAA is applied", root.screen_space_aa == Viewport.SCREEN_SPACE_AA_FXAA and root.msaa_3d == Viewport.MSAA_DISABLED, str(root.screen_space_aa))
-	await select("OpenBFMEAnisotropic", 4) # 16x
-	check("anisotropic filtering 16x is applied", root.anisotropic_filtering_level == Viewport.ANISOTROPY_16X, str(root.anisotropic_filtering_level))
+	check("leaving TAA gives the display settings' scaler back", root.scaling_3d_mode == scaler_before and not root.use_taa, "scaling %d (was %d)" % [root.scaling_3d_mode, scaler_before])
+	check("anisotropic filtering 16x (the default since lane OWNERFIX-1) is in effect", root.anisotropic_filtering_level == Viewport.ANISOTROPY_16X, str(root.anisotropic_filtering_level))
+	await select("OpenBFMEAnisotropic", 3) # 8x
+	check("anisotropic filtering 8x is applied", root.anisotropic_filtering_level == Viewport.ANISOTROPY_8X, str(root.anisotropic_filtering_level))
 	await select("OpenBFMELook", 1)
 	var env: Environment = game._env.environment
 	check("the enhanced look: AgX tone mapping and glow", env.tonemap_mode == Environment.TONE_MAPPER_AGX and env.glow_enabled, "tonemap %d glow %s" % [env.tonemap_mode, env.glow_enabled])
@@ -149,7 +174,7 @@ func run(p_game: Node, p_shots: String) -> int:
 		if not RETAIL_SAVE_KEYS.has(key) and not after_lines.has(line):
 			lost.append(line)
 	check("the other retail entries are unchanged (%d)" % before_lines.size(), lost.is_empty(), str(lost))
-	for pair in [["OpenBFMEAntiAliasing", "fxaa"], ["OpenBFMEAnisotropic", "16x"], ["OpenBFMELook", "enhanced"], ["OpenBFMEMasterVolume", "50"],
+	for pair in [["OpenBFMEAntiAliasing", "fxaa"], ["OpenBFMEAnisotropic", "8x"], ["OpenBFMELook", "enhanced"], ["OpenBFMEMasterVolume", "50"],
 			["OpenBFMEHealthBars", "always"], ["OpenBFMEGameClock", "yes"], ["ScrollFactor", "70"], ["OpenBFMEEdgeScroll", "always"]]:
 		check("Options.ini holds %s = %s" % pair, after_lines.has("%s = %s" % pair), "")
 	check("the file is sorted ZH-style (\"key = value\" lines in key order)", _sorted(after_lines), "")

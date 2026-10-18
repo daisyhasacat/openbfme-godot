@@ -2,6 +2,7 @@
 
 #include "GodotDevice/GodotW3DMaterial.h"
 #include "GodotDevice/GodotTextureOverrides.h"
+#include "Common/BfmeGame.h"
 #include "GodotDevice/GodotPackedTexture.h"
 #include "Libraries/Source/Apt/AptLoad.h"
 
@@ -22,6 +23,7 @@
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/string_name.hpp>
 #include <godot_cpp/variant/vector4.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -34,24 +36,36 @@ namespace godot
 namespace
 {
 
-// Some BFME1 texture packs retain .dds names for PNG replacements.
+// RotWK / BFME2: a .dds is a DDS, anything else a TGA. community PR #36, BFME1 mounted only (docs/BFME1.md): BFME1 installs carry PNG / JPEG files,
+// some under .dds names, so the bytes' signature decides
 Error decodeTexture(const Ref<Image> &image, const PackedByteArray &buffer, bool dds)
 {
-	static const unsigned char png[] = { 137, 80, 78, 71, 13, 10, 26, 10 };
-	if (buffer.size() >= 8 && std::memcmp(buffer.ptr(), png, sizeof(png)) == 0)
-		return image->load_png_from_buffer(buffer);
-	if (buffer.size() >= 3 && buffer[0] == 0xff && buffer[1] == 0xd8 && buffer[2] == 0xff)
-		return image->load_jpg_from_buffer(buffer);
-	// BFME1 Textures.big ships palantira.dds as an uncompressed TGA. The
-	// extension is not reliable; DDS has an unambiguous four-byte signature.
-	if (buffer.size() >= 4 && std::memcmp(buffer.ptr(), "DDS ", 4) == 0)
-		return image->load_dds_from_buffer(buffer);
-	return image->load_tga_from_buffer(buffer);
+	if (bfme1Mounted())
+	{
+		static const unsigned char png[] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+		if (buffer.size() >= 8 && std::memcmp(buffer.ptr(), png, sizeof(png)) == 0)
+		{
+			return image->load_png_from_buffer(buffer);
+		}
+		if (buffer.size() >= 3 && buffer[0] == 0xff && buffer[1] == 0xd8 && buffer[2] == 0xff)
+		{
+			return image->load_jpg_from_buffer(buffer);
+		}
+		// BFME1 palantira.dds is TGA despite its extension.
+		if (buffer.size() < 4 || std::memcmp(buffer.ptr(), "DDS ", 4) != 0) return image->load_tga_from_buffer(buffer);
+	}
+	return dds ? image->load_dds_from_buffer(buffer) : image->load_tga_from_buffer(buffer);
 }
 
 String toGodot(const std::string &s)
 {
 	return String::utf8(s.c_str(), (int64_t)s.size());
+}
+
+W3DSamplerPolicy samplerPolicy()
+{
+	return RenderingServer::get_singleton()->get_current_rendering_driver_name() == "metal"
+		? W3DSamplerPolicy::Metal16 : W3DSamplerPolicy::Anisotropic;
 }
 
 } // namespace
@@ -116,6 +130,10 @@ void W3D_Ensure_Light_Globals()
 		return;
 	}
 	registered = true;
+	if (samplerPolicy() == W3DSamplerPolicy::Metal16)
+	{
+		UtilityFunctions::print("W3D [MAC-10 Metal16 limitation]: repeating mipmapped textures use linear-mipmap filtering instead of anisotropy (Godot 4.7.2 binds anisotropic-repeat at Metal slot 17; limit 15). Clamped textures retain anisotropy; simulation unchanged.");
+	}
 	const W3DLightSet v = viewerSet();
 	for (const char *suffix : { "obj", "inf" })
 	{
@@ -129,6 +147,13 @@ void W3D_Ensure_Light_Globals()
 	// lane PLAY-1: the free camera's fog shift (TacticalCamera::fogShift): the distance every fog range is measured from; 0 = retail
 	rs->global_shader_parameter_add(StringName("w3d_shadow_strength"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 0.0f);
 	rs->global_shader_parameter_add(StringName("w3d_fog_shift"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 0.0f);
+	// lane VISUAL-2: the fogged light fraction (RW 0x46DFD0: GameData FogAlpha / ClearAlpha), set by the map's game
+	rs->global_shader_parameter_add(StringName("w3d_fogged_frac"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 1.0f);
+	// lane VISUAL-2: the vegetation SwayOffsets 1 .. 10 (W3DVegetationSway, RW 0x4E61EE; W3D axes), zero until a map's trees sway
+	for (int i = 1; i <= 10; ++i)
+	{
+		rs->global_shader_parameter_add(StringName(String("w3d_sway") + String::num_int64(i)), RenderingServer::GLOBAL_VAR_TYPE_VEC4, Vector4());
+	}
 	// lane SELPERF-1: the selection's merge decals the terrain shader draws (godot/shaders/selection_decals.gdshaderinc; the HUD sets them, mode 0 = none)
 	rs->global_shader_parameter_add(StringName("sel_data"), RenderingServer::GLOBAL_VAR_TYPE_SAMPLER2D, Variant());
 	rs->global_shader_parameter_add(StringName("sel_atlas"), RenderingServer::GLOBAL_VAR_TYPE_SAMPLER2D, Variant());
@@ -143,6 +168,27 @@ void W3D_Set_Fog_Shift(float shift)
 	if (RenderingServer *rs = RenderingServer::get_singleton())
 	{
 		rs->global_shader_parameter_set(StringName("w3d_fog_shift"), shift);
+	}
+}
+
+void W3D_Set_Fogged_Light_Frac(float frac)
+{
+	W3D_Ensure_Light_Globals();
+	if (RenderingServer *rs = RenderingServer::get_singleton())
+	{
+		rs->global_shader_parameter_set(StringName("w3d_fogged_frac"), frac);
+	}
+}
+
+void W3D_Set_Sway_Offsets(const float offsets[10][3])
+{
+	W3D_Ensure_Light_Globals();
+	if (RenderingServer *rs = RenderingServer::get_singleton())
+	{
+		for (int i = 0; i < 10; ++i)
+		{
+			rs->global_shader_parameter_set(StringName(String("w3d_sway") + String::num_int64(i + 1)), Vector4(offsets[i][0], offsets[i][1], offsets[i][2], 0.0f));
+		}
 	}
 }
 
@@ -183,7 +229,8 @@ void W3D_Apply_Viewer_Lighting()
 
 Ref<Shader> W3DMaterialFactory::Get_Shader(const W3DShaderKey &key)
 {
-	const std::string id = key.Id();
+	const W3DSamplerPolicy samplers = samplerPolicy();
+	const std::string id = key.Id() + (samplers == W3DSamplerPolicy::Metal16 ? "_metal16" : "");
 	auto it = Shaders.find(id);
 	if (it != Shaders.end())
 	{
@@ -192,7 +239,7 @@ Ref<Shader> W3DMaterialFactory::Get_Shader(const W3DShaderKey &key)
 	W3D_Ensure_Light_Globals(); // the shader names the light globals: they must exist before it compiles
 	Ref<Shader> shader;
 	shader.instantiate();
-	shader->set_code(toGodot(Generate_W3D_Shader_Code(key)));
+	shader->set_code(toGodot(Generate_W3D_Shader_Code(key, samplers)));
 	Shaders[id] = shader;
 	return shader;
 }
@@ -327,7 +374,7 @@ void W3DMaterialFactory::Set_Texture_Override(const std::string &name, const Ref
 Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing)
 {
 	found = false;
-	TextureResolution res = Resolve_W3D_Texture(name, [&](const std::string &p) { return Fs.doesFileExist(p); });
+	TextureResolution res = Resolve_W3D_Texture(name, [&](const std::string &p) { return Fs.doesFileExist(p); }, isBfme1Data(Fs)); // community PR #36: the archives' layout
 	if (!res.Found)
 	{
 		if (!quietWhenMissing)
@@ -392,7 +439,7 @@ Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::ve
 
 Ref<Texture2D> W3DMaterialFactory::Recolored_House_Texture(const std::string &name, const HouseColorParams &params, std::vector<std::string> &errors, std::vector<std::string> &notes)
 {
-	TextureResolution res = Resolve_W3D_Texture(name, [&](const std::string &p) { return Fs.doesFileExist(p); });
+	TextureResolution res = Resolve_W3D_Texture(name, [&](const std::string &p) { return Fs.doesFileExist(p); }, isBfme1Data(Fs)); // community PR #36: the archives' layout
 	if (!res.Found)
 	{
 		return Ref<Texture2D>(); // as Load_Texture's quiet case: a missing house texture only means no tint

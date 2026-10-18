@@ -139,7 +139,10 @@ TEST_CASE("render lighting: classic W3D surfaces are lit like defaultw3d.fxo, in
 	k.PriGradient = W3D_GRADIENT_MODULATE;
 	k.HasDCG = true;
 	const std::string code = Generate_W3D_Shader_Code(k);
-	CHECK(has(code, "unshaded"));
+	// The local directional shadow receiver keeps retail lighting in the vertex
+	// shader and uses Godot lighting only to apply shadow attenuation.
+	CHECK_FALSE(has(code, "unshaded"));
+	CHECK(has(code, "void light() { if (LIGHT_IS_DIRECTIONAL) DIFFUSE_LIGHT += ALBEDO * ATTENUATION; }"));
 	CHECK_FALSE(has(code, "source_color")); // the retail arithmetic runs on the stored texel values
 	CHECK(has(code, "global uniform vec3 w3d_amb_obj;"));
 	CHECK(has(code, "global uniform mat3 w3d_lcol_inf;"));

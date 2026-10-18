@@ -100,6 +100,9 @@ public:
 	// GetGameLogicRandomValueReal (RW 0x6D332C).
 	float getValueReal(float lo, float hi, const char *file, int line);
 
+	// lane SAVE-4a: the generator's state (the seed array and the base seed; the algorithm must be this generator's), Common/Xfer.h
+	void xfer(class Xfer &x);
+
 	// Optional call log: every getValue/getValueReal call in order (tests assert retail call order).
 	struct Call
 	{

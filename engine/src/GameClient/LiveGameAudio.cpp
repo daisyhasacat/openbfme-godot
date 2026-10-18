@@ -316,15 +316,7 @@ LiveGameAudio::LiveGameAudio(LiveGame &game, AudioManager &audio)
 	// without a shroud manager has no view, which is retail's ThePartitionManager == 0 branch (RW 0x452024): not shrouded
 	q.isShroudClear = [lg](int playerIndex, const Coord3D &pos) {
 		const std::shared_ptr<const LogicSnapshot> s = lg->latestSnapshot();
-		if (!s || !s->shroud)
-		{
-			return true;
-		}
-		if (s->shroud->localPlayer != playerIndex)
-		{
-			return false; // the view holds the local player's cells only (callers ask for the local player; -1: no local player, no clear cell)
-		}
-		return s->shroud->statusAt(pos.x, pos.y) == CELLSHROUD_CLEAR;
+		return shroudClearFor(s.get(), playerIndex, pos);
 	};
 	m_audio.bindWorldQueries(q, this);
 	// lane AUDIO-4: the footsteps' manager plays on this attachment's manager and finds a drawable's object like the owner resolver does
@@ -336,6 +328,23 @@ LiveGameAudio::LiveGameAudio(LiveGame &game, AudioManager &audio)
 	m_lga = std::make_unique<LgaRuntime>();
 	m_lga->link = &m_game.logic().largeGroupAudio();
 	m_game.logic().largeGroupAudio().setSink(m_lga.get());
+}
+
+bool LiveGameAudio::shroudClearFor(const LogicSnapshot *s, int playerIndex, const Coord3D &pos)
+{
+	if (!s || !s->shroud)
+	{
+		return true;
+	}
+	if (s->shroud->localPlayer == -2)
+	{
+		return true; // lane VISUAL-2 r2: the omniscient view (LogicSnapshot::build fills its cells CLEAR; its PlayerView's local index is -1)
+	}
+	if (s->shroud->localPlayer != playerIndex)
+	{
+		return false; // the view holds the local player's cells only (callers ask for the local player; -1: no local player, no clear cell)
+	}
+	return s->shroud->statusAt(pos.x, pos.y) == CELLSHROUD_CLEAR;
 }
 
 bool LiveGameAudio::audioAlive() const

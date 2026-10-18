@@ -1,75 +1,631 @@
-# macOS build (lane MAC-1)
+# macOS build and package
 
-| | |
-|---|---|
-| Host | macOS 26 or newer with Xcode (or its Command Line Tools), CMake, Ninja, git, python3 (`brew install cmake ninja python`), and Godot 4.7 installed in `/Applications/Godot.app` |
-| Command | `tools/release/build_macos.sh`, then `(cd engine/build && ./openbfme_tests)` |
-| Compiler / runtime | Apple clang, the system libc++ (dynamic), the host architecture only (arm64 on Apple silicon) |
-| Output | `engine/build/macos/OpenBFME.app` with the Second Age icon, `godot/bin/openbfme.macos.template_debug.<arch>.dylib` (listed for arm64 in `godot/openbfme.gdextension`), `engine/build/openbfme_tests` |
+## Current: any-commit Apple Silicon package
 
-The script builds the same two targets as `build.bat`, then refuses a library that is not the host architecture, exports anything but
-`openbfme_library_init` (the export list in `engine/CMakeLists.txt`, the counterpart of Linux's version script) or links anything but libc++ and
-libSystem. The minimum macOS is 26.0: `std::from_chars` of a double (`leanumeric.cpp`, `AptValue.cpp`, `AptFile.cpp`) is in Apple's libc++ from
-macOS 26 on. Godot 4.7 itself runs on older versions; the extension does not.
+The macOS package is arm64-only for Apple Silicon on macOS 13 or later. One
+ZIP contains sibling `OpenBFME.app` and `OpenBFME Launcher.app` bundles. It
+contains no retail game files and does not build or test Intel binaries. The
+player supplies clean BFME2 1.06 and RotWK 2.01 installs. See
+`tools/release/README-MAC.txt` for setup, Gatekeeper and troubleshooting.
 
-The build exports a self-contained app for the host architecture and ad-hoc signs it. Double-click `engine/build/macos/OpenBFME.app` in Finder to launch directly into the game, without the built-in launcher or its update handover. Startup logo/intro videos and the Godot splash are disabled; `--intro` explicitly enables the retail intro videos for testing. Retail game files are still required; the game asks for their folders on first launch if they have not been configured. The first build downloads the matching official macOS export template and caches it under `engine/build/export-templates/`. Set `GODOT` to override the editor executable, `OPENBFME_MACOS_APP` to override the output app path, or `GODOT_MACOS_TEMPLATE` to use an existing `macos.zip` template offline. The app uses the original Second Age icon; provenance is recorded in `tools/release/assets/README.md`.
+Prerequisites are Xcode Command Line Tools, CMake, Ninja, Python 3, the
+initialized pinned `godot-cpp` submodule, the Godot 4.7.2 editor and its
+official export-template archive. Initialize submodules with
+`git submodule update --init --recursive`. The archive SHA-256 must be
+`f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011`.
+Godot's macOS template contains universal template executables; the packager
+verifies the archive hash and derives arm64-only templates in an isolated
+Godot home. In generic package mode only, it verifies the exact pinned release
+and debug arm64 slice hashes, then replaces the 33 validated 67-byte Rust
+registry source-path prefixes inside each slice's `__TEXT,__cstring` section
+with equal-length fixed literals. Every non-target byte is preserved; changed
+slice hashes, counts, prefix hashes, Mach-O section bounds or target locations
+fail closed. The legacy preview template path is not modified. The package
+inventory records the transformation and all pinned hashes.
 
-`brew install lame mpg123` before the build generates the synthetic MP3 fixtures; without them the five MP3 decode cases fail loudly, as on Windows.
-
-**Settings → Interface → BFME2 menus and theme (restart)** switches the main menu and shared menu movies, textures, colors and gadget skins between
-BFME2 (default) and RotWK, including main-menu, submenu, credits and score-screen music. Accept the change and restart the game. It is saved as `OpenBFMEBFME2UI = yes/no` in Options.ini.
-Menu 3D models, animations and materials use the selected theme too. The existing custom settings page and its background path are preserved. The BFME2 main menu renders the retail `Shell02_01` scene with its looping animation and embedded camera. Settings and submenus retain their existing backgrounds. This presentation renderer does not run the full shell map’s terrain, scripts or particle proxies.
-The theme has a separate presentation archive view; gameplay data retains RotWK precedence, and expansion-only UI assets remain available as fallbacks.
-
-Press **backtick (`)** in game to open the Lua console; **Escape** or **backtick** closes it. Ctrl+Shift+C also toggles it. The powers-menu shortcut is unbound. Enter runs a Lua (LuaJIT) command, `=1 + 2` displays an expression,
-and Up / Down browse command history. Shift+Enter inserts a new line; Run executes the entire script. Command and Log tabs have separate Clear controls. The console is scaled 2×. **Ctrl+Shift+F5** or **Reload scripts** rereads `.lua` files in `godot/dev/` and `user://dev/` without restarting; `bfme.console.reload()` does the same. `print("hello")` writes to the console; `clear` clears its output. The console's persistent companion VM exposes
-the [bfme library](BFME_LUA.md), including `bfme.players.localPlayer.money = 10000`. Retail gameplay scripts retain their Lua 4.0.1 state.
-Lua console use does not change save availability. Offline console edits are not fully included in command-log saves; multiplayer host actions are recorded (see [Lua authority](BFME_LUA.md)).
-In multiplayer only the host may change gameplay. Replay playback permits inspection and local graphics settings; new gameplay writes are refused.
-
-## What changed for macOS
-
-- **The Lua VM's NaN results** (`leanumeric.cpp`): an AArch64 CPU's default NaN is positive (`0x7FF8...`), x86's is negative (`0xFFF8...`, retail's
-  `-1.#IND`), so `tostring(0/0)` printed `1.#QNAN` on Apple silicon: a Lua value, and so the simulation, would differ from a Windows or Linux peer.
-  `+ - * /` now decide a NaN result in code with DetLibm's rule (a NaN operand quietened, the first of two; an invalid operation gives
-  `0xFFF8000000000000`): the bits x86 already produced. Pinned in `test_lua_runtime.cpp`.
-- **Install discovery** (`InstallLocator.cpp`): the Windows path lookup in a Wine prefix now returns the folder's spelling on disk (a
-  case-insensitive file system has every spelling), and `~` shortening also compares the canonical home (`/var` is `/private/var`).
-- **The console filter test** reads a child's descriptors through libproc instead of `/proc`.
-
-## Status (2026-10-15, Apple silicon, Apple clang 21, macOS 27)
-
-- `openbfme_tests`: everything passes except the five MP3 cases without lame / mpg123; the retail tests skip without `ROTWK_INSTALL` /
-  `BFME2_INSTALL`.
-- `tools/sim/sim_audit.py`: the flag, link and manifest checks pass. The AST check does not run: libclang 18.1.1 cannot parse Xcode's libc++
-  (`__builtin_clzg`), the same limit as MSVC 14.50 (`docs/WINDOWS.md`); run with `--ast=skip`.
-
-Not done yet:
-
-1. The Godot smoke and shader tests in Godot 4.7 for macOS, and the game windowed against a real install.
-2. A lockstep game against a Windows or Linux peer (`tools/net/cross_os_lockstep.sh`). The Lua NaN above is the one AArch64 difference the unit
-   tests found; NaN results of the C++ simulation code itself (outside DetLibm and the Lua VM) are still the CPU's.
-3. The test helpers of `tools/retail_oracle/build.bat` (the x87 oracle is a 32-bit x86 Windows program), an x86_64 or universal library, a
-   Developer ID signed and notarised distribution package (local builds are ad-hoc signed).
-
-## Package with game assets
-
-Build the app first, then create a separate portable copy including your installed game data:
+From any clean committed branch, detached checkout or shallow clone:
 
 ```sh
-tools/release/build_macos.sh
-python3 tools/release/package_game_with_assets.py \
-  --rotwk /path/to/RotWK --bfme2 /path/to/BFME2
+GODOT=/path/to/Godot-4.7.2.app/Contents/MacOS/Godot
+TEMPLATES=workspace/mac3-tools/Godot_v4.7.2-stable_export_templates.tpz
+
+python3 tools/release/package_macos.py \
+  --version v0.4.6-preview.1 \
+  --godot "$GODOT" \
+  --templates "$TEMPLATES" \
+  --out workspace/mac-release
 ```
 
-Output: `engine/build/macos-with-assets/OpenBFME.app`. Both install folders are copied into `Contents/Resources/retail/`; the app uses them directly without the path picker. Archive verification still runs at startup. The source installs and saved user paths are unchanged. This is a local package containing your retail files, separate from the public release packaging workflow.
+Omit `--version` to use the same `git describe` version rule as
+`BuildVersion.cmake`. Supply an explicit safe filename version in shallow
+clones when a stable package name is wanted. `--dry-run` prints the commit,
+template checksum and deterministic configure/build/export/sign/audit/archive
+plan without creating output directories or invoking Godot; it also works off
+macOS. The output directory must be empty and may be outside the repository.
+The packager freshly builds the Release arm64 extension for macOS 13, uses
+`SOURCE_DATE_EPOCH` from the commit throughout, and never uses a cached
+extension. It rejects dirty source or submodule trees.
 
-Use `--dry-run` to check inputs and estimate disk usage, `--app` to select the freshly built app, and `--output` for a new destination. Existing output is never overwritten. `ROTWK_INSTALL` and `BFME2_INSTALL` can replace the path arguments. The complete install folders are copied, including loose movies and language files; allow roughly 8 GiB plus the app depending on your installs.
+App bundles are ad-hoc signed only; there is no Developer ID signature,
+notarization, stapling, release key use or payload signature generation in
+this build. The package contains no retail game files. The launcher public key
+is used only for official release metadata. Output is
+`openbfme-<version>-macos-arm64.zip`, its `.sha256` sidecar, a matching
+`README-MAC.txt` sidecar and an out-of-package inventory with tool versions.
+The ZIP allowlist contains only the two apps, `README-MAC.txt`, `VERSION`,
+`LICENSE` and `NOTICE`.
 
-Menu movie buttons support **Tab** / **Shift+Tab** to cycle currently clickable buttons **arrow keys** to move toward a nearby button, and **Enter** / **Space** to activate the highlighted button. Moving the mouse returns to pointer navigation.
+The builder checks that one export can be archived identically twice. A
+cross-build byte-reproducibility claim requires two independent clean
+source/build/export runs at the same commit, version and toolchain. ZIP bytes
+also depend on the same SDK, Python and zlib versions. No payload signature or
+private signing key is generated by this package command.
 
-Main-menu arrows follow its hierarchy: Left/Right across navigation headings, Up/Down within the current submenu. On skirmish/review screens, horizontal navigation on the bottom row stays among its actions (such as Main Menu and Play). Tab follows visual row order.
+## Signed Mac updates and release publication
 
-Double-tap **Q** within 450 ms to quit from menus or the score screen. This shortcut is disabled during gameplay, while the Lua console is open, and while a text field or native menu control has keyboard focus.
+The generic package enables Mac updates only on macOS. Its launcher verifies
+the separate `manifest-macos.json` and 64-byte raw
+`manifest-macos.json.sig` with the same public key as other release metadata.
+The existing `manifest.json` schema remains unchanged for Windows and Linux.
+For a release that advertises a Mac update or authenticated no-entry state,
+publish both Mac sidecars together. If neither sidecar is present, the
+launcher verifies the ordinary manifest and offers the releases-page link
+without downloading another platform's package. If either sidecar is present,
+both must be valid and signed; an incomplete or invalid pair is an update
+error, never a manual-update downgrade. A verified Mac manifest with an empty
+`assets.game` is the authenticated no-entry state and shows the releases-page
+link.
 
-Hold **Shift** while launching to open Skirmish and press Start using the saved setup. Release Shift once startup begins. This bypasses menu navigation; explicit scripted/test runs keep their requested startup mode.
+After the ZIP and its exact `.sha256` file have passed the package audit, the
+release operator generates the Mac-only sidecar offline:
+
+```sh
+python3 tools/release/make_macos_manifest.py \
+  --version v0.4.7-preview.1 \
+  --repo Open-BFME/openbfme-godot \
+  --commit <40-hex-source-commit> \
+  --date YYYY-MM-DD \
+  --archive openbfme-v0.4.7-preview.1-macos-arm64.zip \
+  --checksum openbfme-v0.4.7-preview.1-macos-arm64.zip.sha256 \
+  --out manifest-macos.json
+python3 tools/release/sign_manifest.py \
+  --key /offline/path/to/release-ed25519.pem manifest-macos.json
+python3 tools/release/sign_manifest.py \
+  --verify <64-hex-release-public-key> manifest-macos.json
+```
+
+To publish an authenticated release without a Mac package, use the same
+`--version`, `--repo`, `--commit`, `--date`, and `--out` options with
+`--no-entry` instead of `--archive` and `--checksum`, then sign it the same
+way. Publish both sidecars together with the release's normal assets. Do not
+modify the ordinary `manifest.json` or `make_manifest.py` schema. The private
+release key stays on the existing offline signing machine and is never needed
+by the package builder.
+
+An update downloads and verifies one complete ZIP, stages both apps beside the
+installed package, and atomically exchanges the package root. It restarts the
+launcher; the signed receipt is then revalidated before Play. The transaction
+is deferred while a game executable under that root is running. User game
+files and settings remain outside the exchanged package. Directly launching
+`OpenBFME.app` does not perform the launcher's update handover.
+
+## Historical: universal macOS packages
+
+> The instructions below document the previous universal game-and-launcher
+> packaging path only. It is historical and unsupported for new macOS builds;
+> it is not a request or plan for new Intel support.
+
+OpenBFME was previously built as a native macOS Godot application with a
+universal `arm64` + `x86_64` GDExtension. The historical release tooling exports
+the game and launcher together as a single ZIP with sibling `OpenBFME.app` and
+`OpenBFMELauncher.app` bundles. These packages are ad-hoc signed, not Developer
+ID signed or notarized. They contain no retail game files; the player supplies
+their own clean BFME2 1.06 and RotWK 2.01 installs.
+
+## Requirements and compatibility
+
+- **macOS 11 or later on x86_64, macOS 13 or later on arm64**, matching
+  Godot 4.7.2's export preset defaults. Older-OS hardware testing is still needed.
+- Apple clang and the macOS 26 SDK (Xcode / Command Line Tools), CMake, Ninja,
+  Python, and the repository's initialized submodules. Use Python 3.13 for the
+  repository checks. `build.bat` is Windows-only; use the commands below on Mac.
+- The official **Godot 4.7.2** macOS editor and matching export templates.
+- Retail data is not needed to build or run the extension-loading smoke check.
+  Reference MP3 fixtures are needed for the complete C++ suite.
+
+Floating-point conversion uses `Common/FloatFromChars.h` and vendored fast_float
+v8.0.2 on **every platform**, not a Mac-only fallback. Integer `std::from_chars`
+is unchanged. Existing grammar, sign handling, and overflow/underflow decisions
+remain at the call sites. The separate retail MSVCR71 converter is unchanged.
+Only `Common/System/FloatFromChars.cpp` includes the vendored headers (libclang 18
+cannot parse their SSE2 include, which broke the simulation AST audit when the
+headers were included from simulation files). The portable test suite uses this wrapper; the independent comparison below is
+intentionally outside the engine build because its libc++ oracle requires macOS 26.
+
+The official 4.7.2 exporter's `platform/macos/export/export_plugin.cpp` defaults
+to 11.00 (x86_64) and 13.00 (arm64). The official templates' Mach-O minimums are
+10.13 and 11.0 respectively; the app follows the more conservative exporter
+defaults. The universal extension targets 11.0 for both slices, no newer than
+either app target. Availability diagnostics must never be suppressed.
+
+The manual template installation below is only for standalone editor exports.
+`tools/release/package.sh` instead verifies the archive and installs the two
+needed template files in an isolated temporary Godot home; it never modifies
+the user's global template directory.
+
+### Parser compatibility gate
+
+On a macOS 26 host/SDK, compare the actual engine wrapper with libc++ using the
+simulation FP flags. Freeze the corpus once and reuse it on both architectures:
+
+```sh
+xcrun clang++ -std=c++17 -O2 -arch arm64 -arch x86_64 \
+  -mmacosx-version-min=26.0 -fno-fast-math -ffp-contract=off \
+  -frounding-math -fno-math-errno -Wall -Wextra -Werror \
+  -Iengine/src -Iengine/thirdparty/fast_float/include \
+  tools/sim/compare_float_chars.cpp engine/src/Common/System/FloatFromChars.cpp -o workspace/compare-float-chars
+python3 tools/sim/float_chars_corpus.py --out workspace/float-chars-corpus.bin --run "arch -arm64 workspace/compare-float-chars"
+python3 tools/sim/float_chars_corpus.py --out workspace/float-chars-corpus.bin --run "arch -x86_64 workspace/compare-float-chars"
+```
+
+The same parser is also checked against frozen independent vectors by the doctest
+case `win1 crt parse: scanRealText and FloatFromChars match the frozen independent vectors`
+(`tests/data/win1_real_vectors.txt`, made by `tools/sim/gen_real_vectors.py` with exact
+rational arithmetic: it shares no code with the engine, fast_float or any C++ library).
+On a Mac run `engine/build/openbfme_tests -tc="win1 crt parse*"` after the build and report
+the doctest totals; the same command (`openbfme_tests.exe`) is the native Windows check.
+The file covers range boundaries, subnormals, signed zero, ties, inf spellings, rejected
+hex / nan, and the range-error results the callers see.
+
+The generator records source and corpus SHA-256s. It extracts numeric tokens,
+quoted strings and adjacent string literals from tracked engine sources (including
+embedded numeric tables), tests and data, and adds
+special spellings, overlong inputs and exact midpoint/below/above decimal vectors
+through float/double exponent ranges. The generator refuses an empty corpus and writes
+the record count and an FNV-1a digest into the JSON manifest; the comparator takes
+`<corpus> <records> <digest>` (`--run <comparator>` of the generator passes them) and
+exits 2 when the file is missing, truncated, emptied or not the frozen one, before any
+comparison counts. The comparator adds 10 million fixed-seed
+strings: float/double `%.9g`/`%.17g` and shortest round-trip output. Every string
+is parsed into both types; end offsets and error codes must match, and the output
+bits must match for every in-range result. On `result_out_of_range` the standard requires
+the destination to stay unmodified, but implementations differ in practice (libstdc++ keeps it,
+libc++ and fast_float store 0 or infinity), so those bits are NOT compared, to accommodate the
+implementation differences: the caller-visible results (the error code, the end offset and the
+value the callers choose for a range error) are checked separately, and
+`tests/data/win1_real_vectors.txt` freezes them independently (below). It stops at the first
+difference and saves the exact bytes to
+`float-chars-mismatch.input`. A difference blocks a parser update, not a reason to
+adjust expected values. Keep the existing pinned-vector/full-suite gate as well.
+
+## Build the universal extension
+
+Run from the repository root, with a clean checkout of the intended build commit:
+
+```sh
+git submodule update --init --recursive
+cmake -S engine -B workspace/mac3-build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DOPENBFME_LAME=OFF \
+  '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+cmake --build workspace/mac3-build --target openbfme openbfme_tests -j 6
+lipo -archs godot/bin/openbfme.macos.template_debug.universal.dylib
+```
+
+These are explicit legacy universal overrides, not the supported port defaults.
+A fresh macOS CMake configuration defaults to **arm64 and macOS 13.0**; existing
+CMake caches keep their old values. Use the current Apple Silicon package flow
+above for releases. Both architectures in the legacy command
+are compiled by Apple clang with the same unchanged `engine/cmake/SimFp.cmake`
+contract: `-fno-fast-math -ffp-contract=off -frounding-math -fno-math-errno`.
+Windows/Linux configuration is unchanged. The extension manifest selects the
+arm64 filename for native Apple Silicon; explicit universal builds retain their
+universal filename entries.
+
+`Release` is the C++ optimization setting. The extension keeps godot-cpp's
+`template_debug` target, and the export uses Godot's debug template, matching the
+existing Windows/Linux test packages' crash-diagnostic convention.
+
+For the C++ suite, use the project's reference-machine fixtures (LAME 3.100,
+matching `engine/tests/data/audio/mp3_golden.tsv`), not local regeneration:
+
+```sh
+OPENBFME_AUDIO_FIXTURES="$PWD/workspace/audio_fixtures_deck" \
+  workspace/mac3-build/openbfme_tests
+```
+
+`OPENBFME_LAME=OFF` disables regeneration, not MP3 tests. Keep all fixture bytes
+outside git. Tests needing retail data may report SKIP.
+
+## Networking tests and local relay
+
+The engine test build includes `relay/openbfme_relay` on macOS. Its bounded
+64-datagram batches use `recvmsg`/`sendmsg`; Linux retains `recvmmsg`/`sendmmsg`.
+The relay protocol, core logic and log format are shared. It can also be built
+alone with `cmake -S services/online/relay -B workspace/relay-build` followed by
+`cmake --build workspace/relay-build`.
+
+With Node.js on PATH and the private retail installs available, run the networking
+suite on each architecture (the build above is universal):
+
+```sh
+set -e
+for cpu in arm64 x86_64; do
+  ROTWK_INSTALL="$HOME/games/RotWK" BFME2_INSTALL="$HOME/games/BFME2" \
+  RW_GAME_DAT="$HOME/games/RotWK/game.dat" \
+  arch -"$cpu" workspace/mac3-build/openbfme_tests --no-colors=true \
+    '--source-file=*test_net_*,*test_mp2_*,*test_mp3_*,*test_online*,*test_smooth_net.cpp,*test_process.cpp'
+done
+```
+
+The online START/rejoin tests run local lobby, relay and peer processes; they
+do not contact production services. Missing Node.js or retail installs still
+produce explicit skips. Rosetta is required for the x86_64 run on Apple silicon.
+
+## Official templates and local export
+
+Use the [official 4.7.2 release](https://github.com/godotengine/godot-builds/releases/tag/4.7.2-stable).
+Download `Godot_v4.7.2-stable_export_templates.tpz` from that release and verify
+its SHA-256 against the official GitHub release asset digest before extracting it.
+Install its `templates/macos.zip` at:
+
+```text
+~/Library/Application Support/Godot/export_templates/4.7.2.stable/macos.zip
+```
+
+The verified archive SHA-256 is
+`f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011`,
+from [official asset metadata](https://api.github.com/repos/godotengine/godot-builds/releases/assets/519674520).
+The release also provides `SHA512-SUMS.txt`, not `SHA256-SUMS`.
+
+```sh
+set -eu
+mkdir -p workspace/mac3-tools
+TEMPLATES=workspace/mac3-tools/Godot_v4.7.2-stable_export_templates.tpz
+curl -fL --retry 2 -o "$TEMPLATES" \
+  https://github.com/godotengine/godot-builds/releases/download/4.7.2-stable/Godot_v4.7.2-stable_export_templates.tpz
+printf '%s  %s\n' \
+  f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011 \
+  "$TEMPLATES" | shasum -a 256 -c -
+# Continue only if the checksum check succeeds.
+TEMPLATE_DIR="$HOME/Library/Application Support/Godot/export_templates/4.7.2.stable"
+mkdir -p "$TEMPLATE_DIR"
+unzip -p "$TEMPLATES" templates/macos.zip > "$TEMPLATE_DIR/macos.zip"
+unzip -t "$TEMPLATE_DIR/macos.zip"
+```
+
+Set `GODOT` to the editor executable inside the official Godot 4.7.2 `.app`.
+After committing source/configuration changes, rebuild `openbfme` so its embedded
+build version matches the commit being packaged. Export from tracked files only,
+not a developer's working project with caches or private data mixed in:
+
+```sh
+set -eu
+GODOT="${GODOT:-$(command -v godot)}"
+"$GODOT" --version
+git diff --quiet
+git diff --cached --quiet
+cmake --build workspace/mac3-build --target openbfme -j 6
+VERSION=$(git describe --tags --match 'v[0-9]*' --exclude '*-playtest.*' --always --dirty --abbrev=10)
+STAGE="$PWD/workspace/mac3-stage" # use a new, empty directory for each export
+OUT="$PWD/workspace/mac3-release"
+PKG="$OUT/openbfme-$VERSION-macos-universal"
+test ! -e "$STAGE"
+test ! -e "$PKG"
+mkdir -p "$STAGE" "$PKG"
+git archive HEAD godot | tar -x -C "$STAGE"
+mkdir -p "$STAGE/godot/bin"
+cp godot/bin/openbfme.macos.template_debug.universal.dylib "$STAGE/godot/bin/"
+python3 tools/release/audit_package.py "$STAGE/godot"
+"$GODOT" --headless --editor --path "$STAGE/godot" --import --quit
+"$GODOT" --headless --path "$STAGE/godot" \
+  --export-debug 'macOS Universal' "$PKG/OpenBFME.app"
+codesign --verify --deep --strict "$PKG/OpenBFME.app"
+lipo -archs "$PKG/OpenBFME.app/Contents/MacOS/OpenBFME"
+lipo -archs "$PKG/OpenBFME.app/Contents/Frameworks/openbfme.macos.template_debug.universal.dylib"
+cp LICENSE NOTICE "$PKG/"
+printf 'OpenBFME %s\ncommit %s\n' "$VERSION" "$(git rev-parse HEAD)" > "$PKG/VERSION"
+python3 tools/release/audit_package.py "$PKG"
+ditto -c -k --keepParent "$PKG" "$PKG.zip"
+python3 tools/release/audit_package.py "$PKG.zip"
+shasum -a 256 "$PKG.zip"
+```
+
+The `macOS Universal` preset exports all project resources, including the smoke
+script, with text GDScript and an unencrypted PCK. Its minimum OS versions are 11
+for x86_64 and 13 for arm64. Xcode `codesign` uses identity `-` (ad-hoc), with notarization
+and App Sandbox disabled. No Apple ID, Developer ID certificate or signing
+secret is required. The executable and extension must both contain `arm64` and
+`x86_64` slices; inspect the packaged copies, not just the build output.
+Godot enables the Disable Library Validation entitlement for ad-hoc-signed
+applications with GDExtensions. Universal export also requires ETC2/ASTC texture
+imports; `godot/project.godot` enables these alongside the existing formats.
+
+This earlier game-only export procedure is retained for the extension smoke
+test below. For the combined game-and-launcher package, use **Package the
+combined apps** below; it applies the macOS release allowlists and does not
+include retail data.
+
+## Run and smoke-test the packaged application
+
+Official export templates do not support the editor-only `--script` switch.
+Use the game's headless `--smoke-test` entrypoint, which calls the same shared
+checks as `godot --headless --script res://tests/smoke_test.gd`. It bypasses normal
+game boot only when explicitly requested; a windowed invocation is rejected.
+Do not substitute an editor binary and call that proof of the exported executable.
+
+Unzip into a fresh folder, verify the signature again, and run the **unmodified
+exported binary** from outside the source/staging directory:
+
+```sh
+UNPACK="$PWD/workspace/mac3-unpacked" # use a fresh directory
+test ! -e "$UNPACK"
+mkdir -p "$UNPACK"
+ditto -x -k "$PKG.zip" "$UNPACK"
+APP="$UNPACK/$(basename "$PKG")/OpenBFME.app"
+codesign --verify --deep --strict "$APP"
+# Capture 77 deliberately; do not let `set -e` turn an expected SKIP into a shell failure.
+code=0
+(cd /; env -u ROTWK_INSTALL -u BFME2_INSTALL \
+  arch -arm64 "$APP/Contents/MacOS/OpenBFME" --headless -- --smoke-test) || code=$?
+test "$code" -eq 77
+```
+
+On an Apple Silicon test machine with Rosetta installed, repeat with
+`arch -x86_64` to test the Intel slice. Apple provides Rosetta via
+`softwareupdate --install-rosetta` (review its license when prompted). On an
+Intel Mac, run the x86_64 slice natively; the arm64 slice cannot run there.
+
+The smoke test must load `RetailFileSystem` before considering missing game
+paths. Exit **77** with the explicit retail-data SKIP is expected when
+`ROTWK_INSTALL` / `BFME2_INSTALL` are unset; exit **1** for a missing extension is
+a failure. This proves packaging and extension loading, not rendering or retail
+gameplay. To test with game files, set both variables to the native macOS paths
+of the actual install folders and invoke the app binary from that shell.
+Launching from Finder does not inherit exports from a Terminal shell.
+
+The MAC-3 universal extension and tests built on macOS 26, and focused numeric/
+Lua/deterministic tests passed on arm64 and x86_64 under Rosetta. Code-signature
+and generic package-content checks passed. MAC-4 subsequently proved and fixed
+the intermittent `online3 r2` failure: the simulated restart retained unsent CRC
+commands from the old process. Production networking and CRC checks were not
+changed; the full arm64 suite passed after that harness fix. These results do
+not establish retail simulation parity or execution on an older macOS host.
+
+## Current macOS limitations
+
+OpenBFME reads the player's native retail files; it does not need Wine to run.
+Both BFME2 and RotWK folders must exist and pass the game's existing validation.
+The launcher checks folders in this order: `ROTWK_INSTALL` /
+`BFME2_INSTALL`, remembered `user://install-paths.cfg` selections, then the
+downloaded-install marker. It does not scan CrossOver or Whisky bottles and has
+no general search over the home folder or mounted disks. Select the folders
+manually in Game files or copy a valid install to a location you control.
+
+Once its bundled inventory is sealed with the approved release key, the
+launcher can play the signed game offline. A missing or invalid seal blocks
+Play. The legacy explicit Mac preview uses manual package replacement. The
+generic Apple Silicon package uses the separately signed Mac-update flow
+described in [Signed Mac updates and release publication](#signed-mac-updates-and-release-publication).
+`--check-game-files` uses the same discovery order, prints only a scrubbed
+found/missing status, and exits 0 when
+both folders exist or 1 otherwise. Headless checks do not verify the GUI,
+rendering, audio, retail gameplay, or older-OS behavior; those still need player
+testing on supported Intel and Apple Silicon hardware.
+
+## Package the combined apps
+
+Use the official Godot **4.7.2** editor and official export templates. Before
+export, the package tool checks the template archive against SHA-256
+`f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011`. Supply it
+with `--templates` or set `MACOS_EXPORT_TEMPLATES` to the archive path. Do not
+extract or install an unverified archive.
+
+```sh
+cmake -S engine -B workspace/mac3-build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DOPENBFME_LAME=OFF \
+  '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+# Optional: configure with -DOPENBFME_VERSION_OVERRIDE=<approved-version>.
+# Pass the same value to package.sh --version.
+cmake --build workspace/mac3-build --target openbfme -j 6
+lipo -archs godot/bin/openbfme.macos.template_debug.universal.dylib
+
+GODOT=/path/to/Godot_v4.7.2-stable_macos.universal \
+  tools/release/package.sh --platforms macos --out workspace/mac9-package \
+  --templates workspace/mac3-tools/Godot_v4.7.2-stable_export_templates.tpz
+```
+
+`OPENBFME_VERSION_OVERRIDE` is the CMake cache variable in
+`engine/cmake/Release1.cmake`, which passes it to `BuildVersion.cmake` as
+`VERSION_OVERRIDE`. The version passed to `package.sh --version` must match the
+version in the extension's build record. Without an override, the build and
+package use the committed `git describe` version. The package tool does not
+generate release keys.
+
+The package command exports committed files only (`git archive HEAD`), checks
+both universal slices and their build provenance, audits the nested app bundles,
+and writes exactly one deterministic
+`openbfme-<version>-macos-universal.zip`. The ZIP contains sibling
+`OpenBFME.app` and `OpenBFMELauncher.app` bundles plus
+`README_TESTERS.txt`, `README_LAUNCHER.txt`, `LICENSE`, `NOTICE`, and `VERSION`.
+The separate signing step adds `payload.json` and `payload.json.sig`; launcher
+Play requires a valid signed inventory and refuses to start the package if the
+seal is missing or invalid. A valid release version and the approved release
+key are required for the launcher to accept the seal.
+It uses ad-hoc signing only and verifies the app signatures after export and
+fresh unpack. An explicit `--version` must match the version recorded by the
+extension build; configure the existing CMake version override and rebuild to
+request a different version.
+
+After packaging, an approved release private key is used only by the separate
+sealing tool. Keep that key outside the repository; the packager never creates
+one:
+
+```sh
+python3 tools/release/seal_package.py seal workspace/mac9-package \
+  --key <APPROVED_PRIVATE_KEY_FILE> --repo Open-BFME/openbfme-godot
+python3 tools/release/seal_package.py check workspace/mac9-package \
+  --public launcher/release_key.pub --repo Open-BFME/openbfme-godot
+```
+
+The inventory and signature cover the final package contents; do not modify
+either app bundle or package metadata after sealing.
+
+### Local signed trial (not an official release)
+
+With explicit approval, generate a **local test key**, never use or replace the
+project's release key. Keep the private key outside every Git checkout, do not
+upload it, and do not include it in an archive. The existing signing tool creates
+it with mode 0600 and refuses overwrites. These commands run from the repo root;
+set `GODOT` to the official 4.7.2 editor executable first:
+
+```sh
+set -eu
+KEYDIR="$HOME/.openbfme-local-trial"
+mkdir -p "$KEYDIR"
+chmod 700 "$KEYDIR"
+test ! -e "$KEYDIR/test-key.pem"
+python3 tools/release/sign_manifest.py --generate-key "$KEYDIR/test-key.pem" \
+  > "$KEYDIR/test-key.pub"
+VERSION=v0.0.0-alpha.9
+OUT="$PWD/workspace/mac9-local-trial"
+test ! -e "$OUT"
+# Commit source changes first: package.sh exports committed files only.
+cmake -S engine -B workspace/mac3-build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DOPENBFME_LAME=OFF \
+  '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+  -DOPENBFME_VERSION_OVERRIDE="$VERSION"
+cmake --build workspace/mac3-build --target openbfme -j 6
+tools/release/package.sh --platforms macos --out "$OUT" --godot "$GODOT" \
+  --version "$VERSION" --release-key "$KEYDIR/test-key.pub" \
+  --templates workspace/mac3-tools/Godot_v4.7.2-stable_export_templates.tpz
+python3 tools/release/seal_package.py seal "$OUT" \
+  --key "$KEYDIR/test-key.pem" --repo Open-BFME/openbfme-godot
+python3 tools/release/seal_package.py check "$OUT" \
+  --public "$KEYDIR/test-key.pub" --repo Open-BFME/openbfme-godot
+```
+
+`payload.json` is the local signed manifest of the bundled files; no release
+feed or GitHub release is published. The launcher embeds only the public key
+supplied through `--release-key`. A key different from the staged release key
+marks the title, sidebar, and packaged launcher README **LOCAL TRIAL — NOT AN
+OFFICIAL RELEASE**. Normal signature and file-hash checks remain mandatory;
+`test_build` stays false and trust-key/test-path overrides remain disabled.
+The official release key must reject this trial signature. A modified payload
+must also be rejected. Apple signing remains ad-hoc: this seal does not satisfy
+Gatekeeper. Do not advertise the trial as a release or reuse its key for releases.
+
+For a subsequent trial rebuild, reuse the existing local key without repeating
+key generation and use a new empty output directory. Before a normal build,
+clear the CMake override with `-DOPENBFME_VERSION_OVERRIDE=` and omit
+`--release-key` so the normal release public key is used.
+
+For local runtime verification, set the paths to your own retail installs:
+
+```sh
+ROTWK_INSTALL="$HOME/games/RotWK" \
+BFME2_INSTALL="$HOME/games/BFME2" \
+RW_GAME_DAT="$HOME/games/RotWK/game.dat" \
+tools/release/macos_start_check.sh workspace/release/openbfme-<version>-macos-universal.zip
+```
+
+The check fresh-unpacks the package, runs the actual exported game executable
+under arm64 and x86_64, and requires exit 0, `MainMenu.apt`, and exactly 4657
+templates. It never substitutes the editor executable. Local runtime logs may
+contain private paths; do not upload or attach them. The exported launcher also
+supports this headless check (run it from a fresh user-data directory when
+testing the missing-folder case):
+
+```sh
+./OpenBFMELauncher.app/Contents/MacOS/OpenBFME\ Launcher \
+  --headless -- --check-game-files
+```
+
+It returns 0 when both game folders are found and 1 when either is missing,
+using the same environment/config/download-marker discovery as the UI without
+printing full paths. Set `ROTWK_INSTALL` and `BFME2_INSTALL`, or remember both
+folders in the launcher's Game files screen, to test the successful case.
+
+## Install, update, and Gatekeeper
+
+Unzip the package, keep both `.app` bundles and README/LICENSE/NOTICE/VERSION
+files together, and move the folder to a writable location (for example,
+`~/Applications/OpenBFME`). Open `OpenBFMELauncher.app` for the launcher or
+`OpenBFME.app` to start the game directly. In Game files, choose your existing
+BFME2 1.06 and RotWK 2.01 folders. No retail files are bundled or needed to
+build the apps.
+
+For sidecar selection, absent/present behavior, and release publishing, follow
+the single authoritative procedure in “Signed Mac updates and release
+publication” above. A valid `macos-arm64` entry stages the whole
+game-and-launcher package; restart the launcher to apply it.
+
+The first generic package has no signed payload receipt yet. After a signed
+update, the launcher persists a root-bound receipt and requires it for Play;
+missing or corrupt receipt state fails closed. Launching `OpenBFME.app`
+directly still starts the bundled game without the launcher's update handover.
+The legacy explicit Mac preview remains manual-update only. Do not use the
+Linux/Windows updater feed for macOS.
+
+The package uses ad-hoc signing (identity `-`) only. It is not signed by an
+identified Apple Developer ID and is not notarized. A quarantined copy on the
+test Mac showed **OpenBFME Not Opened** because Apple could not verify it was
+free of malware. A locally extracted copy without quarantine showed no prompt;
+that does not predict the first open of a browser-downloaded archive.
+
+Only if you trust the source and have verified the archive checksum:
+
+1. In Finder, open the extracted package folder and double-click the app.
+   Dismiss the blocked-open warning without choosing Move to Trash.
+2. Open **Apple menu > System Settings > Privacy & Security**. Scroll to
+   **Security** and find the message about the app just blocked. Click
+   **Open Anyway** (it is normally available for about an hour after the attempt).
+3. Confirm **Open** if prompted and authenticate with an administrator account
+   or Touch ID when macOS asks. The order of confirmation/authentication varies
+   by macOS version; an administrator prompt is expected, not a failure to bypass.
+4. Repeat for `OpenBFMELauncher.app` and `OpenBFME.app` as needed. Once approved,
+   later launches normally open directly. Managed Macs may require the IT
+   administrator to approve the app; do not circumvent that policy.
+
+On macOS versions that support the Finder shortcut, **Control-click/right-click
+the app > Open**, then click **Open** in the confirmation and authenticate if
+asked. Recent macOS versions can still block this shortcut; use the System
+Settings procedure above rather than repeating it. The test Mac reached the
+Open Anyway administrator prompt; the original test did not authenticate, so
+it did not establish completed first-open approval.
+
+Do not disable Gatekeeper globally, remove quarantine to hide the warning, or
+override a warning that says malware was detected or the app is damaged.
+See [Apple's guidance for apps from unidentified developers](https://support.apple.com/en-us/102445).
+
+Public distribution would separately require an approved Developer ID
+Application identity, hardened runtime and appropriate entitlements,
+notarization submission and a successful Apple ticket. Developer ID signing
+identifies the publisher and establishes trust; hardened runtime restricts
+runtime behavior and is a signing option/entitlement policy; notarization is
+Apple's automated malware and signing assessment, not a signature that replaces
+Developer ID; stapling attaches the accepted ticket to the app so Gatekeeper
+can check it offline. The following are credential-free placeholders only;
+they are intentionally not run by this project:
+
+```sh
+# Future, separately approved distribution workflow; sign nested code first.
+codesign --force --options runtime --sign <APPROVED_DEVELOPER_ID_APPLICATION> \
+  OpenBFME.app/Contents/Frameworks/openbfme.macos.template_debug.universal.dylib
+codesign --force --options runtime --entitlements <APPROVED_ENTITLEMENTS.plist> \
+  --sign <APPROVED_DEVELOPER_ID_APPLICATION> OpenBFME.app
+codesign --force --options runtime --entitlements <APPROVED_ENTITLEMENTS.plist> \
+  --sign <APPROVED_DEVELOPER_ID_APPLICATION> OpenBFMELauncher.app
+# Create the final ZIP after signing, then submit it for notarization.
+xcrun notarytool submit <SIGNED_PACKAGE.zip> --keychain-profile <APPROVED_PROFILE> --wait
+xcrun stapler staple OpenBFME.app
+xcrun stapler staple OpenBFMELauncher.app
+```
+
+This repository does not use Apple credentials or perform these operations.
+After notarization and stapling, rebuild the package and its signed payload
+inventory from the final app bundles. A valid release also requires an approved
+release key and a valid version recorded in the build provenance; neither the
+packager nor the signing workflow generates a key automatically.

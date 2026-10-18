@@ -23,6 +23,7 @@ class ModuleFactory;
 class RepairSpecialPower : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(RepairSpecialPower) // lane SAVE-4b
 	RepairSpecialPower(Thing *thing, const SpecialPowerModuleData *data) : SpecialPowerModule(thing, data) {} // RW 0x8CCADB
 	void doSpecialPower(unsigned) override {}                                     // RW 0x9F3A3C
 	void doSpecialPowerAtLocation(const Coord3D &, unsigned) override {}          // RW 0x8851E4

@@ -111,6 +111,7 @@ public:
 class InvisibilityUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(InvisibilityUpdate) // lane SAVE-4b
 	InvisibilityUpdate(Thing *thing, const InvisibilityUpdateModuleData *data);
 	void onObjectCreated() override;       ///< RW 0x8A6F84
 	UpdateSleepTime update() override;     ///< RW 0x8A7099
@@ -150,6 +151,7 @@ public:
 class StealthDetectorUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(StealthDetectorUpdate) // lane SAVE-4b
 	StealthDetectorUpdate(Thing *thing, const StealthDetectorUpdateModuleData *data); ///< RW 0x8A635B
 	UpdateSleepTime update() override;     ///< RW 0x8A641A
 	// RW 0x8A67C2 .. 0x8A682F: the occupants of a candidate container (DetectionRate + 2 frames)
@@ -219,6 +221,7 @@ public:
 class StealthUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(StealthUpdate) // lane SAVE-4b
 	StealthUpdate(Thing *thing, const StealthUpdateModuleData *data); ///< RW 0x776E3D
 	void onObjectCreated() override;      ///< RW 0x776BF8: the upgrade name lists become masks
 	UpdateSleepTime update() override;    ///< RW 0x7779E3
@@ -226,6 +229,7 @@ public:
 	void markAsDetected(unsigned frames, int mode, Object *detector, bool horde);
 	// RW 0x7765EC / 0x776294
 	bool allowedToStealth() const;
+	bool upgradesAllowStealth() const; // RW 0x7761ED, the selection gate in Object::getStealthUpdate (RW 0x68FBD3)
 	unsigned forbiddenConditions() const; ///< RW 0x77606E
 	bool isEnabled() const { return m_enabled; }
 	// lane STEALTH-2. RW 0x776B50: the One Ring put on (STEALTHED after OneRingDelayOn, PUTTING_ON_RING for RingAnimTimeOn, ONE_RING, held until then, the

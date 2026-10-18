@@ -191,6 +191,7 @@ public:
 	// ---- the current context (valid inside update) -----------------------------------------------------------------------------------------
 	Player *currentPlayer() const { return m_currentPlayer; }
 	const std::string &currentSideName() const { return m_currentSide; }
+	std::string currentScriptName() const;
 	GameLogic &logic() const { return m_logic; }
 	ScriptEngineHost *host() const { return m_host; }
 	bool warOfTheRing() const { return m_warOfTheRing; }
@@ -248,11 +249,36 @@ public:
 	Stats &mutableStats() { return m_stats; }
 	void noteUnportedCondition(const std::string &name) { ++m_stats.unportedConditions[name]; }
 	void noteUnportedAction(const std::string &name) { ++m_stats.unportedActions[name]; }
+	// lane VISUAL-2: the breeze the trees sway in (RW ScriptEngine + 0x1A5A8; BFME2 + 0x1A4A8, decomp ScriptEngineReset.cpp / Rva0020385FHost.cpp).
+	// Client state only: read by the tree draw (GameClient/TreeSway.h), never hashed (retail's logic CRC does not read it either: INFERENCE, S-4972)
+	struct BreezeInfo
+	{
+		float direction = 0.0f;              ///< + 0x00
+		float directionX = 0.0f;             ///< + 0x04 sin(direction)
+		float directionY = 0.0f;             ///< + 0x08 cos(direction)
+		float intensity = 0.0f;              ///< + 0x0C
+		float lean = 0.0f;                   ///< + 0x10
+		float randomness = 0.0f;             ///< + 0x14
+		std::int16_t breezePeriod = 0;       ///< + 0x18 logic frames per sway
+		std::int16_t breezeVersion = 0;      ///< + 0x1A bumped by every SET_TREE_SWAY
+	};
+	const BreezeInfo &getBreezeInfo() const { return m_breeze; }
+	// RW 0x6031A9 (BFME2 0x60385F ScriptEngine::setSway): direction, intensity, lean, period (at least 1), randomness; the version goes up first
+	void setSway(float direction, float intensity, float lean, int breezePeriod, float randomness);
+	// RW 0x609685 (BFME2 0x609ABE ScriptEngine::reset) the breeze part: PI/3 (0xBF9F20), 0.035 PI/4 (0xBF9F1C), 0.02 PI/4 (0xBF9F18), 10 *
+	// LOGICFRAMES_PER_SECOND (0xD9F608 * 10), 0.2 (0xBDAD78), version 0
+	void resetBreeze();
 	void note(const std::string &text) { ++m_stats.notes[text]; }
 	std::vector<std::string> report() const;
 	static std::vector<std::string> stopLines();
 
 	void crc(StateHasher &hasher) const;
+	// lane SAVE-4d: the block obfme:ScriptEngine (ScriptEngineXfer.cpp, S-4256): a load goes into a game of the same START (the script tree is the map's and
+	// its libraries'); a mismatch is an XferException naming it
+	void xfer(class Xfer &x);
+	// lane SAVE-4d: the block's post-process, after every block loaded (the teams' included): each staged sequential record's team exists, or an
+	// XferException naming it and the engine unchanged; then the engine takes the state xfer staged
+	void finishLoad();
 
 	// the runtime tree (public for the tests and reports)
 	struct RScript
@@ -362,6 +388,7 @@ public:
 	void executeAction(const ScriptActionRec &a);
 
 private:
+	BreezeInfo m_breeze; ///< lane VISUAL-2
 	void buildGroup(const std::vector<ScriptItem> &items, const std::string &side, RGroup &out);
 	void executeScripts(std::vector<std::unique_ptr<RScript>> &scripts);
 	void executeGroups(std::vector<std::unique_ptr<RGroup>> &groups);
@@ -434,6 +461,8 @@ private:
 	};
 	std::map<int, std::vector<GenericCopy>> m_genericScripts;
 	Stats m_stats;
+	std::function<void()> m_pendingLoad;       ///< lane SAVE-4d: the state a load staged until finishLoad (not state: empty between loads)
+	std::vector<std::uint32_t> m_pendingTeams; ///< lane SAVE-4d: the staged sequential records' teams, checked by finishLoad
 	friend class ScriptConditions;
 	friend class ScriptActions;
 };

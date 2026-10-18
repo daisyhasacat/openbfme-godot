@@ -2,6 +2,7 @@
 // See AptFile.h for the format notes and citations.
 
 #include "Libraries/Source/Apt/AptFile.h"
+#include "Common/FloatFromChars.h"
 
 #include "Libraries/Source/Apt/AptActionDecoder.h"
 
@@ -1101,7 +1102,7 @@ bool parseFloatStrict(const std::string &s, float &out)
 	{
 		++b;
 	}
-	auto res = std::from_chars(b, s.data() + s.size(), v);
+	auto res = FloatFromChars(b, s.data() + s.size(), v);
 	if (res.ec != std::errc() || res.ptr != s.data() + s.size() || !std::isfinite(v))
 	{
 		return false;

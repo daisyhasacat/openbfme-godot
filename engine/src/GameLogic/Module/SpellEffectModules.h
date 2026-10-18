@@ -77,6 +77,7 @@ public:
 class FireWeaponUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(FireWeaponUpdate) // lane SAVE-4b
 	FireWeaponUpdate(Thing *thing, const FireWeaponUpdateModuleData *data);
 	~FireWeaponUpdate() override;
 	UpdateSleepTime update() override; ///< RW 0x88F554
@@ -120,6 +121,7 @@ public:
 class FloodUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(FloodUpdate) // lane SAVE-4b
 	FloodUpdate(Thing *thing, const FloodUpdateModuleData *data);
 	UpdateSleepTime update() override; ///< RW 0x8919BE
 	void crc(StateHasher &hasher) const override;

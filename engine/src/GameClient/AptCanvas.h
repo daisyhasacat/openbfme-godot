@@ -171,6 +171,13 @@ public:
 	std::size_t count(AptCanvasOp::Kind kind) const;
 };
 
+struct AptImageReplacement
+{
+	std::string texture;
+	float width = 0, height = 0;
+};
+using AptImageReplacements = std::map<std::pair<std::string, int>, AptImageReplacement>;
+
 struct AptCanvasInputs
 {
 	AptStageMapping mapping;
@@ -178,6 +185,10 @@ struct AptCanvasInputs
 	const GameTextTable *text = nullptr;           // required
 	const FontSubstitution *fonts = nullptr;       // null: no substitution
 	const AptTextRecordLookup *textRecords = nullptr; // the engine's Apt text records (shell mode); null: only the string table
+	// lane PLATFORMICON-1: the icons beside movie text fields (GUI/TextBadges.h): a field with a badge that asks to `reserve` stage pixels at its left gets a
+	// box that much narrower, so the string (centred, or squeezed when too wide) never runs under the icon. Null: none
+	const std::map<std::string, struct TextBadge> *textBadges = nullptr;
+	const AptImageReplacements *imageReplacements = nullptr; // lower-case source movie + image id; presentation only
 };
 
 // Lane HUD-3: where an edit-text field's string goes inside its box, as RotWK's Apt display string draw does it (RW 0x4A8F95; the allocation's ctor

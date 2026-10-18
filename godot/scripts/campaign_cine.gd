@@ -29,7 +29,16 @@ var _base_pitch := deg_to_rad(-40.0)
 var hud_mode := false      # lane CAMP-1: in the game (scripts/campaign_flow.gd) the HUD's camera rules outside the cinematics (letterbox, a script move, input off)
 var movie_hook := Callable() # lane CAMP-1H: PLAY_MOVIE_IN_GAME's title goes there (scripts/campaign_flow.gd plays it with scripts/movie_player.gd)
 var dev_overlay := true      # lane CAMP-2: the developer text (logic frame, camera / input state, the objective list): the viewers' only; the game sets it from --dev-overlay
+var input_hook := Callable() # lane OWNERFIX-1: the scripts' DISABLE_INPUT / ENABLE_INPUT (bool enable) (game.gd _script_input)
+var _ui: CanvasLayer = null # lane SAVE-UI1: the presentation's layer (set_covered)
 var control_bar_hook := Callable() # lane CAMP-2: HideControlBar / ShowControlBar (bool hidden) for CAMERA_LETTERBOX_BEGIN / END and HIDE_UI / SHOW_UI (game.gd)
+
+
+## lane SAVE-UI1: a menu over the game (the quit menu and the screens it opens) covers the script presentation: retail draws the in-game UI before the
+## window manager's movies (ZH W3DDisplay::draw: TheInGameUI, then the windows), so the letterbox, captions and notifications are under the menu
+func set_covered(covered: bool) -> void:
+	if _ui != null:
+		_ui.visible = not covered
 
 
 func setup(w: Node3D, cam: Camera3D, start: Vector3, ui_parent: Node, audio: Node = null) -> void:
@@ -40,6 +49,7 @@ func setup(w: Node3D, cam: Camera3D, start: Vector3, ui_parent: Node, audio: Nod
 	target = start
 	var ui := CanvasLayer.new()
 	ui.layer = 5
+	_ui = ui
 	_top = ColorRect.new()
 	_top.color = Color.BLACK
 	_bottom = ColorRect.new()
@@ -120,6 +130,12 @@ func _process(delta: float) -> void:
 			movie_hook.call(String(r.params[0].string))
 		# lane CAMP-2: ScriptActions::executeAction (RW 0x7CAFA5): cases 118 / 119 doLetterBoxMode (RW 0x7BC8B7: HideControlBar(true) or ShowControlBar(false),
 		# then the display's letterbox), cases 347 / 348 HIDE_UI / SHOW_UI (HideControlBar(true) / ShowControlBar(false)); in the requests' order
+		# lane OWNERFIX-1: DISABLE_INPUT / ENABLE_INPUT (RW 0x7BC586 / 0x7BC5E9): the HUD's input flag, the selection and the pointer (InGameHud::scriptInput)
+		if input_hook.is_valid():
+			if r.action == "DISABLE_INPUT":
+				input_hook.call(false)
+			elif r.action == "ENABLE_INPUT":
+				input_hook.call(true)
 		if control_bar_hook.is_valid():
 			if r.action == "CAMERA_LETTERBOX_BEGIN" or r.action == "HIDE_UI":
 				control_bar_hook.call(true)

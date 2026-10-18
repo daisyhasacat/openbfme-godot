@@ -70,6 +70,7 @@ bool load(const std::vector<std::uint8_t> &bytes, const std::string &sourceName,
 
 		file.registerParser("HeightMapData", "", WorldHeightMap::ParseHeightMapDataChunk, &out.heightMap);
 		file.registerParser("BlendTileData", "", WorldHeightMap::ParseBlendTileDataChunk, &out.heightMap);
+		out.chunks.bfme1Data = options.bfme1; // community PR #36: the caller's game (its file system), never a process flag
 		MapChunkParse::registerParsers(file, &out.chunks);
 		SidesListParse::registerParsers(file, &out.sides);
 		ScriptParseContext scriptCtx;

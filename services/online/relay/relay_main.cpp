@@ -1,7 +1,7 @@
 // OpenBFME online relay. GPL-3.0.
 //
-// openbfme_relay (lane ONLINE-2, docs/ONLINE.md phase O1): one UDP socket, one thread. recvmmsg reads up to 64 datagrams per call, RelayCore handles each,
-// sendmmsg sends what came out; RelayCore::tick runs once a second. Linux only (the relay runs on a Linux VPS or VM: services/online/DEPLOY.md).
+// openbfme_relay (lane ONLINE-2, docs/ONLINE.md phase O1): one UDP socket, one thread. Read up to 64 datagrams, handle each in RelayCore, then send replies.
+// Linux batches with recvmmsg / sendmmsg; macOS uses recvmsg / sendmsg. RelayCore::tick runs once a second.
 //
 // Usage: openbfme_relay --bind A.B.C.D:PORT --keys FILE [--log-dir DIR] [--idle-s N] [--status FILE] [--stats-s N] [--rate BYTES] [--burst BYTES] [--silent-ms N]
 //   --rate / --burst  each player's budget: bytes a second (0: the burst only, never refilled) and the burst
@@ -13,6 +13,7 @@
 // SIGTERM / SIGINT: every open game is closed (END reason 3) and the process exits 0.
 
 #include "RelayCore.h"
+#include "DatagramBatch.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -159,11 +160,11 @@ int main(int argc, char **argv)
 	constexpr int kBatch = 64;
 	constexpr size_t kMax = 2048; // a transport datagram is at most packetBytes (1,200) + the 5-byte envelope; bigger ones are truncated and dropped
 	std::vector<std::uint8_t> in((size_t)kBatch * kMax);
-	mmsghdr msgs[kBatch];
+	relayio::Message msgs[kBatch];
 	iovec iovs[kBatch];
 	sockaddr_in from[kBatch];
 	// what goes out: forwards point into `in`, replies into `replies`
-	mmsghdr outMsgs[kBatch];
+	relayio::Message outMsgs[kBatch];
 	iovec outIovs[kBatch];
 	sockaddr_in outTo[kBatch];
 	std::vector<std::vector<std::uint8_t>> replies(kBatch);
@@ -186,7 +187,7 @@ int main(int argc, char **argv)
 				msgs[i].msg_hdr.msg_name = &from[i];
 				msgs[i].msg_hdr.msg_namelen = sizeof(sockaddr_in);
 			}
-			const int n = recvmmsg(fd, msgs, kBatch, MSG_DONTWAIT, nullptr);
+			const int n = relayio::receiveBatch(fd, msgs, kBatch);
 			const std::uint32_t unixNow = (std::uint32_t)std::time(nullptr);
 			int out = 0;
 			for (int i = 0; i < n; ++i)
@@ -228,7 +229,7 @@ int main(int argc, char **argv)
 			}
 			for (int sent = 0; sent < out;)
 			{
-				const int r = sendmmsg(fd, outMsgs + sent, (unsigned)(out - sent), 0);
+				const int r = relayio::sendBatch(fd, outMsgs + sent, (unsigned)(out - sent));
 				if (r <= 0)
 				{
 					break; // a full send buffer drops the rest: the transports resend

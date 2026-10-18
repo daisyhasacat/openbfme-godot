@@ -34,6 +34,10 @@
 #include <cfloat>
 #include <stdexcept>
 #include <cstdlib>
+#include "GameLogic/AI/AIXfer.h"
+
+#include <algorithm>
+#include <iterator>
 
 namespace
 {
@@ -357,6 +361,7 @@ public:
 	}
 	StateReturnType update() override { return STATE_CONTINUE; }
 	bool isIdle() const override { return true; }
+	void xfer(Xfer &x) override { xferNoFields(x); } // lane SAVE-4c: nothing kept (the draw is made at every entry)
 };
 
 // GiantBirdNormalFlightState (ctor RW 0x7691CC (machine, + 0x20, + 0x21), vtable RW 0xC2D988; enter RW 0x76AD1D, update RW 0x76AE06, exit RW 0x76AED0)
@@ -462,6 +467,26 @@ public:
 private:
 	bool m_flag20;      // + 0x20 (read by nothing ported)
 	bool m_aboveGround; // + 0x21: the goal is raised to the flight ground height + the path height
+public:
+	// lane SAVE-4c (obfme:AIWorld, OpenBFME layout: S-4220): the constructor's two flags, saved and checked (a machine of the same class has them)
+	void xfer(Xfer &x) override
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		xferFlags(x);
+	}
+
+protected:
+	void xferFlags(Xfer &x)
+	{
+		bool flag20 = x.isLoading() ? false : m_flag20, above = x.isLoading() ? false : m_aboveGround;
+		x.xferBool(&flag20);
+		x.xferBool(&above);
+		if (x.isLoading() && (flag20 != m_flag20 || above != m_aboveGround))
+		{
+			throw XferException("giant bird: a flight state saved with other constructor flags");
+		}
+	}
 };
 
 // AIGiantBirdSwoopState (ctor RW 0x7691FD (machine, + 0x20 target mode, + 0x30 level), vtable RW 0xC2D9E8; enter RW 0x76DB0E, update RW 0x76DF1D, the target
@@ -755,6 +780,21 @@ private:
 	Coord3D m_pos{ 0.0f, 0.0f, 0.0f };     // + 0x24
 	bool m_level;                          // + 0x30
 	float m_scale = 1.0f;                  // + 0x38
+public:
+	void xfer(Xfer &x) override // lane SAVE-4c: the constructor's flags checked, the aim point and the scale
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		bool target = x.isLoading() ? false : m_targetObject, level = x.isLoading() ? false : m_level;
+		x.xferBool(&target);
+		x.xferBool(&level);
+		if (x.isLoading() && (target != m_targetObject || level != m_level))
+		{
+			throw XferException("giant bird: a swoop state saved with other constructor flags");
+		}
+		AIXfer::coord(x, m_pos);
+		x.xferReal(&m_scale);
+	}
 };
 
 // AIGiantBirdAttack (ctor RW 0x76923F (machine, + 0x20 target mode), vtable RW 0xC2DA48; enter RW 0x76B668, update RW 0x76BA8B, exit RW 0x76B033). BFME2 decomp
@@ -949,6 +989,18 @@ public:
 
 private:
 	bool m_targetObject; // + 0x20
+public:
+	void xfer(Xfer &x) override // lane SAVE-4c: the constructor's flag, checked
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		bool target = x.isLoading() ? false : m_targetObject;
+		x.xferBool(&target);
+		if (x.isLoading() && target != m_targetObject)
+		{
+			throw XferException("giant bird: an attack state saved with another constructor flag");
+		}
+	}
 };
 
 // AIGiantBirdFollowThruState (ctor RW 0x769269 (machine, + 0x20 the long follow-through), vtable RW 0xC2DAA0; enter RW 0x76E3CB, the point RW 0x76E5C1, its
@@ -1132,6 +1184,24 @@ private:
 
 	bool m_longer; // + 0x20
 	int m_frames = 0; // + 0x24
+public:
+	// lane SAVE-4c: AIGiantBirdFollowThruState::xfer RW 0x769297 is (1, 2): a bool and an int (these two; the bool is the constructor's, checked)
+	void xfer(Xfer &x) override
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		bool longer = x.isLoading() ? false : m_longer;
+		x.xferBool(&longer);
+		if (x.isLoading() && longer != m_longer)
+		{
+			throw XferException("giant bird: a follow-through state saved with another constructor flag");
+		}
+		x.xferInt(&m_frames);
+		if (x.isLoading())
+		{
+			AIXfer::inRange(m_frames, 0, 0x7FFFFFFF, "giant bird: the follow-through frames");
+		}
+	}
 };
 
 // GiantBirdAttackMoveToState (ctor RW 0x769451, vtable RW 0xC2DBD0; enter RW 0x76B2A6 -> 0x76AD1D, exit RW 0x76B2E5, update RW 0x76B301): a NormalFlight(0, 1)
@@ -1240,6 +1310,40 @@ private:
 	CommandSourceType m_source = CMD_FROM_AI; // + 0x24
 	int m_retries = 5;                        // + 0x2C
 	unsigned m_nextMoodCheck = 0;
+public:
+	// lane SAVE-4c: GiantBirdAttackMoveToState::xfer RW 0x769521 is (1, 1): an int, the sub machine, the command source; OpenBFME layout (S-4220)
+	void xfer(Xfer &x) override
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		xferFlags(x);
+		AIXfer::enumIn(x, m_source, CMD_FROM_PLAYER, CMD_FROM_AI, "giant bird: the attack move's command source");
+		x.xferInt(&m_retries);
+		AIXfer::uns(x, m_nextMoodCheck);
+		bool has = m_sub != nullptr;
+		x.xferBool(&has);
+		if (!x.isLoading())
+		{
+			if (m_sub)
+			{
+				m_sub->xfer(x);
+			}
+			return;
+		}
+		AIXfer::inRange(m_source, CMD_FROM_PLAYER, CMD_FROM_AI, "giant bird: the attack move's command source");
+		AIXfer::inRange(m_retries, 0, 5, "giant bird: the attack move's retries");
+		std::unique_ptr<AIStateMachine> loaded; // made (RW 0x769451 -> RW 0x769335) and loaded complete, then attached
+		if (has)
+		{
+			loaded = bird(*this).makeAttackThenIdleMachine(10);
+			if (!loaded)
+			{
+				throw XferException("giant bird: the attack move's swoop machine cannot be made");
+			}
+			loaded->xfer(x);
+		}
+		m_sub = std::move(loaded);
+	}
 };
 } // namespace
 
@@ -1900,6 +2004,60 @@ UpdateSleepTime GiantBirdAIUpdate::update()
 	}
 	o.setStatus((unsigned)n.updatingAI, false);
 	return (UpdateSleepTime)sleep;
+}
+
+// lane SAVE-4c (obfme:AIWorld): retail GiantBirdAIUpdate::xfer RW 0x76C96B is (1, 2) (AIUpdateInterface's, then its own fields, docs/SAVES-RETAIL.md);
+// OpenBFME layout (S-4220): the base's, then crc's fields with the deferred command (its target as the id it is looked up by when re-issued), the
+// collision push and the diagnostics' counters. A load fills a fresh spline first (staged) and checks the closed sets
+void GiantBirdAIUpdate::xferAIStateBody(Xfer &x)
+{
+	AIUpdateInterface::xferAIStateBody(x);
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	const bool loading = x.isLoading();
+	AerialSpline spline;
+	AerialSpline &sp = loading ? spline : m_spline;
+	sp.xfer(x);
+	x.xferInt(&m_goalType);
+	x.xferReal(&m_goalAngle);
+	x.xferReal(&m_pathDistance);
+	x.xferBool(&m_reached);
+	x.xferReal(&m_flight.speed);
+	x.xferReal(&m_flight.turnRate);
+	x.xferUnsignedInt(&m_flight.flags);
+	AIXfer::coord(x, m_flight.anchor);
+	x.xferReal(&m_pathHeight);
+	AIXfer::objectId(x, m_victim, "giant bird: the object id victim");
+	AIXfer::objectId(x, m_rider, "giant bird: the object id rider");
+	x.xferReal(&m_grabClock);
+	AIXfer::objectId(x, m_swoopHorde, "giant bird: the object id swoopHorde");
+	x.xferBool(&m_attacking);
+	x.xferInt(&m_duelMode);
+	AIXfer::coord(x, m_lastPosition);
+	AIXfer::coord(x, m_collisionPush);
+	x.xferBool(&m_collisionPushed);
+	x.xferBool(&m_deferredValid);
+	x.xferInt(&m_deferred.type);
+	AIXfer::coord(x, m_deferred.position);
+	AIXfer::enumIn(x, m_deferred.source, CMD_FROM_PLAYER, CMD_FROM_AI, "giant bird: the deferred command's source");
+	x.xferInt(&m_deferred.waypointId);
+	AIXfer::objectId(x, m_deferredTarget, "giant bird: the object id deferredTarget");
+	AIXfer::u64(x, m_swoopsStarted);
+	AIXfer::u64(x, m_strikes);
+	if (!loading)
+	{
+		return;
+	}
+	AIXfer::inRange(m_goalType, 0, 3, "giant bird: the goal type");
+	AIXfer::inRange(m_duelMode, 0, 2, "giant bird: the duel mode");
+	AIXfer::inRange(m_deferred.source, CMD_FROM_PLAYER, CMD_FROM_AI, "giant bird: the deferred command's source");
+	static const int kRouted[] = { 0, kCommandUnidentifiedMove, 0xB, 0xC, 0xE, 0xF, 6, 7, 0x32, 0x33, 0x47 };
+	if (m_deferredValid && std::find(std::begin(kRouted), std::end(kRouted), m_deferred.type) == std::end(kRouted))
+	{
+		throw XferException("giant bird: the deferred command " + std::to_string(m_deferred.type) + " is not one the bird routes");
+	}
+	m_deferred.target = nullptr; // looked up by m_deferredTarget when re-issued (RW 0x76CE3A)
+	m_spline = std::move(spline);
 }
 
 void GiantBirdAIUpdate::crc(StateHasher &h) const

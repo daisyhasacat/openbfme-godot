@@ -4,6 +4,7 @@
 // peers of one game, and a second game after the first.
 
 #include "doctest.h"
+#include "GameNetwork/RelayLog.h"
 
 #include "EndTestUtil.h"
 #include "StartTestUtil.h"
@@ -27,6 +28,7 @@
 #include "GameLogic/ScriptEngine/Scripts.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/VictoryConditions.h"
+#include "GameNetwork/GameInfo.h"
 #include "Libraries/WWVegas/WW3D2/assetmgr.h"
 
 #include <algorithm>
@@ -35,6 +37,17 @@
 #include <vector>
 
 using namespace endtest;
+
+TEST_CASE("rotwk-c end: disconnected requires a human slot and the network flag")
+{
+	SkirmishGameSlot slot;
+	for (SlotState state : { SLOT_OPEN, SLOT_CLOSED, SLOT_EASY_AI, SLOT_MED_AI, SLOT_HARD_AI, SLOT_BRUTAL_AI, SLOT_PLAYER })
+	{
+		slot.state = state;
+		CHECK_FALSE(slot.disconnected(false));
+		CHECK(slot.disconnected(true) == (state == SLOT_PLAYER));
+	}
+}
 
 namespace
 {
@@ -360,6 +373,21 @@ TEST_CASE("end1 retail: a skirmish on Evendim where one side is destroyed: stati
 		d[k] = ScoreScreenData::build(peers[k].logic(), 3, slots, {});
 		REQUIRE(d[k].entries.size() == 2);
 		CHECK(d[k].entries[0].local);
+		RelayLog::Assembled log;
+		log.membership = { { Network::MembershipEvent::DROP, 1, 0 } };
+		std::vector<int> disconnected;
+		for (size_t slot = 0; slot < slots.size() && slot < 8; ++slot)
+		{
+			if (log.disconnectedSlotsAt(1) & (1u << slot))
+			{
+				disconnected.push_back(slots[slot]);
+			}
+		}
+		const ScoreScreenData spectatorResult = ScoreScreenData::build(peers[k].logic(), 3, slots, disconnected);
+		const auto dropped = std::find_if(spectatorResult.entries.begin(), spectatorResult.entries.end(),
+			[&](const ScoreScreenData::Entry &entry) { return entry.playerIndex == slots[1]; });
+		REQUIRE(dropped != spectatorResult.entries.end());
+		CHECK(dropped->result == 2); // RW 0x927183: a disconnected human's result supersedes defeat
 	}
 	CHECK(d[0].entries[0].playerIndex == gondor[0]->getPlayerIndex());
 	CHECK(d[1].entries[0].playerIndex == mordor[1]->getPlayerIndex());

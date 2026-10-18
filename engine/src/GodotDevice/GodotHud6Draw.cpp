@@ -7,6 +7,7 @@
 #include "GameClient/ControlBarCommands.h"
 #include "GameClient/ControlBarRadialMenu.h"
 #include "GameClient/GUI/Image.h"
+#include "GameClient/ControlBar.h"
 #include "GameClient/InGameHud.h"
 #include "GodotDevice/GodotAptPlayer.h"
 
@@ -235,6 +236,20 @@ void Hud6Draw::drawRadial(RID parent)
 	const int kSegments = 32;
 	for (const RadialDrawOp &op : m_hud.radialMenu().ops())
 	{
+		if (op.kind == RadialDrawOp::TEXT)
+		{
+			// lane OWNERFIX-3: the count (RW 0x4A4CD3): DisplayString::draw(x, y, 1, 1) puts the drop copy at (x + 1, y + 1) first, then the text; (x, y)
+			// is the text cell's top-left (the core placed it with these fonts' measure, HelpFontMetrics)
+			float size = 0;
+			Ref<Font> f = static_cast<HelpFontMetrics *>(m_metrics.get())->font(op.font, size);
+			const String text = toGodot(op.text);
+			const int px = (int)std::lround(size);
+			const float base = op.y + f->get_ascent(px);
+			f->draw_string(m_radialItem, Vector2(op.x + 1.0f, base + 1.0f), text, HORIZONTAL_ALIGNMENT_LEFT, -1, px, argb(op.dropColor));
+			f->draw_string(m_radialItem, Vector2(op.x, base), text, HORIZONTAL_ALIGNMENT_LEFT, -1, px, argb(op.color));
+			++m_radialTexts;
+			continue;
+		}
 		Ref<ImageTexture> tex;
 		Rect2 src;
 		if (!region(op.image, tex, src))
@@ -286,12 +301,44 @@ void Hud6Draw::drawRadial(RID parent)
 		rs->canvas_item_add_polygon(m_radialItem, pts, cols, uvs, tex->get_rid());
 		++m_clockDraws;
 	}
+	// lane DEVPORT-8 (FALSEDEF-1): the under-attack blink's window (ControlBar.wnd:WinUAttack, InGameHud::AttackWindow): the default draw's image for
+	// its enabled state at its rect; with RotWK's data (NoImage in both states) nothing is drawn, as in retail
+	m_attackImage = m_hud.attackWindowImage();
+	int ax, ay, aw, ah;
+	Ref<ImageTexture> attackTex;
+	Rect2 attackSrc;
+	if (!m_attackImage.empty() && m_hud.attackWindowRect(m_hud.windowWidth(), m_hud.windowHeight(), ax, ay, aw, ah) && region(m_attackImage, attackTex, attackSrc))
+	{
+		rs->canvas_item_add_texture_rect_region(m_radialItem, Rect2((float)ax, (float)ay, (float)aw, (float)ah), attackTex->get_rid(), attackSrc);
+		++m_attackDraws;
+	}
 	++m_radialDraws;
 }
 
 Dictionary Hud6Draw::state() const
 {
 	Dictionary out;
+	{
+		// lane DEVPORT-8 (FALSEDEF-1): the blink (ControlBar::AttackFlash) and its window
+		const ControlBar::AttackFlash &f = m_hud.controlBar().attackFlash();
+		const InGameHud::AttackWindow &w = m_hud.attackWindow();
+		Dictionary flash;
+		flash["window"] = w.present;
+		flash["window_enabled"] = f.windowEnabled;
+		flash["on"] = f.on;
+		flash["count"] = f.count;
+		flash["starts"] = (int64_t)f.starts;
+		flash["toggles"] = (int64_t)f.toggles;
+		flash["requests"] = (int64_t)m_hud.attackFlashRequests();
+		flash["enabled_image"] = String(w.enabledImage.c_str());
+		flash["disabled_image"] = String(w.disabledImage.c_str());
+		flash["image_status"] = w.imageStatus;
+		flash["rect"] = Rect2((float)w.x0, (float)w.y0, (float)(w.x1 - w.x0), (float)(w.y1 - w.y0));
+		flash["resolution"] = Vector2((float)w.resX, (float)w.resY);
+		flash["drawn_image"] = String(m_attackImage.c_str());
+		flash["image_draws"] = (int64_t)m_attackDraws;
+		out["attack_flash"] = flash;
+	}
 	const ControlBarRadialMenu &r = m_hud.radialMenu();
 	Dictionary radial;
 	radial["object"] = (int64_t)r.object();
@@ -304,6 +351,21 @@ Dictionary Hud6Draw::state() const
 	radial["presses"] = (int64_t)r.presses();
 	radial["draws"] = (int64_t)m_radialDraws;
 	radial["clock_draws"] = (int64_t)m_clockDraws;
+	radial["texts_drawn"] = (int64_t)m_radialTexts; // lane OWNERFIX-3
+	Array texts;
+	for (const RadialDrawOp &op : r.ops())
+	{
+		if (op.kind == RadialDrawOp::TEXT)
+		{
+			Dictionary t;
+			t["slot"] = op.slot;
+			t["text"] = toGodot(op.text);
+			t["pos"] = Vector2(op.x, op.y);
+			t["color"] = (int64_t)op.color;
+			texts.push_back(t);
+		}
+	}
+	radial["texts"] = texts;
 	Array buttons;
 	for (const ControlBarRadialMenu::Button &b : r.buttons())
 	{
@@ -312,6 +374,7 @@ Dictionary Hud6Draw::state() const
 		e["rect"] = Rect2((float)b.rect.x, (float)b.rect.y, (float)b.rect.w, (float)b.rect.h);
 		e["state"] = (int)b.source.state;
 		e["timer"] = b.source.timer;
+		e["production_count"] = b.source.productionCount; // lane OWNERFIX-3
 		e["image"] = toGodot(b.source.image);
 		e["name"] = toGodot(b.source.button ? b.source.button->m_name : std::string());
 		e["command"] = toGodot(b.source.button ? GUICommandName(b.source.button->m_command) : "");

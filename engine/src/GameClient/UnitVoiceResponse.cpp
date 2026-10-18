@@ -9,6 +9,7 @@
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/GameMessage.h"
 #include "GameLogic/Module/BehaviorModule.h"
+#include "GameLogic/Module/BloodthirstyUpdate.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/UnitSpecificSound.h"
@@ -267,6 +268,7 @@ bool UnitVoiceResponse::handles(int msgType)
 		case VOICE_EVENT_ENTER_STATE_ATTACK:
 		case VOICE_EVENT_ENTER_STATE_MOVE:
 		case VOICE_EVENT_ENTER_STATE_ATTACKMOVE:
+		case VOICE_EVENT_BLOODTHIRSTY:
 			return true;
 		default:
 			return false;
@@ -861,6 +863,22 @@ bool UnitVoiceResponse::pickAndPlay(const std::vector<ObjectID> &selection, int 
 					moveVoices(obj, msgType, info, c, rank);
 				}
 				break;
+			case VOICE_EVENT_BLOODTHIRSTY:
+			{
+				BloodthirstyUpdate *module = dynamic_cast<BloodthirstyUpdate *>(obj.findModule("BloodthirstyUpdate"));
+				if (!module)
+				{
+					if (Object *horde = obj.getHordeObject(false); horde && horde != &obj)
+					{
+						module = BloodthirstyUpdate::find(*horde);
+					}
+				}
+				if (module)
+				{
+					c.voice = parseVoiceValue(module->initiateVoice(), std::string());
+				}
+				break;
+			}
 			case MSG_DO_GUARD_POSITION:
 			case MSG_DO_GUARD_OBJECT:
 				fillRow(c, obj, VOICE_GUARD);
@@ -1108,4 +1126,3 @@ void PlayUnitVoiceForMessage(UnitVoiceResponse &voice, const std::vector<ObjectI
 	}
 	voice.pickAndPlay(selection, type, &info);
 }
-

@@ -40,7 +40,9 @@ import ed25519  # noqa: E402
 import make_archive  # noqa: E402
 
 PAYLOAD, PAYLOAD_SIG = "payload.json", "payload.json.sig"
-NAME = re.compile(r"^openbfme-(v[0-9A-Za-z.+-]+)-(linux-x64|windows-x64)\.(tar\.gz|zip)$")
+# MACPLAY-1: the Apple Silicon package (openbfme-<v>-macos-arm64.zip, built on the Mac build host) carries the same signed inventory, so its
+# launcher starts the game beside it only when every file is the signed one (launcher/scripts/core/updater.gd bundled)
+NAME = re.compile(r"^openbfme-(v[0-9A-Za-z.+-]+)-(linux-x64|windows-x64|macos-universal|macos-arm64)\.(tar\.gz|zip)$")
 REPO_NAME = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
 
 
@@ -140,7 +142,7 @@ def read_archive(path: Path) -> tuple[dict[str, bytes], dict[str, int], int]:
                 refuse(i.filename, "a link or another special file")
             if i.flag_bits & 1:
                 refuse(i.filename, "encrypted")
-            plan.append((i.filename, i, i.file_size, mode & 0o777, calendar.timegm(i.date_time + (0, 0, 0))))
+            plan.append((i.orig_filename, i, i.file_size, mode & 0o777, calendar.timegm(i.date_time + (0, 0, 0))))
     else:
         t = tarfile.open(path, "r:gz")
         # streamed (ONEZIP-1 r3, Sol r3): one header at a time, the count checked BEFORE each member is kept, so an archive of a million
@@ -185,6 +187,8 @@ def read_archive(path: Path) -> tuple[dict[str, bytes], dict[str, int], int]:
         for k in range(1, len(parts)):
             if "/".join(parts[:k]) in seen:
                 refuse(top + "/" + rel, "lies below a member that is a file")
+        if "/" in rel and not top.endswith(("-macos-universal", "-macos-arm64")):
+            refuse(top + "/" + rel, "nested package files are supported only for macOS universal apps")
     if not plan or mtime is None:
         raise SystemExit(f"seal_package: {where} holds no files")
     files, modes = {}, {}
@@ -236,7 +240,10 @@ def seal_archive(path: Path, secret: bytes, repo: str) -> None:
     files, modes, mtime = read_archive(path)
     if PAYLOAD in files or PAYLOAD_SIG in files:
         raise SystemExit(f"seal_package: {path.name} is sealed already")
-    if files.get("VERSION", b"").split(b"\n")[0].replace(b"\r", b"") != f"OpenBFME {version}".encode():
+    first = files.get("VERSION", b"").split(b"\n")[0].replace(b"\r", b"")
+    if platform == "macos-arm64":   # MACPLAY-1: package_macos.py's line carries a label after the version ("... Mac Unstable Preview ...")
+        first = b" ".join(first.split(b" ")[:2])
+    if first != f"OpenBFME {version}".encode():
         raise SystemExit(f"seal_package: {path.name}: its VERSION does not name {version}")
     body = payload_bytes(files, version, platform, repo)
     files[PAYLOAD] = body

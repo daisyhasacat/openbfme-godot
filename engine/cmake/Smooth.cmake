@@ -5,6 +5,7 @@
 set(OPENBFME_SMOOTH_SOURCES
     src/GameClient/RenderInterpolation.cpp
     src/GameClient/ClientEvents.cpp
+    src/GameClient/ObserverMetrics.cpp
     src/GameClient/LogicSnapshot.cpp
     src/GameClient/LiveGameRunner.cpp
 )

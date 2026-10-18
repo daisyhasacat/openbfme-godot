@@ -1,6 +1,6 @@
 ## Lane OPTS-2: the game options in effect (owner, 2026-10-10: "rethink the openbfme options menu, it needs more options for the game").
 ##
-## Two kinds of setting, both kept in the player's Options.ini (the shell's OptionPreferences: AptMenuPlayer get_options / set_option / save_options):
+## Two kinds of setting, normally kept in the player's Options.ini (AptMenuPlayer get_options / set_option / save_options):
 ##   * RotWK's own (retail keys, retail text, retail effect): the static detail level (StaticGameLOD and the nine advanced keys: GameLODManager applies them,
 ##     AptMenuPlayer get_detail_state gives what this node hands to the renderer), Brightness (the display gamma, RW 0x641E8B), ScrollFactor (the camera's
 ##     scroll factors, RW 0x641E0C), AllHealthBars (GlobalData + 0x9BE through the detail, RW 0x601CF9) and AlternateMouseSetup (RW 0x641E72).
@@ -9,6 +9,8 @@
 ##     HUD's decorations (client state the logic never reads).
 ## The display settings of lane OPTS-1 (window mode, resolution, vsync, frame cap, counter, render scale) stay in openbfme-display.cfg
 ## (scripts/display_settings.gd), which the launcher reads too.
+## The main menu style (lane MENUSTYLE-1) is an OpenBFME key of Options.ini like the others (OpenBFMEMainMenuStyle = rotwk / bfme2); game.gd reads it
+## before the shell boots (menu_style_from_file), since it picks the shell's presentation source.
 ##
 ## What the retail detail level drives here (each with its source; the rest is stop S-3402, docs/OPTIONS.md):
 ##   max_particle_count, min_particle_priority, min_particle_skip_priority -> the live FX player (FXPlayer.set_particle_lod: GlobalData + 0xAC8 and the
@@ -19,17 +21,20 @@
 ## INFERENCE: retail's W3DDisplay skips the ramp in a window (it would change the desktop's); this pass is the window's own, so it applies in every mode.
 extends Node
 
+const DisplaySettings := preload("res://scripts/display_settings.gd") # lane OWNERFIX-1: TAA through its scaler
 const PREFIX := "OpenBFME"
+const MENU_STYLE_KEY := "OpenBFMEMainMenuStyle"
+const MENU_STYLES := [["rotwk", "Rise of the Witch-king"], ["bfme2", "Battle for Middle-earth II"]]
 
 ## key -> { default, choices } (every value is text, as Options.ini holds it)
 const EXTRAS := {
 	"OpenBFMEMapSiteMarkers": {"default": "no", "choices": ["yes", "no"]},
+	"OpenBFMEMainMenuStyle": {"default": "bfme2", "choices": ["rotwk", "bfme2"]},
 	"OpenBFMEAntiAliasing": {"default": "off", "choices": ["off", "fxaa", "msaa2", "msaa4", "taa"]},
-	"OpenBFMEAnisotropic": {"default": "4x", "choices": ["off", "2x", "4x", "8x", "16x"]},
+	"OpenBFMEAnisotropic": {"default": "16x", "choices": ["off", "2x", "4x", "8x", "16x"]},
 	"OpenBFMELook": {"default": "original", "choices": ["original", "enhanced"]},
 	"OpenBFMESoftParticles": {"default": "yes", "choices": ["yes", "no"]},
 	"OpenBFMEUIScale": {"default": "100", "choices": ["100", "125", "150", "200"]},
-	"OpenBFMEBFME2UI": {"default": "yes", "choices": ["yes", "no"]},
 	"OpenBFMEFreeCamera": {"default": "no", "choices": ["yes", "no"]},
 	# lane ZOOM-1: the Max zoom-out, times retail's highest camera (TacticalCamera::setZoomOutFactor). The owner's default is 2.5 (2026-10-10: "by default
 	# have the option to zoom out like 2.5x as far"), the one extra whose default is not retail's behaviour; "1" is the original game
@@ -45,6 +50,7 @@ const EXTRAS := {
 	"OpenBFMEGameClock": {"default": "no", "choices": ["yes", "no"]},
 	# lane UBER-1: the Uber performance mode (docs/UBER.md): the next lobby and game run the Uber simulation profile; never compatible with the original game
 	"OpenBFMEUberPerformance": {"default": "no", "choices": ["yes", "no"]},
+	"OpenBFMEShareResults": {"default": "yes", "choices": ["yes", "no"]}, # lane ONLINEHUB-1: the platform's game results (docs/PLATFORM_API.md)
 	"OpenBFMEMasterVolume": {"default": "100", "range": [0, 100]},
 	"OpenBFMEMuteUnfocused": {"default": "no", "choices": ["yes", "no"]},
 	"OpenBFMEAudioDevice": {"default": "Default", "device": true},
@@ -116,6 +122,18 @@ void fragment() {
 # ---------------------------------------------------------------------------------------------------------------------------------
 # values
 # ---------------------------------------------------------------------------------------------------------------------------------
+## lane DEVPORT-8: the main menu style in the options file at `path` (AptMenuPlayer.read_options_file: the shell's own reader), before the shell boots:
+## { ok, style, problem } - an absent file or key is the default; a value the key does not take is the default with a problem (as every extra in
+## current()); an unreadable file is not ok
+static func menu_style_from_file(path: String) -> Dictionary:
+	var read: Dictionary = ClassDB.class_call_static("AptMenuPlayer", "read_options_file", path)
+	if not read.get("ok", false):
+		return {"ok": false, "error": "Options.ini: " + str(read.get("error", "unreadable"))}
+	var problems := []
+	var style := value_of(read.get("values", {}), MENU_STYLE_KEY, problems)
+	return {"ok": true, "style": style, "problem": "" if problems.is_empty() else str(problems[0])}
+
+
 static func spec(key: String) -> Dictionary:
 	return EXTRAS.get(key, RETAIL_KEYS.get(key, {}))
 
@@ -124,6 +142,13 @@ static func spec(key: String) -> Dictionary:
 static func value_of(opts: Dictionary, key: String, out_problems = null) -> String:
 	var s := spec(key)
 	if not opts.has(key):
+		# Migrate the former restart-only menu toggle; an explicit new style always wins.
+		if key == MENU_STYLE_KEY and opts.has("OpenBFMEBFME2UI"):
+			var legacy := str(opts["OpenBFMEBFME2UI"])
+			if legacy in ["yes", "no"]:
+				return "bfme2" if legacy == "yes" else "rotwk"
+			if out_problems != null:
+				out_problems.append("OpenBFMEBFME2UI: invalid legacy value " + legacy)
 		return s.get("default", "")
 	var v := str(opts[key])
 	if valid(key, v):
@@ -188,10 +213,18 @@ func scroll_slider(text: String) -> int:
 func commit(values: Dictionary) -> Dictionary:
 	if shell == null:
 		return {"ok": false, "error": "no shell"}
+	if values.has(MENU_STYLE_KEY) and not valid(MENU_STYLE_KEY, str(values[MENU_STYLE_KEY])):
+		return {"ok": false, "error": "Unknown main menu style: " + str(values[MENU_STYLE_KEY])}
 	for key in values:
 		if not shell.set_option(key, values[key]):
 			return {"ok": false, "error": "Options.ini cannot hold %s = %s" % [key, values[key]]}
-	return shell.save_options()
+	var saved: Dictionary = shell.save_options()
+	if not saved.get("ok", false):
+		return saved
+	# lane MENUSTYLE-1: the new style takes effect at the next clean main menu (game.gd reboots the shell with its presentation source)
+	if values.has(MENU_STYLE_KEY) and game != null:
+		game.request_menu_style(str(values[MENU_STYLE_KEY]))
+	return {"ok": true}
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------
@@ -205,7 +238,19 @@ func apply_global(values: Dictionary) -> PackedStringArray:
 	var renderer := str(ProjectSettings.get_setting_with_override("rendering/renderer/rendering_method"))
 	root.msaa_3d = {"msaa2": Viewport.MSAA_2X, "msaa4": Viewport.MSAA_4X}.get(aa, Viewport.MSAA_DISABLED)
 	root.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA if aa == "fxaa" and renderer != "gl_compatibility" else Viewport.SCREEN_SPACE_AA_DISABLED
-	root.use_taa = aa == "taa" and renderer == "forward_plus"
+	# lane OWNERFIX-1 (the owner: "the new anti-aliasing ... looks awful, super blurry"): Godot's TAA (Viewport.use_taa) has no sharpening and smears the
+	# picture while the camera moves: measured at 2560x1440 during a pan (tools/render/sharpness.py, godot/scripts/ownerfix1_player.gd aapan) it keeps
+	# 0.45 of the detail of no anti-aliasing, a mip bias of -0.5 does not help (0.47). FSR 2 at the render scale in effect is Godot's other temporal
+	# anti-aliasing, with its sharpening pass (fsr_sharpness, Godot's default 0.2): 1.2 .. 1.35 of the detail with smooth edges. So TAA is FSR 2
+	# (DisplaySettings.temporal_aa keeps it when the display settings apply their scaler)
+	var taa: bool = aa == "taa" and renderer == "forward_plus"
+	root.use_taa = false
+	DisplaySettings.temporal_aa = taa
+	var display_scaler: String = str(game._display.scaler) if game != null and "_display" in game and game._display != null else ""
+	if taa:
+		root.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR2
+	elif not display_scaler.is_empty():
+		root.scaling_3d_mode = DisplaySettings.scaling_mode_of(display_scaler)
 	if (aa == "fxaa" and renderer == "gl_compatibility") or (aa == "taa" and renderer != "forward_plus"):
 		problems.append("%s: the %s renderer has no %s" % ["OpenBFMEAntiAliasing", renderer, AA_LABELS[aa]])
 	done.append("anti-aliasing " + aa)

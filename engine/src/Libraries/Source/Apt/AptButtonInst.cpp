@@ -210,3 +210,67 @@ bool AptButtonInst::hitTest(float stageX, float stageY) const
 	}
 	return false;
 }
+
+bool AptButtonInst::hitBounds(float out[4]) const
+{
+	if (!m_info)
+	{
+		return false;
+	}
+	bool any = false;
+	const AptMatrix global = globalMatrix();
+	auto add = [&](const AptMatrix &m, float x, float y) {
+		float gx, gy;
+		m.apply(x, y, gx, gy);
+		if (!any)
+		{
+			out[0] = out[2] = gx;
+			out[1] = out[3] = gy;
+			any = true;
+		}
+		out[0] = std::min(out[0], gx), out[1] = std::min(out[1], gy), out[2] = std::max(out[2], gx), out[3] = std::max(out[3], gy);
+	};
+	for (const AptButtonRecord &rec : m_info->records)
+	{
+		if (!(rec.stateMask & 8))
+		{
+			continue;
+		}
+		AptMatrix recM;
+		recM.a = rec.matrix[0];
+		recM.b = rec.matrix[1];
+		recM.c = rec.matrix[2];
+		recM.d = rec.matrix[3];
+		recM.tx = rec.translation[0];
+		recM.ty = rec.translation[1];
+		const AptMatrix m = global.concat(recM);
+		AptCharRef ref;
+		std::string error;
+		if (!m_apt.resolveCharacter(m_char.file, rec.characterId, ref, &error))
+		{
+			continue;
+		}
+		const float *b = nullptr;
+		if (ref.character->type == APT_CHAR_SHAPE)
+		{
+			if (!m_info->triangles.empty() && !m_info->vertices.empty())
+			{
+				for (std::size_t i = 0; i + 1 < m_info->vertices.size(); i += 2)
+				{
+					add(m, m_info->vertices[i], m_info->vertices[i + 1]);
+				}
+				continue;
+			}
+			b = ref.character->bounds;
+		}
+		else if (ref.character->type == APT_CHAR_EDITTEXT && ref.character->text)
+		{
+			b = ref.character->text->bounds;
+		}
+		if (b)
+		{
+			add(m, b[0], b[1]), add(m, b[2], b[1]), add(m, b[0], b[3]), add(m, b[2], b[3]);
+		}
+	}
+	return any;
+}

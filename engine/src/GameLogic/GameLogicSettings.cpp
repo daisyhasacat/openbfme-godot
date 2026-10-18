@@ -56,7 +56,8 @@ enum Seen : unsigned
 	SEEN_SELL = 1u << 25, // lane FACT-A: GameData SellPercentage
 	SEEN_GUARD_CHASE = 1u << 26,  // lane PLAY-4: the guard machine's AIData durations
 	SEEN_GUARD_SCAN = 1u << 27,
-	SEEN_GUARD_RETURN = 1u << 28
+	SEEN_GUARD_RETURN = 1u << 28,
+	SEEN_REPAIR_DELAY = 1u << 29
 };
 
 struct BlockState
@@ -148,6 +149,7 @@ void noteUnapplied(INI *ini, void *instance, void *, const void *userData)
 #define SEEN_DATA(bit) ((const void *)(std::uintptr_t)(bit))
 
 const FieldParse kGameDataFields[] = {
+	{ "TimeAfterDamageUntilRepairAllowed", parseNoting<INI::parseUnsignedInt>, SEEN_DATA(SEEN_REPAIR_DELAY), (int)offsetof(BlockState, values.timeAfterDamageUntilRepairAllowed) },
 	{ "ForceModelsToFollowTimeOfDay", parseNoting<INI::parseBool>, SEEN_DATA(SEEN_TOD), (int)offsetof(BlockState, values.forceModelsToFollowTimeOfDay) },
 	{ "ForceModelsToFollowWeather", parseNoting<INI::parseBool>, SEEN_DATA(SEEN_WEATHER), (int)offsetof(BlockState, values.forceModelsToFollowWeather) },
 	{ "UnitDamagedThreshold", parseNoting<INI::parseReal>, SEEN_DATA(SEEN_DAMAGED), (int)offsetof(BlockState, values.unitDamagedThreshold) },
@@ -195,6 +197,8 @@ const FieldParse kGameDataFields[] = {
 	{ "StandardPublicBone", INI::parseAsciiStringVectorAppend, nullptr, (int)offsetof(BlockState, values.standardPublicBones) },
 	// lane SPELL-2: SpecialPowerViewObject (row RW 0xC006C0, parseAsciiString RW 0x42EE5E, + 0xBA4): the reveal object of RW 0x896FD9
 	{ "SpecialPowerViewObject", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.specialPowerViewObject) },
+	// lane OWNERFIX-1: DefaultUnitHealingBuffFxList (row RW 0xBFF8C0, parseAsciiString RW 0x42EE5E, + 0x9DC): the healing glow of a healed unit (ActiveBody)
+	{ "DefaultUnitHealingBuffFxList", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.defaultUnitHealingBuffFxList) },
 	// lane STEALTH-1: the invisibility rows (RW 0xC00C30 CamouflageDetectorObjectFilter + 0xEB4, RW 0xC01070 ReinvisibityDelay + 0x11CC, RW 0xC01080 / 0xC01090
 	// InvisibilityOpacityMin / Max + 0x11D0 / + 0x11D4, RW 0xC010A0 InvisibilityOpacityCycleFrames + 0x11D8)
 	{ "CamouflageDetectorObjectFilter", parseNoting<parseFilterPtr>, SEEN_DATA(SEEN_CAMOFILTER), (int)offsetof(BlockState, values.camouflageDetectorFilter) },
@@ -208,6 +212,8 @@ const FieldParse kGameDataFields[] = {
 	{ "WaitToForceMemberToEnterDelay", parseNoting<INI::parseUnsignedInt>, 0, (int)offsetof(BlockState, values.waitToForceMemberToEnterDelay) },
 	// lane GARRISON-2: RW 0xC00360 (parseInt RW 0x42EC5E, + 0xA98)
 	{ "MaxTunnelCapacity", parseNoting<INI::parseInt>, 0, (int)offsetof(BlockState, values.maxTunnelCapacity) },
+	// lane BACKLOG-8 r2: GroupMoveClickToGatherAreaFactor (row RW 0xC00600, parseReal RW 0x42ED00, GameData + 0xB60)
+	{ "GroupMoveClickToGatherAreaFactor", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.groupMoveClickToGatherAreaFactor) },
 	{ nullptr, noteUnapplied, nullptr, 0 }
 };
 const FieldParse kAIDataFields[] = {
@@ -220,10 +226,17 @@ const FieldParse kAIDataFields[] = {
 	{ "GuardEnemyReturnScanRate", parseNoting<INI::parseDurationUnsignedInt>, SEEN_DATA(SEEN_GUARD_RETURN), (int)offsetof(BlockState, values.guardEnemyReturnScanRate) },
 	{ "AlertRangeModifier", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.alertRangeModifier) },
 	{ "AggressiveRangeModifier", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.aggressiveRangeModifier) },
-	// lane BACKLOG6: UseFormations (row RW 0xC1CE90, parseBool RW 0x42E558, AIData + 0xBD): the gate of AIGroup RW 0x774897's formation group manager
-	{ "UseFormations", parseNoting<INI::parseBool>, 0, (int)offsetof(BlockState, values.useFormations) },
-	// lane BACKLOG6: MinDistanceForGroup (row RW 0xC1D390, parseReal RW 0x42ED00, AIData + 0x6C): RW 0x76F115 (the group ground path) refuses a group that is nearer than this
+	// lane BACKLOG-8: the formation rows (RW 0xC1CDF0 / 0xC1CE00 / 0xC1CE10 parseReal RW 0x42ED00; RW 0xC1CE20 parseInt RW 0x42EC5E)
+	{ "FormationColumnWidth", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.formationColumnWidth) },
+	{ "FormationRowDepth", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.formationRowDepth) },
+	{ "FormationSquadSpacing", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.formationSquadSpacing) },
+	{ "FormationColumns", parseNoting<INI::parseInt>, 0, (int)offsetof(BlockState, values.formationColumns) },
+	// lane BACKLOG-8 r2: the march rows (RW 0xC1CD20 / 0xC1CD30 / 0xC1CE30 parseReal RW 0x42ED00; RW 0xC1CEA0 / 0xC1CE90 parseBool RW 0x42E558)
 	{ "MinDistanceForGroup", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.minDistanceForGroup) },
+	{ "FormationEnemyDistance", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.formationEnemyDistance) },
+	{ "NarrowPassageScale", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.narrowPassageScale) },
+	{ "WaitForOthers", parseNoting<INI::parseBool>, 0, (int)offsetof(BlockState, values.waitForOthers) },
+	{ "UseFormations", parseNoting<INI::parseBool>, 0, (int)offsetof(BlockState, values.useFormations) },
 	{ nullptr, noteUnapplied, nullptr, 0 }
 };
 const FieldParse kMultiplayerFields[] = {
@@ -389,6 +402,7 @@ bool finish(Load &l, unsigned blockBit, const char *blockName, const std::vector
 		out.buildRulesLoaded = true;
 	}
 	out.builderMoveLoaded = (l.state().seen & SEEN_BUILDERMOVE) != 0; // lane BUILD-3
+	out.repairDamageDelayLoaded = (l.state().seen & SEEN_REPAIR_DELAY) != 0;
 	out.guardRulesLoaded = (l.state().seen & (SEEN_GUARD_CHASE | SEEN_GUARD_SCAN | SEEN_GUARD_RETURN)) == (SEEN_GUARD_CHASE | SEEN_GUARD_SCAN | SEEN_GUARD_RETURN); // lane PLAY-4
 	out.sellPercentageLoaded = (l.state().seen & SEEN_SELL) != 0; // lane FACT-A
 	if ((l.state().seen & (SEEN_VSTRUCT | SEEN_VUNIT)) == (SEEN_VSTRUCT | SEEN_VUNIT))
@@ -520,16 +534,22 @@ void GameLogicSettings::crc(StateHasher &h) const
 
 	h.addBool(enableRepulsors);
 	h.addFloat(repulsedDistance);
-	if (!useFormations) // lane BACKLOG6: only a value other than the constructor's adds to the hash (the retail value leaves every earlier hash as it was)
-	{
-		h.addU32(0x55464D30u); // "UFM0"
-	}
 	h.addBool(guardRulesLoaded); // lane PLAY-4
 	h.addU32(guardChaseUnitsFrames);
 	h.addU32(guardEnemyScanRate);
 	h.addU32(guardEnemyReturnScanRate);
 	h.addFloat(alertRangeModifier);
 	h.addFloat(aggressiveRangeModifier);
+	h.addFloat(formationColumnWidth); // lane BACKLOG-8
+	h.addFloat(formationRowDepth);
+	h.addFloat(formationSquadSpacing);
+	h.addI32(formationColumns);
+	h.addFloat(minDistanceForGroup); // lane BACKLOG-8 r2 (with UseFormations below; lane BACKLOG6 first read both)
+	h.addFloat(formationEnemyDistance);
+	h.addFloat(narrowPassageScale);
+	h.addBool(waitForOthers);
+	h.addBool(useFormations);
+	h.addFloat(groupMoveClickToGatherAreaFactor);
 	h.addBool(forceModelsToFollowTimeOfDay);
 	h.addBool(forceModelsToFollowWeather);
 	h.addBool(bodyThresholdsLoaded);

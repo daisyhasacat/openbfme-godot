@@ -39,6 +39,7 @@ class GameLogic;
 class ModuleFactory;
 class Player;
 class StateHasher;
+class Xfer;
 
 // `Behavior = TunnelContain`: HordeGarrisonContain's tables, then TimeForFullHeal
 class TunnelContainBehaviorData : public HordeGarrisonContainBehaviorData
@@ -67,6 +68,8 @@ public:
 	unsigned tunnelCount() const { return m_tunnelCount; }
 	const std::list<ObjectID> &tunnelIds() const { return m_tunnelIds; }
 	void crc(StateHasher &hasher) const;
+	// lane SAVE-4b: retail TunnelTracker::xfer (RW 0x8FA569, tier A, (1, 1)), the riders as ids (the Objects block has made them)
+	void xfer(Xfer &x, GameLogic &logic);
 	unsigned long long healHits() const { return m_healHits; }
 
 private:
@@ -79,6 +82,7 @@ private:
 class TunnelContain : public GarrisonContain, public CreateModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(TunnelContain) // lane SAVE-4b
 	TunnelContain(Thing *thing, const ModuleData *data, const TunnelContainBehaviorData &tunnel);
 
 	static void registerClasses(ModuleFactory &modules);

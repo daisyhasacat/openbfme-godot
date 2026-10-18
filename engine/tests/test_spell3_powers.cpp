@@ -743,7 +743,7 @@ TEST_CASE("SPELL-3 (review r1): failures reach the game report: a Flood member o
 	CHECK(reported("the timed unpack failed"));
 }
 
-TEST_CASE("SPELL-3 retail (S-932): a bought passive (Scavenger) is never started: the module stays inactive and the player's bounty percent unchanged")
+TEST_CASE("SPELL-3 retail: granting Scavenger science alone does not execute the purchase button CommandTrigger")
 {
 	OPENBFME_REQUIRE_START(shared);
 	auto ctx = shared->world->enterContext();

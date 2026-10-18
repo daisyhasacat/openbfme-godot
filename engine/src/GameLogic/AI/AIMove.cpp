@@ -18,8 +18,11 @@ const char *const kStopSpecialLayer =
 	"S-166 the special-layer (bridge, wall, ladder) branch of doLocomotor (RW 0x669E8F-0x66A27E) is not ported: a path node with a waypoint id moves like a ground node";
 const char *const kStopUpdate =
 	"S-166 the movement-complete block of AIUpdateInterface::update (RW 0x6695EF) skips the object goal refresh (0x68B411, 0x6EF225, 0x68B3BD), the status bit clears and the turret update; the state machine's sleep comes from the host";
-const char *const kStopPatch =
-	"S-166 computePath of a blocked unit (RW 0x665C33 with blocked frames) runs a full search; the blocked repath itself is RotWK's patch (RW 0x6631BF / 0x6F7938, lane MOVE-3)";
+const char *const kStopExitQuickPath =
+	"S-166 computePath's straight path for a unit following its exit-production path (RW 0x666036 .. 0x66607C: state 7 with AI + 0x3BA; the flag is dropped and the machine's "
+	"goal becomes the destination, RW 0x6654AD) is read but not applied: applied, production exits moved (test_aipow1: a frame 22 for 23; test_play4_heroes_retail: 2 shots, "
+	"150 lost and 2 members killed in an order that has none) and the goal overwrite alone sent an idle Battle-stance unit 826.975 from its guard spot (test_play4_stances_retail, "
+	"bound 365; without the overwrite it passes); INFERENCE, not verified: the port's exit state and guard keep the machine's goal for something RotWK does not";
 const char *const kStopExplicit =
 	"S-166 doLocomotor goal types 2 and 4 (RW 0x669A01-0x669B95): the validation of a straight move (RW 0x6F1B3E) is approximated by the PATH-1 line test or a passable "
 	"target cell, and the fallback path of a blocked straight move (RW 0x6F74D0) by a pathfinder search (the two bodies were not fully read)";
@@ -42,7 +45,7 @@ inline float hypot2(float x, float y)
 
 std::vector<std::string> AIMover::allStops()
 {
-	return { kStopSpecialLayer, kStopUpdate, kStopPatch, kStopExplicit, kStopDistance, kStopRequests, kStopGroup, kStopClosest };
+	return { kStopSpecialLayer, kStopUpdate, kStopExitQuickPath, kStopExplicit, kStopDistance, kStopRequests, kStopGroup };
 }
 
 void AIMover::note(const char *stop)
@@ -570,30 +573,40 @@ bool AIMover::computePath(const Coord3D &destIn)
 			return computeQuickPath(dest);
 		}
 	}
+	// lane BACKLOG5 (BFME2 decomp AIUpdateInterface_computePath.cpp as donor, tier B same-shape: the RotWK offsets are read from the RotWK disassembly).
+	// RW 0x666036 .. 0x66607C, the straight path of a unit following its exit-production path (state 7 with AI + 0x3BA), is read but not applied: S-166
+	if (m_host.stateId() == 7 && obj.canPathThroughUnits())
+	{
+		note(kStopExitQuickPath);
+	}
 	const Coord3D orig = dest;
 	{
+		// RW 0x66617F .. 0x6661DC: not for a unit on a bridge layer (RW 0x5E2F24: layers 2 .. 15)
 		const Coord3D pos = obj.getPosition();
-		if (!m_isFinalGoal && m_pf.isLinePassable(&obj, info.validSurfaces, obj.getLayer(), pos, orig, false, true))
+		const bool specialLayer = (int)obj.getLayer() >= 2 && (int)obj.getLayer() <= 15;
+		if (!m_isFinalGoal && !specialLayer && m_pf.isLinePassable(&obj, info.validSurfaces, obj.getLayer(), pos, orig, false, true))
 		{
 			return computeQuickPath(dest);
 		}
 	}
+	// RW 0x6662FD .. 0x6665B5: a destination the unit cannot stand on (RW 0x6EA4E7) gets no search; a unit with blocked frames patches its path
+	// (pathfinder slot 0x10, RW 0x6FC9DA) instead of searching again; else findPath (slot 0, RW 0x6FE7CB), whose `partial` sets the retry flag. Only the first
+	// two fall back, when they made nothing and the unit has no path, to the closest path (slot + 4, RW 0x6FB869), which always sets the retry flag
 	Path *np = nullptr;
-	// RW 0x665C33 (Open-BFME-2 AIUpdateInterface_computePath.cpp): tryClosest stays set unless the plain search ran (an invalid destination or the blocked
-	// patch); with no new path and none kept, FindClosestPath (pathfinder slot + 4, RW 0x6FB869) walks the unit to the reachable cell nearest the destination
 	bool tryClosest = true;
-	if (m_pf.validMovementPosition(&obj, info, LAYER_GROUND, &dest))
+	if (!m_pf.validMovementPosition(&obj, info, LAYER_GROUND, &dest))
+	{
+		np = nullptr;
+	}
+	else if (m_blockedFrames > 0)
+	{
+		np = m_pf.patchPath(&obj, info, m_path, true);
+	}
+	else
 	{
 		const Coord3D pos = obj.getPosition();
 		bool partial = false;
-		if (m_blockedFrames > 0)
-		{
-			note(kStopPatch); // patchPath is replaced by a full search
-		}
-		else
-		{
-			tryClosest = false;
-		}
+		tryClosest = false;
 		np = m_pf.findPath(&obj, info, &pos, &dest, &partial);
 		if (partial)
 		{
@@ -602,22 +615,23 @@ bool AIMover::computePath(const Coord3D &destIn)
 	}
 	if (np == nullptr && m_path == nullptr && tryClosest)
 	{
-		// S-166: FindClosestPath is not ported; findPath stands in for it: its goal steps back toward the unit and its search accepts the closest cell when
-		// the goal cell is not a valid destination (internalFindPath's approximate goal), which is what FindClosestPath returns
+		// FindClosestPath (RW 0x6FB869) is not ported (S-166): as for its other callers the search without findPath's corridor stands in for it; its
+		// `blocked`, cost multiplier 0 and its adjustment of the destination are not modelled
 		const Coord3D pos = obj.getPosition();
-		note(kStopClosest);
-		np = m_pf.findPath(&obj, info, &pos, &dest, nullptr);
-		m_retryPath = true;
-	}
-	if (np == nullptr && m_path == nullptr)
-	{
-		m_retryPath = true;
 		note(kStopRequests);
+		np = m_pf.findPathWithoutCorridor(&obj, info, &pos, &dest, nullptr);
+		m_retryPath = true;
 	}
 	if (np)
 	{
 		destroyPath();
 		m_path = np;
+		// RW 0x6665ED .. 0x66660E: an ultra-accurate locomotor (locomotor + 0x44 bit 6) ends its path on the destination itself (RW 0x765565)
+		Locomotor *loco = m_host.locomotor();
+		if (loco && ((loco->flags() >> 6) & 1u))
+		{
+			m_path->updateLastNode(&orig);
+		}
 		setGoalOnPath();
 		m_host.clearAlliesFromPath(*m_path); // lane PHYS-1: RW 0x666727 .. 0x66679E
 	}

@@ -27,12 +27,21 @@
 //     player's unit whose mood adjustment RW 0x664E18(1) has bit 4 re-issues the path as an attack-follow) are other states.
 // DONOR: ZH AIStates.cpp AIFollowWaypointPathState.
 //
-// INFERENCE / NOT PORTED (stop S-1189, docs/STOPS.md): the team's formation offsets (+ 0x4C / + 0x50, RW 0x94FCBA) and the human team's group-radius
+//   * lane BACKLOG-8, the group offset (state + 0x4C / + 0x50; BFME2 decomp AIFollowWaypointPathStateOnEnter.cpp / AIStatesDerivedOnExit.cpp
+//     AIFollowWaypointPathState::computeGoal, byte-matched, tier B same-shape for RW 0x75070F / 0x755A20): onEnter clears it; as a team with a goal
+//     waypoint a unit with a formation id (Object + 0x42C, RW 0x750790) takes its formation offset (+ 0x430 / + 0x434, AIGroup::createFormation RW
+//     0x94FCBA). computeGoal adds it to the current waypoint's location; a unit with a formation id first turns it (AIGroup::rotateOffset RW 0x76E90A)
+//     to the direction previous waypoint -> current one, without a previous one current -> its first link, without a link +x. The commands 6 / 0x32
+//     clear the unit's formation id (RW 0x66B921 / 0x66B9C6), the as-team group command without the formation clears every member's (RW 0x771E31).
+//
+// INFERENCE / NOT PORTED (stop S-1189, docs/STOPS.md): a team WITHOUT a formation keeps no offset from its group's centre (the onEnter branch over the AI's
+// group, RW 0x6630F5-style accessor, with the group speed: the port has no persistent AI group) and the human team's group-radius
 // arrival; the SHIP water path (state 0x49); the attack-follow states and the mood switch (they stay S-1186's stand-in); the internal move is the
 // port's AIMoveToState (exact: no destination adjustment).
 
 #pragma once
 
+#include "Common/INIDataTypes.h"
 #include "GameLogic/AI/AIStateMachine.h"
 
 #include <memory>
@@ -58,6 +67,7 @@ public:
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override; // lane SAVE-4c (AIWaypointPath.cpp)
 
 	// the machine's goal waypoint (RW 0x6E8498): read by onEnter
 	void setGoalWaypoint(int id) { m_goalWaypoint = id; }
@@ -72,6 +82,7 @@ private:
 	int m_goalWaypoint = -1; ///< the machine's goal waypoint (-1 none)
 	int m_current = -1;     ///< + 0x5C (-1 none)
 	int m_previous = -1;    ///< + 0x60
+	Coord2D m_groupOffset{}; ///< + 0x4C / + 0x50 (hashed when set)
 	std::unique_ptr<AIMoveToState> m_move;
 };
 

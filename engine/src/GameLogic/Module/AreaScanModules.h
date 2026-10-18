@@ -63,6 +63,7 @@ public:
 class LargeGroupBonusUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(LargeGroupBonusUpdate) // lane SAVE-4b
 	LargeGroupBonusUpdate(Thing *thing, const LargeGroupBonusUpdateModuleData *data); ///< RW 0x893765
 	UpdateSleepTime update() override;                                                 ///< RW 0x8938D9
 	void crc(StateHasher &h) const override;
@@ -98,6 +99,7 @@ public:
 class PassiveAreaEffectBehavior : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(PassiveAreaEffectBehavior) // lane SAVE-4b
 	PassiveAreaEffectBehavior(Thing *thing, const PassiveAreaEffectBehaviorModuleData *data); ///< RW 0x887CF3
 	UpdateSleepTime update() override;                                                        ///< RW 0x887DF7
 	void crc(StateHasher &h) const override;

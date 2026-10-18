@@ -12,17 +12,29 @@
 
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 
+#include "Common/GameState.h"
 #include "Common/Player.h"
+#include "Common/BuildAssistant.h"
+#include "GameLogic/Economy.h"
+#include "Common/XferLoad.h"
+#include "Common/XferSave.h"
+#include "GameLogic/Map/TerrainTrees.h"
+#include "GameLogic/Weapon.h"
 #include "Common/PlayerList.h"
 #include "Common/PlayerTemplate.h"
 #include "Common/Recorder.h"
 #include "Common/SimulationProfile.h"
 #include "Common/System/SaveGame/SaveGameFile.h"
 #include "GameClient/CommandLogLoad.h"
+#include "GameClient/ReplaySeek.h"
+#include "GameClient/Drawable.h"
+#include "GameClient/DrawableManager.h"
 #include "GameClient/GUI/Skirmish/IniSkirmishSetupSource.h"
+#include "GameClient/LinearCampaign.h"
 #include "GameClient/LiveGame.h"
 #include "GameLogic/NewGame/NewGame.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/AttributeModifierPool.h"
 #include "Common/BuildVersion.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/Module/AIUpdate.h"
@@ -34,6 +46,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <set>
 #include <sstream>
@@ -154,7 +167,7 @@ struct Loaded
 	std::unique_ptr<LiveGame> game;
 };
 
-void load(starttest::Shared &s, const NewGameMessage &m, Loaded &out)
+void load(starttest::Shared &s, const NewGameMessage &m, Loaded &out, bool paced = false)
 {
 	std::string error;
 	REQUIRE_MESSAGE(NewGame::prepareNewGame(m, s.world->playerTemplates(), s.settings, mapCache(s), RandomAlgorithm::ZH_CarryChain, out.start, &error), error);
@@ -163,6 +176,7 @@ void load(starttest::Shared &s, const NewGameMessage &m, Loaded &out)
 	out.game = std::make_unique<LiveGame>(*s.world, *s.mount->fs, *out.assets, s.options);
 	LiveGame::Options o;
 	o.start = &out.start;
+	o.sixTickPacing = paced;
 	REQUIRE_MESSAGE(out.game->load(o, &error), error);
 }
 
@@ -197,7 +211,9 @@ struct Recorded
 };
 
 // the unsaved game: recorded from its start; the save is taken after `beforeSave` frames, then it runs `after` frames more
-Recorded recordGame(starttest::Shared &s, const NewGameMessage &message, const ProfileIdentity &profile, int beforeSave, int after, const std::string &tag)
+// lane SAVE-4e: `snapshot` also takes the snapshot at F into the save (as GameWorld::save_game does)
+Recorded recordGame(starttest::Shared &s, const NewGameMessage &message, const ProfileIdentity &profile, int beforeSave, int after, const std::string &tag,
+	bool snapshot = false, const std::function<void(LiveGame &)> &beforeLastFrame = nullptr)
 {
 	Recorded r;
 	const std::string path = "save2_" + tag + ".replay";
@@ -217,6 +233,11 @@ Recorded recordGame(starttest::Shared &s, const NewGameMessage &message, const P
 	g.game->setFrameDriver(&driver);
 	for (int i = 0; i < beforeSave; ++i)
 	{
+		if (beforeLastFrame && i == beforeSave - 1)
+		{
+			g.game->drainFrames();
+			beforeLastFrame(*g.game); // lane SAVE-4e review r1: a change outside the commands, before the last frame (a toppled tree)
+		}
 		humanCommands(*g.game, g.game->commands());
 		REQUIRE(g.game->advance(0.2) == 1);
 	}
@@ -225,6 +246,10 @@ Recorded recordGame(starttest::Shared &s, const NewGameMessage &message, const P
 	r.savedFrame = g.game->logic().getFrame();
 	const std::uint32_t hash = g.game->logic().computeStateHash();
 	REQUIRE_MESSAGE(writer.logUpTo(r.savedFrame, hash, r.save.log, &error), error);
+	if (snapshot)
+	{
+		REQUIRE_MESSAGE(g.game->logic().saveSnapshot(r.save.snapshot, &error), error);
+	}
 	SaveGameHeader &sh = r.save.header;
 	sh.buildVersion = "test";
 	sh.engineId = ProfileIdentity::buildId();
@@ -286,6 +311,230 @@ bool changeRecordedHash(std::vector<std::uint8_t> &log, UnsignedInt frame, std::
 	return false;
 }
 } // namespace
+
+TEST_CASE("CASTER-2 seek: restart and budgeted seek match every recorded hash, including threaded and partially paced steps")
+{
+	OPENBFME_REQUIRE_START(s);
+	const auto profile = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain);
+	Recorded rec = recordGame(*s, gameMessage(*s, 2468u), profile, 40, 40, "caster_seek");
+	for (int mode = 0; mode < 3; ++mode)
+	{
+		Loaded g;
+		load(*s, rec.whole.header.game, g, mode == 2);
+		ReplayPlayback playback(rec.whole);
+		RegisterLogicCRCHandler(g.game->dispatch());
+		g.game->setFrameDriver(&playback);
+		g.game->enableReplayObserver();
+		g.game->setLogicThread(mode == 1);
+		if (mode == 2)
+		{
+			CHECK(g.game->advance(2.0 / 30.0) == 0);
+		}
+		const UnsignedInt target = rec.startFrame + 25;
+		ReplaySeek::Result result;
+		do
+		{
+			result = ReplaySeek::step(*g.game, playback, rec.whole, target, 1);
+			REQUIRE_MESSAGE(result.error.empty(), result.error);
+		} while (!result.ready);
+		CHECK(g.game->protocolFrame() == target);
+		CHECK(g.game->logic().computeStateHash() == rec.whole.hashes.at(target));
+		CHECK(playback.hashesCompared() == 25);
+		CHECK(g.game->logicThread() == (mode == 1));
+		// S-4931: no world keyframes; a backward seek is refused by name (the caller restarts the replay and fast-forwards)
+		CHECK(ReplaySeek::step(*g.game, playback, rec.whole, target - 1, 1).error ==
+			"Seek target outside this playback range; restart the replay before seeking backwards");
+		while (g.game->protocolFrame() < rec.whole.finalFrame)
+		{
+			REQUIRE(g.game->stepFrame() == 1);
+			CHECK(g.game->logic().computeStateHash() == rec.whole.hashes.at(g.game->protocolFrame()));
+		}
+		CHECK(playback.hashesCompared() == 80);
+		CHECK_FALSE(playback.hasMismatch());
+		CHECK(g.game->stepFrame() == 0);
+		g.game->setFrameDriver(nullptr);
+	}
+	for (bool missing : {false, true})
+	{
+		ReplayFile broken = rec.whole;
+		const UnsignedInt badFrame = rec.startFrame + 3;
+		if (missing)
+		{
+			broken.hashes.erase(badFrame);
+		}
+		else
+		{
+			broken.hashes[badFrame] ^= 1;
+		}
+		Loaded g;
+		load(*s, broken.header.game, g);
+		ReplayPlayback playback(broken);
+		g.game->setFrameDriver(&playback);
+		ReplaySeek::Result result;
+		do
+		{
+			result = ReplaySeek::step(*g.game, playback, broken, broken.finalFrame, 1);
+		} while (result.error.empty() && !result.ready);
+		CHECK(result.error.find(std::to_string(badFrame)) != std::string::npos);
+		CHECK(result.reached == (missing ? badFrame - 1 : badFrame));
+		g.game->setFrameDriver(nullptr);
+	}
+}
+
+TEST_CASE("CASTER-4 metrics: retail battalions count once, support units count, bounded income is explicit and sampling cannot change simulation")
+{
+	OPENBFME_REQUIRE_START(s);
+	Loaded g;
+	NewGameMessage message = gameMessage(*s, 2468u);
+	message.game.slots[1].state = SLOT_PLAYER;
+	load(*s, message, g);
+	GameLogic &logic = g.game->logic();
+	Player *player = logic.players().getLocalPlayer();
+	REQUIRE(player != nullptr);
+	std::int64_t expectedValue = 0;
+	Object *horde = nullptr;
+	for (const char *name : {"GondorFighterHorde", "RohanEomer", "MordorDrummerTroll"})
+	{
+		const ThingTemplate *tt = logic.things().findTemplate(name);
+		REQUIRE(tt != nullptr);
+		REQUIRE(tt->findField("BuildCost") != nullptr);
+		CHECK(BuildAssistant::buildCost(*tt) > 0); // tolerance: a positive retail cost is required to expose accidental member double-counting.
+		expectedValue += BuildAssistant::buildCost(*tt);
+		Object *object = logic.newObject(tt, player->getDefaultTeam(), {});
+		REQUIRE(object != nullptr);
+		if (object->isKindOfName("HORDE"))
+		{
+			horde = object;
+		}
+	}
+	REQUIRE(horde != nullptr);
+	g.game->enableReplayObserver();
+	REQUIRE(g.game->stepFrame() == 1);
+	auto row = [&](const ObserverMetrics &metrics) -> const ObserverPlayerMetrics & {
+		for (const auto &p : metrics.players())
+		{
+			if (p.player == player->getPlayerIndex())
+			{
+				return p;
+			}
+		}
+		FAIL("the playable player is absent from metrics");
+		return metrics.players().front();
+	};
+	ObserverMetrics direct;
+	const auto hash = logic.computeStateHash();
+	direct.capture(logic);
+	CHECK(logic.computeStateHash() == hash);
+	const auto &initial = row(direct);
+	CHECK(initial.armyComplete);
+	CHECK(initial.armyValue == expectedValue);
+	REQUIRE(initial.army.count("GondorFighterHorde") == 1);
+	CHECK(initial.army.at("GondorFighterHorde").count == 1);
+	CHECK(initial.army.count("GondorFighter") == 0);
+	CHECK(initial.army.count("MordorDrummerTroll") == 1);
+	CHECK(initial.heroes.size() == 1);
+	CHECK(initial.money == player->getMoney()->countMoney());
+	CHECK(initial.cpUsed == player->commandPoints().getUsage());
+	CHECK(initial.cpLimit == player->commandPointLimit());
+	CHECK(initial.powerPoints == player->science().getSciencePurchasePoints());
+	CHECK(initial.unitsLost == player->getScoreKeeper().unitsLost());
+	logic.economy().noteIncome(*horde, *player, 7);
+	ObserverMetrics current;
+	current.capture(logic);
+	CHECK(row(current).resourceIncome == initial.resourceIncome + 7);
+	const auto count = direct.history().size();
+	direct.capture(logic);
+	CHECK(direct.history().size() == count);
+	int members = 0;
+	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+	{
+		members += o->getContainedBy() == horde ? 1 : 0;
+	}
+	CHECK(members > 0); // tolerance: the retail horde must have spawned members for the exclusion assertion to exercise anything.
+	for (int i = 0; i < 8193; ++i)
+	{
+		logic.economy().noteIncome(*horde, *player, 7);
+	}
+	REQUIRE(g.game->stepFrame() == 1);
+	CHECK_FALSE(row(g.game->observerMetrics()).incomeComplete);
+	const UnsignedInt before = g.game->frame();
+	const size_t samples = g.game->observerMetrics().history().size();
+	for (int i = 0; i < 300; ++i)
+	{
+		REQUIRE(g.game->stepFrame() == 1);
+		if (g.game->frame() == before + 299)
+		{
+			CHECK(row(g.game->observerMetrics()).incomeComplete);
+		}
+	}
+	const auto &after = g.game->observerMetrics();
+	CHECK(after.frame() == before + 300);
+	CHECK(after.history().size() == samples + 60);
+	CHECK(row(after).incomeComplete);
+	std::int64_t income = 0;
+	for (const auto &e : logic.economy().incomeLog())
+	{
+		if (e.playerIndex == player->getPlayerIndex() && e.frame > after.frame() - 300 && e.frame <= after.frame())
+		{
+			income += e.amount;
+		}
+	}
+	CHECK(row(after).resourceIncome == income);
+}
+
+TEST_CASE("CASTER-2 timeline: damage groups by time, location and player without swallowing hero, power or capture events")
+{
+	ObserverTimeline timeline;
+	ObserverEvent damage;
+	damage.frame = 2;
+	damage.player = 1;
+	damage.weight = 10;
+	timeline.add(damage);
+	damage.frame = 3;
+	timeline.add(damage);
+	REQUIRE(timeline.events().size() == 1);
+	CHECK(timeline.events()[0].weight == 20);
+	damage.player = 2;
+	timeline.add(damage);
+	damage.position.x = 350;
+	timeline.add(damage);
+	damage.frame = 30;
+	timeline.add(damage);
+	CHECK(timeline.events().size() == 4);
+	for (auto kind : {ObserverEvent::Death, ObserverEvent::Power, ObserverEvent::Capture})
+	{
+		damage.kind = kind;
+		timeline.add(damage);
+	}
+	CHECK(timeline.events().size() == 7);
+}
+
+TEST_CASE("CASTER-2 timeline: signed cell boundaries retain floor semantics")
+{
+	ObserverTimeline timeline;
+	ObserverEvent damage;
+	damage.weight = 0.25f;
+	damage.position.x = -300.0f;
+	timeline.add(damage);
+	damage.position.x = -0.001f;
+	timeline.add(damage);
+	REQUIRE(timeline.events().size() == 1);
+	CHECK(timeline.events()[0].weight == 0.5f);
+	damage.position.x = 0.0f;
+	timeline.add(damage);
+	damage.position.x = 299.999f;
+	timeline.add(damage);
+	REQUIRE(timeline.events().size() == 2);
+	CHECK(timeline.events()[1].weight == 0.5f);
+	damage.position.x = 300.0f;
+	timeline.add(damage);
+	damage.position.x = -300.001f;
+	timeline.add(damage);
+	damage.position.x = 0.0f;
+	damage.position.y = -0.001f;
+	timeline.add(damage);
+	CHECK(timeline.events().size() == 5);
+}
 
 TEST_CASE("save2 retail T1: a skirmish saved at frame F, loaded and played on with the same commands has every later frame's hash of the unsaved game")
 {
@@ -637,7 +886,8 @@ int runPeer(const std::string &args)
 } // namespace
 
 TEST_CASE("save2 retail T1 (SAVES.md): a 4-AI skirmish saved with each named scenario in flight, every save loaded in a fresh process and played on "
-		  "past F + 3000 with the uninterrupted game's commands: every frame's hash is the unsaved game's")
+		  "past F + 3000 with the uninterrupted game's commands: every frame's hash is the unsaved game's (lane SAVE-4e: from the save's snapshot, no frame "
+		  "of its log run; the 11-minute save also caught up from its log, its snapshot compared, both load times measured; T3 with a Windows peer)")
 {
 	OPENBFME_REQUIRE_START(s);
 #ifndef OPENBFME_PEER_EXE
@@ -655,6 +905,7 @@ TEST_CASE("save2 retail T1 (SAVES.md): a 4-AI skirmish saved with each named sce
 	{
 		std::string scenario, path, found;
 		UnsignedInt frame = 0;
+		bool eleven = false; ///< lane SAVE-4e: the 11-minute save (the load time measurement, the verify mode, T3)
 	};
 	std::vector<Taken> saves;
 	const char *const names[4] = { "mid-combat", "mid-construction", "special power in flight", "horde mid-march" };
@@ -676,10 +927,42 @@ TEST_CASE("save2 retail T1 (SAVES.md): a 4-AI skirmish saved with each named sce
 		g.game->setFrameDriver(&driver);
 		// from two minutes on, each scenario is saved at the first frame it is in flight (at most 20 minutes of game time)
 		bool seen[4] = { false, false, false, false };
-		for (int i = 0; i < 6000 && saves.size() < 4; ++i)
+		bool elevenTaken = false;
+		// lane SAVE-4e: the save as GameWorld::save_game writes it: the log to F and the snapshot at F
+		auto takeSave = [&](Taken &t) {
+			SaveGameFile save;
+			const std::uint32_t hash = g.game->logic().computeStateHash();
+			REQUIRE_MESSAGE(writer.logUpTo(t.frame, hash, save.log, &error), error);
+			REQUIRE_MESSAGE(g.game->logic().saveSnapshot(save.snapshot, &error), error);
+			SaveGameHeader &sh = save.header;
+			sh.buildVersion = BuildVersion::kVersion;
+			sh.engineId = ProfileIdentity::buildId();
+			sh.profile = profile;
+			sh.executionProfile = "enhanced";
+			sh.gameKind = 2;
+			sh.frame = t.frame;
+			sh.stateHash = hash;
+			sh.description = t.scenario;
+			sh.mapPath = message.game.mapName;
+			REQUIRE_MESSAGE(save.write(t.path, &error), error);
+		};
+		for (int i = 0; i < 6000 && (saves.size() < 5 || !elevenTaken); ++i)
 		{
 			humanCommands(*g.game, g.game->commands());
 			REQUIRE(g.game->advance(0.2) == 1);
+			if (i + 1 == 3300)
+			{
+				// eleven minutes of game time (the owner's catch-up was "2:51 of 11:00")
+				g.game->drainFrames();
+				Taken t;
+				t.scenario = "eleven minutes";
+				t.frame = g.game->logic().getFrame();
+				t.path = "save2_t1_eleven.obfmesave";
+				t.eleven = true;
+				takeSave(t);
+				saves.push_back(t);
+				elevenTaken = true;
+			}
 			if (i < 600)
 			{
 				continue;
@@ -702,20 +985,7 @@ TEST_CASE("save2 retail T1 (SAVES.md): a 4-AI skirmish saved with each named sce
 					t.found += " " + n;
 				}
 				t.path = "save2_t1_" + std::to_string(k) + ".obfmesave";
-				SaveGameFile save;
-				const std::uint32_t hash = g.game->logic().computeStateHash();
-				REQUIRE_MESSAGE(writer.logUpTo(t.frame, hash, save.log, &error), error);
-				SaveGameHeader &sh = save.header;
-				sh.buildVersion = BuildVersion::kVersion;
-				sh.engineId = ProfileIdentity::buildId();
-				sh.profile = profile;
-				sh.executionProfile = "enhanced";
-				sh.gameKind = 2;
-				sh.frame = t.frame;
-				sh.stateHash = hash;
-				sh.description = t.scenario;
-				sh.mapPath = message.game.mapName;
-				REQUIRE_MESSAGE(save.write(t.path, &error), error);
+				takeSave(t);
 				MESSAGE(t.scenario << " at frame " << t.frame << ":" << t.found);
 				saves.push_back(t);
 			}
@@ -724,7 +994,7 @@ TEST_CASE("save2 retail T1 (SAVES.md): a 4-AI skirmish saved with each named sce
 		{
 			CHECK_MESSAGE(seen[k], names[k] << " never happened in 20 minutes of the game");
 		}
-		REQUIRE(!saves.empty());
+		REQUIRE(elevenTaken);
 		for (int i = 0; i < 3000; ++i) // F + 3000 for the last save, more for the earlier ones
 		{
 			humanCommands(*g.game, g.game->commands());
@@ -737,24 +1007,79 @@ TEST_CASE("save2 retail T1 (SAVES.md): a 4-AI skirmish saved with each named sce
 		CHECK(writer.errors().empty());
 		g.game->setFrameDriver(nullptr);
 	}
-	// each save in a fresh process: caught up from its own log, then the uninterrupted game's commands to its end, every hash compared
+	// each save in a fresh process: loaded from its snapshot (lane SAVE-4e: no frame of its log runs), then the uninterrupted game's commands to its end,
+	// every hash compared; the 11-minute save also caught up from its log (--verify-log: an old save's path, the snapshot compared at F)
+	char want[64];
+	std::snprintf(want, sizeof(want), "0x%08X recorded 0x%08X", finalHash, finalHash);
+	auto check = [&](const Taken &t, const std::string &report, int rc, bool snapshot) {
+		INFO(t.scenario << " (frame " << t.frame << "), " << (snapshot ? "from its snapshot" : "caught up from its log") << ", fresh process report:\n" << report);
+		CHECK(rc == 0);
+		CHECK(reportField(report, "save_frame") == std::to_string(t.frame));
+		CHECK(reportField(report, "load_mode") == (snapshot ? "snapshot" : "catch_up"));
+		CHECK(reportField(report, "catch_up_hashes") == (snapshot ? std::string("0") : std::to_string(t.frame - startFrame)));
+		CHECK(reportField(report, "hashes_compared") == std::to_string(lastFrame - t.frame));
+		CHECK(reportField(report, "mismatches") == "0");
+		CHECK(reportField(report, "final_hash") == want);
+	};
+	std::string elevenPath;
 	for (const Taken &t : saves)
 	{
 		const std::string reportPath = t.path + ".report";
-		const int rc = runPeer("--load-save \"" + t.path + "\" --replay \"" + fullPath + "\" --report \"" + reportPath + "\"");
+		int rc = runPeer("--load-save \"" + t.path + "\" --replay \"" + fullPath + "\" --report \"" + reportPath + "\"");
 		const std::string report = readText(reportPath);
-		INFO(t.scenario << " (frame " << t.frame << "), fresh process report:\n" << report);
-		CHECK(rc == 0);
-		CHECK(reportField(report, "save_frame") == std::to_string(t.frame));
-		CHECK(reportField(report, "catch_up_hashes") == std::to_string(t.frame - startFrame));
-		CHECK(reportField(report, "hashes_compared") == std::to_string(lastFrame - t.frame));
-		CHECK(reportField(report, "mismatches") == "0");
-		char want[64];
-		std::snprintf(want, sizeof(want), "0x%08X recorded 0x%08X", finalHash, finalHash);
-		CHECK(reportField(report, "final_hash") == want);
-		std::remove(t.path.c_str());
+		check(t, report, rc, true);
 		std::remove(reportPath.c_str());
+		if (!t.eleven)
+		{
+			std::remove(t.path.c_str());
+			continue;
+		}
+		elevenPath = t.path;
+		rc = runPeer("--load-save \"" + t.path + "\" --replay \"" + fullPath + "\" --report \"" + reportPath + "\" --verify-log");
+		const std::string verified = readText(reportPath);
+		check(t, verified, rc, false);
+		std::remove(reportPath.c_str());
+		// the measurement (SAVES.md section 8): the same 11-minute save, from its snapshot and caught up from its log, in a fresh process each
+		MESSAGE("SAVE-4e load time of the 11-minute save (frame " << t.frame << ", " << reportField(report, "snapshot_bytes")
+										<< " snapshot bytes): from the snapshot " << reportField(report, "load_ms") << " ms, caught up from the log "
+										<< reportField(verified, "load_ms") << " ms");
 	}
+	// T3 (SAVES.md section 6): a Windows peer (OPENBFME_WINDOWS_PEER: the command that runs openbfme_peer.exe, e.g. under Wine; its install paths in
+	// OPENBFME_WINDOWS_ROTWK / OPENBFME_WINDOWS_BFME2) catches the Linux save up from its log and saves the same snapshot bytes at F (--verify-log),
+	// then loads the Linux snapshot and plays on with every hash equal
+	const char *windowsPeer = std::getenv("OPENBFME_WINDOWS_PEER");
+	if (!windowsPeer || !*windowsPeer)
+	{
+		MESSAGE("SKIP save2 retail T3 (the snapshot bytes on Windows): OPENBFME_WINDOWS_PEER is not set");
+	}
+	else
+	{
+		const char *wr = std::getenv("OPENBFME_WINDOWS_ROTWK"), *wb = std::getenv("OPENBFME_WINDOWS_BFME2");
+		const std::string install = std::string(" --rotwk \"") + (wr ? wr : std::getenv("ROTWK_INSTALL")) + "\" --bfme2 \"" + (wb ? wb : std::getenv("BFME2_INSTALL")) + "\" ";
+		const Taken *eleven = nullptr;
+		for (const Taken &t : saves)
+		{
+			eleven = t.eleven ? &t : eleven;
+		}
+		REQUIRE(eleven);
+		for (bool snapshot : { false, true })
+		{
+			const std::string reportPath = "save2_t1_windows.report";
+			const std::string cmd = std::string(windowsPeer) + install + "--load-save " + elevenPath + " --replay " + fullPath + " --report " + reportPath
+				+ (snapshot ? "" : " --verify-log");
+			const int raw = std::system(cmd.c_str());
+#ifdef _WIN32
+			const int rc = raw;
+#else
+			const int rc = WIFEXITED(raw) ? WEXITSTATUS(raw) : -1;
+#endif
+			const std::string report = readText(reportPath);
+			MESSAGE("T3, the Windows peer " << (snapshot ? "from the Linux snapshot" : "caught up, its snapshot compared with Linux's") << ":\n" << report);
+			check(*eleven, report, rc, snapshot);
+			std::remove(reportPath.c_str());
+		}
+	}
+	std::remove(elevenPath.c_str());
 	std::remove(fullPath.c_str());
 #endif
 }
@@ -937,8 +1262,156 @@ TEST_CASE("save2 retail T1, a campaign mission: recorded in memory, saved at fra
 	CHECK(after.commandCount() == whole.commandCount());
 }
 
+namespace
+{
+// lane CAMPSAVE-1: a campaign mission (by its index in ANGMAR_CAMPAIGN) recorded in memory as GameWorld::start_campaign_mission records it, saved at frame
+// start + before (a version 2 header: the save point 0, no campaign flags), the file read back, the mission started again from its campaign and caught
+// up, then played on `after` frames with the same commands: every later frame's hash and the command count equal the uninterrupted mission's
+void campaignMissionRoundTrip(starttest::Shared &s, int missionIndex, int difficulty, int before, int after)
+{
+	// copies: a game's load may rebuild the world's stores the campaign list lives in (a pointer into it does not outlive a load)
+	std::string map, campaignName;
+	{
+		const LinearCampaign *campaign = s.world->linearCampaigns().find("ANGMAR_CAMPAIGN");
+		REQUIRE(campaign != nullptr);
+		REQUIRE(missionIndex < (int)campaign->missions.size()); // tolerance: a guard before the index is used (the caller picks it from the list)
+		map = campaign->missions[(size_t)missionIndex].map;
+		campaignName = campaign->name;
+	}
+	INFO("mission " << missionIndex << " " << map);
+	const ProfileIdentity profile = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain);
+	std::string error;
+	SaveGameFile save;
+	ReplayFile whole;
+	UnsignedInt startFrame = 0, savedFrame = 0;
+	{
+		Loaded g;
+		loadMission(s, map, difficulty, g);
+		ReplayWriter writer;
+		writer.setKeepCopy(true);
+		ReplayHeader h;
+		h.game.game.mapName = map;
+		h.profile = profile;
+		REQUIRE_MESSAGE(writer.open(std::string(), h, &error), error);
+		LockstepDriver driver(nullptr, &writer);
+		RegisterLogicCRCHandler(g.game->dispatch());
+		startFrame = g.game->frame();
+		g.game->setFrameDriver(&driver);
+		for (int i = 0; i < before; ++i)
+		{
+			humanCommands(*g.game, g.game->commands(), false);
+			REQUIRE(g.game->advance(0.2) == 1);
+		}
+		g.game->drainFrames();
+		MESSAGE("mission " << map << " at its save: " << probe(*g.game).text());
+		savedFrame = g.game->logic().getFrame();
+		const std::uint32_t hash = g.game->logic().computeStateHash();
+		REQUIRE_MESSAGE(writer.logUpTo(savedFrame, hash, save.log, &error), error);
+		SaveGameHeader &sh = save.header;
+		sh.engineId = ProfileIdentity::buildId();
+		sh.profile = profile;
+		sh.gameKind = 1;
+		sh.executionProfile = "enhanced";
+		sh.campaign = campaignName;
+		sh.campaignMission = missionIndex;
+		sh.campaignDifficulty = difficulty;
+		sh.frame = savedFrame;
+		sh.stateHash = hash;
+		sh.mapPath = map;
+		for (int i = 0; i < after; ++i)
+		{
+			humanCommands(*g.game, g.game->commands(), false);
+			REQUIRE(g.game->advance(0.2) == 1);
+		}
+		g.game->drainFrames();
+		std::vector<std::uint8_t> all;
+		REQUIRE_MESSAGE(writer.logUpTo(g.game->logic().getFrame(), g.game->logic().computeStateHash(), all, &error), error);
+		REQUIRE_MESSAGE(ReplayFile::parse(all, whole, &error), error);
+		writer.close(g.game->logic().getFrame(), g.game->logic().computeStateHash());
+		g.game->setFrameDriver(nullptr);
+	}
+	REQUIRE(savedFrame == startFrame + (UnsignedInt)before);
+	SaveGameFile back;
+	REQUIRE_MESSAGE(SaveGameFile::parse(save.encode(), back, &error), error);
+	CHECK(back.header.savePoint == 0);
+	CHECK(back.header.campaignMission == missionIndex);
+	CHECK(back.header.campaignDifficulty == difficulty);
+	// the mission started again from its campaign (start_campaign_mission: its map, the difficulty), caught up to F, then played on
+	const LinearCampaign *campaign = s.world->linearCampaigns().find(back.header.campaign);
+	REQUIRE(campaign != nullptr);
+	const std::string againMap = campaign->missions[(size_t)back.header.campaignMission].map;
+	CHECK(againMap == map);
+	Loaded g;
+	loadMission(s, againMap, back.header.campaignDifficulty, g);
+	CommandLogLoad cl;
+	REQUIRE_MESSAGE(cl.prepare(back, &error), error);
+	REQUIRE_MESSAGE(cl.begin(*g.game, &error), error);
+	while (cl.step(*g.game, 20) == CommandLogLoad::State::CatchingUp)
+	{
+	}
+	REQUIRE_MESSAGE(cl.state() == CommandLogLoad::State::Ready, cl.failure());
+	CHECK(cl.hashesCompared() == (unsigned long long)(savedFrame - startFrame));
+	CHECK(g.game->logic().computeStateHash() == back.header.stateHash);
+	ReplayWriter writer;
+	writer.setKeepCopy(true);
+	REQUIRE_MESSAGE(writer.openContinuing(std::string(), back.log, &error), error);
+	LockstepDriver driver(nullptr, &writer);
+	RegisterLogicCRCHandler(g.game->dispatch());
+	g.game->setFrameDriver(&driver);
+	for (int i = 0; i < after; ++i)
+	{
+		humanCommands(*g.game, g.game->commands(), false);
+		REQUIRE(g.game->advance(0.2) == 1);
+	}
+	g.game->drainFrames();
+	std::vector<std::uint8_t> continued;
+	REQUIRE_MESSAGE(writer.logUpTo(g.game->logic().getFrame(), g.game->logic().computeStateHash(), continued, &error), error);
+	ReplayFile resumed;
+	REQUIRE_MESSAGE(ReplayFile::parse(continued, resumed, &error), error);
+	g.game->setFrameDriver(nullptr);
+	int different = 0;
+	UnsignedInt firstDifferent = 0;
+	for (UnsignedInt f = savedFrame + 1; f <= savedFrame + (UnsignedInt)after; ++f)
+	{
+		REQUIRE(resumed.hashes.count(f) == 1);
+		if (resumed.hashes.at(f) != whole.hashes.at(f))
+		{
+			firstDifferent = different++ == 0 ? f : firstDifferent;
+		}
+	}
+	CHECK_MESSAGE(different == 0, "first differing frame " << firstDifferent);
+	CHECK(resumed.hashes == whole.hashes);
+	CHECK(resumed.commandCount() == whole.commandCount());
+}
+} // namespace
+
+TEST_CASE("campsave1 retail: three more ANGMAR_CAMPAIGN missions (Conquest of Rhudaur, Amon Sul, Carn Dum) saved mid-mission, started again from "
+		  "their campaign and caught up: every later frame's hash equals the uninterrupted mission's")
+{
+	OPENBFME_REQUIRE_START(s);
+	std::vector<int> missions;
+	{
+		const LinearCampaign *campaign = s->world->linearCampaigns().find("ANGMAR_CAMPAIGN");
+		REQUIRE(campaign != nullptr);
+		for (int i = 0; i < (int)campaign->missions.size(); ++i)
+		{
+			const std::string &name = campaign->missions[(size_t)i].name;
+			if (name == "Rhudaur" || name == "Amonsul" || name == "Carndum")
+			{
+				missions.push_back(i);
+			}
+		}
+	}
+	REQUIRE(missions.size() == 3);
+	for (int i : missions)
+	{
+		campaignMissionRoundTrip(*s, i, i % 3, 200, 300);
+	}
+}
+
 TEST_CASE("save2 retail T1 (SAVES.md), a script waiting on a timer: a campaign mission saved with a script countdown timer running, loaded in a fresh "
-		  "process from its campaign start and played on to F + 3000 with the uninterrupted game's commands: every frame's hash equal")
+		  "process from its campaign start and played on to F + 3000 with the uninterrupted game's commands: every frame's hash equal (lane SAVE-4e: from "
+		  "its snapshot, and caught up from its log with the snapshot compared)")
 {
 	OPENBFME_REQUIRE_START(s);
 #ifndef OPENBFME_PEER_EXE
@@ -983,6 +1456,7 @@ TEST_CASE("save2 retail T1 (SAVES.md), a script waiting on a timer: a campaign m
 		const std::uint32_t hash = g.game->logic().computeStateHash();
 		SaveGameFile save;
 		REQUIRE_MESSAGE(writer.logUpTo(savedFrame, hash, save.log, &error), error);
+		REQUIRE_MESSAGE(g.game->logic().saveSnapshot(save.snapshot, &error), error); // lane SAVE-4e
 		SaveGameHeader &sh = save.header;
 		sh.buildVersion = BuildVersion::kVersion;
 		sh.engineId = ProfileIdentity::buildId();
@@ -1007,21 +1481,913 @@ TEST_CASE("save2 retail T1 (SAVES.md), a script waiting on a timer: a campaign m
 		writer.close(lastFrame, finalHash);
 		g.game->setFrameDriver(nullptr);
 	}
-	const int rc = runPeer("--load-save \"" + savePath + "\" --replay \"" + fullPath + "\" --report \"" + reportPath + "\"");
-	const std::string report = readText(reportPath);
-	MESSAGE("fresh process report:\n" << report);
-	CHECK(rc == 0);
-	CHECK(reportField(report, "save_frame") == std::to_string(savedFrame));
-	CHECK(reportField(report, "catch_up_hashes") == std::to_string(savedFrame - startFrame));
-	CHECK(reportField(report, "hashes_compared") == "3000");
-	CHECK(reportField(report, "mismatches") == "0");
 	char want[64];
 	std::snprintf(want, sizeof(want), "0x%08X recorded 0x%08X", finalHash, finalHash);
-	CHECK(reportField(report, "final_hash") == want);
+	for (bool snapshot : { true, false })
+	{
+		const int rc = runPeer("--load-save \"" + savePath + "\" --replay \"" + fullPath + "\" --report \"" + reportPath + "\"" + (snapshot ? "" : " --verify-log"));
+		const std::string report = readText(reportPath);
+		MESSAGE("fresh process report (" << (snapshot ? "from the snapshot" : "caught up, the snapshot compared") << "):\n" << report);
+		CHECK(rc == 0);
+		CHECK(reportField(report, "save_frame") == std::to_string(savedFrame));
+		CHECK(reportField(report, "load_mode") == (snapshot ? "snapshot" : "catch_up"));
+		CHECK(reportField(report, "catch_up_hashes") == (snapshot ? std::string("0") : std::to_string(savedFrame - startFrame)));
+		CHECK(reportField(report, "hashes_compared") == "3000");
+		CHECK(reportField(report, "mismatches") == "0");
+		CHECK(reportField(report, "final_hash") == want);
+	}
 	for (const std::string &p : { savePath, fullPath, reportPath })
 	{
 		std::remove(p.c_str());
 	}
 	(void)lastFrame;
 #endif
+}
+
+// ---- lane SAVE-4e: saves with a snapshot (docs/SAVES.md section 2, case 1) ------------------------------------------------------------------------------
+
+namespace
+{
+// the loaded game played on `frames` frames with the scripted human, recorded as handOver records it: its hashes after F
+std::map<UnsignedInt, std::uint32_t> playOn(Loaded &g, const std::vector<std::uint8_t> &log, int frames)
+{
+	std::string error;
+	ReplayWriter writer;
+	writer.setKeepCopy(true);
+	REQUIRE_MESSAGE(writer.openContinuing(std::string(), log, &error), error);
+	LockstepDriver driver(nullptr, &writer);
+	RegisterLogicCRCHandler(g.game->dispatch());
+	g.game->setFrameDriver(&driver);
+	for (int i = 0; i < frames; ++i)
+	{
+		humanCommands(*g.game, g.game->commands());
+		REQUIRE(g.game->advance(0.2) == 1);
+	}
+	g.game->drainFrames();
+	std::vector<std::uint8_t> all;
+	REQUIRE_MESSAGE(writer.logUpTo(g.game->logic().getFrame(), g.game->logic().computeStateHash(), all, &error), error);
+	g.game->setFrameDriver(nullptr);
+	ReplayFile after;
+	REQUIRE_MESSAGE(ReplayFile::parse(all, after, &error), error);
+	return after.hashes;
+}
+
+// the frames after `from` whose hash differs between the two (each one compared, by frame)
+std::string differences(const std::map<UnsignedInt, std::uint32_t> &a, const std::map<UnsignedInt, std::uint32_t> &b, UnsignedInt from, UnsignedInt to)
+{
+	std::ostringstream o;
+	for (UnsignedInt f = from + 1; f <= to; ++f)
+	{
+		if (!a.count(f) || !b.count(f))
+		{
+			o << " frame " << f << " missing;";
+		}
+		else if (a.at(f) != b.at(f))
+		{
+			o << " frame " << f << ";";
+		}
+	}
+	return o.str();
+}
+
+// the state hash sections and objects that differ between two games (the diagnosis of a load that does not give the saved state back)
+std::string stateDifference(const GameLogic &a, const GameLogic &b)
+{
+	std::vector<GameLogic::StateHashSection> sa, sb;
+	std::vector<GameLogic::ObjectStateHash> oa, ob;
+	a.computeStateHashBreakdown(sa, &oa);
+	b.computeStateHashBreakdown(sb, &ob);
+	std::ostringstream o;
+	for (size_t i = 0; i < sa.size() || i < sb.size(); ++i)
+	{
+		if (i >= sa.size() || i >= sb.size() || sa[i].name != sb[i].name || sa[i].value != sb[i].value)
+		{
+			o << " section '" << (i < sa.size() ? sa[i].name : std::string("-")) << "';";
+		}
+	}
+	int shown = 0;
+	for (size_t i = 0; i < oa.size() && i < ob.size() && shown < 8; ++i)
+	{
+		if (oa[i].id != ob[i].id || oa[i].value != ob[i].value)
+		{
+			o << " object " << oa[i].id << " " << oa[i].templateName << " / " << ob[i].id << " " << ob[i].templateName << ";";
+			++shown;
+		}
+	}
+	if (oa.size() != ob.size())
+	{
+		o << " " << oa.size() << " objects / " << ob.size() << ";";
+	}
+	return o.str();
+}
+
+// every drawable shows its object's model conditions (the loaded state reached the client)
+std::string drawablesOutOfStep(LiveGame &game)
+{
+	std::ostringstream o;
+	size_t objects = 0;
+	for (Object *obj = game.logic().getFirstObject(); obj; obj = obj->getNextObject())
+	{
+		++objects;
+		const Drawable *d = game.drawables().findByObject(obj->getID());
+		if (!d)
+		{
+			o << " no drawable for " << obj->getID() << ";";
+			continue;
+		}
+		for (int bit = 0; bit < 19 * 32; ++bit)
+		{
+			if (d->getModelConditionFlags().test(bit) != obj->testModelCondition(bit))
+			{
+				o << " " << obj->getTemplate()->getName() << " " << obj->getID() << " bit " << bit << ";";
+				break;
+			}
+		}
+	}
+	if (game.drawables().liveCount() != objects)
+	{
+		o << " " << game.drawables().liveCount() << " drawables for " << objects << " objects;";
+	}
+	return o.str();
+}
+} // namespace
+
+TEST_CASE("save4e retail: a save with a snapshot loads in one step into a new game (no frame of its log runs, the frame and state hash are the header's), "
+		  "every drawable shows its loaded object's model conditions, and the game played on has every later frame's hash of the unsaved game")
+{
+	OPENBFME_REQUIRE_START(s);
+	const int kBefore = 600, kAfter = 600;
+	const ProfileIdentity running = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain);
+	Recorded rec = recordGame(*s, gameMessage(*s, 4501u), running, kBefore, kAfter, "s4e", true);
+	REQUIRE(!rec.save.snapshot.empty());
+	std::string error;
+	SaveGameFile save;
+	REQUIRE_MESSAGE(SaveGameFile::parse(rec.save.encode(), save, &error), error);
+	CHECK(save.snapshot == rec.save.snapshot);
+	{
+		Loaded g; // one live game per world (S-3808): this one goes before the verify mode's
+		CommandLogLoad cl;
+		REQUIRE_MESSAGE(cl.prepare(save, &error), error);
+		CHECK(cl.mode() == CommandLogLoad::Mode::Snapshot);
+		load(*s, cl.log().header.game, g);
+		const UnsignedInt started = g.game->frame();
+		CHECK(started == rec.startFrame);
+		REQUIRE_MESSAGE(cl.begin(*g.game, &error), error);
+		CHECK(cl.state() == CommandLogLoad::State::Ready); // at once: nothing to step
+		CHECK(cl.hashesCompared() == 0);
+		CHECK(g.game->frame() == rec.savedFrame);
+		CHECK(g.game->logic().getFrame() == rec.savedFrame);
+		CHECK(g.game->logic().computeStateHash() == save.header.stateHash);
+		MESSAGE("snapshot of " << save.snapshot.size() << " bytes loaded in " << cl.snapshotLoadMs() << " ms");
+		const std::string outOfStep = drawablesOutOfStep(*g.game);
+		if (!outOfStep.empty())
+		{
+			MESSAGE("drawables out of step:" << outOfStep);
+		}
+		CHECK(outOfStep.empty());
+		// the player's game: the recording continues the saved log; every later frame equals the unsaved game's
+		const std::map<UnsignedInt, std::uint32_t> after = playOn(g, save.log, kAfter);
+		const std::string diff = differences(after, rec.whole.hashes, rec.savedFrame, rec.savedFrame + (UnsignedInt)kAfter);
+		CHECK_MESSAGE(diff.empty(), "differing frames:" << diff);
+		CHECK(after == rec.whole.hashes); // the continued recording is the whole game, the frames before F included
+	}
+	// T2 through the load path: the loaded game's snapshot at F was the save's (checked by the verify mode below on a fresh game)
+	Loaded v;
+	CommandLogLoad verify;
+	verify.setVerifyLog(true);
+	REQUIRE_MESSAGE(verify.prepare(save, &error), error);
+	CHECK(verify.mode() == CommandLogLoad::Mode::CatchUp);
+	load(*s, verify.log().header.game, v);
+	REQUIRE_MESSAGE(verify.begin(*v.game, &error), error);
+	while (verify.step(*v.game, 50) == CommandLogLoad::State::CatchingUp)
+	{
+	}
+	CHECK_MESSAGE(verify.state() == CommandLogLoad::State::Ready, verify.failure());
+	CHECK(verify.hashesCompared() == (unsigned long long)kBefore);
+}
+
+TEST_CASE("save4e retail: a refused snapshot is a named error and the started game is as it was (its state hash and frame), and it still runs: a changed "
+		  "byte, a truncated snapshot, another game's snapshot, a header's other hash; the verify mode names the first byte a snapshot differs from its log")
+{
+	OPENBFME_REQUIRE_START(s);
+	const ProfileIdentity running = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain);
+	Recorded rec = recordGame(*s, gameMessage(*s, 4502u), running, 300, 0, "s4e_bad", true);
+	Recorded other = recordGame(*s, gameMessage(*s, 4503u), running, 300, 0, "s4e_other", true); // another seed: another game at the same frame
+	REQUIRE(rec.savedFrame == other.savedFrame);
+	auto refused = [&](SaveGameFile bad, const std::string &expect, const char *what) {
+		INFO(what);
+		std::string error;
+		SaveGameFile reread;
+		REQUIRE_MESSAGE(SaveGameFile::parse(bad.encode(), reread, &error), error); // the container is intact (re-signed): the snapshot is not
+		CommandLogLoad cl;
+		REQUIRE_MESSAGE(cl.prepare(reread, &error), error);
+		Loaded g;
+		load(*s, cl.log().header.game, g);
+		const UnsignedInt frame = g.game->frame();
+		const std::uint32_t hash = g.game->logic().computeStateHash();
+		const size_t objects = g.game->drawables().liveCount();
+		const std::string stepBefore = drawablesOutOfStep(*g.game);
+		CHECK_FALSE(cl.begin(*g.game, &error));
+		CHECK(cl.state() == CommandLogLoad::State::Failed);
+		CHECK_MESSAGE(error.rfind("the save's snapshot is refused: " + expect, 0) == 0, error);
+		CHECK_FALSE(g.game->closed());
+		CHECK(g.game->frame() == frame);
+		CHECK(g.game->logic().getFrame() == frame);
+		CHECK(g.game->logic().computeStateHash() == hash);
+		CHECK(g.game->drawables().liveCount() == objects);
+		// the client: untouched by a refusal of the framing pass, or told every object's conditions again after a put-back
+		const std::string outOfStep = drawablesOutOfStep(*g.game);
+		CHECK_MESSAGE((outOfStep.empty() || outOfStep == stepBefore), "drawables out of step:" << outOfStep);
+		CHECK(g.game->advance(0.2) == 1); // the game still runs (the caller discards it; it is not half loaded)
+	};
+	{
+		SaveGameFile bad = rec.save;
+		bad.snapshot[bad.snapshot.size() / 2] ^= 0x5A; // inside a block's data
+		refused(bad, "", "a changed byte");
+	}
+	{
+		SaveGameFile bad = rec.save;
+		bad.snapshot.resize(bad.snapshot.size() * 2 / 3);
+		refused(bad, "", "a truncated snapshot");
+	}
+	{
+		SaveGameFile bad = rec.save;
+		bad.snapshot = other.save.snapshot; // loads, but is not the header's state
+		refused(bad, "it loads with state hash " + std::to_string(other.save.header.stateHash), "another game's snapshot");
+	}
+	{
+		SaveGameFile bad = rec.save;
+		bad.header.stateHash ^= 1u;
+		bad.log = rec.save.log; // the log's end record keeps the true hash: prepare refuses the header first
+		std::string error;
+		SaveGameFile reread;
+		REQUIRE_MESSAGE(SaveGameFile::parse(bad.encode(), reread, &error), error);
+		CommandLogLoad cl;
+		CHECK_FALSE(cl.prepare(reread, &error));
+		CHECK_MESSAGE(error.find("its header says frame") != std::string::npos, error);
+	}
+	{
+		// the verify mode: the log replays to the save's state, the snapshot is another game's: named by its first differing byte
+		SaveGameFile bad = rec.save;
+		bad.snapshot = other.save.snapshot;
+		std::string error;
+		CommandLogLoad cl;
+		cl.setVerifyLog(true);
+		REQUIRE_MESSAGE(cl.prepare(bad, &error), error);
+		Loaded g;
+		load(*s, cl.log().header.game, g);
+		REQUIRE_MESSAGE(cl.begin(*g.game, &error), error);
+		while (cl.step(*g.game, 50) == CommandLogLoad::State::CatchingUp)
+		{
+		}
+		CHECK(cl.state() == CommandLogLoad::State::Failed);
+		CHECK_MESSAGE(cl.failure().rfind("the save's snapshot is not the state its log replays to: the caught-up game's snapshot (", 0) == 0, cl.failure());
+		CHECK(cl.failure().find(") from byte ") != std::string::npos);
+	}
+}
+
+TEST_CASE("save4e retail: legal but unusual events right before a save (a structure captured, a unit temporarily defected, a unit killed, a player's "
+		  "every object killed: defeated) load from the snapshot into a new game that plays on with every frame's hash of the unsaved game")
+{
+	OPENBFME_REQUIRE_START(s);
+	const NewGameMessage message = fourAiMessage(*s, 4504u);
+	std::string error;
+	Loaded a;
+	load(*s, message, a);
+	for (int i = 0; i < 900; ++i)
+	{
+		humanCommands(*a.game, a.game->commands());
+		REQUIRE(a.game->advance(0.2) == 1);
+	}
+	a.game->drainFrames();
+	GameLogic &logic = a.game->logic();
+	PlayerList &players = logic.players();
+	Player *human = nullptr;
+	std::vector<Player *> ais;
+	for (int i = 0; i < players.getPlayerCount(); ++i)
+	{
+		Player *p = players.getNthPlayer(i);
+		if (!p->getPlayerTemplate() || !p->getPlayerTemplate()->m_playableSide)
+		{
+			continue;
+		}
+		if (p->getPlayerType() == PLAYER_HUMAN)
+		{
+			human = p;
+		}
+		else
+		{
+			ais.push_back(p);
+		}
+	}
+	REQUIRE(human);
+	REQUIRE(ais.size() == 4u);
+	std::vector<std::string> events;
+	// a structure of the first AI captured by the human (RW 0x6996DC's team change)
+	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+	{
+		if (o->getControllingPlayer() == ais[0] && o->isKindOfName("STRUCTURE") && !o->isEffectivelyDead() && !o->isUnderConstruction())
+		{
+			o->setCapturedTeam(human->getDefaultTeam());
+			events.push_back("captured " + o->getTemplate()->getName());
+			break;
+		}
+	}
+	// a unit of the second AI temporarily defected to the human (RW 0x699513)
+	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+	{
+		if (o->getControllingPlayer() == ais[1] && !o->isKindOfName("STRUCTURE") && o->getAIUpdateInterface() && !o->isEffectivelyDead())
+		{
+			o->setTemporaryTeam(human->getDefaultTeam());
+			events.push_back("defected " + o->getTemplate()->getName());
+			break;
+		}
+	}
+	// a unit of the third AI killed
+	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+	{
+		if (o->getControllingPlayer() == ais[2] && !o->isKindOfName("STRUCTURE") && o->getAIUpdateInterface() && !o->isEffectivelyDead())
+		{
+			o->kill(0);
+			events.push_back("killed " + o->getTemplate()->getName());
+			break;
+		}
+	}
+	// every object of the fourth AI killed: it is defeated within the next frames (the victory conditions)
+	int killed = 0;
+	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+	{
+		if (o->getControllingPlayer() == ais[3] && !o->isEffectivelyDead())
+		{
+			o->kill(0);
+			++killed;
+		}
+	}
+	events.push_back("killed every object of the fourth AI (" + std::to_string(killed) + ")");
+	REQUIRE(events.size() == 4u);
+	std::string eventText;
+	for (const std::string &e : events)
+	{
+		eventText += " " + e + ";";
+	}
+	MESSAGE("events:" << eventText);
+	// saved right after the events (between frames), and again 30 frames later (the defeat ran)
+	for (int round = 0; round < 2; ++round)
+	{
+		if (round == 1)
+		{
+			for (int i = 0; i < 30; ++i)
+			{
+				humanCommands(*a.game, a.game->commands());
+				REQUIRE(a.game->advance(0.2) == 1);
+			}
+			a.game->drainFrames();
+		}
+		const UnsignedInt saved = a.game->logic().getFrame();
+		std::vector<std::uint8_t> snapshot;
+		REQUIRE_MESSAGE(a.game->logic().saveSnapshot(snapshot, &error), error);
+		const std::uint32_t hash = a.game->logic().computeStateHash();
+		Loaded b;
+		{
+			auto peerContext = starttest::peerWorld()->world->enterContext();
+			load(*starttest::peerWorld(), message, b);
+		}
+		REQUIRE_MESSAGE(b.game->loadSnapshot(snapshot, &error), error);
+		CHECK(b.game->logic().getFrame() == saved);
+		CHECK_MESSAGE(b.game->logic().computeStateHash() == hash, "differs:" << stateDifference(a.game->logic(), b.game->logic()));
+		std::vector<std::uint8_t> again;
+		REQUIRE_MESSAGE(b.game->logic().saveSnapshot(again, &error), error);
+		CHECK(again == snapshot); // T2
+		// both play on 300 frames with the same human: every frame's hash equal
+		std::string diff;
+		for (int i = 0; i < 300 && diff.empty(); ++i)
+		{
+			humanCommands(*a.game, a.game->commands());
+			humanCommands(*b.game, b.game->commands());
+			REQUIRE(a.game->advance(0.2) == 1);
+			REQUIRE(b.game->advance(0.2) == 1);
+			a.game->drainFrames();
+			b.game->drainFrames();
+			if (a.game->logic().computeStateHash() != b.game->logic().computeStateHash())
+			{
+				diff = "frame " + std::to_string(a.game->logic().getFrame());
+			}
+		}
+		CHECK_MESSAGE(diff.empty(), (round == 0 ? "saved right after the events" : "saved 30 frames after them") << ": first differing " << diff);
+	}
+}
+
+// ---- lane SAVE-4e review r1 (Sol): the load is transactional for every block, the closed sets ----------------------------------------------------------
+
+namespace
+{
+// a standing tree of the map toppled through the logic (TerrainTrees::toppleTree, RW 0x6849F8): the game's trees are no longer the START's
+void toppleATree(LiveGame &game, size_t skip = 0)
+{
+	TerrainTrees &trees = game.logic().trees();
+	TerrainTrees::Record *tree = nullptr;
+	for (const TerrainTrees::Record &r : trees.records())
+	{
+		if (r.clientId && !r.toppled && !r.changed && skip-- == 0)
+		{
+			tree = trees.findClosestTree(r.position, 1.0f, true, 0);
+			break;
+		}
+	}
+	REQUIRE(tree);
+	trees.toppleTree(*tree, Coord3D{ tree->position.x - 10.0f, tree->position.y, tree->position.z }, nullptr);
+	REQUIRE(trees.anyChanged());
+}
+
+// the stream's blocks: (token, the offset of the block's first byte, its end), read from the framing (GameState: "ALAE" "2STR" version tagged, then per
+// block its token (u8 length or 0xFF + u32), "BLOK", the absolute end offset)
+struct BlockAt
+{
+	std::string token;
+	size_t begin = 0, end = 0;
+};
+std::vector<BlockAt> blocksOf(const std::vector<std::uint8_t> &b)
+{
+	std::vector<BlockAt> out;
+	auto u32 = [&](size_t at) { return (std::uint32_t)b[at] | ((std::uint32_t)b[at + 1] << 8) | ((std::uint32_t)b[at + 2] << 16) | ((std::uint32_t)b[at + 3] << 24); };
+	size_t at = 16;
+	for (;;)
+	{
+		size_t n = b[at++];
+		if (n == 0xFF)
+		{
+			n = u32(at);
+			at += 4;
+		}
+		const std::string token(b.begin() + (std::ptrdiff_t)at, b.begin() + (std::ptrdiff_t)(at + n));
+		at += n;
+		if (token == "SG_EOF")
+		{
+			break;
+		}
+		REQUIRE(std::string(b.begin() + (std::ptrdiff_t)at, b.begin() + (std::ptrdiff_t)at + 4) == "KOLB"); // "BLOK" as a little-endian u32
+		BlockAt blk;
+		blk.token = token;
+		blk.end = u32(at + 4);
+		blk.begin = at + 8;
+		out.push_back(blk);
+		at = blk.end;
+	}
+	return out;
+}
+} // namespace
+
+TEST_CASE("save4e retail review r1: a refused snapshot (a hostile end token, a late truncation, a late block's version refused) with a toppled tree "
+		  "saved leaves the started game exactly as it was: not closed, its state hash and its snapshot bytes the same")
+{
+	OPENBFME_REQUIRE_START(s);
+	const ProfileIdentity running = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain);
+	Recorded rec = recordGame(*s, gameMessage(*s, 4502u), running, 300, 0, "review_trees", true, [](LiveGame &g) { toppleATree(g); });
+	for (int c = 0; c < 3; ++c)
+	{
+		SaveGameFile bad = rec.save;
+		const char *what = c == 0 ? "a hostile end token" : c == 1 ? "a late truncation" : "a late block's version refused";
+		INFO(what);
+		if (c == 0)
+		{
+			bad.snapshot.back() ^= 1;
+		}
+		else if (c == 1)
+		{
+			bad.snapshot.resize(bad.snapshot.size() - 3);
+		}
+		else
+		{
+			const std::vector<BlockAt> blocks = blocksOf(bad.snapshot);
+			REQUIRE(blocks.back().token == "obfme:LargeGroupAudio");
+			REQUIRE(bad.snapshot[blocks.back().begin] == 1);
+			bad.snapshot[blocks.back().begin] = 0xFF;
+		}
+		std::string error;
+		SaveGameFile reread;
+		REQUIRE_MESSAGE(SaveGameFile::parse(bad.encode(), reread, &error), error);
+		CommandLogLoad cl;
+		REQUIRE_MESSAGE(cl.prepare(reread, &error), error);
+		Loaded g;
+		load(*s, cl.log().header.game, g);
+		std::vector<std::uint8_t> before, after;
+		REQUIRE(g.game->logic().saveSnapshot(before, &error));
+		const std::uint32_t hash = g.game->logic().computeStateHash();
+		CHECK_FALSE(cl.begin(*g.game, &error));
+		MESSAGE(what << ": " << error);
+		CHECK(error.rfind("the save's snapshot is refused: ", 0) == 0);
+		CHECK(error.find("could not be put back") == std::string::npos);
+		CHECK_FALSE(g.game->closed());
+		CHECK(g.game->logic().computeStateHash() == hash);
+		REQUIRE(g.game->logic().saveSnapshot(after, &error));
+		CHECK(after == before);
+	}
+}
+
+TEST_CASE("save4e retail review r1: a refusal inside each block of a real snapshot (its version byte out of the window), into a game whose own trees "
+		  "changed since its START, leaves that game byte-identical (state hash and snapshot bytes) and running; the exact list of blocks")
+{
+	OPENBFME_REQUIRE_START(s);
+	const NewGameMessage message = gameMessage(*s, 4505u);
+	std::string error;
+	std::vector<std::uint8_t> snapshot;
+	{
+		Loaded a;
+		load(*s, message, a);
+		for (int i = 0; i < 300; ++i)
+		{
+			humanCommands(*a.game, a.game->commands());
+			REQUIRE(a.game->advance(0.2) == 1);
+		}
+		a.game->drainFrames();
+		toppleATree(*a.game);
+		REQUIRE(a.game->advance(0.2) == 1);
+		a.game->drainFrames();
+		REQUIRE_MESSAGE(a.game->logic().saveSnapshot(snapshot, &error), error);
+	}
+	const std::vector<BlockAt> blocks = blocksOf(snapshot);
+	std::vector<std::string> tokens;
+	for (const BlockAt &b : blocks)
+	{
+		tokens.push_back(b.token);
+	}
+	CHECK(tokens == std::vector<std::string>{ "obfme:TeamFactory", "obfme:Players", "obfme:GameLogic", "obfme:Random", "obfme:Objects",
+						"obfme:UpdateScheduler", "obfme:TunnelTracker", "obfme:Combat", "obfme:SellList", "obfme:Experience", "obfme:Invisibility",
+						"obfme:DamageOverTime", "obfme:Partition", "obfme:Emotions", "obfme:AIWorld", "obfme:Shroud", "obfme:SkirmishAI",
+						"obfme:ScriptEngine", "obfme:Victory", "obfme:Weather", "obfme:Economy", "obfme:CreateAHero", "obfme:TerrainTrees",
+						"obfme:LargeGroupAudio" });
+	Loaded g;
+	load(*s, message, g);
+	for (int i = 0; i < 50; ++i)
+	{
+		humanCommands(*g.game, g.game->commands());
+		REQUIRE(g.game->advance(0.2) == 1);
+	}
+	g.game->drainFrames();
+	toppleATree(*g.game, 3); // another tree than the snapshot's: the game is not at its START
+	for (const BlockAt &b : blocks)
+	{
+		INFO("a refusal in " << b.token);
+		std::vector<std::uint8_t> bad = snapshot;
+		bad[b.begin] = 0xFF; // every block opens with its class's version byte: 255 is above every window
+		std::vector<std::uint8_t> before, after;
+		REQUIRE(g.game->logic().saveSnapshot(before, &error));
+		const std::uint32_t hash = g.game->logic().computeStateHash();
+		const UnsignedInt frame = g.game->frame();
+		std::string why;
+		CHECK_FALSE(g.game->loadSnapshot(bad, &why));
+		CHECK_MESSAGE(why.find("block '" + b.token + "'") != std::string::npos, why);
+		CHECK_MESSAGE(why.find("put back") == std::string::npos, why);
+		CHECK_FALSE(g.game->closed());
+		CHECK(g.game->frame() == frame);
+		CHECK(g.game->logic().computeStateHash() == hash);
+		REQUIRE(g.game->logic().saveSnapshot(after, &error));
+		CHECK(after == before);
+	}
+	// the good snapshot then loads into the same game, and the game runs on
+	REQUIRE_MESSAGE(g.game->loadSnapshot(snapshot, &error), error);
+	CHECK(g.game->advance(0.2) == 1);
+}
+
+TEST_CASE("save4e retail review r1: blocks in another order, a truncation and a hostile end token are refused by the framing pass before any block loads")
+{
+	OPENBFME_REQUIRE_START(s);
+	const ProfileIdentity running = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain);
+	Recorded rec = recordGame(*s, gameMessage(*s, 4506u), running, 200, 0, "review_order", true);
+	std::string error;
+	Loaded g;
+	load(*s, rec.whole.header.game, g);
+	GameState &gs = g.game->logic().gameState();
+	// a validly framed permutation: obfme:GameLogic and obfme:Objects swapped (Sol's probe)
+	std::vector<std::string> tokens;
+	for (const BlockAt &b : blocksOf(rec.save.snapshot))
+	{
+		tokens.push_back(b.token);
+	}
+	std::vector<std::uint8_t> reordered;
+	{
+		REQUIRE_MESSAGE(g.game->loadSnapshot(rec.save.snapshot, &error), error);
+		std::vector<std::string> swapped = tokens;
+		std::iter_swap(std::find(swapped.begin(), swapped.end(), "obfme:GameLogic"), std::find(swapped.begin(), swapped.end(), "obfme:Objects"));
+		gs.saveBlocks(swapped, reordered);
+	}
+	CHECK_FALSE(gs.checkFraming(reordered, &error));
+	CHECK(error == "the snapshot is damaged: the snapshot's block 'obfme:Objects' stands where this build loads 'obfme:GameLogic' (the blocks load in the "
+				   "list's order)");
+	std::vector<std::uint8_t> truncated = rec.save.snapshot;
+	truncated.resize(truncated.size() - 3);
+	CHECK_FALSE(gs.checkFraming(truncated, &error));
+	CHECK(error.rfind("the snapshot is damaged: ", 0) == 0);
+	std::vector<std::uint8_t> endToken = rec.save.snapshot;
+	endToken.back() ^= 1;
+	CHECK_FALSE(gs.checkFraming(endToken, &error));
+	CHECK(error == "the snapshot is damaged: the snapshot carries an unknown block 'SG_EOG'");
+	CHECK(gs.checkFraming(rec.save.snapshot, &error));
+	// through the load: refused by the framing, the game unchanged
+	std::vector<std::uint8_t> before, after;
+	REQUIRE(g.game->logic().saveSnapshot(before, &error));
+	CHECK_FALSE(g.game->loadSnapshot(reordered, &error));
+	CHECK(error.rfind("the snapshot is damaged: ", 0) == 0);
+	REQUIRE(g.game->logic().saveSnapshot(after, &error));
+	CHECK(after == before);
+}
+
+TEST_CASE("save4e retail review r1: an object's weapon bonus mask with a bit outside the 22 conditions is refused by name, the object unchanged")
+{
+	OPENBFME_REQUIRE_START(s);
+	Loaded g;
+	load(*s, gameMessage(*s, 4502u), g);
+	Object *o = g.game->logic().getFirstObject();
+	REQUIRE(o);
+	for (int i = 0; i < WEAPONBONUS_CONDITION_COUNT; ++i)
+	{
+		o->setWeaponBonusCondition(i, i % 2 == 1);
+	}
+	REQUIRE(o->weaponBonusConditionMask() == 0x002AAAAAu);
+	XferSave w;
+	o->xfer(w);
+	std::vector<std::uint8_t> data = w.data();
+	const std::vector<std::uint8_t> marker{ 0xAA, 0xAA, 0x2A, 0 };
+	auto at = std::search(data.begin(), data.end(), marker.begin(), marker.end());
+	REQUIRE(at != data.end());
+	REQUIRE(std::search(at + 4, data.end(), marker.begin(), marker.end()) == data.end());
+	at[0] = 0;
+	at[1] = 0;
+	at[2] = 0;
+	at[3] = 0x80;
+	XferLoad r(data);
+	std::string refusal;
+	try
+	{
+		o->xfer(r);
+	}
+	catch (const XferException &e)
+	{
+		refusal = e.what();
+	}
+	CHECK(refusal == "an object's weapon bonus conditions 0x80000000 hold bits outside the 22 conditions (0x003FFFFF)");
+	CHECK(o->weaponBonusConditionMask() == 0x002AAAAAu);
+}
+
+namespace
+{
+// the trees' records as the logic holds them (position, id, toppled and its direction, lumber value, changed), compared field by field: the hash and
+// the snapshot cover only the changed records, so a record wrongly marked unchanged hides from both (review r2)
+std::string treesDiffer(const std::vector<TerrainTrees::Record> &now, const std::vector<TerrainTrees::Record> &want)
+{
+	if (now.size() != want.size())
+	{
+		return std::to_string(now.size()) + " trees, expected " + std::to_string(want.size());
+	}
+	for (size_t i = 0; i < now.size(); ++i)
+	{
+		const TerrainTrees::Record &a = now[i];
+		const TerrainTrees::Record &b = want[i];
+		if (a.clientId != b.clientId || a.toppled != b.toppled || a.value != b.value || a.changed != b.changed || a.index != b.index ||
+			a.position.x != b.position.x || a.position.y != b.position.y || a.position.z != b.position.z || a.toppleDirection.x != b.toppleDirection.x ||
+			a.toppleDirection.y != b.toppleDirection.y)
+		{
+			return "tree " + std::to_string(i) + ": toppled " + std::to_string(a.toppled) + " value " + std::to_string(a.value) + " changed " +
+				std::to_string(a.changed) + " id " + std::to_string(a.clientId) + ", expected toppled " + std::to_string(b.toppled) + " value " +
+				std::to_string(b.value) + " changed " + std::to_string(b.changed) + " id " + std::to_string(b.clientId);
+		}
+	}
+	return "";
+}
+} // namespace
+
+TEST_CASE("save4e retail review r2: a snapshot refused late (LargeGroupAudio's version) or after every post-process, loaded into a game that has since "
+		  "made three teams of a new prototype and toppled a tree, leaves that game exactly as it was: not closed, its teams, trees, state hash and bytes")
+{
+	OPENBFME_REQUIRE_START(s);
+	Loaded g;
+	load(*s, gameMessage(*s, 4502u), g);
+	TeamFactory &teams = g.game->logic().players().teams();
+	TeamPrototype *prototype = teams.initTeam("ReviewExtra", g.game->logic().players().getNthPlayer(1), false);
+	REQUIRE(prototype);
+	for (int i = 0; i < 20; ++i)
+	{
+		REQUIRE(g.game->advance(0.2) == 1);
+	}
+	g.game->drainFrames();
+	std::string error;
+	std::vector<std::uint8_t> older;
+	REQUIRE_MESSAGE(g.game->logic().saveSnapshot(older, &error), error);
+	for (int i = 0; i < 40; ++i)
+	{
+		REQUIRE(g.game->advance(0.2) == 1);
+	}
+	g.game->drainFrames();
+	const size_t olderTeams = teams.teamCount();
+	for (int i = 0; i < 3; ++i)
+	{
+		REQUIRE(teams.createTeam(prototype));
+	}
+	REQUIRE(teams.teamCount() == olderTeams + 3);
+	toppleATree(*g.game);
+	std::vector<std::uint8_t> before, after;
+	REQUIRE_MESSAGE(g.game->logic().saveSnapshot(before, &error), error);
+	const std::uint32_t hash = g.game->logic().computeStateHash();
+	const UnsignedInt frame = g.game->frame();
+	const size_t count = teams.teamCount();
+	const std::vector<TerrainTrees::Record> records = g.game->logic().trees().records();
+	auto same = [&](const char *what) {
+		INFO(what);
+		REQUIRE_FALSE(g.game->closed());
+		CHECK(g.game->frame() == frame);
+		CHECK(teams.teamCount() == count);
+		CHECK(g.game->logic().computeStateHash() == hash);
+		REQUIRE_MESSAGE(g.game->logic().saveSnapshot(after, &error), error);
+		CHECK(after == before);
+		const std::string trees = treesDiffer(g.game->logic().trees().records(), records);
+		CHECK_MESSAGE(trees.empty(), trees);
+	};
+	std::vector<std::uint8_t> bad = older;
+	const std::vector<BlockAt> blocks = blocksOf(bad);
+	REQUIRE(blocks.back().token == "obfme:LargeGroupAudio");
+	bad[blocks.back().begin] = 0xFF;
+	CHECK_FALSE(g.game->loadSnapshot(bad, &error));
+	MESSAGE("late refusal with three extra teams: " << error);
+	CHECK(error.find("could not be put back") == std::string::npos);
+	same("LargeGroupAudio's version refused");
+	CHECK_FALSE(g.game->loadSnapshot(older, &error, [](GameLogic &) { return std::string("review refusal after every post-process"); }));
+	MESSAGE("refused after every post-process: " << error);
+	same("refused after every post-process");
+	// the older snapshot itself loads (its teams trimmed back), and the game runs on
+	REQUIRE_MESSAGE(g.game->loadSnapshot(older, &error), error);
+	CHECK(teams.teamCount() == olderTeams);
+	REQUIRE(g.game->advance(0.2) == 1);
+	g.game->drainFrames();
+	// the sibling (review r2, pattern 7): this game now has three teams fewer than the newer snapshot `before`; that snapshot refused late leaves the
+	// game with its fewer teams (the put-back trims the candidate's three), and the newer snapshot then loads with them
+	std::vector<std::uint8_t> fewer;
+	REQUIRE_MESSAGE(g.game->logic().saveSnapshot(fewer, &error), error);
+	const std::uint32_t fewerHash = g.game->logic().computeStateHash();
+	std::vector<std::uint8_t> newer = before;
+	const std::vector<BlockAt> newerBlocks = blocksOf(newer);
+	newer[newerBlocks.back().begin] = 0xFF;
+	CHECK_FALSE(g.game->loadSnapshot(newer, &error));
+	MESSAGE("a newer snapshot with three more teams refused late: " << error);
+	CHECK(error.find("could not be put back") == std::string::npos);
+	REQUIRE_FALSE(g.game->closed());
+	CHECK(teams.teamCount() == olderTeams);
+	CHECK(g.game->logic().computeStateHash() == fewerHash);
+	REQUIRE_MESSAGE(g.game->logic().saveSnapshot(after, &error), error);
+	CHECK(after == fewer);
+	REQUIRE_MESSAGE(g.game->loadSnapshot(before, &error), error);
+	CHECK(teams.teamCount() == count);
+	CHECK(g.game->logic().computeStateHash() == hash);
+	REQUIRE(g.game->advance(0.2) == 1);
+}
+
+TEST_CASE("save4e retail review r2: a snapshot taken before the game's first tree change (a topple, a harvest, a tree harvested away), loaded after it, restores the trees' "
+		  "actual records (toppled, lumber value), not only the hash and the snapshot bytes")
+{
+	OPENBFME_REQUIRE_START(s);
+	for (int c = 0; c < 3; ++c)
+	{
+		const char *what = c == 0 ? "a tree toppled after the save" : c == 1 ? "a tree harvested after the save" : "a tree harvested away after the save";
+		INFO(what);
+		Loaded g;
+		load(*s, gameMessage(*s, 4502u), g);
+		std::string error;
+		std::vector<std::uint8_t> before, after;
+		REQUIRE_MESSAGE(g.game->logic().saveSnapshot(before, &error), error);
+		const std::vector<TerrainTrees::Record> original = g.game->logic().trees().records();
+		const std::uint32_t hash = g.game->logic().computeStateHash();
+		TerrainTrees &trees = g.game->logic().trees();
+		REQUIRE_FALSE(trees.anyChanged());
+		if (c == 0)
+		{
+			toppleATree(*g.game);
+		}
+		else
+		{
+			TerrainTrees::Record *tree = nullptr;
+			for (const TerrainTrees::Record &r : trees.records())
+			{
+				if (r.clientId && r.value > 1)
+				{
+					tree = trees.findClosestTree(r.position, 1.0f, true, 0);
+					if (tree && tree->value > 1)
+					{
+						break;
+					}
+					tree = nullptr;
+				}
+			}
+			REQUIRE(tree);
+			const int all = tree->value;
+			REQUIRE(trees.harvestTree(*tree, c == 1 ? 1 : all) == (c == 1 ? 1 : all)); // c == 2: the record cleared (RW 0x67D3C2)
+		}
+		REQUIRE(!treesDiffer(trees.records(), original).empty());
+		REQUIRE_MESSAGE(g.game->loadSnapshot(before, &error), error);
+		const std::string differ = treesDiffer(trees.records(), original);
+		CHECK_MESSAGE(differ.empty(), differ);
+		CHECK(g.game->logic().computeStateHash() == hash);
+		REQUIRE_MESSAGE(g.game->logic().saveSnapshot(after, &error), error);
+		CHECK(after == before);
+	}
+}
+
+// lane OWNERFIX-2 (Sol's review of 7fe9e8e1): a handicapped player's game saved, loaded (snapshot) and played on, and its recording replayed: the handicap
+// (Player + 0x29C, RW 0x6B09DE) is the START's on every path (it is not in the snapshot: the players are made from the recorded START first), the objects
+// carrying HandicapPercent50 (RW 0x6940DB) are the same ones, every later frame's hash is the unsaved game's, and a unit made after the load takes the list
+TEST_CASE("ownerfix2 retail: a skirmish with a -50% handicap saved, loaded and played on keeps the handicap and every hash; its recording replays with every hash equal")
+{
+	OPENBFME_REQUIRE_START(s);
+	const int kBefore = 150, kAfter = 150;
+	const ProfileIdentity running = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain);
+	NewGameMessage m = gameMessage(*s, 5031u);
+	m.game.slots[0].handicap = -50;
+	Recorded rec = recordGame(*s, m, running, kBefore, kAfter, "of2", true);
+	REQUIRE(!rec.save.snapshot.empty());
+	std::string error;
+	SaveGameFile save;
+	REQUIRE_MESSAGE(SaveGameFile::parse(rec.save.encode(), save, &error), error);
+	auto playerAt = [](GameLogic &logic, int start) -> Player * {
+		for (int i = 0; i < logic.players().getPlayerCount(); ++i)
+		{
+			Player *p = logic.players().getNthPlayer(i);
+			if (p->getPlayerTemplate() && p->getPlayerTemplate()->m_playableSide && p->getMultiplayerStartIndex() == start)
+			{
+				return p;
+			}
+		}
+		return nullptr;
+	};
+	// the objects carrying a HandicapPercent list, by id and list name
+	auto listed = [](GameLogic &logic) {
+		std::set<std::pair<UnsignedInt, std::string>> out;
+		for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+		{
+			if (const AttributeModifierPool *pool = dynamic_cast<const AttributeModifierPool *>(o->findModule("AttributeModifierPoolUpdate")))
+			{
+				for (const std::string &n : pool->listNames())
+				{
+					if (n.rfind("HandicapPercent", 0) == 0)
+					{
+						out.insert({ (UnsignedInt)o->getID(), n });
+					}
+				}
+			}
+		}
+		return out;
+	};
+	std::set<std::pair<UnsignedInt, std::string>> atSave;
+	{
+		Loaded g;
+		CommandLogLoad cl;
+		REQUIRE_MESSAGE(cl.prepare(save, &error), error);
+		REQUIRE(cl.mode() == CommandLogLoad::Mode::Snapshot);
+		CHECK(cl.log().header.game.game.slots[0].handicap == -50); // the save's recorded START carries it
+		load(*s, cl.log().header.game, g);
+		REQUIRE_MESSAGE(cl.begin(*g.game, &error), error);
+		REQUIRE(cl.state() == CommandLogLoad::State::Ready);
+		CHECK(g.game->logic().computeStateHash() == save.header.stateHash);
+		Player *human = playerAt(g.game->logic(), 0);
+		Player *ai = playerAt(g.game->logic(), 1);
+		REQUIRE(human);
+		REQUIRE(ai);
+		CHECK(human->getHandicap() == -50);
+		CHECK(ai->getHandicap() == 0);
+		atSave = listed(g.game->logic());
+		REQUIRE(!atSave.empty());
+		for (const auto &e : atSave)
+		{
+			INFO(e.first << " " << e.second);
+			CHECK(e.second == "HandicapPercent50");
+			Object *o = g.game->logic().findObjectByID((ObjectID)e.first);
+			REQUIRE(o);
+			CHECK(o->getControllingPlayer() == human);
+		}
+		const std::map<UnsignedInt, std::uint32_t> after = playOn(g, save.log, kAfter);
+		const std::string diff = differences(after, rec.whole.hashes, rec.savedFrame, rec.savedFrame + (UnsignedInt)kAfter);
+		CHECK_MESSAGE(diff.empty(), "differing frames:" << diff);
+		CHECK(after == rec.whole.hashes);
+		// a unit made after the load: the handicap list too (the loaded player's + 0x29C at initObject)
+		const ThingTemplate *tt = g.game->logic().things().findTemplate("GondorFighter");
+		REQUIRE(tt);
+		Object *fresh = g.game->logic().newObject(tt, human->getDefaultTeam(), ObjectStatusMaskType{});
+		REQUIRE(fresh);
+		const ObjectID freshId = fresh->getID();
+		g.game->logic().runLogicFrame();
+		CHECK(listed(g.game->logic()).count({ (UnsignedInt)freshId, "HandicapPercent50" }) == 1);
+	}
+	// the recording replayed from frame 0 (the verify mode: every recorded hash compared on the way): the same player handicap, the same objects listed
+	Loaded v;
+	CommandLogLoad verify;
+	verify.setVerifyLog(true);
+	REQUIRE_MESSAGE(verify.prepare(save, &error), error);
+	REQUIRE(verify.mode() == CommandLogLoad::Mode::CatchUp);
+	load(*s, verify.log().header.game, v);
+	REQUIRE_MESSAGE(verify.begin(*v.game, &error), error);
+	while (verify.step(*v.game, 50) == CommandLogLoad::State::CatchingUp)
+	{
+	}
+	CHECK_MESSAGE(verify.state() == CommandLogLoad::State::Ready, verify.failure());
+	CHECK(verify.hashesCompared() == (unsigned long long)kBefore);
+	REQUIRE(playerAt(v.game->logic(), 0));
+	CHECK(playerAt(v.game->logic(), 0)->getHandicap() == -50);
+	CHECK(listed(v.game->logic()) == atSave);
 }

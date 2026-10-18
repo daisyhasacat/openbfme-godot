@@ -160,7 +160,7 @@ idea (section 4).
 
 ### Where our engine stands
 
-- There is no Xfer, no Snapshot interface and no save container.
+- (Before SAVE-2 / SAVE-4a.) There was no Xfer, no Snapshot interface and no save container: section 8 lists what is built now.
 - There are about 160 one-way `crc(StateHasher&)` walks (Module, weapons,
   locomotors, AI states, economy, victory, weather, ...) behind
   `GameLogic::hashState`. Their step is retail's CRC step (RW 0xA211DF), but
@@ -525,6 +525,18 @@ acceptable as the final answer, which is why SAVE-4 follows.
   switches (below). The log is the
   running replay (format 4) up to F, ending with the end record (F, hash). The
   snapshot part is empty, and a non-empty one is refused until SAVE-4.
+- **The campaign menu save point** (lane CAMPSAVE-1, header version 2; version
+  1 headers still load): after the command count, `u32` save point (0 a game
+  at F, 1 CampaignMenu.apt between missions) and four `u8` flags, each 0 or 1:
+  won, ready, advanced (the campaign's + 0xD0 / + 0xD2 / + 0xD3,
+  `GameClient/LinearCampaign.h`) and auto-save (retail's IsAutoSaveOrNot). A
+  save point 1 file is a campaign (game kind 1) with no game: frame 0, no
+  commands, empty `LOG` and `SNAP` parts; a game's save carries no flags. The
+  campaign's auto-save after a won mission (RW 0x6DE8F1: "Auto Save for
+  <map>", listed in SaveLoad.apt's AutoSaveList) and CampaignMenu.apt's Save
+  write it (`GameWorld.save_campaign_menu`); loading one shows the menu with
+  that state. Having no log to replay, it loads in any build whose data holds
+  its campaign and mission (an update between missions keeps the campaign).
 - **Saving reuses the recorder.** Every skirmish's `ReplayWriter` keeps what
   it wrote in memory, and `logUpTo(F, hash)` returns that log with the end
   record. It refuses, with a named reason, a recording that lost a command or
@@ -570,6 +582,17 @@ acceptable as the final answer, which is why SAVE-4 follows.
   confirmations and the load-over-a-game question through the movie's
   showMessageBox, the result box, and refusals under GUI:ErrorLoadingGame.
   Retail saves in the Save folder are grey import entries (S-4005).
+  Lane SAVE-UI1 (the owner's "stuck on this menu" report): the quit menu
+  shows the in-game background and hides it when it closes (RW 0x92262A /
+  0x921A96, the front-end one after Exit); the save page shows the front-end
+  background only when none is up and hides what it showed (+ 0x2A4, RW
+  0x818BC2 / 0x818501); Escape closes the page (RW 0x816627); the saved box's
+  Ok closes the page and the quit menu (state 10, RW 0x816879 / 0x8184C0); the
+  quit menu under a screen has its movie unloaded and loaded again as RotWK's
+  window layout does (RW 0x812A37 / 0x812913, S-4980), so it comes back with
+  every button; the menus take the keyboard before the game's hot keys, and
+  what the game held when one opened (a key, a mouse button, a scroll) ends
+  with it (S-4982). `test_saveui1.cpp`, `godot/tests/saveui1_test.gd`.
 - **Files:** the retail Save folder (the user data folder's `Save\`, where
   Create-a-Hero keeps its heroes); `--save-dir=DIR` overrides it.
 - **Tests:** `test_save2.cpp` (SHA-256, the container, T5 with the bounded
@@ -597,4 +620,382 @@ acceptable as the final answer, which is why SAVE-4 follows.
   a saved log needs only the relay log assembled into a `ReplayFile`; its
   `rejoinStep` loop (`advance(0.2)` within a time budget) is the same shape as
   `CommandLogLoad::step`.
+
+### SAVE-4a: the Xfer framework, GameState and the core blocks (lane SAVE-4a)
+
+- **The framework** (`Common/Xfer.h`, `XferSave.h`, `XferLoad.h`, `XferCRC.h`, `Snapshot.h`): one `xfer` per class
+  saves, loads and checksums. Retail's byte layout: a version is one byte, checked on load against the class's
+  (earliest, current) window with retail's two messages (RW 0xA1F5B9); a string is a u8 length or 0xFF + u32
+  (RW 0xA1FB84); a block is "BLOK" + the absolute end offset (RW 0xA2111A / 0xA206EF), skipped by it (RW 0xA203D6);
+  XferCRC is the RW 0xA211DF step per transfer. Untagged only. Every load read is bounded (a stream, a block, a
+  string length, a list count) and every failure is a named `XferException`.
+- **GameState** (`Common/GameState.h`): the block registry with retail's list numbering (0 save / load, 1 the deep
+  logic CRC), the "ALAE" "2STR" stream with tokens and "SG_EOF" (RW 0xA20DD0 / 0x6DDF2F), the post-process pass in
+  queue order (RW 0x6DD65C). **No partial snapshots:** every simulation subsystem declares its block with the lane
+  that ports it and the state hash sections it holds; `GameLogic::saveSnapshot` is refused naming every block
+  without an xfer and every hash section no block declares (`settings` is declared as rebuilt from the START and the
+  data). A load refuses an unknown, missing or repeated block, a block read short or long, a version outside a
+  class's window and trailing bytes (stricter than retail, S-4122).
+- **The core blocks** (OpenBFME native layouts, S-4121; registered by `GameLogic/GameLogicSnapshot.cpp`):
+  `obfme:TeamFactory` (the id counters; the prototypes, checked against the game's; every team in creation order,
+  created with its saved id when the game lacks it; each team's state; the members as ids, linked again by the
+  post-process, which requires each object's own team to agree), `obfme:Players` (each Player, its identity
+  checked, with Money, ScoreKeeper, CommandPoints, PlayerScience, the hero list, upgrades by name, cost modifiers
+  and discounts, the relation maps in retail's layout RW 0x6AE9B7 / 0x7A56B6, selection and control groups),
+  `obfme:GameLogic` (frame, frame-advance switch, difficulty, game rules, Legendary Heroes, execution profile, next
+  object id) and `obfme:Random` (the logic generator's seed array and base seed; another algorithm is refused).
+- **The container's SNAP part** is read and digest-checked like the others (at most 256 MiB); a save that carries
+  one is refused at load until the snapshot loads (`CommandLogLoad`). No build writes one before that.
+- **Measured** (Deck, Release, `test_save4a_retail.cpp`): a 4-player skirmish (four Medium AIs on Fall Back 8p) at
+  frame 3,000 with 891 objects: the core is 204,255 bytes (obfme:TeamFactory 5,743; obfme:Players 198,349;
+  obfme:GameLogic 86; obfme:Random 54), written in 0.36 ms (best of 20). The players' size is almost all the score
+  keepers' per-frame statistics (about 15 bytes per player per frame, which retail keeps too): it grows with the
+  game's length (about 1.4 MB for a 60-minute 5-player game).
+- **Tests:** `test_save4a.cpp` (the byte layouts, the version window, every load failure by its text, XferCRC, the
+  stream and its post-process order, the registry as the exact inventory (T4), the core round trip on a synthetic
+  game whose changes only the core holds, checked section by section, with the next random numbers and later
+  frames equal (T1 as far as the core allows) and the same bytes saved again (T2), the refusals of another game's
+  snapshot (T5), the same bytes and refusal under Uber at 1, 4 and 16 threads (T8 as far as the core allows), the
+  container's part); `test_save4a_retail.cpp` (T4 on a real 4-player skirmish: the exact refusal, every hash section
+  declared, the pathfinder and shroud included; T2 on the real game at frame 3,000: the core loaded into a second
+  identical game keeps its state hash and its 891 team members, and saves the same bytes; the measurement).
+- **Stops:** S-4120 .. S-4122.
+
+### SAVE-4b: the objects, their modules, the scheduler and the object-side subsystems (lane SAVE-4b)
+
+- **obfme:Objects** (`GameLogic/GameLogicObjectSnapshot.cpp`, `Object::xfer`): a table of every object in list order (id, template,
+  team, status), then each object's block. A load removes the game's objects, makes every saved object with its id, team and status
+  (its create modules and initObject run, ZH GameLogic::xfer's way, without the BuildVariations draw) before any of them loads; then
+  each object loads, its ids looked up in the saved table only, its containment links (container, riders, members, crew) staged; the
+  objects the creations made on their own are removed; both sides of every staged link are checked, then the links are installed;
+  and the core blocks are loaded again from a copy (a creation changes its player and draws the logic RNG), keeping the teams' member
+  ids for TeamFactory's post-process (S-4191).
+- **Object::xfer**: the object's fields (the crc's and what it leaves out), its ExperienceTracker, its ObjectWeapons (the weapon set
+  the flags select, each Weapon, the FiringTracker), then retail's module loop (RW 0x697F28: a u16 count, per module its tag and a
+  block). The modules must be the object's own, in order (strict where retail skips).
+- **Every module runtime class** outside the AI update family has an xfer of its own, declared with `OBFME_MODULE_XFER`; Object::xfer
+  refuses an instance whose class has none or would inherit its base's, naming the class. The base chain is retail's framing
+  (ObjectModule RW 0x7082E2, BehaviorModule RW 0x8CD4AA, UpdateModule RW 0x850C60, UpgradeMux RW 0x8D27E8, UpgradeModule
+  RW 0x8D284A); TunnelTracker (RW 0x8FA569), DamageFilteredCreateObjectDie (RW 0x88927E) and DeletionUpdate (RW 0x88B863) keep retail's
+  layout; the other classes are native (S-4190). The AI update family (AIUpdateInterface and its subclasses) is SAVE-4c's (S-4193).
+- **obfme:UpdateScheduler**: the four phase vectors and the sleeping vector in order, each entry an (object id, module index) with its
+  next call frame, and the destroy list. **obfme:TunnelTracker** (every player's network in retail's layout), **obfme:Combat**,
+  **obfme:SellList**, **obfme:Experience** (the delayed level grants, the level by name), **obfme:Invisibility** (each entry with the
+  copies of its nuggets, as retail's list nodes hold them) and **obfme:DamageOverTime**.
+- **Rebuilt, named** (S-4192): the per-template caches, the target finder's cell index, the KindOf masks and module interface pointers,
+  the report statistics; the client is not told the loaded model conditions (the step that turns the snapshot on in the game must
+  resynchronise the drawables).
+- **Measured** (a CI host, Release, `test_save4b_retail.cpp`): the 4-AI Fall Back game (seed 4190) at frame 3,000 with 713 objects: SAVE-4b's
+  blocks are 2,061,840 bytes (obfme:Objects 1,954,492; obfme:UpdateScheduler 99,103; obfme:Invisibility 7,772; the others below 400),
+  written in 3.7 ms (best of 20), without the AI update family's modules. About 2.7 KB per object: the fixed-size masks (model
+  conditions, upgrades, status) and the module records dominate.
+- **Tests:** `test_save4b.cpp` (T4: every one of the registry's 149 ported behaviour classes on an object of its own saves, loads into
+  another game and saves the same bytes; T1 / T2 on a synthetic game whose objects were made, changed, destroyed and made again, loaded
+  into the same START's game holding other objects, then both run on equal; each subsystem block with non-default values; T5: the
+  version window, ids, a missing template, another module list, a class without its own xfer, a tunnel nemesis; T8 at 1, 4 and 16
+  threads; the stops), `test_save4b_retail.cpp` (the 4-AI game at frame 3,000 loaded into the same START's game at frame 2,000: 129
+  objects made again and 40 removed, every object hash (without the AI update family's modules) and SAVE-4b's sections equal, the bytes
+  saved again equal; T4 on the real game: the exact refusal (12 blocks of SAVE-4c and 4d), the exact inventory of its module classes;
+  the measurement).
+- **Stops:** S-4190 .. S-4193.
+- **Not done here, T3** (the same snapshot bytes on Linux / GCC and Windows / MSVC, and a Linux save loading on Windows): deferred to
+  SAVE-4e (the coordinator, 2026-10-13: the reference PC is paused, the Windows tests cannot run natively now; a cross-compile alone does not
+  establish it).
+- **For SAVE-4c:** the AI update family's classes declare their xfers with `OBFME_MODULE_XFER(Class)` (Common/Module.h) and start
+  with `xferUpdateModule(x)` (the scheduler block restores their vector positions); `Object::xfer` then saves them inside each
+  object's module loop, and the tests' `setSnapshotModuleFilter(isAIUpdateFamily)` goes (test_save4b_retail.cpp).
+### SAVE-4d: the script engine, victory, weather and the other subsystem blocks (lane SAVE-4d)
+
+- **The blocks** (`GameLogic/GameLogicSnapshot4d.cpp`, in the registry's order). They follow the rules for xfer authors below: every container size
+  goes through `xferCount` / `xferVectorSize` with its entries' minimum encoded size; a load reads into temporaries, checks every value against its
+  closed set (the weather 0 .. 4, the affect kind, the victory rule, a cell state, a record version, the gate's two states, ...) and every name and
+  index against this game's (players, sides, scripts, team prototypes, templates, ModifierLists, the resource grid and its blocked cells), and only
+  then changes the subsystem; obfme:ScriptEngine and obfme:Economy stage what they loaded and take it in their post-process, after every block
+  loaded, once the ids they keep are checked (the sequential scripts' teams, the claimants' objects), so a refusal there leaves them unchanged. The
+  script tree is checked script by script and group by group by name (the same counts in another order are another tree); the resource cells'
+  active entries (a SHARED cell's, an OWNED cell's owner) are tombstones or claimants with a player of this game, an owned cell's owner complete
+  (a FREE cell's stale entries are kept as they are); a tree's bucket link is the START's; the hero dirty flags lie in 0x2FF; a queued science is
+  one of the data's:
+  - `obfme:ScriptEngine` (`ScriptEngine/ScriptEngineXfer.cpp`, lists 0 and 1): the tree's runtime flags through retail's Script (RW 0x7B3063, (1, 2))
+    and ScriptGroup (RW 0x7B2F8A, (1, 1)) records, the sides and every list's counts checked; the generic script copies; the counters and flags; the
+    object type lists; the named object cache (ids); the sequential scripts in retail's record (RW 0x60331E, (1, 1)), found again by side and name; the
+    acquired-science queues' cursors; HAS_FINISHED_AUDIO's timers. Retail's own ScriptEngine::xfer (RW 0x60A45B, (1, 5)) is not identified (S-4256).
+    The Lua state is not saved: retail saves none either (S-4256).
+  - `obfme:Victory`: native (retail does not save VictoryConditions, S-4254); the peer's own slot is not in the bytes.
+  - `obfme:Weather`: retail's GlobalWeatherSystem order and window (RW 0x71A2E3, (1, 4); the AntiCategory mask by name, RW 0x71A1A7) without the
+    client's audio handle, the filter in the port's layout, the burn decay in a trailer (S-4251).
+  - `obfme:Economy`: the GameData settings' hash checked, the game context, the TerrainResourceManager in retail's DoXfer layout (RW 0x75C7AE, (1, 3))
+    plus the complete flags retail drops (S-4253).
+  - `obfme:CreateAHero`: retail's record (RW 0x80B4F5, (1, 8)) per player with the game's validity and flags, and the choices (S-4255).
+  - `obfme:TerrainTrees`: the records changed since the START in retail's record layout (RW 0x680753, (1, 2)); the client's tree events are not
+    saved (S-4252).
+  - `obfme:LargeGroupAudio`: the gate, + 0x38 and + 0x3C (S-4250).
+- **Framework addition:** `Xfer::xferUnicodeString` (RW 0xA1FC7E: the AsciiString's length prefix counting UTF-16 units, the units in one transfer).
+- **Measured** (Deck, Release, `test_save4d_retail.cpp`, on the tree with archive 70281823 merged): four Medium AIs on Fall Back 8p at frame 3,000
+  (703 objects, 56 resource claimants, 486 trees): the seven blocks are 817,901 bytes (obfme:ScriptEngine 175,996, of which about 132,000 are the
+  names of every script and group of the sides' trees and AI libraries, checked at load; obfme:Victory 146; obfme:Weather 60; obfme:Economy 641,557;
+  obfme:CreateAHero 35; obfme:TerrainTrees 48; obfme:LargeGroupAudio 36; each with its token and block header), written in 1.07 ms (best of 20). The economy's size is the resource grid in retail's layout (every cell, at least
+  8 bytes): almost all of it is the same at every frame of a map.
+- **Tests:** `test_save4d.cpp` (the wide string's layout and CRC transfer; per block a game with non-default state saved and loaded into a new game of
+  the same START: its state hash section takes the saved value, the fields read back, the same bytes are saved again (T2); retail's byte layouts of the
+  weather, the resource manager and the hero record; T5 refusals by text: an unknown AntiCategory, a version above / below the window, a player the
+  game lacks, other GameData, other map scripts, a game without scripts; the record windows; T4: the registry's SAVE-4d blocks and the refusal of the
+  13 left; T8 at 1, 4 and 16 threads under Uber; the hostile streams: an oversized count (victory events, resource cells, script counters), a
+  player cached twice, a claimant listed twice or whose object does not exist, a hero's player listed twice or absent, an out-of-range rule,
+  weather, affect kind, cell state, record version and gate, a moved blocked cell, a sequential script of a team and a unit, a team that does not
+  exist: each refused by its text with the block's state unchanged; review r1 (Sol): the script tree in another order, a cell naming a player or
+  object it may not, an incomplete owner, a staged claimant or team that does not exist (the subsystem unchanged afterwards), hero dirty flags beyond
+  0x2FF, a science the data lacks, a hook count other than 32, the counts of every remaining container (generic prototypes and hooks, flags, object
+  lists and their types, named objects, sequential chains and records, a queue's sciences, audio timers, claimants, a cell's entries, heroes, bling,
+  choices, changed trees); the round trips of a non-default science queue and of generic script copies),
+  `test_save4d_retail.cpp` also: changed tree records of version 1 load, a self-link and an oversized count are refused, `test_save4d_retail.cpp` (the real skirmish at frame 3,000: game B's script engine, victory, weather,
+  economy and audio gate changed, A's blocks loaded: those sections equal A's, the other sections unchanged, the whole hash equal and 100 more frames
+  equal (T1 for these blocks), the same bytes again (T2); a real tree toppled and one harvested load, a second load refused; the measurement).
+- **Stops:** S-4250 .. S-4256.
+- **Not verified (deferred to SAVE-4e):** T3, the same bytes on Linux / GCC and Windows / MSVC. The reference PC is paused and the Windows tests cannot run
+  natively on the Deck or the CI VMs; the Windows build compiles the blocks (the gate's windows build), nothing compares their bytes yet.
+
+### Rules for xfer authors (SAVE-4a review r1; SAVE-4b, 4c and 4d follow them)
+
+1. **One function per class.** `void xfer(Xfer &x)` saves, loads and checksums. It starts with its own
+   `XferVersion v{ earliest, current }; x.xferVersion(v);` and branches on `v.current` for older layouts. A 1:1 port of
+   a retail class uses retail's field order and window (`docs/SAVES-RETAIL.md` section 6); anything else is a native
+   block named `obfme:<Name>`, with a stop that says so (see S-4121).
+2. **Never read a destination while loading.** The typed transfers already load into zeroed temporaries. Your own
+   code does the same: build a save-side value from the member when `!x.isLoading()`, transfer it, then assign it.
+   Never compute the value to transfer from a member that the load is about to overwrite.
+3. **Every container size goes through `x.xferVectorSize(v, minEntryBytes)`** (vectors) **or
+   `x.xferCount(&n, minEntryBytes, entryMemory)`** (maps, sets, anything else; use `sizeof(value) + Xfer::kNodeBytes`
+   for a tree node). `minEntryBytes` is the fewest bytes one entry encodes to: its fixed fields, with every string and
+   nested container empty (a string is 1 byte, a count 4, a version 1). Never allocate from a raw count. The load then
+   refuses a count that its block cannot hold, and keeps the encoded and allocation budgets across containers.
+4. **Validate before you link.** A post-process (`GameState::addPostProcessSnapshot`, run after every block has
+   loaded) first checks every saved reference: the id exists, it is listed once, and the object agrees on its side of
+   the link. Only then does it change anything (`TeamFactory::loadPostProcess` is the pattern). An invalid stream must
+   leave no half-linked lists behind.
+5. **Validate every loaded value with a closed set.** That covers enums, flags with meaning and identities that the
+   START made (names, template names, counts). The check throws an `XferException` with a message naming the value.
+   Nothing is clamped or defaulted.
+6. **Declare what you hold.** Each block lists the state hash sections it saves, in the list it is registered in
+   (coverage is checked per list, on save and on load). State rebuilt from the START or the data is
+   `declareRebuiltSection` with the reason. Turning a declared block into a real one shrinks the T4 refusal test by
+   exactly its token.
+7. **Test it like the core.** Cover a round trip whose changed state only your blocks hold, checked section by
+   section, then the same bytes saved again. Add the refusals of a foreign stream by their text, and a malformed count
+   for every container whose entries are large.
+
+### SAVE-4c: the AI, pathfinder, partition, emotion, shroud and skirmish AI blocks (lane SAVE-4c)
+
+- **Five blocks with their xfer** (OpenBFME native layouts, decision D3: none of these classes is a 1:1 port; retail's counterparts and windows are in
+  S-4220), registered in `GameLogic/GameLogicSnapshot.cpp` in place of their declarations:
+  - `obfme:Partition` (lists 0 and 1; `PartitionManager::xfer`): the region and scale, the entry list (newest first), the dirty list and every node's count
+    and list **in their order** (re-inserting would reverse equal-cell orders, which decide every range query's hits). A load reads into a pending record;
+    the post-process (every block loaded, the objects there) makes the entries again and links each to its object by id.
+  - `obfme:Emotions` (list 0; `EmotionWorld::xfer`): the SCARY / HERO list in its order (RW 0x835B0A moves the last id into a removed one's place) and the
+    report's counters; the post-process checks every id. The per-object nuggets are the EmotionTrackerUpdate module's (SAVE-4b).
+  - `obfme:AIWorld` (list 0; `AIWorld::xfer`): the AI modules' object ids first (another set is refused before anything changes), the pathfinder
+    (`Pathfinder::xfer`: the configuration and extents as a hash the game's must match, the cells' class words and zones in runs, every cell info with its
+    obstacle and its occupant chains **in order**, the zone manager, both request rings, every unit's goal and position slots), every pathfinder view's
+    layer, then **every AI update module in object id order, each in a BLOK** (`AIUpdateInterface::xferAIState`, with HordeAIUpdate's and DozerAIUpdate's
+    own fields): the module's fields, the turret (TurretAI with its machine), the mover (AIMover with its path, `Path::xfer`: the nodes and their optimised
+    links as indices), the locomotor set made again from its id and each locomotor, and the state machine with **every defined state's xfer** (retail keeps
+    the state objects; `AIState::xfer` is pure, so every state class says what it keeps). Sub machines (an attack's, a hunt's, a turret's, PLAY-4's
+    guard machine and its attacks) are made again by their kind (the attack's generic, melee or horde melee / ranged machine) and loaded the same way. The block holds the "objects" section's AI part
+    as well as "pathfinder and AI movers": obfme:Objects (SAVE-4b) carries the AI modules as their objects made them, and this block fills them.
+  - `obfme:Shroud` (lists 0 and 1; `ShroudManager::xfer`): the grid and settings, per player and channel a run-length plane of the cells, the unlook queue
+    in order, the records by slot and the free slot stack, registration and dirty lists; the cells' covering lists are rebuilt from the records.
+  - `obfme:SkirmishAI` (lists 0 and 1; `SkirmishAIManager::xfer`): the data's identity (SkirmishAIStore::crc, another data set is refused), the player info
+    records, every build request **once** in a table the lists refer to by index (the farm site pool, the base slots, the queues and the builders share
+    requests), the groups with every AI's builders and brain, the errors and counters. Data pointers are found again: the army by its side, a base's
+    template by its index among its side's templates.
+- **The rules for xfer authors** (above; SAVE-4a review r1, merged at b40daf2e) hold for all five blocks: every container size goes through
+  `xferVectorSize` / `xferCount` with its fewest encoded bytes; a load reads into temporaries (a pending record for the partition and the emotions, a
+  fresh manager for the shroud and the skirmish AI, decoded cells, infos, zones, rings and reservations for the pathfinder) and changes nothing until
+  every reference is checked: objects of the loaded game (entries, records, views, obstacles, occupants, reservations that hold a slot), each named
+  once, links that agree (an entry in exactly the node its cells give, node counts, the shroud's slot lists, the skirmish AI's players, groups,
+  enemies and tactic targets); every enum-like value against its closed set (layers, cell types, statuses, goal types, command sources, attitudes,
+  guard modes, dozer tasks and states, turret targets, AITARGETs, tactic prototypes, request states, phases). Sub machines, moves, paths and locomotor
+  sets are made and loaded complete before they are attached. The AI update modules are filled in place (their objects own them), so
+  obfme:AIWorld and each module's `xferAIState` load as one **transaction** (`AIXfer::transaction`, review r2): before anything changes, the
+  current state is saved by the same xfer; a refusal anywhere (the last module included) loads that capture back and then raises the named error,
+  so the live game's state hash is unchanged after any refusal (tested). Object ids an AI keeps and looks up when it uses them (victims, goals,
+  requesters, a build request's producer) may name units that died since, so their closed set is the ids the game has issued (`AIXfer::issued`:
+  below the next object id). A path's optimised links run forward only (a cycle could not be walked out of). The grid sizes (the pathfinder's
+  cells, the shroud's cells) are the map's: a snapshot of another grid is refused, never allocated. The tests run UBSan-clean.
+- **Review r3** (the four classes, audited over every block): (a) a block that commits inside its xfer checks that it was read to its end before the
+  commit (`AIXfer::blockReadToEnd`, inside obfme:AIWorld's transaction and before obfme:SkirmishAI's commit; the partition, emotions and shroud commit
+  in their post-process, after GameState's own check); (b) a pathfinder view's presence is state: a load makes the views exactly the saved ones, so a
+  refused load leaves the next save's bytes as they were (the tests compare save bytes, not only hashes, around every refusal); (c) a live object an AI
+  acts through (unit and dozer factories, free dozers, tactic team members, dispatched units, the info records' objects) must be its player's, a
+  factory that changes owner leaves the old owner's unit builder (RW 0x8F0C69 -> 0x9A051D), and every pathfinder occupant must be a reservation its
+  unit holds; (d) every member of every saved class is in its xfer or on this list of what is left out on purpose: references and owners (hosts,
+  worlds, the pathfinder, the store), the template's and module data's settings (combat settings, turret data, dozer rates, the bird's data, movement
+  infos, the pathfinder's configuration and extents, which a load checks by hash), caches (partition geometry, zone tables, the cells' covering lists,
+  the unit index), a search's scratch (the open and closed lists, an info's costs and parent, the shortcut counter, the hierarchical corridor, the
+  search memo), per-frame scratch (the collision arrays, the move-allies depth, the partition's walk switch), diagnostics (peaks, the collision pair
+  count, the event trace), test switches, and the client and audio side (the shroud's local player, callback, levels and display switch, an AI's move
+  loop flag). The audit found the flight locomotor's four fields (now saved) and nothing else unsaved.
+- **Review r4** (a fifth class: a legal game producing a snapshot the load refuses): every ownership or range check of rounds 2 to 4 was set against
+  the events that change its field (a capture or other change of owner, a death, a player leaving, a team merge). A change of owner runs the old
+  owner's object-left path (`Object::joinTeam`: RW 0x6A99CB, then RW 0x6A9D9C), and the old owner's AI now lets the object go as retail does: the unit
+  builder erases its factory entries and computes the composition again (RW 0x9A051D, + 0x2C at RW 0x9A055D) (since r5 in the leave event itself, and a barracks
+  captured back registers again in its add event, RW 0x8F06BF -> 0x9A0838), and drops it from its free dozers and tactic teams; the dozer
+  factories and the info records already followed it (RW 0x8F0C47, RW 0x8E480C). A dispatched unit is checked as an issued id only (the dispatch
+  history orders nothing). The emotion list's KindOf check holds (the list is added to and taken from by KindOf, RW 0x693E79 / 0x835B0A, and an object's template never changes). Deaths keep
+  the S-416 stale ids (issued-id checks); no AI, group or team is ever removed (players leaving are disabled AIs), and the targets list never shrinks,
+  so the target, hero, timer and group checks hold. This is a simulation change for an object changing owner.
+- **Review r5:** the unit builder's registration is retail's event, not a scan: an FS_FACTORY enters the factory map in its object event (RW 0x6C7779
+  -> 0x8F069A -> 0x9A0838: synchronously, with no other filter, whether unit building is disabled or not; a structure is listed from its placement,
+  under construction, and the lookup RW 0x9A0705 skips it while its factory is disabled) and leaves it in its leave event, at its death or change of
+  owner (RW 0x8F0C47 -> 0x9A051D, the composition computed again). The port's scan and its registration memory are gone. This changes the simulation
+  of every skirmish (a factory is listed from its placement, in event order, and a dead one leaves at its removal). The audit adds a player defeated,
+  surrendering or leaving: until its AI sees the defeat (its next update) the events clean its lists as for any death or owner change; after it the
+  AI is shut down (RW 0x6C7981), gets no more object events and runs only its brain, so its builder lists (free dozers, dozer and unit factories)
+  keep ids of objects gone or given away since, as retail's state does: they are checked as issued ids only, and as live objects of the player while
+  the AI runs. Its tactic team members stay checked as live objects of the player (the brain still orders them; an owner change takes a member out of
+  every AI's teams, a death leaves an issued id); the info records follow every event whatever the AI's state; no AI, group, target or hero list
+  shrinks at a defeat, so the remaining checks hold.
+- **Review r7** (the merge of the archive 593e83cd): two members the archive added to saved classes are saved: an AI module's kept state machine
+  (RW AI + 0x38, lane BACKLOG-4: `beginDefectedStateMachine`, hashed: a present flag, then the machine saved like the live one, made and loaded complete
+  before it replaces the kept one) and a base's fortress rebuild task (RW AIBase + 0x28, lane BACKLOG-6: a request reference by the block's request table,
+  plus the task counter). What the archive added to the object (the recorded original team, the teleport gather) is obfme:Objects' (SAVE-4b). The
+  coverage test's garrison failed on the merged tree because its keep stood on the neutral Amon Hen structures (placed 80 east of the first Men unit, whose
+  place moved with the game's changed state at frame 3,000): the order was refused by RW 0x82CBD5's path test, so the rider went idle; the test now
+  looks for open ground around that unit (reachable corners and entry point) and takes a rider the path test accepts.
+- **A load never runs a state's exit:** a machine the load replaces (an attack's sub machine, a hunt's) goes under `AIStateMachine::LoadGuard`, which drops
+  its states without their exits (they would change the object's model conditions and statuses the load is restoring).
+- **Diagnostics are saved once:** the units' stop lines (a mover's, a locomotor's, an AI's notes) go through a string table of the block (each sentence
+  once, then by index).
+- **No simulation change** (but review r4's change of owner, above): no state hash input, update or draw changed (the attack machine's and the hunt machine's construction moved into functions
+  of their own, in the same order; sim_audit ok).
+- **Measured** (Deck, Release, `test_save4c_retail.cpp`, review r5 with archive 98750dad merged): the 4-AI game at frame 3,000 (818 objects, 558 AI
+  modules): the five blocks are 1,362,387 bytes (obfme:Partition 24,846; obfme:Emotions 76; obfme:AIWorld 1,158,366; obfme:Shroud 155,075; obfme:SkirmishAI
+  24,001), written in 9.3 ms (best of 20). Most of obfme:AIWorld is the AI modules: saved one by one, each with its own stop lines, they are 1,274,993 bytes (the
+  block's string table writes each line once); the pathfinder's grid is 247,500 cells. A load also captures the block first (the transaction), about
+  one more write.
+- **Tests:** `test_save4c_retail.cpp` (T1 / T2: the five blocks of frame 3,000 load into an identical game whose blocks first held another state (an
+  earlier frame's partition, AI world and skirmish AI (since r5 the target is the first frame from 3,000 on with such a frame among its 50
+  before: 3,002, with 3,001's state, in the last run), 302 AI modules' own state of frame 2,700, a shrouded map, an empty emotion
+  list: each of the six sections
+  differs before the load), give every state hash section of the saved game, save the same bytes again and the same hash on every one of the next 300
+  frames; T4: the refusal names exactly SAVE-4b's and 4d's 15 blocks; T5: each block's version window with retail's two messages, another moment's AI
+  modules, a partition entry of a missing object, a synthetic game's absent AI world and shroud; T8: the same bytes under Uber at 1, 4 and 16 threads;
+  the measurement; the hostile inputs: per block an oversized count, a dangling and a duplicate reference and an out-of-range value, each refused by
+  its text with the blocks' sections unchanged; nested counts (a partition node's list, a shroud record's coverage, a skirmish record's army list)
+  and the allocation budget; review r2's cases: a module refused late, a whole block whose last module is malformed, the skirmish AI's best target,
+  waypoint steps, producers and assist timers, a path's backward and self links, each with the live hash unchanged; review r4's captures (a factory, a
+  dispatched unit, a barracks captured back that queues units again) saved, loaded over an older skirmish AI and 150 frames equal to the uninterrupted game, the barracks making a GondorFighterHorde; review r5's (Sol's probes, kept): the registration in
+  the event with unit building disabled and a named horde made, a defeat with the assets given to an ally, a surrender, a DominateEnemy conversion of a
+  team member, each saved and loaded at frames 50 and 200; the coverage test: units
+  attacking, moving, guarding, hunting and entering a garrison saved mid-order and compared unit by unit, the skirmish plans and timers AI by AI,
+  the shroud player by player), `test_save4c.cpp` (the registry entries, the helpers' container layouts and their duplicate refusals,
+  a synthetic game's blocks saved again byte for byte); the
+  SAVE-4a pins (`test_save4a*.cpp`) and the save stop list (`test_save2.cpp`) follow.
+- **Stops:** S-4220 .. S-4222. **Remaining refusal list:** empty since SAVE-4e merged SAVE-4b and 4d (see below).
+- **For SAVE-4b:** Object::xfer must leave the AI update family's state to obfme:AIWorld (the modules exist and are filled by it, in object id order);
+  their `UpdateModule` part (the next call frame, the phase) is the scheduler's.
+
+### What SAVE-4b, 4c and 4d must cover (the registry's declared blocks)
+
+Each lane gives its blocks an xfer (`GameState::provideSnapshot`, or replace the declaration in
+`GameLogicSnapshot.cpp`), extends T1 / T2 / T4 / T5 to them, and keeps the refusal test exact (it shrinks by its
+blocks). The three can run in parallel: their blocks do not overlap, and each block is tested on its own with
+`GameState::saveBlocks` / `loadBlocks`. 1:1 retail ports transfer in retail's field order and versions (D3,
+`docs/SAVES-RETAIL.md` section 6 lists every RotWK xfer with its window).
+
+| Lane | Block | Holds (state hash section) | Notes |
+|---|---|---|---|
+| SAVE-4b | `obfme:Objects` | every object and its modules ("objects"; the object count of "frame, object ids, RNG") | the object list order and ids (`m_objectsById`), objects created after the START made again and the START's destroyed ones removed; each object's team set before the TeamFactory post-process runs (it checks it); modules keyed by tag inside a BLOK, as retail's Object::xfer (RW 0x697F28, (1, 29)) does; the module runtimes' xfers, in retail order where they are 1:1 ports (the AI update family is 4c's); the per-template caches (`m_templateInfo`, `m_crushInfo`) are rebuilt, named |
+| SAVE-4b | `obfme:UpdateScheduler` | "scheduler" | the four phase vectors and the sleeping vector in their order, each module's next call frame (the order is state: it decides module order) |
+| SAVE-4b | `obfme:TunnelTracker` | part of "objects" | Player + 0x308 (retail TunnelTracker::xfer RW 0x8FA569, (1, 1)): its tunnels and riders as ids |
+| SAVE-4b | `obfme:Combat`, `obfme:SellList`, `obfme:Experience`, `obfme:Invisibility`, `obfme:DamageOverTime` | "combat", "sell list", "experience", "invisibility", "damage over time" | the invisibility manager's state changes every frame even without objects (seen by the core test) |
+| SAVE-4c | `obfme:Partition` | "partition manager" | the trees' link order is state |
+| SAVE-4c | `obfme:Emotions` | "emotion system" | the scary / hero list in order |
+| SAVE-4c | `obfme:AIWorld` | "pathfinder and AI movers" | the pathfinder's queues and the AI movers; with the AIUpdate module family and its state machines (AIUpdateInterface::xfer RW 0x667416, StateMachine and the AI states, all inventoried) |
+| SAVE-4c | `obfme:Shroud` | "shroud" | the shroud cells per player |
+| SAVE-4c | `obfme:SkirmishAI` | "skirmish AI" | AIPlayer / AISkirmishPlayer (RW 0x8F5756 / 0x8F3F6C), the builders, tactics, target chooser, groups |
+| SAVE-4d | `obfme:ScriptEngine` | "script engine" | flags, counters, timers, completed and sequential scripts, the Lua state, the acquired-science queues' cursors (the players' notice history is saved by obfme:Players) |
+| SAVE-4d | `obfme:Victory`, `obfme:Weather`, `obfme:Economy`, `obfme:CreateAHero`, `obfme:TerrainTrees`, `obfme:LargeGroupAudio` | "victory", "weather", "economy", "create-a-hero", "terrain trees", "large group audio" | the weather changes every frame (seen by the core test); the economy's settings part is configuration (declare it rebuilt), its context and terrain resource cells are state |
+
+Every lane also checks the state its subsystems keep **outside** the hash that a later frame reads (SAVES.md
+section 6's rule), for example GameLogic's AI command sink and pending producer. Then a last, small step turns
+the snapshot on in the game: `GameWorld.save_game` writes it, `CommandLogLoad` (case 1 of section 2) starts the
+log's game, loads the snapshot, checks the hash at F and catches up only the log after it; T1 in a fresh process
+and T3 (Linux and Windows bytes equal) gate it.
+
+### SAVE-4e: the snapshot turned on: saves load instantly (lane SAVE-4e)
+
+- **Merged:** SAVE-4a (b40daf2e), 4b (6a97a143), 4c (15b58db5) and 4d (d1ed16d9). **The refusal list is empty:** every block of the registry has
+  its xfer (`save4a: the game's block registry is the exact inventory ...` and the real games' T4 cases save a whole snapshot). The AI update family's
+  classes got their module-list xfer (their versions and UpdateModule's part; the AI state stays in obfme:AIWorld, S-4193). A merge fix: OpenContain's
+  xfer saves SHIP-1's two ship exit counters instead of the count they replaced.
+- **Save** (`GameWorld.save_game`): the header, the log to F and the snapshot at F (`GameLogic::saveSnapshot`). A snapshot the game refuses leaves
+  a log-only save and is named in the result (`snapshot_refused`); option `snapshot: false` writes an earlier alpha's log-only save (tests).
+- **Load** (`CommandLogLoad`, case 1 of section 2): the log is parsed and checked as before (it is the replay so far, continued by `handOver`); the
+  game its log records is started; `LiveGame::loadSnapshot` loads the snapshot over it, checks the frame and the header's state hash, and is ready
+  at once: no frame of the log runs. **Transactional:** the started game's own snapshot is kept first; a refused block, frame or hash puts it back
+  (checked by its state hash) and the load fails named ("the save's snapshot is refused: ..."); a game that cannot be put back is closed (no frame
+  runs any more) and the host discards it, never a half-loaded game. The client is told every object's model conditions (S-5011).
+- **Verify mode** (`CommandLogLoad::setVerifyLog`, `openbfme_peer --verify-log`; off by default): the save is caught up from its log as an old save
+  is, and at F the caught-up game's snapshot must equal the save's byte for byte (T2 across the two load paths).
+- **Old saves** (log only, from the earlier alphas) catch up as before (case 2).
+- **The loading screen** (`save_flow.gd`, `campaign_flow.gd`, `AptMenuPlayer::set_still_load_progress`): retail's screen for a saved game
+  (GameLogic::getLoadScreen RW 0x626A87 with a save loading): the picture screen with a film still (StillImage_Film01 .. 21), the ring and
+  GUI:Loading, for a campaign mission and a skirmish (S-5012). SAVE-2's grey Godot panel is gone; an old save's catch-up draws its progress text and
+  a bar on that screen in its font and colour.
+- **Tests:** `test_save2_retail.cpp`: T1 in a fresh process from the snapshot (`openbfme_peer --load-save`, report `load_mode snapshot`,
+  `catch_up_hashes 0`) for the 4-AI skirmish's named scenarios and an 11-minute save, and for the Angmar mission with a script timer running, each
+  played to F + 3000 with every frame's hash compared; the 11-minute save and the mission also through the verify mode; the in-process load
+  (ready at once, the header's frame and hash, every drawable showing its object's model conditions, the game played on equal, the verify mode);
+  the transactional refusals (a changed byte, a truncated snapshot, another game's snapshot: each named, the started game's frame, state hash and
+  drawables as before, the game still running; a header whose hash its log does not end with; the verify mode naming the first differing byte);
+  the legal but unusual events (a capture, a temporary defection, a death, a player's every object killed, saved right after them and 30 frames
+  later, loaded into another world and played 300 frames equal, saved again byte for byte); T3 with a Windows peer (OPENBFME_WINDOWS_PEER).
+  `godot -- --auto --save-test` loads a snapshot save and an old log-only save through the screens.
+- **Measured** (Deck, Release, `openbfme_peer --load-save` in a fresh process, the 4-AI Fall Back game of `save2 retail T1 (SAVES.md)`): the
+  11-minute save (frame 3,301, a 4,240,033-byte snapshot) loads from its snapshot in 100 ms; the same save caught up from its log (the earlier
+  alphas' path, `--verify-log`) takes 27.8 s. The Angmar mission at frame 151: 385 ms from the snapshot, 4.5 s caught up. The in-process load of a
+  1.8 MB snapshot (frame 601): 114 ms. Through the screens (`--save-test`, a CI host): 32 ms for a skirmish at frame 150, 141 ms for the mission.
+- **T3 measured** (S-5013): the release's llvm-mingw openbfme_peer.exe under Proton 11.0's Wine on the Deck, the same profile identity as the Linux
+  peer: it caught the Linux 11-minute save up from its log and saved the same snapshot bytes at F (the verify mode compares all 4,240,033), then
+  loaded the Linux snapshot and played 3,000 frames with every hash equal (final 0xD552CA8C) in 105.8 ms of load.
+- **Red then green** (the review fixes of 4a, 4b and 4d): with seven checks mutated away (a team member listed twice, the damage and death type
+  sets, a horde's free slot, a script's name, a cell's player, a tree's bucket link) their four test cases fail on exactly those refusals; the
+  real tree passes them.
+- **Review r1 (Sol) fixes:**
+  - *The load is transactional for every block.* `GameState::checkFraming` walks the whole stream before any block loads (the blocks in this build's
+    order, each inside the stream, the end token, nothing after it): a truncated, reordered or hostile stream never touches the game. A block refused
+    later is undone by loading the game's own snapshot back, which now works from any state: obfme:TerrainTrees restores the map's records first (it
+    kept them before the first change) and obfme:TeamFactory loads a snapshot with fewer teams (the later teams are removed by its post-process once
+    empty); the put-back is checked by the state hash and by the snapshot's bytes. Review r2: the trees' first records are kept before the first
+    topple or harvest touches one (not after), and a save made while a trim of teams is pending (the Objects block saves and reloads the core
+    blocks mid-load) holds the snapshot's teams only, so a refused snapshot with fewer teams than a game that made three since is put back; tests
+    compare the trees' records themselves and the team count, not only the hash and bytes. Tests: Sol's three probes (a toppled tree saved, then a hostile end
+    token, a late truncation, LargeGroupAudio's version refused), a refusal inside each of the 24 blocks into a game whose own trees changed, the
+    framing refusals, and the probe test below.
+  - *The menu keeps the running game.* `GameWorld.check_save` checks the snapshot's framing before the running game goes; `keep_running_game` keeps
+    its own save in memory, and when the chosen save is refused later `prepare_kept_load` loads it back: the player is on the quit menu's load page
+    over the same game (its frame and state hash) with the refusal (`--save-test` loads a hostile save over a running game). A game that cannot be
+    kept (its own snapshot refused) is not left: the load stops before the saved game is prepared and the page shows why (review r2;
+    `tools/save/test_save_flow.py`).
+  - *Closed sets.* `tools/save/closed_sets.py` lists every integer and mask transfer of the snapshot code (988) and puts each in a class: closed (a
+    mask, flag set, enum, index, player, side, team, rank by name) and ids need their check after the transfer in the same function, object
+    references (`xferObjectID`, the id list helpers) are looked up when used (S-5014), the open ones (frames, counters, quantities) are named by rule,
+    and every other one (a name of an open and a closed word both among them) has an entry in `tools/save/closed_sets.json` with its reason or the
+    place that checks it. Review r2: the discovery reads each file's code as one text (comments and strings blanked), so a transfer over several lines
+    or through any receiver is found; a helper of the snapshot namespaces, an Xfer method, a `using` or a macro that would move an integer unseen
+    fails the audit until it is placed. Its pytest mutates the real tree (an unchecked multiline or other-receiver transfer of the weapon bonus mask
+    must fail) besides the empty, missing, unchecked, unlisted, stale and unreasoned inputs. The audit added the checks it found missing
+    (the objects' status, model, placement, upgrade, armor set, weapon bonus, weapon set, script status and experience masks; the players' upgrade
+    records, masks, sciences, ranks, relation keys and indices; the teams' id counters; the skirmish AI's target / tactic / attack ids and KindOf bits;
+    the object filters; the Create-a-Hero records; the invisibility nuggets; the contain, body and projectile masks; the horde's flank index; a dozer's
+    idle player and transition depth; the pathfinder's queued and ignored ids; the Legendary Heroes factor). `Common/SnapshotProbe.h` arms the n-th
+    check of a load: `test_save4e.cpp` loads a real 4-AI game's snapshot (frame 1,500, a tree toppled) once per kind of check it runs through (151
+    kinds, 110,159 checks), each with an out-of-set value at that place, and every load is refused naming the check, with the game it was loaded into
+    left byte for byte as it was. The probe exercises only the checks that exist and that this snapshot reaches; a missing check is the audit's to
+    find, not the probe's.
+  - *A refused snapshot fails the save.* `CommandLogLoad::takeSnapshot`: the save is refused, named, in SaveLoad.apt's result box (retail shows a
+    failed save's error there too); no log-only fallback.
+- **War of the Ring battles:** not supported by this build (no War of the Ring battle start), so not in T1.
+- **Stops:** S-5010 .. S-5014.
 

@@ -31,7 +31,7 @@ func _run() -> int:
 	# has no GPU). About 3 minutes on a quiet host; --selperf-deadline stops it with a FAIL at 600 s, inside verify.sh's 900 s per Godot gate.
 	# The gate's budget is x1.15, a regression check: a held selection of 150 costs 0.5 - 0.8 ms a frame (the command bar about 0.3 of it),
 	# 6 - 9% of a quiet CI host's 8.5 ms headless frame, so x1.10 there passes and fails from run to run; before this lane the same cut read
-	# x1.3 - 1.5 standing and x5 - 150 marching. The +10% target itself is measured on the owner's idle 4090 (tools/perf/selperf_win_idle.sh)
+	# x1.3 - 1.5 standing and x5 - 150 marching. The +10% target itself is measured on the owner's idle 4090 (the operator's Windows measurement helper)
 	var args := ["--headless", "--path", ProjectSettings.globalize_path("res://"), "--", "--auto", "--play1=selperf", "--seed=42", "--selperf-phases=idle,pan,march",
 		"--selperf-counts=1,150", "--selperf-reps=5", "--selperf-deadline=600", "--selperf-budget=0.15"]
 	var code := OS.execute(OS.get_executable_path(), args, output, true)

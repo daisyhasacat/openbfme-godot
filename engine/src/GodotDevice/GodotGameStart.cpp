@@ -88,6 +88,7 @@ Dictionary newGameToDictionary(const NewGameMessage &m)
 		sd["start_pos"] = s.startPos;
 		sd["player_template"] = s.playerTemplate;
 		sd["team"] = s.teamNumber;
+		sd["handicap"] = s.handicap; // lane OWNERFIX-2: GameSlot + 0x20
 		if (s.hasCreateAHero)
 		{
 			const std::vector<std::uint8_t> bytes = s.createAHero.save();
@@ -203,6 +204,12 @@ bool newGameFromDictionary(const Dictionary &d, NewGameMessage &out, std::string
 		s.startPos = (int)(int64_t)sd["start_pos"];
 		s.playerTemplate = (int)(int64_t)sd["player_template"];
 		s.teamNumber = (int)(int64_t)sd["team"];
+		// lane OWNERFIX-2: the slot's handicap (absent: 0, the setups before OWNERFIX-2); a value the lobby never offers is refused
+		s.handicap = (int)(int64_t)sd.get("handicap", (int64_t)0);
+		if (!SkirmishGameSlot::handicapValid(s.handicap))
+		{
+			return fail("slot " + std::to_string(i) + " handicap " + std::to_string(s.handicap) + " (0, -5 .. -95)");
+		}
 		if (sd.has("create_a_hero"))
 		{
 			// lane HERO-2: the slot's Create-a-Hero record in its .cah form (GameWorld.get_create_a_hero_record at the setup)

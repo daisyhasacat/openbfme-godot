@@ -226,7 +226,7 @@ TEST_CASE("W3D emitter retail: E_Fire_SM tables and first particles (notes secti
 	ArchiveW3DFileSource src(*mount->fs);
 	std::vector<std::uint8_t> bytes;
 	std::string error;
-	REQUIRE_MESSAGE(src.Read(W3D_Asset_Path("e_fire_sm"), bytes, &error), error);
+	REQUIRE_MESSAGE(src.Read(W3D_Asset_Path("e_fire_sm", false), bytes, &error), error);
 	W3DFileContents contents;
 	REQUIRE_MESSAGE(Load_W3D_File(bytes.data(), bytes.size(), contents, &error), error);
 	REQUIRE(contents.Emitters.size() == 1u);
@@ -287,7 +287,7 @@ bool loadRetailEmitter(const char *stem, W3DFileContents &contents)
 	ArchiveW3DFileSource src(*mount->fs);
 	std::vector<std::uint8_t> bytes;
 	std::string error;
-	REQUIRE_MESSAGE(src.Read(W3D_Asset_Path(stem), bytes, &error), error);
+	REQUIRE_MESSAGE(src.Read(W3D_Asset_Path(stem, false), bytes, &error), error);
 	REQUIRE_MESSAGE(Load_W3D_File(bytes.data(), bytes.size(), contents, &error), error);
 	REQUIRE(contents.Emitters.size() == 1u);
 	return true;

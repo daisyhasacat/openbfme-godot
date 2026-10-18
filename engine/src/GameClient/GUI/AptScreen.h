@@ -40,8 +40,20 @@ public:
 	// WindowLayout: runInit runs when the screen is pushed or becomes the top again, runShutdown when it is covered or popped.
 	virtual void runInit();
 	virtual void runShutdown(bool *immediate);
+	// lane SAVE-UI1 (OPTS-6): RotWK's WindowLayout shutdown unloads the screen's movie (AptWindowLayout RW 0x812A37 -> AptPlayer::HideLevel RW 0x622463) and its
+	// init loads it again (RW 0x812913 -> AptPlayer::ShowLevel RW 0x6221E0, tier A) while the C++ screen stays; the port has hidden the level instead
+	// (S-171) for the screens it has, and does the retail thing for the quit menu, the screen the other screens open over (it is the one whose buttons the
+	// movie fades out when one is pressed, so a return to a hidden movie showed the pressed state). A screen answers true to be unloaded when covered
+	virtual bool unloadsMovieWhenCovered() const { return false; }
+	bool movieUnloaded() const { return m_movieUnloaded; }
 	// lane OPTS-2: once a window manager frame while the screen is the shell's top (Shell::update); nothing by default
 	virtual void frameUpdate() {}
+	// lane SAVE-UI1: a key (DirectInput scan code, KEY_STATE_*) for the screen window's own input procedure (retail: the screen is a GameWindow whose
+	// input callback sees GWM_CHAR, e.g. SaveLoad's RW 0x816627); true when used. The host offers the shell's top screen every key first; nothing by default
+	virtual bool inputKey(int key, int keyState) { (void)key; (void)keyState; return false; }
+	// lane OPTS-6: a menu the keyboard / controller navigation works on (MenuNavigator.h) when it has the input; the in-game HUD (Palantir.apt, on the
+	// shell's stack during a game) is not one: its keys are the game's
+	virtual bool isMenu() const { return true; }
 
 	// Registers `name` (and remembers it for the close).  Returns false when the registry already holds the name (reported).
 	bool registerCommand(const std::string &name, WindowManager::CommandFn fn);
@@ -93,6 +105,7 @@ private:
 	GameWindow *m_owner = nullptr;
 	bool m_ownsWindow = true;
 	bool m_hidden = false;
+	bool m_movieUnloaded = false; // lane SAVE-UI1: runShutdown unloaded the movie (unloadsMovieWhenCovered), runInit loads it again
 	struct Registered
 	{
 		Kind kind;

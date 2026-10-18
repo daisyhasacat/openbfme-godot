@@ -3,6 +3,7 @@
 // LogicSnapshot (lane SMOOTH-1): see LogicSnapshot.h. Reads the completed logic state, writes only the new snapshot.
 
 #include "GameClient/LogicSnapshot.h"
+#include "GameLogic/ScriptEngine/ScriptEngine.h"
 
 #include "GameClient/EndGame.h"
 
@@ -28,7 +29,7 @@
 
 CellShroudStatus ShroudView::cellStatus(int cx, int cy) const
 {
-	if (cx < 0 || cy < 0 || cx >= countX || cy >= countY || localPlayer < 0)
+	if (cx < 0 || cy < 0 || cx >= countX || cy >= countY || (localPlayer < 0 && localPlayer != -2))
 	{
 		return CELLSHROUD_SHROUDED;
 	}
@@ -92,7 +93,8 @@ bool sameTransform(const ObjectSnapshot &a, const ObjectSnapshot &b)
 }
 } // namespace
 
-std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, const LogicSnapshot *previous, bool hashed, std::uint32_t stateHash, int viewPlayer)
+std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, const LogicSnapshot *previous, bool hashed, std::uint32_t stateHash, int viewPlayer,
+	bool teamVision)
 {
 	static const int kActivelyBeingConstructed = ModelCondition::indexOf("ACTIVELY_BEING_CONSTRUCTED");
 	auto snap = std::make_shared<LogicSnapshot>();
@@ -104,21 +106,52 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 	// the local player's shroud (merge with VIS-1): a new copy when its version moved
 	ShroudManager *sm = logic.shroud();
 	const Player *local = logic.players().getLocalPlayer();
+	const bool allVision = viewPlayer == -2;
+	if (viewPlayer >= 0)
+	{
+		local = logic.players().getNthPlayer(viewPlayer);
+		if (local)
+		{
+			snap->observedSelection = local->selection();
+		}
+	}
+	else if (allVision)
+	{
+		local = nullptr;
+	}
+	std::vector<int> visionPlayers;
+	if (local)
+	{
+		visionPlayers.push_back(local->getPlayerIndex());
+		if (teamVision)
+		{
+			for (int i = 0; i < logic.players().getPlayerCount(); ++i)
+			{
+				const Player *p = logic.players().getNthPlayer(i);
+				if (p && p != local && !p->isObserver() && local->getRelationship(p->getDefaultTeam()) == ALLIES)
+				{
+					visionPlayers.push_back(i);
+				}
+			}
+		}
+	}
 	int shroudLocal = -1;
 	if (sm)
 	{
-		const int li = viewPlayer >= 0 ? viewPlayer : local ? local->getPlayerIndex() : -1; // lane ONLINE-3: an observer's observed player
+		const int li = allVision ? -2 : local ? local->getPlayerIndex() : -1;
 		const unsigned long long version = sm->stats().edges * 2 + (sm->displayed() ? 1 : 0);
 		const ShroudView *pv = previous ? previous->shroud.get() : nullptr;
-		if (pv && pv->version == version && pv->localPlayer == li && pv->countX == sm->cellCountX() && pv->countY == sm->cellCountY())
+		if (pv && pv->version == version && pv->localPlayer == li && pv->visionPlayers == visionPlayers &&
+			pv->countX == sm->cellCountX() && pv->countY == sm->cellCountY())
 		{
 			snap->shroud = previous->shroud;
 		}
 		else
 		{
 			auto v = std::make_shared<ShroudView>();
-			v->displayed = sm->displayed();
+			v->displayed = sm->displayed() && !allVision;
 			v->localPlayer = li;
+			v->visionPlayers = visionPlayers;
 			v->countX = sm->cellCountX();
 			v->countY = sm->cellCountY();
 			v->cellSize = sm->cellSize();
@@ -129,12 +162,17 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 			{
 				v->levels[k] = sm->displayLevel((CellShroudStatus)k);
 			}
-			v->status.assign((size_t)std::max(0, v->countX) * (size_t)std::max(0, v->countY), (std::uint8_t)CELLSHROUD_SHROUDED);
+			v->status.assign((size_t)std::max(0, v->countX) * (size_t)std::max(0, v->countY),
+				(std::uint8_t)(allVision ? CELLSHROUD_CLEAR : CELLSHROUD_SHROUDED));
 			for (int y = 0; li >= 0 && y < v->countY; ++y)
 			{
 				for (int x = 0; x < v->countX; ++x)
 				{
-					v->status[(size_t)y * (size_t)v->countX + (size_t)x] = (std::uint8_t)sm->getCellStatus(li, x, y);
+					std::uint8_t &cell = v->status[(size_t)y * (size_t)v->countX + (size_t)x];
+					for (int p : visionPlayers)
+					{
+						cell = std::min(cell, (std::uint8_t)sm->getCellStatus(p, x, y));
+					}
 				}
 			}
 			snap->shroud = v;
@@ -164,6 +202,17 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 		snap->players = pv;
 	}
 	// lane END-1: the victory state and the local player's answers (GameClient/EndGame.h); the previous view is shared when nothing changed
+	{
+		// lane VISUAL-2: the breeze as the tree buffer reads it each client frame (RW 0x4ED566: TheScriptEngine + 0x1A5A8)
+		const ScriptEngine::BreezeInfo &b = logic.scriptEngine().getBreezeInfo();
+		snap->breeze.directionX = b.directionX;
+		snap->breeze.directionY = b.directionY;
+		snap->breeze.intensity = b.intensity;
+		snap->breeze.lean = b.lean;
+		snap->breeze.randomness = b.randomness;
+		snap->breeze.breezePeriod = b.breezePeriod;
+		snap->breeze.breezeVersion = b.breezeVersion;
+	}
 	snap->endGame = EndGameView::build(logic, previous ? previous->endGame : std::shared_ptr<const EndGameView>());
 	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
 	{
@@ -230,13 +279,31 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 		Radar::captureObject(logic, *o, local, s.radar); // lane RADAR-1
 		if (shroudLocal >= 0)
 		{
-			const ObjectShroudStatus os = sm->clientObjectStatus(*o, shroudLocal);
+			ObjectShroudStatus os = sm->clientObjectStatus(*o, shroudLocal);
+			for (int p : visionPlayers)
+			{
+				os = std::min(os, sm->clientObjectStatus(*o, p));
+			}
 			s.shroudedForLocal = os == OBJECTSHROUD_SHROUDED;
 			s.objectShroud = (int)os;
+			s.shroudRecord = sm->hasRecord(*o); // lane VISUAL-2 r2
 		}
 		s.drawableHidden = o->isDrawableHidden(); // lane GARRISON-1
+		s.effectivelyDead = o->isEffectivelyDead(); // lane VISUAL-2
 		s.containedBy = o->getContainedBy() ? o->getContainedBy()->getID() : (ObjectID)INVALID_ID; // lane COMBAT-4
 		s.stealthLook = InvisibilityManager::clientLook(*o, local); // lane STEALTH-1
+		if (teamVision && s.stealthLook == 5)
+		{
+			for (int p : visionPlayers)
+			{
+				const int look = InvisibilityManager::clientLook(*o, logic.players().getNthPlayer(p));
+				if (look != 5)
+				{
+					s.stealthLook = look;
+					break;
+				}
+			}
+		}
 		if (s.stealthLook == 1 || s.stealthLook == 4)
 		{
 			logic.invisibility().clientOpacityRange(*o, &s.stealthOpacityMin, &s.stealthOpacityMax, &s.stealthCycleFrames);

@@ -24,7 +24,9 @@ class ReleaseServer:
         self.status: dict[str, int] = {}       # path -> an HTTP error status to answer (lane AIO-1)
         self.throttle: dict[str, float] = {}   # path part -> seconds between 16 KiB chunks (lane UI-3: Pause / Cancel mid-download)
         self.stats: bytes | None = None        # lane ONLINECOUNT-1: the lobby's GET /v1/stats answer (None: 404, a lobby without stats)
+        self.stats_delay = 0.0                 # MACPLAY-1: seconds the stats answer waits (a lobby that has not answered yet)
         self.requests: list[tuple[str, dict]] = []
+        self.pause_once: dict[str, threading.Event] = {}
         self.stopped = False
         srv = self
 
@@ -37,6 +39,9 @@ class ReleaseServer:
                 if self.path.startswith("/repos/"):
                     return self._api()
                 if self.path == "/v1/stats" and srv.stats is not None:
+                    end = time.monotonic() + srv.stats_delay
+                    while time.monotonic() < end and not srv.stopped:
+                        time.sleep(0.05)
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(srv.stats)))
@@ -74,12 +79,17 @@ class ReleaseServer:
                     self.close_connection = True
                     return
                 slow = next((v for k, v in srv.throttle.items() if k in self.path), None)
-                if slow is not None:
+                pause = srv.pause_once.pop(self.path, None)
+                if slow is not None or pause is not None:
                     try:
                         for i in range(0, len(body), 16384):
                             self.wfile.write(body[i:i + 16384])
                             self.wfile.flush()
-                            time.sleep(slow)
+                            if i == 0 and pause is not None and not pause.wait(120):
+                                self.close_connection = True
+                                return
+                            if slow is not None:
+                                time.sleep(slow)
                     except (BrokenPipeError, ConnectionResetError):  # the launcher stopped the download
                         self.close_connection = True
                     return

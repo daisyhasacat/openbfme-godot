@@ -11,9 +11,11 @@
 //     0x60817A, made when missing) = the command points in use (RW 0x6A7AC7: CommandPoints + 8);
 //   * UNIT_CHANGE_OBJECT_STATUS (unit, status, on) RW 0x7CF52C -> RW 0x7C4360: the unit's status bit (the parser's index) set or cleared (RW 0x62684D);
 //   * lane CAMP-1H: OBJECT_ALLOW_BONUSES (bool) RW 0x7BD718: every object's difficulty bonus flag (RW 0x68B907) and the script engine's + 0x1A5D5.
-// NOT PORTED (S-1363): PLAYER_SET_MAX_SPELLPOINTS (RW 0x7BD15B: the rank whose cumulative Rank + 0x38 reaches the points, RW 0x782942, stored at Player +
-// 0x30 by RW 0x70EB9A; that field's reader is unidentified) and SET_PLAYER_KILLS_OF_TYPE_TO_COUNTER (RW 0x7C38F6: ScoreKeeper + 0x1FC, the per-player
-// kills by template map, RW 0x79E4D8, is not ported) stay unported (counted).
+//   * lane OWNERFIX-1: PLAYER_SET_MAX_SPELLPOINTS (player, points) RW 0x7BD15B: every player of the mask (RW 0x758F7C, RW 0x6A85EE) gets Player + 0x30
+//     (RW 0x70EB9A) = RW 0x6AA8EC (Player + 8 -> RW 0x782942: the rank whose cumulative SciencePurchasePointsGranted reaches the points). Player + 0x30 is
+//     the rank sub-object's + 0x28, the rank cap addSkillPoints (RW 0x782AA4) stops at (PlayerScience.h); MAP ANG Angmar caps the power points at 15.
+// NOT PORTED (S-1363): SET_PLAYER_KILLS_OF_TYPE_TO_COUNTER (RW 0x7C38F6: ScoreKeeper + 0x1FC, the per-player kills by template map, RW 0x79E4D8, is not
+// ported) stays unported (counted).
 
 #include "GameLogic/ScriptEngine/ScriptActions.h"
 
@@ -21,6 +23,7 @@
 #include "Common/Player.h"
 #include "Common/Upgrade.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Module/GateModules.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/ScriptEngine/ScriptConditions.h"
@@ -37,6 +40,20 @@ const ScriptParameter &param(const ScriptActionRec &a, size_t i)
 
 bool ScriptActions::executeCampaignAction(ScriptEngine &engine, const ScriptActionRec &a, const std::string &name)
 {
+	if (name == "GATE_OPEN" || name == "GATE_CLOSE") // RW 0x7BD8B8 / 0x7BD826
+	{
+		Object *o = engine.getUnitNamed(param(a, 0).stringValue);
+		auto *gate = o ? dynamic_cast<GateOpenAndCloseBehavior *>(o->findModule("GateOpenAndCloseBehavior")) : nullptr;
+		const bool open = name == "GATE_OPEN";
+		if (gate && gate->isOpen() != open && gate->isSettled())
+		{
+			if (open)
+				gate->open();
+			else
+				gate->close();
+		}
+		return true;
+	}
 	if (name == "OBJECT_ALLOW_BONUSES") // lane CAMP-1H: RW 0x7BD718 (ScriptActions vtable entry RW 0xC360D8)
 	{
 		// every object of TheGameLogic's list (RW 0x97338F, next + 0x8C) gets the flag (RW 0x68B907), then the script engine's + 0x1A5D5 for new objects
@@ -46,6 +63,14 @@ bool ScriptActions::executeCampaignAction(ScriptEngine &engine, const ScriptActi
 			o->setReceivingDifficultyBonus(allow);
 		}
 		engine.setObjectsReceiveDifficultyBonus(allow);
+		return true;
+	}
+	if (name == "PLAYER_SET_MAX_SPELLPOINTS") // lane OWNERFIX-1: RW 0x7BD15B
+	{
+		for (Player *p : ScriptConditions::players(engine, param(a, 0).stringValue))
+		{
+			p->science().setRankLevelCap(p->science().rankForPurchasePoints(param(a, 1).intValue)); // RW 0x6AA8EC, RW 0x70EB9A
+		}
 		return true;
 	}
 	if (name == "GIVE_PLAYER_UPGRADE") // RW 0x7BBC00
@@ -101,14 +126,11 @@ bool ScriptActions::executeCampaignAction(ScriptEngine &engine, const ScriptActi
 std::vector<std::string> ScriptActions::campaignStopLines()
 {
 	return {
-		"[S-1363] PLAYER_SET_MAX_SPELLPOINTS (RW 0x7BD15B: Player + 0x30, its reader unidentified) and SET_PLAYER_KILLS_OF_TYPE_TO_COUNTER (RW 0x7C38F6: "
-		"ScoreKeeper + 0x1FC, the kills by template) stay unported (counted); NAMED_RECEIVE_UPGRADE on a horde runs Object::giveUpgrade instead of the "
+		"[S-1363] SET_PLAYER_KILLS_OF_TYPE_TO_COUNTER (RW 0x7C38F6: ScoreKeeper + 0x1FC, the kills by template) stays unported (counted); NAMED_RECEIVE_UPGRADE on a horde runs Object::giveUpgrade instead of the "
 		"contain's slots 0xB4 / 0xB8 (noted)",
 		"[S-1365] Team::updateState (RW 0x7A208C, lane CAMP-1H) runs the team scripts and flags except: the entered / exited flag + 0x5C (computed from the "
 		"members' enter / exit frames, RW 0x68DD46), teamEventsList (RW 0x7396E8 -> the members' AI RW 0x662597), the attacker records' expiry (RW "
 		"0x7A1FB1 / 0x7A2004), the team's vslot 0x14 (RW 0x7A59CB), the AIPlayer's team building (+ 0x112 / + 0x113) and the enemy scan's off-map filter",
-		"[S-1366] GATE_OPEN / GATE_CLOSE (RW 0x7BD8B8 / 0x7BD826: the GateOpenAndCloseBehavior's slots 0x18 / 0x28 / 0x1C / 0x20) stay unported (counted): the "
-		"gate module is not ported, a gate keeps its BLOCKING_GATE footprint (MAP ANG Amon Sul, Carn Dum, Fornost and Bonus open their gates by script)",
 		"[S-1712] Object::initObject's player object modifiers (RW 0x6AD3E6 -> RW 0x6AD2B5 when Player + 0xAC + 0xB0 + 0xB4 > 0: health scale, body vslot "
 		"0x6C, Object + 0x39D bits) are not ported; their writers are not located",
 	};

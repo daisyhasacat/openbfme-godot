@@ -29,6 +29,10 @@ struct CreateAHeroScreenContext;
 class ArchiveFileSystem;
 class GlobalLanguage;
 struct OnlineShellContext;
+struct OnlineHubContext;
+struct ProfileSwitch;
+struct CampaignMenuContext;
+struct SkirmishHonorsGame;
 
 // lane END-2: what QuitMenu.apt asks of the game it is opened over (TheGameLogic + 0x110 / + 0x114, the recorder, the local player)
 struct QuitMenuContext
@@ -50,6 +54,9 @@ struct ShellEnvironment
 	LoadScreenInfo *loadScreen = nullptr;     // what LoadScreen.apt shows (GUI/LoadScreenInfo.h); null: its providers answer nothing and say so
 	SkirmishProfileStore *profiles = nullptr; // the Skirmish profiles (GUI/Skirmish/SkirmishSetup.h); null: the screen keeps its own in memory [S-179]
 	ScoreScreenData *scoreScreen = nullptr;   // lane END-1: what TimeLine.apt shows (GameClient/EndGame.h); null: its providers answer nothing and say so
+	// lane OWNERFIX-3: the skirmish game the Skirmish lobby posted last (retail: TheGameInfo), from which the score screen records the profile's battle honors
+	// (GUI/Skirmish/RealTimeStats.h); null: no honors are recorded and the score screen says so
+	SkirmishHonorsGame *skirmishHonors = nullptr;
 	ShellServices *services = nullptr;        // lane END-1: where TimeLine.apt's buttons go (the shell's requests)
 	SaveLoadInfo *saveLoad = nullptr;         // lane MP-2: what SaveLoad.apt lists (GUI/SaveLoadInfo.h); null: it lists nothing and says so
 	LANAPI *lan = nullptr;                    // lane MP-2: the LAN lobby LanLobby.apt drives (GameNetwork/LANAPI.h); null: it says so
@@ -78,6 +85,15 @@ struct ShellEnvironment
 	PlayerStatusInfo *playerStatus = nullptr; // lane HUD-5: the players screen's Status rows (GUI/PlayerStatusInfo.h); null: the page shows no rows and says so
 	CreateAHeroScreenContext *createAHero = nullptr; // lane CAH-1: what CreateAHero.apt edits (GUI/AptScreens/AptCreateAHero.h); null: it says so
 	ArchiveFileSystem *fileSystem = nullptr;  // lane UI-4: the mounted archives (the credits roll reads Data\INI\Credits.ini); null: the credits say so
+	ProfileSwitch *profileSwitch = nullptr;   // lane UBERJOIN-1: switches the performance mode for one game (GUI/ProfileSwitch.h); null: a game of the other mode says it cannot be joined
 	OnlineShellContext *online = nullptr;     // lane ONLINE-4: the lobby client OnlineShell.apt drives (GUI/AptScreens/AptOnlineShell.h); null: it says so
+	OnlineHubContext *onlineHub = nullptr;    // lane ONLINEHUB-1: the recorded games and the platform API the statistics, Quick Match and tournament pages
+	                                          // read (GUI/AptScreens/AptStats.h); null: they say so
+	CampaignMenuContext *campaignMenu = nullptr; // lane CAMPSAVE-1: what CampaignMenu.apt shows (GUI/AptScreens/AptCampaignMenu.h); null: it says so
+	// lane CAMPSAVE-1: TheGlobalData + 0xAF5, the main menu's MainMenuUnlockBonusCampaign (RW 0x91BBAD): Options.ini's "BCU" read at start
+	// (GlobalData::applyOptionPreferences RW 0x641DED -> RW 0x6E5E16: _strcmpi(value, "true") == 0), set by the campaign's end (RW 0x927F4C)
+	bool bonusCampaignUnlocked = false;
+	// lane CAMPSAVE-1: the Save folder (RW 0x6DD85E's folder) MainMenuContinueCampaign looks for "00000000.sav" in (RW 0x91BBBB); "" none
+	std::string saveFolder;
 	const GlobalLanguage *language = nullptr; // lane UI-4: language.ini's Language block (the credits' fonts, GameClient/GlobalLanguage.h); null: likewise
 };

@@ -4,6 +4,7 @@
 // TransportContain / HordeTransportContain at runtime. See GameLogic/Object/Contain/TransportContainRuntime.h for the target facts and the stops. Lane GARRISON-2.
 
 #include "GameLogic/Object/Contain/TransportContainRuntime.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/NumericState.h"
 #include "Common/StateHash.h"
@@ -1179,4 +1180,30 @@ void HordeTransportContain::crc(StateHasher &h) const
 	TransportContain::crc(h);
 	h.addI32(m_fallTimer);
 	h.addBool(m_ridersFalling);
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------
+void TransportContain::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	OpenContain::xfer(x);
+	x.xferInt(&m_extraSlotsInUse); // a sum of (slot count - 1) per rider: negative for riders of no slots, not an index
+	x.xferUnsignedInt(&m_frameExitNotBusy);
+	x.xferUnsignedInt(&m_throwOutFrame);
+	x.xferBool(&m_moving);
+	x.xferBool(&m_payloadCreated);
+	SnapshotXfer::strings(x, m_pendingUpgradeTriggers);
+	for (unsigned long long *s : { &m_stats.payloadObjects, &m_stats.payloadRefused, &m_stats.upgradeObjects, &m_stats.healed, &m_stats.scattered,
+			 &m_stats.ridersKilledNotFree, &m_stats.unported })
+	{
+		SnapshotXfer::u64(x, *s);
+	}
+}
+
+void HordeTransportContain::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	TransportContain::xfer(x);
+	x.xferInt(&m_fallTimer);
+	x.xferBool(&m_ridersFalling);
 }

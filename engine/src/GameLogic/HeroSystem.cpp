@@ -168,10 +168,8 @@ std::vector<std::string> HeroSystem::stopLines()
 		"[S-851] RespawnUpdate AutoSpawn: the writer of state 3 (the auto respawn countdown) is not located and the refund slot RW 0x8B3017 has no caller; retail data has no "
 		"AutoSpawn:Yes rule, a mod's would never respawn by itself here (state 3 reached is a runtime error)",
 		"[S-852] hero records: not ported: the campaign / WotR saved heroes (RW 0x6B1771), the record "
-		"fields Object + 0x47C / + 0x480 / + 0x488 / + 0x458 bit 4 and the tracker's leveled byte, GameLogic + 0x98, RW 0x68C7E9, RW 0x70E013 / 0x67449C, RW 0x68B934; "
+		"fields Object + 0x47C / + 0x480 / + 0x488 / + 0x458 bit 4 and the tracker's leveled byte, GameLogic + 0x98, RW 0x68C7E9, forced drawable model-condition refresh on creation (RW 0x70E013 / 0x67449C(true)), RW 0x68B934; "
 		"the rank of a purchase record is 1 (RW 0x73CE2A's create module vslot is not identified)",
-		"[S-853] RespawnBody: a TEMPORARILY_DEFECTED hero's defection end on a lethal hit (RW 0x69ABA7) is not ported; the death (Object::onDie) runs after the damage modules "
-		"and the kill credit (COMBAT-1's order), retail runs it inside RespawnBody::internalChangeHealth",
 		"[S-854] RespawnUpdate details: the producer's exit slot 9 call of the revive (RW 0x8B38D8) is not made, the AI idle test before the exit (AI vslot 0x1B8 or RW "
 		"0x660AC1 == 16) is AIUpdateInterface::isIdle, a respawn health "
 		"above 100% (the max health growth of RW 0x8C47F6) is not ported",
@@ -185,8 +183,7 @@ std::vector<std::string> HeroSystem::stopLines()
 		"list's order: as an applied modifier can grant an upgrade at once (a CostModifierUpgrade appends to the player's ordered list), that order can change "
 		"shared player state)",
 		"[S-858] AutoHealBehavior: not ported: NonStackable (the body's last heal frame, body vslot 0x48: the heal stacks), AffectsWholePlayer (no retail use), "
-		"RespawnNearbyHordeMembers, Object + 0x458 bit 3 "
-		"in the eligibility, the contain's FX flag, a horde healer's damage frame reader (RW 0x68C866 -> vslot 0x26C: its body's is read); the combat and recent "
+		"Object + 0x458 bit 3 in the eligibility, the contain's FX flag; the combat and recent "
 		"damage tests of RW 0x855533 read the healer (verified)",
 	};
 	for (const std::string &l : SpecialAbilityModules::stopLines())

@@ -172,6 +172,33 @@ int RelayLog::Assembled::runAheadAfter(UnsignedInt frame, int initial) const
 	return ra;
 }
 
+// S-1064: replay the native relay's DROP / REJOIN flags for score presentation (RW 0x90313E), not simulation. assemble appends REJOIN events after
+// collecting drops, so vector order is not execution order. A rejoin completes on its frame; a drop excludes the slot from the start of its frame.
+std::uint8_t RelayLog::Assembled::disconnectedSlotsAt(UnsignedInt nextFrame) const
+{
+	std::array<std::uint64_t, 8> latest{};
+	std::uint8_t disconnected = 0;
+	for (const Network::MembershipEvent &e : membership)
+	{
+		if (e.slot < 0 || e.slot >= 8 || (e.kind != Network::MembershipEvent::DROP && e.kind != Network::MembershipEvent::REJOIN))
+		{
+			continue;
+		}
+		const bool drop = e.kind == Network::MembershipEvent::DROP;
+		const std::uint64_t boundary = (std::uint64_t)e.frame + (drop ? 0 : 1);
+		// At an equal boundary a drop of the new incarnation wins over its completed rejoin, matching assemble's applyDrops after REJOIN.
+		const std::uint64_t order = boundary * 2 + (drop ? 1 : 0);
+		if (boundary > nextFrame || order < latest[(size_t)e.slot])
+		{
+			continue;
+		}
+		latest[(size_t)e.slot] = order;
+		const auto bit = (std::uint8_t)(1u << e.slot);
+		disconnected = drop ? (std::uint8_t)(disconnected | bit) : (std::uint8_t)(disconnected & ~bit);
+	}
+	return disconnected;
+}
+
 bool RelayLog::assemble(const RelayLogFile &log, const NetworkConfig &config, Assembled &out, std::string *error, bool live)
 {
 	Assembled a;

@@ -66,7 +66,7 @@ const std::set<int> &clientActions()
 			"HIDE_UI", "SHOW_UI", "DESELECT", "SELECT_OBJECT", "EVA_SET_ENABLED_DISABLED", "AUDIO_MAKE_SOUND_IMMUNE_TO_FADE", "AUDIO_FADE_VOLUME",
 			"AUDIO_RESTORE_VOLUME_ALL_TYPE", "AUDIO_OVERRIDE_VOLUME_TYPE", "AUDIO_RESTORE_VOLUME_TYPE", "AUDIO_SET_VOLUME_TYPE", "CAMEO_FLASH",
 			"NAMED_FLASH", "TEAM_FLASH", "ENABLE_HOUSE_COLOR", "DRAW_SKYBOX_BEGIN", "DRAW_SKYBOX_END", "SUSPEND_BACKGROUND_SOUNDS",
-			"RESUME_BACKGROUND_SOUNDS", "SET_VISUAL_SPEED_MULTIPLIER", "SHOW_WEATHER", "SCREEN_SHAKE", "SELECT_BUILDER_BUTTON_FLASH",
+			"RESUME_BACKGROUND_SOUNDS", "SET_VISUAL_SPEED_MULTIPLIER", "SHOW_WEATHER", "SCREEN_SHAKE", "SELECT_BUILDER_BUTTON_FLASH", "HERO_SELECT_BUTTON_FLASH",
 			"CLOSE_OBJECTIVES_SCREEN", "PLAYER_SELECT_SKILLSET", "MAP_REVEAL_AT_WAYPOINT", "MAP_SHROUD_AT_WAYPOINT", "MAP_REVEAL_PERMANENTLY_AT_WAYPOINT",
 			"MAP_UNDO_REVEAL_PERMANENTLY_AT_WAYPOINT", "MAP_REVEAL_PERMANENTLY_IN_TRIGGER", "MAP_UNDO_REVEAL_PERMANENTLY_IN_TRIGGER",
 			// lane SCRIPT-2: the victory screen (RW 0x7BF05C: TheShell's victory window, no logic), the objectives button flash (RW 0x7BDF4E), the command
@@ -231,6 +231,21 @@ void ScriptActions::clientRequest(ScriptEngine &engine, const ScriptActionRec &a
 	ScriptClientRequest r;
 	r.action = ScriptTemplates::action(a.resolved)->name;
 	r.params = a.params;
+	if (r.action == "HERO_SELECT_BUTTON_FLASH")
+	{
+		if (a.params.size() != 2)
+		{
+			engine.logic().reportError("HERO_SELECT_BUTTON_FLASH requires a template name and integer seconds");
+			return;
+		}
+		// RW 0x7BDD7A: signed 32-bit IMUL by the 30 Hz client rate, not the 5 Hz logic rate.
+		const std::uint32_t bits = 30u * (std::uint32_t)a.params[1].intValue;
+		const int frames = (int)(bits <= 0x7FFFFFFFu ? (std::int64_t)bits : (std::int64_t)bits - 0x100000000LL);
+		if (ObjectClientHooks *hooks = engine.logic().clientHooks())
+		{
+			hooks->flashHeroButton(a.params[0].stringValue, frames);
+		}
+	}
 	for (const ScriptParameter &p : a.params)
 	{
 		if ((p.type == PARAM_WAYPOINT || p.type == PARAM_CAMERA_POSITION) && !r.hasPosition)

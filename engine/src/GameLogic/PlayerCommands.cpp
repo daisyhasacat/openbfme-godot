@@ -149,12 +149,12 @@ bool addTeam(GameLogic &logic, const GameMessage &m, int n)
 }
 } // namespace
 
-bool PlayerCommands::isSelectable(const Object &o)
+bool PlayerCommands::isSelectable(const Object &o, bool specialPowerTarget)
 {
 	// RW 0x68DE58 (Object::isSelectable): KindOf ALWAYS_SELECTABLE (template + 0x10F bit 2) always; else not while the status UNSELECTABLE (3) is set,
 	// not when effectively dead (object + 0x458 bit 0) unless the template's KeepSelectableWhenDead (+ 0x642, field table row RW 0xDA4858), not for KindOf
-	// DRONE (+ 0x111 bit 1); then the object's own selectable flag (+ 0x454, the script's). NOT PORTED (S-280): RotWK also lets a WALK_ON_TOP_OF_WALL
-	// object pass while the InGameUI's GUI command is of type 0x18 (the client's state, read from the logic in retail).
+	// DRONE (+ 0x111 bit 1); then the object's own selectable flag (+ 0x454, the script's). RW 0x68DEA6..0x68DEC4 overrides only that last flag for
+	// WALK_ON_TOP_OF_WALL while targeting SPECIAL_POWER. Client callers supply that context; logic-only squad recall has no client GUI command (S-280).
 	if (o.isDestroyed())
 	{
 		return false;
@@ -190,7 +190,7 @@ bool PlayerCommands::isSelectable(const Object &o)
 	{
 		return false;
 	}
-	return o.isScriptSelectable();
+	return o.isScriptSelectable() || (specialPowerTarget && o.isKindOfName("WALK_ON_TOP_OF_WALL"));
 }
 
 void PlayerCommands::registerHandlers(GameLogicDispatch &d)

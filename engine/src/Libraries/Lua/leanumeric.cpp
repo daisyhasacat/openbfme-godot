@@ -20,9 +20,10 @@
 
 #include "lua_ea.h"
 
+#include "Common/ArithmeticNaN.h"
 #include "Common/DeterministicLibm.h"
+#include "Common/FloatFromChars.h"
 
-#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -105,11 +106,7 @@ static double nanResult(double a, double b)
 
 double luaEA_add(int mode, double a, double b)
 {
-	const double r = a + b;
-	if (std::isnan(r))
-	{
-		return nanResult(a, b);
-	}
+	const double r = ArithmeticNaN::generated(a, b, a + b);
 	if (mode != LUA_EA_NUM_PC24 || !std::isfinite(r) || r == 0.0)
 	{
 		return r;
@@ -127,11 +124,7 @@ double luaEA_sub(int mode, double a, double b)
 
 double luaEA_mul(int mode, double a, double b)
 {
-	const double r = a * b;
-	if (std::isnan(r))
-	{
-		return nanResult(a, b);
-	}
+	const double r = ArithmeticNaN::generated(a, b, a * b);
 	if (mode != LUA_EA_NUM_PC24 || !std::isfinite(r) || r == 0.0)
 	{
 		return r;
@@ -142,11 +135,7 @@ double luaEA_mul(int mode, double a, double b)
 
 double luaEA_div(int mode, double a, double b)
 {
-	const double r = a / b;
-	if (std::isnan(r))
-	{
-		return nanResult(a, b);
-	}
+	const double r = ArithmeticNaN::generated(a, b, a / b);
 	if (mode != LUA_EA_NUM_PC24 || !std::isfinite(r) || r == 0.0)
 	{
 		return r;
@@ -429,7 +418,7 @@ double luaEA_str2number(const char *s, char **endptr)
 	}
 	(void)numberStart;
 	double value = 0.0;
-	const std::from_chars_result res = std::from_chars(mantissaStart, p, value, std::chars_format::general);
+	const std::from_chars_result res = FloatFromChars(mantissaStart, p, value);
 	if (res.ec == std::errc::result_out_of_range)
 	{
 		// overflow: HUGE_VAL; underflow: 0 (MSVCR71 returns 0 and sets ERANGE below the smallest subnormal).

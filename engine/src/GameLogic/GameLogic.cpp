@@ -8,6 +8,8 @@
 #include "GameLogic/Object/ObjectGeometry.h"
 #include "GameLogic/SimMath.h"
 #include "Common/PlayerList.h"
+#include "Common/GameState.h" // lane SAVE-4a
+#include "Common/Snapshot.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/NotifyCrushModules.h"
 #include "GameLogic/Module/UpgradeModuleClasses.h"
@@ -74,6 +76,7 @@ GameLogic::GameLogic(ThingFactory &things, ModuleFactory &modules, PlayerList &p
 	m_emotions = std::make_unique<EmotionWorld>(*this);
 	m_inertBit = ObjectTemplateInfoBuilder::kindOfIndex("INERT");
 	m_projectileBit = ObjectTemplateInfoBuilder::kindOfIndex("PROJECTILE");
+	registerSnapshotBlocks(); // lane SAVE-4a (GameLogicSnapshot.cpp)
 }
 
 // lane MODULES-2: RW 0x68E31F registers the object with ThePartitionManager (RW 0x68E3B6 -> 0xA39050) unless its template's KindOf has INERT (+ 0x110 bit 25) or

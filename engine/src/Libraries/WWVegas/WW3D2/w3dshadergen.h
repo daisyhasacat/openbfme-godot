@@ -75,7 +75,9 @@ inline float W3D_Pack_House_Color(int r, int g, int b)
 	return 1.0f + (float)(((r & 255) << 16) | ((g & 255) << 8) | (b & 255));
 }
 
-std::string Generate_W3D_Shader_Code(const W3DShaderKey &key);
+enum class W3DSamplerPolicy { Anisotropic, Metal16 };
+
+std::string Generate_W3D_Shader_Code(const W3DShaderKey &key, W3DSamplerPolicy samplers = W3DSamplerPolicy::Anisotropic);
 
 // RENDER-2: simple.fxo vs_1_1 (blob 1): oT0.xy = uv * TexCoordTransform_0.xy + Time * TexCoordTransform_0.zw (the preshader's c4 = Time * zw).
 // Rows 0 and 1 of the stage matrix (applied to (u, v, 1, 0)) for `timeSeconds`. INFERENCE (S-023): Time is the effect's seconds clock.

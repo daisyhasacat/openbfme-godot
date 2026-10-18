@@ -153,6 +153,8 @@ public:
 	static bool findGoodBuildOrRepairPosition(const Object &dozer, const Object &target, Coord3D &out);
 
 	void crc(StateHasher &hasher) const override;
+	void xferAIStateBody(class Xfer &x) override; // lane SAVE-4c (AIUpdateSnapshot.cpp)
+	OBFME_MODULE_XFER(DozerAIUpdate) // lane SAVE-4e: its version and AIUpdateInterface's (its state: xferAIStateBody)
 
 	// RW 0x88CAF5: the base update, the repair validity check, the primary machine; never sleeps
 	UpdateSleepTime update() override;

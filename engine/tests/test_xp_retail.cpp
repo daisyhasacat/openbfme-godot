@@ -20,6 +20,8 @@
 #include "GameLogic/ExperienceWorld.h"
 #include "GameLogic/FXEvents.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Module/SlavedUpdate.h"
+#include "GameLogic/Module/ExperienceUpgradeModules.h"
 #include "GameLogic/Object/AttributeModifierPool.h"
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "GameLogic/Object/ExperienceTracker.h"
@@ -569,6 +571,83 @@ TEST_CASE("xp retail: LevelUpUpgrade (Upgrade_GondorBasicTraining: LevelsToGain 
 	CHECK(t->getRank() == 2);
 	CHECK(g.hash() != 0u);
 	(void)before;
+}
+
+TEST_CASE("STOPS-B1 S-635 retail: basic training levels contained and entering members and respects the cap")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	for (bool release : { false, true })
+	{
+		CAPTURE(release);
+		Game g(*sh.world, *sh.mount);
+		Object *horde = g.make(*sh.world, "GondorFighterHorde", g.gondor);
+		g.frame();
+		auto *contain = dynamic_cast<HordeContain *>(horde->getContain());
+		REQUIRE(contain);
+		const auto *items = contain->getContainedItemsList();
+		REQUIRE(items);
+		REQUIRE_FALSE(items->empty());
+		const std::vector<Object *> members(items->begin(), items->end());
+		if (release)
+		{
+			contain->releaseMemberForGarrison(members.front());
+			REQUIRE(contain->membersEntering().size() == 1);
+		}
+		horde->giveUpgrade(std::string("Upgrade_GondorBasicTraining"));
+		CHECK(horde->getExperienceTracker()->getRank() == 2);
+		for (Object *member : members)
+		{
+			CHECK(member->getExperienceTracker()->getRank() == 2);
+			CHECK(member->getExperienceTracker()->getExperience() == 50.0f);
+		}
+		const auto pool = contain->experiencePools().find(members.front()->getTemplate()->getTemplateID());
+		CHECK(pool != contain->experiencePools().end());
+		if (pool != contain->experiencePools().end())
+		{
+			CHECK(pool->second == 50.0f);
+		}
+		Object *capped = g.make(*sh.world, "GondorFighterHorde", g.gondor);
+		capped->getExperienceTracker()->gainExpForLevel(1, false);
+		auto *upgrade = dynamic_cast<LevelUpUpgrade *>(capped->findModule("LevelUpUpgrade"));
+		REQUIRE(upgrade);
+		REQUIRE(capped->getExperienceTracker()->getRank() == 2);
+		REQUIRE_FALSE(upgrade->isAlreadyUpgraded());
+		CHECK_FALSE(upgrade->wouldUpgrade(upgrade->muxData()->m_activationMask));
+	}
+}
+
+TEST_CASE("STOPS-B1 S-635 retail: only slaves that die with their master veto damage skill points")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	for (const std::string &name : { "MordorFortressCatapult", "CaveTroll_Slaved", "MordorCatapult" })
+	{
+		CAPTURE(name);
+		Game g(*sh.world, *sh.mount);
+		PlayerExperienceAwardSink sink;
+		g.logic->experience().setAwardSink(&sink);
+		Object *attacker = g.make(*sh.world, name, g.gondor);
+		Object *victim = g.make(*sh.world, "MordorFighter", g.mordor);
+		g.frame();
+		REQUIRE(attacker->isKindOfName("CAN_ATTACK"));
+		const auto *slave = SlavedUpdateInterface::of(*attacker);
+		const bool veto = name == "MordorFortressCatapult";
+		if (name != "MordorCatapult")
+		{
+			REQUIRE(slave);
+			REQUIRE(slave->dieOnMastersDeath() == veto);
+		}
+		else
+		{
+			REQUIRE(slave == nullptr);
+		}
+		REQUIRE(victim->getExperienceTracker()->getExperienceValue(*attacker, false) == 1);
+		const float pointsBefore = g.gondor->science().getSkillPoints();
+		const float scoreBefore = g.gondor->getScoreKeeper().skillPointsEarned();
+		g.kill(*victim, *attacker);
+		const float expected = veto ? 0.0f : 1.0f;
+		CHECK(g.gondor->science().getSkillPoints() - pointsBefore == expected);
+		CHECK(g.gondor->getScoreKeeper().skillPointsEarned() - scoreBefore == expected);
+	}
 }
 
 // lane INTEG-1: XP-1's award sink connected to SPELL-1's player science (S-631 / S-527). A GameLogic installs PlayerExperienceAwardSink by default: a kill's

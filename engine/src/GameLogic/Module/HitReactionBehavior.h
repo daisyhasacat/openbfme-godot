@@ -50,6 +50,7 @@ public:
 class HitReactionBehavior : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(HitReactionBehavior) // lane SAVE-4b
 	HitReactionBehavior(Thing *thing, const HitReactionBehaviorModuleData *data); ///< RW 0x85C296
 	UpdateSleepTime update() override;                                           ///< RW 0x85C30F
 	void crc(StateHasher &h) const override;

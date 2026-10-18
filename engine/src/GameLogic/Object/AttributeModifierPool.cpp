@@ -2,6 +2,7 @@
 // See GameLogic/Object/AttributeModifierPool.h.
 
 #include "GameLogic/Object/AttributeModifierPool.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/System/ShroudManager.h"
 
 #include "Common/StateHash.h"
@@ -313,5 +314,34 @@ void AttributeModifierPool::crc(StateHasher &hasher) const
 	for (int c : m_categoryCount)
 	{
 		hasher.addI32(c);
+	}
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190; retail's AttributeModifierPoolUpdate::xfer RW 0x805E89 (1, 3) is an attempt in the decomp, its
+// fields not identified one by one): the entries in order (each list's store index and name), the wake frame and the category tables --------------------
+void AttributeModifierPool::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	SnapshotXfer::each(x, m_entries, 9, [&](Entry &e) {
+		x.xferInt(&e.index);
+		x.xferAsciiString(&e.name);
+		// the list is the store's: its index is the name's (RW 0x614470)
+		const int index = TheAttributeModifierStore ? TheAttributeModifierStore->findIndex(e.name) : -1;
+		if (x.isLoading() && (index < 0 || index != e.index))
+		{
+			throw XferException("an attribute modifier entry names the list '" + e.name + "' at index " + std::to_string(e.index) + ", which this game's data has "
+				+ (index < 0 ? std::string("not") : "at " + std::to_string(index)));
+		}
+		x.xferUnsignedInt(&e.expire);
+	});
+	x.xferUnsignedInt(&m_nextWake);
+	for (unsigned &f : m_categoryDisabled)
+	{
+		x.xferUnsignedInt(&f);
+	}
+	for (int &c : m_categoryCount)
+	{
+		x.xferInt(&c);
 	}
 }

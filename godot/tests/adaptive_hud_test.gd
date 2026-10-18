@@ -1,6 +1,7 @@
 extends SceneTree
 ## UI contract with a mock source: no retail data or GDExtension required.
 class Source extends Node:
+ func is_logic_held() -> bool: return true
  var native_visible:=true
  var hover: Array=[]
  func set_controller_hover(slot,arc,unit,spell):hover=[slot,arc,unit,spell]

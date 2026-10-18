@@ -72,6 +72,7 @@ public:
 	unsigned long long crcsCompared() const { return m_compared; }
 	unsigned long long crcMismatches() const { return m_mismatches; }
 	const std::string &firstMismatch() const { return m_firstMismatch; }
+	int64_t firstMismatchFrame() const { return m_firstMismatchFrame; }
 	// every CRC frame's hash and breakdown this catch-up computed (a rejoined client sends those whose MSG_LOGIC_CRC executes after it rejoined)
 	const std::map<UnsignedInt, Network::LiveStart::Crc> &crcs() const { return m_crcs; }
 	unsigned long long localInputIgnored() const { return m_ignored; }
@@ -83,6 +84,7 @@ private:
 	UnsignedInt m_reached = 0;
 	unsigned long long m_compared = 0, m_mismatches = 0, m_ignored = 0;
 	std::string m_firstMismatch;
+	int64_t m_firstMismatchFrame = -1;
 	std::map<UnsignedInt, Network::LiveStart::Crc> m_crcs;
 	std::map<UnsignedInt, std::uint32_t> m_uncompared; ///< CRC frames run whose players' CRC the log did not have yet (the last 64)
 	void compare(UnsignedInt frame, std::uint32_t own, std::uint32_t players);

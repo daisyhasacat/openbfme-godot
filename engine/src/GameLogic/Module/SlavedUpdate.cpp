@@ -2,6 +2,7 @@
 // See GameLogic/Module/SlavedUpdate.h for the sources and what is inference.
 
 #include "GameLogic/Module/SlavedUpdate.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/GameCommon.h"
 #include "Common/Player.h"
@@ -465,4 +466,19 @@ void SlavedUpdate::registerClass(ModuleFactory &modules)
 std::vector<std::string> SlavedUpdate::stopLines()
 {
 	return { kStop };
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) ---------------------------------------------------------------------------------------------------
+void SlavedUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferObjectID(&m_slaverID);
+	SnapshotXfer::coord3D(x, m_guardOffset);
+	x.xferInt(&m_framesToWait);
+	x.xferInt(&m_repairState);
+	x.xferBool(&m_repairing);
+	x.xferObjectID(&m_guardTargetID);
+	x.xferBool(&m_selfTaskFlag);
+	x.xferBool(&m_faded);
 }

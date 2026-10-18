@@ -84,7 +84,7 @@ void GameWorld::bindCampaignMethods()
 	ClassDB::bind_method(D_METHOD("start_campaign_mission", "options"), &GameWorld::start_campaign_mission);
 	ClassDB::bind_method(D_METHOD("campaign_status"), &GameWorld::campaign_status);
 	ClassDB::bind_method(D_METHOD("campaign_progress_load", "path"), &GameWorld::campaign_progress_load);
-	ClassDB::bind_method(D_METHOD("campaign_progress_save", "path", "progress"), &GameWorld::campaign_progress_save);
+	ClassDB::bind_method(D_METHOD("campaign_progress_step", "progress", "step"), &GameWorld::campaign_progress_step); // lane CAMPSAVE-1
 	ClassDB::bind_method(D_METHOD("get_movie", "title"), &GameWorld::get_movie);
 	ClassDB::bind_method(D_METHOD("get_play_intro"), &GameWorld::get_play_intro); // lane CAMP-2
 }
@@ -286,22 +286,88 @@ Dictionary GameWorld::campaign_progress_load(const String &path) const
 	return d;
 }
 
-Dictionary GameWorld::campaign_progress_save(const String &path, const Dictionary &progress) const
+// lane CAMPSAVE-1: one step of the campaign's state (GameClient/LinearCampaign.h CampaignProgress, the RW functions there) on the host's copy of it:
+//   "started" (RW 0x5EAB8F's flags), "won" (RW 0x5EBAEE: + 0xD0), "game_over" (RW 0x5EAB0A), "after_score" (RW 0x927EC6: after = "bonus_unlock" /
+//   "auto_save_menu" / "menu"), "menu" (RW 0x5EADDE: the menu's content), "next_mission" (RW 0x5EAE37: start = false unless ready), "last_mission"
+//   (RW 0x5EC5D1); every answer has the progress after the step and, for the menu, its content {have_mission, mission_index, mission_name,
+//   load_screen_image, victorious}
+Dictionary GameWorld::campaign_progress_step(const Dictionary &progress, const String &step) const
 {
 	Dictionary d;
 	d["ok"] = false;
+	if (!m_world)
+	{
+		d["error"] = "GameWorld.setup has not run";
+		return d;
+	}
+	const LinearCampaignManager &m = m_world->linearCampaigns();
 	CampaignProgress p;
 	p.campaign = n(String(progress.get("campaign", String())));
 	p.mission = (int)intOpt(progress, "mission", 0);
 	p.difficulty = (int)intOpt(progress, "difficulty", 1);
 	p.victorious = boolOpt(progress, "victorious", false);
-	Ref<FileAccess> f = FileAccess::open(path, FileAccess::WRITE);
-	if (f.is_null())
+	p.ready = boolOpt(progress, "ready", false);
+	p.advanced = boolOpt(progress, "advanced", false);
+	const LinearCampaign *campaign = m.find(p.campaign);
+	if (!campaign)
 	{
-		d["error"] = String("campaign progress: cannot write ") + path;
+		d["error"] = g("no campaign '" + p.campaign + "'");
 		return d;
 	}
-	f->store_string(g(p.serialize()));
+	const std::string what = n(step);
+	if (what == "started")
+	{
+		p.missionStarted();
+	}
+	else if (what == "won")
+	{
+		p.victorious = true;
+	}
+	else if (what == "game_over")
+	{
+		p.gameOver();
+	}
+	else if (what == "after_score")
+	{
+		const CampaignProgress::AfterScore a = p.afterScore(m);
+		d["after"] = a == CampaignProgress::AfterScore::BonusUnlock ? "bonus_unlock" : (a == CampaignProgress::AfterScore::AutoSaveMenu ? "auto_save_menu" : "menu");
+	}
+	else if (what == "next_mission")
+	{
+		bool intro = false;
+		d["start"] = p.nextMission(&intro);
+		d["intro_movie"] = intro;
+	}
+	else if (what == "last_mission")
+	{
+		bool intro = false;
+		p.lastMission(&intro);
+		d["start"] = true;
+		d["intro_movie"] = intro;
+	}
+	else if (what != "menu")
+	{
+		d["error"] = g("unknown campaign step '" + what + "'");
+		return d;
+	}
+	const int shown = p.menuMissionIndex(m);
+	Dictionary menu;
+	menu["have_mission"] = shown >= 0;
+	menu["mission_index"] = (int64_t)shown;
+	menu["mission_name"] = shown >= 0 ? g(campaign->missions[(size_t)shown].name) : String();
+	menu["load_screen_image"] = shown >= 0 ? g(campaign->missions[(size_t)shown].loadScreenImage) : String();
+	menu["map_display"] = shown >= 0 ? g(campaignMapDisplay(campaign->missions[(size_t)shown].map)) : String(); // the auto-save's name (RW 0x6DE8F1)
+	menu["victorious"] = p.victorious;
+	d["menu"] = menu;
+	Dictionary out;
+	out["campaign"] = g(campaign->name);
+	out["mission"] = (int64_t)p.mission;
+	out["difficulty"] = (int64_t)p.difficulty;
+	out["victorious"] = p.victorious;
+	out["ready"] = p.ready;
+	out["advanced"] = p.advanced;
+	d["progress"] = out;
+	d["mission_exists"] = p.current(m) != nullptr;
 	d["ok"] = true;
 	return d;
 }

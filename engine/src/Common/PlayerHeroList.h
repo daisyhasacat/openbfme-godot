@@ -90,9 +90,11 @@ public:
 	bool startProduction(int index, std::uint32_t id, UnsignedInt frame); ///< RW 0x7812B2
 	bool cancelProduction(std::uint32_t id);          ///< RW 0x780C64
 	double progressAt(GameLogic &logic, const Player &owner, int index, const Object *producer) const; ///< RW 0x780C9F
+	double availabilityAt(GameLogic &logic, const Player &owner, int index, const Object *producer, unsigned *cost) const; ///< RW 0x780D22 (not progressAt)
 	int findIndex(const ThingTemplate &tt, std::uint32_t productionID, int nth) const; ///< RW 0x78131E
 
 	void crc(StateHasher &h) const;
+	void xfer(class Xfer &x); // lane SAVE-4a
 
 private:
 	int recordCost(GameLogic &logic, const Player &owner, const HeroRecord &r, const Object *producer) const;   ///< RW 0x780614

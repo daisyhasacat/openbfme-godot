@@ -5,6 +5,7 @@
 // inside GarrisonContain, moved here unchanged, and RW 0x8682D9 / 0x86702D / 0x867242 / 0x866B69 / 0x867D6A).
 
 #include "GameLogic/Object/Contain/OpenContainRuntime.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/NumericState.h"
 #include "Common/Player.h"
@@ -17,6 +18,7 @@
 #include "GameLogic/Combat/CombatState.h"
 #include "GameLogic/Combat/WeaponDelivery.h"
 #include "GameLogic/Damage.h"
+#include "Common/PlayerList.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/Module/AIUpdate.h"
@@ -1115,4 +1117,43 @@ bool OpenContain::getExitOffset(Coord3D &out) const
 {
 	out = *getObject()->getPosition(); // RW 0x867ACD
 	return true;
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190; retail's OpenContain::xfer RW 0x868FEF (1, 1) holds RotWK's fuller contain) ------------------
+// The riders in insertion order as ids (the Objects block has made them), then the crc's fields with the maps in key order, then the statistics.
+void OpenContain::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	GameLogic &logic = getObject()->logic();
+	SnapshotXfer::objectPointers(x, logic, m_contained, "a contain's rider", getObject()->getID());
+	x.xferUnsignedInt(&m_stealthUnitsContained);
+	SnapshotXfer::maskWithin(x, m_playerEnteredMask, SnapshotXfer::lowBits(logic.players().getPlayerCount()), "a contain's players entered", "this game's players"); // lane SAVE-4e
+	auto intMap = [&](std::map<ObjectID, int> &m, const char *what) {
+		SnapshotXfer::map(x, m, 8, what, [&](ObjectID &id) { x.xferObjectID(&id); }, [&](int &v) { x.xferInt(&v); });
+	};
+	intMap(m_wanters, "a contain's enter / exit wishes");
+	for (const auto &kv : m_wanters)
+	{
+		SnapshotXfer::checkRange(kv.second, 0, 2, "a contain's enter / exit wish"); // 0 enter, 1 exit, 2 neither (slot 0x44)
+	}
+	x.xferBool(&m_enabled);
+	x.xferBool(&m_dying);
+	x.xferBool(&m_killingRiders);
+	x.xferInt(&m_nextExitPath);
+	SnapshotXfer::checkRange(m_nextExitPath, 1, 0x7FFFFFFF, "a contain's next exit path");
+	x.xferUnsignedInt(&m_doorOpenFrames);
+	x.xferBool(&m_deleting);
+	intMap(m_riderBoneIndex, "a contain's rider bones");
+	SnapshotXfer::map(x, m_riderBoneName, 5, "a contain's rider bone names", [&](ObjectID &id) { x.xferObjectID(&id); },
+		[&](std::string &name) { x.xferAsciiString(&name); });
+	SnapshotXfer::maskWords(x, m_watchedConditions, SnapshotXfer::modelConditionCount(), "a contain's watched conditions", "the model conditions"); // lane SAVE-4e
+	SnapshotXfer::u64(x, m_turretBonesUnported);
+	SnapshotXfer::u64(x, m_openStats.entered);
+	SnapshotXfer::u64(x, m_openStats.left);
+	SnapshotXfer::u64(x, m_openStats.ridersDestroyedOnDeath);
+	SnapshotXfer::u64(x, m_openStats.ejectedOnDeath);
+	SnapshotXfer::u64(x, m_openStats.exitedViaDoor);
+	SnapshotXfer::u64(x, m_openStats.shipExitsToShore);      // lane SAVE-4e (merge): SHIP-1's counters, which replaced the unported ship exit count
+	SnapshotXfer::u64(x, m_openStats.shipExitsWithoutShore);
 }

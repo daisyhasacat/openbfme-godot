@@ -58,8 +58,6 @@ const FieldParse *table1()
 		add("StreamCount", INI::parseInt, AS(streamCount));
 		add("MixaheadLatency", INI::parseUnsignedInt, AS(mixaheadLatency));
 		add("MixaheadLatencyDuringMovies", INI::parseUnsignedInt, AS(mixaheadLatencyDuringMovies));
-		add("3DBufferCallbackCallsPerBufferLength", INI::parseUnsignedInt, AS(bufferCallbacks3D));
-		add("3DBufferLengthMS", INI::parseUnsignedInt, AS(bufferLength3DMS));
 		add("LoopBufferLengthMS", INI::parseUnsignedInt, AS(loopBufferLengthMS));
 		add("LoopBufferCallbackCallsPerBufferLength", INI::parseUnsignedInt, AS(loopBufferCallbackCallsPerBufferLength));
 		add("AutomaticSubtitleDurationMS", INI::parseInt, AS(automaticSubtitleDurationMS));
@@ -114,6 +112,13 @@ const FieldParse *table1()
 			}
 		}
 		rows.push_back({ nullptr, nullptr, nullptr, 0 });
+		// community PR #36: BFME1's AudioSettings rows (Open-BFME-1 INIAudioSettings.cpp), read only from BFME1 data (Common/BfmeGame.h)
+		static const FieldParse bfme1Rows[] = {
+			{ "3DBufferCallbackCallsPerBufferLength", INI::parseUnsignedInt, nullptr, AS(bufferCallbacks3D) },
+			{ "3DBufferLengthMS", INI::parseUnsignedInt, nullptr, AS(bufferLength3DMS) },
+			{ nullptr, nullptr, nullptr, 0 },
+		};
+		RegisterBfme1FieldRows(rows.data(), bfme1Rows);
 	}
 	return rows.data();
 }

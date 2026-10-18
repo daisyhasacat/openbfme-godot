@@ -107,6 +107,7 @@ std::shared_ptr<ModuleData> ModuleFactory::newModuleDataFromINI(INI *ini, const 
 	std::shared_ptr<ModuleData> data = mt->newModuleData(ini);
 	data->bfmeSetPredicates(mt->isAiModuleData, mt->slot7Predicate);
 	data->setModuleTagNameKey(m_keys.nameToKey(tag)); // RW 0x656F1C-0x656F2F
+	data->setModuleTagName(tag);                     // lane SAVE-4b: the snapshot keys modules by it
 	m_moduleData.push_back(data);
 	++m_declarationCounts[name];
 	m_moduleDataClasses.push_back(name);

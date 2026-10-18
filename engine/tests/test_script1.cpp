@@ -263,7 +263,7 @@ TEST_CASE("script actions: PLAYER_SET_MONEY / GIVE_MONEY, PLAYER_RELATES_PLAYER,
 	g.lists[1].items.push_back(item(script("once", { { cond("CONDITION_TRUE", {}) } },
 		{ act("PLAYER_SET_MONEY", { sp(11, "<This Player>"), ip(0, 1000) }), act("PLAYER_GIVE_MONEY", { sp(11, "<This Player>"), ip(0, -300) }),
 			act("PLAYER_RELATES_PLAYER", { sp(11, "Alice"), sp(11, "Bob"), ip(19, 2) }), act("SHOW_MILITARY_CAPTION", { sp(25, "SCRIPT:X"), rp(3.0f) }),
-			act("VICTORY", {}), act("GATE_OPEN", { sp(14, "nobody") }) },
+			act("VICTORY", {}), act("GATE_OPEN", { sp(14, "nobody") }), act("SET_PLAYER_KILLS_OF_TYPE_TO_COUNTER", { sp(11, "<This Player>"), sp(15, "GondorFighter"), sp(4, "kills") }) },
 		{}, true)));
 	g.start();
 	g.frame();
@@ -278,11 +278,12 @@ TEST_CASE("script actions: PLAYER_SET_MONEY / GIVE_MONEY, PLAYER_RELATES_PLAYER,
 	CHECK(reqs[0].script == "once");
 	REQUIRE(g.engine().endRequests().size() == 1);
 	CHECK(g.engine().endRequests()[0].victory);
-	CHECK(g.engine().stats().unportedActions.count("GATE_OPEN") == 1);
+	CHECK(g.engine().stats().unportedActions.count("GATE_OPEN") == 0);
+	CHECK(g.engine().stats().unportedActions.count("SET_PLAYER_KILLS_OF_TYPE_TO_COUNTER") == 1); // lane DEVPORT-7: unported in the archive and in OWNERFIX-1 (S-1363)
 	bool found = false;
 	for (const std::string &s : g.lw.logic->report().stops)
 	{
-		found = found || s.find("[S-1180] script action not ported (did nothing): GATE_OPEN x1") != std::string::npos;
+		found = found || s.find("[S-1180] script action not ported (did nothing): SET_PLAYER_KILLS_OF_TYPE_TO_COUNTER x1") != std::string::npos;
 	}
 	CHECK(found);
 }

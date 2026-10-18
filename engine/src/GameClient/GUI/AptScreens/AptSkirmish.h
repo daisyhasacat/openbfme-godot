@@ -126,6 +126,9 @@ public:
 	void setMapSearch(const std::u16string &query);
  void refreshMapCatalog() { populateMapList(); }
 	const std::u16string &mapSearch() const { return m_mapSearch; }
+	// lane OWNERFIX-3: the conquest state (RW 0x8460B5's + 0xF4) and the image of each MapList row, in row order
+	const std::vector<int> &mapListStates() const { return m_mapStates; }
+	const std::vector<std::string> &mapListImages() const { return m_mapImages; }
 	// lane RULES-1: the Rules tab's gadgets (AptMpGameRules::InitGadgets files "RuleComboBox_<n>" / "RuleCheckBox_<n>" under n); null when not placed
 	GameWindow *ruleComboWindow(int n) const { return n >= 0 && n < (int)m_ruleCombos.size() ? m_ruleCombos[(size_t)n] : nullptr; }
 	GameWindow *ruleCheckWindow(int n) const { return n >= 0 && n < (int)m_ruleChecks.size() ? m_ruleChecks[(size_t)n] : nullptr; }
@@ -133,9 +136,11 @@ public:
 	GameWindow *ruleWindow(int rule) const { return (unsigned)rule < (unsigned)NUM_GAME_RULES ? m_ruleWindows[(size_t)rule] : nullptr; }
 	GameWindow *legendaryHeroesWindow() const { return m_legendaryCombo; }
 	GameWindow *peaceTimeWindow() const { return m_peaceCombo; }
+	AptMessageBox *ruleBox() const { return m_ruleBox.get(); } // lane OWNERFIX-2: the Rules tab's warning box (APT:CommandPointsTooHigh), for the harness
 	bool rulesPopulated() const { return m_rulesPopulated; }
 	// the rule warning boxes shown (title, text), for tests
 	const std::vector<std::pair<std::u16string, std::u16string>> &ruleWarnings() const { return m_ruleWarnings; }
+	int profileState() const { return m_profileState; } // lane MENUWORK-1: the menu inventory's evidence
 
 protected:
 	WindowMsgHandledType gadgetMessage(GameWindow *from, std::uint32_t msg, WindowMsgData data1, WindowMsgData data2) override;
@@ -161,9 +166,9 @@ protected:
 	virtual void onChatSend(const std::u16string &text);
 	// lane ONLINE-5: the setup panel's flags (AptMpGameSetup + 0x3A4, the constructor's second argument): the online custom match screen passes
 	// 0x200001F0 (RW 0x9AF464), the LAN lobby 0x400001A0 (RW 0x848C6B). Bit 0x20 is the Ready column (RW 0x84214C) and the host's start notice (RW
-	// 0x8431B8: GUI:NotifiedStartIntent). The skirmish screen's own value was read only in BFME2 (0x10000007, decomp AptSkirmishConstructor.cpp: no 0x20):
-	// 0 here, the bits this port reads are all clear in it
-	virtual int setupFlags() const { return 0; }
+	// 0x8431B8: GUI:NotifiedStartIntent). The skirmish screen's own value: 0x10000007 (lane OWNERFIX-3: RotWK's AptSkirmish constructor pushes it, RW
+	// 0x929773; BFME2 decomp AptSkirmishConstructor.cpp the same): no 0x20 / 0x40; bit 0 (1) reads the profile's battle honors into the map list (RW 0x8460B5)
+	virtual int setupFlags() const { return 0x10000007; }
 	// the slot's accepted flag (GameSlot + 8, RW 0x842185): the model's; the LAN lobby's are LANAPI's
 	virtual bool slotAccepted(int slot) const;
 	// lane ONLINE-5: a function of the MpGameSetup movie (RW 0x841330 with the owner's Apt path, vslot 0x58): false when the movie does not have it (yet)
@@ -184,6 +189,9 @@ protected:
 	bool slotGadgetsEnabled(int slot) const;
 	// lane ONLINE-5: may a slot's Hero combo be used at all (the online lobby carries no Create-a-Hero record yet, S-4076: shown locked there)
 	virtual bool heroChoiceAvailable() const { return true; }
+	// lane OWNERFIX-2: whether the lobby can carry a slot's handicap to the game (the skirmish and LAN lobbies: NetPacket's GameInfo); the online staging room's
+	// start (GameNetwork/OnlineStart.cpp) has no handicap, so its combo stays empty and locked (S-4552)
+	virtual bool handicapChoiceAvailable() const { return true; }
 	// lane ONLINE-5: the chat panel's Players list (AptMpChat's "ChatPlayers", RW 0x9BEA20): the human players of the network game, in slot order.
 	// INFERENCE [S-4551]: retail's chat helper fills it with the chat's recipients (the room's players; its fill, RW 0x9BECCB's source, was not read)
 	// and sends a line only to the ones selected; here it lists who is in the room and every line goes to everyone
@@ -246,6 +254,8 @@ private:
 	void setMapSort(int mode);
 	void refreshAll();
 	void refreshSlot(int slot);
+	void updatePlatformBadge(int slot, GameWindow *nameWindow); // lane PLATFORMICON-1
+	bool m_platformNoted = false;
 	void refreshColors(int slot);
 	void updateMapPreview();
 	void updateCurrentMapWindow(const MapCacheEntry *map); // lane UI-2: RW 0x9772E6 / 0x976F59
@@ -300,6 +310,7 @@ private:
 
 	ShellEnvironment &m_env;
 	std::unique_ptr<SkirmishGameSetup> m_setup;
+	std::unique_ptr<class AptStats> m_statsPage; // lane ONLINEHUB-1: the profile page's statistics (Stats.swf, GUI/AptScreens/AptStats.h)
 	std::unique_ptr<SkirmishProfileStore> m_ownProfiles;
 	SkirmishProfileStore *m_profiles = nullptr;
 	std::string m_error;
@@ -312,6 +323,8 @@ private:
 	GameWindow *m_mapList = nullptr;
 	std::u16string m_mapSearch;
 	std::vector<std::string> m_mapKeys;     // the map key of each MapList row (MpGameSetup +0x398)
+	std::vector<int> m_mapStates;           // lane OWNERFIX-3: each row's conquest state
+	std::vector<std::string> m_mapImages;   // lane OWNERFIX-3: each row's column 0 image
 	int m_sortPrimary = 2;                  // MpGameSetup +0x3AC (RW 0x8451A9): 0/1 name, 2/3 players, 4/5 conquest state (ascending / descending)
 	int m_sortSecondary = 0;                // +0x3B0
 	bool m_hostMode = true;

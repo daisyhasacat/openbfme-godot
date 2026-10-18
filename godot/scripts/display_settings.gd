@@ -28,6 +28,9 @@ const MAX_FPS_LIMIT := 1000
 const SCALERS := ["bilinear", "fsr", "fsr2"]
 const SCALE_MIN := 0.5
 const SCALE_MAX := 1.0
+## lane OWNERFIX-1: the anti-aliasing option's TAA is FSR 2's temporal anti-aliasing at the render scale in effect (game_options.gd sets this): the
+## scaler then is FSR 2 whatever `scaler` says, on the renderers that have it
+static var temporal_aa := false
 ## the window sizes the Resolution list offers when they fit on the monitor (Godot lists no adapter modes: S-1913), with the monitor's own size added
 const COMMON_RESOLUTIONS := [Vector2i(800, 600), Vector2i(1024, 768), Vector2i(1152, 864), Vector2i(1280, 720), Vector2i(1280, 800), Vector2i(1280, 960),
 	Vector2i(1280, 1024), Vector2i(1366, 768), Vector2i(1440, 900), Vector2i(1600, 900), Vector2i(1600, 1200), Vector2i(1680, 1050), Vector2i(1920, 1080),
@@ -304,6 +307,8 @@ func apply(window: Window, previous = null) -> Dictionary:
 		if not scalers_for(method).has(scaler):
 			problems.append("the %s renderer has no %s scaling: bilinear is used" % [method, scaler])
 			use_scaler = "bilinear"
+		if temporal_aa and scalers_for(method).has("fsr2"):
+			use_scaler = "fsr2" # lane OWNERFIX-1: the TAA anti-aliasing
 		window.scaling_3d_mode = scaling_mode_of(use_scaler)
 		window.scaling_3d_scale = render_scale
 		applied.append("3D %d%% %s (%s)" % [roundi(render_scale * 100.0), use_scaler, method])

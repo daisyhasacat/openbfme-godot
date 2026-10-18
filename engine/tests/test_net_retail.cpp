@@ -5,6 +5,7 @@
 // recording of a network game plays back in a third process with matching hashes. SKIP loudly without ROTWK_INSTALL / BFME2_INSTALL.
 
 #include "doctest.h"
+#include "ProcessTestUtil.h"
 #include "GameLogic/Map/TerrainTrees.h"
 
 #include "StartTestUtil.h"
@@ -39,7 +40,6 @@
 #include <vector>
 
 #ifndef _WIN32
-#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -265,17 +265,7 @@ std::string field(const std::string &report, const std::string &key)
 	return "";
 }
 
-int runCommand(const std::string &cmdIn)
-{
-	std::string cmd = cmdIn;
-#ifdef _WIN32
-	cmd = "\"" + cmd + "\"";
-	return std::system(cmd.c_str());
-#else
-	const int rc = std::system(cmd.c_str());
-	return WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
-#endif
-}
+using processtest::runCommand;
 
 #ifdef OPENBFME_PEER_EXE
 std::string peerBase()
@@ -921,6 +911,56 @@ TEST_CASE("net retail (HERO-2): a LAN game with a Create-a-Hero on the joiner's 
 	// upgrade away once the hero exists (RW 0x6AE60C): the hero of the carried record plays on both peers
 	CHECK(join.find(" can_build 0 made 1") != std::string::npos);
 	MESSAGE("the joiner's Create-a-Hero: " << join);
+}
+#endif
+
+#ifdef OPENBFME_PEER_EXE
+// lane OWNERFIX-2 (Sol's review of 7fe9e8e1): handicaps on the joiner's human slot and on the computer reach the joiner only through the host's START; both
+// peers give each player the same handicap and the same listed objects, and every frame's hash is equal. The control slot (the host's) has none
+TEST_CASE("net retail ownerfix2: two peer processes, the joiner's slot -50% and the computer -25%: both peers apply the START's handicaps and stay in lockstep")
+{
+	OPENBFME_REQUIRE_START(s);
+	const int kFrames = 600;
+	const std::string common = "--map \"maps/map mp fall back 4p/map mp fall back 4p.map\" --seed 5031 --script --crc-interval 100 --run-ahead 2";
+	const std::string slots = "--slot human,FactionMen,0,0 --slot human,FactionMordor,1,1,-50 --slot medium,FactionElves,2,0,-25";
+	PeerRun r = runPair("ownerfix2", kFrames, common, slots, "");
+	MESSAGE("host:\n" << r.hostReport);
+	MESSAGE("joiner:\n" << r.joinReport);
+	CHECK(r.hostRc == 0);
+	CHECK(r.joinRc == 0);
+	CHECK(field(r.hostReport, "frames") == std::to_string(kFrames));
+	CHECK(field(r.joinReport, "frames") == std::to_string(kFrames));
+	CHECK(field(r.hostReport, "desyncs") == "0");
+	CHECK(field(r.joinReport, "desyncs") == "0");
+	CHECK(field(r.hostReport, "final_hash") == field(r.joinReport, "final_hash"));
+	CHECK(!r.hostHashes.empty());
+	CHECK(r.hostHashes == r.joinHashes); // every frame
+	// player_handicap <start> <handicap> <objects listed>: per start position, the same on both peers; the handicapped players' objects carry the list
+	auto lines = [](const std::string &report) {
+		std::map<int, std::pair<int, int>> out;
+		std::istringstream in(report);
+		std::string line;
+		while (std::getline(in, line))
+		{
+			if (line.rfind("player_handicap ", 0) == 0)
+			{
+				std::istringstream f(line.substr(16));
+				int start = 0, value = 0, listed = 0;
+				f >> start >> value >> listed;
+				out[start] = { value, listed };
+			}
+		}
+		return out;
+	};
+	const std::map<int, std::pair<int, int>> host = lines(r.hostReport), join = lines(r.joinReport);
+	REQUIRE(host.size() == 3);
+	CHECK(join == host);
+	CHECK(host.at(0).first == 0);
+	CHECK(host.at(0).second == 0);
+	CHECK(host.at(1).first == -50);
+	CHECK(host.at(1).second > 0); // tolerance: how many objects the scripted human and the AI have made by frame 600 is the game's; equal on both peers above
+	CHECK(host.at(2).first == -25);
+	CHECK(host.at(2).second > 0); // tolerance: as above (the AI's own army and buildings)
 }
 #endif
 

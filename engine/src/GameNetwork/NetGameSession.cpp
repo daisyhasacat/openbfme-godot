@@ -6,6 +6,26 @@
 #include "Common/Player.h"
 #include "GameNetwork/DesyncDump.h"
 
+std::vector<int> NetGameSession::disconnectedPlayerIndices() const
+{
+	std::vector<int> players;
+	if (!m_network && (!spectating() || !m_assembled || !m_catchUp))
+	{
+		return players;
+	}
+	const std::uint8_t playbackDrops = !m_network ? m_assembled->disconnectedSlotsAt(m_catchUp->reached()) : 0;
+	for (int slot = 0; slot < MAX_SLOTS; ++slot)
+	{
+		const int player = m_config.slotPlayerIndex[(size_t)slot];
+		const bool dropped = m_network ? m_network->isDisconnected(slot) : (playbackDrops & (1u << slot)) != 0;
+		if (player >= 0 && m_start.game.game.slots[slot].disconnected(dropped))
+		{
+			players.push_back(player);
+		}
+	}
+	return players;
+}
+
 NetGameSession::NetGameSession(UDP &socket, const LobbyStart &start, const Options &options)
 	: m_socket(socket)
 	, m_start(start)
@@ -249,6 +269,132 @@ bool NetGameSession::beginSpectate(LiveGame &game, std::string *error)
 	return true;
 }
 
+bool NetGameSession::detachSpectator(LiveGame &game, std::string *error)
+{
+	if (!spectating())
+	{
+		if (error)
+		{
+			*error = "the network session is not a spectator session";
+		}
+		return false;
+	}
+	if (m_game != &game)
+	{
+		if (error)
+		{
+			*error = "the spectator session is attached to another game";
+		}
+		return false;
+	}
+	if (spectatorFailed())
+	{
+		if (error)
+		{
+			*error = m_spectate.failure.empty() ? "the spectator session has failed" : m_spectate.failure;
+		}
+		return false;
+	}
+	game.drainFrames();
+	if (m_catchUp && m_catchUp->crcMismatches())
+	{
+		if (error)
+		{
+			*error = "the spectator's state differs from the players' CRC: " + m_catchUp->firstMismatch();
+		}
+		return false;
+	}
+	game.setFrameDriver(nullptr);
+	m_game = nullptr;
+	return true;
+}
+
+bool NetGameSession::attachSpectator(LiveGame &game, std::string *error)
+{
+	if (!spectating())
+	{
+		if (error)
+		{
+			*error = "the network session is not a spectator session";
+		}
+		return false;
+	}
+	if (m_game)
+	{
+		if (error)
+		{
+			*error = "the spectator session is already attached to a game";
+		}
+		return false;
+	}
+	if (spectatorFailed() || !m_transport || !m_fetch)
+	{
+		if (error)
+		{
+			*error = m_spectate.failure.empty() ? "the spectator session cannot be reattached" : m_spectate.failure;
+		}
+		return false;
+	}
+	const Player *local = game.players().getLocalPlayer();
+	if (!local || !local->isObserver())
+	{
+		if (error)
+		{
+			*error = "the replacement game is not an observer game";
+		}
+		return false;
+	}
+	if (m_config.localSlot != -1)
+	{
+		if (error)
+		{
+			*error = "the spectator session has a local network slot";
+		}
+		return false;
+	}
+	const LiveGame::Report r = game.report();
+	for (int s = 0; s < MAX_SLOTS; ++s)
+	{
+		if (!m_start.networkSlot[(size_t)s])
+		{
+			continue;
+		}
+		const Player *p = (size_t)s < r.startSlotPlayers.size() ? game.players().findPlayerWithName(r.startSlotPlayers[(size_t)s]) : nullptr;
+		if (!p || p->getPlayerIndex() != m_config.slotPlayerIndex[(size_t)s])
+		{
+			if (error)
+			{
+				*error = "network slot " + std::to_string(s) + " does not match the original spectator game";
+			}
+			return false;
+		}
+	}
+	m_catchUp = std::make_unique<CommandLogCatchUp>(m_config.crcInterval);
+	m_catchUp->setLog(m_assembled);
+	RegisterLogicCRCHandler(game.dispatch());
+	game.setFrameDriver(m_catchUp.get());
+	m_game = &game;
+	const unsigned long long requests = m_spectate.logRequests;
+	const std::uint64_t logBytes = m_spectate.logBytes;
+	const bool complete = m_spectate.logComplete || m_logComplete;
+	const UnsignedInt served = m_assembled && m_assembled->anyComplete ? m_assembled->lastCompleteFrame : 0;
+	m_spectate = SpectateReport();
+	m_spectate.startedMs = NetMilliseconds();
+	m_spectate.reached = game.protocolFrame();
+	m_spectate.served = served;
+	m_spectate.logRequests = requests;
+	m_spectate.logBytes = logBytes;
+	m_spectate.logComplete = complete;
+	m_spectateState = SpectateState::Following;
+	m_spectatorAutoCatchup = false;
+	return true;
+}
+
+UnsignedInt NetGameSession::spectatorFinalFrame() const
+{
+	return m_assembled && m_assembled->anyComplete ? std::max<UnsignedInt>(1, m_assembled->lastCompleteFrame + 1) : 1;
+}
+
 NetGameSession::SpectateState NetGameSession::spectateStep(LiveGame &game, std::uint32_t budgetMs)
 {
 	if (m_spectateState == SpectateState::Ended || m_spectateState == SpectateState::Failed || !m_catchUp || !m_transport)
@@ -298,7 +444,7 @@ NetGameSession::SpectateState NetGameSession::spectateStep(LiveGame &game, std::
 		m_catchUp->setTarget(m_spectateStop - 1);
 	}
 	const std::uint64_t t0 = NetMilliseconds();
-	while (NetMilliseconds() - t0 < budgetMs)
+	while (m_spectatorAutoCatchup && NetMilliseconds() - t0 < budgetMs)
 	{
 		if (game.advance(0.2) == 0)
 		{
@@ -311,6 +457,7 @@ NetGameSession::SpectateState NetGameSession::spectateStep(LiveGame &game, std::
 	m_spectate.crcsCompared = m_catchUp->crcsCompared();
 	m_spectate.crcMismatches = m_catchUp->crcMismatches();
 	m_spectate.firstMismatch = m_catchUp->firstMismatch();
+	m_spectate.firstMismatchFrame = m_catchUp->firstMismatchFrame();
 	m_spectate.logComplete = m_logComplete;
 	if (m_catchUp->crcMismatches())
 	{
@@ -385,6 +532,11 @@ NetGameSession::RejoinState NetGameSession::rejoinStep(LiveGame &game, std::uint
 	}
 	// the REJOIN of this incarnation (the log's latest of this slot: this client bound it) names the first lockstep frame
 	const bool ours = m_assembled->incarnations[(size_t)local] >= 2;
+	if (!ours && m_fetch->caughtUp())
+	{
+		failRejoin("cannot rejoin: the relay log has no REJOINED record for this player");
+		return m_rejoinState;
+	}
 	const UnsignedInt join = ours ? m_assembled->joinFrame[(size_t)local] : 0xFFFFFFFFu;
 	m_catchUp->setTarget(join == 0xFFFFFFFFu ? 0xFFFFFFFFu : join - 1);
 	// the catch-up: full speed, no rendering, at most budgetMs per step (the host keeps its window alive)
@@ -510,7 +662,7 @@ void NetGameSession::finish(LiveGame &game)
 	// SMOOTH-1 (review r4): the protocol owner drains the worker first (complete batches only: never a wait for the network), so the leave, the
 	// protocol frame and the replay's end record agree with the logic
 	game.drainFrames();
-	if (m_network)
+	if (m_network && !rejoinUnjoined())
 	{
 		// lane END-2: the commands the local player gave last (the quit menu's MSG_SELF_DESTRUCT(true) of an Exit, RW 0x625E36, which retail sends in the
 		// same message stream as the MSG_CLEAR_GAME_DATA that leaves) go out before the leave: the other peers execute them on the frame before it

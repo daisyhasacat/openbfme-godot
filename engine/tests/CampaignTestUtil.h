@@ -35,7 +35,7 @@ struct Mission
 	std::unique_ptr<LiveGame> game;
 	std::vector<ScriptClientRequest> requests;
 
-	void load(starttest::Shared &s, const std::string &mapName = "map ang angmar")
+	void load(starttest::Shared &s, const std::string &mapName = "map ang angmar", SimulationProfile profile = SimulationProfile::Faithful)
 	{
 		source.reset(new ArchiveW3DFileSource(*s.mount->fs));
 		assets.reset(new WW3DAssetManager(*source));
@@ -43,6 +43,7 @@ struct Mission
 		LiveGame::Options o;
 		o.mapName = mapName;
 		o.campaign = true;
+		o.simulationProfile = profile;
 		std::string error;
 		REQUIRE_MESSAGE(game->load(o, &error), error);
 		take();

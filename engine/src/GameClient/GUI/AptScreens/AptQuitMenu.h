@@ -22,6 +22,9 @@
 //   * the dtor (RW 0x921904) after an Exit: a multiplayer game before logic frame 6 (RW 0xBFD298) quits through TheNetwork (vslot 0x94); else (kind 3 or no
 //     campaign object) RW 0x625E36(1): a multiplayer game whose TheGameInfo vslot 0x50 says no sends MSG_SELF_DESTRUCT(true), then MSG_CLEAR_GAME_DATA
 //     (RW 0x779E28: clearGameData with the score screen for a skirmish or a multiplayer game). Without an Exit a non-multiplayer game is unpaused.
+//   * lane SAVE-UI1: the backgrounds: the ctor ends with RW 0x6230B6(2) (ShowInGameBackground, RW 0x92262A); the dtor shows the front-end background after
+//     an Exit (+ 0x27C, RW 0x921A7C), else hides the background (RW 0x622C88(0), RW 0x921A96) unless + 0x27D is set (RW 0x9226DF: a skirmish's restart;
+//     SaveLoad's load over the game, RW 0x8183D0, is the host's: the game is cleared behind the load screen).
 // The screen posts its decisions as ShellRequests (QuitMenuReturn / Exit / Restart / Forfeit / Options); the host closes the movie and acts.
 // NOT PORTED (stop S-1064): the Living World branches, the network quit of the first six frames (the host's Exit leaves through
 // the same path at any frame), the asset transfer of MSG_SELF_DESTRUCT(true) to a living ally.
@@ -48,6 +51,9 @@ public:
 	std::string restartTooltip() const;
 	// lane SAVE-2: the game type SaveMenu / LoadMenu open SaveLoad.apt with (RW 0x92179F: "2" Skirmish, "1" Campaign, "4" multiplayer)
 	std::string saveLoadType() const;
+	// lane SAVE-UI1 (OPTS-6): a screen opened over the menu (Options, SaveLoad) shuts it down the retail way, its movie unloaded and loaded again by the pop's
+	// init (AptScreen.h); the C++ menu, its disabled buttons' source (the context) and its pending requests stay
+	bool unloadsMovieWhenCovered() const override { return true; }
 	const std::vector<std::string> &disabledButtons() const { return m_disabled; }
 	const std::vector<std::string> &requests() const { return m_requests; }
 
@@ -57,4 +63,6 @@ private:
 	ShellEnvironment &m_env;
 	std::vector<std::string> m_disabled;
 	std::vector<std::string> m_requests;
+	bool m_exiting = false;        // + 0x27C (lane SAVE-UI1)
+	bool m_keepBackground = false; // + 0x27D (lane SAVE-UI1)
 };

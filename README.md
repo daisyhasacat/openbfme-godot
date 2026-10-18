@@ -129,7 +129,7 @@ the original are still missing.
 not reinvent it. Where the evidence runs out and the team has to make an
 educated guess, that guess is not hidden: it is recorded as an *acceptance
 stop* in [docs/STOPS.md](docs/STOPS.md), reported by the game at runtime and
-pinned by a test. There are **697 open stops** today. Some are big
+pinned by a test. There are **759 open stops** today. Some are big
 (retail save files), most are small details waiting for better evidence. The plan to
 get to a 1:1 game is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -188,6 +188,12 @@ can also be cross-compiled from Linux with `tools/release/build_windows.sh`;
 see [docs/WINDOWS.md](docs/WINDOWS.md). Packaging and releases are described
 in [docs/RELEASE.md](docs/RELEASE.md).
 
+MP3 decoder tests use the reference-machine fixtures (LAME 3.100, matching
+`engine/tests/data/audio/mp3_golden.tsv`). On other platforms, including macOS,
+configure with `-DOPENBFME_LAME=OFF` and set `OPENBFME_AUDIO_FIXTURES` to the
+directory containing the unpacked reference fixtures before running the tests.
+`OFF` disables regeneration, not the tests; keep the fixture bytes outside git.
+
 Instead of the environment variables, the install folders can live in
 `user://install-paths.cfg` as `KEY=VALUE` lines (the game's first-run screen
 writes this file). Mounting checks every archive's size and MD5 against
@@ -224,6 +230,9 @@ Video devlogs on the [OpenBFME YouTube channel](https://www.youtube.com/@OpenBFM
   not a copy of the console window.
 - Community reports and their state are tracked in the
   [roadmap](docs/ROADMAP.md#community-feedback-intake-fb-items-updated-2026-10-10).
+- **Pull requests** are welcome: [CONTRIBUTING.md](CONTRIBUTING.md) says how
+  they are checked, reviewed and merged with the next release (and that game
+  files never go into the repository).
 
 ## Behaviour references
 

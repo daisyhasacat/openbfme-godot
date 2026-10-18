@@ -72,6 +72,9 @@ public:
 	// (RW 0x83BAF8 ..) drops a held scroll / rotate / zoom key the keyboard no longer has down, so a release the stream never carried (the keyboard's reset
 	// when the window loses the focus) cannot leave the camera moving. Unset: every key the translator holds counts as down
 	void setKeyboard(std::function<bool(int)> isKeyDown) { m_isKeyDown = std::move(isKeyDown); }
+	// lane OPTS-6: every held scroll, rotate and zoom ends (a modal menu opened over the game). Retail's own way to end a held scroll is the tick's
+	// RW 0x83B4A5 .. 0x83B4B5 (InGameUI + 0x810, the input flag, cleared: stopScrolling); the keys it held are let go with it
+	void cancelHeld();
 	// RW GlobalData Windowed (+0x2C): edge scrolling is off while windowed
 	void setEdgeScrollEnabled(bool on) { m_edgeScrollEnabled = on; }
 	// ---- lane OPTS-2: the OpenBFME camera options (not retail; client only, the logic never sees the camera). Defaults are retail's (off / 1) ----
@@ -84,6 +87,11 @@ public:
 
 	// ---- state, for tests and the report ----
 	void cancelPointer() { stopScrolling(); m_rotating = false; }
+	// lane OWNERFIX-1: RW 0x83AB5D (BFME2 decomp BfmeOwnVVD, tier A: the byte writes +0x38 isScrolling, +0x39 isRotating, +0x3B, +0x3C, +0x154 .. +0x157 the held
+	// rotate / zoom keys), called by DISABLE_INPUT (RW 0x7BC586): a scroll in progress ends (retail leaves InGameUI's own scrolling flag and the Scroll
+	// cursor to the next mouse move, which stops a scroll while the input is off: RW 0x42EBF9; the port ends it here), the rotation and the four held keys
+	// are off. +0x3B / +0x3C (a pitch flag and one more) are not mapped (S-4964)
+	void clearFlags();
 	bool isScrolling() const { return m_scrolling; }
 	int scrollType() const { return m_scrollType; }
 	bool isRotating() const { return m_rotating; }

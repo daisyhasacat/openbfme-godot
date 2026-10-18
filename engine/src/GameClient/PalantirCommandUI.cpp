@@ -6,10 +6,14 @@
 #include "Common/Player.h"
 #include "Common/PlayerTemplate.h"
 #include "Common/Team.h"
+#include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/ExperienceLevels.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Module/StructureModules.h"
+#include "GameLogic/Module/HeroAbilityModules.h"
+#include "GameLogic/Module/InvisibilityModules.h"
+#include "GameLogic/Module/StealthAbilityModules.h"
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/Object/Object.h"
 
@@ -116,6 +120,31 @@ std::string portraitFor(const HudContext &ctx, ObjectID contextObject, const std
 
 namespace
 {
+// RW 0x69194E: only an active enemy viewer sees an override. DISGUISED is a model condition, not KindOf.
+const ThingTemplate *disguisedRankTemplate(const HudContext &ctx, const Object &obj)
+{
+	const Player *viewer = ctx.localPlayer();
+	if (!viewer || viewer->isObserver() || viewer->isDefeated() || viewer->getRelationship(obj.getTeam()) != ENEMIES)
+	{
+		return nullptr;
+	}
+	if (obj.testModelCondition(300))
+	{
+		const SpecialDisguiseUpdate *sd = SpecialDisguiseUpdate::of(const_cast<Object &>(obj));
+		return sd && !sd->enemyPerspectiveTemplate().empty() ? ctx.logic.things().findTemplate(sd->enemyPerspectiveTemplate()) : nullptr;
+	}
+	// RW 0x68FBD3: the first StealthUpdate whose required/forbidden upgrade masks pass (RW 0x7761ED).
+	for (const auto &module : obj.modules())
+	{
+		const auto *st = dynamic_cast<const StealthUpdate *>(module.get());
+		if (st && st->upgradesAllowStealth())
+		{
+			return st->disguiseTemplate();
+		}
+	}
+	return nullptr;
+}
+
 // RW 0x9D2437
 bool rankAndProgress(const Object &obj, int &rank, float &progress)
 {
@@ -171,13 +200,36 @@ RankInfo rankInfo(const HudContext &ctx, const Object &obj)
 	Object &o = const_cast<Object &>(obj);
 	static const std::string kLifetime("LifetimeUpdate"); // lane SELPERF-1: not a temporary per selected object and frame
 	const LifetimeUpdate *life = dynamic_cast<const LifetimeUpdate *>(o.findModule(kLifetime));
-	// RW 0x92F7D9: module + 0x28 is set from WaitForWakeUp (ctor RW 0x7A7F2D) and cleared by the wake-up (RW 0x7A7E79): a module still waiting gives no time bar.
-	// INFERENCE (S-1955): the port keeps no such byte; a module waiting for its wake-up has never computed its frames (both 0)
-	const bool waiting = life && life->waitsForWakeUp() && life->dieFrame() == 0 && life->startFrame() == 0;
-	if (life && !waiting)
+	unsigned start = 0, death = 0;
+	if (life && !life->waitingForWakeUp())
 	{
 		r.type = 1;
-		const unsigned death = life->dieFrame(), start = life->startFrame(), now = ctx.logic.getFrame();
+		start = life->startFrame();
+		death = life->dieFrame();
+	}
+	else if (obj.testStatus(0x3E)) // RW 0x92F7F8: TEMPORARILY_DEFECTED takes precedence over HIDDEN, even without a timer
+	{
+		const TemporarilyDefectUpdate *defect = TemporarilyDefectUpdate::of(o);
+		if (defect && defect->endFrame() != 0)
+		{
+			r.type = 1;
+			start = defect->startFrame();
+			death = defect->endFrame();
+		}
+	}
+	else if (obj.testStatus(0x10)) // RW 0x92F849: HIDDEN
+	{
+		const ToggleHiddenSpecialAbilityUpdate *hidden = ToggleHiddenSpecialAbilityUpdate::of(obj);
+		if (hidden && hidden->showPalantirTimer())
+		{
+			r.type = 1;
+			start = hidden->hideFrame();
+			death = start + hidden->abilityData()->m_effectDuration;
+		}
+	}
+	if (r.type == 1)
+	{
+		const unsigned now = ctx.logic.getFrame();
 		if (death <= start)
 		{
 			r.type = 2;
@@ -188,10 +240,26 @@ RankInfo rankInfo(const HudContext &ctx, const Object &obj)
 		r.progress = (now > death || p < 0.0f) ? 0.0f : (p > 1.0f ? 1.0f : p);
 		return r;
 	}
-	const ExperienceTracker *xp = obj.getExperienceTracker();
-	if (!xp || !xp->isTrainable() || !rankAndProgress(obj, r.rank, r.progress))
+	const ThingTemplate *disguise = disguisedRankTemplate(ctx, obj);
+	const ThingTemplate *shown = disguise ? disguise : obj.getTemplate();
+	bool trainable = shown != nullptr;
+	if (shown)
+	{
+		if (const FieldValue *v = shown->getFinalOverride()->findField("IsTrainable"))
+		{
+			if (const bool *b = std::get_if<bool>(v))
+			{
+				trainable = *b;
+			}
+		}
+	}
+	if (!trainable || !rankAndProgress(obj, r.rank, r.progress))
 	{
 		r.type = 2;
+	}
+	else if (disguise)
+	{
+		r.rank = 1; // RW 0x92F96D: progress stays the original object's, only the rank changes
 	}
 	return r;
 }
@@ -223,7 +291,10 @@ RankInfo rankInfoFor(const HudContext &ctx, ObjectID contextObject, const std::v
 	};
 	auto sameRank = [&](const Object &a, const Object &b) {
 		const ExperienceTracker *x = a.getExperienceTracker(), *y = b.getExperienceTracker();
-		if (!x || !y || a.getTemplate() != b.getTemplate() || hasLife(b))
+		if (!x || !y || a.getTemplate() != b.getTemplate() || hasLife(b)
+			|| a.testStatus(0x3E) || b.testStatus(0x3E) || a.testStatus(0x10) || b.testStatus(0x10)
+			|| a.testModelCondition(300) || b.testModelCondition(300)
+			|| disguisedRankTemplate(ctx, a) || disguisedRankTemplate(ctx, b))
 		{
 			return false;
 		}
@@ -264,9 +335,6 @@ std::vector<std::string> acceptanceStops()
 	return {
 		"[S-760] Palantir portrait: a drawable's portrait is its template's SelectPortrait; the draw module's template override (RW 0x694BF8) and the local-player branch of the "
 		"kind-of bit +0x11F & 0x40 (RW 0x68FBD3) are not ported, nor the cost modifier interface of CommandUI (ShowCostModifierUpgradeInterface)",
-		"[S-1955] Palantir rank interface (HUD-5): the rank / experience bar (RW 0x9305CE, 0x92F778, 0x9D2437) and the LifetimeUpdate time bar are ported; not ported: the "
-		"time bars of TemporarilyDefectUpdate and ToggleHiddenSpecialAbilityUpdate, a disguised enemy's shown template and rank 1 (RW 0x69194E); LifetimeUpdate's + 0x28 "
-		"(still waiting for its wake-up) is taken as 'WaitForWakeUp and no frames computed yet'",
 	};
 }
 } // namespace PalantirCommandUI

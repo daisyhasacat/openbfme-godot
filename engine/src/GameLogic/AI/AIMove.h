@@ -238,6 +238,8 @@ public:
 
 	// the OpenBFME state hash of the mover (MOVE-1): the goal, the throttles, the blocked bookkeeping, the collider cache and the path
 	void crc(class StateHasher &hasher) const;
+	// lane SAVE-4c (AIMoveSnapshot.cpp): every field the mover keeps, the path included (its own nodes; a load replaces the mover's path)
+	void xfer(class Xfer &x);
 
 private:
 	friend class AIMoveToState;
@@ -304,6 +306,8 @@ public:
 	const Coord3D &goal() const { return m_goal; }
 	// MOVE-1: a moving goal (ZH AIMoveToState::update re-reads the goal object's position every frame; the repath test compares it with the goal of the last path)
 	void setGoal(const Coord3D &g) { m_goal = g; }
+	// lane BACKLOG-8 r2: AIInternalMoveToState + 0x48 (the formation march's state sets it after its onEnter, RW 0x74FD39)
+	void setAdjustsDestination(bool on) { m_adjustsDestination = on; }
 	// lane PHYS-1: the attack approach's computePath (RW 0x749A3E) asks for an attack path (RW 0x663802) to `victim` (invalid: the goal position) instead of a move path
 	void setAttackTarget(PathfindObjectID victim) { m_attack = true; m_attackVictim = victim; }
 	// lane PHYS-1: a melee approach path (RW 0x6639CF) to the goal; `false` back to an ordinary move (the tests drive it; AIAttackMeleeApproachState calls the request
@@ -318,6 +322,8 @@ public:
 	int pathRequests() const { return m_pathRequests; }
 	// the OpenBFME state hash of the state (MOVE-1)
 	void crc(class StateHasher &hasher) const;
+	// lane SAVE-4c (AIMoveSnapshot.cpp): every field; the path budget is the owning state's (`budget`, null for a state without one): saved as whether it is set
+	void xfer(class Xfer &x, int *budget = nullptr);
 
 private:
 	AIMover &m_ai;
@@ -337,6 +343,9 @@ private:
 	PathfindObjectID m_attackVictim = PATHFIND_INVALID_ID;
 	int *m_pathBudget = nullptr; // lane MODULES-3: the owning state's budget (hashed by the state)
 };
+
+// lane SAVE-4c: a state's embedded move (null when the state holds none): whether it exists, then its xfer; a load makes the move again first
+void xferMove(class Xfer &x, AIMover &ai, std::unique_ptr<AIMoveToState> &move, int *budget = nullptr);
 
 // lane ANIM-1: the attack states that embed a move run AIMoveToState::onExit (RW 0x748D8A) on exit whether or not they entered the move (the 0xE1 / 0xE2
 // melee states derive from the move state in retail, RW 0x74933F / 0x74B716; ZH AIAttackApproachTargetState::onExit calls AIInternalMoveToState::onExit

@@ -37,10 +37,35 @@ void parseFilter(INI *ini, void *instance, void *store, const void *)
 
 #define SP_OFF(member) (int)offsetof(SpecialPowerTemplate, member)
 // RW 0xDA5FD8, in the binary's order
+// community PR #36 (BFME1 data only, Common/BfmeGame.h): BFME1 Object.cpp's special power names RotWK lacks, after RotWK's (every RotWK ordinal
+// kept); RotWK / BFME2 data parse the binary's 35 + names exactly
+const char *const *bfme1SpecialPowerTypeNames()
+{
+	static const std::vector<const char *> names = [] {
+		std::vector<const char *> n;
+		for (const char *const *p = kSpecialPowerTypeNames; *p; ++p)
+		{
+			n.push_back(*p);
+		}
+		for (const char *extra : { "SPECIAL_RAIN_OF_FIRE", "SPECIAL_SPELL_BOOK_PLUS_1_NAZGUL", "SPECIAL_SPELL_BOOK_PLUS_100_COMMAND_POINTS", "SPECIAL_SPELL_BOOK_ANDURIL",
+				 "SPECIAL_SPELL_BOOK_DRAFT", "SPECIAL_SPELL_BOOK_ELVEN_ALLIES", "SPECIAL_SPELL_BOOK_GANDALF_THE_WHITE" })
+		{
+			n.push_back(extra);
+		}
+		n.push_back(nullptr);
+		return n;
+	}();
+	return names.data();
+}
+
+void parseSpecialPowerEnum(INI *ini, void *instance, void *store, const void *userData)
+{
+	INI::parseIndexList(ini, instance, store, ini->bfme1Data() ? bfme1SpecialPowerTypeNames() : userData);
+}
+
 const FieldParse kSpecialPowerFieldParse[] = {
 	{ "Flags", INI::parseBitString32, kSpecialPowerFlagNames, SP_OFF(m_flags) },
 	{ "ReloadTime", INI::parseDurationUnsignedInt, nullptr, SP_OFF(m_reloadTime) },
-	{ "RequiredScience", ScienceParse::parseScienceVector, nullptr, SP_OFF(m_requiredSciences) },
 	{ "RequiredSciences", ScienceParse::parseScienceVector, nullptr, SP_OFF(m_requiredSciences) },
 	{ "LightPointCost", INI::parseInt, nullptr, SP_OFF(m_lightPointCost) },
 	{ "InitiateSound", parseName, nullptr, SP_OFF(m_initiateSound) },
@@ -49,7 +74,7 @@ const FieldParse kSpecialPowerFieldParse[] = {
 	{ "UnitSpecificSoundToUseAsEnterStateInitiateIntendToDoVoice", INI::parseAsciiString, nullptr, SP_OFF(m_unitSpecificEnterStateVoice) },
 	{ "EvaEventToPlayOnSuccess", parseName, nullptr, SP_OFF(m_evaEventToPlayOnSuccess) },
 	{ "PublicTimer", INI::parseBool, nullptr, SP_OFF(m_publicTimer) },
-	{ "Enum", INI::parseIndexList, kSpecialPowerTypeNames, SP_OFF(m_type) },
+	{ "Enum", parseSpecialPowerEnum, kSpecialPowerTypeNames, SP_OFF(m_type) },
 	{ "DetectionTime", INI::parseDurationUnsignedInt, nullptr, SP_OFF(m_detectionTime) },
 	{ "SharedSyncedTimer", INI::parseBool, nullptr, SP_OFF(m_sharedNSync) },
 	{ "ViewObjectDuration", INI::parseDurationUnsignedInt, nullptr, SP_OFF(m_viewObjectDuration) },
@@ -65,6 +90,13 @@ const FieldParse kSpecialPowerFieldParse[] = {
 	{ "UnitCostDeathType", INI::parseInt, nullptr, SP_OFF(m_unitCostDeathType) },
 	{ nullptr, nullptr, nullptr, 0 }
 };
+// community PR #36: BFME1's RequiredScience row (BFME1 data only)
+const FieldParse kBfme1SpecialPowerRows[] = {
+	{ "RequiredScience", ScienceParse::parseScienceVector, nullptr, SP_OFF(m_requiredSciences) },
+	{ nullptr, nullptr, nullptr, 0 },
+};
+const Bfme1FieldRowsRegistration kBfme1SpecialPowerRowsRegistration(kSpecialPowerFieldParse, kBfme1SpecialPowerRows);
+
 #undef SP_OFF
 } // namespace
 

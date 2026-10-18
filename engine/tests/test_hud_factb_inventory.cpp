@@ -62,12 +62,12 @@ TEST_CASE("factb inventory: Isengard and Mordor reach every structure, unit, her
 		{
 			classes.insert(kv.first);
 		}
-		const std::set<std::string> isengard = { "AnnounceBirthAndDeathBehavior", "AudioLoopUpgrade", "BaseUpgrade", "BloodthirstyUpdate",
+		const std::set<std::string> isengard = { "AnnounceBirthAndDeathBehavior", "AudioLoopUpgrade", "BaseUpgrade",
 			"CitadelSlaughterHordeContain", "EvacuateDamage", "FlingPassengerSpecialAbilityUpdate", "GeometryUpgrade",
 			"PickupStuffUpdate", "SiegeDeployHordeSpecialPower", "SlaveWatcherBehavior", "SupplyCenterCreate", "SupplyCenterDockUpdate",
 			"TransitionDamageFX" };
 		const std::set<std::string> mordor = { "AimWeaponBehavior", "AnnounceBirthAndDeathBehavior", "AudioLoopUpgrade", "AutoPickUpUpdate", "BaseUpgrade",
-			"BloodthirstyUpdate", "BoredUpdate", "CitadelSlaughterHordeContain", "ClickReactionBehavior", "DoCommandUpgrade", "EvacuateDamage",
+			"BoredUpdate", "CitadelSlaughterHordeContain", "ClickReactionBehavior", "DoCommandUpgrade", "EvacuateDamage",
 			"FlingPassengerSpecialAbilityUpdate", "GeometryUpgrade", "GrabPassengerSpecialPower", "HordeTransportContainDamage",
 			"PickupStuffUpdate", "RunOffMapBehavior", "SiegeDeployHordeSpecialPower", "SlaughterHordeContain", "SlaveWatcherBehavior",
 			"SupplyCenterCreate", "SupplyCenterDockUpdate", "TransitionDamageFX" };

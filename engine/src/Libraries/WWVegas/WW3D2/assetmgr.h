@@ -53,11 +53,8 @@ struct W3DFileContents
 bool Load_W3D_File(const std::uint8_t *data, size_t size, W3DFileContents &out, std::string *error);
 
 // Virtual paths per the naming rules above.
-std::string W3D_Asset_Path(const std::string &assetName);          // art\w3d\xx\name.w3d (BFME1: art\w3d\name.w3d)
-// The mounted game's model layout (docs/BFME1.md): BFME2 / RotWK file models in two-letter folders, BFME1 keeps them all in art\w3d\.
-// Set by the archive mount (RetailFileSystem); the default is BFME2's.
-void W3D_Set_Flat_Asset_Layout(bool flat);
-bool W3D_Flat_Asset_Layout();
+// art\w3d\xx\name.w3d; `flatLayout` (community PR #36, the source's FlatAssetLayout: BFME1 data): art\w3d\name.w3d
+std::string W3D_Asset_Path(const std::string &assetName, bool flatLayout);
 std::string W3D_Compiled_Texture_Path(const std::string &textureName); // art\compiledtextures\xx\stem.dds
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -76,18 +73,23 @@ public:
 	virtual ~W3DFileSource() = default;
 	virtual bool Exists(const std::string &path) const = 0;
 	virtual bool Read(const std::string &path, std::vector<std::uint8_t> &out, std::string *error) = 0;
+	// community PR #36: the source's model layout (W3D_Asset_Path): BFME1's flat art\w3d\ or BFME2's two-letter folders. From the source's own
+	// files, never a process flag: the simulation's asset manager (launch bones) reads through it (Sol review r2)
+	virtual bool FlatAssetLayout() const { return false; }
 };
 
 // The mounted retail archives (or any ArchiveFileSystem).
 class ArchiveW3DFileSource : public W3DFileSource
 {
 public:
-	explicit ArchiveW3DFileSource(ArchiveFileSystem &fs) : Fs(fs) {}
+	explicit ArchiveW3DFileSource(ArchiveFileSystem &fs);
 	bool Exists(const std::string &path) const override;
 	bool Read(const std::string &path, std::vector<std::uint8_t> &out, std::string *error) override;
+	bool FlatAssetLayout() const override { return Flat; } // isBfme1Data of the file system (Common/BfmeGame.h)
 
 private:
 	ArchiveFileSystem &Fs;
+	bool Flat = false;
 };
 
 // One drawable member of an HLOD prototype (ZH HLodClass sub object). Boxes are collision / picking volumes, not drawn;

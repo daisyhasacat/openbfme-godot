@@ -15,7 +15,8 @@
 ## (OpenBFMELauncher.x86_64 / .exe next to the game's), so a launcher takes its own update from the game package (launcher_source) and
 ## the player downloads one archive. Format 2 still carries assets.launcher, the launcher-only archives the launchers published before
 ## ONEZIP-1 update themselves from (they refuse a manifest without them); format 3 is format 2 without assets.launcher, for the day
-## those launchers are retired (docs/RELEASE.md, "One archive"). This launcher reads both.
+## those launchers are retired (docs/RELEASE.md, "One archive"). This launcher reads both. The separately signed
+## manifest-macos.json uses the same metadata/inventory contract with the explicit "macos" schema mode.
 extends RefCounted
 
 const Ed25519 := preload("res://scripts/crypto/ed25519.gd")
@@ -24,13 +25,18 @@ const Archive := preload("res://scripts/core/archive.gd")
 
 const FORMATS := [2, 3]
 const PLATFORMS := ["linux-x64", "windows-x64"]
+const PAYLOAD_PLATFORMS := PLATFORMS + ["macos-universal", "macos-arm64"]  # MACPLAY-1: the Apple Silicon package is sealed too
 const KINDS := {"game": "openbfme", "launcher": "openbfme-launcher"}
 const MAX_BYTES := 64 * 1024
 const MAX_ASSET := 4 * 1024 * 1024 * 1024
 
 
 static func asset_name(kind: String, version: String, platform: String) -> String:
-	return "%s-%s-%s.%s" % [KINDS[kind], version, platform, "zip" if platform.begins_with("windows") else "tar.gz"]
+	return "%s-%s-%s.%s" % [KINDS[kind], version, platform, "zip" if platform.begins_with("windows") or platform == "macos-arm64" else "tar.gz"]
+
+
+static func macos_asset_name(version: String) -> String:
+	return "openbfme-%s-macos-arm64.zip" % version
 
 
 ## the archive's single top folder (the asset name without its extension)
@@ -40,7 +46,8 @@ static func top_folder(asset: String) -> String:
 
 ## {ok, error, manifest}. `expect`: {repo, tag, prerelease} of the release it was downloaded with ({} for a stored, already matched one
 ## except `repo`, which is always checked).
-static func verify(bytes: PackedByteArray, sig: PackedByteArray, release_key: PackedByteArray, expect: Dictionary) -> Dictionary:
+static func verify(bytes: PackedByteArray, sig: PackedByteArray, release_key: PackedByteArray, expect: Dictionary,
+		schema_mode := "standard") -> Dictionary:
 	var fail := func(why: String) -> Dictionary: return {"ok": false, "error": why, "manifest": {}}
 	if release_key.size() != 32:
 		return fail.call("this launcher has no release key (a development run without --trust-key?)")
@@ -55,7 +62,7 @@ static func verify(bytes: PackedByteArray, sig: PackedByteArray, release_key: Pa
 	if json.parse(text) != OK or typeof(json.data) != TYPE_DICTIONARY:
 		return fail.call("manifest.json is not a JSON object")
 	var m: Dictionary = json.data
-	var why := _schema(m)
+	var why := _schema(m, schema_mode)
 	if why != "":
 		return fail.call("manifest.json: " + why)
 	if expect.has("repo") and m.repo != expect.repo:
@@ -85,7 +92,7 @@ static func _int(v) -> int:
 	return int(f)
 
 
-static func _schema(m: Dictionary) -> String:
+static func _schema(m: Dictionary, schema_mode := "standard") -> String:
 	var k := _keys(m, ["format", "product", "repo", "version", "channel", "date", "commit", "assets"])
 	if k != "":
 		return k
@@ -109,6 +116,37 @@ static func _schema(m: Dictionary) -> String:
 		return "commit '%s' is not a 40-digit hex id" % m.commit
 	if typeof(m.assets) != TYPE_DICTIONARY:
 		return "assets is not an object"
+	if schema_mode == "macos":
+		if _int(m.format) != 3:
+			return "macOS manifest format must be 3"
+		k = _keys(m.assets, ["game"])
+		if k != "":
+			return "assets: " + k
+		if typeof(m.assets.game) != TYPE_DICTIONARY:
+			return "assets.game is not an object"
+		if m.assets.game.is_empty():
+			return ""
+		if _keys(m.assets.game, ["macos-arm64"]) != "":
+			return "assets.game: keys %s, expected [] or [macos-arm64]" % str(m.assets.game.keys())
+		var a = m.assets.game["macos-arm64"]
+		var where := "assets.game.macos-arm64"
+		if typeof(a) != TYPE_DICTIONARY:
+			return where + " is not an object"
+		k = _keys(a, ["name", "size", "sha256", "files"])
+		if k != "":
+			return "%s: %s" % [where, k]
+		if typeof(a.name) != TYPE_STRING or a.name != macos_asset_name(m.version):
+			return "%s.name '%s', expected %s" % [where, str(a.name), macos_asset_name(m.version)]
+		var size := _int(a.size)
+		if size <= 0 or size > MAX_ASSET:
+			return "%s.size %s" % [where, str(a.size)]
+		a.size = size
+		if typeof(a.sha256) != TYPE_STRING or RegEx.create_from_string("^[0-9a-f]{64}$").search(a.sha256) == null:
+			return "%s.sha256 is not 64 lower-case hex digits" % where
+		var file_why := _files_schema(a.get("files"), top_folder(a.name))
+		return "%s.files: %s" % [where, file_why] if file_why != "" else ""
+	if schema_mode != "standard":
+		return "unknown manifest schema mode '%s'" % schema_mode
 	var kinds: Array = KINDS.keys() if _int(m.format) == 2 else ["game"]
 	k = _keys(m.assets, kinds)
 	if k != "":
@@ -169,7 +207,7 @@ static func _files_schema(files, top: String) -> String:
 ## Lane ONEZIP-1 r2: the signed payload inventory inside a combined package (tools/release/seal_package.py writes it on the machine with
 ## the release key, before the archive is finished, so it never names itself): payload.json, checked byte for byte against
 ## payload.json.sig under the release key before it is parsed, then strictly:
-##   {"format": 1, "product": "OpenBFME", "repo": "<owner>/<name>", "version": <release version>, "platform": "linux-x64" | "windows-x64",
+##   {"format": 1, "product": "OpenBFME", "repo": "<owner>/<name>", "version": <release version>, "platform": "linux-x64" | "windows-x64" | "macos-arm64",
 ##    "files": {<path in the package>: {"size", "sha256"}, ...}}     every file of the package but payload.json and payload.json.sig
 ## `expect`: {repo, platform}. {ok, error, payload}
 const PAYLOAD := "payload.json"
@@ -223,7 +261,7 @@ static func verify_payload(bytes: PackedByteArray, sig: PackedByteArray, release
 		return fail.call("%s is for %s, this launcher updates from %s" % [PAYLOAD, p.repo.left(140), expect.repo])
 	if not Semver.is_valid(p.version):
 		return fail.call("%s: %s" % [PAYLOAD, Semver.parse(p.version).error])
-	if not p.platform in PLATFORMS or p.platform != expect.get("platform", p.platform):
+	if not p.platform in PAYLOAD_PLATFORMS or p.platform != expect.get("platform", p.platform):
 		return fail.call("%s is for the platform '%s'" % [PAYLOAD, p.platform.left(40)])
 	var why := _files_schema(p.get("files"), "openbfme-%s-%s" % [p.version, p.platform])
 	if why != "":

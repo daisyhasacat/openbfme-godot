@@ -373,8 +373,8 @@ void runObject(FactRig &r, const std::string &faction, const std::string &name, 
 				}
 				else
 				{
-					// a ground target: where the enemy stands (the damage, the summons and the floods are seen there)
-					Coord3D ground = FactRig::clickPoint(*enemy);
+					// Area powers target the battalion's ground, not an individual soldier's occupied approach cell.
+					Coord3D ground = *enemy->getPosition();
 					ground.z = r.logic().getGroundHeight(ground.x, ground.y);
 					r.clickWorld(ground);
 				}

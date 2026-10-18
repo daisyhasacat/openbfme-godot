@@ -2,6 +2,7 @@
 // See Common/NumericState.h for the target facts and what is emulated.
 
 #include "Common/NumericState.h"
+#include "Common/ArithmeticNaN.h"
 
 #include <cfenv>
 #include <cmath>
@@ -948,22 +949,22 @@ std::uint32_t ceilScaled(std::uint32_t ms, float scale)
 // ---------------------------------------------------------------------------------------------------------------------------------------
 float sseAdd(float a, float b)
 {
-	return a + b;
+	return ArithmeticNaN::generated(a, b, a + b);
 }
 
 float sseSub(float a, float b)
 {
-	return a - b;
+	return ArithmeticNaN::generated(a, b, a - b);
 }
 
 float sseMul(float a, float b)
 {
-	return a * b;
+	return ArithmeticNaN::generated(a, b, a * b);
 }
 
 float sseDiv(float a, float b)
 {
-	return a / b;
+	return ArithmeticNaN::generated(a, b, a / b);
 }
 
 float sseFromInt32(std::int32_t v)
@@ -1064,22 +1065,22 @@ double ceilD(double x)
 
 double sseAddD(double a, double b)
 {
-	return a + b;
+	return ArithmeticNaN::generated(a, b, a + b);
 }
 
 double sseSubD(double a, double b)
 {
-	return a - b;
+	return ArithmeticNaN::generated(a, b, a - b);
 }
 
 double sseMulD(double a, double b)
 {
-	return a * b;
+	return ArithmeticNaN::generated(a, b, a * b);
 }
 
 double sseDivD(double a, double b)
 {
-	return a / b;
+	return ArithmeticNaN::generated(a, b, a / b);
 }
 
 double absD(double x)

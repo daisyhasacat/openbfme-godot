@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <string>
+#include <typeinfo>
 
 enum ModuleType
 {
@@ -58,6 +59,10 @@ public:
 
 	void setModuleTagNameKey(NameKeyType key) { m_moduleTagNameKey = key; }
 	NameKeyType getModuleTagNameKey() const { return m_moduleTagNameKey; }
+	// lane SAVE-4b: the tag as written (Object::xfer RW 0x697F28 writes each module's tag name before its block; the key depends on the order names were
+	// first seen in, the name does not)
+	void setModuleTagName(const std::string &tag) { m_moduleTagName = tag; }
+	const std::string &getModuleTagName() const { return m_moduleTagName; }
 
 	// RW vtable slot 4
 	virtual bool isAiModuleData() const { return m_aiModuleData; }
@@ -76,6 +81,7 @@ public:
 
 private:
 	NameKeyType m_moduleTagNameKey = NAMEKEY_INVALID;
+	std::string m_moduleTagName;
 	bool m_aiModuleData = false;
 	bool m_slot7Predicate = false;
 };
@@ -92,8 +98,11 @@ private:
 //     0x6D16FA `call [eax + 0xC]`), getSpecialPower (slot 8, RW 0x693D9F `call [eax + 0x20]`), getUpdate (slot 9, RW 0x62BD82 `call
 //     [eax + 0x24]`) and, RotWK only, the AI update interface (slot 19, RW 0x69A3E3 `call [eax + 0x4C]`).
 //
-// Not ported: Snapshot (xfer / loadPostProcess; saves belong to a later lane), preloadAssets (assets are the draw runtime's).
+// Not ported: loadPostProcess (lane SAVE-4b: an object's pointers to other objects are resolved inside its xfer, every object of the snapshot exists
+// by then, GameLogic/GameLogicObjectSnapshot.cpp), preloadAssets (assets are the draw runtime's).
 // `crc` is OpenBFME's own state hash hook (Common/StateHash.h), not retail's xfer CRC.
+// lane SAVE-4b, the snapshot (ZH Module / ObjectModule / BehaviorModule / UpdateModule::xfer): every concrete module class declares its own xfer with
+// OBFME_MODULE_XFER(Class); the Objects block refuses an instance whose class did not (an inherited xfer would drop the subclass's state), naming it.
 // ---------------------------------------------------------------------------------------------------------------------
 
 class Thing;
@@ -101,7 +110,13 @@ class Object;
 class Player;
 class Drawable;
 class StateHasher;
+class Xfer;
 struct Coord3D;
+
+// lane SAVE-4b: declares the module class's xfer and records that the class has one of its own (see Module::xferClass)
+#define OBFME_MODULE_XFER(Class)                                                                                                                       \
+	void xfer(Xfer &x) override;                                                                                                                      \
+	const std::type_info &xferClass() const override { return typeid(Class); }
 
 class Module
 {
@@ -141,6 +156,18 @@ public:
 	virtual bool isUnported() const { return false; }
 	// true for the Object constructor's helper modules (GameLogic/Module/ObjectHelper.h): they are not registry classes
 	virtual bool isHelper() const { return false; }
+	// lane SAVE-4b: the module's tag (the name Object::xfer keys its block by, RW 0x697F28); a helper answers its retail ModuleTag_ string
+	virtual const std::string &getModuleTagName() const;
+	// lane SAVE-4b: the module's snapshot (save, load and XferCRC through one function). The base answers a named XferException: a module class without
+	// an xfer cannot be saved
+	virtual void xfer(Xfer &x);
+	// the class whose xfer `xfer` is (OBFME_MODULE_XFER); the Objects block requires typeid(*this)
+	virtual const std::type_info &xferClass() const { return typeid(Module); }
+
+protected:
+	// ZH Module::xfer: the version byte (1, 1) (inference: RotWK ObjectModule::xfer RW 0x7082E2 transfers two version bytes, its own and the base's)
+	void xferModule(Xfer &x);
+public:
 
 private:
 	const ModuleData *m_moduleData;
@@ -158,6 +185,11 @@ public:
 
 	// ZH ObjectModule::onCapture: the owner changed (RW 0x696F61: vtable slot 0x24 called with the old and the new PLAYER; the first declaration took Objects, ECON-1)
 	virtual void onCapture(Player * /*oldOwner*/, Player * /*newOwner*/) {}
+
+protected:
+	// lane SAVE-4b: RW ObjectModule::xfer 0x7082E2, version (1, 1), then Module::xfer
+	void xferObjectModule(Xfer &x);
+public:
 
 private:
 	Object *m_object;

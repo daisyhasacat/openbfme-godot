@@ -137,6 +137,7 @@ public:
 class CastleBehavior : public FoundationAIUpdate, public CreateModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(CastleBehavior) // lane SAVE-4b
 	// RW +0x34 of the module
 	enum State
 	{
@@ -273,6 +274,7 @@ public:
 class CastleMemberBehavior : public BehaviorModule, public DamageModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(CastleMemberBehavior) // lane SAVE-4b
 	CastleMemberBehavior(Thing *thing, const CastleMemberBehaviorModuleData *data);
 	const CastleMemberBehaviorModuleData *data() const { return m_data; }
 	void crc(StateHasher &hasher) const override;

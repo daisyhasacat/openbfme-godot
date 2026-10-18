@@ -18,18 +18,74 @@
 #include "GameLogic/GameMessage.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/Module/SpecialPowerModules.h"
+#include "GameLogic/Module/BehaviorModule.h"
+#include "GameLogic/Module/BloodthirstyUpdate.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
 
 #include <cstdlib>
 #include <cmath>
 
+// RW 0x81F791: a double click is a gate for expanding the CURRENT selection across the screen; the clicked object does not seed it.
+void CommandTranslator::doubleClick(const ClientMessage &msg)
+{
+	if (m_ctx.ui.isInForceAttackMode())
+	{
+		return;
+	}
+	const IRegion2D &region = msg.arg(0).region;
+	if (region.lo.x != region.hi.x || region.lo.y != region.hi.y)
+	{
+		return;
+	}
+	Object *picked = HudObjects::pickForDoubleClick(m_ctx, region.lo);
+	if (!picked)
+	{
+		return;
+	}
+	// RW 0x81F7DC..0x81F81F: HORDE_MEMBER -> containedBy, else producer ID; only a HordeContain can stand for it.
+	if (picked->testStatus(38))
+	{
+		Object *horde = picked->getContainedBy();
+		if (!horde)
+		{
+			horde = m_ctx.logic.findObjectByID(picked->getProducerID());
+		}
+		if (!horde || !horde->getContain() || !horde->getContain()->getHordeContainInterface())
+		{
+			return;
+		}
+		picked = horde;
+	}
+	// RW 0x9403ED -> InGameUI vslot 0x188 (RW 0x69D90C). No Alt / Shift reselection, area-selection message or map-wide fallback.
+	if (HudObjects::isLocallyControlled(m_ctx, *picked) && HudObjects::isSelectable(*picked, m_ctx.ui.getGUICommand()) && !picked->isKindOfName("STRUCTURE"))
+	{
+		m_ctx.ui.selectMatching(m_ctx, false);
+	}
+}
+
 namespace
 {
 bool isSystemMessage(const ClientMessage &m)
 {
 	// ZH isSystemMessage (CommandXlat.cpp:5163): what still works while input is disabled (the options menu, a game data reset)
-	return m.type() == CMSG_META_OPTIONS;
+	// lane OWNERFIX-1: RotWK's CommandTranslator::translateGameMessage (RW 0x81F8F2 .. 0x81F979) also lets these logic messages through while either
+	// input flag (InGameUI + 0x15 / + 0x16) is off: 0x3EC, 0x447, 0x448, 0x44A, 0x45F, 0x469. The script's DISABLE_INPUT (RW 0x7BC586) appends
+	// MSG_DESTROY_SELECTED_GROUP after turning the input off, so the logic's selection group must reach the logic. The client message numbers of
+	// that list (0x1D, 0x70, 0x6A5, 0x6A6, 0x6B8, 0x6BA, 0x6BB, 0x7D9, 0x7ED) are RotWK's own numbering and are not mapped here (stop S-4964)
+	switch (m.type())
+	{
+		case CMSG_META_OPTIONS:
+		case MSG_DESTROY_SELECTED_GROUP: // 0x3EC
+		case MSG_SET_REPLAY_CAMERA:      // 0x447
+		case MSG_SELF_DESTRUCT:          // 0x448
+		case MSG_LOGIC_CRC:              // 0x44A
+		case MSG_CALL_IN_REINFORCEMENTS: // 0x45F
+		case MSG_CHANGE_ORDERMODE:       // 0x469
+			return true;
+		default:
+			return false;
+	}
 }
 
 const char *metaNameOf(int type)
@@ -283,6 +339,40 @@ int CommandTranslator::evaluateContextCommand(Object *obj, const Coord3D *pos, E
 	// lane FACT-C: a special power button waiting for its target (CONTEXTMODE_COMMAND: GUICommandTranslator leaves its click to this translator)
 	if (const CommandButton *command = m_ctx.ui.getGUICommand())
 	{
+		if (command->m_command == GUI_COMMAND_BLOODTHIRSTY)
+		{
+			// RW 0x81E60B: the pressed button's relationship bits (NEED_TARGET_ALLY_OBJECT in retail's data) drop the target first, then the action check
+			const Player *local = m_ctx.localPlayer();
+			if (obj && (!local || !BloodthirstyUpdate::relationshipAllowed(*command, *local, *obj)))
+			{
+				obj = nullptr;
+			}
+			Object *source = m_ctx.logic.findObjectByID(m_ctx.ui.firstSelected());
+			BloodthirstyUpdate *module = source ? BloodthirstyUpdate::find(*source) : nullptr;
+			Object *sourceHorde = source ? source->getHordeObject(false) : nullptr;
+			Object *targetHorde = obj ? obj->getHordeObject(false) : nullptr;
+			const bool valid = module && sourceHorde && targetHorde && targetHorde != sourceHorde && module->canSacrifice(obj);
+			if (!valid)
+			{
+				if (type == EvaluateType::DoHint && !command->m_invalidCursorName.empty())
+				{
+					hint(command->m_invalidCursorName.c_str());
+				}
+				return 0;
+			}
+			if (type == EvaluateType::DoHint)
+			{
+				if (!command->m_cursorName.empty())
+				{
+					hint(command->m_cursorName.c_str());
+				}
+				return 0;
+			}
+			ClientMessage &m = m_ctx.stream.append(MSG_SACRIFICE);
+			m.appendObjectID(obj->getID());
+			m_ctx.ui.setGUICommand(nullptr);
+			return MSG_SACRIFICE;
+		}
 		if (command->m_command == GUI_COMMAND_SPECIAL_POWER)
 		{
 			return evaluateGUISpecialPower(*command, obj, pos, type);
@@ -820,12 +910,14 @@ MessageDisposition CommandTranslator::translate(const ClientMessage &msg)
 			m_rightLift = msg.arg(0).pixel;
 			m_rightUp = msg.arg(2).integer;
 			break;
+		case CMSG_MOUSE_LEFT_DOUBLE_CLICK:
+			doubleClick(msg); // RW 0x81FBE4: independent of the order-click / alternate-mouse path
+			break;
 		case CMSG_MOUSE_RIGHT_DOUBLE_CLICK:
 		case CMSG_MOUSE_RIGHT_CLICK:
-		case CMSG_MOUSE_LEFT_DOUBLE_CLICK:
 		case CMSG_MOUSE_LEFT_CLICK:
 		{
-			const bool left = t == CMSG_MOUSE_LEFT_CLICK || t == CMSG_MOUSE_LEFT_DOUBLE_CLICK;
+			const bool left = t == CMSG_MOUSE_LEFT_CLICK;
 			// the standard setup orders with the left click, the alternate setup with the right one (CommandXlat.cpp:3678, 3741). lane FACT-C: RotWK's two
 			// cases read TheInGameUI's GUI command first (RW 0x81FAE2 / 0x81FC57): while one other than ATTACK_MOVE (0xA) waits for its target, the right click
 			// orders nothing (RW 0x81FAFE) and the left click carries it out in either setup (RW 0x81FC73 skips the alternate-mouse test); a special power's target

@@ -55,6 +55,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
@@ -69,6 +70,7 @@ class Team;
 class TeamPrototype;
 class Player;
 class StateHasher;
+class Xfer;
 class ThingTemplate;
 
 class Object : public Thing
@@ -336,8 +338,8 @@ public:
 	void giveUpgrade(const UpgradeTemplate *upgrade);
 	// RW 0x693817: the upgrade's bits (its sub upgrades' when it has any), then updateUpgradeModules
 	void giveUpgradeSelf(const UpgradeTemplate *upgrade);
-	// RW 0x694914: an owner, the gate (the controlling player has a completed object its RequiredObjectFilter allows, RW 0x6ABD0B; the other two clauses of the
-	// gate, RW 0x6939DF / 0x693A1A and RW 0x6ABDC2, are not ported: S-486), then some upgrade module would upgrade with (player's completed | object's | the
+	// RW 0x694914: an owner and either the attached horde's upgrade or an owned object satisfying one of the two RequiredObjectFilter queries,
+	// then some upgrade module would upgrade with (player's completed | object's | the
 	// upgrade's bit), or (contain) one of the contained objects is affected
 	bool affectedByUpgrade(const UpgradeTemplate *upgrade) const;
 	// RW 0x691438: the upgrade's own bit clears; every upgrade module whose resetUpgrade(that bit) succeeds is removed (RW 0x8D2688)
@@ -479,6 +481,12 @@ public:
 
 	// the OpenBFME state hash of the object (id, template, team, status, disabled, transform, modules)
 	void crc(StateHasher &hasher) const;
+	// lane SAVE-4b (tests): crc with the modules `omit` answers left out (a lane's part of an object; crc itself is this with no module left out)
+	void crcOmittingModules(StateHasher &hasher, const std::function<bool(const BehaviorModule &)> &omit) const;
+	// lane SAVE-4b: the object's snapshot (OpenBFME native layout, S-4190; GameLogic/GameLogicObjectSnapshot.cpp): its own state, its ExperienceTracker and
+	// weapons, then every module keyed by its tag inside a block (retail Object::xfer RW 0x697F28's module loop, SAVES-RETAIL.md section 3). The Objects
+	// block creates every object of the snapshot before any of them loads, so ids resolve to objects at once
+	void xfer(Xfer &x);
 
 protected:
 	// ZH Object::setPosition / setOrientation: a container (the horde contain) moves what it holds
@@ -506,7 +514,7 @@ private:
 	int m_creationSeed = 0;
 	std::string m_name;
 	std::uint8_t m_scriptStatus = 0; ///< lane SCRIPT-2: RW + 0x457 (hashed when not zero)
-	bool m_scriptSelectable = true;  ///< lane SCRIPT-2: RW + 0x454 (hashed when cleared)
+	bool m_scriptSelectable = false; ///< RW +0x454: ctor initializes from SELECTABLE; hash only deviations from the template-derived default
 	TriggerEntry m_triggers[MAX_TRIGGERS_IN];  ///< lane SCRIPT-2: RW + 0x3DC
 	int m_triggerCount = 0;                      ///< RW + 0x45A
 	std::vector<std::uint8_t> m_geometryActive; ///< lane HUD-5: the shapes' active flags of the object's own GeometryInfo (+ 0xA8), empty: the template's

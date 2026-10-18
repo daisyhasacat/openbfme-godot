@@ -74,6 +74,7 @@ public:
 	int getPlayerIndex() const { return m_playerIndex; }
 
 	void crc(StateHasher &h) const { h.addU32(m_money); }
+	void xfer(class Xfer &x); // lane SAVE-4a (Player.cpp)
 
 private:
 	std::uint32_t m_money = 0;

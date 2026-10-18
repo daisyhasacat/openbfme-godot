@@ -4,7 +4,10 @@
 #include "HudTestUtil.h"
 
 #include "GameClient/CursorFile.h"
+#include "GameClient/CameraSettings.h"
+#include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DScriptedModelDraw.h"
 #include "Common/BuildAssistant.h"
+#include "Common/AsciiString.h"
 #include "Common/PlayerTemplate.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameClient/GUI/ShellServices.h"
@@ -314,6 +317,159 @@ TEST_CASE("hud palantir input: a rally point by the command button and by a clic
 	CHECK(std::fabs(exit->getRallyPoint()->y - target.y) < 12.0f);
 }
 
+TEST_CASE("hud rally banner: real right click sets the point and animates the retail flag while the produced horde walks there")
+{
+	if (!haveWorld("hud rally banner"))
+	{
+		return;
+	}
+	SharedWorld &s = shared();
+	HudRig h(s);
+	const auto context = h.hud->enterContext();
+	h.hud->input().commandTranslator().setUseAlternateMouse(true);
+	const Coord3D c = h.rig.freeSpot(2800, 1400, 200.0f, false, { { 150.0f, 250.0f } });
+	Object *b = h.rig.make("GondorBarracks", c.x, c.y);
+	h.rig.lookAt(c);
+	h.frames(30);
+	const ICoord2D building = h.rig.screenOf({ c.x, c.y, b->getPosition()->z + 20.0f });
+	h.hud->mouseMove(building.x, building.y);
+	h.hud->mouseButton(HudInput::Button::Left, true, building.x, building.y, 0, 1000);
+	h.hud->mouseButton(HudInput::Button::Left, false, building.x, building.y, 0, 1040);
+	h.frames(20);
+	REQUIRE(h.hud->input().ui().selected() == std::vector<ObjectID>{ b->getID() });
+	DrawableManager &dm = h.rig.game->drawables();
+	auto marker = [&]() -> Drawable * {
+		Drawable *found = nullptr;
+		for (size_t i = 1; i < dm.slotCount(); ++i)
+		{
+			Drawable *d = dm.find((DrawableID)i);
+			if (d && d->getTemplate()->getName() == "RallyPointMarker")
+			{
+				CHECK(found == nullptr);
+				found = d;
+			}
+		}
+		return found;
+	};
+	CHECK(marker() == nullptr);
+	const Coord3D target{ c.x + 150.0f, c.y + 250.0f, 0.0f };
+	const ICoord2D px = h.rig.screenOf(target);
+	REQUIRE_FALSE(h.hud->isOverGui(px.x, px.y));
+	h.hud->mouseMove(px.x, px.y);
+	h.hud->mouseButton(HudInput::Button::Right, true, px.x, px.y, 0, 2000);
+	h.hud->mouseButton(HudInput::Button::Right, false, px.x, px.y, 0, 2040);
+	h.frames(12);
+	bool command = false;
+	for (const std::string &line : h.hud->input().messageLog())
+	{
+		command = command || line.compare(0, 20, "MSG_SET_RALLY_POINT ") == 0;
+	}
+	CHECK(command);
+	REQUIRE(b->getObjectExitInterface() != nullptr);
+	const Coord3D *point = b->getObjectExitInterface()->getRallyPoint();
+	REQUIRE(point != nullptr);
+	CHECK(std::fabs(point->x - target.x) < 12.0f); // tolerance: click coordinates are quantized to screen pixels before unprojecting.
+	CHECK(std::fabs(point->y - target.y) < 12.0f); // tolerance: click coordinates are quantized to screen pixels before unprojecting.
+	const Coord3D rally = *point;
+	// Do not stop at the missing visual: the red run also proves that the command and subsequent movement already work.
+	CHECK(marker() != nullptr);
+	if (Drawable *flag = marker())
+	{
+		CHECK(flag->getObjectID() == INVALID_ID);
+		CHECK(flag->getPosition()->x == point->x);
+		CHECK(flag->getPosition()->y == point->y);
+		CHECK(flag->getPosition()->z == point->z);
+		CameraSettings gd;
+		std::string error;
+		REQUIRE(CameraSettings::load(*s.mount->fs, gd, &error));
+		CHECK(gd.haveDownwindAngle);
+		CHECK(flag->getOrientation() == gd.downwindAngle);
+		CHECK(flag->getHouseColor() == h.rig.local->getPlayerColor());
+		REQUIRE(flag->entries().size() == 1);
+		REQUIRE(flag->entries()[0].draw != nullptr);
+		const W3DDrawFrame frame = flag->entries()[0].draw->frame();
+		CHECK(AsciiStringUtil::lowered(frame.modelName) == "rallyflag_skn");
+		REQUIRE(frame.trackCount == 1);
+		CHECK(AsciiStringUtil::lowered(frame.tracks[0].clipName) == "rallyflag_skl.rallyflag_wava");
+		CHECK(frame.tracks[0].mode == W3D_ANIM_MODE_LOOP);
+		CHECK(frame.model != nullptr);
+		CHECK(frame.tracks[0].anim != nullptr);
+		h.frames(3);
+		CHECK(flag->entries()[0].draw->frame().tracks[0].frame != frame.tracks[0].frame);
+	}
+	REQUIRE(!h.hud->controlBar().palantirButtons().empty());
+	const ControlBarButton first = h.hud->controlBar().palantirButtons().front();
+	REQUIRE(first.button->m_command == GUI_COMMAND_UNIT_BUILD);
+	const ThingTemplate *unit = first.button->getThingTemplate();
+	REQUIRE(unit != nullptr);
+	int x = 0, y = 0;
+	REQUIRE(buttonCentre(h, "CommandButtons.0.content", x, y));
+	h.hud->mouseMove(x, y);
+	h.frames(2);
+	h.hud->mouseButton(HudInput::Button::Left, true, x, y, 0, 3000);
+	h.frames(2);
+	h.hud->mouseButton(HudInput::Button::Left, false, x, y, 0, 3040);
+	h.frames(12);
+	Object *made = nullptr;
+	bool arrived = false;
+	for (int i = 0; i < 4000 && !arrived; ++i)
+	{
+		h.frames(1);
+		if (!made)
+		{
+			for (Object *o = h.rig.logic().getFirstObject(); o; o = o->getNextObject())
+			{
+				if (o->getProducerID() == b->getID() && o->getTemplate() == unit)
+				{
+					made = o;
+					break;
+				}
+			}
+		}
+		if (made)
+		{
+			const Coord3D pos = *made->getPosition();
+			arrived = std::hypot(pos.x - rally.x, pos.y - rally.y) < 40.0f; // tolerance: existing 40-unit production-arrival acceptance radius.
+		}
+	}
+	REQUIRE(made != nullptr);
+	CHECK(arrived);
+	CHECK(marker() != nullptr);
+	const DrawableID id = marker() ? marker()->getID() : 0;
+	// A second actual right click repositions the existing flag, not an additional object.
+	const ICoord2D next = h.rig.screenOf({ target.x - 60.0f, target.y, 0.0f });
+	h.hud->mouseMove(next.x, next.y);
+	h.hud->mouseButton(HudInput::Button::Right, true, next.x, next.y, 0, 150000);
+	h.hud->mouseButton(HudInput::Button::Right, false, next.x, next.y, 0, 150040);
+	h.frames(12);
+	if (Drawable *flag = marker())
+	{
+		CHECK(flag->getID() == id);
+		CHECK(flag->getPosition()->x == b->getObjectExitInterface()->getRallyPoint()->x);
+		CHECK(std::fabs(flag->getPosition()->x - rally.x) > 40.0f); // tolerance: the 60-unit target shift must exceed arrival radius despite pixel rounding.
+		h.rig.local->setPlayerNightColor(0xff123456);
+		h.rig.logic().settings().night = true;
+		h.frames(1);
+		CHECK(flag->getHouseColor() == 0xff123456);
+		h.rig.logic().settings().night = false;
+	}
+	h.hud->input().ui().deselectAll(false);
+	h.frames(1);
+	CHECK(marker() == nullptr);
+	CHECK(dm.find(id) == nullptr);
+	h.hud->input().ui().selectObject(b->getID());
+	h.frames(1);
+	CHECK(marker() != nullptr);
+	if (marker())
+	{
+		CHECK(marker()->getID() != id);
+	}
+	h.hud->input().ui().deselectAll(false);
+	h.hud->input().ui().selectObject(made->getID());
+	h.frames(1);
+	CHECK(marker() == nullptr);
+}
+
 namespace
 {
 std::string sideOf(const ThingTemplate &tt)
@@ -474,7 +630,7 @@ TEST_CASE("stops S-289 .. S-295: the control bar, the radar and the Palantir rep
 	{
 		ids.insert(l.substr(0, 7));
 	}
-	CHECK(ids == std::set<std::string>{ "[S-289]", "[S-290]", "[S-291]", "[S-292]", "[S-293]", "[S-294]", "[S-295]", "[S-761]", "[S-762]", "[S-763]", "[S-764]", "[S-1260", "[S-1674", "[S-1922", "[S-2450", "[S-2451", "[S-2452", "[S-2453", "[S-2454", "[S-2455", "[S-2456", "[S-2457", "[S-3460", "[S-1990", "[S-1991", "[S-1992", "[S-3950", "[S-3951", "[S-3801", "[S-3803", "[S-4531" }); // lane HUD-4: S-1674 (the radar events) // lane UI-1: S-1260 (the id is eight characters) // lane RADAR-1: S-2450 .. S-2457 // lane AUTOCAST-1: S-3460 // lane FACT-B: S-1990 .. S-1992 // lane HUD-7: S-3950, S-3951 // lane PLAY-4: S-3801 / S-3803 // lane NETLAG-1: S-4531
+	CHECK(ids == std::set<std::string>{ "[S-289]", "[S-290]", "[S-291]", "[S-292]", "[S-293]", "[S-294]", "[S-295]", "[S-761]", "[S-762]", "[S-763]", "[S-764]", "[S-1260", "[S-1674", "[S-1922", "[S-2450", "[S-2451", "[S-2452", "[S-2453", "[S-2454", "[S-2455", "[S-2456", "[S-2457", "[S-3460", "[S-1990", "[S-1992", "[S-3950", "[S-3801", "[S-3803", "[S-4531", "[S-5040" }); // lane HUD-4: S-1674 (the radar events) // lane UI-1: S-1260 (the id is eight characters) // lane RADAR-1: S-2450 .. S-2457 // lane AUTOCAST-1: S-3460 // lane FACT-B: S-1990 .. S-1992 // lane HUD-7: S-3950 // lane PLAY-4: S-3801 / S-3803 // lane NETLAG-1: S-4531 // lane OWNERFIX-3: S-5040
 }
 
 TEST_CASE("hud radar: the map picture, the object blips in the owners' colours, the view box and a click on the radar are world points")

@@ -165,6 +165,7 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		d.setInt("playerColor", colorInt(col.rgb));
 		d.setInt("playerNightColor", colorInt(col.nightRgb));
 		d.setInt("multiplayerStartIndex", slot.startPos);
+		d.setInt("playerHandicap", slot.handicap); // lane OWNERFIX-2: RW 0x627F8F .. 0x627FA0 (CreateMPPlayers): every occupied slot's + 0x20
 		bool isLocal = false;
 		if (slot.isHuman() && localSlot >= 0 && localSlot < MAX_SLOTS)
 		{
@@ -235,7 +236,7 @@ std::vector<std::string> SkirmishSides::stopLines()
 {
 	return {
 		"[S-271] skirmish sides: built from the RotWK 2.01 disassembly (RW 0x73193D, 0x627C1F, 0x626E1F; S-001 caveat); the map's Player_N sides are dropped with their scripts and "
-		"build lists (the script lane's), playerAIType / livingWorldPlayerID / the handicap / the preorder flag are not set, a Player's night colour and AI difficulty are stored "
+		"build lists (the script lane's), playerAIType / livingWorldPlayerID / the preorder flag are not set, a Player's night colour and AI difficulty are stored "
 		"and not acted on",
 	};
 }

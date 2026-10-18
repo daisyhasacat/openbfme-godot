@@ -6,10 +6,12 @@
 #endif
 
 #include "GameLogic/Module/ExperienceUpgradeModules.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/Thing/ModuleFactory.h"
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "GameLogic/SimMath.h"
 
 #include <cstddef>
@@ -54,10 +56,10 @@ void ExperienceScalarUpgradeModuleData::buildFieldParse(MultiIniFieldParse &p)
 	p.add(kExperienceScalar);
 }
 
-unsigned long long &LevelUpUpgrade::hordeSlotCalls()
+bool LevelUpUpgrade::wouldUpgrade(const UpgradeMaskType &mask) const
 {
-	static unsigned long long n = 0;
-	return n;
+	const ExperienceTracker *tracker = getObject()->getExperienceTracker();
+	return tracker && tracker->getRank() < m_data->m_levelCap && UpgradeMux::wouldUpgrade(mask);
 }
 
 void LevelUpUpgrade::upgradeImplementation()
@@ -77,7 +79,10 @@ void LevelUpUpgrade::upgradeImplementation()
 	Object *horde = obj->getHordeObject(false);
 	if (horde && horde->getContain() && horde->getContain()->getHordeContainInterface() && n > 0)
 	{
-		hordeSlotCalls() += (unsigned long long)n; // RW 0x8B7FE2: HordeContain slot 0xC4, not identified (S-635)
+		for (int i = 0; i < n; ++i)
+		{
+			horde->getContain()->getHordeContainInterface()->gainMemberLevel();
+		}
 	}
 }
 
@@ -101,4 +106,18 @@ void ExperienceUpgradeModules::registerAll(ModuleFactory &modules)
 {
 	bindRuntime<LevelUpUpgrade, LevelUpUpgradeModuleData>(modules, "LevelUpUpgrade");
 	bindRuntime<ExperienceScalarUpgrade, ExperienceScalarUpgradeModuleData>(modules, "ExperienceScalarUpgrade");
+}
+
+// ---- lane SAVE-4b: the snapshots (UpgradeModule's: the classes keep no state of their own) ----
+
+void LevelUpUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+}
+
+void ExperienceScalarUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
 }

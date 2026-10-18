@@ -3,6 +3,8 @@
 
 #include "Common/CreateAHeroRecord.h"
 
+#include "Common/Xfer.h"
+
 #include <cstring>
 
 namespace
@@ -323,6 +325,63 @@ std::vector<std::uint8_t> CreateAHeroHero::save() const
 	w.boolean(isSystemHero);
 	w.u32(w.crc, false);
 	return w.out;
+}
+
+// lane SAVE-4d: RW 0x80B4F5 in retail's field order and window (1, 8) (the header's TARGET FACTS), through the snapshot's Xfer. Saving writes version 8 and
+// the record's STORED checksum (the file save, save() above and retail, writes the one computed now: the two are equal for a valid record; the game's
+// record keeps what it was loaded with, and the state hash covers it). Loading reads any version in the window like load() does, without the file
+// load's side effects (the flags and the validity are the game's: obfme:CreateAHero transfers them after the record, with the record's own version).
+void CreateAHeroHero::xfer(Xfer &x)
+{
+	if (x.isLoading())
+	{
+		*this = CreateAHeroHero(); // a load starts from an empty record (the caller hands a temporary: SAVES.md section 8's rules)
+	}
+	XferVersion v{ 1, XFER_VERSION };
+	x.xferVersion(v);
+	x.xferObjectID(&objectID);
+	x.xferUnicodeString(&name);
+	x.xferUnsignedInt(&classIndex);
+	x.xferUnsignedInt(&subClassIndex);
+	std::uint32_t dummy = 0;
+	x.xferUnsignedInt(&dummy);
+	dummy = 0;
+	x.xferUnsignedInt(&dummy);
+	x.xferUnsignedInt(&primaryColor);
+	x.xferUnsignedInt(&secondaryColor);
+	x.xferUnsignedInt(&tertiaryColor);
+	for (CreateAHeroPower &p : powers) // RW 0x809A31
+	{
+		x.xferAsciiString(&p.commandButton);
+		x.xferUnsignedInt(&p.expLevel);
+		x.xferUnsignedInt(&p.buttonIndex);
+	}
+	std::uint32_t count = x.isLoading() ? 0 : (std::uint32_t)bling.size();
+	x.xferCount(&count, 1 + 4, sizeof(std::pair<std::string, std::uint32_t>)); // a group name (its length byte) and its index
+	for (std::uint32_t i = 0; i < count; ++i)
+	{
+		std::string group = x.isLoading() ? std::string() : bling[i].first;
+		std::uint32_t index = x.isLoading() ? 0 : bling[i].second;
+		x.xferAsciiString(&group);
+		x.xferUnsignedInt(&index);
+		if (x.isLoading())
+		{
+			if (group.empty())
+			{
+				throw XferException("Fatal error in CreateAHeroHero::DoXfer(Xfer *xfer): an empty GroupName"); // RW 0xC4F2D8
+			}
+			setBling(group, index);
+		}
+	}
+	if (v.current > 6)
+	{
+		x.xferAsciiString(&uniqueID);
+	}
+	if (v.current > 7)
+	{
+		x.xferBool(&isSystemHero);
+		x.xferUnsignedInt(&checksum);
+	}
 }
 
 std::uint32_t CreateAHeroHero::computeChecksum() const

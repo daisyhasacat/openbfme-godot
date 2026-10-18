@@ -935,7 +935,7 @@ void enemyStructureTactic(GameLogic &logic, AISkirmishPlayer &ai, AIBrainState &
 void attackMove(GameLogic &logic, const std::vector<ObjectID> &members, const Coord3D &pos, CommandSourceType source = CMD_FROM_PLAYER)
 {
 	AIGroup group(logic, members);
-	group.groupMoveToPosition(pos, false, source);
+	group.groupMoveToPosition(pos, false, source, false, 0.0f, true); // lane BACKLOG-8 r2: no formation march for an attack-move (its attack march is S-4463)
 	for (Object *o : group.members())
 	{
 		if (AIUpdateInterface *u = o->getAIUpdateInterface())
@@ -1238,7 +1238,7 @@ void teamAttackMove(GameLogic &logic, AITactic &tac, int index, const Coord3D &p
 }
 
 // RW 0x8F1848(index, pos): an EASY player's team attack-moves (RW 0x8F17EE); any other difficulty's team makes a formation move (AIGroup RW 0x774897 with no attack,
-// mode 0; the formation group manager RW 0x7747DE / 0x94FCBA is not ported, S-895: the port's group move without a final angle); the idle counter restarts
+// mode 0: lane BACKLOG-8 r2 ported its formation march, RW 0x7747DE / 0x94FCBA / 0x77348C, which the group move offers the team first); the idle counter restarts
 void teamMoveFormation(GameLogic &logic, const Player &player, AITactic &tac, int index, const Coord3D &pos, bool haveAngle = false, float angle = 0.0f)
 {
 	AITacticTeam *team = teamByIndex(tac, index);

@@ -304,8 +304,8 @@ func cast_and_judge(k: int, aim: Vector2) -> Dictionary:
 		return r
 	r["class"] = eff0.get("class", "?")
 	if slots[k] == "_static":
-		# a NONPRESSABLE power (Scavenger, Fuel the Fires): nothing in the ported paths starts it (stop S-932)
-		r["result"] = "ok" if eff0.get("active", false) or int(eff0.get("triggers", 0)) > 0 else "stop S-932"
+		# NONPRESSABLE powers start through the purchase button's CommandTrigger.
+		r["result"] = "ok" if eff0.get("active", false) or int(eff0.get("triggers", 0)) > 0 else "FAIL"
 		r["why"] = "passive (_static), active %s, triggers %d" % [str(eff0.get("active", "-")), int(eff0.get("triggers", 0))]
 		print("SPELL3 power %s: %s" % [power, r.why])
 		return r

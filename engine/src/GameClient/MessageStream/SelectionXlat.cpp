@@ -208,66 +208,6 @@ bool SelectionTranslator::selectSingleWithoutSound(Object &obj)
 	return true;
 }
 
-int SelectionTranslator::selectMatching(Object *picked, bool acrossMap)
-{
-	// ZH InGameUI::selectUnitsMatchingCurrentSelection / selectMatchingAcrossScreen / AcrossMap (InGameUI.cpp:4690-4940): the templates of the locally controlled
-	// selection, every object of those templates on the screen (or the map), one MSG_CREATE_SELECTED_GROUP_NO_SOUND that adds them
-	std::set<const ThingTemplate *> templates;
-	for (ObjectID id : m_ctx.ui.selected())
-	{
-		if (Object *o = m_ctx.logic.findObjectByID(id))
-		{
-			if (HudObjects::isLocallyControlled(m_ctx, *o) && o->getTemplate())
-			{
-				templates.insert(o->getTemplate());
-			}
-		}
-	}
-	(void)picked;
-	if (templates.empty())
-	{
-		return 0;
-	}
-	const ICoord2D size = m_ctx.view.size();
-	std::vector<Object *> found;
-	for (Object *o = m_ctx.logic.getFirstObject(); o; o = o->getNextObject())
-	{
-		if (o->isDestroyed() || o->getContainedBy() || !HudObjects::isLocallyControlled(m_ctx, *o) || !HudObjects::isSelectable(*o) || o->isKindOfName("STRUCTURE"))
-		{
-			continue;
-		}
-		if (!templates.count(o->getTemplate()) || m_ctx.ui.isSelected(o->getID()))
-		{
-			continue;
-		}
-		if (!acrossMap)
-		{
-			ICoord2D px;
-			if (!m_ctx.view.worldToScreen(*o->getPosition(), px) || px.x < 0 || px.y < 0 || px.x > size.x || px.y > size.y)
-			{
-				continue;
-			}
-		}
-		if (m_ctx.ui.getMaxSelectCount() > 0 && m_ctx.ui.getSelectCount() + (int)found.size() >= m_ctx.ui.getMaxSelectCount())
-		{
-			break;
-		}
-		found.push_back(o);
-	}
-	if (found.empty())
-	{
-		return 0;
-	}
-	ClientMessage &m = m_ctx.stream.append(MSG_CREATE_SELECTED_GROUP_NO_SOUND);
-	m.appendBoolean(false);
-	for (Object *o : found)
-	{
-		m_ctx.ui.selectObject(o->getID());
-		m.appendObjectID(o->getID());
-	}
-	return (int)found.size();
-}
-
 const std::vector<ObjectID> &SelectionTranslator::squadFor(Player *player, int group)
 {
 	if (m_predicting && m_ctx.logic.getFrame() != m_predictionFrame)
@@ -328,52 +268,6 @@ void SelectionTranslator::viewSquad(int group)
 			return;
 		}
 	}
-}
-
-MessageDisposition SelectionTranslator::doubleClick(const ClientMessage &msg)
-{
-	const int modifiers = msg.arg(1).integer;
-	(void)modifiers;
-	if (m_ctx.ui.isInForceAttackMode())
-	{
-		return MessageDisposition::Keep; // ctrl is disallowed for double clicking
-	}
-	const IRegion2D &region = msg.arg(0).region;
-	if (region.lo.x != region.hi.x || region.lo.y != region.hi.y)
-	{
-		return MessageDisposition::Keep;
-	}
-	Object *picked = HudObjects::pickForDoubleClick(m_ctx, region.lo); // RotWK picks with SELECTABLE only (RW 0x81F7C5, S-1954)
-	if (!picked || !HudObjects::isSelectable(*picked) || !HudObjects::isLocallyControlled(m_ctx, *picked))
-	{
-		return MessageDisposition::Keep; // nobody to pick: propagate the double click
-	}
-	std::vector<ObjectID> before;
-	if (m_ctx.ui.isInPreferSelectionMode())
-	{
-		before = m_ctx.ui.selected();
-	}
-	selectSingleWithoutSound(*picked);
-	// the alt key (KEY_STATE_ALT = 0x...) selects across the map; the screen otherwise (the key state flag values are the host's: ALT = 4)
-	selectMatching(picked, (modifiers & 4) != 0);
-	m_ctx.stream.append(MSG_AREA_SELECTION).appendObjectID(picked->getID());
-	if (!before.empty())
-	{
-		ClientMessage &more = m_ctx.stream.append(MSG_CREATE_SELECTED_GROUP_NO_SOUND);
-		more.appendBoolean(false);
-		for (ObjectID id : before)
-		{
-			if (Object *o = m_ctx.logic.findObjectByID(id))
-			{
-				if (HudObjects::isSelectable(*o))
-				{
-					m_ctx.ui.selectObject(id);
-					more.appendObjectID(id);
-				}
-			}
-		}
-	}
-	return MessageDisposition::Destroy;
 }
 
 MessageDisposition SelectionTranslator::leftClick(const ClientMessage &msg)
@@ -555,9 +449,9 @@ MessageDisposition SelectionTranslator::translate(const ClientMessage &msg)
 		case CMSG_META_SELECT_MATCHING_UNITS:
 			// lane QA-1 (stop S-1202): the E key. DONOR (ZH InGameUI::selectUnitsMatchingCurrentSelection, InGameUI.cpp:4924): the templates of the selection on the
 			// screen, and across the map when the screen adds none. RotWK's SELECT_MATCHING_UNITS handler is not read
-			if (selectMatching(nullptr, false) == 0)
+			if (m_ctx.ui.selectMatching(m_ctx, false) == 0)
 			{
-				selectMatching(nullptr, true);
+				m_ctx.ui.selectMatching(m_ctx, true);
 			}
 			return MessageDisposition::Destroy;
 		case CMSG_RAW_MOUSE_POSITION:
@@ -620,9 +514,6 @@ MessageDisposition SelectionTranslator::translate(const ClientMessage &msg)
 			}
 			break;
 		}
-		case CMSG_MOUSE_LEFT_DOUBLE_CLICK:
-			disp = doubleClick(msg);
-			break;
 		case CMSG_MOUSE_LEFT_CLICK:
 			disp = leftClick(msg);
 			break;

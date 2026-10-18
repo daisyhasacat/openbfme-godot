@@ -14,6 +14,10 @@
 #include "Common/PlayerList.h"
 #include "Common/Team.h"
 #include "GameClient/MapChunks.h"
+#include "GameLogic/AI/AIFollowPathAsTeam.h"
+#include "GameLogic/AI/AIGroup.h"
+#include "GameLogic/AI/AIGroupFormations.h"
+#include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/AI/AIHunt.h"
 #include "GameLogic/AI/AIWaypointPath.h"
 #include "GameLogic/Damage.h"
@@ -27,6 +31,11 @@
 #include "GameLogic/ScriptEngine/ScriptConditions.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
 
+#include <algorithm>
+#include <cmath>
+#include <functional>
+#include <cstdint>
+#include <cstdio>
 #include <map>
 #include <set>
 
@@ -604,4 +613,503 @@ TEST_CASE("decomp2 PLAYER_HUNT (RW 0x7BBCF9 -> Player::setUnitsShouldHunt RW 0x6
 	// the flag keeps the hunt alive with nothing to hunt (the NAMED_HUNT case above ends in idle)
 	CHECK(h1->getAIUpdateInterface()->currentStateId() == (unsigned)AI_HUNT);
 	CHECK(w.logic->scriptEngine().stats().unportedActions.empty());
+}
+
+// ---- lane BACKLOG-8: AIGroup::createFormation (RW 0x94FCBA) ----
+
+namespace
+{
+const char *const kFormationUnits =
+	"Locomotor RiderLoco\n  Surfaces = GROUND\n  TurnTime = 500\n  TurnTimeDamaged = 500\n  Acceleration = 510\n  Braking = 510\n  MinSpeed = 0\n"
+	"  ZAxisBehavior = NO_Z_MOTIVE_FORCE\n  Appearance = TWO_LEGS\n  StickToGround = Yes\n  CloseEnoughDist = 1\n  FormationPriority = CAVALRY1\nEnd\n"
+	"Locomotor SwordLoco\n  Surfaces = GROUND\n  TurnTime = 500\n  TurnTimeDamaged = 500\n  Acceleration = 510\n  Braking = 510\n  MinSpeed = 0\n"
+	"  ZAxisBehavior = NO_Z_MOTIVE_FORCE\n  Appearance = TWO_LEGS\n  StickToGround = Yes\n  CloseEnoughDist = 1\n  FormationPriority = MELEE1\nEnd\n"
+	"Object Rider\n  KindOf = INFANTRY SELECTABLE SCORE\n  FormationWidth = 2\n  FormationDepth = 2\n  Geometry = CYLINDER\n  GeometryMajorRadius = 8\n"
+	"  GeometryMinorRadius = 8\n  GeometryHeight = 20\n  Body = ActiveBody ModuleTag_Body\n    MaxHealth = 100\n  End\n"
+	"  Behavior = AIUpdateInterface ModuleTag_AI\n  End\n  Behavior = PhysicsBehavior ModuleTag_Physics\n  End\n"
+	"  LocomotorSet\n    Locomotor = RiderLoco\n    Condition = SET_NORMAL\n    Speed = 55\n  End\nEnd\n"
+	"Object Sword\n  KindOf = INFANTRY SELECTABLE SCORE\n  Geometry = CYLINDER\n  GeometryMajorRadius = 8\n"
+	"  GeometryMinorRadius = 8\n  GeometryHeight = 20\n  Body = ActiveBody ModuleTag_Body\n    MaxHealth = 100\n  End\n"
+	"  Behavior = AIUpdateInterface ModuleTag_AI\n  End\n  Behavior = PhysicsBehavior ModuleTag_Physics\n  End\n"
+	"  LocomotorSet\n    Locomotor = SwordLoco\n    Condition = SET_NORMAL\n    Speed = 55\n  End\nEnd\n";
+
+std::string formationUnit(const char *name, const char *width, const char *depth)
+{
+	return std::string("Object ") + name + "\n  KindOf = INFANTRY SELECTABLE SCORE\n  FormationWidth = " + width + "\n  FormationDepth = " + depth +
+		"\n  Geometry = CYLINDER\n  GeometryMajorRadius = 8\n  GeometryMinorRadius = 8\n  GeometryHeight = 20\n  Body = ActiveBody ModuleTag_Body\n"
+		"    MaxHealth = 100\n  End\n  Behavior = AIUpdateInterface ModuleTag_AI\n  End\n  Behavior = PhysicsBehavior ModuleTag_Physics\n  End\n"
+		"  LocomotorSet\n    Locomotor = SwordLoco\n    Condition = SET_NORMAL\n    Speed = 55\n  End\nEnd\n";
+}
+
+// the retail AIData rows (data\ini\default\aidata.ini): FormationColumnWidth 60, FormationRowDepth 55, FormationSquadSpacing 30, FormationColumns 2
+void retailFormationRows(GameLogic &logic)
+{
+	logic.settings().formationColumnWidth = 60.0f;
+	logic.settings().formationRowDepth = 55.0f;
+	logic.settings().formationSquadSpacing = 30.0f;
+	logic.settings().formationColumns = 2;
+}
+} // namespace
+
+// The expected offsets come from an independent model of the BFME2 decomp source (float32 arithmetic), not from the port.
+TEST_CASE("backlog8 formation: AIGroup::createFormation (RW 0x94FCBA) lays four units out in one row, every one on the slot nearest to it, the front "
+		  "member at the origin")
+{
+	combattest::CombatWorld w(kFormationUnits);
+	retailFormationRows(*w.logic);
+	std::vector<Object *> units = { w.unit("Dummy", 'A', 100.0f, 290.0f), w.unit("Dummy", 'A', 100.0f, 230.0f), w.unit("Dummy", 'A', 100.0f, 170.0f),
+		w.unit("Dummy", 'A', 100.0f, 110.0f) };
+	for (Object *o : units)
+	{
+		CHECK(o->getAIUpdateInterface()->formationId() == 0);
+	}
+	AIGroupFormations::createFormation(*w.logic, AIGroupFormations::validMembers(units), Coord3D{ 0.0f, 200.0f, 0.0f }, Coord3D{ 10.0f, 200.0f, 0.0f });
+	const float expectY[4] = { 60.0f, 0.0f, -60.0f, -120.0f };
+	for (size_t i = 0; i < units.size(); ++i)
+	{
+		const AIUpdateInterface *ai = units[i]->getAIUpdateInterface();
+		CHECK(ai->formationId() == 1); // the AI's first formation id (RW 0x70038D)
+		CHECK(ai->formationOffset().x == 0.0f);
+		CHECK(ai->formationOffset().y == expectY[i]);
+	}
+	// the next formation has the next id
+	AIGroupFormations::createFormation(*w.logic, AIGroupFormations::validMembers(units), Coord3D{ 0.0f, 200.0f, 0.0f }, Coord3D{ 10.0f, 200.0f, 0.0f });
+	CHECK(units[0]->getAIUpdateInterface()->formationId() == 2);
+	int stops = 0;
+	for (const std::string &l : w.logic->report().stops)
+	{
+		stops += l.rfind("[S-4460]", 0) == 0 ? 1 : 0;
+	}
+	CHECK(stops == 1);
+	// FormationColumns 0 (retail divides by it): no formation, the units keep what they had, and the report names the row
+	w.logic->settings().formationColumns = 0;
+	AIGroupFormations::createFormation(*w.logic, AIGroupFormations::validMembers(units), Coord3D{ 0.0f, 200.0f, 0.0f }, Coord3D{ 10.0f, 200.0f, 0.0f });
+	CHECK(units[0]->getAIUpdateInterface()->formationId() == 2);
+	CHECK(units[0]->getAIUpdateInterface()->formationOffset().y == 60.0f);
+	int named = 0;
+	for (const std::string &l : w.logic->report().stops)
+	{
+		named += l.find("FormationColumns is 0") != std::string::npos ? 1 : 0;
+	}
+	CHECK(named == 1);
+}
+
+TEST_CASE("backlog8 formation: cavalry, melee and ranged units form ranks by their locomotor's FormationPriority, a FormationWidth 2 x FormationDepth 2 "
+		  "unit takes two columns (RW 0x94FA6C / 0x94FB5F / 0x94F90B)")
+{
+	combattest::CombatWorld w(kFormationUnits);
+	retailFormationRows(*w.logic);
+	struct Row
+	{
+		const char *name;
+		float x, y, offX, offY;
+	};
+	const Row rows[] = { { "Rider", 400.0f, 300.0f, -13.75f, -105.0f }, { "Rider", 380.0f, 360.0f, -13.75f, 15.0f }, { "Rider", 420.0f, 250.0f, -123.75f, -45.0f },
+		{ "Sword", 300.0f, 280.0f, -206.25f, -135.0f }, { "Sword", 320.0f, 295.0f, -206.25f, 45.0f }, { "Sword", 340.0f, 310.0f, -261.25f, -45.0f },
+		{ "Sword", 360.0f, 325.0f, -206.25f, -75.0f }, { "Sword", 380.0f, 340.0f, -206.25f, -15.0f }, { "Dummy", 250.0f, 320.0f, -316.25f, -75.0f },
+		{ "Dummy", 260.0f, 380.0f, -316.25f, -15.0f } };
+	std::vector<Object *> units;
+	for (const Row &r : rows)
+	{
+		units.push_back(w.unit(r.name, 'A', r.x, r.y));
+		REQUIRE(units.back()->getPosition()->x == r.x);
+		REQUIRE(units.back()->getPosition()->y == r.y);
+	}
+	AIGroupFormations::createFormation(*w.logic, AIGroupFormations::validMembers(units), Coord3D{ 300.0f, 300.0f, 0.0f }, Coord3D{ 900.0f, 500.0f, 0.0f });
+	for (size_t i = 0; i < units.size(); ++i)
+	{
+		CAPTURE(i);
+		const AIUpdateInterface *ai = units[i]->getAIUpdateInterface();
+		CHECK(ai->formationId() == 1);
+		CHECK(ai->formationOffset().x == rows[i].offX);
+		CHECK(ai->formationOffset().y == rows[i].offY);
+	}
+}
+
+TEST_CASE("backlog8 formation: TEAM_FOLLOW_WAYPOINTS with the formation flag (RW 0x771E7D) marches the team in its formation: the members end the path "
+		  "abreast, 60 apart; as a plain team they end on the one waypoint")
+{
+	struct End
+	{
+		std::vector<Coord3D> pos;
+		std::vector<int> ids;
+		std::vector<Coord2D> offsets;
+		int ran = 0;
+	};
+	auto march = [](int formation) {
+		End e;
+		PathWorld p(1);
+		retailFormationRows(*p.w.logic);
+		std::vector<Object *> members = { p.w.unit("Dummy", 'A', 220.0f, 240.0f), p.w.unit("Dummy", 'A', 245.0f, 240.0f), p.w.unit("Dummy", 'A', 270.0f, 240.0f) };
+		run(p.w.logic->scriptEngine(), act("TEAM_FOLLOW_WAYPOINTS", { sp(3, qual(p.w.teamA())), sp(24, "Path"), ip(8, 1), ip(8, formation) }));
+		for (Object *o : members)
+		{
+			e.ids.push_back(o->getAIUpdateInterface()->formationId());
+			e.offsets.push_back(o->getAIUpdateInterface()->formationOffset());
+		}
+		e.ran = p.w.runUntil(
+			[&] {
+				bool allIdle = true;
+				for (Object *o : members)
+				{
+					allIdle = allIdle && o->getAIUpdateInterface()->currentStateId() == (unsigned)AI_IDLE;
+				}
+				return allIdle;
+			},
+			3000);
+		for (Object *o : members)
+		{
+			e.pos.push_back(*o->getPosition());
+		}
+		return e;
+	};
+	auto gap = [](const Coord3D &a, const Coord3D &b) { return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)); };
+	const End team = march(0);
+	const End formed = march(1);
+	REQUIRE(team.ran < 3000);   // tolerance: the frame limit of runUntil: every member reached idle before it
+	REQUIRE(formed.ran < 3000); // tolerance: as above
+	// the offsets of the three (the model's): one row along y, the member at x 245 in the middle
+	const float expectY[3] = { 60.0f, 0.0f, -60.0f };
+	for (int i = 0; i < 3; ++i)
+	{
+		CHECK(team.ids[i] == 0);
+		CHECK(formed.ids[i] == 1);
+		CHECK(formed.offsets[i].x == 0.0f);
+		CHECK(formed.offsets[i].y == expectY[i]);
+	}
+	std::printf("  info: formation march: team gaps %.2f %.2f, formation gaps %.2f %.2f; formed ends (%.1f, %.1f) (%.1f, %.1f) (%.1f, %.1f)\n", gap(team.pos[0], team.pos[1]),
+		gap(team.pos[1], team.pos[2]), gap(formed.pos[0], formed.pos[1]), gap(formed.pos[1], formed.pos[2]), formed.pos[0].x, formed.pos[0].y, formed.pos[1].x,
+		formed.pos[1].y, formed.pos[2].x, formed.pos[2].y);
+	// the middle member ends on the last waypoint (600, 600), its neighbours one FormationColumnWidth (60) to each side of the path
+	// tolerance: the members stop within their locomotor's CloseEnoughDist and the destination adjustment's cell (10) of their goals
+	CHECK(gap(formed.pos[1], Coord3D{ 600.0f, 600.0f, 0.0f }) < 12.0f);
+	// tolerance: as above, two members' stopping errors
+	CHECK(std::fabs(gap(formed.pos[0], formed.pos[1]) - 60.0f) < 15.0f);
+	// tolerance: as above
+	CHECK(std::fabs(gap(formed.pos[1], formed.pos[2]) - 60.0f) < 15.0f);
+	// tolerance: as above; the outer two are two columns apart
+	CHECK(std::fabs(gap(formed.pos[0], formed.pos[2]) - 120.0f) < 15.0f);
+	// the plain team's members all go to the waypoint itself: they end packed around it, far closer than a formation column
+	// tolerance: the destination adjustment spreads them over neighbouring cells (10 each)
+	CHECK(gap(team.pos[0], team.pos[2]) < 45.0f);
+}
+
+TEST_CASE("backlog8 formation: hostile FormationColumns / FormationWidth / FormationDepth values: just below the int32 limits a formation is made; at the "
+		  "first value whose arithmetic overflows nothing changes and the report names the row (RW 0x94FDD5 / 0x94FE4C)")
+{
+	// the per-unit limit is INT32_MAX / 40 = 53687091 (a squad's row sums add up to 36 widths); the values are float-exact (the movement info reads them
+	// through a float); 46340 x 46341 = 2147441940 fits alone, twice it does not
+	const std::string extra = std::string(kFormationUnits) + formationUnit("WideOk", "53687088", "1") + formationUnit("WideBad", "53687092", "1") +
+		formationUnit("DeepBad", "1", "-53687092") + formationUnit("Blocky", "46340", "46341");
+	combattest::CombatWorld w(extra.c_str());
+	retailFormationRows(*w.logic);
+	auto named = [&](const std::string &what) {
+		int n = 0;
+		for (const std::string &l : w.logic->report().stops)
+		{
+			n += l.find(what) != std::string::npos ? 1 : 0;
+		}
+		return n;
+	};
+	std::vector<Object *> four = { w.unit("Dummy", 'A', 100.0f, 290.0f), w.unit("Dummy", 'A', 100.0f, 230.0f), w.unit("Dummy", 'A', 100.0f, 170.0f),
+		w.unit("Dummy", 'A', 100.0f, 110.0f) };
+	const Coord3D start{ 0.0f, 200.0f, 0.0f }, end{ 10.0f, 200.0f, 0.0f };
+	auto refused = [&](const std::vector<Object *> &units, const std::string &what) {
+		const std::uint32_t before = w.logic->computeStateHash();
+		const int seen = named(what);
+		AIGroupFormations::createFormation(*w.logic, AIGroupFormations::validMembers(units), start, end);
+		CHECK(w.logic->computeStateHash() == before); // nothing changed: ids, offsets and the AI's formation counter
+		CHECK(named(what) == seen + 1);
+	};
+	// FormationColumns: 178956970 * 12 = 2147483640 fits, 178956971 does not; 0 and negative divide by nothing useful
+	w.logic->settings().formationColumns = 178956970;
+	AIGroupFormations::createFormation(*w.logic, AIGroupFormations::validMembers(four), start, end);
+	CHECK(four[0]->getAIUpdateInterface()->formationId() == 1);
+	for (int columns : { 178956971, 0, -1, -2147483647 - 1 })
+	{
+		w.logic->settings().formationColumns = columns;
+		refused(four, "FormationColumns is " + std::to_string(columns));
+	}
+	retailFormationRows(*w.logic);
+	// FormationWidth / FormationDepth of one unit
+	Object *wideOk = w.unit("WideOk", 'A', 300.0f, 300.0f);
+	AIGroupFormations::createFormation(*w.logic, AIGroupFormations::validMembers({ wideOk }), start, end);
+	CHECK(wideOk->getAIUpdateInterface()->formationId() == 2);
+	refused({ four[0], w.unit("WideBad", 'A', 320.0f, 300.0f) }, "FormationWidth of WideBad (53687092 x 1)");
+	refused({ four[0], w.unit("DeepBad", 'A', 340.0f, 300.0f) }, "FormationDepth of DeepBad (1 x -53687092)");
+	// the area: one Blocky fits, two overflow the sum
+	Object *b1 = w.unit("Blocky", 'A', 360.0f, 300.0f);
+	AIGroupFormations::createFormation(*w.logic, AIGroupFormations::validMembers({ b1 }), start, end);
+	CHECK(b1->getAIUpdateInterface()->formationId() == 3);
+	refused({ b1, w.unit("Blocky", 'A', 380.0f, 300.0f) }, "the summed FormationWidth * FormationDepth of Blocky");
+}
+
+// ---- lane BACKLOG-8 r2: the formation march (RW 0x774897's head, 0x7747DE, 0x76F115, 0x6FAA6D, 0x77348C, state 54) ----
+
+namespace
+{
+// the retail AIData / GameData rows of the march (data\ini\default\aidata.ini, gamedata.ini)
+void retailMarchRows(GameLogic &logic)
+{
+	retailFormationRows(logic);
+	logic.settings().minDistanceForGroup = 200.0f;
+	logic.settings().formationEnemyDistance = 500.0f;
+	logic.settings().narrowPassageScale = 0.4f;
+	logic.settings().waitForOthers = false;
+	logic.settings().useFormations = true;
+	logic.settings().groupMoveClickToGatherAreaFactor = 0.5f;
+}
+
+struct MarchRun
+{
+	bool groundPath = false;
+	std::vector<unsigned> states;          ///< every unit's AI state right after the order
+	std::vector<std::vector<Coord3D>> track; ///< per frame, every unit's position
+	std::vector<Coord3D> goals;            ///< every unit's last path point (the march) or its move goal
+	std::vector<Coord2D> offsets;          ///< every unit's formation slot (the march)
+	std::vector<std::vector<Coord3D>> paths; ///< every unit's march path (the machine's goal path)
+	int frames = 0;
+	bool stop = false;
+	std::vector<unsigned> endStates;       ///< every unit's AI state when the run ended
+};
+
+// six units in two rows west of a block, ordered east past it; blockFirstSlot: a second block is built on the first unit's last path point after the
+// order (its final slot becomes blocked while the unit still has the whole march ahead)
+MarchRun march(bool formations, bool blockFirstSlot = false)
+{
+	MarchRun r;
+	combattest::CombatWorld w(kFormationUnits);
+	retailMarchRows(*w.logic);
+	w.logic->settings().useFormations = formations;
+	Object *block = w.unit("Block", 'A', 500.0f, 500.0f);
+	w.ai->addObjectToPathfindMap(*block);
+	std::vector<Object *> units;
+	for (int i = 0; i < 6; ++i)
+	{
+		units.push_back(w.unit("Dummy", 'A', 180.0f + 40.0f * (float)(i / 3), 460.0f + 40.0f * (float)(i % 3)));
+	}
+	std::vector<ObjectID> ids;
+	for (Object *o : units)
+	{
+		ids.push_back(o->getID());
+	}
+	AIGroup group(*w.logic, ids);
+	group.groupMoveToPosition(Coord3D{ 850.0f, 500.0f, 0.0f }, false, CMD_FROM_PLAYER);
+	r.groundPath = group.groundPath() != nullptr;
+	for (Object *o : units)
+	{
+		AIUpdateInterface *ai = o->getAIUpdateInterface();
+		r.states.push_back(ai->currentStateId());
+		const std::vector<Coord3D> &path = ai->stateMachine().goalPath();
+		r.goals.push_back(path.empty() ? ai->mover().goalPosition() : path.back());
+		r.offsets.push_back(ai->formationOffset());
+		r.paths.push_back(path);
+	}
+	if (blockFirstSlot)
+	{
+		Object *slotBlock = w.unit("Block", 'A', r.goals[0].x, r.goals[0].y);
+		w.ai->addObjectToPathfindMap(*slotBlock);
+	}
+	r.frames = w.runUntil(
+		[&] {
+			std::vector<Coord3D> now;
+			bool idle = true;
+			for (Object *o : units)
+			{
+				now.push_back(*o->getPosition());
+				idle = idle && o->getAIUpdateInterface()->currentStateId() == (unsigned)AI_IDLE;
+			}
+			r.track.push_back(now);
+			return idle;
+		},
+		3000);
+	for (Object *o : units)
+	{
+		r.endStates.push_back(o->getAIUpdateInterface()->currentStateId());
+	}
+	for (const std::string &l : w.logic->report().stops)
+	{
+		r.stop = r.stop || l.rfind("[S-4462]", 0) == 0;
+	}
+	return r;
+}
+
+float spreadAt(const std::vector<Coord3D> &p)
+{
+	float best = 0.0f;
+	for (size_t i = 0; i < p.size(); ++i)
+	{
+		for (size_t j = i + 1; j < p.size(); ++j)
+		{
+			best = std::max(best, (float)std::hypot((double)(p[i].x - p[j].x), (double)(p[i].y - p[j].y)));
+		}
+	}
+	return best;
+}
+} // namespace
+
+TEST_CASE("backlog8 march: a player's group of six marches around a block in formation: each unit in state 54 walks its own lane (the ground path at "
+		  "its slot, turned with every segment) through the turns and ends in its slot; without UseFormations the same order is the ZH group move")
+{
+	const MarchRun formed = march(true);
+	const MarchRun plain = march(false);
+	REQUIRE(formed.frames < 3000); // tolerance: the frame limit of runUntil
+	REQUIRE(plain.frames < 3000);  // tolerance: as above
+	CHECK(formed.groundPath);
+	CHECK(formed.stop);
+	CHECK_FALSE(plain.groundPath);
+	CHECK_FALSE(plain.stop);
+	for (size_t i = 0; i < formed.states.size(); ++i)
+	{
+		CAPTURE(i);
+		CHECK(formed.states[i] == (unsigned)AI_FOLLOW_PATH_AS_TEAM);
+		CHECK(plain.states[i] == (unsigned)AI_MOVE_TO);
+	}
+	// informative: across the group's direction of travel (its mean step of the frame), how often a pair of units two columns apart (slot y at least 30
+	// apart) stands on the wrong side of each other; the march's flips come from the outer slot whose lane runs into the block's cells and is cut back
+	// toward the ground path (RW 0x6EF387), the plain move's from the units choosing their own ways around the block
+	auto sideFlips = [](const MarchRun &r, const std::vector<Coord2D> &slots) {
+		int flips = 0, frames = 0;
+		for (size_t f = 1; f < r.track.size(); ++f)
+		{
+			double mx = 0.0, my = 0.0;
+			for (size_t i = 0; i < r.track[f].size(); ++i)
+			{
+				mx += r.track[f][i].x - r.track[f - 1][i].x;
+				my += r.track[f][i].y - r.track[f - 1][i].y;
+			}
+			const double len = std::hypot(mx, my) / (double)r.track[f].size();
+			if (len < 1.0)
+			{
+				continue; // the group stands (it starts or waits)
+			}
+			++frames;
+			const double px = -my, py = mx; // the left of the travel direction (rotateOffset: y along (-dy, dx))
+			for (size_t i = 0; i < slots.size(); ++i)
+			{
+				for (size_t j = 0; j < slots.size(); ++j)
+				{
+					if (slots[i].y - slots[j].y < 30.0f)
+					{
+						continue;
+					}
+					const double side = (r.track[f][i].x - r.track[f][j].x) * px + (r.track[f][i].y - r.track[f][j].y) * py;
+					flips += side <= 0.0 ? 1 : 0;
+				}
+			}
+		}
+		return std::make_pair(flips, frames);
+	};
+	const auto formedSides = sideFlips(formed, formed.offsets);
+	const auto plainSides = sideFlips(plain, formed.offsets); // the same pairs, judged by the slots the formation gave them
+	const float formedEnd = spreadAt(formed.track.back()), plainEnd = spreadAt(plain.track.back());
+	std::printf("  info: march frames %d / %d; side flips %d in %d moving frames / %d in %d; spread at the end %.1f / %.1f\n", formed.frames, plain.frames,
+		formedSides.first, formedSides.second, plainSides.first, plainSides.second, formedEnd, plainEnd);
+	// through the turn every marching unit walks its own lane: it passes each point of its path (the ground path's nodes at its slot, turned with each
+	// segment, RW 0x77348C), in order
+	for (size_t i = 0; i < formed.paths.size(); ++i)
+	{
+		CAPTURE(i);
+		REQUIRE(formed.paths[i].size() == 4); // the point past the start, the two corner nodes of the ground path around the block, the end
+		size_t from = 0;
+		for (const Coord3D &pt : formed.paths[i])
+		{
+			double best = 1e30;
+			size_t at = from;
+			for (size_t f = from; f < formed.track.size(); ++f)
+			{
+				const double d = std::hypot((double)(formed.track[f][i].x - pt.x), (double)(formed.track[f][i].y - pt.y));
+				if (d < best)
+				{
+					best = d;
+					at = f;
+				}
+			}
+			CHECK(best < 12.0); // tolerance: a unit steps up to its speed per frame (about 11) past a point it passes
+			from = at;
+		}
+	}
+	// every marching unit ends on its own slot: the last point of its path
+	for (size_t i = 0; i < formed.goals.size(); ++i)
+	{
+		CAPTURE(i);
+		const Coord3D &end = formed.track.back()[i];
+		// tolerance: the locomotor stops within its CloseEnoughDist of the goal and the destination adjustment's cell (10)
+		CHECK(std::hypot((double)(end.x - formed.goals[i].x), (double)(end.y - formed.goals[i].y)) < 12.0);
+	}
+	// tolerance: positions in the world; the formation spans its slots (three columns of 60 across), the ZH move keeps the units' own spacing (80 here)
+	CHECK(formedEnd > 150.0f);
+	CHECK(plainEnd < formedEnd); // tolerance: a comparison of the two runs
+}
+
+// RW 0x75040D-0x75042F: on the last leg the destination adjusts when AI + 0x54 and (AI + 0x55 or AI vslot 0x224 = canFollowTeamPath) (the port had it
+// reversed: a ground marcher never adjusted). The expected end comes from the block's geometry (a 40-half-width box, the unit's radius 8), not from the port.
+TEST_CASE("backlog8 march: a marcher's final slot blocked during the march: the last leg adjusts the destination (RW 0x75040D), so the unit ends on a clear "
+		  "cell beside the block instead of at the slot")
+{
+	const MarchRun free = march(true);
+	const MarchRun blocked = march(true, true);
+	REQUIRE(free.frames < 3000);    // tolerance: the frame limit of runUntil
+	REQUIRE(blocked.frames < 3000); // tolerance: as above
+	REQUIRE(blocked.paths[0].size() == 4); // a multi-point march: the corner nodes, then the slot
+	REQUIRE(blocked.goals[0].x == free.goals[0].x);
+	REQUIRE(blocked.goals[0].y == free.goals[0].y);
+	const Coord3D slot = blocked.goals[0];
+	const Coord3D freeEnd = free.track.back()[0], end = blocked.track.back()[0];
+	// the control: nothing in the way, the unit stands on its slot
+	CHECK(std::hypot((double)(freeEnd.x - slot.x), (double)(freeEnd.y - slot.y)) < 12.0); // tolerance: the locomotor's stop distance and the adjustment's cell
+	// the blocked slot: the unit stands outside the block's box grown by its own radius (40 + 8), and near the slot (the adjustment moves it by cells)
+	const double dx = std::fabs((double)(end.x - slot.x)), dy = std::fabs((double)(end.y - slot.y));
+	CAPTURE(dx);
+	CAPTURE(dy);
+	CHECK(std::max(dx, dy) >= 48.0 - 1.0); // tolerance: a cell of the pathfind grid is 10 and the unit's centre may touch the grown box
+	CHECK(std::hypot(dx, dy) < 100.0);      // tolerance: the nearest clear cell for a unit of radius 8 is within a few cells of the box's edge
+	CHECK(blocked.endStates[0] == (unsigned)AI_IDLE);
+}
+
+// The formation / march rows are hashed unconditionally (a desync check: two peers with other rows simulate other marches). The retail rows and the
+// constructors' (RW 0x6FFD0E .. 0x6FFDE5) differ in every row but two and simulate differently, so they must not collide; neither does any single row.
+TEST_CASE("backlog8 settings hash: the retail and the constructor tuples of the formation and march rows hash apart, and every single row moves the hash")
+{
+	GameLogicSettings construct;
+	GameLogicSettings retail;
+	retail.formationColumnWidth = 60.0f;
+	retail.formationRowDepth = 55.0f;
+	retail.formationSquadSpacing = 30.0f;
+	retail.formationColumns = 2;
+	retail.minDistanceForGroup = 200.0f;
+	retail.formationEnemyDistance = 500.0f;
+	retail.narrowPassageScale = 0.4f;
+	retail.waitForOthers = false;
+	retail.useFormations = true;
+	retail.groupMoveClickToGatherAreaFactor = 0.5f;
+	StateHasher constructHash, retailHash;
+	construct.crc(constructHash);
+	retail.crc(retailHash);
+	CHECK(retailHash.value() != constructHash.value());
+	const std::vector<std::pair<const char *, std::function<void(GameLogicSettings &)>>> edits = {
+		{ "FormationColumnWidth", [](GameLogicSettings &s) { s.formationColumnWidth = 61.0f; } },
+		{ "FormationRowDepth", [](GameLogicSettings &s) { s.formationRowDepth = 56.0f; } },
+		{ "FormationSquadSpacing", [](GameLogicSettings &s) { s.formationSquadSpacing = 31.0f; } },
+		{ "FormationColumns", [](GameLogicSettings &s) { s.formationColumns = 3; } },
+		{ "MinDistanceForGroup", [](GameLogicSettings &s) { s.minDistanceForGroup = 201.0f; } },
+		{ "FormationEnemyDistance", [](GameLogicSettings &s) { s.formationEnemyDistance = 501.0f; } },
+		{ "NarrowPassageScale", [](GameLogicSettings &s) { s.narrowPassageScale = 0.5f; } },
+		{ "WaitForOthers", [](GameLogicSettings &s) { s.waitForOthers = true; } },
+		{ "UseFormations", [](GameLogicSettings &s) { s.useFormations = false; } },
+		{ "GroupMoveClickToGatherAreaFactor", [](GameLogicSettings &s) { s.groupMoveClickToGatherAreaFactor = 0.6f; } },
+	};
+	for (const auto &e : edits)
+	{
+		for (const GameLogicSettings *base : { &retail, &construct })
+		{
+			GameLogicSettings s = *base;
+			e.second(s);
+			StateHasher h, hb;
+			s.crc(h);
+			base->crc(hb);
+			CAPTURE(e.first);
+			CHECK(h.value() != hb.value());
+		}
+	}
 }

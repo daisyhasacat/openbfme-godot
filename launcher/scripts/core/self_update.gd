@@ -142,6 +142,12 @@ static func _start(exe: String, extra: Array, user_args: PackedStringArray) -> i
 ## its answer.
 static func on_start(updater: RefCounted, user_args: PackedStringArray, begin_swap := true) -> Dictionary:
 	var info: RefCounted = updater.info
+	if updater.macos_updates_enabled():
+		return updater.macos_update_on_start(user_args, begin_swap)
+	if info.platform() == "macos-universal":
+		if _arg(user_args, "--apply-update=") != "" or "--self-update" in user_args:
+			Log.line("LAUNCHER macOS launcher self-update is unsupported; replace both app bundles manually")
+		return {"exit": false, "message": ""}
 	var apply_dir := _arg(user_args, "--apply-update=")
 	if apply_dir != "":
 		return _helper(updater, apply_dir, user_args)

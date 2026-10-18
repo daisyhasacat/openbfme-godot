@@ -354,6 +354,36 @@ TEST_CASE("terrain resources: a player's second provisional building does not co
 	CHECK(sharedBy(m, b->getID()) == 21);
 }
 
+TEST_CASE("terrain resources: the placement preview (RW 0x75B561, community PR #37) answers for the filter player like a provisional claim and writes nothing")
+{
+	World w;
+	TerrainResourceManager &m = w.economy().resources();
+	const int alice = w.player("Alice")->getPlayerIndex(), bob = w.player("Bob")->getPlayerIndex();
+	Object *a = w.placeUnderConstruction("Farm", "Alice", 10, 10);
+	w.frames(1);
+	REQUIRE(sharedBy(m, a->getID()) == 37);
+	const std::uint32_t before = w.hash();
+	// three cells east: 16 of the 37 cells are SHARED by Alice. RW 0x75C02D with the filter: a clear cell its player already shares is not claimable for
+	// that player (as Alice's own second provisional farm counts 21), another player's provisional entry does not stop it
+	CHECK(m.previewShare(260.0f, 200.0f, 60.0f, false, alice) == fraction(21, 37));
+	CHECK(m.previewShare(260.0f, 200.0f, 60.0f, false, bob) == 1.0f);
+	// the HighPriority flag only sets the mask, which a preview (complete 0) never reads
+	CHECK(m.previewShare(260.0f, 200.0f, 60.0f, true, alice) == fraction(21, 37));
+	// Alice's farm completes: its 37 cells are OWNED, which a preview (complete 0) never counts, for either player (the logic has no shroud manager here: every
+	// cell and owner is clear)
+	a->setStatus(statusBit("UNDER_CONSTRUCTION"), false);
+	a->friend_onBuildComplete();
+	REQUIRE(ownedBy(m, a->getID()) == 37);
+	CHECK(m.previewShare(260.0f, 200.0f, 60.0f, false, bob) == fraction(21, 37));
+	CHECK(m.previewShare(200.0f, 200.0f, 60.0f, false, bob) == 0.0f);
+	// read only: previewShare is const (RW 0x75C02D's client form also normalises cells: not here, see TerrainResourceManager.h), so
+	// the state hash after a frame is what it is without the previews
+	const std::uint32_t afterComplete = w.hash();
+	m.previewShare(200.0f, 200.0f, 60.0f, false, alice);
+	CHECK(w.hash() == afterComplete);
+	CHECK(before != afterComplete);
+}
+
 TEST_CASE("terrain resources: a high priority claimant (a dead spot) takes ground first and the building next to it loses the overlap")
 {
 	World w;

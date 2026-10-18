@@ -16,6 +16,15 @@
 
 namespace
 {
+std::vector<LiveGame::WaitSite> logicFrameWaitSites(std::vector<LiveGame::WaitSite> sites)
+{
+	// lockPublication logs brief snapshot/queue mutex contention too; it does not wait for a logic frame to finish.
+	sites.erase(std::remove_if(sites.begin(), sites.end(), [](const LiveGame::WaitSite &site) {
+		return site.site.compare(0, 19, "publication mutex (") == 0;
+	}), sites.end());
+	return sites;
+}
+
 // two armies in contact and their orders (the same in every rig of a test, before the worker starts)
 void stageBattle(hudtest::Rig &rig)
 {
@@ -48,6 +57,27 @@ void stageBattle(hudtest::Rig &rig)
 	order(enemy->getPlayerIndex(), theirs, 1200);
 }
 } // namespace
+
+TEST_CASE("renderwait1: publication contention is not a logic-frame wait; frame waits and unknown sites remain visible")
+{
+	CHECK(logicFrameWaitSites({}).empty());
+	std::vector<LiveGame::WaitSite> sites{
+		{ "publication mutex (frame)", 2, 1.5, 1.0 },
+		{ "publication mutex (beginClientWindow)", 1, 0.5, 0.5 }
+	};
+	CHECK(logicFrameWaitSites(sites).empty());
+	sites.push_back({ "test_renderwait1.cpp:123", 3, 450.0, 200.0 });
+	auto waits = logicFrameWaitSites(sites);
+	REQUIRE(waits.size() == 1);
+	CHECK(waits[0].site == "test_renderwait1.cpp:123");
+	CHECK(waits[0].count == 3);
+	CHECK(waits[0].totalMs == 450.0);
+	CHECK(waits[0].worstMs == 200.0);
+	sites.push_back({ "unknown wait site", 1, 10.0, 10.0 });
+	waits = logicFrameWaitSites(sites);
+	REQUIRE(waits.size() == 2);
+	CHECK(waits[1].site == "unknown wait site");
+}
 
 TEST_CASE("renderwait1 retail: 60 Hz render frames beside 250 ms logic frames never wait, get a client window every logic frame, and the logic is unchanged")
 {
@@ -106,7 +136,15 @@ TEST_CASE("renderwait1 retail: 60 Hz render frames beside 250 ms logic frames ne
 			<< " frames of " << kWorkerMs << " ms");
 	// the effect: no render frame blocked on the worker, and none took as long as a logic frame
 	CHECK(rig.game->blockingWaits() == waits0);
-	CHECK(rig.game->logicWaitSites().empty());
+	const auto sites = rig.game->logicWaitSites();
+	CHECK(logicFrameWaitSites(sites).empty());
+	unsigned long long loggedWaits = 0;
+	for (const auto &site : sites)
+	{
+		MESSAGE("wait site " << site.site << ": count " << site.count << ", worst " << site.worstMs << " ms");
+		loggedWaits += site.count;
+	}
+	CHECK(loggedWaits == rig.game->contendedPublicationLocks());
 	CHECK(worstRenderMs < kWorkerMs / 2.0); // tolerance: wall time on a shared machine; a render frame that waited would take most of a 250 ms logic frame
 	// the HUD's live work was not starved by a worker that never went idle: the render thread held it between frames at least once per logic frame
 	CHECK(heldFrames >= kFrames - 1); // tolerance: how many render frames fall between two worker frames is wall-clock timing; at least one per logic frame is the rule
@@ -128,13 +166,13 @@ TEST_CASE("renderwait1 retail: the wait log names a blocking wait's site; a full
 	rig.game->setWorkerFrameDelayMs(150);
 	rig.game->setLogicThread(true);
 	REQUIRE(rig.game->logicThread());
-	REQUIRE(rig.game->logicWaitSites().empty());
+	REQUIRE(logicFrameWaitSites(rig.game->logicWaitSites()).empty());
 	// outside a window, a live read while the worker runs a frame blocks: logged under this file and line
 	rig.game->advance(0.2);
 	REQUIRE_FALSE(rig.game->logicIdle());
 	const int line = __LINE__ + 1;
 	const UnsignedInt frame = rig.game->logic().getFrame();
-	const std::vector<LiveGame::WaitSite> sites = rig.game->logicWaitSites();
+	const std::vector<LiveGame::WaitSite> sites = logicFrameWaitSites(rig.game->logicWaitSites());
 	REQUIRE(sites.size() == 1);
 	CHECK(sites[0].site == "test_renderwait1.cpp:" + std::to_string(line));
 	CHECK(sites[0].count == 1);

@@ -4,6 +4,7 @@
 
 #include "GodotDevice/GodotAptPlayer.h"
 #include "GodotDevice/GodotVideoStream.h"
+#include "GameClient/GUI/PlatformIcons.h"
 #include "GameClient/CameraSettings.h"
 #include "GameNetwork/Transport.h"
 #include "GodotDevice/GodotPackedTexture.h"
@@ -33,6 +34,9 @@
 #include "GameClient/GUI/AptScreens/AptMainMenu.h"
 #include "GameClient/UserDataFolder.h"
 #include "GameClient/GUI/AptScreens/AptQuitMenu.h"
+#include "GameClient/GUI/MenuNavigator.h"
+#include "GameClient/GUI/AptScreens/AptCampaignMenu.h"
+#include "Common/AsciiString.h"
 #include "GameClient/GUI/AptScreens/AptSkirmish.h"
 #include "GameClient/GUI/Gadget.h"
 #include "GameClient/GUI/Gadgets.h"
@@ -47,9 +51,11 @@
 #include "GameClient/EndGame.h"
 #include "GameClient/GUI/ShellServices.h"
 #include "GameClient/GUI/Skirmish/SkirmishPreferences.h"
+#include "GameClient/GUI/Skirmish/RealTimeStats.h"
 #include "GameClient/GUI/Skirmish/WorldSkirmishSetupSource.h"
 #include "GameClient/GUI/WindowManager.h"
 #include "GameClient/GameText.h"
+#include "GameClient/VideoPlayer.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
 #include "Common/Audio/AudioEntryPoints.h"
@@ -62,7 +68,11 @@
 #include "GameClient/CreateAHeroHeroList.h"
 #include "GameClient/GUI/AptScreens/AptCreateAHero.h"
 #include "GameClient/GUI/AptScreens/AptOnlineShell.h"
+#include "GameClient/GUI/AptScreens/AptOnlineHub.h"
+#include "GameClient/GameRecords.h"
+#include "GameNetwork/PlatformApiClient.h"
 #include "GameClient/GUI/AptMessageBox.h"
+#include "GameClient/GUI/ProfileSwitch.h"
 #include "GameNetwork/OnlineLobbyClient.h"
 #include "GameLogic/CreateAHeroSystem.h"
 #include "Libraries/Source/Apt/Apt.h"
@@ -74,10 +84,13 @@
 #include <godot_cpp/classes/random_number_generator.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/font.hpp>
 #include <godot_cpp/classes/font_variation.hpp>
 #include <godot_cpp/classes/text_server.hpp>
 #include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/input_event_key.hpp>
 #include <godot_cpp/classes/input_event_mouse_button.hpp>
 #include <godot_cpp/classes/input_event_mouse_motion.hpp>
@@ -431,6 +444,13 @@ public:
 	void setCursorTooltip(const std::string &label) override { events.push_back({ "tooltip", label, "" }); }
 	void request(const ShellRequest &r) override
 	{
+		if (r.action == ShellAction::OpenProjectWebsite)
+		{
+			const Error error = OS::get_singleton()->shell_open("https://openbfme.com");
+			events.push_back({ "project_website", "https://openbfme.com", std::to_string((int)error) });
+			if (error != OK) { UtilityFunctions::push_error("Could not open https://openbfme.com: ", (int)error); }
+			return;
+		}
 		requests.push_back(r);
 		events.push_back({ "request", std::to_string((int)r.action), r.argument });
 	}
@@ -562,6 +582,12 @@ const char *shellActionName(ShellAction a)
 		case ShellAction::DeleteGameFile: return "DeleteGameFile";
 		case ShellAction::QuitMenuSave: return "QuitMenuSave";
 		case ShellAction::QuitMenuLoad: return "QuitMenuLoad";
+		case ShellAction::OpenProjectWebsite: return "OpenProjectWebsite";
+		case ShellAction::CampaignMenuMainMenu: return "CampaignMenuMainMenu"; // lane CAMPSAVE-1
+		case ShellAction::CampaignMenuSave: return "CampaignMenuSave";
+		case ShellAction::CampaignMenuLoad: return "CampaignMenuLoad";
+		case ShellAction::CampaignMenuLastMission: return "CampaignMenuLastMission";
+		case ShellAction::CampaignMenuNextMission: return "CampaignMenuNextMission";
 	}
 	return "Unknown";
 }
@@ -649,6 +675,7 @@ struct ShellMode
 	ShellNewGameSink sink;
 	LoadScreenInfo loadScreen;
 	ScoreScreenData scoreScreen; // lane END-1
+	SkirmishHonorsGame skirmishHonors; // lane OWNERFIX-3: the skirmish game the score screen records the battle honors of
 	std::unique_ptr<SkirmishPreferences> profiles; // lane MENU-1: Skirmish.ini, the profiles a player made (GUI/Skirmish/SkirmishPreferences.h)
 	std::unique_ptr<AptScreen> guiFX; // lane END-1: GuiFX.apt, loaded for the end screen (not on the shell stack)
 	std::unique_ptr<ShellCursorTooltip> cursorTooltip; // lane HOVER-1: the menus' tool tips (GuiFX.apt's ToolTip, CursorTooltip.h)
@@ -656,6 +683,7 @@ struct ShellMode
 	Array disconnectActions;                         // lane MP-2: the buttons pressed, for take_disconnect_actions
 	SaveLoadInfo saveLoad;                           // lane MP-2: what SaveLoad.apt lists
 	QuitMenuContext quitMenuContext;    // lane END-2: the game QuitMenu.apt is opened over
+	CampaignMenuContext campaignMenu;   // lane CAMPSAVE-1: what CampaignMenu.apt shows
 	std::unique_ptr<AptQuitMenu> quitMenu; // lane END-2: QuitMenu.apt, an in-game overlay (RW 0x75E3B7), not on the shell stack
 	ShellEnvironment environment;
 	PlayerStatusInfo playerStatus; // lane HUD-5: the players screen's Status rows
@@ -668,6 +696,8 @@ struct ShellMode
 	std::unique_ptr<WindowManager> wm;
 	std::unique_ptr<AptGadgetLayer> layer;
 	std::unique_ptr<Shell> shell;
+	std::unique_ptr<MenuNavigator> nav; // lane OPTS-6: keyboard / controller navigation of the menus
+	std::set<int> navSwallowed;         // lane OPTS-6: the keys whose press the navigation took (their release is its too)
 	std::unique_ptr<FontMetricsSource> metrics;
 	std::string lastTop;
 	std::vector<NewGameMessage> pendingNewGames;
@@ -678,11 +708,24 @@ struct ShellMode
 	std::mt19937 cahRandom{ 0x43414831u }; // lane CAH-1: the builder's client random (AppearanceRandom, RW 0x6D32E4): never logic state
 	// lane ONLINE-4: the lobby client OnlineShell.apt drives (the shell's screens keep pointers to both: the shell goes first)
 	std::unique_ptr<OnlineLobbyClient> online;
+	ProfileSwitch profileSwitch; // lane UBERJOIN-1: the lobby screens' performance-mode switch (the world's), set by set_lan / set_online
 	OnlineShellContext onlineCtx;
+	// lane ONLINEUX-1: the started games the player left in this run (kept across set_online: Log Out and back in still offers none of them)
+	std::shared_ptr<std::set<std::string>> onlineLeftGames = std::make_shared<std::set<std::string>>();
 	std::string onlineUrl;
+	// lane ONLINEHUB-1: the platform API's client and the recorded games (the screens keep pointers to both: the shell goes first)
+	std::unique_ptr<PlatformApiClient> platform;
+	std::vector<GameRecord> records;
+	OnlineHubContext hubCtx;
+	std::string platformUrl;
 	~ShellMode()
 	{
+		nav.reset();
 		disconnect.reset();
+		if (shell)
+		{
+			shell->clearOverlay(); // lane OPTS-6
+		}
 		quitMenu.reset();
 		cursorTooltip.reset();
 		guiFX.reset();
@@ -698,8 +741,10 @@ struct ShellMode
 struct AptMenuPlayer::Impl
 {
 	Ref<RetailFileSystem> fs;
+	Ref<RetailFileSystem> presentationFs;
 	AptView3DViewers view3d; // lane UI-2: the View3D render objects (the end screen's rings, the menu frame)
 	std::unique_ptr<AptArchiveFileSource> source;
+	std::unique_ptr<AptArchiveFileSource> originalSource;
 	AptGodotHost host;
 	std::unique_ptr<Apt> apt;
 	// lane HUD-1: an Apt player owned by a window manager the device layer runs (the in-game HUD's); null otherwise
@@ -711,9 +756,14 @@ struct AptMenuPlayer::Impl
 	bool keyboardButtonPressed = false;
 	bool openbfmeAvailable = false; // lane OPTS-3: set_openbfme_available
 	std::unique_ptr<AptTextureStore> textures;
+	std::unique_ptr<AptTextureStore> originalTextures;
+	std::set<std::string> presentationImageNames;
+	std::unique_ptr<VideoPlayer> presentationVideos;
 	GameTextTable strings;
 	FontSubstitution fonts;
 	std::map<std::string, Ref<ImageTexture>> godotTextures;
+	AptImageReplacements imageReplacements;
+	std::map<std::string, Ref<Texture2D>> brandTextures;
 	std::map<std::string, Ref<FontFile>> fontByName; // lower-cased family name and file stem
 	std::map<const Font *, GdiFaceMetrics> gdiFaces;  // lane UI-6: each corpus font's GDI metrics (GameClient/GdiFontMetrics.h)
 	std::map<const Font *, const Font *> boldBase;    // lane UI-6: a synthetic bold variation -> its font file
@@ -763,6 +813,8 @@ struct AptMenuPlayer::Impl
 	bool stillLoadOn = false;
 	StillImageLoadScreenLayout stillLoad;
 	std::uint64_t stillLoadStartUs = 0;
+	double stillProgress = -1.0;   ///< lane SAVE-4e: an old save's catch-up (set_still_load_progress); < 0: none
+	std::string stillProgressText; ///< lane SAVE-4e
 	std::uint64_t unchangedFrames = 0;
 	std::vector<RID> itemPool; // lane SELPERF-1: the last list's canvas items, reused by the next full redraw (freed after it)
 	AptStageMapping mapping;
@@ -783,11 +835,34 @@ struct AptMenuPlayer::Impl
 	{
 		// lane UI-2: an image the engine made from a file (IMAGE_STATUS_RAW_TEXTURE: the lobby's map preview, RW 0x70292F) names the file's path
 		const bool rawFile = (img->status & IMAGE_STATUS_RAW_TEXTURE) != 0;
-		const std::string key = rawFile ? "file:" + img->filename : img->filename;
+		const bool originalImage = presentationFs.is_valid() && presentationFs->is_shell_source() && originalTextures &&
+			presentationImageNames.find(lowerAscii(imageName)) == presentationImageNames.end();
+		const std::string key = (originalImage ? "original:" : "") + (rawFile ? "file:" + img->filename : img->filename);
 		auto it = godotTextures.find(key);
+		if (it == godotTextures.end() && (img->status & IMAGE_STATUS_ENGINE_RESOURCE))
+		{
+			// lane PLATFORMICON-1: the game's own artwork (the platform icons, godot/assets/platform_icons), a resource of the Godot project, not of the
+			// retail archives. A missing or unreadable one is reported through gadgetErrors, never drawn as something else
+			Ref<Texture2D> res = ResourceLoader::get_singleton()->load(toGodot(img->filename));
+			Ref<godot::Image> pixels = res.is_valid() ? res->get_image() : Ref<godot::Image>();
+			if (pixels.is_null() || pixels->is_empty())
+			{
+				sm.gadgetErrors.insert("resource '" + img->filename + "' of image '" + imageName + "' cannot be loaded");
+				return Ref<ImageTexture>();
+			}
+			it = godotTextures.emplace(key, ImageTexture::create_from_image(pixels)).first;
+			textureLoads += 1;
+		}
 		if (it == godotTextures.end())
 		{
-			const AptTextureStore::Entry &entry = rawFile ? textures->getFile(img->filename) : textures->get(img->filename);
+			AptTextureStore *store = textures.get();
+			AptFileSource *textureSource = source.get();
+			if (originalImage)
+			{
+				store = originalTextures.get();
+				textureSource = originalSource.get();
+			}
+			const AptTextureStore::Entry &entry = rawFile ? store->getFile(img->filename) : store->get(img->filename);
 			if ((!entry.ok || entry.rgba.empty()) && !rawFile)
 			{
 				// lane UI-2: a mapped image naming a .tga that the install packs as DDS (ScrollShroud.tga -> art\compiledtextures\sc\scrollshroud.dds),
@@ -798,7 +873,7 @@ struct AptMenuPlayer::Impl
 					ch = (char)std::tolower((unsigned char)ch);
 				}
 				bool paired = false;
-				Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*source, fs.is_valid() && fs->is_bfme1() ? "art/textures/" + stem : "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
+				Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*textureSource, "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
 				if (paired)
 				{
 					sm.deviceUnverified.insert("[S-1482] texture " + img->filename + ": the packed .jpg's colour with its .png as the alpha (the loader's merge of the two streams was not read)");
@@ -824,7 +899,7 @@ struct AptMenuPlayer::Impl
 				it = godotTextures.emplace(key, texture).first;
 				if (!rawFile)
 				{
-					textures->releasePixels(img->filename);
+					store->releasePixels(img->filename);
 				}
 				textureLoads += 1;
 			}
@@ -948,7 +1023,48 @@ struct AptMenuPlayer::Impl
 		std::string error;
 		if (!strings.loadRetail(*fs->archive_fs(), &error))
 		{
-			errorsOut.push_back(toGodot("data/lotr.str: " + error));
+			errorsOut.push_back(toGodot("presentation data/lotr.str: " + error));
+		}
+		if (presentationFs.is_valid() && presentationFs->archive_fs() != fs->archive_fs())
+		{
+			bytes.clear();
+			error.clear();
+			if (!originalSource->readFile("data/lotr.str", bytes, &error) || !strings.parse(bytes, &error))
+			{
+				errorsOut.push_back(toGodot("original data/lotr.str: " + error));
+			}
+		}
+		imageReplacements.clear();
+		brandTextures.clear();
+		Ref<Resource> brand = ResourceLoader::get_singleton()->load("res://assets/brand/online_branding.tres");
+		if (brand.is_null() || !brand->has_meta("images") || !brand->has_meta("strings"))
+		{
+			errorsOut.push_back("Missing or invalid online branding resource");
+		}
+		else
+		{
+			const Array images = brand->get_meta("images");
+			for (int i = 0; i < images.size(); ++i)
+			{
+				const Dictionary entry = images[i];
+				const Ref<Texture2D> texture = entry.get("texture", Variant());
+				const String movie = entry.get("movie", "");
+				const int id = entry.get("image", -1);
+				if (texture.is_null() || texture->get_width() <= 0 || texture->get_height() <= 0 || movie.is_empty() || id < 0)
+				{
+					errorsOut.push_back("Invalid online branding image entry");
+					continue;
+				}
+				const std::string key = "brand:" + toNative(movie.to_lower()) + ":" + std::to_string(id);
+				imageReplacements[{ toNative(movie.to_lower()), id }] = { key, (float)texture->get_width(), (float)texture->get_height() };
+				brandTextures[key] = texture;
+			}
+			const Dictionary labels = brand->get_meta("strings");
+			const Array keys = labels.keys();
+			for (int i = 0; i < keys.size(); ++i)
+			{
+				strings.setOverride(toNative(String(keys[i])), toNative(String(labels[keys[i]])));
+			}
 		}
 		if (!source->readFile("data/ini/fontsubstitution.ini", bytes, &error) || !fonts.parse(std::string(bytes.begin(), bytes.end()), &error))
 		{
@@ -958,7 +1074,7 @@ struct AptMenuPlayer::Impl
 		for (const char *pattern : { "*.ttf", "*.otf" })
 		{
 			FilenameList list;
-			fs->archive_fs()->getFileListInDirectory(std::string(), std::string(), std::string(pattern), list, true);
+			(presentationFs.is_valid() ? presentationFs->archive_fs() : fs->archive_fs())->getFileListInDirectory(std::string(), std::string(), std::string(pattern), list, true);
 			for (const std::string &p : list)
 			{
 				if (p.find('/') == std::string::npos && p.find('\\') == std::string::npos)
@@ -1005,6 +1121,28 @@ struct AptMenuPlayer::Impl
 			}
 			fontByName[stem] = font;
 			fontNames.push_back(file + " = " + (family.empty() ? "(no name)" : family));
+		}
+	}
+
+	void collectPresentationImageNames(ArchiveFileSystem &archive, Array &errorsOut)
+	{
+		presentationImageNames.clear();
+		INIEnvironment env;
+		env.fileSystem = &archive;
+		env.blocks.registerBlock("MappedImage", [this](INI *ini) {
+			const std::string name = ini->getNextToken();
+			presentationImageNames.insert(lowerAscii(name));
+			::Image image;
+			ini->initFromINI(&image, ::Image::fieldParseTable());
+		});
+		try
+		{
+			INI ini(env);
+			ini.loadDirectory("data\\ini\\mappedimages", true, INI_LOAD_OVERWRITE);
+		}
+		catch (const INIException &e)
+		{
+			errorsOut.push_back(toGodot("presentation mapped images: " + std::string(e.what())));
 		}
 	}
 
@@ -1088,6 +1226,7 @@ void AptMenuPlayer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("choose_load_screen", "spec"), &AptMenuPlayer::choose_load_screen); // lane MENU-1
 	ClassDB::bind_method(D_METHOD("show_still_load_screen", "picture"), &AptMenuPlayer::show_still_load_screen); // lane MENU-1
 	ClassDB::bind_method(D_METHOD("hide_still_load_screen"), &AptMenuPlayer::hide_still_load_screen); // lane MENU-1
+	ClassDB::bind_method(D_METHOD("set_still_load_progress", "percent", "text"), &AptMenuPlayer::set_still_load_progress); // lane SAVE-4e
 	ClassDB::bind_method(D_METHOD("get_still_load_screen"), &AptMenuPlayer::get_still_load_screen); // lane MENU-1
 	ClassDB::bind_method(D_METHOD("shell_levels"), &AptMenuPlayer::shell_levels);             // lane CAMP-2
 	ClassDB::bind_method(D_METHOD("level_drawn", "level"), &AptMenuPlayer::level_drawn);      // lane CAMP-2
@@ -1126,6 +1265,10 @@ void AptMenuPlayer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("disconnect_screen", "state"), &AptMenuPlayer::disconnect_screen); // lane MP-2
 	ClassDB::bind_method(D_METHOD("take_disconnect_actions"), &AptMenuPlayer::take_disconnect_actions);
 	ClassDB::bind_method(D_METHOD("set_save_load", "info"), &AptMenuPlayer::set_save_load);
+	ClassDB::bind_method(D_METHOD("set_campaign_menu", "content"), &AptMenuPlayer::set_campaign_menu); // lane CAMPSAVE-1
+	ClassDB::bind_method(D_METHOD("unlock_bonus_campaign"), &AptMenuPlayer::unlock_bonus_campaign);
+	ClassDB::bind_method(D_METHOD("is_bonus_campaign_unlocked"), &AptMenuPlayer::is_bonus_campaign_unlocked);
+	ClassDB::bind_method(D_METHOD("set_save_folder", "folder"), &AptMenuPlayer::set_save_folder);
 	ClassDB::bind_method(D_METHOD("save_load_saved", "ok", "error"), &AptMenuPlayer::save_load_saved); // lane SAVE-2
 	ClassDB::bind_method(D_METHOD("save_load_refused", "name", "error"), &AptMenuPlayer::save_load_refused);
 	ClassDB::bind_method(D_METHOD("set_score_screen_from_world", "world"), &AptMenuPlayer::set_score_screen_from_world);
@@ -1136,7 +1279,21 @@ void AptMenuPlayer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("online_status"), &AptMenuPlayer::online_status);
 	ClassDB::bind_method(D_METHOD("online_apply", "spec"), &AptMenuPlayer::online_apply);
 	ClassDB::bind_method(D_METHOD("online_start_failed", "error"), &AptMenuPlayer::online_start_failed); // Sol r1
+	ClassDB::bind_method(D_METHOD("online_game_failed", "text"), &AptMenuPlayer::online_game_failed); // lane ONLINEUX-1
+	ClassDB::bind_method(D_METHOD("online_set_counts", "counts"), &AptMenuPlayer::online_set_counts); // lane ONLINEUX-1
 	ClassDB::bind_static_method("AptMenuPlayer", D_METHOD("online_redact", "text"), &AptMenuPlayer::online_redact);
+	ClassDB::bind_static_method("AptMenuPlayer", D_METHOD("default_options_path"), &AptMenuPlayer::default_options_path); // lane DEVPORT-8
+	ClassDB::bind_static_method("AptMenuPlayer", D_METHOD("read_options_file", "path"), &AptMenuPlayer::read_options_file);
+	// lane ONLINEHUB-1
+	ClassDB::bind_method(D_METHOD("set_platform", "options"), &AptMenuPlayer::set_platform);
+	ClassDB::bind_method(D_METHOD("set_share_results", "share"), &AptMenuPlayer::set_share_results);
+	ClassDB::bind_method(D_METHOD("platform_take_requests"), &AptMenuPlayer::platform_take_requests);
+	ClassDB::bind_method(D_METHOD("platform_deliver", "id", "status", "body", "error"), &AptMenuPlayer::platform_deliver);
+	ClassDB::bind_method(D_METHOD("platform_events"), &AptMenuPlayer::platform_events);
+	ClassDB::bind_method(D_METHOD("set_game_records", "text"), &AptMenuPlayer::set_game_records);
+	ClassDB::bind_method(D_METHOD("record_game", "json"), &AptMenuPlayer::record_game);
+	ClassDB::bind_method(D_METHOD("platform_status"), &AptMenuPlayer::platform_status);
+	ClassDB::bind_method(D_METHOD("platform_apply", "spec"), &AptMenuPlayer::platform_apply);
 	ClassDB::bind_method(D_METHOD("set_create_a_hero", "world", "profile_dir"), &AptMenuPlayer::set_create_a_hero); // lane CAH-1
 	ClassDB::bind_method(D_METHOD("get_create_a_hero_view"), &AptMenuPlayer::get_create_a_hero_view);
 	ClassDB::bind_method(D_METHOD("get_create_a_hero_heroes"), &AptMenuPlayer::get_create_a_hero_heroes);
@@ -1146,10 +1303,24 @@ void AptMenuPlayer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("shell_fscommand", "command", "argument"), &AptMenuPlayer::shell_fscommand);
 	ClassDB::bind_method(D_METHOD("get_timeline_graph", "mode", "path"), &AptMenuPlayer::get_timeline_graph);
 	ClassDB::bind_method(D_METHOD("get_member", "level", "path", "name"), &AptMenuPlayer::get_member);
+	ClassDB::bind_method(D_METHOD("set_clip_property", "level", "path", "name", "value"), &AptMenuPlayer::set_clip_property); // lane DEVPORT-8
 	ClassDB::bind_method(D_METHOD("get_timeline_stats"), &AptMenuPlayer::get_timeline_stats); // lane END-2
 	ClassDB::bind_method(D_METHOD("quit_menu", "request"), &AptMenuPlayer::quit_menu);
 	ClassDB::bind_method(D_METHOD("get_cursor_tooltip"), &AptMenuPlayer::get_cursor_tooltip); // lane HOVER-1
 	ClassDB::bind_method(D_METHOD("list_buttons", "level"), &AptMenuPlayer::list_buttons);
+	ClassDB::bind_method(D_METHOD("menu_input", "event"), &AptMenuPlayer::menu_input); // lane OPTS-6
+	ClassDB::bind_method(D_METHOD("open_options", "network_enabled", "allow_resolution", "allow_advanced", "advanced_only"), &AptMenuPlayer::open_options);
+	ClassDB::bind_method(D_METHOD("menu_has_input"), &AptMenuPlayer::menu_has_input);
+	ClassDB::bind_method(D_METHOD("modal_menu"), &AptMenuPlayer::modal_menu);       // lane SAVE-UI1 / OPTS-6
+	ClassDB::bind_method(D_METHOD("menu_escape", "pressed"), &AptMenuPlayer::menu_escape);
+	ClassDB::bind_method(D_METHOD("menu_pointer_moved"), &AptMenuPlayer::menu_pointer_moved);
+	ClassDB::bind_method(D_METHOD("menu_nav_state"), &AptMenuPlayer::menu_nav_state);
+	ClassDB::bind_method(D_METHOD("hit_test_stage", "stage"), &AptMenuPlayer::hit_test_stage);
+	ClassDB::bind_method(D_METHOD("gadget_pick", "stage"), &AptMenuPlayer::gadget_pick);
+	ClassDB::bind_method(D_METHOD("list_gadgets"), &AptMenuPlayer::list_gadgets);   // lane MENUWORK-1
+	ClassDB::bind_method(D_METHOD("take_commands"), &AptMenuPlayer::take_commands); // lane MENUWORK-1
+	ClassDB::bind_method(D_METHOD("apt_text", "name"), &AptMenuPlayer::apt_text);   // lane MENUWORK-1
+	ClassDB::bind_method(D_METHOD("screen_state"), &AptMenuPlayer::screen_state); // lane MENUWORK-1
 	ClassDB::bind_method(D_METHOD("fetch_text", "label"), &AptMenuPlayer::fetch_text);
 	ClassDB::bind_method(D_METHOD("shell_mapped_image", "name"), &AptMenuPlayer::shell_mapped_image);
 	ClassDB::bind_method(D_METHOD("shell_font", "name", "size"), &AptMenuPlayer::shell_font);
@@ -1276,20 +1447,31 @@ Dictionary AptMenuPlayer::boot(const Ref<RetailFileSystem> &fs, const Dictionary
 		return result;
 	}
 	clearCanvas(); // review r2: a reboot recreates textures / fonts, so the retained canvas is stale
+	m->movies.clear();
+	m->movieErrors.clear();
 	m->fs = fs;
+	m->presentationFs = fs;
 	m->view3d.setOwner(this, fs); // lane UI-2
 	m->shell.reset();
-	m->source = std::make_unique<AptArchiveFileSource>(*fs->menu_archive_fs());
+	m->source = std::make_unique<AptArchiveFileSource>(*fs->archive_fs());
 	m->apt.reset(); // before the host it refers to is reused
 	m->host = AptGodotHost();
 	m->host.frame = &m->frames;
 	m->apt = std::make_unique<Apt>(*m->source, m->host);
 	m->textures = std::make_unique<AptTextureStore>(*m->source);
+	m->originalSource.reset();
+	m->originalTextures.reset();
+	m->presentationImageNames.clear();
+	m->presentationVideos.reset();
 	m->godotTextures.clear();
 	m->strings = GameTextTable();
 	m->fonts = FontSubstitution();
 	m->fontByName.clear();
 	m->fontNames.clear();
+	m->gdiFaces.clear();
+	m->boldBase.clear();
+	m->cellFonts.clear();
+	m->boldFonts.clear();
 	m->frames = m->steps = m->rebuilds = 0;
 	m->stepUs = m->listUs = m->canvasUs = m->submitUs = 0;
 
@@ -1352,9 +1534,23 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 	m_booted = false;
 	const std::uint64_t start = Time::get_singleton()->get_ticks_usec();
 	GameWorld *world = Object::cast_to<GameWorld>(worldObject);
+	Ref<RetailFileSystem> presentationFs = config.get("presentation_fs", Ref<RetailFileSystem>());
+	const bool suppliedPresentationFs = presentationFs.is_valid();
+	if (presentationFs.is_null())
+	{
+		presentationFs = fs;
+	}
 	if (fs.is_null() || !fs->is_mounted())
 	{
 		errors.push_back("the retail archives are not mounted");
+	}
+	else if (fs->is_shell_source())
+	{
+		errors.push_back("boot_shell requires the normal mounted game file system as its world source");
+	}
+	else if (suppliedPresentationFs && (!presentationFs->is_mounted() || !presentationFs->is_shell_source()))
+	{
+		errors.push_back("presentation_fs must be a mounted BFME2 shell source");
 	}
 	else if (!world || !world->object_world() || !world->object_world()->loaded())
 	{
@@ -1367,21 +1563,64 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 		return result;
 	}
 	clearCanvas(); // review r2: a reboot recreates textures / fonts, so the retained canvas is stale
-	m->fs = fs;
-	m->worldId = world->get_instance_id(); // lane CAMP-2: the BinkMovie component's movies
-	m->view3d.setOwner(this, fs); // lane UI-2
+	m->movies.clear();
+	m->movieErrors.clear();
 	m->shell.reset();
 	m->apt.reset();
-	m->source = std::make_unique<AptArchiveFileSource>(*fs->menu_archive_fs());
+	m->source.reset();
+	m->originalSource.reset();
+	m->textures.reset();
+	m->originalTextures.reset();
+	m->presentationVideos.reset();
+	m->list = AptCanvasList();
+	m->drawnList = AptCanvasList();
+	m->gadgets = GadgetDrawList();
+	m->drawnGadgets = GadgetDrawList();
+	m->drawnTexts.clear();
+	m->levelCommands.clear();
+	m->backgroundPaths.clear();
+	m->drawnBackdrop.clear();
+	m->fs = fs;
+	m->presentationFs = presentationFs;
+	m->worldId = world->get_instance_id(); // lane CAMP-2: the BinkMovie component's movies
+	m->view3d.setOwner(this, presentationFs); // lane UI-2: shell decoration follows the presentation source; gameplay View3D stays on the world path
+	m->source = std::make_unique<AptArchiveFileSource>(*presentationFs->archive_fs());
+	m->originalSource = std::make_unique<AptArchiveFileSource>(*fs->archive_fs());
 	m->textures = std::make_unique<AptTextureStore>(*m->source);
+	m->originalTextures = std::make_unique<AptTextureStore>(*m->originalSource);
+	m->presentationImageNames.clear();
 	m->godotTextures.clear();
 	m->strings = GameTextTable();
 	m->fonts = FontSubstitution();
 	m->fontByName.clear();
 	m->fontNames.clear();
+	m->gdiFaces.clear();
+	m->boldBase.clear();
+	m->cellFonts.clear();
+	m->boldFonts.clear();
 	m->frames = m->steps = m->rebuilds = 0;
 	m->stepUs = m->listUs = m->canvasUs = m->submitUs = 0;
 	m->loadResources(errors);
+	if (presentationFs->is_shell_source())
+	{
+		m->collectPresentationImageNames(*presentationFs->archive_fs(), errors);
+		m->presentationVideos = std::make_unique<VideoPlayer>();
+		INIEnvironment videoEnv;
+		videoEnv.fileSystem = presentationFs->archive_fs();
+		m->presentationVideos->registerBlock(videoEnv.blocks);
+		try
+		{
+			INI videoIni(videoEnv);
+			for (const std::string &file : VideoPlayer::loadOrder())
+			{
+				videoIni.load(file, INI_LOAD_OVERWRITE);
+			}
+		}
+		catch (const INIException &e)
+		{
+			errors.push_back(toGodot("presentation Video.ini: " + std::string(e.what())));
+		}
+	}
 
 	auto sm = std::make_unique<ShellMode>();
 	std::string error;
@@ -1391,10 +1630,15 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 		errors.push_back(toGodot("the lobby's setup source: " + error));
 	}
 	addInstalledMaps(sm->setup,*fs.ptr());
-	if (!loadGadgetSkinData(*fs->menu_archive_fs(), sm->skins, &error))
+	if (!loadGadgetSkinData(*fs->archive_fs(), sm->skins, &error))
 	{
 		errors.push_back(toGodot("gadget skins: " + error));
 	}
+	if (presentationFs->archive_fs() != fs->archive_fs() && !loadGadgetSkinData(*presentationFs->archive_fs(), sm->skins, &error))
+	{
+		errors.push_back(toGodot("presentation gadget skins: " + error));
+	}
+	registerPlatformIcons(sm->skins.images); // lane PLATFORMICON-1: our own icons beside the retail mapped images
 	std::int64_t seed = config.get("seed", (int64_t)0);
 	if (seed == 0)
 	{
@@ -1406,6 +1650,7 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 	sm->environment.newGame = &sm->sink;
 	sm->environment.loadScreen = &sm->loadScreen;
 	sm->environment.scoreScreen = &sm->scoreScreen; // lane END-1: TimeLine.apt
+	sm->environment.skirmishHonors = &sm->skirmishHonors; // lane OWNERFIX-3
 	sm->environment.saveLoad = &sm->saveLoad;       // lane MP-2: SaveLoad.apt
 	// lane MENU-1: Skirmish.ini beside Options.ini (config "skirmish_ini" overrides the file: the scripted runs use a file of their own)
 	{
@@ -1425,7 +1670,7 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 	sm->environment.services = &sm->services;
 	// lane UI-2: Options.ini in the user data folder (OptionPreferences); a missing file is no entries (the first run). The soft particle setting
 	// takes effect at once (FX-3's project setting).
-	sm->environment.optionsFile = toNative(OS::get_singleton()->get_user_data_dir()) + "/Options.ini";
+	sm->environment.optionsFile = toNative(default_options_path());
 	if (config.has("options_file"))
 	{
 		sm->environment.optionsFile = toNative(ProjectSettings::get_singleton()->globalize_path(String(config["options_file"]))); // lane OPTS-2: a check's own file (game.gd --options-file), never the player's
@@ -1436,6 +1681,10 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 		UtilityFunctions::print("SHELL Options.ini: ", toGodot(key), " is now ", toGodot(std::string(OptionPreferences::kSoftParticles)), " (lane OPTS-2: OpenBFME keys carry the prefix)");
 	}
 	sm->environment.options = &sm->options;
+	// lane CAMPSAVE-1: GlobalData::applyOptionPreferences (RW 0x641DED -> RW 0x6E5E16): TheGlobalData + 0xAF5 = Options.ini's BCU compared with "true" by
+	// _strcmpi (a missing key: false)
+	sm->environment.bonusCampaignUnlocked = sm->options.has("BCU") && AsciiStringUtil::compareNoCase(sm->options.get("BCU"), "true") == 0;
+	sm->environment.campaignMenu = &sm->campaignMenu;
 	// lane OPTS-4: the saved volumes are in effect from the start, as ZH's AudioManager::init takes them from OptionPreferences (DONOR; RotWK's reader
 	// is RW 0x6E5FB3, its caller at start was not read: INFERENCE, S-4510). Before, the AudioSettings defaults played until the Options screen's
 	// ACCEPT or CANCEL, and CANCEL changed the volume. Without an installed audio manager (a shell viewer) nothing is applied, and the report says so
@@ -1488,10 +1737,10 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 	sm->services.applyOption(OptionPreferences::kSoftParticles, sm->options.softParticles() ? "yes" : "no");
 	// lane UI-4: the main menu's credits roll reads Data\INI\Credits.ini from the archives and its fonts from language.ini (GlobalLanguage::init,
 	// RW 0x5E9D3C); a language.ini that does not parse is a boot error
-	sm->environment.fileSystem = fs->archive_fs();
+	sm->environment.fileSystem = presentationFs->archive_fs();
 	{
 		INIEnvironment env;
-		env.fileSystem = fs->archive_fs();
+		env.fileSystem = presentationFs->archive_fs();
 		sm->language.registerBlocks(env.blocks);
 		try
 		{
@@ -1521,6 +1770,7 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 		sm->layer->gadgets().setTextResolver([gameText](const std::string &label, UnicodeString &out) { return gameText && gameText->fetch(label, out); });
 		sm->layer->registerComponents();
 		sm->shell = std::make_unique<Shell>(*sm->wm, sm->factories, sm->services, sm->environment);
+		sm->nav = std::make_unique<MenuNavigator>(*sm->wm); // lane OPTS-6
 		sm->wm->setShell(sm->shell.get());
 		// lane FB7-1: what the Options screen's InitGadgets reads besides Options.ini (AptSimpleScreens.h): the AudioSettings default volumes and the
 		// machine's addresses and display modes (the device's, from the config), GameData's KeyboardDefaultScrollSpeedFactor (CameraSettings)
@@ -1592,7 +1842,8 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 			AptButtonTooltipMap names;
 			CursorTooltipSettings tipSettings;
 			std::string tipError;
-			if (!AptButtonTooltipMap::load(*fs->archive_fs(), names, &tipError) || !CursorTooltipSettings::load(*fs->archive_fs(), tipSettings, &tipError))
+			if (!AptButtonTooltipMap::load(*presentationFs->archive_fs(), names, &tipError) ||
+					!CursorTooltipSettings::load(*presentationFs->archive_fs(), tipSettings, &tipError))
 			{
 				errors.push_back(toGodot("boot_shell: tool tips: " + tipError));
 			}
@@ -1737,10 +1988,20 @@ Dictionary AptMenuPlayer::show_still_load_screen(const String &picture)
 	m->shell->deviceUnverified.insert(m->stillLoad.unverified);
 	m->stillLoadOn = true;
 	m->stillLoadStartUs = Time::get_singleton()->get_ticks_usec();
+	m->stillProgress = -1.0; // lane SAVE-4e: a new screen has no catch-up line
+	m->stillProgressText.clear();
 	m->dirty = true;
 	m->drawnValid = false;
 	d["ok"] = true;
 	return d;
+}
+
+void AptMenuPlayer::set_still_load_progress(double percent, const String &text)
+{
+	m->stillProgress = percent < 0.0 ? -1.0 : std::min(100.0, percent);
+	m->stillProgressText = percent < 0.0 ? std::string() : toNative(text);
+	m->dirty = true;
+	m->drawnValid = false;
 }
 
 void AptMenuPlayer::hide_still_load_screen()
@@ -1774,6 +2035,8 @@ Dictionary AptMenuPlayer::get_still_load_screen() const
 		d["slots"] = slots;
 		d["movie"] = toGodot(m->stillLoad.movie);
 		d["text_label"] = toGodot(m->stillLoad.textLabel);
+		d["progress"] = m->stillProgress; // lane SAVE-4e
+		d["progress_text"] = toGodot(m->stillProgressText);
 		auto it = m->movies.find("loadscreen:" + m->stillLoad.movie);
 		d["movie_playing"] = it != m->movies.end() && it->second.stream.is_valid() && it->second.error.empty();
 		d["movie_error"] = it != m->movies.end() ? toGodot(it->second.error) : String();
@@ -1816,6 +2079,17 @@ bool AptMenuPlayer::shell_push(const String &filename)
 	m->shell->shell->push(toNative(filename), false);
 	m->dirty = true;
 	return m->shell->shell->screenCount() > before;
+}
+
+bool AptMenuPlayer::open_options(bool network_enabled, bool allow_resolution, bool allow_advanced, bool advanced_only)
+{
+	if (!m->shell || !m->shell->shell)
+	{
+		return false;
+	}
+	AptOptionsScreen::open(*m->shell->shell, network_enabled, allow_resolution, allow_advanced, advanced_only);
+	m->dirty = true;
+	return m->shell->shell->findScreenByFilename("Options.apt") != nullptr;
 }
 
 void AptMenuPlayer::shell_pop()
@@ -2218,6 +2492,10 @@ Dictionary AptMenuPlayer::openbfme_page_state() const
 		rd["value"] = row.value;
 		rd["enabled"] = row.enabled;
 		rd["items"] = (int)row.items.size();
+		static const char *const kKinds[] = { "section", "choice", "check", "slider", "text", "entry" };
+		rd["kind"] = kKinds[(int)row.kind]; // lane OPTS-6
+		rd["min"] = row.minValue;
+		rd["max"] = row.maxValue;
 		// lane OPTS-5: the label's text and room, the help line and the value text (the checks measure the label, read the help)
 		rd["label"] = toGodot(u16ToUtf8(row.label));
 		rd["help"] = toGodot(u16ToUtf8(row.help));
@@ -2414,6 +2692,13 @@ Dictionary AptMenuPlayer::set_player_status(const Dictionary &state)
 		in.slots[i].defeated = (bool)sd.get("defeated", false);
 		in.slots[i].observer = (bool)sd.get("observer", false);
 		in.slots[i].connected = (bool)sd.get("connected", true);
+	}
+	// lane PLATFORMICON-1: each slot's system (0 .. 3, display data); a value outside the set is no icon
+	const Array platforms = state.get("platforms", Array());
+	for (int i = 0; i < MAX_SLOTS && i < (int)platforms.size(); ++i)
+	{
+		const int64_t v = platforms[i];
+		platformFromByte((std::uint8_t)(v >= 0 && v <= 3 ? v : 0), in.platforms[i]);
 	}
 	in.localSlot = (int)(int64_t)state.get("local_slot", (int64_t)-1);
 	in.network = (bool)state.get("network", false);
@@ -2703,6 +2988,7 @@ Dictionary AptMenuPlayer::lobby_state()
 		d["team"] = (int64_t)s.teamNumber;
 		d["start"] = (int64_t)s.startPos;
 		d["player_choices"] = entries(setup.playerEntries((int)slots.size()));
+		d["handicap"] = (int64_t)s.handicap; // lane OWNERFIX-2
 		d["name"] = s.isOccupied() ? toGodot(u16ToUtf8(s.name)) : String();
 		slots.push_back(d);
 	}
@@ -2757,6 +3043,21 @@ Dictionary AptMenuPlayer::lobby_apply(const Dictionary &spec)
 	{
 		screen = dynamic_cast<AptOnlineShell *>(sm.shell->findScreenByFilename("OnlineShell.apt")); // lane ONLINE-4: the staging room's MpGameSetup
 	}
+	if (lan && spec.has("box"))
+	{
+		// lane UBERJOIN-1: a button of the LAN lobby's message box (the performance mode box: Yes / No), as the button runs it
+		if (AptMessageBox *box = lan->messageBox())
+		{
+			box->hide(true);
+			sm.wm->invokeCallback("_level" + std::to_string(box->level()) + ".MessageBox_OnButton" + toNative(String(spec["box"])), "");
+			out["ok"] = true;
+		}
+		else
+		{
+			errors.push_back("no message box");
+		}
+		return out;
+	}
 	if (lan && spec.has("join_row"))
 	{
 		// LanLobby::CustomGamesList: the row's selection, then the Join button (AptLanLobby::OnJoinGameBttn)
@@ -2778,6 +3079,23 @@ Dictionary AptMenuPlayer::lobby_apply(const Dictionary &spec)
 	}
 	if (spec.has("map_search"))
 		screen->setMapSearch(utf8ToU16(toNative(String(spec["map_search"]))));
+	if (!lan && spec.has("box"))
+	{
+		// lane OWNERFIX-2: a button of the Rules tab's warning box (RW 0x8421E0 kind 3: MessageBoxOk RULE:CommandPointFactor / APT:CommandPointsTooHigh),
+		// as the button's own command runs it (RW 0x953141: the type becomes none and the callback runs)
+		AptMessageBox *box = screen->ruleBox();
+		if (box && box->type() != AptMessageBox::TYPE_NONE)
+		{
+			sm.wm->invokeCallback("_level" + std::to_string(box->level()) + ".MessageBox_OnButton" + toNative(String(spec["box"])), "");
+			out["ok"] = true;
+			out["box_type_after"] = (int64_t)box->type();
+		}
+		else
+		{
+			errors.push_back("no rule warning box is up");
+		}
+		return out;
+	}
 	if (spec.has("profile"))
 	{
 		if (GameWindow *entry = screen->profileEntryWindow())
@@ -2831,6 +3149,22 @@ Dictionary AptMenuPlayer::lobby_apply(const Dictionary &spec)
 		if (row < 0)
 		{
 			errors.push_back(combo ? "the Peace Time combo has no such duration" : "the Rules tab's Peace Time row is not placed (open the tab first)");
+		}
+		else
+		{
+			GadgetComboBoxSetSelectedPos(combo, row, false);
+		}
+	}
+	if (spec.has("rule_combo"))
+	{
+		// lane OWNERFIX-2: a Rules tab combo row ([row, value]: RuleComboBox_<row>, e.g. row 1 = Command Points in the skirmish mode), its entry whose item
+		// data is the value, so the panel's own message handler stores it (RW 0x986776); the tab must have been opened (the rows are placed then)
+		const Array rc = spec["rule_combo"];
+		GameWindow *combo = rc.size() == 2 ? screen->ruleComboWindow((int)(int64_t)rc[0]) : nullptr;
+		const int row = combo ? itemRow(combo, (std::intptr_t)(int64_t)rc[1]) : -1;
+		if (row < 0)
+		{
+			errors.push_back(combo ? "the rule combo has no such value" : "no such rule combo row (open the Rules tab first)");
 		}
 		else
 		{
@@ -2936,6 +3270,20 @@ Dictionary AptMenuPlayer::lobby_apply(const Dictionary &spec)
 			if (row < 0)
 			{
 				errors.push_back(toGodot("slot " + std::to_string(slot) + ": no team entry " + std::to_string((int)(int64_t)sd["team"])));
+			}
+			else
+			{
+				GadgetComboBoxSetSelectedPos(combo, row, false);
+			}
+		}
+		if (sd.has("handicap"))
+		{
+			// lane OWNERFIX-2: the Handicap combo's entry whose item data is the value (0, -5 .. -95), so the screen's own handler runs (RW 0x840485)
+			GameWindow *combo = screen->slotGadget(slot, "Handicap");
+			const int row = combo ? itemRow(combo, (std::intptr_t)(int64_t)sd["handicap"]) : -1;
+			if (row < 0)
+			{
+				errors.push_back(toGodot("slot " + std::to_string(slot) + ": no handicap entry " + std::to_string((int)(int64_t)sd["handicap"])));
 			}
 			else
 			{
@@ -3099,6 +3447,17 @@ Dictionary AptMenuPlayer::get_shell_report() const
 		refusals.push_back(toGodot(u16ToUtf8(p.first) + ": " + u16ToUtf8(p.second)));
 	}
 	r["start_refusals"] = refusals;
+	r["presentation_style"] = m->presentationFs.is_valid() && m->presentationFs->is_shell_source() ? "bfme2-106" : "rotwk-201";
+	r["presentation_root"] = m->presentationFs.is_valid() ? m->presentationFs->install_root() : String();
+	PackedStringArray presentationArchives;
+	if (m->presentationFs.is_valid())
+	{
+		for (const MountedArchive &a : m->presentationFs->mountedArchives())
+		{
+			presentationArchives.push_back(toGodot(a.canonicalPath));
+		}
+	}
+	r["presentation_archives"] = presentationArchives;
 	return r;
 }
 
@@ -3335,6 +3694,7 @@ void AptMenuPlayer::render(bool force)
 	AptCanvasInputs in;
 	in.mapping = m->mapping;
 	in.textures = m->textures.get();
+	in.imageReplacements = &m->imageReplacements;
 	in.text = &m->strings;
 	in.fonts = &m->fonts;
 	AptTextRecordLookup recordLookup;
@@ -3343,10 +3703,15 @@ void AptMenuPlayer::render(bool force)
 		WindowManager *wm = m->external ? m->external : m->shell->wm.get();
 		recordLookup = [wm](const std::string &name, std::string &out) { return wm->aptTextShown(name, out); };
 		in.textRecords = &recordLookup;
+		in.textBadges = &wm->textBadges(); // lane PLATFORMICON-1: a field with an icon at its left leaves it room
 	}
 	BuildAptCanvas(rl, in, m->list);
 	std::uint64_t t2 = time->get_ticks_usec();
 	const bool haveGadgets = buildGadgets(m->gadgets);
+	if (haveGadgets && m->shell && m->shell->wm)
+	{
+		appendTextBadges(rl, m->shell->wm->textBadges(), m->gadgets); // lane PLATFORMICON-1: the icons beside the movie rows' names
+	}
 	if (!m->stillLoadOn && m->drawnValid && sameCanvas(m->list, m->drawnList) && (!haveGadgets || sameGadgets(m->gadgets, m->drawnGadgets)))
 	{
 		// lane PERF-1 r2: the HUD's canvas list (and in shell mode its gadget list) is the same as the one on screen in most render frames; its items
@@ -3524,7 +3889,7 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 	// Keep submenu/settings backgrounds and RotWK's static theme on their existing path.
 	m->view3d.beginBuild();
 	const bool animatedShell = m->shell && m->shell->shell && m->fs.is_valid() &&
-		m->fs->menu_archive_fs() != m->fs->archive_fs() && m->shell->shell->shellMapRequested() &&
+		m->fs->archive_fs() != m->fs->archive_fs() && m->shell->shell->shellMapRequested() &&
 		m->shell->shell->top() && m->shell->shell->top()->filename() == "MainMenu.apt";
 	if (animatedShell)
 	{
@@ -3680,6 +4045,15 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 				RID tex;
 				if (!op.texture.empty())
 				{
+					auto branded = m->brandTextures.find(op.texture);
+					if (branded != m->brandTextures.end())
+					{
+						RID brandItem = newItem(parents.back());
+						rs->canvas_item_set_default_texture_filter(brandItem, RenderingServer::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS);
+						rs->canvas_item_add_triangle_array(brandItem, idx, pts, cols, uvs, PackedInt32Array(), PackedFloat32Array(), branded->second->get_rid());
+						current = RID();
+						break;
+					}
 					auto it = m->godotTextures.find(op.texture);
 					if (it == m->godotTextures.end())
 					{
@@ -3789,8 +4163,19 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 					{
 						slot.title = title;
 						slot.loop = loop == "true" || loop == "1";
-						GameWorld *world = Object::cast_to<GameWorld>(ObjectDB::get_instance(m->worldId));
-						Dictionary info = world && !title.empty() ? world->get_movie(toGodot(title)) : Dictionary();
+						Dictionary info;
+						if (m->presentationFs.is_valid() && m->presentationFs->is_shell_source() && m->presentationVideos && !title.empty())
+						{
+							const VideoStreamInfo opened = m->presentationVideos->locate(title, toNative(m->presentationFs->install_root()), "", "English");
+							info["ok"] = opened.ok;
+							info["full_path"] = toGodot(opened.fullPath);
+							info["error"] = toGodot(opened.error);
+						}
+						else
+						{
+							GameWorld *world = Object::cast_to<GameWorld>(ObjectDB::get_instance(m->worldId));
+							info = world && !title.empty() ? world->get_movie(toGodot(title)) : Dictionary();
+						}
 						if (!(bool)info.get("ok", false))
 						{
 							slot.error = title.empty() ? std::string("the clip names no _MovieName") : toNative(String(info.get("error", "no GameWorld")));
@@ -3901,7 +4286,8 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 						auto it = m->godotTextures.find("file:" + picture->file);
 						if (it == m->godotTextures.end())
 						{
-							const AptTextureStore::Entry &entry = m->textures->getFile(picture->file);
+							AptTextureStore *pictureTextures = m->originalTextures ? m->originalTextures.get() : m->textures.get();
+							const AptTextureStore::Entry &entry = pictureTextures->getFile(picture->file);
 							if (entry.ok && !entry.rgba.empty())
 							{
 								PackedByteArray px;
@@ -3942,7 +4328,11 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 						m->shell->gadgetErrors.insert("image record '" + *record + "' names no mapped image");
 					}
 					Ref<ImageTexture> tex;
-					if (img)
+					if (img && m->presentationFs.is_valid() && m->presentationFs->is_shell_source())
+					{
+						tex = m->imageTexture(*m->shell, img, *record);
+					}
+					else if (img)
 					{
 						// Mapped-image movie ops use the same archive layout and format
 						// decoding as native gadgets (BFME1 keeps flat art/textures).
@@ -4091,6 +4481,11 @@ bool AptMenuPlayer::buildGadgets(GadgetDrawList &commands)
 		return false;
 	}
 	m->shell->layer->buildDrawList(commands);
+	if (m->shell->nav)
+	{
+		syncNav();
+		m->shell->nav->appendFocusFrame(commands); // lane OPTS-6: over everything (no root: drawn after the movies)
+	}
 	return true;
 }
 
@@ -4236,8 +4631,37 @@ void AptMenuPlayer::drawStillLoadScreen()
 	const Vector2 size = font->get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, px);
 	const Vector2 at = toWindow(m->stillLoad.textX, m->stillLoad.textY);
 	const unsigned int c = m->stillLoad.textColor;
-	font->draw_string(newItem(), Vector2(at.x - size.x * 0.5f, at.y + font->get_ascent(px)), text, HORIZONTAL_ALIGNMENT_LEFT, -1, px,
-		Color(((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f, ((c >> 24) & 0xFF) / 255.0f));
+	const Color colour(((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f, ((c >> 24) & 0xFF) / 255.0f);
+	font->draw_string(newItem(), Vector2(at.x - size.x * 0.5f, at.y + font->get_ascent(px)), text, HORIZONTAL_ALIGNMENT_LEFT, -1, px, colour);
+	if (m->stillProgress < 0.0)
+	{
+		return;
+	}
+	// lane SAVE-4e (S-5012, OpenBFME's): an old save's catch-up between the "Loading" text and the picture (y 0.1640625): the text in the screen's font at
+	// two thirds of its size, centred at y 0.085, and a bar in the text's colour from x 0.3 to 0.7, y 0.128 to 0.142 (a one-pixel frame, the fill at percent)
+	float smallSize = 0;
+	Ref<Font> small = m->fontFor(m->stillLoad.textFont, (float)m->stillLoad.textSize * 2.0f / 3.0f, &smallSize);
+	if (small.is_valid() && !m->stillProgressText.empty())
+	{
+		const int spx = std::max(1, (int)std::lround(smallSize * map.uniformScale()));
+		small = m->cellFont(small, spx);
+		const String line = toGodot(m->stillProgressText);
+		const Vector2 lineSize = small->get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, spx);
+		const Vector2 lineAt = toWindow(0.5f, 0.085f);
+		small->draw_string(newItem(), Vector2(lineAt.x - lineSize.x * 0.5f, lineAt.y + small->get_ascent(spx)), line, HORIZONTAL_ALIGNMENT_LEFT, -1, spx,
+			colour);
+	}
+	const Vector2 b0 = toWindow(0.3f, 0.128f), b1 = toWindow(0.7f, 0.142f);
+	RID bar = newItem();
+	rs->canvas_item_add_rect(bar, Rect2(b0, b1 - b0), Color(colour.r, colour.g, colour.b, 0.85f));
+	const float inset = std::max(1.0f, map.uniformScale());
+	const Vector2 i0 = b0 + Vector2(inset, inset), i1 = b1 - Vector2(inset, inset);
+	rs->canvas_item_add_rect(bar, Rect2(i0, i1 - i0), Color(0, 0, 0, 1));
+	const float filled = (float)(m->stillProgress / 100.0) * (i1.x - i0.x);
+	if (filled > 0.0f)
+	{
+		rs->canvas_item_add_rect(bar, Rect2(i0, Vector2(filled, i1.y - i0.y)), colour);
+	}
 }
 
 void AptMenuPlayer::drawGadgets(const GadgetDrawList &commands)
@@ -4657,9 +5081,256 @@ Array AptMenuPlayer::list_buttons(int level)
 		d["y"] = y;
 		AptButtonInst *hit = m->A()->input().hitTestButtons(x, y);
 		d["hittable"] = hit == b;
+		d["state"] = (int)b->state(); // lane OPTS-6: 1 up, 2 over, 4 down (the hit-area checks read a press)
+		{
+			bool seenUp = true; // lane OPTS-6 review: shown up its chain and not faded under one half (MenuNavigator's rule): what a player can see
+			for (const AptCharacterInst *c = b; c; c = c->parent())
+			{
+				seenUp = seenUp && c->visible && c->color.mul[3] >= 0.5f;
+			}
+			d["seen"] = seenUp;
+		}
+		float hb[4];
+		if (b->hitBounds(hb))
+		{
+			d["hit_bounds"] = Rect2(hb[0], hb[1], hb[2] - hb[0], hb[3] - hb[1]); // stage
+		}
+		d["bounds"] = [&]() {
+			float ax = 1e30f, ay = 1e30f, bx = -1e30f, by = -1e30f;
+			const float xs[4] = { x0, x1, x0, x1 }, ys[4] = { y0, y0, y1, y1 };
+			for (int i = 0; i < 4; ++i)
+			{
+				float px, py;
+				b->globalMatrix().apply(xs[i], ys[i], px, py);
+				ax = std::min(ax, px), ay = std::min(ay, py), bx = std::max(bx, px), by = std::max(by, py);
+			}
+			return Rect2(ax, ay, bx - ax, by - ay); // stage
+		}();
 		out.push_back(d);
 	}
 	return out;
+}
+
+// lane OPTS-6 (checks): the gadget window a press at a stage point goes to (GameWindowManager::winPickPointerWindow): { found, name, rect (stage) }
+Dictionary AptMenuPlayer::gadget_pick(const Vector2 &stage)
+{
+	Dictionary r;
+	r["found"] = false;
+	if (!m_booted || !m->shell || !m->shell->layer)
+	{
+		return r;
+	}
+	GameWindow *w = m->shell->layer->gadgets().winPickPointerWindow((int)stage.x, (int)stage.y);
+	// the windows whose box holds the point, the pick's own filter aside (a check's diagnosis: the status bits and the parent say why one was passed over)
+	Array under;
+	for (GameWindow *u : m->shell->layer->gadgets().allWindows())
+	{
+		int ux = 0, uy = 0, uw = 0, uh = 0;
+		u->winGetScreenPosition(&ux, &uy);
+		u->winGetSize(&uw, &uh);
+		if (stage.x >= ux && stage.x <= ux + uw && stage.y >= uy && stage.y <= uy + uh)
+		{
+			Dictionary d;
+			d["name"] = toGodot(u->aptInstanceName().empty() ? u->name() : u->aptInstanceName());
+			d["status"] = (int)u->winGetStatus();
+			d["parent"] = u->winGetParent() ? toGodot(u->winGetParent()->name()) : String();
+			d["rect"] = Rect2((float)ux, (float)uy, (float)uw, (float)uh);
+			IRegion2D reg{};
+			u->winGetRegion(&reg);
+			d["region"] = Rect2((float)reg.lo.x, (float)reg.lo.y, (float)(reg.hi.x - reg.lo.x), (float)(reg.hi.y - reg.lo.y));
+			under.push_back(d);
+		}
+	}
+	r["under"] = under;
+	if (!w)
+	{
+		return r;
+	}
+	int x = 0, y = 0, cw = 0, ch = 0;
+	w->winGetScreenPosition(&x, &y);
+	w->winGetSize(&cw, &ch);
+	r["found"] = true;
+	r["name"] = toGodot(w->aptInstanceName().empty() ? w->name() : w->aptInstanceName());
+	r["rect"] = Rect2((float)x, (float)y, (float)cw, (float)ch);
+	return r;
+}
+
+// lane OPTS-6 (checks): the button the Apt input takes at a stage point (its target path; "" none)
+String AptMenuPlayer::hit_test_stage(const Vector2 &stage)
+{
+	AptButtonInst *b = m_booted ? m->A()->input().hitTestButtons(stage.x, stage.y) : nullptr;
+	return b ? toGodot(b->targetPath()) : String();
+}
+
+Array AptMenuPlayer::list_gadgets()
+{
+	// lane MENUWORK-1: the gadget windows of the gadget layer (GameWindowManager::allWindows: creation order), for the menu inventory
+	Array out;
+	if (!m->shell || !m->shell->layer || !m->shell->wm)
+	{
+		return out;
+	}
+	// a gadget made for a movie's placeholder clip is named by the clip (the name InitGadgets got, e.g. OnlineLogin::Nickname, else its path)
+	std::map<const GameWindow *, const WindowManager::ComponentRecord *> records;
+	for (const WindowManager::ComponentRecord &rec : m->shell->wm->components())
+	{
+		if (rec.window)
+		{
+			records[rec.window.get()] = &rec;
+		}
+	}
+	for (GameWindow *w : m->shell->layer->gadgets().allWindows())
+	{
+		const std::uint32_t style = w->winGetStyle();
+		const char *kind = BitTest(style, GWS_PUSH_BUTTON)   ? "button"
+			: BitTest(style, GWS_RADIO_BUTTON)               ? "radio"
+			: BitTest(style, GWS_CHECK_BOX)                  ? "checkbox"
+			: BitTest(style, GWS_ALL_SLIDER)                 ? "slider"
+			: BitTest(style, GWS_COMBO_BOX)                  ? "combo"
+			: BitTest(style, GWS_SCROLL_LISTBOX)             ? "list"
+			: BitTest(style, GWS_ENTRY_FIELD)                ? "entry"
+			: BitTest(style, GWS_STATIC_TEXT)                ? "text"
+			: BitTest(style, GWS_PROGRESS_BAR)               ? "progress"
+			: BitTest(style, GWS_TAB_CONTROL)                ? "tabs"
+															 : "window";
+		// a gadget is shown when it and every parent are shown (a combo's list box is a child of the combo)
+		bool hidden = false;
+		for (GameWindow *p = w; p; p = p->winGetParent())
+		{
+			hidden = hidden || p->winIsHidden();
+		}
+		int x = 0, y = 0, ww = 0, hh = 0;
+		w->winGetScreenPosition(&x, &y);
+		w->winGetSize(&ww, &hh);
+		Dictionary d;
+		auto rec = records.find(w);
+		d["name"] = toGodot(rec == records.end() ? w->name() : (rec->second->instanceName.empty() ? rec->second->instancePath : rec->second->instanceName));
+		d["path"] = rec == records.end() ? String() : toGodot(rec->second->instancePath);
+		d["level"] = rec == records.end() ? -1 : rec->second->level;
+		d["kind"] = kind;
+		d["parent"] = w->winGetParent() ? toGodot(w->winGetParent()->name()) : String();
+		d["x"] = x;
+		d["y"] = y;
+		d["w"] = ww;
+		d["h"] = hh;
+		d["enabled"] = w->winGetEnabled();
+		d["hidden"] = hidden;
+		if (BitTest(style, GWS_CHECK_BOX))
+		{
+			d["checked"] = GadgetCheckBoxIsChecked(w);
+		}
+		if (BitTest(style, GWS_ALL_SLIDER))
+		{
+			d["value"] = GadgetSliderGetPosition(w);
+		}
+		if (BitTest(style, GWS_SCROLL_LISTBOX))
+		{
+			d["entries"] = GadgetListBoxGetNumEntries(w);
+			// the selected row (a multi-select list: its first selection; -1 none) and the first row's text (an order change shows there)
+			const ListboxData *list = static_cast<const ListboxData *>(w->winGetUserData());
+			int selected = -1;
+			if (list)
+			{
+				selected = list->multiSelect ? (list->selections.empty() ? -1 : list->selections.front()) : list->selectPos;
+			}
+			d["selected"] = selected;
+			d["row_height"] = list && !list->listData.empty() ? list->listData.front().height : 0;
+			d["display_pos"] = list ? (int)list->displayPos : 0;
+			d["double_click_time"] = list ? (int64_t)list->doubleClickTime : 0;
+			d["time_ms"] = (int64_t)m->shell->layer->gadgets().timeMs();
+			std::string first;
+			for (int c = 0; c < 6 && GadgetListBoxGetNumEntries(w) > 0; ++c)
+			{
+				first += u16ToUtf8(GadgetListBoxGetText(w, 0, c)) + "|";
+			}
+			d["first"] = toGodot(first);
+			// every row's texts, hashed: a re-sort shows here even when the first row stays
+			std::string all;
+			for (int r = 0; r < GadgetListBoxGetNumEntries(w); ++r)
+			{
+				for (int c = 0; c < 6; ++c)
+				{
+					all += u16ToUtf8(GadgetListBoxGetText(w, r, c)) + "|";
+				}
+				all += "\n";
+			}
+			d["rows"] = (int64_t)std::hash<std::string>{}(all);
+		}
+		if (BitTest(style, GWS_COMBO_BOX))
+		{
+			int selected = -1;
+			GadgetComboBoxGetSelectedPos(w, &selected);
+			d["selected"] = selected;
+			d["entries"] = GadgetComboBoxGetLength(w);
+			GameWindow *dropDown = GadgetComboBoxGetListBox(w);
+			d["open"] = dropDown && !dropDown->winIsHidden(); // the drop-down list is shown
+			d["text"] = toGodot(u16ToUtf8(GadgetComboBoxGetText(w)));
+		}
+		else if (BitTest(style, GWS_ENTRY_FIELD))
+		{
+			d["text"] = toGodot(u16ToUtf8(GadgetTextEntryGetText(w)));
+		}
+		out.push_back(d);
+	}
+	return out;
+}
+
+PackedStringArray AptMenuPlayer::take_commands()
+{
+	PackedStringArray out;
+	if (m->shell && m->shell->wm)
+	{
+		for (const std::string &c : m->shell->wm->takeInvokedCommands())
+		{
+			out.push_back(toGodot(c));
+		}
+	}
+	return out;
+}
+
+Dictionary AptMenuPlayer::screen_state() const
+{
+	// lane MENUWORK-1: what a press on the top screen changed in the engine (not its picture): the LAN list's sort keys and refills, the online
+	// screens' page and state, the skirmish lobby's profile page
+	Dictionary out;
+	AptScreen *top = m->shell && m->shell->shell ? m->shell->shell->top() : nullptr;
+	if (!top)
+	{
+		return out;
+	}
+	out["screen"] = toGodot(top->filename());
+	if (auto *lan = dynamic_cast<AptLanLobby *>(top))
+	{
+		out["sort_primary"] = lan->sorter().primary();
+		out["sort_secondary"] = lan->sorter().secondary();
+		out["sort_status_cycle"] = lan->sorter().statusCycle();
+		out["list_fills"] = lan->listFills();
+		out["lan_state"] = lan->state();
+	}
+	else if (auto *online = dynamic_cast<AptOnlineShell *>(top))
+	{
+		out["online_page"] = toGodot(online->currentPage());
+		out["online_state"] = online->openPlayState();
+		out["online_chat_lines"] = (int64_t)online->chatLines().size();
+		out["online_boxes"] = (int64_t)online->boxesShown().size();
+		out["online_sort"] = online->sortColumn() * 2 + (online->sortDescending() ? 1 : 0);
+	}
+	if (auto *skirmish = dynamic_cast<AptSkirmish *>(top))
+	{
+		out["profile_state"] = skirmish->profileState();
+	}
+	if (auto *cah = dynamic_cast<AptCreateAHero *>(top))
+	{
+		out["cah_suppress_promo"] = cah->suppressPromo();
+		out["cah_sort"] = cah->heroSortKey0() * 10 + cah->heroSortKey1();
+	}
+	return out;
+}
+
+String AptMenuPlayer::apt_text(const String &name) const
+{
+	const std::string *text = m->shell && m->shell->wm ? m->shell->wm->aptText(toNative(name)) : nullptr;
+	return text ? toGodot(*text) : String();
 }
 
 Dictionary AptMenuPlayer::instance_info(int level, const String &path)
@@ -4815,12 +5486,12 @@ void AptMenuPlayer::_input(const Ref<InputEvent> &event)
 		return;
 	if (const InputEventMouseMotion *mm = Object::cast_to<InputEventMouseMotion>(event.ptr()))
 	{
-		m->keyboardButton = String();
-		m->mainMenuGroup = m->mainMenuItem = -1;
+		menu_pointer_moved();
 		post_mouse_move_stage(window_to_stage(mm->get_position()));
 	}
 	else if (const InputEventMouseButton *mb = Object::cast_to<InputEventMouseButton>(event.ptr()))
 	{
+		menu_pointer_moved();
 		post_mouse_move_stage(window_to_stage(mb->get_position()));
 		if (mb->get_button_index() == MOUSE_BUTTON_LEFT)
 		{
@@ -4837,190 +5508,201 @@ void AptMenuPlayer::_input(const Ref<InputEvent> &event)
 	}
 	else if (const InputEventKey *key = Object::cast_to<InputEventKey>(event.ptr()))
 	{
-		if (key->is_echo())
+		if (menuKey(key))
 		{
-			return;
+			get_viewport()->set_input_as_handled();
 		}
+	}
+}
+
+// lane OPTS-6: the navigation keys (MenuNavigator.h; not retail): the arrows, Tab / Shift+Tab, Enter / Space, Esc, PageUp / PageDown
+static bool navKeyOf(const InputEventKey *key, MenuNavKey &out)
+{
+	switch (key->get_keycode())
+	{
+		case Key::KEY_UP: out = MenuNavKey::Up; return true;
+		case Key::KEY_DOWN: out = MenuNavKey::Down; return true;
+		case Key::KEY_LEFT: out = MenuNavKey::Left; return true;
+		case Key::KEY_RIGHT: out = MenuNavKey::Right; return true;
+		case Key::KEY_TAB: out = key->is_shift_pressed() ? MenuNavKey::Previous : MenuNavKey::Next; return true;
+		case Key::KEY_BACKTAB: out = MenuNavKey::Previous; return true;
+		case Key::KEY_ENTER:
+		case Key::KEY_KP_ENTER:
+		case Key::KEY_SPACE: out = MenuNavKey::Activate; return true;
+		case Key::KEY_ESCAPE: out = MenuNavKey::Back; return true;
+		case Key::KEY_PAGEDOWN: out = MenuNavKey::PageNext; return true;
+		case Key::KEY_PAGEUP: out = MenuNavKey::PagePrevious; return true;
+		default: return false;
+	}
+}
+
+void AptMenuPlayer::syncNav() const
+{
+	if (!m->shell || !m->shell->nav)
+	{
+		return;
+	}
+	const AptScreen *top = m->shell->shell ? m->shell->shell->inputTop() : nullptr;
+	m->shell->nav->setMenu(top && top->isMenu() && !top->isHidden() && top->level() >= 0 ? top->level() : -1, top);
+}
+
+bool AptMenuPlayer::modal_menu() const
+{
+	// lane SAVE-UI1 / OPTS-6: a menu is the input's top (the shell's top screen, or the quit menu over a game): the game's input is cancelled and not
+	// served until it is gone. Not the navigation's own test (menu_has_input: a loaded movie): a screen on its way in (its movie still loading) is modal too
+	if (!m_booted || !m->shell || !m->shell->shell)
+	{
+		return false;
+	}
+	const AptScreen *top = m->shell->shell->inputTop();
+	return top && top->isMenu();
+}
+
+bool AptMenuPlayer::menu_escape(bool pressed)
+{
+	// lane SAVE-UI1: the input top screen's own Escape (AptScreen::inputKey: SaveLoad.apt's RW 0x816627 closes on the release in its state 0); true when the
+	// screen used the key (the menus' navigation and the game's quit-menu toggle never see it)
+	if (!m_booted || !m->shell || !m->shell->shell)
+	{
+		return false;
+	}
+	AptScreen *top = m->shell->shell->inputTop();
+	if (!top || !top->inputKey(::KEY_ESC, pressed ? KEY_STATE_DOWN : KEY_STATE_UP))
+	{
+		return false;
+	}
+	m->dirty = true;
+	return true;
+}
+
+bool AptMenuPlayer::menu_has_input() const
+{
+	if (!m_booted || !m->shell || !m->shell->nav)
+	{
+		return false;
+	}
+	syncNav();
+	return m->shell->nav->level() >= 0;
+}
+
+void AptMenuPlayer::menu_pointer_moved()
+{
+	if (m_booted && m->shell && m->shell->nav)
+	{
+		m->shell->nav->pointerMoved();
+	}
+}
+
+bool AptMenuPlayer::menu_input(const Ref<InputEvent> &event)
+{
+	const InputEventKey *key = Object::cast_to<InputEventKey>(event.ptr());
+	return m_booted && key && menuKey(key);
+}
+
+Dictionary AptMenuPlayer::menu_nav_state()
+{
+	Dictionary r;
+	r["level"] = -1;
+	if (!m_booted || !m->shell || !m->shell->nav)
+	{
+		return r;
+	}
+	syncNav();
+	MenuNavigator &nav = *m->shell->nav;
+	r["level"] = nav.level();
+	r["focus"] = toGodot(nav.focusId());
+	r["frame"] = nav.frameShown();
+	float box[4];
+	if (nav.focusBox(box))
+	{
+		r["focus_rect"] = Rect2(box[0], box[1], box[2] - box[0], box[3] - box[1]);
+	}
+	Array targets;
+	for (const MenuNavTarget &t : nav.targets())
+	{
+		Dictionary d;
+		d["id"] = toGodot(t.id);
+		d["kind"] = t.kind == MenuNavTarget::Kind::Button ? "button" : t.kind == MenuNavTarget::Kind::Gadget ? "gadget" : "item";
+		d["rect"] = Rect2(t.x0, t.y0, t.x1 - t.x0, t.y1 - t.y0);
+		targets.push_back(d);
+	}
+	r["targets"] = targets;
+	PackedStringArray catcherIds; // lane OPTS-6 review: the click-away areas (Esc / Tab past the last move the pointer onto one first)
+	for (const MenuNavTarget &c : nav.catchers())
+	{
+		catcherIds.push_back(toGodot(c.id));
+	}
+	r["catchers"] = catcherIds;
+	AptButtonInst *current = m->shell->wm->apt().input().currentButton();
+	r["current_button"] = current ? toGodot(current->targetPath()) : String(); // the button the pointer's last event made current
+	if (m->shell->layer)
+	{
+		GameWindowManager &gwm = m->shell->layer->gadgets();
+		if (GameWindow *f = gwm.winGetFocus())
+		{
+			int x = 0, y = 0, w = 0, h = 0;
+			f->winGetScreenPosition(&x, &y);
+			f->winGetSize(&w, &h);
+			r["key_focus_rect"] = Rect2((float)x, (float)y, (float)w, (float)h);
+		}
+		r["open_list"] = m->shell->layer->openDropDown() != nullptr;
+	}
+	PackedStringArray log;
+	for (const std::string &l : nav.log())
+	{
+		log.push_back(toGodot(l));
+	}
+	r["log"] = log;
+	return r;
+}
+
+bool AptMenuPlayer::menuKey(const InputEventKey *key)
+{
 		const Key controllerKey = key->get_keycode();
-		if (controllerKey == Key::KEY_BACKSLASH) return;
-		if ((controllerKey == Key::KEY_COMMA || controllerKey == Key::KEY_PERIOD) && (bool)Engine::get_singleton()->get_meta("controller_camera_keys", false) && !key->is_ctrl_pressed() && !key->is_alt_pressed()) return;
-		if (controllerKey == Key::KEY_TAB && (bool)Engine::get_singleton()->get_meta("controller_keyboard_enabled", false)) return;
+		if (controllerKey == Key::KEY_BACKSLASH) return false;
+		if ((controllerKey == Key::KEY_COMMA || controllerKey == Key::KEY_PERIOD) && (bool)Engine::get_singleton()->get_meta("controller_camera_keys", false) && !key->is_ctrl_pressed() && !key->is_alt_pressed()) return false;
+		if (controllerKey == Key::KEY_TAB && (bool)Engine::get_singleton()->get_meta("controller_keyboard_enabled", false)) return false;
 		if ((bool)Engine::get_singleton()->get_meta("controller_keyboard_active", false) && !key->is_ctrl_pressed() && !key->is_alt_pressed() &&
 			(controllerKey == Key::KEY_LEFT || controllerKey == Key::KEY_RIGHT || controllerKey == Key::KEY_UP || controllerKey == Key::KEY_DOWN ||
-			controllerKey == Key::KEY_ENTER || controllerKey == Key::KEY_KP_ENTER || controllerKey == Key::KEY_BACKSPACE || controllerKey == Key::KEY_X || controllerKey == Key::KEY_Y)) return;
-		// BFME2Lua dev/lib/main_menu.lua: explicit group/item policy and native
-		// timeline highlights. Expanded groups cover other headings in APT hit
-		// testing, so spatial mouse traversal cannot establish this order.
-		const Key menuKey = key->get_keycode();
-		const bool menuArrow = menuKey == Key::KEY_LEFT || menuKey == Key::KEY_RIGHT || menuKey == Key::KEY_UP || menuKey == Key::KEY_DOWN;
-		const bool mainScreen = m->shell && m->shell->shell && m->shell->shell->top() && m->shell->shell->top()->filename() == "MainMenu.apt";
-		AptCharacterInst *mainHeading = mainScreen ? m->A()->resolvePath(m->A()->level(m->shell->shell->top()->level()), "SoloPlayNav") : nullptr;
-		const bool main = mainHeading && mainHeading->globallyVisible() && !m->shell->wm->componentInputBlocked();
-		if (!main || menuKey == Key::KEY_TAB) m->mainMenuGroup = m->mainMenuItem = -1;
-		if (main && (menuArrow || (m->mainMenuGroup >= 0 && (menuKey == Key::KEY_ENTER || menuKey == Key::KEY_KP_ENTER || menuKey == Key::KEY_SPACE))))
+			controllerKey == Key::KEY_ENTER || controllerKey == Key::KEY_KP_ENTER || controllerKey == Key::KEY_BACKSPACE || controllerKey == Key::KEY_X || controllerKey == Key::KEY_Y)) return false;
+
+	// lane SAVE-UI1: the top screen's own Escape procedure first (its press and its release are its alone)
+	if (key->get_keycode() == Key::KEY_ESCAPE && !key->is_echo() && menu_escape(key->is_pressed()))
+	{
+		return true;
+	}
+	// lane OPTS-6: the navigation first (a key it takes reaches neither the movie nor the gadgets; its release neither)
+	if (m->shell && m->shell->nav)
+	{
+		MenuNavKey nk;
+		const int code = (int)key->get_keycode();
+		if (!key->is_pressed())
 		{
-			struct Menu { const char *clip; std::vector<const char *> items; };
-			const std::vector<Menu> menus = {
-				{ "TutorialsNav", { "BasicTutorial", "AdvancedTutorial", "StrategicTutorial" } },
-				{ "SoloPlayNav", { "Skirmish", "WarOfTheRing", "EvilCampaign", "GoodCampaign", "LoadGame" } },
-				{ "MultiPlayNav", { "Online", "LocalNetwork", "Replay" } },
-				{ "OptionsNav", { "Settings", "AdvancedSettings", "Credits" } },
-				{ "MyHeores", {} }, { "QuitMainMenu", {} }
-			};
-			const int level = m->shell->shell->top()->level();
-			auto animate = [&](const std::string &path, const char *label, bool play) {
-				AptCharacterInst *clip = m->A()->resolvePath(m->A()->level(level), path);
-				AptSpriteInst *sprite = clip ? clip->asSprite() : nullptr;
-				const int frame = sprite ? sprite->labelFrame(label) : -1;
-				if (frame >= 0) { sprite->gotoFrame(frame); sprite->playing = play; }
-			};
-			if (key->is_pressed())
+			if (m->shell->navSwallowed.erase(code))
 			{
-				const int previousGroup = m->mainMenuGroup;
-				const bool horizontal = menuKey == Key::KEY_LEFT || menuKey == Key::KEY_RIGHT;
-				if (menuArrow)
-				{
-					if (horizontal)
-					{
-						const int delta = menuKey == Key::KEY_RIGHT ? 1 : -1;
-						if (m->mainMenuGroup < 0) m->mainMenuGroup = delta > 0 ? -1 : 0;
-						m->mainMenuGroup = (m->mainMenuGroup + delta + (int)menus.size()) % (int)menus.size();
-						m->mainMenuItem = -1;
-					}
-					else
-					{
-						if (m->mainMenuGroup < 0) m->mainMenuGroup = 0;
-						const int count = (int)menus[m->mainMenuGroup].items.size();
-						if (count) m->mainMenuItem = m->mainMenuItem < 0 ? 0 : (m->mainMenuItem + (menuKey == Key::KEY_UP ? 1 : -1) + count) % count;
-					}
-				}
-				else if (m->mainMenuItem < 0 && !menus[m->mainMenuGroup].items.empty()) m->mainMenuItem = 0;
-				else
-				{
-					const std::vector<std::vector<const char *>> actions = {
-						{ "OnTutorial", "OnTutorial", "OnTutorial" },
-						{ "Skirmish", "WarOfTheRing", "EvilCampaignButton", "GoodCampaignButton", "LoadGame" },
-						{ "OnlineButtonPressed", "LAN", "LoadReplay" },
-						{ "SettingsButton", "AdvancedSettingsButton", "Credits" }, { "CreateAHero" }, { "ExitGame" }
-					};
-					const int item = std::max(0, m->mainMenuItem);
-					const std::string action = actions[m->mainMenuGroup][item];
-					if (action.find("Button") != std::string::npos && action != "OnlineButtonPressed")
-					{
-						std::string error;
-						if (!m->shell->wm->invokeASAt(level, "", action, {}, nullptr, &error)) m->errors.insert(error);
-					}
-					else
-					{
-						const char *tutorials[] = { "Basic", "Advanced", "Strategic" };
-						m->shell->wm->invokeCallback("AptMainMenu::" + action, m->mainMenuGroup == 0 ? tutorials[item] : "");
-					}
-				}
-				for (int g = 0; g < (int)menus.size(); ++g)
-				{
-					const bool chosen = g == m->mainMenuGroup;
-					const bool single = menus[g].items.empty();
-					if (previousGroup != m->mainMenuGroup) animate(menus[g].clip, single ? (chosen ? "_over" : "_up") : (chosen ? "_show" : "_hide"), chosen || single);
-					if (!single && previousGroup != m->mainMenuGroup) animate(std::string(menus[g].clip) + ".OpenButton", chosen ? "_over" : "_up", true);
-					for (int j = 0; j < (int)menus[g].items.size(); ++j)
-						animate(std::string(menus[g].clip) + "." + menus[g].items[j], chosen && j == m->mainMenuItem ? "_over" : "_up", true);
-				}
-				m->keyboardButton = String(menus[m->mainMenuGroup].clip);
-				if (m->mainMenuItem >= 0) m->keyboardButton += String(".") + menus[m->mainMenuGroup].items[m->mainMenuItem];
+				return true;
 			}
-			get_viewport()->set_input_as_handled();
-			return;
 		}
-		// OpenBFME menu accessibility: traverse only currently hittable APT buttons.
-		// Hit testing excludes hidden, disabled and modal-covered controls. Hovering
-		// provides the movie's native highlight rather than drawing a second skin.
-		const Key keyCode = key->get_keycode();
-		const bool arrow = keyCode == Key::KEY_LEFT || keyCode == Key::KEY_RIGHT || keyCode == Key::KEY_UP || keyCode == Key::KEY_DOWN;
-		if (m->shell && m->shell->shell && m->shell->shell->screenCount() > 0 && (keyCode == Key::KEY_TAB || arrow ||
-			(!m->keyboardButton.is_empty() && (keyCode == Key::KEY_ENTER || keyCode == Key::KEY_KP_ENTER || keyCode == Key::KEY_SPACE))))
+		else if (navKeyOf(key, nk) && !(key->is_echo() && (nk == MenuNavKey::Activate || nk == MenuNavKey::Back)))
 		{
-			Array candidates;
-			for (int level : m->A()->loadedLevels())
+			syncNav();
+			// Esc on the OpenBFME page stays the page's CANCEL below (OPTS-3's path); the page's Back does the same
+			const bool listOpen = m->shell->layer && m->shell->layer->openDropDown();
+			const bool pageEsc = nk == MenuNavKey::Back && !listOpen && m->shell->shell && optionsTop(m->shell->shell.get()) && optionsTop(m->shell->shell.get())->extensionOpen();
+			if (!pageEsc && m->shell->nav->key(nk))
 			{
-				if (level == m->shell->wm->backgroundLevel()) continue;
-				for (const Variant &entry : list_buttons(level))
-				{
-					Dictionary button = entry;
-					if ((bool)button.get("hittable", false)) candidates.push_back(button);
-				}
+				m->shell->navSwallowed.insert(code);
+				return true;
 			}
-			// Use visual order rather than APT display-list depth for Tab traversal.
-			std::vector<Dictionary> ordered;
-			for (const Variant &entry : candidates) ordered.push_back(Dictionary(entry));
-			std::stable_sort(ordered.begin(), ordered.end(), [](const Dictionary &a, const Dictionary &b) {
-				const double ay = a["y"], by = b["y"];
-				const int rowA = (int)std::floor(ay / 12.0), rowB = (int)std::floor(by / 12.0);
-				if (rowA != rowB) return rowA < rowB;
-				return (double)a["x"] < (double)b["x"];
-			});
-			candidates.clear();
-			for (const auto &entry : ordered) candidates.push_back(entry);
-			int current = -1;
-			for (int i = 0; i < candidates.size(); ++i)
-				if (String(Dictionary(candidates[i])["path"]) == m->keyboardButton) current = i;
-			if ((keyCode == Key::KEY_TAB || arrow) && key->is_pressed() && !candidates.is_empty())
-			{
-				const int count = candidates.size();
-				if (arrow && current >= 0)
-				{
-					const Dictionary origin = candidates[current];
-					const Vector2 direction = keyCode == Key::KEY_LEFT ? Vector2(-1, 0) :
-						keyCode == Key::KEY_RIGHT ? Vector2(1, 0) : keyCode == Key::KEY_UP ? Vector2(0, -1) : Vector2(0, 1);
-					double best = 1e30;
-					int next = current;
-					for (int i = 0; i < count; ++i)
-					{
-						const Dictionary target = candidates[i];
-						const Vector2 delta((double)target["x"] - (double)origin["x"], (double)target["y"] - (double)origin["y"]);
-						const double forward = delta.dot(direction);
-						if (forward <= 0.5) continue;
-						const double across = std::abs(delta.cross(direction));
-						const double score = delta.length() + across * 2.0;
-						if (score < best) { best = score; next = i; }
-					}
-					const bool horizontal = keyCode == Key::KEY_LEFT || keyCode == Key::KEY_RIGHT;
-					// Skirmish/review bottom actions form a horizontal row: don't jump
-					// into a map or player widget when moving between Main Menu and Play.
-					if (horizontal)
-					{
-						double bottom = -1e30;
-						for (const Variant &entry : candidates) bottom = std::max(bottom, (double)Dictionary(entry)["y"]);
-						if ((double)origin["y"] >= bottom - 40.0)
-						{
-							best = 1e30; next = current;
-							for (int i = 0; i < count; ++i)
-							{
-								const Dictionary target = candidates[i];
-								if ((double)target["y"] < bottom - 40.0) continue;
-								const double forward = ((double)target["x"] - (double)origin["x"]) * (keyCode == Key::KEY_LEFT ? -1.0 : 1.0);
-								if (forward > 0.5 && forward < best) { best = forward; next = i; }
-							}
-						}
-					}
-					current = next;
-				}
-				else
-					current = current < 0 ? (key->is_shift_pressed() ? count - 1 : 0) :
-						(current + (key->is_shift_pressed() ? count - 1 : 1)) % count;
-				Dictionary button = candidates[current];
-				m->keyboardButton = button["path"];
-				post_mouse_move_stage(Vector2((double)button["x"], (double)button["y"]));
-			}
-			else if (keyCode != Key::KEY_TAB && !arrow && (current >= 0 || m->keyboardButtonPressed))
-			{
-				post_mouse_button(key->is_pressed());
-				m->keyboardButtonPressed = key->is_pressed();
-			}
-			else if (current < 0) m->keyboardButton = String();
-			get_viewport()->set_input_as_handled();
-			return;
 		}
-		// lane OPTS-3: Esc on the OpenBFME page is its CANCEL; the movie never sees the key (its own Esc would play Options' closing animation)
+	}
+	if (key->is_echo())
+	{
+		return false;
+	}
+	{
+		// lane OPTS-3: Esc on the OpenBFME page is its CANCEL; the movie never sees the key (its own Esc would play Options' closing animation). Lane
+		// OPTS-6: an open drop-down list takes Esc first (the navigation closes it; the page stays)
 		if (key->get_keycode() == Key::KEY_ESCAPE && m->shell && m->shell->shell)
 		{
 			if (AptOptionsScreen *o = optionsTop(m->shell->shell.get()); o && o->extensionOpen())
@@ -5029,8 +5711,7 @@ void AptMenuPlayer::_input(const Ref<InputEvent> &event)
 				{
 					o->extensionCancel();
 				}
-				get_viewport()->set_input_as_handled();
-				return;
+				return true;
 			}
 		}
 		const int vk = virtualKeyOf(key->get_keycode());
@@ -5063,6 +5744,7 @@ void AptMenuPlayer::_input(const Ref<InputEvent> &event)
 			}
 		}
 	}
+	return false; // the movie's and the gadgets' (the event goes on as before)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -5307,7 +5989,19 @@ Dictionary AptMenuPlayer::get_report() const
 	r["keyboard_button"] = m->keyboardButton;
 	r["gadget_keyboard_focus"] = m->shell && m->shell->layer && m->shell->layer->gadgets().winGetFocus() != nullptr;
 	r["view3d_notes"] = toArray(m->view3d.notes());
+	r["view3d_presentation_style"] = m->view3d.sourceStyle();
 	r["movie_errors"] = toArray(m->movieErrors); // lane CAMP-2: BinkMovie components that could not play
+	r["presentation_style"] = m->presentationFs.is_valid() && m->presentationFs->is_shell_source() ? "bfme2-106" : "rotwk-201";
+	r["presentation_root"] = m->presentationFs.is_valid() ? m->presentationFs->install_root() : String();
+	PackedStringArray presentationArchives;
+	if (m->presentationFs.is_valid())
+	{
+		for (const MountedArchive &a : m->presentationFs->mountedArchives())
+		{
+			presentationArchives.push_back(toGodot(a.canonicalPath));
+		}
+	}
+	r["presentation_archives"] = presentationArchives;
 	Dictionary notes;
 	std::map<std::string, int> counts;
 	if (m->A())
@@ -5494,6 +6188,7 @@ void AptMenuPlayer::set_save_load(const Dictionary &info)
 		s.loadable = (bool)d.get("loadable", false);
 		s.refusalUtf8 = toNative(String(d.get("refusal", "")));
 		s.retailImport = (bool)d.get("retail_import", false);
+		s.autoSave = (bool)d.get("auto_save", false); // lane CAMPSAVE-1
 		sl.saves.push_back(s);
 	}
 	sl.lastReplayNameUtf8 = toNative(String(info.get("last_replay", "")));
@@ -5509,6 +6204,57 @@ void AptMenuPlayer::set_save_load(const Dictionary &info)
 		r.timeUtf8 = toNative(String(d.get("time", "")));
 		r.compatible = (bool)d.get("compatible", true);
 		sl.replays.push_back(r);
+	}
+}
+
+// lane CAMPSAVE-1: what RW 0x5EADDE gives CampaignMenu.apt (set before the host pushes the screen; its constructor reads it)
+void AptMenuPlayer::set_campaign_menu(const Dictionary &content)
+{
+	if (!m->shell)
+	{
+		return;
+	}
+	CampaignMenuContext &c = m->shell->campaignMenu;
+	c = CampaignMenuContext();
+	c.haveMission = (bool)content.get("have_mission", false);
+	c.missionName = toNative(String(content.get("mission_name", "")));
+	c.loadScreenImage = toNative(String(content.get("load_screen_image", "")));
+	c.victorious = (bool)content.get("victorious", false);
+}
+
+// lane CAMPSAVE-1: RW 0x927F00 .. 0x927F4C: OptionPreferences (RW 0x6E56F3) BCU = "true" written (RW 0x7B274C), TheGlobalData + 0xAF5 = 1
+Dictionary AptMenuPlayer::unlock_bonus_campaign()
+{
+	Dictionary r;
+	r["ok"] = false;
+	if (!m->shell)
+	{
+		r["error"] = "no shell";
+		return r;
+	}
+	m->shell->options.set("BCU", "true");
+	m->shell->environment.bonusCampaignUnlocked = true;
+	std::string error;
+	const bool saved = !m->shell->environment.optionsFile.empty() && m->shell->options.save(m->shell->environment.optionsFile, &error);
+	r["ok"] = saved;
+	r["file"] = toGodot(m->shell->environment.optionsFile);
+	if (!saved)
+	{
+		r["error"] = toGodot(error.empty() ? std::string("Options.ini: no file name") : error);
+	}
+	return r;
+}
+
+bool AptMenuPlayer::is_bonus_campaign_unlocked() const
+{
+	return m->shell && m->shell->environment.bonusCampaignUnlocked;
+}
+
+void AptMenuPlayer::set_save_folder(const String &folder)
+{
+	if (m->shell)
+	{
+		m->shell->environment.saveFolder = toNative(folder);
 	}
 }
 
@@ -5756,6 +6502,36 @@ Dictionary AptMenuPlayer::create_a_hero_save_folder(const String &rotwkInstall) 
 	return out;
 }
 
+// lane UBERJOIN-1: the screens' performance-mode switch is the world's (GameWorld::switch_profile_for_game / restore_simulation_profile); the world is
+// looked up by its object id at each call, so a freed world is an answer of "no world", never a dangling pointer
+static void bindProfileSwitch(ProfileSwitch &ps, std::uint64_t worldId)
+{
+	auto world = [worldId]() { return Object::cast_to<GameWorld>(ObjectDB::get_instance(ObjectID(worldId))); };
+	ps.current = [world]() {
+		GameWorld *w = world();
+		return w ? w->current_profile() : SimulationProfile::Faithful;
+	};
+	ps.digestOf = [world](SimulationProfile p) {
+		GameWorld *w = world();
+		return w ? w->profile_digest_for(p) : std::string();
+	};
+	ps.request = [world](SimulationProfile p, std::string *why) {
+		GameWorld *w = world();
+		if (!w)
+		{
+			*why = "no game world";
+			return false;
+		}
+		return w->switch_profile_for_game(p, why);
+	};
+	ps.restore = [world]() {
+		if (GameWorld *w = world())
+		{
+			w->restore_simulation_profile();
+		}
+	};
+}
+
 bool AptMenuPlayer::set_lan(Object *worldObject)
 {
 	GameWorld *world = Object::cast_to<GameWorld>(worldObject);
@@ -5764,6 +6540,11 @@ bool AptMenuPlayer::set_lan(Object *worldObject)
 		return false;
 	}
 	m->shell->environment.lan = world ? world->lan() : nullptr;
+	if (world)
+	{
+		bindProfileSwitch(m->shell->profileSwitch, world->get_instance_id());
+		m->shell->environment.profileSwitch = &m->shell->profileSwitch; // lane UBERJOIN-1
+	}
 	return m->shell->environment.lan != nullptr;
 }
 
@@ -5793,13 +6574,17 @@ Dictionary AptMenuPlayer::set_online(Object *worldObject, const Dictionary &opti
 	}
 	OnlineLobbyClient::Options o;
 	o.profileDigest = toNative(world->net_profile_digest());
+	o.platform = localPlatform(); // lane PLATFORMICON-1: the one value told about this machine
 	o.playerTemplateCount = factions;
 	o.colorCount = colors;
 	o.pollMs = (std::uint32_t)(int64_t)options.get("poll_ms", (int64_t)o.pollMs);
 	// lane ONLINE-5: the staging room's polls are held by a lobby that can (20 s: one request per player every 20 s in an idle room); "long_poll_s" 0
 	// turns it off (plain polls every poll_ms)
 	o.longPollS = (std::uint32_t)std::clamp<int64_t>((int64_t)options.get("long_poll_s", (int64_t)20), 0, OnlineLobbyClient::kMaxHoldSeconds);
+	o.profile = world->current_profile(); // lane UBERJOIN-1: net_profile_digest is that profile's
 	sm.online = std::make_unique<OnlineLobbyClient>(o);
+	bindProfileSwitch(sm.profileSwitch, world->get_instance_id());
+	sm.environment.profileSwitch = &sm.profileSwitch;
 	sm.onlineUrl = toNative(String(options.get("lobby_url", String())));
 	sm.onlineCtx = OnlineShellContext();
 	sm.onlineCtx.client = sm.online.get();
@@ -5810,6 +6595,7 @@ Dictionary AptMenuPlayer::set_online(Object *worldObject, const Dictionary &opti
 	// lane ONLINE-4: the kept lobby session (game.gd reads and writes ONLINE-3's user://online_session.txt): online_status's session_token
 	sm.onlineCtx.sessionToken = toNative(String(options.get("session_token", String())));
 	sm.onlineCtx.rememberSession = [](const std::string &) {};
+	sm.onlineCtx.leftGames = sm.onlineLeftGames; // lane ONLINEUX-1
 	sm.environment.online = &sm.onlineCtx;
 	r["ok"] = true;
 	return r;
@@ -5859,6 +6645,67 @@ bool AptMenuPlayer::online_start_failed(const String &error)
 	return true;
 }
 
+String AptMenuPlayer::default_options_path()
+{
+	return OS::get_singleton()->get_user_data_dir() + "/Options.ini";
+}
+
+Dictionary AptMenuPlayer::read_options_file(const String &path)
+{
+	Dictionary r;
+	Dictionary values;
+	const std::string native = toNative(path);
+	std::error_code ec;
+	r["exists"] = std::filesystem::exists(std::filesystem::u8path(native), ec); // anything at the path (a folder there is an unreadable file, not a first run)
+	OptionPreferences prefs;
+	std::string error;
+	if (!(bool)r["exists"])
+	{
+		r["ok"] = true; // the first run: no entries (boot_shell reads the same)
+	}
+	else if (std::filesystem::is_directory(std::filesystem::u8path(native), ec))
+	{
+		r["ok"] = false;
+		r["error"] = toGodot("cannot read " + native + ": a folder");
+	}
+	else if (!prefs.load(native, &error))
+	{
+		r["ok"] = false;
+		r["error"] = toGodot(error);
+	}
+	else
+	{
+		r["ok"] = true;
+		for (const auto &kv : prefs.values())
+		{
+			values[toGodot(kv.first)] = toGodot(kv.second);
+		}
+	}
+	r["values"] = values;
+	return r;
+}
+
+void AptMenuPlayer::online_game_failed(const String &text)
+{
+	if (m->shell)
+	{
+		m->shell->onlineCtx.gameFailed(utf8ToU16(toNative(text)));
+	}
+}
+
+void AptMenuPlayer::online_set_counts(const Dictionary &counts)
+{
+	if (!m->shell)
+	{
+		return;
+	}
+	OnlineShellContext &c = m->shell->onlineCtx;
+	auto get = [&](const char *key) { return counts.has(key) ? (int)std::clamp<int64_t>((int64_t)counts[key], -1, 1000000000) : -1; };
+	c.playersOnline = get("players");
+	c.gamesOpen = get("games_open");
+	c.gamesRunning = get("games_running");
+}
+
 String AptMenuPlayer::online_redact(const String &text)
 {
 	const CharString t = text.utf8();
@@ -5897,6 +6744,8 @@ Dictionary AptMenuPlayer::online_status()
 	r["running"] = mine;
 	r["in_game"] = c.inGame();
 	r["host"] = c.amIHost();
+	r["mode"] = toGodot(std::string(OnlineLobbyClient::modeName(c.profile()))); // lane UBERJOIN-1: "normal" or "uber" (Quick Match matches by it)
+	r["room_mode"] = toGodot(std::string(OnlineLobbyClient::modeName(c.gameMode())));
 	r["slot"] = (int64_t)c.localSlot();
 	r["game_id"] = toGodot(c.gameId());
 	r["busy"] = c.busy();
@@ -5983,6 +6832,10 @@ Dictionary AptMenuPlayer::online_apply(const Dictionary &spec)
 		}
 	};
 	setEntry("nickname", screen->nicknameWindow(), true);
+	if (spec.has("nickname"))
+	{
+		screen->nicknameEdited(); // lane ONLINEUX-1: as the combo's text change does when typed (the Login button follows the name)
+	}
 	setEntry("game_name", screen->gameNameWindow(), false);
 	setEntry("game_password", screen->gamePasswordWindow(), false);
 	if (spec.has("select_row"))
@@ -6161,6 +7014,18 @@ Dictionary AptMenuPlayer::get_member(int level, const String &path, const String
 		r["value"] = toGodot(v.toString());
 	}
 	return r;
+}
+
+bool AptMenuPlayer::set_clip_property(int level, const String &path, const String &name, double value)
+{
+	AptSpriteInst *root = m_booted ? m->A()->level(level) : nullptr;
+	AptCharacterInst *inst = root && !path.is_empty() ? m->A()->resolvePath(root, toNative(path)) : nullptr;
+	if (!inst || !inst->setProperty(toNative(name.to_lower()), AptValue::number((float)value)))
+	{
+		return false;
+	}
+	m->dirty = true;
+	return true;
 }
 
 Dictionary AptMenuPlayer::get_timeline_graph(const String &modeName, const String &path)
@@ -6384,11 +7249,18 @@ Dictionary AptMenuPlayer::quit_menu(const Dictionary &request)
 		{
 			tick(1.0 / 30.0); // the window manager loads a movie over its first updates
 		}
+		// lane OPTS-6: retail pushes QuitMenu.apt on the shell (RW 0x921B0F -> RW 0x75E3B7): a screen it opens (Options, the save / load screen) hides it
+		// and takes its input until that screen is popped (Shell::setOverlay)
+		sm.shell->setOverlay(sm.quitMenu.get());
 		out["ok"] = true;
 	}
 	else if (kind == "close")
 	{
 		out["ok"] = sm.quitMenu != nullptr;
+		if (sm.shell->overlay() == sm.quitMenu.get())
+		{
+			sm.shell->clearOverlay(); // lane OPTS-6
+		}
 		sm.quitMenu.reset(); // the dtor sets APT:Pause back (RW 0x921A9B)
 		sm.environment.quitMenu = nullptr;
 	}
@@ -6405,6 +7277,7 @@ Dictionary AptMenuPlayer::quit_menu(const Dictionary &request)
 	if (sm.quitMenu)
 	{
 		out["level"] = sm.quitMenu->level();
+		out["movie_loaded"] = sm.wm->isAptWindowLoaded(sm.quitMenu->level()); // lane SAVE-UI1: false while a screen over the menu has it unloaded
 		out["popup_type"] = toGodot(sm.quitMenu->restartPopupType());
 		out["tooltip"] = toGodot(sm.quitMenu->restartTooltip());
 		PackedStringArray disabled, requests;
@@ -6532,6 +7405,339 @@ Dictionary AptMenuPlayer::shell_font(const String &name, float size)
 	r["name"] = toGodot(resolved.name);
 	r["fallback"] = m->fontFallbacks.count(resolved.name) != 0; // fontFor records a request it answers with the engine default
 	return r;
+}
+
+
+// ---- lane ONLINEHUB-1: the platform API and the recorded games (GodotAptPlayer.h) ----------------------------------------------------------------------
+
+Dictionary AptMenuPlayer::set_platform(const Dictionary &options)
+{
+	Dictionary r;
+	r["ok"] = false;
+	if (!m->shell)
+	{
+		r["error"] = "not in shell mode";
+		return r;
+	}
+	ShellMode &sm = *m->shell;
+	const std::string install = toNative(String(options.get("install", String())));
+	if (!PlatformApiClient::validInstall(install))
+	{
+		r["error"] = "the install id is not 32 lowercase hex digits";
+		return r;
+	}
+	if (!sm.platform)
+	{
+		PlatformApiClient::Options o;
+		o.install = install;
+		o.nick = toNative(String(options.get("nick", String())));
+		o.clientPlatform = toNative(String(options.get("client_platform", String())));
+		o.clientVersion = toNative(String(options.get("client_version", String())));
+		o.shareResults = (bool)options.get("share_results", true);
+		o.searchTimeoutMs = (std::uint32_t)std::clamp<int64_t>((int64_t)options.get("search_timeout_s", (int64_t)600), 10, 3600) * 1000;
+		o.resultRetryMs = (std::uint32_t)std::clamp<int64_t>((int64_t)options.get("result_retry_s", (int64_t)60), 1, 3600) * 1000;
+		sm.platform = std::make_unique<PlatformApiClient>(o);
+	}
+	else if (sm.platform->options().install != install)
+	{
+		r["error"] = "the platform client exists with another install id";
+		return r;
+	}
+	sm.platformUrl = toNative(String(options.get("base_url", String())));
+	sm.hubCtx.platform = sm.platform.get();
+	sm.hubCtx.records = &sm.records;
+	sm.hubCtx.shareResults = (bool)options.get("share_results", true);
+	sm.platform->setShareResults(sm.hubCtx.shareResults); // off: the results still queued or waiting for their retry are dropped
+	sm.environment.onlineHub = &sm.hubCtx;
+	r["ok"] = true;
+	return r;
+}
+
+void AptMenuPlayer::set_share_results(bool share)
+{
+	if (!m->shell)
+	{
+		return;
+	}
+	m->shell->hubCtx.shareResults = share;
+	if (m->shell->platform)
+	{
+		m->shell->platform->setShareResults(share);
+	}
+}
+
+Array AptMenuPlayer::platform_take_requests()
+{
+	Array out;
+	if (!m->shell || !m->shell->platform)
+	{
+		return out;
+	}
+	PlatformApiClient &p = *m->shell->platform;
+	p.update(NetMilliseconds());
+	for (const PlatformApiClient::HttpRequest &q : p.takeRequests())
+	{
+		Dictionary d;
+		d["id"] = (int64_t)q.id;
+		d["method"] = toGodot(q.method);
+		d["path"] = toGodot(q.path);
+		d["body"] = String::utf8(q.body.c_str(), (int64_t)q.body.size());
+		d["token"] = String();
+		out.push_back(d);
+	}
+	return out;
+}
+
+void AptMenuPlayer::platform_deliver(int64_t id, int64_t status, const String &body, const String &error)
+{
+	if (!m->shell || !m->shell->platform)
+	{
+		return;
+	}
+	const CharString utf8 = body.utf8();
+	m->shell->platform->deliver((int)id, (int)status, std::string(utf8.get_data(), (std::size_t)utf8.length()), toNative(error));
+}
+
+Array AptMenuPlayer::platform_events()
+{
+	Array out;
+	if (!m->shell || !m->shell->platform)
+	{
+		return out;
+	}
+	static const char *const kinds[] = { "health", "qm", "tournaments", "tournament", "registered", "global", "result_sent", "result_dropped", "refused" };
+	for (const PlatformApiClient::Event &e : m->shell->platform->takeEvents())
+	{
+		Dictionary d;
+		d["kind"] = kinds[(int)e.kind];
+		d["id"] = toGodot(e.id);
+		d["code"] = toGodot(e.code);
+		d["request"] = toGodot(e.request);
+		d["text"] = String::utf8(e.text.c_str());
+		d["flag"] = e.flag;
+		out.push_back(d);
+	}
+	return out;
+}
+
+Dictionary AptMenuPlayer::set_game_records(const String &text)
+{
+	Dictionary r;
+	r["ok"] = false;
+	if (!m->shell)
+	{
+		r["error"] = "not in shell mode";
+		return r;
+	}
+	ShellMode &sm = *m->shell;
+	const CharString utf8 = text.utf8();
+	std::vector<std::string> rejected;
+	sm.records = GameRecords::load(std::string(utf8.get_data(), (std::size_t)utf8.length()), &rejected);
+	sm.hubCtx.records = &sm.records;
+	sm.hubCtx.recordsProblem = rejected.empty() ? std::string() : std::to_string(rejected.size()) + " line(s) refused, the first: " + rejected.front();
+	sm.environment.onlineHub = &sm.hubCtx;
+	Array rej;
+	for (const std::string &x : rejected)
+	{
+		rej.push_back(String::utf8(x.c_str()));
+	}
+	r["ok"] = true;
+	r["count"] = (int64_t)sm.records.size();
+	r["rejected"] = rej;
+	return r;
+}
+
+Dictionary AptMenuPlayer::record_game(const String &json)
+{
+	Dictionary r;
+	r["ok"] = false;
+	r["reported"] = false;
+	if (!m->shell)
+	{
+		r["error"] = "not in shell mode";
+		return r;
+	}
+	ShellMode &sm = *m->shell;
+	const CharString utf8 = json.utf8();
+	GameRecord rec;
+	std::string err;
+	if (!GameRecords::parse(std::string(utf8.get_data(), (std::size_t)utf8.length()), rec, &err))
+	{
+		r["error"] = String::utf8(("the game's record was refused: " + err).c_str());
+		return r;
+	}
+	for (const GameRecord &x : sm.records)
+	{
+		if (x.id == rec.id)
+		{
+			r["error"] = String::utf8(("game " + rec.id + " is recorded already").c_str());
+			return r;
+		}
+	}
+	sm.records.push_back(rec);
+	if (sm.records.size() > GameRecords::kMaxRecords)
+	{
+		sm.records.erase(sm.records.begin());
+	}
+	sm.hubCtx.records = &sm.records;
+	sm.environment.onlineHub = &sm.hubCtx;
+	r["ok"] = true;
+	r["line"] = String::utf8(GameRecords::toJson(rec).c_str());
+	// the platform's results: LAN and online games only, when the player shares them (the Options row), from the client the host made
+	std::string why;
+	if (!sm.platform)
+	{
+		why = "no platform client";
+	}
+	else if (!sm.hubCtx.shareResults)
+	{
+		why = "the player does not share game results";
+	}
+	else
+	{
+		const std::string body = GameRecords::resultBody(rec, sm.platform->options().install, rec.me() ? rec.me()->nick : std::string(),
+			sm.platform->options().clientPlatform, sm.platform->options().clientVersion, &why);
+		if (!body.empty())
+		{
+			sm.platform->sendResult({ rec.id, body });
+			r["reported"] = true;
+		}
+	}
+	r["not_reported"] = String::utf8(why.c_str());
+	if (sm.shell)
+	{
+		if (AptOnlineShell *screen = dynamic_cast<AptOnlineShell *>(sm.shell->findScreenByFilename("OnlineShell.apt")))
+		{
+			if (screen->hub())
+			{
+				screen->hub()->recordsChanged();
+			}
+		}
+	}
+	return r;
+}
+
+Dictionary AptMenuPlayer::platform_status()
+{
+	Dictionary r;
+	r["open"] = false;
+	if (!m->shell)
+	{
+		return r;
+	}
+	ShellMode &sm = *m->shell;
+	auto strings = [](const std::vector<std::string> &v) {
+		Array a;
+		for (const std::string &x : v)
+		{
+			a.push_back(String::utf8(x.c_str()));
+		}
+		return a;
+	};
+	r["records"] = (int64_t)sm.records.size();
+	r["records_problem"] = String::utf8(sm.hubCtx.recordsProblem.c_str());
+	if (sm.platform)
+	{
+		const PlatformApiClient &p = *sm.platform;
+		r["qm_state"] = PlatformApiClient::qmStateName(p.qmState());
+		r["qm_problem"] = String::utf8(p.qmProblem().c_str());
+		r["pending_results"] = (int64_t)p.pendingResults();
+		r["results_sent"] = (int64_t)p.sentCount("result");
+		r["health"] = (int64_t)p.healthKnown();
+	}
+	AptOnlineShell *screen = sm.shell ? dynamic_cast<AptOnlineShell *>(sm.shell->findScreenByFilename("OnlineShell.apt")) : nullptr;
+	AptOnlineHub *hub = screen ? screen->hub() : nullptr;
+	if (!hub)
+	{
+		return r;
+	}
+	r["open"] = true;
+	r["quick_match"] = hub->quickMatchUp();
+	r["status"] = String::utf8(hub->status().c_str());
+	r["room"] = toGodot(hub->roomPhase());
+	r["match_id"] = toGodot(hub->matchId());
+	r["tournament_id"] = toGodot(hub->tournamentId());
+	r["room_host"] = hub->roomHost();
+	r["choices"] = toGodot(hub->choices());
+	r["tournaments"] = strings(hub->tournamentRows());
+	r["details"] = strings(hub->detailRows());
+	r["selected"] = (int64_t)hub->selectedTournament();
+	if (AptStats *st = hub->stats())
+	{
+		r["stats_tab"] = (int64_t)st->tab();
+		r["stats_focus"] = (int64_t)st->focus();
+		r["stats_rows"] = strings(st->rowLines());
+		r["stats_filter"] = toGodot(st->filterMode() + "|" + st->filterPeriod());
+	}
+	return r;
+}
+
+Dictionary AptMenuPlayer::platform_apply(const Dictionary &spec)
+{
+	Dictionary out;
+	Array errors;
+	out["errors"] = errors;
+	out["ok"] = false;
+	if (!m->shell || !m->shell->shell)
+	{
+		errors.push_back("not in shell mode");
+		return out;
+	}
+	ShellMode &sm = *m->shell;
+	AptOnlineShell *screen = dynamic_cast<AptOnlineShell *>(sm.shell->findScreenByFilename("OnlineShell.apt"));
+	AptOnlineHub *hub = screen ? screen->hub() : nullptr;
+	if (!hub)
+	{
+		errors.push_back("OnlineShell.apt is not up");
+		return out;
+	}
+	// the page's combos chosen as a player chooses them (the selection, then the owner's message): size 0 / 1, side and colour by list position
+	auto choose = [&](const char *key, GameWindow *w, bool image) {
+		if (!spec.has(key))
+		{
+			return;
+		}
+		if (!w)
+		{
+			errors.push_back(String("no gadget for ") + key);
+			return;
+		}
+		const int n = (int)(int64_t)spec[key];
+		if (image)
+		{
+			GadgetImageComboBoxSetSelectedPos(w, n);
+		}
+		else
+		{
+			GadgetComboBoxSetSelectedPos(w, n, false);
+		}
+	};
+	choose("qm_size", hub->sizeCombo(), false);
+	choose("qm_side", hub->sideCombo(), false);
+	choose("qm_color", hub->colorCombo(), true);
+	if (spec.has("tournament_select"))
+	{
+		hub->chooseTournament((int)(int64_t)spec["tournament_select"]);
+	}
+	if (spec.has("tournament_action"))
+	{
+		hub->tournamentAction((int)(int64_t)spec["tournament_action"]);
+	}
+	if (spec.has("stats_filter"))
+	{
+		const Array f = spec["stats_filter"];
+		if (hub->stats() && f.size() == 2)
+		{
+			hub->stats()->setFilter((int)(int64_t)f[0], (int)(int64_t)f[1]);
+		}
+		else
+		{
+			errors.push_back("no STATS page, or stats_filter is not [mode, period]");
+		}
+	}
+	out["ok"] = errors.is_empty();
+	out["errors"] = errors;
+	return out;
 }
 
 } // namespace godot

@@ -39,8 +39,10 @@ public:
 	// the command numbers RW 0x89E169's switch sends to slot 0x14 (0, 1, 3, 4, 6 .. 9, 0xB, 0xC, 0xE, 0xF, 0x17, 0x18, 0x24, 0x32 .. 0x34, 0x36, 0x38, 0x41,
 	// 0x42, 0x4E) and the port's unidentified move variants (AIUpdateInterface::kCommandUnidentifiedMove, INFERENCE S-1501)
 	static bool commandEndsMemberOrders(int command);
-	std::unique_ptr<AIStateMachine> makeHordeAttackMachine(AIAttackState *att) override;
+	std::unique_ptr<AIStateMachine> makeHordeAttackMachine(AIAttackState *att, int melee = -1, bool *madeMelee = nullptr) override;
 	void crc(StateHasher &hasher) const override;
+	void xferAIStateBody(class Xfer &x) override; // lane SAVE-4c (AIUpdateSnapshot.cpp)
+	OBFME_MODULE_XFER(HordeAIUpdate) // lane SAVE-4e: its version and AIUpdateInterface's (its state: xferAIStateBody)
 
 	// ---- melee ----
 	// RW 0x9E6763 / 0x98FA8E (Amoeba isTargetReady, cached for 3 seconds): the fighting can start / goes on

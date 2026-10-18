@@ -61,10 +61,10 @@ PLACES = [
      "ok", ""),
     ("Help box: hero ability (SPECIAL_POWER) cost line", "RW 0x808675 (RotWK only)", "TOOLTIP:UnitCost with SpecialPower UnitCost", "missing", "ok", ""),
     ("Help box: revive / recruit a hero (REVIVE)", "RW 0x8083EF", "CONTROLBAR:GenericReviveHero / GenericRecruitHero, ReviveText / RecruitText, APT:RankLabel, TOOLTIP:Cost",
-     "missing", "ok (Create-a-Hero name: stop)", "S-4612"),
+     "missing", "ok", ""),
     ("Help box: castle unpack cost (CASTLE_UNPACK)", "RW 0x80863C", "TOOLTIP:Cost with the castle's unpack cost", "missing", "ok", ""),
     ("Help box: repair cost (START_SELF_REPAIR / START_NEIGHBORHOOD_REPAIR)", "RW 0x807BFD", "TOOLTIP:Cost with the repair interface's cost", "missing",
-     "stop", "S-4612"),
+     "ok", ""),
     ("Help box: science pick and cost (PURCHASE_SCIENCE, Science = several)", "RW 0x807B29", "TOOLTIP:ScienceCost", "single science only", "ok", ""),
     ("Help box: upgrade conflicting / lacks prerequisite / already upgraded", "RW 0x808144", "Button + 0x70 / 0x74 / 0x78 labels or the TOOLTIP defaults",
      "already-upgraded only", "ok", ""),
@@ -527,7 +527,7 @@ def cost_branch(button: dict[str, list[str]]) -> tuple[str, str]:
     if cmd == "SPECIAL_POWER":
         return "unit cost", "SpecialPower UnitCost (shown when not 0)"
     if cmd in ("START_SELF_REPAIR", "START_NEIGHBORHOOD_REPAIR"):
-        return "repair cost (stop S-4612)", "the repair interface"
+        return "repair cost", "GettingBuiltBehavior rebuild cost (RW 0x85657E / 0x857074)"
     return "none", ""
 
 

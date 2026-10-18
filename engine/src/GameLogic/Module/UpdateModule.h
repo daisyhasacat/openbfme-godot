@@ -66,7 +66,7 @@ public:
 	void friend_setPhaseInLogic(int phase) { m_phaseInLogic = phase; }
 
 	// RW 0x850C4E (the update interface's vslot 8, called by other modules: ActivateModuleSpecialPower RW 0x8D22C4): setWakeFrame(object, delay)
-	void wakeFromInterface(UpdateSleepTime delay) { setWakeFrame(getObject(), delay); }
+	virtual void wakeFromInterface(UpdateSleepTime delay) { setWakeFrame(getObject(), delay); }
 	// the OpenBFME state hash: the scheduler state of the module (frame, index, phase) plus whatever the module adds
 	void crc(StateHasher &hasher) const override;
 
@@ -76,6 +76,9 @@ protected:
 	void setWakeFrame(Object *obj, UpdateSleepTime wakeDelay);
 	// the frame the module is due (ZH getWakeFrame returns it as a sleep time)
 	UnsignedInt getWakeFrame() const { return m_nextCallFrame; }
+	// lane SAVE-4b: UpdateModule::xfer (RW 0x850C60, tier B, (1, 1)): the version, BehaviorModule::xfer, the next call frame (retail packs the phase into
+	// the word's low bits, ZH m_nextCallFrameAndPhase; OpenBFME's word is the frame alone: the phase and the vector index are the scheduler block's)
+	void xferUpdateModule(Xfer &x);
 
 private:
 	UnsignedInt m_nextCallFrame = 0;

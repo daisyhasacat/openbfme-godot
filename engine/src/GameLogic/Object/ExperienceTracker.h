@@ -50,6 +50,7 @@
 
 class Object;
 class StateHasher;
+class Xfer;
 struct ExperienceLevelTemplate;
 struct ExperienceScalarTable;
 
@@ -97,6 +98,7 @@ public:
 	float getRankFactor() const { return m_rankFactor; }
 	int getBaseRank() const { return m_baseRank; }
 	void crc(StateHasher &hasher) const;
+	void xfer(Xfer &x); // lane SAVE-4b (OpenBFME native, S-4190)
 
 private:
 	int checkLevels(bool feedback);                                         ///< RW 0x79D141

@@ -3,6 +3,7 @@
 // HordeContainCore: see HordeContainCore.h for the target facts and their addresses. Lane HORDE-1.
 
 #include "GameLogic/Object/Contain/HordeContainCore.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "GameLogic/SimMath.h"
 
@@ -423,4 +424,70 @@ std::vector<std::string> HordeContainCore::unverified() const
 	out.push_back("S-082: slot records keep two coordinate copies (+0x4 / +0x8 and +0xC / +0x10); the member form of getSlotWorldPos reads the first, the by-index form the second; "
 				  "the writer that makes them differ is unknown, and NarrowPassageScale (RotWK offset scaling) is not applied");
 	return out;
+}
+
+// ---- lane SAVE-4b: the snapshot (see HordeContainCore.h) -----------------------------------------------------------------------------------------------
+void HordeContainCore::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	// a load reads into temporaries, validates them, then replaces the core's state (a refused stream leaves the core as it was)
+	const bool loading = x.isLoading();
+	std::vector<Slot> slots = loading ? std::vector<Slot>() : m_slots;
+	std::map<ObjectId, int> memberIndex = loading ? std::map<ObjectId, int>() : m_memberIndex;
+	std::list<int> freeList = loading ? std::list<int>() : m_freeList;
+	std::vector<Member> members = loading ? std::vector<Member>() : m_members;
+	std::set<ObjectId> registered = loading ? std::set<ObjectId>() : m_registered;
+	ObjectId bannerCarrier = loading ? 0 : m_bannerCarrierId, otherNonSlot = loading ? 0 : m_otherNonSlotId;
+	bool dirty = !loading && m_dirty, flag174 = !loading && m_flag174, built = !loading && m_built;
+	SnapshotXfer::each(x, slots, 28, [&](Slot &s) {
+		x.xferInt(&s.rank);
+		x.xferReal(&s.x);
+		x.xferReal(&s.y);
+		x.xferReal(&s.x2);
+		x.xferReal(&s.y2);
+		x.xferReal(&s.angle);
+		x.xferInt(&s.leaderSlot);
+	});
+	SnapshotXfer::map(x, memberIndex, 8, "a horde's member slots", [&](ObjectId &id) { x.xferObjectID(&id); }, [&](int &slot) { x.xferInt(&slot); });
+	SnapshotXfer::each(x, freeList, 4, [&](int &f) { x.xferInt(&f); });
+	// the indices are slots of this horde's slot list (they index it unchecked later): a leader slot, a member's slot (-1: none), a free slot
+	if (loading)
+	{
+		const std::int64_t last = (std::int64_t)slots.size() - 1;
+		for (const Slot &s : slots)
+		{
+			SnapshotXfer::checkRange(s.leaderSlot, -1, last, "a horde slot's leader slot");
+		}
+		for (const auto &kv : memberIndex)
+		{
+			SnapshotXfer::checkRange(kv.second, -1, last, "a horde member's slot");
+		}
+		for (int f : freeList) // a slot may be listed again (releaseMember appends the member's slot, RW's list does the same)
+		{
+			SnapshotXfer::checkRange(f, 0, last, "a horde's free slot");
+		}
+	}
+	SnapshotXfer::each(x, members, 5, [&](Member &m) {
+		x.xferObjectID(&m.id);
+		x.xferAsciiString(&m.templateName);
+	});
+	SnapshotXfer::ids(x, registered);
+	x.xferObjectID(&bannerCarrier);
+	x.xferObjectID(&otherNonSlot);
+	x.xferBool(&dirty);
+	x.xferBool(&flag174);
+	x.xferBool(&built);
+	if (loading)
+	{
+		m_slots.swap(slots);
+		m_memberIndex.swap(memberIndex);
+		m_freeList.swap(freeList);
+		m_members.swap(members);
+		m_registered.swap(registered);
+		m_bannerCarrierId = bannerCarrier;
+		m_otherNonSlotId = otherNonSlot;
+		m_dirty = dirty;
+		m_flag174 = flag174;
+		m_built = built;
+	}
 }

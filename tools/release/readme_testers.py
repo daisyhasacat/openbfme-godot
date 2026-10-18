@@ -98,6 +98,17 @@ PLATFORMS = {
                  "  (OpenBFME.console.exe) is not filtered and can show your Windows\n"
                  "  user name and folders; the log file never does.\n"),
     ),
+    "macos": dict(
+        platform_name="macOS Universal",
+        requirements="macOS 11 or newer on Intel, or macOS 13 or newer on Apple silicon.",
+        start="Open OpenBFMELauncher.app for the launcher, or OpenBFME.app for the game. The apps are ad-hoc signed, not signed by an identified Apple Developer ID or notarized; if Gatekeeper blocks them, use the documented Open Anyway steps in docs/MACOS.md.",
+        start_game_only="Open OpenBFME.app.",
+        game="OpenBFME.app", launcher="OpenBFMELauncher.app",
+        wine="",
+        logs="~/Library/Application Support/Godot/app_userdata/OpenBFME/logs/",
+        find_logs="Open the log folder shown in the error message, or use the OpenBFME app's user-data folder.",
+        console="",
+    ),
 }
 
 
@@ -151,6 +162,13 @@ UPDATES
   in the background" in the launcher's Settings.
 """
 
+MACOS_UPDATES = """
+UPDATES
+- Automatic downloads and self-updates are not available in this macOS
+  package. Keep both app bundles together and replace them together when
+  installing a newer package; do not replace an executable inside either app.
+"""
+
 GAME_ONLY_UPDATES = """
 UPDATES
 - This package is the game alone: it does not update itself. Get the
@@ -179,8 +197,9 @@ def render(version: str, platform: str, issues: list[str], game_only: bool = Fal
     else:
         p.pop("start_game_only")
     title = title_of(version, p["platform_name"])
+    updates = GAME_ONLY_UPDATES if game_only else (MACOS_UPDATES if platform == "macos" else UPDATES)
     return TEMPLATE.format(version=version, title=title, rule="=" * len(title), issues="\n".join(issues),
-                           updates=(GAME_ONLY_UPDATES if game_only else UPDATES).format(**names),
+                           updates=updates.format(**names),
                            files="" if game_only else FILES.format(**names), **p)
 
 

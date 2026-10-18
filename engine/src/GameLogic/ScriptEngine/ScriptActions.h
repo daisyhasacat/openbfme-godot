@@ -43,7 +43,7 @@ public:
 	static bool executeUnitAction(ScriptEngine &engine, const ScriptActionRec &a, const std::string &name);
 	// lane CAMP-1 (ScriptActionsCampaign.cpp): the actions of the Angmar campaign missions; false when `name` is not one of them
 	static bool executeCampaignAction(ScriptEngine &engine, const ScriptActionRec &a, const std::string &name);
-	// lane CAMP-1: the stops of the campaign script ports (S-1363, S-1365, S-1366; lane CAMP-1H: S-1712)
+	// lane CAMP-1: the stops of the campaign script ports (S-1363, S-1365; lane CAMP-1H: S-1712)
 	static std::vector<std::string> campaignStopLines();
 	// true for the actions this port records as client requests
 	static bool isClientAction(int ordinal);

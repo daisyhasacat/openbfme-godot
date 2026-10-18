@@ -31,6 +31,7 @@
 #pragma once
 
 #include "GameNetwork/LANLobby.h"
+#include "GameNetwork/PlatformKind.h"
 #include "GameNetwork/ProfileIdentity.h"
 #include "GameNetwork/Transport.h"
 
@@ -64,7 +65,11 @@ enum : std::uint8_t
 	INACTIVE = 16,
 	REQUEST_GAME_INFO = 17,
 	GAME_OPTIONS_PACKED = 18,
-	GAME_START_ACK = 0x80 ///< OpenBFME: a player received the start
+	GAME_START_ACK = 0x80, ///< OpenBFME: a player received the start
+	// lane PLATFORMICON-1 (OpenBFME): a player of the game tells the others its system (one byte, PlatformKind 0 .. 3). A NEW message type, not a field of
+	// an existing one: a build without it answers with its "unhandled LAN message type" note and nothing else changes; the display data never enters the
+	// game options, the start or the profile identity
+	PLATFORM_INFO = 0x81
 };
 }
 
@@ -73,6 +78,7 @@ struct LANGame
 {
 	std::u16string name;                          ///< the game's name (the host's name)
 	NetAddress host;                              ///< the host's lobby address
+	std::uint32_t hostNonce = 0;                  ///< process identity shared by announcements on different interfaces
 	bool inProgress = false;
 	SkirmishGameInfo info;                        ///< the slots (names, states, factions, colours, teams, start positions), the map, the cash, the seed
 	std::array<NetAddress, MAX_SLOTS> lobby{};    ///< every human slot's lobby address
@@ -87,6 +93,10 @@ struct LANGame
 class LANAPI
 {
 public:
+	// the lobby messages' version (a message of another version is refused by name): 2 (lane HERO-2): the GameInfo slots' Create-a-Hero records,
+	// OPT_SLOT_CREATE_A_HERO; 3 (lane OWNERFIX-2): the GameInfo slots' handicaps and the slot request's handicap
+	// Version 4 merges peace time, Lua authority and fortress construction with handicaps.
+	static constexpr std::uint8_t kProtocolVersion = 4;
 	enum ReturnType // ZH LANAPIInterface::ReturnType
 	{
 		RET_OK,
@@ -112,6 +122,8 @@ public:
 		std::vector<std::uint32_t> extraTargets; ///< more addresses to send the lobby's messages to (tests: 127.0.0.1 only)
 		int runAhead = 1;                   ///< the started game's (lane NETLAG-1: RotWK's frame + 1, was 2)
 		int crcInterval = 100;
+		// lane PLATFORMICON-1: the one value this player tells the others of its game (PLATFORM_INFO); None: nothing is sent
+		PlatformKind platform = PlatformKind::None; // the game's glue sets localPlatform()
 		// lane MP-2 (review): the ranges a slot's fields are checked against before a request or the host's options are applied (-1 is random / none;
 		// teams 0 .. MAX_SLOTS / 2 - 1 as the lobby's Team entries, start positions 0 .. MAX_SLOTS - 1). Required: open() fails without them
 		int playerTemplateCount = 0; ///< the PlayerTemplate store's count
@@ -173,7 +185,8 @@ public:
 	void requestChat(const std::u16string &text, bool system = false);
 	// a player's own slot (ZH LanGameOptionsMenu: the host checks and re-broadcasts); kKeep leaves a field as it is (-1 is random / none)
 	static constexpr int kKeep = -1000;
-	void requestSlotOptions(int playerTemplate, int color, int team, int startPos);
+	// lane OWNERFIX-2: `handicap` is the slot's GameSlot + 0x20 (0, -5 .. -95), refused by the host outside that set
+	void requestSlotOptions(int playerTemplate, int color, int team, int startPos, int handicap = kKeep);
 	// lane HERO-2: the local player's Create-a-Hero for its own slot (nullptr: none), the whole record: the host checks it (Options::validateCreateAHero) and
 	// re-broadcasts it in the options (every player's accept is cleared when it changed); false + *error when it is refused here already
 	bool requestSlotCreateAHero(const CreateAHeroHero *hero, std::string *error);
@@ -216,6 +229,7 @@ public:
 		std::u16string name;
 		NetAddress address;
 		std::uint64_t lastHeard = 0;
+		std::uint32_t nonce = 0;
 	};
 	const std::vector<LobbyPlayer> &lobbyPlayers() const { return m_lobbyPlayers; }
 
@@ -233,7 +247,7 @@ private:
 	std::vector<std::uint8_t> gameAnnounce() const;
 	void broadcastOptions();
 	void handle(const NetAddress &from, const std::vector<std::uint8_t> &bytes, std::uint64_t now);
-	bool handleGameAnnounce(NetByteReader &r, const std::u16string &sender, const NetAddress &from, std::uint64_t now);
+	bool handleGameAnnounce(NetByteReader &r, std::uint32_t nonce, const NetAddress &from, std::uint64_t now);
 	bool handleRequestJoin(NetByteReader &r, const std::u16string &sender, const NetAddress &from, std::uint64_t now);
 	bool handleGameOptions(NetByteReader &r, const NetAddress &from, std::uint64_t now);
 	bool handleSlotRequest(NetByteReader &r, const NetAddress &from);
@@ -242,9 +256,14 @@ private:
 	bool createAHeroValid(const SkirmishGameSlot &s, std::string *why) const;
 	bool handleGameStart(NetByteReader &r, const NetAddress &from);
 	void leaveToLobby();
-	static void applySlotRequest(SkirmishGameInfo &info, int slot, int playerTemplate, int color, int team, int startPos);
+	// lane PLATFORMICON-1: tell the other humans of the game our system (to each new address at once, to all again every resend interval), and copy the
+	// ones told into the current game's slots (display data: a slot whose address changed since it told shows none)
+	void sendPlatform(bool all);
+	void syncPlatforms();
+	void resetPlatforms();
+	static void applySlotRequest(SkirmishGameInfo &info, int slot, int playerTemplate, int color, int team, int startPos, int handicap);
 	// lane MP-2 (review): a field of a slot request is kKeep, -1 or within its range; a GameInfo's every slot field is -1 or within its range
-	bool slotRequestValid(int playerTemplate, int color, int team, int startPos, std::string *why) const;
+	bool slotRequestValid(int playerTemplate, int color, int team, int startPos, int handicap, std::string *why) const;
 	bool gameInfoValid(const SkirmishGameInfo &info, std::string *why) const;
 	int slotOf(const NetAddress &lobbyAddress) const;
 	void event(Event e) { m_events.push_back(std::move(e)); }
@@ -270,4 +289,7 @@ private:
 	bool m_starting = false;
 	std::vector<Event> m_events;
 	std::vector<std::string> m_errors, m_log;
+	std::array<PlatformKind, MAX_SLOTS> m_peerPlatform{};       // lane PLATFORMICON-1: what each slot's player told
+	std::array<NetAddress, MAX_SLOTS> m_peerPlatformAddr{};     // ... and from which lobby address
+	std::array<NetAddress, MAX_SLOTS> m_platformSentTo{};       // the address each slot's player was last sent ours at
 };

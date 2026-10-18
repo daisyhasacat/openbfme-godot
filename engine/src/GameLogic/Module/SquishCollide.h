@@ -94,6 +94,7 @@ std::vector<std::string> combat3StopLines();
 class SquishCollide : public BehaviorModule, public CollideModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(SquishCollide) // lane SAVE-4b: BehaviorModule's (no state)
 	SquishCollide(Thing *thing, const ModuleData *data)
 		: BehaviorModule(thing, data)
 	{
@@ -115,6 +116,7 @@ public:
 class HordeMemberCollide : public BehaviorModule, public CollideModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(HordeMemberCollide) // lane SAVE-4b: BehaviorModule's (no state)
 	HordeMemberCollide(Thing *thing, const ModuleData *data)
 		: BehaviorModule(thing, data)
 	{

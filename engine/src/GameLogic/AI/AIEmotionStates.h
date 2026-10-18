@@ -69,6 +69,7 @@ public:
 	void onExit(StateExitType status) override;
 	void crc(class StateHasher &hasher) const override;
 	void crcPersistent(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override; // lane SAVE-4c (AIEmotionStates.cpp)
 	void onTemporaryStateEnded() override; // RW 0x740C97 (vtables 0xC28BE0 / 0xC28C28 slot 0x1C)
 
 private:
@@ -88,6 +89,7 @@ public:
 	StateReturnType onEnter() override;
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
+	void xfer(class Xfer &x) override { xferNoFields(x); }
 };
 
 class AIQuarrelState : public AIState
@@ -97,6 +99,7 @@ public:
 	StateReturnType onEnter() override;
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
+	void xfer(class Xfer &x) override { xferNoFields(x); }
 };
 
 // state 59: AIFaceObjectState in mode 2 (face the goal object while idle)
@@ -108,6 +111,7 @@ public:
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override; // lane SAVE-4c (AIEmotionStates.cpp): the idle state's, then its own
 
 private:
 	bool m_canTurn = false; ///< + 0x2C

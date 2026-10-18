@@ -3,7 +3,11 @@
 
 #include "GameClient/CommandLogLoad.h"
 
+#include "Common/GameState.h"
+#include "GameLogic/GameLogic.h"
+
 #include "GameClient/LiveGame.h"
+#include "GameLogic/GameLogic.h"
 #include "GameNetwork/LockstepDriver.h"
 
 #include <chrono>
@@ -68,18 +72,19 @@ bool CommandLogLoad::handOver(LiveGame &game, ReplayWriter &writer, const std::s
 
 std::vector<std::string> CommandLogLoad::stopLines()
 {
-	return {
+	std::vector<std::string> lines = {
 		"[S-4000] saves: a save is the game's command log up to the saved frame (OpenBFME's .obfmesave, SAVES.md phase SAVE-2): a load replays it at full speed "
 		"(about 1.8 minutes for a 60-minute game on a fast PC), and only the build that made it can (another build's save is refused naming that build); "
-		"retail's Xfer snapshot (SAVE-4) and multiplayer saves (SAVE-3) are not built",
+		"retail's Xfer snapshot (SAVE-4: its framework is built, S-4120) and multiplayer saves (SAVE-3) are not built",
 		"[S-4001] saves: a save of the other execution profile (Faithful <-> Uber) loads in single player (owner decision 7): its log is replayed under "
 		"the profiles it ran (every hash compared), then GameLogic::setSimulationProfile switches to the player's profile at the saved frame and the "
 		"switch is recorded in the continued replay (INFERENCE: UBER-1 documents the profile as set before the first frame; nothing it keeps across frames was found "
 		"that a switch would break); a campaign mission always runs Faithful",
 		"[S-4002] saves: a campaign mission is recorded in memory only (the replay format starts a game from a NewGameMessage, a mission starts from its "
-		"campaign): its save carries the campaign, mission and difficulty, which start it again before the catch-up; retail's campaign auto-save and "
-		"CampaignMenu.apt's Save / Load between missions (S-1360) are not built",
-		"[S-4003] saves: SaveLoad.apt's saved-game pages (AptSaveLoad): the host lists the Save folder; no auto-saves (the AutoSaveList stays empty); the War "
+		"campaign): its save carries the campaign, mission and difficulty, which start it again before the catch-up; lane CAMPSAVE-1: the auto-save "
+		"after a won mission and CampaignMenu.apt's saves hold the campaign's state between missions (the campaign menu save point), not retail's "
+		"GameState snapshot (S-1360)",
+		"[S-4003] saves: SaveLoad.apt's saved-game pages (AptSaveLoad): the host lists the Save folder (the campaign's auto-saves in the AutoSaveList); the War "
 		"of the Ring page lists nothing and the multiplayer page is not offered; the main menu's Load Game opens the types 0xB (RW 0x91C360, inferred to be its "
 		"case); file-name characters are refused at Save, not while typing (S-1409); one result box (APT:SaveGameProgress with GUI:GameSaved or the "
 		"error) instead of retail's two, after which (and after a refusal) the pressed button is revealed again as the movie's RevealButtonList does; the disk "
@@ -89,6 +94,44 @@ std::vector<std::string> CommandLogLoad::stopLines()
 		"when the game is saved is not in the save; a game is saved only after its first frame ran",
 		"[S-4005] saves: retail's own saves (.BfME2Skirmish / .BfME2Campaign in the Save folder) are listed as import entries that do not load (SAVE-7)",
 	};
+	for (const std::string &l : GameState::stopLines()) // lane SAVE-4a: the snapshot's stops
+	{
+		lines.push_back(l);
+	}
+	for (const std::string &l : GameLogic::objectSnapshotStopLines()) // lane SAVE-4b: the object side's
+	{
+		lines.push_back(l);
+	}
+	for (const std::string &l : GameLogic::aiSnapshotStopLines()) // lane SAVE-4c: its blocks' stops
+	{
+		lines.push_back(l);
+	}
+	for (const std::string &l : GameLogic::save4dStopLines()) // lane SAVE-4d: its blocks' stops
+	{
+		lines.push_back(l);
+	}
+	// lane SAVE-4e: the snapshot load and the save's loading screen
+	lines.push_back("[S-5010] saves: a save with a snapshot is loaded by starting the game its log records (the START, as a replay starts) and loading the "
+		"snapshot over it (LiveGame::loadSnapshot), not by retail's GameState::loadGame (RW 0x6DE5D1: a new game made from the file's blocks). The whole "
+		"stream's framing is checked before any block loads (GameState::checkFraming: the blocks in this build's order, inside the stream, the end); a "
+		"block refused later is undone by loading the game's own snapshot back (teams past the older snapshot's are removed, trees go back to the map's "
+		"first), checked by its state hash and bytes; a game that cannot be put back is closed. A load from the quit menu keeps the running game's own save "
+		"in memory and loads it back when the chosen save is refused (OpenBFME's: retail returns to the shell). The command log stays the replay so far "
+		"and the cross-check of the verify mode (off by default). A snapshot the game refuses fails the save, named (no log-only fallback)");
+	lines.push_back("[S-5011] saves: after a snapshot load the client gets each object's whole model condition set and a flush (INFERENCE: retail's loaded "
+		"drawables are made from the loaded objects, ZH GameClient::xfer); not given back: the drawables' module / sub object visibility requests of "
+		"upgrades and scripts, Create-a-Hero colours set after the object's creation, a disguised object's look, effects, sounds and animations in "
+		"flight, the client's own state (camera, selection, the control bar)");
+	lines.push_back("[S-5012] saves: loading a save shows retail's picture screen with a film still (GameLogic::getLoadScreen RW 0x626A87 with a save loading: "
+		"StillImage_Film01 .. 21, the ring, GUI:Loading) for a campaign mission and a skirmish (INFERENCE: GameLogic + 0x114 is 0 when no lobby ran, so a "
+		"skirmish gets the picture screen too); the AudioSettings' LoadScreenMusic retail passes there is not played; an earlier alpha's log-only save "
+		"catches up under OpenBFME's progress text and bar drawn on that screen in its font and colour (retail's screen has none)");
+	lines.push_back("[S-5013] saves: T3 (the snapshot's bytes on Linux / GCC and Windows): the Windows peer is the release's llvm-mingw build, not MSVC, and "
+		"it runs under Wine (Proton) for the test, not on Windows itself");
+	lines.push_back("[S-5014] saves: an object id a snapshot names (Xfer::xferObjectID, the id list helpers) is looked up when it is used "
+		"(GameLogic::findObjectByID is bounded: an id that names no object finds none) and is not checked against the ids the game has issued, except "
+		"the AI's (AIXfer::objectId) and the links the Objects block resolves; an id not yet issued would name the object that later gets it");
+	return lines;
 }
 
 void CommandLogLoad::fail(LiveGame *game, const std::string &why)
@@ -114,6 +157,10 @@ bool CommandLogLoad::prepare(const SaveGameFile &save, std::string *error)
 	m_state = State::Idle;
 	m_failure.clear();
 	std::string why;
+	m_snapshot.clear();
+	m_mode = Mode::CatchUp;
+	m_elapsedMs = 0.0;
+	m_snapshotMs = 0.0;
 	if (!ReplayFile::parse(save.log, m_log, &why))
 	{
 		fail(nullptr, "the save's command log is damaged: " + why);
@@ -161,6 +208,67 @@ bool CommandLogLoad::prepare(const SaveGameFile &save, std::string *error)
 	m_target = save.header.frame;
 	m_targetHash = save.header.stateHash;
 	m_logBytes = save.log;
+	m_snapshot = save.snapshot; // lane SAVE-4e: the container checked its digest and size (SaveGameFile)
+	m_mode = !m_snapshot.empty() && !m_verifyLog ? Mode::Snapshot : Mode::CatchUp;
+	return true;
+}
+
+bool CommandLogLoad::takeSnapshot(LiveGame &game, std::vector<std::uint8_t> &out, std::string *error)
+{
+	game.drainFrames(); // between frames: the frames already taken run first
+	std::string why;
+	out.clear();
+	if (!game.logic().saveSnapshot(out, &why))
+	{
+		out.clear();
+		if (error)
+		{
+			*error = "the game cannot be saved: " + why;
+		}
+		return false;
+	}
+	return true;
+}
+
+bool CommandLogLoad::beginSnapshot(LiveGame &game, std::string *error)
+{
+	// lane SAVE-4e: the started game (the log's START, frame m_startFrame) takes the snapshot's state at F
+	const double t0 = nowMs();
+	std::string why;
+	// the frame and the state hash the header names are checked inside the load: a mismatch is refused like a refused block (the game is put back)
+	const bool loaded = game.loadSnapshot(m_snapshot, &why, [this](GameLogic &logic) -> std::string {
+		if (logic.getFrame() != m_target)
+		{
+			return "it is of frame " + std::to_string(logic.getFrame()) + ", the save's header says frame " + std::to_string(m_target);
+		}
+		const std::uint32_t hash = logic.computeStateHash();
+		if (hash != m_targetHash)
+		{
+			return "it loads with state hash " + std::to_string(hash) + " at frame " + std::to_string(m_target) + ", the save recorded "
+				+ std::to_string(m_targetHash);
+		}
+		return std::string();
+	});
+	m_snapshotMs = nowMs() - t0;
+	m_elapsedMs = m_snapshotMs;
+	if (!loaded)
+	{
+		fail(&game, "the save's snapshot is refused: " + why);
+	}
+	else if (game.frame() != m_target)
+	{
+		fail(&game, "the loaded game's published frame is " + std::to_string(game.frame()) + ", not the saved frame " + std::to_string(m_target));
+	}
+	if (m_state == State::Failed)
+	{
+		if (error)
+		{
+			*error = m_failure;
+		}
+		return false;
+	}
+	m_reached = m_target;
+	m_state = State::Ready;
 	return true;
 }
 
@@ -236,6 +344,10 @@ bool CommandLogLoad::begin(LiveGame &game, std::string *error)
 		}
 		return false;
 	}
+	if (m_mode == Mode::Snapshot)
+	{
+		return beginSnapshot(game, error);
+	}
 	m_playback = std::make_unique<ReplayPlayback>(m_log);
 	RegisterLogicCRCHandler(game.dispatch());
 	m_restoreThread = game.logicThread();
@@ -293,6 +405,28 @@ CommandLogLoad::State CommandLogLoad::step(LiveGame &game, std::uint32_t budgetM
 		fail(&game, "the saved game does not replay the same in this build: frame " + std::to_string(m_target) + " has state hash " + std::to_string(hash)
 			+ ", the save recorded " + std::to_string(m_targetHash));
 		return m_state;
+	}
+	if (!m_snapshot.empty())
+	{
+		// lane SAVE-4e, the verify mode: the caught-up game's snapshot is the save's, byte for byte
+		std::vector<std::uint8_t> ours;
+		std::string why;
+		if (!game.logic().saveSnapshot(ours, &why))
+		{
+			fail(&game, "the caught-up game's snapshot is refused: " + why);
+			return m_state;
+		}
+		if (ours != m_snapshot)
+		{
+			size_t at = 0;
+			while (at < ours.size() && at < m_snapshot.size() && ours[at] == m_snapshot[at])
+			{
+				++at;
+			}
+			fail(&game, "the save's snapshot is not the state its log replays to: the caught-up game's snapshot (" + std::to_string(ours.size())
+				+ " bytes) differs from the save's (" + std::to_string(m_snapshot.size()) + " bytes) from byte " + std::to_string(at));
+			return m_state;
+		}
 	}
 	m_state = State::Ready;
 	return m_state;

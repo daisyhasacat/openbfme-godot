@@ -2,12 +2,16 @@
 // See Common/Player.h.
 
 #include "Common/Player.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "Common/NumericState.h"
 #include "GameLogic/SimMath.h"
 
 #include "Common/PlayerEconomyHost.h"
 #include "Common/StateHash.h"
+#include "Common/Science.h"
 #include "Common/Team.h"
+#include "Common/Upgrade.h"
+#include "Common/Xfer.h"
 #include "GameLogic/ObjectFilter.h"
 #include "GameLogic/ObjectFilterMatch.h"
 
@@ -91,6 +95,7 @@ void Player::init(const PlayerTemplate *pt, std::uint32_t defaultStartingCash)
 	m_color = 0;
 	m_nightColor = 0;
 	m_skirmishDifficulty = -1;
+	m_handicap = 0;
 	m_colorExplicit = false;
 	m_unitsShouldHunt = false; // RW 0x6B0401: + 0x35D cleared by the init (lane DECOMP-2, Sol's review)
 	m_money.init();
@@ -142,7 +147,10 @@ void Player::init(const PlayerTemplate *pt, std::uint32_t defaultStartingCash)
 				m_upgradeRecords.insert(m_upgradeRecords.begin(), UpgradeRecord{ u, UPGRADE_STATUS_COMPLETE }); // RW 0x6AEE6E: linked at the head
 			}
 			m_upgradesCompleted.set((unsigned)u->getMaskBit());
-			++m_upgradeEvaNotPlayed; // not silent (RW 0x6AE4CA)
+			if (m_host)
+			{
+				m_host->reportUpgradeEva(*this, *u, true);
+			}
 		}
 	}
 }
@@ -168,6 +176,10 @@ void Player::crc(StateHasher &h) const
 	h.addU32(m_color);
 	h.addU32(m_nightColor);
 	h.addI32(m_skirmishDifficulty);
+	if (m_handicap != 0)
+	{
+		h.addI32(m_handicap); // lane OWNERFIX-2: hashed only when set, so games without a handicap keep their hash
+	}
 	h.addBool(m_colorExplicit);
 	if (m_unitsShouldHunt)
 	{
@@ -498,7 +510,7 @@ void Player::addUpgrade(const UpgradeTemplate *upgrade, UpgradeStatus status, bo
 		host().updateUpgradeModulesOfPlayer(*this); // RW 0x6AE483
 		if (!silent)
 		{
-			++m_upgradeEvaNotPlayed; // RW 0x6AE4CA .. 0x6AE53C: the local / allied / enemy gain Eva event (TheEva, RW 0x5DD9EE): audio lane
+			host().reportUpgradeEva(*this, *upgrade, true);
 		}
 	}
 }
@@ -532,6 +544,305 @@ void Player::removeUpgrade(const UpgradeTemplate *upgrade, bool silent)
 	host().removeUpgradeFromObjectsOfPlayer(*this, *upgrade); // RW 0x6AE546
 	if (!silent)
 	{
-		++m_upgradeEvaNotPlayed; // RW 0x6AE59B: the lose Eva event
+		host().reportUpgradeEva(*this, *upgrade, false);
 	}
+}
+
+// ---- lane SAVE-4a: the player's snapshot ----------------------------------------------------------------------------------------
+// DONOR ZH Money::xfer (Money.cpp): version 1, the amount. The player index is the game's (set at init), not saved.
+void Money::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferUnsignedInt(&m_money);
+}
+
+namespace
+{
+void checkRelationship(Relationship r)
+{
+	if ((int)r < (int)ENEMIES || (int)r > (int)ALLIES)
+	{
+		throw XferException("a relationship of " + std::to_string((int)r) + " (ENEMIES 0, NEUTRAL 1, ALLIES 2)");
+	}
+}
+
+// TARGET PlayerRelationMap::xfer RW 0x6AE9B7 (tier A, (1, 1)): the version, a u16 count, then per entry the player index (int) and the relationship
+// (XferRelationship RW 0x707407: a 4-byte enum); the entries in key order (INFERENCE: retail iterates its map from begin, RW 0x5E0A39 / 0x6BFEFD)
+void xferPlayerRelationMap(Xfer &x, std::map<int, Relationship> &m)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	std::uint16_t n = (std::uint16_t)m.size();
+	if (m.size() > 0xFFFFu)
+	{
+		throw XferException("a player relation map of " + std::to_string(m.size()) + " entries (retail's count is a u16)");
+	}
+	x.xferUnsignedShort(&n);
+	if (!x.isLoading())
+	{
+		for (auto &kv : m)
+		{
+			std::int32_t k = kv.first;
+			x.xferInt(&k);
+			x.xferEnum(&kv.second);
+		}
+		return;
+	}
+	m.clear();
+	for (std::uint16_t i = 0; i < n; ++i)
+	{
+		std::int32_t k = 0;
+		Relationship r = NEUTRAL;
+		x.xferInt(&k);
+		x.xferEnum(&r);
+		checkRelationship(r);
+		if (m.count(k)) // lane SAVE-4e (closed sets): a key once (the player index range is checked by Player::checkLoadedIndices)
+		{
+			throw XferException("a player relation map names player index " + std::to_string(k) + " twice");
+		}
+		m[k] = r;
+	}
+}
+
+// TARGET TeamRelationMap::xfer RW 0x7A56B6 (tier A, (1, 1) through the version helper RW 0x404F15): the version, a u16 count, then per entry the team id
+// (u32) and the relationship (4 bytes)
+void xferTeamRelationMap(Xfer &x, std::map<std::uint32_t, Relationship> &m)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	if (m.size() > 0xFFFFu)
+	{
+		throw XferException("a team relation map of " + std::to_string(m.size()) + " entries (retail's count is a u16)");
+	}
+	std::uint16_t n = (std::uint16_t)m.size();
+	x.xferUnsignedShort(&n);
+	if (!x.isLoading())
+	{
+		for (auto &kv : m)
+		{
+			std::uint32_t k = kv.first;
+			x.xferUnsignedInt(&k);
+			x.xferEnum(&kv.second);
+		}
+		return;
+	}
+	m.clear();
+	for (std::uint16_t i = 0; i < n; ++i)
+	{
+		std::uint32_t k = 0;
+		Relationship r = NEUTRAL;
+		x.xferUnsignedInt(&k);
+		x.xferEnum(&r);
+		checkRelationship(r);
+		if (m.count(k)) // lane SAVE-4e: a team id once (a team gone since may stay named: retail keeps the entry)
+		{
+			throw XferException("a team relation map names team " + std::to_string(k) + " twice");
+		}
+		m[k] = r;
+	}
+}
+
+void xferFloats(Xfer &x, std::vector<float> &v)
+{
+	x.xferVectorSize(v, 4);
+	for (float &f : v)
+	{
+		x.xferReal(&f);
+	}
+}
+
+void xferIds(Xfer &x, std::vector<ObjectID> &v)
+{
+	x.xferVectorSize(v, 4);
+	for (ObjectID &id : v)
+	{
+		x.xferObjectID(&id);
+	}
+}
+} // namespace
+
+void xferRelationMaps(Xfer &x, std::map<std::uint32_t, Relationship> &teams, std::map<int, Relationship> &players)
+{
+	xferTeamRelationMap(x, teams);
+	xferPlayerRelationMap(x, players);
+}
+
+// OpenBFME native layout (decision D3): retail's Player::DoXfer (RW 0x6B205F, tier B attempt, window (1, 10)) holds RotWK's whole player; this Player is the
+// port's subset, split into sub-objects, so its block is native. The relation maps are retail's own sub-records (above). Every field crc hashes, plus the
+// state crc leaves out that a later frame reads (the order mode); not saved: the economy host and the Eva count (not state), the tunnel network
+// (obfme:TunnelTracker, SAVE-4b).
+// lane SAVE-4e (closed sets): after the players loaded (PlayerList::xfer): the player relation keys and the score keeper's last attacker are player indices of
+// this game (0 .. count - 1; the attacker -1 for none); the command points and score keeper name this player (or are unbound)
+void Player::checkLoadedIndices(int playerCount) const
+{
+	for (const auto &kv : m_playerRelations)
+	{
+		if (kv.first < 0 || kv.first >= playerCount)
+		{
+			throw XferException("player '" + m_name + "': a relation to player index " + std::to_string(kv.first) + ", which this game lacks");
+		}
+	}
+	// this player's index, or the default of one never bound (CommandPoints 0, ScoreKeeper -1)
+	if ((m_commandPoints.getPlayerIndex() != m_index && m_commandPoints.getPlayerIndex() != 0) || (m_score.playerIndex() != m_index && m_score.playerIndex() != -1))
+	{
+		throw XferException("player '" + m_name + "': its command points name player index " + std::to_string(m_commandPoints.getPlayerIndex())
+			+ " and its score keeper " + std::to_string(m_score.playerIndex()) + ", the player is " + std::to_string(m_index));
+	}
+	if (m_score.lastAttackerIndex() < -1 || m_score.lastAttackerIndex() >= playerCount)
+	{
+		throw XferException("player '" + m_name + "': its score keeper's last attacker is player index " + std::to_string(m_score.lastAttackerIndex()));
+	}
+}
+
+void Player::xfer(Xfer &x, TeamFactory &teams)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	// the identity the START made: checked, never overwritten
+	std::int32_t index = m_index;
+	std::string name = m_name;
+	std::string templateName = m_template ? m_template->getName() : std::string();
+	x.xferInt(&index);
+	x.xferAsciiString(&name);
+	x.xferAsciiString(&templateName);
+	if (x.isLoading() && (index != m_index || name != m_name || templateName != (m_template ? m_template->getName() : std::string())))
+	{
+		throw XferException("the snapshot's player " + std::to_string(index) + " '" + name + "' (" + templateName + ") is not this game's player "
+			+ std::to_string(m_index) + " '" + m_name + "' (" + (m_template ? m_template->getName() : std::string()) + ")");
+	}
+	x.xferInt(&m_createAHeroSurcharge);
+	x.xferAsciiString(&m_displayName);
+	x.xferAsciiString(&m_side);
+	x.xferEnum(&m_type);
+	if (m_type != PLAYER_HUMAN && m_type != PLAYER_COMPUTER)
+	{
+		throw XferException("player '" + m_name + "': a player type of " + std::to_string((int)m_type));
+	}
+	x.xferBool(&m_skirmish);
+	x.xferBool(&m_observer);
+	x.xferBool(&m_defeated);
+	x.xferUnsignedInt(&m_defeatFrame);
+	x.xferReal(&m_bountyPercent);
+	x.xferInt(&m_mpStartIndex);
+	x.xferUnsignedInt(&m_color);
+	x.xferUnsignedInt(&m_nightColor);
+	x.xferInt(&m_skirmishDifficulty);
+	x.xferBool(&m_colorExplicit);
+	x.xferBool(&m_unitsShouldHunt);
+	for (bool &b : m_attackedBy)
+	{
+		x.xferBool(&b);
+	}
+	x.xferUnsignedInt(&m_attackedFrame);
+	m_money.xfer(x);
+	m_score.xfer(x);
+	m_commandPoints.xfer(x);
+	m_science.xfer(x);
+	m_heroes.xfer(x);
+	// the upgrade records by name, newest first (RW + 0x9C), then both masks
+	std::uint32_t n = (std::uint32_t)m_upgradeRecords.size();
+	x.xferCount(&n, 1 + 4, sizeof(UpgradeRecord)); // a name, the status
+	if (x.isLoading())
+	{
+		m_upgradeRecords.assign(n, UpgradeRecord{ nullptr, UPGRADE_STATUS_INVALID });
+	}
+	for (UpgradeRecord &r : m_upgradeRecords)
+	{
+		std::string upgrade = r.upgrade ? r.upgrade->getUpgradeName() : std::string();
+		x.xferAsciiString(&upgrade);
+		x.xferInt(&r.status);
+		if (x.isLoading()) // lane SAVE-4e: the record's status set
+		{
+			SnapshotXfer::checkRange(r.status, UPGRADE_STATUS_INVALID, UPGRADE_STATUS_COMPLETE, "an upgrade record's status");
+		}
+		if (x.isLoading())
+		{
+			r.upgrade = resolveUpgrade(upgrade, true);
+		}
+	}
+	for (UpgradeMaskType *mask : { &m_upgradesInProgress, &m_upgradesCompleted })
+	{
+		for (std::uint32_t &w : mask->words)
+		{
+			x.xferUnsignedInt(&w);
+		}
+		if (x.isLoading())
+		{
+			checkLoadedUpgradeMask(*mask, "player '" + m_name + "': its upgrades"); // lane SAVE-4e: only this game's upgrades
+		}
+	}
+	x.xferVectorSize(m_costModifiers, 2 + 4 + 4 + 1); // an absent filter, no percents, the source, the flag
+	for (CostModifier &c : m_costModifiers)
+	{
+		ObjectFilterMatch::xfer(x, c.filter);
+		xferFloats(x, c.percents);
+		x.xferObjectID(&c.source);
+		x.xferBool(&c.slaughter);
+	}
+	x.xferVectorSize(m_upgradeDiscounts, 1 + 4 + 4 + 4 + 4); // a name, the count, no percents, no names, the current value
+	for (UpgradeDiscount &d : m_upgradeDiscounts)
+	{
+		x.xferAsciiString(&d.sourceName);
+		x.xferInt(&d.count);
+		xferFloats(x, d.percents);
+		x.xferVectorSize(d.applyTo, 1);
+		for (std::string &s : d.applyTo)
+		{
+			x.xferAsciiString(&s);
+		}
+		x.xferReal(&d.current);
+	}
+	std::uint32_t defaultTeam = m_defaultTeam ? m_defaultTeam->getID() : (std::uint32_t)TEAM_ID_INVALID;
+	x.xferUnsignedInt(&defaultTeam);
+	if (x.isLoading())
+	{
+		m_defaultTeam = teams.findTeamByID(defaultTeam);
+		if (defaultTeam != TEAM_ID_INVALID && !m_defaultTeam)
+		{
+			throw XferException("player '" + m_name + "': its default team " + std::to_string(defaultTeam) + " does not exist");
+		}
+	}
+	xferPlayerRelationMap(x, m_playerRelations);
+	xferTeamRelationMap(x, m_teamRelations);
+	x.xferBool(&m_canBuildUnits);
+	x.xferBool(&m_canBuildBase);
+	n = (std::uint32_t)m_disabledTemplateIds.size();
+	x.xferCount(&n, 2, sizeof(unsigned short) + Xfer::kNodeBytes);
+	if (!x.isLoading())
+	{
+		for (unsigned short id : m_disabledTemplateIds)
+		{
+			std::uint16_t t = id;
+			x.xferUnsignedShort(&t);
+		}
+	}
+	else
+	{
+		m_disabledTemplateIds.clear();
+		for (std::uint32_t i = 0; i < n; ++i)
+		{
+			std::uint16_t t = 0;
+			x.xferUnsignedShort(&t);
+			m_disabledTemplateIds.insert(t);
+		}
+	}
+	for (std::vector<ScienceType> *list : { &m_disabledSciences, &m_hiddenSciences })
+	{
+		x.xferVectorSize(*list, 4);
+		for (ScienceType &st : *list)
+		{
+			x.xferInt(&st);
+			if (x.isLoading() && TheScienceStore && !TheScienceStore->isValidScience(st)) // lane SAVE-4e: a science of this game's data
+			{
+				throw XferException("player '" + m_name + "': a disabled or hidden science " + std::to_string(st) + " is not one of this game's data");
+			}
+		}
+	}
+	xferIds(x, m_selection);
+	for (std::vector<ObjectID> &squad : m_hotkeySquads)
+	{
+		xferIds(x, squad);
+	}
+	x.xferInt(&m_orderMode);
 }

@@ -8,6 +8,7 @@
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/PlayerCommands.h"
 #include "GameClient/ControlBarCommands.h"
 #include "GameClient/InGameUI.h"
 #include "GameClient/MessageStream/CommandXlat.h"
@@ -121,18 +122,9 @@ bool isEffectivelyDead(const Object &obj)
 	return false;
 }
 
-bool isSelectable(const Object &obj)
+bool isSelectable(const Object &obj, const CommandButton *command)
 {
-	// lane FACT-B: RotWK's Object::isSelectable (RW 0x68DE58, tier B same-shape for BFME2's byte-matched Object::isSelectable) refuses an object with
-	// status 3, UNSELECTABLE (RW 0x68DE6C .. 0x68DE77), before the script flag: a siege engine's crew (SiegeEngineContain ObjectStatusOfCrew =
-	// UNSELECTABLE) then passes a click to its engine (selectionRepresentative) instead of swallowing it (Isengard's battering ram could not be
-	// selected with a click, its crew being the nearest pick hit). The other tests of RW 0x68DE58 are this function's own simplification
-	static const int unselectable = ObjectTemplateInfoBuilder::objectStatusIndex("UNSELECTABLE");
-	if (unselectable >= 0 && obj.testStatus((unsigned)unselectable))
-	{
-		return false;
-	}
-	return obj.isKindOfName("SELECTABLE") && !obj.isKindOfName("NO_SELECT") && obj.isScriptSelectable(); // lane SCRIPT-2: RW + 0x454
+	return PlayerCommands::isSelectable(obj, command && command->m_command == GUI_COMMAND_SPECIAL_POWER);
 }
 
 bool isCombatUnit(const Object &obj)
@@ -193,7 +185,7 @@ bool canSelect(const HudContext &ctx, const Object &obj, bool dragSelecting)
 	{
 		return false;
 	}
-	if (!isSelectable(obj))
+	if (!isSelectable(obj, ctx.ui.getGUICommand()))
 	{
 		return false;
 	}
@@ -210,8 +202,8 @@ unsigned collisionTypeOf(const HudContext &ctx, const Object &obj)
 	// lane HUD-5: the render object's collision type as RotWK's model draw sets it (RW 0x4B583C, tier B of BFME2 0x4B5FE6; Set_Collision_Type replaces the
 	// type): SELECTABLE or WALK_ON_TOP_OF_WALL -> 4 (the draw module's own override, W3DModelDraw + 0x214, is not ported: S-1954); SHRUBBERY -> 8, else ROCK or
 	// ROCK_VENDOR -> 0x200; a selectable one becomes 0x84 for HERO, MONSTER or DEPLOYED_MINE, | 0x100 when locally controlled (RW 0x68B749), else | 0x10 for an
-	// enemy of the local player (RW 0x6ADBEB) that is not WALK_ON_TOP_OF_WALL; FORCEATTACKABLE -> 0x20; CLICK_THROUGH -> 0; then (neither BRIDGE nor
-	// BRIDGE_TOWER) a STRUCTURE's rubble or a dead object -> 0 (the object status bits RW 0x4B5988 / 0x4B59CE are taken as "effectively dead": S-1954)
+	// enemy of the local player (RW 0x6ADBEB) that is not WALK_ON_TOP_OF_WALL; FORCEATTACKABLE -> 0x20; CLICK_THROUGH -> 0; SCRIPT_TARGETABLE -> 0x40.
+	// RW 0x4B599F..0x4B59DE: BRIDGE / BRIDGE_TOWER / KeepSelectableWhenDead exempt rubble/death clearing. Drawable rubble state remains S-1954.
 	unsigned t = 0;
 	if (obj.isKindOfName("SELECTABLE") || obj.isKindOfName("WALK_ON_TOP_OF_WALL"))
 	{
@@ -250,10 +242,25 @@ unsigned collisionTypeOf(const HudContext &ctx, const Object &obj)
 	{
 		t = 0;
 	}
-	if (!obj.isKindOfName("BRIDGE") && !obj.isKindOfName("BRIDGE_TOWER"))
+	if ((obj.scriptStatus() & 0x10u) != 0)
+	{
+		t = PICK_TYPE_SCRIPT_TARGETABLE; // RW 0x4B5988: EDI is Drawable +0xFC (the Object), not the Drawable
+	}
+	bool keepWhenDead = false;
+	if (const ThingTemplate *tt = static_cast<const ThingTemplate *>(obj.getTemplate()))
+	{
+		if (const FieldValue *v = tt->getFinalOverride()->findField("KeepSelectableWhenDead"))
+		{
+			if (const bool *keep = std::get_if<bool>(v))
+			{
+				keepWhenDead = *keep;
+			}
+		}
+	}
+	if (!obj.isKindOfName("BRIDGE") && !obj.isKindOfName("BRIDGE_TOWER") && !keepWhenDead)
 	{
 		static const int RUBBLE = ModelCondition::indexOf("RUBBLE");
-		if ((obj.isKindOfName("STRUCTURE") && obj.testModelCondition(RUBBLE)) || isEffectivelyDead(obj))
+		if ((obj.isKindOfName("STRUCTURE") && obj.testModelCondition(RUBBLE)) || obj.isEffectivelyDead())
 		{
 			t = 0;
 		}
@@ -305,8 +312,8 @@ unsigned pickTypesForContext(const HudContext &ctx, bool forceAttack)
 	// lane HUD-5: RW 0x71083F (BFME2 getPickTypesForContext): 0x44, 0x64 with forceAttack (FORCEATTACKABLE); the GUI command's ALLOW_SHRUBBERY_TARGET -> 8 and
 	// ALLOW_ROCK_TARGET -> 0x200; without a GUI command RW 0x71077B: when the selection is controllable (RW 0x69D1AD), the first selected object (in order) that
 	// deals FLAME damage or has a SHRUBBERY button (RW 0x691F7F) adds 8, a ROCK button (RW 0x691FCE) 0x200, and the scan stops (`test bp, 0x208`); RotWK does not
-	// gate the flame on the force attack mode. The 0x40 bit (a collision type the drawable's + 0x457 & 0x10 sets, RW 0x4B5988) has no object here (S-1954)
-	unsigned types = PICK_TYPE_SELECTABLE;
+	// gate the flame on the force attack mode. SCRIPT_TARGETABLE is included in both base masks (0x44 / 0x64).
+	unsigned types = PICK_TYPE_SELECTABLE | PICK_TYPE_SCRIPT_TARGETABLE;
 	if (forceAttack)
 	{
 		types |= PICK_TYPE_FORCEATTACKABLE;
@@ -393,7 +400,7 @@ std::vector<PickHit> pickHits(const HudContext &ctx, const ICoord2D &pixel, unsi
 	return hits;
 }
 
-Object *pickObject(const HudContext &ctx, const ICoord2D &pixel, unsigned pickTypes)
+Object *pickObject(const HudContext &ctx, const ICoord2D &pixel, unsigned pickTypes, bool promoteContained)
 {
 	// lane HUD-5: W3DView::pickDrawable (RW 0x48AB28, tier A): every render object whose collision type meets pickType | 0x194 is hit-tested (the all-hits
 	// RTS3DScene cast RW 0x471A5B, sorted near to far); then the nearest hit whose type has all of 0x184, else all of 0x104 (only when pickType has 0x100), else
@@ -418,7 +425,7 @@ Object *pickObject(const HudContext &ctx, const ICoord2D &pixel, unsigned pickTy
 	best = best ? best : first(PICK_TYPE_HERO | PICK_TYPE_SELECTABLE, true);
 	best = best ? best : first(PICK_TYPE_ENEMY | PICK_TYPE_SELECTABLE, true);
 	best = best ? best : first(pickTypes, false);
-	return best ? selectionRepresentative(*best) : nullptr;
+	return best && promoteContained ? selectionRepresentative(*best) : best;
 }
 
 // OpenBFME input improvement requested for mouse and controller: a forgiving screen-space
@@ -483,7 +490,7 @@ Object *pickForHover(const HudContext &ctx, const ICoord2D &pixel)
 
 Object *pickForDoubleClick(const HudContext &ctx, const ICoord2D &pixel)
 {
-	return pickObject(ctx, pixel, PICK_TYPE_SELECTABLE); // RW 0x81F7C5: push 4
+	return pickObject(ctx, pixel, PICK_TYPE_SELECTABLE, false); // RW 0x81F7C5: raw drawable, promotion belongs to CommandTranslator
 }
 
 Object *pickForGuiCommand(const HudContext &ctx, const ICoord2D &pixel, const CommandButton &command)
@@ -498,6 +505,27 @@ Object *pickForGuiCommand(const HudContext &ctx, const ICoord2D &pixel, const Co
 		types |= PICK_TYPE_ROCK;
 	}
 	return pickObject(ctx, pixel, types);
+}
+
+// lane VISUAL-2 r2 (S-288): addDrawableToList's shroud rule (DONOR: ZH / BFME2 decomp SelectionInfo.cpp:261-275, "it was possible to drag select a single
+// enemy/neutral unit even if you couldn't see it"): an object of a NEUTRAL or ENEMIES relationship to the local player whose shroud status for it is FOGGED
+// or worse is not added. INFERENCE: RotWK keeps it (its addDrawableToList was not located in game.dat; the click picker refuses the same objects, QA-1's
+// pickRay). The status is ShroudManager::clientObjectStatus (RW 0x68D8F7 without the cache write) while the shroud is displayed; an observer's
+// all-vision and a game without a displayed shroud hide nothing
+bool hiddenFromDrag(const HudContext &ctx, const Object &obj)
+{
+	const Player *local = ctx.localPlayer();
+	const ShroudManager *sm = ctx.logic.shroud();
+	if (!local || !sm || !sm->displayed())
+	{
+		return false;
+	}
+	const Relationship rel = relationshipToLocal(ctx, obj);
+	if (rel != NEUTRAL && rel != ENEMIES)
+	{
+		return false;
+	}
+	return sm->clientObjectStatus(obj, local->getPlayerIndex()) >= OBJECTSHROUD_FOGGED;
 }
 
 std::vector<Object *> objectsInRegion(const HudContext &ctx, const IRegion2D &region)
@@ -515,6 +543,10 @@ std::vector<Object *> objectsInRegion(const HudContext &ctx, const IRegion2D &re
 	for (Object *obj = ctx.logic.getFirstObject(); obj; obj = obj->getNextObject())
 	{
 		if (!isPickable(*obj) || obj->getContainedBy() || InvisibilityManager::clientLook(*obj, ctx.localPlayer()) == 5) // lane STEALTH-1
+		{
+			continue;
+		}
+		if (hiddenFromDrag(ctx, *obj)) // lane VISUAL-2 r2
 		{
 			continue;
 		}

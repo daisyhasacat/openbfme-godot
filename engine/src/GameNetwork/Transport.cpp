@@ -229,8 +229,20 @@ bool UDP::receiveFrom(NetAddress &from, std::vector<std::uint8_t> &data)
 {
 	data.resize(65536);
 	sockaddr_in a{};
-	socklen_type len = sizeof(a);
-	const int n = (int)recvfrom((decltype(socket(0, 0, 0)))m_socket, (char *)data.data(), (int)data.size(), 0, (sockaddr *)&a, &len);
+	int n;
+	for (;;)
+	{
+		socklen_type len = sizeof(a);
+		n = (int)recvfrom((decltype(socket(0, 0, 0)))m_socket, (char *)data.data(), (int)data.size(), 0, (sockaddr *)&a, &len);
+#ifdef _WIN32
+		// Winsock reports ICMP port-unreachable from earlier sends here. It is not an empty receive queue.
+		if (n < 0 && WSAGetLastError() == WSAECONNRESET)
+		{
+			continue;
+		}
+#endif
+		break;
+	}
 	if (n < 0)
 	{
 		data.clear();
@@ -426,11 +438,16 @@ void Transport::handleRelay(const std::vector<std::uint8_t> &d, std::uint64_t no
 	}
 }
 
+std::uint64_t Transport::nowMs() const
+{
+	return m_clock ? m_clock() : NetMilliseconds();
+}
+
 bool Transport::localLinkAlive(std::uint32_t ms) const
 {
 	// lane ONLINE-3: in relay mode the local link is alive while something arrived from the relay within `ms` (WELCOME, DATA_FROM, STATUS: a client hears
 	// its peers' keep-alives every 100 ms through it); peer to peer there is no such test (RotWK's GameSpy ping test does not run in a LAN game)
-	return !m_options.relay.enabled || (m_lastFromRelay != 0 && NetMilliseconds() - m_lastFromRelay <= (std::uint64_t)ms);
+	return !m_options.relay.enabled || (m_lastFromRelay != 0 && nowMs() - m_lastFromRelay <= (std::uint64_t)ms);
 }
 
 void Transport::resetPeer(int slot)
@@ -473,7 +490,7 @@ void Transport::requestRelayLog(std::uint32_t offset)
 		return;
 	}
 	const std::vector<std::uint8_t> r = RelayProtocol::encodeLogRequest(offset);
-	if (!m_impairment.blackedOut(NetMilliseconds()))
+	if (!m_impairment.blackedOut(nowMs()))
 	{
 		sendNow(m_options.relay.address, r);
 	}
@@ -984,7 +1001,7 @@ void Transport::handlePacket(const NetAddress &from, const std::vector<std::uint
 
 void Transport::service()
 {
-	const std::uint64_t now = NetMilliseconds();
+	const std::uint64_t now = nowMs();
 	NetAddress from;
 	std::vector<std::uint8_t> d;
 	while (m_socket.receiveFrom(from, d))

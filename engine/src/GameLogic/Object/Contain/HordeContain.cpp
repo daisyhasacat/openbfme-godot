@@ -455,8 +455,6 @@ const FieldParse *HordeContainModuleData::getFieldParse()
 		{ "BackupPercentage", INI::parsePercentToReal, nullptr, offsetof(HordeContainModuleData, m_backupPercentage) },
 		{ "CowerRadius", INI::parseReal, nullptr, offsetof(HordeContainModuleData, m_cowerRadius) },
 		{ "AttributeModifiers", INI::parseAsciiStringVector, nullptr, offsetof(HordeContainModuleData, m_attributeModifiers) },
-		{ "UsePorcupineBody", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_usePorcupineBody) },
-		{ "UpdateWeaponSetFlagsOnHordeToo", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_updateWeaponSetFlagsOnHordeToo) },
 		{ "IsPorcupineFormation", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_isPorcupineFormation) },
 		{ "ForcedLocomotorSet", INI::parseIndexList, TheLocomotorSetNames, offsetof(HordeContainModuleData, m_forcedLocomotorSet) },
 		{ "MachineAllowed", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_machineAllowed) },
@@ -488,6 +486,14 @@ void HordeContainModuleData::buildFieldParse(MultiIniFieldParse &p, unsigned ext
 {
 	TransportContainModuleData::buildFieldParse(p, extraOffset + (unsigned)offsetof(HordeContainModuleData, m_transport));
 	p.add(getFieldParse(), extraOffset);
+	// community PR #36: BFME1's legacy horde rows, read only from BFME1 data (Common/BfmeGame.h): registered with the HordeContain table, not added to
+	// the chain, so RotWK's chain stays the binary's three tables
+	static const FieldParse legacy[] = {
+		{ "UsePorcupineBody", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_usePorcupineBody) },
+		{ "UpdateWeaponSetFlagsOnHordeToo", INI::parseBool, nullptr, offsetof(HordeContainModuleData, m_updateWeaponSetFlagsOnHordeToo) },
+		{ nullptr, nullptr, nullptr, 0 }
+	};
+	static const Bfme1FieldRowsRegistration registration(getFieldParse(), legacy);
 }
 
 void HordeContainModuleData::parseFromINI(INI *ini)

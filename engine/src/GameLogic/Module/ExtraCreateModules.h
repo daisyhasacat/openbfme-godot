@@ -41,6 +41,7 @@ public:
 class ExperienceLevelCreate : public BehaviorModule, public CreateModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(ExperienceLevelCreate) // lane SAVE-4b: BehaviorModule's (no state)
 	ExperienceLevelCreate(Thing *thing, const ExperienceLevelCreateModuleData *data) : BehaviorModule(thing, data), m_data(data) {}
 	CreateModuleInterface *getCreate() override { return this; }
 	void onCreate() override {}
@@ -60,6 +61,7 @@ public:
 class LockWeaponCreate : public BehaviorModule, public CreateModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(LockWeaponCreate) // lane SAVE-4b
 	LockWeaponCreate(Thing *thing, const LockWeaponCreateModuleData *data) : BehaviorModule(thing, data), m_data(data) {}
 	CreateModuleInterface *getCreate() override { return this; }
 	void onCreate() override {}
@@ -83,6 +85,7 @@ public:
 class InheritUpgradeCreate : public BehaviorModule, public CreateModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(InheritUpgradeCreate) // lane SAVE-4b
 	InheritUpgradeCreate(Thing *thing, const InheritUpgradeCreateModuleData *data) : BehaviorModule(thing, data), m_data(data) {}
 	CreateModuleInterface *getCreate() override { return this; }
 	void onCreate() override {}

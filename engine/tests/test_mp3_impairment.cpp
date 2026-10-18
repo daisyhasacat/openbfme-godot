@@ -130,6 +130,41 @@ TEST_CASE("mp3 impairment: the fate of the n-th datagram on a link depends on th
 	CHECK(clean.stats().blackouts == 1);
 }
 
+TEST_CASE("mp3 impairment: the UDP transport measures a round trip on a non-lossy delayed link")
+{
+	UDP sa, sb;
+	std::string error;
+	REQUIRE_MESSAGE(sa.bind(0x7F000001u, 0, &error), error);
+	REQUIRE_MESSAGE(sb.bind(0x7F000001u, 0, &error), error);
+	Transport::Options o;
+	// Karn's rule excludes retransmitted records. Keep retries beyond the test deadline so an ACK supplies a sample.
+	o.resendMs = 60000;
+	REQUIRE(NetLinkFaults::parse("latency=150,jitter=50", o.impairment.all, &error));
+	o.impairment.seed = 9;
+	Transport ta(sa, 0, o);
+	o.impairment.seed = 10;
+	Transport tb(sb, 1, o);
+	ta.setPeer(1, sb.localAddress());
+	tb.setPeer(0, sa.localAddress());
+	CHECK(ta.roundTripMs(1) == -1);
+	const std::vector<std::uint8_t> bytes = { 1, 2, 3 };
+	REQUIRE_MESSAGE(ta.sendTo(1, bytes, &error), error);
+	const std::uint64_t t0 = NetMilliseconds();
+	while (!ta.allAcked(1) && NetMilliseconds() - t0 < 10000)
+	{
+		ta.service();
+		tb.service();
+		NetSleepMilliseconds(2);
+	}
+	REQUIRE(ta.allAcked(1));
+	CHECK(ta.errors().empty());
+	CHECK(tb.errors().empty());
+	CHECK(ta.stats().commandsResent == 0);
+	REQUIRE(ta.roundTripMs(1) >= 0); // tolerance: -1 is the no-sample sentinel; accepted measurements are nonnegative milliseconds
+	CHECK(ta.roundTripMs(1) >= 150); // tolerance: allow 50 ms below the 200 ms two-way minimum for service-clock sampling
+	MESSAGE("non-lossy round trip " << ta.roundTripMs(1) << " ms");
+}
+
 TEST_CASE("mp3 impairment: the UDP transport delivers every command exactly once and in order through 150 ms +- 50 ms, 5 % loss, duplicates and "
 		  "reordering, fragmented commands included")
 {
@@ -144,6 +179,10 @@ TEST_CASE("mp3 impairment: the UDP transport delivers every command exactly once
 	Transport ta(sa, 0, o);
 	o.impairment.seed = 10;
 	Transport tb(sb, 1, o);
+	// A wall-clock stall can make every record a retransmission: Karn's rule then leaves RTT unmeasured (-1), not below the link's latency.
+	std::uint64_t now = 1000;
+	ta.setClock([&now] { return now; });
+	tb.setClock([&now] { return now; });
 	ta.setPeer(1, sb.localAddress());
 	tb.setPeer(0, sa.localAddress());
 	const int kCommands = 400;
@@ -156,8 +195,8 @@ TEST_CASE("mp3 impairment: the UDP transport delivers every command exactly once
 	}
 	std::vector<std::vector<std::uint8_t>> got;
 	size_t next = 0;
-	const std::uint64_t t0 = NetMilliseconds();
-	while ((got.size() < sent.size() || !ta.allAcked(1)) && NetMilliseconds() - t0 < 60000)
+	const std::uint64_t t0 = now;
+	while ((got.size() < sent.size() || !ta.allAcked(1)) && now - t0 < 60000)
 	{
 		// a burst of 8 commands every 20 ms
 		for (int k = 0; k < 8 && next < sent.size(); ++k)
@@ -173,10 +212,11 @@ TEST_CASE("mp3 impairment: the UDP transport delivers every command exactly once
 			CHECK(from == 0);
 			got.push_back(b);
 		}
-		NetSleepMilliseconds(next < sent.size() ? 20 : 2);
+		now += next < sent.size() ? 20 : 2;
 	}
 	REQUIRE(got.size() == sent.size());
 	CHECK(got == sent);
+	CHECK(ta.allAcked(1));
 	CHECK(ta.errors().empty());
 	CHECK(tb.errors().empty());
 	CHECK(ta.stats().fragmentedCommands > 0);
@@ -185,9 +225,78 @@ TEST_CASE("mp3 impairment: the UDP transport delivers every command exactly once
 	CHECK(ta.impairment().stats().duplicated > 0);
 	CHECK(ta.impairment().stats().reordered > 0);
 	CHECK(ta.stats().commandsResent > 0);
-	CHECK(ta.roundTripMs(1) >= 150); // two directions of 150 +- 50 ms (200 at least; the transport reads its clock once per service call, so a loaded
-	                                  // machine measures up to a call's duration less)
+	CHECK(ta.roundTripMs(1) >= 200); // tolerance: two directions of 150 +- 50 ms require at least 200 ms; service time no longer depends on CPU scheduling.
 	MESSAGE("a -> b: " << ta.impairment().statsText() << "; resent " << ta.stats().commandsResent << ", round trip " << ta.roundTripMs(1) << " ms");
+}
+
+TEST_CASE("mp3 impairment: retransmitted records give no RTT sample; a first-transmission ACK measures both link delays exactly")
+{
+	auto serviceUntil = [](Transport &transport, const std::function<bool()> &ready) {
+		const std::uint64_t deadline = NetMilliseconds() + 5000;
+		do
+		{
+			transport.service();
+			if (ready())
+			{
+				return true;
+			}
+			NetSleepMilliseconds(1);
+		} while (NetMilliseconds() < deadline);
+		return false;
+	};
+	UDP sa, sb;
+	std::string error;
+	REQUIRE_MESSAGE(sa.bind(0x7F000001u, 0, &error), error);
+	REQUIRE_MESSAGE(sb.bind(0x7F000001u, 0, &error), error);
+	Transport::Options o;
+	o.impairment.all.latencyMs = 100;
+	Transport ta(sa, 0, o), tb(sb, 1, o);
+	std::uint64_t now = 1000;
+	ta.setClock([&now] { return now; });
+	tb.setClock([&now] { return now; });
+	ta.setPeer(1, sb.localAddress());
+	tb.setPeer(0, sa.localAddress());
+	REQUIRE(ta.sendTo(1, { 1 }, &error));
+	ta.service();
+	now = 1060; // the initial 60 ms retry timer expires before the 100 ms one-way delay
+	ta.service();
+	REQUIRE(ta.stats().commandsResent == 1);
+	now = 1100;
+	ta.service();
+	// Kernel delivery is asynchronous: wait for the packet without advancing the simulated link clock.
+	REQUIRE(serviceUntil(tb, [&] { return tb.stats().commandsDelivered == 1; }));
+	now = 1180;
+	ta.service();
+	REQUIRE(ta.stats().commandsResent == 2); // Two backoffs raise the 60 ms retry timer to 240 ms, beyond the next clean 200 ms round trip.
+	now = 1200;
+	tb.service();
+	REQUIRE(serviceUntil(ta, [&] { return ta.allAcked(1); }));
+	CHECK(ta.roundTripMs(1) == -1);
+	CHECK(ta.roundTripVarMs(1) == -1);
+
+	REQUIRE(ta.sendTo(1, { 2 }, &error));
+	ta.service();
+	now = 1300;
+	ta.service();
+	REQUIRE(serviceUntil(tb, [&] { return tb.stats().commandsDelivered == 2; }));
+	CHECK_FALSE(ta.allAcked(1));
+	now = 1400;
+	tb.service();
+	REQUIRE(serviceUntil(ta, [&] { return ta.allAcked(1); }));
+	CHECK(ta.stats().commandsResent == 2);
+	CHECK(ta.roundTripMs(1) == 200);
+	CHECK(ta.roundTripVarMs(1) == 100);
+	int from = -1;
+	std::vector<std::uint8_t> bytes;
+	REQUIRE(tb.receive(from, bytes));
+	CHECK(from == 0);
+	CHECK(bytes == std::vector<std::uint8_t>{ 1 });
+	REQUIRE(tb.receive(from, bytes));
+	CHECK(from == 0);
+	CHECK(bytes == std::vector<std::uint8_t>{ 2 });
+	CHECK_FALSE(tb.receive(from, bytes));
+	CHECK(ta.errors().empty());
+	CHECK(tb.errors().empty());
 }
 
 namespace

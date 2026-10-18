@@ -2,6 +2,7 @@
 ## Every file the launcher's All In One BFME Launcher download installs, with its MD5 and size (scripts/core/aio_install.gd).
 extends RefCounted
 
+## The base download (the Game files screen's Download).
 const PACKAGES := [
 	{"key": "rotwk", "guid": "original-RotWK", "name": "Vanilla (2.01)", "game": 2, "folder": "RotWK", "label": "The Rise of the Witch-king 2.01", "owner": "bdc6bc60-73f9-4833-9069-3076aff26418", "bytes": 3157885220, "language": "EN", "policySha256": "0decfa2311078a14d7f9a6eff0165abadaa35feea1dcf3b9618f73520a9c3e56", "files": [
 		["00000000.256", "9055cf28f96e6415769725bb89378f10", 1440056],
@@ -619,7 +620,10 @@ const PACKAGES := [
 		["patchget.dat", "96b4724dd665b6773e5c1b34b8c15cb3", 249856],
 		["patchw32.dll", "1bc225e0c1c2f54cc877b654ccf04684", 202240],
 	]},
-	{"key": "bfme1", "guid": "original-BFME1", "name": "Vanilla (1.03)", "game": 0, "folder": "BFME1", "label": "The Battle for Middle-earth 1.03", "owner": "bdc6bc60-73f9-4833-9069-3076aff26418", "bytes": 3262436380, "language": "EN", "policySha256": "", "files": [
+]
+## Community PR #36: the optional BFME1 download, offered only when Battle for Middle-earth I is chosen.
+const BFME1_PACKAGES := [
+	{"key": "bfme1", "guid": "original-BFME1", "name": "Vanilla (1.03)", "game": 0, "folder": "BFME1", "label": "Battle for Middle-earth I 1.03", "owner": "bdc6bc60-73f9-4833-9069-3076aff26418", "bytes": 3262436380, "language": "EN", "policySha256": "", "files": [
 		["AmbientStreams.big", "a6e93482d85df248a86a44938ace35da", 52255209],
 		["Audio.big", "fd0e5412ee854d6c463d18426e2acca3", 299550662],
 		["Bases.big", "c877384174815984439cc43808aa11b4", 1279070],
@@ -969,7 +973,7 @@ const PACKAGES := [
 	]},
 ]
 
-## Per package key: the files of the compact set, the only ones the iOS app downloads (AioInstall.use_compact).
+## Compact asset subsets for iOS (AioInstall.use_compact).
 const COMPACT := {
 	"rotwk": [
 		"AmbientStreams.big",

@@ -6,6 +6,8 @@
 
 #include "GameClient/InGameHeroSelect.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/ScriptEngine/ScriptActions.h"
+#include "GameLogic/ScriptEngine/ScriptEngine.h"
 
 #include <map>
 #include <string>
@@ -66,6 +68,15 @@ std::vector<ObjectID> idsOf(const std::list<InGameHeroSelect::Hero> &l)
 	}
 	return out;
 }
+
+unsigned retailCycleTimeout(Rig &rig)
+{
+	unsigned timeout = 0;
+	std::string error;
+	REQUIRE(InGameHeroSelect::loadCycleTimeout(*rig.sh.mount->fs, timeout, &error));
+	REQUIRE_MESSAGE(timeout == 3500, error);
+	return timeout;
+}
 } // namespace
 
 TEST_CASE("ui4 herobar retail: idle builders take slot 1, heroes follow by HeroSortOrder at the start; a click selects, the second moves the camera")
@@ -76,7 +87,7 @@ TEST_CASE("ui4 herobar retail: idle builders take slot 1, heroes follow by HeroS
 	}
 	Rig rig(shared());
 	HudContext &ctx = rig.input->context();
-	InGameHeroSelect hs(ctx);
+	InGameHeroSelect hs(ctx, retailCycleTimeout(rig));
 	Recorder rec;
 	// the starting objects of the map (the fortress and its builders), then two heroes created in the first frames (logic frame < 6: sorted by HeroSortOrder)
 	const Coord3D c = rig.freeSpot(2800, 1400, 200.0f);
@@ -163,7 +174,7 @@ TEST_CASE("ui4 herobar retail: idle builders take slot 1, heroes follow by HeroS
 
 	// a hero with a HeroSortOrder created in the first frames goes before the ones without (Argeleb: 50)
 	{
-		InGameHeroSelect early(ctx);
+		InGameHeroSelect early(ctx, retailCycleTimeout(rig));
 		Object *argeleb = rig.make("ArnorArgeleb", c.x, c.y - 250.0f);
 		REQUIRE(rig.logic().getFrame() < 6);
 		early.trackObjects();
@@ -191,4 +202,188 @@ TEST_CASE("ui4 herobar retail: idle builders take slot 1, heroes follow by HeroS
 	hs.update();
 	CHECK(rec.called("SetButtonState(4,_unused)"));
 	CHECK(rec.images.count("_level3.HeroSelectUI_Hero4Image") == 0);
+}
+
+TEST_CASE("ui4 recovered script hero flash retail: exact templates extend their client-frame countdown")
+{
+	if (!haveWorld("ui4 recovered script hero flash retail"))
+	{
+		return;
+	}
+	Rig rig(shared());
+	Object *first = rig.make("GondorFaramir", 3000, 1700);
+	Object *second = rig.make("GondorFaramir", 3200, 1700);
+	Object *other = rig.make("GondorBoromir", 3400, 1700);
+	REQUIRE(first);
+	REQUIRE(second);
+	REQUIRE(other);
+	InGameHeroSelect hs(rig.input->context(), retailCycleTimeout(rig));
+	Recorder rec;
+	hs.trackObjects();
+	REQUIRE(hs.heroes().size() == 3);
+	hs.attach(3, "_level3.HeroSelectUI", rec.movie(), "Men");
+	hs.update();
+	hs.update();
+	rig.game->drawables().setHeroFlashHandler([&](const std::string &name, int frames) { hs.flashHeroButton(name, frames); });
+	ScriptActionRec action;
+	action.resolved = 512;
+	action.params.resize(2);
+	action.params[0].type = 62;
+	action.params[0].stringValue = "GondorFaramir";
+	action.params[1].type = 0;
+	auto request = [&](int seconds) {
+		action.params[1].intValue = seconds;
+		ScriptActions::execute(rig.logic().scriptEngine(), action);
+	};
+	auto framesFor = [&](ObjectID id) {
+		for (const auto &hero : hs.heroes())
+		{
+			if (hero.id == id)
+			{
+				return hero.flashFrames;
+			}
+		}
+		return -1;
+	};
+	CHECK(ScriptActions::isClientAction(512));
+	request(3);
+	request(1);
+	request(-1);
+	action.enabled = false;
+	request(10);
+	action.enabled = true;
+	action.params[0].stringValue = "gondorfaramir";
+	request(10);
+	CHECK(framesFor(first->getID()) == 0); // publication, not direct logic-to-HUD mutation
+	rig.frame();
+	CHECK(framesFor(first->getID()) == 90);
+	CHECK(framesFor(second->getID()) == 90);
+	CHECK(framesFor(other->getID()) == 0);
+	rec.calls.clear();
+	hs.update();
+	CHECK(framesFor(first->getID()) == 89);
+	CHECK(std::count_if(rec.calls.begin(), rec.calls.end(), [](const std::string &s) {
+		return s.find("SetButtonFlashEffectState(") == 0 && s.find("_show)") != std::string::npos;
+	}) == 2);
+	action.params[0].stringValue = "GondorFaramir";
+	request(4);
+	rig.frame();
+	CHECK(framesFor(first->getID()) == 120);
+	for (int i = 0; i < 120; ++i)
+	{
+		hs.update();
+	}
+	CHECK(framesFor(first->getID()) == 0);
+	rec.calls.clear();
+	hs.update();
+	CHECK(std::count_if(rec.calls.begin(), rec.calls.end(), [](const std::string &s) {
+		return s.find("SetButtonFlashEffectState(") == 0 && s.find("_hide)") != std::string::npos;
+	}) == 2);
+	rig.frame();
+	CHECK(framesFor(first->getID()) == 0);
+	rig.game->drawables().setHeroFlashHandler(nullptr);
+}
+
+TEST_CASE("ui4 recovered builder timeout retail: the used round resets at the exact 105 client-frame deadline")
+{
+	if (!haveWorld("ui4 recovered builder timeout retail"))
+	{
+		return;
+	}
+	Rig rig(shared());
+	HudContext &ctx = rig.input->context();
+	const Coord3D c = rig.freeSpot(3000, 1700, 200.0f);
+	Object *a = rig.make("MenPorter", c.x - 150.0f, c.y);
+	Object *b = rig.make("MenPorter", c.x + 150.0f, c.y);
+	Object *d = rig.make("MenPorter", c.x, c.y + 150.0f);
+	const unsigned timeout = retailCycleTimeout(rig);
+	REQUIRE(timeout == 3500);
+	InGameHeroSelect hs(ctx, timeout);
+	hs.trackObjects();
+	REQUIRE(hs.builders().size() == 3);
+	rig.lookAt(c);
+
+	auto choose = [&]() {
+		ctx.ui.deselectAll(false);
+		hs.selectNearestBuilder(true);
+		REQUIRE(ctx.ui.selected().size() == 1);
+		return ctx.ui.selected().front();
+	};
+	auto distance = [&](const Object *o) {
+		const Coord3D *p = o->getPosition();
+		const Coord3D camera = ctx.view.position();
+		const float x = p->x - camera.x, y = p->y - camera.y;
+		return x * x + y * y;
+	};
+	std::vector<ObjectID> expected{ a->getID(), b->getID(), d->getID() };
+	std::stable_sort(expected.begin(), expected.end(), [&](ObjectID x, ObjectID y) {
+		return distance(rig.logic().findObjectByID(x)) < distance(rig.logic().findObjectByID(y));
+	});
+
+	SUBCASE("one frame before the deadline leaves the unused third builder")
+	{
+		hs.setClientFrame(0);
+		CHECK(choose() == expected[0]);
+		CHECK(choose() == expected[1]);
+		hs.setClientFrame(104);
+		CHECK(choose() == expected[2]);
+	}
+	SUBCASE("the exact deadline resets to the first builder")
+	{
+		hs.setClientFrame(0);
+		CHECK(choose() == expected[0]);
+		CHECK(choose() == expected[1]);
+		hs.setClientFrame(105);
+		CHECK(choose() == expected[0]);
+	}
+}
+
+TEST_CASE("ui4 recovered hero attack retail: client events flash the first matching displayed slot")
+{
+	if (!haveWorld("ui4 recovered hero attack retail"))
+	{
+		return;
+	}
+	Rig rig(shared());
+	HudContext &ctx = rig.input->context();
+	const Coord3D c = rig.freeSpot(3200, 1800, 200.0f);
+	Object *hero = rig.make("GondorFaramir", c.x, c.y);
+	const unsigned timeout = retailCycleTimeout(rig);
+	InGameHeroSelect hs(ctx, timeout);
+	Recorder rec;
+	hs.trackObjects();
+	REQUIRE(hs.heroes().size() == 1);
+	hs.attach(3, "_level3.HeroSelectUI", rec.movie(), "Men");
+	hs.update();
+	rec.calls.clear();
+	hs.update();
+	int heroSlot = -1;
+	for (int i = 0; i < InGameHeroSelect::kSlots; ++i)
+	{
+		if (hs.slot(i).hero == hero->getID())
+		{
+			heroSlot = i + 1;
+			break;
+		}
+	}
+	REQUIRE(heroSlot == 1);
+
+	rig.game->drawables().setHeroAttackedHandler([&hs](ObjectID id) { hs.onHeroAttacked(id); });
+	DamageInfo hit;
+	hit.m_input.m_amount = 1.0f;
+	hit.m_input.m_damageType = DAMAGE_UNRESISTABLE;
+	hit.m_input.m_shouldPlayUnderAttackEva = false;
+	hero->attemptDamage(hit);
+	hero->attemptDamage(hit); // both same-frame events are retained in publication order
+	rig.frame();
+	const std::string effect = "PlayButtonAttackedEffect(" + std::to_string(heroSlot) + ")";
+	CHECK(std::count(rec.calls.begin(), rec.calls.end(), effect) == 2);
+	hs.onHeroAttacked(hero->getID() + 100000);
+	CHECK(std::count(rec.calls.begin(), rec.calls.end(), effect) == 2);
+
+	DamageInfo ownedHit = hit;
+	ownedHit.m_input.m_sourcePlayerMask = 1u << (rig.index() & 31);
+	hero->attemptDamage(ownedHit);
+	rig.frame();
+	CHECK(std::count(rec.calls.begin(), rec.calls.end(), effect) == 2);
 }

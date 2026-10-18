@@ -32,4 +32,6 @@ public:
 	virtual void updateUpgradeModulesOfPlayer(const Player &player) = 0;
 	// RW 0x6AE546 onUpgradeRemoved: Object::removeUpgrade(upgrade) (RW 0x691438) on every object of the player's teams
 	virtual void removeUpgradeFromObjectsOfPlayer(const Player &player, const UpgradeTemplate &upgrade) = 0;
+	// RW 0x6AE4CA / 0x6AE59B: presentation only, after the object walk.
+	virtual void reportUpgradeEva(const Player &player, const UpgradeTemplate &upgrade, bool gained) = 0;
 };

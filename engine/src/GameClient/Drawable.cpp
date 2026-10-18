@@ -9,6 +9,7 @@
 #include "Common/Thing/ThingTemplate.h"
 #include "GameClient/MapObjectDrawables.h"
 #include "GameClient/RenderInterpolation.h"
+#include "GameClient/StealthLook.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DTreeDraw.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DModelDrawVariants.h"
@@ -344,6 +345,16 @@ void Drawable::storeModelCondition(int bit, bool on)
 	m_flagsDirty = true; // RW 0x67961F
 }
 
+void Drawable::storeModelConditions(const ModelConditionFlags &flags)
+{
+	if (flags == m_flags)
+	{
+		return; // RW 0x679553: the same flags again change nothing
+	}
+	m_flags = flags;
+	m_flagsDirty = true; // RW 0x67961F
+}
+
 void Drawable::flushModelConditions(bool hasWeaponTiming, int weaponTimingFrames)
 {
 	m_hasWeaponTiming = hasWeaponTiming;
@@ -534,4 +545,34 @@ void Drawable::upgradeTexture(const TextureSwap &swap, bool enabled)
 		if (entry.draw) entry.draw->upgradeTexture(swap, enabled);
 	}
 	++m_changeCount;
+}
+
+Drawable::PresentedLook Drawable::presentedLook(const LogicSnapshot *presented, bool shroudDrawn) const
+{
+	PresentedLook look;
+	if (!presented)
+	{
+		return look;
+	}
+	bool synced = false;
+	const ObjectSnapshot *rec = syncedRecord(*presented, synced); // lane PERF-3: the record syncTransforms found in this snapshot
+	if (!synced)
+	{
+		rec = presented->find(m_objectId);
+	}
+	if (shroudDrawn)
+	{
+		// VIS-1: an object the local player cannot see is not drawn (RW 0xB4E890 SHROUDED); with RW 0x64849E's grace when the record is this frame's sync
+		look.hidden = synced ? m_shroudLook.hidden : (rec && rec->shroudedForLocal);
+		look.fogLook = synced && m_shroudLook.fullyObscured;
+	}
+	// lane STEALTH-1 (RW 0x81AA03 -> RW 0x6760F9, GameClient/StealthLook): an invisible object an enemy looks at is not drawn
+	// lane GARRISON-1: the drawable's hidden flag the logic sets (RW 0x6718FB: a rider of an ENCLOSED container, a horde member gone into a garrison)
+	look.nonStealthHidden = look.hidden || (rec && rec->drawableHidden);
+	if (rec && (StealthLook::hidden(*rec) || rec->drawableHidden))
+	{
+		look.hidden = true;
+	}
+	look.fogLook = look.fogLook && !look.hidden;
+	return look;
 }

@@ -98,6 +98,22 @@ func _run() -> void:
 	await create_timer(1.6).timeout
 	_check("back in view: asked again, shown again", vis.requests_sent > asked and vis.text == "3 players online", "%d %s" % [vis.requests_sent, vis.text])
 	vis.set_mode("")
+	# lane ONLINEUX-1 r2 (Sol 5): an answer that changes only the running games keeps the line's text but reaches the ticker (counts_changed)
+	var run := _make("/running", "T")
+	run.online_s = 0.3
+	var seen_counts := []
+	run.counts_changed.connect(func(c: Dictionary) -> void: seen_counts.append(int(c.get("games_running", -1))))
+	_check("running: the first answer", await _asked(run, "online") == "3 players online, 1 game open" and seen_counts == [2], "%s %s" % [run.text, str(seen_counts)])
+	var texts := [0]
+	run.changed.connect(func(_t: String) -> void: texts[0] += 1)
+	var until := Time.get_ticks_msec() + 5000
+	while Time.get_ticks_msec() < until and (run.requests_sent < 2 or run._in_flight):
+		await process_frame
+	await process_frame
+	_check("running: the next poll changes the running games only: the ticker hears it, the line stays", run.requests_sent >= 2 and seen_counts == [2, 5]
+		and texts[0] == 0 and run.text == "3 players online, 1 game open" and int(run.counts().get("games_running", -1)) == 5,
+		"requests %d counts %s text changes %d '%s'" % [run.requests_sent, str(seen_counts), texts[0], run.text])
+	run.set_mode("")
 	# r2 (Sol): a launcher setting that is not true / false is a damaged file: off, said by name; a missing key or an older file is on
 	for bad in ['"yes"', '"false"', '[1]', '{"a": 1}', '1', '0']:
 		var why: String = OnlineStats.disabled_reason(PackedStringArray(), "", {}, "[launcher]\nshow_online_count=%s\n" % bad, false)

@@ -7,16 +7,22 @@ Every file is judged the way the commit gate judges a staged file (tools/precomm
 (retail_content: RIFF/WAVE, ID3, MPEG Layer III, BIG, DDS, under any name). Containers are recognised by their bytes, whatever their names:
 Godot packs (also appended to an executable), ZIP, gzip, bzip2, xz and tar are opened and audited member by member, recursively; other
 container kinds (7-Zip, Zstandard, RAR, CAB, LZ4, LZO), encrypted packs and encrypted ZIP members are findings, so nothing hides inside. Text files are also checked for
-developer-machine paths (precommit MACHINE_PATH). Exit 1 with one line per problem; 0 prints "package audit ok (<n> files)".
+developer-machine paths (precommit MACHINE_PATH). Every file, member and pack entry (and every file of a --release package) is also
+compared with the files the launcher's AIO download pins (tools/release/aio_package_files.json, by MD5 and size: the RotWK / BFME2 base
+download and the optional BFME1 package of community PR #36, lotrbfme.exe, worldbuilder.exe, the DSOAL dsound.dll ... among them): those
+come only from the third-party service, never from our packages. Exit 1 with one line per problem; 0 prints "package audit ok (<n> files)".
 """
 from __future__ import annotations
 
 import bz2
+import functools
+import json
 import gzip
 import hashlib
 import io
 import lzma
 import re
+import stat
 import struct
 import zlib
 import sys
@@ -28,6 +34,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from precommit import MACHINE_PATH, MSF_MAGICS, PRIVATE_SUFFIXES, RETAIL_SUFFIXES, private_symbols, retail_content  # noqa: E402
 
 PCK_MAGIC = b"GDPC"
+LOCAL_PATH = re.compile(
+    r"(?:[A-Za-z]:\\Users\\[^\\/\x00\s]+\\|/Users/[^/\x00\s]+/|/home/[^/\x00\s]+/|"
+    r"/root/|/(?:private/)?tmp/[^/\x00\s]+(?:/|$)|/(?:private/)?var/tmp/[^/\x00\s]+(?:/|$)|"
+    r"/(?:private/)?var/folders/[^/\x00\s]+/)"
+)
 MAX_DEPTH = 16                 # containers inside containers
 MAX_UNPACKED = 4 << 30         # bytes one compressed stream may expand to (a bomb is a finding, not a hang)
 # containers recognised by their bytes that this audit cannot open: a finding, never a pass (fail closed)
@@ -35,7 +46,179 @@ UNOPENABLE = {b"7z\xbc\xaf\x27\x1c": "7-Zip", b"\x28\xb5\x2f\xfd": "Zstandard", 
               b"\x04\x22\x4d\x18": "LZ4", b"\x89LZO": "LZO"}
 
 
+AIO_FILES = Path(__file__).resolve().parent / "aio_package_files.json"
+
+
+@functools.lru_cache(maxsize=None)
+def aio_pinned(path: Path = AIO_FILES) -> dict[tuple[str, int], str]:
+    """(md5, size) -> "<package>: <name>" of every non-empty file the AIO packages pin. Fails closed: a missing or unreadable table, or a
+    package without files, is an error, never an empty set."""
+    try:
+        table = json.loads(path.read_text())
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"AUDIT: cannot read the AIO pins {path.name}: {e}")
+    if not isinstance(table, dict) or not table or any(not isinstance(rows, list) or not rows for rows in table.values()):
+        raise SystemExit(f"AUDIT: the AIO pins {path.name} name no package or a package without files")
+    return {(str(r[1]), int(r[2])): f"{guid}: {r[0]}" for guid, rows in table.items() for r in rows if int(r[2]) > 0}
+
+
+@functools.lru_cache(maxsize=None)
+def _aio_sizes(path: Path = AIO_FILES) -> frozenset:
+    return frozenset(size for _, size in aio_pinned(path))
+
+
+def aio_file(data: bytes) -> str | None:
+    """the AIO pin `data` is (by size, then MD5), or None"""
+    if len(data) not in _aio_sizes(AIO_FILES):
+        return None
+    return aio_pinned(AIO_FILES).get((hashlib.md5(data).hexdigest(), len(data)))
+
+
 STREAM_MAGIC = {"gzip": b"\x1f\x8b", "bzip2": b"BZh", "xz": b"\xfd7zXZ\x00"}
+
+
+# DEVPORT-6: the build-host paths the OFFICIAL Godot 4.7.2 export templates carry (SHA-pinned upstream binaries; every exported game and
+# launcher executable is one): Godot's GitHub Actions runner's (its home folder "runner") Rust crate sources (AccessKit) in the Linux and Windows templates, and the
+# C++/WinRT headers of its Windows build container. Measured on a Linux CI host 2026-10-17: linux_{debug,release}.x86_64 105 matches each, all under
+# the first prefix; windows_{debug,release}_x86_64.exe 33 each, under the two. With LOCAL_PATH applied to binaries (7c731b971) every
+# Linux / Windows launcher and game package failed the content audit. Exactly these prefixes are upstream's; any other path still fails.
+UPSTREAM_TEMPLATE_PATHS = (
+    "/" + "home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/",   # split: the commit gate's path rule reads this file
+    "/root/winrt/winrt/",
+)
+
+
+# MACPLAY-1 (Sol r1 on DEVPORT-6, P2): the exemption was a text replacement anywhere in any blob, before every check: a path that
+# only STARTED with an upstream prefix and climbed out of it (/root/winrt/winrt/../../private/x.cpp) passed, inside a game pack too, and a
+# forbidden build prefix below an upstream one was erased before the forbidden-prefix check. Now: the forbidden prefixes are checked on
+# the original text; the exemption applies only to executables (what the official templates are: a pack appended to one is audited
+# member by member as a blob of its own, without the exemption); and only to a whole path that lies below an upstream prefix with no "."
+# or ".." component and no backslash (the path runs to the first NUL, space, quote or other character no build path holds).
+# MACPLAY-1 (Sol r2): "an executable" was two magic bytes: a README-MAC.txt starting "MZ" got the exemption. r3 then required an
+# executable slot and a whole parsed image, but structure is not provenance: a synthetic Mach-O segment in the project-built
+# openbfme-bundle-swap carrying /root/winrt/winrt/private-source.cpp passed both audits (Sol r3, P2).
+# MACPLAY-1 (Sol r3): the exemption now needs verified upstream bytes. An upstream path is exempt only inside a section of the file
+# whose (format, name, size, SHA-256) is one of UPSTREAM_TEMPLATE_SECTIONS below: the read-only data section of an official Godot
+# 4.7.2 x86-64 Linux / Windows template, where all of their upstream paths lie (105 per Linux template in .rodata, 33 per Windows
+# template in .rdata). Godot's export leaves that section byte for byte (it rewrites the "pck" section header / the .rsrc resources and
+# appends the pack): measured 2026-10-18 on exported v0.4.5 / v0.4.6 game and launcher executables of both platforms. And only in the
+# slots that hold an exported Godot template (UPSTREAM_TEMPLATE_SLOTS), never in the project-built GDExtension libraries
+# (openbfme.*.so / .dll / .dylib) or the bundle swap helper (tools/release/macos_bundle_swap.c), whatever bytes they hold. The macOS
+# templates carry no upstream path of these prefixes (their /Users/runner/ paths are replaced when the Mac package is made:
+# package_macos_preview.sanitize_template_slice), so no Mac slot is exempt.
+# Pinned from Godot_v4.7.2-stable_export_templates.tpz (SHA-512 ca4d71c4...4079 as Godot's Godot_v4.7.2-SHA512-SUMS.txt lists it);
+# templates/linux_debug.x86_64 sha256 1a291d3d..., linux_release.x86_64 d9f79ab8..., windows_debug_x86_64.exe 51498b72...,
+# windows_release_x86_64.exe d34d36f3... (the console wrappers windows_*_console.exe carry no such path).
+UPSTREAM_TEMPLATE_SECTIONS = {
+    ("elf", ".rodata", 10337072): "2def8bddcd97034a73b244a9f904304642a59446966326e60e617a13c21d0d44",   # linux_debug.x86_64
+    ("elf", ".rodata", 10148304): "5a61a1899d9645c939135f03ac2c7be2e7beedec1eb51766e5272b82bd97597f",   # linux_release.x86_64
+    ("pe", ".rdata", 20961792): "fe821b19a4d508603f794c07335f013da73a1702de568cabc15911948bbfe57d",     # windows_debug_x86_64.exe
+    ("pe", ".rdata", 20376064): "e2cae493f1bc84d760c20f2accd25886b1d4835deb8c163f3ad4fd3306075870",     # windows_release_x86_64.exe
+}
+# the release slots an exported Linux / Windows Godot template fills (RELEASE_FILES: the game's executable, its console wrapper and the
+# launcher's executable with its embedded pack); nothing else gets the exemption
+UPSTREAM_TEMPLATE_SLOTS = frozenset({"OpenBFME.x86_64", "OpenBFMELauncher.x86_64", "OpenBFME.exe", "OpenBFME.console.exe",
+                                     "OpenBFMELauncher.exe"})
+
+
+def is_template_slot(name: str) -> bool:
+    """`name` (a package path, members of containers after ":") is a slot an exported Linux / Windows Godot template fills"""
+    return re.split(r"[/:]", name)[-1] in UPSTREAM_TEMPLATE_SLOTS
+
+
+_PATH_END = re.compile(r"[\x00-\x20\"'<>|*?\x7f]")
+
+
+def _upstream_spans(text: str) -> list[tuple[int, int]]:
+    """(start, end) of every whole upstream-template path in `text` that stays below its prefix"""
+    spans = []
+    for upstream in UPSTREAM_TEMPLATE_PATHS:
+        at = text.find(upstream)
+        while at >= 0:
+            end_match = _PATH_END.search(text, at)
+            end = end_match.start() if end_match else len(text)
+            rest = text[at + len(upstream):end]
+            if "\\" not in rest and not any(part in (".", "..") for part in rest.split("/")):
+                spans.append((at, end))
+            at = text.find(upstream, at + 1)
+    return spans
+
+
+def _sections(data: bytes) -> list[tuple[str, str, int, int]]:
+    """(format, name, file offset, size) of every section with file bytes of a 64-bit little-endian ELF or a PE file; [] for anything
+    else or anything whose headers do not parse (a section running past the file is left out)"""
+    out = []
+    try:
+        if data[:4] == b"\x7fELF" and data[4:6] == b"\x02\x01":
+            shoff, = struct.unpack_from("<Q", data, 40)
+            shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 58)
+            if shentsize != 64 or shstrndx >= shnum:
+                return []
+            strings, = struct.unpack_from("<Q", data, shoff + shstrndx * shentsize + 24)
+            for i in range(shnum):
+                o = shoff + i * shentsize
+                name_at, typ = struct.unpack_from("<II", data, o)
+                off, size = struct.unpack_from("<QQ", data, o + 24)
+                end = data.index(b"\0", strings + name_at)
+                if typ != 8 and off + size <= len(data):  # not NOBITS
+                    out.append(("elf", data[strings + name_at:end].decode("latin-1"), off, size))
+        elif data[:2] == b"MZ":
+            import pefile  # noqa: PLC0415
+            pe = pefile.PE(data=data, fast_load=True)
+            for s in pe.sections:
+                if s.PointerToRawData + s.SizeOfRawData <= len(data):
+                    out.append(("pe", s.Name.rstrip(b"\0").decode("latin-1"), s.PointerToRawData, s.SizeOfRawData))
+    except Exception:  # noqa: BLE001 (struct.error, ValueError, pefile's PEFormatError: no section table)
+        return []
+    return out
+
+
+def upstream_template_ranges(data: bytes) -> list[tuple[int, int]]:
+    """(start, end) of every section of `data` that is byte for byte a pinned section of an official Godot template
+    (UPSTREAM_TEMPLATE_SECTIONS)"""
+    ranges = []
+    for fmt, name, off, size in _sections(data):
+        want = UPSTREAM_TEMPLATE_SECTIONS.get((fmt, name, size))
+        if want is not None and hashlib.sha256(data[off:off + size]).hexdigest() == want:
+            ranges.append((off, off + size))
+    return ranges
+
+
+def _blank_upstream_paths(data: bytes, ranges: list[tuple[int, int]]) -> bytes:
+    """`data` with every whole upstream-template path that lies inside one of `ranges` (byte offsets: latin-1 and UTF-16 decodings map
+    one to one onto bytes) replaced by NUL bytes of the same length; nothing else changes"""
+    def inside(a: int, b: int) -> bool:
+        return any(lo <= a and b <= hi for lo, hi in ranges)
+    out = bytearray(data)
+    for a, b in _upstream_spans(data.decode("latin-1")):
+        if inside(a, b):
+            out[a:b] = bytes(b - a)
+    even = data[:len(data) // 2 * 2]
+    for encoding in ("utf-16le", "utf-16be"):
+        for a, b in _upstream_spans(even.decode(encoding, "surrogatepass")):
+            if inside(2 * a, 2 * b):
+                out[2 * a:2 * b] = bytes(2 * (b - a))
+    return bytes(out)
+
+
+def _texts(data: bytes) -> list[str]:
+    texts = [data.decode("utf-8", "ignore")]
+    if b"\x00" in data:
+        texts.extend((data.decode("utf-16le", "ignore"), data.decode("utf-16be", "ignore")))
+    return texts
+
+
+def developer_path_problem(data: bytes, forbidden_prefixes: tuple[str, ...] = (), template_slot: bool = False) -> str:
+    """"" or why `data` leaks a build path. `template_slot`: the blob fills a release slot of an exported Godot template
+    (UPSTREAM_TEMPLATE_SLOTS); only then are the upstream paths inside its pinned upstream sections exempt."""
+    prefixes = tuple(prefix.rstrip("/\\") for prefix in forbidden_prefixes if prefix.rstrip("/\\"))
+    if any(prefix in text for text in _texts(data) for prefix in prefixes):
+        return "exact checkout/build/stage path"
+    ranges = upstream_template_ranges(data) if template_slot else []
+    scanned = _blank_upstream_paths(data, ranges) if ranges else data
+    if any(LOCAL_PATH.search(text) for text in _texts(scanned)):
+        return "developer-machine path"
+    return ""
 
 
 def stream_kind(data: bytes) -> str | None:
@@ -106,11 +289,19 @@ def pck_entries(data: bytes, base: int = 0, end: int | None = None) -> list[tupl
     end = len(data) if end is None else end
     if data[base:base + 4] != PCK_MAGIC:
         raise ValueError("not a Godot pack")
-    fmt, _major, _minor, _patch, flags = struct.unpack_from("<5I", data, base + 4)
+    fmt, major, minor, patch, flags = struct.unpack_from("<5I", data, base + 4)
     if fmt not in (2, 3, 4):
-        raise ValueError(f"unknown pack format {fmt}")
+        raise ValueError("unknown pack format (not 2, 3 or 4; its value is not printed: it may be text)")
     if flags & 1:
         raise ValueError("encrypted pack directory: cannot be audited")
+    # PUBLISH-2 r4 (Sol r3 P2: a hostname in the reserved header words passed every audit): every header and directory byte is a checked
+    # value, so nothing but the entry names (checked as names) and contents (audited) can carry text: the Godot version numbers below 256,
+    # no flag but PACK_REL_FILEBASE, the 16 reserved words zero, the files right after the header (alignment padding only), each entry's
+    # name UTF-8 with zero padding, its MD5 its content's (Godot 4.7.2 writes it: v0.4.6's packs) and its flags zero
+    if max(major, minor, patch) > 255:
+        raise ValueError("a pack header version number above 255")
+    if flags & ~2:
+        raise ValueError("unknown pack flags (their value is not printed: it may be text)")
     rel_base = flags & 2  # PACK_REL_FILEBASE: offsets relative to the pack start
     file_base, = struct.unpack_from("<Q", data, base + 24)
     if fmt >= 3:
@@ -120,6 +311,11 @@ def pck_entries(data: bytes, base: int = 0, end: int | None = None) -> list[tupl
     else:
         header_end = base + 32 + 16 * 4
         pos = header_end
+    if any(data[header_end - 64:header_end]):
+        raise ValueError("non-zero reserved words in the pack header")
+    files_at = base + file_base if rel_base or fmt >= 3 else file_base
+    if not (header_end <= files_at <= header_end + 64 if fmt >= 3 else files_at <= end):
+        raise ValueError("the pack's files do not start right after its header (the offset is not printed: it may be text)")
     dir_start = pos
     count, = struct.unpack_from("<I", data, pos)
     pos += 4
@@ -128,17 +324,28 @@ def pck_entries(data: bytes, base: int = 0, end: int | None = None) -> list[tupl
     for _ in range(count):
         n, = struct.unpack_from("<I", data, pos)
         pos += 4
-        path = data[pos:pos + n].rstrip(b"\0").decode("utf-8", "replace")
+        raw = data[pos:pos + n].rstrip(b"\0")
+        if b"\0" in raw:
+            raise ValueError("a pack entry name with bytes after its end")
+        try:
+            path = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError("a pack entry name that is not UTF-8") from None
         pos += n
         ofs, size = struct.unpack_from("<QQ", data, pos)
+        md5 = data[pos + 16:pos + 32]
         pos += 16 + 16  # offset, size, md5
         eflags, = struct.unpack_from("<I", data, pos)
         pos += 4
         if eflags & 1:
             raise ValueError(f"encrypted pack entry {path}: cannot be audited")
-        start = (base + file_base if rel_base or fmt >= 3 else file_base) + ofs
+        if eflags:
+            raise ValueError(f"pack entry {path}: unknown flags (their value is not printed: it may be text)")
+        start = files_at + ofs
         if start < base or start + size > end:
             raise ValueError(f"pack entry {path} lies outside the pack")
+        if hashlib.md5(data[start:start + size]).digest() != md5:
+            raise ValueError(f"pack entry {path}: its MD5 is not its content's")
         out.append((path, data[start:start + size]))
         used.append((start, start + size))
     used.append((dir_start, pos))
@@ -236,17 +443,32 @@ def zip_unexplained(data: bytes, infos, start_dir: int) -> list[str]:
 
 
 class Audit:
-    def __init__(self) -> None:
+    # DEVPORT-6: which developer-path rule applies. A release package (binaries, packs) gets LOCAL_PATH on every blob, containers included
+    # (any /Users/<name>/, /home/<name>/ or /tmp/<dir>/ in a shipped file is a leaked build path). The public SOURCE tree
+    # (autorelease.py's SyncAudit) keeps the commit gate's own rule (tools/precommit.py MACHINE_PATH on text leaves, as before the Mac
+    # packaging): LOCAL_PATH there refused the tree's own tests and docs (/tmp/... examples, test fixtures), so every sync failed.
+    commit_gate_paths = False
+
+    def __init__(self, forbidden_prefixes: tuple[str, ...] = ()) -> None:
         self.problems: list[str] = []
         self.files = 0
+        self.forbidden_prefixes = forbidden_prefixes
 
     def blob(self, name: str, data: bytes, depth: int = 0) -> None:
         """Containers are recognised by their bytes, never by their names (review r1: a renamed .zip or .tar.gz passed with BIG/DDS
         inside): Godot packs (also appended to an executable), ZIP (also appended), gzip / bzip2 / xz streams and tar archives are opened
         and every member audited the same way, at any depth up to MAX_DEPTH; a container kind that cannot be opened is a finding."""
         self.files += 1
+        path_problem = "" if self.commit_gate_paths else developer_path_problem(
+            data, self.forbidden_prefixes, template_slot=is_template_slot(name))
+        if path_problem:
+            self.problems.append(f"{path_problem} in {name}")
         if depth > MAX_DEPTH:
             self.problems.append(f"containers nested deeper than {MAX_DEPTH}: {name}")
+            return
+        pinned = aio_file(data)
+        if pinned:
+            self.problems.append(f"a game file the AIO service distributes ({pinned}): {name}")
             return
         low = name.lower()
         if Path(low.rsplit(":", 1)[-1]).suffix in RETAIL_SUFFIXES:
@@ -296,7 +518,7 @@ class Audit:
         if zipfile.is_zipfile(io.BytesIO(data)):
             self.zip(name, data, depth)
             return
-        if b"\x00" not in data[:4096] and MACHINE_PATH.search(data[:1 << 20].decode("utf-8", "replace")):
+        if self.commit_gate_paths and b"\x00" not in data[:4096] and MACHINE_PATH.search(data[:1 << 20].decode("utf-8", "replace")):
             self.problems.append(f"developer-machine path in {name}")
 
     def pack(self, name: str, data: bytes, base: int, depth: int = 0, end: int | None = None) -> None:
@@ -384,28 +606,120 @@ _GAME_FILES = {
     "windows": {"OpenBFME.exe": "pe", "OpenBFME.console.exe": "pe", "openbfme.windows.template_debug.x86_64.dll": "pe", "OpenBFME.pck": "pck",
                 "README_TESTERS.txt": "text", "LICENSE": "text", "NOTICE": "text", "VERSION": "text"},
 }
+_MAC_GAME_FILES = {
+    "OpenBFME.app/Contents/MacOS/OpenBFME": "macho",
+    "OpenBFME.app/Contents/Resources/OpenBFME.pck": "pck",
+    "OpenBFME.app/Contents/Resources/icon.icns": "binary",
+    "OpenBFME.app/Contents/Resources/PrivacyInfo.xcprivacy": "text",
+    "OpenBFME.app/Contents/Info.plist": "text",
+    "OpenBFME.app/Contents/PkgInfo": "binary",
+    "OpenBFME.app/Contents/_CodeSignature/CodeResources": "binary",
+    "OpenBFME.app/Contents/Frameworks/openbfme.macos.template_debug.universal.dylib": "macho",
+    "README_TESTERS.txt": "text", "LICENSE": "text", "NOTICE": "text", "VERSION": "text",
+}
+_MAC_LAUNCHER_APP_FILES = {
+    "OpenBFMELauncher.app/Contents/MacOS/OpenBFME Launcher": "macho",
+    "OpenBFMELauncher.app/Contents/Resources/OpenBFME Launcher.pck": "pck",
+    "OpenBFMELauncher.app/Contents/Resources/icon.icns": "binary",
+    "OpenBFMELauncher.app/Contents/Resources/PrivacyInfo.xcprivacy": "text",
+    "OpenBFMELauncher.app/Contents/Info.plist": "text",
+    "OpenBFMELauncher.app/Contents/PkgInfo": "binary",
+    "OpenBFMELauncher.app/Contents/_CodeSignature/CodeResources": "binary",
+}
+_MAC_LAUNCHER_FILES = {
+    **_MAC_LAUNCHER_APP_FILES,
+    "README.txt": "text", "LICENSE": "text", "NOTICE": "text", "VERSION": "text",
+}
 RELEASE_FILES = {
     # lane ONEZIP-1: the release's package of a platform is the combined one: the game's files and the OpenBFME Launcher's executable
     # (its pack embedded, checked like the launcher package's) with the launcher's README
     "linux": {**_GAME_FILES["linux"], "OpenBFMELauncher.x86_64": "elf+pck", "README_LAUNCHER.txt": "text"},
     "windows": {**_GAME_FILES["windows"], "OpenBFMELauncher.exe": "pe+pck", "README_LAUNCHER.txt": "text"},
+    "macos-universal": {**_MAC_GAME_FILES, **_MAC_LAUNCHER_APP_FILES, "README_LAUNCHER.txt": "text"},
     # lane ONEZIP-1 r2: the signed payload inventory, added by seal_package.py on the machine with the release key (the archives package.sh
     # writes have none yet: OPTIONAL_FILES)
-    # the game alone: package.sh --no-launcher (a local trial, never a release)
+    # Older game-only audit platforms and the explicit combined Apple Silicon preview.
     "game-linux": _GAME_FILES["linux"],
     "game-windows": _GAME_FILES["windows"],
+    "game-macos-universal": _MAC_GAME_FILES,
+    "game-macos-arm64-unstable-preview": {
+        "OpenBFME.app/Contents/MacOS/OpenBFME": "macho-arm64",
+        "OpenBFME.app/Contents/Resources/OpenBFME.pck": "pck",
+        "OpenBFME.app/Contents/Resources/icon.icns": "binary",
+        "OpenBFME.app/Contents/Resources/PrivacyInfo.xcprivacy": "text",
+        "OpenBFME.app/Contents/Info.plist": "text",
+        "OpenBFME.app/Contents/PkgInfo": "binary",
+        "OpenBFME.app/Contents/_CodeSignature/CodeResources": "binary",
+        "OpenBFME.app/Contents/Frameworks/openbfme.macos.template_debug.arm64.dylib": "macho-arm64",
+        "OpenBFME Launcher.app/Contents/MacOS/OpenBFME Launcher": "macho-arm64",
+        "OpenBFME Launcher.app/Contents/Resources/OpenBFME Launcher.pck": "pck",
+        "OpenBFME Launcher.app/Contents/Resources/icon.icns": "binary",
+        "OpenBFME Launcher.app/Contents/Resources/PrivacyInfo.xcprivacy": "text",
+        "OpenBFME Launcher.app/Contents/Info.plist": "text",
+        "OpenBFME Launcher.app/Contents/PkgInfo": "binary",
+        "OpenBFME Launcher.app/Contents/_CodeSignature/CodeResources": "binary",
+        "README-MAC.txt": "text",
+        "LICENSE": "text",
+        "NOTICE": "text",
+        "VERSION": "text",
+    },
     # lane LAUNCH-1: the OpenBFME Launcher packages (tools/release/build_launcher.sh)
     # the launcher's pack is embedded in its executable (one file: a self-update replaces it with one rename, Sol r1)
     "launcher-linux": {"OpenBFMELauncher.x86_64": "elf+pck", "README.txt": "text", "LICENSE": "text", "NOTICE": "text", "VERSION": "text"},
     "launcher-windows": {"OpenBFMELauncher.exe": "pe+pck", "README.txt": "text", "LICENSE": "text", "NOTICE": "text", "VERSION": "text"},
+    "launcher-macos-universal": _MAC_LAUNCHER_FILES,
 }
-OPTIONAL_FILES = {p: {"payload.json": "text", "payload.json.sig": "sig"} for p in ("linux", "windows")}
-TOP_DIR = re.compile(r"^openbfme-(?!launcher-)[0-9A-Za-z][0-9A-Za-z.+_-]*-(linux|windows)-x64$")
-LAUNCHER_TOP_DIR = re.compile(r"^openbfme-launcher-[0-9A-Za-z][0-9A-Za-z.+_-]*-(linux|windows)-x64$")
+RELEASE_FILES["macos-arm64"] = {
+    **RELEASE_FILES["game-macos-arm64-unstable-preview"],
+    "OpenBFME Launcher.app/Contents/MacOS/openbfme-bundle-swap": "macho-arm64",
+}
+# MACPLAY-1 (Sol r3): every template slot is a file of the releases (a renamed release file cannot keep an exemption it lost)
+assert UPSTREAM_TEMPLATE_SLOTS <= {n.split("/")[-1] for files in RELEASE_FILES.values() for n in files}
+# MACPLAY-1: the Apple Silicon package is sealed too (seal_package.py), after the Mac build host returned it unsealed
+OPTIONAL_FILES = {p: {"payload.json": "text", "payload.json.sig": "sig"} for p in ("linux", "windows", "macos-universal", "macos-arm64")}
+TOP_DIR = re.compile(
+    r"^openbfme-(?!launcher-)[0-9A-Za-z][0-9A-Za-z.+_-]*-(linux|windows)-x64$|"
+    r"^openbfme-(?!launcher-)[0-9A-Za-z][0-9A-Za-z.+_-]*-macos-universal$|"
+    r"^openbfme-(?!launcher-)[0-9A-Za-z][0-9A-Za-z.+_-]*-macos-arm64$"
+)
+PREVIEW_TOP_DIR = "openbfme-v0.4.6-macos-arm64-unstable-preview"
+LAUNCHER_TOP_DIR = re.compile(r"^openbfme-launcher-[0-9A-Za-z][0-9A-Za-z.+_-]*-(linux|windows)-x64$|^openbfme-launcher-[0-9A-Za-z][0-9A-Za-z.+_-]*-macos-universal$")
+
+# Owner-approved OpenBFME seal, exported by Godot 4.7.2 from PNG SHA-256
+# 32180a4153977ed292bd00626a8232380b929e2dee4a9ee66d4a13b75ab1a48d (POWEREDBY-1).
+PINNED_GAME_BRANDING = {
+    ".godot/imported/poweredby_openbfme.png-8e49593c1d11f096cae531ecedee93ce.ctex":
+        "07492d4d17f1fa16504a97bcf92c71155696e673539e410fed4b5b23d84ccb8e",
+    "assets/brand/online_branding.tres":
+        "ac35cf8ac2e5ef425f10e15a549ce5a3ff709446bdf07d1ee347b1ed99f43ac9",
+    "assets/brand/poweredby_openbfme.png.import":
+        "54674bc24f279dc10093a40b14992eb68beee5d6188c3b37027b2eb6e8e4c5b3",
+}
+
+# DEVPORT-6: PLATFORMICON-1's lobby icons (godot/assets/platform_icons, our own glyphs from tools/platformicon/make_icons.py, pinned in
+# public_binaries.txt) as Godot 4.7.2 exports them: the same bytes from the Linux x64 and the macOS Apple Silicon presets (measured on
+# a Linux x64 CI host and the Apple Silicon Mac, 2026-10-16). Without them every game pack since PLATFORMICON-1 failed this allowlist (the archive's next
+# Windows / Linux release and the first Mac package build).
+PINNED_GAME_ICONS = {
+    ".godot/imported/linux.png-e3b3f6dbbb74c608680942a1b07c4593.ctex":
+        "2810e4eb3887d6c0e5f1184ea254176c36d9b737e7a3c0f56dffe558cdc2c3dc",
+    ".godot/imported/macos.png-40b991ba36498511f07038e54095534b.ctex":
+        "4f74bba0de07d67bef95977890d2274e1103dbe4598e371199690c59d66237d2",
+    ".godot/imported/windows.png-d254cfae9b851ca9c851d4089a8e9ea3.ctex":
+        "e26a38cfaeeb5d1214725310b3014ba579fa2b1ac28d331af9954b2b8c1c1791",
+    "assets/platform_icons/linux.png.import":
+        "a0fc160c61169b175b3bff1e9d9c89e8e3f8d31a9cb6e9ac71b7ac277871ca44",
+    "assets/platform_icons/macos.png.import":
+        "1bbc06e574486fa9a1bd7dc8af98c9f92aab0d01e37d635a968b533173632190",
+    "assets/platform_icons/windows.png.import":
+        "8a9c65f2799985c024f5d632b1c450420b202096bb6a5d32ca9d674bded99462",
+}
 
 # the Godot resource types of this project a pack may hold (godot/export_presets.cfg exports scripts as text), each with its format check
 PCK_RULES = [
     (re.compile(r"^dev/[\w/.-]+\.lua$"), "text"),
+    *((re.compile(re.escape(path) + r"\Z"), "brand") for path in PINNED_GAME_BRANDING),
+    *((re.compile(re.escape(path) + r"\Z"), "icon") for path in PINNED_GAME_ICONS),
     (re.compile(r"^\.godot/exported/\d+/export-[0-9a-f]{32}-[\w.-]+\.scn$"), "rsrc"),
     (re.compile(r"^(scripts|tests)/[\w/.-]+\.gd$"), "text"),
     (re.compile(r"^scenes/[\w/.-]+\.tscn$"), "scene"),  # scenes ship as their committed text (project.godot: no binary conversion)
@@ -427,12 +741,31 @@ LAUNCHER_PCK_RULES = [
     (re.compile(r"^\.godot/uid_cache\.bin$"), "uidcache"),
     (re.compile(r"^project\.binary$"), "ecfg"),
     (re.compile(r"^build_info\.json$"), "text"),
+    (re.compile(r"^README_LAUNCHER_MACOS\.txt$"), "text"),
     # lane UI-5: the launcher's OFL fonts, exported as their own bytes (importer "keep"), each exactly a file public_binaries.txt pins
     # under launcher/fonts/, and their licences
     (re.compile(r"^fonts/[\w-]+\.ttf$"), "font"),
     (re.compile(r"^fonts/OFL-[\w-]+\.txt$"), "text"),
 ]
 PUBLIC_BINARIES = Path(__file__).resolve().parent / "public_binaries.txt"
+ICON_DIR = "assets/platform_icons"   # godot/assets/platform_icons in the repository (PLATFORMICON-1)
+
+
+def pinned_icons() -> dict[str, str]:
+    """{file name: sha256} of PLATFORMICON-1's icons that tools/release/public_binaries.txt lists (godot/assets/platform_icons/<name>.png)"""
+    out = {}
+    for line in PUBLIC_BINARIES.read_text(encoding="utf-8").splitlines():
+        m = re.fullmatch(rf"([0-9a-f]{{64}})  godot/{ICON_DIR}/([\w-]+\.png)  \S.*", line)
+        if m:
+            out[m.group(2)] = m.group(1)
+    return out
+
+
+def icon_import_paths(name: str) -> tuple[str, str]:
+    """(the .import file, the imported texture) Godot 4.7's export writes for res://assets/platform_icons/<name>: the texture importer's
+    <file>-<md5 of its res:// path>.ctex under .godot/imported (checked on the v0.4.7 package)"""
+    res = f"res://{ICON_DIR}/{name}"
+    return f"{ICON_DIR}/{name}.import", f".godot/imported/{name}-{hashlib.md5(res.encode()).hexdigest()}.ctex"
 
 
 def pinned_fonts() -> dict[str, str]:
@@ -499,6 +832,16 @@ def binary_problems(name: str, kind: str, b: bytes) -> list[str]:
     if kind_found:
         problems.append(f"{name}: retail-format bytes ({kind_found})")
     try:
+        if kind == "macho-arm64":
+            end = macho_arm64_extent(b)
+            if end != len(b):
+                problems.append(f"{name}: {len(b) - end} bytes after the Mach-O image" if end < len(b) else f"{name}: truncated Mach-O")
+            return problems
+        if kind in ("macho", "macho+pck"):
+            end = macho_extent(b)
+            if end != len(b):
+                problems.append(f"{name}: {len(b) - end} bytes after the Mach-O image" if end < len(b) else f"{name}: truncated Mach-O")
+            return problems
         if kind == "elf":
             end = elf_extent(b)
             if end != len(b):
@@ -516,7 +859,102 @@ def binary_problems(name: str, kind: str, b: bytes) -> list[str]:
     return problems
 
 
-def embedded_pack_problems(name: str, kind: str, b: bytes) -> list[str]:
+def macho_extent(b: bytes) -> int:
+    """Check the universal Mach-O header, slice bounds, and load-command bounds."""
+    if len(b) < 8 or b[:4] != b"\xca\xfe\xba\xbe":
+        raise ValueError("not a fat Mach-O")
+    n, = struct.unpack_from(">I", b, 4)
+    if n != 2 or len(b) < 8 + n * 20:
+        raise ValueError("fat Mach-O must contain two architecture records")
+    wanted = {0x01000007, 0x0100000c}
+    got = set()
+    end = 8 + n * 20
+    for i in range(n):
+        cpu, _sub, off, size, align = struct.unpack_from(">IIIII", b, 8 + i * 20)
+        if cpu not in wanted or off < end or size == 0 or off + size > len(b) or align > 31:
+            raise ValueError("fat Mach-O architecture bounds are invalid")
+        if off % (1 << align):
+            raise ValueError("fat Mach-O slice is not aligned as recorded")
+        if any(b[end:off]):
+            raise ValueError("fat Mach-O slice padding is not zero")
+        got.add(cpu)
+        end = max(end, off + size)
+        thin = b[off:off + size]
+        if thin[:4] not in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"):
+            raise ValueError("fat Mach-O contains a non-64-bit slice")
+        if len(thin) < 32:
+            raise ValueError("fat Mach-O slice header is truncated")
+        endian = "<" if thin[:4] == b"\xcf\xfa\xed\xfe" else ">"
+        thin_cpu, = struct.unpack_from(endian + "I", thin, 4)
+        if thin_cpu != cpu:
+            raise ValueError("fat Mach-O CPU type does not match its thin slice")
+        ncmds, sizeofcmds = struct.unpack_from(endian + "II", thin, 16)
+        pos = 32
+        command_limit = 32 + sizeofcmds
+        if command_limit > len(thin):
+            raise ValueError("Mach-O load commands exceed slice bounds")
+        image_end = command_limit
+        for _ in range(ncmds):
+            if pos + 8 > command_limit:
+                raise ValueError("Mach-O load command is truncated")
+            cmd, cmdsize = struct.unpack_from(endian + "II", thin, pos)
+            if cmdsize < 8 or cmdsize % 8 or pos + cmdsize > command_limit:
+                raise ValueError("Mach-O load command bounds are invalid")
+            if cmd == 0x19:  # LC_SEGMENT_64
+                if cmdsize < 72:
+                    raise ValueError("Mach-O LC_SEGMENT_64 command is truncated")
+                fileoff, filesize = struct.unpack_from(endian + "QQ", thin, pos + 40)
+                if fileoff + filesize > len(thin):
+                    raise ValueError("Mach-O segment exceeds its slice")
+                image_end = max(image_end, fileoff + filesize)
+            pos += cmdsize
+        if pos != command_limit:
+            raise ValueError("Mach-O load command sizes do not sum to sizeofcmds")
+        if image_end != len(thin):
+            raise ValueError("Mach-O load commands exceed slice")
+    if got != wanted:
+        raise ValueError("fat Mach-O must contain arm64 and x86_64")
+    return end
+
+
+def macho_arm64_extent(b: bytes) -> int:
+    """Check a thin 64-bit arm64 Mach-O header, load commands, segments and image extent."""
+    if len(b) < 32 or b[:4] != b"\xcf\xfa\xed\xfe":
+        raise ValueError("not a thin 64-bit little-endian Mach-O")
+    cpu, = struct.unpack_from("<I", b, 4)
+    if cpu != 0x0100000c:
+        raise ValueError("Mach-O CPU type is not arm64")
+    ncmds, sizeofcmds = struct.unpack_from("<II", b, 16)
+    pos = 32
+    command_limit = 32 + sizeofcmds
+    if sizeofcmds % 8 or command_limit > len(b):
+        raise ValueError("Mach-O load commands exceed file bounds")
+    image_end = command_limit
+    for _ in range(ncmds):
+        if pos + 8 > command_limit:
+            raise ValueError("Mach-O load command is truncated")
+        cmd, cmdsize = struct.unpack_from("<II", b, pos)
+        if cmdsize < 8 or cmdsize % 8 or pos + cmdsize > command_limit:
+            raise ValueError("Mach-O load command bounds are invalid")
+        if cmd == 0x19:
+            if cmdsize < 72:
+                raise ValueError("Mach-O LC_SEGMENT_64 command is truncated")
+            fileoff, filesize = struct.unpack_from("<QQ", b, pos + 40)
+            if fileoff + filesize > len(b):
+                raise ValueError("Mach-O segment exceeds file bounds")
+            image_end = max(image_end, fileoff + filesize)
+        pos += cmdsize
+    if pos != command_limit:
+        raise ValueError("Mach-O load command sizes do not sum to sizeofcmds")
+    return image_end
+
+
+def embedded_pack_problems(
+    name: str,
+    kind: str,
+    b: bytes,
+    forbidden_prefixes: tuple[str, ...] = (),
+) -> list[str]:
     """The launcher's executable with its pack embedded the way Godot 4.7's export does it: the pack is the executable's last section
     (ELF: covered by the section table; PE: a section named "pck", no overlay), followed by the <u64 pack size> "GDPC" trailer inside it;
     every byte of the file is the image or the pack, and the pack holds only the launcher's resource types (LAUNCHER_PCK_RULES)."""
@@ -531,6 +969,9 @@ def embedded_pack_problems(name: str, kind: str, b: bytes) -> list[str]:
         if kind == "elf+pck":
             if elf_extent(b) != len(b):
                 problems.append(f"{name}: bytes outside what the ELF headers describe")
+        elif kind == "macho+pck":
+            if macho_extent(b[:base]) != base:
+                problems.append(f"{name}: bytes outside what the Mach-O headers describe before the pack")
         else:
             import pefile  # noqa: PLC0415
             pe = pefile.PE(data=b, fast_load=True)
@@ -541,7 +982,9 @@ def embedded_pack_problems(name: str, kind: str, b: bytes) -> list[str]:
                 problems.append(f"{name}: the pack is not exactly the last PE section")
     except (ValueError, struct.error, Exception) as e:
         problems.append(f"{name}: not a valid {kind.split('+')[0].upper()} file ({e})")
-    problems += pck_release_problems(f"{name}:pck", b[base:len(b) - 12], LAUNCHER_PCK_RULES)
+    problems += pck_release_problems(
+        f"{name}:pck", b[base:len(b) - 12], LAUNCHER_PCK_RULES, forbidden_prefixes,
+    )
     if embedded_pck_base(b[:base]) is not None:
         problems.append(f"{name}: a second pack is embedded")
     return problems
@@ -580,7 +1023,12 @@ def ecfg_problem(b: bytes) -> str:
         return "truncated"
 
 
-def pck_release_problems(name: str, data: bytes, rules: list | None = None) -> list[str]:
+def pck_release_problems(
+    name: str,
+    data: bytes,
+    rules: list | None = None,
+    forbidden_prefixes: tuple[str, ...] = (),
+) -> list[str]:
     rules = PCK_RULES if rules is None else rules
     try:
         entries = pck_entries(data)
@@ -589,13 +1037,22 @@ def pck_release_problems(name: str, data: bytes, rules: list | None = None) -> l
     problems = []
     for path, content in entries:
         where = f"{name}:{path}"
+        path_problem = developer_path_problem(content, forbidden_prefixes)
+        if path_problem:
+            problems.append(f"{where}: {path_problem}")
         rule = next((kind for rx, kind in rules if rx.match(path)), None)
         if rule is None:
             problems.append(f"{where}: not a resource type this project exports")
             continue
+        if rule == "brand" and hashlib.sha256(content).hexdigest() != PINNED_GAME_BRANDING[path]:
+            problems.append(f"{where}: not the hash-pinned owner artwork resource")
+        if rule == "icon" and hashlib.sha256(content).hexdigest() != PINNED_GAME_ICONS[path]:
+            problems.append(f"{where}: not the hash-pinned platform icon resource")
         kind = retail_content(content)
         if kind:
             problems.append(f"{where}: retail-format bytes ({kind})")
+        if aio_file(content):
+            problems.append(f"{where}: a game file the AIO service distributes ({aio_file(content)})")
         for what in embedded_signatures(content, text=rule in ("text", "remap", "scene")):
             problems.append(f"{where}: contains a {what} signature")
         if rule in ("text", "remap", "scene") and len(content) > MAX_TEXT:
@@ -632,27 +1089,60 @@ def pck_release_problems(name: str, data: bytes, rules: list | None = None) -> l
     return problems
 
 
-def release_file_problems(platform: str, files: dict[str, bytes], where: str) -> list[str]:
+def release_file_problems(
+    platform: str,
+    files: dict[str, bytes],
+    where: str,
+    forbidden_prefixes: tuple[str, ...] = (),
+) -> list[str]:
     """The files of one package (names relative to its top folder) against the allowlist."""
     allowed = dict(RELEASE_FILES[platform])
     optional = OPTIONAL_FILES.get(platform, {})
     allowed.update(optional)
     problems = [f"{where}: {n} is not a file of the release" for n in sorted(set(files) - set(allowed))]
+    problems += [f"{where}/{n}: a game file the AIO service distributes ({aio_file(files[n])})" for n in sorted(files) if aio_file(files[n])]
     problems += [f"{where}: {n} is missing" for n in sorted(set(allowed) - set(files) - set(optional))]
     if (set(optional) & set(files)) and set(optional) - set(files):
         problems.append(f"{where}: {' and '.join(sorted(optional))} come together")
     for n in sorted(set(files) & set(allowed)):
         kind, data = allowed[n], files[n]
+        is_mac_arm64 = platform in ("macos-arm64", "game-macos-arm64-unstable-preview")
+        if is_mac_arm64:
+            path_problem = developer_path_problem(data, forbidden_prefixes, template_slot=n in UPSTREAM_TEMPLATE_SLOTS)
+            if path_problem:
+                problems.append(f"{where}/{n}: {path_problem}")
         if kind == "sig":
             if len(data) != 64:
                 problems.append(f"{where}/{n}: {len(data)} bytes (an Ed25519 signature is 64)")
             continue
-        if kind in ("elf", "pe"):
+        if kind in ("elf", "pe", "macho", "macho+pck", "macho-arm64"):
+            if kind == "macho+pck":
+                problems += embedded_pack_problems(
+                    f"{where}/{n}", kind, data, forbidden_prefixes if is_mac_arm64 else (),
+                )
+                continue
             problems += binary_problems(f"{where}/{n}", kind, data)
         elif kind in ("elf+pck", "pe+pck"):
-            problems += embedded_pack_problems(f"{where}/{n}", kind, data)
+            problems += embedded_pack_problems(
+                f"{where}/{n}", kind, data, forbidden_prefixes if is_mac_arm64 else (),
+            )
         elif kind == "pck":
-            problems += pck_release_problems(f"{where}/{n}", data, LAUNCHER_PCK_RULES if platform.startswith("launcher-") else PCK_RULES)
+            launcher_pack = platform.startswith("launcher-") or (
+                platform == "macos-universal" and n.startswith("OpenBFMELauncher.app/")
+            ) or (
+                platform in ("game-macos-arm64-unstable-preview", "macos-arm64")
+                and n.startswith("OpenBFME Launcher.app/")
+            )
+            problems += pck_release_problems(
+                f"{where}/{n}", data, LAUNCHER_PCK_RULES if launcher_pack else PCK_RULES,
+                forbidden_prefixes if is_mac_arm64 else (),
+            )
+        elif kind == "binary":
+            t = retail_content(data)
+            if t:
+                problems.append(f"{where}/{n}: retail-format bytes ({t})")
+            for what in embedded_signatures(data):
+                problems.append(f"{where}/{n}: contains a {what} signature")
         else:
             t = text_problem(data) or retail_content(data)
             if t:
@@ -661,7 +1151,7 @@ def release_file_problems(platform: str, files: dict[str, bytes], where: str) ->
                 problems.append(f"{where}/{n}: contains a {what} signature")
             if len(data) > MAX_TEXT:
                 problems.append(f"{where}/{n}: {len(data)} bytes of text (more than {MAX_TEXT})")
-            if MACHINE_PATH.search(data.decode("utf-8", "replace")):
+            if not is_mac_arm64 and MACHINE_PATH.search(data.decode("utf-8", "replace")):
                 problems.append(f"{where}/{n}: developer-machine path")
     return problems
 
@@ -744,7 +1234,7 @@ def read_release_tar_gz(data: bytes, where: str) -> tuple[str | None, dict[str, 
     return top, files, problems
 
 
-def read_release_zip(data: bytes, where: str) -> tuple[str | None, dict[str, bytes], list[str]]:
+def read_release_zip(data: bytes, where: str, nested: bool = False) -> tuple[str | None, dict[str, bytes], list[str]]:
     """A package .zip, strictly: no prefix, no comment, no directory entries, stored or deflated members whose compressed data decodes
     exactly to the member (no unused tail), and nothing outside the entries and the central directory."""
     try:
@@ -761,12 +1251,23 @@ def read_release_zip(data: bytes, where: str) -> tuple[str | None, dict[str, byt
     files: dict[str, bytes] = {}
     top = None
     for info in infos:
-        parts = info.filename.split("/")
+        name = info.filename[:-1] if info.filename.endswith("/") else info.filename
+        parts = name.split("/")
+        if name.startswith("/") or "\\" in name or any(part in ("", ".", "..") for part in parts):
+            problems.append(f"{where}:{info.filename}: unsafe member path")
+            continue
         if info.filename.endswith("/") or info.is_dir():
             _, why = zip_member_exact(data, info)
             if why:
                 problems.append(f"{where}:{info.filename}: {why}")
             problems.append(f"{where}: directory entry {info.filename} (none are written)")
+            continue
+        mode = (info.external_attr >> 16) & 0xFFFF
+        if info.create_system == 3 and stat.S_IFMT(mode) not in (0, stat.S_IFREG):
+            problems.append(f"{where}:{info.filename}: a link or another special file")
+            continue
+        if info.flag_bits & 1:
+            problems.append(f"{where}:{info.filename}: an encrypted member")
             continue
         content, why = zip_member_exact(data, info)
         if why:
@@ -775,17 +1276,18 @@ def read_release_zip(data: bytes, where: str) -> tuple[str | None, dict[str, byt
         n, m = struct.unpack_from("<HH", data, info.header_offset + 26)
         if info.extra or m or info.comment:  # make_archive.py writes none (review r4: payloads in extra fields and entry comments)
             problems.append(f"{where}:{info.filename}: extra fields or an entry comment (none are written)")
-        if len(parts) != 2 or (top is not None and parts[0] != top):
+        if (len(parts) < 2 if nested else len(parts) != 2) or (top is not None and parts[0] != top):
             problems.append(f"{where}: {info.filename} is not a file of the package folder")
             continue
         top = top or parts[0]
-        if parts[1] in files:
+        rel = "/".join(parts[1:])
+        if rel in files:
             problems.append(f"{where}: {info.filename} appears twice")
-        files[parts[1]] = content
+        files[rel] = content
     return top, files, problems
 
 
-def check_release(platform: str, path: Path) -> list[str]:
+def check_release(platform: str, path: Path, forbidden_prefixes: tuple[str, ...] = ()) -> list[str]:
     """A package folder, a package archive, or a SHA256SUMS file (with its archives next to it). `platform`: linux, windows,
     launcher-linux or launcher-windows."""
     where = path.name
@@ -794,12 +1296,16 @@ def check_release(platform: str, path: Path) -> list[str]:
         files, problems = {}, []
         for f in sorted(path.rglob("*")):
             rel = f.relative_to(path)
-            if f.is_dir() or len(rel.parts) != 1:
-                problems.append(f"{where}: {rel} is not a file of the release")
-            elif f.is_symlink() or not f.is_file():
+            if f.is_symlink() or not (f.is_file() or f.is_dir()):
                 problems.append(f"{where}: {rel} is not a regular file")
+            elif f.is_dir():
+                if base not in ("macos-universal", "macos-arm64-unstable-preview", "macos-arm64"):
+                    problems.append(f"{where}: {rel} is not a file of the release")
             else:
-                files[rel.name] = f.read_bytes()
+                if len(rel.parts) != 1 and base not in ("macos-universal", "macos-arm64-unstable-preview", "macos-arm64"):
+                    problems.append(f"{where}: {rel} is not a file of the release")
+                else:
+                    files["/".join(rel.parts)] = f.read_bytes()
         top = path.name
     elif path.name.startswith("SHA256SUMS"):
         return sums_problems(platform, path)
@@ -807,17 +1313,24 @@ def check_release(platform: str, path: Path) -> list[str]:
         data = path.read_bytes()
         if path.name.endswith(".tar.gz") and base == "linux":
             top, files, problems = read_release_tar_gz(data, where)
-        elif path.name.endswith(".zip") and base == "windows":
-            top, files, problems = read_release_zip(data, where)
+        elif path.name.endswith(".zip") and base in ("windows", "macos-universal", "macos-arm64-unstable-preview", "macos-arm64"):
+            top, files, problems = read_release_zip(
+                data, where, nested=base in ("macos-universal", "macos-arm64-unstable-preview", "macos-arm64"),
+            )
         else:
             return [f"{where}: not a {platform} package archive"]
         if top and path.name != top + (".tar.gz" if base == "linux" else ".zip"):
             problems.append(f"{where}: the folder inside is {top}")
     top_rx = LAUNCHER_TOP_DIR if platform.startswith("launcher-") else TOP_DIR
-    if not top or not top_rx.match(top) or not top.endswith(f"-{base}-x64"):
+    if base == "macos-arm64-unstable-preview":
+        top_valid = top == PREVIEW_TOP_DIR
+    else:
+        suffix = f"-{base}-x64" if base in ("linux", "windows") else f"-{base}"
+        top_valid = bool(top and top_rx.match(top) and top.endswith(suffix))
+    if not top or not top_valid:
         kind = "openbfme-launcher" if platform.startswith("launcher-") else "openbfme"
         problems.append(f"{where}: the package folder {top!r} is not {kind}-<version>-{base}-x64")
-    return problems + release_file_problems(platform, files, where)
+    return problems + release_file_problems(platform, files, where, forbidden_prefixes)
 
 
 def sums_problems(platform: str, path: Path, expected: list[str] | None = None) -> list[str]:
@@ -831,7 +1344,8 @@ def sums_problems(platform: str, path: Path, expected: list[str] | None = None) 
         return [f"{path.name}: {t}"]
     listed: list[str] = []
     for line in raw.decode("utf-8").splitlines():
-        m = re.match(r"^([0-9a-f]{64})  (openbfme-[\w.+-]+-(linux|windows)-x64\.(tar\.gz|zip))$", line)
+        # MACREL-1: the release's Mac package (openbfme-<v>-macos-arm64.zip) is listed with the others
+        m = re.match(r"^([0-9a-f]{64})  (openbfme-[\w.+-]+-(linux|windows)-x64\.(tar\.gz|zip)|openbfme-[\w.+-]+-macos-(universal|arm64)\.zip)$", line)
         if not m:
             problems.append(f"{path.name}: unexpected line {line[:80]!r}")
             continue
@@ -845,7 +1359,7 @@ def sums_problems(platform: str, path: Path, expected: list[str] | None = None) 
         problems.append(f"{path.name}: the last line has no newline")
     if expected is None:
         expected = sorted(p.name for p in path.parent.iterdir()
-                          if re.match(r"^openbfme-[\w.+-]+-(linux|windows)-x64\.(tar\.gz|zip)$", p.name))
+                          if re.match(r"^openbfme-[\w.+-]+-(linux|windows)-x64\.(tar\.gz|zip)$|^openbfme-[\w.+-]+-macos-(universal|arm64)\.zip$", p.name))
     for a in sorted(set(listed)):
         if listed.count(a) > 1:
             problems.append(f"{path.name}: {a} is listed {listed.count(a)} times")
@@ -859,6 +1373,10 @@ def sums_problems(platform: str, path: Path, expected: list[str] | None = None) 
 
 
 def main(argv: list[str]) -> int:
+    forbidden_prefixes = []
+    while len(argv) >= 2 and argv[0] == "--forbid-prefix":
+        forbidden_prefixes.append(argv[1])
+        argv = argv[2:]
     if not argv:
         print(__doc__)
         return 2
@@ -873,11 +1391,11 @@ def main(argv: list[str]) -> int:
         return 1 if problems else 0
     if argv[0] == "--release":
         if len(argv) < 3 or argv[1] not in RELEASE_FILES:
-            print("usage: audit_package.py --release linux|windows|game-linux|game-windows|launcher-linux|launcher-windows <package folder | archive | SHA256SUMS file> ...")
+            print("usage: audit_package.py --release linux|windows|macos-universal|game-linux|game-windows|game-macos-universal|game-macos-arm64-unstable-preview|macos-arm64|launcher-linux|launcher-windows|launcher-macos-universal <package folder | archive | SHA256SUMS file> ...")
             return 2
         problems = []
         for a in argv[2:]:
-            problems += check_release(argv[1], Path(a))
+            problems += check_release(argv[1], Path(a), tuple(forbidden_prefixes))
         if problems:
             print("RELEASE ALLOWLIST FAILED")
             for p in problems:
@@ -885,7 +1403,7 @@ def main(argv: list[str]) -> int:
             return 1
         print(f"release allowlist ok ({len(argv) - 2} item(s), {argv[1]})")
         return 0
-    audit = Audit()
+    audit = Audit(tuple(forbidden_prefixes))
     for a in argv:
         audit.path(Path(a))
     if audit.problems:

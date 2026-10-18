@@ -11,16 +11,20 @@
 #include "GameClient/GUI/WindowManager.h"
 #include "Libraries/Source/Apt/Apt.h"
 #include "Libraries/Source/Apt/AptCharacterInst.h"
+#include "Libraries/Source/Apt/AptRenderList.h"
 
 #include "StartShellFx.h"
 
 #include "GameClient/GUI/AptScreens/AptLanLobby.h"
 #include "GameClient/GUI/Gadgets.h"
 #include "GameClient/GUI/GameWindow.h"
+#include "GameClient/GUI/ProfileSwitch.h"
 #include "GameNetwork/LANAPI.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 
@@ -155,7 +159,15 @@ TEST_CASE("mp2 retail: LanLobby.apt hosts and joins a LAN game: the list, Join, 
 	CHECK(js->gameRows()[0].rfind("Host|1/8|", 0) == 0);
 	// Join of the selected row seats the joiner
 	REQUIRE(js->gamesList());
-	GadgetListBoxSetSelected(js->gamesList(), 0);
+	join.tick(40);
+	REQUIRE_FALSE(join.wm->componentInputBlocked());
+	starttest::wheelAndClickRow(join, js->gamesList(), 0);
+	int clickedRow = -1;
+	GadgetListBoxGetSelected(js->gamesList(), &clickedRow);
+	REQUIRE(clickedRow == 0);
+	AptValue joinEnabled;
+	REQUIRE(join.wm->apt().level(js->level())->getMember("vJoinGameEnabled", joinEnabled));
+	CHECK(joinEnabled.toBoolean(7));
 	CHECK(join.wm->invokeCallback("AptLanLobby::OnJoinGameBttn", ""));
 	REQUIRE(run([&] { return js->state() == 4 && hostLan->currentGame()->info.slots[1].isHuman(); }));
 	CHECK(joinLan->localSlot() == 1);
@@ -200,6 +212,11 @@ TEST_CASE("mp2 retail: LanLobby.apt hosts and joins a LAN game: the list, Join, 
 	CHECK(host.wm->invokeCallback("MpGameSetup::OnKickPlayer", "1"));
 	REQUIRE(run([&] { return js->state() == 1 && joinLan->inLobby(); }));
 	CHECK(hostLan->currentGame()->info.slots[1].state == SLOT_OPEN);
+	REQUIRE(js->messageBox());
+	REQUIRE(js->messageBox()->type() == AptMessageBox::TYPE_OK);
+	js->messageBox()->hide(true);
+	join.tick(10);
+	CHECK(js->messageBox()->type() == AptMessageBox::TYPE_NONE);
 	// back on the list (the movie's CancelGame: LanOpenPlay seeks back to "_lobby"): the list refills, keeps a selection across the announcements'
 	// refills, and Join seats the joiner again
 	REQUIRE(run([&] { return js->gameRows().size() == 1 && js->gamesList(); }));
@@ -214,14 +231,39 @@ TEST_CASE("mp2 retail: LanLobby.apt hosts and joins a LAN game: the list, Join, 
 	CHECK(join.wm->invokeCallback("AptLanLobby::OnJoinGameBttn", ""));
 	REQUIRE(run([&] { return js->state() == 4 && hostLan->currentGame()->info.slots[1].isHuman(); }));
 	CHECK(joinLan->localSlot() == 1);
+	// lane OWNERFIX-2 (Sol's review): the rejoined joiner's own Handicap combo (RW 0x840B9D, item data the value) reaches the host through its slot request,
+	// the host's own slot keeps its handicap, and the START carries it below
+	REQUIRE(run([&] {
+		GameWindow *h = js->slotGadget(1, "Handicap");
+		return h && GadgetComboBoxGetLength(h) == 20;
+	}));
+	GadgetComboBoxSetSelectedPos(js->slotGadget(1, "Handicap"), 6, false); // -30%
+	REQUIRE(js->setup()->info().slots[1].handicap == -30);
+	REQUIRE(run([&] { return hostLan->currentGame()->info.slots[1].handicap == -30; }));
+	CHECK(run([&] { return hs->setup()->info().slots[1].handicap == -30; }));
+	CHECK(hostLan->currentGame()->info.slots[0].handicap == 0);
 	// lane ONLINE-5: the Ready column (the LAN panel's flag 0x20, RW 0x848C6B): each screen told its movie the boxes' states (RW 0x84211D): the host's
 	// slot ticked, the joiner's own box the only one that takes a press
 	REQUIRE(run([&] { return hs->readyIcon(1) == "_disabledUnchecked" && js->readyIcon(1) == "_enabledUnchecked"; }));
 	CHECK(hs->readyIcon(0) == "_disabledChecked");
 	CHECK(js->readyIcon(0) == "_disabledChecked");
 	CHECK(hs->readyIcon(2) == "_none");
-	// Accept (MpGameSetup::OnReadyPress), then Play Game: every player gets the start, both screens hand it to the host program
-	CHECK(join.wm->invokeCallback("MpGameSetup::OnReadyPress", "1"));
+	// The local Ready box must draw and accept through mouse input, not an invoked callback.
+	join.tick(60);
+	AptCharacterInst *ready = join.wm->apt().resolvePath(join.wm->apt().level(js->level()),
+		"LanOpenPlay.JoinMain.instance1.PlayerList.~1.Ready");
+	REQUIRE(ready);
+	REQUIRE(ready->globallyVisible());
+	AptButtonInst *readyButton = starttest::firstButtonIn(ready);
+	REQUIRE(readyButton);
+	AptRenderList readyDraw;
+	join.wm->apt().buildRenderList(readyDraw);
+	const std::string readyPath = ready->targetPath() + ".";
+	CHECK(std::any_of(readyDraw.commands.begin(), readyDraw.commands.end(), [&](const AptRenderCommand &cmd) {
+		return cmd.path.rfind(readyPath, 0) == 0 && cmd.kind == AptRenderCommand::Kind::Shape
+			&& cmd.geometry && !cmd.fills.empty() && cmd.color.mul[3] > 0;
+	}));
+	starttest::clickButton(join, *readyButton);
 	REQUIRE(run([&] { return hostLan->currentGame()->accepted[1]; }));
 	REQUIRE(run([&] { return hs->readyIcon(1) == "_disabledChecked" && js->readyIcon(1) == "_enabledChecked"; }));
 	CHECK(!enabled(js->slotGadget(1, "PlayerTemplate"))); // RW 0x843F6E: a joiner who accepted cannot change its row
@@ -239,6 +281,193 @@ TEST_CASE("mp2 retail: LanLobby.apt hosts and joins a LAN game: the list, Join, 
 	CHECK(joinLan->start().game.game == hostLan->start().game.game);
 	CHECK(joinLan->start().game.game.slots[1].name == u"Joiner");
 	CHECK(joinLan->start().localSlot == 1);
+	CHECK(joinLan->start().game.game.slots[1].handicap == -30); // lane OWNERFIX-2
+	CHECK(hostLan->start().game.game.slots[0].handicap == 0);
 	CHECK(hostLan->errors().empty());
 	CHECK(joinLan->errors().empty());
+}
+
+// lane UBERJOIN-1 (S-4860): the LAN game list tags an Uber game; Join from Normal asks Yes / No: No stays in the list, Yes switches the profile for the
+// game and joins it, leaving the room puts the player's own mode back. The mode is the announced GameInfo's simulation profile (UBER-1's wire field)
+TEST_CASE("uberjoin1 retail: the LAN list tags an Uber game; Join from Normal asks Yes / No: No stays, Yes switches and joins, leaving restores")
+{
+	OPENBFME_REQUIRE_START(s);
+	MountedArchive a;
+	a.install = "rotwk";
+	a.canonicalPath = "test.big";
+	a.size = 1;
+	a.md5 = "0123456789abcdef0123456789abcdef";
+	const ProfileIdentity normal = ProfileIdentity::compute({ a }, RandomAlgorithm::ZH_CarryChain, {}, SimulationProfile::Faithful);
+	const ProfileIdentity uber = ProfileIdentity::compute({ a }, RandomAlgorithm::ZH_CarryChain, {}, SimulationProfile::Uber);
+	std::unique_ptr<LANAPI> hostLan = testLan(uber, u"Host", s->world->playerTemplates().getPlayerTemplateCount(), (int)s->settings.multiplayerColors.size());
+	std::unique_ptr<LANAPI> joinLan = testLan(normal, u"Joiner", s->world->playerTemplates().getPlayerTemplateCount(), (int)s->settings.multiplayerColors.size());
+	starttest::ShellFx host(*s, 21);
+	starttest::ShellFx join(*s, 22);
+	// the host program's side of the switch (GodotGameWorld::switch_profile_for_game / restore_simulation_profile): the LAN lobby follows the identity
+	int requests = 0, restores = 0;
+	SimulationProfile current = SimulationProfile::Faithful;
+	std::string refuse;
+	ProfileSwitch ps;
+	ps.current = [&]() { return current; };
+	ps.digestOf = [&](SimulationProfile p) { return (p == SimulationProfile::Uber ? uber : normal).digest; };
+	ps.request = [&](SimulationProfile p, std::string *why) {
+		++requests;
+		if (!refuse.empty())
+		{
+			*why = refuse;
+			return false;
+		}
+		if (!joinLan->setProfile(p == SimulationProfile::Uber ? uber : normal))
+		{
+			*why = "in a game";
+			return false;
+		}
+		current = p;
+		return true;
+	};
+	ps.restore = [&]() {
+		++restores;
+		current = SimulationProfile::Faithful;
+		joinLan->setProfile(normal);
+	};
+	host.environment.lan = hostLan.get();
+	host.environment.services = &host.services;
+	join.environment.lan = joinLan.get();
+	join.environment.services = &join.services;
+	join.environment.profileSwitch = &ps;
+	host.shell->push("LanLobby.apt");
+	join.shell->push("LanLobby.apt");
+	REQUIRE(host.shell->errors().empty());
+	REQUIRE(join.shell->errors().empty());
+	AptLanLobby *hs = dynamic_cast<AptLanLobby *>(host.shell->top());
+	AptLanLobby *js = dynamic_cast<AptLanLobby *>(join.shell->top());
+	REQUIRE(hs);
+	REQUIRE(js);
+	auto run = [&](const std::function<bool()> &done, int limit = 300) {
+		for (int i = 0; i < limit; ++i)
+		{
+			host.tick(1);
+			join.tick(1);
+			NetSleepMilliseconds(2);
+			if (done())
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+	REQUIRE(run([&] { return hs->state() == 1 && js->state() == 1; }));
+	CHECK(host.wm->invokeCallback("AptLanLobby::OnCreateGameBttn", ""));
+	REQUIRE(run([&] { return hs->state() == 4; }));
+	CHECK(std::find(hs->chatLines().begin(), hs->chatLines().end(), "This room uses Uber performance mode.") != hs->chatLines().end());
+	REQUIRE(run([&] { return js->gameRows().size() == 1; }));
+	const std::string row = js->gameRows()[0];
+	CHECK(row.rfind("|uber") == row.size() - 5);
+	{
+		// the header cells are the movie's own: the four sort buttons of the list's frame (Status, Game Name, Map, Players), read from the APT; the movie
+		// has no Ping header (the fifth column's cell must still start right of the Players header's left edge and inside the list)
+		std::map<std::string, std::pair<float, float>> headers; // name -> stage x of the cell's left and right edge
+		std::function<void(AptCharacterInst *)> walk = [&](AptCharacterInst *c) {
+			if (!c)
+			{
+				return;
+			}
+			if (c->instName().rfind("OnSort", 0) == 0)
+			{
+				float x0, y0, x1, y1, a, b, cx, d;
+				REQUIRE(c->contentBounds(x0, y0, x1, y1));
+				c->globalMatrix().apply(x0, y0, a, b);
+				c->globalMatrix().apply(x1, y1, cx, d);
+				headers[c->instName()] = { a, cx };
+			}
+			if (AptSpriteInst *sp = c->asSprite())
+			{
+				for (AptCharacterInst *k : sp->children())
+				{
+					walk(k);
+				}
+			}
+		};
+		walk(join.wm->apt().level(js->level()));
+		REQUIRE(headers.size() == 4); // exactly Status, Game Name, Map, Players: a movie without one of them fails here, not silently
+		REQUIRE(headers.count("OnSortStatus"));
+		REQUIRE(headers.count("OnSortName"));
+		REQUIRE(headers.count("OnSortMap"));
+		REQUIRE(headers.count("OnSortPlayers"));
+		int listX = 0, listY = 0, listW = 0, listH = 0;
+		js->gamesList()->winGetScreenPosition(&listX, &listY);
+		js->gamesList()->winGetSize(&listW, &listH);
+		float cellLeft[5];
+		float x = (float)listX;
+		for (int c = 0; c < 5; ++c)
+		{
+			cellLeft[c] = x;
+			x += (float)GadgetListBoxGetColumnWidth(js->gamesList(), c);
+		}
+		const char *order[4] = { "OnSortStatus", "OnSortName", "OnSortMap", "OnSortPlayers" };
+		for (int c = 0; c < 4; ++c)
+		{
+			const auto &h = headers[order[c]];
+			// the windows' integer coordinates may sit up to one pixel left of a header cell's fractional edge
+			CHECK_MESSAGE(cellLeft[c] >= std::floor(h.first), "column " << c << " starts at " << cellLeft[c] << ", its header " << order[c] << " at " << h.first); // tolerance: containment in the header cell read from the APT (a cell's left edge is a range, not one value); the window coordinates are integers
+			CHECK_MESSAGE(cellLeft[c] < h.second, "column " << c << " starts at " << cellLeft[c] << ", past its header " << order[c] << "'s right edge " << h.second); // tolerance: containment in the header cell read from the APT (a cell's left edge is a range, not one value); the window coordinates are integers
+		}
+		CHECK_MESSAGE(cellLeft[4] >= std::floor(headers["OnSortPlayers"].first), "the Ping column starts at " << cellLeft[4]); // tolerance: containment in the header cell read from the APT (a cell's left edge is a range, not one value); the window coordinates are integers
+		CHECK_MESSAGE(cellLeft[4] < (float)(listX + listW), "the Ping column starts inside the list"); // tolerance: containment in the header cell read from the APT (a cell's left edge is a range, not one value); the window coordinates are integers
+	}
+	// the cells sit under the movie's headers Status, Game Name, Map, Players, Ping (they once stood one column off: the name under Status); an empty cell holds a space
+	REQUIRE(js->gamesList());
+	CHECK(GadgetListBoxGetText(js->gamesList(), 0, 0) == u" ");
+	CHECK(GadgetListBoxGetText(js->gamesList(), 0, 1) == u"Host  - UBER");
+	CHECK(GadgetListBoxGetText(js->gamesList(), 0, 2) == u"map mp adorn river");
+	CHECK(GadgetListBoxGetText(js->gamesList(), 0, 3) == u"1/8");
+	CHECK(GadgetListBoxGetText(js->gamesList(), 0, 4) == u" ");
+	const std::string prompt = "mode-switch|This game uses Uber performance mode. Switch to Uber mode and join? (Your setting changes back after the game.)";
+	// Join: the box asks; nothing switched, nothing sent
+	REQUIRE(js->gamesList());
+	GadgetListBoxSetSelected(js->gamesList(), 0);
+	CHECK(join.wm->invokeCallback("AptLanLobby::OnJoinGameBttn", ""));
+	REQUIRE(run([&] { return js->boxesShown().size() == 1; }));
+	CHECK(js->boxesShown()[0] == prompt);
+	CHECK(requests == 0);
+	CHECK(js->messageBox()->type() == AptMessageBox::TYPE_YES_NO);
+	run([] { return false; }, 20);
+	CHECK(!joinLan->currentGame());
+	// No: stays in the list, unswitched, no error box
+	join.wm->fscommand("_level" + std::to_string(js->messageBox()->level()) + ".MessageBox_OnButtonNo", "");
+	run([] { return false; }, 30);
+	CHECK(js->state() == 1);
+	CHECK(requests == 0);
+	CHECK(joinLan->profile().simulationProfile() == SimulationProfile::Faithful);
+	CHECK(!joinLan->currentGame());
+	CHECK(js->boxesShown().size() == 1);
+	// Yes: switched, joined
+	GadgetListBoxSetSelected(js->gamesList(), 0);
+	CHECK(join.wm->invokeCallback("AptLanLobby::OnJoinGameBttn", ""));
+	REQUIRE(run([&] { return js->boxesShown().size() == 2; }));
+	join.wm->fscommand("_level" + std::to_string(js->messageBox()->level()) + ".MessageBox_OnButtonYes", "");
+	REQUIRE(run([&] { return js->state() == 4 && hostLan->currentGame()->info.slots[1].isHuman(); }));
+	CHECK(requests == 1);
+	CHECK(current == SimulationProfile::Uber);
+	CHECK(joinLan->profile().simulationProfile() == SimulationProfile::Uber);
+	CHECK(js->boxesShown().size() == 2);
+	CHECK(std::find(js->chatLines().begin(), js->chatLines().end(), "This room uses Uber performance mode.") != js->chatLines().end());
+	// leaving: the player's own mode again
+	const int restoresBefore = restores;
+	CHECK(join.wm->invokeCallback("AptLanLobby::OnCancelBttn", ""));
+	REQUIRE(run([&] { return js->state() == 1; }));
+	CHECK(restores == restoresBefore + 1);
+	CHECK(current == SimulationProfile::Faithful);
+	CHECK(joinLan->profile().simulationProfile() == SimulationProfile::Faithful);
+	// a refused switch: a named box, still in the list
+	refuse = "the simulation profile cannot change inside a LAN game (leave it first)";
+	REQUIRE(run([&] { return js->gameRows().size() == 1; }));
+	GadgetListBoxSetSelected(js->gamesList(), 0);
+	CHECK(join.wm->invokeCallback("AptLanLobby::OnJoinGameBttn", ""));
+	REQUIRE(run([&] { return js->boxesShown().size() == 3; }));
+	join.wm->fscommand("_level" + std::to_string(js->messageBox()->level()) + ".MessageBox_OnButtonYes", "");
+	REQUIRE(run([&] { return js->boxesShown().size() == 4; }));
+	CHECK(js->boxesShown()[3] == "mode-switch-failed|The performance mode could not be switched: " + refuse);
+	CHECK(!joinLan->currentGame());
+	CHECK(joinLan->profile().simulationProfile() == SimulationProfile::Faithful);
 }

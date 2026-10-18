@@ -544,10 +544,12 @@ TEST_CASE("mapreset1 retail: after every retail map's map.ini, a test map.ini of
 		CHECK(error.empty() == !k.throws);
 	}
 	CHECK(firstDifferentLine(fingerprint(w), fresh) != "");
-	// the reload makes the whole state again: other stores, a fresh load's data
-	const ThingFactory *before = &w.things();
+	// the reload makes the whole state again: other stores, a fresh load's data. DEVPORT-6: shown by content, not by the store's address
+	// (reloadState frees the old State before making the new one, so an allocator may return the same block: macOS's does): the object
+	// only the synthetic map.ini defined is gone
+	REQUIRE(w.things().findTemplate("MapReset1Object") != nullptr);
 	w.reload();
-	CHECK(&w.things() != before);
+	CHECK(w.things().findTemplate("MapReset1Object") == nullptr);
 	CHECK_FALSE(w.changedSinceLoad());
 	{
 		const std::string difference = firstDifferentLine(fingerprint(w), fresh);

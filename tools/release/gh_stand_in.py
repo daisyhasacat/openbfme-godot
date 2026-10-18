@@ -15,6 +15,14 @@ repository ($FAKE_GH_REMOTE: PR merges are merge commits there, tags are read th
   upload-fail     uploading assets fails (nothing is stored)
   publish-after-read  someone publishes a draft right after it was read by its id (Sol r3: the race between a read and a delete)
   homepage-fail   setting the repository's homepage fails (it stays)
+  community-merge-lost     (GHPR-1) a community pull request is merged but the call fails
+  community-merge-refused  (GHPR-1) merging a community pull request fails and changes nothing
+  pull-read-fail  (GHPR-1) reading a pull request fails
+  community-push-before-merge  (GHPR-1) the author pushes to the pull request just before the merge call: the merge, which names the
+                  reviewed head (--match-head-commit), is refused
+Community pull requests (GHPR-1): $FAKE_GH_STATE's "pulls" ({number: {head, login, state, merged, mergeable, draft, base, repo,
+merge_commit_sha}}), their heads refs/pull/<n>/head of the remote; `api repos/R/pulls/<n>` answers GitHub's record of one,
+`pr merge <n> --merge --match-head-commit <sha>` merges it into main with a real merge commit (git merge-tree; a conflict fails).
 Commands: api (user, repos/R GET / PATCH (homepage), repos/R/commits/<ref>, repos/R/releases[?..], repos/R/releases/<id> GET / PATCH / DELETE, repos/R/releases/tags/<tag>,
 repos/R/releases/assets/<id>), pr create / merge / view, release upload. --jq supports the expressions these scripts use.
 """
@@ -99,6 +107,12 @@ def api(args: list[str]) -> int:
     path = endpoint.split("?")[0]
     if path == "user":
         out(jq({"login": "tester", "id": 42}, expr)); return 0
+    m = re.fullmatch(r"(repos/[^/]+/[^/]+)/pulls/(\d+)", path)
+    if m and method == "GET":
+        p = s.get("pulls", {}).get(m.group(2))
+        if p is None or "pull-read-fail" in FAULTS:
+            print("gh: Not Found (HTTP 404)", file=sys.stderr); return 1
+        out(jq(pull_record(m.group(1), p), expr)); return 0
     m = re.fullmatch(r"repos/[^/]+/[^/]+/commits/(.+)", path)
     if m:
         r = subprocess.run(["git", "-C", REMOTE, "rev-parse", "-q", "--verify", m.group(1) + "^{commit}"], capture_output=True, text=True)
@@ -159,6 +173,38 @@ def api(args: list[str]) -> int:
     return 2
 
 
+def pull_record(repo_path: str, p: dict) -> dict:
+    """GitHub's record of a pull request (the fields community_prs.py reads)"""
+    return {"number": p.get("answer_number", p["number"]), "state": p["state"], "merged": p["merged"], "mergeable": p.get("mergeable", True),
+            "draft": p.get("draft", False), "merge_commit_sha": p.get("merge_commit_sha"), "user": {"login": p["login"]},
+            "head": {"sha": p["head"]}, "base": {"ref": p.get("base", "main"), "repo": {"full_name": p.get("repo", repo_path[6:])}}}
+
+
+def merge_pull(n: str, args: list[str], s: dict) -> int:
+    p = s["pulls"][n]
+    if "community-merge-refused" in FAULTS or p["state"] != "open" or p["merged"] or not p.get("mergeable", True):
+        print("gh: Pull request is not mergeable", file=sys.stderr); return 1
+    if "community-push-before-merge" in FAULTS:
+        p["head"] = remote_git("commit-tree", f"{p['head']}^{{tree}}", "-p", p["head"], "-m", "a push after the review")
+        remote_git("update-ref", f"refs/pull/{n}/head", p["head"])
+        save(s)
+    want = opt(args, "--match-head-commit")
+    if want is not None and want != p["head"]:
+        print("gh: Head branch was modified. Review and try the merge again.", file=sys.stderr); return 1
+    if "--merge" not in args:
+        print("gh stand-in: community pull requests are merged with --merge only", file=sys.stderr); return 2
+    base = remote_git("rev-parse", "refs/heads/main")
+    r = subprocess.run(["git", "-C", REMOTE, "merge-tree", "--write-tree", base, p["head"]], capture_output=True, text=True, env=ENV)
+    if r.returncode:
+        print("gh: merge conflict", file=sys.stderr); return 1
+    tree = r.stdout.split()[0]
+    merged = remote_git("commit-tree", tree, "-p", base, "-p", p["head"], "-m", f"Merge pull request #{n} from {p['login']}/patch")
+    remote_git("update-ref", "refs/heads/main", merged)
+    p.update(state="closed", merged=True, merge_commit_sha=merged)
+    save(s)
+    return 1 if "community-merge-lost" in FAULTS else 0
+
+
 def opt(args: list[str], name: str) -> str | None:
     return args[args.index(name) + 1] if name in args else None
 
@@ -171,6 +217,8 @@ def pr(args: list[str]) -> int:
                        "body": Path(opt(args, "--body-file")).read_text(), "merge": None}
         save(s)
         out(f"https://github.com/{opt(args, '--repo')}/pull/{n}"); return 0
+    if args[0] == "merge" and args[1] in s.get("pulls", {}):
+        return merge_pull(args[1], args, s)
     if args[0] == "merge":
         p = s["prs"][args[1]]
         head = remote_git("rev-parse", f"refs/heads/{p['head']}")

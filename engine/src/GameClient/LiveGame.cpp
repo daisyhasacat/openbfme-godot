@@ -6,6 +6,8 @@
 #include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 
 #include "GameClient/FrameCensus.h"
+#include "Common/GameState.h"
+#include "Common/SnapshotProbe.h"
 #include "GameLogic/TributeCommands.h"
 #include "GameClient/ScriptAudioLength.h"
 #include "GameLogic/AI/GarrisonCommands.h"
@@ -229,6 +231,12 @@ bool LiveGame::load(const Options &options, std::string *error)
 	}
 	else
 	{
+		// lane OWNERFIX-1: a campaign mission's players read the campaign's rank table (RW 0x5FF924: SkillPointsNeededCampaign; the single player
+		// costs, IntrinsicSciences and MaxLevelSP follow from GameLogic + 0x110 != 2). Without it the ranks came at the skirmish's counts
+		if (options.campaign)
+		{
+			m_players->setSpellGameMode(SpellGameMode{ false, true });
+		}
 		m_report.playerNotes = m_players->newGame(m_map.sides, defaultCash);
 	}
 	if (!options.start && !options.slots.players.empty())
@@ -550,7 +558,10 @@ bool LiveGame::load(const Options &options, std::string *error)
 	m_report.secondsPathfinder = SimMath::subD(secondsSince(t0), m_report.secondsLoop); // load timing (report only)
 	// SPELL-1: each player's spell book object (RW 0x6B183D, the player's game start; its place after the map objects and the bases is an
 	// INFERENCE, S-531), for a started game and a map loaded with lobby slots alike (a bare map load, a viewer or a script test, has no game start)
-	for (int i = 0; (options.start || !options.slots.players.empty()) && i < m_players->getPlayerCount(); ++i)
+	// lane OWNERFIX-1 (the owner: "I can't use the powers I earn" in the first campaign mission): and a campaign mission. RW 0x6B183D is Player::newMap
+	// (BFME2 decomp PlayerNewMapBFME2.cpp, tier B same-shape), run for every player by PlayerList::newMap (RW 0x6A850B, decomp PlayerList.cpp) on every
+	// new map with no game mode test: the spell book's name is the only mode-dependent part (SpellBookMp in a skirmish / multiplayer game)
+	for (int i = 0; (options.start || !options.slots.players.empty() || options.campaign) && i < m_players->getPlayerCount(); ++i)
 	{
 		if (SpecialPowerModules::createSpellBook(*m_logic, *m_players->getNthPlayer(i)))
 		{
@@ -959,6 +970,110 @@ void LiveGame::drainFrames()
 	consumeCompletions();
 }
 
+int LiveGame::stepFrame()
+{
+	drainFrames();
+	const bool threaded = logicThread();
+	if (threaded)
+	{
+		setLogicThread(false);
+	}
+	m_clock.reset();
+	m_tickClock.reset();
+	const double seconds = m_options.sixTickPacing
+		? SimMath::divD((double)(7 - m_nextPhase), (double)(LOGICFRAMES_PER_SECOND * 6))
+		: SimMath::divD(1.0, (double)LOGICFRAMES_PER_SECOND);
+	const int ran = advance(seconds);
+	if (threaded)
+	{
+		setLogicThread(true);
+	}
+	return ran;
+}
+
+bool LiveGame::loadSnapshot(const std::vector<std::uint8_t> &bytes, std::string *error, const std::function<std::string(GameLogic &)> &accept)
+{
+	const auto worldContext = m_world.enterContext();
+	NumericState::normalizeFloatingPointEnvironment(); // the load runs simulation code (object creation, post-process)
+	auto refuse = [&](const std::string &why) {
+		if (error)
+		{
+			*error = why;
+		}
+		return false;
+	};
+	if (!m_loaded)
+	{
+		return refuse(m_closed ? "the game was closed by a snapshot that could not be undone" : "no game is loaded");
+	}
+	if (m_frameDriver)
+	{
+		return refuse("a snapshot is loaded with no frame driver installed");
+	}
+	waitIdle();
+	consumeCompletions();
+	std::string why;
+	// lane SAVE-4e review r1 (Sol): the whole stream's framing first (a damaged, truncated, reordered or foreign stream is refused before any block
+	// touches the game); a block whose contents are refused later is undone by the put-back below
+	if (!m_logic->gameState().checkFraming(bytes, &why))
+	{
+		return refuse(why);
+	}
+	// the game's own state, kept for a refusal (a fresh game's snapshot is a few MB and a few ms, SAVES.md section 8's measurements)
+	std::vector<std::uint8_t> kept;
+	{
+		SnapshotProbe::Suspend notTheLoad; // the tests' probe counts the load's checks only
+		if (!m_logic->saveSnapshot(kept, &why))
+		{
+			return refuse("the game's own state cannot be kept for the load: " + why);
+		}
+	}
+	const std::uint32_t keptHash = m_logic->computeStateHash();
+	bool ok = m_logic->loadSnapshot(bytes, &why);
+	if (ok && accept)
+	{
+		why = accept(*m_logic);
+		ok = why.empty();
+	}
+	std::string undo;
+	SnapshotProbe::Suspend notTheLoad; // the put-back and its checks are not the probed load's
+	if (!ok)
+	{
+		if (!m_logic->loadSnapshot(kept, &undo))
+		{
+			undo = "the game could not be put back (" + undo + ")";
+		}
+		else if (m_logic->computeStateHash() != keptHash)
+		{
+			undo = "the game put back has another state hash";
+		}
+		else
+		{
+			std::vector<std::uint8_t> again; // lane SAVE-4e review r1: the put-back is checked byte for byte too
+			std::string againWhy;
+			if (!m_logic->saveSnapshot(again, &againWhy) || again != kept)
+			{
+				undo = "the game put back saves other bytes" + (againWhy.empty() ? std::string() : " (" + againWhy + ")");
+			}
+		}
+	}
+	for (Object *o = m_logic->getFirstObject(); o; o = o->getNextObject())
+	{
+		m_recorder->loadedObject(*o);
+	}
+	m_lastBuilt.reset(); // the next snapshot is built from the loaded state alone (no history of the frames before)
+	m_presentTimeValid = false;
+	m_shroudChanged = true;
+	if (!undo.empty())
+	{
+		m_loaded = false;
+		m_closed = true;
+		return refuse(why + "; " + undo + ": the game is closed");
+	}
+	refreshClient(0.0, 0.0);
+	return ok ? true : refuse(why);
+}
+
 void LiveGame::installBatch(const FrameBatch &batch)
 {
 	// on the simulation owner, immediately before phase 1: the batch must be the frame about to run (MP-1's numbering: batch N runs logic frame N)
@@ -1060,8 +1175,9 @@ void LiveGame::publish(std::shared_ptr<const FrameCompletion> completion)
 		hash = completion->hash;
 		hashed = true;
 	}
-	std::shared_ptr<const LogicSnapshot> snap = LogicSnapshot::build(*m_logic, m_lastBuilt.get(), hashed, hash, m_observedPlayer);
+	std::shared_ptr<const LogicSnapshot> snap = LogicSnapshot::build(*m_logic, m_lastBuilt.get(), hashed, hash, m_observedPlayer, m_observedTeam);
 	m_lastBuilt = snap;
+	m_recorder->captureObserverFrame();
 	std::vector<ClientEvent> events = m_recorder->take();
 	std::vector<ScriptClientRequest> scriptRequests = m_logic->scriptEngine().takeClientRequests(); // lane SCRIPT-1
 	std::lock_guard<std::mutex> lock(m_pubMutex);
@@ -1181,9 +1297,36 @@ LiveGame::Report LiveGame::report() const
 }
 
 // ---- lane ONLINE-3: the observer's view (retail PlayerList::observeNextPlayer RW 0x6A8D2B) --------------------------------------------------
+bool LiveGame::canObserve() const
+{
+	holdLogic();
+	const Player *local = m_players->getLocalPlayer();
+	return m_replayObserver || (local && (local->isObserver() || local->isDefeated()));
+}
+
+bool LiveGame::observePlayer(int index, bool team)
+{
+	holdLogic(); // RENDERWAIT-1: a presentation switch of the view: inside the client window it does not run the queued frames
+	if (!canObserve() || index < -1)
+	{
+		return false;
+	}
+	const Player *player = index >= 0 ? m_players->getNthPlayer(index) : nullptr;
+	if (index >= 0 && (!player || player->isObserver() ||
+		(player->getPlayerType() != PLAYER_HUMAN && player->getPlayerType() != PLAYER_COMPUTER)))
+	{
+		return false;
+	}
+	m_observedPlayer = index == -1 ? -2 : index;
+	m_observedTeam = team && index >= 0;
+	m_shroudChanged = true;
+	refreshClient(0, 1);
+	return true;
+}
+
 bool LiveGame::observeNextPlayer(bool forward)
 {
-	waitIdle();
+	holdLogic(); // RENDERWAIT-1: the Tab key's view switch (RW 0x6A8D2B): inside the client window it does not lift the window to run the queued frames
 	PlayerList &players = *m_players;
 	auto active = [](const Player *p) { return p && !p->isObserver() && !p->isDefeated(); }; // RW 0x6AAC52
 	const Player *local = players.getLocalPlayer();
@@ -1235,6 +1378,7 @@ bool LiveGame::observeNextPlayer(bool forward)
 		}
 	}
 	m_observedPlayer = index;
+	m_observedTeam = false;
 	m_shroud->setLocalPlayer(index, [this](int, int, CellShroudStatus) { m_shroudChanged = true; }); // RW 0xB4D8E0
 	m_shroud->refreshLocalPlayer();
 	m_shroudChanged = true;

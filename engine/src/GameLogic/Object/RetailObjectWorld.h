@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include "Common/BfmeGame.h"
 #include "Common/ArchiveFileSystem.h"
 #include "Common/INI.h"
 #include "Common/INI/INIBlockStubs.h"
@@ -88,6 +89,7 @@ public:
 	const StanceTemplateStore &stances() const { return m_s->m_stances; } // INTEG-1
 	const EmotionSystem &emotions() const { return m_s->m_emotions; }     // MODULES-2: TheEmotionSystem (the EmotionNugget blocks)
 	const std::vector<std::pair<std::string, bool>> &missionObjectives() const { return m_s->m_missionObjectives; }
+	bool bfme1Data() const { return isBfme1Data(m_fs); } // community PR #36 (Common/BfmeGame.h)
 	const LinearCampaignManager &linearCampaigns() const { return m_s->m_linearCampaigns; } // CAMP-1: TheLinearCampaignManager (the LinearCampaign blocks)
 	const CreateAHeroSystem &createAHeroSystem() const { return m_s->m_createAHero; } // HERO-2: TheCreateAHeroSystem (Data\INI\CreateAHeroSystem.ini)
 	// MOVE-1: the INI macro table the object templates were loaded with (a LocomotorSet block's Speed may be a macro: AIWorld parses those blocks at runtime)

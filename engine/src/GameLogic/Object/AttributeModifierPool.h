@@ -36,6 +36,7 @@ class ModuleFactory;
 class AttributeModifierPool : public BehaviorModule
 {
 public:
+	OBFME_MODULE_XFER(AttributeModifierPool) // lane SAVE-4b
 	AttributeModifierPool(Thing *thing, const ModuleData *data);
 	static void registerClass(ModuleFactory &modules);
 

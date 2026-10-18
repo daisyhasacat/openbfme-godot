@@ -59,6 +59,7 @@ public:
 class LargeGroupAudioUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(LargeGroupAudioUpdate) // lane SAVE-4b
 	LargeGroupAudioUpdate(Thing *thing, const LargeGroupAudioUpdateModuleData *data);
 
 	void onObjectCreated() override; // slot 5, RW 0x8AF232

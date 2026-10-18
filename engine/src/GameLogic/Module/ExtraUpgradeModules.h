@@ -26,6 +26,7 @@ public:
 class AttributeModifierUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(AttributeModifierUpgrade) // lane SAVE-4b: UpgradeModule's
 	AttributeModifierUpgrade(Thing *thing, const AttributeModifierUpgradeModuleData *data) : UpgradeModule(thing, data), m_data(data) {}
 
 protected:

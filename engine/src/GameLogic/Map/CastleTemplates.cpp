@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0.
 // See GameLogic/Map/CastleTemplates.h.
 
+#include "Common/BfmeGame.h"
 #include "GameLogic/Map/CastleTemplates.h"
 
 #include "Common/ArchiveFileSystem.h"
@@ -18,10 +19,11 @@ std::string lower(std::string s)
 }
 } // namespace
 
-bool CastleTemplateStore::parseBse(const std::vector<std::uint8_t> &bytes, const std::string &sourceName, const std::string &name, CastleTemplate &out, std::string *error)
+bool CastleTemplateStore::parseBse(const std::vector<std::uint8_t> &bytes, const std::string &sourceName, const std::string &name, CastleTemplate &out, std::string *error, bool bfme1)
 {
 	LoadedMap map;
 	MapReadOptions options; // strict: an unknown chunk or leftover bytes is an error
+	options.bfme1 = bfme1;
 	std::string e;
 	if (!MapReader::load(bytes, sourceName, options, map, &e))
 	{
@@ -60,7 +62,7 @@ CastleTemplateStore::Loader CastleTemplateStore::fileSystemLoader(ArchiveFileSys
 			}
 			return false;
 		}
-		return parseBse(bytes, path, name, out, error);
+		return parseBse(bytes, path, name, out, error, isBfme1Data(fs));
 	};
 }
 

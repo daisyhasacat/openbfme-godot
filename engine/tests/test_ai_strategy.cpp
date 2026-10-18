@@ -99,6 +99,13 @@ End
   bot.army = store.findArmy("Counter");
   while (w.logic->getFrame() % 5 != (unsigned)bot.playerIndex % 5) w.frames(1);
  }
+ Object *factory(const char *name, char team, float x, float y)
+ {
+  Object *o = w.unit(name, team, x, y);
+  // This fixture owns a detached AI; forward the manager's object event explicitly.
+  AIBaseBuilder::onObjectEntered(*w.logic, bot, *o);
+  return o;
+ }
  ~Scenario() { TheCommandStore = previous; }
  void decide()
  {
@@ -159,7 +166,7 @@ TEST_CASE("strategy AI: an observed cavalry rush buys pikes through paid product
 {
  Scenario s;
  s.w.unit("CounterHorse", 'B', 650, 500);
- auto *factory = s.w.unit("CounterFactory", 'A', 100, 500);
+ auto *factory = s.factory("CounterFactory", 'A', 100, 500);
  s.w.frames(2);
  const auto before = factory->getControllingPlayer()->getMoney()->countMoney();
  AIBaseBuilder::update(*s.w.logic, s.bot);
@@ -234,7 +241,7 @@ TEST_CASE("strategy AI: a counter request cannot create an unfunded unit")
 {
  Scenario s;
  s.w.unit("CounterHorse", 'B', 650, 500);
- auto *factory = s.w.unit("CounterFactory", 'A', 100, 500);
+ auto *factory = s.factory("CounterFactory", 'A', 100, 500);
  s.w.frames(2);
  auto *money = factory->getControllingPlayer()->getMoney();
  money->withdraw(money->countMoney(), nullptr, false);

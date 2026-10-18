@@ -171,13 +171,13 @@ std::string SkirmishGameInfoToString(const SkirmishGameInfo &info, int gameMode)
 		if (slot.isHuman())
 		{
 			out += format("H%s,%X,%d,%c%c,%d,%d,%d,%d,%d,%d,%d:", utf8(slot.name).c_str(), 0u, 0, slot.accepted ? 'T' : 'F', slot.hasMap ? 'T' : 'F', slot.color,
-				slot.playerTemplate, slot.startPos, slot.teamNumber, 0, 0, 0);
+				slot.playerTemplate, slot.startPos, slot.teamNumber, slot.handicap, 0, 0); // lane OWNERFIX-2: + 0x20 is the slot's handicap
 		}
 		else if (slot.isAI())
 		{
 			// RW 0x802603 .. 0x802620: 2 E, 3 M, 4 H, any other computer B
 			const char c = slot.state == SLOT_EASY_AI ? 'E' : slot.state == SLOT_MED_AI ? 'M' : slot.state == SLOT_HARD_AI ? 'H' : 'B';
-			out += format("C%c,%d,%d,%d,%d,%d,%d:", c, slot.color, slot.playerTemplate, slot.startPos, slot.teamNumber, 0, 0);
+			out += format("C%c,%d,%d,%d,%d,%d,%d:", c, slot.color, slot.playerTemplate, slot.startPos, slot.teamNumber, slot.handicap, 0); // lane OWNERFIX-2: + 0x20
 		}
 		else if (slot.state == SLOT_OPEN)
 		{
@@ -327,6 +327,7 @@ bool ParseSkirmishGameInfo(const std::string &text, const SkirmishGameRecordLimi
 						{
 							return fail(slotText + ": a human record's value is out of range");
 						}
+						slot.handicap = v20; // lane OWNERFIX-2: + 0x20 (retail's range -100 .. 0; the lobby checks its own set, SkirmishGameSetup::restoreSaved)
 						break;
 					}
 					case 'C':
@@ -353,6 +354,7 @@ bool ParseSkirmishGameInfo(const std::string &text, const SkirmishGameRecordLimi
 						{
 							return fail(slotText + ": a computer record's value is out of range");
 						}
+						slot.handicap = v20; // lane OWNERFIX-2: + 0x20
 						break;
 					}
 					case 'O':

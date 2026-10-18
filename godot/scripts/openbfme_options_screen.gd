@@ -42,12 +42,12 @@ const HELP := {
 	"scaler_full": "How a render scale below 100% is scaled up. At 100% the scaler does nothing (FSR 2 still smooths edges).",
 	"scaler_scaled": "How a render scale below 100% is scaled up. FSR keeps more detail than bilinear.",
 	"OpenBFMEWidescreen": "Original: the original game's view, which shows less from top to bottom on screens wider than 4:3. Wider: the 4:3 view from top to bottom, more to the sides.",
-	"OpenBFMEAntiAliasing": "Smooths the edges of the 3D view. MSAA: models; FXAA and TAA: the whole picture.",
+	"OpenBFMEAntiAliasing": "Smooths the edges of the 3D view. MSAA: models; FXAA and TAA: the whole picture (TAA is FSR 2's temporal anti-aliasing, sharp in motion).",
 	"OpenBFMEAnisotropic": "Anisotropic filtering: keeps the models' textures sharp at a slant.",
 	"OpenBFMELook": "Enhanced: AgX tone mapping and a glow on the brightest effects. Original: the game's own picture.",
 	"OpenBFMESoftParticles": "Smoke, fire and dust fade where they meet the ground instead of a hard cut. Off: the original look.",
 	"OpenBFMEUIScale": "Enlarges the health bars, the frame counter and the game clock for large screens; the menus already scale with the window.",
-	"OpenBFMEBFME2UI": "BFME2's main menu, menu colors, textures, gadget skins and menu music. Off uses Rise of the Witch-king. Takes effect after restarting the game.",
+	"OpenBFMEMainMenuStyle": "Uses the selected game's original menus, music and background. After Accept, changes when you return to the main menu. Gameplay is unchanged.",
 	"OpenBFMEUberPerformance": "Not compatible with the original game: uses every CPU core; games and replays then only work with players who have it on too. From the next game.",
 	"OpenBFMEEdgeScroll": "Scrolling with the mouse at the screen's edge. The original game does it in full screen only.",
 	"OpenBFMERotateSpeed": "How fast the camera turns.",
@@ -66,7 +66,8 @@ const HELP := {
 	"note:Audio": "Moving a volume plays a sample of it. The master volume scales them all.",
 	"note:Camera": "None of these changes the game itself: the camera and the mouse only.",
 	"note:Interface": "\"Selected and damaged\" and \"Always\" health bars are this rebuild's.",
-	"note:Online": "The original game's network settings.",
+	"OpenBFMEShareResults": "After each LAN or online game: your install id, nickname and the game's summary (map, armies, teams, winner) go to the OpenBFME statistics service. Off: nothing is sent.",
+	"note:Online": "The original game's network settings, and what OpenBFME's online services receive.",
 	"note:Performance": "Uber performance mode changes how the game itself runs: read its warning.",
 	"note:Controls": "The original game's hot keys (CommandMap.ini) as the game reads them. Changing them here comes later.",
 }
@@ -100,6 +101,7 @@ var overlay: CanvasLayer           # scripts/fps_overlay.gd
 var skin_errors := PackedStringArray()
 var game_options: Node             # lane OPTS-2: scripts/game_options.gd (Options.ini's settings in effect)
 var audio_getter: Callable         # lane OPTS-4: () -> the GameAudio node or null (the Master volume's sample)
+var room_getter: Callable          # lane UBERJOIN-1: () -> "" or why the player is in a lobby room ("an online room" / "a LAN room"): the Uber row is locked there
 
 var _open := false
 var _original: RefCounted          # the settings when the page opened (CANCEL)
@@ -267,7 +269,10 @@ func reset_defaults() -> void:
 	_pending = DisplaySettings.new()
 	_apply_pending()
 	if game_options != null:
+		var uber_before = _extras.get(UBER_KEY)
 		_extras = game_options.defaults()
+		if not _uber_locked().is_empty() and uber_before != null:
+			_extras[UBER_KEY] = uber_before # lane UBERJOIN-1: Reset does not change the mode inside a room either
 		if _menu:
 			# the retail keys the shell's Reset sets are not this script's (their values in effect stay until ACCEPT / CANCEL)
 			for key in game_options.RETAIL_KEYS:
@@ -287,6 +292,9 @@ func set_extra(key: String, value: String) -> void:
 		return
 	if not game_options.valid(key, value):
 		printerr("GAME OPTIONS %s = '%s' is not a value it takes" % [key, value])
+		return
+	if key == UBER_KEY and not _uber_locked().is_empty():
+		printerr("GAME OPTIONS %s is locked: %s" % [key, _uber_locked()]) # lane UBERJOIN-1: refused by name, never applied
 		return
 	_extras[key] = value
 	_apply_extras()
@@ -538,7 +546,7 @@ func _camera_rows() -> Array:
 
 func _interface_rows() -> Array:
 	return _present([
-		_extra_check("OpenBFMEBFME2UI", "BFME2 menus and theme (restart)", HELP.OpenBFMEBFME2UI),
+		_extra_choice("OpenBFMEMainMenuStyle", "Main menu style", game_options.MENU_STYLES, HELP.OpenBFMEMainMenuStyle),
 		_retail_row("Retail.HealthBars"),
 		_extra_choice("OpenBFMEHealthBars", "Health bars", BARS_ITEMS, HELP.OpenBFMEHealthBars),
 		_extra_check("AlternateMouseSetup", "Alternate mouse setup", HELP.AlternateMouseSetup),
@@ -576,12 +584,31 @@ func _online_rows() -> Array:
 		_retail_row("Retail.OnlinePortNum"),
 		_retail_row("Retail.SendDelay"),
 		_retail_row("Retail.RefreshNat"),
+		_extra_check("OpenBFMEShareResults", "Share my game results for statistics", HELP.OpenBFMEShareResults), # lane ONLINEHUB-1
 	])
+
+
+const UBER_KEY := "OpenBFMEUberPerformance"
+
+
+## lane UBERJOIN-1: "" or the reason the Uber row is locked: inside a lobby room (online or LAN) every player runs the room's mode, so it cannot change
+func _uber_locked() -> String:
+	if not room_getter.is_valid():
+		return ""
+	var where: String = str(room_getter.call())
+	if where.is_empty():
+		return ""
+	return "You are in %s: its players all use the same performance mode, so this setting can't change now. Leave the room first." % where
 
 
 func _performance_rows() -> Array:
 	# lane UBER-1 (docs/UBER.md): the opt-in simulation profile; the help line is the warning
-	return [_extra_check("OpenBFMEUberPerformance", "Uber performance mode", HELP.OpenBFMEUberPerformance)]
+	var row := _extra_check(UBER_KEY, "Uber performance mode", HELP.OpenBFMEUberPerformance)
+	var locked := _uber_locked()
+	if not locked.is_empty():
+		row["enabled"] = false # lane UBERJOIN-1: greyed, with the reason in the help line
+		row["help"] = locked
+	return [row]
 
 
 func _hotkey_list() -> Array:

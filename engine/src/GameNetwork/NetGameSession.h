@@ -94,6 +94,15 @@ public:
 		Failed     ///< see spectateReport().failure
 	};
 	SpectateState spectateStep(LiveGame &game, std::uint32_t budgetMs = 50);
+	bool detachSpectator(LiveGame &game, std::string *error = nullptr);
+	bool attachSpectator(LiveGame &game, std::string *error = nullptr);
+	void disableSpectatorAutoCatchup() { m_spectatorAutoCatchup = false; }
+	bool spectatorAutoCatchupInProgress() const
+	{
+		return m_spectatorAutoCatchup && m_spectateState == SpectateState::Following && m_spectate.caughtUpMs == 0;
+	}
+	bool spectatorFailed() const { return m_spectateState == SpectateState::Failed; }
+	UnsignedInt spectatorFinalFrame() const;
 	struct SpectateReport
 	{
 		std::uint64_t startedMs = 0, caughtUpMs = 0; ///< NetMilliseconds at beginSpectate and when it first reached the end of what the relay served
@@ -103,6 +112,7 @@ public:
 		unsigned long long crcsCompared = 0, crcMismatches = 0, logRequests = 0;
 		bool logComplete = false;
 		std::string firstMismatch, failure;
+		int64_t firstMismatchFrame = -1;
 	};
 	const SpectateReport &spectateReport() const { return m_spectate; }
 	SpectateState spectateState() const { return m_spectateState; }
@@ -112,7 +122,11 @@ public:
 	bool rejoining() const { return m_rejoinState != RejoinState::Live && m_catchUp != nullptr; }
 	// services the transport and answers late lobby START datagrams (a lost START_ACK); call every tick
 	void service();
-	// the local player stops (ZH leave); the replay gets its end record
+	// lane ONLINEUX-1 r2 (Sol 1): a rejoin START whose incarnation never went live (binding, catching up, waiting for its REJOIN, or failed): it is no
+	// member of the lockstep game yet, so it has nothing to leave
+	bool rejoinUnjoined() const { return m_start.rejoinGeneration > 0 && m_rejoinState != RejoinState::Live; }
+	// the local player stops (ZH leave); the replay gets its end record. An unjoined rejoin (above) sends nothing: no frame counts for frames it never
+	// played and no PLAYERLEAVE (the player keeps the slot, as after a crash, and can rejoin again)
 	void finish(LiveGame &game);
 	// true when every command sent so far was acked by every peer (a finished peer stays until then)
 	bool allAcked() const;
@@ -131,6 +145,8 @@ public:
 	Transport &transport() { return *m_transport; }
 	const NetworkConfig &config() const { return m_config; }
 	const LobbyStart &start() const { return m_start; }
+	// RW 0x90313E / 0x927183: human slots marked disconnected, mapped to the score screen's player indices.
+	std::vector<int> disconnectedPlayerIndices() const;
 
 private:
 	UDP &m_socket;
@@ -160,6 +176,7 @@ private:
 	SpectateReport m_spectate;
 	bool m_logComplete = false;
 	UnsignedInt m_spectateStop = 0xFFFFFFFFu;
+	bool m_spectatorAutoCatchup = true;
 	void fillFromLog(UnsignedInt fromFrame);
 	void failRejoin(const std::string &why);
 };

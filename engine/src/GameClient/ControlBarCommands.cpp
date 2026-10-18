@@ -261,8 +261,6 @@ const FieldParse kCommandButtonFieldParse[] = {
 	{ "InvalidCursorName", INI::parseAsciiString, nullptr, CB_OFF(m_invalidCursorName) },
 	{ "ButtonBorderType", INI::parseLookupList, kBorderTypes, CB_OFF(m_commandButtonBorder) },
 	{ "RadiusCursorType", INI::parseAsciiString, nullptr, CB_OFF(m_radiusCursor) },
-	{ "AffectsAllies", INI::parseBool, nullptr, CB_OFF(m_affectsAllies) },
-	{ "UnitSpecificSound2", parseSoundRefList, nullptr, CB_OFF(m_unitSpecificSound2) },
 	{ "UnitSpecificSound", parseSoundRefList, nullptr, CB_OFF(m_unitSpecificSound) },
 	{ "SetAutoAbilityUnitSound", parseSoundRefList, nullptr, CB_OFF(m_setAutoAbilityUnitSound) },
 	{ "UnsetAutoAbilityUnitSound", parseSoundRefList, nullptr, CB_OFF(m_unsetAutoAbilityUnitSound) },
@@ -294,6 +292,14 @@ const FieldParse kCommandButtonFieldParse[] = {
 	{ "CreateAHeroUICostIfSelected", INI::parseInt, nullptr, CB_OFF(m_createAHeroUICostIfSelected) },
 	{ nullptr, nullptr, nullptr, 0 }
 };
+// community PR #36: BFME1's CommandButton rows (stored, not used) (BFME1 data only, Common/BfmeGame.h); RotWK's table stays the binary's
+const FieldParse kBfme1CommandButtonFields[] = {
+	{ "AffectsAllies", INI::parseBool, nullptr, CB_OFF(m_affectsAllies) },
+	{ "UnitSpecificSound2", parseSoundRefList, nullptr, CB_OFF(m_unitSpecificSound2) },
+	{ nullptr, nullptr, nullptr, 0 },
+};
+const Bfme1FieldRowsRegistration kBfme1CommandButtonFieldsRegistration(kCommandButtonFieldParse, kBfme1CommandButtonFields);
+
 #undef CB_OFF
 
 // RW 0x80C9E1 CommandSet::parseCommandButton; userData = the slot index

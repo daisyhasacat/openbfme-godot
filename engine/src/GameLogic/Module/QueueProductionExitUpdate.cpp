@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/QueueProductionExitUpdate.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "GameLogic/Module/ExitMath.h"
 
@@ -396,4 +397,16 @@ void QueueProductionExitUpdate::crc(StateHasher &h) const
 	h.addBool(m_rallyPointExists);
 	h.addU32(m_currentBurstCount);
 	h.addU32(m_lastExitId);
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) ---------------------------------------------------------------------------------------------------
+void QueueProductionExitUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_currentDelay);
+	SnapshotXfer::coord3D(x, m_rallyPoint);
+	x.xferBool(&m_rallyPointExists);
+	x.xferUnsignedInt(&m_currentBurstCount);
+	x.xferObjectID(&m_lastExitId);
 }

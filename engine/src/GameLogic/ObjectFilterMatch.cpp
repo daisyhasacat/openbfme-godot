@@ -2,6 +2,9 @@
 // See GameLogic/ObjectFilterMatch.h for the target facts and the addresses.
 
 #include "GameLogic/ObjectFilterMatch.h"
+#include "GameLogic/SnapshotXfer.h"
+
+#include "Common/Xfer.h"
 
 #include "Common/Player.h"
 #include "Common/PlayerTemplate.h"
@@ -109,6 +112,57 @@ void ObjectFilterMatch::crc(StateHasher &h, const ObjectFilter *filter)
 	h.addU32(filter->relationships);
 	h.addBool(filter->flag);
 	h.addI32(filter->side);
+}
+
+void ObjectFilterMatch::xfer(Xfer &x, std::shared_ptr<const ObjectFilter> &filter)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	bool present = filter != nullptr;
+	x.xferBool(&present);
+	if (!present)
+	{
+		filter.reset();
+		return;
+	}
+	ObjectFilter f = filter ? *filter : ObjectFilter();
+	for (std::vector<std::string> *names : { &f.includeNames, &f.excludeNames })
+	{
+		x.xferVectorSize(*names, 1); // a string: its length byte
+		for (std::string &s : *names)
+		{
+			x.xferAsciiString(&s);
+		}
+	}
+	for (KindOfMaskType *m : { &f.includeKindOf, &f.excludeKindOf })
+	{
+		for (std::uint32_t &w : *m)
+		{
+			x.xferUnsignedInt(&w);
+		}
+	}
+	x.xferInt(&f.rule);
+	x.xferUnsignedInt(&f.relationships);
+	x.xferBool(&f.flag);
+	x.xferInt(&f.side);
+	if (x.isLoading())
+	{
+		// lane SAVE-4e (closed sets): the KindOf masks hold KindOf names' bits, the rule is NONE / ANY / ALL, the relationships the four, the side 0 .. 2
+		for (const KindOfMaskType *m : { &f.includeKindOf, &f.excludeKindOf })
+		{
+			for (int bit = SnapshotXfer::kindOfCount(); bit < (int)m->size() * 32; ++bit)
+			{
+				if (((*m)[(size_t)bit >> 5] >> (bit & 31)) & 1u)
+				{
+					throw XferException("an object filter's KindOf mask holds bit " + std::to_string(bit) + ", beyond the KindOf names");
+				}
+			}
+		}
+		SnapshotXfer::checkRange(f.rule, ObjectFilter::RULE_NONE, ObjectFilter::RULE_ALL, "an object filter's rule");
+		SnapshotXfer::checkMask(f.relationships, 0xF, "an object filter's relationships", "the four relationships");
+		SnapshotXfer::checkRange(f.side, ObjectFilter::SIDE_ANY, ObjectFilter::SIDE_GOOD, "an object filter's side");
+		filter = std::make_shared<const ObjectFilter>(f);
+	}
 }
 
 bool ObjectFilterMatch::isEquivalentTo(const ThingTemplate *a, const ThingTemplate *b)

@@ -340,3 +340,18 @@ void SkirmishPreferences::write()
 		m_errors.push_back("Skirmish.ini: " + error);
 	}
 }
+
+std::string SkirmishPreferences::folder() const
+{
+	const std::filesystem::path dir = std::filesystem::u8path(m_path).parent_path();
+	if (dir.empty())
+	{
+		return std::string();
+	}
+	std::string out = dir.u8string();
+	if (out.back() != '/' && out.back() != '\\')
+	{
+		out += (char)std::filesystem::path::preferred_separator;
+	}
+	return out;
+}

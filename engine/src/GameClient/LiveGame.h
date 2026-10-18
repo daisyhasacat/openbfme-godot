@@ -150,6 +150,16 @@ public:
 	// as PLAYER_HUMAN: inference, S-3902) that is active, or to the observer itself ("all"), wrapping; the observed player becomes the shroud's view
 	// player (RW 0xB4D8E0 -> ShroudManager::setLocalPlayer: whose cells the view shows). False when the local player is active. View only: no logic state
 	bool observeNextPlayer(bool forward);
+	// CASTER-1: presentation only; replay authorization is set by the replay owner, never by an input message.
+	void enableReplayObserver() { waitIdle(); m_replayObserver = true; enableObserverEvents(); }
+	void enableObserverEvents() { waitIdle(); m_recorder->observe(); }
+	const ObserverTimeline &observerTimeline() const { holdLogic(); return m_recorder->observerTimeline(); }
+	const ObserverMetrics &observerMetrics() const { holdLogic(); return m_recorder->observerMetrics(); }
+	bool canObserve() const;
+	// the occupied slots' player names in slot order: fixed by load(), never changed while the game runs, so (unlike report()) no wait for the worker
+	const std::vector<std::string> &startSlotPlayers() const { return m_report.startSlotPlayers; }
+	bool observePlayer(int index, bool team = false); ///< -1: all; otherwise a real human or AI player index
+	bool observedTeam() const { return m_observedTeam; }
 	int observedPlayer() const { return m_observedPlayer; } ///< -1: none chosen (the local player's view)
 	const VisionSettings &visionSettings() const { return m_vision; }
 	// the local player's cell edges since the last call (the client's fog texture rebuilds when this is true)
@@ -175,6 +185,16 @@ public:
 	// SMOOTH-1 (protocol owner): runs every queued batch and hands its completion to the driver (shutdown, leave, a replay's end: the protocol and the
 	// logic agree on the frame afterwards)
 	void drainFrames();
+	// Presentation transport: finish exactly one logic frame, including a partially paced frame.
+	int stepFrame();
+	// lane SAVE-4e (docs/SAVES.md section 2, case 1): the game takes the state of a snapshot (GameLogic::loadSnapshot) between frames, with no frame
+	// driver installed. Transactional: the game's own state is kept first (its snapshot and state hash); a refused snapshot is a named false + *error and
+	// the game is put back to the kept state, checked by its state hash; if even that fails the game is closed (advance runs nothing more: never a
+	// half-loaded game) and *error says so. `accept` (optional) checks the loaded state (the frame and state hash a save's header names): a non-empty
+	// answer is a refusal like a refused block. Either way the client is told the objects' model conditions (ClientEventRecorder::loadedObject) and
+	// the state is published and presented (refreshClient), so the next advance continues from the loaded frame.
+	bool loadSnapshot(const std::vector<std::uint8_t> &bytes, std::string *error, const std::function<std::string(GameLogic &)> &accept = nullptr);
+	bool closed() const { return m_closed; } ///< lane SAVE-4e: a refused snapshot could not be undone (loadSnapshot)
 	// SMOOTH-1 (protocol owner): the logic frame of the last completion the driver consumed (what local input is stamped against), and the next batch frame
 	UnsignedInt protocolFrame() const { return m_protocolFrame; }
 	UnsignedInt nextBatchFrame() const { return m_nextBatchFrame; }
@@ -346,6 +366,8 @@ private:
 	std::unique_ptr<GameLogic> m_logic;
 	std::unique_ptr<ShroudManager> m_shroud;       ///< VIS-1: after the logic (destroyed first: it detaches its hooks)
 	int m_observedPlayer = -1; ///< lane ONLINE-3: TheControlBar + 0x218
+	bool m_replayObserver = false;
+	bool m_observedTeam = false;
 	VisionSettings m_vision;
 	std::atomic<bool> m_shroudChanged{ true }; ///< set by the shroud callback on the simulation owner (the worker); the client reads the snapshot's ShroudView
 	CommandList m_commands;                          ///< lane PROD-1
@@ -361,6 +383,7 @@ private:
 	LiveGameFrameDriver *m_frameDriver = nullptr; ///< lane MP-1 (protocol owner; the worker sees it only through a queued WorkItem)
 	unsigned long long m_stalledFrames = 0;
 	bool m_loaded = false;
+	bool m_closed = false; ///< lane SAVE-4e (loadSnapshot)
 	// ---- SMOOTH-1 + MP-1 (review r4): numbered batches and completion records ----
 	struct WorkItem
 	{

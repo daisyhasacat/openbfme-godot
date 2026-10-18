@@ -122,6 +122,7 @@ public:
 	static constexpr int kColumnRightInset = 12;
 	static constexpr int kEntryWidth = 110;
 	static constexpr int kCheckSize = 30; // checkbox.wnd draws its box (height - 6) square: 24, the size of Options.apt's Show All Health Bars box
+	static constexpr int kCheckBoxMargin = 3; // lane OPTS-6: the stated hit margin above and below a check box's drawn box (its window's inset)
 	static constexpr int kHelpTop = kBottom - 70;
 	static constexpr int kTabTop = kTop + kHeaderHeight + 12;
 	static constexpr int kTabPitch = 38;
@@ -199,8 +200,13 @@ private:
 	int gadgetLeft(std::size_t index) const;
 	int labelLeft(std::size_t index) const;
 	void layout(); // lane OPTS-5: m_built's places (one column, or two when a row asks for column 1)
+
+public:
+	// the page's frame and lettering (Options.apt's measures), also drawn by other OpenBFME panels in the same style (lane ONLINEHUB-1's tournaments)
 	static void frame(GadgetDrawList &out, int x0, int y0, int x1, int y1, const UnicodeString &header);
 	static void text(GadgetDrawList &out, const UnicodeString &s, int x, int y, int size, Color color, int wrapWidth = 0, bool centred = false);
+
+private:
 
 	AptGadgetLayer &m_layer;
 	GameWindow *m_owner = nullptr;

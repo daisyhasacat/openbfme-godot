@@ -42,8 +42,8 @@ std::string objectPortrait(const Object &obj);
 // TARGET FACTS (RotWK game.dat, caveat S-001):
 //   * RW 0x92F778(object): a LifetimeUpdate not waiting for its wake-up (module + 0x28 clear, RW 0x7A7E79) is type 1 from its start (+0x24) and death frames (+0x20): when death > start,
 //     progress = (death - now) / (death - start), 0 once past death, at most 1; else none. (A TEMPORARILY_DEFECTED object's TemporarilyDefectUpdate and a status 16
-//     object's ToggleHiddenSpecialAbilityUpdate are type 1 the same way: not ported, S-1955.) Otherwise the rank: none unless the template IsTrainable (+0x5F7;
-//     a disguised enemy's shown template, RW 0x69194E, and its rank 1: not ported) and RW 0x9D2437 answers;
+//     object's ToggleHiddenSpecialAbilityUpdate are type 1 the same way, in that priority order.) Otherwise the rank: none unless the shown template IsTrainable
+//     (+0x5F7; a disguised enemy's shown template, RW 0x69194E) and RW 0x9D2437 answers; a disguise changes only rank to 1, not progress;
 //   * RW 0x9D2437 (RotWK only): the tracker's current level (+0x26C -> RW 0x79D12A) must exist; rank = its rank (RW 0x688EEC); with a next level (RW 0x6891A4)
 //     and the experience below the last level's (RW 0x6893E2), progress = (experience - required(current)) / (required(next) - required(current)) in [0, 1] when
 //     required(next) > required(current), else -1; -1 without a next level. Nothing for rank <= 1 with progress < 0;

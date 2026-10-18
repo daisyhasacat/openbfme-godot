@@ -98,6 +98,23 @@ const char *kLevels =
 	"End\n";
 } // namespace
 
+TEST_CASE("xp core: bounty denominator uses the last valid definition and its override, not maximum rank")
+{
+	XpFixture f;
+	REQUIRE(f.load(kLevels).empty());
+	const ExperienceLevelTemplate *mp = f.levels.lastLevel("Soldier", true);
+	const ExperienceLevelTemplate *sp = f.levels.lastLevel("Soldier", false);
+	REQUIRE(mp);
+	REQUIRE(sp);
+	CHECK(mp->m_name == "TroopLevel2");
+	CHECK(mp->m_rank == 2);
+	CHECK(sp->m_name == "TroopLevel2Solo");
+	CHECK(f.levels.lastLevel("NoLevels", true) == nullptr);
+	REQUIRE(f.load("ExperienceLevel TroopLevel2\n Rank = 7\n MultiPlayerOnly = Yes\nEnd\n", INI_LOAD_CREATE_OVERRIDES).empty());
+	CHECK(f.levels.lastLevel("Soldier", true)->m_rank == 7);
+	CHECK(f.levels.lastLevel("SoldierHorde", false)->m_name == "TroopLevel3");
+}
+
 TEST_CASE("xp core: ExperienceLevel blocks parse with the binary's field table and chain by TargetNames")
 {
 	XpFixture f;

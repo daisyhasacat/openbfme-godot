@@ -42,6 +42,7 @@
 class GameLogic;
 class GameLogicDispatch;
 class Object;
+class Xfer;
 
 class BuildAssistantSell
 {
@@ -57,6 +58,7 @@ public:
 	void reset() { m_list.clear(); }
 	bool empty() const { return m_list.empty(); }
 	void crc(StateHasher &h) const;
+	void xfer(Xfer &x); // lane SAVE-4b: obfme:SellList (OpenBFME native, S-4190)
 
 	struct Entry
 	{

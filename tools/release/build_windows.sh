@@ -17,6 +17,7 @@
 # Lane WINCRASH-1: every build writes the PDB of the DLL (engine/CMakeLists.txt: CodeView line tables, prefix maps); the home folder
 # prefixes lld records are blanked (tools/release/pdb_tools.py scrub) and the pair is checked (the PDB is the DLL's, no home folder path).
 # It is not exported (round 2: no in-game reader yet); tools/release/archive_symbols.sh keeps it per version for mapping crash offsets.
+# Lane RELFIX-1: the DLL's toolchain build paths are made relative (pdb_tools.py scrub-dll) and the DLL is audited like a package.
 set -euo pipefail
 
 LLVM_MINGW_TAG=20261006
@@ -63,7 +64,11 @@ DLL="$ROOT/godot/bin/openbfme.windows.template_debug.x86_64.dll"
 PDB="${DLL%.dll}.pdb"
 [ -f "$PDB" ] || { echo "the GDExtension's PDB was not written to $PDB" >&2; exit 1; }
 python3 "$ROOT/tools/release/pdb_tools.py" scrub "$PDB"
+# lane RELFIX-1: the toolchain's static libc++abi brings its own build root's __FILE__ paths (pdb_tools.py); the DLL must then pass the
+# package audit's developer-path rule on its own, so a build path that leaks into it fails here, not at packaging
+python3 "$ROOT/tools/release/pdb_tools.py" scrub-dll "$DLL"
 python3 "$ROOT/tools/release/pdb_tools.py" check "$DLL" "$PDB" || exit 1
+python3 "$ROOT/tools/release/audit_package.py" "$DLL" || { echo "the GDExtension $DLL fails the package audit" >&2; exit 1; }
 echo "BUILT: $DLL"
 echo "BUILT: $PDB"
 [ $EXPORT = 1 ] || exit 0

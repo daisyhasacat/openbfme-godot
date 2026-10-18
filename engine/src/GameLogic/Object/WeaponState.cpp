@@ -8,6 +8,7 @@
 
 #include "GameLogic/WeaponState.h"
 #include "Common/StateHash.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/NumericState.h"
 
@@ -1050,4 +1051,62 @@ void FiringTracker::crc(StateHasher &h) const
 	h.addFloat(m_lastOwnerPosition.x);
 	h.addFloat(m_lastOwnerPosition.y);
 	h.addFloat(m_lastOwnerPosition.z);
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) -----------------------------------------------------------------------
+// Retail's Weapon::xfer (RW 0x6CEA67, tier A, (1, 3)) transfers RotWK's instance (its template by name, the owner, the slot, seven frames, ...); this Weapon
+// holds the port's fields (the barrel, scatter and leech state of WeaponState.h), so the layout is the crc's field list. The template is the slot's and is
+// checked: the owner's ObjectWeapons made this weapon from the same set before it loads.
+void Weapon::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	std::string name = (!x.isLoading() && m_template) ? m_template->getName() : std::string();
+	x.xferAsciiString(&name);
+	if (x.isLoading() && name != (m_template ? m_template->getName() : std::string()))
+	{
+		throw XferException("the snapshot's weapon '" + name + "' is not this slot's '" + (m_template ? m_template->getName() : std::string()) + "'");
+	}
+	x.xferUnsignedInt(&m_ownerID);
+	std::int32_t slot = x.isLoading() ? -1 : m_slot;
+	x.xferInt(&slot);
+	if (slot != m_slot)
+	{
+		throw XferException("the snapshot's weapon '" + name + "' is in slot " + std::to_string(slot) + ", this one in " + std::to_string(m_slot));
+	}
+	SnapshotXfer::enumIn(x, m_status, WEAPON_READY_TO_FIRE, WEAPON_FIRING, "a weapon's status");
+	x.xferUnsignedInt(&m_ammoInClip);
+	x.xferUnsignedInt(&m_whenWeCanFireAgain);
+	x.xferUnsignedInt(&m_whenPreAttackFinished);
+	x.xferUnsignedInt(&m_whenFiringEnds);
+	x.xferUnsignedInt(&m_followThruEnd);
+	x.xferUnsignedInt(&m_timerStart);
+	x.xferUnsignedInt(&m_lastFireFrame);
+	x.xferUnsignedInt(&m_suspendFXFrame);
+	x.xferInt(&m_maxShotCount);
+	x.xferInt(&m_curBarrel);
+	SnapshotXfer::checkRange(m_curBarrel, 0, 0x7FFFFFFF, "a weapon's current barrel"); // wrapped to 0 against the barrel count when it fires (Weapon::fire)
+	x.xferInt(&m_numShotsForCurBarrel);
+	SnapshotXfer::ints(x, m_scatterTargets);
+	for (int t : m_scatterTargets)
+	{
+		SnapshotXfer::checkRange(t, 0, (std::int64_t)(m_template ? m_template->m_scatterTargets.size() : 0) - 1, "a weapon's scatter target");
+	}
+	x.xferBool(&m_pitchLimited);
+	x.xferUnsignedInt(&m_leechRangeDeadline);
+	x.xferUnsignedInt(&m_linearTargetCursor);
+	x.xferInt(&m_preAttackJitter);
+}
+
+// retail FiringTracker is a helper module (FiringTrackerHelper, RW 0x8E2EB2); this one is ObjectWeapons' member: native layout, the crc's fields
+void FiringTracker::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	x.xferInt(&m_count);
+	x.xferUnsignedInt(&m_victimID);
+	SnapshotXfer::coord3D(x, m_victimPos);
+	SnapshotXfer::enumIn(x, m_positionMode, 0, 1, "a firing tracker's position mode");
+	x.xferUnsignedInt(&m_coastEnd);
+	x.xferUnsignedInt(&m_autoReloadDeadline);
+	x.xferUnsignedInt(&m_lastShotFrame);
+	SnapshotXfer::coord3D(x, m_lastOwnerPosition);
 }

@@ -125,7 +125,7 @@ the render.
 Every number below is from the lane machine (the "Deck" of the briefs).
 Godot reports its GPU as "AMD Steam Machine (RADV NAVI33)"; it has 12
 hardware threads and was idle apart from other lanes' light work (load average
-0.5-1.2). the reference PC: see the end of this file.
+0.5-1.2). The reference PC: see the end of this file.
 
 ### Logic: the tick (logic + hash), the battle after 10 game seconds of marching
 
@@ -345,7 +345,7 @@ That's a research item, not a plan.
   machines with different CPUs, and (from U2 on) in a native Windows run of
   the suite. UBER-1's evidence:
   - the pin vector made on the reference PC (Ryzen 9 5900X, WSL, 24 threads) passes
-    in the remote gate's suite on pve (Ryzen 7 5800H, 12 threads);
+    in the remote gate's suite on a CI host (Ryzen 7 5800H, 12 threads);
   - the bench's hash chains (Faithful and Uber, 10k and 20k, 30 frames) are
     equal on the lane machine (12 threads) and the reference PC (24 threads).
 
@@ -427,7 +427,7 @@ That's a research item, not a plan.
   textures, per-instance clip, time and blend uploaded, bones evaluated in the
   shader. This is Faithful as well (presentation only). The 40k bench's 33 ms
   of CPU pose and upload go to about 0.5 ms.
-- The game gate runs on the reference PC (idle, briefs/jpc.md) and the Deck at
+- The game gate runs on the reference PC (idle) and the Deck at
   10k / 20k / 40k.
 - **Target (unvalidated until idle reference-PC measurements exist):** 10k at
   144 fps on the reference PC; 10k logic inside the tick on the Deck.
@@ -495,9 +495,9 @@ The logic bench on the reference PC (Ryzen 9 5900X, 24 threads, WSL), 2026-10-12
 Conditions:
 - the machine idle: no CI unit, load average 1-2 before and after;
 - the desktop lock held for the run;
-- run through jpc-run.sh, so as a lane job: nice 10, capped at 16 cores. That
-  is not the normal priority briefs/jpc.md asks for. Holding `jpc-paused`
-  would have stopped the lane job itself.
+- run as a CI lane job: nice 10, capped at 16 cores. That is not the normal
+  priority a reference measurement asks for. Pausing the CI would have
+  stopped the lane job itself.
 
 | Troops | Faithful tick | Uber tick | Uber logic | Hash, Faithful → Uber |
 |---|---|---|---|---|
@@ -512,7 +512,7 @@ the reference PC's numbers.
 Every hash chain (Faithful and Uber, 10k / 20k / 40k) is equal to the lane
 machine's: the same simulation on another CPU and thread count.
 
-Still to do with the owner's desktop (the GPU-job path of briefs/jpc.md, one
+Still to do with the owner's desktop (a GPU job, one
 job at a time):
 - the reference measurement proper: the game gate (`--uber1`) in the native
   Windows build on the RTX 4090, idle, at normal priority;

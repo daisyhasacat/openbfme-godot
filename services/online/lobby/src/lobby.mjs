@@ -18,10 +18,19 @@ import { webResponse } from './webui.mjs';
 // blobs: saveGame / deleteGame / putBlob / getBlob), config (below). No secret is in this file: keys come from the environment / files.
 
 export const VERSION = 1;
+// UBERJOIN-1: the simulation profile a room runs (docs/ONLINE.md): "normal" (Faithful) or "uber" (the Uber performance mode). A room made by a client that
+// predates the field has none and is "normal"; any other value is refused by name
+export const MODES = ['normal', 'uber'];
+function modeOf(value, what) {
+  if (value === undefined) return 'normal';
+  if (typeof value !== 'string' || !MODES.includes(value)) throw bad('bad_field', `${what} must be one of ${MODES.join(', ')}`);
+  return value;
+}
 export const MAX_JSON_BYTES = 16384;          // a JSON request body (ONLINE-2 r2: counted as received)
 export const MAX_LOG_BYTES = 64 * 1024 * 1024; // a relay log upload
 const LOG_HEADER_BYTES = 25; // RelayCore.h "Log format": magic 8, version 4, game id 8, slot mask 1, start 4
 const MAX_SLOTS = 8;
+const MINE_LEFT_MAX = 32; // ONLINEUX-1 r2: the game client's cap of a /v1/mine list (OnlineLobbyClient::kMaxMine)
 // ONLINE-5: long polling. A held poll is one open request and one timer: bounded per game (8 players, each one poll, and a second one while the first
 // is being replaced) and in total; beyond the bounds a poll is answered at once (the client's next poll waits)
 export const MAX_WAIT_S = 25;
@@ -44,6 +53,17 @@ export const MAX_PRESENT = 50000; // the presence table's bound (sign-ins are ra
 const SLOT_STATES = ['open', 'closed', 'player', 'easy', 'medium', 'hard', 'brutal'];
 const AI_STATES = new Set(['easy', 'medium', 'hard', 'brutal']);
 // ONLINE-5 (Sol r1): the choices of a slot no one holds: an open or closed slot keeps none (they would come back with the next occupant)
+// ONLINEHUB-1: whole-string, constant-time comparison of a presented secret (a non-string never matches)
+function sameSecret(presented, secret) {
+  if (typeof presented !== 'string' || presented.length !== secret.length) return false;
+  let diff = 0;
+  for (let i = 0; i < secret.length; i++) diff |= presented.charCodeAt(i) ^ secret.charCodeAt(i);
+  return diff === 0;
+}
+const ROOM_CODE = /^[A-Za-z0-9_-]{6,32}$/; // ONLINEHUB-1: a private room's code (docs/PLATFORM_API.md)
+// PLATFORMICON-1: the one short value a client says about its system, shown beside its name (display only: nothing else about the machine). Absent
+// (an older client) or null is no icon; anything else is refused by name
+export const PLATFORMS = Object.freeze(['windows', 'linux', 'macos']);
 const NO_CHOICES = Object.freeze({ faction: -1, color: -1, startPos: -1, team: -1 });
 // INFRA-2: the admin backup's signature window, page size and the blob keys it moves (the three kinds the lobby stores per started game)
 export const ADMIN_WINDOW_S = 300;
@@ -170,6 +190,11 @@ const bad = (code, msg) => new LobbyError(400, code, msg);
 
 function intIn(v, lo, hi, what) {
   if (!Number.isInteger(v) || v < lo || v > hi) throw bad('bad_field', `${what} must be an integer in ${lo} .. ${hi}`);
+  return v;
+}
+export function checkPlatform(v) {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== 'string' || !PLATFORMS.includes(v)) throw bad('bad_field', `platform must be one of ${PLATFORMS.join(', ')} or absent`);
   return v;
 }
 function str(v, maxLen, what, { empty = false } = {}) {
@@ -431,11 +456,13 @@ export class Lobby {
       id: g.id,
       name: g.name,
       host: g.slots[g.hostSlot].name,
+      hostPlatform: g.slots[g.hostSlot].platform ?? null, // PLATFORMICON-1: the host's system, for the icon in the server browser
       map: g.setup.map,
       players: g.slots.filter((s) => s.state === 'player').length,
       openSlots: g.slots.filter((s) => s.state === 'open').length,
       state: g.state,
       password: !!g.password,
+      mode: g.mode ?? 'normal',
     };
   }
   gameView(g, account) {
@@ -445,6 +472,7 @@ export class Lobby {
       state: g.state,
       hostSlot: g.hostSlot,
       profile: g.profile,
+      mode: g.mode ?? 'normal',
       setup: { ...g.setup, slots: undefined },
       slots: g.slots.map((s, i) => ({
         slot: i,
@@ -455,9 +483,11 @@ export class Lobby {
         startPos: s.startPos,
         team: s.team,
         ready: !!s.ready,
+        platform: s.state === 'player' ? s.platform ?? null : null,
         you: !!account && s.account === account.id,
       })),
       seq: g.seq,
+      private: !!g.roomCode,
     };
   }
   sweep() {
@@ -521,7 +551,7 @@ export class Lobby {
       fortressConstruction: setup.fortressConstruction ?? false,
       peaceTimeMinutes: intIn(setup.peaceTimeMinutes ?? 0, 0, 20, 'setup.peaceTimeMinutes'),
       // lane ONLINE-3: how far behind the players the spectators watch (seconds of game time; the relay holds the log back that far)
-      spectatorDelay: intIn(setup.spectatorDelay ?? 0, 0, 600, 'setup.spectatorDelay'),
+      spectatorDelay: intIn(setup.spectatorDelay ?? 120, 0, 600, 'setup.spectatorDelay'),
       rules: setup.rules ?? null,
     };
     if (typeof out.fortressConstruction !== 'boolean') throw bad('bad_field', 'setup.fortressConstruction must be boolean');
@@ -546,7 +576,19 @@ export class Lobby {
     const name = str(body?.name, 48, 'name');
     const profile = str(body?.profile, 32, 'profile');
     if (!/^[0-9a-f]{32}$/.test(profile)) throw bad('bad_field', 'profile must be the profile identity\'s MD5 (32 hex digits)');
+    const mode = modeOf(body.mode, 'mode');
     const password = body.password === undefined || body.password === '' ? null : str(body.password, 32, 'password');
+    // ONLINEHUB-1: a private room named by a code (a Quick Match or a tournament match: the platform hands every player the same code); not listed,
+    // joined with POST /v1/rooms/<code>/join; no password beside it
+    const roomCode = body.room_code === undefined || body.room_code === null ? null : str(body.room_code, 32, 'room_code');
+    if (roomCode !== null) {
+      if (!ROOM_CODE.test(roomCode)) throw bad('bad_field', 'room_code must be 6 .. 32 characters of A-Z a-z 0-9 _ -');
+      if (password !== null) throw bad('bad_field', 'a room with a room_code has no password');
+      for (const g of this.games.values()) {
+        if (g.state === 'open' && g.roomCode === roomCode) throw new LobbyError(409, 'code_taken', 'a room with this code is open already');
+      }
+    }
+    const platform = checkPlatform(body.platform);
     const setup = this.checkSetup(body.setup, true);
     const slots = body.setup.slots.map((s, i) => {
       if (!SLOT_STATES.includes(s?.state)) throw bad('bad_field', `setup.slots[${i}].state must be one of ${SLOT_STATES.join(', ')}`);
@@ -566,8 +608,10 @@ export class Lobby {
     }
     slots[hostSlot].account = account.id;
     slots[hostSlot].name = account.name;
+    slots[hostSlot].platform = platform;
     const id = bytesToHex(this.env.randomBytes(8));
-    const g = { id, name, password, profile, setup, slots, hostSlot, state: 'open', chat: [], seq: 0, created: this.env.now(), touched: this.env.now(), ip };
+    const g = { id, name, password, profile, mode, setup, slots, hostSlot, state: 'open', chat: [], seq: 0, created: this.env.now(), touched: this.env.now(), ip };
+    if (roomCode !== null) g.roomCode = roomCode;
     this.event(g, `${account.name} created the game`);
     this.games.set(id, g);
     await this.save(g);
@@ -577,18 +621,29 @@ export class Lobby {
   // ONLINE-4: `running` also lists the started games (the server browser offers them to watch: POST .../spectate), after the open ones
   list(running = false) {
     this.sweep();
-    const games = [...this.games.values()].filter((g) => g.state === 'open' || (running && g.state === 'started'))
+    const games = [...this.games.values()].filter((g) => !g.roomCode && (g.state === 'open' || (running && g.state === 'started')))
       .sort((a, b) => (b.state === 'open') - (a.state === 'open') || b.created - a.created).slice(0, 200).map((g) => this.publicGame(g));
     return { v: VERSION, games };
   }
 
-  async join(account, id, body) {
+  // `byCode`: the caller found the room by its code (joinByCode); every other entry into a private room (the game id) must present the code itself
+  async join(account, id, body, byCode = false) {
     this.limit(`join:${account.id}`, 20, 10);
     const g = this.game(id);
+    // UBERJOIN-1: the mode is checked first, before the member / started / password branches (an existing member's repeated join too): a client that sends
+    // none is "normal"; a malformed one is bad_field, the other mode is the 409 "mode" refusal
+    const joinerMode = modeOf(body?.mode, 'mode');
+    if (joinerMode !== (g.mode ?? 'normal')) {
+      throw new LobbyError(409, 'mode', `this game uses ${g.mode ?? 'normal'} performance mode and you are in ${joinerMode} mode: switch modes to join it`);
+    }
     const existing = this.slotOf(g, account);
     if (existing >= 0) return { v: VERSION, slot: existing, game: this.gameView(g, account) };
+    // ONLINEHUB-1 (Sol): a private room is entered with its code on EVERY path. The code is a string compared whole, in constant time; nothing about
+    // the room (not even that it exists, beyond its id the caller already has) is said otherwise
+    if (g.roomCode && !byCode && !sameSecret(body?.room_code, g.roomCode)) throw new LobbyError(403, 'room_code', 'this room is private: join it with its code');
     if (g.state !== 'open') throw new LobbyError(409, 'started', 'the game has started');
     if (g.password && body?.password !== g.password) throw new LobbyError(403, 'password', 'wrong password');
+    const platform = checkPlatform(body?.platform);
     if (body?.profile !== g.profile) {
       throw new LobbyError(409, 'profile', `your game files or build differ from the host's (profile ${body?.profile} vs ${g.profile}): both need the same OpenBFME version and RotWK 2.01 files`);
     }
@@ -599,11 +654,22 @@ export class Lobby {
     if (slot < 0) throw new LobbyError(409, 'full', 'the game is full');
     // Sol r1 (ONLINE-5): a joiner takes the slot with no choices of its own: nothing an earlier AI of the slot held (a start position, a colour others
     // may have claimed since) carries over to the player
-    Object.assign(g.slots[slot], { state: 'player', account: account.id, name: account.name, ready: false, ...NO_CHOICES });
+    Object.assign(g.slots[slot], { state: 'player', account: account.id, name: account.name, ready: false, platform, ...NO_CHOICES });
     this.unreadyAll(g);
     this.event(g, `${account.name} joined`);
     await this.save(g);
     return { v: VERSION, slot, game: this.gameView(g, account) };
+  }
+
+  // ONLINEHUB-1: the open room of a code (rate-limited per account before the lookup: codes are not guessed by trying)
+  async joinByCode(account, code, body) {
+    this.limit(`code:${account.id}`, 20, 10);
+    if (!ROOM_CODE.test(code ?? '')) throw bad('bad_field', 'a room code is 6 .. 32 characters of A-Z a-z 0-9 _ -');
+    this.sweep();
+    for (const g of this.games.values()) {
+      if (g.roomCode === code && g.state === 'open') return this.join(account, g.id, { profile: body?.profile, mode: body?.mode, platform: body?.platform }, true);
+    }
+    throw new LobbyError(404, 'no_room', 'no open room has this code (the host has not made it yet, or it has started)');
   }
 
   unreadyAll(g) {
@@ -623,9 +689,13 @@ export class Lobby {
       return { v: VERSION, left: true, closed: true };
     }
     if (g.state === 'open') {
-      Object.assign(g.slots[slot], { state: 'open', account: undefined, name: undefined, ready: false, faction: -1, color: -1, startPos: -1, team: -1 });
+      Object.assign(g.slots[slot], { state: 'open', account: undefined, name: undefined, platform: undefined, ready: false, faction: -1, color: -1, startPos: -1, team: -1 });
       this.unreadyAll(g);
     }
+    // ONLINEUX-1: a player who leaves a started game is done with it (the game ended for them, they forfeited or quit): its slot stays theirs (the
+    // START, the replay), but it is no longer offered in /v1/mine and a rejoin is refused. Before, a forfeited game was offered for a rejoin at the
+    // next sign-in. A crash sends no leave: the game is still offered then
+    if (g.state === 'started') g.left = { ...(g.left ?? {}), [slot]: true };
     this.event(g, `${account.name} left`);
     await this.save(g);
     return { v: VERSION, left: true };
@@ -719,7 +789,7 @@ export class Lobby {
     if (slot === g.hostSlot || g.slots[slot].state !== 'player') throw bad('bad_field', 'kick another player\'s slot');
     if (g.state !== 'open') throw new LobbyError(409, 'started', 'the game has started');
     const name = g.slots[slot].name;
-    Object.assign(g.slots[slot], { state: 'open', account: undefined, name: undefined, ready: false, faction: -1, color: -1, startPos: -1, team: -1 });
+    Object.assign(g.slots[slot], { state: 'open', account: undefined, name: undefined, platform: undefined, ready: false, faction: -1, color: -1, startPos: -1, team: -1 });
     (g.kicked ??= []).push(slot);
     this.unreadyAll(g);
     this.event(g, `${name} was kicked`);
@@ -772,6 +842,9 @@ export class Lobby {
         ? { state: s.state, name: s.name, faction: s.faction, color: s.color, startPos: s.startPos, team: s.team }
         : { state: s.state })),
     });
+    // PLATFORMICON-1: each player's system, by slot (null: not told, an AI, no one): display data for the running game's player list. It rides in each
+    // player's own START only, never in `setup` (the replay's record)
+    const platforms = g.slots.map((s) => (s.state === 'player' ? s.platform ?? null : null));
     const starts = {};
     for (const [, i] of humans) {
       starts[i] = {
@@ -784,6 +857,7 @@ export class Lobby {
         runAhead: this.config.runAhead,
         crcInterval: this.config.crcInterval,
         profile: g.profile,
+        platforms,
         setup,
       };
     }
@@ -839,11 +913,19 @@ export class Lobby {
 
   // ---- lane ONLINE-3: rejoin ----
   // the signed-in player's running games: a client whose game restarted (a crash, a lost connection) offers "rejoin" for each
+  // ONLINEUX-1 r2 (Sol 4): `left` names the started games the account left (newest first, at most MINE_LEFT_MAX): they stay in the running list for
+  // spectators, and a client started after the leave knows them (it offers neither a rejoin nor a WATCH the lobby refuses to a player of the game)
   mine(account) {
-    const games = [...this.games.values()]
-      .filter((g) => g.state === 'started' && this.slotOf(g, account) >= 0)
+    const started = [...this.games.values()].filter((g) => g.state === 'started' && this.slotOf(g, account) >= 0);
+    const games = started
+      .filter((g) => !g.left?.[this.slotOf(g, account)])
       .map((g) => ({ ...this.publicGame(g), slot: this.slotOf(g, account), rejoin: `/v1/games/${g.id}/rejoin` }));
-    return { v: VERSION, games };
+    const left = started
+      .filter((g) => g.left?.[this.slotOf(g, account)])
+      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
+      .slice(0, MINE_LEFT_MAX)
+      .map((g) => g.id);
+    return { v: VERSION, games, left };
   }
   // a fresh START for the player's slot of a running game: its ticket is a rejoin ticket of the next generation (the relay binds the slot's new
   // incarnation with it and refuses every older ticket of the slot); "rejoin" names the generation. Only the slot's own account gets one
@@ -853,6 +935,7 @@ export class Lobby {
     const slot = this.slotOf(g, account);
     if (slot < 0) throw new LobbyError(403, 'not_in_game', 'you have no slot in this game');
     if (g.state !== 'started' || !g.starts?.[slot]) throw new LobbyError(409, 'not_started', 'the game has not started');
+    if (g.left?.[slot]) throw new LobbyError(409, 'left', 'you left this game: it can not be rejoined'); // ONLINEUX-1
     g.rejoins ??= {};
     const generation = (g.rejoins[slot] ?? 0) + 1;
     if (generation > 0xffff) throw new LobbyError(409, 'rejoins', 'this slot rejoined too often');
@@ -873,6 +956,7 @@ export class Lobby {
     this.limit(`spectate:${account.id}`, 12, 12);
     const g = this.game(id);
     if (this.slotOf(g, account) >= 0) throw new LobbyError(409, 'player', 'players of the game play it; spectators are other accounts');
+    if (g.roomCode) throw new LobbyError(403, 'private', 'a private room is not open to spectators'); // ONLINEHUB-1 (Sol)
     if (g.state !== 'started' || !g.starts) throw new LobbyError(409, 'not_started', 'the game has not started yet: ask again once it has');
     const index = g.spectatorsIssued ?? 0;
     if (index >= 16) throw new LobbyError(409, 'spectators_full', 'the game has had its 16 spectator places');
@@ -881,7 +965,7 @@ export class Lobby {
     const key = this.config.ticketKeys.get(keyId);
     const expires = Math.floor(this.env.now() / 1000) + this.config.ticketSeconds;
     const mask = g.mask ?? g.slots.reduce((m, s, i) => (s.state === 'player' ? m | (1 << i) : m), 0);
-    const delay = g.setup.spectatorDelay ?? 0;
+    const delay = g.setup.spectatorDelay ?? 120;
     const any = Object.values(g.starts)[0];
     const ticket = await signSpectatorTicket(this.env, keyId, key, g.id, index, mask, expires, delay);
     (g.spectators ??= []).push({ account: account.id, name: account.name, index });
@@ -1135,6 +1219,10 @@ export async function route(lobby, req) {
       return { status: 200, headers: { 'content-type': p[3] === 'log' ? 'application/octet-stream' : 'application/json' }, body: b };
     }
     if (m === 'GET' && p[1] === 'mine' && p.length === 2) return json(200, lobby.mine(await lobby.account(req.headers.authorization))); // ONLINE-3
+    if (m === 'POST' && p[1] === 'rooms' && p.length === 4 && p[3] === 'join') { // ONLINEHUB-1: join a private room by its code
+      const account = await lobby.account(req.headers.authorization);
+      return json(200, await lobby.joinByCode(account, p[2], await body()));
+    }
     if (p[1] !== 'games') return json(404, { v: VERSION, error: 'not_found', message: 'unknown path' });
     if (m === 'GET' && p.length === 2) return json(200, lobby.list(req.query.get('running') === '1'));
     const account = await lobby.account(req.headers.authorization);

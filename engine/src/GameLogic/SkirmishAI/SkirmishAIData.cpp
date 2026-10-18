@@ -2,6 +2,7 @@
 //
 // The skirmish AI's data blocks (lane AI-1). See SkirmishAIData.h for the binary facts; every parser cites the RW function it ports.
 
+#include "Common/BfmeGame.h"
 #include "GameLogic/SkirmishAI/SkirmishAIData.h"
 
 #include "Common/ArchiveFileSystem.h"
@@ -569,6 +570,11 @@ bool SkirmishAIStore::loadBaseLayouts(ArchiveFileSystem &fs, std::vector<std::st
 	// pool (MapReader::load is a function of its bytes; each job writes only its own layout), then applied in key order exactly as before
 	struct Layout
 	{
+		Layout() = default;
+		Layout(const Layout &) = delete;
+		Layout &operator=(const Layout &) = delete;
+		Layout(Layout &&) = default;
+		Layout &operator=(Layout &&) = default;
 		AIBaseTemplate *base = nullptr;
 		std::string path, error;
 		std::vector<std::uint8_t> bytes;
@@ -586,11 +592,13 @@ bool SkirmishAIStore::loadBaseLayouts(ArchiveFileSystem &fs, std::vector<std::st
 		l.read = fs.readFile(l.path, l.bytes, &l.error);
 		layouts.push_back(std::move(l));
 	}
-	JobSystem::client().parallelFor(layouts.size(), 1, [&layouts](size_t, size_t begin, size_t end) {
+	const bool bfme1 = isBfme1Data(fs); // community PR #36: BFME1's base layouts (their PolyGonTriggers spelling)
+	JobSystem::client().parallelFor(layouts.size(), 1, [&layouts, bfme1](size_t, size_t begin, size_t end) {
 		for (size_t i = begin; i < end; ++i)
 		{
 			Layout &l = layouts[i];
 			MapReadOptions options;
+			options.bfme1 = bfme1;
 			l.parsed = l.read && MapReader::load(l.bytes, l.path, options, l.map, &l.error);
 			l.bytes = std::vector<std::uint8_t>();
 		}

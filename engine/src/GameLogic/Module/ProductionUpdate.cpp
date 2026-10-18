@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/ProductionUpdate.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/Audio/AudioRequests.h"
 
@@ -1369,4 +1370,64 @@ void ProductionUpdate::crc(StateHasher &h) const
 	h.addBool(m_cancellingAll);
 	h.addBool(m_factoryDisabled);
 	h.addU32(m_heroCountdown); // lane HERO-1
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190: the queue's entries with their templates by name, then the crc's fields) ---------------------
+void ProductionUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	GameLogic &logic = getObject()->logic();
+	// the queue: each entry's fewest bytes are its fixed fields with the three names empty (49); a load builds the queue aside, then replaces it
+	std::vector<std::unique_ptr<ProductionEntry>> queue;
+	std::uint32_t n = x.isLoading() ? 0 : (std::uint32_t)m_queue.size();
+	x.xferCount(&n, 49, sizeof(ProductionEntry) + sizeof(std::unique_ptr<ProductionEntry>));
+	for (std::uint32_t i = 0; i < n; ++i)
+	{
+		queue.push_back(x.isLoading() ? std::make_unique<ProductionEntry>() : nullptr);
+		ProductionEntry &e = x.isLoading() ? *queue.back() : *m_queue[i];
+		SnapshotXfer::enumIn(x, e.type, PRODUCTION_INVALID, PRODUCTION_BUILD_INDEX, "a production entry's type");
+		SnapshotXfer::thingTemplate(x, logic, e.objectToProduce);
+		SnapshotXfer::upgradeTemplate(x, e.upgradeToResearch);
+		x.xferUnsignedInt(&e.productionID);
+		x.xferReal(&e.percentComplete);
+		x.xferReal(&e.percentPerFrame);
+		x.xferReal(&e.framesUnderConstruction);
+		x.xferInt(&e.quantityTotal);
+		x.xferInt(&e.quantityProduced);
+		x.xferInt(&e.cost);
+		x.xferInt(&e.exitDoor);
+		if (e.exitDoor < DOOR_NONE_AVAILABLE || e.exitDoor >= DOOR_COUNT_MAX)
+		{
+			throw XferException("a production entry's exit door " + std::to_string(e.exitDoor) + " is not one of -1 .. " + std::to_string(DOOR_COUNT_MAX - 1));
+		}
+		x.xferInt(&e.value30);
+		x.xferBool(&e.flag34);
+		x.xferObjectID(&e.hordeTarget);
+		x.xferAsciiString(&e.name);
+		x.xferBool(&e.flag44);
+	}
+	if (x.isLoading())
+	{
+		m_queue.swap(queue);
+	}
+	x.xferUnsignedInt(&m_uniqueID);
+	x.xferUnsignedInt(&m_constructionCompleteFrame);
+	for (DoorInfo &d : m_doors)
+	{
+		x.xferUnsignedInt(&d.openedFrame);
+		x.xferUnsignedInt(&d.waitOpenFrame);
+		x.xferUnsignedInt(&d.closedFrame);
+		x.xferBool(&d.holdOpen);
+	}
+	SnapshotXfer::maskWords(x, m_clearFlags, SnapshotXfer::modelConditionCount(), "a production's model conditions to clear", "the model conditions"); // lane SAVE-4e
+	SnapshotXfer::maskWords(x, m_setFlags, SnapshotXfer::modelConditionCount(), "a production's model conditions to set", "the model conditions");
+	x.xferBool(&m_flagsDirty);
+	x.xferUnsignedInt(&m_postExitDelay);
+	x.xferBool(&m_extrasProcessed);
+	x.xferObjectID(&m_exitingObjectID);
+	SnapshotXfer::ids(x, m_extraObjects);
+	x.xferBool(&m_cancellingAll);
+	x.xferBool(&m_factoryDisabled);
+	x.xferUnsignedInt(&m_heroCountdown);
 }

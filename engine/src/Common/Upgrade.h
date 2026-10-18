@@ -219,3 +219,6 @@ private:
 
 // RW 0xDE45A0. The world that loads the INI installs its center (GlobalOwnerChain, like TheCommandStore); null outside a world
 extern thread_local UpgradeCenter *TheUpgradeCenter;
+// lane SAVE-4e (closed sets): a loaded upgrade mask holds only bits of TheUpgradeCenter's upgrades (below nextMaskBit); an XferException naming `what` and
+// the bit otherwise. Without TheUpgradeCenter every set bit is refused (no upgrade exists)
+void checkLoadedUpgradeMask(const UpgradeMaskType &mask, const std::string &what);

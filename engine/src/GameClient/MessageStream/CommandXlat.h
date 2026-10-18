@@ -88,6 +88,7 @@ private:
 	void selectHero();
 	void changeStance(int stance);
 	void viewLastRadarEvent();
+	void doubleClick(const ClientMessage &message);
 
 	HudContext &m_ctx;
 	bool m_teamExists = false;

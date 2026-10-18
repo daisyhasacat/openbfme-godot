@@ -44,6 +44,7 @@ class GameLogic;
 class INIBlockRegistry;
 class Object;
 class StateHasher;
+class Xfer;
 
 // RW 0xD9FA08
 enum EmotionType
@@ -140,6 +141,8 @@ public:
 	bool update();                                                          ///< RW 0x8E11A1: false when it ends
 	void stop();                                                            ///< RW 0x8E168A
 	void crc(StateHasher &h) const;
+	// lane SAVE-4b: the nugget's state (OpenBFME native, S-4190); the template is the tracker's (checked by name)
+	void xfer(Xfer &x);
 	static std::vector<std::string> stopLines();
 
 private:
@@ -177,10 +180,20 @@ public:
 	unsigned long long tauntScans() const { return m_tauntScans; }
 
 	void crc(StateHasher &h) const;
+	// lane SAVE-4c: the obfme:Emotions block (EmotionSystemSnapshot.cpp): the list in its order and the counters of the report. A load keeps them
+	// pending; the post-process checks every id (an object of the loaded game, SCARY or HERO, listed once) before it replaces the list
+	void xfer(class Xfer &x);
+	void loadPostProcess();
 	std::vector<std::string> report() const;
 
 private:
 	GameLogic &m_logic;
 	std::vector<ObjectID> m_ids;
 	unsigned long long m_unportedAI = 0, m_unportedLua = 0, m_unportedFlags = 0, m_tauntScans = 0;
+	struct PendingLoad
+	{
+		std::vector<ObjectID> ids;
+		unsigned long long counters[4] = {};
+	};
+	std::unique_ptr<PendingLoad> m_pendingLoad; ///< lane SAVE-4c: a load's state until its post-process
 };

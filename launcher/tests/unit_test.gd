@@ -10,6 +10,7 @@ extends SceneTree
 const Semver := preload("res://scripts/core/semver.gd")
 const NetPolicy := preload("res://scripts/net/net_policy.gd")
 const Manifest := preload("res://scripts/core/manifest.gd")
+const MacOSUpdate := preload("res://scripts/core/macos_update.gd")
 const Archive := preload("res://scripts/core/archive.gd")
 const GameOptions := preload("res://scripts/core/game_options.gd")
 const AioInstall := preload("res://scripts/core/aio_install.gd")
@@ -24,6 +25,8 @@ const Updater := preload("res://scripts/core/updater.gd")
 const BuildInfo := preload("res://scripts/core/build_info.gd")
 const UrlHandler := preload("res://scripts/core/url_handler.gd")
 const OnlineCount := preload("res://scripts/core/online_count.gd")
+const DesktopEntry := preload("res://scripts/core/desktop_entry.gd")
+const AppIcon := preload("res://scripts/ui/app_icon.gd")
 
 var _checks := 0
 var _failed := 0
@@ -259,17 +262,138 @@ func _init() -> void:
 			breaks[what].call(d)
 			_check(Manifest._schema(d) != "", "schema refuses: %s" % what)
 		_check(Manifest._schema(m.duplicate(true)) == "", "schema accepts the valid manifest")
+	_macos_manifest_schema()
+	_macos_update_tree()
+	_macos_manifest_only_on_macos()
 	_game_options()
 	_aio()
 	_ui()
 	_ui_dialogs()
 	_url_handler()
+	_app_icon()
 	if _failed == 0:
 		print("UNIT OK %d checks" % _checks)
 		quit(0)
 	else:
 		print("UNIT FAIL %d of %d checks" % [_failed, _checks])
 		quit(1)
+
+
+## lane OWNERFIX-3: the launcher's icon decodes to the 256 x 256 ring, and the Linux desktop entry names the launcher and the icon it writes
+func _app_icon() -> void:
+	var img: Image = AppIcon.image()
+	_check(img != null and img.get_width() == 256 and img.get_height() == 256, "the launcher's icon decodes to 256 x 256")
+	var home := OS.get_user_data_dir().path_join("desktop_entry_test")
+	var r := DesktopEntry.install("/opt/Open BFME/OpenBFMELauncher.x86_64", home)
+	_check(r.ok, "the desktop entry is written: " + str(r.get("error", "")))
+	var entry := FileAccess.get_file_as_string(home.path_join("applications/openbfme.desktop"))
+	_check(entry.contains("\nName=OpenBFME\n") and entry.contains("\nIcon=openbfme\n") and entry.contains("\nExec=\"/opt/Open BFME/OpenBFMELauncher.x86_64\"\n"),
+		"the entry names OpenBFME, the icon and the quoted launcher")
+	var png := FileAccess.get_file_as_bytes(home.path_join("icons/hicolor/256x256/apps/openbfme.png"))
+	_check(png == Marshalls.base64_to_raw(AppIcon.PNG_BASE64) and png.size() > 1000, "the icon file is the window icon's PNG")
+	_check(DesktopEntry.text("/a/\"b\"$c").contains("Exec=\"/a/\\\\\"b\\\\\"\\\\$c\""), "quotes and $ in the path are escaped")
+	_check(not DesktopEntry.install("", home).ok, "no launcher path: refused")
+
+
+func _macos_manifest_schema() -> void:
+	var version := "v1.2.3-preview.4"
+	var manifest := {
+		"format": 3, "product": "OpenBFME", "repo": "Test/repo", "version": version, "channel": "preview",
+		"date": "2026-10-16", "commit": "0123456789abcdef0123456789abcdef01234567",
+		"assets": {"game": {"macos-arm64": {
+			"name": Manifest.macos_asset_name(version), "size": 1, "sha256": "0".repeat(64),
+			"files": {"OpenBFME.app/Contents/MacOS/OpenBFME": {"size": 1, "sha256": "0".repeat(64)}},
+		}}},
+	}
+	_check(Manifest._schema(manifest.duplicate(true), "macos") == "", "the signed Mac schema accepts one arm64 game package")
+	_check(Manifest._schema({"format": 3, "product": "OpenBFME", "repo": "Test/repo", "version": version, "channel": "preview",
+		"date": "2026-10-16", "commit": "0123456789abcdef0123456789abcdef01234567", "assets": {"game": {}}}, "macos") == "",
+		"the signed Mac schema accepts an authenticated no-entry manifest")
+	_check(Manifest._schema(manifest.duplicate(true)) != "", "the default schema does not accept a Mac platform")
+	for invalid in [
+		func(d): d.format = 2,
+		func(d): d.assets.game["linux-x64"] = {},
+		func(d): d.assets["launcher"] = {},
+		func(d): d.assets.game["macos-arm64"].name = "openbfme-v1.2.3-macos-arm64.zip",
+		func(d): d.assets.game["macos-arm64"].files["../outside"] = {"size": 1, "sha256": "0".repeat(64)},
+	]:
+		var changed: Dictionary = manifest.duplicate(true)
+		invalid.call(changed)
+		_check(Manifest._schema(changed, "macos") != "", "the Mac schema rejects malformed or cross-platform data")
+
+
+func _macos_update_tree() -> void:
+	var root := OS.get_user_data_dir().path_join("macos_update_tree_test")
+	MacOSUpdate._remove_tree(root)
+	_check(MacOSUpdate.receipt_path(root, "v1.2.3") != MacOSUpdate.receipt_path(root, "v1.2.4"),
+		"Mac receipts are isolated by package root and version")
+	_check(MacOSUpdate.required_state_path(root, "v1.2.3") != MacOSUpdate.required_state_path(root, "v1.2.4"),
+		"signed-required state is isolated by package root and version")
+	var info := BuildInfo.new()
+	info.version = "v1.2.3"
+	info.macos_updates = true
+	var updater := Updater.new(info)
+	updater.launcher_dir = root
+	var receipt_path := MacOSUpdate.receipt_path(root, "v1.2.3")
+	var required_path := MacOSUpdate.required_state_path(root, "v1.2.3")
+	DirAccess.remove_absolute(receipt_path)
+	DirAccess.remove_absolute(required_path)
+	_check(not MacOSUpdate.signed_required(updater, root, "v1.2.3"),
+		"an initial generic package may have no signed receipt or required state")
+	var state := FileAccess.open(required_path, FileAccess.WRITE)
+	state.store_string("corrupt")
+	state.close()
+	_check(MacOSUpdate.signed_required(updater, root, "v1.2.3"),
+		"a corrupt signed-required state fails closed")
+	DirAccess.remove_absolute(required_path)
+	var receipt := FileAccess.open(receipt_path, FileAccess.WRITE)
+	receipt.store_string("corrupt")
+	receipt.close()
+	_check(MacOSUpdate.signed_required(updater, root, "v1.2.3"),
+		"a missing state does not downgrade a present signed receipt")
+	DirAccess.remove_absolute(receipt_path)
+	var names := [
+		"LICENSE", "NOTICE", "README-MAC.txt", "VERSION",
+		"OpenBFME.app/Contents/MacOS/OpenBFME",
+		"OpenBFME Launcher.app/Contents/MacOS/OpenBFME Launcher",
+		"OpenBFME Launcher.app/Contents/MacOS/openbfme-bundle-swap",
+	]
+	var files := {}
+	for name in names:
+		var path := root.path_join(name)
+		DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+		var bytes: PackedByteArray = ("fixture:" + name).to_utf8_buffer()
+		var file := FileAccess.open(path, FileAccess.WRITE)
+		file.store_buffer(bytes)
+		file.close()
+		var hash := HashingContext.new()
+		hash.start(HashingContext.HASH_SHA256)
+		hash.update(bytes)
+		files[name] = {"size": bytes.size(), "sha256": hash.finish().hex_encode()}
+	_check(MacOSUpdate.validate_tree(root, files) == "", "a complete exact Mac package matches its signed inventory")
+	FileAccess.open(root.path_join("unexpected.txt"), FileAccess.WRITE).close()
+	_check(MacOSUpdate.validate_tree(root, files) != "", "a staged Mac package rejects an unexpected file")
+	MacOSUpdate._remove_tree(root)
+
+
+## lane MACREL-1: manifest-macos.json is read on macOS only. A Windows / Linux launcher, even one whose build_info.json carries the Mac
+## flag, takes the release's manifest.json (the separately signed Mac sidecar never reaches it); on macOS the Mac flag selects the sidecar
+func _macos_manifest_only_on_macos() -> void:
+	var info := BuildInfo.new()
+	info.version = "v1.2.3"
+	info.macos_updates = true
+	var updater := Updater.new(info)
+	var release := {"tag": "v1.2.4", "prerelease": false, "assets": {
+		"manifest-macos.json": {"url": "http://127.0.0.1:9/manifest-macos.json", "size": 1},
+		"manifest-macos.json.sig": {"url": "http://127.0.0.1:9/manifest-macos.json.sig", "size": 64}}}
+	if OS.get_name() == "macOS":
+		_check(updater.macos_updates_enabled() and info.platform() == "macos-arm64", "macOS: a Mac-updates launcher reads manifest-macos.json")
+		return
+	_check(not updater.macos_updates_enabled(), "not macOS: the Mac flag never enables the Mac sidecar")
+	_check(info.platform() in ["linux-x64", "windows-x64"], "not macOS: the platform is the Windows / Linux one")
+	var v: Dictionary = updater.release_manifest(release)
+	_check(not v.ok and String(v.error).contains("has no manifest.json"),
+		"not macOS: a release with only manifest-macos.json is not a release for this launcher (%s)" % v.get("error", ""))
 
 
 ## lane INPUT-1: the free camera box edits the game's Options.ini and leaves the rest of the file alone
@@ -309,8 +433,11 @@ func _aio() -> void:
 		_check(AioInstall.safe_relative(good[0]) == good[1], "AIO: plain path %s" % good[0])
 	for bad in ["", "\\x.big", "/etc/passwd", "C:\\x.big", "a\\..\\..\\x", "./x", "a\\\\b", "a. \\b", "a.\\b", "x\tb", "caf\u00e9.big", "a|b", "a*b"]:
 		_check(AioInstall.safe_relative(bad) == "", "AIO: refuses the name '%s'" % bad.c_escape())
-	_check(AioPins.PACKAGES.size() == 3 and AioPins.PACKAGES[0].guid == "original-RotWK" and AioPins.PACKAGES[1].guid == "original-BFME2", "AIO: three packages")
-	_check(AioPins.PACKAGES[0].files.size() == 315 and AioPins.PACKAGES[1].files.size() == 297 and AioPins.PACKAGES[2].files.size() == 346, "AIO: 315 + 297 + 346 pinned files")
+	_check(AioPins.PACKAGES.size() == 2 and AioPins.PACKAGES[0].guid == "original-RotWK" and AioPins.PACKAGES[1].guid == "original-BFME2", "AIO: two packages")
+	_check(AioPins.PACKAGES[0].files.size() == 315 and AioPins.PACKAGES[1].files.size() == 297, "AIO: 315 + 297 pinned files")
+	# community PR #36: the optional BFME1 package, never in the base download
+	_check(AioPins.BFME1_PACKAGES.size() == 1 and AioPins.BFME1_PACKAGES[0].guid == "original-BFME1" and AioPins.BFME1_PACKAGES[0].files.size() == 346, "AIO: the optional BFME1 package, 346 pinned files")
+	_check(AioPins.PACKAGES.all(func(p): return p.key != "bfme1"), "AIO: the base download has no BFME1")
 	_check(AioInstall._whole(2.0) and not AioInstall._whole(2.5) and not AioInstall._whole("2") and not AioInstall._whole(null), "AIO: whole numbers only")
 
 
@@ -450,26 +577,27 @@ func _ui_dialogs() -> void:
 	_check(back.get_value("launcher", "running", {}) == {"v0.1.0": [111, 222]} and back.get_value("launcher", "selected", "") == "v0.1.0",
 		"a second writer keeps the first one's running games")
 	u.set_state("launcher", "selected", "")
-	# Sol r1: the Windows check, simulated (a running image cannot be opened for writing: here a read-only file plays the lock)
+	# Windows locks a running image; on Linux a read-only file simulates that lock.
 	u.test_windows_lock = true
 	var gdir: String = u.data_dir.path_join("versions/v0.1.0/game")
 	DirAccess.make_dir_recursive_absolute(gdir)
 	var exe: String = gdir.path_join(Updater.GAME_EXE[bi.platform()])
+	DirAccess.make_dir_recursive_absolute(exe.get_base_dir())
 	_check(not u._game_runs(4242, "v0.1.0"), "Windows check: no executable, not running")
 	var fx := FileAccess.open(exe, FileAccess.WRITE)
 	fx.store_string("game")
 	fx.close()
 	_check(not u._game_runs(4242, "v0.1.0"), "Windows check: an executable that can be opened for writing is not running")
-	FileAccess.set_unix_permissions(exe, FileAccess.UNIX_READ_OWNER)
+	_set_game_lock(exe, true)
 	_check(u._game_runs(4242, "v0.1.0"), "Windows check: a locked executable is running")
 	u.set_state("launcher", "running", {"v0.1.0": [4242, 4343]})
 	_check(u.running() == ["v0.1.0"], "Windows check: running() follows the lock")
-	FileAccess.set_unix_permissions(exe, FileAccess.UNIX_READ_OWNER | FileAccess.UNIX_WRITE_OWNER)
+	_set_game_lock(exe, false)
 	_check(u.running().is_empty(), "Windows check: unlocked, not running")
 	u.set_state("launcher", "running", {"v0.1.0": 4242})
-	FileAccess.set_unix_permissions(exe, FileAccess.UNIX_READ_OWNER)
+	_set_game_lock(exe, true)
 	_check(u.running() == ["v0.1.0"], "an older state.cfg's single pid still counts")
-	FileAccess.set_unix_permissions(exe, FileAccess.UNIX_READ_OWNER | FileAccess.UNIX_WRITE_OWNER)
+	_set_game_lock(exe, false)
 	u.test_windows_lock = false
 	DirAccess.remove_absolute(exe)
 	for d in ["versions/v0.1.0/game", "versions/v0.1.0", "versions"]:
@@ -496,6 +624,35 @@ func _ui_dialogs() -> void:
 	_check(not DirAccess.dir_exists_absolute(u.data_dir.path_join(Updater.LOCK)), "versions lock: released")
 	DirAccess.remove_absolute(u.data_dir.path_join("state.cfg"))
 	DirAccess.remove_absolute(u.data_dir)
+
+
+var _locked_game_pid := -1
+
+
+func _set_game_lock(exe: String, locked: bool) -> void:
+	if OS.get_name() != "Windows":
+		FileAccess.set_unix_permissions(exe, FileAccess.UNIX_READ_OWNER if locked else FileAccess.UNIX_READ_OWNER | FileAccess.UNIX_WRITE_OWNER)
+		return
+	if locked:
+		var ping := OS.get_environment("SystemRoot").path_join("System32/PING.EXE")
+		_check(DirAccess.copy_absolute(ping, exe) == OK, "Windows lock fixture: copy PING.EXE")
+		_locked_game_pid = OS.create_process(exe, ["-n", "60", "127.0.0.1"])
+		_check(_locked_game_pid > 0, "Windows lock fixture: start the executable")
+	else:
+		if _locked_game_pid > 0:
+			_check(OS.kill(_locked_game_pid) == OK, "Windows lock fixture: stop the executable")
+			var unlocked := false
+			for i in range(1000):
+				if not OS.is_process_running(_locked_game_pid):
+					var writable := FileAccess.open(exe, FileAccess.READ_WRITE)
+					if writable != null:
+						writable.close()
+						unlocked = true
+						break
+				OS.delay_msec(10)
+			_check(not OS.is_process_running(_locked_game_pid), "Windows lock fixture: executable stopped")
+			_check(unlocked, "Windows lock fixture: executable unlocked")
+		_locked_game_pid = -1
 
 
 ## `node` and every parent up to `top` are visible (what is_visible_in_tree means, without a running tree)

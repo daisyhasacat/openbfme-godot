@@ -138,15 +138,23 @@ TEST_CASE("release1: Wine registry values (escapes, sections, str(2), case)")
 	CHECK_FALSE(wineRegistryValue(reg, "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\lotrbfme2.exe", "CacheSize", v));
 }
 
-#ifndef _WIN32 // Wine prefixes exist only on Linux hosts (discover() takes the registry branch on Windows), and on Windows "dosdevices" / "c:" is a
+#ifndef _WIN32 // discover() takes the registry branch on Windows, and on Windows "dosdevices" / "c:" is a
                // drive-relative path, not a folder name
 TEST_CASE("release1: Windows paths inside a Wine prefix")
 {
 	TempDir t("prefix");
 	const fs::path prefix = t.path / "pfx";
 	fs::create_directories(prefix / "drive_c" / "Program Files (x86)" / "EA GAMES" / "Game");
+	auto checkResolved = [&](const char *windowsPath, const fs::path &literal, const fs::path &expected) {
+		const fs::path actual = wineToHost(prefix.u8string(), windowsPath);
+		CHECK(fs::equivalent(actual, expected));
+		// Case-sensitive hosts must recover the stored spelling; APFS may accept the input spelling directly.
+		if (!fs::exists(literal))
+			CHECK(actual == expected);
+	};
 	// no dosdevices: C: is drive_c; other drives are unmapped
-	CHECK(fs::path(wineToHost(prefix.u8string(), "C:\\Program Files (x86)\\EA Games\\game")) == prefix / "drive_c" / "Program Files (x86)" / "EA GAMES" / "Game");
+	checkResolved("C:\\Program Files (x86)\\EA Games\\game", prefix / "drive_c/Program Files (x86)/EA Games/game",
+		prefix / "drive_c/Program Files (x86)/EA GAMES/Game");
 	CHECK(wineToHost(prefix.u8string(), "D:\\x").empty());
 	CHECK(wineToHost(prefix.u8string(), "relative\\x").empty());
 	// dosdevices/d: -> another folder (Wine's drive mapping; Z: is "/" by default)
@@ -159,13 +167,14 @@ TEST_CASE("release1: Windows paths inside a Wine prefix")
 		MESSAGE("SKIP dosdevices part: symlinks unavailable here (" << ec.message() << ")");
 		return;
 	}
-	CHECK(fs::path(wineToHost(prefix.u8string(), "d:\\games\\")) == fs::canonical(t.path / "other") / "Games");
+	checkResolved("d:\\games\\", t.path / "other/games", fs::canonical(t.path / "other") / "Games");
 }
 
 TEST_CASE("release1: discovery in Wine, Proton and Lutris prefixes (Linux)")
 {
 	TempDir t("discover");
-	const fs::path home = t.path / "home";
+	// Discovery canonicalises prefixes, so the synthetic home must use the same spelling (e.g. /private/var on macOS).
+	const fs::path home = fs::canonical(t.path) / "home";
 	// 1. ~/.wine, a 64-bit prefix: RotWK's GameRegPath in the 32-bit view, the folder under drive_c
 	const fs::path wine = home / ".wine";
 	fs::create_directories(wine / "drive_c" / "Program Files (x86)" / "EA Games" / "RotWK here");

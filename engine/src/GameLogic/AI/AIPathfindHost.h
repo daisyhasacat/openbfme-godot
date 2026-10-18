@@ -154,6 +154,8 @@ public:
 	// the controlling player is a computer player (the search then ignores the logical map extent); RW 0x68B68A is the human test.
 	virtual bool isComputerControlled() const = 0;
 	virtual unsigned getCrusherLevel() const = 0;
+	// lane BACKLOG-8 r2: CrushableLevel (RW 0x68CE7B, a signed byte compared unsigned against a crusher level by RW 0x6E8B44)
+	virtual unsigned getCrushableLevel() const { return 0; }
 	// order matters: how THIS object regards `other`
 	virtual PathfindRelationship getRelationship(const PathfindObject &other) const = 0;
 	virtual bool canCrushOrSquish(const PathfindObject &other) const = 0;
@@ -222,6 +224,10 @@ public:
 	// blend tile parser (RW 0x4B0A98, the heightmap vtable RW 0xBDF5D0 slot 2) reads after the cliff plane (chunk version 13 and above): MAP-1's
 	// m_planeTaint (OpenSAGE's "Taintability"; the meaning is not identified). Read by the ActionManager's summon and grid tests (RW 0x82E7C4 / 0x82ECBC)
 	virtual bool thirdPlane(float x, float y) const = 0;
+	// lane BACKLOG-8 r2: RW W3DTerrainLogic vtable + 0xC8 (RW 0x4627C1): the bit plane at WorldHeightMap + 0x5C, the SECOND plane the blend tile parser reads
+	// after the cliff plane (RW 0x4B0D46: version 10 and above; MAP-1's m_planeB, OpenSAGE's "PassageWidths"): a formation march narrows on it (AIData
+	// NarrowPassageScale) and does not start into it. False without a map plane
+	virtual bool passagePlane(const Coord3D &pos) const { (void)pos; return false; }
 	// TerrainLogic::isUnderwater(x, y, &waterZ, &terrainZ)
 	virtual bool isUnderwater(float x, float y, float *waterZ, float *terrainZ) const = 0;
 	virtual float getGroundHeight(float x, float y) const = 0;

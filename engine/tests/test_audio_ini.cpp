@@ -578,7 +578,7 @@ TEST_CASE("audio ini: the AudioEvent field table has exactly the rows and the ro
 	CHECK(control[6] == "\not used by INI files"); // the binary placeholder: a newline character followed by "ot used by INI files"
 }
 
-TEST_CASE("audio ini: audio field names retain the RotWK tables and explicit BFME1 additions")
+TEST_CASE("audio ini: common audio field names retain the RotWK tables; BFME1 additions are isolated")
 {
 	const JsonValue t = loadTables();
 	std::vector<std::string> binary;
@@ -590,8 +590,6 @@ TEST_CASE("audio ini: audio field names retain the RotWK tables and explicit BFM
 		}
 	}
 	std::vector<std::string> mine = AudioSettings::fieldNames();
-	binary.push_back("3DBufferLengthMS");
-	binary.push_back("3DBufferCallbackCallsPerBufferLength");
 	std::sort(binary.begin(), binary.end());
 	std::sort(mine.begin(), mine.end());
 	CHECK(mine == binary);

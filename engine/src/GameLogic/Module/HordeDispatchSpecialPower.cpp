@@ -2,6 +2,7 @@
 // See GameLogic/Module/HordeDispatchSpecialPower.h for the sources and what is inference.
 
 #include "GameLogic/Module/HordeDispatchSpecialPower.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/StateHash.h"
 #include "Common/Thing/ModuleFactory.h"
@@ -107,4 +108,12 @@ std::vector<std::string> HordeDispatchSpecialPower::acceptanceStops()
 	return { "[S-2001] HordeDispatchSpecialPower (lane FACT-C): doSpecialPowerAtObject (RW 0x8CCF76) hands the horde's own base call the member's kept target (module "
 	         "+ 0x2C, interface slot 0x50 RW 0x7B0F25) farthest from the horde; the port's SpecialPowerModule keeps no such target id, so the order's target is used "
 	         "(the same unless a member's initiate swaps it through adjustVictim, which the port's base does not do either)" };
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) ---------------------------------------------------------------------------------------------------
+void HordeDispatchSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	SnapshotXfer::u64(x, m_dispatched);
 }

@@ -27,6 +27,7 @@ set(OPENBFME_BUILD_TESTS
     tests/test_build3_builders.cpp # lane BUILD-3
     tests/test_build4_walls.cpp # lane BUILD-4
     tests/test_build5_placement.cpp # lane BUILD-5
+    tests/test_bfme1_isolation.cpp # community PR #36
 )
 
 # Focused optional-rule checks; a separate target avoids rebuilding unrelated test suites.

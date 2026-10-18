@@ -217,7 +217,6 @@ TEST_CASE("upgrade modules: a player upgrade reaches every object of the player 
 	CHECK_FALSE(alice->hasUpgradeInProduction(research));
 	CHECK(alice->hasUpgradeComplete(research));
 	CHECK(alice->upgradeStatus(research) == Player::UPGRADE_STATUS_COMPLETE);
-	CHECK(alice->upgradeEvaEventsNotPlayed() == 1);
 	CHECK((a->armorSetFlags() & (1u << pu2)) != 0);
 	CHECK((b->armorSetFlags() & (1u << pu2)) == 0); // Bob's object
 	Object *later = f.make("Plain", f.teamOf("Alice"));
@@ -247,7 +246,7 @@ TEST_CASE("upgrade modules: two identical runs give the same state hash; the S-4
 		if (run == 1)
 		{
 			const GameLogic::Report r = f.logic->report();
-			for (const char *id : { "[S-480]", "[S-481]", "[S-482]", "[S-483]", "[S-484]", "[S-485]", "[S-486]" })
+			for (const char *id : { "[S-480]", "[S-482]", "[S-483]", "[S-484]", "[S-485]", "[S-486]" })
 			{
 				bool found = false;
 				for (const std::string &s : r.stops)

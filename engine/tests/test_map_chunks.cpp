@@ -16,10 +16,11 @@ using namespace maptest;
 namespace
 {
 
-bool loadMap(const Bytes &data, LoadedMap &out, std::string *err, bool strict = true)
+bool loadMap(const Bytes &data, LoadedMap &out, std::string *err, bool strict = true, bool bfme1 = false)
 {
 	MapReadOptions opt;
 	opt.strict = strict;
+	opt.bfme1 = bfme1; // community PR #36: the file's game
 	return MapReader::load(data, "synthetic.map", opt, out, err);
 }
 
@@ -813,9 +814,17 @@ TEST_CASE("RiverAreas v3 is refused (layout unverified), PolygonTriggers v5 pars
 	p.u8(1).u8(11).u8(22).u8(33).u8(0).f32(0.5f).f32(0.25f).f32(0.75f);
 	p.i32(2).i32(1).i32(2).i32(3).i32(4).i32(5).i32(6);
 	const char *name = "PolygonTriggers";
+	bool bfme1 = false;
 	SUBCASE("standard spelling") {}
-	SUBCASE("BFME1 base spelling") { name = "PolyGonTriggers"; }
-	REQUIRE_MESSAGE(loadMap(file(t2, chunk(t2, name, 5, p.b)), m, &err), err);
+	SUBCASE("BFME1 base spelling (community PR #36: BFME1 data only)")
+	{
+		name = "PolyGonTriggers";
+		bfme1 = true;
+		LoadedMap rotwk;
+		std::string rotwkError;
+		CHECK_FALSE(loadMap(file(t2, chunk(t2, name, 5, p.b)), rotwk, &rotwkError)); // RotWK data: an unknown chunk (strict)
+	}
+	REQUIRE_MESSAGE(loadMap(file(t2, chunk(t2, name, 5, p.b)), m, &err, true, bfme1), err);
 	REQUIRE(m.chunks.polygonTriggers.size() == 1);
 	const PolygonTrigger &pt = m.chunks.polygonTriggers[0];
 	CHECK(pt.name == "Pond");

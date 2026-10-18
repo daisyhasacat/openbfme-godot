@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/StructureModules.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/HeroModules.h"
 
 #include "Common/Player.h"
@@ -495,19 +496,17 @@ bool RespawnBody::permanentlyKilled() const
 		ObjectFilterMatch::allows(obj.logic(), *m_respawn->m_permanentlyKilledByFilter, *killer, obj.getControllingPlayer());
 }
 
-// RW 0x8C553F. Lane HERO-1: the object's RespawnUpdate is told after ActiveBody's change (RW 0x8C55E2 .. 0x8C5674): a permanent lethal hit -> RW 0x8B3349; a
-// lethal hit that is not permanent: a TEMPORARILY_DEFECTED object's defection ends first (RW 0x69ABA7, not ported: S-853), then an INHERITED_FROM_ALLY_TEAM
-// object (status 80) is permanently killed (RW 0x8B3349 and state 0), any other starts its revival (RW 0x8B3744). The death itself (RW 0x698F06) is ActiveBody's
-// attemptDamage (S-853). A lethal hit on an object without a RespawnUpdate stays counted (respawnWithoutUpdate).
+// RW 0x8C553F: restore ownership and register revival before Object::onDie,
+// inside the health change, before ActiveBody's damage notifications and kill credit.
 void RespawnBody::internalChangeHealth(float delta)
 {
-	const bool lethal = delta != 0.0f && wouldDie(delta);
-	const bool permanent = lethal && permanentlyKilled();
-	ActiveBody::internalChangeHealth(delta);
 	if (delta == 0.0f)
 	{
 		return; // RW 0x8C5549: a zero delta does nothing at all
 	}
+	const bool lethal = wouldDie(delta);
+	const bool permanent = lethal && permanentlyKilled();
+	ActiveBody::internalChangeHealth(delta);
 	Object *obj = getObject();
 	RespawnUpdate *ru = dynamic_cast<RespawnUpdate *>(obj->findModule("RespawnUpdate"));
 	if (lethal && !ru)
@@ -531,7 +530,7 @@ void RespawnBody::internalChangeHealth(float delta)
 	constexpr unsigned kInherited = 0x50; // RW 0x8C5643: push 0x50 (INHERITED_FROM_ALLY_TEAM)
 	if (obj->testStatus(kDefected))
 	{
-		obj->logic().noteStop("[S-853] RespawnBody: a TEMPORARILY_DEFECTED hero's lethal hit ends its defection (RW 0x69ABA7): not ported");
+		obj->endDefection();
 	}
 	if (obj->testStatus(kInherited))
 	{
@@ -542,6 +541,18 @@ void RespawnBody::internalChangeHealth(float delta)
 	{
 		ru->onDeath();
 	}
+	DieModuleInterface::Event event;
+	if (const DamageInfo *info = currentDamageInfo())
+	{
+		event.sourceId = info->m_input.m_sourceID;
+		event.deathType = info->m_input.m_deathType;
+		event.damageType = info->m_input.m_damageType;
+		event.damageSubType = info->m_input.m_damageSubType;
+		event.damageAmount = info->m_input.m_amount;
+		event.actualDamageDealt = info->m_output.m_actualDamageDealt;
+		event.actualDamageClipped = info->m_output.m_actualDamageClipped;
+	}
+	obj->friend_onDie(event); // RW 0x8C566B -> 0x698F06
 }
 
 // ---- DelayedDeathBody -----------------------------------------------------------------------------------------------------------------------
@@ -653,6 +664,7 @@ void SymbioticStructuresBody::crc(StateHasher &h) const
 LifetimeUpdate::LifetimeUpdate(Thing *thing, const LifetimeUpdateModuleData *data)
 	: UpdateModule(thing, data)
 	, m_data(data)
+	, m_waitingForWakeUp(data->m_waitForWakeUp)
 {
 	if (data->m_waitForWakeUp)
 	{
@@ -684,7 +696,16 @@ void LifetimeUpdate::setLifetimeRange(unsigned minFrames, unsigned maxFrames)
 
 void LifetimeUpdate::wakeUp()
 {
+	m_waitingForWakeUp = false; // RW 0x7A7E79: the wake notification clears +0x28 before restarting the lifetime
 	setLifetimeRange(m_data->m_minLifetime, m_data->m_maxLifetime);
+}
+
+void LifetimeUpdate::wakeFromInterface(UpdateSleepTime delay)
+{
+	if (delay != UPDATE_SLEEP_FOREVER)
+	{
+		wakeUp();
+	}
 }
 
 UpdateSleepTime LifetimeUpdate::update()
@@ -724,4 +745,60 @@ void LifetimeUpdate::crc(StateHasher &h) const
 	UpdateModule::crc(h);
 	h.addU32(m_dieFrame);
 	h.addU32(m_startFrame);
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190: each class's fields in its crc's order) ---------------------------------------------------
+void StructureBody::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	ActiveBody::xfer(x);
+	x.xferObjectID(&m_constructorObjectID);
+}
+
+void InactiveBody::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	x.xferBool(&m_dieCalled);
+}
+
+void StructureCollapseUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_collapseFrame);
+	x.xferUnsignedInt(&m_burstFrame);
+	SnapshotXfer::enumIn(x, m_state, COLLAPSESTATE_STANDING, COLLAPSESTATE_DONE, "a structure collapse's state");
+	x.xferReal(&m_velocity);
+	x.xferReal(&m_currentHeight);
+	SnapshotXfer::coord3D(x, m_position);
+}
+
+void RespawnBody::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	ActiveBody::xfer(x);
+}
+
+void DelayedDeathBody::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	RespawnBody::xfer(x);
+	x.xferBool(&m_started);
+	x.xferBool(&m_checked);
+}
+
+void SymbioticStructuresBody::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	ActiveBody::xfer(x);
+	x.xferObjectID(&m_symbioteId);
+}
+
+void LifetimeUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_dieFrame);
+	x.xferUnsignedInt(&m_startFrame);
 }

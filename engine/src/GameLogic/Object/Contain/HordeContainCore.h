@@ -61,6 +61,8 @@
 #include <string>
 #include <vector>
 
+class Xfer;
+
 class HordeContainCore
 {
 public:
@@ -151,6 +153,8 @@ public:
 	// map, the free list in list order, the member list, the registered set, the special ids, and the dirty / reformation / built flags. The module data
 	// and the matcher are configuration and are not hashed.
 	void crc(StateHasher &hasher) const;
+	// lane SAVE-4b: the core's state (OpenBFME native, S-4190): every field of its crc
+	void xfer(Xfer &x);
 
 	// Acceptance stop report (S-082): the unread leader links and the second coordinate copy.
 	std::vector<std::string> unverified() const;

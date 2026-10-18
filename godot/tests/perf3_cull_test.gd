@@ -128,6 +128,32 @@ func _run() -> int:
 			if culled.get_instance_palette(ids[k]) != full.get_instance_palette(ids[k]):
 				explicit_mismatches += 1
 	_check(explicit_compared > 0 and explicit_mismatches == 0, "explicit poses asked for off screen are shown when on screen (%d compared, %d mismatches)" % [explicit_compared, explicit_mismatches])
+	# CASTER-5: a second viewport sees the other end of the line while the main camera stays put.
+	var second := Camera3D.new()
+	root.add_child(second)
+	camera.make_current()
+	camera.position = Vector3(-2400.0, 40.0, 0.0)
+	second.position = Vector3(2100.0, 40.0, 0.0)
+	await process_frame
+	_check(not culled.set_extra_pose_frustum([Plane()]), "reject an incomplete secondary frustum")
+	if not OS.get_cmdline_user_args().has("--caster-no-extra-frustum"):
+		_check(culled.set_extra_pose_frustum(second.get_frustum()), "register the second camera")
+	for inst in [culled, full]:
+		for k in ids.size():
+			inst.set_instance_pose(ids[k], "GUManMocap_IDLB", 18.0 + float(k), "", 0.0, 0.0)
+		inst.update_now()
+	var second_compared := 0
+	var second_mismatches := 0
+	for k in ids.size():
+		if second.is_position_in_frustum(where[k]) and not camera.is_position_in_frustum(where[k]):
+			second_compared += 1
+			if culled.get_instance_palette(ids[k]) != full.get_instance_palette(ids[k]):
+				second_mismatches += 1
+	_check(second_compared > 0, "second-only visible soldiers compared: %d" % second_compared)
+	_check(second_mismatches == 0, "second-only soldiers have current poses: %d mismatches" % second_mismatches)
+	_check(int(culled.get_stats().pose_culled) > 30, "poses outside both cameras still cull")
+	_check(culled.set_extra_pose_frustum([]), "remove the second camera")
+	second.queue_free()
 	# a culled instance asked for a bone is posed on demand
 	camera.position = Vector3(-2400.0, 40.0, 0.0)
 	await process_frame

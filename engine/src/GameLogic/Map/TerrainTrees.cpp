@@ -4,7 +4,9 @@
 
 #include "GameLogic/Map/TerrainTrees.h"
 
+#include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
+#include "Common/Xfer.h"
 #include "GameLogic/Economy.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object/Object.h"
@@ -63,6 +65,16 @@ void TerrainTrees::reset()
 	m_toppleSpeed = 0.0f;
 	m_changedFrame = 0;
 	m_changed = 0;
+	m_start.clear();
+}
+
+// lane SAVE-4e: the records as the map made them, kept before the first one changes (a load restores them, then applies the snapshot's changed records)
+void TerrainTrees::keepStart()
+{
+	if (m_start.empty() && m_changed == 0)
+	{
+		m_start = m_records;
+	}
 }
 
 void TerrainTrees::setExtent(float loX, float loY, float hiX, float hiY)
@@ -208,6 +220,7 @@ void TerrainTrees::toppleTree(Record &tree, const Coord3D &from, const Object *s
 	e.speed = m_toppleSpeed;
 	e.frame = m_logic.getFrame();
 	m_events.push_back(e);
+	keepStart(); // lane SAVE-4e review r2: the start is kept before the first change touches a record
 	tree.toppled = true;
 	tree.toppleDirection = dir;
 	if (!tree.changed)
@@ -232,6 +245,7 @@ void TerrainTrees::toppleTree(Record &tree, const Coord3D &from, const Object *s
 int TerrainTrees::harvestTree(Record &tree, int amount)
 {
 	const int taken = amount < tree.value ? amount : tree.value; // RW 0x67D6EC .. 0x67D6FD: `cmp amount, value; jl`
+	keepStart(); // lane SAVE-4e review r2: the start is kept before the first change touches a record
 	tree.value -= taken;
 	if (!tree.changed)
 	{
@@ -277,6 +291,129 @@ void TerrainTrees::crc(StateHasher &h) const
 		h.addFloat(r.toppleDirection.y);
 		h.addI32(r.value);
 	}
+}
+
+// lane SAVE-4d. Retail saves the tree records inside TerrainLogic::xfer (CHUNK_TerrainLogic, RW 0x683F8C, window (1, 2), tier A: the record count, every
+// record, the 2,500 bucket heads, + 0x1910, + 0x1914 and, from version 2, + 0x48). The port's trees are a part of TerrainLogic that the map builds at the
+// START, so the block is OpenBFME's own (S-4252): the scalars, then only the records that changed since the map start (the ones the state hash covers),
+// each by its list index and in retail's record layout (RW 0x680753, tier A: the decomp's TerrainLogicXfer.cpp Rva0027C230::rva0028002F; window
+// (1, 2)): the position, the client id (XferDrawableID, 4 bytes), the template's name, toppled, the topple direction, the value, the bucket link (a short),
+// IsGrabbable, IsHarvestable and, from version 2, the running index. The buckets never change after the START (a cleared record keeps its link). The client
+// events (topples and removals the tree buffer shows) are not saved: a loaded game's client is not told which trees lie (S-4252).
+// The load (SAVE-4a review r1 rules, SAVES.md section 8) reads every record into a temporary and checks it (an index of the map's list given once, a
+// template name the data has, the bucket link the START gave that record) before the game's records change. A version 1 record has no running index
+// (it keeps the map's).
+void TerrainTrees::xfer(Xfer &x)
+{
+	const bool loading = x.isLoading();
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	std::uint32_t records = loading ? 0 : (std::uint32_t)m_records.size();
+	x.xferUnsignedInt(&records);
+	std::int32_t nextIndex = loading ? 0 : m_nextIndex;
+	x.xferInt(&nextIndex);
+	if (loading && (records != m_records.size() || nextIndex != m_nextIndex))
+	{
+		throw XferException("terrain trees: the snapshot's map has " + std::to_string(records) + " trees (next index " + std::to_string(nextIndex) +
+			"), this game's " + std::to_string(m_records.size()) + " (next index " + std::to_string(m_nextIndex) + ")");
+	}
+	std::uint32_t changedFrame = loading ? 0 : m_changedFrame;
+	float toppleSpeed = loading ? 0.0f : m_toppleSpeed;
+	x.xferUnsignedInt(&changedFrame);
+	x.xferReal(&toppleSpeed);
+	std::uint32_t changed = loading ? 0 : (std::uint32_t)m_changed;
+	// one changed record at its shortest (version 1, which has no running index): its index (4), version (1), position (12), client id (4), an empty
+	// name (1), toppled (1), direction (12), value (4), link (2), two flags (2)
+	x.xferCount(&changed, 43, sizeof(std::uint32_t) + sizeof(Record));
+	std::vector<std::pair<std::uint32_t, Record>> loaded;
+	if (loading)
+	{
+		loaded.reserve(changed);
+	}
+	size_t next = 0;
+	for (std::uint32_t n = 0; n < changed; ++n)
+	{
+		std::uint32_t index = 0;
+		Record r;
+		if (!loading)
+		{
+			while (!m_records[next].changed)
+			{
+				++next;
+			}
+			index = (std::uint32_t)next++;
+			r = m_records[index];
+		}
+		x.xferUnsignedInt(&index);
+		XferVersion rv{ 1, 2 };
+		x.xferVersion(rv);
+		x.xferReal(&r.position.x);
+		x.xferReal(&r.position.y);
+		x.xferReal(&r.position.z);
+		x.xferUnsignedInt(&r.clientId);
+		std::string name = r.tmpl ? r.tmpl->getName() : std::string();
+		x.xferAsciiString(&name);
+		x.xferBool(&r.toppled);
+		x.xferReal(&r.toppleDirection.x);
+		x.xferReal(&r.toppleDirection.y);
+		x.xferReal(&r.toppleDirection.z);
+		x.xferInt(&r.value);
+		x.xferShort(&r.next);
+		x.xferBool(&r.grabbable);
+		x.xferBool(&r.harvestable);
+		if (rv.current >= 2)
+		{
+			x.xferInt(&r.index);
+		}
+		if (!loading)
+		{
+			continue;
+		}
+		if (rv.current < 2 && index < m_records.size())
+		{
+			r.index = (m_start.empty() ? m_records[index] : m_start[index]).index; // RW 0x680753: version 1 leaves + 0x10 as the record was made
+		}
+		const std::string tree = "terrain trees: tree " + std::to_string(index);
+		if (index >= m_records.size())
+		{
+			throw XferException(tree + " of " + std::to_string(m_records.size()));
+		}
+		for (const auto &e : loaded)
+		{
+			if (e.first == index)
+			{
+				throw XferException(tree + " twice");
+			}
+		}
+		r.tmpl = name.empty() ? nullptr : m_logic.things().findTemplate(name);
+		if (!name.empty() && !r.tmpl)
+		{
+			throw XferException(tree + " names the template '" + name + "', which this game lacks");
+		}
+		const Record &startRecord = m_start.empty() ? m_records[index] : m_start[index];
+		if (r.next != startRecord.next)
+		{
+			// the buckets are the START's and never change (a cleared record keeps its link, RW 0x67D3C2): any other link could loop a query
+			throw XferException(tree + ": a bucket link to " + std::to_string(r.next) + " (the map's is " + std::to_string(startRecord.next) + ")");
+		}
+		r.changed = true;
+		loaded.emplace_back(index, r);
+	}
+	if (!loading)
+	{
+		return;
+	}
+	// lane SAVE-4e: the game's records go back to the map's (kept before the first change), then take the snapshot's changes: a game whose trees changed
+	// since its START loads too (a refused load is put back by loading the game's own snapshot, LiveGame::loadSnapshot)
+	keepStart();
+	m_records = m_start;
+	for (const auto &e : loaded)
+	{
+		m_records[e.first] = e.second;
+	}
+	m_changed = (int)changed;
+	m_changedFrame = changedFrame;
+	m_toppleSpeed = toppleSpeed;
 }
 
 std::string TerrainTrees::stopLine()

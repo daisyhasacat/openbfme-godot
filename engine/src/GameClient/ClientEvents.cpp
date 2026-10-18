@@ -11,6 +11,26 @@
 #include "GameLogic/Combat/ObjectWeapons.h"
 #include "GameLogic/Object/Object.h"
 
+void ClientEventRecorder::observerEvent(Object &obj, ObserverEvent::Kind kind, const Coord3D *at, const std::string &name, float weight)
+{
+	if (!m_observing)
+	{
+		return;
+	}
+	ObserverEvent event;
+	event.kind = kind;
+	event.frame = m_logic.getFrame();
+	event.object = obj.getID();
+	event.player = obj.getControllingPlayer() ? obj.getControllingPlayer()->getPlayerIndex() : -1;
+	event.position = at ? *at : *obj.getPosition();
+	event.name = name.empty() ? obj.getTemplate()->getName() : name;
+	event.hero = obj.isKindOfName("HERO");
+	event.structure = obj.isKindOfName("STRUCTURE");
+	event.base = obj.isKindOfName("COMMANDCENTER") || obj.isKindOfName("CASTLE_KEEP");
+	event.weight = weight;
+	m_timeline.add(event);
+}
+
 ClientEvent &ClientEventRecorder::push(ClientEvent::Kind kind, const Object &obj)
 {
 	m_events.emplace_back();
@@ -99,6 +119,22 @@ void ClientEventRecorder::setCustomColors(Object &obj, int kind, std::uint32_t c
 	e.customColors[2] = c2;
 }
 
+void ClientEventRecorder::heroAttacked(Object &obj)
+{
+	push(ClientEvent::HERO_ATTACKED, obj);
+}
+
+void ClientEventRecorder::flashHeroButton(const std::string &templateName, int frames)
+{
+	m_events.emplace_back();
+	ClientEvent &e = m_events.back();
+	e.kind = ClientEvent::HERO_FLASH;
+	e.frame = m_logic.getFrame();
+	e.seq = m_seq++;
+	e.name = templateName;
+	e.flashFrames = frames;
+}
+
 void ClientEventRecorder::replaceDrawable(Object &obj, const ThingTemplate *tmpl, bool hasColor, std::uint32_t color)
 {
 	if (!tmpl)
@@ -156,6 +192,34 @@ void ClientEventRecorder::flushModelConditions(Object &obj)
 		{
 			m_dirty.erase(m_dirty.begin() + (std::ptrdiff_t)i);
 			break;
+		}
+	}
+	pushFlush(obj);
+}
+
+void ClientEventRecorder::loadedObject(Object &obj)
+{
+	if (obj.clientHooks() != this)
+	{
+		return; // never bound
+	}
+	ClientEvent &e = push(ClientEvent::MODEL_CONDITIONS, obj);
+	for (int bit = 0; bit < 19 * 32 && bit < e.flags.size(); ++bit)
+	{
+		if (obj.testModelCondition(bit))
+		{
+			e.flags.set(bit);
+		}
+	}
+	if (m_dirtySet.erase(obj.getID()) != 0) // the flush below covers the changes recorded before
+	{
+		for (size_t i = 0; i < m_dirty.size(); ++i)
+		{
+			if (m_dirty[i] == obj.getID())
+			{
+				m_dirty.erase(m_dirty.begin() + (std::ptrdiff_t)i);
+				break;
+			}
 		}
 	}
 	pushFlush(obj);

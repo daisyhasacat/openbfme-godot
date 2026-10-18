@@ -5,11 +5,14 @@
 
 #include "Common/PlayerScience.h"
 
+#include "GameLogic/SnapshotXfer.h"
 #include "Common/PlayerTemplate.h"
 #include "Common/ScoreKeeper.h"
+#include "Common/Science.h"
 #include "Common/StateHash.h"
 #include "GameLogic/RankInfo.h"
 #include "GameLogic/SimMath.h"
+#include "Common/Xfer.h"
 
 #include <algorithm>
 #include <cstring>
@@ -167,6 +170,27 @@ int PlayerScience::getMaxRankLevel() const
 	}
 	const int cap = m_mode.skirmishOrMultiplayer ? m_template->m_maxLevelMP : m_template->m_maxLevelSP;
 	return cap < count ? cap : count;
+}
+
+// RW 0x782942: edi = 1; while edi < max rank (RW 0x7827C8, re-read each pass): esi += rank(edi) + 0x38 (add: wraps); esi >= points (jge, signed):
+// edi; else edi + 1. The loop ran out: 0
+int PlayerScience::rankForPurchasePoints(int points) const
+{
+	std::int32_t sum = 0;
+	for (int r = 1; r < getMaxRankLevel(); ++r)
+	{
+		const PlayerRankInfo *ri = TheRankInfoStore ? TheRankInfoStore->getRankInfo(r) : nullptr;
+		if (!ri)
+		{
+			throw std::runtime_error("PlayerScience: rank " + std::to_string(r) + " has no Rank block (RW 0x782961 reads it)");
+		}
+		sum = wrapAdd(sum, ri->m_sciencePurchasePointsGranted);
+		if (sum >= points)
+		{
+			return r;
+		}
+	}
+	return 0;
 }
 
 // RW 0x782865
@@ -469,5 +493,102 @@ void AcquiredScienceQueue::crc(StateHasher &h) const
 	for (ScienceType st : m_pending)
 	{
 		h.addI32(st);
+	}
+}
+
+// lane SAVE-4d: OpenBFME native layout (S-4256): retail's queues are ScriptEngine + 0x1A3A8 vectors (their save is part of the unidentified ScriptEngine::xfer
+// RW 0x60A45B); the port's queue is the vector plus the replay position in the player's notice history (obfme:Players saves that history)
+void AcquiredScienceQueue::xfer(Xfer &x, const PlayerScience *player)
+{
+	const bool loading = x.isLoading();
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	std::uint32_t generation = loading ? 0 : m_generation;
+	std::uint32_t cursor = loading ? 0 : (std::uint32_t)m_cursor;
+	x.xferUnsignedInt(&generation);
+	x.xferUnsignedInt(&cursor);
+	std::vector<ScienceType> loaded;
+	std::vector<ScienceType> &pending = loading ? loaded : m_pending;
+	x.xferVectorSize(pending, 4);
+	for (ScienceType &st : pending)
+	{
+		x.xferInt(&st);
+	}
+	if (!loading)
+	{
+		return;
+	}
+	// the replay position is one of the player's notice history (obfme:Players loaded it before): none captured is position 0; the player's current
+	// history holds at least `cursor` notices (an older history's position is dropped by the next replay, RW-equivalent: replay() restarts it)
+	if (generation == kNoGeneration ? cursor != 0
+									: player && generation == player->scriptNoticeGeneration() && cursor > player->scriptNotices().size())
+	{
+		throw XferException("an acquired-science queue at notice " + std::to_string(cursor) + " of history " + std::to_string(generation) +
+			(player ? ", which the player's history does not reach" : ""));
+	}
+	for (ScienceType st : loaded)
+	{
+		if (!TheScienceStore || !TheScienceStore->isValidScience(st))
+		{
+			throw XferException("an acquired-science queue holds the science " + std::to_string(st) + ", which this game's data lacks");
+		}
+	}
+	m_generation = generation;
+	m_cursor = cursor;
+	m_pending = std::move(loaded);
+}
+
+// lane SAVE-4a: OpenBFME native layout (retail transfers the sciences inside Player::DoXfer, RW 0x6B205F, through RW 0x5EC166; this sub-object is the
+// port's split of those Player fields). Every field crc hashes plus the script notices' history (the script engine's queues replay it: their cursors are
+// SAVE-4d's); the bound template, score keeper and hook are the game's (Player::initScience), the dropped-notification count is a statistic. Sciences are
+// their name keys, as the state hash has them (identical for an identical install).
+void PlayerScience::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferUnsignedInt(&m_spellBookId);
+	x.xferReal(&m_rechargeDiscount);
+	x.xferVectorSize(m_sharedReadyFrames, 8);
+	for (auto &e : m_sharedReadyFrames)
+	{
+		x.xferUnsignedInt(&e.first);
+		x.xferUnsignedInt(&e.second);
+	}
+	x.xferBool(&m_mode.skirmishOrMultiplayer);
+	x.xferBool(&m_mode.campaign);
+	x.xferReal(&m_skillPoints);
+	x.xferReal(&m_skillPointsModifier);
+	x.xferInt(&m_rankLevel);
+	x.xferInt(&m_scalarBaseRank);
+	x.xferInt(&m_sciencePurchasePoints);
+	x.xferInt(&m_skillPointsNextRank);
+	x.xferInt(&m_skillPointsThisRank);
+	x.xferInt(&m_rankCap);
+	x.xferVectorSize(m_sciences, 4);
+	for (ScienceType &st : m_sciences)
+	{
+		x.xferInt(&st);
+		if (x.isLoading() && TheScienceStore && !TheScienceStore->isValidScience(st)) // lane SAVE-4e (closed sets): a science of this game's data
+		{
+			throw XferException("a player's science " + std::to_string(st) + " is not one of this game's data");
+		}
+	}
+	x.xferUnsignedInt(&m_noticeGeneration);
+	x.xferVectorSize(m_scriptNotices, 4 + 1);
+	for (ScriptNotice &sn : m_scriptNotices)
+	{
+		x.xferInt(&sn.science);
+		if (x.isLoading() && TheScienceStore && !TheScienceStore->isValidScience(sn.science))
+		{
+			throw XferException("a player's science notice names the science " + std::to_string(sn.science) + ", which this game's data lacks");
+		}
+		x.xferBool(&sn.acquired);
+	}
+	// lane SAVE-4e (closed sets): the rank level is one of the data's ranks (1 .. RankInfo count: setRankLevel walks them; the cap 0 is none)
+	const int ranks = TheRankInfoStore ? TheRankInfoStore->getRankLevelCount() : 0;
+	if (x.isLoading() && TheRankInfoStore)
+	{
+		SnapshotXfer::checkRange(m_rankLevel, 1, ranks, "a player's rank level");
+		SnapshotXfer::checkRange(m_rankCap, 0, ranks, "a player's rank cap");
 	}
 }

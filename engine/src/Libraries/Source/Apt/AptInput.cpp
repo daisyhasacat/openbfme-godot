@@ -198,6 +198,10 @@ void AptInput::collectSprites(std::vector<AptSpriteInst *> &out) const
 {
 	for (int lvl : m_apt.loadedLevels())
 	{
+		if (lvl < m_inputFloor)
+		{
+			continue; // lane OPTS-6: under a modal screen
+		}
 		if (AptSpriteInst *root = m_apt.level(lvl))
 		{
 			walk(root, [&](AptCharacterInst *c) {
@@ -217,6 +221,10 @@ void AptInput::collectButtons(std::vector<AptButtonInst *> &out) const
 {
 	for (int lvl : m_apt.loadedLevels())
 	{
+		if (lvl < m_inputFloor)
+		{
+			continue; // lane OPTS-6: under a modal screen
+		}
 		if (AptSpriteInst *root = m_apt.level(lvl))
 		{
 			walk(root, [&](AptCharacterInst *c) {

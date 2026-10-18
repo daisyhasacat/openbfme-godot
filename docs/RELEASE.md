@@ -570,14 +570,15 @@ ref, so a tag or branch named like the abbreviation cannot stand in for it.
    - The sha must contain `MIN_CONTROL`, the commit of the round-3 release scripts. An older sha carries an older
      `publish_release.sh` and older package checks, so it is never released automatically.
    - An open release intent (below) is reconciled first, and while one is open no other sha is accepted.
-2. **Sync.** The public `main` gets the sha's tree without `archive/`, with the README line about the legacy
-   code and nothing else (the sync recipe). The public `main` has no `PRIVACY.md` since its PR #34; a file that exists only on the
+2. **Sync.** The public `main` gets the sha's tree without `archive/` and the paths of its `tools/release/sync_exclude.txt`, with the
+   README line about the legacy code and nothing else (the sync recipe, `autorelease.py sync-tree`). The public `main` has no `PRIVACY.md` since its PR #34; a file that exists only on the
    public side is not carried (the sync PR deletes it if it comes back), so a public-only file needs a pipeline change first. Before anything is pushed, that tree passes the privacy audit (`autorelease.py audit-tree`):
    - only the public top-level entries (`PUBLIC_TOP`);
    - no `workspace`, `archive` or `reference` folder anywhere;
    - no file that one of the tree's `.gitignore` rules ignores, even a tracked one;
    - every file passes the commit gate's rules (`tools/precommit.py` `check_file`: retail suffixes, retail-format bytes, developer
      paths);
+   - no denylist hit in a file name or a text file (PUBLISH-2: the built-in rules and the operator's private list, below);
    - **text only** (round 6): every file synced to the public repository must be UTF-8 text with no NUL byte. Any binary file stops
      the sync: an image, a font, prebuilt data, or a container or compressed file of any kind, wherever its bytes start. That also
      covers a gzip after a prefix, a self-extracting shell stub and a PNG with an archive appended. The only exceptions are listed in
@@ -600,8 +601,8 @@ ref, so a tag or branch named like the abbreviation cannot stand in for it.
    leaves its pushed tag on origin with no release, and the tag cannot be deleted: the repository's ruleset forbids deleting tags
    (GH013). It does not need to be: the run's release intent stays open, and the next real run (for the same sha or a later one)
    reconciles it and resumes that same version from that tag (see *The release intent*). Never delete the tag.
-4. **Build and test** on the reference PC's WSL through the jpc scripts (their machine-wide slots, niced; the reference PC lane `autorel-src`),
-   from a clean checkout of the tag:
+4. **Build and test** on the build host, from a clean checkout of the tag, through the operator's builder (`OPENBFME_RELEASE_BUILDER`,
+   kept outside this repository, PUBLISH-2; it has the interface of the tests' stand-in, `<builder> <checkout> <version> <out dir>`):
    - the Linux GDExtension (`build_linux.sh`: with Godot 4.7's own Linux SDK, buildroot `godot-2023.08.x-4`: GCC 13.2 on a glibc 2.28
      sysroot, run on the host, so it needs GLIBC 2.28 at most and loads wherever Godot 4.7 runs, Ubuntu 20.04+ and Debian 10+: lane DEP-1;
      package.sh writes the need into the Linux package's VERSION file, `requires GLIBC <x.y>`, and the launcher checks the system's GLIBC
@@ -614,10 +615,10 @@ ref, so a tag or branch named like the abbreviation cannot stand in for it.
      private `APPDATA`. It must exit 0, print `GAME screen: MainMenu.apt` and load 4657 templates (`windows_start_check.sh`); the
      folder is removed.
 
-   The packages are copied back to the Deck.
-5. **The Deck's checks of what came back.** Everything from here on runs the scripts of a trusted checkout: a fresh worktree of the
-   tag made on the Deck. the reference PC never writes to it. Its tree must be the audited sync tree of the archive sha, so every entry but
-   README.md (and a PRIVACY.md of a tree released before PR #34) is the archive sha's own object. Every file of its `tools/release/` and `tools/precommit.py` must also be
+   The packages are copied back to the signing machine.
+5. **The signing machine's checks of what came back.** Everything from here on runs the scripts of a trusted checkout: a fresh worktree
+   of the tag made on the signing machine. The build host never writes to it. Its tree must be the audited sync tree of the archive sha
+   (`autorelease.py sync-tree` of the sha, recomputed). Every file of its `tools/release/` and `tools/precommit.py` must also be
    byte for byte the running autorelease's own copy, so run autorelease.sh from a checkout whose tools are the released sha's. The
    checks:
    - the returned folder holds exactly the package files;
@@ -625,21 +626,22 @@ ref, so a tag or branch named like the abbreviation cannot stand in for it.
    - each library (taken out of the returned archives) has one build record naming the tag, the public commit, a clean tree and the
      engine id of the tag's committed `engine/`;
    - `package.sh --verify` rebuilds every archive from the trusted checkout with those libraries and compares them byte for byte
-     (the Deck's zlib 1.3.1 and the reference PC's 1.3 deflate the packages to the same bytes).
+     (zlib 1.3.1 on the signing machine and 1.3 on the build host deflate the packages to the same bytes).
 
    Nothing is signed before all of this has passed.
-6. **Manifest and signature** on the Deck: the trusted checkout's `make_manifest.py` and `sign_manifest.py --key
-   ~/.config/openbfme-release/release-ed25519.pem`. The key never leaves the Deck: no GitHub Actions, no secret, no the reference PC.
+6. **Manifest and signature** on the signing machine: the trusted checkout's `make_manifest.py` and `sign_manifest.py --key <release
+   key>`. The key never leaves the signing machine: no GitHub Actions, no secret, not the build host.
    GitHub only hosts the source and the assets.
 7. **Public metadata** (round 6): the sync commit's message, the PR title and body, the merge subject, the tag message, the release
    title and the release notes go to the public repository too. They are written before anything is pushed, and they must pass the
    privacy rules (`autorelease.py audit-text`). A hit stops the run: nothing is redacted into them. The rules, checked on the text as
    written, without Markdown escapes and NFKC-normalised:
    - no home or Users path, and not the release key's path or folder;
-   - no user name (the local account's, the ssh config's users) where it names an account: as a path component (`/deck`, `\deck`,
-     `~deck`) or as `user@host`. An ordinary word is fine: "Steam Deck controls now work" passes;
+   - no user name (the local account's, the ssh config's users) where it names an account: as a path component (`/<user>`, `\<user>`,
+     `~<user>`) or as `user@host`. An ordinary word that happens to equal an account name is fine;
    - no host name (this machine's, the ssh config's hosts);
-   - no e-mail address but the noreply ones (`<id>+<login>@users.noreply.github.com`, `noreply@anthropic.com`).
+   - no e-mail address but the noreply ones (`<id>+<login>@users.noreply.github.com`, `noreply@anthropic.com`);
+   - (PUBLISH-2) no hit of the denylist below (the built-in rules and the operator's private list).
 
    The fixed attribution lines are not checked.
 8. **Notes** (`tools/release/autorelease.py notes`) are patch notes in a studio's shape, written for players: a title line, the date and
@@ -693,8 +695,8 @@ ref, so a tag or branch named like the abbreviation cannot stand in for it.
    release is already out; set the link by hand. A release finished by reconciling an open intent does not move the link (the next
    release does). The README's Download button links to the releases list, whose top entry is the newest preview.
 10. **Discord**: `bfme-community` has no release announcement command yet; the run logs that and posts nothing.
-11. **Report.** A one-line summary (`AUTORELEASE OK|SKIP|FAIL ...`), also appended to
-    `~/.cache/openbfme-recover/logs/autorelease-summary.log`, and the log `~/.cache/openbfme-recover/logs/autorelease-<version>.log`.
+11. **Report.** A one-line summary (`AUTORELEASE OK|SKIP|FAIL ...`), also appended to `autorelease-summary.log` in
+    `$OPENBFME_RELEASE_LOGS`, and the log `autorelease-<version>.log` there.
     The state records the released archive sha.
 
 On a failure it stops at that step and publishes nothing further:
@@ -749,12 +751,69 @@ open.
   commit's tree>`, `public=<the public commit>`, `work=<a new work folder>`, `step=tagged`. The next run checks every field and
   resumes that version from the tag.
 
-**The release key.** autorelease.sh signs only with the configured key, `~/.config/openbfme-release/release-ed25519.pem`.
-`OPENBFME_RELEASE_KEY` is accepted only when it resolves to exactly that path; any other value is refused with a message that does not
-repeat it. So no normalised form of another path can appear in a diagnostic.
+**The release key.** autorelease.sh signs only with the configured key, `OPENBFME_RELEASE_KEY` of the operator's release environment
+(PUBLISH-2: the public tree names no private path). It is accepted only as an absolute, normalised path (no relative part, no symbolic
+link: `realpath -m` of it is itself); anything else, or nothing, is refused with a message that does not repeat it. So no normalised
+form of another path can appear in a diagnostic.
 
-**Redaction.** One redactor at the top of autorelease.sh takes every line the script and the helpers it runs print, stdout and
-stderr, and every line of its logs. It writes the release key's path as `<release key>`, its folder as `<release key folder>` and
+**The operator's release environment (PUBLISH-2).** autorelease.sh and record_gate.sh read every private value from the environment,
+with no default in this repository: `OPENBFME_RELEASE_LOGS`, `OPENBFME_RELEASE_KEY`, `OPENBFME_RELEASE_DENYLIST`,
+`OPENBFME_RELEASE_BUILDER` (autorelease.sh) and `OPENBFME_RELEASE_LOGS`, `OPENBFME_REMOTE_VERIFY` (record_gate.sh). A missing one stops
+the run before anything is read or pushed.
+
+**The public tree and its denylist (PUBLISH-2, after the history scrub of 2026-10-15).** The sync tree is the archive sha's tree without
+`archive/` and without every path of the sha's `tools/release/sync_exclude.txt` (the CI configuration and the online service's deploy
+folder; kept in step with the CI mirror's exclusion list), with the public README line (`autorelease.py sync-tree`). `audit-tree` and
+`audit-text` then refuse any hit, in a file name or in the text of a file, of two rule sets:
+- the built-in rules of `autorelease.py` (`BUILTIN_RULES`, generic shapes only): private LAN ranges (192.168/16, 10/8, 172.16/12;
+  synthetic addresses in the game's own LAN tests are allowed), tailnet addresses and names, private path forms, AWS and Cloudflare
+  account-id shapes and keys, e-mail addresses other than the noreply ones and the reserved example domains, and operational files by
+  name (deploy notes, the deploy folder, logs, agent and orchestration files, CI configuration, ops / backup / monitor helpers);
+- the operator's private denylist (`OPENBFME_RELEASE_DENYLIST`, kept outside this repository, the CI mirror's rule format): host,
+  machine and account names, the owner's identity, the infrastructure's ids and file names. Its `warn` rules fail a release too. A
+  missing, empty or malformed list is an error, never "no rules".
+Hits are printed masked (only the length of a match), so the audit's output does not repeat what it found. `autorelease.sh --plan`
+builds and audits the public tree too, without writing anything.
+
+**One privacy gate (PUBLISH-2 round 2).** Every publishing path goes through `autorelease.py privacy-gate` (its halves `audit-tree` and
+`audit-text`): the release sync's tree, the public metadata with the original (unneutralised) note texts, the final notes, and
+`publish_release.sh`, which audits the tag's tree (what GitHub's source archives hold), the notes and the release name before anything is
+uploaded, also in a dry run, and (round 3) every file the release uploads, each archive member at every depth. All of them need the private denylist; without it they refuse (`--builtin-only` is for checks that publish
+nothing, and says so). Further rules of the gate:
+- text is checked as written, without Markdown escapes, NFKC-normalised and with the notes' look-alikes (full-width `@` / `#`, `∼`, `∗`)
+  turned back;
+- metadata must be UTF-8 without NUL bytes: UTF-16 or anything undecodable is refused, never read with replacement characters;
+- binary data (a file pinned in `public_binaries.txt` or not, an archive member, a library) is read whole in Latin-1, UTF-8, and UTF-16
+  and UTF-32 in both byte orders at every alignment, each decoding also NFKC-normalised with the look-alikes turned back (round 4), so
+  a literal of any length is seen; a member named like a text file (`.txt`, `.json`, `.gd` ...) must be UTF-8; every member of a
+  container is checked by name (each part of `archive:member` on its own) and content, and a container layer by its metadata (ZIP
+  headers, tar headers, every gzip member's header fields): a pinned hash never exempts a file;
+- a Godot pack (round 4) holds nothing but checked values outside its entries' names and contents: version numbers below 256, no flag but
+  the relative file base, zero reserved words, files right after the header, entry names UTF-8 with zero padding, each entry's MD5 its
+  content's and its flags zero; anything else is a finding;
+- the release's Godot executables: one that is a Godot export template pinned in `tools/release/godot_templates.txt` byte for byte, for
+  the executable name it is pinned for, is upstream and not scanned (Godot's own tables match short private words by chance); the
+  launcher, a release template with its pack appended, may differ from that template only in its export region (an ELF's section header
+  table, a PE's headers: what Godot's export rewrites), which is scanned whole, and its pack is audited member by member; any other
+  executable, or one that differs anywhere else, is scanned whole (round 4). The templates are read from `OPENBFME_GODOT_TEMPLATES` (default: Godot 4.7.2's export templates
+  folder); a Godot update replaces the pins;
+- file names are checked in every form too (as written, NFKC-normalised, the look-alikes turned back);
+- no `export-subst` attribute in any `.gitattributes` (GitHub's source archives would not hold the audited bytes);
+- no symbolic links; submodules only as listed in `tools/release/public_submodules.txt` (commit, path, url; a submodule bump updates its
+  line in the same commit);
+- the private list itself has a strict schema (only `id`, `kind`, `pattern`, `severity`, `allow`, `paths`, each of its type; a key
+  given twice, in JSON or YAML, is an error; an unknown field's name is never printed);
+- no diagnostic prints a rejected value: problem lines and file names are masked in every form of the line and in each of its words on
+  its own, and (round 4) a rule with an anchor in every piece of the line between word boundaries (so a rule anchored at a path's start
+  or end also masks that path inside a message, spaces in it or not), and a line that any form still matches is
+  withheld whole; note warnings name the commit and the note's number, never its text; the list's own parse errors give a position only;
+- a draft's name and body are the audited ones: publish_release.sh replaces a resumed draft's when they differ, and checks both before
+  and after publishing.
+
+**Redaction.** One redactor (`autorelease.py redact`) at the top of autorelease.sh and of publish_release.sh takes every line the
+script and the helpers it runs print, stdout and stderr, and every line of its logs. It masks every match of the built-in and the
+private rules (as the diagnostics are masked, above), and fails closed: the list is loaded before anything is printed, and a list it
+cannot load stops the run. It writes the release key's path as `<release key>`, its folder as `<release key folder>` and
 the home folder as `~`. It catches each as given and resolved, Markdown-escaped and URL-encoded. So no echo can leak them,
 whatever it prints (intent fields included). No production script writes to the terminal or a log of its own past it.
 
@@ -776,11 +835,64 @@ The tests (`tools/release/test_autorelease.py`) run real mode end to end and eac
 - a local bare repository as the public remote;
 - `gh_stand_in.py` as `gh`, which can lose answers, fail publishing or corrupt an upload;
 - a throwaway key;
-- `OPENBFME_RELEASE_STANDIN` in place of the reference PC and the Deck's package rebuild. It is refused with the real repository or a
+- `OPENBFME_RELEASE_STANDIN` in place of the builder and the signing machine's package rebuild. It is refused with the real repository or a
   remote that is not a local folder.
 
-the reference PC's gate (`verify.sh`, run by `remote-verify.sh`) also cross-builds Windows (`build_windows.sh --no-export`: the tests, the
+The reference PC's gate (`verify.sh`, run by `remote-verify.sh`) also cross-builds Windows (`build_windows.sh --no-export`: the tests, the
 peer and the DLL). A change that breaks the Windows build fails the gate.
+
+### The Mac package (MACREL-1)
+
+Since MACREL-1 every automatic release also carries the macOS package for Apple Silicon: `openbfme-<v>-macos-arm64.zip`, the game and the
+launcher as two ad-hoc signed apps, macOS 13 or later, an unstable preview (owner, 2026-10-15/16: no Intel Macs, no Rosetta). Macs update
+themselves from it: the launcher's macOS mode (mac-release-1, `launcher/scripts/core/macos_update.gd`) reads `manifest-macos.json`, never
+`manifest.json`. The other launchers never read the sidecar.
+
+- **Before anything is pushed** (step 1), `tools/release/build_macos_release.sh --check` asks the Mac build host (`mac`, the owner's M5;
+  `OPENBFME_RELEASE_MAC_HOST`) over ssh whether it has its CI environment, the build tools, Python 3.10+, Godot 4.7.2 and the pinned
+  export templates. If it does not answer (asleep, lid closed, off the network) or lacks something, the run stops at `mac-check`. That
+  is a named failure, and nothing has been pushed or published yet.
+  `OPENBFME_RELEASE_SKIP_MAC=1`, set explicitly, releases without the Mac package. The log and the summary say so, and the release
+  then carries a signed `manifest-macos.json` that names no Mac package: the Mac launchers see no update instead of guessing. Any other
+  value is refused.
+- **The build** (step 4m) runs after the Windows / Linux one: the tag is pushed to the host's private CI repository and cloned there at
+  the tag; `tools/release/package_macos.py` makes a fresh arm64 build, the Godot export, ad-hoc signing and the strict audit in the
+  host's slot 0; the package folder comes back (the zip, its `.sha256`, its inventory and `README-MAC.txt`). The clone and the tag are
+  removed from the host. Nothing is signed there: the release key never leaves the Deck.
+- **The Deck checks it** (step 5) with the trusted checkout's `make_macos_manifest.py --verify-package`:
+  - exactly the package folder;
+  - the strict `macos-arm64` allowlist;
+  - its checksum;
+  - `VERSION` naming the tag and the public commit;
+  - the Mac launcher's `build_info.json` trusting `launcher/release_key.pub` and updating from the target repository. A Mac launcher
+    with another key or repository would refuse every update.
+- **The seal** (step 6, MACPLAY-1). The zip joins the package folder before `seal_package.py` runs, so it is sealed like the Windows /
+  Linux packages: `payload.json` (every file of the package with its size and SHA-256, platform `macos-arm64`) and its signature under
+  the release key are added inside the zip, beside the two apps (their code seals are unchanged). The Mac launcher starts the game
+  beside it only when that inventory verifies, every signed file matches and both apps' code seals verify (`codesign --strict`); a
+  launcher with no verified package beside it installs the signed package into `versions/<v>/game` itself, like the other platforms.
+- **The sidecar** (step 6). The sealed zip is listed in `SHA256SUMS-<v>.txt`. `make_macos_manifest.py` writes
+  `manifest-macos.json` (format 3, the "macos" schema: one `macos-arm64` game entry with every file's size and SHA-256), with the
+  version, repository, commit and date of `manifest.json`. It is signed with the same key in a separate signature,
+  `manifest-macos.json.sig`. `manifest.json` stays byte for byte the manifest of the Windows / Linux packages, so the released
+  launchers read what they always read.
+- **Publishing.** `publish_release.sh` requires both sidecar files or neither, verifies the sidecar's signature and checks it with
+  `make_macos_manifest.py --check`. The check rebuilds the sidecar from the folder's Mac package, or the no-entry one when there is
+  none. It also re-checks the Mac launcher's key and repository, that the checksum file lists the zip with its digest, and (MACPLAY-1)
+  that the zip is sealed under the manifests' key with an inventory of exactly its files. Only then
+  does it upload the zip and the two sidecar files with the other assets, and `release_assets.py` checks all of them back.
+  The notes' download table gets the Mac row (`autorelease.py notes --mac`).
+- **Tests.** `test_autorelease.py` covers:
+  - the Mac assets and the separate signature;
+  - `manifest.json` unchanged;
+  - an unreachable or unready host, which stops before anything is pushed;
+  - `OPENBFME_RELEASE_SKIP_MAC=1` said in the log and the summary;
+  - every Mac package fault the Deck refuses;
+  - every tampered sidecar `publish_release.sh` refuses;
+  - the dry run signing the sidecar with the throwaway key.
+
+  The stand-in build (`OPENBFME_RELEASE_STANDIN/build-mac`) returns a package that passes the strict audit, and
+  `OPENBFME_RELEASE_MAC_SSH` (stand-in mode only) replaces ssh for the readiness check.
 
 ### The updater's threat model
 
@@ -821,6 +933,55 @@ covered by the listed defence:
   - There is no revocation list.
 - **Out of scope.** Anyone who can write the launcher's or the user data folder can already replace the
   launcher. Code-signing of the executables (Authenticode) does not exist yet.
+
+## Community pull requests (GHPR-1)
+
+The public repository is generated from the archive branch, so a community pull request is never merged on GitHub by hand: the next sync
+would overwrite it unless the archive carries it, and a pull request closed without a merge does not show its author as merged.
+`CONTRIBUTING.md` describes the flow for contributors; for the operator it is:
+
+1. **Review** the pull request on GitHub at its current head. Public checks: `.github/workflows/pr.yml` (no secrets, read-only token,
+   `pull_request` trigger): the commit gate on the pull request's changes, `tools/release/pr_audit.py` (the sync audit with the
+   built-in rules plus the `.github` policy), the Linux engine build and unit tests without game files, and `tools/release/pr_pytest.py`.
+2. **Port** it into the archive branch with its author kept (cherry-pick its commits, or apply them with `git am`), through the usual
+   lane and gate. The port must be the pull request exactly: the release refuses a pull request whose diff is not contained in the
+   public tree. If the port needed changes, ask the author to update the pull request (or push the port to its branch), review the new
+   head, and list that one.
+3. **List** it in the private state, `$OPENBFME_RELEASE_STATE/community-prs.tsv`, one tab-separated line per pull request:
+   `<number>  <reviewed head sha>  <author login>  <archive commit of the port>` (`#` comments). Never in the repository.
+4. **Release.** `autorelease.sh` handles every listed pull request whose port commit is in the released sha
+   (`tools/release/community_prs.py`). After the tree passed its audits and before anything is pushed, it reads each pull request from
+   GitHub and checks:
+   - that it is against `main` of the target repository;
+   - that its head is the reviewed sha (on GitHub and fetched from `refs/pull/<n>/head`);
+   - that the author is the listed one, and that it is not a draft;
+   - that it is open and mergeable, or already merged into `main`;
+   - that its whole diff (from its merge base with `main`) applies in reverse, exactly, to the public tree, with the same file modes.
+
+   Every pull request is checked before the first one is merged. A failed check stops the run with `COMMUNITY REFUSED: #<n> ...` and
+   nothing written to GitHub. Then each open pull request is merged with a merge commit (`gh pr merge --merge --match-head-commit
+   <reviewed sha>`; a push in between makes GitHub refuse) and read back. The sync commit goes on top of the `main` that holds those
+   merges, and the sync PR's body says "Includes #37 by @login". After the sync's merge, the landed pull requests are recorded in
+   `$OPENBFME_RELEASE_STATE/community-landed.tsv`: the next releases skip them (remove them from the reviewed list at leisure).
+   - A pull request whose port is not in the released sha waits for a later release (printed, not merged, not credited).
+   - When the public `main` already holds the release's whole tree once the pull requests are merged, there is no sync PR: the release
+     tags the last merge commit, and the merged pull request is the record.
+   - A run resumed after its sync was merged merges nothing more; a pull request reviewed in between waits for the next release.
+
+`--plan` runs every check (GitHub is read, never written) and prints `COMMUNITY PLAN: #<n> by @<login> ... would be merged before the
+sync` and the body's lines. `--dry-run` runs the checks and prints each merge as `WOULD RUN: gh pr merge ...`. The tests
+(`tools/release/test_community_prs.py`) run the flow end to end against `gh_stand_in.py`: the stand-in's pull requests are real
+branches of the local remote, merged with real merge commits. They cover each refusal by name, a push just before the merge, a lost
+merge answer, a pull request merged by hand, a resumed run and the public `.github` policy.
+
+**The `.github` policy** (`tools/release/public_workflows.py`). A sync must never carry a workflow that could reach a secret, write to
+the repository or run on a private machine, also not one a community pull request added. It is checked on the sync tree before
+anything is pushed (also by `--plan`) and on every pull request. The rules:
+- `.github/` holds only the pull request template and `.github/workflows/<name>.yml`;
+- triggers are `pull_request`, `push` and `workflow_dispatch` only (never `pull_request_target`, `workflow_run` or `issue_comment`);
+- there is no `secrets.` reference, no write or `id-token` permission, and the top-level permissions are exactly `contents: read`;
+- every action is pinned by its full commit sha;
+- runners are GitHub-hosted only.
 
 ## Windows test checklist (WIN-1 and the owner)
 

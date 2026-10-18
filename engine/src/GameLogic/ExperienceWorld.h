@@ -13,7 +13,7 @@
 //     (SSE), capped at 1.0; when > 0 the attacker's player gets (RW 0x68BE18 -> Player RW 0x6AAFC3, attacker, victim, fraction): nothing for a victim under
 //     construction (status 2); the attacker qualifies when (CAN_ATTACK or SUPPORT) and not STRUCTURE and (not MONSTER or not SUMMONED), else when its horde
 //     (RW 0x693A1A) is CAN_ATTACK or SUPPORT, else when it is a HERO; a qualifying attacker can still be vetoed by the first module with the slot 0x68
-//     interface whose vslot 0x20 answers true (RW 0x8A4ED8, not identified: stop S-635); then, when the victim's player is not the attacker's player, value =
+//     interface whose vslot 0x20 answers true (RW 0x8A4ED8, SlavedUpdateInterface::dieOnMastersDeath); then, when the victim's player is not the attacker's player, value =
 //     (float)victim.getExperienceValue(attacker, false) * fraction (SSE); value > 0: the score keeper's skill point total += value (RW 0x79DBA1, only while
 //     scores are kept) and Player + 8 .addSkillPoints(value, true) (RW 0x782AA4);
 //   * the skill points of a loss (Object::scoreTheKill RW 0x695758 -> RW 0x6AB0D0 on the VICTIM's player when its template is a playable side): for a
@@ -33,6 +33,7 @@ class GameLogic;
 class Object;
 class Player;
 class StateHasher;
+class Xfer;
 struct ExperienceLevelTemplate;
 
 // the player side of the awards: Player + 8 RW 0x782AA4(amount, true) and the score keeper's total (RW 0x79DBA1)
@@ -99,6 +100,7 @@ public:
 	// null) (RW 0x494615) with the transform from the drawable's draw modules (RW 0x672B5B: the first that knows the bone; none: the identity it started from).
 	// They are client calls: each goes to the logic's FXEventLog (lane FX-2) as an OBJECT_FX of site "LevelUpFx" carrying the entry's bone; LiveFX plays it.
 	void crc(StateHasher &hasher) const;
+	void xfer(Xfer &x); // lane SAVE-4b: obfme:Experience (OpenBFME native, S-4190)
 
 private:
 	friend struct XpTestAccess; // lane XP-1 tests: isolated state hash mutations

@@ -5,7 +5,7 @@
 #   Linux:   openbfme.linux.template_debug.x86_64.so + its .so.debug (cmake -DOPENBFME_LINUX_DEBUG_FILE=ON), or the .so alone when it was
 #            built without the split (its exported symbols only)
 # into <dest>/<version>/ (the version and commit of the library's build record, tools/release/lib_provenance.py), with SHA256SUMS. The
-# default destination is $OPENBFME_SYMBOLS_DIR, else ~/.cache/openbfme-recover/symbols. An existing different file of the same version is
+# destination is --dest, else $OPENBFME_SYMBOLS_DIR (one of them is required). An existing different file of the same version is
 # an error (a dirty build reuses the version name: rebuild from a clean commit), never overwritten.
 # The store is local and private: a destination inside a git work tree (this repository or any other) or a folder holding release
 # packages (openbfme-*.zip / .tar.gz, SHA256SUMS-*, manifest.json) is refused, so symbols never reach a commit, a sync or a release asset.
@@ -14,7 +14,7 @@
 # (Windows: the "+73a188" of "openbfme.windows.template_debug.x86_64.dll+73a188"), addr2line -f -C -e <...>.so.debug 0x<offset> (Linux).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-DEST=${OPENBFME_SYMBOLS_DIR:-$HOME/.cache/openbfme-recover/symbols}
+DEST=${OPENBFME_SYMBOLS_DIR:-}
 LIBS=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -24,6 +24,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ ${#LIBS[@]} -gt 0 ] || { sed -n '2,15p' "$0"; exit 2; }
+[ -n "$DEST" ] || { echo "SYMBOLS: no destination (--dest or OPENBFME_SYMBOLS_DIR)" >&2; exit 2; }
 mkdir -p "$DEST"
 DEST=$(cd "$DEST" && pwd -P)
 if git -C "$DEST" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

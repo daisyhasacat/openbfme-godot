@@ -47,6 +47,8 @@
 #pragma once
 #include "Common/TextureSwap.h"
 
+#include "Common/ObserverEvent.h"
+
 #include "Common/MpGameRules.h"
 #include "Common/PlayerList.h"
 #include "Common/RandomValue.h"
@@ -71,6 +73,8 @@
 #include <vector>
 
 class Object;
+class BehaviorModule;
+class TunnelTracker;
 class Drawable;
 class ModuleFactory;
 class ThingFactory;
@@ -95,6 +99,8 @@ class PartitionManager;
 class EmotionWorld;
 class ScriptEngine;
 class BfmeLuaActionState;
+class GameState;
+class Xfer;
 struct CrushTemplateInfo;
 struct LuaEventArgs;
 
@@ -107,6 +113,7 @@ class ObjectClientHooks
 {
 public:
 	virtual ~ObjectClientHooks() = default;
+	virtual void observerEvent(Object &, ObserverEvent::Kind, const Coord3D * = nullptr, const std::string & = {}, float = 0.0f) {}
 	// RW 0x628882: make the Drawable of a new object and bind it (Object::friend_bindToClient)
 	virtual void objectCreated(Object &obj) = 0;
 	// the object is being deleted (processDestroyList): drop its drawable
@@ -128,6 +135,9 @@ public:
 	// lane BUILD-4, RW 0x670AA2 Drawable::fadeIn(frames) called by the simulation (a wall span's tiles, RW 0x7954A8): the object's drawable fades in over
 	// `frames` client frames (0: shown at once)
 	virtual void fadeIn(Object &obj, UnsignedInt frames) { (void)obj; (void)frames; }
+	// RW 0x67B78C -> 0x6D4789: a qualifying hit on a local hero, independently of the EVA gate.
+	virtual void heroAttacked(Object &obj) { (void)obj; }
+	virtual void flashHeroButton(const std::string &templateName, int frames) { (void)templateName; (void)frames; }
 	// lane CAH-2, RW 0x80AF0B (a Create-a-Hero record's flag 8): the drawable's house colour set (RW 0x80959A: kind 3 and the record's three colours,
 	// RW 0x6727B0 -> every draw module's vslot 0x7C); client only (HouseColor.h)
 	virtual void setCustomColors(Object &obj, int kind, std::uint32_t c0, std::uint32_t c1, std::uint32_t c2) { (void)obj; (void)kind; (void)c0; (void)c1; (void)c2; }
@@ -155,6 +165,20 @@ struct GameLogicSettings
 	unsigned guardEnemyReturnScanRate = 0;
 	float alertRangeModifier = 1.0f;
 	float aggressiveRangeModifier = 1.0f;
+	// lane BACKLOG-8: AIGroup::createFormation's AIData rows (table RW 0xC1CDF0 ..: FormationColumnWidth + 0xA0, FormationRowDepth + 0xA4, FormationSquadSpacing
+	// + 0xA8 through parseReal RW 0x42ED00, FormationColumns + 0xB4 through parseInt RW 0x42EC5E); the defaults are the AIData constructor's (RW 0x6FFCAD ..
+	// 0x6FFD87: 65.0 RW 0xC1D710 twice, 30.0 RW 0xBDAE54, 2)
+	float formationColumnWidth = 65.0f;
+	float formationRowDepth = 65.0f;
+	float formationSquadSpacing = 30.0f;
+	int formationColumns = 2;
+	// lane BACKLOG-8 r2: the formation march's rows: AIData FormationEnemyDistance + 0x70, NarrowPassageScale + 0xAC (parseReal), WaitForOthers + 0xB8
+	// (parseBool; MinDistanceForGroup + 0x6C and UseFormations + 0xBD are lane BACKLOG6's, above); GameData GroupMoveClickToGatherAreaFactor + 0xB60 (row
+	// RW 0xC00600, parseReal). Defaults: the constructors' (AIData RW 0x6FFD0E .. 0x6FFDE5: 600.0 RW 0xBF24F8, 1.0, false; GameData RW 0x643167: 1.0)
+	float formationEnemyDistance = 600.0f;
+	float narrowPassageScale = 1.0f;
+	bool waitForOthers = false;
+	float groupMoveClickToGatherAreaFactor = 1.0f;
 	bool forceModelsToFollowTimeOfDay = false;       ///< GameData ForceModelsToFollowTimeOfDay (a new drawable gets NIGHT)
 	bool forceModelsToFollowWeather = false;         ///< GameData ForceModelsToFollowWeather (SNOW)
 	bool bodyThresholdsLoaded = false;               ///< the two thresholds below were read from GameData (an ActiveBody that needs them throws when not)
@@ -171,6 +195,9 @@ struct GameLogicSettings
 	// lane BUILD-3 (GameData, RW GlobalData + 0x11E4): BuilderMoveFromNewStructureDistance, the walk of a porter out of the structure it built (RW 0x88D6AE); loaded when a block read it
 	bool builderMoveLoaded = false;
 	float builderMoveFromNewStructureDistance = 0.0f;
+	// RW GlobalData +0xA88, parseUnsignedInt (seconds).
+	bool repairDamageDelayLoaded = false;
+	unsigned timeAfterDamageUntilRepairAllowed = 0;
 	// lane FACT-A (GameData SellPercentage, RW GlobalData + 0xB94): a sold structure's refund share (BuildAssistant::update RW 0x79468B); loaded when a block read it
 	bool sellPercentageLoaded = false;
 	float sellPercentage = 0.0f;
@@ -220,6 +247,10 @@ struct GameLogicSettings
 	// lane SPELL-2 (GameData SpecialPowerViewObject, row RW 0xC006C0, parseAsciiString, GlobalData + 0xBA4): the object a special power with a ViewObjectDuration /
 	// ViewObjectRange leaves at its target (RW 0x896FD9); empty when gamedata.ini names none
 	std::string specialPowerViewObject;
+	// lane OWNERFIX-1 (GameData DefaultUnitHealingBuffFxList, row RW 0xBFF8C0, parseAsciiString RW 0x42EE5E, GlobalData + 0x9DC): the FXList every
+	// ActiveBodyModuleData starts with as its HealingBuffFx (constructor RW 0x8C373F: findFXList of this name when it is not empty); RotWK's gamedata.ini
+	// names FX_DefaultUnitHealBuff (the HealingBuff glow). Client effect only: not part of the settings hash
+	std::string defaultUnitHealingBuffFxList;
 	// lane STEALTH-1 (GameData, RW GlobalData + 0xEB4 / + 0x11CC / + 0x11D0 / + 0x11D4 / + 0x11D8; rows RW 0xC00C30, 0xC01070, 0xC01080, 0xC01090, 0xC010A0): the camouflage
 	// detectors' filter (RW 0x76392F), the frames before a revealed object may turn invisible again (ReinvisibityDelay [sic], parseDurationUnsignedInt RW 0x73A429) and the
 	// client's opacity pulse of an own invisible object (InvisibilityOpacityMin / Max parseReal, InvisibilityOpacityCycleFrames parseUnsignedInt RW 0x42ECB2);
@@ -651,6 +682,55 @@ public:
 	};
 	std::uint32_t computeStateHashBreakdown(std::vector<StateHashSection> &sections, std::vector<ObjectStateHash> *objects) const;
 
+	// ---- lane SAVE-4a: the snapshot (Common/GameState.h, docs/SAVES.md; GameLogicSnapshot.cpp) ----------------------------------------------------
+	// The registry of every simulation subsystem's block (registerSnapshotBlocks: the core blocks with their xfer, the others declared for the SAVE-4
+	// lanes that port them). A save while any block lacks an xfer, or while a section of the state hash has no block, is a named refusal; so is a save
+	// during a logic frame. A load needs the game the snapshot came from already started (its START and map: the players, prototypes and objects'
+	// templates come from there), then overwrites its state block by block and runs the post-process (the team members are linked again).
+	GameState &gameState() { return *m_gameState; }
+	const GameState &gameState() const { return *m_gameState; }
+	std::vector<std::string> stateHashSectionNames() const; ///< the sections of computeStateHashBreakdown, in order
+	// lane SAVE-4c: the acceptance stops of its blocks (S-4220 .. S-4222), reported with the save stops (CommandLogLoad::stopLines)
+	static std::vector<std::string> aiSnapshotStopLines();
+	bool saveSnapshot(std::vector<std::uint8_t> &out, std::string *error);
+	bool loadSnapshot(const std::vector<std::uint8_t> &bytes, std::string *error);
+	// the core block obfme:GameLogic: the frame, the frame-advance switch, the difficulty, the game rules, the Legendary Heroes factor, the execution
+	// profile and the next object id (OpenBFME native; retail's CHUNK_GameLogic RW 0x6308F3 also holds the objects: SAVE-4b's obfme:Objects)
+	void xferCore(Xfer &x);
+	// ---- lane SAVE-4b: the objects, the scheduler and the object-side subsystems (GameLogicObjectSnapshot.cpp) -----------------------------------------
+	// obfme:Objects: every object in list order (a table of id, template, team and status first, then each object's block, Object::xfer). Loading removes
+	// this game's objects, creates the snapshot's with their ids, teams and status (onCreate and initObject run, as ZH's load does), loads each, then
+	// removes any object those creations made on their own and loads the core blocks again (an object's creation changes its player and the logic RNG).
+	void xferObjects(Xfer &x);
+	// obfme:UpdateScheduler: the four phase vectors and the sleeping vector in order (object id, module index), the destroy list
+	void xferScheduler(Xfer &x);
+	// tests only: the Objects block leaves out the modules `omit` answers (each leaves an empty block, loading skips it); used to test SAVE-4b's part on a
+	// game whose other modules belong to a lane not merged yet (the AI update family, SAVE-4c). Off by default; never set in a game
+	void setSnapshotModuleFilter(std::function<bool(const BehaviorModule &)> omit) { m_snapshotOmit = std::move(omit); }
+	bool snapshotOmitsModule(const BehaviorModule &m) const { return m_snapshotOmit && m_snapshotOmit(m); }
+	// the links an Objects load stages (SAVES.md section 8, rules for xfer authors, rule 4): an object's container and a contain's rider / crew lists are
+	// read as ids, validated from both sides once every object has loaded, and only then installed (`install` receives the objects, in the saved order)
+	struct SnapshotLink
+	{
+		enum Role
+		{
+			CONTAINED_BY, ///< the object `owner`'s container (one id, INVALID_ID for none)
+			RIDERS        ///< the contain of object `owner` lists these objects (its riders, a horde's members, a siege crew)
+		};
+		Role role = RIDERS;
+		ObjectID owner = INVALID_ID;
+		std::vector<ObjectID> ids;
+		std::string what;
+		std::function<void(const std::vector<Object *> &)> install;
+	};
+	// while an Objects load runs: the saved object table (an id outside it names no object of the snapshot, even when the creations made one) and the
+	// staged links; both null otherwise
+	const std::set<ObjectID> *snapshotObjectTable() const { return m_snapshotTable; }
+	bool stagingSnapshotLinks() const { return m_snapshotLinks != nullptr; }
+	void stageSnapshotLink(SnapshotLink link) { m_snapshotLinks->push_back(std::move(link)); }
+	// the acceptance stops of SAVE-4b's blocks (S-4190 .. S-4193), reported with the snapshot's (CommandLogLoad::stopLines)
+	static std::vector<std::string> objectSnapshotStopLines();
+
 	struct UnportedClassStat
 	{
 		size_t modules = 0;  ///< live module instances of the class
@@ -751,6 +831,19 @@ private:
 	};
 	std::vector<ExtraHooks> m_extraWorldHooks;
 	std::vector<HashContributor> m_hashContributors;
+	std::unique_ptr<GameState> m_gameState; // lane SAVE-4a (it owns the core blocks' adapters)
+	void registerSnapshotBlocks();
+	void registerObjectSnapshotBlocks(); // lane SAVE-4b
+	std::function<bool(const BehaviorModule &)> m_snapshotOmit; // lane SAVE-4b (tests)
+	const std::set<ObjectID> *m_snapshotTable = nullptr;    // lane SAVE-4b: see snapshotObjectTable
+	std::vector<SnapshotLink> *m_snapshotLinks = nullptr;   // lane SAVE-4b: see stagingSnapshotLinks
+	void installSnapshotLinks(std::vector<SnapshotLink> &links); // lane SAVE-4b: validate both sides of every staged link, then install them
+	void validateTunnelNetworks(const std::vector<std::unique_ptr<TunnelTracker>> &networks); // lane SAVE-4b (obfme:TunnelTracker)
+	void deleteObjectForLoad(Object *obj); // lane SAVE-4b: the object goes without its death (GameLogic::reset's per-object step)
+	void registerSave4dBlocks(GameState &gs); // lane SAVE-4d (GameLogicSnapshot4d.cpp)
+public:
+	static std::vector<std::string> save4dStopLines(); ///< lane SAVE-4d: S-4250 .. S-4256 (GameLogicSnapshot4d.cpp)
+private:
 	int m_nextListenerToken = 0;
 	AIWorld *m_aiWorld = nullptr;
 	ShroudManager *m_shroud = nullptr;

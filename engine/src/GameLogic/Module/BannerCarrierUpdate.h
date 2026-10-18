@@ -11,9 +11,10 @@
 //     TEMPORARILY_DEFECTED (62), not moving and not waiting for a path, and its horde not busy (RW 0x8B50A5 on object + 0x254): without ReplenishNearbyHorde, when the carrier
 //     is not in model condition 37 / 61 and has not fired within MeleeFreeUnitSpawnTime, and its horde has not been in combat within MeleeFreeUnitSpawnTime (the horde's
 //     HordeContainInterface slot 0x90 RW 0x86EE52), the horde gets a member (RW 0x89A392: when it has fewer members than slots and RW 0x89A308 allows, HordeContainInterface
-//     slot 0x18C RW 0x873AE3 creates the member at the carrier's position; UnitSpawnFX plays); with ReplenishNearbyHorde RW 0x89AB8F (not ported).
+//     slot 0x18C RW 0x873AE3 creates the member at the carrier's position; UnitSpawnFX plays); with ReplenishNearbyHorde RW 0x89AB8F scans allied hordes nearest
+//     first, skips UNDER_CONSTRUCTION, replenishes one member per horde (one/all), updates shroud and emits UnitSpawnFX; a full horde's banner countdown drops to 1.
 // INFERENCE / NOT PORTED (stop S-587): MorphCondition / ExpLevelDraw keep their raw tokens (the grammars RW 0x89A90F / 0x89AA69 are not read; drawing only); the model
-// condition / status gates are read by number from the binary's registries; RW 0x8B50A5, the AllowBannerSpawnUpgrade test of RW 0x89A308 and ReplenishNearbyHorde are not
+// condition / status gates are read by number from the binary's registries; RW 0x8B50A5 and the AllowBannerSpawnUpgrade test of RW 0x89A308 are not
 // ported; "in combat" is a member with IS_ATTACKING or a horde melee within the window (RW 0x86EE52 asks a per-member test RW 0x68C933 that is not read); the FX are the client's.
 
 #pragma once
@@ -48,6 +49,7 @@ public:
 class BannerCarrierUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(BannerCarrierUpdate) // lane SAVE-4b
 	BannerCarrierUpdate(Thing *thing, const BannerCarrierUpdateModuleData *data);
 	static void registerClass(ModuleFactory &modules);
 	UpdateSleepTime update() override; // RW 0x89ACE4

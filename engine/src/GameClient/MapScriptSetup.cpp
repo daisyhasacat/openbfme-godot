@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0.
 // See GameClient/MapScriptSetup.h.
 
+#include "Common/BfmeGame.h"
 #include "GameClient/MapScriptSetup.h"
 
 #include "Common/ArchiveFileSystem.h"
@@ -79,6 +80,7 @@ bool MapScriptSetup::loadLibrary(ArchiveFileSystem &fs, const std::string &path,
 		}
 		auto m = std::make_unique<LoadedMap>();
 		MapReadOptions opt;
+		opt.bfme1 = isBfme1Data(fs); // community PR #36
 		if (!MapReader::load(bytes, path, opt, *m, error))
 		{
 			if (error)

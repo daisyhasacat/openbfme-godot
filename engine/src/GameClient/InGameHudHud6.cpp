@@ -24,6 +24,7 @@
 #include "Libraries/Source/Apt/AptInput.h"
 
 #include <climits>
+#include <cstdio>
 #include <cstdlib>
 
 namespace
@@ -71,7 +72,160 @@ bool commandWindowTooltipDelay(ArchiveFileSystem &fs, int &delay, std::string *e
 	delay = std::atoi(text.c_str() + eq + 1);
 	return true;
 }
+
+// lane DEVPORT-8 (FALSEDEF-1): the WINDOW block of ControlBar.wnd:WinUAttack (see InGameHud.h). The file is read as the WND loader would (ZH
+// GameWindowManagerScript.cpp: SCREENRECT positional, STATUS a '+' list, the draw data's first IMAGE); a file without the window leaves `present` false
+// (retail's lookup gives NULL and the blink does nothing); a block that does not parse is an error naming the field
+bool readAttackWindow(ArchiveFileSystem &fs, InGameHud::AttackWindow &w, std::string *error)
+{
+	const char *file = "window\\controlbar.wnd";
+	std::vector<std::uint8_t> bytes;
+	std::string readError;
+	if (!fs.readFile(file, bytes, &readError))
+	{
+		*error = std::string(file) + ": " + readError;
+		return false;
+	}
+	w = InGameHud::AttackWindow();
+	const std::string text(bytes.begin(), bytes.end());
+	const char *kName = "\"ControlBar.wnd:WinUAttack\"";
+	const size_t name = text.find(kName);
+	if (name == std::string::npos)
+	{
+		return true;
+	}
+	// the block: from the WINDOW line before the name to the END line after it (the window has no children in the retail file; a CHILD would end the
+	// block early, so it is refused)
+	auto lineIs = [&text](size_t at, const char *word) {
+		size_t b = at, e = text.find('\n', at);
+		e = e == std::string::npos ? text.size() : e;
+		while (b < e && (text[b] == ' ' || text[b] == '\t'))
+		{
+			++b;
+		}
+		while (e > b && (text[e - 1] == ' ' || text[e - 1] == '\t' || text[e - 1] == '\r'))
+		{
+			--e;
+		}
+		return text.compare(b, e - b, word) == 0;
+	};
+	size_t begin = std::string::npos;
+	for (size_t at = text.rfind('\n', name); at != std::string::npos && at > 0; at = text.rfind('\n', at - 1))
+	{
+		if (lineIs(at + 1, "WINDOW"))
+		{
+			begin = at + 1;
+			break;
+		}
+	}
+	size_t end = std::string::npos;
+	for (size_t at = text.find('\n', name); at != std::string::npos; at = text.find('\n', at + 1))
+	{
+		if (lineIs(at + 1, "CHILD"))
+		{
+			*error = std::string(file) + ": ControlBar.wnd:WinUAttack has children (not read)";
+			return false;
+		}
+		if (lineIs(at + 1, "END"))
+		{
+			end = at + 1;
+			break;
+		}
+	}
+	if (begin == std::string::npos || end == std::string::npos)
+	{
+		*error = std::string(file) + ": ControlBar.wnd:WinUAttack is not a closed WINDOW block";
+		return false;
+	}
+	const std::string block = text.substr(begin, end - begin);
+	auto field = [&block](const char *key, std::string &value) {
+		const size_t k = block.find(std::string(key) + " =");
+		if (k == std::string::npos)
+		{
+			return false;
+		}
+		const size_t eq = block.find('=', k), semi = block.find(';', eq);
+		if (semi == std::string::npos)
+		{
+			return false;
+		}
+		value = block.substr(eq + 1, semi - eq - 1);
+		return true;
+	};
+	std::string status, rect, enabled, disabled;
+	if (!field("STATUS", status) || !field("SCREENRECT", rect) || !field("ENABLEDDRAWDATA", enabled) || !field("DISABLEDDRAWDATA", disabled))
+	{
+		*error = std::string(file) + ": ControlBar.wnd:WinUAttack lacks STATUS, SCREENRECT or its draw data";
+		return false;
+	}
+	for (size_t b = 0; b <= status.size();)
+	{
+		size_t e = status.find('+', b);
+		e = e == std::string::npos ? status.size() : e;
+		std::string bit = status.substr(b, e - b);
+		bit.erase(0, bit.find_first_not_of(" \t\r\n"));
+		bit.erase(bit.find_last_not_of(" \t\r\n") + 1);
+		w.imageStatus = w.imageStatus || bit == "IMAGE";
+		w.hidden = w.hidden || bit == "HIDDEN";
+		w.enabledStatus = w.enabledStatus || bit == "ENABLED";
+		b = e + 1;
+	}
+	if (std::sscanf(rect.c_str(), " UPPERLEFT: %d %d, BOTTOMRIGHT: %d %d, CREATIONRESOLUTION: %d %d", &w.x0, &w.y0, &w.x1, &w.y1, &w.resX, &w.resY) != 6 ||
+		w.resX <= 0 || w.resY <= 0)
+	{
+		*error = std::string(file) + ": ControlBar.wnd:WinUAttack's SCREENRECT does not parse";
+		return false;
+	}
+	auto firstImage = [](const std::string &data, std::string &out) {
+		char image[256] = {};
+		if (std::sscanf(data.c_str(), " IMAGE: %255[^,]", image) != 1)
+		{
+			return false;
+		}
+		out = image;
+		out.erase(out.find_last_not_of(" \t\r\n") + 1);
+		if (out == "NoImage")
+		{
+			out.clear();
+		}
+		return true;
+	};
+	if (!firstImage(enabled, w.enabledImage) || !firstImage(disabled, w.disabledImage))
+	{
+		*error = std::string(file) + ": ControlBar.wnd:WinUAttack's draw data has no IMAGE";
+		return false;
+	}
+	w.present = true;
+	return true;
+}
 } // namespace
+
+std::string InGameHud::attackWindowImage() const
+{
+	// W3DGameWinDefaultDraw (ZH), the image branch: the disabled image when the window is not enabled, else the enabled one (INFERENCE: the hilite image
+	// of a hovered window is not used; the window takes no input in RotWK's HUD). A hidden window, or one without the IMAGE status, draws no image
+	const ControlBar::AttackFlash &f = m_bar->attackFlash();
+	if (!m_attackWindow.present || m_attackWindow.hidden || !m_attackWindow.imageStatus)
+	{
+		return std::string();
+	}
+	return f.windowEnabled ? m_attackWindow.enabledImage : m_attackWindow.disabledImage;
+}
+
+bool InGameHud::attackWindowRect(int width, int height, int &x, int &y, int &w, int &h) const
+{
+	// the WND loader's scale: the display resolution over the window's CREATIONRESOLUTION (ZH parseScreenRect)
+	if (!m_attackWindow.present)
+	{
+		return false;
+	}
+	const float sx = (float)width / (float)m_attackWindow.resX, sy = (float)height / (float)m_attackWindow.resY;
+	x = (int)((float)m_attackWindow.x0 * sx);
+	y = (int)((float)m_attackWindow.y0 * sy);
+	w = (int)((float)m_attackWindow.x1 * sx) - x;
+	h = (int)((float)m_attackWindow.y1 * sy) - y;
+	return true;
+}
 
 void InGameHud::bootHud6()
 {
@@ -84,7 +238,29 @@ void InGameHud::bootHud6()
 	{
 		m_hud6Errors.push_back("help box delay: " + error);
 	}
+	// lane DEVPORT-8 (FALSEDEF-1): the blink's window (RW 0x71E1E7 at RW 0x71E8C4: winGetWindowFromId(ControlBar.wnd:WinUAttack) into ControlBar + 0x2A0)
+	if (!readAttackWindow(m_config.fs, m_attackWindow, &error))
+	{
+		m_hud6Errors.push_back("attack blink window: " + error);
+	}
+	m_bar->setAttackFlashWindow(m_attackWindow.present, m_attackWindow.enabledStatus);
 	m_radial.setImageSize(imageSizeOf, (void *)nullptr);
+	// lane OWNERFIX-3: the command windows' count look (ControlBar.wnd:ButtonCommand's FONT and TEXTCOLOR); a failure is reported (S-2703), counts are then
+	// not drawn and the ring reports why (ControlBarRadialMenu::errors)
+	{
+		std::vector<std::uint8_t> bytes;
+		std::string readError;
+		CommandWindowLook look;
+		if (!m_config.fs.readFile("window\\controlbar.wnd", bytes, &readError))
+		{
+			m_hud6Errors.push_back("command window look: window\\controlbar.wnd: " + readError);
+		}
+		else if (!CommandWindowLook::scan(std::string(bytes.begin(), bytes.end()), look, &readError))
+		{
+			m_hud6Errors.push_back("command window look: " + readError);
+		}
+		m_radial.setCountLook(look);
+	}
 	AptPalantir *palantir = m_palantirRef;
 	m_palantirRef->setHelpBoxHandler([this, palantir](const std::string &clip, bool loaded) {
 		if (loaded)
@@ -100,10 +276,9 @@ void InGameHud::bootHud6()
 	});
 	if (isBfme1Data(m_config.fs))
 	{
-		// BFME1 has no OnHelpBoxLoaded: the help box is Palantir.apt's own HelpBox clip, driven through the root's functions (InGameHelpBox::loadedBfme1)
-		m_helpBox.loadedBfme1("_level" + std::to_string(palantir->movieLevel()), [palantir](const std::string &path, const std::string &fn, const std::vector<std::string> &args) {
-			return palantir->invoke(path, fn, args);
-		});
+		// BFME1 has no OnHelpBoxLoaded callback/content-frame protocol.
+		// Its native tooltip is drawn by the device over the HUD.
+		m_helpBox.loaded("_level" + std::to_string(palantir->movieLevel()) + ".BFME1Help", [](const auto &, const auto &, const auto &) { return true; });
 	}
 
 }
@@ -240,11 +415,17 @@ void InGameHud::updateHud6(ObjectID context, const std::string &faction, double 
 	Object *ctx = context != INVALID_ID ? logic.findObjectByID(context) : nullptr;
 	// the side command bar's gate (RW 0x92F27D): a DOZER the local player controls
 	m_palantirRef->setSideBarObject(ctx && local && (ctx->isKindOfName("DOZER") || BuildAssistant::isFortressBuilder(*ctx)) && ctx->getControllingPlayer() == local);
-	// the radial ring (RW 0x9443CF: the object is locally controlled, or the local player is not active; INFERENCE: a skirmish's local player is active)
-	const bool allowed = ctx && local && ctx->getControllingPlayer() == local;
+	// the radial ring (RW 0x9443CF: the object is locally controlled, or the local player is not active, RW 0x6AAC52; lane OWNERFIX-3: the second half
+	// was an inference before, now ported: an observer or a defeated player sees the ring of the object it selects; another player's object, otherwise, none
+	// (RW 0x945938))
+	const bool allowed = ctx && (ctx->getControllingPlayer() == local || !ControlBar::localPlayerActive(local));
 	m_radial.setImageSize(imageSizeOf, (void *)m_hud6Images);
+	m_radial.setFontMetrics(m_hud6Metrics); // lane OWNERFIX-3: the count's measure (the device's fonts)
 	m_radial.update(logic, &m_config.game.drawables(), m_config.view, m_windowW, m_windowH, context, m_bar->radialButtons(), allowed);
 	// the help box: the control bar's test of the last frame, the hover of this one, the movie clip's update
+	m_helpBox.setEndGameTimer(m_config.endGameTimer ? m_config.endGameTimer() : -1);
+	// RW 0x91988F / 0x919158: the disconnect menu owns this registration for its whole lifetime, including before movie initialization.
+	m_helpBox.setDisconnectMenuPresent(m_wm && m_wm->hasScreenRef("DisconnectScreen::InitGadgets"));
 	m_helpBox.beginFrame();
 	InGameHelpBox::Provider p;
 	ControlBarButton hovered;
@@ -304,7 +485,10 @@ void InGameHud::updateHud6(ObjectID context, const std::string &faction, double 
 		Player *player = selection ? selection->getControllingPlayer() : local;                  // RW 0x807AE9 / 0x807AF3
 		const MappedImageCollection *images = m_hud6Images;
 		const GameTextSource *text = m_config.gameText;
-		m_helpBox.showHelp(p, m_hud6ClockMs, m_tooltipDelayMs, [&]() -> std::shared_ptr<CommandButtonHelp> {
+		// the provider's delay (vslot 2): a command button's is its window's TOOLTIPDELAY (+ 0x1C8), 0 without a window (RW 0x8075E4, lane ROTWK-C), so the spell
+		// book's and the hero bar's command buttons (bar 3) show at once; a UnitHelpSource's (bar 4) is its + 0x08 (RW 0x9F9F16, its value not read: S-2703)
+		const int delay = p.bar == 3 ? 0 : m_tooltipDelayMs;
+		m_helpBox.showHelp(p, m_hud6ClockMs, delay, [&]() -> std::shared_ptr<CommandButtonHelp> {
 			if (p.bar == 4)
 			{
 				// RW 0x8EBC61: a gone object makes no help
@@ -390,7 +574,7 @@ bool InGameHud::hud6MouseButton(HudInput::Button button, bool down, int x, int y
 	{
 		return false;
 	}
-	return m_radial.mouseButton(button == HudInput::Button::Left, down, x, y, *m_bar); // a release is the ring's only after a press it took
+	return m_radial.mouseButton(button == HudInput::Button::Left, down, x, y, *m_bar, (m_keyState & KEY_STATE_SHIFT) != 0); // a release is the ring's only after a press it took
 }
 
 void InGameHud::hud6Stops(std::vector<std::string> &out) const

@@ -20,6 +20,11 @@
 ##                           its render frames timed (--uber1-seconds=S, default 20): average fps, 1% low, worst frame, logic frames/s; prints UBER1 lines
 ##     --zoom1=<a,b,...>     (lane ZOOM-1, with --auto) the scenarios of scripts/zoom1_player.gd (zoom: the same spot at 1x / 1.5x / 2x / 2.5x / 3x, the
 ##                           frame rate at 1x and 2.5x; bars: both armies with every health bar on); prints ZOOM1 lines; --screens writes zoom1-*.png
+##     --ownerfix2=<a,b,...> (lane OWNERFIX-2, with --auto) scripts/ownerfix2_player.gd: the owner's 2026-10-17 playtest items in the real game (auras, cp,
+##                           handicap, farms); "OWNERFIX2 RESULT" ends the run
+##     --lobby-cp=<percent>  (lane OWNERFIX-2, with --auto) the lobby's Rules tab is opened and its Command Points combo set to the factor (33 .. 400) through
+##                           the combo (the panel's own handler); lobby-cp-rules-tab.png with --screens
+##     --lobby-handicap=<slot>:<h>[,...] (lane OWNERFIX-2, with --auto) the slots' Handicap combos set to h (0, -5 .. -95) through the combos
 ##     --rules-shot=<n>      (lane RULES-1, with --auto --screens) the lobby's Rules tab is opened (rules1-rules-tab.png), Legendary Heroes n x is chosen
 ##                           (rules1-rules-tab-legendary.png), the game starts (the loading screen names the rule) and scripts/rules1_player.gd places a
 ##                           legendary and a plain hero side by side, damaged alike (rules1-heroes.png); "RULES1 RESULT" ends the run
@@ -31,7 +36,8 @@
 ##                           gate, construction, levels); "HUD5 <name>: ok / FAIL", screenshots hud5-<name>.png in --screens
 ##     --hud6=<a,b,...>      (lane HUD-6, with --auto) scripts/hud6_player.gd: radial (the fortress's bubbles), heroes (its hero ring), help (the
 ##                           help box over a bubble and over an arc button), sidebar (a builder's framed side bar), barracks (lane BUGS-1: the
-##                           help box over a Men barracks' unit bubble keeps its text); hud6-<name>.png in --screens
+##                           help box over a Men barracks' unit bubble keeps its text), queue (lane OWNERFIX-3: three soldiers queued, the bubble's and the
+##                           Palantir's count), enemy (lane OWNERFIX-3: an enemy barracks and hero show their disabled command set); hud6-<name>.png in --screens
 ##     --hover1=<a,b,...>    (lane HOVER-1, with --auto) scripts/hover1_player.gd: ability (a unit cost line), spellbook (a power's help box), herobar
 ##                           (a portrait's unit help); hover1-*.png in --screens
 ##     --hover1-menus=DIR    (lane HOVER-1) the main menu's and Options' tool tips (GuiFX.apt's ToolTip): the pointer on a button of each navigation and on
@@ -41,7 +47,11 @@
 ##                           cancelled by a right click); hud7-<name>.png in --screens
 ##     --autocast1=<a,...>   (lane AUTOCAST-1, with --auto) scripts/autocast1_player.gd: witchking (a right click on the Witch-king's Morgul Blade
 ##                           button turns its autocast on, the button glows, he casts it at an enemy hero by himself; off again); autocast1-<name>.png
+##     --visual2=<a,...>     (lane VISUAL-2, with --auto) scripts/visual2_player.gd: fog (what the local player sees of the enemy in the fog: drawn
+##                           objects, particles), trees (the sway), look (views for the colour comparison); visual2-*.png in --screens
 ##     --start-spot=<n>      (with --auto) slot 0 clicks the lobby's start spot n first (RW 0x845830): e.g. 0 = Player_1_Start, a fortress map's fortress
+##     --devport7=<a,...>    (lane DEVPORT-7, with --auto or --campaign=NAME) scripts/devport7_player.gd: veteran (campaign: banner replenish / heal,
+##                           rank-3 self heal and refill, hero heal), rally (the rally banner of a right click), formation (a mixed group's formation)
 ##     --spell3=<a,b,...>    (lane SPELL-3, with --auto) scripts/spell3_player.gd: spellbook (buy every power in the store, cast every slot by input);
 ##                           "SPELL3 <name>: ok / FAIL", spell3-<faction>-*.png in --screens
 ##     --play1=<a,b,...>     (lane PLAY-1, with --auto) the input-driven scenarios of scripts/play1_player.gd (orders, palantir, powers, camera, explore, dragbox, ghosts,
@@ -70,6 +80,9 @@
 ##     --menu1-walk[=DIR]    (lane MENU-1, scripts/menu1_walk.gd) the front-end paths with real input (Skirmish's profile prompt, the lobby, its Profile
 ##                           page, Options, LAN, Replays, Create-a-Hero ...): after each step at most one screen's widgets may be visible (the top one),
 ##                           the titles never overprint; DIR: windowed screenshots walk1-<step>.png; exit 0 when every step held
+##     --menu-inventory=DIR  (lane MENUWORK-1, scripts/menu_inventory.gd) every control of every menu screen pressed with real input, and a skirmish's
+##                           quit menu and score screen; DIR/inventory.json for tools/menus/menu_inventory.py (the table); MENU_INVENTORY_ONLY=<place>
+##                           walks one place (or "game": the in-game half), MENU_INVENTORY_NO_GAME=1 skips the in-game half
 ##     --menu-colours=DIR    (lane UI-4) the owner's "don't use the green text" (2026-10-10): every front-end screen the main menu's nav entries open
 ##                           (the boxes some open, Skirmish's profile box and lobby, Create-a-Hero's introduction and builder), each text drawn (the canvas's,
 ##                           the gadgets', the credits roll's) with its colour and a heuristic ink sample of its rectangle (DIR/colours-<screen>.png);
@@ -106,6 +119,9 @@
 ##     --opts5-check         the scripted check of tests/opts5_test.gd (scripts/opts5_check.gd): Options is the one OpenBFME menu, the original game's settings
 ##                           among its rows (their effects, Options.ini, CANCEL / RESET), the layout rules; --opts5-size=WxH, --opts5-shots=DIR
 ##     --opts5-game          (with --auto) after --advance seconds: the quit menu's Options opens the menu over the game (what may not change in a game greyed)
+##     --opts6-check         lane OPTS-6 (scripts/opts6_check.gd): the menus' hit areas, keyboard and controller navigation; --opts6-size=WxH, --opts6-shots=DIR
+##     --onlineux1-game      (with --auto, lane ONLINEUX-1 r2) scripts/onlineux1_check.gd: an online game given up by a failed rejoin, with Esc / Options open
+##     --opts6-game          (with --auto) the quit menu's Options over a live game: modal (nothing behind takes a click or a key, no world decoration over it)
 ##     --opts2-shots=DIR     (with --opts2-check) opts2-<tab>-<w>x<h>.png and the Options.apt pages (the proof screenshots; a window, not --headless)
 ##     --opponents=<n>       (lane PERF-1, with --auto) slots 1..n are computers of level --ai (default 1; a 4-player map takes 3)
 ##     --warp=<seconds>      (lane PERF-1, with --auto) run the game at --warp-scale (default 8) times speed until this much game time has passed, then at normal speed
@@ -145,7 +161,7 @@
 ##     --replay-speed=N      (lane QA-2) play the replay at N times speed (the QA matrix checks every game's replay this way)
 ##     --replay-watch=<Player>:<Template>   (lane QA-2) while a replay plays, every 50 logic frames print each of the player's objects of that template
 ##                           (position, conditions, production queue) and the player's money / command points: QA-2's reproductions
-##     --replay-menu-test    (with --auto) after the game, open Load Replay, screenshot it (--screens), load the first replay and play it to the end
+##     --replay-menu-test    (with --auto) click through Replays, select the just-recorded replay, click Load and verify playback to the end
 ##     --no-record           do not record the games
 ##   lane MP-2, the LAN lobby: the main menu's LAN opens LanLobby.apt on GameWorld's LAN lobby (GameNetwork/LANAPI.h: RotWK's lobby ports 8086 ..
 ##   8093, broadcast); every player's start (the shell request "LanGameStart") loads the network game with net_begin as --net-host / --net-join do
@@ -183,6 +199,11 @@
 ##   home page with the lobby's message of the day, Open Play = the server browser, the MpGameSetup staging room) on the lobby service (scripts/online_http.gd).
 ##   The lobby: --online-lobby=URL, else OPENBFME_LOBBY, else Options.ini's OpenBFMEOnlineLobby, else https://play.openbfme.com. The guest name of the last
 ##   sign-in is kept in Options.ini (OpenBFMEOnlineName).
+##   lane ONLINEHUB-1 (docs/PLATFORM_API.md): the TOURNAMENT page (Quick Match, tournaments) and the STATS pages read the OpenBFME platform:
+##     --platform-url=URL    its base URL (default: OPENBFME_PLATFORM, else Options.ini's OpenBFMEPlatformUrl, else https://api.openbfme.com/v1)
+##     --online-walk=hub     sign in, then the STATS and TOURNAMENT pages (--online-shots); every finished skirmish / LAN / online game is recorded in
+##                           user://game_records.jsonl, and LAN / online games are reported (POST /v1/results) unless Options' "Share my game results
+##                           for statistics" is off
 ##     --online-walk=host|join   script the screens through the movie's own commands: Online, the sign-in (--online-name), Open Play; host: Create Game
 ##                           (--online-password=PW), Play Game once --online-players=N players are in and ready; join: the first game listed (sorted by name),
 ##                           its password, chat, Ready. --online-shots=DIR saves every screen (online-<screen>-<W>x<H>.png)
@@ -192,7 +213,10 @@
 ##     --campaign=NAME       start the campaign at once (no menu): ANGMAR_CAMPAIGN, ANGMAR_BONUS_CAMPAIGN; --mission=N its N-th mission (from 0);
 ##                           --difficulty=E|N|H
 ##     --campaign-win        (test hooks) each mission's decisive moment is played by the GameWorld test hooks (Amon Sul, Fornost, the bonus mission)
-##     --campaign-check=N    quit after N missions ended (exit 0 when all were won), printing the CAMPAIGN lines
+##     --campaign-check=N    quit after N missions ended (exit 0 when all were won), printing the CAMPAIGN lines; lane CAMPSAVE-1: with --campaign-win the score
+##                           screen's Continue and CampaignMenu.apt's Next Mission (Replay Mission after a defeat) are clicked between the missions
+##     --campsave-test=S     (lane CAMPSAVE-1) the campaign between missions through its screens: menu / bonus (with --campaign, --campaign-win) or continue
+##                           (from the main menu's Load Game); prints CAMPSAVE1 RESULT (scripts/campaign_save_test.gd)
 ##     --play1=<a,b,...>     (lane SELPERF-1, with --campaign) the play1 scenarios in the mission once it plays (--campaign-play1-wait=<s>, default 20), then quit
 ##     --movies=off          (lane CAMP-1H) the campaign movies (intro, mission intros, PLAY_MOVIE_IN_GAME: their narration over black, S-1710) are not played
 ##     --campaign-menu=CMD[:ARG] (lane CAMP-2) once the main menu is shown, run its command AptMainMenu::CMD (Expansion1Campaign:N, BonusCampaign:N,
@@ -260,6 +284,7 @@ var _perf_last := 0
 var _perf_prev_us := 0
 const DisplaySettings := preload("res://scripts/display_settings.gd") # lane OPTS-1
 const OnlineStats := preload("res://scripts/online_stats.gd") # lane ONLINECOUNT-1
+const AppIcon := preload("res://scripts/app_icon.gd") # lane OWNERFIX-3: the OpenBFME window icon (not Godot's)
 var _display: RefCounted                 # lane OPTS-1: the display settings in effect (openbfme-display.cfg)
 var _display_path := ""
 var _display_overlay: CanvasLayer        # scripts/fps_overlay.gd: the counter and the F10 / Alt+Enter keys
@@ -275,6 +300,12 @@ var _opts2_size := Vector2i.ZERO         # lane OPTS-2: --opts2-size=WxH (the sc
 var _opts4_check := false                # lane OPTS-4: --opts4-check
 var _opts4_shots := ""                   # lane OPTS-4: --opts4-shots=DIR
 var _opts4_size := Vector2i.ZERO         # lane OPTS-4: --opts4-size=WxH
+var _menu_pad: Node = null               # lane OPTS-6: scripts/menu_pad.gd
+var _opts6_check := false                # lane OPTS-6: --opts6-check
+var _opts6_game := false                 # lane OPTS-6: --opts6-game
+var _onlineux1_game := false             # lane ONLINEUX-1 r2: --onlineux1-game (scripts/onlineux1_check.gd)
+var _opts6_shots := ""                   # lane OPTS-6: --opts6-shots=DIR
+var _opts6_size := Vector2i.ZERO         # lane OPTS-6: --opts6-size=WxH
 var _opts5_check := false                # lane OPTS-5: --opts5-check
 var _opts5_game := false                 # lane OPTS-5: --opts5-game
 var _opts5_shots := ""                   # lane OPTS-5: --opts5-shots=DIR
@@ -297,6 +328,13 @@ const DOUBLE_Q_MS := 450
 var _state := State.BOOT
 var _frames := 0
 var _menu_revealed := false
+var _misc_sounds_played: Array = [] # lane DEVPORT-8: the last MiscAudio plays of _update_listener
+var _menu_style := "rotwk"
+var _pending_menu_style := "rotwk"
+var _switching_menu_style := false
+var _shell_config := {}
+var _bfme2_shell_fs: RefCounted
+var _campaign_menu_buttons: CanvasLayer
 var _report := {}
 var _failed := ""
 var _loading_shot_done := false
@@ -320,13 +358,17 @@ var _play_script := "res://scripts/play1_player.gd" # lane SPELL-3: --spell3 run
 var _uber1 := 0 # lane UBER-1: --uber1=<troops>
 var _hud5 := PackedStringArray() # lane HUD-5
 var _rules_shot := 0 # lane RULES-1: --rules-shot=<factor>
+var _lobby_cp := 0 # lane OWNERFIX-2: --lobby-cp=<percent>
+var _lobby_handicap: PackedStringArray = [] # lane OWNERFIX-2: --lobby-handicap=<slot>:<h>,...
 var _gamemodes := "" # lane GAMEMODES-1: --gamemodes=battle|sandbox
 var _hud6 := PackedStringArray() # lane HUD-6 (scripts/hud6_player.gd: radial, heroes, sidebar, help)
 var _hover1 := PackedStringArray() # lane HOVER-1 (scripts/hover1_player.gd: ability, spellbook, herobar)
 var _hover1_menus := "" # lane HOVER-1: --hover1-menus=DIR
 var _hover1_menus_started := false
+var _devport8 := PackedStringArray() # lane DEVPORT-8 (scripts/devport8_player.gd: attack)
 var _hud7 := PackedStringArray() # lane HUD-7 (scripts/hud7_player.gd: radar, deselect, sell, upgrade, herocancel)
 var _autocast1 := PackedStringArray() # lane AUTOCAST-1 (scripts/autocast1_player.gd: witchking)
+var _visual2 := PackedStringArray() # lane VISUAL-2 (scripts/visual2_player.gd: fog, trees, look)
 var _start_spot := -1            # lane HUD-5
 ## lane INPUT-1: the keyboard scenarios of scripts/input1_player.gd (--input1=groups,...)
 var _input1 := PackedStringArray()
@@ -356,6 +398,21 @@ var _stats_label: Label = null       ## the main menu's / the online menu's "N p
 const ONLINE_DEFAULT_LOBBY := "https://play.openbfme.com"
 const ONLINE_SESSION_FILE := "user://online_session.txt" # lane ONLINE-3's file (scripts/online_lobby.gd SESSION_FILE)
 var _online_saved_session := ""
+# lane ONLINEHUB-1 (docs/PLATFORM_API.md): the OpenBFME platform API (Quick Match, tournaments, statistics, game results) and the games this installation
+# played (the STATS pages' "Your stats")
+const PLATFORM_DEFAULT_URL := "https://api.openbfme.com/v1"
+const RECORDS_FILE := "user://game_records.jsonl"       # one JSON line per finished game (GameClient/GameRecords.h)
+const RECORDS_FILE_MAX := 4 * 1024 * 1024               # above this the file keeps its newest half (the engine reads 5000 games)
+const INSTALL_ID_FILE := "user://platform_install_id.txt" # 128 random bits, made once: the platform's "install"
+var _platform_url := ""            # --platform-url
+var _online_qm_side := -1          # --online-qm-side=N: the walk's Army choice (the combo's entry; 0 = random)
+var _onlinehub1_check := false     # --onlinehub1-check (scripts/onlinehub1_check.gd)
+var _platform_http: Node = null
+var _platform_ready := false
+var _hub_online := {}              # the online game being started: { id, match, tournament } (the record's id: the match's when there is one)
+var _hub_kind := ""                # "skirmish" / "lan" / "online": the kind of the game being played ("" none: not recorded)
+var _hub_game_id := ""
+var _game_start_unix := 0
 var _online_rejoin := false        # lane ONLINE-3
 var _net_pause_at := -1
 var _net_resume_after_ms := -1
@@ -364,7 +421,11 @@ var _net_shot_rejoin := ""
 var _pause_label: Label = null
 var _pause_since := 0
 var _pause_key_down := false
-var _rejoin_since := 0
+var _rejoin_watch: RefCounted = preload("res://scripts/rejoin_watch.gd").new() # lane ONLINEUX-1 r2: the catch-up's watchdog (one state per attempt)
+const REJOIN_STALL_MS := 45000
+var _online_from_screens := false  # lane ONLINEUX-1: the game playing was started from the online screens (a failure goes back to them)
+var _relay_label: Label = null     # lane ONLINEUX-1: "the relay server is lost" while the relay link is silent
+var _relay_lost_since := 0
 var _online_spectate := false      # lane ONLINE-3: spectators
 var _net_observe_at := -1
 var _net_shot_spectate := ""
@@ -410,6 +471,15 @@ var _menu_colours_problems: PackedStringArray = [] # what the walk could not pro
 var _menu_walk := "" # lane FB7-1: --menu-walk=DIR
 var _menu1_walk := "" # lane MENU-1: --menu1-walk=DIR (scripts/menu1_walk.gd)
 var _menu1_walk_on := false
+var _menustyle_check := false
+var _menustyle_expect := "" # lane DEVPORT-8: --menustyle-expect=STYLE (the check after a restart)
+var _menustyle_size := "" # lane DEVPORT-8: --menustyle-size=WxH (the window of its captures)
+var _menustyle_runner: RefCounted
+var _menu_inventory := "" # lane MENUWORK-1: --menu-inventory=DIR (scripts/menu_inventory.gd)
+var _menu_inventory_on := false
+var _menu_inventory_runner: RefCounted = null
+var shell_requests: Array = [] # lane MENUWORK-1: every shell request of the run ([action, argument]), read by scripts/menu_inventory.gd
+var shell_request_hold := PackedStringArray() # lane MENUWORK-1 (TEST HOOK): requests the inventory records and does not carry out (ExitGame)
 var _menu1_runner: RefCounted = null
 var _ui6_walk := "" # lane UI-6: --ui6-walk=DIR (scripts/ui6_walk.gd)
 var _ui6_walk_on := false
@@ -425,6 +495,7 @@ var _lan_phase := 0
 var _lan_wait := 0
 var _lan_shot_done := false
 var _lan_start_ms := -1
+var _lan_shots := "" ## lane UBERJOIN-1: --lan-shots=DIR (join): the game list (with an Uber game's tag) and the performance mode box are saved there
 var _lan_shot_start := "" # lane UI-1: (host) the window 8 s after Play Game: the countdown's QM:STARTINGGAME box (the media)
 var _net_shot := ""
 var _net_shot_frame := -1
@@ -437,6 +508,12 @@ var _net_press_producer := -1
 var _net_press_frame := -1
 var _net_press_ms := 0
 var _net_press_queue := 0
+var _net_players_shot := ""      # lane PLATFORMICON-1: --net-players-shot=FILE:FRAME opens the players screen (Tab) at that frame and saves the window
+var _net_players_frame := -1
+var _net_players_wait := -1
+var _net_score_shot := ""        # lane PLATFORMICON-1: --net-score-shot=FILE:FRAME surrenders through the quit menu at that frame and saves the score screen
+var _net_score_frame := -1
+var _net_score_started := false
 var _net_player_timeout_ms := -1
 var _net_kick := false
 var _net_shot_disconnect := ""
@@ -454,12 +531,18 @@ var _replay_speed := 1.0
 var _replay_watch := ""
 var _replay_watch_next := 0
 var _replay_menu_test := false
+var _replay_menu_recorded_path := ""
 var _record := true
 var _replay_active := false
+var _caster: CanvasLayer = null
+var _observe_pending := 0 # a spectator's Tab / Shift+Tab not yet applied (+1 / -1), waiting for the logic to be held
 var _replay_last_print := -1
 var _last_local_slot := -1
 var _save_flow: RefCounted = null # lane SAVE-2: the saved games (scripts/save_flow.gd)
 var _save_dir_arg := ""          # lane SAVE-2: --save-dir=DIR (the Save folder; default the user data folder's Save, as Create-a-Hero's)
+var _campsave_test := ""        # lane CAMPSAVE-1: --campsave-test=<scenario> (scripts/campaign_save_test.gd)
+var _campsave_test_started := false
+var _save_ui_test := false       # lane SAVE-UI1: --save-ui-test (with --auto or --campaign-menu=...: scripts/save_flow.gd run_ui_test)
 var _save_test := ""             # lane SAVE-2: --save-test (with --auto: save in the skirmish, load it back, the main menu's Load Game; with --campaign: a mission)
 # lane END-1
 var _end := false
@@ -481,6 +564,7 @@ var _local_name := ""
 var _local_index := -1 # lane UI-4: the local player's index (GameWorld.create_object's player)
 var _second_game_ok := false
 var _net_lobby_again := false
+var _lan_shell_game := false ## lane UBERJOIN-1: the running game was started by the LAN lobby screen (LanGameStart): its room is left at the game's end, Continue shows the lobby screen
 var _continuing := false
 var _campaign_flow: Node        # lane CAMP-1: scripts/campaign_flow.gd
 var _campaign_complete := false
@@ -508,7 +592,12 @@ var _scripted_skirmish_ini := ""
 
 func _exit_tree() -> void:
 	if not _scripted_skirmish_ini.is_empty():
-		DirAccess.remove_absolute(_scripted_skirmish_ini) # lane MENU-1: the scripted run's own Skirmish.ini
+		# lane MENU-1: the scripted run's own Skirmish.ini; lane OWNERFIX-3: its folder and the profiles' stats files in it
+		var dir := _scripted_skirmish_ini.get_base_dir()
+		for f in DirAccess.get_files_at(dir):
+			if f == "Skirmish.ini" or f.ends_with("RealTimeStats.ini"):
+				DirAccess.remove_absolute(dir.path_join(f))
+		DirAccess.remove_absolute(dir)
 
 
 func _scripted_run() -> bool:
@@ -553,8 +642,21 @@ func _ready() -> void:
 	print("STARTUP game ready at %d ms" % Time.get_ticks_msec())
 	_startup_shortcut = preload("res://scripts/startup_shortcut.gd").new()
 	add_child(_startup_shortcut)
+	if OS.get_cmdline_user_args().has("--smoke-test"):
+		process_mode = Node.PROCESS_MODE_DISABLED
+		if DisplayServer.get_name() != "headless":
+			printerr("SMOKE FAIL: --smoke-test requires --headless")
+			get_tree().quit(1)
+			return
+		var code: int = await preload("res://tests/smoke_checks.gd").new().run(get_tree())
+		get_tree().quit(code)
+		return
 	_display_setup() # lane OPTS-1: the player's display settings first; the command line below wins for the run
 	print("FRAME PACING ", preload("res://scripts/frame_pacing.gd").apply_from_args(OS.get_cmdline_user_args())) # lane SMOOTH-1
+	# lane OWNERFIX-3: the window / taskbar / dock icon is the OpenBFME ring (the project sets none, so Godot's logo showed); a failure is reported
+	var icon_error: String = AppIcon.apply()
+	if icon_error != "":
+		push_error("APP ICON: " + icon_error)
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--res="):
 			var p := arg.substr(6).split("x")
@@ -602,6 +704,16 @@ func _ready() -> void:
 			_opts4_shots = arg.substr(14)
 		elif arg.begins_with("--opts4-size="):
 			_opts4_size = Vector2i(arg.substr(13).get_slice("x", 0).to_int(), arg.substr(13).get_slice("x", 1).to_int())
+		elif arg == "--opts6-check":
+			_opts6_check = true
+		elif arg == "--opts6-game":
+			_opts6_game = true
+		elif arg == "--onlineux1-game":
+			_onlineux1_game = true
+		elif arg.begins_with("--opts6-shots="):
+			_opts6_shots = arg.substr(14)
+		elif arg.begins_with("--opts6-size="):
+			_opts6_size = Vector2i(arg.substr(13).get_slice("x", 0).to_int(), arg.substr(13).get_slice("x", 1).to_int())
 		elif arg == "--opts5-check":
 			_opts5_check = true
 		elif arg == "--opts5-game":
@@ -640,11 +752,26 @@ func _ready() -> void:
 			_uber1 = arg.substr(8).to_int()
 		elif arg.begins_with("--rules-shot="):
 			_rules_shot = int(arg.substr(13))
+		elif arg.begins_with("--lobby-cp="):
+			_lobby_cp = int(arg.substr(11))
+		elif arg.begins_with("--lobby-handicap="):
+			_lobby_handicap = arg.substr(17).split(",", false)
+		elif arg.begins_with("--ownerfix2="):
+			# lane OWNERFIX-2: the owner's 2026-10-17 items through the real game (scripts/ownerfix2_player.gd)
+			_play1 = arg.substr(12).split(",", false)
+			_play_script = "res://scripts/ownerfix2_player.gd"
 		elif arg.begins_with("--gamemodes="):
 			_gamemodes = arg.substr(12)
 		elif arg.begins_with("--spell3="):
 			_play1 = arg.substr(9).split(",", false)
 			_play_script = "res://scripts/spell3_player.gd"
+		elif arg.begins_with("--ownerfix1="):
+			# lane OWNERFIX-1: the owner's problems through the real game (scripts/ownerfix1_player.gd; a skirmish or --campaign)
+			_play1 = arg.substr(12).split(",", false)
+			_play_script = "res://scripts/ownerfix1_player.gd"
+		elif arg.begins_with("--devport7="):
+			_play1 = arg.substr(11).split(",", false)
+			_play_script = "res://scripts/devport7_player.gd" # lane DEVPORT-7: the owner's reports (veteran, rally, formation), with test hooks
 		elif arg.begins_with("--hud5="):
 			_hud5 = arg.substr(7).split(",", false)
 		elif arg.begins_with("--hud6="):
@@ -655,8 +782,12 @@ func _ready() -> void:
 			_hover1_menus = arg.substr(15)
 		elif arg.begins_with("--hud7="):
 			_hud7 = arg.substr(7).split(",", false)
+		elif arg.begins_with("--devport8="):
+			_devport8 = arg.substr(11).split(",", false)
 		elif arg.begins_with("--autocast1="):
 			_autocast1 = arg.substr(12).split(",", false)
+		elif arg.begins_with("--visual2="):
+			_visual2 = arg.substr(10).split(",", false)
 		elif arg.begins_with("--start-spot="):
 			_start_spot = int(arg.substr(13))
 		elif arg.begins_with("--input1="):
@@ -687,6 +818,10 @@ func _ready() -> void:
 			_teams = arg.substr(8).split(",")
 		elif arg.begins_with("--save-dir="):
 			_save_dir_arg = arg.substr(11)
+		elif arg.begins_with("--campsave-test="):
+			_campsave_test = arg.substr(16)
+		elif arg == "--save-ui-test":
+			_save_ui_test = true
 		elif arg == "--save-test" or arg.begins_with("--save-test="):
 			_save_test = arg.substr(12) if arg.begins_with("--save-test=") else "-"
 		elif arg == "--quit":
@@ -743,6 +878,12 @@ func _ready() -> void:
 			_net_shot_pause = arg.substr(17)
 		elif arg.begins_with("--net-shot-rejoin="):
 			_net_shot_rejoin = arg.substr(18)
+		elif arg.begins_with("--platform-url="):
+			_platform_url = arg.substr(15) # lane ONLINEHUB-1
+		elif arg.begins_with("--online-qm-side="):
+			_online_qm_side = int(arg.substr(17))
+		elif arg == "--onlinehub1-check":
+			_onlinehub1_check = true
 		elif arg.begins_with("--online-lobby="):
 			_online_lobby = arg.substr(15)
 		elif arg.begins_with("--online-name="):
@@ -853,6 +994,15 @@ func _ready() -> void:
 		elif arg == "--menu1-walk" or arg.begins_with("--menu1-walk="):
 			_menu1_walk = arg.substr(13) if arg.length() > 13 else ""
 			_menu1_walk_on = true
+		elif arg == "--menustyle-check":
+			_menustyle_check = true
+		elif arg.begins_with("--menustyle-expect="):
+			_menustyle_expect = arg.substr(19)
+		elif arg.begins_with("--menustyle-size="):
+			_menustyle_size = arg.substr(17)
+		elif arg == "--menu-inventory" or arg.begins_with("--menu-inventory="):
+			_menu_inventory = arg.substr(17) if arg.length() > 17 else ""
+			_menu_inventory_on = true
 		elif arg == "--ui6-walk" or arg.begins_with("--ui6-walk="):
 			_ui6_walk = arg.substr(11) if arg.length() > 11 else ""
 			_ui6_walk_on = true
@@ -871,10 +1021,20 @@ func _ready() -> void:
 			_end_capture = arg.substr(14)
 		elif arg.begins_with("--lan-shot="):
 			_lan_shot = arg.substr(11)
+		elif arg.begins_with("--lan-shots="):
+			_lan_shots = arg.substr(12)
 		elif arg.begins_with("--lan-shot-start="):
 			_lan_shot_start = arg.substr(17)
 		elif arg.begins_with("--net-press="):
 			_net_press = arg.substr(12)
+		elif arg.begins_with("--net-score-shot="):
+			var sspec := arg.substr(17)
+			_net_score_shot = sspec.substr(0, sspec.rfind(":"))
+			_net_score_frame = int(sspec.substr(sspec.rfind(":") + 1))
+		elif arg.begins_with("--net-players-shot="):
+			var pspec := arg.substr(19)
+			_net_players_shot = pspec.substr(0, pspec.rfind(":"))
+			_net_players_frame = int(pspec.substr(pspec.rfind(":") + 1))
 		elif arg.begins_with("--net-shot="):
 			var spec := arg.substr(11)
 			_net_shot = spec.substr(0, spec.rfind(":"))
@@ -941,6 +1101,7 @@ func _display_screen_setup() -> void:
 	_display_screen.name = "OpenBFMEOptions"
 	_display_screen.shell = _shell
 	_display_screen.hud_getter = func() -> Node: return _hud
+	_display_screen.room_getter = _lobby_room_name # lane UBERJOIN-1
 	_display_screen.settings = _display
 	_display_screen.settings_path = _display_path
 	_display_screen.overlay = _display_overlay
@@ -961,6 +1122,20 @@ func _run_opts4_check() -> void:
 	var check: Object = load("res://scripts/opts4_check.gd").new()
 	var failed: int = await check.run(self, _opts4_shots)
 	get_tree().quit(0 if failed == 0 else 1)
+
+
+## lane OPTS-6: --opts6-check (scripts/opts6_check.gd)
+func _run_opts6_check() -> void:
+	var check: Object = load("res://scripts/opts6_check.gd").new()
+	var failed: int = await check.run(self, _opts6_shots)
+	get_tree().quit(0 if failed == 0 else 1)
+
+
+## lane ONLINEHUB-1: --onlinehub1-check (scripts/onlinehub1_check.gd): the game records and the results reporting against --platform-url
+func _run_onlinehub1_check() -> void:
+	var check: Object = load("res://scripts/onlinehub1_check.gd").new()
+	var failed: int = await check.run(self)
+	get_tree().quit(1 if failed > 0 else 0)
 
 
 ## lane OPTS-5: --opts5-check (scripts/opts5_check.gd)
@@ -1002,7 +1177,12 @@ func _fail(message: String) -> void:
 	_failed = message
 	_state = State.FAILED
 	printerr("GAME FAIL: ", message)
-	if _check or _auto or DisplayServer.get_name() == "headless":
+	var caster_check: bool = false
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--caster-") and arg.contains("-check="):
+			caster_check = true
+			break
+	if _check or _auto or caster_check or DisplayServer.get_name() == "headless":
 		get_tree().quit(1)
 	else:
 		Release.fatal(message) # lane RELEASE-1: a message box naming the session log, then quit
@@ -1087,6 +1267,8 @@ func _boot() -> void:
 	map_search.fs = _fs
 	map_search.world = _world
 	add_child(map_search)
+	_menu_pad = load("res://scripts/menu_pad.gd").new(_shell) # lane OPTS-6: the game controller in the menus
+	add_child(_menu_pad)
 	_save_flow = load("res://scripts/save_flow.gd").new(self) # lane SAVE-2
 	# lane FB7-1: the Options screen's inputs the device knows (AptSimpleScreens.h): the AudioSettings default volumes and the display modes (Godot lists
 	# no adapter modes: the screen's size and the window's; S-1913); the addresses come from the native LAN transport
@@ -1103,14 +1285,31 @@ func _boot() -> void:
 	if _scripted_run():
 		# lane MENU-1: a scripted run never reads or writes the player's Skirmish.ini (the profiles): a fresh file of its own, so the first visit of
 		# Skirmish always asks for a profile as the scripts expect
-		var ini := OS.get_temp_dir().path_join("openbfme-skirmish-%d-%d.ini" % [OS.get_process_id(), Time.get_ticks_usec()])
+		# lane OWNERFIX-3: in a folder of its own: the profile's RealTimeStats.ini (the map list's battle honors) is written beside it
+		var dir := OS.get_temp_dir().path_join("openbfme-skirmish-%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()])
+		DirAccess.make_dir_recursive_absolute(dir)
+		var ini := dir.path_join("Skirmish.ini")
 		DirAccess.remove_absolute(ini)
 		shell_config["skirmish_ini"] = ini
 		_scripted_skirmish_ini = ini
+	# lane MENUSTYLE-1: Options.ini's OpenBFMEMainMenuStyle picks the shell's presentation source, so it is read before the shell boots (the shell's own
+	# reader, AptMenuPlayer.read_options_file); a value the key does not take is the default, reported as every option's (game_options.current)
+	var menu_settings: Dictionary = load("res://scripts/game_options.gd").menu_style_from_file(_options_path())
+	if not menu_settings.ok:
+		_fail(menu_settings.error)
+		return
+	if not str(menu_settings.problem).is_empty():
+		print("GAME options: ", menu_settings.problem)
+	_menu_style = menu_settings.style
+	_pending_menu_style = _menu_style
+	_shell_config = shell_config
+	if not _configure_menu_style(_menu_style):
+		return
 	var boot: Dictionary = _shell.boot_shell(_fs, _world, shell_config)
 	if not boot.ok:
 		_fail("shell: " + "\n".join(boot.errors))
 		return
+	_sync_shell_volumes()
 	print("GAME shell booted in %.0f ms: %d strings, lobby seed %d" % [boot.load_ms, boot.strings, boot.seed])
 	# lane CAH-1: the Create-a-Hero builder's and the lobby's heroes: the system heroes of the archives and the profile's MyHero*.cah (RW 0x61EEB6: <user data>\\Save\\)
 	var cah: Dictionary = {"ok":true} if _fs.is_bfme1() else _shell.set_create_a_hero(_world, _cah_profile_dir())
@@ -1120,6 +1319,8 @@ func _boot() -> void:
 	_shell.shell_screen.connect(_on_shell_screen)
 	_game_options_setup() # lane OPTS-2: Options.ini's settings in effect (before any game loads its textures)
 	_display_screen_setup() # lane OPTS-1: the OPENBFME button over Options.apt and its screen
+	if not _campaign_buttons_setup():
+		return
 	if not _shell.shell_push("MainMenu.apt"):
 		_fail("the shell refused MainMenu.apt: " + str(_shell.get_shell_report().errors))
 		return
@@ -1130,10 +1331,12 @@ func _boot() -> void:
 	_campaign_flow.name = "CampaignFlow"
 	_campaign_flow.game = self
 	_campaign_flow.world = _world
-	_campaign_flow.hooks = _campaign_win
+	_campaign_flow.hooks = _campaign_win or _play_script.ends_with("ownerfix1_player.gd") or _play_script.ends_with("devport7_player.gd") # lane OWNERFIX-1 / DEVPORT-7: their scenarios use the logged test hooks
 	_campaign_flow.auto_win = _campaign_win
 	_campaign_flow.movies = _campaign_movies # lane CAMP-1H
 	add_child(_campaign_flow)
+	_shell.set_save_folder(_save_flow.save_dir()) # lane CAMPSAVE-1: MainMenuContinueCampaign's folder (RW 0x91BBBB)
+	_campaign_flow.migrate_sidecar() # lane CAMPSAVE-1: an old progress sidecar becomes the auto-save
 	var quick_skirmish: bool = _startup_shortcut.skirmish_requested and not _scripted_run()
 	_startup_shortcut.queue_free()
 	if _resume_console_restart():
@@ -1150,6 +1353,8 @@ func _boot() -> void:
 			_run_campaign_play1() # lane SELPERF-1
 		elif not _save_test.is_empty():
 			_run_campaign_save_test() # lane SAVE-2
+		elif not _campsave_test.is_empty():
+			_run_campsave_test() # lane CAMPSAVE-1
 		return
 	if _display_check:
 		_run_display_check() # lane OPTS-1
@@ -1159,14 +1364,24 @@ func _boot() -> void:
 		_run_opts4_check() # lane OPTS-4
 	elif _opts5_check:
 		_run_opts5_check() # lane OPTS-5
+	elif _opts6_check:
+		_run_opts6_check() # lane OPTS-6
+	elif _onlinehub1_check:
+		_run_onlinehub1_check() # lane ONLINEHUB-1
 	elif _auto and not _auto_task_started:
 		_auto_task_started = true
 		_run_auto()
 	elif not _menu_walk.is_empty():
 		_run_menu_walk()
+	elif _menustyle_check:
+		_menustyle_runner = load("res://scripts/menustyle_check.gd").new()
+		_menustyle_runner.run(self)
 	elif _menu1_walk_on:
 		_menu1_runner = load("res://scripts/menu1_walk.gd").new() # lane MENU-1
 		_menu1_runner.run(self, _menu1_walk)
+	elif _menu_inventory_on:
+		_menu_inventory_runner = load("res://scripts/menu_inventory.gd").new() # lane MENUWORK-1
+		_menu_inventory_runner.run(self, _menu_inventory)
 	elif _ui6_walk_on:
 		_ui6_runner = load("res://scripts/ui6_walk.gd").new() # lane UI-6
 		_ui6_runner.run(self, _ui6_walk)
@@ -1191,22 +1406,33 @@ func _process(delta: float) -> void:
 	if _world != null:
 		_world.update_lua()
 	_frames += 1
+	if _platform_ready:
+		_platform_tick() # lane ONLINEHUB-1
 	if not _capture_dir.is_empty():
 		_capture_tick() # lane ONLINE-4
 	Release.set_in_game(_state == State.PLAYING) # lane RELEASE-1: the version corner in the menus only
 	_campaign_check_tick() # lane CAMP-1
 	if _state == State.MENU:
-		# Wait for the deferred APT load as well as the first frames: intro playback can
-		# advance the game clock before MainMenu.apt exists. A failed reveal must retry.
-		# (menus-apt.md 1.2, S-139: who calls ShowMainMenu is not read)
+		if not _fs.is_bfme1() and _menu_style == "bfme2" and _frames % 5 == 0 and _shell.shell_stack().size() > 0 and _shell.shell_stack()[-1] == "MainMenu.apt":
+			_hide_bfme2_campaign_buttons() # lane DEVPORT-8: the BFME2 campaigns are not in this tree (MenuCampaigns.BFME2_CAMPAIGNS)
+		if _pending_menu_style != _menu_style and not _switching_menu_style and _clean_main_menu():
+			_switching_menu_style = true
+			call_deferred("_apply_pending_menu_style")
+		# the engine reveals the main menu once its first frames ran (menus-apt.md 1.2, S-139: who calls ShowMainMenu is not read)
 		if not _menu_revealed and _frames >= LEVEL_MAIN_MENU_FRAMES and _shell.shell_top_level() >= 0 and _shell.shell_stack().size() > 0 and _shell.shell_stack()[-1] == "MainMenu.apt" and _shell.has_level(_shell.shell_top_level()):
+			_platform_setup() # lane ONLINEHUB-1
 			var shown: Dictionary = _shell.shell_invoke(_shell.shell_top_level(), "ShowMainMenu", PackedStringArray())
+			_menu_revealed = shown.ok
 			if not shown.ok:
 				printerr("GAME ShowMainMenu: ", shown.error)
 			_menu_revealed = shown.ok
 			if _menu_revealed and not _shell_pictures_start_done:
 				_shell_pictures_start_done = true
 				_report_shell_pictures("in the shell at start") # lane CAMP-2: what a return to the shell must show again
+		if _campaign_flow != null and _campaign_flow.menu_open:
+			_campaign_flow.menu_tick() # lane CAMPSAVE-1: SaveLoad.apt over the campaign menu
+			if _campaign_win:
+				_campaign_flow.auto_menu_tick() # lane CAMPSAVE-1: --campaign-win drives the menu
 		if _cah != null:
 			_cah.tick(delta)
 		var message: Dictionary = _shell.take_new_game()
@@ -1223,8 +1449,12 @@ func _process(delta: float) -> void:
 			print("GAME campaign menu: AptMainMenu::%s (%s)" % [cmd.get_slice(":", 0), cmd.get_slice(":", 1)])
 			if not _shell.shell_fscommand("AptMainMenu::" + cmd.get_slice(":", 0), cmd.get_slice(":", 1)):
 				_fail("the main menu refused AptMainMenu::" + cmd)
+			elif _save_ui_test:
+				_save_flow.run_ui_test() # lane SAVE-UI1: the mission the main menu's campaign started
 		elif not _options_shot.is_empty() and _menu_revealed:
 			_options_shot_tick()
+		elif not _campsave_test.is_empty() and not _campsave_test_started and _menu_revealed and _frames >= LEVEL_MAIN_MENU_FRAMES + 30:
+			_run_campsave_test() # lane CAMPSAVE-1: a scenario that starts in the main menu
 		elif not _hover1_menus.is_empty() and _menu_revealed and not _hover1_menus_started:
 			_hover1_menus_started = true
 			_hover1_menus_run()
@@ -1232,6 +1462,7 @@ func _process(delta: float) -> void:
 			_online_keep_name() # lane ONLINE-4
 		if _online_note != null:
 			_online_note.visible = _shell.shell_stack().has("OnlineShell.apt")
+		_restore_switched_profile() # lane UBERJOIN-1
 		_online_count_tick()
 	elif _state == State.PLAYING:
 		if _online_note != null:
@@ -1253,6 +1484,8 @@ func _process(delta: float) -> void:
 			_perf_log_frame()
 	elif _state == State.SCORE:
 		_score_tick()
+		if _campaign_win and _campaign_flow != null and _campaign_flow.score_pending:
+			_campaign_flow.auto_score_tick() # lane CAMPSAVE-1: --campaign-win presses the score screen's Continue
 
 
 # lane AUDIO-5: the 3D sounds (effects, deaths, weapons) are heard from retail's microphone (RW recalculateMicrophone 0x45235B): between the tactical
@@ -1269,7 +1502,11 @@ func _update_listener() -> void:
 	# lane BUILD-5: the MiscAudio sounds the input asked for (BadBuildingPlacementSound of a refused building site, RW 0x83EAC5)
 	if _hud.has_method("take_misc_sounds"):
 		for field in _hud.take_misc_sounds():
-			_audio.play_misc(str(field))
+			var handle: int = _audio.play_misc(str(field))
+			# lane DEVPORT-8: the last MiscAudio plays (field, the handle play_misc gave: AHSV_NoSound for a NoSound slot), for the checks
+			_misc_sounds_played.append({"field": str(field), "handle": handle, "frame": _frames})
+			if _misc_sounds_played.size() > 64:
+				_misc_sounds_played.pop_front()
 
 
 # ---- the shell's hooks -----------------------------------------------------------------------------------------------------------------------
@@ -1297,7 +1534,8 @@ func _on_shell_service(kind: String, a: String, b: String) -> void:
 const OPTION_VOLUME_KEYS := ["SFXVolume", "VoiceVolume", "MusicVolume", "AmbientVolume", "MovieVolume"]
 func _apply_option(key: String, value: String) -> void:
 	if OPTION_VOLUME_KEYS.has(key):
-		pass
+		if _menu_style == "bfme2":
+			_audio.set_volume(["sound", "voice", "music", "ambient", "movie"][OPTION_VOLUME_KEYS.find(key)], value.to_float() * 0.01)
 	elif _game_options == null:
 		return
 	elif key == "StaticGameLOD" or key == "Brightness" or key == "ScrollFactor" or key == "AllHealthBars" or key == "AlternateMouseSetup":
@@ -1312,6 +1550,10 @@ static func shell_request_line(action: String, argument: String) -> String:
 
 func _on_shell_request(action: String, argument: String) -> void:
 	print(shell_request_line(action, argument))
+	shell_requests.push_back([action, argument])
+	if shell_request_hold.has(action):
+		print("GAME TEST HOOK: the menu inventory holds the request ", action)
+		return
 	if not _menu_walk_drop.is_empty() and action == _menu_walk_drop:
 		print("GAME TEST HOOK: --menu-walk-drop drops the request ", action)
 		return
@@ -1334,6 +1576,7 @@ func _on_shell_request(action: String, argument: String) -> void:
 	elif action == "Online":
 		_open_online_shell() # lane ONLINE-4
 	elif action == "OnlineGameStart":
+		_online_from_screens = true # lane ONLINEUX-1
 		_on_online_started(argument) # lane ONLINE-4: the staging room's START, played as ONLINE-2's
 	elif _fs.is_bfme1() and action in ["GoodCampaign", "EvilCampaign", "ContinueCampaign", "LoadCampaign"]:
 		_shell.shell_screen_unavailable(action)
@@ -1345,9 +1588,16 @@ func _on_shell_request(action: String, argument: String) -> void:
 		_campaign_flow.start("ANGMAR_CAMPAIGN", _campaign_flow.difficulty_from_command(argument))
 	elif action == "BonusCampaign": # RW 0x91BEFA
 		_campaign_flow.start("ANGMAR_BONUS_CAMPAIGN", _campaign_flow.difficulty_from_command(argument))
+	elif action == "BFME2GoodCampaign":
+		start_bfme2_campaign("good")
+	elif action == "BFME2EvilCampaign":
+		start_bfme2_campaign("evil")
+	elif action == "LoadCampaign" and argument.begins_with("bfme2:good:"):
+		start_bfme2_campaign("good")
+	elif action == "LoadCampaign" and argument.begins_with("bfme2:evil:"):
+		start_bfme2_campaign("evil")
 	elif action == "ContinueCampaign":
-		if not _campaign_flow.continue_saved():
-			print("GAME stop: ", _shell.shell_screen_unavailable("ContinueCampaignNone")) # lane CAH-2: no progress must not leave the menu disabled
+		_campaign_flow.continue_saved() # lane CAMPSAVE-1: RW 0x91B50D, nothing without 00000000.sav (RotWK's MainMenu.apt has no button for it)
 
 	elif action == "Credits":
 		# lane UI-4: AptMainMenu::Credits (RW 0x91B5E9): the shell's music gives way (RW 0x35BD3F's twin) to the misc audio's CreditsMusic
@@ -1369,6 +1619,8 @@ func _on_shell_request(action: String, argument: String) -> void:
 		_close_tribute()
 	elif action.begins_with("QuitMenu"):
 		_quit_menu_action(action, argument)
+	elif action.begins_with("CampaignMenu"):
+		_campaign_flow.call_deferred("menu_request", action) # lane CAMPSAVE-1: CampaignMenu.apt (outside the movie's command)
 	else:
 		# lane CAH-2 (S-1914): a main-menu request this host opens no screen for must not leave the menu disabled: the player gets a message box
 		# ("... is not available in this build yet") whose Ok makes the menu usable again, and the stop line is printed
@@ -1427,6 +1679,171 @@ func _cah_end() -> void:
 	_shell.shell_fscommand("SetBackground", "fadein")
 
 
+## the Options.ini of this run: --options-file, else the one boot_shell reads (the user data folder's)
+func _options_path() -> String:
+	return _options_file if not _options_file.is_empty() else AptMenuPlayer.default_options_path()
+
+
+func request_menu_style(style: String) -> void:
+	if style not in ["rotwk", "bfme2"]:
+		_fail("unknown main menu style: " + style)
+		return
+	_pending_menu_style = style
+
+
+func _clean_main_menu() -> bool:
+	if _state != State.MENU or not _menu_revealed or _cah != null:
+		return false
+	if _display_screen != null and _display_screen.is_open():
+		return false
+	if _shell.online_status().get("signed_in", false):
+		return false
+	var stack: PackedStringArray = _shell.shell_stack()
+	if stack != PackedStringArray(["MainMenu.apt"]):
+		return false
+	for nav in ["SoloPlayNav", "MultiPlayNav", "OptionsNav"]:
+		var button: Dictionary = _shell.find_button(_shell.shell_top_level(), nav)
+		var hittable := false
+		for candidate in _shell.list_buttons(_shell.shell_top_level()) if button.get("found", false) else []:
+			if candidate.path == button.path and candidate.hittable:
+				hittable = true
+		if not hittable:
+			return false
+	return true
+
+
+func _configure_menu_style(style: String) -> bool:
+	# BFME1 always presents its own archives; the BFME2/RotWK choice is retained for switching back.
+	var use_bfme2: bool = style == "bfme2" and not _fs.is_bfme1()
+	if use_bfme2:
+		if _bfme2_shell_fs == null:
+			_bfme2_shell_fs = _fs.create_bfme2_shell()
+		if _bfme2_shell_fs == null:
+			_fail("BFME2 shell: " + _fs.get_last_error())
+			return false
+		_shell_config["presentation_fs"] = _bfme2_shell_fs
+	else:
+		_shell_config.erase("presentation_fs")
+	var audio_result: Dictionary = _audio.set_shell_source(_bfme2_shell_fs if use_bfme2 else null)
+	if not audio_result.get("ok", false):
+		_fail("shell music: " + str(audio_result.get("errors", [])))
+		return false
+	return true
+
+
+func _sync_shell_volumes() -> void:
+	if _shell_config.has("presentation_fs"):
+		for slider in ["sound", "voice", "music", "ambient", "movie"]:
+			_audio.set_volume(slider, _audio.get_volume(slider))
+
+
+func _apply_pending_menu_style() -> void:
+	if not _clean_main_menu():
+		_switching_menu_style = false
+		return
+	var target := _pending_menu_style
+	_audio.stop_music(false)
+	if not _configure_menu_style(target):
+		return
+	var boot: Dictionary = _shell.boot_shell(_fs, _world, _shell_config)
+	if not boot.get("ok", false):
+		_fail("shell style switch: " + str(boot.get("errors", [])))
+		return
+	_sync_shell_volumes()
+	var heroes: Dictionary = _shell.set_create_a_hero(_world, _cah_profile_dir())
+	if not heroes.get("ok", false):
+		_fail("shell style switch heroes: " + str(heroes.get("errors", [])))
+		return
+	_shell.set_openbfme_available(true)
+	if _platform_ready:
+		_shell.set_game_records(FileAccess.get_file_as_string(RECORDS_FILE) if FileAccess.file_exists(RECORDS_FILE) else "")
+		_platform_configure()
+	_menu_style = target
+	_menu_revealed = false
+	_shell_pictures_start_done = false
+	_frames = 0
+	if not _campaign_buttons_setup():
+		return
+	if not _shell.shell_push("MainMenu.apt"):
+		_fail("shell style switch refused MainMenu.apt")
+		return
+	_audio.play_shell_music(false)
+	_switching_menu_style = false
+	print("GAME main menu style: ", _menu_style)
+
+
+func _campaign_buttons_setup() -> bool:
+	if _campaign_menu_buttons != null:
+		remove_child(_campaign_menu_buttons)
+		_campaign_menu_buttons.queue_free()
+	_campaign_menu_buttons = load("res://scripts/menu_campaigns.gd").new()
+	_campaign_menu_buttons.game = self
+	add_child(_campaign_menu_buttons)
+	return _state != State.FAILED
+
+
+## lane DEVPORT-8: BFME2's own MainMenu.apt has GoodCampaign / EvilCampaign buttons (its Solo Play list: Skirmish, WarOfTheRing, EvilCampaign,
+## GoodCampaign, LoadGame). While MenuCampaigns.BFME2_CAMPAIGNS is off they are hidden (their clip's _visible); { found: [clip paths], visible: [the
+## clips still visible], hittable: [their buttons the pointer would take] }
+const BFME2_CAMPAIGN_CLIPS := ["GoodCampaign", "EvilCampaign"]
+func bfme2_campaign_buttons() -> Dictionary:
+	var out := {"found": [], "visible": [], "hittable": []}
+	var top: int = _shell.shell_top_level()
+	if top < 0:
+		return out
+	# the clips (they exist once the Solo Play list was opened: its timeline places them), and any other button under a clip of those names
+	var clips := []
+	for name in BFME2_CAMPAIGN_CLIPS:
+		clips.append("SoloPlayNav." + name)
+	for b in _shell.list_buttons(top):
+		var parts: PackedStringArray = str(b.path).split(".")
+		for i in parts.size():
+			if parts[i] in BFME2_CAMPAIGN_CLIPS:
+				var clip := ".".join(parts.slice(1, i + 1)) # relative to the level (the first part is the level's name)
+				if not clips.has(clip):
+					clips.append(clip)
+				if bool(b.hittable):
+					out.hittable.append(str(b.path))
+				break
+	for clip in clips:
+		var v: Dictionary = _shell.get_member(top, clip, "_visible")
+		if v.get("found", false):
+			out.found.append(clip)
+			if str(v.value) in ["true", "1"]:
+				out.visible.append(clip)
+	return out
+
+
+func _hide_bfme2_campaign_buttons() -> void:
+	if load("res://scripts/menu_campaigns.gd").BFME2_CAMPAIGNS:
+		return
+	var top: int = _shell.shell_top_level()
+	var buttons := bfme2_campaign_buttons()
+	for clip in buttons.visible:
+		if not _shell.set_clip_property(top, clip, "_visible", 0.0):
+			print("GAME stop: the BFME2 campaign button ", clip, " could not be hidden")
+	# the list without its two rows: Load Game moves up into the first hidden row (EvilCampaign's), so the list has no hole
+	# (Skirmish, War of the Ring, Load Game; the nav's frame keeps its five-row size)
+	if "SoloPlayNav.EvilCampaign" in buttons.found:
+		var evil_y: Dictionary = _shell.get_member(top, "SoloPlayNav.EvilCampaign", "_y")
+		var load_y: Dictionary = _shell.get_member(top, "SoloPlayNav.LoadGame", "_y")
+		if evil_y.get("found", false) and load_y.get("found", false) and str(load_y.value) != str(evil_y.value):
+			_shell.set_clip_property(top, "SoloPlayNav.LoadGame", "_y", float(evil_y.value))
+
+
+## lane DEVPORT-8: the BFME2 campaigns are behind MenuCampaigns.BFME2_CAMPAIGNS (off until B2CAMP-1): their buttons are hidden, so a request is a bug
+## somewhere; it is refused by name and the menu comes back. B2CAMP-1 replaces the body with its campaign entry point.
+func start_bfme2_campaign(alignment: String) -> void:
+	if alignment not in ["good", "evil"]:
+		_fail("unknown BFME2 campaign alignment: " + alignment)
+		return
+	var on: bool = load("res://scripts/menu_campaigns.gd").BFME2_CAMPAIGNS
+	var message := ("BFME2 %s campaign: not in this build (B2CAMP-1)" if not on else "BFME2 %s campaign: not wired") % alignment.capitalize()
+	print("GAME stop: ", message)
+	_campaign_menu_buttons.show_notice(message)
+	_shell.shell_invoke(_shell.shell_top_level(), "ShowMainMenu", PackedStringArray())
+
+
 func _on_shell_screen(filename: String) -> void:
 	print("GAME screen: ", filename)
 	if _state == State.MENU and filename != "MainMenu.apt":
@@ -1453,7 +1870,9 @@ func _boot_audio() -> bool:
 
 func _begin_game(message: Dictionary) -> void:
 	print("GAME new game: map %s seed %d cash %d" % [message.map, message.seed, message.starting_cash])
+	_rejoin_watch.reset() # lane ONLINEUX-1 r2: every game's rejoin is watched afresh (the watch also starts afresh on a new net_status attempt)
 	_game_kind = "lan" if _net_state == "loading" else ("network" if not _net_state.is_empty() else ("restart" if not _restart_stack.is_empty() else "skirmish"))
+	_hub_begin(message) # lane ONLINEHUB-1: what the score screen records
 	_last_new_game = message.duplicate(true) # lane END-2: the quit menu's Restart starts it again (RW 0x9220DE)
 	if _restart_stack.is_empty():
 		_start_stack = _shell.shell_stack() # lane END-2: the screens the score screen's Continue shows again (TheShell + 0x9C, RW 0x925798)
@@ -1494,7 +1913,7 @@ func _begin_game(message: Dictionary) -> void:
 	_shell.auto_process = false
 	var started := Time.get_ticks_msec()
 	_load_log.clear()
-	var opts := {"progress": Callable(self, "_on_load_progress"), "test_hooks": _end or not _zoom1.is_empty() or _rules_shot > 0 or not _gamemodes.is_empty() or _uber1 > 0 or _play_script.ends_with("spell3_player.gd")} # lane ZOOM-1: the bars scenario hurts some units (logged)
+	var opts := {"progress": Callable(self, "_on_load_progress"), "test_hooks": _end or not _zoom1.is_empty() or _rules_shot > 0 or not _gamemodes.is_empty() or _uber1 > 0 or _play_script.ends_with("spell3_player.gd") or _play_script.ends_with("ownerfix1_player.gd") or _play_script.ends_with("devport7_player.gd") or _play_script.ends_with("ownerfix2_player.gd")} # lane ZOOM-1: the bars scenario hurts some units (logged)
 	if _record and _net_state.is_empty():
 		opts["record"] = _last_replay_path() # lane MP-2: every skirmish is recorded
 	var rep: Dictionary = _world.start_new_game(opts)
@@ -1511,6 +1930,12 @@ func _begin_game(message: Dictionary) -> void:
 			_fail("start_new_game failed: " + "\n".join(rep.get("errors", [])))
 		return
 	_enter_game(rep)
+	if _online_spectate:
+		for arg in OS.get_cmdline_user_args():
+			if arg.begins_with("--caster-live-check="):
+				var walk = load("res://tests/caster_live_walk.gd").new()
+				var failed: int = await walk.run(self, arg.trim_prefix("--caster-live-check="))
+				get_tree().quit(0 if failed == 0 else 1)
 
 
 func _recover_local_load_error(rep: Dictionary) -> void:
@@ -1601,6 +2026,14 @@ func _set_control_bar_hidden(hidden: bool) -> void:
 		await get_tree().process_frame
 	if _control_bar_hidden == hidden and _state == State.PLAYING:
 		print("GAME control bar drawn after the %s: %s" % ["hide" if hidden else "show", str(control_bar_drawn())])
+
+
+## lane OWNERFIX-1: a map script's DISABLE_INPUT (enable false) / ENABLE_INPUT (true), as retail's ScriptActions run them (RW 0x7BC586 / 0x7BC5E9): the
+## in-game UI takes no input (no selection, no orders, no hotkeys; Esc's menu still opens), the selection is dropped and the pointer is hidden
+func _script_input(enable: bool) -> void:
+	print("GAME script input %s" % ("enabled" if enable else "disabled"))
+	if _hud != null:
+		_hud.script_input(enable)
 
 
 ## the Apt level of the HUD movie (the bottom of the shell's stack in a game)
@@ -1739,6 +2172,151 @@ func _enter_game(rep: Dictionary) -> void:
 	print("GAME GuiFX for the end screen: level %d %s" % [gfx.get("level", -1), str(gfx.get("error", ""))])
 	if not _net_state.is_empty():
 		_net_begin()
+	_online_spectate = bool(_world.caster_transport_status().get("live", false))
+	if _game_kind == "replay" or _online_spectate:
+		_caster = load("res://scripts/caster_hud.gd").new()
+		add_child(_caster)
+		_caster.configure(_world, _shell, _hud, _camera)
+		_caster.seek_requested.connect(_caster_seek, CONNECT_DEFERRED)
+		_caster.go_live_requested.connect(_caster_go_live, CONNECT_DEFERRED)
+		_game_nodes.append(_caster)
+
+
+var _caster_seeking := false
+signal caster_seek_finished(report: Dictionary)
+
+
+func _caster_go_live() -> void:
+	var state: Dictionary = _world.caster_transport_status()
+	if state.get("live", false):
+		await _caster_seek(int(state.final_frame), true)
+
+
+func _caster_seek(target: int, go_live: bool = false) -> void:
+	if _caster_seeking or not is_instance_valid(_caster):
+		return
+	var replay: Dictionary = _world.caster_transport_status()
+	if not replay.get("seekable", false) or target < 1 or target > int(replay.final_frame):
+		return
+	var live: bool = replay.get("live", false)
+	var net_state := _net_state
+	_caster_seeking = true
+	var started_ms := Time.get_ticks_msec()
+	var paused: bool = _world.is_paused() and not go_live
+	var speed: float = _world.get_time_scale()
+	var view: Dictionary = _world.caster_status()
+	var camera_state: Dictionary = _hud.get_camera()
+	var history: Dictionary = _caster.history.duplicate(true)
+	var indexed: int = _caster.indexed_frame
+	var director_preferences: Dictionary = _caster.director.preferences()
+	var overlay_preferences: Dictionary = _caster.overlays.preferences()
+	var pip_preferences: Dictionary = _caster.pip.preferences()
+	_caster.pip.set_suspended(true)
+	_caster.overlays.set_clean(false)
+	_caster.set_process(false)
+	_world.caster_playback(true, speed)
+	_world.set_auto_advance(false)
+	_hud.set_input_enabled(false)
+	_hud.set_process(false)
+	_camera.current = false
+	_state = State.LOADING
+	var layer := CanvasLayer.new()
+	layer.layer = 120
+	add_child(layer)
+	var shade := ColorRect.new()
+	shade.color = Color(0.03, 0.04, 0.05, 0.94)
+	layer.add_child(shade)
+	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var center := CenterContainer.new()
+	shade.add_child(center)
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var column := VBoxContainer.new()
+	column.custom_minimum_size.x = 700
+	center.add_child(column)
+	var label := Label.new()
+	label.add_theme_font_size_override("font_size", 28)
+	label.text = "Seeking · replay-from-start fallback"
+	column.add_child(label)
+	var progress := ProgressBar.new()
+	progress.max_value = target
+	progress.custom_minimum_size.y = 28
+	column.add_child(progress)
+	if DisplayServer.get_name() == "headless":
+		await get_tree().process_frame
+	else:
+		await RenderingServer.frame_post_draw
+	var restarted: bool = target < int(replay.frame)
+	var rep: Dictionary = {}
+	if restarted:
+		_tear_down_game("live rewind" if live else "replay rewind", not live)
+		if live:
+			rep = _world.caster_restart_live({})
+		else:
+			var prepared: Dictionary = _world.prepare_replay(replay.path)
+			if not prepared.ok:
+				layer.queue_free()
+				_caster_seeking = false
+				_fail("replay rewind: " + str(prepared.errors))
+				return
+			rep = _world.start_replay({})
+		if not rep.ok:
+			layer.queue_free()
+			_caster_seeking = false
+			_fail("rewind: " + str(rep.get("error", rep.get("errors", "unknown error"))))
+			return
+		_world.caster_playback(true, speed)
+	var error := ""
+	var slice_started := Time.get_ticks_msec()
+	while true:
+		var result: Dictionary = _world.caster_seek_step(target, 20)
+		if not result.ok:
+			error = str(result.error)
+			break
+		progress.value = result.frame
+		label.text = "Seeking %s · frame %d / %d · CRC checked\nReplay-from-start; no native world snapshots" % [str(replay.path).get_file(), result.frame, target]
+		if result.ready:
+			var edge: int = _world.caster_transport_status().final_frame if go_live else target
+			if edge <= target:
+				break
+			target = edge
+			progress.max_value = target
+		if Time.get_ticks_msec() - slice_started >= 200:
+			await get_tree().process_frame
+			slice_started = Time.get_ticks_msec()
+	if restarted:
+		_report = rep
+		_enter_game(rep)
+		if live:
+			_net_state = net_state
+		_caster.history = history
+		_caster.marker_button.clear()
+		_caster.indexed_frame = indexed
+		_hud.set_free_camera(camera_state.free_camera)
+		_hud.camera_look_at(camera_state.position)
+		_hud.camera_set_height(camera_state.height_above_ground)
+		_hud.camera_set_angle_pitch(camera_state.angle, camera_state.pitch)
+	else:
+		_state = State.PLAYING
+		_hud.set_input_enabled(true)
+		_hud.set_process(true)
+	_world.caster_observe(maxi(-1, int(view.observed.index)), bool(view.team))
+	_world.caster_playback(paused or not error.is_empty(), speed)
+	_world.set_auto_advance(true)
+	_camera.current = true
+	_replay_active = not live
+	_caster.transport_error = error
+	_caster.restore_director(director_preferences)
+	_caster.overlays.restore(overlay_preferences)
+	_caster.pip.restore(pip_preferences)
+	_caster.pip.set_suspended(false)
+	_caster.set_process(true)
+	_caster.refresh()
+	layer.queue_free()
+	_caster_seeking = false
+	var receipt := {"target": target, "restart": restarted, "elapsed_ms": Time.get_ticks_msec() - started_ms,
+		"error": error, "status": _world.caster_transport_status()}
+	print("CASTER SEEK ", JSON.stringify(receipt))
+	caster_seek_finished.emit(receipt)
 
 
 ## HUD-1's install point: the live game exists and Palantir.apt is pushed (the factory table makes it an AptPalantir). The HUD node takes the GameWorld, the camera, the
@@ -1849,6 +2427,36 @@ func _sync_simulation_profile() -> bool:
 	var r: Dictionary = _world.set_simulation_profile(name)
 	print("GAME simulation profile: %s (%s)" % [name, "ok" if r.ok else str(r.get("error", ""))])
 	return r.ok
+
+
+## lane UBERJOIN-1: a lobby's Yes / No box ("Switch to Uber mode and join?") switched the world's performance mode for one game (GameWorld::
+## switch_profile_for_game; the player's setting in Options.ini is never written). It goes back to the setting when the game has ended (`game_over`) or
+## when neither lobby screen is up and no network game is starting (the room was left, the shell closed)
+## lane UBERJOIN-1: "" or what lobby room the player is in ("an online room" / "a LAN room"): the Options screen locks the Uber performance row there
+func _lobby_room_name() -> String:
+	if _shell != null and _shell.has_method("online_status") and _shell.online_status().get("in_game", false):
+		return "an online room"
+	if _world != null and _world.has_method("lan_status") and _world.lan_status().get("open", false) and _world.lan_status().get("in_game", false):
+		return "a LAN room"
+	return ""
+
+
+func _restore_switched_profile(game_over := false) -> void:
+	if _world == null or not _world.has_method("profile_switched"):
+		return
+	if game_over and _lan_shell_game:
+		_world.leave_lan_room_and_restore_profile() # the room goes with the game (a switched or not)
+	elif not _world.profile_switched():
+		return
+	elif game_over:
+		_world.restore_simulation_profile() # an online game: no room is held
+	else:
+		var stack: PackedStringArray = _shell.shell_stack()
+		if not _net_state.is_empty() or _net_lobby_again or stack.has("OnlineShell.apt") or stack.has("LanLobby.apt"):
+			return
+		_world.leave_lan_room_and_restore_profile() # no lobby screen and no game: a room still held is left, then the setting is back
+	_sync_simulation_profile()
+	print("GAME simulation profile: %s (the player's setting%s)" % [_world.simulation_profile(), " is back" if not _world.profile_switched() else "; a LAN room is still held, the switch stands"])
 
 
 ## lane PLAY-1: the free camera lifts retail's zoom-out limit (TacticalCamera::setFreeCamera; camera only, the simulation never sees it)
@@ -2021,9 +2629,9 @@ func _run_campaign_play1() -> void:
 	while Time.get_ticks_msec() - t0 < int(wait * 1000.0):
 		await get_tree().process_frame
 	print("GAME campaign play1: %s, logic frame %d, %d objects" % [_cli_campaign, _world.get_frame(), _world.get_object_count()])
-	var script: GDScript = load("res://scripts/play1_player.gd")
+	var script: GDScript = load(_play_script) # lane OWNERFIX-1 / DEVPORT-7: --ownerfix1 / --devport7 play their campaign scenarios too
 	if script == null or not script.can_instantiate():
-		_fail("scripts/play1_player.gd does not load")
+		_fail("%s does not load" % _play_script)
 		return
 	var player = script.new()
 	await player.run(self, _play1)
@@ -2066,6 +2674,9 @@ func _run_auto() -> void:
 		return
 	await _step(30)
 	_save_screenshot("game")
+	if _save_ui_test:
+		await _save_flow.run_ui_test() # lane SAVE-UI1
+		return
 	if not _save_test.is_empty():
 		var saved_ok: bool = await _save_flow.run_test() # lane SAVE-2
 		print("GAME SAVE RESULT: ", "ok" if saved_ok else "FAILED")
@@ -2118,6 +2729,15 @@ func _run_auto() -> void:
 		var p1v = hv.new()
 		await p1v.run(self, _hover1)
 		get_tree().quit(0 if p1v.fail_count == 0 else 1)
+		return
+	if not _devport8.is_empty():
+		var dp8: GDScript = load("res://scripts/devport8_player.gd")
+		if dp8 == null or not dp8.can_instantiate():
+			_fail("scripts/devport8_player.gd does not load")
+			return
+		var pd8 = dp8.new()
+		await pd8.run(self, _devport8)
+		get_tree().quit(0 if pd8.fail_count == 0 else 1)
 		return
 	if not _hud7.is_empty():
 		var h7: GDScript = load("res://scripts/hud7_player.gd")
@@ -2196,6 +2816,16 @@ func _run_auto() -> void:
 	var t0 := Time.get_ticks_msec()
 	while Time.get_ticks_msec() - t0 < int(_advance * 1000.0):
 		await get_tree().process_frame
+	if not _visual2.is_empty():
+		# lane VISUAL-2: after the warp and --advance (the AI's expansion is under way)
+		var v2: GDScript = load("res://scripts/visual2_player.gd")
+		if v2 == null or not v2.can_instantiate():
+			_fail("scripts/visual2_player.gd does not load")
+			return
+		var pv2 = v2.new()
+		await pv2.run(self, _visual2)
+		get_tree().quit(0 if pv2.fail_count == 0 else 1)
+		return
 	if not _quit_flow.is_empty():
 		await _run_quit()
 		return
@@ -2203,6 +2833,16 @@ func _run_auto() -> void:
 		var check2: Object = load("res://scripts/opts2_check.gd").new()
 		var failed2: int = await check2.run_game(self, _opts2_shots) # lane OPTS-2
 		get_tree().quit(0 if failed2 == 0 else 1)
+		return
+	if _onlineux1_game:
+		var checkux: Object = load("res://scripts/onlineux1_check.gd").new()
+		var failedux: int = await checkux.run(self) # lane ONLINEUX-1 r2
+		get_tree().quit(0 if failedux == 0 else 1)
+		return
+	if _opts6_game:
+		var check6: Object = load("res://scripts/opts6_check.gd").new()
+		var failed6: int = await check6.run_game(self, _opts6_shots) # lane OPTS-6
+		get_tree().quit(0 if failed6 == 0 else 1)
 		return
 	if _opts5_game:
 		var check5: Object = load("res://scripts/opts5_check.gd").new()
@@ -2457,27 +3097,66 @@ func _cah_recruit() -> void:
 	get_tree().quit(0)
 
 
-## --replay-menu-test (lane MP-2): the game just played was recorded; leave it, open Load Replay from the main menu, then play the newest replay back to its end
+## --replay-menu-test: after recording, use actual mouse input through Main Menu → Replays → row → Load; verify the exact recording reaches its end.
 func _run_replay_menu_test() -> void:
 	var recorded: Dictionary = _world.recording_status()
 	print("GAME REPLAY recording: ", JSON.stringify(recorded))
+	_replay_menu_recorded_path = str(recorded.get("path", ""))
+	if not recorded.get("active", false) or _replay_menu_recorded_path.is_empty():
+		_fail("the replay menu test has no active recording")
+		return
 	_exit_to_score_screen()
 	await _step(30)
 	_score_continue()
 	await _step(LEVEL_MAIN_MENU_FRAMES + 70)
-	_on_shell_request("LoadReplay", "")
+	if not _shell.shell_stack().is_empty() and _shell.shell_stack()[-1] != "MainMenu.apt":
+		if not await _walk_back("replay-test"):
+			_fail("the replay menu test could not return to MainMenu.apt")
+			return
+		await _step(120)
+	if _shell.shell_stack().is_empty() or _shell.shell_stack()[-1] != "MainMenu.apt":
+		_fail("the replay menu test is not at MainMenu.apt")
+		return
+	var level: int = _shell.shell_top_level()
+	for button in ["MultiPlayNav", "MultiPlayNav.Replay"]:
+		if not await _click_button(level, button):
+			_fail("the replay menu test could not click " + button)
+			return
+		await _step(90)
+	if _shell.shell_stack().is_empty() or _shell.shell_stack()[-1] != "SaveLoad.apt":
+		_fail("the Replays menu did not open SaveLoad.apt")
+		return
+	var found := false
+	var name := _replay_menu_recorded_path.get_file().get_basename()
+	for command in _shell.gadget_draw_list():
+		var root_name := str(command.get("root_name", ""))
+		if command.kind == "text" and command.text == name and (root_name.ends_with("GameList") or root_name.ends_with("AutoSaveList")):
+			var rect: Rect2 = command.rect
+			var point: Vector2 = _shell.window_to_stage(rect.position + Vector2(3, 3))
+			_mouse_event(point, false, false)
+			await _step(2)
+			_mouse_event(point, true, true)
+			await _step(2)
+			_mouse_event(point, false, true)
+			found = true
+			break
+	if not found:
+		_fail("the recorded replay row is not drawn: " + name)
+		return
 	await _step(90)
 	if not _screens.is_empty():
 		DirAccess.make_dir_recursive_absolute(_screens)
 		var shot := _capture_image("mp2-replay-menu.png")
 		if shot != null:
 			shot.save_png(_screens.path_join("mp2-replay-menu.png"))
-	var files: Array = _world.list_replays(_replay_dir())
-	if files.is_empty():
-		_fail("no replay was recorded in " + _replay_dir())
+	if not await _click_named_button("Load"):
+		_fail("the selected replay did not enable the Load button")
 		return
-	print("GAME REPLAY menu lists %d files; loading %s" % [files.size(), files[0].path])
-	_on_shell_request("LoadReplayFile", files[0].path)
+	for attempt in 60:
+		if _replay_active or _state == State.FAILED:
+			return
+		await _step(60)
+	_fail("the replay menu Load click did not start playback")
 
 
 ## The scripted way from the main menu through the Skirmish lobby to a running game (real mouse events on the retail movies); false (and _fail) on a failure.
@@ -2568,6 +3247,52 @@ func _auto_lobby_and_start() -> bool:
 			return false
 		await _step(30)
 		_save_named("rules1-rules-tab-legendary")
+	if _lobby_cp > 0:
+		# lane OWNERFIX-2: the Rules tab as the player opens it, then the Command Points combo (RuleComboBox_1 in the skirmish mode) set through its entry
+		if not await _click_button(_shell.shell_top_level(), "OpenPlay.MpMapAndSettings.TabButtons.RulesTab"):
+			_fail("no Rules tab button")
+			return false
+		await _step(60)
+		var cp: Dictionary = _shell.lobby_apply({"rule_combo": [1, _lobby_cp]})
+		if not cp.ok:
+			_fail("lobby: " + str(cp.errors))
+			return false
+		await _step(30)
+		print("GAME lobby: Command Points %d%%: rules %s" % [_lobby_cp, str(_shell.lobby_state().get("rules"))])
+		_save_named("lobby-cp-rules-tab")
+		if _lobby_cp > 100:
+			# RW 0x8421E0 kind 3: a factor above 100 shows the OK box APT:CommandPointsTooHigh; the player presses its OK
+			# the box's buttons as the player sees them (GuiFX.apt's MessageBox clip): the hittable one is the type's button (Ok)
+			var clicked := false
+			for b in _shell.list_buttons(11):
+				print("GAME lobby: box level button %s" % str(b))
+				if not clicked and bool(b.get("hittable", false)) and str(b.path).to_lower().contains("messageboxok"):
+					var p := Vector2(b.x, b.y)
+					_mouse_event(p, false, false)
+					await _step(2)
+					_mouse_event(p, true, true)
+					await _step(2)
+					_mouse_event(p, false, true)
+					await _step(2)
+					clicked = true
+					print("GAME clicked ", b.path)
+			print("GAME lobby: the Command Points warning box's OK clicked: %s" % str(clicked))
+			await _step(30)
+			_save_named("lobby-cp-box-ok")
+	if not _lobby_handicap.is_empty():
+		# lane OWNERFIX-2: each slot's Handicap combo set through its entry (the screen's own handler, RW 0x840485)
+		var hs: Array = []
+		for e in _lobby_handicap:
+			var kv := e.split(":")
+			hs.append({"slot": int(kv[0]), "handicap": int(kv[1])})
+		var hr: Dictionary = _shell.lobby_apply({"slots": hs})
+		if not hr.ok:
+			_fail("lobby: " + str(hr.errors))
+			return false
+		await _step(30)
+		var st: Dictionary = _shell.lobby_state()
+		print("GAME lobby: handicaps %s" % str((st.get("slots", []) as Array).map(func(x): return x.get("handicap"))))
+		_save_named("lobby-handicap")
 	_save_screenshot("lobby")
 	var skirmish_level: int = _shell.shell_top_level()
 	# the Start button: RotWK's lobby (lobby.StartGame), the BFME2-style lobby (lobby.bottomNav.StartGame), BFME1's Skirmish.apt (bottomNav.StartGame)
@@ -2635,6 +3360,11 @@ func _end_game_tick() -> void:
 	if _world == null:
 		return
 	for r in _world.take_end_game_requests():
+		if _game_kind == "replay" or _online_spectate:
+			# CASTER-1: casters keep the final frame and controls, not the recording player's defeat screen (retail's replay viewer is the
+			# ReplayObserver side, RW 0x6282F0; what retail shows that side at the game's end is not verified: stop S-4932)
+			print("GAME END request not shown to the caster [S-4932]: ", JSON.stringify(r))
+			continue
 		_end_log.append(r)
 		print("GAME END request: ", JSON.stringify(r))
 		if r.kind == "show_end_game" or r.kind == "hide_end_game":
@@ -2650,7 +3380,10 @@ func _end_game_tick() -> void:
 			# lane PLAY-1: the end-game timer ran out (RW 0x602FFE -> RW 0x603533: MSG_CLEAR_GAME_DATA, 25 logic frames after the local side's VICTORY /
 			# DEFEAT): the game is left to the score screen as retail leaves it (no surrender: the game is already decided for this player)
 			print("GAME END the end-game timer ran out: leaving to the score screen")
-			call_deferred("_exit_to_score_screen")
+			if _campaign_flow != null and _campaign_flow.active:
+				_campaign_flow.end_timer_ran() # lane CAMPSAVE-1: the campaign leaves (after an exit movie) and tells its state first
+			else:
+				call_deferred("_exit_to_score_screen")
 	if _end_message_label != null and _end_message_until > 0 and Time.get_ticks_msec() > _end_message_until:
 		_end_message_label.text = ""
 		_end_message_until = 0
@@ -2685,12 +3418,20 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		# review r1: Esc in the Options screen opened from the quit menu closes Options only (the quit menu and the pause stay)
 		var stack: PackedStringArray = _shell.shell_stack()
+		# lane OPTS-6: an open drop-down list of a menu takes Esc first (it closes; the menu stays), as in the shell
+		if _shell.menu_has_input() and _shell.menu_nav_state().get("open_list", false):
+			_shell.menu_input(event)
+			return
 		# lane OPTS-3: Esc on Options' OpenBFME page is the page's CANCEL (back to Options' basic page), as AptMenuPlayer does in the menus
 		if _display_screen != null and _display_screen.is_open():
 			_display_screen.close(false)
 			return
 		if _quit_open and not stack.is_empty() and stack[-1] == "Options.apt":
 			_shell.shell_pop()
+			return
+		# lane SAVE-UI1: SaveLoad.apt's input procedure takes Escape (RW 0x816627: its release closes the page). In a game the HUD node gives the input's top
+		# screen its Escape first (AptMenuPlayer::menu_escape) and marks the event used, so this is only reached with no such screen; the quit menu under it stays
+		if not stack.is_empty() and stack[-1] == "SaveLoad.apt":
 			return
 		# lane PLAY-1: Escape over the powers screen closes it with its purchases (AptSpellStore: OnBttnClose and Escape, RW 0x8232ED), not the quit menu
 		if _hud != null and _hud.get_spellbook_state().get("store", {}).get("open", false):
@@ -2722,6 +3463,33 @@ func _lua_console_toggled(open: bool) -> void:
 ## lane PLAY-1: the Palantir's flag (AptPalantir::OnBttnObjectives RW 0x6D40C9). In a skirmish or a multiplayer game (RW 0x625456: mode 2 or a network game)
 ## RW 0x914EF0 pushes PlayerTribute.apt over the game when none is up and the game is not ending (the end-game timer, RW 0x914F37); otherwise RW 0x8E8843 opens
 ## the objectives screen, which is not ported (S-1922)
+## lane PLATFORMICON-1: --net-score-shot: the local player forfeits through the quit menu (as --net-end's joiner does); the game leaves to the score screen, which is saved
+func _net_score_flow() -> void:
+	await _press_escape()
+	await _wait_seconds(4.0)
+	var ok: bool = await _click_quit("Restart")
+	await _wait_seconds(2.0)
+	ok = ok and await _click_quit("Yes")
+	var waited := 0.0
+	while _state != State.SCORE and waited < 20.0:
+		await _wait_seconds(0.25)
+		waited += 0.25
+	if _state != State.SCORE: # a game with other players alive does not end for the defeated one by itself: leave as the end-game timer would
+		_exit_to_score_screen()
+		await _wait_seconds(3.0)
+	await _wait_seconds(4.0)
+	print("GAME NET score shot %s (forfeit ok %s, score screen %s) -> %s" % [_net_score_shot, str(ok), str(_state == State.SCORE), error_string(get_viewport().get_texture().get_image().save_png(_net_score_shot))])
+	_net_score_shot = ""
+
+
+## lane PLATFORMICON-1: --net-players-shot: the players screen (Tab) open, then the window saved two seconds later
+func _net_players_open() -> void:
+	_palantir_objectives()
+	await get_tree().create_timer(2.0).timeout
+	print("GAME NET players shot %s -> %s" % [_net_players_shot, error_string(get_viewport().get_texture().get_image().save_png(_net_players_shot))])
+	_net_players_shot = ""
+
+
 func _palantir_objectives() -> void:
 	var ctx: Dictionary = _world.get_quit_menu_context()
 	var mode: int = ctx.get("mode", 2)
@@ -2774,6 +3542,7 @@ func _show_end_message(r: Dictionary) -> void:
 		_end_message_label.add_theme_color_override("font_outline_color", Color.BLACK)
 		_end_message_label.add_theme_constant_override("outline_size", 6)
 		_end_message_layer.add_child(_end_message_label)
+	_end_message_layer.visible = not _quit_open # lane SAVE-UI1: under a menu over the game
 	_end_message_label.text = text
 	_end_message_until = Time.get_ticks_msec() + 5000
 
@@ -2819,6 +3588,8 @@ func _toggle_quit_menu() -> void:
 	if _quit_open:
 		_close_quit_menu()
 		return
+	if is_instance_valid(_caster):
+		_caster.overlays.set_clean(false)
 	var ctx: Dictionary = _world.get_quit_menu_context()
 	var r: Dictionary = _shell.quit_menu({"kind": "open", "context": ctx})
 	print("GAME QUIT open: ", JSON.stringify(r), " context ", JSON.stringify(ctx))
@@ -2827,19 +3598,40 @@ func _toggle_quit_menu() -> void:
 		printerr("GAME QUIT the quit menu did not open: ", r.get("error", ""))
 		return
 	_quit_open = true
+	if is_instance_valid(_caster):
+		_caster.set_suspended(true)
+	_set_game_overlays_covered(true)
 	var multiplayer: bool = ctx.get("mode", 2) == 1 or ctx.get("mode", 2) == 5
 	if not multiplayer:
+		# retail's close (AptQuitMenu::~AptQuitMenu, RW 0x921904) unpauses a single player game unconditionally; only a caster's replay that was
+		# already paused on its transport bar stays paused (DEVPORT-5: an OpenBFME caster rule, not retail)
+		_quit_paused = not (is_instance_valid(_caster) and _world.is_paused())
 		_world.set_paused(true)
-		_quit_paused = true
 
 
-## the menu's close (RW 0x9216B1) and dtor (RW 0x921904): without an Exit a paused game goes on
-func _close_quit_menu() -> void:
+## lane SAVE-UI1: the game's own overlays (the script presentation's letterbox / captions / notifications, the in-game message) are under a menu over
+## the game, as retail draws the in-game UI before the window manager's movies (ZH W3DDisplay::draw); the HUD movie is the shell's own level
+func _set_game_overlays_covered(covered: bool) -> void:
+	if _end_message_layer != null:
+		_end_message_layer.visible = not covered
+	if _hud != null and _hud.has_method("set_icons_covered"):
+		_hud.set_icons_covered(covered) # the health bars and the drawables' decorations
+	for n in _game_nodes:
+		if is_instance_valid(n) and n.has_method("set_covered"):
+			n.set_covered(covered)
+
+
+## the menu's close (RW 0x9216B1) and dtor (RW 0x921904): without an Exit a paused game goes on (the dtor, AptQuitMenu, hides the in-game background or, after
+## an Exit, shows the front-end one: RW 0x921A7C / 0x921A96)
+func _close_quit_menu(exiting := false) -> void:
 	if not _quit_open:
 		return
 	var r: Dictionary = _shell.quit_menu({"kind": "close"})
 	print("GAME QUIT close: ", JSON.stringify(r))
 	_quit_open = false
+	if is_instance_valid(_caster):
+		_caster.set_suspended(false)
+	_set_game_overlays_covered(false)
 	if _quit_paused:
 		_world.set_paused(false)
 		_quit_paused = false
@@ -2864,8 +3656,9 @@ func _quit_menu_action(action: String, argument := "") -> void:
 		# lane SAVE-2: RW 0x92179F / 0x9217F0 -> AptSaveLoad::OpenScreen(3 / 2, the game's type, 1): SaveLoad.apt over the game, above the quit menu
 		_save_flow.open_menu(3 if action == "QuitMenuSave" else 2, int(argument) if argument.is_valid_int() else 2, true)
 	elif action == "QuitMenuOptions":
-		# RW 0x91ED91: the options screen over the game (the shell's Options.apt; its Back pops it)
-		if not _shell.shell_push("Options.apt"):
+		# RW 0x921783 -> RW 0x91ED91(0, 0, 0, 0): Options.apt over the game with the front-end background (RW 0x91EE08), the quit menu hidden under it
+		# (lane OPTS-6: Shell::setOverlay; its Back pops it and the quit menu shows again)
+		if not _shell.open_options(false, false, false, false):
 			printerr("GAME QUIT Options.apt: ", str(_shell.get_shell_report().errors))
 
 
@@ -2873,12 +3666,15 @@ func _quit_menu_action(action: String, argument := "") -> void:
 ## MSG_CLEAR_GAME_DATA leaves the game to the score screen (RW 0x779E28: clearGameData(true) for a skirmish or a multiplayer game)
 func _quit_menu_exit() -> void:
 	var ctx: Dictionary = _world.get_quit_menu_context()
-	_close_quit_menu()
+	_close_quit_menu(true)
 	var multiplayer: bool = ctx.get("mode", 2) == 1 or ctx.get("mode", 2) == 5
 	if multiplayer and not ctx.get("sandbox", false):
 		# the network session sends it with the leave (NetGameSession::finish); this peer's logic is cleared before it would run it (retail runs it in the
 		# frame that also clears the game: the score screen is built before the victory rules look again)
 		print("GAME QUIT exit self-destruct: ", JSON.stringify(_world.self_destruct(true)))
+	if _campaign_flow != null and _campaign_flow.active:
+		_campaign_flow.leave_to_score_screen() # lane CAMPSAVE-1: the campaign is told (RW 0x5EAB0A) and its score screen's end shows CampaignMenu.apt
+		return
 	_exit_to_score_screen()
 
 
@@ -2960,6 +3756,9 @@ func _resume_console_restart() -> bool:
 
 
 func _restart_game() -> void:
+	if _campaign_flow != null and _campaign_flow.active:
+		_campaign_flow.restart_mission() # lane CAMPSAVE-1: RW 0x9220DE with a campaign -> restartCurrentCampaignMission (RW 0x5EC62F -> RW 0x5EC5D1)
+		return
 	if _last_new_game.is_empty():
 		return
 	_close_quit_menu()
@@ -2968,8 +3767,86 @@ func _restart_game() -> void:
 	_begin_game(_last_new_game)
 
 
+## lane ONLINEUX-1: an online game the online screens started cannot go on (a watched game the relay has closed, a rejoin with nothing to catch up from):
+## the game is cleared without a score screen, the shell's screens come back (the online screens resume on the page the player left: the shell's
+## OnlineShellStartScreen, RW 0x91D9F9) and the screens' box says why, as for a START that could not be played (Sol r1). Before, both ended the program
+## with "OpenBFME cannot continue" (ONLINEUX-1 audit). The command line's --online-spectate / --online-rejoin have no screens: they still fail the run
+func _online_game_failed(kind: String, why: String) -> void:
+	why = AptMenuPlayer.online_redact(why)
+	if not _online_from_screens or _state != State.PLAYING:
+		_fail(kind + ": " + why)
+		return
+	printerr("GAME ONLINE error: %s: %s (back to the online screens)" % [kind, why])
+	# r2 (Sol 3): the menus over the game go first, as for the score screen (_exit_to_score_screen): the OpenBFME options page, then the quit menu (its
+	# own overlay, kept by the shell stack's pops below; its close unpauses), and the game's catch-up / pause line
+	if _display_screen != null and _display_screen.is_open():
+		_display_screen.close(false)
+	if _quit_open:
+		_close_quit_menu()
+	if _pause_label != null:
+		_pause_label.text = ""
+	_pause_since = 0
+	_online_from_screens = false
+	_online_spectate = false
+	_rejoin_watch.reset()
+	if is_instance_valid(_spectate_label):
+		_spectate_label.text = ""
+	if _dc_shown:
+		_shell.disconnect_screen({"visible": false})
+	_dc_shown = false
+	_dc_left_seen = 0
+	_dc_log_seen = 0
+	_dc_quit_handled = false
+	_relay_lost_since = 0
+	if _relay_label != null:
+		_relay_label.text = ""
+	_tear_down_game("online %s failed" % kind)
+	_restore_switched_profile(true) # lane UBERJOIN-1: a game joined in the other performance mode is over
+	# shown by the online screens once they are up again; r2 (Claude F1): the game is not left (no leave to the lobby): the player never left it in the
+	# game, so the lobby keeps offering it for a rejoin (a relay hiccup or a stalled catch-up is often temporary)
+	_shell.online_game_failed(why)
+	_state = State.SCORE
+	_score_continue()
+
+
+## lane ONLINEUX-1: the relay link of an online game went silent (nothing came from the relay for the disconnect time: the ping test fails through the
+## relay, GameNetwork/DisconnectManager.cpp, RW 0x8D7C78): the disconnect screen then lists the OTHER players as silent although the local link is what
+## failed, and after its timeout each player plays on alone ("X has left the game"). The player reads what happened and what to do (OpenBFME's: retail
+## has no relay)
+func _online_relay_tick(st: Dictionary) -> void:
+	var relay: Dictionary = st.get("relay", {})
+	var lost := not relay.is_empty() and bool(relay.get("judged", false)) and not bool(relay.get("heard", true))
+	if lost and _relay_lost_since == 0:
+		_relay_lost_since = Time.get_ticks_msec()
+		print("GAME ONLINE relay lost: nothing heard from %s" % str(relay.get("address", "")))
+	elif not lost and _relay_lost_since != 0:
+		print("GAME ONLINE relay heard again after %d ms" % (Time.get_ticks_msec() - _relay_lost_since))
+		_relay_lost_since = 0
+	if _relay_label == null:
+		if not lost:
+			return
+		var layer := CanvasLayer.new()
+		layer.layer = 102 # over the disconnect screen
+		add_child(layer)
+		_relay_label = Label.new()
+		_relay_label.set_meta("game_text", true)
+		_relay_label.anchor_left = 0.0
+		_relay_label.anchor_right = 1.0
+		_relay_label.offset_top = 64
+		_relay_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_relay_label.add_theme_font_size_override("font_size", 20)
+		_relay_label.add_theme_color_override("font_color", Color(1, 0.92, 0.6))
+		_relay_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+		_relay_label.add_theme_constant_override("outline_size", 8)
+		layer.add_child(_relay_label)
+	_relay_label.text = "" if not lost else ("Lost the connection to the online relay server (%s): the other players can't be reached.\n" +
+		"If it does not come back, leave the game: QUIT GAME, or Esc and Exit (leaving gives the game up: it can't be rejoined).") % str(relay.get("address", ""))
+
+
 ## the running game cleared without the score screen (Restart, lane SAVE-2: a save loaded over a game): the HUD and the game's nodes go, the shell is emptied
-func _tear_down_game(why: String) -> void:
+func _tear_down_game(why: String, clear_world: bool = true) -> void:
+	if is_instance_valid(_caster) and _caster.overlays != null:
+		_caster.overlays.set_clean(false)
 	if is_instance_valid(_map_editor):
 		_map_editor.free()
 		_map_editor = null
@@ -2991,8 +3868,9 @@ func _tear_down_game(why: String) -> void:
 	while _shell.shell_stack().size() > 0:
 		_shell.shell_pop()
 		_shell.tick(0.033)
-	var r: Dictionary = _world.clear_game_data(false)
-	print("GAME QUIT %s clear_game_data: %s" % [why, JSON.stringify(r)])
+	if clear_world:
+		var r: Dictionary = _world.clear_game_data(false)
+		print("GAME QUIT %s clear_game_data: %s" % [why, JSON.stringify(r)])
 	_camera.current = false
 	_restore_sound_volumes()
 	_replay_active = false
@@ -3011,8 +3889,11 @@ func _exit_to_score_screen() -> void:
 	if _world.get_end_game_state().get("showing", false):
 		var hid: Dictionary = _shell.end_game_screen({"kind": "hide_end_game"})
 		print("GAME END hide_end_game on leaving: ", JSON.stringify(hid))
-	_net_lobby_again = not _net_state.is_empty() # lane END-2: Continue opens the LAN lobby again
+	# lane END-2: Continue opens the LAN lobby again: the --net-host / --net-join scripts' (they have the address). A game of the LAN lobby screen or of the
+	# online screens (lane UBERJOIN-1) has none: its Continue shows the screens again (the shell's start screens include the lobby)
+	_net_lobby_again = not _net_state.is_empty() and (_net_host > 0 or not _net_join.is_empty())
 	_net_state = "" # a LAN game's state ends with the game (the next skirmish is not a network game)
+	_restore_switched_profile(true) # lane UBERJOIN-1: a game joined in the other performance mode is over: the player's own setting again
 	if _dc_shown: # lane MP-2: the disconnect screen goes with the game
 		_shell.disconnect_screen({"visible": false})
 	_dc_shown = false
@@ -3021,6 +3902,10 @@ func _exit_to_score_screen() -> void:
 	_dc_log_seen = 0
 	_dc_quit_handled = false
 	_desync_shown = false
+	_relay_lost_since = 0 # lane ONLINEUX-1: the relay notice goes with the game
+	if _relay_label != null:
+		_relay_label.text = ""
+	_online_from_screens = false
 	# the HUD and the HUD movie go first (they read the game), then the game data
 	for n in _game_nodes:
 		if is_instance_valid(n):
@@ -3041,6 +3926,7 @@ func _exit_to_score_screen() -> void:
 	var r: Dictionary = _world.clear_game_data(true)
 	_score_report = r
 	print("GAME END clear_game_data: ", JSON.stringify(r))
+	_record_finished_game(r) # lane ONLINEHUB-1
 	_camera.current = false
 	if _end_message_label != null:
 		_end_message_label.text = ""
@@ -3150,7 +4036,7 @@ func _score_tick() -> void:
 ## on which the engine's next update (RW 0x624EE7) pops the shell's top screen (RW 0x75DB34: Shell::pop, the score screen): retail's lobby is the screen the
 ## shell kept under the game. INFERENCE (stop S-1771): the port pops the shell when the game starts (_enter_game), so it pushes again the screens it held
 ## then: MainMenu and Skirmish for a skirmish, each loaded before the next covers it (a screen covered before its movie loaded stays drawn: QA-2 #5); a LAN
-## game here is started without the shell's LAN screens (MP-1), so its peers open the LAN lobby again (GameNetwork/LANLobby: the host hosts, the joiner joins)
+## game started through the UI restores LanLobby.apt; only direct --net-host / --net-join games (MP-1) reopen their addressed session.
 func _score_continue() -> void:
 	if _state != State.SCORE or _continuing:
 		return # a second Continue the shell's ticks below deliver is the same press
@@ -3162,6 +4048,12 @@ func _score_continue() -> void:
 	while _shell.shell_stack().size() > 0:
 		_shell.shell_pop()
 		_shell.tick(0.033)
+	if _campaign_flow != null and _campaign_flow.score_pending:
+		# lane CAMPSAVE-1: a campaign game's score screen (type 1): its destructor runs RW 0x927EC6 (the bonus unlock, or the auto-save and CampaignMenu.apt);
+		# RW 0x925699 restarts the shell's music only for the types 2 / 3, so the score screen's music plays on
+		_continuing = false
+		await _campaign_flow.after_score()
+		return
 	_audio.stop_music(false)
 	_restore_start_screens()
 
@@ -3197,7 +4089,8 @@ func _restore_start_screens() -> void:
 	print("GAME END back to the shell: ", str(_shell.shell_stack()))
 	if _net_lobby_again:
 		_net_lobby_again = false
-		_net_open() # the LAN lobby again
+		if _net_host > 0 or not _net_join.is_empty():
+			_net_open() # Direct network games have no shell lobby to restore.
 
 
 ## lane FB7-1: --menu-walk=DIR: the main-menu paths a player takes, with real mouse events: every screen and the main menu after each return
@@ -3799,6 +4692,12 @@ func _finish_end_flow(faction: String, prefix := "end1") -> void:
 	_save_named("%s-%s-score" % [prefix, faction])
 	var sr: Dictionary = _shell.get_shell_report()
 	print("GAME END score screen notes: ", JSON.stringify(sr.get("notes", {})))
+	# lane OWNERFIX-3: the score screen recorded the profile's battle honors (RW 0x9CE8F3): the stats file beside the run's Skirmish.ini
+	if not _scripted_skirmish_ini.is_empty():
+		var sdir := _scripted_skirmish_ini.get_base_dir()
+		for f in DirAccess.get_files_at(sdir):
+			if f.ends_with("RealTimeStats.ini"):
+				print("GAME END honors file %s: %s" % [f, FileAccess.get_file_as_string(sdir.path_join(f)).strip_edges().replace("\n", " | ")])
 	print("GAME END score screen errors: ", JSON.stringify(sr.get("errors", [])))
 	var lvl: int = _shell.shell_top_level()
 	print("GAME END graph: ", JSON.stringify(_shell.get_timeline_graph("", _graph_path).get("axis", {})), " at ", _graph_path)
@@ -4009,6 +4908,7 @@ func _online_open() -> void:
 	_online.player_name = _online_name if not _online_name.is_empty() else (_net_name if _net_name != "Joiner" else "Player")
 	_online.token = OS.get_environment("OPENBFME_LOBBY_TOKEN")
 	_online.profile = _world.net_profile_digest()
+	_online.mode = "uber" if _world.simulation_profile() == "uber" else "normal" # lane UBERJOIN-1
 	_online.join_id = _online_join
 	_online.rejoin = _online_rejoin # lane ONLINE-3
 	_online.spectate = _online_spectate
@@ -4032,6 +4932,161 @@ func _online_open() -> void:
 # ---- lane ONLINE-4: the online screens (OnlineShell.apt on the lobby service) -----------------------------------------------------------------------------
 
 ## The lobby the online screens use: --online-lobby, OPENBFME_LOBBY, Options.ini's OpenBFMEOnlineLobby, then the release default
+# ---- lane ONLINEHUB-1: the platform API, the game records and the results ----------------------------------------------------------------------
+
+func _platform_base_url() -> String:
+	if not _platform_url.is_empty():
+		return _platform_url
+	var env := OS.get_environment("OPENBFME_PLATFORM")
+	if not env.is_empty():
+		return env
+	var configured: String = str(_shell.get_options().get("OpenBFMEPlatformUrl", ""))
+	return configured if not configured.is_empty() else PLATFORM_DEFAULT_URL
+
+
+## the install id (platform-api.md: 128 random bits, made once, kept in the user data folder); never printed whole
+func _platform_install_id() -> String:
+	if FileAccess.file_exists(INSTALL_ID_FILE):
+		var kept := FileAccess.get_file_as_string(INSTALL_ID_FILE).strip_edges()
+		var ok := kept.length() == 32
+		for c in kept:
+			ok = ok and "0123456789abcdef".contains(c)
+		if ok:
+			return kept
+		printerr("GAME PLATFORM the kept install id is not 32 hex digits: a new one is made")
+	var id := Crypto.new().generate_random_bytes(16).hex_encode()
+	var f := FileAccess.open(INSTALL_ID_FILE, FileAccess.WRITE)
+	if f == null:
+		printerr("GAME PLATFORM the install id could not be kept: ", error_string(FileAccess.get_open_error()))
+	else:
+		f.store_string(id)
+	return id
+
+
+## the client metadata every platform write carries (docs/PLATFORM_API.md): windows / linux / macos and the game's version tag, sent exactly (1 .. 64
+## characters; "" when the platform is none of the three: the platform client then refuses every write by name)
+func _platform_client_name() -> String:
+	match OS.get_name():
+		"Windows":
+			return "windows"
+		"Linux":
+			return "linux"
+		"macOS":
+			return "macos"
+	return ""
+
+
+func _platform_client_version() -> String:
+	var v: String = str(Release.info.version()) if Release.info != null else ""
+	return v.substr(0, 64) if not v.is_empty() else "unknown"
+
+
+func _share_results() -> bool:
+	return str(_shell.get_options().get("OpenBFMEShareResults", "yes")).to_lower() != "no"
+
+
+## the records of the games this installation played (the STATS pages) and the platform client with its transport. Nothing is sent from here: a
+## request goes out only when the player opens an online page or a LAN / online game ends (and shares results)
+func _platform_setup() -> void:
+	if _platform_ready:
+		return
+	_platform_ready = true
+	var text := FileAccess.get_file_as_string(RECORDS_FILE) if FileAccess.file_exists(RECORDS_FILE) else ""
+	var rr: Dictionary = _shell.set_game_records(text)
+	print("GAME RECORDS: %d games recorded, %d lines refused" % [int(rr.get("count", 0)), (rr.get("rejected", []) as Array).size()])
+	for why in rr.get("rejected", []):
+		printerr("GAME RECORDS refused: ", why)
+	_platform_configure()
+	var url := _platform_base_url()
+	_platform_http = load("res://scripts/online_http.gd").new()
+	_platform_http.name = "PlatformHttp"
+	_platform_http.kind = "platform"
+	_platform_http.shell = _shell
+	_platform_http.lobby_url = url
+	add_child(_platform_http)
+	print("GAME PLATFORM: %s" % url)
+
+
+func _platform_configure() -> void:
+	var name := _online_saved_name if not _online_saved_name.is_empty() else str(_shell.get_options().get("OpenBFMEOnlineName", ""))
+	var opts := {"base_url": _platform_base_url(), "install": _platform_install_id(), "nick": name, "share_results": _share_results(),
+		"client_platform": _platform_client_name(), "client_version": _platform_client_version()}
+	if not OS.get_environment("OPENBFME_PLATFORM_RETRY_S").is_empty():
+		opts["result_retry_s"] = int(OS.get_environment("OPENBFME_PLATFORM_RETRY_S")) # the tests' short retry (tools/platform_fake/test_onlinehub1_game.py)
+	var r: Dictionary = _shell.set_platform(opts)
+	if not r.get("ok", false):
+		printerr("GAME PLATFORM error: ", r.get("error", ""))
+
+
+var _platform_sharing := true
+
+func _platform_tick() -> void:
+	# the Options row "Share my game results for statistics": turned off, the results queued or waiting for their retry are dropped at once
+	var share := _share_results()
+	if share != _platform_sharing:
+		_platform_sharing = share
+		_shell.set_share_results(share)
+		print("GAME PLATFORM sharing results: ", share)
+	for e in _shell.platform_events():
+		if e.kind == "result_sent":
+			print("GAME PLATFORM result sent: game %s" % e.id)
+		elif e.kind == "result_dropped":
+			printerr("GAME PLATFORM result not sent: game %s: %s" % [e.id, e.text])
+
+
+## what the score screen will record: the kind of game and its id (a LAN game's id is the same on every peer: made from the shared start message)
+func _hub_begin(message: Dictionary) -> void:
+	_game_start_unix = int(Time.get_unix_time_from_system())
+	if not _hub_online.is_empty():
+		_hub_kind = "online"
+		_hub_game_id = str(_hub_online.get("id", ""))
+		_hub_online = {}
+	elif _game_kind == "lan":
+		_hub_kind = "lan"
+		var names := PackedStringArray()
+		for sl in message.get("slots", []):
+			names.append(str(sl.get("name", "")))
+		_hub_game_id = "lan-" + ("%s|%s|%s" % [str(message.get("seed", 0)), str(message.get("map", "")), "|".join(names)]).sha256_text().substr(0, 32)
+	elif _game_kind == "skirmish" or _game_kind == "restart":
+		_hub_kind = "skirmish"
+		_hub_game_id = "sk-" + Crypto.new().generate_random_bytes(8).hex_encode()
+	else:
+		_hub_kind = ""
+		_hub_game_id = ""
+
+
+## the score screen opened: the game is recorded (user://game_records.jsonl) and, for a LAN or online game the player shares, reported in the background
+func _record_finished_game(r: Dictionary) -> void:
+	var base: Dictionary = r.get("record", {})
+	if base.is_empty() or _hub_kind.is_empty() or not _platform_ready:
+		print("GAME RECORD: not recorded (%s)" % ("an observer, a replay or no game record" if base.is_empty() else "not a skirmish, LAN or online game"))
+		return
+	base["id"] = _hub_game_id
+	base["kind"] = _hub_kind
+	base["mode"] = _world.simulation_profile() if _world.has_method("simulation_profile") else "faithful"
+	base["end"] = int(Time.get_unix_time_from_system())
+	base["start"] = mini(_game_start_unix, base.end - int(base.get("duration_s", 0))) # the service: duration_s is at most end - start + 300
+	_platform_configure() # the share option as it is now
+	var res: Dictionary = _shell.record_game(JSON.stringify(base))
+	_hub_kind = ""
+	if not res.get("ok", false):
+		printerr("GAME RECORD error: ", res.get("error", ""))
+		return
+	if FileAccess.file_exists(RECORDS_FILE) and FileAccess.get_file_as_bytes(RECORDS_FILE).size() > RECORDS_FILE_MAX:
+		var lines := FileAccess.get_file_as_string(RECORDS_FILE).split("\n", false)
+		var keep := lines.slice(lines.size() / 2)
+		var w := FileAccess.open(RECORDS_FILE, FileAccess.WRITE)
+		if w != null:
+			w.store_string("\n".join(keep) + "\n")
+	var f := FileAccess.open(RECORDS_FILE, FileAccess.READ_WRITE if FileAccess.file_exists(RECORDS_FILE) else FileAccess.WRITE)
+	if f == null:
+		printerr("GAME RECORD error: %s cannot be written: %s" % [RECORDS_FILE, error_string(FileAccess.get_open_error())])
+		return
+	f.seek_end()
+	f.store_string(str(res.line) + "\n")
+	print("GAME RECORD %s (%s): %s" % [base.id, base.kind, "reported" if res.get("reported", false) else "not reported: " + str(res.get("not_reported", ""))])
+
+
 func _online_lobby_url() -> String:
 	if not _online_lobby.is_empty():
 		return _online_lobby
@@ -4117,6 +5172,7 @@ func _online_count_tick() -> void:
 		_stats = made.node
 		_stats.visible_check = func() -> bool: return DisplayServer.get_name() == "headless" or (DisplayServer.window_get_mode() != DisplayServer.WINDOW_MODE_MINIMIZED and get_window().has_focus())
 		_stats.changed.connect(_online_count_show)
+		_stats.counts_changed.connect(func(c: Dictionary) -> void: _shell.online_set_counts(c)) # lane ONLINEUX-1 r2: the home page's ticker
 	_stats.set_mode(mode)
 	if _stats_label != null:
 		_stats_label.position = Vector2(8, 48) if mode == "online" else Vector2(8, 30)
@@ -4141,6 +5197,8 @@ func _online_count_show(text: String) -> void:
 		add_child(layer)
 	_stats_label.text = text
 	_stats_label.visible = not text.is_empty()
+	if _stats != null:
+		_shell.online_set_counts(_stats.counts()) # lane ONLINEUX-1: the online home page's ticker (players online, games in progress)
 	print("GAME ONLINE count shown: %s" % (text if not text.is_empty() else "(nothing)"))
 
 
@@ -4240,6 +5298,12 @@ func _online_walk_run() -> void:
 	print("GAME ONLINE WALK motd: ", _shell.online_status().get("motd", []))
 	if _online_walk == "rejoin":
 		return _online_walk_rejoin()
+	if _online_walk == "hub":
+		await _online_walk_hub()
+		return
+	if _online_walk == "qm":
+		await _online_walk_qm()
+		return
 	await _online_click("Toggles.ButtonNav.OpenPlay") # the shell's nav button
 	if not await _online_wait("Open Play", func(st): return st.get("page", "") == "OnlineOpenPlay" and int(st.get("state", -1)) == 2, 30.0):
 		return _online_walk_end(false)
@@ -4330,6 +5394,14 @@ func _online_walk_run() -> void:
 			break
 	_online_apply({"select_row": join_row})
 	_online_apply({"command": "AptOnline::CustomMatch::JoinGame"})
+	# lane UBERJOIN-1: a game in the other performance mode asks first (the game's Yes / No box); the walk answers Yes
+	if str(listed[join_row]).ends_with("|uber") != (_world.simulation_profile() == "uber"):
+		if not await _online_wait("the performance mode box", func(st): return str(st.get("boxes", [])).contains("mode-switch"), 15.0):
+			return _online_walk_end(false)
+		await _wait_seconds(1.5)
+		_online_shot("mode-box")
+		print("GAME ONLINE WALK mode box: ", _shell.online_status().get("boxes", []))
+		_online_apply({"box": "Yes"})
 	if not _online_password.is_empty():
 		if not await _online_wait("the password prompt", func(st): return int(st.get("state", -1)) == 10, 15.0):
 			return _online_walk_end(false)
@@ -4418,12 +5490,97 @@ func _capture_tick() -> void:
 	get_viewport().get_texture().get_image().save_jpg(_capture_dir.path_join(name), 0.85)
 
 
+## --online-walk=hub (lane ONLINEHUB-1): the TOURNAMENT page (RotWK's OnlineQuickMatch.swf: Quick Match and the tournaments) and the STATS page
+## (Stats.swf: the player's own statistics and the community's), each captured (--online-shots)
+func _online_walk_hub() -> void:
+	await _online_click("Toggles.ButtonNav.Profile")
+	if not await _online_wait("the STATS page", func(st): return st.get("page", "") == "Stats", 30.0):
+		return _online_walk_end(false)
+	await _wait_seconds(3.0)
+	await _online_click("*TabButtons.OpenPlay")
+	await _wait_seconds(1.0)
+	_shell.shell_fscommand("Stats::OnSelectFaction", "0")
+	await _wait_seconds(1.5)
+	_online_shot("stats-yours")
+	print("GAME ONLINE WALK your stats: ", _shell.platform_status().get("stats_rows", []))
+	await _online_click("*TabButtons.Tournament")
+	await _wait_seconds(3.0)
+	_online_shot("stats-community")
+	print("GAME ONLINE WALK community stats: ", _shell.platform_status().get("stats_rows", []))
+	await _online_click("Toggles.ButtonNav.QuickMatch")
+	if not await _online_wait("the TOURNAMENT page", func(st): return st.get("page", "") == "OnlineQuickMatch", 30.0):
+		return _online_walk_end(false)
+	await _wait_seconds(3.0)
+	var ps: Dictionary = _shell.platform_status()
+	if not (ps.get("tournaments", []) as Array).is_empty():
+		_shell.platform_apply({"tournament_select": (ps.tournaments as Array).size() - 1})
+		await _wait_seconds(2.0)
+	_online_shot("tournament")
+	print("GAME ONLINE WALK tournaments: ", _shell.platform_status().get("tournaments", []), " details: ", _shell.platform_status().get("details", []))
+	if not (ps.get("tournaments", []) as Array).is_empty():
+		_shell.platform_apply({"tournament_action": 0})
+		await _wait_seconds(1.0)
+		_shell.platform_apply({"tournament_action": 0})
+		await _wait_seconds(1.5)
+		_online_shot("tournament-register")
+		_online_apply({"box": "No"})
+		await _wait_seconds(1.0)
+	await _online_click("*JoinGame")
+	await _online_wait("the search", func(_st): return str(_shell.platform_status().get("qm_state", "")) == "searching", 15.0)
+	await _wait_seconds(2.5)
+	_online_shot("quickmatch-searching")
+	await _online_click("*navSearching.Cancel")
+	await _wait_seconds(1.5)
+	_online_walk_end(true)
+
+
+## --online-walk=qm (lane ONLINEHUB-1): sign in, the TOURNAMENT page, the Army (--online-qm-side=N, the combo's entry), JOIN GAME; the platform's
+## match makes the private room (the match's host) or joins it (the others), everyone readies, the host starts: the game then loads and plays as any
+## online game (--net-frames, --net-script). Two clients against one lobby, relay and platform: tools/net/onlinehub1_qm.sh
+func _online_walk_qm() -> void:
+	await _online_click("Toggles.ButtonNav.QuickMatch")
+	if not await _online_wait("the TOURNAMENT page", func(st): return st.get("page", "") == "OnlineQuickMatch", 30.0):
+		return _online_walk_end(false)
+	await _wait_seconds(2.0)
+	if _online_qm_side >= 0:
+		print("GAME ONLINE WALK army: ", _shell.platform_apply({"qm_side": _online_qm_side}))
+	print("GAME ONLINE WALK choices: ", _shell.platform_status().get("choices", ""))
+	_online_shot("qm")
+	await _online_click("*JoinGame")
+	if not await _online_wait("the search", func(_st): return str(_shell.platform_status().get("qm_state", "")) == "searching", 30.0):
+		print("GAME ONLINE WALK QM: ", _shell.platform_status())
+		return _online_walk_end(false)
+	_online_shot("qm-searching")
+	var until := Time.get_ticks_msec() + 180000
+	var room := ""
+	while Time.get_ticks_msec() < until:
+		if _net_state != "":
+			print("GAME ONLINE WALK QM: the START arrived: the game loads (match %s, %s)" % [str(_hub_online.get("match", "")), room])
+			return
+		var ps: Dictionary = _shell.platform_status()
+		if str(ps.get("room", "")) != room:
+			room = str(ps.get("room", ""))
+			print("GAME ONLINE WALK QM room: %s (%s): %s" % [room, "host" if ps.get("room_host", false) else "joiner", ps.get("status", "")])
+			if room == "in_room":
+				_online_shot("qm-room")
+			elif room == "failed":
+				return _online_walk_end(false)
+		await _wait_seconds(0.25)
+	print("GAME ONLINE WALK QM timeout: ", _shell.platform_status())
+	_online_walk_end(false)
+
+
 func _online_walk_end(ok: bool) -> void:
 	print("GAME ONLINE WALK RESULT: %s" % ("ok" if ok else "FAILED"))
 	get_tree().quit(0 if ok else 1)
 
 
 func _on_online_started(start_json: String) -> void:
+	# lane ONLINEHUB-1: the game's id for its record and result: the platform's match (Quick Match, tournament) or the lobby's game
+	var ps: Dictionary = _shell.platform_status()
+	var match_id := str(ps.get("match_id", ""))
+	_hub_online = {"id": match_id if not match_id.is_empty() else str(_shell.online_status().get("game_id", "")), "match": match_id,
+		"tournament": str(ps.get("tournament_id", ""))}
 	var r: Dictionary = _world.net_online(start_json)
 	print("GAME ONLINE start: ", AptMenuPlayer.online_redact(str(r)))
 	if not r.ok:
@@ -4586,12 +5743,19 @@ func _net_tick() -> void:
 	if not _net_shot.is_empty() and st.frame >= _net_shot_frame:
 		print("GAME NET shot %s at frame %d -> %s" % [_net_shot, st.frame, error_string(get_viewport().get_texture().get_image().save_png(_net_shot))])
 		_net_shot = ""
+	if not _net_score_shot.is_empty() and not _net_score_started and st.frame >= _net_score_frame:
+		_net_score_started = true
+		call_deferred("_net_score_flow")
+	if not _net_players_shot.is_empty() and _net_players_wait < 0 and st.frame >= _net_players_frame:
+		_net_players_wait = 0
+		call_deferred("_net_players_open") # (a proof hook: the logic worker is held when a deferred call runs, not in this per-frame path)
 	for d in st.desyncs:
 		printerr(d)
 	if not st.desyncs.is_empty() and not _desync_shown:
 		_desync_shown = true
 		_show_desync_box(st.get("desync_dumps", []))
 	_net_disconnect_tick(st.get("disconnect", {}))
+	_online_relay_tick(st) # lane ONLINEUX-1
 	_net_pause_tick(st) # lane ONLINE-3
 	_net_press_tick(st) # lane NETLAG-1
 	if _state != State.PLAYING:
@@ -4611,7 +5775,7 @@ func _net_tick() -> void:
 ## lane ONLINE-3: a spectator: its state and the observed player on screen, Tab / Shift+Tab, the proof pictures, --net-frames
 func _net_spectate_tick(st: Dictionary) -> void:
 	var sp: Dictionary = st.spectate
-	if _spectate_label == null:
+	if _spectate_label == null and not is_instance_valid(_caster):
 		var layer := CanvasLayer.new()
 		layer.layer = 101
 		add_child(layer)
@@ -4633,7 +5797,7 @@ func _net_spectate_tick(st: Dictionary) -> void:
 		if state == "live":
 			_spectate_live_ms = Time.get_ticks_msec()
 	if state == "failed":
-		_fail("spectate: " + str(sp.failure))
+		_online_game_failed("spectate", "The game could not be watched: " + str(sp.failure)) # lane ONLINEUX-1: back to the online screens
 		return
 	if st.frame / 50 != _net_last_print:
 		_net_last_print = st.frame / 50
@@ -4649,6 +5813,11 @@ func _net_spectate_tick(st: Dictionary) -> void:
 		cycle = 1
 	var obs: Dictionary = sp.observed
 	if cycle != 0:
+		_observe_pending = cycle
+	# RENDERWAIT-1: net_observe_next reads the live logic (LiveGame::observeNextPlayer waits for an idle worker): a press waits for a held frame
+	if _world.is_logic_held() and _observe_pending != 0:
+		cycle = _observe_pending
+		_observe_pending = 0
 		obs = _world.net_observe_next(cycle > 0).observed
 		print("GAME NET observe: %s" % ("every player" if obs.all else "%s (%s)" % [obs.name, obs.faction]))
 		_observe_ms = Time.get_ticks_msec() if not obs.all else 0
@@ -4662,10 +5831,14 @@ func _net_spectate_tick(st: Dictionary) -> void:
 			text += ": the game has ended"
 	if obs.all:
 		text += "  -  every player  -  Tab: observe a player"
+	elif obs.get("pending", false):
+		text += "  -  observing a player  -  Tab: next" # net_status's read of the player waits for a frame where the logic is held (RENDERWAIT-1)
 	else:
 		text += "  -  observing %s: %d resources, command points %d / %d, power %d, rank %d  -  Tab: next" % [obs.display_name if not str(obs.display_name).is_empty()
 			else obs.name, int(obs.money), int(obs.cp_used), int(obs.cp_limit), int(obs.power_points), int(obs.rank)]
-	_spectate_label.text = text
+	if is_instance_valid(_spectate_label):
+		_spectate_label.text = text
+		_spectate_label.visible = not is_instance_valid(_caster)
 	if state == "live" and not _net_shot_spectate.is_empty() and Time.get_ticks_msec() - _spectate_live_ms > 3000:
 		print("GAME NET spectate screenshot %s at frame %d: %s" % [_net_shot_spectate, st.frame, error_string(get_viewport().get_texture().get_image().save_png(_net_shot_spectate))])
 		_net_shot_spectate = ""
@@ -4700,21 +5873,25 @@ func _net_pause_tick(st: Dictionary) -> void:
 	var rejoin: Dictionary = st.get("rejoin", {})
 	var pause: Dictionary = st.get("pause", {})
 	var text := ""
+	# lane ONLINEUX-1: a catch-up that never moves (the relay has no log of the game any more: it restarted, or the game ended) is given up after
+	# REJOIN_STALL_MS with a reason, instead of "frame 0" for ever; r2: the watch keeps one state per attempt (scripts/rejoin_watch.gd)
+	_rejoin_watch.stall_ms = REJOIN_STALL_MS
+	var seen: String = _rejoin_watch.step(rejoin, Time.get_ticks_msec())
+	if seen == "began":
+		print("GAME NET rejoin: catching up from the relay's log")
+	elif seen == "stalled":
+		_online_game_failed("rejoin", "The game could not be rejoined: the relay server sent nothing to catch up from in %d seconds (the game may have ended, or the relay server restarted)." % (REJOIN_STALL_MS / 1000))
+		return
+	elif seen == "failed":
+		_online_game_failed("rejoin", "The game could not be rejoined: " + str(rejoin.get("failure", ""))) # lane ONLINEUX-1: back to the online screens
+		return
+	elif seen == "live":
+		print("GAME NET rejoin: live at frame %d after %d ms (%d CRCs compared)" % [int(rejoin.live_frame), int(rejoin.catch_up_ms), int(rejoin.crcs_compared)])
 	if rejoin.get("state", "") == "catching_up":
 		text = "Rejoining the game: catching up, frame %d" % int(rejoin.frame)
-		if _rejoin_since == 0:
-			_rejoin_since = Time.get_ticks_msec()
-			print("GAME NET rejoin: catching up from the relay's log")
-		if not _net_shot_rejoin.is_empty() and Time.get_ticks_msec() - _rejoin_since > 500:
+		if not _net_shot_rejoin.is_empty() and _rejoin_watch.since > 0 and Time.get_ticks_msec() - _rejoin_watch.since > 500:
 			print("GAME NET rejoin screenshot %s: %s" % [_net_shot_rejoin, error_string(get_viewport().get_texture().get_image().save_png(_net_shot_rejoin))])
 			_net_shot_rejoin = ""
-	elif rejoin.get("state", "") == "failed" and _rejoin_since >= 0:
-		_rejoin_since = -1
-		_fail("rejoin: " + str(rejoin.failure))
-		return
-	elif rejoin.get("state", "") == "live" and _rejoin_since > 0:
-		print("GAME NET rejoin: live at frame %d after %d ms (%d CRCs compared)" % [int(rejoin.live_frame), int(rejoin.catch_up_ms), int(rejoin.crcs_compared)])
-		_rejoin_since = -1
 	if pause.get("paused", false):
 		var who := str(pause.get("by_name", ""))
 		text = "Game paused by %s  -  press Pause to resume" % (who if not who.is_empty() else "a player")
@@ -4832,7 +6009,13 @@ func _begin_replay(path: String) -> void:
 	_sync_simulation_profile() # lane UBER-1 (review): the identity a replay is checked against is the player's current option's
 	var prep: Dictionary = _world.prepare_replay(path)
 	if not prep.ok:
-		_fail("prepare_replay: " + "\n".join(prep.errors))
+		var reason := "\n".join(prep.errors)
+		printerr("GAME replay refused: ", reason)
+		var name := path.get_file().get_basename()
+		if not _shell.save_load_refused(name, reason):
+			_open_replay_menu() # a command-line replay or the score screen did not start on the list
+			if not _shell.save_load_refused(name, reason):
+				_fail("could not display the replay refusal: " + reason)
 		return
 	_last_local_slot = int(prep.get("local_slot", -1))
 	_state = State.LOADING
@@ -4867,11 +6050,31 @@ func _begin_replay(path: String) -> void:
 	_enter_game(rep)
 	if _replay_speed != 1.0:
 		_world.set_time_scale(_replay_speed)
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--caster-check="):
+			var walk = load("res://tests/caster_transport_walk.gd").new()
+			var failed: int = await walk.run(self, arg.trim_prefix("--caster-check="))
+			get_tree().quit(0 if failed == 0 else 1)
+		elif arg.begins_with("--caster-director-check="):
+			var walk = load("res://tests/caster_director_walk.gd").new()
+			var failed: int = await walk.run(self, arg.trim_prefix("--caster-director-check="))
+			get_tree().quit(0 if failed == 0 else 1)
+		elif arg.begins_with("--caster-overlay-check="):
+			var walk = load("res://tests/caster_overlay_walk.gd").new()
+			var failed: int = await walk.run(self, arg.trim_prefix("--caster-overlay-check="))
+			get_tree().quit(0 if failed == 0 else 1)
+		elif arg.begins_with("--caster-pip-check="):
+			var walk = load("res://tests/caster_pip_walk.gd").new()
+			var failed: int = await walk.run(self, arg.trim_prefix("--caster-pip-check="))
+			get_tree().quit(0 if failed == 0 else 1)
 
 
 func _replay_tick() -> void:
 	var st: Dictionary = _world.replay_status()
 	if not st.get("active", false):
+		return
+	if _replay_menu_test and str(st.get("path", "")) != _replay_menu_recorded_path:
+		_fail("the Replays menu loaded a different recording: " + str(st.get("path", "")))
 		return
 	if not _replay_watch.is_empty() and int(st.frame) >= _replay_watch_next and _world.is_logic_held(): # RENDERWAIT-1 r2: its live reads never wait
 		_replay_watch_next = int(st.frame) + 50
@@ -5033,6 +6236,7 @@ func _open_lan_lobby() -> void:
 			_fail("LAN lobby: " + str(r.get("error", "")))
 			return
 	_shell.set_lan(_world)
+	print("GAME LAN profile: %s, identity %s" % [_world.simulation_profile(), _world.net_profile_digest()])
 	if not _shell.shell_push("LanLobby.apt"):
 		_fail("the shell refused LanLobby.apt: " + str(_shell.get_shell_report().errors))
 
@@ -5044,11 +6248,19 @@ func _lan_game_start() -> void:
 		_fail("LAN start: " + str(p.get("error", "")))
 		return
 	_net_state = "loading"
+	_lan_shell_game = true
 	print("GAME LAN game started: local slot %d, run-ahead %d, CRC interval %d" % [p.local_slot, p.run_ahead, p.crc_interval])
 	_begin_game(p.message)
 
 
 ## --lan=host|join: the lobby driven through the movie's own commands and gadget messages
+func _lan_save_shot(name: String) -> void:
+	DirAccess.make_dir_recursive_absolute(_lan_shots)
+	var size := get_viewport().get_visible_rect().size
+	var path := _lan_shots.path_join("%s-%dx%d.png" % [name, int(size.x), int(size.y)])
+	print("GAME LAN shot %s -> %s" % [name, error_string(get_viewport().get_texture().get_image().save_png(path))])
+
+
 func _lan_script_tick() -> void:
 	_lan_wait += 1
 	var st: Dictionary = _world.lan_status()
@@ -5069,9 +6281,17 @@ func _lan_script_tick() -> void:
 				_lan_wait = 0
 			elif int(st.get("games", 0)) > 0:
 				print("GAME LAN script: Join of the first game")
+				_lan_phase = 2 # before any await: this tick runs again next frame
+				_lan_wait = 0
+				if not _lan_shots.is_empty():
+					await _lan_save_shot("lan-list") # lane UBERJOIN-1: the list with the game's mode tag
 				var j: Dictionary = _shell.lobby_apply({"join_row": 0})
 				if not j.ok:
 					printerr("GAME LAN join: ", j.errors)
+				if not _lan_shots.is_empty():
+					await _step(60)
+					await _lan_save_shot("lan-mode-box") # the game's Yes / No box when the game is in the other mode
+					print("GAME LAN script: the mode box's Yes -> ", JSON.stringify(_shell.lobby_apply({"box": "Yes"})))
 				_lan_phase = 2
 				_lan_wait = 0
 	elif _lan_phase == 2:
@@ -5226,6 +6446,14 @@ func _run_quit() -> void:
 	await _finish_end_flow(faction, "end2")
 
 
+## lane CAMPSAVE-1: --campsave-test=<scenario>: the campaign between missions through its screens (scripts/campaign_save_test.gd)
+func _run_campsave_test() -> void:
+	_campsave_test_started = true
+	var t = load("res://scripts/campaign_save_test.gd").new(self, _campsave_test)
+	var ok: bool = await t.run()
+	get_tree().quit(0 if ok else 1)
+
+
 ## lane SAVE-2: --campaign=NAME --save-test: a campaign mission saved and loaded back through the screens (scripts/save_flow.gd)
 func _run_campaign_save_test() -> void:
 	var ok: bool = await _save_flow.run_campaign_test()
@@ -5240,7 +6468,8 @@ func _campaign_check_tick() -> void:
 	var ended: Array = _campaign_flow.ended_log
 	# quit once the flow went on after the N-th end: the next mission is playing, or the main menu is back
 	var next_playing: bool = _campaign_flow.active and _campaign_flow.begun > ended.size() and _state == State.PLAYING
-	var menu_back: bool = not _campaign_flow.active and _state == State.MENU
+	# lane CAMPSAVE-1: the campaign menu between missions is not the main menu
+	var menu_back: bool = not _campaign_flow.active and _state == State.MENU and not _campaign_flow.menu_open and not _campaign_flow.score_pending
 	if ended.size() >= _campaign_check and (next_playing or menu_back) and _shell_pictures_pending == 0: # lane CAMP-2: after the SHELL PICTURES lines
 		var won := 0
 		for l in ended:

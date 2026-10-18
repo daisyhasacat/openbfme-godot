@@ -261,6 +261,7 @@ struct CastleTemplate
 
 struct MapChunks
 {
+	bool bfme1Data = false; ///< community PR #36: read as BFME1 data (MapReadOptions::bfme1): its MPPositionInfo version 0 and PolyGonTriggers spelling
 	bool hasWorldInfo = false;
 	Dict worldInfo;
 

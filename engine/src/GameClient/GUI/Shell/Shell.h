@@ -92,6 +92,27 @@ public:
 	static bool readGameDataBool(const std::string &gameDataText, const std::string &field, bool &value, bool &found, std::string *error);
 
 	AptScreen *top() const { return m_stack.empty() ? nullptr : m_stack.back().get(); }
+	// Lane OPTS-6: the in-game menu over the stack. TARGET FACT (RotWK game.dat, caveat S-001; BFME2 decomp AptQuitMenuCallbacks.cpp ShowQuitMenu, tier A):
+	// the quit menu's opening (RW 0x921B0F) pushes QuitMenu.apt on TheShell (RW 0x75E3B7), so the Options screen it opens (RW 0x921783 -> RW 0x91ED91:
+	// Shell::push("Options.apt")) shuts it down (its window hidden, its focus popped) and that screen's pop runs its init again (shown, focused). The port
+	// keeps the quit menu outside the stack (the host owns AptQuitMenu, lane END-2); setOverlay gives it that place: it gets its init now (the push's), a push
+	// while it is the top shuts it down instead of the screen under it, and the pop back to its depth runs its init instead of that screen's.
+	// clearOverlay (the menu closes) pops its focus when it is shown (its pop's shutdown). inputTop: the screen the menus' input goes to.
+	void setOverlay(AptScreen *screen);
+	void clearOverlay();
+	AptScreen *overlay() const { return m_overlay; }
+	// lane SAVE-UI1: the overlay's owner destroyed it (AptScreen::~AptScreen): the shell keeps no pointer to it (a borrowed pointer must not outlive the screen)
+	void forgetOverlay(const AptScreen *screen)
+	{
+		if (screen && m_overlay == screen)
+		{
+			m_overlay = nullptr;
+			m_overlayDepth = 0;
+		}
+	}
+	// lane SAVE-UI1: a push is waiting for the top screen's shutdown (the input is the menus' until it has come)
+	bool transitioning() const { return m_pendingPush || m_pendingPop; }
+	AptScreen *inputTop() const { return overlayIsTop() ? m_overlay : top(); }
 	int screenCount() const { return (int)m_stack.size(); }
 	AptScreen *screenAt(int index) const { return m_stack[(std::size_t)index].get(); }
 	AptScreen *findScreenByFilename(const std::string &filename) const;
@@ -106,6 +127,7 @@ public:
 private:
 	void doPush(const std::string &filename);
 	void doPop(bool impendingPush);
+	bool overlayIsTop() const { return m_overlay && (int)m_stack.size() == m_overlayDepth; }
 
 	WindowManager &m_windows;
 	AptScreenFactoryTable &m_factories;
@@ -113,6 +135,8 @@ private:
 	ShellEnvironment &m_environment;
 	std::vector<std::unique_ptr<AptScreen>> m_stack;
 	bool m_shellMapRequested = false; // presentation lifecycle, including the BFME2 animated backdrop
+	AptScreen *m_overlay = nullptr; // lane OPTS-6 (not owned)
+	int m_overlayDepth = 0;         // the stack's size when the overlay came: the overlay is the top while the stack has this size
 	bool m_lowLodBackdrop = false; // + 0x52
 	bool m_lowLodShown = false;    // + 0x53
 	std::string m_backdropImage;

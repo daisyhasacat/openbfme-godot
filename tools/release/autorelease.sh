@@ -10,28 +10,42 @@
 #      last released archive sha ($STATE/last-released) and differ from it, whatever --since says; the release is skipped when nothing
 #      under engine/ godot/ launcher/ tools/release/ changed since the last released sha. --since only sets where the notes start (the
 #      first release has no state and needs it);
-#   2. syncs the sha to the public main: a commit on top of <remote>/main whose tree is the sha's without archive/, with the public
-#      README line (no PRIVACY.md: the owner removed it from the public main, PR #34). Before anything is pushed, the tree passes the privacy audit (autorelease.py audit-tree: the public
-#      top-level allowlist, no workspace / archive / reference folder, nothing a .gitignore rule ignores, the commit gate's file rules).
+#   2. syncs the sha to the public main: a commit on top of <remote>/main whose tree is the sha's without archive/ and without the paths of
+#      the sha's tools/release/sync_exclude.txt (PUBLISH-2: in step with the CI mirror), with the public README line (no PRIVACY.md: the
+#      owner removed it from the public main, PR #34): autorelease.py sync-tree. Before anything is pushed, the tree passes the privacy
+#      audit (autorelease.py audit-tree: the public top-level allowlist, no workspace / archive / reference folder, nothing a .gitignore rule
+#      ignores, the commit gate's file rules, and PUBLISH-2's denylist: the built-in rules and the operator's private one).
 #      Pushed as sync/<date>-<sha>, a PR, merged with a merge commit whose tree must be the audited one (nothing to sync: main is tagged);
+#      GHPR-1: right before, each reviewed community pull request of $STATE/community-prs.tsv whose port is in the sha is merged on GitHub
+#      (its diff proven to be in the audited tree; tools/release/community_prs.py, docs/RELEASE.md "Community pull requests"), and the
+#      sync PR's body credits it; --plan runs the same checks and prints what it would merge, --dry-run prints the merges as WOULD RUN;
 #   3. tags the merged public commit with the release's version (annotated) and pushes the tag. Lane VERSION-1 (owner, 2026-10-14):
 #      releases are plain numbers, v0.4.5 after v0.4.0-alpha.4, then v0.4.6, ... (--minor: the middle number + 1, v0.5.0, for a feature
 #      the owner calls huge), released as "OpenBFME Alpha 0.4.5" (autorelease.py next-version / title) and published as full releases
 #      (channel stable; the earlier alpha builds and previews were pre-releases). No bridge any more: the launchers up to
 #      v0.3.0-preview.4 read plain tags, so a plain release with the launcher archives is what they install (autorelease.py
 #      release-version; RELNAME-1's v0.3.0-preview.<n> bridges were for the alpha builds, which those launchers skip);
-#   4. builds at the tag on the reference PC's WSL from a clean checkout (the jpc scripts' machine-wide slots, niced): the Linux GDExtension
+#   4. builds at the tag from a clean checkout on the build host, through the operator's builder ($OPENBFME_RELEASE_BUILDER, kept outside
+#      this repository, PUBLISH-2; the interface of the tests' stand-in: <builder> <checkout> <version> <out dir>): the Linux GDExtension
 #      (build_linux.sh, with Godot's own Linux SDK: GLIBC 2.28 at most, GLIBC-1 / DEP-1),
 #      the Windows DLL (build_windows.sh --no-export), package.sh (game + launchers, both platforms), test_export.sh on the Linux
 #      package, and a native Windows start of the Windows package (OpenBFME.console.exe --headless --quit-after 400 must exit 0 and print
 #      "GAME screen: MainMenu.apt" and the template count; then, lane BUGS-1, a Men skirmish whose help box over a barracks bubble must draw
 #      its text: windows_hud6_check.sh); the packages come back to $WORK/pkg;
+#  4m. (MACREL-1) the macOS Apple Silicon package on the Mac build host (build_macos_release.sh: package_macos.py from a clean clone of
+#      the tag, ad-hoc signed, nothing signed with the release key there); before anything is pushed (step 1) the host must answer and
+#      have its tools (build_macos_release.sh --check): no release leaves without the Mac package unless OPENBFME_RELEASE_SKIP_MAC=1 is
+#      set, which the log and the summary say (the release then carries a signed manifest-macos.json naming no Mac package);
 #   5. checks the returned packages on the Deck, with the scripts of a trusted checkout ($WORK/trusted: a fresh worktree of the tag made
-#      here, never written by the reference PC, whose tree must be the audited sync tree of the archive sha): exactly the package files, the
+#      here, never written by the build host, whose tree must be the audited sync tree of the archive sha): exactly the package files, the
 #      release allowlist of every archive, each library's build record against the tag and the engine id of the tag's engine/, and
 #      package.sh --verify (a byte for byte rebuild of every archive from the trusted checkout with the returned libraries);
 #   6. seal_package.py (the packages' signed payload inventory, lane ONEZIP-1 r2), make_manifest.py and the signature, all from the trusted
 #      checkout, the key $OPENBFME_RELEASE_KEY;
+#      MACREL-1: the Mac package is checked here too (the strict audit, its checksum, VERSION naming the tag and its commit, the Mac
+#      launcher built with launcher/release_key.pub and the target repository: make_macos_manifest.py --verify-package), then listed in
+#      SHA256SUMS after the sealing, and manifest-macos.json (make_macos_manifest.py) is signed separately with the same key, so
+#      manifest.json stays byte for byte what the Windows / Linux launchers read;
 #   7. release notes for players from the first-parent subjects since the notes baseline (autorelease.py notes: neutralised, the studio
 #      shape of docs/RELEASE.md "Patch notes"; --plan also prints NOTES WARNING lines for a Release-note that needs fixing);
 #   8. the trusted checkout's publish_release.sh --execute --confirm-tag <tag> (a draft, its assets checked, then published, every
@@ -60,19 +74,23 @@
 #   PR, the merge and the tag push are printed, not run; the tag stays local (deleted at the end), the build / package / tests / Deck checks run in full,
 #   the manifest is signed with a throwaway key (the real key is only checked to match launcher/release_key.pub), publish_release.sh runs
 #   as a dry run. Every command a real run would add is printed as "WOULD RUN: ...".
-# --plan: step 1 and the version only (tests).
+# --plan: step 1, the version and the public tree with its privacy audit (PUBLISH-2); nothing is written to GitHub or the state.
 # --minor: this release raises the middle number (v0.4.7 -> v0.5.0; VERSION-1, the owner's call for a huge feature); ignored when an open
 #   intent is resumed (its version is kept).
 # Environment (defaults): OPENBFME_RELEASE_STATE (~/.local/state/openbfme-release), OPENBFME_RELEASE_WORK (~/.cache/openbfme-release),
-#   OPENBFME_RELEASE_LOGS (~/.cache/openbfme-recover/logs), OPENBFME_RELEASE_KEY (only ~/.config/openbfme-release/release-ed25519.pem itself is accepted, r6),
-#   OPENBFME_JPC_LIB (~/.cache/openbfme-recover/jpc-lib.sh), GH (gh), BFME_COMMUNITY (~/.local/bin/bfme-community),
+#   GH (gh), BFME_COMMUNITY (~/.local/bin/bfme-community),
+#   required, the operator's private release environment (PUBLISH-2: the public tree names no private path or host):
+#   OPENBFME_RELEASE_LOGS (the log folder), OPENBFME_RELEASE_KEY (the release key file: an absolute, normalised path, r6),
+#   OPENBFME_RELEASE_DENYLIST (the private denylist, autorelease.py load_denylist()), OPENBFME_RELEASE_BUILDER (step 4; not with a stand-in),
 #   OPENBFME_RELEASE_TEMPLATES (4657: the templates the Windows start must load),
+#   OPENBFME_RELEASE_SKIP_MAC (unset or 0; 1: release without the macOS package, logged), OPENBFME_RELEASE_MAC_HOST (mac),
 #   OPENBFME_RELEASE_LEGACY_LAUNCHERS (1; lane ONEZIP-1: 0 leaves the launcher-only archives out of the release, manifest format 3:
 #   only once the launchers published before ONEZIP-1 are retired, docs/RELEASE.md "One archive": they cannot read such a release).
 #   Tests only: OPENBFME_RELEASE_MIN_COMMIT replaces MIN_CONTROL (stand-in mode only).
 #   Tests only: OPENBFME_RELEASE_STANDIN=<dir> replaces step 4 by <dir>/build <checkout> <version> <out dir> and step 5's package checks by
 #   <dir>/verify <trusted checkout> <package dir> <version>; refused unless --repo is not the real repository and the remote is a local
-#   folder.
+#   folder. MACREL-1: it also replaces step 4m by <dir>/build-mac <checkout> <version> <out dir> (the Deck's Mac checks still run), and
+#   OPENBFME_RELEASE_MAC_SSH (a stand-in ssh for the Mac check) is accepted in that mode only.
 set -Eeuo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 HERE="$REPO/tools/release"
@@ -86,22 +104,29 @@ while [ $# -gt 0 ]; do
     --repo) TARGET=$2; shift 2 ;;
     --remote) REMOTE=$2; shift 2 ;;
     --archive-branch) ARCHIVE=$2; shift 2 ;;
-    -h|--help) sed -n '2,66p' "$0"; exit 0 ;;
-    -*) echo "autorelease.sh: unknown option $1" >&2; exit 2 ;;
+    -h|--help) sed -n '2,93p' "$0"; exit 0 ;;
+    -*) echo "autorelease.sh: an unknown option (not printed: the redactor is not running yet, PUBLISH-2 r4); see --help" >&2; exit 2 ;;
     *) [ -z "$SHA_ARG" ] || { echo "autorelease.sh: one archive sha" >&2; exit 2; }; SHA_ARG=$1; shift ;;
   esac
 done
 STATE=${OPENBFME_RELEASE_STATE:-$HOME/.local/state/openbfme-release}
 WORK_ROOT=${OPENBFME_RELEASE_WORK:-$HOME/.cache/openbfme-release}
-LOGS=${OPENBFME_RELEASE_LOGS:-$HOME/.cache/openbfme-recover/logs}
-# r6: one fixed release key path (Sol r5: a relative override leaked its normalised path through the signer's diagnostics). An override
-# that is not exactly this path, resolved, is refused without echoing what was given.
-KEY="$HOME/.config/openbfme-release/release-ed25519.pem"
-if [ -n "${OPENBFME_RELEASE_KEY:-}" ] && [ "$(realpath -m -- "$OPENBFME_RELEASE_KEY")" != "$(realpath -m -- "$KEY")" ]; then
-  echo "AUTORELEASE FAIL: OPENBFME_RELEASE_KEY is not the configured release key (~/.config/openbfme-release/release-ed25519.pem): only that key is used" >&2
+# PUBLISH-2: the private values come from the operator's release environment, never from defaults in this public file
+for v in OPENBFME_RELEASE_LOGS OPENBFME_RELEASE_KEY OPENBFME_RELEASE_DENYLIST; do
+  [ -n "${!v:-}" ] || { echo "AUTORELEASE FAIL: $v is not set (the operator's private release environment)" >&2; exit 2; }
+done
+LOGS=$OPENBFME_RELEASE_LOGS
+DENYLIST=$OPENBFME_RELEASE_DENYLIST
+[ -f "$DENYLIST" ] || { echo "AUTORELEASE FAIL: OPENBFME_RELEASE_DENYLIST is not a file" >&2; exit 2; }
+# r6: the key is named by one exact path (Sol r5: a relative override leaked its normalised path through the signer's diagnostics): an
+# absolute, normalised path (no relative part, no symbolic link); anything else is refused without echoing what was given
+KEY=$OPENBFME_RELEASE_KEY
+if [ "${KEY#/}" = "$KEY" ] || [ "$(realpath -m -- "$KEY")" != "$KEY" ]; then
+  echo "AUTORELEASE FAIL: OPENBFME_RELEASE_KEY is not the configured release key (an absolute, normalised path): only that key is used" >&2
   exit 2
 fi
-JPC_LIB=${OPENBFME_JPC_LIB:-$HOME/.cache/openbfme-recover/jpc-lib.sh}
+export OPENBFME_RELEASE_KEY   # autorelease.py audit-text: the key's path and folder are private words
+BUILDER=${OPENBFME_RELEASE_BUILDER:-}
 GH=${GH:-gh}; export GH
 COMMUNITY=${BFME_COMMUNITY:-$HOME/.local/bin/bfme-community}
 TEMPLATES=${OPENBFME_RELEASE_TEMPLATES:-4657}
@@ -109,41 +134,33 @@ LEGACY=${OPENBFME_RELEASE_LEGACY_LAUNCHERS:-1}
 case $LEGACY in 1) PKGOPT=""; FORMAT=2 ;; 0) PKGOPT="--no-legacy-launchers"; FORMAT=3 ;;
   *) echo "AUTORELEASE FAIL: OPENBFME_RELEASE_LEGACY_LAUNCHERS is 1 or 0" >&2; exit 2 ;; esac
 STANDIN=${OPENBFME_RELEASE_STANDIN:-}
-# VERSION-1 (Sol): a format 3 release (no launcher archives) is refused for as long as any published launcher reads format 2 only; derived
-# from each release tag's own manifest.gd, so the day those launchers are retired from the tags the switch works again
-if [ "$LEGACY" = 0 ]; then
-  rc=0; why=$(python3 "$HERE/autorelease.py" --git-dir "$REPO" legacy-needed --remote "$REMOTE" 2>&1) || rc=$?
-  if [ "$rc" != 1 ]; then   # 0: a launcher needs the archives; anything else: the answer could not be had (fail closed)
-    echo "$why" >&2; echo "AUTORELEASE FAIL: OPENBFME_RELEASE_LEGACY_LAUNCHERS=0 is refused (above)" >&2; exit 2
-  fi
-fi
+# MACREL-1: the macOS package is part of every release; only OPENBFME_RELEASE_SKIP_MAC=1, given explicitly, releases without it
+SKIP_MAC=${OPENBFME_RELEASE_SKIP_MAC:-0}
+case $SKIP_MAC in 0|1) ;; *) echo "AUTORELEASE FAIL: OPENBFME_RELEASE_SKIP_MAC is 1 (release without the macOS package) or unset" >&2; exit 2 ;; esac
+MAC_HOST=${OPENBFME_RELEASE_MAC_HOST:-mac}
 # ---- the one redaction point (r5, Sol r4: an intent field printed the key path through an echo) -------------------------------------------
 # Every line this script and the helpers it runs print, stdout and stderr, and every line of its logs, goes through redact: the release
 # key's path, its folder and the home folder (both as given and resolved) become <release key>, <release key folder> and ~.
 KEYDISP="<release key>"
 export AR_KEY=$KEY AR_KEYREAL=$(realpath -m "$KEY") AR_KEYDIR=$(dirname "$KEY") AR_KEYDIRREAL=$(dirname "$(realpath -m "$KEY")")
 export AR_HOME=$HOME AR_HOMEREAL=$(realpath -m "$HOME")
-REDACT_PY='
-import os, sys
-pairs = []
-for var, disp in (("AR_KEY", b"<release key>"), ("AR_KEYREAL", b"<release key>"), ("AR_KEYDIR", b"<release key folder>"),
-                  ("AR_KEYDIRREAL", b"<release key folder>"), ("AR_HOME", b"~"), ("AR_HOMEREAL", b"~")):
-    v = os.environ.get(var, "").rstrip("/")
-    if len(v) > 1:
-        # r6: also the forms the output can carry it in: Markdown-escaped (autorelease.py markdown()) and URL-encoded
-        import re, urllib.parse
-        for form in {v, re.sub(r"([\\`*_{}\[\]()!|~+\-.:#])", r"\\\1", v), urllib.parse.quote(v), urllib.parse.quote(v, safe="")}:
-            pairs.append((form.encode(), disp))
-pairs.sort(key=lambda p: -len(p[0]))   # the longest first: the key before its folder before the home folder
-out = sys.stdout.buffer
-for line in iter(sys.stdin.buffer.readline, b""):
-    for v, disp in pairs:
-        line = line.replace(v, disp)
-    out.write(line)
-    out.flush()
-'
-redact() { python3 -u -c "$REDACT_PY"; }
+export AR_TOOLS=$HERE
+# PUBLISH-2 r3 (review F5): the redactor is autorelease.py redact (also publish_release.sh's): the paths above, then every match of the
+# built-in and the private rules; it fails closed (a list it cannot load prints one line and nothing of the output), and the list is
+# loaded once here first, so a broken list stops the run before anything is printed
+why=$(python3 "$HERE/autorelease.py" redact --check --denylist "$DENYLIST" 2>&1) \
+  || { echo "AUTORELEASE FAIL: OPENBFME_RELEASE_DENYLIST cannot be loaded: ${why#REDACTOR FAILED: }" >&2; exit 2; }
+redact() { python3 -u "$HERE/autorelease.py" redact --denylist "$DENYLIST"; }
 exec > >(redact) 2> >(redact >&2)
+# VERSION-1 (Sol): a format 3 release (no launcher archives) is refused for as long as any published launcher reads format 2 only; derived
+# from each release tag's own manifest.gd, so the day those launchers are retired from the tags the switch works again. PUBLISH-2 r4:
+# checked after the redactor starts (the answer it prints can quote git's errors)
+if [ "$LEGACY" = 0 ]; then
+  rc=0; why=$(python3 "$HERE/autorelease.py" --git-dir "$REPO" legacy-needed --remote "$REMOTE" 2>&1) || rc=$?
+  if [ "$rc" != 10 ]; then   # 10: none does; 0: a launcher needs the archives; anything else: no answer (fail closed)
+    echo "$why" >&2; echo "AUTORELEASE FAIL: OPENBFME_RELEASE_LEGACY_LAUNCHERS=0 is refused (above)" >&2; exit 2
+  fi
+fi
 REAL_REPO="Open-BFME/openbfme-godot"
 # Sol r1: `X=...$([ "$MODE" = dry ] && echo -dryrun)` returned 1 outside dry runs and stopped every real run under set -e
 SUFFIX=""; if [ "$MODE" = dry ]; then SUFFIX=-dryrun; fi
@@ -153,7 +170,7 @@ MIN_CONTROL=126d3014d5758739c7e00016fd33d795949b1b5a
 if [ -n "$STANDIN" ] && [ -n "${OPENBFME_RELEASE_MIN_COMMIT:-}" ]; then MIN_CONTROL=$OPENBFME_RELEASE_MIN_COMMIT; fi
 INTENT="$STATE/intent"
 
-STEP=start; VERSION=""; BRANCH_PUSHED=""; TAG_LOCAL=""; TAG_PUSHED=0; PUBLISHED=0; WT=""; TRUSTED=""; JPC_TAG=0; LOG=""; RESUME=0; REQUESTED=""
+STEP=start; VERSION=""; BRANCH_PUSHED=""; TAG_LOCAL=""; TAG_PUSHED=0; PUBLISHED=0; WT=""; TRUSTED=""; LOG=""; RESUME=0; REQUESTED=""
 keyed() { "$@"; }   # a command that is given the key (its output is redacted with everything else: the redactor below)
 summary() { echo "$*"; if [ "$MODE" != plan ]; then mkdir -p "$LOGS" && echo "$(date -u +%FT%TZ) $*" | redact >> "$LOGS/autorelease-summary.log"; fi; }
 intent_get() { if [ -f "$INTENT" ]; then sed -n "s/^$1=//p" "$INTENT" | tail -1; fi; }
@@ -182,7 +199,6 @@ cleanup() {  # always: the dry run's traces and the work trees. Releases are nev
   if [ "$MODE" = dry ]; then
     if [ -n "$BRANCH_PUSHED" ]; then echo "AUTORELEASE dry run: deleting the pushed branch $BRANCH_PUSHED"; git_ push -q "$REMOTE" --delete "$BRANCH_PUSHED"; fi
     if [ -n "$TAG_LOCAL" ]; then echo "AUTORELEASE dry run: deleting the local tag $TAG_LOCAL"; git_ tag -d "$TAG_LOCAL" >/dev/null; fi
-    if [ "$JPC_TAG" = 1 ]; then jpc_untag; fi
   elif [ $rc != 0 ] && [ "$TAG_PUSHED" = 1 ] && [ "$PUBLISHED" = 0 ]; then
     # RELTEST-1: tags cannot be deleted on GitHub (a repository ruleset, GH013), and none needs to be: the intent stays open
     echo "AUTORELEASE: the tag $VERSION stays on $REMOTE with no release yet; the release intent stays open: run autorelease.sh again (for this sha or a later one) and it resumes $VERSION of ${SHA:0:10} from this tag. Do not delete the tag (the repository's ruleset forbids it, GH013)"
@@ -214,6 +230,7 @@ if [ -n "$STANDIN" ]; then
   [ "$TARGET" != "$REAL_REPO" ] && [ -d "$url" ] || fail "OPENBFME_RELEASE_STANDIN is for tests: only with a stand-in --repo and a remote that is a local folder"
   echo "AUTORELEASE stand-in mode ($STANDIN): tests only"
 fi
+[ -z "${OPENBFME_RELEASE_MAC_SSH:-}" ] || [ -n "$STANDIN" ] || fail "OPENBFME_RELEASE_MAC_SSH is for tests (stand-in mode) only"
 # ---- an open release intent: reconciled first, by GitHub reads only (fail closed) ----------------------------------------------------------
 # The intent file is untrusted (r4, Sol r3: changing only its sha let older source get the next version): every field is checked against
 # the repository, the remote and the state before anything is recorded or resumed; a mismatch stops the run and changes nothing.
@@ -229,14 +246,9 @@ validate_intent() {  # $1 = published: the release of the intent's version is pu
     read -r lv lastver _ < "$STATE/last-released"
     [ "$I_SHA" != "$lv" ] && git_ merge-base --is-ancestor "$lv" "$I_SHA" || intent_bad "$I_SHA does not descend from the last released archive sha $lv"
   fi
-  # the tree: the archive sha's own entries (all but archive/, README.md), nothing else. PRIVACY.md is still tolerated here: the public trees
-  # released before PR #34 (the last released one, dbba3780) have the public main's file; a new sync never makes it (audit-tree refuses it)
+  # the tree: exactly the sync recipe's public tree of the intent's sha (PUBLISH-2: also without its sync_exclude.txt paths)
   [[ "$I_TREE" =~ ^[0-9a-f]{40}$ ]] && [ "$(git_ cat-file -t "$I_TREE" 2>/dev/null)" = tree ] || intent_bad "its tree '$I_TREE' is not a tree here"
-  [ "$(git_ ls-tree --name-only "$I_TREE" | grep -vxE 'README\.md|PRIVACY\.md' | sort)" = \
-    "$(git_ ls-tree --name-only "$I_SHA" | grep -vxE 'archive|README\.md|PRIVACY\.md' | sort)" ] || intent_bad "its tree's entries are not those of $I_SHA"
-  for e in $(git_ ls-tree --name-only "$I_TREE" | grep -vxE 'README\.md|PRIVACY\.md'); do
-    [ "$(git_ rev-parse "$I_TREE:$e")" = "$(git_ rev-parse "$I_SHA:$e")" ] || intent_bad "$e of its tree is not $e of $I_SHA"
-  done
+  [ "$(python3 "$HERE/autorelease.py" --git-dir "$REPO" sync-tree --sha "$I_SHA")" = "$I_TREE" ] || intent_bad "its tree is not the public tree of $I_SHA"
   git_ fetch -q "$REMOTE" main || fail "cannot fetch $REMOTE/main to reconcile (fail closed)"
   RTAGS=$(git_ ls-remote --tags "$REMOTE") || fail "cannot list the tags of $REMOTE to reconcile (fail closed)"
   # VERSION-1 / RELNAME-1: a plain release (from v0.4.5 on), an alpha build v0.4.0-alpha.<n> or a bridge v0.3.0-preview.<n>, above every
@@ -257,7 +269,7 @@ validate_intent() {  # $1 = published: the release of the intent's version is pu
     [ -n "$I_PUBLIC" ] && [ -n "$tagc" ] || intent_bad "$I_VER is published but the intent has no public commit or the tag is missing"
     # the published manifest and signature are the intent's package folder's, and name this version, public commit and repository
     local a f
-    for f in manifest.json manifest.json.sig; do
+    for f in manifest.json manifest.json.sig $([ -f "$I_WORK/pkg/manifest-macos.json" ] && echo manifest-macos.json manifest-macos.json.sig); do
       a=$(python3 -c 'import json,sys; print(next((str(x["id"]) for x in json.load(open(sys.argv[1])).get("assets") or [] if x.get("name") == sys.argv[2]), ""))' "$RJ" "$f")
       [ -n "$a" ] || intent_bad "the published $I_VER has no $f"
       "$GH" api -H "Accept: application/octet-stream" "repos/$TARGET/releases/assets/$a" > "$RJ.$f" || fail "cannot download $f of $I_VER (fail closed)"
@@ -370,10 +382,28 @@ if [ $RESUME = 1 ]; then VERSION=$I_VER
 else VERSION=$(python3 "$HERE/autorelease.py" --git-dir "$REPO" release-version --remote "$REMOTE" --repo "$TARGET" --sha "$SHA" --gh "$GH" --bump "$BUMP") \
   || fail "no version for this release (autorelease.py release-version)"; fi
 DATE=$(date -u +%Y-%m-%d)
+# GHPR-1: reviewed community pull requests (community_prs.py, the operator's list in $STATE). --plan: what this release would merge first
+# and credit, every check run (GitHub read, never written)
+community() { python3 "$HERE/community_prs.py" --git-dir "$REPO" --repo "$TARGET" --remote "$REMOTE" --gh "$GH" --state "$STATE" "$@"; }
 if [ "$MODE" = plan ]; then
-  summary "AUTORELEASE PLAN $VERSION from $SHA (notes since $BASE)"
-  python3 "$HERE/autorelease.py" --git-dir "$REPO" warnings --from "$BASE" --to "$SHA"   # NOTES-1: a Release-note that needs splitting; never fails
+  # PUBLISH-2: the public tree this release would publish, built and audited as step 2 does (nothing pushed); GHPR-1's checks run on it
+  PTREE=$(python3 "$HERE/autorelease.py" --git-dir "$REPO" sync-tree --sha "$SHA") || fail "the sync recipe could not build the public tree of $SHA"
+  python3 "$HERE/autorelease.py" --git-dir "$REPO" audit-tree --tree "$PTREE" --denylist "$DENYLIST" || fail "the public tree $PTREE failed the privacy audit"
+  community plan --sha "$SHA" || fail "a reviewed community pull request cannot land with this release (above)"
+  python3 "$HERE/public_workflows.py" --git-dir "$REPO" --tree "$PTREE" || fail "the public tree's .github folder breaks the public workflow policy (above)"
+  summary "AUTORELEASE PLAN $VERSION from $SHA (notes since $BASE), public tree $PTREE"
+  python3 "$HERE/autorelease.py" --git-dir "$REPO" warnings --from "$BASE" --to "$SHA" --denylist "$DENYLIST"   # NOTES-1: a Release-note that needs splitting; never fails
   exit 0
+fi
+# ---- MACREL-1: the Mac build host answers and is ready, before anything is pushed (a release without the Mac package is the operator's call) --
+STEP=mac-check
+MACOPT="--mac-manifest --mac"   # the notes' download rows (autorelease.py download_section)
+if [ "$SKIP_MAC" = 1 ]; then
+  MACOPT=--mac-manifest
+  summary "AUTORELEASE WARNING: OPENBFME_RELEASE_SKIP_MAC=1: $VERSION is released WITHOUT the macOS package (manifest-macos.json names no Mac package; Macs keep their version)"
+else
+  bash "$HERE/build_macos_release.sh" --check \
+    || fail "the Mac build host ($MAC_HOST) is not ready (above): nothing was pushed or published. Wake it / fix it and run again, or set OPENBFME_RELEASE_SKIP_MAC=1 to release without the macOS package"
 fi
 mkdir -p "$LOGS" "$WORK_ROOT"
 LOG="$LOGS/autorelease-$VERSION$SUFFIX.log"
@@ -394,18 +424,20 @@ ident=$("$GH" api user --jq '"\(.login) \(.id)"') || fail "gh api user failed (g
 export GIT_AUTHOR_NAME=${ident% *} GIT_COMMITTER_NAME=${ident% *}
 export GIT_AUTHOR_EMAIL="${ident#* }+${ident% *}@users.noreply.github.com" GIT_COMMITTER_EMAIL="${ident#* }+${ident% *}@users.noreply.github.com"
 echo "AUTORELEASE identity $GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>"
-if [ -z "$STANDIN" ]; then . "$JPC_LIB" || fail "cannot load the the reference PC scripts ($JPC_LIB)"; fi
+if [ -z "$STANDIN" ]; then [ -n "$BUILDER" ] && [ -x "$BUILDER" ] || fail "OPENBFME_RELEASE_BUILDER is not set or not executable (step 4's builder)"; fi
 
 # ---- release notes (step 7's text; the PR and the sync commit use their items) ------------------------------------------------------------
 STEP=notes
 git_ show "$SHA:tools/release/known_issues.json" > "$WORK/known_issues.json"
 python3 "$HERE/autorelease.py" --git-dir "$REPO" notes --from "$BASE" --to "$SHA" --version "$VERSION" --known-issues "$WORK/known_issues.json" --repo "$TARGET" \
-  --out "$WORK/notes-draft.md" --title-out "$WORK/title.txt" --items-out "$WORK/items.md" --plain-items-out "$WORK/items.txt"
-python3 "$HERE/autorelease.py" --git-dir "$REPO" warnings --from "$BASE" --to "$SHA"
+  --out "$WORK/notes-draft.md" --title-out "$WORK/title.txt" --items-out "$WORK/items.md" --plain-items-out "$WORK/items.txt" $MACOPT \
+  --sources-out "$WORK/note-sources.txt"
 
 # ---- the public metadata, written and audited before anything is pushed (r6, Sol r5: a Release-note with a private path and the key path
 # reached the public commit message, the PR body and the release notes). A privacy hit stops the run; nothing is redacted into it.
 STEP=metadata
+# GHPR-1: the reviewed community pull requests this release lands: the sync PR credits them
+community credits --sha "$SHA" --md "$WORK/community.md" --json "$WORK/community.json" || fail "the reviewed community pull requests cannot be read (above)"
 TITLE="Sync the rebuild: $DATE ($(cat "$WORK/title.txt"))"
 printf '%s\n' "$TITLE" > "$WORK/pr-title.txt"
 { echo "$TITLE (#0)"; echo; echo "Automatic release $VERSION."; } > "$WORK/merge-msg.txt"
@@ -416,31 +448,42 @@ printf '%s\n' "$TITLE" > "$WORK/pr-title.txt"
 { echo "Brings \`main\` up to the rebuild's working branch at ${SHA:0:10} (changes since ${BASE:0:10}), without the archived legacy code."
   echo; echo "For players:"; echo
   if [ -s "$WORK/items.md" ]; then cat "$WORK/items.md"; else echo "- No changes you will notice in the game (tools and documentation)."; fi; echo
-  echo "**Verification:** ${SHA:0:10} passed the full gate (build, the C++ suite, smoke / start / end / LAN / audio runs, the Windows cross build, pytest and the simulation audit) before this sync. The release $VERSION is built from the merge commit."
+  if [ -s "$WORK/community.md" ]; then cat "$WORK/community.md"; echo; fi
+  GATE_NAME=$(awk -F'\t' -v s="$SHA" '$1 == s { n = $2 } END { print n }' "$STATE/gated.tsv" 2>/dev/null)
+  case "$GATE_NAME" in
+    fastpath*) echo "**Verification:** ${SHA:0:10} was compiled for Linux and Windows and passed the privacy check before this sync (the fast release path: no full test gate). The release $VERSION is built from the merge commit." ;;
+    *) echo "**Verification:** ${SHA:0:10} passed the full gate (build, the C++ suite, smoke / start / end / LAN / audio runs, the Windows cross build, pytest and the simulation audit) before this sync. The release $VERSION is built from the merge commit." ;;
+  esac
   echo; echo "🤖 Generated with [Claude Code](https://claude.com/claude-code)"; } > "$WORK/pr-body.md"
 echo "OpenBFME $VERSION" > "$WORK/tag-msg.txt"
 python3 "$HERE/autorelease.py" title "$VERSION" > "$WORK/release-title.txt"   # publish_release.sh's release name ("OpenBFME v0.4.0 Alpha 1")
 python3 "$HERE/autorelease.py" audit-text "$WORK/pr-title.txt" "$WORK/merge-msg.txt" "$WORK/commit-msg.txt" "$WORK/pr-body.md" \
-  "$WORK/notes-draft.md" "$WORK/tag-msg.txt" "$WORK/release-title.txt" || fail "the public metadata failed the privacy audit: nothing pushed"
+  "$WORK/notes-draft.md" "$WORK/tag-msg.txt" "$WORK/release-title.txt" "$WORK/note-sources.txt" --denylist "$DENYLIST" \
+  || fail "the public metadata failed the privacy audit: nothing pushed"
+# the note warnings print note text: only after the audit passed it (PUBLISH-2 r2, Sol r1 P1), and masked
+python3 "$HERE/autorelease.py" --git-dir "$REPO" warnings --from "$BASE" --to "$SHA" --denylist "$DENYLIST"
 
 # ---- 2. sync to the public main ------------------------------------------------------------------------------------------------------
 STEP=sync
 git_ fetch -q "$REMOTE" main
 MAIN=$(git_ rev-parse "refs/remotes/$REMOTE/main")
-readme=$(git_ cat-file blob "$SHA:README.md" | python3 -c '
-import sys
-old = "previous codebase is kept in `archive/` as reference only.\n"
-new = "previous codebase lives on in this repository'"'"'s history (tag `legacy-final`).\n"
-t = sys.stdin.read()
-if t.count(old) != 1:
-    sys.exit("README.md of the archive sha does not have the archive line exactly once (the sync recipe replaces it)")
-sys.stdout.write(t.replace(old, new))' | git_ hash-object -w --stdin) || fail "README.md: the sync recipe's line was not found"
-TREE=$( { git_ ls-tree "$SHA" | grep -vP '\t(archive|README\.md)$'
-          printf '100644 blob %s\tREADME.md\n' "$readme"; } | git_ mktree)
+TREE=$(python3 "$HERE/autorelease.py" --git-dir "$REPO" sync-tree --sha "$SHA") || fail "the sync recipe could not build the public tree of $SHA"
 # the privacy audit, before anything leaves the Deck (Sol r1: a tracked workspace/ file and a retail file went to the public branch)
 STEP=sync-audit
-python3 "$HERE/autorelease.py" --git-dir "$REPO" audit-tree --tree "$TREE" || fail "the public tree $TREE failed the privacy audit: nothing pushed"
+python3 "$HERE/autorelease.py" --git-dir "$REPO" audit-tree --tree "$TREE" --denylist "$DENYLIST" || fail "the public tree $TREE failed the privacy audit: nothing pushed"
 STEP=sync
+# GHPR-1: each reviewed community pull request is merged on GitHub first (its changes proven to be in the audited tree; all checked before
+# the first merge), so its author sees it merged; the sync commit then goes on top of the main that holds those merges. A resumed run
+# whose sync is already merged merges nothing more (the next release takes the rest).
+if [ $RESUME = 1 ] && [ -n "$(intent_get public)" ]; then echo "AUTORELEASE community: resumed after the sync, nothing to merge"
+else
+  STEP=community
+  python3 "$HERE/public_workflows.py" --git-dir "$REPO" --tree "$TREE" || fail "the public tree's .github folder breaks the public workflow policy: nothing pushed"
+  community land --json "$WORK/community.json" --sha "$SHA" --tree "$TREE" --mode "$MODE" || fail "a reviewed community pull request cannot land: nothing synced"
+  STEP=sync
+  git_ fetch -q "$REMOTE" main
+  MAIN=$(git_ rev-parse "refs/remotes/$REMOTE/main")
+fi
 PR=""
 if [ $RESUME = 1 ]; then
   [ "$(intent_get tree)" = "$TREE" ] || fail "the audited tree of $SHA is not the one the release intent recorded: check $INTENT by hand"
@@ -489,6 +532,8 @@ else
   fi
 fi
 echo "AUTORELEASE public commit $PUBLIC"
+if [ "$MODE" = real ]; then community record --json "$WORK/community.json" --public "$PUBLIC" || fail "the landed community pull requests could not be recorded"
+else would community_prs.py record --public "$PUBLIC"; fi
 
 # ---- 3. the tag ------------------------------------------------------------------------------------------------------------------------
 STEP=tag
@@ -534,9 +579,9 @@ else
 fi
 if [ "$MODE" = real ]; then intent_set step=tagged; fi
 
-# ---- 4. build, package and test on the reference PC ------------------------------------------------------------------------------------------
+# ---- 4. build, package and test on the build host -------------------------------------------------------------------------------------
 STEP=build
-WT="$WORK_ROOT/autorel-src"     # the reference PC lane "autorel-src" (jpc-lib.sh): its build dir and ccache carry over between releases
+WT="$WORK_ROOT/autorel-src"     # the builder's lane "autorel-src": its build dir and ccache carry over between releases
 git_ worktree remove --force "$WT" 2>/dev/null || true
 rm -rf "$WT"
 git_ worktree add -q --detach "$WT" "$VERSION"
@@ -547,105 +592,35 @@ SO=godot/bin/openbfme.linux.template_debug.x86_64.so
 if [ -n "$STANDIN" ]; then
   "$STANDIN/build" "$WT" "$VERSION" "$RETURNED" || fail "the stand-in build failed"
 else
-jpc_lane "$WT"
-jpc_sync || fail "jpc sync failed"
-jpc_untag() { echo "rm tag $VERSION on the reference PC"; echo "git -C \$HOME/openbfme-ci/repo.git tag -d $VERSION >/dev/null 2>&1; git -C $RL tag -d $VERSION >/dev/null 2>&1; true" | jpc; }
-git -C "$WT" push -q -f --receive-pack="$WSL git-receive-pack" "win-host:${RD%/lane/*}/repo.git" "refs/tags/$VERSION:refs/tags/$VERSION"
-JPC_TAG=1
-F='^\[[0-9]+/[0-9]+\] (Building|Linking|Generating)'
-jpc <<EOS || fail "the build on the reference PC failed (log above)"
-source \$HOME/openbfme-ci/env.sh; xdg $RL.xdg
-exec 9>$RL.lock; flock 9
-$slot_wait; slot_wait lanebuild 2
-cd $RL || exit 1
-git fetch -q -f \$C/repo.git refs/tags/$VERSION:refs/tags/$VERSION || exit 1
-d=\$(git describe --tags --match 'v[0-9]*' --exclude '*-playtest.*' --always --dirty --abbrev=10)
-[ "\$d" = $VERSION ] || { echo "AUTOREL: the the reference PC checkout describes as \$d, not $VERSION"; exit 1; }
-echo "AUTOREL: the Linux GDExtension (tools/release/build_linux.sh: Godot's own Linux SDK, so it needs GLIBC 2.28 at most: GLIBC-1 / DEP-1)"
-( export OPENBFME_LINUX_DIR=$RL.linux JOBS=16
-  run 16 12G bash tools/release/build_linux.sh ) > $RL.build-linux.log 2>&1 || { grep -vE '$F' $RL.build-linux.log | tail -40; exit 1; }
-grep '^BUILT:' $RL.build-linux.log
-echo "AUTOREL: the Windows DLL (build_windows.sh --no-export)"
-rm -f $DLL
-( export OPENBFME_WIN_DIR=$RL.win JOBS=16 CMAKE_C_COMPILER_LAUNCHER=\$C/bin/ccache CMAKE_CXX_COMPILER_LAUNCHER=\$C/bin/ccache
-  run 16 12G bash tools/release/build_windows.sh --no-export ) > $RL.build-windows.log 2>&1 || { grep -vE '$F' $RL.build-windows.log | tail -40; exit 1; }
-ls -la godot/bin/
-EOS
-STEP=package
-# the CI venv's python: audit_package.py reads the Windows executables with pefile (the system python there has none)
-jpc <<EOS || fail "packaging on the reference PC failed (log above)"
-source \$HOME/openbfme-ci/env.sh; xdg $RL.xdg; export PATH=\$C/venv/bin:\$PATH
-exec 9>$RL.lock; flock 9
-$slot_wait; slot_wait lanetest 3
-cd $RL || exit 1
-rm -rf $RL.pkg; mkdir -p $RL.pkg
-echo "AUTOREL: package.sh"
-run 16 16G tools/release/package.sh --out $RL.pkg --platforms linux,windows --windows-dll $RL/$DLL --repo $TARGET $PKGOPT > $RL.package.log 2>&1 \
-  || { tail -40 $RL.package.log; exit 1; }
-grep -E '^(PACKAGE|VERIFY)' $RL.package.log
-EOS
-STEP=test-export
-jpc <<EOS || fail "test_export.sh failed on the Linux package (log above)"
-source \$HOME/openbfme-ci/env.sh; xdg $RL.xdg; export PATH=\$C/venv/bin:\$PATH
-exec 9>$RL.lock; flock 9
-$slot_wait; slot_wait lanetest 3
-cd $RL || exit 1
-echo "AUTOREL: test_export.sh"
-rm -rf $RL.test_export.d; run 16 16G env TEST_EXPORT_LOGS=$RL.test_export.d tools/release/test_export.sh $RL.pkg/openbfme-$VERSION-linux-x64.tar.gz > $RL.test_export.log 2>&1; rc=\$?
-grep -E '^(RESULT|EXPORT TESTS)' $RL.test_export.log; [ \$rc = 0 ] || { tail -30 $RL.test_export.log; echo "AUTOREL: the full start / smoke output is kept in $RL.test_export.d"; exit 1; }
-EOS
-STEP=windows-start
-jpc <<EOS || fail "the native Windows start of the Windows package failed (log above)"
-source \$HOME/openbfme-ci/env.sh
-export PATH=\$PATH:/mnt/c/Windows/System32   # env.sh's PATH leaves out Windows' (reg.exe, cmd.exe)
-exec 9>$RL.lock; flock 9
-$slot_wait; slot_wait lanetest 3
-# Windows programs read stdin: every interop call gets /dev/null (or it eats the rest of this script)
-regval() { reg.exe query "\$1" /v "\$2" </dev/null 2>/dev/null | tr -d '\r' | sed -n "s/^ *\$2 *REG_SZ *//p" | sed 's/ *\$//'; }
-RW=\$(regval 'HKLM\SOFTWARE\WOW6432Node\Electronic Arts\Electronic Arts\The Lord of the Rings, The Rise of the Witch-king' InstallPath)
-B2=\$(regval 'HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\lotrbfme2.exe' Path)
-[ -n "\$RW" ] && [ -n "\$B2" ] || { echo "AUTOREL: no RotWK / BFME2 install in the Windows registry"; exit 1; }
-WT=\$(cmd.exe /c 'echo %TEMP%' </dev/null 2>/dev/null | tr -d '\r' | tail -1)
-D=\$(mktemp -d "\$(wslpath -u "\$WT")/openbfme-autorel.XXXXXX") || exit 1
-cd "\$D" && unzip -q $RL.pkg/openbfme-$VERSION-windows-x64.zip || { rm -rf "\$D"; exit 1; }
-mkdir appdata
-echo "AUTOREL: OpenBFME.console.exe --headless --quit-after 400 in \$(wslpath -w "\$D") (RotWK \$RW, BFME2 \$B2)"
-cd openbfme-$VERSION-windows-x64
-ROTWK_INSTALL="\$RW" BFME2_INSTALL="\$B2" APPDATA="\$(wslpath -w "\$D")\\\\appdata" WSLENV=ROTWK_INSTALL:BFME2_INSTALL:APPDATA \
-  timeout 900 nice -n 10 ./OpenBFME.console.exe --headless --quit-after 400 </dev/null > "\$D/run.log" 2>&1; rc=\$?
-tr -d '\r' < "\$D/run.log" > $RL.windows-start.log
-# lane BUGS-1: the help box over a barracks bubble shows its text (Devlog #4's empty box): the radial and barracks scenarios of hud6_player.gd
-echo "AUTOREL: OpenBFME.console.exe --headless -- --auto --faction=FactionMen --hud6=radial,barracks"
-ROTWK_INSTALL="\$RW" BFME2_INSTALL="\$B2" APPDATA="\$(wslpath -w "\$D")\\\\appdata" WSLENV=ROTWK_INSTALL:BFME2_INSTALL:APPDATA \
-  timeout 900 nice -n 10 ./OpenBFME.console.exe --headless -- --res=1920x1080 --auto --faction=FactionMen --seed=5 --hud6=radial,barracks </dev/null > "\$D/hud6.log" 2>&1; hrc=\$?
-tr -d '\r' < "\$D/hud6.log" > $RL.windows-hud6.log
-cd /; rm -rf "\$D" || echo "AUTOREL: could not remove \$D (a process still holds it?)"
-# the verdict: exit 0 and the lines (Sol r1: 124 / 139 passed); the Deck's windows_start_check.sh, sent along (the tag's tree may predate it)
-cat > $RL.windows_start_check.sh <<'WSC'
-$(cat "$HERE/windows_start_check.sh")
-WSC
-cat > $RL.windows_hud6_check.sh <<'WSC'
-$(cat "$HERE/windows_hud6_check.sh")
-WSC
-bash $RL.windows_start_check.sh $RL.windows-start.log \$rc $TEMPLATES && bash $RL.windows_hud6_check.sh $RL.windows-hud6.log \$hrc
-EOS
-STEP=fetch
-rsync -a -e "ssh win-host" --rsync-path="$WSL rsync" --exclude='.*' ":$RL.pkg/" "$RETURNED/" || fail "copying the packages back failed"
+# PUBLISH-2: the build host, its paths and its lane scripts are the operator's (kept outside this repository): the builder has the
+# stand-in's interface and builds the Linux and Windows libraries, packages, runs test_export.sh and the native Windows start
+# (windows_start_check.sh, windows_hud6_check.sh from AR_TOOLS) and copies the packages to $RETURNED
+AR_TOOLS=$HERE AR_TARGET=$TARGET AR_PKGOPT=$PKGOPT AR_TEMPLATES=$TEMPLATES AR_MODE=$MODE "$BUILDER" "$WT" "$VERSION" "$RETURNED" \
+  || fail "the release build (OPENBFME_RELEASE_BUILDER) failed (log above)"
+fi
+
+# ---- 4m. the macOS package on the Mac build host (MACREL-1) ------------------------------------------------------------------------------
+STEP=mac-build
+MACOUT="$WORK/returned-macos"; mkdir -p "$MACOUT"
+MACZIP="openbfme-$VERSION-macos-arm64.zip"
+if [ "$SKIP_MAC" = 1 ]; then
+  echo "AUTORELEASE mac-build: skipped (OPENBFME_RELEASE_SKIP_MAC=1): $VERSION has no macOS package"
+elif [ -n "$STANDIN" ]; then
+  "$STANDIN/build-mac" "$WT" "$VERSION" "$MACOUT" || fail "the stand-in Mac build failed"
+else
+  bash "$HERE/build_macos_release.sh" "$WT" "$VERSION" "$MACOUT" || fail "the macOS package build on $MAC_HOST failed (above)"
 fi
 
 # ---- 5. the Deck's checks of what came back, with a trusted checkout ------------------------------------------------------------------
 STEP=deck-verify
 # the trusted checkout: a fresh worktree of the tag, made here from the Deck's objects, whose tree is the audited sync tree of $SHA (so its
-# tools are the archive sha's); the reference PC never writes to it. Every script that touches the packages, the key or GitHub from here on is its.
+# tools are the archive sha's); the build host never writes to it. Every script that touches the packages, the key or GitHub from here on is its.
 TRUSTED="$WORK/trusted"
 git_ worktree add -q --detach "$TRUSTED" "$VERSION"
 [ "$(git_ rev-parse "$VERSION^{commit}")" = "$PUBLIC" ] || fail "the tag $VERSION is not on $PUBLIC"
 [ "$(git -C "$TRUSTED" rev-parse 'HEAD^{tree}')" = "$TREE" ] || fail "the trusted checkout's tree is not the audited sync tree of $SHA"
 [ -z "$(git -C "$TRUSTED" status --porcelain --untracked-files=all)" ] || fail "the trusted checkout is not clean"
-for e in $(git_ ls-tree --name-only "$TREE"); do
-  case "$e" in README.md) continue ;; esac
-  [ "$(git_ rev-parse "$TREE:$e")" = "$(git_ rev-parse "$SHA:$e")" ] || fail "$e of the tag differs from $e of $SHA"
-done
+[ "$(python3 "$HERE/autorelease.py" --git-dir "$REPO" sync-tree --sha "$SHA")" = "$TREE" ] || fail "the tag's tree is not the public tree of $SHA"
 T="$TRUSTED/tools/release"
 # the control scripts the Deck runs from here on are byte for byte the running autorelease's own (Sol r2: an old publisher ran)
 for f in $(git -C "$TRUSTED" ls-files tools/release tools/precommit.py); do
@@ -692,12 +667,28 @@ else
   "$T/package.sh" --verify "$PKG" --windows-dll "$L/openbfme-$VERSION-windows-x64/$(basename "$DLL")" --repo "$TARGET" \
     || fail "the returned packages are not what $VERSION builds on the Deck"
 fi
+# MACREL-1: the Mac package, in every mode (the stand-in build returns one too): exactly the package folder package_macos.py writes, the
+# strict audit, its checksum, VERSION naming this tag at the public commit, its launcher trusting launcher/release_key.pub and this repository
+if [ "$SKIP_MAC" = 0 ]; then
+  got=$(cd "$MACOUT" && find . -mindepth 1 -printf '%P %y\n' | sort)
+  want=$(printf '%s f\n' "$MACZIP" "$MACZIP.sha256" "${MACZIP%.zip}.inventory.txt" README-MAC.txt | sort)
+  [ "$got" = "$want" ] || fail "the returned Mac folder is not exactly the Mac package files: $(echo $got)"
+  python3 "$T/make_macos_manifest.py" --verify-package "$MACOUT/$MACZIP" --checksum "$MACOUT/$MACZIP.sha256" --version "$VERSION" \
+    --commit "$PUBLIC" --repo "$TARGET" --release-key-file "$TRUSTED/launcher/release_key.pub" || fail "$MACZIP failed the Deck's checks"
+fi
 echo "AUTORELEASE: the returned packages passed the Deck's checks"
 
 # ---- 6. manifest and signature (the trusted checkout's scripts) ----------------------------------------------------------------------------
 # lane ONEZIP-1 r2: first the packages' signed payload inventory (seal_package.py: payload.json + its signature into each combined archive,
 # which the game and the launcher check at the first start, before any update check), then the manifest of the sealed archives
 STEP=seal
+# MACPLAY-1: the Mac package joins the folder BEFORE the sealing, so seal_package.py seals it like the Windows / Linux ones (payload.json +
+# its signature inside the ZIP, outside both apps: their code seals are unchanged) and rewrites its checksum line with the others; the
+# Mac launcher starts the game beside it only when that inventory verifies (launcher/scripts/core/updater.gd bundled)
+if [ "$SKIP_MAC" = 0 ]; then
+  cp "$MACOUT/$MACZIP" "$PKG/$MACZIP"
+  cat "$MACOUT/$MACZIP.sha256" >> "$PKG/SHA256SUMS-$VERSION.txt"
+fi
 if [ "$MODE" = dry ]; then
   mkdir -p "$WORK/dry-key"; chmod 700 "$WORK/dry-key"
   python3 "$T/sign_manifest.py" --generate-key "$WORK/dry-key/throwaway.pem" > "$WORK/dry-key/throwaway.pub"
@@ -708,22 +699,37 @@ else
 fi
 STEP=manifest
 python3 "$T/make_manifest.py" "$PKG" --repo "$TARGET" --format "$FORMAT"
+# the Mac launchers read only manifest-macos.json (launcher/scripts/core/updater.gd macos_release_manifest), signed on its own: manifest.json
+# is the Windows / Linux manifest the released launchers read, unchanged by the Mac package. The same version, repository, commit and date.
+MDATE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["date"])' "$PKG/manifest.json")
+if [ "$SKIP_MAC" = 1 ]; then
+  python3 "$T/make_macos_manifest.py" --version "$VERSION" --repo "$TARGET" --commit "$PUBLIC" --date "$MDATE" --no-entry --out "$PKG/manifest-macos.json"
+else
+  # the sealed ZIP's own checksum (SHA256SUMS' line, rewritten by the sealing), not the unsealed one the build host returned
+  grep -F "  $MACZIP" "$PKG/SHA256SUMS-$VERSION.txt" > "$WORK/$MACZIP.sealed.sha256" || fail "SHA256SUMS-$VERSION.txt has no line for $MACZIP"
+  python3 "$T/make_macos_manifest.py" --version "$VERSION" --repo "$TARGET" --commit "$PUBLIC" --date "$MDATE" \
+    --archive "$PKG/$MACZIP" --checksum "$WORK/$MACZIP.sealed.sha256" --out "$PKG/manifest-macos.json"
+fi
 STEP=sign
 if [ "$MODE" = dry ]; then
-  would python3 "$T/sign_manifest.py" --key "$KEYDISP" "$PKG/manifest.json"
-  python3 "$T/sign_manifest.py" --key "$WORK/dry-key/throwaway.pem" "$PKG/manifest.json"
+  for m in manifest.json manifest-macos.json; do
+    would python3 "$T/sign_manifest.py" --key "$KEYDISP" "$PKG/$m"
+    python3 "$T/sign_manifest.py" --key "$WORK/dry-key/throwaway.pem" "$PKG/$m"
+  done
   PUBOPT=(--key-file "$WORK/dry-key/throwaway.pub")
 else
-  keyed python3 "$T/sign_manifest.py" --key "$KEY" "$PKG/manifest.json" || fail "signing the manifest failed (above)"
+  for m in manifest.json manifest-macos.json; do
+    keyed python3 "$T/sign_manifest.py" --key "$KEY" "$PKG/$m" || fail "signing $m failed (above)"
+  done
   PUBOPT=()
 fi
 
 # ---- 7. the notes ---------------------------------------------------------------------------------------------------------------------
 STEP=notes
 python3 "$HERE/autorelease.py" --git-dir "$REPO" notes --from "$BASE" --to "$SHA" --version "$VERSION" --known-issues "$WORK/known_issues.json" --repo "$TARGET" \
-  --commit "$PUBLIC" --date "$DATE" $([ "$LEGACY" = 1 ] || echo --no-legacy-launchers) --out "$WORK/notes.md"
-cat "$WORK/notes.md"
-python3 "$HERE/autorelease.py" audit-text "$WORK/notes.md" || fail "the release notes failed the privacy audit: nothing published"
+  --commit "$PUBLIC" --date "$DATE" $([ "$LEGACY" = 1 ] || echo --no-legacy-launchers) $MACOPT --out "$WORK/notes.md"
+python3 "$HERE/autorelease.py" audit-text "$WORK/notes.md" --denylist "$DENYLIST" || fail "the release notes failed the privacy audit: nothing published"
+cat "$WORK/notes.md"   # printed only once audited (PUBLISH-2 r2)
 
 # ---- 8. publish (the trusted checkout's publish_release.sh: draft, assets checked, published, read back) -------------------------------
 STEP=publish
@@ -735,12 +741,12 @@ case $VERSION in
        || fail "the bridge for the launchers up to v0.3.0-preview.4 is gone: $VERSION is not published (the intent stays open)" ;;
 esac
 if [ "$MODE" = dry ]; then
-  "$T/publish_release.sh" "$PKG" --repo "$TARGET" --notes-file "$WORK/notes.md" "${PUBOPT[@]}"
-  would "$T/publish_release.sh" "$PKG" --repo "$TARGET" --notes-file "$WORK/notes.md" --execute --confirm-tag "$VERSION"
+  "$T/publish_release.sh" "$PKG" --repo "$TARGET" --notes-file "$WORK/notes.md" --denylist "$DENYLIST" "${PUBOPT[@]}"
+  would "$T/publish_release.sh" "$PKG" --repo "$TARGET" --notes-file "$WORK/notes.md" --denylist "$DENYLIST" --execute --confirm-tag "$VERSION"
 else
   intent_set step=publishing
   RESUMEOPT=(); if [ -n "$RESUME_RID" ]; then RESUMEOPT=(--resume-id "$RESUME_RID"); fi
-  "$T/publish_release.sh" "$PKG" --repo "$TARGET" --notes-file "$WORK/notes.md" --execute --confirm-tag "$VERSION" --id-file "$STATE/intent.rid" "${RESUMEOPT[@]}" \
+  "$T/publish_release.sh" "$PKG" --repo "$TARGET" --notes-file "$WORK/notes.md" --denylist "$DENYLIST" --execute --confirm-tag "$VERSION" --id-file "$STATE/intent.rid" "${RESUMEOPT[@]}" \
     || fail "publish_release.sh failed (above); the release intent stays open: the next run reconciles it"
   # read back once more: the published release of the tag (GitHub's tags endpoint shows published releases only)
   [ "$("$GH" api "repos/$TARGET/releases/tags/$VERSION" --jq .draft)" = false ] || fail "the release $VERSION does not read back as published"
@@ -780,6 +786,7 @@ else
   summary "AUTORELEASE OK $VERSION $URL (archive ${SHA:0:10}, public ${PUBLIC:0:10}; log $LOG)"
   if [ -n "$HOMEPAGE_NOTE" ]; then summary "AUTORELEASE WARNING: $HOMEPAGE_NOTE"; fi
 fi
+if [ "$SKIP_MAC" = 1 ]; then summary "AUTORELEASE WARNING: $VERSION has no macOS package (OPENBFME_RELEASE_SKIP_MAC=1)"; fi
 if [ -n "$REQUESTED" ]; then
   summary "AUTORELEASE RESUMED ONLY: the open release $VERSION of ${SHA:0:10} was finished; $REQUESTED was not released: run again for it"
   exit 3

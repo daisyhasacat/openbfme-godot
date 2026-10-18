@@ -308,7 +308,7 @@ TEST_CASE("retail models: six models from different factions and kinds build, wi
 			size_t dot = lower.find('.');
 			std::string stem = dot == std::string::npos ? lower : lower.substr(0, dot);
 			std::vector<std::uint8_t> bytes;
-			REQUIRE(readFile(mount, W3D_Asset_Path(stem), bytes));
+			REQUIRE(readFile(mount, W3D_Asset_Path(stem, false), bytes));
 			RawMeshCounts raw = rawMeshCounts(bytes, name);
 			REQUIRE_MESSAGE(raw.Found, name);
 			CHECK(raw.VertexChunkVertices == raw.HeaderVertices);

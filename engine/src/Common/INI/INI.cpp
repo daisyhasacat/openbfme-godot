@@ -4,6 +4,7 @@
 // loadDirectory. Citations are on each function.
 
 #include "Common/INI.h"
+#include "Common/BfmeGame.h"
 #include "Common/JobSystem.h"
 
 #include "Common/AsciiString.h"
@@ -12,6 +13,8 @@
 #include <algorithm>
 #include <exception>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <stdexcept>
 
 // ---------------------------------------------------------------------------------------------
@@ -550,8 +553,20 @@ void INI::initFromINIMultiProc(void *what, BuildMultiIniFieldProc proc)
 
 namespace
 {
-// ZH INI.cpp:324-346, B1 ini_parsers.cpp findFieldParse.
-INIFieldParseProc findFieldParse(const FieldParse *parseTable, const char *token, int &offset, const void *&userData)
+struct Bfme1RowRegistry
+{
+	std::mutex lock;
+	std::map<const FieldParse *, const FieldParse *> rows;
+};
+Bfme1RowRegistry &bfme1RowRegistry()
+{
+	static Bfme1RowRegistry registry;
+	return registry;
+}
+
+// ZH INI.cpp:324-346, B1 ini_parsers.cpp findFieldParse. community PR #36: `bfme1` (the environment reads BFME1 data) also looks in the table's
+// registered BFME1 rows, after its own rows and before its catch-all row
+INIFieldParseProc findFieldParse(const FieldParse *parseTable, const char *token, int &offset, const void *&userData, INIEnvironment &env)
 {
 	const FieldParse *parse = parseTable;
 	for (; parse->token; ++parse)
@@ -563,6 +578,22 @@ INIFieldParseProc findFieldParse(const FieldParse *parseTable, const char *token
 			return parse->parse;
 		}
 	}
+	// the environment's game first (cached): RotWK / BFME2 data never look in the registry (Sol review r1)
+	if (env.bfme1Data())
+	{
+		if (const FieldParse *extra = Bfme1FieldRows(parseTable))
+		{
+			for (; extra->token; ++extra)
+			{
+				if (std::strcmp(extra->token, token) == 0)
+				{
+					offset = extra->offset;
+					userData = extra->userData;
+					return extra->parse;
+				}
+			}
+		}
+	}
 	// terminator row: token NULL but parse set means catch-all, called with the field name
 	if (!parse->token && parse->parse)
 	{
@@ -572,6 +603,30 @@ INIFieldParseProc findFieldParse(const FieldParse *parseTable, const char *token
 	}
 	return nullptr;
 }
+}
+
+void RegisterBfme1FieldRows(const FieldParse *table, const FieldParse *bfme1Rows)
+{
+	Bfme1RowRegistry &r = bfme1RowRegistry();
+	std::lock_guard<std::mutex> hold(r.lock);
+	r.rows[table] = bfme1Rows;
+}
+
+const FieldParse *Bfme1FieldRows(const FieldParse *table)
+{
+	Bfme1RowRegistry &r = bfme1RowRegistry();
+	std::lock_guard<std::mutex> hold(r.lock);
+	auto it = r.rows.find(table);
+	return it == r.rows.end() ? nullptr : it->second;
+}
+
+bool INIEnvironment::bfme1Data()
+{
+	if (m_bfme1 < 0)
+	{
+		m_bfme1 = fileSystem && isBfme1Data(*fileSystem) ? 1 : 0;
+	}
+	return m_bfme1 == 1;
 }
 
 void INI::initFromINIMulti(void *what, const MultiIniFieldParse &parseTableList)
@@ -600,7 +655,7 @@ void INI::initFromINIMulti(void *what, const MultiIniFieldParse &parseTableList)
 				{
 					int offset = 0;
 					const void *userData = nullptr;
-					INIFieldParseProc parse = findFieldParse(parseTableList.getNthFieldParse(tableIndex), field.c_str(), offset, userData);
+					INIFieldParseProc parse = findFieldParse(parseTableList.getNthFieldParse(tableIndex), field.c_str(), offset, userData, m_env);
 					if (parse != nullptr)
 					{
 						try

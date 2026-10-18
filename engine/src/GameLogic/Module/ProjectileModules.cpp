@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Combat/ObjectWeapons.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/ProjectileModules.h"
 #include "GameLogic/Module/StructureModules.h"
 
@@ -1051,4 +1052,33 @@ std::vector<std::string> ProjectileModules::stops()
 		"[S-365] projectile drawing: an arrow object draws through W3DStreakDraw (lane RENDER-1: the trail of RW 0x4CF884 with the template's Length / Width / NumSegments / Color / "
 		"Texture, drawn by the client's GameWorld; the ribbon geometry and the weather textures are stop S-391); stones and bolts are drawn by their own model draw",
 	};
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190: the crc's fields; retail's BezierProjectileBehavior::xfer RW 0x85FAD7 (1, 2) holds a
+// similar set: launcher, victim, flight path, hit list) ---------------------------------------------------------------------------------------------------
+void BezierProjectileBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferObjectID(&m_launcherID);
+	SnapshotXfer::coord3D(x, m_originPos);
+	x.xferObjectID(&m_victimID);
+	SnapshotXfer::weaponTemplate(x, m_weapon);
+	SnapshotXfer::weaponTemplate(x, m_warhead);
+	SnapshotXfer::coords(x, m_flightPath);
+	SnapshotXfer::coord3D(x, m_flightPathStart);
+	SnapshotXfer::coord3D(x, m_flightPathEnd);
+	x.xferReal(&m_flightPathSpeed);
+	x.xferInt(&m_flightPathSegments);
+	x.xferInt(&m_currentFlightPathStep);
+	SnapshotXfer::checkRange(m_currentFlightPathStep, 0, m_flightPath.size(), "a projectile's flight path step"); // the path's end: the impact
+	SnapshotXfer::maskWithin(x, m_bonusFlags, SnapshotXfer::lowBits(WEAPONBONUS_CONDITION_COUNT), "a projectile's weapon bonus conditions", "the 22 conditions");
+	x.xferInt(&m_altCurve);
+	SnapshotXfer::ids(x, m_hitList);
+	x.xferBool(&m_hasDetonated);
+	x.xferReal(&m_heightScale);
+	SnapshotXfer::coord3D(x, m_pendingPosition);
+	x.xferUnsignedInt(&m_pendingFrame);
+	x.xferBool(&m_pendingValid);
+	x.xferUnsignedInt(&m_fireFrame);
 }

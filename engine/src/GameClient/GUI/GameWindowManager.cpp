@@ -731,6 +731,74 @@ inline bool inRegion(const GameWindow *window, const IRegion2D &r, int x, int y)
 }
 } // namespace
 
+GameWindow *GameWindowManager::winPickPointerWindow(int x, int y, GameWindow **toolTipOut)
+{
+	GameWindow *toolTipWindow = nullptr;
+	ICoord2D pos{ x, y };
+	ICoord2D *mousePos = &pos;
+	// three passes (ZH: ABOVE windows, then normal windows, then BELOW windows), each over the list from its head
+	auto scan = [&](int pass) -> GameWindow * {
+		for (GameWindow *w = m_windowList; w; w = w->m_next)
+		{
+			bool candidate;
+			if (pass == 0)
+			{
+				candidate = BitTest(w->m_status, WIN_STATUS_ABOVE) && !BitTest(w->m_status, WIN_STATUS_HIDDEN);
+			}
+			else if (pass == 1)
+			{
+				candidate = !BitTest(w->m_status, WIN_STATUS_ABOVE | WIN_STATUS_BELOW | WIN_STATUS_HIDDEN);
+			}
+			else
+			{
+				candidate = BitTest(w->m_status, WIN_STATUS_BELOW) && !BitTest(w->m_status, WIN_STATUS_HIDDEN);
+			}
+			if (candidate && inRegion(w, w->m_region, mousePos->x, mousePos->y))
+			{
+				GameWindow *childWindow = w->winPointInAnyChild(mousePos->x, mousePos->y, true, true);
+				if (toolTipWindow == nullptr && (childWindow->m_tooltip || childWindow->m_instData.getTooltipTextLength()))
+				{
+					toolTipWindow = childWindow;
+				}
+				if (BitTest(w->m_status, WIN_STATUS_ENABLED))
+				{
+					return w->winPointInChild(mousePos->x, mousePos->y);
+				}
+			}
+		}
+		return nullptr;
+	};
+	// lane OPTS-4: the open drop-down list is drawn over every other window, so the pointer inside it (and inside the clip the draw keeps for it) is
+	// its own: a row made later (nearer the head) took the clicks on the list of the row above it. The rule is winGetOpenDropDown's (S-3503)
+	GameWindow *drop = winGetOpenDropDown();
+	bool inDrop = false;
+	if (drop)
+	{
+		int dx = 0, dy = 0;
+		drop->winGetScreenPosition(&dx, &dy);
+		inDrop = mousePos->x >= dx && mousePos->x <= dx + drop->m_size.x && mousePos->y >= dy && mousePos->y <= dy + drop->m_size.y;
+		if (inDrop && m_openDropDownClipped)
+		{
+			inDrop = mousePos->x >= m_openDropDownClip.lo.x && mousePos->x <= m_openDropDownClip.hi.x && mousePos->y >= m_openDropDownClip.lo.y &&
+				mousePos->y <= m_openDropDownClip.hi.y;
+		}
+	}
+	GameWindow *window = inDrop ? drop->winPointInChild(mousePos->x, mousePos->y) : scan(0);
+	if (window == nullptr)
+	{
+		window = scan(1);
+	}
+	if (window == nullptr)
+	{
+		window = scan(2);
+	}
+	if (toolTipOut)
+	{
+		*toolTipOut = toolTipWindow;
+	}
+	return window;
+}
+
 WinInputReturnCode GameWindowManager::winProcessMouseEvent(GameWindowMessage msg, ICoord2D *mousePos, void *data)
 {
 	WinInputReturnCode returnCode = WIN_INPUT_NOT_USED;
@@ -857,62 +925,7 @@ WinInputReturnCode GameWindowManager::winProcessMouseEvent(GameWindowMessage msg
 		}
 		else
 		{
-			// three passes (ZH: ABOVE windows, then normal windows, then BELOW windows), each over the list from its head
-			auto scan = [&](int pass) -> GameWindow * {
-				for (GameWindow *w = m_windowList; w; w = w->m_next)
-				{
-					bool candidate;
-					if (pass == 0)
-					{
-						candidate = BitTest(w->m_status, WIN_STATUS_ABOVE) && !BitTest(w->m_status, WIN_STATUS_HIDDEN);
-					}
-					else if (pass == 1)
-					{
-						candidate = !BitTest(w->m_status, WIN_STATUS_ABOVE | WIN_STATUS_BELOW | WIN_STATUS_HIDDEN);
-					}
-					else
-					{
-						candidate = BitTest(w->m_status, WIN_STATUS_BELOW) && !BitTest(w->m_status, WIN_STATUS_HIDDEN);
-					}
-					if (candidate && inRegion(w, w->m_region, mousePos->x, mousePos->y))
-					{
-						GameWindow *childWindow = w->winPointInAnyChild(mousePos->x, mousePos->y, true, true);
-						if (toolTipWindow == nullptr && (childWindow->m_tooltip || childWindow->m_instData.getTooltipTextLength()))
-						{
-							toolTipWindow = childWindow;
-						}
-						if (BitTest(w->m_status, WIN_STATUS_ENABLED))
-						{
-							return w->winPointInChild(mousePos->x, mousePos->y);
-						}
-					}
-				}
-				return nullptr;
-			};
-			// lane OPTS-4: the open drop-down list is drawn over every other window, so the pointer inside it (and inside the clip the draw keeps for it) is
-			// its own: a row made later (nearer the head) took the clicks on the list of the row above it. The rule is winGetOpenDropDown's (S-3503)
-			GameWindow *drop = winGetOpenDropDown();
-			bool inDrop = false;
-			if (drop)
-			{
-				int dx = 0, dy = 0;
-				drop->winGetScreenPosition(&dx, &dy);
-				inDrop = mousePos->x >= dx && mousePos->x <= dx + drop->m_size.x && mousePos->y >= dy && mousePos->y <= dy + drop->m_size.y;
-				if (inDrop && m_openDropDownClipped)
-				{
-					inDrop = mousePos->x >= m_openDropDownClip.lo.x && mousePos->x <= m_openDropDownClip.hi.x && mousePos->y >= m_openDropDownClip.lo.y &&
-						mousePos->y <= m_openDropDownClip.hi.y;
-				}
-			}
-			window = inDrop ? drop->winPointInChild(mousePos->x, mousePos->y) : scan(0);
-			if (window == nullptr)
-			{
-				window = scan(1);
-			}
-			if (window == nullptr)
-			{
-				window = scan(2);
-			}
+			window = winPickPointerWindow(mousePos->x, mousePos->y, &toolTipWindow);
 		}
 		if (window && BitTest(window->m_status, WIN_STATUS_NO_INPUT))
 		{
@@ -1061,6 +1074,11 @@ int GameWindowManager::drawWindow(GameWindow *window)
 		if (!BitTest(window->m_status, WIN_STATUS_SEE_THRU) && window->m_draw)
 		{
 			window->m_draw(window, &window->m_instData);
+		}
+		int bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+		if (window->winBadgeRect(&bx0, &by0, &bx1, &by1))
+		{
+			winDrawImage(window->winBadgeImage(), bx0, by0, bx1, by1); // lane PLATFORMICON-1
 		}
 		if (BitTest(window->winGetStyle(), GWS_SCROLL_LISTBOX))
 		{

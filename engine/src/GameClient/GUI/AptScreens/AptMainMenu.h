@@ -46,8 +46,12 @@ public:
 	// Ok gives the menu what a sub-screen's return gives it: OnFocus("1") (WindowManager::refreshFocus RW 0x46E170 after the pop), whose
 	// ShowMainMenu reveals the buttons again. Returns the stop line ("" for a request that opens no screen: nothing shown).
 	std::string screenUnavailable(const std::string &action);
+	// lane CAMPSAVE-1: MainMenuContinueCampaign's answer (RW 0x91BBBB): the Save folder holds "00000000.sav"
+	static bool continueCampaignSaveExists(const std::string &saveFolder);
 	// the screen name the box names for `action` ("" for a request that opens no screen)
 	static std::string unavailableScreenName(const std::string &action);
+	// lane MENUWORK-1: the box's text, "<screen> is not available yet: <why>." (empty for a request that opens no screen)
+	static std::string unavailableText(const std::string &action);
 	AptMessageBox *unavailableBox() { return m_box.get(); }
 
 	// lane UI-4: the credits page (TARGET FACTS, RotWK game.dat, caveat S-001; BFME2 decomp AptMainMenuCallbacks.cpp, tier A for both):

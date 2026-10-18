@@ -23,8 +23,9 @@
 //     and drops the provider; the mark is cleared.
 // INFERENCE (stop S-2703): the hovered command button of the Palantir's movie is the Apt player's current button (the button under the pointer) inside a
 // content clip the control bar filled (the content updaters' rollover route, vslot 2 of RW 0xC8C3D4, was not traced to its caller); the Apt player's y scale
-// is the stage height over the window height; the guards of showHelp (InGameUI vslot 0x1BC / 0x17C, RW 0xDE3BAC + 0x1A204, RW 0xDEA328) and RW 0xA0CB16
-// are not ported. Lane HOVER-1 adds the spell book's slots (RW 0x930DC4) and the hero bar's (RW 0x92BF34 / 0x92C265) as providers (InGameHud, S-4612).
+// is the stage height over the window height; ported (lane ROTWK-C, docs/re/rotwk/RW_0x807848.md): showHelp's end-game timer guard (RW 0xDE3BAC + 0x1A204),
+// the provider release (RW 0xA0CB16) and the late TheDisconnectMenu guard (RW 0xDEA328); the guards InGameUI vslot 0x1BC / 0x17C are not ported. Lane HOVER-1
+// adds the spell book's slots (RW 0x930DC4) and the hero bar's (RW 0x92BF34 / 0x92C265) as providers (InGameHud, S-4612).
 
 #pragma once
 
@@ -77,8 +78,16 @@ public:
 	};
 	// RW 0x71FC08's test, once per HUD update before the hover: a frame nobody marked hides the box soon and drops the provider
 	void beginFrame();
+	// RW 0x807867: the end-game timer is an early gate; the late vslot 0x17C mode gate is not wired. The separate RW 0xDEA328 TheDisconnectMenu guard is wired by screen lifetime.
+	void setEndGameTimer(int endGameTimer) { m_endGameTimer = endGameTimer; }
+	void setDisconnectMenuPresent(bool present) { m_disconnectMenuPresent = present; } // RW 0xDEA328: TheDisconnectMenu
 	// RW 0x807848 for the provider under the pointer; `compose` makes the help when it is time to show it
 	void showHelp(const Provider &p, std::uint32_t nowMs, int tooltipDelayMs, const std::function<std::shared_ptr<CommandButtonHelp>()> &compose);
+	// lane OWNERFIX-1: RW 0x8076CD (called by DISABLE_INPUT, RW 0x7BC586; the control bar's byte + 0x21C, its provider + 0x2AC released through RW 0xA0CB16, then the
+	// help box's hideSoon RW 0x6D473D): the frame's mark and the kept provider go, a shown help hides soon. Not ported: the call on the radar window override's
+	// inner object (+ 0xC8), whose effect was not traced (S-4964)
+	void dropProvider();
+	bool hasProvider() const { return m_haveProvider; }
 	const Provider &provider() const { return m_provider; }
 	unsigned helpsShown() const { return m_helpsShown; }
 	const std::vector<std::string> &calls() const { return m_calls; }
@@ -100,5 +109,7 @@ private:
 	std::uint32_t m_hoverStart = 0;
 	bool m_hoverStartSet = false;
 	unsigned m_helpsShown = 0;
+	int m_endGameTimer = -1;
+	bool m_disconnectMenuPresent = false;
 	std::vector<std::string> m_calls;
 };

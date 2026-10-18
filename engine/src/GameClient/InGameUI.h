@@ -16,12 +16,14 @@
 #include "GameClient/GUI/GameWindow.h"
 #include "GameLogic/ObjectTypes.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
 class CommandButton;
 class GameLogic;
 class MessageStream;
+struct HudContext;
 
 // ZH Mouse::MouseCursor, as the NAMES of the `MouseCursor <Name>` blocks of Data\INI\Mouse.ini (the table the engine picks from). Lane BUILD-5: RotWK's name table
 // RW 0xD9E108 numbers them None 0, Normal 1, Arrow 2, Scroll 3, Target 4 (ZH's CROSS slot), Move 5, AttackMove 6, AttackObj 7, ..., Build 10, InvalidBuild 11,
@@ -70,6 +72,7 @@ public:
 	void deselectObject(ObjectID id);
 	// ZH deselectAllDrawables(postMessage): the message is MSG_DESTROY_SELECTED_GROUP
 	void deselectAll(bool postMessage = true);
+	void mirrorSelection(const std::vector<ObjectID> &ids); ///< presentation only, no command emitted
 	// the logic dropped the object (it died): the mirror forgets it without a message
 	void forgetObject(ObjectID id) { deselectObject(id); }
 	// ZH / RotWK InGameUI::getFrameSelectionChanged (vtable + 0x120, the field + 0x570): the logic frame of the last select / deselect of a drawable
@@ -78,6 +81,7 @@ public:
 	void setLogic(const GameLogic *logic) { m_logic = logic; }
 	int getMaxSelectCount() const { return m_maxSelect; }
 	void setMaxSelectCount(int n) { m_maxSelect = n; }
+	int selectMatching(HudContext &ctx, bool acrossMap);
 
 	// ---- the GUI command (ZH setGUICommand / getGUICommand: the command button waiting for a target) ----
 	const CommandButton *getGUICommand() const { return m_guiCommand; }
@@ -97,7 +101,24 @@ public:
 	bool isInPreferSelectionMode() const { return m_preferSelection; }
 	void setPreferSelectionMode(bool on) { m_preferSelection = on; }
 	bool getInputEnabled() const { return m_inputEnabled; }
-	void setInputEnabled(bool on) { m_inputEnabled = on; }
+	// lane OWNERFIX-1: InGameUI::setInputEnabled(bool, bool *gate) (RW 0x69B5ED, BFME2 decomp InGameUIInputModes.cpp slot 82, tier A): on an enabled-to-disabled
+	// edge: setSelecting(false), setRadiusCursorNone (the HUD draws no radius cursor while the input is off: InGameHud::updateRadiusCursor), the mode flags
+	// +0x8B0 / +0x8B8 .. +0x8C2 off (the port has the force-attack, force-move and waypoint ones, and +0x8BA, the prefer-selection mode; the other eight are not mapped, S-4964; a pending GUI command stays) and MSG_CHANGE_ORDERMODE
+	// (0x469) with 0 and 1 appended to the stream (immediate orders again if the mode was queued: the same message the Alt key's release sends)
+	void setInputEnabled(bool on);
+	// lane OWNERFIX-1 r2: setRadiusCursorNone (InGameUI vslot 0x144, called by the edge between setSelecting(false) and the mode flags, RW 0x69B5ED): the owner of the
+	// radius cursor (InGameHud) registers what clears it, so it is gone in the edge's own call, not at the next frame
+	void setRadiusCursorNoneHook(std::function<void()> hook) { m_radiusCursorNone = std::move(hook); }
+	// the steps of the last disable edge / DISABLE_INPUT in the order they ran (HudInput keeps the vector); the tests pin retail's order with it
+	void setStepLog(std::vector<std::string> *log) { m_stepLog = log; }
+	// lane OWNERFIX-1: a map script's DISABLE_INPUT (enable false) / ENABLE_INPUT (true). ScriptActions DISABLE_INPUT (RW 0x7BC586, BFME2 decomp
+	// ScriptActionsRva003BBAD3.cpp, tier A), in retail's order: setInputEnabled(false) (RW 0x69B5DA: the edge above), Mouse::setVisibility(false) (RW 0x5EDD0F),
+	// MSG_DESTROY_SELECTED_GROUP (true) appended to the stream (0x3EC, TheMessageStream vslot 0x48), vslot 0x110 deselectAllDrawables (RW 0x69C817, posts
+	// nothing itself), the waypoint mode off (+ 0x8B0 = 0), then the control bar's help provider reset (RW 0x8076CD: InGameHud::scriptInput) and the LookAt
+	// translator's flags (RW 0x83AB5D: InGameHud::scriptInput). ENABLE_INPUT (RW 0x7BC5E9): setInputEnabled(true), setVisibility(true)
+	void applyScriptInput(bool enable);
+	static std::string scriptInputStopLine(); ///< `[S-4964] ...` (InGameHud::stops)
+	bool scriptMouseHidden() const { return m_scriptMouseHidden; }
 	bool isScrolling() const { return m_scrolling; }
 	// lane BUILD-5: RotWK InGameUI::setScrolling (vslot 0xA4, RW 0x69B28F; BFME2 decomp InGameUIInputModes.cpp:330, tier A): a change only; on: TheMouse's capture
 	// (vslot 0x50) and the Scroll cursor (3), off: the Arrow cursor (2) and the release (vslot 0x54)
@@ -219,6 +240,16 @@ public:
 
 	// ---- lane BUILD-5: MiscAudio sounds the translators ask for (by MiscAudio field name, e.g. BadBuildingPlacementSound), drained by the device ----
 	void requestMiscSound(const std::string &field) { m_miscSounds.push_back(field); }
+	// RW 0x6D9BF3 -> RW 0x71C7E4: a new UNDER_ATTACK event re-arms the control bar's blink (a flag and a 150-client-frame count,
+	// the + 0x2A0 window toggled every 15 frames). The device draws the blink; here the request is counted and drained
+	void requestAttackFlash() { ++m_attackFlashes; }
+	unsigned takeAttackFlashes()
+	{
+		unsigned out = m_attackFlashes;
+		m_attackFlashes = 0;
+		return out;
+	}
+	unsigned attackFlashes() const { return m_attackFlashes; }
 	std::vector<std::string> takeMiscSounds()
 	{
 		std::vector<std::string> out;
@@ -274,6 +305,16 @@ private:
 	std::vector<ObjectID> m_selected;
 	const CommandButton *m_guiCommand = nullptr;
 	bool m_forceAttack = false, m_forceMove = false, m_waypoint = false, m_attackMoveTo = false, m_preferSelection = false;
+	std::function<void()> m_radiusCursorNone;
+	std::vector<std::string> *m_stepLog = nullptr;
+	void noteStep(const char *step)
+	{
+		if (m_stepLog)
+		{
+			m_stepLog->push_back(step);
+		}
+	}
+	bool m_scriptMouseHidden = false; ///< lane OWNERFIX-1: Mouse::setVisibility(false) of DISABLE_INPUT
 	bool m_inputEnabled = true, m_scrolling = false, m_selecting = false, m_quitMenuVisible = false;
 	IRegion2D m_areaHint{};
 	bool m_hasAreaHint = false;
@@ -295,5 +336,6 @@ private:
 	ICoord2D m_placeAnchorStart{}, m_placeAnchorEnd{};
 	float m_scrollAmountX = 0.0f, m_scrollAmountY = 0.0f;
 	std::vector<std::string> m_miscSounds;
+	unsigned m_attackFlashes = 0;
 	int m_maxSelect = 0;
 };

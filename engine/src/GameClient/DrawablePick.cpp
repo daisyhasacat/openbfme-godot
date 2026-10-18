@@ -2,6 +2,7 @@
 // See DrawablePick.h.
 
 #include "GameClient/DrawablePick.h"
+#include "Common/BfmeGame.h"
 
 #include "GameClient/Drawable.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DScriptedModelDraw.h"
@@ -186,9 +187,10 @@ Result rayTest(const Drawable &drawable, const Coord3D &o, const Coord3D &d, flo
 		const RenderObjPrototype *proto = nullptr;
 		if (e.kind == W3D_DRAWKIND_MODEL && e.draw)
 			proto = e.draw->currentModel();
-		else if (e.kind == W3D_DRAWKIND_FLOOR && !e.staticModel.empty())
+		else if (e.kind == W3D_DRAWKIND_FLOOR && !e.staticModel.empty() && bfme1Mounted())
 		{
-			// BFME1 building plots expose their clickable surface through FloorDraw.
+			// community PR #36, BFME1 only (docs/BFME1.md): BFME1's building plots expose their clickable surface through W3DFloorDraw. RotWK / BFME2
+			// floors stay unpickable (S-1200)
 			std::string error;
 			proto = drawable.drawServices().assets.Create_Render_Obj(e.staticModel, &error);
 		}

@@ -222,6 +222,8 @@ ListEntryRow &prepareRow(ListboxData *list, int row)
 	return r;
 }
 
+constexpr int kListBadgePixels = 14; // lane PLATFORMICON-1: the badge's side (rows are 16 - 20 stage pixels high)
+
 int addImageEntry(const std::string &image, Color color, int row, int column, GameWindow *window, bool overwrite, int width, int height)
 {
 	(void)overwrite;
@@ -1067,6 +1069,13 @@ WindowMsgHandledType GadgetListBoxSystem(GameWindow *window, std::uint32_t msg, 
 				}
 			}
 			computeTotalHeight(window);
+			// OpenBFME: an APT opening animation can grow a scrolled list until its rows fit; do not retain the old viewport's scroll offset.
+			const int maxDisplayPos = std::max(0, list->totalHeight - list->displayHeight + 1);
+			if (list->displayPos > maxDisplayPos)
+			{
+				list->displayPos = (short)maxDisplayPos;
+				adjustDisplay(window, 0, true);
+			}
 			break;
 		}
 		case GLM_UPDATE_DISPLAY:
@@ -1161,6 +1170,32 @@ UnicodeString GadgetListBoxGetTextAndColor(GameWindow *listbox, Color *color, in
 	listbox->manager().winSendSystemMsg(listbox, GLM_GET_TEXT, msgData(&pos), msgData(&tAndC));
 	*color = tAndC.color;
 	return tAndC.string;
+}
+
+bool GadgetListBoxSetCellBadge(GameWindow *listbox, int row, int column, const std::string &image)
+{
+	ListboxData *list = listbox ? listOf(listbox) : nullptr;
+	if (!list || row < 0 || row >= list->listLength || column < 0 || column >= list->columns)
+	{
+		return false;
+	}
+	ListEntryRow &r = list->listData[(std::size_t)row];
+	if (!r.hasCells || r.cell[(std::size_t)column].cellType != LISTBOX_TEXT)
+	{
+		return false;
+	}
+	r.cell[(std::size_t)column].badge = image;
+	return true;
+}
+
+std::string GadgetListBoxGetCellBadge(GameWindow *listbox, int row, int column)
+{
+	ListboxData *list = listbox ? listOf(listbox) : nullptr;
+	if (!list || row < 0 || row >= list->listLength || column < 0 || column >= list->columns || !list->listData[(std::size_t)row].hasCells)
+	{
+		return std::string();
+	}
+	return list->listData[(std::size_t)row].cell[(std::size_t)column].badge;
 }
 
 int GadgetListBoxAddEntryText(GameWindow *listbox, UnicodeString text, Color color, int row, int column, bool overwrite)
@@ -1826,7 +1861,16 @@ void drawListBoxText(GameWindow *window, WinInstanceData *instData, int x, int y
 					}
 					int textY = (row.height - textHeight + 1) / 2;
 					textY = textY < 0 ? 0 : textY;
+					if (!cell.badge.empty() && cell.justification == 0)
+					{
+						textX += kListBadgePixels + 3; // lane PLATFORMICON-1: the text starts after the icon
+					}
 					mgr.winDrawText(cell.text, window->winGetFont(), columnX + textX, drawY + textY, cell.color, dropColor, wrap);
+					if (!cell.badge.empty())
+					{
+						const int by = drawY + (row.height - kListBadgePixels) / 2;
+						mgr.winDrawImage(cell.badge, columnX + 2, by, columnX + 2 + kListBadgePixels, by + kListBadgePixels);
+					}
 				}
 				else if (cell.cellType == LISTBOX_IMAGE && !cell.image.empty())
 				{

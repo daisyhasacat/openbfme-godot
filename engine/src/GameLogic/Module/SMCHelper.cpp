@@ -4,6 +4,7 @@
 #include "GameLogic/Module/SMCHelper.h"
 
 #include "Common/StateHash.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object/Object.h"
 
@@ -92,4 +93,15 @@ void SMCHelper::crc(StateHasher &hasher) const
 		hasher.addI32(e.bit);
 		hasher.addU32(e.expiry);
 	}
+}
+
+void SMCHelper::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	ObjectHelperShell::xfer(x);
+	SnapshotXfer::each(x, m_list, 8, [&](Entry &e) {
+		x.xferInt(&e.bit);
+		SnapshotXfer::checkRange(e.bit, 0, SnapshotXfer::modelConditionCount() - 1, "a special model condition's bit"); // lane SAVE-4e
+		x.xferUnsignedInt(&e.expiry);
+	});
 }

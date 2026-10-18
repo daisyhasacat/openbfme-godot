@@ -58,6 +58,28 @@ void LookAtTranslator::stopScrolling()
 	m_scrollType = SCROLL_NONE;
 }
 
+// lane OWNERFIX-1: RW 0x83AB5D (LookAtXlat.h)
+void LookAtTranslator::clearFlags()
+{
+	if (m_scrolling)
+	{
+		stopScrolling();
+	}
+	m_rotating = false;
+	m_rotateLeft = m_rotateRight = m_zoomIn = m_zoomOut = false;
+}
+
+void LookAtTranslator::cancelHeld()
+{
+	stopScrolling();
+	m_rotating = false;
+	m_rotateLeft = m_rotateRight = m_zoomIn = m_zoomOut = false;
+	for (bool &k : m_scrollKey)
+	{
+		k = false;
+	}
+}
+
 MessageDisposition LookAtTranslator::translate(const ClientMessage &msg)
 {
 	switch (msg.type())

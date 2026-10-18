@@ -30,6 +30,7 @@ class ModuleFactory;
 class HordeDispatchSpecialPower : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(HordeDispatchSpecialPower) // lane SAVE-4b
 	HordeDispatchSpecialPower(Thing *thing, const SpecialPowerModuleData *data) : SpecialPowerModule(thing, data) {} // RW 0x8CCE0D
 	void doSpecialPower(unsigned options) override;                               // RW 0x8CD08C
 	void doSpecialPowerAtObject(Object *target, unsigned options) override;       // RW 0x8CCF76

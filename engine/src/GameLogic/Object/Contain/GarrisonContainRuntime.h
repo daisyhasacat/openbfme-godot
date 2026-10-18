@@ -55,6 +55,7 @@ struct OpenContainModuleData;
 class GarrisonContain : public OpenContain
 {
 public:
+	OBFME_MODULE_XFER(GarrisonContain) // lane SAVE-4b
 	enum
 	{
 		MAX_GARRISON_POINTS = 40, // RW 0x87C69A: 0x28

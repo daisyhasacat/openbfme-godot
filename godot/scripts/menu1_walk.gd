@@ -20,6 +20,7 @@ const PROFILE_ENTRY_STAGE := Rect2(369, 350, 272, 26) # the MENU-1 build's "prof
 const MENU_PATHS := [
 	["options", "OptionsNav", "Settings"],
 	["lan", "MultiPlayNav", "LocalNetwork"],
+	["online", "MultiPlayNav", "Online"],
 	["replays", "MultiPlayNav", "Replay"],
 	["load", "SoloPlayNav", "LoadGame"],
 	["credits", "OptionsNav", "Credits"],
@@ -35,7 +36,9 @@ func run(p_game: Node, p_dir: String) -> void:
 		DirAccess.make_dir_recursive_absolute(dir)
 	await game._step(game.LEVEL_MAIN_MENU_FRAMES + 90)
 	await game._wait_main_ready()
+	print("MENU1 style: ", game._menu_style, " presentation: ", shell.get_shell_report().get("presentation_style", "missing"))
 	await _check("main")
+	await _campaign_entries()
 	await _skirmish_first_visit()
 	if OS.get_environment("MENU1_SKIP_PROFILE_PAGE").is_empty():
 		await _skirmish_profile_page()
@@ -53,6 +56,29 @@ func run(p_game: Node, p_dir: String) -> void:
 	await _skirmish_start()
 	print("MENU1 RESULT: %d ok, %d failed" % [ok_count, fail_count])
 	game.get_tree().quit(0 if fail_count == 0 else 1)
+
+
+func _campaign_entries() -> void:
+	for entry in [["BFME2GoodCampaign", "good"], ["BFME2EvilCampaign", "evil"]]:
+		await _campaign_click("campaigns")
+		await _shot("campaigns")
+		await _campaign_click(entry[0])
+		var expected := "BFME2 %s campaign: not wired" % String(entry[1]).capitalize()
+		if game._campaign_menu_buttons.notice_text() != expected:
+			_fail("campaign-" + entry[1], "button did not route to the explicit integration stop")
+		else:
+			ok_count += 1
+		await _check("campaign-" + entry[1])
+	game._campaign_menu_buttons.show_notice("")
+
+
+func _campaign_click(action: String) -> void:
+	var button: Button = game._campaign_menu_buttons.find_child(action, true, false)
+	if button == null or not button.is_visible_in_tree():
+		_fail("campaign-" + action, "no visible button")
+		return
+	await _click_at(shell.window_to_stage(button.get_global_rect().get_center()))
+	await game._step(10)
 
 
 # ---- Skirmish ------------------------------------------------------------------------------------------------------------------------------------
@@ -217,7 +243,7 @@ func _menu_path(name: String, nav: String, item: String) -> void:
 				print("MENU1 clicked ", b.path)
 				cont = true
 				break
-		if not cont:
+		if not cont and game._menu_style == "rotwk" and not shell.screen_state().get("cah_suppress_promo", false):
 			_fail("create-a-hero-manager", "no hittable Continue on the introduction")
 		await game._step(150)
 		await _check("create-a-hero-manager")
@@ -235,7 +261,14 @@ func _menu_path(name: String, nav: String, item: String) -> void:
 					await _click_at(Vector2(b.x, b.y))
 					break
 		await game._step(150)
+	elif game._display_screen.is_open():
+		var buttons: Dictionary = shell.openbfme_page_state().get("buttons", {})
+		if buttons.has("cancel"):
+			await _click_at((buttons.cancel as Rect2).get_center())
+		else:
+			_fail(name, "Options has no Cancel button")
 	elif not await game._walk_back(name):
+		_fail(name, "no usable back button")
 		shell.shell_pop()
 		await game._step(120)
 	await game._step(120)

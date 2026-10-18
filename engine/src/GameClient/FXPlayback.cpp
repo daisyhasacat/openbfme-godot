@@ -282,7 +282,7 @@ ParticleEmitterInstance *FXPlayback::playW3DEmitter(const std::string &stem, con
 		ArchiveW3DFileSource source(m_fs);
 		std::vector<std::uint8_t> bytes;
 		std::string err;
-		if (!source.Read(W3D_Asset_Path(stem), bytes, &err))
+		if (!source.Read(W3D_Asset_Path(stem, source.FlatAssetLayout()), bytes, &err))
 		{
 			m_emitterFiles.erase(stem);
 			return fail(err);
@@ -291,12 +291,12 @@ ParticleEmitterInstance *FXPlayback::playW3DEmitter(const std::string &stem, con
 		if (!Load_W3D_File(bytes.data(), bytes.size(), *contents, &err))
 		{
 			m_emitterFiles.erase(stem);
-			return fail(W3D_Asset_Path(stem) + ": " + err);
+			return fail(W3D_Asset_Path(stem, source.FlatAssetLayout()) + ": " + err);
 		}
 		if (contents->Emitters.size() != 1)
 		{
 			m_emitterFiles.erase(stem);
-			return fail(W3D_Asset_Path(stem) + " holds " + std::to_string(contents->Emitters.size()) + " emitters, expected 1");
+			return fail(W3D_Asset_Path(stem, source.FlatAssetLayout()) + " holds " + std::to_string(contents->Emitters.size()) + " emitters, expected 1");
 		}
 		file = contents;
 	}
@@ -324,4 +324,18 @@ std::vector<std::string> FXPlayback::unverified() const
 		out.push_back(s);
 	}
 	return out;
+}
+
+// lane VISUAL-2 (scripts, proof captures): the live systems whose position is within `radius` of (x, y), and their particles
+void FXPlayback::particlesNear(float x, float y, float radius, long long &systems, long long &particles) const
+{
+	systems = particles = 0;
+	m_manager->forEachSystem([&](const FXParticleSystem::ParticleSystem &ps) {
+		const float dx = ps.position().x - x, dy = ps.position().y - y;
+		if (!ps.isDestroyed() && dx * dx + dy * dy <= radius * radius)
+		{
+			++systems;
+			particles += (long long)ps.particleCount();
+		}
+	});
 }

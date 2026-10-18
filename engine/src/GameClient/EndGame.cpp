@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0.
 // See GameClient/EndGame.h for the target facts, the donors and what is inference (lane END-1). Client code: no logic state is written here.
 
+#include "Common/BfmeGame.h"
 #include "GameClient/EndGame.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
 
@@ -155,6 +156,7 @@ bool EndGameScripts::load(ArchiveFileSystem &fs, const std::string &libraryName,
 	}
 	auto map = std::make_unique<LoadedMap>();
 	MapReadOptions options;
+	options.bfme1 = isBfme1Data(fs); // community PR #36
 	if (!MapReader::load(bytes, path, options, *map, error))
 	{
 		return false;
@@ -604,7 +606,7 @@ std::vector<std::string> EndGameController::stopLines()
 		"[S-1064] leaving the game: QuitMenu.apt (AptQuitMenu: Resume, Options, Restart in a skirmish / Forfeit in a LAN game, Exit and the movie's confirmations) over the game; the "
 		"surrender and the exit of a LAN game are MSG_SELF_DESTRUCT on the lockstep; Continue shows the screens the game started from (TheShell + 0x9C: MainMenu and Skirmish) or opens "
 		"the LAN lobby again (the LAN game is started without the shell's LAN screens, MP-1); Save / Load open SaveLoad.apt over the game (lane SAVE-2, S-4003). Not ported: the Living World branches, the network quit "
-		"of the first six frames (RW 0xBFD298), the asset transfer to an ally (RW 0x6AF598), the network session's disconnected slots (RW 0x90313E); INFERENCE: a network game answers "
+		"of the first six frames (RW 0xBFD298), the asset transfer to an ally (RW 0x6AF598), disconnected-slot results for recorded replays (live sessions and relay spectators use RW 0x90313E); INFERENCE: a network game answers "
 		"the quit menu with mode 1 / kind 1 (retail's LAN new-game message, RW 0x648EED), the exiting peer's own logic is cleared before it runs its MSG_SELF_DESTRUCT(true)",
 	};
 }
@@ -642,6 +644,7 @@ ScoreScreenData ScoreScreenData::build(GameLogic &logic, int type, const std::ve
 	const PlayerList &players = logic.players();
 	const Player *local = players.getLocalPlayer();
 	d.localIsObserver = !local || local->isObserver(); // RW 0x6AAC44 (+ 0x294)
+	d.localAlliedVictory = v.localAlliedVictory();      // lane OWNERFIX-3: RW 0x9CE8F3's gate
 	if (!d.localIsObserver)
 	{
 		d.entries.resize(1); // RW 0x92708A(1): the local player's row is the first

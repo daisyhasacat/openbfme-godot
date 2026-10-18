@@ -325,18 +325,16 @@ bool reportEva(const std::string &n, const Coord3D *position)
 	// Eva runs on the audio manager's client clock (presentation time, never the logic clock)
 	return eva->reportEventByName(n, position, mgr->nowMs());
 }
-bool reportEva(int n, const Coord3D *position)
+bool reportEva(int event, const Coord3D *position)
 {
-	// Upgrade completion carries an already resolved Eva index. Queue it on the owner thread
-	// with a copied position, exactly like the name-based reports (S-814).
 	const bool hasPosition = position != nullptr;
 	const Coord3D at = hasPosition ? *position : Coord3D{ 0.0f, 0.0f, 0.0f };
-	switch (route(Binding::Manager, [n, hasPosition, at]() { reportEva(n, hasPosition ? &at : nullptr); }))
+	switch (route(Binding::Manager, [event, hasPosition, at]() { reportEva(event, hasPosition ? &at : nullptr); }))
 	{
 	case Route::Run:
 		break;
 	case Route::Deferred:
-		return true; // S-814: reported on the audio owner at the next idle point
+		return true;
 	case Route::Unbound:
 		g_withoutEva.fetch_add(1, std::memory_order_relaxed);
 		return false;
@@ -353,9 +351,9 @@ bool reportEva(int n, const Coord3D *position)
 		g_withoutEva.fetch_add(1, std::memory_order_relaxed);
 		return false;
 	}
-	// Eva runs on the audio manager's client clock (presentation time, never the logic clock)
-	return eva->reportEvent(n, position, mgr->nowMs());
+	return eva->reportEvent(event, position, mgr->nowMs());
 }
+
 void installUnitVoiceHandler(UnitVoiceHandler handler, const void *owner)
 {
 	UnitVoiceHandler old;

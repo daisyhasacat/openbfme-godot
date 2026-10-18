@@ -60,7 +60,7 @@ bool parseMPPositionInfo(DataChunkInput &file, DataChunkInfo *info, void *ud)
 	MPPositionInfo i;
 	i.isHuman = file.readByte() != 0;
 	i.isComputer = file.readByte() != 0;
-	if (info && info->version == 0)
+	if (info && info->version == 0 && static_cast<MapChunks *>(ud)->bfme1Data)
 	{
 		// version 0 (BFME1's script libraries, e.g. Libraries\AI_MP_Inherit_Management): the two flags and the team, 6 bytes; no LoadAIScript flag
 		// and no side restrictions (version 1 added both: Open-BFME-1 BfmeConv1881.cpp writes version 1 as bytes, team, count, names)
@@ -594,8 +594,11 @@ void registerParsers(DataChunkInput &file, MapChunks *c)
 	file.registerParser("ObjectsList", "", parseObjectsList, c);
 	file.registerParser("Object", "ObjectsList", parseObject, c);
 	file.registerParser("PolygonTriggers", "", parsePolygonTriggers, c);
-	// BFME1 base layouts also ship this capitalization (outpost_gondor.bse).
-	file.registerParser("PolyGonTriggers", "", parsePolygonTriggers, c);
+	if (c->bfme1Data)
+	{
+		// community PR #36, BFME1 data only (MapReadOptions::bfme1): BFME1's base layouts also ship this capitalization (outpost_gondor.bse)
+		file.registerParser("PolyGonTriggers", "", parsePolygonTriggers, c);
+	}
 	file.registerParser("TriggerAreas", "", parseTriggerAreas, c);
 	file.registerParser("StandingWaterAreas", "", parseStandingWaterAreas, c);
 	file.registerParser("RiverAreas", "", parseRiverAreas, c);

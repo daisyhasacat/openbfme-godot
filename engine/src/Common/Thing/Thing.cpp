@@ -63,3 +63,13 @@ void Thing::setTransform(const Coord3D *pos, const float basis[9], bool swept)
 	m_angle = (float)SimMath::atan2d(m_basis[3], m_basis[0]); // X axis = column 0: (b[0], b[3], b[6])
 	reactToTransformChange(&old, oldAngle);
 }
+
+void Thing::friend_setTransformExact(const Coord3D &pos, float angle, const float basis[9])
+{
+	const Coord3D old = m_position;
+	const float oldAngle = m_angle;
+	m_position = pos;
+	m_angle = angle;
+	std::memcpy(m_basis, basis, sizeof(m_basis));
+	reactToTransformChange(&old, oldAngle);
+}

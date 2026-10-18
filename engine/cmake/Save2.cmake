@@ -16,3 +16,5 @@ set(OPENBFME_SAVE2_TESTS
     tests/test_save2_retail.cpp
     tests/test_save2_menu.cpp
 )
+# lane SAVE-UI1: the in-game Save / Load screen flow (the quit menu's backgrounds, SaveLoad's Escape and its return to the game)
+list(APPEND OPENBFME_SAVE2_TESTS tests/test_saveui1.cpp)

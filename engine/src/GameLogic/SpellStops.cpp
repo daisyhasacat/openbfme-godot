@@ -21,9 +21,6 @@ std::vector<std::string> SpellStops::lines()
 		"InitialMaxRingLevel / GameLogic + 0x118) is not ported",
 		"[S-526] science side effects: a new science tells the special power modules of the player's objects (RW 0x6AE1C9 .. 0x6AE2E6) through PlayerScience's hook (counted "
 		"when none is installed); the script engine notices (RW 0x759A4E, 0x75950A), the control bar refresh and the local player's rank-up EVA (RW 0x6AA9C2) are not ported",
-		"[S-527] skill points of kills: connected (lane INTEG-1): XP-1's ExperienceWorld runs RW 0x6AAFC3 / 0x6AB0D0 with the victim's ExperienceTracker value and its "
-		"default sink calls PlayerScience::addSkillPoints(points, true) and the score keeper (RW 0x782AA4, 0x79DBA1); what stays open is XP-1's: the skill point veto "
-		"(S-635)",
 		"[S-528] game start rank points: RW 0x6311ED (0x6313B6 .. 0x631407) gives the human players GameLogic + 0x94 skill points in the game kind RW 0x6253BF selects; not ported",
 		"[S-529] special power runtime: ported: SpecialPowerModule's recharge / ready frame / pause / percent / requirements (RW 0x8973EE, 0x896E31, 0x896C72, 0x896CF2, "
 		"0x896756, 0x8969E5), the shared timers (Player RW 0x6AD1B0 / 0x6AD22B / 0x6AD26F), the science notice (RW 0x896B56), PlayerHealSpecialPower's heal (RW 0x8CC4B4), "

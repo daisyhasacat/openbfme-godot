@@ -145,6 +145,12 @@ RelayCore::Action RelayCore::hello(const RelayAddress &from, const std::uint8_t 
 	auto it = m_games.find(t.gameId);
 	if (it == m_games.end())
 	{
+		if (!t.spectator && t.generation > 0)
+		{
+			// a rejoin ticket cannot start a game: nothing exists to resume (refused before a game, a log handle or a maxGames slot is taken)
+			++m_stats.refused;
+			return reply(from, encodeRefused(REFUSE_REJOIN_BEFORE_BIND));
+		}
 		if (m_games.size() >= m_options.maxGames)
 		{
 			++m_stats.refused;
@@ -190,6 +196,11 @@ RelayCore::Action RelayCore::hello(const RelayAddress &from, const std::uint8_t 
 		return spectatorHello(g, t, from, token, nowMs); // lane ONLINE-3
 	}
 	Slot &s = g.slots[t.slot];
+	if (!s.everBound && t.generation > 0)
+	{
+		++m_stats.refused;
+		return reply(from, encodeRefused(REFUSE_REJOIN_BEFORE_BIND));
+	}
 	std::uint8_t event = 0;
 	// lane ONLINE-3: a rejoin ticket of a newer generation: the slot's game restarted and its player got a fresh ticket from the lobby. The slot moves to
 	// this address without the session token (the old process is gone with it) and starts as a new incarnation; an older generation is stale
@@ -261,7 +272,7 @@ RelayCore::Action RelayCore::hello(const RelayAddress &from, const std::uint8_t 
 			s.lastRefill = nowMs;
 		}
 		event = s.everBound ? 2 : 1;
-		s.generation = t.generation; // lane ONLINE-3: a first bind may already be a rejoin ticket's (equal generations rebind with the token only)
+		s.generation = t.generation;
 		s.bound = true;
 		s.everBound = true;
 		s.bye = false;
@@ -481,7 +492,7 @@ RelayCore::Action RelayCore::logRequest(const RelayAddress &from, const std::uin
 	}
 	if (!g.logReader)
 	{
-		g.logReader = std::fopen((g.closed ? g.logPath : g.logPath + ".part").c_str(), "rb");
+		g.logReader = std::fopen((g.logRenamed ? g.logPath : g.logPath + ".part").c_str(), "rb");
 		if (!g.logReader)
 		{
 			++m_stats.logErrors;
@@ -1093,6 +1104,11 @@ void RelayCore::stopLog(Game &g, const std::string &why)
 	// (the command counts, the frontier, the disconnect records) is released, so nothing stays held for a log that takes no more
 	++m_stats.logErrors;
 	error(why);
+	if (g.logReader)
+	{
+		std::fclose(g.logReader);
+		g.logReader = nullptr;
+	}
 	if (g.log)
 	{
 		std::fclose(g.log);
@@ -1192,7 +1208,8 @@ void RelayCore::close(Game &g, std::uint8_t reason, std::uint64_t nowMs)
 	{
 		watched = watched || sp.bound;
 	}
-	if (g.logReader && !watched)
+	// Windows cannot rename a log with its reader open. LOG_REQUEST reopens the finished path for spectators.
+	if (g.logReader)
 	{
 		std::fclose(g.logReader); // lane ONLINE-3
 		g.logReader = nullptr;
@@ -1208,6 +1225,7 @@ void RelayCore::close(Game &g, std::uint8_t reason, std::uint64_t nowMs)
 		}
 		else
 		{
+			g.logRenamed = true;
 			m_closedLogs.push_back(g.logPath);
 			if (m_closedLogs.size() > 1000)
 			{

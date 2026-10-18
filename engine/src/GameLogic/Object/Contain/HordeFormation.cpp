@@ -74,6 +74,11 @@ const char *HordeContain::formationStopLine()
 	return kStop;
 }
 
+const ThingTemplate *HordeContain::alternateFormationTemplate() const
+{
+	return alternateTemplate(getObject()->logic(), m_data->horde);
+}
+
 // RW 0x8700AC
 bool HordeContain::canToggleFormation() const
 {
@@ -189,6 +194,12 @@ HordeContain *HordeContain::toggleFormation()
 	{
 		stances->setStance(fresh->hordeData().m_isPorcupineFormation ? STANCE_PORCUPINE : STANCE_BATTLE);
 	}
+	if (!fresh->hordeData().m_isPorcupineFormation)
+	{
+		// lane BACKLOG-8, RW 0x8762A4 .. 0x8762B3: a formation that is not a porcupine takes PORCUPINE (model condition 0x71, set by the move hub RW 0x875121
+		// on the members that reached their slots) from the horde and its members (RW 0x6943ED)
+		fresh->setModelConditionForHorde(AIUpdateInterface::modelConditionBit("PORCUPINE"), false);
+	}
 	return fresh;
 }
 
@@ -215,13 +226,30 @@ namespace HordeCommands
 // the dispatcher case RW 0x77BE83
 void registerHandlers(GameLogicDispatch &d)
 {
+	// RW dispatcher case 0x460 / canSetFormation 0x86FFD2: only THIS horde's next formation is accepted.
+	d.registerHandler(MSG_HORDE_SET_FORMATION, "HORDE-2", [](GameLogic &logic, const GameMessage &m) {
+		const GameMessageArgument *object = m.getArgument(0);
+		const GameMessageArgument *formation = m.getArgument(1);
+		if (!object || object->type != ARGUMENTDATATYPE_OBJECTID || !formation || formation->type != ARGUMENTDATATYPE_INTEGER)
+		{
+			return false;
+		}
+		const ThingTemplate *target = logic.things().findByTemplateID((unsigned short)formation->integer);
+		Object *horde = GameLogicDispatch::issuerObject(logic, m, object->objectID); // review DEVPORT-7e: only the issuer's horde
+		auto *hc = horde ? dynamic_cast<HordeContain *>(horde->getContain()) : nullptr;
+		if (target && hc && hc->alternateFormationTemplate() == target && hc->canToggleFormation())
+		{
+			hc->toggleFormation();
+		}
+		return true;
+	});
 	d.registerHandler(MSG_HORDE_TOGGLE_FORMATION, "HORDE-2", [](GameLogic &logic, const GameMessage &m) {
 		const GameMessageArgument *a = m.getArgument(0);
 		if (!a || a->type != ARGUMENTDATATYPE_OBJECTID)
 		{
 			return false;
 		}
-		Object *horde = logic.findObjectByID(a->objectID);
+		Object *horde = GameLogicDispatch::issuerObject(logic, m, a->objectID); // review DEVPORT-7e: only the issuer's horde
 		if (!horde || !horde->getContain())
 		{
 			return true;

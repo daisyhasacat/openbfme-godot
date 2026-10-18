@@ -1,0 +1,4 @@
+# public_submodules.txt: the submodules the public tree may carry (lane PUBLISH-2 r2, autorelease.py link_problems()), one per line:
+#   <commit>  <path>  <url>
+# The gitlink's commit and the .gitmodules url must match exactly; a submodule bump updates its line here in the same commit (reviewed).
+507ed9d840c01a3c5b2a39af8bb4000bfac30bf5  engine/thirdparty/godot-cpp  https://github.com/godotengine/godot-cpp

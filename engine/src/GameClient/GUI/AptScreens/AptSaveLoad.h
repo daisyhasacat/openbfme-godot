@@ -34,7 +34,7 @@
 // reads the folders itself) and receives the chosen file, the typed name and the deleted file as shell requests (LoadReplayFile, LoadGameFile,
 // SaveGameFile, DeleteGameFile); the host saves and answers saveFinished(), which shows the result in the message box (APT:SaveGameProgress with
 // GUI:GameSaved or the error) instead of retail's two boxes; a save the running build cannot load is drawn grey (0xFF808080) and Load shows why
-// (GUI:ErrorLoadingGame's title, the refusal as text); retail saves are listed grey as import entries that do not load yet (SAVE-7); the disk space
+// (GUI:ErrorLoadingGame's title, the refusal as text); lane CAMPSAVE-1: the campaign's auto-saves are listed in the AutoSaveList; retail saves are listed grey as import entries that do not load yet (SAVE-7); the disk space
 // check (RW 0x6DD795) is the host's write failure; the War of the Ring page lists nothing and the multiplayer type is not offered. The gadget
 // handler is retail's (RW 0x8180A8): a selection clears the other list's, refreshes the buttons (RW 0x816927 -> 0x8165A1: the movie's
 // LoadButtonEnable / DeleteButtonEnable) and on the save page takes the file's name into the entry (RW 0x816FA3) and SaveButtonEnable (RW 0x816F24); a
@@ -60,6 +60,12 @@ public:
 
 	void runInit() override;
 	void frameUpdate() override;
+	// lane SAVE-UI1: RW 0x816627, the screen's input procedure (the host gives it Escape): true when the key is used (KEY_ESC); its release in state 0
+	// closes the screen
+	bool inputMessage(std::uint32_t msg, WindowMsgData data1, WindowMsgData data2);
+	bool inputKey(int key, int keyState) override { return inputMessage(GWM_CHAR, (WindowMsgData)key, (WindowMsgData)keyState); }
+	// lane SAVE-UI1: + 0x2A4, the constructor showed the front-end background (none was up), the dtor hides it (tests)
+	bool showedBackground() const { return m_showedBackground; }
 
 	// the rows put into the lists (tests): every row as "list|col0|col1|col2|col3|colour"
 	const std::vector<std::string> &rows() const { return m_rows; }
@@ -127,11 +133,13 @@ private:
 	std::vector<std::string> m_rows;
 	std::vector<std::string> m_gameListPaths, m_autoSavePaths;
 	std::vector<int> m_gameListSaves;     // lane SAVE-2: GameList row -> SaveLoadInfo::saves index (-1 the new-save row)
+	std::vector<int> m_autoSaveSaves;     // lane CAMPSAVE-1: AutoSaveList row -> SaveLoadInfo::saves index
 	std::string m_loaded;
 	std::string m_pendingPath, m_pendingName; // the file / typed name a confirmation waits for
 	unsigned m_generation = 0;
 	std::unique_ptr<AptMessageBox> m_box;
 	bool m_closeAfterBox = false, m_boxOpen = false;
+	bool m_showedBackground = false;      // + 0x2A4 (lane SAVE-UI1)
 	std::string m_boxButton;
 	std::vector<std::string> m_confirmations;
 	std::vector<std::string> m_buttonCalls;

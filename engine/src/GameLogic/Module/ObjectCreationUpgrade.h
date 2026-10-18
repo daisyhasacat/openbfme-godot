@@ -60,6 +60,7 @@ public:
 class ObjectCreationUpgrade : public UpdateModule, public UpgradeMux
 {
 public:
+	OBFME_MODULE_XFER(ObjectCreationUpgrade) // lane SAVE-4b
 	ObjectCreationUpgrade(Thing *thing, const ObjectCreationUpgradeModuleData *data); ///< RW 0x8B8221
 	UpgradeMux *getUpgrade() override { return this; }
 	UpdateSleepTime update() override; ///< RW 0x8B8464

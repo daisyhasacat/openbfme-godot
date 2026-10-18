@@ -15,6 +15,7 @@
 #include "GameLogic/ObjectFilterMatch.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/SimMath.h"
+#include "Common/Xfer.h"
 
 namespace
 {
@@ -570,4 +571,102 @@ int ScoreKeeper::heroesBuilt(GameLogic &logic) const
 int ScoreKeeper::heroesLost(GameLogic &logic) const
 {
 	return heroCount(logic, m_lostByTemplate); // RW 0x79E44C: + 0x2EC
+}
+
+namespace
+{
+void xferCountMap(Xfer &x, std::map<std::string, int> &m)
+{
+	std::uint32_t n = (std::uint32_t)m.size();
+	x.xferCount(&n, 1 + 4, sizeof(std::pair<const std::string, int>) + Xfer::kNodeBytes); // a name, the count
+	if (!x.isLoading())
+	{
+		for (auto &kv : m)
+		{
+			std::string k = kv.first;
+			x.xferAsciiString(&k);
+			x.xferInt(&kv.second);
+		}
+		return;
+	}
+	m.clear();
+	for (std::uint32_t i = 0; i < n; ++i)
+	{
+		std::string k;
+		std::int32_t c = 0;
+		x.xferAsciiString(&k);
+		x.xferInt(&c);
+		if (m.count(k)) // lane SAVE-4e: a template name once
+		{
+			throw XferException("a score count map names '" + k + "' twice");
+		}
+		m[k] = c;
+	}
+}
+} // namespace
+
+// lane SAVE-4a: OpenBFME native layout. Retail's ScoreKeeper::DoXfer (RW 0x79ECCB, tier B, window (1, 12)) transfers 26 ints, the template count maps and
+// the per-frame vector; this class holds a different field set (the counters RotWK reads, and the maps by template NAME), so its block is native (decision
+// D3: a class that is not a 1:1 port gets its own layout). Every field crc hashes, the whole per-frame vector (crc hashes only its newest entry) and the
+// fields crc leaves out; the diagnostic counters are not state.
+void ScoreKeeper::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferBool(&m_enabled);
+	x.xferUnsignedInt(&m_moneyEarned);
+	x.xferUnsignedInt(&m_moneySpent);
+	x.xferUnsignedInt(&m_moneyEarnedSecond);
+	x.xferUnsignedInt(&m_moneyAdjust);
+	x.xferUnsignedInt(&m_moneyGiven);
+	x.xferInt(&m_spentUnits);
+	x.xferInt(&m_spentStructures);
+	x.xferInt(&m_spentHeroes);
+	x.xferInt(&m_spentTotal);
+	for (int i = 0; i < MAX_PLAYERS; ++i)
+	{
+		x.xferInt(&m_unitsDestroyed[i]);
+		x.xferInt(&m_structuresDestroyed[i]);
+		x.xferInt(&m_unitsDestroyed2[i]);
+		x.xferInt(&m_structuresDestroyed2[i]);
+		xferCountMap(x, m_destroyedByTemplate[i]);
+	}
+	x.xferInt(&m_unitsBuilt);
+	x.xferInt(&m_unitsLost);
+	x.xferInt(&m_structuresBuilt);
+	x.xferInt(&m_structuresLost);
+	x.xferInt(&m_structuresBuilt2);
+	x.xferInt(&m_structuresLost2);
+	x.xferInt(&m_unitsBuilt2);
+	x.xferInt(&m_unitsLost2);
+	x.xferUnsignedInt(&m_purchasePointsEarned);
+	x.xferInt(&m_currentScore);
+	x.xferUnsignedInt(&m_endFrame);
+	x.xferInt(&m_firstHeroEntry);
+	x.xferReal(&m_skillPointsEarned);
+	x.xferReal(&m_eliminationBonus);
+	x.xferInt(&m_playerIndex);
+	x.xferInt(&m_lastAttacker);
+	x.xferInt(&m_unitsAlive);
+	x.xferInt(&m_structuresAlive);
+	x.xferBool(&m_counting);
+	for (std::map<std::string, int> *m : { &m_builtByTemplate, &m_builtByTemplate2, &m_lostByTemplate, &m_lostByTemplate2, &m_hordesBuilt })
+	{
+		xferCountMap(x, *m);
+	}
+	x.xferVectorSize(m_perFrame, 4 + 4 + 2 + 2 + 2 + 1);
+	for (PerFrameStats &e : m_perFrame)
+	{
+		x.xferUnsignedInt(&e.money);
+		x.xferReal(&e.score);
+		x.xferUnsignedShort(&e.unitsAlive);
+		x.xferUnsignedShort(&e.structuresAlive);
+		x.xferUnsignedShort(&e.skillPoints);
+		x.xferBool(&e.recorded);
+	}
+	x.xferVectorSize(m_fortressMarks, 4);
+	for (int &f : m_fortressMarks)
+	{
+		x.xferInt(&f);
+	}
 }

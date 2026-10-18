@@ -1,0 +1,11 @@
+# sync_exclude.txt: paths the public tree leaves out (lane PUBLISH-2), on top of archive/ (autorelease.py sync_tree(), the sync recipe of
+# autorelease.sh). One repository-relative path per line; a folder drops everything under it; a path the sha does not have is fine.
+# Kept in step with the CI mirror's exclusion list: when one drops more than the other, a release re-adds what the mirror dropped (or the
+# mirror re-adds what a release dropped). Read from the archive sha's own tree, so a release uses the list of the commit it publishes.
+
+# CI configuration (workflows, runner labels): never public
+.gitea
+
+# the online service's deploy and operations (the owner's decision: the backend's deploy stays private)
+services/online/deploy
+services/online/DEPLOY.md

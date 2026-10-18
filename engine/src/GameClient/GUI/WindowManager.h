@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include "GameClient/GUI/TextBadges.h"
 #include "Libraries/Source/Apt/Apt.h"
 
 #include <cstdint>
@@ -43,6 +44,7 @@ class AptGadgetLayer;
 class GadgetDrawList;
 class Shell;
 class ShellServices;
+class MenuNavigationSource;
 
 // A note about something the manager could not do the retail way or has not ported (a stop, an unhandled command ...).
 struct WindowManagerNote
@@ -148,6 +150,11 @@ public:
 	bool showAptWindow(int index);
 	// Closes a window: the movie leaves its level, the slot is free again.  [S-171] the retail close path was not traced.
 	bool unloadAptWindow(int index);
+	// lane SAVE-UI1 (OPTS-6): AptPlayer::HideLevel / ShowLevel (RW 0x622463 / 0x6221E0, BFME2 decomp AptPlayer.cpp, tier A): the movie of a window leaves its level
+	// (UnloadLevel: loaded and focus bits cleared) while the record, the slot and the screen that owns it stay; ShowLevel asks the next update to load the
+	// movie into the same level again (the movie starts over: its OnInitialized runs again). False when there is nothing to unload / the movie is up.
+	bool unloadAptMovie(int index);
+	bool reloadAptMovie(int index);
 	// The `_level` an instance lives in, -1 if none.
 	int levelOf(const AptCharacterInst &inst) const;
 
@@ -204,6 +211,9 @@ public:
 	std::size_t componentCount() const { return m_components.size(); }
 	std::size_t screenRefCount() const { return m_screenRefs.size(); }
 	std::vector<std::string> commandNames() const;
+	// lane MENUWORK-1: the movie -> engine commands invoked since the last take ("name" or "name (argument)", unhandled ones prefixed "unhandled:"),
+	// at most 1000 kept: the menu inventory names the command a button ran (scripts/menu_inventory.gd)
+	std::vector<std::string> takeInvokedCommands();
 	std::vector<std::string> providerNames() const;
 	std::vector<std::string> componentNames() const;
 	std::vector<std::string> screenRefNames() const;
@@ -223,6 +233,16 @@ public:
 	bool invokeASAtValues(int level, const std::string &path, const std::string &function, const std::vector<AptValue> &args, std::string *error = nullptr);
 	// Sets a member of the root clip of `level` (the engine-to-movie variable of a screen, e.g. Skirmish.apt's `_root.vShowAddProfile`).
 	bool setAptRootMember(int level, const std::string &name, const AptValue &value, std::string *error = nullptr);
+	// lane MENUWORK-1: shows or hides the clip at `path` in `level` (its `_visible`; a hidden button takes no input, AptInput's hit test). Not retail: the
+	// engine hides movie parts of features OpenBFME does not have (the online login's account fields). "<path>#<depth>" names the clip's child at
+	// that depth (an unnamed shape)
+	bool setAptVisible(int level, const std::string &path, bool visible, std::string *error = nullptr);
+	// lane MENUWORK-1: whether `path` resolves in `level` (a movie's clip that is placed by now)
+	bool hasAptPath(int level, const std::string &path);
+	// lane MENUWORK-1: a member (_x, _y, _xscale ...) of the clip at `path` (as setAptVisible's paths)
+	bool setAptMember(int level, const std::string &path, const std::string &name, const AptValue &value, std::string *error = nullptr);
+	// lane MENUWORK-1: the text the text field at `path` shows (as a script's assignment to its `text`); false when the path is not a text field
+	bool setAptFieldText(int level, const std::string &path, const std::string &text, std::string *error = nullptr);
 
 	// ---- text -------------------------------------------------------------------------------------------------
 	// bfme_setAptText: the record's text is replaced and its listener (when bound) is told.
@@ -264,6 +284,10 @@ public:
 	typedef std::function<void(float x, float y, float w, float h, GadgetDrawList &out)> RenderCallback;
 	void setRenderCallback(const std::string &renderName, RenderCallback callback) { m_renderCallbacks[renderName] = std::move(callback); }
 	void clearRenderCallback(const std::string &renderName) { m_renderCallbacks.erase(renderName); }
+	// lane PLATFORMICON-1: an icon left of the movie text field that shows the record `label` (GUI/TextBadges.h)
+	void setTextBadge(const std::string &label, const TextBadge &badge) { m_textBadges[label] = badge; }
+	void clearTextBadge(const std::string &label) { m_textBadges.erase(label); }
+	const TextBadgeMap &textBadges() const { return m_textBadges; }
 	const RenderCallback *renderCallback(const std::string &renderName) const
 	{
 		auto it = m_renderCallbacks.find(renderName);
@@ -324,7 +348,14 @@ public:
 	void setMouseFilter(MouseFilterFn filter) { m_mouseFilter = std::move(filter); }
 	// lane OPTS-5: a screen that covers the whole stage takes every press (Options.apt over a game: its page's tabs and gadgets are not Apt buttons,
 	// so the in-game HUD's "over the GUI" test, InGameHud::isOverGui, asks this too; the world under it must not see the press)
-	void setCapturesMouse(bool captures) { m_capturesMouse = captures; }
+	// lane OPTS-6 (NOT RETAIL, the owner's "the entire menu has to be its own thing"): with the screen's level, the levels under it take no pointer
+	// input (AptInput::setInputFloor) and the shown ones are hidden (the Palantir over a game; not the background movie, which the screen shows on purpose)
+	// until the capture ends, when exactly those are shown again; -1 none
+	void setCapturesMouse(bool captures, int level = -1);
+	const std::vector<int> &levelsHiddenByCapture() const { return m_captureHidden; }
+	// lane OPTS-6: a screen's own keyboard / controller targets (MenuNavigator.h; the OpenBFME page), null: none
+	void setNavigationSource(MenuNavigationSource *source) { m_navigationSource = source; }
+	MenuNavigationSource *navigationSource() const { return m_navigationSource; }
 	bool capturesMouse() const { return m_capturesMouse; }
 	float mouseX() const { return m_mouseX; }
 	float mouseY() const { return m_mouseY; }
@@ -412,6 +443,8 @@ private:
 	std::unique_ptr<Apt> m_apt;
 	MouseFilterFn m_mouseFilter; // lane OPTS-3
 	bool m_capturesMouse = false; // lane OPTS-5
+	MenuNavigationSource *m_navigationSource = nullptr; // lane OPTS-6
+	std::vector<int> m_captureHidden;                   // lane OPTS-6: the levels setCapturesMouse hid
 	float m_mouseX = 0, m_mouseY = 0;
 	int m_pressButton = 0; ///< lane AUTOCAST-1: + 0x318
 
@@ -431,6 +464,7 @@ private:
 	int m_lastAptSteps = 0;
 
 	std::map<std::string, CommandFn> m_commands;
+	std::vector<std::string> m_invokedCommands; // lane MENUWORK-1
 	std::map<std::string, ProviderFn> m_providers;
 	std::set<std::string> m_numericProviders; // lane END-1
 	std::map<std::string, ComponentFn> m_components;
@@ -440,6 +474,7 @@ private:
 	std::map<std::string, std::string> m_images; // lane END-2
 	std::map<std::string, RenderPicture> m_renderPictures; // lane UI-2
 	std::map<std::string, RenderCallback> m_renderCallbacks; // lane UI-4
+	TextBadgeMap m_textBadges;                               // lane PLATFORMICON-1
 	int m_lastElapsedMs = 0;                                  // lane UI-4
 
 	AptGadgetLayer *m_gadgetLayer = nullptr;

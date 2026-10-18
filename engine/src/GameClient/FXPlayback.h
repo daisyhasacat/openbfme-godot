@@ -97,6 +97,8 @@ public:
 	FXParticleSystem::FXParticleSystemTemplateStore &particleTemplates() { return m_templates; }
 	FXListStore &fxLists() { return m_lists; }
 	FXParticleSystem::ParticleSystemManager &particles() { return *m_manager; }
+	// lane VISUAL-2 (scripts, proof captures): the live systems whose position is within `radius` of (x, y), and their particles
+	void particlesNear(float x, float y, float radius, long long &systems, long long &particles) const;
 	const FXParticleSystem::ParticleSystemManager &particles() const { return *m_manager; }
 	ArchiveFileSystem &fileSystem() { return m_fs; }
 

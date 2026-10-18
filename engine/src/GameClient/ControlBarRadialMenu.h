@@ -29,6 +29,10 @@
 //     enabled window is hilited and selected (pressed), RadialOver when it is hilited, else RadialBorder (white, or (144, 144, 144) with the grey-overlay status);
 //     an overlay is centred on the button and scaled by its image size / 48 (drawRadialOverlay); a recharge or build clock draws RadialClockOverlay1 /
 //     RadialClockOverlay2 wiped by the percent, 46/48 of the button (RADIAL_CLOCK_SCALE); no cameo flash and no border colour for a radial button;
+//   * lane OWNERFIX-3, the count (Rva000A52AEDrawNumber RW 0x4A4CD3, called by RW 0x4A5112 when the button data's + 0x28 is 1, before the radial overlays;
+//     BFME2 decomp W3DPushButton.cpp, tier A): a count of 1 or more (+ 0x2C, set each update by RW 0x729D9A: ControlBar::productionCountOf) as L"%d" in the
+//     window's font, the colours of getButtonTextColors (disabled window: DISABLED / DISABLEDBORDER, else hilited: HILITE / HILITEBORDER, else ENABLED /
+//     ENABLEDBORDER), at x = (int)(w * 0.5f - textWidth * 0.5f + left), y = top + h - textHeight (bottom centre), drawn with a (1, 1) drop;
 //   * the input: the command windows are ON_MOUSE_DOWN push buttons (ControlBar.wnd ButtonCommand): the left press is the button's command
 //     (ControlBar::processCommandUI).
 // INFERENCE (stop S-2701, InGameHud reports it): the clock's colours (GlobalData + 0x1160 / + 0x1164 and the control bar's clock colour) are not identified (a
@@ -40,6 +44,7 @@
 #pragma once
 
 #include "GameClient/ControlBar.h"
+#include "GameClient/GUI/GameWindow.h"
 #include "GameLogic/ObjectTypes.h"
 
 #include <cstdint>
@@ -47,6 +52,7 @@
 #include <vector>
 
 class DrawableManager;
+class FontMetricsSource;
 class GameLogic;
 class TacticalView;
 
@@ -91,7 +97,8 @@ struct RadialDrawOp
 	{
 		ICON,    ///< the button image in the ellipse of (x, y, w, h); `grayscale` for a disabled window, else multiplied by `color` (lane HUD-7: ALWAYS_COLOR)
 		OVERLAY, ///< a mapped image over (x, y, w, h), tinted by `color` (ARGB)
-		CLOCK    ///< a mapped image wiped clockwise from the top by `percent` (0 .. 100) over (x, y, w, h), tinted by `color`
+		CLOCK,   ///< a mapped image wiped clockwise from the top by `percent` (0 .. 100) over (x, y, w, h), tinted by `color`
+		TEXT     ///< lane OWNERFIX-3: `text` in `font` with its top-left at (x, y) in `color`, after its drop copy at (x + 1, y + 1) in `dropColor`
 	};
 	Kind kind = ICON;
 	std::string image;
@@ -100,6 +107,21 @@ struct RadialDrawOp
 	std::uint32_t color = 0xFFFFFFFFu;
 	float percent = 0.0f;
 	int slot = -1; ///< the command set slot of the button
+	std::string text;                  ///< TEXT
+	GameFont font;                     ///< TEXT
+	std::uint32_t dropColor = 0;       ///< TEXT (ARGB)
+};
+
+// lane OWNERFIX-3: what the command windows' count is drawn with: ControlBar.wnd's WINDOW "ControlBar.wnd:ButtonCommand" (the template the 33 command windows
+// are made from, RW 0x71E1E7), its FONT (parseFont RW 0x715BF5: name, size, bold; the window font is not resolution-adjusted, adjustFontSize RW 0x5E9BEF
+// has no font-library caller) and TEXTCOLOR (ENABLED, ENABLEDBORDER, DISABLED, DISABLEDBORDER, HILITE, HILITEBORDER, each "r g b a" -> GameMakeColor ARGB)
+struct CommandWindowLook
+{
+	bool loaded = false;
+	GameFont font;
+	std::uint32_t enabled = 0, enabledBorder = 0, disabled = 0, disabledBorder = 0, hilite = 0, hiliteBorder = 0;
+	// the window block of `wndText` (the file's text); a missing window, field or label, or a malformed value, is an error naming it (no default)
+	static bool scan(const std::string &wndText, CommandWindowLook &out, std::string *error);
 };
 
 class ControlBarRadialMenu
@@ -115,6 +137,9 @@ public:
 	            const std::vector<ControlBarButton> &radialButtons, bool allowed);
 	void setPresentationVisible(bool visible) { m_presentationVisible = visible; }
 	void setImageSize(ImageSizeFn fn, void *ctx) { m_imageSize = fn; m_imageCtx = ctx; }
+	// lane OWNERFIX-3: the count's font and colours and the text measure (the device's fonts); without either a count to draw is an error (errors())
+	void setCountLook(const CommandWindowLook &look) { m_countLook = look; }
+	void setFontMetrics(FontMetricsSource *metrics) { m_metrics = metrics; }
 
 	// ---- input (window pixels) ----
 	// the slot of the button under the pixel (the button's ellipse: retail's window rectangle is the hit area of a push button; INFERENCE: the rectangle),
@@ -122,7 +147,7 @@ public:
 	int hit(int x, int y) const;
 	void mouseMove(int x, int y);
 	// a press / release: true when the ring took it (the world gets nothing); `press` is called for the left press on an enabled button, `cancel` for the right
-	bool mouseButton(bool left, bool down, int x, int y, ControlBar &bar);
+	bool mouseButton(bool left, bool down, int x, int y, ControlBar &bar, bool shift = false);
 
 	const std::vector<RadialDrawOp> &ops() const { return m_ops; }
 	struct Button
@@ -146,6 +171,7 @@ public:
 private:
 	bool m_presentationVisible = true;
 	void buildOps();
+	void countOp(const Button &b, bool enabled);
 	RadialMenuLayout m_layout;
 	ObjectID m_object = INVALID_ID;
 	std::vector<int> m_keys; ///< the windows (slots) of the last list (RW 0x9459D1 compares the lists)
@@ -153,6 +179,8 @@ private:
 	std::vector<RadialDrawOp> m_ops;
 	ImageSizeFn m_imageSize = nullptr;
 	void *m_imageCtx = nullptr;
+	CommandWindowLook m_countLook;
+	FontMetricsSource *m_metrics = nullptr;
 	int m_mouseX = -10000, m_mouseY = -10000;
 	int m_hilite = -1;
 	int m_pushed = -1; ///< WIN_STATE_SELECTED: the button the left press went down on, while it is held

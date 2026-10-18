@@ -86,6 +86,7 @@ ThingFactory::ThingFactory(NameKeyGenerator &keys, ModuleFactory &modules, const
 	: m_keys(keys)
 	, m_modules(modules)
 	, m_grammar(grammar)
+	, m_bfme1(bfme1)
 {
 	buildTables(bfme1);
 }
@@ -218,6 +219,7 @@ ThingTemplate *ThingFactory::newTemplate(const std::string &name)
 	m_arena.push_back(std::move(owned));
 	tt->m_catalogRevision = &m_revision;
 	tt->m_fieldNames = &m_slotNames;
+	tt->m_bfme1 = m_bfme1; // community PR #36
 	tt->m_fieldIndex = &m_slotIndex;
 	tt->m_fields.assign(m_slotNames.size(), FieldValue());
 
@@ -246,6 +248,7 @@ ThingTemplate *ThingFactory::newOverride(ThingTemplate *thingTemplate)
 	m_arena.push_back(std::move(owned));
 	tt->m_catalogRevision = &m_revision;
 	tt->m_fieldNames = &m_slotNames;
+	tt->m_bfme1 = m_bfme1; // community PR #36
 	tt->m_fieldIndex = &m_slotIndex;
 	tt->copyFrom(child);
 	tt->m_nameString = child->m_nameString; // the override is a copy of the whole template, name and id included
@@ -393,6 +396,7 @@ void ThingFactory::parseField(INI *ini, void *instance, void *, const void *user
 	{
 		tt->m_fields.resize(factory.m_slotNames.size());
 		tt->m_fieldNames = &factory.m_slotNames;
+		tt->m_bfme1 = factory.m_bfme1; // community PR #36
 		tt->m_fieldIndex = &factory.m_slotIndex;
 	}
 	FieldValue &slot = tt->m_fields[b->slot];
@@ -644,6 +648,7 @@ void ThingFactory::parseField(INI *ini, void *instance, void *, const void *user
 			if (ini->getLoadType() == INI_LOAD_CREATE_OVERRIDES)
 			{
 				eraseBlocks();
+				tt->m_productionPrerequisites.clear();
 			}
 			break;
 		default:
@@ -667,7 +672,14 @@ void ThingFactory::parseField(INI *ini, void *instance, void *, const void *user
 	}
 	else
 	{
-		factory.m_grammar.consumeBlock(ini, tt, b->fn);
+		if (b->sem == S_Prerequisites)
+		{
+			ProductionPrerequisite::parseBlock(ini, tt->m_productionPrerequisites);
+		}
+		else
+		{
+			factory.m_grammar.consumeBlock(ini, tt, b->fn);
+		}
 	}
 	const size_t last = ini->getLineNum();
 	for (size_t i = first; i < last; ++i)
@@ -703,7 +715,7 @@ std::vector<std::string> ThingFactory::acceptanceStops() const
 			}
 		}
 	}
-	out.push_back("S-071: " + std::to_string(rawBlockRows) + " object-level nested blocks (LocomotorSet, Prerequisites, UnitSpecificSounds/FX, AutoResolve*, ...) are kept as raw lines");
+	out.push_back("S-071: " + std::to_string(rawBlockRows) + " object-level nested blocks (LocomotorSet, UnitSpecificSounds/FX, AutoResolve*, ...) are kept as raw lines; Prerequisites also retain raw lines for diagnostics while typed rows are parsed");
 	out.push_back("S-072: " + std::to_string(rawRows) + " object-table rows have parse functions with no typed port and are kept as raw tokens; field defaults of a fresh template are not ported (unset fields read as absent)");
 	size_t conditional = 0, dispatch = 0, guarded = 0;
 	for (const auto &kv : data.functions)

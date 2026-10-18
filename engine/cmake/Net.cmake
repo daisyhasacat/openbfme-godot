@@ -15,6 +15,7 @@ set(OPENBFME_NET_HOST_SOURCES
     src/GameNetwork/ScriptedPlayer.cpp
     src/GameNetwork/ProfileIdentity.cpp)
 set(OPENBFME_NET_TESTS
+    tests/test_process.cpp
     tests/test_net_core.cpp
     tests/test_net_retail.cpp)
 
@@ -64,4 +65,9 @@ macro(openbfme_net_targets)
     endif()
     add_dependencies(openbfme_tests openbfme_peer)
     target_compile_definitions(openbfme_tests PRIVATE OPENBFME_PEER_EXE="$<TARGET_FILE:openbfme_peer>")
+    add_executable(openbfme_process_probe tests/process_probe.cpp)
+    target_compile_features(openbfme_process_probe PRIVATE cxx_std_17)
+    openbfme_sim_register_target(openbfme_process_probe) # the flag audit covers every target's translation units
+    add_dependencies(openbfme_tests openbfme_process_probe)
+    target_compile_definitions(openbfme_tests PRIVATE OPENBFME_PROCESS_PROBE_EXE="$<TARGET_FILE:openbfme_process_probe>")
 endmacro()

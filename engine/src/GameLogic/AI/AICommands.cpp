@@ -91,7 +91,7 @@ bool AICommands::move(GameLogic &logic, const GameMessage &m)
 			group.planningMoveToPosition(dest->location, type == MSG_DO_ATTACKMOVETO, CMD_FROM_PLAYER);
 			return true;
 		}
-		group.groupMoveToPosition(dest->location, false, CMD_FROM_PLAYER);
+		group.groupMoveToPosition(dest->location, false, CMD_FROM_PLAYER, false, 0.0f, type == MSG_DO_ATTACKMOVETO);
 		if (type == MSG_DO_ATTACKMOVETO)
 		{
 			// ZH groupAttackMoveToPosition (lane COMBAT-1, stop S-328): every unit marches to its own goal and attacks what it meets on the way

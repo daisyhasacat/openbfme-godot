@@ -125,6 +125,8 @@ public:
 	virtual void setProfileValue(int mode, const std::string &name, const std::string &value) = 0;
 	// writes what changed (RW 0x927FEF: the preferences' write after the game is kept); nothing for a store without a file
 	virtual void flush() = 0;
+	// lane OWNERFIX-3: the user data folder the profiles' stats files are in (ending in a separator; RealTimeStats.h), "" for a store without a folder
+	virtual std::string folder() const { return std::string(); }
 };
 
 class MemorySkirmishProfiles : public SkirmishProfileStore

@@ -5,7 +5,9 @@
 ## derived from the launcher's data folder (each data folder, e.g. each test, has its own launcher). The holder answers every connection
 ## with one line, HELLO + its version, and closes it (a small thread, so a command-line run answers too); a launcher that cannot bind
 ## the port connects and reads that line, so it tells another launcher from another program that happens to use the port (Sol r4).
-## Nothing else is sent or read (tools/release/net_guard.py allows TCPServer and StreamPeerTCP in this file alone). Godot sets neither
+## Windows exclusions are skipped only after a read-only netsh query confirms them. Published candidate ports are retained so that
+## a changed exclusion table cannot hide a running holder. Publish only after listening, then check all published peers before success.
+## Nothing else is sent or read (tools/release/net_guard.py permits only this protocol and the exact read-only query). Godot sets neither
 ## SO_REUSEADDR nor SO_EXCLUSIVEADDRUSE on Windows, and on Linux SO_REUSEADDR never lets a second process listen on a listened port.
 extends RefCounted
 
@@ -21,31 +23,169 @@ var _version := ""
 var _server: TCPServer
 var _thread: Thread
 var _serving := false
+var _first_port := 0
+var _ports_dir := ""
+var _probe_busy := false
 
 
 func _init(data_dir: String, version := "") -> void:
 	port = FIRST_PORT + int(data_dir.simplify_path().md5_text().substr(0, 8).hex_to_int() % PORTS)
+	_first_port = port
+	_ports_dir = data_dir.path_join("launcher-lock-ports")
 	_version = version
 
 
 ## true when this launcher now holds the lock (atomic: bind succeeds for one process only); false when it is held: `other_launcher` is
 ## the holder's version when it is a launcher, else `error` names the port and the reason
 func acquire() -> bool:
-	var s := TCPServer.new()
-	var err := s.listen(port, "127.0.0.1")
-	if err == OK:
-		_server = s
-		_serving = true
-		_thread = Thread.new()
-		_thread.start(_serve)
+	if held():
 		return true
-	var hello := _probe()
+	error = ""
+	other_launcher = ""
+	var windows := OS.get_name() == "Windows"
+	if windows and not _check_published():
+		return false
+	var ranges: Array = []
+	var queried := false
+	for offset in range(PORTS):
+		port = FIRST_PORT + (_first_port - FIRST_PORT + offset) % PORTS
+		if _excluded(port, ranges):
+			continue
+		var s := TCPServer.new()
+		var err := s.listen(port, "127.0.0.1")
+		if err == OK:
+			_server = s
+			_serving = true
+			_thread = Thread.new()
+			if _thread.start(_serve) != OK:
+				error = "could not start the launcher lock listener"
+				release()
+				return false
+			if windows:
+				var published := DirAccess.make_dir_recursive_absolute(_ports_dir.path_join(str(port)))
+				if published != OK and published != ERR_ALREADY_EXISTS:
+					error = "could not publish launcher lock port %d: %s" % [port, error_string(published)]
+					release()
+					return false
+				# A concurrent candidate must see our listening socket after publishing its own marker, or we see its marker here.
+				if not _check_published(port):
+					release()
+					return false
+			if port != _first_port:
+				print("LAUNCHER local lock port %d is excluded by Windows; using %d" % [_first_port, port])
+			return true
+		var hello := _probe(port)
+		if hello.begins_with(HELLO) or _probe_busy:
+			_refused(port, hello)
+			return false
+		if windows and hello.is_empty() and not queried:
+			var result := _windows_exclusions()
+			if not result.ok:
+				error = "cannot bind local port %d: %s" % [port, result.error]
+				return false
+			ranges = result.ranges
+			queried = true
+		if _excluded(port, ranges):
+			continue
+		_refused(port, hello)
+		return false
+	error = "all launcher lock ports are excluded by Windows"
+	return false
+
+
+func _refused(candidate: int, hello: String) -> void:
+	port = candidate
 	if hello.begins_with(HELLO):
 		other_launcher = hello.substr(HELLO.length()).strip_edges()
 		error = "another OpenBFME Launcher (%s) holds local port %d" % [other_launcher, port]
 	else:
 		error = "local port %d is in use by another program (%s)" % [port, "it did not answer as a launcher" if hello == "" else "it answered something else"]
+
+
+func _check_published(own_port := 0) -> bool:
+	if not DirAccess.dir_exists_absolute(_ports_dir):
+		return true
+	var dir := DirAccess.open(_ports_dir)
+	if dir == null:
+		error = "cannot read the launcher lock port index: " + error_string(DirAccess.get_open_error())
+		return false
+	var exclusions := {}
+	var exclusions_queried := false
+	for name in dir.get_directories():
+		if not name.is_valid_int() or str(int(name)) != name or int(name) < FIRST_PORT or int(name) >= FIRST_PORT + PORTS:
+			error = "invalid launcher lock port marker: " + name
+			return false
+		var candidate := int(name)
+		if candidate == own_port:
+			continue
+		var proof := TCPServer.new()
+		# A successful bind proves this marker is stale; a concurrent owner publishes and rescans after binding.
+		if proof.listen(candidate, "127.0.0.1") == OK:
+			proof.stop()
+			continue
+		var hello := _probe(candidate)
+		if hello.begins_with(HELLO) or _probe_busy:
+			_refused(candidate, hello)
+			return false
+		if OS.get_name() == "Windows":
+			if not exclusions_queried:
+				exclusions = _windows_exclusions()
+				exclusions_queried = true
+			if not exclusions.ok:
+				error = "cannot verify published launcher lock port %d: %s" % [candidate, exclusions.error]
+				return false
+			if _excluded(candidate, exclusions.ranges):
+				continue
+		_refused(candidate, hello)
+		return false
+	return true
+
+
+static func _excluded(candidate: int, ranges: Array) -> bool:
+	for span in ranges:
+		if candidate >= span[0] and candidate <= span[1]:
+			return true
 	return false
+
+
+func _windows_exclusions() -> Dictionary:
+	if not OS.get_environment("SystemRoot").is_absolute_path():
+		return {"ok": false, "error": "Windows SystemRoot is not an absolute path"}
+	var output := []
+	var code := OS.execute(OS.get_environment("SystemRoot").path_join("System32/netsh.exe"), ["int", "ipv4", "show", "excludedportrange", "protocol=tcp"], output, true)
+	if code != 0:
+		return {"ok": false, "error": "Windows excluded-port query failed (exit %d)" % code}
+	return parse_exclusions("\n".join(output))
+
+
+static func parse_exclusions(text: String) -> Dictionary:
+	var separator := RegEx.create_from_string("^\\s*-+\\s+-+\\s*$")
+	var row := RegEx.create_from_string("^\\s*(\\d+)\\s+(\\d+)(?:\\s+\\*)?\\s*$")
+	var table := false
+	var footer := false
+	var ranges := []
+	for line in text.split("\n"):
+		var clean := line.strip_edges()
+		if not table:
+			if separator.search(clean) != null:
+				table = true
+			continue
+		if clean.is_empty():
+			continue
+		if not footer and clean.begins_with("*"):
+			footer = true
+			continue
+		var matched := row.search(clean)
+		if footer or matched == null:
+			return {"ok": false, "error": "unrecognized Windows excluded-port table row: " + clean.left(120)}
+		var first := int(matched.get_string(1))
+		var last := int(matched.get_string(2))
+		if first < 1 or last > 65535 or first > last:
+			return {"ok": false, "error": "invalid Windows excluded-port range: " + clean.left(120)}
+		ranges.append([first, last])
+	if not table:
+		return {"ok": false, "error": "Windows excluded-port query returned no recognizable table"}
+	return {"ok": true, "ranges": ranges}
 
 
 func held() -> bool:
@@ -56,7 +196,8 @@ func held() -> bool:
 func release() -> void:
 	if _server != null:
 		_serving = false
-		_thread.wait_to_finish()
+		if _thread != null and _thread.is_started():
+			_thread.wait_to_finish()
 		_server.stop()
 		_server = null
 
@@ -84,15 +225,19 @@ func _serve() -> void:
 
 
 ## the first line the port's holder sends within PROBE_MS ("" when it sends nothing)
-func _probe() -> String:
+func _probe(candidate: int) -> String:
+	_probe_busy = false
 	var c := StreamPeerTCP.new()
-	if c.connect_to_host("127.0.0.1", port) != OK:
+	if c.connect_to_host("127.0.0.1", candidate) != OK:
 		return ""
 	var got := PackedByteArray()
 	var start := Time.get_ticks_msec()
 	while Time.get_ticks_msec() - start < PROBE_MS and got.size() < 256 and not got.has(10):
 		c.poll()
 		var st := c.get_status()
+		# A connected socket proves a listener; STATUS_CONNECTING at timeout does not.
+		if st == StreamPeerTCP.STATUS_CONNECTED:
+			_probe_busy = true
 		if st == StreamPeerTCP.STATUS_CONNECTED and c.get_available_bytes() > 0:
 			var r := c.get_partial_data(mini(c.get_available_bytes(), 256 - got.size()))
 			if r[0] == OK:

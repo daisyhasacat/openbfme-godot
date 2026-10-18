@@ -20,6 +20,7 @@
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/WeaponState.h"
+#include "GameLogic/AI/AIXfer.h"
 
 namespace ModelCondition
 {
@@ -166,6 +167,15 @@ public:
 		h.addFloat(m_goal.y);
 		h.addBool(m_move != nullptr);
 	}
+	// lane SAVE-4c: AIGuardReturnState::xfer RW 0x6DCE1C is (1, 1) with its move; OpenBFME layout (S-4220): the scan frame, the goal, the move
+	void xfer(Xfer &x) override
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		x.xferUnsignedInt(&m_nextReturnScanTime);
+		AIXfer::coord(x, m_goal);
+		xferMove(x, ai().mover(), m_move);
+	}
 
 private:
 	std::unique_ptr<AIMoveToState> m_move;
@@ -205,6 +215,12 @@ public:
 	bool isIdle() const override { return true; } // RW 0x8BD372
 	unsigned conditionTransition() override { return hasAttackedMeAndICanReturnFire(owner()) ? (unsigned)AI_GUARD_ATTACK_AGGRESSOR : INVALID_STATE_ID; }
 	void crc(StateHasher &h) const override { h.addU32(m_nextEnemyScanTime); }
+	void xfer(Xfer &x) override // lane SAVE-4c
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		x.xferUnsignedInt(&m_nextEnemyScanTime);
+	}
 
 private:
 	unsigned m_nextEnemyScanTime = 0; // + 0x20
@@ -239,6 +255,37 @@ protected:
 		{
 			m_attack->crc(h);
 		}
+	}
+	// lane SAVE-4c: the exit conditions, then the attack (made again with its `follow` and these conditions, then loaded)
+	void xferAttack(Xfer &x, AIStateMachine &m)
+	{
+		x.xferInt(&m_exit.conditions);
+		if (x.isLoading() && (m_exit.conditions & ~7))
+		{
+			throw XferException("ai guard: the exit conditions 0x" + std::to_string(m_exit.conditions) + " hold bits beyond ExitIfOutsideRadius | ExpiredDuration | NoUnitFound");
+		}
+		AIXfer::coord(x, m_exit.center);
+		x.xferReal(&m_exit.radiusSqr);
+		x.xferUnsignedInt(&m_exit.attackGiveUpFrame);
+		bool has = m_attack != nullptr;
+		bool follow = m_attack ? m_attack->follows() : false;
+		x.xferBool(&has);
+		x.xferBool(&follow);
+		if (!x.isLoading())
+		{
+			if (m_attack)
+			{
+				m_attack->xfer(x);
+			}
+			return;
+		}
+		std::unique_ptr<AIAttackState> loaded; // made and loaded complete, then attached
+		if (has)
+		{
+			loaded = std::make_unique<AIAttackState>(m, follow, true, false, &m_exit);
+			loaded->xfer(x);
+		}
+		m_attack = std::move(loaded);
 	}
 	GuardExitConditions m_exit;             // + 0x20
 	std::unique_ptr<AIAttackState> m_attack; // + 0x3C
@@ -316,6 +363,13 @@ public:
 		crcAttack(h);
 		h.addU32(m_deadline);
 	}
+	void xfer(Xfer &x) override // lane SAVE-4c: AIGuardInnerState::xfer RW 0x949575 is (1, 2) (its attack and a u32); OpenBFME layout (S-4220)
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		xferAttack(x, machine());
+		x.xferUnsignedInt(&m_deadline);
+	}
 
 private:
 	unsigned m_deadline = 0; // + 0x44
@@ -357,6 +411,12 @@ public:
 	// RW 0x9495C4
 	void onExit(StateExitType status) override { stopAttack(status); }
 	void crc(StateHasher &h) const override { crcAttack(h); }
+	void xfer(Xfer &x) override // lane SAVE-4c (OpenBFME layout, S-4220)
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		xferAttack(x, machine());
+	}
 };
 
 // RW vtable 0xC2DE48 (AIPickUpCrateState): the port's AI makes no crates (AI + 0x238), so the state has nothing to pick up
@@ -366,6 +426,7 @@ public:
 	explicit GuardPickUpCrateState(AIStateMachine &m) : AIState(m, "AIPickUpCrateState") {}
 	StateReturnType onEnter() override { return STATE_SUCCESS; }
 	StateReturnType update() override { return STATE_SUCCESS; }
+	void xfer(Xfer &x) override { xferNoFields(x); }
 };
 
 // AIGuardAttackAggressorState (RW 0x94A805 onEnter, 0x94A8E8 update)
@@ -406,6 +467,12 @@ public:
 		}
 	}
 	void crc(StateHasher &h) const override { crcAttack(h); }
+	void xfer(Xfer &x) override // lane SAVE-4c (OpenBFME layout, S-4220)
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		xferAttack(x, machine());
+	}
 };
 } // namespace
 
@@ -573,6 +640,21 @@ void AIGuardMachine::crcGuard(StateHasher &h) const
 	crc(h);
 }
 
+void AIGuardMachine::xferGuard(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	AIXfer::coord(x, m_positionToGuard);
+	x.xferReal(&m_guardAngle);
+	AIXfer::objectId(x, m_nemesis, "ai guard: the object id nemesis");
+	x.xferInt(&m_guardMode);
+	if (x.isLoading())
+	{
+		AIXfer::inRange(m_guardMode, GUARDMODE_NORMAL, GUARDMODE_GUARD_FLYING_UNITS_ONLY, "ai guard: the guard mode");
+	}
+	xfer(x);
+}
+
 // ---- AIGuardState --------------------------------------------------------------------------------------------------------------------------------
 
 AIGuardState::~AIGuardState()
@@ -644,6 +726,30 @@ void AIGuardState::crc(StateHasher &h) const
 	{
 		m_guardMachine->crcGuard(h);
 	}
+}
+
+// lane SAVE-4c (obfme:AIWorld, OpenBFME layout: S-4220)
+void AIGuardState::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	bool has = m_guardMachine != nullptr;
+	x.xferBool(&has);
+	if (!x.isLoading())
+	{
+		if (m_guardMachine)
+		{
+			m_guardMachine->xferGuard(x);
+		}
+		return;
+	}
+	std::unique_ptr<AIGuardMachine> loaded; // made and loaded complete, then attached
+	if (has)
+	{
+		loaded = std::make_unique<AIGuardMachine>(ai());
+		loaded->xferGuard(x);
+	}
+	m_guardMachine = std::move(loaded);
 }
 
 // RW 0x743864

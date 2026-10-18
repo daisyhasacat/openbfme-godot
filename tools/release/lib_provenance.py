@@ -33,7 +33,7 @@ def records(data: bytes) -> list[dict]:
         end = data.find(b"\0", pos)
         line = data[pos:end if end >= 0 else len(data)].decode("utf-8", "replace")
         pos += len(PREFIX)
-        m = re.match(r"OPENBFME-BUILD-INFO 1 version=(\S+) commit=(\S+) dirty=(\S+) engine-id=(\S+) x86-32=(\S*) id-options=(.*)$", line)
+        m = re.match(r"OPENBFME-BUILD-INFO 1 version=(.+?) commit=(\S+) dirty=(\S+) engine-id=(\S+) x86-32=(\S*) id-options=(.*)$", line)
         out.append(dict(zip(FIELDS, m.groups())) if m else {"malformed": line[:120]})
     return out
 

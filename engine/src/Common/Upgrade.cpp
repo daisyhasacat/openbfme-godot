@@ -6,6 +6,8 @@
 #endif
 
 #include "Common/Upgrade.h"
+#include "Common/SnapshotProbe.h"
+#include "Common/Xfer.h"
 
 #include "Common/AsciiString.h"
 #include "Common/BuildAssistant.h"
@@ -416,6 +418,19 @@ void UpgradeCenter::parseUpgradeMask(INI *ini, UpgradeMaskType &mask, std::vecto
 			{
 				names->push_back(piece);
 			}
+		}
+	}
+}
+
+void checkLoadedUpgradeMask(const UpgradeMaskType &mask, const std::string &what)
+{
+	const unsigned bits = TheUpgradeCenter ? (unsigned)TheUpgradeCenter->nextMaskBit() : 0u;
+	const bool probed = SnapshotProbe::hit(what) && bits < UpgradeMaskType::BITS; // lane SAVE-4e: a test's bit beyond the upgrades
+	for (unsigned b = bits; b < UpgradeMaskType::BITS; ++b)
+	{
+		if (mask.test(b) || (probed && b == bits))
+		{
+			throw XferException(what + " hold the upgrade bit " + std::to_string(b) + ", beyond this game's " + std::to_string(bits) + " upgrades");
 		}
 	}
 }

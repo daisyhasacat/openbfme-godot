@@ -30,6 +30,7 @@
 class AptPalantir : public AptScreen
 {
 public:
+	bool isMenu() const override { return false; } // lane OPTS-6: the HUD, its keys are the game's
 	AptPalantir(WindowManager &windows, Shell &shell);
 
 	// the commands the Palantir registers, in the binary's order (without the screen prefix of the command UI names)
@@ -59,6 +60,9 @@ public:
 	const std::vector<std::string> &autoAbilityOverlayCalls() const { return m_overlayCalls; }
 	// lane AUTOCAST-1: whether the content showing `slot` (arc or side bar) has its glow shown: + 0x54 set AND the movie call succeeded (r2)
 	bool autoAbilityOverlayShown(int slot, bool arc) const;
+	// lane OWNERFIX-3: the text the window manager holds for the "_ProductionCount" record of the clip showing `slot` (arc or side bar); null when no clip
+	// shows the slot or no record was written
+	const std::string *productionCountText(int slot, bool arc);
 	// lane AUTOCAST-1 r2: the SetAutoAbilityOverlayState calls the movie refused (each also in callErrors()); a proof run fails on any
 	unsigned autoAbilityOverlayErrors() const { return m_overlayErrors; }
 	// Pushes the control bar's state into the movie: the text records (money, command points), the command buttons of the Palantir arc (six positions) and of the side command bar
@@ -121,7 +125,7 @@ public:
 	static constexpr int kArcPositions = 6, kSidePositions = 12;
 	// lane HUD-6: the side command bar shows only for the control bar's context object when it is a DOZER the local player controls (RW 0x92F27D: template
 	// KindOf + 0x109 bit 0x40, its controlling player the local one); the HUD sets it every update
-	void setBfme1(bool value) { m_bfme1 = value; }
+	void setBfme1(bool value); // community PR #36: BFME1 data (InGameHud::boot)
 	void setSideBarObject(bool localDozer) { m_sideBarGate = localDozer; }
 	// lane HUD-6: the side bar's SetButtonState calls made ("2 _show", "5 _hide"; the last 64) and the frames shown (+ 0xD8)
 	const std::vector<std::string> &sideBarCalls() const { return m_sideBarCalls; }

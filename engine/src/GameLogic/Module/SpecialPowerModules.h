@@ -137,6 +137,7 @@ public:
 class SpecialPowerModule : public BehaviorModule, public SpecialPowerModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(SpecialPowerModule) // lane SAVE-4b
 	SpecialPowerModule(Thing *thing, const SpecialPowerModuleData *data);
 	SpecialPowerModuleInterface *getSpecialPower() override { return this; }
 	const SpecialPowerModuleData *spData() const { return m_spData; }
@@ -222,6 +223,7 @@ private:
 class PlayerHealSpecialPower : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(PlayerHealSpecialPower) // lane SAVE-4b
 	PlayerHealSpecialPower(Thing *thing, const PlayerHealSpecialPowerModuleData *data);
 	const PlayerHealSpecialPowerModuleData *data() const { return m_data; }
 
@@ -265,6 +267,7 @@ class ObjectCreationList;
 class OCLSpecialPower : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(OCLSpecialPower) // lane SAVE-4b
 	OCLSpecialPower(Thing *thing, const OCLSpecialPowerModuleData *data);
 	const OCLSpecialPowerModuleData *data() const { return m_data; }
 	const std::vector<ObjectID> &created() const { return m_created; }

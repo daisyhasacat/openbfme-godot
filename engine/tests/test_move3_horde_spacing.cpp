@@ -470,7 +470,7 @@ TEST_CASE("move3 retail: hordes from one barracks with and without a rally point
 				// HORDE's line with radius 1, RW 0x6EE12D); with the retail line test a rank of the second horde touches the first (allied
 				// overlap 9.29 at the end, as before MOVE-3; S-1834)
 				CHECK(r.minCentreDistance > 60.0f);
-				CHECK(r.endAllyOverlap < 10.0f);
+				CHECK(r.endAllyOverlap < 10.0f); // tolerance: a measured rank contact (9.29), not a retail figure (S-1834)
 			}
 			else
 			{

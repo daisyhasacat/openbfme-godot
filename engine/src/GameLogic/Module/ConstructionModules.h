@@ -43,6 +43,7 @@ public:
 class FoundationAIUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(FoundationAIUpdate) // lane SAVE-4b: UpdateModule's (no state of its own)
 	FoundationAIUpdate(Thing *thing, const FoundationAIUpdateModuleData *data);
 	FoundationAIUpdate *getFoundationAIUpdate() override { return this; }
 	UpdateSleepTime update() override;
@@ -88,6 +89,7 @@ public:
 class GettingBuiltBehavior : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(GettingBuiltBehavior) // lane SAVE-4b
 	GettingBuiltBehavior(Thing *thing, const GettingBuiltBehaviorModuleData *data);
 	UpdateSleepTime update() override;
 	void crc(StateHasher &hasher) const override;
@@ -115,6 +117,9 @@ public:
 	float rebuildCost(const Player &player) const;
 	// slot 7 RW 0x8561EA: the player's money covers ceil(rebuildCost)
 	bool canAffordRebuild(const Player &player) const;
+	// RW 0x856501 / 0x857074: eligibility, then source / ascending / descending contiguous dead equivalents.
+	bool canRebuild() const;
+	float neighborhoodRebuildCost(const Player &player) const;
 
 	// slot 17 RW 0x8574F0: runs the update now, then sleeps `frames` (a wall span staggers its tiles by StaggeredBuildFactor * index)
 	void runNowThenSleep(UnsignedInt frames);
@@ -177,6 +182,7 @@ public:
 class BuildingBehavior : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(BuildingBehavior) // lane SAVE-4b: UpdateModule's (no state of its own)
 	BuildingBehavior(Thing *thing, const BuildingBehaviorModuleData *data);
 	UpdateSleepTime update() override { return UPDATE_SLEEP_FOREVER; } // the windows are the client's (night glow, fire)
 	const BuildingBehaviorModuleData *data() const { return m_data; }

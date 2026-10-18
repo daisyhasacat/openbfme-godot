@@ -9,6 +9,7 @@
 #include "Common/Player.h"
 #include "Common/StateHash.h"
 #include "Common/Team.h"
+#include "Common/Xfer.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object/Object.h"
@@ -16,6 +17,7 @@
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/SimMath.h"
 
+#include <map>
 #include <stdexcept>
 #include <utility>
 
@@ -1334,5 +1336,314 @@ void PartitionManager::crc(StateHasher &h) const
 	for (size_t t = 0; t < m_trees.size(); ++t)
 	{
 		Walk::node(h, m_trees[t].data(), (std::uint32_t)(t * (size_t)kNodes), (std::uint32_t)kNodes >> 2);
+	}
+}
+
+// ---- the snapshot (lane SAVE-4c) ----------------------------------------------------------------------------------------------------------------------
+//
+// The obfme:Partition block (lane SAVE-4c, docs/SAVES.md section 8): ThePartitionManager's state. OpenBFME native layout (stop S-4220): retail registers
+// CHUNK_Partition in its lists 0 and 1 (GameState::init RW 0x6DF73E); its xfer RW 0xA39260 transfers a version (1, 1) and calls the implementation's
+// RW 0xA3B040, which transfers a version (1, 1) and nothing else: retail rebuilds the trees from the objects (review r2). ZH's PartitionManager::xfer (donor) saves the cell size and the per-player shroud of its cell grid;
+// RotWK keeps the shroud outside the partition (ShroudManager, obfme:Shroud) and its partition is 21 loose quadtrees (PartitionManager.h) whose link order
+// decides the order of every range query's hits. So everything the trees hold is saved in order: the region, the entry list (newest first, RW + 0x114), the
+// dirty list (RW + 0x120) and every node's count (+ 0) and list (+ 4) as they are, never re-inserted (re-inserting would reverse equal-cell orders).
+// Pointers: an entry is saved as its object's id and linked again in the post-process (the retail scheme, ZH GameState::addPostProcessSnapshot). The
+// template geometry cache (m_geometry, the entries' geomKey / geom) and the hit buffer pool are caches, rebuilt on use.
+
+
+
+
+void PartitionManager::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	if (!x.isLoading())
+	{
+		x.xferReal(&m_loX);
+		x.xferReal(&m_loY);
+		x.xferReal(&m_hiX);
+		x.xferReal(&m_hiY);
+		x.xferReal(&m_scale);
+		x.xferBool(&m_regionSet);
+		std::uint32_t n = (std::uint32_t)m_entryCount;
+		x.xferCount(&n, 20, sizeof(PendingLoad::SavedEntry));
+		for (Entry *e = m_entries; e; e = e->allNext)
+		{
+			x.xferObjectID(&e->id);
+			x.xferInt(&e->layerPlus1);
+			x.xferUnsignedInt(&e->x);
+			x.xferUnsignedInt(&e->y);
+			x.xferUnsignedInt(&e->mask);
+		}
+		std::uint32_t d = 0;
+		for (const Entry *e = m_dirty; e; e = e->dirtyNext)
+		{
+			++d;
+		}
+		x.xferCount(&d, 4, sizeof(ObjectID));
+		for (Entry *e = m_dirty; e; e = e->dirtyNext)
+		{
+			x.xferObjectID(&e->id);
+		}
+		std::uint32_t nodes = 0;
+		for (const std::vector<Node> &tree : m_trees)
+		{
+			for (const Node &node : tree)
+			{
+				nodes += (node.below != 0 || node.head) ? 1u : 0u;
+			}
+		}
+		x.xferCount(&nodes, 12, sizeof(PendingLoad::SavedNode));
+		for (size_t t = 0; t < m_trees.size(); ++t)
+		{
+			for (size_t i = 0; i < m_trees[t].size(); ++i)
+			{
+				Node &node = m_trees[t][i];
+				if (node.below == 0 && !node.head)
+				{
+					continue;
+				}
+				std::uint32_t index = (std::uint32_t)(t * (size_t)kNodes + i);
+				x.xferUnsignedInt(&index);
+				x.xferInt(&node.below);
+				std::uint32_t count = 0;
+				for (const Entry *e = node.head; e; e = e->nodeNext)
+				{
+					++count;
+				}
+				x.xferCount(&count, 4, sizeof(ObjectID));
+				for (Entry *e = node.head; e; e = e->nodeNext)
+				{
+					x.xferObjectID(&e->id);
+				}
+			}
+		}
+		return;
+	}
+	std::unique_ptr<PendingLoad> p = std::make_unique<PendingLoad>();
+	x.xferReal(&p->loX);
+	x.xferReal(&p->loY);
+	x.xferReal(&p->hiX);
+	x.xferReal(&p->hiY);
+	x.xferReal(&p->scale);
+	x.xferBool(&p->regionSet);
+	x.xferVectorSize(p->entries, 20);
+	for (PendingLoad::SavedEntry &e : p->entries)
+	{
+		x.xferObjectID(&e.id);
+		x.xferInt(&e.layerPlus1);
+		x.xferUnsignedInt(&e.x);
+		x.xferUnsignedInt(&e.y);
+		x.xferUnsignedInt(&e.mask);
+		if (e.layerPlus1 < 0 || e.layerPlus1 >= kLayerCount)
+		{
+			throw XferException("partition: the entry of object " + std::to_string(e.id) + " has the layer " + std::to_string(e.layerPlus1 - 1));
+		}
+		if (e.x >= (std::uint32_t)kCells || e.y >= (std::uint32_t)kCells || e.mask >= (std::uint32_t)kCells)
+		{
+			throw XferException("partition: the entry of object " + std::to_string(e.id) + " has the cell " + std::to_string(e.x) + ", " + std::to_string(e.y) +
+				" / mask " + std::to_string(e.mask) + " outside the " + std::to_string(kCells) + " cells");
+		}
+	}
+	x.xferVectorSize(p->dirty, 4);
+	for (ObjectID &id : p->dirty)
+	{
+		x.xferObjectID(&id);
+	}
+	x.xferVectorSize(p->nodes, 12);
+	std::uint32_t last = 0;
+	for (size_t i = 0; i < p->nodes.size(); ++i)
+	{
+		PendingLoad::SavedNode &node = p->nodes[i];
+		x.xferUnsignedInt(&node.index);
+		if (node.index >= (std::uint32_t)(kLayerCount * kNodes) || (i != 0 && node.index <= last))
+		{
+			throw XferException("partition: a node index " + std::to_string(node.index) + " out of order or beyond the trees");
+		}
+		last = node.index;
+		x.xferInt(&node.below);
+		x.xferVectorSize(node.list, 4);
+		for (ObjectID &id : node.list)
+		{
+			x.xferObjectID(&id);
+		}
+	}
+	m_pendingLoad = std::move(p);
+}
+
+// RW 0xA3B220's descent without the counts: the node (index in its tree) an entry with these cells is linked in, and each node passed on the way
+static std::uint32_t partitionNodeOf(std::uint32_t ex, std::uint32_t ey, std::uint32_t emask, std::vector<std::uint32_t> *passed)
+{
+	std::uint32_t node = 0;
+	std::uint32_t stride = (std::uint32_t)PartitionManager::kNodes;
+	std::uint32_t bit = (std::uint32_t)PartitionManager::kCells;
+	for (;;)
+	{
+		stride >>= 2;
+		if (stride == 0)
+		{
+			break;
+		}
+		bit >>= 1;
+		if ((emask & bit) != 0)
+		{
+			break;
+		}
+		if (passed)
+		{
+			passed->push_back(node);
+		}
+		const std::uint32_t child = ((ex & bit) != 0 ? 1u : 0u) + ((ey & bit) != 0 ? 2u : 0u);
+		node += child * stride + 1;
+	}
+	return node;
+}
+
+// rule 4 (validate before linking): every check runs on the pending record first (each entry's object exists and is listed once; every list names
+// entries, each once; every entry sits in the node its cells give, of its layer's tree; every node's count is the number of entries below it); only
+// then are the trees replaced. A refused load leaves the partition as it was
+void PartitionManager::loadPostProcess()
+{
+	if (!m_pendingLoad)
+	{
+		return;
+	}
+	std::unique_ptr<PendingLoad> p = std::move(m_pendingLoad);
+	std::map<ObjectID, size_t> entryIndex; // looked up only
+	std::vector<Object *> objects;
+	for (size_t i = 0; i < p->entries.size(); ++i)
+	{
+		const PendingLoad::SavedEntry &s = p->entries[i];
+		Object *obj = m_logic.findObjectByID(s.id);
+		if (!obj)
+		{
+			throw XferException("partition: the entry of object " + std::to_string(s.id) + " has no object in the loaded game");
+		}
+		if (!entryIndex.emplace(s.id, i).second)
+		{
+			throw XferException("partition: object " + std::to_string(s.id) + " has two entries");
+		}
+		objects.push_back(obj);
+	}
+	auto entryOf = [&](ObjectID id, const char *list) -> size_t {
+		auto it = entryIndex.find(id);
+		if (it == entryIndex.end())
+		{
+			throw XferException(std::string("partition: the ") + list + " names object " + std::to_string(id) + ", which has no entry");
+		}
+		return it->second;
+	};
+	std::vector<char> dirty(p->entries.size(), 0), linked(p->entries.size(), 0);
+	for (ObjectID id : p->dirty)
+	{
+		const size_t e = entryOf(id, "dirty list");
+		if (dirty[e]++)
+		{
+			throw XferException("partition: object " + std::to_string(id) + " is twice on the dirty list");
+		}
+	}
+	std::map<std::uint32_t, std::int32_t> below; // node index -> entries below it, from the entries' cells
+	for (const PendingLoad::SavedEntry &s : p->entries)
+	{
+		std::vector<std::uint32_t> passed;
+		partitionNodeOf(s.x, s.y, s.mask, &passed);
+		for (std::uint32_t n : passed)
+		{
+			++below[(std::uint32_t)s.layerPlus1 * (std::uint32_t)kNodes + n];
+		}
+	}
+	for (const PendingLoad::SavedNode &s : p->nodes)
+	{
+		const std::uint32_t t = s.index / (std::uint32_t)kNodes, n = s.index % (std::uint32_t)kNodes;
+		for (ObjectID id : s.list)
+		{
+			const size_t e = entryOf(id, "node list");
+			const PendingLoad::SavedEntry &se = p->entries[e];
+			if (linked[e]++)
+			{
+				throw XferException("partition: object " + std::to_string(id) + " is in two node lists");
+			}
+			if ((std::uint32_t)se.layerPlus1 != t || partitionNodeOf(se.x, se.y, se.mask, nullptr) != n)
+			{
+				throw XferException("partition: object " + std::to_string(id) + " is in node " + std::to_string(n) + " of the tree of layer " +
+					std::to_string((int)t - 1) + ", not the one its layer and cells give");
+			}
+		}
+		auto it = below.find(s.index);
+		if (s.below != (it == below.end() ? 0 : it->second))
+		{
+			throw XferException("partition: node " + std::to_string(n) + " of the tree of layer " + std::to_string((int)t - 1) + " counts " +
+				std::to_string(s.below) + " entries below it, its entries give " + std::to_string(it == below.end() ? 0 : it->second));
+		}
+		if (it != below.end())
+		{
+			below.erase(it);
+		}
+	}
+	if (!below.empty())
+	{
+		throw XferException("partition: node " + std::to_string(below.begin()->first % (std::uint32_t)kNodes) + " has entries below it and is not saved");
+	}
+	for (size_t e = 0; e < p->entries.size(); ++e)
+	{
+		if (!linked[e])
+		{
+			throw XferException("partition: object " + std::to_string(p->entries[e].id) + " is in no node list");
+		}
+	}
+	// valid: the current trees go and the saved ones are made in their order
+	clearTrees();
+	m_entries = nullptr;
+	m_dirty = nullptr;
+	m_entryCount = 0;
+	m_byId.clear();
+	m_loX = p->loX;
+	m_loY = p->loY;
+	m_hiX = p->hiX;
+	m_hiY = p->hiY;
+	m_scale = p->scale;
+	m_regionSet = p->regionSet;
+	Entry **tail = &m_entries;
+	for (size_t i = 0; i < p->entries.size(); ++i)
+	{
+		const PendingLoad::SavedEntry &s = p->entries[i];
+		if (s.id >= m_byId.size())
+		{
+			m_byId.resize((size_t)s.id + 1);
+		}
+		std::unique_ptr<Entry> owned = std::make_unique<Entry>();
+		Entry &e = *owned;
+		e.object = objects[i];
+		e.id = s.id;
+		e.layerPlus1 = s.layerPlus1;
+		e.x = s.x;
+		e.y = s.y;
+		e.mask = s.mask;
+		e.allPrev = tail;
+		*tail = &e;
+		tail = &e.allNext;
+		m_byId[s.id] = std::move(owned);
+		++m_entryCount;
+	}
+	Entry **dirtyTail = &m_dirty;
+	for (ObjectID id : p->dirty)
+	{
+		Entry &e = *m_byId[id];
+		e.dirtyPrev = dirtyTail;
+		*dirtyTail = &e;
+		dirtyTail = &e.dirtyNext;
+	}
+	for (const PendingLoad::SavedNode &s : p->nodes)
+	{
+		Node &node = m_trees[s.index / (std::uint32_t)kNodes][s.index % (std::uint32_t)kNodes];
+		node.below = s.below;
+		Entry **slot = &node.head;
+		for (ObjectID id : s.list)
+		{
+			Entry &e = *m_byId[id];
+			e.nodePrev = slot;
+			*slot = &e;
+			slot = &e.nodeNext;
+		}
 	}
 }

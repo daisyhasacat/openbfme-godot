@@ -1,5 +1,6 @@
 extends SceneTree
 class FakeHud extends Node:
+	func is_logic_held() -> bool: return true
 	var activated: Array = []
 	var store_open := false
 	var command_count := 6

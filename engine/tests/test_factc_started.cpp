@@ -232,20 +232,9 @@ TEST_CASE("factc castle buttons: every Goblin and Angmar fortress improvement bo
 					}
 					const ProductionUpdateInterface *kq = keep ? keep->getProductionUpdate() : nullptr;
 					const ProductionEntry *kf = kq ? kq->firstProduction() : nullptr;
-					const int canMake = keep && od->m_useBuildingProduction ? (int)BuildAssistant::canMakeUnit(*keep, g.logic().things().findTemplate(od->m_thingToSpawn), -1) : -1;
-					if (od->m_useBuildingProduction)
-					{
-						// S-2009: the keep's queue refuses the Fire Drake (canMakeUnit: no prerequisites; the producer's module-offered templates, RW 0x794F69,
-						// are not ported, S-207): pinned until it is made
-						CHECK_MESSAGE((!done && canMake == (int)CANMAKE_NO_PREREQUISITES), cb->m_name << ": the Fire Drake is made now: move the pin of S-2009");
-						std::printf("factc castle buttons %s: KNOWN %s (S-2009: canMakeUnit %d, queued %u)\n", faction, cb->m_name.c_str(), canMake, ocu->queued());
-					}
-					else
-					{
-						CHECK_MESSAGE(done, cb->m_name << ": the ObjectCreationUpgrade's " << (od->m_thingToSpawn.empty() ? std::string() : od->m_thingToSpawn + " / ") << od->m_grantUpgrade
-																  << " did not show after its Delay (the keep's queue " << (kq ? kq->getProductionCount() : -1) << " entries, the first "
-																  << (kf && kf->objectToProduce ? kf->objectToProduce->getName() : std::string("-")) << ")");
-					}
+					CHECK_MESSAGE(done, cb->m_name << ": the ObjectCreationUpgrade's " << (od->m_thingToSpawn.empty() ? std::string() : od->m_thingToSpawn + " / ") << od->m_grantUpgrade
+															  << " did not show after its Delay (the keep's queue " << (kq ? kq->getProductionCount() : -1) << " entries, the first "
+															  << (kf && kf->objectToProduce ? kf->objectToProduce->getName() : std::string("-")) << ")");
 					line += " -> " + (od->m_thingToSpawn.empty() ? std::string() : od->m_thingToSpawn + (done ? " made, " : " NOT made, ")) + (od->m_grantUpgrade.empty() ? std::string() : od->m_grantUpgrade + " granted");
 				}
 				bought.push_back(line);

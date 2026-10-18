@@ -77,6 +77,11 @@ public:
 
 	// the player's current selection, objects that are gone dropped (ids in selection order)
 	std::vector<ObjectID> selection(int playerIndex) const;
+	// OpenBFME divergence (review DEVPORT-7e, multiplayer hardening): the object an argument names, when the message's (network-stamped) player controls
+	// it, else null. RotWK's cases for MSG_SET_RALLY_POINT, MSG_DO_AUTO_ABILITY(_WEAPON) and MSG_HORDE_SET / TOGGLE_FORMATION read the object without that
+	// question; its own client only names objects of the issuing player's group, which RW 0x779AEF has already cut to the objects that player controls,
+	// so a legitimate command is never refused and a forged one naming another player's object is dropped
+	static Object *issuerObject(GameLogic &logic, const GameMessage &m, ObjectID id);
 	// message types seen but not executed, with counts (stop S-208)
 	const std::map<int, unsigned long long> &unhandled() const { return m_unhandled; }
 	std::vector<std::string> acceptanceStops() const;

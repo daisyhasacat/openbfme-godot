@@ -182,6 +182,9 @@ public:
 	// group once, of the subclass, with an index within its list, a unique id of printable ASCII without spaces (it names the per-rank command sets and
 	// levels). False + *why naming the field otherwise
 	bool validateHero(const CreateAHeroHero &hero, const CommandStore &commands, std::string *why) const;
+	// lane SAVE-4e: validateHero's references alone (the class and subclass, the powers' ranks, slots and buttons, the bling), what a snapshot's record is
+	// checked by (an in-game record's version, validity and flags are the game's)
+	bool validateHeroContent(const CreateAHeroHero &hero, const CommandStore *commands, std::string *why) const;
 
 	// the parse internals (used by the field parsers)
 	void addBling(CreateAHeroBling b, INI *ini);
@@ -228,6 +231,8 @@ public:
 	};
 	const Stats &stats() const { return m_stats; }
 	std::uint32_t crc() const;
+	// lane SAVE-4d: the block obfme:CreateAHero (OpenBFME native layout around retail's record xfer, S-4255; see CreateAHeroSystem.cpp)
+	void xfer(class Xfer &x);
 	// RW 0x809CA6 for any record (lane CAH-1: the builder screen's MyHero::HeroBuildCost, RW 0x809CF3): TheCommandStore's buttons, TheCreateAHeroSystem's
 	// discount
 	static int powerCostOf(const CreateAHeroHero &hero);

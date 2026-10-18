@@ -15,6 +15,16 @@ import online_client  # noqa: E402
 KEY = bytes(range(32))
 
 
+@pytest.mark.parametrize("args,expected", [([], 120), (["--spectator-delay", "0"], 0), (["--spectator-delay", "600"], 600)])
+def test_host_spectator_delay_default_and_override(monkeypatch, args, expected):
+    seen = []
+    monkeypatch.setattr(online_client, "cmd_host", lambda a: seen.append(a.spectator_delay) or 0)
+    monkeypatch.setattr(sys, "argv", ["online_client.py", "host", "--lobby", "http://127.0.0.1:8787", "--name", "Host",
+                                    "--profile", "0" * 32, "--out", "unused.json", "--map", "maps/x/x.map", "--slot", "player,0,0,0,0"] + args)
+    assert online_client.main() == 0
+    assert seen == [expected]
+
+
 def test_ticket_pin():
     assert online_client.ticket(KEY, 1, "0123456789abcdef", 1, 0b0111, 2000000000) == "AQHvzauJZ0UjAQEHAJQ1dxkKDPX40Zd_QbpSaTVc2UI"
 
@@ -59,7 +69,7 @@ def test_lobby_service_node_tests():
 
 
 def test_smoke_against_a_lobby_without_a_relay(tmp_path):
-    # CFDEPLOY-1: the smoke subcommand (the deployment check of services/online/DEPLOY.md) passes against a lobby with RELAYS empty: START refused
+    # CFDEPLOY-1: the smoke subcommand (the deployment check of the deploy notes) passes against a lobby with RELAYS empty: START refused
     node = shutil.which("node")
     if not node:
         pytest.skip("SKIP LOUDLY: Node.js is not installed here, so the lobby smoke check did not run")

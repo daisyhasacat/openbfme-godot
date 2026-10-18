@@ -2,6 +2,7 @@
 // See GameLogic/Module/AreaScanModules.h for the target facts and the stop S-1023.
 
 #include "GameLogic/Module/AreaScanModules.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/AsciiString.h"
 #include "Common/INIException.h"
@@ -447,4 +448,25 @@ void AreaScanModules::registerAll(ModuleFactory &modules)
 std::vector<std::string> AreaScanModules::stopLines()
 {
 	return { kStop };
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190). LargeGroupBonusUpdate's scan counts are the update's scratch (cleared before each scan) ------
+void LargeGroupBonusUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_lastScan);
+	x.xferBool(&m_active);
+	x.xferBool(&m_reached);
+	x.xferUnsignedInt(&m_lastCount);
+}
+
+void PassiveAreaEffectBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_lastScan);
+	SnapshotXfer::ids(x, m_targets);
+	SnapshotXfer::u64(x, m_heals);
+	SnapshotXfer::u64(x, m_modifiers);
 }

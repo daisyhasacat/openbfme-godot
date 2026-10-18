@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/AutoDepositUpdate.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/NumericState.h"
 #include "Common/Player.h"
@@ -152,4 +153,14 @@ void AutoDepositUpdate::crc(StateHasher &h) const
 	h.addU32(m_depositOnFrame);
 	h.addBool(m_awardInitialCaptureBonus);
 	h.addBool(m_started);
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) ---------------------------------------------------------------------------------------------------
+void AutoDepositUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_depositOnFrame);
+	x.xferBool(&m_awardInitialCaptureBonus);
+	x.xferBool(&m_started);
 }

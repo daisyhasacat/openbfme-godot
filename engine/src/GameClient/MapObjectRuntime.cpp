@@ -172,7 +172,7 @@ void MapObjectRuntime::createDrawModules(const MapObjectDrawables &drawables, si
 			{
 				++m_report.floorDraws;
 			}
-			// S-115: the draw fields of the static draws that change how the model is drawn and are stored, not applied
+			// S-115: the draw fields of the static draws that change how the model is drawn and are stored, not applied (WeatherTexture: applied by inference, S-5015)
 			if (const W3DPropDrawModuleData *pd = dynamic_cast<const W3DPropDrawModuleData *>(m.data))
 			{
 				if (!pd->m_distanceFog)
@@ -184,7 +184,7 @@ void MapObjectRuntime::createDrawModules(const MapObjectDrawables &drawables, si
 			{
 				if (!fd->m_weatherTextures.empty())
 				{
-					++m_report.ignoredDrawFields[m.className + " WeatherTexture"];
+					++m_report.inferredDrawFields[m.className + " WeatherTexture"]; // S-5015: the renderer swaps the texture (GodotGameWorld floorWeatherSwaps)
 				}
 				if (fd->m_forceToBack)
 				{

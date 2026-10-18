@@ -10,6 +10,7 @@
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/StateHash.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameClient/FXList.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.h"
@@ -411,6 +412,7 @@ void InvisibilityManager::reset()
 	m_maxMultiplier = 1.0f; // RW 0x81BE4B: 1.0 (RW 0xBD1908)
 	m_reveals = 0;
 	m_becameInvisible = 0;
+	m_loadedNuggets.clear(); // lane SAVE-4b (no entry refers to them any more)
 }
 
 void InvisibilityManager::note(const std::string &what)
@@ -982,4 +984,65 @@ std::vector<std::string> InvisibilityManager::report() const
 	r.push_back("[S-1040] invisibility: " + std::to_string(m_entries.size()) + " objects tracked, " + std::to_string(m_trees.size()) + " terrain trees, " +
 		std::to_string(m_becameInvisible) + " became invisible, " + std::to_string(m_reveals) + " reveals");
 	return r;
+}
+
+// ---- lane SAVE-4b: obfme:Invisibility (OpenBFME native, S-4190; retail's manager is TheGameLogic + 0x178, which no retail block names) -----------------
+// Every entry in id order with its applied copies. Retail's list node holds a COPY of the nugget (RW 0x81A8F5); the port points at the template's, so the
+// snapshot carries each copy's fields and a load points at a copy the manager keeps (m_loadedNuggets): the copy is read field by field only (sameAs, the
+// conditions, the FX names), never compared by address.
+void InvisibilityNugget::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	// lane SAVE-4e (closed sets): each mask holds only bits of its INI name list (the nugget's fields are copies of the data's, RW 0x81A8F5)
+	SnapshotXfer::maskWithin(x, forbiddenConditions, SnapshotXfer::lowBits(SnapshotXfer::nameCount(kForbiddenNames)), "an invisibility nugget's forbidden conditions",
+		"its ForbiddenConditions names");
+	SnapshotXfer::maskWords(x, forbiddenWeaponConditions, SnapshotXfer::weaponConditionCount(), "an invisibility nugget's forbidden weapon conditions", "the weapon set conditions");
+	x.xferReal(&detectionRange);
+	SnapshotXfer::enumIn(x, invisibilityType, STEALTH, NONE, "an invisibility nugget's type");
+	SnapshotXfer::words(x, ignoreTreeCheckUpgrades.words);
+	if (x.isLoading())
+	{
+		checkLoadedUpgradeMask(ignoreTreeCheckUpgrades, "an invisibility nugget's tree check upgrades");
+	}
+	SnapshotXfer::maskWithin(x, options, SnapshotXfer::lowBits(SnapshotXfer::nameCount(kOptionNames)), "an invisibility nugget's options", "its Options names");
+	x.xferAsciiString(&becomeStealthedFX);
+	x.xferAsciiString(&exitStealthFX);
+	SnapshotXfer::maskWords(x, hintDetectableConditions, SnapshotXfer::objectStatusCount(), "an invisibility nugget's hint detectable conditions", "the object status names");
+}
+
+void InvisibilityManager::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	x.xferUnsignedInt(&m_nextUpdate);
+	x.xferReal(&m_maxMultiplier);
+	std::list<InvisibilityNugget> loadedNuggets; // a load's copies, kept once the whole block has loaded
+	// an entry: three frames and its applied copies (each a nugget of InvisibilityNugget::kXferBytes, two frames and a flag)
+	SnapshotXfer::map(x, m_entries, 4 + 12 + 4, "the invisibility entries", [&](ObjectID &id) { x.xferObjectID(&id); }, [&](Entry &e) {
+		x.xferUnsignedInt(&e.notBefore);
+		x.xferUnsignedInt(&e.detectedUntil);
+		x.xferUnsignedInt(&e.invisibleSince);
+		SnapshotXfer::each(x, e.applied, InvisibilityNugget::kXferBytes + 9, [&](Applied &a) {
+			if (x.isLoading())
+			{
+				loadedNuggets.emplace_back();
+				loadedNuggets.back().xfer(x);
+				a.nugget = &loadedNuggets.back();
+			}
+			else
+			{
+				InvisibilityNugget copy = *a.nugget;
+				copy.xfer(x);
+			}
+			x.xferUnsignedInt(&a.startFrame);
+			x.xferUnsignedInt(&a.frames);
+			x.xferBool(&a.active);
+		});
+	});
+	if (x.isLoading())
+	{
+		m_loadedNuggets.swap(loadedNuggets); // the entries point at these nodes (a list keeps them where they are)
+	}
+	SnapshotXfer::coords(x, m_trees);
+	x.xferUnsignedInt(&m_reveals);
+	x.xferUnsignedInt(&m_becameInvisible);
 }

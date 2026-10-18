@@ -1,10 +1,11 @@
 """Tests of tools/sim/sim_audit.py: the compile-flag audit, the manifest classification, the type-aware AST check on fixture sources, and a real
 configure of engine/ whose generated compile_commands.json is audited against the manifest (the coverage check the CI runs: configure first, then audit).
 
-The AST tests need libclang (pip install libclang==18.1.1; OPENBFME_LIBCLANG_PYTHONPATH / OPENBFME_LIBCLANG_LIBRARY) and skip LOUDLY without it
+The AST tests need libclang (Linux: pip install libclang==18.1.1; Windows: LLVM >= 19, see tools/sim/README.md) and skip LOUDLY without it on Linux
 (stop S-190). The configure tests need cmake and skip loudly without it."""
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,102 @@ GNU32 = dict(GNU, x86_32=True, required_flags=GNU["required_flags"] + ["-msse2",
 MSVC = {"compiler_family": "msvc", "x86_32": False, "required_flags": ["/fp:strict"], "sources": []}
 MSVC32 = dict(MSVC, x86_32=True, required_flags=["/fp:strict", "/arch:SSE2"])
 GOOD = ["/usr/bin/c++", "-O3", "-fno-fast-math", "-ffp-contract=off", "-frounding-math", "-c", "a.cpp"]
+
+
+def native_forbidden(option):
+    """Configure tests exercise the native compiler's forbidden options, not GNU flags that cl.exe ignores."""
+    if os.name != "nt":
+        return option
+    for gnu, msvc in {"-ffast-math": "/fp:fast", "-ffp-contract=fast": "/fp:contract", "-Ofast": "/fp:precise",
+                      "-flto": "/GL", "-mfpmath=387": "/arch:IA32"}.items():
+        option = option.replace(gnu, msvc)
+    return option
+
+
+@pytest.mark.parametrize("version", ["clang version 18.1.1", "unrecognised LLVM"])
+def test_windows_llvm_rejects_old_or_unknown_versions(version):
+    with pytest.raises(RuntimeError, match=r"unsupported libclang.dll.*LLVM >= 19"):
+        sim_audit.require_windows_llvm(version, "old/libclang.dll")
+
+
+@pytest.mark.parametrize("version", ["clang version 19.1.7", "clang version 20.1.8"])
+def test_windows_llvm_accepts_supported_versions(version):
+    sim_audit.require_windows_llvm(version, "LLVM/bin/libclang.dll")
+
+
+def test_windows_llvm_discovery_and_missing_explicit_dll(monkeypatch, tmp_path):
+    root = tmp_path / "Program Files"
+    lib = root / "LLVM" / "bin" / "libclang.dll"
+    lib.parent.mkdir(parents=True)
+    lib.touch()
+    monkeypatch.delenv("OPENBFME_LIBCLANG_LIBRARY", raising=False)
+    monkeypatch.setenv("ProgramW6432", str(root))
+    monkeypatch.setenv("ProgramFiles", str(root))
+    monkeypatch.setattr(sim_audit.shutil, "which", lambda name: None)
+    assert sim_audit.windows_libclang() == str(lib)
+    monkeypatch.setenv("OPENBFME_LIBCLANG_LIBRARY", str(tmp_path / "missing.dll"))
+    with pytest.raises(RuntimeError, match="OPENBFME_LIBCLANG_LIBRARY does not name an existing libclang.dll"):
+        sim_audit.windows_libclang()  # an explicit bad path must not fall back to the installed DLL
+    monkeypatch.setenv("OPENBFME_LIBCLANG_LIBRARY", str(lib))
+    assert sim_audit.windows_libclang() == str(lib)
+    monkeypatch.delenv("OPENBFME_LIBCLANG_LIBRARY")
+    monkeypatch.delenv("ProgramW6432")
+    monkeypatch.delenv("ProgramFiles")
+    monkeypatch.setattr(sim_audit.shutil, "which", lambda name: str(lib.parent / "clang.exe"))
+    assert sim_audit.windows_libclang() == str(lib)
+    monkeypatch.setattr(sim_audit.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match=r"libclang.dll not found.*LLVM >= 19"):
+        sim_audit.windows_libclang()
+
+
+def test_msvc_ast_retains_build_include_paths():
+    args = sim_audit.clang_args({"arguments": ["cl.exe", "/I", "src", "-external:Ilua-ea/include", "/external:I", "path with spaces",
+                                               "/D", "FEATURE=1", "/FIconfig.h", "/std:c++17"], "directory": "build", "file": "a.cpp"}, ["sdk"])
+    assert args == ["-x", "c++", "-working-directory", "build", "-I", "src", "-isystem", "lua-ea/include", "-isystem", "path with spaces",
+                    "-D", "FEATURE=1", "-include", "config.h", "-std=c++17", "-fms-compatibility", "-fms-extensions", "-Wno-everything", "-isystem", "sdk"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows command-line quoting")
+def test_windows_compile_command_quoting():
+    argv = [r"C:\Program Files\LLVM\bin\clang-cl.exe", r"/IC:\source tree\include", r"-external:IC:\build tree\lua-ea\include", "/fp:strict"]
+    assert sim_audit.command_args({"command": subprocess.list2cmdline(argv)}) == argv
+    assert sim_audit.command_args({"command": 'cl.exe /I"source tree" -external:I"build tree/lua-ea/include"'}) == [
+        "cl.exe", "/Isource tree", "-external:Ibuild tree/lua-ea/include"]
+
+
+def test_unavailable_ast_is_a_named_error_not_a_skip(monkeypatch, tmp_path, capsys):
+    (tmp_path / "compile_commands.json").write_text("[]")
+    (tmp_path / "sim_manifest.json").write_text(json.dumps(MSVC))
+    monkeypatch.setattr(sim_audit, "audit_link", lambda *args: ([], 0))
+    monkeypatch.setattr(sim_audit, "audit_manifest", lambda *args: ([], {}))
+
+    def missing(*args):
+        raise RuntimeError("libclang.dll not found. " + sim_audit.WINDOWS_LLVM_HELP)
+
+    monkeypatch.setattr(sim_audit, "run_ast", missing)
+    assert sim_audit.main(["--build", str(tmp_path)]) == 2
+    output = capsys.readouterr().out
+    assert "ERROR: libclang.dll not found" in output and "LLVM >= 19" in output
+    assert "AST CHECK SKIPPED" not in output
+
+
+@pytest.mark.parametrize("platform,arches,expected", [
+    ("darwin", ["x86_64", "arm64"], "arm64"),
+    ("darwin", ["arm64", "x86_64"], "arm64"),
+    ("darwin", ["x86_64", "x86_64"], "x86_64"),
+    ("darwin", ["x86_64"], "x86_64"),
+    ("linux", ["x86_64", "arm64"], "x86_64"),
+    ("linux", [], None),
+])
+@pytest.mark.parametrize("representation", ["arguments", "command"])
+def test_clang_args_select_one_architecture(monkeypatch, platform, arches, expected, representation):
+    monkeypatch.setattr(sim_audit.sys, "platform", platform)
+    flags = GNU["required_flags"] + ["-isysroot", "/SDK Path", "-DKEEP=1"]
+    arguments = ["clang++"] + [arg for arch in arches for arg in ("-arch", arch)] + flags + ["-c", "a.cpp", "-o", "a.o"]
+    entry = {"directory": REPO, "file": "a.cpp", representation: arguments if representation == "arguments" else shlex.join(arguments)}
+    parsed = sim_audit.clang_args(entry, ["/system/include"])
+    assert parsed == ["-x", "c++"] + (["-arch", expected] if expected else []) + flags + ["-isystem", "/system/include"]
+    assert sim_audit.command_args(entry) == arguments  # The flag audit still sees the original universal command.
 
 
 # ---- the flag audit ---------------------------------------------------------------------------------------------------------------------------
@@ -84,6 +181,21 @@ def test_the_effective_link_options_of_a_generated_build_are_audited():
         problems, checked = sim_audit.audit_link(tmp, GNU)
         assert checked == 2
         assert len(problems) == 1 and "openbfme_tests" in problems[0] and "-ffast-math" in problems[0]
+
+
+@pytest.mark.parametrize("rule", ["C_EXECUTABLE_LINKER", "CXX_EXECUTABLE_LINKER", "CXX_SHARED_LIBRARY_LINKER",
+                                  "CXX_MODULE_LIBRARY_LINKER", "CXX_STATIC_LIBRARY_LINKER"])
+def test_ninja_link_count_does_not_depend_on_optional_flag_assignments(tmp_path, rule):
+    (tmp_path / "build.ninja").write_text(
+        f"build bad: {rule}__bad_ bad.o\n  LINK_LIBRARIES = -ffast-math\n"
+        f"build bare: {rule}__bare_ bare.o\n"
+        f"build full: {rule}__full_ full.o\n  LINK_FLAGS = -O3\n  LINK_LIBRARIES = -lm\n  LINK_PATH = -L/x\n"
+        "build obj.o: CXX_COMPILER__target_LINKER__ obj.cpp\n"
+        "build alias_LINKER: phony bad bare full\n"
+        "build custom: CUSTOM_COMMAND obj.o\n")
+    problems, checked = sim_audit.audit_link(str(tmp_path), GNU)
+    assert checked == 3
+    assert problems == ["bad: conflicting link option -ffast-math (in LINK_LIBRARIES)"]
 
 
 def _entry(rel, extra=()):
@@ -158,6 +270,7 @@ def _probe(link_line, check_line):
                                        "target_link_libraries(probe INTERFACE -Ofast)", "target_link_options(probe PRIVATE -ffast-math)",
                                        "target_link_libraries(probe PRIVATE -flto)"])
 def test_the_configure_check_rejects_forbidden_options_given_through_target_link_libraries(link_line):
+    link_line = native_forbidden(link_line)
     src, _build, result = _probe(link_line, "openbfme_sim_check_targets()")
     try:
         assert result.returncode != 0, link_line
@@ -239,7 +352,7 @@ def test_the_policy_is_the_reviewed_list():
         assert any(i["glob"] == "src/GodotDevice/%s.cpp" % name for i in policy["excluded"]), name
     on_disk = sorted(n for n in os.listdir(os.path.join(sim_audit.ENGINE, "src", "GodotDevice")) if n.endswith(".cpp"))
     for n in on_disk:  # every .cpp of the directory is classified: excluded by name, or a manifested simulation-input file (the game world, its hero commands (HERO-1), its garrison commands (GARRISON-1), the Create-a-Hero builder's map mode (CAH-1), the new-game message marshalling)
-        assert n in ("GodotGameWorld.cpp", "GodotGameWorldHeroes.cpp", "GodotGameWorldStealth.cpp", "GodotGameWorldGarrison.cpp", "GodotGameWorldCah.cpp", "GodotGameStart.cpp") or any(i["glob"] == "src/GodotDevice/" + n for i in policy["excluded"]), n
+        assert n in ("GodotGameWorld.cpp", "GodotGameWorldHeroes.cpp", "GodotGameWorldStealth.cpp", "GodotGameWorldGarrison.cpp", "GodotGameWorldCah.cpp", "GodotGameStart.cpp", "GodotBfmeLua.cpp", "GodotBfmeLuaAI.cpp") or any(i["glob"] == "src/GodotDevice/" + n for i in policy["excluded"]), n
     # the simulation data loaders are simulation, not excluded
     for src in ("src/Common/INI/INI.cpp", "src/Common/Thing/ThingTemplate.cpp", "src/GameLogic/Object/Weapon.cpp"):
         assert not any(fnmatch_(src, i["glob"]) for i in policy["excluded"]), src
@@ -573,7 +686,7 @@ def test_the_godot_enabled_configuration_audits_cleanly_and_skips_the_generated_
         manifest = json.load(open(os.path.join(build, "sim_manifest.json"), encoding="utf-8"))
         entries = json.load(open(os.path.join(build, "compile_commands.json"), encoding="utf-8"))
         policy = json.load(open(sim_audit.POLICY_PATH, encoding="utf-8"))
-        gen = [e for e in entries if os.sep + "thirdparty" + os.sep + "godot-cpp" + os.sep in os.path.join(e.get("directory", ""), e["file"])]
+        gen = [e for e in entries if os.sep + "thirdparty" + os.sep + "godot-cpp" + os.sep in os.path.normpath(os.path.join(e.get("directory", ""), e["file"]))]
         assert gen, "the Godot configuration should contain godot-cpp compile commands"
         assert sim_audit.audit_flags(entries, manifest, build) == []
         problems, built = sim_audit.audit_manifest(entries, manifest, policy, build)
@@ -592,6 +705,7 @@ def test_the_godot_enabled_configuration_audits_cleanly_and_skips_the_generated_
                                       "-DCMAKE_EXE_LINKER_FLAGS=-flto"])
 def test_conflicting_linker_flags_fail_at_configure_time(override):
     """The review: linking with -ffast-math changes the start-up MXCSR from 1F80 to 9FC0 (crtfastmath.o), and was accepted."""
+    override = native_forbidden(override)
     build, result = _configure([override])
     try:
         assert result.returncode != 0, override
@@ -605,7 +719,7 @@ def test_directory_wide_link_and_compile_options_fail_at_configure_time():
     os.makedirs(work, exist_ok=True)
     for opt in ("add_link_options(-ffast-math)", "add_compile_options(-ffp-contract=fast)"):
         include = tempfile.NamedTemporaryFile("w", suffix=".cmake", dir=work, delete=False)
-        include.write(opt + "\n")
+        include.write(native_forbidden(opt) + "\n")
         include.close()
         try:
             build, result = _configure(["-DCMAKE_PROJECT_INCLUDE=" + include.name])
@@ -621,6 +735,7 @@ def test_directory_wide_link_and_compile_options_fail_at_configure_time():
 @pytest.mark.parametrize("override", ["-DCMAKE_CXX_FLAGS=-ffast-math", "-DCMAKE_CXX_FLAGS=-ffp-contract=fast", "-DCMAKE_C_FLAGS=-Ofast",
                                       "-DCMAKE_CXX_FLAGS=-flto", "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON", "-DCMAKE_CXX_FLAGS_RELEASE=-mfpmath=387"])
 def test_conflicting_overrides_fail_at_configure_time(override):
+    override = native_forbidden(override)
     build, result = _configure([override])
     try:
         assert result.returncode != 0, override

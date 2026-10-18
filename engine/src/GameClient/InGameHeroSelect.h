@@ -35,12 +35,12 @@
 // - the nearest builder (RW 0x92D9F4): Shift keeps the camera; with more than one object selected, or once the "used" round timed out (+ 0x1DC), every builder is
 //   unused again; the idle builders sorted by their distance to the camera (RW 0x92D8FA, the squared ground distance), the first unused one that is not the
 //   on-screen single selection is selected (MSG_CREATE_SELECTED_GROUP_IDLE_WORKER_VOICE 1003 with true), the camera looks at it when it is off screen, and it is
-//   marked used.
+//   marked used. The timeout is the InGameUI SelectNearestBuilderCycleTimeOut in milliseconds converted to 30 Hz client frames.
 // INFERENCE (stop S-2521): the port learns of the objects by walking the logic's objects after each logic frame, in id order (the creation order), not from
 //   initObject / ~Object; the camera position of the sort is the view's look-at point (View vslot 0x118 was not read); the "used" round's time-out (RW 0x92BA91,
-//   + 0x1DC) is not ported (the round resets only on a multiple selection or when every builder was used); the hot key action of the nearest builder keeps the
-//   camera rule of a button press; the over-button handlers (RW 0x92BF34: the help box with the button's description) and the attacked effect (OnHeroAttacked)
-//   and FlashHeroButton's callers are not ported; a Create-a-Hero hero shows its template's ButtonImage (its record's image is S-1405's).
+//   + 0x1DC) is ported; the hot key action of the nearest builder keeps the camera rule of a button press; the over-button handlers (RW 0x92BF34: the help box
+//   with the button's description) are lane HOVER-1's (S-4612); ordered client events drive OnHeroAttacked and the script's FlashHeroButton (lane ROTWK-C); a Create-a-Hero hero
+//   still shows its template's ButtonImage (its record's image is S-1405's).
 
 #pragma once
 
@@ -51,6 +51,7 @@
 #include <string>
 #include <vector>
 
+class ArchiveFileSystem;
 class Object;
 struct HudContext;
 
@@ -67,7 +68,9 @@ public:
 		std::function<void(const std::string &record, const std::string &text)> setText;
 	};
 
-	explicit InGameHeroSelect(HudContext &ctx) : m_ctx(ctx) {}
+	explicit InGameHeroSelect(HudContext &ctx, unsigned timeoutMs);
+	static bool loadCycleTimeout(ArchiveFileSystem &fs, unsigned &ms, std::string *error = nullptr);
+	void setClientFrame(unsigned frame) { m_clientFrame = frame; }
 
 	// ---- the data (Palantir + 0xC0) ----
 	void addObject(const Object &obj);    // RW 0x92CD78
@@ -79,6 +82,7 @@ public:
 		ObjectID id = INVALID_ID;
 		int rank = 0;        ///< the rank the last update saw
 		int flashFrames = 0; ///< FlashHeroButton's countdown
+		std::string templateName; ///< immutable template identity, cached while logic is held
 	};
 	struct Builder
 	{
@@ -99,6 +103,8 @@ public:
 	void onButtonPressed(const std::string &param);    // RW 0x92DB91
 	void selectAllHeroes();                            // RW 0x92C8C4
 	void selectNearestBuilder(bool noCamera);          // RW 0x92D9F4
+	void onHeroAttacked(ObjectID id);                   // RW 0x92BFED
+	void flashHeroButton(const std::string &templateName, int frames); // RW 0x92C876
 	bool selectAllShown() const { return m_selectAllShown; }
 	bool shown() const { return m_shown; }
 
@@ -137,5 +143,6 @@ private:
 	std::string m_name;
 	Movie m_movie;
 	bool m_shown = false, m_selectAllShown = false, m_builderUsed = false;
+	unsigned m_builderDeadline = 0, m_clientFrame = 0, m_builderTimeoutFrames = 0;
 	Slot m_slots[kSlots];
 };

@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0.
 // See GodotDevice/GodotMapTerrain.h.
 
+#include "Common/BfmeGame.h"
 #include "GodotDevice/GodotGammaComposite.h"
 #include "GodotDevice/GodotMapTerrain.h"
 
@@ -527,6 +528,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 	LoadedMap map;
 	{
 		MapReadOptions mro; // strict: unknown chunks and unread bytes are errors
+		mro.bfme1 = rfs.archive_fs() && isBfme1Data(*rfs.archive_fs()); // community PR #36
 		if (!MapReader::load(bytes, path, mro, map, &error))
 		{
 			return fail(error);

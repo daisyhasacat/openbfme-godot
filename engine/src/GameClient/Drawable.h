@@ -28,6 +28,7 @@
 #include "Common/Thing/Thing.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameClient/ClientEvents.h"
+#include "GameClient/DrawableShroud.h"
 #include "GameClient/LogicSnapshot.h"
 #include "GameClient/RenderInterpolation.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DDrawModules.h"
@@ -133,6 +134,7 @@ public:
 	// lane ANIM-1, RW 0x679512 / 0x67449C (see ClientEvents.h): a changed bit is stored and marks the drawable dirty; flushModelConditions hands the
 	// stored flags to the draw modules (setModelConditionFlags) when dirty, with the object's weapon cycle for UseWeaponTiming as the flush event carried it
 	void storeModelCondition(int bit, bool on);
+	void storeModelConditions(const ModelConditionFlags &flags); ///< lane SAVE-4e: the whole set (RW 0x679512's argument), dirty when it differs
 	void flushModelConditions(bool hasWeaponTiming, int weaponTimingFrames);
 	bool modelConditionsDirty() const { return m_flagsDirty; }
 	// the weapon cycle the last flush carried (-1: the object had no current weapon), what UseWeaponTiming animations divide by
@@ -212,7 +214,25 @@ public:
 		m_syncSnapshot = snapshot;
 		m_syncFrame = snapshot ? snapshot->frame : 0;
 		m_syncRec = rec;
+		// lane VISUAL-2: RW 0x64849E's per-frame shroud look (GameClient/DrawableShroud.h) from the presented record
+		const ShroudView *view = snapshot ? snapshot->shroud.get() : nullptr;
+		m_shroudLook.update(rec ? rec->objectShroud : 0, rec && rec->effectivelyDead, m_syncFrame,
+			view ? DrawableShroudLook::viewerKeyOf(view->localPlayer, view->visionPlayers) : 0);
 	}
+	// lane VISUAL-2: the shroud look of the last sync: fullyObscured is RW Drawable +0x440 (attached particle systems do not emit), hidden: not drawn
+	const DrawableShroudLook &shroudLook() const { return m_shroudLook; }
+	// lane VISUAL-2 r2: whether the device layer draws this drawable for the presented snapshot `presented` (null: none yet), in one place for the models,
+	// the attached particle systems (RW 0x5FA2CE reads the drawable's visible byte +0x441), the buffs (TBuff's visible = +0x441, RW 0x4D12FA) and the
+	// streaks. `hidden`: not drawn (the grace-adjusted SHROUDED status while `shroudDrawn`, an enemy's invisible object, a drawable a container hid);
+	// `fogLook`: drawn fully obscured (the fogged light, RW 0x46F48E). INFERENCE (S-4971): +0x441 is the render's visible byte; the port's renderer
+	// draws exactly what is not `hidden` (no view frustum test)
+	struct PresentedLook
+	{
+		bool hidden = false;
+		bool nonStealthHidden = false; ///< shroud/garrison only; model modules may opt out of stealth
+		bool fogLook = false;
+	};
+	PresentedLook presentedLook(const LogicSnapshot *presented, bool shroudDrawn) const;
 	const ObjectSnapshot *syncedRecord(const LogicSnapshot &snapshot, bool &found) const
 	{
 		found = m_syncSnapshot == &snapshot && m_syncFrame == snapshot.frame;
@@ -283,6 +303,7 @@ private:
 	const LogicSnapshot *m_syncSnapshot = nullptr; ///< lane PERF-3: setSyncedRecord
 	UnsignedInt m_syncFrame = 0;
 	const ObjectSnapshot *m_syncRec = nullptr;
+	DrawableShroudLook m_shroudLook; ///< lane VISUAL-2
 	bool m_zBasisCached = false;
 	float m_zCachedAngle = 0.0f;
 	float m_zCachedBasis[9] = {};

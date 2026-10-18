@@ -2,6 +2,7 @@
 // See GameLogic/Module/HitReactionBehavior.h for the target facts and the stop S-1024.
 
 #include "GameLogic/Module/HitReactionBehavior.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/AsciiString.h"
 #include "Common/StateHash.h"
@@ -186,4 +187,13 @@ void HitReactionBehavior::registerClass(ModuleFactory &modules)
 		}
 		return std::make_unique<HitReactionBehavior>(thing, typed);
 	});
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) ---------------------------------------------------------------------------------------------------
+void HitReactionBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferInt(&m_countdown);
+	x.xferReal(&m_lastHealth);
 }

@@ -238,6 +238,25 @@ bool AptPalantir::createContent(const std::string &frame)
 	return ok && written;
 }
 
+void AptPalantir::setBfme1(bool value)
+{
+	if (value && !m_bfme1)
+	{
+		// community PR #36, BFME1 data only: BFME1's Palantir.apt presses its fixed CommandButtons.Command1 .. 6 through this command (RotWK's movies
+		// do not have it, so a RotWK HUD leaves it unregistered as retail does)
+		registerCommand("AptPalantir::OnBttnCommand", [this](const std::string &arg) {
+			m_log.push_back("AptPalantir::OnBttnCommand(" + arg + ")");
+			const size_t digit = arg.find_first_of("0123456789");
+			const int i = digit == std::string::npos ? -1 : std::atoi(arg.c_str() + digit) - 1;
+			if (i >= 0 && i < kArcPositions && m_arc[i].created && m_press)
+			{
+				m_press(m_arc[i].slot, true);
+			}
+		});
+	}
+	m_bfme1 = value;
+}
+
 const AptPalantir::NativeImage *AptPalantir::imageForClip(const std::string &clipPath, const std::string &imageMapVar) const
 {
 	if (m_bfme1)
@@ -386,7 +405,7 @@ void AptPalantir::syncFrames(const std::vector<ControlBarButton> &buttons, bool 
 		}
 		const ControlBarButton &b = *at[i];
 		const std::string key = levelPrefix() + frame + ".content";
-		const std::string sig = std::to_string(b.slot) + "|" + std::to_string((int)b.state) + "|" + std::to_string(b.queued) + "|" + b.image + "|" + std::to_string((int)(b.timer * 100.0f)) + (b.autoAbility ? "|auto" : "");
+		const std::string sig = std::to_string(b.slot) + "|" + std::to_string((int)b.state) + "|" + std::to_string(b.productionCount) + "|" + b.image + "|" + std::to_string((int)(b.timer * 100.0f)) + (b.autoAbility ? "|auto" : "");
 		if (s.created && s.sig == sig)
 		{
 			continue;
@@ -458,7 +477,10 @@ void AptPalantir::syncFrames(const std::vector<ControlBarButton> &buttons, bool 
 		{
 			m_timers.erase(key + "_Timer");
 		}
-		windows().setAptText("APT:" + key + "_ProductionCount", b.queued > 0 ? "x" + std::to_string(b.queued) : std::string(" ")); // a space: an empty record would show the label (ResolveAptText)
+		// lane OWNERFIX-3: InGameCommandButtonMovieClip's count (RW 0x9D2D28 -> 0x9D71E0 -> RW 0x9D7054; BFME2 decomp Rva005C7A29Overlay.cpp, tier A): the
+		// window's production count (RW 0x72981E: ShowProductionCount windows only, ControlBar::productionCountOf) formatted L"%d" (RW 0xBDF1B0), below 1 L" "
+		// (RW 0xBD16E4), into "APT:_level<n>.<clip>_ProductionCount" (RW 0xC8CAC8)
+		windows().setAptText("APT:" + key + "_ProductionCount", b.productionCount > 0 ? std::to_string(b.productionCount) : std::string(" "));
 	}
 }
 
@@ -499,6 +521,21 @@ bool AptPalantir::autoAbilityOverlayShown(int slot, bool arc) const
 		}
 	}
 	return false;
+}
+
+const std::string *AptPalantir::productionCountText(int slot, bool arc)
+{
+	const Slot *slots = arc ? m_arc : m_side;
+	const int n = arc ? kArcPositions : kSidePositions;
+	for (int i = 0; i < n; ++i)
+	{
+		const std::string &frame = arc ? m_arcFramePath[i] : m_sideFramePath[i];
+		if (slots[i].created && slots[i].slot == slot && !frame.empty())
+		{
+			return windows().aptText("APT:" + levelPrefix() + frame + ".content_ProductionCount");
+		}
+	}
+	return nullptr;
 }
 
 void AptPalantir::syncLocal()

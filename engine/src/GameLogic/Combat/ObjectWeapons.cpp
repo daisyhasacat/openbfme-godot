@@ -10,6 +10,7 @@
 #include "Common/GameCommon.h"
 #include "Common/PlayerList.h"
 #include "Common/StateHash.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/AI/TurretAI.h"
@@ -1124,7 +1125,8 @@ bool ObjectWeapons::canAttackObject(const Object &victim, CommandSourceType sour
 	{
 		return false;
 	}
-	if (!forced && m_owner->getRelationship(victim) != ENEMIES)
+	// RW 0x6C9147: the non-forced relationship veto applies only to player commands (source 0).
+	if (!forced && source == CMD_FROM_PLAYER && m_owner->getRelationship(victim) != ENEMIES)
 	{
 		return false;
 	}
@@ -1646,4 +1648,61 @@ void ObjectWeapons::crc(StateHasher &h) const
 	h.addU64(m_stats.shotsOutOfRange);
 	h.addU64(m_stats.projectilesLaunched);
 	h.addU64(m_stats.unportedNuggets);
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) -----------------------------------------------------------------------
+// Retail's WeaponSet::xfer (RW 0x6C95BD, tier A, (1, 1)) transfers RotWK's set by template name with its flags; this ObjectWeapons is the port's (its weapons,
+// the lock, the slot conditions, the firing tracker, the crush weapons). Loading sets the flags, selects the set they select (rebuilding the weapons when it
+// is not the current one, RW 0x6C99E2's rule), then loads every weapon into its slot: the set's weapons are checked against the snapshot's by template.
+void ObjectWeapons::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SnapshotXfer::maskWords(x, m_flags, SnapshotXfer::weaponConditionCount(), "an object's weapon set flags", "the weapon set conditions"); // lane SAVE-4e
+	if (x.isLoading())
+	{
+		const WeaponTemplateSet *set = FindWeaponTemplateSet(m_owner->getTemplate()->weaponTemplateSets(), m_flags);
+		if (set != m_set || !m_set)
+		{
+			rebuildWeapons(set);
+		}
+	}
+	bool hasSet = !x.isLoading() && m_set != nullptr;
+	x.xferBool(&hasSet);
+	if (hasSet != (m_set != nullptr))
+	{
+		throw XferException(std::string("the snapshot's weapon set flags select ") + (hasSet ? "a" : "no") + " weapon set, this object's " + (m_set ? "a" : "no") + " set");
+	}
+	SnapshotXfer::enumIn(x, m_curSlot, 0, WEAPONSLOT_COUNT - 1, "a weapon slot");
+	SnapshotXfer::enumIn(x, m_lockType, NOT_LOCKED, LOCKED_PERMANENTLY, "a weapon lock");
+	SnapshotXfer::enumIn(x, m_lockedSlot, 0, WEAPONSLOT_COUNT - 1, "a locked weapon slot");
+	for (int &c : m_slotCondition)
+	{
+		SnapshotXfer::enumIn(x, c, 0, 5, "a weapon slot's status condition"); // the conditions of WeaponStatusCondition (RW 0xC11F74's table, 5 the follow-through)
+	}
+	auto weapon = [&](std::unique_ptr<Weapon> &w) {
+		bool has = !x.isLoading() && w != nullptr;
+		x.xferBool(&has);
+		if (has != (w != nullptr))
+		{
+			throw XferException(std::string("the snapshot ") + (has ? "has" : "lacks") + " a weapon this object's set " + (w ? "has" : "lacks"));
+		}
+		if (w)
+		{
+			w->xfer(x);
+		}
+	};
+	for (std::unique_ptr<Weapon> &w : m_weapons)
+	{
+		weapon(w);
+	}
+	m_tracker.xfer(x);
+	weapon(m_crushWeapon);
+	weapon(m_crushRevengeWeapon);
+	SnapshotXfer::coord3D(x, m_drawTargetPos);
+	x.xferObjectID(&m_drawTargetID);
+	SnapshotXfer::u64(x, m_stats.shotsFired);
+	SnapshotXfer::u64(x, m_stats.shotsAtVictim);
+	SnapshotXfer::u64(x, m_stats.projectilesLaunched);
+	SnapshotXfer::u64(x, m_stats.unportedNuggets);
+	SnapshotXfer::u64(x, m_stats.shotsOutOfRange);
 }

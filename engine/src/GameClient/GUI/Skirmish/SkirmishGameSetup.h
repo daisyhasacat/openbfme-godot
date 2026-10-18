@@ -67,6 +67,10 @@ public:
 	std::vector<SkirmishComboEntry> colorEntries(int slot) const;
 	// PopulateTeamComboBox: "Team:0" (item data -1) then "Team:1".. "Team:4" (item data 0..3), MAX_SLOTS / 2 of them.
 	std::vector<SkirmishComboEntry> teamEntries() const;
+	// lane OWNERFIX-2: the Handicap combo (RW 0x840B9D = BFME2 decomp MpGameSetupSlots.cpp AptMpGameSetup::rva0043E253, tier A): 0, -5 .. -95 formatted with
+	// u"%d%%" (RW 0xC53FB8), item data the value, the text colour TheMultiplayerSettings->getColor(-1) (the random colour definition: white, as the colour
+	// combo's random entry)
+	std::vector<SkirmishComboEntry> handicapEntries() const;
 	// MapMetaData::bfme_getBaseDisplayName / bfme_getDisplayName / getDescription / bfme_getDescriptionFirstLine (open-bfme-2 GUI/MapMetaData_*.cpp,
 	// target RotWK 0x00300AEA / 0x00300C7E / 0x003009CD): the cache's displayName and description are game text labels ("$Map:Camera_Demo": the
 	// `$` marks a label of the map's own map.str).  An unknown label falls back to the file name without ".map" (`$` labels) or to the label.
@@ -89,6 +93,9 @@ public:
 	bool setSlotColor(int slot, int color);
 	bool setSlotTemplate(int slot, int playerTemplate);
 	bool setSlotTeam(int slot, int team);
+	// lane OWNERFIX-2: RW 0x840485 (BFME2 decomp Rva0043E0C5.cpp, tier B same-shape) hands the combo's item data to the owner's MpOwnerSelectHandicap (vslot 5):
+	// the slot's + 0x20. False for a slot out of range or a value the combo never offers
+	bool setSlotHandicap(int slot, int handicap);
 	// lane CAH-1: the slot's Create-a-Hero from the lobby's Hero combo (BFME2 0x43DD34 stores the choice on the GameSlot; the record travels whole,
 	// SkirmishGameSlot::setCreateAHero); null clears it. False + *error when the record does not fit the setup
 	bool setSlotCreateAHero(int slot, const CreateAHeroHero *hero, std::string *error);

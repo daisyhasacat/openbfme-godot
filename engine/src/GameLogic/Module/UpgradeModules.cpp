@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/UpgradeModules.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/Player.h"
 #include "Common/StateHash.h"
@@ -221,4 +222,18 @@ void CostModifierUpgrade::onCapture(Player *oldOwner, Player *newOwner)
 			setUpgradeExecuted(true); // RW 0x8B9CCA: setUpgradeExecuted(true)
 		}
 	}
+}
+
+// ---- lane SAVE-4b: the snapshots (UpgradeModule's: the classes keep no state of their own) ----
+
+void CommandPointsUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+}
+
+void CostModifierUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
 }

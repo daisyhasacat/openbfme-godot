@@ -124,7 +124,7 @@ float AIUpdateInterface::objectVisionRange() const
 	return objectVisionRangeOf(*getObject());
 }
 
-float AIUpdateInterface::objectVisionRangeOf(Object &object)
+float AIUpdateInterface::objectVisionRangeOf(Object &object, bool updateGroundCache)
 {
 	// RW 0x68E43B (an Object function: lane CAMP-1H reads it for objects without an AI too, ENEMY_SIGHTED)
 	Object *obj = &object;
@@ -148,7 +148,7 @@ float AIUpdateInterface::objectVisionRangeOf(Object &object)
 		const ShroudManager::TemplateVision tv = ShroudManager::templateVision(*tt);
 		if (tv.bonusPerFoot > 0.0f) // template + 0x4CC
 		{
-			float bonus = SimMath::pc24Mul(SimMath::pc24Sub(obj->getPosition()->z, sm->groundReferenceFor(*obj, tv)), tv.bonusPerFoot);
+			float bonus = SimMath::pc24Mul(SimMath::pc24Sub(obj->getPosition()->z, sm->groundReferenceFor(*obj, tv, updateGroundCache)), tv.bonusPerFoot);
 			// RW 0x68AF8E
 			if (bonus > tv.maxBonus)
 			{

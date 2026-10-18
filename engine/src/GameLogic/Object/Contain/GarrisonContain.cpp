@@ -4,6 +4,7 @@
 // GarrisonContain / HordeGarrisonContain at runtime. See GameLogic/Object/Contain/GarrisonContainRuntime.h for the target facts and the stops. Lane GARRISON-1.
 
 #include "GameLogic/Object/Contain/GarrisonContainRuntime.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/NumericState.h"
 #include "GameLogic/AI/AIPathfind.h"
@@ -1336,4 +1337,38 @@ void GarrisonContain::crc(StateHasher &h) const
 	h.addFloat(m_exitRallyPoint.y);
 	h.addFloat(m_exitRallyPoint.z);
 	h.addBool(m_rallyValid);
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190): OpenContain's, then the crc's fields (every point position slot), then the statistics ----------
+void GarrisonContain::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	OpenContain::xfer(x);
+	x.xferBool(&m_rosterCreated);
+	x.xferBool(&m_hiddenFlag);
+	for (GarrisonPoint &p : m_points)
+	{
+		x.xferObjectID(&p.object);
+		x.xferObjectID(&p.target);
+		x.xferUnsignedInt(&p.placedFrame);
+	}
+	x.xferInt(&m_pointsInUse);
+	SnapshotXfer::checkRange(m_pointsInUse, 0, MAX_GARRISON_POINTS, "a garrison's points in use");
+	for (int c = 0; c < GARRISON_POINT_CONDITIONS; ++c)
+	{
+		x.xferInt(&m_pointCount[c]);
+		SnapshotXfer::checkRange(m_pointCount[c], 0, MAX_GARRISON_POINTS, "a garrison's point count");
+		for (Coord3D &p : m_pointPositions[(size_t)c])
+		{
+			SnapshotXfer::coord3D(x, p);
+		}
+	}
+	x.xferBool(&m_pointsLoaded);
+	x.xferUnsignedInt(&m_nextExitFrame);
+	for (unsigned long long *s : { &m_stats.membersEntered, &m_stats.pointsTaken, &m_stats.pointsMoved, &m_stats.boneQueriesWithoutProvider,
+			 &m_stats.healUnported, &m_stats.mobileUnported, &m_exitStats.exitPaths, &m_exitStats.exitCellRetries, &m_exitStats.exitAtContainerPosition,
+			 &m_exitStats.hordeRegroups })
+	{
+		SnapshotXfer::u64(x, *s);
+	}
 }

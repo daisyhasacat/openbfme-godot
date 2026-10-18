@@ -11,6 +11,7 @@
 #include "Common/CreateAHeroRecord.h"
 #include "Common/MpGameRules.h"
 #include "Common/SimulationProfile.h"
+#include "GameNetwork/PlatformKind.h"
 
 #include <cstdint>
 #include <string>
@@ -50,9 +51,17 @@ struct SkirmishGameSlot
 	int startPos = -1;       // -1 random
 	int playerTemplate = -1; // index into SkirmishSetupSource::factions(), PLAYERTEMPLATE_RANDOM / _OBSERVER
 	int teamNumber = -1;     // -1 none, else 0-based team (the combo item data)
+	// lane OWNERFIX-2: RotWK GameSlot + 0x20, the handicap: 0 or -5 .. -95 in steps of 5 (the Handicap combo's item data, RW 0x840B9D = BFME2 decomp
+	// MpGameSetupSlots.cpp AptMpGameSetup::rva0043E253, tier A); GameLogic::CreateMPPlayers (RW 0x627F8F) hands it to the player's dict as playerHandicap
+	int handicap = 0;
+	// the values the combo offers (RW 0x840BF6 .. 0x840C2F: 0, then -5 while above -0x60); the wire and the start refuse any other
+	static bool handicapValid(int h) { return h <= 0 && h > -0x60 && h % 5 == 0; }
 	// GameSlot::saveOffOriginalInfo (RotWK 0x800994: orig template +0x2c = template +0x18, orig start +0x28 = start +0x10, orig colour +0x24 = colour
 	// +0xc): the lobby's choices (random = -1) before the logic resolved them.  Not part of the lobby's equality.
 	int origColor = -1, origStartPos = -1, origPlayerTemplate = -1;
+	// lane PLATFORMICON-1 (OpenBFME): the system the slot's human player told (display data: not part of the equality, never written to a start
+	// message, a save or a replay; None for an AI, an open slot and a client that did not tell)
+	PlatformKind platform = PlatformKind::None;
 	// lane HERO-2: the slot's Create-a-Hero (RW 0x61B17D reads the game slot's hero + 0x64 when + 0x60 is set): the whole record travels with the game setup
 	// (NetPacket::writeGameInfo) and every peer installs it at the game start (LiveGame::load -> CreateAHeroGame); nothing reads a .cah file during play.
 	// setCreateAHero keeps the record in its wire form (the record a save / load round trip gives), so the host and the peers hold the same bytes
@@ -120,12 +129,14 @@ struct SkirmishGameSlot
 	}
 
 	bool isHuman() const { return state == SLOT_PLAYER; }
+	// RW 0x90313E: GameSlot::disconnected. The live flag (+0x48 in retail) belongs to Network in this port, not the lobby record.
+	bool disconnected(bool networkDisconnected) const { return isHuman() && networkDisconnected; }
 	bool isAI() const { return state >= SLOT_EASY_AI && state <= SLOT_BRUTAL_AI; }
 	bool isOccupied() const { return isHuman() || isAI(); }
 	bool operator==(const SkirmishGameSlot &o) const
 	{
 		return state == o.state && name == o.name && accepted == o.accepted && hasMap == o.hasMap && color == o.color && startPos == o.startPos
-			&& playerTemplate == o.playerTemplate && teamNumber == o.teamNumber && hasCreateAHero == o.hasCreateAHero && createAHero == o.createAHero;
+			&& playerTemplate == o.playerTemplate && teamNumber == o.teamNumber && handicap == o.handicap && hasCreateAHero == o.hasCreateAHero && createAHero == o.createAHero;
 	}
 };
 

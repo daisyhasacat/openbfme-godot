@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0.
 // See AptActionInterpreter.h for the model and citations.
 
+#include "Common/BfmeGame.h"
 #include "Libraries/Source/Apt/AptActionInterpreter.h"
 
 #include <algorithm>
@@ -425,6 +426,14 @@ AptValue AptActionInterpreter::constantToValue(Frame &f, const AptConstRef &c)
 			}
 			return (*f.regs)[c.raw];
 		case APT_CONST_LOOKUP:
+			if (!bfme1Mounted())
+			{
+				// RotWK / BFME2: no corpus movie uses a type-8 constant (S-013)
+				reportError("constant type " + std::to_string(c.type) + " (const index " + std::to_string(c.constIndex) +
+					") has no verified runtime meaning (acceptance stop S-013)" + whereIs(f.ins));
+				return AptValue();
+			}
+			// community PR #36, BFME1 only (docs/BFME1.md): BFME1's pause menu pushes type-8 constants that index the active constant pool
 			if (!f.pool || c.raw >= f.pool->size())
 			{
 				reportError("constant pool index " + std::to_string(c.raw) + " is outside the active pool" + whereIs(f.ins));

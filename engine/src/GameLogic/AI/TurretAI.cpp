@@ -17,6 +17,7 @@
 #include "GameLogic/Weapon.h"
 #include "GameLogic/WeaponSet.h"
 #include "Common/INI/HostRealText.h"
+#include "GameLogic/AI/AIXfer.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -170,6 +171,12 @@ public:
 	}
 	void crc(StateHasher &h) const override { h.addU32(m_nextIdleScan); }
 	void crcPersistent(StateHasher &h) const override { h.addU32(m_nextIdleScan); }
+	void xfer(Xfer &x) override
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		x.xferUnsignedInt(&m_nextIdleScan);
+	}
 
 private:
 	unsigned m_nextIdleScan = 0; // + 0x20
@@ -206,6 +213,12 @@ public:
 	}
 	void crc(StateHasher &h) const override { h.addFloat(m_desiredAngle); }
 	void crcPersistent(StateHasher &h) const override { h.addFloat(m_desiredAngle); }
+	void xfer(Xfer &x) override // TurretAIIdleScanState::xfer RW 0x8DC73F is (1, 1): the real
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		x.xferReal(&m_desiredAngle);
+	}
 
 private:
 	float m_desiredAngle = 0.0f; // + 0x20
@@ -217,6 +230,7 @@ class TurretAimState : public TurretStateBase
 public:
 	TurretAimState(AIStateMachine &m, TurretAI &t) : TurretStateBase(m, t, "TurretAIAimTurretState") {}
 	StateReturnType update() override;
+	void xfer(Xfer &x) override { xferNoFields(x); }
 };
 
 // RW 0x8DD01F
@@ -231,6 +245,7 @@ public:
 		const bool pitch = turret().turnTowardsPitch(d.m_naturalTurretPitch, 0.5f);
 		return angle && pitch ? STATE_SUCCESS : STATE_CONTINUE;
 	}
+	void xfer(Xfer &x) override { xferNoFields(x); }
 };
 
 // RW 0x8DC7E8 / 0x8DCC2F
@@ -256,6 +271,12 @@ public:
 	}
 	void crc(StateHasher &h) const override { h.addU32(m_timestamp); }
 	void crcPersistent(StateHasher &h) const override { h.addU32(m_timestamp); }
+	void xfer(Xfer &x) override
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		x.xferUnsignedInt(&m_timestamp);
+	}
 
 private:
 	unsigned m_timestamp = 0; // + 0x20
@@ -822,6 +843,51 @@ void TurretAI::crc(StateHasher &h) const
 	h.addBool(m_firesWhileTurning);
 	h.addBool(m_isForceAttacking);
 	h.addBool(m_targetWasSetByIdleMood);
+}
+
+void TurretAI::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	std::int32_t which = m_whichTurret;
+	x.xferInt(&which);
+	if (which != m_whichTurret)
+	{
+		throw XferException("turret: the snapshot's turret " + std::to_string(which) + " is not this AI's " + std::to_string(m_whichTurret));
+	}
+	m_machine->xfer(x);
+	x.xferReal(&m_angle);
+	x.xferReal(&m_pitch);
+	x.xferUnsignedInt(&m_enableSweepUntil);
+	std::uint32_t team = m_victimInitialTeam ? m_victimInitialTeam->getID() : 0u;
+	x.xferUnsignedInt(&team);
+	if (x.isLoading())
+	{
+		m_victimInitialTeam = team == 0 ? nullptr : owner().logic().players().teams().findTeamByID(team);
+		if (team != 0 && !m_victimInitialTeam)
+		{
+			throw XferException("turret: the victim's team " + std::to_string(team) + " is not in the loaded game");
+		}
+	}
+	x.xferInt(&m_target);
+	if (x.isLoading())
+	{
+		AIXfer::inRange(m_target, 0, 2, "turret: the target type"); // none, object, position (RW + 0x2C)
+	}
+	x.xferUnsignedInt(&m_continuousFireExpirationFrame);
+	x.xferUnsignedInt(&m_sleepUntil);
+	x.xferBool(&m_playRotSound);
+	x.xferBool(&m_playPitchSound);
+	x.xferBool(&m_positiveSweep);
+	x.xferBool(&m_didFire);
+	x.xferBool(&m_enabled);
+	x.xferBool(&m_firesWhileTurning);
+	x.xferBool(&m_isForceAttacking);
+	x.xferBool(&m_targetWasSetByIdleMood);
+	for (unsigned long long *c : { &m_stats.updates, &m_stats.shots, &m_stats.idleScans, &m_stats.idleTargets, &m_stats.turnFrames })
+	{
+		AIXfer::u64(x, *c);
+	}
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------

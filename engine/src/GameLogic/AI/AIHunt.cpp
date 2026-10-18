@@ -20,6 +20,7 @@
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
 #include "GameLogic/System/InvisibilityManager.h"
 #include "Common/StateHash.h"
+#include "GameLogic/AI/AIXfer.h"
 
 namespace
 {
@@ -40,6 +41,7 @@ public:
 	}
 	StateReturnType update() override { return STATE_CONTINUE; }
 	bool isIdle() const override { return true; }
+	void xfer(Xfer &x) override { xferNoFields(x); } // lane SAVE-4c: nothing is kept (the draw is made at every entry)
 };
 
 bool kindOf(const Object &o, const char *name)
@@ -136,15 +138,47 @@ void AIHuntState::setTeamTarget(Team &team, Object *victim, GameLogic &logic)
 	}
 }
 
+std::unique_ptr<AIStateMachine> AIHuntState::makeHuntMachine()
+{
+	// the machine's vslot 0x24 (lane FLY-1: a giant bird's swoop-then-idle machine), else the base attack-then-idle machine
+	std::unique_ptr<AIStateMachine> m = ai().makeAttackThenIdleMachine(AI_ATTACK_OBJECT);
+	if (!m)
+	{
+		m = std::make_unique<AIStateMachine>(ai(), "AIAttackThenIdleStateMachine");
+		m->defineState(AI_ATTACK_OBJECT, std::make_unique<AIAttackState>(*m, false, true, false), AI_IDLE, AI_IDLE);
+		m->defineState(AI_IDLE, std::make_unique<HuntIdleState>(*m), AI_IDLE, AI_IDLE);
+	}
+	return m;
+}
+
+// lane SAVE-4c (obfme:AIWorld): OpenBFME layout (AIHuntState has no retail xfer in docs/SAVES-RETAIL.md's table by that name; stop S-4220)
+void AIHuntState::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferUnsignedInt(&m_nextEnemyScanTime);
+	bool has = m_huntMachine != nullptr;
+	x.xferBool(&has);
+	if (!x.isLoading())
+	{
+		if (m_huntMachine)
+		{
+			m_huntMachine->xfer(x);
+		}
+		return;
+	}
+	std::unique_ptr<AIStateMachine> loaded; // made and loaded complete, then attached
+	if (has)
+	{
+		loaded = makeHuntMachine();
+		loaded->xfer(x);
+	}
+	m_huntMachine = std::move(loaded);
+}
+
 StateReturnType AIHuntState::onEnter()
 {
-	m_huntMachine = ai().makeAttackThenIdleMachine(AI_ATTACK_OBJECT); // the machine's vslot 0x24 (lane FLY-1: a giant bird's swoop-then-idle machine)
-	if (!m_huntMachine)
-	{
-		m_huntMachine = std::make_unique<AIStateMachine>(ai(), "AIAttackThenIdleStateMachine");
-		m_huntMachine->defineState(AI_ATTACK_OBJECT, std::make_unique<AIAttackState>(*m_huntMachine, false, true, false), AI_IDLE, AI_IDLE);
-		m_huntMachine->defineState(AI_IDLE, std::make_unique<HuntIdleState>(*m_huntMachine), AI_IDLE, AI_IDLE);
-	}
+	m_huntMachine = makeHuntMachine();
 	GameLogic &logic = owner().logic();
 	m_nextEnemyScanTime = logic.getFrame() + (unsigned)logic.random().getValue(0, (int)kEnemyScanRate, "AIStates.cpp", 0x3C92);
 	return m_huntMachine->initDefaultState();

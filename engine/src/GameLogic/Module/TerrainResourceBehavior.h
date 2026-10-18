@@ -67,6 +67,7 @@ public:
 class TerrainResourceBehavior : public UpdateModule, public CreateModuleInterface, public DieModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(TerrainResourceBehavior) // lane SAVE-4b
 	TerrainResourceBehavior(Thing *thing, const TerrainResourceBehaviorModuleData *data);
 
 	CreateModuleInterface *getCreate() override { return this; }

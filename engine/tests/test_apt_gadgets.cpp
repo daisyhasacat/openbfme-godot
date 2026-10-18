@@ -619,6 +619,35 @@ TEST_CASE("ListBox: entries, selection by click, force select, the wheel, reset 
 	CHECK(sel == -1);
 }
 
+TEST_CASE("ListBox: growing a scrolled viewport reveals rows that now fit and preserves mouse selection")
+{
+	GadgetFx fx;
+	GameWindow *lb = fx.load(listboxWnd(160, 19), 100, 100);
+	ListboxData *list = static_cast<ListboxData *>(lb->winGetUserData());
+	CHECK(GadgetListBoxAddEntryText(lb, u("first"), GameMakeColor(255, 255, 255, 255), -1, 0) == 0);
+	CHECK(GadgetListBoxAddEntryText(lb, u("second"), GameMakeColor(255, 255, 255, 255), -1, 0) == 1);
+	REQUIRE(list->displayPos == 20);
+	lb->winSetSize(160, 100);
+	CHECK(list->displayHeight == 100);
+	CHECK(list->totalHeight == 38);
+	CHECK(list->displayPos == 0);
+	GadgetDrawList draw;
+	fx.gwm.winRepaint(draw);
+	std::set<std::string> names;
+	for (const GadgetDrawCommand &command : draw.commands)
+	{
+		if (command.kind == GadgetDrawCommand::Kind::Text)
+		{
+			names.insert(narrow(command.text));
+		}
+	}
+	CHECK(names == std::set<std::string>{ "first", "second" });
+	CHECK(fx.click(110, 106));
+	int selected = -1;
+	GadgetListBoxGetSelected(lb, &selected);
+	CHECK(selected == 0);
+}
+
 TEST_CASE("ui6 ListBox: a cell's text is centred in its row and placed by the cell's alignment (RW 0x4A25E5 .. 0x4A2642)")
 {
 	// lane UI-6 (GitGut's report: the Game Setup's map names sat at the top of their rows): RotWK's cell draw centres the string in the row,

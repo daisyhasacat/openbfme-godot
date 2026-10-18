@@ -27,9 +27,11 @@ const WidgetsScript := preload("res://scripts/ui/widgets.gd")
 const StyleScript := preload("res://scripts/ui/style.gd")
 
 ## the windows (pixels): the 720p base, the Deck, 1080p / 1440p, ultra-wide, the window's minimum size (main.gd _fit_window: 960 x 540),
-## and a tall narrow one
+## and a tall narrow one; MACPLAY-1: the Mac windows main.gd fit_size makes on Retina screens (a MacBook Air at its default 1470 x 956
+## points: 2704 x 1521; the owner's M5 at 1710 x 1008 points, measured: 3146 x 1769) and the 960 x 540-point minimum there (1920 x 1080)
 const WINDOWS := [Vector2i(1280, 720), Vector2i(1280, 800), Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3440, 1440),
-	Vector2i(960, 540), Vector2i(960, 1000)]
+	Vector2i(960, 540), Vector2i(960, 1000),
+	Vector2i(2704, 1521), Vector2i(3146, 1769)]
 const BASE := Vector2(1280, 720)
 const EPS := 0.75        # px: layout rounds to half pixels
 const NEAR := 8.0        # px: edges closer than this but not equal are "almost lined up"
@@ -55,6 +57,7 @@ static func _cases() -> Dictionary:
 		"multiplayer": _case("multiplayer", "multiplayer", ["Multiplayer", "Online play is coming"]),
 		"mods": _case("mods", "mods", ["Edain Mod", "none installed"]),
 		"games": _case("games", "games", ["NOT FOUND", "Download"]),
+		"games-bfme1": _case("games-bfme1", "games", ["BATTLE FOR MIDDLE-EARTH I (OPTIONAL)", "Downloaded from BFME Arena (bfmeladder.com)*", "Download"]),
 		"games-downloading": _case("games-downloading", "games", ["Pause", "Cancel", "RotWK: game files 412 of 1 830*"]),
 		"settings": _case("settings", "settings", ["Channel", "Free camera", "Offer to download the games"]),
 		"display": _case("display", "settings", ["Display settings are in the game"]),
@@ -183,6 +186,8 @@ func _check_applied(state: String, main: Control) -> void:
 		_fail("%s: the warning banner is not shown" % state)
 	if state in ["downloading", "verifying", "paused", "playing", "long", "games-downloading"] and not main._progress.visible:
 		_fail("%s: the progress bar is not shown" % state)
+	if (state == "games-bfme1") != main._games_screen.offer_bfme1:
+		_fail("%s: the Game files screen %s the optional BFME1 download" % [state, "offers" if main._games_screen.offer_bfme1 else "does not offer"])
 	if state == "picker" and not main._games_screen._dialog.visible:
 		_fail("%s: the folder picker is not open" % state)
 

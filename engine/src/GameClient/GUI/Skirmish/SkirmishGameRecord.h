@@ -17,7 +17,8 @@
 //     requires every key, refuses a colour outside -1 .. colours - 1, a template outside -2 .. templates
 //     - 1, a start below -1, a team outside -1 .. 3, + 0x20 outside -100 .. 0, + 0x40 outside 0 .. 256, a slot letter it does not know, and sets the game
 //     only when all of it held.
-// INFERENCE / NOT PORTED (stop S-3701): SkirmishGameInfo has no + 0x88 (GSID), scenario (SI), handicap (+ 0x20), + 0x40, address or port: they are written
+// lane OWNERFIX-2: + 0x20 is the slot's handicap (SkirmishGameSlot::handicap), written and read back.
+// INFERENCE / NOT PORTED (stop S-3701): SkirmishGameInfo has no + 0x88 (GSID), scenario (SI), + 0x40, address or port: they are written
 // as 0 (SI -1) and read only to be checked; the hero byte (GameSlot::encodeHero, RW 0x800A25; decodeHero RW 0x801289) is written 0 (no hero): the lobby keeps a slot's
 // Create-a-Hero and the Legendary Heroes factor in OpenBFME keys of their own (AptSkirmish::keepGame); the map path is written as the map cache's name with '\\' (retail's portable map path, RW 0x80204C, was not read); the
 // player template count is the store's.

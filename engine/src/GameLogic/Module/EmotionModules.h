@@ -78,6 +78,7 @@ public:
 class EmotionTrackerUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(EmotionTrackerUpdate) // lane SAVE-4b
 	EmotionTrackerUpdate(Thing *thing, const EmotionTrackerUpdateModuleData *data); ///< RW 0x8B62BE
 	UpdateSleepTime update() override;                                               ///< RW 0x8B5738
 	SleepyUpdatePhase getUpdatePhase() const override { return PHASE_INITIAL; }     ///< lane IDLE-1 r2: vslot 0x30 = RW 0x851E97 (updates[0])
@@ -140,6 +141,7 @@ public:
 class RadiateFearUpdate : public UpdateModule, public UpgradeMux
 {
 public:
+	OBFME_MODULE_XFER(RadiateFearUpdate) // lane SAVE-4b
 	RadiateFearUpdate(Thing *thing, const RadiateFearUpdateModuleData *data); ///< RW 0x89F890
 	UpgradeMux *getUpgrade() override { return this; }
 	UpdateSleepTime update() override; ///< RW 0x89F9A8

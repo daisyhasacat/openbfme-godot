@@ -8,6 +8,7 @@
 
 #include "GameLogic/Module/CastleUpgrade.h"
 #include "Common/Thing/ThingTemplate.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/INI.h"
 #include "Common/Thing/ModuleFactory.h"
@@ -186,4 +187,12 @@ void CastleUpgrade::registerClass(ModuleFactory &modules)
 		}
 		return std::make_unique<CastleUpgrade>(thing, typed);
 	});
+}
+
+// ---- lane SAVE-4b: the snapshots (UpgradeModule's: the classes keep no state of their own) ----
+
+void CastleUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
 }

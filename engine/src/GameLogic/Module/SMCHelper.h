@@ -37,6 +37,7 @@ public:
 	void setSpecialModelConditionState(int bit, UnsignedInt frames);
 	size_t activeCount() const { return m_list.size(); }
 	void crc(StateHasher &hasher) const override;
+	OBFME_MODULE_XFER(SMCHelper) // lane SAVE-4b (OpenBFME native: the shell, then the timers in list order)
 
 private:
 	struct Entry

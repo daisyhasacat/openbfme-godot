@@ -1,4 +1,4 @@
-# secrets and deploy-local files never enter git (services/online/DEPLOY.md)
+# secrets and deploy-local files never enter git (the deploy notes, kept outside this repository)
 *.keys
 keys.txt
 *.env

@@ -279,7 +279,7 @@ def main() -> int:
     h.add_argument("--cash", type=int, default=1500)
     h.add_argument("--game-name")
     h.add_argument("--id-file")
-    h.add_argument("--spectator-delay", type=int, default=0)  # lane ONLINE-3: seconds of game time the spectators watch behind the players
+    h.add_argument("--spectator-delay", type=int, default=120)  # seconds of game time the spectators watch behind the players
     j = sub.choices["join"]
     j.add_argument("--game", required=True)
     for opt in ("--faction", "--color", "--start-pos", "--team"):

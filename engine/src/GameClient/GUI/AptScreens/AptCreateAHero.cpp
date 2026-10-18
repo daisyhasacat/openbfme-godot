@@ -578,6 +578,87 @@ void AptCreateAHero::setImage(const std::string &name, const std::string &image)
 	windows().setAptImage(name, image); // RW 0x6236F6
 }
 
+void AptCreateAHero::notAvailable(const std::u16string &text)
+{
+	// lane MENUWORK-1 (S-4755): an Ok box in the player's words (the same box as message())
+	m_lastMessage = "OpenBFME: " + std::string(text.begin(), text.end());
+	windows().note("create-a-hero-message", m_lastMessage);
+	if (!m_box)
+	{
+		m_box = std::make_unique<AptMessageBox>(windows(), shell());
+	}
+	m_box->show(AptMessageBox::TYPE_OK, u"OpenBFME", text);
+}
+
+bool AptCreateAHero::suppressPromo() const
+{
+	return m_env.createAHero && m_env.createAHero->suppressPromo;
+}
+
+void AptCreateAHero::selectHeroSort(int key)
+{
+	// RW 0x9C4EBD (BFME2 0x9B5BDC, Rva005B5BDC.cpp): the same key again its odd (reversed) twin; another key the primary, the old one the secondary
+	// unless it was the new key's reversed twin; then the list again (RW 0x9C5A66)
+	const int next = key + 1;
+	const int old = m_heroSortKey0;
+	if (old == key)
+	{
+		m_heroSortKey0 = next;
+	}
+	else
+	{
+		m_heroSortKey0 = key;
+		if (old != next)
+		{
+			m_heroSortKey1 = old;
+		}
+	}
+	m_heroSorted = true;
+	fillHeroList();
+}
+
+bool AptCreateAHero::heroBefore(const CreateAHeroListEntry &a, const CreateAHeroListEntry &b) const
+{
+	// RW 0x9C54C4 (BFME2 0x9B61B3, Rva005B61B3Comparer.cpp): the name without case, the class / subclass (major * 100 + minor) and the system flag
+	// (+0x48); the first key decides unless equal, then the second; keys 0 / 2 / 4 ascending, 1 / 3 / 5 descending (">= 0")
+	const std::u16string &an = a.hero.name, &bn = b.hero.name;
+	int nameDiff = 0;
+	for (size_t i = 0; i < std::min(an.size(), bn.size()) && nameDiff == 0; ++i)
+	{
+		const char16_t x = (an[i] >= u'A' && an[i] <= u'Z') ? (char16_t)(an[i] + 32) : an[i];
+		const char16_t y = (bn[i] >= u'A' && bn[i] <= u'Z') ? (char16_t)(bn[i] + 32) : bn[i];
+		nameDiff = x == y ? 0 : (x < y ? -1 : 1);
+	}
+	if (nameDiff == 0 && an.size() != bn.size())
+	{
+		nameDiff = an.size() < bn.size() ? -1 : 1;
+	}
+	const int verDiff = ((int)a.hero.classIndex - (int)b.hero.classIndex) * 100 + ((int)a.hero.subClassIndex - (int)b.hero.subClassIndex);
+	const int flagDiff = (int)a.system - (int)b.system;
+	int crit = m_heroSortKey0;
+	for (int i = 0; i < 2; ++i, crit = m_heroSortKey1)
+	{
+		int diff = 0;
+		bool descending = false;
+		switch (crit)
+		{
+		case 5: diff = verDiff; descending = true; break;
+		case 4: diff = verDiff; break;
+		case 3: diff = nameDiff; descending = true; break;
+		case 2: diff = nameDiff; break;
+		case 1: diff = flagDiff; descending = true; break;
+		case 0: diff = flagDiff; break;
+		default: continue;
+		}
+		if (diff == 0 && i == 0)
+		{
+			continue;
+		}
+		return descending ? diff >= 0 : diff < 0;
+	}
+	return false;
+}
+
 void AptCreateAHero::message(const std::string &titleLabel, const std::string &textLabel)
 {
 	// RW 0x81A375(0, title, text): an Ok box with the two game texts (lane CAH-2: TheMessageBox, GameClient/GUI/AptMessageBox.h)
@@ -631,6 +712,7 @@ void AptCreateAHero::registerAll()
 	registerCommand("AptCreateAHero::PrepareToTakePicture", [this](const std::string &) { m_pictureFrames = 0; });
 	registerCommand("AptCreateAHero::OnTakePicture", [this](const std::string &) {
 		windows().note("unported-command", "AptCreateAHero::OnTakePicture: the hero portrait is not taken [S-1405]");
+		notAvailable(u"Taking a hero portrait is not available yet: the hero keeps its class's picture."); // lane MENUWORK-1 (S-4755)
 		invoke("OnGameTookPicture", {});
 	});
 	registerCommand("AptCreateAHero::RotateLeft", [this](const std::string &a) { m_rotateLeft = !a.empty() && a[0] == 't'; });
@@ -698,17 +780,20 @@ void AptCreateAHero::registerAll()
 
 	// ---- Manager (RW 0x9C5EA4) ----
 	registerCommand("AptCreateAHero::Manager::OnDeleteHero", [this](const std::string &) { deleteSelectedHero(); });
+	// lane MENUWORK-1 (S-4755): the presses below used to be noted only; the player is told now
 	registerCommand("AptCreateAHero::Manager::OnPlayGame", [this](const std::string &) {
 		windows().note("unported-command", "AptCreateAHero::Manager::OnPlayGame: the test map is not started [S-1405]");
+		notAvailable(u"Trying a hero on a test map is not available yet: play a skirmish with the hero instead.");
 	});
 	registerCommand("AptCreateAHero::Manager::OnSelectAward", [this](const std::string &a) {
 		windows().note("unported-command", "AptCreateAHero::Manager::OnSelectAward(" + a + "): the awards are not ported [S-1403]");
+		notAvailable(u"Hero awards are not available yet: OpenBFME does not record them.");
 	});
-	for (const char *n : { "Mission::OnSortIcon", "Mission::OnSortName", "Mission::OnSortType" })
-	{
-		const std::string name = n;
-		registerCommand(name, [this, name](const std::string &) { windows().note("unported-command", name + ": the hero list is not re-sorted [S-1400]"); });
-	}
+	// lane MENUWORK-1: the hero list's headers (the Manager's constructor RW 0x9C5EA4 binds them to RW 0x9C5D42 / 0x9C5D51 / 0x9C5D60: the key
+	// 0 icon / 2 name / 4 type through RW 0x9C4EBD, then the list again, RW 0x9C5A66); they used to be noted only
+	registerCommand("Mission::OnSortIcon", [this](const std::string &) { selectHeroSort(0); });
+	registerCommand("Mission::OnSortName", [this](const std::string &) { selectHeroSort(2); });
+	registerCommand("Mission::OnSortType", [this](const std::string &) { selectHeroSort(4); });
 	registerCommand("AptCreateAHero::OnMyPowerRollOver", [this](const std::string &a) {
 		// RW 0x9C4E1A: the power's description into APT:HeroPowersDescription
 		const int i = atoiArg(a) - 1;
@@ -1200,9 +1285,37 @@ void AptCreateAHero::fillHeroList()
 		return;
 	}
 	const std::vector<CreateAHeroClass> &classes = m_env.createAHero->system->classes();
-	int select = -1;
+	// lane MENUWORK-1: the rows in the headers' order once one was pressed (RW 0x9C5A66 sorts with RW 0x9C54C4 through STLport's sort: up to 16
+	// heroes its insertion sort, reproduced here; INFERENCE S-4755: before a press the list keeps its own order, the constructor sets no keys)
+	m_rowEntries.clear();
 	for (size_t i = 0; i < list->size(); ++i)
 	{
+		m_rowEntries.push_back((int)i);
+		if (m_heroSorted && i > 0)
+		{
+			// STLport __linear_insert: to the front when it sorts before the first, else back past every row it sorts before
+			std::vector<int> &v = m_rowEntries;
+			const CreateAHeroListEntry &val = list->entries()[i];
+			size_t at = v.size() - 1;
+			if (heroBefore(val, list->entries()[(size_t)v.front()]))
+			{
+				v.erase(v.begin() + (std::ptrdiff_t)at);
+				v.insert(v.begin(), (int)i);
+			}
+			else
+			{
+				while (at > 0 && heroBefore(val, list->entries()[(size_t)v[at - 1]]))
+				{
+					std::swap(v[at], v[at - 1]);
+					--at;
+				}
+			}
+		}
+	}
+	int select = -1;
+	for (size_t r = 0; r < m_rowEntries.size(); ++r)
+	{
+		const size_t i = (size_t)m_rowEntries[r];
 		const CreateAHeroHero &h = list->entries()[i].hero;
 		const int row = GadgetListBoxAddEntryText(m_heroList, h.name, 0xFFFFFFFFu, -1, 1);
 		std::u16string cls = h.classIndex < classes.size() ? fetchOrMissing(m_env.gameText, classes[h.classIndex].nameTag) : std::u16string();
@@ -1220,7 +1333,7 @@ void AptCreateAHero::fillHeroList()
 	if (select >= 0)
 	{
 		GadgetListBoxSetSelected(m_heroList, select);
-		selectHero(select);
+		selectHero(m_rowEntries[(size_t)select]);
 	}
 	else
 	{
@@ -1233,7 +1346,7 @@ WindowMsgHandledType AptCreateAHero::gadgetMessage(GameWindow *from, std::uint32
 	if (msg == GLM_SELECTED && from == m_heroList) // RW 0x9C5114: 0x4014 from the hero list
 	{
 		const int row = (int)data1;
-		selectHero(row);
+		selectHero(row >= 0 && (size_t)row < m_rowEntries.size() ? m_rowEntries[(size_t)row] : row); // lane MENUWORK-1: the sorted row's hero
 		return MSG_HANDLED;
 	}
 	return MSG_IGNORED;

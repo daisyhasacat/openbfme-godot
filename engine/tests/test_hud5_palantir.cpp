@@ -18,6 +18,9 @@
 #include "GameClient/InGameHud.h"
 #include "GameClient/PalantirCommandUI.h"
 #include "GameLogic/ExperienceLevels.h"
+#include "GameLogic/Module/HeroAbilityModules.h"
+#include "GameLogic/Module/StealthAbilityModules.h"
+#include "GameLogic/Module/StructureModules.h"
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/Object/Object.h"
 #include "GameClient/SpellBookUI.h"
@@ -237,4 +240,102 @@ TEST_CASE("hud5 rank interface retail: a selected hero shows its rank and the ex
 	CHECK(PalantirCommandUI::rankInfoFor(b.hud->input().context(), INVALID_ID, { hero->getID(), farm->getID() }).type == 2);
 	CHECK_FALSE(pal->rankInterfaceShown());
 	CHECK(called("HideRankInterface()"));
+}
+
+TEST_CASE("hud5 recovered timers retail: defection precedes cloak and mixed timers do not reuse experience state")
+{
+	if (!haveWorld("hud5 recovered timers"))
+	{
+		return;
+	}
+	PointsRig b(shared(), "FactionMen");
+	Object *worm = b.rig.make("IsengardWormTongue", 1500.0f, 1200.0f);
+	Player *enemy = b.rig.game->players().findPlayerWithName("Player_2");
+	REQUIRE(enemy != nullptr);
+	std::string error;
+	Object *other = b.rig.game->createObject("IsengardWormTongue", enemy->getPlayerIndex(), Coord3D{ 1800.0f, 1200.0f, 0.0f }, 0.0f, &error);
+	REQUIRE_MESSAGE(other, error);
+	b.frames(5);
+	GameLogic &logic = b.rig.logic();
+	const HudContext &ctx = b.hud->input().context();
+	auto *cloak = ToggleHiddenSpecialAbilityUpdate::of(*worm);
+	REQUIRE(cloak != nullptr);
+	REQUIRE(cloak->showPalantirTimer());
+	REQUIRE(cloak->abilityData()->m_effectDuration == 75u);
+	cloak->hide();
+	REQUIRE(worm->testStatus(0x10));
+	auto info = PalantirCommandUI::rankInfo(ctx, *worm);
+	CHECK(info.type == 1);
+	CHECK(info.progress == 1.0f);
+	// Equal experience does not make a hidden and an unhidden object share a timer (SELPERF-1 fast path).
+	CHECK(PalantirCommandUI::rankInfoFor(ctx, INVALID_ID, { worm->getID(), other->getID() }).type == 2);
+	auto *defect = TemporarilyDefectUpdate::of(*worm);
+	REQUIRE(defect != nullptr);
+	defect->startDefection(other, logic.getFrame() + 40u);
+	REQUIRE(worm->testStatus(0x3E));
+	// Changing the cloak's start cannot displace the higher-priority defection timer.
+	b.frames(10);
+	const unsigned now = b.rig.logic().getFrame();
+	info = PalantirCommandUI::rankInfo(ctx, *worm);
+	CHECK(info.type == 1);
+	CHECK(info.progress == doctest::Approx((float)(defect->endFrame() - now) / (float)(defect->endFrame() - defect->startFrame()))); // tolerance: the recovered timer ratio is calculated in float.
+	CHECK(info.progress < 1.0f); // tolerance: advancing the logic after activation must reduce the remaining timer.
+}
+
+TEST_CASE("hud5 recovered disguise retail: an enemy sees rank one but allies and defeated viewers see the original rank")
+{
+	if (!haveWorld("hud5 recovered disguise"))
+	{
+		return;
+	}
+	PointsRig b(shared(), "FactionMen");
+	Player *enemy = b.rig.game->players().findPlayerWithName("Player_2");
+	REQUIRE(enemy != nullptr);
+	std::string error;
+	Object *hero = b.rig.game->createObject("RohanEowyn", enemy->getPlayerIndex(), Coord3D{ 1500.0f, 1200.0f, 0.0f }, 0.0f, &error);
+	REQUIRE_MESSAGE(hero, error);
+	b.frames(5);
+	(void)b.rig.logic();
+	auto *disguise = SpecialDisguiseUpdate::of(*hero);
+	REQUIRE(disguise != nullptr);
+	REQUIRE_FALSE(disguise->enemyPerspectiveTemplate().empty());
+	ExperienceTracker *xp = hero->getExperienceTracker();
+	REQUIRE(xp != nullptr);
+	xp->gainLevels(3, false);
+	const HudContext &ctx = b.hud->input().context();
+	const auto before = PalantirCommandUI::rankInfo(ctx, *hero);
+	REQUIRE(before.type == 0);
+	REQUIRE(before.rank > 1); // tolerance: gaining three levels is a setup precondition for the rank-one disguise override.
+	REQUIRE(b.rig.local->getRelationship(hero->getTeam()) == ENEMIES);
+	hero->setModelConditionState(300, true);
+	const auto after = PalantirCommandUI::rankInfo(ctx, *hero);
+	CHECK(after.type == 0);
+	CHECK(after.rank == 1);
+	CHECK(after.progress == before.progress); // RW 0x92F96D changes the rank, not progress
+	b.rig.local->setDefeated(true);
+	CHECK(PalantirCommandUI::rankInfo(ctx, *hero).rank == before.rank);
+	b.rig.local->setDefeated(false);
+	b.rig.local->setPlayerRelationship(enemy, ALLIES);
+	CHECK(PalantirCommandUI::rankInfo(ctx, *hero).rank == before.rank);
+}
+
+TEST_CASE("hud5 recovered lifetime retail: setting a range is not the wake notification")
+{
+	if (!haveWorld("hud5 recovered lifetime"))
+	{
+		return;
+	}
+	PointsRig b(shared(), "FactionMen");
+	Object *obj = b.rig.make("MordorMumakil", 1500.0f, 1200.0f);
+	auto *life = dynamic_cast<LifetimeUpdate *>(obj->findModule("LifetimeUpdate"));
+	REQUIRE(life != nullptr);
+	REQUIRE(life->waitingForWakeUp());
+	life->setLifetimeRange(50, 50);
+	CHECK(PalantirCommandUI::rankInfo(b.hud->input().context(), *obj).type != 1);
+	UpdateModule *update = life;
+	update->wakeFromInterface(UPDATE_SLEEP_FOREVER);
+	CHECK(life->waitingForWakeUp());
+	update->wakeFromInterface(UPDATE_SLEEP(1));
+	CHECK_FALSE(life->waitingForWakeUp());
+	CHECK(PalantirCommandUI::rankInfo(b.hud->input().context(), *obj).type == 1);
 }

@@ -39,6 +39,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include "GameLogic/AI/AIXfer.h"
 
 namespace
 {
@@ -142,6 +143,7 @@ public:
 			ai().setCanPathThroughUnits(false);
 		}
 	}
+	void xfer(Xfer &x) override { xferNoFields(x); } // lane SAVE-4c: the state keeps nothing (the path is the mover's)
 };
 } // namespace
 

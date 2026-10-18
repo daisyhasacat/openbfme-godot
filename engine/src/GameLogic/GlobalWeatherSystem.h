@@ -73,6 +73,9 @@ public:
 	unsigned burnDecay() const { return m_burnDecay; }
 	unsigned long long weatherChanges() const { return m_weatherChanges; }
 	void crc(StateHasher &h) const;
+	// lane SAVE-4d: the block obfme:Weather: retail's GlobalWeatherSystem xfer (RW 0x71A2E3, window (1, 4)) in its field order, then the port's burn decay
+	// (see GlobalWeatherSystem.cpp and S-4251)
+	void xfer(class Xfer &x);
 	static std::vector<std::string> stopLines();
 
 private:

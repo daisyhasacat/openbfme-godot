@@ -25,6 +25,7 @@ AptQuitMenu::AptQuitMenu(WindowManager &windows, Shell &shell, ShellEnvironment 
 		const QuitMenuContext *c = m_env.quitMenu;
 		if (c && !c->isMultiplayer() && c->gameKind == 3)
 		{
+			m_keepBackground = c->gameMode == 2; // lane SAVE-UI1: RW 0x9226D6 .. 0x9226DF (+ 0x27D in a skirmish: the background stays through the restart)
 			post((int)ShellAction::QuitMenuRestart, "QuitMenuRestart", argument); // RW 0x9220DE
 		}
 		else
@@ -32,7 +33,10 @@ AptQuitMenu::AptQuitMenu(WindowManager &windows, Shell &shell, ShellEnvironment 
 			post((int)ShellAction::QuitMenuForfeit, "QuitMenuForfeit", argument); // RW 0x921841
 		}
 	});
-	registerCommand("AptQuitMenu::ExitMission", [this](const std::string &argument) { post((int)ShellAction::QuitMenuExit, "QuitMenuExit", argument); });
+	registerCommand("AptQuitMenu::ExitMission", [this](const std::string &argument) {
+		m_exiting = true; // lane SAVE-UI1: RW 0x92176B (+ 0x27C)
+		post((int)ShellAction::QuitMenuExit, "QuitMenuExit", argument);
+	});
 	registerCommand("AptQuitMenu::ReturnToGame", [this](const std::string &argument) { post((int)ShellAction::QuitMenuReturn, "QuitMenuReturn", argument); });
 	registerCommand("AptQuitMenu::OptionsScreen", [this](const std::string &argument) { post((int)ShellAction::QuitMenuOptions, "QuitMenuOptions", argument); });
 	// lane SAVE-2: RW 0x92179F / 0x9217F0 (BFME2 decomp AptQuitMenuCallbacks.cpp SaveMenu / LoadMenu, tier A): AptSaveLoad::OpenScreen(3 save / 2 load, the
@@ -62,10 +66,23 @@ AptQuitMenu::AptQuitMenu(WindowManager &windows, Shell &shell, ShellEnvironment 
 	{
 		windows.setAptText("APT:Pause", text(m_env, "GUI:Menu"));
 	}
+	// lane SAVE-UI1: the constructor ends with the in-game background (RW 0x922622 .. 0x92262A: RW 0x6230B6(2), ShowInGameBackground); a screen opened
+	// over the menu (SaveLoad.apt, Options.apt) finds a background up and shows none of its own (SaveLoad's RW 0x818BC2)
+	windows.setBackground(2);
 }
 
 AptQuitMenu::~AptQuitMenu()
 {
+	// lane SAVE-UI1: RW 0x9219B9 / 0x921A70 .. 0x921A96: after Exit (+ 0x27C) the front-end background (RW 0x6230B6(1)); else, unless a skirmish restart
+	// keeps it (+ 0x27D), the background is hidden with its animation (RW 0x622C88(0)) and the game is seen again
+	if (m_exiting)
+	{
+		windows().setBackground(1);
+	}
+	else if (!m_keepBackground)
+	{
+		windows().hideBackground(false);
+	}
 	windows().setAptText("APT:Pause", text(m_env, "APT:Pause")); // RW 0x921A9B
 }
 

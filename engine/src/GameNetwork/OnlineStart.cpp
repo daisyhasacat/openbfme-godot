@@ -230,6 +230,7 @@ bool parse(const std::string &json, const ProfileIdentity &ownProfile, const Lim
 		return fail(error, "\"setup\" must be an object");
 	}
 	SkirmishGameInfo &g = s.game.game;
+	g.simulationProfile = ownProfile.simulationProfile(); // lane UBERJOIN-1: the game runs the profile its identity names (as the LAN start: LANLobby.cpp), never the default
 	s.game.mode = NewGameMode::Skirmish;
 	long long seed = 0, cash = 0, sw = 0, lh = 0;
 	sub = "\"map\" is empty";
@@ -352,6 +353,21 @@ bool parse(const std::string &json, const ProfileIdentity &ownProfile, const Lim
 	}
 	if (g.luaAuthoritySlot >= 0 && !s.networkSlot[(size_t)g.luaAuthoritySlot]) return fail(error, "Lua authority is not a human slot");
 	g.clearCreateAHeroesIfNotAllowed();
+	// lane PLATFORMICON-1: the optional top-level "platforms" (lobby.mjs signAndStart: one entry per slot, null or windows / linux / macos). Display data for
+	// the running game's player list: only a human slot's entry counts, and anything unusable (not an array, a wrong length, another value) is no icon,
+	// never a refusal of the START
+	if (const JsonValue *platforms = root.get("platforms"); platforms && platforms->isArray() && platforms->array.size() == (size_t)MAX_SLOTS)
+	{
+		for (int i = 0; i < MAX_SLOTS; ++i)
+		{
+			PlatformKind kind = PlatformKind::None;
+			const JsonValue &p = platforms->array[(size_t)i];
+			if (g.slots[i].isHuman() && p.isString() && platformFromName(p.string, kind))
+			{
+				g.slots[i].platform = kind;
+			}
+		}
+	}
 	if (replay)
 	{
 		// the log converter's start: the first human slot records (GameNetwork/RelayLog.h)

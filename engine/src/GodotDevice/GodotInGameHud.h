@@ -53,6 +53,7 @@ public:
 	// that AptMenuPlayer (shell mode); it keeps stepping its window manager and draws, the HUD feeds the camera and the input and draws the native components.
 	Dictionary attach(const Ref<RetailFileSystem> &fs, GameWorld *world, Camera3D *camera, AptMenuPlayer *player, const String &local_player, const Dictionary &options);
 	bool is_ready() const;
+	bool is_logic_held() const; ///< nonblocking: per-frame overlays only refresh in a client window
 
 	// the objects selected on the client (newest first) and the logic's selection of the local player
 	Array get_selection() const;
@@ -80,6 +81,8 @@ public:
 	Dictionary get_cursor_image() const;
 	// lane BUILD-5 r2: the placement ghost as drawn (PlacementGhostRenderer::state): { template, castle, anchored, arrow, icons: [...], errors: [...] }
 	Dictionary get_placement_ghost_state() const;
+	// community PR #37 review: the canvas shader of an Apt image `_mode` ("" for ALPHA / an unknown mode), for the pixel test (tests/hud_image_mode_pixel_test.gd)
+	static String image_mode_shader(const String &mode);
 	// lane PLAY-1: the move hints to draw now (InGameUI::createMoveHint): { model (GameData MoveHintName), frame (client frame), made, hints: [{ slot, frame,
 	// age (client frames, <= 40), position (Godot axes), x, y, z (SAGE) }] }
 	Dictionary get_move_hints() const;
@@ -116,6 +119,8 @@ public:
 	void set_free_camera(bool on);
 	void hold_input(bool on);        ///< lane BACKLOG3 (QA): queue _input's events as while the logic worker runs
 	void set_input_enabled(bool on); ///< lane BACKLOG3 (QA): InGameUI's input flag (the scripts' DISABLE_INPUT / ENABLE_INPUT)
+	void script_input(bool enable);  ///< lane OWNERFIX-1: a map script's DISABLE_INPUT / ENABLE_INPUT as retail runs them (InGameHud::scriptInput)
+	void set_broadcast_clean(bool on);
 	// lane OPTS-2: the OpenBFME screen's camera / interface settings, live: { scroll_factor_option (Options.ini ScrollFactor text or null), edge_scroll_mode
 	// ("retail" | "always" | "off"), invert_drag_scroll, rotate_speed_scale, alternate_mouse, all_health_bars, health_bar_mode ("retail" | "damaged" |
 	// "always"), ui_scale, free_camera, zoom_out_factor (lane ZOOM-1: the Max zoom-out, 1 = retail), widescreen_wider (lane UI-6: the Widescreen view, false =
@@ -166,6 +171,7 @@ public:
 	Dictionary get_spellbook_state();
 	// lane HUD-5: the drawable decorations of the last frame: { ops, health_bars, texts: [..], images: [..], drawn, notes }
 	Dictionary get_icon_ui() const;
+	void set_icons_covered(bool covered); // lane SAVE-UI1: a menu over the game hides the health bars and decorations
 	// lane HUD-5 (a test hook, logged): the client selection becomes the one object (InGameUI::deselectAll + selectObject), as a click on it selects it
 	bool select_object(int64_t id);
 	// lane BACKLOG2 (proof captures): select_object, then the selection message a click sends (MSG_CREATE_SELECTED_GROUP_NO_SOUND, SelectionTranslator::
@@ -186,7 +192,8 @@ protected:
 
 private:
 	void syncModifiers(const InputEventWithModifiers *event);
-	void keyEvent(int dik, bool down, char32_t character); ///< lane INPUT-1: inject_key with the layout's character ///< lane INPUT-1: Ctrl / Shift / Alt as the event reports them
+	void keyEvent(int dik, bool down, char32_t character);
+	void syncModal(); ///< lane OPTS-6: a menu became (or stopped being) the input's top: the world's held input is cancelled ///< lane INPUT-1: inject_key with the layout's character ///< lane INPUT-1: Ctrl / Shift / Alt as the event reports them
 	void handleInput(const Ref<InputEvent> &event); ///< SMOOTH-1: _input's work (replayed for input that waited for the logic worker)
 	std::unique_ptr<HudDevice> d;
 };

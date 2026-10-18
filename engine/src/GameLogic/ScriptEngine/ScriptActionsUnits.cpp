@@ -54,6 +54,7 @@
 #include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/AI/AICommandSink.h"
+#include "GameLogic/AI/AIGroupFormations.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/Module/AIUpdate.h"
@@ -622,7 +623,6 @@ bool ScriptActions::executeUnitAction(ScriptEngine &engine, const ScriptActionRe
 		{
 			return true;
 		}
-		const std::vector<Object *> group = aiGroupOf(*t);
 		Coord3D sum{ 0.0f, 0.0f, 0.0f };
 		int count = 0;
 		for (Object *o : ScriptConditions::members(*t))
@@ -645,15 +645,28 @@ bool ScriptActions::executeUnitAction(ScriptEngine &engine, const ScriptActionRe
 		}
 		const bool exact = name == "TEAM_FOLLOW_WAYPOINTS_EXACT";
 		const bool formation = !exact && param(a, 3).intValue != 0;
+		const bool asTeam = formation || param(a, 2).intValue != 0;
+		std::vector<Object *> group = aiGroupOf(*t);
 		if (formation)
 		{
-			engine.note("[S-1189] TEAM_FOLLOW_WAYPOINTS: the formation offsets (RW 0x94FCBA) are not ported: the team walks as a team");
+			// lane BACKLOG-8, RW 0x771E7D: the members RW 0x76FFF0 keeps (a lone member it refuses ends the command), AIGroup::createFormation (RW 0x94FCBA)
+			// over the group's path ends (a new group's: RW 0x7707ED leaves the start 0, 0, 0 and the end 10, 0, 0), then command 7 for every member
+			std::vector<Object *> valid = AIGroupFormations::validMembers(group);
+			if (valid.empty())
+			{
+				return true;
+			}
+			group = valid;
+			AIGroupFormations::createFormation(engine.logic(), group, Coord3D{ 0.0f, 0.0f, 0.0f }, Coord3D{ 10.0f, 0.0f, 0.0f });
 		}
-		const bool asTeam = formation || param(a, 2).intValue != 0;
 		for (Object *o : group)
 		{
 			if (AIUpdateInterface *ai = o->getAIUpdateInterface())
 			{
+				if (asTeam && !formation)
+				{
+					ai->setFormationId(0); // RW 0x771E31
+				}
 				ai->aiFollowWaypointPath(start->id, CMD_FROM_SCRIPT, asTeam, exact);
 			}
 		}

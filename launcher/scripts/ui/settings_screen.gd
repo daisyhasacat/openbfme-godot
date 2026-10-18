@@ -37,7 +37,7 @@ var _releases: OptionButton
 var _install: Button
 
 
-func _init() -> void:
+func _init(macos_preview := false) -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	var v := W.vbox(Style.SCREEN_GAP)
 	v.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -71,7 +71,8 @@ func _init() -> void:
 	g.add_child(W.row(_with_note("Free camera", "Zoom out to the whole map (not retail)."), _free_camera))
 	_auto = CheckButton.new()
 	_auto.toggled.connect(func(on: bool) -> void: auto_update_toggled.emit(on))
-	g.add_child(W.row(_with_note("Update automatically in the background",
+	g.add_child(W.row(_with_note("Check for updates on startup" if macos_preview else "Update automatically in the background",
+		"Checks the official release version only. Mac preview updates are manual; nothing is installed." if macos_preview else
 		"New versions download while the launcher is open or you play, and start with your next Play."), _auto))
 	_count = CheckButton.new()
 	_count.toggled.connect(func(on: bool) -> void: show_online_count_toggled.emit(on))

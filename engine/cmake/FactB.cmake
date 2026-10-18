@@ -2,6 +2,7 @@
 # Included from engine/CMakeLists.txt so the lane's file lists stay out of the shared list.
 
 set(OPENBFME_FACTB_TESTS
+    tests/test_hud_bloodthirsty.cpp
     tests/test_hud_factb_inventory.cpp
     tests/test_hud_factb_production.cpp
     tests/test_hud_factb_units.cpp

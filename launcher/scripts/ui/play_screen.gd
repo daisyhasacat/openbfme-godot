@@ -5,7 +5,6 @@ extends HBoxContainer
 
 signal game_selected(game: String)
 var game_picker: OptionButton
-var game_names: Label
 var missing_games: Label
 
 signal download_games
@@ -86,16 +85,15 @@ func _init() -> void:
 	p.panel.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	left.add_child(p.panel)
 	p.box.add_child(W.h3("Your games"))
+	# community PR #36: the game Play starts, in the games row where the names were (a row of its own made the panel's bottom almost meet What's
+	# New's: the layout check); its items name the versions
 	game_picker = OptionButton.new()
-	game_picker.add_item("BFME II / Rise of the Witch-king")
-	game_picker.add_item("Battle for Middle-earth I")
+	game_picker.add_item("RotWK 2.01 · BFME II 1.06")
+	game_picker.add_item("Battle for Middle-earth I 1.03")
 	game_picker.item_selected.connect(func(index: int): game_selected.emit("bfme1" if index == 1 else "bfme2"))
-	p.box.add_child(game_picker)
 	var status := W.label("")
 	_games_status = status
-	var names := W.label("RotWK 2.01 · BFME II 1.06")
-	game_names = names
-	p.box.add_child(W.row(names, status, true))
+	p.box.add_child(W.row(game_picker, status, true))
 	games_found = W.vbox(4)
 	games_where = W.trim_label("", "Muted")
 	games_found.add_child(games_where)

@@ -57,6 +57,8 @@ struct ObjectMovementInfo
 	float pathfindDiameter = -1.0f;  // RW +0x53C: <= 0 when unset
 	int slopeLimitIndex = 0;         // RW +0x57C
 	bool canPathThroughGates = false; // RW +0x644
+	// lane BACKLOG-8: FormationWidth (RW + 0x578, row RW 0xDA4658) / FormationDepth (+ 0x574, row RW 0xDA4668), parseInt; both 1 from the constructor (RW 0x740057)
+	int formationWidth = 1, formationDepth = 1;
 	unsigned crusherLevel = 0, crushableLevel = 0;
 	LocomotorSetTemplate locomotorSets; // the object's `LocomotorSet` blocks (RW 0x73BF6B), one entry per SET_* condition
 	bool hasAIModule = false;
@@ -90,6 +92,7 @@ public:
 	bool isRubble() const override;
 	bool isComputerControlled() const override;
 	unsigned getCrusherLevel() const override;
+	unsigned getCrushableLevel() const override { return info().crushableLevel; }
 	PathfindRelationship getRelationship(const PathfindObject &other) const override;
 	bool canCrushOrSquish(const PathfindObject &other) const override;
 	const PathfindObject *getContainer() const override;
@@ -166,6 +169,8 @@ public:
 	// objects that already exist are made by their first update. `terrain` must outlive the world.
 	void newMap(const PathfindTerrain &terrain);
 	bool mapReady() const { return m_mapReady; }
+	// lane BACKLOG-8: RW 0x6FF265, the AI's next formation id (AI + 0x20: 1 after the reset RW 0x70038D; the value is returned, then incremented)
+	int allocFormationId() { return m_nextFormationId++; }
 
 	// ---- objects ----
 	ObjectPathfindAdapter &adapterFor(Object &obj);
@@ -209,6 +214,10 @@ public:
 	// ---- state hash (MOVE-1: logic state that lives outside the objects) ----
 	// the pathfinder's queues and pools: a summary, O(1) (the grid itself follows from the units' hashed state)
 	void crc(StateHasher &hasher);
+	// lane SAVE-4c (AIWorldSnapshot.cpp): the obfme:AIWorld block: the pathfinder, every pathfinder view's layer, every AI module's state (in object id order,
+	// each in a BLOK) and the report's bookkeeping. A load goes into the game's world with the same AI modules (made with their objects)
+	void xfer(class Xfer &x);
+	void xferBody(class Xfer &x);
 
 	// ---- reports ----
 	// the stops that apply to this world's runs (S-220 and the ones the movers raised), each once
@@ -240,6 +249,7 @@ private:
 	std::set<std::string> m_noted;
 	std::map<std::string, unsigned> m_failures; // "template: text" -> count
 	bool m_mapReady = false;
+	int m_nextFormationId = 1; ///< AI + 0x20 (hashed once a formation was made)
 	bool m_attached = false;
 	int m_hooksToken = 0, m_hashToken = 0; // the logic's removable registrations of the world hooks and the hash contributor
 	unsigned long long m_collisionPairs = 0;

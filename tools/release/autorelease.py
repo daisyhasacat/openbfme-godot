@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Iterator
 import os
 import re
 import subprocess
@@ -60,6 +61,7 @@ import sys
 import tempfile
 import hashlib
 import io
+import struct
 import tarfile
 import zipfile
 from pathlib import Path
@@ -90,10 +92,13 @@ FIXED = re.compile(r"\b(?:fix(?:es|ed)?|regression|crash(?:es|ed)?|no longer|sto
 INTEG_MERGE = re.compile(r"^Merge \S+ \([0-9a-f]{7,40}\) into \S+|^Merge .* into integ/\S+", re.I)
 SKIP_START = re.compile(r"^(?:batch\b|roadmap\b|docs?\b|merge\b)", re.I)
 MAX_ITEM = 140
+# GHPR-1: the community pull request flow's public files: the contributor guide and GitHub's folder (the PR template and the public PR
+# workflow, .github/workflows/pr.yml); every file in them passes the same audit as the rest of the tree
+GHPR_TOP = frozenset({".github", "CONTRIBUTING.md"})
 # the public main's top level (the sync recipe: the archive sha's tree without archive/, plus the README line; a PRIVACY.md is not carried any more, PR #34); anything else is refused. ONLINE-2: services/
 # (the online relay and lobby service source) is public by the owner's decision of 2026-10-11; its secrets come from the environment at deploy time
 PUBLIC_TOP = frozenset({".gitattributes", ".gitignore", ".gitmodules", "CLAUDE.md", "LICENSE", "NOTICE", "README.md",
-                        "build.bat", "docs", "engine", "godot", "launcher", "pytest.ini", "run_tests.bat", "services", "tools"})
+                        "build.bat", "docs", "engine", "godot", "launcher", "pytest.ini", "run_tests.bat", "services", "tools"} | GHPR_TOP)
 PRIVATE_DIRS = frozenset({"workspace", "archive", "reference", "references"})
 URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S*|\bwww\.\S+|\bmailto:\S+")
 # characters that could start emphasis, code or a link in Markdown: replaced by plain look-alikes, never escaped with a backslash (the launcher
@@ -312,6 +317,11 @@ def launcher_formats(manifest_gd: str) -> set[int]:
         raise SystemExit("autorelease: cannot tell which manifest formats a launcher reads (no single FORMATS / FORMAT constant)")
     many, one = found[0]
     return {int(x) for x in many.split(",")} if many else {int(one)}
+
+
+# legacy-needed's "no published launcher needs the launcher archives": not 1, which every uncaught error exits with too (PUBLISH-2 r4: a
+# remote that could not be listed crashed with 1 and autorelease.sh took it for "not needed")
+LEGACY_NOT_NEEDED = 10
 
 
 def format2_only_launchers(git_dir: str | None, tag_names: list[str]) -> list[str]:
@@ -571,10 +581,12 @@ def parse_note(text: str) -> tuple[str, str, str]:
 
 
 def note_warnings(text: str) -> list[str]:
-    """why a `Release-note:` text should be fixed before the release (never an error): it joins several changes, or names an unknown area"""
+    """why a `Release-note:` text should be fixed before the release (never an error): it joins several changes, or names an unknown area.
+    PUBLISH-2 r3 (review F2): the reasons quote nothing of the note (a warning of a `Release-note: none` commit, or one printed by --plan,
+    has passed no metadata audit)"""
     out, m = [], NOTE_HEAD.match(text.strip())
     if m and m.group(2) is not None and m.group(2).strip().lower() not in {x.lower() for x in AREAS}:
-        out.append(f"unknown area [{neutral(m.group(2))[:40]}] (it goes under {GENERAL}; areas: {', '.join(AREAS)})")
+        out.append(f"unknown area in brackets (it goes under {GENERAL}; areas: {', '.join(AREAS)})")
     body = m.group(3) if m else text
     if re.search(r";\s*\S", body):
         out.append("a ';' joins clauses: one note, one change")
@@ -617,9 +629,9 @@ def note_of(subject: str, body: str, files: list[str]) -> tuple[str, str, str] |
 
 
 def release_warnings(commit: dict) -> list[str]:
-    """`NOTES WARNING <sha>: <reason>: <text start>` for each Release-note line of the commit that note_warnings() questions, plain text
-    (neutral(): the plan's output is a log, not a page)"""
-    return [f"NOTES WARNING {commit['sha'][:10]}: {w}: \"{neutral(t)[:70]}\"" for t in release_note_texts(commit.get("body", ""))
+    """`NOTES WARNING <sha> note <n>: <reason>` for each Release-note line of the commit that note_warnings() questions. PUBLISH-2 r3
+    (review F2): the commit and the note's number name it, nothing of its text is printed"""
+    return [f"NOTES WARNING {commit['sha'][:10]} note {n}: {w}" for n, t in enumerate(release_note_texts(commit.get("body", "")), 1)
             for w in note_warnings(t)]
 
 
@@ -639,7 +651,8 @@ def first_parent_commits(git_dir: str | None, a: str, b: str) -> list[dict]:
 REPO_NAME = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
 
 
-def download_section(version: str, repo: str = DEFAULT_REPO, legacy_launchers: bool = True) -> list[str]:
+def download_section(version: str, repo: str = DEFAULT_REPO, legacy_launchers: bool = True, mac: bool = False,
+                     mac_manifest: bool = False) -> list[str]:
     """Lane ONEZIP-1: the notes' "Which file to download" part: one archive per platform with a direct link, and one line for the files
     nobody downloads by hand. Its links are built here from the release's own version and repository (both checked against their
     grammar) and never pass neutral(), which removes every URL from commit text; nothing else of the notes may hold a link."""
@@ -654,6 +667,14 @@ def download_section(version: str, repo: str = DEFAULT_REPO, legacy_launchers: b
         name = asset_name("game", version, platform)
         out.append(f"| **[{name}]({base}/{name})** | **OpenBFME for {label}.** {what} |")
     rest = [f"SHA256SUMS-{version}.txt", "manifest.json", "manifest.json.sig"]
+    if mac:
+        # MACREL-1 (owner, 2026-10-15/16): Apple Silicon only, macOS 13 or later, an unstable preview; the apps are ad-hoc signed, not notarized
+        name = f"openbfme-{version}-macos-arm64.zip"
+        out.append(f"| **[{name}]({base}/{name})** | **OpenBFME for Mac (Apple Silicon, macOS 13 or later), an unstable preview.** The game "
+                   "and the launcher in one download. Unzip it, then open each app the first time with right-click > Open (they are not "
+                   "notarized). The launcher keeps it up to date. Intel Macs are not supported. |")
+    if mac or mac_manifest:   # a release without the Mac package (OPENBFME_RELEASE_SKIP_MAC=1) still carries its signed no-entry sidecar
+        rest += ["manifest-macos.json", "manifest-macos.json.sig"]
     if legacy_launchers:
         rest = [asset_name("launcher", version, p) for p in ("windows-x64", "linux-x64")] + rest
     out.append(f"| {', '.join(rest)} | Used by OpenBFME to update itself and for checking downloads. You don't need these. |")
@@ -680,7 +701,8 @@ def _grouped(items: list[tuple[str, str]]) -> list[str]:
 
 
 def release_notes(version: str, commits: list[dict], known_issues: list, commit: str = "", date: str = "", repo: str = DEFAULT_REPO,
-                  titles: str = DEFAULT_TITLES, legacy_launchers: bool = True) -> tuple[str, list[str]]:
+                  titles: str = DEFAULT_TITLES, legacy_launchers: bool = True, mac: bool = False,
+                  mac_manifest: bool = False) -> tuple[str, list[str]]:
     """(markdown notes, the neutral() lines in order). known_issues: texts, or {"text", "area"} entries. `repo`: the release's repository,
     for the "Which file to download" part (repo="" leaves it out: tests of the items alone)"""
     if titles not in TITLES:
@@ -704,7 +726,7 @@ def release_notes(version: str, commits: list[dict], known_issues: list, commit:
            "Install or update it with the OpenBFME Launcher. It uses your installed The Rise of the Witch-king 2.01 and "
            "The Battle for Middle-earth II 1.06, or downloads them for you.", ""]   # said once, not preachy (owner, 2026-10-10/11)
     if repo:
-        out += download_section(version, repo, legacy_launchers)
+        out += download_section(version, repo, legacy_launchers, mac, mac_manifest)
     for kind, _ in NOTE_KINDS:
         if by_kind[kind]:
             out += [f"## {markdown(neutral(TITLES[titles][kind]))}", ""] + _grouped(by_kind[kind])
@@ -734,13 +756,180 @@ def title_summary(lines: list[str], limit: int = 90) -> str:
 
 
 # ---- the public sync's privacy audit --------------------------------------------------------------------------------------------------
+TEMPLATES = HERE / "godot_templates.txt"
+
+
+def _sha256_of(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_templates(folder: Path | None, pins: Path | None = None) -> dict[str, tuple[Path, str]]:
+    """{sha256: (file, executable name)} of the Godot export templates tools/release/godot_templates.txt pins (`<sha256>  <file name>
+    <executable name>  <reason>`) that are in `folder` with that sha256 (a file there with another sha256 is not one). PUBLISH-2 r3: the
+    release's game executables are these templates byte for byte and the launcher's are one with its pack added: upstream bytes, which the
+    private rules' short words match by chance (3-letter words in Godot's locale tables), so the asset audit does not scan a template's
+    own bytes. r4 (Sol r3 P2): only in the executable the template is pinned for (its file name), and only where an export may change it
+    (export_region)."""
+    out: dict[str, tuple[Path, str]] = {}
+    pins = pins or TEMPLATES
+    for n, line in enumerate(pins.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        m = re.fullmatch(r"([0-9a-f]{64})  ([\w.-]+)  ([\w.-]+)  (\S.*)", line)
+        if not m:
+            raise SystemExit(f"autorelease: {pins.name}:{n} is not `<sha256>  <file name>  <executable name>  <reason>`")
+        f = (folder / m.group(2)) if folder else None
+        if f and f.is_file() and _sha256_of(f) == m.group(1):
+            out[m.group(1)] = (f, m.group(3))   # read only when its executable has its size (content_hits), and checked again then
+    return out
+
+
+def export_region(t: bytes) -> tuple[int, int] | None:
+    """(start, end) of the bytes of a Godot export template that exporting with an embedded pack may change: an ELF's section header
+    table (Godot 4.7.2 sets its `pck` section's offset and size there), a PE's headers up to the first section's data (the section table:
+    v0.4.6's OpenBFMELauncher.exe differs from windows_release_x86_64.exe in its first 872 bytes only); None for any other file. Measured on
+    the v0.4.6 launchers: OpenBFMELauncher.x86_64 differs from linux_release.x86_64 in 7 bytes of the section header table."""
+    if t[:6] == b"\x7fELF\x02\x01" and len(t) >= 64:
+        shoff, = struct.unpack_from("<Q", t, 0x28)
+        shentsize, shnum = struct.unpack_from("<HH", t, 0x3A)
+        end = shoff + shentsize * shnum
+        return (shoff, end) if 64 <= shoff < end <= len(t) else None
+    if t[:2] == b"MZ" and len(t) >= 0x40:
+        pe, = struct.unpack_from("<I", t, 0x3C)
+        if t[pe:pe + 4] == b"PE\0\0" and pe + 24 + 64 <= len(t):
+            size, = struct.unpack_from("<I", t, pe + 24 + 60)   # the optional header's SizeOfHeaders
+            return (0, size) if pe < size <= len(t) else None
+    return None
+
+
+def content_hits(name: str, data: bytes, rules, templates: dict[str, tuple[Path, str]] | None = None) -> list[str]:
+    """the rules' hits in one file or member's content, which every publishing audit checks (the tree's files, the decoded members, the
+    release assets). Text as text (every form); a text file by its name that is not UTF-8 is refused (Sol r2 P2: an undecodable .txt member
+    passed); a container layer that the audit decodes member by member by its metadata only (its member names are checked as names, its
+    members as content): ZIP local headers and central directory, tar headers, the gzip header's fields; an executable that is a pinned
+    Godot template (templates) for its executable is upstream bytes, one with a pack appended is checked in its export_region() and in its
+    pack's members; every other binary through binary_texts()."""
+    if name.endswith(".import") and data.endswith(b"\0"):
+        data = data[:-1]   # Godot 4.7.2's export ends an exported .import file with one NUL byte (v0.4.7's pack)
+    if Path(re.split(r":|\[", name)[-1].lower()).suffix in TEXT_SUFFIXES and not _is_text(data):
+        return [f"a text file that is not UTF-8 without NUL bytes (an encoding the audit does not read): {sanitize(name, rules)}"]
+    if _is_text(data):
+        return denylist_hits(name, data.decode("utf-8"), rules, check_path=False)
+    meta = None
+    if audit_package.stream_kind(data) == "gzip":
+        meta = gzip_header_fields(data)
+    elif audit_package.stream_kind(data) or data[:4] == audit_package.PCK_MAGIC:
+        meta = b""   # bzip2 / xz carry no names; a pack's directory holds only the entry names (checked as names) and zero padding
+    elif audit_package.is_tar(data):
+        meta = tar_headers(data)
+    elif zipfile.is_zipfile(io.BytesIO(data)):
+        meta = zip_metadata(data)
+    if meta is not None:
+        return denylist_hits(name, None, rules, check_path=False, data=meta) if meta else []
+    # r4 (Sol r3 P2: a template matched by size alone exempted unchanged blocks of any same-sized file and split a string across changed
+    # ones): a template is only used for the executable it is pinned for, with the same image size, unchanged outside export_region(),
+    # whose bytes are then scanned as one piece (a changed byte keeps its neighbours); anything else is scanned whole
+    leaf = re.split(r":|\[", name)[-1].rsplit("/", 1)[-1]
+    base = audit_package.embedded_pck_base(data)
+    image = data[:base] if base is not None else data
+    for sha, (f, exe) in (templates or {}).items():
+        if exe != leaf or f.stat().st_size != len(image):
+            continue
+        t = f.read_bytes()
+        if hashlib.sha256(t).hexdigest() != sha:   # the file is no longer the pinned template
+            continue
+        if image == t:
+            return []
+        region = export_region(t)
+        if region and image[:region[0]] == t[:region[0]] and image[region[1]:] == t[region[1]:]:
+            image = image[region[0]:region[1]]
+        break
+    return denylist_hits(name, None, rules, check_path=False, data=image)
+
+
+def gzip_headers(data: bytes) -> list[tuple[int, bytes]]:
+    """[(flags, fields)] of every member of a gzip stream (RFC 1952: concatenated members are one stream; PUBLISH-2 r4, Sol r3 P2: a host
+    name in the second member's file name passed, only the first header was read). fields: the modification time, XFL and OS bytes, the
+    extra field, the file name and the comment. A member that does not end, or bytes after the last one that are no member, end the list
+    (the package audit refuses them: decompress_members)."""
+    out, pos = [], 0
+    while pos + 10 <= len(data) and data[pos:pos + 2] == b"\x1f\x8b":
+        flags, head, fields = data[pos + 3], pos + 10, data[pos + 4:pos + 10] + b"\0"
+        if flags & 4:
+            n = int.from_bytes(data[head:head + 2], "little")
+            fields += data[head + 2:head + 2 + n] + b"\0"
+            head += 2 + n
+        for bit in (8, 16):
+            if flags & bit:
+                end = data.find(b"\0", head)
+                end = len(data) if end < 0 else end
+                fields += data[head:end] + b"\0"
+                head = end + 1
+        out.append((flags, fields))
+        d = zlib.decompressobj(31)   # where the member ends: its input fed in pieces, its output dropped
+        nxt = None
+        for i in range(pos, len(data), 1 << 16):
+            d.decompress(data[i:i + (1 << 16)])
+            if d.eof:
+                nxt = min(len(data), i + (1 << 16)) - len(d.unused_data)
+                break
+        if nxt is None:
+            break
+        pos = nxt
+    return out
+
+
+def gzip_header_fields(data: bytes) -> bytes:
+    """every gzip member's header fields (gzip_headers), as the private rules see them"""
+    return b"".join(f for _, f in gzip_headers(data))
+
+
+def tar_headers(data: bytes) -> bytes:
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as t:
+        return b"\0".join(data[m.offset:m.offset_data] for m in t.getmembers())
+
+
+def zip_metadata(data: bytes) -> bytes:
+    """a ZIP without its members' compressed data: local headers, data descriptors, the central directory, its end record and comment"""
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        cut = []
+        for i in z.infolist():
+            n, m = struct.unpack_from("<HH", data, i.header_offset + 26)
+            start = i.header_offset + 30 + n + m
+            cut.append((start, start + i.compress_size))
+    out, cur = b"", 0
+    for a, b in sorted(cut):
+        out += data[cur:a] + b"\0"
+        cur = max(cur, b)
+    return out + data[cur:]
+
+
 class SyncAudit(audit_package.Audit):
     """audit_package's recursive audit plus raw zlib streams (no gzip header), which the package audit does not open. Every decoded
     layer goes back through this blob() (r4, Sol r3: a twice-zlib-wrapped BIG passed because the decoded layer skipped the zlib check),
     and so do the gzip / bzip2 / xz / zip / tar / pack members the package audit opens (it recurses through self.blob). Bounds:
     MAX_DEPTH layers, MAX_UNPACKED bytes per layer; anything beyond a bound is a finding. A binary file with a valid zlib header must
     decode to its end, or it is a finding (fail closed); text with a zlib-looking start ("x^...") is decoded when it can be, and is
-    text otherwise."""
+    text otherwise. PUBLISH-2 r2 (Sol r1 P2): every decoded member (its name and its content_hits()) also passes the rules; r3: with
+    top=True the file itself too (a release asset), and templates (load_templates) for the Godot executables."""
+
+    def __init__(self, rules=(), top: bool = False, templates: dict[str, tuple[Path, str]] | None = None) -> None:
+        super().__init__()
+        self.rules = list(rules)
+        self.top = top
+        self.templates = templates or {}
+
+    def _rules(self, name: str, data: bytes | None, depth: int) -> None:
+        if (depth > 0 or self.top) and self.rules:
+            self.problems += denylist_hits(name, None, self.rules)
+            if data is not None:
+                self.problems += content_hits(name, data, self.rules, self.templates)
+
+    commit_gate_paths = True   # the public source tree: the commit gate's developer-path rule (audit_package.Audit, DEVPORT-6)
 
     def blob(self, name: str, data: bytes, depth: int = 0) -> None:
         if len(data) >= 2 and data[0] & 0x0F == 8 and data[0] >> 4 <= 7 and (data[0] << 8 | data[1]) % 31 == 0:
@@ -759,12 +948,14 @@ class SyncAudit(audit_package.Audit):
             except zlib.error as e:
                 problem = f"{name}: unreadable zlib data ({e})"
             if not problem:
+                self._rules(name, None, depth)   # the compressed bytes are no text: the decoded layer is checked
                 self.files += 1
                 self.blob(f"{name}[zlib]", out, depth + 1)
                 return
             if not text:
                 self.problems.append(problem)
                 return
+        self._rules(name, data, depth)
         super().blob(name, data, depth)
 
 
@@ -781,10 +972,11 @@ CONTAINER_SUFFIXES = (".zip", ".jar", ".apk", ".whl", ".egg", ".nupkg", ".gz", "
                       ".7z", ".rar", ".cab", ".zst", ".lz4", ".lzo", ".z", ".zlib", ".pck", ".big", ".dmg", ".iso", ".cpio")
 
 
-def load_allowlist(path: Path = ALLOWLIST) -> dict[str, str]:
+def load_allowlist(path: Path | None = None) -> dict[str, str]:
     """{path: sha256} of the containers the public tree may hold: lines `<sha256>  <path>  <reason>`, # comments; a malformed line,
     a missing reason or a path listed twice is an error (fail closed)"""
     out: dict[str, str] = {}
+    path = path or ALLOWLIST
     if not path.exists():
         raise SystemExit(f"autorelease: the container allowlist {path} is missing")
     for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -837,6 +1029,8 @@ def container_metadata_problems(name: str, data: bytes, depth: int = 0) -> list[
     kind = container_kind(name if depth == 0 else "", data)
     if not kind:
         return probs
+    if kind.startswith("suffix") and container_kind("", data) in ("gzip", "bzip2", "xz", "zlib"):
+        kind = container_kind("", data)   # r3 (Sol r2): a listed .gz / .bz2 / .xz / .zlib is read by its content
     try:
         if kind == "zip" or (depth == 0 and kind.startswith("suffix") and zipfile.is_zipfile(io.BytesIO(data))):
             with zipfile.ZipFile(io.BytesIO(data)) as z:
@@ -856,8 +1050,9 @@ def container_metadata_problems(name: str, data: bytes, depth: int = 0) -> list[
                     if not i.is_dir():
                         probs += container_metadata_problems(f"{name}:{i.filename}", z.read(i), depth + 1)
         elif kind == "gzip":
-            if data[3] & 0x1C:
-                probs.append(f"{name}: a gzip header with a file name, comment or extra field")
+            for n, (flags, _) in enumerate(gzip_headers(data), 1):   # r4 (Sol r3 P2): every member's header, not the first only
+                if flags & 0x1C:
+                    probs.append(f"{name}: gzip member {n}'s header has a file name, comment or extra field")
             probs += container_metadata_problems(f"{name}[gzip]", b"".join(audit_package.decompress_members("gzip", data)), depth + 1)
         elif kind in ("bzip2", "xz"):
             probs += container_metadata_problems(f"{name}[{kind}]", b"".join(audit_package.decompress_members(kind, data)), depth + 1)
@@ -917,7 +1112,14 @@ NOREPLY = re.compile(r"(?i)^(?:[0-9]+\+[a-z0-9-]+@users\.noreply\.github\.com|no
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # our own fixed attribution lines (their words are not user or host names)
 OWN_LINES = ("Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>", "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
-KEY_PATH = Path.home() / ".config" / "openbfme-release" / "release-ed25519.pem"
+ORDINARY_WORDS = frozenset({"mac"})   # ssh aliases that are ordinary words of the public text (private_words)
+
+
+def key_path() -> Path | None:
+    """the release key's path (PUBLISH-2: the operator's OPENBFME_RELEASE_KEY, which autorelease.sh exports; the public tree names no
+    private path), or None outside a release run"""
+    k = os.environ.get("OPENBFME_RELEASE_KEY", "")
+    return Path(k) if k else None
 
 
 def _ssh_config_values(field: str) -> set[str]:
@@ -945,7 +1147,9 @@ def private_words() -> tuple[set[str], set[str]]:
         import socket  # noqa: PLC0415
         users = set(USER_NAMES) | _ssh_config_values("User")
         hosts = {socket.gethostname().lower(), socket.gethostname().lower().split(".")[0]} | _ssh_config_values("Host")
-        _PRIVATE_WORDS = ({u for u in users if len(u) >= 2}, {h for h in hosts if len(h) >= 2 and h != "localhost"})
+        # v0.4.7 (coordinator, 2026-10-18): an ssh alias that is also an ordinary word of our public text (the platform name "mac" in
+        # the release notes' download table) is no host name there; every other alias still counts
+        _PRIVATE_WORDS = ({u for u in users if len(u) >= 2}, {h for h in hosts if len(h) >= 2 and h != "localhost" and h not in ORDINARY_WORDS})
     return _PRIVATE_WORDS
 
 
@@ -959,8 +1163,8 @@ def public_text_problems(name: str, text: str) -> list[str]:
     forms = {text, re.sub(r"\\(.)", r"\1", text)}
     forms |= {unicodedata.normalize("NFKC", f) for f in list(forms)}
     users, hosts = private_words()
-    key = str(KEY_PATH)
-    secrets = {key, str(KEY_PATH.parent), "~/.config/openbfme-release", KEY_PATH.name, str(Path.home())}
+    key = key_path()
+    secrets = {str(Path.home())} | ({str(key), str(key.parent), key.name} if key else set())
     problems: set[str] = set()
     for f in forms:
         if audit_package.MACHINE_PATH.search(f) or re.search(r"(?i)(^|[^A-Za-z0-9])(home|users)[/\\][A-Za-z0-9._-]", f):
@@ -974,20 +1178,521 @@ def public_text_problems(name: str, text: str) -> list[str]:
             # an ordinary word ("Steam Deck controls now work") is not one
             e = re.escape(u)
             if re.search(rf"(?:[/\\\\~]{e}(?![a-z0-9_-]))|(?:(?<![a-z0-9_.+-]){e}@[a-z0-9])", low):
-                problems.add(f"a user name ({u})")
+                problems.add("a user name of this machine or its ssh config (masked)")
         for h in hosts:
             if re.search(rf"(?<![a-z0-9_.-]){re.escape(h)}(?![a-z0-9_-])", low):
-                problems.add(f"a host name ({h})")
+                problems.add("a host name of this machine or its ssh config (masked)")
         for e in EMAIL.findall(f):
             if not NOREPLY.match(e):
                 problems.add("an e-mail address that is not the noreply one")
     return [f"{name}: {p}" for p in sorted(problems)]
 
 
-def audit_tree(git_dir: str | None, tree: str) -> list[str]:
+# ---- PUBLISH-2: the public tree's denylist (after the 2026-10-15 history scrub) --------------------------------------------------------
+# Two rule sets, both checked on every path and every text file of the public tree (and on the public metadata), and both FAIL the sync:
+#   * BUILTIN_RULES, here: generic shapes only (address ranges, private path forms, account-id shapes, operational file names), so this
+#     public file names nothing private;
+#   * the operator's private denylist (autorelease.sh: OPENBFME_RELEASE_DENYLIST, required), kept outside the repository: the host, machine
+#     and account names, the owner's identity, the infrastructure's ids and file names. The same rule format as the CI mirror's
+#     denylist.yml (ci/scripts/denylist-scan.py): `{"rules": [{"id", "kind": regex | word | user, "pattern": str or [str], "allow": [glob]}]}`
+#     (JSON; YAML when PyYAML is installed). Unlike the mirror, a `warn` severity fails here too: a release never publishes a known hit.
+# A rule's `allow` globs name files where a hit is known-safe test data; `paths: true` makes a regex rule a file-name rule only.
+# the audit's own rules and their test fixtures are the only files allowed to spell these shapes
+SELF = ["tools/release/autorelease.py", "tools/release/test_autorelease.py"]
+LAN_TEST_FILES = ["engine/tests/**", "godot/tests/**", "launcher/tests/**"]
+BUILTIN_RULES = [
+    # addresses: private LAN and tailnet ranges and names (synthetic addresses in the game's own LAN tests are allowed)
+    {"id": "lan-192.168", "kind": "regex", "pattern": r"(?<![\d.])192\.168\.\d{1,3}\.\d{1,3}(?![\d.])", "allow": LAN_TEST_FILES},
+    {"id": "lan-10", "kind": "regex", "pattern": r"(?<![\d.])10\.\d{1,3}\.\d{1,3}\.\d{1,3}(?![\d.])", "allow": LAN_TEST_FILES},
+    {"id": "lan-172", "kind": "regex", "pattern": r"(?<![\d.])172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}(?![\d.])", "allow": LAN_TEST_FILES},
+    {"id": "cgnat-tailnet-ip", "kind": "regex", "pattern": r"(?<![\d.])100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}(?![\d.])"},
+    {"id": "tailnet-name", "kind": "regex", "pattern": r"\b[a-z0-9-]+\.ts\.net\b"},
+    # private path forms (the home / Users forms are the commit gate's MACHINE_PATH, checked above)
+    {"id": "private-path", "kind": "regex", "pattern": r"~/\.ssh/|/mnt/[a-z]/Users/"},
+    # account ids and cloud credentials by shape
+    {"id": "aws-account", "kind": "regex", "pattern": r"arn:aws[a-z-]*:|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|aws_secret_access_key|aws_session_token|"
+                                                     r"\baccount\W{0,12}\d{4}-?\d{4}-?\d{4}\b"},
+    {"id": "cloudflare-account", "kind": "regex", "pattern": r"(?:account|zone)[_ -]?id\W{0,6}[0-9a-f]{32}\b"},
+    # e-mail addresses: only the noreply forms and the reserved example domains are public (third-party credits and test fixtures allowed)
+    {"id": "e-mail", "kind": "regex", "allow": ["engine/thirdparty/**", "engine/src/GameClient/VP6Decoder.cpp", "engine/src/GameClient/VP6Tables.inc",
+                                                  "engine/tests/**", "godot/tests/**", "launcher/tests/**"],
+     "pattern": r"[A-Za-z0-9._%+-]+@(?!users\.noreply\.github\.com\b|anthropic\.com\b|example\.(?:com|org|net)\b|[a-z0-9.-]*\.(?:example|invalid|test|localhost)\b)"
+                # r3: a file name after the '@' is no address (the game's library holds "...o@multiplayer.ini")
+                r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?!(?:ini|cfg|txt|json|big|str|dat|map|wnd|apt|w3d|tga|dds|png|gd|tscn|tres)\b)"
+                r"[A-Za-z]{2,}\b"},
+    # operational files by name: deploy notes, the deploy folder (the sync drops it), logs, agent and orchestration files, CI config
+    {"id": "operational-file", "kind": "regex", "paths": True,
+     "pattern": r"(?:^|/)DEPLOY[^/]*\.md$|^services/online/deploy/|\.log$|(?:^|/)\.codex|(?:^|/)\.lane-|(?:^|/)orchestration/|"
+                r"(?:^|/)briefs/|(?:^|/)AGENTS\.md$|^\.gitea/|"
+                r"^(?:services|tools/net)/(?:.*/)?[^/]*(?<![a-z0-9])(?:backup|monitor|watch|infra|ops)(?![a-z0-9])[^/]*$"},
+]
+RULE_KINDS = ("regex", "word", "user")
+RULE_FIELDS = {"id", "kind", "pattern", "severity", "allow", "paths"}
+SEVERITIES = ("fail", "warn")
+
+
+def glob_re(pattern: str) -> re.Pattern:
+    """a path glob (`**` any folders, `*` / `?` within one name), as the CI mirror's denylist-scan.py reads its allow lists"""
+    out, i = "", 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out += "(?:.*/)?"; i += 3
+        elif pattern.startswith("**", i):
+            out += ".*"; i += 2
+        elif pattern[i] == "*":
+            out += "[^/]*"; i += 1
+        elif pattern[i] == "?":
+            out += "[^/]"; i += 1
+        else:
+            out += re.escape(pattern[i]); i += 1
+    return re.compile(out + r"\Z")
+
+
+def compile_rules(rules, source: str) -> list[tuple[str, re.Pattern, list[re.Pattern], bool]]:
+    """[(id, pattern, allow globs, paths only)]. A strict schema (Sol r1 P2: `"paths": "false"` made a rule path-only): only the fields of
+    RULE_FIELDS, each of its type (`paths` a JSON boolean, regex rules only; `severity` fail or warn); anything else, or an empty rule
+    list, is an error. Errors name the rule's position and the field, never a pattern (the patterns are private)."""
+    if not isinstance(rules, list) or not rules:
+        raise SystemExit(f"autorelease: the denylist {source} has no rules (refusing to audit with an empty list)")
+    out = []
+    for n, r in enumerate(rules, 1):
+        bad = lambda what: SystemExit(f"autorelease: the denylist {source}, rule {n}: {what}")  # noqa: E731
+        if not isinstance(r, dict):
+            raise bad("is not an object")
+        extra = sorted(set(r) - RULE_FIELDS)
+        if extra:
+            # PUBLISH-2 r3 (review F3): only how many: a YAML slip can turn a private value into a key
+            raise bad(f"{len(extra)} unknown field(s) (the fields are {', '.join(sorted(RULE_FIELDS))})")
+        if not isinstance(r.get("id"), str) or not r["id"].strip():
+            raise bad("needs an id")
+        kind = r.get("kind")
+        if kind not in RULE_KINDS:
+            raise bad(f"needs a kind ({', '.join(RULE_KINDS)})")
+        pat = r.get("pattern")
+        words = pat if isinstance(pat, list) else [pat]
+        if not words or not all(isinstance(w, str) and w for w in words) or (kind == "regex" and isinstance(pat, list)):
+            raise bad("an empty or malformed pattern")
+        if "severity" in r and r["severity"] not in SEVERITIES:
+            raise bad("severity is fail or warn")
+        allow = r.get("allow", [])
+        if not isinstance(allow, list) or not all(isinstance(g, str) and g for g in allow):
+            raise bad("allow is a list of path globs")
+        paths = r.get("paths", False)
+        if not isinstance(paths, bool):
+            raise bad("paths is true or false (a JSON boolean)")
+        if paths and kind != "regex":
+            raise bad("paths applies to regex rules only")
+        alt = "|".join(re.escape(w) for w in words)
+        try:
+            if kind == "regex":
+                rx = re.compile(pat, re.I)
+            elif kind == "word":
+                rx = re.compile(rf"(?<![A-Za-z0-9_.-])(?:{alt})(?![A-Za-z0-9_-])", re.I)
+            else:  # an account name: a path component (/name, \name, ~name) or name@host, never an ordinary word
+                rx = re.compile(rf"(?:[/\\~](?:{alt})(?![A-Za-z0-9_-]))|(?:(?<![A-Za-z0-9_.+-])(?:{alt})@[A-Za-z0-9])", re.I)
+        except re.error:
+            raise bad("its pattern is not a valid regular expression") from None
+        out.append((r["id"], rx, [glob_re(g) for g in allow], paths))
+    return out
+
+
+BUILTIN = compile_rules([{**r, "allow": sorted(set(r.get("allow", [])) | set(SELF))} for r in BUILTIN_RULES], "built in")
+
+
+class _Duplicate(Exception):
+    pass
+
+
+def load_denylist(path: Path) -> list[tuple[str, re.Pattern, list[re.Pattern], bool]]:
+    """the operator's private denylist (see BUILTIN_RULES): a missing, unreadable, empty or malformed file is an error, never 'no rules'.
+    Its own errors never quote it (Sol r1 P1: a YAML parser exception printed a private pattern)."""
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        raise SystemExit(f"autorelease: cannot read the private denylist ({e.strerror})") from None
+    try:
+        text = strict_text(raw)
+    except ValueError as e:
+        raise SystemExit(f"autorelease: the private denylist {e}") from None
+    top = {"rules"}
+    # PUBLISH-2 r3 (Sol r2 P2): a key given twice is an error in both forms (both parsers keep the last one: a second `pattern` replaced
+    # the first, a second `rules` list dropped the whole first one)
+    if path.suffix.lower() in (".yml", ".yaml"):
+        try:
+            import yaml  # noqa: PLC0415
+        except ImportError:
+            raise SystemExit("autorelease: the private denylist is YAML but PyYAML is not installed (use the JSON form)") from None
+
+        class Strict(yaml.SafeLoader):
+            pass
+
+        def mapping(loader, node, deep=False):
+            keys = [loader.construct_object(k, deep=deep) for k, _ in node.value]
+            if len(keys) != len({repr(k) for k in keys}):
+                raise _Duplicate(node.start_mark.line + 1)
+            return yaml.SafeLoader.construct_mapping(loader, node, deep)
+        Strict.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+        try:
+            data = yaml.load(text, Loader=Strict)  # noqa: S506 (a SafeLoader subclass)
+        except _Duplicate as e:
+            raise SystemExit(f"autorelease: the private denylist gives a key twice (line {e.args[0]})") from None
+        except Exception as e:  # noqa: BLE001  (every parser error: only its position is printed)
+            mark = getattr(e, "problem_mark", None)
+            raise SystemExit(f"autorelease: the private denylist is not valid YAML (line {mark.line + 1 if mark else '?'})") from None
+    else:
+        def pairs(items):
+            keys = [k for k, _ in items]
+            if len(keys) != len(set(keys)):
+                raise _Duplicate("?")
+            return dict(items)
+        try:
+            data = json.loads(text, object_pairs_hook=pairs)
+        except _Duplicate:
+            raise SystemExit("autorelease: the private denylist gives a key twice in one object") from None
+        except json.JSONDecodeError as e:
+            raise SystemExit(f"autorelease: the private denylist is not JSON (line {e.lineno})") from None
+    if not isinstance(data, dict) or any(k not in top and not str(k).startswith("_") for k in data):
+        raise SystemExit("autorelease: the private denylist is an object with a rules list (and _comment fields) only")
+    return compile_rules(data.get("rules"), "(private)")
+
+
+def _mask(s: str) -> str:
+    """a rejected value as printed: nothing of it but its length (Sol r1 P1: two-character matches were printed whole)"""
+    return f"<{len(s)} chars>"
+
+
+def strict_text(data: bytes) -> str:
+    """UTF-8 text without NUL bytes (an optional UTF-8 BOM dropped), or ValueError: never a replacement decoding (Sol r1 P2: UTF-16 text
+    with a denylisted value passed the metadata audit as replacement characters)"""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        raise ValueError("is UTF-16 (only UTF-8 text is accepted)")
+    if b"\x00" in data:
+        raise ValueError("holds NUL bytes (only UTF-8 text is accepted)")
+    try:
+        return data.decode("utf-8").removeprefix("﻿")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"is not UTF-8 (byte {e.start})") from None
+
+
+DENEUTRAL = str.maketrans({"＠": "@", "＃": "#", "‑": "-", "∗": "*", "∼": "~", "(": "[", ")": "]"})
+
+
+def text_forms(text: str, unescape: bool = True) -> list[str]:
+    """the forms a text is checked in: as written, without Markdown backslash escapes (metadata only: in a source file they are string
+    escapes, and test fixtures spell paths that way), NFKC-normalised, and with neutral() / markdown()'s look-alikes turned back
+    (Sol r1 P1: '@' written as a full-width sign hid an account@host from the private rules)"""
+    import unicodedata  # noqa: PLC0415
+    forms = [text] + ([re.sub(r"\\(.)", r"\1", text)] if unescape else [])
+    forms += [unicodedata.normalize("NFKC", f) for f in list(forms)]
+    forms += [f.translate(DENEUTRAL) for f in list(forms)]
+    return list(dict.fromkeys(forms))
+
+
+def _normal(text: str) -> str:
+    """the look-alikes turned back, NFKC-normalised, the look-alikes turned back again (U+2011 normalises to U+2010, not to '-')"""
+    import unicodedata  # noqa: PLC0415
+
+    def back(t: str) -> str:   # str.translate, but as fast on 20 MB of decoded binary as on a line
+        for k, v in DENEUTRAL.items():
+            t = t.replace(chr(k), v)
+        return t
+    return back(unicodedata.normalize("NFKC", back(text)))
+
+
+def binary_texts(data: bytes) -> Iterator[tuple[str, str]]:
+    """[(encoding, text)]: what the private rules see of binary data (a pinned binary, a decoded container member, a library). PUBLISH-2 r3
+    (Sol r2 P2: only ASCII and UTF-16LE runs of 4+ were read, so a 3-character literal, UTF-16BE, UTF-32 and non-ASCII UTF-8 strings
+    passed): the whole data in Latin-1 (every ASCII byte as itself: a literal of any length, between any bytes), UTF-8 and UTF-16 / UTF-32
+    in both byte orders at every alignment. r4 (Sol r3 P2: a full-width host name passed in UTF-16 and UTF-32): every decoding that is not
+    ASCII is also read _normal()ised, as text is (text_forms). Undecodable code units become U+FFFD, which no rule matches and which ends
+    a word. One form at a time (a generator: 28 decodings of a 20 MB library held at once took gigabytes)."""
+    def decodings():
+        yield "latin-1", data.decode("latin-1")
+        yield "utf-8", data.decode("utf-8", "replace")
+        for enc, step in (("utf-16-le", 2), ("utf-16-be", 2), ("utf-32-le", 4), ("utf-32-be", 4)):
+            for off in range(step):
+                yield f"{enc} +{off}", data[off:len(data) - (len(data) - off) % step].decode(enc, "replace")
+    for enc, text in decodings():
+        yield enc, text
+        if not text.isascii():
+            norm = _normal(text)
+            if norm != text:
+                yield f"{enc} NFKC", norm
+
+
+TEXT_SUFFIXES = (".txt", ".md", ".json", ".gd", ".cfg", ".ini", ".tscn", ".tres", ".import", ".remap", ".gdshader", ".gdshaderinc",
+                 ".gdextension", ".csv", ".xml", ".yml", ".yaml", ".html", ".sh", ".py", ".toml", ".pub")
+# the file and member names a rule matched (their printed forms are masked wherever they appear: sanitize)
+PRIVATE_NAMES: set[str] = set()
+
+
+def name_forms(path: str) -> list[str]:
+    """a file or member name as the rules check it (PUBLISH-2 r3, review F4 and Sol r2 P2): every text_forms() form, and for a container
+    member (`archive:member`, `x.tar.gz[gzip]`) also each member part on its own, so an anchored rule (`^docs/...`) sees it from its start"""
+    parts = {path}
+    for piece in re.split(r":|\[[^\]]*\]", path):
+        if piece:
+            parts.add(piece.lstrip("/"))
+    return list(dict.fromkeys(f for p in sorted(parts) for f in text_forms(p, unescape=False)))
+
+
+def denylist_hits(path: str, text: str | None, rules, check_path: bool = True, metadata: bool = False, data: bytes | None = None) -> list[str]:
+    """the hits of one file (its name, and its text, or with data= its binary_texts(), unless None) as problem lines. Nothing of a matched
+    value is printed (_mask), and a file name that a rule matches is printed masked too (and recorded in PRIVATE_NAMES)."""
+    names = name_forms(path) if check_path else []
+    named = [rid for rid, rx, allow, _ in rules if not any(g.match(path) for g in allow) and any(rx.search(n) for n in names)]
+    if named:
+        PRIVATE_NAMES.add(path)
+    shown = sanitize(path, rules)
+    if text is not None:
+        for own in OWN_LINES:   # our own attribution lines (their URL path reads like a user path to an account rule)
+            text = text.replace(own, "")
+    texts = None if text is None else [(None, f) for f in text_forms(text, unescape=metadata)]
+    if data is not None:
+        texts = binary_texts(data)
+    live = [r for r in rules if not any(g.match(path) for g in r[2])]
+    found: dict[str, list[str]] = {r[0]: [] for r in live}
+    for rid, rx, _, _ in live:
+        if rid in named:
+            m = next(m for m in (rx.search(n) for n in names) if m)
+            found[rid].append(f"denylisted ({rid}) in a file name: {shown} ({_mask(m.group(0))})")
+    seen: set[tuple[str, str]] = set()
+    values: dict[tuple[str, str], set[str]] = {}   # (rule, encoding): the values found in it
+    for enc, form in texts or ():   # form by form (binary_texts is a generator), every rule on each
+        for rid, rx, _, paths_only in live:
+            if paths_only:
+                continue
+            for m in rx.finditer(form):
+                if enc == "utf-8" and m.group(0).isascii():
+                    continue   # the Latin-1 form has it (the same bytes)
+                if enc and enc.endswith(" NFKC") and m.group(0) in values.get((rid, enc[:-5]), ()):
+                    continue   # the encoding's own form has it as written
+                if enc:
+                    values.setdefault((rid, enc), set()).add(m.group(0))
+                where = f"{shown}:{form.count(chr(10), 0, m.start()) + 1}" if enc is None else f"{shown} ({enc} bytes at {m.start()})"
+                key = (rid, where if enc is None else enc)
+                if key not in seen:
+                    seen.add(key)
+                    found[rid].append(f"denylisted ({rid}) in {where} ({_mask(m.group(0))})")
+    return [h for rid in dict.fromkeys(r[0] for r in live) for h in found[rid]]
+
+
+def _mapped_forms(seg: str) -> list[tuple[str, list[int]]]:
+    """(form, index of each of its characters in seg): seg as written, without backslash escapes, and both with each character
+    NFKC-normalised and the look-alikes turned back (character by character, so a match maps back to the characters it came from)"""
+    import unicodedata  # noqa: PLC0415
+    plain, plain_idx, i = [], [], 0
+    while i < len(seg):
+        if seg[i] == "\\" and i + 1 < len(seg):
+            i += 1
+        plain.append(seg[i]); plain_idx.append(i); i += 1
+    out = [(seg, list(range(len(seg)))), ("".join(plain), plain_idx)]
+    for form, idx in list(out):
+        chars, cidx = [], []
+        for c, j in zip(form, idx):
+            n = unicodedata.normalize("NFKC", c).translate(DENEUTRAL)
+            chars.append(n); cidx += [j] * len(n)
+        out.append(("".join(chars), cidx))
+    return out
+
+
+TOKEN = re.compile(r"[^\s:\"'(),\[\]<>]+")
+ANCHORS = re.compile(r"\^|\$|\\A|\\Z|\\z")
+
+
+def _spans(line: str, rxs) -> list[tuple[int, int]]:
+    """(start, end) of every match in the line of any of rxs, in every _mapped_forms() form: in the whole line, in each word (TOKEN) on its
+    own, and (PUBLISH-2 r4, Sol r3 P2: `^docs/private folder/` never matched a path with a space inside a message, a word holds only a
+    part of it) for a rule with an anchor in any piece of the line that starts where a word starts and ends where a word ends: from each
+    word start to the end of the line (`^`), from the start to each word end (`$`) and between the two (both)."""
+    import bisect  # noqa: PLC0415
+    spans = []
+    for start, seg in [(0, line)] + [(m.start(), m.group(0)) for m in TOKEN.finditer(line)]:
+        for form, idx in _mapped_forms(seg):
+            for rx in rxs:
+                for m in rx.finditer(form):
+                    if m.end() > m.start():
+                        spans.append((start + idx[m.start()], start + idx[m.end() - 1] + 1))
+    anchored = [rx for rx in rxs if ANCHORS.search(rx.pattern)]
+    if not anchored:
+        return spans
+    words = list(TOKEN.finditer(line))
+    starts = sorted({0} | {m.start() for m in words})
+    ends = sorted({len(line)} | {m.end() for m in words})
+    for form, idx in _mapped_forms(line):
+        at = lambda i: bisect.bisect_left(idx, i)  # noqa: E731  (a line position -> the form's)
+        def add(m, off: int) -> None:
+            if m and m.end() > m.start():
+                spans.append((idx[off + m.start()], idx[off + m.end() - 1] + 1))
+        for rx in anchored:
+            for i in starts:
+                fi = at(i)
+                tail = form[fi:]
+                for mm in rx.finditer(tail):
+                    add(mm, fi)
+                for j in ends:
+                    if j > i:
+                        add(rx.match(tail, 0, at(j) - fi), fi)
+            for j in ends:
+                for mm in rx.finditer(form, 0, at(j)):
+                    add(mm, 0)
+    return spans
+
+
+def sanitize(line: str, rules, words: bool = True) -> str:
+    """a diagnostic line with every match of any rule (its paths-only rules too) and (words) of this machine's user and host names masked:
+    what a problem line, a warning, an error or the redactor may print. PUBLISH-2 r3: matched in every form of the line (review F2: a
+    full-width '@' hid an account@host), in each of its words on its own (Sol r2 P2: an anchored path rule never matched a path inside a
+    message) and the file names a rule matched (PRIVATE_NAMES) wherever they appear; r4: an anchored rule in every piece between word
+    boundaries (_spans). Fail closed: a line that any form of still matches after the masking is withheld whole."""
+    rxs = [rx for _, rx, _, _ in rules]
+    if words:
+        users, hosts = private_words()
+        rxs += [re.compile(rf"(?<![A-Za-z0-9_.-]){re.escape(w)}(?![A-Za-z0-9_-])", re.I) for w in sorted(users | hosts, key=len, reverse=True)]
+    for n in sorted(PRIVATE_NAMES, key=len, reverse=True):
+        line = line.replace(n, _mask(n))
+    out, cur = "", 0
+    for a, b in sorted(_spans(line, rxs)):
+        if b <= cur:
+            continue
+        a = max(a, cur)
+        out += line[cur:a] + _mask(line[a:b])
+        cur = b
+    out += line[cur:]
+    if _spans(out, rxs) or any(rx.search(f) for seg in [out] + TOKEN.findall(out) for f in text_forms(seg) for rx in rxs):
+        return f"<a line of {len(line)} chars withheld: a private rule matches it>"
+    return out
+
+
+SYNC_EXCLUDE = "tools/release/sync_exclude.txt"
+ARCHIVE_LINE = "previous codebase is kept in `archive/` as reference only.\n"
+PUBLIC_ARCHIVE_LINE = "previous codebase lives on in this repository's history (tag `legacy-final`).\n"
+
+
+def sync_excludes(git_dir: str | None, sha: str) -> list[str]:
+    """the repository-relative paths the public tree leaves out, from the sha's own SYNC_EXCLUDE (in step with the CI mirror's
+    mirror-exclude.txt): one path per line (a folder drops everything under it), # comments; the file is required"""
+    r = subprocess.run(["git"] + (["-C", git_dir] if git_dir else []) + ["cat-file", "blob", f"{sha}:{SYNC_EXCLUDE}"],
+                       capture_output=True)
+    if r.returncode:
+        raise SystemExit(f"autorelease: {sha} has no {SYNC_EXCLUDE} (the sync recipe's exclusions): refusing to build its public tree")
+    out = []
+    for n, line in enumerate(r.stdout.decode("utf-8").splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("/") or line.endswith("/") or any(c in ("", ".", "..") for c in line.split("/")) or "\\" in line:
+            raise SystemExit(f"autorelease: {SYNC_EXCLUDE}:{n} is not a repository-relative path: {line}")
+        out.append(line)
+    return out
+
+
+def _tree_without(git_dir: str | None, tree: str, parts: list[str]) -> str:
+    g = ["git"] + (["-C", git_dir] if git_dir else [])
+    entries = [e for e in subprocess.run(g + ["ls-tree", "-z", tree], capture_output=True, check=True).stdout.decode().split("\0") if e]
+    out = []
+    for e in entries:
+        meta, name = e.split("\t", 1)
+        if name == parts[0]:
+            if len(parts) == 1:
+                continue
+            mode, kind, oid = meta.split()
+            if kind == "tree":
+                oid = _tree_without(git_dir, oid, parts[1:])
+                if not subprocess.run(g + ["ls-tree", oid], capture_output=True, check=True).stdout:
+                    continue  # nothing left in that folder
+                meta = f"{mode} {kind} {oid}"
+        out.append(f"{meta}\t{name}")
+    return subprocess.run(g + ["mktree", "-z"], input="".join(f"{e}\0" for e in out).encode(), capture_output=True,
+                          check=True).stdout.decode().strip()
+
+
+def sync_tree(git_dir: str | None, sha: str) -> str:
+    """the public tree of an archive sha (the sync recipe): its tree without archive/ and every SYNC_EXCLUDE path, README.md's archive
+    line replaced by the public one (exactly once, or an error)"""
+    g = ["git"] + (["-C", git_dir] if git_dir else [])
+    readme = subprocess.run(g + ["cat-file", "blob", f"{sha}:README.md"], capture_output=True, check=True).stdout.decode("utf-8")
+    if readme.count(ARCHIVE_LINE) != 1:
+        raise SystemExit("autorelease: README.md of the archive sha does not have the archive line exactly once (the sync recipe replaces it)")
+    blob = subprocess.run(g + ["hash-object", "-w", "--stdin"], input=readme.replace(ARCHIVE_LINE, PUBLIC_ARCHIVE_LINE).encode(),
+                          capture_output=True, check=True).stdout.decode().strip()
+    tree = git(git_dir, "rev-parse", f"{sha}^{{tree}}").strip()
+    for p in ["archive", "README.md"] + sync_excludes(git_dir, sha):
+        tree = _tree_without(git_dir, tree, p.split("/"))
+    entries = [e for e in subprocess.run(g + ["ls-tree", "-z", tree], capture_output=True, check=True).stdout.decode().split("\0") if e]
+    entries.append(f"100644 blob {blob}\tREADME.md")
+    return subprocess.run(g + ["mktree", "-z"], input="".join(f"{e}\0" for e in entries).encode(), capture_output=True,
+                          check=True).stdout.decode().strip()
+
+
+SUBMODULES = HERE / "public_submodules.txt"
+SYMLINKS_ALLOWED: frozenset[str] = frozenset()   # PUBLISH-2 r2: the public tree has no symbolic link; one would be named here, reviewed
+
+
+def load_submodules(path: Path | None = None) -> dict[str, tuple[str, str]]:
+    """{path: (commit, url)} of the submodules the public tree may carry: lines `<40 hex commit>  <path>  <url>`, # comments; a malformed
+    line or a path listed twice is an error (fail closed)"""
+    out: dict[str, tuple[str, str]] = {}
+    path = path or SUBMODULES
+    if not path.exists():
+        raise SystemExit(f"autorelease: the submodule allowlist {path.name} is missing")
+    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        m = re.fullmatch(r"([0-9a-f]{40})  (\S+)  (https://\S+)", line)
+        if not m or m.group(2) in out:
+            raise SystemExit(f"autorelease: {path.name}:{n} is not `<commit>  <path>  <https url>` (or lists a path twice)")
+        out[m.group(2)] = (m.group(1), m.group(3))
+    return out
+
+
+def link_problems(git_dir: str | None, entries) -> list[str]:
+    """PUBLISH-2 r2 (Sol r1 P2): no symbolic link (a checkout or an archive tool may follow it out of the tree), and only the approved
+    submodules: each gitlink's (path, commit) and its .gitmodules url must be a line of public_submodules.txt, and .gitmodules names
+    no other submodule"""
+    probs = []
+    approved = load_submodules()
+    for mode, kind, oid, path in entries:
+        if mode == "120000" and path not in SYMLINKS_ALLOWED:
+            probs.append(f"a symbolic link in the public tree: {path}")
+        if kind == "commit":
+            want = approved.get(path)
+            if want is None:
+                probs.append(f"a submodule that is not in {SUBMODULES.name}: {path}")
+            elif want[0] != oid:
+                probs.append(f"the submodule {path} is at another commit than {SUBMODULES.name} approves")
+    gm = [oid for mode, kind, oid, path in entries if path == ".gitmodules" and kind == "blob"]
+    declared: dict[str, dict] = {}
+    if gm:
+        raw = subprocess.run(["git"] + (["-C", git_dir] if git_dir else []) + ["cat-file", "blob", gm[0]], capture_output=True,
+                             check=True).stdout
+        with tempfile.NamedTemporaryFile() as f:
+            f.write(raw)
+            f.flush()
+            r = subprocess.run(["git", "config", "--file", f.name, "--null", "--list"], capture_output=True)
+        if r.returncode:
+            probs.append(".gitmodules cannot be read")
+        for item in r.stdout.decode("utf-8", "replace").split("\0"):
+            k, _, v = item.partition("\n")
+            m = re.fullmatch(r"submodule\.(.+)\.(path|url)", k)
+            if m:
+                declared.setdefault(m.group(1), {})[m.group(2)] = v
+    for name, d in declared.items():
+        want = approved.get(d.get("path", ""))
+        if want is None or d.get("url") != want[1]:
+            probs.append(f".gitmodules declares a submodule that {SUBMODULES.name} does not approve (path and url): {d.get('path', name)}")
+    for mode, kind, oid, path in entries:
+        if kind == "commit" and path not in {d.get("path") for d in declared.values()}:
+            probs.append(f"a submodule without its .gitmodules entry: {path}")
+    return probs
+
+
+def audit_tree(git_dir: str | None, tree: str, denylist=None) -> list[str]:
     """the problems of a tree about to be pushed to the public repository (empty: it may go). Run before the first push (Sol r1: a tracked
-    workspace/ file or a retail file outside archive/ went to the public branch)."""
+    workspace/ file or a retail file outside archive/ went to the public branch). PUBLISH-2: every path and text file also passes
+    BUILTIN_RULES and the operator's private denylist (compiled rules, load_denylist())."""
     problems = []
+    rules = BUILTIN + list(denylist or [])
     allowed = load_allowlist()
     for line in git(git_dir, "ls-tree", "-z", tree).split("\0"):
         if line and line.split("\t", 1)[1] not in PUBLIC_TOP:
@@ -1032,6 +1737,8 @@ def audit_tree(git_dir: str | None, tree: str) -> list[str]:
         problem = check_file(path, verb="in the public tree") or check_file(path, data, verb="in the public tree")
         if problem:
             problems.append(problem)
+        # PUBLISH-2 r2 (Sol r1 P2): a binary file's readable strings pass the rules too, pinned or not (a pinned hash never exempts a file)
+        problems += denylist_hits(path, None, rules) + content_hits(path, data, rules)
         if problem:
             continue
         binary = not _is_text(data)
@@ -1054,7 +1761,7 @@ def audit_tree(git_dir: str | None, tree: str) -> list[str]:
                 problems.append(f"{path} is listed in {ALLOWLIST.name} with another sha256")
                 continue
             problems += container_metadata_problems(path, data)
-        inner = SyncAudit()
+        inner = SyncAudit(rules)
         inner.blob(path, data)
         problems += [f"inside a container: {p}" for p in inner.problems]
     for _, _, _, path in entries:
@@ -1066,7 +1773,105 @@ def audit_tree(git_dir: str | None, tree: str) -> list[str]:
             problem = check_file(path, verb="in the public tree")
             if problem:
                 problems.append(problem)
+            problems += denylist_hits(path, None, rules)
+    problems += link_problems(git_dir, entries)
+    # PUBLISH-2 r3 (review hardening): GitHub's source archives expand `$Format:...$` in files an export-subst attribute names, so what they
+    # publish would not be the audited blob: the attribute is refused (the public tree uses none)
+    for mode, kind, oid, path in entries:
+        if kind == "blob" and path.split("/")[-1] == ".gitattributes":
+            text = subprocess.run(["git"] + (["-C", git_dir] if git_dir else []) + ["cat-file", "blob", oid], capture_output=True,
+                                  check=True).stdout.decode("utf-8", "replace")
+            if re.search(r"(?i)(?<![\w-])export-subst\b", text):
+                problems.append(f"an export-subst attribute (GitHub's source archives would not hold the audited bytes): {path}")
     return problems
+
+
+def note_sources(commits: list[dict], known_issues: list) -> list[str]:
+    """the original texts the notes are made from (PUBLISH-2 r2, Sol r1 P1: neutral() hides an account@host behind a full-width sign): the
+    Release-note lines, or the subject, of every commit that gives a note, and the known issues"""
+    out = []
+    for c in commits:
+        if notes_of(c["subject"], c.get("body", ""), c.get("files", [])):
+            out += release_note_texts(c.get("body", "")) or [c["subject"]]
+    return out + [i["text"] for i in known_issues]
+
+
+def asset_problems(assets: list[Path], rules, templates: dict[str, tuple[Path, str]]) -> list[str]:
+    """PUBLISH-2 r3 (review F1, Sol r2): the files a release uploads (the archives, the checksum file, the manifest and its signature) pass
+    the built-in and the private rules: each file and every member at every depth, by name and content (content_hits; the Godot
+    executables in the export region of the template pinned for them)"""
+    problems = []
+    for f in assets:
+        try:
+            data = f.read_bytes()
+        except OSError as e:
+            problems.append(f"a release asset cannot be read ({e.strerror}): {f.name}")
+            continue
+        a = SyncAudit(rules, top=True, templates=templates)
+        a.blob(f.name, data)
+        problems += [f"in a release asset: {p}" for p in a.problems]   # the package audit's own findings too (fail closed)
+    return problems
+
+
+def privacy_gate(git_dir: str | None, tree: str | None, files: list[Path], rules, assets: list[Path] = (),
+                 templates: dict[str, tuple[Path, str]] | None = None) -> int:
+    """the one privacy gate of every publishing path: the tree (audit_tree), the text files (strict UTF-8, public_text_problems and
+    every rule on every form of the text) and the release assets (asset_problems); every line printed is sanitized. 0: it may go."""
+    problems = []
+    for f in files:
+        try:
+            text = strict_text(f.read_bytes())
+        except ValueError as e:
+            problems.append(f"{f.name} {e}")
+            continue
+        except OSError as e:
+            problems.append(f"{f.name} cannot be read ({e.strerror})")
+            continue
+        problems += public_text_problems(f.name, text) + denylist_hits(f.name, text, BUILTIN + list(rules), check_path=False, metadata=True)
+    if tree:
+        problems += audit_tree(git_dir, tree, rules)
+    every = BUILTIN + list(rules)
+    if assets:
+        problems += asset_problems(list(assets), every, templates or {})
+    label = "SYNC" if tree else "METADATA"
+    for p in problems:
+        print(f"{label} AUDIT: {sanitize(p, every)}")
+    what = f"{len(files)} text files" + (f", {len(assets)} release assets" if assets else "")
+    print(f"{label} AUDIT {'FAILED' if problems else 'ok'}: {tree or ''} {what}".replace(":  ", ": "))
+    return 1 if problems else 0
+
+
+def redact(denylist: Path, check: bool = False) -> int:
+    """the release scripts' output redactor (autorelease.sh, publish_release.sh: every line they and their helpers print or log): the
+    release key's path and folder and the home folder (as given and resolved, also Markdown-escaped and URL-encoded) become <release key>,
+    <release key folder> and ~; then sanitize() masks every rule's match (words=False: this machine's own names stay readable in its
+    logs). PUBLISH-2 r3 (review F5): fail closed: a list that cannot be loaded prints one line saying so and nothing of the input."""
+    try:
+        rules = BUILTIN + load_denylist(denylist)
+    except SystemExit as e:
+        print(f"REDACTOR FAILED: {e} (output withheld)", flush=True)
+        return 3
+    if check:
+        return 0
+    import urllib.parse  # noqa: PLC0415
+    pairs = []
+    for var, disp in (("AR_KEY", "<release key>"), ("AR_KEYREAL", "<release key>"), ("AR_KEYDIR", "<release key folder>"),
+                      ("AR_KEYDIRREAL", "<release key folder>"), ("AR_HOME", "~"), ("AR_HOMEREAL", "~")):
+        v = os.environ.get(var, "").rstrip("/")
+        if len(v) > 1:
+            for form in {v, re.sub(r"([\\`*_{}\[\]()!|~+\-.:#])", r"\\\1", v), urllib.parse.quote(v), urllib.parse.quote(v, safe="")}:
+                pairs.append((form, disp))
+    pairs.sort(key=lambda p: -len(p[0]))   # the longest first: the key before its folder before the home folder
+    out = sys.stdout
+    for raw in iter(sys.stdin.buffer.readline, b""):
+        line = raw.decode("utf-8", "replace")
+        end = "\n" if line.endswith("\n") else ""
+        line = line[:len(line) - len(end)]
+        for v, disp in pairs:
+            line = line.replace(v, disp)
+        out.write(sanitize(line, rules, words=False) + end)
+        out.flush()
+    return 0
 
 
 def load_known_issues(path: Path) -> list[dict]:
@@ -1096,7 +1901,8 @@ def main(argv: list[str]) -> int:
     iv.add_argument("last", nargs="?", default="")
     ap_ = sub.add_parser("auto-publish", help="exit 0 when a plain release may be published without the typed tag (v0.4.5 to below v1.0.0)")
     ap_.add_argument("version")
-    lg = sub.add_parser("legacy-needed", help="exit 0 and name them when a published launcher reads format 2 only (a release must carry the launcher archives)")
+    lg = sub.add_parser("legacy-needed", help="exit 0 and name them when a published launcher reads format 2 only (a release must carry the launcher archives), "
+                                                     "10 when none does")
     lg.add_argument("--remote", default="origin")
     tt = sub.add_parser("title")
     tt.add_argument("version")
@@ -1116,30 +1922,73 @@ def main(argv: list[str]) -> int:
     n.add_argument("--repo", default=DEFAULT_REPO, help="OWNER/NAME of the release page (the download table's links)")
     n.add_argument("--titles", default=DEFAULT_TITLES, choices=sorted(TITLES), help="bridge: the old launchers' section titles for added / fixed")
     n.add_argument("--no-legacy-launchers", action="store_true", help="the release has no launcher-only archives (format 3)")
+    n.add_argument("--mac", action="store_true", help="MACREL-1: the release has the macOS Apple Silicon package (its download row)")
+    n.add_argument("--mac-manifest", action="store_true", help="MACREL-1: the release has manifest-macos.json (with or without the package)")
     n.add_argument("--out", type=Path, required=True)
     n.add_argument("--title-out", type=Path)
     n.add_argument("--items-out", type=Path, help="the items as Markdown (PR body)")
     n.add_argument("--plain-items-out", type=Path, help="the items as neutral plain text (the sync commit's message)")
+    n.add_argument("--sources-out", type=Path, help="the original texts the items come from, unneutralised (audited too: PUBLISH-2 r2)")
     w = sub.add_parser("warnings", help="NOTES WARNING lines for the Release-note lines of A..B (never an error)")
     w.add_argument("--from", dest="a", required=True)
     w.add_argument("--to", dest="b", required=True)
+    w.add_argument("--denylist", type=Path, help="mask what the private rules match in the warnings (autorelease.sh passes it)")
+    # PUBLISH-2 r2 (Sol r1): one privacy gate for every publishing path (the release sync, the metadata, the notes, the tag's tree,
+    # publish_release.sh): privacy-gate; audit-tree / audit-text are its two halves. The private denylist is required; --builtin-only
+    # (the built-in rules alone) is for checks that publish nothing, such as the CI mirror's dry run, and says so.
     t = sub.add_parser("audit-tree")
     t.add_argument("--tree", required=True)
     x = sub.add_parser("audit-text", help="the public metadata files: exit 1 on any privacy hit (no redaction)")
     x.add_argument("files", nargs="+", type=Path)
+    g = sub.add_parser("privacy-gate", help="the tree of --tree / --commit, the --text files and the --assets: the release's one privacy gate")
+    g.add_argument("--tree")
+    g.add_argument("--commit")
+    g.add_argument("--no-tree", action="store_true", help="tests' untagged dry runs: no tree (the commit is not in this repository)")
+    g.add_argument("--text", nargs="*", type=Path, default=[])
+    g.add_argument("--assets", nargs="+", type=Path, default=[], help="the files the release uploads (at least one when given)")
+    g.add_argument("--templates", type=Path, default=Path(os.environ.get("OPENBFME_GODOT_TEMPLATES") or
+                                                          Path.home() / ".local/share/godot/export_templates/4.7.2.stable"),
+                   help="the Godot export templates godot_templates.txt pins (default: Godot 4.7.2's)")
+    rd = sub.add_parser("redact", help="stdin to stdout, every line masked: the release scripts' one output redactor")
+    rd.add_argument("--denylist", type=Path, required=True)
+    rd.add_argument("--check", action="store_true", help="only load the list: exit 0 when the redactor can run")
+    for q in (t, x, g):
+        q.add_argument("--denylist", type=Path, help="the operator's private denylist (required for every publishing check)")
+    for q in (t, x):
+        q.add_argument("--builtin-only", action="store_true", help="the built-in rules alone: NOT a publishing check")
+    st = sub.add_parser("sync-tree", help="write the public tree of an archive sha (the sync recipe) and print its id")
+    st.add_argument("--sha", required=True)
     a = ap.parse_args(argv)
-    if a.cmd == "audit-text":
-        problems = [p for f in a.files for p in public_text_problems(f.name, f.read_text(encoding="utf-8", errors="replace"))]
-        for p in problems:
-            print(f"METADATA AUDIT: {p}")
-        print(f"METADATA AUDIT {'FAILED' if problems else 'ok'}: {len(a.files)} files")
-        return 1 if problems else 0
-    if a.cmd == "audit-tree":
-        problems = audit_tree(a.git_dir, a.tree)
-        for p in problems:
-            print(f"SYNC AUDIT: {p}")
-        print(f"SYNC AUDIT {'FAILED' if problems else 'ok'}: {a.tree}")
-        return 1 if problems else 0
+    if a.cmd == "sync-tree":
+        print(sync_tree(a.git_dir, git(a.git_dir, "rev-parse", "--verify", f"{a.sha}^{{commit}}").strip()))
+        return 0
+    if a.cmd == "redact":
+        return redact(a.denylist, a.check)
+    if a.cmd in ("audit-text", "audit-tree", "privacy-gate"):
+        if a.denylist:
+            rules = load_denylist(a.denylist)
+        elif getattr(a, "builtin_only", False):
+            rules = []
+            print("AUDIT NOTE: the built-in rules only (--builtin-only): NOT a publishing check")
+        else:
+            print("AUDIT FAILED: no private denylist (--denylist): every publishing check needs it", file=sys.stderr)
+            return 2
+        if a.cmd == "audit-tree":
+            return privacy_gate(a.git_dir, a.tree, [], rules)
+        if a.cmd == "audit-text":
+            return privacy_gate(a.git_dir, None, a.files, rules)
+        if (bool(a.tree) + bool(a.commit) + a.no_tree) != 1:
+            print("AUDIT FAILED: privacy-gate needs one of --tree, --commit and --no-tree", file=sys.stderr)
+            return 2
+        tree = a.tree
+        if a.commit:
+            r = subprocess.run(["git"] + (["-C", a.git_dir] if a.git_dir else []) + ["rev-parse", "--verify", "-q", f"{a.commit}^{{tree}}"],
+                               capture_output=True, text=True)
+            if r.returncode:
+                print("AUDIT FAILED: the commit to publish is not in this repository: its tree cannot be audited", file=sys.stderr)
+                return 1
+            tree = r.stdout.strip()
+        return privacy_gate(a.git_dir, tree, a.text, rules, a.assets, load_templates(a.templates) if a.assets else {})
     if a.cmd == "next-version":
         print(next_version(remote_tags(a.git_dir, a.remote), a.bump))
         return 0
@@ -1165,7 +2014,7 @@ def main(argv: list[str]) -> int:
         if old:
             print(f"AUTORELEASE: published launchers read manifest format 2 only ({', '.join(old)}): a release without the launcher archives "
                   f"(format 3) would strand them")
-        return 0 if old else 1
+        return 0 if old else LEGACY_NOT_NEEDED
     if a.cmd == "auto-publish":
         return 0 if auto_publish_ok(a.version) else 1
     if a.cmd == "title":
@@ -1178,12 +2027,13 @@ def main(argv: list[str]) -> int:
         print(f"{len(files)} release files changed" + (f" (first: {files[0]})" if files else ""))
         return 0 if files else 1
     if a.cmd == "warnings":
+        rules = BUILTIN + (load_denylist(a.denylist) if a.denylist else [])
         for c in first_parent_commits(a.git_dir, a.a, a.b):
             for w in release_warnings(c):
-                print(w)
+                print(sanitize(w, rules))
         return 0
     text, lines = release_notes(a.version, first_parent_commits(a.git_dir, a.a, a.b), load_known_issues(a.known_issues), a.commit, a.date, a.repo, a.titles,
-                                not a.no_legacy_launchers)
+                                not a.no_legacy_launchers, a.mac, a.mac_manifest)
     a.out.write_text(text, encoding="utf-8")
     if a.title_out:
         a.title_out.write_text(title_summary(lines) + "\n", encoding="utf-8")
@@ -1191,6 +2041,9 @@ def main(argv: list[str]) -> int:
         a.items_out.write_text("".join(f"- {markdown(x)}\n" for x in lines), encoding="utf-8")
     if a.plain_items_out:
         a.plain_items_out.write_text("".join(f"- {x}\n" for x in lines), encoding="utf-8")
+    if a.sources_out:
+        a.sources_out.write_text("".join(f"{s}\n" for s in note_sources(first_parent_commits(a.git_dir, a.a, a.b),
+                                                                          load_known_issues(a.known_issues))), encoding="utf-8")
     print(f"NOTES {a.out}: {len(lines)} items")
     return 0
 

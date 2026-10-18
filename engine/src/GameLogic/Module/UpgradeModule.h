@@ -39,6 +39,7 @@
 
 class Object;
 class StateHasher;
+class Xfer;
 
 // the part every upgrade module's data starts with (RW 0xC76AD8)
 class UpgradeModuleData : public ModuleData
@@ -86,6 +87,8 @@ protected:
 	virtual void upgradeImplementation() = 0;   // slot 10
 	virtual void processUpgradeRemoval() {}     // slot 8
 	void crcMux(StateHasher &h) const;
+	// lane SAVE-4b: UpgradeMux::upgradeMuxXfer (RW 0x8D27E8, tier A, (1, 1)): the version, the executed flag (mux + 4)
+	void xferMux(Xfer &x);
 
 private:
 	Object *m_muxObject;
@@ -97,6 +100,7 @@ private:
 class UpgradeModule : public BehaviorModule, public UpgradeMux
 {
 public:
+	OBFME_MODULE_XFER(UpgradeModule) // lane SAVE-4b: retail's layout (RW 0x8D284A, (1, 1))
 	UpgradeModule(Thing *thing, const UpgradeModuleData *data);
 	UpgradeMux *getUpgrade() override { return this; }
 	void crc(StateHasher &hasher) const override;

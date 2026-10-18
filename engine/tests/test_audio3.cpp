@@ -37,6 +37,7 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -153,6 +154,118 @@ struct RetailAudio
 		return n;
 	}
 };
+
+TEST_CASE("STOPS-B1 S-685 retail: slow-death sounds retain their dying object owner")
+{
+	if (!hudtest::haveWorld("STOPS-B1 S-685"))
+	{
+		return;
+	}
+	auto &shared = hudtest::shared();
+	hudtest::Rig rig(shared);
+	RetailAudio audio(*shared.mount->fs);
+	LiveGameAudio attachment(*rig.game, *audio.manager);
+	FXPlayback playback(*shared.mount->fs, RandomAlgorithm::RotWK_GameDat_LCG);
+	REQUIRE(playback.loadRetailData().empty());
+	LiveFX fx(*rig.game, playback);
+	std::string error;
+	Object *soldier = rig.game->createObject("GondorFighter", rig.index(), Coord3D{ 1200.0f, 1200.0f, 0.0f }, 0.0f, &error);
+	REQUIRE_MESSAGE(soldier, error);
+	rig.logic().runLogicFrame();
+	rig.game->refreshClient(0.0, 1.0);
+	audio.manager->setListenerPosition(*soldier->getPosition(), Coord3D{ 0.0f, 1.0f, 0.0f });
+	audio.manager->takeEventLog();
+	soldier->kill(0);
+	fx.flushPending();
+	int deathSounds = 0;
+	for (const auto &entry : audio.manager->takeEventLog())
+	{
+		if (!entry.play && entry.origin.find("SlowDeath Sound INITIAL") != std::string::npos)
+		{
+			++deathSounds;
+			CHECK(entry.objectId == soldier->getID());
+			CHECK(entry.positional);
+			CHECK(entry.outcome == "queued");
+		}
+	}
+	CHECK(deathSounds == 1);
+}
+
+TEST_CASE("STOPS-B1 S-481 retail: ring upgrade announcements select local allied and enemy events")
+{
+	if (!hudtest::haveWorld("STOPS-B1 S-481"))
+	{
+		return;
+	}
+	for (int relation : { -1, (int)ALLIES, (int)ENEMIES, (int)NEUTRAL })
+	{
+		CAPTURE(relation);
+		auto &shared = hudtest::shared();
+		hudtest::Rig rig(shared);
+		RetailAudio audio(*shared.mount->fs);
+		INI parser(audio.env);
+		audio.ini.loadEva(parser);
+		Eva eva(audio.ini, *audio.manager);
+		eva.setLocalSide(rig.local->getSide());
+		eva.setLocalPlayerIndex(rig.index());
+		AudioApi::installEva(&eva);
+		struct UnbindEva { ~UnbindEva() { AudioApi::installEva(nullptr); } } unbind;
+		Player *owner = relation == -1 ? rig.local : rig.game->players().findPlayerWithName("Player_2");
+		REQUIRE(owner);
+		if (owner != rig.local)
+		{
+			REQUIRE(owner->getDefaultTeam());
+			rig.local->setPlayerRelationship(owner, relation == ALLIES ? ENEMIES : ALLIES);
+			rig.local->setTeamRelationship(owner->getDefaultTeam(), (Relationship)relation);
+		}
+		const UpgradeTemplate *upgrade = shared.world->upgrades().findUpgrade("Upgrade_RingHero");
+		REQUIRE(upgrade);
+		const char *eventName = relation == -1 ? "LocalPlayerGainsRing" : relation == ALLIES ? "AlliedPlayerGainsRing" : "EnemyPlayerGainsRing";
+		const int event = eva.findEvent(eventName);
+		// tolerance: retail EVA event IDs are table-order indices, not stable constants.
+		REQUIRE(event >= 0);
+		CHECK(upgrade->m_localPlayerGainsUpgradeEvaEvent == eva.findEvent("LocalPlayerGainsRing"));
+		CHECK(upgrade->m_alliedPlayerGainsUpgradeEvaEvent == eva.findEvent("AlliedPlayerGainsRing"));
+		CHECK(upgrade->m_enemyPlayerGainsUpgradeEvaEvent == eva.findEvent("EnemyPlayerGainsRing"));
+		owner->addUpgrade(upgrade, Player::UPGRADE_STATUS_IN_PRODUCTION);
+		CHECK(eva.counters().reported == 0);
+		owner->addUpgrade(upgrade, Player::UPGRADE_STATUS_COMPLETE);
+		CHECK(eva.counters().reported == 1);
+		for (int ms = 0; ms <= 5000; ms += 50)
+		{
+			audio.device->setTime(ms);
+			audio.manager->update(ms);
+			eva.update(ms);
+		}
+		CHECK(eva.playedRecently(event, 6000.0, 5000.0));
+		CHECK(eva.counters().played == 1);
+		Coord3D at;
+		CHECK_FALSE(eva.lastPlayedPosition(event, &at));
+		// Retail removed all ring-loss cues. None and silent grants must stay silent.
+		owner->removeUpgrade(upgrade);
+		owner->addUpgrade(upgrade, Player::UPGRADE_STATUS_COMPLETE, true);
+		owner->removeUpgrade(upgrade, true);
+		CHECK(eva.counters().reported == 1);
+
+		// Controlled loss fields exercise the dormant retail loss branch with the same event table.
+		UpgradeTemplate loss = *upgrade;
+		loss.m_localPlayerLosesUpgradeEvaEvent = upgrade->m_localPlayerGainsUpgradeEvaEvent;
+		loss.m_alliedPlayerLosesUpgradeEvaEvent = upgrade->m_alliedPlayerGainsUpgradeEvaEvent;
+		loss.m_enemyPlayerLosesUpgradeEvaEvent = upgrade->m_enemyPlayerGainsUpgradeEvaEvent;
+		owner->addUpgrade(&loss, Player::UPGRADE_STATUS_COMPLETE, true);
+		eva.reset();
+		const auto before = eva.counters().reported;
+		std::thread worker([&] { owner->removeUpgrade(&loss); });
+		worker.join();
+		CHECK(eva.counters().reported == before);
+		const auto hash = rig.logic().computeStateHash();
+		AudioApi::drainDeferred();
+		CHECK(rig.logic().computeStateHash() == hash);
+		CHECK(eva.counters().reported == before + 1);
+		eva.update(5000.0);
+		CHECK(eva.playedRecently(event, 1.0, 5000.0));
+	}
+}
 
 void appendAll(std::vector<AudioLogEntry> &into, std::vector<AudioLogEntry> &&from)
 {

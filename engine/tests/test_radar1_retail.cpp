@@ -5,6 +5,7 @@
 #include "HudTestUtil.h"
 #include "ScriptTestUtil.h"
 
+#include "GameClient/ControlBar.h"
 #include "GameClient/GUI/ShellServices.h"
 #include "GameClient/InGameHud.h"
 #include "GameClient/LogicSnapshot.h"
@@ -202,12 +203,22 @@ TEST_CASE("radar1 retail events: an event lives 4 s of client frames, fades half
 	CHECK_FALSE(radar.radarEvent(0).active);
 	CHECK(radar.radarEvent(2).active);
 	// the ping protocol: a new ping is created and moved to the event's pixel, then faded after the fade frame
+	InGameUI &ui = r.hud->input().ui();
+	ui.takeMiscSounds();
 	std::vector<Radar::PingCall> calls;
 	radar.drawEvents(100, 50, 256, 256, calls);
 	REQUIRE(calls.size() >= 4); // two live events: create + move each
 	CHECK(calls[calls.size() - 4].kind == Radar::PingCall::Create);
 	CHECK(calls[calls.size() - 4].name == "PingAttack");
 	CHECK(calls[calls.size() - 3].kind == Radar::PingCall::Move);
+	// RW 0x44DE8C .. 0x44DEE3: the first draw of a live event adds MiscAudio GenericRadarEvent once (a beacon gets none)
+	CHECK(ui.takeMiscSounds() == std::vector<std::string>({ "GenericRadarEvent", "GenericRadarEvent" }));
+	radar.drawEvents(100, 50, 256, 256, calls);
+	CHECK(ui.takeMiscSounds() == std::vector<std::string>{});
+	radar.createEvent({ 1500.0f, 900.0f, 0.0f }, Radar::RADAR_EVENT_BEACON);
+	ui.takeMiscSounds();
+	radar.drawEvents(100, 50, 256, 256, calls);
+	CHECK(ui.takeMiscSounds() == std::vector<std::string>{});
 	calls.clear();
 	radar.setClientFrame(1300 + 106);
 	radar.drawEvents(100, 50, 256, 256, calls);
@@ -800,18 +811,30 @@ TEST_CASE("backlog3 radar attack message: each of RW 0x6D9BF3's four messages fo
 	// one retail object per branch of RW 0x6D9C2A .. (KindOf bits 8 INFANTRY / 9 CAVALRY, 16 HARVESTER, 7 STRUCTURE + 37 MP_COUNT_FOR_VICTORY), each hit more
 	// than tryEvent's 10 seconds (300 client frames, RW 0x6D9B4D) after the last event; the expected label is the literal of the binary's string, never the
 	// implementation's answer
+	auto radarSounds = [&]() {
+		std::vector<std::string> out;
+		for (const std::string &m : ui.takeMiscSounds())
+		{
+			if (m.compare(0, 11, "RadarNotify") == 0)
+			{
+				out.push_back(m);
+			}
+		}
+		return out;
+	};
 	struct Case
 	{
 		const char *tmpl;
 		float x, y;
 		bool unit, harvester, countedStructure; ///< the kinds the object must have for its branch (checked by name)
 		const char *label;
+		const char *sound; ///< the MiscAudio slot of the branch (RW 0x6D9BF3: 0 harvester, 1 the rest)
 	};
 	const Case cases[] = {
-		{ "GondorBoromir", 1900.0f, 1500.0f, true, false, false, "RADAR:UnitUnderAttack" },
-		{ "WildLaborer", 2200.0f, 1500.0f, true, true, false, "RADAR:HarvesterUnderAttack" },
-		{ "GondorBarracks", 1900.0f, 1800.0f, false, false, true, "RADAR:StructureUnderAttack" },
-		{ "GondorTrebuchet", 2200.0f, 1800.0f, false, false, false, "RADAR:UnderAttack" },
+		{ "GondorBoromir", 1900.0f, 1500.0f, true, false, false, "RADAR:UnitUnderAttack", "RadarNotifyStructureUnderAttackSound" },
+		{ "WildLaborer", 2200.0f, 1500.0f, true, true, false, "RADAR:HarvesterUnderAttack", "RadarNotifyHarvesterUnderAttackSound" },
+		{ "GondorBarracks", 1900.0f, 1800.0f, false, false, true, "RADAR:StructureUnderAttack", "RadarNotifyStructureUnderAttackSound" },
+		{ "GondorTrebuchet", 2200.0f, 1800.0f, false, false, false, "RADAR:UnderAttack", "RadarNotifyStructureUnderAttackSound" },
 	};
 	std::vector<Object *> made;
 	for (const Case &c : cases)
@@ -826,13 +849,122 @@ TEST_CASE("backlog3 radar attack message: each of RW 0x6D9BF3's four messages fo
 		REQUIRE((o->isKindOfName("STRUCTURE") && o->isKindOfName("MP_COUNT_FOR_VICTORY")) == c.countedStructure);
 		REQUIRE(capture(r, *o).listed); // on the radar's list (Object + 0x268, RW 0x67B57B)
 		radarMessages();
+		radarSounds();
+		const unsigned starts = r.hud->controlBar().attackFlash().starts;
 		hit(o);
 		r.frames(3);
 		CHECK(radarMessages() == std::vector<std::string>{ c.label });
 		CHECK(std::string(Radar::underAttackLabel(*o)) == c.label);
-		// a second hit within 10 seconds and 600 units: tryEvent refuses (RW 0x6D9B4D), no second message
+		// RW 0x6D9BF3: the branch's MiscAudio slot and the control bar's attack blink (RW 0x71C7E4) with the new event; lane DEVPORT-8: the HUD drains
+		// the request into the control bar (its blink is on, ControlBar.wnd:WinUAttack disabled by the start; the next toggle is 15 client frames on)
+		CHECK(radarSounds() == std::vector<std::string>{ c.sound });
+		CHECK(std::string(Radar::underAttackSound(*o)) == c.sound);
+		CHECK(ui.takeAttackFlashes() == 0u); // drained by the HUD's update
+		CHECK(r.hud->controlBar().attackFlash().starts == starts + 1);
+		CHECK(r.hud->controlBar().attackFlash().on);
+		CHECK_FALSE(r.hud->controlBar().attackFlash().windowEnabled);
+		// a second hit within 10 seconds and 600 units: tryEvent refuses (RW 0x6D9B4D), no second message, sound or flash
 		hit(o);
 		r.frames(3);
 		CHECK(radarMessages() == std::vector<std::string>{});
+		CHECK(radarSounds() == std::vector<std::string>{});
+		CHECK(r.hud->controlBar().attackFlash().starts == starts + 1);
 	}
+}
+
+TEST_CASE("devport8 attack blink: an enemy's hit starts the control bar's blink on ControlBar.wnd:WinUAttack (RW 0x71C7E4), which toggles every 15 client "
+		  "frames and ends enabled after 150 (RW 0x71C81A); RotWK's window has no image, so nothing is drawn")
+{
+	if (!haveWorld("devport8 attack blink"))
+	{
+		return;
+	}
+	SharedWorld &s = shared();
+	RadarRig r(s);
+	// the window as BFME2's window.big (which RotWK mounts) defines it: window\controlbar.wnd, "ControlBar.wnd:WinUAttack" (read with an independent BIG
+	// reader): SCREENRECT 77 416 - 122 461 at 800 x 600, STATUS ENABLED+IMAGE, NoImage in the enabled and the disabled draw data
+	const InGameHud::AttackWindow &w = r.hud->attackWindow();
+	REQUIRE(w.present);
+	CHECK(w.x0 == 77);
+	CHECK(w.y0 == 416);
+	CHECK(w.x1 == 122);
+	CHECK(w.y1 == 461);
+	CHECK(w.resX == 800);
+	CHECK(w.resY == 600);
+	CHECK(w.imageStatus);
+	CHECK(w.enabledStatus);
+	CHECK_FALSE(w.hidden);
+	CHECK(w.enabledImage.empty());
+	CHECK(w.disabledImage.empty());
+	ControlBar &bar = r.hud->controlBar();
+	CHECK(bar.attackFlash().window);
+	CHECK(bar.attackFlash().windowEnabled);
+	CHECK_FALSE(bar.attackFlash().on);
+	CHECK(bar.attackFlash().starts == 0u);
+
+	// the real path: an enemy's hit on our barracks -> Radar::noteAttacks -> tryUnderAttackEvent's InGameUI request -> the HUD's update -> the blink
+	Player *enemy = r.rig.game->players().findPlayerWithName("Player_2");
+	REQUIRE(enemy != nullptr);
+	const Coord3D b = r.rig.freeSpot(1900, 1500, 250.0f);
+	Object *barracks = r.rig.make("GondorBarracks", b.x, b.y);
+	r.frames(3);
+	CHECK(bar.attackFlash().starts == 0u);
+	DamageInfo hit;
+	hit.m_input.m_sourcePlayerMask = 1u << enemy->getPlayerIndex();
+	hit.m_input.m_damageType = DAMAGE_SLASH;
+	hit.m_input.m_amount = 5.0f;
+	barracks->attemptDamage(hit);
+	r.frames(3);
+	CHECK(r.hud->attackFlashRequests() == 1u);
+	CHECK(bar.attackFlash().starts == 1u);
+	CHECK(bar.attackFlash().on);
+	CHECK_FALSE(bar.attackFlash().windowEnabled);
+	CHECK(r.hud->attackWindowImage().empty()); // the disabled state's image: NoImage
+	// the blink runs out by itself on the HUD's client clock (150 client frames = 5 s; 200 updates of 0.033 s are more)
+	r.frames(200);
+	CHECK_FALSE(bar.attackFlash().on);
+	CHECK(bar.attackFlash().windowEnabled);
+	CHECK(bar.attackFlash().toggles == 10u); // the start's disable and the 9 toggles at counts 135, 120, .. 15
+	CHECK(r.hud->attackWindowImage().empty()); // the enabled state's image: NoImage
+
+	// the timeline of one blink, one client frame at a time (the frames listed here are RW 0x71C81A's: count = 150 - n; a toggle when count % 15 == 0)
+	bar.startAttackFlash();
+	CHECK(bar.attackFlash().count == 150);
+	std::vector<int> changes;
+	bool enabled = bar.attackFlash().windowEnabled;
+	CHECK_FALSE(enabled);
+	for (int n = 1; n <= 160; ++n)
+	{
+		bar.tickAttackFlash();
+		if (bar.attackFlash().windowEnabled != enabled)
+		{
+			enabled = bar.attackFlash().windowEnabled;
+			changes.push_back(enabled ? n : -n);
+		}
+		if (n == 149)
+		{
+			CHECK(bar.attackFlash().on);
+		}
+		if (n == 150)
+		{
+			CHECK_FALSE(bar.attackFlash().on);
+		}
+	}
+	CHECK(changes == std::vector<int>{ 15, -30, 45, -60, 75, -90, 105, -120, 135 });
+	CHECK(bar.attackFlash().windowEnabled);
+	// a start while the blink runs restarts the count (RW 0x71C7E4 writes 150 again)
+	bar.startAttackFlash();
+	for (int n = 0; n < 40; ++n)
+	{
+		bar.tickAttackFlash();
+	}
+	CHECK(bar.attackFlash().count == 110);
+	bar.startAttackFlash();
+	CHECK(bar.attackFlash().count == 150);
+	CHECK(bar.attackFlash().on);
+	// no window (a WND without ControlBar.wnd:WinUAttack: retail's lookup gives NULL, RW 0x71C7EF): no blink, no toggle
+	bar.setAttackFlashWindow(false, true);
+	const unsigned startsBefore = bar.attackFlash().starts;
+	bar.startAttackFlash();
+	CHECK(bar.attackFlash().starts == startsBefore);
 }

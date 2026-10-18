@@ -102,6 +102,7 @@ void W3DInstancer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("set_worker_threads", "count"), &W3DInstancer::set_worker_threads);
 	ClassDB::bind_method(D_METHOD("get_worker_threads"), &W3DInstancer::get_worker_threads);
 	ClassDB::bind_method(D_METHOD("set_pose_culling", "enabled"), &W3DInstancer::set_pose_culling); // lane PERF-3
+	ClassDB::bind_method(D_METHOD("set_extra_pose_frustum", "planes"), &W3DInstancer::set_extra_pose_frustum);
 	ClassDB::bind_method(D_METHOD("get_pose_culling"), &W3DInstancer::get_pose_culling);
 	ClassDB::bind_method(D_METHOD("get_instance_palette", "instance"), &W3DInstancer::get_instance_palette);
 	ClassDB::bind_method(D_METHOD("get_model_radius", "model"), &W3DInstancer::get_model_radius);
@@ -164,6 +165,22 @@ void W3DInstancer::set_instance_infantry_light(int64_t instance, bool infantry)
 {
 	if (instance < 0 || instance >= (int64_t)Instances.size()) return;
 	Instances[(size_t)instance].InfantryLight = infantry;
+	PoseDirty = true;
+	mark_model(instance);
+}
+
+void W3DInstancer::set_instance_sway(int64_t instance, int type)
+{
+	if (instance < 0 || instance >= (int64_t)Instances.size() || type < 0 || type > 10) return;
+	Instances[(size_t)instance].Sway = type;
+	PoseDirty = true;
+	mark_model(instance);
+}
+
+void W3DInstancer::set_instance_fogged(int64_t instance, bool fogged)
+{
+	if (instance < 0 || instance >= (int64_t)Instances.size() || Instances[(size_t)instance].Fogged == fogged) return;
+	Instances[(size_t)instance].Fogged = fogged;
 	PoseDirty = true;
 	mark_model(instance);
 }
@@ -1310,7 +1327,7 @@ void W3DInstancer::write_buffers()
 				o[12] = inst.InfantryLight ? -(float)(inst.PaletteOffset + 1) : (float)inst.PaletteOffset;
 				o[13] = fade;
 				o[14] = inst.HcPacked;
-				o[15] = rigid ? (float)bone : 0.0f;
+				o[15] = (float)((rigid ? (int)bone : 0) + 1024 * inst.Sway + (inst.Fogged ? 16384 : 0)); // lane VISUAL-2: the sway type, the fogged light
 				++count;
 			}
 			d.MM->set_buffer(d.Buffer);
@@ -1392,6 +1409,20 @@ double W3DInstancer::get_model_radius(int64_t model)
  return model>=0 && model<(int64_t)Models.size() ? std::max(1.0f,(cull_radius(*Models[(size_t)model])-30.0f)/1.5f) : 30.0;
 }
 
+bool W3DInstancer::set_extra_pose_frustum(const TypedArray<Plane> &planes)
+{
+	if (planes.size() != 0 && planes.size() != 6)
+	{
+		return false;
+	}
+	ExtraPoseFrustum.clear();
+	for (int i = 0; i < planes.size(); ++i)
+	{
+		ExtraPoseFrustum.push_back(planes[i]);
+	}
+	return true;
+}
+
 void W3DInstancer::update_now()
 {
 	if (!Assets) return;
@@ -1407,7 +1438,7 @@ void W3DInstancer::update_now()
 	std::mutex errorMutex;
 	const bool timeMoved = GlobalTime != PosedTime;
 	PosedTime = GlobalTime;
-	// lane PERF-3: pose culling (set_pose_culling): the frustum of the viewport's camera in this node's parent space
+	// lane PERF-3: pose culling (set_pose_culling): the viewport camera's world-space frustum
 	Plane frustum[6];
 	bool cull = false;
 	Transform3D nodeXf;
@@ -1445,6 +1476,18 @@ void W3DInstancer::update_now()
 					{
 						outside = true;
 						break;
+					}
+				}
+				if (outside && !ExtraPoseFrustum.empty())
+				{
+					outside = false;
+					for (const Plane &pl : ExtraPoseFrustum)
+					{
+						if (pl.distance_to(centre) > r)
+						{
+							outside = true;
+							break;
+						}
 					}
 				}
 				if (outside)

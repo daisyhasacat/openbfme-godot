@@ -40,6 +40,7 @@ public:
 class DeletionUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(DeletionUpdate) // lane SAVE-4b: retail's layout (RW 0x88B863, (1, 1))
 	DeletionUpdate(Thing *thing, const DeletionUpdateModuleData *data);
 	UpdateSleepTime update() override;
 	// lane SPELL-2: RW 0x88B830 (the special power's view object, RW 0x896FD9): calcSleepDelay(min, max) again (one more draw) and the sleep
@@ -66,6 +67,7 @@ public:
 class MonitorConditionUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(MonitorConditionUpdate) // lane SAVE-4b
 	MonitorConditionUpdate(Thing *thing, const MonitorConditionUpdateModuleData *data) : UpdateModule(thing, data), m_data(data) {}
 	UpdateSleepTime update() override;
 	const std::string &savedCommandSet() const { return m_saved; }

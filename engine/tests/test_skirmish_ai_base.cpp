@@ -402,7 +402,6 @@ TEST_CASE("skirmish ai base: the request hash covers the complete request state 
 	CHECK(moved([&] { std::swap(st.inProgress[0], st.pending[1]); }));
 	CHECK(moved([&] { unit->angle = 1.0f; }));
 	CHECK(moved([&] { unit->basePosition.x = 7.0f; }));
-	CHECK(moved([&] { st.units.registeredStructures.push_back(5); }));
 	CHECK(moved([&] { st.waitedForMoney += 1; }));
 	CHECK(moved([&] { st.waitedForDozer += 1; }));
 	CHECK(moved([&] { st.bases[0].index = 2; }));

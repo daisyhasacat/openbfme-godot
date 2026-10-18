@@ -1,0 +1,864 @@
+{
+ "about": "Lane MENUWORK-1: what RotWK 2.01 does when each menu control is pressed, for tools/menus/menu_inventory.py. Rows are matched in order by a regular expression on the control's path (the Apt button's target path, or a gadget's placeholder name) and optionally on the screen name; the first match wins. 'source' cites the RotWK address or the decompile file (and whether it is an inference). 'expect': 'nothing' = retail's press has no effect either; 'unavailable' = retail greys it out. 'effect': the control's intended effect as checks (tools/menus/menu_inventory.py); 'retail_unhandled': commands the movie sends that retail's engine has no handler for either (not a defect). 'owner': another lane owns the defect.",
+ "required_places": [
+  {
+   "name": "the main menu",
+   "top": "MainMenu.apt"
+  },
+  {
+   "name": "Skirmish",
+   "top": "Skirmish.apt"
+  },
+  {
+   "name": "the LAN lobby",
+   "top": "LanLobby.apt"
+  },
+  {
+   "name": "Online: login",
+   "top": "OnlineShell.apt",
+   "online_page": "OnlineLogin"
+  },
+  {
+   "name": "Online: home",
+   "top": "OnlineShell.apt",
+   "online_page": "OnlineHome"
+  },
+  {
+   "name": "Online: open play (the server browser)",
+   "top": "OnlineShell.apt",
+   "online_page": "OnlineOpenPlay",
+   "online_states": [
+    2
+   ]
+  },
+  {
+   "name": "Online: the staging room (host)",
+   "top": "OnlineShell.apt",
+   "online_page": "OnlineOpenPlay",
+   "online_states": [
+    6
+   ]
+  },
+  {
+   "name": "Replays / Load Game",
+   "top": "SaveLoad.apt"
+  },
+  {
+   "name": "Options",
+   "top": "Options.apt"
+  },
+  {
+   "name": "Create-a-Hero",
+   "top": "CreateAHero.apt"
+  },
+  {
+   "name": "the quit menu",
+   "top": "Quit menu (in game)"
+  },
+  {
+   "name": "the score screen",
+   "top": "Score screen"
+  }
+ ],
+ "controls": [
+  {
+   "match": "_level3\\.Exit\\.Button_Shell",
+   "retail": "leaves Online to the main menu",
+   "source": "AptOnline::ShellExit RW 0x91D6CD",
+   "effect": "screen:MainMenu.apt"
+  },
+  {
+   "match": "_level3\\.Options\\.Button_Shell",
+   "retail": "Options over the online screens",
+   "source": "AptOnline::Options RW 0x91D6BA",
+   "effect": "screen:Options.apt"
+  },
+  {
+   "match": "ButtonNav\\.(OpenPlay|Home)",
+   "retail": "an online page (Open Play: the server browser; Home: the message of the day)",
+   "source": "AptOnline::ShellLoadScreen RW 0x91DEFB",
+   "effect": "probe:online_page | page"
+  },
+  {
+   "match": "ButtonNav\\.QuickMatch",
+   "retail": "the TOURNAMENT page: Quick Match (left) and OpenBFME's tournaments (right) on the platform (ONLINEHUB-1; its line names both: ONLINEUX-1, S-5143)",
+   "source": "AptOnline::ShellLoadScreen RW 0x91DEFB (OnlineQuickMatch, AptOnlineHub)",
+   "effect": "probe:online_page | page"
+  },
+  {
+   "match": "ButtonNav\\.Strategic",
+   "retail": "War of the Ring online games: not available, the box says so (S-4075)",
+   "source": "OnlineStrategic (not ported)",
+   "effect": "unavailable"
+  },
+  {
+   "match": "ButtonNav\\.Profile",
+   "retail": "the STATS page (ONLINEHUB-1: the player's own statistics and the community's)",
+   "source": "AptOnline::ShellLoadScreen RW 0x91DEFB (Stats, AptStats)",
+   "effect": "probe:online_page | page"
+  },
+  {
+   "match": "^_level1\\.instance3$",
+   "retail": "the shell's full-screen back layer (AptLevel0.apt): it catches clicks outside the menus and does nothing",
+   "source": "AptLevel0.apt",
+   "effect": "nothing"
+  },
+  {
+   "match": "MessageBox\\.instance3$",
+   "retail": "the message box's modal back layer: it keeps clicks from the screen under the box and does nothing",
+   "source": "GuiFX.apt MessageBox (TheMessageBox RW 0xDE8A9C)",
+   "effect": "nothing",
+   "retail_unhandled": [
+    "AptCreateAHero::Manager::OnMapClick",
+    "AptCreateAHero::Manager::OnMapRelease"
+   ],
+   "note": "over Create-a-Hero the movie also sends AptCreateAHero::Manager::OnMapClick / OnMapRelease (no game.dat names: retail ignores them too)"
+  },
+  {
+   "match": "MessageBox\\.ButtonsOk\\.MessageBoxOk|MessageBox.*\\.Ok",
+   "retail": "the message box's Ok: the box closes, the screen under it takes input again",
+   "source": "GuiFX.apt MessageBox, AptMessageBox (RW 0x953141)",
+   "effect": "page",
+   "retail_unhandled": [
+    "AptCreateAHero::Manager::OnMapClick",
+    "AptCreateAHero::Manager::OnMapRelease"
+   ],
+   "note": "over Create-a-Hero the movie also sends AptCreateAHero::Manager::OnMapClick / OnMapRelease (no game.dat names: retail ignores them too)"
+  },
+  {
+   "match": "\\.tooltip",
+   "retail": "a help spot: the pointer over it shows its help text; a click does nothing",
+   "source": "the movies' tooltip clips",
+   "effect": "nothing"
+  },
+  {
+   "match": "SoloPlayNav\\.instance108$|MultiPlayNav\\.instance80$|OptionsNav\\.instance80$",
+   "retail": "a nav: the pointer opens its entries; a click plays the select sound and toggles the nav (the movie's own script; its On<Nav> command has no handler: not one of the 22 AptMainMenu names in game.dat)",
+   "source": "game.dat string table 0x0087CFD8..0x0087D274 (AptMainMenu.h)",
+   "effect": "hover | nothing",
+   "retail_unhandled": [
+    "AptMainMenu::OnSoloPlayNav",
+    "AptMainMenu::OnMultiPlayNav",
+    "AptMainMenu::OnOptionsNav"
+   ]
+  },
+  {
+   "match": "Nav\\.instance1$|Nav\\.instance3$",
+   "retail": "the nav's transparent surround: the pointer leaving the nav over it closes the nav (no press action)",
+   "source": "MainMenu.apt sprite 25 (ui6_walk.gd)",
+   "effect": "nothing"
+  },
+  {
+   "match": "_level2\\.instance308$",
+   "retail": "the hidden top-left hot spot: AptMainMenu::ResetResolution (the body is not ported; the request is the whole behaviour, S-175)",
+   "source": "AptMainMenu ResetResolution",
+   "effect": "request:ResetResolution"
+  },
+  {
+   "match": "SoloPlayNav\\.Skirmish",
+   "retail": "opens Skirmish (Skirmish.apt pushed unless it is up)",
+   "source": "ShowSkirmish.cpp 0x00579440",
+   "effect": "screen:Skirmish.apt"
+  },
+  {
+   "match": "SoloPlayNav\\.WarOfTheRing",
+   "retail": "opens War of the Ring (the Living World): not ported, the box says so",
+   "source": "AptMainMenu::WarOfTheRing (RotWK only), S-1914",
+   "effect": "unavailable"
+  },
+  {
+   "match": "SoloPlayNav\\.Expansion1Campaign",
+   "retail": "shows the difficulty choice, then starts the Rise of the Witch-king campaign",
+   "source": "RW 0x91BE64 (ANGMAR_CAMPAIGN)",
+   "effect": "page:Easy"
+  },
+  {
+   "match": "SoloPlayNav\\.BonusCampaign\\.bttnDisabled",
+   "retail": "greyed out until the campaign is won (provider MainMenuUnlockBonusCampaign)",
+   "source": "RW 0x91BEFA, MainMenu.apt",
+   "effect": "unavailable"
+  },
+  {
+   "match": "SoloPlayNav\\.BonusCampaign",
+   "retail": "shows the difficulty choice, then starts the bonus campaign",
+   "source": "RW 0x91BEFA",
+   "effect": "page:Easy"
+  },
+  {
+   "match": "SoloPlayNav\\.LoadGame",
+   "retail": "opens Load Game (SaveLoad.apt, mode 2)",
+   "source": "RW 0x91C360",
+   "effect": "screen:SaveLoad.apt"
+  },
+  {
+   "match": "LevelOfDifficulty\\.(Easy|Medium|Hard)",
+   "retail": "starts the chosen campaign at that difficulty (the walk holds the request: the campaign tests start it)",
+   "source": "RW 0x91BE64 / 0x91BEFA",
+   "effect": "request:Expansion1Campaign | request:BonusCampaign"
+  },
+  {
+   "match": "LevelOfDifficulty\\.cancelButton",
+   "retail": "closes the difficulty choice (the menu's buttons back)",
+   "source": "MainMenu.apt",
+   "effect": "page"
+  },
+  {
+   "match": "MultiPlayNav\\.Online",
+   "retail": "opens Online (OnlineShell.apt; GameSpy's login)",
+   "source": "RW 0x91D7A3",
+   "effect": "screen:OnlineShell.apt"
+  },
+  {
+   "match": "MultiPlayNav\\.LocalNetwork",
+   "retail": "opens the network (LAN) lobby",
+   "source": "AptMainMenu::LAN",
+   "effect": "screen:LanLobby.apt"
+  },
+  {
+   "match": "MultiPlayNav\\.Replay",
+   "retail": "opens Replays (SaveLoad.apt, replay mode)",
+   "source": "AptMainMenu::LoadReplay",
+   "effect": "screen:SaveLoad.apt"
+  },
+  {
+   "match": "OptionsNav\\.Settings",
+   "retail": "opens Options (basic page)",
+   "source": "AptMainMenu::Options, RW 0x91ED91",
+   "effect": "screen:Options.apt"
+  },
+  {
+   "match": "OptionsNav\\.AdvancedSettings",
+   "retail": "opens Options (advanced page)",
+   "source": "AptMainMenu::Options(true), RW 0x91ED91",
+   "effect": "screen:Options.apt"
+  },
+  {
+   "match": "OptionsNav\\.Credits",
+   "retail": "rolls the credits over the main menu",
+   "source": "RW 0x91B5E9",
+   "effect": "request:Credits"
+  },
+  {
+   "match": "ExitCredits",
+   "retail": "ends the credits, the main menu comes back",
+   "source": "RW 0x91B6FD",
+   "effect": "command:AptMainMenu::CreditsExit | page"
+  },
+  {
+   "match": "_level2\\.MyHeroes",
+   "retail": "opens Create-a-Hero (CreateAHero.apt and its map)",
+   "source": "RW 0x91A018",
+   "effect": "screen:CreateAHero.apt"
+  },
+  {
+   "match": "QuitMainMenu",
+   "retail": "quits the game",
+   "source": "AptMainMenuExitGame.cpp",
+   "effect": "request:ExitGame"
+  },
+  {
+   "match": "SavedHeroList",
+   "retail": "Create-a-Hero's hero list: selects a hero",
+   "source": "AptCreateAHero::Manager (RW 0x9C5114)",
+   "effect": "select"
+  },
+  {
+   "match": "Tab_Nav_Button\\.(Appearance|Awards|Powers|Stats)\\.instance5|\\$Campaign|\\$FinalScoreTab",
+   "retail": "the tab already shown: a press changes nothing",
+   "source": "the movies' tab clips",
+   "effect": "nothing"
+  },
+  {
+   "match": "mcClassScreen.*(ClassIcon|TypeIcon)",
+   "retail": "Create-a-Hero's class / type choice: the shown hero becomes that class (its OnMapRelease has no handler in game.dat either: OnMapClick does the work)",
+   "source": "AptCreateAHero::Class (game.dat names)",
+   "effect": "probe:cah_hero",
+   "retail_unhandled": [
+    "AptCreateAHero::Class::OnMapRelease"
+   ]
+  },
+  {
+   "match": "mcClassScreen.*(Rotate|Zoom)",
+   "retail": "Create-a-Hero: turns / zooms the hero's model while pressed",
+   "source": "AptCreateAHero::RotateLeft / RotateRight / ZoomIn / ZoomOut",
+   "effect": "probe:cah_camera",
+   "retail_unhandled": [
+    "AptCreateAHero::Class::OnMapRelease"
+   ]
+  },
+  {
+   "match": "mcClassScreen.*mcClassButtons\\.Cancel",
+   "retail": "Create-a-Hero's class page: back to the hero list",
+   "source": "AptCreateAHero::Class::Exit",
+   "effect": "probe:cah_page | page",
+   "retail_unhandled": [
+    "AptCreateAHero::Class::OnMapRelease"
+   ]
+  },
+  {
+   "match": "mcClassScreen.*mcClassButtons\\.Next",
+   "retail": "Create-a-Hero's class page: on to the appearance page",
+   "source": "AptCreateAHero::Class::SetClassAndType",
+   "effect": "probe:cah_page | page",
+   "retail_unhandled": [
+    "AptCreateAHero::Class::OnMapRelease"
+   ]
+  },
+  {
+   "match": "mcClassScreen",
+   "retail": "Create-a-Hero's class page control",
+   "source": "AptCreateAHero::Class",
+   "effect": "probe:cah_page | probe:cah_hero | page",
+   "retail_unhandled": [
+    "AptCreateAHero::Class::OnMapRelease"
+   ]
+  },
+  {
+   "match": "SuppressPromo",
+   "retail": "Create-a-Hero's introduction: \"don't show this again\": its check mark (the next visit opens the hero list)",
+   "source": "CreateAHero.apt, AptCreateAHero (SuppressCahPromo)",
+   "effect": "probe:cah_suppress_promo"
+  },
+  {
+   "match": "mcClassButtons\\.Continue",
+   "retail": "Create-a-Hero's introduction: on to the hero list",
+   "source": "CreateAHero.apt",
+   "effect": "probe:cah_page | page"
+  },
+  {
+   "match": "mcClassButtons\\.MainMenu|Class::Exit",
+   "retail": "leaves Create-a-Hero to the main menu",
+   "source": "RW 0x91A018 (the map mode ends)",
+   "effect": "screen:MainMenu.apt"
+  },
+  {
+   "match": "CreateNewHero",
+   "retail": "Create-a-Hero: starts a new hero (class choice)",
+   "source": "AptCreateAHero",
+   "effect": "probe:cah_page | page"
+  },
+  {
+   "match": "DeleteHero",
+   "retail": "Create-a-Hero: deletes the selected hero; asks first (a system hero cannot be deleted)",
+   "source": "AptCreateAHero::Manager::OnDeleteHero RW 0x9C5D6F",
+   "effect": "box | page:Yes | command:AptCreateAHero::Manager::OnDeleteHero",
+   "reason": "the walk's selected hero is a system hero: RotWK's OnDeleteHero (RW 0x9C5D6F) returns without asking for one (its +0x48 flag) and the movie shows Delete greyed; a profile hero's question and delete are test_cah1's 'Delete Hero asks ...'"
+  },
+  {
+   "match": "TakePicture",
+   "retail": "Create-a-Hero: takes the hero's portrait (not ported: the box says so, S-4755)",
+   "source": "AptCreateAHero::OnTakePicture",
+   "effect": "unavailable"
+  },
+  {
+   "match": "PlayGame",
+   "retail": "Create-a-Hero: tries the hero on a test map (not ported: the box says so, S-4755)",
+   "source": "AptCreateAHero::Manager::OnPlayGame",
+   "effect": "unavailable",
+   "screen": "MyHeroes"
+  },
+  {
+   "match": "ScreenAwards|AwardList",
+   "retail": "Create-a-Hero: an award (not ported: the box says so, S-4755)",
+   "source": "AptCreateAHero::Manager::OnSelectAward",
+   "effect": "unavailable | nothing"
+  },
+  {
+   "match": "mcMyPowerIcon",
+   "retail": "Create-a-Hero: a chosen power: the pointer shows its description; a click does nothing",
+   "source": "AptCreateAHero::OnMyPowerRollOver RW 0x9C4E1A",
+   "effect": "nothing"
+  },
+  {
+   "match": "UnselectedTabButtons|TabNav",
+   "retail": "Create-a-Hero: a page tab (appearance, powers, awards, stats)",
+   "source": "AptCreateAHero::Manager",
+   "effect": "probe:cah_page | page"
+  },
+  {
+   "match": "HeroList.*OnSort(HeroName|HeroType|Icon)",
+   "retail": "a hero list header: sorts the heroes (again: reversed)",
+   "source": "Mission::OnSort*, RW 0x9C4EBD / 0x9C54C4",
+   "effect": "gadget:SavedHeroList | probe:cah_sort",
+   "reason": "heroes equal on the key keep their order: the sort keys (RW 0x9C4EBD's + 0x18 / + 0x1C) are the evidence then"
+  },
+  {
+   "match": "MpGameSetup.*TabRules.*Reset|\\.Reset\\.instance11",
+   "retail": "the Rules tab's Reset: the rules back to their defaults",
+   "source": "AptMpGameRules::Reset RW 0x98674C",
+   "effect": "gadget:RuleComboBox | gadget:RuleCheckBox | command:AptMpGameRules::Reset"
+  },
+  {
+   "match": "RuleComboBox",
+   "retail": "a game rule's drop-down (start money, command points ...): opens its list",
+   "source": "AptMpGameRules (RW 0x986810)",
+   "effect": "open | value"
+  },
+  {
+   "match": "RuleCheckBox",
+   "retail": "a game rule's check box",
+   "source": "AptMpGameRules (RW 0x986810)",
+   "effect": "value"
+  },
+  {
+   "match": "Tab(Rules|Map|Chat)\\.instance7",
+   "retail": "the tab already shown: a press changes nothing",
+   "source": "MpGameSetup tab clips",
+   "effect": "nothing"
+  },
+  {
+   "match": "TabButtons\\.RulesTab",
+   "retail": "the lobby's Rules tab (the game's rules)",
+   "source": "MpGameSetup::OnTabSelect",
+   "effect": "page"
+  },
+  {
+   "match": "TabButtons\\.MapTab",
+   "retail": "the lobby's Map tab (the map list)",
+   "source": "MpGameSetup::OnTabSelect",
+   "effect": "page"
+  },
+  {
+   "match": "TabButtons\\.ChatTab",
+   "retail": "the staging room's Chat tab",
+   "source": "MpGameSetup::OnTabSelect",
+   "effect": "page"
+  },
+  {
+   "match": "TabButtons\\.(Skirmish|WOTR)",
+   "retail": "a saved-game type tab",
+   "source": "SaveLoad.apt, AptSaveLoad (S-4003)",
+   "effect": "page | gadget:"
+  },
+  {
+   "match": "instance224\\.OnSort|LanStrategic.*OnSort|instance228\\.OnSort",
+   "retail": "a game list header: sorts the list by that column (again: reversed)",
+   "source": "GameSorter RW 0x9888B7 / 0x9881DE / 0x988418",
+   "effect": "probe:sort_primary",
+   "retail_unhandled": [
+    "MpGameSetup::OnSortStatus",
+    "MpGameSetup::OnSortMap"
+   ]
+  },
+  {
+   "match": "MapsTab.*OnSort",
+   "retail": "a map list header: sorts the map list",
+   "source": "MpGameSetup::OnSortName / OnSortPlayers / OnSortIcons",
+   "effect": "gadget:MapList | command:MpGameSetup::OnSortIcons",
+   "reason": "the icon sort leaves the order as it is when every map has the same icons (the command's handler took the press)"
+  },
+  {
+   "match": "Refresh",
+   "retail": "refreshes the game list (LAN: retail has no handler, OpenBFME refills the list, S-4752)",
+   "source": "AptOnline::CustomMatch::Refresh RW 0x9AA76A",
+   "effect": "probe:list_fills | probe:online_state | command:AptOnline::CustomMatch::Refresh"
+  },
+  {
+   "match": "Toggles\\.instance\\d+\\.Strategic",
+   "retail": "switches the LAN lobby to War of the Ring games (LanStrategic): not available, the box says so (S-4753)",
+   "source": "AptLanLobby::OnLoadScreen",
+   "effect": "unavailable",
+   "retail_unhandled": [
+    "AptLanLobby::OnUnloadScreen"
+   ]
+  },
+  {
+   "match": "Toggles\\.instance\\d+\\.OpenPlay",
+   "retail": "switches the LAN lobby back to Open Play games",
+   "source": "AptLanLobby::OnLoadScreen",
+   "effect": "page | command:AptLanLobby::OnLoadScreen",
+   "retail_unhandled": [
+    "AptLanLobby::OnUnloadScreen"
+   ]
+  },
+  {
+   "match": "TopRightFrame\\.LoadGame",
+   "retail": "hosts a LAN game from a save: not available, the box says so (S-4753)",
+   "source": "AptLanLobby::OnLoadGameBttn",
+   "effect": "unavailable"
+  },
+  {
+   "match": "CreateGamePopup\\.Accept",
+   "retail": "creates the game with that name: the staging room (an empty name: a box); its AcceptGameName has no handler in game.dat either",
+   "source": "AptOnline::CustomMatch::CreateGame RW 0x9A8423",
+   "effect": "probe:online_state | page",
+   "retail_unhandled": [
+    "AptOnline::OnlineCustomMatch::AcceptGameName"
+   ]
+  },
+  {
+   "match": "CreateGamePopup\\.CancelPopUpCreate",
+   "retail": "closes the Create Game box: the game list again",
+   "source": "AptOnline::CustomMatch::CancelPopUpCreate RW 0x9A84C9",
+   "effect": "probe:online_state | page"
+  },
+  {
+   "match": "CreateGamePopup\\.instance1$",
+   "retail": "the Create Game box's back layer: a click does nothing",
+   "source": "OnlineOpenPlay.apt",
+   "effect": "nothing"
+  },
+  {
+   "match": "CreateGame",
+   "retail": "hosts a game (the staging room)",
+   "source": "AptLanLobby::OnCreateGameBttn / AptOnline::CustomMatch::CreateGame RW 0x9A8423",
+   "effect": "page | probe:lan_state | probe:online_state"
+  },
+  {
+   "match": "JoinGame",
+   "retail": "joins the selected game (none selected: a box)",
+   "source": "AptLanLobby::OnJoinGameBttn RW 0x846F8A / AptOnline::CustomMatch::JoinGame",
+   "effect": "box | probe:lan_state | probe:online_state"
+  },
+  {
+   "match": "MainButtons\\.PlayGame|\\.PlayGame\\.",
+   "retail": "starts the game for everyone (the walk holds the start; alone: the start checks refuse it with a line or a box)",
+   "source": "AptLanLobby::OnStartGameBttn RW 0x846F72",
+   "effect": "request:LanGameStart | request:OnlineGameStart | box | probe:lan_state | probe:online_state | probe:online_chat_lines"
+  },
+  {
+   "match": "MainButtons\\.CancelHost|MainButtons\\.Cancel(Join)?$|HostMain.*Cancel",
+   "retail": "leaves the staging room for the game list",
+   "source": "AptLanLobby::OnCancelBttn RW 0x847A91 / AptOnline::CustomMatch::Cancel",
+   "effect": "page | probe:lan_state | probe:online_state"
+  },
+  {
+   "match": "MainButtons\\.Options",
+   "retail": "opens Options over the lobby",
+   "source": "AptLanLobby::OnOptionsBttn RW 0x846F53 / AptOnline::Options RW 0x91D6BA",
+   "effect": "screen:Options.apt"
+  },
+  {
+   "match": "MainButtons\\.MainMenu",
+   "retail": "leaves the lobby to the main menu",
+   "source": "AptLanLobby::OnExitBttn RW 0x846C41",
+   "effect": "screen:MainMenu.apt"
+  },
+  {
+   "match": "MainButtons\\.Cancel",
+   "retail": "closes the saved games / replays page",
+   "source": "AptSaveLoad::Cancel",
+   "effect": "leave"
+  },
+  {
+   "match": "NameEntry",
+   "retail": "the LAN player name: typing edits it",
+   "source": "AptLanLobby::InitGadgets (12 characters, RW 0x81606D)",
+   "effect": "value"
+  },
+  {
+   "match": "CustomGamesList|GameList",
+   "retail": "the game / save list: selects a row",
+   "source": "AptLanLobby::InitGadgets RW 0x848A7F, AptSaveLoad",
+   "effect": "select"
+  },
+  {
+   "match": "AutoSaveList",
+   "retail": "the autosave list: selects a row",
+   "source": "AptSaveLoad::InitGadgets",
+   "effect": "select"
+  },
+  {
+   "match": "MapList",
+   "retail": "the map list: picks a map",
+   "source": "AptMapList / MpGameSetup",
+   "effect": "select"
+  },
+  {
+   "match": "MapInfo",
+   "retail": "the map's description (a read-only list): a click changes nothing",
+   "source": "MpGameSetup MapInfo",
+   "effect": "nothing | select"
+  },
+  {
+   "match": "/(Player|PlayerTemplate|Team|Handicap|Hero|Color)#",
+   "retail": "a lobby slot's drop-down (player, army, team, handicap, hero): opens its list",
+   "source": "MpGameSetup slots (AptSkirmish)",
+   "effect": "open | value"
+  },
+  {
+   "match": "ProfileNav\\.ProfileStats",
+   "retail": "the profile's statistics page (AptStats): the faction cards of this installation's recorded games (S-4874)",
+   "source": "AptSkirmish::OnStatsMenu / AptStats",
+   "effect": "page"
+  },
+  {
+   "match": "ProfileNav\\.instance1$",
+   "retail": "the profile nav's surround: the pointer leaving the nav over it closes it (no press action)",
+   "source": "Skirmish.apt",
+   "effect": "nothing"
+  },
+  {
+   "match": "ProfileNav\\.(New|Change|Delete)",
+   "retail": "the profile nav's entries: a new / another / no profile (the profile box)",
+   "source": "AptSkirmish::OnNewProfileMenu / OnChangeProfileMenu / OnDeleteProfileMenu",
+   "effect": "page | probe:profile_state"
+  },
+  {
+   "match": "ProfileNav",
+   "retail": "the profile nav: the pointer opens it (its OnProfileNav command has no handler in game.dat either)",
+   "source": "game.dat AptSkirmish names",
+   "effect": "hover | nothing | page",
+   "retail_unhandled": [
+    "AptSkirmish::OnProfileNav"
+   ]
+  },
+  {
+   "match": "lobby\\.MainMenu",
+   "retail": "leaves Skirmish to the main menu",
+   "source": "AptSkirmish::Exit",
+   "effect": "screen:MainMenu.apt"
+  },
+  {
+   "match": "lobby\\.StartGame",
+   "retail": "starts the skirmish (the loading screen, then the game)",
+   "source": "AptSkirmish::StartGame RW 0x928B71",
+   "effect": "screen:LoadScreen.apt | screen:Palantir.apt",
+   "retail_unhandled": [
+    "AptGameLoading::OnInitialized"
+   ]
+  },
+  {
+   "match": "OnlineHome::MessageOfTheDay",
+   "retail": "the message of the day (a read-only list)",
+   "source": "AptOnlineHome::InitGadgets RW 0x9C8EDA",
+   "effect": "select | nothing"
+  },
+  {
+   "match": "Lobbies#",
+   "retail": "the lobby rooms' drop-down: lists OpenBFME's one room (ONLINEUX-1; the lobby has no group rooms, S-4073)",
+   "source": "AptOnlineCustomMatch::InitGadgets RW 0x9AA4C3 (Lobbies)",
+   "effect": "open | value"
+  },
+  {
+   "match": "OnlineOpenPlay\\.Main\\..*\\.OnSort",
+   "retail": "a game list header: sorts the server browser (OpenBFME's sort of the lobby's games, S-4073)",
+   "source": "GameSorter::OnSort* (AptOnlineShell::sortBy)",
+   "effect": "probe:online_sort"
+  },
+  {
+   "match": "GameName#|GamePassword#",
+   "retail": "the new game's name / password: typing edits it (20 characters)",
+   "source": "AptOnlineCustomMatch::InitGadgets RW 0x9AA4C3",
+   "effect": "value"
+  },
+  {
+   "match": "LowerButtons_Host\\.CancelHost|LowerButtons_Join\\.CancelJoin",
+   "retail": "leaves the staging room for the game list",
+   "source": "AptOnline::CustomMatch::Cancel",
+   "effect": "probe:online_state | page"
+  },
+  {
+   "match": "LowerButtons_Host\\.Connections",
+   "retail": "the connections between the players: retail shows the GameSpy connection of every two players; OpenBFME's players reach each other through the relay, so the player is told it is not available and the room's panels come back (ONLINE-5, S-4550)",
+   "source": "AptOnline::CustomMatch::OnOpenConnectionsScreen",
+   "effect": "unavailable"
+  },
+  {
+   "match": "LowerButtons_Host\\.PlayGame",
+   "retail": "starts the game (no relay on the inventory's lobby: refused with a box)",
+   "source": "AptOnline::CustomMatch::PlayGame RW 0x9A8416",
+   "effect": "box | request:OnlineGameStart | probe:online_boxes"
+  },
+  {
+   "match": "ChatPlayers#",
+   "retail": "the staging room's players (a list)",
+   "source": "MpGameSetup chat",
+   "effect": "select | nothing"
+  },
+  {
+   "match": "Chat#list",
+   "retail": "the staging room's chat lines (a read-only list)",
+   "source": "MpGameSetup chat",
+   "effect": "select | nothing"
+  },
+  {
+   "match": "ChatEntry#",
+   "retail": "the chat line being typed",
+   "source": "AptMpChat",
+   "effect": "value"
+  },
+  {
+   "match": "EnterButton",
+   "retail": "sends the typed chat line",
+   "source": "AptMpChat::Send",
+   "effect": "gadget:Chat#list | probe:online_chat_lines"
+  },
+  {
+   "match": "OnlineLogin\\.Exit",
+   "retail": "leaves Online to the main menu",
+   "source": "AptOnline::Login::CancelLogin RW 0x977B0F",
+   "effect": "screen:MainMenu.apt"
+  },
+  {
+   "match": "OnlineLogin\\.Login\\.LogIn",
+   "retail": "signs in (an empty nickname: the box GUI:GSNoLoginInfoNickname)",
+   "source": "AptOnline::Login::Login RW 0x97C5C6",
+   "effect": "probe:online_page | box"
+  },
+  {
+   "match": "OnlineLogin::Nickname",
+   "retail": "the nickname: typing edits it, the drop-down lists the names used before",
+   "source": "AptOnlineLogin::InitGadgets RW 0x97A413",
+   "effect": "value"
+  },
+  {
+   "match": "Buttons\\.(Accept|Done)",
+   "retail": "saves the options and closes Options",
+   "source": "AptOptions::Save RW 0x91FC9C",
+   "effect": "screen:MainMenu.apt | leave",
+   "owner": "OPTS-5"
+  },
+  {
+   "match": "Buttons\\.Cancel",
+   "retail": "closes Options without saving",
+   "source": "AptOptions::Cancel",
+   "effect": "leave",
+   "owner": "OPTS-5"
+  },
+  {
+   "match": "Buttons\\.DefaultAdvanced",
+   "retail": "the advanced options' default values (a step changed before the press goes back)",
+   "source": "AptOptions::Reset (advanced page)",
+   "effect": "page:DescreetSliderButton | probe:options",
+   "owner": "OPTS-5"
+  },
+  {
+   "match": "Buttons\\.Default",
+   "retail": "the options' default values (a value changed before the press goes back)",
+   "source": "AptOptions::Reset",
+   "effect": "gadget: | command:AptOptions::Reset",
+   "owner": "OPTS-5"
+  },
+  {
+   "match": "FrameLeft\\.Advanced",
+   "retail": "the advanced options page",
+   "source": "AptOptions::EnterAdvancedSettings",
+   "effect": "page",
+   "owner": "OPTS-5"
+  },
+  {
+   "match": "OpenBFMEEntry",
+   "retail": "(OpenBFME's own page: the OpenBFME options)",
+   "source": "lane OPTS-3, not retail",
+   "effect": "changed",
+   "owner": "OPTS-5"
+  },
+  {
+   "match": "DescreetSlider",
+   "retail": "a step of an advanced option's slider: sets that value (the step becomes the shown one)",
+   "source": "Options.apt",
+   "effect": "page | probe:options",
+   "owner": "OPTS-5"
+  },
+  {
+   "match": "\\.wnd:#",
+   "retail": "a row's control of OpenBFME's one Options menu (OPTS-5, not retail layout: S-4670): changes that option",
+   "source": "AptOptionsScreen / OpenBFMEOptionsPage (S-4670)",
+   "effect": "value | open",
+   "owner": "OPTS-5",
+   "note": "OPTS-5's own checks cover the menu's rows too"
+  },
+  {
+   "match": "Options::",
+   "retail": "an option's control: changes the value",
+   "source": "AptOptions::InitGadgets",
+   "effect": "value | open",
+   "owner": "OPTS-5"
+  },
+  {
+   "match": "_level3\\.Resume\\.",
+   "retail": "closes the quit menu, the game goes on",
+   "source": "QuitMenuReturn, RW 0x9216B1",
+   "effect": "probe:quit_menu_open"
+  },
+  {
+   "match": "_level3\\.Options\\.TheButton",
+   "retail": "Options over the game",
+   "source": "QuitMenuOptions, RW 0x91ED91",
+   "effect": "screen:Options.apt"
+  },
+  {
+   "match": "_level3\\.Save\\.TheButton",
+   "retail": "the save page over the game",
+   "source": "QuitMenuSave, RW 0x92179F",
+   "effect": "screen:SaveLoad.apt"
+  },
+  {
+   "match": "_level3\\.Load\\.TheButton",
+   "retail": "the load page over the game",
+   "source": "QuitMenuLoad, RW 0x9217F0",
+   "effect": "screen:SaveLoad.apt"
+  },
+  {
+   "match": "_level3\\.Restart\\.TheButton",
+   "retail": "asks, then restarts the game",
+   "source": "QuitMenuRestart, RW 0x9220DE",
+   "effect": "page:Yes"
+  },
+  {
+   "match": "_level3\\.(ExitMission|Exit)\\.TheButton",
+   "retail": "asks, then leaves the game to the score screen",
+   "source": "QuitMenuExit, RW 0x921904",
+   "effect": "page:Yes"
+  },
+  {
+   "match": "popup\\.navSearching\\.No",
+   "retail": "the question's No: back to the quit menu",
+   "source": "QuitMenu.apt popup",
+   "effect": "page:TheButton"
+  },
+  {
+   "match": "popup\\.navSearching\\.Yes",
+   "retail": "the question's Yes: carries the restart / exit out",
+   "source": "QuitMenu.apt popup",
+   "effect": "screen:LoadScreen.apt | screen:TimeLine.apt",
+   "ignore_unhandled": [
+    "OnAptInGameSideCommandBarButtonFrameUnloaded"
+   ],
+   "note": "the HUD's side command bar teardown callback (a game.dat name) has no handler: an in-game HUD gap, not this button's"
+  },
+  {
+   "match": "MainButtons\\.Skip",
+   "retail": "the score screen: skips the timeline to the end",
+   "source": "TimeLine.apt, AptTimeLine",
+   "effect": "page:More"
+  },
+  {
+   "match": "MainButtons\\.More",
+   "retail": "the score screen: the second page (Back, Continue)",
+   "source": "TimeLine.apt",
+   "effect": "page:Continue"
+  },
+  {
+   "match": "MainButtons\\.Back",
+   "retail": "the score screen: back to the first page",
+   "source": "TimeLine.apt",
+   "effect": "page:More"
+  },
+  {
+   "match": "MainButtons\\.Continue",
+   "retail": "leaves the score screen (to the lobby the game came from)",
+   "source": "ScoreScreenContinue (AptTimeLine)",
+   "effect": "screen:Skirmish.apt | screen:MainMenu.apt"
+  },
+  {
+   "match": "Main\\.\\$\\w+Tab|Main\\.TabButtons\\.(Units|Structures|Resources)",
+   "retail": "a score screen tab (units, structures, resources ...)",
+   "source": "TimeLine.apt",
+   "effect": "page | gadget:AptTimeLine"
+  },
+  {
+   "match": "Main\\.Button\\d\\.OnSort",
+   "retail": "a score screen column header: sorts the players",
+   "source": "AptTimeLine OnSortName",
+   "effect": "page | gadget:AptTimeLine"
+  },
+  {
+   "match": "StatsList",
+   "retail": "the score screen's statistics list: selects a row",
+   "source": "AptTimeLine::StatsList",
+   "effect": "select | nothing"
+  }
+ ]
+}

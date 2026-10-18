@@ -12,6 +12,7 @@
 #include "GameLogic/GameMessage.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "Common/PlayerHeroList.h"
 #include "Common/PlayerTemplate.h"
@@ -46,13 +47,26 @@ namespace
 {
 const char *kPaletteSize = nullptr;
 
+bool modelConditionsAllow(const CommandButton &b, const Object &obj)
+{
+	bool needsCondition = false, enabled = false, disabled = false;
+	for (size_t i = 0; i < b.m_enableOnModelCondition.size(); ++i)
+	{
+		const auto bits = obj.getModelConditionBits()[i];
+		needsCondition = needsCondition || b.m_enableOnModelCondition[i] != 0;
+		enabled = enabled || (bits & b.m_enableOnModelCondition[i]) != 0;
+		disabled = disabled || (bits & b.m_disableOnModelCondition[i]) != 0;
+	}
+	return !disabled && (!needsCondition || enabled);
+}
+
 int hotkeyOf(const std::string &)
 {
 	return 0; // the `&` accelerator of a label needs the game text: the HUD fills it when a text source is given
 }
 } // namespace
 
-ButtonState ControlBar::evaluate(const CommandButton &b, Object &obj)
+ButtonState ControlBar::evaluate(const CommandButton &b, Object &obj, bool ignoreDisabled)
 {
 	// ZH ControlBar::getCommandAvailability (ControlBarCommand.cpp:1017), the subset whose logic is ported (stop S-290)
 	Player *player = obj.getControllingPlayer();
@@ -60,10 +74,10 @@ ButtonState ControlBar::evaluate(const CommandButton &b, Object &obj)
 	{
 		return ButtonState::Hidden;
 	}
-	ProductionUpdateInterface *pu = obj.getProductionUpdate();
-	if (pu && pu->firstProduction() && b.hasOption(COMMAND_OPTION_NOT_QUEUEABLE))
+	// RW 0x9427A0..0x9427B7: script disabled / unpowered and DISABLED_UNMANNED hide even the disabled-command exceptions.
+	if ((obj.scriptStatus() & 3u) != 0 || obj.isDisabledByType(DISABLED_UNMANNED))
 	{
-		return ButtonState::Restricted;
+		return ButtonState::Hidden;
 	}
 	// lane FACT-A: RW 0x942733 (RotWK's getCommandAvailability), before its command switch: a MOUNTED_ONLY button is disabled (0) while the object lacks the
 	// model condition MOUNTED (object + 0x124 >> 22 & 1: model condition 214), an UNMOUNTED_ONLY one while it has it (Glorfindel's Wind Rider, the mounted heroes)
@@ -72,11 +86,30 @@ ButtonState ControlBar::evaluate(const CommandButton &b, Object &obj)
 	{
 		return ButtonState::Restricted;
 	}
+	// RW 0x942490: each mask is an ANY intersection. SPECIAL_POWER defers this check until after readiness (RW 0x9435C3 / 0x9435DC).
+	if (b.m_command != GUI_COMMAND_SPECIAL_POWER && !modelConditionsAllow(b, obj))
+	{
+		return ButtonState::Restricted;
+	}
+	// RW 0x942833..0x94284E: no tracker, or a positive RequireLevel above the current rank, hides the button.
+	const ExperienceTracker *xp = obj.getExperienceTracker();
+	if (!xp || (b.m_requireLevel > 0 && xp->getRank() < b.m_requireLevel))
+	{
+		return ButtonState::Hidden;
+	}
+	// RW 0x942854..0x9428C6: TEMPORARILY_BUSY alone is ignored. Other disabled objects retain hidden results on a recursive pass, otherwise restrict.
+	const auto disabled = obj.getDisabledMask();
+	if (!ignoreDisabled && disabled != 0 && disabled != (1u << DISABLED_TEMPORARILY_BUSY) &&
+		b.m_command != GUI_COMMAND_EVACUATE && b.m_command != GUI_COMMAND_CREW_EVACUATE && b.m_command != GUI_COMMAND_EXIT_CONTAINER &&
+		b.m_command != GUI_COMMAND_BEACON_DELETE && b.m_command != GUI_COMMAND_SET_RALLY_POINT && b.m_command != GUI_COMMAND_SWITCH_WEAPON)
+	{
+		return evaluate(b, obj, true) == ButtonState::Hidden ? ButtonState::Hidden : ButtonState::Restricted;
+	}
 	// lane FACT-B, RW 0x9428A3 .. 0x942993 (before every command's own rule): a NEED_UPGRADE button (Options bit 0x40) needs its NeededUpgrade list (+0x28):
 	// every entry, or any one with NeededUpgradeAny (+0x34). A PLAYER entry asks Player::hasUpgradeComplete (RW 0x6AC2AF), an OBJECT entry Object::hasUpgrade
 	// (RW 0x691421). A missing entry restricts the button (RW 0x9438C8: 0), except that a missing OBJECT entry hides a build button whose template is
 	// Buildable = No, or Only_By_AI for a human (RW 0x942950 .. 0x942972: 3)
-	if (b.hasOption(COMMAND_OPTION_NEED_UPGRADE) && !b.m_neededUpgrade.empty())
+	if (b.hasOption(COMMAND_OPTION_NEED_UPGRADE))
 	{
 		bool restricted = b.m_neededUpgradeAny;
 		for (const std::string &name : b.m_neededUpgrade)
@@ -120,8 +153,15 @@ ButtonState ControlBar::evaluate(const CommandButton &b, Object &obj)
 			return ButtonState::Restricted;
 		}
 	}
+	ProductionUpdateInterface *pu = obj.getProductionUpdate();
+	if (pu && pu->firstProduction() && b.hasOption(COMMAND_OPTION_NOT_QUEUEABLE))
+	{
+		return ButtonState::Restricted;
+	}
 	switch (b.m_command)
 	{
+		case GUI_COMMAND_REVIVE:
+			return ButtonState::Enabled; // record-specific rules follow in reviveButton; these common gates run first
 		case GUI_COMMAND_UNIT_BUILD:
 		case GUI_COMMAND_DOZER_CONSTRUCT:     // BUILD-1: a builder's or a plot's building button (the same availability: command set, price, command points, maximum)
 		case GUI_COMMAND_FOUNDATION_CONSTRUCT:
@@ -160,6 +200,7 @@ ButtonState ControlBar::evaluate(const CommandButton &b, Object &obj)
 		case GUI_COMMAND_ATTACK_MOVE:
 		case GUI_COMMAND_SELL:
 		case GUI_COMMAND_HORDE_TOGGLE_FORMATION:
+		case GUI_COMMAND_BLOODTHIRSTY:
 			return ButtonState::Enabled;
 		case GUI_COMMAND_SET_RALLY_POINT:
 			return obj.getProductionUpdate() ? ButtonState::Enabled : ButtonState::Restricted;
@@ -306,20 +347,53 @@ ButtonState ControlBar::evaluate(const CommandButton &b, Object &obj)
 		}
 		case GUI_COMMAND_SPECIAL_POWER:
 		{
-			// lane HERO-1 (S-850): a special power button of the object (the hero abilities): no module of the power on the object hides it, a paused module (an
-			// ability its level has not unlocked) is restricted, a recharging one not ready (its timer), else enabled
+			// RW 0x943343..0x943606: the special-power availability branch (remaining update-module / BattlePlan gates: S-850).
 			const SpecialPowerTemplate *t = specialPowerOf(b);
-			SpecialPowerModuleInterface *sp = t ? SpecialPowerModules::findModule(obj, t) : nullptr;
-			if (!sp)
+			// RW 0x943343..0x943433: ShowButton, an active owner, the first owned RequiredScience, then PreventActivationConditions (RW 0x75CDC4).
+			if (!b.m_showButton || !t || player->isDefeated())
 			{
 				return ButtonState::Hidden;
 			}
+			if (!t->getRequiredSciences().empty())
+			{
+				const auto &sciences = t->getRequiredSciences();
+				auto owned = std::find_if(sciences.begin(), sciences.end(), [&](ScienceType science) { return player->science().hasScience(science); });
+				if (owned == sciences.end() || *owned == SCIENCE_INVALID)
+				{
+					return ButtonState::Hidden;
+				}
+				if (player->isScienceDisabled(*owned) || player->isScienceHidden(*owned))
+				{
+					return ButtonState::Restricted;
+				}
+			}
+			for (unsigned i = 0; i < t->m_preventActivationConditions.size() * 32; ++i)
+			{
+				if ((t->m_preventActivationConditions[i / 32] & (1u << (i % 32))) && obj.testStatus(i))
+				{
+					return ButtonState::Restricted;
+				}
+			}
+			SpecialPowerModuleInterface *sp = t ? SpecialPowerModules::findModule(obj, t) : nullptr;
+			if (!sp)
+			{
+				return ButtonState::Enabled; // RW 0x9434F7..0x943564: missing module (including the CommandTrigger scan) falls through to availability 1
+			}
 			const SpecialPowerModule *m = dynamic_cast<const SpecialPowerModule *>(sp);
-			if ((m && m->pauseCount() > 0) || !sp->requirementsMet())
+			if (!sp->requirementsMet())
 			{
 				return ButtonState::Restricted;
 			}
-			return sp->isReadyForDisplay() ? ButtonState::Enabled : ButtonState::NotReady;
+			if (!sp->isReadyForDisplay())
+			{
+				// RW 0x943585..0x9435D2: paused only disables when progress is nonpositive; positive paused progress still draws a recharge clock.
+				if (!(sp->getPercentReadyForDisplay() > 0.0f) && m && m->pauseCount() > 0)
+				{
+					return ButtonState::Restricted;
+				}
+				return modelConditionsAllow(b, obj) ? ButtonState::NotReady : ButtonState::Restricted;
+			}
+			return modelConditionsAllow(b, obj) ? ButtonState::Enabled : ButtonState::Restricted;
 		}
 		case GUI_COMMAND_CASTLE_UNPACK:
 		case GUI_COMMAND_CASTLE_UNPACK_EXPLICIT_OBJECT:
@@ -400,6 +474,109 @@ std::string ControlBar::heroRecordImage(const HeroRecord &r, const Player &playe
 	return std::string();
 }
 
+// lane DEVPORT-8 (FALSEDEF-1): RW 0x71C7E4 (see ControlBar.h)
+void ControlBar::startAttackFlash()
+{
+	if (!m_flash.window)
+	{
+		return;
+	}
+	++m_flash.starts;
+	m_flash.on = true;
+	m_flash.count = 150;
+	if (m_flash.windowEnabled)
+	{
+		setAttackWindowEnabled(false);
+	}
+}
+
+// RW 0x71C81A (see ControlBar.h)
+void ControlBar::tickAttackFlash()
+{
+	if (!m_flash.on || !m_flash.window)
+	{
+		return;
+	}
+	if (--m_flash.count < 1)
+	{
+		m_flash.on = false;
+		setAttackWindowEnabled(true);
+	}
+	else if (m_flash.count % 15 == 0)
+	{
+		setAttackWindowEnabled(!m_flash.windowEnabled);
+	}
+}
+
+void ControlBar::setAttackWindowEnabled(bool enabled)
+{
+	if (m_flash.windowEnabled != enabled)
+	{
+		++m_flash.toggles;
+	}
+	m_flash.windowEnabled = enabled;
+}
+
+// RW 0x6AAC52 (Player::isPlayerActive) for the local player: not an observer and not defeated (+ 0x35A / + 0x754 clear)
+bool ControlBar::localPlayerActive(const Player *local)
+{
+	return local && !local->isObserver() && !local->isDefeated();
+}
+
+// lane OWNERFIX-3: updateContextCommand (RW 0x94397F .. 0x943B1E; BFME2 decomp ControlBarRappellerCount.cpp getCommandAvailability's caller, tier C) for an
+// object that is not locally controlled (RW 0x68B749) while the local player is active (RW 0x6AAC52): every availability other than 0 (disabled), 3 (hidden)
+// and 4 becomes 0 and the converted flag (bl, RW 0x943B18) keeps it from HIDE_WHILE_DISABLED; availability 0 disables the window (winEnable(false) and the
+// grey-overlay status 0x80000000, RW 0x943C0E / 0x943C15), so the Palantir shows the "_disabled" clip with a grey image and the bubbles a grey image; the
+// clock is not set for it ([ebp - 0xf], RW 0x943C7A), and the Palantir clip's update skips its auto-ability glow and its count (RW 0x9D2B49 -> 0x9D2D37).
+// (Availability 4 is not distinguished from 0 in this model: both are Restricted, stop S-290's note in acceptanceStops.)
+void ControlBar::foreignDisable(ControlBarButton &cb) const
+{
+	if (!m_foreignView || cb.state == ButtonState::Hidden)
+	{
+		return;
+	}
+	cb.state = ButtonState::Restricted;
+	cb.timer = -1.0f;
+	cb.autoAbility = false;
+	cb.productionCount = 0;
+}
+
+// lane OWNERFIX-3: the count a command window shows (RW 0x729D9A, the update of a push button whose ShowProductionCount flag RW 0x7297CC set from
+// CommandButton + 0x104 in setControlCommand RW 0x71CF3E; BFME2 decomp GadgetButtonSetText.cpp Rva00328354Update, tier B same-shape): 0 unless the button
+// shows production counts and the object has a production interface and the button a template (RW 0x75D1DC, the final override's). With BuildUpgrades
+// (+ 0x38, the upgrades' mask bits through TheUpgradeCenter RW 0x66F5E5 -> + 0x38, RW 0x75D176; any bit set, RW 0x444DCE) the queue entries whose + 0x30
+// index is one of those bits (ProductionUpdate vslot 0x50, RW 0x8A0844); else the entries of type 1 (unit) or 3 (build index) (RW 0x729661) whose template
+// the button's is equivalent to (RW 0x73D5C2 with the button's template as this) (vslot 0x48, RW 0x8A05F2). Entries, not units: a batch counts once
+int ControlBar::productionCountOf(const CommandButton &b, const ProductionUpdateInterface *pu)
+{
+	const ThingTemplate *tt = b.getThingTemplate();
+	if (!b.m_showProductionCount || !pu || !tt)
+	{
+		return 0;
+	}
+	std::vector<int> bits;
+	for (const std::string &name : b.m_buildUpgrades)
+	{
+		if (const UpgradeTemplate *u = TheUpgradeCenter ? TheUpgradeCenter->findUpgrade(name) : nullptr)
+		{
+			bits.push_back(u->getMaskBit());
+		}
+	}
+	int count = 0;
+	for (const ProductionEntry *e = pu->firstProduction(); e; e = pu->nextProduction(e))
+	{
+		if (!bits.empty())
+		{
+			count += (e->value30 != -1 && std::find(bits.begin(), bits.end(), e->value30) != bits.end()) ? 1 : 0;
+		}
+		else if ((e->type == PRODUCTION_UNIT || e->type == PRODUCTION_BUILD_INDEX) && BuildAssistant::isEquivalentTo(tt, e->objectToProduce))
+		{
+			++count;
+		}
+	}
+	return count;
+}
+
 void ControlBar::update()
 {
 	(void)kPaletteSize;
@@ -427,6 +604,7 @@ void ControlBar::update()
 	m_portrait.clear();
 	m_displayName.clear();
 	m_underConstruction = false;
+	m_foreignView = false;
 	if (obj && isUnderConstructionContext(*obj))
 	{
 		m_displayName = obj->getTemplate() ? obj->getTemplate()->getName() : std::string();
@@ -437,10 +615,16 @@ void ControlBar::update()
 	{
 		m_displayName = obj->getTemplate() ? obj->getTemplate()->getName() : std::string();
 		const bool mine = HudObjects::isLocallyControlled(m_ctx, *obj);
-		m_setName = mine ? obj->getCommandSetName() : std::string();
+		// lane OWNERFIX-3: evaluateContextUI (RW 0x71EBDA; BFME2 0x71D230, tier B) gives any object with a command set context 1, populateCommand (RW 0x943D6F),
+		// whoever controls it: the bar shows another player's command set too. updateContextCommand (RW 0x94397F) then disables its buttons while the local
+		// player is active (foreignView, below); an inactive local player (observer, defeated: RW 0x6AAC52 false) sees their real availability
+		m_foreignView = !mine && localPlayerActive(local);
+		m_setName = obj->getCommandSetName();
 		const CommandStore *store = m_ctx.commands;
 		const CommandSet *set = (store && !m_setName.empty()) ? store->findCommandSet(m_setName) : nullptr;
-		ProductionUpdateInterface *pu = mine ? obj->getProductionUpdate() : nullptr;
+		// the queue and the production count (RW 0x729D9A reads the selected object's production interface whoever owns it; the Palantir skips the count of a
+		// foreign object, RW 0x9D2B49, and the ring is cleared for it, RW 0x945938): none for a foreign view
+		ProductionUpdateInterface *pu = m_foreignView ? nullptr : obj->getProductionUpdate();
 		if (set)
 		{
 			const int start = m_rangeStack.back().first, count = m_rangeStack.back().second;
@@ -464,7 +648,10 @@ void ControlBar::update()
 					int j = 0;
 					std::map<std::string, int> seen;
 					std::string tmpl;
-					const PlayerTemplate *pt = local ? local->getPlayerTemplate() : nullptr;
+					// lane OWNERFIX-3: the records and the player template are the object's controlling player's (RW 0x943D6F: Object + 0x31C's player,
+					// RW 0x68B678, at [ebp - 0x1c]; the local player's for the local player's own buildings)
+					Player *owner = obj->getControllingPlayer();
+					const PlayerTemplate *pt = owner ? owner->getPlayerTemplate() : nullptr;
 					for (int k = 0; k <= slot; ++k)
 					{
 						const CommandButton *o = set->getCommandButton(k);
@@ -492,24 +679,16 @@ void ControlBar::update()
 						}
 					}
 					const ThingTemplate *rt = tmpl.empty() ? nullptr : m_ctx.logic.things().findTemplate(tmpl);
-					const int n = (rt && local) ? local->heroes().findIndex(*rt, 0xFFFFFFFFu, seen[tmpl]) : -1;
-					if (b->hasOption(COMMAND_OPTION_NEED_UPGRADE) && !b->m_neededUpgrade.empty() && local)
-					{
-						bool have = false;
-						for (const std::string &u : b->m_neededUpgrade)
-						{
-							const UpgradeTemplate *ut = TheUpgradeCenter ? TheUpgradeCenter->findUpgrade(u) : nullptr;
-							have = have || (ut && (local->hasUpgradeComplete(ut) || obj->hasUpgrade(ut)));
-						}
-						if (!have)
-						{
-							continue;
-						}
-					}
-					if (n < 0 || !local || !reviveButton(cb, n, *local, *obj))
+					const int n = (rt && owner) ? owner->heroes().findIndex(*rt, 0xFFFFFFFFu, seen[tmpl]) : -1;
+					if (n < 0 || !owner || !reviveButton(cb, n, *owner, *obj))
 					{
 						continue;
 					}
+					if (cb.state == ButtonState::Hidden || (cb.state == ButtonState::Restricted && b->hasOption(0x400000u)))
+					{
+						continue;
+					}
+					foreignDisable(cb);
 					cb.inPalantir = b->m_inPalantir;
 					cb.textLabel = b->m_textLabel.empty() ? std::string() : b->m_textLabel.front();
 					cb.descriptLabel = b->m_descriptLabel.empty() ? std::string() : b->m_descriptLabel.front();
@@ -518,10 +697,10 @@ void ControlBar::update()
 				}
 				cb.state = evaluate(*b, *obj);
 				// lane HUD-6: RW 0x943B39 .. 0x943B4C: a disabled button (availability 0) with the option HIDE_WHILE_DISABLED (CommandButton + 0x1E & 0x40,
-				// option bit 22 of RW 0xDA4C88) is hidden (3), unless the object is another player's while the local player is active (bl, RW 0x943B18):
-				// the Mordor fortress's spire fireball before its upgrade
-				const bool otherPlayers = obj->getControllingPlayer() != local;
-				if (cb.state == ButtonState::Restricted && b->hasOption(0x400000u) && !otherPlayers)
+				// option bit 22 of RW 0xDA4C88) is hidden (3): the Mordor fortress's spire fireball before its upgrade. Lane OWNERFIX-3: the exception (bl,
+				// RW 0x943B18) is only for a button updateContextCommand itself turned to 0 in a foreign view (foreignDisable): one whose own availability was
+				// already 0 hides for every viewer
+				if (cb.state == ButtonState::Restricted && b->hasOption(0x400000u))
 				{
 					continue;
 				}
@@ -602,12 +781,21 @@ void ControlBar::update()
 				{
 					cb.autoAbility = aa->isAutoButton(*b);
 				}
+				cb.productionCount = productionCountOf(*b, pu);
+				foreignDisable(cb);
 				place(cb, start);
 			}
 			// RW 0x943D6F: a contain that shows its riders on the control bar (contain slot 0xC8) fills the set's EXIT_CONTAINER buttons
 			if (ContainModuleInterface *c = obj->getContain(); c && c->isDisplayedOnControlBar())
 			{
 				doTransportInventoryUI(*obj);
+				for (auto *list : { &m_palantir, &m_side, &m_offBar })
+				{
+					for (ControlBarButton &r : *list)
+					{
+						foreignDisable(r); // the riders' buttons too (RW 0x94251F runs before updateContextCommand)
+					}
+				}
 			}
 		}
 		else if (obj->getCommandSetName().empty())
@@ -644,8 +832,7 @@ void ControlBar::update()
 	emitStateKey();
 }
 
-// lane HERO-1 (S-850): a REVIVE button for record `n` (false: no record, the button is hidden). The availability is the logic's (BuildAssistant::canMakeUnit
-// with the build index, RW 0x793ECB; RW 0x942733's UI rules beyond it are S-290's); the cost is the record's (RW 0x780614), the timer its production progress
+// RW 0x942ECF..0x942FC1: common availability, dead producer, allowedToBuild, canMakeUnit, then the distinct hero availability query (RW 0x780D22).
 // (RW 0x780C9F) while it is queued
 bool ControlBar::reviveButton(ControlBarButton &cb, int n, Player &player, Object &producer)
 {
@@ -658,19 +845,36 @@ bool ControlBar::reviveButton(ControlBarButton &cb, int n, Player &player, Objec
 	cb.reviveIndex = n;
 	cb.image = heroRecordImage(*r, player);
 	cb.cost = list.costAt(m_ctx.logic, player, n, &producer);
-	if (r->startFrame >= 0)
+	cb.state = evaluate(*cb.button, producer);
+	if (cb.state != ButtonState::Enabled)
 	{
-		cb.queued = 1;
-		cb.timer = (float)list.progressAt(m_ctx.logic, player, n, &producer);
-		cb.state = ButtonState::NotReady;
+		return true;
+	}
+	if (producer.isEffectivelyDead() || !BuildAssistant::playerAllowedToBuild(player, list.templateAt(m_ctx.logic, n), m_ctx.logic))
+	{
+		cb.state = ButtonState::Restricted;
 		return true;
 	}
 	switch (BuildAssistant::canMakeUnit(producer, nullptr, n))
 	{
-		case CANMAKE_OK: cb.state = ButtonState::Enabled; break;
-		case CANMAKE_NO_MONEY: cb.state = ButtonState::CantAfford; break;
-		default: cb.state = ButtonState::Restricted; break;
+		case CANMAKE_NO_MONEY:
+			cb.state = ButtonState::CantAfford;
+			return true;
+		case CANMAKE_UNKNOWN_7:
+		case CANMAKE_MAXED_OUT_FOR_PLAYER:
+		case CANMAKE_PARKING_PLACES_FULL:
+			cb.state = ButtonState::Restricted;
+			return true;
+		default:
+			break; // RW 0x942F4E..0x942F69: other results still query progress
 	}
+	unsigned cost = 0;
+	const double progress = list.availabilityAt(m_ctx.logic, player, n, &producer, &cost);
+	const float stored = (float)progress;
+	cb.queued = r->startFrame != -1 ? 1 : 0;
+	cb.timer = cb.queued ? stored : -1.0f;
+	cb.state = progress == 0.0 ? ButtonState::Restricted : stored != 1.0f ? ButtonState::NotReady :
+		player.getMoney()->countMoney() < cost ? ButtonState::CantAfford : ButtonState::Enabled;
 	return true;
 }
 
@@ -961,15 +1165,13 @@ std::vector<std::string> ControlBar::acceptanceStops()
 		"[S-289] control bar placement (HUD-4, RW 0x943D6F / 0x92FF5C / 0x92F082): window i shows slot rangeStart + i; the Palantir arc shows windows 0 .. 5 whose "
 		"button is InPalantir, the side command bar every Radial button in window order; a button in neither is off the bar as in retail (offBarButtons: Attack-Move / "
 		"Stop / the SET_STANCE slots, reached by hotkey); the stance buttons: S-3803",
-		"[S-290] control bar availability: the rules that need other lanes' ports (special power cooldown, science, castle / gate commands, weapon toggles, stances, hero revive, spell book, "
-		"script status bits, disabled objects) are not ported: those buttons show as restricted and their presses are counted by ControlBar::unportedPresses()",
+		"[S-290] command availability RW 0x942733 is partial: common script / disabled / rank / model-condition gates, NeededUpgrade, hero availability and "
+		"special-power science / status, deferred model-mask and paused-progress gates are ported; unresolved receiver state, command-center substitution, special-power substitution / trigger chains and "
+		"the remaining command-specific branches are documented in docs/re/rotwk/RW_0x942733.md; availability 4/7 still use Restricted",
 		"[S-1990] FIRE_WEAPON buttons (lane FACT-B: the archers' and siege engines' Bombard, the explosive mine's Deploy, the Mumakil's Charge): RotWK's "
 		"availability (RW 0x942733 case 0x17: the weapon of WeaponSlot and its clip) and press (RW 0x940435 case 0x17: MSG_DO_WEAPON with WeaponSlot and "
 		"MaxShotsToFire, a targeted one through the GUI command's issueFireWeaponCommand) are not ported, nor the logic's MSG_DO_WEAPON / _AT_LOCATION / "
 		"_AT_OBJECT and the AI's attack-position state (S-325): the buttons show restricted",
-		"[S-1991] BLOODTHIRSTY buttons (lane FACT-B: the Uruk and orc hordes' Bloodthirsty Sacrifice, NEED_TARGET_ALLY_OBJECT CONTEXTMODE_COMMAND): no "
-		"availability rule (RW 0x942733 has no case 0x29: available), the target click's MSG_SACRIFICE (1056) and BloodthirstyUpdate are not ported: the "
-		"buttons show restricted",
 		"[S-1992] TOGGLE_NO_AUTO_ACQUIRE buttons (lane FACT-B: the catapult's and ballista's auto-acquire toggle): the press (RW 0x940435 case 0x30: "
 		"MSG_TOGGLE_NO_AUTO_ACQUIRE 1115 with the object, then the button image RW 0x75D366) and the logic's flag are not ported: the buttons show restricted",
 		"[S-1260] transport inventory (lane UI-1): the riders on a container's EXIT_CONTAINER buttons (RW 0x94251F), the press as MSG_EXIT (RW 0x940FEF), EVACUATE while "
@@ -983,6 +1185,11 @@ std::vector<std::string> ControlBar::acceptanceStops()
 		"(Gui_PalantirCommandButtonClick / DisabledClick, RW 0x9D2941); INFERENCE: only the command button clips of the Palantir see right presses (retail "
 		"posts every right press into the Apt, RW 0x83EE14, and its other handlers test TheAptWindowManager + 0x318 themselves; ours do not); the radial "
 		"menu's right press keeps only its build cancel (HUD-6)",
+		"[S-5040] another player's command set (lane OWNERFIX-3): evaluateContextUI (RW 0x71EBDA) and updateContextCommand (RW 0x94397F) are ported: the bar "
+		"shows the set of a selected object the local player does not control, every availability but hidden turned to disabled while the local player is "
+		"active (RW 0x6AAC52), no clock, glow or count; an observer sees the real availability; INFERENCE: presses of such a set (left, right, hotkey) send "
+		"nothing (retail's logic refuses a non-owner's command; its disabled windows take no left press); availability 4 is not told apart from 0 (S-290); "
+		"a disabled Palantir button's image is drawn in greyscale with the bubbles' luminance weights (RotWK's RenderImage callback not read)",
 		"[S-3801] under-construction context (lane PLAY-4, evaluateContextUI RW 0x71EBDA -> populateUnderConstruction RW 0x944EFB): a structure whose GettingBuiltBehavior "
 		"rebuilds it or has + 0x36 set while UNDER_CONSTRUCTION (+ 0x36 alone when not), or with the model condition BASE_BUILD, shows only Command_CancelConstruction "
 		"(not for DONT_USE_CANCEL_BUILD_BUTTON; enabled for its controller; MSG_DOZER_CANCEL_CONSTRUCT, RW 0x9409A1); not ported: the WALL_UPGRADE whose Object query "
@@ -991,9 +1198,6 @@ std::vector<std::string> ControlBar::acceptanceStops()
 		"[S-3803] stance buttons (lane PLAY-4): SET_STANCE and TOGGLE_STANCE send MSG_CHANGE_STANCE with the stance (RW 0x96F53C), TOGGLE_STANCE is available with a "
 		"StancesBehavior (RW 0x942A77) and shows the current stance's image and labels (StanceToButtonSlot); INFERENCE: retail opens the toggle's radial sub-menu "
 		"(PalantirCommandUI::OnSubMenuLoaded RW 0x97004A / 0x96FDFD, not ported) and sends the picked stance; here a press sends the next stance of the button's list",
-		"[S-3951] the right press's production cancel (lane HUD-7): a CANCELABLE UNIT_BUILD button cancels one of its template and a REVIVE button its hero "
-		"record by index (processCommandUI RW 0x940B0E / 0x940C57, MSG_CANCEL_UNIT_CREATE); not ported: the Shift form that cancels them all (RW 0x940CB7 .. "
-		"0x940CDE: Keyboard::isShift RW 0x63F122 while the template's field + 0x5F0 is 0, unidentified): the flag is always false here",
 		"[S-4531] the left press's gate and click sound (lane NETLAG-1, read, not ported): RW 0x9D285E (BFME2 decomp Rva005C3427::Run, tier A) reads the "
 		"command button clip's state (RW 0xA00C0E: clip + 0x50, set by RW 0x9D2BEE: 1 _disabled, 2 _extraDisabled, 3 _cantAfford, 4 _static, 5 _notReady, "
 		"6 _up, 7 _visuallyEnabled) and for 1, 3 and 5 plays Gui_PalantirCommandButtonDisabledClick and drops the press; any other state goes to "

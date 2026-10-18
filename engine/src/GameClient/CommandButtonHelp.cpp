@@ -10,6 +10,7 @@
 #include "Common/INIException.h"
 #include "Common/INI/INIBlockStubs.h"
 #include "Common/Player.h"
+#include "Common/ProductionPrerequisite.h"
 #include "Common/Science.h"
 #include "Common/SpecialPower.h"
 #include "Common/Thing/ThingTemplate.h"
@@ -18,8 +19,10 @@
 #include "GameClient/GUI/GameWindowManager.h"
 #include "GameClient/GUI/LoadScreenInfo.h"
 #include "GameClient/GlobalLanguage.h"
+#include "GameLogic/CreateAHeroSystem.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Module/CastleModules.h"
+#include "GameLogic/Module/ConstructionModules.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/ObjectTemplateInfo.h"
@@ -69,6 +72,11 @@ std::string withoutComment(const std::string &line)
 	}
 	return cut == std::string::npos ? line : line.substr(0, cut);
 }
+size_t indentOf(const std::string &line)
+{
+	const size_t b = line.find_first_not_of(" \t");
+	return b == std::string::npos ? line.size() : b;
+}
 bool firstTokenIsEnd(const std::string &line)
 {
 	const std::string l = withoutComment(line);
@@ -88,6 +96,9 @@ void skipField(INI *ini, void *, void *, const void *userData)
 	{
 		return;
 	}
+	const size_t headerIndent = indentOf(header);
+	// community PR #36: BFME1's InGameUI cursor blocks end at their first End whatever its indent (docs/BFME1.md; BFME1 data only)
+	const bool bfme1 = ini->bfme1Data();
 	for (;;)
 	{
 		const std::string *next = ini->peekNextLine();
@@ -98,7 +109,7 @@ void skipField(INI *ini, void *, void *, const void *userData)
 		}
 		const std::string line = *next;
 		ini->readLine();
-		if (firstTokenIsEnd(line))
+		if (firstTokenIsEnd(line) && (bfme1 || indentOf(line) <= headerIndent))
 		{
 			return;
 		}
@@ -307,6 +318,70 @@ bool HelpBoxSettings::load(ArchiveFileSystem &fs, HelpBoxSettings &out, std::str
 	return l.run("data\\ini\\ingameui.ini", nullptr, error) && l.run("language.ini", nullptr, error) && finish(l, out, error);
 }
 
+bool loadInGameUiString(ArchiveFileSystem *fs, const std::string *memory, const char *field, std::string &out, std::string *error)
+{
+	const char *file = "data\\ini\\ingameui.ini";
+	if (!memory && (!fs || !fs->doesFileExist(file)))
+	{
+		if (error)
+		{
+			*error = std::string("file not found in any mounted archive: ") + file;
+		}
+		return false;
+	}
+	struct State
+	{
+		std::string value;
+		bool seen = false, inGameUi = false;
+	} state;
+	const FieldParse fields[] = {
+		{ field, [](INI *ini, void *instance, void *store, const void *) {
+			  INI::parseAsciiString(ini, instance, store, nullptr);
+			  static_cast<State *>(instance)->seen = true;
+		  }, nullptr, (int)offsetof(State, value) },
+		{ "RadiusCursorTemplate", skipNestedBlock, "RadiusCursorTemplate", 0 },
+		{ nullptr, skipField, "InGameUI", 0 }
+	};
+	INIEnvironment env;
+	env.fileSystem = fs;
+	INIBlockRecorder recorder;
+	RegisterRecordingBlockStubs(env.blocks, recorder, { "InGameUI" }, StubExtent::Lenient);
+	env.blocks.registerBlock("InGameUI", [&](INI *ini) {
+		state.inGameUi = true;
+		ini->initFromINI(&state, fields);
+	});
+	try
+	{
+		INI ini(env);
+		if (memory)
+		{
+			ini.loadMemory(file, std::vector<std::uint8_t>(memory->begin(), memory->end()), INI_LOAD_OVERWRITE);
+		}
+		else
+		{
+			ini.load(file, INI_LOAD_OVERWRITE);
+		}
+	}
+	catch (const std::exception &e)
+	{
+		if (error)
+		{
+			*error = std::string(file) + ": " + e.what();
+		}
+		return false;
+	}
+	if (!state.inGameUi || !state.seen)
+	{
+		if (error)
+		{
+			*error = std::string(file) + (!state.inGameUi ? ": no InGameUI block" : std::string(": InGameUI lacks ") + field);
+		}
+		return false;
+	}
+	out = state.value;
+	return true;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------------------
 // the text (RW 0x807A81)
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -424,10 +499,25 @@ CommandButtonHelp::Text CommandButtonHelp::compose(const ControlBarButton &butto
 	}
 
 	// the repair cost (RW 0x807BFD .. 0x807CAF, START_SELF_REPAIR / START_NEIGHBORHOOD_REPAIR with a selection): the cost of the interface the object's
-	// behavior modules answer at vslot 0x84 (RW 0x68C3E6), vslot 0x30 / 0x50
-	if ((cmd == GUI_COMMAND_START_SELF_REPAIR || cmd == GUI_COMMAND_START_NEIGHBORHOOD_REPAIR) && selection)
+	// behavior modules answer at vslot 0x84 (RW 0x68C3E6), GettingBuiltBehavior's (lane ROTWK-C): vslot 0x30 rebuildCost (RW 0x85657E) for self repair, vslot 0x50
+	// (RW 0x857074: a dead source's own cost when it can rebuild, RW 0x856501, plus the dead equivalent objects of contiguous IDs above, then below) for the
+	// neighborhood, shown truncated (int). Both pass one gate: an object with any of FS_POWER / FS_FACTORY / FS_BASE_DEFENSE / FS_TECHNOLOGY / FS_CASH_PRODUCER
+	// (RW 0x68DAE6 = Object::rva0028D491, bits 62 .. 65 and 135) shows it only at zero health, any other only below full health (body vslot 0x14 != 1)
+	if ((cmd == GUI_COMMAND_START_SELF_REPAIR || cmd == GUI_COMMAND_START_NEIGHBORHOOD_REPAIR) && selection && player)
 	{
-		t.unported.push_back("the repair cost of RW 0x807C14 (the behavior interface RW 0x68C3E6 answers is not ported, S-4612)");
+		const auto *building = dynamic_cast<const GettingBuiltBehavior *>(selection->findModule("GettingBuiltBehavior"));
+		const BodyModuleInterface *body = selection->getBodyModule();
+		bool factionStructure = false;
+		for (const char *kind : { "FS_POWER", "FS_FACTORY", "FS_BASE_DEFENSE", "FS_TECHNOLOGY", "FS_CASH_PRODUCER" })
+		{
+			const int bit = ObjectTemplateInfoBuilder::kindOfIndex(kind);
+			factionStructure = factionStructure || (bit >= 0 && MaskTest(selection->getKindOf(), (unsigned)bit));
+		}
+		if (building && body && (factionStructure ? body->getHealth() == 0.0f : body->getHealth() / body->getMaxHealth() != 1.0f))
+		{
+			const float cost = cmd == GUI_COMMAND_START_SELF_REPAIR ? building->rebuildCost(*player) : building->neighborhoodRebuildCost(*player);
+			t.cost = formatOne(fetchOrMissing(text, "TOOLTIP:Cost"), u16(std::to_string((int)cost)));
+		}
 	}
 
 	// SPELL_BOOK (RW 0x807CBA .. 0x807D88): with a local player, the first of the power's RequiredSciences the local player owns; when that science is
@@ -499,7 +589,28 @@ CommandButtonHelp::Text CommandButtonHelp::compose(const ControlBarButton &butto
 		{
 			t.commandPoints = formatOne(fetchOrMissing(text, "TOOLTIP:CommandPoints"), u16(std::to_string(cp)));
 		}
-		// RW 0x8080B6: the prerequisites into CONTROLBAR:Requirements (retail templates have none, S-207)
+		std::u16string requirements;
+		for (const ProductionPrerequisite &prerequisite : tmpl->getFinalOverride()->productionPrerequisites())
+		{
+			const std::u16string requirement = prerequisite.getRequiresList(player, logic, text);
+			if (!requirement.empty())
+			{
+				if (!requirements.empty())
+				{
+					requirements += u", ";
+				}
+				requirements += requirement;
+			}
+		}
+		if (!requirements.empty())
+		{
+			const std::u16string requirementText = formatOne(fetchOrMissing(text, "CONTROLBAR:Requirements"), requirements);
+			if (!t.description.empty())
+			{
+				t.description += u"\n";
+			}
+			t.description += requirementText;
+		}
 		if (localPlayer && !BuildAssistant::playerAllowedToBuild(*localPlayer, tmpl, logic)) // RW 0x8081F7 (RW 0x6AC856): the local player (+ -0x2C)
 		{
 			if (!t.description.empty())
@@ -633,15 +744,12 @@ CommandButtonHelp::Text CommandButtonHelp::compose(const ControlBarButton &butto
 		{
 			t.description = fetchOrMissing(text, r->dead ? "CONTROLBAR:ToolTipGenericReviveHero" : "CONTROLBAR:ToolTipGenericRecruitHero");
 		}
-		// the name (RW 0x8084CA): a CREATE_A_HERO template's created hero (RW 0x80774E) is not ported (S-4612); else the label formatted with the template's
-		// + 0x60 label (the Hotkey row, RW 0x73C644) fetched, or its DisplayName text (+ 0x30)
+		// the name (RW 0x8084CA): a CREATE_A_HERO template (+ 0x11F bit 0x40) with the player's created hero (RW 0x80774E -> RW 0x61B2DF) formats the label
+		// with that hero's name (lane ROTWK-C); else with the template's + 0x60 label (the Hotkey row, RW 0x73C644) fetched, or its DisplayName text (+ 0x30)
 		const int cahBit = ObjectTemplateInfoBuilder::kindOfIndex("CREATE_A_HERO");
-		if (cahBit >= 0 && MaskTest(ObjectTemplateInfoBuilder::build(*hero).kindOf, (unsigned)cahBit))
-		{
-			t.unported.push_back("the Create-a-Hero name of RW 0x80774E (S-4612)");
-		}
+		const CreateAHeroHero *cah = cahBit >= 0 && MaskTest(ObjectTemplateInfoBuilder::build(*hero).kindOf, (unsigned)cahBit) ? logic.createAHeroes().heroOf(*player) : nullptr;
 		const std::string nameLabel = templateLabel(*hero, "Hotkey");
-		t.name = formatOne(fetchOrMissing(text, label), nameLabel.empty() ? templateText(*hero, "DisplayName", text) : fetchOrMissing(text, nameLabel));
+		t.name = formatOne(fetchOrMissing(text, label), cah ? cah->name : nameLabel.empty() ? templateText(*hero, "DisplayName", text) : fetchOrMissing(text, nameLabel));
 		// "\n" and the rank (RW 0x80858B: APT:RankLabel with the record's + 0x0C)
 		t.description += u"\n";
 		t.description += formatOne(fetchOrMissing(text, "APT:RankLabel"), u16(std::to_string(r->rank)));
@@ -1006,9 +1114,9 @@ std::vector<std::string> CommandButtonHelp::acceptanceStops()
 	return {
 		"[S-2702] command button help (HUD-6, HOVER-1): ported RW 0x807A81's name, description, build cost / free, command points, build-disabled, the "
 		"science pick and cost, SPELL_BOOK's science-disabled test, the upgrade's cost / already-upgraded / conflicting / lacks-prerequisite texts, the "
-		"queue-full and not-enough-money warnings, the revive / recruit name, text, rank and cost, the castle unpack cost and the unit cost of SPECIAL_POWER, "
-		"and InGameCommandButtonHelp (RW 0x974EEB / 0x9744E4 / 0x974795); not ported: the repair cost (S-4612), the Create-a-Hero revive name, the "
-		"Prerequisites text (no retail template has one, S-207); INFERENCE: the word wrap breaks at spaces and '\\n' and centres each line "
+		"queue-full and not-enough-money warnings, the revive / recruit name (the Create-a-Hero name too), text, rank and cost, the repair costs, the castle "
+		"unpack cost and the unit cost of SPECIAL_POWER, "
+		"the Prerequisites text (RW 0x8080B6 -> RW 0x8F9BBF) and InGameCommandButtonHelp (RW 0x974EEB / 0x9744E4 / 0x974795); INFERENCE: the word wrap breaks at spaces and '\\n' and centres each line "
 		"(Render2DSentenceClass not read), a line's leading / trailing blanks are dropped"
 	};
 }

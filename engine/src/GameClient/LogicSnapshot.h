@@ -24,6 +24,7 @@
 #include "GameLogic/ObjectTypes.h"
 #include "GameLogic/System/ShroudManager.h"
 #include "GameClient/DrawableScriptTarget.h"
+#include "GameEngineDevice/W3DDevice/GameClient/W3DVegetationSway.h"
 
 #include <cstdint>
 #include <memory>
@@ -83,6 +84,10 @@ struct ObjectSnapshot
 	// the radar leaves it out and the device layer does not draw it
 	bool shroudedForLocal = false;
 	int objectShroud = 0;          ///< lane PROJ-2: the ObjectShroudStatus for the local player while the shroud is displayed (0 OBJECTSHROUD_INVALID otherwise)
+	// lane VISUAL-2 r2: while the shroud is displayed, the object has a shroud record (retail: partition data, Object + 0x4E4). objectShroud is 0 both for
+	// an ALWAYS_VISIBLE object and for one without a record (a contained object); FXList::doFXObj asks the cell at the position of the latter (RW 0x5E22C4)
+	bool shroudRecord = false;
+	bool effectivelyDead = false;  ///< lane VISUAL-2: Object::isEffectivelyDead (the drawable's shroud grace is 3 s longer, RW 0x64849E: GameClient/DrawableShroud.h)
 	// lane STEALTH-1: the invisibility look for the local player (InvisibilityManager::clientLook, RW 0x81AA03): 0 normal, 1 / 4 the friend's opacity pulse, 3 detected
 	// for an enemy, 5 invisible for an enemy (not drawn, not picked)
 	int stealthLook = 0;
@@ -108,6 +113,7 @@ struct ShroudView
 {
 	bool displayed = false;
 	int localPlayer = -1;
+	std::vector<int> visionPlayers; ///< CASTER-1: one player, or the union of an observed player's allies
 	int countX = 0, countY = 0;
 	float cellSize = 0.0f, originX = 0.0f, originY = 0.0f;
 	unsigned long long version = 0;      ///< the radar's version: edges * 2 + displayed (Radar::shroudVersion)
@@ -140,11 +146,14 @@ struct LogicSnapshot
 	std::shared_ptr<const ShroudView> shroud;   ///< null without a shroud manager
 	std::shared_ptr<const PlayerView> players;
 	std::shared_ptr<const EndGameView> endGame; ///< lane END-1: the victory state the end sequence reads (GameClient/EndGame.h)
+	std::vector<ObjectID> observedSelection; ///< CASTER-1: recorded command selection, never a new selection command
+	W3DVegetationSway::Breeze breeze;            ///< lane VISUAL-2: TheScriptEngine's breeze (RW + 0x1A5A8) the tree sway reads
 
 	const ObjectSnapshot *find(ObjectID id) const;
 
 	// Builds the snapshot of the logic's current (completed) state. `previous` gives lastMovedFrame its history (null: the first snapshot).
 	// Must run on the thread that owns the simulation, between frames.
 	// lane ONLINE-3: viewPlayer >= 0: the shroud of that player instead of the local player's (the player an observer looks at, LiveGame::observeNextPlayer)
-	static std::shared_ptr<const LogicSnapshot> build(GameLogic &logic, const LogicSnapshot *previous, bool hashed, std::uint32_t stateHash, int viewPlayer = -1);
+	static std::shared_ptr<const LogicSnapshot> build(GameLogic &logic, const LogicSnapshot *previous, bool hashed, std::uint32_t stateHash, int viewPlayer = -1,
+		bool teamVision = false); ///< viewPlayer -2: omniscient presentation (no simulation mutation)
 };

@@ -218,6 +218,10 @@ func run(problem: String) -> int:
 
 
 func _update(problem: String, playing: String) -> int:
+	if updater.macos_updates_unsupported():
+		Log.line("LAUNCHER macOS automated updates are unsupported; continuing with the bundled game")
+		_status("Automatic macOS updates are unavailable. The bundled game starts.", true)
+		return 0
 	if problem != "":
 		_status("Updates are off: %s." % problem, true)
 		return 2

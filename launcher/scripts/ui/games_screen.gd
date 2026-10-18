@@ -2,6 +2,8 @@
 ## asks for its folders on its next start), and the All In One download (lane AIO-1: what, from where, into which folder, its progress
 ## with Pause and Cancel). Lane UI-3's Settings folders and its "Download the games" dialog, moved here; scripts/main.gd does the work.
 ## Nothing downloads until the player presses Download: that press is the consent scripts/core/aio_install.gd logs.
+## Community PR #36: when Battle for Middle-earth I is the chosen game, the download panel offers the optional BFME1 package instead
+## (set_offer), labelled as coming from BFME Arena, a third party; it is never offered otherwise.
 extends Control
 
 signal forget_folders
@@ -16,12 +18,20 @@ const Paths := preload("res://scripts/ui/paths.gd")
 const VectorIcon := preload("res://scripts/ui/vector_icon.gd")
 const AioInstall := preload("res://scripts/core/aio_install.gd")
 
+const DL_TITLE := "Download the games"
+const DL_SOURCE := "Files from the All In One BFME Launcher service (BFME Foundation, Patch 2.22 team). Every file is checked."
+const BFME1_TITLE := "Battle for Middle-earth I (optional)"
+const BFME1_SOURCE := "Downloaded from BFME Arena (bfmeladder.com), a third-party service. OpenBFME does not host or distribute it. Every file is checked."
+
 var folder := ""
+var offer_bfme1 := false  # the download panel offers the optional BFME1 package (set_offer)
 var _found_title: Label
 var _games: VBoxContainer
 var _folders: VBoxContainer
 var _forget: Button
 var _what: Label
+var _dl_title: Label
+var _source: Label
 var _where: Label
 var _go: Button
 var _off: Label
@@ -65,10 +75,12 @@ func _init() -> void:
 	dl.panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dl.panel.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	grid.add_child(dl.panel)
-	dl.box.add_child(W.h3("Download the games"))
+	_dl_title = W.h3(DL_TITLE)
+	dl.box.add_child(_dl_title)
 	_what = W.wrap("", "Muted")
 	dl.box.add_child(_what)
-	dl.box.add_child(W.wrap("Files from the All In One BFME Launcher service (BFME Foundation, Patch 2.22 team). Every file is checked.", "Muted"))
+	_source = W.wrap(DL_SOURCE, "Muted")
+	dl.box.add_child(_source)
 	var link := LinkButton.new()
 	link.text = AioInstall.PAGE.trim_prefix("https://")
 	link.uri = AioInstall.PAGE
@@ -124,7 +136,9 @@ func set_folders(f: Dictionary, demo := false) -> void:
 	_found_title.text = "FOUND" if f.found else "NOT FOUND"
 	for c in _games.get_children() + _folders.get_children():
 		c.queue_free()
-	var games := [["Battle for Middle-earth I 1.03", f.get("bfme1", "")], ["The Rise of the Witch-king 2.01", f.rotwk], ["Battle for Middle-earth II 1.06", f.bfme2]]
+	var games := [["The Rise of the Witch-king 2.01", f.rotwk], ["Battle for Middle-earth II 1.06", f.bfme2]]
+	if String(f.get("bfme1", "")) != "":
+		games.push_front(["Battle for Middle-earth I 1.03", f.bfme1]) # community PR #36: the optional BFME1 folder, listed when one was found
 	for i in games.size():
 		var ok := String(games[i][1]) != "" and (demo or DirAccess.dir_exists_absolute(games[i][1]))
 		var mark := W.label("✓" if ok else "—")
@@ -149,13 +163,21 @@ func set_folders(f: Dictionary, demo := false) -> void:
 	_forget.visible = f.source == "config"
 
 
-## gb: the download's size; packages: AioInstall.packages (their folder names)
-func setup(dir: String, gb: float, packages: Array) -> void:
+## gb: the download's size; packages: AioInstall.chosen() (their folder names)
+func setup(dir: String, gb: float, packages: Array, bfme1 := false) -> void:
+	set_offer(bfme1, gb, packages)
+	set_folder(dir)
+
+
+## community PR #36: which download the panel offers (the base games, or with bfme1 the optional BFME1 package); the folder stays
+func set_offer(bfme1: bool, gb: float, packages: Array) -> void:
+	offer_bfme1 = bfme1
+	_dl_title.text = (BFME1_TITLE if bfme1 else DL_TITLE).to_upper()  # W.h3 shows section titles in capitals
+	_source.text = BFME1_SOURCE if bfme1 else DL_SOURCE
 	var names := PackedStringArray()
 	for p in packages:
 		names.append(str(p.get("label", p.get("folder", ""))))
 	_what.text = "%s, about %.1f GB." % [" and ".join(names), gb] if not names.is_empty() else "About %.1f GB." % gb
-	set_folder(dir)
 
 
 func set_folder(dir: String) -> void:

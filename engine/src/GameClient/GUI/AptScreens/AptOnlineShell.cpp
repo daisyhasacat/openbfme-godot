@@ -3,6 +3,9 @@
 // See GameClient/GUI/AptScreens/AptOnlineShell.h (lane ONLINE-4).
 
 #include "GameClient/GUI/AptScreens/AptOnlineShell.h"
+
+#include "GameClient/GUI/AptScreens/AptOnlineHub.h"
+#include "GameClient/GUI/PlatformIcons.h"
 #include "GameClient/GUI/AptScreens/AptSimpleScreens.h"
 
 #include "GameClient/GUI/AptGadgetLayer.h"
@@ -11,6 +14,7 @@
 #include "GameClient/GUI/Gadgets.h"
 #include "GameClient/GUI/GameTextSource.h"
 #include "GameClient/GUI/GameWindow.h"
+#include "GameClient/GUI/ProfileSwitch.h"
 #include "GameClient/GUI/Shell/Shell.h"
 #include "GameClient/GUI/ShellServices.h"
 #include "GameClient/GUI/Skirmish/SkirmishGameSetup.h"
@@ -20,6 +24,10 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <ctime>
+#include <functional>
+#include <iterator>
+#include <map>
 #include <set>
 
 namespace
@@ -62,6 +70,9 @@ const char16_t *const kNoMotd = u"The lobby has no message of the day.";
 const char16_t *const kNoRelayTitle = u"Online";
 const char16_t *const kNoRelay = u"Online games can't start yet: no relay server is available.";
 const char16_t *const kRejoinTitle = u"Rejoin";
+const char16_t *const kModeTitle = u"Performance mode"; // lane UBERJOIN-1
+const char16_t *const kOnlineTitle = u"Online";          // lane ONLINEUX-1: the title of the screens' own messages (GUI:GSErrorTitle is empty in RotWK)
+constexpr size_t kWrap = 58;                              // lane ONLINEUX-1: the characters of a box line (the box's text field squeezes one long line)
 } // namespace
 
 const std::vector<std::string> &AptOnlineShell::stopLines()
@@ -70,29 +81,53 @@ const std::vector<std::string> &AptOnlineShell::stopLines()
 		"[S-4070] online shell: the opener's RW 0x6230B6(1) is taken as the front-end background; GameSpy's setup (RW 0x9CCC06) and its misc preference "
 		"InAdvMode (OnlineAdvMode) are not ported (the mode is kept for the session)",
 		"[S-4071] online sign-in: the lobby's guest sign-in only: the nickname is the guest name; e-mail, password, remember-me, register, delete nickname, "
-		"terms of service, the locale pop-up and the GameSpy / official site buttons are disabled or report not available",
+		"terms of service, the locale pop-up and the official site button are disabled or report not available; the former GameSpy button opens OpenBFME",
 		"[S-4072] online home: the message of the day is the lobby's /v1/motd (none: said plainly); the ticker and the ladder site are not ported",
 		"[S-4073] online game list: the lobby's games (name, the map's display name (a map not in the cache: its file name), players, lock); no ping, "
 		"settings or user-map icons, no lobby rooms; the sort order "
 		"(a second press reverses) is OpenBFME's (RotWK's sorter RW 0x988BB5 not read)",
 		"[S-4074] online staging room: the states between the retail facts (the update's moves, the GameSpy NAT negotiation, the countdown) are OpenBFME's: "
 		"the host's Play Game asks the lobby for the START (no relay: refused, told to the player); loading a saved online game is not available",
-		"[S-4075] online pages not ported: Quick Match, Strategic (War of the Ring online), Profile / Stats, the Messenger",
+		"[S-4075] online pages not ported: Strategic (War of the Ring online), the Messenger",
+		"[S-4870] Quick Match (the TOURNAMENT page): the platform's matchmaker (same mode and size, oldest first): Ladder = the size, Army, Color; "
+		"ConnectionSpeed disabled, Widen Search says the search is as wide as it gets",
+		"[S-4871] Quick Match room: the match's host makes a private lobby room by the match's room code on an official map for that many players "
+		"picked by the match id; the others join by the code, take the match's team, say ready; the host starts",
+		"[S-4873] tournaments: no RotWK screen (retail's Tournament was the ranked automatch): a panel of the game's list box skin on the TOURNAMENT "
+		"page; register / withdraw / join through GuiFX's Yes / No box; the first player of a match hosts its room",
+		"[S-4874] STATS page cards: the player's games and win rate with each faction (RotWK: GameSpy ranks and points)",
+		"[S-4875] STATS page tabs: OPEN PLAY = the player's own statistics (this installation's games), TOURNAMENT = all players' (the platform), "
+		"WAR OF THE RING = not kept",
+		"[S-4877] Quick Match failures: the platform unreachable, a search timed out or cancelled, a room that does not start in 90 seconds: told in a "
+		"box and the page's status line, the page comes back",
 		"[S-4076] online Create-a-Hero: the lobby service does not carry a slot's Create-a-Hero record: online games are played without them",
 		"[S-4550] online Connections screen: not shown (retail's lists the GameSpy connection between every two players; OpenBFME's players reach each "
 		"other only through the relay): the button says so and the staging room comes back",
 		"[S-4551] online staging room chat: the Players list names the room's players (retail's fill, the chat's recipients, was not read) and every "
 		"line goes to everyone (no private lines)",
-		"[S-4552] online staging room rows: Hero (no Create-a-Hero through the lobby, S-4076) and Handicap (no entries in this port, S-178) are shown "
+		"[S-4552] online staging room rows: Hero (no Create-a-Hero through the lobby, S-4076) and Handicap (the online start carries no handicap: OWNERFIX-2 locks its combo) are shown "
 		"locked; the lobby carries no handicap",
 		"[S-4553] online ready rules: the lobby unreadies every player on any change of the room (a join, a leave, a kick, a slot or setup change); "
 		"RotWK's own reset (the game's vslot 0x38 after a rule change, RW 0x8421E0) was read only for the host's rule changes; the clan game's checks "
 		"before a ready (CLAN:ErrorMissingClanAffiliation / CLAN:ErrorOnlyTwoClans) are not ported",
+		"[S-4860] online / LAN performance mode: the list tags an Uber game, Join on a game of the other mode asks in GuiFX's Yes / No box and Yes "
+		"switches the profile for that game (restored when the room is left or the game ended; the Options.ini setting is never written); OpenBFME's "
+		"own (retail has one simulation and no such box)",
 		"[S-4554] online staging room transport: polls held by the lobby (long polling) and the sender's own chat line shown at its sending are "
 		"OpenBFME's (retail: GameSpy's peer chat)",
 		"[S-4077] online rejoin / watch: RotWK's movies have no Rejoin or Watch button: the player's running game is offered in GuiFX's Yes / No box at "
 		"sign-in and is a REJOIN row of the Open Play list, other running games are WATCH rows; Join Game on such a row asks the lobby for the rejoin "
 		"or spectator START (state 13, OpenBFME's)",
+		// lane ONLINEUX-1
+		"[S-5140] online shell back over a covering screen (Options): the movie's own ShowButtonBar brings the nav, LOG OUT and OPTIONS back "
+		"(INFERENCE: retail reloads the covered shell's movie, whose first frame does it; this port hides and shows it, S-171)",
+		"[S-5141] online server browser: the MAP panel shows the selected game's map (retail's GameInfo fill, RW 0x9AA4C3, not read); the RULES tab "
+		"keeps the player's own (the lobby's list carries no rules)",
+		"[S-5142] online home ticker: the Date, Time, Players Online and Games In Progress rows of retail's thirteen (RW 0x9C8694, labels RW 0xDB9290); "
+		"no ladder ranks, no faction win rates; NumTickerFields 4; the rows' texts are given as the movie's TickerInfo class would (registerClass "
+		"unported, S-104)",
+		"[S-5143] online screens' own texts: the TOURNAMENT page's and the home page's lines name Quick Match and OpenBFME's tournaments (no ranked "
+		"ladder); the lobby's refusals are said as what happened and what to do (RotWK's own texts where it has them)",
 	};
 	return lines;
 }
@@ -176,7 +211,34 @@ AptOnlineShell::AptOnlineShell(WindowManager &windows, Shell &shell, ShellEnviro
 		}
 		return true;
 	});
+	m_hub = std::make_unique<AptOnlineHub>(*this); // lane ONLINEHUB-1
 	windows.addUpdateListener(this, [this]() { update(); });
+	// lane ONLINEUX-1: the shell made again after an online game (the score screen's Continue pushes the shell's start screens: S-1771; retail kept this
+	// shell under the game). The game the player played is over for them: the lobby is told (it stopped offering a finished or forfeited game for a
+	// rejoin only when its player left it) and it is never offered again in this run. The screens resume on the page the player was on: the movie's
+	// first frame loads extern OnlineShellStartScreen (RW 0x91D9F9 query 0, the shell object's current page; OnlineShell.apt frame 1:
+	// LoadScreen(extern.OnlineShellStartScreen, true)), which retail's kept shell answers with that page, not the login
+	if (m_ctx)
+	{
+		if (!m_ctx->leftGames)
+		{
+			m_ctx->leftGames = std::make_shared<std::set<std::string>>();
+		}
+		if (m_client)
+		{
+			const std::string played = m_client->finishGame();
+			if (!played.empty())
+			{
+				m_ctx->leftGames->insert(played);
+				windows.note("online-game-finished", "game " + played + " is over for this player: the lobby is told (leave), no rejoin is offered for it");
+			}
+			if (m_client->signedIn() && !m_ctx->lastPage.empty())
+			{
+				m_currentName = m_ctx->lastPage;
+				windows.note("online-resume", "signed in already: the screens resume on " + m_currentName);
+			}
+		}
+	}
 }
 
 std::vector<std::string> AptOnlineShell::loadedPages() const
@@ -216,11 +278,22 @@ void AptOnlineShell::showError(const std::string &titleLabel, const std::string 
 	showBox(text(titleLabel), text(textLabel), titleLabel + "|" + textLabel);
 }
 
-void AptOnlineShell::notAvailable(const std::string &what, const std::string &stop)
+void AptOnlineShell::notAvailable(const std::string &what, const std::string &stop, const std::u16string &playerText)
 {
 	windows().note("unported", what + " is not available in OpenBFME's online play " + stop);
-	showBox(text("GUI:GSErrorTitle"), u"Not available in OpenBFME's online play yet: " + std::u16string(what.begin(), what.end()) + u".",
+	// lane MENUWORK-1: a box titled as OpenBFME's (the game text GUI:GSErrorTitle is GameSpy's error title), in the player's words when given
+	showBox(u"OpenBFME", playerText.empty() ? u"Not available in OpenBFME's online play yet: " + std::u16string(what.begin(), what.end()) + u"." : playerText,
 		"GUI:GSErrorTitle|not available: " + what);
+}
+
+std::u16string AptOnlineShell::unavailablePageText(const std::string &page)
+{
+	// lane MENUWORK-1: the online home's pages OpenBFME does not have (S-4075), in the player's words
+	if (page == "OnlineStrategic")
+	{
+		return u"War of the Ring online games are not available yet: its strategy map game is still being rebuilt.";
+	}
+	return std::u16string();
 }
 
 void AptOnlineShell::callChild(const std::string &function, const std::vector<std::string> &args)
@@ -300,13 +373,65 @@ void AptOnlineShell::loadPage(const std::string &name)
 		m_pages[name];
 		registerOpenPlay();
 	}
+	else if (AptOnlineHub::isHubPage(name))
+	{
+		// lane ONLINEHUB-1: OnlineQuickMatch (the TOURNAMENT button) and Stats (STATS)
+		m_pages[name];
+		m_hub->loadPage(name);
+	}
 	else
 	{
-		// OnlineStrategic, OnlineQuickMatch, Stats: not ported [S-4075]
+		// OnlineStrategic: not ported [S-4075]. Lane MENUWORK-1: the box says why in the player's words, and the page the
+		// player came from is loaded again (the movie's LoadScreen) instead of leaving them on an empty page
 		m_pages[name];
-		notAvailable(name, "[S-4075]");
+		notAvailable(name, "[S-4075]", unavailablePageText(name));
+		if (!m_currentName.empty() && m_currentName != name)
+		{
+			loadChildScreen(m_currentName);
+			navTo(m_currentName); // lane ONLINEUX-1: the nav's highlight goes back too (it stayed on the refused page's button)
+			return;
+		}
 	}
 	m_currentName = name;
+	if (m_ctx && name != "OnlineLogin")
+	{
+		m_ctx->lastPage = name; // lane ONLINEUX-1: the page the screens resume on after a game
+	}
+}
+
+void AptOnlineShell::navTo(const std::string &page)
+{
+	// lane ONLINEUX-1: OnlineShell.apt's ButtonNav clip (Toggles.ButtonNav) has one frame label per page, _Home, _QuickMatch, _OpenPlay, _Strategic and
+	// _Profile (the STATS button), whose frame plays "_hit" on that page's Select* button and "_up" on the others, then stops and loads its targetScreen
+	// when one is set (the movie's frame scripts, decoded from the player's OnlineShell.apt). A refused page (OnlineStrategic) left the refused button
+	// highlighted over the page the player is back on; the clip goes to that page's label (no targetScreen is set: nothing is loaded by it)
+	static const std::map<std::string, std::string> labels = { { "OnlineHome", "_Home" }, { "OnlineQuickMatch", "_QuickMatch" },
+		{ "OnlineOpenPlay", "_OpenPlay" }, { "OnlineStrategic", "_Strategic" }, { "Stats", "_Profile" } };
+	const auto it = labels.find(page);
+	if (it == labels.end())
+	{
+		return;
+	}
+	std::string err;
+	if (level() < 0 || !windows().invokeASAt(level(), "Toggles.ButtonNav", "gotoAndPlay", { it->second }, nullptr, &err))
+	{
+		windows().note("movie-function-missing", "Toggles.ButtonNav.gotoAndPlay(" + it->second + "): " + err);
+	}
+}
+
+void AptOnlineShell::runInit()
+{
+	AptSkirmish::runInit();
+	// lane ONLINEUX-1: the shell shown again after a screen covered it (Options: the shell's OPTIONS button runs the movie's HideButtonBar("Options"),
+	// which hides the nav bar, the Options and the Exit button, ButtonBarOn false). OnlineShell.apt shows them again only in ShowButtonBar, which its
+	// LoadScreen calls when a page is loaded for the first time, as the movie's first frame does (LoadScreen(extern.OnlineShellStartScreen, true)); the
+	// retail binary names neither function (no ShowButtonBar / HideButtonBar string in game.dat): retail's movie runs its first frame again when the
+	// shell comes back. INFERENCE (S-5140): retail reloads a covered screen's movie; this port only hides and shows it (S-171), so the bar stayed
+	// hidden and the online screens had no way out but quitting the game (ONLINEUX-1 audit). The return calls the movie's own ShowButtonBar
+	if (m_shownOnce)
+	{
+		m_barDue = true;
+	}
 }
 
 void AptOnlineShell::unloadPage(const std::string &name)
@@ -330,9 +455,14 @@ void AptOnlineShell::unloadPage(const std::string &name)
 		windows().closeAptScreen(n); // _bfme_closeAptScreen
 	}
 	m_pages.erase(it);
+	if (AptOnlineHub::isHubPage(name))
+	{
+		m_hub->unloadPage(name); // lane ONLINEHUB-1
+	}
 	if (name == "OnlineLogin")
 	{
 		m_nickname = m_email = m_password = m_remember = nullptr;
+		m_loginHideUpdates = 0;
 		m_loginDisablesDue = 0;
 	}
 	else if (name == "OnlineHome")
@@ -355,13 +485,14 @@ void AptOnlineShell::unloadPage(const std::string &name)
 void AptOnlineShell::registerLogin()
 {
 	const std::string page = "OnlineLogin";
+	windows().note("online-login", "[S-4750] the login page shows the nickname only: the account rows and buttons are hidden (no accounts yet)");
 	pageCommand(page, "AptOnline::Login::Login", [this](const std::string &) { login(); });
 	pageCommand(page, "AptOnline::Login::DeleteNickname", [this](const std::string &) { notAvailable("Delete nickname", "[S-4071]"); });
 	pageCommand(page, "AptOnline::Login::Register", [this](const std::string &) { notAvailable("Register", "[S-4071]"); });
 	pageCommand(page, "AptOnline::Login::ServiceTerms", [this](const std::string &) { notAvailable("GameSpy's terms of service", "[S-4071]"); });
 	pageCommand(page, "AptOnline::Login::AcceptLocale", [this](const std::string &) { notAvailable("The locale", "[S-4071]"); });
 	pageCommand(page, "AptOnline::Login::OfficialSite", [this](const std::string &) { notAvailable("The official site (URL:LotrHome)", "[S-4071]"); });
-	pageCommand(page, "AptOnline::Login::GameSpy", [this](const std::string &) { notAvailable("GameSpy (URL:GameSpyHome)", "[S-4071]"); });
+	pageCommand(page, "AptOnline::Login::GameSpy", [this](const std::string &) { windows().services().request({ ShellAction::OpenProjectWebsite, "" }); });
 	pageCommand(page, "AptOnline::Login::CancelLogin", [this](const std::string &) {
 		// RW 0x977B0F: the online shell is left (as ShellExit)
 		this->windows().requestShellPop();
@@ -374,10 +505,11 @@ void AptOnlineShell::registerLogin()
 		}
 		if (name == "OnlineLogin::Password")
 		{
-			// 16 characters; disabled: the guest sign-in has no password [S-4071]
+			// 16 characters; disabled and hidden: the guest sign-in has no password [S-4071] (lane MENUWORK-1: a field that does nothing is not shown)
 			candidate(m_password, w);
 			GadgetTextEntrySetText(w, UnicodeString());
 			w->winEnable(false);
+			w->winHide(true);
 		}
 		else if (name == "OnlineLogin::Nickname")
 		{
@@ -399,11 +531,13 @@ void AptOnlineShell::registerLogin()
 			candidate(m_email, w);
 			GadgetComboBoxReset(w);
 			w->winEnable(false); // no e-mail sign-in [S-4071]
+			w->winHide(true);
 		}
 		else if (name == "OnlineLogin::RememberInfo")
 		{
 			candidate(m_remember, w); // "remember me" kept the password; a guest has none: the name is always remembered [S-4071]
 			w->winEnable(false);
+			w->winHide(true);
 		}
 		else if (name == "OnlineLogin::CountryList")
 		{
@@ -413,6 +547,73 @@ void AptOnlineShell::registerLogin()
 		// shows its fields (update): the shell's CallChild reaches the page only after it became the shell's current movie
 		m_loginDisablesDue = 15;
 	});
+}
+
+// lane MENUWORK-1 (S-4750): the owner wants no account features yet (2026-10-14): the login page shows the nickname, a line saying what it is for, Log In
+// and Main Menu, alongside OpenBFME's website seal. The movie's account parts (the e-mail / password / remember-me rows, Register, Delete nickname,
+// Service terms, the retail official site and the two tooltips of the hidden rows) are hidden every update while the page is up (the movie may place them again); the
+// e-mail row's label shows the line. Not retail: retail's page is GameSpy's account sign-in (RW 0x97C819). A part the movie does not have is noted
+// once ("online-login"), never skipped silently
+const std::vector<std::string> &AptOnlineShell::loginAccountParts()
+{
+	static const std::vector<std::string> parts = {
+		"OnlineLogin.Login.textAndBorders.InputLabels.Password",
+		"OnlineLogin.Login.textAndBorders.InputFields#2",
+		"OnlineLogin.Login.textAndBorders.innerBorder#3",
+		"OnlineLogin.Login.textAndBorders.innerBorder#9",
+		"OnlineLogin.Login.textAndBorders.innerBorder#11",
+		"OnlineLogin.Login.textAndBorders.InputLabels.RememberMe",
+		"OnlineLogin.Login.Register",
+		"OnlineLogin.Login.DeleteNickname",
+		"OnlineLogin.Login.ServiceTerms",
+		"OnlineLogin.Login.OfficialSite",
+		"OnlineLogin.tooltipOnlineEAAccountName",
+		"OnlineLogin.tooltipRememberMe",
+	};
+	return parts;
+}
+
+// the password frame's place (155.7, 96.65) moved down by the nickname row's distance (the placeholders OnlineLogin::Password y 94.8 and ::Nickname
+// y 173.3: 78.5) and widened from the password entry's 269 to the combo's 340 pixels (126.4 %); its content starts 145 units left of its origin, so
+// the widening is made up by 145 * 0.264 = 38.4 to the right (the left ends of the rows line up again; measured on the 2560 x 1440 proof)
+const float AptOnlineShell::kNicknameFrameX = 155.7f + 38.4f;
+const float AptOnlineShell::kNicknameFrameY = 96.65f + 78.5f;
+const float AptOnlineShell::kNicknameFrameXScale = 126.4f;
+const char *const AptOnlineShell::kNicknameLine = "Online play needs no account: your nickname is the name other players see in the game list and in games.";
+
+void AptOnlineShell::showNicknameOnly()
+{
+	if (level() < 0 || !windows().hasAptPath(level(), "OnlineLogin.Login.textAndBorders"))
+	{
+		return; // the page's clips are not placed yet
+	}
+	// the page's timeline places its buttons over its first frames: a part still missing after 60 updates is noted
+	const bool settled = ++m_loginHideUpdates > 60;
+	for (const std::string &part : loginAccountParts())
+	{
+		std::string err;
+		if (!windows().setAptVisible(level(), part, false, &err) && settled && m_loginPartsMissing.insert(part).second)
+		{
+			windows().note("online-login", "the account part " + part + " was not hidden: " + err + " [S-4750]");
+		}
+	}
+	// the nickname row's frame: the movie draws the e-mail and nickname frames as one shape (InputFields depth 2, hidden with the e-mail row); the
+	// password row's frame (depth 3, a clip of its own) is moved to the nickname row and widened to the combo's width
+	const std::string frame = "OnlineLogin.Login.textAndBorders.InputFields#3";
+	std::string frameErr;
+	if ((!windows().setAptMember(level(), frame, "_x", AptValue::number(kNicknameFrameX), &frameErr) ||
+			!windows().setAptMember(level(), frame, "_y", AptValue::number(kNicknameFrameY), &frameErr) ||
+			!windows().setAptMember(level(), frame, "_xscale", AptValue::number(kNicknameFrameXScale), &frameErr)) &&
+		settled && m_loginPartsMissing.insert(frame).second)
+	{
+		windows().note("online-login", "the nickname frame was not placed: " + frameErr + " [S-4750]");
+	}
+	const std::string label = "OnlineLogin.Login.textAndBorders.InputLabels.AccountName";
+	std::string err;
+	if (!windows().setAptFieldText(level(), label, kNicknameLine, &err) && settled && m_loginPartsMissing.insert(label).second)
+	{
+		windows().note("online-login", "the nickname line has no place: " + err + " [S-4750]");
+	}
 }
 
 void AptOnlineShell::login()
@@ -427,6 +628,8 @@ void AptOnlineShell::login()
 	if (name.empty())
 	{
 		showError("GUI:GSErrorTitle", "GUI:GSNoLoginInfoNickname");
+		// lane ONLINEUX-1: the movie's Login button disables itself when pressed; it comes back with a name (RW 0x97A668 below), never stays dead
+		applyLoginButton(true);
 		return;
 	}
 	if (!m_client)
@@ -436,6 +639,7 @@ void AptOnlineShell::login()
 	}
 	callChild("DisableButtonLogin");
 	callChild("DisableButtonDeleteNickname");
+	m_loginButton = 0; // lane ONLINEUX-1
 	m_loginSent = true;
 	m_loginName = name;
 	// lane ONLINE-4: the session a restarted game kept (ONLINE-3's user://online_session.txt) signs in as the same player when the name is its own: the
@@ -447,6 +651,130 @@ void AptOnlineShell::login()
 		return;
 	}
 	m_client->signInGuest(name);
+}
+
+// lane ONLINEUX-1: RW 0x97A668 (BFME2 0x5706D4, tier A, decomp AptOnlineLogin.cpp rva005706D4): the login page's buttons follow its fields. Login is
+// enabled only while the fields can sign in (retail: an e-mail, a nickname with a printable character (iswgraph) and a password); the movie is told
+// only when that changes (EnableButtonLogin / DisableButtonLogin through CallChild). Its callers: the gadget handler (BFME2 0x57166C) on a selection
+// (0x4026) or a text change (0x402E) of the nickname, the page's fill, and a refused sign-in (loginEnabled cleared, then this). OpenBFME (S-4071):
+// the guest sign-in has the nickname only, so Login follows the nickname alone. Before, an empty-name press left the button disabled for good (the
+// movie disables it on its press and nothing enabled it again: the ONLINEUX-1 audit's dead end)
+void AptOnlineShell::applyLoginButton(bool force)
+{
+	if (m_currentName != "OnlineLogin" || !m_pages.count("OnlineLogin"))
+	{
+		return;
+	}
+	prune();
+	const std::u16string name = m_nickname ? GadgetComboBoxGetText(m_nickname) : std::u16string();
+	const bool printable = std::any_of(name.begin(), name.end(), [](char16_t c) { return c > 0x20 && c != 0x7F && c != 0xA0; });
+	const int enabled = printable && !m_loginSent ? 1 : 0;
+	if (!force && enabled == m_loginButton)
+	{
+		return;
+	}
+	m_loginButton = enabled;
+	callChild(enabled ? "EnableButtonLogin" : "DisableButtonLogin");
+}
+
+// lane ONLINEUX-1: the player's words for a refusal. The lobby's own messages are written for the logs (raw profile digests, "wrong password", a
+// transport's result number): a refusal the player can act on is said as what happened and what to do; RotWK's own texts where it has them
+// (GUI:JoinFailedBadPassword, GUI:JoinFailedRoomFull); anything else is the lobby's text. Every message is broken into lines (wrapLines)
+std::u16string AptOnlineShell::playerMessage(const std::string &request, const std::string &code, const std::u16string &lobbyText) const
+{
+	if (code == "transport")
+	{
+		std::string host = m_ctx ? m_ctx->lobbyUrl : std::string();
+		const size_t scheme = host.find("://");
+		host = scheme == std::string::npos ? host : host.substr(scheme + 3);
+		host = host.substr(0, host.find('/'));
+		return u"Can't reach the OpenBFME online lobby" + (host.empty() ? std::u16string() : u" (" + wide(host) + u")") +
+			u". Check your internet connection, then try again. If it keeps failing, the lobby may be down: the OpenBFME Discord says when it is.";
+	}
+	if (code == "profile")
+	{
+		return u"You can't join this game: it was made with a different OpenBFME version or different game files. Both players need the same "
+			   u"OpenBFME version and unmodified RotWK 2.01 files.";
+	}
+	if (code == "password")
+	{
+		return text("GUI:JoinFailedBadPassword");
+	}
+	if (code == "full")
+	{
+		return text("GUI:JoinFailedRoomFull");
+	}
+	if (code == "started")
+	{
+		return u"This game has started already: it can't be joined any more.";
+	}
+	if (code == "no_game")
+	{
+		return request == "join" ? text("GUI:HostLeft") : u"This game is gone: its host closed it, or it has ended.";
+	}
+	if (code == "signed_out")
+	{
+		return u"Your online session has expired. Log out and log in again.";
+	}
+	if (code == "rate_limited")
+	{
+		return u"Too many requests at once: wait a moment, then try again.";
+	}
+	if (code == "protocol")
+	{
+		return u"The online lobby sent an answer this OpenBFME version does not understand (" + lobbyText + u"). Check for an OpenBFME update.";
+	}
+	return lobbyText;
+}
+
+std::u16string AptOnlineShell::wrapLines(const std::u16string &text, size_t width)
+{
+	// at the last space before `width` characters (a word longer than a line stays whole); the text's own line breaks are kept
+	std::u16string out;
+	size_t lineStart = 0;
+	for (size_t i = 0; i < text.size(); ++i)
+	{
+		out += text[i];
+		if (text[i] == u'\n')
+		{
+			lineStart = out.size();
+			continue;
+		}
+		if (out.size() - lineStart > width)
+		{
+			const size_t space = out.rfind(u' ');
+			if (space != std::u16string::npos && space >= lineStart)
+			{
+				out[space] = u'\n';
+				lineStart = space + 1;
+			}
+		}
+	}
+	return out;
+}
+
+bool AptOnlineShell::gameLeft(const std::string &id) const
+{
+	if (m_ctx && m_ctx->leftGames && m_ctx->leftGames->count(id))
+	{
+		return true;
+	}
+	// lane ONLINEUX-1 r2 (Sol 4): a game left in an earlier run (this run's set is empty after a restart): the lobby's /v1/mine names it
+	if (!m_client)
+	{
+		return false;
+	}
+	const std::vector<std::string> &left = m_client->mineLeft();
+	return std::find(left.begin(), left.end(), id) != left.end();
+}
+
+void OnlineShellContext::gameFailed(const std::u16string &why)
+{
+	pendingNotice = why;
+	if (client)
+	{
+		client->forgetPlayedGame();
+	}
 }
 
 // ---- OnlineHome ------------------------------------------------------------------------------------------------------------------------------------------
@@ -472,10 +800,17 @@ void AptOnlineShell::registerHome()
 	pageProvider(page, "OnlineHome::NumTickerFields", [](const std::string &, std::string &value, bool setting) {
 		if (!setting)
 		{
-			value = "12"; // RW 0x9C8350
+			value = "4"; // RW 0x9C8350 answers 12; lane ONLINEUX-1 (S-5142): the four rows fillTicker fills (the others showed the movie's placeholder)
 		}
 		return true;
 	});
+	m_tickerRows.clear();
+	m_tickerClipsDone = 0;
+	fillTicker();
+	// lane ONLINEUX-1 (S-5143): the home page's line for the TOURNAMENT button (APT:HomeTournamentDesc) promised a "stat-tracked ladder match against
+	// other ranked Tournament competitors": that button is where Quick Match and OpenBFME's tournaments are; the line says so
+	windows().setAptText("APT:HomeTournamentDesc", "Tournament - Quick Match: the server pairs you with players looking for the same game; and "
+												   "OpenBFME's scheduled tournaments.");
 	// the constructor's message-of-the-day request (peer request 0x17)
 	if (m_client)
 	{
@@ -544,6 +879,7 @@ void AptOnlineShell::registerOpenPlay()
 			callPage("ClosePassword");
 			m_state = 1;
 			m_popUp = false;
+			restoreMode(); // lane UBERJOIN-1: the join was cancelled after a switch
 		}
 	});
 	pageCommand(page, "AptOnline::CustomMatch::CreateGame", [this](const std::string &) {
@@ -638,6 +974,11 @@ void AptOnlineShell::registerOpenPlay()
 		notAvailable("the Connections screen (online games go through the relay server, players do not connect to each other)", "[S-4550]");
 	});
 	pageCommand(page, "AptOnline::CustomMatch::OnClosingConnectionsScreen", [](const std::string &) {});
+	// lane MENUWORK-1 (S-4550): the Connections movie draws its player grid by calling Connection::RedrawGrid (a game.dat name of the screen's own
+	// registrations, not ported: the screen is replaced by the box above); the call reached no handler and was only a "command-unhandled" note
+	pageCommand(page, "Connection::RedrawGrid", [this](const std::string &) {
+		windows().note("unported", "Connection::RedrawGrid: the Connections screen is not available in OpenBFME's online play [S-4550]");
+	});
 	// GameSorter (RW 0x98821C ..): the columns of the list
 	pageCommand(page, "GameSorter::OnSortName", [this](const std::string &) { sortBy(0); });
 	pageCommand(page, "GameSorter::OnSortMap", [this](const std::string &) { sortBy(1); });
@@ -658,6 +999,16 @@ void AptOnlineShell::registerOpenPlay()
 		else if (name == "Lobbies")
 		{
 			candidate(m_lobbies, w); // GameSpy's group rooms: one lobby here [S-4073]
+			// lane ONLINEUX-1: the drop-down showed the movie's placeholder "Entry" and opened an empty list: it lists the one room every player of
+			// the lobby is in (retail's PopulateLobbyComboBox, BFME2 0x5A1EEE's call, lists GameSpy's group rooms). The movie enables its components
+			// after this (EnableComponents), so the disable below does not hold: the drop-down opens on that one room
+			if (BitTest(w->winGetStyle(), GWS_COMBO_BOX))
+			{
+				GadgetComboBoxReset(w);
+				GadgetComboBoxAddEntry(w, u"OpenBFME", 0xFFFFFFFFu);
+				GadgetComboBoxSetSelectedPos(w, 0, false);
+				GadgetComboBoxSetText(w, u"OpenBFME");
+			}
 			w->winEnable(false);
 		}
 		else if (name == "GameInfo")
@@ -691,6 +1042,136 @@ void AptOnlineShell::registerOpenPlay()
 		{
 			m_client->fetchMine(); // lane ONLINE-4: the player's running games are rows too (REJOIN)
 		}
+	}
+}
+
+// lane ONLINEUX-1: the server browser's MAP / RULES panel is MpGameSetup's, read only outside a room (lobbyEditable). It showed the player's own last
+// map whatever game was selected, and its map list took clicks that changed nothing: the panel follows the game selected in the list instead (its map
+// chosen in the panel's model, the panel redrawn: the preview, the description, the list's highlight), as retail's custom match page shows the
+// selected game's information (GameInfo, RW 0x9AA4C3). The player's own map comes back when they create a game. INFERENCE (S-5141): the retail
+// page's fill of the panel for a selection is not read; the lobby's list carries the map, not the rules (the RULES tab keeps the player's own)
+void AptOnlineShell::showSelectedGameMap()
+{
+	prune();
+	SkirmishGameSetup *model = setupModel();
+	if (!m_gameList || !model || !m_client || (m_client->inGame() && m_state != 2))
+	{
+		return;
+	}
+	int selected = -1;
+	GadgetListBoxGetSelected(m_gameList, &selected);
+	if (selected < 0 || selected >= (int)m_rowIds.size())
+	{
+		return;
+	}
+	std::string map;
+	for (const std::vector<OnlineLobbyClient::Listing> *list : { &m_client->mine(), &m_client->games() })
+	{
+		for (const OnlineLobbyClient::Listing &g : *list)
+		{
+			map = g.id == m_rowIds[(size_t)selected] ? g.map : map;
+		}
+	}
+	if (map.empty() || !model->findMap(map))
+	{
+		return; // a map the player does not have (the list shows its file name): nothing to show
+	}
+	if (m_selectedMap.empty())
+	{
+		m_ownMap = model->info().mapName; // the player's own, for a game they create
+	}
+	if (model->info().mapName != map)
+	{
+		SkirmishGameInfo info = model->info();
+		info.mapName = map;
+		model->replaceInfo(info);
+		refreshLobby();
+	}
+	m_selectedMap = map;
+}
+
+// lane ONLINEUX-1: the home page's ticker. Retail's rows (RW 0x9C8694, BFME2 0x5B9378 byte-matched): APT:TickerField_<i> = the game text of the i-th
+// label of the table RW 0xDB9290 with ":" appended, APT:TickerValue_<i> = the value; its update (RW 0x9C881D, BFME2 0x5B9501) writes the date (row 0)
+// and time (row 1) every time, and the 1v1 / 2v2 ladder ranks (rows 2, 3) when it has them; GameSpy's answers filled the players online and games in
+// progress (rows 4, 5, peer response 21) and each faction's win rate (rows 6 .. 12). The movie shows OnlineHome::NumTickerFields rows (retail 12): the
+// rows it was never given showed the movie's placeholder ("Men of The West 99.99%"). OpenBFME (S-5142) has the date, the time and the lobby's counts
+// (GET /v1/stats: players online, games running); no ladder and no community win rates on this page (the STATS page has the community's): four rows,
+// in retail's order of their labels
+void AptOnlineShell::fillTicker()
+{
+	const std::time_t now = std::time(nullptr);
+	std::tm local{};
+	if (const std::tm *t = std::localtime(&now)) // the UI thread's only use
+	{
+		local = *t;
+	}
+	char date[32], clock[16];
+	std::strftime(date, sizeof(date), "%Y-%m-%d", &local); // INFERENCE: retail formats with the system's locale (RW 0x6DBFAD's GetDateFormat): ISO here
+	std::strftime(clock, sizeof(clock), "%H:%M", &local);
+	auto count = [](int n) { return n >= 0 ? std::to_string(n) : std::string("..."); };
+	const std::pair<const char *, std::string> rows[] = { { "APT:Date", date }, { "APT:Time", clock },
+		{ "APT:PlayersOnline", count(m_ctx ? m_ctx->playersOnline : -1) }, { "APT:GamesInProgress", count(m_ctx ? m_ctx->gamesRunning : -1) } };
+	std::vector<std::string> shown;
+	for (size_t i = 0; i < std::size(rows); ++i)
+	{
+		const std::string field = narrow(text(rows[i].first)) + ":";
+		shown.push_back(field + "|" + rows[i].second);
+		if (i < m_tickerRows.size() && m_tickerRows[i] == shown.back())
+		{
+			continue;
+		}
+		windows().setAptText("APT:TickerField_" + std::to_string(i), field);
+		windows().setAptText("APT:TickerValue_" + std::to_string(i), rows[i].second);
+	}
+	m_tickerRows = shown;
+	// the rows' clips: OnlineHome.apt's InitTicker attaches TickerInfo_<i> (its export TickerInfo) and the class registered for it
+	// (Object.registerClass("TickerInfo", TickerInfoObject)) sets Field.text = "$TickerField_" + i and Value.text = "$TickerValue_" + i (the player's
+	// movie, decoded). This port's interpreter does not run registered classes (registerClass is unported: S-104), so the rows kept the clip's own
+	// placeholder text; the screens give each row the two texts that constructor gives it (S-5142)
+	if (level() < 0 || m_tickerClipsDone >= (int)std::size(rows))
+	{
+		return;
+	}
+	std::function<AptCharacterInst *(AptCharacterInst *, const std::string &)> find = [&](AptCharacterInst *c, const std::string &suffix) -> AptCharacterInst * {
+		if (!c)
+		{
+			return nullptr;
+		}
+		const std::string path = c->targetPath();
+		if (path.size() >= suffix.size() && path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0)
+		{
+			return c;
+		}
+		if (AptSpriteInst *sp = c->asSprite())
+		{
+			for (AptCharacterInst *k : sp->children())
+			{
+				if (AptCharacterInst *f = find(k, suffix))
+				{
+					return f;
+				}
+			}
+		}
+		return nullptr;
+	};
+	AptCharacterInst *root = windows().apt().level(level());
+	while (m_tickerClipsDone < (int)std::size(rows))
+	{
+		const std::string index = std::to_string(m_tickerClipsDone);
+		AptCharacterInst *clip = find(root, ".TickerInfo_" + index);
+		if (!clip)
+		{
+			return; // not attached yet: the next update
+		}
+		std::string path = clip->targetPath();
+		path = path.substr(path.find('.') + 1); // the level's own path ("_levelN." off)
+		std::string err;
+		if (!windows().setAptFieldText(level(), path + ".Field", "$TickerField_" + index, &err) ||
+			!windows().setAptFieldText(level(), path + ".Value", "$TickerValue_" + index, &err))
+		{
+			windows().note("online-ticker", "ticker row " + index + " has no Field / Value: " + err + " [S-5142]");
+		}
+		++m_tickerClipsDone;
 	}
 }
 
@@ -754,6 +1235,11 @@ GameWindow *AptOnlineShell::gamePasswordWindow()
 {
 	prune();
 	return m_gamePassword;
+}
+GameWindow *AptOnlineShell::lobbiesWindow()
+{
+	prune();
+	return m_lobbies;
 }
 
 void AptOnlineShell::candidate(GameWindow *&role, GameWindow *w)
@@ -819,14 +1305,19 @@ void AptOnlineShell::fillGamesList()
 	const std::string keep = selected >= 0 && selected < (int)m_rowIds.size() ? m_rowIds[(size_t)selected] : std::string();
 	// lane ONLINE-4 (S-4077): the player's own running games first (REJOIN), then the lobby's games: open ones (Join Game) and running ones of others
 	// (WATCH: a spectator START)
-	std::vector<OnlineLobbyClient::Listing> games = m_client->mine();
-	for (OnlineLobbyClient::Listing &g : games)
+	// lane ONLINEUX-1: a game the player left is neither theirs to rejoin nor to watch (the lobby refuses a player of a game as its spectator): not listed
+	std::vector<OnlineLobbyClient::Listing> games;
+	for (const OnlineLobbyClient::Listing &g : m_client->mine())
 	{
-		g.state = "rejoin";
+		if (!gameLeft(g.id))
+		{
+			games.push_back(g);
+			games.back().state = "rejoin";
+		}
 	}
 	for (const OnlineLobbyClient::Listing &g : m_client->games())
 	{
-		if (std::none_of(games.begin(), games.end(), [&](const OnlineLobbyClient::Listing &m) { return m.id == g.id; }))
+		if (!gameLeft(g.id) && std::none_of(games.begin(), games.end(), [&](const OnlineLobbyClient::Listing &m) { return m.id == g.id; }))
 		{
 			games.push_back(g);
 			games.back().state = g.state == "started" ? "watch" : "join";
@@ -866,11 +1357,24 @@ void AptOnlineShell::fillGamesList()
 	m_gameRows.clear();
 	m_rowIds.clear();
 	m_rowKinds.clear();
+	m_rowModes.clear();
 	for (const OnlineLobbyClient::Listing &g : games)
 	{
 		const Color c = g.state == "join" ? 0xFFFFFFFFu : 0xFFFFD27Fu; // a running game's row in the gold of the movie's highlighted text
-		const std::u16string label = g.state == "rejoin" ? g.name + u"  - REJOIN" : g.state == "watch" ? g.name + u"  - WATCH" : g.name;
+		std::u16string label = g.state == "rejoin" ? g.name + u"  - REJOIN" : g.state == "watch" ? g.name + u"  - WATCH" : g.name;
+		if (g.mode == SimulationProfile::Uber)
+		{
+			label += u"  - UBER"; // lane UBERJOIN-1: the game's performance mode, in the style of the REJOIN / WATCH tags (a Normal game has no tag)
+		}
 		const int row = GadgetListBoxAddEntryText(m_gameList, label, c, -1, 3);
+		if (g.hostPlatform != PlatformKind::None) // lane PLATFORMICON-1: the host's system before the game's name
+		{
+			if (MappedImageCollection *images = m_gameList->manager().mutableImages())
+			{
+				registerPlatformIcons(*images);
+			}
+			GadgetListBoxSetCellBadge(m_gameList, row, 3, platformImageName(g.hostPlatform));
+		}
 		if (g.password)
 		{
 			GadgetListBoxAddEntryImage(m_gameList, "AptLock", row, 2, 20, 20, true); // BFME2 0x59F496: the lock of a locked game
@@ -880,9 +1384,11 @@ void AptOnlineShell::fillGamesList()
 		GadgetListBoxAddEntryText(m_gameList, map, c, row, 4);
 		GadgetListBoxAddEntryText(m_gameList, wide(players), c, row, 5);
 		GadgetListBoxAddEntryText(m_gameList, UnicodeString(), c, row, 6);
-		m_gameRows.push_back(narrow(g.name) + "|" + narrow(map) + "|" + players + "|" + (g.password ? "lock" : "") + (g.state == "join" ? "" : "|" + g.state));
+		m_gameRows.push_back(narrow(g.name) + "|" + narrow(map) + "|" + players + "|" + (g.password ? "lock" : "") + (g.state == "join" ? "" : "|" + g.state) +
+			(g.mode == SimulationProfile::Uber ? "|uber" : ""));
 		m_rowIds.push_back(g.id);
 		m_rowKinds.push_back(g.state);
+		m_rowModes.push_back(g.mode);
 		if (!keep.empty() && g.id == keep)
 		{
 			GadgetListBoxSetSelected(m_gameList, row);
@@ -962,6 +1468,11 @@ void AptOnlineShell::joinSelected()
 	}
 	const std::string id = m_rowIds[(size_t)selected];
 	const std::string kind = selected < (int)m_rowKinds.size() ? m_rowKinds[(size_t)selected] : std::string("join");
+	// lane UBERJOIN-1: a game of the other performance mode asks first (Yes switches and comes back here, No stays in the list)
+	if (selected < (int)m_rowModes.size() && !modeAllows(m_rowModes[(size_t)selected], [this]() { joinSelected(); }))
+	{
+		return;
+	}
 	if (kind == "rejoin" || kind == "watch")
 	{
 		// lane ONLINE-4 (S-4077): Join Game on the player's running game asks for a rejoin START, on another running game for a spectator START
@@ -999,7 +1510,23 @@ void AptOnlineShell::startRunning(const std::string &id, bool rejoin)
 	{
 		return;
 	}
+	// lane UBERJOIN-1: a running game of the other performance mode asks first
+	SimulationProfile mode = m_client->profile();
+	for (const std::vector<OnlineLobbyClient::Listing> *list : { &m_client->mine(), &m_client->games() })
+	{
+		const auto it = std::find_if(list->begin(), list->end(), [&](const OnlineLobbyClient::Listing &l) { return l.id == id; });
+		if (it != list->end())
+		{
+			mode = it->mode;
+			break;
+		}
+	}
+	if (!modeAllows(mode, [this, id, rejoin]() { startRunning(id, rejoin); }))
+	{
+		return;
+	}
 	windows().note("online-rejoin", std::string(rejoin ? "rejoin" : "watch") + " game " + id + " [S-4077]");
+	m_runningId = id; // lane ONLINEUX-1
 	if (rejoin)
 	{
 		m_client->rejoinGame(id);
@@ -1017,15 +1544,93 @@ void AptOnlineShell::startRunning(const std::string &id, bool rejoin)
 	}
 }
 
+bool AptOnlineShell::modeAllows(SimulationProfile gameMode, std::function<void()> proceed)
+{
+	// lane UBERJOIN-1 (S-4860): a game in the other performance mode is joined by switching to its mode for the game, never refused silently and never
+	// with an error box: the game's own Yes / No box asks, Yes switches (the player's setting is restored when the room is left or the game ended)
+	if (!m_client || gameMode == m_client->profile())
+	{
+		return true;
+	}
+	const std::u16string body = performanceModeSwitchPrompt(gameMode);
+	m_boxes.push_back("mode-switch|" + narrow(body));
+	windows().note("online-box", "mode-switch|" + narrow(body));
+	box().show(AptMessageBox::TYPE_YES_NO, kModeTitle, body, [this, gameMode, proceed](int button) {
+		if (button != 2) // No: stay in the list
+		{
+			m_state = 1;
+			return;
+		}
+		std::string why;
+		if (!switchMode(gameMode, &why))
+		{
+			const std::u16string text = u"The performance mode could not be switched: " + std::u16string(why.begin(), why.end());
+			showBox(kModeTitle, text, "mode-switch-failed|" + narrow(text));
+			m_state = 1;
+			return;
+		}
+		proceed();
+	});
+	return false;
+}
+
+bool AptOnlineShell::switchMode(SimulationProfile mode, std::string *why)
+{
+	ProfileSwitch *ps = environment().profileSwitch;
+	if (!ps || !ps->complete())
+	{
+		*why = "this build cannot switch the performance mode";
+		return false;
+	}
+	if (!ps->request(mode, why))
+	{
+		return false;
+	}
+	return m_client->setProfile(mode, ps->digestOf(mode), why);
+}
+
+void AptOnlineShell::syncMode()
+{
+	// the client follows the host program's mode (the player's setting, or the one switched to for a game, undone when the game ended)
+	ProfileSwitch *ps = environment().profileSwitch;
+	if (!ps || !ps->complete() || !m_client || m_client->inGame())
+	{
+		return;
+	}
+	const SimulationProfile now = ps->current();
+	std::string why;
+	if (now != m_client->profile() && !m_client->setProfile(now, ps->digestOf(now), &why))
+	{
+		windows().note("online-mode", "the lobby client could not follow the performance mode: " + why);
+	}
+}
+
+void AptOnlineShell::restoreMode()
+{
+	// the room was left (or the join failed or was cancelled): the player's own setting again
+	if (ProfileSwitch *ps = environment().profileSwitch; ps && ps->complete() && m_client && !m_client->inGame())
+	{
+		ps->restore();
+		syncMode();
+	}
+}
+
 void AptOnlineShell::offerRejoin()
 {
 	// lane ONLINE-4 (S-4077): RotWK's movies have no Rejoin button; on sign-in the player's running game is offered in GuiFX's own Yes / No box
-	if (!m_client || m_client->mine().empty() || m_rejoinOffered)
+	if (!m_client || m_rejoinOffered)
+	{
+		return;
+	}
+	// lane ONLINEUX-1: a game this player left (finished, forfeited, quit) is not theirs to rejoin, even where the lobby still lists it (a lobby
+	// before ONLINEUX-1 keeps a started game's slot after its player left)
+	const auto mine = std::find_if(m_client->mine().begin(), m_client->mine().end(), [&](const OnlineLobbyClient::Listing &l) { return !gameLeft(l.id); });
+	if (mine == m_client->mine().end())
 	{
 		return;
 	}
 	m_rejoinOffered = true;
-	const OnlineLobbyClient::Listing g = m_client->mine().front();
+	const OnlineLobbyClient::Listing g = *mine;
 	const std::u16string body = u"Your game \"" + g.name + u"\" is still running. Rejoin it now?";
 	m_boxes.push_back("rejoin-offer|" + narrow(body));
 	windows().note("online-box", "rejoin-offer|" + narrow(body));
@@ -1066,6 +1671,10 @@ void AptOnlineShell::enterSetup(bool host)
 	m_startSent = false;
 	m_chat.clear();
 	syncModel();
+	if (m_client && m_client->gameMode() == SimulationProfile::Uber)
+	{
+		systemChat(u"This room uses Uber performance mode."); // lane UBERJOIN-1: the room's mode (a Normal room says nothing)
+	}
 	if (host)
 	{
 		callPage("GotoAndPlay", { "_host" });
@@ -1084,6 +1693,13 @@ void AptOnlineShell::backToList()
 {
 	// RW 0x9AB748 (BFME2 0x5A1EEE, byte-matched): the room left, ClosePassword, GotoAndPlay("_lobby"), EnableButtonCreateGame, DisableButtonJoinGame,
 	// state 1
+	// lane ONLINEUX-1: the room is left first (TheGameSpyInfo->leaveStagingRoom(), the function's first call); the port's callers left it themselves,
+	// except the page's state 0 (the custom match page made again after a game: RW 0x9AFAD5), where the player stayed in the started game's room
+	if (m_client && m_client->inGame())
+	{
+		m_client->leaveGame();
+	}
+	restoreMode(); // lane UBERJOIN-1
 	callPage("ClosePassword");
 	callPage("GotoAndPlay", { "_lobby" });
 	callPage("EnableButtonCreateGame");
@@ -1167,6 +1783,10 @@ void AptOnlineShell::pumpClient()
 	m_client->update(NetMilliseconds());
 	for (const OnlineLobbyClient::Event &e : m_client->takeEvents())
 	{
+		if (m_hub && m_hub->lobbyEvent(e))
+		{
+			continue; // lane ONLINEHUB-1: a Quick Match / tournament room's event (the hub makes and starts that room)
+		}
 		switch (e.kind)
 		{
 		case OnlineLobbyClient::Event::SignedIn:
@@ -1259,6 +1879,8 @@ void AptOnlineShell::pumpClient()
 			}
 			if (environment().services)
 			{
+				// lane ONLINEUX-1: the game this player plays (a spectator's is not theirs): left when the screens come back after it
+				m_client->setPlayedGame(e.code == "spectate" ? std::string() : e.code == "rejoin" ? m_runningId : m_client->gameId());
 				environment().services->request(ShellRequest{ ShellAction::OnlineGameStart, m_client->startJson() });
 			}
 			m_box.reset(); // the box goes with the shell (its GuiFX.apt level is the game's, as the LAN lobby's start)
@@ -1280,7 +1902,9 @@ void AptOnlineShell::pumpClient()
 			}
 			else if (e.request == "rejoin" || e.request == "spectate")
 			{
+				m_runningId.clear();
 				m_rejoinPending = false;
+				restoreMode(); // lane UBERJOIN-1: a refused rejoin / watch after a mode switch
 				if (m_connecting)
 				{
 					callPage("PopUpConnectingClose");
@@ -1290,13 +1914,14 @@ void AptOnlineShell::pumpClient()
 				{
 					m_state = 1;
 				}
-				showBox(kRejoinTitle, e.text, "rejoin-refused|" + narrow(e.text));
+				showBox(kRejoinTitle, wrapLines(playerMessage(e.request, e.code, e.text), kWrap), "rejoin-refused|" + narrow(e.text));
 			}
 			else if (e.request == "signin")
 			{
 				m_loginSent = false;
-				callChild("EnableButtonLogin");
-				showBox(text("GUI:GSErrorTitle"), e.text, "GUI:GSErrorTitle|" + narrow(e.text));
+				m_loginButton = -1; // lane ONLINEUX-1: RW 0x97A668 after a refused sign-in (loginEnabled cleared, then the fields decide)
+				applyLoginButton(true);
+				showBox(kOnlineTitle, wrapLines(playerMessage(e.request, e.code, e.text), kWrap), "GUI:GSErrorTitle|" + narrow(e.text));
 			}
 			else if (e.request == "motd")
 			{
@@ -1315,14 +1940,15 @@ void AptOnlineShell::pumpClient()
 					m_gamePassword->winEnable(true);
 				}
 				m_state = 3;
-				showBox(text("GUI:GSErrorTitle"), e.text, "GUI:GSErrorTitle|" + narrow(e.text));
+				showBox(kOnlineTitle, wrapLines(playerMessage(e.request, e.code, e.text), kWrap), "GUI:GSErrorTitle|" + narrow(e.text));
 			}
 			else if (e.request == "join")
 			{
 				callPage("ClosePassword");
 				m_state = 1;
 				m_popUp = false;
-				showBox(text("GUI:JoinFailedDefault"), e.text, "GUI:JoinFailedDefault|" + narrow(e.text));
+				restoreMode(); // lane UBERJOIN-1
+				showBox(text("GUI:JoinFailedDefault"), wrapLines(playerMessage(e.request, e.code, e.text), kWrap), "GUI:JoinFailedDefault|" + narrow(e.text));
 			}
 			else if (e.request == "start")
 			{
@@ -1340,12 +1966,12 @@ void AptOnlineShell::pumpClient()
 				}
 				else
 				{
-					showBox(text("GUI:GSErrorTitle"), e.text, "GUI:GSErrorTitle|" + narrow(e.text));
+					showBox(kOnlineTitle, wrapLines(playerMessage(e.request, e.code, e.text), kWrap), "GUI:GSErrorTitle|" + narrow(e.text));
 				}
 			}
 			else if (e.request == "list")
 			{
-				showBox(text("GUI:GSErrorTitle"), e.text, "GUI:GSErrorTitle|" + narrow(e.text));
+				showBox(kOnlineTitle, wrapLines(playerMessage(e.request, e.code, e.text), kWrap), "GUI:GSErrorTitle|" + narrow(e.text));
 			}
 			else if (e.request == "poll")
 			{
@@ -1353,7 +1979,7 @@ void AptOnlineShell::pumpClient()
 				if (!m_pollTrouble && m_client->inGame())
 				{
 					m_pollTrouble = true;
-					systemChat(u"The lobby does not answer: " + e.text + u" (still trying)");
+					systemChat(u"The online lobby does not answer (still trying): " + playerMessage(e.request, e.code, e.text)); // lane ONLINEUX-1
 				}
 			}
 			else if (e.request != "leave")
@@ -1371,6 +1997,35 @@ void AptOnlineShell::update()
 {
 	prune();
 	pumpClient();
+	if (level() >= 0 && !isHidden())
+	{
+		m_shownOnce = true;
+		if (m_barDue)
+		{
+			m_barDue = false;
+			std::string err;
+			if (!windows().invokeAS(level(), "ShowButtonBar", {}, nullptr, &err))
+			{
+				windows().note("movie-function-missing", "_root.ShowButtonBar(): " + err);
+			}
+			else
+			{
+				windows().note("online-button-bar", "the shell is back over a covering screen: the movie's ShowButtonBar [S-5140]");
+			}
+		}
+		if (m_ctx && !m_ctx->pendingNotice.empty() && m_currentName != "OnlineLogin" && m_pages.count(m_currentName))
+		{
+			// lane ONLINEUX-1: an online game that could not go on (game.gd: a watched game the relay closed, a rejoin with nothing to catch up from)
+			const std::u16string notice = m_ctx->pendingNotice;
+			m_ctx->pendingNotice.clear();
+			showBox(kOnlineTitle, wrapLines(notice, kWrap), "online-notice|" + narrow(notice));
+		}
+	}
+	if (m_hub)
+	{
+		m_hub->update(); // lane ONLINEHUB-1
+	}
+	syncMode(); // lane UBERJOIN-1
 	serviceReadyBoxes(); // lane ONLINE-5: RW 0x846BA4 (the setup panel's update: + 0x2B9)
 	if (m_box)
 	{
@@ -1394,6 +2049,16 @@ void AptOnlineShell::update()
 		callChild("DisableButtonDeleteNickname");
 		callChild("DisableButtonRegister");
 		callChild("DisableButtonServiceTerms");
+		applyLoginButton(true); // lane ONLINEUX-1: the page's fill (RW 0x97A668 runs after the cached names are in)
+	}
+	if (m_currentName == "OnlineLogin" && m_pages.count("OnlineLogin") && m_nickname && !m_nickname->winIsHidden())
+	{
+		// once the page shows its fields (its clips are placed: the same moment the account buttons' DisableButton* calls wait for)
+		showNicknameOnly(); // lane MENUWORK-1 (S-4750)
+	}
+	if (m_pages.count("OnlineHome"))
+	{
+		fillTicker(); // lane ONLINEUX-1: RW 0x9C881D runs every update of the home page (the clock, the counts the host keeps)
 	}
 	if (!m_pages.count("OnlineOpenPlay"))
 	{
@@ -1447,6 +2112,12 @@ void AptOnlineShell::update()
 		}
 		// the host's slot 0, every other slot open (as the LAN lobby's host start)
 		SkirmishGameInfo info = model->info();
+		if (!m_ownMap.empty())
+		{
+			info.mapName = m_ownMap; // lane ONLINEUX-1: the player's own map, not the last game the browser showed
+			m_ownMap.clear();
+			m_selectedMap.clear();
+		}
 		info.slots[0].state = SLOT_PLAYER;
 		for (int s = 1; s < MAX_SLOTS; ++s)
 		{
@@ -1475,8 +2146,16 @@ WindowMsgHandledType AptOnlineShell::gadgetMessage(GameWindow *from, std::uint32
 {
 	prune();
 	GameWindow *gadget = reinterpret_cast<GameWindow *>(data1);
+	if (m_hub && m_hub->gadgetMessage(gadget, msg, data1, data2))
+	{
+		return MSG_HANDLED; // lane ONLINEHUB-1: the tournaments panel's lists, the STATS page's filters
+	}
 	if (gadget && gadget == m_gameList)
 	{
+		if (msg == GLM_SELECTED || msg == GLM_DOUBLE_CLICKED)
+		{
+			showSelectedGameMap(); // lane ONLINEUX-1
+		}
 		if (msg == GLM_DOUBLE_CLICKED && m_state == 2)
 		{
 			if ((int)(std::intptr_t)data2 >= 0)
@@ -1485,6 +2164,11 @@ WindowMsgHandledType AptOnlineShell::gadgetMessage(GameWindow *from, std::uint32
 			}
 			m_state = 9; // as JoinGame
 		}
+		return MSG_HANDLED;
+	}
+	if (gadget && gadget == m_nickname && (msg == GCM_UPDATE_TEXT || msg == GCM_SELECTED))
+	{
+		applyLoginButton(false); // lane ONLINEUX-1: BFME2 0x57166C (0x402E / 0x4026 on the nickname): RW 0x97A668
 		return MSG_HANDLED;
 	}
 	if (gadget && (gadget == m_nickname || gadget == m_motd || gadget == m_lobbies || gadget == m_gameInfo || gadget == m_gameName || gadget == m_gamePassword))

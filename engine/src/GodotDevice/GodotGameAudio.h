@@ -91,6 +91,7 @@ private:
 
 	Node *m_owner;
 	AudioAssetCache *m_cache;
+	String m_busPrefix;
 	std::vector<Slot> m_slots;
 	std::map<int, size_t> m_voiceSlot;
 	bool m_suspended = false;
@@ -114,6 +115,9 @@ public:
 	// config: { seed: int, random_algorithm: "RotWK_LCG" (default) | "ZH_CarryChain", decoded_budget_mb: int (default 128) }.
 	// Loads the audio INI files from the mounted retail archives (retail order) and creates the manager. Returns { ok, errors: [...], events, ... }.
 	Dictionary boot(const Ref<RetailFileSystem> &fs, const Dictionary &config);
+	// Install a private BFME2 music manager for shell presentation. Null restores
+	// the normal manager-only routing; AudioApi always remains on this node.
+	Dictionary set_shell_source(const Ref<RetailFileSystem> &fs);
 	bool is_booted() const { return m_manager != nullptr; }
 
 	// ---- AUDIO-2: TheEva (installed for the engine through AudioApi::installEva) ----------------------------------------------------------
@@ -185,6 +189,7 @@ protected:
 
 private:
 	void tearDown();
+	void destroyShellAudio();
 
 	std::unique_ptr<INIEnvironment> m_env;
 	std::unique_ptr<AudioIniState> m_ini;
@@ -193,12 +198,15 @@ private:
 	std::unique_ptr<GodotAudioDevice> m_device;
 	std::unique_ptr<AudioManager> m_manager;
 	std::unique_ptr<Eva> m_eva; ///< AUDIO-2: TheEva, installed through AudioApi::installEva next to the manager
+	GameAudio *m_shellAudio = nullptr; ///< shell-only child; never installed in AudioApi
+	bool m_shellOnly = false;
 	bool m_processing = false; ///< _process drives the manager: off after shutdown() until the next boot()
 	// lane OPTS-4: OPENBFME_AUDIO_LOG outside a game (the menus' requests and volume changes): the file's path, empty when the log is off. A game's
 	// LiveGameAudio appends to the same file while it is attached (AudioManager::eventLogTaker)
 	std::string m_logPath;
 	void flushLog();
 	Ref<RetailFileSystem> m_fs;
+	Ref<RetailFileSystem> m_shellFs;
 };
 
 } // namespace godot

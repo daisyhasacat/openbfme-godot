@@ -55,6 +55,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -114,7 +115,7 @@ public:
 
 	static TemplateVision templateVision(const ThingTemplate &finalOverride);
 	// RW 0x69264D: object + 0x1C4, the mean ground height of the VisionBonus test circle, recomputed only when the object's truncated integer position changed
-	float groundReferenceFor(const Object &obj, const TemplateVision &tv);
+	float groundReferenceFor(const Object &obj, const TemplateVision &tv, bool updateCache = true);
 
 	explicit ShroudManager(GameLogic &logic);
 	~ShroudManager();
@@ -171,6 +172,8 @@ public:
 	// the radar), so that reading for the local player never changes a peer's state hash
 	ObjectShroudStatus clientObjectStatus(const Object &obj, int player) const;
 	ObjectShroudStatus peekObjectStatus(const Object &obj, int player) const; ///< the cached value (0 when invalid)
+	// lane VISUAL-2 r2: the object has a record (retail: partition data, Object + 0x4E4); a contained object has none (GARRISON-1's containment hook)
+	bool hasRecord(const Object &obj) const;
 	bool hasSeen(const Object &obj, int player) const;                       ///< RW 0xB4E270 (record + 0xC4)
 	bool worldToCell(float x, float y, int &cx, int &cy) const;             ///< floor((p - lo) * inverse), false outside the grid
 	// lane MODULES-2: RW 0xB4D9E0 -> 0xB4FF50: the sum of the cell's `channel` values (0 .. 2) over the players of `playerMask` (bits 0 .. 19); 0 outside the
@@ -212,6 +215,11 @@ public:
 	bool displayed() const { return m_displayed; }
 
 	void hash(StateHasher &h) const;
+	// lane SAVE-4c: the obfme:Shroud block (ShroudManagerSnapshot.cpp): the grid, the cells, the unlook queue, the records by slot and the lists. A load
+	// goes into a manager of its own (checked there: the slot lists, the value sets); the post-process checks that every record's object exists in the
+	// loaded game, then this manager takes the loaded state
+	void xfer(class Xfer &x);
+	void loadPostProcess();
 	static std::vector<std::string> stopLines();
 	// the per-frame counters of the report
 	struct Stats
@@ -301,6 +309,8 @@ private:
 	std::vector<std::uint32_t> m_registration;              ///< registration order (RW + 0x30 list, head = back)
 	std::vector<std::uint32_t> m_freeSlots;                 ///< released record slots (reused last released first)
 	Stats m_stats;
+	void xferState(class Xfer &x);                  ///< lane SAVE-4c: the transferred state (a load fills a fresh manager)
+	std::unique_ptr<ShroudManager> m_pendingLoad;   ///< lane SAVE-4c: that manager, until the post-process
 	unsigned m_levels[3] = { 0, 0, 0 };
 	bool m_displayed = false;
 };

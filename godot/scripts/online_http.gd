@@ -6,11 +6,14 @@
 ## URL must be a plain http(s)://host[:port][/path].
 ## Lane ONLINE-5: beside the ordinary requests, one held poll at a time (a request marked `held`: the lobby keeps it until the staging room changes, at
 ## most hold_seconds) travels on a connection of its own, so a chat line or a ready tick sent meanwhile does not wait for it.
+## Lane ONLINEHUB-1: the same transport carries the OpenBFME platform API's requests (kind "platform": AptMenuPlayer.platform_take_requests /
+## platform_deliver; GET / POST / DELETE, no token); `lobby_url` is then the platform's base URL (it names the version: .../v1).
 extends Node
 
 var shell: Object = null
 var lobby_url := ""
 var problem := ""          ## why the lobby URL is refused ("" when it is fine)
+var kind := "lobby"        ## lane ONLINEHUB-1: "lobby" or "platform"
 
 const BODY_LIMIT := 262144 ## OnlineLobbyClient::kMaxBodyBytes
 const HELD_SLACK := 15.0   ## a held poll's timeout beyond the seconds the lobby may keep it (the round trip, a slow link)
@@ -44,14 +47,25 @@ func _process(_delta: float) -> void:
 	if shell == null:
 		return
 	# the client hands out at most one ordinary request (none while one is in flight) and one held poll (likewise)
-	for q: Dictionary in shell.online_take_requests():
+	for q: Dictionary in (shell.platform_take_requests() if kind == "platform" else shell.online_take_requests()):
 		_send(q)
+
+
+func _deliver(id: int, code: int, body: String, error: String) -> void:
+	if kind == "platform":
+		shell.platform_deliver(id, code, body, error)
+	else:
+		shell.online_deliver(id, code, body, error)
+
+
+func _service() -> String:
+	return "the online services" if kind == "platform" else "the lobby"
 
 
 func _send(q: Dictionary) -> void:
 	var held: bool = q.get("held", false)
 	if not problem.is_empty():
-		shell.online_deliver(q.id, 0, "", problem)
+		_deliver(q.id, 0, "", problem)
 		return
 	var node := _held if held else _http
 	if held:
@@ -64,14 +78,14 @@ func _send(q: Dictionary) -> void:
 	var headers := PackedStringArray(["content-type: application/json", "accept: application/json"])
 	if not String(q.token).is_empty():
 		headers.append("authorization: Bearer " + q.token)
-	var method := HTTPClient.METHOD_POST if q.method == "POST" else HTTPClient.METHOD_GET
-	var err := node.request(lobby_url.trim_suffix("/") + q.path, headers, method, q.body if method == HTTPClient.METHOD_POST else "")
+	var method := HTTPClient.METHOD_POST if q.method == "POST" else (HTTPClient.METHOD_DELETE if q.method == "DELETE" else HTTPClient.METHOD_GET)
+	var err := node.request(lobby_url.trim_suffix("/") + q.path, headers, method, q.body if method != HTTPClient.METHOD_GET else "")
 	if err != OK:
 		if held:
 			_held_id = 0
 		else:
 			_id = 0
-		shell.online_deliver(q.id, 0, "", "cannot reach the lobby %s: %s" % [lobby_url, error_string(err)])
+		_deliver(q.id, 0, "", "cannot reach %s %s: %s" % [_service(), lobby_url, error_string(err)])
 
 
 func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, held: bool) -> void:
@@ -83,10 +97,10 @@ func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedB
 	if shell == null:
 		return
 	if result == HTTPRequest.RESULT_REDIRECT_LIMIT_REACHED or (code >= 300 and code < 400):
-		shell.online_deliver(id, code, "", "the lobby %s answered with a redirect: not followed" % lobby_url)
+		_deliver(id, code, "", "%s %s answered with a redirect: not followed" % [_service(), lobby_url])
 	elif result == HTTPRequest.RESULT_BODY_SIZE_LIMIT_EXCEEDED:
-		shell.online_deliver(id, 0, "", "the lobby %s answered with more than %d bytes: not read" % [lobby_url, BODY_LIMIT])
+		_deliver(id, 0, "", "%s %s answered with more than %d bytes: not read" % [_service(), lobby_url, BODY_LIMIT])
 	elif result != HTTPRequest.RESULT_SUCCESS:
-		shell.online_deliver(id, 0, "", "the lobby %s did not answer (%d)" % [lobby_url, result])
+		_deliver(id, 0, "", "%s %s did not answer (%d)" % [_service(), lobby_url, result])
 	else:
-		shell.online_deliver(id, code, body.get_string_from_utf8(), "")
+		_deliver(id, code, body.get_string_from_utf8(), "")

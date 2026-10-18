@@ -21,6 +21,7 @@ set(OPENBFME_HUD_SOURCES
     src/GameClient/Radar.cpp
     src/GameClient/ControlBarCommandProcessing.cpp
     src/GameClient/GUI/AptScreens/AptPalantir.cpp
+    src/GameClient/GUI/AptScreens/AptImageMode.cpp # community PR #37
     src/GameLogic/PlayerCommands.cpp
 )
 set(OPENBFME_HUD_TESTS

@@ -17,7 +17,7 @@
 ##    folder" button (the file manager opens with the log selected); a "Logs" link next to the version in the menus opens the folder; the
 ##    command line --open-logs opens it and quits without starting the game. The logs stay in the user data folder: not next to the exe (the
 ##    launcher accepts a version folder only with exactly its signed files, and Program Files is not writable).
-##  * --crash-test (debug builds): a deliberate native crash once the menus are up (the release gate checks the symbolized crash dump).
+##  * --crash-test / --crash-test-worker (debug builds): deliberate native main/worker crashes once the menus are up.
 ##  * the game folders: mount_retail(fs) mounts the retail archives from ROTWK_INSTALL / BFME2_INSTALL (a developer / test override) or the folders
 ##    remembered in user://install-paths.cfg; when neither exists, or the remembered folders stopped working, the first-run screen
 ##    (scripts/release/first_run.gd) lets the player choose them, checks them and remembers them.
@@ -76,7 +76,7 @@ func _set_window_title() -> void:
 
 func _ready() -> void:
 	# lane UI-4: the packages run Godot's DEBUG export template on purpose (tools/release/package.sh: its crash handler writes the native backtrace
-	# into the session log; stop S-1923), and that template titles the window "<name> (DEBUG)". The title is the project's name, "OpenBFME", in every
+	# into the session log), and that template titles the window "<name> (DEBUG)". The title is the project's name, "OpenBFME", in every
 	# package. (Retail RotWK titles its window with gi.dat's GameName or the installer's registry DisplayName, RW 0x640ED0 / CreateWindowExW at
 	# RW 0x40243D; OpenBFME is not that program, so it keeps its own name.)
 	_set_window_title.call_deferred() # after the engine's own start-up titling
@@ -84,8 +84,15 @@ func _ready() -> void:
 		return
 	_add_watermark()
 	if OS.get_name() == "Windows":
-		# stop S-1923: Godot's crash dump symbolizes its own executable only, on the main thread only
-		print("RELEASE [S-1923] a crash dump names the extension's frames as openbfme.windows.template_debug.x86_64.dll+<offset> (mapped later with the build's private symbols), and a crash on a thread other than the main thread writes no dump at all (Godot's handler covers the main thread only)")
+		# Autoload ready runs after Godot's native initialization.
+		var crash_error: String = info.install_crash_handler()
+		if not crash_error.is_empty():
+			fatal("Windows crash diagnostics: " + crash_error)
+			return
+		print("RELEASE local minidumps: user://logs/minidumps (private process data; never uploaded)")
+		# stop S-1923 (what is left of it since win-crash-1's minidumps; DEVPORT-6 keeps it reported): the dump names the extension's frames
+		# by offset only, mapped later with the build's private symbols
+		print("RELEASE [S-1923] a crash writes a local minidump (user://logs/minidumps, every thread); it names the extension's frames as openbfme.windows.template_debug.x86_64.dll+<offset> (mapped later with the build's private symbols)")
 	if _has_arg("--open-logs"):
 		# lane WINCRASH-1: open the log folder (the newest earlier log selected) and quit without starting the game
 		var logs := _session_logs()
@@ -94,7 +101,7 @@ func _ready() -> void:
 		open_log_folder(LOG_DIR + "/" + logs[-1] if not logs.is_empty() else LOG_DIR)
 		get_tree().quit.call_deferred(0)
 		return
-	if _has_arg("--crash-test") and OS.is_debug_build():
+	if (_has_arg("--crash-test") or _has_arg("--crash-test-worker")) and OS.is_debug_build():
 		_crash_test.call_deferred()
 	# Previous abnormal exits are recorded in the session log without a startup dialog.
 
@@ -301,7 +308,7 @@ func bfme1_install() -> String:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--bfme1-install="): candidates.append(arg.trim_prefix("--bfme1-install="))
 	candidates.append(OS.get_environment("BFME1_INSTALL"))
-	for file in ["user://install-paths.cfg", "user://downloaded-installs.cfg"]:
+	for file in ["user://install-paths.cfg", "user://downloaded-installs.cfg", "user://downloaded-bfme1.cfg"]:
 		if not FileAccess.file_exists(file): continue
 		for line in FileAccess.get_file_as_string(file).split("\n"):
 			if line.begins_with("BFME1_INSTALL="): candidates.append(line.trim_prefix("BFME1_INSTALL=").strip_edges())
@@ -445,7 +452,10 @@ func _crash_test() -> void:
 	# the menus first, so the crash happens in a running game as a tester's would (about two seconds)
 	await get_tree().create_timer(2.0).timeout
 	print("RELEASE --crash-test: a deliberate native crash now")
-	info.crash_test()
+	if _has_arg("--crash-test-worker"):
+		info.crash_test_worker()
+	else:
+		info.crash_test()
 
 
 ## user://logs/openbfme-*.log file names, oldest first.

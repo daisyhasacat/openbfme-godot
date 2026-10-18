@@ -133,6 +133,44 @@ Run simulate(Weapon &w, TestHost &host, Shots &out, std::uint32_t from, std::uin
 // =============================================================================================================================
 // the golden timing sequences (tools/weapon/dump_timing_facts.py --golden)
 // =============================================================================================================================
+TEST_CASE("FALSEDEF-1 timing: PER_SHOT wind-up is added to the cooldown, not scaled by the ROF attribute")
+{
+	StateWorld w;
+	const WeaponTemplate *t = w.make("  DelayBetweenShots = 8000\n  PreAttackDelay = 666\n  PreAttackType = PER_SHOT\n");
+	REQUIRE(t->m_delayBetweenShotsMin == 40);
+	REQUIRE(t->m_preAttackDelay == 4);
+	TestHost host;
+	std::vector<std::uint32_t> expected;
+	SUBCASE("neutral rate") { expected = { 4, 48, 92 }; }
+	SUBCASE("double RATE_OF_FIRE attribute") { host.rofAttr = 2.0f; expected = { 4, 28, 52, 76, 100 }; }
+	Weapon weapon(t, 0, 0);
+	weapon.loadAmmoNow(host);
+	Shots delivery;
+	std::vector<std::uint32_t> frames;
+	bool windingUp = false;
+	for (host.frame = 0; host.frame <= 100; ++host.frame)
+	{
+		if (weapon.getStatusWriteBack(host) != WEAPON_READY_TO_FIRE)
+		{
+			continue;
+		}
+		if (!windingUp)
+		{
+			CHECK(weapon.preFireWeapon(host, victimShot().target) == 4);
+			windingUp = true;
+		}
+		else
+		{
+			weapon.privateFireWeapon(host, delivery, victimShot());
+			frames.push_back(host.frame);
+			windingUp = false;
+		}
+	}
+	CHECK(frames == expected);
+	CHECK(delivery.shots.size() == expected.size());
+	CHECK(host.rng.callLog().empty());
+}
+
 TEST_CASE("Weapon timing G1: ClipSize 3, delay 5 frames, reload 25 -> 24 frames: shots at 0, 5, 10, 34, 39")
 {
 	StateWorld w;

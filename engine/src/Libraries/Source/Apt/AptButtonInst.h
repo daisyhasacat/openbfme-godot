@@ -46,6 +46,8 @@ public:
 
 	// Hit test in stage coordinates against the button's hit mesh (triangles) or its bounds.
 	bool hitTest(float stageX, float stageY) const;
+	// lane OPTS-6 (checks): the stage box around every Hit record (the mesh's vertices, else the shape's or the text's bounds); false: none
+	bool hitBounds(float out[4]) const;
 
 private:
 	friend class AptInput;

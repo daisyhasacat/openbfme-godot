@@ -1,5 +1,6 @@
 // OpenBFME. GPL-3.0.
 
+#include "Common/BfmeGame.h"
 #include "GodotDevice/GodotW3DModelBuilder.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
 
@@ -166,7 +167,8 @@ Node3D *W3DModelBuilder::build_model(const Ref<RetailFileSystem> &fsRef, const S
 	std::string model = toNative(model_name);
 
 	// Model file
-	std::string modelPath = W3D_Asset_Path(model);
+	const bool flatLayout = fs.archive_fs() && isBfme1Data(*fs.archive_fs()); // community PR #36: the archives' model layout
+	std::string modelPath = W3D_Asset_Path(model, flatLayout);
 	m_report["file"] = toGodot(modelPath);
 	std::vector<uint8_t> modelBytes;
 	std::string error;
@@ -210,7 +212,7 @@ Node3D *W3DModelBuilder::build_model(const Ref<RetailFileSystem> &fsRef, const S
 		}
 		else
 		{
-			std::string treePath = W3D_Asset_Path(hlod->HierarchyName);
+			std::string treePath = W3D_Asset_Path(hlod->HierarchyName, flatLayout);
 			std::vector<uint8_t> treeBytes;
 			if (!fs.readBytes(treePath, treeBytes, &error))
 			{

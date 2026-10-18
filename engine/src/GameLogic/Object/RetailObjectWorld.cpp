@@ -24,6 +24,8 @@
 #include "GameLogic/Module/LogicModules.h"
 #include "GameLogic/ProductionStops.h"
 
+#include "Common/BfmeGame.h"
+
 #include <chrono>
 #include <stdexcept>
 
@@ -76,14 +78,15 @@ RetailObjectWorld::State::State(ArchiveFileSystem &fs)
 	: m_fs(fs)
 {
 	m_keys.init();
-	m_grammar = std::make_unique<RwGrammar>(m_fs.doesFileExist("Data\\INI\\Default\\SubsystemLegendExpansion1.ini") ? RwBinaryData::embedded() : bfme1Grammar());
+	// community PR #36: BFME1 data (Common/BfmeGame.h: its legend without BFME2's expansion legend) reads BFME1's legacy rows; anything else is RotWK's
+	m_grammar = std::make_unique<RwGrammar>(isBfme1Data(m_fs) ? bfme1Grammar() : RwBinaryData::embedded());
 	m_modules = std::make_unique<ModuleFactory>(m_keys, *m_grammar);
 	m_modules->init();
 	W3DDrawModules::registerTypedDrawModuleData(*m_modules);
 	// the horde contain data of the map's horde objects (their members are the drawables of a horde)
 	MapHordeSpawn::bindHordeContainData(*m_modules);
 	LogicModules::registerAll(*m_modules); // LOGIC-1: ActiveBody and HordeContain run for real, every other class is an UnportedModule (S-140)
-	m_things = std::make_unique<ThingFactory>(m_keys, *m_modules, *m_grammar, !m_fs.doesFileExist("Data\\INI\\Default\\SubsystemLegendExpansion1.ini"));
+	m_things = std::make_unique<ThingFactory>(m_keys, *m_modules, *m_grammar, isBfme1Data(m_fs));
 	m_playerTemplates = std::make_unique<PlayerTemplateStore>(m_keys);
 	m_spellStores = std::make_unique<SpellStores>(m_keys);
 	m_audio = std::make_unique<AudioIniState>();
@@ -402,7 +405,7 @@ bool RetailObjectWorld::loadState(std::string *error)
 	INI ini(m_s->m_env);
 	SubsystemLoadOptions options;
 	options.collectErrors = true;
-	options.bfme1 = !m_fs.doesFileExist("Data\\INI\\Default\\SubsystemLegendExpansion1.ini");
+	options.bfme1 = isBfme1Data(m_fs);
 	options.cinematics = true; // the census counts the Cinematic folder (338 templates), like the object-model retail test
 	const auto t0 = std::chrono::steady_clock::now();
 	try

@@ -66,6 +66,9 @@ public:
 	const std::vector<ObjectID> &heroes() const { return m_heroes; }           ///< + 0x14
 
 	void crc(StateHasher &h) const;
+	void xfer(class Xfer &x); ///< lane SAVE-4c (SkirmishAISnapshot.cpp)
+	// lane SAVE-4c: the seven lists (a load's references, checked before the manager takes them)
+	std::vector<const std::vector<ObjectID> *> lists() const { return { &m_army, &m_dozers, &m_ships, &m_structures, &m_pads, &m_economy, &m_heroes }; }
 
 private:
 	int m_playerIndex;

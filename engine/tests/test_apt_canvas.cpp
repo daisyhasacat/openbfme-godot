@@ -715,7 +715,7 @@ struct RetailMenu
 			apt->update(33);
 		}
 	}
-	AptCanvasList canvas(float w = 1024, float h = 768, bool merge = true)
+	AptCanvasList canvas(float w = 1024, float h = 768, bool merge = true, const AptImageReplacements *replacements = nullptr)
 	{
 		AptRenderList rl;
 		apt->buildRenderList(rl);
@@ -725,6 +725,7 @@ struct RetailMenu
 		in.textures = &textures;
 		in.text = &strings;
 		in.fonts = &fonts;
+		in.imageReplacements = replacements;
 		AptCanvasList out;
 		BuildAptCanvas(rl, in, out, merge);
 		return out;
@@ -756,6 +757,62 @@ std::size_t renderListTriangles(const AptRenderList &rl)
 }
 
 } // namespace
+
+TEST_CASE("retail online branding: replace only the seal, centred and aspect fitted in window pixels without changing layer or fade")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	RetailMenu menu(mount);
+	menu.host.setExternValue("InGame", "1");
+	menu.host.setExternValue("OnlineShellStartScreen", "OnlineLogin");
+	std::string error;
+	REQUIRE_MESSAGE(menu.apt->loadMovie(1, "OnlineShell", &error), error);
+	menu.tick(150);
+	const AptImageReplacements replacements = { { { "onlinelogin", 118 }, { "brand:onlinelogin:118", 512, 512 } } };
+	for (const auto &size : { std::make_pair(1024.f, 768.f), std::make_pair(2560.f, 1440.f) })
+	{
+		const auto original = menu.canvas(size.first, size.second, false);
+		const auto branded = menu.canvas(size.first, size.second, false, &replacements);
+		REQUIRE(branded.errors == original.errors);
+		REQUIRE(branded.ops.size() == original.ops.size());
+		int changed = 0;
+		for (size_t i = 0; i < branded.ops.size(); ++i)
+		{
+			const auto &a = original.ops[i];
+			const auto &b = branded.ops[i];
+			CHECK(a.path == b.path);
+			CHECK(a.colors == b.colors);
+			if (b.texture == "brand:onlinelogin:118")
+			{
+				++changed;
+				CHECK(a.path.find("OnlineLogin.GameSpy.GameSpy") != std::string::npos);
+				CHECK(a.texture == "apt_OnlineLogin_1.tga");
+				auto bounds = [](const AptCanvasOp &op) {
+					std::array<float, 4> box = { op.positions[0], op.positions[1], op.positions[0], op.positions[1] };
+					for (size_t j = 0; j < op.positions.size(); j += 2)
+					{
+						box[0] = std::min(box[0], op.positions[j]); box[2] = std::max(box[2], op.positions[j]);
+						box[1] = std::min(box[1], op.positions[j + 1]); box[3] = std::max(box[3], op.positions[j + 1]);
+					}
+					return box;
+				};
+				const auto oldBox = bounds(a), newBox = bounds(b);
+				CHECK(newBox[2] - newBox[0] == doctest::Approx(newBox[3] - newBox[1])); // tolerance: canvas transforms can round the fitted aspect ratio by a few float ulps
+				CHECK(newBox[0] + newBox[2] == doctest::Approx(oldBox[0] + oldBox[2])); // tolerance: canvas transforms can round the fitted center by a few float ulps
+				CHECK(newBox[1] + newBox[3] == doctest::Approx(oldBox[1] + oldBox[3])); // tolerance: canvas transforms can round the fitted center by a few float ulps
+				CHECK(newBox[0] >= oldBox[0] - 0.001f); CHECK(newBox[2] <= oldBox[2] + 0.001f); // tolerance: canvas transforms can round fitted bounds by a few float ulps
+				CHECK(newBox[1] >= oldBox[1] - 0.001f); CHECK(newBox[3] <= oldBox[3] + 0.001f); // tolerance: canvas transforms can round fitted bounds by a few float ulps
+				CHECK(b.uvs == std::vector<float>{ 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1 });
+			}
+			else
+			{
+				CHECK(a.texture == b.texture);
+				CHECK(a.positions == b.positions);
+				CHECK(a.uvs == b.uvs);
+			}
+		}
+		CHECK(changed == 1);
+	}
+}
 
 TEST_CASE("retail MainMenu canvas: per frame the triangle count equals the render list's, every texture loads, every label resolves, masks balance")
 {

@@ -84,7 +84,8 @@ enum RefuseReason : std::uint8_t
 	REFUSE_SLOT_TAKEN = 6,  ///< the slot is bound to another address and the HELLO lacks its session token (ONLINE-2 r2)
 	REFUSE_STALE = 7,       ///< lane ONLINE-3: the ticket's generation is below the slot's (a newer rejoin ticket was used)
 	REFUSE_NO_LOG = 8,      ///< lane ONLINE-3: LOG_REQUEST for a game the relay keeps no log of
-	REFUSE_SPECTATOR = 9    ///< lane ONLINE-3: DATA from a spectator (read-only: it sends no commands)
+	REFUSE_SPECTATOR = 9,   ///< lane ONLINE-3: DATA from a spectator (read-only: it sends no commands)
+	REFUSE_REJOIN_BEFORE_BIND = 10 ///< the original process never joined the relay; there is no incarnation to resume
 };
 const char *refuseReasonName(int reason);
 

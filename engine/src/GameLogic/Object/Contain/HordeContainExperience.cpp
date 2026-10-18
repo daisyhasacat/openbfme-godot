@@ -70,6 +70,34 @@ void HordeContain::addExperience(Object *member, float amount)
 	}
 }
 
+// RW 0x876C23: level each member, overwrite its template pool, then check the banner without forcing it.
+void HordeContain::gainMemberLevel()
+{
+	if (m_members.empty() && m_garrisonEntering.empty())
+	{
+		return;
+	}
+	auto levelMember = [this](Object *member) {
+		if (member)
+		{
+			ExperienceTracker *tracker = member->getExperienceTracker();
+			tracker->gainExpForLevel(1, false, false);
+			m_experiencePools[member->getTemplate()->getTemplateID()] = tracker->getExperience();
+		}
+	};
+	const std::vector<Object *> members(m_members.begin(), m_members.end());
+	for (Object *member : members)
+	{
+		levelMember(member);
+	}
+	const std::vector<ObjectID> entering(m_garrisonEntering.begin(), m_garrisonEntering.end());
+	for (ObjectID id : entering)
+	{
+		levelMember(getObject()->logic().findObjectByID(id));
+	}
+	bannerCheck(false);
+}
+
 // RW 0x870F75 (lane INTEG-1; the filter argument is null on the stances' path, so every member qualifies)
 void HordeContain::removeAttributeModifier(const std::string &listName)
 {

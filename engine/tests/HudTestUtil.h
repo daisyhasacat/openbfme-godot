@@ -116,7 +116,8 @@ struct Rig
 	int timeMs = 1000;
 	int keyState = 0;
 
-	explicit Rig(SharedWorld &s, const char *mapName = "map mp fall back 4p", const char *faction = "FactionMen") // lane SPELL-2: the local faction
+	// lane VISUAL-2 r2: `allyFaction` adds a computer Player_3 on the local player's team (start 2)
+	explicit Rig(SharedWorld &s, const char *mapName = "map mp fall back 4p", const char *faction = "FactionMen", const char *allyFaction = nullptr) // lane SPELL-2: the local faction
 		: sh(s)
 		, source(*s.mount->fs)
 		, assets(source)
@@ -127,6 +128,10 @@ struct Rig
 		o.seed = 4711;
 		o.slots.players.push_back({ "Player_1", faction, true, 0, 0, 0 });
 		o.slots.players.push_back({ "Player_2", "FactionMordor", false, 1, 0, 1 });
+		if (allyFaction)
+		{
+			o.slots.players.push_back({ "Player_3", allyFaction, false, 0, 0, 2 });
+		}
 		std::string err;
 		REQUIRE_MESSAGE(game->load(o, &err), err);
 		local = game->players().findPlayerWithName("Player_1");

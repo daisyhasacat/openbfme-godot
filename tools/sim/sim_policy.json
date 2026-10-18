@@ -22,12 +22,24 @@
    "reason": "Client-only wall expansion hover spacing: reads recorded wall links and replacement templates, returns highlight IDs without changing simulation state"
   },
   {
+   "glob": "src/Common/System/FloatFromChars.cpp",
+   "reason": "the vendored fast_float parser behind Common/FloatFromChars.h (decimal text to float / double, correctly rounded; no simulation arithmetic of ours); it is compiled with the simulation flags, and tools/sim/compare_float_chars.cpp checks it against the C++ library; libclang 18 cannot parse its SSE2 header (the reason it is the only file that includes the vendored headers)"
+  },
+  {
+   "glob": "src/Common/System/WindowsCrashDump.cpp",
+   "reason": "local Windows crash diagnostics: exception contexts and minidumps, no simulation arithmetic or state"
+  },
+  {
    "glob": "src/GodotDevice/LinuxRuntimeShims.cpp",
    "reason": "lane DEP-2: the Linux GDExtension's own powf and getentropy (link-time --wrap so it needs no newer glibc): client code (audio, shaders, godot-cpp colours, a GUID); the simulation calls neither"
   },
   {
    "glob": "src/GameClient/GUI/AptScreens/AptSkirmishRules.cpp",
    "reason": "lane RULES-1: the lobby Rules tab's gadgets (AptMpGameRules: rule rows, check boxes, the warning box): user interface, writes only the lobby's game setup"
+  },
+  {
+   "glob": "src/GameNetwork/GameSorter.cpp",
+   "reason": "lane MENUWORK-1: the LAN / online game lists' sort order (GameSorter, RW 0x9888B7): user interface, never read by the logic"
   },
   {
    "glob": "src/GodotDevice/GodotHud6Draw.cpp",
@@ -40,6 +52,10 @@
   {
    "glob": "src/GameClient/ControlBarRadialMenu.cpp",
    "reason": "lane HUD-6: the radial command bubbles' layout and look in window pixels: user interface, reads the logic and the drawables; its presses go through ControlBar::pressButton"
+  },
+  {
+   "glob": "src/GameClient/TerrainResourceFeedback.cpp",
+   "reason": "lane OWNERFIX-2: the resource claim feedback (the placement's claimable percentage, its colour and decal mask, the selected resource building's claim decals): user interface, reads the logic's claim grid and shroud, never changes them"
   },
   {
    "glob": "src/GameClient/CommandButtonHelp.cpp",
@@ -314,6 +330,10 @@
    "reason": "MENU-1 Skirmish.ini: the player's profile names read and written by the Skirmish screen, client-side user interface; nothing reaches the logic"
   },
   {
+   "glob": "src/GameClient/GUI/Skirmish/RealTimeStats.cpp",
+   "reason": "lane OWNERFIX-3: the profile's RealTimeStats.ini (the skirmish map list's battle honors), read by the lobby and written by the score screen: menu preferences, never simulation state"
+  },
+  {
    "glob": "src/GameClient/GUI/Skirmish/SkirmishGameRecord.cpp",
    "reason": "lane UI-6: the lobby's kept game in Skirmish.ini (RotWK's GameInfoToAsciiString / ParseAsciiStringToGameInfo text): menu preferences, never simulation state"
   },
@@ -324,6 +344,10 @@
   {
    "glob": "src/GameClient/GUI/Shell/*",
    "reason": "APT-4 GUI shell: windows, gadgets and Apt screens, client-side user interface; the only values it hands to the logic are the skirmish GameInfo, built by the (simulation-classified) src/GameClient/GUI/Skirmish sources"
+  },
+  {
+   "glob": "src/GameClient/GUI/MenuNavigator.cpp",
+   "reason": "lane OPTS-6: keyboard and controller navigation of the menus (focus order, the focus frame, clicks posted through the window manager): client-side user interface, reads and writes no simulation state"
   },
   {
    "glob": "src/GameClient/GUI/AptGadgetLayer.cpp",
@@ -526,6 +550,10 @@
    "reason": "lane SMOOTH-1 (S-810): the immutable render snapshot of a completed logic frame (copies of transforms, positions, construction state); reads the logic between frames, writes only the snapshot"
   },
   {
+   "glob": "src/GameClient/ObserverMetrics.cpp",
+   "reason": "CASTER-1: read-only broadcast statistics sampled between completed frames; writes only owned presentation counters, lists and graph history, never simulation state"
+  },
+  {
    "glob": "src/GameClient/LiveGameRunner.cpp",
    "reason": "lane SMOOTH-1 (S-810): LiveGame's render-side presentation (presented frame and alpha, client events applied in order, poses from one snapshot) and the logic worker's thread management; the frames themselves run in LiveGame::runFrameOwned (LiveGame.cpp, audited)"
   },
@@ -622,6 +650,22 @@
    "reason": "lane ONLINE-4: OnlineShell.apt's engine side (sign-in, home, the server browser, the staging room's gadgets on the lobby game); no logic state"
   },
   {
+   "glob": "src/GameNetwork/PlatformApiClient.cpp",
+   "reason": "lane ONLINEHUB-1: the online platform API's client (Quick Match tickets, tournaments, statistics, game results: HTTP requests queued for the host, JSON answers checked and kept for the menus); nothing reaches the logic (a Quick Match ends in an ordinary lobby room whose START is the input)"
+  },
+  {
+   "glob": "src/GameClient/GameRecords.cpp",
+   "reason": "lane ONLINEHUB-1: the local record of finished games (written after the score screen, read for the player's statistics pages and the results report); display data only, no logic state"
+  },
+  {
+   "glob": "src/GameClient/GUI/AptScreens/AptStats.cpp",
+   "reason": "lane ONLINEHUB-1: Stats.swf's engine side (the statistics page: faction cards and the list from the recorded games and the platform's community statistics); no logic state"
+  },
+  {
+   "glob": "src/GameClient/GUI/AptScreens/AptOnlineHub.cpp",
+   "reason": "lane ONLINEHUB-1: the online shell's TOURNAMENT page (Quick Match on the platform's matchmaker, the tournaments panel) and the STATS page's owner; a match ends in an ordinary lobby room whose START is the input; no logic state"
+  },
+  {
    "glob": "src/GameNetwork/RelayLog.cpp",
    "reason": "lane ONLINE-2: reads the relay's command log and assembles the replay's frame command lists (the input the audited replay playback feeds through the lockstep path); no logic state"
   },
@@ -648,6 +692,10 @@
   {
    "glob": "src/GameClient/SpellBookUI.cpp",
    "reason": "the spell book screens' engine side (lane SPELL-2): display reads of the logic and GameMessages it builds; never simulation state"
+  },
+  {
+   "glob": "src/GameEngineDevice/W3DDevice/GameClient/W3DVegetationSway.cpp",
+   "reason": "lane VISUAL-2: the tree sway of the W3DTreeDraw trees (W3DTreeBuffer's vegetation sway, the shader's SwayOffsets) from the script engine's breeze; client random only, never simulation state"
   },
   {
    "glob": "src/GameClient/TreeTopple.cpp",
@@ -692,6 +740,18 @@
   {
    "glob": "src/GameLogic/ScriptEngine/BfmeLuaRuntime.cpp",
    "reason": "Interactive bfme.* console interpreter on LuaJIT (lua-gdextension's VM, lane LUAGD-1), detached snapshots and explicit command queue; not the automatic retail Lua simulation. Native mutation application is audited in GodotBfmeLua.cpp. LuaJIT and lua-gdextension third-party sources are outside engine/src."
+  },
+  {
+   "glob": "src/Common/System/FreezeWatchdog.cpp",
+   "reason": "Client process hang diagnostics and stack capture; no simulation arithmetic or game state."
+  },
+  {
+   "glob": "<build>/luagd/*",
+   "reason": "Staged lua-gdextension addon and generated Godot Lua bindings, interactive console VM only; authoritative mutations remain audited in GodotBfmeLua.cpp and GodotBfmeLuaAI.cpp."
+  },
+  {
+   "glob": "src/GodotDevice/LuaGDExtensionRegister.cpp",
+   "reason": "Registers interactive Lua addon Godot classes; no simulation state or arithmetic."
   }
  ]
 }

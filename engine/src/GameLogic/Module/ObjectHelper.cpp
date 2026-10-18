@@ -3,6 +3,8 @@
 
 #include "GameLogic/Module/ObjectHelper.h"
 
+#include "Common/Xfer.h"
+
 ObjectHelperShell::ObjectHelperShell(Thing *thing, std::string helperName, std::string tag)
 	: UpdateModule(thing, nullptr)
 	, m_name(std::move(helperName))
@@ -18,4 +20,12 @@ UpdateSleepTime ObjectHelperShell::update()
 {
 	++m_calls;
 	return UPDATE_SLEEP_FOREVER;
+}
+
+void ObjectHelperShell::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_calls);
 }

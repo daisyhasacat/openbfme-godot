@@ -14,6 +14,9 @@
 extends Node
 
 signal changed(text: String)
+## lane ONLINEUX-1 r2 (Sol 5): the counts of the last answer changed (counts(): {} when none is current). The line's text has no running games, so a
+## change of games_running alone never reaches `changed`: the online home page's ticker (Games In Progress) follows this one
+signal counts_changed(counts: Dictionary)
 
 const MENU_SECONDS := 300.0
 const ONLINE_SECONDS := 90.0
@@ -129,6 +132,11 @@ static func parse(code: int, body: String) -> Dictionary:
 	return out
 
 
+## lane ONLINEUX-1: the counts of the last answer ({} when none is current): the online home page's ticker shows them
+func counts() -> Dictionary:
+	return _last
+
+
 ## the line to show: "3 players online" (the online menu adds ", 1 game open")
 static func line(stats: Dictionary, with_games: bool) -> String:
 	var n: int = stats.players
@@ -162,7 +170,7 @@ func _tick() -> void:
 	# a line older than two intervals is not shown (the lobby has not answered since): never a stale number
 	var interval := menu_s if mode == "menu" else online_s
 	if not _last.is_empty() and float(Time.get_ticks_msec() - _last_ms) / 1000.0 >= 2.0 * interval:
-		_last = {}
+		_set_last({})
 		_set_text("")
 	if visible_check.is_valid() and not bool(visible_check.call()):
 		_timer.start(maxf(min_gap_s, 1.0)) # asked again when the window is back
@@ -194,7 +202,7 @@ func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedB
 	if result == HTTPRequest.RESULT_SUCCESS and (code < 300 or code >= 400):
 		var p := parse(code, body.get_string_from_utf8())
 		if p.ok:
-			_last = p
+			_set_last(p)
 			_last_ms = Time.get_ticks_msec()
 			shown = line(p, mode == "online")
 		else:
@@ -202,7 +210,7 @@ func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedB
 	else:
 		print("GAME ONLINE count: not shown (no answer: %d / %d)" % [result, code])
 	if shown.is_empty():
-		_last = {}
+		_set_last({})
 	if mode.is_empty() or not fresh:
 		# the player moved on while it was asked: nothing of it is shown, and the new menu asks for itself
 		if not mode.is_empty():
@@ -210,6 +218,15 @@ func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedB
 		return
 	_set_text(shown)
 	_timer.start(menu_s if mode == "menu" else online_s)
+
+
+func _set_last(d: Dictionary) -> void:
+	var was := _last
+	_last = d
+	for k in ["players", "games_open", "games_running"]:
+		if was.get(k, -1) != d.get(k, -1):
+			counts_changed.emit(d)
+			return
 
 
 func _set_text(t: String) -> void:

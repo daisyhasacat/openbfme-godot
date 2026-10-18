@@ -1,13 +1,14 @@
 # Distinct instancer asset errors the retail corpus produces when every map's objects are built (godot/tests/object_corpus_sweep.gd).
 # One line per asset, prefixed by its kind. A new line, or a line that disappears, fails the sweep; the sweep also pins the three counts
-# below (10 + 13 + 2) so an asset cannot move from one kind to another unnoticed.
+# below (10 + 15 + 2) so an asset cannot move from one kind to another unnoticed.
 #
 # absent prototype (10): an HLOD sub object / aggregate names a render object that no W3D file of the mounted archives registers.
 #   Retail's Create_Render_Obj returns NULL for it and the part is skipped (ZH hlod.cpp:1112-1137).
-# missing texture (13): the exact texture name has no file at the path retail's name builder gives (RW 0x477D1C: art\compiledtextures\
+# missing texture (15): the exact texture name has no file at the path retail's name builder gives (RW 0x477D1C: art\compiledtextures\
 #   <first two characters>\<name>, DDS first), and no other file the sweep could cite. Alternate names (a .jpg / .png / .dds of another
 #   spelling, e.g. compiledtextures\ci\cinmrdbnr01.jpg, kb\kbmain2_nrm.tga, tclif_mor02nrm.dds) are not retail aliases and are not used.
 #   "None" is the literal texture name `None`.
+#   The two skybox textures also fail on archive base 645d3899; neither texture exists in the RotWK/BFME2 BIG directories.
 # terrain-folder texture (2): the exact name exists only as art\terrain\<name>.tga. Only the terrain texture loader (RW 0x709F77, prefix
 #   "Art\Terrain\") reads that folder; the file name builder a model texture goes through never does, so retail leaves these two
 #   unresolved too and the engine matches it (Resolve_W3D_Texture reports the file in TerrainFolderPath, test_w3d_render.cpp).
@@ -32,7 +33,9 @@ missing texture S3_BD02aLightingMap.tga
 missing texture S3_BD04LightingMap.tga
 missing texture S3_MainLightingMap.tga
 missing texture SFE03_Background01.tga
+missing texture Skybox_PinkRT.tga
 missing texture main2_NRM.tga
+missing texture skybox_morning_2.tga
 missing texture xb_gas_01.tga
 terrain-folder texture TClif_Mor01_NRM.tga
 terrain-folder texture TClif_Mor02_NRM.tga

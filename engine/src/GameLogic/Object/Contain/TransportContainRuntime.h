@@ -54,6 +54,7 @@ struct TransportContainModuleData;
 class TransportContain : public OpenContain
 {
 public:
+	OBFME_MODULE_XFER(TransportContain) // lane SAVE-4b
 	TransportContain(Thing *thing, const ModuleData *data, const TransportContainModuleData &transport, const DieMuxData &dieMux);
 	~TransportContain() override;
 
@@ -130,6 +131,7 @@ protected:
 class HordeTransportContain : public TransportContain
 {
 public:
+	OBFME_MODULE_XFER(HordeTransportContain) // lane SAVE-4b
 	HordeTransportContain(Thing *thing, const ModuleData *data, const TransportContainModuleData &transport, const DieMuxData &dieMux);
 
 	UpdateSleepTime update() override; // RW 0x87AD94

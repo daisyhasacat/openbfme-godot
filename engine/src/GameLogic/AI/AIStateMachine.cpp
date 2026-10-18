@@ -48,8 +48,29 @@ AIStateMachine::~AIStateMachine()
 	halt();
 }
 
+namespace
+{
+thread_local int t_loadGuards = 0; // lane SAVE-4c: AIStateMachine::LoadGuard
+} // namespace
+
+AIStateMachine::LoadGuard::LoadGuard()
+{
+	++t_loadGuards;
+}
+
+AIStateMachine::LoadGuard::~LoadGuard()
+{
+	--t_loadGuards;
+}
+
 void AIStateMachine::halt()
 {
+	if (t_loadGuards > 0)
+	{
+		m_temporaryState = nullptr; // lane SAVE-4c: a machine a load replaces leaves without its exits
+		m_currentState = nullptr;
+		return;
+	}
 	// ZH StateMachine::~StateMachine: the current state exits without a state to go to
 	if (m_temporaryState)
 	{

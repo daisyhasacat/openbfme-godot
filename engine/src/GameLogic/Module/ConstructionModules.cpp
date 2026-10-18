@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Combat/ObjectWeapons.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/ConstructionModules.h"
 #include "GameLogic/ConstructionSite.h"
 
@@ -18,6 +19,8 @@
 #include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/AI/AIEmotionStates.h"
+#include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/Combat/WeaponDelivery.h"
 #include "GameLogic/Damage.h"
 #include "GameLogic/Weapon.h"
@@ -209,29 +212,86 @@ GettingBuiltBehavior::GettingBuiltBehavior(Thing *thing, const GettingBuiltBehav
 	setWakeFrame(getObject(), UPDATE_SLEEP_NONE);
 }
 
-// RW 0x68C933(&damager, 4): the body took a damaging hit within the last 4 * LOGICFRAMES_PER_SECOND (RW 0xD9F608 = 5) frames: last + 20 >= now; never hit = 0xFFFFFFFF.
-// RW asks the module at Object + 0x258 first (vslot 0x7C, then its slot 0x90): that module is not identified (stop S-650), the body's answer is used
+// RW 0x68C933(&damager, 4): HordeContain's provider first, otherwise the body's last-damage record.
 bool GettingBuiltBehavior::recentlyDamaged() const
 {
-	const ActiveBody *body = activeBody(*getObject());
-	if (!body)
-	{
-		return false;
-	}
-	const UnsignedInt last = body->lastDamageFrame();
-	if (last == 0xFFFFFFFFu)
-	{
-		return false;
-	}
-	return getObject()->logic().getFrame() <= last + 4u * 5u;
+	ObjectID attacker = INVALID_ID;
+	return emotionAttackedWithin(*getObject(), 4u, attacker);
 }
 
-// RW 0x8561C0: the object is a castle member (RW 0x797BEF) that records an occupant (+0x14) which stands (RW 0x79A09D), and the member's + 0x24 byte is 0 (the field is not
-// identified: taken as 0, stop S-650)
+// RW 0x8561C0 / 0x79A09D. +0x14 is the keep, not the plot occupant.
 bool GettingBuiltBehavior::castleBlocks() const
 {
 	const CastleMemberBehavior *member = dynamic_cast<const CastleMemberBehavior *>(getObject()->findModule("CastleMemberBehavior"));
-	return member && member->occupantId() != INVALID_ID && member->plotIsTaken();
+	if (!member || member->keepId() == INVALID_ID || member->keepId() == getObject()->getID())
+	{
+		// RW 0x79ACED: the keep sets +0x24 and records its own ID at +0x14.
+		return false;
+	}
+	// RW 0x79A09D: no keep, a dead one (+ 0x458 bit 0), or one with BASE_BUILD / JUST_BUILT / ACTIVELY_BEING_CONSTRUCTED / DYING (Object + 0x124 bits 27 / 26,
+	// + 0x114 bit 5, + 0x110 bit 30 of the model condition flags at Object + 0x10C: bits 219 / 218 / 69 / 62)
+	static const int kBaseBuild = CombatNames::modelCondition("BASE_BUILD");
+	static const int kJustBuilt = CombatNames::modelCondition("JUST_BUILT");
+	static const int kBeingBuilt = CombatNames::modelCondition("ACTIVELY_BEING_CONSTRUCTED");
+	static const int kDying = CombatNames::modelCondition("DYING");
+	const Object *keep = getObject()->logic().findObjectByID(member->keepId());
+	return !keep || keep->isEffectivelyDead() || keep->testModelCondition(kBaseBuild) || keep->testModelCondition(kJustBuilt) ||
+		keep->testModelCondition(kBeingBuilt) || keep->testModelCondition(kDying);
+}
+
+bool GettingBuiltBehavior::canRebuild() const
+{
+	if (isConstructing())
+	{
+		return false;
+	}
+	const BodyModuleInterface *body = getObject()->getBodyModule();
+	if (!body)
+	{
+		throw std::runtime_error("GettingBuiltBehavior::canRebuild: missing body (RW 0x856501)");
+	}
+	if (m_data->m_spawnTimer >= 0.0f)
+	{
+		if (body->getDamageState() != BODY_RUBBLE) { return false; }
+	}
+	else
+	{
+		const GameLogicSettings &settings = getObject()->logic().settings();
+		if (!settings.repairDamageDelayLoaded)
+		{
+			throw std::runtime_error("GettingBuiltBehavior::canRebuild: TimeAfterDamageUntilRepairAllowed was not loaded");
+		}
+		ObjectID attacker = INVALID_ID;
+		if (emotionAttackedWithin(*getObject(), settings.timeAfterDamageUntilRepairAllowed, attacker))
+		{
+			return false;
+		}
+		if (SimMath::divf32(body->getHealth(), body->getMaxHealth()) >= 1.0f) { return false; } // body vslot 0x14, the health fraction
+	}
+	return !castleBlocks();
+}
+
+float GettingBuiltBehavior::neighborhoodRebuildCost(const Player &player) const
+{
+	const Object &source = *getObject();
+	if (!source.isEffectivelyDead()) { return 0.0f; }
+	float result = canRebuild() ? rebuildCost(player) : 0.0f;
+	for (int direction : { 1, -1 })
+	{
+		ObjectID id = source.getID();
+		for (;;)
+		{
+			id += direction;
+			const Object *object = source.logic().findObjectByID(id);
+			if (!object || !ObjectFilterMatch::isEquivalentTo(object->getTemplate(), source.getTemplate()) || !object->isEffectivelyDead()) { break; }
+			const auto *building = dynamic_cast<const GettingBuiltBehavior *>(object->findModule("GettingBuiltBehavior"));
+			if (building && building->canRebuild())
+			{
+				result = SimMath::fstpDword(SimMath::pc24AddW(result, building->rebuildCost(player)));
+			}
+		}
+	}
+	return result;
 }
 
 void GettingBuiltBehavior::killBuilder(Object &builder)
@@ -920,4 +980,41 @@ void ConstructionModules::registerAll(ModuleFactory &modules)
 	bindRuntime<FoundationAIUpdate, FoundationAIUpdateModuleData>(modules, "FoundationAIUpdate");
 	bindRuntime<GettingBuiltBehavior, GettingBuiltBehaviorModuleData>(modules, "GettingBuiltBehavior");
 	bindRuntime<BuildingBehavior, BuildingBehaviorModuleData>(modules, "BuildingBehavior");
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190: each class's fields in its crc's order) ---------------------------------------------------
+void FoundationAIUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+}
+
+void GettingBuiltBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferReal(&m_spawnTimer);
+	x.xferUnsignedInt(&m_buildFrames);
+	x.xferBool(&m_releaseBuilder);
+	x.xferBool(&m_wasDead);
+	x.xferBool(&m_constructing);
+	x.xferBool(&m_completedOnce);
+	x.xferBool(&m_healWeaponFired);
+	x.xferBool(&m_rebuilding);
+	x.xferBool(&m_forceComplete);
+	x.xferInt(&m_pricePaid);
+	x.xferBool(&m_workerSpawned);
+	x.xferBool(&m_checkCompletion);
+	x.xferUnsignedInt(&m_healWeaponShots);
+	SnapshotXfer::each(x, m_linked, 20, [&](LinkedPiece &l) {
+		x.xferObjectID(&l.id);
+		SnapshotXfer::coord3D(x, l.pos);
+		x.xferReal(&l.angle);
+	});
+}
+
+void BuildingBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
 }

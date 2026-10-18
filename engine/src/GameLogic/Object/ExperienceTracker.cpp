@@ -7,6 +7,8 @@
 #include "Common/NumericState.h"
 #include "Common/Player.h"
 #include "Common/StateHash.h"
+#include "GameLogic/SnapshotXfer.h"
+#include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/Economy.h"
 #include "GameLogic/EconomySettings.h"
@@ -360,4 +362,35 @@ void ExperienceTracker::crc(StateHasher &hasher) const
 	hasher.addFloat(m_rankFactor);
 	hasher.addI32(m_baseRank);
 	hasher.addU32(m_sink);
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) -----------------------------------------------------------------------
+// Retail's ExperienceTracker::xfer (RW 0x79D4E6, tier A, (1, 5)) transfers RotWK's tracker (real, int, the level name, ...); this one holds the port's fields
+// plus its helper's (+ 0x08 rank factor, + 0x0C base rank; RW keeps them in a separate helper object), so the layout is native. The scalar table is the
+// template's (the constructor's) and is not saved.
+void ExperienceTracker::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	x.xferAsciiString(&m_templateName);
+	x.xferAsciiString(&m_levelName);
+	// identities: the level target is a template of this game's data, the level one of its experience levels (or none)
+	if (x.isLoading() && !m_parent->logic().things().findTemplate(m_templateName))
+	{
+		throw XferException("an experience tracker's level target '" + m_templateName + "' is not a template of this game's data");
+	}
+	if (x.isLoading() && !m_levelName.empty() && !(TheExperienceLevelSystem && TheExperienceLevelSystem->findLevel(m_levelName)))
+	{
+		throw XferException("an experience tracker's level '" + m_levelName + "' is not an experience level of this game's data");
+	}
+	x.xferReal(&m_experience);
+	x.xferInt(&m_experienceValue);
+	x.xferInt(&m_ownGuysDieValue);
+	x.xferReal(&m_scalar);
+	x.xferBool(&m_leveled);
+	x.xferInt(&m_rank);
+	x.xferInt(&m_levelCap);
+	x.xferReal(&m_rankFactor);
+	x.xferInt(&m_baseRank);
+	x.xferObjectID(&m_sink);
+	x.xferBool(&m_defaultFeedback);
 }

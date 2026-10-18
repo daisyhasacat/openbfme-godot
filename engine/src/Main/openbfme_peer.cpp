@@ -10,7 +10,8 @@
 //
 // Usage:
 //   openbfme_peer --rotwk DIR --bfme2 DIR (or ROTWK_INSTALL / BFME2_INSTALL)
-//     --host PORT [--bind IP] --map KEY --seed N --slot "human|easy|medium|hard|brutal,FactionName,startPos,team" (repeated, in slot order)
+//     --host PORT [--bind IP] --map KEY --seed N --slot "human|easy|medium|hard|brutal,FactionName,startPos,team[,handicap]" (repeated, in slot order;
+//       lane OWNERFIX-2: the handicap 0, -5 .. -95, default 0; the report lists each playable player's `player_handicap`)
 //     | --join IP:PORT --name NAME
 //     [--frames N] [--run-ahead N] [--crc-interval N] [--script] [--realtime] [--record FILE] [--hashes FILE] [--report FILE]
 //     [--inject-divergence FRAME] [--drop PERMILLE] [--delay MS] [--jitter MS] [--feature NAME] [--lobby-timeout S]
@@ -24,7 +25,8 @@
 //     more is sent); [--disconnect-ms N] / [--player-timeout-ms N] replace GameData's NetworkDisconnectTime / NetworkPlayerTimeoutTime (tests);
 //     [--kick] the local player presses Kick for every player the disconnect screen offers it for; [--desync-dir DIR] where a desync dump goes
 //     (GameNetwork/DesyncDump.h, default the current directory); [--fixed-run-ahead] keep the lobby's run-ahead (no adaptation to the round trip)
-//     lane MP-2 (the LAN lobby, GameNetwork/LANAPI.h): --lan-join --name NAME [--lan-faction FactionName] [--lan-port-base N] [--lan-targets a.b.c.d,...]
+//     lane MP-2 (the LAN lobby, GameNetwork/LANAPI.h): --lan-host or --lan-join --name NAME [--lan-faction FactionName] [--lan-port-base N]
+//     [--lan-targets a.b.c.d,...] [--lan-pump-ms N]
 //     instead of --host / --join: joins the first game the LAN lobby lists (a game hosted from LanLobby.apt), asks for the faction, accepts (again after
 //     every options change) and plays the game the host starts
 //     lane MP-3 (NET-4, the network test harness, GameNetwork/NetImpairment.h): [--link [SLOT:]FAULTS] faults on the datagrams this peer sends (to every
@@ -53,7 +55,9 @@
 //     this build: its log is caught up to its frame F, every recorded hash compared, GameClient/CommandLogLoad.h), then plays the rest of FILE (the
 //     uninterrupted game's replay, the same game) from F with every frame's hash compared; the report adds save_frame and catch_up_hashes; exit 2 on a
 //     refused save, a failed catch-up or any later mismatch (a campaign mission's save starts its mission from the save's campaign start, the replay's
-//     map directory and the save's difficulty); --profile-text FILE writes this build's profile identity text to FILE (what a test records
+//     map directory and the save's difficulty); lane SAVE-4e: a save with a snapshot loads from it (no frame of its log runs; the report's load_mode
+//     snapshot, snapshot_bytes, load_ms), [--verify-log] catches it up from its log instead and compares the snapshot; --profile-text FILE
+//     writes this build's profile identity text to FILE (what a test records
 //     the game under, so the save is this build's) and exits
 //   lane ONLINE-2: openbfme_peer --rotwk DIR --bfme2 DIR --print-profile   prints this build's profile identity MD5 (what the lobby compares),
 //     then "faction INDEX NAME" lines (the START's faction numbers)
@@ -78,6 +82,7 @@
 #include "Common/Recorder.h"
 #include "Common/System/SaveGame/SaveGameFile.h"
 #include "GameClient/CommandLogLoad.h"
+#include "Common/Sha256.h"
 #include "Common/RetailArchivePolicy.h"
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
@@ -94,6 +99,7 @@
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/NewGame/NewGame.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/AttributeModifierPool.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
 #include "GameNetwork/LANAPI.h"
 #include "GameNetwork/LANLobby.h"
@@ -112,6 +118,8 @@
 #include "Libraries/WWVegas/WW3D2/assetmgr.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -140,6 +148,8 @@ struct Args
 	bool script = false, realtime = false;
 	std::string record, hashes, report, replay;
 	std::string loadSave; ///< lane SAVE-2: --load-save FILE (with --replay)
+	bool verifyLog = false; ///< lane SAVE-4e: --verify-log (a snapshot save is caught up from its log and its snapshot compared)
+	std::string snapshotOut; ///< lane SAVE-4e: --snapshot-out FILE (with --replay): the snapshot at the replay's end (T3, the bytes across OSes)
 	std::string profileText; ///< lane SAVE-2: --profile-text FILE writes this build's profile identity text there and exits (a test records under it)
 	long long injectFrame = -1;
 	int dropPerMille = 0, delayMs = 0, jitterMs = 0;
@@ -162,9 +172,12 @@ struct Args
 	bool kick = false;
 	std::string desyncDir;
 	bool fixedRunAhead = false;
-	bool lanJoin = false;
+	bool lanJoin = false, lanHost = false;
+	int lanPumpMs = 5;
+	bool lanPumpGiven = false;
 	std::string lanFaction, lanTargets;
 	int lanPortBase = -1;
+	std::string platform; ///< lane PLATFORMICON-1: --platform windows|linux|macos (--lan-join: the PLATFORM_INFO this peer sends; none: it tells nothing, like an older build)
 	bool uber = false;             ///< lane UBER-1: --uber
 	int logicThreads = 0;          ///< PERF-2: --logic-threads N, the logic job pool's threads (0: OPENBFME_LOGIC_THREADS or the hardware's)
 	int toggleGates = 0;                ///< lane HUD-5: --toggle-gates N (every N frames the local player toggles each settled gate it controls)
@@ -234,6 +247,8 @@ bool parseArgs(int argc, char **argv, Args &a, std::string &error)
 		else if (k == "--report" && next(a.report)) {}
 		else if (k == "--replay" && next(a.replay)) {}
 		else if (k == "--load-save" && next(a.loadSave)) {}
+		else if (k == "--verify-log") { a.verifyLog = true; }
+		else if (k == "--snapshot-out" && next(a.snapshotOut)) {}
 		else if (k == "--profile-text" && next(a.profileText)) {}
 		else if (k == "--inject-divergence" && next(v)) a.injectFrame = std::atoll(v.c_str());
 		else if (k == "--drop" && next(v)) a.dropPerMille = std::atoi(v.c_str());
@@ -276,6 +291,21 @@ bool parseArgs(int argc, char **argv, Args &a, std::string &error)
 		else if (k == "--desync-dir" && next(a.desyncDir)) {}
 		else if (k == "--fixed-run-ahead") a.fixedRunAhead = true;
 		else if (k == "--lan-join") a.lanJoin = true;
+		else if (k == "--platform" && next(a.platform)) {} // lane PLATFORMICON-1: the system this peer tells the LAN lobby (windows / linux / macos)
+		else if (k == "--lan-host") a.lanHost = true;
+		else if (k == "--lan-pump-ms" && next(v))
+		{
+			char *end = nullptr;
+			errno = 0;
+			const long pumpMs = std::strtol(v.c_str(), &end, 10);
+			if (errno == ERANGE || end == v.c_str() || *end != '\0' || pumpMs <= 0 || pumpMs > INT_MAX)
+			{
+				error = "--lan-pump-ms needs a positive integer";
+				return false;
+			}
+			a.lanPumpMs = (int)pumpMs;
+			a.lanPumpGiven = true;
+		}
 		else if (k == "--create-a-hero" && next(v)) a.createAHeroes.push_back(v);
 		else if (k == "--recruit-create-a-hero" && next(v)) a.recruitCreateAHeroAt = std::atoll(v.c_str());
 		else if (k == "--toggle-gates" && next(v)) a.toggleGates = std::max(1, std::atoi(v.c_str()));
@@ -303,6 +333,21 @@ bool parseArgs(int argc, char **argv, Args &a, std::string &error)
 	if (a.rotwk.empty() || a.bfme2.empty())
 	{
 		error = "the RotWK and BFME2 installs are required (--rotwk / --bfme2 or ROTWK_INSTALL / BFME2_INSTALL)";
+		return false;
+	}
+	if (a.lanHost && a.lanJoin)
+	{
+		error = "--lan-host and --lan-join are incompatible";
+		return false;
+	}
+	if ((a.lanHost || a.lanJoin) && (a.hostPort != -1 || !a.join.empty() || !a.onlineStart.empty()))
+	{
+		error = "a LANAPI host or join cannot be combined with --host, --join, or --online-start";
+		return false;
+	}
+	if (a.lanPumpGiven && !a.lanHost && !a.lanJoin)
+	{
+		error = "--lan-pump-ms requires --lan-host or --lan-join";
 		return false;
 	}
 	return true;
@@ -407,9 +452,9 @@ bool buildGame(const Args &a, const World &w, NewGameMessage &m, std::string &er
 		{
 			f.push_back(part);
 		}
-		if (f.size() != 4)
+		if (f.size() != 4 && f.size() != 5)
 		{
-			error = "--slot wants kind,faction,startPos,team: " + a.slots[i];
+			error = "--slot wants kind,faction,startPos,team[,handicap]: " + a.slots[i];
 			return false;
 		}
 		SkirmishGameSlot &s = m.game.slots[i];
@@ -432,6 +477,12 @@ bool buildGame(const Args &a, const World &w, NewGameMessage &m, std::string &er
 		s.startPos = std::atoi(f[2].c_str());
 		s.color = (int)i;
 		s.teamNumber = std::atoi(f[3].c_str());
+		s.handicap = f.size() == 5 ? std::atoi(f[4].c_str()) : 0; // lane OWNERFIX-2
+		if (!SkirmishGameSlot::handicapValid(s.handicap) || (f.size() == 5 && std::to_string(s.handicap) != f[4]))
+		{
+			error = "--slot handicap " + (f.size() == 5 ? f[4] : std::string("0")) + " (0, -5 .. -95)";
+			return false;
+		}
 	}
 	for (const std::string &c : a.createAHeroes)
 	{
@@ -445,6 +496,43 @@ bool buildGame(const Args &a, const World &w, NewGameMessage &m, std::string &er
 		if (!readCreateAHero(c.substr(colon + 1), w, m.game.slots[slot], error))
 		{
 			return false;
+		}
+	}
+	return true;
+}
+
+bool configureLANOptions(const Args &a, const World &w, LANAPI::Options &lo, std::string &error)
+{
+	if (!a.platform.empty() && !platformFromName(a.platform, lo.platform))
+	{
+		error = "--platform must be windows, linux or macos, got " + a.platform;
+		return false;
+	}
+	lo.playerTemplateCount = w.world->setupPlayerTemplates().getPlayerTemplateCount();
+	lo.colorCount = (int)w.settings.multiplayerColors.size();
+	lo.validateCreateAHero = [&w](const CreateAHeroHero &h, std::string *why) { return w.world->createAHeroSystem().validateHero(h, w.world->commands(), why); };
+	if (a.lanPortBase != -1 && (a.lanPortBase < 1 || a.lanPortBase > 65528))
+	{
+		error = "--lan-port-base must be between 1 and 65528";
+		return false;
+	}
+	if (a.lanPortBase > 0)
+	{
+		lo.lobbyPortBase = (std::uint16_t)a.lanPortBase;
+	}
+	if (!a.lanTargets.empty())
+	{
+		std::stringstream targets(a.lanTargets);
+		for (std::string t; std::getline(targets, t, ',');)
+		{
+			NetAddress ta;
+			if (t.empty() || !NetAddress::parse(t + ":0", ta))
+			{
+				error = "bad --lan-targets entry " + t;
+				return false;
+			}
+			lo.broadcast = false;
+			lo.extraTargets.push_back(ta.ip);
 		}
 	}
 	return true;
@@ -519,6 +607,7 @@ int runReplay(const Args &a, World &w)
 		// replay of the uninterrupted game supplies the frames after it
 		const SaveGameCompatibility c = SaveGameCompatibility::check(save.header, w.profile, ProfileIdentity::buildId(), BuildVersion::kVersion, false);
 		CommandLogLoad load;
+		load.setVerifyLog(a.verifyLog);
 		if (!c.loadable || !load.prepare(save, &error))
 		{
 			std::fprintf(stderr, "openbfme_peer: the save is refused: %s\n", c.loadable ? error.c_str() : c.refusal.c_str());
@@ -543,6 +632,11 @@ int runReplay(const Args &a, World &w)
 		r << "save " << a.loadSave << "\n";
 		r << "save_frame " << save.header.frame << "\n";
 		r << "catch_up_hashes " << load.hashesCompared() << "\n";
+		r << "load_mode " << (load.mode() == CommandLogLoad::Mode::Snapshot ? "snapshot" : "catch_up") << "\n"; // lane SAVE-4e
+		r << "snapshot_bytes " << save.snapshot.size() << "\n";
+		char loadMs[48];
+		std::snprintf(loadMs, sizeof(loadMs), "load_ms %.1f\n", load.elapsedMs());
+		r << loadMs;
 		if (load.state() != CommandLogLoad::State::Ready)
 		{
 			r << "catch_up_failed " << load.failure() << "\n";
@@ -571,6 +665,28 @@ int runReplay(const Args &a, World &w)
 	char b[64];
 	std::snprintf(b, sizeof(b), "final_hash 0x%08X recorded 0x%08X\n", finalHash, replay.finalHash);
 	r << b;
+	if (!a.snapshotOut.empty())
+	{
+		// lane SAVE-4e (T3): the snapshot of the replay's last frame, written as is; its size and SHA-256 in the report
+		std::vector<std::uint8_t> snap;
+		if (!game.logic().saveSnapshot(snap, &error))
+		{
+			r << "snapshot_refused " << error << "\n";
+			writeReport(a.report, r.str());
+			return 2;
+		}
+		std::ofstream so(a.snapshotOut, std::ios::binary | std::ios::trunc);
+		so.write(reinterpret_cast<const char *>(snap.data()), (std::streamsize)snap.size());
+		if (!so)
+		{
+			std::fprintf(stderr, "openbfme_peer: cannot write %s\n", a.snapshotOut.c_str());
+			return 1;
+		}
+		r << "snapshot_frame " << game.logic().getFrame() << "\n";
+		r << "snapshot_bytes " << snap.size() << "\n";
+		const std::array<std::uint8_t, 32> digest = Sha256::hash(snap.data(), snap.size());
+		r << "snapshot_sha256 " << HexBytes(digest.data(), digest.size()) << "\n";
+	}
 	if (playback.hasMismatch())
 	{
 		std::snprintf(b, sizeof(b), "first_mismatch frame %u recorded 0x%08X played 0x%08X\n", playback.firstMismatch().frame, playback.firstMismatch().recorded,
@@ -934,33 +1050,154 @@ int main(int argc, char **argv)
 			return runSpectator(a, w, socket, lobby);
 		}
 	}
+	else if (a.lanHost)
+	{
+		NewGameMessage m;
+		if (!buildGame(a, w, m, error))
+		{
+			std::fprintf(stderr, "openbfme_peer: %s\n", error.c_str());
+			return 1;
+		}
+		if (!m.game.slots[0].isHuman())
+		{
+			std::fprintf(stderr, "openbfme_peer: --lan-host requires slot 0 to be human\n");
+			return 1;
+		}
+		int expectedHumans = 0;
+		for (int s = 0; s < MAX_SLOTS; ++s)
+		{
+			if (m.game.slots[s].isHuman())
+			{
+				++expectedHumans;
+			}
+		}
+		if (expectedHumans < 2)
+		{
+			std::fprintf(stderr, "openbfme_peer: --lan-host needs at least two requested human slots\n");
+			return 1;
+		}
+		const SkirmishGameInfo requested = m.game;
+		for (int s = 1; s < MAX_SLOTS; ++s)
+		{
+			if (m.game.slots[s].isHuman())
+			{
+				m.game.slots[s].state = SLOT_OPEN;
+			}
+		}
+		LANAPI::Options lo;
+		lo.runAhead = a.runAhead;
+		lo.crcInterval = a.crcInterval;
+		if (!configureLANOptions(a, w, lo, error))
+		{
+			std::fprintf(stderr, "openbfme_peer: %s\n", error.c_str());
+			return 1;
+		}
+		lan = std::make_unique<LANAPI>(w.profile, std::u16string(a.name.begin(), a.name.end()), lo);
+		if (!lan->open(&error))
+		{
+			std::fprintf(stderr, "openbfme_peer: %s\n", error.c_str());
+			return 1;
+		}
+		std::printf("LAN_READY role=host lobby_port=%u game_port=%u\n", (unsigned)lan->lobbyPort(), (unsigned)lan->gameSocket().localAddress().port);
+		std::fflush(stdout);
+		lan->requestGameCreate(m.game);
+		std::vector<bool> optionsApplied((size_t)MAX_SLOTS, false);
+		bool startRequested = false;
+		while (!lan->started())
+		{
+			const std::uint64_t now = NetMilliseconds();
+			lan->update(now);
+			for (const LANAPI::Event &e : lan->takeEvents())
+			{
+				if (e.kind == LANAPI::Event::PlayerJoin)
+				{
+					const LANGame *current = lan->currentGame();
+					const std::string endpoint = current && e.slot >= 0 && e.slot < MAX_SLOTS ? current->lobby[(size_t)e.slot].text() : "unknown";
+					std::printf("LAN_PLAYER_JOIN slot=%d endpoint=%s\n", e.slot, endpoint.c_str());
+					std::fflush(stdout);
+					if (e.slot > 0 && e.slot < MAX_SLOTS && !optionsApplied[(size_t)e.slot])
+					{
+						if (!lan->hostSetOptions(requested))
+						{
+							std::fprintf(stderr, "openbfme_peer: LAN hostSetOptions failed for slot %d\n", e.slot);
+							return 3;
+						}
+						optionsApplied[(size_t)e.slot] = true;
+						lan->requestAccept(true);
+					}
+				}
+				else if (e.kind == LANAPI::Event::Accept)
+				{
+					std::printf("LAN_ACCEPT slot=%d accepted=%d\n", e.slot, e.flag ? 1 : 0);
+					std::fflush(stdout);
+				}
+				else if (e.kind == LANAPI::Event::PlayerLeave || e.kind == LANAPI::Event::Kicked)
+				{
+					std::printf("LAN_PLAYER_LEAVE slot=%d\n", e.slot);
+					std::fflush(stdout);
+				}
+				else if (e.kind == LANAPI::Event::GameCreate && e.ret != LANAPI::RET_OK)
+				{
+					std::fprintf(stderr, "openbfme_peer: LAN game create failed: %d\n", (int)e.ret);
+					return 3;
+				}
+			}
+			const LANGame *current = lan->currentGame();
+			if (current && !startRequested)
+			{
+				int humans = 0;
+				bool accepted = true;
+				for (int s = 0; s < MAX_SLOTS; ++s)
+				{
+					if (current->info.slots[s].isHuman())
+					{
+						++humans;
+						if (s > 0 && !current->accepted[(size_t)s])
+						{
+							accepted = false;
+						}
+					}
+				}
+				if (humans == expectedHumans && accepted)
+				{
+					std::string reason;
+					if (!lan->hostStartGame(&reason))
+					{
+						std::fprintf(stderr, "openbfme_peer: LAN host start failed: %s\n", reason.c_str());
+						return 3;
+					}
+					startRequested = true;
+				}
+			}
+			if (!lan->errors().empty() || now - lobbyStart > (std::uint64_t)a.lobbyTimeoutSeconds * 1000u)
+			{
+				for (const std::string &l : lan->log())
+				{
+					std::fprintf(stderr, "openbfme_peer: LAN lobby: %s\n", l.c_str());
+				}
+				std::fprintf(stderr, "openbfme_peer: %s\n", lan->errors().empty() ? "no LAN game start in time" : lan->errors().front().c_str());
+				return 3;
+			}
+			NetSleepMilliseconds(a.lanPumpMs);
+		}
+		lobby = lan->start();
+		lanGameSocket = lan->takeGameSocket();
+	}
 	else if (a.lanJoin)
 	{
 		LANAPI::Options lo;
-		lo.playerTemplateCount = w.world->setupPlayerTemplates().getPlayerTemplateCount();
-		lo.colorCount = (int)w.settings.multiplayerColors.size();
-		lo.validateCreateAHero = [&w](const CreateAHeroHero &h, std::string *why) { return w.world->createAHeroSystem().validateHero(h, w.world->commands(), why); };
+		lo.runAhead = a.runAhead;
+		lo.crcInterval = a.crcInterval;
 		SkirmishGameSlot ownHero;
 		if (a.createAHeroes.size() > 1 || (!a.createAHeroes.empty() && !readCreateAHero(a.createAHeroes.front(), w, ownHero, error)))
 		{
 			std::fprintf(stderr, "openbfme_peer: %s\n", a.createAHeroes.size() > 1 ? "--lan-join takes one --create-a-hero FILE.cah" : error.c_str());
 			return 1;
 		}
-		if (a.lanPortBase > 0)
+		if (!configureLANOptions(a, w, lo, error))
 		{
-			lo.lobbyPortBase = (std::uint16_t)a.lanPortBase;
-		}
-		std::stringstream targets(a.lanTargets);
-		for (std::string t; std::getline(targets, t, ',');)
-		{
-			NetAddress ta;
-			if (!NetAddress::parse(t + ":0", ta))
-			{
-				std::fprintf(stderr, "openbfme_peer: bad --lan-targets entry %s\n", t.c_str());
-				return 1;
-			}
-			lo.broadcast = false;
-			lo.extraTargets.push_back(ta.ip);
+			std::fprintf(stderr, "openbfme_peer: %s\n", error.c_str());
+			return 1;
 		}
 		const int faction = a.lanFaction.empty() ? LANAPI::kKeep : templateIndex(w.world->setupPlayerTemplates(), a.lanFaction);
 		if (faction == -1)
@@ -974,14 +1211,27 @@ int main(int argc, char **argv)
 			std::fprintf(stderr, "openbfme_peer: %s\n", error.c_str());
 			return 1;
 		}
+		std::printf("LAN_READY role=guest lobby_port=%u game_port=%u\n", (unsigned)lan->lobbyPort(), (unsigned)lan->gameSocket().localAddress().port);
+		std::fflush(stdout);
 		std::uint64_t lastTry = 0;
-		bool factionAsked = false;
+		std::uint64_t joinRequestedAt = 0;
+		bool factionAsked = false, joinRequested = false;
 		while (!lan->started())
 		{
 			const std::uint64_t now = NetMilliseconds();
 			lan->update(now);
 			for (const LANAPI::Event &e : lan->takeEvents())
 			{
+				if (e.kind == LANAPI::Event::GameList)
+				{
+					std::printf("LAN_DISCOVERY count=%zu hosts=", lan->games().size());
+					for (const LANGame &game : lan->games())
+					{
+						std::printf("%s,", game.host.text().c_str());
+					}
+					std::printf("\n");
+					std::fflush(stdout);
+				}
 				if (e.kind == LANAPI::Event::Kicked || e.kind == LANAPI::Event::HostLeave)
 				{
 					std::fprintf(stderr, "openbfme_peer: LAN lobby: %s\n", e.kind == LANAPI::Event::Kicked ? "kicked" : "the host left");
@@ -989,18 +1239,24 @@ int main(int argc, char **argv)
 				}
 				if (e.kind == LANAPI::Event::GameJoin && e.ret != LANAPI::RET_OK)
 				{
-					std::fprintf(stderr, "openbfme_peer: LAN lobby: the join was answered %d\n", (int)e.ret);
-					if (e.ret == LANAPI::RET_CRC_MISMATCH)
-					{
-						return 3;
-					}
+					const std::uint64_t elapsed = joinRequestedAt == 0 ? 0 : now - joinRequestedAt;
+					std::fprintf(stderr, "openbfme_peer: LAN_GAME_JOIN result=%d elapsed_ms=%llu\n", (int)e.ret, (unsigned long long)elapsed);
+					return 3;
+				}
+				if (e.kind == LANAPI::Event::GameJoin && e.ret == LANAPI::RET_OK)
+				{
+					const std::uint64_t elapsed = joinRequestedAt == 0 ? 0 : now - joinRequestedAt;
+					std::printf("LAN_GAME_JOIN result=0 elapsed_ms=%llu\n", (unsigned long long)elapsed);
+					std::fflush(stdout);
 				}
 			}
 			const LANGame *g = lan->currentGame();
-			if (!g && !lan->games().empty() && now - lastTry > 1500)
+			if (!g && !joinRequested && !lan->games().empty())
 			{
 				lastTry = now;
+				joinRequested = true;
 				lan->requestGameJoin(0);
+				joinRequestedAt = now;
 			}
 			else if (g && !factionAsked)
 			{
@@ -1027,7 +1283,7 @@ int main(int argc, char **argv)
 				std::fprintf(stderr, "openbfme_peer: %s\n", lan->errors().empty() ? "no LAN game start in time" : lan->errors().front().c_str());
 				return 3;
 			}
-			NetSleepMilliseconds(5);
+			NetSleepMilliseconds(a.lanPumpMs);
 		}
 		lobby = lan->start();
 		lanGameSocket = lan->takeGameSocket();
@@ -1092,6 +1348,18 @@ int main(int argc, char **argv)
 			const std::vector<std::uint8_t> ack = LANLobby::encodeStartAck(lobby.localSlot);
 			socket.sendTo(hostAddress, ack.data(), ack.size());
 		}
+	}
+	if (lan)
+	{
+		std::printf("LAN_START role=%s local_slot=%d\n", a.lanHost ? "host" : "guest", lobby.localSlot);
+		for (int s = 0; s < MAX_SLOTS; ++s)
+		{
+			if (lobby.networkSlot[(size_t)s])
+			{
+				std::printf("LAN_START_SLOT slot=%d address=%s\n", s, lobby.addresses[(size_t)s].text().c_str());
+			}
+		}
+		std::fflush(stdout);
 	}
 	// ---- load ----
 	NewGameStart start(RandomAlgorithm::ZH_CarryChain);
@@ -1682,6 +1950,28 @@ int main(int argc, char **argv)
 	}
 	r << "objects " << game.logic().report().objects << "\n";
 	r << "players_defeated " << defeated << "\n";
+	// lane OWNERFIX-2: each playable player's handicap (Player + 0x29C) and how many of its live objects carry a HandicapPercent<n> list (RW 0x6940DB)
+	for (int i = 0; i < game.logic().players().getPlayerCount(); ++i)
+	{
+		const Player *p = game.logic().players().getNthPlayer(i);
+		if (!p->getPlayerTemplate() || !p->getPlayerTemplate()->m_playableSide)
+		{
+			continue;
+		}
+		int listed = 0;
+		for (Object *o = game.logic().getFirstObject(); o; o = o->getNextObject())
+		{
+			const AttributeModifierPool *pool = o->getControllingPlayer() == p ? dynamic_cast<const AttributeModifierPool *>(o->findModule("AttributeModifierPoolUpdate")) : nullptr;
+			if (pool && !o->isEffectivelyDead())
+			{
+				for (const std::string &n : pool->listNames())
+				{
+					listed += n.rfind("HandicapPercent", 0) == 0 ? 1 : 0;
+				}
+			}
+		}
+		r << "player_handicap " << p->getMultiplayerStartIndex() << " " << p->getHandicap() << " " << listed << "\n";
+	}
 	for (const auto &kv : scriptedTypes)
 	{
 		r << "scripted_type " << kv.first << " " << kv.second << "\n";

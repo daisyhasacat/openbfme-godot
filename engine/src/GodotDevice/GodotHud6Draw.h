@@ -57,6 +57,9 @@ private:
 	Ref<Shader> m_grayShader, m_solidShader;
 	Ref<ShaderMaterial> m_grayMaterial, m_solidMaterial;
 	unsigned m_helpDraws = 0, m_radialDraws = 0, m_clockDraws = 0;
+	unsigned m_attackDraws = 0;  ///< lane DEVPORT-8: draws of the blink window's image
+	std::string m_attackImage;   ///< the image the last draw chose ("" none)
+	unsigned m_radialTexts = 0; ///< lane OWNERFIX-3: the counts drawn on the bubbles so far
 	unsigned m_helpTextOps = 0; ///< lane BUGS-1: the text lines the last help draw drew (0: an empty box)
 };
 

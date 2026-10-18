@@ -2,6 +2,7 @@
 // Derived from Command & Conquer Generals Zero Hour, (c) 2001-2003 Electronic Arts Inc., GPL-3.0.
 
 #include "Libraries/WWVegas/WW3D2/assetmgr.h"
+#include "Common/BfmeGame.h"
 
 #include <atomic>
 #include "Libraries/WWVegas/WWLib/chunkio.h"
@@ -207,24 +208,9 @@ bool Load_W3D_File(const std::uint8_t *data, size_t size, W3DFileContents &out, 
 	return true;
 }
 
-namespace
+std::string W3D_Asset_Path(const std::string &assetName, bool flatLayout)
 {
-std::atomic<bool> g_flatAssetLayout{ false };
-}
-
-void W3D_Set_Flat_Asset_Layout(bool flat)
-{
-	g_flatAssetLayout = flat;
-}
-
-bool W3D_Flat_Asset_Layout()
-{
-	return g_flatAssetLayout.load();
-}
-
-std::string W3D_Asset_Path(const std::string &assetName)
-{
-	if (g_flatAssetLayout.load())
+	if (flatLayout)
 	{
 		return "art\\w3d\\" + AsciiStringUtil::lowered(assetName) + ".w3d"; // BFME1: its W3D.big stores art\\w3d\\<name>.w3d, no two-letter folders
 	}
@@ -243,6 +229,12 @@ std::string W3D_Compiled_Texture_Path(const std::string &textureName)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+
+ArchiveW3DFileSource::ArchiveW3DFileSource(ArchiveFileSystem &fs)
+	: Fs(fs)
+	, Flat(isBfme1Data(fs)) // community PR #36
+{
+}
 
 bool ArchiveW3DFileSource::Exists(const std::string &path) const
 {
@@ -323,7 +315,7 @@ const W3DFileContents *WW3DAssetManager::Try_Stem_File(const std::string &stem)
 	{
 		return nullptr;
 	}
-	std::string path = W3D_Asset_Path(stem);
+	std::string path = W3D_Asset_Path(stem, Source.FlatAssetLayout());
 	if (!Source.Exists(path))
 	{
 		return nullptr;
@@ -339,7 +331,7 @@ const HTreeClass *WW3DAssetManager::Get_HTree(const std::string &name, std::stri
 	const HTreeClass *tree = file ? file->Find_HTree(name) : nullptr;
 	if (!tree && error)
 	{
-		*error = "hierarchy " + name + " is not registered (looked in " + W3D_Asset_Path(AsciiStringUtil::lowered(name)) + ")";
+		*error = "hierarchy " + name + " is not registered (looked in " + W3D_Asset_Path(AsciiStringUtil::lowered(name), Source.FlatAssetLayout()) + ")";
 	}
 	return tree;
 }
@@ -518,7 +510,7 @@ const RenderObjPrototype *WW3DAssetManager::Create_Render_Obj(const std::string 
 		if (!mesh)
 		{
 			Prototypes[key].reset();
-			if (error) *error = "render object " + name + " is not registered (no HLOD or mesh of that name in " + W3D_Asset_Path(key) + ")";
+			if (error) *error = "render object " + name + " is not registered (no HLOD or mesh of that name in " + W3D_Asset_Path(key, Source.FlatAssetLayout()) + ")";
 			return nullptr;
 		}
 		proto->Type = RenderObjPrototype::PROTO_MESH;

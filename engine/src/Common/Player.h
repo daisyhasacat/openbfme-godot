@@ -94,6 +94,11 @@ public:
 	// the skirmish AI level of the side (skirmishDifficulty: 0 easy .. 3 brutal), -1 for a side without one; the AI lane reads it
 	int getSkirmishDifficulty() const { return m_skirmishDifficulty; }
 	void setSkirmishDifficulty(int d) { m_skirmishDifficulty = d; }
+	// lane OWNERFIX-2: RW Player + 0x29C, the lobby handicap (0, -5 .. -95): Player::initFromDict (RW 0x6B09C2 .. 0x6B09DE) stores the side's playerHandicap
+	// (Dict::getInt: 0 when absent); Object::friend_initObject (RW 0x6940DB) reads it. Set once at the start, never changed: a save's start message sets it
+	// again before the snapshot loads, so it is not in the snapshot (xfer); hashed only when not 0 so a game without a handicap keeps its hash
+	int getHandicap() const { return m_handicap; }
+	void setHandicap(int h) { m_handicap = h; }
 	// lane CAMP-1H: RW 0x6AC32D, the difficulty bonus of `obj` (Object::setReceivingDifficultyBonus); defined in GameLogic/Object/Object.cpp (it reads the logic)
 	void applyDifficultyBonusesForObject(Object &obj, bool apply);
 	// the colour tints the player's models: the map or the lobby chose it, or the faction is one that can be played (a template with a
@@ -130,6 +135,11 @@ public:
 	void setMultiplayerStartIndex(int i) { m_mpStartIndex = i; }
 
 	void crc(StateHasher &hasher) const;
+	// lane SAVE-4a: the player's state (Common/Xfer.h); the identity the game's START made (index, name, faction template) must match on load. The default
+	// team is resolved by id through `teams` (loaded before the players, as retail's list 0 has TeamFactory before Players). The tunnel network (+ 0x308) is
+	// NOT here: its block obfme:TunnelTracker is SAVE-4b's (its riders are objects)
+	void checkLoadedIndices(int playerCount) const; ///< lane SAVE-4e: see Player.cpp
+	void xfer(class Xfer &x, class TeamFactory &teams);
 
 	// ---- lane PROD-1: what production reads of a player ------------------------------------------------------------------------
 	// (the command points are the economy's, lane ECON-1: commandPoints() above, Economy::canAffordCommandPoints for the production checks)
@@ -239,7 +249,7 @@ public:
 	};
 	// RW 0x6AEE22 addUpgrade(template, status, silent): the record is found or made (at the head); IN_PRODUCTION sets the in-production bit; COMPLETE clears it,
 	// sets the completed bit and runs onUpgradeCompleted (RW 0x6AE483: updateUpgradeModules on every object of the player through the host, then the Eva gain
-	// event unless silent, which is the audio lane's: counted in upgradeEvaEventsNotPlayed())
+	// event unless silent)
 	void addUpgrade(const UpgradeTemplate *upgrade, UpgradeStatus status, bool silent = false);
 	// RW 0x6AE60C removeUpgrade(template, silent): a PLAYER upgrade's record leaves and both bits clear, and only a record that was COMPLETE goes on; an OBJECT
 	// upgrade always goes on: RW 0x6AE546 removes the upgrade from every object of the player (Object::removeUpgrade RW 0x691438), then the Eva lose event
@@ -248,7 +258,6 @@ public:
 	bool hasUpgradeInProduction(const UpgradeTemplate *upgrade) const { return upgrade && m_upgradesInProgress.test((unsigned)upgrade->getMaskBit()); } // RW 0x6AB2E1
 	const UpgradeMaskType &getCompletedUpgradeMask() const { return m_upgradesCompleted; }
 	int upgradeStatus(const UpgradeTemplate *upgrade) const; ///< the record's status, UPGRADE_STATUS_INVALID when there is none
-	unsigned upgradeEvaEventsNotPlayed() const { return m_upgradeEvaNotPlayed; }
 	// by name through TheUpgradeCenter (std::logic_error when no center is installed). A name that is not an upgrade is RW's NULL template: the queries answer
 	// false (RW 0x6AC2AF / 0x691421 return false for NULL), a grant or removal by such a name throws (no RW caller grants a NULL template)
 	void addCompletedUpgrade(const std::string &name) { addUpgrade(resolveUpgrade(name, true), UPGRADE_STATUS_COMPLETE); }
@@ -303,6 +312,7 @@ public:
 	// is hashed by the tunnels (TunnelContain::crc)
 	TunnelTracker &tunnelTracker();
 	const TunnelTracker *tunnelTrackerIfAny() const { return m_tunnelTracker.get(); }
+	void friend_dropTunnelTracker() { m_tunnelTracker.reset(); } // lane SAVE-4b: a snapshot of a player without one
 
 	void setEconomyHost(PlayerEconomyHost *host) { m_host = host; }
 	PlayerEconomyHost *economyHost() const { return m_host; }
@@ -327,6 +337,7 @@ private:
 	std::uint32_t m_color = 0;
 	std::uint32_t m_nightColor = 0;
 	int m_skirmishDifficulty = -1;
+	int m_handicap = 0; // + 0x29C (lane OWNERFIX-2)
 	bool m_colorExplicit = false;
 	Money m_money;
 	ScoreKeeper m_score;
@@ -339,7 +350,6 @@ private:
 	std::vector<UpgradeRecord> m_upgradeRecords; ///< RW + 0x9C (newest first)
 	UpgradeMaskType m_upgradesInProgress;        ///< RW + 0xBC
 	UpgradeMaskType m_upgradesCompleted;         ///< RW + 0x14C
-	unsigned m_upgradeEvaNotPlayed = 0;          ///< not state: Eva events the audio lane would play
 	PlayerScience m_science; // SPELL-1
 	PlayerHeroList m_heroes; // HERO-1 (RW + 0x758)
 	std::vector<CostModifier> m_costModifiers;

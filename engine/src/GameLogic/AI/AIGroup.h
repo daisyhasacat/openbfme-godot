@@ -24,6 +24,7 @@
 
 #include "Common/INIDataTypes.h"
 
+#include <memory>
 #include <vector>
 
 class AIWorld;
@@ -39,9 +40,27 @@ public:
 	size_t size() const { return m_members.size(); }
 	const std::vector<Object *> &members() const { return m_members; }
 
+	AIGroup(const AIGroup &) = delete;
+	AIGroup &operator=(const AIGroup &) = delete;
+	~AIGroup();
 	// ZH AIGroup::groupMoveToPosition. `addWaypoint` appends the destination to the path the units follow. `finalAngle` (when `haveFinalAngle`) is the facing every unit
-	// takes on arrival (the BFME formation move's drag direction, S-223).
-	void groupMoveToPosition(const Coord3D &pos, bool addWaypoint, CommandSourceType source, bool haveFinalAngle = false, float finalAngle = 0.0f);
+	// takes on arrival (the BFME formation move's drag direction, S-223). lane BACKLOG-8 r2: RW 0x774897's head first offers a player's group of more than one
+	// unit to the formation march (gatherAndMoveInFormation); `attackMove` (the port's group attack-move) never marches (the attack march, mode 1, is S-4463)
+	void groupMoveToPosition(const Coord3D &pos, bool addWaypoint, CommandSourceType source, bool haveFinalAngle = false, float finalAngle = 0.0f,
+		bool attackMove = false);
+	// ---- lane BACKLOG-8 r2: the formation march (AIGroupMarch.cpp) ----
+	// RW 0x7747DE (privateGatherAndMoveInFormationToPosition): true when the group took the order (it marched, or every member was invalid)
+	bool gatherAndMoveInFormation(const Coord3D &pos, CommandSourceType source, int mode, bool ground);
+	// RW 0x76F115
+	bool computeGroundPath(const Coord3D &pos);
+	// RW 0x77348C (keepFormation: the NO_FORMATION units keep their slot at the end)
+	void moveFormationToPos(const Coord3D &pos, CommandSourceType source, int mode, bool ground, bool keepFormation);
+	// RW 0x76EEC1: the rectangle and centre of the members not held with an AI; true when the first such member has a formation id and there are two
+	bool getMinMaxAndCenter(Coord2D &min, Coord2D &max, Coord3D &center) const;
+	const class Path *groundPath() const { return m_groundPath.get(); }
+	const Coord3D &pathStart() const { return m_pathStart; }
+	const Coord3D &pathEnd() const { return m_pathEnd; }
+	static const char *marchStopLine();
 	// lane MOVE-3: MSG_DO_MOVETO / MSG_DO_ATTACKMOVETO with GameData + 0x11CA (PlanningModeEnabled, set by the GameData constructor RW 0x643982 and cleared only
 	// by a command-line switch RW 0x7B9F93; retail INI never names it): the group manager's move order (RW 0x75748C -> order RW 0x94E232, vtable 0xC81430)
 	// executed at once for every object of the group in group order (RW 0x7572FA -> 0x94ED4C -> slot 0x10 RW 0x94E184): an object that is not a horde member
@@ -99,6 +118,14 @@ private:
 	// RW 0x774C6D .. 0x774D04: the stealth delay of a player-source order (one logic random draw at AIGroup.cpp 0x874)
 	void delayMoodCheckForStealth(Object &obj, AIUpdateInterface &ai);
 
+	// lane BACKLOG-8 r2 (AIGroupMarch.cpp)
+	bool getCenter(Coord3D &center) const;
+	void releaseGroundPath(); // RW 0x76EBA1
+	bool removeInvalidMembers(); // RW 0x76FFF0
+
 	GameLogic &m_logic;
 	std::vector<Object *> m_members;
+	Coord3D m_pathStart{ 0.0f, 0.0f, 0.0f }; ///< + 0x18 (the group constructor RW 0x7707ED)
+	Coord3D m_pathEnd{ 10.0f, 0.0f, 0.0f };  ///< + 0x24
+	std::unique_ptr<class Path> m_groundPath; ///< + 0x14
 };

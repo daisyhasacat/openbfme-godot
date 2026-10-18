@@ -51,6 +51,15 @@ std::string DrawableManager::flushStopLine()
 		"reproduced; the draw scripts' target record is the one at the flush event, not read live";
 }
 
+std::string DrawableManager::textureSwapStopLine()
+{
+	return "[S-5015] texture swaps (community PR #37): a model condition state's `Texture = A B` pairs (W3DScriptedModelDraw::poseView textureSwaps: a "
+		"building's SNOW state on a snowy map) and a W3DFloorDraw's WeatherTexture of the map's weather (the first entry; it replaces every texture of the "
+		"floor model) are drawn by building the model again with every texture named A (any case) loaded as B, normal maps included, before the house colour "
+		"lookup; INFERENCE: retail's swap routine was not read (the match, normal maps, a floor model with several textures); MapRuntimeReport::"
+		"inferredDrawFields counts the placed floors that set WeatherTexture";
+}
+
 std::string DrawableManager::wallFadeStopLine()
 {
 	return "[S-1520] wall span look (lane BUILD-4): each tile of a span fades in over 138 client frames (RW 0x7954A8 -> Drawable::fadeIn RW 0x670AA2, a FADE_IN client "
@@ -103,6 +112,49 @@ Drawable *DrawableManager::findByObject(ObjectID id) const
 {
 	auto it = m_byObject.find(id);
 	return it == m_byObject.end() ? nullptr : find(it->second);
+}
+
+Drawable *DrawableManager::createClientDrawable(const ThingTemplate &tt)
+{
+	const ThingTemplate *final = tt.getFinalOverride();
+	for (ModuleType type : { MODULETYPE_CLIENT_UPDATE, MODULETYPE_CLIENT_BEHAVIOR })
+	{
+		if (!final->moduleList(type).nuggets().empty())
+		{
+			const std::string error = final->getName() + ": client-only drawable requires client module resolution";
+			if (std::find(m_sink.errors.begin(), m_sink.errors.end(), error) == m_sink.errors.end())
+			{
+				m_sink.errors.push_back(error);
+			}
+			return nullptr;
+		}
+	}
+	const DrawableID id = (DrawableID)m_slots.size();
+	std::vector<std::string> problems;
+	std::unique_ptr<Drawable> d(new Drawable(m_services, final, id, INVALID_ID, {}, problems));
+	for (const std::string &p : problems)
+	{
+		m_sink.message(final->getName(), std::string(), p);
+	}
+	m_slots.push_back(std::move(d));
+	++m_live;
+	++m_created;
+	m_events.push_back({ true, id });
+	return m_slots[id].get();
+}
+
+void DrawableManager::destroyClientDrawable(DrawableID id)
+{
+	Drawable *d = find(id);
+	if (!d || d->getObjectID() != INVALID_ID)
+	{
+		return;
+	}
+	collect(*d, m_sink);
+	m_slots[id].reset();
+	--m_live;
+	++m_destroyed;
+	m_events.push_back({ false, id });
 }
 
 void DrawableManager::created(const ClientEvent &ev)
@@ -179,6 +231,12 @@ void DrawableManager::applyEvents(const std::vector<ClientEvent> &events)
 				d->storeModelCondition(ev.bit, ev.on); // lane ANIM-1: stored, applied by the next MODEL_FLUSH (RW 0x679512)
 			}
 			break;
+		case ClientEvent::MODEL_CONDITIONS: // lane SAVE-4e: a loaded object's whole set, applied by the MODEL_FLUSH after it
+			if (Drawable *d = findByObject(ev.object))
+			{
+				d->storeModelConditions(ev.flags);
+			}
+			break;
 		case ClientEvent::MODEL_FLUSH:
 			if (Drawable *d = findByObject(ev.object))
 			{
@@ -228,6 +286,18 @@ void DrawableManager::applyEvents(const std::vector<ClientEvent> &events)
 					d->setInstanceScale(ev.scale);
 				}
 				d->setDrawsInMirror(ev.mirror);
+			}
+			break;
+		case ClientEvent::HERO_ATTACKED:
+			if (m_heroAttackedHandler)
+			{
+				m_heroAttackedHandler(ev.object);
+			}
+			break;
+		case ClientEvent::HERO_FLASH:
+			if (m_heroFlashHandler)
+			{
+				m_heroFlashHandler(ev.name, ev.flashFrames);
 			}
 			break;
 		}
@@ -420,6 +490,7 @@ DrawableManager::Report DrawableManager::report() const
 	r.stops.push_back(fadeStopLine()); // lane PROJ-2
 	r.stops.push_back(flushStopLine()); // lane ANIM-1
 	r.stops.push_back(wallFadeStopLine()); // lane BUILD-4
+	r.stops.push_back(textureSwapStopLine()); // community PR #37
 	for (const std::string &l : RenderInterpolation::stopLines())
 	{
 		r.stops.push_back(l); // SMOOTH-1
@@ -479,7 +550,7 @@ DrawableManager::Report DrawableManager::report() const
 					}
 				}
 			}
-			else if (!e.staticModel.empty() && !e.moduleHidden)
+			else if (!e.staticModel.empty() && !e.moduleHidden && !e.conditionHidden)
 			{
 				++r.staticModels;
 				++r.modelsShown;

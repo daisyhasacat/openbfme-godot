@@ -23,8 +23,9 @@ GENERATED build, so it must run after configure (CMAKE_EXPORT_COMPILE_COMMANDS i
 Run it where the compiler of the build runs (the include paths are probed from the compiler of the compile command), e.g. on the Steam Deck inside the
 flatpak SDK that built the project:
     flatpak run --filesystem=home --env=PYTHONPATH=<dir with the 'clang' package> --command=python3 org.freedesktop.Sdk//25.08 tools/sim/sim_audit.py --build <build dir>
-libclang: `pip install libclang==18.1.1` (OPENBFME_LIBCLANG_PYTHONPATH adds a directory holding the 'clang' package, OPENBFME_LIBCLANG_LIBRARY a
-libclang shared library). Without it the AST part cannot run: the default is an error (--ast=require); --ast=skip prints a loud notice and exits 3.
+Linux libclang: `pip install libclang==18.1.1`. Windows requires LLVM >= 19 and compatible Python clang bindings; see tools/sim/README.md.
+OPENBFME_LIBCLANG_PYTHONPATH adds a directory holding the 'clang' package; OPENBFME_LIBCLANG_LIBRARY selects a libclang shared library.
+Without it the AST part cannot run: the default is an error (--ast=require); --ast=skip prints a loud notice and exits 3.
 """
 import argparse
 import fnmatch
@@ -32,6 +33,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -43,8 +45,8 @@ BASELINE_PATH = os.path.join(REPO, "tools", "sim", "sim_baseline.json")
 
 # The acceptance stops of this tool (docs/STOPS.md), printed with every run.
 STOPS = {
-    "S-230": "the AST check needs the libclang Python bindings (not part of the default toolchain: pip install libclang==18.1.1) and runs where the build's "
-             "compiler runs; it was exercised on GCC / Linux compile commands only (MSVC options are translated best effort, unverified); implicit "
+    "S-230": "the AST check needs libclang Python bindings and runs where the build's compiler runs (Linux: libclang==18.1.1; Windows: LLVM >= 19, "
+             "see tools/sim/README.md); implicit "
              "conversions are recognised through libclang's UNEXPOSED_EXPR nodes, template bodies only when no operand is a concrete integer, and the "
              "staged Lua C sources (lvm.c: the VM arithmetic is the PC24 emulation by design) are not scanned",
     "S-231": "existing simulation code of other lanes (PATH-1, HORDE-1, LOGIC-1, the terrain and the shared WWMath headers) still contains bare floating "
@@ -70,7 +72,25 @@ MSVC_LTO = re.compile(r"^[-/](GL|LTCG(:.*)?)$", re.I)
 def command_args(entry):
     if "arguments" in entry:
         return list(entry["arguments"])
-    return shlex.split(entry["command"], posix=(os.name != "nt"))
+    if os.name == "nt":
+        # shlex cannot split /I"C:\\path with spaces" or unquote a Windows executable path.
+        import ctypes
+        from ctypes import wintypes
+        split = ctypes.windll.shell32.CommandLineToArgvW
+        split.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int))
+        split.restype = ctypes.POINTER(wintypes.LPWSTR)
+        free = ctypes.windll.kernel32.LocalFree
+        free.argtypes = (wintypes.HLOCAL,)
+        free.restype = wintypes.HLOCAL
+        count = ctypes.c_int()
+        argv = split(entry["command"], ctypes.byref(count))
+        if not argv:
+            raise OSError("CommandLineToArgvW failed for the compile command")
+        try:
+            return list(argv[:count.value])
+        finally:
+            free(argv)
+    return shlex.split(entry["command"])
 
 
 def check_flags(args, manifest):
@@ -188,12 +208,13 @@ def audit_link(build_dir, manifest):
         target = None
         with open(ninja, encoding="utf-8", errors="replace") as f:
             for line in f:
-                if line.startswith("build "):
-                    target = line[len("build "):].split(":")[0].strip()
+                build = re.match(r"^build (.*?):\s+(\S+)", line)
+                if build:
+                    target = build.group(1).strip()
+                    if build.group(2).split("__", 1)[0].endswith("_LINKER"):
+                        checked += 1
                 m = re.match(r"^\s+(LINK_FLAGS|LINK_LIBRARIES|LINK_PATH)\s*=\s*(.*)$", line)
                 if m:
-                    if m.group(1) == "LINK_FLAGS":
-                        checked += 1
                     found = []
                     found += check_link_flags(link_tokens(m.group(2), build_dir, found), manifest)
                     for p in found:
@@ -272,21 +293,75 @@ ARITH_OPS = {"+", "-", "*", "/"}
 ARITH_ASSIGN_OPS = {"+=", "-=", "*=", "/="}
 
 
+WINDOWS_LLVM_HELP = "Windows AST audit requires LLVM >= 19 (winget install -e --id LLVM.LLVM, or the official LLVM Windows installer) and compatible Python clang bindings; see tools/sim/README.md"
+
+
+def windows_libclang():
+    """An explicit DLL wins; otherwise use an official installation, never the bundled libclang 18 wheel."""
+    explicit = os.environ.get("OPENBFME_LIBCLANG_LIBRARY")
+    if explicit:
+        if not os.path.isfile(explicit):
+            raise RuntimeError("OPENBFME_LIBCLANG_LIBRARY does not name an existing libclang.dll: %s. %s" % (explicit, WINDOWS_LLVM_HELP))
+        return explicit
+    candidates = []
+    for var in ("ProgramW6432", "ProgramFiles"):
+        if os.environ.get(var):
+            candidates.append(os.path.join(os.environ[var], "LLVM", "bin", "libclang.dll"))
+    clang = shutil.which("clang.exe")
+    if clang:
+        candidates.append(os.path.join(os.path.dirname(clang), "libclang.dll"))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    raise RuntimeError("libclang.dll not found (OPENBFME_LIBCLANG_LIBRARY, Program Files/LLVM/bin, or beside clang.exe on PATH). " + WINDOWS_LLVM_HELP)
+
+
+def require_windows_llvm(version, library):
+    match = re.search(r"clang version (\d+)", version)
+    if not match or int(match.group(1)) < 19:
+        raise RuntimeError("unsupported libclang.dll %s: %s. %s" % (library, version, WINDOWS_LLVM_HELP))
+
+
+def clang_version(cindex):
+    get_version = cindex.conf.lib.clang_getClangVersion
+    get_version.argtypes = []
+    get_version.restype = cindex._CXString
+    return cindex._CXString.from_result(get_version())
+
+
+def windows_resource_include(cindex):
+    version = clang_version(cindex)
+    library = os.path.abspath(cindex.conf.get_filename())
+    require_windows_llvm(version, library)
+    major = re.search(r"clang version (\d+)", version).group(1)
+    path = os.path.normpath(os.path.join(os.path.dirname(library), "..", "lib", "clang", major, "include"))
+    if not os.path.isfile(os.path.join(path, "stddef.h")):
+        raise RuntimeError("LLVM resource headers not found at %s (for %s). Install the complete LLVM distribution. %s" %
+                           (path, library, WINDOWS_LLVM_HELP))
+    return path
+
+
 def import_clang():
     extra = os.environ.get("OPENBFME_LIBCLANG_PYTHONPATH")
     if extra and extra not in sys.path:
         sys.path.insert(0, extra)
     try:
         import clang.cindex as cindex
-    except ImportError:
+    except ImportError as ex:
+        if os.name == "nt":
+            raise RuntimeError("Python clang.cindex bindings not found: %s. %s" % (ex, WINDOWS_LLVM_HELP)) from ex
         return None
-    lib = os.environ.get("OPENBFME_LIBCLANG_LIBRARY")
-    if lib:
+    lib = windows_libclang() if os.name == "nt" else os.environ.get("OPENBFME_LIBCLANG_LIBRARY")
+    if lib and not cindex.Config.loaded:
         cindex.Config.set_library_file(lib)
     try:
         cindex.Index.create()
-    except Exception:  # libclang shared library missing
+    except Exception as ex:  # libclang shared library missing or bindings incompatible
+        if os.name == "nt":
+            raise RuntimeError("cannot load libclang.dll %s with these Python clang bindings: %s. %s" % (lib, ex, WINDOWS_LLVM_HELP)) from ex
         return None
+    if os.name == "nt":
+        require_windows_llvm(clang_version(cindex), cindex.conf.get_filename())
     return cindex
 
 
@@ -315,12 +390,17 @@ def probe_includes(compiler):
 
 
 def msvc_to_clang(args):
-    """The cl.exe options that matter for parsing, as clang options (UNVERIFIED on a Windows host: stop S-230)."""
+    """Preserve the build's include paths (including CMake SYSTEM /external:I paths), defines and forced includes."""
     out = []
+    args = iter(args)
     for a in args:
-        m = re.match(r"^[-/](I|D)(.+)$", a)
+        m = re.match(r"^[-/](external:I|FI|I|D)(.*)$", a)
         if m:
-            out.append("-" + m.group(1) + m.group(2))
+            value = m.group(2) or next(args, None)
+            if value is None:
+                raise RuntimeError("missing argument to MSVC option " + a)
+            option = {"external:I": "-isystem", "FI": "-include", "I": "-I", "D": "-D"}[m.group(1)]
+            out += [option, value]
         elif re.match(r"^[-/]std:", a):
             out.append("-std=" + a.split(":", 1)[1])
     return out + ["-fms-compatibility", "-fms-extensions", "-Wno-everything"]
@@ -329,7 +409,7 @@ def msvc_to_clang(args):
 def clang_args(entry, system_dirs):
     args = command_args(entry)
     if os.path.basename(args[0]).lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
-        return ["-x", "c++"] + msvc_to_clang(args[1:]) + [x for d in system_dirs for x in ("-isystem", d)]
+        return ["-x", "c++", "-working-directory", entry.get("directory", ".")] + msvc_to_clang(args[1:]) + [x for d in system_dirs for x in ("-isystem", d)]
     out, skip = [], False
     src = os.path.normpath(os.path.join(entry.get("directory", "."), entry["file"]))
     for a in args[1:]:
@@ -342,6 +422,12 @@ def clang_args(entry, system_dirs):
         if a in ("-c", "-MD", "-MMD", "-MP") or os.path.normpath(os.path.join(entry.get("directory", "."), a)) == src:
             continue
         out.append(a)
+    # libclang parses one translation unit, not a universal driver's multiple jobs.
+    arches = [(i, out[i + 1]) for i in range(len(out) - 1) if out[i] == "-arch"]
+    if len(arches) > 1:
+        selected = next((i for i, arch in arches if sys.platform == "darwin" and arch == "arm64"), arches[0][0])
+        removed = {j for i, _ in arches if i != selected for j in (i, i + 1)}
+        out = [arg for i, arg in enumerate(out) if i not in removed]
     for d in system_dirs:
         out += ["-isystem", d]
     return ["-x", "c++"] + out
@@ -437,6 +523,9 @@ def scan_tu(cindex, path, args, policy, root=None, base=None, visited=None):
     root defaults to engine/src (the project's code, whose nodes are inspected), base to engine/."""
     root = os.path.normpath(root or os.path.join(ENGINE, "src"))
     base = os.path.normpath(base or ENGINE)
+    if os.name == "nt":
+        # Clang's builtin offsetof must precede the SDK's MSVC-only macro; inspect uninstantiated template bodies too, as on Linux.
+        args = ["-isystem", windows_resource_include(cindex)] + list(args) + ["-fno-delayed-template-parsing"]
     index = cindex.Index.create()
     tu = index.parse(path, args=args, options=cindex.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD)
     errors = []
@@ -568,6 +657,7 @@ def run_ast(manifest, built, policy, jobs):
     cindex = import_clang()
     if cindex is None:
         return None, None
+    print("libclang: %s (%s)" % (clang_version(cindex), cindex.conf.get_filename()))
     compilers = {}
     work = []
     for rel in manifest["sources"]:
@@ -752,7 +842,11 @@ def main(argv=None):
     if a.ast == "skip":
         print("AST CHECK SKIPPED (--ast=skip): the floating-point arithmetic of the simulation sources was NOT checked")
     else:
-        violations, errors = run_ast(manifest, built, policy, a.jobs)
+        try:
+            violations, errors = run_ast(manifest, built, policy, a.jobs)
+        except RuntimeError as ex:
+            print("ERROR: %s. The AST check cannot run (S-230)." % ex)
+            return 2
         if violations is None:
             print("ERROR: libclang is not available (pip install libclang==18.1.1; OPENBFME_LIBCLANG_PYTHONPATH / OPENBFME_LIBCLANG_LIBRARY). "
                   "The AST check cannot run; this is registered as stop S-230.")

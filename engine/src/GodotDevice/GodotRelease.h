@@ -44,10 +44,11 @@ public:
 	// Is a process with this id running (any process, not only a child: OS.is_process_running only knows children)? The crash marker of
 	// scripts/release/release.gd tells a live second instance (two windows of a LAN test) from a crashed run with it.
 	bool process_alive(int64_t pid) const;
-	// Lane WINCRASH-1: a deliberate native crash (a write through a null pointer in this function) for the release gate: the next session log
-	// must show Godot's crash dump with symbolized openbfme frames (the PDB / debug file next to the extension). release.gd calls it for
-	// --crash-test in debug builds only.
+	// Deliberate native crashes, guarded by Godot's debug-build flag. Windows dumps
+	// are local; symbolize them offline with the matching build's PDB.
 	void crash_test() const;
+	void crash_test_worker() const;
+	String install_crash_handler() const;
 
 protected:
 	static void _bind_methods();

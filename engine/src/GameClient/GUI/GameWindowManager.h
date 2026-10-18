@@ -122,6 +122,9 @@ public:
 	// ---- messages ---------------------------------------------------------------------------------------------------------------------
 	WindowMsgHandledType winSendSystemMsg(GameWindow *window, std::uint32_t msg, WindowMsgData mData1, WindowMsgData mData2);
 	WindowMsgHandledType winSendInputMsg(GameWindow *window, std::uint32_t msg, WindowMsgData mData1, WindowMsgData mData2);
+	// lane OPTS-6: the window a pointer event at (x, y) goes to when no window captured or grabbed the mouse and no modal is up (winProcessMouseEvent's
+	// three passes and its open drop-down rule; the checks ask it too); the tool tip window found on the way
+	GameWindow *winPickPointerWindow(int x, int y, GameWindow **toolTip = nullptr);
 
 	// ---- focus, capture, lone window ------------------------------------------------------------------------------------------------------
 	int winCapture(GameWindow *window);

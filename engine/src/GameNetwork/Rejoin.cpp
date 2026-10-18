@@ -74,7 +74,7 @@ void CommandLogCatchUp::pump(UnsignedInt protocolFrame, CommandList &pending)
 
 bool CommandLogCatchUp::acquire(UnsignedInt frame, FrameBatch &out)
 {
-	if (!m_log || !m_log->anyComplete || frame > m_log->lastCompleteFrame || frame > m_target)
+	if (m_mismatches || !m_log || !m_log->anyComplete || frame > m_log->lastCompleteFrame || frame > m_target)
 	{
 		return false;
 	}
@@ -147,6 +147,7 @@ void CommandLogCatchUp::compare(UnsignedInt frame, std::uint32_t own, std::uint3
 		++m_mismatches;
 		if (m_firstMismatch.empty())
 		{
+			m_firstMismatchFrame = frame;
 			char b[96];
 			std::snprintf(b, sizeof b, "frame %u: the players' CRC 0x%08X, the catch-up 0x%08X", frame, players, own);
 			m_firstMismatch = b;

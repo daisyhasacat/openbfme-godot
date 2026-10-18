@@ -8,6 +8,7 @@
 
 #include "GameNetwork/LANAPI.h"
 #include "GameNetwork/NetPacket.h"
+#include "GameNetwork/ProfileChoice.h"
 #include "GameNetwork/Transport.h"
 
 #include <algorithm>
@@ -154,6 +155,84 @@ SkirmishGameInfo hostedGame()
 }
 } // namespace
 
+TEST_CASE("mp2 lan: discovery identifies a process across addresses, not games by name")
+{
+	Lan lan({ { u"Observer", "" } });
+	LANAPI &observer = *lan.peers[0];
+	UDP first, alias;
+	std::string error;
+	REQUIRE_MESSAGE(first.bind(0x7F000001u, 0, &error), error);
+#ifdef __APPLE__
+	// DEVPORT-6: macOS's lo0 answers 127.0.0.1 only (a second loopback address needs an administrator's `ifconfig lo0 alias`); the
+	// discovery logic is the same C++ on every platform and runs on Linux and Windows. Everywhere else a failed bind fails the test.
+	if (!alias.bind(0x7F000002u, first.localAddress().port, &error))
+	{
+		MESSAGE("SKIP LOUDLY: mp2 lan alias discovery: this Mac has no 127.0.0.2 (" << error << ")");
+		return;
+	}
+#else
+	REQUIRE_MESSAGE(alias.bind(0x7F000002u, first.localAddress().port, &error), error);
+#endif
+	auto announce = [&](UDP &socket, std::uint32_t nonce, std::uint8_t type) {
+		NetByteWriter w;
+		w.u16(0x4E4C);
+		w.u8(2);
+		w.u8(type);
+		w.u32(nonce);
+		w.wstr(u"Same name");
+		if (type == LANMessageType::GAME_ANNOUNCE)
+		{
+			w.wstr(u"Same name");
+			w.u8(0);
+			w.str(profileFor("").digest);
+			NetPacket::writeGameInfo(w, hostedGame());
+		}
+		REQUIRE(socket.sendTo(NetAddress{ 0x7F000001u, observer.lobbyPort() }, w.data().data(), w.data().size()));
+		lan.run(10);
+	};
+	announce(first, 71, LANMessageType::GAME_ANNOUNCE);
+	announce(alias, 71, LANMessageType::GAME_ANNOUNCE);
+	REQUIRE(observer.games().size() == 1);
+	CHECK(observer.games()[0].host == first.localAddress());
+	announce(alias, 72, LANMessageType::GAME_ANNOUNCE);
+	CHECK(observer.games().size() == 2);
+	announce(first, 71, LANMessageType::LOBBY_ANNOUNCE);
+	announce(alias, 71, LANMessageType::LOBBY_ANNOUNCE);
+	CHECK(observer.lobbyPlayers().size() == 1);
+	announce(alias, 71, LANMessageType::REQUEST_LOBBY_LEAVE);
+	CHECK(observer.lobbyPlayers().empty());
+}
+
+#ifdef _WIN32
+TEST_CASE("mp2 lan: Windows UDP port-unreachable errors do not hide a queued reply")
+{
+	UDP receiver, sender;
+	std::string error;
+	REQUIRE(receiver.bind(0x7F000001u, 0, &error));
+	REQUIRE(sender.bind(0x7F000001u, 0, &error));
+	const std::vector<std::uint8_t> payload{ 1, 2, 3 };
+	for (int i = 0; i < 6; ++i)
+	{
+		NetAddress closed;
+		{
+			UDP reserve;
+			REQUIRE(reserve.bind(0x7F000001u, 0, &error));
+			closed = reserve.localAddress();
+		}
+		REQUIRE(receiver.sendTo(closed, payload.data(), payload.size()));
+		NetSleepMilliseconds(20);
+	}
+	REQUIRE(sender.sendTo(receiver.localAddress(), payload.data(), payload.size()));
+	NetSleepMilliseconds(100);
+	NetAddress from;
+	std::vector<std::uint8_t> received;
+	REQUIRE(receiver.receiveFrom(from, received));
+	CHECK(from == sender.localAddress());
+	CHECK(received == payload);
+	CHECK_FALSE(receiver.receiveFrom(from, received));
+}
+#endif
+
 TEST_CASE("mp2 lan: find, join, options through the host, chat, kick and rejoin, accept, start: every player gets the same game")
 {
 	Lan lan({ { u"Host", "" }, { u"Alice", "" }, { u"Bob", "" } });
@@ -296,7 +375,7 @@ TEST_CASE("mp2 lan (review): a truncated or oversized lobby message changes noth
 	auto header = [](std::uint8_t type) {
 		NetByteWriter w;
 		w.u16(0x4E4C); // the lobby's magic and version
-		w.u8(2);
+		w.u8(LANAPI::kProtocolVersion);
 		w.u8(type);
 		w.u32(77);
 		w.wstr(u"Mallory");
@@ -387,7 +466,7 @@ TEST_CASE("mp2 lan (review): a flag byte other than 0 / 1 is an error in every m
 	auto header = [](std::uint8_t type, const std::u16string &name) {
 		NetByteWriter w;
 		w.u16(0x4E4C);
-		w.u8(2);
+		w.u8(LANAPI::kProtocolVersion);
 		w.u8(type);
 		w.u32(77);
 		w.wstr(name);
@@ -554,7 +633,7 @@ TEST_CASE("mp2 lan (review): every field of a slot request is kKeep, -1 or withi
 	auto header = [](std::uint8_t type) {
 		NetByteWriter w;
 		w.u16(0x4E4C);
-		w.u8(2);
+		w.u8(LANAPI::kProtocolVersion);
 		w.u8(type);
 		w.u32(77);
 		w.wstr(u"Mallory");
@@ -594,6 +673,7 @@ TEST_CASE("mp2 lan (review): every field of a slot request is kKeep, -1 or withi
 		{
 			w.u32((std::uint32_t)v);
 		}
+		w.u32((std::uint32_t)K); // lane OWNERFIX-2 (protocol 3): the handicap, kept
 		toHost(w);
 		INFO(c.what);
 		CHECK(host.errors().size() == errors + 1);
@@ -607,7 +687,7 @@ TEST_CASE("mp2 lan (review): every field of a slot request is kKeep, -1 or withi
 	// a request within the ranges is applied
 	NetByteWriter good = header(LANMessageType::GAME_OPTIONS);
 	good.u8(1);
-	for (int v : { 11, 9, 3, 7 })
+	for (int v : { 11, 9, 3, 7, K })
 	{
 		good.u32((std::uint32_t)v);
 	}
@@ -832,7 +912,7 @@ TEST_CASE("mp2 lan (HERO-2): the host reads a Create-a-Hero request whole and ch
 	auto header = [](std::uint8_t type) {
 		NetByteWriter w;
 		w.u16(0x4E4C);
-		w.u8(2);
+		w.u8(LANAPI::kProtocolVersion);
 		w.u8(type);
 		w.u32(77);
 		w.wstr(u"Mallory");
@@ -979,4 +1059,448 @@ TEST_CASE("rules1 lan: AllowCustomHeroes off clears every player's Create-a-Hero
 	SkirmishGameInfo back;
 	CHECK_FALSE(NetPacket::readGameInfo(r, back, &error));
 	CHECK(error.find("AllowCustomHeroes is off") != std::string::npos);
+}
+
+// lane UBERJOIN-1: the GameInfo's simulation profile is optional where it ends the packet (the game list's announcement: a peer that predates UBER-1 lists
+// as Faithful) and mandatory everywhere else; a present value is checked as ever
+TEST_CASE("uberjoin1 lan: an announcement without the simulation profile lists as Faithful; a malformed profile, or a missing one mid-packet, is refused")
+{
+	SkirmishGameInfo g = hostedGame();
+	g.simulationProfile = SimulationProfile::Uber;
+	NetByteWriter w;
+	NetPacket::writeGameInfo(w, g);
+	const std::vector<std::uint8_t> full = w.data();
+	std::string error;
+	{
+		NetByteReader r(full);
+		SkirmishGameInfo back;
+		REQUIRE_MESSAGE(NetPacket::readGameInfo(r, back, &error, true), error);
+		CHECK(back.simulationProfile == SimulationProfile::Uber); // present: read as ever
+		CHECK(r.atEnd());
+	}
+	// lane OWNERFIX-2: the slots' handicaps (8 i32) follow the profile; LANAPI protocol 3 always writes them, so an announcement with the profile and without
+	// them is truncated (a peer that predates OWNERFIX-2 speaks protocol 2 and is refused by its header); a peer that predates UBER-1 has neither
+	{
+		std::vector<std::uint8_t> noHandicaps(full.begin(), full.end() - 4 * MAX_SLOTS);
+		NetByteReader r(noHandicaps);
+		SkirmishGameInfo back;
+		std::string e;
+		CHECK_FALSE(NetPacket::readGameInfo(r, back, &e, true));
+		CHECK(e == "truncated GameInfo");
+	}
+	std::vector<std::uint8_t> absent(full.begin(), full.end() - 12 - 4 * MAX_SLOTS);
+	{
+		NetByteReader r(absent);
+		SkirmishGameInfo back;
+		REQUIRE_MESSAGE(NetPacket::readGameInfo(r, back, &error, true), error);
+		CHECK(back.simulationProfile == SimulationProfile::Faithful);
+		CHECK(r.atEnd());
+	}
+	{
+		NetByteReader r(absent); // not the announcement: the field is mandatory
+		SkirmishGameInfo back;
+		std::string e;
+		CHECK_FALSE(NetPacket::readGameInfo(r, back, &e));
+		CHECK(e == "truncated GameInfo");
+	}
+	{
+		std::vector<std::uint8_t> partial(full.begin(), full.end() - 2); // half the field: truncated, never "absent"
+		NetByteReader r(partial);
+		SkirmishGameInfo back;
+		std::string e;
+		CHECK_FALSE(NetPacket::readGameInfo(r, back, &e, true));
+		CHECK(e == "truncated GameInfo");
+	}
+	for (std::int32_t bad : { 2, -1, 99 })
+	{
+		std::vector<std::uint8_t> b = absent;
+		NetByteWriter tail;
+		tail.i32(0); // peace time
+		tail.i32(-1); // Lua authority
+		tail.i32(bad);
+		for (int i = 0; i < MAX_SLOTS; ++i)
+		{
+			tail.i32(0); // lane OWNERFIX-2: the handicaps follow a present profile
+		}
+		b.insert(b.end(), tail.data().begin(), tail.data().end());
+		NetByteReader r(b);
+		SkirmishGameInfo back;
+		std::string e;
+		CHECK_FALSE(NetPacket::readGameInfo(r, back, &e, true));
+		CHECK(e == "GameInfo simulation profile " + std::to_string(bad));
+	}
+}
+
+// lane UBERJOIN-1: the player's profile and a lobby's switch for one game, through a real LAN lobby pair: the setter really switches, a switch is undone on
+// every exit (a failed or cancelled join, the room left, the lobby closed, the game over and the room left), a held room pins the profile, and the setting
+// is never written
+namespace
+{
+ProfileIdentity identityOf(SimulationProfile p)
+{
+	MountedArchive a;
+	a.install = "rotwk";
+	a.canonicalPath = "test.big";
+	a.size = 1;
+	a.md5 = "0123456789abcdef0123456789abcdef";
+	return ProfileIdentity::compute({ a }, RandomAlgorithm::ZH_CarryChain, {}, p);
+}
+
+struct ModePair
+{
+	std::unique_ptr<LANAPI> host, join;
+	ProfileChoice hostChoice, joinChoice; ///< the host program's choice per player: the way GameWorld holds one
+	std::uint64_t clock = 1000;
+	ModePair(SimulationProfile hostMode, SimulationProfile joinOwn)
+	{
+		LANAPI::Options o;
+		o.playerTemplateCount = 16;
+		o.colorCount = 10;
+		o.lobbyPortBase = testPortBase();
+		o.lobbyPorts = 8;
+		o.broadcast = false;
+		o.extraTargets = { 0x7F000001u };
+		o.resendMs = 300;
+		o.actionTimeoutMs = 2000;
+		host = std::make_unique<LANAPI>(identityOf(hostMode), u"Host", o);
+		join = std::make_unique<LANAPI>(identityOf(joinOwn), u"Joiner", o);
+		std::string error;
+		REQUIRE_MESSAGE(host->open(&error), error);
+		REQUIRE_MESSAGE(join->open(&error), error);
+		hostChoice.own = hostChoice.current = hostMode;
+		hostChoice.lan = host.get();
+		hostChoice.identityFor = identityOf;
+		joinChoice.own = joinChoice.current = joinOwn;
+		joinChoice.lan = join.get();
+		joinChoice.identityFor = identityOf;
+	}
+	void run(int ticks)
+	{
+		for (int t = 0; t < ticks; ++t)
+		{
+			clock += 20;
+			host->update(clock);
+			host->takeEvents();
+			join->update(clock);
+			join->takeEvents();
+			NetSleepMilliseconds(1);
+		}
+	}
+	SimulationProfile announced() const { return join->profile().simulationProfile(); }
+};
+} // namespace
+
+TEST_CASE("uberjoin1 lan: the setting really switches (Normal -> Uber and back), inside and outside a room, and the lobby announces it")
+{
+	ModePair m(SimulationProfile::Faithful, SimulationProfile::Faithful);
+	std::string why;
+	// the reported bug: asking for Uber from Normal answered ok and stayed Normal
+	REQUIRE(m.joinChoice.setOwn(SimulationProfile::Uber, &why));
+	CHECK(m.joinChoice.current == SimulationProfile::Uber);
+	CHECK(m.joinChoice.own == SimulationProfile::Uber);
+	CHECK_FALSE(m.joinChoice.switched);
+	CHECK(m.announced() == SimulationProfile::Uber);
+	REQUIRE(m.joinChoice.setOwn(SimulationProfile::Faithful, &why));
+	CHECK(m.joinChoice.current == SimulationProfile::Faithful);
+	CHECK(m.announced() == SimulationProfile::Faithful);
+	CHECK_FALSE(m.joinChoice.setOwn((SimulationProfile)7, &why));
+	CHECK(why == "unknown simulation profile");
+	CHECK(m.joinChoice.current == SimulationProfile::Faithful);
+	// a lobby's switch leaves the setting alone and restore undoes it; a restore with nothing switched changes nothing
+	REQUIRE(m.joinChoice.restore());
+	REQUIRE(m.joinChoice.switchForGame(SimulationProfile::Uber, &why));
+	CHECK(m.joinChoice.current == SimulationProfile::Uber);
+	CHECK(m.joinChoice.own == SimulationProfile::Faithful);
+	CHECK(m.joinChoice.switched);
+	CHECK(m.announced() == SimulationProfile::Uber);
+	REQUIRE(m.joinChoice.restore());
+	CHECK(m.joinChoice.current == SimulationProfile::Faithful);
+	CHECK_FALSE(m.joinChoice.switched);
+	CHECK(m.announced() == SimulationProfile::Faithful);
+	// a switch to the player's own mode is no switch
+	REQUIRE(m.joinChoice.switchForGame(SimulationProfile::Faithful, &why));
+	CHECK_FALSE(m.joinChoice.switched);
+	// the option changed while a switch holds: only the setting moves, and it is what comes back
+	REQUIRE(m.joinChoice.switchForGame(SimulationProfile::Uber, &why));
+	REQUIRE(m.joinChoice.setOwn(SimulationProfile::Faithful, &why)); // the player's setting is Normal already: nothing changes for the game
+	CHECK(m.joinChoice.current == SimulationProfile::Uber);
+	CHECK(m.joinChoice.own == SimulationProfile::Faithful);
+	CHECK(m.joinChoice.switched);
+	REQUIRE(m.joinChoice.setOwn(SimulationProfile::Uber, &why)); // now the setting equals the game's: the switch is over
+	CHECK_FALSE(m.joinChoice.switched);
+	CHECK(m.joinChoice.current == SimulationProfile::Uber);
+}
+
+TEST_CASE("uberjoin1 lan: a switched player's room lifecycle: a held room pins the profile; every exit puts the setting back: the room left, a failed join, the "
+		  "lobby closed, the game over and the room left")
+{
+	std::string why;
+	// ---- the join, then the room left by the player ----
+	{
+		ModePair m(SimulationProfile::Uber, SimulationProfile::Faithful);
+		m.run(10);
+		m.host->requestGameCreate(hostedGame());
+		m.run(10);
+		REQUIRE(m.join->games().size() == 1);
+		CHECK(m.join->games()[0].info.simulationProfile == SimulationProfile::Uber);
+		REQUIRE(m.joinChoice.switchForGame(SimulationProfile::Uber, &why));
+		m.join->requestGameJoin(0);
+		m.run(20);
+		REQUIRE(m.join->currentGame());
+		CHECK(m.join->localSlot() == 1);
+		CHECK(m.joinChoice.roomHeld());
+		// inside the room the profile is pinned: another switch, and the option's change while it is the game's, are refused with nothing changed
+		CHECK_FALSE(m.joinChoice.switchForGame(SimulationProfile::Faithful, &why));
+		CHECK(why == "the simulation profile cannot change inside a LAN game (leave it first)");
+		CHECK(m.joinChoice.current == SimulationProfile::Uber);
+		CHECK_FALSE(m.joinChoice.restore()); // the room is held: the switch stands
+		CHECK(m.joinChoice.current == SimulationProfile::Uber);
+		CHECK(m.joinChoice.switched);
+		// the player's setting changes in the room (the option while the room is up): only the setting moves
+		REQUIRE(m.joinChoice.setOwn(SimulationProfile::Faithful, &why));
+		CHECK(m.joinChoice.current == SimulationProfile::Uber);
+		// the room is left (the lobby screen's Cancel): the setting is back, announced
+		m.join->requestGameLeave();
+		m.run(10);
+		CHECK_FALSE(m.join->currentGame());
+		REQUIRE(m.joinChoice.restore());
+		CHECK(m.joinChoice.current == SimulationProfile::Faithful);
+		CHECK_FALSE(m.joinChoice.switched);
+		CHECK(m.announced() == SimulationProfile::Faithful);
+	}
+	// ---- the game over: the room is kept (the players return to it): the switch stands until the room is left, and leaveRoomAndRestore does both ----
+	{
+		ModePair m(SimulationProfile::Uber, SimulationProfile::Faithful);
+		m.run(10);
+		m.host->requestGameCreate(hostedGame());
+		m.run(10);
+		REQUIRE(m.joinChoice.switchForGame(SimulationProfile::Uber, &why));
+		m.join->requestGameJoin(0);
+		m.run(20);
+		REQUIRE(m.join->currentGame());
+		m.join->requestAccept(true);
+		m.run(10);
+		// the game ended: the world asks for the restore: a held room stands (the bug: nothing ever left it)
+		CHECK_FALSE(m.joinChoice.restore());
+		CHECK(m.joinChoice.switched);
+		CHECK(m.joinChoice.leaveRoomAndRestore()); // the lobby is gone for good (main menu): the room is left, then the setting is back
+		m.run(10);
+		CHECK_FALSE(m.join->currentGame());
+		CHECK(m.joinChoice.current == SimulationProfile::Faithful);
+		CHECK_FALSE(m.joinChoice.switched);
+		CHECK(m.announced() == SimulationProfile::Faithful);
+		// and a lobby that offers the Normal game again: the list shows the host's game with the host's mode only
+		m.run(10);
+	}
+	// ---- a failed or cancelled join: no room was ever held ----
+	{
+		ModePair m(SimulationProfile::Uber, SimulationProfile::Faithful);
+		REQUIRE(m.joinChoice.switchForGame(SimulationProfile::Uber, &why));
+		CHECK_FALSE(m.joinChoice.roomHeld());
+		REQUIRE(m.joinChoice.restore());
+		CHECK(m.joinChoice.current == SimulationProfile::Faithful);
+		CHECK(m.announced() == SimulationProfile::Faithful);
+	}
+	// ---- the lobby closed (lan_close): the pair of the choice is dropped, then the restore ----
+	{
+		ModePair m(SimulationProfile::Uber, SimulationProfile::Faithful);
+		m.run(10);
+		m.host->requestGameCreate(hostedGame());
+		m.run(10);
+		REQUIRE(m.joinChoice.switchForGame(SimulationProfile::Uber, &why));
+		m.join->requestGameJoin(0);
+		m.run(20);
+		REQUIRE(m.join->currentGame());
+		m.joinChoice.lan = nullptr;
+		m.join.reset();
+		REQUIRE(m.joinChoice.restore());
+		CHECK(m.joinChoice.current == SimulationProfile::Faithful);
+	}
+	// ---- the setter inside a held room with nothing switched: refused by name, nothing changes ----
+	{
+		ModePair m(SimulationProfile::Faithful, SimulationProfile::Faithful);
+		m.run(10);
+		m.host->requestGameCreate(hostedGame());
+		m.run(10);
+		m.join->requestGameJoin(0);
+		m.run(20);
+		REQUIRE(m.join->currentGame());
+		CHECK_FALSE(m.joinChoice.setOwn(SimulationProfile::Uber, &why));
+		CHECK(why == "the simulation profile cannot change inside a LAN game (leave it first)");
+		CHECK(m.joinChoice.current == SimulationProfile::Faithful);
+		CHECK(m.joinChoice.own == SimulationProfile::Faithful);
+		REQUIRE(m.joinChoice.setOwn(SimulationProfile::Faithful, &why)); // the same setting: fine
+	}
+}
+
+// lane OWNERFIX-2 (Sol's review of 7fe9e8e1): a joining player's handicap goes through the host like its faction (the slot request's fifth field, LANAPI
+// protocol 3): the host applies it to the sender's own slot only, clears every accept, re-broadcasts it, and the START carries it; a value the combo never
+// offers, the previous request layout and a message of the previous protocol version are refused by name with the setup unchanged
+TEST_CASE("ownerfix2 lan: a joiner's handicap reaches the host and every player through its slot request; out-of-set values and the previous layouts are refused")
+{
+	Lan lan({ { u"Host", "" }, { u"Alice", "" }, { u"Bob", "" } });
+	LANAPI &host = *lan.peers[0];
+	LANAPI &alice = *lan.peers[1];
+	LANAPI &bob = *lan.peers[2];
+	lan.run(10);
+	host.requestGameCreate(hostedGame());
+	alice.requestLocations();
+	bob.requestLocations();
+	lan.run(10);
+	REQUIRE(alice.games().size() == 1);
+	alice.requestGameJoin(0);
+	lan.run(10);
+	bob.requestGameJoin(0);
+	lan.run(15);
+	REQUIRE(alice.currentGame());
+	REQUIRE(bob.currentGame());
+	REQUIRE(alice.localSlot() == 1);
+	REQUIRE(bob.localSlot() == 2);
+	alice.requestAccept(true);
+	bob.requestAccept(true);
+	lan.run(10);
+	REQUIRE(host.currentGame()->accepted[1]);
+	REQUIRE(host.currentGame()->accepted[2]);
+	// Alice's handicap alone (every other field kept): the host's setup, Bob's and Alice's own copy show it; every accept is cleared (the options changed)
+	alice.requestSlotOptions(LANAPI::kKeep, LANAPI::kKeep, LANAPI::kKeep, LANAPI::kKeep, -25);
+	lan.run(10);
+	CHECK(host.currentGame()->info.slots[1].handicap == -25);
+	CHECK(bob.currentGame()->info.slots[1].handicap == -25);
+	CHECK(alice.currentGame()->info.slots[1].handicap == -25);
+	CHECK(host.currentGame()->info.slots[0].handicap == 0); // the sender's slot only
+	CHECK(host.currentGame()->info.slots[2].handicap == 0);
+	CHECK(host.currentGame()->info.slots[3].handicap == 0);
+	CHECK_FALSE(host.currentGame()->accepted[1]);
+	CHECK_FALSE(host.currentGame()->accepted[2]);
+	// a later request that keeps the handicap (kKeep) leaves it; Bob's own is Bob's
+	alice.requestSlotOptions(2, LANAPI::kKeep, LANAPI::kKeep, LANAPI::kKeep);
+	bob.requestSlotOptions(LANAPI::kKeep, LANAPI::kKeep, LANAPI::kKeep, LANAPI::kKeep, -95);
+	lan.run(10);
+	CHECK(host.currentGame()->info.slots[1].playerTemplate == 2);
+	CHECK(host.currentGame()->info.slots[1].handicap == -25);
+	CHECK(host.currentGame()->info.slots[2].handicap == -95);
+	CHECK(alice.currentGame()->info.slots[2].handicap == -95);
+	// values the combo never offers (RW 0x840B9D: 0, -5 .. -95): refused by the host by name, the slot unchanged
+	for (int bad : { -7, 5, -100, -1, 1000 })
+	{
+		const size_t errors = host.errors().size();
+		alice.requestSlotOptions(LANAPI::kKeep, LANAPI::kKeep, LANAPI::kKeep, LANAPI::kKeep, bad);
+		lan.run(10);
+		INFO(bad);
+		CHECK(host.currentGame()->info.slots[1].handicap == -25);
+		REQUIRE(host.errors().size() == errors + 1);
+		CHECK(host.errors().back().find("handicap " + std::to_string(bad) + " (0, -5 .. -95): refused") != std::string::npos);
+	}
+	// the host's own slot through its own setter
+	host.requestSlotOptions(LANAPI::kKeep, LANAPI::kKeep, LANAPI::kKeep, LANAPI::kKeep, -50);
+	lan.run(10);
+	CHECK(alice.currentGame()->info.slots[0].handicap == -50);
+	// the START carries every handicap to every player
+	alice.requestAccept(true);
+	bob.requestAccept(true);
+	lan.run(10);
+	std::string reason;
+	REQUIRE_MESSAGE(host.hostStartGame(&reason), reason);
+	lan.run(20);
+	REQUIRE(alice.started());
+	REQUIRE(bob.started());
+	for (LANAPI *p : { &host, &alice, &bob })
+	{
+		CHECK(p->start().game.game.slots[0].handicap == -50);
+		CHECK(p->start().game.game.slots[1].handicap == -25);
+		CHECK(p->start().game.game.slots[2].handicap == -95);
+		CHECK(p->start().game.game.slots[3].handicap == 0);
+	}
+}
+
+TEST_CASE("ownerfix2 lan: the protocol versions moved with the handicap layouts (LANAPI 3, LANLobby 4); the previous versions and the four-field slot request are refused by name")
+{
+	CHECK(LANAPI::kProtocolVersion == 4);
+	CHECK(LANLobby::kVersion == 5);
+	// a START of the previous lobby version (3: the GameInfo without the handicaps) is refused by its version byte, before any GameInfo is read
+	LobbyStart start;
+	start.game.game = hostedGame();
+	start.game.game.slots[0].state = SLOT_PLAYER;
+	start.game.game.slots[0].name = u"Host";
+	start.game.game.slots[0].handicap = -30;
+	start.networkSlot[0] = true;
+	std::vector<std::uint8_t> bytes = LANLobby::encodeStart(start);
+	CHECK(bytes[3] == LANLobby::kVersion); // u16 magic, u8 kind, u8 version
+	LobbyStart out;
+	std::string error;
+	REQUIRE_MESSAGE(LANLobby::decodeStart(bytes, out, &error), error);
+	CHECK(out.game.game.slots[0].handicap == -30);
+	bytes[3] = 3;
+	CHECK_FALSE(LANLobby::decodeStart(bytes, out, &error));
+	CHECK(error == "lobby START version 3 (this build speaks 5)");
+	// a lobby message of protocol 2 and a protocol 3 slot request in the four-field layout of protocol 2: refused, the host's setup unchanged
+	LANAPI::Options o;
+	o.playerTemplateCount = 16;
+	o.colorCount = 10;
+	o.lobbyPortBase = (std::uint16_t)(testPortBase() + 8);
+	o.lobbyPorts = 8;
+	o.broadcast = false;
+	o.extraTargets = { 0x7F000001u };
+	const ProfileIdentity profile = profileFor("");
+	LANAPI host(profile, u"Host", o);
+	REQUIRE_MESSAGE(host.open(&error), error);
+	host.requestGameCreate(hostedGame());
+	UDP peer;
+	REQUIRE_MESSAGE(peer.bind(0, 0, &error), error);
+	const NetAddress dst{ 0x7F000001u, host.lobbyPort() };
+	std::uint64_t clock = 1000;
+	auto header = [](std::uint8_t version, std::uint8_t type) {
+		NetByteWriter w;
+		w.u16(0x4E4C);
+		w.u8(version);
+		w.u8(type);
+		w.u32(78);
+		w.wstr(u"Carol");
+		return w;
+	};
+	auto deliver = [&](const NetByteWriter &w) {
+		peer.sendTo(dst, w.data().data(), w.data().size());
+		for (int i = 0; i < 20; ++i)
+		{
+			NetSleepMilliseconds(2);
+			host.update(++clock);
+		}
+	};
+	NetByteWriter oldJoin = header(2, LANMessageType::REQUEST_JOIN);
+	oldJoin.str(profile.digest);
+	oldJoin.u16(peer.localAddress().port);
+	size_t errors = host.errors().size();
+	deliver(oldJoin);
+	REQUIRE(host.errors().size() == errors + 1);
+	CHECK(host.errors().back().rfind("a LAN lobby message of version 2 (this build speaks 4) from ", 0) == 0);
+	CHECK_FALSE(host.currentGame()->info.slots[1].isHuman());
+	NetByteWriter join = header(LANAPI::kProtocolVersion, LANMessageType::REQUEST_JOIN);
+	join.str(profile.digest);
+	join.u16(peer.localAddress().port);
+	deliver(join);
+	REQUIRE(host.currentGame()->info.slots[1].isHuman());
+	const SkirmishGameSlot before = host.currentGame()->info.slots[1];
+	NetByteWriter fourFields = header(LANAPI::kProtocolVersion, LANMessageType::GAME_OPTIONS);
+	fourFields.u8(1); // OPT_SLOT_REQUEST
+	fourFields.i32(2);
+	fourFields.i32(LANAPI::kKeep);
+	fourFields.i32(LANAPI::kKeep);
+	fourFields.i32(LANAPI::kKeep);
+	errors = host.errors().size();
+	deliver(fourFields);
+	REQUIRE(host.errors().size() == errors + 1);
+	CHECK(host.errors().back().rfind("a malformed slot request from ", 0) == 0);
+	CHECK(host.currentGame()->info.slots[1] == before);
+	NetByteWriter fiveFields = header(LANAPI::kProtocolVersion, LANMessageType::GAME_OPTIONS);
+	fiveFields.u8(1);
+	fiveFields.i32(2);
+	fiveFields.i32(LANAPI::kKeep);
+	fiveFields.i32(LANAPI::kKeep);
+	fiveFields.i32(LANAPI::kKeep);
+	fiveFields.i32(-40);
+	errors = host.errors().size();
+	deliver(fiveFields);
+	CHECK(host.errors().size() == errors);
+	CHECK(host.currentGame()->info.slots[1].playerTemplate == 2);
+	CHECK(host.currentGame()->info.slots[1].handicap == -40);
 }

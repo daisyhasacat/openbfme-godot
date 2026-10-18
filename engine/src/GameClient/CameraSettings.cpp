@@ -71,6 +71,13 @@ void parseMoveHintName(INI *ini, void *instance, void *, const void *)
 	st->seen |= SEEN_MOVEHINT;
 }
 
+void parseDownwindAngle(INI *ini, void *instance, void *, const void *)
+{
+	State *st = static_cast<State *>(instance);
+	INI::parseReal(ini, nullptr, &st->values.downwindAngle, nullptr);
+	st->values.haveDownwindAngle = true;
+}
+
 // lane HUD-5: ShowObjectHealth / VeterancyPipDrawObjectFilter, written through the instance (see CameraSettings.h)
 void parseShowObjectHealth(INI *ini, void *instance, void *, const void *)
 {
@@ -184,6 +191,7 @@ FieldParse kFields[] = {
 	{ "KeyboardCameraRotateSpeed", parseNoting<INI::parseReal>, SEEN_DATA(SEEN_KBROTATE), CS_OFF(keyboardCameraRotateSpeed) },
 	{ "PartitionCellSize", parseNoting<INI::parseReal>, SEEN_DATA(SEEN_PARTITION), CS_OFF(partitionCellSize) },
 	{ "MoveHintName", parseMoveHintName, nullptr, 0 },
+	{ "DownwindAngle", parseDownwindAngle, nullptr, 0 },
 	{ "ShowObjectHealth", parseShowObjectHealth, nullptr, 0 },
 	{ "ShowSelectedUnitMarker", parseShowSelectedUnitMarker, nullptr, 0 },         // RW + 0x9A5
 	{ "UseSimpleHordeDecals", parseUseSimpleHordeDecals, nullptr, 0 },             // RW + 0x9A6

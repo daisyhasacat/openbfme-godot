@@ -55,6 +55,21 @@ std::string withoutProfileLine(const std::string &text)
 	return out;
 }
 
+// lane CAMPSAVE-1 (review): the identity without its execution profile and engine id lines: what the data and the rules are, not which build
+std::string dataOnly(const std::string &text)
+{
+	std::istringstream in(text);
+	std::string line, out;
+	while (std::getline(in, line))
+	{
+		if (line.rfind("profile ", 0) != 0 && line.rfind("engine ", 0) != 0)
+		{
+			out += line + "\n";
+		}
+	}
+	return out;
+}
+
 std::string shortId(const std::string &id)
 {
 	return id.size() > 12 ? id.substr(0, 12) : id;
@@ -96,6 +111,12 @@ std::vector<std::uint8_t> SaveGameFile::encode() const
 	h.str(header.campaign);
 	h.i32(header.campaignMission);
 	h.i32(header.campaignDifficulty);
+	// header version 2 (lane CAMPSAVE-1): the save point and the campaign's flags
+	h.u32((std::uint32_t)header.savePoint);
+	h.u8(header.campaignVictorious ? 1 : 0);
+	h.u8(header.campaignReady ? 1 : 0);
+	h.u8(header.campaignAdvanced ? 1 : 0);
+	h.u8(header.autoSave ? 1 : 0);
 	std::vector<std::uint8_t> out(kMagic, kMagic + sizeof(kMagic));
 	NetByteWriter v;
 	v.u32(kContainerVersion);
@@ -183,7 +204,7 @@ bool SaveGameFile::parseFrom(Source &src, SaveGameFile &out, std::string *error,
 	{
 		return failWith(error, "save container version " + std::to_string(version) + " (this build reads version " + std::to_string(kContainerVersion) + ")");
 	}
-	const std::uint64_t limits[3] = { kMaxHeaderBytes, kMaxLogBytes, 0 };
+	const std::uint64_t limits[3] = { kMaxHeaderBytes, kMaxLogBytes, kMaxSnapshotBytes };
 	std::vector<std::uint8_t> parts[3];
 	std::uint64_t pos = 12;
 	for (int i = 0; i < 3; ++i)
@@ -205,11 +226,7 @@ bool SaveGameFile::parseFrom(Source &src, SaveGameFile &out, std::string *error,
 			return failWith(error, std::string("the save is truncated (the ") + kPartNames[i] + " part has " + std::to_string(size - pos) + " of its "
 				+ std::to_string(length) + " bytes)");
 		}
-		if (i == 2 && length > 0 && !headerOnly)
-		{
-			return failWith(error, "the save carries a snapshot (" + std::to_string(length) + " bytes), which this build cannot read");
-		}
-		if (i < 2 && (i == 0 || !headerOnly))
+		if (i == 0 || !headerOnly)
 		{
 			if (length > limits[i])
 			{
@@ -235,9 +252,9 @@ bool SaveGameFile::parseFrom(Source &src, SaveGameFile &out, std::string *error,
 	}
 	NetByteReader r(parts[0]);
 	const std::uint32_t headerVersion = r.u32();
-	if (!r.failed() && headerVersion != kHeaderVersion)
+	if (!r.failed() && headerVersion != kHeaderVersion && headerVersion != 1)
 	{
-		return failWith(error, "save header version " + std::to_string(headerVersion) + " (this build reads version " + std::to_string(kHeaderVersion) + ")");
+		return failWith(error, "save header version " + std::to_string(headerVersion) + " (this build reads versions 1 and " + std::to_string(kHeaderVersion) + ")");
 	}
 	SaveGameHeader &h = out.header;
 	h.buildVersion = r.str();
@@ -257,6 +274,32 @@ bool SaveGameFile::parseFrom(Source &src, SaveGameFile &out, std::string *error,
 	h.campaign = r.str();
 	h.campaignMission = r.i32();
 	h.campaignDifficulty = r.i32();
+	int flags[4] = { 0, 0, 0, 0 };
+	if (headerVersion >= 2)
+	{
+		// lane CAMPSAVE-1: closed sets, refused by name (a version 1 header is a game at its frame with no flags)
+		const std::uint32_t point = r.u32();
+		for (int &f : flags)
+		{
+			f = r.u8();
+		}
+		if (!r.failed() && point > 1)
+		{
+			return failWith(error, "the save's save point " + std::to_string(point) + " is not one this build saves (0 a game, 1 the campaign menu)");
+		}
+		h.savePoint = (int)point;
+		for (int i = 0; i < 4 && !r.failed(); ++i)
+		{
+			if (flags[i] > 1)
+			{
+				return failWith(error, "the save's campaign flag " + std::to_string(i) + " is " + std::to_string(flags[i]) + " (0 or 1)");
+			}
+		}
+	}
+	h.campaignVictorious = flags[0] == 1;
+	h.campaignReady = flags[1] == 1;
+	h.campaignAdvanced = flags[2] == 1;
+	h.autoSave = flags[3] == 1;
 	if (r.failed())
 	{
 		return failWith(error, "the save is damaged (its header part ends early)");
@@ -273,7 +316,29 @@ bool SaveGameFile::parseFrom(Source &src, SaveGameFile &out, std::string *error,
 	{
 		return failWith(error, h.gameKind == 1 ? std::string("the save is a campaign mission without its campaign") : "the save is a skirmish that names a campaign");
 	}
+	if (h.savePoint == 1)
+	{
+		// the campaign menu between missions: a campaign, a mission index and difficulty in range, no game (no frame, no log, no snapshot)
+		if (h.gameKind != 1)
+		{
+			return failWith(error, "the save is a campaign menu save without its campaign");
+		}
+		if (h.campaignMission < 0 || h.campaignDifficulty < 0 || h.campaignDifficulty > 2)
+		{
+			return failWith(error, "the campaign menu save's mission " + std::to_string(h.campaignMission) + " / difficulty " +
+				std::to_string(h.campaignDifficulty) + " is out of range");
+		}
+		if (h.frame != 0 || h.commands != 0 || (!headerOnly && (!parts[1].empty() || !parts[2].empty())))
+		{
+			return failWith(error, "the campaign menu save carries a game (a frame, commands, a log or a snapshot)");
+		}
+	}
+	else if (h.campaignVictorious || h.campaignReady || h.campaignAdvanced || h.autoSave)
+	{
+		return failWith(error, "the save is a game at its frame with the campaign menu's flags");
+	}
 	out.log = std::move(parts[1]);
+	out.snapshot = std::move(parts[2]); // lane SAVE-4a
 	return true;
 }
 
@@ -328,6 +393,27 @@ bool SaveGameFile::write(const std::string &path, std::string *error) const
 		return failWith(error, "cannot replace the save " + path + ": " + ec.message());
 	}
 	return true;
+}
+
+SaveGameCompatibility SaveGameCompatibility::checkMenuSave(const SaveGameHeader &save, const ProfileIdentity &running, const std::string &campaignRefusal)
+{
+	// a campaign menu save holds no log, so the build that made it does not matter (an update between missions keeps the campaign), but its data and
+	// rules must be the running ones (a mod's other campaign list or archives are a named refusal), and its campaign, mission and difficulty must exist
+	SaveGameCompatibility c;
+	const ProfileIdentity a = ProfileIdentity::fromText(dataOnly(running.text));
+	const ProfileIdentity b = ProfileIdentity::fromText(dataOnly(save.profile.text));
+	if (a != b)
+	{
+		c.refusal = "this game was saved with other game data or rules: " + ProfileIdentity::difference(a, b);
+		return c;
+	}
+	if (!campaignRefusal.empty())
+	{
+		c.refusal = campaignRefusal;
+		return c;
+	}
+	c.loadable = true;
+	return c;
 }
 
 SaveGameCompatibility SaveGameCompatibility::check(const SaveGameHeader &save, const ProfileIdentity &running, const std::string &runningEngineId,

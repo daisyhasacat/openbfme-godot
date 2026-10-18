@@ -35,6 +35,7 @@ WindowMsgHandledType AptScreen::gadgetMessage(GameWindow *, std::uint32_t, Windo
 
 AptScreen::~AptScreen()
 {
+	m_shell.forgetOverlay(this); // lane SAVE-UI1
 	m_windows.removeUpdateListeners(this); // nothing of this screen may run after it is gone
 	for (const Registered &r : m_registered)
 	{
@@ -74,8 +75,16 @@ void AptScreen::runInit()
 {
 	if (m_hidden && m_level >= 0)
 	{
-		m_windows.showAptWindow(m_level);
+		if (m_movieUnloaded)
+		{
+			m_windows.reloadAptMovie(m_level); // RW 0x812913 -> AptPlayer::ShowLevel: the movie loads again on the next update and starts over
+		}
+		else
+		{
+			m_windows.showAptWindow(m_level);
+		}
 	}
+	m_movieUnloaded = false;
 	m_hidden = false;
 	if (m_level >= 0)
 	{
@@ -90,7 +99,14 @@ void AptScreen::runShutdown(bool *)
 	m_hidden = true;
 	if (m_level >= 0)
 	{
-		m_windows.hideAptWindow(m_level);
+		if (unloadsMovieWhenCovered())
+		{
+			m_movieUnloaded = m_windows.unloadAptMovie(m_level); // RW 0x812A37 -> AptPlayer::HideLevel: the movie leaves its level, the screen stays
+		}
+		else
+		{
+			m_windows.hideAptWindow(m_level);
+		}
 		m_windows.popFocus();
 	}
 	m_shell.shutdownComplete(this);

@@ -280,6 +280,26 @@ TEST_CASE("build4 walls: a Men span's tiles wait at 0 % and rise StaggeredBuildF
 	std::printf("\n");
 }
 
+TEST_CASE("community PR #37: S-5015 (the inferred texture swaps) is in DrawableManager::report().stops exactly once")
+{
+	OPENBFME_REQUIRE_START(s);
+	std::string error;
+	buildtest::Game g;
+	REQUIRE_MESSAGE(buildtest::startGame(*s, "FactionMen", "FactionMordor", 5150, g, &error), error);
+	g.live->logic().runLogicFrame();
+	g.live->refreshClient(200.0, 0.0);
+	int matches = 0;
+	for (const std::string &line : g.live->drawables().report().stops)
+	{
+		if (line.rfind("[S-5015] ", 0) == 0)
+		{
+			++matches;
+			CHECK(line.find("WeatherTexture") != std::string::npos);
+		}
+	}
+	CHECK(matches == 1);
+}
+
 TEST_CASE("build4 walls: S-1520 is in DrawableManager::report().stops exactly once")
 {
 	OPENBFME_REQUIRE_START(s);

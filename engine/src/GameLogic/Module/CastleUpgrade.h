@@ -37,6 +37,7 @@ public:
 class CastleUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(CastleUpgrade) // lane SAVE-4b: UpgradeModule's
 	CastleUpgrade(Thing *thing, const CastleUpgradeModuleData *data) : UpgradeModule(thing, data), m_data(data) {}
 	static void registerClass(ModuleFactory &modules);
 	static void shareWithNewTower(Object &tower);

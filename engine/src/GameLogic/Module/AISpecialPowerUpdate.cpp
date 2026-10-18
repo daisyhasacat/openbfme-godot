@@ -2,6 +2,7 @@
 // See GameLogic/Module/AISpecialPowerUpdate.h for the sources and what is inference.
 
 #include "GameLogic/Module/AISpecialPowerUpdate.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/GameCommon.h"
 #include "Common/Player.h"
@@ -851,4 +852,70 @@ void AISpecialPowerUpdate::registerClass(ModuleFactory &modules)
 std::vector<std::string> AISpecialPowerUpdate::stopLines()
 {
 	return { kStop, kStopSpellBook };
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190; retail's AISpecialPowerUpdate::xfer RW 0x8B74A6 (1, 4) holds two bools after UpdateModule::xfer
+// and no decision) -----------------------------------------------------------------------------------------------------------------------------------------
+// The decision whole when it exists, its command button by name (TheCommandStore's: the button the object's command set holds). The test switch
+// m_assumeButtonForTest is a test harness setting, not state.
+void AISpecialPowerUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferBool(&m_active);
+	x.xferBool(&m_initialized);
+	bool has = !x.isLoading() && m_decision != nullptr;
+	x.xferBool(&has);
+	if (x.isLoading())
+	{
+		m_decision.reset();
+		if (has)
+		{
+			m_decision = std::make_unique<AISpecialPowerDecision>();
+		}
+	}
+	if (!m_decision)
+	{
+		return;
+	}
+	AISpecialPowerDecision &d = *m_decision;
+	x.xferInt(&d.type);
+	x.xferInt(&d.kind);
+	if (x.isLoading() && (AISpecialPowerDecision::kindOf(d.type) < 0 || AISpecialPowerDecision::kindOf(d.type) != d.kind))
+	{
+		throw XferException("an AI special power decision of type " + std::to_string(d.type) + " and kind " + std::to_string(d.kind)
+			+ " is not one this build makes");
+	}
+	x.xferInt(&d.powerType);
+	std::string button = (!x.isLoading() && d.button) ? d.button->m_name : std::string();
+	x.xferAsciiString(&button);
+	if (x.isLoading())
+	{
+		d.button = button.empty() ? nullptr : (TheCommandStore ? TheCommandStore->findCommandButton(button) : nullptr);
+		if (!button.empty() && !d.button)
+		{
+			throw XferException("the snapshot's AI special power decision names the command button '" + button + "', which this game's data lacks");
+		}
+	}
+	x.xferUnsignedInt(&d.counter);
+	x.xferReal(&d.range);
+	x.xferReal(&d.radius);
+	x.xferBool(&d.fired);
+	x.xferBool(&d.randomize);
+	x.xferBool(&d.makesStructure);
+	x.xferObjectID(&d.target);
+	SnapshotXfer::coord3D(x, d.location);
+	SnapshotXfer::ints(x, d.waypointIds);
+	for (int id : d.waypointIds) // lane SAVE-4e review r2: each a waypoint of this map (the shroud reveal looks it up, RW 0x9E7CA3)
+	{
+		const TerrainLogic *terrain = getObject()->logic().terrain();
+		if (x.isLoading() && (!terrain || !terrain->findWaypointById(id)))
+		{
+			throw XferException("an AI special power decision's waypoint " + std::to_string(id) + " is not a waypoint of this map");
+		}
+	}
+	SnapshotXfer::enumIn(x, d.variant, 0, 2, "an AI special power decision's variant");
+	x.xferObjectID(&d.assistUnit);
+	x.xferObjectID(&d.assistTarget);
+	SnapshotXfer::ids(x, d.buffedIds);
 }

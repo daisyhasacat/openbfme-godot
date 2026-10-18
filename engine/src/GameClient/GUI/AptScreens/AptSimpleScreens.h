@@ -19,6 +19,7 @@
 
 #include "GameClient/GUI/AptScreen.h"
 #include "GameClient/GUI/AptScreens/OpenBFMEOptionsPage.h"
+#include "GameClient/GUI/MenuNavigator.h"
 #include "GameClient/GameLODManager.h"
 #include "Libraries/Source/Apt/AptValue.h"
 
@@ -132,6 +133,7 @@ private:
 		std::string path;                ///< the page's path without the level prefix
 		std::vector<bool> rowShown;      ///< a row object exists (OnRowShown made it)
 		std::vector<std::string> rowPath;
+		bool platformNoted = false;      ///< lane PLATFORMICON-1: [S-4850] was reported
 	};
 	void pageLoaded(const std::string &params);
 	void pageUnloaded(const std::string &name);
@@ -255,7 +257,7 @@ private:
 // MasterOption0ResetDefault, the warnings (RW 0x91F2AB: APT:WarnHighGraphicSettings / Detail / Resolution), the "(level)" labels of RW 0x91F175 /
 // 0x920E0F, RefreshNat (lane OPTS-5: the brightness slider tracks live, see gadgetMessage).
 // Lane OPTS-4: the volume sliders act while they move and play their samples (RW 0x91F90D, see trackVolume); Reset and Cancel set the volumes at once.
-class AptOptionsScreen : public AptScreen
+class AptOptionsScreen : public AptScreen, public MenuNavigationSource
 {
 public:
 	AptOptionsScreen(WindowManager &windows, Shell &shell, ShellEnvironment &environment, ShellServices &services);
@@ -340,6 +342,14 @@ public:
 	void resetMenu();
 	// the detail settings shown (the level's, or the custom ones)
 	std::array<int, GameLODManager::kAdvancedOptionCount> shownAdvancedSettings() const;
+
+	// ---- lane OPTS-6: the OpenBFME page without a mouse (MenuNavigator.h; NOT RETAIL) -----------------------------------------------------------------
+	// While the page is up and the screen is shown: its tabs ("tab:<index>", the page's tab hit areas: a press there is the page's tab click) and the
+	// gadgets of its rows that take input ("row:<key>"; the hot key list "list"). Back is the page's CANCEL (as Esc), PageUp / PageDown the tab before /
+	// after (wrapping), as a click on that tab.
+	void navTargets(std::vector<MenuNavTarget> &targets) override;
+	bool navKey(MenuNavKey key, const MenuNavTarget *focus) override;
+	std::string navFirst() const override;
 
 protected:
 	WindowMsgHandledType gadgetMessage(GameWindow *from, std::uint32_t msg, WindowMsgData data1, WindowMsgData data2) override;

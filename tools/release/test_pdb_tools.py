@@ -15,7 +15,7 @@ import pdb_tools  # noqa: E402
 import readme_testers  # noqa: E402
 
 GUID = bytes(range(16))
-HOME = b"/home" b"/alice/openbfme-ci/llvm-mingw/lib/libc++.a"  # split: tools/precommit.py rejects a home path in a committed file
+HOME = b"/home" b"/alice/build-ci/llvm-mingw/lib/libc++.a"  # split: tools/precommit.py rejects a home path in a committed file
 
 
 def msf(streams: list[bytes], block_size: int = 512) -> bytes:
@@ -100,7 +100,7 @@ def test_scrub_blanks_the_whole_home_prefix_and_keeps_the_file_valid():
     assert len(out) == len(raw)
     assert pdb_tools.pdb_identity(out) == (GUID, 1)
     assert pdb_tools.home_paths(out) == []
-    assert b"___________/openbfme-ci" in out and b"______________\\x.obj" in out  # neither the home prefix nor the user folder prefix is left
+    assert b"___________/build-ci" in out and b"______________\\x.obj" in out  # neither the home prefix nor the user folder prefix is left
     assert b"/home/" + b"_" not in out and b"Users" not in out
     assert b"/runner/work/llvm-mingw/" in out  # the toolchain's own build path stays: nobody's home
     assert pdb_tools.check(pe(), out) == []
@@ -109,8 +109,35 @@ def test_scrub_blanks_the_whole_home_prefix_and_keeps_the_file_valid():
 
 def test_a_home_prefix_with_a_blanked_user_name_still_fails_the_check():
     """Sol r1: round 1's scrub left "/home/_____/..." (the absolute layout of the builder's home)."""
-    blanked = b"/home" b"/_____/openbfme-ci/llvm-mingw/lib/libc++.a"
+    blanked = b"/home" b"/_____/build-ci/llvm-mingw/lib/libc++.a"
     assert any("PDB holds home folder paths" in p for p in pdb_tools.check(pe(), pdb(extra=blanked)))
+
+
+def test_scrub_dll_makes_the_toolchain_build_root_relative_and_the_dll_passes_the_package_audit():
+    """Lane RELFIX-1: v0.4.7's package audit refused the DLL for the llvm-mingw libc++abi's own __FILE__ paths (in every release DLL)."""
+    toolchain = b"/home" b"/runner/work/llvm-mingw/llvm-mingw/llvm-project/libcxxabi/src/cxa_personality.cpp\0"
+    raw = pe(extra=b"\0" + toolchain + b"x\0" + toolchain)
+    assert any("DLL holds home folder paths" in p for p in pdb_tools.check(raw, pdb()))  # the toolchain's path is no exemption in a DLL
+    assert audit_package.developer_path_problem(raw) == "developer-machine path"
+    out = pdb_tools.scrub_dll(raw)
+    assert len(out) == len(raw) and out.count(b"./" * 9 + b"llvm-mingw/llvm-mingw/llvm-project/libcxxabi/src/cxa_personality.cpp\0") == 2
+    assert out.replace(b"./" * 9 + b"llvm-mingw/", b"/home" b"/runner/work/llvm-mingw/") == raw  # nothing else changes
+    assert pdb_tools.pe_codeview(out) == pdb_tools.pe_codeview(raw)
+    assert pdb_tools.check(out, pdb()) == []
+    assert audit_package.developer_path_problem(out) == ""
+    assert pdb_tools.scrub_dll(out) == out
+    # any other home folder in the DLL stays and fails both checks
+    other = pdb_tools.scrub_dll(pe(extra=b"\0" + HOME + b"\0"))
+    assert any("DLL holds home folder paths" in p for p in pdb_tools.check(other, pdb()))
+    assert audit_package.developer_path_problem(other) == "developer-machine path"
+
+
+def test_the_release_builds_audit_their_libraries():
+    """Lane RELFIX-1: a build path in the GDExtension fails its build, not the release's packaging step."""
+    windows = (HERE / "build_windows.sh").read_text()
+    assert windows.index('pdb_tools.py" scrub-dll "$DLL"') < windows.index('pdb_tools.py" check "$DLL"') < windows.index('audit_package.py" "$DLL"')
+    linux = (HERE / "build_linux.sh").read_text()
+    assert linux.index('audit_package.py" "$SO"') < linux.index('echo "BUILT: $SO')
 
 
 def test_debug_symbols_never_ship():
@@ -165,6 +192,7 @@ def test_the_session_log_names_stop_s1923_on_windows():
     """Stop S-1923 is reported at run time: release.gd prints it into every Windows session log, and the row exists."""
     release = (REPO / "godot/scripts/release/release.gd").read_text()
     at = release.index('if OS.get_name() == "Windows":')
-    message = release[at:at + 600]
-    assert 'print("RELEASE [S-1923]' in message and "dll+<offset>" in message and "thread other than the main thread" in message
+    message = release[at:at + 1200]
+    # DEVPORT-6: since win-crash-1 (WindowsCrashDump: a local minidump of a crash on any thread) the stop is the offset-only naming
+    assert 'print("RELEASE [S-1923]' in message and "dll+<offset>" in message and "minidump" in message and "every thread" in message
     assert "| S-1923 | code |" in (REPO / "docs/STOPS.md").read_text()

@@ -56,6 +56,7 @@ public:
 	bool m_useDefaultDamageSettings = true;
 	std::vector<std::vector<std::string>> m_damageCreationList; ///< one entry per `DamageCreationList = OCL DamageType [...]` line
 	std::string m_healingBuffFx;
+	bool m_healingBuffFxSet = false; ///< lane OWNERFIX-1: a HealingBuffFx row was read (else the GameData default, RW 0x8C373F)
 	std::string m_damagedAttributeModifier;
 	std::string m_reallyDamagedAttributeModifier;
 	float m_cheerRadius = 200.0f;
@@ -124,6 +125,7 @@ public:
 	// lane COMBAT-2: the damage state the body last applied (RW + 0x30, written by setCorrectDamageState RW 0x8C2A5D)
 	BodyDamageType appliedDamageState() const { return m_curDamageState; }
 	void crc(StateHasher &hasher) const override;
+	OBFME_MODULE_XFER(ActiveBody) // lane SAVE-4b (OpenBFME native, S-4190)
 
 protected:
 	// the DamageInfo attemptDamage is processing (RW passes it down to internalChangeHealth, RW 0x8C553F / 0x8C5828 read and change it); null outside a hit
@@ -167,6 +169,7 @@ class ImmortalBody : public ActiveBody
 public:
 	using ActiveBody::ActiveBody;
 	void internalChangeHealth(float delta) override;
+	OBFME_MODULE_XFER(ImmortalBody) // lane SAVE-4b: ActiveBody's (no state of its own)
 };
 
 // RW vtable 0xC71ED0, attemptDamage RW 0x8C49C7: a hit never takes more than health - 1 unless UNRESISTABLE
@@ -175,4 +178,5 @@ class HighlanderBody : public ActiveBody
 public:
 	using ActiveBody::ActiveBody;
 	void attemptDamage(DamageInfo &info) override;
+	OBFME_MODULE_XFER(HighlanderBody) // lane SAVE-4b: ActiveBody's (no state of its own)
 };

@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/ProductionExitModules.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "GameLogic/Module/ExitMath.h"
 
@@ -286,4 +287,42 @@ void SpawnPointProductionExitUpdate::exitObjectViaDoor(Object *newObj, ExitDoorT
 	newObj->setPosition(&m_worldCoordSpawnPoints[i]);
 	newObj->setOrientation(m_worldAngleSpawnPoints[i]);
 	newObj->setDisabled(3, (UnsignedInt)UPDATE_SLEEP_FOREVER); // DISABLED_HELD (RW 0x692432: no end frame)
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190; retail's DefaultProductionExitUpdate::xfer RW 0x8A9D7C (1, 1) is the same coord3d + bool after
+// UpdateModule::xfer) ------------------------------------------------------------------------------------------------------------------------------------
+void SimpleProductionExitUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	SnapshotXfer::coord3D(x, m_rallyPoint);
+	x.xferBool(&m_rallyPointExists);
+}
+
+void DefaultProductionExitUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SimpleProductionExitUpdate::xfer(x);
+}
+
+void SupplyCenterProductionExitUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SimpleProductionExitUpdate::xfer(x);
+}
+
+// every spawn point slot (the count says how many are in use); the report flag is the report's
+void SpawnPointProductionExitUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferBool(&m_bonesInitialized);
+	x.xferInt(&m_spawnPointCount);
+	SnapshotXfer::checkRange(m_spawnPointCount, 0, MAX_SPAWN_POINTS, "a spawn point exit's point count");
+	for (int i = 0; i < MAX_SPAWN_POINTS; ++i)
+	{
+		SnapshotXfer::coord3D(x, m_worldCoordSpawnPoints[i]);
+		x.xferReal(&m_worldAngleSpawnPoints[i]);
+		x.xferObjectID(&m_spawnPointOccupier[i]);
+	}
 }

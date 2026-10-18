@@ -76,6 +76,8 @@ static func why_not(scripted: bool) -> String:
 	var here := OS.get_executable_path().get_base_dir().replace("\\", "/").simplify_path()
 	if RegEx.create_from_string("/versions/v[^/]+/game$").search(here) != null:
 		return "a version the launcher installed"
+	if OS.get_name() == "macOS":
+		return "macOS app-bundle updates are not supported"
 	if not FileAccess.file_exists(launcher_path()):
 		return "no OpenBFME Launcher beside the game (a game-only folder does not update)"
 	return ""

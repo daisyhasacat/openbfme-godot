@@ -375,6 +375,23 @@ const std::vector<const ExperienceLevelTemplate *> *ExperienceLevelSystem::level
 	return it == m_byTarget.end() ? nullptr : &it->second;
 }
 
+const ExperienceLevelTemplate *ExperienceLevelSystem::lastLevel(const std::string &templateName, bool multiplayerGame) const
+{
+	const auto *list = levelsFor(templateName);
+	if (list)
+	{
+		for (auto it = list->rbegin(); it != list->rend(); ++it)
+		{
+			const ExperienceLevelTemplate *level = (*it)->getFinal();
+			if (levelValid(*level, multiplayerGame))
+			{
+				return level;
+			}
+		}
+	}
+	return nullptr;
+}
+
 const ExperienceLevelTemplate *ExperienceLevelSystem::findLevel(const std::string &name) const
 {
 	auto it = m_byName.find(name);

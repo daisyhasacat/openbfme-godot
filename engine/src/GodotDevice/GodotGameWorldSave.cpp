@@ -10,7 +10,9 @@
 #include "Common/Audio/AudioEntryPoints.h"
 #include "Common/AsciiString.h"
 #include "Common/BuildVersion.h"
+#include "Common/GameState.h"
 #include "GameClient/GUI/LoadScreenInfo.h"
+#include "GameClient/LinearCampaign.h"
 #include "GameClient/LiveFX.h"
 #include "GameLogic/NewGame/NewGame.h"
 #include "GameNetwork/LockstepDriver.h"
@@ -61,50 +63,50 @@ void GameWorld::bindSaveMethods()
 	ClassDB::bind_method(D_METHOD("prepare_save_load", "path"), &GameWorld::prepare_save_load);
 	ClassDB::bind_method(D_METHOD("start_save_load", "options"), &GameWorld::start_save_load);
 	ClassDB::bind_method(D_METHOD("save_load_step", "budget_ms"), &GameWorld::save_load_step);
+	ClassDB::bind_method(D_METHOD("save_campaign_menu", "path", "options"), &GameWorld::save_campaign_menu); // lane CAMPSAVE-1
+	ClassDB::bind_method(D_METHOD("keep_running_game"), &GameWorld::keep_running_game); // lane SAVE-4e review r1
+	ClassDB::bind_method(D_METHOD("prepare_kept_load"), &GameWorld::prepare_kept_load);
+	ClassDB::bind_method(D_METHOD("drop_kept_game"), &GameWorld::drop_kept_game);
 }
 
-Dictionary GameWorld::save_game(const String &path, const Dictionary &options)
+// the save of the running game (SAVE-2's log + SAVE-4e's snapshot) with its header; false + error naming why the game cannot be saved
+bool GameWorld::buildSave(const Dictionary &options, SaveGameFile &f, UnsignedInt &frame, std::uint32_t &hash, std::string &error)
 {
-	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
-	Dictionary r;
-	r["ok"] = false;
-	auto fail = [&](const std::string &why) {
-		r["error"] = g(why);
-		return r;
+	auto failed = [&](const std::string &why) {
+		error = why;
+		return false;
 	};
 	if (!m_game)
 	{
-		return fail("there is no game to save");
+		return failed("there is no game to save");
 	}
 	if (m_netSession)
 	{
-		return fail("a network game cannot be saved yet (multiplayer saves are SAVE-3)");
+		return failed("a network game cannot be saved yet (multiplayer saves are SAVE-3)");
 	}
 	if (m_replayPlayback)
 	{
-		return fail("a replay cannot be saved");
+		return failed("a replay cannot be saved");
 	}
 	if (m_saveLoad && m_saveLoad->state() != CommandLogLoad::State::Ready)
 	{
-		return fail("the loaded game is still catching up");
+		return failed("the loaded game is still catching up");
 	}
 	if (!m_localWriter || !m_localDriver)
 	{
-		return fail("this game is not recorded, so it cannot be saved");
+		return failed("this game is not recorded, so it cannot be saved");
 	}
 	m_game->drainFrames(); // every batch already taken runs; the recording then holds the frames below F and the hash of F
-	const UnsignedInt frame = m_game->logic().getFrame();
-	const std::uint32_t hash = m_game->logic().computeStateHash();
-	SaveGameFile f;
-	std::string error;
+	frame = m_game->logic().getFrame();
+	hash = m_game->logic().computeStateHash();
 	if (!m_localWriter->logUpTo(frame, hash, f.log, &error))
 	{
-		return fail(error);
+		return failed(error);
 	}
 	ReplayFile check; // the log must read back as the replay a load plays (never a save that cannot load)
 	if (!ReplayFile::parse(f.log, check, &error) || !check.complete || check.finalFrame != frame || !check.lost.empty())
 	{
-		return fail("the game's log does not read back: " + (error.empty() ? std::string("its end is not frame ") + std::to_string(frame) : error));
+		return failed("the game's log does not read back: " + (error.empty() ? std::string("its end is not frame ") + std::to_string(frame) : error));
 	}
 	SaveGameHeader &h = f.header;
 	h.buildVersion = BuildVersion::kVersion;
@@ -142,6 +144,35 @@ Dictionary GameWorld::save_game(const String &path, const Dictionary &options)
 	}
 	dateTime((int64_t)Time::get_singleton()->get_unix_time_from_system(), h.date, h.time);
 	h.commands = (std::uint32_t)check.commandCount();
+	// lane SAVE-4e: the snapshot at F (SAVE-4a..d's blocks), what a load restores directly. Review r1 (Sol): a snapshot the game refuses fails the save,
+	// named, and the player sees it in SaveLoad.apt's result box (retail's failed save shows its error there too) instead of a slow log-only save
+	// passed off as a success (CommandLogLoad::takeSnapshot)
+	const bool withSnapshot = (bool)options.get("snapshot", true); // false: an earlier alpha's log-only save (the tests of the catch-up path)
+	if (withSnapshot && !CommandLogLoad::takeSnapshot(*m_game, f.snapshot, &error))
+	{
+		return false;
+	}
+	return true;
+}
+
+Dictionary GameWorld::save_game(const String &path, const Dictionary &options)
+{
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	Dictionary r;
+	r["ok"] = false;
+	auto fail = [&](const std::string &why) {
+		r["error"] = g(why);
+		return r;
+	};
+	SaveGameFile f;
+	UnsignedInt frame = 0;
+	std::uint32_t hash = 0;
+	std::string error;
+	if (!buildSave(options, f, frame, hash, error))
+	{
+		return fail(error);
+	}
+	const SaveGameHeader &h = f.header;
 	const std::string native = n(path);
 	if (!f.write(native, &error))
 	{
@@ -159,7 +190,140 @@ Dictionary GameWorld::save_game(const String &path, const Dictionary &options)
 	r["bytes"] = (int64_t)f.encode().size();
 	r["commands"] = (int64_t)h.commands;
 	r["path"] = path;
+	r["snapshot_bytes"] = (int64_t)f.snapshot.size(); // lane SAVE-4e
 	return r;
+}
+
+// lane SAVE-4e review r1 (Sol): a load from the quit menu keeps the running game until the saved one is in: its own save in memory (the same as
+// save_game's), which restore_kept_game loads back (prepare_kept_load) when the chosen save is refused after the running game had to go (one live game per
+// world, S-3808). { ok, frame, hash, error }
+Dictionary GameWorld::keep_running_game()
+{
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	Dictionary r;
+	r["ok"] = false;
+	m_keptSave.reset();
+	auto kept = std::make_unique<SaveGameFile>();
+	UnsignedInt frame = 0;
+	std::uint32_t hash = 0;
+	std::string error;
+	if (!buildSave(Dictionary(), *kept, frame, hash, error))
+	{
+		r["error"] = g(error);
+		return r;
+	}
+	m_keptSave = std::move(kept);
+	r["ok"] = true;
+	r["frame"] = (int64_t)frame;
+	r["hash"] = (int64_t)hash;
+	return r;
+}
+
+// lane CAMPSAVE-1: a mission's map ("MAP ANG Angmar") as the map cache names it (maps/<dir>/<dir>.map, lower case) and its display name there (retail's
+// getMapDisplayName, the decomp's GameStateAutoSave.cpp: the map cache's base display name, else the label itself)
+std::string GameWorld::campaignMapPath(const std::string &map)
+{
+	const std::string dir = AsciiStringUtil::lowered(map);
+	return "maps/" + dir + "/" + dir + ".map";
+}
+
+std::string GameWorld::campaignMapDisplay(const std::string &map) const
+{
+	const std::string path = campaignMapPath(map);
+	for (const MapCacheEntry &e : m_mapCache)
+	{
+		if (e.name == path && !e.displayName.empty())
+		{
+			return loadScreenU16ToUtf8(e.displayName);
+		}
+	}
+	return map;
+}
+
+// lane CAMPSAVE-1: the campaign's state between missions (CampaignMenu.apt) as an .obfmesave of the campaign menu save point: the auto-save after a won
+// mission (RW 0x927F83 -> RW 0x6DE8F1) and the menu's Save (RW 0x927A93). No game: frame 0, no log; the map is the mission the menu names (RW 0x5EAB0A
+// makes the next mission's map the GameState's map name, which column 0 of the Load page shows)
+Dictionary GameWorld::save_campaign_menu(const String &path, const Dictionary &options)
+{
+	Dictionary r;
+	r["ok"] = false;
+	auto fail = [&](const std::string &why) {
+		r["error"] = g(why);
+		return r;
+	};
+	if (!m_world)
+	{
+		return fail("GameWorld.setup has not run");
+	}
+	CampaignProgress p;
+	p.campaign = n(String(options.get("campaign", String())));
+	p.mission = (int)(int64_t)options.get("mission", (int64_t)-1);
+	p.difficulty = (int)(int64_t)options.get("difficulty", (int64_t)-1);
+	p.victorious = (bool)options.get("victorious", false);
+	p.ready = (bool)options.get("ready", false);
+	p.advanced = (bool)options.get("advanced", false);
+	const LinearCampaign *campaign = m_world->linearCampaigns().find(p.campaign);
+	if (!campaign)
+	{
+		return fail("no campaign '" + p.campaign + "' to save");
+	}
+	if (p.mission < 0 || p.mission > (int)campaign->missions.size() || p.difficulty < 0 || p.difficulty > 2)
+	{
+		return fail("the campaign's mission " + std::to_string(p.mission) + " / difficulty " + std::to_string(p.difficulty) + " is out of range");
+	}
+	const int shown = p.menuMissionIndex(m_world->linearCampaigns());
+	if (shown < 0)
+	{
+		return fail("the campaign menu names no mission of " + campaign->name + " (it is over)");
+	}
+	SaveGameFile f;
+	SaveGameHeader &h = f.header;
+	h.buildVersion = BuildVersion::kVersion;
+	h.engineId = ProfileIdentity::buildId();
+	h.commit = BuildVersion::kCommit;
+	h.profile = profileIdentityFor(SimulationProfile::Faithful); // a campaign mission runs Faithful
+	h.executionProfile = "enhanced";
+	h.gameKind = 1;
+	h.savePoint = 1;
+	h.frame = 0;
+	h.stateHash = 0;
+	h.description = n(String(options.get("description", String())));
+	h.mapPath = campaignMapPath(campaign->missions[(size_t)shown].map);
+	h.mapDisplay = campaignMapDisplay(campaign->missions[(size_t)shown].map);
+	dateTime((int64_t)Time::get_singleton()->get_unix_time_from_system(), h.date, h.time);
+	h.campaign = campaign->name;
+	h.campaignMission = p.mission;
+	h.campaignDifficulty = p.difficulty;
+	h.campaignVictorious = p.victorious;
+	h.campaignReady = p.ready;
+	h.campaignAdvanced = p.advanced;
+	h.autoSave = (bool)options.get("auto_save", false);
+	std::string error;
+	if (!f.write(n(path), &error))
+	{
+		return fail(error);
+	}
+	r["ok"] = true;
+	r["path"] = path;
+	r["map"] = g(h.mapDisplay);
+	r["menu_mission"] = (int64_t)shown;
+	r["bytes"] = (int64_t)f.encode().size();
+	return r;
+}
+
+// lane CAMPSAVE-1 (review): the one verdict on a campaign menu save, for the Load page's listing and for check_save: the data identity and the campaign /
+// mission / difficulty must match the running data (the build that made it need not)
+SaveGameCompatibility GameWorld::menuSaveVerdict(const SaveGameHeader &h) const
+{
+	CampaignProgress p;
+	p.campaign = h.campaign;
+	p.mission = h.campaignMission;
+	p.difficulty = h.campaignDifficulty;
+	p.victorious = h.campaignVictorious;
+	p.ready = h.campaignReady;
+	p.advanced = h.campaignAdvanced;
+	const std::string refusal = m_world ? p.menuSaveRefusal(m_world->linearCampaigns()) : std::string("GameWorld.setup has not run");
+	return SaveGameCompatibility::checkMenuSave(h, profileIdentityFor(SimulationProfile::Faithful), refusal);
 }
 
 Array GameWorld::list_saves(const String &directory) const
@@ -232,6 +396,8 @@ Array GameWorld::list_saves(const String &directory) const
 		}
 		const SaveGameCompatibility c = SaveGameCompatibility::check(f.header, f.header.campaign.empty() ? running : faithful, ProfileIdentity::buildId(),
 			BuildVersion::kVersion, false);
+		const bool menuSave = f.header.savePoint == 1; // lane CAMPSAVE-1: no log; the same verdict as check_save's (menuSaveVerdict)
+		const SaveGameCompatibility menuVerdict = menuSave ? menuSaveVerdict(f.header) : SaveGameCompatibility();
 		d["kind"] = f.header.gameKind;
 		d["map"] = g(f.header.mapDisplay);
 		d["map_path"] = g(f.header.mapPath);
@@ -240,10 +406,12 @@ Array GameWorld::list_saves(const String &directory) const
 		d["description"] = g(f.header.description);
 		d["frame"] = (int64_t)f.header.frame;
 		d["build"] = g(f.header.buildVersion);
-		d["loadable"] = c.loadable;
-		d["refusal"] = g(c.refusal);
-		d["cross_profile"] = c.crossProfile;
+		d["loadable"] = menuSave ? menuVerdict.loadable : c.loadable;
+		d["refusal"] = g(menuSave ? menuVerdict.refusal : c.refusal);
+		d["cross_profile"] = menuSave ? false : c.crossProfile;
 		d["retail_import"] = false;
+		d["auto_save"] = f.header.autoSave; // lane CAMPSAVE-1
+		d["save_point"] = (int64_t)f.header.savePoint;
 		out.push_back(d);
 	}
 	return out;
@@ -260,6 +428,28 @@ Dictionary GameWorld::check_save(const String &path) const
 		r["error"] = g(error);
 		return r;
 	}
+	r["save_point"] = (int64_t)file.header.savePoint;
+	if (file.header.savePoint == 1)
+	{
+		// lane CAMPSAVE-1: a campaign menu save holds no game (no log to replay), so the build rule of a game's save does not apply: another build loads
+		// it when the data and the campaign's mission are the running ones (menuSaveVerdict, also the Load page's listing)
+		const SaveGameCompatibility verdict = menuSaveVerdict(file.header);
+		if (!verdict.loadable)
+		{
+			r["error"] = g(verdict.refusal);
+			return r;
+		}
+		const LinearCampaign *campaign = m_world->linearCampaigns().find(file.header.campaign);
+		r["ok"] = true;
+		r["campaign"] = g(campaign->name);
+		r["mission"] = (int64_t)file.header.campaignMission;
+		r["difficulty"] = (int64_t)file.header.campaignDifficulty;
+		r["victorious"] = file.header.campaignVictorious;
+		r["ready"] = file.header.campaignReady;
+		r["advanced"] = file.header.campaignAdvanced;
+		r["auto_save"] = file.header.autoSave;
+		return r;
+	}
 	const ProfileIdentity running = file.header.campaign.empty() ? net_profile() : profileIdentityFor(SimulationProfile::Faithful);
 	const SaveGameCompatibility c = SaveGameCompatibility::check(file.header, running, ProfileIdentity::buildId(), BuildVersion::kVersion, false);
 	if (!c.loadable)
@@ -272,6 +462,17 @@ Dictionary GameWorld::check_save(const String &path) const
 	{
 		r["error"] = g(error);
 		return r;
+	}
+	// lane SAVE-4e review r1: the snapshot's framing (every block in this build's order, inside the file, its end) is checked before the running game goes;
+	// the blocks' contents are checked by the load itself (a refusal there gives the running game back: keep_running_game)
+	if (!file.snapshot.empty() && m_game && m_world)
+	{
+		const auto worldContext = m_world->enterContext();
+		if (!m_game->logic().gameState().checkFraming(file.snapshot, &error))
+		{
+			r["error"] = g("the save's snapshot is refused: " + error);
+			return r;
+		}
 	}
 	r["ok"] = true;
 	r["cross_profile"] = c.crossProfile;
@@ -298,6 +499,43 @@ Dictionary GameWorld::prepare_save_load(const String &path)
 		errors.push_back(g(error));
 		return r;
 	}
+	if (file->header.savePoint == 1)
+	{
+		// lane CAMPSAVE-1: a campaign menu save holds no game: the host opens the campaign menu with it (check_save's save_point)
+		errors.push_back("the save is the campaign menu between missions, not a game to load");
+		return r;
+	}
+	return prepareSaveLoad(std::move(file));
+}
+
+// lane SAVE-4e review r1: the running game's own save kept by keep_running_game, prepared like a file's (the menu then starts and steps it as any load)
+Dictionary GameWorld::prepare_kept_load()
+{
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	if (!m_keptSave)
+	{
+		Dictionary r;
+		Array errors;
+		errors.push_back("no running game was kept");
+		r["ok"] = false;
+		r["errors"] = errors;
+		return r;
+	}
+	return prepareSaveLoad(std::move(m_keptSave));
+}
+
+void GameWorld::drop_kept_game()
+{
+	m_keptSave.reset();
+}
+
+Dictionary GameWorld::prepareSaveLoad(std::unique_ptr<SaveGameFile> file)
+{
+	Dictionary r;
+	Array errors;
+	r["ok"] = false;
+	r["errors"] = errors;
+	std::string error;
 	const ProfileIdentity running = file->header.campaign.empty() ? net_profile() : profileIdentityFor(SimulationProfile::Faithful);
 	const SaveGameCompatibility c = SaveGameCompatibility::check(file->header, running, ProfileIdentity::buildId(), BuildVersion::kVersion, false);
 	if (!c.loadable)
@@ -313,6 +551,7 @@ Dictionary GameWorld::prepare_save_load(const String &path)
 	}
 	const ReplayFile &log = load->log();
 	r["frame"] = (int64_t)file->header.frame;
+	r["mode"] = load->mode() == CommandLogLoad::Mode::Snapshot ? "snapshot" : "catch_up"; // lane SAVE-4e: the loading screen shows a catch-up's progress only
 	r["description"] = g(file->header.description);
 	r["cross_profile"] = c.crossProfile;
 	r["note"] = g(c.note);
@@ -385,10 +624,10 @@ Dictionary GameWorld::start_save_load(const Dictionary &options)
 	{
 		// the log's game starts under the profile it was recorded under (UBER-1's start_new_game checks the prepared game against the player's profile:
 		// for this start it is the log's), the player's own is back right after; the switch to it comes at the saved frame (save_load_step)
-		const SimulationProfile own = m_simulationProfile;
-		m_simulationProfile = load->startProfile();
+		const SimulationProfile own = m_choice.current;
+		m_choice.current = load->startProfile();
 		report = start_new_game(o); // load_internal releases the local drivers (and m_saveLoad): the pending load is held here meanwhile
-		m_simulationProfile = own;
+		m_choice.current = own;
 	}
 	if (!(bool)report.get("ok", false))
 	{
@@ -413,6 +652,7 @@ Dictionary GameWorld::start_save_load(const Dictionary &options)
 		stops.push_back(g(l));
 	}
 	report["stops"] = stops;
+	report["mode"] = m_saveLoad->mode() == CommandLogLoad::Mode::Snapshot ? "snapshot" : "catch_up"; // lane SAVE-4e
 	report["target_frame"] = (int64_t)m_saveLoad->target();
 	report["start_frame"] = (int64_t)m_saveLoad->startFrame();
 	return report;
@@ -444,13 +684,16 @@ Dictionary GameWorld::save_load_step(int64_t budget_ms)
 		{
 			m_liveFX->discardPending();
 		}
-		if (state == CommandLogLoad::State::Ready && m_saveRecordContinues)
+	}
+	if (state == CommandLogLoad::State::Ready && m_saveRecordContinues)
+	{
+		// lane SAVE-4e: a snapshot load is Ready at start_save_load (CommandLogLoad::begin), a catch-up after its last step
 		{
 			// the player's game from here on: a recording that continues the save's log (so a later save holds the whole game), with the switch to this
 			// player's execution profile when it differs (single player, owner decision 7; a campaign mission stays Faithful). A recording that cannot be
 			// opened fails the load, named (the game would go on unsaveable)
 			m_saveRecordContinues = false;
-			const SimulationProfile own = m_campaignStart.campaign.empty() ? m_simulationProfile : SimulationProfile::Faithful;
+			const SimulationProfile own = m_campaignStart.campaign.empty() ? m_choice.current : SimulationProfile::Faithful;
 			m_localWriter = std::make_unique<ReplayWriter>();
 			std::string error;
 			if (!m_saveLoad->handOver(*m_game, *m_localWriter, m_saveRecordPath, own, &error))
@@ -480,5 +723,7 @@ Dictionary GameWorld::save_load_step(int64_t budget_ms)
 		r["error"] = g(m_saveLoad->failure());
 	}
 	r["recording"] = m_localDriver != nullptr;
+	r["mode"] = m_saveLoad->mode() == CommandLogLoad::Mode::Snapshot ? "snapshot" : "catch_up"; // lane SAVE-4e
+	r["snapshot_ms"] = m_saveLoad->snapshotLoadMs();
 	return r;
 }

@@ -1,7 +1,7 @@
 // OpenBFME online relay. GPL-3.0.
 //
 // RelayCore (lane ONLINE-2, docs/ONLINE.md phase O1): the forwarding relay's logic without sockets, so the tests drive it datagram by datagram. The process
-// around it (relay_main.cpp) owns one UDP socket and one thread: recvmmsg a batch, handle() each datagram, sendmmsg what comes out, tick() once a second.
+// around it (relay_main.cpp) owns one UDP socket and one thread: receive a batch, handle() each datagram, send what comes out, tick() once a second.
 //
 // What it does (the envelope and the ticket: engine/src/GameNetwork/RelayProtocol.h):
 //   * HELLO with a valid ticket binds the sender's address to (game, slot): the game is created on its first HELLO; a slot HELLOing from a new address is
@@ -141,6 +141,16 @@ public:
 
 	const Stats &stats() const { return m_stats; }
 	size_t openGames() const { return m_games.size(); }
+	size_t openLogHandles() const
+	{
+		size_t count = 0;
+		for (const auto &kv : m_games)
+		{
+			count += kv.second.log ? 1 : 0;
+			count += kv.second.logReader ? 1 : 0;
+		}
+		return count;
+	}
 	// ONLINE-2 r3: the bytes the caps count, and (walking every stream) the bytes the streams actually keep allocated: equal by construction
 	size_t heldBytes() const { return m_buffered; }
 	size_t retainedBytes() const;
@@ -203,6 +213,7 @@ private:
 		std::array<std::map<std::uint32_t, std::map<std::uint64_t, std::uint32_t>>, 8> logged; ///< [sender] execution frame -> command hash -> logged
 		std::FILE *log = nullptr;
 		std::string logPath;
+		bool logRenamed = false; ///< DEVPORT-1: the .part became logPath; a failed rename leaves the .part as the log spectators read
 		size_t buffered = 0; ///< ONLINE-2 r2
 		std::FILE *logReader = nullptr;          ///< lane ONLINE-3: LOG_REQUESTs read the log being written through this
 		std::uint64_t logBytes = 0;              ///< lane ONLINE-3: bytes written to the log so far

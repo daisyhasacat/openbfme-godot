@@ -5,6 +5,7 @@
 
 #include "GameClient/Drawable.h"
 #include "GameClient/DrawableManager.h"
+#include "GameClient/GUI/GameWindowManager.h"
 #include "GameClient/TacticalView.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object/Object.h"
@@ -12,6 +13,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 
 namespace
@@ -247,7 +249,7 @@ void ControlBarRadialMenu::mouseMove(int x, int y)
 	buildOps();
 }
 
-bool ControlBarRadialMenu::mouseButton(bool left, bool down, int x, int y, ControlBar &bar)
+bool ControlBarRadialMenu::mouseButton(bool left, bool down, int x, int y, ControlBar &bar, bool shift)
 {
 	m_mouseX = x;
 	m_mouseY = y;
@@ -289,7 +291,7 @@ bool ControlBarRadialMenu::mouseButton(bool left, bool down, int x, int y, Contr
 		// only for a CANCELABLE button (CommandButton + 0x1F & 0x80) of the local player's object; the window takes the press either way
 		if (b && b->source.button && b->source.button->hasOption(COMMAND_OPTION_CANCELABLE))
 		{
-			bar.cancelQueued(slot, false);
+			bar.cancelQueued(slot, false, shift);
 			++m_cancels;
 		}
 	}
@@ -351,6 +353,11 @@ void ControlBarRadialMenu::buildOps()
 				m_ops.push_back(c);
 			}
 		}
+		// lane OWNERFIX-3: the count (RW 0x4A4CD3), after the clock and before the radial overlays (RW 0x4A5112's order)
+		if (s.productionCount >= 1)
+		{
+			countOp(b, enabled);
+		}
 		std::string overlay = "RadialBorder";
 		if (enabled && m_hilite == b.slot)
 		{
@@ -380,13 +387,191 @@ void ControlBarRadialMenu::buildOps()
 	}
 }
 
+// lane OWNERFIX-3: Rva000A52AEDrawNumber (RW 0x4A4CD3; BFME2 decomp W3DPushButton.cpp, tier A) for the window of `b`
+void ControlBarRadialMenu::countOp(const Button &b, bool enabled)
+{
+	if (!m_countLook.loaded || !m_metrics)
+	{
+		if (m_errors.size() < 20)
+		{
+			m_errors.push_back(std::string("radial count: ") + (m_countLook.loaded ? "no font metrics" : "ControlBar.wnd:ButtonCommand's font and text colours are not loaded"));
+		}
+		return;
+	}
+	RadialDrawOp t;
+	t.kind = RadialDrawOp::TEXT;
+	t.text = std::to_string(b.source.productionCount); // L"%d" (RW 0xBDF1B0)
+	t.font = m_countLook.font;
+	// getButtonTextColors (RW 0x4A43A2; decomp W3DPushButton.cpp): WIN_STATUS_ENABLED clear -> the disabled pair, WIN_STATE_HILITED -> the hilite pair
+	if (!enabled)
+	{
+		t.color = m_countLook.disabled;
+		t.dropColor = m_countLook.disabledBorder;
+	}
+	else if (m_hilite == b.slot)
+	{
+		t.color = m_countLook.hilite;
+		t.dropColor = m_countLook.hiliteBorder;
+	}
+	else
+	{
+		t.color = m_countLook.enabled;
+		t.dropColor = m_countLook.enabledBorder;
+	}
+	UnicodeString wide;
+	for (char c : t.text)
+	{
+		wide.push_back((char16_t)c);
+	}
+	const int width = m_metrics->textWidth(t.font, wide), height = m_metrics->fontHeight(t.font);
+	// Int textX = size.x * 0.5f - width * 0.5f + origin.x (a float sum truncated); Int textY = origin.y + size.y - height
+	t.x = (float)(int)((float)b.rect.w * 0.5f - (float)width * 0.5f + (float)b.rect.x);
+	t.y = (float)(b.rect.y + b.rect.h - height);
+	t.w = (float)width;
+	t.h = (float)height;
+	t.slot = b.slot;
+	m_ops.push_back(t);
+}
+
+namespace
+{
+// ZH File::scanString-style tokens of a .wnd value (the separators parseFont / parseTextColor give strtok: " ,\n\r\t" and ':' for the labels)
+std::vector<std::string> wndTokens(const std::string &v)
+{
+	std::vector<std::string> out;
+	std::string cur;
+	for (char c : v)
+	{
+		if (std::strchr(" ,:\n\r\t\"", c))
+		{
+			if (!cur.empty())
+			{
+				out.push_back(cur);
+				cur.clear();
+			}
+			continue;
+		}
+		cur.push_back(c);
+	}
+	if (!cur.empty())
+	{
+		out.push_back(cur);
+	}
+	return out;
+}
+bool wndInt(const std::string &t, int &v)
+{
+	char *end = nullptr;
+	const long r = std::strtol(t.c_str(), &end, 10);
+	if (t.empty() || !end || *end != 0)
+	{
+		return false;
+	}
+	v = (int)r;
+	return true;
+}
+} // namespace
+
+bool CommandWindowLook::scan(const std::string &text, CommandWindowLook &out, std::string *error)
+{
+	out = CommandWindowLook();
+	auto fail = [&](const std::string &why) {
+		if (error)
+		{
+			*error = "ControlBar.wnd:ButtonCommand: " + why;
+		}
+		return false;
+	};
+	const size_t name = text.find("\"ControlBar.wnd:ButtonCommand\"");
+	if (name == std::string::npos)
+	{
+		return fail("no such window");
+	}
+	// the window's own fields: up to its first CHILD / END / next WINDOW
+	size_t end = text.size();
+	for (const char *stop : { "CHILD", "END", "WINDOW" })
+	{
+		const size_t at = text.find(stop, name);
+		end = at != std::string::npos && at < end ? at : end;
+	}
+	const std::string block = text.substr(name, end - name);
+	auto field = [&](const char *key, std::string &value) {
+		const size_t k = block.find(key);
+		if (k == std::string::npos)
+		{
+			return false;
+		}
+		const size_t eq = block.find('=', k), semi = block.find(';', k);
+		if (eq == std::string::npos || semi == std::string::npos || semi < eq)
+		{
+			return false;
+		}
+		value = block.substr(eq + 1, semi - eq - 1);
+		return true;
+	};
+	std::string font, colors;
+	if (!field("FONT", font))
+	{
+		return fail("no FONT");
+	}
+	if (!field("TEXTCOLOR", colors))
+	{
+		return fail("no TEXTCOLOR");
+	}
+	// FONT = NAME: "<name>", SIZE: <n>, BOLD: <n>;
+	{
+		const size_t q1 = font.find('"'), q2 = q1 == std::string::npos ? q1 : font.find('"', q1 + 1);
+		if (q2 == std::string::npos)
+		{
+			return fail("FONT has no quoted NAME");
+		}
+		out.font.name = font.substr(q1 + 1, q2 - q1 - 1);
+		const std::vector<std::string> t = wndTokens(font.substr(q2 + 1));
+		int size = 0, bold = 0;
+		if (t.size() != 4 || t[0] != "SIZE" || t[2] != "BOLD" || !wndInt(t[1], size) || !wndInt(t[3], bold))
+		{
+			return fail("FONT is not NAME: \"..\", SIZE: n, BOLD: n");
+		}
+		out.font.pointSize = size;
+		out.font.bold = bold != 0;
+	}
+	// TEXTCOLOR = ENABLED: r g b a, ENABLEDBORDER: r g b a, DISABLED: ..., DISABLEDBORDER: ..., HILITE: ..., HILITEBORDER: ...;
+	{
+		const std::vector<std::string> t = wndTokens(colors);
+		static const char *const labels[] = { "ENABLED", "ENABLEDBORDER", "DISABLED", "DISABLEDBORDER", "HILITE", "HILITEBORDER" };
+		std::uint32_t *slots[] = { &out.enabled, &out.enabledBorder, &out.disabled, &out.disabledBorder, &out.hilite, &out.hiliteBorder };
+		if (t.size() != 30)
+		{
+			return fail("TEXTCOLOR has " + std::to_string(t.size()) + " tokens, not six labelled r g b a colours");
+		}
+		for (int i = 0; i < 6; ++i)
+		{
+			int c[4];
+			if (t[(size_t)i * 5] != labels[i])
+			{
+				return fail(std::string("TEXTCOLOR's colour ") + std::to_string(i + 1) + " is not " + labels[i]);
+			}
+			for (int k = 0; k < 4; ++k)
+			{
+				if (!wndInt(t[(size_t)i * 5 + 1 + (size_t)k], c[k]) || c[k] < 0 || c[k] > 255)
+				{
+					return fail(std::string("TEXTCOLOR ") + labels[i] + " has a bad component");
+				}
+			}
+			*slots[i] = ((std::uint32_t)c[3] << 24) | ((std::uint32_t)c[0] << 16) | ((std::uint32_t)c[1] << 8) | (std::uint32_t)c[2]; // GameMakeColor
+		}
+	}
+	out.loaded = true;
+	return true;
+}
+
 std::vector<std::string> ControlBarRadialMenu::acceptanceStops()
 {
 	return {
 		"[S-2701] radial command bubbles (HUD-6): ported RW 0x9459D1 / 0x9D6521 / 0x9D6320 / 0x9D5CCE / 0x9457FE (count, size, radius, ring, centre) and the "
 		"look of W3DGadgetPushButtonImageDrawOne RW 0x4A5112; not identified: the clock colours (the control bar's clock colour, GlobalData + 0x1160 / + 0x1164), "
 		"the 0x808080 multiplier condition (RW 0x327E0E's flag; lane HUD-7: the grey-overlay and always-colour statuses are RotWK's availability 0 / 6 / 7 / 8); not ported: the ring's button flash animations (RW 0x9D5BDC / "
-		"0x9D6250), the queue count number (drawNumber); the right press cancels only a CANCELABLE button's queue (RW 0x940C70; upgrade cancels not ported: "
+		"0x9D6250); the right press cancels only a CANCELABLE button's queue (RW 0x940C70; upgrade cancels not ported: "
 		"ControlBar::cancelQueued is UNIT_BUILD and REVIVE), the hit area is the window rectangle with inclusive edges (RW 0x715A84); INFERENCE: a point outside the view rectangle is off the frustum, the ring is drawn under the Palantir movie"
 	};
 }

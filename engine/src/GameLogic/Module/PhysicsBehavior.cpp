@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/PhysicsBehavior.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/GameCommon.h"
 #include "Common/INI.h"
@@ -742,18 +743,18 @@ float ObjectKnockback::shockwaveResistance(const Object &obj)
 //     the current one's) is 0x2D (RW AIRampageState, vtable 0xC28068): the body's last damager (body slot 0x40 = body + 0x30, its + 8) scores the kill unless the object
 //     is dead (RW 0x6955BC(obj, 1)), and Object::kill(UNRESISTABLE, NORMAL) twice (RW 0x698EC3); AI slot 0x264 (wake up); RW 0x67B4B7 on the drawable (client).
 // INFERENCE: the port's AI machine has no temporary state id apart from its current state (AIUpdateInterface::currentStateId); no ported state has id 0x2D.
-void ObjectKnockback::shockWave(Object &obj, const DamageInfo &info)
+bool ObjectKnockback::shockWave(Object &obj, const DamageInfo &info)
 {
 	const DamageInfoInput &d = info.m_input;
 	if (!(d.m_shockWaveAmount > 0.0f) || !(d.m_shockWaveRadius > 0.0f))
 	{
-		return;
+		return true;
 	}
 	const bool cyclonic = d.m_cyclonicFactor != 0.0f; // ucomiss; lahf; test ah, 0x44 (an unordered NaN counts as cyclonic)
 	PhysicsBehavior *phys = PhysicsBehavior::find(obj);
 	if (!phys || (phys->isStunned() && !cyclonic))
 	{
-		return;
+		return true;
 	}
 	GameLogic &logic = obj.logic();
 	CombatState::Counters &counters = logic.combat().counters();
@@ -763,13 +764,13 @@ void ObjectKnockback::shockWave(Object &obj, const DamageInfo &info)
 	{
 		phys->standUp(); // RW 0x792AFF
 		++counters.shockwaveStandUps;
-		return;
+		return true;
 	}
 	float resist = 0.0f; // RW 0x696A39: the pool's sum (it starts at 0); an object without a pool leaves the local unwritten in RW (every retail object has one)
 	obj.attributeModifierSum(10, nullptr, resist); // RESIST_KNOCKBACK
 	if (resist >= 1.0f)
 	{
-		return;
+		return false; // RW 0x696A61: the only exit bypassing the drawable notification.
 	}
 	const float len = SimMath::fstpDword(retailLength(d.m_shockWaveVector.x, d.m_shockWaveVector.y, d.m_shockWaveVector.z));
 	const float ratio = SimMath::divf32(len, d.m_shockWaveRadius);
@@ -859,4 +860,29 @@ void ObjectKnockback::shockWave(Object &obj, const DamageInfo &info)
 	{
 		ai2->wakeUpNow(); // AI slot 0x264
 	}
+	return true;
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190: the crc's fields, in declaration order) ---------------------------------------------------
+void PhysicsBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	SnapshotXfer::coords(x, m_points);
+	SnapshotXfer::coord3D(x, m_start);
+	SnapshotXfer::coord3D(x, m_landing);
+	x.xferReal(&m_speed);
+	x.xferReal(&m_apex);
+	x.xferInt(&m_pointCount);
+	x.xferUnsignedInt(&m_step);
+	x.xferInt(&m_bounceIndex);
+	SnapshotXfer::checkRange(m_bounceIndex, 0, m_data->m_bounceCount, "a physics behaviour's bounce index");
+	SnapshotXfer::checkRange(m_step, 0, m_points.size(), "a physics behaviour's path step");
+	x.xferUnsignedInt(&m_extraA);
+	x.xferUnsignedInt(&m_extraB);
+	x.xferInt(&m_stunTimer);
+	x.xferBool(&m_stunned);
+	x.xferBool(&m_allowBouncing);
+	x.xferBool(&m_bounced);
+	x.xferBool(&m_killOnRest);
 }

@@ -234,9 +234,18 @@ TEST_CASE("save2 T5: a damaged, truncated or foreign file is refused with its na
 	}
 	SUBCASE("a snapshot (SAVE-4), an unknown game kind, a header of another version")
 	{
+		// lane SAVE-4a: the container reads the snapshot part. Lane SAVE-4e: a snapshot no longer refuses the save; its log is still checked first
+		// (this sample's is not a replay), and its bytes when the game takes them (test_save2_retail.cpp's save4e cases)
 		SaveGameFile s = sample();
 		s.snapshot = { 1, 2, 3, 4 };
-		CHECK(parseError(s.encode()) == "the save carries a snapshot (4 bytes), which this build cannot read");
+		SaveGameFile withSnapshot;
+		std::string snapError;
+		REQUIRE_MESSAGE(SaveGameFile::parse(s.encode(), withSnapshot, &snapError), snapError);
+		CHECK(withSnapshot.snapshot == s.snapshot);
+		CommandLogLoad snapLoad;
+		CHECK_FALSE(snapLoad.prepare(withSnapshot, &snapError));
+		CHECK(snapError.rfind("the save's command log is damaged: ", 0) == 0);
+		CHECK_FALSE(snapLoad.hasSnapshot());
 		SaveGameFile k = sample();
 		k.header.gameKind = 4;
 		CHECK(parseError(k.encode()) == "the save's game kind 4 is not one this build saves (1 Campaign, 2 Skirmish)");
@@ -248,10 +257,10 @@ TEST_CASE("save2 T5: a damaged, truncated or foreign file is refused with its na
 		CHECK(parseError(sk.encode()) == "the save is a skirmish that names a campaign");
 		std::vector<std::uint8_t> v = good;
 		const size_t head = partOffset(good, 0);
-		v[head + 40] = 2; // the header version word (its digest recomputed below so only the version is wrong)
+		v[head + 40] = 3; // the header version word (its digest recomputed below so only the version is wrong; lane CAMPSAVE-1: 1 and 2 load)
 		const std::array<std::uint8_t, 32> d = Sha256::hash(v.data() + head + 40, (size_t)(partOffset(good, 1) - head - 40));
 		std::memcpy(v.data() + head + 8, d.data(), 32);
-		CHECK(parseError(v) == "save header version 2 (this build reads version 1)");
+		CHECK(parseError(v) == "save header version 3 (this build reads versions 1 and 2)");
 	}
 	SUBCASE("a missing file")
 	{
@@ -459,12 +468,15 @@ TEST_CASE("save2: the recorder gives the log up to the saved frame, refuses one 
 	std::remove(path2.c_str());
 }
 
-TEST_CASE("save2: the lane's acceptance stops are reported (S-4000 .. S-4005)")
+TEST_CASE("save2: the lane's acceptance stops are reported (S-4000 .. S-4005, SAVE-4a's S-4120 .. S-4122, SAVE-4b's S-4190 .. S-4193, SAVE-4c's S-4220 .. "
+		  "S-4222, SAVE-4d's S-4250 .. S-4256 and SAVE-4e's S-5010 .. S-5014)")
 {
 	const std::vector<std::string> lines = CommandLogLoad::stopLines();
-	REQUIRE(lines.size() == 6u);
-	const char *ids[6] = { "[S-4000]", "[S-4001]", "[S-4002]", "[S-4003]", "[S-4004]", "[S-4005]" };
-	for (size_t i = 0; i < 6; ++i)
+	REQUIRE(lines.size() == 28u);
+	const char *ids[28] = { "[S-4000]", "[S-4001]", "[S-4002]", "[S-4003]", "[S-4004]", "[S-4005]", "[S-4120]", "[S-4121]", "[S-4122]", "[S-4190]",
+		"[S-4191]", "[S-4192]", "[S-4193]", "[S-4220]", "[S-4221]", "[S-4222]", "[S-4250]", "[S-4251]", "[S-4252]", "[S-4253]", "[S-4254]", "[S-4255]",
+		"[S-4256]", "[S-5010]", "[S-5011]", "[S-5012]", "[S-5013]", "[S-5014]" };
+	for (size_t i = 0; i < 28; ++i)
 	{
 		CHECK(lines[i].rfind(ids[i], 0) == 0);
 	}

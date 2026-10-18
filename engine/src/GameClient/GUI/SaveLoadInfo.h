@@ -41,6 +41,7 @@ struct SaveLoadInfo
 		bool loadable = true;      ///< false: refused (another build, other data, a damaged file); drawn grey, Load shows `refusalUtf8`
 		std::string refusalUtf8;
 		bool retailImport = false; ///< a retail save (.BfME2Skirmish / .BfME2Campaign): listed, never loaded yet (import is SAVE-7)
+		bool autoSave = false;     ///< lane CAMPSAVE-1: the campaign's auto-save (IsAutoSaveOrNot): listed in the AutoSaveList (RW 0x6E04AD)
 	};
 	std::vector<Save> saves;
 	// lane SAVE-2: raised by the host whenever it changes the lists while the screen is open (a delete); the screen fills its lists again

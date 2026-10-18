@@ -111,7 +111,7 @@ void Shell::push(const std::string &filename, bool shutdownImmediate)
 	}
 	m_pendingPush = true;
 	m_pendingPushName = filename;
-	AptScreen *currentTop = top();
+	AptScreen *currentTop = inputTop(); // lane OPTS-6: the overlay (the quit menu) when it is the top
 	if (currentTop && !currentTop->isHidden())
 	{
 		bool immediate = shutdownImmediate;
@@ -150,6 +150,28 @@ void Shell::popImmediate()
 	{
 		doPop(false);
 	}
+}
+
+void Shell::setOverlay(AptScreen *screen)
+{
+	clearOverlay();
+	if (!screen)
+	{
+		return;
+	}
+	m_overlay = screen;
+	m_overlayDepth = (int)m_stack.size();
+	screen->runInit(); // the push's init (Shell::doPush)
+}
+
+void Shell::clearOverlay()
+{
+	if (m_overlay && overlayIsTop() && !m_overlay->isHidden() && m_overlay->level() >= 0)
+	{
+		m_windows.popFocus(); // the pop's shutdown (AptScreen::runShutdown) without its hide: the screen is going
+	}
+	m_overlay = nullptr;
+	m_overlayDepth = 0;
 }
 
 void Shell::showShellMap(bool use)
@@ -330,7 +352,16 @@ void Shell::doPop(bool impendingPush)
 		return;
 	}
 	m_stack.pop_back(); // the destructor unloads the window and unregisters the screen's names
-	AptScreen *newTop = top();
+	if ((int)m_stack.size() < m_overlayDepth)
+	{
+		m_overlayDepth = (int)m_stack.size(); // a screen under the overlay went (the stack cleared): the overlay stays on what is left
+	}
+	AptScreen *newTop = inputTop(); // lane OPTS-6: back to the overlay: its init, not the screen's under it
+	if (newTop && !impendingPush && newTop == m_overlay)
+	{
+		m_windows.note("shell-overlay-return", "[S-4980] the shell returned to " + newTop->filename() + ": its init runs again (RW 0x812913: the movie is loaded again "
+			"and starts over, as RW 0x812A37's shutdown unloaded it); the screens that are not overlays are hidden and shown instead (S-171)");
+	}
 	if (newTop && !impendingPush)
 	{
 		newTop->runInit();

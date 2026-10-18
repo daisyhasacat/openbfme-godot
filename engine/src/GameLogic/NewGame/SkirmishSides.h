@@ -20,7 +20,7 @@
 //     list (day and night), start index 0, not local; its team "teamReplayObserver" owned by it, a singleton.
 //   * the order of the sides is the order of the players: the kept sides in map order, the slot sides in slot order, ReplayObserver last (neutral player 0
 //     is made by PlayerList itself).
-// Not ported (S-271): the skirmish scripts and build lists, playerAIType, livingWorldPlayerID, the handicap (the lobby has none), the preorder flag.
+// Not ported (S-271): the skirmish scripts and build lists, playerAIType, livingWorldPlayerID, the preorder flag.
 
 #pragma once
 

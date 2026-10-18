@@ -81,7 +81,24 @@ public:
 	// The draw commands of every visible gadget in this frame.
 	void buildDrawList(GadgetDrawList &out);
 	// lane OPTS-3: an engine page's own frames and texts (the Options screen's OpenBFME page, not retail), drawn before the gadgets; empty: none
-	void setDecorator(std::function<void(GadgetDrawList &)> decorator) { m_decorator = std::move(decorator); }
+	// lane ONLINEUX-1: `owner` names who set it (nullptr: unnamed); clearDecorator(owner) takes it away only when that owner's is the one set, so an
+	// object that dies never leaves its function behind (AptOnlineHub's lambda outlived the online shell and was called in the game: a crash) and
+	// never removes another owner's
+	void setDecorator(std::function<void(GadgetDrawList &)> decorator, const void *owner = nullptr)
+	{
+		m_decorator = std::move(decorator);
+		m_decoratorOwner = m_decorator ? owner : nullptr;
+	}
+	void clearDecorator(const void *owner)
+	{
+		if (m_decorator && m_decoratorOwner == owner)
+		{
+			m_decorator = nullptr;
+			m_decoratorOwner = nullptr;
+		}
+	}
+	bool hasDecorator() const { return (bool)m_decorator; }
+	const void *decoratorOwner() const { return m_decoratorOwner; }
 
 	// ---- input (stage coordinates) --------------------------------------------------------------------------------------------------------
 	// Each returns true when a gadget took the event (the Apt movie must not see it).
@@ -121,6 +138,7 @@ private:
 	std::vector<std::string> m_notes;
 	std::map<const GameWindow *, Placed> m_placed;
 	std::function<void(GadgetDrawList &)> m_decorator; // lane OPTS-3
+	const void *m_decoratorOwner = nullptr; // lane ONLINEUX-1
 	std::uint32_t m_timeMs = 0;
 	float m_mouseX = 0, m_mouseY = 0;
 	bool m_leftDown = false;

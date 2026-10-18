@@ -36,6 +36,7 @@ struct PlayerStatusRow
 	int slot = -1;
 	std::string fields[4]; ///< UTF-8: the player name, army, team, status (the records APT:_level<n>.<row>_field0 .. 3)
 	std::int32_t color = 0; ///< what the row's _color extern prints (the colour as a signed 32 bit 0xAARRGGBB)
+	PlatformKind platform = PlatformKind::None; ///< lane PLATFORMICON-1 (OpenBFME): the slot's player's system; the icon beside field 0, none in single player
 };
 
 struct PlayerStatusInfo
@@ -59,6 +60,7 @@ struct PlayerStatusInput
 	int localSlot = -1;                     ///< TheGameInfo's local slot
 	PlayerStatusSlotState slots[MAX_SLOTS];
 	bool network = false;                   ///< TheNetwork exists (a LAN / online game)
+	PlatformKind platforms[MAX_SLOTS] = {}; ///< lane PLATFORMICON-1: each slot's player's system (display data; a computer's is None)
 	int gameMode = 2;                       ///< TheGameLogic + 0x110
 	bool showRandomPlayerTemplate = true, showRandomColor = true; ///< MultiplayerSettings (VisionSettings carries them)
 	std::uint32_t randomColor = 0xFFFFFFFFu, observerColor = 0xFFFFFFFFu; ///< MultiplayerSettings +0x84 / +0x44 colours (S-1952)

@@ -233,7 +233,7 @@ double LiveGame::presentationExtraDelayMs() const
 
 void LiveGame::refreshClient(double elapsedMs, double alpha)
 {
-	waitIdle();
+	holdLogic(); // RENDERWAIT-1: the one caller is a view switch (observePlayer); in the client window the worker is parked between frames
 	publish();
 	std::vector<ClientEvent> events;
 	std::shared_ptr<const LogicSnapshot> snap;

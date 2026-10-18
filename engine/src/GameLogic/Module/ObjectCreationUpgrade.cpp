@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/ObjectCreationUpgrade.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/INI.h"
 #include "Common/Player.h"
@@ -217,4 +218,17 @@ std::vector<std::string> ObjectCreationUpgrade::acceptanceStops()
 	return { "[S-2007] ObjectCreationUpgrade (RW 0x8B8281 / 0x8B8464 / 0x8B87C5) runs: Delay, ThingToSpawn at Offset and Angle, GrantUpgrade, RemoveUpgrade; not ported: "
 			 "UpgradeObject, the SlaveWatcherBehavior link and DestroyWhenSold's kill (S-1995), FadeInTime (client): " +
 			 std::to_string(s_stopUses) + " uses" };
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190; retail's ObjectCreationUpgrade::xfer RW 0x8B83A6 (1, 1) is bool, u32, UpdateModule::xfer, the mux)
+void ObjectCreationUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	xferMux(x);
+	x.xferUnsignedInt(&m_waitFrame);
+	x.xferBool(&m_pending);
+	x.xferObjectID(&m_spawned);
+	x.xferUnsignedInt(&m_queued);
+	SnapshotXfer::u64(x, m_unported);
 }

@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/LargeGroupAudioUpdate.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/GameCommon.h"
 #include "Common/NumericState.h"
@@ -205,4 +206,18 @@ void LargeGroupAudioUpdate::registerClass(ModuleFactory &modules)
 		}
 		return std::make_unique<LargeGroupAudioUpdate>(thing, typed);
 	});
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190: the crc's fields; the large group audio's own registry is SAVE-4d's obfme:LargeGroupAudio) ---
+void LargeGroupAudioUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferReal(&m_storedX);
+	x.xferReal(&m_storedY);
+	SnapshotXfer::maskWords(x, m_storedConditions, SnapshotXfer::modelConditionCount(), "a large group audio's stored conditions", "the model conditions"); // lane SAVE-4e
+	SnapshotXfer::maskWords(x, m_storedStatus, SnapshotXfer::objectStatusCount(), "a large group audio's stored status", "the object status names");
+	x.xferBool(&m_storedStealthed);
+	x.xferBool(&m_registered);
+	x.xferInt(&m_storedFrame);
 }

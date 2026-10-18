@@ -61,10 +61,25 @@ struct RadiusDecalTemplate
 	float spiralAcceleration = 0.0f;   // + 0x30
 };
 
+// lane OWNERFIX-2: InGameUI.ini's resource claim fields (rows RW 0xC12860 .. 0xC12890): TerrainResourceClaimDecal (RW 0x69C374: parseAsciiString, handed to
+// the claim feedback holder InGameUI + 0x58C, RW 0x8EC442), PlaceTerrainResourceClaimantDecal (parseAsciiString RW 0x42EE5E, + 0x574),
+// PlaceTerrainResourceClaimantFont (parseFontDesc RW 0x778C93, + 0x578: quoted name, size, bold) and PlaceTerrainResourceClaimantFontColor (parseColorInt
+// RW 0x42F13E, + 0x584). InGameUI's constructor defaults were not read: the retail file sets all four (INFERENCE, S-5030: empty / 0 when a mod omits one)
+struct TerrainResourceUiSettings
+{
+	std::string claimDecal;      ///< TerrainResourceClaimDecal (the selected resource building's claim decals)
+	std::string placeDecal;      ///< PlaceTerrainResourceClaimantDecal (the placement decal)
+	std::string fontName;        ///< PlaceTerrainResourceClaimantFont
+	int fontSize = 0;
+	bool fontBold = false;
+	std::uint32_t fontColor = 0; ///< PlaceTerrainResourceClaimantFontColor, ARGB
+};
+
 // InGameUI's RadiusCursorTemplate map (InGameUI.ini)
 class RadiusCursorTemplates
 {
 public:
+	const TerrainResourceUiSettings &resourceUi() const { return m_resourceUi; } // lane OWNERFIX-2
 	// Data\INI\InGameUI.ini from the mount; false with `error` when it is missing or does not parse
 	bool load(ArchiveFileSystem &fs, std::string *error);
 	// the same from text (tests)
@@ -76,6 +91,7 @@ public:
 
 private:
 	std::map<std::string, RadiusDecalTemplate> m_templates;
+	TerrainResourceUiSettings m_resourceUi;
 };
 
 // the decal the device draws this frame

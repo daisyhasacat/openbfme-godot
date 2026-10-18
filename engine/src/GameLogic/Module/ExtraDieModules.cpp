@@ -6,6 +6,9 @@
 #endif
 
 #include "GameLogic/Combat/ObjectWeapons.h"
+#include "GameLogic/SnapshotXfer.h"
+#include "GameLogic/WeaponNugget.h"
+#include "GameLogic/Damage.h"
 #include "GameLogic/Module/ExtraDieModules.h"
 
 #include "Common/AsciiString.h"
@@ -438,4 +441,50 @@ void HeroDie::onDie(const DieModuleInterface::Event &)
 			sp->setReadyFrame(now); // slot 0x20
 		}
 	}
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------
+// Enhanced snapshot layout for the local rubble-hole module, following SAVE-4b's
+// versioned module/base records. The hole ID is the sole mutable CRC field.
+void RebuildHoleExposeDie::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	x.xferObjectID(&m_hole);
+}
+
+void CreateObjectDie::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	x.xferUnsignedInt(&m_created);
+}
+
+// the stored death (the event the delayed shot fires for) whole, then the counters
+void FireWeaponWhenDeadBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	xferMux(x);
+	x.xferUnsignedInt(&m_delay);
+	x.xferObjectID(&m_stored.sourceId);
+	SnapshotXfer::enumIn(x, m_stored.deathType, 0, DEATH_NUM_TYPES - 1, "a stored death's death type");
+	SnapshotXfer::enumIn(x, m_stored.damageType, 0, DAMAGE_NUM_TYPES - 1, "a stored death's damage type");
+	SnapshotXfer::enumIn(x, m_stored.damageSubType, 0, SnapshotXfer::nameCount(TheDamageSubTypeNames) - 1, "a stored death's damage sub type");
+	x.xferReal(&m_stored.damageAmount);
+	x.xferReal(&m_stored.actualDamageDealt);
+	x.xferReal(&m_stored.actualDamageClipped);
+	x.xferUnsignedInt(&m_shots);
+}
+
+void UpgradeDie::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+}
+
+void HeroDie::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
 }

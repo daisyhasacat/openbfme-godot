@@ -123,6 +123,8 @@ public:
 	unsigned long long assetTransfersUnported() const { return m_transfersUnported; } // lane MP-2: stays 0 (RW 0x6AF598 is ported, GameLogic/SelfDestruct.h)
 
 	void crc(StateHasher &hasher) const;
+	// lane SAVE-4d: the block obfme:Victory (OpenBFME native layout, S-4254; see VictoryConditions.cpp)
+	void xfer(class Xfer &x);
 	static std::vector<std::string> stops();
 	std::vector<std::string> report() const;
 

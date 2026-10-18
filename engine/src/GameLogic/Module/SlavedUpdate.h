@@ -104,6 +104,7 @@ public:
 class SlavedUpdate : public UpdateModule, public SlavedUpdateInterface
 {
 public:
+	OBFME_MODULE_XFER(SlavedUpdate) // lane SAVE-4b
 	SlavedUpdate(Thing *thing, const SlavedUpdateModuleData *data); // RW 0x8A4F67
 	void onObjectCreated() override;                                 // RW 0x8A4FF2
 	UpdateSleepTime update() override;                              // RW 0x8A5D00

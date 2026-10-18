@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0.
 // See GameClient/MapClassification.h.
 
+#include "Common/BfmeGame.h"
 #include "GameClient/MapClassification.h"
 
 #include <chrono>
@@ -31,6 +32,7 @@ bool MapClassification::run(const std::vector<std::uint8_t> &bytes, const std::s
 	auto t0 = std::chrono::steady_clock::now();
 	const auto worldContext = world.enterContext(); // this world's stores and audio validator for the map.ini parse and the classification
 	MapReadOptions mro;
+	mro.bfme1 = world.bfme1Data(); // community PR #36
 	if (!MapReader::load(bytes, sourceName, mro, map, error))
 	{
 		return false;

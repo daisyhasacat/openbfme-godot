@@ -14,4 +14,5 @@ set(OPENBFME_XP_SOURCES
 set(OPENBFME_XP_TESTS
     tests/test_xp_core.cpp
     tests/test_xp_retail.cpp
+    tests/test_veteran_heal_retail.cpp
 )

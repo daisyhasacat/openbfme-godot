@@ -3,6 +3,7 @@
 
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/PhysicsBehavior.h"
+#include "GameLogic/AI/AIFollowPathAsTeam.h"
 #include "GameLogic/AI/AIGarrisonStates.h"
 #include "GameLogic/AI/TurretAI.h"
 #include "Common/Thing/RawModuleData.h"
@@ -428,6 +429,7 @@ std::unique_ptr<AIStateMachine> AIUpdateInterface::makeStateMachine()
 	m->defineState(AI_MOVE_TO, std::make_unique<AIMoveToMachineState>(*m), AI_GOING_IDLE, AI_GOING_IDLE);
 	m->defineState(AI_FOLLOW_PATH, std::make_unique<AIFollowPathState>(*m, false), AI_IDLE, AI_IDLE);
 	m->defineState(AI_FOLLOW_EXITPRODUCTION_PATH, std::make_unique<AIFollowPathState>(*m, true), AI_IDLE, AI_IDLE);
+	m->defineState(AI_FOLLOW_PATH_AS_TEAM, std::make_unique<AIFollowPathAsTeamState>(*m), AI_IDLE, AI_IDLE); // lane BACKLOG-8 r2: RW state 54
 	m->defineState(AI_WAIT, std::make_unique<AIWaitState>(*m), AI_IDLE, AI_IDLE);
 	m->defineState(AI_BUSY, std::make_unique<AIBusyState>(*m), AI_IDLE, AI_IDLE);
 	m->defineState(AI_MOVE_OUT_OF_THE_WAY, makeMoveOutOfTheWayState(*m), AI_GOING_IDLE, AI_GOING_IDLE); // lane PHYS-1: state 26 (AIUpdateAllies.cpp); PLAY-4: -> 0x4E
@@ -908,6 +910,45 @@ void AIUpdateInterface::aiFollowPath(const std::vector<Coord3D> &path, Object *i
 	setLastCommandSource(source);
 	m_machine->setState(exitProduction ? AI_FOLLOW_EXITPRODUCTION_PATH : AI_FOLLOW_PATH);
 	wakeUpNow();
+}
+
+void AIUpdateInterface::aiFollowPathAsTeam(const std::vector<Coord3D> &path, Object *ignoreObject, float angle, CommandSourceType source)
+{
+	// RW 0x66BB9D (BFME2 decomp bfmePrivateCommand24, tier B): the command passes aiDoCommand's gate (RW 0x667174) first
+	if (!acceptCommand(source, 0x24))
+	{
+		return;
+	}
+	if (hasKind(*getObject(), kindBits().immobile))
+	{
+		return;
+	}
+	m_machine->clear();
+	if (path.empty())
+	{
+		return;
+	}
+	m_machine->setGoalPosition(path.back());
+	m_machine->setGoalPath(path);
+	setLastCommandSource(source);
+	m_mover->ignoreObstacle(ignoreObject ? ignoreObject->getID() : PATHFIND_INVALID_ID);
+	m_teamPathAngle = angle;
+	m_machine->setState(AI_FOLLOW_PATH_AS_TEAM);
+	wakeUpNow();
+}
+
+bool AIUpdateInterface::canFollowTeamPath() const
+{
+	// RW 0x667144
+	if (locomotorInfo().validSurfaces == LOCOMOTORSURFACE_AIR || !m_curLocomotor)
+	{
+		return false;
+	}
+	if (m_curLocomotor->getTemplate().m_surfaces & LOCOMOTORSURFACE_AIR)
+	{
+		return false;
+	}
+	return (getObject()->getDisabledMask() & (1u << DISABLED_HELD)) == 0;
 }
 
 // B1 AIUpdate.cpp:5005: add a point to the path being followed (or start one)
@@ -1579,6 +1620,17 @@ void AIUpdateInterface::crc(StateHasher &h) const
 	h.addI32(m_curLocomotorSet);
 	h.addU32((std::uint32_t)m_lastCommandSource);
 	h.addU32(m_currentVictim);
+	if (m_teamPathAngle != 0.0f || m_currentGoalPathIndex != -1) // lane BACKLOG-8 r2: hashed once a formation march used them
+	{
+		h.addFloat(m_teamPathAngle);
+		h.addI32(m_currentGoalPathIndex);
+	}
+	if (m_formationId != 0 || m_formationOffset.x != 0.0f || m_formationOffset.y != 0.0f) // lane BACKLOG-8: hashed once a formation placed the unit
+	{
+		h.addI32(m_formationId);
+		h.addFloat(m_formationOffset.x);
+		h.addFloat(m_formationOffset.y);
+	}
 	if (m_guardMode != 0 || m_guardTargetType != 0 || m_guardLocation.x != 0.0f || m_guardLocation.y != 0.0f) // lane PLAY-4: hashed once a guard was set
 	{
 		h.addI32(m_guardMode);

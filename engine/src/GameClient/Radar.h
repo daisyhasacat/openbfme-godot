@@ -58,8 +58,9 @@
 // | 6-frame cadence      | blips every draw                               | the overlay is rebuilt when the client frame % 6 == 0 (or forced, +0x1464)    | ported       |
 // | clicks               | move the camera / order the selection          | LeftHUDInput (RW 0x803CE4): the same (radar gate as above)                    | as before    |
 // NOT PORTED (stop S-291, narrowed): the terrain texture of a map without art (the loop from RW 0x44F4AD: here a shaded height field), the image at +0x1494 /
-// texture +0x1498, the other event creators and the event sounds (S-2452), markers (S-2451), the hidden state and the radar upgrade modules (S-2453). Everything here is client
-// state (Radar.cpp is outside the simulation sources; LogicSnapshot reads the logic, never writes it).
+// texture +0x1498, the other event creators (S-2452), markers (S-2451), the hidden state and the radar upgrade modules (S-2453). The event sounds ARE
+// requested through InGameUI::requestMiscSound / requestAttackFlash (the device resolves and plays them; the control bar's blink itself is drawn device-side).
+// Everything here is client state (Radar.cpp is outside the simulation sources; LogicSnapshot reads the logic, never writes it).
 
 #pragma once
 
@@ -264,9 +265,11 @@ public:
 	bool tryUnderAttackEvent(const Coord3D &position);
 	// lane BACKLOG3: RW 0x6D9BF3 after a new event (BFME2 decomp attempt 0x002d8b9d.cpp Radar::tryUnderAttackEvent, tier A): the message by the object's KindOf
 	// bits: INFANTRY (8) or CAVALRY (9): HARVESTER (16) -> RADAR:HarvesterUnderAttack, else RADAR:UnitUnderAttack; else STRUCTURE (7) and
-	// MP_COUNT_FOR_VICTORY (37) -> RADAR:StructureUnderAttack; else RADAR:UnderAttack. The control bar's flash (RW 0x71C7E4) and the MiscAudio sound of each
-	// are not ported (stop S-2452)
+	// MP_COUNT_FOR_VICTORY (37) -> RADAR:StructureUnderAttack; else RADAR:UnderAttack
 	static const char *underAttackLabel(const Object &object);
+	// RW 0x6D9BF3's MiscAudio slot for the object: RadarNotifyHarvesterUnderAttackSound (0) on the harvester branch,
+	// RadarNotifyStructureUnderAttackSound (1) on every other (both NoSound in RotWK's miscaudio.ini)
+	static const char *underAttackSound(const Object &object);
 	// lane BACKLOG3 (S-2452): the radar events the logic recorded since the last call (GameLogic::radarEventNotices): a script's action makes the event (4 s)
 	// and TheEva's position for every client; a finished building's event (RW 0x88E125) is the dozer's local controller's. The logic must be idle
 	void noteLogicEvents(GameLogic &logic);

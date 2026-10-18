@@ -464,8 +464,9 @@ std::vector<std::string> Radar::acceptanceStops()
 		"ported; lane BACKLOG3: the scripts' radar event actions (RW 0x7BC221 / 0x7BC250 / 0x7C0B61, with TheEva's position RW 0x5DD1F3 for the Space jump), "
 		"the dozer's finished building (RW 0x88E125) and the under-attack messages of RW 0x6D9BF3 are ported; not ported: stealth detection (RW 0x7767A9 / "
 		"0x81ACD7: the types 9 / 8 have no ping in the table RW 0xBDAD30, their effect is the event sound and MESSAGE:StealthNeutralized / StealthDiscovered), "
-		"infiltration (RW 0x6D9A71, one caller RW 0x699784), battle plans (RW 0x89B7AE), RW 0x779A3D / 0x782214 / 0x8A1B9F / 0x8CDCE9, the RadarEvent sound of "
-		"a new event, the MiscAudio sounds and the control bar flash (RW 0x71C7E4) of RW 0x6D9BF3, DOZER:ConstructionComplete; INFERENCE: RW 0x7A07D8's "
+		"infiltration (RW 0x6D9A71, one caller RW 0x699784), battle plans (RW 0x89B7AE), RW 0x779A3D / 0x782214 / 0x8A1B9F / 0x8CDCE9, DOZER:ConstructionComplete; "
+		"the RadarEvent sound of a new event, the MiscAudio sounds and the control bar flash (RW 0x71C7E4) of RW 0x6D9BF3 are requested through InGameUI, the "
+		"device resolves and plays / draws them; INFERENCE: RW 0x7A07D8's "
 		"Object + 0x94 bit 0 test of TEAM_CREATE_RADAR_EVENT is not read; a script position that is not a finite number is refused by name (a deliberate "
 		"validation difference: retail hands it on), a huge finite one lands in cell 0 as retail's CVTTSS2SI does; the messages reach InGameUI's list, which "
 		"the game does not draw yet (S-283)",
@@ -1177,6 +1178,19 @@ const char *Radar::underAttackLabel(const Object &object)
 	return "RADAR:UnderAttack";
 }
 
+const char *Radar::underAttackSound(const Object &object)
+{
+	// RW 0x6D9BF3: the MiscAudio slot of the object's branch — index 0 (HarvesterUnderAttack) for the harvester, index 1
+	// (StructureUnderAttack) for every other kind (RW 0x6D9D81 without + 4 vs RW 0x6D9DAE / 0x6D9D0D / 0x6D9C96 with it); both
+	// resolve to NoSound in RotWK's miscaudio.ini
+	constexpr unsigned kInfantry = 8, kCavalry = 9, kHarvester = 16;
+	if ((object.isKindOf(kInfantry) || object.isKindOf(kCavalry)) && object.isKindOf(kHarvester))
+	{
+		return "RadarNotifyHarvesterUnderAttackSound";
+	}
+	return "RadarNotifyStructureUnderAttackSound";
+}
+
 void Radar::noteEvaPosition(const Coord3D &position)
 {
 	// RW 0x5DD1F3 (see Radar.h)
@@ -1276,7 +1290,9 @@ void Radar::noteAttacks(GameLogic &logic)
 		{
 			if (tryUnderAttackEvent(*o->getPosition()))
 			{
-				m_ctx.ui.message(underAttackLabel(*o)); // lane BACKLOG3: RW 0x6D9BF3's message
+				m_ctx.ui.requestAttackFlash();            // RW 0x6D9BF3 -> RW 0x71C7E4: the control bar's blink
+				m_ctx.ui.message(underAttackLabel(*o));   // lane BACKLOG3: RW 0x6D9BF3's message
+				m_ctx.ui.requestMiscSound(underAttackSound(*o)); // RW 0x6D9BF3: MiscAudio 0 / 1 (NoSound in RotWK's data)
 			}
 		}
 	}
@@ -1366,8 +1382,15 @@ void Radar::drawEvents(int ulx, int uly, int width, int height, std::vector<Ping
 		{
 			continue;
 		}
-		// RW 0x44DE8C .. 0x44DEE3: the first draw of a non-beacon event plays the RadarEvent sound (not ported, stop S-2452)
-		e.soundPlayed = true;
+		// RW 0x44DE8C .. 0x44DEE3: the first draw of a non-beacon event adds the MiscAudio GenericRadarEvent once
+		if (!e.soundPlayed)
+		{
+			if (e.type != RADAR_EVENT_BEACON)
+			{
+				m_ctx.ui.requestMiscSound("GenericRadarEvent");
+			}
+			e.soundPlayed = true;
+		}
 		if (e.ping < 0)
 		{
 			// RW 0x44DEEB .. 0x44DF33: the type's ping (AptPalantir RW 0x6D60BF -> RW 0x6D600F: a new RadarPing in the Palantir's list)

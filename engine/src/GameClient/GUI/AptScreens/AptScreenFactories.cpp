@@ -14,6 +14,7 @@
 #include "GameClient/GUI/AptScreens/AptLanLobby.h"
 #include "GameClient/GUI/AptScreens/AptCreateAHero.h"
 #include "GameClient/GUI/AptScreens/AptOnlineShell.h"
+#include "GameClient/GUI/AptScreens/AptCampaignMenu.h"
 
 void registerAptScreenFactories(AptScreenFactoryTable &table)
 {
@@ -71,6 +72,10 @@ void registerAptScreenFactories(AptScreenFactoryTable &table)
 	// lane ONLINE-4: the online screens (the main menu's Online, RW 0x91D7A3 pushes OnlineShell.apt) on the OpenBFME lobby service
 	table.registerFactory("OnlineShell.apt", [](AptScreenContext &c) -> std::unique_ptr<AptScreen> {
 		return std::make_unique<AptOnlineShell>(c.windows, c.shell, c.environment);
+	});
+	// lane CAMPSAVE-1: the campaign between missions (RW 0x927EC6 pushes CampaignMenu.apt)
+	table.registerFactory("CampaignMenu.apt", [](AptScreenContext &c) -> std::unique_ptr<AptScreen> {
+		return std::make_unique<AptCampaignMenu>(c.windows, c.shell, c.environment);
 	});
 	table.registerFactory("AptLevel0.apt", [](AptScreenContext &c) -> std::unique_ptr<AptScreen> {
 		return std::make_unique<AptLevel0Screen>(c.windows, c.shell);

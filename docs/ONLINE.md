@@ -58,7 +58,7 @@ the command line and from `openbfme://join/<id>` links; the online screens
 (phase O2) are not built. **It is a test feature.** By the owner's decision
 of 2026-10-11, the service source is public, in `services/online/` (the
 first paragraph of this document said it would stay private). Its secrets are
-files read at deploy time ([DEPLOY.md](../services/online/DEPLOY.md)).
+files read at deploy time (the deploy notes are kept outside this repository).
 
 | Piece | Where | What it does |
 |---|---|---|
@@ -177,10 +177,8 @@ the LAN, with the Deck on Wi-Fi.
   Windows client and no client behind another NAT;
 - the Cloudflare deployment. The account exists now, on Free plans only.
   CFDEPLOY-1 made the lobby fit the Workers Free plan: relay logs go in
-  Durable Object SQLite, START is refused while there is no relay, and
-  `deploy/cloudflare_api.py` does the deploy. It is not live yet, because the
-  owner's token launcher only works in their own Windows session. See
-  services/online/DEPLOY.md, "The live setup";
+  Durable Object SQLite, and START is refused while there is no relay. The
+  deploy itself is the operator's (outside this repository);
 - the launcher's registration on a real desktop (its entries are unit tested).
 
 ### What the owner needs to provide for a public deployment
@@ -233,7 +231,8 @@ frames through it on equal state hashes (0 desyncs).
   with `MOTD` set, and a relay in its `RELAYS` (no VPS yet): until then START
   is refused with the message above;
 - (fixed by ONLINE-5: the staging room's Ready column, below);
-- Quick Match, War of the Ring online, Stats and the Messenger (S-4075),
+- War of the Ring online and the Messenger (S-4075); Quick Match, tournaments and Stats need the
+  platform API deployed (S-4880, below),
   Create-a-Heroes online (S-4076), ping per relay region (S-4073).
 
 **Rejoin and Watch (round 2, with ONLINE-3 merged).** A restarted game signs
@@ -329,6 +328,23 @@ going. What was wrong, and what the room does now:
   rendered at its clip's stage aspect under a non-4:3 stretch, so it stays
   around the panels at 16:9 (S-4555). Only the menu screens' 3D frame does
   this: the end screen's victory and defeat rings keep RotWK's proportions.
+
+## The player's system beside the name (PLATFORMICON-1, 2026-10-14)
+
+Each client tells the others ONE short value about itself: `windows`, `linux` or `macos` (the build's own platform; no OS version, no hardware). The
+staging room shows it as a small icon left of the player's name, online and on the LAN; a running network game's players screen (Tab, the Status page)
+shows it beside each name too, and so do the staging room's chat Players list, the server browser (the host's, before the game's name) and the score screen. It is display data: never part of a slot's equality, the game options, a start message, the profile identity, the
+state hash or a replay's simulation input.
+
+| Where | How |
+|---|---|
+| Online lobby | `POST /v1/games` (create) and `POST /v1/games/<id>/join` take an optional `"platform"`; the lobby stores it with the slot and returns it as `slots[i].platform` (`null` for an AI, an open slot or a client that did not tell). Any other value is refused `400 bad_field`. Leaving or a kick clears it. A player's own START carries `platforms` (8 entries, by slot) beside `setup`, never inside it, so the published replay record has none. The public game list carries only `hostPlatform` (the host's system: the server browser's icon before the game's name). |
+| Online client | `OnlineLobbyClient::Options::platform`; a lobby view's value that is not one of the three (or sits on an AI / open slot) shows no icon and is named in `platformNotes()`; a view is never refused for it. An older lobby (no field) shows no icons and nothing breaks. |
+| LAN | A new message type `PLATFORM_INFO` (0x81, one byte: 0 none, 1 Windows, 2 Linux, 3 macOS) sent by every human of a game to the others when their address is new, and again every resend interval. It is a new TYPE, not a field of an existing message: a build without it answers "unhandled LAN message type 129" and nothing else changes (the other messages are read whole and refuse trailing bytes, so a new field would have broken old peers). A value above 3, a cut message or trailing bytes change nothing and are named in `LANAPI::errors()`; a message from an address that is not a human slot of the game is ignored. |
+| Engine | `GameNetwork/PlatformKind.h`; `SkirmishGameSlot::platform`; `GameWindow::winSetBadge` (the staging room's rows); `WindowManager::setTextBadge` (a movie's own text rows: the Status page); the icons are our own plain glyphs, `godot/assets/platform_icons/*.png`, drawn by `tools/platformicon/make_icons.py`. |
+
+Deploy notes: the lobby (`services/online/lobby`) needs a redeploy for online icons. An old lobby keeps working with new clients (the field is
+optional on both sides); a new lobby keeps working with old clients (an absent `platform` is no icon).
 
 ### Request budget (Cloudflare Workers Free plan)
 
@@ -446,7 +462,17 @@ exactly; everything below applies to online games only, except the pause.
 | Pause | NETCOMMANDTYPE_PAUSE / RESUME, `Network::requestPause` / `requestResume` | RotWK has **no** multiplayer pause: GameLogic::setGamePaused (RW 0x625AF1) returns at once in a multiplayer game (isInMultiplayerGame, RW 0x441B7C: game mode 1 or 5), and the NetCommandType list (RW 0x989449) has no pause command. OpenBFME adds the smallest one (S-3901): any player sends PAUSE naming its next execution frame, and every peer runs the frames before it and stops. Any player resumes. Pausing works on LAN and online, with no per-player limit. |
 | Lobby and clients | `lobby.mjs` (`GET /v1/mine`, `POST /v1/games/<id>/rejoin`), `online_client.py rejoin`, `game.gd` (`--online-rejoin`, the Pause key), `online_lobby.gd` | The game keeps its guest session in the user data; `--online-rejoin` lists the player's running game and rejoins it ("Rejoining the game: catching up" on screen). The Pause key pauses or resumes; the screen says who paused. |
 
-Tests: `engine/tests/test_online3_rejoin.cpp` (the wire formats and the
+A rejoin ticket cannot establish
+a slot's first connection: the relay returns `REFUSE_REJOIN_BEFORE_BIND` with
+a named error instead of welcoming a client whose log cannot contain REJOINED.
+This is an OpenBFME protocol rule, not retail behavior (S-3900: RotWK has no
+rejoin command). A client also rejects a fully fetched legacy relay log without
+its REJOINED record rather than waiting indefinitely in catch-up. The existing
+ONLINE-4 crash test still assumes the joiner is in-game within 20 seconds of process creation;
+under slower startup it can fail explicitly instead of testing an in-game rejoin.
+
+Tests: `engine/tests/test_online3_rejoin.cpp` (the rejoin-before-first-bind
+regressions, the wire formats and the
 pinned rejoin ticket, the relay's STATUS / rejoin / log serving, a real
 Transport's view of the relay, hold and hand-over, LAN and vote hand-over,
 the ping test, pause and resume, and a whole rejoin at the Network level
@@ -470,11 +496,11 @@ from the relay's log matched every CRC frame of the game.
 | pause | slot 1 paused at frame 200, slot 2 resumed after 8 s | every peer stopped with logic frame 202, for 8.0 s; replay: 9 CRC frames |
 
 **Home lab** (`tools/net/online3_homelab.sh`): the self-hosted lobby and
-relay on the pve VM, redeployed with this lane's code; the lobby client
+relay on a lab VM, redeployed with this lane's code; the lobby client
 (host, joins, the rejoin START) on the Deck; slots 0 and 1 as headless peers
-on pve, and the failing slot as a headless peer on the reference PC (a second host,
+on the lab VM, and the failing slot as a headless peer on the reference PC (a second host,
 reaching the relay over the LAN). Every replay is the lobby's uploaded copy
-of the relay log, turned into a replay and played back on pve.
+of the relay log, turned into a replay and played back on the lab VM.
 
 Each game: 3 scripted humans and a hard AI on Fall Back 4p, 900 frames in
 real time (1,500 for "late"), retail timeouts; slot 2's process is killed
@@ -483,22 +509,22 @@ and the replay of the lobby's copy of the log matched every CRC frame.
 
 | Run | Hosts | Scenario | Result |
 |---|---|---|---|
-| 1 | pve + the reference PC | rejoin: restarted 20 s after the kill | rejoined at frame 278 after a 0.57 s catch-up; 3 peers on 0x8984F5D8; the rejoined peer took part in 6 CRC checks; replay: 9 CRC frames |
-| 1 | pve + the reference PC | late: restarted 110 s after the kill | the player was held when its timeout ran out; the others played on to frame 835, where it rejoined after a 0.90 s catch-up; 3 peers on 0x1A9F305B; replay: 15 CRC frames |
-| 1 | pve + the reference PC | soak: rejoin with every peer's datagrams impaired (80 ± 30 ms, 3 % loss, 1 % duplication, 1 % reordering) | rejoined at frame 282 after a 2.77 s catch-up (the log read is impaired too); 3 peers on 0x83ADFD3A; replay: 9 CRC frames |
-| 2 | pve + the reference PC | vote: both others pressed Kick | handed over at once, 17 objects to the ally; 2 peers on 0xF92B5CB6; replay: 9 CRC frames |
+| 1 | lab VM + the reference PC | rejoin: restarted 20 s after the kill | rejoined at frame 278 after a 0.57 s catch-up; 3 peers on 0x8984F5D8; the rejoined peer took part in 6 CRC checks; replay: 9 CRC frames |
+| 1 | lab VM + the reference PC | late: restarted 110 s after the kill | the player was held when its timeout ran out; the others played on to frame 835, where it rejoined after a 0.90 s catch-up; 3 peers on 0x1A9F305B; replay: 15 CRC frames |
+| 1 | lab VM + the reference PC | soak: rejoin with every peer's datagrams impaired (80 ± 30 ms, 3 % loss, 1 % duplication, 1 % reordering) | rejoined at frame 282 after a 2.77 s catch-up (the log read is impaired too); 3 peers on 0x83ADFD3A; replay: 9 CRC frames |
+| 2 | lab VM + the reference PC | vote: both others pressed Kick | handed over at once, 17 objects to the ally; 2 peers on 0xF92B5CB6; replay: 9 CRC frames |
 | 3 (final build) | the reference PC + Deck | rejoin | rejoined at frame 250 after a 1.51 s catch-up on the Deck; 3 peers on 0xAF840AB2; replay: 9 CRC frames |
 | 3 (final build) | the reference PC + Deck | window: never back, rejoin window 30 s | held, then handed over by the packet router when the window ended, 18 objects; 2 peers on 0x9F5DCFFF; replay: 9 CRC frames |
 | 3 (final build) | the reference PC + Deck | pause: slot 1 paused at frame 200, slot 2 resumed after 8 s | every peer stopped with logic frame 202, for 7.6-8.0 s; 3 peers on 0xD59E0181; replay: 9 CRC frames |
 | 3 (final build) | the reference PC + Deck | vote | handed over at once, 17 objects; 2 peers on 0x41D4134A; replay: 9 CRC frames |
 
 Runs 1 and 2 used the build before the log-only stream (below); run 3
-used the final build, with the reference PC as host A because pve's CI slot was
-busy with gates (pve still ran the lobby and the relay).
+used the final build, with the reference PC as host A because the lab VM's CI slot was
+busy with gates (the lab VM still ran the lobby and the relay).
 
 **The game client** (final build), once each, for the proof pictures: the
 Godot client on the Deck and a headless host on the reference PC, through the
-pve lobby and relay, 1v1 plus a hard AI. The host paused at frame 200: the
+the lab VM lobby and relay, 1v1 plus a hard AI. The host paused at frame 200: the
 client stopped with logic frame 202 and showed "Game paused by Gondor";
 the host resumed 15.6 s later. In a second game the client was killed
 (SIGKILL) at frame 250 and started again with `--online-rejoin`. It caught
@@ -592,7 +618,7 @@ steps through the humans and back), the lobby's node test,
 
 ### Measured (2026-10-12)
 
-`tools/net/online3_spectate.sh` (the final build): the pve lobby and relay (redeployed), slot 0
+`tools/net/online3_spectate.sh` (the final build): the lab VM's lobby and relay (redeployed), slot 0
 and spectators on the reference PC, slot 1 and spectators on the Deck; 2 scripted
 humans and a hard AI on Fall Back 4p, 900 frames in real time. In each run the
 players ended on one hash with 0 desyncs, and every spectator stopped at frame
@@ -607,10 +633,10 @@ players ended on one hash with 0 desyncs, and every spectator stopped at frame
 The Deck's player stalled 37-38 times for one frame (200 ms) per game:
 the same as in round 1's home-lab games without spectators.
 
-**After review round 1** (the merged build with the fixes below, the pve lobby
-and relay redeployed): pve's CI slot was busy with other lanes' gates, and a
+**After review round 1** (the merged build with the fixes below, the lab VM's lobby
+and relay redeployed): the lab VM's CI slot was busy with other lanes' gates, and a
 peer waiting there missed the 180 s load wait. So both hosts' processes ran on
-the Deck, through pve's lobby and relay over the LAN. All four scenarios
+the Deck, through the lab VM's lobby and relay over the LAN. All four scenarios
 passed. Every spectator stopped at frame 900 on the players' hash, with 8 CRCs
 compared and 0 mismatches.
 
@@ -632,7 +658,7 @@ under its shroud.
   frame F executes a few frames after F, so the frame had run before its CRC
   reached the log. Now such a frame is compared when a newer log has it
   (a unit test covers it).
-- jpc-run runs one job of a lane at a time on a host. The first run's
+- The CI's lane-job script runs one job of a lane at a time on a host. The first run's
   spectator on the reference PC started only after its player had finished, and
   the relay refused it with "game closed". The script now runs a host's
   players and spectators in one command.
@@ -710,14 +736,38 @@ Also new:
 
 Both regressions fail with the round-2 code.
 
-Home lab, on the build with these fixes (pve's lobby and relay redeployed):
+Home lab, on the build with these fixes (the lab VM's lobby and relay redeployed):
 the spectator scenarios `start`, `mid`, `delay` and `delaypause` passed with
-host A on pve and host B on the Deck; every spectator ended on the players'
+host A on the lab VM and host B on the Deck; every spectator ended on the players'
 hash with 8 CRCs compared and 0 mismatches, and the delayed spectator ran
 79.2-79.3 s behind before a 20 s pause and 59.6-59.8 s after it. The
-reconnect scenario `rejoin` (slots 0 and 1 on pve, slot 2 on the Deck,
+reconnect scenario `rejoin` (slots 0 and 1 on the lab VM, slot 2 on the Deck,
 killed at 60 s) passed: slot 2 rejoined at frame 251 after a 1.0 s catch-up,
 one final hash, and the replay of the lobby's log matched 9 CRC frames.
+
+## Performance mode in the lobby (UBERJOIN-1, S-4860)
+
+The simulation profile (Faithful = "Normal", or Uber; `docs/UBER.md`) is part of the profile identity, so players of different modes could never share a
+room. The lobby now says so instead of refusing blindly:
+
+- **Room record.** `POST /v1/games` takes an optional `"mode": "normal" | "uber"` (absent = normal, an old client's room); the list (`publicGame`) and the
+  game view carry it. Any other value is `bad_field` (create and join). `POST .../join` takes the same optional `mode`; a join in the other mode is
+  `409 mode` ("this game uses uber performance mode and you are in normal mode"), checked before the profile digest.
+- **Lists.** The online list and the LAN list tag an Uber game ("  - UBER" after the name, like REJOIN / WATCH); a Normal game has no tag. The staging
+  room's chat starts with "This room uses Uber performance mode." for an Uber room.
+- **Join in the other mode.** The game's own Yes / No box asks ("This game uses Uber performance mode. Switch to Uber mode and join? (Your setting
+  changes back after the game.)", the reverse for Normal). Yes switches the world's profile for that game (`GameWorld::switch_profile_for_game`) and
+  joins; No stays in the list. The setting in Options.ini is never written: it is restored when the room is left, the join fails or is cancelled, or the
+  game has ended (`restore_simulation_profile`; `scripts/game.gd`).
+- **LAN.** The announcement already carries the profile in its GameInfo (UBER-1); the list reads it from there.
+- **Inside a room** nobody changes mode: `OnlineLobbyClient::setProfile` refuses while in a room, the Options screen's Uber performance row is greyed
+  there with the reason ("You are in an online room: ... Leave the room first."), and the identity still refuses a mismatch at START.
+- **Restore.** `GameNetwork/ProfileChoice.h` holds the player's setting and the one switched to for a game. The switch ends when the room is left, a join
+  or rejoin / watch fails or is cancelled, the lobby is closed, or the game is over; a LAN room is kept after its game, so there the switch stands until
+  the room is left (the main menu leaves a held room and restores).
+- **Wire.** The LAN announcement's profile field is optional where it ends the packet (an absent field lists as Normal); the lobby checks `mode` before
+  the member, started and password branches (also for a member's repeated join).
+- **Quick Match** (another lane) reads `OnlineLobbyClient::profile()` (`online_status().mode`: "normal" / "uber").
 
 ## 1. What exists today
 
@@ -810,7 +860,7 @@ frames each, 0 desyncs, every frame on every peer:
 
 Raw totals, 8 players: 9,193,447 payload bytes, 361,012 datagrams (184,412
 ack-only), 186,857 records, and `bytes_received` equal to `bytes_sent` within
-the in-flight tail. the reference PC was at load ~160 on 24 cores, so the games ran
+the in-flight tail. The reference PC was at load ~160 on 24 cores, so the games ran
 below 5 fps. The table therefore normalises per logic frame: every peer sends
 a FRAMEINFO per frame per peer, and the acks answer those. This also treats
 the 100 ms keep-alive as frame-driven, which is slightly pessimistic.
@@ -1064,13 +1114,13 @@ the movies are not:
 | `OnlineLogin.apt` | 65,666 | Sign-in: nickname, e-mail, password, "remember me", country list, Register, Terms of Service, "GameSpy" and official-site buttons. | yes, rewired: Steam / Discord / e-mail buttons in its button slots; nickname and e-mail fields for the magic link |
 | `OnlineHome.apt` | 15,080 | The welcome page: message of the day, news ticker, game-type descriptions (Open Play, Tournament, War of the Ring). | yes: MOTD and news from the lobby |
 | `OnlineOpenPlay.apt` | 161,042 | **The server browser**: game list with sortable Name / Map / Players / Status columns (`OnSortName`, `OnSortPing`, ...), Refresh, Create Game popup (name, password), Join, password prompt, lobby rooms, the connecting popup, then `MpGameSetup` for the staging room. | yes: the core of the browser |
-| `OnlineQuickMatch.apt` | 38,607 | Quick match: side, colour, number of players, connection speed, "searching for players", "players found", widen search, ladder / relative rank. | later: matchmaking phase |
+| `OnlineQuickMatch.apt` | 38,607 | Quick match: side, colour, number of players, connection speed, "searching for players", "players found", widen search, ladder / relative rank. | yes (ONLINEHUB-1): the TOURNAMENT page: Quick Match on the platform, the tournaments panel |
 | `OnlineStrategic.apt` | 59,227 | The War of the Ring lobby (`StrategicLobbyTitle`, a load-game button). | later: with War of the Ring |
 | `MpGameSetup.apt` | 234,316 | The staging room (shared with LAN, already driven by UI-1/MP-2): player matrix with kick, map and settings, chat, ready, clans tab. | yes: already in use |
 | `Messenger.apt` | 123,265 | Friends / buddy list and chat window with tabs, add / remove friend. | later: friends phase |
 | `Connections.apt` | 20,206 | Connection quality grid per player pair (excellent / good / poor / failed). | yes: relay link quality |
 | `InGameChat.apt` | 25,938 | In-game chat. | already used |
-| `Stats.apt` | 35,164 | Per-faction stats with Open Play / Strategic / Tournament tabs. | later: results reporting |
+| `Stats.apt` | 35,164 | Per-faction stats with Open Play / Strategic / Tournament tabs. | yes (ONLINEHUB-1): Your stats and the community's |
 
 BFME2 1.06 also has `OnlineProfile.apt` and `ScoreScreen.apt`; RotWK drops the
 first and keeps its stats in `Stats.apt`.
@@ -1168,10 +1218,29 @@ Read 2026-10-10.
 - [D3] discord-rpc (deprecated, MIT): https://github.com/discord/discord-rpc
 - [M1] Resend pricing: https://resend.com/pricing
 
+## Quick Match, tournaments and statistics (lane ONLINEHUB-1)
+
+The online menu's TOURNAMENT and STATS buttons open RotWK's own `OnlineQuickMatch` and `Stats` movies, fed by the OpenBFME platform API
+(`docs/PLATFORM_API.md`: AWS, `https://api.openbfme.com/v1`, built in the private repository) instead of GameSpy:
+
+- **Quick Match** (TOURNAMENT page, left): Ladder = 1 vs 1 / 2 vs 2, Army (or random), Color; the mode follows Options' Uber performance mode.
+  JOIN GAME searches; a match puts the players into a private lobby room by the match's room code (`POST /v1/rooms/<code>/join`, the lobby's
+  smallest addition for it) on an official map for that many players, readies them and starts. Cancel, a 10-minute search, the platform
+  unreachable or a room that does not start in 90 s are told in the game's box (S-4870 .. S-4872, S-4877).
+- **Tournaments** (TOURNAMENT page, right; not a RotWK screen, S-4873): the list, rules and bracket, register / withdraw / join your next match.
+- **Stats** (S-4874 .. S-4876): OPEN PLAY = the player's own statistics from the games this installation recorded (`user://game_records.jsonl`,
+  skirmish included, offline too); TOURNAMENT = all players' statistics with mode and period filters.
+- **Results**: after each LAN or online game the game's summary goes to `POST /v1/results` unless Options > Online > "Share my game results for
+  statistics" is off (S-4878, S-4879). What is sent: `docs/PLATFORM_API.md` "What the game sends".
+
+Proof: `engine/tests/test_onlinehub1_screens.cpp` (the retail movies against a local lobby and the platform's fake), `tools/net/onlinehub1_qm.sh`
+(two game clients matched, in one room, playing in lockstep through a relay), `tools/platform_fake/test_onlinehub1_game.py` (the results reporting).
+
+
 ## Player count (lane ONLINECOUNT-1)
 
-The lobby's `GET /v1/stats` (counts of players online, open and running games; services/online/DEPLOY.md has the definition, the request budget and the
-free-plan estimate) feeds three lines: the main menu's top-left "N players online" and the online menu's "N players online, M games open"
+The lobby's `GET /v1/stats` (counts of players online, open and running games; the deploy notes, kept outside this repository, have the request budget and
+the free-plan estimate) feeds three lines: the main menu's top-left "N players online" and the online menu's "N players online, M games open"
 (`godot/scripts/online_stats.gd`), and the launcher's Play card chip (`launcher/scripts/core/online_count.gd`). The setting "Show how many players are
 online" (launcher: Settings > General, `state.cfg` `[launcher] show_online_count`, `--online-count=on|off`) is on by default; off, neither asks the lobby.
 The game reads the launcher's `state.cfg` (read only), so one switch covers both; a game without a launcher is turned off with `--no-online-count`,
@@ -1180,4 +1249,50 @@ The game reads the launcher's `state.cfg` (read only), so one switch covers both
 
 Known limit (ONLINECOUNT-1, for the owner): on Cloudflare's Free plan (100,000 Worker requests a day) the lobby already runs out at about 23 players
 constantly in staging rooms (the held poll is 20 s, 180 requests an hour each); the player count adds nothing for them and 40 an hour for a player parked in the
-online menu. The numbers at 10 / 100 / 1,000 players are in services/online/DEPLOY.md.
+online menu. The numbers at 10 / 100 / 1,000 players are in the deploy notes.
+
+
+## The online menus in real use (lane ONLINEUX-1, 2026-10-17)
+
+The owner asked for the ONLINE menus to "make sense and actually work". Every screen was walked with real X input (xdotool clicks and typing on
+windowed game clients under Xvfb) by three game clients at once, against a local staging lobby (`server.mjs`), a local relay and the platform API's
+fake: `tools/net/onlineux1_session.sh` (the clients start as a player starts the game; nothing touches play.openbfme.com). The captures are in
+`workspace/rebuild/proof/ONLINEUX-1/` (`before/`, `after/`).
+
+| # | Where | What the player met | Root cause | Now |
+|---|---|---|---|---|
+| 1 | Login | LOGIN pressed with no nickname: a box, then LOGIN stayed greyed for good (only Main Menu helped) | the movie disables its button on the press; nothing enabled it again (retail's Login only works with a name: RW 0x97A668 enables it while the fields can sign in) | Login follows the nickname as retail's (disabled while empty, enabled by typing a name, back after a refused sign-in) |
+| 2 | Login | the box says "click on Login or Create Account": there is no Create Account | RotWK's text (GUI:GSNoLoginInfoNickname) | not reachable any more: Login is disabled while the name is empty |
+| 3 | Any page | OPTIONS, then Cancel: the nav bar (pages, LOG OUT, OPTIONS) never came back: no way out but quitting | OnlineShell.apt hides the bar on OPTIONS and shows it only from its first frame, which retail runs again (it reloads the covered movie); the port only hid and showed it (S-171) | the shell shown again calls the movie's own ShowButtonBar (S-5140) |
+| 4 | Nav | WAR OF THE RING's "not available" box left its button highlighted over the page the player was on | the refused page went back to the previous page, the nav clip did not | the nav clip goes to that page's frame label too |
+| 5 | Home | the ticker scrolled "Men of The West 99.99%" placeholders | NumTickerFields 12, no row ever filled (S-4072) | Date, Time, Players Online, Games In Progress from the lobby (RW 0x9C8694 / 0x9C881D, 4 rows: S-5142) |
+| 6 | Home, TOURNAMENT | Quick Match was nowhere by name (it is the TOURNAMENT page's left half); the texts promised a ranked ladder | RotWK's texts (its Tournament was the ranked automatch) | the page's and the home page's lines name Quick Match and the tournaments (S-5143); one entry point each: TOURNAMENT = Quick Match + tournaments, OPEN PLAY = the server browser and private (password) games, STATS = statistics |
+| 7 | Open Play | the Lobby Room drop-down showed "Entry" and did nothing | the movie's placeholder (no GameSpy group rooms) | it lists the one room, "OpenBFME" |
+| 8 | Open Play | the MAP panel under the list ignored the selected game; its map list took clicks that changed nothing | the panel kept the player's own last map | it shows the selected game's map; the player's own map comes back for a game they create (S-5141) |
+| 9 | Joining | another version's game: one squeezed, unreadable line with two raw profile digests; a wrong password: "wrong password"; the lobby down: "the lobby http://... did not answer (2)" | the lobby's log texts shown as they came | what happened and what to do, on lines that fit the box ("Online" title); RotWK's own texts for a wrong password, a full game, a host who left (S-5143) |
+| 10 | Staging room | the lobby lost: one technical line, only in the CHAT tab | as 9 | the line in the player's words (retail's room has no other place for it) |
+| 11 | After a game | the score screen's Continue led to the LOGIN page | the shell is made again for Continue (S-1771) and starts at its login | it resumes on the page the player was on, signed in (the movie's OnlineShellStartScreen, RW 0x91D9F9: retail's shell, kept through the game, answers its page) |
+| 12 | After a game | a player who forfeited and exited was offered "Rejoin it now?" for that game | no leave was ever sent for a started game, and the lobby kept offering it | the screens leave the played game when they come back (retail's leave-room, RW 0x9AB748, leaves the staging room first); the client never offers a game it left; the lobby stops offering it (services change below) |
+| 13 | Rejoin | a rejoin with nothing to catch up from sat at "catching up, frame 0" for ever | no timeout | given up after 45 s with the reason, back to the online screens |
+| 14 | WATCH | watching a game the relay had closed: "OpenBFME cannot continue" and the program ended | a spectator's failure was fatal | the player reads why and is back in the online screens |
+| 15 | In game | the relay lost: the Disconnect Menu blamed the other players; after its timeout everyone played on alone | the relay link is what failed (the ping test through the relay) | "Lost the connection to the online relay server ... leave the game: QUIT GAME, or Esc and Exit" while the relay is silent; a restarted relay still cannot carry the running game on (S-5144) |
+| 16 | Quick Match | the status line ("The match starts ...") stayed on the loading screen, and one client crashed (signal 11) when the game's HUD came up | the TOURNAMENT page's lettering function, which captures the page, was left on the gadget layer after the online shell was destroyed for the game: the in-game HUD's drawing called it | the page's function leaves with the page (the layer's decorator is owned and taken away by its owner), and it draws nothing while the shell is not on top |
+
+Second and third walks on the fixed build (same tool, three clients): the ticker rows were still the movie's placeholders (their texts come from an
+`Object.registerClass` class this port's interpreter does not run, S-104: the screens now give each row its texts), the tournaments panel showed
+through the Options screen (now hidden while the shell is covered), and the relay-lost notice showed for ~14 s at every game start while the map
+loaded (now judged only once the load screen is gone). A relay that is down for a few seconds still splits a running game (S-5144): the notice says so.
+The MAP panel's map list keeps its own highlight while the preview and description follow the selected game (cosmetic).
+
+Retail-first: 1 (RW 0x97A668 / BFME2 0x5706D4, 0x57166C), 3 and 4 (the player's OnlineShell.apt scripts), 5 (RW 0x9C8694, 0x9C881D, the label table RW
+0xDB9290), 11 (RW 0x91D9F9) and 12 (RW 0x9AB748) are ported; the rest is OpenBFME's (its lobby, its texts) and registered as stops S-5140 .. S-5144.
+Single-human online starts (the owner's "solo online") wait for lane SOLO-1 (not merged).
+
+**Lobby change for the coordinator (not deployed: deploys need review and the owner's OK).** `services/online/lobby/src/lobby.mjs`: a player who
+leaves a started game (`POST /v1/games/<id>/leave`) is done with it: the game is no longer in their `/v1/mine` and `POST .../rejoin` is refused with
+`409 left`; the slot stays theirs (START, replay). Tested in `lobby.test.mjs` ("ONLINEUX-1: a player who leaves a started game ..."). The game works
+with the live lobby as it is (the client filters the games it left), so the deploy is not urgent. Round 2 (review fixes): `/v1/mine` also names
+the started games the account left (`"left": [ids]`, newest 32; optional for the client, which refuses a malformed list by name), so a client started
+after the leave lists those games neither as REJOIN nor as WATCH (the lobby refuses a player of the game as its spectator, `409 player`). A rejoin or
+watch that fails before it is live (`game.gd _online_game_failed`) is no leave: the client forgets the game without `POST .../leave`, the network
+session sends no frame counts and no PLAYERLEAVE for an incarnation that never went live, and the lobby keeps offering the game for a rejoin.

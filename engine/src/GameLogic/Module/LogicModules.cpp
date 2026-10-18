@@ -8,6 +8,7 @@
 #include "GameLogic/Module/ObjectCreationUpgrade.h"
 #include "GameLogic/Module/SlavedUpdate.h"
 #include "GameLogic/Module/SpawnBehavior.h"
+#include "GameLogic/Module/SpawnUnitBehavior.h"
 #include "GameLogic/Module/LogicModules.h"
 #include "GameLogic/Module/LargeGroupAudioUpdate.h"
 #include "GameClient/ClientBehaviorModules.h"
@@ -55,6 +56,8 @@
 
 void LogicModules::registerAll(ModuleFactory &modules)
 {
+	// Only its S-207 offer is ported; keep the runtime's unported registration.
+	modules.bindTypedData<SpawnUnitBehaviorModuleData>("SpawnUnitBehavior", MODULETYPE_BEHAVIOR);
 	modules.bindTypedData<ActiveBodyModuleData>("ActiveBody", MODULETYPE_BEHAVIOR);
 	modules.bindModuleProc("ActiveBody", MODULETYPE_BEHAVIOR, [](Thing *thing, const ModuleData *data, const ModuleFactory::ModuleTemplate &) -> std::unique_ptr<Module> {
 		const ActiveBodyModuleData *typed = dynamic_cast<const ActiveBodyModuleData *>(data);

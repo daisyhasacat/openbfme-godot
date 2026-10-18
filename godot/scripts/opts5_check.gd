@@ -43,6 +43,10 @@ func run(p_game: Node, p_shots: String) -> int:
 	screen = game._display_screen
 	options = game._game_options
 	shots = p_shots
+	check("initial main-menu movie is still pending", not shell.has_level(shell.shell_top_level()), str(shell.shell_stack()))
+	game._frames = game.LEVEL_MAIN_MENU_FRAMES # first-run setup and intro movies can consume the host's initial frames
+	game._process(0.0)
+	check("a pending main-menu movie is not marked revealed", not game._menu_revealed, str(game._menu_revealed))
 	var root: Window = game.get_tree().root
 	if game._opts5_size != Vector2i.ZERO:
 		root.mode = Window.MODE_WINDOWED
@@ -53,6 +57,9 @@ func run(p_game: Node, p_shots: String) -> int:
 	size_tag = "%dx%d" % [root.size.x, root.size.y]
 	await game._wait_main_ready()
 	await game._step(60)
+	var main_menu_shown: Dictionary = shell.get_member(shell.shell_top_level(), "", "MainMenuShown")
+	check("loaded main menu is revealed", game._menu_revealed and main_menu_shown.get("found", false) and main_menu_shown.get("value", "") == "true",
+		str(main_menu_shown))
 	var file: String = game._options_file
 	check("the check has an Options.ini of its own", not file.is_empty() and not file.ends_with("/Options.ini"), file)
 

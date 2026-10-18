@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/MoneyEventModules.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/NumericState.h"
 #include "Common/Player.h"
@@ -236,4 +237,18 @@ void PillageModule::onDamageDealt(Object &victim)
 void PillageModule::crc(StateHasher &h) const
 {
 	h.addU32(m_counter);
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------
+void RefundDie::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+}
+
+void PillageModule::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	x.xferUnsignedInt(&m_counter);
 }

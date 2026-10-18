@@ -7,6 +7,7 @@
 #include "doctest.h"
 
 #include "StartTestUtil.h"
+#include "ScriptTestUtil.h"
 
 #include "Common/Player.h"
 #include "Common/StateHash.h"
@@ -141,6 +142,61 @@ struct GateGame
 	}
 };
 } // namespace
+
+TEST_CASE("stops-b S-1366 retail: scripted gate actions and condition use the settled gate and update pathing")
+{
+	OPENBFME_REQUIRE_START(s);
+	GateGame g(*s, gateMessage(*s, "maps/map wor helms deep/map wor helms deep.map", false));
+	g.frames(2);
+	Object *gate = g.named("Main Gate");
+	REQUIRE(gate);
+	GateOpenAndCloseBehavior *b = GateOpenAndCloseBehavior::findGate(*gate);
+	REQUIRE(b);
+	REQUIRE_FALSE(gate->getControllingPlayer()->isSkirmishAI());
+	ScriptEngine &scripts = g.game->logic().scriptEngine();
+	const auto open = scripttest::act("GATE_OPEN", { scripttest::sp(14, "Main Gate") });
+	const auto close = scripttest::act("GATE_CLOSE", { scripttest::sp(14, "Main Gate") });
+	const auto isOpen = scripttest::cond("GATE_IS_OPEN", { scripttest::sp(14, "Main Gate") });
+	REQUIRE(b->isOpen());
+	REQUIRE(b->isSettled());
+	CHECK(scripts.evaluateCondition(isOpen));
+	scripts.executeAction(open);
+	CHECK(b->state() == GateOpenAndCloseBehavior::OPEN);
+	scripts.executeAction(close);
+	CHECK(b->state() == GateOpenAndCloseBehavior::CLOSING);
+	CHECK_FALSE(b->isSettled());
+	CHECK_FALSE(scripts.evaluateCondition(isOpen));
+	scripts.executeAction(open);
+	CHECK(b->state() == GateOpenAndCloseBehavior::CLOSING);
+	g.frames(70);
+	CHECK(b->state() == GateOpenAndCloseBehavior::CLOSED);
+	CHECK(b->isSettled());
+	CHECK(g.blocksCentre(*gate));
+	CHECK(g.shapeActive(*gate, "Closed"));
+	CHECK_FALSE(scripts.evaluateCondition(isOpen));
+	scripts.executeAction(close);
+	CHECK(b->state() == GateOpenAndCloseBehavior::CLOSED);
+	scripts.executeAction(open);
+	CHECK(b->state() == GateOpenAndCloseBehavior::OPENING);
+	CHECK_FALSE(scripts.evaluateCondition(isOpen));
+	scripts.executeAction(close);
+	CHECK(b->state() == GateOpenAndCloseBehavior::OPENING);
+	g.frames(70);
+	CHECK(b->isOpen());
+	CHECK(b->isSettled());
+	CHECK_FALSE(g.blocksCentre(*gate));
+	CHECK_FALSE(g.shapeActive(*gate, "Closed"));
+	CHECK(scripts.evaluateCondition(isOpen));
+	for (const char *name : { "stops-b missing gate", "" })
+	{
+		scripts.executeAction(scripttest::act("GATE_OPEN", { scripttest::sp(14, name) }));
+		scripts.executeAction(scripttest::act("GATE_CLOSE", { scripttest::sp(14, name) }));
+		CHECK_FALSE(scripts.evaluateCondition(scripttest::cond("GATE_IS_OPEN", { scripttest::sp(14, name) })));
+	}
+	CHECK(scripts.stats().unportedActions.count("GATE_OPEN") == 0);
+	CHECK(scripts.stats().unportedActions.count("GATE_CLOSE") == 0);
+	CHECK(scripts.stats().unportedConditions.count("GATE_IS_OPEN") == 0);
+}
 
 TEST_CASE("hud5 gates retail: Helm's Deep's main gate closes and opens by MSG_CLOSE_GATE / MSG_OPEN_GATE: states, timing, model conditions, geometry, pathfinder")
 {

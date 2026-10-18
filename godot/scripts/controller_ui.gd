@@ -197,6 +197,9 @@ func _configure() -> void:
 
 func _process(delta: float) -> void:
 	var live: Node = hud.call()
+	var held: bool = live.is_logic_held() if is_instance_valid(live) else true
+	if not held:
+		return
 	if live != null and live.has_method("set_placement_snap"):
 		live.set_placement_snap(bridge._gameplay() and not bridge._suspended and (bridge._left_trigger or Input.is_key_pressed(KEY_SHIFT)), bridge.placement_grid_spacing)
 	if Engine.get_meta("adaptive_hud_replaces_native", false):

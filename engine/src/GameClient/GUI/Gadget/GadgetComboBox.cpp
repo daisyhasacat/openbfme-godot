@@ -458,6 +458,7 @@ void GadgetComboBoxSetMaxChars(GameWindow *comboBox, int maxChars)
 
 void GadgetComboBoxSetMaxDisplay(GameWindow *comboBox, int maxDisplay)
 {
+	// RW 0x72414F: ComboBoxData +0x04, assigned without clamping or immediate layout.
 	comboOf(comboBox)->maxDisplay = maxDisplay;
 }
 

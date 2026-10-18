@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/GateModules.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/AsciiString.h"
 #include "Common/Player.h"
@@ -521,4 +522,35 @@ std::vector<std::string> GateModules::acceptanceStops()
 		"[S-1942] the gate sounds (SoundOpeningGateLoop / SoundFinishedOpeningGate / SoundClosingGateLoop / SoundFinishedClosingGate, RW 0x89C261 / 0x89C1A4) are "
 		"recorded, not played: the logic has no object sound path",
 	};
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190; retail's AIGateUpdate::xfer RW 0x8B4A69 (1, 2) holds two more ints) ----------------------
+void GateOpenAndCloseBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	SnapshotXfer::enumIn(x, m_state, OPENING, CLOSED, "a gate's state");
+	SnapshotXfer::enumIn(x, m_geometryState, GEOMETRY_NONE, GEOMETRY_OPEN, "a gate's geometry state");
+	x.xferBool(&m_settled);
+	x.xferReal(&m_percent);
+	x.xferUnsignedInt(&m_stateFrame);
+	x.xferInt(&m_request); // -1: no request, else the count of open requests
+	if (m_request < -1)
+	{
+		throw XferException("a gate's open request count " + std::to_string(m_request) + " is below -1");
+	}
+	x.xferBool(&m_soundPlayed);
+	SnapshotXfer::strings(x, m_sounds);
+}
+
+void AIGateUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferInt(&m_trigger);
+	SnapshotXfer::checkRange(m_trigger, -1, 0x7FFFFFFF, "an AI gate's trigger"); // -1: none; else the script engine's polygon trigger (SAVE-4d)
+	x.xferInt(&m_allies);
+	x.xferInt(&m_enemies);
+	x.xferBool(&m_loaded);
+	x.xferBool(&m_enabled);
 }

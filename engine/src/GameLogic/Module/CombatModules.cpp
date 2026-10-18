@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Combat/ObjectWeapons.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/CombatModules.h"
 #include "GameLogic/ObjectCreationList.h"
 
@@ -47,11 +48,27 @@ void parseFX(INI *ini, void *instance, void *, const void *)
 }
 void parseOCL(INI *ini, void *instance, void *, const void *)
 {
-	parsePhaseNames(ini, static_cast<SlowDeathBehaviorModuleData *>(instance)->m_ocl);
+	auto *data = static_cast<SlowDeathBehaviorModuleData *>(instance);
+	const int phase = INI::scanIndexList(ini->getNextToken(), kSlowDeathNames);
+	for (const char *name = ini->getNextTokenOrNull(); name; name = ini->getNextTokenOrNull())
+	{
+		// RW 0x8615FE -> 0x5EFFE7: a null lookup still occupies a list slot.
+		const bool resolved = TheObjectCreationListStore && TheObjectCreationListStore->findObjectCreationList(name);
+		data->m_ocl[phase].push_back(resolved ? name : "None");
+		data->m_resolvedLogicMask |= resolved ? 2 : 0;
+	}
 }
 void parseWeapon(INI *ini, void *instance, void *, const void *)
 {
-	parsePhaseNames(ini, static_cast<SlowDeathBehaviorModuleData *>(instance)->m_weapon);
+	auto *data = static_cast<SlowDeathBehaviorModuleData *>(instance);
+	const int phase = INI::scanIndexList(ini->getNextToken(), kSlowDeathNames);
+	for (const char *name = ini->getNextTokenOrNull(); name; name = ini->getNextTokenOrNull())
+	{
+		// RW 0x861672 -> 0x6CC5DF: only a resolved weapon sets the mask bit.
+		const bool resolved = TheWeaponStore && TheWeaponStore->findWeaponTemplate(name);
+		data->m_weapon[phase].push_back(resolved ? name : "None");
+		data->m_resolvedLogicMask |= resolved ? 4 : 0;
+	}
 }
 // Sound = <phase> <audio event> [...] (RW 0x861903): the phase index is validated; every remaining token is an entry of the phase's list (m_sounds); m_sound
 // keeps the first one as written (the raw record of the earlier lanes)
@@ -464,8 +481,7 @@ void SlowDeathBehavior::doPhase(SlowDeathPhase phase)
 	// 0x861903: bit 1 FX, 2 OCL, 4 Weapon, 8 Sound, over every phase), is non-zero. Then, for the phase: the FX pick is a CLIENT draw (RW 0x6D32E4, state
 	// 0xDA1C74, line 0x217) and the list entry plays through RW 0x4B1B5A (doFXObj(fx, obj, null)); the OCL pick (line 0x221) and the Weapon pick (line 0x22B)
 	// are LOGIC draws (RW 0x6D328E, state 0xDA1CA4); the Sound pick is a CLIENT draw (line 0x238) played on the object. The client picks are the player's
-	// (LiveFX draws them from the client stream when it plays the event: the logic never draws them). S-324: the OCL and weapon are counted, not executed; the
-	// hashed counter counts every non-empty list as before.
+	// (LiveFX draws them from the client stream when it plays the event: the logic never draws them). The hashed diagnostic counter still counts nonempty lists.
 	static const char *const kSites[SDPHASE_COUNT] = { "SlowDeath INITIAL", "SlowDeath MIDPOINT", "SlowDeath FINAL", "SlowDeath HIT_GROUND" };
 	static const char *const kSoundSites[SDPHASE_COUNT] = { "SlowDeath Sound INITIAL", "SlowDeath Sound MIDPOINT", "SlowDeath Sound FINAL", "SlowDeath Sound HIT_GROUND" };
 	Object *obj = getObject();
@@ -517,9 +533,8 @@ void SlowDeathBehavior::doPhase(SlowDeathPhase phase)
 	}
 }
 
-// RW byte +0x18C (see doPhase). INFERENCE for OCL and Weapon: an entry counts as resolved when its name is not "None" (the OCL store is not ported; the
-// weapon name is resolved at use); FX names are validated at parse time like RW (an unknown one is an error, "None" is NULL); a Sound entry counts unless
-// it is "NoSound" (the audio registry's empty event)
+// RW byte +0x18C (see doPhase). OCL/weapon parsers retain null slots but set bits only on successful lookups.
+// FX names are validated at parse time; Sound's empty event is NoSound.
 int SlowDeathBehaviorModuleData::resolvedMask() const
 {
 	auto any = [](const std::vector<std::string> *lists, bool sound) {
@@ -535,7 +550,7 @@ int SlowDeathBehaviorModuleData::resolvedMask() const
 		}
 		return false;
 	};
-	return (any(m_fx, false) ? 1 : 0) | (any(m_ocl, false) ? 2 : 0) | (any(m_weapon, false) ? 4 : 0) | (any(m_sounds, true) ? 8 : 0);
+	return (any(m_fx, false) ? 1 : 0) | m_resolvedLogicMask | (any(m_sounds, true) ? 8 : 0);
 }
 
 // RW 0x860B39 (the update interface slot 0). The LOD scale's rescale (RW 0x860B5B .. 0x860BC8) is not reached (scale 1.0). Then, in this order:
@@ -654,4 +669,45 @@ void SlowDeathBehavior::crc(StateHasher &h) const
 	h.addBool(m_hitGroundPending);
 	h.addBool(m_fadeBegun);
 	h.addU32(m_fadeFrame);
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------
+void DestroyDie::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+}
+
+void KeepObjectDie::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+}
+
+void FXListDie::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+}
+
+void PorcupineFormationBody::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	ActiveBody::xfer(x);
+}
+
+void SlowDeathBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferBool(&m_activated);
+	x.xferBool(&m_midpointDone);
+	x.xferUnsignedInt(&m_sinkFrame);
+	x.xferUnsignedInt(&m_midpointFrame);
+	x.xferUnsignedInt(&m_destructionFrame);
+	x.xferUnsignedInt(&m_decayFrame);
+	SnapshotXfer::maskWithin(x, m_flags, kActivated | kMidpoint | kFlung | kLanded, "a slow death's flags", "its four phase flags"); // lane SAVE-4e
+	x.xferBool(&m_hitGroundPending);
+	x.xferBool(&m_fadeBegun);
+	x.xferUnsignedInt(&m_fadeFrame);
 }

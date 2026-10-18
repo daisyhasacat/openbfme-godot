@@ -237,6 +237,23 @@ int GameWindow::winGetScreenPosition(int *x, int *y)
 	return WIN_ERR_OK;
 }
 
+bool GameWindow::winBadgeRect(int *x0, int *y0, int *x1, int *y1)
+{
+	if (m_badgeImage.empty() || m_badgeSize <= 0)
+	{
+		return false;
+	}
+	// two stage pixels of air between the icon and the window; centred on the window's height
+	int x = 0, y = 0, w = 0, h = 0;
+	winGetScreenPosition(&x, &y);
+	winGetSize(&w, &h);
+	*x1 = x - 2;
+	*x0 = *x1 - m_badgeSize;
+	*y0 = y + (h - m_badgeSize) / 2;
+	*y1 = *y0 + m_badgeSize;
+	return true;
+}
+
 int GameWindow::winGetRegion(IRegion2D *region)
 {
 	if (region)

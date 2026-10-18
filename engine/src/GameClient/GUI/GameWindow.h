@@ -314,6 +314,20 @@ public:
 	void winGetDrawOffset(int *x, int *y);
 	void winSetHiliteState(bool state);
 	void winSetTooltip(const UnicodeString &tip);
+	// lane PLATFORMICON-1 (OpenBFME, not retail): a small mapped image drawn just LEFT of the window (a player's system beside the name): `image` is the
+	// mapped image's name ("" clears it), `size` its side in stage pixels, `help` the text a help box would show ("Playing on Linux"; the menus have no
+	// help box yet, so it is kept for the screens and the reports). It follows the window: hidden with it, moved with it
+	void winSetBadge(const std::string &image, int size, const std::string &help)
+	{
+		m_badgeImage = image;
+		m_badgeSize = image.empty() ? 0 : size;
+		m_badgeHelp = image.empty() ? std::string() : help;
+	}
+	const std::string &winBadgeImage() const { return m_badgeImage; }
+	const std::string &winBadgeHelp() const { return m_badgeHelp; }
+	int winBadgeSize() const { return m_badgeSize; }
+	// the badge's box in screen (stage) pixels: false when there is none
+	bool winBadgeRect(int *x0, int *y0, int *x1, int *y1);
 	int getTooltipDelay() { return m_instData.m_tooltipDelay; }
 	void setTooltipDelay(int delay) { m_instData.m_tooltipDelay = delay; }
 
@@ -394,6 +408,8 @@ protected:
 	GameWindow *m_child = nullptr;
 	GameWindowManager &m_manager;
 	std::string m_aptInstanceName;
+	std::string m_badgeImage, m_badgeHelp; // lane PLATFORMICON-1
+	int m_badgeSize = 0;
 };
 
 inline bool BitTest(std::uint32_t value, std::uint32_t bits) { return (value & bits) != 0; }

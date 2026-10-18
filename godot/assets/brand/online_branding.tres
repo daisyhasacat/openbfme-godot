@@ -1,0 +1,13 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Texture2D" path="res://assets/brand/poweredby_openbfme.png" id="1"]
+
+[resource]
+metadata/images = [{
+"movie": "OnlineLogin",
+"image": 118,
+"texture": ExtResource("1")
+}]
+metadata/strings = {
+"TOOLTIP:OnlineShell/OnlineLogin/GamespyShortcut": "OpenBFME"
+}

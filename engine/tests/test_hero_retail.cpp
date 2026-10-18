@@ -37,6 +37,7 @@
 #include "GameLogic/Module/SpecialPowerModules.h"
 #include "GameLogic/Module/SpecialAbilityModules.h"
 #include "GameLogic/Combat/CombatNames.h"
+#include "GameLogic/Combat/CombatState.h"
 #include "GameLogic/Combat/ObjectWeapons.h"
 #include "GameLogic/BitFlags.h"
 #include "GameLogic/Module/AIUpdate.h"
@@ -55,9 +56,12 @@
 #include "GameLogic/ScriptEngine/Scripts.h"
 #include "PathfindTestUtil.h"
 #include "RetailTestMount.h"
+#include "GameLogic/AI/AIPathfind.h"
+#include "GameLogic/Combat/CombatState.h"
 #include "GameLogic/AI/AIWorld.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <map>
 #include <memory>
 #include <set>
@@ -1477,6 +1481,94 @@ TEST_CASE("hero abilities retail: FactionAngmar") { checkAbilities("FactionAngma
 
 // lane HERO-2: DamageFilteredCreateObjectDie (RW 0x8892B0): a hero killed by a BECOME_UNDEAD hit (the Black Rider's Morgul blade poison, DamageSubType) becomes
 // the killer's Barrow Wight (OCL_BecomeUndead with the killer as primary) and its body is destroyed; a normal kill leaves it alone
+TEST_CASE("STOPS-B1 S-261 retail: ordinary hero kills pay level-scaled bounty without a hook")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	Game g(sh, "FactionMen", "FactionMordor");
+	const ThingTemplate *heroTemplate = sh.world->things().findTemplate("RohanEowyn");
+	const ThingTemplate *killerTemplate = sh.world->things().findTemplate("MordorFighter");
+	REQUIRE(heroTemplate);
+	REQUIRE(killerTemplate);
+	const int baseBounty = static_cast<int>(Economy::templateInt(*heroTemplate, "BountyValue"));
+	// tolerance: the retail template must provide a positive bounty for level scaling to be meaningful.
+	REQUIRE(baseBounty > 0);
+	Object *killer = g.make(killerTemplate, g.me, 600.0f, 600.0f);
+	g.me->setBountyPercent(1.0f);
+	for (int rank : { 1, 5, 10 })
+	{
+		CAPTURE(rank);
+		Object *victim = g.make(heroTemplate, g.enemy, 900.0f, 900.0f);
+		ExperienceTracker *tracker = victim->getExperienceTracker();
+		REQUIRE(tracker);
+		tracker->gainExpForLevel(rank - 1, false);
+		g.logic->runLogicFrame();
+		REQUIRE(tracker->getRank() == rank);
+		const std::uint32_t moneyBefore = g.me->getMoney()->countMoney();
+		g.kill(*victim, killer);
+		// Retail Eowyn has ten ranks; these small integer inputs avoid PC24 boundary cases.
+		CHECK(g.me->getMoney()->countMoney() - moneyBefore == static_cast<unsigned>(baseBounty + baseBounty * rank / 10));
+	}
+}
+
+TEST_CASE("STOPS-B1 S-853 retail: respawning hero death restores ownership before damage notifications")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	for (bool defected : { false, true })
+	{
+		CAPTURE(defected);
+		Game g(sh, "FactionMen", "FactionMordor");
+		const ThingTemplate *heroTemplate = sh.world->things().findTemplate("RohanEowyn");
+		const ThingTemplate *enemyTemplate = sh.world->things().findTemplate("MordorFighter");
+		REQUIRE(heroTemplate);
+		REQUIRE(enemyTemplate);
+		Object *hero = g.make(heroTemplate, g.me, 600.0f, 600.0f);
+		Object *killer = g.make(enemyTemplate, g.enemy, 900.0f, 900.0f);
+		REQUIRE(hero->findModule("RespawnUpdate"));
+		g.logic->runLogicFrame();
+		if (defected)
+		{
+			REQUIRE(TemporarilyDefectUpdate::of(*hero));
+			hero->defect(killer, false);
+			REQUIRE(hero->testStatus(0x3e));
+			REQUIRE(hero->getControllingPlayer() == g.enemy);
+		}
+		const auto killsBefore = g.logic->combat().counters().kills;
+		DamageInfo nonlethal;
+		nonlethal.m_input.m_damageType = DAMAGE_UNRESISTABLE;
+		nonlethal.m_input.m_amount = 1.0f;
+		hero->attemptDamage(nonlethal);
+		CHECK_FALSE(hero->isEffectivelyDead());
+		CHECK(hero->testStatus(0x3e) == defected);
+		CHECK(g.logic->combat().counters().kills == killsBefore);
+
+		int notifications = 0;
+		g.logic->combat().setDamageTrace([&](const Object &victim, std::uint32_t source, float, float) {
+			if (victim.getID() != hero->getID())
+			{
+				return;
+			}
+			++notifications;
+			CHECK(source == killer->getID());
+			CHECK(victim.isEffectivelyDead());
+			CHECK_FALSE(victim.testStatus(0x3e));
+			CHECK(victim.getControllingPlayer() == g.me);
+			CHECK(g.logic->combat().counters().kills == killsBefore + 1);
+			const int index = g.me->heroes().findIndex(*heroTemplate, 0xFFFFFFFFu, 0);
+			const HeroRecord *record = g.me->heroes().at(index);
+			REQUIRE(record);
+			CHECK(record->dead);
+		});
+		g.kill(*hero, killer);
+		g.logic->combat().setDamageTrace(nullptr);
+		CHECK(notifications == 1);
+		CHECK(g.logic->combat().counters().kills == killsBefore + 1);
+		CHECK(hero->getControllingPlayer() == g.me);
+		const int wrongIndex = g.enemy->heroes().findIndex(*heroTemplate, 0xFFFFFFFFu, 0);
+		const HeroRecord *wrongRecord = g.enemy->heroes().at(wrongIndex);
+		CHECK_FALSE((wrongRecord && wrongRecord->dead));
+	}
+}
+
 TEST_CASE("hero retail: a BECOME_UNDEAD kill turns a hero into the killer's Barrow Wight (DamageFilteredCreateObjectDie, RW 0x8892B0)")
 {
 	REQUIRE_RETAIL_WORLD(sh);
@@ -1552,13 +1644,27 @@ TEST_CASE("hero retail: MSG_DO_AUTO_ABILITY makes Eowyn cast Smite by herself at
 	AutoAbilityBehavior *aa = AutoAbilityBehavior::forPower(*hero, smite->getName());
 	REQUIRE(aa);
 	CHECK(aa->autoButton().empty());
+	// review DEVPORT-7e (the sibling of Sol #1): the enemy's identical message naming our Eowyn toggles nothing, on or off
+	auto forged = [&]() {
+		GameMessage m(MSG_DO_AUTO_ABILITY, g.enemy->getPlayerIndex());
+		m.appendIntegerArgument((int)smite->getID());
+		m.appendObjectIDArgument(hero->getID());
+		g.list.append(m);
+		g.logic->runLogicFrame();
+	};
+	REQUIRE(g.enemy->getPlayerIndex() != g.me->getPlayerIndex());
+	forged();
+	CHECK(aa->autoButton().empty());
 	GameMessage on(MSG_DO_AUTO_ABILITY, g.me->getPlayerIndex());
 	on.appendIntegerArgument((int)smite->getID());
 	on.appendObjectIDArgument(hero->getID());
 	g.list.append(on);
 	g.logic->runLogicFrame();
 	CHECK(aa->autoButton() == "Command_EowynSmite");
+	forged();
+	CHECK(aa->autoButton() == "Command_EowynSmite");
 	const unsigned long long casts = AutoAbilityBehavior::stats().casts;
+	hero->getBodyModule()->setMaxHealth(1000000.0f, 1); // she outlives Gothmog's reply (the ratio kept: full health), so the "off" below toggles a live hero
 	Object *victim = g.make(victimT, g.enemy, 1060.0f, 1000.0f);
 	const float before = victim->getBodyModule()->getHealth();
 	bool cast = false;
@@ -1573,13 +1679,95 @@ TEST_CASE("hero retail: MSG_DO_AUTO_ABILITY makes Eowyn cast Smite by herself at
 		g.logic->runLogicFrame();
 	}
 	CHECK(victim->getBodyModule()->getHealth() < before);
-	// the same button again: off (RW 0x85D76C)
+	// the same button again: off (RW 0x85D76C). Precondition: she is alive and ours (a dead hero has no controlling player, review DEVPORT-7e: nobody's to toggle)
+	REQUIRE_FALSE(hero->isEffectivelyDead());
+	REQUIRE(hero->getControllingPlayer() == g.me);
 	GameMessage off(MSG_DO_AUTO_ABILITY, g.me->getPlayerIndex());
 	off.appendIntegerArgument((int)smite->getID());
 	off.appendObjectIDArgument(hero->getID());
 	g.list.append(off);
 	g.logic->runLogicFrame();
 	CHECK(aa->autoButton().empty());
+}
+
+// lane BACKLOG-8: AutoAbilityBehavior's AdjustAttackMeleePosition (RW 0x85DDA4 .. 0x85DDCC: Pathfinder::adjustToMeleeDestination RW 0x6EEBC1 on the cast position
+// unless the target's geometry is small). The Wyrm (ModuleTag_AutoAbilityBehavior: SpecialAbilityWyrmReposition, StartsActive, AdjustAttackMeleePosition = Yes,
+// MinScanRange 50, MaxScanRange 500, IdleTimeSeconds 4) repositions next to the nearest enemy by itself.
+namespace
+{
+struct WyrmRun
+{
+	bool cast = false;
+	unsigned long long adjusted = 0;
+	Coord3D end{};
+	Coord3D target{};
+	bool endOnObstacle = false;
+	bool targetSmall = false;
+};
+
+// the Wyrm 300 from an enemy `targetName`; `footprint`: the target's cells are obstacles of the pathfinder
+WyrmRun runWyrm(Shared &sh, const char *targetName, bool footprint)
+{
+	WyrmRun r;
+	Game g(sh, "FactionWild", "FactionMordor", true);
+	HeroAbilityModules::registerHandlers(*g.dispatch);
+	g.logic->combat().setAutoAcquireEnabled(false); // the Wyrm must stay idle for its IdleTimeSeconds: nothing but the auto ability may move it
+	const ThingTemplate *wyrmT = sh.world->things().findTemplate("Wyrm");
+	const ThingTemplate *targetT = sh.world->things().findTemplate(targetName);
+	REQUIRE(wyrmT);
+	REQUIRE(targetT);
+	Object *wyrm = g.make(wyrmT, g.me, 1000.0f, 1000.0f);
+	Object *target = g.make(targetT, g.enemy, 1300.0f, 1000.0f);
+	if (footprint)
+	{
+		g.ai->addObjectToPathfindMap(*target);
+	}
+	r.target = *target->getPosition();
+	r.targetSmall = g.ai->movementInfo(*targetT).geometry.isSmall;
+	const unsigned long long casts = AutoAbilityBehavior::stats().casts, adjusted = AutoAbilityBehavior::stats().meleeAdjust;
+	for (int i = 0; i < 400 && !r.cast; ++i)
+	{
+		g.logic->runLogicFrame();
+		r.cast = AutoAbilityBehavior::stats().casts > casts;
+	}
+	r.adjusted = AutoAbilityBehavior::stats().meleeAdjust - adjusted;
+	for (int i = 0; i < 60; ++i) // UnpackTime 3200 ms + PackTime 2100 ms
+	{
+		g.logic->runLogicFrame();
+	}
+	r.end = *wyrm->getPosition();
+	const PathfindCell *cell = g.ai->pathfinder().getCell(LAYER_GROUND, &r.end);
+	r.endOnObstacle = cell && cell->getType() == PathfindCell::CELL_OBSTACLE;
+	return r;
+}
+} // namespace
+
+TEST_CASE("backlog8 retail: the Wyrm's auto reposition lands beside a large target, not inside it (AdjustAttackMeleePosition, RW 0x85DDA4 -> 0x6EEBC1); a "
+		  "small target and a target without a footprint take it at their own position")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	const WyrmRun inside = runWyrm(sh, "MordorOrcPit", false);  // control: the same large target, its cells free
+	const WyrmRun beside = runWyrm(sh, "MordorOrcPit", true);
+	const WyrmRun small = runWyrm(sh, "GoblinFighter", false); // GeometryIsSmall = Yes
+	std::printf("  info: wyrm ends: free cells (%.1f, %.1f), obstacle cells (%.1f, %.1f), small target (%.1f, %.1f); adjust calls %llu %llu %llu\n", inside.end.x, inside.end.y,
+		beside.end.x, beside.end.y, small.end.x, small.end.y, inside.adjusted, beside.adjusted, small.adjusted);
+	REQUIRE(inside.cast);
+	REQUIRE(beside.cast);
+	REQUIRE(small.cast);
+	REQUIRE_FALSE(inside.targetSmall);
+	REQUIRE(small.targetSmall);
+	// a large target: the adjustment runs; with free cells the position stays the target's own
+	CHECK(inside.adjusted == 1);
+	CHECK(inside.end.x == inside.target.x);
+	CHECK(inside.end.y == inside.target.y);
+	// its cells obstacles: the Wyrm comes up on a free cell on its own side of the target
+	CHECK(beside.adjusted == 1);
+	CHECK_FALSE(beside.endOnObstacle);
+	CHECK(beside.end.x < beside.target.x); // tolerance: the spiral takes only cells closer to the Wyrm (it starts at x 1000) than the target (x 1300)
+	// a small target: no adjustment (Object + 0xAC, RW 0x85DDAF)
+	CHECK(small.adjusted == 0);
+	CHECK(SimMath::floorToInt(small.end.x / 10.0f) == SimMath::floorToInt(small.target.x / 10.0f)); // the target's own cell
+	CHECK(SimMath::floorToInt(small.end.y / 10.0f) == SimMath::floorToInt(small.target.y / 10.0f));
 }
 
 // lane AUTOCAST-1: the Witch-king's Morgul Blade (Command_WitchkingMorgulBlade, AutoAbility = Yes; ModuleTag_MorgulBladeAutoAbility: Query 1
@@ -1886,8 +2074,8 @@ TEST_CASE("autocast retail: MSG_DO_AUTO_ABILITY_WEAPON toggles Gimli's Axe Throw
 	g.logic->runLogicFrame();
 	AutoAbilityBehavior *aa = AutoAbilityBehavior::first(*gimli);
 	CHECK(aa->autoButton().empty());
-	auto send = [&](int slot) {
-		GameMessage m(MSG_DO_AUTO_ABILITY_WEAPON, g.me->getPlayerIndex());
+	auto send = [&](int slot, const Player *from = nullptr) {
+		GameMessage m(MSG_DO_AUTO_ABILITY_WEAPON, (from ? from : g.me)->getPlayerIndex());
 		m.appendIntegerArgument(slot);
 		m.appendObjectIDArgument(gimli->getID());
 		g.list.append(m);
@@ -1895,7 +2083,11 @@ TEST_CASE("autocast retail: MSG_DO_AUTO_ABILITY_WEAPON toggles Gimli's Axe Throw
 	};
 	send(axe->m_weaponSlot + 1); // another slot: no FIRE_WEAPON button of it, nothing
 	CHECK(aa->autoButton().empty());
+	send(axe->m_weaponSlot, g.enemy); // review DEVPORT-7e: the enemy's message naming our Gimli toggles nothing
+	CHECK(aa->autoButton().empty());
 	send(axe->m_weaponSlot);
+	CHECK(aa->autoButton() == "Command_GimliAxeThrow");
+	send(axe->m_weaponSlot, g.enemy); // nor does it toggle him off
 	CHECK(aa->autoButton() == "Command_GimliAxeThrow");
 	send(axe->m_weaponSlot);
 	CHECK(aa->autoButton().empty());

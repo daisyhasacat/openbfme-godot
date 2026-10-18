@@ -15,7 +15,7 @@ rm -rf "$PHOME"; mkdir -p "$OUT" "$PHOME"
 C="python3 $HERE/online_client.py"
 rm -f "$OUT/spectate-id.txt"
 $C host --lobby "$LOBBY" --name Gondor --profile "$PROFILE" --map "maps/map mp fall back 4p/map mp fall back 4p.map" --slot "player,3,0,0,0" \
-    --slot open --slot "hard,5,2,2,1" --players 2 --id-file "$OUT/spectate-id.txt" --out "$OUT/spectate-s0.json" --timeout 300 > "$OUT/spectate-host.log" 2>&1 &
+    --slot open --slot "hard,5,2,2,1" --players 2 --spectator-delay 0 --id-file "$OUT/spectate-id.txt" --out "$OUT/spectate-s0.json" --timeout 300 > "$OUT/spectate-host.log" 2>&1 &
 HP=$!
 for _ in $(seq 1 100); do [ -s "$OUT/spectate-id.txt" ] && break; sleep 0.2; done
 ID="$(cat "$OUT/spectate-id.txt")"

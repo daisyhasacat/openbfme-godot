@@ -29,8 +29,8 @@
 // member pass while the horde is dirty, has back-up records or a fighter B (RW 0x8730CD .. 0x8730E4); with B but no A (the quarrel ended) B and the distance map are
 // cleared first (RW 0x8730F7 .. 0x873107).
 //
-// INFERENCE / NOT PORTED (stop S-1028): the horde's own "attacked" record (+ 0x298 / + 0x29C) has no identified writer (never set); the members of the map + 0x170 (skipped by the pass, counted by
-// the nearest-neighbour search) are not ported; the clear of RW 0x686D65 at the quarrel's begin is taken to be the distance map's.
+// RW 0x87370B records ordinary member removal at +0x298 and its last attacker at +0x29C; garrison release does not write them.
+// INFERENCE / NOT PORTED (stop S-1028): +0x170's member-pass/nearest-neighbour handling and RW 0x686D65's quarrel distance-map clear.
 
 #include "Common/GameCommon.h"
 #include "Common/StateHash.h"
@@ -39,6 +39,7 @@
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/HordeContain.h"
 #include "GameLogic/Object/Contain/HordeContainBehaviorData.h"
+#include "GameLogic/Object/Contain/HordeContainCore.h"
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/ObjectTemplateInfo.h"
@@ -55,8 +56,9 @@ const float kCowerStep = 5.0f;      // RW 0xBDAE58
 
 const char *const kStopHordeEmotion =
 	"[S-1028] horde emotions: the back-up records (RW 0x878905), cowering, the quarrel (RW 0x876DA5 / 0x870B91), the face point and the member pass branches (RW 0x873FE8) "
-	"are ported (the records end when the horde moves or melees, RW 0x873155); INFERENCE: the horde's own attacked record "
-	"(+ 0x298) is never set, the pass's skipped-member map + 0x170 is not ported, RW 0x686D65 at the quarrel's begin is the distance map's clear";
+	"are ported (the records end when the horde moves or melees, RW 0x873155); recent damage uses the own cache (+ 0x298 / + 0x29C, RW 0x87370B) "
+	"and registered-member set (+ 0x170, RW 0x86EE52); INFERENCE / NOT PORTED: the separate + 0x170 member-pass / nearest-neighbour handling, "
+	"RW 0x686D65 at the quarrel's begin is the distance map's clear";
 
 void normalize3(float &x, float &y, float &z)
 {
@@ -274,13 +276,28 @@ bool HordeContain::attackedWithin(unsigned frames, ObjectID &attacker) const
 {
 	// RW 0x86EE52
 	attacker = INVALID_ID;
-	if (!(frames < getObject()->logic().getFrame()))
+	GameLogic &logic = getObject()->logic();
+	if (!(frames < logic.getFrame()))
 	{
 		return false;
+	}
+	if (m_lastMemberRemovedFrame != 0xFFFFFFFFu && m_lastMemberRemovedFrame + frames >= logic.getFrame())
+	{
+		attacker = m_removedMemberAttacker;
+		return true;
 	}
 	for (Object *m : m_members)
 	{
 		if (m && emotionAttackedWithin(*m, 4, attacker))
+		{
+			return true;
+		}
+	}
+	// RW H+0x170: also visits registered members released toward a garrison, in object-ID order.
+	for (ObjectID id : m_core->registeredMembers())
+	{
+		Object *member = logic.findObjectByID(id);
+		if (member && emotionAttackedWithin(*member, 4, attacker))
 		{
 			return true;
 		}

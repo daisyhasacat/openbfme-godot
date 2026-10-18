@@ -244,8 +244,10 @@ TEST_CASE("hud5 pick retail: each caller's pick types: selection prefers own obj
 	};
 	const HudContext &ctx = rig.input->context();
 	// the masks
-	CHECK(HudObjects::pickTypesForContext(ctx, false) == HudObjects::PICK_TYPE_SELECTABLE);
-	CHECK(HudObjects::pickTypesForContext(ctx, true) == (HudObjects::PICK_TYPE_SELECTABLE | HudObjects::PICK_TYPE_FORCEATTACKABLE));
+	CHECK(HudObjects::pickTypesForContext(ctx, false) ==
+		  (HudObjects::PICK_TYPE_SELECTABLE | HudObjects::PICK_TYPE_SCRIPT_TARGETABLE));
+	CHECK(HudObjects::pickTypesForContext(ctx, true) ==
+		  (HudObjects::PICK_TYPE_SELECTABLE | HudObjects::PICK_TYPE_FORCEATTACKABLE | HudObjects::PICK_TYPE_SCRIPT_TARGETABLE));
 	// the camera looks north: the nearer object stands south of the farther one on the same ray
 	Object *own = make("MenPorter", rig.local, c.x, c.y);
 	Object *foe = make("MenPorter", enemy, c.x, c.y + 60.0f);
@@ -295,7 +297,7 @@ TEST_CASE("hud5 pick retail: each caller's pick types: selection prefers own obj
 
 // Sol's review: Minas Tirith's gate, friend and enemy. Its owner (the player at start 1) selects it: TOGGLE_GATE is active and closes it through the message path;
 // seen by the player at start 2 (an enemy), the selected gate offers no command (the control bar shows only the local player's own objects' command sets)
-TEST_CASE("hud5 gate button retail: Minas Tirith's gate toggles for its owner; an enemy's selection of it offers no Toggle")
+TEST_CASE("hud5 gate button retail: Minas Tirith's gate toggles for its owner; an enemy's selection of it shows the Toggle disabled and sends nothing")
 {
 	if (!haveWorld("hud5 minas tirith gate button"))
 	{
@@ -328,6 +330,18 @@ TEST_CASE("hud5 gate button retail: Minas Tirith's gate toggles for its owner; a
 	g.hud->input().ui().deselectAll(true);
 	g.hud->input().ui().selectObject(gate->getID());
 	g.frames(5);
-	CHECK(g.toggle() == nullptr);
+	// lane OWNERFIX-3: retail shows another player's command set (evaluateContextUI RW 0x71EBDA -> context 1) with every button disabled
+	// (updateContextCommand RW 0x94397F); before, the port showed no set at all, which this case had pinned as "no Toggle"
+	const ControlBarButton *et = g.toggle();
+	REQUIRE(et);
+	CHECK((int)et->state == (int)ButtonState::Restricted);
+	CHECK(g.hud->controlBar().foreignView());
+	const int sent = g.count("MSG_OPEN_GATE") + g.count("MSG_CLOSE_GATE");
+	const bool openNow = b->isOpen();
+	CHECK_FALSE(g.hud->controlBar().pressButton(et->slot, et->inPalantir));
+	CHECK_FALSE(g.hud->controlBar().rightPressButton(et->slot, et->inPalantir));
+	g.frames(5);
+	CHECK(g.count("MSG_OPEN_GATE") + g.count("MSG_CLOSE_GATE") == sent);
+	CHECK(b->isOpen() == openNow);
 	g.rig.game->players().setLocalPlayer(g.rig.local);
 }

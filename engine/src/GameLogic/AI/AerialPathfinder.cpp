@@ -17,6 +17,7 @@
 #include "GameLogic/SimMath.h"
 
 #include <cfloat>
+#include "GameLogic/AI/AIXfer.h"
 
 namespace
 {
@@ -295,6 +296,48 @@ void AerialSpline::crc(StateHasher &h) const
 	h.addFloat(m_endPoint.x);
 	h.addFloat(m_endPoint.y);
 	h.addFloat(m_endPoint.z);
+}
+
+void AerialSpline::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferVectorSize(m_records, 4 + 4 * kSamples + 12 * kSamples + 12);
+	for (Record &r : m_records)
+	{
+		x.xferReal(&r.duration);
+		for (float &f : r.steps)
+		{
+			x.xferReal(&f);
+		}
+		for (Coord3D &c : r.samples)
+		{
+			AIXfer::coord(x, c);
+		}
+		AIXfer::coord(x, r.point);
+	}
+	x.xferReal(&m_time);
+	x.xferReal(&m_segmentBegin);
+	x.xferUnsignedInt(&m_segment);
+	x.xferBool(&m_valid);
+	x.xferReal(&m_totalLength);
+	x.xferReal(&m_sampleBegin);
+	x.xferInt(&m_sample);
+	AIXfer::coord(x, m_result);
+	AIXfer::coord(x, m_endPoint);
+	if (x.isLoading())
+	{
+		// the walk's place: a segment of the records (evaluate reads m_records[m_segment] and [m_segment + 1]) and a sample of the record
+		if (!m_records.empty())
+		{
+			AIXfer::inRange(m_segment, 0, (long long)m_records.size() - 1, "aerial spline: the segment");
+		}
+		else if (m_segment != 0)
+		{
+			throw XferException("aerial spline: the segment " + std::to_string(m_segment) + " of no control points");
+		}
+		AIXfer::inRange(m_sample, 0, kSamples, "aerial spline: the sample");
+	}
 }
 
 // ---- TheAerialPathfinder ----------------------------------------------------------------------------------------------------------------------------------

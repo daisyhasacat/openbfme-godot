@@ -27,10 +27,11 @@ struct World
 	ModuleFactory modules;
 	ThingFactory things;
 
-	World()
+	// bfme1 (community PR #36): the ThingFactory is built for BFME1 data (its templates answer bfme1Data())
+	explicit World(bool bfme1 = false)
 		: grammar(RwBinaryData::embedded())
 		, modules(keys, grammar)
-		, things(keys, modules, grammar)
+		, things(keys, modules, grammar, bfme1)
 	{
 		keys.init();
 		modules.init();

@@ -25,6 +25,7 @@
 #include "Common/INIDataTypes.h"
 #include "Common/Module.h"
 #include "Common/NameKeyGenerator.h"
+#include "Common/ProductionPrerequisite.h"
 
 #include <memory>
 #include <string>
@@ -187,12 +188,15 @@ public:
 	// VIS-1: the same slots by index: the row-name table (shared by the templates of one factory, fixed by the binary's field table) and the slot's live value
 	// (nullptr when never set), so a hot reader resolves a name once per table and still reads the current value
 	const std::vector<std::string> *fieldNameTable() const { return m_fieldNames; }
+	// community PR #36 (Common/BfmeGame.h): the template comes from BFME1 data; the simulation gates BFME1 behaviour on it (RotWK / BFME2 never set it)
+	bool bfme1Data() const { return m_bfme1; }
 	const FieldValue *fieldAt(size_t slot) const
 	{
 		return slot < m_fields.size() && !std::holds_alternative<std::monostate>(m_fields[slot]) ? &m_fields[slot] : nullptr;
 	}
 	std::vector<std::string> fieldNames() const; ///< names of the fields that were set
 	const std::vector<RawBlock> &rawBlocks() const { return m_rawBlocks; }
+	const std::vector<ProductionPrerequisite> &productionPrerequisites() const { return m_productionPrerequisites; }
 	// AUDIO-2: a voice row's value (the audio table rows parsed by RW 0x73ACEF -> 0x73AB45 store {Eva event id, audio event}). Each line changes the
 	// slot the template already has (from an earlier line or the template it was copied from): "NoSound" clears both halves; `EVA:<event>` sets only the
 	// Eva half (RW 0x73ABC5 .. 0x73ABF8 writes the id and leaves the sound at +4); `+SOUND:<event>` sets only the sound (RW 0x73AC21, the id kept);
@@ -252,8 +256,10 @@ private:
 	std::uint64_t *m_catalogRevision = nullptr; // owning factory; never copied by copyFrom
 	std::vector<FieldValue> m_fields;
 	const std::vector<std::string> *m_fieldNames = nullptr;
+	bool m_bfme1 = false; // community PR #36: made by a ThingFactory for BFME1 data
 	const std::unordered_map<std::string, size_t> *m_fieldIndex = nullptr; ///< the factory's name -> slot index of m_fieldNames (unique names)
 	std::vector<RawBlock> m_rawBlocks;
+	std::vector<ProductionPrerequisite> m_productionPrerequisites;
 	std::vector<GeometryEvent> m_geometryEvents;
 	std::vector<RawTokens> m_kindOfRows;
 	std::vector<std::pair<std::string, VoiceRowValue>> m_voiceRows; ///< AUDIO-2: row name -> both halves (see voiceRow); copied with the template

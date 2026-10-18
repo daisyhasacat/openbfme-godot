@@ -46,6 +46,9 @@ struct CameraSettings
 	// lane PLAY-1: the in-game UI's move hint model (MoveHintName, GlobalData + 0x10, row RW 0xBFF5C0, parseAsciiString RW 0x42EE5E; retail "SCMoveHint").
 	// Optional: a GameData without it leaves it empty and the HUD reports that no hint is drawn (the constructor's value was not read)
 	std::string moveHintName;
+	// RW 0x71D18F reads GlobalData +0x94; DownwindAngle is parseReal, not parseAngleReal.
+	float downwindAngle = 0.0f;
+	bool haveDownwindAngle = false;
 	// lane HUD-5: what the drawable decorations read (GameClient/DrawableIconUI.h): ShowObjectHealth (GlobalData + 0x9BD, parseBool, row RW 0xC00120) and
 	// VeterancyPipDrawObjectFilter (GlobalData + 0xEB8, ParseObjectFilter RW 0x76392F, row RW 0xC00C40). Optional (not every GameData has them): absent, the
 	// health bars and the veterancy marks are off and the HUD reports it

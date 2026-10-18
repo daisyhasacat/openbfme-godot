@@ -133,6 +133,7 @@ class AISpecialPowerUpdate : public UpdateModule
 	static inline const Coord3D kNoLocation{};
 
 public:
+	OBFME_MODULE_XFER(AISpecialPowerUpdate) // lane SAVE-4b
 	AISpecialPowerUpdate(Thing *thing, const AISpecialPowerUpdateModuleData *data); // RW 0x8B703A
 	UpdateSleepTime update() override;                                               // RW 0x8B73B7
 	void crc(StateHasher &h) const override;

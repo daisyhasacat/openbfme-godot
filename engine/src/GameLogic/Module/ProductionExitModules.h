@@ -40,6 +40,7 @@ public:
 class SimpleProductionExitUpdate : public UpdateModule, public ExitInterface
 {
 public:
+	OBFME_MODULE_XFER(SimpleProductionExitUpdate) // lane SAVE-4b
 	SimpleProductionExitUpdate(Thing *thing, const DefaultProductionExitUpdateModuleData *data);
 	ExitInterface *getExitInterface() override { return this; }
 	UpdateSleepTime update() override { return UPDATE_SLEEP_FOREVER; }
@@ -74,6 +75,7 @@ protected:
 class DefaultProductionExitUpdate : public SimpleProductionExitUpdate
 {
 public:
+	OBFME_MODULE_XFER(DefaultProductionExitUpdate) // lane SAVE-4b: SimpleProductionExitUpdate's
 	using SimpleProductionExitUpdate::SimpleProductionExitUpdate;
 	static void registerClass(ModuleFactory &modules);
 	void exitObjectViaDoor(Object *newObj, ExitDoorType door) override; // RW 0x88B479
@@ -82,6 +84,7 @@ public:
 class SupplyCenterProductionExitUpdate : public SimpleProductionExitUpdate
 {
 public:
+	OBFME_MODULE_XFER(SupplyCenterProductionExitUpdate) // lane SAVE-4b: SimpleProductionExitUpdate's
 	using SimpleProductionExitUpdate::SimpleProductionExitUpdate;
 	static void registerClass(ModuleFactory &modules);
 	void exitObjectViaDoor(Object *newObj, ExitDoorType door) override; // RW 0x8A9DBA
@@ -97,6 +100,7 @@ public:
 class SpawnPointProductionExitUpdate : public UpdateModule, public ExitInterface
 {
 public:
+	OBFME_MODULE_XFER(SpawnPointProductionExitUpdate) // lane SAVE-4b
 	enum
 	{
 		MAX_SPAWN_POINTS = 10

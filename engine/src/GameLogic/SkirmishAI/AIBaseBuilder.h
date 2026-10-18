@@ -128,8 +128,7 @@ struct AIBaseInstance
 struct AIUnitBuilderState
 {
 	bool disabled = false;                               ///< + 0x4 (DisableUnitBuilding)
-	std::multimap<NameKeyType, ObjectID> factories;      ///< + 0xC: unit name key -> factory (RW 0x9A0838 inserts per new structure)
-	std::vector<ObjectID> registeredStructures;          ///< the structures RW 0x9A0838 has seen (S-416)
+	std::multimap<NameKeyType, ObjectID> factories;      ///< + 0xC: unit name key -> factory (RW 0x9A0838 inserts at the object event, RW 0x9A051D erases)
 	std::map<NameKeyType, float> composition;            ///< + 0x18: unit name key -> desired percent of the army (RW 0x9A0E2B)
 	std::vector<std::shared_ptr<AIBuildRequest>> requests; ///< + 0x14: the unit requests made (RW 0x9A1051 appends)
 	bool recompute = true;                               ///< + 0x2C

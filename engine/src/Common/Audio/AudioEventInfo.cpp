@@ -105,8 +105,7 @@ void parseDelayPair(INI *ini, void *, void *store, const void *)
 // value is flipped back first so "+FLAG" / "-FLAG" edit the BFME1 bits of a value copied from the default event.
 void parseAudioControl(INI *ini, void *instance, void *store, const void *userData)
 {
-	const ArchiveFileSystem *fs = ini->environment().fileSystem;
-	if (!fs || !isBfme1Data(*fs))
+	if (!ini->bfme1Data())
 	{
 		INI::parseBitString32(ini, instance, store, userData);
 		return;
@@ -302,7 +301,7 @@ void ParseMultisoundBlock(INI *ini, AudioEventInfoStore &store)
 
 	struct MultisoundParse
 	{
-		static void parseControl(INI *ini2, void *, void *s, const void *ud) { INI::parseBitString32(ini2, nullptr, s, ud); }
+		static void parseControl(INI *ini2, void *instance, void *s, const void *ud) { parseAudioControl(ini2, instance, s, ud); }
 		static void parseSubsounds(INI *ini2, void *instance, void *, const void *ud)
 		{
 			AudioEventInfo *self = static_cast<AudioEventInfo *>(instance);

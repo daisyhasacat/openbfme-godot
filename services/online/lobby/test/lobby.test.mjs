@@ -728,6 +728,8 @@ test('ONLINE-3: a spectator (an account that is not a player) gets a spectator S
   const w = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Wat' } })).body;
   const id = (await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'g', profile: PROFILE, setup } })).body.id;
   await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: PROFILE } });
+  assert.equal(lobby.games.get(id).setup.spectatorDelay, 120);
+  assert.equal((await call(lobby, 'POST', `/v1/games/${id}/setup`, { token: b.token, body: { spectatorDelay: 90 } })).status, 403);
   // the host sets the delay; out of range is refused
   assert.equal((await call(lobby, 'POST', `/v1/games/${id}/setup`, { token: a.token, body: { spectatorDelay: 601 } })).status, 400);
   assert.equal((await call(lobby, 'POST', `/v1/games/${id}/setup`, { token: a.token, body: { spectatorDelay: 60 } })).status, 200);
@@ -752,6 +754,22 @@ test('ONLINE-3: a spectator (an account that is not a player) gets a spectator S
   assert.equal(s1.spectator, 1);
 });
 
+test('ONLINE-3: the default spectator delay is signed into START tickets', async () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const a = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Ann' } })).body;
+  const b = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Bea' } })).body;
+  const w = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Wat' } })).body;
+  const id = (await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'g', profile: PROFILE, setup } })).body.id;
+  await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: PROFILE } });
+  assert.equal(lobby.games.get(id).setup.spectatorDelay, 120);
+  await call(lobby, 'POST', `/v1/games/${id}/ready`, { token: b.token, body: { ready: true } });
+  await call(lobby, 'POST', `/v1/games/${id}/start`, { token: a.token });
+  const start = (await call(lobby, 'POST', `/v1/games/${id}/spectate`, { token: w.token })).body.start;
+  assert.equal(start.delay, 120);
+  const ticket = base64UrlDecode(start.ticket);
+  assert.equal(ticket[16] | (ticket[17] << 8), 120);
+});
+
 test('ONLINE-4: the server browser\'s list: open games only, or with ?running=1 also the started ones (to watch), open ones first', async () => {
   const env = fakeEnv();
   const lobby = new Lobby(env, configFromEnv(ENV));
@@ -768,8 +786,7 @@ test('ONLINE-4: the server browser\'s list: open games only, or with ?running=1 
   assert.deepEqual(all.map((g) => [g.id, g.state]), [[g2, 'open'], [g1, 'started']]);
 });
 
-// INFRA-2: the admin backup on the Durable Object (services/online/deploy/lobby_backup.py is its client; tools/net/test_lobby_backup.py runs it
-// against the self-hosted server)
+// INFRA-2: the admin backup on the Durable Object (its client, the operator's backup tool, is kept outside this repository)
 const ADMIN_KEY = 'cc'.repeat(32);
 function adminHeaders(method, path, body = new Uint8Array(0), key = ADMIN_KEY, at = Date.now()) {
   const url = new URL(path, 'http://lobby');
@@ -1247,4 +1264,392 @@ test('Lua authority uses the actual nonzero host slot including archived START',
   assert.equal(guest.start.setup.luaAuthoritySlot, 1);
   const replay = JSON.parse(new TextDecoder().decode(env.blobs.get(`starts/${id}.json`)));
   assert.equal(replay.setup.luaAuthoritySlot, 1);
+});
+
+test('ONLINEHUB-1: a private room by its code: not listed, joined by the code, codes checked, unique while open, no password beside one', async () => {
+  const env = fakeEnv();
+  const lobby = new Lobby(env, configFromEnv(ENV));
+  const a = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Ann' } })).body;
+  const b = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Bea' } })).body;
+  const c = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Cid' } })).body;
+  // bad codes and a code with a password are refused, nothing is made
+  for (const [room_code, extra, why] of [['abc', {}, 'room_code must be 6 .. 32 characters of A-Z a-z 0-9 _ -'], ['qm room 1', {}, 'room_code must be 6 .. 32 characters of A-Z a-z 0-9 _ -'],
+    ['x'.repeat(33), {}, 'room_code: at most 32 characters'], ['QM-abcdef12', { password: 'pw' }, 'a room with a room_code has no password']]) {
+    const r = await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'qm', profile: PROFILE, setup, room_code, ...extra } });
+    assert.equal(r.status, 400, room_code);
+    assert.equal(r.body.error, 'bad_field');
+    if (!why.includes('at most')) assert.equal(r.body.message, why);
+  }
+  assert.equal(lobby.games.size, 0);
+  const created = await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'Quick Match', profile: PROFILE, setup, room_code: 'QM-abcdef12' } });
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  assert.equal(created.body.game.private, true);
+  // not in the server browser, open or running
+  assert.equal((await call(lobby, 'GET', '/v1/games')).body.games.length, 0);
+  assert.equal((await call(lobby, 'GET', '/v1/games?running=1')).body.games.length, 0);
+  // the same code twice while the room is open
+  const twice = await call(lobby, 'POST', '/v1/games', { token: c.token, body: { name: 'Quick Match', profile: PROFILE, setup, room_code: 'QM-abcdef12' } });
+  assert.equal(twice.status, 409);
+  assert.equal(twice.body.error, 'code_taken');
+  // joining: an unknown code, a bad code, no sign-in, another profile, then the right one (twice: the same slot)
+  assert.equal((await call(lobby, 'POST', '/v1/rooms/QM-zzzzzz99/join', { token: b.token, body: { profile: PROFILE } })).body.error, 'no_room');
+  assert.equal((await call(lobby, 'POST', '/v1/rooms/../join', { token: b.token, body: { profile: PROFILE } })).status, 404);
+  assert.equal((await call(lobby, 'POST', '/v1/rooms/a%20b/join', { token: b.token, body: { profile: PROFILE } })).body.error, 'bad_field');
+  assert.equal((await call(lobby, 'POST', '/v1/rooms/QM-abcdef12/join', { body: { profile: PROFILE } })).status, 401);
+  const other = await call(lobby, 'POST', '/v1/rooms/QM-abcdef12/join', { token: b.token, body: { profile: 'f'.repeat(32) } });
+  assert.equal(other.body.error, 'profile');
+  const joined = await call(lobby, 'POST', '/v1/rooms/QM-abcdef12/join', { token: b.token, body: { profile: PROFILE } });
+  assert.equal(joined.status, 200, JSON.stringify(joined.body));
+  assert.equal(joined.body.slot, 1);
+  assert.equal(joined.body.game.id, created.body.id);
+  const again = await call(lobby, 'POST', '/v1/rooms/QM-abcdef12/join', { token: b.token, body: { profile: PROFILE } });
+  assert.equal(again.body.slot, 1);
+  // the room is full now (one open slot): a third player is refused by name, the room unchanged
+  const full = await call(lobby, 'POST', '/v1/rooms/QM-abcdef12/join', { token: c.token, body: { profile: PROFILE } });
+  assert.equal(full.body.error, 'full');
+  assert.deepEqual(lobby.games.get(created.body.id).slots.map((s) => s.name ?? null), ['Ann', 'Bea', 'Computer', null, null, null, null, null]);
+  // trying codes is rate-limited per account before the lookup (a burst of 10, the clock stands: Cid's full join took one)
+  const answers = [];
+  for (let i = 0; i < 40; ++i) answers.push((await call(lobby, 'POST', `/v1/rooms/QM-guess${String(i).padStart(4, '0')}/join`, { token: c.token, body: { profile: PROFILE } })).body.error);
+  assert.deepEqual(answers, [...Array(9).fill('no_room'), ...Array(31).fill('rate_limited')]);
+  // an old client's create (no room_code) is listed as before, and its view says it is not private
+  const listed = await call(lobby, 'POST', '/v1/games', { token: c.token, body: { name: 'Open game', profile: PROFILE, setup } });
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.equal(listed.body.game.private, false);
+  assert.deepEqual((await call(lobby, 'GET', '/v1/games')).body.games.map((g) => g.name), ['Open game']);
+  // the code is free again once its room has started (a rematch with the same code makes a new room)
+  lobby.games.get(created.body.id).state = 'started';
+  const rematch = await call(lobby, 'POST', '/v1/games', { token: b.token, body: { name: 'Quick Match', profile: PROFILE, setup, room_code: 'QM-abcdef12' } });
+  assert.equal(rematch.status, 200, JSON.stringify(rematch.body)); // a started room holds neither its code nor its players' create
+});
+
+// ---- Sol's review of ONLINEHUB-1: a private room is entered only with its code, on EVERY path -----------------------------------------------------------
+async function privateRoom(lobby, tokens, code = 'QM-secret-12') {
+  const created = await call(lobby, 'POST', '/v1/games', { token: tokens.host, body: { name: 'Quick Match', profile: PROFILE, setup, room_code: code } });
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  return created.body;
+}
+async function threeAccounts(lobby) {
+  const out = {};
+  for (const [k, name] of [['host', 'Ann'], ['guest', 'Bea'], ['outsider', 'Out']]) out[k] = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name } })).body.token;
+  return out;
+}
+
+test('ONLINEHUB-1 review: an outsider cannot join a private room by its game id, with no code, a wrong code, or a code of the wrong shape', async () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const t = await threeAccounts(lobby);
+  const room = await privateRoom(lobby, t);
+  const slotsBefore = JSON.stringify(lobby.games.get(room.id).slots);
+  const attempts = [
+    {}, { room_code: 'QM-wrong-123' }, { room_code: 'qm-secret-12' }, { room_code: 'QM-SECRET-12' }, { room_code: ['QM-secret-12'] }, { room_code: { toString: 'QM-secret-12' } },
+    { room_code: 12 }, { room_code: null }, { room_code: '' }, { room_code: 'QM-secret-12 ' }, { room_code: 'QM-secret-12\u0000' }, { code: 'QM-secret-12' }, { roomCode: 'QM-secret-12' },
+  ];
+  // guessing is rate-limited per account (a burst of 10): each attempt here is another outsider
+  let n = 0;
+  for (const extra of attempts) {
+    const token = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: `Out${n++}` } })).body.token;
+    const r = await call(lobby, 'POST', `/v1/games/${room.id}/join`, { token, body: { profile: PROFILE, ...extra } });
+    assert.equal(r.status, 403, JSON.stringify(extra));
+    assert.equal(r.body.error, 'room_code', JSON.stringify(extra));
+    assert.ok(!JSON.stringify(r.body).includes('QM-secret-12'), 'the answer never echoes the code');
+  }
+  // and one account that keeps guessing meets the limiter after its burst
+  let limited = 0;
+  for (let i = 0; i < 15; ++i) limited += (await call(lobby, 'POST', `/v1/games/${room.id}/join`, { token: t.outsider, body: { profile: PROFILE, room_code: `QM-guess-${i}` } })).status === 429 ? 1 : 0;
+  assert.equal(limited, 5);
+  // the code in the query string is no authorisation either
+  const q = await call(lobby, 'POST', `/v1/games/${room.id}/join?room_code=QM-secret-12`, { token: (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Qry' } })).body.token, body: { profile: PROFILE } });
+  assert.equal(q.status, 403);
+  assert.equal(JSON.stringify(lobby.games.get(room.id).slots), slotsBefore, 'a refused join changes nothing');
+  // nothing about the room reaches the outsider: no poll, no chat, no ready, no setup, no kick
+  for (const [m, p, b] of [['GET', `/v1/games/${room.id}`], ['POST', `/v1/games/${room.id}/chat`, { text: 'hi' }], ['POST', `/v1/games/${room.id}/ready`, { ready: true }],
+    ['POST', `/v1/games/${room.id}/slot`, { faction: 0 }], ['POST', `/v1/games/${room.id}/kick`, { slot: 0 }], ['POST', `/v1/games/${room.id}/start`, {}]]) {
+    const r = await call(lobby, m, p, { token: t.outsider, body: b });
+    assert.ok(r.status === 403 || r.status === 400, `${m} ${p}: ${r.status}`);
+  }
+  assert.equal(JSON.stringify(lobby.games.get(room.id).slots), slotsBefore);
+});
+
+test('ONLINEHUB-1 review: the right code works on both entry paths (the game id with room_code, and /v1/rooms/<code>/join); the room stays unlisted', async () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const t = await threeAccounts(lobby);
+  const room = await privateRoom(lobby, t);
+  const viaId = await call(lobby, 'POST', `/v1/games/${room.id}/join`, { token: t.guest, body: { profile: PROFILE, room_code: 'QM-secret-12' } });
+  assert.equal(viaId.status, 200, JSON.stringify(viaId.body));
+  assert.equal(viaId.body.slot, 1);
+  // a second room, joined only by code
+  const lobby2 = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const t2 = await threeAccounts(lobby2);
+  await privateRoom(lobby2, t2, 'QM-other-345');
+  const byCode = await call(lobby2, 'POST', '/v1/rooms/QM-other-345/join', { token: t2.guest, body: { profile: PROFILE } });
+  assert.equal(byCode.status, 200);
+  // a code given to the code route does not open ANOTHER room (the room's own code is the key)
+  assert.equal((await call(lobby2, 'POST', '/v1/rooms/QM-secret-12/join', { token: t2.outsider, body: { profile: PROFILE } })).body.error, 'no_room');
+  // a public game ignores a room_code in the body and a private one never lists
+  assert.equal((await call(lobby, 'GET', '/v1/games')).body.games.length, 0);
+  const pub = await call(lobby, 'POST', '/v1/games', { token: t.outsider, body: { name: 'Open', profile: PROFILE, setup } });
+  const fresh = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Fresh' } })).body.token;
+  const joinPub = await call(lobby, 'POST', `/v1/games/${pub.body.id}/join`, { token: fresh, body: { profile: PROFILE, room_code: 'nonsense' } });
+  assert.equal(joinPub.status, 200, JSON.stringify(joinPub.body)); // a public game asks for no code (old clients' joins are unchanged)
+});
+
+test('ONLINEHUB-1 review: an outsider cannot spectate, rejoin or read the replay of a private room; players still can rejoin', async () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const t = await threeAccounts(lobby);
+  const room = await privateRoom(lobby, t);
+  await call(lobby, 'POST', `/v1/games/${room.id}/join`, { token: t.guest, body: { profile: PROFILE, room_code: 'QM-secret-12' } });
+  for (const tok of [t.host, t.guest]) await call(lobby, 'POST', `/v1/games/${room.id}/ready`, { token: tok, body: { ready: true } });
+  const started = await call(lobby, 'POST', `/v1/games/${room.id}/start`, { token: t.host });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const spectate = await call(lobby, 'POST', `/v1/games/${room.id}/spectate`, { token: t.outsider });
+  assert.equal(spectate.status, 403);
+  assert.equal(spectate.body.error, 'private');
+  assert.equal(lobby.games.get(room.id).spectatorsIssued ?? 0, 0, 'no spectator place was issued');
+  assert.equal((await call(lobby, 'POST', `/v1/games/${room.id}/rejoin`, { token: t.outsider })).status, 403);
+  assert.equal((await call(lobby, 'POST', `/v1/games/${room.id}/join`, { token: t.outsider, body: { profile: PROFILE } })).status, 403);
+  assert.equal((await call(lobby, 'POST', `/v1/games/${room.id}/rejoin`, { token: t.guest })).status, 200);
+  assert.equal((await call(lobby, 'GET', '/v1/games?running=1')).body.games.length, 0);
+  assert.deepEqual((await call(lobby, 'GET', '/v1/mine', { token: t.outsider })).body.games, []);
+  // a public game can still be watched
+  const pub = await call(lobby, 'POST', '/v1/games', { token: t.outsider, body: { name: 'Open', profile: PROFILE, setup } });
+  assert.equal(pub.status, 200);
+});
+
+test('ONLINEHUB-1 review: the room code never leaves the lobby in a game view, a listing, a chat line or an error', async () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const t = await threeAccounts(lobby);
+  const room = await privateRoom(lobby, t);
+  const seen = [JSON.stringify(room), JSON.stringify((await call(lobby, 'GET', `/v1/games/${room.id}`, { token: t.host })).body), JSON.stringify((await call(lobby, 'GET', '/v1/games')).body),
+    JSON.stringify((await call(lobby, 'GET', '/v1/mine', { token: t.host })).body), JSON.stringify((await call(lobby, 'POST', `/v1/games/${room.id}/join`, { token: t.outsider, body: { profile: PROFILE } })).body),
+    JSON.stringify((await call(lobby, 'POST', '/v1/rooms/QM-nothere-1/join', { token: t.outsider, body: { profile: PROFILE } })).body)];
+  for (const s of seen) assert.ok(!s.includes('QM-secret-12'), s);
+});
+
+// UBERJOIN-1: a room's performance mode (normal = Faithful, uber): listed, in the view, checked at the join; an old client's room (no field) is normal
+const UBER_PROFILE = 'cd'.repeat(16);
+async function twoGuests(lobby) {
+  const a = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Ann' } })).body;
+  const b = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Bea' } })).body;
+  return { a, b };
+}
+
+test('UBERJOIN-1: the room carries its mode: listed, in the view, and an absent field is normal', async () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const { a, b } = await twoGuests(lobby);
+  const uber = await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'u', profile: UBER_PROFILE, mode: 'uber', setup } });
+  assert.equal(uber.status, 200, JSON.stringify(uber.body));
+  assert.equal(uber.body.game.mode, 'uber');
+  const old = await call(lobby, 'POST', '/v1/games', { token: b.token, body: { name: 'old', profile: PROFILE, setup } });
+  assert.equal(old.status, 200, JSON.stringify(old.body));
+  assert.equal(old.body.game.mode, 'normal');
+  const list = (await call(lobby, 'GET', '/v1/games')).body.games;
+  assert.deepEqual(list.map((g) => [g.name, g.mode]).sort(), [['old', 'normal'], ['u', 'uber']]);
+});
+
+test('UBERJOIN-1: a join in the other mode is refused by name (409 mode), in either direction; the room is untouched', async () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const { a, b } = await twoGuests(lobby);
+  const id = (await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'u', profile: UBER_PROFILE, mode: 'uber', setup } })).body.id;
+  const before = JSON.stringify((await call(lobby, 'GET', '/v1/games')).body);
+  for (const body of [{ profile: PROFILE }, { profile: PROFILE, mode: 'normal' }, { profile: UBER_PROFILE }]) {
+    const r = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body });
+    assert.equal(r.status, 409, JSON.stringify(body));
+    assert.equal(r.body.error, 'mode');
+    assert.match(r.body.message, /uber performance mode/);
+  }
+  assert.equal(JSON.stringify((await call(lobby, 'GET', '/v1/games')).body), before);
+  const ok = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: UBER_PROFILE, mode: 'uber' } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.game.mode, 'uber');
+  // the other way: a normal room refuses an Uber joiner
+  const lobby2 = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const g = await twoGuests(lobby2);
+  const nid = (await call(lobby2, 'POST', '/v1/games', { token: g.a.token, body: { name: 'n', profile: PROFILE, setup } })).body.id;
+  const r = await call(lobby2, 'POST', `/v1/games/${nid}/join`, { token: g.b.token, body: { profile: UBER_PROFILE, mode: 'uber' } });
+  assert.equal(r.status, 409);
+  assert.equal(r.body.error, 'mode');
+  assert.equal((await call(lobby2, 'POST', `/v1/games/${nid}/join`, { token: g.b.token, body: { profile: PROFILE } })).status, 200); // old client: normal
+});
+
+test('UBERJOIN-1: a malformed mode is refused by name at create and at join (closed set)', async () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const { a, b } = await twoGuests(lobby);
+  for (const mode of ['Uber', 'faithful', '', 1, ['uber']]) { // the create limit is 6 a minute (and null follows at the join)
+    const r = await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'm', profile: PROFILE, mode, setup } });
+    assert.equal(r.status, 400, JSON.stringify([mode, r.body]));
+    assert.equal(r.body.error, 'bad_field');
+  }
+  assert.equal((await call(lobby, 'POST', '/v1/games', { token: b.token, body: { name: 'm', profile: PROFILE, mode: null, setup } })).status, 400);
+  assert.equal((await call(lobby, 'GET', '/v1/games')).body.games.length, 0);
+  const id = (await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'n', profile: PROFILE, setup } })).body.id;
+  for (const mode of ['Normal', 'uber ', 0, null]) {
+    const r = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: PROFILE, mode } });
+    assert.equal(r.status, 400, JSON.stringify([mode, r.body]));
+    assert.equal(r.body.error, 'bad_field');
+  }
+  assert.equal((await call(lobby, 'GET', '/v1/games')).body.games[0].players, 1); // nobody joined
+});
+
+test('UBERJOIN-1: the mode is checked before the password and the member branches: wrong mode + wrong password is 409 mode; an existing member\'s wrong or malformed mode is refused', async () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const { a, b } = await twoGuests(lobby);
+  const id = (await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'pw', profile: UBER_PROFILE, mode: 'uber', password: 'secret', setup } })).body.id;
+  const both = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: PROFILE, mode: 'normal', password: 'nope' } });
+  assert.equal(both.status, 409);
+  assert.equal(both.body.error, 'mode');
+  const malformed = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: UBER_PROFILE, mode: 'Uber', password: 'nope' } });
+  assert.equal(malformed.status, 400);
+  assert.equal(malformed.body.error, 'bad_field');
+  // the right mode with the wrong password is the password refusal, as ever
+  assert.equal((await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: UBER_PROFILE, mode: 'uber', password: 'nope' } })).body.error, 'password');
+  // the host (an existing member) repeating its join: the right mode answers its slot; the wrong or a malformed one is refused, the room untouched
+  const ok = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: a.token, body: { profile: UBER_PROFILE, mode: 'uber' } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.slot, 0);
+  const before = JSON.stringify((await call(lobby, 'GET', '/v1/games')).body);
+  const wrong = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: a.token, body: { profile: UBER_PROFILE, mode: 'normal' } });
+  assert.equal(wrong.status, 409);
+  assert.equal(wrong.body.error, 'mode');
+  assert.equal((await call(lobby, 'POST', `/v1/games/${id}/join`, { token: a.token, body: { profile: UBER_PROFILE } })).body.error, 'mode'); // none = normal
+  for (const mode of ['x', 1, null]) {
+    const r = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: a.token, body: { profile: UBER_PROFILE, mode } });
+    assert.equal(r.status, 400, JSON.stringify(mode));
+    assert.equal(r.body.error, 'bad_field');
+  }
+  assert.equal(JSON.stringify((await call(lobby, 'GET', '/v1/games')).body), before);
+});
+
+test('UBERJOIN-1 x ONLINEHUB-1: a private room joined by its code is checked for the performance mode too', async () => {
+  const env = fakeEnv();
+  const lobby = new Lobby(env, configFromEnv(ENV));
+  const { a, b } = await twoGuests(lobby);
+  const made = await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'Uber room', profile: UBER_PROFILE, mode: 'uber', setup, room_code: 'QM-uberroom1' } });
+  assert.equal(made.status, 200, JSON.stringify(made.body));
+  const normal = await call(lobby, 'POST', '/v1/rooms/QM-uberroom1/join', { token: b.token, body: { profile: PROFILE } });
+  assert.equal(normal.status, 409, JSON.stringify(normal.body));
+  assert.equal(normal.body.error, 'mode');
+  const uber = await call(lobby, 'POST', '/v1/rooms/QM-uberroom1/join', { token: b.token, body: { profile: UBER_PROFILE, mode: 'uber' } });
+  assert.equal(uber.status, 200, JSON.stringify(uber.body));
+});
+
+test('PLATFORMICON-1: a player\'s system (windows / linux / macos) is stored with the slot and returned in the room; absent is no icon; anything else is refused by name', async () => {
+  const env = fakeEnv();
+  const lobby = new Lobby(env, configFromEnv(ENV));
+  const guest = async (name) => (await call(lobby, 'POST', '/v1/auth/guest', { body: { name } })).body;
+  const [a, b, c, d] = [await guest('Ann'), await guest('Bea'), await guest('Cy'), await guest('Di')];
+  const wide = { ...setup, slots: [setup.slots[0], { state: 'open' }, { state: 'open' }, setup.slots[2]] };
+  // a malformed host value refuses the whole create (no game is made)
+  for (const bad of ['Windows', 'ios', '', 7, true, ['linux'], { os: 'linux' }]) {
+    const r = await call(lobby, 'POST', '/v1/games', { token: (await guest('Eve')).token, body: { name: 'g', profile: PROFILE, platform: bad, setup: wide } });
+    assert.equal(r.status, 400, JSON.stringify(bad));
+    assert.equal(r.body.error ?? r.body.code, 'bad_field', JSON.stringify(bad));
+  }
+  assert.equal((await call(lobby, 'GET', '/v1/games')).body.games.length, 0);
+  const created = await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'g', profile: PROFILE, platform: 'macos', setup: wide } });
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  const id = created.body.id;
+  const platforms = (game) => game.slots.map((s) => s.platform);
+  assert.deepEqual(platforms(created.body.game), ['macos', null, null, null, null, null, null, null]);
+  // a bad value on a join is refused and the slot stays open
+  const refused = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: PROFILE, platform: 'beos' } });
+  assert.equal(refused.status, 400);
+  assert.equal((await call(lobby, 'GET', `/v1/games/${id}`, { token: a.token })).body.game.slots[1].state, 'open');
+  const joinB = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: PROFILE, platform: 'linux' } });
+  assert.equal(joinB.status, 200);
+  // an older client sends no field: no icon, nothing else changes
+  const joinC = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: c.token, body: { profile: PROFILE } });
+  assert.equal(joinC.status, 200);
+  assert.deepEqual(platforms(joinC.body.game), ['macos', 'linux', null, null, null, null, null, null]);
+  assert.equal(joinC.body.game.slots[2].state, 'player');
+  // the AI slot never shows one
+  assert.equal(joinC.body.game.slots[3].state, 'hard');
+  assert.equal(joinC.body.game.slots[3].platform, null);
+  // Bea leaves; her slot's value is gone, and Di taking it with 'windows' shows windows
+  await call(lobby, 'POST', `/v1/games/${id}/leave`, { token: b.token, body: {} });
+  const afterLeave = (await call(lobby, 'GET', `/v1/games/${id}`, { token: a.token })).body.game;
+  assert.equal(afterLeave.slots[1].state, 'open');
+  assert.equal(afterLeave.slots[1].platform, null);
+  const joinD = await call(lobby, 'POST', `/v1/games/${id}/join`, { token: d.token, body: { profile: PROFILE, platform: 'windows' } });
+  assert.deepEqual(platforms(joinD.body.game).slice(0, 3), ['macos', 'windows', null]);
+  // a kick clears it too, so the next occupant who sends nothing has none
+  const kick = await call(lobby, 'POST', `/v1/games/${id}/kick`, { token: a.token, body: { slot: 1 } });
+  assert.equal(kick.status, 200, JSON.stringify(kick.body));
+  assert.equal((await call(lobby, 'GET', `/v1/games/${id}`, { token: a.token })).body.game.slots[1].platform, null);
+  // the public list carries only the host's system (the server browser's icon): the host is Ann, macOS
+  assert.deepEqual((await call(lobby, 'GET', '/v1/games')).body.games.map((g) => g.hostPlatform), ['macos']);
+});
+
+test('PLATFORMICON-1: the START carries each player\'s system by slot in its own START only (never in the replay\'s record); an AI and a player that told nothing are null', async () => {
+  const env = fakeEnv();
+  const lobby = new Lobby(env, configFromEnv(ENV));
+  const guest = async (name) => (await call(lobby, 'POST', '/v1/auth/guest', { body: { name } })).body;
+  const [a, b, c] = [await guest('Ann'), await guest('Bea'), await guest('Cy')];
+  const wide = { ...setup, slots: [setup.slots[0], { state: 'open' }, { state: 'open' }, setup.slots[2]] };
+  const id = (await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'g', profile: PROFILE, platform: 'linux', setup: wide } })).body.id;
+  await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: PROFILE, platform: 'macos' } });
+  await call(lobby, 'POST', `/v1/games/${id}/join`, { token: c.token, body: { profile: PROFILE } }); // an older client: nothing told
+  for (const t of [b, c]) await call(lobby, 'POST', `/v1/games/${id}/ready`, { token: t.token, body: { ready: true } });
+  const started = await call(lobby, 'POST', `/v1/games/${id}/start`, { token: a.token });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  assert.deepEqual(started.body.start.platforms, ['linux', 'macos', null, null, null, null, null, null]);
+  const polled = (await call(lobby, 'GET', `/v1/games/${id}?since=0`, { token: b.token })).body;
+  assert.deepEqual(polled.start.platforms, started.body.start.platforms);
+  // a rejoin START keeps them; the replay's record has none
+  const rejoin = await call(lobby, 'POST', `/v1/games/${id}/rejoin`, { token: b.token });
+  assert.equal(rejoin.status, 200, JSON.stringify(rejoin.body));
+  assert.deepEqual(rejoin.body.start.platforms, started.body.start.platforms);
+  const replayStart = JSON.parse(new TextDecoder().decode(env.blobs.get(`starts/${id}.json`)));
+  assert.equal(replayStart.platforms, undefined);
+  assert.equal(JSON.stringify(replayStart).includes('macos'), false);
+});
+
+test('PLATFORMICON-1 x ONLINEHUB-1: a player joining a private room by its code has their system shown too', async () => {
+  const env = fakeEnv();
+  const lobby = new Lobby(env, configFromEnv(ENV));
+  const a = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Ann' } })).body;
+  const b = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Bea' } })).body;
+  const made = await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'Room', profile: PROFILE, platform: 'linux', setup, room_code: 'QM-platform1' } });
+  assert.equal(made.status, 200, JSON.stringify(made.body));
+  const joined = await call(lobby, 'POST', '/v1/rooms/QM-platform1/join', { token: b.token, body: { profile: PROFILE, platform: 'macos' } });
+  assert.equal(joined.status, 200, JSON.stringify(joined.body));
+  const mine = lobby.games.get(made.body.game.id);
+  assert.deepEqual(mine.slots.filter((s) => s.state === 'player').map((s) => s.platform), ['linux', 'macos']);
+});
+
+test('ONLINEUX-1: a player who leaves a started game is done with it: not in /v1/mine, a rejoin is refused (left); the others keep theirs', async () => {
+  const env = fakeEnv();
+  const lobby = new Lobby(env, configFromEnv(ENV));
+  const a = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Ann' } })).body;
+  const b = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Bea' } })).body;
+  const id = (await call(lobby, 'POST', '/v1/games', { token: a.token, body: { name: 'g', profile: PROFILE, setup } })).body.id;
+  await call(lobby, 'POST', `/v1/games/${id}/join`, { token: b.token, body: { profile: PROFILE } });
+  await call(lobby, 'POST', `/v1/games/${id}/ready`, { token: b.token, body: { ready: true } });
+  assert.equal((await call(lobby, 'POST', `/v1/games/${id}/start`, { token: a.token })).status, 200);
+  // both players are offered the running game (a crash: no leave was sent)
+  assert.deepEqual((await call(lobby, 'GET', '/v1/mine', { token: b.token })).body.games.map((g) => g.id), [id]);
+  assert.deepEqual((await call(lobby, 'GET', '/v1/mine', { token: a.token })).body.games.map((g) => g.id), [id]);
+  // Bea leaves the started game (forfeit, exit, the game over): no longer hers to rejoin; Ann's is unchanged
+  const left = await call(lobby, 'POST', `/v1/games/${id}/leave`, { token: b.token });
+  assert.equal(left.status, 200);
+  assert.equal(left.body.left, true);
+  assert.equal((await call(lobby, 'GET', '/v1/mine', { token: b.token })).body.games.length, 0);
+  // ONLINEUX-1 r2 (Sol 4): /v1/mine names the game Bea left (a client started after the leave offers no WATCH for it); Ann left nothing
+  assert.deepEqual((await call(lobby, 'GET', '/v1/mine', { token: b.token })).body.left, [id]);
+  assert.deepEqual((await call(lobby, 'GET', '/v1/mine', { token: a.token })).body.left, []);
+  const refused = await call(lobby, 'POST', `/v1/games/${id}/rejoin`, { token: b.token });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, 'left');
+  assert.deepEqual((await call(lobby, 'GET', '/v1/mine', { token: a.token })).body.games.map((g) => g.id), [id]);
+  assert.equal((await call(lobby, 'POST', `/v1/games/${id}/rejoin`, { token: a.token })).body.start.slot, 0);
+  // a second leave changes nothing; the game is still listed as running for spectators, and its replay stays Bea's (her slot is kept)
+  assert.equal((await call(lobby, 'POST', `/v1/games/${id}/leave`, { token: b.token })).status, 200);
+  assert.equal((await call(lobby, 'GET', '/v1/mine', { token: b.token })).body.games.length, 0);
+  const running = (await call(lobby, 'GET', '/v1/games?running=1', { token: b.token })).body.games;
+  assert.deepEqual(running.map((g) => g.id), [id]);
+  // the mark survives the lobby's storage (the game is kept as JSON: server.mjs saveGame / loadGames, the Durable Object's storage)
+  const reloaded = new Lobby(env, configFromEnv(ENV));
+  reloaded.load([JSON.parse(JSON.stringify(lobby.games.get(id)))]);
+  assert.equal((await call(reloaded, 'POST', `/v1/games/${id}/rejoin`, { token: b.token })).body.error, 'left');
+  assert.equal((await call(reloaded, 'GET', '/v1/mine', { token: b.token })).body.games.length, 0);
+  assert.deepEqual((await call(reloaded, 'GET', '/v1/mine', { token: b.token })).body.left, [id]);
 });

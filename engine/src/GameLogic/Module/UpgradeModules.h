@@ -57,6 +57,7 @@ public:
 class CommandPointsUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(CommandPointsUpgrade) // lane SAVE-4b: UpgradeModule's
 	CommandPointsUpgrade(Thing *thing, const CommandPointsUpgradeModuleData *data);
 	void giveUpgrade();   ///< the implementation unless executed (then executed)
 	void takeUpgrade();   ///< the removal (slot 8, RW 0x8BC821: only when executed)
@@ -73,6 +74,7 @@ private:
 class CostModifierUpgrade : public UpgradeModule, public CreateModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(CostModifierUpgrade) // lane SAVE-4b: UpgradeModule's
 	CostModifierUpgrade(Thing *thing, const CostModifierUpgradeModuleData *data);
 	CreateModuleInterface *getCreate() override { return this; }
 	void giveUpgrade();   ///< the implementation unless executed (then executed)

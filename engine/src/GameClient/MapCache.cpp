@@ -102,7 +102,7 @@ std::string unescape(const std::string &escaped)
 	return out;
 }
 
-bool parse(const std::string &text, std::vector<MapCacheEntry> &out, std::string *error)
+bool parse(const std::string &text, std::vector<MapCacheEntry> &out, std::string *error, bool bfme1)
 {
 	out.clear();
 	std::istringstream in(text);
@@ -148,7 +148,7 @@ bool parse(const std::string &text, std::vector<MapCacheEntry> &out, std::string
 			cur->name = n;
 			continue;
 		}
-		if (line.rfind("PlayerPosition ", 0) == 0)
+		if (line.rfind("PlayerPosition ", 0) == 0 && bfme1) // community PR #36: BFME1's scenario slot blocks (BFME1 data only)
 		{
 			long long slot = 0;
 			if (playerPosition || !parseInt(trim(line.substr(15)), slot) || slot < 1 || slot > 16) return fail("bad PlayerPosition");

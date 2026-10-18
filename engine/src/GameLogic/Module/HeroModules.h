@@ -73,13 +73,14 @@
 //     update (RW 0x8558C0): waiting for the button, a mux not executed or a dead object: sleep forever; HealOnlyIfNotInCombat and the object in combat (RW
 //     0x8554E4: its AI, or its HORDE container's, has a live current victim, AI + 0x40): wake after StartHealingDelay (5 when 0); amount = (int)((float)
 //     HealingAmount + the AUTO_HEAL attribute sum) below 1: wake next frame; AffectsWholePlayer (S-858); AffectsContained: the contain's objects (heal with the
-//     FX unless the contain's flag); Radius: the allies within Radius (FROM_CENTER_2D) that are KindOf, below their max health and pass RW 0x855533 are healed
-//     (RespawnNearbyHordeMembers: S-858); else the object itself when below its max health; then FOREVER after a SingleBurst, else HealingDelay.
+//     FX unless the contain's flag; a contained healer uses its parent's contain); Radius: the allies within Radius (FROM_CENTER_2D) that are KindOf, below their
+//     max health and pass RW 0x855533 are healed. RespawnNearbyHordeMembers independently refills non-construction hordes below Slots after the raw-frame
+//     RespawnMinimumDelay (RW 0x855D16); else the object itself when below its max health; then FOREVER after a SingleBurst, else HealingDelay.
 //     heal one (RW 0x855761): not while waiting for the button; NonStackable needs the body's last heal frame (body vslot 0x48, S-858); amount as above; Radius 0:
 //     Object::attemptHealing(amount, the object) (RW 0x690532), else attemptHealingFromSoleBenefactor(amount, the object, HealingDelay) (RW 0x690584);
 //     UnitHealPulseFX on the target; the next heal frame = now + HealingDelay.
-//     eligible (RW 0x855533): HealOnlyOthers and the healer itself: no; HealOnlyIfNotInCombat and the target in combat: no; HealOnlyIfNotUnderAttack and a
-//     damage within LOGICFRAMES_PER_SECOND frames (body vslot 0x44, the last damage frame): no; a dead (+0x458 bit 0) or bit-3 object: no; else KindOf and
+//     eligible (RW 0x855533): HealOnlyOthers and the healer itself: no; HealOnlyIfNotInCombat and the healer in combat: no; HealOnlyIfNotUnderAttack and healer
+//     damage within LOGICFRAMES_PER_SECOND frames (body vslot 0x44, or a horde's member damage reader RW 0x86EB60): no; a dead (+0x458 bit 0) or bit-3 object: no; else KindOf and
 //     below the max health.
 //     onDamage (RW 0x855706): not waiting for the button, the mux executed and Radius 0: a hit whose DamageInfo + 0x18 (m_damageSubType) is not 2 with a
 //     StartHealingDelay wakes it after StartHealingDelay; otherwise, past the next heal frame, next frame.
@@ -138,6 +139,7 @@ public:
 class RespawnUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(RespawnUpdate) // lane SAVE-4b
 	enum State
 	{
 		STATE_ALIVE = 0,
@@ -193,6 +195,7 @@ public:
 class UnpauseSpecialPowerUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(UnpauseSpecialPowerUpgrade) // lane SAVE-4b: UpgradeModule's
 	UnpauseSpecialPowerUpgrade(Thing *thing, const UnpauseSpecialPowerUpgradeModuleData *data) : UpgradeModule(thing, data), m_data(data) {}
 
 protected:
@@ -228,6 +231,7 @@ public:
 class AttributeModifierAuraUpdate : public UpdateModule, public UpgradeMux
 {
 public:
+	OBFME_MODULE_XFER(AttributeModifierAuraUpdate) // lane SAVE-4b
 	AttributeModifierAuraUpdate(Thing *thing, const AttributeModifierAuraUpdateModuleData *data); ///< RW 0x89ED5C
 	UpgradeMux *getUpgrade() override { return this; }
 	UpdateSleepTime update() override; ///< RW 0x89F42D
@@ -254,6 +258,7 @@ private:
 class AutoHealBehaviorModuleData : public UpgradeModuleData
 {
 public:
+	AutoHealBehaviorModuleData(); ///< RW 0x654B36: KindOf initially includes every bit.
 	bool m_startsActive = false;            ///< +0x138
 	bool m_buttonTriggered = false;         ///< +0x139
 	bool m_singleBurst = false;             ///< +0x13A
@@ -278,6 +283,7 @@ public:
 class AutoHealBehavior : public UpdateModule, public UpgradeMux, public DamageModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(AutoHealBehavior) // lane SAVE-4b
 	AutoHealBehavior(Thing *thing, const AutoHealBehaviorModuleData *data); ///< RW 0x85562D
 	UpgradeMux *getUpgrade() override { return this; }
 	DamageModuleInterface *getDamage() override { return this; }
@@ -314,6 +320,7 @@ public:
 class BuildableHeroListUpgrade : public UpgradeModule
 {
 public:
+	OBFME_MODULE_XFER(BuildableHeroListUpgrade) // lane SAVE-4b: UpgradeModule's
 	BuildableHeroListUpgrade(Thing *thing, const BuildableHeroListUpgradeModuleData *data) : UpgradeModule(thing, data) {}
 
 protected:

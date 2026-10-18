@@ -48,9 +48,9 @@ TEST_CASE("uber1: the simulation profile travels in the game setup (LAN options,
 	NewGameMessage faithful = m;
 	faithful.game.simulationProfile = SimulationProfile::Faithful;
 	CHECK_FALSE(faithful.game == m.game);
-	// the profile is the GameInfo's last i32: 2 is no profile this build knows
+	// the profile is the GameInfo's i32 before the eight slots' handicaps (lane OWNERFIX-2): 2 is no profile this build knows
 	std::vector<std::uint8_t> bad = w.data();
-	bad[bad.size() - 4] = 2;
+	bad[bad.size() - 4 - 4 * MAX_SLOTS] = 2;
 	NetByteReader r2(bad);
 	CHECK_FALSE(NetPacket::readNewGameMessage(r2, back, &error));
 	CHECK(error.find("simulation profile 2") != std::string::npos);
@@ -383,7 +383,7 @@ std::vector<std::uint8_t> forgedReplay(const ProfileIdentity &identity, const Ne
 {
 	std::vector<std::uint8_t> bytes = { 'O', 'B', 'F', 'M', 'E', 'R', 'E', 'P' };
 	NetByteWriter w;
-	w.u32(5);
+	w.u32(9); // merged enhanced format written by NetPacket::writeNewGameMessage
 	w.str(identity.text);
 	NetPacket::writeNewGameMessage(w, game);
 	w.i32(0);

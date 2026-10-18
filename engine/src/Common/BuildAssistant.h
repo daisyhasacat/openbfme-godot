@@ -53,8 +53,7 @@ int maxSimultaneousOfType(const ThingTemplate &tt); ///< MaxSimultaneousOfType (
 
 // RW 0x6AC856 Player::allowedToBuild: units and structures are gated by the player's two flags, then the scripts' forbidden template ids
 bool playerAllowedToBuild(const Player &player, const ThingTemplate *tt, GameLogic &logic);
-// RW 0x6AC927 Player::canBuild: allowedToBuild, then Buildable (No refuses, Ignore_Prerequisites accepts, Only_By_AI needs a computer player), then the
-// template's Prerequisites (none in retail data; a mod's block is reported, stop S-207)
+// RW 0x6AC927 Player::canBuild: allowedToBuild, then Buildable (No refuses, Ignore_Prerequisites accepts, Only_By_AI needs a computer player), then every typed Prerequisites record
 bool playerCanBuild(const Player &player, const ThingTemplate *tt, GameLogic &logic);
 // RW 0x6A7F79: CommandPoints == 0, a KindOf bit 143 template, or usage + CommandPoints <= limit
 bool commandPointsAvailable(const Player &player, const ThingTemplate &tt, GameLogic &logic);
@@ -68,9 +67,10 @@ int calcTimeToBuild(const ThingTemplate &tt, const Player *player, const Object 
 // BuildVariations (RW +0x330) list (no reskin chain: RotWK dropped it)
 bool isEquivalentTo(const ThingTemplate *a, const ThingTemplate *b);
 
-// RW 0x794F38 (BuildAssistant vtable slot 0x68): `what` must be offered by a button of the builder's CommandSet (UNIT_BUILD, DOZER_CONSTRUCT or
+// RW 0x794F38 (BuildAssistant vtable slot 0x68): a non-null `what` matching a SpawnUnitBehavior's UnitName returns true first, even for a revival index.
+// Otherwise `what` must be offered by a button of the builder's CommandSet (UNIT_BUILD, DOZER_CONSTRUCT or
 // FOUNDATION_CONSTRUCT whose Object is equivalent), the button's NeededUpgrade list satisfied (all, or any with NeededUpgradeAny: object upgrades by the
-// builder, player upgrades by its owner) and the owner able to build it. The hero / REVIVE path (buildIndex != -1) is HERO-1's: false.
+// builder, player upgrades by its owner) and the owner able to build it. The hero / REVIVE path checks the indexed button and hero record availability.
 // Enhanced fortress construction: uses the faction's starting DOZER template data,
 // never a live builder. nullptr when the rule/object/faction has no such menu.
 const CommandSet *fortressBuildSet(const Object &fortress);

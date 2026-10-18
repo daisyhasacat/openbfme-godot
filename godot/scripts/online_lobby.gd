@@ -22,6 +22,7 @@ const BODY_LIMIT := 262144 ## Sol r1 (ONLINE-4): the largest lobby answer read (
 var lobby_url := ""
 var player_name := "Player"
 var profile := ""
+var mode := "normal"        ## lane UBERJOIN-1: the performance mode of this player's games ("normal" or "uber": the lobby refuses a join in the other)
 var join_id := ""          ## join this game; empty: host one with host_setup
 var host_setup := {}        ## {name, setup: {map, startingCash, slots: [...]}, players: N}
 var token := ""
@@ -115,11 +116,12 @@ func _after_signin() -> void:
 		_step = "create"
 		var body: Dictionary = host_setup.duplicate(true)
 		body["profile"] = profile
+		body["mode"] = mode
 		body.erase("players")
 		_send(HTTPClient.METHOD_POST, "/v1/games", body)
 	else:
 		_step = "join"
-		_send(HTTPClient.METHOD_POST, "/v1/games/%s/join" % join_id, {"profile": profile})
+		_send(HTTPClient.METHOD_POST, "/v1/games/%s/join" % join_id, {"profile": profile, "mode": mode})
 
 
 func _on_response(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:

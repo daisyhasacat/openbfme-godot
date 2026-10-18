@@ -7,6 +7,7 @@
 #endif
 
 #include "GameLogic/Module/WeaponChangeSpecialPower.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/INI.h"
 #include "Common/Thing/ModuleFactory.h"
@@ -149,4 +150,11 @@ void WeaponChangeSpecialPowerModule::registerClass(ModuleFactory &modules)
 							   }
 							   return std::make_unique<WeaponChangeSpecialPowerModule>(thing, typed);
 						   });
+}
+
+// ---- lane SAVE-4b: the snapshot (SpecialPowerModule's: the class keeps no state of its own) -------------------------------------------------------------
+void WeaponChangeSpecialPowerModule::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
 }

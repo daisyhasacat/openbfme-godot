@@ -10,6 +10,7 @@
 #include "GameLogic/BitFlags.h"
 #include "GameLogic/Locomotor.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <map>
@@ -126,7 +127,8 @@ struct Unit : AIMoveHost
 	bool isStatusImmobile() const override { return false; }
 	bool isContained() const override { return false; }
 	bool isIdle() const override { return idle; }
-	int stateId() const override { return 1; }
+	int stateIdValue = 1; // lane BACKLOG5: the state machine's current state id
+	int stateId() const override { return stateIdValue; }
 	AIMover *moverOf(PathfindObjectID id) override;
 	AIMover *containerMover() override { return container; }
 	float speedOf(const PathfindObject &o) const override;
@@ -526,7 +528,7 @@ TEST_CASE("ai move: the repath cadence: a path found from the queue is not asked
 	// onEnter queued one request; after the path came, update asked for none or one more (the quick path leaves pathGoal stale)
 	CHECK(u.state->pathRequests() <= 2);
 	CHECK(u.ai->path() != nullptr);
-	CHECK(AIMover::allStops().size() == 8); // lane AI-4: + kStopClosest (computePath's FindClosestPath stand-in)
+	CHECK(AIMover::allStops().size() == 7); // upstream ports the closest-path fallback, retiring its stop
 	for (const std::string &s : AIMover::allStops())
 	{
 		CHECK(s.compare(0, 6, "S-166 ") == 0);
@@ -828,4 +830,308 @@ TEST_CASE("ai move: the melee approach path is slot + 4 (FindClosestPath, S-166)
 	const Coord3D end = *u.ai->path()->getLastNode()->getPosition();
 	CHECK(end.x == doctest::Approx(goal.x));
 	CHECK(end.y == doctest::Approx(goal.y));
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// lane BACKLOG5: computePath's patch for a blocked unit (RW 0x665C33 -> pathfinder slot 0x10, RW 0x6FC9DA) and the layer-change expansion (RW 0x6F6286)
+// ---------------------------------------------------------------------------------------------------------
+namespace
+{
+// a hand-made path the pathfinder would never return: east along the row y = 15 to the cell (45, 15), north to (45, 35), west to (30, 35)
+Path *detourPath()
+{
+	Path *p = new Path();
+	auto add = [&](int cx, int cy) {
+		const Coord3D c{ (float)cx * 10.0f + 5.0f, (float)cy * 10.0f + 5.0f, 0.0f };
+		p->appendNode(&c, LAYER_GROUND);
+	};
+	for (int x = 5; x <= 45; ++x) add(x, 15);
+	for (int y = 16; y <= 35; ++y) add(45, y);
+	for (int x = 44; x >= 30; --x) add(x, 35);
+	return p;
+}
+bool hasNode(const Path *p, float x, float y)
+{
+	for (const PathNode *n = p ? p->getFirstNode() : nullptr; n; n = n->getNext())
+	{
+		if (n->getPosition()->x == x && n->getPosition()->y == y)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+// the cliff block that keeps the straight line from (55, 155) to (305, 355) impassable, so computePath has to search
+void detourCliff(Sim &sim)
+{
+	for (int x = 10; x <= 25; ++x)
+	{
+		for (int y = 17; y <= 30; ++y)
+		{
+			sim.terrain.cliff.insert({ x, y });
+		}
+	}
+}
+} // namespace
+
+TEST_CASE("backlog5: computePath of a unit with blocked frames patches its path (RW 0x6FC9DA) and keeps the rest of it; without them it searches anew")
+{
+	const Coord3D goal{ 305.0f, 355.0f, 0.0f };
+	for (int blocked = 0; blocked < 2; ++blocked)
+	{
+		CAPTURE(blocked);
+		Sim sim(60, 40);
+		detourCliff(sim);
+		sim.build();
+		Unit &a = sim.add(2, 55.0f, 155.0f);
+		Unit &b = sim.add(7, 62.0f, 155.0f, 1); // the enemy in the way: stands still, same priority
+		a.ai->setPath(detourPath());
+		a.ai->setGoalOnPath();
+		a.ai->startingMove();
+		if (blocked)
+		{
+			a.ai->blockedBy(b.obj);
+			REQUIRE(a.ai->blockedFrames() == 1);
+		}
+		else
+		{
+			REQUIRE(a.ai->blockedFrames() == 0);
+		}
+		REQUIRE(a.ai->computePath(goal));
+		const Path *p = a.ai->path();
+		REQUIRE(p != nullptr);
+		CHECK(a.ai->blockedFrames() == 0);
+		CHECK(p->getFirstNode()->getPosition()->x == 55.0f);
+		CHECK(p->getFirstNode()->getPosition()->y == 155.0f);
+		CHECK(p->getLastNode()->getPosition()->x == goal.x);
+		CHECK(p->getLastNode()->getPosition()->y == goal.y);
+		// the far corners of the old path: only the patch keeps them
+		CHECK(hasNode(p, 455.0f, 155.0f) == (blocked == 1));
+		CHECK(hasNode(p, 455.0f, 355.0f) == (blocked == 1));
+		bool patchStop = false;
+		for (const std::string &s : sim.pf->stops())
+		{
+			patchStop = patchStop || s.compare(0, 7, "S-1830 ") == 0;
+		}
+		CHECK(patchStop == (blocked == 1));
+	}
+	for (const std::string &s : AIMover::allStops())
+	{
+		CHECK(s.find("runs a full search") == std::string::npos); // the S-166 line of the old full search is gone
+	}
+}
+
+TEST_CASE("backlog5: patchPath (RW 0x6FC9DA) joins the nearest node the unit can stand on; no path, a blocked last node or a spent cell budget give nothing")
+{
+	Sim sim(60, 40);
+	detourCliff(sim);
+	sim.build();
+	Unit &a = sim.add(2, 55.0f, 135.0f); // two cells below the old path's row
+	const int freeBefore = sim.pf->pool().freeCount();
+	CHECK(sim.pf->patchPath(&a.obj, groundLoco(), nullptr, true) == nullptr);
+	{
+		std::unique_ptr<Path> original(detourPath());
+		std::unique_ptr<Path> patch(sim.pf->patchPath(&a.obj, groundLoco(), original.get(), true));
+		REQUIRE(patch != nullptr);
+		CHECK(patch->getFirstNode()->getPosition()->x == 55.0f);
+		CHECK(patch->getFirstNode()->getPosition()->y == 135.0f);
+		// the nearest node is the old path's first cell (55, 155), which the walk does not test (RW walks down to, not onto, the first node): the patch
+		// joins a node after it and keeps every node from there on
+		CHECK_FALSE(hasNode(patch.get(), 55.0f, 155.0f));
+		for (int x = 7; x <= 45; ++x)
+		{
+			CAPTURE(x);
+			CHECK(hasNode(patch.get(), (float)x * 10.0f + 5.0f, 155.0f));
+		}
+		CHECK(patch->getLastNode()->getPosition()->x == 305.0f);
+		CHECK(patch->getLastNode()->getPosition()->y == 355.0f);
+		CHECK(original->getLastNode()->getPosition()->x == 305.0f); // the original is untouched
+		CHECK(original->nodeCount() == 41 + 20 + 15);
+	}
+	CHECK(sim.pf->pool().freeCount() == freeBefore); // every cell record of the search went back
+	{
+		// an enemy standing on the last node: the walk stops on it (RW 0x6FCC41: the lists are cleaned, nothing)
+		Unit &c = sim.add(9, 305.0f, 355.0f, 1);
+		sim.pf->updatePos(c.obj);
+		std::unique_ptr<Path> original(detourPath());
+		const int freeHeld = sim.pf->pool().freeCount();
+		CHECK(sim.pf->patchPath(&a.obj, groundLoco(), original.get(), true) == nullptr);
+		CHECK(sim.pf->pool().freeCount() == freeHeld);
+	}
+	{
+		// GameData MaxCellsPatchPath 0: the start cell is closed and never expanded
+		Sim tight(60, 40);
+		tight.config.patchPathLimit = 0;
+		tight.build();
+		Unit &u = tight.add(2, 55.0f, 135.0f);
+		const int freeTight = tight.pf->pool().freeCount();
+		std::unique_ptr<Path> original(detourPath());
+		CHECK(tight.pf->patchPath(&u.obj, groundLoco(), original.get(), true) == nullptr);
+		CHECK(tight.pf->pool().freeCount() == freeTight);
+	}
+}
+
+TEST_CASE("backlog5: checkChangeLayers (RW 0x6F6286) is only its ground-connection case: a connection to the ground or to a bridge layer changes no search (S-161 / S-1830)")
+{
+	// the case that runs opens the parent's own index on the ground, which is the closed parent: nothing; a connection to a bridge layer finds no cell (only the
+	// ground holds cells); the waypoint expansion is not implemented. The searches are therefore what they were: the same path with a connection marked
+	Sim sim(40, 20);
+	sim.build();
+	Unit &u = sim.add(2, 55.0f, 105.0f);
+	const Coord3D from = u.obj.pos, goal{ 355.0f, 105.0f, 0.0f };
+	std::unique_ptr<Path> plain(sim.pf->findPathWithoutCorridor(&u.obj, groundLoco(), &from, &goal, nullptr));
+	REQUIRE(plain != nullptr);
+	const size_t plainNodes = plain->nodeCount();
+	sim.pf->getCell(LAYER_GROUND, 20, 10)->setConnectLayer((PathfindLayerEnum)5); // a bridge layer: no cells there
+	std::unique_ptr<Path> bridged(sim.pf->findPathWithoutCorridor(&u.obj, groundLoco(), &from, &goal, nullptr));
+	REQUIRE(bridged != nullptr);
+	CHECK(bridged->nodeCount() == plainNodes);
+	CHECK(bridged->getLastNode()->getPosition()->x == goal.x);
+	// a ground connection: the same index on the ground is the closed parent itself, so nothing is opened twice and the path is the same
+	sim.pf->getCell(LAYER_GROUND, 20, 10)->setConnectLayer(LAYER_GROUND);
+	std::unique_ptr<Path> ground(sim.pf->findPathWithoutCorridor(&u.obj, groundLoco(), &from, &goal, nullptr));
+	REQUIRE(ground != nullptr);
+	CHECK(ground->nodeCount() == plainNodes);
+}
+
+TEST_CASE("backlog5: the start's movement check has the mode flags 0 (RW 0x6FD8DF): an enemy on the unit's cell does not start a tunnelling search")
+{
+	// a valid cell inside a cliff ring two cells out (every neighbour invalid): a search that starts tunnelling (pathfinder + 0x38) walks out through the ring at
+	// +100 a cell and reaches the goal; RotWK's start check (flags 0: no unit counts) leaves it closed in, with or without an enemy on its cell. The old flags
+	// (0x1C: enemies block) turned the enemy into a way out: (605, 405) after 21 nodes
+	for (int enemyOnStart = 0; enemyOnStart < 2; ++enemyOnStart)
+	{
+		CAPTURE(enemyOnStart);
+		Sim sim(80, 60);
+		for (int x = 38; x <= 42; ++x)
+		{
+			for (int y = 38; y <= 42; ++y)
+			{
+				if (std::max(std::abs(x - 40), std::abs(y - 40)) == 2)
+				{
+					sim.terrain.cliff.insert({ x, y });
+				}
+			}
+		}
+		sim.build();
+		Unit &a = sim.add(2, 405.0f, 405.0f);
+		if (enemyOnStart)
+		{
+			Unit &b = sim.add(7, 405.0f, 405.0f, 1);
+			sim.pf->updatePos(b.obj);
+		}
+		const Coord3D from = a.obj.pos, goal{ 605.0f, 405.0f, 0.0f };
+		bool partial = false;
+		std::unique_ptr<Path> p(sim.pf->findPathWithoutCorridor(&a.obj, groundLoco(), &from, &goal, &partial));
+		REQUIRE(p != nullptr);
+		CHECK(partial);
+		CHECK(p->nodeCount() == 1);
+		CHECK(p->getLastNode()->getPosition()->x == 405.0f);
+		CHECK(p->getLastNode()->getPosition()->y == 405.0f);
+	}
+}
+
+TEST_CASE("backlog5: the goal's movement check has the info radius 1 (RW 0x6FD341): an enemy beside the goal makes the search approximate and prune the detour")
+{
+	// a wall with its only gap far above; the goal is behind it and the unit (footprint radius 0) in front. Without an enemy the full detour is found
+	// (59 nodes). An enemy one cell beyond the goal is outside the unit's own footprint but inside radius 1's 3 x 3: RotWK's goal check fails, the search is
+	// approximate and prunes the cells that lead away from the goal (RW 0x6FDB7F), so the path ends where it began. The old check with the footprint radius
+	// did not see the enemy and reached the goal
+	for (int enemyByGoal = 0; enemyByGoal < 2; ++enemyByGoal)
+	{
+		CAPTURE(enemyByGoal);
+		Sim sim(80, 60);
+		for (int y = 4; y < 60; ++y)
+		{
+			sim.terrain.cliff.insert({ 30, y });
+		}
+		sim.build();
+		Unit &a = sim.add(2, 285.0f, 305.0f);
+		if (enemyByGoal)
+		{
+			Unit &b = sim.add(8, 415.0f, 305.0f, 1);
+			sim.pf->updatePos(b.obj);
+		}
+		const Coord3D from = a.obj.pos, goal{ 405.0f, 305.0f, 0.0f };
+		bool partial = false;
+		std::unique_ptr<Path> p(sim.pf->findPathWithoutCorridor(&a.obj, groundLoco(), &from, &goal, &partial));
+		REQUIRE(p != nullptr);
+		CHECK(partial == (enemyByGoal == 1));
+		CHECK(p->nodeCount() == (enemyByGoal ? 1u : 59u));
+		CHECK(p->getLastNode()->getPosition()->x == (enemyByGoal ? 285.0f : 405.0f));
+		CHECK(p->getLastNode()->getPosition()->y == 305.0f);
+	}
+}
+
+namespace
+{
+bool hasLine(const std::vector<std::string> &lines, const char *exact)
+{
+	return std::find(lines.begin(), lines.end(), std::string(exact)) != lines.end();
+}
+} // namespace
+
+TEST_CASE("backlog5: the two withdrawn rules are named at runtime with their measured effect (S-163 goal offset, S-166 exit-production straight path)")
+{
+	// S-163: a LARGE_RECTANGLE_PATHFIND unit's search raises the line and does not offset its goal (the path ends in the goal's cell)
+	{
+		Sim sim(40, 20);
+		sim.build();
+		Unit &u = sim.add(2, 55.0f, 105.0f);
+		u.obj.kinds.insert(PK_LARGE_RECTANGLE_PATHFIND);
+		const Coord3D from = u.obj.pos, goal{ 305.0f, 105.0f, 0.0f };
+		std::unique_ptr<Path> p(sim.pf->findPathWithoutCorridor(&u.obj, groundLoco(), &from, &goal, nullptr));
+		REQUIRE(p != nullptr);
+		CHECK(p->getLastNode()->getPosition()->x == 305.0f);
+		CHECK(p->getLastNode()->getPosition()->y == 105.0f);
+		CHECK(hasLine(sim.pf->stops(),
+			"S-163 the LARGE_RECTANGLE_PATHFIND goal offset of internalFindPath (RW 0x6FD1FE .. 0x6FD29D: 20 behind the goal along the goal slot's angle + pi, the goal itself as "
+			"the fallback, RW 0x6FD2CD / 0x6FD3F8) is read but not applied: it was ported and a horde ordered north while facing east ended 20 west of its goal, because the goal slot's "
+			"angle is renewed only by the group move (test_move_horde: the final position and the 90 degree reform; test_camp1_missions moved too); the next step is S-166's: port the "
+			"binary-backed callers of the angle update RW 0x68B3CF, not a refresh on every direct order"));
+		Sim ordinary(40, 20);
+		ordinary.build();
+		Unit &o = ordinary.add(2, 55.0f, 105.0f);
+		std::unique_ptr<Path> q(ordinary.pf->findPathWithoutCorridor(&o.obj, groundLoco(), &from, &goal, nullptr));
+		REQUIRE(q != nullptr);
+		for (const std::string &line : ordinary.pf->stops())
+		{
+			CHECK(line.find("goal offset of internalFindPath") == std::string::npos); // an ordinary unit raises nothing
+		}
+	}
+	// S-166: a unit in state 7 that may path through units gets the ordinary search around a cliff wall, not the straight path, and the line
+	for (int state : { 1, 7 })
+	{
+		CAPTURE(state);
+		Sim sim(60, 30);
+		for (int y = 0; y < 22; ++y)
+		{
+			sim.terrain.cliff.insert({ 30, y });
+		}
+		sim.build();
+		Unit &a = sim.add(2, 205.0f, 105.0f);
+		a.stateIdValue = state;
+		a.obj.throughUnits = true;
+		REQUIRE(a.ai->computePath(Coord3D{ 405.0f, 105.0f, 0.0f }));
+		CHECK(a.ai->path()->nodeCount() == 29u); // around the wall (the pinned result of the ordinary search in both states), not the 2-node straight path
+		CHECK(a.obj.throughUnits); // the flag is not dropped
+		CHECK(hasLine(a.ai->stops(),
+			"S-166 computePath's straight path for a unit following its exit-production path (RW 0x666036 .. 0x66607C: state 7 with AI + 0x3BA; the flag is dropped and the machine's "
+			"goal becomes the destination, RW 0x6654AD) is read but not applied: applied, production exits moved (test_aipow1: a frame 22 for 23; test_play4_heroes_retail: 2 shots, "
+			"150 lost and 2 members killed in an order that has none) and the goal overwrite alone sent an idle Battle-stance unit 826.975 from its guard spot (test_play4_stances_retail, "
+			"bound 365; without the overwrite it passes); INFERENCE, not verified: the port's exit state and guard keep the machine's goal for something RotWK does not") == (state == 7));
+	}
+	// S-1830: patchPath names what the layer step leaves out
+	{
+		Sim sim(60, 40);
+		sim.build();
+		Unit &a = sim.add(2, 55.0f, 135.0f);
+		std::unique_ptr<Path> original(detourPath());
+		std::unique_ptr<Path> patch(sim.pf->patchPath(&a.obj, groundLoco(), original.get(), true));
+		REQUIRE(patch != nullptr);
+		CHECK(hasLine(sim.pf->stops(),
+			"S-1830 the layer-change step of the cell searches (RW 0x6F6286) implements only its ground-connection case, which opens nothing (the cell's own index is the closed "
+			"parent): the bridge-layer cell lookup (RW 0x5E2E9C) and the waypoint link expansion (RW 0x68229C, 0x93443D) are not implemented, and the four-bit connection "
+			"field cannot hold a wall layer (16 and up); a patch or a search never crosses a layer or a portal (S-161)"));
+	}
 }

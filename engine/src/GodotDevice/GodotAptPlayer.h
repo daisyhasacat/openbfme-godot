@@ -21,6 +21,7 @@
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/input_event.hpp>
+#include <godot_cpp/classes/input_event_key.hpp>
 #include <godot_cpp/classes/node2d.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/ref.hpp>
@@ -119,6 +120,20 @@ public:
 	void post_mouse_wheel(int delta);
 	void post_key(int vk_code, bool down);
 	void _input(const Ref<InputEvent> &event) override;
+	// lane OPTS-6: the menus without a mouse (GameClient/GUI/MenuNavigator.h). menu_input: a key event as the menus take it (the in-game HUD hands the
+	// keys over while a menu has the input; true when it was used); menu_has_input: a menu has the input (the shell's top screen, or the quit menu over
+	// a game); menu_pointer_moved: the real pointer moved (the focus frame goes); menu_nav_state: { level, focus, frame, focus_rect (stage), targets:
+	// [{ id, kind, rect }], log: [String] } (scripted checks)
+	bool menu_input(const Ref<InputEvent> &event);
+	bool menu_has_input() const;
+	// lane SAVE-UI1 / OPTS-6: modal_menu: a menu is the input's top (the world's input is cancelled and not served); menu_escape: the top screen's own Escape
+	// procedure took the key (SaveLoad.apt closes on its release)
+	bool modal_menu() const;
+	bool menu_escape(bool pressed);
+	void menu_pointer_moved();
+	Dictionary menu_nav_state();
+	String hit_test_stage(const Vector2 &stage);
+	Dictionary gadget_pick(const Vector2 &stage);
 	void _ready() override;
 	void _process(double delta) override;
 
@@ -128,7 +143,7 @@ public:
 	// (list boxes, combo boxes, text entries ... of the lobby) is drawn after the movies, and the Skirmish lobby is fed from `world`'s PlayerTemplate
 	// store (a GameWorld that setup() ran on the same file system) so a slot's faction index is the logic's.  config: { seed: int (the lobby's game
 	// seed; 0 = from the clock), profile: String (optional: the Skirmish profile name to start with), options_file: String (optional, lane OPTS-2: the
-	// Options.ini to use instead of the user data folder's; the checks) }.  Returns { ok, errors, load_ms, strings, fonts }.
+	// Options.ini to use instead of the user data folder's; the checks), presentation_fs: optional verified BFME2 shell source }. Returns { ok, errors, load_ms, strings, fonts }.
 	Dictionary boot_shell(const Ref<RetailFileSystem> &fs, Object *world, const Dictionary &config);
 	void shell_show_shell_map(bool use); // lane FB7-1: Shell::showShellMap
 	void shell_hide_background();        // lane FB7-1: WindowManager hide of the front-end background (RW 0x622C88(0))
@@ -147,7 +162,10 @@ public:
 	// lane MENU-1: the picture loading screen of a campaign mission (RW 0x7583CC) over everything until hide_still_load_screen: { ok, error }
 	Dictionary show_still_load_screen(const String &picture);
 	void hide_still_load_screen();
-	Dictionary get_still_load_screen() const; // { on, slots: [{ image, rect }], movie, movie_playing, movie_error, text_label }
+	Dictionary get_still_load_screen() const; // { on, slots: [{ image, rect }], movie, movie_playing, movie_error, text_label, progress, progress_text }
+	// lane SAVE-4e: the catch-up of an old (log-only) save on the picture screen: `text` and a bar at `percent` (0 .. 100) between the "Loading" text and
+	// the picture, in the screen's font and colour (OpenBFME's: retail's picture screen has no bar, S-5012); a negative percent removes them
+	void set_still_load_progress(double percent, const String &text);
 	PackedInt32Array shell_levels() const; // lane CAMP-2: the Apt level of each screen of the stack, bottom first
 	bool level_drawn(int level) const;     // lane CAMP-2: the last render list drew something visible of the level
 	// lane CAMP-2: the BinkMovie components on screen: [{ path, title, frame, frames, error }]
@@ -155,6 +173,9 @@ public:
 	bool is_shell_mode() const;
 	// Shell::push / pop of a screen file ("MainMenu.apt"); false + the shell's errors in the report when the shell refused.
 	bool shell_push(const String &filename);
+	// lane OPTS-6: AptOptions::OpenScreen (RW 0x91ED91): Options.apt pushed (unless it is up), its four mode bytes, the front-end background shown
+	// (RW 0x91EE08: setBackground(1)); the quit menu passes (0, 0, 0, 0) (RW 0x921783). False when the screen did not come.
+	bool open_options(bool network_enabled, bool allow_resolution, bool allow_advanced, bool advanced_only);
 	void shell_pop();
 	// the screens of the Shell stack, bottom first ("AptLevel0.apt", "MainMenu.apt" ...); the top one's `_level` slot
 	PackedStringArray shell_stack() const;
@@ -215,6 +236,12 @@ public:
 	// loadable, refusal, retail_import }]; Save, Load and Delete come back as "SaveGameFile" (the typed name), "LoadGameFile" / "DeleteGameFile" (the path).
 	// Called again while the screen is open (after a delete) it fills the lists again.
 	void set_save_load(const Dictionary &info);
+	// lane CAMPSAVE-1: CampaignMenu.apt's content ({have_mission, mission_name, load_screen_image, victorious}, RW 0x5EADDE), the bonus unlock (Options.ini
+	// BCU = "true" and TheGlobalData + 0xAF5, RW 0x927EC6) and the Save folder MainMenuContinueCampaign looks in
+	void set_campaign_menu(const Dictionary &content);
+	Dictionary unlock_bonus_campaign();
+	bool is_bonus_campaign_unlocked() const;
+	void set_save_folder(const String &folder);
 	// lane SAVE-2: the host's answer to "SaveGameFile": the screen's message box shows GUI:GameSaved (ok) or `error`; false when SaveLoad.apt is not the top
 	bool save_load_saved(bool ok, const String &error);
 	// lane SAVE-2: the host refused a "LoadGameFile" (GameWorld.check_save): the screen shows GUI:ErrorLoadingGame with `name` and `error`, and stays
@@ -238,7 +265,33 @@ public:
 	// and go back to the game list (false: no online screens). online_redact: a text with its credentials masked (OnlineLobbyClient::redact: relay,
 	// rejoin and spectator tickets, session tokens), for anything the game prints of the lobby's
 	bool online_start_failed(const String &error);
+	// lane ONLINEUX-1: online_game_failed: an online game the screens started could not go on (game.gd _online_game_failed): the message the online
+	// screens show once they are up again, and the game is not left (OnlineShellContext::gameFailed: r2, the lobby keeps offering it for a rejoin);
+	// online_set_counts: the lobby's counts (GET /v1/stats: {players, games_open, games_running}) for the home page's ticker
+	void online_game_failed(const String &text);
+	void online_set_counts(const Dictionary &counts);
 	static String online_redact(const String &text);
+	// lane DEVPORT-8 (MENUSTYLE-1): the options file read before the shell boots (the main menu style decides the shell's presentation source):
+	// the path boot_shell uses without an options_file (the user data folder's Options.ini), and that file's entries through OptionPreferences (the
+	// shell's reader). { ok, exists, values: { key: value }, error }: a missing file is no entries (the first run, ok); an unreadable one is an error
+	static String default_options_path();
+	static Dictionary read_options_file(const String &path);
+	// lane ONLINEHUB-1 (docs/PLATFORM_API.md): the OpenBFME platform API (Quick Match, tournaments, community statistics, game results) and the games this
+	// installation recorded ("Your stats"). set_platform: the client { base_url (shown in reports only), install (32 hex digits), nick, share_results
+	// (the Options row), search_timeout_s } -> { ok, error }; platform_take_requests / platform_deliver as the lobby's (scripts/online_http.gd sends them:
+	// [{ id, method, path, body }]); platform_events: the host's events [{ kind, id, code, text }] (a result sent / dropped). set_game_records: the
+	// record file's text -> { ok, count, rejected }; record_game: one finished game (GameWorld.clear_game_data's "record" completed by the host: id,
+	// kind, mode, start, end) -> { ok, line (to append to the file), error, reported, not_reported (why not) }. platform_status / platform_apply: the
+	// TOURNAMENT and STATS pages' state and scripted input (tests, the proof walk)
+	Dictionary set_platform(const Dictionary &options);
+	void set_share_results(bool share); // the Options row, at once: off drops the results still queued or waiting for their retry
+	Array platform_take_requests();
+	void platform_deliver(int64_t id, int64_t status, const String &body, const String &error);
+	Array platform_events();
+	Dictionary set_game_records(const String &text);
+	Dictionary record_game(const String &json);
+	Dictionary platform_status();
+	Dictionary platform_apply(const Dictionary &spec);
 	// lane CAH-1, the Create-a-Hero builder (CreateAHero.apt, GameClient/GUI/AptScreens/AptCreateAHero.h): set_create_a_hero gives the shell the world's
 	// TheCreateAHeroSystem and the hero list (the system heroes of the archives and the profile's MyHero*.cah files in `profile_dir`; the lobby's Hero combo
 	// lists the same heroes): { ok, heroes, errors }. get_create_a_hero_view: what the builder's 3D view shows { up, page ("M", "C", "A", "P" or ""),
@@ -262,6 +315,10 @@ public:
 	Dictionary get_timeline_graph(const String &mode, const String &path);
 	// a member of a movie instance as a string (`found` false when the instance or member does not exist)
 	Dictionary get_member(int level, const String &path, const String &name);
+	// lane DEVPORT-8 (MENUSTYLE-1): a property of the clip at `path` on `level` set as ActionScript's `clip.<name> = value` does (AptCharacterInst::setProperty:
+	// _visible, _x, _y, _alpha ...); false when there is no such clip or property. game.gd hides BFME2's own MainMenu.apt campaign buttons with it while the
+	// BFME2 campaigns are switched off (scripts/menu_campaigns.gd)
+	bool set_clip_property(int level, const String &path, const String &name, double value);
 	// the game text of `label` ({ found, text }; a missing label is the retail "MISSING: 'label'" text and found false)
 	Dictionary fetch_text(const String &label);
 	// lane OPTS-1: the shell's skin for the OpenBFME options screen (a Godot UI drawn over the shell, not a retail screen): a mapped image as the gadget
@@ -298,6 +355,10 @@ public:
 	// lane HOVER-1: the menus' tool tip (CursorTooltip.h): the label, the text GuiFX shows, the GuiFX calls made, the pointer, the errors
 	Dictionary get_cursor_tooltip() const;
 	Array list_buttons(int level);
+	Array list_gadgets();         // lane MENUWORK-1: every live gadget window (name, kind, stage rect, enabled, hidden, text, checked)
+	PackedStringArray take_commands(); // lane MENUWORK-1: WindowManager::takeInvokedCommands
+	String apt_text(const String &name) const;
+	Dictionary screen_state() const; // lane MENUWORK-1: the top screen's engine state (the menu inventory's evidence of a press) // lane MENUWORK-1: the text record `name` (bfme_setAptText, e.g. APT:_level5.MessageBox_Text), "" when none
 	// SetBarTo(local card, percent) on the load screen; returns false when the screen is not up or the movie has not loaded yet (the call is made by the next update)
 	bool set_load_progress(double percent);
 	Array take_load_progress_calls();
@@ -385,6 +446,8 @@ private:
 	void drawStillLoadScreen(); // lane MENU-1
 	void pumpShellEvents();
 	Vector2 windowSize() const;
+	bool menuKey(const InputEventKey *key); // lane OPTS-6: the menus' keys (_input, menu_input)
+	void syncNav() const;                   // lane OPTS-6: the navigator follows the menu that has the input
 };
 
 } // namespace godot

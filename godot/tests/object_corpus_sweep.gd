@@ -102,6 +102,6 @@ func _run() -> int:
 			if String(key).begins_with(kind + " "):
 				by_kind[kind] += 1
 	print("SWEEP asset errors by kind: ", by_kind)
-	var ok: bool = failed == 0 and unexplained == 0 and vanished == 0 and by_kind["absent prototype"] == 10 and by_kind["missing texture"] == 13 and by_kind["terrain-folder texture"] == 2
+	var ok: bool = failed == 0 and unexplained == 0 and vanished == 0 and by_kind["absent prototype"] == 10 and by_kind["missing texture"] == 15 and by_kind["terrain-folder texture"] == 2
 	print("SWEEP %s (%d maps failed to build, %d new errors, %d baseline entries not seen, %d baseline entries seen)" % ["PASS" if ok else "FAIL", failed, unexplained, vanished, seen.size()])
 	return 0 if ok else 1

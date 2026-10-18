@@ -5,6 +5,7 @@
 #include "GameLogic/System/DOTManager.h"
 
 #include "Common/StateHash.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
@@ -136,4 +137,17 @@ void DOTManager::crc(StateHasher &h) const
 		h.addU32(kv.second.endFrame);
 		h.addU32(kv.second.nextFrame);
 	}
+}
+
+// ---- lane SAVE-4b: obfme:DamageOverTime (OpenBFME native, S-4190): the records in victim id order; the counters are the report's ---------------------
+void DOTManager::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SnapshotXfer::map(x, m_entries, 4 + SnapshotXfer::kDamageInfoBytes + 12, "the damage over time records", [&](ObjectID &id) { x.xferObjectID(&id); },
+		[&](Record &r) {
+			SnapshotXfer::damageInfo(x, r.info);
+			x.xferUnsignedInt(&r.interval);
+			x.xferUnsignedInt(&r.endFrame);
+			x.xferUnsignedInt(&r.nextFrame);
+		});
 }

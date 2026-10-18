@@ -15,12 +15,19 @@
 #include "GameClient/GUI/ShellEnvironment.h"
 #include "GameClient/GUI/ShellServices.h"
 #include "GameClient/GUI/Skirmish/IniSkirmishSetupSource.h"
+#include "GameClient/GUI/Skirmish/RealTimeStats.h"
+#include "GameClient/GUI/Skirmish/SkirmishPreferences.h"
+#include "GameClient/EndGame.h"
 #include "GameClient/GUI/Skirmish/SkirmishGameSetup.h"
 #include "GameClient/GUI/WindowManager.h"
 
 #include "Libraries/Source/Apt/AptActionDecoder.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <sstream>
 #include <functional>
 #include <map>
 #include <set>
@@ -1039,9 +1046,12 @@ TEST_CASE("retail lobby API: profile commands (change, delete) keep the list, th
 	fx.wm->invokeCallback("AptSkirmish::OnDeleteProfile", "");
 	CHECK(fx.screen->profiles().current().empty());
 	CHECK(fx.screen->setup()->info().slots[0].name == u"Player");
-	// the stats screens are not ported and say so
+	// lane ONLINEHUB-1: the statistics page (Stats.swf's AptStats registrations) is made when the player opens it and goes when they leave it
+	CHECK_FALSE(fx.wm->hasCommand("Stats::OnSelectFaction"));
 	fx.wm->invokeCallback("AptSkirmish::OnStatsMenu", "");
-	CHECK(fx.wm->noteCount("unported-command") >= 1);
+	CHECK(fx.wm->hasCommand("Stats::OnSelectFaction"));
+	fx.wm->invokeCallback("AptSkirmish::OnExitStatsScreen", "");
+	CHECK_FALSE(fx.wm->hasCommand("Stats::OnSelectFaction"));
 }
 
 TEST_CASE("retail lobby: a screen with no setup source or sink reports it and refuses StartGame; the registered names are the binary's")
@@ -1099,12 +1109,25 @@ TEST_CASE("stops S-178 / S-179: the lobby reports its inferences, the profile ga
 	CHECK(detail("skirmish-profile-unverified").find("[S-179]") == 0);
 	CHECK(detail("skirmish-environment-missing").find("[S-179]") != std::string::npos); // the in-memory profile store
 	// lane FB7-1 / CAH-2: RW 0x842C93 fills the Hero combo only when TheCreateAHeroSystem exists; this lobby has no Create-a-Hero context, so the
-	// combo stays empty (with one: "-", GUI:Random and the heroes, test_cah1.cpp). The Handicap combo stays empty
+	// combo stays empty (with one: "-", GUI:Random and the heroes, test_cah1.cpp). Lane OWNERFIX-2: the Handicap combo is RotWK's (RW 0x840B9D): 0% .. -95%
+	// in steps of 5, item data the value, the first selected
 	GameWindow *hero = fx.screen->slotGadget(0, "Hero");
 	REQUIRE(hero);
 	CHECK(GadgetComboBoxGetLength(hero) == 0);
-	CHECK(GadgetComboBoxGetLength(fx.screen->slotGadget(0, "Handicap")) == 0);
-	// lane RULES-1: the rule rows of mode 0 (RW 0x960A46 / 0x960A5D: 2 combos + OpenBFME's Legendary Heroes, Fortress construction and Peace Time rows, 3 check boxes); the clan tab answers 0
+	GameWindow *handicap = fx.screen->slotGadget(0, "Handicap");
+	REQUIRE(handicap);
+	REQUIRE(GadgetComboBoxGetLength(handicap) == 20);
+	for (int i = 0; i < 20; ++i)
+	{
+		CHECK((std::intptr_t)GadgetComboBoxGetItemData(handicap, i) == -5 * i);
+	}
+	CHECK(GadgetComboBoxGetText(handicap) == u"0%");
+	// the entry chosen goes through the screen's handler to the slot (RW 0x840485 -> MpOwnerSelectHandicap: GameSlot + 0x20)
+	GadgetComboBoxSetSelectedPos(handicap, 5, false);
+	CHECK(fx.screen->setup()->info().slots[0].handicap == -25);
+	GadgetComboBoxSetSelectedPos(handicap, 0, false);
+	CHECK(fx.screen->setup()->info().slots[0].handicap == 0);
+	// lane RULES-1: the rule rows of mode 0 (RW 0x960A46 / 0x960A5D: 2 combos + OpenBFME's Legendary Heroes row, 3 check boxes); the clan tab answers 0
 	std::string value;
 	REQUIRE(fx.wm->getExtern("MpGameRules::NumCheckBoxes", value) == AptExternResult::Value);
 	CHECK(value == "3");
@@ -1919,6 +1942,83 @@ TEST_CASE("ui6 retail lobby: the map, the players and the rules are kept when th
 	CHECK(itemValueOf(GadgetComboBoxGetItemData(fx.screen->slotGadget(1, "Player"), selectedPos(fx.screen->slotGadget(1, "Player")))) == SLOT_BRUTAL_AI);
 }
 
+// lane OWNERFIX-2 (Sol's review of 7fe9e8e1): the kept game holds each slot's handicap at RotWK's + 0x20 (the human's 9th field, a computer's 6th: RW 0x8023C1),
+// chosen through the Handicap combos, and the lobby opened again shows it; a kept + 0x20 that retail's parser takes (-100 .. 0) but the combo never offers
+// leaves the lobby at its defaults with the note
+TEST_CASE("ownerfix2 retail lobby: the handicaps chosen in the combos are kept with the game and shown when the lobby is opened again; an unoffered one is refused")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	MemorySkirmishProfiles store;
+	LobbyFx fx(mount, false);
+	fx.environment.profiles = &store;
+	ruleLabels(fx.text);
+	fx.shell->push("Skirmish.apt");
+	fx.screen = dynamic_cast<AptSkirmish *>(fx.shell->top());
+	REQUIRE(fx.screen);
+	openRulesTab(fx);
+	GadgetComboBoxSetSelectedPos(fx.screen->slotGadget(1, "Player"), 5, false); // a brutal computer
+	REQUIRE(fx.screen->setup()->info().slots[1].state == SLOT_BRUTAL_AI);
+	GameWindow *h0 = fx.screen->slotGadget(0, "Handicap");
+	GameWindow *h1 = fx.screen->slotGadget(1, "Handicap");
+	REQUIRE(h0);
+	REQUIRE(h1);
+	GadgetComboBoxSetSelectedPos(h0, 7, false); // -35%
+	GadgetComboBoxSetSelectedPos(h1, 19, false); // -95%
+	REQUIRE(fx.screen->setup()->info().slots[0].handicap == -35);
+	REQUIRE(fx.screen->setup()->info().slots[1].handicap == -95);
+	const SkirmishGameSlot s0 = fx.screen->setup()->info().slots[0];
+	const SkirmishGameSlot s1 = fx.screen->setup()->info().slots[1];
+	AptButtonInst *back = popupButton(fx, "lobby.MainMenu");
+	REQUIRE(back);
+	clickButton(fx, *back);
+	fx.tick(120);
+	REQUIRE(fx.shell->findScreenByFilename("Skirmish.apt") == nullptr);
+	const std::string record = store.profileValue(0, "GameInfo");
+	// the records as RotWK writes them: H<name>,ip,port,TF,colour,template,start,team,+0x20,+0x40,hero and C<letter>,colour,template,start,team,+0x20,hero
+	const std::string human = "HGimli,0,0," + std::string(s0.accepted ? "T" : "F") + (s0.hasMap ? "T" : "F") + "," + std::to_string(s0.color) + "," +
+		std::to_string(s0.playerTemplate) + "," + std::to_string(s0.startPos) + "," + std::to_string(s0.teamNumber) + ",-35,0,0:";
+	const std::string computer = ":CB," + std::to_string(s1.color) + "," + std::to_string(s1.playerTemplate) + "," + std::to_string(s1.startPos) + "," +
+		std::to_string(s1.teamNumber) + ",-95,0:";
+	CHECK_MESSAGE(record.find("S=" + human) != std::string::npos, record);
+	CHECK_MESSAGE(record.find(computer) != std::string::npos, record);
+	// Skirmish again: the kept handicaps, in the setup and in the combos
+	fx.shell->push("Skirmish.apt");
+	fx.screen = dynamic_cast<AptSkirmish *>(fx.shell->top());
+	REQUIRE(fx.screen);
+	fx.tick(60);
+	CHECK(fx.screen->restoredGame() == record);
+	CHECK(fx.screen->setup()->info().slots[0].handicap == -35);
+	CHECK(fx.screen->setup()->info().slots[1].handicap == -95);
+	CHECK(fx.screen->setup()->info().slots[2].handicap == 0);
+	REQUIRE(fx.screen->slotGadget(0, "Handicap"));
+	REQUIRE(fx.screen->slotGadget(1, "Handicap"));
+	CHECK(itemValueOf(GadgetComboBoxGetItemData(fx.screen->slotGadget(0, "Handicap"), selectedPos(fx.screen->slotGadget(0, "Handicap")))) == -35);
+	CHECK(itemValueOf(GadgetComboBoxGetItemData(fx.screen->slotGadget(1, "Handicap"), selectedPos(fx.screen->slotGadget(1, "Handicap")))) == -95);
+	// a kept + 0x20 of -3 (inside retail's parse range, not a combo value): the lobby starts from the defaults, named
+	AptButtonInst *back2 = popupButton(fx, "lobby.MainMenu");
+	REQUIRE(back2);
+	clickButton(fx, *back2);
+	fx.tick(120);
+	REQUIRE(fx.shell->findScreenByFilename("Skirmish.apt") == nullptr);
+	std::string odd = store.profileValue(0, "GameInfo");
+	const std::size_t at = odd.find(",-35,0,0:");
+	REQUIRE(at != std::string::npos);
+	odd.replace(at, 9, ",-3,0,0:");
+	store.setProfileValue(0, "GameInfo", odd);
+	fx.shell->push("Skirmish.apt");
+	fx.screen = dynamic_cast<AptSkirmish *>(fx.shell->top());
+	REQUIRE(fx.screen);
+	fx.tick(60);
+	CHECK(fx.screen->restoredGame().empty());
+	CHECK(fx.screen->setup()->info().slots[0].handicap == 0);
+	bool noted = false;
+	for (const WindowManagerNote &n : fx.wm->notes())
+	{
+		noted = noted || (n.kind == "skirmish-kept-game" && n.detail.find("slot 0 has the handicap -3, which the lobby does not offer") != std::string::npos);
+	}
+	CHECK(noted);
+}
+
 TEST_CASE("ui6 retail lobby input: the Profile nav opens under the pointer and closes when the pointer leaves it (Skirmish.apt sprite 34: bttn -> _show, "
 		  "the surround's rollOver -> _close)")
 {
@@ -2038,4 +2138,148 @@ TEST_CASE("fortress construction rules: default off, optional match setting, res
  CHECK(setup.info().fortressConstruction);
  setup.resetRules();
  CHECK_FALSE(setup.info().fortressConstruction);
+}
+
+TEST_CASE("rotwk-c lobby retail: handicap and faction dropdown limits follow the slot")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	LobbyFx fx(mount);
+	fx.tick(60);
+	for (int slot : { 0, 1, 4, 7 })
+	{
+		for (const char *leaf : { "Handicap", "PlayerTemplate" })
+		{
+			GameWindow *combo = fx.screen->slotGadget(slot, leaf);
+			REQUIRE(combo != nullptr);
+			const ComboBoxData *data = static_cast<const ComboBoxData *>(combo->winGetUserData());
+			REQUIRE(data != nullptr);
+			const int expected[] = { 8, 7, 6, 5, 4, 4, 4, 4 };
+			CHECK(data->maxDisplay == expected[slot]);
+		}
+	}
+}
+
+// lane OWNERFIX-3 (the owner's playtest, 2026-10-17: "the map list's hammer icon and star column do nothing"): the first column is the profile's battle
+// honors (RW 0x8460B5), the hammer header sorts by it (MpGameSetup::OnSortIcons -> RW 0x84010E with 4); a won skirmish is recorded by the score screen
+// (RW 0x9270AD -> 0x9CE8F3) into the profile's RealTimeStats.ini, and the lobby shows the conquest
+TEST_CASE("ownerfix3 retail lobby: a won skirmish against a Hard AI marks its map Hard-conquered, the hammer header sorts by the conquest (RW 0x8460B5 / 0x9CE8F3)")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	const std::filesystem::path dir = std::filesystem::temp_directory_path() / ("openbfme-ownerfix3-lobby-" + std::to_string(std::random_device{}()));
+	std::filesystem::remove_all(dir);
+	std::filesystem::create_directories(dir);
+	struct Cleanup
+	{
+		std::filesystem::path d;
+		~Cleanup() { std::filesystem::remove_all(d); }
+	} cleanup{ dir };
+	SkirmishPreferences profiles((dir / "Skirmish.ini").string());
+	REQUIRE(profiles.add(u"Gimli"));
+	REQUIRE(profiles.setCurrent(u"Gimli"));
+	SkirmishHonorsGame honors;
+	ScoreScreenData score;
+	LobbyFx fx(mount, false);
+	fx.environment.profiles = &profiles;
+	fx.environment.skirmishHonors = &honors;
+	fx.environment.scoreScreen = &score;
+	fx.shell->push("Skirmish.apt");
+	fx.screen = dynamic_cast<AptSkirmish *>(fx.shell->top());
+	REQUIRE(fx.screen);
+	fx.tick(60);
+	REQUIRE(fx.screen->setup());
+	GameWindow *list = fx.screen->mapListWindow();
+	REQUIRE(list);
+	const std::vector<std::string> keys = fx.screen->mapListKeys();
+	REQUIRE(keys.size() >= 3); // tolerance: the retail install lists dozens of maps; the sort checks need three rows
+	auto entryOf = [&](const std::string &key) -> const MapCacheEntry * {
+		for (const MapCacheEntry &m : fx.setup.maps())
+		{
+			if (m.name == key)
+			{
+				return &m;
+			}
+		}
+		return nullptr;
+	};
+	// a new profile: every listed multiplayer map is not conquered (state 1, + 0x8000 for a user map), the not-conquered images
+	for (std::size_t i = 0; i < keys.size(); ++i)
+	{
+		const MapCacheEntry *m = entryOf(keys[i]);
+		REQUIRE(m);
+		CAPTURE(keys[i]);
+		CHECK(fx.screen->mapListStates()[i] == ((m->isMultiplayer ? 1 : 0) | (m->isOfficial ? 0 : 0x8000)));
+		CHECK(fx.screen->mapListImages()[i] == (m->isOfficial ? "AptDifficultyNotConquered" : "AptUserMapNotConquered"));
+	}
+	// pick the second row's map and a Hard AI in slot 1, then press the movie's StartGame
+	const std::string won = keys[1];
+	const MapCacheEntry *wonMap = entryOf(won);
+	REQUIRE(wonMap);
+	REQUIRE(wonMap->isMultiplayer);
+	clickListRow(fx, list, 1);
+	REQUIRE(fx.screen->setup()->info().mapName == won);
+	GadgetComboBoxSetSelectedPos(fx.screen->slotGadget(1, "Player"), 4, false); // Open, Closed, Easy, Medium, Hard
+	REQUIRE(fx.screen->setup()->info().slots[1].state == SLOT_HARD_AI);
+	AptButtonInst *start = firstButtonIn(fx.wm->apt().resolvePath(fx.wm->apt().level(1), "lobby.StartGame"));
+	REQUIRE(start);
+	clickButton(fx, *start);
+	fx.tick(30);
+	REQUIRE(fx.sink.messages.size() == 1);
+	// the game the score screen records (retail: TheGameInfo)
+	REQUIRE(honors.valid);
+	CHECK(honors.localSlot == 0);
+	CHECK(honors.slots[0].state == SLOT_PLAYER);
+	CHECK(honors.slots[1].state == SLOT_HARD_AI);
+	CHECK(honors.mapKey == won);
+	CHECK(honors.mapPlayers == wonMap->numPlayers);
+
+	// the game ends in the local player's victory: the score screen (type 2) records the honors once
+	score.valid = true;
+	score.type = 2;
+	score.localAlliedVictory = true;
+	ScoreScreenData::Entry me;
+	me.playerIndex = 1;
+	me.name = "Gimli";
+	me.side = "Dwarves";
+	me.local = true;
+	me.result = 0;
+	score.entries.push_back(me);
+	fx.shell->push("TimeLine.apt");
+	fx.tick(90);
+	const std::string statsPath = (dir / "GimliRealTimeStats.ini").string();
+	REQUIRE(std::filesystem::exists(statsPath));
+	std::ifstream in(statsPath, std::ios::binary);
+	std::stringstream text;
+	text << in.rdbuf();
+	std::string retailKey = won;
+	std::replace(retailKey.begin(), retailKey.end(), '/', '\\');
+	CHECK(text.str().find(retailKey + "_4 = 1") != std::string::npos);
+	CHECK(text.str().find("UseMapListTooltips = 1") != std::string::npos);
+	CHECK(score.honorsRecorded);
+	CHECK_FALSE(honors.valid); // once
+	CHECK(fx.wm->noteCount("map-honors") == 1); // the record's note (the lobby's fills had the profile store and its folder: no note)
+
+	// back in the lobby: the hammer header (OnSortIcons, the state ascending) puts the conquered map last with the Hard image; again: first
+	fx.shell->pop();
+	fx.tick(30);
+	REQUIRE(fx.shell->top() == fx.screen);
+	fx.wm->invokeCallback("MpGameSetup::OnSortIcons", "");
+	REQUIRE(fx.screen->mapListKeys().size() == keys.size());
+	CHECK(fx.screen->mapListKeys().back() == won);
+	CHECK(fx.screen->mapListStates().back() == 4);
+	CHECK(fx.screen->mapListImages().back() == "AptDifficultyHardConquered");
+	fx.wm->invokeCallback("MpGameSetup::OnSortIcons", "");
+	CHECK(fx.screen->mapListKeys().front() == won);
+	CHECK(fx.screen->mapListImages().front() == "AptDifficultyHardConquered");
+	// a defeat records nothing: the file stays as it was
+	const std::string before = text.str();
+	score.honorsRecorded = false;
+	score.localAlliedVictory = false;
+	honors.valid = true;
+	fx.shell->push("TimeLine.apt");
+	fx.tick(60);
+	std::ifstream again(statsPath, std::ios::binary);
+	std::stringstream after;
+	after << again.rdbuf();
+	CHECK(after.str() == before);
+	CHECK(score.honorsRecorded);
 }

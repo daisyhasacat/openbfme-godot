@@ -116,6 +116,8 @@ public:
 	const std::vector<const ExperienceLevelTemplate *> *levelsFor(const std::string &templateName) const;
 	// RW 0x689E3C: the next level after the one named `currentName` ("" = none) for `templateName`
 	const ExperienceLevelTemplate *nextLevel(const std::string &templateName, const std::string &currentName, bool multiplayerGame) const;
+	// RW 0x689045: last valid entry in definition order, not the highest rank.
+	const ExperienceLevelTemplate *lastLevel(const std::string &templateName, bool multiplayerGame) const;
 	// RW 0x689BB3 (resolved to its override)
 	const ExperienceLevelTemplate *findLevel(const std::string &name) const;
 	// RW 0x6891DA

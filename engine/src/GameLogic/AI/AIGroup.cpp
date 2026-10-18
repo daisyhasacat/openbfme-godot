@@ -65,7 +65,7 @@ Coord3D AIGroup::clampWaypointPosition(const Coord3D &pos) const
 const char *AIGroup::stopLine()
 {
 	return "S-223 AIGroup's force moves and waypoints (lane MOVE-3: not MSG_DO_MOVETO, S-1831) move with ZH's individual destinations (offset from the nearest unit clamped to "
-		"six bounding radii): the BFME group manager's formation layout (RW 0x94FCBA), "
+		"six bounding radii) unless they march in formation (lane BACKLOG-8: the layout RW 0x94FCBA and the march RW 0x7747DE / 0x77348C, S-4460 / S-4462); "
 		"the ZH column and tighten moves and the weapon locks are not ported; a formation move's drag direction becomes the units' final facing (inference)";
 }
 
@@ -256,7 +256,7 @@ void AIGroup::delayMoodCheckForStealth(Object &obj, AIUpdateInterface &ai)
 	ai.setNextMoodCheckTime(m_logic.getFrame() + draw + delay); // RW 0x774CF0 .. 0x774CFB: 32-bit adds
 }
 
-void AIGroup::groupMoveToPosition(const Coord3D &posIn, bool addWaypoint, CommandSourceType source, bool haveFinalAngle, float finalAngle)
+void AIGroup::groupMoveToPosition(const Coord3D &posIn, bool addWaypoint, CommandSourceType source, bool haveFinalAngle, float finalAngle, bool attackMove)
 {
 	AIWorld *world = m_logic.aiWorld();
 	if (!world || m_members.empty())
@@ -264,17 +264,45 @@ void AIGroup::groupMoveToPosition(const Coord3D &posIn, bool addWaypoint, Comman
 		return;
 	}
 	world->noteStop(stopLine());
-	// lane BACKLOG6: RW 0x774897's formation group manager: a group it takes keeps the port's stand-in move and makes no stealth draw; one it refuses runs the
-	// generic path below (its draw) on the members the manager's filter left; a group whose last member the filter refuses does nothing
+	// lane BACKLOG6: RW 0x774897's formation group manager: a group it takes (lane BACKLOG-8 r2: and that is not an attack-move and is not a click inside its own
+	// gather rectangle) marches in formation; otherwise it keeps the port's stand-in move and makes no stealth draw; one it refuses runs the generic path below
+	// (its draw) on the members the manager's filter left; a group whose last member the filter refuses does nothing
 	bool managed = false;
-	switch (formationManager(posIn, addWaypoint, source, haveFinalAngle))
+	bool marchGroup = !attackMove && source == CMD_FROM_PLAYER;
+	if (marchGroup)
+	{
+		// lane BACKLOG-8 r2, RW 0x7748C1 .. 0x77498D: the tighten test (a click inside the group's rectangle scaled by GameData GroupMoveClickToGatherAreaFactor
+		// about its middle, RW 0x65F4DC / 0x65F4A2) sends the group past the manager to the generic path
+		const GameLogicSettings &gs = m_logic.settings();
+		if (gs.groupMoveClickToGatherAreaFactor > 0.0f && m_members.size() > 1)
+		{
+			Coord2D lo, hi;
+			Coord3D c;
+			getMinMaxAndCenter(lo, hi, c);
+			const float f = SimMath::mulf32(SimMath::subf32(gs.groupMoveClickToGatherAreaFactor, 1.0f), 0.5f);
+			const float dx = SimMath::mulf32(SimMath::subf32(hi.x, lo.x), f), dy = SimMath::mulf32(SimMath::subf32(hi.y, lo.y), f);
+			lo.x = SimMath::subf32(lo.x, dx);
+			lo.y = SimMath::subf32(lo.y, dy);
+			hi.x = SimMath::addf32(hi.x, dx);
+			hi.y = SimMath::addf32(hi.y, dy);
+			marchGroup = !(posIn.x >= lo.x && hi.x >= posIn.x && posIn.y >= lo.y && hi.y >= posIn.y);
+		}
+	}
+	const bool tightened = !attackMove && source == CMD_FROM_PLAYER && !marchGroup;
+	switch (tightened ? FORMATION_NOT_OFFERED : formationManager(posIn, addWaypoint, source, haveFinalAngle))
 	{
 	case FORMATION_NOTHING:
 		world->noteStop(formationStopLine());
 		return;
 	case FORMATION_TAKEN:
-		managed = true;
 		world->noteStop(formationStopLine());
+		// the march (RW 0x7747DE's ground path, createFormation and moveFormationToPos, S-4462): a refusal by its ground path (the terrain, the nearby enemy,
+		// no path) is the manager's refusal: the generic path below
+		if (marchGroup && gatherAndMoveInFormation(posIn, source, 0, true))
+		{
+			return;
+		}
+		managed = !marchGroup;
 		break;
 	default:
 		break;

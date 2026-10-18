@@ -200,6 +200,7 @@ public:
 class SpecialAbilityUpdate : public UpdateModule, public SpecialPowerUpdateInterface
 {
 public:
+	OBFME_MODULE_XFER(SpecialAbilityUpdate) // lane SAVE-4b
 	SpecialAbilityUpdate(Thing *thing, const SpecialAbilityUpdateModuleData *data); // RW 0x851D42
 	UpdateSleepTime update() override;                                              // RW 0x854DF7
 	DisabledMaskType getDisabledTypesToProcess() const override { return (DisabledMaskType)(1u << 3); } // RW 0x855830: DISABLED_HELD
@@ -287,6 +288,7 @@ protected:
 class WeaponFireSpecialAbilityUpdate : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(WeaponFireSpecialAbilityUpdate) // lane SAVE-4b
 	WeaponFireSpecialAbilityUpdate(Thing *thing, const WeaponFireSpecialAbilityUpdateModuleData *data); // RW 0x895D98
 	~WeaponFireSpecialAbilityUpdate() override;
 	void finishAbility(bool ownerDying, bool aborted) override; // RW 0x896033
@@ -311,6 +313,7 @@ private:
 class ToggleMountedSpecialAbilityUpdate : public SpecialAbilityUpdate, public CreateModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(ToggleMountedSpecialAbilityUpdate) // lane SAVE-4b
 	ToggleMountedSpecialAbilityUpdate(Thing *thing, const ToggleMountedSpecialAbilityUpdateModuleData *data);
 	CreateModuleInterface *getCreate() override { return this; }
 	void onCreate() override {}
@@ -336,6 +339,7 @@ private:
 class HeroModeSpecialAbilityUpdate : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(HeroModeSpecialAbilityUpdate) // lane SAVE-4b: SpecialAbilityUpdate's (no state of its own)
 	HeroModeSpecialAbilityUpdate(Thing *thing, const HeroModeSpecialAbilityUpdateModuleData *data);
 
 protected:
@@ -350,6 +354,7 @@ private:
 class LevelGrantSpecialPower : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(LevelGrantSpecialPower) // lane SAVE-4b
 	LevelGrantSpecialPower(Thing *thing, const LevelGrantSpecialPowerModuleData *data);
 	unsigned granted() const { return m_granted; }
 	void crc(StateHasher &h) const override;
@@ -366,6 +371,7 @@ private:
 class ModelConditionSpecialAbilityUpdate : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(ModelConditionSpecialAbilityUpdate) // lane SAVE-4b
 	ModelConditionSpecialAbilityUpdate(Thing *thing, const ModelConditionSpecialAbilityUpdateModuleData *data);
 	void finishAbility(bool ownerDying, bool aborted) override; // RW 0x8945C1
 	unsigned emotionRequests() const { return m_emotions; }
@@ -390,6 +396,7 @@ private:
 class SpecialDisguiseUpdate : public SpecialAbilityUpdate, public CreateModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(SpecialDisguiseUpdate) // lane SAVE-4b
 	SpecialDisguiseUpdate(Thing *thing, const SpecialDisguiseUpdateModuleData *data); // RW 0x8B439F
 	CreateModuleInterface *getCreate() override { return this; }
 	void onCreate() override {}
@@ -400,6 +407,7 @@ public:
 	static SpecialDisguiseUpdate *of(Object &obj); // RW 0x68BDA5("SpecialDisguiseUpdate")
 	float opacity() const { return m_opacity; }
 	unsigned disguises() const { return m_disguises; }
+	const std::string &enemyPerspectiveTemplate() const { return m_sd->m_disguisedAsTemplateEnemy; } // RW 0x8B4440
 	void crc(StateHasher &h) const override;
 
 protected:

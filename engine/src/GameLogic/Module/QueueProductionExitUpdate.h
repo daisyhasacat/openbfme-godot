@@ -49,6 +49,7 @@ public:
 class QueueProductionExitUpdate : public UpdateModule, public ExitInterface
 {
 public:
+	OBFME_MODULE_XFER(QueueProductionExitUpdate) // lane SAVE-4b
 	QueueProductionExitUpdate(Thing *thing, const QueueProductionExitUpdateModuleData *data);
 
 	static void registerClass(class ModuleFactory &modules);

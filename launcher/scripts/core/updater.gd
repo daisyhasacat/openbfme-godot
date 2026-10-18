@@ -15,8 +15,8 @@
 ##                                   install by themselves (lane UI-5), the versions started and their process ids (never removed while
 ##                                   they run)
 ## Lane ONEZIP-1 (one download): the folder of the launcher's executable may hold the game too (the combined package: OpenBFME beside
-## OpenBFMELauncher, with the package's VERSION file). That game is playable at once, with no first download (bundled): Play starts it
-## in place while no newer version is installed, and it counts as installed when the launcher decides whether a release is newer.
+## OpenBFMELauncher, with the package's VERSION file). When its signed inventory verifies, Play starts the bundled game in place with
+## no first download; it counts as installed when the launcher decides whether a release is newer.
 ## The launcher's own update comes out of the game package (stage_self_update, Manifest.launcher_source).
 ## See docs/RELEASE.md, "The launcher", for the rules (verify before use, rollback protection, keep two, offline start).
 extends RefCounted
@@ -30,14 +30,21 @@ const NetPolicy := preload("res://scripts/net/net_policy.gd")
 const HttpFetch := preload("res://scripts/net/http_fetch.gd")
 const Log := preload("res://scripts/core/launcher_log.gd")
 const GlibcCheck := preload("res://scripts/core/glibc_check.gd")
+const MacOSUpdate := preload("res://scripts/core/macos_update.gd")
 
 const API_BASE := "https://api.github.com"
 const KEEP_VERSIONS := 2
 const FREEZE_DAYS := 60
 const MAX_RELEASES_JSON := 4 * 1024 * 1024
 const MAX_NOTES := 20000
-const GAME_EXE := {"linux-x64": "OpenBFME.x86_64", "windows-x64": "OpenBFME.exe"}
-const LAUNCHER_EXE := {"linux-x64": "OpenBFMELauncher.x86_64", "windows-x64": "OpenBFMELauncher.exe"}
+const GAME_EXE := {"linux-x64": "OpenBFME.x86_64", "windows-x64": "OpenBFME.exe",
+	"macos-arm64-unstable-preview": "OpenBFME.app/Contents/MacOS/OpenBFME",
+	"macos-universal": "OpenBFME.app/Contents/MacOS/OpenBFME",
+	"macos-arm64": "OpenBFME.app/Contents/MacOS/OpenBFME"}
+const LAUNCHER_EXE := {"linux-x64": "OpenBFMELauncher.x86_64", "windows-x64": "OpenBFMELauncher.exe",
+	"macos-arm64-unstable-preview": "OpenBFME Launcher.app/Contents/MacOS/OpenBFME Launcher",
+	"macos-universal": "OpenBFMELauncher.app/Contents/MacOS/OpenBFME Launcher",
+	"macos-arm64": "OpenBFME Launcher.app/Contents/MacOS/OpenBFME Launcher"}
 ## lane ONEZIP-1: set for every game this launcher starts, so that game does not ask the launcher for an update check again
 ## (godot/scripts/release/update_handover.gd)
 const STARTED_BY_LAUNCHER := "OPENBFME_STARTED_BY_LAUNCHER"
@@ -53,6 +60,73 @@ var state := ConfigFile.new()
 var _state_lock := Mutex.new()  # lane UI-5: Play (the main thread) writes state.cfg while a worker thread installs an update
 var progress := Callable()  # progress.call(text, done_bytes, total_bytes)
 var launcher_dir := ""  # the folder of the running launcher's executable ("" in a development run: no self-update)
+var macos_transaction := false
+var translocated := ""  # lane MACPLAY-1: the read-only copy macOS started this launcher from (App Translocation), "" when it did not
+
+## Lane MACPLAY-1: macOS runs a quarantined app that was not moved since it was unpacked from a temporary, read-only copy of that one app
+## (App Translocation: <the system's temporary folder>/AppTranslocation/<UUID>/d/OpenBFME Launcher.app). OpenBFME.app is not beside that copy, so
+## the launcher there finds no game (the v0.4.6 Mac preview showed a dimmed Play with no word why) and cannot update the package. The
+## launcher says so and tells the player what to do (README-MAC.txt "FIRST OPEN"); it never downloads a second game for a translocated copy.
+const TRANSLOCATED_TEXT := ("macOS started the launcher from a temporary read-only copy (App Translocation), because the apps still " +
+	"carry the download quarantine; that copy cannot see OpenBFME.app. Quit the launcher, move the folder that holds BOTH apps " +
+	"(OpenBFME Launcher.app and OpenBFME.app, the unpacked openbfme-...-macos-arm64 folder) out of Downloads, for example into your " +
+	"home folder, and open the launcher in it again. If it still happens, remove the quarantine as README-MAC.txt describes (Terminal: " +
+	"xattr -dr com.apple.quarantine <that folder>).")
+
+
+static func is_translocated(path: String) -> bool:
+	return path.replace("\\", "/").contains("/AppTranslocation/")
+
+
+## MACPLAY-1: whether updates replace the verified package beside this Mac launcher as a whole (DEVPORT-6's swap). Only a folder the swap
+## accepts (the unpacked openbfme-<v>-macos-arm64 folder, nothing else in it: MacOSUpdate.validate_installed_root); a package whose apps
+## were moved elsewhere (both into Applications, say) still plays, and its updates install into versions/<v>/game.
+func mac_swap_root() -> bool:
+	if not macos_updates_enabled() or bundled().is_empty():
+		return false
+	var why := MacOSUpdate.validate_installed_root(launcher_dir.simplify_path(), self)
+	if why != "":
+		Log.line("LAUNCHER updates install into the launcher's data folder: the folder of the apps is not one the package update replaces (%s)" % why)
+	return why == ""
+
+
+## the Mac whose launcher installs, verifies and plays versions/<v>/game (the signed macos-arm64 package of manifest-macos.json)
+func mac_platform() -> bool:
+	return macos_updates_enabled()
+
+func macos_updates_unsupported() -> bool:
+	return info.platform() in ["macos-universal", "macos-arm64-unstable-preview"] or \
+		(info.platform() == "macos-arm64" and not macos_updates_enabled())
+
+
+func macos_updates_enabled() -> bool:
+	return OS.get_name() == "macOS" and info.macos_updates and info.platform() == "macos-arm64"
+
+
+func release_version() -> String:
+	return info.release_version() if info.has_method("release_version") else String(info.version)
+
+
+func macos_preview() -> bool:
+	return OS.get_name() == "macOS" and info.platform() == "macos-arm64-unstable-preview"
+
+
+func releases_url() -> String:
+	return "https://github.com/%s/releases" % info.repo
+
+
+func macos_preview_notice(release: Dictionary) -> Dictionary:
+	if not macos_preview():
+		return {"ok": false, "error": "not a Mac preview", "message": "", "url": ""}
+	var verified := release_manifest(release)
+	if not verified.ok:
+		return {"ok": false, "error": verified.error, "message": "", "url": ""}
+	var base := String(info.version).get_slice(" ", 0)
+	if not Semver.is_valid(base):
+		return {"ok": false, "error": "invalid Mac preview base version", "message": "", "url": ""}
+	var newer := Semver.compare(verified.manifest.version, base) > 0
+	return {"ok": true, "error": "", "newer": newer, "url": releases_url(),
+		"message": "A newer version may be on the releases page" if newer else "Mac preview: updates are manual for now"}
 
 
 func _init(build_info: RefCounted) -> void:
@@ -61,13 +135,25 @@ func _init(build_info: RefCounted) -> void:
 	http = HttpFetch.new(policy, info.version)
 	state.load(data_dir.path_join("state.cfg"))
 	if info.packaged:
-		set_launcher_dir(OS.get_executable_path().get_base_dir())
+		set_launcher_dir(package_root(OS.get_executable_path(), info.platform()))
+
+
+static func package_root(executable_path: String, platform: String) -> String:
+	# MACPLAY-1: <root>/OpenBFME Launcher.app/Contents/MacOS/<exe>: the root holds both apps (spaces in any folder name are kept as they are)
+	var executable_dir := executable_path.get_base_dir()
+	return executable_dir.get_base_dir().get_base_dir().get_base_dir() if platform in ["macos-universal", "macos-arm64-unstable-preview", "macos-arm64"] else executable_dir
 
 
 ## the folder of this launcher's executable: where its own update is staged, and where the game of the combined package lies. A
 ## launcher started out of an installed version (lane ONEZIP-1: the combined package is installed with its launcher in it) has none:
 ## staging an update there would add files to a signed version folder, and that folder's game is the installed version already.
 func set_launcher_dir(dir: String) -> void:
+	if info.platform().begins_with("macos") and is_translocated(dir):
+		translocated = dir
+		Log.line("LAUNCHER this launcher runs from a macOS App Translocation copy (%s): no game beside it, no package update; move both apps out of Downloads" % dir)
+		launcher_dir = ""
+		return
+	translocated = ""
 	var here := dir.replace("\\", "/").simplify_path()
 	var versions := data_dir.replace("\\", "/").simplify_path().path_join("versions") + "/"
 	if here.begins_with(versions) or (OS.get_name() == "Windows" and here.to_lower().begins_with(versions.to_lower())):
@@ -93,7 +179,7 @@ func channel() -> String:
 
 
 func default_channel() -> String:
-	return Semver.channel_of(info.version) if Semver.is_valid(info.version) else "stable"
+	return Semver.channel_of(release_version()) if Semver.is_valid(release_version()) else "stable"
 
 
 func set_channel(c: String) -> void:
@@ -184,6 +270,9 @@ func _report(text: String, done := -1, total := -1) -> void:
 ## {ok, error, releases: [{tag, prerelease, notes, published, assets: {name: {url, size}}}] newest first, from_cache}
 ## Only releases whose tag is a release version are listed (drafts and other tags are skipped, and logged).
 func fetch_releases() -> Dictionary:
+	if macos_updates_unsupported() and not macos_preview():
+		Log.line("LAUNCHER macOS automated updates are unsupported; update the complete app bundle manually")
+		return {"ok": false, "error": "macOS automated updates are unsupported; unpack a newer complete bundle manually"}
 	var cache := data_dir.path_join("cache")
 	DirAccess.make_dir_recursive_absolute(cache)
 	var etag := ""
@@ -313,6 +402,91 @@ func in_channel(releases: Array, ch: String) -> Array:
 
 ## The release's verified manifest (cached per tag). {ok, error, manifest, bytes, sig}
 func release_manifest(release: Dictionary) -> Dictionary:
+	if macos_updates_enabled():
+		return macos_release_manifest(release)
+	return _standard_release_manifest(release)
+
+
+func macos_update_on_start(args: PackedStringArray, begin_swap := true) -> Dictionary:
+	return MacOSUpdate.on_start(self, args, begin_swap)
+
+
+## The release's signed macOS sidecar (manifest-macos.json + .sig), cached per tag in cache/manifests-macos/<tag>/. MACPLAY-1 (Sol r1 on
+## DEVPORT-6): the two files were written one after the other, and a cache holding one of them (a crash or a full disk between the
+## writes) refused that release forever. Now the verified pair is written into a fresh folder beside the cache and published with one
+## rename of that folder (both files or neither), and a cache entry that is incomplete or does not verify is removed and fetched again.
+func macos_release_manifest(release: Dictionary) -> Dictionary:
+	var dir := data_dir.path_join("cache/manifests-macos").path_join(release.tag)
+	var manifest_path := dir.path_join("manifest-macos.json")
+	var signature_path := dir.path_join("manifest-macos.json.sig")
+	var expect := {"repo": info.repo, "tag": release.tag, "prerelease": release.prerelease}
+	# MACPLAY-1 (Sol r2): a cache folder above the entry that is a link is never read, written or cleaned (its target is not ours): the
+	# sidecar is fetched and verified as without a cache, and the log says why nothing is cached
+	var linked := ""
+	for above in [data_dir.path_join("cache"), data_dir.path_join("cache/manifests-macos")]:
+		if linked == "" and _path_is_link(above):
+			linked = above
+	if linked != "":
+		Log.line("LAUNCHER the macOS manifest cache is not used: %s is a symbolic link" % linked)
+	if linked == "" and (DirAccess.dir_exists_absolute(dir) or FileAccess.file_exists(dir) or _path_is_link(dir)):
+		var entry_linked := _path_is_link(dir)  # MACPLAY-1 (Sol r2): never read through it; the link alone is removed below
+		var cached := Manifest.read_limited(manifest_path, Manifest.MAX_BYTES) if not entry_linked else PackedByteArray()
+		var cached_sig := Manifest.read_limited(signature_path, 64) if not entry_linked else PackedByteArray()
+		var cv := Manifest.verify(cached, cached_sig, info.release_key, expect, "macos")
+		if cv.ok:
+			return {"ok": true, "error": "", "manifest": cv.manifest, "bytes": cached, "sig": cached_sig,
+				"macos_sidecar": true, "no_entry": cv.manifest.assets.game.is_empty()}
+		Log.line("LAUNCHER the cached macOS manifest of %s is %s (%s): it is fetched again" % [release.tag,
+			"a symbolic link" if entry_linked else "incomplete" if not FileAccess.file_exists(manifest_path) or \
+				not FileAccess.file_exists(signature_path) else "not valid", cv.error])
+		remove_tree(dir)
+		DirAccess.remove_absolute(dir)
+	var has_manifest: bool = release.assets.has("manifest-macos.json")
+	var has_signature: bool = release.assets.has("manifest-macos.json.sig")
+	if has_manifest or has_signature:
+		if not has_manifest or not has_signature:
+			return {"ok": false, "error": "release %s has an incomplete macOS manifest sidecar" % release.tag, "manifest": {}}
+		var m := http.get_small(release.assets["manifest-macos.json"].url, Manifest.MAX_BYTES)
+		if not m.ok or m.code != 200:
+			return {"ok": false, "error": "the macOS manifest of %s could not be downloaded: %s" % [release.tag, m.error if not m.ok else "HTTP %d" % m.code], "manifest": {}}
+		var s := http.get_small(release.assets["manifest-macos.json.sig"].url, 64)
+		if not s.ok or s.code != 200:
+			return {"ok": false, "error": "the macOS manifest signature of %s could not be downloaded: %s" % [release.tag, s.error if not s.ok else "HTTP %d" % s.code], "manifest": {}}
+		var v := Manifest.verify(m.body, s.body, info.release_key, expect, "macos")
+		if not v.ok:
+			return {"ok": false, "error": "release %s rejected: %s" % [release.tag, v.error], "manifest": {}}
+		var why := _cache_pair(dir, "manifest-macos.json", m.body, s.body) if linked == "" else ""
+		if why != "":
+			# the verified sidecar is used for this check; only its cache failed (the next check fetches it again)
+			Log.line("LAUNCHER the verified macOS manifest of %s was not cached: %s" % [release.tag, why])
+		return {"ok": true, "error": "", "manifest": v.manifest, "bytes": m.body, "sig": s.body,
+			"macos_sidecar": true, "no_entry": v.manifest.assets.game.is_empty()}
+	var legacy := _standard_release_manifest(release)
+	if not legacy.ok:
+		return legacy
+	legacy.macos_sidecar = false
+	legacy.no_entry = true
+	return legacy
+
+
+## MACPLAY-1: `name` and `name`.sig into `dir` as one step: written into a fresh sibling folder, then that folder renamed to `dir` (a
+## crash leaves either no `dir` or the complete pair; a leftover temporary folder is never read). "" or what failed.
+func _cache_pair(dir: String, name: String, body: PackedByteArray, sig: PackedByteArray) -> String:
+	var tmp := "%s.tmp-%d-%d" % [dir, OS.get_process_id(), Time.get_ticks_usec()]
+	if DirAccess.make_dir_recursive_absolute(tmp) != OK:
+		return "cannot create %s" % tmp
+	if not _write(tmp.path_join(name), body) or not _write(tmp.path_join(name + ".sig"), sig):
+		remove_tree(tmp)
+		return "writing failed (is the disk full?)"
+	test_point("manifest-cache-written")
+	remove_tree(dir)
+	if DirAccess.rename_absolute(tmp, dir) != OK:
+		remove_tree(tmp)
+		return "the folder could not be renamed into place"
+	return ""
+
+
+func _standard_release_manifest(release: Dictionary) -> Dictionary:
 	var dir := data_dir.path_join("cache/manifests").path_join(release.tag)
 	var expect := {"repo": info.repo, "tag": release.tag, "prerelease": release.prerelease}
 	var bytes := Manifest.read_limited(dir.path_join("manifest.json"), Manifest.MAX_BYTES)
@@ -344,6 +518,8 @@ func release_manifest(release: Dictionary) -> Dictionary:
 ## [{version, path (the game folder), manifest}] of the verified installed versions, newest first; problems are logged and the version
 ## is not offered (it is not deleted: the user may look at it)
 func installed() -> Array:
+	if macos_preview():
+		return []
 	var root := data_dir.path_join("versions")
 	var out := []
 	if not DirAccess.dir_exists_absolute(root):
@@ -362,20 +538,30 @@ func installed() -> Array:
 
 ## `full`: every file's size and SHA-256 against the signed manifest, and no other file (before Play); else that every file is there
 func verify_installed(name: String, full := false) -> Dictionary:
+	if macos_preview():
+		return {"ok": false, "error": "Mac preview starts only its bundled game; updates are manual"}
 	if not Semver.is_valid(name):
 		return {"ok": false, "error": "not a version folder"}
 	var dir := data_dir.path_join("versions").path_join(name)
+	# MACPLAY-1: a Mac version folder holds the signed manifest-macos.json it was installed from (stored as manifest.json), "macos" schema
 	var v := Manifest.verify(Manifest.read_limited(dir.path_join("manifest.json"), Manifest.MAX_BYTES),
-		Manifest.read_limited(dir.path_join("manifest.json.sig"), 64), info.release_key, {"repo": info.repo})
+		Manifest.read_limited(dir.path_join("manifest.json.sig"), 64), info.release_key, {"repo": info.repo},
+		"macos" if mac_platform() else "standard")
 	if not v.ok:
 		return {"ok": false, "error": v.error}
 	if v.manifest.version != name:
 		return {"ok": false, "error": "its manifest is for %s" % v.manifest.version}
+	if not v.manifest.assets.game.has(info.platform()):
+		return {"ok": false, "error": "its signed manifest has no %s package" % info.platform()}
 	var files: Dictionary = v.manifest.assets.game[info.platform()].files
 	if not files.has(GAME_EXE[info.platform()]):
 		return {"ok": false, "error": "the package has no %s" % GAME_EXE[info.platform()]}
 	if full:
-		var why := Manifest.check_files(dir.path_join("game"), files)
+		var why := MacOSUpdate.link_error(dir.path_join("game"), files) if mac_platform() else ""
+		if why == "":
+			why = Manifest.check_files(dir.path_join("game"), files)
+		if why == "" and mac_platform():
+			why = MacOSUpdate._verify_apps(dir.path_join("game"))  # the apps' own seals: Apple Silicon runs only validly signed code
 		if why != "":
 			return {"ok": false, "modified": true, "error": why}
 		return {"ok": true, "error": "", "manifest": v.manifest}
@@ -421,6 +607,20 @@ func play_version() -> String:
 	return newest_installed()
 
 
+## MACPLAY-1: why Play has nothing to start, and what the player can do (shown by Play and --play; never an empty answer)
+func no_game_reason() -> String:
+	if translocated != "":
+		return TRANSLOCATED_TEXT
+	var problem := bundled_problem()
+	if problem != "":
+		return ("The game beside the launcher is not the signed package (%s), and no verified version is installed. Download the " +
+			"package again from %s, or let the launcher download the game (Check for updates).") % [problem, releases_url()]
+	if launcher_dir == "" and info.packaged:
+		return "No verified version is installed. The launcher downloads the newest one when it checks for updates (Check for updates)."
+	return ("No game is installed yet: there is no signed game beside the launcher and no verified version in the launcher's data " +
+		"folder. The launcher downloads the newest release when it checks for updates (Check for updates; it needs an internet connection).")
+
+
 ## the versions Play can start, newest first: the installed ones and the game beside the launcher ({version, path, bundled: true})
 ## when that version is not installed
 func playable() -> Array:
@@ -458,6 +658,27 @@ func bundle_extras() -> Array:
 func bundled() -> Dictionary:
 	if launcher_dir == "" or not FileAccess.file_exists(launcher_dir.path_join(GAME_EXE[info.platform()])):
 		return {}
+	if macos_updates_enabled():
+		if MacOSUpdate.signed_required(self):
+			var receipt := MacOSUpdate.signed_receipt(self, launcher_dir)
+			if not receipt.ok:
+				_bundled_said = receipt.error
+				if _bundled_said != "":
+					Log.line("LAUNCHER the signed Mac package is not offered: " + _bundled_said)
+				return {}
+			_bundled_said = ""
+			return {"version": receipt.manifest.version, "path": launcher_dir, "files": receipt.files}
+		# MACPLAY-1: the unpacked Mac package is offered like the Windows / Linux ones: only when its signed payload inventory verifies
+		# (DEVPORT-6 offered it on its VERSION line and a pack file alone, with no signed data at all)
+	if macos_preview():
+		var version_file := Manifest.read_limited(launcher_dir.path_join("VERSION"), 4096).get_string_from_utf8()
+		if version_file.get_slice("\n", 0).strip_edges() != "OpenBFME " + String(info.version):
+			_bundled_said = "the Mac preview VERSION does not match this launcher"
+			return {}
+		if not FileAccess.file_exists(launcher_dir.path_join("OpenBFME.app/Contents/Resources/OpenBFME.pck")):
+			_bundled_said = "the bundled Mac preview game pack is missing"
+			return {}
+		return {"version": info.version, "path": launcher_dir, "files": {}}
 	# sizes first (Sol r2): nothing larger than the limits is read whole
 	var pr := Manifest.read_bounded(launcher_dir.path_join(Manifest.PAYLOAD), Manifest.MAX_BYTES)
 	var sr := Manifest.read_bounded(launcher_dir.path_join(Manifest.PAYLOAD_SIG), 64)
@@ -473,7 +694,9 @@ func bundled() -> Dictionary:
 		var why: String = v.error
 		if v.ok:
 			var first := FileAccess.get_file_as_string(launcher_dir.path_join("VERSION")).get_slice("\n", 0).strip_edges()
-			if first != "OpenBFME " + String(v.payload.version):
+			# the Mac package's VERSION line carries a label after the version ("OpenBFME v0.4.7 Mac Unstable Preview (Apple Silicon)")
+			var named := first.trim_prefix("OpenBFME ").get_slice(" ", 0) if mac_platform() and first.begins_with("OpenBFME ") else first
+			if (mac_platform() and named != String(v.payload.version)) or (not mac_platform() and first != "OpenBFME " + String(v.payload.version)):
 				why = "its VERSION file (%s) is not the signed version %s" % [first.left(60).c_escape(), v.payload.version]
 		_bundled_cache = {key: {} if why != "" else {"version": v.payload.version, "path": launcher_dir, "files": v.payload.files}}
 		if why != "" and _bundled_said != why:
@@ -526,7 +749,7 @@ func record_started(version: String, pid: int) -> bool:
 ## whether Play of `version` starts the game beside the launcher (that version is not installed in the data folder)
 func plays_bundled(version: String) -> bool:
 	var b := bundled()
-	return not b.is_empty() and b.version == version and not DirAccess.dir_exists_absolute(data_dir.path_join("versions").path_join(version))
+	return not b.is_empty() and b.version == version and (macos_preview() or not DirAccess.dir_exists_absolute(data_dir.path_join("versions").path_join(version)))
 
 
 ## Every file of the game beside the launcher against its signed payload inventory, and the launcher's executable against signed data
@@ -534,7 +757,32 @@ func plays_bundled(version: String) -> bool:
 func check_bundled() -> Dictionary:
 	var b := bundled()
 	if b.is_empty():
-		return {"ok": false, "error": "there is no signed game beside the launcher"}
+		var error := bundled_problem()
+		if error != "":
+			return {"ok": false, "error": error}
+		return {"ok": false, "error": "there is no signed Mac package beside the launcher" if macos_updates_enabled() else
+			"the bundled Mac preview is missing or its VERSION does not match" if macos_preview() else "there is no signed game beside the launcher"}
+	if macos_preview():
+		Log.line("LAUNCHER Mac preview: starting the bundled game without signed-manifest verification; updates are manual")
+		return {"ok": true, "error": ""}
+	if macos_updates_enabled():
+		var transaction_error := MacOSUpdate.play_blocker(self)
+		if transaction_error != "":
+			return {"ok": false, "error": transaction_error}
+		if MacOSUpdate.signed_required(self):
+			var verified := MacOSUpdate.signed_receipt(self, b.path)
+			return {"ok": verified.ok, "error": verified.error}
+		if macos_transaction or MacOSUpdate.transaction_locked(self):
+			return {"ok": false, "error": "a signed whole-package update is in progress"}
+		# MACPLAY-1: every signed file by size and SHA-256 (the apps' code seals, _CodeSignature/CodeResources, are signed files too),
+		# then the seals themselves: codesign --strict refuses a file added to or removed from an app. Files outside the two apps that
+		# are not signed (Finder's .DS_Store) are never run, so they are not refused.
+		var why_mac := MacOSUpdate.link_error(b.path, b.files)
+		if why_mac == "":
+			why_mac = Manifest.check_files(b.path, b.files, [], true)
+		if why_mac == "":
+			why_mac = MacOSUpdate._verify_apps(b.path)
+		return {"ok": why_mac == "", "error": why_mac}
 	var exe: String = LAUNCHER_EXE[info.platform()]
 	var files: Dictionary = b.files.duplicate()
 	files.erase(exe)
@@ -599,6 +847,8 @@ static func _sha256_of(path: String) -> String:
 
 
 func _play_bundled(b: Dictionary, args: PackedStringArray) -> Dictionary:
+	if macos_updates_enabled() and (macos_transaction or MacOSUpdate.transaction_locked(self)):
+		return {"ok": false, "pid": -1, "modified": false, "error": "a signed whole-package update is in progress"}
 	var c := check_bundled()
 	if not c.ok:
 		return {"ok": false, "pid": -1, "modified": true, "error": ("%s (the game beside the launcher) is not the signed package " +
@@ -621,6 +871,17 @@ func _play_bundled(b: Dictionary, args: PackedStringArray) -> Dictionary:
 ## Install `release`'s game package. `user_pick`: the user chose this version (an older one is allowed then); otherwise (an automatic
 ## update) only a version newer than every installed one is installed. {ok, error, version}
 func install(release: Dictionary, user_pick: bool) -> Dictionary:
+	# MACPLAY-1: a Mac launcher beside its verified package updates that package as a whole (DEVPORT-6's staged swap of both apps); a
+	# launcher with no verified game beside it (alone, or the package's inventory does not verify) installs the signed Mac package into
+	# versions/<v>/game like the Windows / Linux launchers. A translocated copy installs nothing (TRANSLOCATED_TEXT).
+	if mac_swap_root():
+		var r := MacOSUpdate.new(self).install(release, user_pick)
+		r.swap = true
+		return r
+	if macos_updates_enabled() and translocated != "":
+		return {"ok": false, "error": TRANSLOCATED_TEXT, "version": ""}
+	if macos_updates_unsupported():
+		return {"ok": false, "error": "macOS automated updates are unsupported; unpack a newer complete app bundle manually", "version": ""}
 	var newest := newest_installed()
 	if not user_pick and newest != "" and Semver.compare(release.tag, newest) <= 0:
 		return {"ok": false, "error": "%s is not newer than the installed %s: an automatic update never installs an older or the same version (pick it yourself to roll back)" % [release.tag, newest], "version": ""}
@@ -628,6 +889,8 @@ func install(release: Dictionary, user_pick: bool) -> Dictionary:
 	if not mm.ok:
 		return {"ok": false, "error": mm.error, "version": ""}
 	var m: Dictionary = mm.manifest
+	if mm.get("no_entry", false) or not m.assets.game.has(info.platform()):
+		return {"ok": false, "error": "the release %s has no signed %s package (download a complete package from %s)" % [release.tag, info.platform(), releases_url()], "version": ""}
 	var asset: Dictionary = m.assets.game[info.platform()]
 	var got := fetch_asset(release, asset)
 	if not got.ok:
@@ -641,6 +904,8 @@ func install(release: Dictionary, user_pick: bool) -> Dictionary:
 		remove_tree(partial)
 		return {"ok": false, "error": "%s was not installed: %s" % [m.version, x.error], "version": ""}
 	var differ := same_files(x.files, asset.files)
+	if differ == "" and mac_platform():
+		differ = _mac_ready(partial.path_join("game"))
 	if differ != "":
 		remove_tree(partial)
 		return {"ok": false, "error": "%s was not installed: %s" % [m.version, differ], "version": ""}
@@ -688,6 +953,19 @@ func install(release: Dictionary, user_pick: bool) -> Dictionary:
 	_prune_locked()
 	unlock_versions()
 	return {"ok": true, "error": "", "version": m.version}
+
+
+## MACPLAY-1: an unpacked Mac package before it is installed: Archive.extract kept the executable bits (the ZIP's Unix modes; the release
+## ZIPs hold no links: make_archive.py refuses them and Archive refuses a link member), both apps' ad-hoc code seals verify (Apple Silicon
+## runs only validly signed code) and nothing carries the download quarantine (the launcher downloads with Godot's HTTP client, which sets
+## none; it is removed anyway, then checked again). "" or what is wrong.
+func _mac_ready(root: String) -> String:
+	var why := MacOSUpdate._verify_apps(root)
+	if why == "" and not MacOSUpdate._clear_tree_quarantine(root):
+		why = "the download quarantine could not be removed from the unpacked package"
+	if why == "":
+		why = MacOSUpdate._verify_apps(root)
+	return why
 
 
 ## Download a manifest asset to downloads/ (resuming) and check its size and SHA-256. {ok, error, path}. A mismatch deletes the file:
@@ -772,7 +1050,10 @@ static var kill_at := ""
 static func test_point(name: String) -> void:
 	if kill_at == name:
 		Log.line("LAUNCHER test kill at " + name)
-		OS.kill(OS.get_process_id())
+		if OS.get_name() == "macOS":
+			MacOSUpdate.kill_self()  # MACPLAY-1: OS.kill of its own process does not end it there
+		else:
+			OS.kill(OS.get_process_id())
 		OS.delay_msec(10000)
 
 
@@ -943,6 +1224,9 @@ var test_windows_lock := false
 func _game_runs(pid: int, version: String) -> bool:
 	if pid <= 0:
 		return false
+	if macos_updates_enabled():
+		var game_root := data_dir.path_join("versions").path_join(version).path_join("game")
+		return MacOSUpdate.process_under(self, pid, game_root)
 	if OS.get_name() == "Windows" or test_windows_lock:
 		var exe := data_dir.path_join("versions").path_join(version).path_join("game").path_join(GAME_EXE[info.platform()])
 		if not FileAccess.file_exists(exe):
@@ -971,7 +1255,9 @@ func launcher_files() -> Array:
 ## lane UI-5: whether stage_self_update(release) would stage a launcher (a packaged launcher older than `release`, not refused before,
 ## not staged already), without downloading anything
 func launcher_update_available(release: Dictionary) -> bool:
-	if launcher_dir == "" or not Semver.is_valid(info.version) or Semver.compare(release.tag, info.version) <= 0:
+	if mac_platform() and not mac_swap_root():
+		return false  # MACPLAY-1: a Mac launcher without its package beside it does not replace itself (mac_launcher_notice)
+	if launcher_dir == "" or not Semver.is_valid(release_version()) or Semver.compare(release.tag, release_version()) <= 0:
 		return false
 	if release.tag in get_state("launcher", "rejected_launcher", []):
 		return false
@@ -981,6 +1267,13 @@ func launcher_update_available(release: Dictionary) -> bool:
 ## Stage the launcher of `release` in <launcher folder>/update/ when it is newer than this launcher and did not fail before. The swap
 ## happens on the next start (apply_staged_update). {ok, error, staged (version or "")}
 func stage_self_update(release: Dictionary) -> Dictionary:
+	if macos_updates_enabled() and not mac_swap_root():
+		var notice := mac_launcher_notice(release)
+		return {"ok": true, "error": "", "staged": "", "why": notice if notice != "" else "the launcher is up to date (%s)" % release_version()}
+	if macos_updates_enabled():
+		return MacOSUpdate.new(self).stage_self_update(release)
+	if macos_updates_unsupported():
+		return {"ok": false, "error": "macOS launcher self-update is unsupported; replace both app bundles manually", "staged": ""}
 	if launcher_dir == "":
 		return {"ok": true, "error": "", "staged": "", "why": "this launcher has no folder of its own (a development run, or one out of an installed version): it does not update itself"}
 	if not Semver.is_valid(info.version):
@@ -1080,6 +1373,16 @@ func _stage_from_package(release: Dictionary, src: Dictionary) -> Dictionary:
 	return {"ok": true, "error": "", "staged": release.tag}
 
 
+## MACPLAY-1: a Mac launcher updates itself only together with the package beside it (DEVPORT-6's swap of both apps: an app bundle is a
+## signed folder, not the one executable file the Windows / Linux swap replaces). A launcher whose folder the swap does not take (no
+## package beside it, or apps moved out of their package folder) says when a newer launcher is out instead: "" when it is not.
+func mac_launcher_notice(release: Dictionary) -> String:
+	if not mac_platform() or not Semver.is_valid(release_version()) or Semver.compare(release.tag, release_version()) <= 0:
+		return ""
+	return ("A new launcher %s is available. This launcher does not replace itself when OpenBFME.app is not beside it: download the Mac " +
+		"package from %s and keep its two apps together.") % [release.tag, releases_url()]
+
+
 ## the release assets a job downloads for these kinds ("game", "launcher"), for Pause / Cancel (main.gd): a combined package is the
 ## launcher's download too
 func asset_names(manifest: Dictionary, kinds: Array) -> Array:
@@ -1120,6 +1423,11 @@ func check_staged(dir: String, tag: String) -> Dictionary:
 
 # ---- files -------------------------------------------------------------------------------------------------------------------------------
 
+static func _path_is_link(path: String) -> bool:
+	var parent := DirAccess.open(path.get_base_dir())
+	return parent != null and parent.is_link(path.get_file())
+
+
 static func _write(path: String, bytes: PackedByteArray) -> bool:
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
@@ -1131,8 +1439,12 @@ static func _write(path: String, bytes: PackedByteArray) -> bool:
 	return ok
 
 
-## remove a folder and everything below it, never following a link (a link is removed, not entered)
+## remove a folder and everything below it, never following a link (a link is removed, not entered). MACPLAY-1 (Sol r2): `path` itself
+## too: a link given as the folder was opened and its target's contents deleted (an invalid cache/manifests-macos/<tag> linking elsewhere)
 static func remove_tree(path: String) -> void:
+	if _path_is_link(path):
+		DirAccess.remove_absolute(path)
+		return
 	if not DirAccess.dir_exists_absolute(path):
 		return
 	var d := DirAccess.open(path)

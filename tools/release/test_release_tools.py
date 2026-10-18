@@ -1,9 +1,12 @@
 """Lane RELEASE-1: the package audit, the testers' README and the privacy rule "no network calls besides LAN play"."""
 from __future__ import annotations
 
+import hashlib
 import io
 import json
+import os
 import re
+import stat
 import struct
 import sys
 import tarfile
@@ -17,7 +20,10 @@ REPO = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 
 import audit_package  # noqa: E402
+import ed25519  # noqa: E402
+import make_archive  # noqa: E402
 import readme_testers  # noqa: E402
+import seal_package  # noqa: E402
 
 BIG = b"BIGF" + b"\x00" * 60
 DDS = b"DDS " + b"\x00" * 60
@@ -25,7 +31,8 @@ WAV = b"RIFF\x00\x00\x00\x00WAVEfmt " + b"\x00" * 40
 
 
 def pck(entries: list[tuple[str, bytes]], fmt: int = 4) -> bytes:
-    """A Godot 4 pack in the layout audit_package reads (header, files, directory at the end for format 3)."""
+    """A Godot 4 pack in the layout audit_package reads (header, files, directory at the end for format 3), each entry with its content's
+    MD5 as Godot writes it (PUBLISH-2 r4: the audit checks it)."""
     header_size = 4 + 5 * 4 + 8 + (8 if fmt >= 3 else 0) + 16 * 4
     file_base = header_size if fmt >= 3 else 0
     blobs, offsets, pos = b"", [], 0
@@ -37,7 +44,7 @@ def pck(entries: list[tuple[str, bytes]], fmt: int = 4) -> bytes:
     for (path, data), ofs in zip(entries, offsets):
         p = path.encode() + b"\0"
         p += b"\0" * (-len(p) % 4)
-        directory += struct.pack("<I", len(p)) + p + struct.pack("<QQ", ofs, len(data)) + b"\0" * 16 + struct.pack("<I", 0)
+        directory += struct.pack("<I", len(p)) + p + struct.pack("<QQ", ofs, len(data)) + hashlib.md5(data).digest() + struct.pack("<I", 0)
     if fmt >= 3:
         head = b"GDPC" + struct.pack("<5I", fmt, 4, 7, 2, 2) + struct.pack("<QQ", file_base, header_size + len(blobs)) + b"\0" * 64
         return head + blobs + directory
@@ -48,9 +55,172 @@ def pck(entries: list[tuple[str, bytes]], fmt: int = 4) -> bytes:
     for (path, data), ofs in zip(entries, offsets):
         p = path.encode() + b"\0"
         p += b"\0" * (-len(p) % 4)
-        directory += struct.pack("<I", len(p)) + p + struct.pack("<QQ", base + ofs, len(data)) + b"\0" * 16 + struct.pack("<I", 0)
+        directory += struct.pack("<I", len(p)) + p + struct.pack("<QQ", base + ofs, len(data)) + hashlib.md5(data).digest() + struct.pack("<I", 0)
     head = b"GDPC" + struct.pack("<5I", 2, 4, 3, 0, 0) + struct.pack("<Q", 0) + b"\0" * 64
     return head + directory + blobs
+
+
+def universal_macho(*, gap: int = 0, gap_byte: int = 0, command_padding: int = 0, ncmds: int = 1) -> bytes:
+    def thin(cpu: int, subtype: int) -> bytes:
+        image_size = 104 + command_padding
+        command = struct.pack("<II16sQQQQiiII", 0x19, 72, b"__TEXT", 0x1000, image_size, 0, image_size, 7, 5, 0, 0)
+        header = struct.pack("<IiiIIIII", 0xFEEDFACF, cpu, subtype, 2, ncmds, 72 + command_padding, 0, 0)
+        return header + command + b"\0" * command_padding
+
+    thin_x86 = thin(0x01000007, 3)
+    thin_arm = thin(0x0100000C, 0)
+    header_size = 8 + 2 * 20
+    arm_offset = header_size + len(thin_x86) + gap
+    records = (struct.pack(">IIIII", 0x01000007, 3, header_size, len(thin_x86), 3)
+               + struct.pack(">IIIII", 0x0100000C, 0, arm_offset, len(thin_arm), 3))
+    return b"\xca\xfe\xba\xbe" + struct.pack(">I", 2) + records + thin_x86 + bytes([gap_byte]) * gap + thin_arm
+
+
+def macos_release_files() -> dict[str, bytes]:
+    game_pck = pck([("scripts/game.gd", b"extends Node\n")])
+    launcher_pck = pck([("build_info.json", b'{"version":"v1.0.0"}\n')])
+    files = {
+        "OpenBFME.app/Contents/MacOS/OpenBFME": universal_macho(),
+        "OpenBFME.app/Contents/Resources/OpenBFME.pck": game_pck,
+        "OpenBFME.app/Contents/Resources/icon.icns": b"\0\xfficon",
+        "OpenBFME.app/Contents/Resources/PrivacyInfo.xcprivacy": b"<plist/>\n",
+        "OpenBFME.app/Contents/Info.plist": b"<plist/>\n",
+        "OpenBFME.app/Contents/PkgInfo": b"APPL????",
+        "OpenBFME.app/Contents/_CodeSignature/CodeResources": b"signature",
+        "OpenBFME.app/Contents/Frameworks/openbfme.macos.template_debug.universal.dylib": universal_macho(),
+        "OpenBFMELauncher.app/Contents/MacOS/OpenBFME Launcher": universal_macho(),
+        "OpenBFMELauncher.app/Contents/Resources/OpenBFME Launcher.pck": launcher_pck,
+        "OpenBFMELauncher.app/Contents/Resources/icon.icns": b"\0\xfficon",
+        "OpenBFMELauncher.app/Contents/Resources/PrivacyInfo.xcprivacy": b"<plist/>\n",
+        "OpenBFMELauncher.app/Contents/Info.plist": b"<plist/>\n",
+        "OpenBFMELauncher.app/Contents/PkgInfo": b"APPL????",
+        "OpenBFMELauncher.app/Contents/_CodeSignature/CodeResources": b"signature",
+        "README_TESTERS.txt": b"test package\n",
+        "README_LAUNCHER.txt": b"launcher notes\n",
+        "LICENSE": b"license\n",
+        "NOTICE": b"notice\n",
+        "VERSION": b"OpenBFME v1.0.0\ncommit " + b"0" * 40 + b"\n",
+    }
+    return files
+
+
+def macos_folder(tmp_path: Path, files: dict[str, bytes]) -> Path:
+    folder = tmp_path / "openbfme-v1.0.0-macos-universal"
+    for rel, data in files.items():
+        path = folder / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        if rel.endswith("/MacOS/OpenBFME") or rel.endswith("/MacOS/OpenBFME Launcher") or rel.endswith(".dylib"):
+            path.chmod(0o755)
+    return folder
+
+
+def test_macos_universal_macho_bounds_and_launcher_pack():
+    binary = universal_macho()
+    launcher_pack = pck([("build_info.json", b'{"version":"v1.0.0"}\n')])
+    assert audit_package.macho_extent(binary) == len(binary)
+    assert audit_package.binary_problems("app", "macho", binary) == []
+    assert audit_package.embedded_pack_problems(
+        "launcher", "macho+pck", binary + launcher_pack + struct.pack("<Q", len(launcher_pack)) + b"GDPC",
+    ) == []
+    assert audit_package.binary_problems("app", "macho", binary + b"appended")
+    with pytest.raises(ValueError, match="architecture bounds"):
+        audit_package.macho_extent(binary[:-1])
+
+
+def test_macos_universal_macho_structural_checks():
+    assert audit_package.macho_extent(universal_macho(gap=8)) == len(universal_macho(gap=8))
+
+    mismatch = bytearray(universal_macho())
+    struct.pack_into("<I", mismatch, 48 + 4, 0x0100000C)
+    with pytest.raises(ValueError, match="CPU type"):
+        audit_package.macho_extent(bytes(mismatch))
+
+    with pytest.raises(ValueError, match="padding is not zero"):
+        audit_package.macho_extent(universal_macho(gap=8, gap_byte=0x41))
+
+    with pytest.raises(ValueError, match="load command is truncated"):
+        audit_package.macho_extent(universal_macho(ncmds=2))
+
+    with pytest.raises(ValueError, match="sizes do not sum"):
+        audit_package.macho_extent(universal_macho(command_padding=8))
+
+    misaligned_size = bytearray(universal_macho())
+    struct.pack_into("<I", misaligned_size, 48 + 32 + 4, 71)
+    with pytest.raises(ValueError, match="load command bounds"):
+        audit_package.macho_extent(bytes(misaligned_size))
+
+    outside_command_region = bytearray(universal_macho())
+    struct.pack_into("<I", outside_command_region, 48 + 20, 64)
+    with pytest.raises(ValueError, match="load command bounds"):
+        audit_package.macho_extent(bytes(outside_command_region))
+
+
+def test_nested_zip_support_is_macos_only(tmp_path: Path):
+    folder = tmp_path / "openbfme-v1.0.0-windows-x64"
+    (folder / "nested").mkdir(parents=True)
+    (folder / "nested/file.txt").write_text("file\n")
+    with pytest.raises(SystemExit, match="only for macOS universal apps"):
+        make_archive.zip_file(folder, tmp_path / "package.zip", 1_700_000_000)
+
+    archive = tmp_path / "openbfme-v1.0.0-windows-x64.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr(f"{folder.name}/nested/file.txt", "file\n")
+    with pytest.raises(SystemExit, match="nested package files are supported only"):
+        seal_package.read_archive(archive)
+
+
+def test_macos_archive_rejects_links_and_unsafe_paths():
+    top = "openbfme-v1.0.0-macos-universal"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        link = zipfile.ZipInfo(f"{top}/OpenBFME.app/Contents/Info.plist")
+        link.create_system = 3
+        link.external_attr = (stat.S_IFLNK | 0o777) << 16
+        z.writestr(link, "target")
+        z.writestr(f"{top}/../escape", "not a package member")
+    _, _, problems = audit_package.read_release_zip(buffer.getvalue(), "macos.zip", nested=True)
+    assert any("a link or another special file" in p for p in problems), problems
+    assert any("unsafe member path" in p for p in problems), problems
+
+
+def test_macos_nested_package_allowlist_seal_and_tampering(tmp_path: Path):
+    folder = macos_folder(tmp_path, macos_release_files())
+    archive = tmp_path / "openbfme-v1.0.0-macos-universal.zip"
+    repeat = tmp_path / "repeat.zip"
+    make_archive.zip_file(folder, archive, 1_700_000_000)
+    make_archive.zip_file(folder, repeat, 1_700_000_000)
+    assert archive.read_bytes() == repeat.read_bytes()
+    assert audit_package.check_release("macos-universal", archive) == []
+
+    files = macos_release_files()
+    files["OpenBFME.app/Contents/MacOS/unexpected"] = b"unexpected"
+    problems = audit_package.release_file_problems("macos-universal", files, archive.name)
+    assert any("not a file of the release" in p for p in problems), problems
+    files = macos_release_files()
+    files["OpenBFME.app/Contents/MacOS/OpenBFME"] += b"appended"
+    problems = audit_package.release_file_problems("macos-universal", files, archive.name)
+    assert any("bytes after the Mach-O image" in p for p in problems), problems
+
+    secret = bytes(range(32))
+    seal_package.seal_archive(archive, secret, "Test/repo")
+    assert seal_package.check(tmp_path, ed25519.public_key(secret), "Test/repo") == []
+    sealed, modes, mtime = seal_package.read_archive(archive)
+    sealed["OpenBFME.app/Contents/Info.plist"] += b"tampered"
+    seal_package.write_archive(archive, archive.stem, sealed, modes, mtime)
+    problems = seal_package.check(tmp_path, ed25519.public_key(secret), "Test/repo")
+    assert problems and any("not the inventory of the archive's files" in p for p in problems), problems
+
+
+def test_macos_launcher_app_extract_preserves_bundle_paths(tmp_path: Path):
+    folder = macos_folder(tmp_path, macos_release_files())
+    archive = tmp_path / "openbfme-v1.0.0-macos-universal.zip"
+    unpack = tmp_path / "unpacked"
+    make_archive.zip_file(folder, archive, 1_700_000_000)
+    assert make_archive.extract(archive, "OpenBFMELauncher.app", unpack) == 0
+    assert (unpack / "OpenBFMELauncher.app/Contents/MacOS/OpenBFME Launcher").is_file()
+    assert (unpack / "OpenBFMELauncher.app/Contents/Resources/OpenBFME Launcher.pck").is_file()
+    assert not (unpack / "OpenBFMELauncher.app/OpenBFMELauncher.app").exists()
 
 
 def audit(tmp_path: Path, files: dict[str, bytes]) -> list[str]:
@@ -840,11 +1010,254 @@ def test_the_game_presets_filters_cannot_reorder_the_pack():
     files = subprocess.run(["git", "-C", str(REPO / "godot"), "ls-files", "-z", "."], capture_output=True, text=True, check=True).stdout
     files = [f for f in files.split("\0") if f]
     assert files, "git ls-files lists the game project"
+    # lane OWNERFIX-3: Godot's filter walk skips a folder that holds a .gdignore (assets/app_icon: the icons the Windows / macOS export reads by
+    # path stay out of the pack); a launcher export with that folder stored no icon file
+    ignored = {f.rsplit("/", 1)[0] + "/" for f in files if f.endswith("/.gdignore")}
+    files = [f for f in files if not any(f.startswith(d) for d in ignored)]
     for value in re.findall(r'^exclude_filter="(.*)"$', text, re.M):
         assert value == "", f"exclude_filter={value!r}: its erases follow the directory order"
     includes = re.findall(r'^include_filter="(.*)"$', text, re.M)
-    assert len(includes) == 2, "a Linux and a Windows preset"
+    assert len(includes) == len(re.findall(r"^\[preset\.\d+\]$", text, re.M)) == 6, "Linux, Windows, two release macOS, iOS and standalone macOS presets"
     for value in includes:
         patterns = [p.strip().lower() for p in value.split(",") if p.strip()] + ["*.ico", "*.icns"]  # Godot adds the icons the same way
         matched = [f for f in files if any(fnmatch.fnmatchcase(f.lower(), p) for p in patterns)]  # Godot's matchn: * spans folders
         assert len(matched) <= 1, f"include_filter={value!r} matches {matched}: their order in the pack would follow the host"
+
+
+@pytest.mark.parametrize("text,flagged", [
+    # MACPLAY-1 (Sol r3): a synthetic image is not upstream bytes; even the paths the real templates carry are findings in it
+    (b"\0/" + b"home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/accesskit-0.19.1/src/tree.rs\0", True),
+    (b"\0/root/winrt/winrt/Windows.Foundation.h\0", True),
+    (b"\0/" + b"home/runner/work/godot/godot/core/a.cpp\0", True),          # upstream's runner, but not the pinned crate sources
+    (b"\0/" + b"home/runner/.cargo/registry/src/index.crates.io-0000000000000000/x.rs\0", True),
+    (b"\0/root/build/x.cpp\0", True),
+    (b"\0/" + b"home/builder/ci-work/src/x.cpp\0", True),             # a CI host's (built here: this file passes the commit gate)
+    (b"\0/Users/someone/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/x.rs\0", True),
+])
+def test_only_the_official_templates_build_paths_are_exempt(text, flagged):
+    """DEVPORT-6: LOCAL_PATH scans binaries since 7c731b971; the official Godot 4.7.2 templates carry their build host's paths (every
+    exported executable is one), exempted by exact prefix (audit_package.UPSTREAM_TEMPLATE_PATHS) inside the pinned upstream section
+    of a template slot (MACPLAY-1 Sol r3: test_the_template_exemption_is_upstream_bytes_only); anything else is still a finding"""
+    assert (audit_package.developer_path_problem(loadable_elf(text), template_slot=True) == "developer-machine path") is flagged
+
+
+CARGO = "/" + "home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/"
+
+
+def loadable_elf(payload: bytes, machine: int = 62, e_type: int = 3) -> bytes:
+    """an x86-64 shared object whose one loadable segment covers the whole file: header, program header, `payload`"""
+    size = 64 + 56 + len(payload)
+    h = bytearray(64)
+    h[0:4] = b"\x7fELF"
+    h[4], h[5], h[6] = 2, 1, 1
+    struct.pack_into("<HHI", h, 16, e_type, machine, 1)
+    struct.pack_into("<Q", h, 32, 64)                     # e_phoff
+    struct.pack_into("<HHHH", h, 52, 64, 56, 1, 64)       # e_ehsize, e_phentsize, e_phnum, e_shentsize
+    ph = struct.pack("<IIQQQQQQ", 1, 5, 0, 0, 0, size, size, 0x1000)
+    return bytes(h) + ph + payload
+
+
+@pytest.mark.parametrize("text, why", [
+    # Sol r1 on DEVPORT-6 (P2): escapes out of an upstream prefix
+    (b"\x7fELF\0/root/winrt/winrt/../../private/source.cpp\0", "developer-machine path"),
+    (b"\x7fELF\0" + CARGO.encode() + b"../../../../builder/x.rs\0", "developer-machine path"),
+    (b"\x7fELF\0/root/winrt/winrt/./../build/x.h\0", "developer-machine path"),
+    (b"\x7fELF\0/root/winrt/winrt/a\\..\\..\\x.h\0", "developer-machine path"),
+    # an upstream prefix outside an executable (a pack's script, a text file): no exemption
+    (b"extends Node\n# build source: /root/winrt/winrt/Windows.Foundation.h\n", "developer-machine path"),
+    # a forbidden build prefix below an upstream one: checked on the original text
+    (b"\x7fELF\0/root/winrt/winrt/stage-7/x.h\0", "exact checkout/build/stage path"),
+    # a local path after an exempt one in the same blob is still found
+    (b"\x7fELF\0/root/winrt/winrt/a.h\0/root/private/b.cpp\0", "developer-machine path"),
+])
+def test_template_exemption_has_no_escapes(text, why):
+    """the exemption covers whole upstream paths inside executables only: '..' / '.' / backslash escapes, the prefix in non-executable
+    content, a forbidden prefix below an upstream one and a second path beside an exempt one are all findings"""
+    blob = loadable_elf(text[4:]) if text.startswith(b"\x7fELF") else text
+    assert audit_package.developer_path_problem(blob, ("/root/winrt/winrt/stage-7",), template_slot=True) == why
+
+
+def test_template_exemption_escape_inside_a_game_pack_is_found():
+    """the reviewer's reproduction: the escaping path in a script of an otherwise valid game pack"""
+    for path in ["/root/private/source.cpp", "/root/winrt/winrt/../../private/source.cpp", "/root/winrt/winrt/Windows.Foundation.h"]:
+        pack = pck([("scripts/game.gd", ("extends Node\n# build source: " + path + "\n").encode())])
+        assert audit_package.pck_release_problems("OpenBFME.pck", pack) == ["OpenBFME.pck:scripts/game.gd: developer-machine path"], path
+
+
+def _template_homes() -> list[Path]:
+    """where Godot 4.7.2's official templates are installed: Godot's own data folder ($XDG_DATA_HOME, which the CI hosts link to their
+    template copy), then the default one"""
+    homes = [Path(x) / "godot/export_templates/4.7.2.stable" for x in [os.environ.get("XDG_DATA_HOME", "")] if x]
+    return homes + [Path.home() / ".local/share/godot/export_templates/4.7.2.stable"]
+
+
+def test_the_official_export_templates_pass_the_path_audit():
+    """the real x86-64 Linux / Windows templates the releases export with (SKIP LOUDLY where none is installed)"""
+    homes = _template_homes()
+    files = [p for h in homes if h.is_dir() for p in sorted(h.iterdir())
+             if p.name.startswith(("linux_", "windows_")) and "x86_64" in p.name and p.is_file()]   # the release presets' (x86-64 only;
+    # a host with every template also has arm64 Windows ones, whose build paths no release carries)
+    if not files:
+        pytest.skip("SKIP LOUDLY: no Godot 4.7.2 Linux / Windows export template here")
+    assert {p.name: audit_package.developer_path_problem(p.read_bytes(), template_slot=True) for p in files} == {p.name: "" for p in files}
+
+
+def _official_template(name: str) -> bytes:
+    for home in _template_homes():
+        if (home / name).is_file():
+            return (home / name).read_bytes()
+    pytest.skip(f"SKIP LOUDLY: no Godot 4.7.2 export template {name} here")
+
+
+def _pinned_section(data: bytes) -> tuple[int, int]:
+    found = [(off, size) for fmt, name, off, size in audit_package._sections(data)
+             if (fmt, name, size) in audit_package.UPSTREAM_TEMPLATE_SECTIONS]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def _upstream_path_at(data: bytes, prefix: bytes) -> tuple[int, int]:
+    off, size = _pinned_section(data)
+    at = data.index(prefix, off, off + size)
+    return at, data.index(b"\0", at)
+
+
+TEMPLATES = ["linux_debug.x86_64", "linux_release.x86_64", "windows_debug_x86_64.exe", "windows_release_x86_64.exe"]
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_the_template_exemption_is_upstream_bytes_only(template: str):
+    """MACPLAY-1 (Sol r3, P2): the exemption needs the template's own read-only data section (pinned by SHA-256 from the official
+    Godot 4.7.2 templates) in a slot an exported template fills. Each mutation below keeps a parseable image of the right format and
+    is a finding; the untouched template in each of its slots is not (the control). Expected values: the pinned upstream hashes and
+    paths the test writes, never the audit's own output."""
+    data = _official_template(template)
+    prefix = audit_package.UPSTREAM_TEMPLATE_PATHS[1 if template.startswith("windows") else 0].encode()   # the whole upstream prefix
+    slots = ["OpenBFME.exe", "OpenBFME.console.exe", "OpenBFMELauncher.exe"] if template.startswith("windows") else \
+        ["OpenBFME.x86_64", "OpenBFMELauncher.x86_64"]
+    assert set(slots) <= audit_package.UPSTREAM_TEMPLATE_SLOTS
+    assert all(audit_package.is_template_slot(f"pkg.zip:top/{slot}") for slot in slots)
+    audit = audit_package.Audit()
+    audit.blob(f"pkg/{slots[0]}", data)
+    assert [p for p in audit.problems if "path" in p] == [], audit.problems
+    # the same untouched bytes in a project-built slot (the swap helper; the GDExtensions and the macOS executables are no template slot
+    # either) and through the bare call without a slot
+    audit = audit_package.Audit()
+    audit.blob("pkg/openbfme-bundle-swap", data)
+    assert "developer-machine path in pkg/openbfme-bundle-swap" in audit.problems, audit.problems
+    assert not any(audit_package.is_template_slot(f"top/{slot}") for slot in [
+        "openbfme.linux.template_debug.x86_64.so", "openbfme.windows.template_debug.x86_64.dll", "openbfme-bundle-swap",
+        "openbfme.macos.template_debug.arm64.dylib", "openbfme.macos.template_debug.universal.dylib", "OpenBFME", "OpenBFME Launcher",
+        "OpenBFME.pck", "README.txt", "OpenBFME.exe:scripts/game.gd"])
+    assert audit_package.developer_path_problem(data) == "developer-machine path"
+    off, size = _pinned_section(data)
+    a, b = _upstream_path_at(data, prefix)
+    private = (prefix + b"private-source.cpp").ljust(b - a, b"\0")[:b - a]
+    mutations = {
+        # a private path written over an upstream one, inside the upstream section (the section no longer hashes as pinned)
+        "private path in the section": data[:a] + private + data[b:],
+        # one byte of the section changed far from any path: the upstream paths themselves lose their exemption
+        "section byte changed": data[:off] + bytes([data[off] ^ 1]) + data[off + 1:],
+        # the private path appended after the image (an upstream path outside the pinned section)
+        "path after the image": data + b"\0" + prefix + b"private-source.cpp\0",
+    }
+    for why, blob in mutations.items():
+        assert audit_package.developer_path_problem(blob, template_slot=True) == "developer-machine path", why
+
+
+# ---- PUBLISH-2 r3 (RELHOST-1: v0.4.7's package failed the allowlist): the pinned platform icons' two pack entries, by exact path. Merge
+# queue q21: DEVPORT-6 pins the same six entries by their exported bytes (PINNED_GAME_ICONS, measured on Linux x64 and the M5), which
+# PUBLISH-2's structural rules duplicated; the hash pins are kept and these cases run against them -------------------------------------
+def test_the_pinned_icons_pass_and_nothing_else_does():
+    icons = sorted(audit_package.pinned_icons())
+    assert icons == ["linux.png", "macos.png", "windows.png"], icons
+    # the paths Godot 4.7.2's export wrote into v0.4.7's pack (RELHOST-1's failing run listed exactly these six)
+    paths = [p for n in icons for p in audit_package.icon_import_paths(n)]
+    assert paths == [
+        "assets/platform_icons/linux.png.import", ".godot/imported/linux.png-e3b3f6dbbb74c608680942a1b07c4593.ctex",
+        "assets/platform_icons/macos.png.import", ".godot/imported/macos.png-40b991ba36498511f07038e54095534b.ctex",
+        "assets/platform_icons/windows.png.import", ".godot/imported/windows.png-d254cfae9b851ca9c851d4089a8e9ea3.ctex"]
+    assert sorted(paths) == sorted(audit_package.PINNED_GAME_ICONS)
+    # the entries after an icon are named under their own pack (the icon rule once renamed the pack in later problem lines)
+    tex = paths[1]
+    assert audit_package.pck_release_problems("OpenBFME.pck", pck([(tex, b"GST2"), ("assets/music.bin", b"x")])) == [
+        "OpenBFME.pck:.godot/imported/linux.png-e3b3f6dbbb74c608680942a1b07c4593.ctex: not the hash-pinned platform icon resource",
+        "OpenBFME.pck:assets/music.bin: not a resource type this project exports"]
+    other = ".godot/imported/other.png-" + hashlib.md5(b"res://assets/platform_icons/other.png").hexdigest() + ".ctex"
+    for entries, why in [
+        ([(other, b"GST2")], "not a resource type"),                                      # an unpinned texture
+        ([("assets/platform_icons/other.png.import", b"[remap]\n")], "not a resource type"),  # an unpinned import file
+        ([(tex.replace("e3b3", "e3b4"), b"GST2")], "not a resource type"),               # the pinned name under another hash
+        ([("assets/linux.png.import", b"[remap]\n")], "not a resource type"),            # the pinned name in another folder
+        ([(tex + ".bak", b"GST2")], "not a resource type"),
+        ([(paths[0], b"[remap]\n")], "not the hash-pinned platform icon resource"),      # a pinned path with other bytes
+    ]:
+        probs = audit_package.pck_release_problems("p", pck(entries))
+        assert any(why in p for p in probs), (entries[0][0], probs)
+
+
+def test_the_real_release_package_passes_the_allowlist():
+    """the package package.sh built on a CI host (OPENBFME_RELEASE_PACKAGE: its .tar.gz or .zip; the check runs where one is given)"""
+    import os  # noqa: PLC0415
+    path = os.environ.get("OPENBFME_RELEASE_PACKAGE")
+    if not path:
+        pytest.skip("SKIP LOUDLY: OPENBFME_RELEASE_PACKAGE is not set (a package.sh archive of this commit)")
+    platform = "linux" if path.endswith(".tar.gz") else "windows"
+    assert audit_package.check_release(platform, Path(path)) == []
+
+
+# ---- community PR #36: the files of the AIO download (the optional BFME1 package included) never ship in our packages ----------------
+
+def _aio_table(tmp_path: Path, monkeypatch, files: dict[str, bytes]) -> None:
+    """a made-up aio_package_files.json pinning `files` (name -> bytes) in a package original-BFME1, for the audit"""
+    import hashlib
+    t = tmp_path / "aio_package_files.json"
+    t.write_text(json.dumps({"original-BFME1": [[n, hashlib.md5(d).hexdigest(), len(d)] for n, d in files.items()]}))
+    monkeypatch.setattr(audit_package, "AIO_FILES", t)
+
+
+def test_the_real_aio_table_holds_every_pinned_file_of_the_three_packages():
+    """the audit reads the launcher's own pins: the base RotWK / BFME2 download and the optional BFME1 package, e.g. lotrbfme.exe,
+    worldbuilder.exe and the DSOAL dsound.dll (looked up by the pins, independently of the audit's table)"""
+    table = json.loads((HERE / "aio_package_files.json").read_text())
+    pinned = audit_package.aio_pinned(audit_package.AIO_FILES)
+    assert set(table) == {"original-RotWK", "original-BFME2", "original-BFME1"} and len(table["original-BFME1"]) == 346
+    for guid, rows in table.items():
+        for name, md5, size in rows:
+            if size > 0:
+                assert (md5, size) in pinned, (guid, name)  # a file two packages share is named after one of them
+    assert {"original-BFME1: lotrbfme.exe", "original-BFME1: worldbuilder.exe", "original-BFME1: dsound.dll"} <= set(pinned.values())
+
+
+def test_a_pinned_aio_file_is_refused_under_any_name_and_in_any_container(tmp_path, monkeypatch):
+    exe = b"MZ" + bytes(range(256)) * 40          # stands in for lotrbfme.exe: not retail-format bytes, an ordinary name
+    _aio_table(tmp_path, monkeypatch, {"lotrbfme.exe": exe})
+    zbuf = io.BytesIO()
+    with zipfile.ZipFile(zbuf, "w") as z:
+        z.writestr("pkg/tool.dll", exe)
+    problems = audit(tmp_path, {"README_TESTERS.txt": b"hello", "helper.exe": exe, "b.zip": zbuf.getvalue(),
+                                "OpenBFME.pck": pck([("res://a.bin", exe)])})
+    for where in ("helper.exe", "b.zip:pkg/tool.dll", "OpenBFME.pck:res://a.bin"):
+        assert any(p.endswith(where) and "original-BFME1: lotrbfme.exe" in p for p in problems), (where, problems)
+    assert len(problems) == 3, problems
+    # one byte different, or one byte longer: not that file (no false positives on our own files)
+    assert audit(tmp_path / "other", {"helper.exe": exe[:-1] + b"\x01", "longer.exe": exe + b"\x00"}) == []
+    # the release allowlist too: a pinned file under an allowed name, and the same file as an extra
+    problems = release_problems(tmp_path / "rel", NOTICE=exe)
+    assert any("NOTICE: a game file the AIO service distributes (original-BFME1: lotrbfme.exe)" in p for p in problems), problems
+    problems = release_problems(tmp_path / "rel2", **{"lotrbfme.exe": exe})
+    assert any("lotrbfme.exe: a game file the AIO service distributes" in p for p in problems), problems
+    problems = audit_package.pck_release_problems("OpenBFME.pck", pck([("scripts/x.gd", exe)]))
+    assert any("a game file the AIO service distributes" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("content", ["", "{}", '{"original-BFME1": []}', "not json"])
+def test_the_aio_table_fails_closed(tmp_path, monkeypatch, content):
+    t = tmp_path / "aio_package_files.json"
+    t.write_text(content)
+    monkeypatch.setattr(audit_package, "AIO_FILES", t)
+    with pytest.raises(SystemExit, match="AUDIT"):
+        audit_package.aio_file(b"x")
+    monkeypatch.setattr(audit_package, "AIO_FILES", tmp_path / "missing.json")
+    with pytest.raises(SystemExit, match="AUDIT"):
+        audit_package.aio_file(b"x")

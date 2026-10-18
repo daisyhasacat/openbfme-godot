@@ -22,5 +22,5 @@ class PlayerCommands
 public:
 	void registerHandlers(GameLogicDispatch &dispatcher);
 	// RotWK's Object::isSelectable (RW 0x68DE58), the filter of Squad::getLiveObjects (RW 0x8DB103): what a control group recalls (logic and HUD)
-	static bool isSelectable(const Object &object);
+	static bool isSelectable(const Object &object, bool specialPowerTarget = false);
 };

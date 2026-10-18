@@ -13,6 +13,7 @@
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "GameLogic/Object/Contain/HordeFlank.h"
 #include "Common/StateHash.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object/Object.h"
@@ -175,4 +176,34 @@ std::vector<std::string> CombatState::report() const
 		", nested horde hits not ported " + std::to_string(m_counters.metaImpactNestedHorde) + ", shockwave flings " + std::to_string(m_counters.shockwaveFlings) + ", stand-ups " +
 		std::to_string(m_counters.shockwaveStandUps) + ", rampage kills " + std::to_string(m_counters.shockwaveRampageKills));
 	return out;
+}
+
+// ---- lane SAVE-4b: obfme:Combat (OpenBFME native, S-4190: no retail counterpart; the counters are hashed state of the port) --------------------------
+// The target finder's cell index is a cache: rebuilt from the objects at its next query (TargetFinder::reset), never saved.
+void CombatState::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	x.xferBool(&m_autoAcquire);
+	for (unsigned long long *c : { &m_counters.damageApplications, &m_counters.kills, &m_counters.bountyPaid, &m_counters.projectilesLaunched,
+			 &m_counters.launchBonesFound, &m_counters.garrisonLaunchUnported, &m_counters.garrisonLaunches, &m_counters.launchesWithoutBones,
+			 &m_counters.projectilesDetonated, &m_counters.projectilesLanded, &m_counters.projectileGroundHits, &m_counters.projectileBounces,
+			 &m_counters.projectileFxUnplayed, &m_counters.projectileEmotionsUnported, &m_counters.unportedNuggets, &m_counters.flankIgnored,
+			 &m_counters.rubbleEntered, &m_counters.collapsesBegun, &m_counters.collapsesDone, &m_counters.collapseEffectsUnported,
+			 &m_counters.respawnWithoutUpdate, &m_counters.delayedDeaths, &m_counters.castleMemberHits, &m_counters.castleBreaches, &m_counters.crushes,
+			 &m_counters.crushWeaponShots, &m_counters.crushBumps, &m_counters.ramHits, &m_counters.crushKnockbacks, &m_counters.crushBumpAttacksNotPorted,
+			 &m_counters.crushDecelerations, &m_counters.flanks, &m_counters.flankTests, &m_counters.metaImpactHits, &m_counters.metaImpactKills,
+			 &m_counters.metaImpactNestedHorde, &m_counters.shockwaveFlings, &m_counters.shockwaveStandUps, &m_counters.shockwaveRampageKills })
+	{
+		SnapshotXfer::u64(x, *c);
+	}
+	SnapshotXfer::each(x, m_breaches, 12, [&](CastleBreach &b) {
+		x.xferUnsignedInt(&b.frame);
+		x.xferObjectID(&b.objectId); // an object id (the same u32)
+		x.xferInt(&b.ownerPlayerIndex);
+		SnapshotXfer::checkRange(b.ownerPlayerIndex, -1, m_logic.players().getPlayerCount() - 1, "a castle breach's owner player");
+	});
+	if (x.isLoading())
+	{
+		m_targets.reset();
+	}
 }

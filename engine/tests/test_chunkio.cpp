@@ -169,7 +169,7 @@ TEST_CASE("mesh, hierarchy and HLod load from a synthetic W3D; skin bind pose fo
 	CHECK(p.Y == doctest::Approx(1.0f));
 	CHECK(p.Z == doctest::Approx(10.0f));
 
-	CHECK(W3D_Asset_Path("GUMAArms_SKN") == "art\\w3d\\gu\\gumaarms_skn.w3d");
+	CHECK(W3D_Asset_Path("GUMAArms_SKN", false) == "art\\w3d\\gu\\gumaarms_skn.w3d");
 	CHECK(W3D_Compiled_Texture_Path("GUManAtArms.tga") == "art\\compiledtextures\\gu\\gumanatarms.dds");
 }
 

@@ -57,6 +57,7 @@
 class AptMessageBox;
 class CommandButton;
 class CreateAHeroHeroList;
+struct CreateAHeroListEntry;
 class CreateAHeroSystem;
 
 // What the builder needs besides the shell (ShellEnvironment::createAHero): the system (TheCreateAHeroSystem of the shell's world), the heroes, the client
@@ -152,6 +153,11 @@ public:
 	AptMessageBox *messageBox() { return m_box.get(); }            ///< lane CAH-2: the screen's message box (GuiFX.apt), null until one was shown
 	bool exitRequested() const { return m_exitRequested; }
 	GameWindow *heroList() const { return m_heroList; }
+	// lane MENUWORK-1: the hero list's sort keys (RW 0x9C4EBD's + 0x18 / + 0x1C) and each row's hero (an index of the hero list)
+	int heroSortKey0() const { return m_heroSortKey0; }
+	bool suppressPromo() const; // the SuppressCAHPromo preference (the session's)
+	int heroSortKey1() const { return m_heroSortKey1; }
+	const std::vector<int> &rowEntries() const { return m_rowEntries; }
 	GameWindow *nameEntry() const { return m_nameEntry; }
 	CreateAHeroScreenContext *context() { return m_env.createAHero; }
 
@@ -181,6 +187,9 @@ private:
 	void refreshPowersPage();
 	void setImage(const std::string &name, const std::string &image);
 	void message(const std::string &titleLabel, const std::string &textLabel);
+	void notAvailable(const std::u16string &text);                                          // lane MENUWORK-1 (S-4755)
+	void selectHeroSort(int key);                                                            // lane MENUWORK-1: RW 0x9C4EBD
+	bool heroBefore(const CreateAHeroListEntry &a, const CreateAHeroListEntry &b) const;     // lane MENUWORK-1: RW 0x9C54C4
 	void bumpDisplay() { ++m_displayRevision; }
 	bool nameIsFree(const std::u16string &name) const;
 	std::u16string entryName() const;
@@ -209,6 +218,9 @@ private:
 	int m_keepPowers = CahPowers::MAX_POWERS;  ///< + 0x28
 	bool m_powersDirty = false;                ///< + 0x5C
 	bool m_listDirty = true;
+	int m_heroSortKey0 = 0, m_heroSortKey1 = 0; ///< lane MENUWORK-1: the Manager's + 0x18 / + 0x1C (RW 0x9C4EBD)
+	bool m_heroSorted = false;                 ///< a header was pressed (INFERENCE S-4755: the keys' start values are not set by RotWK's constructor)
+	std::vector<int> m_rowEntries;             ///< the hero list's row -> hero index
 	bool m_editingExisting = false;            ///< the Appearance / Powers pages were opened from the Manager (+0x41C == Manager)
 	int m_pendingQueryRow = -1, m_pendingQueryCol = -1; ///< the cell CurrentPowerIndex was last set to
 	int m_powersScrollUpdates = 0;             ///< updates left that put the matrix at its first row (S-1404)

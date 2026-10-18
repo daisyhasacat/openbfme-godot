@@ -97,6 +97,8 @@ public:
 	TeamFactory &teams() { return m_teams; }
 	const PlayerTemplateStore &templates() const { return m_templates; }
 	void crc(StateHasher &hasher) const;
+	// lane SAVE-4a: every player's state (the count must be this game's: the START made the players); the local player is this peer's UI identity, not saved
+	void xfer(class Xfer &x);
 	// the local player index: a per-peer diagnostic, NOT part of crc()
 	void localCrc(StateHasher &hasher) const;
 

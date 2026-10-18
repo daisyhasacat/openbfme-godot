@@ -42,9 +42,11 @@ int SpellStoreModel::points() const
 bool SpellStoreModel::open(const CommandStore &commands, GameLogic &logic, Player &player, std::string *error)
 {
 	m_logic = &logic;
+	m_commands = &commands;
 	m_player = nullptr;
 	m_buttons.clear();
 	m_pending.clear();
+	m_pendingButtons.clear();
 	m_pendingCost = 0;
 	const PlayerTemplate *pt = player.getPlayerTemplate();
 	if (!pt)
@@ -169,6 +171,7 @@ bool SpellStoreModel::click(int index)
 	}
 	// RW 0x82355F: appended, the pending cost grows (the click sound RW 0x90BE00 is the HUD's)
 	m_pending.push_back(b->science);
+	m_pendingButtons.push_back(b->button);
 	m_pendingCost += TheScienceStore->getSciencePurchaseCost(b->science, m_player->science().mode().skirmishOrMultiplayer);
 	refresh();
 	return true;
@@ -177,6 +180,7 @@ bool SpellStoreModel::click(int index)
 void SpellStoreModel::reset()
 {
 	m_pending.clear();
+	m_pendingButtons.clear();
 	m_pendingCost = 0;
 	refresh();
 }
@@ -187,17 +191,40 @@ std::vector<GameMessage> SpellStoreModel::close()
 	if (m_player)
 	{
 		const int pi = m_player->getPlayerIndex();
-		for (ScienceType st : m_pending) // RW 0x823360 .. 0x823378
+		for (size_t i = 0; i < m_pending.size(); ++i) // RW 0x8232ED -> 0x940435, case 0x19
 		{
 			GameMessage m(MSG_PURCHASE_SCIENCE, pi);
 			m.appendIntegerArgument(pi);
-			m.appendIntegerArgument(st);
+			m.appendIntegerArgument(m_pending[i]);
 			out.push_back(m);
+			for (const std::string &name : m_pendingButtons[i]->m_commandTrigger)
+			{
+				const CommandButton *trigger = m_commands->findCommandButton(name);
+				const SpecialPowerTemplate *power = trigger && TheSpecialPowerStore
+					? TheSpecialPowerStore->findSpecialPowerTemplate(trigger->m_specialPowerName) : nullptr;
+				if (!power)
+				{
+					// retail dereferences the missing button / power (RW 0x940435 case 0x19): reported by name, that cast is not sent (lane DEVPORT-7)
+					const std::string e = "spell store: CommandTrigger " + name + " of " + m_pendingButtons[i]->m_name + " names no special power button";
+					if (std::find(m_errors.begin(), m_errors.end(), e) == m_errors.end())
+					{
+						m_errors.push_back(e);
+					}
+					continue;
+				}
+				GameMessage cast(MSG_DO_SPELLBOOK_SPECIAL_POWER, pi);
+				cast.appendIntegerArgument((int)power->getID());
+				cast.appendIntegerArgument((int)trigger->m_options);
+				cast.appendObjectIDArgument(INVALID_ID);
+				out.push_back(cast);
+			}
 		}
 	}
 	m_pending.clear();
+	m_pendingButtons.clear();
 	m_pendingCost = 0;
 	m_player = nullptr;
+	m_commands = nullptr;
 	m_buttons.clear();
 	return out;
 }

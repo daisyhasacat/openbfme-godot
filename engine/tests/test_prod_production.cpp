@@ -9,6 +9,7 @@
 #include "GameLogic/AI/AIWorld.h"
 
 #include "GameLogic/GameLogicDispatch.h"
+#include "GameLogic/Module/ExitInterface.h"
 
 #include "GameLogic/BitFlags.h"
 #include "GameLogic/ObjectTemplateInfo.h"
@@ -335,6 +336,42 @@ TEST_CASE("production: a rally point set by command makes the exit path end at i
 	CHECK(cmds[0].path[1].x == 1500.0f);
 	CHECK(cmds[0].path[1].y == 2500.0f);
 	CHECK(f.logic->aiCommands().unexecuted() == 1);       // nobody runs the AI yet (stop S-201): reported, not hidden
+}
+
+// review DEVPORT-7e (the sibling of Sol #1): MSG_SET_RALLY_POINT names its building in argument 0; Bob's message naming Alice's barracks sets nothing (the
+// barracks keeps no rally point, its next soldier walks to the natural one only), Alice's identical message then sets it (the control: the message is valid)
+TEST_CASE("production: a MSG_SET_RALLY_POINT naming another player's building is refused, the owner's identical one is not")
+{
+	BarracksFx f;
+	CommandList list;
+	GameLogicDispatch dispatch(*f.logic);
+	dispatch.attach(list);
+	const int alice = f.alice()->getPlayerIndex();
+	const Player *bobPlayer = f.players.findPlayerWithName("Bob");
+	REQUIRE(bobPlayer);
+	const int bob = bobPlayer->getPlayerIndex();
+	REQUIRE(bob != alice);
+	ExitInterface *exit = f.barracks->getObjectExitInterface();
+	REQUIRE(exit);
+	REQUIRE(exit->getRallyPoint() == nullptr);
+	auto rally = [&](int player) {
+		GameMessage m(MSG_SET_RALLY_POINT, player);
+		m.appendObjectIDArgument(f.barracks->getID());
+		m.appendLocationArgument(Coord3D{ 1500.0f, 2500.0f, 0.0f });
+		m.appendBooleanArgument(false);
+		m.appendObjectIDArgument(INVALID_ID);
+		return m;
+	};
+	list.append(rally(bob));
+	f.frames(1);
+	CHECK(exit->getRallyPoint() == nullptr);
+	CHECK(dispatch.unhandled().count(MSG_SET_RALLY_POINT) == 0);
+	CHECK(dispatch.errors().empty()); // refused as a hostile command, not as a malformed one
+	list.append(rally(alice));
+	f.frames(1);
+	REQUIRE(exit->getRallyPoint() != nullptr);
+	CHECK(exit->getRallyPoint()->x == 1500.0f);
+	CHECK(exit->getRallyPoint()->y == 2500.0f);
 }
 
 #include "GameLogic/ProductionStops.h"

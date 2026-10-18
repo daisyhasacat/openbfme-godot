@@ -130,6 +130,7 @@ const char *refuseReasonName(int reason)
 	case REFUSE_STALE: return "a newer rejoin ticket of the slot was used";
 	case REFUSE_NO_LOG: return "the relay keeps no log of the game";
 	case REFUSE_SPECTATOR: return "a spectator sends no commands";
+	case REFUSE_REJOIN_BEFORE_BIND: return "cannot rejoin: the original player never connected to the relay";
 	default: return "unknown reason";
 	}
 }

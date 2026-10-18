@@ -17,6 +17,9 @@
 #include <cfenv>
 #include <clocale>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <limits>
 #include <cstdlib>
 #include <fstream>
 #include <random>
@@ -510,6 +513,26 @@ TEST_CASE("lua: the object handle table carries an integer payload (RW 0xB5BB30 
 // ---------------------------------------------------------------------------------------------------------------------
 // numerics
 // ---------------------------------------------------------------------------------------------------------------------
+TEST_CASE("lua numerics: invalid arithmetic produces x86 indefinite bits in both modes")
+{
+	const double inf = std::numeric_limits<double>::infinity();
+	struct Case { double a, b; double (*op)(int, double, double); };
+	const Case cases[] = {
+		{ inf, -inf, luaEA_add }, { inf, inf, luaEA_sub }, { 0.0, inf, luaEA_mul },
+		{ inf, 0.0, luaEA_mul }, { 0.0, 0.0, luaEA_div }, { inf, inf, luaEA_div }
+	};
+	for (int mode : { LUA_EA_NUM_PC24, LUA_EA_NUM_DOUBLE })
+	{
+		for (const auto &c : cases)
+		{
+			const double result = c.op(mode, c.a, c.b);
+			std::uint64_t bits;
+			std::memcpy(&bits, &result, sizeof bits);
+			CHECK(bits == 0xFFF8000000000000ull);
+		}
+	}
+}
+
 TEST_CASE("lua numerics: round24 is one rounding of the exact result (a tie breaks to even, a hair above a tie rounds up)")
 {
 	// 1 + 2^-24 is exactly half way between 1 and 1 + 2^-23: to even gives 1

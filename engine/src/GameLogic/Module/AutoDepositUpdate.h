@@ -54,6 +54,7 @@ public:
 class AutoDepositUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(AutoDepositUpdate) // lane SAVE-4b
 	AutoDepositUpdate(Thing *thing, const AutoDepositUpdateModuleData *data);
 	UpdateSleepTime update() override;
 	// RW 0x89DA1E (see the file comment)

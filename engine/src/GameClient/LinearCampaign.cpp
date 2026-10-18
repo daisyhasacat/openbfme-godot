@@ -110,11 +110,18 @@ const LinearCampaign *LinearCampaignManager::find(const std::string &name) const
 std::vector<std::string> LinearCampaignManager::stopLines()
 {
 	return {
-		"[S-1360] the campaign progress: retail auto-saves a won mission as \"00000000.sav\" (\"__AUTO_SAVE__\", RW 0x6DE8F1) and shows CampaignMenu.apt (RW 0x75E3B7: "
-		"next / last mission, save, load, main menu); the port keeps CampaignProgress in a sidecar text file of its own and loads the next mission at once",
-		"[S-1364] the campaign presentation: the bonus unlock writes no preference file (\"BCU\", "
-		"RW 0x927F08), MillisecondsAfterStartToStartFadeUp is not applied (its reader is not decoded); lane CAMP-2: the movies (OverallCampaignIntroMovie, "
+		"[S-1360] the campaign between missions: the auto-save after a won mission (RW 0x6DE8F1) and the saves of CampaignMenu.apt are OpenBFME saves of "
+		"the campaign's state (the campaign menu save point), not retail's GameState snapshot; the carry-over heroes are not carried (S-4903)",
+		"[S-1364] the campaign presentation: MillisecondsAfterStartToStartFadeUp is not applied (its reader is not decoded); lane CAMP-2: the movies (OverallCampaignIntroMovie, "
 		"IntroMovie, PLAY_MOVIE_IN_GAME) show their VP6 picture with their narration (S-2340)",
+		"[S-4900] the campaign menu's Save / Load: CampaignMenu.apt is pushed again once SaveLoad.apt has left the stack (INFERENCE: retail's refocus of the "
+		"covered menu was not read)",
+		"[S-4901] the campaign's state after the game (RW 0x5EAB0A: ready, a won mission's index moved on) is set when the game is cleared for the score "
+		"screen (INFERENCE: its caller, the manager's subsystem slot 9, was not located)",
+		"[S-4902] the score screen of a campaign game lists the local player only (the port's campaign start builds no game slots), and its music plays on "
+		"under CampaignMenu.apt (RW 0x925699 restarts the shell's music for the types 2 / 3 only)",
+		"[S-4903] the campaign's carry-over units (RW 0x5EBAEE's record of the CarryoverUnit objects of a won mission, their spawn in the next mission) "
+		"are not ported: a mission starts with the map's own units",
 		"[S-1711] the military caption (SHOW_MILITARY_CAPTION, the campaign's subtitles) is drawn whole in the client's own style: retail types it (RW "
 		"0x69CE5F: a character per InGameUI MilitaryCaptionDelayMS on the real-time clock, MiscAudio MissionBriefingCharacterClick per character, up to 4 "
 		"lines, held 2 s after the last character, then faded) with InGameUI.ini's MilitaryCaption* colour / position / font, which the port does not parse",
@@ -141,8 +148,10 @@ const LinearCampaignMission *CampaignProgress::current(const LinearCampaignManag
 
 bool CampaignProgress::isFinalMission(const LinearCampaignManager &m) const
 {
+	// RW 0x5EAE75 (no campaign: true) -> RW 0x5EAB6E: the mission after the current one ((+ 0xD3 ? mission : mission + 1), RW 0x5EAADF's bounds check)
 	const LinearCampaign *c = m.find(campaign);
-	return !c || mission + 1 >= (int)c->missions.size();
+	const int next = advanced ? mission : mission + 1;
+	return !c || next < 0 || next >= (int)c->missions.size();
 }
 
 bool CampaignProgress::advance(const LinearCampaignManager &m)
@@ -154,6 +163,111 @@ bool CampaignProgress::advance(const LinearCampaignManager &m)
 	++mission;
 	victorious = false;
 	return true;
+}
+
+void CampaignProgress::missionStarted()
+{
+	// RW 0x5EAB8F (decomp LinearCampaignMissionStart.cpp: flagC0 / C1 / C3 cleared, then C2)
+	victorious = false;
+	ready = false;
+	advanced = false;
+}
+
+void CampaignProgress::gameOver()
+{
+	// RW 0x5EAB0A: + 0xD2 = 1; won: + 0xC + 1 once (+ 0xD3)
+	ready = true;
+	if (victorious && !advanced)
+	{
+		++mission;
+		advanced = true;
+	}
+}
+
+CampaignProgress::AfterScore CampaignProgress::afterScore(const LinearCampaignManager &m) const
+{
+	// RW 0x927EC6: RW 0x5EAE75 (the campaign is over) and RW 0x5EA8CD (+ 0xD0) -> the unlock; else + 0xD0 -> the auto-save (RW 0x6DE8F1); then the menu
+	if (isFinalMission(m) && victorious)
+	{
+		return AfterScore::BonusUnlock;
+	}
+	return victorious ? AfterScore::AutoSaveMenu : AfterScore::Menu;
+}
+
+std::string CampaignProgress::menuSaveRefusal(const LinearCampaignManager &m) const
+{
+	const LinearCampaign *c = m.find(campaign);
+	if (!c)
+	{
+		return "the game data has no campaign '" + campaign + "'";
+	}
+	if (difficulty < 0 || difficulty > 2)
+	{
+		return "the save's difficulty " + std::to_string(difficulty) + " is not 0 .. 2";
+	}
+	if (advanced && !ready)
+	{
+		return "the save's campaign state is not one a game reaches (the mission index moved on before the game was over)";
+	}
+	if (mission < 0 || mission > (int)c->missions.size())
+	{
+		return "the campaign " + c->name + " has no mission " + std::to_string(mission) + " (it has " + std::to_string(c->missions.size()) + ")";
+	}
+	if (menuMissionIndex(m) < 0)
+	{
+		const int shown = mission + ((!advanced && victorious) ? 1 : 0);
+		return "the campaign " + c->name + " has no mission " + std::to_string(shown) + " for its menu to name (it has " + std::to_string(c->missions.size()) + ")";
+	}
+	return std::string();
+}
+
+int CampaignProgress::menuMissionIndex(const LinearCampaignManager &m) const
+{
+	// RW 0x5EADDE: + 0xC + ((+ 0xD3 == 0 and + 0xD0) ? 1 : 0), looked up by RW 0x5EAADF (null past the list: the menu shows nothing)
+	const int index = mission + ((!advanced && victorious) ? 1 : 0);
+	const LinearCampaign *c = m.find(campaign);
+	return (c && index >= 0 && index < (int)c->missions.size()) ? index : -1;
+}
+
+bool CampaignProgress::nextMission(bool *introMovie)
+{
+	// RW 0x5EAE37: nothing unless + 0xD2; + 0xC + 1 unless + 0xD3 (then + 0xD3 = 1); RW 0x5EAB8F(1, 1)
+	if (!ready)
+	{
+		return false;
+	}
+	if (!advanced)
+	{
+		++mission;
+		advanced = true;
+	}
+	if (introMovie)
+	{
+		*introMovie = true;
+	}
+	return true;
+}
+
+void CampaignProgress::lastMission(bool *introMovie)
+{
+	// RW 0x5EC5D1: + 0xD0 or + 0xD3 -> RW 0x5EADC3 (+ 0xC + 1 unless + 0xD3, RW 0x5EAB8F(0, 1)); else the carry-over lists restored and RW 0x5EAB8F(1, 0)
+	if (victorious || advanced)
+	{
+		if (!advanced)
+		{
+			++mission;
+			advanced = true;
+		}
+		if (introMovie)
+		{
+			*introMovie = true;
+		}
+		return;
+	}
+	if (introMovie)
+	{
+		*introMovie = false;
+	}
 }
 
 std::string CampaignProgress::serialize() const

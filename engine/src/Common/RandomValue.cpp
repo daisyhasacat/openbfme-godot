@@ -6,6 +6,7 @@
 #include "Common/RandomValue.h"
 
 #include "Common/NumericState.h"
+#include "Common/Xfer.h"
 
 #include <stdexcept>
 
@@ -250,4 +251,25 @@ int GetGameLogicRandomValue(int lo, int hi, const char *file, int line)
 float GetGameLogicRandomValueReal(float lo, float hi, const char *file, int line)
 {
 	return TheGameLogicRandom().getValueReal(lo, hi, file, line);
+}
+
+// lane SAVE-4a (docs/SAVES.md section 6: both generators' state is saved). OpenBFME native layout, NOT a retail block: retail's GameLogic seeds the
+// generator again at a load (InitRandom(0) after a War of the Ring load, SAVES.md section 1; ZH saves no RNG state), which a checkpoint cannot do: the
+// next draw must be the uninterrupted game's. The algorithm is the game START's choice (stop S-080): a snapshot of the other algorithm is refused.
+void GameLogicRandom::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	std::int32_t algorithm = (std::int32_t)m_algorithm;
+	x.xferInt(&algorithm);
+	if (algorithm != (std::int32_t)m_algorithm)
+	{
+		throw XferException("the snapshot's logic random generator is algorithm " + std::to_string(algorithm) + ", this game's is "
+			+ std::to_string((int)m_algorithm));
+	}
+	for (std::uint32_t &w : m_seed)
+	{
+		x.xferUnsignedInt(&w);
+	}
+	x.xferUnsignedInt(&m_baseSeed);
 }

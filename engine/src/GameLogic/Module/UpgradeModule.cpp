@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/UpgradeModule.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/INIException.h"
 #include "Common/StateHash.h"
@@ -165,4 +166,19 @@ UpgradeModule::UpgradeModule(Thing *thing, const UpgradeModuleData *data)
 void UpgradeModule::crc(StateHasher &hasher) const
 {
 	crcMux(hasher);
+}
+
+// ---- lane SAVE-4b: the snapshot -----------------------------------------------------------------------------------------------------------------------------
+void UpgradeMux::xferMux(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1); // RW 0x8D27E8
+	x.xferBool(&m_upgradeExecuted);
+}
+
+// retail's layout (UpgradeModule::xfer RW 0x8D284A, tier A, (1, 1)): the version, BehaviorModule::xfer, the mux
+void UpgradeModule::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	xferMux(x);
 }

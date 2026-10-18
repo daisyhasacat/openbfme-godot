@@ -70,6 +70,8 @@ struct CreateAHeroHero
 	bool load(const std::vector<std::uint8_t> &bytes, std::string *error);
 	// RW 0x80B4F5 save: the 2STR header (version word 1, block flag 0) and the version 8 record with its checksum.
 	std::vector<std::uint8_t> save() const;
+	// lane SAVE-4d: the record's xfer (RW 0x80B4F5, window (1, 8)) through an Xfer, for the game snapshot (see CreateAHeroRecord.cpp)
+	void xfer(class Xfer &x);
 	// the checksum of the current fields (what save() writes)
 	std::uint32_t computeChecksum() const;
 	// every field (lane HERO-2: the game setup compares the slots' heroes)

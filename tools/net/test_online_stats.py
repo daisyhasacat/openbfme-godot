@@ -42,6 +42,12 @@ def test_the_player_count_answers_requests_and_off_switch(tmp_path):
                 status, body, extra = 302, b"", {"Location": self.path.replace("/redirect/", "/redirected/")}
             elif self.path.startswith("/slow/"):
                 time.sleep(3)
+            elif self.path.startswith("/running/"):
+                # lane ONLINEUX-1 r2 (Sol 5): only the running games change between the answers (the line's text stays the same)
+                with lock:
+                    switched["running"] = switched.get("running", 0) + 1
+                    n = switched["running"]
+                body = b'{"v":1,"players":3,"games_open":1,"games_running":%d,"as_of":1700000000}' % (2 if n == 1 else 5)
             elif self.path.startswith("/switch/"):
                 switched["n"] += 1
                 if switched["n"] > 1:

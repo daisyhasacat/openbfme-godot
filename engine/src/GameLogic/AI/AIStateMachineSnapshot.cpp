@@ -1,0 +1,102 @@
+// OpenBFME. GPL-3.0.
+// Derived from Command & Conquer Generals Zero Hour, (c) 2001-2003 Electronic Arts Inc., GPL-3.0.
+//
+// The AI state machines' part of the obfme:AIWorld block (lane SAVE-4c, docs/SAVES.md section 8). OpenBFME native layout (stop S-4220). Retail:
+// StateMachine::xfer RW 0x8DBAEC (window (1, 4): the sleep, the lock, the current and default ids, the current state's and the temporary state's snapshots,
+// the goal object, position and angle) and AIStateMachine::xfer RW 0x755174 ((1, 2): StateMachine's, then the goal path and the temporary state's frame),
+// both tier A (docs/SAVES-RETAIL.md section 6); ZH StateMachine::xfer (donor) saves every state of the machine by id (each state object is kept between its
+// activations, so its fields are state whether it runs or not). This port's machine keeps a different set of fields (the saved goal of RotWK's own temporary
+// state, the goal angle as a flag and a value), so the layout is OpenBFME's own, in the crc order, then every defined state in id order with its id and its
+// xfer. The states themselves come from the class's constructor (makeStateMachine): a load checks that the machine has exactly the saved state ids.
+
+#include "GameLogic/AI/AIStateMachine.h"
+
+#include "GameLogic/AI/AIXfer.h"
+#include "GameLogic/Module/AIUpdate.h"
+
+void AIState::xferNoFields(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+}
+
+void AIStateMachine::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	const bool loading = x.isLoading();
+	auto xferStatePtr = [&](AIState *&state, const char *what) {
+		std::uint32_t id = state ? state->id() : (std::uint32_t)AI_NO_STATE;
+		x.xferUnsignedInt(&id);
+		if (loading)
+		{
+			state = id == (std::uint32_t)AI_NO_STATE ? nullptr : findState(id);
+			if (id != (std::uint32_t)AI_NO_STATE && !state)
+			{
+				throw XferException("ai machine " + m_name + ": the " + what + " state " + std::to_string(id) + " is not one of its states");
+			}
+		}
+	};
+	xferStatePtr(m_currentState, "current");
+	xferStatePtr(m_temporaryState, "temporary");
+	x.xferUnsignedInt(&m_temporaryStateFrameEnd);
+	std::uint32_t def = m_defaultStateId;
+	x.xferUnsignedInt(&def);
+	if (loading && def != m_defaultStateId)
+	{
+		throw XferException("ai machine " + m_name + ": the default state " + std::to_string(def) + " is not its " + std::to_string(m_defaultStateId));
+	}
+	x.xferUnsignedInt(&m_sleepTill);
+	x.xferBool(&m_locked);
+	AIXfer::coord(x, m_goalPosition);
+	AIXfer::objectId(x, m_goalObjectID, "ai machine: the object id goalObjectID");
+	x.xferBool(&m_haveGoalAngle);
+	x.xferReal(&m_goalAngle);
+	AIXfer::coords(x, m_goalPath);
+	AIXfer::coord(x, m_savedGoalPosition);
+	AIXfer::objectId(x, m_savedGoalObjectID, "ai machine: the object id savedGoalObjectID");
+	std::uint32_t n = (std::uint32_t)m_states.size();
+	x.xferUnsignedInt(&n);
+	if (n != (std::uint32_t)m_states.size())
+	{
+		throw XferException("ai machine " + m_name + ": " + std::to_string(n) + " saved states, the machine has " + std::to_string(m_states.size()));
+	}
+	for (auto &kv : m_states)
+	{
+		std::uint32_t id = kv.first;
+		x.xferUnsignedInt(&id);
+		if (id != kv.first)
+		{
+			throw XferException("ai machine " + m_name + ": the saved state " + std::to_string(id) + " where the machine has " + std::to_string(kv.first));
+		}
+		kv.second->xfer(x);
+	}
+}
+
+// AIIdleState::xfer RW 0x741850 is (1, 2): u16, two bools, u16; this port keeps the countdown offset and the init flag
+void AIIdleState::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferUnsignedShort(&m_initialSleepOffset);
+	x.xferBool(&m_inited);
+}
+
+void AIMoveToMachineState::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	AIXfer::coord(x, m_goalPosition);
+	x.xferBool(&m_adjustsDestination);
+	xferMove(x, ai().mover(), m_move);
+}
+
+void AIFollowPathState::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferInt(&m_index);
+	x.xferBool(&m_adjustFinal);
+	AIXfer::coord(x, m_goalPosition);
+	xferMove(x, ai().mover(), m_move);
+}

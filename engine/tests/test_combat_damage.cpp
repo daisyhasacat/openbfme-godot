@@ -20,6 +20,37 @@ DamageInfo hit(const Object *source, float amount, int type, float delay = 0.0f)
 }
 } // namespace
 
+TEST_CASE("FALSEDEF-1 body: StructureBody uses the current armor flags on each hit without an extra structure scalar")
+{
+	CombatWorld w(
+		"Armor ProbeBase\n  Armor = DEFAULT 100%\n  Armor = SIEGE 50%\nEnd\n"
+		"Armor ProbeUpgrade\n  Armor = DEFAULT 100%\n  Armor = SIEGE 25%\nEnd\n"
+		"Object ProbeStructure\n  KindOf = STRUCTURE\n"
+		"  Body = StructureBody ModuleTag_Body\n    MaxHealth = 200\n    MaxHealthDamaged = 150\n    MaxHealthReallyDamaged = 50\n  End\n"
+		"  ArmorSet\n    Conditions = NONE\n    Armor = ProbeBase\n  End\n"
+		"  ArmorSet\n    Conditions = PLAYER_UPGRADE\n    Armor = ProbeUpgrade\n  End\n"
+		"  Geometry = CYLINDER\n  GeometryMajorRadius = 10\n  GeometryHeight = 10\nEnd\n");
+	Object *target = w.unit("ProbeStructure", 'B', 400, 300);
+	REQUIRE(target != nullptr);
+	DamageInfo base = hit(nullptr, 120.0f, DAMAGE_SIEGE);
+	target->attemptDamage(base);
+	CHECK(base.m_output.m_actualDamageDealt == 60.0f);
+	CHECK(w.health(target) == 140.0f);
+	CHECK(target->getBodyModule()->getDamageState() == BODY_DAMAGED);
+	CHECK(target->armorSetFlags() == 0);
+	const int upgrade = CombatNames::armorSetBit("PLAYER_UPGRADE");
+	target->setArmorSetFlag(upgrade, true);
+	DamageInfo upgraded = hit(nullptr, 120.0f, DAMAGE_SIEGE);
+	target->attemptDamage(upgraded);
+	CHECK(upgraded.m_output.m_actualDamageDealt == 30.0f);
+	CHECK(w.health(target) == 110.0f);
+	target->setArmorSetFlag(upgrade, false);
+	DamageInfo restored = hit(nullptr, 120.0f, DAMAGE_SIEGE);
+	target->attemptDamage(restored);
+	CHECK(restored.m_output.m_actualDamageDealt == 60.0f);
+	CHECK(w.health(target) == 50.0f);
+}
+
 TEST_CASE("combat damage: the armour of the victim scales a hit by the percent of its damage type, UNRESISTABLE ignores it")
 {
 	CombatWorld w;

@@ -407,7 +407,8 @@ it later, from the same screens as the original.
 - **Saving.** Press Esc in the game and choose **Save**. The save page lists
   your saved games. Type a name (or keep the suggested "Saved Game 2" and so
   on) and press Save; choosing an existing save overwrites it after asking.
-  "Game Saved" confirms it.
+  "Game Saved" confirms it, and its Ok takes you back into the game. Cancel
+  or Esc on the save page goes back to the menu.
 - **Loading.** Choose **Load** in the same menu, or **Load Game** in the main
   menu. Pick a save and press Load. Over a running game you're asked first,
   because that game is lost.
@@ -424,9 +425,17 @@ it later, from the same screens as the original.
   files, so the original game never sees them.
 - **Campaign missions** save the same way, on the Campaign page. Loading one
   plays the mission's orders again and the campaign goes on from there.
-- **Not yet:** saving between campaign missions, multiplayer saves, and
-  loading the original game's own saves (they show in the list greyed out,
-  with a note).
+- **Between campaign missions** the original campaign screen comes after the
+  score screen. After a won mission the game saves automatically ("Auto Save
+  for" and the next map, in the automatic saves list of the Load page) and the
+  screen names the next mission: **Next Mission**, **Save**, **Load** or
+  **Main Menu**. After a lost one it offers **Replay Mission**, **Load** or
+  **Main Menu**. Saves made on this screen, and the automatic save, bring you
+  back to it, also after an update. To continue a campaign after quitting,
+  choose **Load Game** in the main menu and pick the automatic save. Winning
+  the last mission unlocks the bonus campaign in the main menu.
+- **Not yet:** multiplayer saves, and loading the original game's own saves
+  (they show in the list greyed out, with a note).
 - **Deleting.** Select a save and press Delete; you're asked first.
 - **Uber performance mode.** A game saved with the Uber performance mode on
   loads with it off, and the reverse. The saved part is replayed as it was
@@ -550,6 +559,18 @@ On Windows this adds an entry for your user only (no administrator rights).
 On Linux and the Steam Deck it adds a hidden `openbfme-url.desktop` entry in
 `~/.local/share/applications`.
 
+**A menu entry on Linux.** The game and the launcher show the OpenBFME icon
+(the ring) in their windows and task bars. On Linux and the Steam Deck you can
+also add an "OpenBFME" entry with that icon to your desktop's menu:
+
+```
+./OpenBFMELauncher.x86_64 --headless -- --install-desktop-entry
+```
+
+It writes `~/.local/share/applications/openbfme.desktop` (starting this
+launcher) and the icon `~/.local/share/icons/hicolor/256x256/apps/openbfme.png`.
+On Windows the icon is in the `.exe` files themselves.
+
 You can also start the game straight from a terminal:
 
 ```
@@ -628,9 +649,9 @@ These are the open gaps a player is most likely to notice. Each one is a
 recorded stop in [STOPS.md](STOPS.md); the ID is given for reference.
 
 **Not available yet**
-- Save and load games; the campaign has no menu between missions and does not
-  save your progress the original way (S-1360). Missions load the next one
-  directly.
+- Your heroes' experience does not carry over from one campaign mission to
+  the next yet (S-4903), and the campaign's saves are OpenBFME's own, not the
+  original game's (S-1360).
 - War of the Ring.
 - Online play is a test feature: the Online menu works against an OpenBFME
   lobby, but there is no public one yet, and Quick Match, War of the Ring

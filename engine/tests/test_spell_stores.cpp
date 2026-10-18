@@ -270,14 +270,15 @@ TEST_CASE("SPELL-1 retail: the Science, Rank and SpecialPower stores of the pure
 							   << " special powers; SpellBookHeal reload " << h->getReloadTime() << " frames");
 }
 
-TEST_CASE("SPELL-1 stops: S-520 .. S-532 are reported, once each, by the lane and by the retail world")
+TEST_CASE("SPELL-1 stops: the remaining S-520 .. S-532 stops are reported once; resolved S-527 is absent")
 {
 	const std::vector<std::string> lines = SpellStops::lines();
-	REQUIRE(lines.size() == 13);
-	for (int i = 0; i < 13; ++i)
+	const std::vector<int> remaining{ 520, 521, 522, 523, 524, 525, 526, 528, 529, 530, 531, 532 };
+	REQUIRE(lines.size() == remaining.size());
+	for (size_t i = 0; i < remaining.size(); ++i)
 	{
-		const std::string id = "[S-5" + std::to_string(20 + i) + "]";
-		CHECK(lines[(size_t)i].rfind(id, 0) == 0);
+		const std::string id = "[S-" + std::to_string(remaining[i]) + "]";
+		CHECK(lines[i].rfind(id, 0) == 0);
 	}
 	OPENBFME_REQUIRE_START(shared);
 	const std::vector<std::string> all = shared->world->acceptanceStops();

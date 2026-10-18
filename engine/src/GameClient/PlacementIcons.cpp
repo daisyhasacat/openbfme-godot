@@ -15,8 +15,10 @@
 #include "GameClient/ClientEvents.h"
 #include "GameClient/ControlBarCommands.h"
 #include "GameClient/Drawable.h"
+#include "GameClient/GUI/GameTextSource.h"
 #include "GameClient/InGameUI.h"
 #include "GameClient/MapObjectRuntime.h"
+#include "GameClient/UnitHelpSource.h"
 #include "GameClient/PlacementGhost.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DScriptedModelDraw.h"
 #include "GameLogic/BitFlags.h"
@@ -180,6 +182,30 @@ void PlacementIcons::rebuild(const InGameUI &ui)
 		icon.drawable = make(*pt, m_icons.size());
 		m_icons.push_back(std::move(icon));
 	}
+}
+
+std::u16string PlacementIcons::claimantText(const GameTextSource *text, float share)
+{
+	const int percent = (int)(long)std::floor(share * 100.0f + 0.5f);
+	const std::string digits = std::to_string(percent);
+	return UnitHelpSource::format(fetchOrMissing(text, "GUI:TerrainResourcePercentageClaimable"), { std::u16string(digits.begin(), digits.end()) });
+}
+
+std::uint32_t PlacementIcons::claimantColor(float share)
+{
+	if (share > 0.75f)
+	{
+		return 0xFF00FF00u;
+	}
+	if (share >= 0.5f)
+	{
+		return 0xFFFFFF00u;
+	}
+	if (share >= 0.25f)
+	{
+		return 0xFFFF0000u;
+	}
+	return 0xFF000000u;
 }
 
 void PlacementIcons::updateWall(const InGameUI &ui)
@@ -346,8 +372,10 @@ void PlacementIcons::update(const InGameUI &ui, double elapsedMs, unsigned ghost
 	main.angle = angle;
 	main.drawable->setPosition(&site);
 	main.drawable->setOrientation(angle);
-	// BFME2 0x4E6295/0x4E6455: hypothetical claim, without creating an object or claiming ground.
-	// Never read the resource grid while the logic worker is running.
+	// BFME2 PlaceTerrainResourceClaimantFeedback (0x4E6295 / 0x4E6455, Open-BFME-2 Rva004E65CFLeaf.cpp): the share a claim at the ghost would get, for
+	// the local player (ThePlayerList + 0x10, its index; 0 without one), with the template's TerrainResourceBehavior Radius and HighPriority
+	// (RW 0x75B561, TerrainResourceManager::previewShare: read only). Never read the resource grid while the logic worker is running.
+	// INFERENCE (S-5016): which templates get the feedback (here: the first TerrainResourceBehavior with MaxIncome > 0, i.e. not a "dead spot") was not read
 	if (judge)
 	{
 		m_resourceRadius = m_resourceShare = 0;
@@ -357,9 +385,10 @@ void PlacementIcons::update(const InGameUI &ui, double elapsedMs, unsigned ghost
 			if (!data) continue;
 			if (data->m_maxIncome > 0 && data->m_radius > 0 && std::isfinite(site.x) && std::isfinite(site.y))
 			{
+				const Player *local = m_logic.players().getLocalPlayer();
 				m_resourceRadius = data->m_radius;
-				m_resourceShare = m_logic.economy().resources().previewShare(site.x, site.y, data->m_radius,
-					data->m_highPriority, INVALID_ID, 0);
+				m_resourceShare = m_logic.economy().resources().previewShare(site.x, site.y, data->m_radius, data->m_highPriority,
+					local ? local->getPlayerIndex() : 0);
 			}
 			break;
 		}

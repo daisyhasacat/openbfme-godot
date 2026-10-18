@@ -13,6 +13,7 @@
 ##   --install=<version>      install that release (the user's pick: an older version is allowed)
 ##   --select=<version>       play that installed version from now on (--select= clears the pick)
 ##   --self-update            stage a newer launcher (replaced on the next start)
+##   --check-game-files       exit 0 when both configured game folders exist, 1 when either is missing
 ##   --channel=stable|preview remember the channel (--channel=alpha is the same as stable, the channel's shown name since VERSION-1)
 ##   --list                   print the installed versions
 ##   --play                   start the version Play starts
@@ -23,6 +24,8 @@
 ##   --lobby=<url>            remember the online lobby the links use (until one is set, a link says so and starts nothing)
 ##   --register-url-handler   register this launcher for openbfme:// links (scripts/core/url_handler.gd: the current user's registry on Windows,
 ##                            ~/.local/share/applications + xdg-mime on Linux)
+##   --install-desktop-entry  (lane OWNERFIX-3) Linux / Steam Deck: an "OpenBFME" entry with the OpenBFME icon in the desktop menus
+##                            (scripts/core/desktop_entry.gd: <data home>/applications/openbfme.desktop and the icon under icons/hicolor)
 ##   --auto-update=on|off     (lane UI-5) the setting "Update automatically in the background" (on by default)
 ##   --online-count=on|off    (lane ONLINECOUNT-1) the setting "Show how many players are online" (on by default): the Play card's "N players online" from
 ##                            the lobby's GET /v1/stats (scripts/core/online_count.gd); off, the launcher never asks the lobby, and the game's menus follow it
@@ -33,6 +36,9 @@
 ##   --aio-install=<folder> --aio-consent   with that setting on: download BFME1 1.03, RotWK 2.01 and BFME2 1.06 from the All In One BFME Launcher's
 ##                            service into <folder>/BFME1, <folder>/RotWK and <folder>/BFME2 (scripts/core/aio_install.gd, docs/AIO.md); --aio-consent is
 ##                            the player's agreement to the text it logs (in the window: the Download press)
+##   --aio-package=bfme1      (community PR #36) with --aio-install: the OPTIONAL Battle for Middle-earth I 1.03 package instead, from BFME Arena
+##                            (bfmeladder.com, a third party; OpenBFME does not host it) into <folder>/BFME1; refused unless --game=bfme1 is
+##                            the chosen game (in the window: the Game files screen offers it only then)
 ##   --game-start=<folder>    (lane ONEZIP-1; what the game runs when a player starts it directly from the combined package, see
 ##                            scripts/core/game_start.gd) decide which version that start plays, then look for an update in the background
 ## --screenshot=FILE (with the window): save the window as a PNG once the start-up check has finished, then quit (the layout check).
@@ -58,7 +64,9 @@
 extends Control
 
 const BuildInfo := preload("res://scripts/core/build_info.gd")
+const AppIcon := preload("res://scripts/ui/app_icon.gd") # lane OWNERFIX-3
 const Updater := preload("res://scripts/core/updater.gd")
+const MacOSUpdate := preload("res://scripts/core/macos_update.gd")
 const SelfUpdate := preload("res://scripts/core/self_update.gd")
 const Semver := preload("res://scripts/core/semver.gd")
 const Log := preload("res://scripts/core/launcher_log.gd")
@@ -85,12 +93,14 @@ const GameStart := preload("res://scripts/core/game_start.gd")
 const OnlineCount := preload("res://scripts/core/online_count.gd")  # lane ONLINECOUNT-1
 const HttpFetch := preload("res://scripts/net/http_fetch.gd")
 
-const CLI_ACTIONS := ["--update", "--install=", "--select=", "--self-update", "--channel=", "--list", "--play", "--version", "--free-camera=",
-	"--game=", "--aio=", "--aio-install=", "--auto-update=", "--online-count=", "--open-url", "--lobby=", "--register-url-handler", "--game-start="]
+const CLI_ACTIONS := ["--update", "--install=", "--select=", "--self-update", "--check-game-files", "--channel=", "--list", "--play", "--version", "--free-camera=",
+	"--game=", "--aio=", "--aio-install=", "--auto-update=", "--online-count=", "--open-url", "--lobby=", "--register-url-handler", "--game-start=",
+	"--install-desktop-entry"]
 const UrlHandler := preload("res://scripts/core/url_handler.gd")
+const DesktopEntry := preload("res://scripts/core/desktop_entry.gd") # lane OWNERFIX-3
 # the test options (honoured only by a development run or a test package); ONLINE-2 r2: also the only arguments allowed before --open-url there
 const TEST_OPTIONS := ["--api-base=", "--trust-key=", "--repo=", "--test-kill-at=", "--aio-base=", "--aio-pins=", "--aio-stop-after=", "--ui-demo=",
-	"--ui-stop=", "--ui-then=", "--launcher-dir=", "--launcher-version="]
+	"--ui-stop=", "--ui-then=", "--launcher-dir=", "--launcher-version=", "--test-macos-kill-at=", "--ui-play="]
 const RECHECK_SECONDS := 3600.0  # lane UI-5: while the launcher stays open, it looks for updates again every hour
 
 var info: RefCounted
@@ -99,6 +109,7 @@ var _instance: InstanceLock  # lane UI-5 (Sol r2): one launcher at a time
 var aio: AioInstall
 var _thread: Thread
 var _count_thread: Thread     # lane ONLINECOUNT-1
+var _count_http: HttpFetch    # its request (MACPLAY-1: cancelled and joined when the window closes)
 var _count_timer: Timer
 var _count_asked_ms := 0
 var _count_text := ""         # the chip's text and when it arrived (it expires: OnlineCount.EXPIRY_SECONDS)
@@ -120,6 +131,7 @@ var _ui_stop := ""            # tests: --ui-stop=<pause|cancel|play>@<text>, pre
 var _ui_then := ""            # tests: --ui-then=resume|cancel, pressed once after that stop
 var _aio_target := ""         # the folder of the AIO download that runs or is paused
 var _demo := ""
+var _demo_bfme1 := false     # --ui-demo games-bfme1: the Game files screen offers the BFME1 package without the choice being saved
 var _problem := ""            # why updates are off ("" when they work)
 var _pv := ""                 # the version Play starts (refreshed with the installed versions)
 var _update_state := "idle"
@@ -137,6 +149,8 @@ var _games_screen: GamesScreen
 var _settings: SettingsScreen
 var _banner: PanelContainer
 var _warning: Label
+var _macos_releases_link: LinkButton
+var _macos_package_notice := ""
 var _status_head: Label
 var _status_tail: Label
 var _status: Label
@@ -154,10 +168,16 @@ var _message: MessagePanel
 
 func _ready() -> void:
 	Log.open()
+	# lane OWNERFIX-3: the window / taskbar / dock icon is the OpenBFME ring (the project sets none, so Godot's logo showed)
+	var icon_error: String = AppIcon.apply()
+	if icon_error != "":
+		Log.line("LAUNCHER app icon: " + icon_error)
 	info = BuildInfo.load_info()
 	updater = Updater.new(info)
 	aio = AioInstall.new(updater)
 	var args := OS.get_cmdline_user_args()
+	if info.tests_allowed():
+		MacOSUpdate.kill_at = OS.get_environment("OPENBFME_TEST_MACOS_KILL_AT")
 	# lane ONEZIP-1: a game started directly runs the launcher beside it with fixed arguments; a test of that start gives the test
 	# options through the environment (test builds and development runs only, like every test option)
 	var test_env := OS.get_environment("OPENBFME_TEST_LAUNCHER_OPTIONS")
@@ -201,6 +221,8 @@ func _ready() -> void:
 				info.repo = a.substr(7)
 			elif a.begins_with("--test-kill-at="):
 				Updater.kill_at = a.substr(15)
+			elif a.begins_with("--test-macos-kill-at="):
+				MacOSUpdate.kill_at = a.substr(21)
 			elif a.begins_with("--launcher-dir="):
 				updater.set_launcher_dir(a.substr(15))
 			elif a.begins_with("--launcher-version="):
@@ -296,11 +318,28 @@ func _ready() -> void:
 	elif problem != "":
 		_set_status("Updates are off: " + problem)
 		_set_update_state("failed")
-	elif not "--offline" in args:
+	elif not "--offline" in args and (not updater.macos_preview() or updater.auto_update()):
 		_start_job(_job_check.bind(updater.auto_update()), "check")
+	elif updater.macos_preview():
+		_set_update_state("manual")
+	for a in args:
+		if a.begins_with("--ui-play=") and info.tests_allowed():
+			await _ui_play(int(a.substr(10)))
 	for a in args:
 		if a.begins_with("--screenshot="):
 			_screenshot(a.substr(13))
+
+
+## tests (MACPLAY-1): press the real PLAY button `times` times, each once no job runs (its pressed signal: the player's click, _on_play),
+## and say what the window shows after each press
+func _ui_play(times: int) -> void:
+	for n in times:
+		await _settle()
+		Log.line("LAUNCHER ui test: PLAY pressed (%s, Play %s)" % [_pv if _pv != "" else "no version", "disabled" if _play.disabled else "enabled"])
+		_play.pressed.emit()
+		await get_tree().process_frame
+		Log.line("LAUNCHER ui status: " + _status.text)
+		Log.line("LAUNCHER ui dialog: " + (_message.shown_text() if _message.visible else ""))
 
 
 func _screenshot(path: String) -> void:
@@ -335,6 +374,10 @@ func _screenshot(path: String) -> void:
 	Log.line("LAUNCHER ui games card: " + ("shown" if _play_screen.games_card.visible else "hidden"))
 	Log.line("LAUNCHER ui dialog: " + (_message.shown_text() if _message.visible else ""))
 	Log.line("LAUNCHER ui update button: " + (_update.text if _update.visible else ""))
+	if _macos_package_notice != "":
+		Log.line("LAUNCHER ui Mac package notice: " + _macos_package_notice)
+	if _macos_releases_link != null:
+		Log.line("LAUNCHER ui releases link: " + ("shown" if _macos_releases_link.visible else "hidden"))
 	Log.line("LAUNCHER ui screen: %s%s" % [_screen, " (%s)" % _settings.tab if _screen == "settings" else ""])
 	if "--ui-dump" in OS.get_cmdline_user_args():
 		for t in _texts(self):
@@ -350,7 +393,8 @@ func _screenshot(path: String) -> void:
 				img.resize(want.x, want.y, Image.INTERPOLATE_LANCZOS)
 		img.save_png(path)
 		Log.line("LAUNCHER screenshot " + path)
-	get_tree().quit(0)
+	if not "--ui-keep-open" in OS.get_cmdline_user_args():
+		get_tree().quit(0)
 
 
 ## waits until no job runs (at most two minutes), then a few more frames for the window to show the result
@@ -399,10 +443,11 @@ static func _texts(node: Node) -> PackedStringArray:
 ## than the build's GLIBC, lane GLIBC-1). Lane LAUNCHERUI-1 (the layout check, tests/layout_test.gd) adds the states a player meets: first-run
 ## (nothing installed, no games), offline (the check failed), verifying (an install is being checked), paused (a paused download),
 ## update-launcher (only the launcher is newer), warning (the freeze banner), ask (the question dialog), playing (Play pressed while an
-## update downloads), long (the longest texts the window gets), picker (the games' folder picker).
+## update downloads), long (the longest texts the window gets), picker (the games' folder picker). Community PR #36: games-bfme1 (Battle for
+## Middle-earth I chosen: the optional BFME1 download; the choice is not saved).
 func _show_demo(screen: String) -> void:
 	var home := Paths.home()
-	var no_games := screen in ["games", "games-downloading", "first-run"]
+	var no_games := screen in ["games", "games-downloading", "first-run", "games-bfme1"]
 	var games := {"found": true, "rotwk": home.path_join("Games/BFME/RotWK"), "bfme2": home.path_join("Games/BFME/BFME2"), "source": "config"}
 	if no_games:
 		games = {"found": false, "rotwk": "", "bfme2": "", "source": ""}
@@ -437,9 +482,15 @@ func _show_demo(screen: String) -> void:
 		"settings", "display", "about":
 			_show_screen("settings")
 			_settings.show_tab({"settings": "general", "display": "display", "about": "about"}[screen])
+		"games-bfme1":
+			_demo_bfme1 = true
+			_play_screen.game_picker.select(1)
+			aio.choose(AioInstall.BFME1)
+			_show_screen("games")
+			_games_screen.setup(Paths.default_games_dir(), aio.total_size() / 1e9, aio.chosen(), true)
 		"games", "games-downloading":
 			_show_screen("games")
-			_games_screen.setup(Paths.default_games_dir(), aio.total_size() / 1e9, aio.packages)
+			_games_screen.setup(Paths.default_games_dir(), aio.total_size() / 1e9, aio.chosen(), aio.choice == AioInstall.BFME1)
 			if screen == "games-downloading":
 				_job_kind = "aio"
 				_demo_progress("RotWK: game files 412 of 1 830", 3328599654, 9234179686)
@@ -479,7 +530,7 @@ func _show_demo(screen: String) -> void:
 			_set_status("Play started %s. The window closes when the update is installed." % installed)
 		"picker":
 			_show_screen("games")
-			_games_screen.setup(Paths.default_games_dir(), aio.total_size() / 1e9, aio.packages)
+			_games_screen.setup(Paths.default_games_dir(), aio.total_size() / 1e9, aio.chosen(), aio.choice == AioInstall.BFME1)
 			_games_screen.open_picker(true)
 		"long":
 			_latest = {"tag": chan[0].tag}
@@ -558,6 +609,15 @@ func _run_cli(args: PackedStringArray, problem: String) -> int:
 			updater.set_state("launcher", "game", game)
 	if "--version" in args:
 		print("OpenBFME Launcher %s" % info.version)
+	if "--check-game-files" in args:
+		var folders := Paths.game_folders()
+		if folders.found:
+			print("GAME FILES found (source: %s)" % folders.source)
+			Log.line("LAUNCHER game files found (source: %s)" % folders.source)
+		else:
+			print("GAME FILES missing (set both game folders or choose them in the launcher)")
+			Log.line("LAUNCHER game files not found")
+			code = 1
 	for a in args:
 		if a.begins_with("--free-camera="):
 			var v := a.substr(14)
@@ -592,6 +652,12 @@ func _run_cli(args: PackedStringArray, problem: String) -> int:
 				return 1
 			aio.set_enabled(v == "on")
 			Log.line("LAUNCHER AIO setting %s" % v)
+	for a in args:
+		if a.begins_with("--aio-package="):
+			var why := aio.choose(a.substr(14))
+			if why != "":
+				Log.line("LAUNCHER --aio-package: " + why)
+				return 1
 	for a in args:
 		if a.begins_with("--aio-install="):
 			var r := aio.install(a.substr(14), "--aio-consent" in args)
@@ -628,12 +694,19 @@ func _run_cli(args: PackedStringArray, problem: String) -> int:
 					Log.line("LAUNCHER no %s release yet" % updater.channel())
 				else:
 					var newest := updater.newest_installed()
-					var mm := updater.release_manifest(chan[0])
-					if mm.ok and updater.freeze_warning(mm.manifest) != "":
+					var mm := {} if updater.macos_preview() else updater.release_manifest(chan[0])
+					if not updater.macos_preview() and mm.ok and updater.freeze_warning(mm.manifest) != "":
 						Log.line("LAUNCHER warning: " + updater.freeze_warning(mm.manifest))
-					if not mm.ok:
+					if updater.macos_preview():
+						var notice := updater.macos_preview_notice(chan[0])
+						Log.line("LAUNCHER " + (notice.message + ": " + notice.url if notice.ok else "Update check rejected: " + notice.error))
+						if not notice.ok:
+							code = 3
+					elif not mm.ok:
 						Log.line("LAUNCHER update rejected: " + mm.error)
 						code = 3
+					elif updater.macos_updates_enabled() and mm.get("no_entry", false):
+						Log.line("LAUNCHER this verified release has no signed Mac package; download a complete package manually from %s" % updater.releases_url())
 					elif newest != "" and Semver.compare(chan[0].tag, newest) <= 0:
 						Log.line("LAUNCHER up to date: %s installed, newest %s release %s" % [newest, updater.channel(), chan[0].tag])
 					else:
@@ -681,10 +754,19 @@ func _run_cli(args: PackedStringArray, problem: String) -> int:
 		Log.line("LAUNCHER openbfme:// links: %s" % (("registered (%s)" % reg.where) if reg.ok else "not registered: " + reg.error))
 		if not reg.ok:
 			code = 1
+	if "--install-desktop-entry" in args:
+		if OS.get_name() in ["Linux", "FreeBSD", "NetBSD", "OpenBSD", "BSD"]:
+			var de := DesktopEntry.install(OS.get_executable_path(), DesktopEntry.data_home())
+			Log.line("LAUNCHER desktop entry: %s" % (("written (%s)" % de.where) if de.ok else "not written: " + de.error))
+			if not de.ok:
+				code = 1
+		else:
+			Log.line("LAUNCHER desktop entry: only on Linux (Windows and macOS take the icon from the executable / the app bundle)")
+			code = 1
 	if "--play" in args:
 		var v := updater.play_version()
 		if v == "":
-			Log.line("LAUNCHER nothing to play: no verified version is installed")
+			Log.line("LAUNCHER nothing to play: " + updater.no_game_reason())
 			return 1
 		var p := updater.play(v)
 		Log.line("LAUNCHER play %s" % (v if p.ok else "failed: " + p.error))
@@ -718,21 +800,46 @@ func _fit_window() -> void:
 	if DisplayServer.get_name() == "headless":
 		return
 	var win := get_window()
-	win.title = "OpenBFME Launcher"
-	win.min_size = Vector2i(960, 540)
-	if "--resolution" in OS.get_cmdline_args() or OS.get_cmdline_args().has("--fullscreen"):
-		return
+	win.title = "OpenBFME Launcher — LOCAL TRIAL — NOT AN OFFICIAL RELEASE" if info.local_trial else "OpenBFME Launcher"
+	if updater.macos_preview():
+		win.title = "OpenBFME Launcher — Mac Unstable Preview (Apple Silicon)"
 	var scr := win.current_screen
-	var scale := DisplayServer.screen_get_scale(scr)
-	if OS.get_name() == "Windows":
-		scale = DisplayServer.screen_get_dpi(scr) / 96.0
-	if scale <= 1.05:
-		return
+	var screen_scale := DisplayServer.screen_get_scale(scr)
+	# MACPLAY-1: Godot sizes a macOS window in the screen's pixels (2 per point on Retina): the 960 x 540 minimum is in points there
+	win.min_size = Vector2i((MIN_SIZE * (screen_scale if OS.get_name() == "macOS" else 1.0)).round())
 	var usable := Vector2(DisplayServer.screen_get_usable_rect(scr).size)
+	var dpi := DisplayServer.screen_get_dpi(scr)
+	var want := fit_size(OS.get_name(), screen_scale, dpi, usable)
+	Log.line("LAUNCHER window: screen scale %.2f, %d dpi, usable %dx%d px -> %s" % [screen_scale, dpi, int(usable.x), int(usable.y),
+		"%dx%d px" % [want.x, want.y] if want != Vector2i.ZERO else "the project's size"])
+	if "--resolution" in OS.get_cmdline_args() or OS.get_cmdline_args().has("--fullscreen") or want == Vector2i.ZERO:
+		return
+	win.size = want
+	win.move_to_center()
+
+
+const MIN_SIZE := Vector2(960, 540)
+## the dots per inch of the layout's base unit on a Windows screen at 100 % (the size the launcher was designed at)
+const REFERENCE_DPI := 96.0
+
+
+## The window's size in pixels on a screen (Vector2i.ZERO: keep the project's 1280 x 720): BASE_SIZE times the screen's factor, within
+## 92 % of its usable area. Windows: DPI / 96. MACPLAY-1, macOS: Godot reports the Retina factor (2) as the scale, but a Mac point is
+## smaller than a Windows pixel at 100 % (a MacBook Air's default "looks like" 1470 x 956 is ~128 points per inch, Windows' reference
+## 96): at the Retina factor alone the launcher read about three quarters of its Windows size. The factor is the screen's physical
+## pixels per inch over 96, so a base unit has the same physical size as on Windows, never below the Retina factor and at most 1.5 times
+## it (a screen that reports no or a wrong DPI keeps the Retina factor). Other systems: the screen's scale.
+static func fit_size(os_name: String, screen_scale: float, dpi: int, usable: Vector2) -> Vector2i:
+	var scale := screen_scale
+	if os_name == "Windows":
+		scale = dpi / REFERENCE_DPI
+	elif os_name == "macOS":
+		scale = clampf(dpi / REFERENCE_DPI, screen_scale, screen_scale * 1.5) if dpi > 0 else screen_scale
+	if scale <= 1.05:
+		return Vector2i.ZERO
 	var want := BASE_SIZE * scale
 	want *= minf(1.0, minf(usable.x * 0.92 / want.x, usable.y * 0.92 / want.y))
-	win.size = Vector2i(want)
-	win.move_to_center()
+	return Vector2i(want)
 
 
 func _build_ui() -> void:
@@ -781,6 +888,8 @@ func _build_ui() -> void:
 	rv.add_child(W.spacer())
 	rv.get_child(rv.get_child_count() - 1).size_flags_vertical = Control.SIZE_EXPAND_FILL
 	var foot := W.label("Launcher %s" % Semver.display(info.version), "Muted")
+	if info.local_trial:
+		foot.text += "\nLOCAL TRIAL\nNOT AN OFFICIAL RELEASE"
 	foot.add_theme_font_size_override("font_size", 12)
 	var fm := MarginContainer.new()
 	fm.add_theme_constant_override("margin_left", RAIL_INK)
@@ -799,6 +908,30 @@ func _build_ui() -> void:
 	add_child(content)
 	var cv := W.vbox(12)
 	content.add_child(cv)
+	if updater.macos_preview():
+		cv.add_child(W.wrap("Mac preview: updates are manual for now. The bundled game has no signed-manifest verification."))
+		var releases := LinkButton.new()
+		releases.text = "Open the releases page"
+		releases.uri = updater.releases_url()
+		cv.add_child(releases)
+	elif updater.macos_updates_enabled():
+		# MACPLAY-1: what the player must know about the package beside this launcher (nothing when it is verified, or when there is none
+		# and the launcher installs one); a translocated copy says how to get out of it
+		if updater.translocated != "":
+			_macos_package_notice = Updater.TRANSLOCATED_TEXT
+		elif updater.launcher_dir != "" and MacOSUpdate.signed_required(updater, updater.launcher_dir):
+			var receipt := MacOSUpdate.signed_receipt(updater, updater.launcher_dir)
+			_macos_package_notice = "" if receipt.ok else "The Mac package's signed update receipt does not verify (%s): Play does not start it." % receipt.error
+		elif updater.bundled_problem() != "":
+			_macos_package_notice = "OpenBFME.app beside the launcher is not the signed package (%s): Play does not start it." % updater.bundled_problem()
+		var notice := W.wrap(_macos_package_notice)
+		notice.visible = _macos_package_notice != ""
+		cv.add_child(notice)
+		_macos_releases_link = LinkButton.new()
+		_macos_releases_link.text = "Open the releases page"
+		_macos_releases_link.uri = updater.releases_url()
+		_macos_releases_link.visible = false
+		cv.add_child(_macos_releases_link)
 	# the freeze warning (its own line: round 3, Sol r2)
 	_banner = PanelContainer.new()
 	_banner.theme_type_variation = "Banner"
@@ -834,7 +967,7 @@ func _build_ui() -> void:
 	_games_screen.show_folder.connect(_show_folder)
 	_games_screen.pause_pressed.connect(_on_pause)
 	_games_screen.cancel_pressed.connect(_on_cancel)
-	_settings = SettingsScreen.new()
+	_settings = SettingsScreen.new(updater.macos_preview())
 	_settings.channel_picked.connect(_on_channel)
 	_settings.free_camera_toggled.connect(_on_free_camera)
 	_settings.auto_update_toggled.connect(_on_auto_update)
@@ -962,7 +1095,7 @@ func _show_screen(key: String) -> void:
 		_screens[k].visible = k == key
 		_nav[k].set_pressed_no_signal(k == key)
 	if key == "games" and _games_screen.folder == "":
-		_games_screen.setup(Paths.default_games_dir(), aio.total_size() / 1e9, aio.packages)
+		_games_screen.setup(Paths.default_games_dir(), aio.total_size() / 1e9, aio.chosen(), aio.choice == AioInstall.BFME1)
 	if key == "play" and _play_screen != null:
 		# back on the Play card: an old number is gone, and a stale one is asked for again (at most every MIN_GAP_SECONDS)
 		_expire_count()
@@ -989,6 +1122,11 @@ func _set_update_state(state: String, tag := "") -> void:
 	_refresh_head()
 
 
+func _set_macos_releases_link(visible: bool) -> void:
+	if _macos_releases_link != null:
+		_macos_releases_link.visible = visible
+
+
 ## the bottom bar's first line and the Play screen's chips: the update state, the version Play starts, the channel
 func _refresh_head() -> void:
 	if _status_head == null:
@@ -996,9 +1134,10 @@ func _refresh_head() -> void:
 	var ch := Semver.channel_name(updater.channel())  # lane VERSION-1: stable is shown as "Alpha", the pre-release channel as "Preview"
 	var pv := Semver.display(_pv)
 	var head: String = {"idle": "Ready", "checking": "Checking for updates", "updating": "Updating", "current": "Up to date",
-		"update": "Update available", "failed": "Could not check for updates", "none": "No %s release yet" % ch.to_lower()}[_update_state]
+		"update": "Update available", "manual": "Mac preview — manual updates", "no_macos_entry": "No signed Mac package",
+		"failed": "Could not check for updates", "none": "No %s release yet" % ch.to_lower()}[_update_state]
 	var colour: Color = {"idle": Style.TEXT2, "checking": Style.TEXT2, "updating": Style.ACCENT, "current": Style.GOOD, "update": Style.ACCENT,
-		"failed": Style.WARN, "none": Style.TEXT2}[_update_state]
+		"manual": Style.TEXT2, "no_macos_entry": Style.TEXT2, "failed": Style.WARN, "none": Style.TEXT2}[_update_state]
 	if _update_state == "update":
 		head = ("Launcher %s is available" if _launcher_only else "%s is available") % Semver.display(_update_tag)
 	if _update_state == "updating" and _update_tag != "":
@@ -1025,6 +1164,9 @@ func _on_free_camera(on: bool) -> void:
 
 func _on_auto_update(on: bool) -> void:
 	updater.set_auto_update(on)
+	if updater.macos_preview():
+		_set_status("Mac preview: check for newer releases on startup is " + ("on." if on else "off."))
+		return
 	_set_status("Updates install by themselves in the background." if on else "Updates are only checked: press Update to install one.")
 
 
@@ -1075,6 +1217,7 @@ func _refresh_count() -> void:
 		_count_thread.wait_to_finish()
 	_count_asked_ms = maxi(Time.get_ticks_msec(), 1)
 	var http := HttpFetch.new(updater.policy, info.version)
+	_count_http = http
 	_count_thread = Thread.new()
 	_count_thread.start(func() -> void: _on_count.call_deferred(OnlineCount.fetch(http, url)))
 
@@ -1128,10 +1271,15 @@ func _show_error(title: String, text: String) -> void:
 	_message.show_error(title, text, _about())
 
 
-func _start_aio(dir: String) -> void:
+## the Game files screen's Download (resume: Resume of a paused one, which keeps its package)
+func _start_aio(dir: String, resume := false) -> void:
 	if dir == "" or not dir.is_absolute_path():
 		_show_error("No folder", "Pick a folder for the games first.")
 		return
+	if not resume:
+		# community PR #36: the package the panel showed when Download was pressed (BFME1 only when that is the chosen game: install refuses
+		# it otherwise)
+		aio.choose(AioInstall.BFME1 if _games_screen.offer_bfme1 else AioInstall.GAMES)
 	_aio_target = dir
 	_start_job(_job_aio.bind(dir), "aio")
 
@@ -1145,7 +1293,7 @@ func _on_pause() -> void:
 		else:
 			updater.http.cancelled = true
 	elif _paused == "aio":
-		_start_aio(_aio_target)
+		_start_aio(_aio_target, true)
 	elif _paused == "game":
 		_start_job(_job_install.bind(_paused_release, _paused_pick), "install", String(_paused_release.get("tag", "")))
 	elif _paused == "launcher":
@@ -1251,8 +1399,8 @@ func _show_games(g: Dictionary, demo := false) -> void:
 	var bfme1 := Paths.bfme1_folder()
 	g["bfme1"] = bfme1
 	var use_bfme1: bool = updater.get_state("launcher", "game", "bfme2") == "bfme1"
-	_play_screen.game_names.text = "Battle for Middle-earth I 1.03" if use_bfme1 else "RotWK 2.01 · BFME II 1.06"
-	_play_screen.missing_games.text = "Battle for Middle-earth I assets were not found." if use_bfme1 else "The Rise of the Witch-king 2.01 and Battle for Middle-earth II 1.06 were not found."
+	# community PR #36: BFME1 is the player's own install; its download is optional (Game files, from BFME Arena, a third party)
+	_play_screen.missing_games.text = "Battle for Middle-earth I 1.03 was not found: set BFME1_INSTALL to its folder, put it in %s, or download it (optional, from BFME Arena) in Game files." % Paths.short(Paths.default_games_dir().path_join("BFME1")) if use_bfme1 else "The Rise of the Witch-king 2.01 and Battle for Middle-earth II 1.06 were not found."
 	_play_screen.set_games(not bfme1.is_empty() if use_bfme1 else g.found, aio.enabled(), Paths.short(bfme1) if use_bfme1 else where)
 	_mods.set_games(g.found)
 	_games_screen.set_folders(g, demo)
@@ -1266,6 +1414,9 @@ func _busy() -> bool:
 ## Play waits only for a job that changes the version it starts (a reinstall of it) or downloads the games; a background update of a
 ## newer version does not stop it (that version is used from the next Play on)
 func _play_blocked() -> bool:
+	if updater.macos_updates_enabled() and \
+			(updater.macos_transaction or MacOSUpdate.transaction_locked(updater)):
+		return true
 	if not _busy():
 		return false
 	return _job_kind == "aio" or (_job_target != "" and _job_target == _pv)
@@ -1282,10 +1433,16 @@ func _set_buttons() -> void:
 	_cancel.visible = downloading
 	_update.visible = _update_state == "update" and not downloading  # LAUNCHERUI-1: no room beside Pause and Cancel, and it is disabled meanwhile
 	_update.disabled = busy or _latest.is_empty()
-	_play.disabled = _pv == "" or _play_blocked()
+	_play.disabled = _play_blocked()  # MACPLAY-1: never a dimmed Play with no word why: _on_play says what is missing
 	_play_screen.games_button.disabled = busy or _paused != ""
 	_settings.set_busy(busy)
 	var aio_running := busy and _job_kind == "aio"
+	# community PR #36: the Game files download follows the chosen game (BFME1: the optional BFME1 package), except while a download
+	# runs or is paused: that one keeps its package (Resume continues what was started)
+	if not aio_running and _paused != "aio" and not _demo_bfme1:
+		aio.choose(AioInstall.BFME1 if aio.bfme1_chosen() else AioInstall.GAMES)
+	if _games_screen.offer_bfme1 != (aio.choice == AioInstall.BFME1):
+		_games_screen.set_offer(aio.choice == AioInstall.BFME1, aio.total_size() / 1e9, aio.chosen())
 	_games_screen.set_download_state(aio_running, _paused == "aio", busy and not aio_running, aio.enabled())
 
 
@@ -1390,6 +1547,7 @@ func _on_progress(text: String, done: int, total: int) -> void:
 # ---- jobs (worker thread) ----------------------------------------------------------------------------------------------------------------
 
 func _job_check(auto_install: bool) -> void:
+	_set_macos_releases_link.call_deferred(false)
 	var r := updater.fetch_releases()
 	if not r.ok:
 		_after_check.call_deferred({}, [], "Updates skipped: %s. Play starts the newest installed version." % r.error, "failed", "")
@@ -1399,12 +1557,27 @@ func _job_check(auto_install: bool) -> void:
 	if chan.is_empty():
 		_after_check.call_deferred({}, chan, "There is no %s release yet." % Semver.channel_name(updater.channel()).to_lower(), "none", "")
 		return
+	if updater.macos_preview():
+		var notice := updater.macos_preview_notice(chan[0])
+		_after_check.call_deferred({}, chan, notice.message if notice.ok else "Update check rejected: " + notice.error,
+			"manual" if notice.ok else "failed", "")
+		return
 	var mm := updater.release_manifest(chan[0])
 	if not mm.ok:
 		_after_check.call_deferred({}, chan, "Update rejected: " + mm.error, "failed", "Update rejected: " + mm.error)
 		return
-	var newest := updater.newest_installed()
-	var newer := newest == "" or Semver.compare(chan[0].tag, newest) > 0
+	if updater.macos_updates_enabled() and mm.get("no_entry", false):
+		_set_macos_releases_link.call_deferred(true)
+		_after_check.call_deferred({}, chan,
+			"This verified release has no signed Mac package. Download a complete macOS package manually from the releases page.",
+			"no_macos_entry", "")
+		return
+	if updater.translocated != "":
+		# MACPLAY-1: a translocated copy installs nothing; the notice above the screens and Play say what to do
+		_after_check.call_deferred({}, chan, "Updates are off in this temporary copy of the launcher: move both apps out of Downloads.", "failed", "")
+		return
+	var current := updater.newest_installed()
+	var newer := current == "" or Semver.compare(chan[0].tag, current) > 0
 	var msg := "Up to date." if not newer else "%s is available." % chan[0].tag
 	var err := ""
 	# the freeze warning has its own line in the window (round 3: folded into the status, it was overwritten by the install's messages)
@@ -1416,7 +1589,8 @@ func _job_check(auto_install: bool) -> void:
 		_job_assets = _assets_of(chan[0], ["game"])
 		var i := updater.install(chan[0], false)
 		if i.ok:
-			msg = "Installed %s." % i.version
+			msg = ("The signed Mac package %s is staged; restart the launcher to update both apps." % i.version) \
+				if i.get("swap", false) else "Installed %s." % i.version
 		elif _stop != "":
 			msg = _stopped("game", chan[0], false)
 		else:
@@ -1432,8 +1606,11 @@ func _job_check(auto_install: bool) -> void:
 	elif not s.ok:
 		msg += " Launcher update rejected: " + s.error
 		err = (err + " " if err != "" else "") + "Launcher update rejected: " + s.error
-	elif s.staged != "":
+	elif s.staged != "" and not updater.macos_updates_enabled():
 		msg += " The launcher %s is ready and replaces this one on the next start." % s.staged
+	elif updater.mac_launcher_notice(chan[0]) != "" and str(s.get("why", "")) == updater.mac_launcher_notice(chan[0]):
+		msg += " " + s.why  # MACPLAY-1: a Mac launcher without its package beside it says that a newer launcher is out
+		_set_macos_releases_link.call_deferred(true)
 	# lane UI-5 (Sol r1): updating by itself off, the launcher's own update is offered on its own too (a launcher older than the
 	# channel's newest release while the game is up to date said "Up to date" with no Update button)
 	var launcher_only := not newer and not auto_install and _stop == "" and updater.launcher_update_available(chan[0])
@@ -1461,7 +1638,8 @@ func _after_check(latest: Dictionary, chan: Array, msg: String, state: String, e
 	_launcher_only = launcher_only
 	_older = []
 	for r in chan:
-		_older.append(r.tag)
+		if not updater.macos_preview():
+			_older.append(r.tag)
 	_set_update_state(state, chan[0].tag if not chan.is_empty() else "")
 	# a check that did not finish is a failure too while the game runs (the player would otherwise never see it)
 	var problem := err if err != "" else (msg if state == "failed" and _quit_when_done else "")
@@ -1474,7 +1652,9 @@ func _job_install(release: Dictionary, user_pick: bool) -> void:
 	_job_assets = _assets_of(release, ["game"])
 	var i := updater.install(release, user_pick)
 	if i.ok:
-		_after_install.call_deferred("Installed %s." % i.version, "")
+		var message := "The signed Mac package %s is staged; restart both apps to finish updating." % i.version \
+			if i.get("swap", false) else "Installed %s." % i.version
+		_after_install.call_deferred(message, "")
 	elif _stop != "":
 		_after_install.call_deferred(_stopped("game", release, user_pick), "")
 	else:
@@ -1494,7 +1674,8 @@ func _job_update(release: Dictionary) -> void:
 			else:
 				_after_install.call_deferred("Not installed: " + i.error, i.error)
 			return
-		msg = "Installed %s." % i.version
+		msg = ("The signed Mac package %s is staged; restart the launcher to update both apps." % i.version) \
+			if i.get("swap", false) else "Installed %s." % i.version
 	_job_assets = _assets_of(release, ["launcher"])
 	var s := updater.stage_self_update(release)
 	if not s.ok and _stop != "":
@@ -1502,8 +1683,10 @@ func _job_update(release: Dictionary) -> void:
 	elif not s.ok:
 		_after_install.call_deferred((msg + " " if msg != "" else "") + "Launcher update rejected: " + s.error, "Launcher update rejected: " + s.error)
 	else:
-		if s.staged != "":
+		if s.staged != "" and not updater.macos_updates_enabled():
 			msg += (" " if msg != "" else "") + "The launcher %s is ready and replaces this one on the next start." % s.staged
+		elif s.staged != "" and msg == "":
+			msg = "The signed Mac package %s is staged; restart both apps to finish updating." % s.staged
 		_after_install.call_deferred(msg if msg != "" else "Up to date.", "")
 
 
@@ -1512,8 +1695,12 @@ func _job_stage(release: Dictionary) -> void:
 	_job_assets = _assets_of(release, ["launcher"])
 	var s := updater.stage_self_update(release)
 	if s.ok:
-		_after_install.call_deferred("The launcher %s is ready and replaces this one on the next start." % s.staged if s.staged != "" \
-			else "Launcher update: " + str(s.get("why", "")), "")
+		if updater.macos_updates_enabled():
+			_after_install.call_deferred("The signed Mac package %s is staged; restart the launcher to update both apps." % s.staged \
+				if s.staged != "" else "Mac package update: " + str(s.get("why", "")), "")
+		else:
+			_after_install.call_deferred("The launcher %s is ready and replaces this one on the next start." % s.staged if s.staged != "" \
+				else "Launcher update: " + str(s.get("why", "")), "")
 	elif _stop != "":
 		_after_install.call_deferred(_stopped("launcher", release, false), "")
 	else:
@@ -1521,7 +1708,8 @@ func _job_stage(release: Dictionary) -> void:
 
 
 func _after_install(msg: String, err: String) -> void:
-	if err == "" and _paused == "" and (msg.begins_with("Installed") or msg == "Up to date." or msg.begins_with("The launcher")):
+	if err == "" and _paused == "" and (msg.begins_with("Installed") or msg == "Up to date." or msg.begins_with("The launcher") or
+			msg.begins_with("The signed Mac package")):
 		_latest = {}
 		_launcher_only = false
 		_set_update_state("current")
@@ -1536,7 +1724,10 @@ func _job_aio(dir: String) -> void:
 
 
 func _after_aio(r: Dictionary) -> void:
-	if r.ok:
+	if r.ok and aio.choice == AioInstall.BFME1:
+		_finish("Battle for Middle-earth I is downloaded and checked: %s. Play starts it while it is the chosen game." % _folders_text(r.folders))
+		_refresh_games()
+	elif r.ok:
 		_finish("The games are downloaded and checked: %s. OpenBFME offers these folders when it starts." % _folders_text(r.folders))
 		_refresh_games()
 	elif r.kind == AioInstall.STOPPED and aio.stop_request == "pause":
@@ -1582,7 +1773,10 @@ func _on_install_pick(tag: String) -> void:
 ## closes once the download is done (the new version is used from the next Play on).
 func _on_play() -> void:
 	var v := updater.play_version()
-	if v == "" or _play_blocked():
+	if _play_blocked():
+		return
+	if v == "":
+		_no_game()
 		return
 	var p := updater.play(v)
 	if p.ok:
@@ -1607,7 +1801,33 @@ func _on_play() -> void:
 	_show_error("The game did not start", p.error)
 
 
+## MACPLAY-1: Play with no game to start (the v0.4.6 Mac preview's Play did nothing): say what is missing and what to do, and start the
+## download of the channel's newest release when that is the remedy
+func _no_game() -> void:
+	var why := updater.no_game_reason()
+	Log.line("LAUNCHER play: no game to start: " + why)
+	if updater.translocated == "" and not _busy() and _problem == "":
+		var chan := updater.in_channel(_releases, updater.channel())
+		if not chan.is_empty():
+			_set_status("No game is installed yet: downloading %s." % chan[0].tag)
+			_start_job(_job_install.bind(chan[0], false), "install", chan[0].tag)
+			_message.show_error("Downloading the game", why + " The launcher is downloading %s now; press Play again when it is installed." % chan[0].tag, _about())
+			return
+	elif _busy() and _job_kind in ["check", "install"]:
+		why += " The launcher is downloading it now; press Play again when it is installed."
+	_set_status(why)
+	_show_error("No game to start", why)
+
+
 func _exit_tree() -> void:
+	# MACPLAY-1: the online-count request is cancelled and its thread joined before the window goes. It was never joined: a launcher that
+	# closed while the lobby had not answered (Play started the game at once) freed itself under the running thread, which then called
+	# back into it (the owner's Mac, 2026-10-17 11:13: SIGSEGV at 0x190 on that thread, the "quit unexpectedly" dialog)
+	if _count_thread != null:
+		if _count_http != null:
+			_count_http.cancelled = true
+		_count_thread.wait_to_finish()
+		_count_thread = null
 	if _thread != null:
 		if _job_kind == "aio":
 			aio.request_stop("pause")

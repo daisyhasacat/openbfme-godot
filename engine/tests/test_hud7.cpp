@@ -80,14 +80,14 @@ const ControlBarRadialMenu::Button *bubble(const ControlBarRadialMenu &radial, i
 }
 
 // a press of the bubble through the HUD's mouse, as the player clicks it
-void pressBubble(facta::FactRig &r, const ControlBarRadialMenu::Button &b, HudInput::Button which)
+void pressBubble(facta::FactRig &r, const ControlBarRadialMenu::Button &b, HudInput::Button which, int modifiers = 0)
 {
 	const int x = b.rect.x + b.rect.w / 2, y = b.rect.y + b.rect.h / 2;
-	r.hud->mouseMove(x, y, 0);
+	r.hud->mouseMove(x, y, modifiers);
 	r.rig.timeMs += 300;
-	r.hud->mouseButton(which, true, x, y, 0, r.rig.timeMs);
+	r.hud->mouseButton(which, true, x, y, modifiers, r.rig.timeMs);
 	r.rig.timeMs += 40;
-	r.hud->mouseButton(which, false, x, y, 0, r.rig.timeMs);
+	r.hud->mouseButton(which, false, x, y, modifiers, r.rig.timeMs);
 	r.rig.timeMs += 300;
 }
 
@@ -459,6 +459,54 @@ TEST_CASE("hud7 upgrade: an object upgrade being researched shows RotWK's availa
 	CHECK(b->state == ButtonState::Purchased);
 }
 
+TEST_CASE("hud7 cancel all retail: Shift right press cancels all unlimited units, not just one (RW 0x940CD0)")
+{
+	if (!haveWorld("hud7 cancel all"))
+	{
+		return;
+	}
+	facta::FactRig r(shared(), "FactionMen");
+	r.local()->getMoney()->deposit(10000, false);
+	Object *barracks = r.make("GondorBarracks", r.spot(2000.0f, 1300.0f, 400.0f));
+	r.frames(3);
+	REQUIRE(r.select(barracks));
+	const ControlBarButton *button = nullptr;
+	for (const auto &b : r.bar().palantirButtons())
+	{
+		if (b.button && b.button->m_command == GUI_COMMAND_UNIT_BUILD && b.state == ButtonState::Enabled
+			&& b.button->hasOption(COMMAND_OPTION_CANCELABLE) && b.button->getThingTemplate()
+			&& BuildAssistant::maxSimultaneousOfType(*b.button->getThingTemplate()) == 0)
+		{
+			button = &b;
+			break;
+		}
+	}
+	REQUIRE(button != nullptr);
+	const int slot = button->slot;
+	ProductionUpdateInterface *pu = barracks->getProductionUpdate();
+	REQUIRE(pu != nullptr);
+	for (int i = 0; i < 3; ++i)
+	{
+		REQUIRE(r.bar().pressButton(slot, true));
+		r.frames(1);
+	}
+	REQUIRE(pu->getProductionCount() == 3);
+	int modifiers = 0;
+	int remaining = 2;
+	SUBCASE("without Shift only one is cancelled") {}
+	SUBCASE("left Shift cancels all") { modifiers = KEY_STATE_LSHIFT; remaining = 0; }
+	SUBCASE("right Shift cancels all") { modifiers = KEY_STATE_RSHIFT; remaining = 0; }
+	int x = 0, y = 0;
+	REQUIRE(arcContentPoint(r, slot, x, y));
+	r.hud->mouseMove(x, y, modifiers);
+	r.rig.timeMs += 300;
+	r.hud->mouseButton(HudInput::Button::Right, true, x, y, modifiers, r.rig.timeMs);
+	r.rig.timeMs += 40;
+	r.hud->mouseButton(HudInput::Button::Right, false, x, y, modifiers, r.rig.timeMs);
+	r.frames(2);
+	CHECK(pu->getProductionCount() == remaining);
+}
+
 TEST_CASE("hud7 hero cancel: a right click on the recruiting hero's bubble cancels it with the full refund (RW 0x940B0E / 0x940C57 -> MSG_CANCEL_UNIT_CREATE by index)")
 {
 	if (!haveWorld("hud7 hero cancel"))
@@ -534,7 +582,7 @@ TEST_CASE("hud7 hero cancel: a right click on the recruiting hero's bubble cance
 
 	// the right click on the same bubble cancels it: the full price back, the record out of production, the queue empty
 	const unsigned cancelsBefore = radial.cancels();
-	pressBubble(r, *bubble(radial, heroSlot), HudInput::Button::Right);
+	pressBubble(r, *bubble(radial, heroSlot), HudInput::Button::Right, KEY_STATE_LSHIFT);
 	r.frames(2);
 	CHECK(radial.cancels() == cancelsBefore + 1);
 	CHECK(r.money() == start + incomeSince(r)); // the full price back

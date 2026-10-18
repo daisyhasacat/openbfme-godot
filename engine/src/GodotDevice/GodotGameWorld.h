@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <array>
+
 #include "GameClient/VideoPlayer.h" // lane CAMP-1H: m_videos (complete for the unique_ptr)
 #include "GameClient/EndGame.h"
 #include "GameClient/CommandLogLoad.h" // lane SAVE-2: m_saveLoad (complete for the unique_ptr)
@@ -29,8 +31,10 @@
 #include "GameNetwork/LANAPI.h"
 #include "GameNetwork/LANLobby.h"
 #include "GameNetwork/NetGameSession.h"
+#include "GameNetwork/ProfileChoice.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DScriptedModelDraw.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DStreakDraw.h"
+#include "GameEngineDevice/W3DDevice/GameClient/W3DVegetationSway.h"
 #include "GodotDevice/GodotW3DMaterial.h"
 
 #include <godot_cpp/classes/immediate_mesh.hpp>
@@ -157,6 +161,7 @@ public:
 	// lane END-1: the end of the game (GameClient/EndGame.h). The end sequence runs on every presented logic frame (the human player's win / loss scripts, the
 	// defeat messages, Eva, showEndGame / hideEndGame); its presentation requests are taken by the host ({ kind, text, name, evil, sound, cheer, eva }).
 	Dictionary get_end_game_state() const;
+	int hud_end_game_timer() const;
 	Array take_end_game_requests();
 	// GameLogic::clearGameData (RW 0x7792BC): keeps the score screen's data (when `show_score_screen`) and tears the game down (the worker stopped, the
 	// network session, audio, effects and objects released); a new game may start afterwards. { ok, score_screen: { type, frames, entries: [...] } }
@@ -186,6 +191,8 @@ public:
 	// lane SPELL-3 (review r3): a test hook (start option test_hooks): the global weather back to none, its map attribute modifier removed from every object
 	// (GlobalWeatherSystem::clear, RW 0x71A04F) - the spell harness isolates the weather powers' casts with it
 	Dictionary debug_clear_weather();
+	// lane BACKLOG-8 r2 (proof captures): AIData UseFormations for the running game (test hooks only, never in a network game)
+	Dictionary debug_set_use_formations(bool on);
 	// read-only: the live objects of `player` [{ id, template, structure, commandcenter, x, y, z }] (between logic frames)
 	Array get_player_objects(const String &player);
 	Array get_logic_trees(double x, double y, double radius) const; // lane SPELL-3: the logic's map trees within radius (2D): x, y, id, toppled, value
@@ -356,6 +363,7 @@ public:
 	// centre or a waypoint, a named unit killed (a horde through its members, its indestructible flag lifted): the player's part of a campaign capture
 	Dictionary debug_script_place(const String &name, const String &where);
 	Dictionary debug_script_kill(const String &name);
+	Dictionary debug_script_victory(); // lane CAMPSAVE-1: QUICKVICTORY for the local side (test hooks only)
 	// lane SCRIPT-3 (test_hooks only, never in a network game): a named unit's / a script team's position, a unit placed at a point, a team killed
 	Dictionary debug_script_unit(const String &name);
 	Dictionary debug_script_action(const String &name, const Array &params); ///< lane BACKLOG3 (test hook)
@@ -373,10 +381,10 @@ public:
 	Dictionary start_campaign_mission(const Dictionary &options);
 	// the running mission's end: { ended, victory, action, frame } (the script engine's VICTORY / QUICKVICTORY / DEFEAT, ScriptEngine::endRequests)
 	Dictionary campaign_status() const;
-	// the campaign progress sidecar (CampaignProgress's text, never a retail save format): load -> { ok, campaign, mission, difficulty, victorious, error };
-	// save { campaign, mission, difficulty, victorious } -> { ok, error }
+	// the campaign progress sidecar of lanes CAMP-1 .. SAVE-4 (CampaignProgress's text): load -> { ok, campaign, mission, difficulty, victorious, error }.
+	// Lane CAMPSAVE-1: no build writes it any more; scripts/campaign_flow.gd migrates an old one into the auto-save
 	Dictionary campaign_progress_load(const String &path) const;
-	Dictionary campaign_progress_save(const String &path, const Dictionary &progress) const;
+	Dictionary campaign_progress_step(const Dictionary &progress, const String &step) const; // lane CAMPSAVE-1
 	// lane CAMP-1H: a movie by its Video title (TheVideoPlayer, GameClient/VideoPlayer.h: RW 0x490EE6's lookup): { ok, error, title, path, width, height,
 	// frames, duration_ms, audio_events: [ "<file>_Music"?, "<file>"? ] (the ones the audio INIs define, RW 0x49112C), stops: [..] }. The Video INIs are read
 	// on the first call; the movie files are the install's loose Data\Movies (ROTWK_INSTALL / user://install-paths.cfg)
@@ -386,20 +394,36 @@ public:
 	// ---- lane SAVE-2 (GodotDevice/GodotGameWorldSave.cpp): the command-log save of a single player game (docs/SAVES.md) ----
 	// save_game(path, { description, kind (1 Campaign, 2 Skirmish), map_display, date, time }): the running recorded skirmish as an .obfmesave file (the log so
 	// far + its header, Common/System/SaveGame/SaveGameFile.h) -> { ok, error, frame, hash, bytes, commands }. Refused (named) without a recording, in a network
-	// game or a replay, or when the recording is incomplete.
+	// game or a replay, or when the recording is incomplete. Lane SAVE-4e: the snapshot at F too (snapshot_bytes; option "snapshot": false writes a
+	// log-only save as the earlier alphas did); a snapshot the game refuses fails the save, named (review r1).
 	Dictionary save_game(const String &path, const Dictionary &options);
+	// lane CAMPSAVE-1: CampaignMenu.apt's state written as a campaign menu save (the auto-save, the menu's Save): options campaign, mission, difficulty,
+	// victorious, ready, advanced, description, auto_save -> {ok, path, map, menu_mission} or {ok false, error}
+	Dictionary save_campaign_menu(const String &path, const Dictionary &options);
+	SaveGameCompatibility menuSaveVerdict(const SaveGameHeader &header) const; // lane CAMPSAVE-1: one verdict for the listing and check_save
+	static std::string campaignMapPath(const std::string &map);   // lane CAMPSAVE-1: "MAP ANG Angmar" -> "maps/map ang angmar/map ang angmar.map"
+	std::string campaignMapDisplay(const std::string &map) const; // its map cache display name (the map itself when the cache lacks it)
 	// list_saves(dir): the saved games of a folder, newest first: the .obfmesave files read by their header (path, name, map, date, time, kind, frame,
 	// build, loadable, refusal, cross_profile) and retail's own saves (*.BfME2Skirmish / *.BfME2Campaign) as { retail_import: true, loadable: false }
 	Array list_saves(const String &directory) const;
 	// prepare_save_load(path): reads and checks the save (the build, the data, the log) and prepares its game like prepare_replay -> { ok, errors, resolved,
 	// map, local_slot, frame, description, cross_profile, note }; start_save_load(options) loads that game like start_new_game (options "record": the
 	// recording continues the save's log there) and installs the catch-up; save_load_step(budget_ms) then runs it: { state ("catching_up", "ready",
-	// "failed"), frame, start, target, percent, error, hashes_compared, elapsed_ms }. At "ready" the game is at the saved frame and the player's.
+	// "failed"), frame, start, target, percent, error, hashes_compared, elapsed_ms, mode, snapshot_ms }. At "ready" the game is at the saved frame and the
+	// player's. Lane SAVE-4e: mode "snapshot" (prepare_save_load's and start_save_load's "mode" too): the save's snapshot is loaded by start_save_load (the
+	// first step answers "ready"); "catch_up": a log-only save caught up as above. A refused snapshot fails the load, named, the game as it was.
 	// check_save(path): what prepare_save_load would refuse, without touching the running game -> { ok, error }
 	Dictionary check_save(const String &path) const;
 	Dictionary prepare_save_load(const String &path);
 	Dictionary start_save_load(const Dictionary &options);
 	Dictionary save_load_step(int64_t budget_ms);
+	// lane SAVE-4e review r1 (Sol): a load over the running game keeps that game's own save in memory first (keep_running_game: save_game's log and
+	// snapshot, { ok, frame, hash, error }); when the chosen save is refused after the running game went, prepare_kept_load prepares the kept one like
+	// prepare_save_load and the host starts and steps it as any load, so the player is back in the same game (its state hash and snapshot bytes);
+	// drop_kept_game forgets it once the chosen save is in
+	Dictionary keep_running_game();
+	Dictionary prepare_kept_load();
+	void drop_kept_game();
 	static void bindSaveMethods();
 	// ---- player commands (lane MOVE-1): everything goes through the lockstep command path (LiveGame::commands(), executed by the logic's command list row of the
 	// next logic frame), never by touching the AI directly ----
@@ -465,6 +489,10 @@ public:
 	// lane SMOOTH-1: the drawable's render pose of an object (the interpolated transform the instancer draws) next to its logic position, SAGE coordinates:
 	// { ok, x, y, z, angle, logic_x, logic_y, logic_z, logic_angle }
 	Dictionary get_render_pose(int64_t id) const;
+	// lane VISUAL-2 (scripts and proof captures): the live particle systems whose position is within `radius` of (x, y) and their particles
+	Dictionary get_particles_near(double x, double y, double radius) const;
+	// lane VISUAL-2 (scripts and proof captures): the trees that sway (by sway type), the sway's breeze version and the current SwayOffsets 1 .. 10
+	Dictionary get_tree_sway() const;
 	// the load report; RENDER-1 adds streak_errors (W3DStreakDraw textures that failed to load while drawing: also in errors, ok false)
 	Dictionary get_report() const;
 	// lane QA-1: the live game's report now (the load report is taken once): { ok, frame, errors, stops, stop_hits: { text: count } (GameLogic::noteStop),
@@ -521,6 +549,18 @@ public:
 	// (RW 0x6A8D2B: the next human player's view, then back to every player's); net_observed() names the observed player and its resources
 	Dictionary net_observe_next(bool forward);
 	Dictionary net_observed() const;
+	// RENDERWAIT-1: net_status()'s per-frame copy of net_observed(): read fresh only where the logic is held, else the last one read for the same player
+	Dictionary net_observed_unwaiting() const;
+	Dictionary caster_status() const;
+	bool caster_observe(int64_t player, bool team = false);
+	bool caster_playback(bool paused, double speed);
+	Dictionary caster_step();
+	Dictionary caster_transport_status() const;
+	Dictionary caster_restart_live(const Dictionary &options = Dictionary());
+	Dictionary caster_seek_step(int64_t target, int64_t budget_ms = 20);
+	Array caster_events(int64_t from_frame = 0) const;
+	Dictionary caster_metrics(int64_t from_frame = 0) const;
+	Dictionary replay_seek_step(int64_t target, int64_t budget_ms = 20);
 	// lane MP-2: replays. start_new_game({record: path}) records a skirmish (Common/Recorder.h: every frame's commands and hash); a LAN game records with
 	// net_begin({record}). prepare_replay(path) reads a recording and prepares its game (the profile identity must match; { ok, resolved, map, local_slot,
 	// final_frame, errors } like prepare_new_game); start_replay(options) loads it like start_new_game and plays the recording back (the local input is
@@ -558,6 +598,17 @@ public:
 	// a game. Diagnostics only: reads the logic between frames
 	Dictionary get_census() const;
 	String simulation_profile() const;
+	// lane UBERJOIN-1 (GameClient/GUI/ProfileSwitch.h): the lobby screens switch the profile for ONE game (a game list's Yes / No box: "Switch to Uber mode
+	// and join?"). The player's own setting (set_simulation_profile, the option) is kept in m_choice.own and never written; restore_simulation_profile
+	// (bound: scripts/game.gd calls it when a game has ended, the screens when the room is left) puts it back. Refused inside a LAN game
+	bool switch_profile_for_game(SimulationProfile profile, std::string *why);
+	void restore_simulation_profile(); // false from the ProfileChoice (a LAN room held) leaves the switch standing; see profile_switched()
+	// the game is over / the room left for good: leaves a LAN room that is still held (it is kept after a game so the players return to it), then restores
+	void leave_lan_room_and_restore_profile();
+	Dictionary switch_simulation_profile_for_game(const String &name); // the screens' switch as a scripted call (the headless lifecycle test): { ok, error }
+	bool profile_switched() const { return m_choice.switched; }
+	SimulationProfile current_profile() const { return m_choice.current; }
+	std::string profile_digest_for(SimulationProfile profile) const { return profileIdentityFor(profile).digest; }
 
 	// lane HUD-1 (C++ only, not bound): what the in-game HUD node needs of the game; null until setup() / load_map() ran
 	void set_lua_hud_source(uint64_t id) { m_luaHudSource = id; }
@@ -574,6 +625,7 @@ protected:
 	static void _bind_methods();
 
 private:
+	mutable Dictionary m_observedRead; ///< net_observed_unwaiting(): the last net_observed() read where the logic was held
 	Dictionary load_internal(const LiveGame::Options &lo, const String &map_name, const Dictionary &options, const Callable &progress, bool withTerrain);
 	std::unique_ptr<NewGameStart> m_start;           ///< the prepared new game (LiveGame::Options::start points into it)
 	std::vector<MapCacheEntry> m_mapCache;           ///< maps\\mapcache.ini, read by setup()
@@ -582,6 +634,8 @@ private:
 		int64_t instance = -1;
 		std::string model;              ///< the lower-case model the instance shows ("" none)
 		std::string rawModel, rawLowered; ///< lane PERF-1: the last model name as the draw gave it and its lower-case form (lowered once per change)
+		const void *swapSource = nullptr; ///< community PR #37 (S-5015): the swap list swapSuffix was made from (a model condition state's, stable)
+		std::string swapSuffix;            ///< its W3DInstancer::Texture_Swap_Suffix, made once per change (not every frame)
 		std::vector<std::string> hidden;
 		std::uint32_t hiddenGeneration = 0; ///< lane PERF-3: the draw's hidden set generation and model `hidden` was made from (names made only when they change)
 		const void *hiddenModel = nullptr;
@@ -593,6 +647,8 @@ private:
 		float opacity = 1.0f;           ///< PROJ-2: the drawable's fade the instance shows (Drawable::drawOpacity)
 		unsigned tireChanges = 0xFFFFFFFFu; ///< lane COMBAT-4: DrawEntry::tireChanges the instance's bone spins show
 		int64_t tireInstance = -1;          ///< the instance they were handed to
+		bool fogLook = false;               ///< lane VISUAL-2: the instance is drawn with the fogged light (a last-seen object in the fog)
+		int64_t fogLookInstance = -1;       ///< the instance it was handed to
 		std::uint32_t colorsRevision = 0;   ///< lane CAH-2: Drawable::customColorRevision the model choice saw
 	};
 	struct DrawableView
@@ -646,7 +702,7 @@ private:
 	std::unique_ptr<InGameSpellBookModel> m_spellBar;  // lane SPELL-2
 	// lane MP-1 (after m_game: the session goes first; every m_game.reset() drops it before)
 	std::unique_ptr<LANAPI> m_lan; // lane MP-2
-	SimulationProfile m_simulationProfile = SimulationProfile::Faithful; // lane UBER-1
+	ProfileChoice m_choice; // lane UBER-1 / UBERJOIN-1: the player's profile (own), the one the next game runs (current) and a lobby's switch for one game
 	std::unique_ptr<UDP> m_netSocket;
 	std::unique_ptr<LANLobbyHost> m_netHost;
 	std::unique_ptr<LANLobbyClient> m_netClient;
@@ -655,6 +711,9 @@ private:
 	std::unique_ptr<NetGameSession> m_netSession;
 	// lane MP-2: the recording of a local game (start_new_game option "record") and the playback of a replay (start_replay)
 	NewGameMessage m_startMessage;                    ///< the message prepare_new_game resolved (a replay's header holds it, unresolved)
+	Dictionary gameRecordBase(GameLogic &logic, const std::vector<int> &slotPlayers) const; // lane ONLINEHUB-1 (clear_game_data's "record")
+	NewGameMessage m_recordMessage;                   ///< lane ONLINEHUB-1: the resolved message of the game (the game record's players, GameClient/GameRecords.h)
+	int m_recordLocalSlot = -1;
 	std::unique_ptr<ReplayWriter> m_localWriter;
 	std::unique_ptr<LockstepDriver> m_localDriver;
 	std::unique_ptr<ReplayFile> m_replayFile;
@@ -663,6 +722,9 @@ private:
 	std::string m_replayPath, m_recordPath;
 	// lane SAVE-2: the save being loaded (prepare_save_load / start_save_load / save_load_step)
 	std::unique_ptr<SaveGameFile> m_pendingSave;
+	std::unique_ptr<SaveGameFile> m_keptSave; ///< lane SAVE-4e review r1: keep_running_game
+	bool buildSave(const Dictionary &options, SaveGameFile &f, UnsignedInt &frame, std::uint32_t &hash, std::string &error); ///< save_game's file
+	Dictionary prepareSaveLoad(std::unique_ptr<SaveGameFile> file); ///< prepare_save_load's checks and preparation of a read file
 	std::unique_ptr<CommandLogLoad> m_saveLoad;
 	std::string m_saveRecordPath; ///< "" with m_saveRecordContinues: in memory (a campaign mission)
 	bool m_saveRecordContinues = false;
@@ -727,6 +789,9 @@ private:
 	size_t m_treeEventsSeen = 0;
 	void heldClientWork(); // lane RENDERWAIT-1: the render side's reads of the live logic, where it is held
 	void updateTreeTopple(double dt);
+	std::unique_ptr<W3DVegetationSway> m_vegSway; ///< lane VISUAL-2: the W3DTreeDraw trees' sway (null: the map has none)
+	std::array<int64_t, 11> m_swayTypeCounts{}; ///< lane VISUAL-2: the trees given each sway type (0: TaintedTree)
+	void updateTreeSway(double dt);
 	uint64_t m_staticId = 0, m_dynamicId = 0;
 	std::vector<DrawableView> m_views;       ///< index = drawable id
 	std::map<std::string, int64_t> m_dynamicModels, m_staticModels;
@@ -760,6 +825,7 @@ private:
 		const W3DStreakDrawModuleData *data = nullptr;
 		bool seen = false;
 		float opacity = 1.0f; ///< PROJ-2: the drawable's opacity (RW 0x672FC4, Drawable::drawOpacity)
+		bool hidden = false;  ///< lane VISUAL-2 r2: the drawable is not drawn (Drawable::presentedLook): no point recorded, no ribbon
 	};
 	W3DDrawPoseView m_viewPose;               ///< lane PERF-3: refresh_views reads the pose request by reference (W3DScriptedModelDraw::poseView)
 	BfmeLuaValue::List m_wallHubMarkers;

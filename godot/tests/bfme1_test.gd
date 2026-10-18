@@ -63,8 +63,8 @@ func _run() -> void:
 			elif name == prefix + "CastleBaseKeep": keeps += 1
 			elif name == ("RBCastleFloor" if faction == 3 else "GBCastleFloor"): pass
 			else: continue
-			assert(object.get("instances", 0) > 0, str(object))
-		assert(walls >= 8, "%s: only %d walls" % [prefix, walls])
+			assert(object.get("instances", 0) > 0, str(object))  # tolerance: the object was drawn (instance count depends on its LOD and pieces)
+		assert(walls >= 8, "%s: only %d walls" % [prefix, walls])  # tolerance: a castle stands: its wall count varies with the faction's layout (port note, community PR #36)
 		assert(gates == 2, "%s: only %d gate leaves" % [prefix, gates])
 		assert(keeps == 1, "%s: missing keep" % prefix)
 		print("BFME1 CASTLE ", prefix, ": ", walls, " walls, ", gates, " gate leaves, keep rendered")

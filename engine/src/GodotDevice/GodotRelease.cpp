@@ -6,9 +6,11 @@
 #include "Common/BuildVersion.h"
 #include "Common/ConsoleFilter.h"
 #include "Common/InstallLocator.h"
+#include "Common/WindowsCrashDump.h"
 #include "GameNetwork/ProfileIdentity.h"
 
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
 
@@ -90,6 +92,8 @@ void ReleaseInfo::_bind_methods()
 	ClassDB::bind_method(D_METHOD("redact", "text"), &ReleaseInfo::redact);
 	ClassDB::bind_method(D_METHOD("process_alive", "pid"), &ReleaseInfo::process_alive);
 	ClassDB::bind_method(D_METHOD("crash_test"), &ReleaseInfo::crash_test);
+	ClassDB::bind_method(D_METHOD("crash_test_worker"), &ReleaseInfo::crash_test_worker);
+	ClassDB::bind_method(D_METHOD("install_crash_handler"), &ReleaseInfo::install_crash_handler);
 }
 
 String ReleaseInfo::version() const
@@ -156,10 +160,34 @@ bool ReleaseInfo::process_alive(int64_t pid) const
 
 void ReleaseInfo::crash_test() const
 {
+	if (!OS::get_singleton()->is_debug_build())
+		return;
 	std::fprintf(stderr, "RELEASE --crash-test: crashing on purpose (a write through a null pointer)\n");
 	std::fflush(stderr);
 	volatile int *volatile target = nullptr;
 	*target = 0x0BADF00D;
+}
+
+void ReleaseInfo::crash_test_worker() const
+{
+	if (!OS::get_singleton()->is_debug_build())
+		return;
+	// Do not call the Godot API from the crashing worker.
+	std::thread worker([] {
+		std::fprintf(stderr, "RELEASE --crash-test-worker: deliberate worker access violation\n");
+		std::fflush(stderr);
+		volatile int *volatile target = nullptr;
+		*target = 0x0BADF00D;
+	});
+	worker.join();
+}
+
+String ReleaseInfo::install_crash_handler() const
+{
+	std::string error;
+	if (!WindowsCrashDump::install(toNative(ProjectSettings::get_singleton()->globalize_path("user://logs/minidumps")), error))
+		return toGodot(error);
+	return String();
 }
 
 // ---- SessionLogger ----

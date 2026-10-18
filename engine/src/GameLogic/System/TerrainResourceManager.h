@@ -32,8 +32,10 @@
 //     that entry is the first live one); OWNED cells held by the object become free), the module's share becomes 0, and every claimant within (largest + radius)
 //     is re-applied with its own flag so neighbours can grow into the freed ground.
 //   * reset (RW 0x75BD62): the grid and the largest radius are cleared (the claimant list is cleared by the owner of the GameLogic).
-// The client half of the class (decal alpha RW 0x75C1A9, the placement preview RW 0x75B561 with its visitor, observers) does not touch logic state and is not here.
-// (RW 0x75C02D with a filter >= 0, the client's form, would erase dead owners from cells: a logic mutation from the draw path; the logic form is the only one here.)
+// The client half of the class (decal alpha RW 0x75C1A9, observers) does not touch logic state and is not here. The placement preview RW 0x75B561 is
+// (previewShare, community PR #37): RW 0x75C02D in its client form (a filter player >= 0) also writes - an OWNED cell without entries becomes free, a cell
+// whose owner no longer exists loses its entries and becomes free -; previewShare answers the same without those writes (the cells are hashed state and
+// only the local client asks), and the next logic read makes the same change retail's preview would have made.
 //
 // Determinism: integers, the claimants in a vector in the retail order, the cells in a vector; the floats go through NumericState (x87 at 24 bits, SSE).
 
@@ -43,6 +45,7 @@
 #include "GameLogic/ObjectTypes.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 class GameLogic;
@@ -114,11 +117,19 @@ public:
 	void unclaim(Object &obj, float radius);
 	void onBuildComplete(Object &obj);
 
-	// the share of the disc (claimed / total) a hypothetical claim would hold right now, without changing anything: tests and the AI's farm placement
-	// (RW 0x75B561 with the visitor RW 0xC2BA38 / 0x75C523)
-	float previewShare(float x, float y, float radius, bool complete, ObjectID objectId, int playerIndex);
+	// the placement preview's share (RW 0x75B561 x, y, radius, highPriority, player; its visitor RW 0xC2BA38 / 0x75C523 counts every disc cell toward the
+	// total and the cells RW 0x75C02D calls usable toward the claimed ones, with mask = highPriority ? 0x7FFFF43 : 0, object 0, complete 0 and the filter =
+	// `playerIndex`): what PlaceTerrainResourceClaimantFeedback shows for the local player (BFME2 0x4E6295 passes the template's TerrainResourceBehavior
+	// Radius and HighPriority). Reads only (previewUsable), so a client may ask it on an idle frame without changing a peer's state hash
+	float previewShare(float x, float y, float radius, bool highPriority, int playerIndex) const;
 
 	void crc(StateHasher &h) const;
+	// lane SAVE-4d: retail's TerrainResourceManager::DoXfer (RW 0x75C7AE, window (1, 3)) in its layout, then the claimants' complete flags retail does not
+	// save (S-4253); see TerrainResourceManager.cpp
+	void xfer(class Xfer &x);
+	// lane SAVE-4d: the economy block's post-process, after every block loaded (the objects' included): each staged claimant's object exists, or an
+	// XferException naming it and the manager unchanged; then the manager takes the state xfer staged
+	void finishLoad();
 
 private:
 	struct DiscCounts
@@ -134,8 +145,9 @@ private:
 	Cell &at(int x, int y) { return m_cells[(size_t)y * (size_t)m_width + (size_t)x]; }
 	Disc makeDisc(float x, float y, float radius) const;
 	template <class Visitor>
-	void forEachInDisc(const Disc &d, Visitor &&visit); // RW 0x75B4BA with RW 0x75B3AE
+	void forEachInDisc(const Disc &d, Visitor &&visit) const; // RW 0x75B4BA with RW 0x75B3AE
 	bool usable(int x, int y, std::uint32_t mask, ObjectID objectId, bool complete);        // RW 0x75C02D with filter -1
+	bool previewUsable(int x, int y, int filter) const; // RW 0x75C02D with complete 0, object 0 and a filter player, without its two writes (previewShare)
 	void visitClaim(int x, int y, std::uint32_t mask, ObjectID objectId, bool complete, DiscCounts &counts); // RW 0x75C5D2
 	void visitRelease(int x, int y, ObjectID objectId);                                      // RW 0x75C461
 	void applyClaim(Object &obj, float radius, bool highPriority, bool complete);            // RW 0x75BA1D
@@ -153,5 +165,12 @@ private:
 	float m_extentX = 0.0f, m_extentY = 0.0f, m_extentZ = 0.0f; ///< RW + 0x28 .. + 0x30
 	float m_maxRadius = 0.0f;          ///< RW + 0x18
 	size_t m_blockedCount = 0;
+	struct Pending ///< lane SAVE-4d: a load's state until finishLoad (not state: null between loads)
+	{
+		std::vector<Claimant> claimants;
+		std::vector<Cell> cells;
+		float maxRadius = 0.0f;
+	};
+	std::unique_ptr<Pending> m_pending;
 	std::uint32_t m_blockedHash = 0;   ///< the hash of the blocked cell indices (they never change after init)
 };

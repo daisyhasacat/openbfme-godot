@@ -41,17 +41,19 @@
 // OpenBFME DIFFERENCES (docs/ONLINE.md section 5; stops S-4070 .. S-4079):
 //   * sign-in is the lobby's guest sign-in: the nickname combo is the guest name (remembered by the host program), the e-mail and password fields are
 //     disabled, Register / Create / Delete nickname / ServiceTerms are disabled through the movie's own DisableButton* functions, and the locale pop-up,
-//     GameSpy and OfficialSite buttons report "not available" (their EA / GameSpy sites are gone) [S-4071];
+//     OfficialSite reports "not available" [S-4071]; the former GameSpy button opens OpenBFME's website;
 //   * the message of the day is the lobby's /v1/motd; a lobby without one shows "The lobby has no message of the day." [S-4072];
 //   * the game list is the lobby's: no ping (column 7 empty), no settings / user-map icons; the lobby rooms (Lobbies) are not used [S-4073];
 //   * the staging room's state machine beyond the facts above (which state the update moves from, the GameSpy NAT negotiation, the countdown) is
 //     OpenBFME's: the host's Play Game sends the lobby's START; a lobby without a relay refuses it (no_relay), which the player sees as a message box
 //     [S-4074];
-//   * Quick Match, Strategic (War of the Ring online), Profile / Stats and the Messenger are not ported: their pages report "not available" [S-4075].
+//   * Strategic (War of the Ring online) and the Messenger are not ported: their pages report "not available" [S-4075]; lane ONLINEHUB-1 ported the
+//     TOURNAMENT (OnlineQuickMatch: Quick Match and the tournaments) and STATS pages on the OpenBFME platform (GUI/AptScreens/AptOnlineHub.h).
 
 #pragma once
 
 #include "GameClient/GUI/AptScreens/AptSkirmish.h"
+#include "Common/SimulationProfile.h"
 
 #include <functional>
 #include <map>
@@ -61,6 +63,7 @@
 #include <vector>
 
 class AptMessageBox;
+class AptOnlineHub;
 class OnlineLobbyClient;
 
 // What the online screens need from the host program (ShellEnvironment::online)
@@ -74,6 +77,15 @@ struct OnlineShellContext
 	std::string sessionToken;
 	std::function<void(const std::string &)> rememberSession;
 	std::string lobbyUrl;                             ///< shown in the reports only
+	// lane ONLINEUX-1: what the screens keep across the online shell's remaking (the shell is popped for a game and pushed again after it):
+	std::string lastPage;   ///< the page shown last (OnlineShellStartScreen after a game: retail's shell, kept through the game, shows the page it was on)
+	std::shared_ptr<std::set<std::string>> leftGames; ///< the started games this player left (finished, forfeited, quit): never offered for a rejoin
+	std::u16string pendingNotice; ///< a message for the player the screens show once they are up (an online game that could not go on)
+	int playersOnline = -1, gamesOpen = -1, gamesRunning = -1; ///< the lobby's counts (GET /v1/stats, the host asks): the home page's ticker; -1 unknown
+	// lane ONLINEUX-1 r2 (Claude F1, Sol): the online game the screens started could not go on on this side (a rejoin or a watch that failed before it was
+	// live; game.gd _online_game_failed through AptMenuPlayer.online_game_failed): `why` is shown once the screens are up, and the game is NOT left (the
+	// client forgets it without a leave), so the lobby keeps offering it for a rejoin: the player never left it in the game
+	void gameFailed(const std::u16string &why);
 };
 
 class AptOnlineShell : public AptSkirmish
@@ -89,6 +101,8 @@ public:
 	const std::string &currentPage() const { return m_currentName; } ///< OnlineShellStartScreen
 	std::vector<std::string> loadedPages() const;
 	int openPlayState() const { return m_state; }  ///< the custom match screen's state (+0x488)
+	int sortColumn() const { return m_sortColumn; } ///< lane MENUWORK-1: the game list's sort (the menu inventory's evidence)
+	bool sortDescending() const { return m_sortDescending; }
 	AptMessageBox *messageBox() const { return m_box.get(); }
 	// the rows of the game list (tests): "name|map|players|lock"
 	const std::vector<std::string> &gameRows() const { return m_gameRows; }
@@ -99,7 +113,14 @@ public:
 	GameWindow *nicknameWindow();
 	GameWindow *gameNameWindow();
 	GameWindow *gamePasswordWindow();
+	GameWindow *lobbiesWindow(); ///< lane ONLINEUX-1 (tests): the Lobby Room drop-down
 	bool connectingShown() const { return m_connecting; }
+	// lane MENUWORK-1 (S-4750): the login page's account parts the engine hides (Apt paths in OnlineShell.apt) and the line shown in the e-mail row's place
+	static const std::vector<std::string> &loginAccountParts();
+	static const char *const kNicknameLine;
+	// lane MENUWORK-1: the box text of an online page OpenBFME does not have (empty: none of those)
+	static std::u16string unavailablePageText(const std::string &page);
+	static const float kNicknameFrameX, kNicknameFrameY, kNicknameFrameXScale;
 	// the boxes shown (title|text, as the game text gave them), for the tests
 	const std::vector<std::string> &boxesShown() const { return m_boxes; }
 	// lane ONLINE-5: the labels of the host's refused starts (the start check's refusal: "GUI:NotifiedStartIntent" while a player is not ready)
@@ -107,13 +128,28 @@ public:
 	// Sol r1: the host program could not play the START the screens handed on (GodotAptPlayer.online_start_failed: the relay socket would not open):
 	// the player is told in a box and is back at the game list (a recoverable lobby error, never the game's end)
 	void startFailed(const std::string &why);
+	// lane ONLINEHUB-1: the TOURNAMENT (Quick Match, tournaments) and STATS pages (GUI/AptScreens/AptOnlineHub.h)
+	AptOnlineHub *hub() const { return m_hub.get(); }
+	// lane ONLINE-4: a rejoin (own game) or spectator START for a running game (the list's Join on a REJOIN / WATCH row, the sign-in's rejoin box; lane
+	// UBERJOIN-1: public for the tests of a refused one)
+	void startRunning(const std::string &id, bool rejoin);
+	// lane ONLINEUX-1 (tests): whether the movie was last told to enable its Login button (-1: not told yet)
+	int loginButtonState() const { return m_loginButton; }
+	void nicknameEdited() { applyLoginButton(false); } ///< the nickname set by the host program (a script): as a typed change
+	// the home page's ticker rows the screens filled ("label|value"), in the movie's order
+	const std::vector<std::string> &tickerRows() const { return m_tickerRows; }
+	// the player's words for a lobby refusal or transport error (OpenBFME's: the lobby's own text is for the logs), broken into lines the box can show
+	std::u16string playerMessage(const std::string &request, const std::string &code, const std::u16string &lobbyText) const;
+	static std::u16string wrapLines(const std::u16string &text, size_t width);
 
 protected:
+	void runInit() override; // lane ONLINEUX-1: the shell shown again after a screen covered it (Options)
 	WindowMsgHandledType gadgetMessage(GameWindow *from, std::uint32_t msg, WindowMsgData data1, WindowMsgData data2) override;
 	void lobbyChanged() override;
 	bool lobbyEditable(int slot) const override;
 	void onReadyPress(const std::string &argument) override;
 	bool heroChoiceAvailable() const override { return false; } // lane ONLINE-5: S-4076 (no Create-a-Hero record through the lobby): shown locked
+	bool handicapChoiceAvailable() const override { return false; } // lane OWNERFIX-2: the online start carries no handicap (S-4552): shown locked
 	int setupFlags() const override { return 0x200001F0; } // lane ONLINE-5: RW 0x9AF464 (BFME2 0x5A5BC7's 0x200001F0)
 	bool applySlotHero(int slot, const CreateAHeroHero *hero) override;
 	void onKickPlayer(const std::string &argument) override;
@@ -123,6 +159,7 @@ protected:
 	void showRuleWarning(const std::u16string &title, const std::u16string &text) override;
 
 private:
+	friend class AptOnlineHub; // lane ONLINEHUB-1: the hub's pages use the shell's box, lobby client and setup model
 	enum class Page
 	{
 		None,
@@ -141,9 +178,16 @@ private:
 	void pageProvider(const std::string &page, const std::string &name, WindowManager::ProviderFn fn);
 	void pageScreenRef(const std::string &page, const std::string &name, WindowManager::ScreenRefFn fn);
 	void registerLogin();
+	void showNicknameOnly();
 	void registerHome();
 	void registerOpenPlay();
-	void notAvailable(const std::string &what, const std::string &stop);
+	void notAvailable(const std::string &what, const std::string &stop, const std::u16string &playerText = std::u16string());
+	// lane ONLINEUX-1
+	void applyLoginButton(bool force);         ///< RW 0x97A668 (BFME2 0x5706D4): Login enabled while the nickname has a printable character
+	void navTo(const std::string &page);        ///< the shell's ButtonNav clip to the page's frame label (its highlighted button)
+	void fillTicker();                          ///< RW 0x9C881D / 0x9C8694: the home page's ticker rows
+	bool gameLeft(const std::string &id) const; ///< a started game this player left (ctx leftGames)
+	void showSelectedGameMap();                 ///< the browser's MAP panel shows the selected game's map (the panel is read only there)
 
 	void update();
 	void pumpClient();
@@ -168,8 +212,12 @@ private:
 	void sortBy(int column);
 	void joinSelected();
 	void requestJoin(const std::string &id, const std::string &password);
-	void startRunning(const std::string &id, bool rejoin); ///< lane ONLINE-4: a rejoin (own game) or spectator START for a running game
 	void offerRejoin();
+	// lane UBERJOIN-1 (GUI/ProfileSwitch.h): true when `gameMode` is the player's own; else the Yes / No box asks and Yes switches, then `proceed` runs
+	bool modeAllows(SimulationProfile gameMode, std::function<void()> proceed);
+	bool switchMode(SimulationProfile mode, std::string *why);
+	void syncMode();
+	void restoreMode();
 	void enterSetup(bool host);
 	void backToList();
 	void startPressed();
@@ -180,6 +228,7 @@ private:
 
 	OnlineShellContext *m_ctx = nullptr;
 	OnlineLobbyClient *m_client = nullptr;
+	std::unique_ptr<AptOnlineHub> m_hub; // lane ONLINEHUB-1
 	std::string m_currentName = "OnlineLogin"; // + 0x294
 	std::string m_pendingScreen;               // + 0x28C
 	std::map<std::string, PageNames> m_pages;  // + 0x280 (the loaded pages)
@@ -191,6 +240,8 @@ private:
 	// login
 	GameWindow *m_nickname = nullptr, *m_email = nullptr, *m_password = nullptr, *m_remember = nullptr;
 	bool m_loginSent = false;
+	int m_loginHideUpdates = 0;                // lane MENUWORK-1: updates since the login page's clips were placed
+	std::set<std::string> m_loginPartsMissing; // lane MENUWORK-1: the account parts already noted as missing
 	int m_loginDisablesDue = 0; ///< updates until the account buttons are disabled (0: done or not due)
 	// home
 	GameWindow *m_motd = nullptr;
@@ -207,6 +258,7 @@ private:
 	bool m_popUp = false;             // + 0x4A0
 	std::string m_joinId;             // + 0x4B8: the game to join
 	std::vector<std::string> m_gameRows, m_rowIds;
+	std::vector<SimulationProfile> m_rowModes; ///< lane UBERJOIN-1: the performance mode of each row
 	std::vector<std::string> m_rowKinds; ///< lane ONLINE-4: "join", "rejoin" (the player's running game) or "watch" (another running game)
 	bool m_rejoinOffered = false, m_rejoinPending = false;
 	std::u16string m_loginName;
@@ -221,4 +273,13 @@ private:
 	bool m_left = false;
 	bool m_pollTrouble = false;             ///< Sol r1: the staging room's poll failed (said once in the chat, and again when it is back)
 	std::set<std::string> m_unknownMaps;    ///< listed maps the player does not have (noted once each)
+	// lane ONLINEUX-1
+	int m_loginButton = -1;                 ///< what the movie's Login button was last told (1 enabled, 0 disabled, -1 not yet)
+	bool m_shownOnce = false;               ///< the shell's movie has been up (a later runInit is a return from a covering screen)
+	bool m_barDue = false;                  ///< the button bar is to be shown again on the next update (the movie's ShowButtonBar)
+	std::string m_runningId;                ///< the running game a rejoin / watch was asked for
+	std::vector<std::string> m_tickerRows;
+	int m_tickerClipsDone = 0;              ///< the ticker rows' clips given their texts (fillTicker)
+	std::string m_selectedMap;              ///< the map the browser's MAP panel shows for the selected game
+	std::string m_ownMap;                   ///< the player's own map while the panel shows a selected game's
 };

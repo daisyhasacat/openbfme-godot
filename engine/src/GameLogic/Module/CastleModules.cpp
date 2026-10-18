@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/CastleModules.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/CastleUpgrade.h"
 #include "GameLogic/Object/PartitionManager.h"
 
@@ -92,9 +93,6 @@ void parseRestOfLine(INI *ini, void *, void *store, const void *)
 
 #define CB_OFF(member) (int)offsetof(CastleBehaviorModuleData, member)
 const FieldParse kCastleFieldParse[] = {
-	{ "UseTheNewCastleSystemInsteadOfTheClunkyBuildList", INI::parseBool, nullptr, CB_OFF(m_useNewCastleSystem) },
-	{ "UseSecondaryBuildList", INI::parseBool, nullptr, CB_OFF(m_useSecondaryBuildList) },
-	{ "SidesAllowed", INI::parseAsciiStringVector, nullptr, CB_OFF(m_sidesAllowed) },
 	{ "CastleToUnpackForFaction", parseFactionBaseList, nullptr, CB_OFF(m_castleToUnpackForFaction) },
 	{ "FilterValidOwnedEntries", parseOptionalObjectFilter, nullptr, CB_OFF(m_filterValidOwnedEntries) },
 	{ "FilterCrew", parseOptionalObjectFilter, nullptr, CB_OFF(m_filterCrew) },
@@ -120,6 +118,15 @@ const FieldParse kCastleFieldParse[] = {
 	{ "TransferFoundationHealthToCastleUponUnpack", INI::parseBool, nullptr, CB_OFF(m_transferFoundationHealthToCastleUponUnpack) },
 	{ nullptr, nullptr, nullptr, 0 }
 };
+// community PR #36: BFME1's castle flag rows (BFME1 data only, Common/BfmeGame.h); RotWK's table stays the binary's
+const FieldParse kBfme1CastleRows[] = {
+	{ "UseTheNewCastleSystemInsteadOfTheClunkyBuildList", INI::parseBool, nullptr, CB_OFF(m_useNewCastleSystem) },
+	{ "UseSecondaryBuildList", INI::parseBool, nullptr, CB_OFF(m_useSecondaryBuildList) },
+	{ "SidesAllowed", INI::parseAsciiStringVector, nullptr, CB_OFF(m_sidesAllowed) },
+	{ nullptr, nullptr, nullptr, 0 },
+};
+const Bfme1FieldRowsRegistration kBfme1CastleRowsRegistration(kCastleFieldParse, kBfme1CastleRows);
+
 #undef CB_OFF
 
 #define CM_OFF(member) (int)offsetof(CastleMemberBehaviorModuleData, member)
@@ -127,13 +134,19 @@ const FieldParse kCastleMemberFieldParse[] = {
 	{ "CampDestroyedOwnerEvaEvent", INI::parseAsciiString, nullptr, CM_OFF(m_campDestroyedOwnerEvaEvent) },
 	{ "CampDestroyedAllyEvaEvent", INI::parseAsciiString, nullptr, CM_OFF(m_campDestroyedAllyEvaEvent) },
 	{ "CampDestroyedAttackerEvaEvent", INI::parseAsciiString, nullptr, CM_OFF(m_campDestroyedAttackerEvaEvent) },
-	{ "UnderAttackAllyEvaEventIfKeep", INI::parseAsciiString, nullptr, CM_OFF(m_underAttackAllyEvaEventIfKeep) },
-	{ "UnderAttackEvaEventIfKeep", INI::parseAsciiString, nullptr, CM_OFF(m_underAttackEvaEventIfKeep) },
 	{ "BeingBuiltSound", INI::parseAsciiString, nullptr, CM_OFF(m_beingBuiltSound) },
 	{ "StoreUpgradePrice", INI::parseBool, nullptr, CM_OFF(m_storeUpgradePrice) },
 	{ "CountsForEvaCastleBreached", INI::parseBool, nullptr, CM_OFF(m_countsForEvaCastleBreached) },
 	{ nullptr, nullptr, nullptr, 0 }
 };
+// community PR #36: BFME1's castle member rows (BFME1 data only)
+const FieldParse kBfme1CastleMemberRows[] = {
+	{ "UnderAttackAllyEvaEventIfKeep", INI::parseAsciiString, nullptr, CM_OFF(m_underAttackAllyEvaEventIfKeep) },
+	{ "UnderAttackEvaEventIfKeep", INI::parseAsciiString, nullptr, CM_OFF(m_underAttackEvaEventIfKeep) },
+	{ nullptr, nullptr, nullptr, 0 },
+};
+const Bfme1FieldRowsRegistration kBfme1CastleMemberRowsRegistration(kCastleMemberFieldParse, kBfme1CastleMemberRows);
+
 #undef CM_OFF
 
 float normalizeAngle(float a)
@@ -1428,4 +1441,36 @@ void CastleModules::registerAll(ModuleFactory &modules)
 		}
 		return std::make_unique<CastleMemberBehavior>(thing, typed);
 	});
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190: each class's fields in its crc's order; the last error text is the report's) ----------------
+void CastleBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	FoundationAIUpdate::xfer(x);
+	SnapshotXfer::enumIn(x, m_state, STATE_IDLE, STATE_ABANDONED, "a castle's state");
+	x.xferBool(&m_needInstantBuild);
+	if (m_data->m_useNewCastleSystem)
+	{
+		x.xferBool(&m_bfme1StartChecked); // community PR #36: a BFME1 castle flag's (in its crc's order; RotWK castles never have the row)
+	}
+	x.xferBool(&m_keepGone);
+	x.xferBool(&m_hasWalkOnWall);
+	x.xferReal(&m_timer);
+	x.xferObjectID(&m_keepId);
+	x.xferUnsignedInt(&m_unpackFrame);
+	for (std::vector<ObjectID> *list : { &m_owned, &m_foundations, &m_members, &m_crew, &m_defenseFoundations })
+	{
+		SnapshotXfer::ids(x, *list);
+	}
+}
+
+void CastleMemberBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	x.xferObjectID(&m_castleId);
+	x.xferObjectID(&m_occupantId);
+	x.xferObjectID(&m_keepId);
+	x.xferBool(&m_breached);
 }

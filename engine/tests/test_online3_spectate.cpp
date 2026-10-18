@@ -26,17 +26,47 @@
 #include "GameNetwork/RelayProtocol.h"
 #include "GameNetwork/Rejoin.h"
 #include "GameNetwork/Transport.h"
+#include <algorithm>
+
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 #include "Libraries/WWVegas/WW3D2/assetmgr.h"
 #include "RelayCore.h"
 
 #include <cstdio>
+#include <algorithm>
+#include <chrono>
+#include <thread>
 #include <filesystem>
 #include <map>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <system_error>
 #include <vector>
+
+TEST_CASE("rotwk-c spectator: disconnected results follow playback boundaries, not membership vector order")
+{
+	using E = Network::MembershipEvent;
+	RelayLog::Assembled log;
+	log.membership = {
+		{ E::DROP, 1, 5 }, { E::DROP, 1, 12 }, { E::DROP, 2, 9 },
+		{ E::LEAVE, 3, 4 }, { E::DESTROY, 4, 4 },
+		{ E::REJOIN, 1, 7, 1 }, { E::REJOIN, 2, 8, 1 }
+	};
+	CHECK(log.disconnectedSlotsAt(4) == 0);
+	CHECK(log.disconnectedSlotsAt(5) == 2);
+	CHECK(log.disconnectedSlotsAt(7) == 2); // rejoin frame 7 has not run yet
+	CHECK(log.disconnectedSlotsAt(8) == 0);
+	CHECK(log.disconnectedSlotsAt(9) == 4); // a new-incarnation drop wins at the rejoin boundary
+	CHECK(log.disconnectedSlotsAt(12) == 6); // a later drop is not cleared by the earlier REJOIN appended at the vector's end
+	std::reverse(log.membership.begin(), log.membership.end());
+	CHECK(log.disconnectedSlotsAt(8) == 0);
+	CHECK(log.disconnectedSlotsAt(12) == 6);
+	log.membership = { { E::DROP, 0, 0 }, { E::REJOIN, 0, 0xFFFFFFFFu, 1 } };
+	CHECK(log.disconnectedSlotsAt(0) == 1);
+	CHECK(log.disconnectedSlotsAt(0xFFFFFFFFu) == 1); // no wrap of the rejoin's next-frame boundary
+}
 
 namespace
 {
@@ -276,13 +306,17 @@ TEST_CASE("online3 spectators: the relay binds a spectator, refuses its commands
 	CHECK(maxFrameIn(late) == 31);
 	CHECK(std::equal(late.begin(), late.end(), full.begin())); // a prefix of the same log
 	CHECK(relay.stats().spectatorLogBytes == full.size() + late.size());
+	CHECK(relay.openLogHandles() == 2);
 	// the players leave: the game closes (spectators keep no game open), the delayed spectator still reads it, its frontier moving on at 5 frames a
 	// second, until it has all of it 2 s later
 	send(at(10), encodeEmpty(BYE));
 	send(at(11), encodeEmpty(BYE));
 	REQUIRE(relay.closedLogs().size() == 1);
+	CHECK(relay.openLogHandles() == 0);
+	CHECK(relay.stats().logErrors == 0);
 	CHECK(send(at(12), encodeHello(bytesOf(ticket(0)))).reply == encodeRefused(REFUSE_GAME_CLOSED));
 	CHECK(maxFrameIn(readLog(relay, at(21), now)) == 31); // closed at `now`: its frontier has not moved on yet
+	CHECK(relay.openLogHandles() == 1);
 	now += 2500;
 	const std::vector<std::uint8_t> end = readLog(relay, at(21), now);
 	RelayLogFile f;
@@ -295,6 +329,58 @@ TEST_CASE("online3 spectators: the relay binds a spectator, refuses its commands
 	relay.tick(now + 40000, nullptr);
 	CHECK(relay.stats().spectatorsDropped == 2);
 	CHECK(relay.openGames() == 0);
+	CHECK(relay.openLogHandles() == 0);
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("online3 spectators (DEVPORT-1, Sol): a finished log whose rename fails stays readable from its .part")
+{
+	using namespace RelayProtocol;
+	const std::filesystem::path dir = tempDir("renamefail");
+	RelayCore::Options o;
+	o.keys = ring();
+	o.logDir = dir.string();
+	o.spectatorIdleMs = 30000;
+	o.spectatorGraceMs = 10000;
+	RelayCore relay(o);
+	std::uint64_t now = 1000;
+	auto send = [&](const RelayAddress &from, std::vector<std::uint8_t> d) { return relay.handle(from, d.data(), d.size(), now, 1700000000u); };
+	REQUIRE(send(at(10), encodeHello(bytesOf(ticket(0)))).kind == RelayCore::Action::REPLY);
+	REQUIRE(send(at(11), encodeHello(bytesOf(ticket(1)))).kind == RelayCore::Action::REPLY);
+	REQUIRE(send(at(20), encodeHello(bytesOf(ticket(0, 0x03, true, 0)))).reply[3] == WELCOME);
+	std::uint32_t seq0 = 0;
+	for (std::uint32_t f = 0; f <= 5; ++f)
+	{
+		send(at(10), encodeData(1, packetOf(0, seq0++, frameInfo(0, f))));
+	}
+	// block the final name with a directory, so the rename at the end of the game fails and leaves the .part
+	std::filesystem::path part;
+	for (const auto &e : std::filesystem::directory_iterator(dir))
+	{
+		part = e.path();
+	}
+	REQUIRE(part.extension() == ".part");
+	std::filesystem::path finalName = part;
+	finalName.replace_extension();
+	std::filesystem::create_directory(finalName);
+	const std::vector<std::uint8_t> before = readLog(relay, at(20), now);
+	REQUIRE_FALSE(before.empty());
+	send(at(10), encodeEmpty(BYE));
+	send(at(11), encodeEmpty(BYE));
+	CHECK(relay.stats().logErrors == 1);
+	CHECK(relay.closedLogs().empty());
+	CHECK(relay.openLogHandles() == 0);
+	const std::vector<std::uint8_t> after = readLog(relay, at(20), now);
+	std::ifstream in(part, std::ios::binary);
+	const std::vector<std::uint8_t> onDisk((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	REQUIRE(after.size() == onDisk.size()); // the whole retained .part, END record included, not nothing
+	CHECK(after == onDisk);
+	REQUIRE(before.size() < after.size()); // tolerance: the END record was written after the first read; its size is the log's own
+	CHECK(std::equal(before.begin(), before.end(), after.begin()));
+	RelayLogFile f;
+	std::string error;
+	REQUIRE_MESSAGE(RelayLogFile::parse(after, f, &error), error);
+	CHECK(f.complete);
 	std::filesystem::remove_all(dir);
 }
 
@@ -711,7 +797,7 @@ TEST_CASE("online3 r1 (Sol: log reads): a LOG_REQUEST over its budget is refused
 	using namespace RelayProtocol;
 	const std::filesystem::path dir = tempDir("r1reads");
 	{
-		// the client's budget is below one chunk: refused at once. Round 1 opened the log first (here: removed from the disk, so a read fails loudly)
+		// The client's budget is below one chunk: refuse before opening a reader, on every platform.
 		RelayCore::Options o;
 		o.keys = ring();
 		o.logDir = dir.string();
@@ -725,16 +811,14 @@ TEST_CASE("online3 r1 (Sol: log reads): a LOG_REQUEST over its budget is refused
 		{
 			send(at(1), encodeData(1, packetOf(0, f, frameInfo(0, f))));
 		}
-		std::error_code ec;
-		char name[32];
-		std::snprintf(name, sizeof name, "%016llx.obfmerlog.part", (unsigned long long)kGame);
-		std::filesystem::remove(dir / name, ec);
-		REQUIRE_FALSE(ec);
+		CHECK(relay.openLogHandles() == 1);
 		std::vector<std::uint8_t> req = encodeLogRequest(0);
 		CHECK(relay.handle(at(2), req.data(), req.size(), 1000, 1700000000u).kind == RelayCore::Action::NONE);
 		CHECK(relay.stats().logRateLimited == 1);
 		CHECK(relay.stats().logErrors == 0);
+		CHECK(relay.openLogHandles() == 1);
 		relay.shutdown(2000);
+		CHECK(relay.openLogHandles() == 0);
 	}
 	{
 		// three clients of one game with ample budgets of their own; the game's budget is two chunks: the third waits
@@ -790,6 +874,8 @@ TEST_CASE("online3 r1 (Sol: log reads): a LOG_REQUEST over its budget is refused
 		auto send = [&](const RelayAddress &from, std::vector<std::uint8_t> d) { return relay.handle(from, d.data(), d.size(), 1000, 1700000000u); };
 		send(at(1), encodeHello(bytesOf(ticket(0))));
 		send(at(2), encodeHello(bytesOf(ticket(1))));
+		CHECK(readLog(relay, at(2), 1000).size() == 39);
+		CHECK(relay.openLogHandles() == 2);
 		for (std::uint32_t f = 0; f < 100; ++f)
 		{
 			send(at(1), encodeData(1, packetOf(0, f, frameInfo(0, f))));
@@ -797,6 +883,7 @@ TEST_CASE("online3 r1 (Sol: log reads): a LOG_REQUEST over its budget is refused
 		// the header (25 bytes) and two EVENTs (7 each) are 39 bytes; a FRAMEINFO's COMMAND record is 18: 20 fit in 400, the 21st stops the log
 		CHECK(relay.stats().logErrors == 1);
 		CHECK(relay.stats().commandsLogged == 20);
+		CHECK(relay.openLogHandles() == 0);
 		REQUIRE(relay.errors().size() == 1);
 		CHECK(relay.errors()[0].find("reached 400 bytes") != std::string::npos);
 		std::vector<std::uint8_t> req = encodeLogRequest(0);
@@ -880,6 +967,150 @@ TEST_CASE("online3 spectators: a frame that ran before its CRC was in the log is
 	CHECK(c.firstMismatch() == "frame 200: the players' CRC 0x00009999, the catch-up 0x00005678");
 	c.setLog(newest);
 	CHECK(c.crcsCompared() == 2);
+	FrameBatch afterMismatch;
+	CHECK_FALSE(c.acquire(100, afterMismatch));
+}
+
+TEST_CASE("CASTER-6 spectator catch-up fails closed after an immediate or late CRC mismatch")
+{
+	auto log = std::make_shared<RelayLog::Assembled>();
+	log->anyComplete = true;
+	log->lastCompleteFrame = 2;
+	log->hashes[1] = 0x9999u;
+	CommandLogCatchUp immediate(1);
+	immediate.setLog(log);
+	FrameCompletion f;
+	f.frame = 1;
+	f.hash = 0x1234u;
+	f.hashed = f.breakdown = true;
+	immediate.completed(f);
+	FrameBatch out;
+	CHECK(immediate.crcMismatches() == 1);
+	CHECK(immediate.firstMismatchFrame() == 1);
+	CHECK_FALSE(immediate.acquire(2, out));
+
+	auto older = std::make_shared<RelayLog::Assembled>();
+	older->anyComplete = true;
+	older->lastCompleteFrame = 2;
+	CommandLogCatchUp late(1);
+	late.setLog(older);
+	late.completed(f);
+	CHECK(late.crcMismatches() == 0);
+	CHECK(late.acquire(2, out));
+	auto arrived = std::make_shared<RelayLog::Assembled>(*older);
+	arrived->hashes[1] = 0x9999u;
+	late.setLog(arrived);
+	CHECK(late.crcMismatches() == 1);
+	CHECK(late.firstMismatchFrame() == 1);
+	CHECK_FALSE(late.acquire(2, out));
+}
+
+TEST_CASE("CASTER-1 vision: direct human and AI POV, allied union, all vision and recorded selection never change simulation state")
+{
+	OPENBFME_REQUIRE_START(s);
+	NewGameMessage m;
+	m.game.mapName = "maps/map mp fall back 4p/map mp fall back 4p.map";
+	m.game.seed = 777u;
+	for (int i = 0; i < 3; ++i)
+	{
+		auto &slot = m.game.slots[i];
+		slot.state = i == 0 ? SLOT_PLAYER : SLOT_HARD_AI;
+		slot.name = u"Caster player";
+		slot.playerTemplate = factionOf(s->world->playerTemplates(), "FactionMen");
+		slot.startPos = i;
+		slot.color = i;
+		slot.teamNumber = i == 2 ? 1 : 0;
+	}
+	Loaded loaded;
+	loadAs(*s, m, 0, loaded);
+	LiveGame &game = *loaded.game;
+	std::vector<Player *> players;
+	for (int i = 0; i < 3; ++i)
+	{
+		players.push_back(game.players().findPlayerWithName(game.report().startSlotPlayers[i]));
+		REQUIRE(players.back());
+	}
+	const int localIndex = game.players().getLocalPlayer()->getPlayerIndex();
+	CHECK_FALSE(game.observePlayer(-1));
+	CHECK_FALSE(game.observePlayer(players[1]->getPlayerIndex()));
+	game.enableReplayObserver();
+	CHECK_FALSE(game.observePlayer(-2));
+	CHECK_FALSE(game.observePlayer(255));
+	GameMessage selection(MSG_CREATE_SELECTED_GROUP, localIndex);
+	selection.appendBooleanArgument(true);
+	for (Object *o = game.logic().getFirstObject(); o; o = o->getNextObject())
+	{
+		if (o->getControllingPlayer() == players[0] && !o->isKindOfName("STRUCTURE") && !o->isEffectivelyDead())
+		{
+			selection.appendObjectIDArgument(o->getID());
+		}
+	}
+	game.commands().append(selection);
+	REQUIRE(game.advance(0.2) == 1);
+	REQUIRE_FALSE(players[0]->selection().empty());
+	const auto hash = game.logic().computeStateHash();
+	for (Player *player : players)
+	{
+		const int index = player->getPlayerIndex();
+		REQUIRE(game.observePlayer(index));
+		const auto snapshot = game.presentedSnapshot();
+		REQUIRE(snapshot);
+		REQUIRE(snapshot->shroud);
+		CHECK(snapshot->players->localIndex == index);
+		CHECK(snapshot->observedSelection == player->selection());
+		CHECK(snapshot->shroud->visionPlayers == std::vector<int>{ index });
+		int wrongCells = 0;
+		for (int y = 0; y < game.shroud().cellCountY(); ++y)
+		{
+			for (int x = 0; x < game.shroud().cellCountX(); ++x)
+			{
+				wrongCells += snapshot->shroud->cellStatus(x, y) != game.shroud().getCellStatus(index, x, y);
+			}
+		}
+		CHECK(wrongCells == 0);
+		CHECK(game.logic().computeStateHash() == hash);
+		CHECK(game.players().getLocalPlayer()->getPlayerIndex() == localIndex);
+	}
+	// DEVPORT-5 review: the POVs above are distinguishable (an enemy's fog differs from the recorder's), so a projection of the wrong player fails them
+	int differing = 0;
+	for (int y = 0; y < game.shroud().cellCountY(); ++y)
+	{
+		for (int x = 0; x < game.shroud().cellCountX(); ++x)
+		{
+			differing += game.shroud().getCellStatus(players[0]->getPlayerIndex(), x, y) != game.shroud().getCellStatus(players[2]->getPlayerIndex(), x, y);
+		}
+	}
+	CHECK(differing != 0); // tolerance: any differing cell makes the per-player comparison above discriminating; the count itself is map data
+	REQUIRE(game.observePlayer(players[0]->getPlayerIndex(), true));
+	const auto team = game.presentedSnapshot();
+	CHECK(team->shroud->visionPlayers == std::vector<int>{ players[0]->getPlayerIndex(), players[1]->getPlayerIndex() });
+	// DEVPORT-5 review: RotWK already gives a player its allies' looks (ShroudManager's looker mask, RW 0x6A8695(index, 3, 0): the owner and every
+	// player it counts as an ally), so with mutual allies the team view equals each member's own view: the union below cannot tell the two apart
+	// (a one-sided alliance is the only case where team vision adds cells). Both facts are asserted, the retail one first.
+	int wrongUnion = 0, ownDiffers = 0;
+	for (int y = 0; y < game.shroud().cellCountY(); ++y)
+	{
+		for (int x = 0; x < game.shroud().cellCountX(); ++x)
+		{
+			const auto own = game.shroud().getCellStatus(players[0]->getPlayerIndex(), x, y);
+			ownDiffers += own != game.shroud().getCellStatus(players[1]->getPlayerIndex(), x, y);
+			const auto expected = std::min(own, game.shroud().getCellStatus(players[1]->getPlayerIndex(), x, y));
+			wrongUnion += team->shroud->cellStatus(x, y) != expected;
+		}
+	}
+	CHECK(ownDiffers == 0);
+	CHECK(wrongUnion == 0);
+	REQUIRE(game.observePlayer(-1));
+	const auto all = game.presentedSnapshot();
+	CHECK_FALSE(all->shroud->displayed);
+	CHECK(all->observedSelection.empty());
+	CHECK(std::count(all->shroud->status.begin(), all->shroud->status.end(), CELLSHROUD_CLEAR) == (int)all->shroud->status.size());
+	for (const auto &object : all->objects)
+	{
+		CHECK_FALSE(object.shroudedForLocal);
+		CHECK(object.stealthLook != 5);
+	}
+	CHECK(game.logic().computeStateHash() == hash);
 }
 
 TEST_CASE("online3 spectators retail: no local slot makes the observer's ReplayObserver side the local player with the whole map revealed; the same "
@@ -968,4 +1199,80 @@ TEST_CASE("online3 spectators retail: no local slot makes the observer's ReplayO
 		shrouded += c != CELLSHROUD_CLEAR ? 1 : 0;
 	}
 	CHECK(shrouded == 0);
+}
+
+TEST_CASE("DEVPORT-5 renderwait: a spectator's Tab and a caster's POV switch inside a held client window with queued frames do not run them or wait")
+{
+	OPENBFME_REQUIRE_START(s);
+	NewGameMessage m;
+	m.game.mapName = "maps/map mp fall back 4p/map mp fall back 4p.map";
+	m.game.seed = 777u;
+	for (int i = 0; i < 3; ++i)
+	{
+		SkirmishGameSlot &sl = m.game.slots[i];
+		sl.state = i < 2 ? SLOT_PLAYER : SLOT_HARD_AI;
+		sl.name = i < 2 ? u"Human" + std::u16string(1, (char16_t)(u'0' + i)) : u"Computer";
+		sl.playerTemplate = factionOf(s->world->playerTemplates(), "FactionMen");
+		sl.startPos = i;
+		sl.color = i;
+		sl.teamNumber = i;
+	}
+	Loaded spectator;
+	loadAs(*s, m, -1, spectator);
+	LiveGame &game = *spectator.game;
+	const int human0 = game.players().findPlayerWithName(game.report().startSlotPlayers[0])->getPlayerIndex(); // before the window: both wait
+	game.setWorkerFrameDelayMs(150);
+	game.setLogicThread(true);
+	REQUIRE(game.logicThread());
+	game.advance(0.2);
+	game.advance(0.2); // frames are queued: the worker holds for the client window
+	const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!game.beginClientWindow() && std::chrono::steady_clock::now() < until)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	REQUIRE(game.logicHeld());
+	REQUIRE_FALSE(game.logicIdle()); // a frame is queued behind the window
+	const UnsignedInt held = game.frame();
+	const unsigned long long waits = game.blockingWaits();
+	game.resetLogicWaitSites();
+	REQUIRE(game.observeNextPlayer(true)); // the Tab key
+	CHECK(game.observedPlayer() == human0); // from the observer's "all", the first human
+	REQUIRE(game.observePlayer(-1)); // the caster's all-vision key
+	CHECK(game.observedPlayer() == -2);
+	CHECK(game.frame() == held);               // the queued frames did not run
+	CHECK(game.blockingWaits() == waits);      // and nothing waited for the worker
+	CHECK(game.logicWaitSites().empty());
+	CHECK_FALSE(game.logicIdle());             // the frame is still queued
+	game.endClientWindow();
+	game.setLogicThread(false);
+}
+
+// lane UBERJOIN-1: a START's game runs the profile its identity names (an Uber client's online game is prepared as Uber, never as the default)
+TEST_CASE("uberjoin1: OnlineStart sets the game's simulation profile from the identity: Uber for \"profile uber\", Faithful otherwise, for a player's START and a spectator's")
+{
+	OnlineStart::Limits limits;
+	limits.playerTemplateCount = 20;
+	limits.colorCount = 10;
+	for (bool uber : { false, true })
+	{
+		const ProfileIdentity profile = ProfileIdentity::fromText(std::string("openbfme-profile 1\nprofile ") + (uber ? "uber" : "enhanced") + "\ntest\n");
+		CHECK(profile.simulationProfile() == (uber ? SimulationProfile::Uber : SimulationProfile::Faithful));
+		auto json = [&](const std::string &kind, const std::vector<std::uint8_t> &t, const std::string &extra) {
+			return std::string("{\"v\":1,\"kind\":\"") + kind + "\",\"game\":\"00aa00bb00cc00dd\"" + extra + ",\"relay\":\"10.0.0.1:7350\",\"ticket\":\""
+				+ RelayProtocol::base64UrlEncode(t.data(), t.size()) + "\",\"runAhead\":2,\"crcInterval\":100,\"profile\":\"" + profile.digest
+				+ "\",\"setup\":{\"map\":\"maps/x/x.map\",\"seed\":5,\"startingCash\":1000,\"superweaponRestriction\":0,\"rules\":null,\"legendaryHeroes\":1,"
+				  "\"slots\":[{\"state\":\"player\",\"name\":\"A\",\"faction\":1,\"color\":0,\"startPos\":0,\"team\":-1},"
+				  "{\"state\":\"player\",\"name\":\"B\",\"faction\":2,\"color\":1,\"startPos\":1,\"team\":-1}]}}";
+		};
+		std::string error;
+		LobbyStart spectate;
+		REQUIRE_MESSAGE(OnlineStart::parse(json("openbfme-spectate", bytesOf(ticket(3, 0x03, true, 60)), ",\"spectator\":3,\"delay\":60"), profile, limits, spectate,
+						&error, OnlineStart::Kind::Spectate), error);
+		CHECK(spectate.game.game.simulationProfile == (uber ? SimulationProfile::Uber : SimulationProfile::Faithful));
+		LobbyStart player;
+		REQUIRE_MESSAGE(OnlineStart::parse(json("openbfme-start", bytesOf(ticket(1, 0x03, false, 0)), ",\"slot\":1"), profile, limits, player, &error), error);
+		CHECK(player.game.game.simulationProfile == (uber ? SimulationProfile::Uber : SimulationProfile::Faithful));
+		CHECK(player.profile == profile);
+	}
 }

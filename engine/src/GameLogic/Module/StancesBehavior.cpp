@@ -2,6 +2,7 @@
 // StancesBehavior and the StanceTemplate store (lane INTEG-1). See GameLogic/Module/StancesBehavior.h for the target facts and what is not ported.
 
 #include "GameLogic/Module/StancesBehavior.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/INI.h"
 #include "Common/INIException.h"
@@ -316,4 +317,12 @@ void StancesBehavior::registerHandlers(GameLogicDispatch &d)
 		}
 		return true;
 	});
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190: the stance) ---------------------------------------------------------------------------------
+void StancesBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	SnapshotXfer::enumIn(x, m_stance, STANCE_UNINITIALIZED, STANCE_COUNT - 1, "a stance");
 }

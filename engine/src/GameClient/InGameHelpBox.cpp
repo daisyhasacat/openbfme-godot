@@ -167,8 +167,24 @@ void InGameHelpBox::beginFrame()
 	m_marked = false;
 }
 
+// lane OWNERFIX-1: RW 0x8076CD (InGameHelpBox.h)
+void InGameHelpBox::dropProvider()
+{
+	m_marked = false;
+	m_haveProvider = false;
+	m_shownForProvider = false;
+	if (m_loaded && isShown())
+	{
+		hideSoon(); // RW 0x6D473D -> the help box's vslot 1 (RW 0x92E229): a shown help counts down to its hide
+	}
+}
+
 void InGameHelpBox::showHelp(const Provider &p, std::uint32_t nowMs, int tooltipDelayMs, const std::function<std::shared_ptr<CommandButtonHelp>()> &compose)
 {
+	if (m_endGameTimer >= 0) // RW 0x80786B: ScriptEngine + 0x1A204, including the expired timer (zero).
+	{
+		return;
+	}
 	if (!m_hoverStartSet) // RW 0x807886: the static's first use
 	{
 		m_hoverStartSet = true;
@@ -186,6 +202,10 @@ void InGameHelpBox::showHelp(const Provider &p, std::uint32_t nowMs, int tooltip
 			return;
 		}
 		m_shownForProvider = true;
+		if (m_disconnectMenuPresent) // RW 0x807982: consumed even though composition is suppressed.
+		{
+			return;
+		}
 		std::shared_ptr<CommandButtonHelp> help = compose(); // RW 0x807676: the provider's vslot 3, then the Palantir's help box
 		if (help && m_loaded)
 		{
@@ -194,9 +214,14 @@ void InGameHelpBox::showHelp(const Provider &p, std::uint32_t nowMs, int tooltip
 		}
 		return;
 	}
-	if (m_loaded && isShown())
+	if (!m_loaded || isShown())
 	{
-		hideSoon(); // RW 0x8078F9 .. 0x8079AA: another provider while the box shows (RW 0xA0CB16 not ported)
+		m_haveProvider = false; // RW 0xA0CB16: release the old provider before requesting the hide.
+		m_provider = Provider();
+		if (m_loaded)
+		{
+			hideSoon();
+		}
 		return;
 	}
 	m_provider = p; // RW 0x807914 .. 0x80795B
@@ -212,7 +237,8 @@ std::vector<std::string> InGameHelpBox::acceptanceStops()
 		"[S-2703] help box (HUD-6): ported the help box movie clip (RW 0x92E462 / 0x92E2AC / 0x92E570 / 0x92E229), the control bar's provider (RW 0x807848, "
 		"ControlBar::update RW 0x71FC08); INFERENCE: the hovered Palantir command button is the Apt player's current button inside a content the control bar "
 		"filled (the content updater's rollover route, RW 0xC8C3D4 vslot 2, was not traced to its caller), the radial bubbles' hover is the ring's hit test, "
-		"the Apt player's y scale is the stage height over the window height; not ported: showHelp's guards (InGameUI vslot 0x1BC / 0x17C, RW 0xDE3BAC + "
-		"0x1A204, RW 0xDEA328), RW 0xA0CB16 (lane HOVER-1 ports the hero bar's and the spell book's providers, S-4612)"
+		"the Apt player's y scale is the stage height over the window height; ported (lane ROTWK-C): showHelp's end-game timer guard (RW 0xDE3BAC + "
+		"0x1A204), the provider release RW 0xA0CB16 and the late TheDisconnectMenu guard (RW 0xDEA328); not ported: showHelp's guards InGameUI vslot 0x1BC / "
+		"0x17C (lane HOVER-1 ports the hero bar's and the spell book's providers, S-4612)"
 	};
 }

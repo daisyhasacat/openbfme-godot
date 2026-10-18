@@ -7,6 +7,7 @@
 #endif
 
 #include "GameLogic/Module/SpecialAbilityModules.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/GiantBirdAIUpdate.h"
 #include "GameLogic/Module/EmotionModules.h"
 #include "GameLogic/Object/PartitionManager.h"
@@ -275,11 +276,17 @@ const FieldParse kLevelGrant[] = { // RW 0xC73550
 	{ "Experience", INI::parseInt, nullptr, LG_OFF(m_experience) },
 	{ "RadiusEffect", INI::parseReal, nullptr, LG_OFF(m_radiusEffect) },
 	{ "LevelFX", parseFX, nullptr, LG_OFF(m_levelFX) },
-	{ "UseKindOf", INI::parseBool, nullptr, LG_OFF(m_useKindOf) },
-	{ "AffectsKindOf", parseLegacyUseKindOf, nullptr, LG_OFF(m_acceptanceFilter) },
 	{ "AcceptanceFilter", parseFilter, nullptr, LG_OFF(m_acceptanceFilter) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+// community PR #36: BFME1's LevelGrantSpecialPower rows (UseKindOf, AffectsKindOf as an ANY + KindOf filter) (BFME1 data only, Common/BfmeGame.h); RotWK's table stays the binary's
+const FieldParse kBfme1LevelGrant[] = {
+	{ "UseKindOf", INI::parseBool, nullptr, LG_OFF(m_useKindOf) },
+	{ "AffectsKindOf", parseLegacyUseKindOf, nullptr, LG_OFF(m_acceptanceFilter) },
+	{ nullptr, nullptr, nullptr, 0 },
+};
+const Bfme1FieldRowsRegistration kBfme1LevelGrantRegistration(kLevelGrant, kBfme1LevelGrant);
+
 #undef LG_OFF
 
 #define MC_OFF(m) (int)offsetof(ModelConditionSpecialAbilityUpdateModuleData, m)
@@ -2240,4 +2247,105 @@ std::vector<std::string> SpecialAbilityModules::hero2StopLines()
 		lines.push_back(l);
 	}
 	return lines;
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------
+// Retail's SpecialAbilityUpdate::xfer is not identified by name in SAVES-RETAIL.md's inventory; the port's fields (RW + 0x24 .. + 0x84 as the header lists
+// them) follow in declaration order, then the counters the crc hashes.
+void SpecialAbilityUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferInt(&m_triggerCount);
+	x.xferUnsignedInt(&m_packFramesLeft);
+	x.xferUnsignedInt(&m_effectExpiry);
+	SnapshotXfer::enumIn(x, m_packingState, 0, 4, "a special ability's packing state"); // none, packing, unpacking, packed, unpacked
+	x.xferUnsignedInt(&m_prepFrames);
+	x.xferObjectID(&m_targetID);
+	SnapshotXfer::coord3D(x, m_targetPos);
+	SnapshotXfer::coord3D(x, m_lastTargetPos);
+	x.xferInt(&m_extra);
+	x.xferInt(&m_persistentLeft);
+	x.xferUnsignedInt(&m_options);
+	x.xferReal(&m_captureAccumulator);
+	x.xferBool(&m_active);
+	x.xferUnsignedInt(&m_approachCounter);
+	x.xferBool(&m_keepActive);
+	x.xferBool(&m_noTarget);
+	x.xferBool(&m_facingIssued);
+	x.xferBool(&m_facingDone);
+	x.xferBool(&m_withinRange);
+	x.xferBool(&m_chargeSpeed);
+	x.xferBool(&m_chargeMove);
+	x.xferUnsignedInt(&m_customAnimFrame);
+	x.xferUnsignedInt(&m_abilitiesTriggered);
+	x.xferUnsignedInt(&m_captures);
+	SnapshotXfer::u64(x, m_unported);
+}
+
+// the special weapon is made on first use (specialWeapon): a load makes it when the snapshot's was made, then loads its state
+void WeaponFireSpecialAbilityUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	bool made = !x.isLoading() && m_weaponMade;
+	x.xferBool(&made);
+	if (x.isLoading() && made != m_weaponMade)
+	{
+		m_weapon.reset();
+		m_weaponMade = false;
+		if (made)
+		{
+			specialWeapon();
+		}
+	}
+	bool has = !x.isLoading() && m_weapon != nullptr;
+	x.xferBool(&has);
+	if (has != (m_weapon != nullptr))
+	{
+		throw XferException("the snapshot's special ability weapon of object " + std::to_string(getObject()->getID()) + (has ? " exists" : " does not exist")
+			+ ", this one's " + (m_weapon ? "does" : "does not"));
+	}
+	if (m_weapon)
+	{
+		m_weapon->xfer(x);
+	}
+	x.xferUnsignedInt(&m_shots);
+}
+
+void ToggleMountedSpecialAbilityUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	x.xferBool(&m_replaceAfterPacking);
+	x.xferUnsignedInt(&m_toggles);
+	x.xferObjectID(&m_replacement);
+}
+
+void HeroModeSpecialAbilityUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+}
+
+void LevelGrantSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	x.xferUnsignedInt(&m_granted);
+}
+
+void ModelConditionSpecialAbilityUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	x.xferUnsignedInt(&m_emotions);
+}
+
+void SpecialDisguiseUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialAbilityUpdate::xfer(x);
+	x.xferReal(&m_opacity);
+	x.xferUnsignedInt(&m_disguises);
 }

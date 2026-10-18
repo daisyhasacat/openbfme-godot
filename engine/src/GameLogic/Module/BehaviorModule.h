@@ -184,6 +184,15 @@ public:
 class UpgradeMux;
 class ProjectileUpdateInterface;
 
+// RW 0x794F69: behavior slot 0x2C returns this interface; its first slot
+// returns SpawnUnitBehavior's UnitName (RW 0x8BC992).
+class SpawnUnitBehaviorInterface
+{
+public:
+	virtual ~SpawnUnitBehaviorInterface() = default;
+	virtual const std::string &getUnitName() const = 0;
+};
+
 class BehaviorModule : public ObjectModule
 {
 public:
@@ -201,6 +210,7 @@ public:
 	virtual DieModuleInterface *getDie() { return nullptr; }
 	virtual SpecialPowerModuleInterface *getSpecialPower() { return nullptr; }
 	virtual UpdateModuleInterface *getUpdate() { return nullptr; }
+	virtual SpawnUnitBehaviorInterface *getSpawnUnitBehaviorInterface() { return nullptr; }
 	// RW slot 0x50 / 4 = 20 of the +0xC interface: the exit interface of a production exit module (Object::getObjectExitInterface, RW 0x68BB14)
 	virtual ExitInterface *getExitInterface() { return nullptr; }
 	// the production queue of a ProductionUpdate (RW 0x68C327 asks for it)
@@ -215,4 +225,9 @@ public:
 	virtual UpgradeMux *getUpgrade() { return nullptr; }
 	// ZH BehaviorModuleInterface::getProjectileUpdateInterface (lane PROJ-2: the client snapshot asks the projectile's look-ahead point and its launch)
 	virtual ProjectileUpdateInterface *getProjectileUpdateInterface() { return nullptr; }
+
+protected:
+	// lane SAVE-4b: BehaviorModule::xfer, version (1, 1) (RW 0x8CD4AA, the base xfer every UpdateModule / UpgradeModule xfer calls; inference: it is
+	// BehaviorModule's and calls ObjectModule::xfer), then ObjectModule::xfer
+	void xferBehaviorModule(Xfer &x);
 };

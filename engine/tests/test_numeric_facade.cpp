@@ -6,6 +6,7 @@
 #include "doctest.h"
 
 #include "Common/NumericState.h"
+#include "Common/ArithmeticNaN.h"
 #include "GameLogic/SimMath.h"
 
 #include <cfloat>
@@ -35,6 +36,54 @@ std::uint64_t bitsOf(double d)
 }
 
 using namespace NumericState;
+
+TEST_CASE("facade invalid arithmetic: generated NaNs have the x86 indefinite bits")
+{
+	const float inf = std::numeric_limits<float>::infinity();
+	struct Case { float a, b; float (*f)(float, float); double (*d)(double, double); };
+	const Case cases[] = {
+		{ inf, -inf, sseAdd, sseAddD }, { inf, inf, sseSub, sseSubD },
+		{ 0.0f, inf, sseMul, sseMulD }, { inf, 0.0f, sseMul, sseMulD },
+		{ 0.0f, 0.0f, sseDiv, sseDivD }, { inf, inf, sseDiv, sseDivD }
+	};
+	for (const auto &c : cases)
+	{
+		CHECK(bitsOf(c.f(c.a, c.b)) == 0xFFC00000u);
+		CHECK(bitsOf(c.d(c.a, c.b)) == 0xFFF8000000000000ull);
+	}
+	CHECK(bitsOf(sseMul(-0.0f, 2.0f)) == 0x80000000u);
+	CHECK(bitsOf(sseMulD(-0.0, 2.0)) == 0x8000000000000000ull);
+	CHECK(bitsOf(sseDiv(1.0f, 0.0f)) == 0x7F800000u);
+	CHECK(bitsOf(sseDivD(1.0, 0.0)) == 0x7FF0000000000000ull);
+}
+
+TEST_CASE("facade invalid arithmetic: operand NaNs are not canonicalised and x86 results are unchanged")
+{
+	const std::uint64_t patterns[] = { 0x7FF8000000000000ull, 0xFFF8000000000000ull, 0x7FF8000000000123ull, 0xFFF8000000000123ull,
+		0x7FF0000000000001ull };
+	for (auto bits : patterns)
+	{
+		double operand;
+		std::memcpy(&operand, &bits, sizeof operand);
+		// A signalling operand is quietened by arithmetic, not by the normaliser.
+		const auto quietBits = bits | 0x0008000000000000ull;
+		double result;
+		std::memcpy(&result, &quietBits, sizeof result);
+		CHECK(bitsOf(ArithmeticNaN::generated(operand, 1.0, result)) == quietBits);
+		CHECK(bitsOf(ArithmeticNaN::generated(1.0, operand, result)) == quietBits);
+		CHECK(bitsOf(sseAddD(operand, 1.0)) == quietBits);
+	}
+#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
+	volatile double zero = 0.0;
+	const double native = zero / zero;
+	CHECK(bitsOf(native) == 0xFFF8000000000000ull);
+	CHECK(bitsOf(ArithmeticNaN::generated(double(zero), double(zero), native)) == bitsOf(native));
+	volatile float zeroF = 0.0f;
+	const float nativeF = zeroF / zeroF;
+	CHECK(bitsOf(nativeF) == 0xFFC00000u);
+	CHECK(bitsOf(ArithmeticNaN::generated(float(zeroF), float(zeroF), nativeF)) == bitsOf(nativeF));
+#endif
+}
 
 TEST_CASE("facade _ftol2: truncation to signed 64 bit, callers use the low word (the frame 0xC0000000 vector)")
 {

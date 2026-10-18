@@ -13,10 +13,16 @@
 namespace
 {
 constexpr std::uint16_t kMagic = 0x4E4C; // "LN"
-constexpr std::uint8_t kVersion = 2; // 2 (lane HERO-2): the GameInfo slots' Create-a-Hero records, OPT_SLOT_CREATE_A_HERO
+constexpr std::uint8_t kVersion = LANAPI::kProtocolVersion;
 constexpr std::uint32_t kBroadcast = 0xFFFFFFFFu;
 constexpr std::uint32_t kLoopback = 0x7F000001u;
 constexpr std::uint64_t kStartGiveUpMs = 10000; // OpenBFME: a host stops resending GAME_START after this (reported)
+
+NetAddress discoveryAddress(const NetAddress &previous, const NetAddress &incoming)
+{
+	// Keep a LAN route once discovered: loopback cannot be shared with remote peers at game start.
+	return (previous.ip >> 24) == 127 && (incoming.ip >> 24) != 127 ? incoming : previous;
+}
 
 // GAME_OPTIONS sub-kinds (OpenBFME): the host's whole setup, a player's request for its own slot, a player's keep-alive (ZH's "HELLO")
 enum : std::uint8_t
@@ -51,7 +57,7 @@ std::string toNarrow(const std::u16string &s)
 }
 } // namespace
 
-void LANAPI::applySlotRequest(SkirmishGameInfo &info, int slot, int playerTemplate, int color, int team, int startPos)
+void LANAPI::applySlotRequest(SkirmishGameInfo &info, int slot, int playerTemplate, int color, int team, int startPos, int handicap)
 {
 	// ZH LanGameOptionsMenu handle*Selection as the host applies them: a colour or start position another slot holds is refused (random -1 never is)
 	SkirmishGameSlot &s = info.slots[slot];
@@ -71,9 +77,13 @@ void LANAPI::applySlotRequest(SkirmishGameInfo &info, int slot, int playerTempla
 	{
 		s.startPos = startPos;
 	}
+	if (handicap != kKeep)
+	{
+		s.handicap = handicap; // lane OWNERFIX-2: the player's own GameSlot + 0x20 (RotWK's "Handicap=%d" of the slot's option string, RW 0x8476E6)
+	}
 }
 
-bool LANAPI::slotRequestValid(int playerTemplate, int color, int team, int startPos, std::string *why) const
+bool LANAPI::slotRequestValid(int playerTemplate, int color, int team, int startPos, int handicap, std::string *why) const
 {
 	auto check = [&](const char *name, int v, int count) {
 		if (v == kKeep || (v >= -1 && v < count))
@@ -86,8 +96,21 @@ bool LANAPI::slotRequestValid(int playerTemplate, int color, int team, int start
 		}
 		return false;
 	};
-	return check("faction", playerTemplate, m_options.playerTemplateCount) && check("colour", color, m_options.colorCount) && check("team", team, MAX_SLOTS / 2)
-		&& check("start position", startPos, MAX_SLOTS);
+	if (!(check("faction", playerTemplate, m_options.playerTemplateCount) && check("colour", color, m_options.colorCount) && check("team", team, MAX_SLOTS / 2)
+			&& check("start position", startPos, MAX_SLOTS)))
+	{
+		return false;
+	}
+	// lane OWNERFIX-2: the handicap's closed set is the combo's item data (0, -5 .. -95, SkirmishGameSlot::handicapValid)
+	if (handicap != kKeep && !SkirmishGameSlot::handicapValid(handicap))
+	{
+		if (why)
+		{
+			*why = "handicap " + std::to_string(handicap) + " (0, -5 .. -95)";
+		}
+		return false;
+	}
+	return true;
 }
 
 bool LANAPI::gameInfoValid(const SkirmishGameInfo &info, std::string *why) const
@@ -107,7 +130,7 @@ bool LANAPI::gameInfoValid(const SkirmishGameInfo &info, std::string *why) const
 	{
 		const SkirmishGameSlot &s = info.slots[i];
 		std::string w;
-		if (!slotRequestValid(s.playerTemplate, s.color, s.teamNumber, s.startPos, &w) || s.playerTemplate == kKeep || s.color == kKeep || s.teamNumber == kKeep
+		if (!slotRequestValid(s.playerTemplate, s.color, s.teamNumber, s.startPos, s.handicap, &w) || s.playerTemplate == kKeep || s.color == kKeep || s.teamNumber == kKeep
 			|| s.startPos == kKeep)
 		{
 			if (why)
@@ -349,6 +372,7 @@ void LANAPI::requestGameCreate(const SkirmishGameInfo &game)
 		return;
 	}
 	m_current = LANGame();
+	resetPlatforms();
 	m_current.name = m_name;
 	m_current.info = game;
 	m_current.info.simulationProfile = m_profile.simulationProfile(); // lane UBER-1: the host's game runs the host's profile (its identity's)
@@ -361,6 +385,7 @@ void LANAPI::requestGameCreate(const SkirmishGameInfo &game)
 	m_host = true;
 	m_localSlot = 0;
 	m_started = false;
+	syncPlatforms(); // lane PLATFORMICON-1
 	note("hosting game " + toNarrow(m_name));
 	sendToAll(gameAnnounce());
 	event(Event{ Event::GameCreate, RET_OK });
@@ -455,7 +480,7 @@ void LANAPI::requestChat(const std::u16string &text, bool system)
 	event(Event{ Event::Chat, RET_OK, m_localSlot, system, m_name, text });
 }
 
-void LANAPI::requestSlotOptions(int playerTemplate, int color, int team, int startPos)
+void LANAPI::requestSlotOptions(int playerTemplate, int color, int team, int startPos, int handicap)
 {
 	if (!m_inGame || m_localSlot < 0)
 	{
@@ -464,7 +489,7 @@ void LANAPI::requestSlotOptions(int playerTemplate, int color, int team, int sta
 	if (m_host)
 	{
 		SkirmishGameInfo info = m_current.info;
-		applySlotRequest(info, m_localSlot, playerTemplate, color, team, startPos);
+		applySlotRequest(info, m_localSlot, playerTemplate, color, team, startPos, handicap);
 		hostSetOptions(info);
 		return;
 	}
@@ -475,6 +500,7 @@ void LANAPI::requestSlotOptions(int playerTemplate, int color, int team, int sta
 	w.i32(color);
 	w.i32(team);
 	w.i32(startPos);
+	w.i32(handicap); // lane OWNERFIX-2 (protocol 3)
 	std::vector<std::uint8_t> b = w.take();
 	h.insert(h.end(), b.begin(), b.end());
 	sendTo(m_current.lobby[0], h);
@@ -604,6 +630,7 @@ bool LANAPI::hostSetOptions(const SkirmishGameInfo &info)
 	next.clearCreateAHeroesIfNotAllowed();
 	const bool changed = !(next == m_current.info);
 	m_current.info = next;
+	syncPlatforms(); // lane PLATFORMICON-1: the host's setup carries no platform
 	if (changed)
 	{
 		m_current.accepted.fill(false); // ZH: a change of the options unaccepts everybody
@@ -689,8 +716,71 @@ void LANAPI::leaveToLobby()
 	m_host = false;
 	m_localSlot = -1;
 	m_current = LANGame();
+	resetPlatforms();
 	m_pending = ACT_NONE;
 	m_starting = false;
+}
+
+void LANAPI::resetPlatforms()
+{
+	m_peerPlatform.fill(PlatformKind::None);
+	m_peerPlatformAddr.fill(NetAddress());
+	m_platformSentTo.fill(NetAddress());
+}
+
+void LANAPI::sendPlatform(bool all)
+{
+	// lane PLATFORMICON-1: one PLATFORM_INFO byte to every other human of the game at an address it was not sent at yet (or all of them: the resend)
+	if (!m_inGame || m_options.platform == PlatformKind::None)
+	{
+		return;
+	}
+	std::vector<std::uint8_t> h = header(LANMessageType::PLATFORM_INFO);
+	h.push_back((std::uint8_t)m_options.platform);
+	for (int s = 0; s < MAX_SLOTS; ++s)
+	{
+		const NetAddress &to = m_current.lobby[(size_t)s];
+		if (s != m_localSlot && m_current.info.slots[s].isHuman() && to.port != 0 && (all || !(m_platformSentTo[(size_t)s] == to)))
+		{
+			sendTo(to, h);
+			m_platformSentTo[(size_t)s] = to;
+		}
+	}
+}
+
+void LANAPI::syncPlatforms()
+{
+	if (!m_inGame)
+	{
+		return;
+	}
+	bool changed = false;
+	for (int s = 0; s < MAX_SLOTS; ++s)
+	{
+		SkirmishGameSlot &slot = m_current.info.slots[s];
+		PlatformKind kind = PlatformKind::None;
+		if (!slot.isHuman())
+		{
+			// an occupant left (or never was): what it told is forgotten with it, so the same endpoint joining again without telling (an older build)
+			// shows no icon instead of the last occupant's; and our own is sent to the next occupant of the slot again
+			m_peerPlatform[(size_t)s] = PlatformKind::None;
+			m_peerPlatformAddr[(size_t)s] = NetAddress();
+			m_platformSentTo[(size_t)s] = NetAddress();
+		}
+		else
+		{
+			kind = s == m_localSlot ? m_options.platform : (m_peerPlatformAddr[(size_t)s] == m_current.lobby[(size_t)s] ? m_peerPlatform[(size_t)s] : PlatformKind::None);
+		}
+		if (slot.platform != kind)
+		{
+			slot.platform = kind;
+			changed = true;
+		}
+	}
+	if (changed)
+	{
+		event(Event{ Event::GameOptions }); // the screens refresh their rows
+	}
 }
 
 int LANAPI::slotOf(const NetAddress &lobbyAddress) const
@@ -715,6 +805,11 @@ std::vector<LANAPI::Event> LANAPI::takeEvents()
 // ---- update -----------------------------------------------------------------------------------------------------------------------
 void LANAPI::update(std::uint64_t now)
 {
+	struct Sync // lane PLATFORMICON-1: the platforms told are copied into the slots after whatever this tick changed
+	{
+		LANAPI &self;
+		~Sync() { self.syncPlatforms(); }
+	} sync{ *this };
 	m_now = now;
 	if (!m_lobbySocket)
 	{
@@ -727,7 +822,9 @@ void LANAPI::update(std::uint64_t now)
 		handle(from, bytes, now);
 	}
 	// ZH: the periodic announcements
-	if (m_lastResend == 0 || now - m_lastResend >= m_options.resendMs)
+	const bool resendDue = m_lastResend == 0 || now - m_lastResend >= m_options.resendMs;
+	sendPlatform(resendDue); // lane PLATFORMICON-1
+	if (resendDue)
 	{
 		m_lastResend = now;
 		if (!m_inGame)
@@ -846,14 +943,25 @@ void LANAPI::update(std::uint64_t now)
 
 void LANAPI::handle(const NetAddress &from, const std::vector<std::uint8_t> &bytes, std::uint64_t now)
 {
+	// lane PLATFORMICON-1: whatever the message changed in the game's slots, the platforms told are copied into them after it
+	struct Sync
+	{
+		LANAPI &self;
+		~Sync()
+		{
+			self.sendPlatform(false);
+			self.syncPlatforms();
+		}
+	} sync{ *this };
 	NetByteReader r(bytes);
 	if (r.u16() != kMagic || r.failed())
 	{
 		return; // not a lobby message (the game socket's datagrams never come here)
 	}
-	if (r.u8() != kVersion)
+	const std::uint8_t version = r.u8();
+	if (version != kVersion)
 	{
-		m_errors.push_back("a LAN lobby message of another version from " + from.text());
+		m_errors.push_back("a LAN lobby message of version " + std::to_string(version) + " (this build speaks " + std::to_string(kVersion) + ") from " + from.text());
 		return;
 	}
 	const std::uint8_t type = r.u8();
@@ -881,8 +989,10 @@ void LANAPI::handle(const NetAddress &from, const std::vector<std::uint8_t> &byt
 	auto heardPlayer = [&]() {
 		for (LobbyPlayer &p : m_lobbyPlayers)
 		{
-			if (p.address == from)
+			if (p.address == from || (p.nonce == nonce && p.address.port == from.port))
 			{
+				p.address = p.nonce == nonce ? discoveryAddress(p.address, from) : from;
+				p.nonce = nonce;
 				p.lastHeard = now;
 				if (p.name != sender)
 				{
@@ -892,7 +1002,7 @@ void LANAPI::handle(const NetAddress &from, const std::vector<std::uint8_t> &byt
 				return;
 			}
 		}
-		m_lobbyPlayers.push_back(LobbyPlayer{ sender, from, now });
+		m_lobbyPlayers.push_back(LobbyPlayer{ sender, from, now, nonce });
 		event(Event{ Event::PlayerList });
 	};
 	auto heardInGame = [&]() {
@@ -942,7 +1052,9 @@ void LANAPI::handle(const NetAddress &from, const std::vector<std::uint8_t> &byt
 		}
 		heardInGame();
 		const size_t before = m_lobbyPlayers.size();
-		m_lobbyPlayers.erase(std::remove_if(m_lobbyPlayers.begin(), m_lobbyPlayers.end(), [&](const LobbyPlayer &p) { return p.address == from; }),
+		m_lobbyPlayers.erase(std::remove_if(m_lobbyPlayers.begin(), m_lobbyPlayers.end(), [&](const LobbyPlayer &p) {
+			return p.address == from || (p.nonce == nonce && p.address.port == from.port);
+		}),
 			m_lobbyPlayers.end());
 		if (before != m_lobbyPlayers.size())
 		{
@@ -951,7 +1063,7 @@ void LANAPI::handle(const NetAddress &from, const std::vector<std::uint8_t> &byt
 		return;
 	}
 	case LANMessageType::GAME_ANNOUNCE:
-		if (handleGameAnnounce(r, sender, from, now))
+		if (handleGameAnnounce(r, nonce, from, now))
 		{
 			heardInGame();
 		}
@@ -978,6 +1090,7 @@ void LANAPI::handle(const NetAddress &from, const std::vector<std::uint8_t> &byt
 		m_host = false;
 		m_localSlot = slot;
 		m_current = LANGame();
+		resetPlatforms();
 		m_current.host = from;
 		m_current.lobby[0] = from;
 		m_current.lastHeardHost = now;
@@ -1110,31 +1223,59 @@ void LANAPI::handle(const NetAddress &from, const std::vector<std::uint8_t> &byt
 		}
 		return;
 	}
+	case LANMessageType::PLATFORM_INFO:
+	{
+		// lane PLATFORMICON-1: one byte, PlatformKind 0 .. 3, from a human of our game. A message that is cut or has bytes after it, or a value outside
+		// the closed set, changes nothing and is named in errors()
+		const std::uint8_t code = r.u8();
+		if (!complete("platform message"))
+		{
+			return;
+		}
+		PlatformKind kind = PlatformKind::None;
+		if (!platformFromByte(code, kind))
+		{
+			m_errors.push_back("a platform message from " + from.text() + " with the platform " + std::to_string(code) + " (0 .. 3 are known): ignored");
+			return;
+		}
+		heardInGame();
+		const int s = slotOf(from);
+		if (m_inGame && s >= 0 && s != m_localSlot)
+		{
+			m_peerPlatform[(size_t)s] = kind;
+			m_peerPlatformAddr[(size_t)s] = from;
+		}
+		return;
+	}
 	default:
 		note("unhandled LAN message type " + std::to_string(type) + " from " + from.text());
 		return;
 	}
 }
 
-bool LANAPI::handleGameAnnounce(NetByteReader &r, const std::u16string &sender, const NetAddress &from, std::uint64_t now)
+bool LANAPI::handleGameAnnounce(NetByteReader &r, std::uint32_t nonce, const NetAddress &from, std::uint64_t now)
 {
 	LANGame g;
 	g.name = r.wstr();
 	g.inProgress = r.flag();
 	g.profileDigest = r.str();
 	std::string error;
-	if (!NetPacket::readGameInfo(r, g.info, &error) || r.failed() || !r.atEnd())
+	if (!NetPacket::readGameInfo(r, g.info, &error, true) || r.failed() || !r.atEnd()) // lane UBERJOIN-1: an announcement without the profile is Faithful
 	{
 		m_errors.push_back("a malformed game announcement from " + from.text() + ": " + (error.empty() ? std::string("truncated or trailing bytes") : error));
 		return false;
 	}
-	(void)sender;
 	g.host = from;
+	g.hostNonce = nonce;
 	g.lastHeardHost = now;
 	for (LANGame &e : m_games)
 	{
-		if (e.host == from)
+		if (e.host == from || (e.hostNonce == nonce && e.host.port == from.port))
 		{
+			if (e.hostNonce == nonce)
+			{
+				g.host = discoveryAddress(e.host, from);
+			}
 			e = g;
 			event(Event{ Event::GameList });
 			return true;
@@ -1303,13 +1444,14 @@ bool LANAPI::handleSlotRequest(NetByteReader &r, const NetAddress &from)
 	const int color = r.i32();
 	const int team = r.i32();
 	const int startPos = r.i32();
+	const int handicap = r.i32(); // lane OWNERFIX-2 (protocol 3)
 	if (r.failed() || !r.atEnd())
 	{
 		m_errors.push_back("a malformed slot request from " + from.text());
 		return false;
 	}
 	std::string why;
-	if (!slotRequestValid(playerTemplate, color, team, startPos, &why))
+	if (!slotRequestValid(playerTemplate, color, team, startPos, handicap, &why))
 	{
 		m_errors.push_back("a slot request from " + from.text() + " with the " + why + ": refused");
 		return false;
@@ -1320,7 +1462,7 @@ bool LANAPI::handleSlotRequest(NetByteReader &r, const NetAddress &from)
 		return true;
 	}
 	SkirmishGameInfo info = m_current.info;
-	applySlotRequest(info, s, playerTemplate, color, team, startPos);
+	applySlotRequest(info, s, playerTemplate, color, team, startPos, handicap);
 	hostSetOptions(info);
 	return true;
 }
@@ -1367,6 +1509,10 @@ bool LANAPI::handleGameStart(NetByteReader &r, const NetAddress &from)
 	if (s.addresses[0].ip == 0)
 	{
 		s.addresses[0].ip = from.ip; // the host's game socket is where we hear the host from
+	}
+	for (int i = 0; i < MAX_SLOTS; ++i)
+	{
+		s.game.game.slots[i].platform = m_current.info.slots[i].isHuman() ? m_current.info.slots[i].platform : PlatformKind::None; // lane PLATFORMICON-1: the start carries none
 	}
 	m_start = s;
 	m_started = true;

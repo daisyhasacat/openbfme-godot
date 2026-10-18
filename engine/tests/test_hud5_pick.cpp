@@ -99,6 +99,63 @@ const CommandButton *buttonWith(SharedWorld &s, std::uint32_t option)
 }
 } // namespace
 
+TEST_CASE("rotwk-c pick retail: script targetable replaces collision type and context masks pick it")
+{
+	if (!haveWorld("rotwk-c script targetable"))
+	{
+		return;
+	}
+	Rig r(shared());
+	const HudContext &ctx = r.input->context();
+	const Coord3D c = r.freeSpot(2400, 1800, 300.0f);
+	r.lookAt({ c.x, c.y, r.logic().getGroundHeight(c.x, c.y) }, 300.0f, 40.0f);
+	Object *fighter = r.make("GondorFighter", c.x, c.y);
+	REQUIRE(fighter);
+	r.frame(1);
+	const ICoord2D px = r.screenOf({ c.x, c.y, r.logic().getGroundHeight(c.x, c.y) + 4.0f });
+	REQUIRE(HudObjects::pickForDoubleClick(ctx, px) == fighter);
+	fighter->setScriptStatus(0x10, true);
+	CHECK(HudObjects::collisionTypeOf(ctx, *fighter) == HudObjects::PICK_TYPE_SCRIPT_TARGETABLE);
+	CHECK(HudObjects::pickTypesForContext(ctx, false) == 0x44u);
+	CHECK(HudObjects::pickTypesForContext(ctx, true) == 0x64u);
+	CHECK(HudObjects::pickObject(ctx, px) == fighter);
+	CHECK(HudObjects::pickForHover(ctx, px) == fighter);
+	CHECK(HudObjects::pickForSelection(ctx, px) == fighter);
+	CHECK(HudObjects::pickForDoubleClick(ctx, px) != fighter);
+	CommandButton command;
+	CHECK(HudObjects::pickForGuiCommand(ctx, px, command) != fighter);
+	fighter->friend_setEffectivelyDead(true);
+	CHECK(HudObjects::collisionTypeOf(ctx, *fighter) == 0u); // death clearing runs after SCRIPT_TARGETABLE
+	fighter->friend_setEffectivelyDead(false);
+	fighter->setScriptStatus(0x10, false);
+	CHECK(HudObjects::collisionTypeOf(ctx, *fighter) == (HudObjects::PICK_TYPE_SELECTABLE | HudObjects::PICK_TYPE_OWN));
+}
+
+TEST_CASE("rotwk-c pick retail: KeepSelectableWhenDead preserves a dead structure's collision type")
+{
+	if (!haveWorld("rotwk-c keep selectable collision"))
+	{
+		return;
+	}
+	Rig r(shared());
+	const Coord3D c = r.freeSpot(2400, 1800, 300.0f);
+	Object *structure = r.make("RBHelmsDeepGateDoorBig", c.x, c.y);
+	REQUIRE(structure);
+	const auto *tt = static_cast<const ThingTemplate *>(structure->getTemplate());
+	const FieldValue *keep = tt->getFinalOverride()->findField("KeepSelectableWhenDead");
+	REQUIRE(keep);
+	REQUIRE(std::get<bool>(*keep));
+	REQUIRE(structure->isKindOfName("STRUCTURE"));
+	REQUIRE_FALSE(structure->isKindOfName("BRIDGE"));
+	REQUIRE_FALSE(structure->isKindOfName("BRIDGE_TOWER"));
+	const unsigned type = HudObjects::collisionTypeOf(r.input->context(), *structure);
+	REQUIRE(type != 0u);
+	structure->friend_setEffectivelyDead(true);
+	CHECK(HudObjects::collisionTypeOf(r.input->context(), *structure) == type);
+	structure->setScriptStatus(0x10, true);
+	CHECK(HudObjects::collisionTypeOf(r.input->context(), *structure) == HudObjects::PICK_TYPE_SCRIPT_TARGETABLE);
+}
+
 // the hover is forced (RW 0x83CC13), the selection and the order click are not: a FORCEATTACKABLE object is under the cursor for the hover only. SHRUBBERY and
 // ROCK join the pick types only through a GUI command's options or the selection (RW 0x71083F / 0x71077B), and a GUI command's object target takes RW 0x83D41A's
 TEST_CASE("hud5 pick retail: hover is forced; shrubbery / rock come from the GUI command or the selection; a GUI target picks by its button (real mouse moves)")

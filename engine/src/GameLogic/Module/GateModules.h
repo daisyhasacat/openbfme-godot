@@ -75,6 +75,7 @@ public:
 class GateOpenAndCloseBehavior : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(GateOpenAndCloseBehavior) // lane SAVE-4b
 	enum State
 	{
 		OPENING = 0,
@@ -137,6 +138,7 @@ public:
 class AIGateUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(AIGateUpdate) // lane SAVE-4b
 	AIGateUpdate(Thing *thing, const AIGateUpdateModuleData *data);
 	UpdateSleepTime update() override;
 	void crc(StateHasher &hasher) const override;

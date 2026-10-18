@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0.
 // See GameClient/GUI/Skirmish/IniSkirmishSetupSource.h.
 
+#include "Common/BfmeGame.h"
 #include "GameClient/GUI/Skirmish/IniSkirmishSetupSource.h"
 
 #include <algorithm>
@@ -447,7 +448,7 @@ bool IniSkirmishSetupSource::loadMapCache(ArchiveFileSystem &fs, std::vector<Map
 		return false;
 	}
 	std::string mapError;
-	if (!MapCache::parse(text, out, &mapError))
+	if (!MapCache::parse(text, out, &mapError, isBfme1Data(fs)))
 	{
 		if (error)
 		{

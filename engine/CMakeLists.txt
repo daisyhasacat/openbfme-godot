@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.17)
 
+# Match the macOS GDExtension manifest; an explicit architecture list still overrides this default.
+if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_ARCHITECTURES)
+    set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "macOS target architectures")
+endif()
+if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version")
+endif()
+
 # OpenBFME engine: game logic as a Godot GDExtension, device layer on Godot.
 #   openbfme_core   - engine code with no Godot dependency (SAGE ports); unit-tested
 #   openbfme        - the GDExtension (core + GodotDevice), written to godot/bin/
@@ -15,6 +23,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 # compile_commands.json for tools/sim/sim_audit.py: set BEFORE any subdirectory, the setting is read when a target is created
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    get_filename_component(OPENBFME_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." REALPATH)
+    add_compile_options("-ffile-prefix-map=${OPENBFME_REPO_ROOT}/="
+                        "-fdebug-prefix-map=${OPENBFME_REPO_ROOT}/="
+                        "-ffile-prefix-map=${CMAKE_BINARY_DIR}/=build/"
+                        "-fdebug-prefix-map=${CMAKE_BINARY_DIR}=build"
+                        -fdebug-compilation-dir=.)
+endif()
+
+# Native Windows builds keep matching private symbols in every configuration,
+# including optimized Release. /Z7 embeds library debug info in its object files.
+if(MSVC)
+    add_compile_options(/Z7)
+    add_link_options(/DEBUG:FULL /INCREMENTAL:NO "/PDBALTPATH:%_PDB%"
+        "$<$<NOT:$<CONFIG:Debug>>:/OPT:REF>" "$<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>")
+endif()
 
 # WINCRASH-1: the llvm-mingw Windows build (tools/release/build_windows.sh) writes CodeView line tables to a PDB next to the GDExtension DLL
 # (and its test executables): tools/release/archive_symbols.sh keeps it per version, so a crash report's DLL offsets map to functions and
@@ -42,11 +67,16 @@ endif()
 # it and points at the file (.gnu_debuglink). The .debug stays with the builder (tools/release/archive_symbols.sh), it is not packaged.
 # Off by default: -g costs compile memory (the Deck builds with -j3).
 option(OPENBFME_LINUX_DEBUG_FILE "Linux: split the GDExtension's debug info into godot/bin/<lib>.so.debug" OFF)
-if(OPENBFME_LINUX_DEBUG_FILE AND UNIX AND NOT APPLE)
+# PUBLISH-2 r3: every Linux / macOS build remaps the repository and build folders, as the Windows build does (__FILE__ in godot-cpp's and
+# the engine's error macros put 118 absolute build-host paths, its user and folder names, into the released .so: the release's asset
+# audit refuses them)
+if(UNIX AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     get_filename_component(OPENBFME_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
-    # the build folder twice: with a slash for its files, bare for the compilation folder (DW_AT_comp_dir)
-    add_compile_options(-g "-ffile-prefix-map=${OPENBFME_REPO_ROOT}/=" "-ffile-prefix-map=${CMAKE_BINARY_DIR}/=build/"
-                        "-fdebug-prefix-map=${CMAKE_BINARY_DIR}=build")
+    add_compile_options("-ffile-prefix-map=${OPENBFME_REPO_ROOT}/=" "-ffile-prefix-map=${CMAKE_BINARY_DIR}/=build/")
+endif()
+if(OPENBFME_LINUX_DEBUG_FILE AND UNIX AND NOT APPLE)
+    # the build folder bare too, for the compilation folder (DW_AT_comp_dir)
+    add_compile_options(-g "-fdebug-prefix-map=${CMAKE_BINARY_DIR}=build")
 endif()
 
 # godot-cpp 10.x generates bindings for a chosen Godot API; the project targets Godot 4.7.
@@ -80,6 +110,12 @@ add_custom_command(
 
 # ---- core ---------------------------------------------------------------------------------
 include(cmake/SimFp.cmake) # openbfme_sim_fp (the simulation floating-point contract) and the simulation manifest helpers
+# openbfme_float_chars is its own static library, like openbfme_detlibm: the Lua library below the core needs it
+add_library(openbfme_float_chars STATIC src/Common/System/FloatFromChars.cpp)
+target_include_directories(openbfme_float_chars PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(openbfme_float_chars SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/fast_float/include)
+set_target_properties(openbfme_float_chars PROPERTIES POSITION_INDEPENDENT_CODE ON)
+openbfme_sim_register_target(openbfme_float_chars)
 include(cmake/Apt.cmake) # OPENBFME_APT_SOURCES / OPENBFME_APT_TESTS (EA Apt player lane)
 include(cmake/Dep2.cmake) # openbfme_detlibm: the deterministic libm of the simulation (lane DEP-2; the Lua math library uses it)
 include(cmake/Lua.cmake) # openbfme_lua: Lua 4.0.1 + EA's fork (lane LUA-1)
@@ -135,11 +171,13 @@ include(cmake/Mp2.cmake)        # MP-2: the disconnect path, a dropped player's 
 include(cmake/Mp3.cmake)        # MP-3: the network test harness (client only; OPENBFME_MP3_CLIENT_SOURCES / OPENBFME_MP3_TESTS)
 include(cmake/Online2.cmake)    # ONLINE-2: the online relay, the START from the lobby service, the relay log -> replay (client only; openbfme_online2_targets)
 include(cmake/Online4.cmake)    # ONLINE-4: the online screens on the lobby service (client only; openbfme_online4_targets)
+include(cmake/OnlineHub1.cmake) # ONLINEHUB-1: Quick Match, tournaments, statistics (client only; openbfme_onlinehub1_targets)
 include(cmake/Online3.cmake)    # ONLINE-3: hold, rejoin, the multiplayer pause (appends to OPENBFME_SIM_SOURCES; openbfme_online3_targets)
 include(cmake/MpDrop1.cmake)    # MP-DROP-1: a dropped player never freezes an online game (openbfme_mpdrop1_targets)
 include(cmake/Script1.cmake)    # SCRIPT-1: the map script engine (appends to OPENBFME_SIM_SOURCES; OPENBFME_SCRIPT1_TESTS)
 include(cmake/Camp1.cmake)      # CAMP-1: the campaigns (OPENBFME_CAMP1_SOURCES / OPENBFME_CAMP1_TESTS)
 include(cmake/Camp2.cmake)      # CAMP-2: the movies' VP6 picture (OPENBFME_CAMP2_SOURCES / _GODOT_SOURCES / _TESTS)
+include(cmake/CampSave1.cmake)  # CAMPSAVE-1: CampaignMenu.apt and the campaign's saves between missions (OPENBFME_CAMPSAVE1_SOURCES / _TESTS)
 include(cmake/Ui1.cmake)        # UI-1: interface gaps (client only; OPENBFME_UI1_CLIENT_SOURCES / OPENBFME_UI1_TESTS)
 include(cmake/Release1.cmake)   # RELEASE-1: install discovery, version, session log (client only; OPENBFME_RELEASE1_SOURCES / _GODOT_SOURCES / _TESTS)
 include(cmake/Mod4.cmake)       # MOD-4: AISpecialPowerUpdate, RepairSpecialPower, ... (appends to OPENBFME_SIM_SOURCES; OPENBFME_MOD4_TESTS)
@@ -147,6 +185,7 @@ include(cmake/Aipow1.cmake)     # AIPOW-1: the AISpecialPowerUpdate decisions an
 include(cmake/Ui2.cmake)        # UI-2: owner menu feedback (client only; OPENBFME_UI2_CLIENT_SOURCES / OPENBFME_UI2_TESTS)
 include(cmake/Ui4.cmake)        # UI-4: owner menu / HUD findings on v0.3.0-preview.1 (client only)
 include(cmake/Ui6.cmake)        # UI-6: a tester's menu findings on v0.3.0-preview.6, widescreen view (client only)
+include(cmake/Ownerfix3.cmake)  # OWNERFIX-3: the map list's battle honors (client only; OPENBFME_OWNERFIX3_CLIENT_SOURCES / _TESTS)
 include(cmake/Selperf1.cmake)   # SELPERF-1: the selection's frame cost (client only; OPENBFME_SELPERF1_TESTS)
 include(cmake/Anim1.cmake)      # OPENBFME_ANIM1_TESTS (lane ANIM-1: combat animation)
 include(cmake/Win1.cmake)       # WIN-1: the MSVCR71 real parser (appends to OPENBFME_SIM_SOURCES; OPENBFME_WIN1_TESTS: cross-OS lockstep)
@@ -169,12 +208,14 @@ include(cmake/Decomp1.cmake)    # DECOMP-1: stops closed with the decompilation'
 include(cmake/Play1.cmake)      # PLAY-1: the tribute, the placement ghost (appends to OPENBFME_SIM_SOURCES; OPENBFME_PLAY1_SOURCES / _TESTS)
 include(cmake/Cah1.cmake)       # CAH-1: the Create-a-Hero screens (client only; OPENBFME_CAH1_SOURCES / _GODOT_SOURCES / _TESTS)
 include(cmake/Uber1.cmake)      # UBER-1: the Uber performance mode (appends to OPENBFME_SIM_SOURCES; OPENBFME_UBER1_TESTS)
+include(cmake/Menuwork1.cmake)  # MENUWORK-1: the menu inventory's fixes (client only; OPENBFME_MENUWORK1_SOURCES / _TESTS)
 include(cmake/Rules1.cmake)     # RULES-1: the Rules tab, the game rules, Legendary Heroes (appends to OPENBFME_SIM_SOURCES; OPENBFME_RULES1_SOURCES / _TESTS)
 include(cmake/Gamemodes1.cmake) # GAMEMODES-1: the game modes' tests (OPENBFME_GAMEMODES1_TESTS)
 include(cmake/Move3.cmake)      # MOVE-3: horde spacing, the blocked path patch (appends to OPENBFME_SIM_SOURCES; OPENBFME_MOVE3_TESTS)
 include(cmake/Input1.cmake)     # INPUT-1: RotWK's input layer (OPENBFME_INPUT1_TESTS)
 include(cmake/Opts2.cmake)      # OPTS-2: the Options menu (OPENBFME_OPTS2_TESTS)
 include(cmake/Opts3.cmake)      # OPTS-3: the OpenBFME page of the Options screen (appends to OPENBFME_APT_SOURCES)
+include(cmake/Opts6.cmake)      # OPTS-6: menu keyboard / controller navigation, the modal in-game menu (appends to OPENBFME_APT_SOURCES)
 include(cmake/Play1.cmake)      # PLAY-1: the tribute, the placement ghost (appends to OPENBFME_SIM_SOURCES; OPENBFME_PLAY1_SOURCES / _TESTS)
 include(cmake/Play4.cmake)      # PLAY-4: the guard machine, the tester's gameplay report (appends to OPENBFME_SIM_SOURCES; OPENBFME_PLAY4_TESTS)
 include(cmake/MapReset1.cmake)  # MAPRESET-1: map.ini overrides reset before every game (OPENBFME_MAPRESET1_TESTS)
@@ -182,6 +223,8 @@ include(cmake/FactA.cmake)      # FACT-A: Men / Elves / Dwarves content through 
 include(cmake/FactC.cmake)      # FACT-C: the Goblins / Angmar content through the HUD (OPENBFME_FACTC_TESTS)
 include(cmake/Bugs1.cmake)      # BUGS-1: backlog bugs (production exits, hero requests; OPENBFME_BUGS1_TESTS)
 include(cmake/Save2.cmake)      # SAVE-2: the command-log save (OPENBFME_SAVE2_CLIENT_SOURCES / _TESTS)
+include(cmake/Save4a.cmake)     # SAVE-4a: the Xfer framework, GameState, the core blocks (appends to OPENBFME_SIM_SOURCES; OPENBFME_SAVE4A_TESTS)
+include(cmake/Save4c.cmake)     # SAVE-4c: the AI, pathfinder, partition, emotions, shroud and skirmish AI blocks (appends to OPENBFME_SIM_SOURCES; OPENBFME_SAVE4C_TESTS)
 include(cmake/Fly1.cmake)       # FLY-1: the GIANT_BIRD flyers (appends to OPENBFME_SIM_SOURCES; OPENBFME_FLY1_TESTS)
 include(cmake/Backlog4.cmake)  # BACKLOG4: the teleport forms, the special power runtime, defection (OPENBFME_BACKLOG4_TESTS)
 include(cmake/Ship1.cmake)      # SHIP-1: ships and hover units (OPENBFME_SHIP1_TESTS)
@@ -189,6 +232,14 @@ include(cmake/RenderWait1.cmake) # RENDERWAIT-1: the render never waits on the l
 include(cmake/Backlog2.cmake)   # BACKLOG2: castle / camp / construction ports (appends to OPENBFME_SIM_SOURCES; OPENBFME_BACKLOG2_TESTS)
 include(cmake/Contrib1.cmake)   # CONTRIB-1: the known RotWK 2.01 layouts, Data1.big by its entries (OPENBFME_CONTRIB1_TESTS)
 include(cmake/Netlag1.cmake)    # NETLAG-1: the command delay of a multiplayer game (OPENBFME_NETLAG1_TESTS)
+include(cmake/Save4b.cmake)     # SAVE-4b: the objects, modules, scheduler and object-side subsystems (appends to OPENBFME_SIM_SOURCES; OPENBFME_SAVE4B_TESTS)
+include(cmake/Save4d.cmake)     # SAVE-4d: the script engine, victory, weather and the other subsystem blocks (appends to OPENBFME_SIM_SOURCES; OPENBFME_SAVE4D_TESTS)
+include(cmake/Save4e.cmake)     # SAVE-4e: the snapshot load's test probe (appends to OPENBFME_SIM_SOURCES; OPENBFME_SAVE4E_TESTS)
+include(cmake/Platformicon1.cmake) # PLATFORMICON-1: each player's system beside the name (OPENBFME_PLATFORMICON1_TESTS)
+include(cmake/Ownerfix1.cmake)  # OWNERFIX-1: problems the owner hit playing (OPENBFME_OWNERFIX1_TESTS)
+include(cmake/Visual2.cmake)    # VISUAL-2: the owner's fog leak, tree sway and colouring (OPENBFME_VISUAL2_SOURCES / _TESTS)
+include(cmake/Ownerfix2.cmake)  # OWNERFIX-2: the owner's playtest of 2026-10-17 (OPENBFME_OWNERFIX2_CLIENT_SOURCES / _TESTS)
+include(cmake/Backlog8.cmake)   # BACKLOG-8: formations, horde wall scaling, auto ability melee position (appends to OPENBFME_SIM_SOURCES)
 add_library(openbfme_core STATIC
     ${OPENBFME_PLAY2_SOURCES}
     ${OPENBFME_APT_SOURCES}
@@ -221,7 +272,9 @@ add_library(openbfme_core STATIC
     ${OPENBFME_RELEASE1_SOURCES}
     ${OPENBFME_UI2_CLIENT_SOURCES}
     ${OPENBFME_UI4_CLIENT_SOURCES}
+    ${OPENBFME_OWNERFIX2_CLIENT_SOURCES}
     ${OPENBFME_UI6_CLIENT_SOURCES}
+    ${OPENBFME_OWNERFIX3_CLIENT_SOURCES}
     ${OPENBFME_SCRIPT1_SOURCES}
     ${OPENBFME_CAMP1_SOURCES}
     ${OPENBFME_HUD5_CLIENT_SOURCES}
@@ -229,7 +282,10 @@ add_library(openbfme_core STATIC
     ${OPENBFME_HOVER1_CLIENT_SOURCES}
     ${OPENBFME_CAH1_SOURCES}
     ${OPENBFME_RULES1_SOURCES}
+    ${OPENBFME_MENUWORK1_SOURCES}
     ${OPENBFME_CAMP2_SOURCES}
+    ${OPENBFME_VISUAL2_SOURCES}
+    ${OPENBFME_CAMPSAVE1_SOURCES}
     src/Common/AsciiString.cpp
     src/Common/LogicFrameClock.cpp
     src/Common/MD5.cpp
@@ -363,6 +419,7 @@ list(APPEND OPENBFME_SIM_SOURCES
     src/GameLogic/Object/Object.cpp
     src/GameLogic/Module/UpdateModule.cpp
     src/GameLogic/Module/UnportedModule.cpp
+    src/GameLogic/Module/SpawnUnitBehavior.cpp
     src/GameLogic/Module/ObjectHelper.cpp
     src/GameLogic/Module/ActiveBody.cpp
     src/GameLogic/Module/LogicModules.cpp
@@ -456,8 +513,12 @@ if(OPENBFME_PYTHON)
         VERBATIM USES_TERMINAL)
 endif()
 target_include_directories(openbfme_core PUBLIC src)
+target_link_libraries(openbfme_core PUBLIC openbfme_float_chars)
 target_link_libraries(openbfme_core PUBLIC openbfme_lua)
 target_link_libraries(openbfme_core PUBLIC openbfme_luajit)
+if(WIN32)
+    target_link_libraries(openbfme_core PRIVATE dbghelp)
+endif()
 # DEP-1: std::thread (LiveGameRunner) needs libpthread below glibc 2.34 (tools/release/build_linux.sh: Godot's Linux SDK, a glibc 2.28
 # sysroot); on a newer glibc FindThreads adds nothing (pthread is in libc). Link-only: no compile flag, so the sim flag audit is unchanged.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -474,7 +535,7 @@ endif()
 
 # ---- GDExtension -------------------------------------------------------------------------
 if(OPENBFME_BUILD_GODOT)
-set(OPENBFME_GODOT_BIN ${CMAKE_CURRENT_SOURCE_DIR}/../godot/bin)
+set(OPENBFME_GODOT_BIN "${CMAKE_CURRENT_SOURCE_DIR}/../godot/bin" CACHE PATH "OpenBFME Godot extension output directory")
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND OPENBFME_IOS_SDK STREQUAL "iphonesimulator")
     set(OPENBFME_GODOT_BIN ${OPENBFME_GODOT_BIN}/ios-simulator)
 endif()
@@ -565,6 +626,14 @@ endif()
 if(MSVC)
     target_compile_options(openbfme PRIVATE /utf-8)
 endif()
+# DEVPORT-6: godot/openbfme.gdextension names an arm64 library for Apple Silicon (the default build here, Apple Silicon only) beside the
+# universal one; Godot loads the most specific entry and never falls back. A universal build (the CI Mac's env.sh) therefore also writes
+# its arm64 slice under the arm64 name, so the project loads whichever way the Mac build was configured.
+if(APPLE AND "arm64" IN_LIST CMAKE_OSX_ARCHITECTURES AND "x86_64" IN_LIST CMAKE_OSX_ARCHITECTURES)
+    add_custom_command(TARGET openbfme POST_BUILD
+        COMMAND lipo "$<TARGET_FILE:openbfme>" -thin arm64 -output "${OPENBFME_GODOT_BIN}/openbfme.macos.template_debug.arm64.dylib"
+        VERBATIM)
+endif()
 endif()
 
 # ---- unit tests --------------------------------------------------------------------------
@@ -624,10 +693,16 @@ add_executable(openbfme_tests
     ${OPENBFME_END1_TESTS}
     ${OPENBFME_MP2_TESTS}
     ${OPENBFME_SAVE2_TESTS}
+    ${OPENBFME_SAVE4A_TESTS}
+    ${OPENBFME_SAVE4C_TESTS}
+    ${OPENBFME_SAVE4B_TESTS}
+    ${OPENBFME_SAVE4D_TESTS}
+    ${OPENBFME_SAVE4E_TESTS}
     ${OPENBFME_MP3_TESTS}
     ${OPENBFME_SCRIPT1_TESTS}
     ${OPENBFME_CAMP1_TESTS}
     ${OPENBFME_CAMP2_TESTS}
+    ${OPENBFME_CAMPSAVE1_TESTS}
     ${OPENBFME_UI1_TESTS}
     ${OPENBFME_RELEASE1_TESTS}
     ${OPENBFME_MOD4_TESTS}
@@ -635,6 +710,7 @@ add_executable(openbfme_tests
     ${OPENBFME_UI2_TESTS}
     ${OPENBFME_UI4_TESTS}
     ${OPENBFME_UI6_TESTS}
+    ${OPENBFME_OWNERFIX3_TESTS}
     ${OPENBFME_SELPERF1_TESTS}
     ${OPENBFME_GARRISON3_TESTS}
     ${OPENBFME_BACKLOG1_TESTS}
@@ -655,6 +731,7 @@ add_executable(openbfme_tests
     ${OPENBFME_HUD7_TESTS}
     ${OPENBFME_CAH1_TESTS}
     ${OPENBFME_RULES1_TESTS}
+    ${OPENBFME_MENUWORK1_TESTS}
     ${OPENBFME_GAMEMODES1_TESTS}
     ${OPENBFME_UBER1_TESTS}
     ${OPENBFME_MOVE3_TESTS}
@@ -671,6 +748,10 @@ add_executable(openbfme_tests
     ${OPENBFME_BACKLOG2_TESTS}
     ${OPENBFME_CONTRIB1_TESTS}
     ${OPENBFME_NETLAG1_TESTS}
+    ${OPENBFME_PLATFORMICON1_TESTS}
+    ${OPENBFME_OWNERFIX1_TESTS}
+    ${OPENBFME_VISUAL2_TESTS}
+    ${OPENBFME_OWNERFIX2_TESTS}
     tests/test_main.cpp
     tests/test_big_archive.cpp
     tests/test_archive_order.cpp
@@ -769,11 +850,13 @@ add_executable(openbfme_tests
     tests/test_econ_core.cpp
     tests/test_econ_resources.cpp
     tests/test_econ_hash.cpp
-    tests/test_econ_retail.cpp)
+    tests/test_econ_retail.cpp
+    tests/test_falsedef_retail.cpp)
 target_link_libraries(openbfme_tests PRIVATE openbfme_core)
 openbfme_net_targets() # MP-1: the network host sources, the headless peer
 openbfme_online2_targets() # ONLINE-2: the relay sources and tests, the relay process (Linux)
 openbfme_online4_targets() # ONLINE-4: the online screens, the lobby client and their tests
+openbfme_onlinehub1_targets() # ONLINEHUB-1: the platform API's client, the game records, the pages and their tests
 openbfme_online3_targets() # ONLINE-3: the rejoin, hold and pause tests
 openbfme_mpdrop1_targets() # MP-DROP-1: the disconnect path's drop tests
 # a separate process for the independent-process determinism test of lua_pushusertag userdata (tests/test_lua_runtime.cpp)
@@ -784,6 +867,11 @@ target_compile_definitions(openbfme_tests PRIVATE OPENBFME_LUA_PROBE_EXE="$<TARG
 if(WIN32)
     # the real shlwapi path calls are the oracle for Win32Path (tests/test_win32path.cpp)
     target_link_libraries(openbfme_tests PRIVATE shlwapi)
+endif()
+if(MSVC)
+    # Destructive crash cases are isolated from doctest in explicit subprocesses.
+    add_executable(openbfme_crash_probe tests/windows_crash_probe.cpp)
+    target_link_libraries(openbfme_crash_probe PRIVATE openbfme_core)
 endif()
 # golden tables written by tools/ini_macro_oracle.py (independent oracle for the INI macro tests)
 target_compile_definitions(openbfme_tests PRIVATE OPENBFME_TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")

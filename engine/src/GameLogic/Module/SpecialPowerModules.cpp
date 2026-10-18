@@ -8,6 +8,7 @@
 #endif
 
 #include "GameLogic/Module/SpecialPowerModules.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/WeaponChangeSpecialPower.h"
 #include "GameLogic/Module/SpecialAbilityModules.h"
 #include "GameLogic/Module/ExtraUpdateModules.h"
@@ -110,7 +111,6 @@ const FieldParse kSpecialPowerModuleFieldParse[] = {
 	{ "SpecialPowerTemplate", parseSpecialPowerTemplate, nullptr, 0 },
 	{ "UpdateModuleStartsAttack", INI::parseBool, nullptr, SP_OFF(m_updateModuleStartsAttack) },
 	{ "StartsPaused", INI::parseBool, nullptr, SP_OFF(m_startsPaused) },
-	{ "InitiateSound2", parseName, nullptr, SP_OFF(m_initiateSound2) },
 	{ "InitiateSound", parseName, nullptr, SP_OFF(m_initiateSound) },
 	{ "ReEnableAntiCategory", INI::parseBool, nullptr, SP_OFF(m_reEnableAntiCategory) },
 	{ "AntiCategory", INI::parseBitString32, TheAntiCategoryNames, SP_OFF(m_antiCategory) }, // RW 0x89F32D (BitFlags<15>::parse, lane SPELL-2)
@@ -145,6 +145,13 @@ const FieldParse kSpecialPowerModuleFieldParse[] = {
 	{ "DistanceFromCommandCenter", INI::parseReal, nullptr, SP_OFF(m_distanceFromCommandCenter) },
 	{ nullptr, nullptr, nullptr, 0 }
 };
+// community PR #36: BFME1's InitiateSound2 row (stored, not played) (BFME1 data only, Common/BfmeGame.h); RotWK's table stays the binary's
+const FieldParse kBfme1SpecialPowerModule[] = {
+	{ "InitiateSound2", parseName, nullptr, SP_OFF(m_initiateSound2) },
+	{ nullptr, nullptr, nullptr, 0 },
+};
+const Bfme1FieldRowsRegistration kBfme1SpecialPowerModuleRegistration(kSpecialPowerModuleFieldParse, kBfme1SpecialPowerModule);
+
 #undef SP_OFF
 
 #define PH_OFF(member) (int)offsetof(PlayerHealSpecialPowerModuleData, member)
@@ -636,6 +643,10 @@ void SpecialPowerModule::triggerSpecialPower(const Coord3D *loc, const Object *)
 		if (t)
 		{
 			logic.scriptEngine().notifyOfTriggeredSpecialPower(owner->getPlayerIndex(), t->getName(), obj->getID());
+			if (logic.clientHooks())
+			{
+				logic.clientHooks()->observerEvent(*obj, ObserverEvent::Power, loc, t->getName());
+			}
 			++m_clientNotices;
 		}
 	}
@@ -1425,4 +1436,42 @@ void SpecialPowerModules::registerAll(ModuleFactory &modules)
 	SpellBookPowers::registerAll(modules); // lane SPELL-2: the other spell book power classes
 	WeaponChangeSpecialPowerModule::registerClass(modules); // lane FACT-B: the Berserker's torch toggle
 	SpellEffectModules::registerAll(modules); // lane SPELL-2: DeletionUpdate, FireWeaponUpdate (the effect objects)
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------
+// Retail's SpecialPowerModule::xfer is not one of the inventory's named rows; the port's fields (RW + 0x14 .. + 0x28) and its counters, in declaration order.
+void SpecialPowerModule::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	x.xferUnsignedInt(&m_rechargeLength);
+	x.xferUnsignedInt(&m_readyFrame);
+	x.xferInt(&m_pauseCount);
+	x.xferUnsignedInt(&m_pauseFrame);
+	x.xferReal(&m_pausedPercent);
+	x.xferBool(&m_updateDisabled);
+	x.xferUnsignedInt(&m_triggers);
+	x.xferUnsignedInt(&m_applied);
+	SnapshotXfer::u64(x, m_unported);
+	SnapshotXfer::u64(x, m_victims);
+	SnapshotXfer::u64(x, m_initiates);
+	SnapshotXfer::u64(x, m_clientNotices);
+	SnapshotXfer::u64(x, m_viewObjects);
+}
+
+void PlayerHealSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	SnapshotXfer::u64(x, m_fx);
+	SnapshotXfer::u64(x, m_ocl);
+	x.xferInt(&m_lastHealed);
+}
+
+void OCLSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	SnapshotXfer::ids(x, m_created);
+	x.xferObjectID(&m_secondaryUsed);
 }

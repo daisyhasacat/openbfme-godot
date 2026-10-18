@@ -7,7 +7,7 @@
 # INFRA-2 r2 (Sol r1: the monitor could not see whether the logs reach the lobby): with --relay-id, every run then posts its status to
 # <lobby>/v1/relay/status, signed the same way: the logs still waiting (and the oldest one's age), the .part files of running games, this run's uploads
 # and failures, and the relay's own logErrors counter from its --status file (null when it cannot be read: the monitor fails on that). A status the
-# lobby refuses is exit 1. lab-host-a's monitor reads it back (services/online/deploy/monitor.py).
+# lobby refuses is exit 1. The operator's monitor reads it back.
 import argparse
 import json
 import hashlib

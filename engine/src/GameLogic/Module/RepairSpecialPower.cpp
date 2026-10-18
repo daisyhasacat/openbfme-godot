@@ -2,6 +2,7 @@
 // See GameLogic/Module/RepairSpecialPower.h for the sources and what is inference.
 
 #include "GameLogic/Module/RepairSpecialPower.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/StateHash.h"
 #include "Common/Thing/ModuleFactory.h"
@@ -61,4 +62,12 @@ void RepairSpecialPower::registerClass(ModuleFactory &modules)
 		}
 		return std::make_unique<RepairSpecialPower>(thing, typed);
 	});
+}
+
+// ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190) ---------------------------------------------------------------------------------------------------
+void RepairSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	SnapshotXfer::u64(x, m_repairs);
 }

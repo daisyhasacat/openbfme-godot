@@ -5,6 +5,7 @@
 // assembled into frames as the Network relays them.
 
 #include "doctest.h"
+#include "TestChild.h"
 
 #include "Common/Crc32.h"
 #include "Common/Sha256.h"
@@ -22,6 +23,85 @@
 #include <map>
 #include <string>
 #include <vector>
+
+#if defined(__linux__) || defined(__APPLE__)
+#include "DatagramBatch.h"
+#include <unistd.h>
+
+namespace
+{
+struct DatagramPair
+{
+	int fd[2]{ -1, -1 };
+	~DatagramPair()
+	{
+		for (int socket : fd)
+		{
+			if (socket != -1)
+			{
+				close(socket);
+			}
+		}
+	}
+};
+} // namespace
+
+TEST_CASE("online2 batch: datagram order, empty datagrams and truncation survive a partial receive batch")
+{
+	DatagramPair sockets;
+	REQUIRE(socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets.fd) == 0);
+	char data[] = "abcdef";
+	iovec sendBuffers[3]{ { data, 3 }, { data, 0 }, { data, 6 } };
+	relayio::Message outgoing[3]{};
+	for (int i = 0; i < 3; ++i)
+	{
+		outgoing[i].msg_hdr.msg_iov = &sendBuffers[i];
+		outgoing[i].msg_hdr.msg_iovlen = 1;
+	}
+	REQUIRE(relayio::sendBatch(sockets.fd[0], outgoing, 3) == 3);
+	CHECK(outgoing[0].msg_len == 3);
+	CHECK(outgoing[1].msg_len == 0);
+	CHECK(outgoing[2].msg_len == 6);
+	char dataIn[4][4]{};
+	iovec receiveBuffers[4]{};
+	relayio::Message incoming[4]{};
+	for (int i = 0; i < 4; ++i)
+	{
+		receiveBuffers[i] = { dataIn[i], sizeof dataIn[i] };
+		incoming[i].msg_hdr.msg_iov = &receiveBuffers[i];
+		incoming[i].msg_hdr.msg_iovlen = 1;
+	}
+	REQUIRE(relayio::receiveBatch(sockets.fd[1], incoming, 4) == 3);
+	CHECK(incoming[0].msg_len == 3);
+	CHECK(std::string(dataIn[0], 3) == "abc");
+	CHECK((incoming[0].msg_hdr.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) == 0);
+	CHECK(incoming[1].msg_len == 0);
+	CHECK((incoming[1].msg_hdr.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) == 0);
+	CHECK(incoming[2].msg_len == 4);
+	CHECK(std::string(dataIn[2], 4) == "abcd");
+	CHECK((incoming[2].msg_hdr.msg_flags & MSG_TRUNC) == MSG_TRUNC);
+	CHECK(relayio::receiveBatch(sockets.fd[1], incoming, 4) == -1);
+	CHECK((errno == EAGAIN || errno == EWOULDBLOCK));
+}
+
+TEST_CASE("online2 batch: a send error returns the completed prefix, or minus one when nothing was sent")
+{
+	DatagramPair sockets;
+	REQUIRE(socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets.fd) == 0);
+	char data = 'x';
+	iovec buffer{ &data, 1 };
+	relayio::Message outgoing[2]{};
+	outgoing[0].msg_hdr.msg_iov = &buffer;
+	outgoing[0].msg_hdr.msg_iovlen = 1;
+	outgoing[1].msg_hdr.msg_iovlen = 1; // null iovec: the second message must fail
+	CHECK(relayio::sendBatch(sockets.fd[0], outgoing, 2) == 1);
+	CHECK(outgoing[0].msg_len == 1);
+	CHECK(relayio::sendBatch(-1, outgoing, 1) == -1);
+	CHECK(errno == EBADF);
+	CHECK(relayio::receiveBatch(-1, outgoing, 1) == -1);
+	CHECK(errno == EBADF);
+}
+#endif
 
 #ifdef OPENBFME_RELAY_EXE
 #include <csignal>
@@ -1029,14 +1109,9 @@ TEST_CASE("online2: the openbfme_relay process welcomes a ticket over UDP, write
 	}
 	const std::string bind = "127.0.0.1:" + std::to_string(port), keys = (dir / "keys.txt").string(), logs = dir.string(),
 					  status = (dir / "status.json").string();
-	const pid_t pid = fork();
-	REQUIRE(pid >= 0);
-	if (pid == 0)
-	{
-		execl(OPENBFME_RELAY_EXE, OPENBFME_RELAY_EXE, "--bind", bind.c_str(), "--keys", keys.c_str(), "--log-dir", logs.c_str(), "--status", status.c_str(),
-			"--stats-s", "0", (char *)nullptr);
-		_exit(127);
-	}
+	// lane DEVPORT-7: TestChild.h stops the relay with this scope, kills it with the test and keeps it off the test's output
+	TestChild relay(OPENBFME_RELAY_EXE, { "--bind", bind, "--keys", keys, "--log-dir", logs, "--status", status, "--stats-s", "0" }, (dir / "relay.out").string());
+	REQUIRE(relay.started());
 	const std::vector<std::uint8_t> hello = RelayProtocol::encodeHello(ticketBytes(testTicket(0)));
 	bool welcomed = false;
 	const std::uint64_t start = NetMilliseconds();
@@ -1052,9 +1127,7 @@ TEST_CASE("online2: the openbfme_relay process welcomes a ticket over UDP, write
 		}
 	}
 	CHECK(welcomed);
-	kill(pid, SIGTERM);
-	int status_ = 0;
-	waitpid(pid, &status_, 0);
+	const int status_ = relay.stop();
 	CHECK(WIFEXITED(status_));
 	CHECK(WEXITSTATUS(status_) == 0);
 	// the shutdown closed the game: a finished log, and the status file says so

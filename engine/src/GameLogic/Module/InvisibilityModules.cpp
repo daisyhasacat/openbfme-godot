@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/InvisibilityModules.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/SpecialAbilityModules.h"
 
 #include "Common/AsciiString.h"
@@ -551,6 +552,12 @@ void maskOf(const std::vector<std::string> &names, UpgradeMaskType &mask)
 StealthUpdate *StealthUpdate::of(const Object &obj)
 {
 	return dynamic_cast<StealthUpdate *>(obj.findModule("StealthUpdate"));
+}
+
+bool StealthUpdate::upgradesAllowStealth() const
+{
+	const Object *obj = getObject();
+	return obj && upgradesAllow(obj->getUpgradeMask(), m_requiredUpgrades, m_forbiddenUpgrades);
 }
 
 // RW 0x776E3D
@@ -1168,4 +1175,51 @@ std::vector<std::string> InvisibilityModules::stopLines()
 		out.push_back(l);
 	}
 	return out;
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190: each class's fields in its crc's order; the disguise template by name) -----------------------
+void InvisibilityUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferBool(&m_active);
+	x.xferUnsignedInt(&m_applications);
+}
+
+void StealthDetectorUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_scans);
+	x.xferUnsignedInt(&m_marks);
+}
+
+void StealthUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_stealthAllowedFrame);
+	x.xferUnsignedInt(&m_detectionExpires);
+	x.xferInt(&m_forbiddenOverride);
+	x.xferBool(&m_enabled);
+	x.xferUnsignedInt(&m_ringReadyFrame);
+	x.xferBool(&m_ring);
+	x.xferBool(&m_wasStealthed);
+	x.xferBool(&m_ringAtLastFX);
+	x.xferBool(&m_first);
+	x.xferInt(&m_disguisePlayer);
+	SnapshotXfer::checkRange(m_disguisePlayer, -1, getObject()->logic().players().getPlayerCount() - 1, "a stealth update's disguise player");
+	SnapshotXfer::thingTemplate(x, getObject()->logic(), m_disguiseTemplate);
+	x.xferUnsignedInt(&m_transitionFrames);
+	x.xferBool(&m_halfway);
+	x.xferBool(&m_disguising);
+	x.xferBool(&m_disguised);
+	SnapshotXfer::words(x, m_requiredUpgrades.words);
+	SnapshotXfer::words(x, m_forbiddenUpgrades.words);
+	if (x.isLoading()) // lane SAVE-4e (closed sets): only this game's upgrades
+	{
+		checkLoadedUpgradeMask(m_requiredUpgrades, "a stealth update's required upgrades");
+		checkLoadedUpgradeMask(m_forbiddenUpgrades, "a stealth update's forbidden upgrades");
+	}
+	x.xferBool(&m_active);
 }

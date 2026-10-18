@@ -40,6 +40,7 @@
 #include <vector>
 
 class HordeContainCore;
+class ThingTemplate;
 struct HordeContainModuleData;
 struct MeleeBehaviorModuleData;
 class HordeContainBehaviorData;
@@ -87,6 +88,7 @@ public:
 	// ---- lane XP-1 (GameLogic/Object/Contain/HordeContainExperience.cpp) ----
 	// slot 0xC0 / 4 (RW 0x873A02): a member's kill experience joins the pool of its template; the members of that template and the horde follow the pool
 	virtual void addExperience(Object *member, float amount) = 0;
+	virtual void gainMemberLevel() = 0; ///< slot 0xC4 (RW 0x876C23): contained then entering members, pool write-back, banner check
 	// slot 0x1D8 / 4 (RW 0x870E50): a ModifierList reaches the members (not a LEVEL one) and always the horde's own pool
 	virtual void addAttributeModifier(const std::string &listName, int duration) = 0;
 	virtual void removeAttributeModifier(const std::string &listName) = 0; ///< slot 0x1DC (RW 0x870F75, lane INTEG-1)
@@ -152,6 +154,7 @@ public:
 class HordeContain : public UpdateModule, public ContainModuleInterface, public CreateModuleInterface, public HordeContainInterface
 {
 public:
+	OBFME_MODULE_XFER(HordeContain) // lane SAVE-4b
 	HordeContain(Thing *thing, const HordeContainBehaviorData *data);
 	~HordeContain() override;
 
@@ -198,6 +201,7 @@ public:
 	unsigned formationRefreshFrame() const override { return m_formationRefreshFrame; }
 	// lane XP-1 (HordeContainExperience.cpp)
 	void addExperience(Object *member, float amount) override;
+	void gainMemberLevel() override;
 	void addAttributeModifier(const std::string &listName, int duration) override;
 	// RW 0x870F75 (slot 0x1DC, name, filter; the stances pass no filter): every member (contain slot 0x118) loses the list (Object::removeAttributeModifier), the
 	// second list's members are not ported (S-486), then the horde's own AttributeModifierPoolUpdate (RW 0x8052FB) (lane INTEG-1)
@@ -299,6 +303,8 @@ public:
 	bool dirty() const { return m_dirty; }
 	// diagnostics (tests, the viewer's report): the largest planar distance of a slotted member from its slot in the world; 0 without members
 	float worstMemberSlotError() const;
+	// RW 0x871897, the member order's destination step (public for the tests' diagnostics)
+	bool adjustMemberDestination(Object &member, Coord3D &dest) const;
 	// the stop line S-224 (raised through AIWorld::noteStop by every horde of a game with an AIWorld)
 	static const char *movementStop();
 	// lane HORDE-2: the stop line of the re-forming after a melee (S-584)
@@ -328,6 +334,25 @@ public:
 	// pass does not run (RW 0x86D75E beginMelee / 0x86C0F9 endMelee; horde spec 2.1 step 3), the horde AI's melee behaviour moves the members instead
 	const HordeContainModuleData &hordeData() const;
 	bool meleeEngaged() const { return m_meleeEngaged; }
+
+	// ---- lane BACKLOG-8: wall scaling (HordeWallScaling.cpp) ----
+	// contain slot 0x23C (RW 0x86BCF9): the wall the horde scales (0 ends it)
+	void setWallToScale(ObjectID wall);
+	ObjectID wallToScale() const { return m_wallToScale; }
+	// contain slot 0x238 (RW 0x86BD54)
+	bool isScalingWall() const;
+	// the collide entry (RW 0x86C61E)
+	void collideWithWall(Object *other);
+	// RW 0x86D170, at the end of the member pass
+	void checkWallScalingDone();
+	// RW 0x86E214: the climbing member's next position toward `pos` (`other`: the horde object the member order passes)
+	void wallScalingMemberPosition(Object &member, Coord3D &pos, Object &other);
+	// the hub's SCALING_WALLS branch (RW 0x8747AE ..): true when it placed the member
+	bool wallScalingHub(Object &member, const Coord3D &goal, float orientation);
+	float scalingReach() const { return m_scalingReach; }
+	// RW 0x694233 / 0x694183 / 0x6943ED: a model condition of the horde object and of every member
+	void setModelConditionForHorde(int bit, bool on);
+	static const char *wallScalingStopLine();
 	void setMeleeEngaged(bool on);
 	// the free slot indices in free-list order (HordeContainCore::freeList)
 	std::vector<int> freeSlotIndices() const;
@@ -349,6 +374,8 @@ public:
 	// RW 0x8700AC (HordeContainInterface slot 0x5C): the horde has members and an AlternateFormation template whose HordeContain is the main formation or accepts
 	// the member count (MinimumHordeSize)
 	bool canToggleFormation() const;
+	// RW 0x86C7DE (interface slot 0x58): the next template, not the current formation.
+	const ThingTemplate *alternateFormationTemplate() const;
 	// RW 0x86C7F6 / 0x875FB2 (slots 0x60 / 0x68): the horde object keeps its id, AI, selection and transform and takes the AlternateFormation template's HordeContain;
 	// the members (and the banner carrier) move into it and walk to their new slots. Returns the new contain (this module is gone afterwards), null when nothing happened
 	HordeContain *toggleFormation();
@@ -365,6 +392,9 @@ public:
 	void bannerCheck(bool force);
 	ObjectID bannerCarrier() const { return m_bannerCarrier; }
 	unsigned bannerCountdown() const { return m_bannerCountdown; }
+	void expediteBannerRespawn() { if (m_bannerCountdown > 1) { m_bannerCountdown = 1; } } // RW 0x89ACC1
+	unsigned payloadCount() const; ///< RW interface slot 0x188: members, including those entering a garrison, without the banner.
+	unsigned lastMemberDamageFrame() const; ///< RW 0x86EB60, interface slot 0x26C.
 	// RW HordeContainInterface slot 0x18C (RW 0x873AE3): a new member of the payload template joins at `pos` (null when the horde is full or has no single payload template)
 	Object *spawnReplacementMember(const Coord3D &pos);
 	// RW slot 0x90 (RW 0x86EE52, inference S-587): a member was damaged or is attacking within the last `frames` frames
@@ -385,7 +415,6 @@ private:
 	void moveHub(Object &member, const Coord3D &dest, float orientation);
 	void reassignMembersToNearestSlots();
 	bool slotCellClear(Object &member) const;
-	bool adjustMemberDestination(Object &member, Coord3D &dest) const;
 	bool isMemberAheadOfSlot(const Object &member, const Coord3D &slotPos) const;
 	// lane MODULES-3: the emotion branches of the member pass (RW 0x873FE8 .. 0x874671): 0 order the member at `pos` / `angle`, 1 skip it, 2 the quarrel ended (the
 	// pass stops)
@@ -404,6 +433,10 @@ private:
 	bool m_dirty = true;
 	bool m_workDone = false;
 	bool m_meleeEngaged = false;
+	ObjectID m_wallToScale = 0;  ///< lane BACKLOG-8: H + 0x2F0 (hashed with the two below once set)
+	int m_wallIdlePasses = 0;    ///< H + 0x2F4
+	float m_scalingReach = 0.0f; ///< H + 0x2EC
+	void crcWallScaling(StateHasher &h) const;
 	bool m_deleting = false;
 	bool m_locomoting = false;
 	bool m_propagatedMoving = false;
@@ -417,6 +450,8 @@ private:
 	// HORDE-2 banner state: RW H+0x26C carrier id, H+0x27C countdown
 	ObjectID m_bannerCarrier = 0;
 	unsigned m_bannerCountdown = 0;
+	unsigned m_lastMemberRemovedFrame = 0xFFFFFFFFu; ///< RW H+0x298, written by 0x87370B
+	ObjectID m_removedMemberAttacker = INVALID_ID; ///< RW H+0x29C
 	// lane GARRISON-1: RW interface + 0x54 (the members on their way into a garrison, a map keyed by id), + 0x1EC (the frame the last of them entered), + 0x188 (garrisoned)
 	std::set<ObjectID> m_garrisonEntering;
 	unsigned m_lastMemberEnteredFrame = 0;

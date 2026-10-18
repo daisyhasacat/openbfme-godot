@@ -41,6 +41,7 @@ public:
 class WeaponChangeSpecialPowerModule : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(WeaponChangeSpecialPowerModule) // lane SAVE-4b: SpecialPowerModule's
 	WeaponChangeSpecialPowerModule(Thing *thing, const WeaponChangeSpecialPowerModuleData *data) : SpecialPowerModule(thing, data), m_data(data) {}
 	void doSpecialPower(unsigned options) override; // RW 0x8C8420
 

@@ -92,9 +92,15 @@ bool compareOp(int op, std::int32_t a, std::int32_t b)
 ScriptEngine::ScriptEngine(GameLogic &logic)
 	: m_logic(logic)
 {
+	resetBreeze(); // lane VISUAL-2: the reset's values before the first reset
 }
 
 ScriptEngine::~ScriptEngine() = default;
+
+std::string ScriptEngine::currentScriptName() const
+{
+	return m_currentScript && m_currentScript->def ? m_currentScript->def->name : std::string();
+}
 
 void ScriptEngine::reset()
 {
@@ -129,6 +135,37 @@ void ScriptEngine::reset()
 	m_genericScripts.clear(); // lane CAMP-1H
 	m_thisTeam = nullptr;
 	m_stats = Stats();
+	resetBreeze(); // lane VISUAL-2
+}
+
+void ScriptEngine::resetBreeze()
+{
+	// RW 0x6097C9 .. 0x609843 (the reset's breeze stores, in this order)
+	m_breeze.direction = 1.0471975803375244f;                        // 0xBF9F20: PI / 3
+	m_breeze.directionX = SimMath::sinDet(m_breeze.direction);       // RW 0x42F4D0 (fsin)
+	m_breeze.directionY = SimMath::cosDet(m_breeze.direction);       // RW 0x42F4E0 (fcos)
+	m_breeze.intensity = 0.027488935738801956f;                       // 0xBF9F1C: 0.035f * PI / 4
+	m_breeze.lean = 0.015707964077591896f;                            // 0xBF9F18: 0.02f * PI / 4
+	m_breeze.breezePeriod = (std::int16_t)(LOGICFRAMES_PER_SECOND * 10); // 0xD9F608 (logic frames per second) * 10
+	m_breeze.randomness = 0.2f;                                       // 0xBDAD78
+	m_breeze.breezeVersion = 0;
+}
+
+void ScriptEngine::setSway(float direction, float intensity, float lean, int breezePeriod, float randomness)
+{
+	// RW 0x6031A9: the parameters' real / int fields; the period is stored as a short, then raised to 1
+	++m_breeze.breezeVersion;
+	m_breeze.direction = direction;
+	m_breeze.directionX = SimMath::sinDet(direction);
+	m_breeze.directionY = SimMath::cosDet(direction);
+	m_breeze.intensity = intensity;
+	m_breeze.lean = lean;
+	m_breeze.breezePeriod = (std::int16_t)breezePeriod;
+	if (m_breeze.breezePeriod < 1)
+	{
+		m_breeze.breezePeriod = 1;
+	}
+	m_breeze.randomness = randomness;
 }
 
 bool ScriptEngine::didPlayerAcquireScience(const Player &p, ScienceType st, bool consume)
@@ -1110,7 +1147,10 @@ bool ScriptEngine::executeEngineAction(const ScriptActionRec &a)
 	}
 	case ACT_ADD_TO_MSEC_TIMER: adjustMsecTimer(a, true, true); return true;
 	case ACT_SUB_FROM_MSEC_TIMER: adjustMsecTimer(a, true, false); return true;
-	case ACT_SET_TREE_SWAY:
+	case ACT_SET_TREE_SWAY: // lane VISUAL-2: RW 0x6031A9
+		setSway(param(a.params, 0).realValue, param(a.params, 1).realValue, param(a.params, 2).realValue, param(a.params, 3).intValue,
+			param(a.params, 4).realValue);
+		return true;
 	case ACT_SET_ATTACK_PRIORITY_THING:
 	case ACT_SET_ATTACK_PRIORITY_KIND_OF:
 	case ACT_SET_DEFAULT_ATTACK_PRIORITY:

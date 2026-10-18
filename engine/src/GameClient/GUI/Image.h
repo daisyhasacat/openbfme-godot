@@ -20,7 +20,10 @@ enum ImageStatus
 {
 	IMAGE_STATUS_NONE = 0x00000000,
 	IMAGE_STATUS_ROTATED_90_CLOCKWISE = 0x00000001,
-	IMAGE_STATUS_RAW_TEXTURE = 0x00000002
+	IMAGE_STATUS_RAW_TEXTURE = 0x00000002,
+	// lane PLATFORMICON-1 (OpenBFME, not retail; no INI status names it): the texture is a file of the game's own resources (the Godot project's
+	// res:// path in `filename`), not of the retail archives
+	IMAGE_STATUS_ENGINE_RESOURCE = 0x00000004
 };
 
 struct Image

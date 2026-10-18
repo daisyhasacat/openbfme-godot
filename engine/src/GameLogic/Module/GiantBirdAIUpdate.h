@@ -95,6 +95,8 @@ public:
 
 	UpdateSleepTime update() override; // RW 0x76CDFB
 	void crc(StateHasher &hasher) const override;
+	void xferAIStateBody(class Xfer &x) override; // lane SAVE-4c (GiantBirdAIUpdate.cpp)
+	OBFME_MODULE_XFER(GiantBirdAIUpdate) // lane SAVE-4e: its version and AIUpdateInterface's (its state: xferAIStateBody)
 	bool isIdle() const override;      // RW 0x769E8F: not while + 0x57C bit 0 is set
 
 	// AI commands 0x47 / 0x48 (SpecialAbilityUpdate's approach, RW 0x852D59 / 0x852DC5) -> RW 0x76A04A: GiantBirdNormalFlightState 0x400 to `pos`

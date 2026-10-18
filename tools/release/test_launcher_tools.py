@@ -9,7 +9,8 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -21,13 +22,62 @@ import audit_package  # noqa: E402
 import ed25519  # noqa: E402
 import make_archive  # noqa: E402
 import make_manifest  # noqa: E402
+import onezip_windows_test  # noqa: E402
 from launcher_test_server import tiny_package  # noqa: E402
 
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
+def test_onezip_mode_options_and_paths(tmp_path, monkeypatch):
+    validate = onezip_windows_test.validate_mode_options
+    validate("wine", False, False, None, None, False)
+    validate(None, True, False, None, None, False)
+    validate(None, False, True, None, None, True)
+    with pytest.raises(ValueError, match="exactly one"):
+        validate(None, False, False, None, None, True)
+    with pytest.raises(ValueError, match="--native requires Windows"):
+        validate(None, False, True, None, None, False)
+    with pytest.raises(ValueError, match="--launchers requires --key"):
+        validate(None, False, True, Path("launchers"), None, True)
+    with pytest.raises(ValueError, match="--key requires --launchers"):
+        validate(None, False, True, None, Path("key.secret"), True)
+
+    spaced = tmp_path / "path with spaces"
+    assert onezip_windows_test.resolve_windows_path(spaced, "native") == str(spaced.resolve())
+    assert onezip_windows_test.resolve_windows_path(PurePosixPath("/mnt/c/path with spaces"), "wine") == r"Z:\mnt\c\path with spaces"
+    monkeypatch.setattr(onezip_windows_test.subprocess, "run",
+                        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout=r"C:\path with spaces"))
+    assert onezip_windows_test.resolve_windows_path(spaced, "interop") == r"C:\path with spaces"
+
+
+@pytest.mark.parametrize("official", [True, False, None])
+def test_custom_key_labels_trial_without_enabling_test_overrides(tmp_path, official):
+    key = "12" * 32
+    if official is not None:
+        (tmp_path / "release_key.pub").write_text((key if official else "34" * 32) + "\n")
+    script = (HERE / "build_launcher.sh").read_text()
+    build_info = script.split('"$TEST_BUILD" <<\'EOF\'\n', 1)[1].split("\nEOF", 1)[0]
+    info_path = tmp_path / "build_info.json"
+    result = run(sys.executable, "-", info_path, "v0.0.0-alpha.9", COMMIT, "2026-10-15", "Test/repo", key, "false",
+                 input=build_info)
+    assert result.returncode == 0, result.stderr
+    info = json.loads(info_path.read_text())
+    assert info["local_trial"] is (official is not True)
+    assert info["test_build"] is False
+    assert info["release_key"] == key
+
+
 def run(*cmd, **kw) -> subprocess.CompletedProcess:
-    return subprocess.run([str(c) for c in cmd], capture_output=True, text=True, timeout=300, **kw)
+    return subprocess.run([str(c) for c in cmd], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=300, **kw)
+
+
+@pytest.fixture(autouse=True)
+def _private_denylist(tmp_path, monkeypatch):
+    """PUBLISH-2 r2: publish_release.sh's privacy gate needs the operator's private denylist; a fictional one here"""
+    f = tmp_path / "denylist.json"
+    f.write_text(json.dumps({"rules": [{"id": "hosts", "kind": "word", "pattern": ["pubhost-q"]}]}))
+    monkeypatch.setenv("OPENBFME_RELEASE_DENYLIST", str(f))
 
 
 def package_dir(d: Path, version: str) -> Path:
@@ -70,7 +120,8 @@ def test_key_rules(tmp_path):
     key.parent.mkdir()
     r = run(sys.executable, tool, "--generate-key", key)
     assert r.returncode == 0 and len(r.stdout.strip()) == 64, r.stderr
-    assert (key.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":
+        assert (key.stat().st_mode & 0o777) == 0o600
     public = r.stdout.strip()
     assert run(sys.executable, tool, "--generate-key", key).returncode != 0, "a key is never overwritten"
     assert run(sys.executable, tool, "--public-key", key).stdout.strip() == public
@@ -81,15 +132,21 @@ def test_key_rules(tmp_path):
     assert run(sys.executable, tool, "--verify", public, m).returncode == 0
     m.write_bytes(b'{"x": 2}\n')
     assert run(sys.executable, tool, "--verify", public, m).returncode == 1
-    key.chmod(0o640)
-    r = run(sys.executable, tool, "--key", key, m)
-    assert r.returncode != 0 and "other users" in r.stderr + r.stdout
+    if os.name != "nt":
+        key.chmod(0o640)
+        r = run(sys.executable, tool, "--key", key, m)
+        assert r.returncode != 0 and "other users" in r.stderr + r.stdout
 
 
 def test_make_manifest(tmp_path):
     d = package_dir(tmp_path / "out", "v0.3.0-preview.2")
     tool = HERE / "make_manifest.py"
-    r = run(sys.executable, tool, d, "--repo", "Test/repo", "--commit", COMMIT, "--date", "2026-10-09")
+    tree = run("git", "-C", REPO, "rev-parse", "HEAD^{tree}").stdout.strip()
+    commit = run("git", "-C", REPO, "commit-tree", tree, "-m", "untagged manifest test",
+                 env=dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                          GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")).stdout.strip()
+    assert re.fullmatch(r"[0-9a-f]{40}", commit), "create a real untagged commit for the tag-policy test"
+    r = run(sys.executable, tool, d, "--repo", "Test/repo", "--commit", commit, "--date", "2026-10-09")
     assert r.returncode != 0 and "is not a tag" in r.stderr + r.stdout, "a release version must be a tag on the commit"
     r = run(sys.executable, tool, d, "--repo", "Test/repo", "--commit", COMMIT, "--date", "2026-10-09", "--allow-untagged")
     assert r.returncode == 0, r.stderr
@@ -109,6 +166,8 @@ def test_make_manifest(tmp_path):
 
 
 def test_publish_dry_run(tmp_path):
+    if os.name == "nt":
+        pytest.skip("intrinsically POSIX: production Bash publish dry-run")
     d = package_dir(tmp_path / "out", "v0.3.0")
     run(sys.executable, HERE / "make_manifest.py", d, "--repo", "Test/repo", "--commit", COMMIT, "--date", "2026-10-09", "--allow-untagged")
     sk = os.urandom(32)
@@ -238,7 +297,7 @@ def test_the_launcher_presets_have_no_include_or_exclude_filter():
     of the pack: a file the pack needs or must not hold goes to addons/pack_files/export_plugin.gd (ADD / SKIP), never to a filter."""
     text = (REPO / "launcher" / "export_presets.cfg").read_text(encoding="utf-8")
     presets = len(re.findall(r"^\[preset\.\d+\]$", text, re.M))
-    assert presets == 2, "the launcher has a Linux and a Windows preset"
+    assert presets == 3, "the launcher has Linux, Windows and macOS presets"
     for key in ("include_filter", "exclude_filter"):
         assert text.count(f'\n{key}=""\n') == presets, f"every preset's {key} must be empty"
     project = (REPO / "launcher" / "project.godot").read_text(encoding="utf-8")
@@ -325,6 +384,8 @@ def test_the_release_assets_follow_the_manifest(tmp_path, legacy, archives):
 
 def test_publish_dry_run_uploads_the_manifests_archives(tmp_path):
     """the dry run of a format 3 release names two archives and no launcher archive; a checksum file that lists another set stops it"""
+    if os.name == "nt":
+        pytest.skip("intrinsically POSIX: production Bash publish dry-run")
     d = one_download_dir(tmp_path / "pkg", "v0.5.0", legacy=False)
     secret = os.urandom(32)
     pub = tmp_path / "key.pub"
@@ -374,16 +435,49 @@ def test_the_notes_say_which_file_to_download():
 
 def test_make_archive_extracts_one_file(tmp_path):
     """package.sh takes the launcher's executable out of the launcher archive for the combined package: exactly that file's bytes"""
-    for name in ("openbfme-launcher-v1-linux-x64.tar.gz", "openbfme-launcher-v1-windows-x64.zip"):
-        (tmp_path / name).write_bytes(tiny_package(name, {"OpenBFMELauncher.x86_64": b"the launcher \x00\xff", "README.txt": b"read me\n"}))
-        assert make_archive.extract(tmp_path / name, "OpenBFMELauncher.x86_64", tmp_path / "out.bin") == 0
-        assert (tmp_path / "out.bin").read_bytes() == b"the launcher \x00\xff"
+    package_script = (HERE / "package.sh").read_text()
+    build_script = (HERE / "build_launcher.sh").read_text()
+    assert 'if [ "$p" = macos ]; then launcher_extract_out="$dir"; else launcher_extract_out="$dir/$lexe"; fi' in package_script
+    assert 'chmod 0755 "$dir/$lexe" "$dir/$lexe/Contents/MacOS/OpenBFME Launcher"' in package_script
+    assert 'chmod 0755 "$dir/$lexe"' in package_script
+    assert 'chmod 0755 "$dir" "$dir/$exe" "$LAUNCHER_BINARY"' in build_script
+    assert 'chmod 0755 "$dir" "$dir/$exe"' in build_script
+    assert all(
+        "|| true" not in line and "2>/dev/null" not in line
+        for script in (package_script, build_script)
+        for line in script.splitlines()
+        if "chmod " in line
+    )
+    for name, lexe in (
+        ("openbfme-launcher-v1-linux-x64.tar.gz", "OpenBFMELauncher.x86_64"),
+        ("openbfme-launcher-v1-windows-x64.zip", "OpenBFMELauncher.exe"),
+    ):
+        (tmp_path / name).write_bytes(tiny_package(name, {lexe: b"the launcher \x00\xff", "README.txt": b"read me\n"}))
+        out = tmp_path / name.replace(".", "-")
+        out.mkdir()
+        executable = out / lexe
+        assert make_archive.extract(tmp_path / name, lexe, executable) == 0
+        assert executable.read_bytes() == b"the launcher \x00\xff"
         assert make_archive.extract(tmp_path / name, "missing.txt", tmp_path / "none.bin") == 1 and not (tmp_path / "none.bin").exists()
         assert make_archive.extract(tmp_path / name, "../" + name, tmp_path / "none.bin") == 1 and not (tmp_path / "none.bin").exists()
         # --has: how package.sh --verify tells a combined package from the game alone
-        assert make_archive.has(tmp_path / name, "OpenBFMELauncher.x86_64") and not make_archive.has(tmp_path / name, "OpenBFME.x86_64")
+        assert make_archive.has(tmp_path / name, lexe) and not make_archive.has(tmp_path / name, "OpenBFME.x86_64")
         assert run(sys.executable, HERE / "make_archive.py", "--has", tmp_path / name, "README.txt").returncode == 0
         assert run(sys.executable, HERE / "make_archive.py", "--has", tmp_path / name, "OpenBFME.pck").returncode == 1
+
+
+def test_make_archive_extracts_macos_launcher_subtree(tmp_path):
+    folder = tmp_path / "openbfme-v1-macos-universal"
+    executable = folder / "OpenBFMELauncher.app/Contents/MacOS/OpenBFME Launcher"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"launcher app executable")
+    executable.chmod(0o755)
+    archive = tmp_path / "openbfme-v1-macos-universal.zip"
+    make_archive.zip_file(folder, archive, 1_700_000_000)
+
+    unpacked = tmp_path / "unpacked"
+    assert make_archive.extract(archive, "OpenBFMELauncher.app", unpacked) == 0
+    assert (unpacked / "OpenBFMELauncher.app/Contents/MacOS/OpenBFME Launcher").read_bytes() == b"launcher app executable"
 
 
 # ---- lane ONEZIP-1 r3 (Sol r2): the seal tool reads only plain archives --------------------------------------------------------------
@@ -412,6 +506,8 @@ def _hostile_zip(path: Path, members: list) -> None:
     with zipfile.ZipFile(path, "w") as z:
         for name, kind, data in members:
             info = zipfile.ZipInfo(name)
+            info.filename = name
+            info.orig_filename = name
             info.create_system = 3
             info.external_attr = ((0o120777 if kind == "symlink" else 0o100644) << 16)
             z.writestr(info, data)
@@ -447,6 +543,9 @@ def test_the_seal_tool_refuses_a_hostile_archive_before_writing_anything(tmp_pat
         _hostile_tar(arc, top, members)
     else:
         _hostile_zip(arc, members)
+        if any("\\" in name for name, _, _ in members):
+            with zipfile.ZipFile(arc) as z:
+                assert z.infolist()[-1].orig_filename == members[-1][0]
     with pytest.raises(SystemExit, match=said.replace("(", r"\(").replace(")", r"\)")):
         seal_package.unseal(arc, tmp_path / "unsealed.out")
     with pytest.raises(SystemExit, match=said.replace("(", r"\(").replace(")", r"\)")):
@@ -540,7 +639,7 @@ def test_the_seal_tool_refuses_a_huge_zip_directory_before_allocating_for_it(tmp
         b = tmp_path / f"{top}-{name.replace(' ', '')}.zip"
         b.write_bytes(data)
         with pytest.raises(SystemExit, match=said):
-            seal_package.read_archive(b.rename(tmp_path / f"{top}.zip"))
+            seal_package.read_archive(b.replace(tmp_path / f"{top}.zip"))
     big = tmp_path / f"{top}.zip"   # a directory of 3 MB: 5,000 entries with 600-byte comments each
     with zipfile.ZipFile(big, "w") as z:
         for i in range(5000):

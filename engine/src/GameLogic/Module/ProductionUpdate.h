@@ -159,6 +159,7 @@ public:
 class ProductionUpdate : public UpdateModule, public ProductionUpdateInterface
 {
 public:
+	OBFME_MODULE_XFER(ProductionUpdate) // lane SAVE-4b
 	ProductionUpdate(Thing *thing, const ProductionUpdateModuleData *data);
 
 	static void registerClass(ModuleFactory &modules);

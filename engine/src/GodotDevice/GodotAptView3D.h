@@ -24,6 +24,7 @@
 #include <godot_cpp/classes/sub_viewport.hpp>
 #include <godot_cpp/variant/rect2.hpp>
 #include <godot_cpp/variant/rid.hpp>
+#include <godot_cpp/variant/string.hpp>
 
 #include <map>
 #include <set>
@@ -57,6 +58,7 @@ public:
 	const std::set<std::string> &notes() const { return m_notes; }
 	std::size_t viewerCount() const { return m_slots.size(); }
 	float animationFrame(const std::string &path) const;
+	String sourceStyle() const;
 
 private:
 	struct Slot

@@ -10,6 +10,7 @@
 #include "Common/PlayerTemplate.h"
 #include "Common/Team.h"
 #include "Common/Thing/ThingTemplate.h"
+#include "Common/Xfer.h"
 #include "GameLogic/Damage.h"
 #include "GameLogic/Economy.h"
 #include "GameLogic/GameLogic.h"
@@ -503,6 +504,123 @@ void VictoryConditions::crc(StateHasher &h) const
 		h.addI32(e.kind);
 		h.addI32(e.playerIndex);
 	}
+}
+
+// lane SAVE-4d: OpenBFME native layout (S-4254). RotWK's VictoryConditions (vtable RW 0xC4F108, constructor RW 0x808D3C) has one vtable and no Snapshot
+// part: retail does not save it (CHUNK_VictorySystem is another class). Every field crc hashes, the cached players as their player indices (-1 none),
+// resolved against this game's player list. NOT saved: the local slot and the observer flags (this peer's identity, set by init from the local player and
+// never changed after: a snapshot's bytes must be equal on every peer, SAVES.md T6) and the run-time counts (statistics).
+// The load (SAVE-4a review r1 rules, SAVES.md section 8) reads into temporaries and checks the closed sets before anything changes: the rule 0 .. 3, the
+// cached count 0 .. 20 with exactly that many players, each a player index of this game listed once, the events' kinds 0 / 1 and their player indices.
+void VictoryConditions::xfer(Xfer &x)
+{
+	const bool loading = x.isLoading();
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	std::int32_t rule = loading ? 0 : m_rule, defeatCount = loading ? 0 : m_defeatCount, cached = loading ? 0 : m_cached;
+	std::uint32_t endFrame = loading ? 0 : m_endFrame;
+	bool single = loading ? false : m_singleAllianceRemaining, flag90 = loading ? false : m_flag90, flag91 = loading ? false : m_flag91;
+	x.xferInt(&rule);
+	x.xferUnsignedInt(&endFrame);
+	x.xferBool(&single);
+	x.xferInt(&defeatCount);
+	x.xferInt(&cached);
+	x.xferBool(&flag90);
+	x.xferBool(&flag91);
+	std::int32_t indices[MAX_PLAYER_COUNT];
+	bool defeated[MAX_PLAYER_COUNT];
+	for (int i = 0; i < MAX_PLAYER_COUNT; ++i)
+	{
+		indices[i] = loading ? 0 : (m_players[i] ? m_players[i]->getPlayerIndex() : -1);
+		defeated[i] = loading ? false : m_isDefeated[i];
+		x.xferInt(&indices[i]);
+		x.xferBool(&defeated[i]);
+	}
+	std::vector<Event> events;
+	if (!loading)
+	{
+		events = m_events;
+	}
+	x.xferVectorSize(events, 12);
+	for (Event &e : events)
+	{
+		x.xferUnsignedInt(&e.frame);
+		x.xferInt(&e.kind);
+		x.xferInt(&e.playerIndex);
+	}
+	if (!loading)
+	{
+		return;
+	}
+	PlayerList &list = m_logic.players();
+	auto playerOf = [&](std::int32_t index) -> Player * {
+		for (int n = 0; index >= 0 && n < list.getPlayerCount(); ++n)
+		{
+			Player *p = list.getNthPlayer(n);
+			if (p && p->getPlayerIndex() == index)
+			{
+				return p;
+			}
+		}
+		return nullptr;
+	};
+	if (rule < RULE_ALL_OBJECTS || rule > RULE_BASE_OR_ARMY)
+	{
+		throw XferException("victory: a rule of " + std::to_string(rule));
+	}
+	if (cached < 0 || cached > MAX_PLAYER_COUNT)
+	{
+		throw XferException("victory: " + std::to_string(cached) + " cached players");
+	}
+	Player *players[MAX_PLAYER_COUNT] = {};
+	for (int i = 0; i < MAX_PLAYER_COUNT; ++i)
+	{
+		if (i >= cached ? indices[i] != -1 : indices[i] < 0)
+		{
+			throw XferException("victory: the cached player " + std::to_string(i) + " is player index " + std::to_string(indices[i]) + " with " +
+				std::to_string(cached) + " players cached");
+		}
+		if (indices[i] < 0)
+		{
+			continue;
+		}
+		players[i] = playerOf(indices[i]);
+		if (!players[i])
+		{
+			throw XferException("victory: the cached player " + std::to_string(i) + " is player index " + std::to_string(indices[i]) + ", which this game lacks");
+		}
+		for (int j = 0; j < i; ++j)
+		{
+			if (players[j] == players[i])
+			{
+				throw XferException("victory: player index " + std::to_string(indices[i]) + " is cached twice");
+			}
+		}
+	}
+	for (const Event &e : events)
+	{
+		if (e.kind != Event::PLAYER_DEFEATED && e.kind != Event::ALLIANCE_VICTORY)
+		{
+			throw XferException("victory: an event of kind " + std::to_string(e.kind));
+		}
+		if (e.playerIndex != -1 && !playerOf(e.playerIndex))
+		{
+			throw XferException("victory: an event of player index " + std::to_string(e.playerIndex) + ", which this game lacks");
+		}
+	}
+	m_rule = rule;
+	m_endFrame = endFrame;
+	m_singleAllianceRemaining = single;
+	m_defeatCount = defeatCount;
+	m_cached = cached;
+	m_flag90 = flag90;
+	m_flag91 = flag91;
+	for (int i = 0; i < MAX_PLAYER_COUNT; ++i)
+	{
+		m_players[i] = players[i];
+		m_isDefeated[i] = defeated[i];
+	}
+	m_events = std::move(events);
 }
 
 std::vector<std::string> VictoryConditions::stops()

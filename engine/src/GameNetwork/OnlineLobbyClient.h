@@ -22,7 +22,9 @@
 
 #pragma once
 
+#include "Common/SimulationProfile.h"
 #include "GameNetwork/GameInfo.h"
+#include "GameNetwork/PlatformKind.h"
 
 #include <array>
 #include <cstddef>
@@ -41,6 +43,9 @@ public:
 	struct Options
 	{
 		std::string profileDigest;   ///< the profile identity's MD5 (ProfileIdentity::digest): the lobby compares it at the join
+		// lane UBERJOIN-1: the simulation profile that digest is of (the player's performance mode): the room made and the room joined carry it as their
+		// "mode" ("normal" / "uber"); a join of a room in the other mode is the lobby's "mode" refusal. setProfile changes both together
+		SimulationProfile profile = SimulationProfile::Faithful;
 		int playerTemplateCount = 0; ///< factions are indices below this (or -1 random); required
 		int colorCount = 0;          ///< colours likewise; required
 		std::uint32_t pollMs = 1000; ///< the staging room's poll interval (a lobby that does not hold polls; the pause after a poll that failed)
@@ -50,6 +55,8 @@ public:
 		// (HttpRequest::held: its own connection), so a chat line typed meanwhile is not kept waiting. 0: plain polls every pollMs (the tests' blocking
 		// transport; a lobby without "wait" is polled that way whatever this says)
 		std::uint32_t longPollS = 0;
+		// lane PLATFORMICON-1: the one value this client tells the lobby about itself (the create / join body's "platform"); None: nothing is sent
+		PlatformKind platform = PlatformKind::None; // the game's glue sets localPlatform()
 	};
 	struct HttpRequest
 	{
@@ -67,10 +74,12 @@ public:
 		std::string id;          ///< 16 hex digits
 		std::u16string name;     ///< the game's name
 		std::u16string host;     ///< the host's name
+		PlatformKind hostPlatform = PlatformKind::None; ///< lane PLATFORMICON-1: the host's system (null / absent / anything but the three names: None)
 		std::string map;         ///< the map cache key
 		int players = 0;         ///< human players in it
 		int openSlots = 0;
 		bool password = false;
+		SimulationProfile mode = SimulationProfile::Faithful; ///< lane UBERJOIN-1: the game's performance mode ("mode": absent = "normal", a room of an old client)
 		std::string state;       ///< "open", or "started" (refreshList(true): a running game, to watch; mine(): the player's own, to rejoin)
 		int slot = -1;           ///< mine(): the player's slot in the running game
 	};
@@ -130,6 +139,7 @@ public:
 	// a rejoin or spectator ticket, a session token's HMAC; with its dot-joined parts: the whole token) becomes "<redacted>". The lobby's ids (16 hex
 	// digits) and the profile digest (32) stay
 	static std::string redact(const std::string &text);
+	std::string platformField() const; // lane PLATFORMICON-1: ,"platform":"<name>" or nothing
 
 	explicit OnlineLobbyClient(const Options &options);
 
@@ -146,13 +156,19 @@ public:
 	void spectateGame(const std::string &id);             // POST /v1/games/<id>/spectate: a spectator START (GameStart)
 	const std::string &sessionToken() const { return m_token; }
 	const std::vector<Listing> &mine() const { return m_mine; }
+	// lane ONLINEUX-1 r2 (Sol 4): the started games the signed-in account left, as the lobby's /v1/mine names them ("left": absent from an older lobby,
+	// then empty): a game left in an earlier run of the program is neither the player's to rejoin nor to watch (the lobby refuses a player as its spectator)
+	const std::vector<std::string> &mineLeft() const { return m_mineLeft; }
 	// the account name a session token names (its payload, lobby.mjs makeToken: base64url(JSON).base64url(HMAC)); "" when it is not one
 	static std::u16string sessionName(const std::string &token);
 	void fetchMotd();                                     // GET /v1/motd
 	// POST /v1/games: host a game; `setup` gives the map, the cash, the rules and the slot states (the host's slot must be SLOT_PLAYER, the other human
 	// slots open). `password` "" = none
-	void createGame(const std::u16string &name, const std::string &password, const SkirmishGameInfo &setup, int hostSlot);
+	// lane ONLINEHUB-1: `roomCode` (not "") makes a private room named by that code (lobby.mjs ROOM_CODE: a Quick Match or tournament match room; not
+	// listed, no password)
+	void createGame(const std::u16string &name, const std::string &password, const SkirmishGameInfo &setup, int hostSlot, const std::string &roomCode = "");
 	void joinGame(const std::string &id, const std::string &password); // POST /v1/games/<id>/join
+	void joinByCode(const std::string &roomCode);                      // lane ONLINEHUB-1: POST /v1/rooms/<code>/join (GameJoined, or Refused "join")
 	void leaveGame();                                     // POST .../leave; the client is out of the game at once (Removed "left")
 	// the local player's own slot (POST .../slot); kKeep leaves a field
 	static constexpr int kKeep = -1000;
@@ -188,12 +204,33 @@ public:
 	int localSlot() const { return m_localSlot; }
 	int hostSlot() const { return m_hostSlot; }
 	const SkirmishGameInfo &gameInfo() const { return m_info; }
+	// lane PLATFORMICON-1: the room's slots whose "platform" was neither absent, null nor one of windows / linux / macos: shown without an icon, and named
+	// here ("slot 2: platform \"beos\" is not windows, linux or macos"; the last kMaxPlatformNotes)
+	const std::vector<std::string> &platformNotes() const { return m_platformNotes; }
+	static constexpr std::size_t kMaxPlatformNotes = 16;
 	const std::array<SlotView, MAX_SLOTS> &slotViews() const { return m_slots; }
 	const std::string &startJson() const { return m_startJson; }
+	// lane ONLINEUX-1: the lobby game this player played: the screens set it when they hand a START on (the room's game, or the rejoined one; a
+	// spectator's is not the player's). finishGame: the played game is over for this player (the online screens are back after it): the lobby is told
+	// (POST /v1/games/<id>/leave: the lobby keeps a started game's slot, and offers it for a rejoin, until its player leaves) and the client forgets it
+	// (also out of mine()); returns the id, "" when none was played
+	void setPlayedGame(const std::string &id) { m_playedGame = id; }
+	const std::string &playedGame() const { return m_playedGame; }
+	std::string finishGame();
+	// lane ONLINEUX-1 r2 (Claude F1, Sol): the played game could not go on on this side (a rejoin or a watch that failed before it was live): the client
+	// forgets it and the staging room it came from without telling the lobby, so the player keeps the slot and the lobby keeps offering the game for a
+	// rejoin (only a real leave ends it; the room page's teardown sends none for a room this client no longer is in)
+	void forgetPlayedGame();
 	// Sol r1: the START could not be played (OnlineStart refused it, or the host program could not open the relay socket): the client forgets it and
 	// the game it was for, as far as this client goes (no leave is sent: the player keeps the slot and can rejoin the running game)
 	void dropStart();
 	const Options &options() const { return m_options; }
+	// lane UBERJOIN-1: the performance mode this client's games run, the one function a later matcher (Quick Match) asks. setProfile switches it and the
+	// digest the lobby compares (the caller's: the profile identity of that mode); refused (false, `why` named) while in a room: nobody changes mode inside one
+	SimulationProfile profile() const { return m_options.profile; }
+	bool setProfile(SimulationProfile profile, const std::string &digest, std::string *why);
+	// the room's mode (the host's: it can't differ inside a room): the view's "mode", Faithful before a room
+	SimulationProfile gameMode() const { return m_info.simulationProfile; }
 	std::uint32_t viewSeq() const { return m_seq; } ///< the game view's seq (moves with every change the lobby made)
 	bool busy() const { return m_inFlight != 0 || !m_queue.empty(); }
 	// lane ONLINE-5: the seconds the lobby holds a poll (its "wait"; 0: it does not, or no poll answered yet), and whether a held poll is out
@@ -210,6 +247,9 @@ public:
 	static std::string utf16ToUtf8(const std::u16string &in);
 	static std::string jsonQuote(const std::string &utf8);
 	static const char *slotStateName(SlotState s);
+	// lane UBERJOIN-1: the lobby's "mode" names: "normal" (Faithful) and "uber"
+	static const char *modeName(SimulationProfile p) { return p == SimulationProfile::Uber ? "uber" : "normal"; }
+	static bool parseMode(const std::string &name, SimulationProfile *out);
 
 private:
 	struct Pending
@@ -237,10 +277,13 @@ private:
 	std::u16string m_gameName;
 	int m_localSlot = -1, m_hostSlot = -1;
 	SkirmishGameInfo m_info;
+	std::vector<std::string> m_platformNotes; // lane PLATFORMICON-1
 	std::array<SlotView, MAX_SLOTS> m_slots{};
 	std::uint32_t m_seq = 0;      ///< the game view's seq
 	std::uint32_t m_chatSince = 0; ///< the last chat line read
 	std::string m_startJson;
+	std::string m_playedGame; // lane ONLINEUX-1
+	std::vector<std::string> m_mineLeft; // lane ONLINEUX-1 r2
 	std::uint64_t m_nextPoll = 0;
 	bool m_pollQueued = false;
 	// the requests

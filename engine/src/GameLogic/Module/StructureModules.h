@@ -82,6 +82,7 @@ void registerAll(ModuleFactory &modules);
 class StructureBody : public ActiveBody
 {
 public:
+	OBFME_MODULE_XFER(StructureBody) // lane SAVE-4b
 	StructureBody(Thing *thing, const ActiveBodyModuleData *data) : ActiveBody(thing, data) {}
 	// ZH StructureBody::setConstructorObject: a null object leaves the id alone
 	void setConstructorObject(const Object *obj);
@@ -102,6 +103,7 @@ public:
 class InactiveBody : public BehaviorModule, public BodyModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(InactiveBody) // lane SAVE-4b
 	InactiveBody(Thing *thing, const InactiveBodyModuleData *data);
 	BodyModuleInterface *getBody() override { return this; }
 	float getHealth() const override { return 0.0f; }
@@ -161,6 +163,7 @@ public:
 class StructureCollapseUpdate : public UpdateModule, public DieModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(StructureCollapseUpdate) // lane SAVE-4b
 	StructureCollapseUpdate(Thing *thing, const StructureCollapseUpdateModuleData *data);
 	DieModuleInterface *getDie() override { return this; }
 	void onDie(const DieModuleInterface::Event &event) override;
@@ -201,6 +204,7 @@ public:
 class RespawnBody : public ActiveBody
 {
 public:
+	OBFME_MODULE_XFER(RespawnBody) // lane SAVE-4b: ActiveBody's (no state of its own)
 	RespawnBody(Thing *thing, const RespawnBodyModuleData *data) : ActiveBody(thing, data), m_respawn(data) {}
 	void internalChangeHealth(float delta) override;
 	const RespawnBodyModuleData *respawnData() const { return m_respawn; }
@@ -227,6 +231,7 @@ public:
 class DelayedDeathBody : public RespawnBody
 {
 public:
+	OBFME_MODULE_XFER(DelayedDeathBody) // lane SAVE-4b
 	DelayedDeathBody(Thing *thing, const DelayedDeathBodyModuleData *data) : RespawnBody(thing, data), m_delayed(data) {}
 	void internalChangeHealth(float delta) override;
 	// RW slot 0x26 (RW 0x8C57A1)
@@ -252,6 +257,7 @@ public:
 class SymbioticStructuresBody : public ActiveBody
 {
 public:
+	OBFME_MODULE_XFER(SymbioticStructuresBody) // lane SAVE-4b
 	SymbioticStructuresBody(Thing *thing, const SymbioticStructuresBodyModuleData *data) : ActiveBody(thing, data), m_symbioticData(data) {}
 	// RW + 0x104: the object whose body this one answers with (INVALID_ID until something links them: stop S-343)
 	void setSymbiote(ObjectID id) { m_symbioteId = id; }
@@ -288,15 +294,18 @@ public:
 class LifetimeUpdate : public UpdateModule
 {
 public:
+	OBFME_MODULE_XFER(LifetimeUpdate) // lane SAVE-4b
 	LifetimeUpdate(Thing *thing, const LifetimeUpdateModuleData *data);
 	UpdateSleepTime update() override;
 	// RW 0x7A7E41: a new lifetime of random(min, max) frames from now
 	void setLifetimeRange(unsigned minFrames, unsigned maxFrames);
 	// RW 0x7A7E60: the data's own range (a WaitForWakeUp module starts its lifetime here)
 	void wakeUp();
+	void wakeFromInterface(UpdateSleepTime delay) override; // RW 0x7A7E6F
 	unsigned dieFrame() const { return m_dieFrame; }
 	unsigned startFrame() const { return m_startFrame; } ///< lane HUD-5: the Palantir's time bar (RW 0x92F7E2)
 	bool waitsForWakeUp() const { return m_data->m_waitForWakeUp; }
+	bool waitingForWakeUp() const { return m_waitingForWakeUp; } // RW +0x28, used by the Palantir
 	void crc(StateHasher &hasher) const override;
 
 private:
@@ -304,4 +313,5 @@ private:
 	const LifetimeUpdateModuleData *m_data;
 	unsigned m_dieFrame = 0;   // RW + 0x20
 	unsigned m_startFrame = 0; // RW + 0x24
+	bool m_waitingForWakeUp = false;
 };

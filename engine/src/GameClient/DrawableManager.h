@@ -24,6 +24,8 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <functional>
+#include <utility>
 #include <vector>
 
 // SMOOTH-1 (S-810): the manager lives on the render side. It no longer implements ObjectClientHooks: the simulation's calls are recorded as ordered
@@ -37,10 +39,16 @@ public:
 
 	// the simulation's client events, in order: creation, destruction, model conditions, module / sub object visibility, placement
 	void applyEvents(const std::vector<ClientEvent> &events);
+	void setHeroAttackedHandler(std::function<void(ObjectID)> handler) { m_heroAttackedHandler = std::move(handler); }
+	void setHeroFlashHandler(std::function<void(const std::string &, int)> handler) { m_heroFlashHandler = std::move(handler); }
 	size_t eventsApplied() const { return m_eventsApplied; }
 
 	Drawable *find(DrawableID id) const { return id >= 1 && id < m_slots.size() ? m_slots[id].get() : nullptr; }
 	Drawable *findByObject(ObjectID id) const;
+	// RW 0x71D18F: the ControlBar's DRAWABLE_ONLY marker has no simulation object (and is not saved).
+	// Client modules require logic-owner resolution; this entry point reports them as unsupported instead of dropping them.
+	Drawable *createClientDrawable(const ThingTemplate &tt);
+	void destroyClientDrawable(DrawableID id);
 	size_t dependencyUpdates() const { return m_dependencyUpdates; } ///< lane COMBAT-4 (RW 0x4BF2D8)
 	size_t liveCount() const { return m_live; }
 	// ids are 1, 2, 3 ... in creation order; a destroyed id is never reused. Slot 0 is unused.
@@ -97,6 +105,7 @@ public:
 	static std::string flushStopLine();
 	// lane BUILD-4: the S-1520 line (a wall span's fade-in and the draw scripts' module visibility)
 	static std::string wallFadeStopLine();
+	static std::string textureSwapStopLine(); // community PR #37: S-5015
 
 private:
 	// What the draw runtimes of drawables said: classified (classifyDrawMessage), counted, never dropped. The runtime of a live drawable keeps
@@ -121,6 +130,8 @@ private:
 	AnimationSoundModuleManager m_animationSounds; ///< lane AUDIO-4 (before the drawables: their modules leave its lists when they go)
 	DrawServices m_services;
 	std::map<ObjectID, DrawableID> m_byObject;
+	std::function<void(ObjectID)> m_heroAttackedHandler;
+	std::function<void(const std::string &, int)> m_heroFlashHandler;
 	size_t m_dependencyUpdates = 0; ///< lane COMBAT-4: dependent drawables whose shared flags changed (RW 0x4BF2D8)
 	std::uint32_t m_nextSeq = 0;
 	size_t m_eventsApplied = 0;

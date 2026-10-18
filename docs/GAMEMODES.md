@@ -88,7 +88,7 @@ check the skirmish lobby used. Order:
   too (an observer slot).
 - **Pins:** the rule is part of the VictoryConditions hash, so every
   skirmish's state hash changes from the first frame. The PERF-1 skirmish
-  vector was re-measured (remote-measure on pve). Changing the rule also
+  vector was re-measured (remote-measure on a CI host). Changing the rule also
   moved the AI-vs-AI defeat frames of two pinned games (seed 7: 4206 to 3831;
   seed 1234: 5519 to 5443; same losers): a side is now out when its last
   structure falls, even with builders left.

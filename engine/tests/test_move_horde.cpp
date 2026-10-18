@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <string>
 #include <set>
 
 using namespace movetest;
@@ -468,4 +470,58 @@ TEST_CASE("horde: the near arm's turn sets an angle goal and wakes the member wi
 	CHECK_FALSE(mover.isBlocked());
 	CHECK(mover.blockedFrames() == 0);
 	CHECK(mover.movementComplete() == completeBefore);
+}
+
+// ---- lane BACKLOG-8 r2: the near arm's height rule (RW 0x874F30: the member locomotor's ZAxisBehavior, template + 0x70, against FLOATING_Z) ----
+namespace
+{
+const char *const kHeightHordes =
+	"Locomotor FloatMemberLoco\n  Surfaces = GROUND\n  TurnTime = 500\n  TurnTimeDamaged = 500\n  Acceleration = 510\n  Braking = 510\n  MinSpeed = 0\n"
+	"  ZAxisBehavior = FLOATING_Z\n  Appearance = TWO_LEGS\n  CloseEnoughDist = 1\nEnd\n"
+	"Locomotor TreadMemberLoco\n  Surfaces = GROUND\n  TurnTime = 500\n  TurnTimeDamaged = 500\n  Acceleration = 510\n  Braking = 510\n  MinSpeed = 0\n"
+	"  ZAxisBehavior = NO_Z_MOTIVE_FORCE\n  Appearance = TREADS\n  StickToGround = Yes\n  CloseEnoughDist = 1\nEnd\n"
+	"Locomotor RaisedHordeLoco\n  Surfaces = GROUND\n  TurnTime = 2000\n  TurnTimeDamaged = 2000\n  Acceleration = 500\n  Braking = 500\n"
+	"  ZAxisBehavior = FLOATING_Z\n  Appearance = HORDE\n  CloseEnoughDist = 1\nEnd\n"
+	"Object FloatMember\n  KindOf = INFANTRY SELECTABLE\n  Geometry = CYLINDER\n  GeometryMajorRadius = 8\n  GeometryMinorRadius = 8\n  GeometryHeight = 20\n"
+	"  Behavior = AIUpdateInterface ModuleTag_AI\n  End\n  LocomotorSet\n    Locomotor = FloatMemberLoco\n    Condition = SET_NORMAL\n    Speed = 55\n  End\nEnd\n"
+	"Object TreadMember\n  KindOf = INFANTRY SELECTABLE\n  Geometry = CYLINDER\n  GeometryMajorRadius = 8\n  GeometryMinorRadius = 8\n  GeometryHeight = 20\n"
+	"  Behavior = AIUpdateInterface ModuleTag_AI\n  End\n  LocomotorSet\n    Locomotor = TreadMemberLoco\n    Condition = SET_NORMAL\n    Speed = 55\n  End\nEnd\n"
+	"Object FloatHorde\n  KindOf = HORDE MELEE_HORDE LARGE_RECTANGLE_PATHFIND SELECTABLE\n  Geometry = BOX\n  GeometryMajorRadius = 30\n  GeometryMinorRadius = 45\n"
+	"  GeometryHeight = 20\n  Behavior = HordeAIUpdate ModuleTag_AI\n  End\n  Behavior = HordeContain ModuleTag_Contain\n"
+	"    RankInfo = RankNumber:1 UnitType:FloatMember Position:X:50 Y:0 Position:X:50 Y:20 Position:X:50 Y:-20\n    InitialPayload = FloatMember 3\n  End\n"
+	"  LocomotorSet\n    Locomotor = RaisedHordeLoco\n    Condition = SET_NORMAL\n    Speed = 50\n  End\nEnd\n"
+	"Object TreadHorde\n  KindOf = HORDE MELEE_HORDE LARGE_RECTANGLE_PATHFIND SELECTABLE\n  Geometry = BOX\n  GeometryMajorRadius = 30\n  GeometryMinorRadius = 45\n"
+	"  GeometryHeight = 20\n  Behavior = HordeAIUpdate ModuleTag_AI\n  End\n  Behavior = HordeContain ModuleTag_Contain\n"
+	"    RankInfo = RankNumber:1 UnitType:TreadMember Position:X:50 Y:0 Position:X:50 Y:20 Position:X:50 Y:-20\n    InitialPayload = TreadMember 3\n  End\n"
+	"  LocomotorSet\n    Locomotor = RaisedHordeLoco\n    Condition = SET_NORMAL\n    Speed = 50\n  End\nEnd\n";
+} // namespace
+
+TEST_CASE("backlog8 horde: a parked horde 25 above the ground: FLOATING_Z members stand at their slots' height, TREADS members on the ground (RW 0x874F30)")
+{
+	MoveWorld mw(100, 100, kHeightHordes);
+	for (const char *name : { "FloatHorde", "TreadHorde" })
+	{
+		Object *h = mw.spawn(name, 505.0f, 505.0f);
+		mw.frames(10);
+		Coord3D raised = *h->getPosition();
+		raised.z = 25.0f;
+		h->setPosition(&raised);
+		const unsigned long long snaps = mw.hordeOf(h)->passStats().snaps, orders = mw.hordeOf(h)->passStats().orders;
+		mw.frames(40);
+		std::printf("  info: %s at z %.3f, snaps %llu orders %llu:", name, h->getPosition()->z, mw.hordeOf(h)->passStats().snaps - snaps,
+			mw.hordeOf(h)->passStats().orders - orders);
+		for (Object *m : mw.membersOf(h))
+		{
+			std::printf(" (%.2f, %.2f, %.3f; slot error %.3f)", m->getPosition()->x, m->getPosition()->y, m->getPosition()->z, memberError(mw, h, m));
+		}
+		std::printf("\n");
+		REQUIRE(h->getPosition()->z == 25.0f);
+		REQUIRE(mw.membersOf(h).size() == 3);
+		for (Object *m : mw.membersOf(h))
+		{
+			CHECK(memberError(mw, h, m) == 0.0f); // snapped onto the slot (the near arm)
+			// FLOATING_Z: the slot as it is (the horde's height); any other: the member's height, on the ground where it may stand
+			CHECK(m->getPosition()->z == (std::string(name) == "FloatHorde" ? 25.0f : 0.0f));
+		}
+	}
 }

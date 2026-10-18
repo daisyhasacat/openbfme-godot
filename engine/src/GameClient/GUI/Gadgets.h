@@ -58,6 +58,9 @@ int GadgetListBoxGetColumnWidth(GameWindow *listbox, int column);
 void GadgetListBoxSetColumnWidths(GameWindow *listbox, int count, const int *widths);
 void GadgetListBoxSetFont(GameWindow *listbox, GameFont *font);
 UnicodeString GadgetListBoxGetText(GameWindow *listbox, int row, int column = 0);
+// lane PLATFORMICON-1: the badge image of a text cell ("" clears it); false when the row / column does not exist or the cell holds no text
+bool GadgetListBoxSetCellBadge(GameWindow *listbox, int row, int column, const std::string &image);
+std::string GadgetListBoxGetCellBadge(GameWindow *listbox, int row, int column);
 UnicodeString GadgetListBoxGetTextAndColor(GameWindow *listbox, Color *color, int row, int column = 0);
 int GadgetListBoxAddEntryText(GameWindow *listbox, UnicodeString text, Color color, int row, int column = -1, bool overwrite = true);
 int GadgetListBoxAddEntryImage(GameWindow *listbox, const std::string &image, int row, int column = -1, bool overwrite = true, Color color = 0xFFFFFFFFu);

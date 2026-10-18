@@ -1,4 +1,4 @@
-# OpenBFME lobby on Cloudflare (services/online/DEPLOY.md). Copy to wrangler.toml, fill the account id and names; secrets go in with
+# OpenBFME lobby on Cloudflare (the deploy notes, kept outside this repository). Copy to wrangler.toml, fill the account id and names; secrets go in with
 # `wrangler secret put TICKET_KEYS` etc., never into this file.
 name = "openbfme-lobby"
 main = "src/worker.mjs"

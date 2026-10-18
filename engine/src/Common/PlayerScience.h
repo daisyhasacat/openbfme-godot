@@ -93,6 +93,10 @@ public:
 	int getSkillPointsLevelDown() const { return m_skillPointsThisRank; }
 	void setSkillPointsModifier(float m) { m_skillPointsModifier = m; }
 	void setRankLevelCap(int cap) { m_rankCap = cap; }
+	int getRankLevelCap() const { return m_rankCap; }
+	// RW 0x782942 (lane OWNERFIX-1): the first rank r in 1 .. max rank - 1 whose summed SciencePurchasePointsGranted (ranks 1 .. r) reaches `points`;
+	// 0 when none does (PLAYER_SET_MAX_SPELLPOINTS stores the answer as the rank cap, + 0x28)
+	int rankForPurchasePoints(int points) const;
 
 	bool hasScience(ScienceType st) const override; // RW 0x6AC207
 	const ScienceVec &sciences() const { return m_sciences; }
@@ -135,6 +139,7 @@ public:
 	void resetOrStartSharedReadyFrame(unsigned powerId, unsigned reload, unsigned now); // RW 0x6AD1B0
 
 	void crc(StateHasher &h) const;
+	void xfer(class Xfer &x); // lane SAVE-4a
 
 private:
 	void baseReset();                 // RW 0x782774
@@ -177,6 +182,7 @@ public:
 	// position is taken now, not at the next read). `player` null (no player at that index yet): a later player's whole history is replayed
 	void clear(const PlayerScience *player);
 	void crc(StateHasher &h) const;
+	void xfer(class Xfer &x, const PlayerScience *player); ///< lane SAVE-4d: every field crc hashes (the script engine's block); `player` at its index or null
 	const std::vector<ScienceType> &pending() const { return m_pending; }
 
 private:

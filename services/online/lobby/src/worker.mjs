@@ -16,7 +16,7 @@ const subtle = crypto.subtle;
 // - a blob is cut into 1 MiB parts, one row each (under the 2 MB row limit with its key);
 // - a log is at most 8 MiB (413 'too_big', checked against the body as it arrives); ONLINE-2 measured about 90 KB per game, so one part is typical;
 // - logs together are at most 1 GiB (blob_totals keeps the sum, so no upload scans the table); past it an upload is refused with 507
-//   'log_store_full'. Nothing is evicted: old logs stay until a cleanup or the R2 store comes (DEPLOY.md). START records are tiny and not capped.
+//   'log_store_full'. Nothing is evicted: old logs stay until a cleanup or the R2 store comes (the deploy notes). START records are tiny and not capped.
 export const SQL_PART_BYTES = 1024 * 1024;
 export const SQL_MAX_LOG_BYTES = 8 * 1024 * 1024;
 export const SQL_MAX_STORED_LOG_BYTES = 1024 * 1024 * 1024;

@@ -286,7 +286,94 @@ Left out, with the reason, in `docs/ROADMAP.md`: shadow map resolution (uses the
 double-click guard (RotWK 2.01 never reads it), colour-blind player colours
 (player colours are part of the game setup), hotkey rebinding.
 
-## Proof
+## Main menu style (MENUSTYLE-1)
+
+Options → Interface → **Main menu style** offers **Rise of the Witch-king**
+and **Battle for Middle-earth II** (default). Accept saves the choice;
+Cancel does not. The current screen is not interrupted: the change is
+applied on returning to an idle main menu, outside Create-a-Hero and a
+signed-in online session. At that point the shell is rebuilt without
+reloading the gameplay world. Returning from a game also permits the
+pending change.
+
+The choice is the `Options.ini` entry `OpenBFMEMainMenuStyle`, with value
+`rotwk` or `bfme2`. Without it, the former `OpenBFMEBFME2UI = yes/no`
+preference migrates to `bfme2/rotwk`; an explicit new style takes precedence.
+Without either entry, BFME2 is the default. Invalid values are reported and
+use the default. Test runs with `--options-file=PATH` use that options file.
+BFME1 always uses its own menus and retains this preference for switching back.
+
+### Presentation files and gameplay isolation
+
+The existing RotWK-first retail filesystem remains mounted and belongs to
+`GameWorld`. BFME2 presentation uses an independent filesystem, validated
+by `bfme2-106-english-archives.json`. It cannot remount itself as a gameplay
+source. The option never reverses global archive precedence and does not
+copy or install any game files. The user must supply the BFME2 1.06 files.
+
+Virtual paths are case-insensitive. The following are the source-routing
+rules, not a claim that every possible screen or asset is loaded on entry:
+
+| File(s) requested by the shell | BFME2 style source |
+|---|---|
+| Each shell movie's `<name>.apt`, `<name>.const`, `<name>.dat`, its imported movies, geometry and image-map texture paths | BFME2-only APT source; no retry through RotWK |
+| `MainMenu`, `Background`, `MenuFrameAndBg`, `MenuExport`, `GuiFX`, `GameWindowGadgets`, `Options`, `Skirmish`, `MPGameSetup`, `LanLobby`, `LanOpenPlay`, `OnlineShell`, `OnlineLogin`, `OnlineHome`, `OnlineOpenPlay`, `OnlineProfile`, `OnlineQuickMatch`, `Messenger`, `SaveLoad`, `CreateAHero`, `CAHManager`, `CAHClass`, `CAHAppearance`, `CAHPowers`, `CampaignMenu`, `CampaignReview`, `LoadScreen`, `QuitMenu`, `ScoreScreen`, `TimeLine` and their imports | The above rule applies to these named movies, rather than loading RotWK's movies and recolouring them |
+| `data/lotr.str` | BFME2 labels first; RotWK-only labels are added for retained RotWK game content, never overriding a BFME2 label |
+| `data/ini/fontsubstitution.ini`, root `albertusmt.otf`, `omnialtstd.ttf`, `sachwt__.ttf` | BFME2 definitions and font bytes |
+| `headertemplate.ini`, `data/ini/mappedimages/**/*.ini`, `window/apt/*.wnd` | BFME2 headers, mapped-image definitions and gadget skins. RotWK-only mapped images remain available for RotWK content; a BFME2-defined image reads its texture only from BFME2 |
+| `language.ini`, `data/ini/mouse.ini`, `data/ini/aptbuttontooltipmap.ini`, `data/ini/credits.ini` | BFME2 shell text layout, tooltips and credits |
+| APT `View3D` render objects, including `SFE_MenuFrame` and score-ring models, and their model textures/animations | BFME2 presentation filesystem; decorative viewer caches are discarded on source changes |
+| `data/ini/default/video.ini`, `data/ini/video.ini`; files named by their shell video definitions | BFME2 definitions and BFME2 install-root movie lookup; `GameWorld` campaign/gameplay movie lookup is unchanged |
+| `data/ini/audiosettings.ini`, `data/ini/default/{music,speech,soundeffects,ambientstream}.ini`, `data/ini/{music,soundeffects,speech,voice,ambientstream,miscaudio}.ini` | Loaded into a separate BFME2 shell audio manager. Only shell, submenu and credits music are routed there, including their named media files |
+
+The dynamic art/media paths come from those validated retail definitions,
+not from hard-coded copies of asset lists. `get_shell_report()` and
+`get_report()` identify the presentation policy, install root and mounted
+archives. A missing selected-shell file or parse failure is reported;
+the game does not silently restore the RotWK shell.
+
+Gameplay `GameData.ini`, objects, factions, maps and map previews, camera
+and detail settings, Create-a-Hero gameplay definitions, the simulation,
+in-game HUD and gameplay `AudioApi`/EVA continue using the original mount.
+The private music manager never installs itself as the gameplay audio
+manager. No P16-UI skirmish or lobby layout is restyled by this option;
+those screens inherit the selected retail shell's assets.
+
+### Campaign entries
+
+Both styles add **Campaigns** at the lower left of the main menu (retail
+stage position 36,588). Its panel opens above it and offers BFME2 Good,
+BFME2 Evil, Angmar, Angmar bonus and Continue campaign. It uses the
+selected shell's Albertus font and mapped-image skins
+`AptTextEntryEnabledRepeatingCenter` / `AptListBoxHiliteItem`, scaled with
+the APT stage. Thus Angmar, bonus and Continue remain reachable even when
+BFME2's native menu has no RotWK buttons. Native navigation remains intact.
+
+The provisional B2CAMP-1 integration entry point is
+`game.gd.start_bfme2_campaign(alignment: String)`, with `good` / `evil`.
+Until coordinated campaign support lands, both paths visibly report
+`BFME2 Good campaign: not wired` or `BFME2 Evil campaign: not wired`.
+Native BFME2 campaign commands also reach this stop; their engine host
+requests preserve the selected difficulty as `bfme2:good:N` /
+`bfme2:evil:N`. Angmar/bonus/Continue keep the existing campaign handlers.
+
+### Checks
+
+With the extension built, run Godot headlessly with `--path godot --script`
+and each of `res://tests/menustyle_settings_test.gd`,
+`res://tests/menustyle_native_test.gd`, `res://tests/menustyle_test.gd`.
+The latter two need `ROTWK_INSTALL` and `BFME2_INSTALL`. The C++ test
+filter is `--test-case='menustyle*'`.
+
+The settings test checks a separate-process read and keeps the choice out
+of `Options.ini`. The runtime check covers Cancel, deferred Accept,
+repeated switches, world-state and gameplay provenance preservation.
+`--menu1-walk=DIR` drives real viewport mouse/key events in the selected
+style and saves screenshots in windowed runs. Use isolated options/menu
+config files for each style and resolution; do not change the player's
+saved choice to run the walk.
+
+## Earlier proof
 
 Lane UI-6: `workspace/rebuild/proof/UI-6/widescreen-<size>-<original|wider>.png`
 (1920 x 1080, 2560 x 1080, 3440 x 1440, 5120 x 1440), the radar's view box at

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Lane LAUNCH-1: publish a signed release to GitHub Releases, where the launcher finds it (docs/RELEASE.md, "The launcher").
 #
-#   tools/release/publish_release.sh <package dir> [--repo OWNER/NAME] [--notes-file FILE] [--execute [--confirm-tag TAG] [--id-file FILE] [--resume-id ID]]
+#   tools/release/publish_release.sh <package dir> [--repo OWNER/NAME] [--notes-file FILE] [--denylist FILE] [--execute [--confirm-tag TAG] [--id-file FILE] [--resume-id ID]]
 #   (tests, dry run only: --key-file FILE instead of launcher/release_key.pub, --allow-untagged)
 #
 # A DRY RUN by default: it checks everything and prints the commands it would run. Only --execute runs them, and only after the owner's OK
@@ -25,18 +25,31 @@
 #   * manifest.json is exactly make_manifest.py's manifest of these archives (sizes, SHA-256, the SHA256SUMS file);
 #   * manifest.json.sig verifies under launcher/release_key.pub, the key the launcher is built with;
 #   * the manifest's repository is the target repository, its version a tag on the checked-out commit that the archives were built from;
-#   * no private key file is among the files.
+#   * no private key file is among the files;
+#   * (PUBLISH-2 r2, Sol r1 P1: signing does not make a release private-safe) the release's one privacy gate, autorelease.py privacy-gate:
+#     the tree of the manifest's commit (what GitHub's source archives of the tag hold), the notes and the release name, against the
+#     built-in rules and the operator's private denylist (--denylist FILE or OPENBFME_RELEASE_DENYLIST: required, also for a dry run);
+#     r3 (review F1, Sol r2): and every file the release uploads, each member at every depth (the Godot executables in the export region
+#     of the template tools/release/godot_templates.txt pins for them: OPENBFME_GODOT_TEMPLATES, default Godot 4.7.2's export templates).
+# Everything this script and its helpers print goes through autorelease.py redact (Sol r2 P2: dry runs printed the package's absolute
+# path, a helper quoted a rejected member name): the home folder becomes ~ and every rule's match is masked; a list it cannot load stops
+# the run before anything is printed.
+# A draft's name and body (also a resumed draft's: Sol r2 P2) are the audited ones, replaced when they differ and checked before and after
+# publishing.
 # The release is a pre-release exactly when the manifest's channel is preview. Assets: the archives the manifest names (lane ONEZIP-1:
 # per platform the package, the game and the launcher in one archive, and in format 2 the launcher archive the launchers published
 # before ONEZIP-1 update themselves from), SHA256SUMS, manifest.json and manifest.json.sig (the launcher reads the last two by name).
+# MACREL-1: with manifest-macos.json in the folder also the Mac package it names and the sidecar with its signature (checked above;
+# docs/RELEASE.md "The Mac package").
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 GH=${GH:-gh}
-DIR=""; TARGET="Open-BFME/openbfme-godot"; NOTES=""; EXECUTE=0; PUB="$REPO/launcher/release_key.pub"; TEST_KEY=0; UNTAGGED=0; CONFIRM=""; IDFILE=""; RESUME_ID=""
+DENY=${OPENBFME_RELEASE_DENYLIST:-}; DIR=""; TARGET="Open-BFME/openbfme-godot"; NOTES=""; EXECUTE=0; PUB="$REPO/launcher/release_key.pub"; TEST_KEY=0; UNTAGGED=0; CONFIRM=""; IDFILE=""; RESUME_ID=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) TARGET=$2; shift 2 ;;
     --notes-file) NOTES=$2; shift 2 ;;
+    --denylist) DENY=$2; shift 2 ;;
     --execute) EXECUTE=1; shift ;;
     --confirm-tag) CONFIRM=$2; shift 2 ;;
     --id-file) IDFILE=$2; shift 2 ;;
@@ -44,11 +57,17 @@ while [ $# -gt 0 ]; do
     --key-file) PUB=$2; TEST_KEY=1; shift 2 ;;
     --allow-untagged) UNTAGGED=1; shift ;;
     -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
-    -*) echo "publish_release.sh: unknown option $1" >&2; exit 2 ;;
+    -*) echo "publish_release.sh: an unknown option (not printed: the redactor is not running yet, PUBLISH-2 r4); see --help" >&2; exit 2 ;;
     *) DIR=$1; shift ;;
   esac
 done
 fail() { echo "PUBLISH FAIL: $*" >&2; exit 1; }
+[ -n "$DENY" ] || fail "no private denylist (--denylist or OPENBFME_RELEASE_DENYLIST): the release's privacy gate needs it"
+why=$(python3 "$REPO/tools/release/autorelease.py" redact --check --denylist "$DENY" 2>&1) \
+  || { echo "PUBLISH FAIL: the private denylist cannot be loaded: ${why#REDACTOR FAILED: }" >&2; exit 2; }
+export AR_HOME=$HOME AR_HOMEREAL=$(realpath -m "$HOME")
+exec > >(python3 -u "$REPO/tools/release/autorelease.py" redact --denylist "$DENY") \
+     2> >(python3 -u "$REPO/tools/release/autorelease.py" redact --denylist "$DENY" >&2)
 [ -n "$DIR" ] && [ -d "$DIR" ] || fail "usage: publish_release.sh <package dir> [--repo OWNER/NAME] [--notes-file FILE] [--execute]"
 DIR=$(cd "$DIR" && pwd)
 [ $EXECUTE = 1 ] && { [ $TEST_KEY = 1 ] || [ $UNTAGGED = 1 ]; } && fail "--key-file and --allow-untagged are for dry runs only"
@@ -65,6 +84,18 @@ COMMIT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit
 [ "$REPO_IN" = "$TARGET" ] || fail "the manifest is for $REPO_IN, the target is $TARGET"
 python3 "$REPO/tools/release/make_manifest.py" --check "$DIR" --version "$VERSION" || fail "manifest.json is not the manifest of these archives"
 python3 "$REPO/tools/release/sign_manifest.py" --verify "$PUB" "$DIR/manifest.json" || fail "the signature does not verify under $PUB"
+# MACREL-1: the separately signed Mac manifest (the macOS launchers read manifest-macos.json only; the others never see it): both files or
+# neither; signed by the same key; exactly make_macos_manifest.py's manifest of the folder's Mac package (or the no-entry one), the Mac
+# launcher inside it built with launcher/release_key.pub and this repository, the package in the checksum file
+if [ -e "$DIR/manifest-macos.json" ] || [ -e "$DIR/manifest-macos.json.sig" ]; then
+  [ -f "$DIR/manifest-macos.json" ] && [ -f "$DIR/manifest-macos.json.sig" ] || fail "manifest-macos.json and manifest-macos.json.sig come together"
+  python3 "$REPO/tools/release/sign_manifest.py" --verify "$PUB" "$DIR/manifest-macos.json" || fail "the signature of manifest-macos.json does not verify under $PUB"
+  # MACPLAY-1: the package's payload.json is sealed with the manifests' key ($PUB)
+  python3 "$REPO/tools/release/make_macos_manifest.py" --check "$DIR" --release-key-file "$REPO/launcher/release_key.pub" --seal-key-file "$PUB" \
+    || fail "manifest-macos.json is not the manifest of the folder's Mac package"
+elif compgen -G "$DIR/openbfme-*-macos-*" >/dev/null; then
+  fail "a Mac package is in $DIR without manifest-macos.json"
+fi
 if [ $UNTAGGED = 0 ]; then
   git -C "$REPO" tag --points-at "$COMMIT" | grep -qx "$VERSION" || fail "$VERSION is not a tag on the manifest's commit $COMMIT"
 fi
@@ -83,6 +114,18 @@ NAME=$(python3 "$REPO/tools/release/autorelease.py" title "$VERSION") || fail "n
 NOTES_ARG=$NOTES
 if [ -z "$NOTES_ARG" ]; then NOTES_ARG=$(mktemp); trap 'rm -f "$NOTES_ARG"' EXIT
   echo "OpenBFME $VERSION ($CHANNEL). Install or update with the OpenBFME Launcher." > "$NOTES_ARG"; fi
+# the privacy gate (PUBLISH-2 r2): the tag's tree, the notes, the name and (r3) every asset; nothing is published past a hit
+NAMEF=$(mktemp); printf '%s\n' "$NAME" > "$NAMEF"
+FILES=(); for a in "${ASSETS[@]}"; do FILES+=("$DIR/$a"); done
+if [ $UNTAGGED = 1 ] && ! git -C "$REPO" cat-file -e "$COMMIT^{commit}" 2>/dev/null; then
+  echo "PUBLISH note: a dry run with --allow-untagged (tests): the manifest's commit is not here, so only the notes, the name and the assets are audited"
+  python3 "$REPO/tools/release/autorelease.py" --git-dir "$REPO" privacy-gate --no-tree --text "$NOTES_ARG" "$NAMEF" --assets "${FILES[@]}" --denylist "$DENY" \
+    || { rm -f "$NAMEF"; fail "the privacy gate refused the notes, the name or an asset: nothing published"; }
+else
+  python3 "$REPO/tools/release/autorelease.py" --git-dir "$REPO" privacy-gate --commit "$COMMIT" --text "$NOTES_ARG" "$NAMEF" --assets "${FILES[@]}" --denylist "$DENY" \
+    || { rm -f "$NAMEF"; fail "the privacy gate refused the tag's tree, the notes, the name or an asset: nothing published"; }
+fi
+rm -f "$NAMEF"
 echo "PUBLISH checks passed for $VERSION ($CHANNEL) -> $TARGET"
 if [ $EXECUTE = 0 ]; then
   echo "DRY RUN (nothing uploaded); with --execute this runs:"
@@ -97,7 +140,9 @@ fi
 if [ -n "$CONFIRM" ]; then
   echo "Publishing $VERSION to $TARGET (confirmed by --confirm-tag)"
 else
-  answer=""; read -r -p "Publish $VERSION to $TARGET? Type the tag to confirm: " answer || true   # no terminal: not confirmed
+  # the prompt is a whole line: the redactor passes on whole lines only
+  echo "Publish $VERSION to $TARGET? Type the tag to confirm:" >&2
+  answer=""; read -r answer || true   # no terminal: not confirmed
   [ "$answer" = "$VERSION" ] || fail "not confirmed"
 fi
 WORKF=$(mktemp -d); trap 'rm -rf "$WORKF"; [ -z "$NOTES" ] && rm -f "$NOTES_ARG"' EXIT
@@ -113,9 +158,15 @@ abandon() {  # a failure after the draft exists: it is left as it is (r4, Sol r3
   if readback; then state="reads back as draft=$(draft_of)"; fi
   fail "$why; the release $RID ($VERSION) is left as it is ($state): the next autorelease run resumes a draft it recorded, or see docs/RELEASE.md (operator steps)"
 }
-finish() {  # upload what the draft $RID lacks, check every asset, publish it, read it back
+META=(--name "$NAME" --body-file "$NOTES_ARG")
+finish() {  # the audited name and body, upload what the draft $RID lacks, check every asset, publish it, read it back
   local need
   readback || abandon "the draft cannot be read back"
+  if [ "$(python3 "$REPO/tools/release/release_assets.py" --release-json "$WORKF/release.json" --dir "$DIR" --version "$VERSION" "${META[@]}" --metadata)" != same ]; then
+    echo "PUBLISH the draft $RID's name or body is not the audited one: replacing them"
+    "$GH" api --method PATCH "repos/$TARGET/releases/$RID" -f "name=$NAME" -F "body=@$NOTES_ARG" >/dev/null || abandon "replacing the draft's name and body failed"
+    readback || abandon "the draft cannot be read back"
+  fi
   need=$(python3 "$REPO/tools/release/release_assets.py" --release-json "$WORKF/release.json" --dir "$DIR" --version "$VERSION" --draft true \
            --prerelease "$PRE" --repo "$TARGET" --missing) || abandon "the draft's assets do not match the package folder"
   if [ -n "$need" ]; then
@@ -125,12 +176,12 @@ finish() {  # upload what the draft $RID lacks, check every asset, publish it, r
     readback || abandon "the draft cannot be read back"
   fi
   python3 "$REPO/tools/release/release_assets.py" --release-json "$WORKF/release.json" --dir "$DIR" --version "$VERSION" --draft true \
-    --prerelease "$PRE" --repo "$TARGET" || abandon "the uploaded draft does not match the package folder"
+    --prerelease "$PRE" --repo "$TARGET" "${META[@]}" || abandon "the uploaded draft does not match the package folder or the audited name and notes"
   # publish, then read back whatever the answer was
   "$GH" api --method PATCH "repos/$TARGET/releases/$RID" -F draft=false >/dev/null || echo "PUBLISH: the publish call failed or its answer was lost: reading the release back"
   readback || fail "the release $RID cannot be read back after publishing ($(head -c 300 "$WORKF/readback.err")): left in place, check it by hand"
   if python3 "$REPO/tools/release/release_assets.py" --release-json "$WORKF/release.json" --dir "$DIR" --version "$VERSION" --draft false \
-       --prerelease "$PRE" --repo "$TARGET"; then
+       --prerelease "$PRE" --repo "$TARGET" "${META[@]}"; then
     echo "PUBLISHED $VERSION ($CHANNEL) -> $TARGET (release $RID)"
     exit 0
   fi

@@ -96,6 +96,7 @@ public:
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override; // lane SAVE-4c (AIAttackSnapshot.cpp)
 	// RW 0x740ECD: !(slot 0x20 RW 0x742DD0: no machine -> false; the machine's current state (none: true) isIdle)
 	bool isActive() const override;
 
@@ -104,6 +105,7 @@ public:
 	bool isAttackingObject() const override { return m_isAttackingObject; }
 	bool isWeaponSlotOkToFire(int) const override { return true; } // ZH AIAttackState: any slot
 	bool isForceAttacking() const { return m_isForceAttacking; }
+	bool follows() const { return m_follow; } ///< lane SAVE-4c: the constructor's `follow` (a holder that made the state makes it again at a load)
 	AIStateMachine *attackMachine() const { return m_attackMachine.get(); }
 	const Coord3D &originalVictimPos() const { return m_originalVictimPos; }
 	void notifyFired() override { ++m_shotsFired; }
@@ -111,9 +113,22 @@ public:
 	// lane PHYS-1: the sub machine is the melee machine RW 0x744B71 (attack kind 2)
 	bool usesMeleeMachine() const { return m_meleeMachine; }
 
+	// lane SAVE-4c: the sub machine's kind (0 none, 1 the generic machine, 2 the melee machine RW 0x744B71, 3 / 4 the horde machine with its melee / ranged
+	// states): a load makes the same machine again before it loads it (bookkeeping, not hashed: the machine's states say the same)
+	enum AttackMachineMade
+	{
+		MADE_NONE = 0,
+		MADE_GENERIC = 1,
+		MADE_MELEE = 2,
+		MADE_HORDE_MELEE = 3,
+		MADE_HORDE_RANGED = 4
+	};
+
 private:
 	bool chooseWeapon();
 	std::unique_ptr<AIStateMachine> createAttackMachine();
+	std::unique_ptr<AIStateMachine> makeGenericAttackMachine();
+	int m_machineMade = MADE_NONE;
 	std::unique_ptr<AIStateMachine> m_attackMachine;
 	bool m_follow, m_isAttackingObject, m_isForceAttacking;
 	Coord3D m_originalVictimPos{ 0.0f, 0.0f, 0.0f };
@@ -132,6 +147,7 @@ public:
 	StateReturnType onEnter() override;
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
+	void xfer(class Xfer &x) override { xferNoFields(x); }
 };
 
 // the sub machine's states (ZH AIStates.cpp; ids above)
@@ -144,6 +160,7 @@ public:
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override;
 
 private:
 	bool inRange() const;
@@ -169,6 +186,7 @@ public:
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override;
 
 private:
 	AIAttackState *m_att;
@@ -186,6 +204,7 @@ public:
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
 	void crc(class StateHasher &hasher) const override;
+	void xfer(class Xfer &x) override;
 
 private:
 	AttackFireNotify *m_att;
@@ -199,6 +218,7 @@ public:
 	StateReturnType onEnter() override;
 	StateReturnType update() override;
 	void onExit(StateExitType status) override;
+	void xfer(class Xfer &x) override { xferNoFields(x); }
 };
 
 // the exact AIAttackApproachTargetState distance test the machines share: the victim is in the current weapon's range

@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/HeroModules.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Object/PartitionManager.h"
 
 #include "Common/AsciiString.h"
@@ -36,6 +37,7 @@
 #include "GameLogic/ObjectFilter.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/Object/ExperienceTracker.h"
+#include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
 
@@ -211,6 +213,28 @@ bool belowMaxHealth(const Object &o)
 {
 	const BodyModuleInterface *b = o.getBodyModule();
 	return b && b->getHealth() < b->getMaxHealth(); // body vslots 0x10 / 0x1C
+}
+
+// RW 0x85584B: visit horde payloads, and collect damaged non-horde objects before healing.
+void collectContainedHealingTargets(ContainModuleInterface &contain, std::vector<Object *> &targets)
+{
+	if (const auto *items = contain.getContainedItemsList())
+	{
+		for (Object *o : *items)
+		{
+			if (o->isKindOfName("HORDE"))
+			{
+				if (ContainModuleInterface *nested = o->getContain())
+				{
+					collectContainedHealingTargets(*nested, targets);
+				}
+			}
+			else if (belowMaxHealth(*o))
+			{
+				targets.push_back(o);
+			}
+		}
+	}
 }
 
 int mcIndex(const char *name)
@@ -821,6 +845,11 @@ void AttributeModifierAuraUpdate::crc(StateHasher &h) const
 }
 
 // ---- AutoHealBehavior --------------------------------------------------------------------------------------------------------------------------
+AutoHealBehaviorModuleData::AutoHealBehaviorModuleData()
+{
+	m_kindOf.fill(0xFFFFFFFFu); // RW 0x654B36 -> 0x6532EC; explicit KindOf replaces this mask.
+}
+
 void AutoHealBehaviorModuleData::buildFieldParse(MultiIniFieldParse &p)
 {
 	p.add(kAutoHeal);       // RW 0x656626
@@ -898,13 +927,12 @@ bool AutoHealBehavior::eligible(Object &target) const
 		const UnsignedInt now = target.logic().getFrame();
 		UnsignedInt last = 0xFFFFFFFFu;
 		bool known = false;
-		if (healer->getContain() && healer->getContain()->getHordeContainInterface())
+		if (const auto *horde = dynamic_cast<const HordeContain *>(healer->getContain()))
 		{
-			// RW 0x68C866: a healer whose contain answers the horde interface (contain vslot 0x7C) reads the horde's damage frame (vslot 0x26C); that reader
-			// is not identified (S-858): counted, the horde healer's own body is read instead
-			const_cast<GameLogic &>(target.logic()).noteStop("[S-858] AutoHealBehavior: a horde healer's damage frame reader (RW 0x68C866 -> vslot 0x26C) is not identified; its body's is used");
+			last = horde->lastMemberDamageFrame(); // RW 0x86EB60, horde interface slot 0x26C
+			known = true;
 		}
-		if (const ActiveBody *b = dynamic_cast<const ActiveBody *>(healer->getBodyModule()))
+		else if (const ActiveBody *b = dynamic_cast<const ActiveBody *>(healer->getBodyModule()))
 		{
 			last = b->lastDamageFrame(); // body vslot 0x44 (-1 = never)
 			known = true;
@@ -976,15 +1004,18 @@ UpdateSleepTime AutoHealBehavior::update()
 	}
 	if (d->m_affectsContained)
 	{
-		if (ContainModuleInterface *c = obj->getContain())
+		ContainModuleInterface *c = obj->getContain();
+		if (!c && obj->getContainedBy())
 		{
-			if (const ContainModuleInterface::ContainedItemsList *items = c->getContainedItemsList())
+			c = obj->getContainedBy()->getContain(); // RW 0x855A32 .. 0x855A58: a banner heals its parent horde.
+		}
+		if (c)
+		{
+			std::vector<Object *> targets;
+			collectContainedHealingTargets(*c, targets);
+			for (Object *o : targets)
 			{
-				const std::vector<Object *> list(items->begin(), items->end());
-				for (Object *o : list)
-				{
-					healOne(*o, true); // RW 0x855D91 (the contain's flag that turns the FX off is not identified: S-858)
-				}
+				healOne(*o, true); // RW 0x855AAD (the contain's flag that turns the FX off is not identified: S-858)
 			}
 		}
 		return d->m_singleBurst ? UPDATE_SLEEP_FOREVER : (UpdateSleepTime)d->m_healingDelay;
@@ -1010,9 +1041,20 @@ UpdateSleepTime AutoHealBehavior::update()
 			{
 				healOne(*o, true);
 			}
-			if (respawnDue && d->m_respawnNearbyHordeMembers)
+			if (respawnDue && d->m_respawnNearbyHordeMembers && o->isKindOfName("HORDE") && !o->testStatus(2))
 			{
-				logic.noteStop("[S-858] AutoHealBehavior RespawnNearbyHordeMembers (RW 0x855C83: a horde's missing members) is not ported");
+				// RW 0x855D16 .. 0x855D9A: replenishment is independent of the health/KindOf healing filter.
+				if (auto *horde = dynamic_cast<HordeContain *>(o->getContain()))
+				{
+					if ((int)horde->payloadCount() < horde->getSlotCapacity())
+					{
+						if (Object *member = horde->spawnReplacementMember(*o->getPosition()))
+						{
+							member->updateShroudNow();
+							emitFX(logic, "AutoHealBehavior RespawnFXList", d->m_respawnFXList, *member);
+						}
+					}
+				}
 			}
 		}
 		if (respawnDue)
@@ -1089,4 +1131,54 @@ void HeroModules::registerAll(ModuleFactory &modules)
 	bindRuntime<UnpauseSpecialPowerUpgrade, UnpauseSpecialPowerUpgradeModuleData>(modules, "UnpauseSpecialPowerUpgrade");
 	bindRuntime<AttributeModifierAuraUpdate, AttributeModifierAuraUpdateModuleData>(modules, "AttributeModifierAuraUpdate");
 	bindRuntime<AutoHealBehavior, AutoHealBehaviorModuleData>(modules, "AutoHealBehavior");
+}
+
+// ---- lane SAVE-4b: the snapshots (UpgradeModule's: the classes keep no state of their own) ----
+
+void UnpauseSpecialPowerUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+}
+
+void BuildableHeroListUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+}
+
+// OpenBFME native (S-4190): each class's fields in its crc's order
+void RespawnUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferReal(&m_health);
+	SnapshotXfer::enumIn(x, m_state, STATE_ALIVE, STATE_SPAWN_ANIMATION, "a respawn state");
+	x.xferObjectID(&m_respawnAt);
+	x.xferInt(&m_34);
+	x.xferInt(&m_time);
+	x.xferInt(&m_cost);
+	x.xferBool(&m_notAutoSpawn);
+	x.xferBool(&m_initialSpawn);
+}
+
+// retail's AttributeModifierAuraUpdate::xfer (RW 0x89ED19, (1, 2)) is UpdateModule::xfer, the version, the mux; OpenBFME adds its pulse counters (native)
+void AttributeModifierAuraUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	xferMux(x);
+	x.xferUnsignedInt(&m_pulses);
+	SnapshotXfer::u64(x, m_anti);
+}
+
+void AutoHealBehavior::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	xferMux(x);
+	x.xferUnsignedInt(&m_nextHealFrame);
+	x.xferBool(&m_waitingForButton);
+	x.xferUnsignedInt(&m_lastRespawnFrame);
+	x.xferUnsignedInt(&m_heals);
 }

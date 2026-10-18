@@ -20,6 +20,7 @@
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/System/ShroudManager.h"
+#include "GameLogic/AI/AIXfer.h"
 
 namespace
 {
@@ -347,6 +348,15 @@ public:
 		}
 	}
 
+	// lane SAVE-4c (obfme:AIWorld, OpenBFME layout: stop S-4220): the goal and the move
+	void xfer(Xfer &x) override
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		AIXfer::coord(x, m_goal);
+		xferMove(x, ai().mover(), m_move);
+	}
+
 private:
 	Coord3D m_goal{ 0.0f, 0.0f, 0.0f };
 	std::unique_ptr<AIMoveToState> m_move;
@@ -491,6 +501,17 @@ public:
 		}
 	}
 
+	// lane SAVE-4c (obfme:AIWorld, OpenBFME layout: stop S-4220; retail's AIEnterState has no xfer of its own in docs/SAVES-RETAIL.md's table)
+	void xfer(Xfer &x) override
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		AIXfer::objectId(x, m_container, "ai garrison: the object id container");
+		x.xferUnsignedInt(&m_timeout);
+		AIXfer::coord(x, m_goal);
+		xferMove(x, ai().mover(), m_move);
+	}
+
 private:
 	ObjectID m_container = INVALID_ID; // state + 0x4C
 	unsigned m_timeout = 0;            // state + 0x50
@@ -560,6 +581,12 @@ public:
 	}
 
 	void crc(StateHasher &h) const override { h.addBool(m_heldHorde); }
+	void xfer(Xfer &x) override // lane SAVE-4c (obfme:AIWorld, OpenBFME layout: stop S-4220)
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		x.xferBool(&m_heldHorde);
+	}
 
 private:
 	bool m_heldHorde = false;
@@ -654,6 +681,13 @@ public:
 	}
 
 	void crc(StateHasher &h) const override { h.addU32(m_container); }
+	// lane SAVE-4c (obfme:AIWorld): retail's AIExitState::xfer RW 0x7434E9 / AIHordeExitState::xfer RW 0x7434B1 are (1, 2); OpenBFME layout (S-4220)
+	void xfer(Xfer &x) override
+	{
+		XferVersion v{ 1, 1 };
+		x.xferVersion(v);
+		AIXfer::objectId(x, m_container, "ai garrison: the object id container");
+	}
 
 private:
 	bool m_horde;

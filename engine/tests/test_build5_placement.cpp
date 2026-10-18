@@ -2,6 +2,9 @@
 // (RW 0x6A2AE5) do it, the right button's drag-or-click rule, right-drag scrolling during a placement, and the directional Scroll cursor. The retail tests
 // SKIP loudly when ROTWK_INSTALL / BFME2_INSTALL are unset; the binary facts need RW_GAME_DAT. GPL-3.0.
 
+#include "GameClient/CommandButtonHelp.h"
+#include "GameLogic/Economy.h"
+#include "GameLogic/System/TerrainResourceManager.h"
 #include "doctest.h"
 
 #include "HudTestUtil.h"
@@ -1131,4 +1134,110 @@ TEST_CASE("build5 r3 alpha override: an opaque surface of a translucent drawable
 	const std::string addCode = Generate_W3D_Shader_Code(add);
 	CHECK(addCode.find("blend_add") != std::string::npos);
 	CHECK(addCode.find("ALPHA = v_fade;") != std::string::npos);
+}
+
+TEST_CASE("build5 resource preview: farms expose their radius and share without claiming resources")
+{
+	if (!haveWorld("build5 resource preview")) return;
+	PlaceRig r(shared());
+	r.startPlacing("GondorFarm");
+	r.move(512, 384);
+	PlacementIcons icons(r.game->drawables().services(), r.game->logic());
+	const std::uint32_t hash0 = r.game->logic().computeStateHash();
+	icons.update(r.ui(), 33.0, PlaceEventTranslator::ghostOptions());
+	CHECK(icons.resourceRadius() == 300.0f); // GondorFarm's TerrainResourceBehavior Radius (GONDOR_FARM_MONEY_RANGE)
+	CHECK(icons.resourceShare() == 0.0f);    // before the first logic frame every cell is shrouded for the local player (RW 0x75C02D: not usable)
+	CHECK(r.game->logic().computeStateHash() == hash0); // the preview writes nothing (previewShare is const)
+	for (int f = 0; f < 3; ++f)
+	{
+		r.game->logic().runLogicFrame();
+	}
+	const std::uint32_t hash3 = r.game->logic().computeStateHash();
+	icons.update(r.ui(), 33.0, PlaceEventTranslator::ghostOptions());
+	// community PR #37 review: the local player's filter (BFME2 0x4E6295 passes its index): the cells it has not seen yet do not count, the castle's own
+	// discs (OWNED) never count; without the filter (-1, the logic form) the same disc would be 0.849405527
+	const Coord3D &site = r.ui().placeLocation();
+	CHECK(icons.resourceShare() == 0.195508584f);
+	CHECK(r.game->logic().economy().resources().previewShare(site.x, site.y, 300.0f, false, -1) == 0.849405527f);
+	CHECK(r.game->logic().computeStateHash() == hash3);
+	const float share = icons.resourceShare();
+	icons.update(r.ui(), 33.0, PlaceEventTranslator::ghostOptions());
+	CHECK(icons.resourceShare() == share);
+	// the label and its colour (BFME2 0x4E6455): under 0.25 black; the text is GUI:TerrainResourcePercentageClaimable with the rounded percent
+	CHECK(PlacementIcons::claimantColor(share) == 0xFF000000u);
+	CHECK(PlacementIcons::claimantColor(0.25f) == 0xFFFF0000u);
+	CHECK(PlacementIcons::claimantColor(0.5f) == 0xFFFFFF00u);
+	CHECK(PlacementIcons::claimantColor(0.75f) == 0xFFFFFF00u);
+	CHECK(PlacementIcons::claimantColor(0.7500001f) == 0xFF00FF00u);
+	CHECK(PlacementIcons::claimantText(nullptr, share) == u"MISSING: 'GUI:TerrainResourcePercentageClaimable'");
+	icons.clear();
+	CHECK(icons.resourceRadius() == 0);
+	CHECK(icons.resourceShare() == 0);
+}
+
+TEST_CASE("build5 resource preview: the decal image is InGameUI PlaceTerrainResourceClaimantDecal (community PR #37), a missing row is an error")
+{
+	std::string image, error;
+	const std::string ini = "InGameUI\n  RadiusCursorTemplate = X\n    Texture = a.tga\n  End\n  PlaceTerrainResourceClaimantDecal = farmreticle02 ; comment\n"
+		"  HelpBoxNameFont = Arial\nEnd\n";
+	REQUIRE_MESSAGE(loadInGameUiString(nullptr, &ini, "PlaceTerrainResourceClaimantDecal", image, &error), error);
+	CHECK(image == "farmreticle02");
+	const std::string without = "InGameUI\n  HelpBoxNameFont = Arial\nEnd\n";
+	CHECK_FALSE(loadInGameUiString(nullptr, &without, "PlaceTerrainResourceClaimantDecal", image, &error));
+	CHECK(error == "data\\ini\\ingameui.ini: InGameUI lacks PlaceTerrainResourceClaimantDecal");
+	if (!haveWorld("build5 resource preview decal")) return;
+	REQUIRE_MESSAGE(loadInGameUiString(shared().mount->fs.get(), nullptr, "PlaceTerrainResourceClaimantDecal", image, &error), error);
+	CHECK(image == "farmreticle02"); // RotWK 2.01 InGameUI.ini
+}
+
+#include "GameLogic/WallSpan.h"
+TEST_CASE("build5 wall preview: every ghost matches the construction planner tile")
+{
+	if (!haveWorld("build5 wall preview")) return;
+	PlaceRig r(shared());
+	std::string error;
+	Object *hub = r.game->createObject("MenWallHubSmallExpansion", r.game->players().getLocalPlayer()->getPlayerIndex(), r.start, 0, &error);
+	REQUIRE_MESSAGE(hub, error);
+	Coord3D end = *hub->getPosition();
+	end.x += 300;
+	InGameUI ui;
+	ui.placeBuildAvailable("MenWallHubSmall", hub->getID());
+	ui.setPlaceGhost(end, 0, 0);
+	WallSpan::Plan plan;
+	REQUIRE(WallSpan::plan(r.game->logic(), *hub, *hub->getPosition(), end, 0, plan));
+	PlacementIcons icons(r.game->drawables().services(), r.game->logic());
+	icons.update(ui, 33, PlaceEventTranslator::ghostOptions());
+	REQUIRE(icons.icons().size() == plan.tiles.size());
+	for (size_t i = 0; i < plan.tiles.size(); ++i)
+	{
+		CHECK(icons.icons()[i].tt == plan.tiles[i].tmpl->getFinalOverride());
+		CHECK(icons.icons()[i].drawable->getPosition()->x == plan.tiles[i].pos.x);
+		CHECK(icons.icons()[i].drawable->getPosition()->y == plan.tiles[i].pos.y);
+		CHECK(icons.icons()[i].code == plan.tiles[i].code);
+	}
+}
+
+#include "GameClient/GUI/AptScreens/AptImageMode.h"
+TEST_CASE("community PR #37: an Apt image clip's _mode is parsed as BFME2 0x412AF3 and its shader samples the texture once (S-5016)")
+{
+	CHECK(parseAptImageMode("SOLID") == APT_IMAGE_SOLID);
+	CHECK(parseAptImageMode("solid_texture") == APT_IMAGE_SOLID_TEXTURE);
+	CHECK(parseAptImageMode("Solid_Grayscale") == APT_IMAGE_SOLID_GRAYSCALE);
+	CHECK(parseAptImageMode("GRAYSCALE") == APT_IMAGE_GRAYSCALE);
+	CHECK(parseAptImageMode("ADDITIVE") == APT_IMAGE_ADDITIVE);
+	CHECK(parseAptImageMode("ALPHA") == APT_IMAGE_ALPHA);
+	CHECK(parseAptImageMode("") == APT_IMAGE_ALPHA);
+	CHECK(parseAptImageMode("SOLIDX") == APT_IMAGE_ALPHA);
+	CHECK(aptImageModeShader(APT_IMAGE_ALPHA).empty());
+	// Sol review r1: a canvas_item fragment's COLOR already is texture * vertex colour; the vertex colour comes through a varying and the texture is
+	// sampled once (tests/hud_image_mode_pixel_test.gd renders it)
+	CHECK(aptImageModeShader(APT_IMAGE_SOLID) ==
+		"shader_type canvas_item;\nvarying vec4 v_tint;\nvoid vertex() { v_tint = COLOR; }\nvoid fragment() {\n\tvec4 pixel = texture(TEXTURE, UV);\n"
+		"\tpixel.a = 1.0;\n\tCOLOR = pixel * v_tint;\n}\n");
+	CHECK(aptImageModeShader(APT_IMAGE_ADDITIVE) ==
+		"shader_type canvas_item;\nrender_mode blend_add;\nvarying vec4 v_tint;\nvoid vertex() { v_tint = COLOR; }\nvoid fragment() {\n"
+		"\tvec4 pixel = texture(TEXTURE, UV);\n\tCOLOR = pixel * v_tint;\n}\n");
+	const std::vector<std::string> stops = aptImageModeStops();
+	REQUIRE(stops.size() == 1);
+	CHECK(stops[0].rfind("[S-5016] ", 0) == 0);
 }

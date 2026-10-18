@@ -2,6 +2,7 @@
 // See GameLogic/Module/WeaponStatusHelper.h.
 
 #include "GameLogic/Module/WeaponStatusHelper.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "GameLogic/Combat/ObjectWeapons.h"
 #include "GameLogic/GameLogic.h"
@@ -23,4 +24,10 @@ UpdateSleepTime WeaponStatusHelper::update()
 		w->updateWeaponStatusConditions();
 	}
 	return UPDATE_SLEEP_NONE;
+}
+
+void WeaponStatusHelper::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	ObjectHelperShell::xfer(x);
 }

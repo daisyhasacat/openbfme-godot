@@ -24,12 +24,14 @@ namespace HudObjects
 bool isLocallyControlled(const HudContext &ctx, const Object &obj);
 // ZH Object::isEffectivelyDead (destroyed or no health left)
 bool isEffectivelyDead(const Object &obj);
-// ZH Object::isSelectable (the SELECTABLE kind of, not NO_SELECT)
-bool isSelectable(const Object &obj);
+// RW 0x68DE58: object selectability, distinct from the drawable's SELECTABLE collision type.
+bool isSelectable(const Object &obj, const CommandButton *command = nullptr);
 // OpenBFME army selection: combat/support units, excluding economic workers even when armed.
 bool isCombatUnit(const Object &obj);
 // the relationship of the local player to the object's team
 Relationship relationshipToLocal(const HudContext &ctx, const Object &obj);
+// lane VISUAL-2 r2: a drag box does not add an enemy / neutral object the local player sees FOGGED or worse (addDrawableToList's shroud rule, S-288)
+bool hiddenFromDrag(const HudContext &ctx, const Object &obj);
 // ZH CanSelectDrawable (SelectionXlat.cpp:81): the drawable of the object can be selected under the rules of the system. `dragSelecting`: structures and
 // foreign objects are refused. A contained object (a horde member inside its horde) is refused.
 bool canSelect(const HudContext &ctx, const Object &obj, bool dragSelecting);
@@ -42,7 +44,7 @@ bool isPickable(const Object &obj);
 // lane HUD-5: RotWK's callers pass their own pick types (RW 0x48AB28's third argument). pickObject(ctx, pixel) is the command translator's order click (RW 0x81FBB3 /
 // 0x81FD1E: RW 0x71083F with the force attack mode); the others below are the point selection, the hover, the double click and a GUI command's object target.
 Object *pickObject(const HudContext &ctx, const ICoord2D &pixel);
-Object *pickObject(const HudContext &ctx, const ICoord2D &pixel, unsigned pickTypes);
+Object *pickObject(const HudContext &ctx, const ICoord2D &pixel, unsigned pickTypes, bool promoteContained = true);
 // RW 0x485CB8 (W3DView::iterateDrawablesInRegion, a point region): RW 0x71083F(force attack mode) | 0x100: an own hero, then an own object, then a hero, then an enemy
 Object *pickForSelection(const HudContext &ctx, const ICoord2D &pixel);
 // OpenBFME: nearest eligible enemy unit within 32 pixels at 720p (viewport scaled).
@@ -61,6 +63,7 @@ enum PickType : unsigned
 	PICK_TYPE_SHRUBBERY = 0x08,
 	PICK_TYPE_ENEMY = 0x10,          ///< a selectable enemy of the local player
 	PICK_TYPE_FORCEATTACKABLE = 0x20,
+	PICK_TYPE_SCRIPT_TARGETABLE = 0x40, ///< RW Object +0x457 SCRIPT_TARGETABLE
 	PICK_TYPE_HERO = 0x80,           ///< a selectable HERO, MONSTER or DEPLOYED_MINE
 	PICK_TYPE_OWN = 0x100,           ///< a selectable object the local player controls
 	PICK_TYPE_ROCK = 0x200

@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/ExtraUpdateModules.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/StateHash.h"
 #include "GameLogic/BitFlags.h"
@@ -149,4 +150,21 @@ void MonitorConditionUpdate::crc(StateHasher &hasher) const
 {
 	UpdateModule::crc(hasher);
 	hasher.addString(m_saved);
+}
+
+// ---- lane SAVE-4b: the snapshots ----------------------------------------------------------------------------------------------------------------------------
+// retail's layout (DeletionUpdate::xfer RW 0x88B863, tier B, (1, 1)): the version, UpdateModule::xfer, the frame the object is deleted
+void DeletionUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferUnsignedInt(&m_dieFrame);
+}
+
+// OpenBFME native (S-4190): the command set the monitor saved
+void MonitorConditionUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferAsciiString(&m_saved);
 }

@@ -158,9 +158,11 @@ std::unique_ptr<AIStateMachine> AIAttackState::createAttackMachine()
 	std::unique_ptr<AIStateMachine> m;
 	if (a.attackMachineKind() == ATTACK_MACHINE_HORDE)
 	{
-		m = a.makeHordeAttackMachine(this);
+		bool melee = false;
+		m = a.makeHordeAttackMachine(this, -1, &melee);
 		if (m)
 		{
+			m_machineMade = melee ? MADE_HORDE_MELEE : MADE_HORDE_RANGED;
 			return m;
 		}
 	}
@@ -168,15 +170,23 @@ std::unique_ptr<AIStateMachine> AIAttackState::createAttackMachine()
 	m_meleeMachine = AttackUsesMeleeMachine(owner(), m_isAttackingObject ? machine().goalObject() : nullptr, m_isAttackingObject);
 	if (m_meleeMachine)
 	{
+		m_machineMade = MADE_MELEE;
 		return makeMeleeAttackMachine(a, this);
 	}
-	// B1 AttackStateMachineCtor.cpp:253-297 (the portable structure / continue-state variants are S-325)
-	m = std::make_unique<AIStateMachine>(a, "AIAttackMachine");
+	m_machineMade = MADE_GENERIC;
+	return makeGenericAttackMachine();
+}
+
+// B1 AttackStateMachineCtor.cpp:253-297 (the portable structure / continue-state variants are S-325)
+std::unique_ptr<AIStateMachine> AIAttackState::makeGenericAttackMachine()
+{
+	std::unique_ptr<AIStateMachine> m = std::make_unique<AIStateMachine>(ai(), "AIAttackMachine");
 	// the default state is the first defined: Pursue 0x64 (here a pass through to Approach, see AIAttack.h)
 	struct PursueStub : AIState
 	{
 		explicit PursueStub(AIStateMachine &mm) : AIState(mm, "AIAttackPursueTargetState") {}
 		StateReturnType update() override { return STATE_SUCCESS; }
+		void xfer(Xfer &x) override { xferNoFields(x); } // lane SAVE-4c
 	};
 	// lane SPELL-3 (review r3): the Aim and Fire states of an attack on an object leave the machine with failure when the owner cannot possibly attack it
 	// (B1 AttackStateMachineCtor.cpp: d_0016af70 with ATTACK_CONTINUED_TARGET 2 / _FORCED 3 in both the normal and the immobile condition lists; RotWK RW

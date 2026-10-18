@@ -38,6 +38,7 @@ class Object;
 class Player;
 class ThingFactory;
 class ThingTemplate;
+class Xfer;
 
 namespace ObjectFilterMatch
 {
@@ -45,6 +46,9 @@ namespace ObjectFilterMatch
 bool isValid(const ObjectFilter *filter);
 // the OpenBFME state hash of an optional filter (its whole content)
 void crc(StateHasher &hasher, const ObjectFilter *filter);
+// lane SAVE-4a: an optional filter by value (the fields crc hashes; OpenBFME's native layout: a filter record of the player's cost modifiers and command
+// point records, a copy of a module's filter that is compared by value, RW 0x6AE74C)
+void xfer(Xfer &x, std::shared_ptr<const ObjectFilter> &filter);
 
 // RW 0x73D5C2
 bool isEquivalentTo(const ThingTemplate *a, const ThingTemplate *b);

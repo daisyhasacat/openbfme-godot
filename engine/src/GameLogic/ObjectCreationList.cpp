@@ -50,7 +50,10 @@ void parseDisposition(INI *ini, void *instance, void *store, const void *)
 	const char *names[33] = {};
 	int i = 0;
 	for (; kOCLDispositionNames[i]; ++i) names[i] = kOCLDispositionNames[i];
-	if (ini->environment().fileSystem && ini->environment().fileSystem->doesFileExist("Data\\INI\\Default\\SubsystemLegend.ini") && !ini->environment().fileSystem->doesFileExist("Data\\INI\\Default\\SubsystemLegendExpansion1.ini")) names[13] = "SET_ANGLE";
+	if (ini->bfme1Data())
+	{
+		names[13] = "SET_ANGLE"; // community PR #36: BFME1's name of disposition bit 13 (BFME1 data only, Common/BfmeGame.h)
+	}
 	INI::parseBitString32(ini, instance, store, names);
 }
 

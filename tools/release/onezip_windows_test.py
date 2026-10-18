@@ -6,6 +6,8 @@ on Windows, under Wine or natively.
                        --fake-game GAME.exe --published DIR [--tags v0.4.0-alpha.3,...]
     WSL on Windows: python3 tools/release/onezip_windows_test.py --work DIR --interop --fake-game GAME.exe --published DIR \\
                        --launchers DIR --key DIR/key.secret       (no window: the swap step is skipped by name, stop S-4480)
+    Native Windows: python tools/release/onezip_windows_test.py --work DIR --native --fake-game GAME.exe --published DIR \\
+                       --launchers DIR --key DIR/key.secret       (headless: the swap step is skipped by name, stop S-4480)
 
 --published: <DIR>/<tag>/openbfme-launcher-<tag>-windows-x64.zip, the launcher archives of the GitHub releases as testers downloaded
 them (gh release download <tag> -R Open-BFME/openbfme-godot -p 'openbfme-launcher-*'). Not rebuilt from source: the published
@@ -51,6 +53,7 @@ import make_manifest  # noqa: E402
 from launcher_test_server import COMMIT, TEST_REPO, ReleaseServer, tiny_package  # noqa: E402
 from launcher_windows_test import KILL_POINTS  # noqa: E402
 import seal_package  # noqa: E402
+from launcher_test_support import WINDOWS  # noqa: E402
 
 SECRET = [b""]   # the test's release key (its secret), set in main()
 
@@ -64,10 +67,32 @@ NEXT = "v0.4.0-alpha.10"   # the release after NEW, for the game-start steps
 SWAP_TO = "v0.4.0-alpha.11"  # a real launcher of this tree the headless self-replacement swaps in
 
 
+def validate_mode_options(wine: str | None, interop: bool, native: bool, launchers: Path | None,
+                          key: Path | None, windows: bool) -> None:
+    if sum(bool(value) for value in (wine, interop, native)) != 1:
+        raise ValueError("exactly one of --wine <binary>, --interop, or --native")
+    if native and not windows:
+        raise ValueError("--native requires Windows")
+    if launchers and not key:
+        raise ValueError("--launchers requires --key")
+    if key and not launchers:
+        raise ValueError("--key requires --launchers")
+
+
+def resolve_windows_path(path: Path, mode: str) -> str:
+    if mode == "wine":
+        return "Z:" + str(path).replace("/", "\\")
+    if mode == "native":
+        return str(path.resolve())
+    if mode == "interop":
+        return subprocess.run(["wslpath", "-w", str(path)], capture_output=True, text=True, check=True).stdout.strip()
+    raise ValueError(f"unknown Windows launcher test mode: {mode}")
+
+
 def patch_published(exe: bytes, test_key: bytes) -> bytes:
     """the published executable with its build information's release key replaced by the test key and test_build set (same length,
     nothing else touched); asserts that each value is there exactly once"""
-    real = (REPO / "launcher/release_key.pub").read_text().strip()
+    real = (REPO / "launcher/release_key.pub").read_text(encoding="utf-8").strip()
     key_field = f'"release_key": "{real}"'.encode()
     flag = b'"test_build": false'
     assert exe.count(key_field) == 1, "the published launcher does not carry the release key of launcher/release_key.pub exactly once"
@@ -114,8 +139,10 @@ def tree(folder: Path) -> dict[str, str]:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--work", type=Path, required=True)
-    ap.add_argument("--wine")
-    ap.add_argument("--interop", action="store_true", help="WSL on Windows: the .exe files run natively, without a window")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--wine")
+    mode.add_argument("--interop", action="store_true", help="WSL on Windows: the .exe files run natively, without a window")
+    mode.add_argument("--native", action="store_true", help="run native Windows executables from Windows Python")
     ap.add_argument("--fake-game", type=Path, required=True)
     ap.add_argument("--published", type=Path, required=True)
     ap.add_argument("--tags", default=",".join(PUBLISHED))
@@ -124,8 +151,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--godot", default=os.environ.get("GODOT", "godot"))
     ap.add_argument("--skip-swap", action="store_true", help="leave out the self-replacement steps (a quick rerun of the others)")
     a = ap.parse_args(argv)
-    if bool(a.wine) == a.interop:
-        ap.error("exactly one of --wine <binary> and --interop")
+    try:
+        validate_mode_options(a.wine, a.interop, a.native, a.launchers, a.key, WINDOWS)
+    except ValueError as error:
+        ap.error(str(error))
     tags = [] if a.tags == "none" else [t for t in a.tags.split(",") if t]   # none: this tree's launcher only
     for t in tags:
         if t not in PUBLISHED:
@@ -147,7 +176,17 @@ def main(argv: list[str]) -> int:
         (builds / "key.pub").write_text(ed25519.public_key(secret).hex() + "\n")
         (builds / "key.secret").write_bytes(secret)
         for v in news:
-            r = subprocess.run([str(HERE / "build_launcher.sh"), "--out", str(builds), "--version", v, "--commit", COMMIT, "--repo", TEST_REPO,
+            export = [str(HERE / "build_launcher.sh")]
+            if a.native:
+                from launcher_native_export import export_launcher
+                try:
+                    (builds / f"openbfme-launcher-{v}-windows-x64.zip").write_bytes(
+                        export_launcher(REPO, builds, v, COMMIT, TEST_REPO, ed25519.public_key(secret).hex(), a.godot, 1700000000))
+                    continue
+                except RuntimeError as e:
+                    print(e)
+                    return 1
+            r = subprocess.run(export + ["--out", str(builds), "--version", v, "--commit", COMMIT, "--repo", TEST_REPO,
                                 "--key-file", str(builds / "key.pub"), "--mtime", "1700000000", "--platforms", "windows", "--worktree",
                                 "--test-build", "--godot", a.godot], capture_output=True, text=True)
             if r.returncode != 0:
@@ -158,9 +197,7 @@ def main(argv: list[str]) -> int:
     new_exe = {v: zipfile.ZipFile(io.BytesIO(z)).read(f"openbfme-launcher-{v}-windows-x64/{EXE}") for v, z in new_zip.items()}
 
     def winpath(p: Path) -> str:
-        if wine:
-            return "Z:" + str(p).replace("/", "\\")
-        return subprocess.run(["wslpath", "-w", str(p)], capture_output=True, text=True, check=True).stdout.strip()
+        return resolve_windows_path(p, "wine" if wine else "native" if a.native else "interop")
 
     if wine:
         roaming = [r for r in sorted(Path(os.environ["WINEPREFIX"]).glob("drive_c/users/*/AppData/Roaming")) if r.parent.parent.name != "Public"]
@@ -174,7 +211,15 @@ def main(argv: list[str]) -> int:
         appdata.mkdir()
         data = appdata / "OpenBFMELauncher"
         env = dict(os.environ, APPDATA=winpath(appdata))
-        env["WSLENV"] = ":".join(filter(None, [os.environ.get("WSLENV", ""), "APPDATA", "OPENBFME_TEST_PLAYED"]))
+        if a.native:
+            localappdata, userprofile = appdata / "Local", appdata / "Profile"
+            localappdata.mkdir()
+            userprofile.mkdir()
+            env.update(LOCALAPPDATA=winpath(localappdata), USERPROFILE=winpath(userprofile), HOME=winpath(userprofile))
+        if a.interop:
+            env["WSLENV"] = ":".join(filter(None, [os.environ.get("WSLENV", ""), "APPDATA", "OPENBFME_TEST_PLAYED"]))
+    if not a.interop:
+        env.pop("WSLENV", None)
     played = work / "played.txt"
     env["OPENBFME_TEST_PLAYED"] = winpath(played)
     srv = ReleaseServer()
@@ -186,7 +231,7 @@ def main(argv: list[str]) -> int:
         log = data / "launcher.log"
         before = log.stat().st_size if log.is_file() else 0
         # with its window under Wine (on Windows a staged launcher update is applied only at a start with a window); --interop has none
-        cmd = ([a.wine] if wine else []) + [str(inst / EXE)] + (["--headless"] if a.interop or headless else []) + ["--", f"--api-base={srv.origin}", f"--repo={TEST_REPO}", *args]
+        cmd = ([a.wine] if wine else []) + [str(inst / EXE)] + (["--headless"] if a.interop or a.native or headless else []) + ["--", f"--api-base={srv.origin}", f"--repo={TEST_REPO}", *args]
         with open(work / "out.txt", "w") as out:  # a file, not a pipe: Wine's services would hold a pipe open
             subprocess.run(cmd, env=env, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=900, cwd=inst)
         t0, last, size = time.time(), time.time(), -1
@@ -243,7 +288,7 @@ def main(argv: list[str]) -> int:
             step(f"{old}: install + play", f"update installed {new}" in log and wait_played(f"versions\\{new}\\game\\OpenBFME.exe")
                  and (game_dir / EXE).is_file() and (game_dir / EXE).read_bytes() == new_exe[new], log)
             step(f"{old}: staged", f"launcher update {new} staged" in log and (inst / "update" / EXE).read_bytes() == new_exe[new], log)
-            if a.interop:
+            if a.interop or a.native:
                 print(f"SKIP {old}: swap: a start without a window does not apply a launcher update on Windows (stop S-4480)", flush=True)
                 skipped.append(f"{old}: swap")
                 continue
@@ -269,7 +314,8 @@ def main(argv: list[str]) -> int:
         srv.publish(new, release(work, new, secret, combined_zip(work, new, a.fake_game, new_exe[new]), new_zip[new], new_exe[new]))
         # NEXT's game is a program that stays running (Windows' own ping.exe under the game's name), so the game's side can report the
         # real Windows process id of a live game (Sol r2: the harness reported an invented one after the stand-in had ended)
-        stand_in = (Path(os.environ["WINEPREFIX"]) / "drive_c/windows/system32/ping.exe") if wine else Path("/mnt/c/Windows/System32/PING.EXE")
+        stand_in = (Path(os.environ["WINEPREFIX"]) / "drive_c/windows/system32/ping.exe") if wine else (
+            Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE" if a.native else Path("/mnt/c/Windows/System32/PING.EXE"))
         srv.publish(NEXT, release(work, NEXT, secret, combined_zip(work, NEXT, stand_in, b"MZ the launcher of " + NEXT.encode()), None,
                                   b"MZ the launcher of " + NEXT.encode(), fmt=3))
         played.unlink(missing_ok=True)
@@ -282,7 +328,7 @@ def main(argv: list[str]) -> int:
             return req
 
         def read(req: Path, name: str) -> dict:
-            return json.loads((req / name).read_text()) if (req / name).is_file() else {}
+            return json.loads((req / name).read_text(encoding="utf-8")) if (req / name).is_file() else {}
 
         req = request([])
         log = run(home, f"--game-start={winpath(req)}", headless=True)   # as the game runs it: without a window
@@ -370,8 +416,8 @@ def main(argv: list[str]) -> int:
                  and (not point or f"test kill at {point}" in log), log)
     finally:
         srv.stop()
-    want = (4 if not a.interop else 2) * len(tags) + 3 + (0 if a.skip_swap else 1 + len(KILL_POINTS))
-    how = " (Wine)" if wine else " (native, no window)"
+    want = (4 if not (a.interop or a.native) else 2) * len(tags) + 3 + (0 if a.skip_swap else 1 + len(KILL_POINTS))
+    how = " (Wine)" if wine else (" (native Windows)" if a.native else " (interop, no window)")
     print(f"RESULT the one download on Windows{how}: {sum(results.values())}/{len(results)} steps passed"
           + (f", {len(skipped)} skipped by name" if skipped else ""))
     if not all(results.values()) or len(results) != want:

@@ -66,6 +66,7 @@ private:
 	void populate();
 	void fillStats();
 
+	void recordHonors(); // lane OWNERFIX-3
 	ShellEnvironment &m_env;
 	ScoreScreenData::Axis m_axis;
 	int m_mode = -1;

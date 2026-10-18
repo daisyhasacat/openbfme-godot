@@ -140,7 +140,7 @@ TEST_CASE("mapobj retail: the object loop over all 181 maps explains every objec
 	std::vector<std::pair<size_t, std::string>> perMapModels;
 	std::set<std::string> allModels;
 	std::map<std::string, size_t> sideColors, sideFactions;
-	std::map<std::string, size_t> runtimeErrors, runtimeDefects, runtimeHideMisses, ignoredFields, hooksByFunction, hooksByTemplate, hookHides, hookShows;
+	std::map<std::string, size_t> runtimeErrors, runtimeDefects, runtimeHideMisses, ignoredFields, inferredFields, hooksByFunction, hooksByTemplate, hookHides, hookShows;
 	size_t hookObjects = 0, scriptsRun = 0, mapsWithS091 = 0, mapsWithoutScan = 0, hooksRun = 0, creationDraws = 0;
 	std::map<std::string, size_t> handlersRun;
 	std::set<std::string> luaStops;
@@ -248,6 +248,7 @@ TEST_CASE("mapobj retail: the object loop over all 181 maps explains every objec
 			for (const auto &kv : runtime.report().dataDefects) runtimeDefects[kv.first] += kv.second;
 			for (const auto &kv : runtime.report().hideMisses) runtimeHideMisses[kv.first] += kv.second;
 			for (const auto &kv : runtime.report().ignoredDrawFields) ignoredFields[kv.first] += kv.second;
+			for (const auto &kv : runtime.report().inferredDrawFields) inferredFields[kv.first] += kv.second;
 			scriptsRun += runtime.report().scriptsRun;
 			hooksRun += runtime.report().creationHookObjects;
 			CHECK(runtime.report().creationHookObjects == r.creationHookObjects); // every object the loop counted as having an OnCreated handler ran it
@@ -377,7 +378,9 @@ TEST_CASE("mapobj retail: the object loop over all 181 maps explains every objec
 	// S-115: static draw fields stored, not applied (placed models; no map object sets ForceToBack, and DistanceFog = No is not on any map object either:
 	// the synthetic tests cover those)
 	CHECK(ignoredFields == std::map<std::string, size_t>({
-		{ "W3DFloorDraw StaticModelLODMode", 1873 }, { "W3DFloorDraw WeatherTexture", 3166 }, }));
+		{ "W3DFloorDraw StaticModelLODMode", 1873 }, }));
+	// S-5015 (community PR #37): the floor WeatherTexture is drawn by inference
+	CHECK(inferredFields == std::map<std::string, size_t>({ { "W3DFloorDraw WeatherTexture", 3166 }, }));
 	// S-110: the OnCreated Lua handlers of every full object and horde member (scriptevents.xml AILuaEventsList -> OnCreated, scripts.lua): the
 	// loop counts them (below); MapObjectRuntime runs them (pinned further down)
 	CHECK(mapsWithoutScan == 0);

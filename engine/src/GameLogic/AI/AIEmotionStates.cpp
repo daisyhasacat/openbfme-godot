@@ -17,6 +17,7 @@
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/System/EmotionSystem.h"
+#include "GameLogic/AI/AIXfer.h"
 
 namespace
 {
@@ -430,4 +431,27 @@ void AIFaceObjectIdleState::crc(StateHasher &h) const
 {
 	AIIdleState::crc(h);
 	h.addBool(m_canTurn);
+}
+
+// lane SAVE-4c (obfme:AIWorld, OpenBFME layouts: stop S-4220): what crc covers; the panic state's move uses the state's path budget (+ 0x4C)
+void AIPanicState::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferReal(&m_goal.x);
+	x.xferReal(&m_goal.y);
+	x.xferReal(&m_goal.z);
+	x.xferInt(&m_budget);
+	x.xferBool(&m_goalFromPath);
+	x.xferBool(&m_cowering);
+	x.xferUnsignedInt(&m_cowerUntil);
+	xferMove(x, ai().mover(), m_move, &m_budget);
+}
+
+void AIFaceObjectIdleState::xfer(Xfer &x)
+{
+	AIIdleState::xfer(x);
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferBool(&m_canTurn);
 }

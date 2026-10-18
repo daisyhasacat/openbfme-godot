@@ -15,8 +15,11 @@
 //     + 0x70 label) when the selection has it, and, only right after a DescriptLabel's text, an upgrade the selection's player lacks gets "\n\n" +
 //     "TOOLTIP:TooltipCannotPurchaseBecauseQueueFull" when the selection's queue holds 0x14 entries, else "TOOLTIP:TooltipNotEnoughMoneyToBuild" when the
 //     local player cannot afford it (RW 0x807E15 .. 0x807EB0, RW 0x66F492);
-//     a single-science PURCHASE_SCIENCE button "TOOLTIP:ScienceCost" with the science's cost (RW 0x5FEC64); the "resource" image suffix is the Palantir's
+//     a single science, or the first unowned tier of PURCHASE_SCIENCE, uses "TOOLTIP:ScienceCost" (RW 0x5FEC64); the "resource" image suffix is the Palantir's
 //     faction (RW 0x6D4750: Palantir + 0xF8, SetPlayerFaction);
+//   * RW 0x807A81's remaining recovered cost paths: self-repair is health/wall-gated, REVIVE uses PlayerHeroList cost/rank and recruit/revive text,
+//     CASTLE_UNPACK uses canUnpack(false), SPECIAL_POWER shows UnitCost (units, not money). SPELL_BOOK replaces its description with ScienceDisabled
+//     for the first owned required science disabled/hidden or without its roots. See docs/re/rotwk/RW_0x807A81.md.
 //   * InGameCommandButtonHelp::Impl (the decomp's InGameCommandButtonHelpDisplayStrings.cpp / ...SetWidth.cpp / ...Render.cpp, tier A for RW 0x974EEB /
 //     0x9744E4 / 0x974795): built from (name, cost, command points, description, resource suffix) - the decomp's (name, title, description, cost); the
 //     name loses its '&' markers and the first alphanumeric after one is the shortcut key (towupper); the title icon is "Resource_Icon", the second
@@ -30,10 +33,9 @@
 //   * Render(position, size) (RW 0x974795): the name centred at the top; with a shortcut: the title with its icon left and the shortcut right-aligned on one
 //     line (or the shortcut alone centred); without: the title with its icon centred; then the second line with its icon (centred when there is no
 //     shortcut); then the long text centred; positions rounded as floor(v + 0.5).
-// INFERENCE (stop S-2702): the word wrap breaks at spaces and at '\n' and centres each line (W3D Render2DSentenceClass not read); the prerequisite text
-// (RW 0x8F9BBF) is the prerequisite object's DisplayName list joined by " or " (ZH ProductionPrerequisite::getRequiresList); not ported (a description
-// noted in the help's `unported`): the special power cost branches (START_SELF_REPAIR / START_NEIGHBORHOOD_REPAIR, SPECIAL_POWER's "TOOLTIP:UnitCost"),
-// REVIVE / CASTLE_UNPACK costs, SPELL_BOOK's "TOOLTIP:ScienceDisabled", the multi-science PURCHASE_SCIENCE pick, the upgrade's conflict / prerequisite labels.
+// INFERENCE (stop S-2702): the word wrap breaks at spaces and at '\n' and centres each line (W3D Render2DSentenceClass not read). The prerequisite text
+// (RW 0x8080B6 .. 0x808118, lane ROTWK-C): each Prerequisites record's ProductionPrerequisite::getRequiresList (RW 0x8F9BBF) joined by ", " into
+// CONTROLBAR:Requirements, after "\n" when the description has text.
 
 #pragma once
 
@@ -69,6 +71,10 @@ struct HelpBoxSettings
 	static bool load(ArchiveFileSystem &fs, HelpBoxSettings &out, std::string *error);
 	static bool scan(const std::string &inGameUi, const std::string &language, HelpBoxSettings &out, std::string *error);
 };
+
+// One string row of the InGameUI block (data\ini\ingameui.ini, parseAsciiString), e.g. PlaceTerrainResourceClaimantDecal (the farm placement's mapped
+// image). The other rows are skipped as HelpBoxSettings skips them. A missing file, block or row is an error (no default); `memory` (tests) replaces the file
+bool loadInGameUiString(ArchiveFileSystem *fs, const std::string *memory, const char *field, std::string &out, std::string *error);
 
 // What the help box draws (window pixels), in order.
 struct HelpDrawOp

@@ -21,6 +21,8 @@
 #include "GameClient/GUI/AptScreens/AptMainMenu.h"
 #include "GameClient/GUI/AptScreens/AptSimpleScreens.h"
 #include "GameClient/GUI/AptMessageBox.h"
+#include "GameClient/GUI/AptScreens/AptQuitMenu.h"
+#include "GameClient/GUI/MenuNavigator.h"
 #include "GameClient/GUI/Gadget.h"
 #include "GameClient/GUI/Gadgets.h"
 #include "GameClient/GUI/Shell/Shell.h"
@@ -30,9 +32,11 @@
 #include "GameClient/OptionPreferences.h"
 #include "Libraries/Source/Apt/Apt.h"
 #include "Libraries/Source/Apt/AptButtonInst.h"
+#include "Libraries/Source/Apt/AptInput.h"
 #include "Libraries/Source/Apt/AptCharacterInst.h"
 #include "Libraries/Source/Apt/AptRenderList.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -408,7 +412,8 @@ TEST_CASE("cah2 main menu retail: a request with no screen (War of the Ring) sho
 	const std::vector<std::string> calls = menu->unavailableBox()->calls();
 	REQUIRE_FALSE(calls.empty());
 	CHECK(calls.front() == "Show Ok false");
-	CHECK(menu->unavailableBox()->text() == u"War of the Ring is not available in this build yet.");
+	// lane MENUWORK-1: the box says why, in the player's words
+	CHECK(menu->unavailableBox()->text() == u"War of the Ring is not available yet: its strategy map game is still being rebuilt.");
 	// the box's Ok (GuiFX.apt's button sends "_level<n>.MessageBox_OnButtonOk"): the box goes, the menu gets OnFocus("1") -> ShowMainMenu
 	REQUIRE(fx.wm->invokeCallback("_level" + std::to_string(boxLevel) + ".MessageBox_OnButtonOk", ""));
 	fx.tick(90);
@@ -2748,4 +2753,371 @@ TEST_CASE("opts5 options retail: Show All Health Bars greyed by the detail level
 	rows = options->retailRows();
 	CHECK_FALSE(rowOf(rows, "Retail.HealthBars").enabled);
 	CHECK(rowOf(rows, "Retail.HealthBars").help == own + u". This detail level already shows every health bar.");
+}
+
+// ---- lane OPTS-6: menus that are exact, modal and usable without a mouse ---------------------------------------------------------------------------
+namespace
+{
+// QuitMenu.apt over a "game" (the context the host passes), loaded as the device loads it (GodotAptPlayer quit_menu: its own screen, not on the stack)
+std::unique_ptr<AptQuitMenu> openQuitMenu(ShellFx &fx, QuitMenuContext &context)
+{
+	context.inGame = true;
+	fx.environment.quitMenu = &context;
+	auto quit = std::make_unique<AptQuitMenu>(*fx.wm, *fx.shell, fx.environment);
+	REQUIRE(quit->level() >= 0); // tolerance: any free slot (the load's answer -1 is the refusal)
+	for (int i = 0; i < 30 && !fx.wm->isAptWindowLoaded(quit->level()); ++i)
+	{
+		fx.tick(1);
+	}
+	fx.tick(200); // its intro
+	return quit;
+}
+
+// the quit menu's buttons the pointer can press now (each at its centre)
+std::vector<std::string> pressableButtons(ShellFx &fx, int level, std::vector<std::array<float, 2>> *centres = nullptr)
+{
+	std::vector<std::string> out;
+	std::vector<AptButtonInst *> all;
+	std::function<void(AptCharacterInst *)> walk = [&](AptCharacterInst *c) {
+		if (!c)
+		{
+			return;
+		}
+		if (AptButtonInst *b = c->asButton())
+		{
+			all.push_back(b);
+		}
+		if (AptSpriteInst *sp = c->asSprite())
+		{
+			for (AptCharacterInst *k : sp->children())
+			{
+				walk(k);
+			}
+		}
+	};
+	walk(fx.wm->apt().level(level));
+	for (AptButtonInst *b : all)
+	{
+		float x0, y0, x1, y1, x, y;
+		if (b->contentBounds(x0, y0, x1, y1))
+		{
+			b->globalMatrix().apply((x0 + x1) / 2, (y0 + y1) / 2, x, y);
+			if (fx.wm->apt().input().hitTestButtons(x, y) == b)
+			{
+				out.push_back(b->targetPath());
+				if (centres)
+				{
+					centres->push_back({ x, y });
+				}
+			}
+		}
+	}
+	return out;
+}
+
+} // namespace
+
+// The owner (2026-10-15): the quit menu's SAVE / LOAD / RESTART / EXIT / RESUME took clicks through the OpenBFME settings opened from it. RotWK pushes
+// QuitMenu.apt on the shell (RW 0x921B0F -> Shell::push RW 0x75E3B7), so Options' push (RW 0x91ED91) shuts it down and Options' pop runs its init again.
+TEST_CASE("opts6 shell retail: Options opened from the quit menu hides it and takes its focus; closing Options shows it and gives the focus back")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	ShellFx fx(mount, "StaticGameLOD = High\n");
+	fx.environment.openbfmeOptionsMenu = true;
+	fx.tick(2);
+	QuitMenuContext context;
+	std::unique_ptr<AptQuitMenu> quit = openQuitMenu(fx, context);
+	const int quitLevel = quit->level();
+	std::vector<std::array<float, 2>> centres;
+	const std::vector<std::string> buttons = pressableButtons(fx, quitLevel, &centres);
+	REQUIRE(buttons.size() == 6); // RotWK's QuitMenu.apt: OPTIONS, SAVE, LOAD, RESTART, EXIT, RESUME GAME
+	fx.shell->setOverlay(quit.get()); // the device's quit_menu open
+	CHECK(fx.wm->focusedLevel() == quitLevel);
+	AptOptionsScreen::open(*fx.shell, false, false, false, false); // the quit menu's OptionsScreen (RW 0x921783)
+	fx.tick(60);
+	AptOptionsScreen *options = dynamic_cast<AptOptionsScreen *>(fx.shell->top());
+	REQUIRE(options);
+	CHECK(quit->isHidden());
+	CHECK(quit->movieUnloaded()); // RW 0x812A37 -> AptPlayer::HideLevel: the movie leaves its level, the screen stays (lane SAVE-UI1)
+	CHECK(fx.wm->apt().level(quitLevel) == nullptr);
+	CHECK(pressableButtons(fx, quitLevel).empty());
+	CHECK(fx.wm->focusedLevel() == options->level());
+	CHECK(fx.shell->inputTop() == options);
+	CHECK(fx.wm->backgroundMode() == 1); // RW 0x91EE08: the front-end background over the game
+	// a click where every quit menu button was: none of its commands runs
+	const int restart = quit->commandCalls("AptQuitMenu::RestartMission"), exit = quit->commandCalls("AptQuitMenu::ExitMission");
+	const int resume = quit->commandCalls("AptQuitMenu::ReturnToGame"), save = quit->commandCalls("AptQuitMenu::SaveMenu");
+	for (const auto &c : centres)
+	{
+		clickStage(fx, c[0], c[1]);
+	}
+	REQUIRE(fx.shell->top() == options); // nothing closed Options either
+	fx.shell->pop();
+	fx.tick(30);
+	CHECK(fx.shell->top() == nullptr);
+	CHECK_FALSE(quit->isHidden());
+	CHECK(fx.wm->focusedLevel() == quitLevel);
+	CHECK(fx.shell->inputTop() == quit.get());
+	CHECK(fx.wm->noteCount("shell-overlay-return") == 1); // S-4980
+	// RW 0x812913 -> AptPlayer::ShowLevel: the movie loads again into the same level and starts over; every button is back (the review of OPTS-6: the
+	// OPTIONS button stayed in its pressed state, and a second visit failed)
+	fx.tick(30);
+	CHECK(quit->level() == quitLevel);
+	CHECK(fx.wm->apt().level(quitLevel) != nullptr);
+	fx.tick(200); // its intro
+	CHECK(fx.wm->apt().level(quitLevel)->visible);
+	CHECK(pressableButtons(fx, quitLevel) == buttons);
+	CHECK(quit->commandCalls("AptQuitMenu::RestartMission") == restart);
+	CHECK(quit->commandCalls("AptQuitMenu::ExitMission") == exit);
+	CHECK(quit->commandCalls("AptQuitMenu::ReturnToGame") == resume);
+	CHECK(quit->commandCalls("AptQuitMenu::SaveMenu") == save);
+	// the quit menu closes (the device's quit_menu close): its focus goes, nothing of it stays on the shell
+	fx.shell->clearOverlay();
+	CHECK(fx.shell->inputTop() == nullptr);
+	CHECK(fx.wm->focusedLevel() != quitLevel);
+}
+
+// The capture alone (no overlay: a screen under Options that is not the shell's, such as the Palantir over a game) hides the levels under Options and
+// keeps the pointer from them; the background movie stays (Options shows it on purpose); Options' end shows exactly those levels again.
+TEST_CASE("opts6 shell retail: Options takes the pointer from every level under it and hides them until it closes")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	ShellFx fx(mount, "StaticGameLOD = High\n");
+	fx.environment.openbfmeOptionsMenu = true;
+	fx.tick(2);
+	REQUIRE(fx.wm->loadBackground()); // the device's (GameClient::init RW 0x646771): under everything; Options shows it, the capture keeps it
+	QuitMenuContext context;
+	std::unique_ptr<AptQuitMenu> under = openQuitMenu(fx, context); // a level under Options that is not on the shell (no setOverlay)
+	const std::vector<std::string> before = pressableButtons(fx, under->level());
+	REQUIRE(before.size() == 6);
+	AptOptionsScreen::open(*fx.shell, false, false, false, false);
+	fx.tick(60);
+	AptOptionsScreen *options = dynamic_cast<AptOptionsScreen *>(fx.shell->top());
+	REQUIRE(options);
+	REQUIRE(under->level() < options->level()); // tolerance: the order of the two levels is the property (the screen under Options)
+	CHECK(fx.wm->levelsHiddenByCapture() == std::vector<int>{ under->level() });
+	CHECK(fx.wm->apt().input().inputFloor() == options->level());
+	CHECK(fx.wm->noteCount("capture-hides") == 1); // S-4982
+	CHECK_FALSE(fx.wm->apt().level(under->level())->visible);
+	CHECK(pressableButtons(fx, under->level()).empty());
+	REQUIRE(fx.wm->backgroundLevel() >= 0); // tolerance: loaded (any slot)
+	REQUIRE(fx.wm->backgroundLevel() < options->level()); // tolerance: the order is the property (under Options)
+	CHECK(std::find(fx.wm->levelsHiddenByCapture().begin(), fx.wm->levelsHiddenByCapture().end(), fx.wm->backgroundLevel()) == fx.wm->levelsHiddenByCapture().end());
+	fx.shell->pop();
+	fx.tick(30);
+	CHECK(fx.wm->levelsHiddenByCapture().empty());
+	CHECK(fx.wm->apt().input().inputFloor() == -1);
+	CHECK(fx.wm->apt().level(under->level())->visible);
+	CHECK(pressableButtons(fx, under->level()) == before);
+}
+
+// The owner (2026-10-15, 2560 x 1440): "the menu is scaled so your mouse can go way off to the left or right on some of the sliders". A window larger
+// than the stage gives pointer moves under one stage pixel; each one's truncated difference was 0, so a dragged thumb stayed behind the pointer.
+TEST_CASE("opts6 gadget layer retail: a thumb dragged in moves of a quarter stage pixel follows the pointer to the pixel")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	ShellFx fx(mount, "StaticGameLOD = High\n");
+	AptOptionsScreen *options = openMenu(fx, false);
+	OpenBFMEOptionsPage *page = showRetail(options, { "Retail.MusicVolume" });
+	GameWindow *slider = page->gadget("Retail.MusicVolume");
+	REQUIRE(slider);
+	REQUIRE(page->choose("Retail.MusicVolume", 0, nullptr));
+	GameWindow *thumb = GadgetSliderGetThumb(slider);
+	int sx = 0, sy = 0, tx0 = 0, ty0 = 0, tw = 0, th = 0;
+	slider->winGetScreenPosition(&sx, &sy);
+	thumb->winGetScreenPosition(&tx0, &ty0);
+	thumb->winGetSize(&tw, &th);
+	// press on the thumb's middle, move right 80 times by 0.25 stage pixels (20 pixels), let go
+	const float x = (float)tx0 + 6.0f, y = (float)ty0 + (float)th / 2.0f;
+	fx.wm->postMouseMove(x, y);
+	fx.wm->postMouseButton(true);
+	for (int i = 1; i <= 80; ++i)
+	{
+		fx.wm->postMouseMove(x + 0.25f * (float)i, y);
+	}
+	int tx1 = 0, ty1 = 0;
+	thumb->winGetScreenPosition(&tx1, &ty1);
+	CHECK(tx1 - tx0 == 20); // the pixels the pointer crossed (ZH: the grabbed window moves by the pointer's pixel steps)
+	fx.wm->postMouseButton(false);
+	CHECK(GadgetSliderGetPosition(slider) > 0); // tolerance: the value the 20 pixels mean is the slider's arithmetic (checkThumb), here only that it moved
+}
+
+// Hit areas equal to the drawn shapes on the OpenBFME page: the combo box's button no longer hangs under its box, a check box takes no press right of
+// its drawn box, a tab takes presses on its drawn bar only. The drawn shapes are read from the gadget layer's draw list (what the device draws).
+TEST_CASE("opts6 options page retail: each control's window is the shape it draws (combo box button, check box, tab bar)")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	ShellFx fx(mount, "StaticGameLOD = High\n");
+	AptOptionsScreen *options = openMenu(fx, false);
+	OpenBFMEOptionsPage *page = showRetail(options, { "Retail.Detail", "Retail.HealthBars" });
+	fx.tick(4);
+	GadgetDrawList list;
+	fx.layer->buildDrawList(list);
+	auto drawnBox = [&](GameWindow *root, bool images) {
+		std::array<int, 4> b{ 1 << 20, 1 << 20, -(1 << 20), -(1 << 20) };
+		for (const GadgetDrawCommand &c : list.commands)
+		{
+			if (c.root == root && (!images || c.kind == GadgetDrawCommand::Kind::Image))
+			{
+				b = { std::min(b[0], c.x0), std::min(b[1], c.y0), std::max(b[2], c.x1), std::max(b[3], c.y1) };
+			}
+		}
+		return b;
+	};
+	auto windowBox = [](GameWindow *w) {
+		int x = 0, y = 0, cw = 0, ch = 0;
+		w->winGetScreenPosition(&x, &y);
+		w->winGetSize(&cw, &ch);
+		return std::array<int, 4>{ x, y, x + cw, y + ch };
+	};
+	GameWindow *combo = page->gadget("Retail.Detail");
+	REQUIRE(combo);
+	const std::array<int, 4> comboDrawn = drawnBox(combo, true), comboWindow = windowBox(combo);
+	CHECK(comboDrawn[1] == comboWindow[1]); // the drop-down button as high as the box (OPTS-5: 4 stage pixels under it)
+	CHECK(comboDrawn[3] == comboWindow[3]);
+	GameWindow *box = page->gadget("Retail.HealthBars");
+	REQUIRE(box);
+	const std::array<int, 4> boxDrawn = drawnBox(box, true), boxWindow = windowBox(box);
+	CHECK(boxDrawn[0] == boxWindow[0]);
+	CHECK(boxDrawn[2] == boxWindow[2]); // as wide as the box it draws
+	CHECK(boxDrawn[1] - boxWindow[1] == OpenBFMEOptionsPage::kCheckBoxMargin); // the stated margin above and below
+	CHECK(boxWindow[3] - boxDrawn[3] == OpenBFMEOptionsPage::kCheckBoxMargin);
+	// a press right of the box: nothing; on it: ticked
+	const bool was = GadgetCheckBoxIsChecked(box);
+	clickStage(fx, (float)boxWindow[2] + 2.0f, (float)(boxWindow[1] + boxWindow[3]) / 2.0f);
+	CHECK(GadgetCheckBoxIsChecked(box) == was);
+	fx.tick(30); // past the double click time
+	clickStage(fx, (float)boxWindow[2] - 2.0f, (float)(boxWindow[1] + boxWindow[3]) / 2.0f);
+	CHECK(GadgetCheckBoxIsChecked(box) != was);
+	// the tab bar: the drawn selection image of the chosen tab (decorate) is the bar; a press one pixel left of it is no tab click
+	std::array<int, 4> bar{ 0, 0, 0, 0 };
+	for (const GadgetDrawCommand &c : list.commands)
+	{
+		if (c.root == nullptr && c.kind == GadgetDrawCommand::Kind::Image && c.image == "AptListBoxHiliteSelectedItem")
+		{
+			bar = { c.x0, c.y0, c.x1, c.y1 };
+		}
+	}
+	REQUIRE(bar[2] > bar[0]); // tolerance: the bar was found (drawn)
+	options->takeExtensionEvents();
+	const float tabY = (float)(bar[1] + bar[3]) / 2.0f + (float)OpenBFMEOptionsPage::kTabPitch; // the next tab, as tall as the drawn bar
+	clickStage(fx, (float)bar[0] - 1.0f, tabY);
+	CHECK(options->takeExtensionEvents().empty());
+	clickStage(fx, (float)bar[2] + 1.0f, tabY);
+	CHECK(options->takeExtensionEvents().empty());
+	clickStage(fx, (float)bar[0] + 1.0f, tabY);
+	const std::vector<OpenBFMEPageEvent> events = options->takeExtensionEvents();
+	REQUIRE(events.size() == 1);
+	CHECK(events[0].kind == OpenBFMEPageEvent::Kind::Tab);
+	CHECK(events[0].value == 1);
+}
+
+// Keyboard / controller navigation (not retail; MenuNavigator.h) on the OpenBFME page: the first key only shows the focus (the current tab), Tab walks
+// the tabs and rows, Right moves a slider by a twentieth of its range through the slider's own messages, Space ticks a box, PageDown is the next tab,
+// Back is CANCEL; another screen starts without the old focus.
+TEST_CASE("opts6 menu navigation retail: the OpenBFME page by keys")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	ShellFx fx(mount, "StaticGameLOD = High\nMusicVolume = 40.000000\n");
+	AptOptionsScreen *options = openMenu(fx, false);
+	OpenBFMEOptionsPage *page = showRetail(options, { "Retail.MusicVolume", "Retail.HealthBars" });
+	fx.tick(4);
+	options->takeExtensionEvents();
+	MenuNavigator nav(*fx.wm);
+	nav.setMenu(options->level(), options);
+	CHECK(nav.focusId().empty());
+	CHECK_FALSE(nav.key(MenuNavKey::Activate)); // nothing focused: Enter is the screen's own
+	REQUIRE(nav.key(MenuNavKey::Next));
+	CHECK(nav.focusId() == "tab:0"); // the page's first: its tab
+	CHECK(fx.wm->noteCount("menu-navigation") == 1); // S-4981
+	CHECK(options->takeExtensionEvents().empty()); // showing the focus does nothing
+	// Tab to the music slider: the reading order of the page's targets (tabs on the left, the rows, the bottom bar)
+	for (int i = 0; i < 12 && nav.focusId() != "row:Retail.MusicVolume"; ++i)
+	{
+		REQUIRE(nav.key(MenuNavKey::Next));
+	}
+	REQUIRE(nav.focusId() == "row:Retail.MusicVolume");
+	const int before = GadgetSliderGetPosition(page->gadget("Retail.MusicVolume"));
+	REQUIRE(nav.key(MenuNavKey::Right));
+	int lo = 0, hi = 0;
+	GadgetSliderGetMinMax(page->gadget("Retail.MusicVolume"), &lo, &hi);
+	const int step = (hi - lo) / MenuNavigator::kSliderSteps;
+	CHECK(step == 5); // 0 .. 100 (Options.apt's volume sliders)
+	CHECK(GadgetSliderGetPosition(page->gadget("Retail.MusicVolume")) == before + step);
+	// the effect: the original game's own Music slider (the hidden gadget the row drives, Save writes) moved with it, through RotWK's handler
+	CHECK(GadgetSliderGetPosition(options->gadget("MusicVolume")) == before + step);
+	std::vector<OpenBFMEPageEvent> events;
+	// the focus frame is drawn around it, over everything
+	GadgetDrawList list;
+	nav.appendFocusFrame(list);
+	REQUIRE(list.commands.size() == 2);
+	std::array<int, 4> r{};
+	REQUIRE(page->rect("Retail.MusicVolume", r));
+	CHECK(list.commands[0].x0 == r[0] - 2);
+	CHECK(list.commands[0].y1 == r[3] + 2);
+	CHECK(list.commands[0].color == MenuNavigator::kFrameColor);
+	// Down to the box, Space ticks it through a click there
+	const bool ticked = GadgetCheckBoxIsChecked(page->gadget("Retail.HealthBars"));
+	REQUIRE(nav.key(MenuNavKey::Down));
+	REQUIRE(nav.focusId() == "row:Retail.HealthBars");
+	REQUIRE(nav.key(MenuNavKey::Activate));
+	fx.tick(2);
+	CHECK(GadgetCheckBoxIsChecked(page->gadget("Retail.HealthBars")) != ticked);
+	options->takeExtensionEvents();
+	// PageDown: the tab after; Back: CANCEL
+	REQUIRE(nav.key(MenuNavKey::PageNext));
+	events = options->takeExtensionEvents();
+	REQUIRE(events.size() == 1);
+	CHECK(events[0].kind == OpenBFMEPageEvent::Kind::Tab);
+	CHECK(events[0].value == 1);
+	REQUIRE(nav.key(MenuNavKey::Back));
+	events = options->takeExtensionEvents();
+	REQUIRE(events.size() == 1);
+	CHECK(events[0].kind == OpenBFMEPageEvent::Kind::Cancel);
+	// the pointer moved: the frame goes, the focus stays; another screen: no focus
+	nav.pointerMoved();
+	CHECK_FALSE(nav.frameShown());
+	CHECK(nav.focusId() == "row:Retail.HealthBars");
+	int other = 0;
+	nav.setMenu(options->level(), &other);
+	CHECK(nav.focusId().empty());
+}
+
+// The retail main menu without a mouse: its nav buttons open their sub-menus when pointed at and put a click-away area over the stage; the keys leave
+// a sub-menu through it as the mouse does, Enter on OPTIONS opens its sub-menu and Up reaches SETTINGS, whose Enter opens Options.
+TEST_CASE("opts6 menu navigation retail: the main menu's OPTIONS > SETTINGS by keys")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	ShellFx fx(mount, "StaticGameLOD = High\n");
+	fx.environment.openbfmeOptionsMenu = true;
+	fx.tick(2);
+	fx.shell->push("MainMenu.apt");
+	fx.tick(150); // the intro
+	AptScreen *menu = fx.shell->top();
+	REQUIRE(menu);
+	MenuNavigator nav(*fx.wm);
+	nav.setMenu(menu->level(), menu);
+	const auto has = [](const std::string &id, const char *clip) { return id.find(std::string(".") + clip + ".") != std::string::npos; };
+	bool reached = false;
+	for (int i = 0; i < 20 && !reached; ++i)
+	{
+		REQUIRE(nav.key(MenuNavKey::Next));
+		fx.tick(15);
+		reached = has(nav.focusId(), "OptionsNav");
+	}
+	REQUIRE_MESSAGE(reached, nav.focusId());
+	REQUIRE(nav.key(MenuNavKey::Activate)); // pointed at, OPTIONS opened its sub-menu over itself: Enter presses it or, once covered, nothing
+	fx.tick(40);
+	bool settings = false;
+	for (int i = 0; i < 10 && !settings; ++i)
+	{
+		REQUIRE(nav.key(MenuNavKey::Up));
+		fx.tick(15);
+		settings = nav.focusId().find("Settings") != std::string::npos;
+	}
+	REQUIRE_MESSAGE(settings, nav.focusId());
+	REQUIRE(nav.key(MenuNavKey::Activate));
+	fx.tick(80);
+	REQUIRE(fx.shell->top());
+	CHECK(fx.shell->top()->filename() == "Options.apt");
 }

@@ -123,6 +123,7 @@ public:
 class BezierProjectileBehavior : public UpdateModule, public ProjectileUpdateInterface
 {
 public:
+	OBFME_MODULE_XFER(BezierProjectileBehavior) // lane SAVE-4b
 	BezierProjectileBehavior(Thing *thing, const BezierProjectileBehaviorModuleData *data);
 	UpdateSleepTime update() override;
 	void crc(StateHasher &hasher) const override;

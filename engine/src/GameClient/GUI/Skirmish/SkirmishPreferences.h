@@ -43,6 +43,8 @@ public:
 	std::string profileValue(int mode, const std::string &name) const override;
 	void setProfileValue(int mode, const std::string &name, const std::string &value) override;
 	void flush() override { write(); }
+	// lane OWNERFIX-3: the folder Skirmish.ini is in (the user data folder, RW 0x7B2B7F's prefix), with a trailing separator
+	std::string folder() const override;
 	// RW 0x821AB4: ":%d:%s:%s" (mode, the quoted-printable profile name, the entry's name)
 	static std::string profileKey(int mode, const std::string &quotedName, const std::string &name);
 

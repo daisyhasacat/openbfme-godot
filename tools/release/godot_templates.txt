@@ -1,0 +1,12 @@
+# PUBLISH-2 r3: the Godot export templates the release's executables are made from (package.sh: the debug templates for the game, the
+# release templates for the launcher, its pack appended). autorelease.py privacy-gate --assets does not scan their upstream bytes with the
+# private rules (Godot's own tables match short private words by chance): an executable that is one of these files byte for byte is
+# upstream, one with a pack appended is scanned in the template's export region (autorelease.py export_region: ELF section header table,
+# PE headers) and must equal the template everywhere else; r4: only the executable named in the third field may use a template.
+# Godot 4.7.2 stable; the CI hosts' and the Deck's copies are byte-identical (v0.4.6's OpenBFME.x86_64 / .exe / .console.exe have exactly these sha256). A Godot update replaces these lines.
+# Format: <sha256>  <file name in the templates folder>  <the release executable it makes>  <reason>     (two spaces between the fields)
+1a291d3d15e4180b60b0af96cf6458f11fe143636d76575ddf1e23d1a3f24f2e  linux_debug.x86_64  OpenBFME.x86_64  Godot 4.7.2 stable export template
+d9f79ab89b5ae369aeed11c6052d402e8218cd503bf85b4a235f9c30c46a7c63  linux_release.x86_64  OpenBFMELauncher.x86_64  Godot 4.7.2 stable export template
+51498b72b3a237f882ebd7d1787f06a4bc1eaf0572daab93837adcfd3cfdc107  windows_debug_x86_64.exe  OpenBFME.exe  Godot 4.7.2 stable export template
+5514c7645ee897a01f540d3cf22ede5badf92394521a08bfab66a54d7369e6e6  windows_debug_x86_64_console.exe  OpenBFME.console.exe  Godot 4.7.2 stable export template
+d34d36f3be1a6c49c56525ae86469b92e4f417ddf0b43cf00dd80c385c4b0562  windows_release_x86_64.exe  OpenBFMELauncher.exe  Godot 4.7.2 stable export template

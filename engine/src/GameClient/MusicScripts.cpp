@@ -1,5 +1,6 @@
 // OpenBFME. GPL-3.0. See MusicScripts.h.
 
+#include "Common/BfmeGame.h"
 #include "GameClient/MusicScripts.h"
 
 #include "Common/ArchiveFileSystem.h"
@@ -105,6 +106,7 @@ bool MusicScripts::load(ArchiveFileSystem &fs, const std::string &mapPath, std::
 	}
 	auto map = std::make_unique<LoadedMap>();
 	MapReadOptions options;
+	options.bfme1 = isBfme1Data(fs); // community PR #36
 	if (!MapReader::load(bytes, mapPath, options, *map, error))
 	{
 		return false;

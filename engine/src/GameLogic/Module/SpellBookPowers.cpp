@@ -7,6 +7,7 @@
 #endif
 
 #include "GameLogic/Combat/ObjectWeapons.h"
+#include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/SpellBookPowers.h"
 #include "GameLogic/Module/SpellEffectModules.h"
 
@@ -609,12 +610,87 @@ std::vector<std::string> SpellBookPowers::stopLines()
 				  "button's timer key is absent instead of 0, the store is loaded into a free window slot over the Palantir instead of the shell push and "
 				  "single-player pause of RW 0x822CF7, RW 0x8227BB's disabled / hidden sciences are never set (no _disabled_level), the store's command set is "
 				  "the local player's PlayerTemplate PurchaseScienceCommandSetMP (skirmish / multiplayer) or PurchaseScienceCommandSet (RW 0x822AB3 reads "
-				  "it through RW 0x71F933, not traced), and a pending purchase sent at the close (RW 0x940435, ControlBar::processCommandUI of the "
-				  "button) is taken as the player's MSG_PURCHASE_SCIENCE, and the store's update runs only in a HUD update that stepped the movie (lane SPELL-3: "
+				  "it through RW 0x71F933, not traced), and the store's update runs only in a HUD update that stepped the movie (lane SPELL-3: "
 				  "states sent before the movie stepped after SetLayout were lost, retail's client frame is taken to step the movie at each update)");
 	out.push_back(SpellEffectModules::stopLine());
 	out.push_back(TerrainTrees::stopLine()); // lane SPELL-3: S-930
-	out.push_back("[S-932] passive spell book powers (Scavenger, Fuel the Fires; NONPRESSABLE SPELL_BOOK buttons): no ported path starts them after the purchase "
-				  "(ScavengerSpecialPower's vtable RW 0xC73F20 overrides slots 9 / 10 only; the new-science notice RW 0x6AE1C9 calls slots 7, 8, 15): bought, they do nothing"); // lane SPELL-3
 	return out;
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------
+void PlayerUpgradeSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+}
+
+void WeatherFamilySpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+}
+
+void DarknessSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+}
+
+void FreezingRainSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+}
+
+void CloudBreakSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	SnapshotXfer::u64(x, m_sunbeams);
+}
+
+void TaintSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	x.xferObjectID(&m_lastObject);
+}
+
+void ElvenWoodSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	x.xferObjectID(&m_lastObject);
+}
+
+// the bonuses granted, in order: (the template name, (the count, the factor))
+void ProductionSpeedBonus::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	SnapshotXfer::each(x, m_bonuses, 9, [&](std::pair<std::string, std::pair<int, float>> &b) {
+		x.xferAsciiString(&b.first);
+		x.xferInt(&b.second.first);
+		x.xferReal(&b.second.second);
+	});
+}
+
+void ScavengerSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	x.xferBool(&m_active);
+}
+
+void UntamedAllegianceSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
+	SnapshotXfer::u64(x, m_defected);
+}
+
+void DevastateSpecialPower::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SpecialPowerModule::xfer(x);
 }

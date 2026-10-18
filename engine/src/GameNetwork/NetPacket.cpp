@@ -349,9 +349,10 @@ void NetPacket::writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g)
 	// OpenBFME setup flags share the profile word. Off retains the existing wire/replay bytes;
 	// older readers reject the flagged profile rather than silently ignoring the rule.
 	w.i32((std::int32_t)g.simulationProfile | (g.fortressConstruction ? 0x100 : 0)); // lane UBER-1: the simulation profile (Common/SimulationProfile.h)
+	for (const SkirmishGameSlot &s : g.slots) w.i32(s.handicap);
 }
 
-bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool withPeaceTime, bool withLuaAuthority)
+bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool profileOptionalAtEnd, bool slotHandicaps, bool withPeaceTime, bool withLuaAuthority)
 {
 	for (SkirmishGameSlot &s : g.slots)
 	{
@@ -405,11 +406,19 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 		v = r.i32();
 	}
 	g.legendaryHeroes = r.i32();
-	g.peaceTimeMinutes = withPeaceTime ? r.i32() : PeaceTime::kOff;
-	g.luaAuthoritySlot = withLuaAuthority ? r.i32() : -1;
-	const std::int32_t profileFlags = r.i32();
+	const bool profileAbsent = profileOptionalAtEnd && !r.failed() && r.atEnd();
+	g.peaceTimeMinutes = withPeaceTime && !profileAbsent ? r.i32() : PeaceTime::kOff;
+	g.luaAuthoritySlot = withLuaAuthority && !profileAbsent ? r.i32() : -1;
+	const std::int32_t profileFlags = profileAbsent ? (std::int32_t)SimulationProfile::Faithful : r.i32();
 	g.fortressConstruction = (profileFlags & 0x100) != 0;
 	const std::int32_t profile = profileFlags & ~0x100;
+	// lane OWNERFIX-2: the slots' handicaps (absent: an older replay / save format, or an announcement without the profile, UBERJOIN-1's case; the LAN
+	// messages that carry them are LANAPI protocol 4 / LANLobby version 5, so an announcement with the profile and without them is truncated)
+	const bool handicapsAbsent = !slotHandicaps || profileAbsent;
+	for (SkirmishGameSlot &s : g.slots)
+	{
+		s.handicap = handicapsAbsent ? 0 : r.i32();
+	}
 	if (r.failed())
 	{
 		return failWith(error, r.badFlag() ? "GameInfo with a flag that is not 0 / 1" : "truncated GameInfo");
@@ -424,6 +433,13 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 			{
 				return failWith(error, "GameInfo slot " + std::to_string(i) + " has the field value " + std::to_string(v));
 			}
+		}
+	}
+	for (int i = 0; i < MAX_SLOTS; ++i)
+	{
+		if (!SkirmishGameSlot::handicapValid(g.slots[i].handicap))
+		{
+			return failWith(error, "GameInfo slot " + std::to_string(i) + " has the handicap " + std::to_string(g.slots[i].handicap) + " (0, -5 .. -95)");
 		}
 	}
 	// lane RULES-1: -1 is "not set" (RotWK GameInfo::m_54 = -1 after reset, RW 0x801AAF; the starting money then comes from the InitialResources rule)
@@ -442,7 +458,7 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 	// lane UBER-1: a simulation profile this build does not know is a refused setup (never a guess)
 	if (!simulationProfileValid(profile))
 	{
-		return failWith(error, "GameInfo simulation profile " + std::to_string(profile));
+		return failWith(error, "GameInfo simulation profile " + std::to_string(profileFlags));
 	}
 	g.simulationProfile = (SimulationProfile)profile;
 	// lane RULES-1: AllowCustomHeroes off and a slot with a Create-a-Hero is a setup no host makes: refused
@@ -467,7 +483,7 @@ void NetPacket::writeNewGameMessage(NetByteWriter &w, const NewGameMessage &m)
 	writeGameInfo(w, m.game);
 }
 
-bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool withPeaceTime, bool withLuaAuthority)
+bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::string *error, bool slotHandicaps, bool withPeaceTime, bool withLuaAuthority)
 {
 	const std::uint8_t mode = r.u8();
 	if (mode > 1)
@@ -477,7 +493,7 @@ bool NetPacket::readNewGameMessage(NetByteReader &r, NewGameMessage &m, std::str
 	m.mode = mode ? NewGameMode::Skirmish : NewGameMode::SinglePlayer;
 	m.difficulty = r.i32();
 	m.rankPoints = r.i32();
-	return readGameInfo(r, m.game, error, withPeaceTime, withLuaAuthority);
+	return readGameInfo(r, m.game, error, false, slotHandicaps, withPeaceTime, withLuaAuthority);
 }
 
 std::vector<std::uint8_t> NetPacket::encodeCommand(const NetCommandMsg &c, std::string *error)

@@ -6,17 +6,21 @@
 
 #include "Common/StateHash.h"
 #include "Common/Team.h"
+#include "GameLogic/AI/AIGroupFormations.h"
 #include "GameLogic/AI/AIMove.h"
 #include "GameLogic/AI/AIGarrisonStates.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/AI/AIXfer.h"
+#include "GameLogic/SimMath.h"
 
 const char *waypointPathStopLine()
 {
-	return "[S-1189] AI waypoint paths (RW 0xC28F90 states 2 .. 5): a team's formation offsets and a human team's group-radius arrival, the SHIP water "
-		   "path (state 0x49) and the attack-follow states are not ported; the internal move is the port's AIMoveToState";
+	return "[S-1189] AI waypoint paths (RW 0xC28F90 states 2 .. 5): a team's formation offsets are ported (lane BACKLOG-8: RW 0x94FCBA through RW 0x771E7D "
+		   "and the state's group offset); a team without a formation keeps no offset from its group's centre, a human team's group-radius arrival, the "
+		   "SHIP water path (state 0x49) and the attack-follow states are not ported; the internal move is the port's AIMoveToState";
 }
 
 AIFollowWaypointPathState::AIFollowWaypointPathState(AIStateMachine &m, bool asTeam, bool exact)
@@ -51,7 +55,31 @@ StateReturnType AIFollowWaypointPathState::startMove()
 	{
 		return STATE_FAILURE;
 	}
-	m_move = std::make_unique<AIMoveToState>(ai().mover(), w->location, !m_exact);
+	// computeGoal (RW 0x755A20's callee): the waypoint plus the group offset, a formation's turned to the path direction first
+	Coord2D offset = m_groupOffset;
+	if (ai().formationId() != 0)
+	{
+		const TerrainLogic *terrain = owner().logic().terrain();
+		Coord3D nearPoint = w->location;
+		Coord3D farPoint = w->location;
+		farPoint.x = SimMath::subf32(farPoint.x, 1.0f);
+		const Waypoint *prior = m_previous >= 0 ? terrain->findWaypointById(m_previous) : nullptr;
+		const Waypoint *link = w->linksTo.empty() ? nullptr : terrain->findWaypointById(w->linksTo.front());
+		if (prior)
+		{
+			farPoint = prior->location;
+		}
+		else if (link)
+		{
+			farPoint = nearPoint;
+			nearPoint = link->location;
+		}
+		AIGroupFormations::rotateOffset(farPoint, nearPoint, offset);
+	}
+	Coord3D goal = w->location;
+	goal.x = SimMath::addf32(goal.x, offset.x);
+	goal.y = SimMath::addf32(goal.y, offset.y);
+	m_move = std::make_unique<AIMoveToState>(ai().mover(), goal, !m_exact);
 	return m_move->onEnter();
 }
 
@@ -65,11 +93,16 @@ StateReturnType AIFollowWaypointPathState::onEnter()
 	{
 		return STATE_FAILURE;
 	}
+	m_groupOffset = Coord2D{};
 	if (m_asTeam && team)
 	{
 		if (m_current >= 0)
 		{
 			team->setCurrentWaypointId(m_current);
+			if (ai().formationId() != 0)
+			{
+				m_groupOffset = ai().formationOffset(); // RW 0x750790 .. 0x7507A2
+			}
 		}
 		else
 		{
@@ -134,6 +167,11 @@ void AIFollowWaypointPathState::onExit(StateExitType)
 void AIFollowWaypointPathState::crc(StateHasher &h) const
 {
 	h.addBool(m_asTeam);
+	if (m_groupOffset.x != 0.0f || m_groupOffset.y != 0.0f) // lane BACKLOG-8
+	{
+		h.addFloat(m_groupOffset.x);
+		h.addFloat(m_groupOffset.y);
+	}
 	h.addBool(m_exact);
 	h.addI32(m_current);
 	h.addI32(m_previous);
@@ -144,10 +182,26 @@ void AIFollowWaypointPathState::crc(StateHasher &h) const
 	}
 }
 
+// lane SAVE-4c (obfme:AIWorld): OpenBFME layout (retail's AIFollowWaypointPathExactState::xfer RW 0x742AC5 is (1, 1): the internal move and a u32; stop
+// S-4220): the goal waypoint the command set, the current and previous waypoints and the move
+void AIFollowWaypointPathState::xfer(Xfer &x)
+{
+	XferVersion v{ 1, 1 };
+	x.xferVersion(v);
+	x.xferInt(&m_goalWaypoint);
+	x.xferInt(&m_current);
+	x.xferInt(&m_previous);
+	xferMove(x, ai().mover(), m_move);
+}
+
 // AI commands 6 / 7 / 0x32 / 0x33 (RW 0x66B907 / 0x66BA11 / vslots 0x70 / 0x74)
 bool AIUpdateInterface::aiFollowWaypointPath(int waypointId, CommandSourceType source, bool asTeam, bool exact)
 {
 	const int command = exact ? (asTeam ? 0x33 : 0x32) : (asTeam ? 7 : 6);
+	if (!asTeam)
+	{
+		m_formationId = 0; // RW 0x66B921 / 0x66B9C6 (lane BACKLOG-8): the as-team commands keep the formation id
+	}
 	if (!acceptCommand(source, command))
 	{
 		return false; // RW 0x667174

@@ -8,6 +8,7 @@
 #endif
 
 #include "GameLogic/Module/SpellEffectModules.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/StateHash.h"
 #include "Common/Thing/ModuleFactory.h"
@@ -60,15 +61,21 @@ void parseLegacyFireWeapon(INI *ini, void *instance, void *, const void *field)
 }
 
 const FieldParse kFireWeaponUpdateFields[] = { // RW 0xC62A40
-	{ "Weapon", parseLegacyFireWeapon, (const void *)0, 0 },
-	{ "FireDelay", parseLegacyFireWeapon, (const void *)1, 0 },
-	{ "OneShot", parseLegacyFireWeapon, (const void *)2, 0 },
 	{ "FireWeaponNugget", parseFireWeaponNugget, nullptr, 0 },
 	{ "HeroModeTrigger", INI::parseBool, nullptr, (int)offsetof(FireWeaponUpdateModuleData, m_heroModeTrigger) },
 	{ "ChargingModeTrigger", INI::parseBool, nullptr, (int)offsetof(FireWeaponUpdateModuleData, m_chargingModeTrigger) },
 	{ "AliveOnly", INI::parseBool, nullptr, (int)offsetof(FireWeaponUpdateModuleData, m_aliveOnly) },
 	{ nullptr, nullptr, nullptr, 0 }
 };
+// community PR #36: BFME1's single-weapon FireWeaponUpdate rows (Weapon / FireDelay / OneShot fill the first nugget) (BFME1 data only, Common/BfmeGame.h); RotWK's table stays the binary's
+const FieldParse kBfme1FireWeaponUpdate[] = {
+	{ "Weapon", parseLegacyFireWeapon, (const void *)0, 0 },
+	{ "FireDelay", parseLegacyFireWeapon, (const void *)1, 0 },
+	{ "OneShot", parseLegacyFireWeapon, (const void *)2, 0 },
+	{ nullptr, nullptr, nullptr, 0 },
+};
+const Bfme1FieldRowsRegistration kBfme1FireWeaponUpdateRegistration(kFireWeaponUpdateFields, kBfme1FireWeaponUpdate);
+
 
 const FieldParse kFloodMemberFields[] = { // RW 0xC63080
 	{ "MemberTemplateName", INI::parseAsciiString, nullptr, (int)offsetof(FloodMemberData, templateName) },
@@ -403,4 +410,56 @@ std::string SpellEffectModules::stopLine()
 	return "[S-924] DeletionUpdate (RW 0x88B7B0, lane MODULES-1's) and FireWeaponUpdate (RW 0x88F731 / 0x88F554) run (lane SPELL-2: the spell book's effect objects fire their weapons "
 		   "and go); FireWeaponUpdate's weapons fire through WEAPON-1's privateFireWeapon at a position (Weapon::forceFireWeapon RW 0x6CF3D2) with an "
 		   "ObjectWeapons host made for an object without a WeaponSet (inference), and the weapons' own unported nugget kinds stay counted by the delivery";
+}
+
+// ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------
+// FireWeaponUpdate's records are made by its constructor from the data (the same list for the object a load makes); each loads its weapon's state and its
+// timer. The weapon host of an object without a WeaponSet (S-924) is saved whole.
+void FireWeaponUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	std::uint32_t n = x.isLoading() ? 0 : (std::uint32_t)m_records.size();
+	x.xferUnsignedInt(&n);
+	if (n != m_records.size())
+	{
+		throw XferException("the snapshot's FireWeaponUpdate has " + std::to_string(n) + " weapons, this one " + std::to_string(m_records.size()));
+	}
+	for (Record &r : m_records)
+	{
+		x.xferUnsignedInt(&r.fireFrame);
+		x.xferBool(&r.oneShot);
+		SnapshotXfer::coord3D(x, r.offset);
+		r.weapon->xfer(x);
+	}
+	bool ownHost = !x.isLoading() && m_ownHost != nullptr;
+	x.xferBool(&ownHost);
+	if (x.isLoading() && ownHost != (m_ownHost != nullptr))
+	{
+		m_ownHost.reset();
+		if (ownHost)
+		{
+			m_ownHost = std::make_unique<ObjectWeapons>(*getObject());
+		}
+	}
+	if (m_ownHost)
+	{
+		m_ownHost->xfer(x);
+	}
+	SnapshotXfer::u64(x, m_shots);
+	SnapshotXfer::u64(x, m_unfired);
+}
+
+// the flood's members (their ids, paths and cursors)
+void FloodUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferUpdateModule(x);
+	x.xferBool(&m_membersCreated);
+	SnapshotXfer::each(x, m_records, 12, [&](Record &r) {
+		x.xferObjectID(&r.id);
+		SnapshotXfer::coords(x, r.path);
+		x.xferInt(&r.index);
+		SnapshotXfer::checkRange(r.index, 0, r.path.size(), "a flood member's path index");
+	});
 }

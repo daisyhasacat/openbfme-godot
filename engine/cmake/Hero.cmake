@@ -3,6 +3,7 @@
 
 # simulation sources (sim audit manifest): every file here enters the lockstep state (the hero list is Player state, the modules are object state)
 list(APPEND OPENBFME_SIM_SOURCES
+    src/GameLogic/Module/BloodthirstyUpdate.cpp
     src/Common/PlayerHeroList.cpp
     src/GameLogic/HeroSystem.cpp
     src/GameLogic/Module/HeroModules.cpp

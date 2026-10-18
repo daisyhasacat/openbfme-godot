@@ -56,11 +56,13 @@ public:
 class ToggleHiddenSpecialAbilityUpdate : public SpecialAbilityUpdate
 {
 public:
+	OBFME_MODULE_XFER(ToggleHiddenSpecialAbilityUpdate) // lane SAVE-4b
 	ToggleHiddenSpecialAbilityUpdate(Thing *thing, const ToggleHiddenSpecialAbilityUpdateModuleData *data); // RW 0x8B184A
 	UpdateSleepTime update() override; // RW 0x8B1962
 	void unhide();                     // slot 0x5C, RW 0x8B19AC
 	void hide();                       // slot 0x60, RW 0x8B1A70
 	unsigned hideFrame() const { return m_hideFrame; } // slot 0x64, RW 0x69AE14
+	bool showPalantirTimer() const { return m_th->m_showPalantirTimer; } // RW 0x92F89F
 	unsigned hides() const { return m_hides; }
 	unsigned unhides() const { return m_unhides; }
 	void crc(StateHasher &h) const override;
@@ -92,6 +94,7 @@ public:
 class InvisibilitySpecialPower : public SpecialPowerModule
 {
 public:
+	OBFME_MODULE_XFER(InvisibilitySpecialPower) // lane SAVE-4b
 	InvisibilitySpecialPower(Thing *thing, const InvisibilitySpecialPowerModuleData *data); // RW 0x8C6553
 	void doSpecialPowerAtObject(Object *target, unsigned options) override;       // RW 0x8C65D2
 	void doSpecialPowerAtLocation(const Coord3D &loc, unsigned options) override; // RW 0x8C66EB

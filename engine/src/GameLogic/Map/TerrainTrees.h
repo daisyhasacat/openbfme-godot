@@ -103,10 +103,16 @@ public:
 	bool anyChanged() const { return m_changed > 0; }
 	// the changed records (toppled or harvested), in list order: a game where no tree changed keeps its hash
 	void crc(StateHasher &h) const;
+	// lane SAVE-4d: the block obfme:TerrainTrees (see TerrainTrees.cpp, S-4252): the changed records in retail's record layout; a load goes into a game of the
+	// same START (lane SAVE-4e: its records are put back to the map's first, so the game's own changes since need not be undone), and throws an XferException
+	// naming a mismatch
+	void xfer(class Xfer &x);
 	static std::string stopLine(); ///< [S-930]
 
 private:
 	int bucketOf(float x, float y) const;            ///< RW 0x67D400
+	void keepStart();                                ///< lane SAVE-4e: m_start before the first change
+	std::vector<Record> m_start;                     ///< lane SAVE-4e: the records as the map made them (empty until the first change)
 	GameLogic &m_logic;
 	std::vector<Record> m_records;   ///< + 0x578
 	std::vector<std::int16_t> m_heads; ///< + 0x588 (50 * 50)

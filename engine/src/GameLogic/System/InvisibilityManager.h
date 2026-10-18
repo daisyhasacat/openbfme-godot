@@ -84,6 +84,7 @@ class GameLogic;
 class Object;
 class Player;
 class StateHasher;
+class Xfer;
 
 // RW 0xC507B8 (0xC8 bytes, constructor RW 0x6540C0)
 struct InvisibilityNugget
@@ -127,6 +128,8 @@ struct InvisibilityNugget
 	// RW 0x81A7A3 (the hint mask is compared with itself: never a difference)
 	bool sameAs(const InvisibilityNugget &o) const;
 	void crc(StateHasher &hasher) const;
+	void xfer(Xfer &x); // lane SAVE-4b: a loaded copy (OpenBFME native)
+	static constexpr size_t kXferBytes = 207; // lane SAVE-4b: xfer's encoded size with both FX names empty (a container entry's fewest bytes)
 	// the field parse of the nested block (RW 0x81A667): `store` points at an InvisibilityNugget
 	static void parse(INI *ini, void *instance, void *store, const void *userData);
 	// the binary's name runs (tests)
@@ -181,6 +184,7 @@ public:
 
 	// ---- reports / tests ----
 	void crc(StateHasher &hasher) const;
+	void xfer(Xfer &x); // lane SAVE-4b: obfme:Invisibility (OpenBFME native, S-4190)
 	std::vector<std::string> report() const;
 	static std::vector<std::string> stopLines();
 	size_t entryCount() const { return m_entries.size(); }
@@ -232,5 +236,6 @@ private:
 	unsigned m_nextUpdate = 0;           ///< RW + 0x14
 	float m_maxMultiplier = 1.0f;        ///< RW + 0x10: the largest CamouflageDetectionMultiplier of a created template the detector filter allows (RW 0x81A6A1)
 	std::vector<Coord3D> m_trees;
+	std::list<InvisibilityNugget> m_loadedNuggets; ///< lane SAVE-4b: the nugget copies a snapshot brought (retail keeps a copy in every node too)
 	unsigned m_reveals = 0, m_becameInvisible = 0; ///< counters (tests, report)
 };

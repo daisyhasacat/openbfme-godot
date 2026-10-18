@@ -19,6 +19,8 @@ class MiscAudio
 public:
 	// The row names in the binary's order; the index is the slot (the binary stores them at 4 * index in some order of its own).
 	static const std::vector<std::string> &fieldNames();
+	// community PR #36: BFME1's extra rows (BattleCrySound, CrateSalvage), read only from BFME1 data; their slots follow fieldNames()'
+	static const std::vector<std::string> &bfme1FieldNames();
 
 	// The event name of a slot, "" for NoSound / not given.
 	const std::string &get(const std::string &fieldName) const;
@@ -30,4 +32,5 @@ public:
 
 private:
 	std::vector<std::string> m_names = std::vector<std::string>(fieldNames().size());
+	std::vector<std::string> m_bfme1Names = std::vector<std::string>(bfme1FieldNames().size()); // community PR #36
 };

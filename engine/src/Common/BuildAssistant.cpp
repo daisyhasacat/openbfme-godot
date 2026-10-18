@@ -280,15 +280,15 @@ bool BuildAssistant::playerCanBuild(const Player &player, const ThingTemplate *t
 	{
 		return false;
 	}
-	for (const RawBlock &block : tt->getFinalOverride()->rawBlocks())
+	bool prerequisitesSatisfied = true;
+	for (const ProductionPrerequisite &prerequisite : tt->getFinalOverride()->productionPrerequisites())
 	{
-		if (block.field == "Prerequisites")
+		if (!prerequisite.isSatisfied(&player, logic))
 		{
-			logic.reportError("template " + tt->getName() + " has a Prerequisites block: the ProductionPrerequisite grammar and test (RW 0x74057B / 0x8F9ADD) are not ported (S-207); it is treated as unsatisfied");
-			return false;
+			prerequisitesSatisfied = false;
 		}
 	}
-	return true;
+	return prerequisitesSatisfied;
 }
 
 // RW 0x6A7F79: the economy's rule (lane ECON-1 owns the command point model; Economy::canAffordCommandPoints)
@@ -329,11 +329,24 @@ bool BuildAssistant::isInProducersCommandSet(Object &builder, const ThingTemplat
 		return false;
 	}
 	GameLogic &logic = builder.logic();
+	// RW 0x794F69 .. 0x794FA3: offers precede even the revival path and
+	// bypass the command-set/player gates. This is name equality, not equivalence.
+	if (what)
+	{
+		for (const auto &module : builder.modules())
+		{
+			const auto *offer = module->getSpawnUnitBehaviorInterface();
+			if (offer && offer->getUnitName() == what->getName())
+			{
+				return true;
+			}
+		}
+	}
 	if (buildIndex != -1)
 	{
 		// lane HERO-1: RW 0x795006 .. 0x795036: the producer's set must hold a buildIndex + 1-th REVIVE button (counted over the slots in order; no NeededUpgrade
 		// test on this path, RW jumps straight to the answer), and the answer is the owner's hero list record at the index existing and not in production
-		// (RW 0x780C46). The module offers of RW 0x794F69 need a template (none here)
+		// (RW 0x780C46). A non-null template could already have matched a module offer above.
 		if (!TheCommandStore)
 		{
 			throw std::logic_error("canMakeUnit: no CommandStore (TheCommandStore) is set");
@@ -360,8 +373,6 @@ bool BuildAssistant::isInProducersCommandSet(Object &builder, const ThingTemplat
 		}
 		return false;
 	}
-	// RW 0x794F69: the builder's modules that offer extra templates by name (the behavior interface at + 0xC, vslot 0x2C; its answer's slot 0 returns a name compared
-	// with the template's + 0x64): the classes that implement that slot are not identified, none is ported (S-207)
 	if (!TheCommandStore)
 	{
 		throw std::logic_error("canMakeUnit: no CommandStore (TheCommandStore) is set");

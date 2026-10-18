@@ -1,19 +1,25 @@
 ## Lane LAUNCH-1: what this launcher build is. tools/release/package.sh writes res://build_info.json into the staged project before the
 ## export: {"version", "commit", "date", "repo" (the GitHub <owner>/<name> it updates from, a build-time setting), "release_key" (the
 ## Ed25519 public key, 64 hex digits, the only key whose manifests it accepts), "test_build" (true only for the test packages of
-## tools/release/test_launcher.py)}. A packaged launcher without it is an error (no update without a key and a repository).
+## tools/release/test_launcher.py), "local_trial" (a non-release public key; labels only, no test overrides)}.
+## A packaged launcher without it is an error (no update without a key and a repository).
 ## A development run (the Godot editor binary on launcher/) has no build_info.json: version v0.0.0-dev, the default repository, no key
 ## unless --trust-key=<hex> is given; development runs and test builds accept the test options (tests_allowed).
 extends RefCounted
 
 const DEFAULT_REPO := "Open-BFME/openbfme-godot"
+const Semver := preload("res://scripts/core/semver.gd")
 
 var version := "v0.0.0-dev"
+var display_version := "v0.0.0-dev"
 var commit := ""
 var date := ""
 var repo := DEFAULT_REPO
 var release_key := PackedByteArray()
 var test_build := false
+var local_trial := false
+var macos_preview := false
+var macos_updates := false
 var packaged := false  # running from an exported executable
 var error := ""
 
@@ -31,10 +37,23 @@ static func load_info() -> RefCounted:
 		info.error = "res://build_info.json is malformed"
 		return info
 	info.version = d.version
+	info.display_version = str(d.get("display_version", d.version))
 	info.commit = str(d.get("commit", ""))
 	info.date = str(d.get("date", ""))
 	info.repo = d.repo
 	info.test_build = d.test_build
+	if typeof(d.get("local_trial", false)) != TYPE_BOOL:
+		info.error = "res://build_info.json has an invalid local_trial flag"
+		return info
+	info.local_trial = d.get("local_trial", false)
+	if typeof(d.get("macos_preview", false)) != TYPE_BOOL:
+		info.error = "res://build_info.json has an invalid macos_preview flag"
+		return info
+	info.macos_preview = d.get("macos_preview", false)
+	if typeof(d.get("macos_updates", false)) != TYPE_BOOL:
+		info.error = "res://build_info.json has an invalid macos_updates flag"
+		return info
+	info.macos_updates = d.get("macos_updates", false)
 	var key: String = d.release_key
 	if key.length() != 64 or key.hex_decode().size() != 32:
 		info.error = "res://build_info.json has no valid release key"
@@ -48,6 +67,12 @@ func tests_allowed() -> bool:
 	return OS.has_feature("editor") or test_build
 
 
+func release_version() -> String:
+	if macos_updates and Semver.is_valid(version.get_slice(" ", 0)):
+		return version.get_slice(" ", 0)
+	return version
+
+
 ## the operating system's name (Godot's OS.get_name()); OPENBFME_TEST_OS_NAME replaces it in test builds, so a test can play another OS
 func os_name() -> String:
 	var forced := OS.get_environment("OPENBFME_TEST_OS_NAME")
@@ -55,4 +80,12 @@ func os_name() -> String:
 
 
 func platform() -> String:
-	return "windows-x64" if OS.get_name() == "Windows" else "linux-x64"
+	if OS.get_name() == "Windows":
+		return "windows-x64"
+	if OS.get_name() == "macOS":
+		if macos_updates:
+			return "macos-arm64"
+		if macos_preview:
+			return "macos-arm64-unstable-preview"
+		return "macos-universal"
+	return "linux-x64"

@@ -58,6 +58,7 @@ public:
 class RefundDie : public BehaviorModule, public DieModuleInterface
 {
 public:
+	OBFME_MODULE_XFER(RefundDie) // lane SAVE-4b: BehaviorModule's (no state)
 	RefundDie(Thing *thing, const RefundDieModuleData *data);
 	DieModuleInterface *getDie() override { return this; }
 	void onDie(const DieModuleInterface::Event &event) override;
@@ -81,6 +82,7 @@ public:
 class PillageModule : public BehaviorModule
 {
 public:
+	OBFME_MODULE_XFER(PillageModule) // lane SAVE-4b
 	PillageModule(Thing *thing, const PillageModuleData *data);
 	// RW 0x88826E: the damage pipeline calls this for every hit this object's weapons land on `victim`
 	void onDamageDealt(Object &victim);

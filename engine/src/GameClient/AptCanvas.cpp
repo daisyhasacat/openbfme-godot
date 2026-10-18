@@ -2,6 +2,7 @@
 // See AptCanvas.h for the model and the sources.
 
 #include "GameClient/AptCanvas.h"
+#include "GameClient/GUI/TextBadges.h"
 
 #include <algorithm>
 #include <cctype>
@@ -425,6 +426,19 @@ void BuildAptCanvas(const AptRenderList &list, const AptCanvasInputs &in, AptCan
 				op.readOnly = cmd.readOnly;
 				op.matrix = cmd.matrix;
 				std::copy(cmd.bounds, cmd.bounds + 4, op.bounds);
+				// lane PLATFORMICON-1: a field with an icon at its left that reserves room for it gives up that much of its box (stage pixels through the
+				// matrix's horizontal scale), so the string is centred / squeezed in what is left and never runs under the icon
+				if (in.textBadges)
+				{
+					const auto badge = in.textBadges->find(textBadgeLabel(cmd.text));
+					const float scale = std::fabs(cmd.matrix.a);
+					if (badge != in.textBadges->end() && badge->second.reserve > 0 && scale > 0.0f)
+					{
+						const float room = (float)badge->second.reserve / scale;
+						const float width = op.bounds[2] - op.bounds[0];
+						op.bounds[0] += std::min(room, width > 0.0f ? width : 0.0f);
+					}
+				}
 				op.scaleX = in.mapping.scaleX();
 				op.scaleY = in.mapping.scaleY();
 				op.offsetX = in.mapping.offsetX();
@@ -460,6 +474,43 @@ void BuildAptCanvas(const AptRenderList &list, const AptCanvasInputs &in, AptCan
 					float texW = 1, texH = 1;
 					if (fill.kind == APT_STYLE_TEXTURED && !inMaskShape)
 					{
+						if (in.imageReplacements)
+						{
+							auto replacement = in.imageReplacements->find({ lowerAscii(cmd.shapeMovie), fill.imageId });
+							if (replacement != in.imageReplacements->end())
+							{
+								const auto &r = replacement->second;
+								const auto &points = fill.style->triangles;
+								if (points.empty() || r.width <= 0 || r.height <= 0)
+								{
+									out.errors.push_back("invalid image replacement: " + r.texture);
+									continue;
+								}
+								float x0 = points[0], x1 = x0, y0 = points[1], y1 = y0;
+								for (size_t i = 0; i + 1 < points.size(); i += 2)
+								{
+									x0 = std::min(x0, points[i]); x1 = std::max(x1, points[i]);
+									y0 = std::min(y0, points[i + 1]); y1 = std::max(y1, points[i + 1]);
+								}
+								float ax, ay, bx, by, cx, cy;
+								map.apply(x0, y0, ax, ay); map.apply(x1, y0, bx, by); map.apply(x0, y1, cx, cy);
+								const float w = std::hypot(bx - ax, by - ay), h = std::hypot(cx - ax, cy - ay);
+								if (w <= 0 || h <= 0) { continue; }
+								const float fit = std::min(w / r.width, h / r.height);
+								const float dx = (x1 - x0) * (1 - r.width * fit / w) * 0.5f;
+								const float dy = (y1 - y0) * (1 - r.height * fit / h) * 0.5f;
+								x0 += dx; x1 -= dx; y0 += dy; y1 -= dy;
+								op.texture = r.texture;
+								const float uv[12] = { 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1 };
+								for (int i = 0; i < 12; i += 2)
+								{
+									pushVertex(op, map, x0 + uv[i] * (x1 - x0), y0 + uv[i + 1] * (y1 - y0), colour, nullptr, 1, 1);
+								}
+								op.uvs.assign(uv, uv + 12);
+								push(std::move(op));
+								continue;
+							}
+						}
 						if (!fill.imageResolved)
 						{
 							continue; // reported in the render list errors (an image id with no .dat entry)

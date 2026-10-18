@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/UpgradeModuleClasses.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/AsciiString.h"
 #include "Common/INIException.h"
@@ -169,7 +170,6 @@ const FieldParse kCommandSet[] = { // RW 0xC6DF70
 };
 #define SO_OFF(m) (int)offsetof(SubObjectsUpgradeModuleData, m)
 const FieldParse kSubObjects[] = { // RW 0xC6E928
-	{ "FXListUpgrade", INI::parseAsciiString, nullptr, SO_OFF(m_fxListUpgrade) },
 	{ "ShowSubObjects", INI::parseAsciiStringVectorAppend, nullptr, SO_OFF(m_showSubObjects) },
 	{ "HideSubObjects", INI::parseAsciiStringVectorAppend, nullptr, SO_OFF(m_hideSubObjects) },
 	{ "UpgradeTexture", parseUpgradeTexture, nullptr, SO_OFF(m_upgradeTexture) },
@@ -182,6 +182,13 @@ const FieldParse kSubObjects[] = { // RW 0xC6E928
 	{ "UnHideSubObjectsOnRemove", INI::parseBool, nullptr, SO_OFF(m_unHideSubObjectsOnRemove) },
 	{ nullptr, nullptr, nullptr, 0 }
 };
+// community PR #36: BFME1's FXListUpgrade row (stored, not played) (BFME1 data only, Common/BfmeGame.h); RotWK's table stays the binary's
+const FieldParse kBfme1SubObjects[] = {
+	{ "FXListUpgrade", INI::parseAsciiString, nullptr, SO_OFF(m_fxListUpgrade) },
+	{ nullptr, nullptr, nullptr, 0 },
+};
+const Bfme1FieldRowsRegistration kBfme1SubObjectsRegistration(kSubObjects, kBfme1SubObjects);
+
 #undef SO_OFF
 
 #define RU_OFF(m) (int)offsetof(RemoveUpgradeUpgradeModuleData, m)
@@ -689,8 +696,6 @@ std::vector<std::string> UpgradeModuleClasses::stopLines()
 		"UnpauseSpecialPowerUpgrade, GeometryUpgrade, MaxHealthUpgrade, LocomotorSetUpgrade, "
 		"DoCommandUpgrade, ...; CastleUpgrade, ObjectCreationUpgrade and ReplaceSelfUpgrade run since lane FACT-A) and InheritUpgradeCreate / UpgradeDie are UnportedModules (S-140): a granted upgrade does nothing through them; " +
 			std::to_string(unknownUpgradeNames().size()) + " unknown upgrade names met at run time (RW's debug messages)",
-		"[S-481] upgrade Eva events: the gain / lose events of Player::addUpgrade / removeUpgrade (RW 0x6AE483, 0x6AE546 -> TheEva RW 0x5DD9EE) are counted per player "
-		"(Player::upgradeEvaEventsNotPlayed), not played",
 		"[S-482] upgrade walks: onUpgradeCompleted / onUpgradeRemoved (RW 0x6AE483 / 0x6AE546) walk the player's teams' members; here the logic object list in list order "
 		"(the order an upgrade reaches the objects in is inferred)",
 		"[S-483] closed (lane DECOMP-2): Object::hasUpgrade asks a horde's members first (RW 0x68E040 -> contain slot 0x7C -> RW 0x86EC2D) and "
@@ -703,4 +708,57 @@ std::vector<std::string> UpgradeModuleClasses::stopLines()
 		"messages of the completion",
 		"[S-485] closed: ModelConditionUpgrade RemoveConditionFlagsInRange (RW 0x8BA71A) is ported (the Create-A-Hero model condition upgrades use it)",
 	};
+}
+
+// ---- lane SAVE-4b: the snapshots (UpgradeModule's: the classes keep no state of their own) ----
+
+void StatusBitsUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+}
+
+void ModelConditionUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+}
+
+void ArmorUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+}
+
+void WeaponSetUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+}
+
+void CommandSetUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+}
+
+void RemoveUpgradeUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+}
+
+// OpenBFME native (S-4190): the mux, then RW module + 0x20 (the sub objects are shown)
+void SubObjectsUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+	x.xferBool(&m_shown);
+}
+
+void GrantUpgradeCreate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	xferBehaviorModule(x);
+	x.xferBool(&m_needToRunOnBuildComplete);
 }

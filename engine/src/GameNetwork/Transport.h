@@ -53,8 +53,10 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 // an IPv4 address and port (host byte order)
@@ -141,6 +143,8 @@ public:
 	void retire(int slot) override;
 	// sends what is due, reads every waiting datagram; call often
 	void service() override;
+	// Test clock, as in Network: set before servicing; monotonic milliseconds, real time by default.
+	void setClock(std::function<std::uint64_t()> clock) { m_clock = std::move(clock); }
 
 	struct Stats
 	{
@@ -242,10 +246,12 @@ private:
 	void sendHello(std::uint64_t now);
 	void deliver(int slot, Incoming &&record);
 	void error(const std::string &e);
+	std::uint64_t nowMs() const;
 
 	UDP &m_socket;
 	int m_localSlot;
 	Options m_options;
+	std::function<std::uint64_t()> m_clock;
 	std::array<Peer, MAX_SLOTS> m_peers;
 	std::deque<std::pair<int, std::vector<std::uint8_t>>> m_delivered;
 	std::multimap<std::uint64_t, std::pair<NetAddress, std::vector<std::uint8_t>>> m_delayed;

@@ -580,6 +580,8 @@ public:
 
 	// the OpenBFME state hash of the instance (MOVE-1): every field the movers carry from one frame to the next
 	void crc(class StateHasher &hasher) const;
+	// lane SAVE-4c (AI/AIMoveSnapshot.cpp): those fields (the template is the AI's locomotor set's: a load checks its name) and the raised stops
+	void xfer(class Xfer &x);
 
 	// Acceptance-stop lines raised by the moves made so far (S-081, S-084); empty when none applied.
 	const std::vector<std::string> &unverified() const { return m_unverified; }

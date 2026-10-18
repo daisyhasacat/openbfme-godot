@@ -3,6 +3,7 @@
 
 #include "Common/BfmeGame.h"
 #include "GameClient/InGameHud.h"
+#include "GameClient/GUI/AptScreens/AptImageMode.h"
 #include "GameClient/GUI/GameTextSource.h"
 
 #include "GameClient/GUI/GameTextSource.h"
@@ -12,6 +13,10 @@
 
 #include "GameClient/AptCanvas.h"
 #include "GameClient/CursorFile.h"
+#include "GameClient/CameraSettings.h"
+#include "GameClient/HudObjects.h"
+#include "Common/Thing/ThingFactory.h"
+#include "GameLogic/Module/ProductionUpdate.h"
 #include "Common/Player.h"
 #include "Common/PlayerTemplate.h"
 #include "Common/Science.h"
@@ -56,6 +61,12 @@ InGameHud::InGameHud(Config config)
 	m_environment.gameText = m_config.gameText;
 	m_input = std::make_unique<HudInput>(m_config.game.logic(), &m_config.game.ai(), m_config.view, m_config.game.commands(), m_config.mouse, m_config.metaMap);
 	m_input->context().commands = &m_config.world.commands();
+	// lane OWNERFIX-1 r2: InGameUI's setRadiusCursorNone (the disable edge, RW 0x69B632): the aiming circle goes in that call, the pointer back to the arrow
+	m_input->ui().setRadiusCursorNoneHook([this]() {
+		m_radiusCursor.clear();
+		m_targetingCursor = false;
+		m_input->ui().hintCursor(MouseCursorName::Arrow);
+	});
 	// lane QA-1: the pick tests the ray against the drawn models (GameClient/DrawablePick: ZH W3DView::pickDrawable casts it at the scene's render objects);
 	// an object without a drawable has nothing in the scene and cannot be picked. The geometry pick of S-284 selected the castle shell (MenFortress, Model =
 	// None) for a click on its citadel and a tower in front of a barracks for a click on the barracks.
@@ -126,12 +137,15 @@ InGameHud::InGameHud(Config config)
 
 InGameHud::~InGameHud()
 {
+	m_config.game.drawables().destroyClientDrawable(m_rallyPointDrawable);
 	// lane SPELL-2 (review r2): an open spell store is a screen of the window manager below: it goes first, without sending its pending purchases
 	m_store.reset();
 	if (m_palantirRef)
 	{
 		m_palantirRef->setHeroSelectHandler(nullptr); // lane UI-4
 	}
+	m_config.game.drawables().setHeroAttackedHandler(nullptr);
+	m_config.game.drawables().setHeroFlashHandler(nullptr);
 	m_heroSelect.reset();
 	// the screen before the window manager it registered on
 	m_ownedPalantir.reset();
@@ -147,6 +161,17 @@ InGameHud::~InGameHud()
 
 bool InGameHud::boot(std::string *error)
 {
+	CameraSettings gameData;
+	std::string settingsError;
+	if (CameraSettings::load(m_config.fs, gameData, &settingsError) && gameData.haveDownwindAngle)
+	{
+		m_downwindAngle = gameData.downwindAngle;
+		m_haveDownwindAngle = true;
+	}
+	else
+	{
+		m_errors.push_back("rally marker: " + (settingsError.empty() ? std::string("GameData has no DownwindAngle") : settingsError));
+	}
 	if (m_ownedWindows)
 	{
 		m_ownedWindows->init();
@@ -182,9 +207,10 @@ bool InGameHud::boot(std::string *error)
 		});
 	});
 	m_palantirRef->setRightButtonHandler([this](int slot, bool inPalantir) { // lane AUTOCAST-1
-		whenHeld([this, slot, inPalantir]() {
+		const bool shift = (m_keyState & KEY_STATE_SHIFT) != 0;
+		whenHeld([this, slot, inPalantir, shift]() {
 			const auto worldContext = enterContext();
-			m_bar->rightPressButton(slot, inPalantir);
+			m_bar->rightPressButton(slot, inPalantir, shift);
 		});
 	});
 	// lane SPELL-2: the spell book's press and the store button of the Palantir
@@ -200,8 +226,22 @@ bool InGameHud::boot(std::string *error)
 			}
 		});
 	});
+	unsigned builderCycleTimeoutMs = 0;
+	std::string cycleTimeoutError;
+	// community PR #36: BFME1's InGameUI has no SelectNearestBuilderCycleTimeOut (a BFME2 row): BFME1 data keeps 0 (S-5017)
+	if (!isBfme1Data(m_config.fs) && !InGameHeroSelect::loadCycleTimeout(m_config.fs, builderCycleTimeoutMs, &cycleTimeoutError))
+	{
+		m_errors.push_back("hero select settings: " + cycleTimeoutError);
+		if (error)
+		{
+			*error = m_errors.back();
+		}
+		return false;
+	}
 	// lane UI-4: the hero bar (InGameHeroSelect.h): AptPalantir::OnHeroSelectLoaded hands the movie's clip path (InGameHeroSelectInterface ctor RW 0x92DDE7)
-	m_heroSelect = std::make_unique<InGameHeroSelect>(m_input->context());
+	m_heroSelect = std::make_unique<InGameHeroSelect>(m_input->context(), builderCycleTimeoutMs);
+	m_config.game.drawables().setHeroAttackedHandler([this](ObjectID id) { m_heroSelect->onHeroAttacked(id); });
+	m_config.game.drawables().setHeroFlashHandler([this](const std::string &name, int frames) { m_heroSelect->flashHeroButton(name, frames); });
 	m_palantirRef->setHeroSelectHandler([this](const std::string &clipPath, bool loaded) {
 		if (!loaded)
 		{
@@ -290,6 +330,67 @@ std::unique_ptr<RetailObjectWorld::ContextScope> InGameHud::enterContext(const c
 	return m_config.world.enterContext();
 }
 
+void InGameHud::updateRallyPoint()
+{
+	// RW 0x943D6F / 0x944EFB: the command / construction context asks the exit for its rally point.
+	// Multi-selection's representative drawable remains part of S-1202; use this HUD's single-object context.
+	const auto &selection = m_input->ui().selected();
+	Object *obj = selection.size() == 1 ? m_config.game.logic().findObjectByID(selection.front()) : nullptr;
+	const Player *local = m_config.game.players().getLocalPlayer();
+	const Coord3D *loc = nullptr;
+	if (obj && !obj->isDestroyed() && !obj->isEffectivelyDead() && local &&
+		(m_bar->underConstruction() || HudObjects::isLocallyControlled(m_input->context(), *obj) || local->isDefeated()))
+	{
+		// RW 0x6AAC52's additional player byte +0x35A is not modelled (as in EndGame); no invented observer mapping.
+		if (const ExitInterface *exit = obj->getObjectExitInterface())
+		{
+			loc = exit->getRallyPoint();
+		}
+	}
+	const ObjectID source = loc ? obj->getID() : (ObjectID)INVALID_ID;
+	DrawableManager &drawables = m_config.game.drawables();
+	// RW 0x71D8BE clears the marker when the ControlBar switches context; RW 0x71D18F also clears a null point.
+	if (!loc || source != m_rallyPointSource || m_rallyPointConstruction != m_bar->underConstruction())
+	{
+		drawables.destroyClientDrawable(m_rallyPointDrawable);
+		m_rallyPointDrawable = 0;
+		m_rallyPointSource = source;
+		m_rallyPointConstruction = m_bar->underConstruction();
+	}
+	if (!loc || !m_haveDownwindAngle)
+	{
+		return;
+	}
+	auto error = [this](const std::string &text) {
+		if (std::find(m_errors.begin(), m_errors.end(), text) == m_errors.end())
+		{
+			m_errors.push_back(text);
+		}
+	};
+	Drawable *marker = drawables.find(m_rallyPointDrawable);
+	if (!marker)
+	{
+		const ThingTemplate *tt = m_config.game.logic().things().findTemplate("RallyPointMarker");
+		if (!tt)
+		{
+			error("rally marker: missing RallyPointMarker template");
+			return;
+		}
+		// RW 0x71D18F: newDrawable(template, 0, -1), status bit 0x10 (ZH DRAWABLE_STATUS_NO_SAVE).
+		// A client-only manager slot has no Object or lockstep/save state; the normal world renderer draws and animates it.
+		marker = drawables.createClientDrawable(*tt);
+		if (!marker)
+		{
+			error("rally marker: cannot create RallyPointMarker drawable (see drawable report)");
+			return;
+		}
+		m_rallyPointDrawable = marker->getID();
+	}
+	marker->setPosition(loc);
+	marker->setOrientation(m_downwindAngle);
+	marker->setHouseColor(m_config.game.logic().settings().night ? local->getPlayerNightColor() : local->getPlayerColor());
+}
+
 void InGameHud::update(double seconds)
 {
 	// SMOOTH-1 (S-810): the per-frame update reads the live game (selection, control bar, production, the movie's callbacks); while the logic worker runs
@@ -298,7 +399,18 @@ void InGameHud::update(double seconds)
 	// update per client frame, RW 0x6D8E2B, touches client state only); HUD-4's event jump reads the same clock (RW 0x5DCB4C)
 	if (m_booted && m_radar)
 	{
-		m_clientFrames += m_radar->advanceClock(seconds);
+		const unsigned advanced = m_radar->advanceClock(seconds);
+		m_clientFrames += advanced;
+		// lane DEVPORT-8 (FALSEDEF-1): the control bar's under-attack blink counts client frames (RW 0x71C81A, the first call of ControlBar::update
+		// RW 0x71FC08); client state only, so it runs while the logic worker is busy too
+		for (unsigned i = 0; i < advanced; ++i)
+		{
+			m_bar->tickAttackFlash();
+		}
+		if (m_heroSelect)
+		{
+			m_heroSelect->setClientFrame(m_clientFrames);
+		}
 	}
 	if (!m_config.game.logicHeld()) // RENDERWAIT-1: the client window (or an idle worker)
 	{
@@ -326,6 +438,14 @@ void InGameHud::update(double seconds)
 		partStart = now;
 	};
 	m_input->update();
+	if (m_config.game.canObserve())
+	{
+		const auto snapshot = m_config.game.presentedSnapshot();
+		if (snapshot)
+		{
+			m_input->ui().mirrorSelection(snapshot->observedSelection);
+		}
+	}
 	part(m_updateParts.input);
 	// lane INPUT-1: the SPELL_STORE meta (the ` key): RW 0x71C6AF closes the open store, else opens it (the Palantir's powers button path)
 	while (m_spellToggleSeen < m_input->ui().spellStoreToggles())
@@ -354,6 +474,7 @@ void InGameHud::update(double seconds)
 		}
 	}
 	m_bar->update();
+	updateRallyPoint();
 	if (m_bar->version() != m_hotkeyVersion)
 	{
 		m_hotkeyVersion = m_bar->version();
@@ -418,6 +539,7 @@ void InGameHud::update(double seconds)
 	m_palantirRef->sync(*m_bar);
 	syncSpellBook();
 	updateRadiusCursor();
+	updateResourceFeedback(); // lane OWNERFIX-2
 	part(m_updateParts.palantir);
 	// lane UI-4: the hero bar (RW 0x92CF64 in the Palantir's update); its object list follows the logic once per logic frame (INFERENCE, S-2521)
 	if (m_heroSelect)
@@ -456,7 +578,9 @@ void InGameHud::update(double seconds)
 	const unsigned logicFrame = m_config.game.logic().getFrame();
 	if (logicFrame != m_decalLogicFrame || selected != m_decalSelection || !(m_decalSettings == m_decalBuiltSettings) || m_decalLogic != &m_config.game.logic())
 	{
-		BuildSelectionDecals(m_config.game.logic(), &m_config.game.drawables(), m_config.game.players().getLocalPlayer(), selected, m_decalSettings,
+		const int observed = m_config.game.observedPlayer();
+		const Player *viewPlayer = observed >= 0 ? m_config.game.players().getNthPlayer(observed) : m_config.game.players().getLocalPlayer();
+		BuildSelectionDecals(m_config.game.logic(), &m_config.game.drawables(), viewPlayer, selected, m_decalSettings,
 			m_clientFrames, m_selectionDecals);
 		m_decalLogicFrame = logicFrame;
 		m_decalSelection = selected;
@@ -474,6 +598,12 @@ void InGameHud::update(double seconds)
 	m_decalClientFrame = m_clientFrames;
 	part(m_updateParts.decals);
 	updateRadarEvents();
+	// lane DEVPORT-8 (FALSEDEF-1): RW 0x6D9BF3's control bar blink (RW 0x71C7E4), which the radar asked for through InGameUI::requestAttackFlash
+	for (unsigned n = m_input->ui().takeAttackFlashes(); n > 0; --n)
+	{
+		++m_attackFlashRequests;
+		m_bar->startAttackFlash();
+	}
 	part(m_updateParts.radar);
 }
 
@@ -542,10 +672,18 @@ void InGameHud::updateRadarEvents()
 // ---- lane SPELL-2 ------------------------------------------------------------------------------------------------------------------------------
 void InGameHud::send(const std::vector<GameMessage> &msgs)
 {
+	// lane OWNERFIX-1 (review: a spell aimed before DISABLE_INPUT still cast during the cutscene): the HUD's own messages enter the stream like the control bar's
+	// (ControlBar::processCommandUI appends to TheMessageStream), so the CommandTranslator's input guard (RW 0x81F8F2 .. 0x81F979) is the one door every command
+	// passes; they reach the command list in this call, as before
+	if (msgs.empty())
+	{
+		return;
+	}
 	for (const GameMessage &m : msgs)
 	{
-		m_config.game.commands().append(m);
+		m_input->submit(m);
 	}
+	m_input->flush();
 }
 
 // lane SPELL-4 (GameClient/RadiusCursor.h). While a spell book power waits for its target, each update is one createCommandHint of RotWK (RW 0x6A3B77 for a
@@ -554,11 +692,33 @@ void InGameHud::send(const std::vector<GameMessage> &msgs)
 // be cast at the terrain point under the pointer (InGameSpellBookModel::targetValid, RW 0x6A4260), else invalid (0xAF); then handleRadiusCursor /
 // RadiusDecal::update move it there and throb it on the client clock. Over a window no hint comes (the translators do not see the pointer): the decal
 // keeps its place and colour. The command's end clears the decal and gives the pointer back (setGUICommand RW 0x69B398: Arrow, then setRadiusCursorNone).
+void InGameHud::updateResourceFeedback()
+{
+	// lane OWNERFIX-2 (GameClient/TerrainResourceFeedback.h): the placement feedback while a building waits for its site (InGameUI::handleBuildPlacements),
+	// the claim decals while a selected object of the local player lists a TerrainResourceClientBehavior (INFERENCE S-5030: the users follow the selection)
+	GameLogic &logic = m_config.game.logic();
+	const Player *local = m_config.game.players().getLocalPlayer();
+	const int me = local ? local->getPlayerIndex() : -1;
+	const InGameUI &ui = m_input->ui();
+	int users = 0;
+	for (ObjectID id : ui.selected())
+	{
+		const Object *o = logic.findObjectByID(id);
+		users += o && local && o->getControllingPlayer() == local && TerrainResourceFeedback::hasClientBehavior(*o->getTemplate()) ? 1 : 0;
+	}
+	m_resourceFeedback.updateSelection(logic, me, users);
+	const ThingTemplate *pending = ui.isPlacing() && ui.placeHasGhost() ? logic.things().findTemplate(ui.placeBuildTemplate()) : nullptr;
+	const std::u16string format = pending ? fetchOrMissing(m_config.gameText, "GUI:TerrainResourcePercentageClaimable") : std::u16string();
+	m_resourceFeedback.updatePlacement(logic, me, pending, ui.placeLocation(), format, m_pointerX, m_pointerY);
+}
+
 void InGameHud::updateRadiusCursor()
 {
 	const InGameSpellBookModel::Button *b = m_spellBar.targeting() ? m_spellBar.targetButton() : nullptr;
 	Player *local = m_config.game.players().getLocalPlayer();
-	if (!b || !b->power || !local)
+	// lane OWNERFIX-1: setRadiusCursorNone on the input's disable edge (RW 0x69B5ED), and no hint creates one while it is off (the translators that make the
+	// hints never see the pointer); the aim itself stays pending and shows again with the input
+	if (!b || !b->power || !local || !m_input->ui().getInputEnabled())
 	{
 		if (m_radiusCursor.active() || m_targetingCursor)
 		{
@@ -745,7 +905,7 @@ void InGameHud::registerHotkeys()
 bool InGameHud::pressSpell(int buttonIndex)
 {
 	Player *local = m_config.game.players().getLocalPlayer();
-	if (!local)
+	if (!local || !m_input->ui().getInputEnabled()) // lane OWNERFIX-1 (INFERENCE, S-4964): a press starts no aim and casts nothing while a script has the input off
 	{
 		return false;
 	}
@@ -753,6 +913,17 @@ bool InGameHud::pressSpell(int buttonIndex)
 	const bool ok = m_spellBar.press(buttonIndex, local->getPlayerIndex(), out);
 	send(out);
 	return ok;
+}
+
+// lane OWNERFIX-1: RW 0x7BC586 (DISABLE_INPUT) / RW 0x7BC5E9 (ENABLE_INPUT); see InGameUI::applyScriptInput
+void InGameHud::scriptInput(bool enable)
+{
+	auto ctx = enterContext();
+	// the input flag and its edge, the pointer, the selection; then (disabling) the control bar's help provider (RW 0x8076CD), then the LookAt flags (RW 0x83AB5D)
+	m_input->scriptInput(enable, [this]() {
+		m_helpBox.dropProvider();
+		m_input->noteScriptStep("controlBarHelpProvider");
+	});
 }
 
 bool InGameHud::openSpellStore(std::string *error)
@@ -786,6 +957,13 @@ void InGameHud::closeSpellStore()
 		return;
 	}
 	send(m_store->takePurchases()); // RW 0x8232ED: the pending purchases go to the logic as the store goes
+	for (const std::string &e : m_store->model().errors())
+	{
+		if (std::find(m_errors.begin(), m_errors.end(), e) == m_errors.end())
+		{
+			m_errors.push_back(e);
+		}
+	}
 	m_store.reset();
 }
 
@@ -855,6 +1033,7 @@ bool InGameHud::radarClick(HudInput::Button button, int x, int y, int timeMs)
 
 bool InGameHud::radarNormalizedClick(HudInput::Button button, float u, float v)
 {
+	if (!m_input->ui().getInputEnabled()) return true;
 	if (!m_radar->ready() || !m_radar->drawn(false) || u < 0 || u > 1 || v < 0 || v > 1) return false;
 	float wx, wy;
 	if (!m_radar->click(u * 128, v * 128, 128, wx, wy)) return false;
@@ -899,6 +1078,10 @@ bool InGameHud::commandSlotAt(int x, int y, bool &arc, int &slot)
 
 bool InGameHud::isOverGui(int x, int y)
 {
+	if (m_broadcastClean)
+	{
+		return m_booted && m_wm->capturesMouse();
+	}
 	if (hud6OverGui(x, y)) // lane HUD-6: the radial bubbles
 	{
 		return true;
@@ -917,39 +1100,73 @@ bool InGameHud::isOverGui(int x, int y)
 	return m_booted && (m_wm->capturesMouse() || m_wm->apt().input().hitTestButtons(sx, sy) != nullptr);
 }
 
+void InGameHud::setModal(bool modal)
+{
+	const auto worldContext = enterContext(); // this world's stores for the whole call (see InGameHud.h)
+	if (modal && !m_modal)
+	{
+		m_input->cancelHeld(); // what began before the menu opened ends with it
+	}
+	m_modal = modal;
+}
+
 void InGameHud::mouseMove(int x, int y, int keyState)
 {
+	m_keyState = keyState;
 	const auto worldContext = enterContext(); // this world's stores for the whole call (see InGameHud.h)
 	AptStageMapping m;
 	m.windowW = (float)m_windowW;
 	m.windowH = (float)m_windowH;
 	float sx, sy;
 	m.windowToStage((float)x, (float)y, sx, sy);
-	if (m_booted)
+	if (m_booted && (!m_broadcastClean || m_wm->capturesMouse()))
 	{
 		m_wm->postMouseMove(sx, sy);
 	}
-	hud6MouseMove(x, y); // lane HUD-6
+	if (!m_broadcastClean && !m_modal)
+	{
+		hud6MouseMove(x, y); // lane HUD-6
+	}
 	m_pointerX = x; // lane SPELL-4: the radius cursor follows the pointer (InGameUI::handleRadiusCursor reads TheMouse + 0x4F0C)
 	m_pointerY = y;
 	m_pointerSeen = true;
+	if (m_modal)
+	{
+		return; // lane OPTS-6: the menus' movies saw the pointer; the world did not (no edge scroll, no hover pick)
+	}
 	m_input->mouseMove(x, y, keyState);
 }
 
 void InGameHud::mouseButton(HudInput::Button button, bool down, int x, int y, int keyState, int timeMs, bool doubleClick)
 {
+	m_keyState = keyState;
 	const auto worldContext = enterContext(); // this world's stores for the whole call (see InGameHud.h)
 	// Touch taps need not have a preceding mouse motion. APT button dispatch uses
 	// its stored pointer position, so update it before hit testing and posting the press.
 	mouseMove(x, y, keyState);
+	if (m_modal)
+	{
+		// lane OPTS-6: a press goes to the menus' movies (their buttons, gadgets and the ones the quit menu sits over: nothing of the game); a release too
+		if (m_booted && button == HudInput::Button::Left)
+		{
+			m_wm->setPressButton(0);
+			m_wm->postMouseButton(down);
+		}
+		return;
+	}
 	const bool over = isOverGui(x, y);
+	if (m_broadcastClean && !over)
+	{
+		m_input->mouseButton(button, down, x, y, keyState, timeMs, doubleClick, false);
+		return;
+	}
 	if (hud6MouseButton(button, down, x, y)) // lane HUD-6: a radial bubble took the press (the world sees neither it nor its release)
 	{
 		m_input->mouseButton(button, down, x, y, keyState, timeMs, doubleClick, true);
 		return;
 	}
 	// lane SPELL-2: a spell book power waiting for its target takes the next click on the ground (left: cast there, right: cancel)
-	if (m_spellBar.targeting() && down && !over && !m_store)
+	if (m_spellBar.targeting() && down && !over && !m_store && m_input->ui().getInputEnabled()) // lane OWNERFIX-1: the aim waits while a script has the input off
 	{
 		if (button == HudInput::Button::Left)
 		{
@@ -999,7 +1216,7 @@ void InGameHud::mouseButton(HudInput::Button button, bool down, int x, int y, in
 void InGameHud::mouseWheel(int delta, int x, int y)
 {
 	const auto worldContext = enterContext(); // this world's stores for the whole call (see InGameHud.h)
-	if (isOverGui(x, y))
+	if (m_modal || isOverGui(x, y))
 	{
 		if (m_booted)
 		{
@@ -1012,6 +1229,7 @@ void InGameHud::mouseWheel(int delta, int x, int y)
 
 void InGameHud::key(int keyCode, int keyState, char32_t character)
 {
+	m_keyState = keyState;
 	const auto worldContext = enterContext(); // this world's stores for the whole call (see InGameHud.h)
 	m_input->key(keyCode, keyState, character);
 }
@@ -1030,10 +1248,15 @@ std::vector<std::string> InGameHud::stops() const
 	out.push_back("[S-4640] radius cursor (lane SPELL-4): InGameUI's RadiusCursorTemplate decal of a targeted spell book power (RW 0x6A077A / 0x732DE7 / "
 				  "0x732926 / 0x73232B); handleRadiusCursor's radar pixel and shroud second pass are not ported (the view's terrain point), the spiral branch and "
 				  "the radius > 110 flag are not used, the decal is a Godot Decal on the terrain layer (S-2522)");
+	out.push_back(TerrainResourceFeedback::stopLine()); // lane OWNERFIX-2
+	out.push_back("[S-5032] placement ghost decal shadows (lane OWNERFIX-2): the ghost draws its model state's SHADOW_ALPHA_DECAL / SHADOW_ADDITIVE_DECAL "
+				  "(a well's / statue's area of effect) as a terrain decal at the texture's alpha; the shadow opacity fade and every other drawable's decal "
+				  "shadow are not drawn (S-3304)");
 	for (const std::string &l : m_cursorStops)
 	{
 		out.push_back(l);
 	}
+	out.push_back(InGameUI::scriptInputStopLine()); // lane OWNERFIX-1
 	out.push_back("[S-3301] drag selection (lane PLAY-3): a left drag with Ctrl held at the press is RotWK's point-list selection (InGameUI + 0x924, RW 0x83CA72; "
 				  "points RW 0x6A091A, polyline RW 0x48ED1B, selection RW 0x6A0A5E), not ported: it draws and selects the plain box");
 	for (const std::string &l : ControlBar::acceptanceStops())
@@ -1041,6 +1264,10 @@ std::vector<std::string> InGameHud::stops() const
 		out.push_back(l);
 	}
 	for (const std::string &l : AptPalantir::acceptanceStops())
+	{
+		out.push_back(l);
+	}
+	for (const std::string &l : aptImageModeStops()) // community PR #37
 	{
 		out.push_back(l);
 	}

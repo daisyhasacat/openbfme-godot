@@ -3,6 +3,7 @@
 // See GameLogic/BuildAssistantSell.h (lane FACT-A).
 
 #include "GameLogic/BuildAssistantSell.h"
+#include "GameLogic/SnapshotXfer.h"
 
 #include "Common/BuildAssistant.h"
 #include "Common/NumericState.h"
@@ -265,4 +266,15 @@ std::vector<std::string> BuildAssistantSell::acceptanceStops()
 		"[S-1981] sell: GameData SellPercentage (row RW 0xC00690, parsePercentToReal RW 0x42EEFA, GlobalData + 0xB94) must be loaded; without it a structure that has no "
 		"RefundValue is sold for nothing and the stop is noted",
 	};
+}
+
+// ---- lane SAVE-4b: obfme:SellList (OpenBFME native, S-4190; retail keeps the list in TheBuildAssistant + 0xC, which no retail block names) -------------
+// The entries newest first, as held; the statistics are the report's, not state.
+void BuildAssistantSell::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	SnapshotXfer::each(x, m_list, 8, [&](Entry &e) {
+		x.xferObjectID(&e.id);
+		x.xferUnsignedInt(&e.frame);
+	});
 }

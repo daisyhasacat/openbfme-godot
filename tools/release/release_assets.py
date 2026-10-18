@@ -7,13 +7,17 @@
 
 FILE is `gh api repos/<repo>/releases/<id>`'s answer. The release must have the tag, the draft and pre-release flags given, and exactly the
 release's assets (publish_release.sh's list: the archives the manifest names, four in format 2, two in format 3, lane ONEZIP-1; the
-checksum file, manifest.json and its signature), each in state "uploaded" with the local file's size and SHA-256: the archives'
+checksum file, manifest.json and its signature; MACREL-1: with manifest-macos.json in the folder also the Mac package it names, the
+sidecar and its signature), each in state "uploaded" with the local file's size and SHA-256: the archives'
 digests come from the signed manifest.json (which publish_release.sh has verified against the archives and the key), the checksum file,
 manifest.json and manifest.json.sig are hashed here. An asset whose answer carries no "digest" is downloaded (`$GH api -H "Accept:
 application/octet-stream" repos/<repo>/releases/assets/<id>`) and hashed. Prints each problem; exit 0 when there is none.
 --missing (r4: a draft is resumed, never deleted): the assets already on the release are checked the same way and the names of the
 release's assets that are not there yet are printed, one per line; exit 1 when an asset that is there is wrong or foreign (only the
 operator can repair that: nothing is ever deleted).
+--name NAME --body-file FILE (PUBLISH-2 r3, Sol r2 P2: a resumed draft kept the name and body of the run that created it, which nobody
+had audited): the release's name and body must be exactly the audited ones (the body compared with its line ends as LF, trailing white space aside); --metadata
+prints `same` or `differs` for them alone (publish_release.sh then replaces them and checks again).
 """
 from __future__ import annotations
 
@@ -40,7 +44,17 @@ def expected(d: Path, version: str) -> dict[str, tuple[int, str]]:
             if a["name"] != asset_name(kind, version, platform):
                 raise SystemExit(f"release_assets: the manifest names {a['name']} for {kind} {platform}")
             out[a["name"]] = (a["size"], a["sha256"])
-    for name in (f"SHA256SUMS-{version}.txt", "manifest.json", "manifest.json.sig"):
+    names = [f"SHA256SUMS-{version}.txt", "manifest.json", "manifest.json.sig"]
+    # MACREL-1: the separately signed Mac manifest and the Mac package it names (none: a release made with OPENBFME_RELEASE_SKIP_MAC=1
+    # carries the no-entry manifest-macos.json); the archive's digest comes from that signed sidecar, as the others' from manifest.json
+    if (d / "manifest-macos.json").exists() or (d / "manifest-macos.json.sig").exists():
+        mac = json.loads((d / "manifest-macos.json").read_bytes())
+        for platform, a in ((mac.get("assets") or {}).get("game") or {}).items():
+            if platform != "macos-arm64" or a.get("name") != f"openbfme-{version}-macos-arm64.zip":
+                raise SystemExit(f"release_assets: manifest-macos.json names {a.get('name')!r} for {platform}")
+            out[a["name"]] = (a["size"], a["sha256"])
+        names += ["manifest-macos.json", "manifest-macos.json.sig"]
+    for name in names:
         data = (d / name).read_bytes()
         out[name] = (len(data), hashlib.sha256(data).hexdigest())
     return out
@@ -55,10 +69,20 @@ def download_digest(repo: str, asset_id: int) -> str:
     return hashlib.sha256(r.stdout).hexdigest()
 
 
-def check(release: dict, want: dict[str, tuple[int, str]], version: str, draft: bool, prerelease: bool, repo: str,
-          partial: bool = False) -> list[str]:
-    """partial: assets missing from the release are not problems (missing() names them)"""
+def metadata_problems(release: dict, name: str | None, body: str | None) -> list[str]:
+    """the release's name and body against the audited ones (None: not checked). Nothing of either is printed: they may be private."""
     problems = []
+    if name is not None and release.get("name") != name:
+        problems.append("the release's name is not the audited name")
+    if body is not None and (release.get("body") or "").replace("\r\n", "\n").rstrip() != body.replace("\r\n", "\n").rstrip():
+        problems.append("the release's body is not the audited notes")
+    return problems
+
+
+def check(release: dict, want: dict[str, tuple[int, str]], version: str, draft: bool, prerelease: bool, repo: str,
+          partial: bool = False, name: str | None = None, body: str | None = None) -> list[str]:
+    """partial: assets missing from the release are not problems (missing() names them)"""
+    problems = metadata_problems(release, name, body)
     if release.get("tag_name") != version:
         problems.append(f"the release's tag is {release.get('tag_name')!r}, not {version}")
     if release.get("draft") is not draft:
@@ -107,7 +131,11 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--prerelease", choices=("true", "false"), default="false")
     ap.add_argument("--repo", default="Open-BFME/openbfme-godot")
     ap.add_argument("--missing", action="store_true", help="check the assets that are there, print the names of those that are not")
+    ap.add_argument("--name", help="the audited release name")
+    ap.add_argument("--body-file", type=Path, help="the audited release notes")
+    ap.add_argument("--metadata", action="store_true", help="print same or differs for the name and body alone")
     a = ap.parse_args(argv)
+    body = a.body_file.read_text(encoding="utf-8") if a.body_file else None
     want = expected(a.dir, a.version)
     if a.names:
         print("\n".join(want))
@@ -117,7 +145,10 @@ def main(argv: list[str]) -> int:
     except (OSError, ValueError, AttributeError) as e:
         print(f"RELEASE CHECK: cannot read the release ({e})")
         return 1
-    problems = check(release, want, a.version, a.draft == "true", a.prerelease == "true", a.repo, partial=a.missing)
+    if a.metadata:
+        print("differs" if metadata_problems(release, a.name, body) else "same")
+        return 0
+    problems = check(release, want, a.version, a.draft == "true", a.prerelease == "true", a.repo, partial=a.missing, name=a.name, body=body)
     if a.missing:
         for p in problems:
             print(f"RELEASE CHECK: {p}", file=sys.stderr)

@@ -11,4 +11,5 @@ set(OPENBFME_HORDE2_TESTS
     tests/test_horde2_crush.cpp
     tests/test_horde2_banner.cpp
     tests/test_horde2_hash.cpp
-    tests/test_hud_horde2_retail.cpp)
+    tests/test_hud_horde2_retail.cpp
+    tests/test_hud_group_commands.cpp)
