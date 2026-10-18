@@ -18,6 +18,7 @@
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/System/InvisibilityManager.h"
 #include "GameLogic/System/ShroudManager.h"
+#include "GameLogic/WallBalance.h"
 #include "Common/Team.h"
 #include "GameLogic/Module/BehaviorModule.h"
 #include "GameLogic/Object/Contain/HordeContainCore.h"
@@ -222,7 +223,7 @@ bool wantsHealthBar(const Object &obj, const IconUISettings &s, const std::set<O
 {
 	static const int HERO = kindIndex("HERO"), MACHINE = kindIndex("MACHINE"), MONSTER = kindIndex("MONSTER"), MINE = kindIndex("MINE");
 	static const int STRUCTURE = kindIndex("STRUCTURE"), HAS_HEALTH_BAR = kindIndex("HAS_HEALTH_BAR"), INFANTRY = kindIndex("INFANTRY"), CAVALRY = kindIndex("CAVALRY");
-	static const int WALL_UPGRADE = kindIndex("WALL_UPGRADE"), DEFENSIVE_WALL = kindIndex("DEFENSIVE_WALL"), UNATTACKABLE = kindIndex("UNATTACKABLE");
+	static const int UNATTACKABLE = kindIndex("UNATTACKABLE");
 	static const int ROCK_VENDOR = kindIndex("ROCK_VENDOR"), HORDE = kindIndex("HORDE");
 	const bool controllerHover = s.controllerHover != INVALID_ID && (s.controllerHover == obj.getID() ||
 		(obj.getContainedBy() && kindOf(*obj.getContainedBy(), HORDE) && s.controllerHover == obj.getContainedBy()->getID()));
@@ -237,7 +238,7 @@ bool wantsHealthBar(const Object &obj, const IconUISettings &s, const std::set<O
 		sel = selected.count(obj.getContainedBy()->getID()) != 0;
 		hovered = hovered || mousedOver == obj.getContainedBy()->getID();
 	}
-	if (!sel && !hovered)
+	if (!sel && !hovered && !controllerHover)
 	{
 		// lane OPTS-2: the OpenBFME health bar mode (retail: none here)
 		const BodyModuleInterface *body = s.healthBarMode == IconUISettings::HEALTH_BARS_DAMAGED ? obj.getBodyModule() : nullptr;
@@ -257,7 +258,7 @@ bool wantsHealthBar(const Object &obj, const IconUISettings &s, const std::set<O
 			return false;
 		}
 	}
-	if (!controllerHover && !kindOf(obj, HERO) && !kindOf(obj, MACHINE) && !kindOf(obj, MONSTER) && !kindOf(obj, MINE) && !kindOf(obj, STRUCTURE) && !kindOf(obj, HAS_HEALTH_BAR))
+	if (!controllerHover && !WallBalance::wall(obj) && !kindOf(obj, HERO) && !kindOf(obj, MACHINE) && !kindOf(obj, MONSTER) && !kindOf(obj, MINE) && !kindOf(obj, STRUCTURE) && !kindOf(obj, HAS_HEALTH_BAR))
 	{
 		// lane ZOOM-1: the OpenBFME "Always (all players)" mode shows the infantry and cavalry bars as AllHealthBars does (the owner, 2026-10-10: "see all my
 		// troops' health bars all the time, and the enemies' too"); retail's AllHealthBars alone only widens the kinds of the selected / moused-over objects
@@ -267,14 +268,8 @@ bool wantsHealthBar(const Object &obj, const IconUISettings &s, const std::set<O
 			return false;
 		}
 	}
-	if (kindOf(obj, WALL_UPGRADE))
-	{
-		return false; // INFERENCE (S-1950): the WallUpgradeUpdate's "upgrade active" test is not ported; a wall upgrade gets no bar
-	}
-	if (kindOf(obj, DEFENSIVE_WALL) && !kindOf(obj, HAS_HEALTH_BAR))
-	{
-		return false;
-	}
+	// OpenBFME UI improvement: wall hubs, segments and upgrades use the normal
+	// health display settings, independently of wall rebalance (retail active-upgrade test: S-1950).
 	return !kindOf(obj, UNATTACKABLE) && !kindOf(obj, ROCK_VENDOR) && !kindOf(obj, HORDE);
 }
 } // namespace
@@ -577,7 +572,7 @@ std::vector<std::string> DrawableIconUI::acceptanceStops()
 	return {
 		"[S-1950] the drawable decorations (HUD-5): the health bar (unit, structure and construction looks RW 0x6723C3 / 0x6721CC / 0x671FD5), the construction text and "
 		"the veterancy marks (a horde's on its banner carrier or first member, RW 0x67939F) run as RW 0x679129 / 0x676346 / 0x677CF9 / 0x6780DF, with the stealth tests "
-		"(RW 0x4853EB, 0x6763DA); not ported: the wall upgrade's \"upgrade active\" test, the other decoration lists (the group number, the caption, lists 1, 3, 5)",
+		"(RW 0x4853EB, 0x6763DA); not ported: the wall upgrade's \"upgrade active\" test (wall objects use normal health settings independently of wall rebalance), the other decoration lists (the group number, the caption, lists 1, 3, 5)",
 		"[S-1951] the drawable decorations' inference: the in-game UI's drawable caption font of the construction text (InGameUI + 0x7A0 / + 0x7A4), the icon toggle "
 		"(TheGameLogic + 0x9A) and the script letterbox (TheScriptEngine + 0x1A238) of the queue, the queue's fog / shroud test (RW 0x68D8F7 <= 2) read from the presented snapshot (one client frame behind the live logic the icons read), the "
 		"horde anchor's H+0x170 set taken as HordeContainCore's registered members (the members on their way into a garrison are kept apart)",

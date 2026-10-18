@@ -7,6 +7,8 @@
 #include "doctest.h"
 
 #include "HudTestUtil.h"
+#include "CombatTestUtil.h"
+#include "Libraries/WWVegas/WW3D2/assetmgr.h"
 
 #include "Common/INI.h"
 #include "Common/Player.h"
@@ -561,4 +563,59 @@ TEST_CASE("hud5 icons: the acceptance stops are reported")
 	REQUIRE(stops.size() == 2);
 	CHECK(stops[0].rfind("[S-1950]", 0) == 0);
 	CHECK(stops[1].rfind("[S-1951]", 0) == 0);
+}
+
+// Synthetic regressions: walls use normal health settings, without requiring retail assets.
+
+TEST_CASE("wall health bars: hubs towers segments and gates follow selection hover and display settings")
+{
+	for (const char *kind : {"WALL_HUB DEFENSIVE_WALL", "WALL_UPGRADE DEFENSIVE_WALL", "WALL_SEGMENT DEFENSIVE_WALL", "WALL_GATE DEFENSIVE_WALL"})
+	{
+		for (int mode = 0; mode != 8; ++mode)
+		{
+			INFO(kind, " display mode ", mode);
+			const std::string definition = std::string("Object WallBar\n KindOf = STRUCTURE SELECTABLE IMMOBILE ") + kind +
+				"\n Geometry = BOX\n GeometryMajorRadius = 10\n GeometryMinorRadius = 10\n GeometryHeight = 20\n"
+				" Body = ActiveBody Body\n MaxHealth = 100\n End\nEnd\n";
+			combattest::CombatWorld world(definition.c_str());
+			Object *wall = world.unit("WallBar", 'A', 300, 300);
+			CHECK(world.logic->settings().wallBalance.enabled == false);
+			struct NoModels : W3DFileSource
+			{
+				bool Exists(const std::string &) const override { return false; }
+				bool Read(const std::string &, std::vector<std::uint8_t> &, std::string *) override { FAIL("wall health test unexpectedly requested a model"); return false; }
+			} source;
+			WW3DAssetManager assets(source);
+			DrawableManager drawables(assets, *world.logic);
+			ClientEvent created;
+			created.seq = 1;
+			created.object = wall->getID();
+			created.tmpl = wall->getTemplate();
+			created.position = *wall->getPosition();
+			drawables.applyEvents({created});
+			REQUIRE(drawables.findByObject(wall->getID()) != nullptr);
+			PinholeView view({300,0,400}, {300,300,0}, 1024, 768, 0.7f);
+			IconUISettings settings;
+			settings.showObjectHealth = true;
+			std::set<ObjectID> selected;
+			ObjectID hover = INVALID_ID;
+			if (mode == 0) selected.insert(wall->getID());
+			if (mode == 1) hover = wall->getID();
+			if (mode == 2) settings.healthBarMode = IconUISettings::HEALTH_BARS_ALWAYS;
+			if (mode == 3)
+			{
+				settings.healthBarMode = IconUISettings::HEALTH_BARS_DAMAGED;
+				wall->getBodyModule()->setInitialHealth(50);
+			}
+			if (mode == 4) settings.controllerHover = wall->getID();
+			if (mode == 5) settings.healthBarMode = IconUISettings::HEALTH_BARS_DAMAGED; // healthy wall: no bar
+			if (mode == 6) { selected.insert(wall->getID()); settings.showObjectHealth = false; }
+			if (mode == 7) { selected.insert(wall->getID()); wall->setDrawableHidden(true); }
+			DrawableIconUI icons;
+			std::vector<IconUIOp> ops;
+			icons.build(*world.logic, drawables, view, settings, selected, hover, ops);
+			const size_t expected[] = {7, 7, 7, 7, 7, 0, 0, 0};
+			CHECK(ops.size() == expected[mode]);
+		}
+	}
 }
