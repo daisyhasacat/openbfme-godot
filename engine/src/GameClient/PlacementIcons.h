@@ -49,7 +49,8 @@ public:
 	{
 		TINT_NONE = 0,
 		TINT_ILLEGAL = 1, ///< IllegalBuildColor (1, 0, 0), RW 0xDA0B28
-		TINT_CODE9 = 2    ///< (0, 0, tintBlue)
+		TINT_CODE9 = 2,   ///< (0, 0, tintBlue)
+		TINT_ALTERNATE = 3 ///< OpenBFME: every other legal wall segment of a span, so the segments can be counted
 	};
 	enum Bib
 	{
@@ -91,6 +92,7 @@ public:
 	std::vector<Icon> &icons() { return m_icons; }
 	const std::string &templateName() const { return m_template; }
 	bool castle() const { return m_castle; }
+	bool wall() const { return m_wall; } ///< a line build (a wall span dragged from a hub)
 	float resourceRadius() const { return m_resourceRadius; }
 	float resourceShare() const { return m_resourceShare; }
 	// problems (a draw module that does not build, a layout that does not load), each reported once

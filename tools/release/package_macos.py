@@ -44,6 +44,19 @@ def host_template(template, arch, build):
         return target
 
 
+def ensure_bundle_stopped(output):
+    """A running Godot pack still uses its file offsets; never replace it underneath it."""
+    info_path = output / 'Contents/Info.plist'
+    if not info_path.is_file():
+        return
+    info = plistlib.loads(info_path.read_bytes())
+    executable = str((output / 'Contents/MacOS' / info['CFBundleExecutable']).resolve())
+    processes = subprocess.run(['/bin/ps', '-axo', 'comm='], capture_output=True, text=True, check=True)
+    if any(line.strip() == executable for line in processes.stdout.splitlines()):
+        raise RuntimeError(f'Quit {output.name} before rebuilding it: replacing a running bundle can corrupt resource reads. '
+                           'Use --output with a different app path to build alongside it.')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build-dir', type=Path, default=ROOT / 'engine/build')
@@ -57,14 +70,20 @@ def main():
     output = (args.output or build / 'macos/OpenBFME.app').resolve()
     if output.suffix != '.app':
         parser.error('output must end in .app')
+    ensure_bundle_stopped(output)
     godot = shutil.which(args.godot) or args.godot
     version = subprocess.check_output([godot, '--version'], text=True).strip().split('.')
     channel = next((i for i, part in enumerate(version) if not part.isdigit()), len(version))
     tag = '.'.join(version[:channel]) + '-' + version[channel]
-    template = args.template or Path(os.environ.get('GODOT_MACOS_TEMPLATE', build / f'export-templates/{tag}/macos.zip'))
+    # Godot 4.7/4.7.1 Metal copy-queue alignment can advance beyond its 64 KiB
+    # scratch buffer during large map previews (native SIGBUS in memcpy).
+    # 4.7.2 aligns the end of each copy, fixing the offset underflow.
+    # Keep patch-compatible exports usable with an older installed editor.
+    template_tag = '4.7.2-stable' if tag in ('4.7-stable', '4.7.1-stable') else tag
+    template = args.template or Path(os.environ.get('GODOT_MACOS_TEMPLATE', build / f'export-templates/{template_tag}/macos.zip'))
     template = template.resolve()
     if not template.is_file():
-        run('python3', ROOT / 'tools/release/fetch_macos_template.py', '--version', tag, '--output', template)
+        run('python3', ROOT / 'tools/release/fetch_macos_template.py', '--version', template_tag, '--output', template)
     arch = 'arm64' if platform.machine() == 'arm64' else 'x86_64'
     template = host_template(template, arch, build)
     library = ROOT / f'godot/bin/openbfme.macos.template_debug.{arch}.dylib'
@@ -106,6 +125,7 @@ def main():
             old_info = plistlib.loads((output / 'Contents/Info.plist').read_bytes())
             if old_info.get('CFBundleIdentifier') != 'org.openbfme.game':
                 raise RuntimeError(f'Refusing to replace a different application: {output}')
+            ensure_bundle_stopped(output)
             shutil.rmtree(output)
         shutil.move(str(app), str(output))
     print(f'BUILT APP: {output}')

@@ -18,6 +18,7 @@
 //  * mapper phase is per material, shared by every instance that uses it (WW3D keeps it per render object).
 
 #pragma once
+#include "Common/TextureSwap.h"
 
 #include "GameEngineDevice/W3DDevice/GameClient/HouseColor.h"
 #include "Libraries/WWVegas/WW3D2/mapper.h"
@@ -87,7 +88,7 @@ public:
 	void Set_House_Params(const HouseColorParams &params) { HouseParams = params; }
 	// stop S-4832: the texture swaps of the model being built (W3DInstancer::Set_Build_Texture_Swaps, a ModelConditionState's `Texture = A B` pairs):
 	// a surface texture named A (any case; A = "*": every texture) is loaded as B. Empty by default.
-	void Set_Texture_Swaps(const std::vector<std::pair<std::string, std::string>> &swaps) { TextureSwaps = swaps; }
+	void Set_Texture_Swaps(const std::vector<TextureSwap> &swaps) { TextureSwaps = swaps; }
 	// lane BUILD-5 r3: the surfaces this factory builds belong to a translucent drawable (W3DShaderKey::AlphaOverride); off by default
 	void Set_Alpha_Override(bool on) { AlphaOverride = on; }
 	// RW 0x531C77 applied to the texture `name` (its A8R8G8B8 texels; another format stays as it is, as retail's switch leaves it), then mipmaps; cached
@@ -123,7 +124,7 @@ private:
 	ArchiveFileSystem &Fs;
 	const HouseColorTable *HouseColors = nullptr;
 	HouseColorParams HouseParams;
-	std::vector<std::pair<std::string, std::string>> TextureSwaps; // stop S-4832
+	std::vector<TextureSwap> TextureSwaps; // stop S-4832
 	bool AlphaOverride = false;
 	std::map<std::string, Ref<Shader>> Shaders;
 	std::map<std::string, Ref<Texture2D>> Textures; // by virtual path

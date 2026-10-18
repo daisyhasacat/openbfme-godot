@@ -35,6 +35,10 @@ End
 Object Tactical
  KindOf = STRUCTURE TACTICAL_MARKER
 End
+Object Producer
+ KindOf = STRUCTURE
+ CommandSet = TrainSet
+End
 Object Soldier
  KindOf = INFANTRY SELECTABLE
 End
@@ -49,6 +53,13 @@ Object Hole
 End
 Object Old
  KindOf = STRUCTURE OBSOLETE
+End
+CommandButton Train
+ Command = UNIT_BUILD
+ Object = Soldier
+End
+CommandSet TrainSet
+ 1 = Train
 End
 CommandButton Build
  Command = DOZER_CONSTRUCT
@@ -84,6 +95,8 @@ End
  CHECK(result.at("EnhancedOnly").enhancedPlotBuildable);CHECK_FALSE(result.at("EnhancedOnly").plotBuildable);
  CHECK_FALSE(result.at("EnhancedOnly").recommended);CHECK_FALSE(result.at("Orphan").builderBuildable);
  CHECK(result.at("Tactical").marker);CHECK_FALSE(result.at("Tactical").recommended);
+ CHECK(result.at("Soldier").trainable);CHECK(result.at("Soldier").producers==std::vector<std::string>{"Producer"});
+ CHECK_FALSE(result.at("Horde").trainable);
  CHECK(result.at("Soldier").unit);CHECK(result.at("Horde").unit);
  CHECK(result.at("SelectableScenery").scenery);CHECK_FALSE(result.at("SelectableScenery").unit);
  CHECK(result.at("Hole").placeholder);CHECK(result.at("Old").unfinishedContent);

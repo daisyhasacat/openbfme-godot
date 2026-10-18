@@ -3,6 +3,7 @@
 #include "Common/Audio/AudioEventInfo.h"
 
 #include "Common/AsciiString.h"
+#include "Common/BfmeGame.h"
 #include "Common/INIException.h"
 
 #include <cctype>
@@ -12,8 +13,12 @@
 
 const char *const theAudioPriorityNames[] = { "LOWEST", "LOW", "NORMAL", "HIGH", "CRITICAL", nullptr };
 const char *const theSoundTypeNames[] = { "UI", "WORLD", "SHROUDED", "GLOBAL", "VOICE", "PLAYER", "ALLIES", "ENEMIES", "EVERYONE", "FAKE", "DEFAULT", nullptr };
-// BFME1 uses RANDOM for bit 6; RotWK leaves that slot unavailable to INI files.
-const char *const theAudioControlNames[] = { "LOOP", "SEQUENTIAL", "RANDOMSTART", "INTERRUPT", "FADE_ON_KILL", "FADE_ON_START", "RANDOM", "PLAY_ONE", nullptr };
+// RW 0xD9DB70: the seventh name is the C string "\not used by INI files": a newline character followed by "ot used by INI files" (the author meant
+// "not used"; the escape ate the n). No INI line can name it.
+const char *const theAudioControlNames[] = { "LOOP", "SEQUENTIAL", "RANDOMSTART", "INTERRUPT", "FADE_ON_KILL", "FADE_ON_START", "\not used by INI files", "PLAY_ONE", nullptr };
+// BFME1 VA 0x012A8264 (Open-BFME-1 targets/game/reverse/name_tables.tsv): bit 1 is RANDOM, and an event without it plays its Sounds in order
+// (the ZH AC_RANDOM meaning). RotWK inverted that bit to SEQUENTIAL; the other bits match.
+static const char *const theBfme1AudioControlNames[] = { "LOOP", "RANDOM", "RANDOMSTART", "INTERRUPT", "FADE_ON_KILL", "FADE_ON_START", nullptr };
 const char *const theSubmixSliderNames[] = { "SOUNDFX", "VOICE", "MUSIC", "AMBIENT", "MOVIE", "NONE", nullptr };
 
 namespace
@@ -96,6 +101,22 @@ void parseDelayPair(INI *ini, void *, void *store, const void *)
 }
 
 // RW 0x5D9620: `VolumeSliderMultiplier = Slider:<name> Multiplier:<percent>`; appended to the event's list.
+// Control: BFME1 data is read with its own names, and its RANDOM bit is stored as RotWK's SEQUENTIAL (set when RANDOM is absent). The stored
+// value is flipped back first so "+FLAG" / "-FLAG" edit the BFME1 bits of a value copied from the default event.
+void parseAudioControl(INI *ini, void *instance, void *store, const void *userData)
+{
+	const ArchiveFileSystem *fs = ini->environment().fileSystem;
+	if (!fs || !isBfme1Data(*fs))
+	{
+		INI::parseBitString32(ini, instance, store, userData);
+		return;
+	}
+	unsigned *control = (unsigned *)store;
+	*control ^= AC_SEQUENTIAL;
+	INI::parseBitString32(ini, instance, store, theBfme1AudioControlNames);
+	*control ^= AC_SEQUENTIAL;
+}
+
 void parseVolumeSliderMultiplier(INI *ini, void *, void *store, const void *)
 {
 	std::vector<SliderMultiplier> *list = static_cast<std::vector<SliderMultiplier> *>(store);
@@ -133,7 +154,7 @@ const FieldParse *AudioEventInfo::getFieldParse()
 		{ "Limit", INI::parseInt, nullptr, AEI(limit) },
 		{ "Priority", INI::parseIndexList, theAudioPriorityNames, AEI(priority) },
 		{ "Type", INI::parseBitString32, theSoundTypeNames, AEI(type) },
-		{ "Control", INI::parseBitString32, theAudioControlNames, AEI(control) },
+		{ "Control", parseAudioControl, theAudioControlNames, AEI(control) },
 		{ "Sounds", parseSoundsList, nullptr, AEI(sounds) },
 		{ "Attack", parseSoundsList, nullptr, AEI(attack) },
 		{ "Decay", parseSoundsList, nullptr, AEI(decay) },

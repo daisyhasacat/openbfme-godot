@@ -194,6 +194,8 @@ bool structureFilter(const Object *o, bool fortressExcluded)
 		return false;
 	}
 	const Kinds &k = kinds();
+ // OpenBFME: armed wall towers/emplacements remain objectives after a breach.
+ if ((is(*o,k.wallUpgrade) || is(*o,k.wallHub) || is(*o,k.wallSegment) || is(*o,k.defensiveWall)) && is(*o,k.canAttack))return true;
 	if (!fortressExcluded && is(*o, k.dozerFactory))
 	{
 		return true;
@@ -635,7 +637,7 @@ bool offensiveAllowed(GameLogic &logic, const AISkirmishPlayer &ai, const Player
 
 bool inAnyTeamOf(const AIBrainState &b, ObjectID id)
 {
-	if (b.siegeUnits.count(id)) return true;
+	if (b.siegeUnits.count(id) || b.siegeEscorts.count(id)) return true;
 	for (const AITactic &tac : b.tactics)
 	{
 		for (const AITacticTeam &team : tac.teams)
@@ -788,7 +790,7 @@ void setupTeam(GameLogic &logic, OffensiveKind kind, int index, const AITarget &
 	case FLANK_ATTACK:
 		if (t.type == kEnemyStructure)
 		{
-			team.minimum = logic.random().getValue(3, 5, "AITactic.cpp", 0x1C7); // RW 0x8F121F
+			team.minimum = 3; // Enhanced pressure: launch a small open-field attack promptly. // RW 0x8F121F
 		}
 		break;
 	case FORMATION_ATTACK: // RW 0x9B49CE
@@ -2170,7 +2172,7 @@ bool recruitable(GameLogic &logic, const AIBrainState &b, const AITacticTeam &te
 	{
 		return false;
 	}
-	if (logic.getFrame() - o.getCreationFrame() < (std::uint32_t)(kLogicFramesPerSecond * 10))
+	if (logic.getFrame() - o.getCreationFrame() < (std::uint32_t)(kLogicFramesPerSecond * 5))
 	{
 		return false;
 	}
@@ -2309,7 +2311,7 @@ void dispatchIdleUnits(GameLogic &logic, AISkirmishPlayer &ai, const std::vector
 		{
 			continue;
 		}
-		if (logic.getFrame() - o->getCreationFrame() < (std::uint32_t)(kLogicFramesPerSecond * 10))
+		if (logic.getFrame() - o->getCreationFrame() < (std::uint32_t)(kLogicFramesPerSecond * 5))
 		{
 			continue;
 		}
@@ -2397,6 +2399,9 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 			{
 				team.maximum = 2;
 			}
+			// Unlimited prototype maxima must not require defeating the entire base's
+   // threat before any attack launches, especially with edited CP limits.
+   if(team.type==kEnemyStructure && (team.maximum<0 || team.maximum>12)) team.maximum=12;
 			const std::uint32_t maximum = (std::uint32_t)team.maximum;
 			std::uint32_t count = teamUnitCount(logic, team); // RW 0x9A32C1 -> RW 0x9A24A6
 			// RW 0x9A2E06: the army list in order while count < maximum (unsigned; -1: no maximum): a CAN_ATTACK or SUPPORT unit that RW 0x9A24FC accepts joins
@@ -2449,8 +2454,13 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 				continue;
 			}
 			const std::uint32_t count = teamUnitCount(logic, team);
+   if (team.type == kEnemyStructure && !b.siegeLaunched && b.fortificationTarget != INVALID_ID)
+   {
+    const auto *barrier = logic.findObjectByID(b.fortificationTarget);
+    if (barrier && AIFortification::passiveBarrier(*barrier)) continue;
+   }
 			if (count >= (std::uint32_t)team.minimum &&
-				(team.type == kDefensive || count >= (std::uint32_t)team.maximum || teamMeetsThreat(logic, tac, team)))
+				(team.type == kDefensive || count >= 8u || count >= (std::uint32_t)team.maximum || teamMeetsThreat(logic, tac, team)))
 			{
 				team.wantsMembers = false;
 				team.handedOver = true; // RW 0x6C779B
@@ -2460,7 +2470,9 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 	// RW 0x9A3462 .. 0x9A34A3: the sent units whose object is gone leave the set; then RW 0x9A3040 (RW 0x9A34AC)
 	for (auto it = b.dispatched.begin(); it != b.dispatched.end();)
 	{
-		it = logic.findObjectByID(*it) ? std::next(it) : b.dispatched.erase(it);
+		const auto *unit=logic.findObjectByID(*it);
+  const auto *update=unit ? unit->getAIUpdateInterface() : nullptr;
+  it = unit && !(logic.getFrame()%50==0 && update && update->isIdle()) ? std::next(it) : b.dispatched.erase(it);
 	}
 	dispatchIdleUnits(logic, ai, army);
 }
@@ -2567,10 +2579,13 @@ void AITacticalAI::makeGenerator(GameLogic &logic, AISkirmishPlayer &ai)
 
 void AITacticalAI::crc(const AIBrainState &b, StateHasher &h)
 {
-	if (b.fortificationTarget != INVALID_ID || !b.siegeUnits.empty())
+	if (b.fortificationTarget != INVALID_ID || !b.siegeUnits.empty() || !b.siegeEscorts.empty())
 	{
 		h.addU32(0x53494547u); // "SIEG": extension state only when used
 		h.addU32(b.fortificationTarget);
+		h.addU32(b.siegeGatherFrame);h.addBool(b.siegeLaunched);
+		h.addU32((std::uint32_t)b.siegeEscorts.size());
+		for (ObjectID id : b.siegeEscorts) h.addU32(id);
 		h.addU32((std::uint32_t)b.siegeUnits.size());
 		for (ObjectID id : b.siegeUnits) h.addU32(id);
 	}

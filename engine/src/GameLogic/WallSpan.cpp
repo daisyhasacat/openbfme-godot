@@ -241,7 +241,7 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
 		float best = 0.0f;
 		for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
 		{
-			if (o == &hub || o->isDestroyed() || !o->isInWorld() || o->getControllingPlayer() != owner || !(o->isKindOfName("WALL_HUB") || (logic.settings().wallBalance.enabled && logic.settings().wallBalance.trebuchetWallTargets
+			if (o == &hub || o->isDestroyed() || o->isEffectivelyDead() || !o->isInWorld() || o->getControllingPlayer() != owner || !(o->isKindOfName("WALL_HUB") || (logic.settings().wallBalance.enabled && logic.settings().wallBalance.trebuchetWallTargets
 				&& (AsciiStringUtil::lowered(o->getTemplate()->getName()).find("trebuchetexpansion") != std::string::npos || AsciiStringUtil::lowered(o->getTemplate()->getName()).find("trebuchetsideexpansion") != std::string::npos))))
 			{
 				continue;
@@ -298,10 +298,45 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
 		const ThingTemplate *segment=wh->defaultSegmentTemplate();
 		if(segment) remaining=SimMath::addf32(remaining,SimMath::mulf32(2.0f,SimMath::subf32(halfExtentY(*segment),1.0f)));
 	}
+ // Enhanced span rebuilding: only a connection between two live friendly hubs
+ // may reuse aligned walls and clear rubble. Other structures/crossing walls block.
+ std::vector<ObjectID> ignored;
+ std::vector<Object *> survivors;
+ if (endHub) ignored.push_back(endHub->getID());
+ if (endHub && endHub->isKindOfName("WALL_HUB"))
+ {
+  const float length = (float)SimMath::length3d(endAt.x-start.x,endAt.y-start.y,0.0f);
+  for (Object *o=logic.getFirstObject();o;o=o->getNextObject())
+  {
+   if (o==&hub || o==endHub || !o->isInWorld() || o->isDestroyed() || !o->getTemplate()) continue;
+   const auto &p=*o->getPosition();
+   const float along=SimMath::addf32(SimMath::mulf32(p.x-start.x,dir.x),SimMath::mulf32(p.y-start.y,dir.y));
+   const float off=SimMath::subf32(SimMath::mulf32(p.x-start.x,dir.y),SimMath::mulf32(p.y-start.y,dir.x));
+   if (along<=0.0f || along>=length || std::abs(off)>1.0f) continue;
+   const bool rubble=o->isEffectivelyDead() || o->testModelCondition(Construction::modelConditionIndex("RUBBLE")) ||
+                     o->testModelCondition(Construction::modelConditionIndex("POST_RUBBLE"));
+   if (rubble) { out.rubble.push_back(o->getID());ignored.push_back(o->getID());continue; }
+   const bool wall=o->isKindOfName("WALL_SEGMENT") || o->isKindOfName("DEFENSIVE_WALL") || o->isKindOfName("WALL_GATE") ||
+                   o->isKindOfName("WALL_HUB") || BuildAssistant::isEquivalentTo(o->getTemplate(),wh->defaultSegmentTemplate());
+   const float turn=normalizeAngle(o->getOrientation()-angle);
+   const bool aligned=std::abs(turn)<0.008727f || std::abs(std::abs(turn)-3.14159265f)<0.008727f;
+   if (wall && o->getControllingPlayer()==owner && (aligned || o->isKindOfName("WALL_HUB")))
+   { survivors.push_back(o);ignored.push_back(o->getID()); }
+  }
+ }
+ auto existingAt = [&](const Coord3D &p) -> ObjectID {
+  for (const auto *o:survivors)
+  {
+   const float along=SimMath::addf32(SimMath::mulf32(p.x-o->getPosition()->x,dir.x),SimMath::mulf32(p.y-o->getPosition()->y,dir.y));
+   if (std::abs(along)<=std::max(1.0f,halfExtentY(*o->getTemplate())-1.5f)) return o->getID();
+  }
+  return INVALID_ID;
+ };
+
 	auto legal = [&](const Coord3D &p, const ThingTemplate &tt, bool ignoreCollision=false) {
-		int code = (int)BuildPlacement::isLocationLegalToBuild(logic, p, tt, angle, ignoreCollision ? (0x55 & ~LLF_NO_OBJECT_OVERLAP) : 0x55, &hub, nullptr);
+		int code = (int)BuildPlacement::isLocationLegalToBuild(logic, p, tt, angle, ignoreCollision ? (0x55 & ~LLF_NO_OBJECT_OVERLAP) : 0x55, &hub, nullptr, &ignored);
 		if(trebuchetEnd && !ignoreCollision && code==LBC_OBJECTS_IN_THE_WAY)
-			code=(int)BuildPlacement::isLocationLegalToBuild(logic,p,tt,angle,0x55,endHub,owner);
+			code=(int)BuildPlacement::isLocationLegalToBuild(logic,p,tt,angle,0x55,endHub,owner,&ignored);
 		if (!centres.empty())
 		{
 			bool near = false;
@@ -314,6 +349,49 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
 		return code;
 	};
 	const int maxTiles = logic.settings().maxLineBuildObjects; // GameData + 0xA94
+ // Existing links retain original slot positions even when the object was removed.
+ // Use them in either build direction; regenerating from the other hub shifts
+ // the segment lattice and would overlap the surviving wall.
+ if (endHub && endHub->isKindOfName("WALL_HUB"))
+ {
+  const auto *a=dynamic_cast<const GettingBuiltBehavior *>(hub.findModule("GettingBuiltBehavior"));
+  const auto *b=dynamic_cast<const GettingBuiltBehavior *>(endHub->findModule("GettingBuiltBehavior"));
+  auto linkedTo=[](const GettingBuiltBehavior *gb,const Object &endpoint) {
+   if (gb) for (const auto &piece:gb->linkedPieces()) if (piece.id==endpoint.getID() || CombatQueries::centerDistanceSquared2D(piece.pos,*endpoint.getPosition())<1.0f) return true;
+   return false;
+  };
+  if (linkedTo(a,*endHub) || linkedTo(b,hub))
+  {
+   std::vector<Coord3D> slots;
+   const float length=(float)SimMath::length3d(endAt.x-start.x,endAt.y-start.y,0.0f);
+   for (const auto *gb:{a,b}) if (gb) for (const auto &piece:gb->linkedPieces())
+   {
+    const float along=SimMath::addf32(SimMath::mulf32(SimMath::subf32(piece.pos.x,start.x),dir.x),SimMath::mulf32(SimMath::subf32(piece.pos.y,start.y),dir.y));
+    const float off=SimMath::subf32(SimMath::mulf32(SimMath::subf32(piece.pos.x,start.x),dir.y),SimMath::mulf32(SimMath::subf32(piece.pos.y,start.y),dir.x));
+    if (along<=1.0f || along>=length-1.0f || std::abs(off)>1.0f) continue;
+    bool duplicate=false;
+    for (const auto &p:slots) if (CombatQueries::centerDistanceSquared2D(p,piece.pos)<1.0f) duplicate=true;
+    if (!duplicate) slots.push_back(piece.pos);
+   }
+   std::sort(slots.begin(),slots.end(),[&](const Coord3D &p,const Coord3D &q) { return SimMath::addf32(SimMath::mulf32(SimMath::subf32(p.x,q.x),dir.x),SimMath::mulf32(SimMath::subf32(p.y,q.y),dir.y))<0; });
+   if (slots.size()>1 && slots.size()<=(size_t)maxTiles)
+   {
+    for (auto p:slots)
+    {
+     Tile tile;tile.pos=p;tile.pos.z=logic.getGroundHeight(p.x,p.y);tile.angle=angle;tile.tmpl=wh->defaultSegmentTemplate();
+     if (!tile.tmpl) return false;
+     tile.existing=existingAt(p);
+     if (const auto *o=logic.findObjectByID(tile.existing)) tile.tmpl=o->getTemplate();
+     tile.code=tile.existing==INVALID_ID ? legal(tile.pos,*tile.tmpl) : 0;
+     if (tile.existing==INVALID_ID) out.cost+=costOf(*tile.tmpl,hub);
+     if (money<(unsigned)out.cost) tile.code=7;
+     out.worstCode=std::max(out.worstCode,tile.code);out.tiles.push_back(tile);
+    }
+    out.endCapPlaced=false;return true;
+   }
+  }
+ }
+
 	unsigned i = 0;
 	if (done < remaining)
 	{
@@ -338,7 +416,8 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
 			t.angle = angle;
 			t.tmpl = tt;
 			const bool finalTrebuchetSegment=trebuchetEnd && remaining<=SimMath::addf32(done,SimMath::mulf32(half,2.0f));
-			t.code = legal(pos, *tt, finalTrebuchetSegment);
+			t.existing = existingAt(pos);
+			t.code = t.existing == INVALID_ID ? legal(pos, *tt, finalTrebuchetSegment) : 0;
 			// A wall may terminate against terrain, but never use this exception to
 			// tunnel through another object or evade buildout/shroud restrictions.
 			const int terrainCode = BuildPlacement::isLocationLegalToBuild(logic, pos, *tt, angle,
@@ -378,7 +457,7 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
 			// Terrain termination above maps the port's terrain codes to the configured cliff cap.
 			pos.x = SimMath::addf32(sx, pos.x);
 			pos.y = SimMath::addf32(sy, pos.y);
-			out.cost += costOf(*tt, hub);
+			if (t.existing == INVALID_ID) out.cost += costOf(*tt, hub);
 			if ((int)money < out.cost)
 			{
 				out.worstCode = 7;
@@ -416,11 +495,6 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
 			++i;
 		}
 	}
-	else if (!out.tiles.empty())
-	{
-		// RW 0x796090: the link path (RW 0x793DB9, slot 0x58) is not ported (S-657); the last tile is made legal
-		out.tiles.back().code = 0;
-	}
 	out.endCapPlaced = endCap;
 	if (out.tiles.size() > 1)
 	{
@@ -442,11 +516,17 @@ bool WallSpan::build(GameLogic &logic, Object &hub, const Coord3D &start, const 
 		return false;
 	}
 	WallHubBehavior *wh = WallHubBehavior::find(hub, options);
-	std::vector<ObjectID> ids;
+	std::vector<ObjectID> ids, created;
+	for (ObjectID id : p.rubble) if (Object *rubble = logic.findObjectByID(id)) logic.destroyObject(rubble);
 	Object *lastHub = nullptr;
 	for (unsigned i = 0; i < p.tiles.size(); ++i)
 	{
 		const Tile &t = p.tiles[i];
+		if (t.existing != INVALID_ID)
+		{
+			if (std::find(ids.begin(),ids.end(),t.existing)==ids.end()) ids.push_back(t.existing);
+			continue;
+		}
 		// RW 0x7952F4: BuildAssistant slot 0x38 with the hub as builder (the structure is made complete, then started again below)
 		Object *obj = Construction::buildObjectNow(logic, &hub, *t.tmpl, t.pos, t.angle, owner);
 		if (!obj)
@@ -454,6 +534,7 @@ bool WallSpan::build(GameLogic &logic, Object &hub, const Coord3D &start, const 
 			continue;
 		}
 		ids.push_back(obj->getID());
+		created.push_back(obj->getID());
 		obj->setBuilder(&hub);
 		if (ActiveBody *body = dynamic_cast<ActiveBody *>(obj->getBodyModule()))
 		{
@@ -529,7 +610,7 @@ bool WallSpan::build(GameLogic &logic, Object &hub, const Coord3D &start, const 
 	if (!startingWalls) owner.getScoreKeeper().addMoneySpentByKind(logic, p.tiles.empty() ? nullptr : p.tiles[0].tmpl, p.cost);
 	if (made)
 	{
-		*made = ids;
+		*made = created;
 	}
 	return true;
 }
@@ -552,7 +633,7 @@ std::vector<std::string> WallSpan::stopLines()
 	return {
 		"[S-657] walls: WallHubBehavior and MSG_WALL_HUB_CONSTRUCT_SPAN (RW 0x77C4C3 -> BuildAssistant RW 0x795221 / 0x79586E) are ported for a straight span; not ported: RotWK's legal-build "
 		"codes 8 blocked mid-way and 10 rebuild of a dead equivalent segment (RW 0x797A96 is not read; terrain termination adapts the port's terrain checks), the end-hub link "
-		"path (RW 0x793DB9 then slot 0x58), the filter of the end-hub search (the port takes the owner's WALL_HUBs), the consumers of the linked-piece list (RW 0x856E1F / 0x856E5C), "
+		"path (RW 0x793DB9 then slot 0x58), the filter of the end-hub search (the port takes the owner's WALL_HUBs), the retail consumers of the linked-piece list (RW 0x856E1F / 0x856E5C); enhanced reconnection restores saved slots and clears rubble, "
 		"CANCEL_NEIGHBORHOOD, WallUpgradeUpdate and CastleUpgrade",
 	};
 }

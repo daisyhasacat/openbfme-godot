@@ -124,6 +124,7 @@ public:
 	// The map cache keys in the order of the MapList rows.
 	const std::vector<std::string> &mapListKeys() const { return m_mapKeys; }
 	void setMapSearch(const std::u16string &query);
+ void refreshMapCatalog() { populateMapList(); }
 	const std::u16string &mapSearch() const { return m_mapSearch; }
 	// lane RULES-1: the Rules tab's gadgets (AptMpGameRules::InitGadgets files "RuleComboBox_<n>" / "RuleCheckBox_<n>" under n); null when not placed
 	GameWindow *ruleComboWindow(int n) const { return n >= 0 && n < (int)m_ruleCombos.size() ? m_ruleCombos[(size_t)n] : nullptr; }

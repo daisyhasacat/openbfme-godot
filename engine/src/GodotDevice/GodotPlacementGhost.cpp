@@ -19,8 +19,13 @@
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/immediate_mesh.hpp>
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Module/ConstructionModules.h"
 #include "GameLogic/BuildPlacement.h"
+#include "GameLogic/Object/Object.h"
+#include "Common/Player.h"
+#include "Common/PlayerTemplate.h"
 #include <array>
+#include <map>
 #include <limits>
 #include <chrono>
 #include <godot_cpp/classes/camera3d.hpp>
@@ -133,6 +138,11 @@ void PlacementGhostRenderer::clear()
 	m_footprintId = 0;
 	m_footprint = nullptr;
 	m_footprintCount = 0;
+	freeNode(m_wallAlignId);
+	m_wallAlignId = 0;
+	m_wallAlign = nullptr;
+	m_wallAlignSpans = m_wallAlignSegments = 0;
+ m_alignmentCache.clear();m_alignmentHub=INVALID_ID;m_alignmentFrame=~0u;
 	freeNode(m_selectionCircleId);
 	m_selectionCircleId = 0;
 	m_selectionCircle = nullptr;
@@ -296,6 +306,10 @@ void PlacementGhostRenderer::drawIcon(size_t i, PlacementIcons::Icon &icon, Icon
 	else if (icon.tint == PlacementIcons::TINT_CODE9)
 	{
 		tint = Color(0, 0, icon.tintBlue, 1);
+	}
+	else if (icon.tint == PlacementIcons::TINT_ALTERNATE)
+	{
+		tint = Color(.45f, .35f, 0, 1); // a warm gold added to the lighting, distinct from the red / blue refusals
 	}
 	applyTint(view, tint);
 	updateBib(icon, view);
@@ -518,6 +532,7 @@ void PlacementGhostRenderer::sync(LiveGame &game, const InGameUI &ui, double del
 	updateResources(ui);
 	updateGrid(game, ui, judge);
 	updateFootprints(game, ui, judge);
+	updateWallAlignment(game, ui, judge);
 	updateSelectionCircle(game, ui, judge);
 	updateFormation(game, ui, judge);
 	m_formationSlots = ui.formationSlots;
@@ -561,11 +576,58 @@ void PlacementGhostRenderer::updateSelectionCircle(LiveGame &game, const InGameU
 	m_selectionCircle->show();
 }
 
+namespace
+{
+// the outline of a structure template's foundation rectangle (the box around its active collision shapes) laid on the ground, `width` units each side of
+// the edge; begins the mesh's surface on its first use. False when the template has no footprint there.
+bool outlineFootprint(GameLogic &logic, ImmediateMesh &mesh, const Ref<StandardMaterial3D> &material, bool &begun, const ThingTemplate &tt, const Coord3D &p,
+	float angle, float width = 1.0f, std::vector<Vector3> *vertices = nullptr)
+{
+	std::vector<BuildPlacement::Footprint> shapes;
+	if (!BuildPlacement::footprintsOf(logic,tt,p,angle,shapes) || shapes.empty()) return false;
+	const float c=std::cos(angle),s=std::sin(angle);
+	float loX=std::numeric_limits<float>::infinity(),loY=loX,hiX=-loX,hiY=-loX;
+	// A rotated foundation rectangle bounds the active collision shapes, including offsets.
+	for (const auto &shape : shapes)
+		for (float dx : {-shape.major,shape.major})
+			for (float dy : {-(shape.type==0?shape.minor:shape.major),shape.type==0?shape.minor:shape.major})
+			{
+				const float a=shape.type==0?shape.angle:angle;
+				const float x=shape.x+dx*std::cos(a)-dy*std::sin(a)-p.x;
+				const float y=shape.y+dx*std::sin(a)+dy*std::cos(a)-p.y;
+				const float lx=x*c+y*s,ly=-x*s+y*c;
+				loX=std::min(loX,lx);hiX=std::max(hiX,lx);loY=std::min(loY,ly);hiY=std::max(hiY,ly);
+			}
+	if (!std::isfinite(loX) || hiX<=loX || hiY<=loY) return false;
+	if (!begun) { if (!vertices) mesh.surface_begin(Mesh::PRIMITIVE_TRIANGLES,material); begun=true; }
+	auto point = [&](float x,float y) {
+		const float wx=p.x+x*c-y*s,wy=p.y+x*s+y*c;
+		return Vector3(wx,logic.getGroundHeight(wx,wy)+1.5f,-wy);
+	};
+	const std::array<Vector2,4> corners={Vector2(loX,loY),Vector2(hiX,loY),Vector2(hiX,hiY),Vector2(loX,hiY)};
+	for (int edge=0;edge<4;++edge)
+	{
+		const Vector2 a=corners[edge],b=corners[(edge+1)%4];
+		const Vector2 normal=Vector2(-(b-a).y,(b-a).x).normalized()*width;
+		for (int j=0;j<16;++j)
+		{
+			const Vector2 u=a+(b-a)*(j/16.0f),v=a+(b-a)*((j+1)/16.0f);
+			const Vector2 uv[6]={u-normal,v-normal,v+normal,u-normal,v+normal,u+normal};
+			for (const auto &vertex:uv)
+    if (vertices) vertices->push_back(point(vertex.x,vertex.y));
+    else mesh.surface_add_vertex(point(vertex.x,vertex.y));
+		}
+	}
+	return true;
+}
+} // namespace
+
 void PlacementGhostRenderer::updateFootprints(LiveGame &game, const InGameUI &ui, bool idle)
 {
 	if (!ui.isPlacing() || !ui.placeHasGhost() || !ui.placementSnap)
 	{
 		if (m_footprint) m_footprint->hide();
+		m_structureFootprintCount = 0;
 		return;
 	}
 	if (!idle) return; // footprint geometry reads the live movement cache
@@ -579,44 +641,27 @@ void PlacementGhostRenderer::updateFootprints(LiveGame &game, const InGameUI &ui
 	material->set_albedo(Color(1,.8f,.15f,.9f));
 	bool begun = false;
 	m_footprintCount = 0;
+	// the snap square of a structure template at a position: the ghost's entries, and (OpenBFME aid) every built structure near the cursor
+	m_structureFootprintCount = 0;
+	auto addFootprint = [&](const ThingTemplate &tt, const Coord3D &p, float angle, unsigned &count) {
+		if (outlineFootprint(game.logic(), **mesh, material, begun, tt, p, angle)) ++count;
+	};
 	for (const auto &icon : m_icons->icons())
 	{
-		if (!icon.drawable || !icon.tt) continue;
-		const auto &p = *icon.drawable->getPosition();
-		std::vector<BuildPlacement::Footprint> shapes;
-		if (!BuildPlacement::footprintsOf(game.logic(),*icon.tt,p,icon.angle,shapes) || shapes.empty()) continue;
-		const float c=std::cos(icon.angle),s=std::sin(icon.angle);
-		float loX=std::numeric_limits<float>::infinity(),loY=loX,hiX=-loX,hiY=-loX;
-		// A rotated foundation rectangle bounds the active collision shapes, including offsets.
-		for (const auto &shape : shapes)
-			for (float dx : {-shape.major,shape.major})
-				for (float dy : {-(shape.type==0?shape.minor:shape.major),shape.type==0?shape.minor:shape.major})
-				{
-					const float a=shape.type==0?shape.angle:icon.angle;
-					const float x=shape.x+dx*std::cos(a)-dy*std::sin(a)-p.x;
-					const float y=shape.y+dx*std::sin(a)+dy*std::cos(a)-p.y;
-					const float lx=x*c+y*s,ly=-x*s+y*c;
-					loX=std::min(loX,lx);hiX=std::max(hiX,lx);loY=std::min(loY,ly);hiY=std::max(hiY,ly);
-				}
-		if (!std::isfinite(loX) || hiX<=loX || hiY<=loY) continue;
-		if (!begun) { mesh->surface_begin(Mesh::PRIMITIVE_TRIANGLES,material); begun=true; }
-		auto point = [&](float x,float y) {
-			const float wx=p.x+x*c-y*s,wy=p.y+x*s+y*c;
-			return Vector3(wx,game.logic().getGroundHeight(wx,wy)+1.5f,-wy);
-		};
-		const std::array<Vector2,4> corners={Vector2(loX,loY),Vector2(hiX,loY),Vector2(hiX,hiY),Vector2(loX,hiY)};
-		for (int edge=0;edge<4;++edge)
-		{
-			const Vector2 a=corners[edge],b=corners[(edge+1)%4];
-			const Vector2 normal=Vector2(-(b-a).y,(b-a).x).normalized();
-			for (int j=0;j<16;++j)
-			{
-				const Vector2 u=a+(b-a)*(j/16.0f),v=a+(b-a)*((j+1)/16.0f);
-				const Vector2 uv[6]={u-normal,v-normal,v+normal,u-normal,v+normal,u+normal};
-				for (const auto &vertex:uv) mesh->surface_add_vertex(point(vertex.x,vertex.y));
-			}
-		}
-		++m_footprintCount;
+		if (icon.drawable && icon.tt) addFootprint(*icon.tt,*icon.drawable->getPosition(),icon.angle,m_footprintCount);
+	}
+	// the built structures within reach of the cursor (a bounded radius keeps the mesh small on a large base)
+	const Coord3D &cursor = ui.placeLocation();
+	const float reach = 1500.0f;
+	for (::Object *o = game.logic().getFirstObject(); o; o = o->getNextObject())
+	{
+		if (!o->isInWorld() || o->isEffectivelyDead() || o->getContainedBy() || !o->getTemplate() || !o->isKindOfName("STRUCTURE")) continue;
+		// a player's buildings only: the map's neutral and creep pieces (rocks, lairs) are STRUCTUREs owned by players of no playable side
+		const Player *owner = o->getControllingPlayer();
+		if (!owner || !owner->getPlayerTemplate() || !owner->getPlayerTemplate()->m_playableSide) continue;
+		const Coord3D &p = *o->getPosition();
+		if (std::abs(p.x-cursor.x) > reach || std::abs(p.y-cursor.y) > reach) continue;
+		addFootprint(*o->getTemplate(),p,o->getOrientation(),m_structureFootprintCount);
 	}
 	if (begun) mesh->surface_end();
 	if (!m_footprint && begun)
@@ -627,6 +672,122 @@ void PlacementGhostRenderer::updateFootprints(LiveGame &game, const InGameUI &ui
 		m_footprint->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
 	}
 	if (m_footprint) { m_footprint->set_mesh(mesh); m_footprint->set_visible(begun); }
+}
+
+// OpenBFME placement aid: while a wall span is dragged from a hub, the hub's existing spans that run exactly square to it (90 degrees either way) or exactly
+// opposite it are outlined. A span is the hub's own segments in one direction (their producer is the hub, the direction from the hub to the segment), or a
+// span another hub built that ends at this one (the direction from this hub to that hub). "Exactly" is within half a degree.
+void PlacementGhostRenderer::updateWallAlignment(LiveGame &game, const InGameUI &ui, bool idle)
+{
+	auto hide = [&] {
+		if (m_wallAlign) m_wallAlign->hide();
+		m_wallAlignSpans = m_wallAlignSegments = 0;
+	};
+	if (!ui.isPlacing() || !ui.placeHasGhost() || !m_icons->wall())
+	{
+		hide();
+		return;
+	}
+ constexpr float kPi=3.14159265358979f,kTolerance=0.5f*kPi/180.0f;
+ // Snapshot geometry only in a logic client window. Pointer-angle matching
+ // uses that snapshot on every rendered frame, including threaded live games.
+ if (idle && (m_alignmentHub != ui.placeBuildSource() || m_alignmentFrame != game.logic().getFrame()))
+ {
+	GameLogic &logic = game.logic();
+	const ::Object *hub = logic.findObjectByID(ui.placeBuildSource());
+	const Coord3D &cursor = ui.placeLocation();
+	if (!hub || !std::isfinite(cursor.x) || !std::isfinite(cursor.y))
+	{
+		hide();
+		return;
+	}
+	const Coord3D &h = *hub->getPosition();
+	// the hub's spans, keyed by their direction rounded to a tenth of a degree: the segments of each, and its exact direction (the mean of its members')
+	struct Span { float sx = 0, sy = 0; std::vector<const ::Object *> segments; };
+	std::map<int, Span> spans;
+ const auto *linked=dynamic_cast<const GettingBuiltBehavior *>(hub->findModule("GettingBuiltBehavior"));
+	for (const ::Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+	{
+		if (!o->isInWorld() || o->isEffectivelyDead() || !o->getTemplate() || o->getControllingPlayer() != hub->getControllingPlayer()) continue;
+		if (!(o->isKindOfName("WALL_SEGMENT") || (o->isKindOfName("DEFENSIVE_WALL") && !o->isKindOfName("WALL_HUB")))) continue;
+		const Coord3D &p = *o->getPosition();
+		float dx = 0, dy = 0;
+		// the span's hub is the segment's producer (Construction::buildObjectNow; the builder link is released when it completes)
+		if (o->getProducerID() == hub->getID() || (linked && std::any_of(linked->linkedPieces().begin(), linked->linkedPieces().end(), [&](const auto &piece) { return piece.id == o->getID(); })))
+		{
+			dx = p.x - h.x;
+			dy = p.y - h.y;
+		}
+		else if (const ::Object *builder = logic.findObjectByID(o->getProducerID()))
+		{
+			// another hub's span that ends here: the segment lies on the line from its builder to this hub, between the two
+			const Coord3D &b = *builder->getPosition();
+			const float lx = h.x - b.x, ly = h.y - b.y, len = std::sqrt(lx * lx + ly * ly);
+			if (len < 1.0f) continue;
+			const float along = ((p.x - b.x) * lx + (p.y - b.y) * ly) / len, off = std::abs((p.x - b.x) * ly - (p.y - b.y) * lx) / len;
+			if (off > 10.0f || along < 0.0f || along > len) continue;
+			dx = b.x - h.x;
+			dy = b.y - h.y;
+		}
+		else
+		{
+			continue;
+		}
+		const float d = std::sqrt(dx * dx + dy * dy);
+		if (d < 1.0f) continue;
+		Span &span = spans[(int)std::lround(std::atan2(dy, dx) * 1800.0f / kPi)];
+		span.sx += dx / d;
+		span.sy += dy / d;
+		span.segments.push_back(o);
+	}
+  m_alignmentCache.clear();
+  m_alignmentHub=hub->getID();m_alignmentOrigin=h;m_alignmentFrame=logic.getFrame();
+  Ref<ImmediateMesh> scratch;scratch.instantiate();
+  Ref<StandardMaterial3D> unused;
+  for (const auto &entry:spans)
+  {
+   AlignedWallSpan cached;cached.angle=std::atan2(entry.second.sy,entry.second.sx);
+   bool begun=false;
+   for (const auto *o:entry.second.segments)
+    if (outlineFootprint(logic,**scratch,unused,begun,*o->getTemplate(),*o->getPosition(),o->getOrientation(),2.0f,&cached.vertices)) ++cached.segments;
+   m_alignmentCache.push_back(std::move(cached));
+  }
+ }
+ if (m_alignmentHub != ui.placeBuildSource()) { hide();return; }
+ const auto &cursor=ui.placeLocation();
+ const float cx=cursor.x-m_alignmentOrigin.x,cy=cursor.y-m_alignmentOrigin.y;
+ if (!std::isfinite(cx) || !std::isfinite(cy) || cx*cx+cy*cy<1.0f) { hide();return; }
+ const float current=std::atan2(cy,cx);
+	Ref<ImmediateMesh> mesh;
+	mesh.instantiate();
+	Ref<StandardMaterial3D> material;
+	material.instantiate();
+	material->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+	material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+	material->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
+ material->set_flag(BaseMaterial3D::FLAG_DISABLE_DEPTH_TEST,true);
+	material->set_albedo(Color(.25f, 1, .55f, .95f));
+	bool begun = false;
+	m_wallAlignSpans = m_wallAlignSegments = 0;
+ for (const auto &span:m_alignmentCache)
+ {
+  const float diff=std::abs(std::remainder(span.angle-current,2.0f*kPi));
+  const bool parallel=diff<=kTolerance || std::abs(diff-kPi)<=kTolerance;
+  const bool square=std::abs(diff-kPi*.5f)<=kTolerance;
+  if ((!parallel && !square) || span.vertices.empty()) continue;
+  ++m_wallAlignSpans;m_wallAlignSegments+=span.segments;
+  if (!begun) { mesh->surface_begin(Mesh::PRIMITIVE_TRIANGLES,material);begun=true; }
+  for (const auto &vertex:span.vertices) mesh->surface_add_vertex(vertex);
+ }
+	if (begun) mesh->surface_end();
+	if (!m_wallAlign && begun)
+	{
+		m_wallAlign = memnew(MeshInstance3D);
+		m_parent->add_child(m_wallAlign);
+		m_wallAlignId = m_wallAlign->get_instance_id();
+		m_wallAlign->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+	}
+	if (m_wallAlign) { m_wallAlign->set_mesh(mesh); m_wallAlign->set_visible(begun); }
 }
 
 void PlacementGhostRenderer::updateGrid(LiveGame &game, const InGameUI &ui, bool idle)
@@ -640,8 +801,11 @@ void PlacementGhostRenderer::updateGrid(LiveGame &game, const InGameUI &ui, bool
 	const Coord3D &p = ui.placeLocation();
 	if (!std::isfinite(p.x) || !std::isfinite(p.y)) return;
 	const float spacing = ui.placementGrid;
-	const int cx = (int)std::round(p.x / spacing), cy = (int)std::round(p.y / spacing);
-	if (idle && (!m_grid || cx != m_gridX || cy != m_gridY || spacing != m_gridSpacing))
+	const float rot = ui.placementGridAngle;
+	const float gc = std::cos(rot), gs = std::sin(rot);
+	// the cursor in the grid's own axes
+	const int cx = (int)std::round((p.x * gc + p.y * gs) / spacing), cy = (int)std::round((-p.x * gs + p.y * gc) / spacing);
+	if (idle && (!m_grid || cx != m_gridX || cy != m_gridY || spacing != m_gridSpacing || rot != m_gridAngle))
 	{
 		if (!m_grid)
 		{
@@ -658,7 +822,8 @@ void PlacementGhostRenderer::updateGrid(LiveGame &game, const InGameUI &ui, bool
 		Ref<ImmediateMesh> mesh;
 		mesh.instantiate();
 		mesh->surface_begin(Mesh::PRIMITIVE_LINES, material);
-		auto vertex = [&](float x, float y) {
+		auto vertex = [&](float u, float v) {
+			const float x = u * gc - v * gs, y = u * gs + v * gc;
 			mesh->surface_add_vertex(Vector3(x, game.logic().getGroundHeight(x,y) + 1.0f, -y));
 		};
 		// Bounded local portion of a global map grid. Subdivide lines to follow terrain.
@@ -672,7 +837,7 @@ void PlacementGhostRenderer::updateGrid(LiveGame &game, const InGameUI &ui, bool
 			}
 		mesh->surface_end();
 		m_grid->set_mesh(mesh);
-		m_gridX = cx; m_gridY = cy; m_gridSpacing = spacing;
+		m_gridX = cx; m_gridY = cy; m_gridSpacing = spacing; m_gridAngle = rot;
 	}
 	if (m_grid) m_grid->show();
 }
@@ -744,8 +909,12 @@ Dictionary PlacementGhostRenderer::state() const
 	s["selection_circle_visible"] = m_selectionCircle && m_selectionCircle->is_visible();
 	s["footprint_visible"] = m_footprint && m_footprint->is_visible();
 	s["footprint_count"] = m_footprintCount;
+	s["structure_footprint_count"] = m_structureFootprintCount;
+	s["wall_aligned_spans"] = m_wallAlignSpans;
+	s["wall_aligned_segments"] = m_wallAlignSegments;
 	s["grid_visible"] = m_grid && m_grid->is_visible();
 	s["grid_spacing"] = m_gridSpacing;
+	s["grid_angle"] = m_gridAngle;
 	s["resource_radius"] = m_icons ? m_icons->resourceRadius() : 0;
 	s["resource_share"] = m_icons ? m_icons->resourceShare() : 0;
 	s["resource_visible"] = m_resourceLabel && m_resourceLabel->is_visible();
@@ -774,6 +943,10 @@ Dictionary PlacementGhostRenderer::state() const
 			else if (icon.tint == PlacementIcons::TINT_CODE9)
 			{
 				tint = Color(0, 0, icon.tintBlue, 1);
+			}
+			else if (icon.tint == PlacementIcons::TINT_ALTERNATE)
+			{
+				tint = Color(.45f, .35f, 0, 1);
 			}
 			d["tint"] = tint;
 			d["bib"] = icon.bib == PlacementIcons::BIB_NONE ? String() : (icon.bib == PlacementIcons::BIB_NORMAL ? String("TBBib.tga") : String("TBRedBib.tga"));

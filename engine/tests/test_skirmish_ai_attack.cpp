@@ -13,12 +13,15 @@
 #include "Common/PlayerList.h"
 #include "Common/PlayerTemplate.h"
 #include "Common/StateHash.h"
+#include "Common/Upgrade.h"
+#include "GameLogic/Module/ProductionUpdate.h"
 #include "GameClient/GUI/Skirmish/IniSkirmishSetupSource.h"
 #include "GameClient/LiveGame.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/NewGame/NewGame.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Module/BehaviorModule.h"
+#include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/SkirmishAI/AITacticalAI.h"
 #include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
@@ -85,11 +88,13 @@ struct AttackRun
 	unsigned long long reserveSaved = 0, reserveDrawn = 0, heroesMade = 0; // lane AI-4: the money reserve and the hero requests
 	bool humanDefeated = false, aiDefeated = false;
 	int defeatFrame = -1;
+ bool sawDwarvenCatapult=false;
+ unsigned maxUpgradedTroops=0;
 };
 
 constexpr float kArrival = 450.0f;
 
-void runAttackGame(starttest::Shared &s, const NewGameMessage &message, int frames, AttackRun &out, bool hashEveryFrame, bool stopAtDefeat = false)
+void runAttackGame(starttest::Shared &s, const NewGameMessage &message, int frames, AttackRun &out, bool hashEveryFrame, bool stopAtDefeat = false, bool boostedCP = false)
 {
 	static std::vector<MapCacheEntry> cache;
 	std::string error;
@@ -151,10 +156,28 @@ void runAttackGame(starttest::Shared &s, const NewGameMessage &message, int fram
 			startStructures[x->getID()] = x->getTemplate()->getName();
 		}
 	}
-	const Player *aiPlayer = logic.players().getNthPlayer(ai->playerIndex);
+	Player *aiPlayer = logic.players().getNthPlayer(ai->playerIndex);
+ if(boostedCP)
+ {
+  aiPlayer->commandPoints().setFromScript(10000,10000);
+  for(auto *obj=logic.getFirstObject();obj;obj=obj->getNextObject())
+   if(obj->getControllingPlayer()==other && obj->isKindOfName("STRUCTURE"))
+    if(auto *body=obj->getBodyModule())body->setMaxHealth(10000000,1);
+ }
 	for (int i = 0; i < frames; ++i)
 	{
 		game.advance(0.2);
+  if(boostedCP && i%25==0)
+  {
+   unsigned upgraded=0;
+   for(auto *unit=logic.getFirstObject();unit;unit=unit->getNextObject())
+   {
+    if(unit->getControllingPlayer()!=aiPlayer)continue;
+    if(unit->getTemplate()->getName()=="DwarvenCatapult")out.sawDwarvenCatapult=true;
+    if(!unit->isKindOfName("STRUCTURE") && (unit->hasUpgrade("Upgrade_DwarvenMithrilMail") || unit->hasUpgrade("Upgrade_DwarvenForgedBlades") || unit->hasUpgrade("Upgrade_DwarvenFireArrows")))++upgraded;
+   }
+   out.maxUpgradedTroops=std::max(out.maxUpgradedTroops,upgraded);
+  }
 		if (hashEveryFrame)
 		{
 			out.hashes.push_back(logic.computeStateHash());
@@ -201,7 +224,7 @@ void runAttackGame(starttest::Shared &s, const NewGameMessage &message, int fram
 			}
 		}
 	}
-	out.farmSites = ai->farmSites ? ai->farmSites->size() : 0;
+		out.farmSites = ai->farmSites ? ai->farmSites->size() : 0;
 	out.farmsBuilt = ai->build.economy.built;
 	out.farmsInFlight = ai->build.economy.inFlight;
 	// A request executed after completion polling can already have a completed object; the AI acknowledges it next frame.
@@ -301,6 +324,10 @@ TEST_CASE("skirmish ai attack: the brain hash covers the tactical state (each mu
 	CHECK(moved([&] { b.nextTargetId += 1; }));
 	CHECK(moved([&] { b.tactics[0].targetOwner = 2; }));
 	CHECK(moved([&] { b.tactics[0].success = true; }));
+	CHECK(moved([&] { b.fortificationTarget = 10; }));
+	CHECK(moved([&] { b.siegeGatherFrame = 20; }));
+	CHECK(moved([&] { b.siegeLaunched = true; }));
+	CHECK(moved([&] { b.siegeEscorts.insert(30); }));
 }
 
 TEST_CASE("skirmish ai attack: each of the 7 factions as the Medium computer on Evendim attacks an idle human within 8 minutes")
@@ -445,4 +472,23 @@ TEST_CASE("skirmish ai attack: AI vs AI on Evendim (Medium Mordor against Medium
 		CHECK(run.farmsBuilt >= 1);
 		CHECK(run.attacksLaunched >= 1);
 	}
+}
+
+TEST_CASE("offensive AI retail: Dwarves with enlarged CP launch attacks and produce catapults")
+{
+ OPENBFME_REQUIRE_START(s);
+ auto message=attackMessage(*s,"FactionDwarves","FactionMen",false);
+ message.game.startingCash=50000;
+ AttackRun run;
+ runAttackGame(*s,message,4500,run,false,false,true);
+ MESSAGE("farms="<<run.farmsBuilt<<" requests="<<run.farmRequests<<" defeat="<<run.defeatFrame<<" attacks="<<run.attacksLaunched<<" first="<<run.firstAttackFrame<<" catapult="<<run.sawDwarvenCatapult<<" damage="<<run.humanStructureHealthLost<<" upgraded="<<run.maxUpgradedTroops);
+ // tolerance: The regression is an army that never attacks; the exact attack count is not the contract.
+ CHECK(run.attacksLaunched>0);
+ // tolerance: The first attack must occur within eight simulated minutes rather than wait indefinitely.
+ CHECK(run.firstAttackFrame>0);CHECK(run.firstAttackFrame<2400);
+ CHECK(run.sawDwarvenCatapult);
+ // tolerance: An attack must deal actual base damage; the damage amount depends on target selection.
+ CHECK(run.humanStructureHealthLost>0);
+ // tolerance: Upgrades must reach beyond the initial small squad as the army grows.
+ CHECK(run.maxUpgradedTroops>6);
 }

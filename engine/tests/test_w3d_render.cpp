@@ -329,6 +329,18 @@ TEST_CASE("render data: two-bone skin weights and the second-bone streams (hand-
 	W3dVertInfStruct i1 = { 1, 2, 60, 40 }; // 60% bone 1 (p0), 40% bone 2 (p1)
 	W3dVertInfStruct i2 = { 1, 0, 0, 0 };   // both weights 0: counted, treated as bone 1 only (OpenSAGE's reading)
 	s.Influences = { i0, i1, i2 };
+	{
+		SynthMesh odd = s;
+		odd.Influences[1] = { 1, 2, 89, 10 }; // a BFME1 patch skin: the sum 99 is scaled to 1
+		MeshRenderData ro;
+		std::string oddError;
+		REQUIRE_MESSAGE(buildFrom(odd, ro, oddError), oddError);
+		CHECK(ro.UnnormalizedWeightVertices == 1);
+		// tolerance: Adding normalized float weights can round; their sum must approximate unity.
+		CHECK(ro.Weight0[1] + ro.Weight1[1] == doctest::Approx(1.0f));
+		// tolerance: Normalization can multiply by a reciprocal instead of divide, differing by float rounding.
+		CHECK(ro.Weight0[1] == doctest::Approx(89.0f / 99.0f));
+	}
 	MeshRenderData r;
 	std::string error;
 	REQUIRE_MESSAGE(buildFrom(s, r, error), error);
@@ -371,7 +383,7 @@ TEST_CASE("render data: two-bone skin weights and the second-bone streams (hand-
 	CHECK_THROWS_AS(Deform_Position(r, 1, tiny), std::out_of_range);
 }
 
-TEST_CASE("render data: skin weights must sum to 100, a second bone needs its streams, rigid meshes carry no influences")
+TEST_CASE("render data: skin weights not summing to 100 are scaled, a second bone without its streams is dropped, rigid meshes ignore influences")
 {
 	std::string error;
 	MeshRenderData r;
@@ -379,16 +391,26 @@ TEST_CASE("render data: skin weights must sum to 100, a second bone needs its st
 	s.Attributes = W3D_MESH_FLAG_GEOMETRY_TYPE_SKIN;
 	s.Vertices = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } };
 	s.Triangles = { 0, 1, 2 };
-	s.Influences = { W3dVertInfStruct{ 1, 0, 70, 20 }, W3dVertInfStruct{ 1, 0, 100, 0 }, W3dVertInfStruct{ 1, 0, 100, 0 } };
-	CHECK_FALSE(buildFrom(s, r, error));
-	CHECK(error.find("weights 70 + 20") != std::string::npos);
+	s.Influences = { W3dVertInfStruct{ 1, 0, 90, 0 }, W3dVertInfStruct{ 1, 0, 100, 0 }, W3dVertInfStruct{ 1, 0, 100, 0 } };
+	REQUIRE_MESSAGE(buildFrom(s, r, error), error);
+	CHECK(r.UnnormalizedWeightVertices == 1);
+	CHECK(r.Weight0[0] == 1.0f);
 
 	s.Influences = { W3dVertInfStruct{ 1, 2, 50, 50 }, W3dVertInfStruct{ 1, 0, 100, 0 }, W3dVertInfStruct{ 1, 0, 100, 0 } };
-	CHECK_FALSE(buildFrom(s, r, error));
-	CHECK(error.find("second-bone streams") != std::string::npos);
+	REQUIRE_MESSAGE(buildFrom(s, r, error), error);
+	CHECK(r.SingleBoneVertices == 1);
+	CHECK_FALSE(r.DualBone);
+	CHECK(r.Weight0[0] == 1.0f);
+	CHECK(r.Weight1[0] == 0.0f);
 
 	SynthMesh rigid = quad();
 	rigid.Influences = { W3dVertInfStruct{ 1, 0, 100, 0 }, W3dVertInfStruct{ 1, 0, 100, 0 }, W3dVertInfStruct{ 1, 0, 100, 0 }, W3dVertInfStruct{ 1, 0, 100, 0 } };
+	MeshRenderData rr;
+	REQUIRE_MESSAGE(buildFrom(rigid, rr, error), error);
+	CHECK(rr.IgnoredInfluences == 4);
+	CHECK_FALSE(rr.Skin);
+	rigid.Vertices2 = rigid.Vertices;
+	rigid.Normals2 = { { 0, 0, 1 }, { 0, 0, 1 }, { 0, 0, 1 }, { 0, 0, 1 } };
 	CHECK_FALSE(buildFrom(rigid, r, error));
 	CHECK(error.find("not a skin") != std::string::npos);
 }

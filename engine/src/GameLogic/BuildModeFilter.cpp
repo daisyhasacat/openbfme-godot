@@ -81,7 +81,6 @@ std::map<std::string,BuildModeFilter::Entry> BuildModeFilter::classify(const Thi
   const auto tt=master->getFinalOverride();const Flags flags(*tt);
   const bool builder=flags.has("DOZER") || flags.has("SWARM_DOZER");
   const bool plot=result.at(tt->getName()).plot;
-  if(!builder && !plot)continue;
   for(const auto &name:sets(*tt))
   {
    if(name.empty() || name=="None")continue;
@@ -92,10 +91,12 @@ std::map<std::string,BuildModeFilter::Entry> BuildModeFilter::classify(const Thi
     const auto button=set->getCommandButton(i);if(!button)continue;
     const bool byBuilder=builder && button->m_command==GUI_COMMAND_DOZER_CONSTRUCT;
     const bool byPlot=plot && button->m_command==GUI_COMMAND_FOUNDATION_CONSTRUCT;
-    if(!byBuilder && !byPlot)continue;
+    const bool trained=button->m_command==GUI_COMMAND_UNIT_BUILD || button->m_command==GUI_COMMAND_SECONDARY_UNIT_BUILD;
+    if(!byBuilder && !byPlot && !trained)continue;
     const auto target=button->getThingTemplate();
     if(!target){result.at(tt->getName()).warnings.push_back("unresolved_build_command:"+button->m_name);continue;}
     auto &e=result.at(target->getName());
+    if(trained){e.trainable=true;unique(e.producers,tt->getName());}
     if(byBuilder){e.builderBuildable=true;unique(e.builders,tt->getName());}
     if(byPlot && FactionBuildPlots::isPlot(tt->getName())){e.enhancedPlotBuildable=true;unique(e.enhancedPlots,tt->getName());}
     else if(byPlot){e.plotBuildable=true;unique(e.plots,tt->getName());}

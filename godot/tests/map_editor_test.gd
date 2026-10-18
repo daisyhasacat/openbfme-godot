@@ -103,6 +103,11 @@ func _run():
   editor.texture.select(1);editor._texture_selected(1)
   check(editor.texture_preview.texture!=null,'Changing terrain selection refreshes image preview')
  editor.grid_mode=false
+ editor.availability.select(1);editor._filter('mordor')
+ check(editor.filtered.size()>10,'Mordor buildable catalog includes faction buildings and troops')
+ check(editor.filtered.has('MordorOrcPit'),'Mordor Orc Pit is buildable')
+ check(editor.filtered.has('MordorFighterHorde'),'Mordor Orc Warriors are trainable')
+ editor.availability.select(0)
  editor._filter('DaleBuilding04');check(editor.objects.item_count==1,'Object search')
  editor.objects.select(0);editor.tool.select(1);editor._update_controls();editor.points.clear();editor.points.append(point)
  editor.angle_control.value=45
@@ -129,6 +134,7 @@ func _run():
  check(is_equal_approx(world.get_object(id).angle,PI/4),'Placed object retains preview angle')
  hud.picked=id;editor.tool.select(9);editor.start=point;editor.cursor=point;editor._apply()
  check(editor.selected_objects==[id],'Editor selects object for owner editing')
+ check(editor.inspector.visible and str(id) in editor.inspector_details.text and 'DaleBuilding04' in editor.inspector_details.text,'Selection opens identity and state inspector')
  editor.owner_slot.value=1;editor._apply_owner()
  check(world.get_object(id).player_id==1,'Selected object owner changes in place')
  editor._undo();check(world.get_object(id).player_id==0,'Undo owner change')

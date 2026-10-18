@@ -11,9 +11,10 @@ namespace BuildModeFilter
 struct Entry
 {
  bool building=false,unit=false,plot=false,marker=false,placeholder=false,scenery=false;
+ bool trainable=false;
  bool builderBuildable=false,plotBuildable=false,enhancedPlotBuildable=false;
  bool unfinishedContent=false,unsupported=false,recommended=false;
- std::vector<std::string> builders,plots,enhancedPlots,reasons,warnings;
+ std::vector<std::string> producers,builders,plots,enhancedPlots,reasons,warnings;
 };
 // Resolve only commands in a producer's actual or upgrade-switched sets; orphan
 // CommandButtons do not prove that content is normally available.

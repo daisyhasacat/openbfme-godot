@@ -10,6 +10,7 @@
 #include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
 #include "GameLogic/WallBalance.h"
+#include "GameLogic/UpgradeTypes.h"
 using namespace combattest;
 namespace
 {
@@ -19,7 +20,7 @@ Armor SiegeProofExceptSiege
  Armor = SIEGE 100%
 End
 Weapon BreachHit
- AttackRange = 150
+ AttackRange = 200
  DelayBetweenShots = 1000
  DamageNugget
   Damage = 25
@@ -49,8 +50,20 @@ ChildObject BreachCatapult BreachEngine
   Weapon = PRIMARY BreachProjectile
  End
 End
+Weapon MeleeBreach
+ AttackRange = 20
+ MeleeWeapon = Yes
+ DamageNugget
+  Damage = 25
+  DamageType = SIEGE
+ End
+End
 ChildObject WallAttacker BreachEngine
  KindOf = SELECTABLE CAN_ATTACK CAN_ATTACK_WALLS
+ WeaponSet
+  Conditions = None
+  Weapon = PRIMARY MeleeBreach
+ End
 End
 ChildObject UselessSiege Swordsman
  KindOf = SELECTABLE CAN_ATTACK CAN_ATTACK_WALLS SIEGEENGINE
@@ -71,6 +84,21 @@ Object BreachWall
  Body = ActiveBody Body
   MaxHealth = 500
  End
+End
+ChildObject BlockingWall BreachWall
+ Geometry = BOX
+ GeometryMajorRadius = 5
+ GeometryMinorRadius = 600
+ GeometryHeight = 25
+End
+ChildObject BlockingGate BlockingWall
+ KindOf = STRUCTURE IMMOBILE WALL_GATE SELECTABLE
+End
+ChildObject WallHub BreachWall
+ KindOf = STRUCTURE IMMOBILE WALL_HUB SELECTABLE
+End
+ChildObject ArmedWallTower BreachWall
+ KindOf = STRUCTURE IMMOBILE WALL_UPGRADE CAN_ATTACK SELECTABLE
 End
 ChildObject BreachFortress BreachWall
  KindOf = STRUCTURE IMMOBILE COMMANDCENTER DOZER_FACTORY SELECTABLE
@@ -181,6 +209,9 @@ TEST_CASE("fortification AI: breach outer walls, reserve capable units and retar
 	Object *soldier = s.w.unit("Swordsman", 'A', 300, 500);
 	Object *engine = s.w.unit("BreachEngine", 'A', 320, 500);
 	Object *wall = s.w.unit("BreachWall", 'B', 600, 500);
+ // A sealed terrain corridor makes connectivity explicit in this synthetic map.
+ for(int y=0;y<100;++y)s.w.terrain.cliff.insert({60,y});
+ s.w.buildMap();
 	Object *fortress = s.w.unit("BreachFortress", 'B', 850, 500);
 	s.w.frames(2);
 	AITactic squad;
@@ -190,12 +221,16 @@ TEST_CASE("fortification AI: breach outer walls, reserve capable units and retar
 	AIFortification::update(*s.w.logic, s.bot);
 	CHECK(s.bot.brain.fortificationTarget == wall->getID());
 	CHECK(s.bot.brain.siegeUnits == std::set<ObjectID>{engine->getID()});
-	CHECK(s.bot.brain.tactics[0].teams[0].members == std::vector<ObjectID>{soldier->getID()});
+	CHECK(s.bot.brain.tactics[0].teams[0].members.empty());
+	CHECK(s.bot.brain.siegeEscorts.count(soldier->getID()) == 1);
+	CHECK_FALSE(s.bot.brain.siegeLaunched);
+	s.w.frames(225);AIFortification::update(*s.w.logic, s.bot);
 	CHECK(engine->getAIUpdateInterface()->currentVictimId() == wall->getID());
 	// This exercises the real attack state and body damage, not only target selection.
 	s.w.frames(100);
 	CHECK(s.w.health(wall) < 500); // tolerance: at least one siege hit must land after crossing the flat approach
 	s.w.logic->destroyObject(wall);
+ s.w.terrain.cliff.clear();s.w.buildMap();
 	s.w.frames(1);
 	AIFortification::update(*s.w.logic, s.bot);
 	CHECK(s.bot.brain.fortificationTarget == fortress->getID());
@@ -280,13 +315,15 @@ TEST_CASE("fortification AI: a later siege factory starts once and retains its p
 	CHECK(s.bot.build.pending.size() == 1);
 }
 
-TEST_CASE("fortification AI: two capable engines satisfy demand and policy changes release the breach team")
+TEST_CASE("fortification AI: six melee engines satisfy demand and policy changes release the breach team")
 {
 	Scenario s;
 	s.restrict();
 	s.w.unit("BreachFortress", 'B', 850, 500);
 	Object *a = s.w.unit("BreachEngine", 'A', 300, 500);
 	Object *b = s.w.unit("BreachEngine", 'A', 320, 500);
+	Object *c = s.w.unit("BreachEngine", 'A', 340, 500);
+ for(int i=0;i<2;++i)s.w.unit("BreachEngine",'A',360+i*20,500);
 	s.w.unit("BreachWorkshop", 'A', 100, 500);
 	s.w.unit("Swordsman", 'A', 350, 500);
 	s.w.frames(2);
@@ -295,9 +332,283 @@ TEST_CASE("fortification AI: two capable engines satisfy demand and policy chang
 	AIBaseBuilder::update(*s.w.logic, s.bot);
 	CHECK(s.bot.build.units.requests.empty());
 	AIFortification::update(*s.w.logic, s.bot);
-	CHECK(s.bot.brain.siegeUnits == std::set<ObjectID>{a->getID(), b->getID()});
+	CHECK(s.bot.brain.siegeUnits.size()==5);
 	s.w.logic->settings().wallBalance.enabled = false;
 	AIFortification::update(*s.w.logic, s.bot);
 	CHECK(s.bot.brain.siegeUnits.empty());
 	CHECK(s.bot.brain.fortificationTarget == INVALID_ID);
+}
+
+TEST_CASE("fortification AI: bypass open walls and hubs but retain armed emplacements")
+{
+ Scenario s;s.restrict();
+ Object *soldier=s.w.unit("Swordsman",'A',300,500);
+ Object *hub=s.w.unit("WallHub",'B',400,500);
+ Object *wall=s.w.unit("BreachWall",'B',600,500);
+ Object *fortress=s.w.unit("BreachFortress",'B',850,500);
+ s.w.frames(2);
+ CHECK(AIFortification::findTarget(*s.w.logic,s.bot)==fortress);
+ CHECK_FALSE(AIFortification::allowAutoTarget(*soldier,*hub));
+ CHECK_FALSE(AIFortification::allowAutoTarget(*soldier,*wall));
+ Object *tower=s.w.unit("ArmedWallTower",'B',450,550);
+ CHECK_FALSE(AIFortification::passiveBarrier(*tower));
+ CHECK(AIFortification::allowAutoTarget(*soldier,*tower));
+ soldier->getControllingPlayer()->setPlayerType(PLAYER_HUMAN,true);
+ CHECK(AIFortification::allowAutoTarget(*soldier,*hub));
+}
+
+TEST_CASE("fortification AI: a blocking gate takes precedence over a nearby hub")
+{
+ Scenario s;s.restrict();
+ s.w.unit("Swordsman",'A',300,500);
+ Object *engine=s.w.unit("BreachEngine",'A',320,500);
+ s.w.unit("WallHub",'B',450,500);
+ Object *gate=s.w.unit("BlockingGate",'B',600,500);
+ for(int y=0;y<100;++y)s.w.terrain.cliff.insert({60,y});
+ s.w.buildMap();
+ Object *fortress=s.w.unit("BreachFortress",'B',850,500);
+ s.w.frames(2);
+ AIFortification::update(*s.w.logic,s.bot);
+ CHECK(s.bot.brain.fortificationTarget==gate->getID());
+ CHECK_FALSE(s.bot.brain.siegeLaunched);
+ s.w.frames(225);AIFortification::update(*s.w.logic,s.bot);
+ CHECK(engine->getAIUpdateInterface()->currentVictimId()==gate->getID());
+ s.w.logic->destroyObject(gate);s.w.terrain.cliff.clear();s.w.buildMap();s.w.frames(1);
+ AIFortification::update(*s.w.logic,s.bot);
+ CHECK(s.bot.brain.fortificationTarget==fortress->getID());
+ CHECK(engine->getAIUpdateInterface()->currentVictimId()==fortress->getID());
+}
+
+TEST_CASE("fortification AI: a hub is a last-resort blocker, never a cleanup objective")
+{
+ Scenario s;s.restrict();
+ s.w.unit("Swordsman",'A',300,500);
+ Object *engine=s.w.unit("BreachEngine",'A',320,500);
+ Object *hub=s.w.unit("WallHub",'B',600,500);
+ s.w.unit("BreachFortress",'B',850,500);
+ for(int y=0;y<100;++y)s.w.terrain.cliff.insert({60,y});s.w.buildMap();s.w.frames(2);
+ CHECK(AIFortification::findTarget(*s.w.logic,s.bot)==hub);
+ AIFortification::update(*s.w.logic,s.bot);
+ s.w.frames(225);AIFortification::update(*s.w.logic,s.bot);
+ CHECK(engine->getAIUpdateInterface()->currentVictimId()==hub->getID());
+ // A different part of the wall was breached: the hub is still alive.
+ s.w.terrain.cliff.clear();s.w.buildMap();s.w.frames(1);
+ AIFortification::update(*s.w.logic,s.bot);
+ CHECK(engine->getAIUpdateInterface()->currentVictimId()!=hub->getID());
+ CHECK(s.w.health(hub)==500);
+}
+
+TEST_CASE("fortification AI: a walled base gathers three engines and six escorts before launching")
+{
+ Scenario s; s.restrict();
+ Object *gate=s.w.unit("BlockingGate",'B',600,500);
+ s.w.unit("BreachFortress",'B',850,500);
+ for(int y=0;y<100;++y)s.w.terrain.cliff.insert({60,y});s.w.buildMap();
+ for(int i=0;i<3;++i)s.w.unit("BreachEngine",'A',150+i*20,450);
+ for(int i=0;i<5;++i)s.w.unit("Swordsman",'A',150+i*20,550);
+ s.w.frames(2);
+ AIFortification::update(*s.w.logic,s.bot);
+ CHECK(s.bot.brain.siegeUnits.size()==3);
+ CHECK(s.bot.brain.siegeEscorts.size()==5);
+ CHECK_FALSE(s.bot.brain.siegeLaunched);
+ for(auto id:s.bot.brain.siegeUnits)CHECK(s.w.logic->findObjectByID(id)->getAIUpdateInterface()->currentVictimId()==INVALID_ID);
+ s.w.unit("Swordsman",'A',280,550);s.w.frames(1);
+ AIFortification::update(*s.w.logic,s.bot);
+ CHECK(s.bot.brain.siegeLaunched);
+ CHECK(s.bot.brain.siegeEscorts.size()==6);
+ for(auto id:s.bot.brain.siegeUnits)CHECK(s.w.logic->findObjectByID(id)->getAIUpdateInterface()->currentVictimId()==gate->getID());
+ gate->setTeam(s.w.teamA());s.w.terrain.cliff.clear();s.w.buildMap();
+ AIFortification::update(*s.w.logic,s.bot);
+ CHECK(s.bot.brain.fortificationTarget!=gate->getID());
+}
+
+TEST_CASE("offensive AI: research and unit upgrades use paid queues and prerequisites")
+{
+ Scenario s;
+ REQUIRE(s.w.w.load(R"ini(
+Upgrade Upgrade_TestArrowTechnology
+ Type = PLAYER
+ BuildCost = 200
+ BuildTime = 1
+End
+Upgrade Upgrade_TestFireArrows
+ Type = OBJECT
+ BuildCost = 100
+ BuildTime = 1
+End
+ChildObject UpgradeLab BreachWorkshop
+ CommandSet = UpgradeLabCommands
+End
+ChildObject UpgradeArcher Swordsman
+ CommandSet = UpgradeArcherCommands
+ Behavior = ProductionUpdate Production
+ End
+ Behavior = ModelConditionUpgrade FireArrowUpgrade
+  TriggeredBy = Upgrade_TestFireArrows
+  AddConditionFlags = USER_1
+ End
+End
+CommandButton ResearchTestArrows
+ Command = PLAYER_UPGRADE
+ Upgrade = Upgrade_TestArrowTechnology
+End
+CommandButton BuyTestArrows
+ Command = OBJECT_UPGRADE
+ Upgrade = Upgrade_TestFireArrows
+ Options = NEED_UPGRADE
+ NeededUpgrade = Upgrade_TestArrowTechnology
+End
+CommandSet UpgradeLabCommands
+ 1 = ResearchTestArrows
+End
+CommandSet UpgradeArcherCommands
+ 1 = BuyTestArrows
+End
+)ini").empty());
+ auto *lab=s.w.unit("UpgradeLab",'A',100,500);
+ auto *archer=s.w.unit("UpgradeArcher",'A',120,500);
+ auto *player=lab->getControllingPlayer();
+ const auto *technology=TheUpgradeCenter->findUpgrade("Upgrade_TestArrowTechnology");
+ const auto *arrows=TheUpgradeCenter->findUpgrade("Upgrade_TestFireArrows");
+ REQUIRE(technology); REQUIRE(arrows);
+ s.bot.build.baseBuilderDisabled=true;s.bot.build.economy.disabled=true;s.bot.build.units.disabled=true;s.bot.build.phase=1;
+ player->getMoney()->withdraw(player->getMoney()->countMoney(),nullptr,false);
+ player->getMoney()->deposit(600,nullptr,false);
+ for(int i=0;i<5;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
+ CHECK_FALSE(lab->getProductionUpdate()->isUpgradeInQueue(technology));
+ CHECK_FALSE(archer->getProductionUpdate()->isUpgradeInQueue(arrows));
+ player->getMoney()->withdraw(500,nullptr,false);
+ s.bot.build.moneyReserve=1500;
+ s.store.data().disableUnitUpgrading=true;
+ for(int i=0;i<5;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
+ CHECK_FALSE(lab->getProductionUpdate()->isUpgradeInQueue(technology));
+ CHECK(player->getMoney()->countMoney()+s.bot.build.moneyReserve==1600);
+ s.store.data().disableUnitUpgrading=false;
+ for(int i=0;i<5;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
+ CHECK((player->hasUpgradeComplete(technology) || lab->getProductionUpdate()->isUpgradeInQueue(technology)));
+ s.w.frames(10);
+ for(int i=0;i<5;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
+ s.w.frames(10);
+ CHECK(archer->hasUpgrade(arrows));
+ CHECK(player->getMoney()->countMoney()+s.bot.build.moneyReserve==1300);
+ for(int i=0;i<10;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
+ CHECK(player->getMoney()->countMoney()+s.bot.build.moneyReserve==1300);
+}
+
+TEST_CASE("offensive AI: midgame maintains siege without a protected target or composition share")
+{
+ Scenario s;
+ s.w.unit("BreachEngine",'A',150,500);
+ auto *factory=s.w.unit("BreachWorkshop",'A',100,500);
+ s.w.frames(2);
+ s.bot.build.baseBuilderDisabled=true;s.bot.build.economy.disabled=true;s.bot.build.phase=1;
+ REQUIRE(AIFortification::findTarget(*s.w.logic,s.bot)==nullptr);
+ AIBaseBuilder::update(*s.w.logic,s.bot);
+ REQUIRE(s.bot.build.units.requests.size()==1);
+ CHECK(s.bot.build.units.requests.front()->templateName=="BreachEngine");
+ CHECK(factory->getProductionUpdate()->getProductionCount()==1);
+}
+
+TEST_CASE("offensive AI: ranged siege takes priority over existing melee breach units")
+{
+ Scenario s;s.restrict();
+ REQUIRE(s.w.w.load("CommandButton TrainCatapult\n Command = UNIT_BUILD\n Object = BreachCatapult\nEnd\nCommandSet RangedWorkshopCommands\n 1 = TrainBreach\n 2 = TrainCatapult\nEnd\nChildObject RangedWorkshop BreachWorkshop\n CommandSet = RangedWorkshopCommands\nEnd\nArmyDefinition RangedArmy\n Side = Ranged\n ArmyMemberDefinition Ram\n Unit = WallAttacker\n End\n ArmyMemberDefinition Catapult\n Unit = BreachCatapult\n End\nEnd\n").empty());
+ s.bot.army=s.store.findArmy("Ranged");
+ s.w.unit("BreachFortress",'B',850,500);
+ auto *factory=s.w.unit("RangedWorkshop",'A',100,500);
+ for(int i=0;i<6;++i)s.w.unit("WallAttacker",'A',200+i*20,500);
+ s.w.frames(2);s.bot.build.baseBuilderDisabled=true;s.bot.build.economy.disabled=true;
+ AIBaseBuilder::update(*s.w.logic,s.bot);
+ REQUIRE(s.bot.build.units.requests.size()==1);
+ CHECK(s.bot.build.units.requests.front()->templateName=="BreachCatapult");
+ CHECK(factory->getProductionUpdate()->getProductionCount()==1);
+}
+
+TEST_CASE("offensive AI: a busy siege producer can queue its unlocking level upgrade")
+{
+ Scenario s;
+ s.w.logic->productionSettings().loaded=true;
+ s.w.logic->productionSettings().multipleFactory=1;
+ s.w.logic->productionSettings().multiPlayEntries=8;
+ for(int i=0;i<8;++i){s.w.logic->productionSettings().multiPlayUnitSpeedMult[i]=1;s.w.logic->productionSettings().multiPlayBuildingSpeedMult[i]=1;}
+ REQUIRE(s.w.w.load(R"ini(
+Upgrade Upgrade_TestSiegeLevel2
+ Type = OBJECT
+ BuildCost = 200
+ BuildTime = 1
+End
+ChildObject BusyWorkshop BreachWorkshop
+ CommandSet = BusyWorkshopCommands
+ Behavior = ModelConditionUpgrade WorkshopLevel
+  TriggeredBy = Upgrade_TestSiegeLevel2
+  AddConditionFlags = USER_1
+ End
+End
+CommandButton BuySiegeLevel
+ Command = OBJECT_UPGRADE
+ Upgrade = Upgrade_TestSiegeLevel2
+End
+CommandSet BusyWorkshopCommands
+ 1 = TrainBreach
+ 2 = BuySiegeLevel
+End
+)ini").empty());
+ auto *factory=s.w.unit("BusyWorkshop",'A',100,500);
+ auto *pu=factory->getProductionUpdate();
+ auto *unit=s.w.w.things.findTemplate("BreachEngine");
+ REQUIRE(pu->queueCreateUnit(unit,-1,pu->requestUniqueUnitID(),-1,false,std::string(),false));
+ s.bot.build.baseBuilderDisabled=true;s.bot.build.economy.disabled=true;s.bot.build.units.disabled=true;s.bot.build.phase=1;
+ const auto *upgrade=TheUpgradeCenter->findUpgrade("Upgrade_TestSiegeLevel2");REQUIRE(upgrade);
+ for(int i=0;i<5;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
+ CHECK((factory->hasUpgrade(upgrade) || pu->isUpgradeInQueue(upgrade)));
+}
+
+TEST_CASE("offensive AI: upgrading a registered factory reveals newly unlocked artillery")
+{
+ Scenario s;
+ REQUIRE(s.w.w.load(R"ini(
+Upgrade Upgrade_TestFactoryArtillery
+ Type = OBJECT
+End
+ChildObject UnlockingWorkshop BreachWorkshop
+ CommandSet = UnlockingWorkshopCommands
+ Behavior = ModelConditionUpgrade Unlock
+  TriggeredBy = Upgrade_TestFactoryArtillery
+  AddConditionFlags = USER_1
+ End
+End
+CommandButton TrainUnlockedCatapult
+ Command = UNIT_BUILD
+ Object = BreachCatapult
+ Options = NEED_UPGRADE
+ NeededUpgrade = Upgrade_TestFactoryArtillery
+End
+CommandSet UnlockingWorkshopCommands
+ 1 = TrainBreach
+ 2 = TrainUnlockedCatapult
+End
+ArmyDefinition UnlockingArmy
+ Side = Unlocking
+ ArmyMemberDefinition Ram
+  Unit = BreachEngine
+ End
+ ArmyMemberDefinition Artillery
+  Unit = BreachCatapult
+ End
+End
+)ini").empty());
+ UpgradeTypeTable types;std::string error;
+ REQUIRE(types.scan("Upgrade Upgrade_TestFactoryArtillery\n Type = OBJECT\nEnd\n",&error));
+ s.w.logic->setUpgradeTypes(&types);
+ s.bot.army=s.store.findArmy("Unlocking");
+ auto *factory=s.w.unit("UnlockingWorkshop",'A',100,500);
+ s.w.frames(2);s.bot.build.baseBuilderDisabled=true;s.bot.build.economy.disabled=true;
+ AIBaseBuilder::update(*s.w.logic,s.bot);
+ auto key=s.store.keyOf("BreachCatapult");
+ CHECK(s.bot.build.units.factories.count(key)==0);
+ factory->giveUpgrade("Upgrade_TestFactoryArtillery");
+ for(int i=0;i<5;++i){s.w.frames(1);AIBaseBuilder::update(*s.w.logic,s.bot);}
+ CHECK(s.bot.build.units.factories.count(key)==1);
+ for(int i=0;i<5;++i){s.w.frames(1);AIBaseBuilder::update(*s.w.logic,s.bot);}
+ CHECK(s.bot.build.units.factories.count(key)==1);
 }

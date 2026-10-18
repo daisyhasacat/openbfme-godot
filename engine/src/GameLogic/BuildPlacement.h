@@ -59,9 +59,9 @@ enum LocationLegalFlags
 namespace BuildPlacement
 {
 // ZH isLocationLegalToBuild(worldPos, build, angle, options, builderObject, player). The builder and the player may be null (a castle layout entry has the castle).
-LegalBuildCode isLocationLegalToBuild(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, unsigned options, Object *builder, Player *player);
+LegalBuildCode isLocationLegalToBuild(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, unsigned options, Object *builder, Player *player, const std::vector<ObjectID> *ignored = nullptr);
 // ZH isLocationClearOfObjects with options NO_OBJECT_OVERLAP or NO_ENEMY_OBJECT_OVERLAP (the exit-width pass is not ported)
-bool isLocationClearOfObjects(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, Object *builder, unsigned options);
+bool isLocationClearOfObjects(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, Object *builder, unsigned options, const std::vector<ObjectID> *ignored = nullptr);
 // the 2D collision of two template geometries at positions and angles (ZH PartitionManager::geomCollidesWithGeom, footprint only)
 struct Footprint
 {

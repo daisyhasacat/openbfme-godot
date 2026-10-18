@@ -25,6 +25,11 @@ public:
 	const std::vector<SkirmishFaction> &factions() const override { return m_factions; }
 	const std::vector<SkirmishColor> &colors() const override { return m_colors; }
 	const std::vector<MapCacheEntry> &maps() const override { return m_maps; }
+ // OpenBFME user-map installation; verified retail metadata stays untouched.
+ void addInstalledMap(const MapCacheEntry &entry) {
+  for(auto &map:m_maps)if(map.name==entry.name){map=entry;return;}
+  m_maps.push_back(entry);
+ }
 	int defaultStartingCash() const override { return m_defaultStartingCash; }
 	const std::vector<int> &startingCashChoices() const override { return m_cashChoices; }
 	int mapContentsMask(const MapCacheEntry &map) const override;

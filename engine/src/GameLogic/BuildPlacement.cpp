@@ -222,7 +222,7 @@ bool BuildPlacement::footprintsOf(GameLogic &logic, const ThingTemplate &tt, con
 	return true;
 }
 
-bool BuildPlacement::isLocationClearOfObjects(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, Object *builder, unsigned options)
+bool BuildPlacement::isLocationClearOfObjects(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, Object *builder, unsigned options, const std::vector<ObjectID> *ignored)
 {
 	std::vector<Footprint> mine, other;
 	if (!footprintsOf(logic, build, pos, angle, mine))
@@ -237,7 +237,7 @@ bool BuildPlacement::isLocationClearOfObjects(GameLogic &logic, const Coord3D &p
 	for (Object *them = logic.getFirstObject(); them; them = them->getNextObject())
 	{
 		if (ConstructionSite::isNeutralDecoration(logic, *them)) continue;
-		if (them == builder || them->isDestroyed() || !them->getTemplate() || !them->isInWorld())
+		if ((ignored && std::find(ignored->begin(), ignored->end(), them->getID()) != ignored->end()) || them == builder || them->isDestroyed() || !them->getTemplate() || !them->isInWorld())
 		{
 			continue; // lane GARRISON-1: a contain's rider out of the world (RW 0x68C18F) is not in the partition
 		}
@@ -279,7 +279,7 @@ bool BuildPlacement::isLocationClearOfObjects(GameLogic &logic, const Coord3D &p
 	return true;
 }
 
-LegalBuildCode BuildPlacement::isLocationLegalToBuild(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, unsigned options, Object *builder, Player *player)
+LegalBuildCode BuildPlacement::isLocationLegalToBuild(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, unsigned options, Object *builder, Player *player, const std::vector<ObjectID> *ignored)
 {
 	if (!WallBalance::placementAllowed(logic,build,pos,builder,player)) return LBC_RESTRICTED_TERRAIN;
 	AIWorld *ai = logic.aiWorld();
@@ -298,11 +298,11 @@ LegalBuildCode BuildPlacement::isLocationLegalToBuild(GameLogic &logic, const Co
 	{
 		// no shroud exists yet (VIS-1): every cell is revealed (stop S-301)
 	}
-	if ((options & LLF_NO_OBJECT_OVERLAP) && !isLocationClearOfObjects(logic, pos, build, angle, builder, LLF_NO_OBJECT_OVERLAP))
+	if ((options & LLF_NO_OBJECT_OVERLAP) && !isLocationClearOfObjects(logic, pos, build, angle, builder, LLF_NO_OBJECT_OVERLAP, ignored))
 	{
 		return LBC_OBJECTS_IN_THE_WAY;
 	}
-	if ((options & LLF_NO_ENEMY_OBJECT_OVERLAP) && !isLocationClearOfObjects(logic, pos, build, angle, builder, LLF_NO_ENEMY_OBJECT_OVERLAP))
+	if ((options & LLF_NO_ENEMY_OBJECT_OVERLAP) && !isLocationClearOfObjects(logic, pos, build, angle, builder, LLF_NO_ENEMY_OBJECT_OVERLAP, ignored))
 	{
 		return LBC_OBJECTS_IN_THE_WAY;
 	}

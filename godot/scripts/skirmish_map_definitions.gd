@@ -1,6 +1,6 @@
 extends RefCounted
 ## Generated browser metadata, isolated from retail MapCache.ini and invalidated by mounted archive content/order.
-const VERSION = 4
+const VERSION = 5
 var fs: RefCounted
 var scanner: RefCounted
 var directory := ''

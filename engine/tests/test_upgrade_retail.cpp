@@ -24,6 +24,9 @@
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
 #include "GameClient/LiveGame.h"
+#include "GameClient/DrawableManager.h"
+#include "GameLogic/SkirmishAI/AIFortification.h"
+#include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "GameClient/MapCreationHooks.h"
 #include "GameClient/MapObjectDrawables.h"
 #include "Libraries/WWVegas/WW3D2/assetmgr.h"
@@ -624,4 +627,72 @@ TEST_CASE("upgrade retail: the structure upgrades of every side (fortress improv
 		const SideResult &r = sides[kv.first];
 		CHECK(std::array<int, 3>{ { r.structures, r.grants, r.ran } } == kv.second);
 	}
+}
+
+TEST_CASE("upgrade retail: Lorien Warrior heavy armor reaches the rendered pose")
+{
+ REQUIRE_RETAIL_WORLD(sh);
+ Game g(*sh.world, *sh.mount, "FactionElves");
+ ArchiveW3DFileSource source(*sh.mount->fs);
+ WW3DAssetManager assets(source);
+ DrawableManager drawables(assets, *g.logic);
+ ClientEventRecorder recorder(*g.logic);
+ g.logic->setClientHooks(&recorder);
+ Object *unit = g.make(*sh.world, "ElvenLorienWarrior");
+ drawables.applyEvents(recorder.take());
+ const auto *armor = sh.world->upgrades().findUpgrade("Upgrade_ElvenHeavyArmor");
+ REQUIRE(armor);
+ unit->giveUpgrade(armor);
+ drawables.applyEvents(recorder.take());
+ auto *drawable = drawables.findByObject(unit->getID());
+ REQUIRE(drawable);
+ int matchingDraws = 0;
+ for (const auto &entry : drawable->entries())
+ {
+  if (!entry.draw) continue;
+  W3DDrawPoseView pose;
+  entry.draw->poseView(pose);
+  for (const auto &swap : *pose.textureSwaps)
+  {
+   if (AsciiStringUtil::compareNoCase(swap.first, "EUlorienwarrior.tga") != 0) continue;
+   ++matchingDraws;
+   CHECK(AsciiStringUtil::compareNoCase(swap.second, "EULorWarHA.tga") == 0);
+   CHECK(swap.excludes("Unit.Forged_Blade"));
+   CHECK_FALSE(swap.excludes("Unit.Body"));
+  }
+ }
+ // tolerance: At least one body draw must receive the armor texture; model submesh counts may vary.
+ CHECK(matchingDraws > 0);
+ g.logic->setClientHooks(nullptr);
+}
+
+TEST_CASE("offensive AI retail: catapults and trebuchets outrank melee siege")
+{
+ REQUIRE_RETAIL_WORLD(sh);
+ for (const auto &pair : {std::pair<const char *,const char *>{"MordorCatapult","MordorBatteringRam"}, {"GondorTrebuchet","MordorMountainTroll"}})
+ {
+  auto *ranged=sh.world->things().findTemplate(pair.first);
+  auto *melee=sh.world->things().findTemplate(pair.second);
+  REQUIRE(ranged); REQUIRE(melee);
+  // tolerance: Artillery must meet the tactical standoff range used by siege selection.
+  CHECK(AIFortification::siegeRange(*ranged->getFinalOverride())>=200.0f);
+  // tolerance: The selection contract ranks ranged siege ahead of melee siege, independent of exact weapon ranges.
+  CHECK(AIFortification::siegeRange(*ranged->getFinalOverride())>AIFortification::siegeRange(*melee->getFinalOverride()));
+ }
+}
+
+TEST_CASE("offensive AI retail: Dwarven catapults are artillery and battlewagons are not")
+{
+ REQUIRE_RETAIL_WORLD(sh);
+ auto *catapult=sh.world->things().findTemplate("DwarvenCatapult");
+ auto *wagon=sh.world->things().findTemplate("DwarvenBattleWagon");
+ REQUIRE(catapult);REQUIRE(wagon);
+ // tolerance: The catapult must meet the tactical artillery standoff range.
+ CHECK(AIFortification::siegeRange(*catapult->getFinalOverride())>=200);
+ CHECK(AIFortification::siegeRange(*wagon->getFinalOverride())==0);
+ auto *army=sh.world->skirmishAI().findArmy("Dwarves");
+ REQUIRE(army);
+ bool found=false;
+ for(const auto &member:army->members)if(member.unit=="DwarvenCatapult")found=true;
+ CHECK(found);
 }

@@ -28,6 +28,10 @@ var catalog := PackedStringArray()
 var filtered := PackedStringArray()
 var object_records: Dictionary = {}
 var object_filters: HFlowContainer
+var availability: OptionButton
+var inspector: Window
+var inspector_objects: ItemList
+var inspector_details: RichTextLabel
 var object_category: OptionButton
 var filter_toggles: Dictionary = {}
 var view_toggle: Button
@@ -185,6 +189,7 @@ func _ready():
   dropdown.fit_to_longest_item=false;dropdown.clip_text=true
  for button in panel.find_children('*','Button',true,false):button.custom_minimum_size.y=52
  _build_workspace(ui_theme,background)
+ _build_inspector()
  _update_controls();panel.hide();lookup.hide();toolbar.hide();set_process(false)
 
 func _build_workspace(ui_theme: Theme,background: StyleBoxFlat):
@@ -335,6 +340,11 @@ func _field_visible(field: SpinBox,enabled: bool):
  field.visible=enabled;field.get_meta('label').visible=enabled
 
 func _update_controls():
+ if inspector!=null:
+  if active and tool.selected==9:
+   if not inspector.visible:inspector.popup_centered()
+  else:inspector.hide()
+
  var placing=tool.selected in [1,2]
  tool.hide()
  for i in mode_buttons.size():mode_buttons[i].set_pressed_no_signal(i==tool.selected)
@@ -354,6 +364,7 @@ func _update_controls():
 
 func set_active(enabled: bool):
  if active==enabled:return
+ if not enabled and inspector!=null:inspector.hide()
  active=enabled;active_changed.emit(enabled);panel.visible=enabled;toolbar.visible=enabled;lookup.visible=enabled and tool.selected in [1,2,6,7];set_process(enabled)
  if enabled:
   was_paused=world.is_paused();hud_was_processing=hud.is_processing_input();world.set_paused(true);was_shroud=world.get_shroud_report().get('displayed',true);world.set_shroud_drawn(false);hud.deselect_all();hud.set_process_input(false)
@@ -369,14 +380,26 @@ func set_active(enabled: bool):
   dragging=false;touches.clear();_clear_preview();world.set_shroud_drawn(was_shroud);hud.set_process_input(hud_was_processing);world.set_paused(was_paused);outline.queue_redraw()
 
 func _load_object_catalog():
- var code="local rows={}; for name,t in pairs(bfme.templates) do local c=bfme.buildMode.classify(t); local flags={}; for _,k in ipairs({'building','unit','scenery','builderBuildable','plotBuildable','enhancedPlotBuildable','plot','placeholder','unfinishedContent','unsupported','marker'}) do if c[k] then flags[#flags+1]=k end end; rows[#rows+1]=table.concat({name,tostring(t.cost or 0),table.concat(flags,','),table.concat(c.reasons or {},'; ')},string.char(9)) end; table.sort(rows); return table.concat(rows,string.char(10))"
- var result:Dictionary=world.execute_lua(code)
- if not result.ok:status.text=str(result.output);return
- for line in str(result.output).strip_edges().split('\n',false):
-  var fields=line.split('\t')
-  if fields.size()<3:continue
-  var record={'name':fields[0],'cost':fields[1],'flags':fields[2].split(','),'notes':fields[3] if fields.size()>3 else ''}
-  object_records[fields[0]]=record;catalog.append(fields[0])
+ var first=1
+ while true:
+  # Lua console output is capped at 64 KiB. Page the catalog and require a
+  # terminator, so a truncated response can never become a partial catalog.
+  var code="local names={}; for name in pairs(bfme.templates) do names[#names+1]=name end; table.sort(names); local rows={}; for i=%d,math.min(%d,#names) do local name=names[i]; local t=bfme.templates[name]; local c=bfme.buildMode.classify(t); local flags={}; for _,k in ipairs({'building','unit','scenery','trainable','builderBuildable','plotBuildable','enhancedPlotBuildable','plot','placeholder','unfinishedContent','unsupported','marker'}) do if c[k] then flags[#flags+1]=k end end; rows[#rows+1]=table.concat({name,tostring(t.cost or 0),table.concat(flags,','),table.concat(c.reasons or {},'; '),tostring(t.faction or ''),tostring(t.displayName or ''),table.concat(c.producers or {},','),table.concat(c.builders or {},','),table.concat(c.plots or {},',')},string.char(9)) end; rows[#rows+1]='__CATALOG_END__'; return table.concat(rows,string.char(10))"%[first,first+49]
+  var result:Dictionary=world.execute_lua(code)
+  var output=str(result.output).strip_edges()
+  if not result.ok or not output.ends_with('__CATALOG_END__'):
+   status.text='Object catalog failed: '+output;catalog.clear();object_records.clear();return
+  var count=0
+  for line in output.split('\n',false):
+   if line=='__CATALOG_END__':continue
+   var fields=line.split('\t')
+   if fields.size()<3:continue
+   var record={'name':fields[0],'cost':fields[1],'flags':fields[2].split(','),'notes':fields[3] if fields.size()>3 else ''}
+   record.faction=fields[4] if fields.size()>4 else '';record.display_name=fields[5] if fields.size()>5 else ''
+   record.producers=', '.join([fields[6],fields[7],fields[8]].filter(func(value):return not value.is_empty())) if fields.size()>8 else ''
+   object_records[fields[0]]=record;catalog.append(fields[0]);count+=1
+  if count<50:break
+  first+=50
  _filter(search.text)
 
 func _build_object_browser(browser: VBoxContainer):
@@ -384,8 +407,11 @@ func _build_object_browser(browser: VBoxContainer):
  object_category=OptionButton.new()
  for title in ['All objects','Buildings','Units','Scenery']:object_category.add_item(title)
  object_filters.add_child(object_category);object_category.item_selected.connect(func(_i):_filter(search.text))
- for pair in [['buildable','Hide buildable'],['plot','Hide plots'],['placeholder','Hide placeholders'],['unfinished','Hide unfinished']]:
-  var check=CheckButton.new();check.text=pair[1];check.button_pressed=true;check.tooltip_text='Uses the native build-mode classification';object_filters.add_child(check);filter_toggles[pair[0]]=check;check.toggled.connect(func(_on):_filter(search.text))
+ availability=OptionButton.new()
+ for title in ['All objects','Buildable only','Non-buildable only']:availability.add_item(title)
+ object_filters.add_child(availability);availability.item_selected.connect(func(_i):_filter(search.text))
+ for pair in [['plot','Hide plots'],['placeholder','Hide placeholders'],['unfinished','Hide unfinished'],['unsupported','Hide unsupported']]:
+  var check=CheckButton.new();check.text=pair[1];check.button_pressed=pair[0]!='unsupported';check.tooltip_text='Uses the native build-mode classification';object_filters.add_child(check);filter_toggles[pair[0]]=check;check.toggled.connect(func(_on):_filter(search.text))
  view_toggle=Button.new();view_toggle.text='▦ Grid · switch to list';view_toggle.pressed.connect(func():grid_mode=not grid_mode;view_toggle.text='▦ Grid · switch to list' if grid_mode else '☷ List · switch to grid';_render_object_results();_update_controls());browser.add_child(view_toggle)
  object_tree=Tree.new();object_tree.add_theme_font_size_override('font_size',18);object_tree.columns=4;object_tree.hide_root=true;object_tree.column_titles_visible=true;object_tree.size_flags_vertical=Control.SIZE_EXPAND_FILL;object_tree.custom_minimum_size.y=220
  for i in 4:
@@ -406,11 +432,13 @@ func _filter(query: String):
   var r:Dictionary=object_records.get(name,{'name':name,'cost':'0','flags':[],'notes':''})
   var flags=r.flags
   if not category.is_empty() and category not in flags:continue
-  if filter_toggles.buildable.button_pressed and ('builderBuildable' in flags or 'plotBuildable' in flags or 'enhancedPlotBuildable' in flags):continue
+  var buildable='trainable' in flags or 'builderBuildable' in flags or 'plotBuildable' in flags or 'enhancedPlotBuildable' in flags
+  if availability.selected==1 and not buildable or availability.selected==2 and buildable:continue
   if filter_toggles.plot.button_pressed and 'plot' in flags:continue
   if filter_toggles.placeholder.button_pressed and 'placeholder' in flags:continue
-  if filter_toggles.unfinished.button_pressed and ('unfinishedContent' in flags or 'unsupported' in flags):continue
-  if not query.is_empty() and query.to_lower() not in (name+' '+str(flags)+' '+r.notes).to_lower():continue
+  if filter_toggles.unfinished.button_pressed and 'unfinishedContent' in flags:continue
+  if filter_toggles.unsupported.button_pressed and 'unsupported' in flags:continue
+  if not query.is_empty() and query.to_lower() not in (name+' '+str(r.get('faction',''))+' '+str(r.get('display_name',''))+' '+str(r.get('producers',''))+' '+str(flags)+' '+r.notes).to_lower():continue
   filtered.append(name);objects.add_item(name)
   if name==previous:objects.select(objects.item_count-1)
  _clear_preview();_render_object_results()
@@ -780,12 +808,14 @@ func _apply_owner():
  var result:Dictionary=world.map_editor_terrain({'owners':changes})
  if result.get('ok',false):undo_stack.append({'owners':result.undo_owners});overlay.append({'owners':saved});status.text='Changed owner for %d objects'%changes.size()
  else:status.text=str(result.get('error','Owner change failed'))
+ if inspector.visible:_inspect_selection()
 
 func _apply():
  if tool.selected==9:
   selected_objects=_delete_ids()
   if not selected_objects.is_empty():owner_slot.value=world.get_object(selected_objects[0]).get('player_id',0)
-  status.text='Selected %d objects. Choose an owner slot and apply.'%selected_objects.size();return
+  _inspect_selection()
+  status.text='Selected %d objects. Details are in the selection window.'%selected_objects.size();return
  if tool.selected==0:
   var deleted:Array=[]
   for id in _delete_ids():
@@ -918,3 +948,54 @@ func _exit_tree():
  _clear_preview()
  if active and is_instance_valid(hud):hud.set_process_input(hud_was_processing)
  if active and is_instance_valid(world):world.set_shroud_drawn(was_shroud);world.set_paused(was_paused)
+
+func _build_inspector():
+ inspector=Window.new();inspector.title='Selected object';inspector.size=Vector2i(620,660);inspector.min_size=Vector2i(440,360);inspector.visible=false;add_child(inspector)
+ inspector.close_requested.connect(func():inspector.hide())
+ var margin=MarginContainer.new();margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+ for edge in ['left','right','top','bottom']:margin.add_theme_constant_override('margin_'+edge,16)
+ inspector.add_child(margin)
+ var box=VBoxContainer.new();margin.add_child(box)
+ inspector_objects=ItemList.new();inspector_objects.custom_minimum_size.y=120;box.add_child(inspector_objects)
+ inspector_objects.item_selected.connect(func(i):_inspect_object(int(inspector_objects.get_item_metadata(i))))
+ inspector_details=RichTextLabel.new();inspector_details.selection_enabled=true;inspector_details.size_flags_vertical=Control.SIZE_EXPAND_FILL;box.add_child(inspector_details)
+ inspector_details.text='Click an object or drag an area to inspect objects.'
+
+func _inspect_selection():
+ inspector_objects.clear()
+ for id in selected_objects:
+  var data:Dictionary=world.get_object(id)
+  if not data.get('ok',false):continue
+  var row=inspector_objects.add_item('%d · %s'%[id,data.get('template','')]);inspector_objects.set_item_metadata(row,id)
+ inspector.popup_centered()
+ if inspector_objects.item_count>0:
+  inspector_objects.select(0);_inspect_object(int(inspector_objects.get_item_metadata(0)))
+ else:inspector_details.text='No object selected. Click an object or drag an area.'
+
+func _inspect_object(id: int):
+ var data:Dictionary=world.get_object(id)
+ if not data.get('ok',false):inspector_details.text='Object %d no longer exists.'%id;return
+ inspector_details.text=_object_details(data)
+
+func _object_details(data: Dictionary) -> String:
+ var name=str(data.get('template',''))
+ var record:Dictionary=object_records.get(name,{})
+ var lines=PackedStringArray(['Template / name: '+name,'Object ID: '+str(data.get('id',''))])
+ if not str(record.get('display_name','')).is_empty():lines.append('Display name / label: '+str(record.display_name))
+ if not str(record.get('faction','')).is_empty():lines.append('Faction: '+str(record.faction))
+ lines.append('Owner: %s (player %s) · Team: %s'%[data.get('owner',''),data.get('player_id',0),data.get('team','')])
+ if data.has('health'):lines.append('Health: %s / %s'%[data.health,data.get('max_health','?')])
+ lines.append('Position: %.1f, %.1f, %.1f · Rotation: %.1f°'%[data.get('x',0),data.get('y',0),data.get('z',0),rad_to_deg(float(data.get('angle',0)))])
+ if data.get('under_construction',false):lines.append('Construction: %s%%'%data.get('construction_percent',0))
+ if record.has('cost'):lines.append('Build cost: '+str(record.cost))
+ if not str(record.get('producers','')).is_empty():lines.append('Built / trained by: '+str(record.producers).trim_prefix(', ').trim_suffix(', '))
+ if record.has('flags'):lines.append('Classification: '+', '.join(record.flags))
+ if not str(record.get('notes','')).is_empty():lines.append('Notes: '+str(record.notes))
+ if data.get('contained_by',0)!=0:lines.append('Contained by object: '+str(data.contained_by))
+ if not data.get('members',[]).is_empty():lines.append('Contained / horde members: '+str(data.members))
+ if data.has('ai_state'):lines.append('AI state: '+str(data.ai_state))
+ if data.has('ai_victim'):lines.append('Target object: '+str(data.ai_victim))
+ if data.has('ai_goal'):lines.append('AI goal: '+str(data.ai_goal))
+ if data.has('ai_has_path'):lines.append('Path: %s · Blocked: %s · Moving: %s'%[data.ai_has_path,data.get('ai_blocked',false),data.get('ai_moving',false)])
+ lines.append('Drawable hidden: '+str(data.get('drawable_hidden',false)))
+ return '\n\n'.join(lines)

@@ -15,6 +15,7 @@
 // set_instance_pose), no turrets / captured bones, no house colour, no shadows, no emitters. See GodotW3DMaterial.h for the shading divergences.
 
 #pragma once
+#include "Common/TextureSwap.h"
 
 #include "GodotDevice/GodotW3DMaterial.h"
 
@@ -113,9 +114,9 @@ public:
 	// stop S-4832 (C++ only): the next add_model / add_model_colored builds the model with a ModelConditionState's `Texture = A B` swaps (a building's SNOW
 	// state: KBHall.tga -> KBHall_snow.tga): its meshes are built again, under a name that carries Texture_Swap_Suffix, with every texture A loaded as B.
 	// The add clears them.
-	void Set_Build_Texture_Swaps(const std::vector<std::pair<std::string, std::string>> &swaps) { PendingSwaps = swaps; }
+	void Set_Build_Texture_Swaps(const std::vector<TextureSwap> &swaps) { PendingSwaps = swaps; }
 	// "#tex&a=b&c=d" (lower case, in the state's order): the part of a model's cache name that its texture swaps make; empty without swaps
-	static std::string Texture_Swap_Suffix(const std::vector<std::pair<std::string, std::string>> &swaps);
+	static std::string Texture_Swap_Suffix(const std::vector<TextureSwap> &swaps);
 	// RENDER-1 (stop S-390): the instance is lit by the map's infantry light set (KINDOF_INFANTRY drawables) instead of the objects set;
 	// the buffer stores the palette base as -(base + 1) for it.
 	void set_instance_infantry_light(int64_t instance, bool infantry);
@@ -285,7 +286,7 @@ private:
 	bool AlphaOverride = false; // lane BUILD-5 r3
 	std::map<std::string, std::shared_ptr<MeshGpu>> MeshCache;
 	std::string BuildSuffix; // lane CAH-2: the colour set of the model being built (add_model_colored), part of the mesh cache key
-	std::vector<std::pair<std::string, std::string>> PendingSwaps; // stop S-4832: Set_Build_Texture_Swaps, taken by the next add_model
+	std::vector<TextureSwap> PendingSwaps; // stop S-4832: Set_Build_Texture_Swaps, taken by the next add_model
 	std::vector<std::unique_ptr<Model>> Models;
 	std::vector<Instance> Instances;
 	std::vector<Ref<ShaderMaterial>> AllMaterials;

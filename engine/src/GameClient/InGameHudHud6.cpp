@@ -96,9 +96,10 @@ void InGameHud::bootHud6()
 	});
 	if (isBfme1Data(m_config.fs))
 	{
-		// BFME1 has no OnHelpBoxLoaded callback/content-frame protocol.
-		// Its native tooltip is drawn by the device over the HUD.
-		m_helpBox.loaded("_level" + std::to_string(palantir->movieLevel()) + ".BFME1Help", [](const auto &, const auto &, const auto &) { return true; });
+		// BFME1 has no OnHelpBoxLoaded: the help box is Palantir.apt's own HelpBox clip, driven through the root's functions (InGameHelpBox::loadedBfme1)
+		m_helpBox.loadedBfme1("_level" + std::to_string(palantir->movieLevel()), [palantir](const std::string &path, const std::string &fn, const std::vector<std::string> &args) {
+			return palantir->invoke(path, fn, args);
+		});
 	}
 
 }

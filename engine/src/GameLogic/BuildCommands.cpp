@@ -338,13 +338,8 @@ bool BuildCommands::wallSpan(GameLogic &logic, const GameMessage &m)
 		refuse(m, "wall span: no hub, template or owner");
 		return true;
 	}
-	// RW 0x77C529 -> 0x6AAA2E(template, 0): the owner can afford the template (calcCostToBuild(owner, no producer) <= money + 0; BUILD-1's S-305 calls this function
-	// Player::canBuild), then RW + 0x770 must be 0 (not identified: taken as 0)
-	if ((std::uint32_t)BuildAssistant::calcCostToBuild(*tmpl, owner, nullptr, -1) > owner->getMoney()->countMoney())
-	{
-		refuse(m, "wall span: the owner cannot afford the template");
-		return true;
-	}
+	// Enhanced reconnection can cost less than one hub. WallSpan::build validates
+	// the complete plan and charges only the missing pieces, including the money check.
 	if (WallSpan::build(logic, *hub, a1->location, a2->location, *owner, (unsigned)a3->integer, nullptr))
 	{
 		++m_stats.wallSpans;

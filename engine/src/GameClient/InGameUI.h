@@ -176,6 +176,7 @@ public:
 	float controllerAreaRadius = -1;
 	bool placementSnap = false;
 	float placementGrid = 50.0f;
+	float placementGridAngle = 0.0f; ///< OpenBFME: the snap grid's rotation, 0 or pi/4 (G while placing toggles it)
 	bool isPlacing() const { return !m_placeTemplate.empty(); }
 	void setPlaceGhost(const Coord3D &location, float angle, int legalCode)
 	{

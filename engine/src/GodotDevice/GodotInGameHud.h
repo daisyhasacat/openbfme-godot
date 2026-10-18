@@ -131,6 +131,7 @@ public:
 	bool controller_select_area(float radius, bool commit);
 	bool controller_formation(const String &action, const Vector2 &direction);
 	void set_placement_snap(bool active, float spacing);
+	float rotate_placement_grid();
 	Dictionary get_controller_target(float selection_assist_radius);
 	void controller_deselect();
 	void deselect_all();

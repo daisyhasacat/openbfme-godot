@@ -78,7 +78,98 @@ Men against Mordor and Dwarves against Wild trade armies without a decision in
 
 Still not ported (each a reported stop): the DEFENSIVE heuristic RW 0x97D74F
 and tactic RW 0x90C436 (they need the player record's position sampler, RW
-0x8E3EF8 / 0x8E4456), the EXPANSION tactics, the upgrade / science builder
-(RW 0x9ED82A is its reserve-aware check), the wall builder, and bridge / wall
+0x8E3EF8 / 0x8E4456), the EXPANSION tactics, the original upgrade / science builder
+(RW 0x9ED82A is its reserve-aware check; an enhanced paid-upgrade policy now runs), the wall builder, and bridge / wall
 pathfinder layers (S-161; Evendim has no bridges, so its lair island is
 unreachable by ground for retail as well).
+
+## OpenBFME fortification target preference
+
+Computer armies treat passive walls and hubs as route obstacles, rather than
+cleanup objectives. The siege response checks a complete ground path to approach
+points around an enemy structure. When no path exists, it prefers a wall section
+or gate on that corridor, using a hub only when no such section is available.
+Once a route opens, the response releases the old breach order. Ordinary automatic
+acquisition skips passive barriers; armed wall towers and emplacements remain
+valid tactical targets. Human targeting is unchanged.
+
+This is a requested OpenBFME policy, not a retail parity claim. Corridor selection
+uses the nearest enemy structure and a straight corridor to choose a breach point;
+it is not a global planner for multiple nested fortifications. Regression cases
+live in `engine/tests/test_ai_fortifications.cpp`.
+
+Heavy armor appearance: `ArmorUpgrade` sets the armor/model-condition flags;
+`SubObjectsUpgrade` can also change textures (`UpgradeTexture`), for example
+Lorien Warriors' `EUlorienwarrior.tga` to `EULorWarHA.tga`. These swaps pass through
+`ClientEventRecorder` to each drawable's model draws, then use the instancer's
+material variant cache. `ExcludeSubobjects` applies per mesh, and replacement
+textures resolve their own house-color masks. The variant key includes exclusions
+so upgraded units and ordinary units can share a model without sharing its look.
+
+Editor object browser: the availability selector includes a buildable-only mode.
+Building availability comes from builder/plot commands; trained units and hordes
+come from `UNIT_BUILD` / `SECONDARY_UNIT_BUILD` buttons in producers' normal or
+upgrade-switched command sets. This is catalog evidence, not a check of the
+current player's resources or prerequisites. Unsupported behaviors have a
+separate optional filter and do not imply unfinished content. Search includes
+faction, display-name labels, and producer templates. Catalog extraction pages
+Lua output with a required terminator to avoid the console's 64 KiB truncation.
+Select mode opens an object inspector with IDs, template, owner/team, health,
+position, classification, production sources, containment and available AI state.
+
+
+Enhanced offensive AI policy (user requested, not retail parity): ordinary attack
+teams recruit after five seconds and SimpleAttack structure raids start with three
+units. After the opening, composition maintains two siege units; a protected or
+blocked base raises breach demand to three and can bring siege production forward.
+A blocked wall musters three effective breach engines and six available escorts
+near home before advancing, with a 45-second limit for an incomplete force with
+at least one engine. Gathering reserves units from ordinary tactics; the state,
+escorts and launch flag participate in deterministic hashing. Once a route opens,
+old barrier orders are released and armed objectives remain valid targets.
+
+Each AI considers up to eight paid upgrade purchases per second after the opening, using
+its current command sets and NeededUpgrade requirements. Arrow/blade and armor
+upgrades take precedence over other research, including production-building levels.
+It uses ordinary production queues and money/reserve funds, retaining a combined
+500-resource buffer. DisableUnitUpgrading disables this policy. This provides
+research and troop purchases without claiming to port the original upgrade builder.
+
+Wall placement on main: parallel/opposite and perpendicular existing spans are
+outlined using a snapshot refreshed in a logic client window; angle matching runs
+on every rendered frame, including threaded games. Hub linked-piece records cover
+starting/reconnected walls as well as producer links, and the outline is drawn
+above wall geometry. The visual comparison uses a half-degree rounding tolerance.
+
+Reconnecting friendly wall hubs restores gaps along their recorded span slots,
+including when dragged from the opposite endpoint. Aligned live walls, hubs and
+wall upgrades are retained, omitted from the ghost models, and not charged again.
+Accepted construction clears rubble on the centerline; an illegal or unaffordable
+plan clears nothing. Crossing walls, enemy live walls and other structures retain
+normal collision checks. The command checks the missing-piece cost rather than
+requiring the price of another hub. This is the enhanced reconnection path; it
+is not a claim that all retail legal-code-10 rebuild behavior has been ported.
+
+Ranged siege refinement: fortified-base production aims for five ranged engines
+(non-melee ground/structure weapons with at least 200 attack range) when offered
+by the army definition; melee breach units do not satisfy that quota. Without
+ranged candidates the fallback target is six breach units. Production candidates
+and reserved assault engines prefer longer weapon range; reserve up to five engines.
+Fire/flaming/munitions research joins arrow/blade upgrades in the first purchase
+priority. Blocked siege orders retry periodically, and idle dispatched troops are
+released for recruitment again. Range is read from weapon data, not unit names.
+
+
+Dwarven/high-CP regression fixes: attack teams against structures have a finite
+maximum of twelve and can hand over at eight combat units even when the target
+threat remains larger. Enlarging CP does not enlarge that launch threshold.
+Artillery classification follows projectile warheads and requires positive SIEGE
+damage, excluding battlewagons' ranged passenger weapons. Factory registration
+refreshes once per simulation second so NeededUpgrade and switched command sets
+can reveal catapults after a Forge Works level upgrade. Busy producers with a
+short queue can enqueue upgrades; structure level upgrades precede troop purchases.
+The upgrader can buy eight upgrades per simulation second and, where income exists,
+holds new army requests while saving for its next eligible upgrade plus the buffer.
+These decisions use logic frames, not elapsed wall-clock time. A retail regression
+runs Dwarves with 10,000 CP against a high-health defended base and checks actual
+attacks/damage, catapult production and more than six upgraded troops.

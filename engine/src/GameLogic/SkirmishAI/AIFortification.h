@@ -12,5 +12,8 @@ Object *findTarget(GameLogic &logic, const AISkirmishPlayer &ai);
 bool canBreach(GameLogic &logic, const ThingTemplate &unit, Object &target, const Player *owner = nullptr);
 bool canBreach(const Object &unit, Object &target);
 bool factoryCanBreach(GameLogic &logic, const ThingTemplate &factory, Object &target, const Player *owner = nullptr);
+float siegeRange(const ThingTemplate &unit);
+bool passiveBarrier(const Object &object);
+bool allowAutoTarget(const Object &unit, const Object &target);
 void update(GameLogic &logic, AISkirmishPlayer &ai);
 }

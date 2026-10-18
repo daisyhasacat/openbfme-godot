@@ -6,6 +6,7 @@
 #include "GameLogic/SkirmishAI/AIFortification.h"
 
 #include "Common/BuildAssistant.h"
+#include "Common/AsciiString.h"
 #include "Common/GameCommon.h"
 #include "GameClient/ControlBarCommands.h"
 #include "GameLogic/WallBalance.h"
@@ -570,11 +571,16 @@ void registerFactories(GameLogic &logic, AISkirmishPlayer &ai, const Player &pla
 		{
 			continue;
 		}
-		if (std::find(u.registeredStructures.begin(), u.registeredStructures.end(), o->getID()) != u.registeredStructures.end())
-		{
-			continue;
-		}
-		u.registeredStructures.push_back(o->getID());
+  const bool registered=std::find(u.registeredStructures.begin(),u.registeredStructures.end(),o->getID())!=u.registeredStructures.end();
+  if(registered)
+  {
+   // NeededUpgrade and switched command sets can unlock new units after the
+   // factory completes. Refresh rather than freezing its initial build menu.
+   if(logic.getFrame()%5!=(unsigned)player.getPlayerIndex()%5)continue;
+   for(auto it=u.factories.begin();it!=u.factories.end();)
+    it=it->second==o->getID() ? u.factories.erase(it) : std::next(it);
+  }
+  else u.registeredStructures.push_back(o->getID());
 		for (const ArmyMemberDefinition &m : ai.army->members)
 		{
 			const ThingTemplate *tt = logic.things().findTemplate(m.unit);
@@ -829,6 +835,27 @@ std::shared_ptr<AIBuildRequest> chooseUnit(GameLogic &logic, AISkirmishPlayer &a
 			requestAttackerFactory(logic, ai, player, attackerTemplates);
 		}
 	}
+ // User-requested offensive composition: maintain siege even without wall immunity.
+ if (ai.build.phase >= 1)
+ {
+  int siegeCount = 0;
+  std::vector<std::string> siegePool;
+  std::vector<const ThingTemplate *> siegeTemplates;
+  for (const auto &m : ai.army->members)
+  {
+   const auto *tt = logic.things().findTemplate(m.unit);
+   if (!tt || !MaskTest(logic.templateInfo(tt->getFinalOverride()).kindOf, (unsigned)KindOfTokens::indexOf("SIEGEENGINE"))) continue;
+   siegeTemplates.push_back(tt->getFinalOverride());
+   if(AIFortification::siegeRange(*tt)>=200.0f) siegeCount += ownedCount(logic, player, m.unit) + requestsOf(u, m.unit);
+   if (hasFreeFactory(logic, ai, m.unit) && AIFortification::siegeRange(*tt)>=200.0f) siegePool.push_back(m.unit);
+  }
+  if (siegeCount < 2)
+  {
+   if (!siegePool.empty()) pool = siegePool;
+   else requestAttackerFactory(logic, ai, player, siegeTemplates);
+  }
+ }
+
 	if (pool.empty())
 	{
 		return nullptr;
@@ -967,31 +994,45 @@ std::shared_ptr<AIBuildRequest> chooseBreachUnit(GameLogic &logic, AISkirmishPla
 	if (ai.store->data().disableTacticalAI) return nullptr;
 	Object *target = AIFortification::findTarget(logic, ai);
 	if (!target) return nullptr;
-	int count = 0;
+ std::vector<const ThingTemplate *> candidates;
+ for(const auto &member:ai.army->members)
+  if(const auto *tt=logic.things().findTemplate(member.unit))
+   if(AIFortification::canBreach(logic,*tt->getFinalOverride(),*target,&player)) candidates.push_back(tt->getFinalOverride());
+ std::stable_sort(candidates.begin(),candidates.end(),[](const auto *a,const auto *b) {return AIFortification::siegeRange(*a)>AIFortification::siegeRange(*b);});
+ const bool ranged=!candidates.empty() && AIFortification::siegeRange(*candidates.front())>=200.0f;
+ int count = 0;
 	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
 		if (o->getControllingPlayer() == &player && !o->isDestroyed() && !o->isEffectivelyDead() &&
-			!o->isKindOfName("STRUCTURE") && AIFortification::canBreach(*o, *target)) ++count;
+			!o->isKindOfName("STRUCTURE") && AIFortification::canBreach(*o, *target) && (!ranged || AIFortification::siegeRange(*o->getTemplate())>=200.0f)) ++count;
 	for (const auto &r : ai.build.units.requests)
 	{
 		const ThingTemplate *tt = logic.things().findTemplate(r->templateName);
-		if (!r->finished() && tt && AIFortification::canBreach(logic, *tt->getFinalOverride(), *target, &player)) ++count;
+		if (!r->finished() && tt && AIFortification::canBreach(logic, *tt->getFinalOverride(), *target, &player) && (!ranged || AIFortification::siegeRange(*tt)>=200.0f)) ++count;
 	}
-	if (count >= 2) return nullptr;
-	for (const ArmyMemberDefinition &m : ai.army->members)
-	{
-		const ThingTemplate *tt = logic.things().findTemplate(m.unit);
-		if (!tt || !AIFortification::canBreach(logic, *tt->getFinalOverride(), *target, &player) || !hasFreeFactory(logic, ai, m.unit)) continue;
-		Object *factory = findFactory(logic, ai, m.unit, nullptr, false);
+	if (count >= (ranged ? 5 : 6)) return nullptr;
+ for (const auto *tt:candidates)
+ {
+  const std::string &unit=tt->getName();
+  if(ranged && AIFortification::siegeRange(*tt)<200.0f) continue;
+  if(!hasFreeFactory(logic,ai,unit)) continue;
+		Object *factory = findFactory(logic, ai, unit, nullptr, false);
 		const CanMakeType code = BuildAssistant::canMakeUnit(*factory, tt->getFinalOverride(), -1);
 		if (code != CANMAKE_OK && code != CANMAKE_NO_MONEY) continue;
 		auto req = std::make_shared<AIBuildRequest>();
 		req->serial = ai.build.nextSerial++;
 		req->unit = true;
-		req->templateName = m.unit;
+		req->templateName = unit;
 		req->commandPoints = BuildAssistant::commandPoints(*tt);
 		req->priority = 1000.0f;
+		req->reserveMoney = true;
 		return req;
 	}
+ if(ranged && !ai.build.baseBuilderDisabled)
+ {
+  candidates.erase(std::remove_if(candidates.begin(),candidates.end(),[](const auto *tt) {return AIFortification::siegeRange(*tt)<200.0f;}),candidates.end());
+  requestAttackerFactory(logic,ai,player,candidates);
+ }
+
 	// Bring forward an appropriate production building from the faction's base layout,
 	// retaining its legal site and dozer workflow, even if its usual phase has not begun.
 	if (!ai.build.baseBuilderDisabled)
@@ -1014,6 +1055,9 @@ std::shared_ptr<AIBuildRequest> chooseBreachUnit(GameLogic &logic, AISkirmishPla
 void updateUnitBuilder(GameLogic &logic, AISkirmishPlayer &ai, const Player &player)
 {
 	AIUnitBuilderState &u = ai.build.units;
+ const auto saving=ai.brain.namedCounters.find("UpgradeSavingsTarget");
+ if(saving!=ai.brain.namedCounters.end() && saving->second>0 && economyStructureCount(logic,player)>0 &&
+    (std::uint64_t)player.getMoney()->countMoney()+ai.build.moneyReserve<(unsigned)saving->second)return;
 	registerFactories(logic, ai, player);
 	if (u.recompute)
 	{
@@ -1985,6 +2029,68 @@ static void checkForNewUpgrades(GameLogic &logic, AISkirmishPlayer &ai, Player &
 	}
 }
 
+// Enhanced purchasing policy: use only offered upgrade buttons, their prerequisites,
+// and ordinary paid queues. Keep an economy buffer; never grant upgrades for free.
+static void buyCombatUpgrade(GameLogic &logic, AISkirmishPlayer &ai, Player &player)
+{
+ if (!TheCommandStore || !TheUpgradeCenter || ai.store->data().disableUnitUpgrading || ai.build.phase == 0)
+ { ai.brain.namedCounters.erase("UpgradeSavingsTarget");return; }
+ if(logic.getFrame()%5!=(unsigned)player.getPlayerIndex()%5)return;
+ Object *producer = nullptr;
+ const UpgradeTemplate *chosen = nullptr;
+ int best = 100;
+ for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+ {
+  if (o->getControllingPlayer() != &player || !o->isInWorld() || o->isEffectivelyDead() || o->isUnderConstruction() ||
+      o->getContainedBy()) continue;
+  auto *pu = o->getProductionUpdate();
+  if (!pu || pu->getProductionCount()>=2) continue;
+  const auto *set = TheCommandStore->findCommandSet(o->getCommandSetName());
+  for (int i = 0; set && i < CommandSet::MAX_BUTTONS; ++i)
+  {
+   const auto *button = set->getCommandButton(i);
+   if (!button || (button->m_command != GUI_COMMAND_PLAYER_UPGRADE && button->m_command != GUI_COMMAND_OBJECT_UPGRADE)) continue;
+   const auto *upgrade = TheUpgradeCenter->findUpgrade(button->m_upgradeName);
+   if (!upgrade || pu->canQueueUpgrade(upgrade) != 0 || player.hasUpgradeComplete(upgrade) || player.hasUpgradeInProduction(upgrade) ||
+       o->hasUpgrade(upgrade) || pu->isUpgradeInQueue(upgrade)) continue;
+   if (upgrade->getUpgradeType() == UPGRADE_TYPE_OBJECT && !o->affectedByUpgrade(upgrade)) continue;
+   bool prerequisites = true;
+   if (button->hasOption(COMMAND_OPTION_NEED_UPGRADE) && !button->m_neededUpgrade.empty())
+   {
+    prerequisites = !button->m_neededUpgradeAny;
+    for (const auto &name : button->m_neededUpgrade)
+    {
+     const auto *need = TheUpgradeCenter->findUpgrade(name);
+     const bool have = need && (need->getUpgradeType() == UPGRADE_TYPE_PLAYER ? player.hasUpgradeComplete(need) : o->hasUpgrade(need));
+     if (button->m_neededUpgradeAny) prerequisites = prerequisites || have;
+     else prerequisites = prerequisites && have;
+    }
+   }
+   if (!prerequisites) continue;
+   const auto name = AsciiStringUtil::lowered(button->m_upgradeName);
+   int rank = name.find("arrow") != std::string::npos || name.find("blade") != std::string::npos || name.find("fire") != std::string::npos || name.find("flaming") != std::string::npos || name.find("munition") != std::string::npos ? 0 :
+              name.find("armor") != std::string::npos || name.find("mail") != std::string::npos ? 1 : 2;
+   if (o->isKindOfName("STRUCTURE") && upgrade->getUpgradeType()==UPGRADE_TYPE_OBJECT) rank=-1;
+   if (rank < best) { best = rank; chosen = upgrade; producer = o; }
+  }
+ }
+ ai.brain.namedCounters["UpgradeSavingsTarget"]=chosen ? std::max(0,chosen->calcCostToBuild(&player,producer))+500 : 0;
+ if (producer && chosen)
+ {
+  if((std::uint64_t)chosen->calcCostToBuild(&player,producer)+500u>(std::uint64_t)player.getMoney()->countMoney()+ai.build.moneyReserve)return;
+  const auto cost = (std::uint32_t)chosen->calcCostToBuild(&player, producer);
+  const auto money = player.getMoney()->countMoney();
+  if (cost > money)
+  {
+   const auto draw = cost - money;
+   ai.build.moneyReserve -= draw;
+   ai.build.reserveDrawn += draw;
+   player.getMoney()->deposit(draw, nullptr, false);
+  }
+  producer->getProductionUpdate()->queueUpgrade(chosen);
+ }
+}
+
 void AIBaseBuilder::update(GameLogic &logic, AISkirmishPlayer &ai)
 {
 	AIBuildState &s = ai.build;
@@ -2026,6 +2132,8 @@ void AIBaseBuilder::update(GameLogic &logic, AISkirmishPlayer &ai)
 	}
 	// RW 0x8F0EBE: drop finished requests from the in-progress list
 	s.inProgress.erase(std::remove_if(s.inProgress.begin(), s.inProgress.end(), [](const std::shared_ptr<AIBuildRequest> &r) { return r->finished(); }), s.inProgress.end());
+	// Upgrade throughput scales to a large army without consuming wall-clock time.
+	for(int purchase=0;purchase<8;++purchase) buyCombatUpgrade(logic, ai, *player);
 	checkForNewUpgrades(logic, ai, *player); // RW 0x8F0EF8
 	// RW 0x8F0EFD: the base builder (+ 4) through RW 0x90CD00 (skipped when disabled): RW 0x90CDAD -> every base RW 0x9BCA33 -> its slots
 	if (!s.baseBuilderDisabled)

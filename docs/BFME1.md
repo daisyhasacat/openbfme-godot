@@ -93,7 +93,28 @@ These are the places where BFME1's data or menus differ from RotWK's. Each one i
   those stay loadable by name but are omitted from the skirmish list.
 - **Texture replacements:** PNG/JPEG files are accepted by BFME1 texture lookup (including `GBCampFloor`), and image signatures are recognized even when replacements retain `.dds` filenames.
 - **Palantir commands:** BFME1 uses six fixed `CommandButtons.Command1` … `Command6` slots and `SetCommandButtonState`, rather than BFME2's dynamic content frames. Slot state updates only run when content changes, so show animations can finish.
-- **Command tooltips:** BFME1's legacy cursor blocks are skipped to their `End` when loading help fonts. A native help panel displays the existing command-help text because BFME1 has no BFME2 `OnHelpBoxLoaded` content-frame callback.
+- **Command tooltips:** BFME1's legacy cursor blocks are skipped to their `End` when loading help fonts. BFME1 has no `OnHelpBoxLoaded`:
+  the tooltip is `Palantir.apt`'s own bordered `HelpBox` clip. The RotWK help box state machine drives it through the root's
+  `SampleHelpBoxTextWidth` / `HideHelpBox` / `ShowHelpBox(height, "%g")`, and the text is drawn into the clip typed `HelpBoxText`
+  (Open-BFME-1 VA 0x00593E60, 0x005649A0, 0x00592640). INFERENCE: the width sample waits for the `Text` clip's shape, which is
+  empty on the first frame after the call.
+- **Audio Control flags:** BFME1's names are `LOOP RANDOM RANDOMSTART INTERRUPT FADE_ON_KILL FADE_ON_START` (VA 0x012A8264):
+  bit 1 is RANDOM, and an event without it plays in order. RotWK inverted that bit to SEQUENTIAL, so BFME1 values are stored
+  with bit 1 flipped. Reading `Control = random` as RotWK's unnamed bit 6 stripped every sound effect's `Data\Audio\Sounds\` folder
+  and `.wav` extension, which silenced the game.
+- **Skins:** patch 2.22 models have skin weights that sum to 99 or 101 (scaled to 1). Some also weight a second bone without a
+  `VERTICES_2` stream, and these are drawn on the first bone, an inference from BFME1's influence loader (VA 0x00925380). Rigid
+  meshes that carry an influence chunk ignore it. All three are reported as `[S-020]`. Before, such meshes were rejected, which
+  made Gandalf invisible.
+- **Button art:** patch 2.22 ships RLE (type 10) TGAs such as `uiGondorSoldier.tga`, and BFME1 UI textures decode them.
+- **Health bars:** an absent `AllHealthBars` option means on in BFME1 (GlobalData + 0xA8E defaults to 1), so selected or
+  hovered infantry and cavalry get bars. RotWK's default stays off.
+- **Multi-selection portrait:** BFME1 maps the player's side to `UP<Side>_Army` (VA 0x00596D40). It has no
+  `MultiSelectionPortrait` field.
+- **Score screen:** BFME1 has no `TimeLine.apt`, and pushing it left only the red background. `ScoreScreen.apt` (`AptScoreScreen`)
+  gets the per-player `PlayerTable:<row>:<field>` texts, colours and factions, and its Continue/Exit return to the menus
+  (Open-BFME-1 VA 0x005770E0, 0x00576C20, 0x005731E0). INFERENCE: the score data has no alliances, so each row is its own team.
+  The campaign page, Save Replay, Restart and unit renaming are not ported.
 - **Pause menu:** BFME1 uses type-8 `PushData` constants to reference the active constant pool. Resolving these initializes each button's own text and callback, including the Restart/Exit confirmations.
 - **Keys and voices:** only `Data\INI\CommandMap.ini` exists (there's no root `CommandMap.ini`), and there's no
   `CrowdResponse.ini`, because BFME1 has no crowd responses.

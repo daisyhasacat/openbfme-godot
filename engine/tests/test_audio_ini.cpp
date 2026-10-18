@@ -177,6 +177,25 @@ TEST_CASE("audio ini: RANDOMSTART is dropped from an AudioEvent but kept on a Mu
 	CHECK(f.state.infos.find("M")->soundType == AT_Music);
 }
 
+TEST_CASE("audio ini: BFME1 Control reads RANDOM as bit 1; an event without it is SEQUENTIAL and keeps its folder prefix")
+{
+	AudioFixture f;
+	f.fx.mount({ { "Data\\INI\\Default\\SubsystemLegend.ini", "" } });
+	REQUIRE(f.load("AudioEvent DefaultSoundEffect\n  Control = random\n  Type = ui player\n  Type = +DEFAULT\nEnd\n"
+				   "AudioEvent Inherited\n  Sounds = a b\nEnd\n"
+				   "AudioEvent Looped\n  Control = loop\nEnd\n"
+				   "AudioEvent Added\n  Control = +loop\nEnd\n")
+				.empty());
+	CHECK(f.state.infos.find("DefaultSoundEffect")->control == 0u);
+	CHECK(f.state.infos.find("Inherited")->control == 0u);
+	CHECK(f.state.infos.find("Looped")->control == (AC_LOOP | AC_SEQUENTIAL));
+	CHECK(f.state.infos.find("Added")->control == AC_LOOP);
+	CHECK(!f.load("AudioEvent B\n  Control = sequential\nEnd\n").empty());
+
+	AudioFixture rotwk;
+	CHECK(!rotwk.load(std::string(kDefaults) + "AudioEvent A\n  Control = random\nEnd\n").empty());
+}
+
 TEST_CASE("audio ini: Type accepts +/- edits and every retail flag name; an unknown name is an error")
 {
 	AudioFixture f;

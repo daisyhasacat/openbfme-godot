@@ -1,5 +1,22 @@
 extends CanvasLayer
 ## Local skirmish map browser. Selection is committed only with Use map or Play.
+var install_button: Button
+var favorite_button: Button
+var snow_filter: CheckButton
+var favorites_filter: CheckButton
+var favorites := {}
+var favorites_path := "user://map-favorites.cfg"
+var install_root := "user://installed-maps"
+var source_tabs: TabBar
+var loaded_catalog: Array = []
+var library_catalog: Array = []
+var library_queue: Array = []
+var library_error := ""
+var metadata: RefCounted
+var metadata_cache_root := "user://map-library-metadata"
+var library_path := OS.get_environment("HOME").path_join("Library/Application Support/BFMELauncher/Maps/Library/rotwk")
+var use_button: Button
+var play_button: Button
 var tabs: TabContainer
 var players_page: VBoxContainer
 var rules_page: VBoxContainer
@@ -66,10 +83,14 @@ func _ready():
  var column=VBoxContainer.new();panel.add_child(column)
  var header=HBoxContainer.new();column.add_child(header)
  title=Label.new();title.text='SKIRMISH · MAP EXPLORER';title.size_flags_horizontal=Control.SIZE_EXPAND_FILL;header.add_child(title)
+ favorite_button=Button.new();favorite_button.text='☆ Favorite';favorite_button.pressed.connect(_toggle_favorite);header.add_child(favorite_button)
  var close=Button.new();close.text='Cancel';close.pressed.connect(close_browser);header.add_child(close)
  var top=HBoxContainer.new();top.custom_minimum_size.y=280;top.size_flags_vertical=Control.SIZE_EXPAND_FILL;top.size_flags_stretch_ratio=.8;
  tabs=TabContainer.new();tabs.size_flags_vertical=Control.SIZE_EXPAND_FILL;tabs.size_flags_stretch_ratio=.8;column.add_child(tabs)
- top.name='Map selection';tabs.add_child(top)
+ var map_page=VBoxContainer.new();map_page.name='Map selection';tabs.add_child(map_page)
+ source_tabs=TabBar.new();source_tabs.add_tab('Loaded maps');source_tabs.add_tab('Map Library');map_page.add_child(source_tabs)
+ source_tabs.tab_changed.connect(_change_source)
+ map_page.add_child(top)
  players_page=VBoxContainer.new();players_page.name='Players';tabs.add_child(players_page)
  rules_page=VBoxContainer.new();rules_page.name='Rules';tabs.add_child(rules_page)
  tabs.tab_changed.connect(func(_i):_update_starts())
@@ -83,6 +104,9 @@ func _ready():
  for label in ['Any layout','Fortress maps','Standard maps','With outposts','With inns','With signal fires']:feature_filter.add_item(label)
  sort=OptionButton.new();sort.tooltip_text='Sort the map list';sort.size_flags_horizontal=Control.SIZE_EXPAND_FILL;sort.item_selected.connect(func(_i):_filter());options.add_child(sort)
  for label in ['Name A–Z','Name Z–A','Fewest players','Most players','Official first']:sort.add_item(label)
+ var toggles=VBoxContainer.new();left.add_child(toggles)
+ snow_filter=CheckButton.new();snow_filter.text='Snow maps only';snow_filter.tooltip_text='Maps with snowy weather in their map data';snow_filter.toggled.connect(func(_on):_filter());toggles.add_child(snow_filter)
+ favorites_filter=CheckButton.new();favorites_filter.text='Favorites only';favorites_filter.toggled.connect(func(_on):_filter());toggles.add_child(favorites_filter)
  for control in [players_filter,type_filter,feature_filter,sort]:control.fit_to_longest_item=false;control.custom_minimum_size.x=140
  maps=ItemList.new();maps.size_flags_vertical=Control.SIZE_EXPAND_FILL;maps.item_selected.connect(_select);left.add_child(maps)
  var middle=VBoxContainer.new();middle.size_flags_horizontal=Control.SIZE_EXPAND_FILL;middle.size_flags_stretch_ratio=1.4;top.add_child(middle)
@@ -102,8 +126,9 @@ func _ready():
  slot=OptionButton.new();slot.fit_to_longest_item=false;slot.custom_minimum_size.x=240;slot.item_selected.connect(func(_i):_update_starts());footer.add_child(slot)
  var random=Button.new();random.text='Random start';random.pressed.connect(func():_assign(slot.get_item_id(slot.selected),-1));footer.add_child(random)
  message=Label.new();message.size_flags_horizontal=Control.SIZE_EXPAND_FILL;message.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;footer.add_child(message)
- var use=Button.new();use.text='Use map';use.custom_minimum_size=Vector2(150,48);use.pressed.connect(_apply);footer.add_child(use)
- var play=Button.new();play.name='Play';play.text='Play';play.tooltip_text='Use this map and setup, then start the game';play.custom_minimum_size=Vector2(150,48)
+ install_button=Button.new();install_button.text='Install map';install_button.pressed.connect(_install_selected);footer.add_child(install_button)
+ var use=Button.new();use_button=use;use.text='Use map';use.custom_minimum_size=Vector2(150,48);use.pressed.connect(_apply);footer.add_child(use)
+ var play=Button.new();play_button=play;play.name='Play';play.text='Play';play.tooltip_text='Use this map and setup, then start the game';play.custom_minimum_size=Vector2(150,48)
  var play_style=StyleBoxFlat.new();play_style.bg_color=Color('#4a3a14');play_style.border_color=Color('#e8c36d');play_style.set_border_width_all(2);play_style.set_corner_radius_all(4)
  play.add_theme_stylebox_override('normal',play_style)
  var play_hover:StyleBoxFlat=play_style.duplicate();play_hover.bg_color=Color('#6a5320');play.add_theme_stylebox_override('hover',play_hover);play.add_theme_stylebox_override('pressed',play_hover)
@@ -111,7 +136,11 @@ func _ready():
  builder=ClassDB.instantiate('MapTerrainBuilder');root.hide();set_process(false)
 
 func show_browser():
- catalog=shell.lobby_map_catalog()
+ _load_favorites()
+ loaded_catalog=shell.lobby_map_catalog();catalog=loaded_catalog
+ source_tabs.set_tab_disabled(1,fs.is_bfme1())
+ source_tabs.set_current_tab(0)
+ _discover_library()
  _prepare_definitions()
  previous_input=shell.is_processing_input();shell.set_process_input(false)
  previous_shell_processing=shell.is_processing();previous_shell_visible=shell.visible
@@ -124,14 +153,15 @@ func show_browser():
  if slot.item_count==0:slot.add_item('Player 1',0)
  players_filter.clear();players_filter.add_item('Any players',0)
  var counts={}
- for entry in catalog:counts[int(entry.players)]=true
+ for entry in catalog:
+  if int(entry.players)>0:counts[int(entry.players)]=true
  var sorted_counts=counts.keys();sorted_counts.sort()
  for n in sorted_counts:players_filter.add_item('%d players'%n,n)
  search.text='';open=true;root.show();set_process(true);_filter()
  for i in filtered.size():
   if filtered[i].key==state.get('map',''):maps.select(i);_select(i);return
  if not filtered.is_empty():maps.select(0);_select(0)
- else:message.text='No skirmish maps available.'
+ else:_empty_selection('No skirmish maps available.')
 
 func close_browser():
  revision+=1;open=false;root.hide();set_process(false);viewport.render_target_update_mode=SubViewport.UPDATE_DISABLED
@@ -148,14 +178,16 @@ func prepare():
   if entry.key==key:_build_scene(entry);return
 
 func _filter():
- maps.clear();filtered=[]
+ var previous=filtered.duplicate();filtered=[]
  var query=search.text.strip_edges().to_lower()
  var players=players_filter.get_selected_id() if players_filter.selected>=0 else 0
  for entry in catalog:
+  if favorites_filter.button_pressed and not favorites.has(_favorite_id(entry)):continue
   if not query.is_empty() and query not in (str(entry.name)+' '+str(entry.players)).to_lower():continue
   if players>0 and int(entry.players)!=players:continue
   if type_filter.selected==1 and not entry.official or type_filter.selected==2 and entry.official:continue
   var definition:Dictionary=entry.get('definition',{})
+  if snow_filter.button_pressed and not entry.get('snowy',definition.get('snowy',false)):continue
   if feature_filter.selected>0:
    if not definition.get('ok',false):continue
    if feature_filter.selected==1 and not definition.is_fortress:continue
@@ -164,7 +196,17 @@ func _filter():
    if categories.has(feature_filter.selected) and int(definition.counts.get(categories[feature_filter.selected],0))==0:continue
   filtered.append(entry)
  filtered.sort_custom(_sort_order)
- for entry in filtered:maps.add_item('%s (%d)%s'%[entry.name,entry.players,' · Fortress' if entry.get('definition',{}).get('is_fortress',false) else ''])
+ var same_order=previous.size()==filtered.size() and maps.item_count==filtered.size()
+ if same_order:
+  for i in filtered.size():
+   if previous[i].key!=filtered[i].key:same_order=false;break
+ if not same_order:maps.clear()
+ for i in filtered.size():
+  var label=_map_label(filtered[i])
+  if same_order:
+   if maps.get_item_text(i)!=label:maps.set_item_text(i,label)
+  else:maps.add_item(label)
+  maps.set_item_tooltip(i,str(filtered[i].get('path',filtered[i].key)))
  for i in filtered.size():
   if filtered[i].key==selected.get('key',''):maps.select(i);maps.ensure_current_is_visible();break
 
@@ -179,11 +221,20 @@ func _sort_order(a: Dictionary, b: Dictionary) -> bool:
 
 # Retail marks some names with a leading '*' (the besiege maps); sorting ignores it.
 func _plain_name(entry: Dictionary) -> String:
- return str(entry.name).lstrip('* ')
+ return _display_name(entry).lstrip('* ')
 
 func _select(index: int):
  var same=selected.get('key','')==filtered[index].key
  selected=filtered[index];revision+=1
+ if selected.get('library',false):
+  var inspected:Dictionary=fs.inspect_library_map(selected.path,true)
+  if not inspected.get('ok',false):
+   _empty_selection('Library map could not be loaded: '+str(inspected.get('error','')));return
+  selected.merge(inspected,true)
+  var cache_error=metadata.save(inspected)
+  if not cache_error.is_empty():push_warning(cache_error)
+  selected.definition=definitions.cached(selected)
+ _update_actions()
  for i in definition_queue.size():
   if definition_queue[i].key==selected.key:
    var priority=definition_queue.pop_at(i);definition_queue.push_front(priority);break
@@ -191,7 +242,7 @@ func _select(index: int):
  if assignments.is_empty() and selected.key==draft.get('map',''):
   for i in draft.slots.size():assignments[i]=int(draft.slots[i].start)
  _setup_players()
- description.text=str(selected.description);title.text=str(selected.name)
+ description.text=str(selected.description);title.text=_display_name(selected)
  stats.text='%d players\n%s'%[selected.players,'Official map' if selected.official else 'Custom map']
  _update_definition_stats()
  _clear_markers()
@@ -224,6 +275,8 @@ func _load_preview(token: int):
  _build_scene(selected)
  if token!=revision or not open:return
  _show_scene()
+ if selected.get('library',false) and selected.get('definition',{}).is_empty():
+  selected.definition=definitions.generate(selected,objects_builder);_update_definition_stats()
  _full_scan(token)
 
 ## A map whose own map.ini defines the objects it places is scanned once it is selected and its preview is up (the background pass skips it:
@@ -234,13 +287,14 @@ func _full_scan(token: int):
  await get_tree().process_frame
  if token!=revision or not open:return
  selected.definition=definitions.generate(selected);_update_definition_stats()
- if feature_filter.selected>0:_filter()
+ if feature_filter.selected>0 or snow_filter.button_pressed:_filter()
  message.text='Drag to orbit · wheel to zoom · set each fortress owner on its card'
 
 ## Builds terrain, objects and fortresses of one catalog entry into the preview scene (no UI).
 func _build_scene(entry: Dictionary):
+ print('MAP PREVIEW ',entry.get('path',entry.key))
  _clear_scene()
- var key=str(entry.key).replace('\\','/').get_file().get_basename()
+ var key=str(entry.get('preview_name',str(entry.key).replace('\\','/').get_file().get_basename()))
  var probes:=PackedVector2Array()
  for start in entry.starts:probes.append(Vector2(start.x,start.y))
  terrain=builder.build_map(fs,key,{'markers':false,'fog':false,'height_probes':probes})
@@ -326,6 +380,8 @@ func _preview_input(event: InputEvent):
 
 func _process(_delta):
  # One map scan (about 20 ms) every other frame while the browser is open; the selected map is queued first.
+ if not library_queue.is_empty() and source_tabs.current_tab==1:
+  _scan_library()
  if definition_scan_running:
   definition_frame+=1
   if definition_frame%2==0:_scan_definitions()
@@ -357,6 +413,8 @@ func _play():
 ## Writes the browser's map, slots and rules into the lobby; false (with the errors shown) when the lobby refuses them.
 func _commit() -> bool:
  if selected.is_empty():return false
+ if selected.get('library',false):
+  message.text='Install/add this map to the main list, then select it under Loaded maps to play.';return false
  var slots=[]
  for i in mini(int(selected.players),draft.slots.size()):
   var entry=draft.slots[i]
@@ -519,6 +577,10 @@ func _prepare_definitions():
   definitions=preload('res://scripts/skirmish_map_definitions.gd').new();definitions.setup(fs)
  definition_queue=[]
  for entry in catalog:
+  if entry.get('library',false):
+   var cached=definitions.cached(entry) if entry.has('preview_name') else {}
+   if not cached.is_empty():entry.definition=cached
+   continue
   var definition=definitions.cached(entry)
   if definition.is_empty():definition_queue.append(entry)
   else:entry.definition=definition
@@ -535,11 +597,11 @@ func _scan_definitions():
  if selected.get('key','')==entry.key:
   selected.definition=entry.definition;_update_definition_stats()
   if loaded_key==entry.key:_full_scan(revision)
- if feature_filter.selected>0:_filter()
+ if feature_filter.selected>0 or snow_filter.button_pressed:_filter()
  else:
   for row in filtered.size():
    if filtered[row].key==entry.key:
-    maps.set_item_text(row,'%s (%d)%s'%[entry.name,entry.players,' · Fortress' if entry.definition.get('is_fortress',false) else '']);break
+    maps.set_item_text(row,_map_label(entry));break
  feature_filter.tooltip_text='Map definitions: %d pending'%definition_queue.size() if not definition_queue.is_empty() else 'Filter by scanned map features'
  definition_scan_running=not definition_queue.is_empty()
 
@@ -556,3 +618,112 @@ func _update_definition_stats():
  var counts:Dictionary=definition.counts
  stats.text+='\n\nFeatures: %s\n%d outposts · %d inns\n%d signal fires · %d other capturables'%['Fortress map' if definition.is_fortress else 'Standard map',int(counts.get('outpost',0)),int(counts.get('inn',0)),int(counts.get('signal_fire',0)),int(counts.get('other',0))]
  if definition.has('cache_error'):stats.text+='\n'+str(definition.cache_error)
+
+func _update_actions():
+ var blocked=selected.is_empty() or selected.get('library',false)
+ use_button.disabled=blocked;play_button.disabled=blocked
+ install_button.visible=selected.get('library',false)
+ install_button.disabled=selected.is_empty() or not selected.has('content_id') or selected.get('installed',false) or int(selected.get('players',0))<2
+ install_button.text='Installed' if selected.get('installed',false) else 'Install map'
+ favorite_button.disabled=selected.is_empty()
+ favorite_button.text='★ Favorited' if favorites.has(_favorite_id(selected)) else '☆ Favorite'
+ use_button.tooltip_text='Install/add library maps to the main list first.' if blocked else 'Use this map and setup'
+ play_button.tooltip_text=use_button.tooltip_text if blocked else 'Use this map and setup, then start the game'
+
+func _empty_selection(reason: String):
+ selected={};revision+=1;_clear_scene();description.text='';stats.text='';message.text=reason
+ title.text='MAP LIBRARY' if source_tabs.current_tab==1 else 'SKIRMISH · MAP EXPLORER'
+ viewport.render_target_update_mode=SubViewport.UPDATE_ONCE
+ _update_actions()
+
+func _discover_library():
+ library_catalog=[];library_queue=[];library_error=''
+ if metadata==null:
+  metadata=preload('res://scripts/skirmish_map_metadata.gd').new();metadata.setup(fs,metadata_cache_root)
+ if fs.is_bfme1():return
+ _discover_library_folder(library_path)
+
+func _discover_library_folder(path: String):
+ var directory=DirAccess.open(path)
+ if directory==null:
+  library_error='Cannot read Map Library: '+path+' ('+error_string(DirAccess.get_open_error())+')';return
+ for filename in directory.get_files():
+  if filename.get_extension().to_lower()!='map':continue
+  var disk=path.path_join(filename)
+  var entry={'key':disk,'path':disk,'name':'','description':'','players':0,'official':false,'library':true,'starts':[]}
+  var cached:Dictionary=metadata.cached(disk)
+  if not cached.is_empty():entry.merge(cached,true)
+  else:library_queue.append(entry)
+  library_catalog.append(entry)
+ for folder in directory.get_directories():
+  if not folder.begins_with('.') and not directory.is_link(folder):_discover_library_folder(path.path_join(folder))
+
+func _change_source(index: int):
+ catalog=loaded_catalog if index==0 else library_catalog
+ _empty_selection('Select a map to preview.' if index==0 else 'Browse library maps here. Install/add a map to the main list before playing.')
+ players_filter.clear();players_filter.add_item('Any players',0)
+ for count in range(1,9):players_filter.add_item('%d players'%count,count)
+ _prepare_definitions();_filter()
+ if not filtered.is_empty():maps.select(0);_select(0)
+ elif index==1:message.text=library_error if not library_error.is_empty() else 'No maps in Map Library: '+library_path
+
+func _scan_library():
+ var entry:Dictionary=library_queue.pop_front()
+ var inspected:Dictionary=fs.inspect_library_map(entry.path,true)
+ if inspected.get('ok',false):
+  entry.merge(inspected,true)
+  var cache_error=metadata.save(inspected)
+  if not cache_error.is_empty():push_warning(cache_error)
+  var definition:Dictionary=definitions.cached(entry)
+  if not definition.is_empty():entry.definition=definition
+ else:entry['scan_error']=inspected.get('error','Map parse failed')
+ _filter()
+ source_tabs.set_tab_tooltip(1,'Scanning %d library maps…'%library_queue.size() if not library_queue.is_empty() else library_path)
+
+func _map_label(entry: Dictionary) -> String:
+ var count=str(entry.players) if int(entry.players)>0 else '?'
+ return ('★ ' if favorites.has(_favorite_id(entry)) else '')+'%s (%s)%s'%[_display_name(entry),count,' · Unavailable' if entry.has('scan_error') else (' · Fortress' if entry.get('definition',{}).get('is_fortress',false) else '')]
+
+func _display_name(entry: Dictionary) -> String:
+ var name=str(entry.get('name','')).strip_edges()
+ if not name.is_empty():return name
+ if entry.has('scan_error'):return 'Map metadata unavailable'
+ return 'Untitled map' if entry.has('content_id') else 'Reading map metadata…'
+
+func _favorite_id(entry: Dictionary) -> String:
+ return str(entry.get('content_id',entry.get('key','')))
+
+func _load_favorites():
+ var config=ConfigFile.new()
+ var status=config.load(favorites_path)
+ if status==OK:
+  var saved=config.get_value('maps','favorites',{})
+  if saved is Dictionary:favorites=saved
+  else:message.text='Cannot read map favorites: invalid favorites data.'
+ elif status!=ERR_FILE_NOT_FOUND:message.text='Cannot read map favorites: '+error_string(status)
+
+func _toggle_favorite():
+ if selected.is_empty():return
+ var key=_favorite_id(selected)
+ var previous=favorites.duplicate()
+ if favorites.has(key):favorites.erase(key)
+ else:favorites[key]=true
+ var config=ConfigFile.new();config.set_value('maps','favorites',favorites)
+ var status=config.save(favorites_path)
+ if status!=OK:
+  favorites=previous;message.text='Cannot save map favorites: '+error_string(status)
+ _update_actions();_filter()
+
+func _install_selected():
+ if selected.is_empty() or not selected.get('library',false):return
+ install_button.disabled=true;message.text='Installing map…'
+ var result:Dictionary=fs.install_library_map(selected.path,install_root)
+ if not result.get('ok',false):
+  message.text='Install failed: '+str(result.get('error',''));_update_actions();return
+ selected.installed=true
+ loaded_catalog=shell.lobby_map_catalog()
+ search.text='';players_filter.select(0);type_filter.select(0);feature_filter.select(0);favorites_filter.button_pressed=false;snow_filter.button_pressed=false
+ source_tabs.current_tab=0
+ for i in filtered.size():
+  if filtered[i].key==result.key:maps.select(i);_select(i);break
+ message.text='Map installed. Select Use map or Play to continue.'

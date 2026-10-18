@@ -239,3 +239,10 @@ std::vector<ClientEvent> ClientEventRecorder::take(bool endOfFrame)
 	out.swap(m_events);
 	return out;
 }
+
+void ClientEventRecorder::upgradeTexture(Object &obj, const TextureSwap &swap, bool enabled)
+{
+	auto &event = push(ClientEvent::UPGRADE_TEXTURE, obj);
+	event.textureSwap = swap;
+	event.on = enabled;
+}

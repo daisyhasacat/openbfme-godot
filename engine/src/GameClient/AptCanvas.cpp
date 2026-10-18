@@ -132,13 +132,26 @@ const AptTextureStore::Entry &AptTextureStore::getFile(const std::string &path)
 	return m_entries.emplace(key, std::move(entry)).first->second;
 }
 
+// the mount is BFME1's (Common/BfmeGame.h isBfme1Data, asked through the file source)
+bool AptTextureStore::isBfme1()
+{
+	if (m_bfme1 < 0)
+	{
+		m_bfme1 = m_source.fileExists("Data\\INI\\Default\\SubsystemLegend.ini") && !m_source.fileExists("Data\\INI\\Default\\SubsystemLegendExpansion1.ini") ? 1 : 0;
+	}
+	return m_bfme1 == 1;
+}
+
 void AptTextureStore::decodeEntry(const std::string &path, const std::vector<std::uint8_t> &bytes, Entry &entry)
 {
 	std::string error;
 	{
 		TGAImage image;
-		// the atlases are up to 1024 wide and 2048 high in the corpus; 4096 is far above any of them
-		if (!TGAFile::decode(bytes.data(), bytes.size(), image, &error, 4096))
+		// the atlases are up to 1024 wide and 2048 high in the corpus; 4096 is far above any of them. BFME1's patch 2.22 button art
+		// (uiGondorSoldier.tga, ...) is RLE (type 10), which BFME1's D3DX texture loader reads: decoded there as the radar art is
+		const bool decoded = isBfme1() ? TGAFile::decodeRadar(bytes.data(), bytes.size(), image, &error)
+		                               : TGAFile::decode(bytes.data(), bytes.size(), image, &error, 4096);
+		if (!decoded)
 		{
 			entry.error = path + ": " + error;
 		}

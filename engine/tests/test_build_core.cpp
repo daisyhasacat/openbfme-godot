@@ -654,10 +654,15 @@ std::string wallObjects(const char *stagger)
 
 struct WallFx : BuildFx
 {
+ pathtest::SyntheticTerrain terrain{256,256};
+ INIMacroTable macros;
+ std::unique_ptr<AIWorld> ai;
 	explicit WallFx(const char *stagger = "20")
 	{
 		load(wallObjects(stagger));
 		logic->settings().maxLineBuildObjects = 50;
+  AIWorldConfig config;config.pathfind=pathtest::testConfig();
+  ai=std::make_unique<AIWorld>(*logic,config,macros);ai->attach();ai->newMap(terrain);
 	}
 	Object *hubAt(float x, float y)
 	{
@@ -1033,4 +1038,73 @@ TEST_CASE("construction events: accepted placements notify once and previews or 
 	CHECK(placed.back() == scripted->getID());
 	f.frames(1);
 	CHECK(placed.size() == 2);
+}
+
+TEST_CASE("walls: reconnecting linked hubs restores gaps in either direction and clears rubble")
+{
+ for (bool reverse : {false,true})
+ {
+  WallFx f;
+  auto *a=f.hubAt(1000,1000);auto *b=f.hubAt(1400,1000);
+  std::vector<ObjectID> original;
+  REQUIRE(WallSpan::build(*f.logic,*a,*a->getPosition(),*b->getPosition(),*f.alice(),0,&original,true));
+  // tolerance: The fixture needs interior segments between its endpoints to remove a middle piece.
+  REQUIRE(original.size()>3);
+  auto *missing=f.logic->findObjectByID(original[original.size()/2]);
+  auto position=*missing->getPosition();auto angle=missing->getOrientation();
+  f.logic->destroyObject(missing);f.logic->runLogicFrame();
+  auto *rubble=f.make("WallSeg",f.teamOf("Alice"));rubble->setPosition(&position);rubble->setOrientation(angle);
+  rubble->setModelConditionState(Construction::modelConditionIndex("RUBBLE"),true);
+  auto *source=reverse?b:a;auto *end=reverse?a:b;
+  WallSpan::Plan plan;
+  REQUIRE(WallSpan::plan(*f.logic,*source,*source->getPosition(),*end->getPosition(),0,plan));
+  CHECK(plan.worstCode==0);CHECK(plan.cost==10);CHECK(plan.rubble.size()==1);
+  auto money=f.alice()->getMoney()->countMoney();
+  std::vector<ObjectID> made;
+  REQUIRE(WallSpan::build(*f.logic,*source,*source->getPosition(),*end->getPosition(),*f.alice(),0,&made));
+  REQUIRE(made.size()==1);
+  auto *replacement=f.logic->findObjectByID(made.front());
+  CHECK(replacement->getPosition()->x==position.x);CHECK(replacement->getPosition()->y==position.y);
+  CHECK(f.alice()->getMoney()->countMoney()==money-10);
+  CHECK(rubble->isDestroyed());
+  for (auto id:original) if(id!=original[original.size()/2]) CHECK(f.logic->findObjectByID(id)!=nullptr);
+  WallSpan::Plan again;
+  REQUIRE(WallSpan::plan(*f.logic,*source,*source->getPosition(),*end->getPosition(),0,again));
+  CHECK(again.cost==0);
+ }
+}
+
+TEST_CASE("walls: reconnect refuses unrelated buildings and cannot clear rubble without payment")
+{
+ WallFx f;auto *a=f.hubAt(1000,1000);auto *b=f.hubAt(1400,1000);
+ std::vector<ObjectID> original;
+ REQUIRE(WallSpan::build(*f.logic,*a,*a->getPosition(),*b->getPosition(),*f.alice(),0,&original,true));
+ auto *gap=f.logic->findObjectByID(original[original.size()/2]);auto p=*gap->getPosition();
+ f.logic->destroyObject(gap);f.logic->runLogicFrame();
+ auto *blocker=f.make("WallHubT",f.teamOf("Bob"));blocker->setPosition(&p);
+ CHECK_FALSE(WallSpan::build(*f.logic,*a,*a->getPosition(),*b->getPosition(),*f.alice(),0,nullptr));
+ blocker->setModelConditionState(Construction::modelConditionIndex("RUBBLE"),true);
+ f.alice()->getMoney()->withdraw(f.alice()->getMoney()->countMoney(),nullptr,false);
+ CHECK_FALSE(WallSpan::build(*f.logic,*a,*a->getPosition(),*b->getPosition(),*f.alice(),0,nullptr));
+ CHECK_FALSE(blocker->isDestroyed());
+}
+
+TEST_CASE("walls: wall command can pay for a gap even when a whole hub is unaffordable")
+{
+ WallFx f;auto *a=f.hubAt(1000,1000);auto *b=f.hubAt(1400,1000);
+ std::vector<ObjectID> original;
+ REQUIRE(WallSpan::build(*f.logic,*a,*a->getPosition(),*b->getPosition(),*f.alice(),0,&original,true));
+ auto *gap=f.logic->findObjectByID(original[original.size()/2]);auto p=*gap->getPosition();
+ f.logic->destroyObject(gap);f.logic->runLogicFrame();
+ f.alice()->getMoney()->withdraw(f.alice()->getMoney()->countMoney()-15,nullptr,false);
+ GameMessage order(MSG_WALL_HUB_CONSTRUCT_SPAN,f.alice()->getPlayerIndex());
+ order.appendIntegerArgument(a->getTemplate()->getTemplateID());
+ order.appendLocationArgument(*a->getPosition());order.appendLocationArgument(*b->getPosition());
+ order.appendIntegerArgument(0);order.appendObjectIDArgument(a->getID());
+ f.dispatch.dispatch(order);
+ CHECK(f.alice()->getMoney()->countMoney()==5);
+ bool found=false;
+ for(auto *o=f.logic->getFirstObject();o;o=o->getNextObject())
+  if(o->getTemplate()->getName()=="WallSeg" && o->getPosition()->x==p.x && o->getPosition()->y==p.y)found=true;
+ CHECK(found);
 }

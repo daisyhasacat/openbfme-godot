@@ -1,3 +1,4 @@
+#include "GameLogic/SkirmishAI/AIFortification.h"
 // OpenBFME. GPL-3.0.
 // See GameLogic/Combat/TargetFinder.h.
 
@@ -143,7 +144,7 @@ Object *TargetFinder::findClosestEnemyNear(const Object &seeker, const Coord3D &
 		{
 			continue;
 		}
-		if (!weapons->canAttackObject(*o, source, false))
+		if (!AIFortification::allowAutoTarget(seeker,*o) || !weapons->canAttackObject(*o, source, false))
 		{
 			continue;
 		}

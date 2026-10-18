@@ -47,6 +47,7 @@
 //   S-098  how hidden sub objects carry over when the render object is recreated (RetainSubObjects), and the sub object name match.
 
 #pragma once
+#include "Common/TextureSwap.h"
 
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DDrawServices.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.h"
@@ -116,7 +117,7 @@ struct W3DDrawPoseView
 	float blendPercentage = 0.0f;
 	const std::set<int> *hiddenSubObjects = nullptr; ///< indices into model->SubObjects (frame() names them; empty without a model)
 	std::uint32_t hiddenGeneration = 0;             ///< changes whenever the module's hidden set may have changed (with the same model: the same set)
-	const std::vector<std::pair<std::string, std::string>> *textureSwaps = nullptr; ///< the state's `Texture = A B` pairs (stop S-4832); never null after poseView
+	const std::vector<TextureSwap> *textureSwaps = nullptr; ///< the state's `Texture = A B` pairs (stop S-4832); never null after poseView
 };
 
 struct W3DScriptedModelDrawOptions
@@ -176,6 +177,7 @@ public:
 	// in every render frame)
 	void frame(W3DDrawFrame &f) const;
 	// lane PERF-3: the pose request and model of frame(), without copies (W3DDrawPoseView)
+	void upgradeTexture(const TextureSwap &swap, bool enabled);
 	void poseView(W3DDrawPoseView &v) const;
 
 	// The construction look (lane RENDER-2). The caller passes the object's construction percent (Object + 0x288, 0..100), whether the client is on
@@ -327,6 +329,8 @@ private:
 	bool m_inScript = false;
 	// lane RENDER-3: RW 0x4C3B25's permanent list (draw + 0x68): one record per name (_strcmpi), kept whether or not the current render object has the
 	// sub object, applied by name to every new render object (a model without it is skipped silently)
+	std::vector<TextureSwap> m_upgradeTextures;
+	mutable std::vector<TextureSwap> m_effectiveTextures;
 	std::vector<std::pair<std::string, bool>> m_permanentSubObjectOps;
 	std::vector<std::pair<std::string, bool>> m_subObjectOps; ///< lane PROJ-2: the non-permanent records (RW draw +0x5C), name -> hide, list order
 	std::set<std::string> m_hiddenModules;

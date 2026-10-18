@@ -1232,6 +1232,7 @@ void InGameHudNode::_bind_methods()
 	ClassDB::bind_method(D_METHOD("take_misc_sounds"), &InGameHudNode::take_misc_sounds);
 	ClassDB::bind_method(D_METHOD("get_cursor_image"), &InGameHudNode::get_cursor_image);
 	ClassDB::bind_method(D_METHOD("set_placement_snap", "active", "spacing"), &InGameHudNode::set_placement_snap);
+	ClassDB::bind_method(D_METHOD("rotate_placement_grid"), &InGameHudNode::rotate_placement_grid);
 	ClassDB::bind_method(D_METHOD("controller_formation", "action", "direction"), &InGameHudNode::controller_formation);
 	ClassDB::bind_method(D_METHOD("controller_select_area", "radius", "commit"), &InGameHudNode::controller_select_area);
 	ClassDB::bind_method(D_METHOD("controller_attack_move"), &InGameHudNode::controller_attack_move);
@@ -2760,15 +2761,6 @@ void InGameHudNode::_process(double delta)
 	if (d->hud6 && d->nativeHudVisible)
 	{
 		d->hud6->drawRadial(get_canvas_item()); // lane HUD-6
-		if (d->fs.is_valid() && d->fs->is_bfme1())
-		{
-			const Vector2 size = get_viewport_rect().size;
-			const float width = std::min(420.0f, (float)size.x * 0.4f);
-			const Rect2 rect(size.x - width - 24.0f, std::max(24.0f, (float)size.y - 370.0f), width, 300.0f);
-			if (d->hud->helpBox().isShown())
-				RenderingServer::get_singleton()->canvas_item_add_rect(get_canvas_item(), rect.grow(10), Color(0.06f, 0.05f, 0.03f, 0.95f));
-			d->hud6->drawHelp(rect, get_canvas_item());
-		}
 
 	}
 	const uint64_t t1 = Time::get_singleton()->get_ticks_usec();
@@ -3178,6 +3170,15 @@ void InGameHudNode::set_placement_snap(bool active, float spacing)
 	auto &ui = d->hud->input().ui();
 	ui.placementSnap = active;
 	ui.placementGrid = std::isfinite(spacing) ? std::clamp(spacing, 10.0f, 200.0f) : 50.0f;
+}
+
+// OpenBFME build grid: G while a building is placed turns the snap grid between the map's axes and 45 degrees; answers the new angle in degrees
+float InGameHudNode::rotate_placement_grid()
+{
+	if (!d->hud) return 0.0f;
+	auto &ui = d->hud->input().ui();
+	ui.placementGridAngle = ui.placementGridAngle == 0.0f ? 0.7853981633974483f : 0.0f;
+	return ui.placementGridAngle == 0.0f ? 0.0f : 45.0f;
 }
 
 bool InGameHudNode::controller_select_area(float radius, bool commit)
@@ -3668,6 +3669,17 @@ void InGameHudNode::_input(const Ref<InputEvent> &event)
 	if (!d->ready || event.is_null())
 	{
 		return;
+	}
+	// OpenBFME build grid: G turns the snap grid by 45 degrees while a building is placed (consumed only then, so G hotkeys keep working otherwise)
+	if (const auto *key = Object::cast_to<InputEventKey>(event.ptr()))
+	{
+		if (key->get_keycode() == Key::KEY_G && !key->is_ctrl_pressed() && !key->is_alt_pressed() && !key->is_meta_pressed() && d->hud &&
+			d->hud->input().ui().isPlacing() && d->hud->input().ui().placeHasGhost())
+		{
+			if (key->is_pressed() && !key->is_echo()) rotate_placement_grid();
+			if (Viewport *vp = get_viewport()) vp->set_input_as_handled();
+			return;
+		}
 	}
 	// SMOOTH-1 (S-810): the HUD's input reads the live game (picking, selection, the control bar). While the logic worker runs a frame the event waits,
 	// in order, for the next render frame the worker is idle in (InGameHudNode::_process replays it), instead of blocking the render on the frame

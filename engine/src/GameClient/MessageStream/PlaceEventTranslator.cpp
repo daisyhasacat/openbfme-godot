@@ -162,9 +162,13 @@ void PlaceEventTranslator::handleBuildPlacements(bool judge)
 	// Optional user placement aid, aligned to world/map axes.
 	if (m_ctx.ui.placementSnap)
 	{
+		// the grid's own axes (rotated by placementGridAngle about the map origin)
 		const float grid = m_ctx.ui.placementGrid;
-		world.x = std::round(world.x / grid) * grid;
-		world.y = std::round(world.y / grid) * grid;
+		const float gc = std::cos(m_ctx.ui.placementGridAngle), gs = std::sin(m_ctx.ui.placementGridAngle);
+		const float u = std::round((world.x * gc + world.y * gs) / grid) * grid;
+		const float v = std::round((-world.x * gs + world.y * gc) / grid) * grid;
+		world.x = u * gc - v * gs;
+		world.y = u * gs + v * gc;
 		world.z = m_ctx.logic.getGroundHeight(world.x, world.y);
 		constexpr float step = 0.7853981633974483f;
 		angle = std::round(angle / step) * step;

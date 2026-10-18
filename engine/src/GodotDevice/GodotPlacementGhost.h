@@ -86,6 +86,7 @@ private:
 	void updateResources(const InGameUI &ui);
 	void updateGrid(LiveGame &game, const InGameUI &ui, bool idle);
 	void updateFootprints(LiveGame &game, const InGameUI &ui, bool idle);
+	void updateWallAlignment(LiveGame &game, const InGameUI &ui, bool idle);
 	void updateFormation(LiveGame &game, const InGameUI &ui, bool idle);
 	void updateSelectionCircle(LiveGame &game, const InGameUI &ui, bool idle);
 	Ref<Texture2D> texture(const std::string &name);
@@ -97,11 +98,21 @@ private:
 	uint64_t m_selectionCircleId = 0;
 	MeshInstance3D *m_footprint = nullptr;
 	uint64_t m_footprintId = 0;
-	int m_footprintCount = 0;
+	unsigned m_footprintCount = 0;
+	unsigned m_structureFootprintCount = 0; ///< the built structures near the cursor given the snap square too
+	MeshInstance3D *m_wallAlign = nullptr;   ///< the outlines of the hub's spans square to (or opposite) the dragged span
+	uint64_t m_wallAlignId = 0;
+	unsigned m_wallAlignSpans = 0, m_wallAlignSegments = 0;
+ struct AlignedWallSpan { float angle = 0; unsigned segments = 0; std::vector<Vector3> vertices; };
+ std::vector<AlignedWallSpan> m_alignmentCache;
+ ::ObjectID m_alignmentHub = INVALID_ID;
+ unsigned m_alignmentFrame = ~0u;
+ Coord3D m_alignmentOrigin{};
 	MeshInstance3D *m_grid = nullptr;
 	uint64_t m_gridId = 0;
 	int m_gridX = 0, m_gridY = 0;
 	float m_gridSpacing = 0;
+	float m_gridAngle = 0;
 	Decal *m_resourceDecal = nullptr;
 	Label *m_resourceLabel = nullptr;
 	uint64_t m_resourceDecalId = 0, m_resourceLabelId = 0;

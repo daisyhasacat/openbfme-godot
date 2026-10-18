@@ -1158,8 +1158,12 @@ void W3DScriptedModelDraw::poseView(W3DDrawPoseView &v) const
 	v.blendPercentage = blending ? 1.0f - m_blendCountdown / m_blendInitial : 0.0f;
 	v.hiddenSubObjects = m_model ? &m_hiddenSubObjects : &noHidden;
 	v.hiddenGeneration = m_hiddenGeneration;
-	static const std::vector<std::pair<std::string, std::string>> noSwaps;
-	v.textureSwaps = m_curModelInfo ? &m_curModelInfo->textures : &noSwaps; // stop S-4832: a SNOW state's look is often its texture swap alone
+	m_effectiveTextures = m_upgradeTextures;
+	if (m_curModelInfo)
+	{
+		m_effectiveTextures.insert(m_effectiveTextures.end(), m_curModelInfo->textures.begin(), m_curModelInfo->textures.end());
+	}
+	v.textureSwaps = &m_effectiveTextures; // stop S-4832: a SNOW state's look is often its texture swap alone
 }
 
 bool W3DScriptedModelDraw::modelCondition(const std::string &name)
@@ -1364,4 +1368,16 @@ int W3DHordeModelDraw::randomStartFrame(int frames)
 {
 	const int v = W3DScriptedModelDraw::randomStartFrame(frames);
 	return (v * m_lod.randomStartFramePercent) / 100;
+}
+
+void W3DScriptedModelDraw::upgradeTexture(const TextureSwap &swap, bool enabled)
+{
+	for (auto it = m_upgradeTextures.begin(); it != m_upgradeTextures.end(); ++it)
+	{
+		if (AsciiStringUtil::compareNoCase(it->first, swap.first) != 0) continue;
+		if (enabled) *it = swap;
+		else if (AsciiStringUtil::compareNoCase(it->second, swap.second) == 0) m_upgradeTextures.erase(it);
+		return;
+	}
+	if (enabled) m_upgradeTextures.push_back(swap);
 }

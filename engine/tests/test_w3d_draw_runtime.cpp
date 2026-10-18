@@ -1208,3 +1208,22 @@ TEST_CASE("draw bones: the drawable scale is applied at the root, and a missing 
 	CHECK(idx == 2); // the SWORD mesh hangs on HAND (bone 2)
 	REQUIRE(b2.barrels[0].size() == 1);
 }
+
+TEST_CASE("draw runtime: heavy armor texture variants persist across poses and can be removed")
+{
+ Rig r({}, std::string(kDefaultState) + "End\n");
+ r.start();
+ TextureSwap armor{"EUlorienwarrior.tga", "EULorWarHA.tga", {"Forged_Blade"}};
+ r.draw->upgradeTexture(armor, true);
+ W3DDrawPoseView pose;
+ r.draw->poseView(pose);
+ REQUIRE(pose.textureSwaps->size() == 1);
+ CHECK(pose.textureSwaps->front().second == "EULorWarHA.tga");
+ CHECK(pose.textureSwaps->front().excludes("Unit.Forged_Blade"));
+ r.draw->upgradeTexture(armor, true);
+ r.draw->poseView(pose);
+ CHECK(pose.textureSwaps->size() == 1);
+ r.draw->upgradeTexture(armor, false);
+ r.draw->poseView(pose);
+ CHECK(pose.textureSwaps->empty());
+}

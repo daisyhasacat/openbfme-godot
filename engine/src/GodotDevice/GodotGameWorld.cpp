@@ -762,9 +762,9 @@ void GameWorld::clear_scene()
 // stops S-115 / S-4832: a W3DFloorDraw's WeatherTexture of the map's weather (the first entry, as RW 0x4CFA9A picks a streak's) replaces the floor model's
 // texture: every texture of the model ("*"; 92 of the 96 retail floor models that set one have a single texture, the other four none or one name the
 // extractor split). INFERENCE: the floor draw's own routine was not read. Empty for any other draw module or when no entry has the weather.
-static std::vector<std::pair<std::string, std::string>> floorWeatherSwaps(const ModuleData *data, int weather)
+static std::vector<TextureSwap> floorWeatherSwaps(const ModuleData *data, int weather)
 {
-	std::vector<std::pair<std::string, std::string>> swaps;
+	std::vector<TextureSwap> swaps;
 	if (const W3DFloorDrawModuleData *fd = dynamic_cast<const W3DFloorDrawModuleData *>(data))
 	{
 		for (const std::pair<int, std::string> &w : fd->m_weatherTextures)
@@ -812,7 +812,7 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 		const MapObjectDrawable &d = m_game->clientOnly().drawables[p.drawable];
 		const Transform3D xf = toTransform(d.basis, d.position, d.scale);
 		// stop S-4832: a model draw's state swaps textures (a rock's or a civilian building's SNOW state on a snowy map): its own model variant
-		std::vector<std::pair<std::string, std::string>> swaps;
+		std::vector<TextureSwap> swaps;
 		if (p.draw)
 		{
 			W3DDrawPoseView view;
@@ -966,6 +966,9 @@ Dictionary GameWorld::prepare_new_game(const Dictionary &message)
 		return result;
 	}
 	auto start = std::make_unique<NewGameStart>(RandomAlgorithm::ZH_CarryChain);
+	// A map may have been installed after this world was set up. Only explicit
+	// installs join the simulation cache; preview aliases remain unplayable.
+	m_fs->append_installed_maps(m_mapCache);
 	if (!NewGame::prepareNewGame(in, m_world->setupPlayerTemplates(), *m_settings, m_mapCache, RandomAlgorithm::ZH_CarryChain, *start, &error))
 	{
 		errors.push_back(toGodot(error));
@@ -1963,8 +1966,8 @@ void GameWorld::refresh_views(double deltaMs)
 				{
 					ev.posed = true;
 					// a player's building's floor (bib) takes its WeatherTexture on a snowy map (stop S-4832)
-					const std::vector<std::pair<std::string, std::string>> swaps =
-						e.kind == W3D_DRAWKIND_FLOOR ? floorWeatherSwaps(e.data, m_streakWeather) : std::vector<std::pair<std::string, std::string>>();
+					const std::vector<TextureSwap> swaps =
+						e.kind == W3D_DRAWKIND_FLOOR ? floorWeatherSwaps(e.data, m_streakWeather) : std::vector<TextureSwap>();
 					const std::string model = AsciiStringUtil::lowered(e.staticModel) + W3DInstancer::Texture_Swap_Suffix(swaps);
 					auto it = m_dynamicModels.find(model);
 					int64_t mid;
@@ -3733,7 +3736,8 @@ bool GameWorld::build2_wall_span(int64_t hub, const String &cap_template, double
 	}
 	::GameMessage m(MSG_WALL_HUB_CONSTRUCT_SPAN, h->getControllingPlayer()->getPlayerIndex());
 	m.appendIntegerArgument((int)cap->getFinalOverride()->getTemplateID());
-	Coord3D a{ (float)x0, (float)y0, 0.0f }, b{ (float)x1, (float)y1, 0.0f };
+	Coord3D a{ (float)x0, (float)y0, m_game->logic().getGroundHeight((float)x0,(float)y0) },
+		b{ (float)x1, (float)y1, m_game->logic().getGroundHeight((float)x1,(float)y1) };
 	m.appendLocationArgument(a);
 	m.appendLocationArgument(b);
 	m.appendIntegerArgument((int)options);
@@ -6637,6 +6641,7 @@ Dictionary GameWorld::prepare_replay(const String &path)
 		return r;
 	}
 	auto start = std::make_unique<NewGameStart>(file->header.algorithm);
+	m_fs->append_installed_maps(m_mapCache);
 	if (!NewGame::prepareNewGame(file->header.game, m_world->setupPlayerTemplates(), *m_settings, m_mapCache, file->header.algorithm, *start, &error))
 	{
 		errors.push_back(toGodot(error));

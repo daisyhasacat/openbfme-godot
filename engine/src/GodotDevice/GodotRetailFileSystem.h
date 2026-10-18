@@ -7,6 +7,7 @@
 
 #include "Common/LooseFileScan.h"
 #include "Common/RetailArchivePolicy.h"
+#include "GameClient/MapCache.h"
 
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/variant/array.hpp>
@@ -21,6 +22,7 @@
 
 class Win32BIGFileSystem;
 class ArchiveFileSystem;
+class GameTextTable;
 
 namespace godot
 {
@@ -71,6 +73,12 @@ public:
 	const std::vector<MountedArchive> &mountedArchives() const { return m_mountedArchives; }
 	// GDScript view of the same list: [{install, path, size, line}].
 	Array get_loose_files() const;
+	// Presentation-only aliases; never inserted into the skirmish map catalog.
+	Dictionary inspect_library_map(const String &path, bool preview = false);
+	Dictionary install_library_map(const String &path, const String &root = "user://installed-maps");
+	Array installed_maps(const String &root = "user://installed-maps");
+	// Shared metadata for both lobby listing and actual game preparation.
+	void append_installed_maps(std::vector<MapCacheEntry> &maps);
 
 protected:
 	static void _bind_methods();
@@ -84,6 +92,9 @@ private:
 	bool m_bfme1 = false;
 	std::string m_bfme1Root;
 	String m_lastError;
+	Array m_installedMaps;
+	bool m_installedLoaded = false;
+	std::unique_ptr<GameTextTable> m_libraryText;
 	std::vector<LooseFileFinding> m_loose;
 	std::vector<MountedArchive> m_mountedArchives;
 };

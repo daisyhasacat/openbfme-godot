@@ -187,6 +187,9 @@ struct AIBrainState
 	AIThreatFinder::ThreatRecord idleArmy;        ///< lane AI-3: the player info record's army list + 0x10 (RW 0x99E63B): the army in the default team
 	std::set<ObjectID> dispatched;                ///< lane DECOMP-2: the team builder's + 0x18, the default-team units RW 0x9A3040 has sent (until they are gone)
 	ObjectID fortificationTarget = INVALID_ID;    ///< OpenBFME siege response; derived from live enemy fortifications
+	std::set<ObjectID> siegeEscorts;
+	std::uint32_t siegeGatherFrame = 0;
+	bool siegeLaunched = false;
 	std::set<ObjectID> siegeUnits;                ///< reserved from normal tactics while breaching
 	unsigned long long idleDispatches = 0;        ///< lane DECOMP-2: the units RW 0x9A3040 sent (report)
 	unsigned long long gateDraws = 0, gateRejects = 0; ///< lane AI-3: RW 0x90B2A0's draws (AITargetChooser.cpp 0xF7) and rejections

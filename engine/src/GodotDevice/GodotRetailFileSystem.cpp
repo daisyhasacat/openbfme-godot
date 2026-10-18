@@ -7,6 +7,8 @@
 #include "Common/RetailArchivePolicy.h"
 #include "Common/ArchiveFile.h"
 #include "Common/MD5.h"
+#include "GameClient/MapUtil.h"
+#include "GameClient/GameText.h"
 #include <algorithm>
 #include <filesystem>
 #include <chrono>
@@ -52,6 +54,9 @@ String RetailFileSystem::content_signature() const
 
 void RetailFileSystem::_bind_methods()
 {
+ ClassDB::bind_method(D_METHOD("install_library_map", "path", "root"), &RetailFileSystem::install_library_map, DEFVAL(String("user://installed-maps")));
+ ClassDB::bind_method(D_METHOD("installed_maps", "root"), &RetailFileSystem::installed_maps, DEFVAL(String("user://installed-maps")));
+ ClassDB::bind_method(D_METHOD("inspect_library_map", "path", "preview"), &RetailFileSystem::inspect_library_map, DEFVAL(false));
  ClassDB::bind_method(D_METHOD("content_signature"), &RetailFileSystem::content_signature);
 	ClassDB::bind_method(D_METHOD("mount_bfme1_path", "root"), &RetailFileSystem::mount_bfme1_path);
 	ClassDB::bind_method(D_METHOD("is_bfme1"), &RetailFileSystem::is_bfme1);
@@ -90,6 +95,7 @@ Dictionary RetailFileSystem::mount_retail_paths(const String &rotwk, const Strin
 
 Dictionary RetailFileSystem::mount_bfme1_path(const String &root)
 {
+ m_installedMaps.clear();m_installedLoaded=false;m_libraryText.reset();
 	m_fs.reset();
 	m_menuFs.reset();
 	m_mounted = false;
@@ -226,6 +232,7 @@ Dictionary RetailFileSystem::mount_bfme1_path(const String &root)
 
 Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::string &bfme2Root, PackedStringArray errors)
 {
+ m_installedMaps.clear();m_installedLoaded=false;m_libraryText.reset();
 	Dictionary result;
 	std::string error;
 	W3D_Set_Flat_Asset_Layout(false); // RotWK / BFME2 file models in two-letter folders
@@ -656,3 +663,173 @@ PackedByteArray RetailFileSystem::read_file(const String &path)
 }
 
 } // namespace godot
+
+// OpenBFME browser feature: an isolated virtual name prevents library files from
+// shadowing installed maps or entering the lobby's MapCache-based playable list.
+namespace {
+class LibraryPreviewArchive : public ArchiveFile {
+public:
+ FolderArchiveFile folder;
+ std::map<std::string, std::string> source;
+ std::string identity;
+ bool readFile(const std::string &path, std::vector<uint8_t> &out, std::string *error) override {
+  auto it=source.find(FolderArchiveFile::key(path));
+  if(it==source.end()) { if(error)*error="Library preview file is absent: "+path; return false; }
+  return folder.readFile(it->second,out,error);
+ }
+ std::string getName() const override { return identity; }
+ std::string getPath() const override { return folder.getPath(); }
+ bool isIdentityEnforced() const override { return false; }
+};
+}
+
+godot::Dictionary godot::RetailFileSystem::inspect_library_map(const String &path, bool preview)
+{
+ Dictionary result; result["ok"]=false;
+ auto fail=[&](const std::string &error) { result["error"]=toGodot(error); return result; };
+ if(!m_fs)return fail("Retail archives are not mounted");
+ auto file=FileAccess::open(path,FileAccess::READ);
+ if(file.is_null())return fail("Cannot read library map: "+toNative(path));
+ auto data=file->get_buffer(file->get_length());
+ std::vector<uint8_t> bytes(data.ptr(),data.ptr()+data.size());
+ LoadedMap map; std::string error;
+ if(!MapReader::load(bytes,toNative(path),MapReadOptions(),map,&error))return fail(error);
+ // Include sidecar modification times in the alias, so feature caches also expire
+ // when a library map's own INI or assets change.
+ auto archive=std::make_unique<LibraryPreviewArchive>();
+ if(!archive->folder.open(toNative(path.get_base_dir()),&error))return fail(error);
+ String identity=path+String(":")+FileAccess::get_sha256(path);
+ for(const auto &source:archive->folder.paths()) {
+  String disk=path.get_base_dir().path_join(toGodot(source).replace("\\","/"));
+  identity+=toGodot(source)+String::num_uint64(FileAccess::get_modified_time(disk));
+ }
+ String alias="openbfme_library_"+identity.sha256_text();
+ result["key"]=String("maps/")+alias+String("/")+alias+String(".map");
+ result["preview_name"]=alias; result["library"]=true; result["official"]=false;
+ // WorldInfo keys: BFME2 MapUtil.cpp / MapCache::addMap. Strings may be
+ // literal Unicode/Windows-1252 or labels in this map's map.str / game text.
+ GameTextTable localText; std::vector<uint8_t> strings;
+ if(archive->folder.readFile("map.str",strings,&error) && !localText.parse(strings,&error))return fail("map.str: "+error);
+ auto mapText=[&](const char *key) -> String {
+  const auto *value=map.chunks.worldInfo.find(key);
+  if(!value)return String();
+  String raw=value->type==Dict::DICT_UNICODESTRING ? String::utf16(reinterpret_cast<const char16_t *>(value->u.data()),value->u.size()) : toGodot(Windows1252ToUtf8(value->s));
+  std::string label=toNative(raw.begins_with("$")?raw.substr(1):raw),text;
+  if(localText.lookup(label,text))return toGodot(text);
+  if(raw.begins_with("$") || raw.contains(":")) {
+   if(!m_libraryText) { m_libraryText=std::make_unique<GameTextTable>(); if(!m_libraryText->loadRetail(*m_fs,&error)) { m_libraryText.reset();return raw; } }
+   if(m_libraryText->lookup(label,text))return toGodot(text);
+  }
+  return raw;
+ };
+ result["name"]=mapText("mapName"); result["description"]=mapText("mapDescription");
+ result["snowy"]=map.chunks.hasWorldInfo && map.chunks.worldInfo.getInt("weather")==1;
+ result["content_id"]=FileAccess::get_sha256(path); result["file_size"]=data.size();
+ result["path"]=path;
+ Array starts;
+ for(const auto &object:map.chunks.objects) {
+  if(!object.isWaypoint())continue;
+  for(int i=1;i<=8;++i)if(object.getWaypointName()=="Player_"+std::to_string(i)+"_Start") {
+   Dictionary start; start["index"]=i-1; start["x"]=object.m_location.x; start["y"]=object.m_location.y; start["z"]=object.m_location.z; starts.push_back(start);
+  }
+ }
+ result["starts"]=starts;result["players"]=starts.size();
+ if(preview) {
+  if(!m_fs)return fail("Retail archives are not mounted");
+  const std::string prefix="maps\\"+toNative(alias)+"\\";
+  if(!m_fs->doesFileExist(prefix+toNative(alias)+".map")) {
+   archive->identity=toNative(alias);
+   for(const auto &source:archive->folder.paths()) {
+    // A neighboring map must not replace the selected .map.
+    std::string target=source==FolderArchiveFile::key(toNative(path.get_file())) ? toNative(alias)+".map" : source;
+    std::string dest=prefix+target;
+    archive->source[dest]=source;
+    ArchivedFileInfo info; info.m_filename=target.substr(target.find_last_of('\\')+1);
+    auto sep=dest.find_last_of('\\'); archive->addFile(dest.substr(0,sep+1),&info);
+   }
+   m_fs->mountArchive(std::move(archive),toNative(alias),false);
+  }
+ }
+ result["ok"]=true;return result;
+}
+
+// OpenBFME installs live in user data, never in either verified game install.
+// Copy into a new staging directory, validate it, then rename before publishing.
+godot::Dictionary godot::RetailFileSystem::install_library_map(const String &path, const String &root)
+{
+ Dictionary result;result["ok"]=false;
+ auto fail=[&](const String &error){result["error"]=error;return result;};
+ auto inspected=inspect_library_map(path,false);
+ if(!bool(inspected.get("ok",false)))return inspected;
+ if(int(inspected["players"])<2)return fail("This map has fewer than two player starts.");
+ String destination=ProjectSettings::get_singleton()->globalize_path(root).path_join(String(inspected["content_id"]));
+ String target=destination.path_join(path.get_file());
+ std::error_code ec;
+ if(!FileAccess::file_exists(target) && !FileAccess::file_exists(destination.path_join(path.get_file().to_lower()))) {
+  const std::string staging=toNative(destination)+".installing";
+  std::filesystem::create_directories(std::filesystem::u8path(staging),ec);
+  if(ec)return fail(toGodot(ec.message()));
+  FolderArchiveFile folder;std::string error;
+  if(!folder.open(toNative(path.get_base_dir()),&error))return fail(toGodot(error));
+  for(const auto &source:folder.paths()) {
+   String rel=toGodot(source).replace("\\","/");
+   if(rel.get_extension().to_lower()=="map" && rel!=path.get_file().to_lower())continue;
+   // Resolve the real filename case on case-sensitive disks through the archive.
+   std::vector<uint8_t> bytes;
+   if(!folder.readFile(source,bytes,&error))return fail(toGodot(error));
+   String out=toGodot(staging).path_join(rel);
+   if(DirAccess::make_dir_recursive_absolute(out.get_base_dir())!=OK)return fail("Cannot create installed map directory.");
+   auto file=FileAccess::open(out,FileAccess::WRITE);
+   if(file.is_null())return fail("Cannot write installed map file.");
+   PackedByteArray buffer;buffer.resize(bytes.size());if(!bytes.empty())memcpy(buffer.ptrw(),bytes.data(),bytes.size());file->store_buffer(buffer);
+  }
+  // FolderArchiveFile normalizes names to lower case.
+  target=destination.path_join(path.get_file().to_lower());
+  auto staged=inspect_library_map(toGodot(staging).path_join(path.get_file().to_lower()),false);
+  if(!bool(staged.get("ok",false)))return staged;
+  std::filesystem::rename(std::filesystem::u8path(staging),std::filesystem::u8path(toNative(destination)),ec);
+  if(ec)return fail(toGodot(ec.message()));
+ }
+ if(!FileAccess::file_exists(target))target=destination.path_join(path.get_file().to_lower());
+ result=inspect_library_map(target,true);
+ if(!bool(result.get("ok",false)))return result;
+ result["library"]=false;result["installed"]=true;
+ for(int64_t i=0;i<m_installedMaps.size();++i)if(String(Dictionary(m_installedMaps[i])["key"])==String(result["key"]))return result;
+ m_installedMaps.push_back(result);return result;
+}
+
+godot::Array godot::RetailFileSystem::installed_maps(const String &directory)
+{
+ if(!m_installedLoaded && !m_bfme1) {
+  m_installedLoaded=true;
+  String root=ProjectSettings::get_singleton()->globalize_path(directory);
+  auto dir=DirAccess::open(root);
+  if(dir.is_valid())for(const String &folder:dir->get_directories()) {
+   if(folder.ends_with(".installing"))continue;
+   auto files=DirAccess::open(root.path_join(folder));if(files.is_null())continue;
+   for(const String &name:files->get_files())if(name.get_extension().to_lower()=="map") {
+    auto entry=inspect_library_map(root.path_join(folder).path_join(name),true);
+    if(bool(entry.get("ok",false))) { entry["library"]=false;entry["installed"]=true;m_installedMaps.push_back(entry); }
+    else UtilityFunctions::push_warning("Installed map: ",entry.get("error",String()));
+   }
+  }
+ }
+ return m_installedMaps;
+}
+
+void godot::RetailFileSystem::append_installed_maps(std::vector<MapCacheEntry> &maps)
+{
+ for(const Variant &value:installed_maps()) {
+  Dictionary d=value;MapCacheEntry entry;
+  entry.name=toNative(String(d["key"]));entry.rawName=entry.name;
+  auto name=String(d["name"]).utf16();entry.displayName.assign(name.get_data(),name.length());
+  if(entry.displayName.empty())entry.displayName=u"Untitled map";
+  auto description=String(d["description"]).utf16();entry.description.assign(description.get_data(),description.length());
+  entry.numPlayers=int(d["players"]);entry.isMultiplayer=entry.numPlayers>=2;
+  entry.fileSize=int64_t(d.get("file_size",0));
+  Array starts=d["starts"];
+  for(const Variant &start:starts) {Dictionary p=start;Coord3D point;point.x=double(p["x"]);point.y=double(p["y"]);point.z=double(p["z"]);entry.startPositions[int(p["index"])+1]=point;}
+  auto found=std::find_if(maps.begin(),maps.end(),[&](const MapCacheEntry &map){return map.name==entry.name;});
+  if(found==maps.end())maps.push_back(std::move(entry));else *found=std::move(entry);
+ }
+}

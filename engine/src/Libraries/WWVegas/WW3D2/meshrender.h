@@ -19,7 +19,11 @@
 // Target / donor / unknown: the dual-bone formula p = (w0/100) M[b0] p0 + (w1/100) M[b1] p1 with p1 from W3D_CHUNK_VERTICES_2
 // is the spec's reading of the file (OpenSAGE cross-check); the BFME2 binary's blend code was not located (spec 3.1 [U]).
 // Vertices whose weights are both 0 (1,653 retail vertices in 15 meshes) are given w0 = 100, which is OpenSAGE's choice,
-// not a retail fact: they are counted in ZeroWeightVertices so every consumer can report them.
+// not a retail fact: they are counted in ZeroWeightVertices so every consumer can report them. Weights whose sum is not 100 (none in RotWK;
+// BFME1 patch 2.22 skins such as GUGandalfG_SKN have 89 + 10) are divided by their sum, also not a retail fact (UnnormalizedWeightVertices).
+// A skin that weights a second bone but has no VERTICES_2 stream (BFME1 only) is drawn on the first bone alone (SingleBoneVertices): an
+// inference from BFME1's influence loader, which keys its runs on the first bone. A rigid (non-skin) mesh with an influence chunk (BFME1
+// only) ignores it (IgnoredInfluences).
 
 #pragma once
 
@@ -113,6 +117,9 @@ struct MeshRenderData
 	std::vector<std::uint16_t> Bone0, Bone1;
 	std::vector<float> Weight0, Weight1;
 	size_t ZeroWeightVertices = 0;
+	size_t UnnormalizedWeightVertices = 0;
+	size_t SingleBoneVertices = 0;
+	size_t IgnoredInfluences = 0;
 
 	std::vector<MeshUVStream> PassUV;
 	std::vector<std::vector<std::uint8_t>> PassDCG; // per pass: 4 bytes (R, G, B, A) per vertex, empty when none

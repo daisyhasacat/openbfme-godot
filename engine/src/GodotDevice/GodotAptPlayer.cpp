@@ -633,6 +633,13 @@ private:
 	FontFn m_fn;
 };
 
+// Convert only explicitly installed user maps into playable lobby metadata.
+static void addInstalledMaps(WorldSkirmishSetupSource &source, RetailFileSystem &fs)
+{
+ std::vector<MapCacheEntry> entries;fs.append_installed_maps(entries);
+ for(const auto &entry:entries)source.addInstalledMap(entry);
+}
+
 // Everything shell mode owns, in construction order (destroyed in reverse: the Shell and the layer go before the manager).
 struct ShellMode
 {
@@ -1383,6 +1390,7 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 	{
 		errors.push_back(toGodot("the lobby's setup source: " + error));
 	}
+	addInstalledMaps(sm->setup,*fs.ptr());
 	if (!loadGadgetSkinData(*fs->menu_archive_fs(), sm->skins, &error))
 	{
 		errors.push_back(toGodot("gadget skins: " + error));
@@ -2613,10 +2621,15 @@ Array AptMenuPlayer::lobby_map_catalog()
 {
  Array out;if(!m->shell || !m->shell->shell)return out;
  auto screen=dynamic_cast<AptSkirmish *>(m->shell->shell->findScreenByFilename("Skirmish.apt"));if(!screen || !screen->setup())return out;
+ const auto previousMaps=m->shell->setup.maps().size();
+ addInstalledMaps(m->shell->setup,*m->fs.ptr());
+ if(m->shell->setup.maps().size()!=previousMaps)screen->refreshMapCatalog();
  const auto &setup=*screen->setup();
  for(int index:setup.listedMaps()) {
   const auto &entry=setup.source().maps()[index];Dictionary d;d["key"]=toGodot(entry.name);d["name"]=toGodot(u16ToUtf8(setup.mapBaseDisplayName(entry)));d["description"]=toGodot(u16ToUtf8(setup.mapDescription(entry)));d["players"]=entry.numPlayers;d["official"]=entry.isOfficial;
-  Array starts;for(const auto &s:entry.startPositions){Dictionary p;p["index"]=s.first-1;p["x"]=s.second.x;p["y"]=s.second.y;p["z"]=s.second.z;starts.push_back(p);}d["starts"]=starts;out.push_back(d);
+  Array starts;for(const auto &s:entry.startPositions){Dictionary p;p["index"]=s.first-1;p["x"]=s.second.x;p["y"]=s.second.y;p["z"]=s.second.z;starts.push_back(p);}d["starts"]=starts;
+  for(const Variant &installed:m->fs->installed_maps()) { Dictionary user=installed;if(String(user["key"])==String(d["key"])) { d.merge(user,true);break; } }
+  out.push_back(d);
  }
  return out;
 }

@@ -97,6 +97,17 @@ std::string portraitFor(const HudContext &ctx, ObjectID contextObject, const std
 				{
 					return pt->m_multiSelectionPortrait;
 				}
+				// BFME1 has no MultiSelectionPortrait field: its chooser (Open-BFME-1 AptPalantirRva00594740.cpp, VA 0x00596D40) maps the controlling
+				// player's side to a compiled-in portrait. Every RotWK playable template names its own, and RotWK has no Gondor / Rohan side.
+				static const std::pair<const char *, const char *> bfme1Armies[] = {
+					{ "Mordor", "UPMordor_Army" }, { "Gondor", "UPGondor_Army" }, { "Isengard", "UPIsengard_Army" }, { "Rohan", "UPRohan_Army" } };
+				for (const auto &army : bfme1Armies)
+				{
+					if (pt->m_side == army.first)
+					{
+						return army.second;
+					}
+				}
 			}
 		}
 	}

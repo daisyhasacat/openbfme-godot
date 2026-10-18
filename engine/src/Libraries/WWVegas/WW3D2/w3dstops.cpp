@@ -31,6 +31,23 @@ void W3D_Collect_Mesh_Stops(const MeshRenderData &mesh, std::vector<W3DStopHit> 
 			std::to_string(mesh.ZeroWeightVertices) + " vertices of " + mesh.Name + " have both skin weights 0; drawn with weight 100 on their first bone (OpenSAGE's reading, not a retail fact)",
 			mesh.ZeroWeightVertices);
 	}
+	if (mesh.UnnormalizedWeightVertices > 0)
+	{
+		add(out, "S-020",
+			std::to_string(mesh.UnnormalizedWeightVertices) + " vertices of " + mesh.Name + " have skin weights that do not sum to 100; drawn with each weight divided by the sum (not a retail fact)",
+			mesh.UnnormalizedWeightVertices);
+	}
+	if (mesh.SingleBoneVertices > 0)
+	{
+		add(out, "S-020",
+			std::to_string(mesh.SingleBoneVertices) + " vertices of " + mesh.Name + " weight a second bone but the mesh has no second-bone streams; drawn on the first bone only (inferred from BFME1's influence loader)",
+			mesh.SingleBoneVertices);
+	}
+	if (mesh.IgnoredInfluences > 0)
+	{
+		add(out, "S-020", mesh.Name + " is not a skin but carries " + std::to_string(mesh.IgnoredInfluences) + " vertex influences; drawn on its sub object's pivot, the influences ignored",
+			mesh.IgnoredInfluences);
+	}
 	if (mesh.DualBone)
 	{
 		add(out, "S-021",

@@ -158,6 +158,10 @@ func current() -> Dictionary:
 		out[key] = value_of(opts, key, found)
 	for key in RETAIL_KEYS:
 		out[key] = value_of(opts, key, found)
+	# BFME1: an absent AllHealthBars reads the GlobalData default, which is on (Open-BFME-1 GlobalDataConstructor.cpp m_a8e = 1,
+	# R4OptionPreferencesBoolGetters.cpp getAllHealthBars); RotWK's absent value is off
+	if not opts.has("AllHealthBars") and game != null and game.get("_fs") != null and game._fs.is_bfme1():
+		out.AllHealthBars = "yes"
 	problems = found
 	return out
 

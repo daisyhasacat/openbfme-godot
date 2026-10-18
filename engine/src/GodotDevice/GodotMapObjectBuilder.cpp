@@ -248,6 +248,8 @@ Dictionary MapObjectBuilder::scan_definition(const Ref<RetailFileSystem> &fs, co
  if (!fs->readBytes(path, bytes, &error)) { errors.push_back(toGodot(error)); return out; }
  LoadedMap map;
  if (!MapReader::load(bytes, path, MapReadOptions(), map, &error)) { errors.push_back(toGodot(error)); return out; }
+ // Same WorldInfo weather classification used by LiveGame and MapObjectDrawables.
+ out["snowy"] = map.chunks.hasWorldInfo && map.chunks.worldInfo.getInt("weather") == 1;
  // The map.ini only matters when the map places objects the retail INI does not define and the map.ini does: applying it to every map dirtied the scanner's world
  // and cost a full INI reload (about 1 s) per map. The rare map that needs it gets it (and a following one pays the reload).
  bool missing = false;

@@ -526,3 +526,12 @@ void Drawable::commitSync(const SyncPrep &prep)
 		setTransform(&p.position, p.basis);
 	}
 }
+
+void Drawable::upgradeTexture(const TextureSwap &swap, bool enabled)
+{
+	for (auto &entry : m_entries)
+	{
+		if (entry.draw) entry.draw->upgradeTexture(swap, enabled);
+	}
+	++m_changeCount;
+}

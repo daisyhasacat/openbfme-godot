@@ -110,7 +110,7 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 			const auto &c = buildClasses.at(tt->getName());
 			auto list = [](const std::vector<std::string> &items) { Value::List out; for (const auto &item : items) out.emplace_back(item); return out; };
 			r["buildMode"] = Table{{"building",c.building},{"unit",c.unit},{"plot",c.plot},{"marker",c.marker},{"placeholder",c.placeholder},
-				{"scenery",c.scenery},{"builderBuildable",c.builderBuildable},{"plotBuildable",c.plotBuildable},{"enhancedPlotBuildable",c.enhancedPlotBuildable},
+				{"scenery",c.scenery},{"trainable",c.trainable},{"producers",list(c.producers)},{"builderBuildable",c.builderBuildable},{"plotBuildable",c.plotBuildable},{"enhancedPlotBuildable",c.enhancedPlotBuildable},
 				{"unfinishedContent",c.unfinishedContent},{"unsupported",c.unsupported},{"recommended",c.recommended},
 				{"builders",list(c.builders)},{"plots",list(c.plots)},{"enhancedPlots",list(c.enhancedPlots)},{"reasons",list(c.reasons)},{"warnings",list(c.warnings)}};
 			(*catalog)["templates"][tt->getName()] = r;

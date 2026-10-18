@@ -219,15 +219,24 @@ void PlacementIcons::updateWall(const InGameUI &ui)
 			m_icons[i] = std::move(icon);
 		}
 	}
+	static const int wallHub = ObjectTemplateInfoBuilder::kindOfIndex("WALL_HUB");
+	size_t segment = 0; // the wall segments counted along the span (the hubs are not segments)
 	for (size_t i = 0; i < plan.tiles.size(); ++i)
 	{
 		Icon &icon = m_icons[i];
 		const WallSpan::Tile &tile = plan.tiles[i];
+		icon.drawable->setDrawableOpacity(tile.existing == INVALID_ID ? 0.45f : 0.0f);
+		const bool hubTile = wallHub >= 0 && MaskTest(m_logic.templateInfo(icon.tt).kindOf, (unsigned)wallHub);
 		icon.angle = tile.angle;
 		icon.drawable->setPosition(&tile.pos);
 		icon.drawable->setOrientation(tile.angle);
 		icon.code = tile.code;
 		icon.tint = tile.code == 0 ? TINT_NONE : (tile.code == 9 ? TINT_CODE9 : TINT_ILLEGAL);
+		// OpenBFME placement aid (not retail): every other legal segment is highlighted, so a span's length reads at a glance
+		if (!hubTile && (segment++ & 1) && icon.tint == TINT_NONE)
+		{
+			icon.tint = TINT_ALTERNATE;
+		}
 		icon.tintBlue = (ui.clientFrame() & 4) ? 1.7f : 0.5f;
 		icon.bib = tile.code == 0 ? BIB_NONE : (tile.code == 9 ? BIB_NORMAL : BIB_HIGHLIGHT);
 	}

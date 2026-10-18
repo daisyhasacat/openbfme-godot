@@ -20,7 +20,8 @@
 // Terrain termination: the port checks cliff/water/height restrictions and ends with a hub on the last legal tile plus CliffCapTemplateName.
 // This adapts the retail 5/6 cliff-cap branch to the port's terrain codes; exact retail legal-code classification is not recovered.
 // Not ported (stop S-657): code 8 blocked mid-way, code 10 equivalent dead-segment rebuild; the end-hub link path (RW 0x793DB9 then slot 0x58) and the
-// rebuild of dead segments; the hub's CANCEL_NEIGHBORHOOD. The HUD's line build that makes the message is lane QA2-FIX's (PlaceEventTranslator.h, S-1770).
+// retail rebuild of dead segments; the hub's CANCEL_NEIGHBORHOOD.
+// Enhanced hub reconnection reuses aligned pieces/recorded slots, clears rubble, and charges only for new pieces. The HUD's line build that makes the message is lane QA2-FIX's (PlaceEventTranslator.h, S-1770).
 //
 // Simulation maths goes through SimMath.
 
@@ -86,6 +87,7 @@ namespace WallSpan
 {
 struct Tile
 {
+	ObjectID existing = INVALID_ID; // aligned surviving piece, never rebuilt or charged again
 	Coord3D pos{};
 	float angle = 0.0f;
 	const ThingTemplate *tmpl = nullptr;
@@ -94,6 +96,7 @@ struct Tile
 struct Plan
 {
 	std::vector<Tile> tiles;
+	std::vector<ObjectID> rubble; // cleared only by an accepted build
 	int cost = 0;               // + 4
 	bool endsOnHub = false;     // + 0xC
 	bool endCapPlaced = false;  // + 0xD

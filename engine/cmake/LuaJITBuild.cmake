@@ -25,6 +25,9 @@ else()
         # name their iOS sysroot in TARGET_FLAGS, so SDKROOT (build_ios.sh exports the iOS one) is not needed and would mislead the host's
         list(APPEND args "HOST_CC=/usr/bin/clang -isysroot ${HOST_SYSROOT}")
         unset(ENV{SDKROOT})
+        # an Xcode script phase also exports IPHONEOS_DEPLOYMENT_TARGET, which clang would apply to the host tools too (building
+        # minilua for iOS, killed when run on the Mac); the target compiles carry -miphoneos-version-min in TARGET_FLAGS instead
+        unset(ENV{IPHONEOS_DEPLOYMENT_TARGET})
     endif()
     if(DEPLOYMENT_TARGET)
         set(ENV{MACOSX_DEPLOYMENT_TARGET} ${DEPLOYMENT_TARGET})
