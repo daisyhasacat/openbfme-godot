@@ -568,3 +568,9 @@ the native site-cleanup path. Previewing or cancelling placement removes nothing
 `matches(templateOrInstance, options)` classify buildings, units, foundations,
 markers, helpers, and unfinished content from mounted template/command data.
 See [Build-mode filter](BUILD_MODE_FILTER.md) for flags, evidence, and examples.
+
+`replayBuildings("base2")` defaults to the current occupant of the recorded
+starting slot, including a computer player. New recordings store `sourceStartSlot`
+(the zero-based map start index). Older layouts infer the owner from the starting
+position nearest their saved fortress or first building. An unoccupied saved slot
+is an error; `{player=...}` explicitly overrides ownership.

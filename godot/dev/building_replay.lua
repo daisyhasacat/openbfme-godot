@@ -31,13 +31,35 @@ function replayBuildings(name, options)
     if not buildingLayouts[name] then loadBuildings(name) end
     local layout = copy(assert(buildingLayouts[name], 'Unknown layout'))
 
-    local player = options.player
-    player = type(player) == 'number'
-        and bfme.players[player]
-        or player
-        or bfme.players.localPlayer
-
-    assert(player, 'Start a match and choose a player')
+    local player
+    if options.player ~= nil then
+        player = type(options.player) == 'number' and bfme.players[options.player] or options.player
+        assert(player, 'Requested player does not occupy a current player slot')
+    else
+        local slot = layout[1] and layout[1].sourceStartSlot
+        if slot ~= nil then
+            for _, candidate in pairs(bfme.players) do
+                if candidate.startSlot == slot then player = candidate; break end
+            end
+            assert(player, 'The saved start slot is unoccupied; supply {player=...} to override')
+        else
+            -- Older layouts have no slot metadata. Their fortress (or first
+            -- building) identifies the original location on this map.
+            local anchor = layout[1]
+            for _, building in ipairs(layout) do
+                if building.castle then anchor = building; break end
+            end
+            local best
+            for _, position in ipairs(bfme.match.getStartPositions()) do
+                local candidate = position.playerId and bfme.players[position.playerId]
+                if candidate and anchor then
+                    local distance = (position.x-anchor.x)^2 + (position.y-anchor.y)^2
+                    if not best or distance < best then player = candidate; best = distance end
+                end
+            end
+            assert(player, 'Cannot identify the saved base slot; supply {player=...}')
+        end
+    end
 
     local speed = options.speed or 1
     local level3 = options.level3

@@ -129,3 +129,9 @@ Defensive threats include distant traversable ground inside the survey, even
 when the survey edge is blocked by cliffs or the map boundary. Set `hubSpacing`
 (80–400, default 120) to control marker density along closures. Short closures
 receive endpoint pairs when both sites are legal.
+
+`replayBuildings("base2")` defaults to the current occupant of the recorded
+starting slot, including a computer player. New recordings store `sourceStartSlot`
+(the zero-based map start index). Older layouts infer the owner from the starting
+position nearest their saved fortress or first building. An unoccupied saved slot
+is an error; `{player=...}` explicitly overrides ownership.

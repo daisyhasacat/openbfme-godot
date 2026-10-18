@@ -149,6 +149,7 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 		const auto &cp = p->commandPoints();
 		const int limit = p->commandPointLimit();
 		Table r{{"id", i},
+				{"startSlot", p->getMultiplayerStartIndex()},
 				{"name", p->getPlayerName()},
 				{"displayName", p->getPlayerDisplayName()},
 				{"username", p->getPlayerDisplayName()},

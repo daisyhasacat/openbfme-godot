@@ -18,7 +18,7 @@ local function make(id,template,x,info,kind)
  function b:linkWallPiece(other) return self:giveUpgrade('link:'..other.typeId) end
  return b
 end
-local player={id=1,buildings=function() local a={}; for _,b in pairs(live) do a[#a+1]=b end; table.sort(a,function(a,b)return a.id<b.id end); return a end}
+local player={id=1,startSlot=0,buildings=function() local a={}; for _,b in pairs(live) do a[#a+1]=b end; table.sort(a,function(a,b)return a.id<b.id end); return a end}
 function player:construct(template,pos,speed,cb)
  nextTicket=nextTicket+1; local t=nextTicket
  calls[#calls+1]={template=template,x=pos.x,y=pos.y,rotation=pos.rotation,speed=speed,plotId=pos.plotId}
@@ -30,7 +30,7 @@ function player:construct(template,pos,speed,cb)
 end
 local saved={}
 bfme={layouts={save=function(k,v) saved[k]=v; return k end,load=function(k)return saved[k]end,list=function()return {'test'}end},players={[1]=player,localPlayer=player},buildingInstances=live,
- match={getStatus=function() return {generation=generation} end},
+ match={getStartPositions=function() return {{x=100,y=20,playerId=1}} end,getStatus=function() return {generation=generation} end},
  mutations={getStatus=function(id) return statuses[id] end,getBuilding=function(id) return started[id] end},
  events={onUpdate=function(_,fn) tick=fn end,remove=function() tick=nil end}}
 local function pump()
@@ -52,6 +52,7 @@ function checkReplay()
  assert(recordBuildings('test')==7)
  local exported=exportBuildings('test'); buildingLayouts={}; assert(loadstring(exported))()
  assert(buildingLayouts.test[1].rotation==1.2)
+ assert(buildingLayouts.test[1].sourceStartSlot==0)
  buildingLayouts.test=nil; assert(loadBuildings('test')==7); assert(listBuildingLayouts()[1]=='test')
  -- The new fortress will regenerate its keep/pad. Existing matching root is reused.
  live[4]=nil; for i=5,8 do live[i]=nil end
@@ -82,6 +83,18 @@ function checkReplay()
  started[hubTicket]=make(900,'Hub',700); statuses[hubTicket]='building'
  tick(); assert(#calls==before+5, 'Walls must start while their hub is still building')
  stopBuildingReplay(); callbacks={}; started={}
+ -- Resolve the saved starting position to its current occupant, not local player or old ID.
+ local replacement={id=9,startSlot=0,buildings=player.buildings,construct=player.construct}
+ bfme.players[1]=nil; bfme.players[9]=replacement
+ bfme.players.localPlayer={id=2,startSlot=1}
+ replayBuildings('test'); tick(); assert(buildingReplay.failed==0); stopBuildingReplay()
+ bfme.players[9]=nil
+ local ok=pcall(function() replayBuildings('test') end); assert(not ok)
+ replayBuildings('test',{player=bfme.players.localPlayer}); stopBuildingReplay()
+ bfme.players[1]=player; bfme.players.localPlayer=player
+ -- Legacy recordings identify the base by location.
+ buildingLayouts.legacy={{template='Farm',x=100,y=20}}
+ replayBuildings('legacy'); tick(); assert(buildingReplay.failed==0); stopBuildingReplay()
  -- Match changes cancel scheduled work.
 
  replayBuildings('test'); generation=2; tick(); assert(not buildingReplay.running)
