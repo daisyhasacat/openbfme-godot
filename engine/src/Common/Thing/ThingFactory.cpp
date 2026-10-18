@@ -212,9 +212,11 @@ const ThingTemplate *ThingFactory::findByTemplateID(unsigned short id) const
 
 ThingTemplate *ThingFactory::newTemplate(const std::string &name)
 {
+	++m_revision;
 	auto owned = std::make_unique<ThingTemplate>();
 	ThingTemplate *tt = owned.get();
 	m_arena.push_back(std::move(owned));
+	tt->m_catalogRevision = &m_revision;
 	tt->m_fieldNames = &m_slotNames;
 	tt->m_fieldIndex = &m_slotIndex;
 	tt->m_fields.assign(m_slotNames.size(), FieldValue());
@@ -234,6 +236,7 @@ ThingTemplate *ThingFactory::newTemplate(const std::string &name)
 
 ThingTemplate *ThingFactory::newOverride(ThingTemplate *thingTemplate)
 {
+	++m_revision;
 	// ZH ThingFactory.cpp:169-196; spec 4.8
 	// RW 0x6D2733: new template, member-wise copy of the FINAL override (RW 0x6D1D80, which leaves the new
 	// template's own override fields untouched), setCopiedFromDefault, markAsOverride, link behind the final one
@@ -241,6 +244,7 @@ ThingTemplate *ThingFactory::newOverride(ThingTemplate *thingTemplate)
 	auto owned = std::make_unique<ThingTemplate>();
 	ThingTemplate *tt = owned.get();
 	m_arena.push_back(std::move(owned));
+	tt->m_catalogRevision = &m_revision;
 	tt->m_fieldNames = &m_slotNames;
 	tt->m_fieldIndex = &m_slotIndex;
 	tt->copyFrom(child);
@@ -254,6 +258,7 @@ ThingTemplate *ThingFactory::newOverride(ThingTemplate *thingTemplate)
 
 void ThingFactory::reset()
 {
+	++m_revision;
 	// ZH ThingFactory.cpp:209-238: drop override chains and templates that exist only for the last map
 	std::vector<ThingTemplate *> keep;
 	for (ThingTemplate *t : m_list)
@@ -286,6 +291,7 @@ void ThingFactory::reset()
 // ---------------------------------------------------------------------------------------------
 void ThingFactory::parseObjectDefinition(INI *ini, const std::string &name, const std::string &reskinFrom, const std::string &childOf)
 {
+	++m_revision;
 	{
 		DefinitionRecord rec;
 		rec.name = name;

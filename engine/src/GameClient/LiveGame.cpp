@@ -2,6 +2,7 @@
 // See GameClient/LiveGame.h.
 
 #include "GameClient/LiveGame.h"
+#include "Common/BfmeGame.h"
 #include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 
 #include "GameClient/FrameCensus.h"
@@ -145,6 +146,21 @@ bool LiveGame::load(const Options &options, std::string *error)
 	if (!classified)
 	{
 		return false;
+	}
+	if (isBfme1Data(m_fs))
+	{
+		// Compatibility inference for BFME2 maps converted to BFME1: placements
+		// without a mounted template have no object to instantiate. Keep them in
+		// the classification census and report the omission without aborting play.
+		// Case-mismatched names and errors in existing templates remain failures.
+		for (const auto &d : m_classified.records)
+		{
+			if (d.fate != MAPOBJ_UNRESOLVED || d.detail != "no template of that name") continue;
+			const std::string problem = "object " + std::to_string(d.objectIndex) + " '" + d.templateName + "': " + d.detail;
+			auto &errors = m_classified.report.errors;
+			errors.erase(std::remove(errors.begin(), errors.end(), problem), errors.end());
+			m_classified.report.stops.push_back("BFME1 compatibility: omitted unavailable map placement: " + problem);
+		}
 	}
 	m_report.mapIniErrors = cr.mapIni.errors;
 	m_report.mapObjects = m_classified.report.objects;

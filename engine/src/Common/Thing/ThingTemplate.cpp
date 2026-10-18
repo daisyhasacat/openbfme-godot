@@ -172,7 +172,10 @@ void ThingTemplate::copyFrom(const ThingTemplate *that)
 	const unsigned short id = m_templateID;
 	ThingTemplate *nextOverride = m_nextOverride;
 	const bool isOverride = m_isOverride;
+	auto *catalogRevision = m_catalogRevision;
 	*this = *that;
+	m_catalogRevision = catalogRevision;
+	if (m_catalogRevision) ++*m_catalogRevision;
 	m_nameString = name;
 	m_templateID = id;
 	m_nextOverride = nextOverride;

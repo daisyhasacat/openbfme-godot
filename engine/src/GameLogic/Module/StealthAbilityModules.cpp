@@ -35,10 +35,12 @@ const HiddenBits &hiddenBits()
 }
 
 #define TH_OFF(m) (int)offsetof(ToggleHiddenSpecialAbilityUpdateModuleData, m)
+OPENBFME_INI_OFFSETOF_BEGIN
 const FieldParse kToggleHidden[] = { // RW 0xC05A8C
 	{ "ShowPalantirTimer", INI::parseBool, nullptr, TH_OFF(m_showPalantirTimer) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+
 #undef TH_OFF
 
 #define IS_OFF(m) (int)offsetof(InvisibilitySpecialPowerModuleData, m)
@@ -49,6 +51,8 @@ const FieldParse kInvisibilitySpecialPower[] = { // RW 0xC730E8
 	{ "Duration", INI::parseDurationUnsignedInt, nullptr, IS_OFF(m_duration) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+OPENBFME_INI_OFFSETOF_END
+
 #undef IS_OFF
 
 void noteStop(const Object &obj, const std::string &what)

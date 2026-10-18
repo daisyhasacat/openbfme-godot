@@ -6,10 +6,14 @@ class Source extends Node:
  var placement:Dictionary={}
  var order:Dictionary={}
  var store:=false
+ var submenu:=false
+ var buttons:Array=[]
  func set_native_hud_visible(value):native_visible=value
  func get_adaptive_resources():return {"money":9000,"used":120,"limit":500,"power":5}
  func get_placement():return placement
- func get_command_buttons():return [{'slot':3,'in_palantir':false,'name':'BuildHall','title':'Barracks','state':1,'cost':300,'queued':2,'timer':.4}]
+ func get_command_buttons():
+  if not buttons.is_empty():return buttons
+  return [{'slot':3,'in_palantir':false,'name':'BuildHall','title':'Barracks','state':1,'cost':300,'queued':2,'timer':.4}]
  func activate_command(slot,arc,cancel):activated.append([slot,arc,cancel]);return true
  func get_command_icon(_key):return null
  func get_controller_objects(_role):return [{'id':9,'name':'Builder'}]
@@ -53,9 +57,78 @@ func _run():
   var safe=ui._safe_rect()
   assert(safe.encloses(ui._dock.get_global_rect()),'Dock fits '+str(dimensions)+' '+str(ui._dock.get_global_rect()))
   assert(safe.encloses(ui._panel.get_global_rect()),'Panel fits '+str(dimensions)+' '+str(ui._panel.get_global_rect()))
+ # Palantir duplicates disappear, but distinct abilities sharing an order remain.
+ source.buttons=[
+  {'slot':0,'in_palantir':true,'name':'Stop','title':'Stop','command':'STOP','state':1},
+  {'slot':0,'in_palantir':false,'name':'Stop','title':'Stop','command':'STOP','state':1},
+  {'slot':1,'in_palantir':false,'name':'Extinguish','title':'Extinguish','command':'SPECIAL_POWER','state':1},
+  {'slot':2,'in_palantir':false,'name':'BuildHall','title':'Barracks','command':'DOZER_CONSTRUCT','state':1},
+  {'slot':3,'in_palantir':true,'name':'UpgradeMenu','title':'Upgrades','command':'PUSH_VISIBLE_COMMAND_RANGE','state':1},
+  {'slot':4,'in_palantir':false,'name':'RecruitHero','title':'Hero','command':'UNIT_BUILD','state':1},
+  {'slot':5,'in_palantir':true,'name':'OtherPower','title':'Other power','command':'SPECIAL_POWER','state':1}]
+ ui.section='';ui._refresh();await process_frame
+ assert(ui._command_entries.size()==5 and ui._construction_entries.size()==1)
+ assert(ui._commands.visible and ui._construction.visible and ui._map.visible and not ui._panel.visible)
+ assert(ui._construction_tiles[0].text.begins_with('Barracks'))
+ ui._construction_tiles[0].pressed.emit();assert(source.activated[-1]==[2,false,false])
+ ui._command_tiles[2].pressed.emit();assert(source.activated[-1]==[3,true,false])
+ source.buttons=[{'slot':8,'in_palantir':false,'name':'Upgrade','title':'Fortress upgrade','command':'OBJECT_UPGRADE','state':1},
+  {'slot':9,'in_palantir':true,'name':'Back','title':'Back','command':'POP_VISIBLE_COMMAND_RANGE','state':1}]
+ ui._refresh();await process_frame
+ assert(ui._command_entries.size()==2 and ui._construction_entries.is_empty())
+ assert(ui._command_tiles[1].text.begins_with('‹'))
+ ui._command_tiles[1].pressed.emit();assert(source.activated[-1]==[9,true,false])
+ source.buttons.append({'slot':2,'in_palantir':false,'name':'BuildHall','title':'Barracks','command':'FOUNDATION_CONSTRUCT','state':1})
+ for dimensions in [Vector2i(393,852),Vector2i(852,393),Vector2i(1280,800)]:
+  root.size=dimensions;ui.section='Powers';ui._refresh()
+  for frame in 8:await process_frame
+  var safe=ui._safe_rect()
+  for panel in [ui._commands,ui._construction,ui._map,ui._panel,ui._dock,ui._top]:
+   assert(safe.encloses(panel.get_global_rect()),str(dimensions)+' '+str(panel.get_global_rect()))
+  assert(not ui._commands.get_global_rect().intersects(ui._map.get_global_rect()))
+  assert(not ui._commands.get_global_rect().intersects(ui._construction.get_global_rect()))
+  assert(not ui._panel.get_global_rect().intersects(ui._construction.get_global_rect()))
+  assert(not ui._panel.get_global_rect().intersects(ui._commands.get_global_rect()))
+ ui.section='Map'
  ui.open_section('Map');await process_frame;assert(not ui._panel.visible)
  ui.mode='hidden';ui._apply_mode();await process_frame;assert(not source.native_visible and not ui._dock.visible)
  ui.mode='classic';ui._apply_mode();await process_frame;assert(source.native_visible)
+ # The requested desktop sizes and five columns, independent of current selection.
+ root.size=Vector2i(5120,2880);ui.mode='modern';ui.section='';ui._apply_mode()
+ for frame in 8:await process_frame
+ assert(roundi(ui._map.size.x)==880)
+ assert(roundi(ui._commands.get_global_rect().size.y)==1196)
+ assert(ui._command_grid.columns==5 and ui._construction_grid.columns==5)
+ # tolerance: panels must not overlap; their separation scales with the viewport.
+ assert(ui._construction.get_global_rect().end.y<ui._commands.get_global_rect().position.y)
+ # Saving JSON during play reloads geometry, fonts and columns without closing a power store.
+ var test_path='user://adaptive-layout-test-%d.json'%OS.get_process_id()
+ var original_layout_path=ui.layout_config.path
+ ui.layout_config.path=test_path
+ var file=FileAccess.open(test_path,FileAccess.WRITE)
+ assert(file!=null)
+ file.store_string(JSON.stringify({'minimap_side':960,'command_height':1200,'font_size':18,'tile_width':112}))
+ file.close()
+ ui.section='Powers';ui._store_owned=true;source.store=true
+ ui._process(float(ui._sizes.reload_interval_seconds)+.01)
+ for frame in 8:await process_frame
+ assert(ui._sizes.minimap_side==960 and ui._sizes.command_height==1200)
+ assert(roundi(ui._map.size.x)==960)
+ assert(ui._command_tiles[0].get_theme_font_size('font_size')==18)
+ assert(ui.section=='Powers' and ui._store_owned and source.store)
+ var previous=ui._sizes.duplicate(true)
+ file=FileAccess.open(test_path,FileAccess.WRITE);file.store_string('{');file.close()
+ assert(not ui.reload_layout())
+ assert(ui._sizes==previous and not ui.layout_config.last_error.is_empty())
+ file=FileAccess.open(test_path,FileAccess.WRITE);file.store_string('{"command_columns":0}');file.close()
+ assert(not ui.reload_layout() and ui._sizes==previous)
+ file=FileAccess.open(test_path,FileAccess.WRITE);file.store_string('{"minimap_side":880}');file.close()
+ var reload_key=InputEventKey.new();reload_key.keycode=KEY_F10;reload_key.shift_pressed=true;reload_key.pressed=true
+ ui._unhandled_key_input(reload_key)
+ assert(ui._sizes.command_height==1040 and ui._sizes.font_size==16 and ui.mode=='modern')
+ DirAccess.remove_absolute(ProjectSettings.globalize_path(test_path))
+ ui.layout_config.path=original_layout_path;assert(ui.reload_layout())
+ ui.open_section('');ui._refresh()
  if '--visual' in OS.get_cmdline_user_args():
   ui.mode='modern';ui._apply_mode();ui.open_section('Commands');ui._refresh()
   for frame in 8:await process_frame

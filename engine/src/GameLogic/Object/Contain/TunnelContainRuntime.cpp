@@ -136,11 +136,14 @@ void TunnelTracker::crc(StateHasher &h) const
 // ---------------------------------------------------------------------------------------------------------------------------------
 // TunnelContain
 // ---------------------------------------------------------------------------------------------------------------------------------
+OPENBFME_INI_OFFSETOF_BEGIN
 void TunnelContainBehaviorData::buildFieldParse(MultiIniFieldParse &p)
 {
 	HordeGarrisonContainBehaviorData::buildFieldParse(p); // RW 0x87D2A3 and the DieMux table
 	p.add(tunnelFieldParse(), (unsigned)offsetof(TunnelContainBehaviorData, m_framesForFullHeal));
 }
+OPENBFME_INI_OFFSETOF_END
+
 
 TunnelContain::TunnelContain(Thing *thing, const ModuleData *data, const TunnelContainBehaviorData &tunnel)
 	: GarrisonContain(thing, data, tunnel.horde.m_garrison, tunnel.m_dieMux, &tunnel.horde)

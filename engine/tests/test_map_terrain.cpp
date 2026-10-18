@@ -1006,3 +1006,26 @@ TEST_CASE("TerrainComposite::build refuses blend layers that are not subsequence
 	CHECK_FALSE(TerrainComposite::build(chunks, out, rec, cs, &err));
 	CHECK(err.find("terrain composite:") != std::string::npos);
 }
+
+TEST_CASE("TGA radar: RLE raw and repeated packets preserve pixels and reject invalid lengths")
+{
+	TGAImage img;
+	std::string error;
+	// Two red pixels followed by one green and one blue pixel, spanning rows.
+	const Bytes packets = {0x81, 0, 0, 255, 0x01, 0, 255, 0, 255, 0, 0};
+	auto bytes = makeTga(10, 24, 2, 2, 0x20, packets, 3);
+	REQUIRE_MESSAGE(TGAFile::decodeRadar(bytes.data(), bytes.size(), img, &error), error);
+	CHECK(img.topDownFlag);
+	CHECK(img.rgba == Bytes{255,0,0,255, 255,0,0,255, 0,255,0,255, 0,0,255,255});
+	CHECK_FALSE(TGAFile::decode(bytes.data(), bytes.size(), img, &error)); // terrain remains strict
+	auto rgba = makeTga(10, 32, 2, 1, 0, {0x81, 3, 2, 1, 77});
+	REQUIRE(TGAFile::decodeRadar(rgba.data(), rgba.size(), img, &error));
+	CHECK(img.rgba == Bytes{1,2,3,77, 1,2,3,77});
+	for (const auto &payload : {Bytes{}, Bytes{0x80}, Bytes{0x00, 0, 0}, Bytes{0x84, 0, 0, 0}})
+	{
+		auto broken = makeTga(10, 24, 2, 2, 0, payload);
+		CHECK_FALSE(TGAFile::decodeRadar(broken.data(), broken.size(), img, &error));
+	}
+	bytes[0] = 255;
+	CHECK_FALSE(TGAFile::decodeRadar(bytes.data(), bytes.size(), img, &error));
+}

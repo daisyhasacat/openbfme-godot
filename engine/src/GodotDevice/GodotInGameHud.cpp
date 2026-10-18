@@ -3343,10 +3343,12 @@ bool InGameHudNode::activate_command(int slot, bool in_palantir, bool cancel)
     const auto context = d->hud->enterContext();
     ControlBar &bar = d->hud->controlBar();
     bar.update();
-    const auto &buttons = in_palantir ? bar.palantirButtons() : bar.sideButtons();
-    for (const auto &b : buttons)
-        if (b.slot == slot && b.button && b.state != ButtonState::Hidden)
-            return cancel ? bar.cancelQueued(slot, in_palantir) : bar.pressButton(slot, in_palantir);
+    // The fortress construction side bar replaces the classic side display,
+    // but the replacement HUD also exposes its ordinary radial commands.
+    for (const auto *buttons : { &bar.palantirButtons(), &bar.radialButtons(), &bar.sideButtons(), &bar.offBarButtons() })
+        for (const auto &b : *buttons)
+            if (b.slot == slot && b.inPalantir == in_palantir && b.button && b.state != ButtonState::Hidden)
+                return cancel ? bar.cancelQueued(slot, in_palantir) : bar.pressButton(slot, in_palantir);
     return false;
 }
 
@@ -3447,16 +3449,18 @@ Array InGameHudNode::get_command_buttons() const
 		return out;
 	}
 	ControlBar &cb = d->hud->controlBar();
-	for (const bool arc : { true, false })
+	std::set<std::pair<int, bool>> seen;
+	for (const auto *buttons : { &cb.palantirButtons(), &cb.radialButtons(), &cb.sideButtons(), &cb.offBarButtons() })
 	{
-		const std::vector<ControlBarButton> &list = arc ? cb.palantirButtons() : cb.sideButtons();
+		const std::vector<ControlBarButton> &list = *buttons;
 		for (size_t i = 0; i < list.size(); ++i)
 		{
 			const ControlBarButton &b = list[i];
-			if (!b.button)
+			if (!b.button || !seen.emplace(b.slot, b.inPalantir).second)
 			{
 				continue;
 			}
+			const bool arc = b.inPalantir;
 			Dictionary e;
 			e["slot"] = b.slot;
 			e["in_palantir"] = b.inPalantir;

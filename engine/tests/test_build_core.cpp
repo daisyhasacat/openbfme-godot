@@ -1009,3 +1009,28 @@ TEST_CASE("timing build: registering a callback after builder work starts does n
 	CHECK(gb->scriptBuildFrames(100, nullptr) == 100);
 	CHECK(calls == 0);
 }
+
+TEST_CASE("construction events: accepted placements notify once and previews or refusals do not")
+{
+	BuildFx f;
+	std::vector<ObjectID> placed;
+	f.logic->setBuildingPlacedHook([&](const Object &building, const Object *builder) {
+		CHECK(building.isKindOfName("STRUCTURE"));
+		CHECK(building.getControllingPlayer() == f.alice());
+		placed.push_back(building.getID());
+	});
+	BuildPlacement::isLocationLegalToBuild(*f.logic, {300,300,0}, *f.w.get("Hall"), 0, 0, nullptr, f.alice());
+	CHECK(placed.empty());
+	auto building = Construction::constructOnPlot(*f.plot, *f.w.get("Hall"), *f.plot->getPosition(), 0, *f.alice(), false);
+	REQUIRE(building);
+	REQUIRE(placed.size() == 1);
+	CHECK(placed.back() == building->getID());
+	CHECK(Construction::constructOnPlot(*f.plot, *f.w.get("Hall"), *f.plot->getPosition(), 0, *f.alice(), false) == nullptr);
+	CHECK(placed.size() == 1);
+	auto scripted = Construction::constructWithoutBuilder(*f.logic, *f.w.get("Hall"), {300,300,0}, 0, *f.alice());
+	REQUIRE(scripted);
+	REQUIRE(placed.size() == 2);
+	CHECK(placed.back() == scripted->getID());
+	f.frames(1);
+	CHECK(placed.size() == 2);
+}

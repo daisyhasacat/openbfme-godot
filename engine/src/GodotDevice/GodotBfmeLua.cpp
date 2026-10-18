@@ -98,24 +98,31 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 	out.paused = m_paused;
 	if (!m_world)
 		return out;
-	const auto buildClasses = BuildModeFilter::classify(m_world->things(), m_world->commands(), m_world->modules());
-	for (auto master : m_world->things().templates())
+	if (!m_luaCatalog || m_luaCatalogRevision != m_world->things().revision())
 	{
-		const auto tt = master->getFinalOverride();
-		auto info = ObjectTemplateInfoBuilder::build(*tt);
-		auto r = definition(*tt);
-		const auto &c = buildClasses.at(tt->getName());
-		auto list = [](const std::vector<std::string> &items) { Value::List out; for (const auto &item : items) out.emplace_back(item); return out; };
-		r["buildMode"] = Table{{"building",c.building},{"unit",c.unit},{"plot",c.plot},{"marker",c.marker},{"placeholder",c.placeholder},
-			{"scenery",c.scenery},{"builderBuildable",c.builderBuildable},{"plotBuildable",c.plotBuildable},{"enhancedPlotBuildable",c.enhancedPlotBuildable},
-			{"unfinishedContent",c.unfinishedContent},{"unsupported",c.unsupported},{"recommended",c.recommended},
-			{"builders",list(c.builders)},{"plots",list(c.plots)},{"enhancedPlots",list(c.enhancedPlots)},{"reasons",list(c.reasons)},{"warnings",list(c.warnings)}};
-		out.collections["templates"][tt->getName()] = r;
-		if (kind(info, 7))
-			out.collections["buildingTypes"][tt->getName()] = r;
-		else if (kind(info, 1))
-			out.collections["unitTypes"][tt->getName()] = r;
+		auto catalog = std::make_shared<BfmeLuaRuntime::Collections>();
+		const auto buildClasses = BuildModeFilter::classify(m_world->things(), m_world->commands(), m_world->modules());
+		for (auto master : m_world->things().templates())
+		{
+			const auto tt = master->getFinalOverride();
+			auto info = ObjectTemplateInfoBuilder::build(*tt);
+			auto r = definition(*tt);
+			const auto &c = buildClasses.at(tt->getName());
+			auto list = [](const std::vector<std::string> &items) { Value::List out; for (const auto &item : items) out.emplace_back(item); return out; };
+			r["buildMode"] = Table{{"building",c.building},{"unit",c.unit},{"plot",c.plot},{"marker",c.marker},{"placeholder",c.placeholder},
+				{"scenery",c.scenery},{"builderBuildable",c.builderBuildable},{"plotBuildable",c.plotBuildable},{"enhancedPlotBuildable",c.enhancedPlotBuildable},
+				{"unfinishedContent",c.unfinishedContent},{"unsupported",c.unsupported},{"recommended",c.recommended},
+				{"builders",list(c.builders)},{"plots",list(c.plots)},{"enhancedPlots",list(c.enhancedPlots)},{"reasons",list(c.reasons)},{"warnings",list(c.warnings)}};
+			(*catalog)["templates"][tt->getName()] = r;
+			if (kind(info, 7))
+				(*catalog)["buildingTypes"][tt->getName()] = r;
+			else if (kind(info, 1))
+				(*catalog)["unitTypes"][tt->getName()] = r;
+		}
+		m_luaCatalog = std::move(catalog);
+		m_luaCatalogRevision = m_world->things().revision();
 	}
+	out.catalog = m_luaCatalog;
 	if (!m_game)
 		return out;
 	out.ready = true;

@@ -12,6 +12,7 @@ extern "C"
 }
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <cmath>
 #include <deque>
 #include <limits>
@@ -114,6 +115,7 @@ V scalar(lua_State *L, int index)
 const char *bootstrap = R"lua(
 local snapshot, queue, status, writeLog, clock, newproxy, scripts, constructionResult = _bfmeSnapshot, _bfmeQueue, _bfmeStatus, _bfmeLog, _bfmeClock, _bfmeProxy, _bfmeScripts, _bfmeConstructionResult
 _bfmeSnapshot, _bfmeQueue, _bfmeStatus, _bfmeLog, _bfmeClock, _bfmeProxy, _bfmeScripts, _bfmeConstructionResult = nil,nil,nil,nil,nil,nil,nil,nil
+local onEventNative = _bfmeOnEvent; _bfmeOnEvent=nil
 local onUpdateNative, updateList, query, timingNative = _bfmeOnUpdate, _bfmeUpdateList, _bfmeQuery, _bfmeTiming
 _bfmeOnUpdate, _bfmeUpdateList, _bfmeQuery, _bfmeTiming = nil,nil,nil,nil
 local view, generation, cache = {}, 1, {}
@@ -539,7 +541,9 @@ library('events',{
   if intervalMs~=nil then numeric(intervalMs,50,3600000,true) end
   onUpdateNative(n,fn,intervalMs)
  end,
- remove=function(n) onUpdateNative(name(n,'an update'),nil) end,
+ onMatchStarted=function(n,fn) name(n,'an event'); if type(fn)~='function' then error('expected a function',2) end; onEventNative('matchStarted',n,fn) end,
+ onBuildingPlaced=function(n,fn) name(n,'an event'); if type(fn)~='function' then error('expected a function',2) end; onEventNative('buildingPlaced',n,fn) end,
+ remove=function(n) name(n,'an event'); onUpdateNative(n,nil); onEventNative('matchStarted',n,nil); onEventNative('buildingPlaced',n,nil) end,
  list=updateList,
 })
 library('map',{
@@ -644,6 +648,8 @@ struct BfmeLuaRuntime::Impl
 	std::map<unsigned long long, std::string> results;
 	std::chrono::steady_clock::time_point deadline;
 	int refreshRef = LUA_NOREF, invalidateRef = LUA_NOREF, printRef = LUA_NOREF;
+	std::shared_ptr<const Collections> catalog;
+	int catalogRef = LUA_NOREF;
 	// bfme.events.onUpdate: named callbacks run by flush() every intervalMs (wall clock), each under the execution budget
 	struct UpdateCallback
 	{
@@ -654,6 +660,27 @@ struct BfmeLuaRuntime::Impl
 		unsigned long long runs = 0, failures = 0;
 	};
 	std::map<std::string, UpdateCallback> updates;
+	struct Event { std::string kind; V::Table payload; };
+	struct EventQueue { std::mutex mutex; std::deque<Event> pending; };
+	std::shared_ptr<EventQueue> events = std::make_shared<EventQueue>();
+	std::map<std::string, std::map<std::string, UpdateCallback>> eventCallbacks;
+	static int onEvent(lua_State *L)
+	{
+		auto &s = self(L);
+		const std::string kind = luaL_checkstring(L, 1), name = luaL_checkstring(L, 2);
+		if (kind != "matchStarted" && kind != "buildingPlaced") return luaL_error(L, "unknown engine event");
+		auto &callbacks = s.eventCallbacks[kind];
+		auto old = callbacks.find(name);
+		if (old != callbacks.end()) { luaL_unref(L, LUA_REGISTRYINDEX, old->second.ref); callbacks.erase(old); }
+		if (!lua_isnoneornil(L, 3))
+		{
+			luaL_checktype(L, 3, LUA_TFUNCTION);
+			lua_pushvalue(L, 3);
+			callbacks[name].ref = luaL_ref(L, LUA_REGISTRYINDEX);
+		}
+		return 0;
+	}
+
 	static int onUpdate(lua_State *L)
 	{
 		auto &s = self(L);
@@ -689,6 +716,10 @@ struct BfmeLuaRuntime::Impl
 		for (const auto &kv : self(L).updates)
 			out.emplace_back(V::Table{{"name", kv.first}, {"intervalMs", double(kv.second.intervalMs)}, {"runs", double(kv.second.runs)},
 				{"failures", double(kv.second.failures)}, {"lastError", kv.second.lastError}});
+		for (const auto &kind : self(L).eventCallbacks)
+			for (const auto &entry : kind.second)
+				out.emplace_back(V::Table{{"name", entry.first}, {"event", kind.first}, {"runs", double(entry.second.runs)},
+					{"failures", double(entry.second.failures)}, {"lastError", entry.second.lastError}});
 		push(L, out);
 		return 1;
 	}
@@ -762,11 +793,50 @@ struct BfmeLuaRuntime::Impl
 			{
 				V::Table records;
 				for (auto &r : c.second)
-					records[r.first] = r.second;
+					records[r.first] = std::move(r.second);
 				all[c.first] = std::move(records);
 			}
 			t["collections"] = std::move(all);
 			push(L, t);
+			// Static definitions are marshalled once per catalog, not once per callback.
+			// Only engine-owned tables are shared; the public proxy API returns copies.
+			auto &runtime = self(L);
+			if (runtime.catalog != s.catalog)
+			{
+				luaL_unref(L, LUA_REGISTRYINDEX, runtime.catalogRef);
+				runtime.catalogRef = LUA_NOREF;
+				runtime.catalog = s.catalog;
+				if (s.catalog)
+				{
+					lua_newtable(L);
+					for (const auto &collection : *s.catalog)
+					{
+						lua_newtable(L);
+						for (const auto &record : collection.second)
+						{
+							push(L, record.second);
+							lua_setfield(L, -2, record.first.c_str());
+						}
+						lua_setfield(L, -2, collection.first.c_str());
+					}
+					runtime.catalogRef = luaL_ref(L, LUA_REGISTRYINDEX);
+				}
+			}
+			if (s.catalog)
+			{
+				lua_getfield(L, -1, "collections");
+				const int collections = lua_gettop(L);
+				lua_rawgeti(L, LUA_REGISTRYINDEX, runtime.catalogRef);
+				lua_pushnil(L);
+				while (lua_next(L, -2))
+				{
+					lua_pushvalue(L, -2);
+					lua_pushvalue(L, -2);
+					lua_settable(L, collections);
+					lua_pop(L, 1);
+				}
+				lua_pop(L, 2);
+			}
 			return 1;
 		}
 		catch (const std::exception &e)
@@ -880,6 +950,10 @@ struct BfmeLuaRuntime::Impl
 	bool ownsState = true; // false: the state is a LuaState's (lua-gdextension), which closes it
 	~Impl()
 	{
+		if (L) {
+			luaL_unref(L, LUA_REGISTRYINDEX, catalogRef);
+			for (const auto &kind : eventCallbacks) for (const auto &entry : kind.second) luaL_unref(L, LUA_REGISTRYINDEX, entry.second.ref);
+		}
 		if (L && ownsState)
 			lua_close(L);
 	}
@@ -923,6 +997,7 @@ BfmeLuaRuntime::BfmeLuaRuntime(Host host, void *luaState) : m(new Impl)
 	m->bind("_bfmeLog", Impl::log);
 	m->bind("_bfmeClock", Impl::clock);
 	m->bind("_bfmeOnUpdate", Impl::onUpdate);
+	m->bind("_bfmeOnEvent", Impl::onEvent);
 	m->bind("_bfmeTiming", Impl::timing);
 	m->bind("_bfmeUpdateList", Impl::updateList);
 	m->bind("_bfmeQuery", Impl::query);
@@ -1011,8 +1086,17 @@ BfmeLuaRuntime::Result BfmeLuaRuntime::execute(const std::string &code)
 	lua_settop(L, 0);
 	return r;
 }
+BfmeLuaRuntime::EventSink BfmeLuaRuntime::eventSink() const
+{
+	auto events = m->events;
+	return [events](const std::string &kind, Value::Table payload) {
+		std::lock_guard<std::mutex> lock(events->mutex);
+		events->pending.push_back({kind, std::move(payload)});
+	};
+}
 bool BfmeLuaRuntime::hasPending() const
 {
+	{ std::lock_guard<std::mutex> lock(m->events->mutex); if (!m->events->pending.empty()) return true; }
 	if (!m->pending.empty() || !m->constructions.empty() || !m->deferred.empty())
 		return true;
 	const auto now = std::chrono::steady_clock::now();
@@ -1026,6 +1110,8 @@ void BfmeLuaRuntime::flush()
 	// Only consume the queue present on entry. A completion callback can enqueue
 	// another request, which runs on the next safe point rather than recursively.
 	m->output.clear(); // what Lua prints during this flush goes to Host::output at its end
+	std::deque<Impl::Event> events;
+	{ std::lock_guard<std::mutex> lock(m->events->mutex); events.swap(m->events->pending); }
 	auto count = m->pending.size();
 	while (count--)
 	{
@@ -1101,6 +1187,39 @@ void BfmeLuaRuntime::flush()
 		if (job.callback != LUA_NOREF) luaL_unref(m->L, LUA_REGISTRYINDEX, job.callback);
 	}
 	while (m->constructionResults.size() > 1024) m->constructionResults.erase(m->constructionResults.begin());
+	// Engine notifications never enter Lua on the simulation worker. Dispatch the entry
+	// batch here; events or mutations produced by handlers wait for the next safe point.
+	bool eventSnapshot = false;
+	for (const auto &event : events)
+	{
+		std::vector<std::string> names;
+		for (const auto &entry : m->eventCallbacks[event.kind]) names.push_back(entry.first);
+		if (names.empty()) continue;
+		try { if (!eventSnapshot) { m->call(m->refreshRef); eventSnapshot = true; } }
+		catch (const std::exception &e) { m->output += std::string("bfme event snapshot failed: ") + e.what() + "\n"; break; }
+		for (const auto &name : names)
+		{
+			auto &callbacks = m->eventCallbacks[event.kind];
+			auto it = callbacks.find(name);
+			if (it == callbacks.end()) continue;
+			++it->second.runs;
+			auto L = m->L;
+			m->deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+			lua_rawgeti(L, LUA_REGISTRYINDEX, it->second.ref);
+			push(L, event.payload);
+			lua_sethook(L, Impl::hook, LUA_MASKCOUNT, 1000);
+			const int status = lua_pcall(L, 1, 0, 0);
+			lua_sethook(L, nullptr, 0, 0);
+			if (status != LUA_OK) {
+				const char *text = lua_tostring(L, -1);
+				const std::string error = text ? text : "non-string Lua error";
+				auto current = callbacks.find(name);
+				if (current != callbacks.end()) { ++current->second.failures; current->second.lastError = error; }
+				m->output += "bfme event '" + name + "' failed: " + error + "\n";
+				lua_pop(L, 1);
+			}
+		}
+	}
 	// update callbacks: each sees a fresh snapshot; a failing one keeps running (its error is reported once per change of message)
 	const auto now = std::chrono::steady_clock::now();
 	std::vector<std::string> due;
@@ -1189,6 +1308,7 @@ int BfmeLuaRuntime::adjustTiming(const std::string &kind, Value::Table context, 
 
 void BfmeLuaRuntime::invalidate()
 {
+	{ std::lock_guard<std::mutex> lock(m->events->mutex); m->events->pending.clear(); }
 	for (const auto &hook : m->timingHooks) luaL_unref(m->L, LUA_REGISTRYINDEX, hook.second);
 	m->timingHooks.clear();
 	if (m->host.onTimingChanged) m->host.onTimingChanged();

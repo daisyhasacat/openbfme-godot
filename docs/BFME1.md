@@ -167,3 +167,13 @@ errors; six LevelBar reads remain unresolved. The broader RotWK smoke check
 reported seven failures across sort priorities, object setup, menu captions,
 instance counts and move-order state hashes; it is not recorded as passing.
 Those failures have not been isolated against an unchanged baseline. No simulation code was changed in this update.
+
+Converted community maps can retain references to absent BFME2 side-script
+libraries (for example the 2.22 Buckland map's Gollum-spawn library). BFME1
+loads omit these absent map-authored references and report them in the load
+notes. This is a compatibility inference, not verified retail behavior. Present
+libraries must still parse successfully, and AI libraries remain required.
+BFME2/RotWK retain strict dependency checking. BFME1 live loads also omit map
+placements whose templates are absent, preserving them in the classification
+census and reporting each omission. Case mismatches and errors in templates
+that are present remain failures.

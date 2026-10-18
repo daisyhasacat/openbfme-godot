@@ -639,6 +639,7 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 	m_treeTopple.reset(); // lane SPELL-3
 		reset_streaks(); // the streak texture factory references the previous archive file system
 		m_fs = fs;
+		m_luaCatalog.reset();
 		m_world.reset(new RetailObjectWorld(*fs->archive_fs()));
 		m_options.reset(new MapObjectOptions());
 		std::string error;
@@ -732,6 +733,7 @@ void GameWorld::clear_scene()
 	m_spellStore.reset(); // lane SPELL-2 (review r1): the spell book screens hold the game's player and templates: they go before it
 	m_spellBar.reset();
 	m_game.reset(); // the objects (and through them the drawables) first
+	if (m_consoleRuntime) m_consoleRuntime->invalidate(); // discard events after the producer worker has joined
 	m_clientRuntime.reset();
 	m_treeTopple.reset(); // lane SPELL-3
 	m_views.clear();
@@ -932,7 +934,9 @@ Dictionary GameWorld::load_map(const String &map_name, const Dictionary &options
 		}
 	}
 	// lane CAH-1: `terrain` (default false) builds the map's terrain under this node too, as start_new_game does (the Create-a-Hero builder's map mode)
-	return load_internal(lo, map_name, options, Callable(), optBool(options, "terrain", false));
+	Dictionary report = load_internal(lo, map_name, options, Callable(), optBool(options, "terrain", false));
+	if ((bool)report.get("ok", false)) m_consoleRuntime->eventSink()("matchStarted", {{"frame", m_game->logic().getFrame()}});
+	return report;
 }
 
 Dictionary GameWorld::prepare_new_game(const Dictionary &message)
@@ -1069,6 +1073,7 @@ Dictionary GameWorld::start_new_game(const Dictionary &options)
 			report["ok"] = false;
 		}
 	}
+	if ((bool)report.get("ok", false)) m_consoleRuntime->eventSink()("matchStarted", {{"frame", m_game->logic().getFrame()}});
 	return report;
 }
 
@@ -1148,6 +1153,7 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	m_netSession.reset(); // MP-1: the session points at the game
 	releaseLocalDrivers(); // lane MP-2: the recording / replay driver too
 	m_audio.reset(); // AUDIO-2: the audio side reads the game
+	m_luaCatalog.reset(); // map command/module overrides also change build classifications
 	if (m_consoleRuntime) m_consoleRuntime->invalidate();
 	m_game.reset(new LiveGame(*m_world, *m_fs->archive_fs(), *m_assets, *m_options));
 	m_timingRestoreLogicThread = false;
@@ -1595,6 +1601,21 @@ void fragment() {
 	}
 	report["ok"] = errors.is_empty();
 	m_report = report;
+	if (errors.is_empty())
+	{
+		const bool threaded = m_game->logicThread();
+		if (threaded) m_game->setLogicThread(false);
+		ensureConsoleRuntime();
+		auto sink = m_consoleRuntime->eventSink();
+		m_game->logic().setBuildingPlacedHook([sink](const ::Object &building, const ::Object *builder) {
+			const auto *position = building.getPosition();
+			const auto *owner = building.getControllingPlayer();
+			sink("buildingPlaced", BfmeLuaValue::Table{{"objectId", building.getID()}, {"builderId", builder ? builder->getID() : 0u},
+				{"typeId", building.getTemplate()->getName()}, {"playerId", owner ? owner->getPlayerIndex() : -1},
+				{"frame", building.logic().getFrame()}, {"position", BfmeLuaValue::Table{{"x", double(position->x)}, {"y", double(position->y)}, {"z", double(position->z)}}}});
+		});
+		if (threaded) m_game->setLogicThread(true);
+	}
 	emit(100);
 	return report;
 }

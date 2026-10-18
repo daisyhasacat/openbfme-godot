@@ -18,6 +18,18 @@ var _scroll: ScrollContainer
 var _status: Label
 var _title: Label
 var _notice: Label
+var _commands: PanelContainer
+var _construction: PanelContainer
+var _command_grid: GridContainer
+var _construction_grid: GridContainer
+var _command_scroll: ScrollContainer
+var _construction_scroll: ScrollContainer
+var _command_entries: Array = []
+var _construction_entries: Array = []
+var _command_tiles: Array[Button] = []
+var _construction_tiles: Array[Button] = []
+var _command_signature := ''
+var _construction_signature := ''
 var _map: Control
 var _tiles: Array[Button] = []
 var _entries: Array = []
@@ -31,36 +43,48 @@ var _map_large := false
 var _rotation := 0.0
 var _pad_open := false
 var _config := ConfigFile.new()
-const SECTIONS=['Commands','Powers','Heroes','Builders','Map','System']
+var layout_config=preload('res://scripts/adaptive_hud_layout.gd').new()
+var _sizes:Dictionary={}
+var _reload_elapsed:=0.0
+const SECTIONS=['Commands','Construction','Powers','Heroes','Builders','Map','System']
 
 func _ready():
  layer=38
+ if not layout_config.initialize():return
+ _sizes=layout_config.values
  var loaded=_config.load('user://adaptive-hud.cfg')
  if loaded!=OK and loaded!=ERR_FILE_NOT_FOUND:push_error('Cannot load HUD preference: '+error_string(loaded))
  mode=str(_config.get_value('hud','mode','modern' if OS.has_feature('ios') else 'classic'))
  if mode not in ['classic','modern','hidden']:mode='classic'
  _top=_panel_box();add_child(_top)
  var top=HBoxContainer.new();_top.add_child(top)
- _status=Label.new();_status.text='Battle controls';_status.custom_minimum_size.x=180;top.add_child(_status)
- var toggle=_button('HUD',Vector2(72,64));toggle.tooltip_text='Cycle Classic / Touch & Controller / Hidden · F10';toggle.pressed.connect(cycle_mode);top.add_child(toggle)
+ _status=Label.new();_status.text='Battle controls';_status.custom_minimum_size.x=_sizes.status_width;top.add_child(_status)
+ var toggle=_button('HUD','toggle');toggle.tooltip_text='F10: HUD mode · Shift+F10: reload sizes · '+ProjectSettings.globalize_path(layout_config.path);toggle.pressed.connect(cycle_mode);top.add_child(toggle)
  _dock=_panel_box();add_child(_dock)
- var dock=GridContainer.new();_tabs=dock;dock.columns=6;dock.add_theme_constant_override('h_separation',6);dock.add_theme_constant_override('v_separation',6);_dock.add_child(dock)
+ var dock=GridContainer.new();_tabs=dock;dock.columns=int(_sizes.tab_columns);dock.add_theme_constant_override('h_separation',int(_sizes.tab_gap));dock.add_theme_constant_override('v_separation',int(_sizes.tab_gap));_dock.add_child(dock)
  for name in SECTIONS:
-  var button=_button(name,Vector2(86,62));button.pressed.connect(open_section.bind(name));dock.add_child(button)
+  if name in ['Commands','Construction']:continue
+  var button=_button(name,'tab');button.pressed.connect(open_section.bind(name));dock.add_child(button)
  _panel=_panel_box();add_child(_panel)
- _contents=VBoxContainer.new();_contents.add_theme_constant_override('separation',10);_panel.add_child(_contents)
+ _contents=VBoxContainer.new();_contents.add_theme_constant_override('separation',int(_sizes.content_gap));_panel.add_child(_contents)
  var heading=HBoxContainer.new();_contents.add_child(heading)
  _title=Label.new();_title.size_flags_horizontal=Control.SIZE_EXPAND_FILL;heading.add_child(_title)
- var close=_button('Close',Vector2(72,52));close.pressed.connect(func():open_section(''));heading.add_child(close)
+ var close=_button('Close','close');close.pressed.connect(func():open_section(''));heading.add_child(close)
  _notice=Label.new();_notice.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;_contents.add_child(_notice)
  _scroll=ScrollContainer.new();_scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL;_scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED;_contents.add_child(_scroll)
- _grid=GridContainer.new();_grid.columns=3;_grid.add_theme_constant_override('h_separation',8);_grid.add_theme_constant_override('v_separation',8);_scroll.add_child(_grid)
- _map=preload('res://scripts/adaptive_minimap.gd').new();_map.hud=hud;_contents.add_child(_map)
+ _grid=GridContainer.new();_grid.columns=int(_sizes.command_columns);_grid.add_theme_constant_override('h_separation',int(_sizes.grid_gap));_grid.add_theme_constant_override('v_separation',int(_sizes.grid_gap));_scroll.add_child(_grid)
+ _map=preload('res://scripts/adaptive_minimap.gd').new();_map.hud=hud;_map.sizing=_sizes;add_child(_map)
+ _commands=_panel_box();add_child(_commands)
+ _command_grid=_persistent_grid(_commands,'Commands')
+ _command_scroll=_command_grid.get_parent()
+ _construction=_panel_box();add_child(_construction)
+ _construction_grid=_persistent_grid(_construction,'Construction')
+ _construction_scroll=_construction_grid.get_parent()
  if is_instance_valid(bridge):
   bridge.palette_toggled.connect(_palette)
   bridge.command_action.connect(_controller_action)
   bridge.controller_disconnected.connect(func():_pad_open=false)
- _apply_mode()
+ _apply_mode();_apply_layout_settings()
 
 func _exit_tree():
  if is_instance_valid(_live):_live.set_native_hud_visible(true)
@@ -82,7 +106,9 @@ func _apply_mode():
 
 func _unhandled_key_input(event):
  if event is InputEventKey and event.pressed and not event.echo and event.keycode==KEY_F10:
-  cycle_mode();get_viewport().set_input_as_handled()
+  if event.shift_pressed:reload_layout()
+  else:cycle_mode()
+  get_viewport().set_input_as_handled()
 
 func open_section(value:String):
  var next_section='' if value==section else value
@@ -98,6 +124,10 @@ func _palette(open:bool):
   open_section('')
 
 func _process(delta):
+ _reload_elapsed+=delta
+ if _reload_elapsed>=float(_sizes.reload_interval_seconds):
+  _reload_elapsed=0
+  if layout_config.reload():_apply_layout_settings()
  var active:bool=gameplay.is_valid() and gameplay.call()
  var live:Node=hud.call() if hud.is_valid() else null
  if live!=_live:
@@ -106,7 +136,10 @@ func _process(delta):
  _top.visible=active and is_instance_valid(_live)
  _status.visible=mode!='hidden'
  _dock.visible=_top.visible and mode=='modern'
- _panel.visible=_dock.visible and not section.is_empty()
+ _panel.visible=_dock.visible and section not in ['','Commands','Construction']
+ _commands.visible=_dock.visible
+ _construction.visible=_dock.visible and not _construction_entries.is_empty()
+ _map.visible=_dock.visible
  if not active:
   if _store_owned and is_instance_valid(_live):_live.close_spell_store();_store_owned=false
   Engine.set_meta('adaptive_hud_rects',[]);return
@@ -118,7 +151,7 @@ func _process(delta):
   if mode=='modern':_refresh()
  _layout()
  var rects=[]
- for control in [_top,_dock,_panel]:
+ for control in [_top,_dock,_panel,_commands,_construction,_map]:
   if control.visible:rects.append(control.get_global_rect())
  Engine.set_meta('adaptive_hud_rects',rects)
 
@@ -132,37 +165,121 @@ func _safe_rect()->Rect2:
  return view
 
 func _layout():
- var safe=_safe_rect().grow(-12)
- var scale_factor=clampf(safe.size.y/800.0,.72,1.35)
- _tabs.columns=3 if safe.size.x<600*scale_factor else 6
- for p in [_top,_dock,_panel]:p.scale=Vector2.ONE*scale_factor
+ var safe=_safe_rect().grow(-float(_sizes.viewport_margin))
+ var gap=float(_sizes.gap)
+ var padding=float(_sizes.panel_padding)*2
+ var scale_factor=clampf(minf(safe.size.x,safe.size.y)/float(_sizes.scale_reference),float(_sizes.minimum_scale),float(_sizes.maximum_scale))
+ var columns=int(_sizes.command_columns)
+ var widest=maxi(columns,int(_sizes.construction_columns))
+ var grid_width=widest*float(_sizes.tile_width)+(widest-1)*float(_sizes.grid_gap)+padding+gap*2
+ # Five full tiles include room for padding and the vertical scrollbar.
+ scale_factor=minf(scale_factor,safe.size.x/grid_width)
+ var compact=safe.size.x<float(_sizes.compact_width)
+ _tabs.columns=int(_sizes.compact_tab_columns if compact else _sizes.tab_columns)
+ for p in [_top,_dock,_panel,_commands,_construction]:p.scale=Vector2.ONE*scale_factor
  _top.size=_top.get_combined_minimum_size();_top.position=safe.position
- _dock.size=_dock.get_combined_minimum_size();_dock.position=safe.end-Vector2(_dock.size.x*scale_factor,_dock.size.y*scale_factor)
- var available=Vector2(minf(520*scale_factor,safe.size.x),maxf(80,safe.size.y-_top.size.y*scale_factor-_dock.size.y*scale_factor-24))
+ _dock.size=_dock.get_combined_minimum_size()
+ _dock.position=Vector2(safe.end.x-_dock.size.x*scale_factor,safe.position.y+(_top.size.y*scale_factor+gap if compact else 0))
+ var top_end=maxf(_top.position.y+_top.size.y*scale_factor,_dock.position.y+_dock.size.y*scale_factor)+gap
+ var height_budget=maxf(1,safe.end.y-top_end)
+ var width=minf(grid_width*scale_factor,safe.size.x)
+ var build_height=minf(float(_sizes.construction_height)*scale_factor,height_budget*float(_sizes.construction_height_fraction)) if _construction.visible else 0.0
+ var map_reserve=maxf(float(_sizes.auxiliary_minimum_height)*scale_factor,height_budget*float(_sizes.compact_minimap_height_fraction)) if compact else 0.0
+ var command_height=minf(float(_sizes.command_height)*scale_factor,height_budget-build_height-gap-map_reserve-gap)
+ _commands.size=Vector2(width,command_height)/scale_factor
+ _commands.position=safe.end-Vector2(width,command_height)
+ _construction.size=Vector2(width,maxf(1,build_height))/scale_factor
+ _construction.position=_commands.position-Vector2(0,build_height+gap)
+ _command_grid.columns=columns;_construction_grid.columns=int(_sizes.construction_columns)
+ var desired_map=float(_sizes.expanded_minimap_side if _map_large else _sizes.minimap_side)
+ var map_width=safe.size.x-width-gap
+ var map_height=maxf(1,height_budget-(float(_sizes.auxiliary_minimum_height)*scale_factor+gap if _panel.visible else 0))
+ var map_bottom=safe.end.y
+ if map_width<desired_map and compact:
+  map_width=maxf(1,safe.size.x-float(_sizes.auxiliary_minimum_width)*scale_factor-gap)
+  map_bottom=(_construction.position.y if _construction.visible else _commands.position.y)-gap
+  map_height=maxf(1,map_bottom-top_end)
+ var map_side=minf(desired_map,minf(maxf(1,map_width),map_height))
+ _map.custom_minimum_size=Vector2.ZERO
+ _map.size=Vector2.ONE*map_side;_map.position=Vector2(safe.position.x,map_bottom-map_side)
+ # Auxiliary panels share the space above the minimap on wide screens;
+ # on portrait screens they sit beside the map above the construction panel.
+ var panel_top=top_end
+ var panel_bottom=map_bottom if compact else _map.position.y-gap
+ var panel_width=minf(float(_sizes.auxiliary_width)*scale_factor,maxf(1,safe.size.x-_map.size.x-gap)) if compact else minf(float(_sizes.auxiliary_width)*scale_factor,maxf(1,map_width))
+ var available=Vector2(panel_width,minf(float(_sizes.auxiliary_maximum_height)*scale_factor,maxf(1,panel_bottom-panel_top)))
  _panel.size=available/scale_factor
- _panel.position=Vector2(safe.end.x-available.x,_top.position.y+_top.size.y*scale_factor+10)
- _grid.columns=maxi(1,int((_panel.size.x-24)/112))
- _map.custom_minimum_size=Vector2(0,minf(360 if _map_large else 220,maxf(64,_panel.size.y-200)))
- _map.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+ _panel.position=Vector2(safe.end.x-available.x if compact else safe.position.x,panel_top)
+ _grid.columns=maxi(1,int((_panel.size.x-padding)/(float(_sizes.tile_width)+float(_sizes.grid_gap))))
+
+func reload_layout()->bool:
+ if not layout_config.reload(true):return false
+ _apply_layout_settings()
+ return true
+
+func _apply_layout_settings():
+ _sizes=layout_config.values
+ _map.sizing=_sizes;_map.queue_redraw()
+ _status.custom_minimum_size.x=float(_sizes.status_width)
+ _restyle(self)
+ _signature='';_command_signature='';_construction_signature=''
+ _layout()
+
+func _restyle(node:Node):
+ if node is PanelContainer:_style_panel(node)
+ if node is Label:node.add_theme_font_size_override('font_size',int(_sizes.font_size))
+ if node is Button:_style_button(node,str(node.get_meta('layout_kind','command')))
+ if node is GridContainer:
+  var gap=int(_sizes.tab_gap if node==_tabs else _sizes.grid_gap)
+  node.add_theme_constant_override('h_separation',gap);node.add_theme_constant_override('v_separation',gap)
+ if node is ProgressBar:node.offset_top=-float(_sizes.progress_height)
+ if node==_contents:node.add_theme_constant_override('separation',int(_sizes.content_gap))
+ for child in node.get_children():_restyle(child)
+
+func _persistent_grid(panel:PanelContainer,title:String)->GridContainer:
+ var column=VBoxContainer.new();panel.add_child(column)
+ var heading=Label.new();heading.text=title;column.add_child(heading)
+ var scroll=ScrollContainer.new();scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL;scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED;column.add_child(scroll)
+ var grid=GridContainer.new();grid.columns=int(_sizes.construction_columns);grid.add_theme_constant_override('h_separation',int(_sizes.grid_gap));grid.add_theme_constant_override('v_separation',int(_sizes.grid_gap));scroll.add_child(grid)
+ return grid
+
+static func split_commands(buttons:Array)->Dictionary:
+ var commands=[];var construction=[];var seen={}
+ for entry in buttons:
+  if int(entry.get('state',0))==0:continue
+  # A command button may be exposed in both native bars. Its INI name is
+  # its identity; distinct buttons using the same order must remain distinct.
+  var key=str(entry.get('name',''))
+  if key.is_empty():key=JSON.stringify([entry.get('command',''),entry.get('template',''),entry.get('upgrade',''),entry.get('power',''),entry.get('slot',-1)])
+  if seen.has(key):continue
+  seen[key]=true
+  if entry.get('command','') in ['DOZER_CONSTRUCT','FOUNDATION_CONSTRUCT','CASTLE_UNPACK_EXPLICIT_OBJECT']:
+   construction.append(entry)
+  else:commands.append(entry)
+ return {'commands':commands,'construction':construction}
 
 func _refresh():
  var resource:Dictionary=_live.get_adaptive_resources()
  if not resource.is_empty():_status.text='Gold %s   Army %s/%s   Power %s'%[resource.money,resource.used,resource.limit,resource.power]
+ var groups=split_commands(_live.get_command_buttons())
+ _command_entries=groups.commands;_construction_entries=groups.construction
+ var command_signature=JSON.stringify(_command_entries)
+ if command_signature!=_command_signature:
+  _command_signature=command_signature;_command_tiles=_render_tiles(_command_entries,_command_grid)
+ var construction_signature=JSON.stringify(_construction_entries)
+ if construction_signature!=_construction_signature:
+  _construction_signature=construction_signature;_construction_tiles=_render_tiles(_construction_entries,_construction_grid)
+ _map.refresh()
  var placing:Dictionary=_live.get_placement()
  if placing.get('placing',false) and section!='Placement':section='Placement';_signature=''
  elif not placing.get('placing',false) and section=='Placement':section='Commands';_signature=''
  _entries=[]
  _title.text=section
- _map.visible=section=='Map'
- _scroll.visible=section!='Map'
- _notice.text='Hold RT (or Tab) · D-pad moves · A activates · B cancels' if _pad_open else 'Tap a panel to expand · tap it again to collapse'
+ _scroll.visible=true
+ _notice.text='Hold RT (or Tab) · D-pad moves · A activates · B cancels' if _pad_open else ''
  match section:
-  'Commands':
-   var seen={}
-   for entry in _live.get_command_buttons():
-    var key='%s:%s'%[entry.slot,entry.in_palantir]
-    if int(entry.state)!=0 and not seen.has(key):_entries.append(entry);seen[key]=true
-   if _entries.is_empty():_notice.text='Select a unit, builder, plot, or building to see its commands.'
+  'Commands':_entries=_command_entries
+  'Construction':_entries=_construction_entries
   'Heroes','Builders':
    for entry in _live.get_controller_objects(section.to_lower()):_entries.append({'title':entry.name,'id':entry.id})
   'Powers':
@@ -183,38 +300,54 @@ func _refresh():
    _map.refresh();_entries=[{'title':'Look / orders','map_orders':true,'detail':'Orders' if _map.order_mode else 'Look'},{'title':'Resize map','map_size':true}]
    _scroll.visible=true;_notice.text='Tap / drag to look. Orders sends selected units. Controller: D-pad aims, A looks, B orders.'
   'System':
-   for title in ['Pause / options','Deselect','Stop','Select army','Console','Classic HUD','Hide HUD']:_entries.append({'title':title,'system':title})
+   for title in ['Pause / options','Deselect','Select army','Console','Reload HUD layout','Classic HUD','Hide HUD']:_entries.append({'title':title,'system':title})
  var signature=JSON.stringify(_entries)
- if signature!=_signature:
+ if section in ['Commands','Construction']:
+  _tiles=_command_tiles if section=='Commands' else _construction_tiles
+  _selected=clampi(_selected,0,maxi(0,_entries.size()-1));_highlight()
+ elif signature!=_signature:
   _signature=signature;_render()
 
 func _render():
  _selected=clampi(_selected,0,maxi(0,_entries.size()-1))
- for child in _grid.get_children():_grid.remove_child(child);child.queue_free()
- _tiles.clear()
- for i in _entries.size():
-  var entry:Dictionary=_entries[i]
+ _tiles=_render_tiles(_entries,_grid)
+ _highlight()
+
+func _render_tiles(entries:Array,grid:GridContainer)->Array[Button]:
+ for child in grid.get_children():grid.remove_child(child);child.queue_free()
+ var tiles:Array[Button]=[]
+ for i in entries.size():
+  var entry:Dictionary=entries[i]
   var title=str(entry.get('title',entry.get('template',entry.get('name','Command'))))
   if title.is_empty():title=str(entry.get('command','Command'))
+  if entry.get('command','')=='PUSH_VISIBLE_COMMAND_RANGE':title+=' ›'
+  elif entry.get('command','')=='POP_VISIBLE_COMMAND_RANGE':title='‹ '+title
   var suffix=''
   if int(entry.get('cost',0))>0:suffix+='\n%d gold'%int(entry.cost)
   if int(entry.get('queued',0))>0:suffix+=' · ×%d'%int(entry.queued)
   if entry.has('detail'):suffix+='\n'+str(entry.detail)
-  var button=_button(title+suffix,Vector2(104,56 if section=='Map' else 104))
+  var tile_kind='command' if grid==_command_grid else ('map_control' if grid==_grid and section=='Map' else 'construction')
+  var button=_button(title+suffix,tile_kind)
   button.tooltip_text=title+'\n'+str(entry.get('description',''))
   var icon_name=str(entry.get('image',''))
   if not icon_name.is_empty():
    if not _icons.has(icon_name):_icons[icon_name]=_live.get_command_icon(icon_name)
-   button.icon=_icons[icon_name];button.expand_icon=true;button.icon_alignment=HORIZONTAL_ALIGNMENT_CENTER;button.vertical_icon_alignment=VERTICAL_ALIGNMENT_TOP;button.add_theme_constant_override('icon_max_width',48)
+   button.icon=_icons[icon_name];button.expand_icon=true;button.icon_alignment=HORIZONTAL_ALIGNMENT_CENTER;button.vertical_icon_alignment=VERTICAL_ALIGNMENT_TOP;button.add_theme_constant_override('icon_max_width',int(_sizes.icon_width))
   button.disabled=int(entry.get('state',1)) not in [1,5]
-  button.pressed.connect(_activate.bind(i,false));_grid.add_child(button);_tiles.append(button)
+  button.pressed.connect(_activate_entry.bind(entry,false));grid.add_child(button);tiles.append(button)
+  button.gui_input.connect(func(event):
+   if event is InputEventMouseButton and event.pressed and event.button_index==MOUSE_BUTTON_RIGHT:
+    _activate_entry(entry,true);button.accept_event())
   if float(entry.get('timer',-1))>=0:
-   var progress=ProgressBar.new();progress.mouse_filter=Control.MOUSE_FILTER_IGNORE;progress.show_percentage=false;progress.max_value=1;progress.value=float(entry.timer);progress.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE);progress.offset_top=-6;button.add_child(progress)
- _highlight()
+   var progress=ProgressBar.new();progress.mouse_filter=Control.MOUSE_FILTER_IGNORE;progress.show_percentage=false;progress.max_value=1;progress.value=float(entry.timer);progress.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE);progress.offset_top=-float(_sizes.progress_height);button.add_child(progress)
+ return tiles
 
 func _activate(index:int,cancel:bool):
  if index<0 or index>=_entries.size() or not is_instance_valid(_live):return
- var entry:Dictionary=_entries[index]
+ _activate_entry(_entries[index],cancel)
+
+func _activate_entry(entry:Dictionary,cancel:bool):
+ if not is_instance_valid(_live):return
  if entry.has('slot'):_live.activate_command(entry.slot,entry.in_palantir,cancel)
  elif entry.has('id'):_live.select_controller_group(PackedInt64Array([entry.id]));open_section('Commands')
  elif entry.has('spell'):_live.press_spell_slot(entry.spell)
@@ -239,6 +372,7 @@ func _activate(index:int,cancel:bool):
     for unit in _live.get_controller_objects('units'):ids.append(unit.id)
     _live.select_controller_group(ids)
    'Console':if open_console.is_valid():open_console.call()
+   'Reload HUD layout':reload_layout()
    'Classic HUD':mode='classic';_config.set_value('hud','mode',mode);_config.save('user://adaptive-hud.cfg');open_section('');_apply_mode()
    'Hide HUD':mode='hidden';_config.set_value('hud','mode',mode);_config.save('user://adaptive-hud.cfg');open_section('');_apply_mode()
  _signature='';_refresh()
@@ -263,15 +397,31 @@ func _controller_action(action:String):
 
 func _highlight():
  for i in _tiles.size():_tiles[i].modulate=Color('#ffe2a3') if _pad_open and i==_selected else Color.WHITE
- if _pad_open and _selected>=0 and _selected<_tiles.size():_scroll.ensure_control_visible(_tiles[_selected])
+ if _pad_open and _selected>=0 and _selected<_tiles.size():
+  var scroll=_command_scroll if section=='Commands' else (_construction_scroll if section=='Construction' else _scroll)
+  scroll.ensure_control_visible(_tiles[_selected])
 
 func _panel_box()->PanelContainer:
- var panel=PanelContainer.new();var style=StyleBoxFlat.new();style.bg_color=Color('#101c2af5');style.border_color=Color('#52667d');style.set_border_width_all(1);style.set_corner_radius_all(14)
- for edge in ['left','right','top','bottom']:style.set('content_margin_'+edge,12)
- panel.add_theme_stylebox_override('panel',style);return panel
+ var panel=PanelContainer.new();_style_panel(panel);return panel
 
-func _button(title:String,minimum:Vector2)->Button:
- var button=Button.new();button.text=title;button.custom_minimum_size=minimum;button.focus_mode=Control.FOCUS_NONE;button.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;button.add_theme_font_size_override('font_size',16)
+func _style_panel(panel:PanelContainer):
+ var style=StyleBoxFlat.new();style.bg_color=Color('#101c2af5');style.border_color=Color('#52667d');style.set_border_width_all(int(_sizes.border_width));style.set_corner_radius_all(int(_sizes.panel_corner_radius))
+ for edge in ['left','right','top','bottom']:style.set('content_margin_'+edge,float(_sizes.panel_padding))
+ panel.add_theme_stylebox_override('panel',style)
+ panel.add_theme_font_size_override('font_size',int(_sizes.font_size))
+
+func _button(title:String,kind:String)->Button:
+ var button=Button.new();button.text=title;button.set_meta('layout_kind',kind);button.focus_mode=Control.FOCUS_NONE;button.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
+ _style_button(button,kind);return button
+
+func _style_button(button:Button,kind:String):
+ var width=float(_sizes.get(kind+'_width',_sizes.tile_width))
+ var height=float(_sizes.get(kind+'_height',_sizes.construction_tile_height))
+ if kind in ['command','construction']:height=float(_sizes[kind+'_tile_height'])
+ button.custom_minimum_size=Vector2(width,height)
+ button.add_theme_font_size_override('font_size',int(_sizes.font_size))
+ button.add_theme_constant_override('icon_max_width',int(_sizes.icon_width))
  for state in ['normal','hover','pressed','disabled']:
-  var style=StyleBoxFlat.new();style.bg_color=Color('#283b50') if state!='pressed' else Color('#53694f');style.border_color=Color('#6a7f97') if state!='disabled' else Color('#33404e');style.set_border_width_all(1);style.set_corner_radius_all(10);style.content_margin_left=8;style.content_margin_right=8;style.content_margin_top=8;style.content_margin_bottom=8;button.add_theme_stylebox_override(state,style)
- return button
+  var style=StyleBoxFlat.new();style.bg_color=Color('#283b50') if state!='pressed' else Color('#53694f');style.border_color=Color('#6a7f97') if state!='disabled' else Color('#33404e');style.set_border_width_all(int(_sizes.border_width));style.set_corner_radius_all(int(_sizes.button_corner_radius))
+  for edge in ['left','right','top','bottom']:style.set('content_margin_'+edge,float(_sizes.button_padding))
+  button.add_theme_stylebox_override(state,style)

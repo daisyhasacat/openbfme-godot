@@ -1504,9 +1504,32 @@ func _begin_game(message: Dictionary) -> void:
 	if not rep.ok:
 		for e in rep.errors.slice(0, 20):
 			print("  load error: ", e)
-		_fail("start_new_game failed")
+		if _game_kind == "skirmish" and not _check and not _auto and DisplayServer.get_name() != "headless":
+			_recover_local_load_error(rep)
+		else:
+			_fail("start_new_game failed: " + "\n".join(rep.get("errors", [])))
 		return
 	_enter_game(rep)
+
+
+func _recover_local_load_error(rep: Dictionary) -> void:
+	_hide_rules_summary()
+	_tear_down_game("load failed")
+	_shell.auto_process = true
+	_restore_start_screens()
+	if _state == State.FAILED:
+		return
+	_show_load_error("The match could not be loaded.\n\n" + "\n".join(rep.get("errors", [])))
+
+
+func _show_load_error(message: String) -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "Unable to start match"
+	dialog.dialog_text = message
+	add_child(dialog)
+	dialog.confirmed.connect(dialog.queue_free)
+	dialog.canceled.connect(dialog.queue_free)
+	dialog.popup_centered(Vector2i(760, 260))
 
 
 ## lane CAMP-2: every way into a game (a skirmish, a LAN game, Restart, a replay, a campaign mission, the campaign's next mission and Continue) takes the
@@ -1708,6 +1731,8 @@ func _enter_game(rep: Dictionary) -> void:
 		for o in rep.start.starting_objects:
 			print("GAME starting object: ", JSON.stringify(_world.get_object(o.id)))
 	_install_hud(rep)
+	if not _hud_installed:
+		return
 	# lane END-1: GuiFX.apt (the end screen's movie) is loaded with the game, so ShowEndGame finds it
 	var gfx: Dictionary = _shell.end_game_screen({"kind": "preload"})
 	print("GAME GuiFX for the end screen: level %d %s" % [gfx.get("level", -1), str(gfx.get("error", ""))])
@@ -1754,7 +1779,12 @@ func _install_hud(rep: Dictionary) -> void:
 		"all_health_bars": all_bars != null and str(all_bars) == "yes", "zoom_out_factor": zoom_out, "widescreen_wider": wider})
 	print("GAME HUD installed: ok=%s errors=%s" % [r.ok, r.errors])
 	if not r.ok:
-		hud.queue_free()
+		# Detach the native hook before the shell gets another draw/update.
+		hud.free()
+		if _game_kind in ["skirmish", "restart"] and not _check and not _auto and DisplayServer.get_name() != "headless":
+			_recover_local_load_error(r)
+		else:
+			_fail("HUD setup failed: " + "\n".join(r.get("errors", [])))
 		return
 	_hud = hud
 	_hud_installed = true
@@ -3107,6 +3137,11 @@ func _score_continue() -> void:
 		_shell.shell_pop()
 		_shell.tick(0.033)
 	_audio.stop_music(false)
+	_restore_start_screens()
+
+
+## Shared by score-screen Continue and a failed local match load.
+func _restore_start_screens() -> void:
 	var screens: PackedStringArray = _start_stack if _start_stack.size() > 0 else PackedStringArray(["MainMenu.apt"])
 	var levels: Array[int] = []
 	for screen in screens:

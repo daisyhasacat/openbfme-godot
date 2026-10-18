@@ -8,6 +8,8 @@
 #include "Common/Thing/ThingFactory.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Construction.h"
+#include "GameLogic/BitFlags.h"
+#include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/Object/Object.h"
@@ -147,6 +149,15 @@ void StartingBase::placeForPlayer(GameLogic &logic, int slotNum, const SkirmishG
 		if (name.empty())
 		{
 			continue;
+		}
+		// OpenBFME fortress construction replaces a human's starting builders.
+		// Keep other starting units, and preserve the native AI's builder workforce.
+		if (logic.fortressConstruction() && player.getPlayerType() == PLAYER_HUMAN)
+		{
+			const auto *tt = logic.things().findTemplate(name);
+			const int dozer = ObjectTemplateInfoBuilder::kindOfIndex("DOZER");
+			if (tt && dozer >= 0 && MaskTest(logic.templateInfo(tt->getFinalOverride()).kindOf, (unsigned)dozer))
+				continue;
 		}
 		const Coord3D &off = pt.m_startingUnitOffset[i];
 		if (off.x == 0.0f && off.y == 0.0f && off.z == 0.0f)

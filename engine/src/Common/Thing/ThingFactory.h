@@ -41,6 +41,7 @@
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/ObjectTypes.h"
 
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
@@ -94,6 +95,8 @@ public:
 	// the master list, in creation order (overrides are not in it)
 	const std::vector<ThingTemplate *> &templates() const { return m_list; }
 	size_t templateCount() const { return m_list.size(); }
+	// Companion catalog cache: changes on parse, overrides, reset, and runtime scalar edits.
+	std::uint64_t revision() const { return m_revision; }
 
 	NameKeyGenerator &nameKeys() { return m_keys; }
 	ModuleFactory &moduleFactory() { return m_modules; }
@@ -126,6 +129,7 @@ private:
 	void buildTables(bool bfme1);
 	void noteRaw(const std::string &field) { ++m_rawFieldCounts[field]; }
 
+	std::uint64_t m_revision = 0;
 	NameKeyGenerator &m_keys;
 	ModuleFactory &m_modules;
 	const RwGrammar &m_grammar;

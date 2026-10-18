@@ -365,6 +365,7 @@ extensions in the map browser). It defaults to Off. Selecting your completed
 fortress opens your faction builder's building menu on the right. Choose a
 building and place/rotate it normally; construction starts immediately at the
 site without a builder, using normal prices, placement checks and build times.
+Human players start without their usual builders while this rule is enabled; computer players retain theirs for the native AI. Other starting units are unchanged.
 The fortress keeps its ordinary recruitment and upgrade commands. This applies
 to every player and travels with match setup and replays. The menu comes from
 the faction's starting builder template, including mod-defined command sets.

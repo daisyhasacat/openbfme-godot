@@ -695,6 +695,8 @@ private:
 	// lane LUAGD-1: the lua-gdextension LuaState whose lua_State the bfme.* runtime runs on (declared first: the runtime goes first)
 	Ref<RefCounted> m_consoleLuaState;
 	std::unique_ptr<BfmeLuaRuntime> m_consoleRuntime;
+	std::shared_ptr<const BfmeLuaRuntime::Collections> m_luaCatalog;
+	std::uint64_t m_luaCatalogRevision = 0;
 	void ensureConsoleRuntime();
 	void refreshTimingHooks();
 	bool m_timingRestoreLogicThread = false;

@@ -9,6 +9,29 @@ Two ways to build the Windows x64 game:
 | Compiler / runtime | cl `/fp:strict`, static MSVC CRT | Clang 23 + lld + libc++ against the UCRT (llvm-mingw 20261006, static C++ runtime) |
 | Output | `godot/bin/openbfme.windows.template_*.dll`, `engine/build/openbfme_tests.exe` | the same DLL, `build/windows/build/openbfme_tests.exe` / `openbfme_peer.exe`, and the exported game in `build/windows/export/` |
 
+## Windows ARM64
+
+Run `build_arm64.bat` from a Windows checkout, or `build_arm64.bat Debug` for a
+Debug build. Install Visual Studio 2022 or newer (or Build Tools) with the C++
+x64/x86 tools, C++ ARM64 build tools and a Windows SDK. CMake, Ninja, Git and
+Python 3 are required, as for the x64 build.
+
+The script selects the x64-hosted ARM64 compiler, including when launched from
+an existing developer prompt. It works on an x64 Windows host or on Windows 11
+ARM64 with x64 tool emulation. LuaJIT uses x64 host tools to generate its ARM64 VM.
+Build files, `openbfme_tests.exe` and `openbfme_peer.exe` go into
+`build/windows-arm64/`, separate from `engine/build/`. The ARM64 GDExtension goes
+into `godot/bin/` and has ARM64 entries in the extension manifest. Use an ARM64
+Godot executable matching the project's API version to run it.
+
+This script builds without running tests or exporting the game. On Windows ARM64,
+run the test executable from `build/windows-arm64/`; `run_tests.bat` still targets
+the x64 build. The retail x86 oracle helpers remain separate: build them using
+`tools/retail_oracle/build.bat`. Synthetic audio fixtures have the same tool
+requirements as the x64 build and are generated under this build's
+`audio_fixtures/` directory. Native Windows ARM64 build and gameplay validation
+remain pending.
+
 ## What `build.bat` and `run_tests.bat` need (GitHub #23)
 
 - Visual Studio 2022 or newer (or its Build Tools) with the C++ x64 and x86 tools; `build.bat` and `run_tests.bat` find them through

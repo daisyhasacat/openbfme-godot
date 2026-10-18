@@ -84,6 +84,7 @@ void parseFilter(INI *ini, void *instance, void *store, const void *)
 }
 
 // RW 0xC6D450
+OPENBFME_INI_OFFSETOF_BEGIN
 const FieldParse kTrackerParse[] = {
 	{ "TauntAndPointDistance", INI::parseReal, nullptr, ET_OFF(m_tauntAndPointDistance) },
 	{ "TauntAndPointUpdateDelay", INI::parseDurationUnsignedInt, nullptr, ET_OFF(m_tauntAndPointUpdateDelay) },
@@ -112,6 +113,8 @@ const FieldParse kRadiateParse[] = {
 	{ "VictimFilter", parseFilter, nullptr, RF_OFF(m_victimFilter) },
 	{ nullptr, nullptr, nullptr, 0 }
 };
+OPENBFME_INI_OFFSETOF_END
+
 
 int kindBit(const char *name)
 {

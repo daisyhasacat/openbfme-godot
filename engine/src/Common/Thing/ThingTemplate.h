@@ -20,6 +20,7 @@
 // S-071 / S-072 (see ThingFactory.h).
 
 #pragma once
+#include <cstdint>
 
 #include "Common/INIDataTypes.h"
 #include "Common/Module.h"
@@ -180,6 +181,7 @@ public:
 		auto it = m_fieldIndex->find(name);
 		if (it == m_fieldIndex->end() || it->second >= m_fields.size()) return false;
 		m_fields[it->second] = std::move(value);
+		if (m_catalogRevision) ++*m_catalogRevision;
 		return true;
 	}
 	// VIS-1: the same slots by index: the row-name table (shared by the templates of one factory, fixed by the binary's field table) and the slot's live value
@@ -247,6 +249,7 @@ private:
 
 	// field slots (see ThingFactory: one per row of the object table, then the audio table) and the
 	// names of the slots, shared by every template of one factory
+	std::uint64_t *m_catalogRevision = nullptr; // owning factory; never copied by copyFrom
 	std::vector<FieldValue> m_fields;
 	const std::vector<std::string> *m_fieldNames = nullptr;
 	const std::unordered_map<std::string, size_t> *m_fieldIndex = nullptr; ///< the factory's name -> slot index of m_fieldNames (unique names)

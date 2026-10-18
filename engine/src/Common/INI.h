@@ -69,6 +69,18 @@ struct LookupListRec
 };
 typedef const LookupListRec *ConstLookupListRecArray;
 
+// INI tables intentionally use compiler-supported offsetof on inherited ModuleData.
+// Bracket only the affected tables/registrations so other layout warnings stay enabled.
+#if defined(__GNUC__) || defined(__clang__)
+#define OPENBFME_INI_OFFSETOF_BEGIN \
+	_Pragma("GCC diagnostic push") \
+	_Pragma("GCC diagnostic ignored \"-Winvalid-offsetof\"")
+#define OPENBFME_INI_OFFSETOF_END _Pragma("GCC diagnostic pop")
+#else
+#define OPENBFME_INI_OFFSETOF_BEGIN
+#define OPENBFME_INI_OFFSETOF_END
+#endif
+
 // ZH Include/Common/INI.h FieldParse. A row whose token is NULL but whose parse is not is the
 // table's catch-all (called with userData = the field name).
 struct FieldParse

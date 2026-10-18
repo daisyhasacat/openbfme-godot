@@ -304,6 +304,7 @@ Object *Construction::constructOnPlot(Object &plot, const ThingTemplate &what, c
 		obj->friend_onBuildComplete(); // RW 0x858B79
 		onStructureConstructionComplete(owner, &plot, *obj, false);
 	}
+	if (obj->isKindOfName("STRUCTURE")) logic.notifyBuildingPlaced(*obj, &plot);
 	return obj;
 }
 
@@ -353,6 +354,7 @@ Object *Construction::constructByDozer(Object &dozer, const ThingTemplate &what,
 	{
 		obj->friend_onBuildComplete();
 	}
+	if (obj->isKindOfName("STRUCTURE")) logic.notifyBuildingPlaced(*obj, &dozer);
 	return obj;
 }
 
@@ -389,6 +391,7 @@ Object *Construction::constructWithoutBuilder(GameLogic &logic, const ThingTempl
 	owner.withdrawMoney((std::uint32_t)cost, true);
 	owner.getScoreKeeper().addMoneySpentByKind(logic, &what, cost);
 	obj->setBuildCostPaid((float)cost);
+	if (obj->isKindOfName("STRUCTURE")) logic.notifyBuildingPlaced(*obj, nullptr);
 	return obj;
 }
 
@@ -430,6 +433,7 @@ Object *Construction::buildObjectNow(GameLogic &logic, Object *builder, const Th
 		onStructureConstructionComplete(owner, builder, *obj, false);
 	}
 	obj->friend_onBuildComplete();
+	if (obj->isKindOfName("STRUCTURE")) logic.notifyBuildingPlaced(*obj, builder);
 	return obj;
 }
 

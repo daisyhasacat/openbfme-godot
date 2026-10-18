@@ -410,6 +410,10 @@ public:
 		const Object *object;
 		int frames;
 	};
+	// OpenBFME notification only: consumers queue IDs/data and never execute Lua here.
+	using BuildingPlacedHook = std::function<void(const Object &, const Object *)>;
+	void setBuildingPlacedHook(BuildingPlacedHook hook) { m_buildingPlacedHook = std::move(hook); }
+	void notifyBuildingPlaced(const Object &building, const Object *builder) const { if (m_buildingPlacedHook) m_buildingPlacedHook(building, builder); }
 	using TimingHook = std::function<int(const TimingRequest &)>;
 	void setTimingHook(const std::string &kind, TimingHook hook) { if (hook) m_timingHooks[kind] = std::move(hook); else m_timingHooks.erase(kind); }
 	bool hasTimingHook(const std::string &kind) const { return m_timingHooks.count(kind) != 0; }
@@ -758,6 +762,7 @@ private:
 	UnsignedInt m_frame = 0;
 	int m_gameDifficulty = 1;     ///< lane CAMP-1H: RW GameLogic + 0xA4
 	GameRules m_gameRules = MpGameRules::none(); ///< lane RULES-1
+	BuildingPlacedHook m_buildingPlacedHook;
 	std::map<std::string, TimingHook> m_timingHooks;
 	bool m_fortressConstruction = false;
 	int m_peaceTimeMinutes = PeaceTime::kOff;

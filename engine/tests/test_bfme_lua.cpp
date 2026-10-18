@@ -631,3 +631,68 @@ TEST_CASE("bfme Lua: synchronized tickets wait for committed outcomes and guest 
  allowed=true; run("pending=bfme.players[1]:set('money',90)"); vm.flush(); vm.invalidate();
  CHECK(run("return bfme.mutations.getStatus(pending)")=="expired registry\n");
 }
+
+TEST_CASE("bfme Lua: shared catalogs refresh independently from live state without exposing mutable tables")
+{
+	BfmeFixture f;
+	auto catalog = std::make_shared<BfmeLuaRuntime::Collections>();
+	(*catalog)["unitTypes"]["GondorSoldier"] = {{"id", "GondorSoldier"}, {"cost", 75},
+		{"buildMode", BfmeLuaValue::Table{{"recommended", true}}}};
+	f.snapshot.collections.erase("unitTypes");
+	f.snapshot.catalog = catalog;
+	CHECK(f.run("saved=bfme.unitTypes.GondorSoldier; local mode=saved.buildMode; mode.recommended=false; return saved.cost,saved.buildMode.recommended") == "75\ttrue\n");
+	f.snapshot.collections["players"]["1"]["money"] = 4321;
+	CHECK(f.run("return saved.cost,bfme.players[1].money,saved==bfme.unitTypes.GondorSoldier") == "75\t4321\ttrue\n");
+	// Replacing the immutable catalog must update existing proxies and expire removed definitions.
+	auto replacement = std::make_shared<BfmeLuaRuntime::Collections>(*catalog);
+	(*replacement)["unitTypes"]["GondorSoldier"]["cost"] = 90;
+	f.snapshot.catalog = replacement;
+	CHECK(f.run("return saved.cost") == "90\n");
+	f.vm->invalidate();
+	CHECK_FALSE(f.vm->execute("return saved.cost").ok);
+	CHECK(f.run("return bfme.unitTypes.GondorSoldier.cost") == "90\n");
+	f.snapshot.catalog = std::make_shared<const BfmeLuaRuntime::Collections>();
+	CHECK(f.run("return bfme.unitTypes.GondorSoldier") == "nil\n");
+	f.snapshot.catalog.reset();
+	f.snapshot.collections["unitTypes"]["Other"] = {{"id", "Other"}, {"cost", 10}};
+	CHECK(f.run("return bfme.unitTypes.Other.cost") == "10\n");
+}
+
+TEST_CASE("bfme Lua: engine events queue across threads and dispatch once at safe points")
+{
+	BfmeFixture f;
+	auto sink = f.vm->eventSink();
+	f.run("starts=0; placed=0; bfme.events.onMatchStarted('start', function(e) starts=starts+1; seen=bfme.players[1].money end); bfme.events.onBuildingPlaced('place', function(e) placed=placed+1; objectId=e.objectId; bfme.players[1].money=2000 end)");
+	CHECK_FALSE(f.vm->hasPending());
+	std::thread producer([sink] { sink("matchStarted", {}); sink("buildingPlaced", {{"objectId", 1234}}); });
+	producer.join();
+	CHECK(f.run("return starts,placed") == "0\t0\n");
+	CHECK(f.vm->hasPending());
+	f.snapshot.collections["players"]["1"]["money"] = 987;
+	f.vm->flush();
+	CHECK(f.run("return starts,placed,objectId,seen") == "1\t1\t1234\t987\n");
+	CHECK(f.applied.empty()); // event writes wait until the next safe point
+	f.vm->flush();
+	CHECK(f.run("return bfme.players[1].money") == "2000\n");
+	CHECK_FALSE(f.vm->hasPending());
+	f.vm->flush();
+	CHECK(f.run("return starts,placed") == "1\t1\n");
+	// Reload replaces a named listener; errors cannot prevent other listeners.
+	f.run("bfme.events.onBuildingPlaced('place', function(e) placed=placed+10; error('event test') end); bfme.events.onBuildingPlaced('other', function(e) other=e.objectId end)");
+	sink("buildingPlaced", {{"objectId", 55}});
+	f.vm->flush();
+	CHECK(f.run("return placed,other") == "11\t55\n");
+	CHECK(f.asyncOutput.find("bfme event 'place' failed:") != std::string::npos);
+	f.run("bfme.events.remove('place')");
+	sink("buildingPlaced", {{"objectId", 56}});
+	f.vm->flush();
+	CHECK(f.run("return placed,other") == "11\t56\n");
+	// New matches discard stale queued notifications, retaining registrations.
+	sink("matchStarted", {});
+	f.vm->invalidate();
+	CHECK_FALSE(f.vm->hasPending());
+	sink("matchStarted", {});
+	f.vm->flush();
+	CHECK(f.run("return starts") == "2\n");
+	CHECK_FALSE(f.vm->execute("bfme.events.onBuildingPlaced('x', false)").ok);
+}

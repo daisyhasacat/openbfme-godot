@@ -190,9 +190,9 @@ bool Radar::loadArt(ArchiveFileSystem &fs, const std::string &mapFile, std::stri
 bool Radar::decodeArt(const std::vector<std::uint8_t> &bytes, int &w, int &h, std::vector<std::uint8_t> &rgba, std::string *error)
 {
 	TGAImage img;
-	// INFERENCE: retail loads the file through the texture manager, which takes any TGA; the core reader takes the uncompressed true-colour form every
-	// retail art file has (2 / 32-bit) and refuses the others with an error, never a silent default
-	if (!TGAFile::decode(bytes.data(), bytes.size(), img, error, 4096) || img.width <= 0 || img.height <= 0 || bytes.size() < 18)
+	// Radar art goes through the texture-loader path, unlike terrain tiles.
+	// Community maps can supply type-10 RLE true-colour art.
+	if (!TGAFile::decodeRadar(bytes.data(), bytes.size(), img, error) || img.width <= 0 || img.height <= 0 || bytes.size() < 18)
 	{
 		return false;
 	}

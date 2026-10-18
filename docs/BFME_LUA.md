@@ -298,6 +298,28 @@ A failing callback keeps its schedule and writes its error to the log once per n
 each callback's runs, failures and last error, and `remove(name)` stops one. Output from callbacks goes to the session log
 (`LUA ...` lines). Callbacks survive match changes; check `bfme.match.getStatus().ready`.
 
+### Engine events
+
+`bfme.events.onMatchStarted(name, fn)` receives `{frame}` once after a successful live map load.
+`bfme.events.onBuildingPlaced(name, fn)` receives `{objectId, builderId, typeId, playerId, frame, position={x,y,z}}`
+once when native construction accepts a building: dozer, plot, scripted self-construction, or immediate build.
+Placement previews, rejected orders, map-authored objects, and construction completion do not emit it.
+`builderId` is zero for a build without a builder; IDs in a notification can have expired by dispatch time.
+
+C++ queues value-only notifications; Lua runs at the next safe point with a fresh snapshot and the same
+250 ms budget. Handler errors are logged without stopping other listeners. Mutations and events generated
+by handlers wait until a later safe point. Named listeners replace the same name for that event, survive
+match changes, and appear in `bfme.events.list()` with an `event` field. `remove(name)` removes that name
+from timers and both engine events. Queued notifications are discarded when a match ends or is replaced.
+Registration receives future events only; a script reloaded during a match should also apply its current setting
+explicitly, as `dev/neutral_decorations.lua` does. Gameplay writes retain their multiplayer/replay restrictions.
+
+```lua
+bfme.events.onBuildingPlaced("construction-log", function(event)
+    print("Placed", event.typeId, event.objectId)
+end)
+```
+
 ### Orders
 
 Orders go through the same player commands a click sends (and the native AI uses). They run in the next logic frame
@@ -487,7 +509,12 @@ The API lives in the bootstrap in `engine/src/GameLogic/ScriptEngine/BfmeLuaRunt
 Both use the core helpers: `record(handle)` for checked lookups, `proxy(kind, id)` for handles, `templateName(...)`
 for template arguments, `numeric(...)` for validation, `queue(...)` for writes and `copy(...)` for detached results.
 New engine state is added to `BfmeLuaRuntime::Snapshot` and filled in `GameWorld::bfme_snapshot()`, which runs with
-the logic worker held. New queued actions are applied in `GameWorld::bfme_apply()`. Add a contract test to
+the logic worker held. Object definitions use an immutable shared catalog, marshalled into Lua only when the
+catalog changes. The factory revision advances on INI parsing, overrides, reset, copies, and runtime scalar
+edits (including synchronized Lua actions); starting a match or switching the mounted store also discards
+the catalog. Live players, objects, selection, and match state still refresh for every chunk or due callback.
+This keeps periodic status callbacks from rebuilding the entire template catalog on the render thread.
+New queued actions are applied in `GameWorld::bfme_apply()`. Add a contract test to
 `engine/tests/test_bfme_lua.cpp` and document it here.
 
 - **An order** is a new case in `GameWorld::bfme_order()` (`GodotBfmeLuaAI.cpp`), which builds the player command message, plus an entry in `orderFns`.
@@ -502,6 +529,8 @@ handle identity, enumeration, detached copies, money tickets, validation, expire
 the AI switch, update callbacks and error recovery. `--test-case='skirmish ai script control*'` (retail files) checks that a script-controlled computer
 builds and trains nothing and builds again once handed back. `godot --headless --path godot --script res://tests/lua_ai_test.gd` plays the
 Lua skirmish AI on Evendim for five game minutes.
+`godot --headless --path godot --script res://tests/lua_snapshot_test.gd` (installed retail data) reports repeated snapshot median/p95/max times and checks that runtime template edits invalidate the catalog.
+`godot --headless --path godot --script res://tests/lua_events_test.gd` (installed retail data) checks native match-start and accepted-placement notifications, safe-point dispatch, and the timer-free scenery script.
 `godot --headless --path godot --script res://tests/lua_console_test.gd` exercises the console and native extension together.
 `godot --headless --path godot --script res://tests/lua_gdextension_test.gd` (no game files) checks the lua-gdextension classes, the
 `bfme` API on the `LuaState` of `get_lua_state()`, the execution budget and the sandbox.

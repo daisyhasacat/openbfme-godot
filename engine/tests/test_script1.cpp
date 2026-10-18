@@ -5,6 +5,10 @@
 // runtime cases follow the RotWK functions cited at each check (ScriptEngine.h).
 
 #include "doctest.h"
+#include "BigTestUtil.h"
+#include "Common/ArchiveFile.h"
+#include "GameClient/MapScriptSetup.h"
+#include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "LogicTestUtil.h"
 #include "ScriptTestUtil.h"
 #include "MapCorpusUtil.h"
@@ -679,5 +683,44 @@ TEST_CASE("script r2: a reused EndGameController shows the next game's script en
 			shown = shown || (q.kind == EndGameRequest::SHOW_END_GAME && q.text == "APT:EndVictorious");
 		}
 		CHECK_MESSAGE(shown, "game " << game);
+	}
+}
+
+TEST_CASE("BFME1 converted maps: absent side libraries are reported; expansion and corrupt libraries still fail")
+{
+	const std::string path = "Libraries\\ConvertedOnly\\ConvertedOnly.map";
+	for (int mode = 0; mode != 3; ++mode)
+	{
+		Win32BIGFileSystem fs;
+		std::vector<std::pair<std::string, std::string>> files = {{"Data\\INI\\Default\\SubsystemLegend.ini", ""}};
+		if (mode == 1) files.emplace_back("Data\\INI\\Default\\SubsystemLegendExpansion1.ini", "");
+		if (mode == 2) files.emplace_back(path, "invalid map");
+		auto bytes = std::make_shared<std::vector<std::uint8_t>>(bigtest::makeBig("BIGF", files));
+		std::string error;
+		auto archive = fs.openArchiveFromMemory("synthetic.big", bytes, &error);
+		REQUIRE_MESSAGE(archive, error);
+		fs.mountArchive(std::move(archive), "synthetic.big", false);
+		LoadedMap map;
+		map.sides.sides.resize(1);
+		map.sides.sides[0].dict.setAsciiString("playerName", "PlyrCreeps");
+		map.sides.hasLibraryMapLists = true;
+		map.sides.libraryMaps = {{path}};
+		NameKeyGenerator keys;
+		SkirmishAIStore ai(keys);
+		MapScriptSetup setup;
+		const bool ok = setup.build(fs, ai, map.sides, map, {}, {}, &error);
+		if (mode == 0)
+		{
+			CHECK(ok);
+			REQUIRE(setup.notes().size() == 1);
+			CHECK(setup.notes()[0].find(path) != std::string::npos);
+			REQUIRE(setup.sides().size() == 1);
+			CHECK(setup.sides()[0].libraries.empty());
+		}
+		else
+		{
+			CHECK_FALSE(ok);
+			CHECK(error.find(path) != std::string::npos);
+		}
 	}
 }

@@ -4,6 +4,7 @@
 #include "GameClient/MapScriptSetup.h"
 
 #include "Common/ArchiveFileSystem.h"
+#include "Common/BfmeGame.h"
 #include "GameClient/MapUtil.h"
 #include "GameLogic/Map/SidesList.h"
 #include "GameLogic/SkirmishAI/SkirmishAIData.h"
@@ -118,6 +119,7 @@ bool MapScriptSetup::build(ArchiveFileSystem &fs, const SkirmishAIStore &aiStore
 	const std::set<std::string> &droppedMapSides, const std::vector<std::string> &aiTypes, std::string *error)
 {
 	m_sides.clear();
+	m_notes.clear();
 	m_sides.resize(sides.sides.size());
 	for (size_t i = 0; i < sides.sides.size(); ++i)
 	{
@@ -158,7 +160,21 @@ bool MapScriptSetup::build(ArchiveFileSystem &fs, const SkirmishAIStore &aiStore
 		// then the side's LibraryMaps
 		if (mapIndex >= 0 && map.sides.hasLibraryMapLists && (size_t)mapIndex < map.sides.libraryMaps.size())
 		{
-			if (!loadLibraryList(fs, map.sides.libraryMaps[(size_t)mapIndex], out, loaded, 0, error))
+			std::vector<std::string> libraries;
+			for (const auto &path : map.sides.libraryMaps[(size_t)mapIndex])
+			{
+				// Compatibility inference: BFME1 community maps converted from BFME2 can
+				// retain side-library references to systems absent from the mounted game.
+				// Keep this limited to missing map-authored references; AI libraries,
+				// present-but-invalid libraries and BFME2/RotWK dependencies remain required.
+				if (isBfme1Data(fs) && !fs.doesFileExist(path))
+				{
+					m_notes.push_back("BFME1 map side '" + out.sideName + "': skipping absent map-authored library reference: " + path);
+					continue;
+				}
+				libraries.push_back(path);
+			}
+			if (!loadLibraryList(fs, libraries, out, loaded, 0, error))
 			{
 				return false;
 			}

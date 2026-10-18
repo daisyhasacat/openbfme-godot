@@ -107,10 +107,12 @@ void positionFX(GameLogic &logic, const char *site, const std::string &fx, const
 }
 
 #define TD_OFF(m) (int)offsetof(TemporarilyDefectUpdateModuleData, m)
+OPENBFME_INI_OFFSETOF_BEGIN
 const FieldParse kTemporarilyDefect[] = { // RW 0xC76214
 	{ "DefectDuration", INI::parseDurationUnsignedInt, nullptr, TD_OFF(m_defectDuration) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+
 #undef TD_OFF
 
 #define DE_OFF(m) (int)offsetof(DominateEnemySpecialPowerModuleData, m)
@@ -122,6 +124,8 @@ const FieldParse kDominateEnemy[] = { // RW 0xC76268
 	{ "AttributeModifierAffects", SpecialAbilityModules::parseObjectFilterField, nullptr, DE_OFF(m_affects) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+OPENBFME_INI_OFFSETOF_END
+
 #undef DE_OFF
 
 // RW 0x8D239B: TriggerSpecialPower = <module tag> [TARGETPOS | OBJECTPOS]; at most 8 entries (a ninth is ignored)
@@ -156,10 +160,12 @@ void parseTriggerSpecialPower(INI *ini, void *, void *store, const void *)
 }
 
 #define AM_OFF(m) (int)offsetof(ActivateModuleSpecialPowerModuleData, m)
+OPENBFME_INI_OFFSETOF_BEGIN
 const FieldParse kActivateModule[] = { // RW 0xC769A0
 	{ "TriggerSpecialPower", parseTriggerSpecialPower, nullptr, AM_OFF(m_triggers) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+
 #undef AM_OFF
 #define AS_OFF(m) (int)offsetof(ArrowStormUpdateModuleData, m)
 const FieldParse kArrowStorm[] = { // RW 0xC05168
@@ -171,6 +177,7 @@ const FieldParse kArrowStorm[] = { // RW 0xC05168
 	{ "CanShootEmptyGround", INI::parseBool, nullptr, AS_OFF(m_canShootEmptyGround) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+
 #undef AS_OFF
 
 #define RS_OFF(m) (int)offsetof(RousingSpeechUpdateModuleData, m)
@@ -187,6 +194,7 @@ const FieldParse kRousingSpeech[] = { // RW 0xC6BA48
 	{ "ObjectFilter", SpecialAbilityModules::parseObjectFilterField, nullptr, RS_OFF(m_filter) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+
 #undef RS_OFF
 
 #define TP_OFF(m) (int)offsetof(TeleportSpecialAbilityUpdateModuleData, m)
@@ -197,6 +205,7 @@ const FieldParse kTeleport[] = { // RW 0xC054B0
 	{ "MaxDistance", INI::parseReal, nullptr, TP_OFF(m_maxDistance) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+
 #undef TP_OFF
 
 #define CU_OFF(m) (int)offsetof(CurseSpecialPowerModuleData, m)
@@ -206,6 +215,8 @@ const FieldParse kCurse[] = { // RW 0xC76440
 	{ "CursePercentage", INI::parsePercentToReal, nullptr, CU_OFF(m_cursePercentage) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+OPENBFME_INI_OFFSETOF_END
+
 #undef CU_OFF
 } // namespace
 
@@ -278,6 +289,7 @@ void HordeContain::onDefectionEnded()
 // ShareExperienceBehavior
 // ---------------------------------------------------------------------------------------------------------------------------------
 #define SE_OFF(m) (int)offsetof(ShareExperienceBehaviorModuleData, m)
+OPENBFME_INI_OFFSETOF_BEGIN
 const FieldParse kShareExperience[] = { // RW 0xC5EF30
 	{ "Radius", INI::parseReal, nullptr, SE_OFF(m_radius) },
 	{ "DropOff", INI::parseReal, nullptr, SE_OFF(m_dropOff) },
@@ -285,6 +297,8 @@ const FieldParse kShareExperience[] = { // RW 0xC5EF30
 	{ "ObjectFilter", SpecialAbilityModules::parseObjectFilterField, nullptr, SE_OFF(m_filter) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+OPENBFME_INI_OFFSETOF_END
+
 #undef SE_OFF
 
 void ShareExperienceBehaviorModuleData::buildFieldParse(MultiIniFieldParse &p)
@@ -389,6 +403,7 @@ void parseOclName(INI *ini, void *, void *store, const void *)
 }
 
 #define DF_OFF(m) (int)offsetof(DamageFilteredCreateObjectDieModuleData, m)
+OPENBFME_INI_OFFSETOF_BEGIN
 const FieldParse kDamageFilteredMux[] = { // RW 0xC76BD8
 	{ "DeathTypes", ParseDeathTypeFlags, nullptr, DF_OFF(m_dieMux.m_deathTypes) },
 	{ "ExemptStatus", ParseObjectStatusMask, nullptr, DF_OFF(m_dieMux.m_exemptStatus) },
@@ -398,6 +413,7 @@ const FieldParse kDamageFilteredMux[] = { // RW 0xC76BD8
 	{ "MaxKillerAngle", INI::parseAngleReal, nullptr, DF_OFF(m_dieMux.m_maxKillerAngle) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+
 const FieldParse kDamageFiltered[] = { // RW 0xC613D8
 	{ "CreationList", parseOclName, nullptr, DF_OFF(m_creationList) },
 	{ "DamageTypeTriggersInstantly", parseDamageSubType, nullptr, DF_OFF(m_instantType) },
@@ -405,6 +421,8 @@ const FieldParse kDamageFiltered[] = { // RW 0xC613D8
 	{ "PostFilterTriggeredDuration", INI::parseDurationUnsignedInt, nullptr, DF_OFF(m_postFilterDuration) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+OPENBFME_INI_OFFSETOF_END
+
 #undef DF_OFF
 
 void DamageFilteredCreateObjectDieModuleData::buildFieldParse(MultiIniFieldParse &p)
@@ -513,6 +531,7 @@ void parseAutoAbilityQuery(INI *ini, void *instance, void *store, const void *us
 }
 
 #define AA_OFF(m) (int)offsetof(AutoAbilityBehaviorModuleData, m)
+OPENBFME_INI_OFFSETOF_BEGIN
 const FieldParse kAutoAbility[] = { // RW 0xC57EC0
 	{ "SpecialAbility", INI::parseAsciiString, nullptr, AA_OFF(m_specialAbility) },
 	{ "MaxScanRange", INI::parseReal, nullptr, AA_OFF(m_maxScanRange) },
@@ -527,6 +546,8 @@ const FieldParse kAutoAbility[] = { // RW 0xC57EC0
 	{ "ForbiddenStatus", ParseObjectStatusMask, nullptr, AA_OFF(m_forbiddenStatus) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+OPENBFME_INI_OFFSETOF_END
+
 #undef AA_OFF
 
 const unsigned kOptTargetPos = 0x20u;         // NEED_TARGET_POS (bit 5)
@@ -1025,12 +1046,14 @@ void parseNextName(INI *ini, void *, void *store, const void *) // RW 0x73ACEF (
 }
 
 #define WM_OFF(m) (int)offsetof(WeaponModeSpecialPowerUpdateModuleData, m)
+OPENBFME_INI_OFFSETOF_BEGIN
 const FieldParse kWeaponModeBase[] = { // RW 0xC87588
 	{ "SpecialPowerTemplate", parseWeaponModePower, nullptr, 0 },
 	{ "InitiateSound", parseNextName, nullptr, WM_OFF(m_initiateSound) },
 	{ "StartsPaused", INI::parseBool, nullptr, WM_OFF(m_startsPaused) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+
 const FieldParse kWeaponMode[] = { // RW 0xC650A0
 	{ "Duration", INI::parseDurationUnsignedInt, nullptr, WM_OFF(m_duration) },
 	{ "AttributeModifier", INI::parseAsciiString, nullptr, WM_OFF(m_attributeModifier) },
@@ -1038,6 +1061,8 @@ const FieldParse kWeaponMode[] = { // RW 0xC650A0
 	{ "WeaponSetFlags", parseWeaponSetFlagWords, nullptr, WM_OFF(m_weaponSetFlags) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+OPENBFME_INI_OFFSETOF_END
+
 #undef WM_OFF
 
 void WeaponModeSpecialPowerUpdateModuleData::buildFieldParse(MultiIniFieldParse &p)
@@ -1265,6 +1290,7 @@ void WeaponModeSpecialPowerUpdate::crc(StateHasher &h) const
 // DualWeaponBehavior
 // ---------------------------------------------------------------------------------------------------------------------------------
 #define DW_OFF(m) (int)offsetof(DualWeaponBehaviorModuleData, m)
+OPENBFME_INI_OFFSETOF_BEGIN
 const FieldParse kDualWeapon[] = { // RW 0xC58088
 	{ "SwitchWeaponOnCloseRangeDistance", INI::parseReal, nullptr, DW_OFF(m_switchDistance) },
 	{ "UseCloseRangeWhileMounted", INI::parseBool, nullptr, DW_OFF(m_useCloseRangeWhileMounted) },
@@ -1273,6 +1299,8 @@ const FieldParse kDualWeapon[] = { // RW 0xC58088
 	{ "UseRealVictimRange", INI::parseBool, nullptr, DW_OFF(m_useRealVictimRange) },
 	{ nullptr, nullptr, nullptr, 0 },
 };
+OPENBFME_INI_OFFSETOF_END
+
 #undef DW_OFF
 
 const int kWeaponSetCloseRange = 7; // TheWeaponConditionNames[7] CLOSE_RANGE

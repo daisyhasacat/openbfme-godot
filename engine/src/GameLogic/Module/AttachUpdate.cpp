@@ -66,6 +66,7 @@ void parseEva(INI *ini, void *, void *store, const void *)
 }
 
 // RW 0xC643B8
+OPENBFME_INI_OFFSETOF_BEGIN
 const FieldParse kAttachParse[] = {
 	{ "ObjectFilter", parseFilter, nullptr, AU_OFF(m_objectFilter) },
 	{ "ScanRange", INI::parseReal, nullptr, AU_OFF(m_scanRange) },
@@ -81,6 +82,8 @@ const FieldParse kAttachParse[] = {
 	{ "ParentEnemyDiedEvaEvent", parseEva, nullptr, AU_OFF(m_enemyDiedEva) },
 	{ nullptr, nullptr, nullptr, 0 }
 };
+OPENBFME_INI_OFFSETOF_END
+
 
 bool maskEmpty(const ObjectStatusMaskType &m)
 {

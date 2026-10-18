@@ -29,5 +29,7 @@ struct TGAImage
 namespace TGAFile
 {
 // maxDimension: images larger than this are refused (terrain: 1024).
+// Radar art uses the texture-loader path: also accept type-10 true-colour RLE.
+bool decodeRadar(const std::uint8_t *data, size_t size, TGAImage &out, std::string *error);
 bool decode(const std::uint8_t *data, size_t size, TGAImage &out, std::string *error, int maxDimension = 1024);
 }

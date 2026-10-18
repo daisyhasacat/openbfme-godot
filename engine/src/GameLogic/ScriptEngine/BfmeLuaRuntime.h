@@ -44,6 +44,7 @@ class BfmeLuaRuntime
   public:
 	using Value = BfmeLuaValue;
 	using Records = std::map<std::string, Value::Table>;
+	using Collections = std::map<std::string, Records>;
 	struct Snapshot
 	{
 		bool ready = false, paused = false;
@@ -53,7 +54,9 @@ class BfmeLuaRuntime
 		unsigned frame = 0;
 		Value cursorPosition; // nil when no active terrain hit; SAGE x/y/z otherwise
 		std::vector<unsigned> selection; // client-selected object IDs, newest first (InGameUI::selected)
-		std::map<std::string, Records> collections;
+		Collections collections;
+		// Immutable catalog shared across snapshots. Replace the pointer when definitions change.
+		std::shared_ptr<const Collections> catalog;
 	};
 	struct Mutation
 	{
@@ -105,6 +108,9 @@ class BfmeLuaRuntime
 	// Caller owns the simulation on the Lua thread. Context is data, never engine pointers.
 	// Throws on a callback error/invalid duration; engine reports it and keeps the native duration.
 	int adjustTiming(const std::string &kind, Value::Table context, int nativeFrames);
+	// Thread-safe producer: queues value-only events; Lua runs only in flush().
+	using EventSink = std::function<void(const std::string &, Value::Table)>;
+	EventSink eventSink() const;
 	void invalidate(); // new match / registry: old proxies expire; globals remain
   private:
 	struct Impl;

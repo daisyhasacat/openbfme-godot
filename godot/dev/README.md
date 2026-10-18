@@ -78,7 +78,7 @@ buildings in local matches. Preview ignores those obstacles; confirming construc
 clears only overlapping scenery. Capturable sites, lairs, production/economy
 structures, fortresses, walls and player-owned buildings are protected.
 Use `neutralDecorations.enable(false)` to disable, or `.enable(true)` to restore.
-The script applies the option again when a new match starts. Network games and
+The script uses the C++ `onMatchStarted` event instead of a polling timer, and applies changes immediately when toggled or reloaded. Network games and
 replays are excluded. Reload scripts after installing; the native engine must also
 be rebuilt for the placement hook.
 

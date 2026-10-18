@@ -1,6 +1,7 @@
 extends Control
 ## Native visibility-filtered radar data, presented in a resizable touch surface.
 var hud: Callable
+var sizing:Dictionary={}
 var state := {}
 var order_mode := false
 var cursor := Vector2(.5,.5)
@@ -8,7 +9,7 @@ var _dragging := false
 
 func _ready():
  mouse_filter=Control.MOUSE_FILTER_STOP
- custom_minimum_size=Vector2(220,220)
+ custom_minimum_size=Vector2.ZERO
  tooltip_text='Tap or drag to look · Orders mode sends the current selection'
 
 func refresh():
@@ -45,16 +46,16 @@ func _draw():
  var rect=picture_rect()
  draw_style_box(_border(),Rect2(Vector2.ZERO,size))
  if not state.get('ready',false):
-  draw_string(ThemeDB.fallback_font,Vector2(20,35),'Radar unavailable',HORIZONTAL_ALIGNMENT_LEFT,-1,16,Color.WHITE);return
+  draw_string(ThemeDB.fallback_font,Vector2(sizing.minimap_notice_x,sizing.minimap_notice_y),'Radar unavailable',HORIZONTAL_ALIGNMENT_LEFT,-1,int(sizing.font_size),Color.WHITE);return
  draw_texture_rect(state.texture,rect,false)
  for dot in state.get('dots',[]):
-  draw_circle(rect.position+dot.uv*rect.size,3 if dot.mine else 2,dot.color)
+  draw_circle(rect.position+dot.uv*rect.size,float(sizing.minimap_own_dot_radius if dot.mine else sizing.minimap_other_dot_radius),dot.color)
  var points:=PackedVector2Array()
  for point in state.get('view_box',[]):points.append(rect.position+point*rect.size)
- if points.size()==4:points.append(points[0]);draw_polyline(points,Color('#f7d487'),2,true)
+ if points.size()==4:points.append(points[0]);draw_polyline(points,Color('#f7d487'),float(sizing.minimap_camera_line_width),true)
  var p=rect.position+cursor*rect.size
- draw_line(p-Vector2(6,0),p+Vector2(6,0),Color.WHITE,1)
- draw_line(p-Vector2(0,6),p+Vector2(0,6),Color.WHITE,1)
+ draw_line(p-Vector2(sizing.minimap_cursor_radius,0),p+Vector2(sizing.minimap_cursor_radius,0),Color.WHITE,float(sizing.minimap_cursor_line_width))
+ draw_line(p-Vector2(0,sizing.minimap_cursor_radius),p+Vector2(0,sizing.minimap_cursor_radius),Color.WHITE,float(sizing.minimap_cursor_line_width))
 
 func _border()->StyleBoxFlat:
- var box=StyleBoxFlat.new();box.bg_color=Color('#0a111a');box.border_color=Color('#b49b65');box.set_border_width_all(2);box.set_corner_radius_all(8);return box
+ var box=StyleBoxFlat.new();box.bg_color=Color('#0a111a');box.border_color=Color('#b49b65');box.set_border_width_all(int(sizing.minimap_border_width));box.set_corner_radius_all(int(sizing.minimap_corner_radius));return box

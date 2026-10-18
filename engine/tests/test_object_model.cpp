@@ -1152,3 +1152,32 @@ TEST_CASE("stops: the raw object-table rows are exactly the ones without a typed
 	CHECK(!rawSet.count("AddModule"));
 	CHECK(w.things.fieldSlotCount() == 191 + 56);
 }
+
+TEST_CASE("object: companion catalog revision follows definitions and runtime edits")
+{
+	World w;
+	auto revision = w.things.revision();
+	REQUIRE(w.load("Object Foo\n  BuildCost = 1\nEnd\n").empty());
+	// tolerance: the revision is a monotonic invalidation token; one operation may edit multiple definitions.
+	CHECK(w.things.revision() > revision);
+	revision = w.things.revision();
+	auto *tt = const_cast<ThingTemplate *>(w.get("Foo"));
+	REQUIRE(tt->setRuntimeField("BuildCost", FieldValue(2LL)));
+	// tolerance: the revision is a monotonic invalidation token; one operation may edit multiple definitions.
+	CHECK(w.things.revision() > revision);
+	revision = w.things.revision();
+	CHECK_FALSE(tt->setRuntimeField("NoSuchField", FieldValue(3LL)));
+	CHECK(w.things.revision() == revision);
+	REQUIRE(w.load("Object Foo\n  BuildCost = 4\nEnd\n", INI_LOAD_CREATE_OVERRIDES, "map.ini").empty());
+	// tolerance: the revision is a monotonic invalidation token; one operation may edit multiple definitions.
+	CHECK(w.things.revision() > revision);
+	revision = w.things.revision();
+	auto *override = const_cast<ThingTemplate *>(w.get("Foo")->getFinalOverride());
+	REQUIRE(override->setRuntimeField("BuildCost", FieldValue(5LL)));
+	// tolerance: the revision is a monotonic invalidation token; one operation may edit multiple definitions.
+	CHECK(w.things.revision() > revision);
+	revision = w.things.revision();
+	w.things.reset();
+	// tolerance: the revision is a monotonic invalidation token; one operation may edit multiple definitions.
+	CHECK(w.things.revision() > revision);
+}
