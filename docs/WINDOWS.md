@@ -45,6 +45,10 @@ remain pending.
   before the unit tests.
 - `GODOT` = the Godot 4.7 console executable for the smoke and shader tests.
 
+Oracle helper compilers run in child shells, preserving the engine's x64 developer environment between builds. This keeps the
+32-bit retail and x87 oracles from accumulating earlier `vcvars` changes on `PATH`, which can exceed `cmd.exe`'s line-length limit.
+The helper build checks all outputs against `helpers.json` before reporting success, including after a `HELPERS_FORCE=1` rebuild.
+
 Known limit: libclang 18.1.1 cannot parse the MSVC 14.50 (VS 2026) STL (`STL1000: Unexpected compiler version, expected Clang 19.0.0 or
 newer`), so the audit's AST step fails there; `set SIM_AUDIT_ARGS=--ast=skip` before `run_tests.bat` runs the other audit steps and reports the AST step
 as skipped. A newer libclang needs its AST result compared with Linux before it is trusted.

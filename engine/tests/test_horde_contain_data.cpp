@@ -59,6 +59,13 @@ struct HookScope
 };
 }
 
+TEST_CASE("HordeContain: legacy BFME fields parse separately from the RotWK field table")
+{
+	const auto data = parsedHorde("UsePorcupineBody = Yes\nUpdateWeaponSetFlagsOnHordeToo = Yes");
+	CHECK(data.m_usePorcupineBody);
+	CHECK(data.m_updateWeaponSetFlagsOnHordeToo);
+}
+
 // ---- tables --------------------------------------------------------------------------------------------------
 namespace
 {
@@ -119,14 +126,17 @@ TEST_CASE("HordeContain: the three field tables are RW 0xC5BB50 (43 rows), 0xC5A
 	checkTable(MeleeBehaviorModuleData::getAmoebaFieldParse(), "table_melee_amoeba.tsv", 9);
 }
 
-TEST_CASE("HordeContain: buildFieldParse chains OpenContain, TransportContain, HordeContain (RW 0x878B63)")
+TEST_CASE("HordeContain: buildFieldParse chains the three retail tables (RW 0x878B63), then BFME compatibility fields")
 {
 	MultiIniFieldParse p;
 	HordeContainModuleData::buildFieldParse(p);
-	REQUIRE(p.getCount() == 3);
+	REQUIRE(p.getCount() == 4);
 	CHECK(p.getNthFieldParse(0) == OpenContainModuleData::getFieldParse());
 	CHECK(p.getNthFieldParse(1) == TransportContainModuleData::getFieldParse());
 	CHECK(p.getNthFieldParse(2) == HordeContainModuleData::getFieldParse());
+	CHECK(std::string(p.getNthFieldParse(3)[0].token) == "UsePorcupineBody");
+	CHECK(std::string(p.getNthFieldParse(3)[1].token) == "UpdateWeaponSetFlagsOnHordeToo");
+	CHECK(p.getNthFieldParse(3)[2].token == nullptr);
 	// the embedded structs sit at offset 0, so one pointer serves all three tables
 	HordeContainModuleData d;
 	CHECK((void *)&d == (void *)&d.m_transport);

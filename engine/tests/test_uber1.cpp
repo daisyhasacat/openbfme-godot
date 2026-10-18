@@ -378,12 +378,12 @@ TEST_CASE("uber1: the OpenBFME option OpenBFMEUberPerformance picks the simulati
 
 namespace
 {
-// a replay header's bytes in format 5 (Recorder.h) with any identity and game, as a broken or forged writer would make them
+// a replay header's bytes in format 8 (Recorder.cpp) with any identity and game, as a broken or forged writer would make them
 std::vector<std::uint8_t> forgedReplay(const ProfileIdentity &identity, const NewGameMessage &game)
 {
 	std::vector<std::uint8_t> bytes = { 'O', 'B', 'F', 'M', 'E', 'R', 'E', 'P' };
 	NetByteWriter w;
-	w.u32(5);
+	w.u32(8);
 	w.str(identity.text);
 	NetPacket::writeNewGameMessage(w, game);
 	w.i32(0);
@@ -432,7 +432,7 @@ TEST_CASE("uber1 (review): a replay header whose identity and game name differen
 	CHECK(error.find("but the game runs uber") != std::string::npos);
 	CHECK_FALSE(ReplayFile::parse(forgedReplay(identity(SimulationProfile::Uber), faithfulGame), file, &error));
 	CHECK(error.find("but the game runs faithful") != std::string::npos);
-	// consistent headers read (the forger is format 5 itself)
+	// consistent headers read (the forger uses the current game setup format)
 	REQUIRE_MESSAGE(ReplayFile::parse(forgedReplay(identity(SimulationProfile::Uber), uberGame), file, &error), error);
 	CHECK(file.header.game.game.simulationProfile == SimulationProfile::Uber);
 	REQUIRE_MESSAGE(ReplayFile::parse(forgedReplay(identity(SimulationProfile::Faithful), faithfulGame), file, &error), error);

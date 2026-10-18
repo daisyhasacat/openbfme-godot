@@ -521,7 +521,7 @@ TEST_CASE("mapobj creation: map.ini overrides (load type 2) decide the model; Ki
 	CHECK(s3.out.drawables[0].draws[0].model == "CastleOld");
 }
 
-TEST_CASE("mapobj creation: the GameData switches are read by name from the first GameData block; a missing key is an error")
+TEST_CASE("mapobj creation: the GameData switches are read by name from the first GameData block; absent switches keep the retail constructor defaults")
 {
 	MapObjectOptions o;
 	std::string err;
@@ -529,9 +529,13 @@ TEST_CASE("mapobj creation: the GameData switches are read by name from the firs
 	CHECK(o.forceModelsToFollowTimeOfDay);
 	CHECK_FALSE(o.forceModelsToFollowWeather);
 	MapObjectOptions p;
-	CHECK_FALSE(MapObjectGameData::scanText("GameData\n  ForceModelsToFollowWeather = Yes\nEnd\n", p, &err));
-	CHECK(err.find("ForceModelsToFollowTimeOfDay") != std::string::npos);
-	CHECK_FALSE(MapObjectGameData::scanText("Weather\n  ForceModelsToFollowTimeOfDay = Yes\n  ForceModelsToFollowWeather = Yes\nEnd\n", p, &err)); // not in a GameData block
+	// GlobalData's constructor initializes both switches to Yes (RW 0x23631C).
+	CHECK(MapObjectGameData::scanText("GameData\n  ForceModelsToFollowWeather = No\nEnd\n", p, &err));
+	CHECK(p.forceModelsToFollowTimeOfDay);
+	CHECK_FALSE(p.forceModelsToFollowWeather);
+	CHECK(MapObjectGameData::scanText("Weather\n  ForceModelsToFollowTimeOfDay = No\n  ForceModelsToFollowWeather = No\nEnd\n", p, &err));
+	CHECK(p.forceModelsToFollowTimeOfDay);
+	CHECK(p.forceModelsToFollowWeather); // rows outside GameData are ignored
 }
 
 TEST_CASE("mapobj creation: horde members stand on the formation slots, rotated by the horde's angle (HordeContainCore, RW 0x875847)")
