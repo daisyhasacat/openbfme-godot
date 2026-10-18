@@ -762,7 +762,10 @@ godot::Dictionary godot::RetailFileSystem::install_library_map(const String &pat
  auto inspected=inspect_library_map(path,false);
  if(!bool(inspected.get("ok",false)))return inspected;
  if(int(inspected["players"])<2)return fail("This map has fewer than two player starts.");
- String destination=ProjectSettings::get_singleton()->globalize_path(root).path_join(String(inspected["content_id"]));
+ // Load existing imports before adding this one, avoiding a duplicate on the first catalog read.
+ installed_maps(root);
+ String installRoot=m_bfme1 && root=="user://installed-maps" ? String("user://bfme1-installed-maps") : root;
+ String destination=ProjectSettings::get_singleton()->globalize_path(installRoot).path_join(String(inspected["content_id"]));
  String target=destination.path_join(path.get_file());
  std::error_code ec;
  if(!FileAccess::file_exists(target) && !FileAccess::file_exists(destination.path_join(path.get_file().to_lower()))) {
@@ -800,9 +803,10 @@ godot::Dictionary godot::RetailFileSystem::install_library_map(const String &pat
 
 godot::Array godot::RetailFileSystem::installed_maps(const String &directory)
 {
- if(!m_installedLoaded && !m_bfme1) {
+ if(!m_installedLoaded) {
   m_installedLoaded=true;
-  String root=ProjectSettings::get_singleton()->globalize_path(directory);
+  String installRoot=m_bfme1 && directory=="user://installed-maps" ? String("user://bfme1-installed-maps") : directory;
+  String root=ProjectSettings::get_singleton()->globalize_path(installRoot);
   auto dir=DirAccess::open(root);
   if(dir.is_valid())for(const String &folder:dir->get_directories()) {
    if(folder.ends_with(".installing"))continue;
