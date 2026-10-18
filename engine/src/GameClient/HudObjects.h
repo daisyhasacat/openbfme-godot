@@ -43,6 +43,9 @@ Object *pickObject(const HudContext &ctx, const ICoord2D &pixel);
 Object *pickObject(const HudContext &ctx, const ICoord2D &pixel, unsigned pickTypes);
 // RW 0x485CB8 (W3DView::iterateDrawablesInRegion, a point region): RW 0x71083F(force attack mode) | 0x100: an own hero, then an own object, then a hero, then an enemy
 Object *pickForSelection(const HudContext &ctx, const ICoord2D &pixel);
+// OpenBFME: nearest eligible enemy unit within 32 pixels at 720p (viewport scaled).
+// Shared by hover, order clicks and controller targeting; direct picks retain priority.
+Object *pickNearbyAttackTarget(const HudContext &ctx, const ICoord2D &pixel);
 // RW 0x83CC13 (SelectionTranslator, MSG_RAW_MOUSE_POSITION): RW 0x71083F(1): FORCEATTACKABLE always
 Object *pickForHover(const HudContext &ctx, const ICoord2D &pixel);
 // RW 0x81F7C5 (CommandTranslator, MSG_MOUSE_LEFT_DOUBLE_CLICK): SELECTABLE only

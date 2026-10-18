@@ -10,7 +10,9 @@
 #include "GameLogic/Object/Object.h"
 #include "GameClient/ControlBarCommands.h"
 #include "GameClient/InGameUI.h"
+#include "GameClient/MessageStream/CommandXlat.h"
 #include "GameLogic/System/InvisibilityManager.h"
+#include "GameLogic/System/ShroudManager.h"
 #include "GameLogic/Combat/ObjectWeapons.h"
 #include "GameLogic/Damage.h"
 #include "GameLogic/Weapon.h"
@@ -406,9 +408,53 @@ Object *pickObject(const HudContext &ctx, const ICoord2D &pixel, unsigned pickTy
 	return best ? selectionRepresentative(*best) : nullptr;
 }
 
+// OpenBFME input improvement requested for mouse and controller: a forgiving screen-space
+// target area around enemy units, independent of wall rules and simulation weapon range.
+Object *pickNearbyAttackTarget(const HudContext &ctx, const ICoord2D &pixel)
+{
+	if (ctx.ui.selected().empty() || ctx.ui.isPlacing() || ctx.ui.getGUICommand()
+		|| ctx.ui.isInForceMoveToMode() || ctx.ui.isInForceAttackMode() || ctx.ui.isInWaypointMode()) return nullptr;
+	const auto size = ctx.view.size();
+	if (pixel.x < 0 || pixel.y < 0 || pixel.x >= size.x || pixel.y >= size.y) return nullptr;
+	// 32 pixels at 720p, scaled with the viewport like the controller reticle.
+	const float radius = 32.0f * (float)size.y / 720.0f;
+	float bestDistance = radius * radius;
+	Object *nearest = nullptr;
+	HudContext evaluation = ctx;
+	CommandTranslator commands(evaluation);
+	if (!commands.areSelectedObjectsControllable()) return nullptr;
+	for (Object *object = ctx.logic.getFirstObject(); object; object = object->getNextObject())
+	{
+		if (!object->isInWorld() || !isPickable(*object) || isEffectivelyDead(*object)
+			|| object->isDrawableHidden() || object->isKindOfName("STRUCTURE") || !isSelectable(*object)
+			|| relationshipToLocal(ctx, *object) != ENEMIES
+			|| InvisibilityManager::clientLook(*object, ctx.localPlayer()) == 5) continue;
+		if (object->getContainedBy() && !object->getContainedBy()->isKindOfName("HORDE")) continue;
+		Object *target = selectionRepresentative(*object);
+		if (isEffectivelyDead(*target) || InvisibilityManager::clientLook(*target, ctx.localPlayer()) == 5) continue;
+		if (const ShroudManager *shroud = ctx.logic.shroud())
+		{
+			if (shroud->displayed() && ctx.localPlayer()
+				&& shroud->clientObjectStatus(*object, ctx.localPlayer()->getPlayerIndex()) > OBJECTSHROUD_PARTIAL_CLEAR) continue;
+		}
+		ICoord2D projected;
+		Coord3D center = *object->getPosition();
+		center.z += shapeOf(ctx, *object).height * 0.5f;
+		if (!ctx.view.worldToScreen(center, projected)) continue;
+		const float dx = (float)projected.x - pixel.x, dy = (float)projected.y - pixel.y;
+		const float distance = dx * dx + dy * dy;
+		if (distance > bestDistance || (distance == bestDistance && nearest && target->getID() >= nearest->getID())) continue;
+		if (commands.evaluateContextCommand(target, target->getPosition(), EvaluateType::EvaluateOnly) != MSG_DO_ATTACK_OBJECT) continue;
+		bestDistance = distance;
+		nearest = target;
+	}
+	return nearest;
+}
+
 Object *pickObject(const HudContext &ctx, const ICoord2D &pixel)
 {
-	return pickObject(ctx, pixel, pickTypesForContext(ctx));
+	Object *direct = pickObject(ctx, pixel, pickTypesForContext(ctx));
+	return direct ? direct : pickNearbyAttackTarget(ctx, pixel);
 }
 
 Object *pickForSelection(const HudContext &ctx, const ICoord2D &pixel)
@@ -418,7 +464,8 @@ Object *pickForSelection(const HudContext &ctx, const ICoord2D &pixel)
 
 Object *pickForHover(const HudContext &ctx, const ICoord2D &pixel)
 {
-	return pickObject(ctx, pixel, pickTypesForContext(ctx, true)); // RW 0x83CC13: push 1 -> RW 0x71083F
+	Object *direct = pickObject(ctx, pixel, pickTypesForContext(ctx, true)); // RW 0x83CC13
+	return direct ? direct : pickNearbyAttackTarget(ctx, pixel);
 }
 
 Object *pickForDoubleClick(const HudContext &ctx, const ICoord2D &pixel)

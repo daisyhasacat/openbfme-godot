@@ -524,7 +524,9 @@ func _update_reticle(live: Node, active: bool) -> void:
 		var native := str(cursor.get("name", "")).to_lower()
 		var name_text := "reticle"
 		var target: Dictionary = live.get_controller_target(bridge.selection_assist_radius) if live.has_method("get_controller_target") else {}
-		if target.get("can_select", false):
+		if target.get("can_attack", false):
+			name_text = "reticle_attack"
+		elif target.get("can_select", false):
 			name_text = "reticle_a"
 		elif "invalid" in native or "notallowed" in native or "nobomb" in native:
 			name_text = "reticle_invalid"

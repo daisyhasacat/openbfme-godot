@@ -7,12 +7,13 @@ class FakeHud extends Node:
 	var production_progress := 0.25
 	var selected_ids: Array = [42]
 	var selection_available := true
+	var attack_available := false
 	var placing := false
 	var sell_first := false
 	func get_placement() -> Dictionary: return {"placing":placing,"has_ghost":placing}
 	func get_cursor_image() -> Dictionary: return {"name":"Select"}
 	func get_state() -> Dictionary: return {"gui_command":false}
-	func get_controller_target(_radius: float) -> Dictionary: return {"can_select":selection_available}
+	func get_controller_target(_radius: float) -> Dictionary: return {"can_select":selection_available,"can_attack":attack_available}
 	func is_ready() -> bool: return true
 	func get_command_buttons() -> Array:
 		var result := []
@@ -63,6 +64,10 @@ func _run() -> void:
 	live.selection_available = false
 	ui._update_reticle(live, true)
 	assert(ui._reticle.texture.atlas == preload("res://scripts/controller_art.gd").texture("reticle_yellow"))
+	live.attack_available = true
+	ui._update_reticle(live, true)
+	assert(ui._reticle.texture.atlas == preload("res://scripts/controller_art.gd").texture("reticle_attack"))
+	live.attack_available = false
 	live.selected_ids = [42]
 	assert(ui._commands.get_child_count() == 6)
 	var circle: Button = ui._commands.get_child(0)

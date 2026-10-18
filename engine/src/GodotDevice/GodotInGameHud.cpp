@@ -3080,6 +3080,7 @@ static ::Object *controllerPickTarget(HudDevice *d, float selection_assist_radiu
 	const HudContext &ctx = d->hud->input().context();
 	const ICoord2D pixel{ (int)d->lastPointer.x, (int)d->lastPointer.y };
 	::Object *target = HudObjects::pickForSelection(ctx, pixel);
+	if (!target && !pending) target = HudObjects::pickNearbyAttackTarget(ctx, pixel);
 	if (!target && !pending && std::isfinite(selection_assist_radius) && selection_assist_radius > 0.0f && !d->hud->isOverGui(pixel.x, pixel.y))
 	{
 		const float radius = std::min(selection_assist_radius, 200.0f) * viewportHeight / 720.0f;
@@ -3120,7 +3121,9 @@ Dictionary InGameHudNode::get_controller_target(float selection_assist_radius)
 	::Object *target = controllerPickTarget(d.get(), selection_assist_radius, get_viewport_rect().size.y, assisted);
 	if (!target) return result;
 	const bool selectable = HudObjects::canSelect(input.context(), *target, false);
-	const bool order = !assisted && ui.getSelectCount() > 0 && input.commandTranslator().evaluateContextCommand(target, target->getPosition(), EvaluateType::EvaluateOnly) != 0;
+	const int orderType = !assisted && ui.getSelectCount() > 0 ? input.commandTranslator().evaluateContextCommand(target, target->getPosition(), EvaluateType::EvaluateOnly) : 0;
+	const bool order = orderType != 0;
+	result["can_attack"] = orderType == MSG_DO_ATTACK_OBJECT;
 	result["id"] = (int64_t)target->getID();
 	result["assisted"] = assisted;
 	result["can_select"] = selectable && !order;

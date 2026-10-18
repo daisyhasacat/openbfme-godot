@@ -76,3 +76,10 @@ alternate mouse setup also accepts the usual right-click movement command. The
 right release preserves this pending command until context input submits it,
 instead of cancelling it and sending an ordinary move. Units acquire enemy units
 and buildings along the way, then resume toward the original destination.
+
+Attack targeting shares a nearby-enemy area with mouse input: 32 pixels at 720p,
+scaled with viewport height. With combat units selected, hovering near an enemy
+unit shows the red attack cursor or controller reticle, and clicking or pressing A
+orders an attack on that same target. Direct model hits keep priority; nearby
+attack assistance does not affect building placement or targeted abilities. This
+is an OpenBFME input improvement independent of wall rebalance and weapon range.

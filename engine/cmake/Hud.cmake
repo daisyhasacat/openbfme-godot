@@ -25,6 +25,7 @@ set(OPENBFME_HUD_SOURCES
 )
 set(OPENBFME_HUD_TESTS
     tests/test_hud_input.cpp
+    tests/test_hud_attack_assist.cpp
     tests/test_hud_palantir.cpp
     tests/test_hud_cursors.cpp
     tests/test_camera.cpp
