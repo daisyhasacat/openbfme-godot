@@ -611,6 +611,14 @@ private:
 	void clear_scene();
 	void build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &report, Array &errors, Array &stops);
 	void refresh_views(double deltaMs);
+	void refresh_wall_paving();
+	bool m_pavingEnabled = true;
+	String m_pavingName;
+	String m_pavingError;
+	float m_pavingTileSize = 80;
+	Ref<Texture2D> m_pavingTexture;
+	std::uint64_t m_pavingSignature = 0;
+	unsigned m_pavingFrame = ~0u;
 	// VIS-1: the local player's shroud as a cell texture on the terrain materials (S-567)
 	void refresh_shroud(bool force);
 	Ref<godot::ImageTexture> m_shroudTexture;

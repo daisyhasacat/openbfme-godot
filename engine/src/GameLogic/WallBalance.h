@@ -3,6 +3,8 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
+#include <cstdint>
 #include "Common/INIDataTypes.h"
 class GameLogic;
 class Player;
@@ -18,6 +20,8 @@ struct WallBalance
  std::map<std::string,std::string> startingHubs, startingGates;
  mutable std::shared_ptr<WallEnclosureCache> enclosureCache;
  static bool enclosed(GameLogic &logic, const Player &owner, const Coord3D &point, bool perimeter = false);
+ // Client paving mask from the same wall topology; call only while the logic is held.
+ static std::vector<std::uint8_t> pavingMask(GameLogic &logic, int &width, int &height);
  static bool placementAllowed(GameLogic &logic, const ThingTemplate &tt, const Coord3D &point, const Object *builder, const Player *owner);
  static void createStartingWalls(GameLogic &logic);
  int wallDamage = 0, fortressDamage = 0; // 0 normal, 1 CAN_ATTACK_WALLS, 2 SIEGEENGINE

@@ -26,3 +26,19 @@ python3 tools/import_bfme2lua_wall_towers.py \
 ```
 
 The importer combines the new tower definitions and models with the current retail command INIs; it avoids replacing them with BFME2Lua’s unrelated full command tables.
+
+## Automatic paving
+
+Completed wall enclosures now apply a terrain texture during gameplay. Gates
+count as closed; breaches remove the paving and closing the gap restores it.
+Natural isolated land without walls is not paved. The existing enclosure test
+requires at least half of a region's boundary to be wall edges for paving.
+
+This is a client-only terrain layer: it retains terrain lighting and fog, leaves
+roads visible, and does not change map tiles, pathfinding, saves, or simulation
+state. It is independent of the master wall rebalance switch. The `[paving]`
+section in `dev/wall_balance.cfg` (overridden by `user://wall_balance.cfg`) sets
+`enabled`, the mounted terrain.ini `texture` name, and `tile_size` in map units.
+The default uses `CobblestoneType2` from the player's original game files.
+Restart the match after changing these settings. Missing textures report an
+error instead of silently substituting another texture.

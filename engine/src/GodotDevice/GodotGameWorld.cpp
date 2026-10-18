@@ -22,6 +22,7 @@
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/BuildPlacement.h"
+#include "GameLogic/WallBalance.h"
 #include "GameClient/GUI/TributeInfo.h"
 
 #include "Common/Prefetch.h"
@@ -710,6 +711,7 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 void GameWorld::clear_scene()
 {
 	m_mapWeatherId = 0;
+	m_pavingTexture.unref();m_pavingSignature=0;m_pavingFrame=~0u;m_pavingError=String();
 	m_endGame.reset(); // lane END-1: the end sequence of the game that goes
 	m_endGameRequests.clear();
 	m_endGameFrame = 0;
@@ -1124,6 +1126,10 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 		const float value = setting(key,fallback);
 		return std::isfinite(value) ? std::clamp(value,lo,hi) : fallback;
 	};
+ m_pavingEnabled=wallConfig->get_value("paving","enabled",true);
+ m_pavingName=wallConfig->get_value("paving","texture",String());
+ const float pavingSize=wallConfig->get_value("paving","tile_size",80.0);
+ m_pavingTileSize=std::isfinite(pavingSize)?std::clamp(pavingSize,10.0f,1000.0f):80.0f;
 	auto &walls = lo.wallBalance;
 	walls.enabled = setting("enabled",false);
 	walls.trebuchetWallTargets = setting("trebuchet_wall_targets",false);
@@ -2236,12 +2242,63 @@ void GameWorld::syncBuffs(double dt)
 	}
 }
 
+void GameWorld::refresh_wall_paving()
+{
+ // Presentation only: the simulation owner is held by heldClientWork. Never edit the map's terrain tiles.
+ Node *terrain=get_node_or_null(NodePath("Terrain"));
+ if(!terrain || !m_game || m_pavingFrame==m_game->logic().getFrame())return;
+ m_pavingFrame=m_game->logic().getFrame();
+ auto &logic=m_game->logic();
+ std::uint64_t signature=1469598103934665603ULL;
+ auto hash=[&](std::uint64_t value){signature=(signature^value)*1099511628211ULL;};
+ hash(terrain->get_instance_id());hash(m_pavingEnabled);
+ for(::Object *o=logic.getFirstObject();o;o=o->getNextObject())if(WallBalance::wall(*o)||o->isKindOfName("STRUCTURE")) {
+  hash(o->getID());hash(o->isDestroyed());hash(o->isEffectivelyDead());hash(o->isUnderConstruction());hash(o->isInWorld());
+  hash(o->getControllingPlayer()?o->getControllingPlayer()->getPlayerIndex()+1:0);
+  hash((std::int64_t)(o->getPosition()->x*100));hash((std::int64_t)(o->getPosition()->y*100));hash((std::int64_t)(o->getOrientation()*10000));
+ }
+ if(signature==m_pavingSignature)return;
+ m_pavingSignature=signature;
+ int width=0,height=0;
+ auto cells=m_pavingEnabled?WallBalance::pavingMask(logic,width,height):std::vector<std::uint8_t>{};
+ const auto count=std::count(cells.begin(),cells.end(),std::uint8_t(255));
+ terrain->set_meta("paving_cells",(int64_t)count);
+ bool enabled=count>0;
+ if(enabled && m_pavingTexture.is_null() && m_pavingError.is_empty()) {
+  Ref<MapTerrainBuilder> loader;loader.instantiate();const Dictionary loaded=loader->preview_texture(m_fs,m_pavingName);
+  if(bool(loaded.get("ok",false)))m_pavingTexture=loaded["texture"];
+  else {m_pavingError=String(loaded.get("error",String("Cannot load paving texture")));UtilityFunctions::push_error("Wall paving: "+m_pavingError);}
+ }
+ enabled=enabled && m_pavingTexture.is_valid();
+ Ref<ImageTexture> mask;
+ if(enabled) {
+  PackedByteArray bytes;bytes.resize(cells.size());std::memcpy(bytes.ptrw(),cells.data(),cells.size());
+  mask=ImageTexture::create_from_image(Image::create_from_data(width,height,false,Image::FORMAT_L8,bytes));
+ }
+ std::vector<Node *> nodes{terrain};
+ while(!nodes.empty()) {
+  Node *node=nodes.back();nodes.pop_back();
+  for(int i=0;i<node->get_child_count();++i)nodes.push_back(node->get_child(i));
+  auto *mesh=Object::cast_to<MeshInstance3D>(node);if(!mesh || mesh->get_mesh().is_null())continue;
+  for(int surface=0;surface<mesh->get_mesh()->get_surface_count();++surface) {
+   Ref<ShaderMaterial> material=mesh->get_active_material(surface);
+   if(material.is_null() || material->get_shader().is_null() || material->get_shader()->get_path()!=String("res://shaders/terrain.gdshader"))continue;
+   material->set_shader_parameter("paving_enabled",enabled);
+   if(enabled) {
+    material->set_shader_parameter("paving_mask",mask);material->set_shader_parameter("paving_texture",m_pavingTexture);
+    material->set_shader_parameter("paving_extent",Vector2(width*10,height*10));material->set_shader_parameter("paving_tile_size",m_pavingTileSize);
+   }
+  }
+ }
+}
+
 void GameWorld::heldClientWork()
 {
 	if (!m_game->logicHeld())
 	{
 		return;
 	}
+	refresh_wall_paving();
 	LiveGameAudio::drainDeferredAudio(); // S-814 (also without the effect player)
 	applyPendingScriptAudio(); // RENDERWAIT-1 r2: the script requests' sounds taken in render frames the logic was not held in
 	if (m_audio)
@@ -3291,7 +3348,7 @@ Dictionary GameWorld::map_editor_terrain(const Dictionary &operation)
 		result["ok"]=false;result["error"]="Terrain rebuild failed; edit reverted";return result;
 	}
 	if(auto old=get_node_or_null(NodePath("Terrain"))) {remove_child(old);old->queue_free();}
-	terrain->set_name("Terrain");add_child(terrain);m_shroudVersionShown=~0ull;
+	terrain->set_name("Terrain");add_child(terrain);m_shroudVersionShown=~0ull;m_pavingFrame=~0u;
 	// Ground-bound objects follow the edited surface.
 	for(const auto &item:grounded) { auto obj=item.first;Coord3D p=*obj->getPosition();p.z=logic.getGroundHeight(p.x,p.y);obj->setPosition(&p); }
 	if(auto ai=logic.aiWorld()) if(auto source=ai->pathfinder().terrainView()) ai->newMap(*source);

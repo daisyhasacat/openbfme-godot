@@ -146,6 +146,25 @@ bool WallBalance::enclosed(GameLogic &logic,const Player &owner,const Coord3D &p
  }
  return false;
 }
+std::vector<std::uint8_t> WallBalance::pavingMask(GameLogic &logic,int &width,int &height) {
+ width=height=0;
+ std::vector<const Player *> owners;
+ for(Object *o=logic.getFirstObject();o;o=o->getNextObject())
+  if(wall(*o)&&!o->isDestroyed()&&!o->isEffectivelyDead()&&!o->isUnderConstruction()&&o->isInWorld())
+   if(const Player *owner=o->getControllingPlayer();owner&&std::find(owners.begin(),owners.end(),owner)==owners.end())owners.push_back(owner);
+ std::vector<std::uint8_t> mask;
+ for(const Player *owner:owners) {
+  enclosed(logic,*owner,{0,0,0}); // refresh the owner's topology once, never once per terrain cell
+  const auto &cache=logic.settings().wallBalance.enclosureCache;
+  if(!cache)continue;
+  const auto found=cache->regions.find(owner->getPlayerIndex());if(found==cache->regions.end())continue;
+  const auto &regions=found->second;width=regions.width;height=regions.height;
+  if(mask.empty())mask.resize((size_t)width*height);
+  for(int y=0;y<height;++y)for(int x=0;x<width;++x)
+   if(regions.pavingEnclosed(x,y))mask[(size_t)y*width+x]=255;
+ }
+ return mask;
+}
 bool WallBalance::placementAllowed(GameLogic &logic,const ThingTemplate &tt,const Coord3D &point,const Object *builder,const Player *owner) {
  const auto &r=logic.settings().wallBalance;
  if(!r.enabled||!r.requireEnclosed||!kind(tt,"STRUCTURE")||costCategory(tt)>=0||resource(tt)||kind(tt,"COMMANDCENTER")||kind(tt,"BASE_FOUNDATION")||kind(tt,"BASE_DEFENSE_FOUNDATION")||(kind(tt,"FS_BASE_DEFENSE")&&tt.getName().find("Expansion")!=std::string::npos))return true;

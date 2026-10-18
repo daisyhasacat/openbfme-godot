@@ -42,9 +42,25 @@ TEST_CASE("wall balance: a closed wall region is enclosed, a breach opens it") {
  const Coord3D center{500,500,0};
  CHECK(WallBalance::enclosed(*w.logic,*top->getControllingPlayer(),center));
  CHECK_FALSE(WallBalance::enclosed(*w.logic,*top->getControllingPlayer(),{100,100,0}));
+ int width=0,height=0;
+ r.enabled=false; // paving is client decoration, independent of gameplay wall restrictions
+ const auto stateBeforePaving=w.logic->computeStateHash();
+ const auto paved=WallBalance::pavingMask(*w.logic,width,height);
+ CHECK(w.logic->computeStateHash()==stateBeforePaving);
+ // tolerance: the probe at cell (50,50) must fit within the fixture terrain, whose extent is not the behavior under test.
+ REQUIRE(width>50);REQUIRE(height>50);
+ CHECK(paved[50*width+50]==255);
+ CHECK(paved[10*width+10]==0);
  w.logic->destroyObject(top);
  w.logic->runLogicFrame();
  CHECK_FALSE(WallBalance::enclosed(*w.logic,*left->getControllingPlayer(),center));
+ const auto breached=WallBalance::pavingMask(*w.logic,width,height);
+ // tolerance: ensure the cell-50 probe is in bounds before indexing the returned terrain mask.
+ REQUIRE(width>50);CHECK(breached[50*width+50]==0);
+ w.logic->destroyObject(left);w.logic->destroyObject(right);
+ for(Object *o=w.logic->getFirstObject();o;o=o->getNextObject())if(WallBalance::wall(*o))w.logic->destroyObject(o);
+ w.logic->runLogicFrame();
+ CHECK(WallBalance::pavingMask(*w.logic,width,height).empty());
 }
 
 TEST_CASE("wall replacement clears side tiles only for gates") {

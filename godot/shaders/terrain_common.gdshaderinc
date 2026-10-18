@@ -190,7 +190,14 @@ vec3 shade_layer(vec2 uv_unwrapped, vec4 rect, vec4 vcol, float lod) {
 	return lit;
 }
 
-vec3 terrain_output(vec2 uv0, vec4 vcol) {
+// Optional client-only paving over wall-enclosed navigation cells.
+uniform bool paving_enabled = false;
+uniform sampler2D paving_mask : filter_nearest, repeat_disable;
+uniform sampler2D paving_texture : filter_linear_mipmap, repeat_enable;
+uniform vec2 paving_extent = vec2(1.0);
+uniform float paving_tile_size = 80.0;
+
+vec3 terrain_output(vec2 uv0, vec4 vcol, vec2 sage_xy) {
 	vec2 p = v_local;
 	bool has_rec = v_rec > -0.5;
 	int rec = has_rec ? int(v_rec + 0.5) : 0;
@@ -220,6 +227,15 @@ vec3 terrain_output(vec2 uv0, vec4 vcol) {
 	}
 	if (has2) {
 		comp = mix(comp, shade_layer(uv2, rect2, vcol, lod2), alpha2);
+	}
+	if (paving_enabled && all(greaterThanEqual(sage_xy, vec2(0.0))) && all(lessThan(sage_xy, paving_extent))) {
+		float mask = texture(paving_mask, sage_xy / paving_extent).r;
+		vec3 albedo = texture(paving_texture, sage_xy / paving_tile_size).rgb;
+		vec3 sun = overbright ? 0.5 * sun_color : sun_color;
+		vec3 lit = (vcol.rgb + 0.5 * lightning_color + sun * max(normalize(v_lts).z, 0.0)) * albedo;
+		if (overbright) { lit *= 2.0; }
+		if (debug_mode == 1 || debug_mode == 7) { lit = albedo; }
+		comp = mix(comp, lit, mask);
 	}
 	if (debug_mode == 4) { return vec3(fract(uv0 * 16.0), 0.0); }
 	if (debug_mode == 7) { return retail_output(clamp(comp, 0.0, 1.0)); }
