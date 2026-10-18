@@ -83,7 +83,7 @@ private:
 	void applyTint(IconView &view, const Color &tint);
 	void updateBib(PlacementIcons::Icon &icon, IconView &view);
 	void updateArrow(const InGameUI &ui);
-	void updateResources(const InGameUI &ui);
+	void updateResources(const InGameUI &ui, bool idle);
 	void updateGrid(LiveGame &game, const InGameUI &ui, bool idle);
 	void updateFootprints(LiveGame &game, const InGameUI &ui, bool idle);
 	void updateWallAlignment(LiveGame &game, const InGameUI &ui, bool idle);
@@ -113,6 +113,9 @@ private:
 	int m_gridX = 0, m_gridY = 0;
 	float m_gridSpacing = 0;
 	float m_gridAngle = 0;
+	struct ResourceRing { Decal *decal = nullptr; uint64_t nodeId = 0; };
+	std::vector<ResourceRing> m_existingResourceRings;
+	Array m_existingResourceState;
 	Decal *m_resourceDecal = nullptr;
 	Label *m_resourceLabel = nullptr;
 	uint64_t m_resourceDecalId = 0, m_resourceLabelId = 0;

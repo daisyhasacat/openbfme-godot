@@ -20,6 +20,13 @@ func _run() -> void:
 	var id = world.create_object("MenPorter", int(player.output), position.x, position.y, 0)
 	assert(id > 0)
 	world.advance(0.2)
+	var constructed=world.execute_lua("local p=bfme.players[%d]; p.money=100000; local site=assert(p:findBuildSite('GondorFarm',{x=2300,y=2000},1000)); ringFarm=p:construct('GondorFarm',site,100)" % int(player.output))
+	assert(constructed.ok,str(constructed))
+	world.update_lua()
+	for i in 100: world.advance(.2)
+	world.update_lua()
+	var farm=world.execute_lua("assert(bfme.mutations.getStatus(ringFarm)=='complete'); return bfme.mutations.getBuilding(ringFarm).id")
+	assert(farm.ok,str(farm))
 	var camera := Camera3D.new()
 	root.add_child(camera)
 	var hud = ClassDB.instantiate("InGameHudNode")
@@ -46,6 +53,13 @@ func _run() -> void:
 	for i in 8: await process_frame
 	var preview: Dictionary = hud.get_placement_ghost_state()
 	assert(preview.resource_visible, str(preview))
+	var found=false
+	for ring in preview.existing_resource_rings:
+		if ring.object==int(farm.output):
+			found=true
+			assert(ring.radius==preview.resource_radius)
+			assert(ring.color==Color(0,1,0) or ring.color==Color(1,1,0) or ring.color==Color(1,0,0) or ring.color==Color(0,0,0))
+	assert(found,str(preview.existing_resource_rings))
 	assert(preview.resource_radius > 0, str(preview))
 	assert(preview.resource_share > 0 and preview.resource_share <= 1, str(preview))
 	hud.camera_look_at(Vector2(1800,1800))
@@ -58,6 +72,7 @@ func _run() -> void:
 	hud.controller_deselect()
 	for i in 4: await process_frame
 	assert(not hud.get_placement_ghost_state().resource_visible)
+	assert(hud.get_placement_ghost_state().existing_resource_rings.is_empty())
 	print("resource placement preview: PASS")
 	hud.queue_free()
 	world.queue_free()

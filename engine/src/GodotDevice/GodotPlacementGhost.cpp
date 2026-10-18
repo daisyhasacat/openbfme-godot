@@ -23,6 +23,10 @@
 #include "GameLogic/BuildPlacement.h"
 #include "GameLogic/Object/Object.h"
 #include "Common/Player.h"
+#include "Common/PlayerList.h"
+#include "GameLogic/Module/TerrainResourceBehavior.h"
+#include "GameLogic/System/TerrainResourceManager.h"
+#include "GameLogic/Economy.h"
 #include "Common/PlayerTemplate.h"
 #include <array>
 #include <map>
@@ -150,6 +154,9 @@ void PlacementGhostRenderer::clear()
 	m_gridId = 0;
 	m_grid = nullptr;
 	m_gridSpacing = 0;
+	for (auto &ring : m_existingResourceRings) freeNode(ring.nodeId);
+	m_existingResourceRings.clear();
+	m_existingResourceState.clear();
 	freeNode(m_resourceDecalId);
 	freeNode(m_resourceLabelId);
 	m_resourceDecalId = m_resourceLabelId = 0;
@@ -529,7 +536,7 @@ void PlacementGhostRenderer::sync(LiveGame &game, const InGameUI &ui, double del
 		}
 	}
 	updateArrow(ui);
-	updateResources(ui);
+	updateResources(ui, judge);
 	updateGrid(game, ui, judge);
 	updateFootprints(game, ui, judge);
 	updateWallAlignment(game, ui, judge);
@@ -842,11 +849,13 @@ void PlacementGhostRenderer::updateGrid(LiveGame &game, const InGameUI &ui, bool
 	if (m_grid) m_grid->show();
 }
 
-void PlacementGhostRenderer::updateResources(const InGameUI &ui)
+void PlacementGhostRenderer::updateResources(const InGameUI &ui, bool idle)
 {
 	const bool show = ui.isPlacing() && ui.placeHasGhost() && m_icons->resourceRadius() > 0;
 	if (!show)
 	{
+		for (auto &ring : m_existingResourceRings) ring.decal->hide();
+		m_existingResourceState.clear();
 		if (m_resourceDecal) m_resourceDecal->hide();
 		if (m_resourceLabel) m_resourceLabel->hide();
 		return;
@@ -870,6 +879,52 @@ void PlacementGhostRenderer::updateResources(const InGameUI &ui)
 		m_parent->add_child(m_resourceLabel);
 		m_resourceLabelId = m_resourceLabel->get_instance_id();
 	}
+ // Read authoritative claimant data only while the logic worker is idle.
+ // Reuse decal nodes between frames, just as the placement reticle is reused.
+ if (idle && m_game)
+ {
+  auto &logic = m_game->logic();
+  const auto *source = logic.findObjectByID(ui.placeBuildSource());
+  const Player *owner = source ? source->getControllingPlayer() : logic.players().getLocalPlayer();
+  size_t count = 0;
+  m_existingResourceState.clear();
+  for (const auto &claim : logic.economy().resources().claimants())
+  {
+   const auto *object = logic.findObjectByID(claim.id);
+   if (!claim.visible || claim.radius <= 0 || !object || object->isEffectivelyDead() ||
+       !object->isInWorld() || object->getControllingPlayer() != owner) continue;
+   const auto *resource = dynamic_cast<const TerrainResourceBehavior *>(object->findModule("TerrainResourceBehavior"));
+   if (!resource || resource->data()->m_maxIncome <= 0) continue;
+   if (count == m_existingResourceRings.size())
+   {
+    ResourceRing ring;
+    ring.decal = memnew(Decal);
+    m_parent->add_child(ring.decal);
+    ring.nodeId = ring.decal->get_instance_id();
+    ring.decal->set_texture(Decal::TEXTURE_ALBEDO, texture("BuildingRadialButtons_003.tga"));
+    ring.decal->set_cull_mask(1u << 19);
+    ring.decal->set_albedo_mix(1);
+    ring.decal->set_upper_fade(0);
+    ring.decal->set_lower_fade(0);
+    m_existingResourceRings.push_back(ring);
+   }
+   auto *decal = m_existingResourceRings[count++].decal;
+   const float share = resource->claimShare();
+   const Color color = share > .75f ? Color(0,1,0) : share >= .5f ? Color(1,1,0) : share >= .25f ? Color(1,0,0) : Color(0,0,0);
+   const auto &position = *object->getPosition();
+   decal->set_position(Vector3(position.x,position.z,-position.y));
+   decal->set_size(Vector3(2*claim.radius,200,2*claim.radius));
+   decal->set_modulate(Color(color.r,color.g,color.b,128.0f/255));
+   decal->show();
+   Dictionary state;
+   state["object"] = (int64_t)claim.id;
+   state["radius"] = claim.radius;
+   state["share"] = share;
+   state["color"] = color;
+   m_existingResourceState.push_back(state);
+  }
+  for (size_t i=count;i<m_existingResourceRings.size();++i) m_existingResourceRings[i].decal->hide();
+ }
 	const float share = m_icons->resourceShare();
 	const Color color = share > .75f ? Color(0,1,0) : share >= .5f ? Color(1,1,0) : share >= .25f ? Color(1,0,0) : Color(0,0,0);
 	const Coord3D &p = ui.placeLocation();
@@ -915,6 +970,7 @@ Dictionary PlacementGhostRenderer::state() const
 	s["grid_visible"] = m_grid && m_grid->is_visible();
 	s["grid_spacing"] = m_gridSpacing;
 	s["grid_angle"] = m_gridAngle;
+	s["existing_resource_rings"] = m_existingResourceState;
 	s["resource_radius"] = m_icons ? m_icons->resourceRadius() : 0;
 	s["resource_share"] = m_icons ? m_icons->resourceShare() : 0;
 	s["resource_visible"] = m_resourceLabel && m_resourceLabel->is_visible();
