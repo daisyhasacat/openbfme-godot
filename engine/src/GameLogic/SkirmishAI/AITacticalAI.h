@@ -185,6 +185,7 @@ struct AIBrainState
 	unsigned long long targetlessPicks = 0, targetlessStarted = 0, targetlessUnported = 0;
 	std::vector<AIAttackedAt> attackedAt;          ///< lane AI-3: + 0x20 (RW 0x6C7344 / 0x6C720A), at most 20
 	AIThreatFinder::ThreatRecord idleArmy;        ///< lane AI-3: the player info record's army list + 0x10 (RW 0x99E63B): the army in the default team
+	std::map<ObjectID, std::uint32_t> strategyRecovering; ///< enhanced retreat ownership, expiry frame
 	std::set<ObjectID> dispatched;                ///< lane DECOMP-2: the team builder's + 0x18, the default-team units RW 0x9A3040 has sent (until they are gone)
 	ObjectID fortificationTarget = INVALID_ID;    ///< OpenBFME siege response; derived from live enemy fortifications
 	std::set<ObjectID> siegeEscorts;

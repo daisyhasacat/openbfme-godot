@@ -185,3 +185,10 @@ slot limit remains unchanged and each extra wave is counted and retired through
 the existing tactic lifecycle. The synthetic saturated-slot regression and the
 optional Tharbad retail scenario (`OPENBFME_TEST_MAP_PACK` points at the local
 map pack) exercise this enhanced behavior.
+## Strategy-driven enhanced policy
+
+The separate strategy branch adds visible-composition counter production, local
+role-based targeting, pike avoidance and timed retreat ownership. Siege engines
+and escorts retain the existing wall/breach controller's orders. Optional upgrade
+saving yields to visible home threats and counter requests. See
+[AI-STRATEGY.md](AI-STRATEGY.md) for research, implementation boundaries and tests.

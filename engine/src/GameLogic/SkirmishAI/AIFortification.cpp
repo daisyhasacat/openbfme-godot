@@ -288,7 +288,7 @@ void AIFortification::update(GameLogic &logic, AISkirmishPlayer &ai)
  std::vector<Object *> candidates;
  for (Object *unit = logic.getFirstObject(); target && unit; unit = unit->getNextObject())
   if (unit->getControllingPlayer() == player && unit->isInWorld() && CombatQueries::isAlive(*unit) &&
-      !unit->getContainedBy() && !unit->isKindOfName("STRUCTURE") && !unit->isKindOfName("IGNORES_SELECT_ALL") &&
+      !unit->getContainedBy() && !b.strategyRecovering.count(unit->getID()) && !unit->isKindOfName("STRUCTURE") && !unit->isKindOfName("IGNORES_SELECT_ALL") &&
       (unit->isKindOfName("SIEGEENGINE") || unit->isKindOfName("CAN_ATTACK_WALLS"))) candidates.push_back(unit);
  std::sort(candidates.begin(), candidates.end(), [&](const Object *a, const Object *c) {
   const float ar=siegeRange(*a->getTemplate()),cr=siegeRange(*c->getTemplate());
@@ -315,7 +315,7 @@ void AIFortification::update(GameLogic &logic, AISkirmishPlayer &ai)
    if (b.siegeEscorts.size() == 6) break;
    auto *a = unit->getAIUpdateInterface();
    if (unit->getControllingPlayer() != player || !unit->isInWorld() || !CombatQueries::isAlive(*unit) || !a ||
-       unit->getContainedBy() || unit->isUnderConstruction() || !unit->isKindOfName("CAN_ATTACK") ||
+       unit->getContainedBy() || b.strategyRecovering.count(unit->getID()) || unit->isUnderConstruction() || !unit->isKindOfName("CAN_ATTACK") ||
        unit->isKindOfName("STRUCTURE") || unit->isKindOfName("DOZER") || unit->isKindOfName("IGNORES_SELECT_ALL") ||
        unit->isKindOfName("SIEGEENGINE") || b.siegeUnits.count(unit->getID())) continue;
    bool assigned = false;

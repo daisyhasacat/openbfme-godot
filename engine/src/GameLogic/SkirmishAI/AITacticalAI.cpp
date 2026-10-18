@@ -3,6 +3,7 @@
 
 #include "GameLogic/SkirmishAI/AITacticalAI.h"
 #include "GameLogic/SkirmishAI/AIFortification.h"
+#include "GameLogic/SkirmishAI/AIStrategy.h"
 
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
@@ -637,7 +638,7 @@ bool offensiveAllowed(GameLogic &logic, const AISkirmishPlayer &ai, const Player
 
 bool inAnyTeamOf(const AIBrainState &b, ObjectID id)
 {
-	if (b.siegeUnits.count(id) || b.siegeEscorts.count(id)) return true;
+	if (b.siegeUnits.count(id) || b.siegeEscorts.count(id) || b.strategyRecovering.count(id)) return true;
 	for (const AITactic &tac : b.tactics)
 	{
 		for (const AITacticTeam &team : tac.teams)
@@ -2384,6 +2385,7 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 	}
 	const std::vector<ObjectID> army = recordOf(logic, ai.playerIndex).army(); // the record + 0 -> + 4 (a copy: the loops below give orders)
 	if (!ai.store->data().disableTacticalAI) AIFortification::update(logic, ai);
+	AIStrategy::update(logic, ai);
 	const Kinds &k = kinds();
 	static const std::vector<int> supportHorde = { k.support, kindBit("HORDE") };
 	for (AITactic &tac : b.tactics)
@@ -2614,6 +2616,14 @@ void AITacticalAI::makeGenerator(GameLogic &logic, AISkirmishPlayer &ai)
 
 void AITacticalAI::crc(const AIBrainState &b, StateHasher &h)
 {
+	// Enhanced retreat ownership affects recruitment and is authoritative state.
+	if (!b.strategyRecovering.empty())
+	{
+		h.addU32(0x53545241u);
+		h.addU32((std::uint32_t)b.strategyRecovering.size());
+		for (const auto &entry : b.strategyRecovering) { h.addU32(entry.first); h.addU32(entry.second); }
+	}
+
 	if (b.fortificationTarget != INVALID_ID || !b.siegeUnits.empty() || !b.siegeEscorts.empty())
 	{
 		h.addU32(0x53494547u); // "SIEG": extension state only when used

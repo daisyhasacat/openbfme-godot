@@ -4,6 +4,7 @@
 
 #include "GameLogic/SkirmishAI/AIBaseBuilder.h"
 #include "GameLogic/SkirmishAI/AIFortification.h"
+#include "GameLogic/SkirmishAI/AIStrategy.h"
 
 #include "Common/BuildAssistant.h"
 #include "Common/AsciiString.h"
@@ -1052,12 +1053,44 @@ std::shared_ptr<AIBuildRequest> chooseBreachUnit(GameLogic &logic, AISkirmishPla
 	return nullptr;
 }
 
+// Enhanced composition: visible threats and the army's own offered units determine
+// counters. Requests and living battalions both satisfy demand. No faction names.
+std::shared_ptr<AIBuildRequest> chooseStrategyCounter(GameLogic &logic, AISkirmishPlayer &ai, const Player &player)
+{
+ const auto situation = AIStrategy::assess(logic, ai);
+ const ThingTemplate *choice = nullptr;
+ int score = 0;
+ std::vector<const ThingTemplate *> missingFactories;
+ for (const auto &member : ai.army->members)
+ {
+  const auto *tt = logic.things().findTemplate(member.unit);
+  if (!tt) continue;
+  tt = tt->getFinalOverride();
+  const int need = AIStrategy::productionNeed(AIStrategy::role(logic, *tt), situation);
+  if (need == 0) continue;
+  if (!findFactory(logic, ai, member.unit, nullptr, true)) missingFactories.push_back(tt);
+  if (!hasFreeFactory(logic, ai, member.unit)) continue;
+  if (need > score) { score = need; choice = tt; }
+ }
+ if (!choice)
+ {
+  // Reuse the legal paid construction chain instead of fabricating a counter.
+  if (!missingFactories.empty()) requestAttackerFactory(logic, ai, player, missingFactories);
+  return nullptr;
+ }
+ auto request = std::make_shared<AIBuildRequest>();
+ request->serial = ai.build.nextSerial++;
+ request->unit = true;
+ request->templateName = choice->getName();
+ request->commandPoints = BuildAssistant::commandPoints(*choice);
+ request->priority = std::max(kRushUnitPriority, SimMath::mulf32(2.0f, ai.army->defaultUnitPriority));
+ request->reserveMoney = true;
+ return request;
+}
+
 void updateUnitBuilder(GameLogic &logic, AISkirmishPlayer &ai, const Player &player)
 {
 	AIUnitBuilderState &u = ai.build.units;
- const auto saving=ai.brain.namedCounters.find("UpgradeSavingsTarget");
- if(saving!=ai.brain.namedCounters.end() && saving->second>0 && economyStructureCount(logic,player)>0 &&
-    (std::uint64_t)player.getMoney()->countMoney()+ai.build.moneyReserve<(unsigned)saving->second)return;
 	registerFactories(logic, ai, player);
 	if (u.recompute)
 	{
@@ -1097,7 +1130,12 @@ void updateUnitBuilder(GameLogic &logic, AISkirmishPlayer &ai, const Player &pla
 		}
 	}
 	// RW 0x9A1051: one new request per frame: a hero (RW 0x9A03A1 -> 0x9A0993, lane DECOMP-2), else a unit (RW 0x9A0F66)
-	std::shared_ptr<AIBuildRequest> req = chooseBreachUnit(logic, ai, player);
+	std::shared_ptr<AIBuildRequest> req = chooseStrategyCounter(logic, ai, player);
+ const auto saving = ai.brain.namedCounters.find("UpgradeSavingsTarget");
+ if (!req && saving != ai.brain.namedCounters.end() && saving->second > 0 &&
+     economyStructureCount(logic, player) > 0 &&
+     (std::uint64_t)player.getMoney()->countMoney() + ai.build.moneyReserve < (unsigned)saving->second) return;
+ if (!req) req = chooseBreachUnit(logic, ai, player);
 	if (!req) req = shouldBuildHero(logic, ai, player) ? createBestHero(logic, ai, player) : nullptr;
 	if (!req)
 	{
@@ -2031,11 +2069,13 @@ static void checkForNewUpgrades(GameLogic &logic, AISkirmishPlayer &ai, Player &
 
 // Enhanced purchasing policy: use only offered upgrade buttons, their prerequisites,
 // and ordinary paid queues. Keep an economy buffer; never grant upgrades for free.
-static void buyCombatUpgrade(GameLogic &logic, AISkirmishPlayer &ai, Player &player)
+static void buyCombatUpgrade(GameLogic &logic, AISkirmishPlayer &ai, Player &player, bool homeThreat)
 {
  if (!TheCommandStore || !TheUpgradeCenter || ai.store->data().disableUnitUpgrading || ai.build.phase == 0)
  { ai.brain.namedCounters.erase("UpgradeSavingsTarget");return; }
  if(logic.getFrame()%5!=(unsigned)player.getPlayerIndex()%5)return;
+ if (homeThreat)
+ { ai.brain.namedCounters.erase("UpgradeSavingsTarget"); return; }
  Object *producer = nullptr;
  const UpgradeTemplate *chosen = nullptr;
  int best = 100;
@@ -2133,7 +2173,8 @@ void AIBaseBuilder::update(GameLogic &logic, AISkirmishPlayer &ai)
 	// RW 0x8F0EBE: drop finished requests from the in-progress list
 	s.inProgress.erase(std::remove_if(s.inProgress.begin(), s.inProgress.end(), [](const std::shared_ptr<AIBuildRequest> &r) { return r->finished(); }), s.inProgress.end());
 	// Upgrade throughput scales to a large army without consuming wall-clock time.
-	for(int purchase=0;purchase<8;++purchase) buyCombatUpgrade(logic, ai, *player);
+	const bool homeThreat = logic.getFrame() % 5 == (unsigned)ai.playerIndex % 5 && AIStrategy::assess(logic, ai).homeThreat;
+	for(int purchase=0;purchase<8;++purchase) buyCombatUpgrade(logic, ai, *player, homeThreat);
 	checkForNewUpgrades(logic, ai, *player); // RW 0x8F0EF8
 	// RW 0x8F0EFD: the base builder (+ 4) through RW 0x90CD00 (skipped when disabled): RW 0x90CDAD -> every base RW 0x9BCA33 -> its slots
 	if (!s.baseBuilderDisabled)
