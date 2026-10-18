@@ -287,6 +287,24 @@ int CommandTranslator::evaluateContextCommand(Object *obj, const Coord3D *pos, E
 		{
 			return evaluateGUISpecialPower(*command, obj, pos, type);
 		}
+  // The Attack Move button (including its A hotkey) is a pending GUI
+  // command. Keep its cursor and order through context/right-click input;
+  // otherwise this path silently turns it into an ordinary move.
+  if (command->m_command == GUI_COMMAND_ATTACK_MOVE)
+  {
+   if (!pos || !selectionCanReach(*pos))
+   {
+    hint(MouseCursorName::GenericInvalid);
+    return 0;
+   }
+   hint(MouseCursorName::AttackMove);
+   if (type == EvaluateType::DoCommand)
+   {
+    m_ctx.stream.append(MSG_DO_ATTACKMOVETO).appendLocation(*pos);
+    m_ctx.ui.setGUICommand(nullptr);
+   }
+   return MSG_DO_ATTACKMOVETO;
+  }
 	}
 	// lane GARRISON-1 (ZH evaluateContextCommand's ACTIONTYPE_ENTER_OBJECT): a click on a container some selected object may enter (ActionManager::canEnterObject,
 	// RW 0x82CBD5, mode 0) is MSG_ENTER (argument 0 the first selected object, argument 1 the container: the logic case RW 0x77AC26 reads argument 1); the cursor

@@ -69,3 +69,10 @@ Hold A for at least 250 ms to grow a gold selection circle around the cursor. Re
 With selected mobile units, hold both mouse buttons on the terrain to preview a formation. Drag to choose its facing and width; release either button to deploy. Green ground rings mark each unit or battalion destination and arrows show its final facing. Escape or focus loss cancels. Formation placement preserves the selection and suppresses selection drags and camera drag scrolling.
 
 A+B formation aiming pauses both camera sticks. Releasing the formation leaves a short delay and waits for the left stick to return to neutral before camera panning resumes. Holding A alone still grows the selection circle. B alone deselects on release so either A+B press order works. Opening the palette, leaving gameplay, or disconnecting cancels the preview.
+
+Attack move: the selected units' Attack Move button (A in English) arms the
+retail AttackMove cursor. Left-clicking a destination submits the command; the
+alternate mouse setup also accepts the usual right-click movement command. The
+right release preserves this pending command until context input submits it,
+instead of cancelling it and sending an ordinary move. Units acquire enemy units
+and buildings along the way, then resume toward the original destination.

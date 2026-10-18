@@ -659,7 +659,9 @@ MessageDisposition SelectionTranslator::translate(const ClientMessage &msg)
 			}
 			if (isClick)
 			{
-				if (m_ctx.ui.getGUICommand())
+				const CommandButton *pending = m_ctx.ui.getGUICommand();
+                const bool attackMoveOrder = pending && pending->m_command == GUI_COMMAND_ATTACK_MOVE && m_commands.useAlternateMouse();
+				if (pending && !attackMoveOrder)
 				{
 					// cancel the GUI command mode without deselecting
 					m_ctx.ui.setGUICommand(nullptr);

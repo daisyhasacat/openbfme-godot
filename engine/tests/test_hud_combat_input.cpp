@@ -119,3 +119,34 @@ TEST_CASE("combat hud: selecting a horde and clicking the enemy horde orders the
 	CHECK(r.logic().findObjectByID(ours->getID()) != nullptr);
 	std::printf("  info: HUD attack order: the orcs were gone after %zu frames, %llu kills, %zu of 15 Gondor fighters left\n", frames, r.logic().combat().counters().kills, members(ours));
 }
+
+TEST_CASE("combat hud: pending attack move keeps its cursor and right click emits attack move")
+{
+ if(!haveWorld("combat hud attack move")) return;
+ auto &s=shared(); Rig r(s);
+ float mx=0,my=0;
+ REQUIRE(r.logic().terrain()->getExtent(0,mx,my));
+ const auto start=r.freeSpot(mx*.5f,my*.5f,260);
+ auto *unit=r.make("GondorFighterHorde",start.x,start.y);
+ Coord3D goal{};
+ REQUIRE(reachableSpot(r,unit,260,goal));
+ r.lookAt({(start.x+goal.x)*.5f,(start.y+goal.y)*.5f,0},520,640);
+ r.frame(3);
+ auto at=r.screenOf({start.x,start.y,6});
+ r.leftClick(at.x,at.y);r.frame(1);
+ const auto *button=s.world->commands().findCommandButton("Command_AttackMove");
+ REQUIRE(button != nullptr);
+ r.input->ui().setGUICommand(button);
+ auto &translator=r.input->commandTranslator();
+ CHECK(translator.evaluateContextCommand(nullptr,&goal,EvaluateType::DoHint)==MSG_DO_ATTACKMOVETO);
+ CHECK(r.input->ui().cursor()==MouseCursorName::AttackMove);
+ translator.setUseAlternateMouse(true);
+ at=r.screenOf({goal.x,goal.y,6});
+ r.rightClick(at.x,at.y);
+ CHECK(logCountOf(*r.input,"MSG_DO_ATTACKMOVETO")==1);
+ CHECK(logCountOf(*r.input,"MSG_DO_MOVETO")==0);
+ CHECK(r.input->ui().getGUICommand()==nullptr);
+ r.frame(1);
+ CHECK(r.game->aiCommands().stats().attackMoves==1);
+ CHECK(unit->getAIUpdateInterface()->attackMoveActive());
+}
