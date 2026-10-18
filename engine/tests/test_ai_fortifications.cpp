@@ -612,3 +612,39 @@ End
  for(int i=0;i<5;++i){s.w.frames(1);AIBaseBuilder::update(*s.w.logic,s.bot);}
  CHECK(s.bot.build.units.factories.count(key)==1);
 }
+
+TEST_CASE("offensive AI: saturated target slots still dispatch a new full attack wave")
+{
+ Scenario s;
+ auto *target=s.w.unit("BreachFortress",'B',850,500);
+ s.bot.build.phase=1;
+ s.bot.brain.chooser=false;
+ s.bot.brain.bestTarget=-1;
+ AITarget objective;
+ objective.inactive=false;
+ objective.object=target->getID();
+ objective.position=*target->getPosition();
+ objective.teams=objective.maxTeams=1;
+ s.bot.brain.targets.push_back(objective);
+ for(int i=0;i<8;++i)s.w.unit("Swordsman",'A',150+i*20,450);
+ s.w.frames(30);
+ auto *player=s.w.players.findPlayerWithName("Alice");
+ player->setPlayerType(PLAYER_HUMAN,true);
+ REQUIRE(s.w.w.load("SkirmishAIData TheSkirmishAIData\nEnd\n").empty());
+ s.w.logic->skirmishAI().setStore(&s.store);
+ s.w.logic->skirmishAI().newGame(true);
+ player->setPlayerType(PLAYER_COMPUTER,true);
+ AITacticalAI::updateBrain(*s.w.logic,s.bot,&s.bot);
+ REQUIRE(s.bot.brain.tactics.size()==1);
+ CHECK(s.bot.brain.targets[0].teams==2);
+ CHECK(s.bot.brain.targets[0].maxTeams==1);
+ REQUIRE(s.bot.brain.tactics[0].teams.size()==1);
+ CHECK(s.bot.brain.tactics[0].teams[0].members.size()==8);
+ AITacticalAI::updateTeamBuilder(*s.w.logic,s.bot);
+ CHECK(s.bot.brain.tactics[0].teams[0].handedOver);
+ AITacticalAI::updateBrain(*s.w.logic,s.bot,&s.bot);
+ s.w.frames(1);
+ AITacticalAI::updateBrain(*s.w.logic,s.bot,&s.bot);
+ CHECK(s.bot.brain.attacksLaunched==1);
+ CHECK(s.bot.brain.targets[0].teams==2);
+}

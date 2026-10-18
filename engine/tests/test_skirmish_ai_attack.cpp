@@ -9,6 +9,7 @@
 
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 
+#include "Common/ArchiveFile.h"
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/PlayerTemplate.h"
@@ -28,6 +29,7 @@
 #include "Libraries/WWVegas/WW3D2/assetmgr.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <vector>
@@ -89,14 +91,15 @@ struct AttackRun
 	bool humanDefeated = false, aiDefeated = false;
 	int defeatFrame = -1;
  bool sawDwarvenCatapult=false;
+ bool sawExtraAttackWave=false;
  unsigned maxUpgradedTroops=0;
 };
 
 constexpr float kArrival = 450.0f;
 
-void runAttackGame(starttest::Shared &s, const NewGameMessage &message, int frames, AttackRun &out, bool hashEveryFrame, bool stopAtDefeat = false, bool boostedCP = false)
+void runAttackGame(starttest::Shared &s, const NewGameMessage &message, int frames, AttackRun &out, bool hashEveryFrame, bool stopAtDefeat = false, bool boostedCP = false, bool lateArmy = false)
 {
-	static std::vector<MapCacheEntry> cache;
+	std::vector<MapCacheEntry> cache;
 	std::string error;
 	if (cache.empty())
 	{
@@ -166,9 +169,27 @@ void runAttackGame(starttest::Shared &s, const NewGameMessage &message, int fram
  }
 	for (int i = 0; i < frames; ++i)
 	{
+  // Model the reported late-match mass: existing assaults still occupy their
+  // slots when many newly available battalions need an offensive assignment.
+  if(lateArmy && i==2500)
+  {
+   const auto *troop=logic.things().findTemplate("DwarvenGuardianHorde");
+   REQUIRE(troop != nullptr);
+   for(int n=0;n<24;++n)
+   {
+    auto *unit=logic.newObject(troop,aiPlayer->getDefaultTeam(),{});
+    REQUIRE(unit != nullptr);
+    Coord3D position=ai->build.startPosition;
+    position.x+=(n%6)*40;position.y+=(n/6)*40;
+    position.z=logic.getGroundHeight(position.x,position.y);
+    unit->setPosition(&position);
+   }
+  }
 		game.advance(0.2);
   if(boostedCP && i%25==0)
   {
+   for(const auto &target:ai->brain.targets)
+    if(target.teams>target.maxTeams)out.sawExtraAttackWave=true;
    unsigned upgraded=0;
    for(auto *unit=logic.getFirstObject();unit;unit=unit->getNextObject())
    {
@@ -472,6 +493,38 @@ TEST_CASE("skirmish ai attack: AI vs AI on Evendim (Medium Mordor against Medium
 		CHECK(run.farmsBuilt >= 1);
 		CHECK(run.attacksLaunched >= 1);
 	}
+}
+
+TEST_CASE("offensive AI retail: Dwarves on Tharbad with enlarged CP sustain attack waves and produce catapults")
+{
+ const char *mapPack=std::getenv("OPENBFME_TEST_MAP_PACK");
+ if(!mapPack) { retailtest::printSkip("Tharbad attack waves: OPENBFME_TEST_MAP_PACK is unset");return; }
+ auto world=starttest::freshWorld();
+ if(!world) { retailtest::printSkip("Tharbad attack waves: retail install paths are unset");return; }
+ auto *s=world.get();
+ REQUIRE_MESSAGE(s->world != nullptr,s->error);
+ auto context=s->world->enterContext();
+ std::string packError;
+ auto pack=s->mount->fs->openArchiveFile(mapPack,&packError);
+ REQUIRE_MESSAGE(pack != nullptr,packError);
+ s->mount->fs->mountArchive(std::move(pack),"test 2.02 maps",true);
+ auto message=attackMessage(*s,"FactionDwarves","FactionMen",false,4139u);
+ message.game.mapName="maps/map mp tharbad/map mp tharbad.map";
+ message.game.slots[1].state=SLOT_BRUTAL_AI;
+ message.game.startingCash=100000;
+ AttackRun run;
+ runAttackGame(*s,message,4500,run,false,false,true,true);
+ MESSAGE("farms="<<run.farmsBuilt<<" requests="<<run.farmRequests<<" defeat="<<run.defeatFrame<<" attacks="<<run.attacksLaunched<<" first="<<run.firstAttackFrame<<" catapult="<<run.sawDwarvenCatapult<<" damage="<<run.humanStructureHealthLost<<" upgraded="<<run.maxUpgradedTroops);
+ // tolerance: The regression is an army that never attacks; the exact attack count is not the contract.
+ CHECK(run.attacksLaunched>0);
+ // tolerance: The first attack must occur within eight simulated minutes rather than wait indefinitely.
+ CHECK(run.firstAttackFrame>0);CHECK(run.firstAttackFrame<2400);
+ CHECK(run.sawDwarvenCatapult);
+ CHECK(run.sawExtraAttackWave);
+ // tolerance: An attack must deal actual base damage; the damage amount depends on target selection.
+ CHECK(run.humanStructureHealthLost>0);
+ // tolerance: Upgrades must reach beyond the initial small squad as the army grows.
+ CHECK(run.maxUpgradedTroops>6);
 }
 
 TEST_CASE("offensive AI retail: Dwarves with enlarged CP launch attacks and produce catapults")

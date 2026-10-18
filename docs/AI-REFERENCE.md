@@ -173,3 +173,15 @@ holds new army requests while saving for its next eligible upgrade plus the buff
 These decisions use logic frames, not elapsed wall-clock time. A retail regression
 runs Dwarves with 10,000 CP against a high-health defended base and checks actual
 attacks/damage, catapult production and more than six upgraded troops.
+
+
+Enhanced attack reinforcement: the retail `MaxTeamsPerTarget` slots can remain
+occupied by long-lived assaults while a large unassigned army builds up. When
+all target slots are occupied, eight eligible unassigned combat units can form
+another SimpleAttack wave (up to twelve units). This preserves difficulty
+activation, recruitment exclusions and the fortification gathering gate; it
+neither steals an existing team nor releases reserved siege. The target's normal
+slot limit remains unchanged and each extra wave is counted and retired through
+the existing tactic lifecycle. The synthetic saturated-slot regression and the
+optional Tharbad retail scenario (`OPENBFME_TEST_MAP_PACK` points at the local
+map pack) exercise this enhanced behavior.

@@ -874,10 +874,10 @@ void endTactic(AITactic &tac, AIBrainState &owner, bool success)
 }
 
 // RW 0x8F21F7
-void startTactic(GameLogic &logic, AITactic &tac, AIBrainState &owner, int targetIndex)
+void startTactic(GameLogic &logic, AITactic &tac, AIBrainState &owner, int targetIndex, bool pressureWave = false)
 {
 	AITarget &t = owner.targets[(size_t)targetIndex];
-	if (t.teams >= t.maxTeams)
+	if (t.teams >= t.maxTeams && !pressureWave)
 	{
 		tac.ended = true;
 		return;
@@ -2526,6 +2526,41 @@ void AITacticalAI::updateBrain(GameLogic &logic, AISkirmishPlayer &ai, AISkirmis
 	{
 		b.bestTarget = bestTarget(logic, ai);
 	}
+ // Enhanced pressure: MaxTeamsPerTarget limits prototypes, not the useful
+ // size of an army. Long-lived attacks can occupy every slot while hundreds
+ // of newly trained units remain unassigned. Reserve another complete wave
+ // rather than waiting for those existing attacks to die. Recruitment still
+ // excludes the breach force and the normal hand-over keeps wall staging.
+ if (owner->brain.bestTarget < 0 && !ai.store->data().disableTeamBuilding)
+ {
+  AITacticTeam wave;
+  wave.type = kEnemyStructure;
+  for (ObjectID id : recordOf(logic, ai.playerIndex).army())
+  {
+   const Object *unit = logic.findObjectByID(id);
+   if (unit && is(*unit, kinds().canAttack) && !is(*unit, kinds().support) && recruitable(logic, b, wave, *unit))
+    wave.members.push_back(id);
+   if (wave.members.size() == 12) break;
+  }
+  if (wave.members.size() >= 8 && offensiveAllowed(logic, ai, *player))
+   for (size_t i = 0; i < owner->brain.targets.size(); ++i)
+   {
+    const auto &target = owner->brain.targets[i];
+    if (target.type != kEnemyStructure || target.maxTeams <= 0 || target.teams < target.maxTeams ||
+        !targetAcceptable(logic, *owner, target) || !commonApplies(logic, ai, b, target, *player, false)) continue;
+    AITactic tactic;
+    tactic.kindIndex = SIMPLE_ATTACK;
+    tactic.kind = kOffensiveNames[SIMPLE_ATTACK];
+    tactic.id = b.nextTacticId++;
+    tactic.targetOwner = owner->playerIndex;
+    startTactic(logic, tactic, owner->brain, (int)i, true);
+    tactic.teams[0].members = std::move(wave.members);
+    ++b.tacticsByKind[tactic.kind];
+    ++b.tacticsStarted;
+    b.tactics.push_back(std::move(tactic));
+    break;
+   }
+ }
 	const int best = owner->brain.bestTarget;
 	if (best < 0 || best >= (int)owner->brain.targets.size())
 	{
