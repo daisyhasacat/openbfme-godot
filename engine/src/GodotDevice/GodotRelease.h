@@ -34,6 +34,7 @@ class ReleaseInfo : public RefCounted
 public:
 	String version() const;      // git describe
 	String commit() const;
+	String commit_subject() const;
 	String build_date() const;
 	String version_line() const; // "OpenBFME <version> (<date>)"
 	String display_line() const; // lane VERSION-1: "OpenBFME Alpha 0.4.5 (<date>)" (BuildVersion::displayLine)

@@ -81,6 +81,7 @@ void ReleaseInfo::_bind_methods()
 {
 	ClassDB::bind_method(D_METHOD("version"), &ReleaseInfo::version);
 	ClassDB::bind_method(D_METHOD("commit"), &ReleaseInfo::commit);
+	ClassDB::bind_method(D_METHOD("commit_subject"), &ReleaseInfo::commit_subject);
 	ClassDB::bind_method(D_METHOD("build_date"), &ReleaseInfo::build_date);
 	ClassDB::bind_method(D_METHOD("version_line"), &ReleaseInfo::version_line);
 	ClassDB::bind_method(D_METHOD("display_line"), &ReleaseInfo::display_line);
@@ -99,6 +100,11 @@ String ReleaseInfo::version() const
 String ReleaseInfo::commit() const
 {
 	return String(BuildVersion::kCommit);
+}
+
+String ReleaseInfo::commit_subject() const
+{
+	return toGodot(BuildVersion::kCommitSubject);
 }
 
 String ReleaseInfo::build_date() const

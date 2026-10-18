@@ -209,6 +209,9 @@ The full design is in [RELEASE.md](RELEASE.md#the-launcher-launch-1).
 
 ## Logs
 
+The menu’s version text includes the build’s latest commit hash and a shortened
+commit message, making development builds easier to identify in screenshots.
+
 Every run of the game writes its own log file, `openbfme-<date>-<time>.log`.
 The 20 newest are kept. Your user name and home folder are removed from every
 line.

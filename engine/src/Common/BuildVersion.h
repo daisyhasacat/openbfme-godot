@@ -11,6 +11,7 @@ namespace BuildVersion
 {
 extern const char *const kVersion;   // e.g. "v0.3.0-preview.1-4-g0123456789" or "0af8b6b84c-dirty"; "untracked" without Git
 extern const char *const kCommit;    // the full commit hash, "none" without Git
+extern const char *const kCommitSubject; // latest commit subject, empty without Git
 extern const char *const kBuildDate; // "YYYY-MM-DD" (UTC)
 // the provenance line tools/release/package.sh checks (engine/cmake/BuildVersion.cmake): version, commit, dirty, engine id
 extern const char *const kBuildRecord;

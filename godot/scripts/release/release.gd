@@ -528,6 +528,10 @@ func _add_watermark() -> void:
 	# Lane VERSION-1: "OpenBFME Alpha 0.4.5 (<date>)  -  unofficial build" (the line already says Alpha)
 	var shown := display_line()
 	label.text = shown + ("  -  unofficial build" if shown.begins_with("OpenBFME Alpha ") else "  -  unofficial alpha build")
+	if info != null and info.commit() != "none":
+		var subject: String = info.commit_subject()
+		label.text += "\n" + info.commit().left(10) + " · " + subject.left(72) + ("…" if subject.length() > 72 else "")
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	label.add_theme_font_size_override("font_size", 13)
 	label.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
 	label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
@@ -553,7 +557,7 @@ func _add_watermark() -> void:
 	logs.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	logs.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	logs.offset_right = -8
-	logs.offset_top = 22
+	logs.offset_top = label.offset_top + label.get_combined_minimum_size().y + 4
 	logs.focus_mode = Control.FOCUS_NONE
 	logs.name = "OpenLogs"
 	logs.pressed.connect(func() -> void: open_log_folder())
@@ -569,7 +573,7 @@ func _add_watermark() -> void:
 	mods.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	mods.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	mods.offset_right = -8
-	mods.offset_top = 40
+	mods.offset_top = logs.offset_top + logs.get_combined_minimum_size().y + 4
 	mods.focus_mode = Control.FOCUS_NONE
 	mods.name = "OpenMods"
 	mods.pressed.connect(open_mod_manager)
@@ -591,7 +595,7 @@ func _add_watermark() -> void:
 	_update_note.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	_update_note.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	_update_note.offset_right = -8
-	_update_note.offset_top = 44
+	_update_note.offset_top = mods.offset_top + mods.get_combined_minimum_size().y + 8
 	_update_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_update_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_update_note.custom_minimum_size = Vector2(380, 0)
