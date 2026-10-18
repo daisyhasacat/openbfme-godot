@@ -34,8 +34,8 @@ count as closed; breaches remove the paving and closing the gap restores it.
 Natural isolated land without walls is not paved. The existing enclosure test
 requires at least half of a region's boundary to be wall edges for paving.
 Buildings and vegetation are excluded from this visual topology, so paving
-continues underneath enclosed buildings. Enclosed map vegetation and props marked
-for clearing on construction are hidden while paved; buildings remain visible.
+continues underneath enclosed buildings. Enclosed map vegetation, optimized decorative props (including crop patches),
+and props marked for clearing on construction are hidden while paved; buildings remain visible.
 The paving mask is smoothed at its boundary to soften diagonal wall edges.
 
 This is a client-only terrain layer: it retains terrain lighting and fog, leaves

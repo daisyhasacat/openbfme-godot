@@ -845,7 +845,7 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 			continue;
 		}
 		++instances;
-		if(d.info && (d.info->tree || d.info->shrub || d.info->shrubbery || d.info->clearedByBuild)
+		if(d.info && (d.info->tree || d.info->shrub || d.info->shrubbery || d.info->clearedByBuild || d.info->optimizedProp)
 			&& !d.info->kindOf_test(MapObjectCreation::kindOfIndex("STRUCTURE")))
 			m_pavingPlants.push_back({instance,Vector2(d.position.x,d.position.y)});
 		// lane SPELL-3: a tree the logic may topple (its TerrainTrees client id is the map object index + 1, S-930)
