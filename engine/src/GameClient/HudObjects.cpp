@@ -135,6 +135,19 @@ bool isSelectable(const Object &obj)
 	return obj.isKindOfName("SELECTABLE") && !obj.isKindOfName("NO_SELECT") && obj.isScriptSelectable(); // lane SCRIPT-2: RW + 0x454
 }
 
+bool isCombatUnit(const Object &obj)
+{
+	// User-requested army selection policy, independent of point selection and retail combat orders.
+	if (obj.isKindOfName("STRUCTURE") || obj.isKindOfName("DOZER") || obj.isKindOfName("HARVESTER")
+		|| obj.isKindOfName("PORTER") || obj.isKindOfName("NONCOM") || obj.isKindOfName("IGNORES_SELECT_ALL")) return false;
+	if (obj.isKindOfName("CAN_ATTACK") || obj.isKindOfName("HERO") || obj.isKindOfName("SUPPORT")) return true;
+	// Individual soldiers need not carry CAN_ATTACK (their battalion does); their weapons still make them combat units.
+	const ObjectWeapons *weapons = obj.getWeapons();
+	for (int slot = 0; weapons && slot < WEAPONSLOT_COUNT; ++slot)
+		if (weapons->weaponInSlot(slot)) return true;
+	return false;
+}
+
 Relationship relationshipToLocal(const HudContext &ctx, const Object &obj)
 {
 	const Player *local = ctx.localPlayer();

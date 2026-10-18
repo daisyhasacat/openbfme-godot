@@ -26,6 +26,8 @@ bool isLocallyControlled(const HudContext &ctx, const Object &obj);
 bool isEffectivelyDead(const Object &obj);
 // ZH Object::isSelectable (the SELECTABLE kind of, not NO_SELECT)
 bool isSelectable(const Object &obj);
+// OpenBFME army selection: combat/support units, excluding economic workers even when armed.
+bool isCombatUnit(const Object &obj);
 // the relationship of the local player to the object's team
 Relationship relationshipToLocal(const HudContext &ctx, const Object &obj);
 // ZH CanSelectDrawable (SelectionXlat.cpp:81): the drawable of the object can be selected under the rules of the system. `dragSelecting`: structures and

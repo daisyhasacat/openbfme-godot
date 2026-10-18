@@ -582,8 +582,8 @@ void CommandTranslator::viewLastRadarEvent()
 
 void CommandTranslator::selectAllUnits()
 {
-	// ZH InGameUI::selectAllUnitsByType with the disqualifying kinds DOZER, HARVESTER, IGNORES_SELECT_ALL (CommandXlat.cpp:2888): every mobile
-	// object of the local player that is not contained, structure or dead. ZH selects across the whole map; the radius / screen rule of
+	// ZH InGameUI::selectAllUnitsByType (CommandXlat.cpp:2888), with OpenBFME
+	// army-only filtering shared with drag selection. ZH selects across the whole map; the radius / screen rule of
 	// RotWK is not read (stop S-286).
 	m_ctx.ui.deselectAll();
 	ClientMessage &group = m_ctx.stream.append(MSG_CREATE_SELECTED_GROUP);
@@ -594,7 +594,7 @@ void CommandTranslator::selectAllUnits()
 		{
 			continue;
 		}
-		if (o->isKindOfName("DOZER") || o->isKindOfName("HARVESTER") || o->isKindOfName("IGNORES_SELECT_ALL") || o->isKindOfName("STRUCTURE"))
+		if (!HudObjects::isCombatUnit(*o))
 		{
 			continue;
 		}

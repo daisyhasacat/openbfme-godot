@@ -503,3 +503,39 @@ TEST_CASE("hud input: a drag box over a horde selects the horde object, not its 
 	r.frame(1);
 	CHECK(r.local->selection() == std::vector<ObjectID>{ horde->getID() });
 }
+
+TEST_CASE("hud input: army drag selection prefers combat units, worker-only boxes fall back, and Q excludes workers")
+{
+	if (!haveWorld("army selection workers")) return;
+	SharedWorld &s = shared();
+	for (const char *workerType : { "MenPorter", "MordorWorker", "WildLaborer" })
+	{
+		CAPTURE(workerType);
+		Rig r(s);
+		const Coord3D c = r.freeSpot(center(r).x, center(r).y, 200.0f);
+		Object *soldier = r.make("GondorFighter", c.x, c.y);
+		Object *worker = r.make(workerType, c.x + 100.0f, c.y);
+		REQUIRE(HudObjects::isCombatUnit(*soldier));
+		CHECK_FALSE(HudObjects::isCombatUnit(*worker));
+		r.lookAt({ c.x + 50.0f, c.y, 0.0f }, 300.0f, 380.0f);
+		r.frame(2);
+		auto px = [&](Object *o) { const Coord3D &p = *o->getPosition(); return r.screenOf({ p.x, p.y, p.z + 6.0f }); };
+		const ICoord2D a = px(soldier), b = px(worker);
+		r.leftDrag(std::min(a.x,b.x)-25, std::min(a.y,b.y)-40, std::max(a.x,b.x)+25, std::max(a.y,b.y)+40);
+		CHECK(r.input->ui().selected() == std::vector<ObjectID>{ soldier->getID() });
+		r.frame(1);
+		CHECK(selectionOf(r) == std::vector<ObjectID>{ soldier->getID() });
+		r.leftDrag(b.x-20,b.y-25,b.x+20,b.y+25);
+		CHECK(r.input->ui().selected() == std::vector<ObjectID>{ worker->getID() });
+		r.pressKey(KEY_Q);
+		CHECK(r.input->ui().isSelected(soldier->getID()));
+		CHECK_FALSE(r.input->ui().isSelected(worker->getID()));
+		r.frame(1);
+		CHECK(selectionOf(r) == std::vector<ObjectID>{ soldier->getID() });
+		r.logic().destroyObject(soldier);
+		r.pressKey(KEY_Q);
+		CHECK(r.input->ui().selected().empty());
+		r.leftClick(b.x,b.y);
+		CHECK(r.input->ui().selected() == std::vector<ObjectID>{ worker->getID() });
+	}
+}

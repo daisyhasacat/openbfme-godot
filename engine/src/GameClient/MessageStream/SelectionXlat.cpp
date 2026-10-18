@@ -385,6 +385,13 @@ MessageDisposition SelectionTranslator::leftClick(const ClientMessage &msg)
 	const IRegion2D selectionRegion = msg.arg(0).region;
 	const bool isPoint = selectionRegion.lo.x == selectionRegion.hi.x && selectionRegion.lo.y == selectionRegion.hi.y;
 	std::vector<Object *> will = drawablesThatWillSelect(m_ctx, selectionRegion);
+	// OpenBFME: a drag prefers selectable local army units; workers remain available in worker-only boxes and point picks.
+	if (!isPoint && std::any_of(will.begin(), will.end(), [&](Object *o) {
+		return HudObjects::canSelect(m_ctx, *o, true) && HudObjects::isCombatUnit(*o);
+	}))
+	{
+		will.erase(std::remove_if(will.begin(), will.end(), [](Object *o) { return !HudObjects::isCombatUnit(*o); }), will.end());
+	}
 	if (will.empty())
 	{
 		// lane HUD-7, TARGET FACTS (RotWK SelectionTranslator::translateGameMessage, the MSG_MOUSE_LEFT_CLICK case, RW 0x83C44F .. 0x83C4B9; caveat S-001): a click

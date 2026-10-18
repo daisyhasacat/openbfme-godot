@@ -319,6 +319,12 @@ with `OpenBFME`; the original game ignores them. The full list is in
 
 ## The hero bar and selection
 
+- **Army selection.** Dragging a box selects combat and support units first.
+  Builders and lumber workers are selected only when the box contains no
+  selectable combat units of your own. Click workers individually to select
+  them directly. **Q** (select army) always excludes workers, even when no
+  combat units remain.
+
 - **The hero bar** runs along the bottom of the screen, beside the Palantir.
   Its first button is your builders: it shows how many are idle, and a click
   selects the nearest idle one. Each of your heroes follows with their
