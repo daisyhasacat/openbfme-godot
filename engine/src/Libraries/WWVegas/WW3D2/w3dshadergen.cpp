@@ -193,7 +193,6 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy sam
 	if (k.HouseColor)
 	{
 		line("uniform sampler2D w3d_hc_tex : " + repeatMipFilter + ", repeat_enable; // housecolor.ini texture: the team colour mask is its alpha");
-		line("varying flat float v_house;");
 	}
 	line("varying vec2 v_uv0;");
 	line("varying vec2 v_uv1;");
@@ -203,8 +202,9 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy sam
 	line("varying vec3 v_vnrm;");
 	line("varying vec3 v_wnrm;");
 	line("varying vec3 v_wview;");
-	line("varying flat float v_inf;"); // 1: the instance is lit by the infantry set (the instancer stores -(palette base + 1))
-	line("varying flat float v_fogfrac;"); // lane VISUAL-2: the fogged light (INSTANCE_CUSTOM.w bit 14: w3d_fogged_frac, else 1)
+	// One flat varying carries per-instance lighting and team colour. Separate
+	// scalars exceed Godot Forward+'s 31-location budget for normal-mapped buildings.
+	line("varying flat vec3 v_instance;"); // x infantry light, y fog fraction, z packed house colour
 	line("varying vec3 v_wpos;");
 	if (k.Fx)
 	{
@@ -259,10 +259,10 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy sam
 	line("void vertex() {");
 	line("\tfloat px = INSTANCE_CUSTOM.x;");
 	line("\tint base = px < 0.0 ? int(-px + 0.5) - 1 : int(px + 0.5);");
-	line("\tv_inf = px < 0.0 ? 1.0 : 0.0;");
+	line("\tv_instance.x = px < 0.0 ? 1.0 : 0.0;");
 	// lane VISUAL-2: INSTANCE_CUSTOM.w = rigid bone + 1024 * sway type + 16384 * fogged (W3DInstancer)
 	line("\tint wi = int(INSTANCE_CUSTOM.w + 0.5);");
-	line("\tv_fogfrac = (wi & 16384) != 0 ? w3d_fogged_frac : 1.0;");
+	line("\tv_instance.y = (wi & 16384) != 0 ? w3d_fogged_frac : 1.0;");
 	line("\tvec3 p; vec3 n;");
 	if (k.Skin)
 	{
@@ -343,7 +343,7 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy sam
 	line("\tv_fade = INSTANCE_CUSTOM.y;");
 	if (k.HouseColor)
 	{
-		line("\tv_house = INSTANCE_CUSTOM.z;");
+		line("\tv_instance.z = INSTANCE_CUSTOM.z;");
 	}
 	line("\tv_vpos = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;");
 	line("\tv_vnrm = normalize((MODELVIEW_NORMAL_MATRIX * NORMAL));");
@@ -369,7 +369,7 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy sam
 			line("\t\tvec3 fy = cross(wn, fx);");
 		}
 		line("\t\tvec3 vv = normalize(CAMERA_POSITION_WORLD - v_wpos);");
-		line("\t\tmat3 ld = v_inf > 0.5 ? w3d_ldir_inf : w3d_ldir_obj;");
+		line("\t\tmat3 ld = v_instance.x > 0.5 ? w3d_ldir_inf : w3d_ldir_obj;");
 		for (int i = 0; i < 3; ++i)
 		{
 			const std::string si = std::to_string(i);
@@ -387,12 +387,12 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy sam
 		line("\t{");
 		line("\t\tvec3 wn = normalize(MODEL_NORMAL_MATRIX * NORMAL);");
 		line("\t\tvec3 vv = normalize(CAMERA_POSITION_WORLD - v_wpos);");
-		line("\t\tbool inf = v_inf > 0.5;");
+		line("\t\tbool inf = v_instance.x > 0.5;");
 		line("\t\tmat3 lc = inf ? w3d_lcol_inf : w3d_lcol_obj;");
 		line("\t\tmat3 ld = inf ? w3d_ldir_inf : w3d_ldir_obj;");
 		line("\t\tvec3 amb = inf ? w3d_amb_inf : w3d_amb_obj;");
 		line("\t\tlc[0] += w3d_tint; lc[1] += w3d_tint; lc[2] += w3d_tint; amb += w3d_tint;");
-		line("\t\tlc *= v_fogfrac; amb *= v_fogfrac;"); // lane VISUAL-2: the fogged light environment (RW 0x46DFBA: the lights' diffuse and ambient times the fraction)
+		line("\t\tlc *= v_instance.y; amb *= v_instance.y;"); // lane VISUAL-2: the fogged light environment (RW 0x46DFBA: the lights' diffuse and ambient times the fraction)
 		line("\t\tvec3 dsum = vec3(0.0);");
 		line("\t\tvec3 ssum = vec3(0.0);");
 		line("\t\tfor (int i = 0; i < 3; i++) {");
@@ -468,8 +468,8 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy sam
 	else if (k.HouseColor && k.Tex[0])
 	{
 		// S-119 hypothesis: team colour (8 bit sRGB packed by W3D_Pack_House_Color) tints the base where the housecolor mask is set
-		line("\tif (v_house > 0.5) {");
-		line("\t\tfloat hv = v_house - 1.0;");
+		line("\tif (v_instance.z > 0.5) {");
+		line("\t\tfloat hv = v_instance.z - 1.0;");
 		line("\t\tvec3 team = vec3(floor(hv / 65536.0), floor(mod(hv, 65536.0) / 256.0), mod(hv, 256.0)) / 255.0;");
 		line("\t\tt0.rgb = mix(t0.rgb, t0.rgb * team, texture(w3d_hc_tex, uvs0).a);");
 		line("\t}");
@@ -495,11 +495,11 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy sam
 		}
 		line("\tvec3 lts[3] = vec3[3](v_lt0, v_lt1, v_lt2);");
 		line("\tvec3 hts[3] = vec3[3](v_ht0, v_ht1, v_ht2);");
-		line("\tbool inf = v_inf > 0.5;");
+		line("\tbool inf = v_instance.x > 0.5;");
 		line("\tmat3 lc = inf ? w3d_lcol_inf : w3d_lcol_obj;");
 		line("\tvec3 amb = inf ? w3d_amb_inf : w3d_amb_obj;");
 		line("\tlc[0] += w3d_tint; lc[1] += w3d_tint; lc[2] += w3d_tint; amb += w3d_tint;");
-		line("\tlc *= v_fogfrac; amb *= v_fogfrac;"); // lane VISUAL-2: the fogged light environment
+		line("\tlc *= v_instance.y; amb *= v_instance.y;"); // lane VISUAL-2: the fogged light environment
 		line("\tvec3 base = t0.rgb * w3d_diffuse.rgb;");
 		line("\tvec3 col = t0.rgb * clamp(amb * w3d_ambient_mat * 0.5, 0.0, 1.0) * 2.0;");
 		line("\tfor (int i = 0; i < 3; i++) {");

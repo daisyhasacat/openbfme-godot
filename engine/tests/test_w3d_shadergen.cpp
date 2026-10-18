@@ -120,3 +120,32 @@ TEST_CASE("shader text: W3D sampler permutations share configurations and Metal 
 		}
 	}
 }
+
+TEST_CASE("shader text: instance lighting and colour share one flat interpolation slot")
+{
+	for (bool fx : {false, true})
+	{
+		for (bool house : {false, true})
+		{
+			W3DShaderKey key;
+			key.Fx = fx;
+			key.HouseColor = house;
+			key.Tex[0] = key.Texturing = true;
+			const auto code = Generate_W3D_Shader_Code(key, W3DSamplerPolicy::Metal16);
+			std::istringstream lines(code);
+			std::string line;
+			int flatSlots = 0;
+			while (std::getline(lines, line))
+			{
+				if (line.find("varying flat ") == 0) ++flatSlots;
+			}
+			// Godot assigns each separately declared flat scalar its own location;
+			// the normal-mapped permutation overflowed the Forward+ budget with three.
+			CHECK(flatSlots == 1);
+			CHECK(has(code, "varying flat vec3 v_instance;"));
+			CHECK(has(code, "v_instance.x = px < 0.0 ? 1.0 : 0.0;"));
+			CHECK(has(code, "v_instance.y = (wi & 16384) != 0 ? w3d_fogged_frac : 1.0;"));
+			CHECK(has(code, "v_instance.z = INSTANCE_CUSTOM.z;") == house);
+		}
+	}
+}

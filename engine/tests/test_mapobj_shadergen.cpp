@@ -1,5 +1,5 @@
 // OpenBFME unit tests: the HouseColor shader permutation (stop S-119, lane MAPOBJ-1). The generated text is checked for the pieces the
-// hypothesis needs; existing permutations must stay byte for byte what they were.
+// hypothesis needs; the uncoloured permutation must keep its material semantics.
 
 #include "doctest.h"
 
@@ -29,14 +29,14 @@ TEST_CASE("shadergen: the HouseColor permutation adds the mask sampler, the pack
 	CHECK(tinted.Id() == plain.Id() + "_hc1");
 	const std::string a = Generate_W3D_Shader_Code(plain), b = Generate_W3D_Shader_Code(tinted);
 	CHECK(a.find("w3d_hc_tex") == std::string::npos);
-	CHECK(a.find("v_house") == std::string::npos);
+	CHECK(a.find("v_instance.z") == std::string::npos);
 	CHECK(b.find("uniform sampler2D w3d_hc_tex") != std::string::npos);
-	CHECK(b.find("varying flat float v_house;") != std::string::npos);
-	CHECK(b.find("v_house = INSTANCE_CUSTOM.z;") != std::string::npos);
+	CHECK(b.find("varying flat vec3 v_instance;") != std::string::npos);
+	CHECK(b.find("v_instance.z = INSTANCE_CUSTOM.z;") != std::string::npos);
 	CHECK(b.find("t0.rgb = mix(t0.rgb, t0.rgb * team, texture(w3d_hc_tex, uvs0).a);") != std::string::npos);
 	// the tint comes right after the stage 0 sample and only when an instance carries a colour (packed value > 0.5)
 	const size_t sample = b.find("t0 = texture(w3d_tex0, uvs0);");
-	const size_t tint = b.find("if (v_house > 0.5)");
+	const size_t tint = b.find("if (v_instance.z > 0.5)");
 	REQUIRE(sample != std::string::npos);
 	REQUIRE(tint != std::string::npos);
 	CHECK(sample < tint);
