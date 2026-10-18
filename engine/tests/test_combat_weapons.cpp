@@ -497,3 +497,57 @@ TEST_CASE("peace time: computer units cannot target players until expiry, humans
  d.w.frames(1);
  CHECK(d.ow->canAttackObject(*d.b, CMD_FROM_AI, false));
 }
+
+TEST_CASE("enhanced walls: arrows sweep walls instead of damaging the stored victim behind them")
+{
+	CombatWorld w(
+		"Object ArrowWall\n KindOf = STRUCTURE IMMOBILE WALL_SEGMENT\n"
+		" Geometry = BOX\n GeometryName = Closed\n GeometryMajorRadius = 1\n GeometryMinorRadius = 30\n GeometryHeight = 100\n"
+		" Body = ActiveBody Body\n MaxHealth = 100\n End\nEnd\n"
+		"ChildObject RoundArrowWall ArrowWall\n Geometry = CYLINDER\n GeometryMajorRadius = 2\nEnd\n"
+		"ChildObject SphereArrowWall ArrowWall\n Geometry = SPHERE\n GeometryMajorRadius = 40\n GeometryHeight = 40\nEnd\n");
+	w.combat().setAutoAcquireEnabled(false);
+	w.logic->settings().wallBalance.enabled = true;
+	Object *source = w.unit("Archer", 'A', 300, 300);
+	Object *victim = w.unit("Dummy", 'B', 400, 300);
+	Object *wall = w.unit("ArrowWall", 'B', 347, 300);
+	bool blocked = true;
+	Object *farWall = nullptr;
+	SUBCASE("thin wall between flight samples") {}
+	SUBCASE("friendly walls also block") { wall->setTeam(w.teamA()); }
+	SUBCASE("rotated wall") { wall->setOrientation(0.75f); }
+	SUBCASE("cylinder") { w.logic->destroyObject(wall); wall = w.unit("RoundArrowWall", 'B', 347, 300); }
+	SUBCASE("sphere") { w.logic->destroyObject(wall); wall = w.unit("SphereArrowWall", 'B', 347, 300); }
+	SUBCASE("lower half of sphere")
+	{
+		w.logic->destroyObject(wall); wall = w.unit("SphereArrowWall", 'B', 347, 300);
+		Coord3D p = *wall->getPosition(); p.z = 35; wall->setPosition(&p);
+	}
+	SUBCASE("above sphere")
+	{
+		w.logic->destroyObject(wall); wall = w.unit("SphereArrowWall", 'B', 347, 300);
+		Coord3D p = *wall->getPosition(); p.z = -45; wall->setPosition(&p);
+		blocked = false;
+	}
+	SUBCASE("inactive gate geometry") { wall->setGeometryActive("Closed", false); blocked = false; }
+	SUBCASE("above wall") { Coord3D p = *wall->getPosition(); p.z = -200; wall->setPosition(&p); blocked = false; }
+	SUBCASE("dead wall") { wall->kill(DEATH_NORMAL); blocked = false; }
+	SUBCASE("retail rules unchanged") { w.logic->settings().wallBalance.enabled = false; blocked = false; }
+	SUBCASE("nearest wall wins")
+	{
+		farWall = w.unit("ArrowWall", 'B', 350, 300);
+	}
+	Object *projectile = w.unit("Arrow", 'A', 300, 300);
+	projectile->setProducer(source);
+	ProjectileUpdateInterface *flight = nullptr;
+	for (const auto &module : projectile->modules())
+		if (auto *p = module->getProjectileUpdateInterface()) flight = p;
+	REQUIRE(flight != nullptr);
+	flight->projectileLaunchAtObjectOrPosition(victim, nullptr, source, PRIMARY_WEAPON, 0,
+		TheWeaponStore->findWeaponTemplate("BowWeapon"), TheWeaponStore->findWeaponTemplate("BowWarhead"));
+	w.frames(25);
+	CHECK(w.health(victim) == (blocked ? 100.0f : 88.0f));
+	if (blocked) CHECK(w.health(wall) == 85.0f);
+	if (farWall) CHECK(w.health(farWall) == 100.0f);
+	CHECK(w.combat().counters().projectilesDetonated == 1);
+}

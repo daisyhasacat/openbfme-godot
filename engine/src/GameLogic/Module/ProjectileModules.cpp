@@ -17,12 +17,15 @@
 #include "GameLogic/Combat/CombatQueries.h"
 #include "GameLogic/Combat/CombatState.h"
 #include "GameLogic/Combat/WeaponDelivery.h"
+#include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/WallBalance.h"
 #include "GameLogic/Damage.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/Weapon.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 #include <stdexcept>
@@ -36,6 +39,69 @@ const int kModelConditionAboutToHit = 155;
 const int kModelConditionSplatted = 122;
 const char *const kWeaponCpp = "Weapon.cpp";                          // RW 0xC18320
 const float kPartitionCellSize = 40.0f;                               // ZH GameData PartitionCellSize (inference S-362)
+
+// Enhanced wall rules: sweep the whole logic step against active, oriented wall geometry.
+// This is an OpenBFME improvement, not a claim about retail collision dispatch (S-364).
+bool wallIntersection(Object &wall, const Coord3D &from, const Coord3D &to, float &hit)
+{
+	const auto &geometry = wall.logic().aiWorld()->adapterFor(wall).getGeometry();
+	const float c = SimMath::cosf32(wall.getOrientation()), s = SimMath::sinf32(wall.getOrientation());
+	auto local = [&](const Coord3D &p) {
+		const float x = SimMath::subf32(p.x, wall.getPosition()->x), y = SimMath::subf32(p.y, wall.getPosition()->y);
+		return Coord3D{SimMath::addf32(SimMath::mulf32(c,x), SimMath::mulf32(s,y)),
+			SimMath::subf32(SimMath::mulf32(c,y), SimMath::mulf32(s,x)), SimMath::subf32(p.z,wall.getPosition()->z)};
+	};
+	const Coord3D a = local(from), b = local(to);
+	bool found = false;
+	for (size_t i = 0; i < geometry.shapeCount(); ++i)
+	{
+		const auto shape = geometry.shape(i);
+		if (!shape.active) continue;
+		const float start[3] = {SimMath::subf32(a.x,shape.offsetX), SimMath::subf32(a.y,shape.offsetY), SimMath::subf32(a.z,shape.offsetZ)};
+		const float delta[3] = {SimMath::subf32(b.x,a.x), SimMath::subf32(b.y,a.y), SimMath::subf32(b.z,a.z)};
+		float lo = 0.0f, hi = hit;
+		auto clip = [&](float origin, float direction, float lower, float upper) {
+			if (direction == 0.0f) return origin >= lower && origin <= upper;
+			float enter = SimMath::divf32(SimMath::subf32(lower,origin),direction);
+			float leave = SimMath::divf32(SimMath::subf32(upper,origin),direction);
+			if (enter > leave) std::swap(enter,leave);
+			lo = std::max(lo,enter); hi = std::min(hi,leave);
+			return lo <= hi;
+		};
+		bool intersects;
+		if (shape.type == PATHFIND_GEOMETRY_BOX)
+		{
+			intersects = clip(start[0],delta[0],-shape.majorRadius,shape.majorRadius)
+				&& clip(start[1],delta[1],-shape.minorRadius,shape.minorRadius)
+				&& clip(start[2],delta[2],0.0f,shape.height);
+		}
+		else
+		{
+			// Spheres are centred at their shape offset; cylinders have a flat base and top.
+			float q = 0.0f, r = 0.0f, t = -SimMath::mulf32(shape.majorRadius,shape.majorRadius);
+			const int axes = shape.type == PATHFIND_GEOMETRY_SPHERE ? 3 : 2;
+			for (int axis = 0; axis < axes; ++axis)
+			{
+				const float v = start[axis];
+				q = SimMath::addf32(q,SimMath::mulf32(delta[axis],delta[axis]));
+				r = SimMath::addf32(r,SimMath::mulf32(v,delta[axis]));
+				t = SimMath::addf32(t,SimMath::mulf32(v,v));
+			}
+			const float disc = SimMath::subf32(SimMath::mulf32(r,r),SimMath::mulf32(q,t));
+			intersects = q == 0.0f ? t <= 0.0f : disc >= 0.0f;
+			if (intersects && q != 0.0f)
+			{
+				const float root = SimMath::fstpDword(SimMath::sqrtPC24(disc));
+				lo = std::max(lo,SimMath::divf32(SimMath::subf32(-r,root),q));
+				hi = std::min(hi,SimMath::divf32(SimMath::addf32(-r,root),q));
+				intersects = lo <= hi;
+			}
+			if (intersects && axes == 2) intersects = clip(start[2],delta[2],0.0f,shape.height);
+		}
+		if (intersects) { hit = lo; found = true; }
+	}
+	return found;
+}
 
 // RW 0x8E09CE: a token, the index in the emotion table or -1 (an unknown name is accepted, like the binary)
 void parseEmotion(INI *ini, void *, void *store, const void *)
@@ -565,6 +631,29 @@ UpdateSleepTime BezierProjectileBehavior::update()
 	}
 	// RW 0x85F565: the step of the path
 	const Coord3D step = m_flightPath[(size_t)m_currentFlightPathStep];
+	if (logic.settings().wallBalance.enabled)
+	{
+		const Coord3D from = *obj->getPosition();
+		float fraction = 1.0f;
+		Object *blocker = nullptr;
+		for (Object *wall = logic.getFirstObject(); wall; wall = wall->getNextObject())
+		{
+			if (wall->getID() == m_launcherID || !WallBalance::wall(*wall) || !wall->isInWorld()
+				|| wall->isDestroyed() || wall->isEffectivelyDead() || wall->isUnderConstruction()) continue;
+			if (wallIntersection(*wall,from,step,fraction)) blocker = wall;
+		}
+		if (blocker)
+		{
+			const Coord3D impact{SimMath::addf32(from.x,SimMath::mulf32(fraction,SimMath::subf32(step.x,from.x))),
+				SimMath::addf32(from.y,SimMath::mulf32(fraction,SimMath::subf32(step.y,from.y))),
+				SimMath::addf32(from.z,SimMath::mulf32(fraction,SimMath::subf32(step.z,from.z)))};
+			obj->setPosition(&impact);
+			m_pendingValid = false;
+			// HitStoredTarget must resolve to the wall, never the victim behind it.
+			m_victimID = blocker->getID();
+			if (projectileHandleCollision(blocker) && !d->m_crushStyle) return sleepTime();
+		}
+	}
 	if (d->m_orientToFlightPath && !d->m_tumbleRandomly)
 	{
 		const float lower = SimMath::mulf32(m_heightScale, 20.0f);
@@ -950,7 +1039,7 @@ std::vector<std::string> ProjectileModules::stops()
 		"drawable query) and the seed is drawn from the logic random (Weapon.cpp:1749) like retail; the highest terrain along the line is sampled over partition cells of 40 on a 3x3 lattice (ZH "
 		"estimateTerrainExtremesAlongLine; RW's own routine, slot 0x40 of the terrain object RW 0xDE4690, was not read); only the ground layer exists (no bridges)",
 		"[S-363] projectile behaviour: the victim proximity test of RW 0x85F737 is ported as the binary has it (the length of the victim's WORLD position against radius + speed: it only fires near the map "
-		"origin); nothing calls projectileHandleCollision(other) in flight (arrows are NO_COLLIDE; a stone needs the physics / collide dispatch), so a CrushStyle projectile and the GeometryInfo back-off of "
+		"origin); retail collision dispatch is unported (arrows are NO_COLLIDE; enhanced wall rules sweep active wall geometry), so a CrushStyle projectile and the GeometryInfo back-off of "
 		"RW 0x85EA5F are reached only by direct calls; GarrisonHitKill, the Pre / PostLanding emotions and TumbleRandomly are parsed and counted, not executed (InvisibleFrames / FadeInTime and the drawable look-ahead point: lane PROJ-2, S-1001); "
 		"FinalStuckTime > 0 sends the object's AI command 0x31 (RW 0x852E2A -> 0x66498A -> 0x74168E: a temporary busy state 0x2A; skipped without AI), not ported; FinalStuckTime 0 sends a message (RW 0x5E821A) that is not read; the hit and bounce FX lists are counted, not played",
 		"[S-364] warhead: the detonation delivers the warhead's nuggets through DeliverNuggets (RW 0x6CF590 / 0x6CF4D6 create a temporary Weapon: its own HitPercentage / scatter / dodge rolls and the weapon "
