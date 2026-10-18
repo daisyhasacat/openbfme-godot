@@ -498,7 +498,7 @@ TEST_CASE("peace time: computer units cannot target players until expiry, humans
  CHECK(d.ow->canAttackObject(*d.b, CMD_FROM_AI, false));
 }
 
-TEST_CASE("enhanced walls: arrows sweep walls instead of damaging the stored victim behind them")
+TEST_CASE("projectile walls: arrows sweep walls instead of damaging the stored victim behind them")
 {
 	CombatWorld w(
 		"Object ArrowWall\n KindOf = STRUCTURE IMMOBILE WALL_SEGMENT\n"
@@ -507,7 +507,7 @@ TEST_CASE("enhanced walls: arrows sweep walls instead of damaging the stored vic
 		"ChildObject RoundArrowWall ArrowWall\n Geometry = CYLINDER\n GeometryMajorRadius = 2\nEnd\n"
 		"ChildObject SphereArrowWall ArrowWall\n Geometry = SPHERE\n GeometryMajorRadius = 40\n GeometryHeight = 40\nEnd\n");
 	w.combat().setAutoAcquireEnabled(false);
-	w.logic->settings().wallBalance.enabled = true;
+	CHECK(w.logic->settings().wallBalance.enabled == false);
 	Object *source = w.unit("Archer", 'A', 300, 300);
 	Object *victim = w.unit("Dummy", 'B', 400, 300);
 	Object *wall = w.unit("ArrowWall", 'B', 347, 300);
@@ -532,7 +532,7 @@ TEST_CASE("enhanced walls: arrows sweep walls instead of damaging the stored vic
 	SUBCASE("inactive gate geometry") { wall->setGeometryActive("Closed", false); blocked = false; }
 	SUBCASE("above wall") { Coord3D p = *wall->getPosition(); p.z = -200; wall->setPosition(&p); blocked = false; }
 	SUBCASE("dead wall") { wall->kill(DEATH_NORMAL); blocked = false; }
-	SUBCASE("retail rules unchanged") { w.logic->settings().wallBalance.enabled = false; blocked = false; }
+	SUBCASE("wall rebalance enabled also blocks") { w.logic->settings().wallBalance.enabled = true; }
 	SUBCASE("nearest wall wins")
 	{
 		farWall = w.unit("ArrowWall", 'B', 350, 300);

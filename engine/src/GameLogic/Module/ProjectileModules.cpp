@@ -40,7 +40,7 @@ const int kModelConditionSplatted = 122;
 const char *const kWeaponCpp = "Weapon.cpp";                          // RW 0xC18320
 const float kPartitionCellSize = 40.0f;                               // ZH GameData PartitionCellSize (inference S-362)
 
-// Enhanced wall rules: sweep the whole logic step against active, oriented wall geometry.
+// Wall collision: sweep the whole logic step against active, oriented wall geometry.
 // This is an OpenBFME improvement, not a claim about retail collision dispatch (S-364).
 bool wallIntersection(Object &wall, const Coord3D &from, const Coord3D &to, float &hit)
 {
@@ -631,7 +631,6 @@ UpdateSleepTime BezierProjectileBehavior::update()
 	}
 	// RW 0x85F565: the step of the path
 	const Coord3D step = m_flightPath[(size_t)m_currentFlightPathStep];
-	if (logic.settings().wallBalance.enabled)
 	{
 		const Coord3D from = *obj->getPosition();
 		float fraction = 1.0f;
@@ -1039,8 +1038,8 @@ std::vector<std::string> ProjectileModules::stops()
 		"drawable query) and the seed is drawn from the logic random (Weapon.cpp:1749) like retail; the highest terrain along the line is sampled over partition cells of 40 on a 3x3 lattice (ZH "
 		"estimateTerrainExtremesAlongLine; RW's own routine, slot 0x40 of the terrain object RW 0xDE4690, was not read); only the ground layer exists (no bridges)",
 		"[S-363] projectile behaviour: the victim proximity test of RW 0x85F737 is ported as the binary has it (the length of the victim's WORLD position against radius + speed: it only fires near the map "
-		"origin); retail collision dispatch is unported (arrows are NO_COLLIDE; enhanced wall rules sweep active wall geometry), so a CrushStyle projectile and the GeometryInfo back-off of "
-		"RW 0x85EA5F are reached only by direct calls; GarrisonHitKill, the Pre / PostLanding emotions and TumbleRandomly are parsed and counted, not executed (InvisibleFrames / FadeInTime and the drawable look-ahead point: lane PROJ-2, S-1001); "
+		"origin); retail collision dispatch is unported (arrows are NO_COLLIDE); wall collision sweeps active wall geometry independently of wall rebalance, but the GeometryInfo back-off of "
+		"RW 0x85EA5F remains unported; GarrisonHitKill, the Pre / PostLanding emotions and TumbleRandomly are parsed and counted, not executed (InvisibleFrames / FadeInTime and the drawable look-ahead point: lane PROJ-2, S-1001); "
 		"FinalStuckTime > 0 sends the object's AI command 0x31 (RW 0x852E2A -> 0x66498A -> 0x74168E: a temporary busy state 0x2A; skipped without AI), not ported; FinalStuckTime 0 sends a message (RW 0x5E821A) that is not read; the hit and bounce FX lists are counted, not played",
 		"[S-364] warhead: the detonation delivers the warhead's nuggets through DeliverNuggets (RW 0x6CF590 / 0x6CF4D6 create a temporary Weapon: its own HitPercentage / scatter / dodge rolls and the weapon "
 		"bonus flags are not applied), the ProjectileCollidesWith test (RW 0x6CC79C) is not ported",
