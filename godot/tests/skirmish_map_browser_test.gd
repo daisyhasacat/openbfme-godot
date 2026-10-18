@@ -56,6 +56,15 @@ func _run():
  var factions=browser.draft.factions.filter(func(f):return not str(f.building).is_empty())
  assert(factions.size()>1)
  browser.draft.slots[0].template=factions[0].value;browser._refresh_cards()
+ var flag:Dictionary=world.get_placement_ghost('CastleFlag')
+ assert(not str(flag.model).is_empty(),'CastleFlag preview resolves from retail data')
+ assert(browser.fortress_model.contains(str(flag.model)+';'),'Unassigned start uses CastleFlag')
+ var unused_index=int(browser.selected.starts[1].index)
+ browser._assign(1,unused_index)
+ browser.draft.slots[1].template=factions[0].value
+ browser.draft.slots[1].state=1;browser._refresh_cards()
+ assert(browser.fortress_model.contains(str(flag.model)+';'),'Closed assigned slot uses CastleFlag')
+ browser._assign(1,-1)
  var first_model=browser.fortress_model
  assert(not first_model.is_empty(),'Faction fortress resolved')
  browser.draft.slots[0].template=factions[1].value;browser._refresh_cards()

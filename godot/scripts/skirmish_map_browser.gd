@@ -464,14 +464,15 @@ func _refresh_fortresses(entry: Dictionary):
  fortress=ClassDB.instantiate('W3DInstancer');scene.add_child(fortress);fortress.setup(fs);fortress.set_auto_update(false);fortress_model=''
  for n in entry.starts.size():
   var owner=_owner(int(entry.starts[n].index));var building='';var side=''
-  if owner>=0:
+  if owner>=0 and int(draft.slots[owner].state) not in [0,1]:
    for faction in draft.get('factions',[]):
     if int(faction.value)==int(draft.slots[owner].template):building=str(faction.building);side=str(faction.get('side',''))
-  if building.is_empty():
-   var marker=MeshInstance3D.new();var mesh=CylinderMesh.new();mesh.top_radius=30;mesh.bottom_radius=60;mesh.height=80;marker.mesh=mesh;marker.position=scene_info.points[n]+Vector3(0,40,0);fortress.add_child(marker)
-   continue # Explicit neutral marker for random/unassigned starts.
+  # Unassigned, open/closed slots, and unresolved random factions use the retail
+  # neutral castle flag at the actual start point, through the same model path.
+  if building.is_empty():building='CastleFlag';side=''
 
   var look:Dictionary=resolver.get_placement_ghost(building,side)
+  if str(look.get('model','')).is_empty() and not look.get('castle',false):message.text='Preview model unavailable: '+building;continue
   if not str(look.get('castle_error','')).is_empty():message.text=look.castle_error;continue
   var pieces:Array=look.get('pieces',[]) if look.get('castle',false) else [{'model':look.get('model',''),'x':0,'y':0,'z':0,'angle':0,'hidden':look.get('hidden',[])}]
   for piece in pieces:

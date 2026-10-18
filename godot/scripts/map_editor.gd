@@ -4,6 +4,7 @@ var world: Node
 var hud: Node
 var camera: Camera3D
 var fs: RefCounted
+signal active_changed(enabled: bool)
 var active := false
 var was_paused := false
 var was_shroud := true
@@ -25,6 +26,23 @@ var panel: PanelContainer
 var status: Label
 var catalog := PackedStringArray()
 var filtered := PackedStringArray()
+var object_records: Dictionary = {}
+var object_filters: HFlowContainer
+var object_category: OptionButton
+var filter_toggles: Dictionary = {}
+var view_toggle: Button
+var object_tree: Tree
+var object_results: ScrollContainer
+var object_grid: GridContainer
+var paging: HBoxContainer
+var page_label: Label
+var object_page := 0
+var grid_mode := true
+var thumbnail_busy := false
+var thumbnail_queue: Array = []
+var thumbnail_cache: Dictionary = {}
+var result_generation := 0
+const PAGE_SIZE := 24
 var objects: ItemList
 var search: LineEdit
 var tool: OptionButton
@@ -174,8 +192,10 @@ func _build_workspace(ui_theme: Theme,background: StyleBoxFlat):
  var rows=VBoxContainer.new();toolbar.add_child(rows)
  var modes=HFlowContainer.new();rows.add_child(modes)
  var names=['Delete','Object','Object brush','Raise','Lower','Flatten','Paint','Pick texture','Roads','Select']
+ var icons=['⌫','⬡','▦','▲','▼','▬','▧','⌖','⌁','↖']
  for i in names.size():
-  var button=Button.new();button.text=names[i];button.toggle_mode=true;button.custom_minimum_size.y=48
+  var button=Button.new();button.text=icons[i]+'\n'+names[i];button.tooltip_text=tool.get_item_text(i);button.toggle_mode=true;button.custom_minimum_size=Vector2(96,78)
+  var block=StyleBoxFlat.new();block.bg_color=Color('#24343f');block.set_corner_radius_all(6);block.set_content_margin_all(8);button.add_theme_stylebox_override('normal',block)
   button.pressed.connect(func():tool.select(i);hovered_texture='';_clear_preview();_update_controls());modes.add_child(button);mode_buttons.append(button)
  tool.hide()
  var actions=HBoxContainer.new();rows.add_child(actions)
@@ -188,7 +208,8 @@ func _build_workspace(ui_theme: Theme,background: StyleBoxFlat):
  var browser=VBoxContainer.new();lookup.add_child(browser)
  lookup_title=Label.new();browser.add_child(lookup_title)
  for control in [search,objects,texture_search,texture_category,texture_subcategory,texture]:control.reparent(browser)
- objects.custom_minimum_size=Vector2(360,180);objects.size_flags_vertical=Control.SIZE_EXPAND_FILL
+ objects.hide() # selection backing for placement and existing editor operations
+ _build_object_browser(browser)
  texture_preview.reparent(browser);texture_preview.custom_minimum_size=Vector2(0,240)
  object_image=TextureRect.new();object_image.custom_minimum_size=Vector2(0,240);object_image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE;object_image.stretch_mode=TextureRect.STRETCH_KEEP_ASPECT_CENTERED;browser.add_child(object_image)
  object_view=SubViewport.new();object_view.size=Vector2i(512,384);object_view.own_world_3d=true;object_view.transparent_bg=false;object_view.render_target_update_mode=SubViewport.UPDATE_DISABLED;object_image.add_child(object_view);object_image.texture=object_view.get_texture()
@@ -321,39 +342,155 @@ func _update_controls():
  lookup_title.text='OBJECT LIBRARY' if placing else 'TERRAIN LIBRARY'
  if placing:texture_caption.text=_selected()
  if tool.selected==6:_texture_selected(texture.selected)
- object_image.visible=placing
- object_view.render_target_update_mode=SubViewport.UPDATE_ALWAYS if placing and active else SubViewport.UPDATE_DISABLED
- texture_caption.visible=placing or tool.selected in [6,7]
+ object_image.visible=placing and not grid_mode and not _selected().is_empty()
+ object_view.render_target_update_mode=SubViewport.UPDATE_ALWAYS if placing and active and not grid_mode else SubViewport.UPDATE_DISABLED
+ texture_caption.visible=(placing and not grid_mode) or tool.selected in [6,7]
  road_controls.visible=tool.selected==8
  _field_visible(angle_control,placing);_field_visible(owner_slot,placing or tool.selected==9);apply_owner.visible=tool.selected==9
  _field_visible(radius,tool.selected>=2 and tool.selected<7);shape.visible=tool.selected>=2 and tool.selected<7;grid_rotation.visible=tool.selected>=2 and tool.selected<7
  _field_visible(strength,tool.selected in [2,3,4])
- search.visible=placing;objects.visible=placing;texture.visible=tool.selected==6;texture_search.visible=tool.selected==6;texture_category.visible=tool.selected==6;texture_subcategory.visible=tool.selected==6;texture_preview.visible=tool.selected in [6,7];texture_caption.visible=placing or tool.selected in [6,7]
+ search.visible=placing;objects.hide();object_filters.visible=placing;view_toggle.visible=placing;object_tree.visible=placing and not grid_mode;object_results.visible=placing and grid_mode;paging.visible=placing;texture.visible=tool.selected==6;texture_search.visible=tool.selected==6;texture_category.visible=tool.selected==6;texture_subcategory.visible=tool.selected==6;texture_preview.visible=tool.selected in [6,7];texture_caption.visible=(placing and not grid_mode) or tool.selected in [6,7]
  panel.reset_size()
 
 func set_active(enabled: bool):
  if active==enabled:return
- active=enabled;panel.visible=enabled;toolbar.visible=enabled;lookup.visible=enabled and tool.selected in [1,2,6,7];set_process(enabled)
+ active=enabled;active_changed.emit(enabled);panel.visible=enabled;toolbar.visible=enabled;lookup.visible=enabled and tool.selected in [1,2,6,7];set_process(enabled)
  if enabled:
   was_paused=world.is_paused();hud_was_processing=hud.is_processing_input();world.set_paused(true);was_shroud=world.get_shroud_report().get('displayed',true);world.set_shroud_drawn(false);hud.deselect_all();hud.set_process_input(false)
   terrain_info=world.map_editor_terrain({});_load_texture_catalog()
   roads=terrain_info.get('roads',[]).duplicate(true);road_type.clear()
   for item in terrain_info.get('road_types',[]):road_type.add_item(item.name)
   _refresh_roads()
-  if catalog.is_empty():
-   var result=world.execute_lua("local a={}; for name in pairs(bfme.templates) do a[#a+1]=name end; table.sort(a); return table.concat(a,'\\n')")
-   if result.ok:catalog=str(result.output).strip_edges().split('\n',false)
-   _filter('')
+  if catalog.is_empty():_load_object_catalog()
   status.text='Editing live map. Save edits as a reusable JSON overlay.'
  else:
   if road_drag:roads=road_before.duplicate(true);road_drag=false
   if dragging and tool.selected in [3,4,5,6]:_paint_live();_finish_terrain_stroke()
   dragging=false;touches.clear();_clear_preview();world.set_shroud_drawn(was_shroud);hud.set_process_input(hud_was_processing);world.set_paused(was_paused);outline.queue_redraw()
 
+func _load_object_catalog():
+ var code="local rows={}; for name,t in pairs(bfme.templates) do local c=bfme.buildMode.classify(t); local flags={}; for _,k in ipairs({'building','unit','scenery','builderBuildable','plotBuildable','enhancedPlotBuildable','plot','placeholder','unfinishedContent','unsupported','marker'}) do if c[k] then flags[#flags+1]=k end end; rows[#rows+1]=table.concat({name,tostring(t.cost or 0),table.concat(flags,','),table.concat(c.reasons or {},'; ')},string.char(9)) end; table.sort(rows); return table.concat(rows,string.char(10))"
+ var result:Dictionary=world.execute_lua(code)
+ if not result.ok:status.text=str(result.output);return
+ for line in str(result.output).strip_edges().split('\n',false):
+  var fields=line.split('\t')
+  if fields.size()<3:continue
+  var record={'name':fields[0],'cost':fields[1],'flags':fields[2].split(','),'notes':fields[3] if fields.size()>3 else ''}
+  object_records[fields[0]]=record;catalog.append(fields[0])
+ _filter(search.text)
+
+func _build_object_browser(browser: VBoxContainer):
+ object_filters=HFlowContainer.new();browser.add_child(object_filters)
+ object_category=OptionButton.new()
+ for title in ['All objects','Buildings','Units','Scenery']:object_category.add_item(title)
+ object_filters.add_child(object_category);object_category.item_selected.connect(func(_i):_filter(search.text))
+ for pair in [['buildable','Hide buildable'],['plot','Hide plots'],['placeholder','Hide placeholders'],['unfinished','Hide unfinished']]:
+  var check=CheckButton.new();check.text=pair[1];check.button_pressed=true;check.tooltip_text='Uses the native build-mode classification';object_filters.add_child(check);filter_toggles[pair[0]]=check;check.toggled.connect(func(_on):_filter(search.text))
+ view_toggle=Button.new();view_toggle.text='▦ Grid · switch to list';view_toggle.pressed.connect(func():grid_mode=not grid_mode;view_toggle.text='▦ Grid · switch to list' if grid_mode else '☷ List · switch to grid';_render_object_results();_update_controls());browser.add_child(view_toggle)
+ object_tree=Tree.new();object_tree.add_theme_font_size_override('font_size',18);object_tree.columns=4;object_tree.hide_root=true;object_tree.column_titles_visible=true;object_tree.size_flags_vertical=Control.SIZE_EXPAND_FILL;object_tree.custom_minimum_size.y=220
+ for i in 4:
+  object_tree.set_column_title(i,['Object name','Type','Cost','Classification / notes'][i]);object_tree.set_column_expand(i,i in [0,3]);object_tree.set_column_custom_minimum_width(i,[190,100,60,180][i])
+ object_tree.item_selected.connect(func():var item=object_tree.get_selected();_select_object(str(item.get_metadata(0))) if item else null);browser.add_child(object_tree)
+ object_results=ScrollContainer.new();object_results.size_flags_vertical=Control.SIZE_EXPAND_FILL;object_results.custom_minimum_size.y=220;object_results.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED;browser.add_child(object_results)
+ object_grid=GridContainer.new();object_grid.columns=3;object_grid.size_flags_horizontal=Control.SIZE_EXPAND_FILL;object_grid.add_theme_constant_override('h_separation',8);object_grid.add_theme_constant_override('v_separation',8);object_results.add_child(object_grid)
+ paging=HBoxContainer.new();browser.add_child(paging)
+ for direction in [-1,1]:
+  var button=Button.new();button.text='Previous' if direction<0 else 'Next';button.pressed.connect(func():object_page=clampi(object_page+direction,0,maxi(0,(filtered.size()-1)/PAGE_SIZE));_render_object_results());paging.add_child(button)
+ page_label=Label.new();paging.add_child(page_label)
+
 func _filter(query: String):
- filtered=PackedStringArray();objects.clear()
+ var previous=_selected()
+ filtered=PackedStringArray();objects.clear();object_page=0
+ var category=['','building','unit','scenery'][object_category.selected] if object_category else ''
  for name in catalog:
-  if query.to_lower() in name.to_lower():filtered.append(name);objects.add_item(name)
+  var r:Dictionary=object_records.get(name,{'name':name,'cost':'0','flags':[],'notes':''})
+  var flags=r.flags
+  if not category.is_empty() and category not in flags:continue
+  if filter_toggles.buildable.button_pressed and ('builderBuildable' in flags or 'plotBuildable' in flags or 'enhancedPlotBuildable' in flags):continue
+  if filter_toggles.plot.button_pressed and 'plot' in flags:continue
+  if filter_toggles.placeholder.button_pressed and 'placeholder' in flags:continue
+  if filter_toggles.unfinished.button_pressed and ('unfinishedContent' in flags or 'unsupported' in flags):continue
+  if not query.is_empty() and query.to_lower() not in (name+' '+str(flags)+' '+r.notes).to_lower():continue
+  filtered.append(name);objects.add_item(name)
+  if name==previous:objects.select(objects.item_count-1)
+ _clear_preview();_render_object_results()
+
+func _select_object(name: String):
+ var index=filtered.find(name)
+ if index>=0:objects.select(index);_clear_preview()
+ for card in object_grid.get_children():
+  if card is Button:card.set_pressed_no_signal(card.get_meta('template','')==name)
+
+func _render_object_results():
+ result_generation+=1;thumbnail_queue.clear()
+ for child in object_grid.get_children():child.free()
+ object_tree.clear();var root=object_tree.create_item()
+ var first=object_page*PAGE_SIZE;var last=mini(first+PAGE_SIZE,filtered.size())
+ page_label.text='%d–%d / %d'%[first+1 if filtered.size() else 0,last,filtered.size()]
+ for index in range(first,last):
+  var name=filtered[index];var r:Dictionary=object_records.get(name,{'flags':[],'cost':'0','notes':''})
+  var kind='Building' if 'building' in r.flags else ('Unit' if 'unit' in r.flags else 'Scenery / other')
+  var notes=', '.join(r.flags)+' '+r.notes
+  var row=object_tree.create_item(root);row.set_text(0,name);row.set_text(1,kind);row.set_text(2,r.cost);row.set_text(3,notes);row.set_metadata(0,name)
+  for column in 4:row.set_tooltip_text(column,name+'\n'+notes)
+  if name==_selected():row.select(0)
+  if not grid_mode:continue
+  var card=Button.new();card.toggle_mode=true;card.button_pressed=name==_selected();card.set_meta('template',name);card.size_flags_horizontal=Control.SIZE_EXPAND_FILL;card.custom_minimum_size=Vector2(190,188);card.tooltip_text=name+'\n'+kind+' · Cost '+r.cost+'\n'+notes;object_grid.add_child(card);card.pressed.connect(func():_select_object(name))
+  var box=VBoxContainer.new();box.mouse_filter=Control.MOUSE_FILTER_IGNORE;box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT);box.offset_left=8;box.offset_right=-8;box.offset_top=8;box.offset_bottom=-8;card.add_child(box)
+  var image=TextureRect.new();image.mouse_filter=Control.MOUSE_FILTER_IGNORE;image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE;image.stretch_mode=TextureRect.STRETCH_KEEP_ASPECT_CENTERED;image.custom_minimum_size.y=128;image.size_flags_vertical=Control.SIZE_EXPAND_FILL;box.add_child(image)
+  var label=Label.new();label.mouse_filter=Control.MOUSE_FILTER_IGNORE;label.text=name;label.horizontal_alignment=HORIZONTAL_ALIGNMENT_CENTER;label.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;label.add_theme_font_size_override('font_size',16);box.add_child(label)
+  if thumbnail_cache.has(name):
+   image.texture=thumbnail_cache[name]
+   if image.texture==null:_missing_thumbnail(image)
+  else:thumbnail_queue.append({'name':name,'image':image,'generation':result_generation})
+ object_tree.visible=active and tool.selected in [1,2] and not grid_mode
+ object_results.visible=active and tool.selected in [1,2] and grid_mode
+
+func _missing_thumbnail(image: TextureRect):
+ image.tooltip_text='No preview model available'
+ var unavailable=Label.new();unavailable.text='No preview model';unavailable.horizontal_alignment=HORIZONTAL_ALIGNMENT_CENTER;unavailable.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT);unavailable.vertical_alignment=VERTICAL_ALIGNMENT_CENTER;unavailable.add_theme_font_size_override('font_size',14);unavailable.mouse_filter=Control.MOUSE_FILTER_IGNORE;image.add_child(unavailable)
+
+func _render_thumbnail(job: Dictionary):
+ if not is_instance_valid(job.image) or job.generation!=result_generation:return
+ thumbnail_busy=true
+ var view=SubViewport.new();view.size=Vector2i(256,192);view.own_world_3d=true;view.render_target_update_mode=SubViewport.UPDATE_ONCE;add_child(view)
+ var stage=Node3D.new();view.add_child(stage)
+ var renderer=ClassDB.instantiate('W3DInstancer');stage.add_child(renderer);renderer.setup(fs)
+ var model=world.get_template_model(job.name);var id=renderer.add_model(model) if not model.is_empty() else -1
+ if id<0:
+  _missing_thumbnail(job.image)
+  thumbnail_cache[job.name]=null;view.queue_free();thumbnail_busy=false;return
+ renderer.add_instance(id,Transform3D.IDENTITY,'',0,0);renderer.update_now()
+ var cam=Camera3D.new();stage.add_child(cam);cam.current=true;cam.projection=Camera3D.PROJECTION_ORTHOGONAL;cam.far=100000
+ var extent=maxf(10,float(renderer.get_model_radius(id)));cam.size=extent*2.5;cam.position=Vector3(1,.8,1).normalized()*extent*3.5;cam.look_at(Vector3.ZERO)
+ var light=DirectionalLight3D.new();light.rotation_degrees=Vector3(-45,-30,0);light.light_energy=1.5;stage.add_child(light)
+ var environment=WorldEnvironment.new()
+ # Use the same neutral backdrop and ambient lighting as the selected-object preview.
+ var env=Environment.new();env.background_mode=Environment.BG_COLOR;env.background_color=Color('#15232e');env.ambient_light_source=Environment.AMBIENT_SOURCE_COLOR;env.ambient_light_color=Color.WHITE;env.ambient_light_energy=.7;environment.environment=env;stage.add_child(environment)
+ await RenderingServer.frame_post_draw
+ if is_instance_valid(view):
+  var picture=view.get_texture().get_image()
+  if picture and not picture.is_empty():
+   # Tighten the framing around visible pixels; some model pivots have very large bounds.
+   var bg=picture.get_pixel(0,0);var bounds=Rect2i();var found=false
+   for y in range(0,picture.get_height(),3):
+    for x in range(0,picture.get_width(),3):
+     var pixel=picture.get_pixel(x,y)
+     if absf(pixel.r-bg.r)+absf(pixel.g-bg.g)+absf(pixel.b-bg.b)>.08:
+      bounds=bounds.expand(Vector2i(x,y)) if found else Rect2i(x,y,1,1);found=true
+   if found:
+    var center=Vector2(bounds.get_center())-Vector2(view.size)*.5
+    cam.position+=cam.basis.x*(center.x/float(view.size.y)*cam.size)-cam.basis.y*(center.y/float(view.size.y)*cam.size)
+    cam.size*=maxf(float(bounds.size.x)/view.size.x,float(bounds.size.y)/view.size.y)*1.2
+    view.render_target_update_mode=SubViewport.UPDATE_ONCE
+    await RenderingServer.frame_post_draw
+    if not is_instance_valid(view):thumbnail_busy=false;return
+    picture=view.get_texture().get_image()
+   if thumbnail_cache.size()>=96:thumbnail_cache.erase(thumbnail_cache.keys()[0])
+   var image=ImageTexture.create_from_image(picture);thumbnail_cache[job.name]=image
+   if is_instance_valid(job.image) and job.generation==result_generation:job.image.texture=image
+  view.queue_free()
+ thumbnail_busy=false
 
 func _selected() -> String:
  var selected=objects.get_selected_items()
@@ -368,12 +505,18 @@ func _process(_delta):
  if dragging and tool.selected in [3,4,5,6] and points.size()>stroke_count and stroke_clock>=0.1:_paint_live()
  if not is_instance_valid(hud):queue_free();return
  if tool.selected==7 and not _over_editor(cursor):_pick_terrain(false)
- var screen=get_viewport().get_visible_rect().size
- toolbar.position=Vector2(12,12);toolbar.size=Vector2(maxf(360,screen.x-24),0)
- var top=toolbar.position.y+toolbar.size.y+12
- panel.position=Vector2(12,top);scroll.custom_minimum_size.y=min(content.get_combined_minimum_size().y,max(160.0,screen.y-top-20));panel.reset_size()
- lookup.position=Vector2(maxf(384,screen.x-420),top);lookup.size=Vector2(408,maxf(300,screen.y-top-20))
- if tool.selected in [1,2]:_update_object_view()
+ var pixels=get_viewport().get_visible_rect().size
+ var ui_scale=clampf(pixels.y/1080.0,.75,2.5)
+ var screen=pixels/ui_scale
+ for window in [toolbar,panel,lookup]:window.scale=Vector2.ONE*ui_scale
+ var toolbar_width=minf(1160,screen.x-24)
+ toolbar.size=Vector2(toolbar_width,0);toolbar.position=Vector2((screen.x-toolbar_width)/2,12)*ui_scale
+ var top=toolbar.size.y+24
+ panel.position=Vector2(12,top)*ui_scale;scroll.custom_minimum_size.y=min(content.get_combined_minimum_size().y,max(160.0,screen.y-top-20));panel.reset_size()
+ var browser_width=minf(780,maxf(660,screen.x*.44))
+ lookup.position=Vector2(maxf(384,screen.x-browser_width-12),top)*ui_scale;lookup.size=Vector2(browser_width,maxf(300,screen.y-top-20))
+ if not thumbnail_busy and not thumbnail_queue.is_empty() and grid_mode and lookup.visible and DisplayServer.get_name()!='headless':_render_thumbnail(thumbnail_queue.pop_front())
+ if tool.selected in [1,2] and not grid_mode:_update_object_view()
  outline.queue_redraw()
  if tool.selected not in [1,2] or _over_editor(cursor):
   if is_instance_valid(preview):preview.hide()

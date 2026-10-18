@@ -2,7 +2,7 @@
 
 Start a local skirmish, open the Lua console, then click **Map editor**. Editing
 pauses the simulation and captures gameplay input. **Exit editor** or **Esc**
-restores the previous pause state. Network games, replays and campaigns are excluded.
+restores the previous pause state and gameplay HUD visibility. The normal command UI, minimap, and controller overlay hide while editing. Network games, replays and campaigns are excluded.
 
 - **Delete objects:** click an object, or drag a rectangle to delete objects whose
   origins fall inside it. This includes objects you cannot normally select.
@@ -70,9 +70,20 @@ For **Place object**, hold **Shift** to show the 50-unit grid and snap position
 and rotation (45° steps). Press to anchor an object, drag to set its facing, then
 release to place it. A simple click uses the current rotation.
 
-The editor workspace has a top mode/action toolbar, a left tool inspector, and a
-right lookup window. Object modes show a searchable object library with an
-isolated render-to-texture model preview that automatically centers and fits the
-selected model. Terrain modes show the categorized texture library and image
+The editor workspace has a centered top toolbar with separate icon tiles for each tool,
+a left tool inspector, and a right lookup window. The object browser supports:
+
+- **Grid:** three preview cards per row, each with an isolated model render and its name below.
+- **List:** columns for object name, type, cost, and classification notes, with a selected-model preview.
+- Search across names, classifications, and reasons, plus Buildings / Units / Scenery categories.
+- **Hide buildable**, **Hide plots**, **Hide placeholders**, and **Hide unfinished** switches, enabled by default.
+  These use the existing native `bfme.buildMode` classification, including builder/plot build commands,
+  foundation flags, helper/rebuild placeholders, obsolete content, and unsupported behavior modules.
+  A missing preview alone does not classify an object as unfinished.
+
+Results are paged in groups of 24. Preview models load one at a time and the last 96
+rendered thumbnails are cached. Missing model renders are labeled explicitly.
+Selecting a result in either view selects the template used for map placement.
+ Terrain modes show the categorized texture library and image
 preview in the same area. The toolbar includes persistent grid snapping, brush
 orientation, Undo, Save, Load, and Exit controls.

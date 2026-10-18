@@ -284,6 +284,7 @@ var _display_game := false               # --display-game
 var _fs: RefCounted
 var _audio: Node
 var _world: Node3D           # GameWorld
+var _editor_hud_state: Dictionary = {}
 var _map_editor: CanvasLayer
 var _lua_console: CanvasLayer
 var _console_input_states: Array[Dictionary] = []
@@ -2895,8 +2896,28 @@ func _open_map_editor() -> void:
 		_map_editor.hud = _hud
 		_map_editor.camera = _camera
 		_map_editor.fs = _fs
+		_map_editor.active_changed.connect(_editor_visibility_changed)
 		add_child(_map_editor)
 	_map_editor.set_active(true)
+
+func _editor_visibility_changed(enabled: bool) -> void:
+	if enabled:
+		_editor_hud_state = {"control_bar_hidden": _control_bar_hidden}
+		for node_name in ["AdaptiveHUD", "ControllerUI"]:
+			var node = get_node_or_null(node_name)
+			if node:
+				_editor_hud_state[node_name] = {"visible": node.visible, "processing": node.is_processing()}
+				node.set_process(false)
+				node.hide()
+		_set_control_bar_hidden(true)
+	else:
+		_set_control_bar_hidden(_editor_hud_state.get("control_bar_hidden", false))
+		for node_name in ["AdaptiveHUD", "ControllerUI"]:
+			var node = get_node_or_null(node_name)
+			if node and _editor_hud_state.has(node_name):
+				node.visible = _editor_hud_state[node_name].visible
+				node.set_process(_editor_hud_state[node_name].processing)
+		_editor_hud_state.clear()
 
 func _console_restart() -> void:
 	var config := ConfigFile.new()

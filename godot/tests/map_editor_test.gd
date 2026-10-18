@@ -102,6 +102,7 @@ func _run():
  if editor.texture.item_count>1:
   editor.texture.select(1);editor._texture_selected(1)
   check(editor.texture_preview.texture!=null,'Changing terrain selection refreshes image preview')
+ editor.grid_mode=false
  editor._filter('DaleBuilding04');check(editor.objects.item_count==1,'Object search')
  editor.objects.select(0);editor.tool.select(1);editor._update_controls();editor.points.clear();editor.points.append(point)
  editor.angle_control.value=45
