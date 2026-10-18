@@ -37,6 +37,7 @@ var _selected := 0
 var _elapsed := 0.0
 var _signature := ''
 var _icons := {}
+var _command_hover_button: Button
 var _live: Node
 var _store_owned := false
 var _map_large := false
@@ -87,6 +88,7 @@ func _ready():
  _apply_mode();_apply_layout_settings()
 
 func _exit_tree():
+ _clear_command_hover()
  if is_instance_valid(_live):_live.set_native_hud_visible(true)
  if _store_owned and is_instance_valid(_live):_live.close_spell_store()
  Engine.remove_meta('adaptive_hud_rects');Engine.remove_meta('adaptive_hud_active');Engine.remove_meta('adaptive_hud_replaces_native');Engine.remove_meta('touch_build_controls')
@@ -99,6 +101,7 @@ func cycle_mode():
  open_section('');_apply_mode()
 
 func _apply_mode():
+ _clear_command_hover()
  Engine.set_meta('adaptive_hud_active',mode=='modern')
  Engine.set_meta('adaptive_hud_replaces_native',mode!='classic')
  if is_instance_valid(_live):_live.set_native_hud_visible(mode=='classic')
@@ -131,6 +134,7 @@ func _process(delta):
  var active:bool=gameplay.is_valid() and gameplay.call()
  var live:Node=hud.call() if hud.is_valid() else null
  if live!=_live:
+  _clear_command_hover()
   if is_instance_valid(_live):_live.set_native_hud_visible(true)
   _live=live;_icons.clear();_apply_mode()
  _top.visible=active and is_instance_valid(_live)
@@ -141,6 +145,7 @@ func _process(delta):
  _construction.visible=_dock.visible and not _construction_entries.is_empty()
  _map.visible=_dock.visible
  if not active:
+  _clear_command_hover()
   if _store_owned and is_instance_valid(_live):_live.close_spell_store();_store_owned=false
   Engine.set_meta('adaptive_hud_rects',[]);return
  if not is_instance_valid(_live):return
@@ -313,6 +318,15 @@ func _render():
  _tiles=_render_tiles(_entries,_grid)
  _highlight()
 
+func _command_hover(button:Button,entry:Dictionary):
+ _command_hover_button=button
+ if is_instance_valid(_live):_live.set_controller_hover(int(entry.slot),bool(entry.in_palantir),0,-1)
+
+func _clear_command_hover(button:Button=null):
+ if button!=null and button!=_command_hover_button:return
+ if _command_hover_button!=null and is_instance_valid(_live):_live.set_controller_hover(-1,true,0,-1)
+ _command_hover_button=null
+
 func _render_tiles(entries:Array,grid:GridContainer)->Array[Button]:
  for child in grid.get_children():grid.remove_child(child);child.queue_free()
  var tiles:Array[Button]=[]
@@ -328,6 +342,10 @@ func _render_tiles(entries:Array,grid:GridContainer)->Array[Button]:
   if entry.has('detail'):suffix+='\n'+str(entry.detail)
   var tile_kind='command' if grid==_command_grid else ('map_control' if grid==_grid and section=='Map' else 'construction')
   var button=_button(title+suffix,tile_kind)
+  if entry.has('slot'):
+   button.mouse_entered.connect(_command_hover.bind(button,entry))
+   button.mouse_exited.connect(_clear_command_hover.bind(button))
+   button.tree_exiting.connect(_clear_command_hover.bind(button))
   button.tooltip_text=title+'\n'+str(entry.get('description',''))
   var icon_name=str(entry.get('image',''))
   if not icon_name.is_empty():

@@ -13,6 +13,7 @@
 // (GameLogicDispatch); the HUD reads the logic (selection, production queue, money) and the client views.
 
 #pragma once
+#include <array>
 
 #include "GameClient/GUI/AptScreens/AptPalantir.h"
 #include "GameClient/GUI/AptScreens/AptSpellStore.h"
@@ -148,6 +149,8 @@ public:
 	const IconUISettings &iconSettings() const { return m_iconSettings; }
 	void setControllerSelectionHover(ObjectID id) { m_controllerSelectionHover = id; }
 	const std::vector<IconUIOp> &iconOps() const { return m_iconOps; }
+	struct WallHighlight { ObjectID object; std::array<ICoord2D,4> corners; bool primary; };
+	const std::vector<WallHighlight> &wallUpgradeHighlights() const { return m_wallUpgradeHighlights; }
 	// lane PLAY-3: the drag selection box of this render frame (W3DInGameUI::drawSelectionRegion, RW 0x48ECF4): an OPEN_RECT over the region the
 	// SelectionTranslator's drag holds (InGameUI's area select hint), drawn while the drag lasts; false when there is none. Computed from the client
 	// state on every call (no logic frame needed: the box follows the pointer even while the logic worker runs)
@@ -244,6 +247,8 @@ private:
 	IconUISettings m_iconSettings;
 	ObjectID m_controllerSelectionHover = INVALID_ID;
 	std::vector<IconUIOp> m_iconOps;
+	std::vector<WallHighlight> m_wallUpgradeHighlights;
+	void updateWallUpgradePreview(const ControlBarButton *hovered, ObjectID context);
 	unsigned m_spellToggleSeen = 0;           // lane INPUT-1: the SPELL_STORE metas done
 	unsigned m_diplomacySeen = 0;             // lane INPUT-1: the DIPLOMACY metas done
 	unsigned m_hotkeyVersion = ~0u;           // lane INPUT-1: the control bar version the hotkeys were registered for

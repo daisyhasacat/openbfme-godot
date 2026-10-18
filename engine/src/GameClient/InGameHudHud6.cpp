@@ -5,6 +5,10 @@
 // ControlBarRadialMenu.h, CommandButtonHelp.h and InGameHelpBox.h for the target facts). Kept apart from InGameHud.cpp (lane UI-4 edits that file).
 
 #include "GameClient/InGameHud.h"
+#include "GameClient/WallUpgradePreview.h"
+#include "GameLogic/BuildPlacement.h"
+#include "GameLogic/Object/ObjectGeometry.h"
+#include <cmath>
 
 #include "Common/ArchiveFileSystem.h"
 #include "Common/AsciiString.h"
@@ -292,6 +296,7 @@ void InGameHud::updateHud6(ObjectID context, const std::string &faction, double 
 			p.bar = 3; p.button = button; have = true; break;
 		}
 	}
+	updateWallUpgradePreview(have ? &hovered : nullptr, context);
 	const std::vector<ObjectID> &selected = m_input->ui().selected();
 	if (have)
 	{
@@ -412,4 +417,30 @@ void InGameHud::hud6Stops(std::vector<std::string> &out) const
 	{
 		out.push_back("[S-2703] " + e);
 	}
+}
+
+void InGameHud::updateWallUpgradePreview(const ControlBarButton *hovered,ObjectID context)
+{
+ m_wallUpgradeHighlights.clear();
+ auto &logic=m_config.game.logic();
+ const Object *source=logic.findObjectByID(context);bool gate=false;
+ if(!source||!hovered||!hovered->button||source->getControllingPlayer()!=m_config.game.players().getLocalPlayer()
+  ||!WallUpgradePreview::expansion(logic,*source,*hovered->button,gate))return;
+ for(ObjectID id:WallUpgradePreview::objects(logic,*source,gate)) {
+  const Object *o=logic.findObjectByID(id);if(!o)continue;
+  std::vector<BuildPlacement::Footprint> shapes;
+  BuildPlacement::footprintsOf(logic,*o->getTemplate(),*o->getPosition(),o->getOrientation(),shapes);
+  const float z=o->getPosition()->z+ObjectGeometry::maxHeightAbovePosition(ObjectGeometry::shapesOf(*o->getTemplate()));
+  for(const auto &f:shapes) {
+   // A translucent cap marks the actual wall footprint at wall height, regardless of camera rotation.
+   WallHighlight quad;quad.object=id;quad.primary=id==source->getID();bool visible=true;
+   const float c=std::cos(f.angle),s=std::sin(f.angle);
+   const float minor=f.type==0?f.minor:f.major;
+   for(int i=0;i<4;++i) {
+    const float x=(i==0||i==3)?-f.major:f.major,y=i<2?-minor:minor;
+    visible&=m_config.view.worldToScreen({f.x+x*c-y*s,f.y+x*s+y*c,z},quad.corners[i]);
+   }
+   if(visible)m_wallUpgradeHighlights.push_back(quad);
+  }
+ }
 }

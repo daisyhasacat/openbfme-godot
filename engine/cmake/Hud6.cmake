@@ -7,9 +7,11 @@ set(OPENBFME_HUD6_CLIENT_SOURCES
     src/GameClient/ControlBarRadialMenu.cpp
     src/GameClient/CommandButtonHelp.cpp
     src/GameClient/InGameHelpBox.cpp
+    src/GameClient/WallUpgradePreview.cpp
     src/GameClient/InGameHudHud6.cpp
 )
 set(OPENBFME_HUD6_TESTS
+    tests/test_wall_upgrade_preview.cpp
     tests/test_hud6.cpp
 )
 # the device layer (GDExtension)

@@ -915,6 +915,13 @@ void HudDevice::drawIconOps(RID parent)
 		rs->canvas_item_set_draw_index(iconItem, -1000);
 	}
 	rs->canvas_item_clear(iconItem);
+	for(const auto &highlight:hud->wallUpgradeHighlights()) {
+		PackedVector2Array points;PackedColorArray colors;
+		const Color color=highlight.primary?Color(1.0,.8,.15,.5):Color(.25,1.0,.8,.35);
+		for(const auto &p:highlight.corners){points.push_back(Vector2(p.x,p.y));colors.push_back(color);}
+		rs->canvas_item_add_polygon(iconItem,points,colors);
+		for(int i=0;i<4;++i)rs->canvas_item_add_line(iconItem,points[i],points[(i+1)%4],Color(color.r,color.g,color.b,1),2.0,true);
+	}
 	{
 		IconUISettings is = hud->iconSettings();
 		is.zoom = cam ? cam->getZoom() : 1.0f;
@@ -2096,6 +2103,9 @@ Dictionary InGameHudNode::get_state() const
 	{
 		return s;
 	}
+	Array wallHighlights;
+	for(const auto &quad:d->hud->wallUpgradeHighlights())if(!wallHighlights.has((int64_t)quad.object))wallHighlights.push_back((int64_t)quad.object);
+	s["wall_upgrade_highlights"]=wallHighlights;
 	const InGameUI &ui = d->hud->input().ui();
 	s["cursor"] = toGodot(ui.cursor());
 	if (d->world && d->world->hud_game())

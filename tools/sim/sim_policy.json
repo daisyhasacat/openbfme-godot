@@ -18,6 +18,10 @@
  ],
  "excluded": [
   {
+   "glob": "src/GameClient/WallUpgradePreview.cpp",
+   "reason": "Client-only wall expansion hover spacing: reads recorded wall links and replacement templates, returns highlight IDs without changing simulation state"
+  },
+  {
    "glob": "src/GodotDevice/LinuxRuntimeShims.cpp",
    "reason": "lane DEP-2: the Linux GDExtension's own powf and getentropy (link-time --wrap so it needs no newer glibc): client code (audio, shaders, godot-cpp colours, a GUID); the simulation calls neither"
   },

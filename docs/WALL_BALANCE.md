@@ -46,3 +46,14 @@ section in `dev/wall_balance.cfg` (overridden by `user://wall_balance.cfg`) sets
 The default uses `CobblestoneType2` from the player's original game files.
 Restart the match after changing these settings. Missing textures report an
 error instead of silently substituting another texture.
+
+## Wall expansion hover preview
+
+Hover a wall expansion button to preview spacing along that wall's recorded
+span. The selected segment is gold; alternating segments are teal. Arrow towers,
+posterns and other single-tile expansions mark offsets 0, ±2, ±4, and so on.
+Regular gates mark the selected tile and its neighbors (0, ±1), then alternate
+outward at ±3, ±5, and so on. Hubs, other spans, enemy walls and existing
+expansions are excluded; missing tiles retain their original spacing.
+The preview works in the native and modern HUDs and with controller focus.
+It clears when hover ends and does not purchase or place any expansion.

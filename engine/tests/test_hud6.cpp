@@ -18,6 +18,9 @@
 #include "GameClient/GUI/ShellServices.h"
 #include "GameClient/InGameHelpBox.h"
 #include "GameClient/InGameHud.h"
+#include "GameClient/WallUpgradePreview.h"
+#include "GameLogic/WallSpan.h"
+#include "GameLogic/Module/ConstructionModules.h"
 #include "Common/Money.h"
 #include "Common/Player.h"
 #include "GameLogic/Module/ProductionUpdate.h"
@@ -634,4 +637,44 @@ TEST_CASE("bugs1 retail: the help box over a barracks bubble keeps its content: 
 	ops.clear();
 	h.hud->helpBoxRender(400.0f, 500.0f, 360.0f, 120.0f, ops);
 	CHECK(std::count_if(ops.begin(), ops.end(), [](const HelpDrawOp &o) { return o.kind == HelpDrawOp::TEXT; }) >= 3); // name, cost, description
+}
+
+TEST_CASE("hud6 retail: wall expansion hover previews gates, towers and posterns, and clears on exit")
+{
+ if(!haveWorld("hud6 wall upgrade preview"))return;
+ Hud6Rig h(shared(),"FactionMen");
+ h.frames(10);
+ const auto c=h.rig.freeSpot(2800,1400,200);
+ std::vector<Object *> walls;
+ auto *source=h.rig.make("MenWallSegmentSmall",c.x,c.y);
+ const float step=2*(WallSpan::halfExtentY(*source->getTemplate())-1);
+ for(int i=-4;i<=4;++i)walls.push_back(i==0?source:h.rig.make("MenWallSegmentSmall",c.x,c.y+i*step));
+ auto *built=dynamic_cast<GettingBuiltBehavior *>(source->findModule("GettingBuiltBehavior"));REQUIRE(built);
+ for(auto *o:walls) {
+  built->addLinkedPiece(*o);
+  auto *gb=dynamic_cast<GettingBuiltBehavior *>(o->findModule("GettingBuiltBehavior"));
+  gb->finishConstruction(nullptr);gb->setForceComplete(false);o->setStatus(OBJECT_STATUS_UNDER_CONSTRUCTION,false);
+ }
+ h.rig.lookAt(c,300,450);h.select(source);h.frames(3);
+ bool regular=false,postern=false,tower=false;
+ std::vector<ControlBarButton> buttons=h.hud->controlBar().palantirButtons();
+ const auto &side=h.hud->controlBar().sideButtons();buttons.insert(buttons.end(),side.begin(),side.end());
+ for(const auto &b:buttons) {
+  if(!b.button)continue;
+  bool gate=false;
+  if(!WallUpgradePreview::expansion(h.rig.logic(),*source,*b.button,gate))continue;
+  h.hud->setControllerHover(b.slot,b.inPalantir,INVALID_ID,-1);h.frames(1);
+  std::set<ObjectID> marked;
+  for(const auto &quad:h.hud->wallUpgradeHighlights())marked.insert(quad.object);
+  if(gate){regular=true;CHECK(marked==std::set<ObjectID>{walls[1]->getID(),walls[3]->getID(),source->getID(),walls[5]->getID(),walls[7]->getID()});}
+  else {
+   if(b.button->m_name.find("Postern")!=std::string::npos)postern=true;
+   if(b.button->m_name.find("Tower")!=std::string::npos)tower=true;
+   CHECK(marked==std::set<ObjectID>{walls[0]->getID(),walls[2]->getID(),source->getID(),walls[6]->getID(),walls[8]->getID()});
+  }
+ }
+ INFO("Wall command set: "<<h.hud->controlBar().commandSetName()<<", buttons: "<<buttons.size()<<", under construction: "<<source->isUnderConstruction());
+ CHECK(regular);CHECK(postern);CHECK(tower);
+ h.hud->setControllerHover(-1,true,INVALID_ID,-1);h.frames(1);
+ CHECK(h.hud->wallUpgradeHighlights().empty());
 }

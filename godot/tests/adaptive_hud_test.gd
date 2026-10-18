@@ -2,6 +2,8 @@ extends SceneTree
 ## UI contract with a mock source: no retail data or GDExtension required.
 class Source extends Node:
  var native_visible:=true
+ var hover: Array=[]
+ func set_controller_hover(slot,arc,unit,spell):hover=[slot,arc,unit,spell]
  var activated:=[]
  var placement:Dictionary={}
  var order:Dictionary={}
@@ -45,6 +47,11 @@ func _run():
  assert(not source.native_visible)
  ui.open_section('Commands');ui._refresh();await process_frame
  assert(ui._entries.size()==1 and ui._tiles.size()==1)
+ ui._tiles[0].mouse_entered.emit();assert(source.hover==[3,false,0,-1])
+ ui._command_tiles=ui._render_tiles(ui._entries,ui._command_grid);assert(source.hover==[-1,true,0,-1],'Tile replacement clears mouse hover')
+ ui._command_tiles[0].mouse_entered.emit();ui.mode='classic';ui._apply_mode()
+ assert(source.hover==[-1,true,0,-1],'Changing HUD mode clears hover')
+ ui.mode='modern';ui._apply_mode();ui._refresh();await process_frame
  ui._activate(0,false);assert(source.activated[-1]==[3,false,false])
  ui._palette(true);ui._controller_action('rightPressCommand');assert(source.activated[-1]==[3,false,true])
  ui.open_section('Powers');ui._refresh();ui._activate(0,false);assert(source.store)
