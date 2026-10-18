@@ -21,6 +21,7 @@
 #include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/Module/ConstructionModules.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/Object/ObjectGeometry.h"
 #include "GameLogic/SimMath.h"
 
@@ -398,7 +399,21 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
 		while ((int)i < maxTiles - 1)
 		{
 			const ThingTemplate *tt = wh->patternTemplate(i);
-			if (logic.settings().wallBalance.enabled && !logic.settings().wallBalance.intermediateHubs && tt && WallBalance::costCategory(*tt) == 1) tt = wh->defaultSegmentTemplate();
+			if (logic.settings().wallBalance.enabled && !logic.settings().wallBalance.intermediateHubs && tt)
+			{
+				// Pattern entries are intermediate regardless of their cost category or name.
+				// Outer/expansion hub templates can occur here too; endpoint caps are separate.
+				const int hubKind = ObjectTemplateInfoBuilder::kindOfIndex("WALL_HUB");
+				if (hubKind >= 0 && MaskTest(logic.templateInfo(tt->getFinalOverride()).kindOf, (unsigned)hubKind))
+				{
+					tt = wh->defaultSegmentTemplate();
+					if (!tt)
+					{
+						logic.reportError("wall span: intermediate hubs disabled but no default segment for " + hub.getTemplate()->getName());
+						return false;
+					}
+				}
+			}
 			tt = tt ? tt : hub.getTemplate();
 			float half = SimMath::subf32(halfExtentY(*tt), 1.0f);
 			if (remaining < SimMath::addf32(SimMath::mulf32(half, 2.0f), done))

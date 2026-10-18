@@ -8,7 +8,7 @@ The profile supplies:
 - Health multipliers: walls 6×, hubs 30×, gates 6×.
 - Cost multipliers: walls 0.5×, run hubs 0.7×, standalone hubs 0.3×, expansions 0.8×.
 - Fortress and standalone hub wall ranges: 2×.
-- Intermediate hubs disabled; native gate clearance optional.
+- Intermediate hubs disabled; all `WALL_HUB` entries inside a span are replaced with its default wall segment, including outer and expansion hub templates used by Mordor packs. Endpoint hubs remain. Native gate clearance is optional.
 - Fortress arrow upgrade sharing, including towers completed after research.
 - Elven and Isengard wall arrow towers using the BFME2Lua models, commands, upgrades, and replacement behaviors.
 - Optional offline completed starting wall rings with front and back gates. The reference layout uses eight hubs, radius 450, and hub-pair spacing 300. The radius shrinks near map borders. AI players receive starting walls when enclosure is required. Faction hub and gate names are data in the configuration; unsupported factions are skipped.

@@ -212,3 +212,53 @@ TEST_CASE("wall span optionally connects to friendly fortress trebuchet expansio
  REQUIRE(WallSpan::plan(*w.logic,*hub,{300,500,0},{600,500,0},0,blocked));
  CHECK(blocked.tiles.front().code==LBC_OBJECTS_IN_THE_WAY);
 }
+
+TEST_CASE("wall spans: disabling intermediate hubs covers outer and expansion pattern templates") {
+ bool missingDefault = false;
+ SUBCASE("configured default segment") {}
+ SUBCASE("missing default segment reports an error") { missingDefault = true; }
+ for (const char *name : {"PatternHub", "PatternOuterHub", "PatternExpansionHub"}) {
+  INFO(name);
+  std::string definitions =
+   "Object PlainTile\n KindOf = STRUCTURE IMMOBILE WALL_SEGMENT\n BuildCost = 1\n Geometry = BOX\n GeometryMajorRadius = 4\n GeometryMinorRadius = 10\n GeometryHeight = 20\nEnd\n";
+  definitions += std::string("Object ") + name +
+   "\n KindOf = STRUCTURE IMMOBILE WALL_HUB\n BuildCost = 1\n Geometry = BOX\n GeometryMajorRadius = 4\n GeometryMinorRadius = 10\n GeometryHeight = 20\nEnd\n";
+  definitions += std::string("Object StartHub\n KindOf = STRUCTURE IMMOBILE WALL_HUB\n Geometry = BOX\n GeometryMajorRadius = 4\n GeometryMinorRadius = 10\n GeometryHeight = 20\n Behavior = WallHubBehavior Hub\n SegmentTemplateName = PlainTile ") + name +
+   "\n DefaultSegmentTemplateName = PlainTile\n HubCapTemplateName = " + name + "\n BuilderRadius = 10\n End\nEnd\n";
+  if (missingDefault) {
+   const std::string field = "DefaultSegmentTemplateName = PlainTile";
+   definitions.replace(definitions.find(field), field.size(), "DefaultSegmentTemplateName = UnknownTile");
+  }
+  CombatWorld w(definitions.c_str());
+  w.logic->settings().buildRulesLoaded = true;
+  w.logic->settings().allowedHeightVariationForBuilding = 10;
+  w.logic->settings().maxLineBuildObjects = 50;
+  auto *hub = w.unit("StartHub", 'A', 300, 500);
+  auto &rules = w.logic->settings().wallBalance;
+  rules.enabled = true;
+  rules.intermediateHubs = false;
+  WallSpan::Plan disabled;
+  if (missingDefault) {
+   CHECK_FALSE(WallSpan::plan(*w.logic, *hub, {300,500,0}, {600,500,0}, 0, disabled));
+   CHECK(w.logic->report().errors == std::vector<std::string>{"wall span: intermediate hubs disabled but no default segment for StartHub"});
+   continue;
+  }
+  REQUIRE(WallSpan::plan(*w.logic, *hub, {300,500,0}, {600,500,0}, 0, disabled));
+  REQUIRE_FALSE(disabled.tiles.empty());
+  CHECK(disabled.worstCode == 0);
+  for (size_t i = 0; i + 1 < disabled.tiles.size(); ++i)
+   CHECK(disabled.tiles[i].tmpl->getName() == "PlainTile");
+  CHECK(disabled.tiles.back().tmpl->getName() == name); // endpoint cap is preserved
+  rules.intermediateHubs = true;
+  WallSpan::Plan enabled;
+  REQUIRE(WallSpan::plan(*w.logic, *hub, {300,500,0}, {600,500,0}, 0, enabled));
+  REQUIRE(enabled.tiles.size() == disabled.tiles.size());
+  CHECK(enabled.tiles[1].tmpl->getName() == name);
+  rules.enabled = false;
+  rules.intermediateHubs = false;
+  WallSpan::Plan native;
+  REQUIRE(WallSpan::plan(*w.logic, *hub, {300,500,0}, {600,500,0}, 0, native));
+  REQUIRE(native.tiles.size() == enabled.tiles.size());
+  CHECK(native.tiles[1].tmpl->getName() == name);
+ }
+}
