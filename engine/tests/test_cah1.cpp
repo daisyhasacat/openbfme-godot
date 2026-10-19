@@ -385,6 +385,11 @@ TEST_CASE("cah1 retail shell: a hero is built page by page through the movies (c
 	REQUIRE_MESSAGE(c.fx->wm->invokeAS(scr->level(), "SetCreateNewHero", { "true" }, nullptr, &error), error);
 	c.show(scr, "Class");
 	CHECK(scr->currentPage() == 'C');
+	REQUIRE(c.fx->wm->aptImage("Cah::Portrait"));
+	CHECK(*c.fx->wm->aptImage("Cah::Portrait") == "HPGandalf");
+	// The applied preview supplies the hero portrait. Text refreshes must not
+	// replace it with the class's faction emblem.
+	c.fx->wm->setAptImage("Cah::Portrait", "CPShieldMaiden");
 	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::Class::SetClassAndType", "2 1"));
 	REQUIRE(scr->displayedHero());
 	CHECK(scr->displayedHero()->classIndex == 2);
@@ -394,6 +399,7 @@ TEST_CASE("cah1 retail shell: a hero is built page by page through the movies (c
 	REQUIRE(scr->myHero());
 	CHECK(scr->myHero()->hero().classIndex == 2);
 	CHECK(scr->myHero()->hero().subClassIndex == 1);
+	CHECK(*c.fx->wm->aptImage("Cah::Portrait") == "CPShieldMaiden");
 	// the appearance arrows and the attribute buttons through their commands
 	const int before = scr->myHero()->currentIndex(AptMyHero::KIND_APPEARANCE, 0);
 	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::Appearance::NextAppearance", "0"));

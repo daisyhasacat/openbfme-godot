@@ -54,3 +54,15 @@ Shield Maiden = CPShieldMaiden, Captain = CPCaptainofGondor. The HUD regression
 checks those distinct portraits and a mixed selection of two heroes sharing
 the same object template. The ordinary template comparison shortcut must not
 skip custom heroes. S-760 still covers disguise/template overrides.
+
+The Powers screen's `Cah::Portrait` mapping also uses that applied preview
+object's portrait now. It previously used the class `IconImage`, so Hero of
+the West displayed the Gondor tree. `cah_preview_apply` returns the resolved
+portrait after applying the hero, and the view supplies it to the shell image
+store. Text refreshes preserve it. Before a preview exists, the explicit
+default is HPGandalf, as in donor AptMyHero RVA 0x5B0725. A native shell
+regression pins both the default and preservation across class/text refreshes;
+a windowed Powers-screen capture confirms the Shield Maiden image replaces
+the tree. The separate live-preview camera placement remains under S-1405;
+the experimental portrait-row transform did not establish correct framing and
+is not included in this fix.

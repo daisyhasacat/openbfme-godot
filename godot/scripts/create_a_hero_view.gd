@@ -135,6 +135,8 @@ func _apply(view: Dictionary) -> void:
 	if _t < 0.0:
 		_t = clampf(float(_info.get("normal_cam", 0.0)), 0.0, 1.0)
 	var r: Dictionary = _world.cah_preview_apply(_object, _record)
+	if r.ok:
+		_shell.set_create_a_hero_portrait(str(r.portrait))
 	if not r.ok:
 		errors.append(str(r.get("error", "")))
 		printerr("CAH preview: ", r.get("error", ""))

@@ -703,7 +703,13 @@ void AptCreateAHero::refreshTexts()
 	}
 	const int cost = m_myHero->buildCost();
 	windows().setAptText("APT:MyHeroCost", cost >= 0 ? std::to_string(cost) : std::string(" "));
-	setImage("Cah::Portrait", h.classIndex < classes.size() ? classes[h.classIndex].iconImage : std::string()); // INFERENCE (S-1405): the portrait file is not ported
+	// DONOR AptMyHero::rva005B0725: use the preview drawable's portrait;
+	// HPGandalf is the explicit default until that drawable supplies an image.
+	// The device returns the applied model-state portrait after each revision.
+	if (!windows().aptImage("Cah::Portrait"))
+	{
+		setImage("Cah::Portrait", "HPGandalf");
+	}
 }
 
 void AptCreateAHero::registerAll()
@@ -713,7 +719,7 @@ void AptCreateAHero::registerAll()
 	registerCommand("AptCreateAHero::PrepareToTakePicture", [this](const std::string &) { m_pictureFrames = 0; });
 	registerCommand("AptCreateAHero::OnTakePicture", [this](const std::string &) {
 		windows().note("unported-command", "AptCreateAHero::OnTakePicture: the hero portrait is not taken [S-1405]");
-		notAvailable(u"Taking a hero portrait is not available yet: the hero keeps its class's picture."); // lane MENUWORK-1 (S-4755)
+		notAvailable(u"Taking a hero portrait is not available yet: the hero keeps its model's portrait."); // lane MENUWORK-1 (S-4755)
 		invoke("OnGameTookPicture", {});
 	});
 	registerCommand("AptCreateAHero::RotateLeft", [this](const std::string &a) { m_rotateLeft = !a.empty() && a[0] == 't'; });

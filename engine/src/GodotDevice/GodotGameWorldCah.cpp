@@ -8,6 +8,7 @@
 
 #include "Common/CreateAHeroRecord.h"
 #include "GameClient/TacticalCamera.h"
+#include "GameClient/PalantirCommandUI.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
 #include "Common/Player.h"
 #include "GameClient/LiveGame.h"
@@ -83,6 +84,7 @@ Dictionary GameWorld::cah_preview_apply(int64_t objectId, const PackedByteArray 
 		return out;
 	}
 	m_game->logic().createAHeroes().applyBuilder(*player, hero, *obj);
+	out["portrait"] = String(PalantirCommandUI::objectPortrait(*obj).c_str());
 	out["ok"] = true;
 	return out;
 }
