@@ -32,6 +32,11 @@ remembered in `user://game-selection.cfg`; an explicit `--game=...` takes
 precedence. RotWK mod choices are retained while BFME1 runs, and BFME1 never
 mounts those mods. Switching back restores the RotWK menu and its profiles.
 
+BFME1 startup skips Create-a-Hero initialization and the RotWK campaign overlay;
+its own menu handles unsupported campaign actions through the existing refusal path.
+The complete startup regression is `godot/tests/bfme1_startup_test.gd` (run with
+`BFME1_INSTALL` set and `-- --game=bfme1`).
+
 BFME1 has separate `bfme1-Options.ini` and `bfme1-Skirmish.ini` settings.
 `--game=bfme1` and `--bfme1-install=...` are normal player options, so profiles persist between launches.
 Automation flags such as `--auto` still use an isolated temporary profile file.
@@ -218,3 +223,8 @@ BFME2/RotWK retain strict dependency checking. BFME1 live loads also omit map
 placements whose templates are absent, preserving them in the classification
 census and reporting each omission. Case mismatches and errors in templates
 that are present remain failures.
+
+BFME1 `BloodthirstyUpdate` also accepts and stores `NumToSacrifice` and
+`InitiateVoice2`. These legacy fields are refused in RotWK data. Their runtime
+semantics remain unported and are reported by S-5017; the BFME1 donor constructor
+initializes the sacrifice count to 1.
