@@ -727,7 +727,12 @@ TEST_CASE("AIPOW-1 r2: the spell book's ASSIST_BATTLE_BUFF (RW 0x9E896E) with it
 	}
 	if (buff)
 	{
+		Object *oathbreakers = a.make("RohanOathbreakerHorde", a.human, 30.0f, 0.0f);
+		REQUIRE(oathbreakers->getContain() == nullptr);
+		a.logic->partition().update();
 		const bool first = buff->decideNow();
+		const auto stops = a.logic->report().stops;
+		CHECK(std::find(stops.begin(), stops.end(), "[S-5902] AI battle statistics skip hordes without a runtime HordeContain (including unported AODHordeContain, S-140); their member health is unavailable") != stops.end());
 		MESSAGE("ASSIST_BATTLE_BUFF on a wounded horde: " << first << " (the ActionManager's test at its position decides)");
 		CHECK(buff->decision()->assistUnit == mine->getID());
 		CHECK(buff->decision()->assistTarget == mine->getID());

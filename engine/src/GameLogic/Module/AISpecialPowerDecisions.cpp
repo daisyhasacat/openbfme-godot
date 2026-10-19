@@ -552,7 +552,10 @@ BattleStats battleStats(GameLogic &logic, Object &unit, float radius)
 			const HordeContain *hc = dynamic_cast<const HordeContain *>(horde->getContain());
 			if (!hc)
 			{
-				throw std::logic_error("AISpecialPowerUpdate RW 0xA0260A: a horde without a horde contain");
+				// Unsupported AODHordeContain leaves Oathbreakers as empty shells (S-140).
+				// Inference: exclude that shell rather than invent its member health.
+				logic.noteStop("[S-5902] AI battle statistics skip hordes without a runtime HordeContain (including unported AODHordeContain, S-140); their member health is unavailable");
+				continue;
 			}
 			ratio = (double)hc->averageMemberHealthRatio(); // slot 0x264
 		}
