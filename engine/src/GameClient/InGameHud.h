@@ -35,11 +35,13 @@
 #include "GameClient/Radar.h"
 #include "GameClient/RadiusCursor.h"
 #include "GameClient/TerrainResourceFeedback.h"
+#include "GameClient/FloatingText.h"
 #include "GameClient/UnitVoiceResponse.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
 #include "GameLogic/GameLogicDispatch.h"
 #include "Libraries/Source/Apt/AptLoad.h"
 
+#include <map>
 #include <functional>
 #include <memory>
 #include <set>
@@ -169,6 +171,7 @@ public:
 	const IconUISettings &iconSettings() const { return m_iconSettings; }
 	void setControllerSelectionHover(ObjectID id) { m_controllerSelectionHover = id; }
 	const std::vector<IconUIOp> &iconOps() const { return m_iconOps; }
+	const FloatingTextList &floatingText() const { return m_floatingText; }
 	struct WallHighlight { ObjectID object; std::array<ICoord2D,4> corners; bool primary; };
 	const std::vector<WallHighlight> &wallUpgradeHighlights() const { return m_wallUpgradeHighlights; }
 	// lane PLAY-3: the drag selection box of this render frame (W3DInGameUI::drawSelectionRegion, RW 0x48ECF4): an OPEN_RECT over the region the
@@ -294,6 +297,13 @@ private:
 	IconUISettings m_iconSettings;
 	ObjectID m_controllerSelectionHover = INVALID_ID;
 	std::vector<IconUIOp> m_iconOps;
+	// the money texts of the paying buildings (GameClient/FloatingText.h), fed from the economy's income log
+	void updateFloatingText(const TacticalView &view, bool shroudDrawn);
+	FloatingTextList m_floatingText;
+	unsigned long long m_incomeSeen = 0;
+	const GameLogic *m_incomeLogic = nullptr;
+	std::map<std::string, float> m_floatingTextHeights; ///< a template's geometry top (TerrainResourceBehavior's text height), once per template
+	std::vector<std::string> m_floatingTextErrors;      ///< settings that did not load, geometry rows that do not parse: reported as [S-283]
 	std::vector<WallHighlight> m_wallUpgradeHighlights;
 	void updateWallUpgradePreview(const ControlBarButton *hovered, ObjectID context);
 	unsigned m_spellToggleSeen = 0;           // lane INPUT-1: the SPELL_STORE metas done

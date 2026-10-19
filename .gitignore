@@ -121,3 +121,19 @@ workspace/agents/
 /godot/mods/
 
 /engine/build-ios-simulator-x64/
+godot/mods/rotwk_202_maps.big
+godot/mods/wall_towers.big
+godot/mods/gondor_plots/gbarcheryn_bib.dds
+godot/mods/gondor_plots/gbarcheryn_bib.dds.uid
+godot/mods/gondor_plots/gbarmorybib.dds
+godot/mods/gondor_plots/gbarmorybib.dds.uid
+godot/mods/gondor_plots/gbbarracks_bib.dds
+godot/mods/gondor_plots/gbbarracks_bib.dds.uid
+godot/mods/gondor_plots/gbbtltwrs_bib.dds
+godot/mods/gondor_plots/gbbtltwrs_bib.dds.uid
+godot/mods/gondor_plots/gbfarmt.dds
+godot/mods/gondor_plots/gbfarmt.dds.uid
+godot/mods/gondor_plots/gbstablet.dds
+godot/mods/gondor_plots/gbstablet.dds.uid
+godot/mods/gondor_plots/gbworkshop_bib.dds
+godot/mods/gondor_plots/gbworkshop_bib.dds.uid
