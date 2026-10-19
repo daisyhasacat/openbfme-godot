@@ -95,13 +95,13 @@ map selection/install behavior.
 The synchronous progress callback now calls `RenderingServer.force_draw` with
 buffer swapping enabled. Previously it drew into the renderer without
 presenting those updates to the window. Skirmish presents 0% before loading,
-then its real progress milestones, and waits for a completed loading frame
-before replacing the screen with gameplay. There is no minimum-duration timer.
-Headless runs yield a process frame instead of waiting for a visible display.
+then its real progress milestones. Gameplay begins immediately when loading
+returns: there is no extra completion update, frame wait or minimum-duration
+timer. The bar is presented by the progress callback while loading is active.
 
 The game world's original visibility is saved while loading and restored on
 both success and failure. Its partially built terrain stays hidden behind the
-loading artwork, including the final 100% frame.
+loading artwork until the load returns.
 
 Validation: four existing loading-screen tests (83 assertions), a headless
 scripted Skirmish, and a windowed scripted Skirmish. A render-frame observer

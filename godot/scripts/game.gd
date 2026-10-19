@@ -2052,14 +2052,6 @@ func _begin_game(message: Dictionary) -> void:
 		else:
 			_fail("start_new_game failed: " + "\n".join(rep.get("errors", [])))
 		return
-	# Keep the completed loading bar on a presented frame even for a cached,
-	# very fast load. Yield to drawing, without adding a timed loading delay.
-	if _load_log.is_empty() or _load_log[-1] != 100:
-		_on_load_progress(100)
-	if DisplayServer.get_name() == "headless":
-		await get_tree().process_frame
-	else:
-		await RenderingServer.frame_post_draw
 	_world.visible = world_was_visible
 	_enter_game(rep)
 	if _online_spectate:
