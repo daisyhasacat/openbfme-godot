@@ -157,25 +157,30 @@ Dictionary GameWorld::cah_view_info(int64_t cls, int64_t sub) const
 	{
 		return out;
 	}
-	CameraSettings settings;
-	std::string cameraError;
 	if (!m_game || m_fs.is_null() || !m_fs->archive_fs())
 	{
 		out["error"] = String("cah_view_info: no map or archive file system is loaded");
 		return out;
 	}
-	if (!CameraSettings::load(*m_fs->archive_fs(), settings, &cameraError))
+	if (!m_cahCameraOffsetValid)
 	{
-		out["error"] = String(cameraError.c_str());
-		return out;
+		CameraSettings settings;
+		std::string cameraError;
+		if (!CameraSettings::load(*m_fs->archive_fs(), settings, &cameraError))
+		{
+			out["error"] = String(cameraError.c_str());
+			return out;
+		}
+		const auto &chunks = m_game->map().chunks;
+		const MapCameraValues values = MapCameraValues::resolve(settings, chunks.hasWorldInfo ? &chunks.worldInfo : nullptr);
+		Coord3D offset;
+		float angle;
+		bool legacy;
+		TacticalCamera::computeCameraOffset(values, offset, angle, legacy);
+		m_cahCameraOffset = Vector3(offset.x, offset.y, offset.z);
+		m_cahCameraOffsetValid = true;
 	}
-	const auto &chunks = m_game->map().chunks;
-	const MapCameraValues values = MapCameraValues::resolve(settings, chunks.hasWorldInfo ? &chunks.worldInfo : nullptr);
-	Coord3D offset;
-	float angle;
-	bool legacy;
-	TacticalCamera::computeCameraOffset(values, offset, angle, legacy);
-	out["camera_offset"] = Vector3(offset.x, offset.y, offset.z);
+	out["camera_offset"] = m_cahCameraOffset;
 	const CreateAHeroViewInfo &v = s->viewInfo;
 	auto five = [](float a, float b, float c, float d, float e) {
 		Array r;

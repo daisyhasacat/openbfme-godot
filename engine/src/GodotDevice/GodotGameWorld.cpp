@@ -521,6 +521,7 @@ GameWorld::~GameWorld()
 	m_liveFX.reset();
 	m_spellStore.reset(); // lane SPELL-2 (review r1): the spell book screens hold the game's player and templates: they go before it
 	m_spellBar.reset();
+	m_cahCameraOffsetValid = false;
 	m_game.reset();
 	m_clientRuntime.reset();
 	m_treeTopple.reset(); // lane SPELL-3
@@ -663,6 +664,7 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 		m_audio.reset(); // AUDIO-2: the audio side reads the game
 		m_spellStore.reset(); // lane SPELL-2 (review r1): the spell book screens hold the game's player and templates: they go before it
 		m_spellBar.reset();
+		m_cahCameraOffsetValid = false;
 		m_game.reset();
 		m_clientRuntime.reset();
 	m_treeTopple.reset(); // lane SPELL-3
@@ -762,6 +764,7 @@ void GameWorld::clear_scene()
 	}
 	m_spellStore.reset(); // lane SPELL-2 (review r1): the spell book screens hold the game's player and templates: they go before it
 	m_spellBar.reset();
+	m_cahCameraOffsetValid = false;
 	m_game.reset(); // the objects (and through them the drawables) first
 	if (m_consoleRuntime) m_consoleRuntime->invalidate(); // discard events after the producer worker has joined
 	m_clientRuntime.reset();
@@ -1215,6 +1218,7 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	m_audio.reset(); // AUDIO-2: the audio side reads the game
 	m_luaCatalog.reset(); // map command/module overrides also change build classifications
 	if (m_consoleRuntime) m_consoleRuntime->invalidate();
+	m_cahCameraOffsetValid = false;
 	m_game.reset(new LiveGame(*m_world, *m_fs->archive_fs(), *m_assets, *m_options));
 	m_timingRestoreLogicThread = false;
 	m_game->setRenderInterpolation(m_renderInterpolation);
@@ -1260,6 +1264,7 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 		m_audio.reset(); // AUDIO-2: the audio side reads the game
 		m_spellStore.reset(); // lane SPELL-2 (review r1): the spell book screens hold the game's player and templates: they go before it
 		m_spellBar.reset();
+		m_cahCameraOffsetValid = false;
 		m_game.reset();
 		return fail(error);
 	}

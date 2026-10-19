@@ -80,3 +80,9 @@ an absent map/archive explicitly, and a failed camera refresh clears the
 incomplete view dictionary before the next frame can read `camera_offset`.
 The standalone camera regression covers that failure as well as the donor
 Floor transform.
+
+The preview camera offset is cached for the loaded game/map. Appearance and
+attribute edits reuse it instead of reparsing gamedata.ini on the main thread.
+Every game replacement or reset invalidates the cache, including setup with a
+new file system. Failed settings loads leave it invalid and keep reporting the
+error rather than caching an invented offset.
