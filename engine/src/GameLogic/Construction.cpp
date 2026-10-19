@@ -295,6 +295,7 @@ Object *Construction::constructOnPlot(Object &plot, const ThingTemplate &what, c
 	{
 		hasGettingBuilt(*obj, what);
 	}
+	plot.logic().notifyScriptEvent("buildingPlaced", obj, &plot); // OpenBFME scripting notification (bfme.events.onBuildingPlaced)
 	if (instant)
 	{
 		obj->friend_onBuildComplete(); // RW 0x858B79
@@ -338,6 +339,7 @@ Object *Construction::constructByDozer(Object &dozer, const ThingTemplate &what,
 	owner.withdrawMoney((std::uint32_t)cost, true);
 	owner.getScoreKeeper().addMoneySpentByKind(logic, &what, cost); // RW 0x88D34A (lane END-2)
 	obj->setBuildCostPaid((float)cost);
+	dozer.logic().notifyScriptEvent("buildingPlaced", obj, &dozer); // OpenBFME scripting notification (bfme.events.onBuildingPlaced)
 	if (structure)
 	{
 		obj->setConstructionPercent(0.0f);
@@ -388,6 +390,7 @@ Object *Construction::buildObjectNow(GameLogic &logic, Object *builder, const Th
 		obj->setStatus(OBJECT_STATUS_UNDER_CONSTRUCTION, false);
 		onStructureConstructionComplete(owner, builder, *obj, false);
 	}
+	logic.notifyScriptEvent("buildingPlaced", obj, builder); // OpenBFME scripting notification (bfme.events.onBuildingPlaced)
 	obj->friend_onBuildComplete();
 	return obj;
 }

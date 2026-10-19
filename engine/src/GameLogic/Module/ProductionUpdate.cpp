@@ -604,6 +604,10 @@ void ProductionUpdate::completeUpgrade(ProductionEntry *entry, Player *player)
 			getObject()->giveUpgrade(upgrade); // RW 0x69388B
 		}
 	}
+	if (upgrade)
+	{
+		getObject()->logic().notifyScriptEvent("upgradeComplete", getObject(), nullptr, player ? player->getPlayerIndex() : -1, upgrade->getUpgradeName());
+	}
 	removeFromProductionQueue(entry); // RW 0x8A22D9
 }
 
@@ -1104,6 +1108,7 @@ void ProductionUpdate::completeUnit(ProductionEntry *entry, Player *player, Unsi
 				newObj->setBuildCostPaid(NumericState::sseFromInt32(entry->cost));
 			}
 			m_exitingObjectID = newObj->getID();
+			logic.notifyScriptEvent("unitTrained", newObj, us, player->getPlayerIndex()); // OpenBFME scripting notification (bfme.events.onUnitTrained)
 			// RW 0x8A27D4 .. 0x8A283B: VeteranUnitsFromVeteranFactory and the XP for the producer need the experience tracker (S-203)
 			if (hasPos)
 			{

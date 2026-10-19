@@ -387,6 +387,7 @@ void VictoryConditions::killPlayer(Player *p)
 		}
 	}
 	p->setDefeated(true); // RW 0x6ABEFD: Player + 0x754
+	m_logic.notifyScriptEvent("playerDefeated", nullptr, nullptr, p->getPlayerIndex()); // OpenBFME scripting notification (bfme.events.onPlayerDefeated)
 	// lane END-1: RW 0x6ABF3C .. 0x6ABF57: ThePlayerList vslot 0x40 (the team relationship refresh, not ported: S-1062), then every coin the player holds is
 	// withdrawn (Money::withdraw(Player + 0x94, no score keeper, playSound 1), RW 0x7B17EF)
 	p->getMoney()->withdraw(p->getMoney()->countMoney(), nullptr, true);

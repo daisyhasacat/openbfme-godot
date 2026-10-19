@@ -115,6 +115,7 @@ openbfme_sim_register_target(openbfme_float_chars)
 include(cmake/Apt.cmake) # OPENBFME_APT_SOURCES / OPENBFME_APT_TESTS (EA Apt player lane)
 include(cmake/Dep2.cmake) # openbfme_detlibm: the deterministic libm of the simulation (lane DEP-2; the Lua math library uses it)
 include(cmake/Lua.cmake) # openbfme_lua: Lua 4.0.1 + EA's fork (lane LUA-1)
+include(cmake/LuaJIT.cmake) # openbfme_luajit: LuaJIT 2.1, the VM of lua-gdextension and the bfme.* scripting API (BfmeLuaRuntime)
 include(cmake/Fx.cmake)  # OPENBFME_FX_SOURCES / OPENBFME_FX_TESTS (FX-1: FXList, particles, emitters)
 include(cmake/Production.cmake) # OPENBFME_PROD_SOURCES / OPENBFME_PROD_TESTS (lane PROD-1)
 include(cmake/Audio.cmake) # OPENBFME_AUDIO_SOURCES / OPENBFME_AUDIO_TESTS (lane AUDIO-1)
@@ -487,12 +488,14 @@ list(APPEND OPENBFME_SIM_SOURCES
 # ---- register the manifest once (after every lane's block above) and write it for the audit ----
 list(REMOVE_DUPLICATES OPENBFME_SIM_SOURCES)
 target_sources(openbfme_core PRIVATE ${OPENBFME_SIM_SOURCES})
+target_sources(openbfme_core PRIVATE src/GameLogic/ScriptEngine/BfmeLuaRuntime.cpp) # the bfme.* scripting companion VM: outside the retail simulation
 target_sources(openbfme_core PRIVATE ${OPENBFME_SPELL_CLIENT_SOURCES}) # lane SPELL-2 (client sources, Spell.cmake)
 # Simulation sources of the GDExtension (they need godot-cpp, so they are registered with the `openbfme` target, not the core): GodotGameWorld.cpp calls the core
 # game start (GameLogic/NewGame, a thin caller since START-1), creates the logic objects and queues the player's commands (HUD-1 moves the commands into core);
 # GodotGameStart.cpp marshals the lobby's NewGameMessage between Godot Dictionaries and the logic's struct (the values the logic consumes), so it is audited too.
 if(OPENBFME_BUILD_GODOT)
-    set(OPENBFME_SIM_SOURCES_GODOT src/GodotDevice/GodotGameWorld.cpp src/GodotDevice/GodotGameStart.cpp src/GodotDevice/GodotGameWorldHeroes.cpp src/GodotDevice/GodotGameWorldStealth.cpp src/GodotDevice/GodotGameWorldGarrison.cpp src/GodotDevice/GodotGameWorldCah.cpp) # CAH-1: the builder's map mode; HERO-1: the hero commands; STEALTH-1: the stealth viewer helpers; GARRISON-1: the garrison commands
+    set(OPENBFME_SIM_SOURCES_GODOT src/GodotDevice/GodotBfmeLua.cpp src/GodotDevice/GodotBfmeLuaAI.cpp) # the bfme.* API's validated mutations, orders, queries and the AI switch
+    list(APPEND OPENBFME_SIM_SOURCES_GODOT src/GodotDevice/GodotGameWorld.cpp src/GodotDevice/GodotGameStart.cpp src/GodotDevice/GodotGameWorldHeroes.cpp src/GodotDevice/GodotGameWorldStealth.cpp src/GodotDevice/GodotGameWorldGarrison.cpp src/GodotDevice/GodotGameWorldCah.cpp) # CAH-1: the builder's map mode; HERO-1: the hero commands; STEALTH-1: the stealth viewer helpers; GARRISON-1: the garrison commands
 endif()
 openbfme_sim_write_manifest(${CMAKE_CURRENT_BINARY_DIR}/sim_manifest.json)
 # `cmake --build <dir> --target sim_audit` (after the build): the flags of every compile command, the manifest and the type-aware AST scan (tools/sim/sim_audit.py)
@@ -506,6 +509,7 @@ endif()
 target_include_directories(openbfme_core PUBLIC src)
 target_link_libraries(openbfme_core PUBLIC openbfme_float_chars)
 target_link_libraries(openbfme_core PUBLIC openbfme_lua)
+target_link_libraries(openbfme_core PUBLIC openbfme_luajit)
 if(WIN32)
     target_link_libraries(openbfme_core PRIVATE dbghelp)
 endif()
@@ -526,6 +530,7 @@ endif()
 # ---- GDExtension -------------------------------------------------------------------------
 if(OPENBFME_BUILD_GODOT)
 set(OPENBFME_GODOT_BIN "${CMAKE_CURRENT_SOURCE_DIR}/../godot/bin" CACHE PATH "OpenBFME Godot extension output directory")
+include(cmake/LuaGDExtension.cmake) # openbfme_luagd: lua-gdextension 0.8.2, compiled into the extension (the bfme.* API's LuaState)
 add_library(openbfme SHARED
     src/GodotDevice/register_types.cpp
     src/GodotDevice/GodotRetailFileSystem.cpp
@@ -559,7 +564,7 @@ add_library(openbfme SHARED
     ${OPENBFME_HUD6_GODOT_SOURCES}
     ${OPENBFME_CAH1_GODOT_SOURCES})
 target_sources(openbfme PRIVATE ${OPENBFME_SIM_SOURCES_GODOT}) # the simulation sources of the extension (listed in the manifest)
-target_link_libraries(openbfme PRIVATE openbfme_core godot-cpp)
+target_link_libraries(openbfme PRIVATE openbfme_core godot-cpp openbfme_luagd)
 if(UNIX AND NOT APPLE)
     # The extension links libstdc++ statically; without this its exported locale facet ids collide with the system runtime that Mesa loads into a
     # windowed Godot, and the first stream integer extraction (std::istream >> int) dispatches into the wrong codecvt and crashes (PROD-1 review r1).
@@ -786,6 +791,7 @@ add_executable(openbfme_tests
     tests/test_mapobj_retail.cpp
     # ---- LUA-1 (Lua scripting) ----
     tests/test_lua_runtime.cpp
+    tests/test_bfme_lua.cpp
     tests/test_lua_events.cpp
     tests/test_lua_engine.cpp
     tests/test_lua_retail.cpp

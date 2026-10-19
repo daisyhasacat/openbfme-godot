@@ -320,6 +320,8 @@ var _display_game := false               # --display-game
 var _fs: RefCounted
 var _audio: Node
 var _world: Node3D           # GameWorld
+var _lua_console: CanvasLayer # the bfme.* scripting console (scripts/lua_console.lua, docs/BFME_LUA.md): Ctrl+Shift+C
+var _console_input_states: Array[Dictionary] = []
 var _shell: Node2D           # AptMenuPlayer
 var _camera: Camera3D
 var _env: WorldEnvironment
@@ -1213,6 +1215,7 @@ func _boot() -> void:
 	add_child(_world)
 	var setup: Dictionary = _world.setup(_fs)
 	print("GAME object world: ok=%s, %d templates, %d playable factions, %.1f s" % [setup.ok, setup.get("templates", 0), setup.get("factions", 0), setup.get("seconds", 0.0)])
+	_boot_lua()
 	if not setup.ok:
 		_fail("object world: " + "\n".join(setup.errors))
 		return
@@ -1352,6 +1355,8 @@ func _boot() -> void:
 
 
 func _process(delta: float) -> void:
+	if _world != null:
+		_world.update_lua() # the bfme.* scripts' due changes, update callbacks and engine events, between frames
 	_frames += 1
 	if _platform_ready:
 		_platform_tick() # lane ONLINEHUB-1
@@ -3358,6 +3363,8 @@ func _end_game_tick() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if _lua_console != null and _lua_console.is_open():
+		return # the console has the keyboard (its own _input toggles / closes it)
 	# lane END-2: Esc toggles the quit menu (the options meta command, RW 0x9DB877 -> ToggleQuitMenu RW 0x921C9D), as the Palantir's options button does
 	if _state == State.PLAYING and event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
 		get_viewport().set_input_as_handled()
@@ -6737,3 +6744,36 @@ func _run_menu_colours() -> void:
 	var ok := green == 0 and _menu_colours_problems.is_empty()
 	print("UI4 COLOURS %s: %d screens, %d green-dominant texts, %d problems" % ["PASS" if ok else "FAIL", screens, green, _menu_colours_problems.size()])
 	get_tree().quit(0 if ok else 1)
+
+
+## the bfme.* scripting API (docs/BFME_LUA.md): the console (Ctrl+Shift+C) and the entry scripts of the Lua paths (GameWorld.get_lua_paths: res://lua,
+## user://lua, --lua-path= / OPENBFME_LUA_PATH; a later path's file of the same name replaces an earlier one). Scripts only add functions and handlers:
+## nothing changes the game unless a script calls a bfme.* action. A script error is reported, never fatal
+func _boot_lua() -> void:
+	_lua_console = preload("res://scripts/lua_console.lua").new()
+	_lua_console.name = "LuaConsole"
+	_lua_console.execute = func(code: String) -> Dictionary: return _world.execute_lua(code)
+	_lua_console.toggled.connect(_lua_console_toggled)
+	add_child(_lua_console)
+	print("GAME Lua paths: ", ", ".join(_world.get_lua_paths()))
+	var loaded: Dictionary = _world.execute_lua("return bfme.console.reload()")
+	if loaded.ok:
+		print("GAME Lua scripts: ", str(loaded.output).strip_edges().replace("\n", "; "))
+	else:
+		printerr("GAME Lua scripts: ", loaded.output)
+
+
+func _lua_console_toggled(open: bool) -> void:
+	# the shell's and the HUD's input wait while the console is open
+	if open:
+		for target in [_shell, _hud]:
+			if is_instance_valid(target):
+				_console_input_states.append({"node": target, "enabled": target.is_processing_input()})
+				target.set_process_input(false)
+		if is_instance_valid(_hud):
+			_hud.notification(Node.NOTIFICATION_WM_WINDOW_FOCUS_OUT)
+	else:
+		for state in _console_input_states:
+			if is_instance_valid(state.node):
+				state.node.set_process_input(state.enabled)
+		_console_input_states.clear()

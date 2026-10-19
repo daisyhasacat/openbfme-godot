@@ -333,6 +333,10 @@ UpdateSleepTime AISpecialPowerUpdate::update()
 	{
 		return UPDATE_SLEEP_FOREVER;
 	}
+	if (logic.skirmishAI().isScriptControlled(player->getPlayerIndex()))
+	{
+		return UPDATE_SLEEP(LOGICFRAMES_PER_SECOND); // OpenBFME scripting: a script decides; checked again each second (the AI may be handed back)
+	}
 	if (!m_decision->button)
 	{
 		init();

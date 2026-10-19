@@ -19,6 +19,7 @@
 
 #include <array>
 
+#include "GameLogic/ScriptEngine/BfmeLuaRuntime.h"
 #include "GameClient/VideoPlayer.h" // lane CAMP-1H: m_videos (complete for the unique_ptr)
 #include "GameClient/EndGame.h"
 #include "GameClient/CommandLogLoad.h" // lane SAVE-2: m_saveLoad (complete for the unique_ptr)
@@ -196,6 +197,27 @@ public:
 	// lane PLAY-1: { model, state, hidden: [sub object names], shown: [...], unread: [script lines] } of the template's BUILD_PLACEMENT_CURSOR look (the ghost);
 	// lane PLAY-3: a castle also gives castle = true, base, castle_error and pieces: [{ template, model, hidden, x, y, z, angle }] (PlacementGhost::castleLookOf)
 	Dictionary get_placement_ghost(const String &template_name) const;
+	// the bfme.* scripting API (GodotBfmeLua.cpp, docs/BFME_LUA.md): a LuaJIT companion VM beside the retail Lua 4 scripts. It reads the game through
+	// snapshots and changes it only through explicit calls a script makes (validated mutations applied at the next safe point between frames)
+	Dictionary execute_lua(const String &code);
+	// the lua-gdextension LuaState the bfme.* runtime runs on (globals["bfme"], do_string ...); code run on it directly has neither the console's
+	// execution budget nor its output capture (execute_lua has both)
+	Ref<RefCounted> get_lua_state();
+	void update_lua(); // the due mutations, update callbacks and engine events, at a safe point (the game calls it once a frame)
+	// the directories scanned for entry scripts, in load order: res://lua, user://lua, then each extra directory (--lua-path=, OPENBFME_LUA_PATH);
+	// a later file of the same name replaces an earlier one
+	PackedStringArray get_lua_paths() const;
+	BfmeLuaRuntime::Snapshot bfme_snapshot();
+	unsigned bfme_construct(const BfmeLuaRuntime::Mutation &mutation);
+	std::string bfme_construction_status(unsigned id);
+	std::string bfme_apply(const BfmeLuaRuntime::Mutation &mutation);
+	// GodotBfmeLuaAI.cpp: unit / building / player orders, the AI switch, the read-only queries and the snapshot's AI fields
+	std::string bfme_order(const BfmeLuaRuntime::Mutation &mutation);
+	std::string bfme_set_ai(int playerIndex, bool enabled);
+	BfmeLuaRuntime::Value bfme_query(const std::string &name, const std::vector<BfmeLuaRuntime::Value> &args);
+	void bfme_snapshot_ai(BfmeLuaRuntime::Snapshot &out);
+	bool bfme_network_game() const;
+	void set_lua_hud_source(uint64_t id) { m_luaHudSource = id; }
 
 	// ---- lane PROD-1: production by player command ----
 	// makes an object of `template_name` for the player with index `player` (PlayerList order) at map position (x, y), ground height from the terrain;
@@ -681,6 +703,14 @@ private:
 	std::unique_ptr<ReplayFile> m_replayFile;
 	std::unique_ptr<ReplayFile> m_pendingReplay; ///< prepare_replay's, until start_replay
 	std::unique_ptr<ReplayPlayback> m_replayPlayback;
+	// the bfme.* scripting runtime (declared in this order: the runtime goes before the LuaState it runs on)
+	uint64_t m_luaHudSource = 0; // ObjectDB ID of the HUD whose selection / cursor the snapshot reads (safe when the HUD is freed)
+	Ref<RefCounted> m_consoleLuaState;
+	std::unique_ptr<BfmeLuaRuntime> m_consoleRuntime;
+	std::shared_ptr<const BfmeLuaRuntime::Collections> m_luaCatalog;
+	std::set<int> m_luaFogRevealed; ///< players a script's setFogOfWar(false) revealed permanently (undone by setFogOfWar(true))
+	void ensureConsoleRuntime();
+	void attachLuaEvents();
 	std::string m_replayPath, m_recordPath;
 	// lane SAVE-2: the save being loaded (prepare_save_load / start_save_load / save_load_step)
 	std::unique_ptr<SaveGameFile> m_pendingSave;

@@ -424,6 +424,18 @@ public:
 	// OpenBFME's Legendary Heroes factor (1 = off). Both are part of the state hash only when set, so a game without them keeps its hashes
 	void setGameRules(const GameRules &rules) { m_gameRules = rules; }
 	const GameRules &gameRules() const { return m_gameRules; }
+	// OpenBFME scripting (the bfme.events engine handlers, GodotBfmeLua.cpp): value-only notifications of engine events. The consumer copies the values
+	// into a queue and runs no script here; nothing in the game reads the hook, so a game plays the same with or without one (never hashed or saved).
+	// `subject` / `other` are the event's objects (null when none), `playerIndex` its player (-1 when none), `detail` a name (an upgrade's)
+	using ScriptEventHook = std::function<void(const char *event, const Object *subject, const Object *other, int playerIndex, const std::string &detail)>;
+	void setScriptEventHook(ScriptEventHook hook) { m_scriptEventHook = std::move(hook); }
+	void notifyScriptEvent(const char *event, const Object *subject, const Object *other = nullptr, int playerIndex = -1, const std::string &detail = std::string()) const
+	{
+		if (m_scriptEventHook)
+		{
+			m_scriptEventHook(event, subject, other, playerIndex, detail);
+		}
+	}
 	void setLegendaryHeroes(int factor) { m_legendaryHeroes = factor; }
 	int legendaryHeroes() const { return m_legendaryHeroes; }
 	// lane UBER-1: the simulation profile (Common/SimulationProfile.h; set before the first frame). Hashed only when Uber, so a Faithful game keeps its hash
@@ -819,6 +831,7 @@ private:
 
 	UnsignedInt m_frame = 0;
 	int m_gameDifficulty = 1;     ///< lane CAMP-1H: RW GameLogic + 0xA4
+	ScriptEventHook m_scriptEventHook; ///< OpenBFME scripting notifications (not simulation state)
 	GameRules m_gameRules = MpGameRules::none(); ///< lane RULES-1
 	int m_legendaryHeroes = LegendaryHeroes::kOff; ///< lane RULES-1 (OpenBFME)
 	SimulationProfile m_simulationProfile = SimulationProfile::Faithful; ///< lane UBER-1 (OpenBFME)

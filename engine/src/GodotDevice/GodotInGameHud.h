@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include <vector>
+#include "Common/INIDataTypes.h"
 #include <godot_cpp/classes/camera3d.hpp>
 #include <godot_cpp/classes/input_event.hpp>
 #include <godot_cpp/classes/input_event_with_modifiers.hpp>
@@ -42,6 +44,10 @@ class InGameHudNode : public Node2D
 public:
 	InGameHudNode();
 	~InGameHudNode() override;
+	// the bfme.* scripting snapshot (GodotBfmeLua.cpp): the terrain point under the pointer through the displayed camera (as placement picks it) and the
+	// client selection, newest first; the caller holds the logic. False / empty for another world or before the HUD is ready
+	bool cursor_map_position(const GameWorld *world, Coord3D &out) const;
+	std::vector<unsigned> selected_ids(const GameWorld *world) const;
 
 	// Builds the HUD for the live game of `world` (its map is loaded) and the player named `local_player` ("Player_1"); `camera` is the game camera the picks use.
 	// options: { show_placeholders: bool, alternate_mouse: bool, camera_start: Vector3 (REQUIRED: the ground point the camera looks at, Godot axes), edge_scroll: bool }. Returns { ok, errors }.

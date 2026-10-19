@@ -1910,6 +1910,7 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 	d->fs = fs;
 	d->owner = this;
 	d->world = world;
+	world->set_lua_hud_source(get_instance_id()); // the bfme.* snapshot's selection and cursor position come from this HUD
 	d->camera = camera;
 	LiveGame &game = *world->hud_game();
 	Player *local = game.players().findPlayerWithName(local_player.utf8().get_data());
@@ -2141,6 +2142,35 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 	result["ok"] = d->ready;
 	result["errors"] = errors;
 	return result;
+}
+
+bool InGameHudNode::cursor_map_position(const GameWorld *world, Coord3D &out) const
+{
+	if (!d->ready || !d->cam || d->world != world || !world->hud_game())
+	{
+		return false;
+	}
+	const Vector2 pixel = d->livePointerSeen ? d->livePointer : d->lastPointer;
+	const Vector2 size = get_viewport()->get_visible_rect().size;
+	if (pixel.x < 0 || pixel.y < 0 || pixel.x >= size.x || pixel.y >= size.y)
+	{
+		return false;
+	}
+	return d->shown.screenToTerrain({ (int)pixel.x, (int)pixel.y }, world->hud_game()->logic(), out);
+}
+
+std::vector<unsigned> InGameHudNode::selected_ids(const GameWorld *world) const
+{
+	std::vector<unsigned> out;
+	if (!d->ready || !d->hud || d->world != world)
+	{
+		return out;
+	}
+	for (std::uint32_t id : d->hud->input().ui().selected())
+	{
+		out.push_back(id);
+	}
+	return out;
 }
 
 Array InGameHudNode::get_selection() const

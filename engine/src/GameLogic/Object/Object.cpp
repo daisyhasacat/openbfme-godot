@@ -880,6 +880,7 @@ void Object::removeFromPlayerCommandPoints()
 
 void Object::friend_onBuildComplete()
 {
+	logic().notifyScriptEvent("constructionComplete", this); // OpenBFME scripting notification (bfme.events.onConstructionComplete)
 	// RW 0x68D252: the create interface's slot 1 of every module (the drawable's modules follow in retail: the client lane's)
 	for (size_t i = 0; i < m_modules.size(); ++i)
 	{
@@ -894,6 +895,7 @@ void Object::friend_onDie(const DieModuleInterface::Event &event)
 {
 	// RW 0x698F06 (the dead flag RW + 0x458 bit 0 first: from now on the object is no target and takes no more damage)
 	m_effectivelyDead = true;
+	logic().notifyScriptEvent("objectDied", this, event.sourceId != INVALID_ID ? logic().findObjectByID(event.sourceId) : nullptr); // OpenBFME scripting notification
 	if (m_client)
 	{
 		m_client->observerEvent(*this, ObserverEvent::Death);

@@ -62,6 +62,10 @@ struct AISkirmishPlayer
 	std::string armySide;                     ///< the side the army was looked up by (for the hash and reports)
 	bool firstOfGroup = false;                ///< the brain's ctor flag (RW 0x6C6DB1 arg 2): only the first AI of a group makes the target chooser
 	bool disabled = false;                    ///< + 0x168
+	// OpenBFME scripting (not retail): a script controls this player instead (bfme.ai, docs/BFME_LUA.md). The base builder, the team builder, the brain and
+	// the AI's unit ability decisions (AISpecialPowerUpdate) do not run; the object / dozer / structure bookkeeping and the defeat shutdown still do, so the AI
+	// resumes where it was when it is handed back. Only a script's bfme.ai.setEnabled(player, false) sets it; hashed only while set
+	bool scriptControlled = false;
 	float field170 = 0.0f;                    ///< + 0x170 (0.0f at creation; meaning not read)
 	std::uint32_t creationFrame = 0;          ///< + 0x174 (TheGameLogic + 0x40 at creation)
 	int field178 = -1;                        ///< + 0x178 (-1 at creation; selects RW 0x6C75B5 / the shutdown variant)
@@ -124,6 +128,11 @@ public:
 
 	const std::vector<std::unique_ptr<AISkirmishGroup>> &groups() const { return m_groups; }
 	const AISkirmishPlayer *findAI(int playerIndex) const;
+	// OpenBFME scripting: hand a player's AI to a script (true) or back to the native AI (false); false when the player has no skirmish AI
+	bool setScriptControlled(int playerIndex, bool scripted);
+	bool isScriptControlled(int playerIndex) const;
+	// the player's native AI makes decisions: it has one, it is not disabled and no script controls it
+	bool aiDecides(int playerIndex) const;
 	const AISkirmishGroup *findGroup(int playerIndex) const;
 	// manager + 0xA3C: the players with a player info record (every playable player of a started game), in index order
 	const std::vector<int> &infoPlayers() const { return m_infoPlayers; }
@@ -142,6 +151,7 @@ public:
 		unsigned long long aiPlayerUpdates = 0;    ///< RW 0x8F0EB4 calls (the AIPlayer sub systems; not ported)
 		unsigned long long brainUpdates = 0;       ///< the + 0x164 brain updates (not ported)
 		unsigned long long disabledSkips = 0;      ///< a disabled AI whose group has no reason to update its brain
+		unsigned long long scriptSkips = 0;        ///< AI updates a script took over (OpenBFME scripting)
 		unsigned long long shutdowns = 0;          ///< RW 0x6C78D9 / 0x6C7928 (not ported)
 		unsigned long long objectAdds = 0;         ///< lane DECOMP-3: RW 0x6A9D9C calls while a game runs
 		unsigned long long objectRemoves = 0;      ///< lane DECOMP-3: RW 0x6A99CB calls while a game runs

@@ -7,6 +7,8 @@
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include "GodotDevice/GodotGameWorld.h"
+#include "GodotDevice/LuaGDExtensionRegister.h"
+#include <godot_cpp/classes/os.hpp>
 
 #include "GameClient/FrameCensus.h"
 #include "GameClient/ReplaySeek.h"
@@ -295,6 +297,10 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("find_object_by_template", "template_name"), &GameWorld::find_object_by_template);
 	ClassDB::bind_method(D_METHOD("get_template_model", "template_name"), &GameWorld::get_template_model);
 	ClassDB::bind_method(D_METHOD("get_placement_ghost", "template_name"), &GameWorld::get_placement_ghost);
+	ClassDB::bind_method(D_METHOD("execute_lua", "code"), &GameWorld::execute_lua);
+	ClassDB::bind_method(D_METHOD("get_lua_state"), &GameWorld::get_lua_state);
+	ClassDB::bind_method(D_METHOD("update_lua"), &GameWorld::update_lua);
+	ClassDB::bind_method(D_METHOD("get_lua_paths"), &GameWorld::get_lua_paths);
 	ClassDB::bind_method(D_METHOD("create_object", "template_name", "player", "x", "y", "angle"), &GameWorld::create_object, DEFVAL(0.0));
 	ClassDB::bind_method(D_METHOD("get_ground_height", "x", "y"), &GameWorld::get_ground_height);
 	ClassDB::bind_method(D_METHOD("queue_unit", "player", "producer", "template_name", "secondary"), &GameWorld::queue_unit, DEFVAL(false));
@@ -598,6 +604,7 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 	m_treeTopple.reset(); // lane SPELL-3
 		reset_streaks(); // the streak texture factory references the previous archive file system
 		m_fs = fs;
+		m_luaCatalog.reset(); // the scripting catalog describes the previous definitions
 		m_world.reset(new RetailObjectWorld(*fs->archive_fs()));
 		m_options.reset(new MapObjectOptions());
 		std::string error;
@@ -1071,6 +1078,12 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	m_netSession.reset(); // MP-1: the session points at the game
 	releaseLocalDrivers(); // lane MP-2: the recording / replay driver too
 	m_audio.reset(); // AUDIO-2: the audio side reads the game
+	m_luaCatalog.reset(); // map command/module overrides also change build classifications
+	if (m_consoleRuntime)
+	{
+		m_consoleRuntime->invalidate(); // the scripting handles of the previous game expire (globals stay)
+	}
+	m_luaFogRevealed.clear();
 	m_game.reset(new LiveGame(*m_world, *m_fs->archive_fs(), *m_assets, *m_options));
 	m_game->setRenderInterpolation(m_renderInterpolation);
 	// lane RENDERWAIT-1: a blocking wait on the logic worker names its script caller (the innermost GDScript frame: the C++ site of a bound query is
@@ -1435,6 +1448,10 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	}
 	report["ok"] = errors.is_empty();
 	m_report = report;
+	if (errors.is_empty())
+	{
+		attachLuaEvents(); // the bfme.events engine handlers of this game (notifications only)
+	}
 	emit(100);
 	return report;
 }
@@ -5888,6 +5905,10 @@ Dictionary GameWorld::clear_game_data(bool show_score_screen)
 		out["error"] = "no game";
 		return out;
 	}
+	if (m_consoleRuntime)
+	{
+		m_consoleRuntime->eventSink()("matchEnded", { { "frame", m_game->logic().getFrame() } }); // bfme.events.onMatchEnded (delivered at the next safe point)
+	}
 	m_scoreScreen = ScoreScreenData();
 	if (show_score_screen)
 	{
@@ -6886,6 +6907,276 @@ Array GameWorld::list_replays(const String &directory) const
 		out.push_back(d);
 	}
 	return out;
+}
+
+// ---- the bfme.* scripting runtime (docs/BFME_LUA.md) --------------------------------------------------------------------------------------------------
+PackedStringArray GameWorld::get_lua_paths() const
+{
+	// res://lua: the scripts shipped with the game; user://lua: the player's own (a file of the same name replaces a shipped one); then each extra
+	// directory of --lua-path= / OPENBFME_LUA_PATH (separated by ';'), in order, each replacing the earlier ones' files of the same name
+	PackedStringArray paths;
+	paths.push_back("res://lua");
+	paths.push_back("user://lua");
+	auto addList = [&paths](const String &list) {
+		for (const String &part : list.split(";", false))
+		{
+			const String dir = part.strip_edges();
+			if (!dir.is_empty() && !paths.has(dir))
+			{
+				paths.push_back(dir);
+			}
+		}
+	};
+	if (OS *os = OS::get_singleton())
+	{
+		addList(os->get_environment("OPENBFME_LUA_PATH"));
+		for (const String &arg : os->get_cmdline_user_args())
+		{
+			if (arg.begins_with("--lua-path="))
+			{
+				addList(arg.substr(11));
+			}
+		}
+	}
+	return paths;
+}
+
+void GameWorld::ensureConsoleRuntime()
+{
+	if (m_consoleRuntime)
+	{
+		return;
+	}
+	BfmeLuaRuntime::Host host;
+	host.snapshot = [this] { return bfme_snapshot(); };
+	host.apply = [this](const BfmeLuaRuntime::Mutation &mutation) {
+		// a script's explicit change of the game: local games only (a network game or a replay would desynchronise or diverge from its record)
+		if (m_replayPlayback || bfme_network_game())
+		{
+			return std::string("gameplay Lua writes are available in local games only");
+		}
+		return bfme_apply(mutation);
+	};
+	host.construct = [this](const auto &mutation) {
+		if (m_replayPlayback || bfme_network_game())
+		{
+			throw std::runtime_error("gameplay Lua writes are available in local games only");
+		}
+		return bfme_construct(mutation);
+	};
+	host.constructionStatus = [this](unsigned id) { return bfme_construction_status(id); };
+	host.query = [this](const std::string &name, const std::vector<BfmeLuaRuntime::Value> &args) { return bfme_query(name, args); };
+	host.output = [](const std::string &text) { UtilityFunctions::print(String::utf8(("LUA " + text).c_str()).strip_edges()); };
+	const PackedStringArray paths = get_lua_paths();
+	host.scripts = [paths] {
+		// the entry scripts: every *.lua of each path, a later path's file replacing an earlier one of the same name; run sorted by file name
+		std::map<std::string, std::pair<std::string, std::string>> byName; // file name -> (path, source)
+		for (const String &directory : paths)
+		{
+			if (!DirAccess::dir_exists_absolute(directory))
+			{
+				continue;
+			}
+			PackedStringArray names = DirAccess::get_files_at(directory);
+			for (int64_t i = 0; i < names.size(); ++i)
+			{
+				if (!names[i].ends_with(".lua"))
+				{
+					continue;
+				}
+				const String path = directory.path_join(names[i]);
+				Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ);
+				if (file.is_null())
+				{
+					throw std::runtime_error("Could not read Lua script: " + std::string(path.utf8().get_data()));
+				}
+				if (file->get_length() > 1024 * 1024)
+				{
+					throw std::runtime_error("Lua entry script exceeds 1 MiB: " + std::string(path.utf8().get_data()));
+				}
+				byName[names[i].utf8().get_data()] = { path.utf8().get_data(), file->get_as_text().utf8().get_data() };
+			}
+		}
+		std::vector<std::pair<std::string, std::string>> scripts;
+		for (auto &kv : byName)
+		{
+			scripts.push_back(std::move(kv.second));
+		}
+		return scripts;
+	};
+	host.module = [paths](const std::string &name) -> std::pair<std::string, std::string> {
+		// require('a.b') reads lib/a/b.lua: letters, digits, '_', '-' and dots only (no path of its own); the last path holding it wins
+		if (name.empty() || name.size() > 128 || name.front() == '.' || name.back() == '.' || name.find("..") != std::string::npos)
+		{
+			throw std::runtime_error("invalid module name: " + name);
+		}
+		std::string relative;
+		for (char c : name)
+		{
+			if (c == '.')
+			{
+				relative += '/';
+			}
+			else if (std::isalnum((unsigned char)c) || c == '_' || c == '-')
+			{
+				relative += c;
+			}
+			else
+			{
+				throw std::runtime_error("invalid module name: " + name);
+			}
+		}
+		for (int64_t i = paths.size() - 1; i >= 0; --i)
+		{
+			const String path = paths[i].path_join("lib").path_join(String::utf8((relative + ".lua").c_str()));
+			if (!FileAccess::file_exists(path))
+			{
+				continue;
+			}
+			Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ);
+			if (file.is_null())
+			{
+				throw std::runtime_error("Could not read Lua module: " + std::string(path.utf8().get_data()));
+			}
+			return { path.utf8().get_data(), file->get_as_text().utf8().get_data() };
+		}
+		return {};
+	};
+	void *luaState = nullptr;
+	m_consoleLuaState = LuaGDExtension::newBfmeState(&luaState); // the runtime runs on the lua-gdextension LuaState
+	m_consoleRuntime = std::make_unique<BfmeLuaRuntime>(std::move(host), luaState);
+}
+
+void GameWorld::attachLuaEvents()
+{
+	if (!m_game)
+	{
+		return;
+	}
+	if (bfme_network_game())
+	{
+		// for now Lua stays out of network games entirely: no hook in the logic, no events (the lobby starts before the map loads, so this is known here)
+		m_game->logic().setScriptEventHook({});
+		return;
+	}
+	const bool threaded = m_game->logicThread();
+	if (threaded)
+	{
+		m_game->setLogicThread(false);
+	}
+	ensureConsoleRuntime();
+	auto sink = m_consoleRuntime->eventSink();
+	// the engine's notifications become value-only events (the handlers run at the next safe point with a fresh snapshot); ids may have expired by then
+	m_game->logic().setScriptEventHook([sink](const char *event, const ::Object *subject, const ::Object *other, int playerIndex, const std::string &detail) {
+		const std::string kind = event;
+		if (kind == "buildingPlaced" && (!subject || !subject->isKindOfName("STRUCTURE")))
+		{
+			return; // walls' and props' immediate builds are not buildings
+		}
+		BfmeLuaValue::Table e;
+		if (subject)
+		{
+			const Coord3D *p = subject->getPosition();
+			const ::Player *owner = subject->getControllingPlayer();
+			e["objectId"] = subject->getID();
+			e["typeId"] = subject->getTemplate() ? subject->getTemplate()->getName() : std::string();
+			e["playerId"] = owner ? owner->getPlayerIndex() : -1;
+			e["frame"] = subject->logic().getFrame();
+			e["position"] = BfmeLuaValue::Table{ { "x", double(p->x) }, { "y", double(p->y) }, { "z", double(p->z) } };
+		}
+		if (playerIndex >= 0)
+		{
+			e["playerId"] = playerIndex;
+		}
+		if (kind == "buildingPlaced")
+		{
+			e["builderId"] = other ? other->getID() : 0u;
+		}
+		else if (kind == "unitTrained")
+		{
+			e["producerId"] = other ? other->getID() : 0u;
+		}
+		else if (kind == "objectDied")
+		{
+			e["killerId"] = other ? other->getID() : 0u;
+		}
+		else if (kind == "upgradeComplete")
+		{
+			e["upgrade"] = detail;
+		}
+		sink(kind, std::move(e));
+	});
+	sink("matchStarted", { { "frame", m_game->logic().getFrame() } });
+	if (threaded)
+	{
+		m_game->setLogicThread(true);
+	}
+}
+
+Ref<RefCounted> GameWorld::get_lua_state()
+{
+	try
+	{
+		ensureConsoleRuntime();
+	}
+	catch (const std::exception &error)
+	{
+		UtilityFunctions::push_error(String::utf8(("bfme Lua: " + std::string(error.what())).c_str()));
+	}
+	return m_consoleLuaState;
+}
+
+Dictionary GameWorld::execute_lua(const String &code)
+{
+	Dictionary result;
+	result["ok"] = false;
+	if (bfme_network_game())
+	{
+		result["output"] = "Lua is not available in multiplayer games";
+		return result;
+	}
+	const bool threaded = m_game && m_game->logicThread();
+	if (threaded)
+	{
+		m_game->setLogicThread(false); // Lua reads and changes the game between frames
+	}
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	try
+	{
+		ensureConsoleRuntime();
+		auto evaluated = m_consoleRuntime->execute(code.utf8().get_data());
+		result["ok"] = evaluated.ok;
+		result["output"] = String::utf8(evaluated.output.c_str());
+		result["state"] = m_game ? "game" : "menu";
+	}
+	catch (const std::exception &error)
+	{
+		result["output"] = String::utf8(error.what());
+	}
+	if (threaded && m_game)
+	{
+		m_game->setLogicThread(true);
+	}
+	return result;
+}
+
+void GameWorld::update_lua()
+{
+	if (!m_consoleRuntime || !m_consoleRuntime->hasPending() || bfme_network_game())
+	{
+		return; // in a network game no update callback, completion callback or event runs (and the logic worker is never held for Lua)
+	}
+	const bool threaded = m_game && m_game->logicThread();
+	if (threaded)
+	{
+		m_game->setLogicThread(false);
+	}
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	m_consoleRuntime->flush();
+	if (threaded && m_game)
+	{
+		m_game->setLogicThread(true);
+	}
 }
 
 } // namespace godot
