@@ -1260,6 +1260,19 @@ void AptCreateAHero::selectHero(int index)
 	}
 	m_selectedHero = index;
 	m_myHero->edit(e->hero, false);
+	// DONOR AptMyHero RVA 0x5B0446 refreshes all ten level entries through
+	// RVA 0x5B0416 (MyPowerLevel text and MyPowerIcon image). This is also
+	// needed on the manager, which does not run refreshPowersPage.
+	for (int i = 0; i < CahPowers::MAX_POWERS; ++i)
+	{
+		const CommandButton *button = TheCommandStore ? TheCommandStore->findCommandButton(e->hero.powers[(size_t)i].commandButton) : nullptr;
+		const std::string suffix = std::to_string(i + 1);
+		setImage("MyPowerIcon_" + suffix, powerIcon(button));
+		std::u16string name = button && !button->m_textLabel.empty() ? fetchOrMissing(m_env.gameText, button->m_textLabel.front()) : u" ";
+		name.erase(std::remove(name.begin(), name.end(), u'&'), name.end());
+		windows().setAptText("APT:MyPowerLevel_" + suffix, loadScreenU16ToUtf8(name));
+	}
+	windows().setAptText("APT:HeroPowersDescription", " ");
 	m_showClassHero = false;
 	invoke("EnableCustomizeButtons", { e->system ? "false" : "true" });
 	bumpDisplay();

@@ -359,6 +359,25 @@ TEST_CASE("cah1 retail shell: the main menu's Create-a-Hero pushes CreateAHero.a
 	CHECK(scr->selectedHero() == scr->rowEntries()[1]);
 	REQUIRE(scr->displayedHero());
 	CHECK(scr->displayedHero()->name == c.heroes.at(scr->rowEntries()[1])->hero.name);
+	// Every list selection refreshes all ten power icons, not only the hero
+	// model and name. Seed stale icons to pin clearing of empty slots too.
+	for (int row = 0; row < 8; ++row)
+	{
+		for (int i = 1; i <= 10; ++i)
+		{
+			c.fx->wm->setAptImage("MyPowerIcon_" + std::to_string(i), "stale");
+		}
+		GadgetListBoxSetSelected(scr->heroList(), row);
+		const auto &hero = c.heroes.at(scr->rowEntries()[(size_t)row])->hero;
+		for (int i = 0; i < 10; ++i)
+		{
+			const CommandButton *button = TheCommandStore->findCommandButton(hero.powers[(size_t)i].commandButton);
+			const std::string expected = !button ? std::string() : !button->m_createAHeroUIIconImageName.empty()
+				? button->m_createAHeroUIIconImageName : button->m_buttonImageName.empty() ? std::string() : button->m_buttonImageName.front();
+			const std::string *image = c.fx->wm->aptImage("MyPowerIcon_" + std::to_string(i + 1));
+			CHECK((image ? *image : std::string()) == expected);
+		}
+	}
 	GadgetListBoxSetSelected(scr->heroList(), 0);
 	CHECK(scr->selectedHero() == scr->rowEntries()[0]);
 	for (const WindowManagerNote &n : c.fx->wm->notes())

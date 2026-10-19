@@ -66,3 +66,11 @@ a windowed Powers-screen capture confirms the Shield Maiden image replaces
 the tree. The separate live-preview camera placement remains under S-1405;
 the experimental portrait-row transform did not establish correct framing and
 is not included in this fix.
+
+Saved-hero selection now refreshes all ten `MyPowerIcon_<level>` images and
+`APT:MyPowerLevel_<level>` labels on the Manager page and clears the previous
+hover description. Previously only the Powers editing page refreshed these
+keys, leaving stale or missing powers beside the saved-hero list. This follows
+donor AptMyHero RVA 0x5B0446 / 0x5B0416 (ten level entries). The real gadget
+selection regression switches through all eight system heroes and verifies
+every icon, including removal of stale icons in empty slots.
