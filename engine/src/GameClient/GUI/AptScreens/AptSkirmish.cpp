@@ -1562,28 +1562,31 @@ void AptSkirmish::populateMapList()
 	const int size = std::min(hard ? hard->getImageWidth() : 10, GadgetListBoxGetColumnWidth(m_mapList, 0));
 	const Color white = 0xFFFFFFFFu;
 	int selection = -1;
-	for (const Row &r : rows)
 	{
-		const MapCacheEntry &m = maps[(std::size_t)r.index];
-		const char *image = RealTimeStatsPreferences::conquestImage(r.state);
-		int row = GadgetListBoxAddEntryImage(m_mapList, image, -1, 0, size, size, true, white);
-		row = GadgetListBoxAddEntryText(m_mapList, m_setup->mapDisplayName(m, false), white, row, numColumns - 3);
-		char16_t count[16];
-		const std::string digits = std::to_string(m.numPlayers);
-		std::size_t n = 0;
-		for (char c : digits)
+		GadgetListBoxLayoutCache layoutCache(m_mapList);
+		for (const Row &r : rows)
 		{
-			count[n++] = (char16_t)c;
+			const MapCacheEntry &m = maps[(std::size_t)r.index];
+			const char *image = RealTimeStatsPreferences::conquestImage(r.state);
+			int row = GadgetListBoxAddEntryImage(m_mapList, image, -1, 0, size, size, true, white);
+			row = GadgetListBoxAddEntryText(m_mapList, m_setup->mapDisplayName(m, false), white, row, numColumns - 3);
+			char16_t count[16];
+			const std::string digits = std::to_string(m.numPlayers);
+			std::size_t n = 0;
+			for (char c : digits)
+			{
+				count[n++] = (char16_t)c;
+			}
+			GadgetListBoxAddEntryText(m_mapList, std::u16string(count, n), white, row, numColumns - 1);
+			m_mapKeys.push_back(m.name);
+			m_mapStates.push_back(r.state);
+			m_mapImages.push_back(image);
+			if (m.name == m_setup->info().mapName)
+			{
+				selection = row;
+			}
 		}
-		GadgetListBoxAddEntryText(m_mapList, std::u16string(count, n), white, row, numColumns - 1);
-		m_mapKeys.push_back(m.name);
-		m_mapStates.push_back(r.state);
-		m_mapImages.push_back(image);
-		if (m.name == m_setup->info().mapName)
-		{
-			selection = row;
-		}
-	}
+	} // end the measurement cache before selecting the current map
 	// INFERENCE: RW 0x8460B5 does not select; the lobby shows the game's map selected (the map preview names it)
 	if (selection >= 0)
 	{

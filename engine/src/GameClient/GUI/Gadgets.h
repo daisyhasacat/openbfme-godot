@@ -62,6 +62,20 @@ UnicodeString GadgetListBoxGetText(GameWindow *listbox, int row, int column = 0)
 bool GadgetListBoxSetCellBadge(GameWindow *listbox, int row, int column, const std::string &image);
 std::string GadgetListBoxGetCellBadge(GameWindow *listbox, int row, int column);
 UnicodeString GadgetListBoxGetTextAndColor(GameWindow *listbox, Color *color, int row, int column = 0);
+// Reuse measured row heights during synchronous population. Every insertion
+// still updates cumulative heights and scrolling; changed cells invalidate their
+// row, and font/column/size changes always remeasure all rows.
+class GadgetListBoxLayoutCache
+{
+public:
+	explicit GadgetListBoxLayoutCache(GameWindow *window);
+	~GadgetListBoxLayoutCache();
+	GadgetListBoxLayoutCache(const GadgetListBoxLayoutCache &) = delete;
+	GadgetListBoxLayoutCache &operator=(const GadgetListBoxLayoutCache &) = delete;
+private:
+	GameWindow *m_window = nullptr;
+};
+
 int GadgetListBoxAddEntryText(GameWindow *listbox, UnicodeString text, Color color, int row, int column = -1, bool overwrite = true);
 int GadgetListBoxAddEntryImage(GameWindow *listbox, const std::string &image, int row, int column = -1, bool overwrite = true, Color color = 0xFFFFFFFFu);
 int GadgetListBoxAddEntryImage(GameWindow *listbox, const std::string &image, int row, int column, int height, int width, bool overwrite = true, Color color = 0xFFFFFFFFu);

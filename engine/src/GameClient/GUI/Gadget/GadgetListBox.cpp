@@ -157,7 +157,7 @@ void adjustDisplay(GameWindow *window, int adjustment, bool updateSlider)
 	}
 }
 
-void computeTotalHeight(GameWindow *window)
+void computeTotalHeight(GameWindow *window, bool reuseRows = false)
 {
 	ListboxData *list = listOf(window);
 	WinInstanceData *instData = window->winGetInstanceData();
@@ -168,6 +168,12 @@ void computeTotalHeight(GameWindow *window)
 		ListEntryRow &row = list->listData[(std::size_t)i];
 		if (!row.hasCells)
 		{
+			continue;
+		}
+		if (reuseRows && list->cacheRowHeights && row.heightCached)
+		{
+			height += row.height + 1;
+			row.listHeight = height;
 			continue;
 		}
 		int tempHeight = 0;
@@ -204,6 +210,7 @@ void computeTotalHeight(GameWindow *window)
 			}
 		}
 		row.height = tempHeight;
+		row.heightCached = true;
 		height += (row.height + 1);
 		row.listHeight = height;
 	}
@@ -250,7 +257,8 @@ int addImageEntry(const std::string &image, Color color, int row, int column, Ga
 	cell.color = color;
 	cell.height = height;
 	cell.width = width;
-	computeTotalHeight(window);
+	listRow.heightCached = false;
+	computeTotalHeight(window, true);
 	return row;
 }
 
@@ -320,6 +328,7 @@ int addEntry(const UnicodeString &string, Color color, int row, int column, Game
 	cell.color = color;
 	cell.text = string;
 	cell.image.clear();
+	listRow->heightCached = false;
 	if (overwrite)
 	{
 		const int oldRowHeight = listRow->height;
@@ -348,7 +357,7 @@ int addEntry(const UnicodeString &string, Color color, int row, int column, Game
 	}
 	else
 	{
-		computeTotalHeight(window);
+		computeTotalHeight(window, true);
 	}
 	return row;
 }
@@ -383,6 +392,22 @@ int rowAtMouse(GameWindow *window, int mousey)
 }
 
 } // namespace
+
+GadgetListBoxLayoutCache::GadgetListBoxLayoutCache(GameWindow *window)
+{
+	ListboxData *list = window ? listOf(window) : nullptr;
+	if (list && !list->cacheRowHeights)
+	{
+		m_window = window;
+		for (ListEntryRow &row : list->listData) row.heightCached = false;
+		list->cacheRowHeights = true;
+	}
+}
+
+GadgetListBoxLayoutCache::~GadgetListBoxLayoutCache()
+{
+	if (m_window) listOf(m_window)->cacheRowHeights = false;
+}
 
 int GadgetListBoxGetEntryBasedOnXY(GameWindow *listbox, int x, int y, int &row, int &column)
 {
@@ -1551,6 +1576,7 @@ void GadgetListBoxSetColumnWidths(GameWindow *listbox, int count, const int *wid
 	{
 		return;
 	}
+	for (ListEntryRow &row : data->listData) row.heightCached = false;
 	data->columns = (short)count;
 	data->columnWidthPercentage.assign((std::size_t)count, 0);
 	if (widths)

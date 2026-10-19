@@ -219,6 +219,7 @@ struct ListEntryRow
 {
 	int listHeight = 0;   // cumulative height up to and including this row (+1 per row)
 	int height = 0;
+	bool heightCached = false; // invalidated when a cell changes
 	bool hasCells = false;
 	std::vector<ListEntryCell> cell;
 };
@@ -241,6 +242,7 @@ struct ListboxData
 	GameWindow *upButton = nullptr;
 	GameWindow *downButton = nullptr;
 	GameWindow *slider = nullptr;
+	bool cacheRowHeights = false; // only within a synchronous population scope
 	int totalHeight = 0;
 	short endPos = 0;
 	short insertPos = 0;

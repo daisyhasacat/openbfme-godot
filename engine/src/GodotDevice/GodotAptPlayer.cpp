@@ -1632,6 +1632,16 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 		errors.push_back(toGodot("the lobby's setup source: " + error));
 	}
 	addInstalledMaps(sm->setup,*fs.ptr());
+	// Resolve the mounted maps' labels while the shell is still booting. This
+	// fills ShellGameText's existing per-map string cache (including missing
+	// map.str files), so opening Skirmish does no first-use map-string I/O.
+	{
+		SkirmishGameSetup labels(sm->setup, sm->text.get());
+		for (const MapCacheEntry &map : sm->setup.maps())
+		{
+			labels.mapBaseDisplayName(map);
+		}
+	}
 	if (!loadGadgetSkinData(*fs->archive_fs(), sm->skins, &error))
 	{
 		errors.push_back(toGodot("gadget skins: " + error));

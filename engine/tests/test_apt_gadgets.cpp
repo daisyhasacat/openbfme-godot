@@ -1564,3 +1564,86 @@ TEST_CASE("TextEntry: RotWK's character validator (RW 0x75E4DF) refuses the Thai
 	CHECK(GadgetTextEntryValidateCharacter(u'Q', 0x40));
 	CHECK(GadgetTextEntryValidateCharacter(u'Q', 0x100)); // only the low byte is read
 }
+
+TEST_CASE("ListBox: cached map row measurements preserve layout and selection with linear font work")
+{
+	struct Metrics : DefaultFontMetrics
+	{
+		int calls = 0;
+		int wrappedHeight(const GameFont &, const UnicodeString &text, int) override
+		{
+			++calls;
+			return 18 + (int)(text.size() / 5) * 11;
+		}
+	} metrics;
+	GadgetFx fx;
+	fx.gwm.setFontMetrics(&metrics);
+	const std::string skin = listboxWnd(240, 100, "LENGTH: 999,\n AUTOSCROLL: 0,\n SCROLLIFATEND: 0,\n AUTOPURGE: 0,\n SCROLLBAR: 1,\n MULTISELECT: 0,\n COLUMNS: 3,\n COLUMNSWIDTH: 10,\n COLUMNSWIDTH: 80,\n COLUMNSWIDTH: 10,\n FORCESELECT: 0");
+	GameWindow *reference = fx.load(skin, 0, 0);
+	GameWindow *batched = fx.load(skin, 0, 0);
+	SUBCASE("fixed list") {}
+	SUBCASE("scroll at end")
+	{
+		static_cast<ListboxData *>(reference->winGetUserData())->scrollIfAtEnd = true;
+		static_cast<ListboxData *>(batched->winGetUserData())->scrollIfAtEnd = true;
+	}
+	SUBCASE("auto scroll and purge skin")
+	{
+		for (GameWindow *window : { reference, batched })
+		{
+			auto *list = static_cast<ListboxData *>(window->winGetUserData());
+			list->autoScroll = true;
+			list->autoPurge = true;
+		}
+	}
+	auto fill = [](GameWindow *window) {
+		for (int i = 0; i < 64; ++i)
+		{
+			const int row = GadgetListBoxAddEntryImage(window, "BlackSquare", -1, 0, 8, 8, true, 0xFFFFFFFFu);
+			const UnicodeString name((std::size_t)(i % 17 + 1), u'x');
+			GadgetListBoxAddEntryText(window, name, 0xFFFFFFFFu, row, 1);
+			GadgetListBoxAddEntryText(window, u"4", 0xFFFFFFFFu, row, 2);
+		}
+	};
+	fill(reference);
+	metrics.calls = 0;
+	{
+		GadgetListBoxLayoutCache cache(batched);
+		fill(batched);
+		CHECK(metrics.calls == 254);
+	}
+	CHECK(metrics.calls == 254);
+	GadgetListBoxSetSelected(reference, 51);
+	GadgetListBoxSetSelected(batched, 51);
+	const auto &a = *static_cast<ListboxData *>(reference->winGetUserData());
+	const auto &b = *static_cast<ListboxData *>(batched->winGetUserData());
+	CHECK(b.cacheRowHeights == false);
+	CHECK(b.endPos == a.endPos);
+	CHECK(b.totalHeight == a.totalHeight);
+	CHECK(b.displayPos == a.displayPos);
+	CHECK(b.selectPos == a.selectPos);
+	for (int i = 0; i < 64; ++i)
+	{
+		CHECK(b.listData[i].height == a.listData[i].height);
+		CHECK(b.listData[i].listHeight == a.listData[i].listHeight);
+		for (int c = 0; c < 3; ++c)
+		{
+			CHECK(b.listData[i].cell[c].text == a.listData[i].cell[c].text);
+			CHECK(b.listData[i].cell[c].image == a.listData[i].cell[c].image);
+		}
+	}
+	// The cache leaves no persistent metrics when fonts or skins change later.
+	metrics.calls = 0;
+	GadgetListBoxSetFont(batched, batched->winGetFont());
+	CHECK(metrics.calls == 128);
+	{
+		GadgetListBoxLayoutCache cache(batched);
+		metrics.calls = 0;
+		GadgetListBoxAddEntryImage(batched, "BlackSquare", 0, 0, 8, 8, true, 0xFFFFFFFFu);
+		CHECK(metrics.calls == 128);
+		const int widths[3] = { 10, 70, 20 };
+		GadgetListBoxSetColumnWidths(batched, 3, widths);
+		GadgetListBoxAddEntryImage(batched, "BlackSquare", 0, 0, 8, 8, true, 0xFFFFFFFFu);
+		CHECK(metrics.calls == 256);
+	}
+}
