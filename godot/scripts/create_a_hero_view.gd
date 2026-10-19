@@ -117,6 +117,7 @@ func _apply(view: Dictionary) -> void:
 	_info = _world.cah_view_info(int(view.get("class", 0)), int(view.get("subclass", 0)))
 	if not _info.get("ok", false):
 		errors.append(str(_info.get("error", "Create-a-Hero view information is unavailable")))
+		_info = {} # A failed refresh must not feed incomplete data to _place_camera.
 		return
 	var loc := int(_info.get("map_location", 0))
 	if _locations.is_empty():

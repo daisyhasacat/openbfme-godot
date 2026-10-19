@@ -74,3 +74,9 @@ keys, leaving stale or missing powers beside the saved-hero list. This follows
 donor AptMyHero RVA 0x5B0446 / 0x5B0416 (ten level entries). The real gadget
 selection regression switches through all eight system heroes and verifies
 every icon, including removal of stale icons in empty slots.
+
+PR self-review also checked the missing-settings path: `cah_view_info` reports
+an absent map/archive explicitly, and a failed camera refresh clears the
+incomplete view dictionary before the next frame can read `camera_offset`.
+The standalone camera regression covers that failure as well as the donor
+Floor transform.

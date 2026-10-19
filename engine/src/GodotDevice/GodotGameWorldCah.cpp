@@ -159,7 +159,12 @@ Dictionary GameWorld::cah_view_info(int64_t cls, int64_t sub) const
 	}
 	CameraSettings settings;
 	std::string cameraError;
-	if (!m_game || m_fs.is_null() || !CameraSettings::load(*m_fs->archive_fs(), settings, &cameraError))
+	if (!m_game || m_fs.is_null() || !m_fs->archive_fs())
+	{
+		out["error"] = String("cah_view_info: no map or archive file system is loaded");
+		return out;
+	}
+	if (!CameraSettings::load(*m_fs->archive_fs(), settings, &cameraError))
 	{
 		out["error"] = String(cameraError.c_str());
 		return out;
