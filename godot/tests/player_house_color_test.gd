@@ -37,6 +37,11 @@ func _run() -> void:
 	renderer.set_house_colors_enabled(true)
 	var model: int=renderer.add_model_colored(world.get_template_model("GondorFighter"),1,PackedInt64Array([0xff00ff00]))
 	assert(model>=0) # tolerance: model handles are nonnegative.
+	var packed_note := false
+	for note in renderer.get_model_report(model).notes:
+		if str(note).replace("\\", "/").contains("[S-1482] house texture art/compiledtextures/hc/hc_gumanatarms04.jpg: packed PNG colour multiplication and alpha replacement are inferred; the loader merge was not read"):
+			packed_note = true
+	assert(packed_note, str(renderer.get_model_report(model).notes))
 	assert(renderer.add_instance(model,Transform3D.IDENTITY)>=0) # tolerance: instance handles are nonnegative.
 	for i in 3: await process_frame
 	var textures := 0

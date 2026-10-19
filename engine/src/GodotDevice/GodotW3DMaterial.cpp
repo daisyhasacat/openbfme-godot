@@ -451,6 +451,8 @@ Ref<Texture2D> W3DMaterialFactory::Recolored_House_Texture(const std::string &na
 	auto it = Textures.find(cacheKey);
 	if (it != Textures.end())
 	{
+		const auto note = PackedHouseTextureNotes.find(cacheKey);
+		if (note != PackedHouseTextureNotes.end()) notes.push_back(note->second);
 		return it->second;
 	}
 	std::vector<std::uint8_t> bytes;
@@ -471,6 +473,11 @@ Ref<Texture2D> W3DMaterialFactory::Recolored_House_Texture(const std::string &na
 	 AptArchiveFileSource source(Fs);bool paired=false;
 	 image=loadPackedTexture(source,res.Path.substr(0,res.Path.size()-4),&paired);
 	 err=image.is_valid() ? OK : ERR_FILE_CORRUPT;
+	 if (paired) {
+	  const std::string note = "[S-1482] house texture " + res.Path + ": packed PNG colour multiplication and alpha replacement are inferred; the loader merge was not read";
+	  notes.push_back(note);
+	  PackedHouseTextureNotes[cacheKey] = note;
+	 }
 	} else err = decodeTexture(image, buffer, res.IsDDS);
 	if (err != OK || image.is_null() || image->is_empty())
 	{
