@@ -424,8 +424,14 @@ bool AptSkirmish::onRuleGadget(GameWindow *gadget)
 	}
 	if (gadget == m_fortressCombo)
 	{
+		// Selecting the displayed value sends a synchronous selection message too.
+		// As with the other rule rows, do not refresh again while input is gated.
+		if (!m_ruleInput || m_refreshing)
+		{
+			return true;
+		}
 		const int value = comboValue(gadget);
-		if (m_ruleInput && !m_refreshing && amIHost() && (value == 0 || value == 1)) {
+		if (amIHost() && (value == 0 || value == 1)) {
 			m_setup->setFortressConstruction(value != 0); ruleChanged(-3, false);
 		}
 		updateLegendaryGadget(); return true;

@@ -1796,7 +1796,17 @@ TEST_CASE("rules1 retail lobby: the Rules tab shows RotWK's rows (Initial Resour
 	CHECK(fx.screen->setup()->info().peaceTimeMinutes == 10);
 	CHECK(fx.screen->setup()->info().fortressConstruction);
 	CHECK(fx.screen->ruleComboWindow(5)->winIsHidden());
-	CHECK(GadgetComboBoxGetLength(cash) == 11);
+	// Opening/refreshing Rules sets combo selections synchronously. Those
+	// notifications must not recursively refresh the fortress row or edit rules.
+	for (int refresh = 0; refresh < 3; ++refresh)
+	{
+		fx.wm->invokeCallback("MpGameSetup::OnTabSelect", "RulesTab");
+		CHECK(selectedValue(fortress) == 1);
+		CHECK(selectedValue(peace) == 10);
+		CHECK(fx.screen->setup()->info().fortressConstruction);
+		CHECK(fx.screen->setup()->info().peaceTimeMinutes == 10);
+	}
+	CHECK(GadgetComboBoxGetLength(cash) == 12); // includes the fork's infinite-resources choice
 	CHECK(GadgetComboBoxGetLength(cp) == 7);
 	CHECK(GadgetComboBoxGetLength(legendary) == 4);
 	CHECK(selectedValue(cash) == 1000);
