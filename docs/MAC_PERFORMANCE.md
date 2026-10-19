@@ -89,3 +89,21 @@ checks lobby idle/re-entry, native search, no hidden creation/preparation,
 explicit browser opening and instance reuse. The retail
 `skirmish_map_browser_test.gd` also passes, including preview construction and
 map selection/install behavior.
+
+## Always present Skirmish loading progress
+
+The synchronous progress callback now calls `RenderingServer.force_draw` with
+buffer swapping enabled. Previously it drew into the renderer without
+presenting those updates to the window. Skirmish presents 0% before loading,
+then its real progress milestones, and waits for a completed loading frame
+before replacing the screen with gameplay. There is no minimum-duration timer.
+Headless runs yield a process frame instead of waiting for a visible display.
+
+The game world's original visibility is saved while loading and restored on
+both success and failure. Its partially built terrain stays hidden behind the
+loading artwork, including the final 100% frame.
+
+Validation: four existing loading-screen tests (83 assertions), a headless
+scripted Skirmish, and a windowed scripted Skirmish. A render-frame observer
+confirmed progress from 0% through 100% while LoadScreen.apt was still on the
+stack, before gameplay; the completed bar was also captured and inspected.
