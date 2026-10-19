@@ -128,6 +128,22 @@ TEST_CASE("hud2 palantir: nothing selected; the good side's PlayerMagic button s
 	CHECK(h.playerMagicDraws(205));
 	CHECK_FALSE(h.playerMagicDraws(162));
 	// the command interface follows the control bar's context from the first update on (PalantirCommandUI 0x93085F), the portrait clip has no image
+	// The empty six-button panel retains disabled frame content, not live commands.
+	int emptyFrames = 0;
+	for (const auto &frame : p->buttonFrames()) {
+	 std::string path=frame.path;
+	 if (path.rfind("_level",0)==0) path=path.substr(path.find('.')+1);
+	 if (path.rfind("CommandButtons.",0)!=0) continue;
+	 auto *content=h.clip(path+".content");
+	 REQUIRE_MESSAGE(content,path);
+	 const int disabled=content->labelFrame("_disabled");
+	 int next=content->labelFrame("_cantAfford");
+	 CHECK(content->frame>=disabled); // tolerance: any frame in the disabled timeline animation is valid.
+	 CHECK(content->frame<next); // tolerance: the disabled animation must not enter the next state.
+	 CHECK(content->visible);
+	 ++emptyFrames;
+	}
+	CHECK(emptyFrames==6);
 	CHECK(p->commandInterfaceShown());
 	CHECK(h.label("CommandUI") == "_show");
 	CHECK(p->portraitShown().empty());
