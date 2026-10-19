@@ -955,11 +955,18 @@ class SyncAudit(audit_package.Audit):
                 self.files += 1
                 self.blob(f"{name}[zlib]", out, depth + 1)
                 return
-            if not text:
+            if not text and not is_detached_signature(name, data, depth):
                 self.problems.append(problem)
                 return
         self._rules(name, data, depth)
         super().blob(name, data, depth)
+
+
+def is_detached_signature(name: str, data: bytes, depth: int) -> bool:
+    """PUBLICCI-1: a release's detached Ed25519 signature (manifest*.json.sig, sign_manifest.py: 64 raw bytes, top level) is random; about
+    1 in 992 starts with a valid zlib header (the hosted pull request checks hit one in test_autorelease). Such a file that does NOT decode
+    as zlib is a signature, not a finding; one that decodes is still decoded and checked like any other stream"""
+    return depth == 0 and len(data) == 64 and re.fullmatch(r"(?:.*/)?[^/]+\.json\.sig", name) is not None
 
 
 def _is_text(data: bytes) -> bool:

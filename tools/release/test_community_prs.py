@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -539,6 +540,7 @@ def test_the_real_workflow_passes_the_policy():
     ("  pull_request:\n", "  pull_request_target:\n", "the trigger pull_request_target"),
     ("  workflow_dispatch:\n", "  workflow_run:\n    workflows: [x]\n", "the trigger workflow_run"),
     ("  workflow_dispatch:\n", "  issue_comment:\n", "the trigger issue_comment"),
+    ("  merge_group:\n", "  pull_request_target:\n", "the trigger pull_request_target"),
     ("  workflow_dispatch:\n", "  schedule:\n    - cron: '0 0 * * *'\n", "the trigger schedule is not one of"),
     ("on:\n  pull_request:\n", "on: [push, pull_request_target]\nx:\n  pull_request:\n", "the trigger pull_request_target"),
     ("on:\n  pull_request:\n", "on: [push]\nx:\n  pull_request:\n", "`on:` is not written as a block"),
@@ -546,21 +548,84 @@ def test_the_real_workflow_passes_the_policy():
     ("permissions:\n  contents: read\n", "permissions: read-all\n", "the top-level permissions are not exactly `contents: read`"),
     ("permissions:\n  contents: read\n", "", "the top-level permissions are not exactly `contents: read`"),
     ("permissions:\n  contents: read\n", "permissions:\n  contents: read\n  pull-requests: read\n", "the top-level permissions are not exactly"),
-    ("    runs-on: ubuntu-24.04\n    timeout-minutes: 15\n", "    runs-on: ubuntu-24.04\n    permissions:\n      issues: write\n    timeout-minutes: 15\n", "a write permission"),
-    ("    timeout-minutes: 15\n", "    timeout-minutes: 15\n    permissions:\n      id-token: none\n", "an id-token permission"),
+    ("    runs-on: ubuntu-24.04\n    timeout-minutes: 5\n", "    runs-on: ubuntu-24.04\n    permissions:\n      issues: write\n    timeout-minutes: 5\n", "a write permission"),
+    ("    timeout-minutes: 5\n", "    timeout-minutes: 5\n    permissions:\n      id-token: none\n", "an id-token permission"),
     ("python3 tools/release/pr_pytest.py", "python3 tools/release/pr_pytest.py ${{ secrets.TOKEN }}", "a secrets reference"),
     ("python3 tools/release/pr_pytest.py", "echo ${{ secrets['X'] }}", "a secrets reference"),
     ("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1", "actions/checkout@v7", "an action not pinned by its full commit sha"),
     ("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1", "actions/checkout@3d3c42e5", "an action not pinned"),
     ("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1", "docker://alpine:3", "an action not pinned"),
-    ("runs-on: ubuntu-24.04\n    timeout-minutes: 15", "runs-on: self-hosted\n    timeout-minutes: 15", "a self-hosted runner"),
-    ("runs-on: ubuntu-24.04\n    timeout-minutes: 15", "runs-on: [ubuntu-24.04, gpu]\n    timeout-minutes: 15", "runs-on is not one GitHub-hosted runner"),
-    ("runs-on: ubuntu-24.04\n    timeout-minutes: 15", "runs-on: the-build-box\n    timeout-minutes: 15", "runs-on is not one GitHub-hosted runner"),
+    ("runs-on: ubuntu-24.04\n    timeout-minutes: 5", "runs-on: self-hosted\n    timeout-minutes: 5", "a self-hosted runner"),
+    ("runs-on: ubuntu-24.04\n    timeout-minutes: 5", "runs-on: [ubuntu-24.04, gpu]\n    timeout-minutes: 5", "runs-on is not one GitHub-hosted runner"),
+    ("runs-on: ubuntu-24.04\n    timeout-minutes: 5", "runs-on: the-build-box\n    timeout-minutes: 5", "runs-on is not one GitHub-hosted runner"),
 ])
 def test_each_workflow_rule_catches_its_mutation(old, new, why):
     assert old in PR_YML, old
     probs = public_workflows.workflow_problems(".github/workflows/pr.yml", PR_YML.replace(old, new, 1))
     assert any(why in p for p in probs), probs
+
+
+# lane PUBLICCI-1: every run of the public pr.yml failed as a "workflow file issue" (a plain `run:` value holding ": ") while the text
+# rules above passed it; the policy now loads each workflow as YAML
+OLD_LINE_88 = 'run: engine/build/openbfme_tests --test-case-exclude="audio decode: MP3 *,audio decode: corrupted MP3 fixtures*"'
+
+
+def test_the_real_workflow_parses_and_the_old_unparsable_line_is_refused():
+    assert public_workflows.yaml_problems(".github/workflows/pr.yml", PR_YML) == []
+    old = '        run: |\n          engine/build/openbfme_tests --test-case-exclude="audio decode: MP3 *,audio decode: corrupted MP3 fixtures*"\n'
+    assert old in PR_YML
+    probs = public_workflows.workflow_problems(".github/workflows/pr.yml", PR_YML.replace(old, "        " + OLD_LINE_88 + "\n", 1))
+    assert len(probs) == 1 and "not valid YAML (mapping values are not allowed here)" in probs[0], probs
+    assert probs[0].startswith(".github/workflows/pr.yml:"), probs
+    for bad, why in (("- a\n- b\n", "the YAML is not a mapping"), ("", "the YAML is not a mapping"),
+                     ("on:\n  push:\n\tx: 1\n", "not valid YAML"), ("a: [1\n", "not valid YAML")):
+        probs = public_workflows.yaml_problems("w.yml", bad)
+        assert len(probs) == 1 and why in probs[0], (bad, probs)
+
+
+def test_without_pyyaml_the_yaml_check_fails_instead_of_skipping(monkeypatch):
+    monkeypatch.setitem(sys.modules, "yaml", None)   # makes `import yaml` raise ImportError
+    probs = public_workflows.workflow_problems(".github/workflows/pr.yml", PR_YML)
+    assert probs == [".github/workflows/pr.yml: PyYAML is not installed, so the file cannot be checked to parse as YAML (pip install PyYAML)"]
+
+
+def test_the_ci_check_needs_every_other_job():
+    """CI is the one check name the repository's rules require: it must need (and its script must expect) exactly the other jobs, so a
+    job added without it, or left out of it, fails here and not silently on GitHub"""
+    import yaml
+    jobs = yaml.safe_load(PR_YML)["jobs"]
+    ci = jobs["ci"]
+    assert ci["name"] == "CI" and ci["if"] == "always()"
+    others = set(jobs) - {"ci"}
+    assert set(ci["needs"]) == others and len(ci["needs"]) == len(others)
+    script = ci["steps"][0]["run"]
+    want = re.search(r"want = (\{[^}]*\})", script).group(1)
+    assert eval(want) == others, want
+    assert 'v["result"] != "success"' in script   # skipped and cancelled fail too
+    names = [j.get("name") for j in jobs.values()]
+    assert len(set(names)) == len(names) and names.count("CI") == 1
+
+
+def test_the_ci_script_fails_on_every_non_success(tmp_path):
+    import yaml
+    script = yaml.safe_load(PR_YML)["jobs"]["ci"]["steps"][0]["run"]
+    body = script.split("<<'EOF'\n", 1)[1].rsplit("EOF", 1)[0]
+    f = tmp_path / "ci.py"
+    f.write_text(body)
+    names = ("lint", "gate", "linux", "windows", "macos")
+
+    def ci(results):
+        env = {**os.environ, "RESULTS": json.dumps({k: {"result": v, "outputs": {}} for k, v in results.items()})}
+        return subprocess.run([sys.executable, str(f)], env=env, capture_output=True, text=True)
+    r = ci({n: "success" for n in names})
+    assert r.returncode == 0 and r.stdout.strip() == "CI ok", r.stdout
+    for n in names:
+        for bad in ("failure", "cancelled", "skipped"):
+            r = ci({**{m: "success" for m in names}, n: bad})
+            assert r.returncode == 1 and f"CI FAILED: {n}: {bad}" in r.stdout, (n, bad, r.stdout)
+        r = ci({m: "success" for m in names if m != n})
+        assert r.returncode == 1 and "not ['gate', 'lint', 'linux', 'macos', 'windows']" in r.stdout, r.stdout
+    assert ci({}).returncode == 1
 
 
 def test_the_github_folder_holds_approved_files_only(repo):

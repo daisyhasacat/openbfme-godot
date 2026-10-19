@@ -951,8 +951,7 @@ would overwrite it unless the archive carries it, and a pull request closed with
 `CONTRIBUTING.md` describes the flow for contributors; for the operator it is:
 
 1. **Review** the pull request on GitHub at its current head. Public checks: `.github/workflows/pr.yml` (no secrets, read-only token,
-   `pull_request` trigger): the commit gate on the pull request's changes, `tools/release/pr_audit.py` (the sync audit with the
-   built-in rules plus the `.github` policy), the Linux engine build and unit tests without game files, and `tools/release/pr_pytest.py`.
+   `pull_request` trigger; the one check to look at is **CI**, see "Hosted pull request CI" below).
 2. **Port** it into the archive branch with its author kept (cherry-pick its commits, or apply them with `git am`), through the usual
    lane and gate. The port must be the pull request exactly: the release refuses a pull request whose diff is not contained in the
    public tree. If the port needed changes, ask the author to update the pull request (or push the port to its branch), review the new
@@ -988,10 +987,81 @@ merge answer, a pull request merged by hand, a resumed run and the public `.gith
 the repository or run on a private machine, also not one a community pull request added. It is checked on the sync tree before
 anything is pushed (also by `--plan`) and on every pull request. The rules:
 - `.github/` holds only the pull request template and `.github/workflows/<name>.yml`;
-- triggers are `pull_request`, `push` and `workflow_dispatch` only (never `pull_request_target`, `workflow_run` or `issue_comment`);
+- every workflow parses as YAML (PyYAML; missing PyYAML fails the check): GitHub runs none of the jobs of a file it cannot parse;
+- triggers are `pull_request`, `merge_group`, `push` and `workflow_dispatch` only (never `pull_request_target`, `workflow_run` or
+  `issue_comment`);
 - there is no `secrets.` reference, no write or `id-token` permission, and the top-level permissions are exactly `contents: read`;
 - every action is pinned by its full commit sha;
 - runners are GitHub-hosted only.
+
+### Hosted pull request CI (PUBLICCI-1)
+
+Until 2026-10-19 every run of `pr.yml` failed in 0 s as a "workflow file issue": line 88, a plain `run:` value, held `audio decode: MP3`,
+and `: ` inside a plain YAML scalar starts a mapping, so GitHub refused the whole file (the line-based policy above passed it; it now
+loads each workflow as YAML, and the `lint` job runs actionlint). The workflow (`.github/workflows/pr.yml`) now runs on GitHub-hosted
+runners only, with `permissions: contents: read`, pinned action shas, no secrets and no game files:
+
+| job | runner | what |
+| --- | --- | --- |
+| `lint` | ubuntu-24.04 | actionlint 1.7.12 and zizmor 1.31.1 (offline), downloads checked by SHA-256 |
+| `gate` | ubuntu-24.04 | the commit gate on the pull request's changes, `pr_audit.py` (built-in privacy rules + the `.github` policy; no private denylist), `pr_pytest.py` |
+| `linux` | ubuntu-24.04 | engine core + `openbfme_tests` build (ccache), the unit tests that need no game files |
+| `windows` | ubuntu-24.04 | `tools/release/build_windows.sh --no-export`: the release's llvm-mingw cross build (tests, peer, GDExtension, PDB scrub, DLL audit), compile only |
+| `macos` | macos-15 | the GDExtension with the Mac package's configuration (arm64, macOS 13), compile only |
+| `CI` | ubuntu-24.04 | needs all of the above, runs even when one failed, and passes only when every one succeeded |
+
+Measured on `ci/publicci1` (2026-10-19, the tree of the next sync): with warm compiler caches the whole check took 7.5 minutes
+(gate 7m21 with pytest on four workers, linux 3m13, macos 55 s, windows 47 s, lint 7 s); with cold caches the builds took
+11.5 (macos), 17 (windows) and 17 to 24 (linux) minutes. A pull request that touches a header most files include builds nearly cold.
+
+Triggers: `pull_request` to `main`, `merge_group`, `push` to `main` and to `ci/**` (maintainer test branches), `workflow_dispatch`.
+A newer push to a pull request cancels its older run. The compiler caches are saved only by pushes (`main`'s are the ones pull
+requests restore; a `ci/**` branch's cache is visible to that branch only); pull requests restore read-only (a pull request cannot
+poison what `main` builds with).
+
+**Repository settings for the owner** (not changed by any script; GitHub, Settings):
+1. Actions, General: "Fork pull request workflows from outside collaborators": *Require approval for first-time contributors* (the
+   default; or stricter). Workflow permissions: *Read repository contents and packages permissions*; leave "Allow GitHub Actions to
+   create and approve pull requests" off.
+2. Actions, General, "Actions permissions": *Allow Open-BFME, and select non-Open-BFME, actions and reusable workflows* with only
+   "Allow actions created by GitHub" ticked (the workflow uses `actions/checkout`, `actions/setup-python` and `actions/cache` only), and
+   "Require actions to be pinned to a full-length commit SHA" (today: all actions allowed, pinning not required).
+3. Actions, Runners: no self-hosted runner for this repository or the organisation (a pull request can edit a workflow to ask for one).
+4. Rules, Rulesets, the existing `main-protection` ruleset (today: no deletion, no force push, no bypass actors): add "Require status
+   checks to pass" with the one check **`CI`** (source: GitHub Actions);
+   optionally "Require merge queue" (the workflow already runs on `merge_group`). Before turning the required check on,
+   `autorelease.sh` must be able to merge its sync pull request, which it does right after creating it: either give the release account
+   a bypass on that ruleset, or change the sync to `gh pr merge --auto` and wait (a later lane). Community pull requests then need a
+   green CI before the release merges them (`community_prs.py` merges with `--match-head-commit`, unaffected otherwise).
+
+### Pushing to the public repository (PUBLICCI-1)
+
+Everything that writes to `Open-BFME/openbfme-godot` and the privacy scan in front of it (plan 2026-10 section 10: the private scan runs
+before anything is pushed public):
+
+| path | what goes public | the scan before it |
+| --- | --- | --- |
+| `autorelease.sh` step 2, `git push <sync commit>:refs/heads/sync/...` | the sync commit (the public tree of the released sha) | `autorelease.py audit-tree --denylist` on that tree, `public_workflows.py`; the commit's message, PR title / body: `audit-text --denylist` |
+| `autorelease.sh` step 2, `gh pr create` / `gh pr merge` of the sync PR | the PR text, the merge commit | the audited texts; the merge commit's tree is checked equal to the audited tree |
+| `community_prs.py land` (from `autorelease.sh`) | merges of already public community pull requests | runs after the tree audit; each pull request's diff must be contained in the audited tree |
+| `autorelease.sh` step 3, `git push refs/tags/<version>` | the tag (on the audited merge commit) | the tag message: `audit-text --denylist` |
+| `publish_release.sh --execute` | the release's name, notes and assets | `autorelease.py privacy-gate` (notes, tree, assets, `--denylist` required), every output line redacted |
+| a hand-made `git push` to the public remote (`origin` in the operator's checkout) | whatever it carries (a lane branch would carry the private history) | **`tools/release/public_push_guard.py`**, the pre-push hook below |
+| the GitHub web UI (merging a community pull request by hand) | the pull request's already public commits | none: don't (see "Community pull requests") |
+
+`public_push_guard.py` is the backstop that makes the scan a property of the checkout instead of each script: as the pre-push hook it
+runs for every `git push` (autorelease's included) whose URL is the public repository, needs `OPENBFME_RELEASE_DENYLIST`, and audits
+every commit the push would publish (tree: the release's privacy gate and the `.github` policy; author, committer and message) and an
+annotated tag's text; more than 10 new commits (a branch of the private history) is refused unread. Pushes to other remotes (the
+private dev repository, the backup) pass untouched. Install it once in the operator's checkout, after the archive branch holds the file
+(a checkout without it refuses every public push, which is the safe failure):
+
+    printf '#!/bin/sh\n# public push guard (docs/RELEASE.md): never bypass\nexec python3 "$(git rev-parse --show-toplevel)/tools/release/public_push_guard.py" "$@"\n' > .git/hooks/pre-push
+    chmod +x .git/hooks/pre-push
+
+Never push with `--no-verify`. The tests (`tools/release/test_public_push_guard.py`) push through the real hook into local bare
+repositories: a push elsewhere, no / a broken denylist, a clean commit, a deletion, each privacy hit (file, path, message, author,
+`.github` policy, unparsable YAML), a hit in an earlier commit, a private-history branch, stale tracking refs, tags, and a crash.
 
 ## Windows test checklist (WIN-1 and the owner)
 

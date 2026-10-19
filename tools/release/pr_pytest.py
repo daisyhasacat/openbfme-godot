@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lane GHPR-1: the Python tests the public pull request check runs (.github/workflows/pr.yml, CONTRIBUTING.md "What we check").
 
-SUBSET is the test files that pass on a clean GitHub runner: Python and pytest only (no capstone / pefile / PyYAML), no game folders, no
+SUBSET is the test files that pass on a clean GitHub runner: Python, pytest and PyYAML (PUBLICCI-1; no capstone / pefile), no game folders, no
 built engine, no Godot. It was measured by running every test file of the public tree that way (GHPR-1, 2026-10-18: 56 files of 89
 passed with no failure; the rest need capstone / pefile, the game files or a build, or only skip there, and the full gate runs them all).
 The operations-only tests under tools/net are left out (they leave the public tree with PUBLISH-2). Fails closed: a listed file that does not exist, a pytest failure, or a
@@ -46,6 +46,7 @@ SUBSET = [
     "tools/release/test_autorelease.py",
     "tools/release/test_big_entries.py",
     "tools/release/test_community_prs.py",
+    "tools/release/test_public_push_guard.py",
     "tools/release/test_export_checks.py",
     "tools/release/test_launcher_tools.py",
     "tools/release/test_net_guard_files.py",

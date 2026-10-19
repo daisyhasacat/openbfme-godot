@@ -1217,7 +1217,7 @@ LiveGame::Report LiveGame::report() const
 	}
 	if (m_drawables)
 	{
-		r.drawables = m_drawables->report();
+		r.drawables = m_drawables->report(m_presented.get());
 	}
 	if (m_scripting)
 	{

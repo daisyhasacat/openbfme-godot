@@ -47,7 +47,8 @@ fi
 "$GODOT_BIN" --version | grep -q "^4\.7\.2\.stable" || { echo "RESULT smoke: FAIL the editor binary is not Godot 4.7.2 ($("$GODOT_BIN" --version))"; ok=0; }
 cp -r "$PKG" "$WORK/smoke"
 cp "$(command -v "$GODOT_BIN" | xargs readlink -f)" "$WORK/smoke/OpenBFME.x86_64"
-(cd "$WORK/smoke" && timeout 900 ./OpenBFME.x86_64 --headless --script res://tests/smoke_test.gd) > "$LOGS/smoke.log" 2>&1; code=$?
+# lane RELFIX-5: the map checks' oracle survey is a repo file, not in the pack (smoke_checks.gd _map_survey)
+(cd "$WORK/smoke" && OPENBFME_MAP_SURVEY="$REPO/engine/tests/data/map-survey.json" timeout 900 ./OpenBFME.x86_64 --headless --script res://tests/smoke_test.gd) > "$LOGS/smoke.log" 2>&1; code=$?
 if [ $code = 0 ] && grep -q "^SMOKE PASS" "$LOGS/smoke.log"; then
   echo "RESULT smoke: PASS ($(grep -c '' "$LOGS/smoke.log") lines of output)"
 else

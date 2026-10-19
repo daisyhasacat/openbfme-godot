@@ -464,6 +464,19 @@ func _mesh_headers(data: PackedByteArray) -> Dictionary:
 	return out
 
 
+## The oracle survey of the retail maps (engine/tests/data/map-survey.json, MAP-1) that _map_terrain and _map_objects compare against. It is not
+## in the exported pack: in a package (tools/release/test_export.sh) res:// is the pack, so the export test names the checkout's file in
+## OPENBFME_MAP_SURVEY. Before RELFIX-5 the packaged run read "<package>/../engine/...", JSON.parse_string returned null and both checks died
+## at a script error without a FAIL (every release since the export test existed skipped them).
+func _map_survey() -> Dictionary:
+	var path := OS.get_environment("OPENBFME_MAP_SURVEY")
+	if path.is_empty():
+		path = ProjectSettings.globalize_path("res://").path_join("../engine/tests/data/map-survey.json")
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path)) if FileAccess.file_exists(path) else null
+	_check(parsed is Dictionary and not parsed.is_empty(), "read the oracle survey %s (OPENBFME_MAP_SURVEY names it in a package)" % path)
+	return parsed if parsed is Dictionary else {}
+
+
 ## MAP-1: build a real retail map through MapTerrainBuilder. EVERY expectation comes from the oracle survey
 ## (engine/tests/data/map-survey.json, written by tools/maps/map_survey.py from the spec author's independent
 ## parser), never from the builder's own counts. "map wor fangorn" has standing water (2 areas), rivers (9) and a
@@ -476,9 +489,9 @@ func _map_terrain(fs: RefCounted) -> void:
 	_check(ClassDB.class_exists("MapTerrainBuilder"), "MapTerrainBuilder is registered")
 	if not ClassDB.class_exists("MapTerrainBuilder"):
 		return
-	var survey_path := ProjectSettings.globalize_path("res://").path_join("../engine/tests/data/map-survey.json")
-	var survey: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(survey_path))
-	_check(not survey.is_empty(), "read the oracle survey %s" % survey_path)
+	var survey := _map_survey()
+	if survey.is_empty():
+		return
 	var want: Dictionary = survey.maps[KEY]
 	var w: int = int(want.heightMap.w)
 	var h: int = int(want.heightMap.h)
@@ -599,8 +612,9 @@ func _map_objects(fs: RefCounted) -> void:
 	_check(ClassDB.class_exists("MapObjectBuilder"), "MapObjectBuilder is registered")
 	if not ClassDB.class_exists("MapObjectBuilder"):
 		return
-	var survey_path := ProjectSettings.globalize_path("res://").path_join("../engine/tests/data/map-survey.json")
-	var survey: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(survey_path))
+	var survey := _map_survey()
+	if survey.is_empty():
+		return
 	var want: Dictionary = survey.maps[KEY]
 	var builder: RefCounted = ClassDB.instantiate("MapObjectBuilder")
 	var setup: Dictionary = builder.setup(fs)

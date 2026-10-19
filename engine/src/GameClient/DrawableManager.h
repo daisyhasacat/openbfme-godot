@@ -85,7 +85,8 @@ public:
 		size_t created = 0, destroyed = 0, live = 0;
 		size_t modelDraws = 0, animatedModelDraws = 0, staticModelDraws = 0, staticModels = 0, notDrawnEntries = 0;
 		std::map<std::string, size_t> unportedClientModules;      ///< live ClientUpdate / ClientBehavior modules that are UnportedDrawableModules, by class (stop S-140)
-		size_t modelsShown = 0;                                    ///< entries that show a model right now (model draws with a model + static models)
+		size_t modelsShown = 0;                                    ///< entries that show a model right now (model draws with a model + static models), not counting
+		                                                           ///< a drawable the presented snapshot hides (Drawable::presentedLook without the shroud)
 		std::map<std::string, size_t> byDrawClass;                 ///< entries per draw class
 		std::map<std::string, size_t> distinctModels;              ///< lower-case model name -> entries (the first model of each entry)
 		std::vector<std::string> errors;
@@ -93,7 +94,8 @@ public:
 		std::vector<std::string> stops;
 		size_t scriptsRun = 0;
 	};
-	Report report() const;
+	// presented: the snapshot the device draws (LiveGame::presentedSnapshot); a drawable it hides (the logic's drawable-hidden flag, stealth) shows no model
+	Report report(const LogicSnapshot *presented = nullptr) const;
 	// MapObjectLoop's afterCreate: the per object overrides of the map (initial model condition flags incl. objectTime / objectWeather, the
 	// prototype scale of a directly placed object (not of a horde's member: it keeps its template's), the mirror flag)
 	static void applyPlacement(Object &obj, const MapObjectDrawable &placement);

@@ -6,8 +6,12 @@ A community pull request can change .github/ like any other file, and a sync car
 a secret, write to the repository or run on a private machine must never get there. The rules (a hit is a failure; nothing is skipped):
   * .github/ holds only APPROVED files: the pull request template and workflows (.github/workflows/<name>.yml); anything else there
     (other templates, dependabot, funding, CODEOWNERS ...) is refused until it is reviewed and added to APPROVED;
-  * a workflow runs on `pull_request` / `push` / `workflow_dispatch` only: never `pull_request_target`, `workflow_run` or
-    `issue_comment` (they run with the base repository's token and secrets on a contributor's code);
+  * a workflow parses as YAML (PyYAML's safe loader) into a mapping: GitHub refuses a file it cannot parse and runs none of its jobs
+    (lane PUBLICCI-1: a plain `run:` value holding ": " made every run of pr.yml fail as a "workflow file issue" while the text rules
+    below passed it); without PyYAML the check fails, it is never skipped;
+  * a workflow runs on `pull_request` / `merge_group` / `push` / `workflow_dispatch` only: never `pull_request_target`, `workflow_run` or
+    `issue_comment` (they run with the base repository's token and secrets on a contributor's code; `merge_group` runs the merge queue's
+    commit of base-repository code, like `push`);
   * no `secrets.` reference at all (GITHUB_TOKEN included), no `id-token`, no `: write` permission anywhere, and a top-level
     `permissions:` block that is exactly `contents: read`;
   * every `uses:` names an action by its full 40-hex commit sha (a tag can be moved) or a local `./` path;
@@ -27,15 +31,33 @@ import sys
 
 APPROVED = (re.compile(r"\.github/pull_request_template\.md"), re.compile(r"\.github/workflows/[a-z0-9][a-z0-9_-]*\.yml"))
 REFUSED_TRIGGERS = ("pull_request_target", "workflow_run", "issue_comment")
-ALLOWED_TRIGGERS = ("pull_request", "push", "workflow_dispatch")
+ALLOWED_TRIGGERS = ("pull_request", "merge_group", "push", "workflow_dispatch")
 USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)\s*(?:#.*)?$")
 PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}")
 RUNS_ON = re.compile(r"^\s*runs-on:\s*(.*?)\s*(?:#.*)?$")
 HOSTED = re.compile(r"(?:ubuntu|windows|macos)-[a-z0-9.-]+")
 
 
+def yaml_problems(path: str, text: str) -> list[str]:
+    """the file must load as a YAML mapping; PyYAML missing is a failure (fail closed), not a skip"""
+    try:
+        import yaml
+    except ImportError:
+        return [f"{path}: PyYAML is not installed, so the file cannot be checked to parse as YAML (pip install PyYAML)"]
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        where = f":{mark.line + 1}:{mark.column + 1}" if mark else ""
+        what = getattr(e, "problem", None) or str(e).splitlines()[0]
+        return [f"{path}{where}: not valid YAML ({what}): GitHub would refuse the whole workflow"]
+    if not isinstance(doc, dict):
+        return [f"{path}: the YAML is not a mapping (a workflow is one)"]
+    return []
+
+
 def workflow_problems(path: str, text: str) -> list[str]:
-    probs = []
+    probs = yaml_problems(path, text)
     lines = text.splitlines()
     for n, line in enumerate(lines, 1):
         code = line   # comments included: a refused word in a comment fails too (stricter than YAML, never looser)

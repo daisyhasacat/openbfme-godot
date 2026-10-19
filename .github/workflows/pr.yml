@@ -1,30 +1,65 @@
 # The public pull request checks (CONTRIBUTING.md, "What we check"). They run on GitHub's own runners with no secrets and a read-only
 # token: the trigger is pull_request, so a pull request from a fork gets neither the repository's secrets nor write access, and nothing here
-# asks for them (tools/release/public_workflows.py enforces that on every workflow of this folder). Pushes to main run them too, which also
-# keeps the compiler cache warm for the pull requests (a pull request reads main's cache, never writes it).
+# asks for them (tools/release/public_workflows.py enforces that on every workflow of this folder, and that each one parses as YAML).
+# Pushes to main run them too, which also keeps the compiler caches warm for the pull requests (a pull request restores main's caches, it
+# never saves one; only pushes, which need write access, save). ci/** branches are maintainers' test branches; merge_group is the merge
+# queue's run of the same checks.
+#
+# One aggregate job, CI, needs every other job and fails unless all of them succeeded: it is the one check name a branch rule or the merge
+# queue requires (lane PUBLICCI-1), so adding or renaming a job never touches the repository's settings.
 name: Pull request checks
 
 on:
   pull_request:
     branches:
       - main
+  merge_group:
   push:
     branches:
       - main
+      - "ci/**"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  lint:
+    name: Workflow lint (actionlint, zizmor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the pinned linters
+        # release archives checked against the SHA-256 their release pages publish
+        run: |
+          mkdir -p "$RUNNER_TEMP/lint"
+          cd "$RUNNER_TEMP/lint"
+          curl -fsSLo actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          curl -fsSLo zizmor.tar.gz https://github.com/zizmorcore/zizmor/releases/download/v1.31.1/zizmor-x86_64-unknown-linux-gnu.tar.gz
+          sha256sum -c --strict <<'EOF'
+          8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz
+          d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99  zizmor.tar.gz
+          EOF
+          tar -xzf actionlint.tar.gz actionlint
+          tar -xzf zizmor.tar.gz zizmor
+          echo "$RUNNER_TEMP/lint" >> "$GITHUB_PATH"
+      - name: actionlint
+        run: actionlint -color
+      - name: zizmor
+        # offline: the online audits need a token, and this job has none to spare
+        run: zizmor --offline --persona=regular .github/workflows
+
   gate:
     name: Commit gate, public tree audit, Python tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,17 +68,19 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - name: Install pytest
-        run: python3 -m pip install --disable-pip-version-check --no-input "pytest==9.1.1"
+      - name: Install pytest, pytest-xdist and PyYAML
+        run: >-
+          python3 -m pip install --disable-pip-version-check --no-input
+          "pytest==9.1.1" "pytest-xdist==3.8.0" "execnet==2.1.2" "PyYAML==6.0.3"
       - name: Git identity for the tests' throwaway repositories
         run: |
           git config --global user.name "pr-checks"
           git config --global user.email "pr-checks@example.invalid"
           git config --global init.defaultBranch main
       - name: Commit gate on the pull request's changes
-        if: github.event_name == 'pull_request'
-        # the checkout is GitHub's merge of the pull request into main: its first parent is main, so the merge's changes are exactly the
-        # pull request's; they are staged against main and the gate checks them as a commit would
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        # the checkout is GitHub's merge of the pull request into main (or the queue's commit on top of main): its first parent is main, so
+        # its changes are exactly the pull request's; they are staged against main and the gate checks them as a commit would
         run: |
           git reset -q --soft HEAD^1
           python3 tools/precommit.py
@@ -51,12 +88,19 @@ jobs:
       - name: Public tree audit (the built-in rules)
         run: python3 tools/release/pr_audit.py --tree "$GITHUB_SHA^{tree}"
       - name: Python tests that need no game files
-        run: python3 tools/release/pr_pytest.py
+        # four workers (the runner's four CPUs): one process runs them in 12 to 15 minutes, mostly the release flows of
+        # test_autorelease.py and test_community_prs.py
+        run: python3 tools/release/pr_pytest.py -n 4 --durations=15
 
-  engine:
+  linux:
     name: Linux engine build and unit tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # a cold compiler cache took 24 minutes (PUBLICCI-1, 2026-10-19); a warm one about 3
+    timeout-minutes: 40
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_NOHASHDIR: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,24 +109,136 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends ninja-build ccache
-      - name: Compiler cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/ccache
-          key: ccache-ubuntu-24.04-${{ github.sha }}
-          restore-keys: ccache-ubuntu-24.04-
+          path: .ccache
+          key: ccache-linux-${{ github.sha }}
+          restore-keys: ccache-linux-
       - name: Configure
         run: >-
           cmake -S engine -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPENBFME_BUILD_GODOT=OFF
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build
         run: |
-          export CCACHE_DIR="$HOME/.cache/ccache" CCACHE_MAXSIZE=2G
           ccache -z
           cmake --build engine/build
           ccache -s
+      - name: Save the compiler cache (pushes only)
+        # a push to main saves the cache pull requests restore; a ci/** branch's cache is visible to that branch only
+        if: github.event_name == 'push'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-linux-${{ github.sha }}
       - name: Unit tests (the tests that need the game skip)
         # the five MP3 decoder tests read synthetic streams that lame encodes at build time and compare them with numbers mpg123 1.33
         # derived (engine/tests/data/audio/mp3_golden.tsv); this runner has neither tool in that version, so they run in the project's
         # full test run only
-        run: engine/build/openbfme_tests --test-case-exclude="audio decode: MP3 *,audio decode: corrupted MP3 fixtures*"
+        run: |
+          engine/build/openbfme_tests --test-case-exclude="audio decode: MP3 *,audio decode: corrupted MP3 fixtures*"
+
+  windows:
+    name: Windows cross build (llvm-mingw, compile only)
+    # the release's own recipe (tools/release/build_windows.sh: the pinned llvm-mingw, the tests, the peer and the GDExtension, the DLL's
+    # PDB scrub and package audit) without the Godot export
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_NOHASHDIR: "1"
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      JOBS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ninja-build ccache
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-windows-${{ github.sha }}
+          restore-keys: ccache-windows-
+      - name: Build
+        run: |
+          ccache -z
+          tools/release/build_windows.sh --no-export
+          ccache -s
+      - name: Save the compiler cache (pushes only)
+        # a push to main saves the cache pull requests restore; a ci/** branch's cache is visible to that branch only
+        if: github.event_name == 'push'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-windows-${{ github.sha }}
+
+  macos:
+    name: macOS arm64 build (compile only)
+    # the configuration of the Mac package (tools/release/package_macos.py cmake_configure_args) without the export
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_NOHASHDIR: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: true
+      - name: Install the build tools
+        run: brew install ninja ccache
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-macos-${{ github.sha }}
+          restore-keys: ccache-macos-
+      - name: Configure
+        run: >-
+          cmake -S engine -B engine/build-macos -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPENBFME_LAME=OFF -DOPENBFME_BUILD_GODOT=ON
+          -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build the GDExtension
+        run: |
+          ccache -z
+          cmake --build engine/build-macos --target openbfme
+          ccache -s
+      - name: Save the compiler cache (pushes only)
+        # a push to main saves the cache pull requests restore; a ci/** branch's cache is visible to that branch only
+        if: github.event_name == 'push'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ccache-macos-${{ github.sha }}
+
+  ci:
+    name: CI
+    # the one required check: it runs even when a job it needs failed or was cancelled, and passes only when every one succeeded
+    if: always()
+    needs: [lint, gate, linux, windows, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every check succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          needs = json.loads(os.environ["RESULTS"])
+          want = {"lint", "gate", "linux", "windows", "macos"}
+          bad = sorted(f"{k}: {v['result']}" for k, v in needs.items() if v["result"] != "success")
+          if set(needs) != want:
+              bad.append(f"the jobs are {sorted(needs)}, not {sorted(want)}")
+          for b in bad:
+              print(f"CI FAILED: {b}")
+          print("CI ok" if not bad else "CI FAILED")
+          sys.exit(1 if bad else 0)
+          EOF

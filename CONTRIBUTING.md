@@ -37,13 +37,16 @@ Please also keep personal data out: no paths of your own machine, no e-mail addr
 
 ## What we check
 
-Every pull request runs `.github/workflows/pr.yml` on GitHub's own runners, with no secrets and read-only access:
+Every pull request runs `.github/workflows/pr.yml` on GitHub's own runners, with no secrets and read-only access. The check named
+**CI** sums it up: it passes only when every job below passed.
 
 - the commit gate (`tools/precommit.py`) on the files your pull request changes;
 - the public tree audit (`tools/release/pr_audit.py`): no game files, no private paths, no binaries or archives that are not listed,
-  nothing in a folder that must stay out, and the rules for this `.github` folder (workflows with read-only permissions, no secrets,
-  actions pinned by commit);
+  nothing in a folder that must stay out, and the rules for this `.github` folder (workflows that parse, with read-only permissions,
+  no secrets, actions pinned by commit, GitHub's runners only);
+- actionlint and zizmor on the workflows;
 - a Linux build of the engine and its unit tests without game files;
+- a Windows build (the release's llvm-mingw cross build) and a macOS arm64 build of the game library, compile only;
 - the Python tests that need no game files.
 
 A maintainer then reviews the change. We may ask for changes, or for a test that shows the behaviour against the original game.

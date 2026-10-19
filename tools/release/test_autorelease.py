@@ -774,7 +774,10 @@ def test_sync_drops_a_stray_privacy_md_of_the_public_main(world):
 def test_audit_tree_of_the_real_public_tree():
     """the public tree of this checkout's HEAD (the sync recipe) passes the audit: the built-in rules, plus the operator's private
     denylist when OPENBFME_RELEASE_DENYLIST names it on this machine"""
-    tree = autorelease.sync_tree(str(REPO), "HEAD")
+    # PUBLICCI-1: in the public repository (the hosted pull request checks) HEAD already is a public tree: no archive/, no archive line
+    has_archive = "archive" in subprocess.run(["git", "-C", str(REPO), "ls-tree", "--name-only", "HEAD"], capture_output=True, text=True,
+                                              check=True).stdout.split()
+    tree = autorelease.sync_tree(str(REPO), "HEAD") if has_archive else autorelease.git(str(REPO), "rev-parse", "HEAD^{tree}").strip()
     private = os.environ.get("OPENBFME_RELEASE_DENYLIST")
     rules = autorelease.load_denylist(Path(private)) if private else []
     assert autorelease.audit_tree(str(REPO), tree, rules) == []
@@ -1352,6 +1355,31 @@ def test_the_depth_bound_is_a_refusal():
     a = autorelease.SyncAudit()
     a.blob("docs/deep.bin", data)
     assert any("nested deeper than" in p for p in a.problems), a.problems
+
+
+def test_a_signature_that_looks_like_zlib_is_a_signature():
+    """PUBLICCI-1: the hosted checks' first run failed test_returned_artifacts_are_checked_before_signing on a manifest.json.sig whose
+    random bytes began with a valid zlib header ("unreadable zlib data"): 1 in 992 Ed25519 signatures do"""
+    sig = b"\x78\x9c" + bytes(range(7, 69))   # a zlib header, then bytes no inflater accepts
+    assert len(sig) == 64
+    a = autorelease.SyncAudit(PRIVATE, top=True)
+    a.blob("manifest.json.sig", sig)
+    a.blob("out/manifest-macos.json.sig", sig)
+    assert a.problems == []
+    # the exemption is that shape only: another name, another size or a member inside a container stays a finding
+    for name, data in (("manifest.json.bin", sig), ("notes.sig", sig), ("manifest.json.sig", sig + b"\x00"), ("manifest.json.sig", sig[:63])):
+        a = autorelease.SyncAudit(PRIVATE, top=True)
+        a.blob(name, data)
+        assert any("unreadable zlib data" in p for p in a.problems), (name, len(data), a.problems)
+    a = autorelease.SyncAudit(PRIVATE, top=True)
+    a.blob("p.zip", zip_of({"manifest.json.sig": sig}))
+    assert any("unreadable zlib data" in p for p in a.problems), a.problems
+    # a .sig that IS a zlib stream is still decoded and its content checked
+    hidden = zlib.compress(b"built on lab-vm-q".ljust(53, b" "), 0)
+    assert len(hidden) == 64
+    a = autorelease.SyncAudit(PRIVATE, top=True)
+    a.blob("manifest.json.sig", hidden)
+    assert any(p.startswith("denylisted (hosts)") for p in a.problems), a.problems
 
 
 def test_a_swapped_intent_sha_changes_nothing(world):

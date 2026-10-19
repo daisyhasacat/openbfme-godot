@@ -176,7 +176,7 @@ TEST_CASE("mp2 lan: discovery identifies a process across addresses, not games b
 	auto announce = [&](UDP &socket, std::uint32_t nonce, std::uint8_t type) {
 		NetByteWriter w;
 		w.u16(0x4E4C);
-		w.u8(2);
+		w.u8(LANAPI::kProtocolVersion); // PUBLICCI-1: was 2, left behind when OWNERFIX-2 moved the protocol to 3 (refused by version)
 		w.u8(type);
 		w.u32(nonce);
 		w.wstr(u"Same name");

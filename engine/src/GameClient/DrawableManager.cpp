@@ -469,7 +469,7 @@ void DrawableManager::applyPlacement(Object &obj, const MapObjectDrawable &place
 	}
 }
 
-DrawableManager::Report DrawableManager::report() const
+DrawableManager::Report DrawableManager::report(const LogicSnapshot *presented) const
 {
 	Report r;
 	r.created = m_created;
@@ -534,6 +534,9 @@ DrawableManager::Report DrawableManager::report() const
 				++r.unportedClientModules[m->getModuleClassName()];
 			}
 		}
+		// the device draws nothing for a drawable the logic hides (GodotGameWorld's sync skips it, Drawable::presentedLook): an occupied build plot
+		// (Construction::constructOnPlot, community PR #48), a rider of an ENCLOSED container, an invisible enemy. The shroud is the view's, not counted here
+		const bool hidden = d->presentedLook(presented, false).hidden;
 		for (const DrawEntry &e : d->entries())
 		{
 			++r.byDrawClass[e.className];
@@ -547,14 +550,14 @@ DrawableManager::Report DrawableManager::report() const
 					if (f.model && !f.modelName.empty() && !e.moduleHidden)
 					{
 						++r.distinctModels[AsciiStringUtil::lowered(f.modelName)];
-						++r.modelsShown;
+						r.modelsShown += hidden ? 0 : 1;
 					}
 				}
 			}
 			else if (!e.staticModel.empty() && !e.moduleHidden && !e.conditionHidden)
 			{
 				++r.staticModels;
-				++r.modelsShown;
+				r.modelsShown += hidden ? 0 : 1;
 				++r.distinctModels[AsciiStringUtil::lowered(e.staticModel)];
 			}
 			else
