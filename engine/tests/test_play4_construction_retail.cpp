@@ -291,6 +291,8 @@ TEST_CASE("play4 construction retail: a castle pad's tower rises in its build va
 		pad = (o->getControllingPlayer() == player && o->getTemplate()->getName() == "MenFortressExpansionPadSide") ? o : nullptr;
 	}
 	REQUIRE(pad);
+	Hud hud(*s, live);
+	REQUIRE_FALSE(hud.buttonsOf(pad->getID()).empty());
 	const ThingTemplate *tower = logic.things().findTemplate("MenArrowTowerExpansion")->getFinalOverride(); // MenFortressExpansionPadSideCommandSet
 	const int pi = player->getPlayerIndex();
 	live.commands().append(selectMsg(pi, pad->getID()));
@@ -307,6 +309,12 @@ TEST_CASE("play4 construction retail: a castle pad's tower rises in its build va
 	}
 	REQUIRE(t);
 	CHECK(t->getProducerID() == pad->getID());
+	CHECK(pad->isDrawableHidden());
+	hud.hud->update(0.033);
+	CHECK(hud.hud->input().ui().selected().empty());
+	CHECK(hud.hud->controlBar().sideButtons().empty());
+	CHECK(hud.hud->controlBar().palantirButtons().empty());
+
 	bool variation = false, construction = true, damaged = false;
 	int frames = 0;
 	while (t->isUnderConstruction() && frames < 3000)
@@ -337,6 +345,12 @@ TEST_CASE("play4 construction retail: a castle pad's tower rises in its build va
 	CHECK(sawDamaged);
 	CHECK(sawReally);
 	CHECK(exclusive);
+	logic.destroyObject(t);
+	logic.runLogicFrame();
+	CHECK_FALSE(pad->isDrawableHidden());
+	CHECK_FALSE(has(*pad, "CONSTRUCTION_COMPLETE"));
+	CHECK_FALSE(hud.buttonsOf(pad->getID()).empty());
+
 }
 
 TEST_CASE("Lua construction: builderless foundation rises at its own rate and enables production on completion")

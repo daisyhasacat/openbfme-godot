@@ -196,7 +196,8 @@ bool Radar::decodeArt(const std::vector<std::uint8_t> &bytes, int &w, int &h, st
 	{
 		return false;
 	}
-	// texture row 0 is the picture's bottom (see Radar.h): a bottom-origin file in storage order, a top-origin one reversed; shown north up. The horizontal
+	// Map art is authored with map north at the bottom of the decoded TGA. Keep bottom-origin storage order
+	// (reverse a top-origin file) so row 0 of the displayed radar is north. The horizontal
 	// origin (descriptor bit 0x10, right-to-left) is honoured as the loader does (the check at RW 0xA28564 calls XFlip): column x comes from w - 1 - x.
 	const bool rightOrigin = (bytes[17] & 0x10) != 0;
 	w = img.width;
@@ -204,7 +205,7 @@ bool Radar::decodeArt(const std::vector<std::uint8_t> &bytes, int &w, int &h, st
 	rgba.assign((size_t)w * (size_t)h * 4, 0);
 	for (int r = 0; r < h; ++r)
 	{
-		const int src = img.topDownFlag ? r : h - 1 - r;
+		const int src = img.topDownFlag ? h - 1 - r : r;
 		for (int x = 0; x < w; ++x)
 		{
 			const int srcX = rightOrigin ? w - 1 - x : x;

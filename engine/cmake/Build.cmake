@@ -20,6 +20,7 @@ list(APPEND OPENBFME_SIM_SOURCES
 set(OPENBFME_BUILD_TESTS
     tests/test_build_castle.cpp
     tests/test_build_core.cpp
+    tests/test_wall_termination.cpp
     tests/test_build_construct.cpp
     tests/test_build_hud.cpp
     tests/test_build_rate.cpp # lane BUILD-2

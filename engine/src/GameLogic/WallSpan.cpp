@@ -16,6 +16,7 @@
 #include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/BuildPlacement.h"
+#include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Combat/CombatQueries.h"
 #include "GameLogic/Construction.h"
 #include "GameLogic/GameLogic.h"
@@ -436,8 +437,10 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
 			t.code = t.existing == INVALID_ID ? legal(pos, *tt, finalTrebuchetSegment) : 0;
 			// A wall may terminate against terrain, but never use this exception to
 			// tunnel through another object or evade buildout/shroud restrictions.
-			const int terrainCode = BuildPlacement::isLocationLegalToBuild(logic, pos, *tt, angle,
-				LLF_TERRAIN_RESTRICTIONS, &hub, owner);
+			// Synthetic worlds without a terrain view keep the existing straight-span behavior.
+			const bool hasTerrain = logic.aiWorld() && logic.aiWorld()->pathfinder().terrainView();
+			const int terrainCode = hasTerrain ? BuildPlacement::isLocationLegalToBuild(logic, pos, *tt, angle,
+				LLF_TERRAIN_RESTRICTIONS, &hub, owner) : LBC_OK;
 			if (terrainCode == LBC_RESTRICTED_TERRAIN || terrainCode == LBC_NOT_FLAT_ENOUGH)
 			{
 				const ThingTemplate *cliff = wh->cliffCapTemplate();
@@ -470,7 +473,7 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
 				t.code = terrainCode;
 			}
 			out.tiles.push_back(t);
-			// Terrain termination above maps the port's terrain codes to the configured cliff cap.
+			// Terrain termination uses the configured cliff cap (fork terrain-termination policy; S-657).
 			pos.x = SimMath::addf32(sx, pos.x);
 			pos.y = SimMath::addf32(sy, pos.y);
 			if (t.existing == INVALID_ID) out.cost += costOf(*tt, hub);
@@ -648,7 +651,7 @@ std::vector<std::string> WallSpan::stopLines()
 {
 	return {
 		"[S-657] walls: WallHubBehavior and MSG_WALL_HUB_CONSTRUCT_SPAN (RW 0x77C4C3 -> BuildAssistant RW 0x795221 / 0x79586E) are ported for a straight span; not ported: RotWK's legal-build "
-		"codes 8 blocked mid-way and 10 rebuild of a dead equivalent segment (RW 0x797A96 is not read; terrain termination adapts the port's terrain checks), the end-hub link "
+		"codes the plan acts on (5 / 6 cliff cap, 8 blocked mid-way, 10 rebuild of a dead equivalent segment: RW 0x797A96 is not read); INFERENCE: fork terrain termination maps restricted/uneven terrain to the configured cliff cap with a preceding legal hub, retaining collision/shroud/buildout/payment checks; the end-hub link "
 		"path (RW 0x793DB9 then slot 0x58), the filter of the end-hub search (the port takes the owner's WALL_HUBs), the retail consumers of the linked-piece list (RW 0x856E1F / 0x856E5C); enhanced reconnection restores saved slots and clears rubble, "
 		"CANCEL_NEIGHBORHOOD, WallUpgradeUpdate and CastleUpgrade",
 	};

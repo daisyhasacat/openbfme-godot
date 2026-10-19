@@ -288,6 +288,8 @@ Object *Construction::constructOnPlot(Object &plot, const ThingTemplate &what, c
 	}
 	// the plot's pad is drawn away once something stands on it (the pad's own CONSTRUCTION_COMPLETE model state is `Model = None`)
 	setModelConditions(plot, {}, { "CONSTRUCTION_COMPLETE" });
+	// OpenBFME presentation fix: an occupied build plot is hidden and unselectable, including fortress expansion pads.
+	// FoundationAIUpdate restores it when its occupant is removed. This extends the BFME1 presentation fix (S-5017).
 	if ((plot.isKindOfName("BASE_FOUNDATION") || plot.isKindOfName("BASE_DEFENSE_FOUNDATION") || plot.isKindOfName("EXPANSION_PAD")) && member)
 	{
 		plot.setDrawableHidden(true);

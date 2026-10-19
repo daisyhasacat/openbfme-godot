@@ -265,10 +265,9 @@ public:
 	{
 		std::string mappedImage; // a MappedImage name
 		std::string file;        // a texture file path in the mounted archives (an image the engine made from a file)
-		// the file image's UV in the port's top-row-first textures: RotWK's texture rows are bottom-up (its Targa loader Y-flips a top-origin file,
-		// RW 0xA28575), so a retail V is 1 - V here; retail's UV (0,0)-(1,1) of RW 0x975F23 is (0,1)-(1,0)
-		float uvLo[2] = { 0.0f, 1.0f };
-		float uvHi[2] = { 1.0f, 0.0f };
+		// Color map screenshots use the texture loader's top-row-first image directly.
+		float uvLo[2] = { 0.0f, 0.0f };
+		float uvHi[2] = { 1.0f, 1.0f };
 	};
 	void setRenderPicture(const std::string &renderName, const RenderPicture &picture) { m_renderPictures[renderName] = picture; }
 	void clearRenderPicture(const std::string &renderName) { m_renderPictures.erase(renderName); }

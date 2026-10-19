@@ -16,7 +16,7 @@ using namespace hudtest;
 
 namespace
 {
-// an independent reading of a 32-bit uncompressed TGA, shown the way a TGA viewer shows it (the origin bit honoured): RGBA rows from the top
+// Independent reading of 32-bit map art: honor file origin, then reverse decoded rows into map north-up order.
 bool viewTga(const std::vector<std::uint8_t> &d, int &w, int &h, std::vector<std::uint8_t> &rgba)
 {
 	if (d.size() < 18 || d[2] != 2 || d[16] != 32)
@@ -34,7 +34,7 @@ bool viewTga(const std::vector<std::uint8_t> &d, int &w, int &h, std::vector<std
 	rgba.assign((size_t)w * (size_t)h * 4, 0);
 	for (int row = 0; row < h; ++row)
 	{
-		const int stored = topDown ? row : h - 1 - row;
+		const int stored = topDown ? h - 1 - row : row;
 		for (int x = 0; x < w; ++x)
 		{
 			const std::uint8_t *s = &d[base + ((size_t)stored * (size_t)w + (size_t)x) * 4];
@@ -94,7 +94,7 @@ void checkArt(SharedWorld &s, const char *map)
 }
 } // namespace
 
-TEST_CASE("hud2 radar: a map's <stem>_art.tga is the radar picture, pixel for pixel as the file shows it (fall back 4p, evendim)")
+TEST_CASE("hud2 radar: a map's <stem>_art.tga is the radar picture, pixel for pixel in map north-up order (fall back 4p, evendim)")
 {
 	if (!haveWorld("hud2 radar art"))
 	{
@@ -209,7 +209,7 @@ TEST_CASE("hud2 radar: the shroud is ScrollShroud's alpha per texel: 255 shroude
 
 TEST_CASE("hud2 radar: the art TGA shows the same picture for each of the four origins (descriptor bits 0x20 top, 0x10 right)")
 {
-	// a 3 x 2 picture as it looks (row 0 on top, column 0 on the left): every pixel distinct
+	// A 3 x 2 decoded TGA. Map art north is its bottom row: the radar must reverse it.
 	const int w = 3, h = 2;
 	auto pix = [](int x, int y) { return std::array<std::uint8_t, 4>{ (std::uint8_t)(10 + x), (std::uint8_t)(20 + y), (std::uint8_t)(30 + x * 2 + y), (std::uint8_t)(200 + x + y) }; };
 	for (int origin = 0; origin < 4; ++origin)
@@ -244,7 +244,7 @@ TEST_CASE("hud2 radar: the art TGA shows the same picture for each of the four o
 		{
 			for (int x = 0; x < w; ++x)
 			{
-				const auto p = pix(x, y);
+				const auto p = pix(x, h - 1 - y);
 				const std::uint8_t *o = &rgba[((size_t)y * w + x) * 4];
 				CHECK_MESSAGE((o[0] == p[0] && o[1] == p[1] && o[2] == p[2] && o[3] == p[3]), "origin " << origin << " pixel " << x << "," << y);
 			}

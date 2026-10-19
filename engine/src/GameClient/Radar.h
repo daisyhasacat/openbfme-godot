@@ -12,7 +12,7 @@
 //   gets the texture built from the terrain (+0x1470, the loop from RW 0x44F4AD). The display image (+0x146C) takes the art texture when +0x14D5 is set
 //   (RW 0x44DC96), with the UV rectangle (0, 1) - (1, 0): row 0 of the D3D texture is at the bottom. The loader puts a TGA's storage rows into the texture in
 //   file order for a bottom-left file (ZH textureloader.cpp: "DX8 uses image upside down compared to TGA", the origin flag is toggled), so the picture shows
-//   the way the TGA looks (north up). Every one of the 109 retail art files is a 32-bit uncompressed TGA with an alpha channel: the drawing lies over the
+//   with the decoded TGA vertically reversed into map north-up order. Every one of the 109 retail art files is a 32-bit uncompressed TGA with an alpha channel: the drawing lies over the
 //   movie's own background (the Palantir's RadarBackground clip, a parchment);
 // - draw (vtable +0x1C, RW 0x44FDF3): the picture goes into the clip rectangle reduced to the map's aspect (RW 0x6D89F2, drawRect below); a map without art
 //   gets the two letterbox bands filled 0xFF000000 / 0xFF323232 first (RW 0x44FE8C); then the object overlay (redrawn every 6 frames), the shroud image over
@@ -100,7 +100,7 @@ public:
 	// has it; false + *error when it exists and cannot be read or decoded (no fallback); true without art when there is none.
 	bool loadArt(ArchiveFileSystem &fs, const std::string &mapFile, std::string *error);
 	static std::string artFileFor(const std::string &mapFile);
-	// the art TGA as the radar shows it (RGBA8, row 0 on top, the vertical and horizontal origin bits honoured); false + *error when it cannot be decoded
+	// the art TGA as the radar shows it (RGBA8, row 0 on top, the vertical and horizontal origin bits honoured before mapping art into north-up order); false + *error when it cannot be decoded
 	static bool decodeArt(const std::vector<std::uint8_t> &bytes, int &w, int &h, std::vector<std::uint8_t> &rgba, std::string *error);
 	bool hasArt() const { return m_artW > 0; }
 	int artWidth() const { return m_artW; }

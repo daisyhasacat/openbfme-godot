@@ -24,7 +24,7 @@ def test_the_source_is_six_png_frames_of_godots_sizes():
 
 
 def test_icns_holds_the_png_frames():
-    frames = app_icon.read_ico(app_icon.SOURCE.read_bytes())
+    frames = app_icon.read_ico(app_icon.MAC_SOURCE.read_bytes())
     icns = app_icon.make_icns(frames)
     assert icns[:4] == b"icns" and struct.unpack(">I", icns[4:8])[0] == len(icns)
     pos, seen = 8, {}
@@ -73,8 +73,22 @@ def test_the_presets_name_the_icons():
     game = (REPO / "godot/export_presets.cfg").read_text(encoding="utf-8")
     launcher = (REPO / "launcher/export_presets.cfg").read_text(encoding="utf-8")
     assert game.count('application/icon="res://assets/app_icon/openbfme.ico"') == 1
-    assert game.count('application/icon="res://assets/app_icon/openbfme.icns"') == 1
+    assert game.count('application/icon="res://assets/app_icon/openbfme.icns"') == 2
     assert launcher.count('application/icon="res://assets/app_icon/openbfme.ico"') == 1
+    assert launcher.count('application/icon="res://assets/app_icon/openbfme.icns"') == 1
     assert "application/modify_resources=false" not in game + launcher
     # the icon files stay out of the packs (the release audit allows no image files there)
     assert (REPO / "godot/assets/app_icon/.gdignore").exists() and (REPO / "launcher/assets/app_icon/.gdignore").exists()
+
+
+def test_runtime_icon_keeps_windows_and_mac_sources_separate():
+    windows = app_icon.read_ico(app_icon.SOURCE.read_bytes())[256]
+    mac = app_icon.read_ico(app_icon.MAC_SOURCE.read_bytes())[256]
+    assert windows != mac
+    script = app_icon.make_gd(windows, "test", mac)
+    import base64
+    for constant, expected in [("PNG_BASE64", windows), ("MAC_PNG_BASE64", mac)]:
+        block = script.split("const " + constant + " := (", 1)[1].split(")", 1)[0]
+        encoded = "".join(re.findall(r'"([A-Za-z0-9+/=]*)"', block))
+        assert base64.b64decode(encoded) == expected
+    assert 'image(OS.get_name() == "macOS")' in script

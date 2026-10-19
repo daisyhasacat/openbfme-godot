@@ -1851,7 +1851,7 @@ std::string AptSkirmish::mapPreviewImage(const MapCacheEntry &map)
 	image.name = name;
 	image.status = IMAGE_STATUS_RAW_TEXTURE;
 	image.textureSize.x = image.textureSize.y = 128;
-	// Preserve the map preview's vertical UV direction after the TGA loader normalizes its rows.
+	// Map art needs a vertical flip after the texture loader normalizes TGA storage order.
 	if (m_setup->source().fileExists(base + "_art.tga"))
 	{
 		image.filename = base + "_art.tga";

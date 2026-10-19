@@ -763,12 +763,14 @@ void ControlBar::update()
 						}
 					}
 				}
+				// Upgrade buttons share the production queue's progress with unit buttons. Availability
+				// remains Purchased while researching; it does not mean the research is complete.
 				if (b->m_command == GUI_COMMAND_OBJECT_UPGRADE || b->m_command == GUI_COMMAND_PLAYER_UPGRADE || b->m_command == GUI_COMMAND_CASTLE_UPGRADE)
 				{
 					const UpgradeTemplate *upgrade = TheUpgradeCenter ? TheUpgradeCenter->findUpgrade(b->m_upgradeName) : nullptr;
-					for (const ProductionEntry *e = pu ? pu->firstProduction() : nullptr; upgrade && e; e = pu->nextProduction(e))
+					for (const ProductionEntry *e = pu ? pu->firstProduction() : nullptr; e; e = pu->nextProduction(e))
 					{
-						if (e->type == PRODUCTION_UPGRADE && e->upgradeToResearch == upgrade)
+						if (upgrade && e->type == PRODUCTION_UPGRADE && e->upgradeToResearch == upgrade)
 						{
 							cb.timer = e->percentComplete / 100.0f;
 							break;

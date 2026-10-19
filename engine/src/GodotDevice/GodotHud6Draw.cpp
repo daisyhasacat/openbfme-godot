@@ -3,6 +3,8 @@
 
 #include "GodotDevice/GodotHud6Draw.h"
 
+#include "GameClient/GUI/AptScreens/AptImageMode.h"
+
 #include "GameClient/CommandButtonHelp.h"
 #include "GameClient/ControlBarCommands.h"
 #include "GameClient/ControlBarRadialMenu.h"
@@ -97,23 +99,6 @@ private:
 	AptMenuPlayer *m_player;
 };
 
-const char *kSolidShader = R"(shader_type canvas_item;
-varying vec4 vertex_tint;
-void vertex() { vertex_tint = COLOR; }
-void fragment() {
-	vec4 tint = vertex_tint;
-	COLOR = vec4(texture(TEXTURE, UV).rgb * tint.rgb, tint.a);
-}
-)";
-const char *kGrayShader = R"(shader_type canvas_item;
-varying vec4 vertex_tint;
-void vertex() { vertex_tint = COLOR; }
-void fragment() {
-	vec4 c = texture(TEXTURE, UV) * vertex_tint;
-	float g = dot(c.rgb, vec3(0.299, 0.587, 0.114));
-	COLOR = vec4(vec3(g), vertex_tint.a);
-}
-)";
 } // namespace
 
 Hud6Draw::Hud6Draw(InGameHud &hud, const MappedImageCollection &images, TextureFn textureFor, AptMenuPlayer *player)
@@ -126,10 +111,13 @@ Hud6Draw::~Hud6Draw()
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (rs)
 	{
-		if (m_solidItem.is_valid()) rs->free_rid(m_solidItem);
 		if (m_radialItem.is_valid())
 		{
 			rs->free_rid(m_radialItem);
+		}
+		if (m_iconItem.is_valid())
+		{
+			rs->free_rid(m_iconItem);
 		}
 		if (m_grayItem.is_valid())
 		{
@@ -199,20 +187,20 @@ void Hud6Draw::drawRadial(RID parent)
 	}
 	if (!m_grayItem.is_valid())
 	{
-		// BFME2 W3DPushButton.cpp, W3DGadgetPushButtonImageDrawOne: radial
-		// images use DRAW_IMAGE_SOLID (or RADIAL_GRAYSCALE) inside the ellipse.
-		// Texture alpha masks only the foreground; RGB includes the button backdrop.
-		m_solidShader.instantiate();
-		m_solidShader->set_code(kSolidShader);
-		m_solidMaterial.instantiate();
-		m_solidMaterial->set_shader(m_solidShader);
-		m_solidItem = rs->canvas_item_create();
-		rs->canvas_item_set_parent(m_solidItem, parent);
-		rs->canvas_item_set_draw_index(m_solidItem, -1000);
-		rs->canvas_item_set_z_index(m_solidItem, -1);
-		rs->canvas_item_set_material(m_solidItem, m_solidMaterial->get_rid());
 		m_grayShader.instantiate();
-		m_grayShader->set_code(kGrayShader);
+		// INFERENCE (S-2701): radial cameos use the ellipse as their mask. Their texture alpha masks foreground art;
+		// the RGB underneath contains the full button background (notably builders and heroes).
+		// Keep the rim/clock on the ordinary alpha-blended item.
+		m_grayShader->set_code(String(aptImageModeShader(APT_IMAGE_SOLID_GRAYSCALE).c_str()));
+		m_iconShader.instantiate();
+		m_iconShader->set_code(String(aptImageModeShader(APT_IMAGE_SOLID).c_str()));
+		m_iconMaterial.instantiate();
+		m_iconMaterial->set_shader(m_iconShader);
+		m_iconItem = rs->canvas_item_create();
+		rs->canvas_item_set_parent(m_iconItem, parent);
+		rs->canvas_item_set_draw_index(m_iconItem, -999);
+		rs->canvas_item_set_material(m_iconItem, m_iconMaterial->get_rid());
+		rs->canvas_item_set_z_index(m_iconItem, -1);
 		m_grayMaterial.instantiate();
 		m_grayMaterial->set_shader(m_grayShader);
 		m_grayItem = rs->canvas_item_create();
@@ -229,7 +217,7 @@ void Hud6Draw::drawRadial(RID parent)
 		rs->canvas_item_set_z_index(m_grayItem, -1);
 		rs->canvas_item_set_z_index(m_radialItem, -1);
 	}
-	rs->canvas_item_clear(m_solidItem);
+	rs->canvas_item_clear(m_iconItem);
 	rs->canvas_item_clear(m_grayItem);
 	rs->canvas_item_clear(m_radialItem);
 	m_clockDraws = 0;
@@ -276,7 +264,7 @@ void Hud6Draw::drawRadial(RID parent)
 				uvs.push_back(Vector2((src.position.x + ux * src.size.x) / tw, (src.position.y + uy * src.size.y) / th));
 				cols.push_back(argb(op.color)); // lane HUD-7: the ALWAYS_COLOR multiplier (white otherwise)
 			}
-			rs->canvas_item_add_polygon(op.grayscale ? m_grayItem : m_solidItem, pts, cols, uvs, tex->get_rid());
+			rs->canvas_item_add_polygon(op.grayscale ? m_grayItem : m_iconItem, pts, cols, uvs, tex->get_rid());
 			continue;
 		}
 		// CLOCK: the part still to go, clockwise from the top (INFERENCE, S-2701: the inverse clock's wipe)

@@ -436,6 +436,32 @@ TEST_CASE("hud7 upgrade: an object upgrade being researched shows RotWK's availa
 		CHECK(l.rimColor == (st == ButtonState::Restricted || st == ButtonState::Purchased ? 0xFF909090u : 0xFFFFFFFFu));
 	}
 
+	// The wheel follows research progress even though availability is Purchased.
+	float previousProgress = b->timer;
+	for (int sample = 0; sample < 2; ++sample)
+	{
+		r.frames(1);
+		r.hud->update(0.0);
+		b = r.find(name);
+		REQUIRE(b != nullptr);
+		const ProductionEntry *entry = pu->firstProduction();
+		REQUIRE(entry != nullptr);
+		CHECK(entry->upgradeToResearch == u);
+		CHECK(b->timer == entry->percentComplete / 100.0f);
+		CHECK(b->timer > previousProgress); // tolerance: each logic frame advances the active retail research entry
+		previousProgress = b->timer;
+		int wheels = 0;
+		for (const RadialDrawOp &op : radial.ops())
+		{
+			if (op.slot == slot && op.kind == RadialDrawOp::CLOCK)
+			{
+				CHECK(op.percent == b->timer * 100.0f);
+				++wheels;
+			}
+		}
+		CHECK(wheels == 2);
+	}
+
 	// a second press reaches processCommandUI (RW 0x940D49 asks only canAffordUpgrade); the queue refuses the duplicate: no second charge, one entry
 	r.bar().pressButton(b->slot, b->inPalantir);
 	r.frames(2);
@@ -457,6 +483,7 @@ TEST_CASE("hud7 upgrade: an object upgrade being researched shows RotWK's availa
 	b = r.find(name);
 	REQUIRE(b != nullptr);
 	CHECK(b->state == ButtonState::Purchased);
+	CHECK(b->timer == -1.0f);
 }
 
 TEST_CASE("hud7 cancel all retail: Shift right press cancels all unlimited units, not just one (RW 0x940CD0)")

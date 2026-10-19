@@ -17,11 +17,12 @@
 //   hub object; the hub's owner must pass Player::canBuild (RW 0x6AAA2E) and have RW + 0x770 == 0; then BuildAssistant slot 0x3C (RW 0x795221) builds the span.
 //   planWallSpan (BuildAssistant slot 0x54, RW 0x79586E) and buildWallSpan (slot 0x3C, RW 0x795221) are ported below in their order; the numbers (the tile length
 //   2 * (geometry half extent in y - 1), the cap half extent, the 2/3 snap to an end hub, the 20.0 search radius, MaxLineBuildObjects) are read there.
-// Terrain termination: the port checks cliff/water/height restrictions and ends with a hub on the last legal tile plus CliffCapTemplateName.
-// This adapts the retail 5/6 cliff-cap branch to the port's terrain codes; exact retail legal-code classification is not recovered.
-// Not ported (stop S-657): code 8 blocked mid-way, code 10 equivalent dead-segment rebuild; the end-hub link path (RW 0x793DB9 then slot 0x58) and the
-// retail rebuild of dead segments; the hub's CANCEL_NEIGHBORHOOD.
-// Enhanced hub reconnection reuses aligned pieces/recorded slots, clears rubble, and charges only for new pieces. The HUD's line build that makes the message is lane QA2-FIX's (PlaceEventTranslator.h, S-1770).
+// Fork terrain-termination policy (S-657): restricted or uneven terrain ends a span with the configured cliff cap and a preceding hub,
+// only where collision, shroud, buildout and payment checks pass. This is inferred behavior, not a verified RotWK legality mapping.
+// Not ported (stop S-657): the RotWK legal-build codes the plan acts on (5 / 6: a cliff cap ends the span; 8: blocked mid-way; 10: an equivalent dead segment is
+// rebuilt) belong to RW 0x797A96, which is not read (S-301): the port uses ZH legality codes; the end-hub link path (RW 0x793DB9 then slot 0x58) and the
+// rebuild of dead segments; the hub's CANCEL_NEIGHBORHOOD. The HUD's line build that makes the message is lane QA2-FIX's (PlaceEventTranslator.h, S-1770).
+// Enhanced hub reconnection reuses aligned pieces/recorded slots, clears rubble, and charges only for new pieces.
 //
 // Simulation maths goes through SimMath.
 

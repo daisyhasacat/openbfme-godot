@@ -149,8 +149,10 @@ size_t HudInput::update()
 	for (ObjectID id : m_ui.selected())
 	{
 		Object *o = m_logic.findObjectByID(id);
+		// An occupied plot hidden by Construction::constructOnPlot leaves the client selection, closing its command menu.
 		if (!o || o->isDestroyed() || (sold >= 0 && o->testStatus((unsigned)sold)) ||
-		    ((o->isKindOfName("BASE_FOUNDATION") || o->isKindOfName("BASE_DEFENSE_FOUNDATION") || o->isKindOfName("EXPANSION_PAD")) && o->isDrawableHidden()))
+			(o->isDrawableHidden() &&
+				(o->isKindOfName("BASE_FOUNDATION") || o->isKindOfName("BASE_DEFENSE_FOUNDATION") || o->isKindOfName("EXPANSION_PAD"))))
 		{
 			gone.push_back(id);
 		}
