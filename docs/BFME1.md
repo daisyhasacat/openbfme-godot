@@ -228,3 +228,9 @@ BFME1 `BloodthirstyUpdate` also accepts and stores `NumToSacrifice` and
 `InitiateVoice2`. These legacy fields are refused in RotWK data. Their runtime
 semantics remain unported and are reported by S-5017; the BFME1 donor constructor
 initializes the sacrifice count to 1.
+
+Standalone texture loads, including map weather particles, use the same
+game-specific resolver as model materials. BFME1 names such as `exraindrop.tga`
+resolve to `art/textures/exraindrop.dds`.
+`godot/tests/bfme1_weather_test.gd` checks the resolved path and starts matches
+on Ered Lithui and Nimrodel.
