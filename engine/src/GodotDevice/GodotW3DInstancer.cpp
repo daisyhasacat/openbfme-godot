@@ -1091,6 +1091,7 @@ void W3DInstancer::rebuild_layout()
 				d.MM->set_instance_count(capacity);
 				d.Buffer.resize((int64_t)capacity * 16);
 				d.Allocated = capacity;
+				d.BufferUploadRequired = true;
 				mp->BuffersDirty = true;
 			}
 		}
@@ -1251,6 +1252,7 @@ void W3DInstancer::write_buffers()
 	HaveLastCamera = haveCamera;
 
 	int dithered = 0, sortedItems = 0, visible = 0, writes = 0;
+	BufferUploads = 0;
 	bool missedCamera = false;
 	bool sortRewritten = false;
 	for (std::unique_ptr<Model> &mp : Models)
@@ -1316,12 +1318,14 @@ void W3DInstancer::write_buffers()
 			}
 			float *buf = d.Buffer.ptrw();
 			int count = 0;
+			bool changed = d.BufferUploadRequired;
 			for (int id : ids)
 			{
 				const Instance &inst = Instances[(size_t)id];
 				const float fade = inst.Pose.PivotFade[(size_t)bone] * inst.Opacity; // PROJ-2: the drawable's opacity
 				if (d.Mesh->HasOpaque && fade < 0.999f) ++m.Dithered;
-				float *o = buf + (size_t)count * 16;
+				float packed[16];
+				float *o = packed;
 				const Basis &b = inst.Xf.basis;
 				o[0] = b.rows[0][0]; o[1] = b.rows[0][1]; o[2] = b.rows[0][2]; o[3] = inst.Xf.origin.x;
 				o[4] = b.rows[1][0]; o[5] = b.rows[1][1]; o[6] = b.rows[1][2]; o[7] = inst.Xf.origin.y;
@@ -1330,9 +1334,22 @@ void W3DInstancer::write_buffers()
 				o[13] = fade;
 				o[14] = inst.HcPacked;
 				o[15] = (float)((rigid ? (int)bone : 0) + 1024 * inst.Sway + (inst.Fogged ? 16384 : 0)); // lane VISUAL-2: the sway type, the fogged light
+				float *dst = buf + (size_t)count * 16;
+				if (std::memcmp(dst, packed, sizeof(packed)) != 0)
+				{
+					std::memcpy(dst, packed, sizeof(packed));
+					changed = true;
+				}
 				++count;
 			}
-			d.MM->set_buffer(d.Buffer);
+			// Bone matrices live in the palette. Re-evaluating a pose or sorting
+			// does not require a GPU upload when the packed instance data is identical.
+			if (changed)
+			{
+				d.MM->set_buffer(d.Buffer);
+				++BufferUploads;
+				d.BufferUploadRequired = false;
+			}
 			d.MM->set_visible_instance_count(count);
 			visible += count;
 		}
@@ -1651,6 +1668,7 @@ Dictionary W3DInstancer::get_stats() const
 	s["upload_ms"] = UploadMs;
 	s["pose_evaluations"] = PoseEvaluations; // SMOOTH-1: instances posed in the last update (only the changed ones)
 	s["pose_culled"] = PoseCulled;           // lane PERF-3: instances whose pose the last update left pending (outside the frustum, set_pose_culling)
+	s["buffer_uploads"] = BufferUploads;
 	s["buffer_writes"] = BufferWrites;       // SMOOTH-1: models whose MultiMesh buffers were rewritten in the last update
 	s["mapper_ms"] = MapperMs;
 	s["visible_draw_instances"] = VisibleInstances;

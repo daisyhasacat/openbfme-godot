@@ -245,6 +245,21 @@ func _instancer_pool_stress(instancer: Node3D, model: int) -> void:
 	for i in 100:
 		ids.append(instancer.add_instance(model, Transform3D(Basis.IDENTITY, Vector3(float(i) * 2.0, 0.0, 0.0)), "GUManMocap_IDLB", 0.0, 1.0))
 	instancer.set_playing(false)
+	instancer.set_global_time(0.0)
+	instancer.update_now()
+	var initial_palette: PackedFloat32Array = instancer.get_instance_palette(ids[0])
+	instancer.set_global_time(1.0 / 30.0)
+	instancer.update_now()
+	_check(instancer.get_instance_palette(ids[0]) != initial_palette, "idle animation uploads changed bone matrices")
+	_check(instancer.get_stats().buffer_uploads == 0, "bone motion with unchanged visibility/fade reuses opaque instance buffers: %s" % [instancer.get_stats()])
+	instancer.set_instance_opacity(ids[0], 0.5)
+	instancer.update_now()
+	_check(instancer.get_stats().buffer_uploads == 3, "opacity changes upload all three soldier draw items")
+	instancer.update_now()
+	_check(instancer.get_stats().buffer_uploads == 0, "unchanged opacity reuses the submitted buffers")
+	instancer.set_instance_opacity(ids[0], 1.0)
+	instancer.update_now()
+	_check(instancer.get_stats().buffer_uploads == 3, "restoring opacity updates the GPU buffers")
 	var mismatches := 0
 	var updates := 0
 	for iteration in 120:

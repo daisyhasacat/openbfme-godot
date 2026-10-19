@@ -220,6 +220,7 @@ private:
 		Ref<MultiMesh> MM;
 		PackedFloat32Array Buffer;
 		int Allocated = 0;
+		bool BufferUploadRequired = true; // MultiMesh storage was allocated/reallocated
 		std::vector<int> Order;          // instance ids as written by the last write_buffers
 		W3DSortBatch Batch;              // SMOOTH-1: the depths of the last write (sorted items), kept for the S-029 check of frames that skip this model
 		bool HasBatch = false;
@@ -326,6 +327,7 @@ private:
 	std::vector<std::pair<StringName, StringName>> MapperNames; // SMOOTH-1: per stage, the w3d_m<stage>r0 / r1 uniform names
 	std::uint32_t MapperSyncMs = 0xFFFFFFFFu;     // the mapper clock of the last update_mappers
 	size_t MapperCount = 0;
+	int BufferUploads = 0; // MultiMesh uploads whose packed contents changed
 	int PoseEvaluations = 0, BufferWrites = 0;   // stats of the last update: instances posed, models rewritten
 
 	double GlobalTime = 0.0;
