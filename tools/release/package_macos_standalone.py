@@ -107,9 +107,9 @@ def main():
         info_path = app / 'Contents/Info.plist'
         info = plistlib.loads(info_path.read_bytes())
         info['LSMinimumSystemVersion'] = '26.0'
-        info['CFBundleIconFile'] = 'second-age.icns'
+        info['CFBundleIconFile'] = 'openbfme.icns'
         info_path.write_bytes(plistlib.dumps(info))
-        shutil.copy2(ROOT / 'godot/assets/second-age.icns', app / 'Contents/Resources/second-age.icns')
+        shutil.copy2(ROOT / 'godot/assets/app_icon/openbfme.icns', app / 'Contents/Resources/openbfme.icns')
         executable = app / 'Contents/MacOS' / info['CFBundleExecutable']
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise RuntimeError('Exported app executable is missing or not executable')
