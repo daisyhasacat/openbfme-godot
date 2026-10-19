@@ -5,6 +5,12 @@
 // The templates are found by module class in the loaded data (no template name is hard-coded where a search can find one); the test prints which one it used.
 
 #include "doctest.h"
+#include "GameLogic/Module/CrateCollide.h"
+#include "Common/Money.h"
+#include "Common/XferSave.h"
+#include "Common/XferLoad.h"
+#include "GameLogic/AI/AIWorld.h"
+#include "PathfindTestUtil.h"
 
 #include "Common/PlayerList.h"
 #include "Common/StateHash.h"
@@ -700,4 +706,174 @@ TEST_CASE("modules retail: HeroDie makes its special power ready at once on the 
 	CHECK(sp->getReadyFrame() == g.logic->getFrame());
 	CHECK(g.hash() != h0);
 	CHECK_FALSE(reportHas(g, "[S-980] HeroDie")); // lane MODULES-2: the walk order is unobservable (RW 0x8C642D only sets the ready frame)
+}
+
+namespace {
+struct CrateGame : Game
+{
+	pathtest::SyntheticTerrain terrain{100, 100};
+	AIWorldConfig config;
+	std::unique_ptr<AIWorld> ai;
+	CrateGame(RetailObjectWorld &world, retailtest::Mount &mount) : Game(world, mount)
+	{
+		std::string error;
+		REQUIRE_MESSAGE(AIWorldConfigLoader::load(*mount.fs, config, &error), error);
+		ai = std::make_unique<AIWorld>(*logic, config, world.iniMacros());
+		ai->attach();
+		ai->newMap(terrain);
+	}
+	~CrateGame() { logic->reset(); ai.reset(); }
+};
+}
+
+TEST_CASE("crate pickups retail: walking over a fixed-value gold chest pays once and removes it")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	CrateGame g(*sh.world, *sh.mount);
+	Object *chest = g.make(sh.world->things().findTemplate("TreasureChest100"), g.players.getNeutralPlayer());
+	Object *unit = g.make(sh.world->things().findTemplate("GondorFighter"));
+	auto *crate = moduleOf<SalvageCrateCollide>(chest);
+	REQUIRE(crate);
+	const auto before = g.player->getMoney()->countMoney();
+	g.logic->random().enableCallLog(true);
+	g.logic->partition().update();
+	g.ai->processCollisions();
+	REQUIRE_MESSAGE(chest->isDestroyed(), "pickup valid=", crate->wouldLikeToCollideWith(*unit), " AI=", unit->getAIUpdateInterface(), " world=", unit->isInWorld(), " dead=", unit->isEffectivelyDead(), " immobile=", unit->isKindOfName("IMMOBILE"));
+	CHECK(crate->executed() == true);
+	CHECK(g.player->getMoney()->countMoney() == before + 100);
+	CHECK(g.logic->random().callLog().size() == 1);
+	crate->onCollide(unit, nullptr, nullptr);
+	CHECK(g.player->getMoney()->countMoney() == before + 100);
+	CHECK(g.logic->random().callLog().size() == 1);
+	REQUIRE(g.logic->fxEvents().perSite().count("CrateCollide") == 1);
+	CHECK(g.logic->fxEvents().perSite().at("CrateCollide") == 1);
+	CHECK(g.logic->economy().incomeLog().back().amount == 100);
+	XferSave saved;
+	crate->xfer(saved);
+	Object *replacement = g.make(sh.world->things().findTemplate("TreasureChest100"), g.players.getNeutralPlayer());
+	auto *loaded = moduleOf<SalvageCrateCollide>(replacement);
+	REQUIRE(loaded);
+	XferLoad reader(saved.data());
+	loaded->xfer(reader);
+	REQUIRE(reader.atEnd());
+	CHECK(loaded->executed() == true);
+	loaded->onCollide(unit, nullptr, nullptr);
+	CHECK(replacement->isDestroyed() == false);
+	CHECK(g.player->getMoney()->countMoney() == before + 100);
+
+}
+
+TEST_CASE("crate pickups retail: shield promotes its collector once; ground contact is required")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	CrateGame g(*sh.world, *sh.mount);
+	Object *shield = g.make(sh.world->things().findTemplate("TreasureChestLevelUpMedium"), g.players.getNeutralPlayer());
+	Object *unit = g.make(sh.world->things().findTemplate("GondorFighter"));
+	auto *crate = moduleOf<VeterancyCrateCollide>(shield);
+	REQUIRE(crate);
+	REQUIRE(unit->getExperienceTracker());
+	CHECK(unit->getExperienceTracker()->getRank() == 1);
+	Coord3D above{ 500.0f, 500.0f, 100.0f };
+	unit->setPosition(&above);
+	crate->onCollide(unit, nullptr, nullptr);
+	CHECK(shield->isDestroyed() == false);
+	CHECK(unit->getExperienceTracker()->getRank() == 1);
+	Coord3D ground{ 500.0f, 500.0f, 0.0f };
+	unit->setPosition(&ground);
+	g.logic->partition().update();
+	g.ai->processCollisions();
+	CHECK(shield->isDestroyed() == true);
+	CHECK(unit->getExperienceTracker()->getRank() == 2);
+	crate->onCollide(unit, nullptr, nullptr);
+	CHECK(unit->getExperienceTracker()->getRank() == 2);
+}
+
+TEST_CASE("crate pickups retail: disallowed AI and immobile collectors leave gold untouched")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	CrateGame g(*sh.world, *sh.mount);
+	Object *chest = g.make(sh.world->things().findTemplate("SalvageCrate"), g.players.getNeutralPlayer());
+	Object *enemy = g.make(sh.world->things().findTemplate("GondorFighter"), g.enemy);
+	auto *crate = moduleOf<SalvageCrateCollide>(chest);
+	REQUIRE(crate);
+	g.logic->random().enableCallLog(true);
+	crate->onCollide(enemy, nullptr, nullptr);
+	CHECK(chest->isDestroyed() == false);
+	CHECK(g.logic->random().callLog().size() == 0);
+	Object *structure = g.make(sh.world->things().findTemplate("GondorFarm"));
+	crate->onCollide(structure, nullptr, nullptr);
+	CHECK(chest->isDestroyed() == false);
+	Object *neutral = g.make(sh.world->things().findTemplate("GondorFighter"), g.players.getNeutralPlayer());
+	crate->onCollide(neutral, nullptr, nullptr);
+	CHECK(chest->isDestroyed() == false);
+}
+
+TEST_CASE("crate pickups: contact inference is explicitly reported")
+{
+	CHECK(std::string(CrateCollide::contactStop()) == "[S-5900] crate pickups use ground bounding-circle overlaps in the partition/collision phase, in crate and picker ID order; retail's full contact geometry and pair order are not reproduced (S-581, S-780)");
+}
+
+TEST_CASE("crate pickups: specialized limitations are explicitly reported")
+{
+	CHECK(std::string(CrateCollide::limitationsStop()) == "[S-5901] crate pickups do not reproduce the CREEP-controller and undetected-defector gates, significant-height tolerance, GUI rank label, ExecuteAnimation or pilot script-name transfer; CREEP collectors and pilot crates are refused");
+}
+
+TEST_CASE("crate pickups retail: lair treasure allows AI collection and capped shields stay available")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	CrateGame g(*sh.world, *sh.mount);
+	Object *chest = g.make(sh.world->things().findTemplate("TreasureChest1"), g.players.getNeutralPlayer());
+	Object *unit = g.make(sh.world->things().findTemplate("GondorFighter"), g.enemy);
+	auto *gold = moduleOf<SalvageCrateCollide>(chest);
+	REQUIRE(gold);
+	const auto before = g.enemy->getMoney()->countMoney();
+	g.logic->random().enableCallLog(true);
+	gold->onCollide(unit, nullptr, nullptr);
+	REQUIRE(chest->isDestroyed());
+	CHECK(g.logic->random().callLog().size() == 2);
+	// tolerance: retail TreasureChest1 draws an inclusive random reward of 50..100.
+	CHECK(g.enemy->getMoney()->countMoney() >= before + 50);
+	// tolerance: the random reward must remain within the retail INI range.
+	CHECK(g.enemy->getMoney()->countMoney() <= before + 100);
+	Object *shield = g.make(sh.world->things().findTemplate("TreasureChestLevelUpMoria"), g.players.getNeutralPlayer());
+	auto *xpCrate = moduleOf<VeterancyCrateCollide>(shield);
+	REQUIRE(xpCrate);
+	unit->getExperienceTracker()->gainExpForLevel(2, true, false);
+	REQUIRE(unit->getExperienceTracker()->getRank() == 3);
+	xpCrate->onCollide(unit, nullptr, nullptr);
+	CHECK(shield->isDestroyed() == false);
+	Object *fresh = g.make(sh.world->things().findTemplate("GondorFighter"));
+	xpCrate->onCollide(fresh, nullptr, nullptr);
+	CHECK(shield->isDestroyed() == true);
+	CHECK(fresh->getExperienceTracker()->getRank() == 2);
+}
+
+TEST_CASE("crate pickups retail: destroyed lair treasure can be collected through the collision phase")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	CrateGame g(*sh.world, *sh.mount);
+	Object *lair = g.make(sh.world->things().findTemplate("HillTrollLair"));
+	auto *expose = moduleOf<RebuildHoleExposeDie>(lair);
+	REQUIRE(expose);
+	lair->kill(DEATH_NORMAL);
+	Object *hole = g.logic->findObjectByID(expose->holeId());
+	REQUIRE(hole);
+	hole->kill(DEATH_NORMAL);
+	std::vector<Object *> treasure;
+	for (Object *obj = g.logic->getFirstObject(); obj; obj = obj->getNextObject())
+		if (obj->getTemplate()->getName() == "TreasureChest1") treasure.push_back(obj);
+	REQUIRE(treasure.size() == 4);
+	Object *unit = g.make(sh.world->things().findTemplate("GondorFighter"));
+	const auto before = g.player->getMoney()->countMoney();
+	for (Object *chest : treasure)
+	{
+		unit->setPosition(chest->getPosition());
+		g.logic->partition().update();
+		g.ai->processCollisions();
+	}
+	for (Object *chest : treasure) CHECK(chest->isDestroyed() == true);
+	// tolerance: each of the four lair chests pays a random inclusive 50..100.
+	CHECK(g.player->getMoney()->countMoney() >= before + 200);
+	// tolerance: the total cannot exceed four maximum retail chest rewards.
+	CHECK(g.player->getMoney()->countMoney() <= before + 400);
 }
