@@ -173,14 +173,6 @@ func close_browser():
   shell.set_process_input(previous_input);shell.set_process(previous_shell_processing);shell.visible=previous_shell_visible
  # The built preview stays: reopening on the same map shows it at once.
 
-## Loads what the first preview needs before the browser opens (the skirmish screen calls it): the object templates (about 1 s) and the
-## lobby's current map, so Explore maps opens on a finished preview.
-func prepare():
- if not _setup_objects():return
- var key=str(shell.lobby_state().get('map',''))
- for entry in shell.lobby_map_catalog():
-  if entry.key==key:_build_scene(entry);return
-
 func _filter():
  var previous=filtered.duplicate();filtered=[]
  var query=search.text.strip_edges().to_lower()

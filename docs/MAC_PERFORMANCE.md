@@ -62,3 +62,30 @@ contents, total height, scroll position and selection against the unoptimized
 path for fixed, scroll-at-end and auto-scroll/purge lists. It pins 254 font
 measurements for 64 rows and checks font/column invalidation. Retail Skirmish
 and lobby tests cover the resulting map order and controls.
+
+## Late lobby-animation stall: hidden 3D browser
+
+A separate stall remained after the map-list changes. `skirmish_map_search.gd`
+waited ten active lobby frames, then created the optional Explore maps browser
+and synchronously prepared the selected map's terrain, object templates and
+models while the browser was hidden. A windowed Metal trace recorded a
+1,118 ms frame gap at that point, with 55 new surface pipelines.
+
+The search overlay now creates the browser only when Explore maps is pressed.
+Its existing `show_browser` path selects and builds the initial preview, and
+subsequent opens reuse the browser. The automatic countdown and its unused
+`prepare` entry point are removed. Ordinary lobby entry, search and map
+selection no longer build this optional 3D scene. Opening Explore maps for the
+first time still pays its preview-loading cost.
+
+The repeated windowed transition had no hidden MAP PREVIEW build or matching
+late frame gap; an initial 31 ms frame from the lobby's native animated 3D
+background remained, separate from the removed late stall. This observation
+is not a guarantee about all maps or renderer caches. Temporary native timing
+probes were removed from the final build.
+
+`godot/tests/skirmish_lobby_lazy_browser_test.gd` needs no retail data and
+checks lobby idle/re-entry, native search, no hidden creation/preparation,
+explicit browser opening and instance reuse. The retail
+`skirmish_map_browser_test.gd` also passes, including preview construction and
+map selection/install behavior.

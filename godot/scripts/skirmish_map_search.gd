@@ -3,7 +3,6 @@ extends CanvasLayer
 
 var fs: RefCounted
 var world: Node # the game's GameWorld: the browser resolves the fortress model with it instead of loading its own
-var preload_frames := -1 # frames until the browser preloads; -1: not scheduled
 var browser: CanvasLayer
 var browse: Button
 var shell: Node
@@ -64,7 +63,6 @@ func _make_browser() -> void:
 
 func _open_browser():
 	_make_browser()
-	preload_frames = -1
 	browser.show_browser()
 
 func _search(text: String) -> void:
@@ -82,17 +80,9 @@ func _process(_delta: float) -> void:
 	if not active:
 		if field.has_focus(): field.release_focus()
 		field.hide();browse.hide()
-		preload_frames = -1
 		return
-	# Preload the browser's object templates and the current map's preview once the skirmish screen has drawn (a few frames in), so
-	# Explore maps opens on a finished preview.
-	if not is_instance_valid(browser) and preload_frames < 0:
-		preload_frames = 10
-	elif preload_frames > 0:
-		preload_frames -= 1
-		if preload_frames == 0:
-			_make_browser()
-			browser.prepare()
+	# The optional 3D browser is created by _open_browser only. Preparing its
+	# terrain and models here stalls the lobby animation even while it is hidden.
 	if not field.visible:
 		field.text = shell.lobby_state().get("map_search", "")
 	field.show();browse.visible=not is_instance_valid(browser) or not browser.open
