@@ -42,3 +42,15 @@ position. The optional initializer is now applied through the VM's property
 setter. EA's property-copy order remains disclosed under S-104; the real retail
 movie test pins all 160 tick positions and that disclosure. The builder screenshot
 run now captures the actual Attributes page as well as Appearance.
+
+The in-game Palantir now uses Create-a-Hero's model-state `PortraitImageName`
+instead of the generic template's Wanderer portrait. Donor
+`CreateAHeroHero::Update` (BFME2 RVA 0x4087E0..0x408802) caches the first
+non-null draw-module portrait through `Drawable` RVA 0x272709; the selected
+portrait getter (RVA 0x2946AB) prefers that image to `SelectPortrait`.
+The port resolves the object's current model flags with the draw runtime's
+existing matcher. Retail CreateAHeroModels.inc supplies the expectations:
+Shield Maiden = CPShieldMaiden, Captain = CPCaptainofGondor. The HUD regression
+checks those distinct portraits and a mixed selection of two heroes sharing
+the same object template. The ordinary template comparison shortcut must not
+skip custom heroes. S-760 still covers disguise/template overrides.
