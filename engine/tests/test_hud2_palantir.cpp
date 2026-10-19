@@ -9,6 +9,7 @@
 #include "GameClient/GUI/ShellServices.h"
 #include "GameClient/InGameHud.h"
 #include "GameClient/PalantirCommandUI.h"
+#include "GameClient/InGameHeroSelect.h"
 #include "Libraries/Source/Apt/AptCharacterInst.h"
 #include "Libraries/Source/Apt/AptRenderList.h"
 
@@ -284,6 +285,10 @@ TEST_CASE("hud2 palantir: custom heroes use their model-state portraits rather t
 	captain->setModelConditionState(ModelCondition::indexOf("CREATE_A_HERO_00"), true);
 	CHECK(PalantirCommandUI::objectPortrait(*maiden) == "CPShieldMaiden");
 	CHECK(PalantirCommandUI::objectPortrait(*captain) == "CPCaptainofGondor");
+	CHECK(InGameHeroSelect::buttonImage(*maiden) == "HICAHShieldMaiden");
+	CHECK(InGameHeroSelect::buttonImage(*captain) == "HICAHCaptainGondor");
+	maiden->setModelConditionState(ModelCondition::indexOf("MOUNTED"), true);
+	CHECK(InGameHeroSelect::buttonImage(*maiden) == "HICAHShieldMaiden");
 	h.hud->input().ui().selectObject(maiden->getID());
 	h.frames(10);
 	CHECK(h.hud->palantir()->portraitShown() == "CPShieldMaiden");

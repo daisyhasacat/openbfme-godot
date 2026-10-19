@@ -40,7 +40,7 @@
 //   initObject / ~Object; the camera position of the sort is the view's look-at point (View vslot 0x118 was not read); the "used" round's time-out (RW 0x92BA91,
 //   + 0x1DC) is ported; the hot key action of the nearest builder keeps the camera rule of a button press; the over-button handlers (RW 0x92BF34: the help box
 //   with the button's description) are lane HOVER-1's (S-4612); ordered client events drive OnHeroAttacked and the script's FlashHeroButton (lane ROTWK-C); a Create-a-Hero hero
-//   still shows its template's ButtonImage (its record's image is S-1405's).
+//   uses its model state's ButtonImageName; generated custom screenshots remain S-1405's.
 
 #pragma once
 

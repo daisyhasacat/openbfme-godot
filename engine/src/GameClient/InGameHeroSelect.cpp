@@ -2,6 +2,7 @@
 // See GameClient/InGameHeroSelect.h for the target facts.
 
 #include "GameClient/InGameHeroSelect.h"
+#include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.h"
 
 #include "Common/ArchiveFileSystem.h"
 #include "Common/AsciiString.h"
@@ -232,7 +233,20 @@ void InGameHeroSelect::flashHeroButton(const std::string &templateName, int fram
 
 std::string InGameHeroSelect::buttonImage(const Object &obj)
 {
-	// RW 0x73D0BA -> RW 0x73CFEF: the template's ButtonImage (+ 0x78). The CREATE_A_HERO branch (the Create-a-Hero record's image) is S-2521 / S-1405
+	// Donor CreateAHeroHero::Update caches the drawable's model-state button
+	// image alongside its portrait (see PalantirCommandUI::objectPortrait).
+	if (obj.isKindOfName("CREATE_A_HERO"))
+	{
+		ModelConditionFlags flags;
+		for (int bit = 0; bit < MODELCONDITION_COUNT; ++bit) flags.set(bit, obj.testModelCondition(bit));
+		for (const auto &module : obj.getTemplate()->drawModules().nuggets())
+		{
+			const auto *data = dynamic_cast<const W3DModelDrawModuleData *>(module.data.get());
+			const ModelConditionInfo *state = data ? data->findBestInfo(flags) : nullptr;
+			if (state && !state->buttonImageName.empty()) return state->buttonImageName;
+		}
+	}
+	// RW 0x73D0BA -> RW 0x73CFEF: ordinary template ButtonImage.
 	if (const FieldValue *v = obj.getTemplate()->findField("ButtonImage"))
 	{
 		if (const std::string *s = std::get_if<std::string>(v))
