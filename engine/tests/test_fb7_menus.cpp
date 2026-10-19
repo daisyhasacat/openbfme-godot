@@ -402,6 +402,12 @@ TEST_CASE("cah2 main menu retail: a request with no screen (War of the Ring) sho
 	auto *menu = dynamic_cast<AptMainMenu *>(fx.shell->top());
 	REQUIRE(menu);
 	CHECK(AptMainMenu::unavailableScreenName("StopGameMovie").empty());
+	// lane CAMPMENU-1: retail's Solo Play campaign buttons start the campaigns (the host's campaign flow), they never get the box; the BFME2 campaigns
+	// (switched off) are refused by name
+	CHECK(AptMainMenu::unavailableScreenName("Expansion1Campaign").empty());
+	CHECK(AptMainMenu::unavailableScreenName("BonusCampaign").empty());
+	CHECK(AptMainMenu::unavailableText("BFME2GoodCampaign") == "The BFME2 Good campaign is not available yet: OpenBFME does not have it yet.");
+	CHECK(AptMainMenu::unavailableText("BFME2EvilCampaign") == "The BFME2 Evil campaign is not available yet: OpenBFME does not have it yet.");
 	CHECK(menu->screenUnavailable("StopGameMovie").empty());
 	const std::string line = menu->screenUnavailable("WarOfTheRing");
 	CHECK(line.rfind("[S-1914] War of the Ring", 0) == 0);
@@ -3120,4 +3126,114 @@ TEST_CASE("opts6 menu navigation retail: the main menu's OPTIONS > SETTINGS by k
 	fx.tick(80);
 	REQUIRE(fx.shell->top());
 	CHECK(fx.shell->top()->filename() == "Options.apt");
+}
+
+// ---- lane SHELLFIX-1: the Options menu in both main menu styles (the owner's v0.4.9 reports at 2560 x 1440) ---------------------------------------
+namespace
+{
+// the movie's own ACCEPT button: the first button under the visible clip ".Accept" (found from the movie's tree, not through the screen's code)
+AptButtonInst *movieAccept(ShellFx &fx, AptOptionsScreen *options)
+{
+	return firstButtonUnder(findClip(fx.wm->apt().level(options->level()), "Accept"));
+}
+
+// The OpenBFME menu's ACCEPT in one movie: the updates from the button's release until the main menu is on top again, the device acting on the page's
+// Accept event as game.gd does (openbfme_options_screen.gd close(true): AptMenuPlayer.openbfme_menu_finish -> finishMenu)
+int menuAcceptUpdates(AptRetail &mount, const std::string &buttonName)
+{
+	ShellFx fx(mount, "StaticGameLOD = High\n");
+	AptOptionsScreen *options = openMenu(fx, false);
+	fx.tick(30);
+	options->takeExtensionEvents(); // the opening's Entry
+	AptButtonInst *accept = movieAccept(fx, options);
+	REQUIRE(accept);
+	CHECK(accept->instName() == buttonName);
+	clickButton(fx, accept);
+	int updates = 0;
+	bool finished = false;
+	for (; updates < 120 && fx.shell->top() && fx.shell->top()->filename() == "Options.apt"; ++updates)
+	{
+		if (!finished)
+		{
+			for (const OpenBFMEPageEvent &e : options->takeExtensionEvents())
+			{
+				if (e.kind == OpenBFMEPageEvent::Kind::Accept)
+				{
+					options->finishMenu(true);
+					finished = true;
+				}
+			}
+		}
+		fx.tick(1);
+	}
+	REQUIRE(fx.shell->top());
+	CHECK(fx.shell->top()->filename() == "MainMenu.apt");
+	return updates;
+}
+} // namespace
+
+// Before: the page took the bottom bar's clicks only from a button named "bttn" (RotWK 2.01's Options.apt). BFME2 1.06's movie leaves it unnamed,
+// so in the BFME2 style the click reached the movie, which played its closing animation before it sent AptOptions::Save: ACCEPT came back 0.55 s late
+// (measured in the game: 33 frames at 60 Hz) where the RotWK style took 2 frames.
+TEST_CASE("shellfix1 options retail: the OpenBFME menu's ACCEPT goes back to the main menu on the next update in both styles' Options.apt")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	CHECK(menuAcceptUpdates(mount, "bttn") == 1);
+	retailtest::Mount *bfme2 = retailtest::bfme2Mount();
+	REQUIRE(bfme2);
+	REQUIRE_MESSAGE(bfme2->fs, bfme2->error);
+	AptRetail bfme2Only{ *bfme2->fs };
+	REQUIRE(bfme2Only.fs.getArchiveFilenameForFile("Options.apt").find("options.big") != std::string::npos); // BFME2 1.06's own movie
+	CHECK(menuAcceptUpdates(bfme2Only, "") == 1); // an unnamed button (the player's list_buttons calls it "instance14")
+}
+
+// Retail's own ACCEPT (the reference for the menu's): RotWK 2.01's Options.apt plays its closing animation, then sends AptOptions::Save (RW 0x91FC9C),
+// whose close (RW 0x91EA39) only raises the shell's pop request (Shell + 0x310 = 1, RW 0x62215B): the main menu is back on the next shell update. The
+// updates are the movie's 30 Hz frames (33 ms each): 18 updates, 0.6 s. The OpenBFME menu takes the click before the movie sees it (mouseFilter), so its
+// ACCEPT skips that animation (1 update, the test above).
+TEST_CASE("shellfix1 options retail: retail's own ACCEPT on RotWK 2.01's Options.apt takes the movie's closing animation, then one update")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	ShellFx fx(mount, "StaticGameLOD = High\n");
+	AptOptionsScreen *options = fx.openOptionsFromMainMenu();
+	REQUIRE(options);
+	fx.tick(30);
+	clickButton(fx, movieAccept(fx, options));
+	int updates = 0;
+	for (; updates < 120 && fx.shell->top() && fx.shell->top()->filename() == "Options.apt"; ++updates)
+	{
+		fx.tick(1);
+	}
+	MESSAGE("retail ACCEPT: " << updates << " updates");
+	REQUIRE(fx.shell->top());
+	CHECK(fx.shell->top()->filename() == "MainMenu.apt");
+	CHECK(updates == 18);
+}
+
+// BFME2 1.06's Options.apt draws each settings frame's border as an unnamed clip of Main beside the named frame (depths 3, 27, 51; dump_tree of the
+// movie); the menu hid only the named frames, so the borders crossed the OpenBFME page (the owner's screenshot). RotWK 2.01's Main has no such clips.
+TEST_CASE("shellfix1 options retail: in the BFME2 style no frame border of the retail page shows over the OpenBFME menu")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	retailtest::Mount *bfme2 = retailtest::bfme2Mount();
+	REQUIRE(bfme2);
+	REQUIRE_MESSAGE(bfme2->fs, bfme2->error);
+	AptRetail bfme2Only{ *bfme2->fs };
+	ShellFx fx(bfme2Only, "StaticGameLOD = High\n");
+	AptOptionsScreen *options = openMenu(fx, false);
+	fx.tick(30);
+	AptCharacterInst *main = fx.wm->apt().resolvePath(fx.wm->apt().level(options->level()), "Main");
+	REQUIRE(main);
+	REQUIRE(main->asSprite());
+	for (int depth : { 3, 27, 51 })
+	{
+		AptCharacterInst *border = main->asSprite()->childAtDepth(depth);
+		REQUIRE_MESSAGE(border, "depth " << depth);
+		CHECK(border->instName().empty());
+		CHECK_FALSE_MESSAGE(border->globallyVisible(), "depth " << depth);
+	}
+	// the version label's holder (depth 1: "Version 2.1" above ACCEPT) stays
+	AptCharacterInst *version = main->asSprite()->childAtDepth(1);
+	REQUIRE(version);
+	CHECK(version->globallyVisible());
 }

@@ -283,9 +283,17 @@ static func launcher_source(m: Dictionary, platform: String, exe: String) -> Dic
 	return {"ok": false, "error": "the release %s has no launcher: %s is not in its package" % [m.version, exe]}
 
 
+## MACFIX-1 (issue #47): a file Finder writes into any folder it shows (its view settings .DS_Store, a custom folder icon "Icon\r") or
+## an AppleDouble "._<name>" (extended attributes copied to a volume without them). No release package holds one, nothing runs one, and
+## inside an app bundle the code seal rules on them by itself (an AppleDouble file breaks the seal, .DS_Store is outside it).
+static func finder_metadata(name: String) -> bool:
+	return name == ".DS_Store" or name == "Icon\r" or name.begins_with("._")
+
+
 ## "" when the files of folder `dir` are exactly the signed `files` (the same names, sizes and SHA-256; `extra_ok` names files that may
-## also be there; `any_extra`: other files are not looked at), else what differs
-static func check_files(dir: String, files: Dictionary, extra_ok: Array = [], any_extra := false) -> String:
+## also be there; `any_extra`: other files are not looked at; `finder_ok`: Finder's own files, finder_metadata, may be there), else what
+## differs
+static func check_files(dir: String, files: Dictionary, extra_ok: Array = [], any_extra := false, finder_ok := false) -> String:
 	for rel in files:
 		var p := dir.path_join(rel)
 		if not FileAccess.file_exists(p):
@@ -300,7 +308,7 @@ static func check_files(dir: String, files: Dictionary, extra_ok: Array = [], an
 		if hc.finish().hex_encode() != files[rel].sha256:
 			return "%s does not match its signed SHA-256" % rel
 	for rel in ([] if any_extra else _list(dir, "")):
-		if not files.has(rel) and not rel in extra_ok:
+		if not files.has(rel) and not rel in extra_ok and not (finder_ok and finder_metadata(rel.get_file())):
 			return "%s is not a file of the signed package" % rel
 	return ""
 

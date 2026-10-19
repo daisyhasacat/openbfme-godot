@@ -2,13 +2,16 @@
 ## brings them back, read from the scene (AptMenuPlayer.get_backdrop_state: the backdrop the canvas drew, the front-end background's visible commands in
 ## the render list), the real game shows no developer text (game.gd _dev_text_on_screen) and a cinematic's letterbox hides the Palantir as retail's
 ## doLetterBoxMode (RW 0x7BC8B7: HideControlBar). scenes/game.tscn runs as a child process:
-##   1. the main menu's Bonus campaign (AptMainMenu::BonusCampaign), its mission won by the test hooks, the way back to the main menu;
+##   1. the main menu's Bonus campaign started with the player's clicks (lane CAMPMENU-1: Solo Play, retail's SoloPlayNav.BonusCampaign with Options.ini's
+##   BCU = true, the movie's LevelOfDifficulty Hard -> AptMainMenu::BonusCampaign), its mission won by the test hooks, the way back to the main menu;
+##   before its unlock (no BCU) the same clicks find only its disabled face and start nothing;
 ##   2. --campaign=ANGMAR_CAMPAIGN --mission=2 (Amon Sul) won, the next mission (Dark Eye) starts; with --dev-overlay (the check sees the overlay); lane
 ##   CAMPSAVE-1: between them the score screen and CampaignMenu.apt (the shell's pictures are back there), Next Mission clicked by --campaign-win;
 ##   3. the main menu's Continue (AptMainMenu::ContinueCampaign, RW 0x91B50D: lane CAMPSAVE-1, it loads 00000000.sav when the Save folder holds it,
 ##   which RotWK never writes: nothing starts; the campaign is continued from Load Game, tests/campsave1 scenario "continue");
 ##   4. a skirmish from the menu, its score screen's Continue, the main menu's Load Replay and the replay;
-##   5. the movies: the bonus mission's intro movie whole (frames, length, audio events); 6. the campaign's opening movie skipped as by Esc; 7. the
+##   5. the movies: the bonus mission's intro movie whole (frames, length, audio events); 6. the campaign started with the clicks Solo Play,
+##   SoloPlayNav.Expansion1Campaign, LevelOfDifficulty Easy (lane CAMPMENU-1), its opening movie skipped as by Esc; 7. the
 ##   start-up movies.
 ## (Restart: end_test.gd --quit-restart; a LAN game: net_end_test.gd.)
 ##
@@ -47,6 +50,23 @@ func _game(args: Array, expect_exit := 0) -> String:
 			lines.append(line)
 	print("    " + "\n    ".join(lines))
 	return text
+
+
+## lane CAMPMENU-1: the run's "GAME clicked _levelN.<path>" lines name `paths` in this order (each the clicked button itself or the clip it is under)
+func _clicked(text: String, paths: Array) -> bool:
+	var at := 0
+	for path in paths:
+		var found := -1
+		for line in text.substr(at).split("\n"):
+			if line.begins_with("GAME clicked _level"):
+				var rest := line.substr(line.find(".") + 1)
+				if rest == path or rest.begins_with(path + "."):
+					found = text.find(line, at)
+					break
+		if found < 0:
+			return false
+		at = found + 1
+	return true
 
 
 ## the SHELL PICTURES line of `where`, "" when there is none
@@ -120,9 +140,21 @@ func _run() -> int:
 	# 1. the main menu's campaign button, the mission, the way back
 	# lane CAMPSAVE-1: the won bonus mission writes the bonus unlock (BCU) to Options.ini: the run's own file, never the tester's
 	var options := OS.get_temp_dir().path_join("openbfme-camp2-options-%d.ini" % OS.get_process_id())
-	var t1 := _game(["--campaign-menu=BonusCampaign:N", "--campaign-win", "--movies=off", "--options-file=" + options, "--shell-pictures-quit=3"])
+	# lane CAMPMENU-1: before the unlock (a fresh Options.ini: no BCU) retail's bonus button shows its disabled face (MainMenuUnlockBonusCampaign, RW
+	# 0x91BBAD): the player's clicks reach no button and no campaign starts
+	var t0 := _game(["--campaign-click=BonusCampaign:Hard", "--movies=off", "--options-file=" + options], -1)
+	_check(_clicked(t0, ["SoloPlayNav", "SoloPlayNav.BonusCampaign.bttnDisabled"]) and t0.contains("GAME FAIL")
+		and t0.contains("SoloPlayNav.BonusCampaign cannot be clicked: its disabled face took the click and nothing opened"),
+		"1: before the unlock the bonus campaign's button is its disabled face: clicked, it opens nothing")
+	_check(not t0.contains("CAMPAIGN start") and not t0.contains("GAME shell request: BonusCampaign"), "1: before the unlock nothing started")
+	var f0 := FileAccess.open(options, FileAccess.WRITE)
+	f0.store_string("BCU = true\n")
+	f0.close()
+	var t1 := _game(["--campaign-click=BonusCampaign:Hard", "--campaign-win", "--movies=off", "--options-file=" + options, "--shell-pictures-quit=3"])
 	DirAccess.remove_absolute(options)
-	_check(t1.contains("GAME campaign menu: AptMainMenu::BonusCampaign") and t1.contains("CAMPAIGN start ANGMAR_BONUS_CAMPAIGN"), "1: the main menu started the bonus campaign")
+	_check(_clicked(t1, ["SoloPlayNav", "SoloPlayNav.BonusCampaign", "LevelOfDifficulty.Hard"]), "1: Solo Play, Bonus campaign, Hard were clicked")
+	_check(t1.contains("GAME shell request: BonusCampaign ("), "1: the difficulty button sent AptMainMenu::BonusCampaign")
+	_check(t1.contains("CAMPAIGN start ANGMAR_BONUS_CAMPAIGN (difficulty 2)"), "1: the retail buttons started the bonus campaign at Hard")
 	_in_game_clean(t1, "campaign ANGMAR_BONUS_CAMPAIGN 0")
 	_check(t1.contains("CAMPAIGN back to the main menu"), "1: the campaign returned to the main menu")
 	_back_in_shell(t1)
@@ -158,7 +190,9 @@ func _run() -> int:
 	_check(t5.find("CAMPAIGN movie:") < t5.find("GAME SHELL PICTURES in game"), "5: the movie played before the mission started (after its loading screen)")
 	_in_game_clean(t5, "campaign ANGMAR_BONUS_CAMPAIGN 0")
 	# 6. the campaign's opening movie (Angmar_Campaign_Intro, BACO.vp6) from the main menu, skipped as by Esc after 3 s, then the first mission's intro
-	var t6 := _game(["--campaign-menu=Expansion1Campaign:N", "--movie-skip-after=3000", "--shell-pictures-quit=2"])
+	var t6 := _game(["--campaign-click=Expansion1Campaign:Easy", "--movie-skip-after=3000", "--shell-pictures-quit=2"])
+	_check(_clicked(t6, ["SoloPlayNav", "SoloPlayNav.Expansion1Campaign", "LevelOfDifficulty.Easy"]), "6: Solo Play, the campaign, Easy were clicked")
+	_check(t6.contains("CAMPAIGN start ANGMAR_CAMPAIGN (difficulty 0)"), "6: the retail buttons started the Rise of the Witch-king campaign at Easy")
 	var m6 := _movie(t6, "Angmar_Campaign_Intro")
 	_check(not m6.is_empty() and m6.error == "" and m6.skipped and int(m6.frame) >= 60 and int(m6.distinct_pictures) > 10,
 		"6: the campaign's opening movie played (its frames advanced) and Esc skipped it (%s)" % str(m6))

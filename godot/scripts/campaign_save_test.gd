@@ -330,7 +330,13 @@ func _run_single_player() -> bool:
 	await game._wait_seconds(3.0)
 	_shot("single-player-%s" % ("unlocked" if game._shell.is_bonus_campaign_unlocked() else "locked"))
 	print("CAMPSAVE1 single player page, bonus campaign unlocked: %s" % str(game._shell.is_bonus_campaign_unlocked()))
-	return true
+	# lane CAMPMENU-1: retail's list is the campaigns' only entry point (no OpenBFME panel); the bonus campaign's face follows the run's own Options.ini
+	# (BCU = true, read here from the file, not from the shell): its button, else its bttnDisabled face (MainMenu.apt, MainMenuUnlockBonusCampaign)
+	var unlocked: bool = not game._options_file.is_empty() and FileAccess.get_file_as_string(game._options_file).contains("BCU = true")
+	var entries: Array = game.solo_play_entries()
+	entries.sort()
+	var expected := ["BonusCampaign." + ("bttn" if unlocked else "bttnDisabled"), "Expansion1Campaign.bttn", "LoadGame.bttn", "Skirmish.bttn", "WarOfTheRing.bttn"]
+	return _check(entries == expected, "the Solo Play list's entries %s are retail's %s (Options.ini BCU %s)" % [entries, expected, unlocked])
 
 
 func _run_eight() -> bool:

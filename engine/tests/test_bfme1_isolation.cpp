@@ -6,10 +6,12 @@
 
 #include "IniTestUtil.h"
 #include "ObjectTestUtil.h"
+#include "RetailTestMount.h"
 
 #include "Common/Audio/AudioIni.h"
 #include "Common/BfmeGame.h"
 #include "Common/INI.h"
+#include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 #include "GameLogic/Module/LogicModules.h"
 #include "GameLogic/Module/BloodthirstyUpdate.h"
 #include "Libraries/WWVegas/WW3D2/assetmgr.h"
@@ -57,8 +59,8 @@ TEST_CASE("bfme1 isolation: the data decides the game (SubsystemLegend.ini witho
 	initest::Fixture rotwk(kRotwkLegends);
 	CHECK_FALSE(isBfme1Data(rotwk.fsys));
 	CHECK_FALSE(rotwk.env.bfme1Data());
-	initest::Fixture bfme2({ { "Data\\INI\\Default\\SubsystemLegend.ini", "; base legend\r\n" },
-		{ "Data\\INI\\CreateAHeroSystem.ini", "; BFME2 feature table\r\n" } });
+	// lane SHELLFIX-1: BFME2 1.06 on its own (the BFME2 menu style's shell source): the legend alone, plus BFME2's AwardSystem.ini
+	initest::Fixture bfme2({ { "Data\\INI\\Default\\SubsystemLegend.ini", "; legend\r\n" }, { "Data\\INI\\AwardSystem.ini", "; awards\r\n" } });
 	CHECK_FALSE(isBfme1Data(bfme2.fsys));
 	CHECK_FALSE(bfme2.env.bfme1Data());
 	INIEnvironment noFs;
@@ -206,4 +208,26 @@ TEST_CASE("bfme1 isolation: typed BloodthirstyUpdate stores legacy rows only in 
 	CHECK(data->m_bfme1InitiateVoice2 == "SecondVoice");
 	CHECK(BloodthirstyUpdateModuleData().m_bfme1NumToSacrifice == 1);
 	CHECK(bfme1StopLines()[0].find("BloodthirstyUpdate NumToSacrifice and InitiateVoice2 are stored but their runtime semantics are unported") != std::string::npos);
+}
+
+// lane SHELLFIX-1: the BFME2 main menu style's shell source is BFME2 1.06's archives alone. Read as BFME1 data, its menu models (Options.apt's and the
+// main menu's View3D SFE_MenuFrame ...) were looked for in BFME1's flat art\w3d\ and never drew ("render object SFE_MenuFrame is not registered")
+TEST_CASE("bfme1 isolation retail: BFME2 1.06's archives alone are BFME2 data; their menu models are found in its two-letter folders")
+{
+	retailtest::Mount *bfme2 = retailtest::bfme2Mount();
+	if (!bfme2)
+	{
+		retailtest::printSkip("bfme1 isolation retail (BFME2_INSTALL unset)");
+		return;
+	}
+	REQUIRE_MESSAGE(bfme2->fs, bfme2->error);
+	CHECK_FALSE(isBfme1Data(*bfme2->fs));
+	ArchiveW3DFileSource source(*bfme2->fs);
+	CHECK_FALSE(source.FlatAssetLayout());
+	CHECK(W3D_Asset_Path("sfe_menuframe", source.FlatAssetLayout()) == "art\\w3d\\sf\\sfe_menuframe.w3d");
+	CHECK(source.Exists(W3D_Asset_Path("sfe_menuframe", source.FlatAssetLayout())));
+	retailtest::Mount *pure = retailtest::pureMount();
+	REQUIRE(pure);
+	REQUIRE_MESSAGE(pure->fs, pure->error);
+	CHECK_FALSE(isBfme1Data(*pure->fs));
 }

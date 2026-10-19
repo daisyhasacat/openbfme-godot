@@ -2135,6 +2135,28 @@ AptCharacterInst *AptOptionsScreen::entryClip() const
 	return find(std::string("Main.FrameLeft.") + kEntryName);
 }
 
+AptButtonInst *AptOptionsScreen::barButton(int i) const
+{
+	// lane SHELLFIX-1: the button is the clip's direct child (RotWK: Buttons.Accept.bttn; BFME2: Buttons.Accept.instance14). Before, only ".bttn" was
+	// looked up, so with the BFME2 1.06 shell the page never took the bar's clicks: the movie played its closing animation (about 0.55 s) before it sent
+	// AptOptions::Save / Cancel, and ACCEPT returned late
+	AptCharacterInst *clip = i >= 0 && i < 3 ? find(kBarButtons[i]) : nullptr;
+	AptSpriteInst *sprite = clip ? clip->asSprite() : nullptr;
+	if (!sprite || !sprite->globallyVisible())
+	{
+		return nullptr;
+	}
+	for (AptCharacterInst *c : sprite->children())
+	{
+		AptButtonInst *button = c ? c->asButton() : nullptr;
+		if (button && button->globallyVisible())
+		{
+			return button;
+		}
+	}
+	return nullptr;
+}
+
 bool AptOptionsScreen::entryBox(float out[4]) const
 {
 	AptCharacterInst *entry = entryClip();
@@ -2199,6 +2221,22 @@ void AptOptionsScreen::setExtensionHidden(bool hidden)
 		if (AptCharacterInst *f = find(path))
 		{
 			f->visible = !hidden;
+		}
+	}
+	// lane SHELLFIX-1: BFME2 1.06's Options.apt draws each settings frame's border as an unnamed clip beside the named frame (Main's depths 3, 27 and 51;
+	// RotWK 2.01's movie has none: dump_tree of both). They go with the frames: every unnamed clip of Main that holds no text (the version label's
+	// holder holds one and stays)
+	if (AptCharacterInst *main = find("Main"))
+	{
+		if (AptSpriteInst *sprite = main->asSprite())
+		{
+			for (AptCharacterInst *c : sprite->children())
+			{
+				if (c && c->asSprite() && c->instName().empty() && !firstText(c, std::string()))
+				{
+					c->visible = !hidden;
+				}
+			}
 		}
 	}
 	if (AptCharacterInst *root = level() >= 0 ? windows().apt().level(level()) : nullptr)
@@ -2459,9 +2497,8 @@ bool AptOptionsScreen::mouseFilter(int kind, float x, float y)
 		for (int i = 0; i < 3 && hit < 0; ++i)
 		{
 			// the button's own hit area (the clip's bounds hold the hidden frames of its animation)
-			AptCharacterInst *b = find(std::string(kBarButtons[i]) + ".bttn");
-			AptButtonInst *button = b ? b->asButton() : nullptr;
-			if (button && button->globallyVisible() && button->hitTest(x, y))
+			AptButtonInst *button = barButton(i);
+			if (button && button->hitTest(x, y))
 			{
 				hit = i;
 			}

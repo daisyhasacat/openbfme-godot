@@ -118,6 +118,8 @@
 ##                           their windows, the volume sliders live with their samples; --opts4-size=WxH the window, --opts4-shots=DIR the screenshots
 ##     --opts5-check         the scripted check of tests/opts5_test.gd (scripts/opts5_check.gd): Options is the one OpenBFME menu, the original game's settings
 ##                           among its rows (their effects, Options.ini, CANCEL / RESET), the layout rules; --opts5-size=WxH, --opts5-shots=DIR
+##     --shellfix1-check     lane SHELLFIX-1 (scripts/shellfix1_check.gd): Options from the main menu (and, with OPENBFME_LOBBY, the online home) in the style
+##                           Options.ini starts with: the shell assets drawn by source, ACCEPT's return; --shellfix1-game (with --auto): the quit menu's Options
 ##     --opts5-game          (with --auto) after --advance seconds: the quit menu's Options opens the menu over the game (what may not change in a game greyed)
 ##     --opts6-check         lane OPTS-6 (scripts/opts6_check.gd): the menus' hit areas, keyboard and controller navigation; --opts6-size=WxH, --opts6-shots=DIR
 ##     --onlineux1-game      (with --auto, lane ONLINEUX-1 r2) scripts/onlineux1_check.gd: an online game given up by a failed rejoin, with Esc / Options open
@@ -221,6 +223,9 @@
 ##     --movies=off          (lane CAMP-1H) the campaign movies (intro, mission intros, PLAY_MOVIE_IN_GAME: their narration over black, S-1710) are not played
 ##     --campaign-menu=CMD[:ARG] (lane CAMP-2) once the main menu is shown, run its command AptMainMenu::CMD (Expansion1Campaign:N, BonusCampaign:N,
 ##                           ContinueCampaign), as its button does
+##     --campaign-click=BUTTON[:DIFFICULTY] (lane CAMPMENU-1) once the main menu is shown, the player's clicks: Solo Play, retail's SoloPlayNav.BUTTON
+##                           (Expansion1Campaign or BonusCampaign), then LevelOfDifficulty.DIFFICULTY (Easy, Medium (default) or Hard); a button that
+##                           cannot be clicked (the bonus campaign before its unlock) is a GAME FAIL
 ##     every game's start and every return to the shell print "GAME SHELL PICTURES <where>: ..." (lane CAMP-2: the backdrop and the front-end background as
 ##     the canvas drew them, and any developer text on screen; tests/camp2_test.gd)
 ##     --shell-pictures-quit=N (lane CAMP-2) quit (exit 0) once N SHELL PICTURES lines were printed
@@ -334,7 +339,6 @@ var _pending_menu_style := "rotwk"
 var _switching_menu_style := false
 var _shell_config := {}
 var _bfme2_shell_fs: RefCounted
-var _campaign_menu_buttons: CanvasLayer
 var _report := {}
 var _failed := ""
 var _loading_shot_done := false
@@ -472,6 +476,9 @@ var _menu_walk := "" # lane FB7-1: --menu-walk=DIR
 var _menu1_walk := "" # lane MENU-1: --menu1-walk=DIR (scripts/menu1_walk.gd)
 var _menu1_walk_on := false
 var _menustyle_check := false
+var _shellfix1_check := false # lane SHELLFIX-1: --shellfix1-check (scripts/shellfix1_check.gd)
+var _shellfix1_game := false  # lane SHELLFIX-1: --shellfix1-game (with --auto)
+var _shellfix1_runner: RefCounted
 var _menustyle_expect := "" # lane DEVPORT-8: --menustyle-expect=STYLE (the check after a restart)
 var _menustyle_size := "" # lane DEVPORT-8: --menustyle-size=WxH (the window of its captures)
 var _menustyle_runner: RefCounted
@@ -575,6 +582,7 @@ var _campaign_win := false
 var _campaign_check := -1
 var _campaign_movies := true    # lane CAMP-1H: --movies=off
 var _campaign_menu := ""        # lane CAMP-2: --campaign-menu=CMD[:ARG]
+var _campaign_click := ""       # lane CAMPMENU-1: --campaign-click=BUTTON[:DIFFICULTY]
 var _game_kind := ""            # lane CAMP-2: how the game being entered started (the SHELL PICTURES lines)
 var _shell_pictures_pending := 0 # lane CAMP-2: reports still waiting for their frames (--campaign-check quits after them)
 var _shell_pictures_seen := 0
@@ -977,6 +985,8 @@ func _ready() -> void:
 			_intro_check = true
 		elif arg.begins_with("--campaign-menu="):
 			_campaign_menu = arg.substr(16)
+		elif arg.begins_with("--campaign-click="):
+			_campaign_click = arg.substr(17)
 		elif arg.begins_with("--shell-pictures-quit="):
 			_shell_pictures_quit = int(arg.substr(22))
 		elif arg.begins_with("--lan="):
@@ -996,6 +1006,10 @@ func _ready() -> void:
 			_menu1_walk_on = true
 		elif arg == "--menustyle-check":
 			_menustyle_check = true
+		elif arg == "--shellfix1-check":
+			_shellfix1_check = true
+		elif arg == "--shellfix1-game":
+			_shellfix1_game = true
 		elif arg.begins_with("--menustyle-expect="):
 			_menustyle_expect = arg.substr(19)
 		elif arg.begins_with("--menustyle-size="):
@@ -1321,8 +1335,6 @@ func _boot() -> void:
 	_shell.shell_screen.connect(_on_shell_screen)
 	_game_options_setup() # lane OPTS-2: Options.ini's settings in effect (before any game loads its textures)
 	_display_screen_setup() # lane OPTS-1: the OPENBFME button over Options.apt and its screen
-	if not _campaign_buttons_setup():
-		return
 	if not _shell.shell_push("MainMenu.apt"):
 		_fail("the shell refused MainMenu.apt: " + str(_shell.get_shell_report().errors))
 		return
@@ -1375,6 +1387,9 @@ func _boot() -> void:
 		_run_auto()
 	elif not _menu_walk.is_empty():
 		_run_menu_walk()
+	elif _shellfix1_check:
+		_shellfix1_runner = load("res://scripts/shellfix1_check.gd").new() # lane SHELLFIX-1
+		_shellfix1_runner.run(self)
 	elif _menustyle_check:
 		_menustyle_runner = load("res://scripts/menustyle_check.gd").new()
 		_menustyle_runner.run(self)
@@ -1416,7 +1431,7 @@ func _process(delta: float) -> void:
 	_campaign_check_tick() # lane CAMP-1
 	if _state == State.MENU:
 		if not _fs.is_bfme1() and _menu_style == "bfme2" and _frames % 5 == 0 and _shell.shell_stack().size() > 0 and _shell.shell_stack()[-1] == "MainMenu.apt":
-			_hide_bfme2_campaign_buttons() # lane DEVPORT-8: the BFME2 campaigns are not in this tree (MenuCampaigns.BFME2_CAMPAIGNS)
+			_hide_bfme2_campaign_buttons() # lane DEVPORT-8: the BFME2 campaigns are not in this tree (BFME2_CAMPAIGNS)
 		if _pending_menu_style != _menu_style and not _switching_menu_style and _clean_main_menu():
 			_switching_menu_style = true
 			call_deferred("_apply_pending_menu_style")
@@ -1453,6 +1468,10 @@ func _process(delta: float) -> void:
 				_fail("the main menu refused AptMainMenu::" + cmd)
 			elif _save_ui_test:
 				_save_flow.run_ui_test() # lane SAVE-UI1: the mission the main menu's campaign started
+		elif not _campaign_click.is_empty() and _menu_revealed and _frames >= LEVEL_MAIN_MENU_FRAMES + 30 and _shell_pictures_seen > 0:
+			var click := _campaign_click
+			_campaign_click = ""
+			_campaign_click_run(click.get_slice(":", 0), click.get_slice(":", 1) if click.contains(":") else "Medium")
 		elif not _options_shot.is_empty() and _menu_revealed:
 			_options_shot_tick()
 		elif not _campsave_test.is_empty() and not _campsave_test_started and _menu_revealed and _frames >= LEVEL_MAIN_MENU_FRAMES + 30:
@@ -1590,10 +1609,6 @@ func _on_shell_request(action: String, argument: String) -> void:
 		_campaign_flow.start("ANGMAR_CAMPAIGN", _campaign_flow.difficulty_from_command(argument))
 	elif action == "BonusCampaign": # RW 0x91BEFA
 		_campaign_flow.start("ANGMAR_BONUS_CAMPAIGN", _campaign_flow.difficulty_from_command(argument))
-	elif action == "BFME2GoodCampaign":
-		start_bfme2_campaign("good")
-	elif action == "BFME2EvilCampaign":
-		start_bfme2_campaign("evil")
 	elif action == "LoadCampaign" and argument.begins_with("bfme2:good:"):
 		start_bfme2_campaign("good")
 	elif action == "LoadCampaign" and argument.begins_with("bfme2:evil:"):
@@ -1698,8 +1713,9 @@ func _clean_main_menu() -> bool:
 		return false
 	if _display_screen != null and _display_screen.is_open():
 		return false
-	if _shell.online_status().get("signed_in", false):
-		return false
+	# lane SHELLFIX-1: no "signed in" condition any more. The online screens' client outlives OnlineShell.apt (the main menu's Online makes a new one each
+	# time, _open_online_shell, signing in with the kept session), so a player who had signed in never saw the chosen style again in that run: Options
+	# read "Rise of the Witch-king" over the BFME2 screens (the owner's report, v0.4.9). The stack is the main menu alone: no online screen is up
 	var stack: PackedStringArray = _shell.shell_stack()
 	if stack != PackedStringArray(["MainMenu.apt"]):
 		return false
@@ -1744,6 +1760,11 @@ func _apply_pending_menu_style() -> void:
 		_switching_menu_style = false
 		return
 	var target := _pending_menu_style
+	if _online_http != null:
+		# lane SHELLFIX-1: the rebuilt shell has no online client: the lobby session is kept first (the next Online signs in with it), its transport goes
+		_online_keep_name()
+		_online_http.queue_free()
+		_online_http = null
 	_audio.stop_music(false)
 	if not _configure_menu_style(target):
 		return
@@ -1764,8 +1785,6 @@ func _apply_pending_menu_style() -> void:
 	_menu_revealed = false
 	_shell_pictures_start_done = false
 	_frames = 0
-	if not _campaign_buttons_setup():
-		return
 	if not _shell.shell_push("MainMenu.apt"):
 		_fail("shell style switch refused MainMenu.apt")
 		return
@@ -1774,22 +1793,13 @@ func _apply_pending_menu_style() -> void:
 	print("GAME main menu style: ", _menu_style)
 
 
-func _campaign_buttons_setup() -> bool:
-	if _campaign_menu_buttons != null:
-		remove_child(_campaign_menu_buttons)
-		_campaign_menu_buttons.queue_free()
-		_campaign_menu_buttons = null
-	# BFME1 has its own campaign entries and no RotWK campaign-overlay textures.
-	if _fs.is_bfme1():
-		return true
-	_campaign_menu_buttons = load("res://scripts/menu_campaigns.gd").new()
-	_campaign_menu_buttons.game = self
-	add_child(_campaign_menu_buttons)
-	return _state != State.FAILED
-
+## lane DEVPORT-8: THE switch of the BFME2 Good / Evil campaigns (lane B2CAMP-1 turns it on with its campaign entry point). Off, BFME2's own MainMenu.apt
+## GoodCampaign / EvilCampaign buttons are hidden (below) and a request that still names them is refused by name (start_bfme2_campaign). Lane CAMPMENU-1
+## moved it here from the OpenBFME campaign panel (scripts/menu_campaigns.gd, removed: the campaigns start from retail's own Solo Play buttons)
+const BFME2_CAMPAIGNS := false
 
 ## lane DEVPORT-8: BFME2's own MainMenu.apt has GoodCampaign / EvilCampaign buttons (its Solo Play list: Skirmish, WarOfTheRing, EvilCampaign,
-## GoodCampaign, LoadGame). While MenuCampaigns.BFME2_CAMPAIGNS is off they are hidden (their clip's _visible); { found: [clip paths], visible: [the
+## GoodCampaign, LoadGame). While BFME2_CAMPAIGNS is off they are hidden (their clip's _visible); { found: [clip paths], visible: [the
 ## clips still visible], hittable: [their buttons the pointer would take] }
 const BFME2_CAMPAIGN_CLIPS := ["GoodCampaign", "EvilCampaign"]
 func bfme2_campaign_buttons() -> Dictionary:
@@ -1821,7 +1831,7 @@ func bfme2_campaign_buttons() -> Dictionary:
 
 
 func _hide_bfme2_campaign_buttons() -> void:
-	if load("res://scripts/menu_campaigns.gd").BFME2_CAMPAIGNS:
+	if BFME2_CAMPAIGNS:
 		return
 	var top: int = _shell.shell_top_level()
 	var buttons := bfme2_campaign_buttons()
@@ -1837,17 +1847,120 @@ func _hide_bfme2_campaign_buttons() -> void:
 			_shell.set_clip_property(top, "SoloPlayNav.LoadGame", "_y", float(evil_y.value))
 
 
-## lane DEVPORT-8: the BFME2 campaigns are behind MenuCampaigns.BFME2_CAMPAIGNS (off until B2CAMP-1): their buttons are hidden, so a request is a bug
-## somewhere; it is refused by name and the menu comes back. B2CAMP-1 replaces the body with its campaign entry point.
-func start_bfme2_campaign(alignment: String) -> void:
+## lane DEVPORT-8: the BFME2 campaigns are behind BFME2_CAMPAIGNS (off until B2CAMP-1): their buttons are hidden, so a request is a bug somewhere; it is
+## refused by name with the main menu's "not available" box (AptMainMenu::screenUnavailable, lane CAMPMENU-1: retail's GuiFX.apt message box, whose Ok
+## gives the menu back) and the stop line, which is returned. B2CAMP-1 replaces the body with its campaign entry point.
+func start_bfme2_campaign(alignment: String) -> String:
 	if alignment not in ["good", "evil"]:
 		_fail("unknown BFME2 campaign alignment: " + alignment)
+		return ""
+	var line: String = _shell.shell_screen_unavailable("BFME2%sCampaign" % alignment.capitalize())
+	print("GAME stop: ", line)
+	return line
+
+
+## lane CAMPMENU-1: the player's way into a campaign, with real clicks: the main menu's Solo Play nav, retail's SoloPlayNav.<button> (RotWK MainMenu.apt's
+## Solo Play list: Skirmish, WarOfTheRing, Expansion1Campaign, BonusCampaign, LoadGame; BonusCampaign shows its bttnDisabled face until the bonus unlock,
+## extern MainMenuUnlockBonusCampaign, RW 0x91BBAD), then the movie's LevelOfDifficulty choice (Easy / Medium / Hard), whose button sends
+## AptMainMenu::Expansion1Campaign / BonusCampaign (RW 0x91AF8C / 0x91AFAF) with the difficulty. "" when every click landed, else what failed
+func campaign_click(button: String, difficulty: String) -> String:
+	await _wait_main_ready()
+	var level: int = _shell.shell_top_level()
+	if not await _click_button(level, "SoloPlayNav"):
+		return "the main menu has no SoloPlayNav"
+	var entry := {}
+	var deadline := Time.get_ticks_msec() + 5000
+	while entry.is_empty() and Time.get_ticks_msec() < deadline:
+		await _step(1)
+		entry = campaign_entry(button)
+	print("GAME campaign click: Solo Play entries ", JSON.stringify(solo_play_entries()))
+	await _campaign_click_shot(button, "solo-play")
+	if entry.is_empty():
+		# the bonus campaign before its unlock: only its bttnDisabled face takes the pointer; the player's click on it must open nothing
+		var face := {}
+		for b in _shell.list_buttons(level):
+			if bool(b.hittable) and String(b.path) == "_level%d.SoloPlayNav.%s.bttnDisabled" % [level, button]:
+				face = b
+		if face.is_empty():
+			return "SoloPlayNav.%s cannot be clicked (%s)" % [button, JSON.stringify(solo_play_entries())]
+		await _click_at_stage(Vector2(face.x, face.y))
+		print("GAME clicked ", face.path)
+		await _wait_seconds(2.0)
+		var opened := not _hittable_at(level, "LevelOfDifficulty." + difficulty).is_empty()
+		return "SoloPlayNav.%s cannot be clicked: its disabled face took the click and %s (%s)" % [button,
+			"the difficulty choice opened" if opened else "nothing opened", JSON.stringify(solo_play_entries())]
+	await _click_at_stage(Vector2(entry.x, entry.y))
+	print("GAME clicked ", entry.path)
+	var choice := {}
+	deadline = Time.get_ticks_msec() + 5000
+	while choice.is_empty() and Time.get_ticks_msec() < deadline:
+		await _step(1)
+		choice = _hittable_at(level, "LevelOfDifficulty." + difficulty)
+	if choice.is_empty():
+		return "the difficulty choice LevelOfDifficulty.%s never took the pointer" % difficulty
+	await _campaign_click_shot(button, "difficulty")
+	await _click_at_stage(Vector2(choice.x, choice.y))
+	print("GAME clicked ", choice.path)
+	return ""
+
+
+func _campaign_click_run(button: String, difficulty: String) -> void:
+	print("GAME campaign click: SoloPlayNav.%s, %s" % [button, difficulty])
+	var error: String = await campaign_click(button, difficulty)
+	if not error.is_empty():
+		_fail("campaign click: " + error)
+	elif _save_ui_test:
+		_save_flow.run_ui_test() # lane SAVE-UI1: the mission the main menu's campaign started
+	elif not _screens.is_empty():
+		# --screens: the mission the clicks started, once it plays
+		while _state != State.PLAYING and _state != State.FAILED:
+			await get_tree().process_frame
+		await _wait_seconds(6.0)
+		_save_named("campaign-click-%s-in-game" % button)
+
+
+## --screens: the campaign clicks' steps as pictures (campaign-click-<button>-<step>.png)
+func _campaign_click_shot(button: String, step: String) -> void:
+	if _screens.is_empty():
 		return
-	var on: bool = load("res://scripts/menu_campaigns.gd").BFME2_CAMPAIGNS
-	var message := ("BFME2 %s campaign: not in this build (B2CAMP-1)" if not on else "BFME2 %s campaign: not wired") % alignment.capitalize()
-	print("GAME stop: ", message)
-	_campaign_menu_buttons.show_notice(message)
-	_shell.shell_invoke(_shell.shell_top_level(), "ShowMainMenu", PackedStringArray())
+	await _wait_seconds(1.0)
+	_save_named("campaign-click-%s-%s" % [button, step])
+
+
+## the hittable button of the Solo Play list's entry `name` (its own button, never its bttnDisabled face), {} when it does not take the pointer
+func campaign_entry(name: String) -> Dictionary:
+	return _hittable_at(_shell.shell_top_level(), "SoloPlayNav." + name)
+
+
+## the Solo Play list's entries that take the pointer now, by name (with ".bttnDisabled" for a disabled face): what the player can click
+func solo_play_entries() -> Array:
+	var level: int = _shell.shell_top_level()
+	var prefix := "_level%d.SoloPlayNav." % level
+	var out := []
+	for b in _shell.list_buttons(level):
+		var rest := String(b.path).trim_prefix(prefix)
+		if bool(b.hittable) and String(b.path).begins_with(prefix) and not rest.begins_with("instance"):
+			out.append(rest)
+	return out
+
+
+## the hittable button at `path` (relative to the level) or under it, never a disabled face; {} when none takes the pointer
+func _hittable_at(level: int, path: String) -> Dictionary:
+	var full := "_level%d.%s" % [level, path]
+	for b in _shell.list_buttons(level):
+		var p := String(b.path)
+		if bool(b.hittable) and (p == full or p.begins_with(full + ".")) and not p.containsn("Disabled"):
+			return b
+	return {}
+
+
+func _click_at_stage(p: Vector2) -> void:
+	_mouse_event(p, false, false)
+	await _step(2)
+	_mouse_event(p, true, true)
+	await _step(2)
+	_mouse_event(p, false, true)
+	await _step(2)
 
 
 func _on_shell_screen(filename: String) -> void:
@@ -2849,6 +2962,11 @@ func _run_auto() -> void:
 		var check6: Object = load("res://scripts/opts6_check.gd").new()
 		var failed6: int = await check6.run_game(self, _opts6_shots) # lane OPTS-6
 		get_tree().quit(0 if failed6 == 0 else 1)
+		return
+	if _shellfix1_game:
+		var checksf: Object = load("res://scripts/shellfix1_check.gd").new()
+		var failedsf: int = await checksf.run_game(self) # lane SHELLFIX-1
+		get_tree().quit(0 if failedsf == 0 else 1)
 		return
 	if _opts5_game:
 		var check5: Object = load("res://scripts/opts5_check.gd").new()

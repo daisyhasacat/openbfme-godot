@@ -811,3 +811,210 @@ def test_an_older_release_is_installed_only_when_the_player_picks_it(exported_ma
         assert pick.returncode == 0 and _journal(home)["version"] == older, pick.stdout + pick.stderr
     finally:
         server.stop()
+
+
+# ---- MACFIX-1: Finder / iCloud Drive metadata is no change (issue #47); the download progress keeps moving (issue #46) -------------------
+
+# what issue #47's Mac showed on an app unpacked into an iCloud Drive Desktop (com.apple.FinderInfo with Finder flags set: the bare
+# --strict check's "detritus"), a resource fork as Finder copies one, and the Finder files of a folder Finder shows
+FINDER_INFO = "0000000000000000400000000000000000000000000000000000000000000000"
+
+
+def _icloud_metadata(root: Path) -> None:
+    for app in ("OpenBFME.app", "OpenBFME Launcher.app"):
+        for path in (root / app, root / app / "Contents/Info.plist"):
+            subprocess.run(["xattr", "-wx", "com.apple.FinderInfo", FINDER_INFO, str(path)], check=True)
+        subprocess.run(["xattr", "-w", "com.apple.fileprovider.fpfs#P", "1", str(root / app)], check=True)
+        subprocess.run(["xattr", "-w", "com.apple.provenance", "x", str(root / app)], check=True)
+    for exe in ("OpenBFME.app/Contents/MacOS/OpenBFME", "OpenBFME Launcher.app/Contents/MacOS/OpenBFME Launcher"):
+        subprocess.run(["xattr", "-wx", "com.apple.FinderInfo", FINDER_INFO, str(root / exe)], check=True)
+    subprocess.run(["xattr", "-w", "com.apple.ResourceFork", "fork", str(root / "OpenBFME.app/Contents/Info.plist")], check=True)
+    for name in (".DS_Store", "Icon\r", "._OpenBFME.app"):
+        (root / name).write_bytes(b"Finder\n")
+    # the fixture is issue #47's case: the bare strict check refuses it, the seal itself holds
+    strict = subprocess.run(["codesign", "--verify", "--deep", "--strict", str(root / "OpenBFME.app")], capture_output=True, text=True)
+    assert strict.returncode != 0 and "detritus" in strict.stderr, strict.stderr
+    subprocess.run(["codesign", "--verify", "--deep", str(root / "OpenBFME.app")], check=True, capture_output=True)
+
+
+def test_icloud_metadata_on_the_unpacked_package_is_no_change_and_play_starts_it(mac, tmp_path: Path, home: Path):
+    """issue #47: the release ZIP unpacked into an iCloud Drive Desktop (Finder / file provider attributes on the apps and their files,
+    a resource fork, .DS_Store / Icon / AppleDouble files beside the apps): Play starts the game beside the launcher, nothing is called
+    changed, and the folder still takes the whole-package update"""
+    server = ReleaseServer()
+    try:
+        root = _unzip_like_finder(_release_zip(tmp_path, mac), tmp_path / "Desktop")
+        _icloud_metadata(root)
+        r, log, played = _play(root / "OpenBFME Launcher.app", home, server, "--offline")
+        assert played.strip() == f"played game {root / 'OpenBFME.app/Contents/MacOS/OpenBFME'}", (played, log)
+        assert "is not the signed package" not in log and "was changed after it was installed" not in log, log
+        assert "is not one the package update replaces" not in log, log
+    finally:
+        server.stop()
+
+
+@pytest.mark.parametrize("change, why", [
+    ("added-in-app", "codesign verification failed for OpenBFME.app"),
+    ("appledouble-in-app", "codesign verification failed for OpenBFME.app"),
+    ("changed-in-app", "OpenBFME.app/Contents/Info.plist does not match its signed SHA-256"),
+    ("changed", "NOTICE does not match its signed SHA-256"),
+])
+def test_a_real_change_under_icloud_metadata_is_still_refused_by_name(mac, tmp_path: Path, home: Path, change: str, why: str):
+    """issue #47's fix keeps tamper detection: with the same metadata, a file added inside an app, an AppleDouble file inside an app
+    (not ignored there: the seal refuses it), a changed sealed file or a changed signed file outside the apps is refused, Play starts
+    nothing, and the dialog names what was found"""
+    server = ReleaseServer()
+    try:
+        root = _unzip_like_finder(_release_zip(tmp_path, mac), tmp_path / "Desktop")
+        _icloud_metadata(root)
+        if change == "added-in-app":
+            (root / "OpenBFME.app/Contents/MacOS/extra").write_bytes(b"extra")
+        elif change == "appledouble-in-app":
+            (root / "OpenBFME.app/Contents/MacOS/._OpenBFME").write_bytes(b"\x00\x05\x16\x07 AppleDouble")
+        elif change == "changed-in-app":
+            plist = root / "OpenBFME.app/Contents/Info.plist"
+            plist.write_bytes(plist.read_bytes().replace(b"org.openbfme.test-game", b"org.openbfme.test-gamf"))
+        else:
+            (root / "NOTICE").write_bytes((root / "NOTICE").read_bytes().upper())
+        r, log, played = _play(root / "OpenBFME Launcher.app", home, server, "--offline")
+        assert played == "", played
+        assert "LAUNCHER ui test: PLAY pressed" in log and why in log, log
+        dialog = [line for line in log.splitlines() if "LAUNCHER ui dialog: " in line][-1]
+        assert why in dialog, dialog
+    finally:
+        server.stop()
+
+
+def test_icloud_metadata_on_an_installed_version_is_no_change(mac, tmp_path: Path, home: Path):
+    """issue #47 for versions/<v>/game (a launcher alone downloads the package): the same metadata on the installed apps and Finder files
+    in its folder; Play starts that version"""
+    server = ReleaseServer()
+    try:
+        archive = _release_zip(tmp_path, mac)
+        server.publish(VERSION, mu._test_signed_sidecars(archive, mu.TEST_SECRET, VERSION))
+        alone = tmp_path / "Launcher"
+        alone.mkdir()
+        shutil.copytree(mac["launcher"], alone / "OpenBFME Launcher.app", symlinks=True)
+        first = mu._run_exported(alone / "OpenBFME Launcher.app", home, server, "--update")
+        assert first.returncode == 0, first.stdout + first.stderr
+        game_root = mu._app_data(home) / "versions" / VERSION / "game"
+        _icloud_metadata(game_root)
+        r, log, played = _play(alone / "OpenBFME Launcher.app", home, server)
+        assert played.strip() == f"played game {game_root / 'OpenBFME.app/Contents/MacOS/OpenBFME'}", (played, log)
+        assert "was changed after it was installed" not in log, log
+    finally:
+        server.stop()
+
+
+def test_icloud_metadata_on_the_installed_package_still_takes_the_whole_package_update(exported_macos_launchers, tmp_path: Path,
+                                                                                         home: Path):
+    """issue #47 ("updates install into the launcher's data folder: ... detritus not allowed", then "not a complete standalone OpenBFME
+    package" for Finder's .DS_Store): the installed package A with the metadata stages, exchanges and confirms the signed package B; the
+    root then holds exactly B's signed files"""
+    server = ReleaseServer()
+    try:
+        root = mu._installed_root(tmp_path / "install", exported_macos_launchers["a"])
+        _icloud_metadata(root)
+        package = mu._test_package(tmp_path / f"openbfme-{mu.VERSION}-macos-arm64", exported_macos_launchers["b"], mu.VERSION)
+        sidecars = mu._test_signed_sidecars(package, mu.TEST_SECRET, mu.VERSION)
+        server.publish(mu.VERSION, sidecars)
+        staged = mu._run_exported(root / "OpenBFME Launcher.app", home, server, "--update", "--channel=preview")
+        out = staged.stdout + staged.stderr
+        assert staged.returncode == 0 and "staged" in out and "is not one the package update replaces" not in out, out
+        apply = mu._run_exported(root / "OpenBFME Launcher.app", home, server, "--version")
+        assert apply.returncode == 0, apply.stdout + apply.stderr
+        assert mu._wait_for_version(root, mu.VERSION, timeout=35), "the staged update was not exchanged and confirmed"
+        assert mu._wait_for_receipt(home, mu.VERSION) is not None
+        assert mu._file_inventory(root) == json.loads(sidecars["manifest-macos.json"])["assets"]["game"]["macos-arm64"]["files"]
+    finally:
+        server.stop()
+
+
+@pytest.fixture(scope="module")
+def mac_window_app(tmp_path_factory) -> dict:
+    """issue #46's launcher on a Mac without an export (an exported launcher ignores --script): the launcher project with a Mac update
+    build's build_info.json (macos_updates on, as tools/release/test_macos_update.py exports it), run by a copy of the Godot editor
+    binary in <tmp>/Probe.app/Contents/MacOS beside the real bundle swap helper, built from tools/release/macos_bundle_swap.c, so the
+    window takes the signed Mac package's paths (MacOSUpdate._local_swap_helper finds the helper beside the running binary)"""
+    if sys.platform != "darwin":
+        pytest.skip("SKIPPED LOUDLY: the Mac window's download progress test needs macOS (the Darwin swap helper)")
+    godot = Path(os.environ.get("GODOT", ""))
+    if not godot.is_file():
+        pytest.skip("SKIPPED LOUDLY: set GODOT to the Godot 4.7.2 editor executable")
+    tmp = tmp_path_factory.mktemp("macwindow")
+    macos = tmp / "Probe.app/Contents/MacOS"
+    macos.mkdir(parents=True)
+    shutil.copy2(godot, macos / "godot")
+    # the editor's own signature names its app's resources: Apple Silicon kills a copy outside it until it carries a seal of its own
+    subprocess.run(["codesign", "--force", "--sign", "-", str(macos / "godot")], check=True, capture_output=True)
+    subprocess.run(["clang", "-arch", "arm64", "-mmacosx-version-min=13.0", "-Wall", "-Wextra", "-Werror", str(mu.SWAP_SOURCE),
+                    "-o", str(macos / "openbfme-bundle-swap")], check=True)
+    project = tmp / "launcher"
+    shutil.copytree(HERE.parents[1] / "launcher", project, ignore=shutil.ignore_patterns(".godot"))
+    (project / "build_info.json").write_text(json.dumps({
+        "version": VERSION, "display_version": VERSION, "commit": mu.COMMIT, "date": mu.DATE, "repo": REPO,
+        "release_key": ed25519.public_key(mu.TEST_SECRET).hex(), "test_build": True, "local_trial": True, "macos_preview": False,
+        "macos_updates": True}, sort_keys=True) + "\n", encoding="utf-8")
+    for _ in range(2):
+        subprocess.run([str(macos / "godot"), "--headless", "--path", str(project), "--import"], capture_output=True, timeout=300)
+    return {"godot": macos / "godot", "project": project}
+
+
+def test_aio_download_progress_keeps_moving_in_the_mac_window(mac_window_app, tmp_path: Path, home: Path):
+    """issue #46 where it happened: the Mac launcher with signed Mac updates on (so every refresh of the Play button asked the bundle
+    swap helper about the update lock: a process start per downloaded chunk) runs tools/release/test_aio.py's large download in its
+    window (tests/aio_progress_test.gd: no frame gap over 1 s, both bars forward to the total, each big file shown mid-download)"""
+    import test_aio
+    server = ReleaseServer()
+    try:
+        service = test_aio.Service(server, tmp_path, test_aio.big_packages())
+        for p in service.pkgs:
+            for f in p["files"]:
+                if len(f["data"]) == test_aio.BIG:
+                    server.throttle[test_aio.file_path(f["data"])] = 0.0001
+        games = tmp_path / "games"
+        env = dict(os.environ, HOME=str(home), OPENBFME_GAME_USER_DIR=str(tmp_path / "game-user"))
+        cmd = [str(mac_window_app["godot"]), "--headless", "--path", str(mac_window_app["project"]), "--script",
+               "res://tests/aio_progress_test.gd", "--", "--offline", f"--aio-base={server.origin}", f"--aio-pins={service.pins_file}",
+               f"--progress-target={games}", "--progress-big=" + ",".join(test_aio.BIG_FILES)]
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=400, stdin=subprocess.DEVNULL)
+        out = r.stdout + r.stderr
+        print(next((ln for ln in out.splitlines() if ln.startswith("AIO PROGRESS frames")), out[-3000:]))
+        log = (mu._app_data(home) / "launcher.log").read_text(encoding="utf-8")
+        assert f"LAUNCHER OpenBFME Launcher {VERSION} " in log and ", macos-arm64) updates from" in log, log[-3000:]
+        assert r.returncode == 0 and "AIO PROGRESS OK" in out, out[-4000:]
+        assert "Message queue out of memory" not in out, out[-4000:]
+        for p in service.pkgs:
+            for f in p["files"]:
+                path = games / p["folder"] / f["name"].replace("\\", "/")
+                if p["key"] != "bfme1" and (f["language"] == "ALL" or "EN" in f["language"].split()):
+                    assert path.read_bytes() == f["data"], path
+                else:
+                    assert not path.exists(), path
+        assert log.count(" downloaded and checked (") == 6, log[-3000:]
+    finally:
+        server.stop()
+
+
+def test_icloud_metadata_on_the_previous_package_still_lets_a_rollback_restore_it(exported_macos_launchers, tmp_path: Path, home: Path):
+    """issue #47's sibling path: the installed package A carries the metadata, the update to B is exchanged and B's NOTICE is then
+    damaged at the root: A (moved aside with its Finder files) verifies on its own and is put back at the root exactly"""
+    server = ReleaseServer()
+    try:
+        root = mu._installed_root(tmp_path / "install", exported_macos_launchers["a"])
+        _icloud_metadata(root)
+        original = mu._file_inventory(root)
+        package = mu._test_package(tmp_path / f"openbfme-{mu.VERSION}-macos-arm64", exported_macos_launchers["b"], mu.VERSION)
+        server.publish(mu.VERSION, mu._test_signed_sidecars(package, mu.TEST_SECRET, mu.VERSION))
+        staged = mu._run_exported(root / "OpenBFME Launcher.app", home, server, "--install=" + mu.VERSION)
+        assert staged.returncode == 0 and "staged" in staged.stdout + staged.stderr, staged.stdout + staged.stderr
+        mu._run_exported(root / "OpenBFME Launcher.app", home, server, "--version", env_extra={"OPENBFME_TEST_MACOS_KILL_AT": "after-exchange"})
+        assert mu._wait_for_version(root, mu.VERSION, timeout=35), "the exchange did not happen"
+        assert mu._wait_for_process_exit(exported_macos_launchers["helper"], _journal(home)["apply_pid"])
+        _damage(root, "notice")
+        mu._run_exported(root / "OpenBFME Launcher.app", home, server, "--version")
+        assert mu._file_inventory(root) == original, "the previous package is not back at the root exactly"
+        assert (root / ".DS_Store").exists() and "did not complete and its files are damaged. The previous version v1.2.2 was restored" \
+            in _state(home), _state(home)
+    finally:
+        server.stop()

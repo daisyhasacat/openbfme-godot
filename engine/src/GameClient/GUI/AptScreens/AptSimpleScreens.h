@@ -306,6 +306,10 @@ public:
 	OpenBFMEOptionsPage *extensionPage() const { return m_page.get(); }
 	// The OPENBFME button's stage box (x0 y0 x1 y1); false when it is not on screen.
 	bool entryBox(float out[4]) const;
+	// lane SHELLFIX-1: the bottom bar's button `i` (0 CANCEL, 1 RESET TO DEFAULTS, 2 ACCEPT): the visible button under the movie's clip Buttons.Cancel /
+	// Buttons.Default / Buttons.Accept, whatever its instance name (RotWK 2.01's Options.apt names it "bttn", BFME2 1.06's "instance14"); null when the
+	// clip or its button is not on screen
+	AptButtonInst *barButton(int i) const;
 	// The page's events and the button's (Entry), oldest first.
 	std::vector<OpenBFMEPageEvent> takeExtensionEvents();
 	// Esc while the page is up: the page's CANCEL (the movie never sees the key)

@@ -1332,6 +1332,7 @@ void AptMenuPlayer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("edit_native_text", "text", "submit"), &AptMenuPlayer::edit_native_text);
 	ClassDB::bind_method(D_METHOD("lobby_gadget_rect", "name"), &AptMenuPlayer::lobby_gadget_rect);
 	ClassDB::bind_method(D_METHOD("get_shell_report"), &AptMenuPlayer::get_shell_report);
+	ClassDB::bind_method(D_METHOD("shell_drawn_sources"), &AptMenuPlayer::shell_drawn_sources); // lane SHELLFIX-1
 	ADD_SIGNAL(MethodInfo("shell_service", PropertyInfo(Variant::STRING, "kind"), PropertyInfo(Variant::STRING, "a"), PropertyInfo(Variant::STRING, "b")));
 	ADD_SIGNAL(MethodInfo("shell_request", PropertyInfo(Variant::STRING, "action"), PropertyInfo(Variant::STRING, "argument")));
 	ADD_SIGNAL(MethodInfo("shell_screen", PropertyInfo(Variant::STRING, "filename")));
@@ -2101,6 +2102,46 @@ void AptMenuPlayer::shell_pop()
 	}
 }
 
+Dictionary AptMenuPlayer::shell_drawn_sources() const
+{
+	Dictionary r;
+	if (!m->shell || !m->shell->shell || m->presentationFs.is_null() || !m->presentationFs->archive_fs())
+	{
+		r["error"] = "the shell is not booted";
+		return r;
+	}
+	ArchiveFileSystem &fs = *m->presentationFs->archive_fs();
+	r["style"] = m->presentationFs->is_shell_source() ? "bfme2-106" : "rotwk-201";
+	r["view3d_style"] = m->view3d.sourceStyle();
+	Dictionary movies;
+	for (int i = 0; i < m->shell->shell->screenCount(); ++i)
+	{
+		const std::string name = m->shell->shell->screenAt(i)->filename();
+		movies[toGodot(name)] = toGodot(fs.getArchiveFilenameForFile(name)); // AptArchiveFileSource reads the movie at the archives' root
+	}
+	r["movies"] = movies;
+	Dictionary textures;
+	for (const AptCanvasOp &op : m->drawnList.ops)
+	{
+		if (op.kind == AptCanvasOp::Kind::Mesh && !op.texture.empty() && m->brandTextures.find(op.texture) == m->brandTextures.end())
+		{
+			textures[toGodot(op.texture)] = toGodot(fs.getArchiveFilenameForFile("art/textures/" + op.texture)); // AptTextureStore::get
+		}
+	}
+	r["textures"] = textures;
+	PackedStringArray original;
+	for (const auto &kv : m->godotTextures)
+	{
+		// a picture the engine makes from a file ("file:", the lobby's map pictures) is game content in either style
+		if (kv.first.rfind("original:", 0) == 0 && kv.first.rfind("original:file:", 0) != 0)
+		{
+			original.push_back(toGodot(kv.first.substr(9)));
+		}
+	}
+	r["original_images"] = original;
+	return r;
+}
+
 PackedStringArray AptMenuPlayer::shell_stack() const
 {
 	PackedStringArray out;
@@ -2451,14 +2492,13 @@ Dictionary AptMenuPlayer::openbfme_page_state() const
 		d["entry"] = Rect2(box[0], box[1], box[2] - box[0], box[3] - box[1]);
 	}
 	Dictionary buttons;
-	AptSpriteInst *root = o->level() >= 0 ? m->shell->wm->apt().level(o->level()) : nullptr;
-	static const char *names[3][2] = { { "cancel", "Buttons.Cancel.bttn" }, { "reset", "Buttons.Default.bttn" }, { "accept", "Buttons.Accept.bttn" } };
-	for (const auto &n : names)
+	static const char *names[3] = { "cancel", "reset", "accept" };
+	for (int i = 0; i < 3; ++i)
 	{
-		AptCharacterInst *b = root ? m->shell->wm->apt().resolvePath(root, n[1]) : nullptr;
-		if (b && b->globallyVisible() && WindowManager::stageBounds(*b, box))
+		AptButtonInst *b = o->barButton(i); // lane SHELLFIX-1: the button the page takes the clicks of, in either style's movie
+		if (b && WindowManager::stageBounds(*b, box))
 		{
-			buttons[n[0]] = Rect2(box[0], box[1], box[2] - box[0], box[3] - box[1]);
+			buttons[names[i]] = Rect2(box[0], box[1], box[2] - box[0], box[3] - box[1]);
 		}
 	}
 	d["buttons"] = buttons;

@@ -559,7 +559,7 @@ func verify_installed(name: String, full := false) -> Dictionary:
 	if full:
 		var why := MacOSUpdate.link_error(dir.path_join("game"), files) if mac_platform() else ""
 		if why == "":
-			why = Manifest.check_files(dir.path_join("game"), files)
+			why = Manifest.check_files(dir.path_join("game"), files, [], false, mac_platform())  # MACFIX-1: Finder's files on a Mac
 		if why == "" and mac_platform():
 			why = MacOSUpdate._verify_apps(dir.path_join("game"))  # the apps' own seals: Apple Silicon runs only validly signed code
 		if why != "":
@@ -775,8 +775,9 @@ func check_bundled() -> Dictionary:
 		if macos_transaction or MacOSUpdate.transaction_locked(self):
 			return {"ok": false, "error": "a signed whole-package update is in progress"}
 		# MACPLAY-1: every signed file by size and SHA-256 (the apps' code seals, _CodeSignature/CodeResources, are signed files too),
-		# then the seals themselves: codesign --strict refuses a file added to or removed from an app. Files outside the two apps that
-		# are not signed (Finder's .DS_Store) are never run, so they are not refused.
+		# then the seals themselves: codesign refuses a file added to or removed from an app (MACFIX-1: Finder / iCloud extended
+		# attributes are not refused, MacOSUpdate._codesign). Files outside the two apps that are not signed (Finder's .DS_Store) are
+		# never run, so they are not refused.
 		var why_mac := MacOSUpdate.link_error(b.path, b.files)
 		if why_mac == "":
 			why_mac = Manifest.check_files(b.path, b.files, [], true)
@@ -851,7 +852,7 @@ func _play_bundled(b: Dictionary, args: PackedStringArray) -> Dictionary:
 		return {"ok": false, "pid": -1, "modified": false, "error": "a signed whole-package update is in progress"}
 	var c := check_bundled()
 	if not c.ok:
-		return {"ok": false, "pid": -1, "modified": true, "error": ("%s (the game beside the launcher) is not the signed package " +
+		return {"ok": false, "pid": -1, "modified": true, "change": c.error, "error": ("%s (the game beside the launcher) is not the signed package " +
 			"(%s): it is not started; download it again (--install=%s, or Play to confirm)") % [b.version, c.error, b.version]}
 	var exe: String = String(b.path).path_join(GAME_EXE[info.platform()])
 	if info.os_name() == "Linux":
@@ -1112,7 +1113,7 @@ func play(version: String, args: PackedStringArray = PackedStringArray(), before
 		var why := "%s cannot be started: %s" % [version, v.error]
 		if v.get("modified", false):
 			why = "%s was changed after it was installed (%s): it is not started; download it again (--install=%s, or Play to confirm)" % [version, v.error, version]
-		return {"ok": false, "error": why, "pid": -1, "modified": v.get("modified", false)}
+		return {"ok": false, "error": why, "pid": -1, "modified": v.get("modified", false), "change": v.error}
 	var exe := data_dir.path_join("versions").path_join(version).path_join("game").path_join(GAME_EXE[info.platform()])
 	if info.os_name() == "Linux":
 		# DEP-1 (Sol r1): Linux only; platform() is "linux-x64" for every non-Windows OS, macOS included

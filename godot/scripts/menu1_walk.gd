@@ -58,27 +58,27 @@ func run(p_game: Node, p_dir: String) -> void:
 	game.get_tree().quit(0 if fail_count == 0 else 1)
 
 
+## lane CAMPMENU-1: the campaign entry points are retail's Solo Play buttons: Solo Play, The Rise of the Witch-king campaign (SoloPlayNav.Expansion1Campaign),
+## the movie's difficulty choice shown, left with its Cancel (the campaign itself starts in camp2_test / campsave1_test)
 func _campaign_entries() -> void:
-	for entry in [["BFME2GoodCampaign", "good"], ["BFME2EvilCampaign", "evil"]]:
-		await _campaign_click("campaigns")
-		await _shot("campaigns")
-		await _campaign_click(entry[0])
-		var expected := "BFME2 %s campaign: not wired" % String(entry[1]).capitalize()
-		if game._campaign_menu_buttons.notice_text() != expected:
-			_fail("campaign-" + entry[1], "button did not route to the explicit integration stop")
-		else:
-			ok_count += 1
-		await _check("campaign-" + entry[1])
-	game._campaign_menu_buttons.show_notice("")
-
-
-func _campaign_click(action: String) -> void:
-	var button: Button = game._campaign_menu_buttons.find_child(action, true, false)
-	if button == null or not button.is_visible_in_tree():
-		_fail("campaign-" + action, "no visible button")
+	if game._menu_style != "rotwk":
 		return
-	await _click_at(shell.window_to_stage(button.get_global_rect().get_center()))
-	await game._step(10)
+	var level: int = shell.shell_top_level()
+	await game._click_button(level, "SoloPlayNav")
+	await game._step(60)
+	var entry: Dictionary = game.campaign_entry("Expansion1Campaign")
+	if entry.is_empty():
+		_fail("campaign", "SoloPlayNav.Expansion1Campaign cannot be clicked: %s" % [game.solo_play_entries()])
+		return
+	await _click_at(Vector2(entry.x, entry.y))
+	await game._step(60)
+	await _check("campaign-difficulty")
+	if not await _click_hittable("LevelOfDifficulty.cancelButton"):
+		_fail("campaign-difficulty", "no hittable LevelOfDifficulty.cancelButton")
+		return
+	await game._step(90)
+	await game._wait_main_ready()
+	await _check("main-after-campaign")
 
 
 # ---- Skirmish ------------------------------------------------------------------------------------------------------------------------------------

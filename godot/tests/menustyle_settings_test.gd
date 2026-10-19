@@ -83,13 +83,11 @@ func _initialize() -> void:
 	shell.opts[Options.MENU_STYLE_KEY] = "unknown"
 	var found := options.current()
 	check(found[Options.MENU_STYLE_KEY] == "bfme2" and "\n".join(options.problems).contains("unknown"), "an unknown value: the default, reported")
-	# lane DEVPORT-8: the BFME2 campaigns stay out of the shipped menu until B2CAMP-1 turns the one switch on
-	var campaigns: GDScript = load("res://scripts/menu_campaigns.gd")
-	check(campaigns.BFME2_CAMPAIGNS == false, "MenuCampaigns.BFME2_CAMPAIGNS is off in this tree")
-	var actions := []
-	for e in campaigns.entries():
-		actions.append(e[1])
-	check(actions == ["Expansion1Campaign", "BonusCampaign", "ContinueCampaign"], "the campaign panel's rows have no BFME2 campaign: %s" % [actions])
+	# lane DEVPORT-8: the BFME2 campaigns stay out of the shipped menu until B2CAMP-1 turns the one switch on (lane CAMPMENU-1: game.gd's, the OpenBFME
+	# campaign panel is gone: the campaigns are retail's own Solo Play buttons)
+	var game_script: GDScript = load("res://scripts/game.gd")
+	check(game_script.BFME2_CAMPAIGNS == false, "game.gd BFME2_CAMPAIGNS is off in this tree")
+	check(not ResourceLoader.exists("res://scripts/menu_campaigns.gd"), "no OpenBFME campaign panel script")
 	options.free()
 	shell.free()
 	game.free()

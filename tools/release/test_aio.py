@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -155,9 +156,9 @@ def file_path(data: bytes) -> str:
 
 
 class Service:
-    def __init__(self, server: ReleaseServer, tmp: Path) -> None:
+    def __init__(self, server: ReleaseServer, tmp: Path, pkgs: list[dict] | None = None) -> None:
         self.server, self.tmp = server, tmp
-        self.pkgs = packages()
+        self.pkgs = packages() if pkgs is None else pkgs
         self.manifests = {p["guid"]: manifest(p, server.origin) for p in self.pkgs}
         self.pins_file = tmp / "pins.json"
         self.pins_file.write_text(json.dumps(pins(self.pkgs)))
@@ -245,6 +246,20 @@ def test_aio_is_on_by_default_and_needs_consent(tmp_path, service):
 def test_aio_installs_both_games_and_checks_every_file(tmp_path, service):
     r = install(tmp_path, service)
     assert r.code == 0 and r.has("LAUNCHER AIO done: 7 files downloaded, 0 already there"), r
+    # MACFIX-1 (issue #46): what the download takes of each package, then every finished file with the running byte count
+    assert r.has("LAUNCHER AIO original-RotWK: the download takes 5 of the package's 6 files (EN; every one is pinned and matches)"), r
+    assert r.has("LAUNCHER AIO original-BFME2: the download takes 2 of the package's 3 files (EN; every one is pinned and matches)"), r
+    taken = [(p["folder"], f) for p in service.pkgs if p["key"] != "bfme1" for f in sorted(p["files"], key=lambda f: f["name"].replace("\\", "/"))
+               if f["language"] == "ALL" or "EN" in f["language"].split()]
+    total = sum(len(f["data"]) for _, f in taken)
+    def milestones(how: str) -> list[str]:
+        out, done = [], 0
+        for i, (folder, f) in enumerate(taken, 1):
+            done += len(f["data"])
+            out.append(f"LAUNCHER AIO File {i} of 7, {folder}/{f['name'].replace(chr(92), '/')} {how} "
+                       f"({done / 1e9:.2f} of {total / 1e9:.2f} GB, {int(done * 100.0 / total)}%)")
+        return out
+    assert [ln for ln in r.lines if " downloaded and checked (" in ln] == milestones("downloaded and checked"), r
     assert r.has("AIO consent given: The game files are downloaded from the servers of the All In One BFME Launcher"), r
     assert not (target(tmp_path) / "BFME1").exists()  # community PR #36: the optional BFME1 package is never part of it
     for p in service.pkgs:
@@ -271,6 +286,7 @@ def test_aio_installs_both_games_and_checks_every_file(tmp_path, service):
     before = len(service.file_requests())
     r = launch(tmp_path, service, f"--aio-install={target(tmp_path)}", "--aio-consent")
     assert r.code == 0 and r.has("0 files downloaded, 7 already there"), r
+    assert [ln for ln in r.lines if " already there and checked (" in ln] == milestones("already there and checked"), r
     assert len(service.file_requests()) == before
 
 
@@ -580,3 +596,61 @@ def test_bfme1_assets_script(tmp_path):
                        text=True, timeout=300, stdin=subprocess.DEVNULL, env=env)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and "BFME1 ASSETS OK" in out, out[-4000:]
+
+
+# ---- MACFIX-1 (issue #46): the progress display of a large download in the real window ---------------------------------------------
+
+BIG = 64 * 1024 * 1024
+BIG_FILES = ["RotWK/big1.big", "RotWK/big2.big", "BFME2/zbig3.big"]
+
+
+def big_packages() -> list[dict]:
+    """the two base packages with three 64 MiB files among small ones (the last file of the download is big too: its check keeps the
+    window drawing until the bar has reached the total)"""
+    r = os.urandom
+    pkgs = packages()
+    pkgs[0]["files"] = [_file("_patch201.big", r(150000)), _file("big1.big", r(BIG)), _file("big2.big", r(BIG)),
+                        _file("lang\\English.big", r(40000), "EN"), _file("lang\\French.big", r(20000), "FR")]
+    pkgs[1]["files"] = [_file("INI.big", r(60000)), _file("zbig3.big", r(BIG))]
+    return pkgs
+
+
+@needs_godot
+def test_aio_progress_keeps_moving_in_the_window_during_a_large_download(tmp_path):
+    """issue #46 (the Mac launcher stuck on "Checking File 2 of 612" for the whole 8.6 GB download while the files arrived): the real
+    window downloads 192 MiB from the stand-in service, its 16 KiB chunks throttled to the order of 100 MB/s (the issue's line: 30-60
+    MB/s); every frame the bottom bar and the Game files bar are sampled (tests/aio_progress_test.gd): the window keeps drawing (no
+    frame gap over 1 s), both bars only move forward and reach the total, each big file is shown mid-download, and every file lands
+    with its bytes"""
+    server = ReleaseServer()
+    try:
+        service = Service(server, tmp_path, big_packages())
+        for p in service.pkgs:
+            for f in p["files"]:
+                if len(f["data"]) == BIG:
+                    server.throttle[file_path(f["data"])] = 0.0001
+        env = dict(os.environ, XDG_DATA_HOME=str(tmp_path / "data"), OPENBFME_GAME_USER_DIR=str(tmp_path / "game-user"),
+                   HOME=str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        cmd = [GODOT, "--headless", "--path", str(LAUNCHER), "--script", "res://tests/aio_progress_test.gd", "--", "--offline",
+               f"--aio-base={server.origin}", f"--aio-pins={service.pins_file}", f"--progress-target={target(tmp_path)}",
+               "--progress-big=" + ",".join(BIG_FILES)]
+        started = time.monotonic()
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=400, stdin=subprocess.DEVNULL)
+        took = time.monotonic() - started
+        out = r.stdout + r.stderr
+        print(next((ln for ln in out.splitlines() if ln.startswith("AIO PROGRESS frames")), ""), f"({3 * BIG / 1e6 / took:.0f} MB/s overall)")
+        assert r.returncode == 0 and "AIO PROGRESS OK" in out, out[-4000:]
+        assert "Message queue out of memory" not in out, out[-4000:]
+        for p in service.pkgs:
+            if p["key"] == "bfme1":
+                continue
+            for f in p["files"]:
+                path = on_disk(tmp_path, p["folder"], f["name"])
+                english = f["language"] == "ALL" or "EN" in f["language"].split()
+                assert path.exists() == english, path
+                if english:
+                    assert path.read_bytes() == f["data"], path
+        assert not list(target(tmp_path).rglob("*.part"))
+    finally:
+        server.stop()

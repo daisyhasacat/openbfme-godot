@@ -116,14 +116,14 @@ func run(owner: Node) -> void:
 	game.get_tree().quit(0 if failures == 0 else 1)
 
 
-## lane DEVPORT-8: with MenuCampaigns.BFME2_CAMPAIGNS off (until B2CAMP-1) no BFME2 campaign button is in the menu (the OpenBFME panel; BFME2's own
-## MainMenu.apt buttons are hidden by game.gd), and a request that names one is refused by name
+## lane DEVPORT-8: with game.gd BFME2_CAMPAIGNS off (until B2CAMP-1) no BFME2 campaign button is in the menu (BFME2's own MainMenu.apt buttons are hidden by
+## game.gd), and a request that names one is refused by name. Lane CAMPMENU-1: the campaigns are retail's own Solo Play entries (no OpenBFME panel):
+## RotWK's list holds Expansion1Campaign and BonusCampaign (MainMenu.apt; tools/menus/retail_controls.json), clicked as the player would
+const ROTWK_SOLO_ENTRIES := ["BonusCampaign", "Expansion1Campaign", "LoadGame", "Skirmish", "WarOfTheRing"]
 func _check_campaign_buttons(style: String) -> void:
-	var on: bool = load("res://scripts/menu_campaigns.gd").BFME2_CAMPAIGNS
-	check(not on, "the BFME2 campaign switch is off in this tree")
-	var names: PackedStringArray = game._campaign_menu_buttons.button_names()
-	check(not names.has("BFME2GoodCampaign") and not names.has("BFME2EvilCampaign") and names.has("Expansion1Campaign"),
-		"%s: the campaign panel has no BFME2 campaign: %s" % [style, names])
+	check(not game.BFME2_CAMPAIGNS, "the BFME2 campaign switch is off in this tree")
+	var overlay := _visible_godot_buttons(game)
+	check(overlay.is_empty(), "%s: no Godot button over the main menu (every button is the movie's): %s" % [style, overlay])
 	var top: int = game._shell.shell_top_level()
 	var nav: Dictionary = game._shell.find_button(top, "SoloPlayNav")
 	var opened := false
@@ -133,6 +133,16 @@ func _check_campaign_buttons(style: String) -> void:
 		await game._wait_seconds(1.5)
 		opened = not game._clean_main_menu()
 	var native: Dictionary = game.bfme2_campaign_buttons()
+	if style == "rotwk":
+		check(opened, "rotwk: the Solo Play list opened")
+		var names := []
+		for entry in game.solo_play_entries():
+			var name := String(entry).get_slice(".", 0)
+			if not names.has(name):
+				names.append(name)
+		names.sort()
+		check(names == ROTWK_SOLO_ENTRIES, "rotwk: retail's Solo Play entries take the pointer: %s" % [game.solo_play_entries()])
+		check(not game.campaign_entry("Expansion1Campaign").is_empty(), "rotwk: SoloPlayNav.Expansion1Campaign can be clicked")
 	if style == "bfme2":
 		check(opened, "bfme2: the Solo Play list opened")
 		check(native.get("found", []) == ["SoloPlayNav.GoodCampaign", "SoloPlayNav.EvilCampaign"], "bfme2: BFME2's MainMenu.apt GoodCampaign / EvilCampaign found: %s" % JSON.stringify(native))
@@ -148,8 +158,26 @@ func _check_campaign_buttons(style: String) -> void:
 	if opened:
 		await _close_list(nav)
 	for alignment in ["good", "evil"]:
-		game.start_bfme2_campaign(alignment)
-		check(game._campaign_menu_buttons.notice_text() == "BFME2 %s campaign: not in this build (B2CAMP-1)" % alignment.capitalize(), style + ": a " + alignment + " request is refused by name")
+		var line: String = game.start_bfme2_campaign(alignment)
+		check(line.begins_with("[S-1914] The BFME2 %s campaign " % alignment.capitalize()), style + ": a " + alignment + " request is refused by name: " + line)
+		# the main menu's "not available" box (GuiFX.apt's MessageBox): its Ok gives the menu back
+		await game._step(30)
+		var ok: Dictionary = game._walk_find_box_ok()
+		check(not ok.is_empty(), style + ": the " + alignment + " refusal shows the not-available box")
+		if not ok.is_empty():
+			await _click(Vector2(ok.x, ok.y))
+		await game._wait_main_ready()
+		check(game._clean_main_menu(), style + ": the menu is usable again after the " + alignment + " box")
+
+
+## lane CAMPMENU-1: the Godot buttons drawn over the clean main menu (an OpenBFME panel such as MENUSTYLE-1's campaign panel), by their node paths
+func _visible_godot_buttons(node: Node) -> Array:
+	var out := []
+	for child in node.get_children():
+		if child is BaseButton and (child as BaseButton).is_visible_in_tree():
+			out.append(str(child.get_path()))
+		out.append_array(_visible_godot_buttons(child))
+	return out
 
 
 ## --menustyle-size=WxH: a windowed run's window size for the captures

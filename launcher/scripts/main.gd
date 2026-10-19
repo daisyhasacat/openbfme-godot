@@ -129,6 +129,11 @@ var _job_assets: Array = []   # the release assets the running game / launcher j
 var _paused_assets: Array = []
 var _ui_stop := ""            # tests: --ui-stop=<pause|cancel|play>@<text>, pressed once when a download whose progress names <text> runs
 var _ui_then := ""            # tests: --ui-then=resume|cancel, pressed once after that stop
+# MACFIX-1 (issue #46): the running job's newest byte progress, [text, done, total] ([] once shown), written by the worker thread and
+# shown by _process once a frame (_queue_progress); _job_ui_stop is the worker's copy of _ui_stop for the job
+var _progress_lock := Mutex.new()
+var _progress_next: Array = []
+var _job_ui_stop := ""
 var _aio_target := ""         # the folder of the AIO download that runs or is paused
 var _demo := ""
 var _demo_bfme1 := false     # --ui-demo games-bfme1: the Game files screen offers the BFME1 package without the choice being saved
@@ -1414,12 +1419,10 @@ func _busy() -> bool:
 ## Play waits only for a job that changes the version it starts (a reinstall of it) or downloads the games; a background update of a
 ## newer version does not stop it (that version is used from the next Play on)
 func _play_blocked() -> bool:
-	if updater.macos_updates_enabled() and \
-			(updater.macos_transaction or MacOSUpdate.transaction_locked(updater)):
+	# MACFIX-1 (issue #46): the running job first; the update lock's state is a process start (the bundle swap helper)
+	if _busy() and (_job_kind == "aio" or (_job_target != "" and _job_target == _pv)):
 		return true
-	if not _busy():
-		return false
-	return _job_kind == "aio" or (_job_target != "" and _job_target == _pv)
+	return updater.macos_updates_enabled() and (updater.macos_transaction or MacOSUpdate.transaction_locked(updater))
 
 
 func _set_buttons() -> void:
@@ -1459,11 +1462,17 @@ func _start_job(job: Callable, kind: String, target := "") -> void:
 	_meter.reset()
 	if kind == "check":
 		_set_update_state("checking")
-	updater.progress = func(text: String, done: int, total: int) -> void:
-		_on_progress.call_deferred(text, done, total)
+	_progress_lock.lock()
+	_progress_next = []
+	_job_ui_stop = _ui_stop
+	_progress_lock.unlock()
+	updater.progress = _queue_progress
 	_thread = Thread.new()
 	_thread.start(job)
-	_set_buttons()
+	if _progress.visible:
+		_show_progress(true)   # a resumed download: Pause again, not Resume (its progress no longer calls this)
+	else:
+		_set_buttons()
 
 
 ## `err`: the job failed (its message is shown in the dialog by the caller)
@@ -1514,6 +1523,35 @@ func _show_progress(on: bool) -> void:
 	_set_buttons()
 
 
+## MACFIX-1 (issue #46): the worker thread's progress callback. A download reports every chunk it reads (thousands a second on a fast
+## line); each used to be a deferred _on_progress call, which the window handles more slowly than they came: Godot's message queue
+## runs the calls that arrive while it runs, so the main thread never left it, never drew a frame again ("Checking File 2 of 612" for
+## the whole 8.6 GB download on the Mac of issue #46) and the queue overflowed. Status lines (no byte counts) still go in order; byte
+## progress only replaces the newest value, which _process shows once a frame. A --ui-stop test's matching line is passed on at once.
+func _queue_progress(text: String, done: int, total: int) -> void:
+	var now := total <= 0
+	_progress_lock.lock()
+	if not now and _job_ui_stop != "" and done < total and text.contains(_job_ui_stop.get_slice("@", 1)):
+		_job_ui_stop = ""
+		now = true
+	if now:
+		_progress_next = []
+	else:
+		_progress_next = [text, done, total]
+	_progress_lock.unlock()
+	if now:
+		_on_progress.call_deferred(text, done, total)
+
+
+func _process(_delta: float) -> void:
+	_progress_lock.lock()
+	var p := _progress_next
+	_progress_next = []
+	_progress_lock.unlock()
+	if not p.is_empty() and _job_kind != "":
+		_on_progress(p[0], p[1], p[2])
+
+
 func _on_progress(text: String, done: int, total: int) -> void:
 	if _ui_stop != "" and total > 0 and done < total and _busy() and text.contains(_ui_stop.get_slice("@", 1)):
 		var how := _ui_stop.get_slice("@", 0)
@@ -1537,7 +1575,8 @@ func _on_progress(text: String, done: int, total: int) -> void:
 		elif _job_kind in ["check", "install"] and text.begins_with("Downloading") and _update_state != "updating":
 			var m := RegEx.create_from_string("-(v\\d+\\.\\d+\\.\\d+(?:-(?:alpha|preview)\\.\\d+)?)-").search(text)
 			_set_update_state("updating", m.get_string(1) if m != null else _update_tag)
-		_show_progress(true)
+		if not _progress.visible:
+			_show_progress(true)   # MACFIX-1 (issue #46): not every chunk: it refreshes every button (_set_buttons, _play_blocked)
 	else:
 		_bar_title.text = Paths.scrub(text)
 		_status.text = Paths.scrub(text)
@@ -1795,7 +1834,9 @@ func _on_play() -> void:
 		if rel.is_empty():
 			_show_error("The game did not start", p.error + " It cannot be downloaded now: the release list is not available.")
 			return
-		_message.ask("Download it again?", "%s was changed after it was installed and is not started. Download it again?" % v, "Download",
+		# MACFIX-1 (issue #47): what was found, by name (Finder / iCloud metadata is not a change: MacOSUpdate._codesign)
+		_message.ask("Download it again?", "%s was changed after it was installed and is not started (%s). Download it again?" %
+			[v, p.get("change", "")], "Download",
 			func() -> void: _start_job(_job_install.bind(rel[0], true), "install", v))
 		return
 	_show_error("The game did not start", p.error)

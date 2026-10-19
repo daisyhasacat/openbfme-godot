@@ -20,10 +20,13 @@
 #include <string>
 #include <vector>
 
+// lane SHELLFIX-1: BFME2 1.06's archives on their own (the BFME2 main menu style's shell source, RetailFileSystem::create_bfme2_shell) hold the legend
+// without RotWK's expansion legend too; BFME2's Data\INI\AwardSystem.ini (BFME2 1.06 ini.big, RotWK 2.01 INI.big / _patch201ini.big; not in BFME1 1.03)
+// tells them apart. Before, that source was read as BFME1 data: its menu models were looked up in BFME1's flat art\w3d\ (SFE_MenuFrame not found)
 inline bool isBfme1Data(const ArchiveFileSystem &fs)
 {
 	return fs.doesFileExist("Data\\INI\\Default\\SubsystemLegend.ini") && !fs.doesFileExist("Data\\INI\\Default\\SubsystemLegendExpansion1.ini") &&
-		!fs.doesFileExist("Data\\INI\\CreateAHeroSystem.ini");
+		!fs.doesFileExist("Data\\INI\\AwardSystem.ini");
 }
 
 namespace Bfme1Detail

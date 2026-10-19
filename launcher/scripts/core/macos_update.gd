@@ -438,7 +438,7 @@ static func _validate_inventory_subset(root: String, files: Dictionary, updater:
 		if not files.has(path):
 			return "%s is not in the recorded inactive package inventory" % path
 		subset[path] = files[path]
-	return Manifest.check_files(root, subset)
+	return Manifest.check_files(root, subset, [], false, true)  # MACFIX-1: Finder's own files, as _scan
 
 
 static func _scan(root: String, relative: String, files: Array, directories: Array) -> String:
@@ -450,6 +450,8 @@ static func _scan(root: String, relative: String, files: Array, directories: Arr
 	for name in dir.get_files():
 		if dir.is_link(name):
 			return "%s is a symbolic link" % (relative.path_join(name) if relative != "" else name)
+		if Manifest.finder_metadata(name):
+			continue   # MACFIX-1 (issue #47): Finder's own files are no part of a package (Manifest.finder_metadata)
 		files.append(relative.path_join(name) if relative != "" else name)
 	for name in dir.get_directories():
 		if dir.is_link(name):
@@ -523,7 +525,7 @@ static func _validate_files_tree(root: String, files: Dictionary, updater: RefCo
 		for name in actual_dirs:
 			if not name in expected_dirs:
 				return "%s is an unexpected directory" % name
-	return Manifest.check_files(root, files)
+	return Manifest.check_files(root, files, [], false, true)  # MACFIX-1: Finder's own files, as _scan
 
 
 static func validate_tree(root: String, files: Dictionary, updater: RefCounted = null) -> String:
@@ -658,9 +660,17 @@ static func _transaction_trust_error(updater: RefCounted, journal: Dictionary) -
 	return _verify_external_helper(updater, journal)
 
 
+## The app's code seal: its code directory, every sealed resource (a file added, removed or changed anywhere in the app is refused), the
+## executables' own signatures, nested code (--deep) and the strict symlink rule. MACFIX-1 (issue #47): --strict=symlinks, not a bare
+## --strict, whose "sideband" check refuses an app that carries Finder information or a resource fork as extended attributes
+## ("resource fork, Finder information, or similar detritus not allowed"). Finder, iCloud Drive's file provider and unzip tools add those
+## to folders the player owns (com.apple.FinderInfo, com.apple.fileprovider.fpfs#P, com.apple.provenance): they are no part of the
+## seal, never run, and the bytes of every sealed file are still checked here and against the signed inventory (payload.json / the
+## signed manifest) by the callers. Measured on macOS 26.6: a bare --strict and --strict=symlinks refuse the same added, removed,
+## changed and AppleDouble files; only the extended attributes differ.
 static func _codesign(app: String) -> String:
 	var output: Array = []
-	var code := OS.execute("codesign", ["--verify", "--deep", "--strict", app], output, true)
+	var code := OS.execute("codesign", ["--verify", "--deep", "--strict=symlinks", app], output, true)
 	return "" if code == 0 else "codesign verification failed for %s: %s" % [app.get_file(), "\n".join(output).strip_edges()]
 
 

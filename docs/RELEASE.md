@@ -797,6 +797,13 @@ nothing, and says so). Further rules of the gate:
   table, a PE's headers: what Godot's export rewrites), which is scanned whole, and its pack is audited member by member; any other
   executable, or one that differs anywhere else, is scanned whole (round 4). The templates are read from `OPENBFME_GODOT_TEMPLATES` (default: Godot 4.7.2's export templates
   folder); a Godot update replaces the pins;
+- speed (PRIVSPEED-1: the v0.4.9 gate ran 1-2+ hours): the same findings, line for line, from fewer regex runs. `tools/release/rulescan.py`
+  reads each rule's required literals (and the characters it can never consume) off its parsed pattern and runs the regex only where
+  a match can be (a rule it cannot analyse is scanned whole); each distinct binary content is scanned once (sha256), large ones split
+  by decoding over worker processes (`--jobs` / `OPENBFME_PRIVACY_JOBS`, default the CPUs up to 8) that start within a memory budget
+  (`OPENBFME_PRIVACY_MEMORY_MB`, default half the available memory, at most 16 GB); a failed worker fails the gate. v0.4.9's assets:
+  about 75 s on a 16-core CI host (8 jobs), 100-135 s with a 2-3 GB budget; `audit-tree`: 91 s -> 15 s.
+  `tools/release/test_rulescan.py` keeps the old scan verbatim as the oracle;
 - file names are checked in every form too (as written, NFKC-normalised, the look-alikes turned back);
 - no `export-subst` attribute in any `.gitattributes` (GitHub's source archives would not hold the audited bytes);
 - no symbolic links; submodules only as listed in `tools/release/public_submodules.txt` (commit, path, url; a submodule bump updates its
@@ -869,8 +876,11 @@ themselves from it: the launcher's macOS mode (mac-release-1, `launcher/scripts/
 - **The seal** (step 6, MACPLAY-1). The zip joins the package folder before `seal_package.py` runs, so it is sealed like the Windows /
   Linux packages: `payload.json` (every file of the package with its size and SHA-256, platform `macos-arm64`) and its signature under
   the release key are added inside the zip, beside the two apps (their code seals are unchanged). The Mac launcher starts the game
-  beside it only when that inventory verifies, every signed file matches and both apps' code seals verify (`codesign --strict`); a
-  launcher with no verified package beside it installs the signed package into `versions/<v>/game` itself, like the other platforms.
+  beside it only when that inventory verifies, every signed file matches and both apps' code seals verify (`codesign --deep
+  --strict=symlinks`: MACFIX-1, every strict check but "sideband", which refused the Finder / iCloud Drive extended attributes of a
+  package unpacked into an iCloud Desktop, issue #47; Finder's `.DS_Store`, `Icon\r` and `._*` files are no part of a package either);
+  a launcher with no verified package beside it installs the signed package into `versions/<v>/game` itself, like the other platforms.
+  The release tooling keeps the bare `--strict` on the bytes it makes.
 - **The sidecar** (step 6). The sealed zip is listed in `SHA256SUMS-<v>.txt`. `make_macos_manifest.py` writes
   `manifest-macos.json` (format 3, the "macos" schema: one `macos-arm64` game entry with every file's size and SHA-256), with the
   version, repository, commit and date of `manifest.json`. It is signed with the same key in a separate signature,

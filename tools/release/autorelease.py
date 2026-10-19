@@ -73,7 +73,10 @@ import ed25519  # noqa: E402
 sys.path.insert(0, str(HERE.parent))
 from precommit import check_file  # noqa: E402  (the commit gate's per-file rules)
 import audit_package  # noqa: E402  (the package audit: containers opened recursively, fail closed)
+import rulescan  # noqa: E402  (PRIVSPEED-1: the rules' scans, exact and fast)
 import zlib  # noqa: E402
+import contextlib  # noqa: E402
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait  # noqa: E402
 
 # what a release is made of: a change anywhere else (docs, roadmap, other tools) does not make a new release
 RELEASE_PATHS = ("engine", "godot", "launcher", "tools/release")
@@ -1213,10 +1216,11 @@ BUILTIN_RULES = [
     {"id": "aws-account", "kind": "regex", "pattern": r"arn:aws[a-z-]*:|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|aws_secret_access_key|aws_session_token|"
                                                      r"\baccount\W{0,12}\d{4}-?\d{4}-?\d{4}\b"},
     {"id": "cloudflare-account", "kind": "regex", "pattern": r"(?:account|zone)[_ -]?id\W{0,6}[0-9a-f]{32}\b"},
-    # e-mail addresses: only the noreply forms and the reserved example domains are public (third-party credits and test fixtures allowed)
+    # e-mail addresses: only the noreply forms and the reserved example domains are public (third-party credits and test fixtures allowed);
+    # RELFIX-3: nongnu.org's public mailing lists too (FreeType's, in every Godot template)
     {"id": "e-mail", "kind": "regex", "allow": ["engine/thirdparty/**", "engine/src/GameClient/VP6Decoder.cpp", "engine/src/GameClient/VP6Tables.inc",
                                                   "engine/tests/**", "godot/tests/**", "launcher/tests/**"],
-     "pattern": r"[A-Za-z0-9._%+-]+@(?!users\.noreply\.github\.com\b|anthropic\.com\b|example\.(?:com|org|net)\b|[a-z0-9.-]*\.(?:example|invalid|test|localhost)\b)"
+     "pattern": r"[A-Za-z0-9._%+-]+@(?!users\.noreply\.github\.com\b|anthropic\.com\b|nongnu\.org\b|example\.(?:com|org|net)\b|[a-z0-9.-]*\.(?:example|invalid|test|localhost)\b)"
                 # r3: a file name after the '@' is no address (the game's library holds "...o@multiplayer.ini")
                 r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?!(?:ini|cfg|txt|json|big|str|dat|map|wnd|apt|w3d|tga|dds|png|gd|tscn|tres)\b)"
                 r"[A-Za-z]{2,}\b"},
@@ -1388,37 +1392,249 @@ def text_forms(text: str, unescape: bool = True) -> list[str]:
     return list(dict.fromkeys(forms))
 
 
-def _normal(text: str) -> str:
-    """the look-alikes turned back, NFKC-normalised, the look-alikes turned back again (U+2011 normalises to U+2010, not to '-')"""
+NORMAL_CHUNK = 1 << 20
+SPARSE_MIN = 1 << 16   # _nfkc looks for a sparse text's stretches from this length on
+_ASCII_CHAR = re.compile(r"[\x00-\x7f]")
+_NON_INERT: tuple[re.Pattern, frozenset[str]] | None = None
+
+
+def non_inert() -> tuple[re.Pattern, frozenset[str]]:
+    """(a pattern of runs of characters that NFKC may change or join to their neighbours, the ones of them beyond U+FFFF): a character
+    whose own NFKC form differs, a combining mark, the second character of any canonical composition (Hangul vowel and trailing jamo
+    included). The pattern's class has every character beyond U+FFFF (re reads astral ranges one by one), the set the ones that
+    count. Every other ("inert") character is a normalisation boundary that normalises to itself: a starter that never composes with
+    what comes before it, so NFKC(x + c + y) = NFKC(x) + c + NFKC(y) for one. Read from the running unicodedata."""
+    global _NON_INERT
+    if _NON_INERT is None:
+        import unicodedata  # noqa: PLC0415
+        seconds = set(range(0x1161, 0x1176)) | set(range(0x11A8, 0x11C3))
+        for cp in range(0x110000):
+            if not 0xD800 <= cp < 0xE000:
+                d = unicodedata.decomposition(chr(cp))
+                if d and not d.startswith("<") and len(d.split()) == 2:
+                    seconds.add(int(d.split()[1], 16))
+        chars = [chr(cp) for cp in range(0x110000) if not 0xD800 <= cp < 0xE000 and (
+            cp in seconds or unicodedata.combining(chr(cp)) or unicodedata.normalize("NFKC", chr(cp)) != chr(cp))]
+        _NON_INERT = (re.compile(rulescan.class_re("".join(chars), astral=True).pattern + "+"),
+                      frozenset(c for c in chars if c >= "\U00010000"))
+    return _NON_INERT
+
+
+def _nfkc(t: str) -> str:
+    """unicodedata.normalize("NFKC", t); when few characters are not inert (non_inert(): the UTF-32 decodings, ~90 % U+FFFD, and the
+    UTF-8 one of a binary), only the stretches around them, each from the inert character before it to the next inert one"""
     import unicodedata  # noqa: PLC0415
+    if len(t) < SPARSE_MIN:
+        return unicodedata.normalize("NFKC", t)   # short: not worth reading non_inert() for
+    rx, astral = non_inert()
 
-    def back(t: str) -> str:   # str.translate, but as fast on 20 MB of decoded binary as on a line
-        for k, v in DENEUTRAL.items():
-            t = t.replace(chr(k), v)
-        return t
-    return back(unicodedata.normalize("NFKC", back(text)))
+    def counts(m) -> bool:   # a run that is not all inert characters beyond U+FFFF
+        return not all(c >= "\U00010000" and c not in astral for c in m.group(0))
+    sample = t[:1 << 14]
+    if sum(map(counts, rx.finditer(sample))) > len(sample) >> 6:
+        return unicodedata.normalize("NFKC", t)
+    runs = []
+    for m in rx.finditer(t):
+        if counts(m):
+            runs.append(m.span())
+            if len(runs) > len(t) >> 6:
+                return unicodedata.normalize("NFKC", t)
+    out, cur = "", 0
+    for a, b in runs:
+        a = max(a - 1, cur)   # the inert starter its marks may compose with
+        out += t[cur:a]
+        out += unicodedata.normalize("NFKC", t[a:b])
+        cur = b
+    return out + t[cur:] if runs else t
 
 
-def binary_texts(data: bytes) -> Iterator[tuple[str, str]]:
+def _back(t: str) -> str:
+    """the look-alikes turned back (str.translate, but as fast on 20 MB of decoded binary as on a line)"""
+    for k, v in DENEUTRAL.items():
+        t = t.replace(chr(k), v)
+    return t
+
+
+def _normal_piece(t: str) -> str:
+    return _back(_nfkc(_back(t)))
+
+
+def _normal(text: str) -> str:
+    """the look-alikes turned back, NFKC-normalised, the look-alikes turned back again (U+2011 normalises to U+2010, not to '-').
+    PRIVSPEED-1: a long text piece by piece (NORMAL_CHUNK characters, each piece up to the next ASCII character), the pieces joined in
+    place: the same text (an ASCII character is inert, non_inert(); the look-alikes are per character), without normalize()'s
+    whole-text buffers; each piece through _nfkc()."""
+    out, a = "", 0
+    while True:
+        m = _ASCII_CHAR.search(text, a + NORMAL_CHUNK) if a + NORMAL_CHUNK < len(text) else None
+        b = m.start() if m else len(text)
+        out += _normal_piece(text[a:b])
+        a = b
+        if a >= len(text):
+            return out
+
+
+# the decodings binary_texts() reads, in order; PRIVSPEED-1: a large content's scan is split into these groups of them (about the same
+# work each: the whole data in Latin-1, in UTF-8, half of it in each UTF-16 alignment, a quarter in each UTF-32 one)
+BINARY_DECODINGS = ("latin-1", "utf-8") + tuple(f"{enc} +{off}" for enc, step in (("utf-16-le", 2), ("utf-16-be", 2), ("utf-32-le", 4),
+                                                                                    ("utf-32-be", 4)) for off in range(step))
+BINARY_GROUPS = tuple((d,) for d in BINARY_DECODINGS[:6]) + tuple(BINARY_DECODINGS[i:i + 2] for i in range(6, 14, 2))
+# a worker's peak memory per byte of the content for each decoding (measured on v0.4.9's 113 MB OpenBFMELauncher.exe: Latin-1 3.9,
+# UTF-8 6.5 (its text is UCS-4), UTF-16 4.8-5.2, a UTF-32 pair 4.8-5.1), rounded up: what parallel_scans() budgets
+DECODING_MEMORY = {"latin-1": 5, "utf-8": 8, "utf-16": 6, "utf-32": 6}
+
+_FLAG = {name: bytes(0xFF if test(i) else 0 for i in range(256)) for name, test in (
+    ("nonzero", lambda i: i != 0), ("above-10", lambda i: i > 0x10), ("zero", lambda i: i == 0), ("d8-df", lambda i: 0xD8 <= i <= 0xDF))}
+
+
+def _utf32_replace(data: bytes, enc: str, start: int = 0, end: int | None = None) -> str:
+    """data[start:end].decode(enc, "replace") for UTF-32 (a whole number of units): the same text, without the codec's per-unit error
+    path (binary data is ~90 % invalid units, which made the UTF-32 decodings a fifth of the whole scan). A unit is invalid when it is
+    above U+10FFFF or a surrogate (U+D800..U+DFFF); each becomes one U+FFFD, as the codec does. The bytes of each significance are read
+    as one column (data[i::4]), flagged with bytes.translate and combined as integers; the result is decoded strictly, so any unit this
+    missed fails the decode, and the codec decodes it instead."""
+    end = len(data) if end is None else end
+    n = (end - start) // 4
+    if (end - start) % 4 or n <= 0:
+        return data[start:end].decode(enc, "replace")
+    order = (0, 1, 2, 3) if enc.endswith("le") else (3, 2, 1, 0)   # the offsets of the low ... high byte of each unit
+
+    def num(k: int, flag: str | None = None) -> int:   # column k (0: the low byte), flagged
+        col = data[start + order[k]:end:4]
+        return int.from_bytes(col.translate(_FLAG[flag]) if flag else col, "little")
+    ones = (1 << (8 * n)) - 1
+    high = num(3, "nonzero")
+    bad = high | num(2, "above-10") | (num(1, "d8-df") & num(2, "zero") & (high ^ ones))
+    del high
+    if not bad:
+        try:
+            return data[start:end].decode(enc)
+        except UnicodeDecodeError:
+            return data[start:end].decode(enc, "replace")
+    keep = bad ^ ones
+    out = bytearray(data[start:end])
+    for k, fill in enumerate(b"\xfd\xff\x00\x00"):   # U+FFFD, low byte first
+        col = num(k) & keep | (bad & int.from_bytes(bytes([fill]) * n, "little") if fill else 0)
+        out[order[k]::4] = col.to_bytes(n, "little")
+        del col
+    try:
+        return out.decode(enc)
+    except UnicodeDecodeError:
+        return data[start:end].decode(enc, "replace")
+
+
+def _span(data: bytes, name: str) -> tuple[str, int, int, int]:
+    """(codec, code unit size, first byte, end byte) of a BINARY_DECODINGS decoding: the alignment's whole code units"""
+    if name in ("latin-1", "utf-8"):
+        return name, 1, 0, len(data)
+    enc, off = name.split(" +")
+    step, off = (2 if "16" in enc else 4), int(off)
+    return enc, step, off, len(data) - (len(data) - off) % step
+
+
+def _decode(data: bytes, enc: str, start: int, end: int) -> str:
+    if enc.startswith("utf-32"):
+        return _utf32_replace(data, enc, start, end)
+    return data[start:end].decode(enc, "replace")
+
+
+def _decoding(data: bytes, name: str) -> str:
+    enc, _, start, end = _span(data, name)
+    return _decode(data, enc, start, end)
+
+
+# a code unit that decodes to an ASCII character, by codec (UTF-8: any byte below 0x80 is one, never part of a sequence)
+_ASCII_UNIT = {"latin-1": re.compile(rb"[\x00-\x7f]"), "utf-8": re.compile(rb"[\x00-\x7f]"),
+               "utf-16-le": re.compile(rb"[\x00-\x7f]\x00"), "utf-16-be": re.compile(rb"\x00[\x00-\x7f]"),
+               "utf-32-le": re.compile(rb"[\x00-\x7f]\x00\x00\x00"), "utf-32-be": re.compile(rb"\x00\x00\x00[\x00-\x7f]")}
+
+
+def _pieces(data: bytes, name: str) -> list[tuple[int, int]]:
+    """byte ranges that split a decoding about every NORMAL_CHUNK characters, each after the first starting at a code unit that
+    decodes to an ASCII character: decoding them one by one gives the whole decoding (no codec state or error range crosses such a
+    unit: the UTF-8 and UTF-16 'replace' decodings restart there exactly) and normalising them one by one its _normal() (_normal)"""
+    enc, step, start, end = _span(data, name)
+    rx, bounds = _ASCII_UNIT[enc], [start]
+    while bounds[-1] + NORMAL_CHUNK * step < end:
+        pos, q = bounds[-1] + NORMAL_CHUNK * step, None
+        while q is None:
+            m = rx.search(data, pos, end)
+            if not m:
+                break
+            if (m.start() - start) % step == 0:
+                q = m.start()
+            pos = m.start() + 1
+        if q is None:
+            break
+        bounds.append(q)
+    bounds.append(end)
+    return list(zip(bounds, bounds[1:]))
+
+
+def _normal_form(data: bytes, name: str) -> str | None:
+    """_normal() of the decoding `name` of data, or None if that is the decoding itself, made piece by piece from the bytes (_pieces):
+    the whole decoding is not held while its normal form is built (a 100 MB executable's UTF-8 decoding is UCS-4: both at once took
+    gigabytes per worker)"""
+    enc, *_ = _span(data, name)
+    out, first, pos = "", None, 0
+    for a, b in _pieces(data, name):
+        t = _decode(data, enc, a, b)
+        n = _normal_piece(t)
+        if first is None and n != t:
+            first = (pos, t)   # the first piece that changes: the text up to it is out's
+        out += n
+        pos += len(t)
+        del t, n
+    if first is None:
+        return None   # every piece is its own normal form: so is the whole
+    at, t = first
+    if out[at:at + len(t)] != t:
+        return out    # out differs from the decoding there
+    pos = 0
+    for a, b in _pieces(data, name):   # the same text after all (never seen): compare it whole
+        t = _decode(data, enc, a, b)
+        if out[pos:pos + len(t)] != t:
+            return out
+        pos += len(t)
+    return None if pos == len(out) else out
+
+
+def binary_texts(data: bytes, decodings: tuple[str, ...] = BINARY_DECODINGS) -> Iterator[tuple[str, str]]:
     """[(encoding, text)]: what the private rules see of binary data (a pinned binary, a decoded container member, a library). PUBLISH-2 r3
     (Sol r2 P2: only ASCII and UTF-16LE runs of 4+ were read, so a 3-character literal, UTF-16BE, UTF-32 and non-ASCII UTF-8 strings
     passed): the whole data in Latin-1 (every ASCII byte as itself: a literal of any length, between any bytes), UTF-8 and UTF-16 / UTF-32
-    in both byte orders at every alignment. r4 (Sol r3 P2: a full-width host name passed in UTF-16 and UTF-32): every decoding that is not
-    ASCII is also read _normal()ised, as text is (text_forms). Undecodable code units become U+FFFD, which no rule matches and which ends
-    a word. One form at a time (a generator: 28 decodings of a 20 MB library held at once took gigabytes)."""
-    def decodings():
-        yield "latin-1", data.decode("latin-1")
-        yield "utf-8", data.decode("utf-8", "replace")
-        for enc, step in (("utf-16-le", 2), ("utf-16-be", 2), ("utf-32-le", 4), ("utf-32-be", 4)):
-            for off in range(step):
-                yield f"{enc} +{off}", data[off:len(data) - (len(data) - off) % step].decode(enc, "replace")
-    for enc, text in decodings():
+    in both byte orders at every alignment (BINARY_DECODINGS). r4 (Sol r3 P2: a full-width host name passed in UTF-16 and UTF-32): every
+    decoding that is not ASCII is also read _normal()ised, as text is (text_forms). Undecodable code units become U+FFFD, which no rule
+    matches and which ends a word. One form at a time (a generator: 28 decodings of a 20 MB library held at once took gigabytes).
+    decodings: a part of BINARY_DECODINGS (PRIVSPEED-1: a worker's group), in its order. PRIVSPEED-1: a long decoding is let go (the
+    consumer drops it too) before its normal form is made from the bytes (_normal_form)."""
+    for enc in decodings:
+        text = _decoding(data, enc)
         yield enc, text
-        if not text.isascii():
+        if text.isascii():
+            continue
+        if len(text) <= NORMAL_CHUNK:
             norm = _normal(text)
-            if norm != text:
-                yield f"{enc} NFKC", norm
+            norm = None if norm == text else norm
+        else:
+            del text
+            norm = _normal_form(data, enc)
+        if norm is not None:
+            yield f"{enc} NFKC", norm
+        del norm
 
+
+# RELFIX-3 (v0.4.9's publish refused 3-letter private words found by chance in 100 MB of executables): in binary bytes a match of this
+# many characters or fewer is not a finding; text, names, notes and metadata are still checked for them
+SHORT_BINARY = 3
+# RELFIX-4 (the v0.4.9 macOS executables: "T@9.xk" in ARM64 machine code): an e-mail-shaped match of 7 characters or fewer in binary
+# bytes is chance too (the shortest real address is longer; a private one far longer)
+SHORT_BINARY_RULE = {"e-mail": 7}
+
+
+def short_binary(rid: str) -> int:
+    """the longest match of rule rid that is no finding in binary bytes"""
+    return max(SHORT_BINARY, SHORT_BINARY_RULE.get(rid, 0))
 
 TEXT_SUFFIXES = (".txt", ".md", ".json", ".gd", ".cfg", ".ini", ".tscn", ".tres", ".import", ".remap", ".gdshader", ".gdshaderinc",
                  ".gdextension", ".csv", ".xml", ".yml", ".yaml", ".html", ".sh", ".py", ".toml", ".pub")
@@ -1438,43 +1654,305 @@ def name_forms(path: str) -> list[str]:
 
 def denylist_hits(path: str, text: str | None, rules, check_path: bool = True, metadata: bool = False, data: bytes | None = None) -> list[str]:
     """the hits of one file (its name, and its text, or with data= its binary_texts(), unless None) as problem lines. Nothing of a matched
-    value is printed (_mask), and a file name that a rule matches is printed masked too (and recorded in PRIVATE_NAMES)."""
+    value is printed (_mask), and a file name that a rule matches is printed masked too (and recorded in PRIVATE_NAMES). PRIVSPEED-1:
+    every rule's matches through rulescan.finditer (exactly rx.finditer, run only where a match can be); binary data through
+    binary_rule_hits(), once per distinct content and in a worker process inside parallel_scans() (then the result is a _Pending
+    that resolve() expands, in order)."""
     names = name_forms(path) if check_path else []
-    named = [rid for rid, rx, allow, _ in rules if not any(g.match(path) for g in allow) and any(rx.search(n) for n in names)]
+    maybe = _name_rules(names, rules)
+    named = [rid for i, (rid, rx, allow, _) in enumerate(rules)
+             if i in maybe and not any(g.match(path) for g in allow) and any(rx.search(n) for n in names)]
     if named:
         PRIVATE_NAMES.add(path)
-    shown = sanitize(path, rules)
-    if text is not None:
-        for own in OWN_LINES:   # our own attribution lines (their URL path reads like a user path to an account rule)
-            text = text.replace(own, "")
-    texts = None if text is None else [(None, f) for f in text_forms(text, unescape=metadata)]
-    if data is not None:
-        texts = binary_texts(data)
+    shown_once: list[str] = []
+
+    def shown() -> str:   # the name as printed: made when a line needs it (sanitize is most of an audit of thousands of clean files)
+        if not shown_once:
+            shown_once.append(sanitize(path, rules))
+        return shown_once[0]
     live = [r for r in rules if not any(g.match(path) for g in r[2])]
     found: dict[str, list[str]] = {r[0]: [] for r in live}
     for rid, rx, _, _ in live:
         if rid in named:
             m = next(m for m in (rx.search(n) for n in names) if m)
-            found[rid].append(f"denylisted ({rid}) in a file name: {shown} ({_mask(m.group(0))})")
+            found[rid].append(f"denylisted ({rid}) in a file name: {shown()} ({_mask(m.group(0))})")
+    order = list(dict.fromkeys(r[0] for r in live))
+    if data is not None:
+        shown()   # now: PRIVATE_NAMES as of this file (a worker's lines are made later)
+        def lines(hits: dict[str, list[tuple[str, int, int]]]) -> list[str]:
+            for rid, got in hits.items():
+                found[rid] += [f"denylisted ({rid}) in {shown()} ({enc} bytes at {at}) (<{n} chars>)" for enc, at, n in got]
+            return [h for rid in order for h in found[rid]]
+        hits = _binary_scan(data, live)
+        return [_Pending(lambda: lines(hits.result()))] if isinstance(hits, _Joined) else lines(hits)
+    if text is not None:
+        for own in OWN_LINES:   # our own attribution lines (their URL path reads like a user path to an account rule)
+            text = text.replace(own, "")
     seen: set[tuple[str, str]] = set()
-    values: dict[tuple[str, str], set[str]] = {}   # (rule, encoding): the values found in it
-    for enc, form in texts or ():   # form by form (binary_texts is a generator), every rule on each
+    scanned = [rx for _, rx, _, paths_only in live if not paths_only]
+    for form in (text_forms(text, unescape=metadata) if text is not None else ()):   # every rule on each form
+        index = rulescan.literal_index(form, scanned)   # every rule's literals in one pass
         for rid, rx, _, paths_only in live:
             if paths_only:
                 continue
-            for m in rx.finditer(form):
-                if enc == "utf-8" and m.group(0).isascii():
-                    continue   # the Latin-1 form has it (the same bytes)
-                if enc and enc.endswith(" NFKC") and m.group(0) in values.get((rid, enc[:-5]), ()):
-                    continue   # the encoding's own form has it as written
-                if enc:
-                    values.setdefault((rid, enc), set()).add(m.group(0))
-                where = f"{shown}:{form.count(chr(10), 0, m.start()) + 1}" if enc is None else f"{shown} ({enc} bytes at {m.start()})"
-                key = (rid, where if enc is None else enc)
-                if key not in seen:
-                    seen.add(key)
+            for m in rulescan.finditer(rx, form, None, index):
+                where = f"{shown()}:{form.count(chr(10), 0, m.start()) + 1}"
+                if (rid, where) not in seen:
+                    seen.add((rid, where))
                     found[rid].append(f"denylisted ({rid}) in {where} ({_mask(m.group(0))})")
-    return [h for rid in dict.fromkeys(r[0] for r in live) for h in found[rid]]
+    return [h for rid in order for h in found[rid]]
+
+
+def _name_rules(names: list[str], rules) -> set[int]:
+    """the indexes of the rules that may match one of the names: every rule whose cover literal (rulescan) is in one of them, every
+    rule rulescan scans whole"""
+    if not names:
+        return set()
+    index = rulescan.literal_index("\n".join(names), [rx for _, rx, _, _ in rules])
+    out = set()
+    for i, (_, rx, _, _) in enumerate(rules):
+        sc = rulescan.scan_of(rx)
+        if index is None or sc.mode == "full" or any(index.get(c[0]) for c in sc.cover):
+            out.add(i)
+    return out
+
+
+def binary_rule_hits(data: bytes, rules, decodings: tuple[str, ...] = BINARY_DECODINGS) -> dict[str, list[tuple[str, int, int]]]:
+    """{rule id: [(encoding, offset, length)]}: the first match of each rule in each of binary_texts(data) (its offset in that decoding,
+    its length; never its value), every rule on each form. RELFIX-3: a match of SHORT_BINARY characters or fewer is no hit; a UTF-8 match
+    that is ASCII is the Latin-1 form's (the same bytes); an NFKC form's match that its own decoding has as written is that decoding's.
+    Each decoding (with its NFKC form) is on its own, so the hits of a split scan (decodings: a group, in order) joined in
+    BINARY_DECODINGS order are the whole scan's (_Joined)."""
+    found: dict[str, list[tuple[str, int, int]]] = {}
+    values: dict[tuple[str, str], set[str]] = {}   # (rule, encoding): the values found in it
+    seen: set[tuple[str, str]] = set()
+    scanned = [rx for _, rx, _, paths_only in rules if not paths_only]
+
+    def scan(enc: str, form: str) -> None:
+        index = rulescan.literal_index(form, scanned)   # every rule's literals in one pass
+        for rid, rx, _, paths_only in rules:
+            if paths_only:
+                continue
+            for m in rulescan.finditer(rx, form, None, index):
+                v = m.group(0)
+                if len(v) <= short_binary(rid):
+                    continue   # RELFIX-3: a match this short in binary bytes is chance (machine code, ICU / locale tables), no leak
+                if enc == "utf-8" and v.isascii():
+                    continue   # the Latin-1 form has it (the same bytes)
+                if enc.endswith(" NFKC") and v in values.get((rid, enc[:-5]), ()):
+                    continue   # the encoding's own form has it as written
+                values.setdefault((rid, enc), set()).add(v)
+                if (rid, enc) not in seen:
+                    seen.add((rid, enc))
+                    found.setdefault(rid, []).append((enc, m.start(), len(v)))
+    for enc, form in binary_texts(data, decodings):   # form by form (binary_texts is a generator)
+        scan(enc, form)
+        del form   # PRIVSPEED-1: not held while the next form is made
+    return found
+
+
+class _Pending:
+    """problem lines a worker is still computing (parallel_scans): resolve() expands it in place. Never printable (fail closed: a
+    pending scan that reached a report unresolved is an error, not a pass)."""
+
+    def __init__(self, fn) -> None:
+        self.fn = fn
+
+    def __str__(self) -> str:
+        raise RuntimeError("autorelease: an unresolved privacy scan reached a report")
+
+    __format__ = lambda self, spec: str(self)  # noqa: E731
+
+
+def prefixed(prefix: str, problems: list) -> list:
+    """prefix + every problem line (a _Pending one when it is resolved)"""
+    return [_Pending(lambda p=p: [prefix + x for x in p.fn()]) if isinstance(p, _Pending) else prefix + p for p in problems]
+
+
+def resolve(problems: list) -> list[str]:
+    """the problem lines with every _Pending expanded in place (the order of a sequential run); a failed worker is an error that names
+    nothing it read (its exception's text could quote what it scanned)"""
+    out: list[str] = []
+    for p in problems:
+        if isinstance(p, _Pending):
+            try:
+                out += p.fn()
+            except Exception as e:  # noqa: BLE001
+                raise SystemExit(f"autorelease: a privacy scan worker failed ({type(e).__name__}): nothing is published") from None
+        else:
+            out.append(p)
+    return out
+
+
+def _rule_spec(rules) -> tuple:
+    return tuple((rid, rx.pattern, rx.flags, paths_only) for rid, rx, _, paths_only in rules)
+
+
+_WORKER_RULES: dict[tuple, list] = {}
+
+
+def _scan_job(data: bytes, spec: tuple, decodings: tuple[str, ...]) -> dict[str, list[tuple[str, int, int]]]:
+    """a worker's binary_rule_hits (the rules rebuilt from their spec: ids, patterns, flags)"""
+    rules = _WORKER_RULES.get(spec)
+    if rules is None:
+        rules = _WORKER_RULES[spec] = [(rid, re.compile(pat, flags), [], po) for rid, pat, flags, po in spec]
+    return binary_rule_hits(data, rules, decodings)
+
+
+class _Part:
+    """one worker task: a group of decodings of one content, with the memory it may take (DECODING_MEMORY)"""
+
+    def __init__(self, data: bytes, spec: tuple, group: tuple[str, ...]) -> None:
+        self.args: tuple | None = (data, spec, group)
+        self.cost = len(data) * max(DECODING_MEMORY[re.sub(r"-[lb]e$", "", d.split(" ")[0])] for d in group) + (64 << 20)
+        self.future: Future | None = None
+
+
+class _Joined:
+    """the workers' parts of one content's scan: result() joins them in BINARY_DECODINGS order (the whole scan's hits)"""
+
+    def __init__(self, state: "_Scans", parts: list[_Part]) -> None:
+        self.state, self.parts = state, parts
+
+    def result(self) -> dict[str, list[tuple[str, int, int]]]:
+        out: dict[str, list[tuple[str, int, int]]] = {}
+        for p in self.parts:
+            self.state.run(p)
+            for rid, got in p.future.result().items():
+                out.setdefault(rid, []).extend(got)
+        return out
+
+
+def _worker_failed(e: BaseException) -> SystemExit:
+    return SystemExit(f"autorelease: a privacy scan worker failed ({type(e).__name__}): nothing is published")
+
+
+class _Scans:
+    """parallel_scans()'s state: each distinct (content, rules) once (sha256), large ones in a worker pool, very large ones split into
+    BINARY_GROUPS (one worker each: a 100 MB executable no longer scans on one core while the others wait). Tasks start while the
+    workers' estimated memory (_Part.cost) stays within the budget (scan_memory(); one task at a time always runs)."""
+    INLINE = 1 << 20          # smaller contents are scanned in this process
+    SPLIT = 8 << 20           # larger ones are split
+    INFLIGHT = 512 << 20      # contents waiting for a worker that this process holds (the walk waits beyond it)
+
+    def __init__(self, jobs: int, budget: int | None = None) -> None:
+        self.done: dict[tuple, object] = {}
+        self.pool = None
+        self.jobs = jobs
+        self.budget = scan_memory() if budget is None else budget
+        self.queue: list[_Part] = []
+        self.running: dict[Future, _Part] = {}
+        self.used = 0
+        if jobs > 1:
+            # workers from a clean process (never fork() this one: a thread of the caller's, e.g. a test's server, can hold a lock a
+            # forked child then waits on forever): forkserver where there is one (Linux), else spawn
+            import multiprocessing  # noqa: PLC0415
+            method = "forkserver" if sys.platform.startswith("linux") and "forkserver" in multiprocessing.get_all_start_methods() \
+                else "spawn"
+            self.pool = ProcessPoolExecutor(max_workers=jobs, mp_context=multiprocessing.get_context(method))
+
+    def _pump(self) -> None:
+        """retire finished tasks, start queued ones (first fit) while a worker is free and the budget allows"""
+        for f in [f for f in self.running if f.done()]:
+            self.used -= self.running.pop(f).cost
+        i = 0
+        while i < len(self.queue) and len(self.running) < self.jobs:
+            p = self.queue[i]
+            if self.running and self.used + p.cost > self.budget:
+                i += 1
+                continue
+            del self.queue[i]
+            try:
+                p.future = self.pool.submit(_scan_job, *p.args)
+            except Exception as e:  # noqa: BLE001  (a broken pool)
+                raise _worker_failed(e) from None
+            p.args = None
+            self.running[p.future] = p
+            self.used += p.cost
+
+    def _wait(self) -> None:
+        wait(list(self.running), return_when=FIRST_COMPLETED)
+        self._pump()
+
+    def run(self, part: _Part) -> None:
+        """until the part has started (its future then gives its result)"""
+        self._pump()
+        while part.future is None:
+            self._wait()
+
+    def get(self, data: bytes, rules):
+        spec = _rule_spec(rules)
+        key = (hashlib.sha256(data).digest(), len(data), spec)
+        if key in self.done:
+            return self.done[key]
+        if self.pool is None or len(data) < self.INLINE:
+            got = self.done[key] = binary_rule_hits(data, rules)
+            return got
+        parts = [_Part(data, spec, g) for g in (BINARY_GROUPS if len(data) >= self.SPLIT else (BINARY_DECODINGS,))]
+        self.queue += parts
+        self._pump()
+        while self.running and sum({id(p.args[0]): len(p.args[0]) for p in self.queue}.values()) > self.INFLIGHT:
+            self._wait()
+        got = self.done[key] = _Joined(self, parts)
+        return got
+
+
+_SCAN_STATE: _Scans | None = None
+
+
+def _binary_scan(data: bytes, rules):
+    """binary_rule_hits(data, rules): at once outside parallel_scans(), else deduplicated and (when large) a _Joined"""
+    return binary_rule_hits(data, rules) if _SCAN_STATE is None else _SCAN_STATE.get(data, rules)
+
+
+def scan_memory() -> int:
+    """bytes the privacy gate's workers may take together: OPENBFME_PRIVACY_MEMORY_MB, else half of what this machine (and this
+    process's cgroup, when it has a limit) has available, at most 16 GB; 4 GB where neither can be read"""
+    v = os.environ.get("OPENBFME_PRIVACY_MEMORY_MB", "")
+    if v:
+        if not v.isdigit() or int(v) < 256:
+            raise SystemExit("autorelease: OPENBFME_PRIVACY_MEMORY_MB is a whole number of at least 256")
+        return int(v) << 20
+    avail = []
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                avail.append(int(line.split()[1]) << 10)
+        rel = next(x.split(":", 2)[2] for x in Path("/proc/self/cgroup").read_text().splitlines() if x.startswith("0::"))
+        cg = Path("/sys/fs/cgroup") / rel.strip().lstrip("/")
+        limit = (cg / "memory.max").read_text().strip()
+        if limit.isdigit():
+            avail.append(int(limit) - int((cg / "memory.current").read_text().strip()))
+    except (OSError, ValueError, StopIteration):
+        pass
+    return max(512 << 20, min(min(avail) // 2, 16 << 30)) if avail else 4 << 30
+
+
+def scan_jobs() -> int:
+    """the privacy gate's worker processes: OPENBFME_PRIVACY_JOBS, else the CPU count up to 8 (1: everything in this process)"""
+    v = os.environ.get("OPENBFME_PRIVACY_JOBS", "")
+    if v:
+        if not v.isdigit() or int(v) < 1:
+            raise SystemExit("autorelease: OPENBFME_PRIVACY_JOBS is a whole number of at least 1")
+        return int(v)
+    return max(1, min(8, len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)))
+
+
+@contextlib.contextmanager
+def parallel_scans(jobs: int):
+    """inside: binary contents are scanned once each (sha256 and rules), large ones in `jobs` worker processes; the problem lists of
+    denylist_hits / content_hits / SyncAudit then hold _Pending entries until resolve()"""
+    global _SCAN_STATE
+    if _SCAN_STATE is not None:
+        yield _SCAN_STATE
+        return
+    state = _SCAN_STATE = _Scans(jobs)
+    try:
+        yield state
+    finally:
+        _SCAN_STATE = None
+        if state.pool is not None:
+            state.pool.shutdown(wait=True, cancel_futures=True)
 
 
 def _mapped_forms(seg: str) -> list[tuple[str, list[int]]]:
@@ -1763,7 +2241,7 @@ def audit_tree(git_dir: str | None, tree: str, denylist=None) -> list[str]:
             problems += container_metadata_problems(path, data)
         inner = SyncAudit(rules)
         inner.blob(path, data)
-        problems += [f"inside a container: {p}" for p in inner.problems]
+        problems += prefixed("inside a container: ", inner.problems)
     for _, _, _, path in entries:
         problem = path_problem(path)
         if problem:
@@ -1809,14 +2287,28 @@ def asset_problems(assets: list[Path], rules, templates: dict[str, tuple[Path, s
             continue
         a = SyncAudit(rules, top=True, templates=templates)
         a.blob(f.name, data)
-        problems += [f"in a release asset: {p}" for p in a.problems]   # the package audit's own findings too (fail closed)
+        problems += prefixed("in a release asset: ", a.problems)   # the package audit's own findings too (fail closed)
     return problems
 
 
 def privacy_gate(git_dir: str | None, tree: str | None, files: list[Path], rules, assets: list[Path] = (),
-                 templates: dict[str, tuple[Path, str]] | None = None) -> int:
+                 templates: dict[str, tuple[Path, str]] | None = None, jobs: int | None = None) -> int:
     """the one privacy gate of every publishing path: the tree (audit_tree), the text files (strict UTF-8, public_text_problems and
-    every rule on every form of the text) and the release assets (asset_problems); every line printed is sanitized. 0: it may go."""
+    every rule on every form of the text) and the release assets (asset_problems); every line printed is sanitized. 0: it may go.
+    PRIVSPEED-1: the binary scans run once per distinct content, in `jobs` worker processes (scan_jobs()); the lines keep the order of a
+    sequential run."""
+    with parallel_scans(scan_jobs() if jobs is None else jobs):
+        problems = _privacy_problems(git_dir, tree, files, rules, assets, templates)
+    every = BUILTIN + list(rules)
+    label = "SYNC" if tree else "METADATA"
+    for p in problems:
+        print(f"{label} AUDIT: {sanitize(p, every)}")
+    what = f"{len(files)} text files" + (f", {len(assets)} release assets" if assets else "")
+    print(f"{label} AUDIT {'FAILED' if problems else 'ok'}: {tree or ''} {what}".replace(":  ", ": "))
+    return 1 if problems else 0
+
+
+def _privacy_problems(git_dir: str | None, tree: str | None, files: list[Path], rules, assets, templates) -> list[str]:
     problems = []
     for f in files:
         try:
@@ -1833,12 +2325,7 @@ def privacy_gate(git_dir: str | None, tree: str | None, files: list[Path], rules
     every = BUILTIN + list(rules)
     if assets:
         problems += asset_problems(list(assets), every, templates or {})
-    label = "SYNC" if tree else "METADATA"
-    for p in problems:
-        print(f"{label} AUDIT: {sanitize(p, every)}")
-    what = f"{len(files)} text files" + (f", {len(assets)} release assets" if assets else "")
-    print(f"{label} AUDIT {'FAILED' if problems else 'ok'}: {tree or ''} {what}".replace(":  ", ": "))
-    return 1 if problems else 0
+    return resolve(problems)
 
 
 def redact(denylist: Path, check: bool = False) -> int:
@@ -1954,6 +2441,7 @@ def main(argv: list[str]) -> int:
     rd.add_argument("--check", action="store_true", help="only load the list: exit 0 when the redactor can run")
     for q in (t, x, g):
         q.add_argument("--denylist", type=Path, help="the operator's private denylist (required for every publishing check)")
+        q.add_argument("--jobs", type=int, help="worker processes for the binary scans (default: OPENBFME_PRIVACY_JOBS, else the CPUs up to 8)")
     for q in (t, x):
         q.add_argument("--builtin-only", action="store_true", help="the built-in rules alone: NOT a publishing check")
     st = sub.add_parser("sync-tree", help="write the public tree of an archive sha (the sync recipe) and print its id")
@@ -1965,6 +2453,9 @@ def main(argv: list[str]) -> int:
     if a.cmd == "redact":
         return redact(a.denylist, a.check)
     if a.cmd in ("audit-text", "audit-tree", "privacy-gate"):
+        if a.jobs is not None and a.jobs < 1:
+            print("AUDIT FAILED: --jobs is at least 1", file=sys.stderr)
+            return 2
         if a.denylist:
             rules = load_denylist(a.denylist)
         elif getattr(a, "builtin_only", False):
@@ -1974,9 +2465,9 @@ def main(argv: list[str]) -> int:
             print("AUDIT FAILED: no private denylist (--denylist): every publishing check needs it", file=sys.stderr)
             return 2
         if a.cmd == "audit-tree":
-            return privacy_gate(a.git_dir, a.tree, [], rules)
+            return privacy_gate(a.git_dir, a.tree, [], rules, jobs=a.jobs)
         if a.cmd == "audit-text":
-            return privacy_gate(a.git_dir, None, a.files, rules)
+            return privacy_gate(a.git_dir, None, a.files, rules, jobs=a.jobs)
         if (bool(a.tree) + bool(a.commit) + a.no_tree) != 1:
             print("AUDIT FAILED: privacy-gate needs one of --tree, --commit and --no-tree", file=sys.stderr)
             return 2
@@ -1988,7 +2479,7 @@ def main(argv: list[str]) -> int:
                 print("AUDIT FAILED: the commit to publish is not in this repository: its tree cannot be audited", file=sys.stderr)
                 return 1
             tree = r.stdout.strip()
-        return privacy_gate(a.git_dir, tree, a.text, rules, a.assets, load_templates(a.templates) if a.assets else {})
+        return privacy_gate(a.git_dir, tree, a.text, rules, a.assets, load_templates(a.templates) if a.assets else {}, a.jobs)
     if a.cmd == "next-version":
         print(next_version(remote_tags(a.git_dir, a.remote), a.bump))
         return 0

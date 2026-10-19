@@ -168,6 +168,12 @@ func _report(text: String, done := -1, total := -1) -> void:
 	updater._report(text, done, total)
 
 
+## MACFIX-1 (issue #46): launcher.log names every finished file with the running byte count (the issue's log stopped at the plan line,
+## so a stuck display could not be told from a stuck download)
+static func _log_file(show: String, how: String, done: int, total: int) -> void:
+	Log.line("LAUNCHER AIO %s %s (%.2f of %.2f GB, %d%%)" % [show, how, done / 1e9, total / 1e9, int(done * 100.0 / maxi(total, 1))])
+
+
 static func _fail(kind: String, error: String) -> Dictionary:
 	return {"ok": false, "kind": kind, "error": error}
 
@@ -327,7 +333,8 @@ func _install(target: String) -> Dictionary:
 			var names: Dictionary = only[pkg.key]
 			c.files = c.files.filter(func(f): return names.has(f.rel.to_lower()))
 		plans.append({"pkg": pkg, "dir": target.path_join(pkg.folder), "files": c.files})
-		Log.line("LAUNCHER AIO %s: %d of the package's %d files are installed (%s; every one is pinned and matches)" % [pkg.guid, c.files.size(), c.all, pkg.language])
+		# MACFIX-1 (issue #46): what this download takes from the package (the others are other languages), not what is on disk yet
+		Log.line("LAUNCHER AIO %s: the download takes %d of the package's %d files (%s; every one is pinned and matches)" % [pkg.guid, c.files.size(), c.all, pkg.language])
 	var total := 0
 	var need := 0
 	var count := 0
@@ -367,6 +374,7 @@ func _install(target: String) -> Dictionary:
 					return _fail(REJECTED, "%s already exists and is not %s's file (MD5 %s, expected %s): move it away or pick another folder" % [dest, p.pkg.guid, have, f.md5])
 				kept += 1
 				done += f.size
+				_log_file(show, "already there and checked", done, total)
 				continue
 			DirAccess.make_dir_recursive_absolute(dest.get_base_dir())
 			var part := dest + ".part"
@@ -392,6 +400,7 @@ func _install(target: String) -> Dictionary:
 				return _fail(REFUSED, "cannot rename %s to %s" % [part, dest])
 			downloaded += 1
 			done += size
+			_log_file(show, "downloaded and checked", done, total)
 			if test_stop_after != "" and test_stop_after.get_slice(":", 0) == "%s/%s" % [p.pkg.folder, f.rel]:
 				request_stop(test_stop_after.get_slice(":", 1))
 	# a pause or cancel that came during the last check: nothing is handed to the game (Sol r1)

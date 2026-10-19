@@ -291,10 +291,12 @@ double-click guard (RotWK 2.01 never reads it), colour-blind player colours
 Options → Interface → **Main menu style** offers **Rise of the Witch-king**
 and **Battle for Middle-earth II** (default). Accept saves the choice;
 Cancel does not. The current screen is not interrupted: the change is
-applied on returning to an idle main menu, outside Create-a-Hero and a
-signed-in online session. At that point the shell is rebuilt without
-reloading the gameplay world. Returning from a game also permits the
-pending change.
+applied on returning to an idle main menu (not during Create-a-Hero). At that
+point the shell is rebuilt without reloading the gameplay world; a lobby
+session of the online screens is kept for the next Online (lane SHELLFIX-1:
+before, a player who had signed in to online play never got the chosen style
+in that run, so Options read "Rise of the Witch-king" over the BFME2
+screens). Returning from a game also permits the pending change.
 
 The choice is the `Options.ini` entry `OpenBFMEMainMenuStyle`, with value
 `rotwk` or `bfme2`. Without it, the former `OpenBFMEBFME2UI = yes/no`
@@ -302,6 +304,18 @@ preference migrates to `bfme2/rotwk`; an explicit new style takes precedence.
 Without either entry, BFME2 is the default. Invalid values are reported and
 use the default. Test runs with `--options-file=PATH` use that options file.
 BFME1 always uses its own menus and retains this preference for switching back.
+
+Lane SHELLFIX-1 also made the Options menu the same in both styles: the
+menu takes the bottom bar's clicks from either movie's button (BFME2 1.06's
+Options.apt leaves it unnamed; RotWK 2.01's is `bttn`), so ACCEPT is back
+on the previous screen on the next shell update in both (before, the BFME2
+movie played its 0.55 s closing animation first); the BFME2 movie's frame
+borders (unnamed clips of `Main`) are hidden with its settings frames; and
+BFME2 1.06's archives on their own are BFME2 data (`isBfme1Data`), so its 3D
+menu models load from its two-letter folders. Retail RotWK's own ACCEPT plays
+Options.apt's closing animation (18 updates, 0.6 s) before the shell pops
+(RW 0x91FC9C, 0x91EA39, 0x62215B); the OpenBFME menu takes the click before
+the movie, so it skips that animation.
 
 ### Presentation files and gameplay isolation
 
@@ -341,21 +355,25 @@ those screens inherit the selected retail shell's assets.
 
 ### Campaign entries
 
-Both styles add **Campaigns** at the lower left of the main menu (retail
-stage position 36,588). Its panel opens above it and offers BFME2 Good,
-BFME2 Evil, Angmar, Angmar bonus and Continue campaign. It uses the
-selected shell's Albertus font and mapped-image skins
-`AptTextEntryEnabledRepeatingCenter` / `AptListBoxHiliteItem`, scaled with
-the APT stage. Thus Angmar, bonus and Continue remain reachable even when
-BFME2's native menu has no RotWK buttons. Native navigation remains intact.
+The campaigns start from retail's own main menu buttons (lane CAMPMENU-1
+removed the OpenBFME **Campaigns** panel). In the RotWK style, Solo Play
+lists Skirmish, War of the Ring, Angmar Campaign
+(`SoloPlayNav.Expansion1Campaign`), Epilogue (`SoloPlayNav.BonusCampaign`,
+which shows its disabled face until Options.ini's `BCU = true`) and Load
+Game, as RotWK 2.01's `MainMenu.apt` does. A campaign button opens the
+movie's difficulty choice, and its Easy / Medium / Hard button sends
+`AptMainMenu::Expansion1Campaign` / `BonusCampaign` (RW 0x91AF8C /
+0x91AFAF) to `campaign_flow.gd`. RotWK has no Continue Campaign button;
+you continue a campaign from Load Game (its auto-saves).
 
-The provisional B2CAMP-1 integration entry point is
-`game.gd.start_bfme2_campaign(alignment: String)`, with `good` / `evil`.
-Until coordinated campaign support lands, both paths visibly report
-`BFME2 Good campaign: not wired` or `BFME2 Evil campaign: not wired`.
-Native BFME2 campaign commands also reach this stop; their engine host
-requests preserve the selected difficulty as `bfme2:good:N` /
-`bfme2:evil:N`. Angmar/bonus/Continue keep the existing campaign handlers.
+BFME2's 1.06 `MainMenu.apt` (the BFME2 style) has no Angmar buttons, so
+in that style you can't start the Angmar campaigns from the menu; switch
+to the RotWK style to play them. BFME2's own Good / Evil campaign buttons
+stay hidden while `game.gd`'s `BFME2_CAMPAIGNS` is off (until B2CAMP-1).
+Load Game moves up into their place. A request that still names them,
+`game.gd.start_bfme2_campaign(alignment: String)` with `good` / `evil`
+(B2CAMP-1's entry point), gets the main menu's "not available" box
+("The BFME2 Good campaign is not available yet: ...").
 
 ### Checks
 

@@ -317,7 +317,7 @@ public:
 	Dictionary get_member(int level, const String &path, const String &name);
 	// lane DEVPORT-8 (MENUSTYLE-1): a property of the clip at `path` on `level` set as ActionScript's `clip.<name> = value` does (AptCharacterInst::setProperty:
 	// _visible, _x, _y, _alpha ...); false when there is no such clip or property. game.gd hides BFME2's own MainMenu.apt campaign buttons with it while the
-	// BFME2 campaigns are switched off (scripts/menu_campaigns.gd)
+	// BFME2 campaigns are switched off (game.gd BFME2_CAMPAIGNS)
 	bool set_clip_property(int level, const String &path, const String &name, double value);
 	// the game text of `label` ({ found, text }; a missing label is the retail "MISSING: 'label'" text and found false)
 	Dictionary fetch_text(const String &label);
@@ -379,6 +379,11 @@ public:
 	Dictionary lobby_gadget_rect(const String &name);
 	// Everything the shell reported (notes of the window manager, shell errors, gadget layer errors and notes, unported commands): the unverified list
 	Dictionary get_shell_report() const;
+	// lane SHELLFIX-1 (tests): where the shell's pictures come from now: { style ("rotwk-201" / "bfme2-106"), view3d_style, movies: { file: the disk
+	// path of the archive the shell read it from } for every screen on the stack, textures: { name: archive } for every textured shape of the frame
+	// drawn last, original_images: [names] the BFME2 shell took from the game's own archives (images BFME2 1.06 does not have; map pictures, "file:", are
+	// game content and not counted) }
+	Dictionary shell_drawn_sources() const;
 	// Signals (the hooks of other lanes): `shell_service(kind, a, b)` for every ShellServices call (kind "sound" a = the sound name: the AUDIO-1 hook for
 	// UI sounds and music cues; "background", "mouse_visible", "tooltip"); `shell_request(action, argument)` for the main menu actions the shell does not
 	// handle itself (ExitGame, Lan, LoadGame ...; `action` is the ShellAction name); `shell_screen(filename)` whenever the top screen changes.

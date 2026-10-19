@@ -8,7 +8,8 @@
 ##   4b. the in-game Save / Load screens over mission 0 through the real UI (SAVE-UI1's scripts/save_flow.gd run_ui_test on the campaign started from the
 ##      main menu: Save, typed name, Cancel / Escape, Options, Save, Load, Resume);
 ##   4c. eight: the whole ANGMAR_CAMPAIGN through its menus (win, score screen, auto-save, CampaignMenu.apt, Next Mission x7, the eighth win);
-##   5. bonus: Fornost won, no auto-save, no menu, Options.ini's BCU = true, the main menu.
+##   5. bonus: Fornost won, no auto-save, no menu, Options.ini's BCU = true, the main menu; around it (lane CAMPMENU-1) single_player: the Solo Play list
+##   is retail's, the bonus campaign's disabled face before the unlock and its button after.
 ##
 ##   godot --headless --path godot --script res://tests/campsave1_test.gd
 ##
@@ -131,6 +132,10 @@ func _run() -> int:
 	DirAccess.make_dir_recursive_absolute(save2)
 	var options := root.path_join("Options.ini")
 	var common := ["--movies=off", "--options-file=" + options]
+	# lane CAMPMENU-1: before any campaign was won (no Options.ini yet: no BCU), the bonus button's disabled face
+	_check(not FileAccess.file_exists(options), "the run's Options.ini does not exist yet")
+	var locked := _game(["--save-dir=" + save2, "--campsave-test=single_player"] + common)
+	_check(locked.contains('"BonusCampaign.bttnDisabled"') and locked.contains("(Options.ini BCU false)"), "before the unlock the Solo Play list shows the bonus campaign's disabled face")
 	_game(["--campaign=ANGMAR_CAMPAIGN", "--mission=2", "--campaign-win", "--save-dir=" + save1, "--campsave-test=menu"] + common)
 	var auto := ""
 	for f in DirAccess.get_files_at(save1):
@@ -142,12 +147,14 @@ func _run() -> int:
 	_game(["--save-dir=" + save2, "--campsave-test=continue"] + common)
 	_game(["--save-dir=" + save2, "--campsave-test=continue_command"] + common)
 	_game(["--campaign=ANGMAR_CAMPAIGN", "--mission=1", "--save-dir=" + save2, "--campsave-test=quit"] + common)
-	_ui_run(["--campaign-menu=Expansion1Campaign:N", "--res=2560x1440"], root)
+	_ui_run(["--campaign-click=Expansion1Campaign:Medium", "--res=2560x1440"], root) # lane CAMPMENU-1: retail's buttons, clicked
 	var save8 := root.path_join("save8")
 	DirAccess.make_dir_recursive_absolute(save8)
 	_game(["--campaign=ANGMAR_CAMPAIGN", "--mission=0", "--campaign-win", "--save-dir=" + save8, "--campsave-test=eight"] + common)
 	_game(["--campaign=ANGMAR_CAMPAIGN", "--mission=7", "--campaign-win", "--save-dir=" + save2, "--campsave-test=bonus"] + common)
 	_check(FileAccess.get_file_as_string(options).contains("BCU = true"), "the bonus unlock was written to the run's own Options.ini")
+	var unlocked := _game(["--save-dir=" + save2, "--campsave-test=single_player"] + common) # lane CAMPMENU-1: after it, the bonus campaign's own button
+	_check(unlocked.contains('"BonusCampaign.bttn"') and unlocked.contains("(Options.ini BCU true)"), "after the unlock the Solo Play list shows the bonus campaign's button")
 	for dir in [save1, save2, save8]:
 		for f in DirAccess.get_files_at(dir):
 			DirAccess.remove_absolute(dir.path_join(f))
