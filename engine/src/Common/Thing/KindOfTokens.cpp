@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 // RW 0xDA0E68 (generated: GameLogic/BitFlagNames.cpp)
 extern const char *const TheKindOfNames[];
@@ -19,66 +20,41 @@ char lowerAscii(char c)
 	return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c; // AsciiStringUtil::compareNoCase's folding
 }
 
-// lane PERF-1: the names lower-cased and sorted, built once (a function-local static: thread-safe), so a lookup is a binary search without an
-// allocation instead of a scan that built a std::string per name (the skirmish AI's isKindOfName calls were half of a 4-player game's logic time).
-// Two names that fold to the same text keep the lowest index, which is what the scan in table order returned.
-struct FoldedName
+// PERF: runtime script and AI filters resolve these names millions of times in
+// accelerated matches. Hash ASCII-folded views without allocating; the immutable
+// retail name table owns the keys. Emplace in table order keeps the first index
+// for duplicate folded names, exactly as the original scan did.
+struct FoldedHash
 {
-	std::string folded;
-	int index;
+ size_t operator()(std::string_view name) const
+ {
+  size_t hash = 2166136261u;
+  for (char c : name) hash = (hash ^ (unsigned char)lowerAscii(c)) * 16777619u;
+  return hash;
+ }
 };
-
-int compareFolded(std::string_view a, const std::string &folded)
+struct FoldedEqual
 {
-	const size_t n = a.size() < folded.size() ? a.size() : folded.size();
-	for (size_t i = 0; i < n; ++i)
-	{
-		const unsigned char ca = (unsigned char)lowerAscii(a[i]), cb = (unsigned char)folded[i];
-		if (ca != cb)
-		{
-			return ca < cb ? -1 : 1;
-		}
-	}
-	return a.size() == folded.size() ? 0 : (a.size() < folded.size() ? -1 : 1);
-}
-
-const std::vector<FoldedName> &foldedNames()
-{
-	static const std::vector<FoldedName> table = [] {
-		std::vector<FoldedName> t;
-		for (int i = 0; TheKindOfNames[i]; ++i)
-		{
-			std::string f = TheKindOfNames[i];
-			for (char &c : f)
-			{
-				c = lowerAscii(c);
-			}
-			t.push_back(FoldedName{ std::move(f), i });
-		}
-		std::stable_sort(t.begin(), t.end(), [](const FoldedName &a, const FoldedName &b) { return a.folded < b.folded; }); // equal names stay in index order
-		return t;
-	}();
-	return table;
-}
+ bool operator()(std::string_view a, std::string_view b) const
+ {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i)
+   if (lowerAscii(a[i]) != lowerAscii(b[i])) return false;
+  return true;
+ }
+};
 } // namespace
 
 int KindOfTokens::indexOf(std::string_view name)
 {
-	const std::vector<FoldedName> &t = foldedNames();
-	size_t lo = 0, hi = t.size();
-	while (lo < hi) // the first entry not below the name
-	{
-		const size_t mid = lo + (hi - lo) / 2;
-		if (compareFolded(name, t[mid].folded) > 0)
-		{
-			lo = mid + 1;
-		}
-		else
-		{
-			hi = mid;
-		}
-	}
-	return lo < t.size() && compareFolded(name, t[lo].folded) == 0 ? t[lo].index : -1;
+ static const auto names = [] {
+  std::unordered_map<std::string_view, int, FoldedHash, FoldedEqual> table;
+  table.reserve(256);
+  for (int i = 0; TheKindOfNames[i]; ++i) table.emplace(TheKindOfNames[i], i);
+  return table;
+ }();
+ const auto found = names.find(name);
+ return found == names.end() ? -1 : found->second;
 }
 
 // Mirror of the bit-string loop of RW 0x65621C / 0x655B0B for a token list (the shared loop is documented at GameLogic/BitFlags.h):

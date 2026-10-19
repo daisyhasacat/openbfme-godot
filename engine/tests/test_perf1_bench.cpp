@@ -47,7 +47,7 @@ using namespace hudtest;
 
 extern const char *const TheKindOfNames[];
 
-TEST_CASE("perf1: KindOfTokens::indexOf (sorted lookup) returns what the scan of RW 0xDA0E68 in table order returns, for every name in any case")
+TEST_CASE("perf1: KindOfTokens::indexOf (folded lookup) returns what the scan of RW 0xDA0E68 in table order returns, for every name in any case")
 {
 	// the scan the lookup replaced: the first name equal under AsciiStringUtil::compareNoCase
 	auto scan = [](const std::string &name) {
@@ -76,6 +76,11 @@ TEST_CASE("perf1: KindOfTokens::indexOf (sorted lookup) returns what the scan of
 			CHECK(KindOfTokens::indexOf(n) == scan(n));
 		}
 	}
+	// Views need not be null-terminated; length and embedded NULs remain significant.
+	const std::string padded = "!horde!";
+	CHECK(KindOfTokens::indexOf(std::string_view(padded).substr(1, 5)) == scan("horde"));
+	CHECK(KindOfTokens::indexOf(std::string_view("HORDE\0INFANTRY", 14)) == -1);
+	CHECK(KindOfTokens::indexOf(std::string_view()) == -1);
 	CHECK(names > 200);
 	for (const char *n : { "", "NONE", "horde", "Horde_", "ZZZZ", "\xff", "A", "_" })
 	{
