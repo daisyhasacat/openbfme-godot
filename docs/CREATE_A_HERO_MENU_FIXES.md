@@ -18,9 +18,13 @@ Donor references are relative to Open-BFME-2:
 - `AptMyHeroRefreshCamera.cpp` supplies ViewInfo's pitch, zoom, floor, distance,
   shift and horizontal field of view. The preview now keeps horizontal FOV,
   reads the mounted map's camera offset for zoom distance, and keeps Floor
-  separate from Zoom. The Godot eye placement and close-up pitch conversion
-  remain explicitly inferred under S-1405; this does not establish retail
-  pixel parity. Preview placement still needs comparison with a retail capture.
+  separate from Zoom. The subsequent camera correction follows the donor's mode-1 transform:
+  Floor is copied to groundLevel as an absolute plane; the zoomed map offset
+  is rotated by pitch/heading, scaled by `1 - Floor / offset.z`, then translated
+  by Floor and the named XY point. The hero's terrain Z is not added again.
+  S-1405 remains for RotWK mode/flags and fixed-view selection. The Powers
+  fixed-view placement is preserved separately; retail pixel parity still
+  requires an independent capture.
 
 The hero-list event correction uses the existing GadgetListBox contract:
 GLM_SELECTED data1 is the gadget, data2 is the selected row; the callback's
@@ -31,3 +35,10 @@ Validation: native Create-a-Hero and draw-runtime regressions; scripted builder
 flow across classes, appearance, powers and save; windowed screenshots of the
 full-body preview, Powers view and restored scrollbar artwork. Retail bytes and
 screenshots are not committed.
+
+The Attributes movie supplies `{_x: curX, _y: curY}` as duplicateMovieClip's
+third argument. Ignoring it stacked the thirty-two ticks of each bar at the template
+position. The optional initializer is now applied through the VM's property
+setter. EA's property-copy order remains disclosed under S-104; the real retail
+movie test pins all 160 tick positions and that disclosure. The builder screenshot
+run now captures the actual Attributes page as well as Appearance.

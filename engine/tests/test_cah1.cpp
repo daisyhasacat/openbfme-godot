@@ -1097,3 +1097,30 @@ TEST_CASE("menuwork1 cah retail shell: the hero list's headers sort it (RW 0x9C4
 	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::Manager::OnSelectAward", "1"));
 	CHECK(scr->lastMessage() == "OpenBFME: Hero awards are not available yet: OpenBFME does not record them.");
 }
+
+TEST_CASE("cah attributes: duplicate tick initializers position all thirty-two segments of each bar")
+{
+	OPENBFME_REQUIRE_START(s);
+	CahShellFx c(s, true);
+	auto *scr = c.screen();
+	REQUIRE(scr);
+	REQUIRE(c.fx->wm->invokeAS(scr->level(), "SetCreateNewHero", { "true" }));
+	c.show(scr, "Class");
+	scr->setClassAndType(0, 1);
+	c.show(scr, "Appearance");
+	REQUIRE(c.fx->wm->invokeASAt(scr->level(), "Main.mcAppearanceScreen.Screen.TypeWindow", "gotoAndPlay", { "_attributes" }));
+	c.fx->tick(60);
+	CHECK(c.fx->wm->apt().noteCount("duplicate-init-object-unverified") == 160);
+	for (int attribute = 0; attribute < 5; ++attribute)
+	{
+		const std::string path = "Main.mcAppearanceScreen.Screen.TypeWindow.instance12." + std::to_string(attribute) + ".AttribBar";
+		for (int tick = 0; tick < 32; ++tick)
+		{
+			auto *segment = c.fx->at(scr->level(), path + ".Tick_" + std::to_string(tick));
+			REQUIRE(segment);
+			// The retail movie starts at -100 and advances by its 9-pixel tick width.
+			CHECK(segment->matrix.tx == -100.0f + 9.0f * tick);
+			CHECK(segment->matrix.ty == -242.0f);
+		}
+	}
+}
