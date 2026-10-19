@@ -848,11 +848,21 @@ int LiveGame::advance(double seconds)
 		stashHeldCommands(); // RENDERWAIT-1 r2: input issued while older frames were queued does not run in them
 		if (due > 0)
 		{
-			WorkItem first;
-			first.commands = m_pendingInput.messages(); // the first frame queued after the input was issued executes it
-			m_pendingInput.reset();
 			const std::unique_lock<std::mutex> lock = lockPublication("advance");
-			m_work.push_back(std::move(first));
+			// Host pacing only: at accelerated speed the requested clock can outrun
+			// simulation indefinitely. Bound offline work just as advanceWithDriver
+			// bounds batches, so input accessors and pause never drain seconds of debt.
+			const int room = m_work.size() < kMaxQueuedBatches ? (int)(kMaxQueuedBatches - m_work.size()) : 0;
+			const int accepted = std::min(due, room);
+			m_droppedFrames += (unsigned long long)(due - accepted);
+			due = accepted;
+			if (due > 0)
+			{
+				WorkItem first;
+				first.commands = m_pendingInput.messages();
+				m_work.push_back(std::move(first));
+				m_pendingInput.reset(); // rejected advances retain input for the next accepted frame
+			}
 			for (int i = 1; i < due; ++i)
 			{
 				m_work.push_back(WorkItem());

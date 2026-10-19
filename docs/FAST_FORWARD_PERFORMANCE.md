@@ -35,3 +35,14 @@ passes 14043 of 14045 assertions on this installation: both stored historical
 hash vectors differ at frame zero. The original binary-search lookup reproduces
 those same two failures; the reference files were not regenerated. The seeded
 seven-AI before/after benchmark above provides a current-build hash comparison.
+
+Interactive fast-forward also needs bounded worker debt. Offline threaded
+advances now use the existing 16-frame queue limit already used for driven
+batches. Requests beyond available queue capacity count as dropped wall-clock
+time; accepted simulation frames remain sequential and pending input stays
+queued until a frame accepts it. This prevents an accelerated clock from building
+an arbitrarily long queue that synchronous input or pause operations must drain.
+It does not promise a maximum duration for an individual expensive logic frame.
+`test_renderwait1.cpp` exercises overload with a delayed worker and checks that
+the requested frame cannot exceed completion by more than the queue plus its
+one in-flight frame.

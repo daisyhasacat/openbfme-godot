@@ -355,3 +355,18 @@ TEST_CASE("renderwait1 retail: a window no advance ended is ended at the next re
 	CHECK(w.maxWindowMs == w.windowMs); // one window so far: the longest is the total
 	rig.game->setLogicThread(false);
 }
+
+TEST_CASE("renderwait1 retail: accelerated offline advances cannot accumulate unbounded worker debt")
+{
+ hudtest::Rig rig(hudtest::shared());
+ rig.game->setWorkerFrameDelayMs(20);
+ rig.game->setLogicThread(true);
+ for (int i = 0; i < 100; ++i) rig.game->advance(2.0);
+ const auto due = rig.game->dueFrame();
+ const auto completed = rig.game->frame();
+ // tolerance: at most the 16 queued frames plus one running frame, regardless of worker scheduling.
+ CHECK(due - completed <= 17u);
+ CHECK(rig.game->droppedFrames() > 0); // tolerance: 1000 requested frames exceed the bounded queue during the delayed worker.
+ rig.game->waitIdle();
+ CHECK(rig.game->frame() == due);
+}
