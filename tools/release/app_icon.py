@@ -4,7 +4,8 @@
 The project-owned sources are godot/assets/app_icon/openbfme.ico (Windows) and
 openbfme-macos.ico (transparent exterior for macOS). Both contain PNG frames
 16, 32, 48, 64, 128, 256 and are pinned in public_binaries.txt. Generated outputs:
-  godot/assets/app_icon/openbfme.icns      the macOS bundle icon (both macOS presets: application/icon)
+  godot/assets/openbfme-icon.png          the project/editor icon (transparent macOS 256 PNG)
+  godot/assets/app_icon/openbfme.icns      the macOS bundle icon (macOS presets: application/icon)
   launcher/assets/app_icon/openbfme.ico    the launcher's copy (its Windows preset: application/icon; a project only reads its own res://)
   launcher/assets/app_icon/openbfme.icns
   godot/scripts/app_icon.gd                the window icon at run time (DisplayServer.set_icon): the platform-specific 256 PNGs as base64 text, because the
@@ -103,6 +104,7 @@ def outputs() -> dict[Path, bytes]:
     mac_frames = read_ico(MAC_SOURCE.read_bytes())
     icns = make_icns(mac_frames)
     return {
+        REPO / "godot/assets/openbfme-icon.png": mac_frames[256],
         REPO / "godot/assets/app_icon/openbfme.icns": icns,
         REPO / "launcher/assets/app_icon/openbfme.ico": data,
         REPO / "launcher/assets/app_icon/openbfme.icns": icns,

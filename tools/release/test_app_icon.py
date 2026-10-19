@@ -73,7 +73,7 @@ def test_the_presets_name_the_icons():
     game = (REPO / "godot/export_presets.cfg").read_text(encoding="utf-8")
     launcher = (REPO / "launcher/export_presets.cfg").read_text(encoding="utf-8")
     assert game.count('application/icon="res://assets/app_icon/openbfme.ico"') == 1
-    assert game.count('application/icon="res://assets/app_icon/openbfme.icns"') == 2
+    assert game.count('application/icon="res://assets/app_icon/openbfme.icns"') == 3
     assert launcher.count('application/icon="res://assets/app_icon/openbfme.ico"') == 1
     assert launcher.count('application/icon="res://assets/app_icon/openbfme.icns"') == 1
     assert "application/modify_resources=false" not in game + launcher

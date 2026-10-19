@@ -24,3 +24,5 @@ b20b7d9626dd956b2c5e558692ad328b1f19e3275e2782db4fa07670d83f35e0  launcher/fonts
 4996c420dbf287913966d3dfa993407b104a8d800fc251e3e2426a3dd3a3c827  launcher/assets/app_icon/openbfme.icns  OWNERFIX-3: generated macOS ring icon with transparent exterior (tools/release/app_icon.py)
 32180a4153977ed292bd00626a8232380b929e2dee4a9ee66d4a13b75ab1a48d  godot/assets/brand/poweredby_openbfme.png  POWEREDBY-1: the owner-provided OpenBFME seal that replaces GameSpy's on the online login screen (tools/release/audit_package.py PINNED_GAME_BRANDING pins its export)
 d971adf3712e2c866c5aa4c5657ceb21ba8adf88ecc08af2c766b9eb72f6b3aa  godot/assets/app_icon/openbfme-macos.ico  MACICON-1: transparent-background cutout of the project-owned ring icon, for macOS; PNG frames generated with Godot
+
+7d892f979817eb7b2cff30f2fb41f672b70fd388fa41b25394331efd6e2ac36a  godot/assets/openbfme-icon.png  Generated editor/project icon from the corrected upstream macOS ring artwork (tools/release/app_icon.py)
