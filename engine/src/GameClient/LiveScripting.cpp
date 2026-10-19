@@ -15,6 +15,7 @@
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Object/PartitionManager.h"
 #include "GameLogic/System/InvisibilityManager.h"
+#include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DModelDraw.h"
 
 namespace
 {
@@ -114,7 +115,35 @@ bool LiveScripting::start(const std::string &mapFolder, std::string *error)
 			snap.words()[w] = before[w];
 		}
 		++m_stats.modelConditionChanges;
+		const ModelConditionFlags previous = snap;
 		m_engine->updateModelConditionEvents(info, now, &snap, m_logic.getFrame());
+		if (obj.isKindOfName("CAPTUREFLAG"))
+		{
+			// Capture flag LuaEvents select subobjects through the shipped generic handler.
+			// INFERENCE S-090: deliver condition-state enter/leave events on the logic
+			// owner, before its client events publish. Render-frame Lua events and
+			// script-selected transitions remain unported; rendering never drives logic.
+			for (const ThingTemplate::Nugget &n : obj.getTemplate()->drawModules().nuggets())
+			{
+				const auto *data = dynamic_cast<const W3DModelDrawModuleData *>(n.data.get());
+				if (!data) continue;
+				const AnimationStateInfo *oldState = data->findBestAnimationState(previous);
+				const AnimationStateInfo *newState = data->findBestAnimationState(now);
+				if (oldState == newState) continue;
+				for (const auto &state : { std::make_pair(oldState, 2), std::make_pair(newState, 1) })
+				{
+					if (!state.first) continue;
+					for (const LuaEventInfo &event : state.first->luaEvents)
+					{
+						if (event.when != state.second) continue;
+						m_logic.noteStop("[S-090] capture flag condition-state LuaEvents run on the logic owner; render-frame and script-transition event timing remain unported");
+						LuaEventArgs args;
+						args.arg[0] = LuaEventArg::makeString(event.data);
+						m_engine->dispatchInternal(LUAEVENT_OnGenericEvent, info, args);
+					}
+				}
+			}
+		}
 	});
 	m_attached = true;
 	return true;
@@ -184,6 +213,24 @@ bool LiveScripting::findObject(int id, LuaObjectInfo *out)
 	}
 	Object *obj = m_logic.findObjectByID((ObjectID)id);
 	return obj && describe(*obj, out, false);
+}
+
+// LuaBindings.cpp RW 0x7367E3 / 0x73684D: owner side, or the current capturer's side.
+std::string LiveScripting::objectPlayerSide(int id)
+{
+	const Object *obj = m_logic.findObjectByID((ObjectID)id);
+	const Player *player = obj ? obj->getControllingPlayer() : nullptr;
+	return player ? player->getSide() : std::string();
+}
+
+bool LiveScripting::objectCapturingPlayerSide(int id, std::string *out)
+{
+	const Object *obj = m_logic.findObjectByID((ObjectID)id);
+	const Object *capturer = obj ? m_logic.findObjectByID(obj->getCapturerID()) : nullptr;
+	const Player *player = capturer ? capturer->getControllingPlayer() : nullptr;
+	if (!player) return false;
+	if (out) *out = player->getSide();
+	return true;
 }
 
 std::uint32_t LiveScripting::logicFrame()

@@ -228,6 +228,15 @@ void ClientEventRecorder::loadedObject(Object &obj)
 void ClientEventRecorder::pushFlush(const Object &obj)
 {
 	ClientEvent &e = push(ClientEvent::MODEL_FLUSH, obj);
+	if (obj.isKindOfName("CAPTUREFLAG"))
+	{
+		// RW 0x853D31's capture colour: the raising flag belongs visually to the
+		// capturer before ownership transfers. Cancel returns to the current owner.
+		const Object *capturer = m_logic.findObjectByID(obj.getCapturerID());
+		const Player *player = capturer ? capturer->getControllingPlayer() : obj.getControllingPlayer();
+		e.hasHouseColor = true;
+		e.houseColor = player ? player->getPlayerColor() : 0;
+	}
 	e.scriptTarget = DrawableScriptTarget::capture(m_logic, obj); // lane FX-3: what the state scripts this flush starts ask about (RW 0x73667D / 0x734A75)
 	if (const ObjectWeapons *w = obj.getWeapons())
 	{
