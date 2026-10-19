@@ -809,7 +809,7 @@ void AptPalantir::sync(const ControlBar &bar)
 		// (the faction icon of the resource bar: syncLocal)
 		m_started = true;
 		call("", "SetPalantirFrameState", { m_evil ? "_evil" : "_good" });
-		m_arcShown = true; // the arc starts shown by the frame state: hide it until a selection has commands
+		m_arcShown = true; // the frame state shows the six command slots
 		m_sideShown = true;
 	}
 	syncLocal();
@@ -823,7 +823,8 @@ void AptPalantir::sync(const ControlBar &bar)
 		windows().setAptText("APT:PalantirCommandPoints", std::to_string(bar.commandPointsUsed()) + "/" + std::to_string(bar.commandPointsLimit()));
 		windows().setAptText("APT:PalantirResourceMultiplier", "x1"); // the territory multiplier is the economy's (stop S-290)
 	}
-	const bool wantArc = !bar.palantirButtons().empty();
+	// OpenBFME: the six-slot frame stays visible even when no commands are assigned.
+	const bool wantArc = true;
 	if (wantArc != m_arcShown)
 	{
 		m_arcShown = wantArc;
