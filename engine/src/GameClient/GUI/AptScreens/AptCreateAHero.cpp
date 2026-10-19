@@ -527,6 +527,7 @@ AptCreateAHero::AptCreateAHero(WindowManager &windows, Shell &shell, ShellEnviro
 		m_myHero->onChanged = [this]() {
 			bumpDisplay();
 			refreshTexts();
+			invoke("UpdateHeroBaseAttributes", {});
 		};
 		// RW 0x9C4951: the class page's hero of every (class, subclass)
 		const std::vector<CreateAHeroClass> &classes = m_env.createAHero->system->classes();
@@ -1341,11 +1342,12 @@ void AptCreateAHero::fillHeroList()
 	}
 }
 
-WindowMsgHandledType AptCreateAHero::gadgetMessage(GameWindow *from, std::uint32_t msg, WindowMsgData data1, WindowMsgData)
+WindowMsgHandledType AptCreateAHero::gadgetMessage(GameWindow *, std::uint32_t msg, WindowMsgData data1, WindowMsgData data2)
 {
-	if (msg == GLM_SELECTED && from == m_heroList) // RW 0x9C5114: 0x4014 from the hero list
+	GameWindow *gadget = reinterpret_cast<GameWindow *>(data1);
+	if (msg == GLM_SELECTED && gadget == m_heroList) // RW 0x9C5114: 0x4014 from the hero list
 	{
-		const int row = (int)data1;
+		const int row = (int)(std::intptr_t)data2;
 		selectHero(row >= 0 && (size_t)row < m_rowEntries.size() ? m_rowEntries[(size_t)row] : row); // lane MENUWORK-1: the sorted row's hero
 		return MSG_HANDLED;
 	}

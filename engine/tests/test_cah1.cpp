@@ -354,6 +354,13 @@ TEST_CASE("cah1 retail shell: the main menu's Create-a-Hero pushes CreateAHero.a
 	REQUIRE(scr->heroList());
 	CHECK(GadgetListBoxGetNumEntries(scr->heroList()) == 8);
 	CHECK(scr->selectedHero() == 0);
+	// Real list notifications carry the gadget in data1 and row in data2.
+	GadgetListBoxSetSelected(scr->heroList(), 1);
+	CHECK(scr->selectedHero() == scr->rowEntries()[1]);
+	REQUIRE(scr->displayedHero());
+	CHECK(scr->displayedHero()->name == c.heroes.at(scr->rowEntries()[1])->hero.name);
+	GadgetListBoxSetSelected(scr->heroList(), 0);
+	CHECK(scr->selectedHero() == scr->rowEntries()[0]);
 	for (const WindowManagerNote &n : c.fx->wm->notes())
 	{
 		if (n.kind != "unported-command" && n.kind != "create-a-hero-stop")

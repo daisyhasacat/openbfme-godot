@@ -4283,6 +4283,10 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 						if (kv.first == "_imageMap")
 						{
 							record = m->shell->wm->aptImage(kv.second);
+							// Donor AptPlayer::FindRenderImage (BFME2 0x4128F0
+							// parameter lookup): after records, try the mapped image
+							// name itself (VerticalScrollBar's button/thumb artwork).
+							if (!record && m->shell->skins.images.findImageByName(kv.second)) record = &kv.second;
 							mapped = true;
 						}
 					}
