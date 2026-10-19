@@ -1227,3 +1227,15 @@ TEST_CASE("draw runtime: heavy armor texture variants persist across poses and c
  r.draw->poseView(pose);
  CHECK(pose.textureSwaps->empty());
 }
+
+TEST_CASE("draw runtime: a model animation prefix change refreshes the shared idle state")
+{
+	Rig r({ { "ABUNIT_IDLA", 31 }, { "ABOTHER_IDLA", 31 } },
+		std::string("DefaultModelConditionState\n Model = ABUNIT_SKN\n Skeleton = ABUNIT_SKL\n ModelAnimationPrefix = ABUNIT\nEnd\n") +
+		"ModelConditionState = USER_1\n ModelAnimationPrefix = ABOTHER\nEnd\n" +
+		"IdleAnimationState\n" + anim("#(MODEL)_IDLA") + "End\nEnd\n");
+	r.start();
+	CHECK(r.draw->frame().tracks[0].clipName == "abunit_skl.ABUNIT_IDLA");
+	r.draw->setModelConditionFlags(flagsOf({ "USER_1" }));
+	CHECK(r.draw->frame().tracks[1].clipName == "abunit_skl.ABOTHER_IDLA");
+}
