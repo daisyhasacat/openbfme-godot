@@ -76,12 +76,39 @@ class Catalogue:
         self.locks[key] = threading.Lock()
 
     def public(self):
-        return [{k: v for k, v in p.items() if not k.startswith('_')} for p in self.packs.values()]
+        bundled = any(p['kind'] == 'map_bundle' for p in self.packs.values())
+        return [{k: v for k, v in p.items() if not k.startswith('_')} for p in self.packs.values()
+                if not (bundled and p['kind'] == 'map')]
+
+    def build_map_bundle(self):
+        ids = sorted(key for key, pack in self.packs.items() if pack['kind'] == 'map')
+        if not ids:
+            return
+        key = hashlib.sha256(('map-library-v1:' + ':'.join(ids)).encode()).hexdigest()
+        listing = self.bundle_files(ids)
+        self.packs[key] = {'id': key, 'name': 'Complete map library', 'kind': 'map_bundle',
+                           'game': 'all', 'textures_only': False, 'map_count': len(ids),
+                           'bytes': sum(p.stat().st_size for _, p in listing), '_maps': ids}
+        self.locks[key] = threading.Lock()
+
+    def bundle_files(self, ids):
+        listing = []
+        for key in ids:
+            pack = self.packs[key]
+            game = 'bfme1' if pack['game'] == 'bfme1' else 'rotwk'
+            for name, path in pack_files(pack['_root'], pack['_kind']):
+                if path.suffix.lower() == '.map' and name != pack['entry']:
+                    continue
+                listing.append((f'{game}/lan-{key}/{name}', path))
+        return listing
+
+    def listing(self, pack):
+        return self.bundle_files(pack['_maps']) if pack['kind'] == 'map_bundle' else pack_files(pack['_root'], pack['_kind'])
 
     def prepare(self, key):
         with self.locks[key]:
             pack = self.packs[key]
-            listing = pack_files(pack['_root'], pack['_kind'])
+            listing = self.listing(pack)
             stamps = [(name, p.stat().st_size, p.stat().st_mtime_ns) for name, p in listing]
             version = hashlib.sha256(('stored-v1:' + json.dumps(stamps)).encode()).hexdigest()
             target = self.cache / f'{key}-{version}.zip'
@@ -93,7 +120,7 @@ class Catalogue:
                     with zipfile.ZipFile(partial, 'w', zipfile.ZIP_STORED, allowZip64=True) as z:
                         for name, path in listing:
                             z.write(path, name)
-                    after = [(name, p.stat().st_size, p.stat().st_mtime_ns) for name, p in pack_files(pack['_root'], pack['_kind'])]
+                    after = [(name, p.stat().st_size, p.stat().st_mtime_ns) for name, p in self.listing(pack)]
                     if after != stamps:
                         raise ValueError('Content changed while packing; retry when the files are idle.')
                     partial.replace(target)
@@ -204,6 +231,7 @@ def main():
     if (edain / '__edain_data.big').is_file():
         catalogue.add(edain, kind='edain')
         next(p for p in catalogue.packs.values() if p['_kind'] == 'edain')['name'] = 'Edain'
+    catalogue.build_map_bundle()
     server = http.server.ThreadingHTTPServer((args.bind, args.port), handler(catalogue))
     print(f'Sharing {len(catalogue.packs)} packs without authentication on port {server.server_port}.', flush=True)
     print('In game: Mods → LAN downloads. Stop with Ctrl+C. Archives are prepared on first download.', flush=True)

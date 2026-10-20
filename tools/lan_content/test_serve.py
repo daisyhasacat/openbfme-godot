@@ -80,6 +80,29 @@ class ServerTest(unittest.TestCase):
         self.assertEqual([name for name, _ in serve.pack_files(root / 'rotwk', 'edain')],
                          ['__edain_data.big'])
 
+    def test_complete_library_is_one_cached_archive_with_game_folders_and_sidecars(self):
+        self.catalog.packs.clear()
+        for game, name in [('bfme2', 'One'), ('bfme1', 'Two')]:
+            root = self.root / name
+            root.mkdir()
+            (root / (name + '.map')).write_text('synthetic map')
+            (root / 'map.ini').write_text('synthetic sidecar')
+            (root / 'Unselected.map').write_text('excluded other map')
+            self.catalog.add(root, 'map', game=game, entry=name + '.map')
+        self.catalog.build_map_bundle()
+        packs = self.catalog.public()
+        self.assertEqual(len(packs), 1)
+        self.assertEqual(packs[0]['kind'], 'map_bundle')
+        self.assertEqual(packs[0]['map_count'], 2)
+        first = self.catalog.prepare(packs[0]['id'])
+        self.assertEqual(first, self.catalog.prepare(packs[0]['id']))
+        with zipfile.ZipFile(self.catalog.packs[packs[0]['id']]['_file']) as archive:
+            names = archive.namelist()
+            self.assertEqual(len(names), 4)
+            self.assertEqual({p.split('/')[0] for p in names}, {'bfme1', 'rotwk'})
+            self.assertEqual(sum(p.endswith('.map') for p in names), 2)
+            self.assertFalse(any('Unselected.map' in p for p in names))
+
     def test_map_sidecars_and_builtin_discovery(self):
         user = self.root / 'user'
         (user / 'mods').mkdir(parents=True)

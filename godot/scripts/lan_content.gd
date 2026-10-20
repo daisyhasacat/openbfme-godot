@@ -105,7 +105,7 @@ func _connect_server()->void:
   if not value is Dictionary:continue
   var pack:Dictionary=value
   if not valid_id(str(pack.get("id",""))):continue
-  if str(pack.get("kind",""))=="map":
+  if str(pack.get("kind","")) in ["map","map_bundle"]:
    map_packs.append(pack)
    continue
   if str(pack.get("kind",""))=="builtin" or "2.02" in str(pack.get("name","")):
@@ -119,7 +119,9 @@ func _connect_server()->void:
   var button:=Button.new();button.text="Download";row.add_child(button)
   button.pressed.connect(func():_download(pack))
  maps_button.disabled=map_packs.is_empty();builtin_button.disabled=builtin_packs.is_empty()
- maps_button.text="Download all maps to library (%d)"%map_packs.size()
+ var map_count:=0
+ for pack in map_packs:map_count+=int(pack.get("map_count",1))
+ maps_button.text="Download all maps to library (%d)"%map_count
  preload("res://scripts/menu_accessibility.gd").prepare(self)
  if not maps_button.disabled:maps_button.grab_focus()
  status.text="%d packs available. Mods take effect after enabling them and restarting; maps appear after reopening the map browser." % catalog.get("packs",[]).size()
@@ -129,24 +131,32 @@ func _download_batch(packs:Array, description:String)->void:
  batch_running=true
  var completed:=0
  var skipped:=0
- _update_overall(0,packs.size(),description,0)
+ var total:=0
+ var done:=0
+ var skipped_items:=0
+ for pack in packs:total+=int(pack.get("map_count",1))
+ _update_overall(0,total,description,0)
  for pack in packs:
   var present:=false
-  if str(pack.kind)=="map":
+  if str(pack.kind)=="map_bundle":
+   present=DirAccess.dir_exists_absolute("user://map-library/bundles/"+str(pack.id))
+  elif str(pack.kind)=="map":
    present=DirAccess.dir_exists_absolute("user://map-library/%s/lan-%s"%["bfme1" if str(pack.get("game",""))=="bfme1" else "rotwk",pack.id])
   elif str(pack.kind)=="builtin":
    present=FileAccess.file_exists("user://mods/"+str(pack.name)+".big")
   else:present=DirAccess.dir_exists_absolute("user://mods/lan-%s"%pack.id)
   if present:
    skipped+=1
-   _update_overall(completed+skipped,packs.size(),description,skipped)
+   done+=int(pack.get("map_count",1));skipped_items+=int(pack.get("map_count",1))
+   _update_overall(done,total,description,skipped_items)
    if skipped%32==0:await get_tree().process_frame
    continue
   if not await _download(pack,true):
    status.text="Stopped after %d of %d: %s"%[completed,packs.size(),status.text]
    batch_running=false;return
   completed+=1
-  _update_overall(completed+skipped,packs.size(),description,skipped)
+  done+=int(pack.get("map_count",1))
+  _update_overall(done,total,description,skipped_items)
  batch_running=false
  status.text="Downloaded %d %s; %d already present. Maps remain in Map Library until you install them in the browser."%[completed,description,skipped]
 
@@ -206,15 +216,16 @@ func _download(pack:Dictionary, from_batch:bool=false)->bool:
  busy=false
  if problem.is_empty():
   progress.value=100;status.text="Installed %s. Enable mods in Mods, or reopen the map browser’s Map Library for maps (install there when ready). Built-in packs use their existing Options switches."%pack.name
-  if str(pack.get("kind",""))!="map":installed.emit()
+  if not str(pack.get("kind","")) in ["map","map_bundle"]:installed.emit()
  else:status.text=problem
  return problem.is_empty()
 
 func _install(pack:Dictionary, archive:String)->String:
  var kind:=str(pack.get("kind",""))
- if not kind in ["mod","builtin","map","aotr"]:return "Unsupported pack type."
+ if not kind in ["mod","builtin","map","map_bundle","aotr"]:return "Unsupported pack type."
  if kind=="map" and not str(pack.get("game","")) in ["bfme1","bfme2"]:return "Unsupported map game."
  var root_path:="user://mods/lan-%s"%pack.id
+ if kind=="map_bundle":root_path="user://map-library/bundles/"+str(pack.id)
  if kind=="aotr":root_path="user://games/aotr-lan-%s"%pack.id
  if kind=="map":root_path="user://map-library/%s/lan-%s"%["bfme1" if str(pack.get("game",""))=="bfme1" else "rotwk",pack.id]
  if kind=="builtin":root_path="user://lan-downloads/builtin-%s"%pack.id
@@ -227,6 +238,7 @@ func _install(pack:Dictionary, archive:String)->String:
  for entry in zip.get_files():
   if entry.ends_with("/"):continue
   if not safe_path(entry) or seen.has(entry.to_lower()):zip.close();return "Unsafe or duplicate path in pack: "+entry
+  if kind=="map_bundle" and not (entry.begins_with("rotwk/") or entry.begins_with("bfme1/")):zip.close();return "Invalid map-library game folder."
   seen[entry.to_lower()]=true
  if seen.is_empty():zip.close();return "Pack contains no files."
  zip.close()
@@ -235,6 +247,7 @@ func _install(pack:Dictionary, archive:String)->String:
  var input:=FileAccess.open(archive,FileAccess.READ)
  if input==null:return "Cannot read installation archive."
  var extracted:={}
+ var extracted_maps:=0
  var expanded:int=0
  while input.get_position()+4<=input.get_length():
   var signature:=input.get_32()
@@ -286,9 +299,17 @@ func _install(pack:Dictionary, archive:String)->String:
    await get_tree().process_frame
   var error:=output.get_error();output.close()
   if error!=OK:return "Failed to write installation file."
+  if kind=="map_bundle" and entry.get_extension().to_lower()=="map":
+   extracted_maps+=1
+   _update_overall(extracted_maps,int(pack.get("map_count",0)),"maps extracted",0)
   await get_tree().process_frame
  input.close()
  if extracted.size()!=seen.size():return "Incomplete installation archive."
+ if kind=="map_bundle":
+  if extracted_maps!=int(pack.get("map_count",0)) or extracted_maps==0:return "Map-library count mismatch."
+  DirAccess.make_dir_recursive_absolute(root_path.get_base_dir())
+  if DirAccess.rename_absolute(staging,root_path)!=OK:return "Cannot finish map-library extraction."
+  return ""
  if kind=="aotr":
   if not FileAccess.file_exists(staging.path_join("aotr/AOTRSkirmish.big")) or not FileAccess.file_exists(staging.path_join("rotwk/#aotr_patch202.big")):return "AOTR pack is missing its game files or runtime dependency."
   DirAccess.make_dir_recursive_absolute(root_path.get_base_dir())

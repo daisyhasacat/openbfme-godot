@@ -644,6 +644,12 @@ func _discover_library():
  if metadata==null:
   metadata=preload('res://scripts/skirmish_map_metadata.gd').new();metadata.setup(fs,metadata_cache_root)
  var downloads='user://map-library/bfme1' if fs.is_bfme1() else 'user://map-library/rotwk'
+ var bundle_game='bfme1' if fs.is_bfme1() else 'rotwk'
+ var bundles=DirAccess.get_directories_at('user://map-library/bundles') if DirAccess.dir_exists_absolute('user://map-library/bundles') else PackedStringArray()
+ for bundle in bundles:
+  if bundle.begins_with('.') or '.installing-' in bundle:continue
+  var folder='user://map-library/bundles/'+bundle+'/'+bundle_game
+  if DirAccess.dir_exists_absolute(folder):_discover_library_folder(ProjectSettings.globalize_path(folder))
  if library_path!=downloads and DirAccess.dir_exists_absolute(downloads):_discover_library_folder(ProjectSettings.globalize_path(downloads))
  if not DirAccess.dir_exists_absolute(library_path):
   var status=DirAccess.make_dir_recursive_absolute(library_path)
