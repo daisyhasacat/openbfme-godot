@@ -14,7 +14,7 @@ var library_queue: Array = []
 var library_error := ""
 var metadata: RefCounted
 var metadata_cache_root := "user://map-library-metadata"
-var library_path := OS.get_environment("HOME").path_join("Library/Application Support/BFMELauncher/Maps/Library/rotwk")
+var library_path := OS.get_environment("HOME").path_join("Library/Application Support/BFMELauncher/Maps/Library/rotwk") if OS.get_name()=="macOS" else "user://map-library/rotwk"
 var use_button: Button
 var play_button: Button
 var tabs: TabContainer
@@ -141,6 +141,7 @@ func show_browser():
  if fs.is_bfme1():
   var default_library=OS.get_environment("HOME").path_join("Library/Application Support/BFMELauncher/Maps/Library/rotwk")
   if library_path==default_library:library_path=default_library.get_base_dir().path_join('bfme1')
+  if library_path=='user://map-library/rotwk':library_path='user://map-library/bfme1'
   if install_root=='user://installed-maps':install_root='user://bfme1-installed-maps'
  source_tabs.set_tab_disabled(1,false)
  source_tabs.set_current_tab(0)
@@ -642,11 +643,13 @@ func _discover_library():
  library_catalog=[];library_queue=[];library_error=''
  if metadata==null:
   metadata=preload('res://scripts/skirmish_map_metadata.gd').new();metadata.setup(fs,metadata_cache_root)
+ var downloads='user://map-library/bfme1' if fs.is_bfme1() else 'user://map-library/rotwk'
+ if library_path!=downloads and DirAccess.dir_exists_absolute(downloads):_discover_library_folder(ProjectSettings.globalize_path(downloads))
  if not DirAccess.dir_exists_absolute(library_path):
   var status=DirAccess.make_dir_recursive_absolute(library_path)
   if status!=OK:
    library_error='Cannot create Map Library: '+error_string(status);return
- _discover_library_folder(library_path)
+ _discover_library_folder(ProjectSettings.globalize_path(library_path))
 
 func _discover_library_folder(path: String):
  var directory=DirAccess.open(path)
