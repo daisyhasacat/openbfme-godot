@@ -9,22 +9,25 @@
 //   a      = river.a * vtx.a * edge.a * Opacity.w;  rgb *= shroud
 // Space: mesh in Godot's frame (x, z, -y); world.xy = (G.x, -G.z).
 //
-// NOT retail geometry: the retail mesh/UV generation of rivers (WaterRenderObj) is not ported, the UV
-// layout here (uv0 = across 0..1, along = distance/river_uv_length; uv1 = across, 0.5) and the strip built
-// from the cross-section lines are named assumptions (stop S-035).
+// UV layout follows BFME2 W3DWaterDrawRiverWater.cpp RVA 0x100A0B:
+// primary U 0..0.5, opacity U 0..1, shared width-scaled V plus sine wobble.
+// Animation uses presentation TIME * map scroll speed for the V origin;
+// the retail origin clock and full boundary generation remain S-035.
 shader_type spatial;
 render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
 
 uniform sampler2D river_tex : filter_linear_mipmap, repeat_enable, hint_default_white;
 uniform sampler2D sparkle_tex : filter_linear_mipmap, repeat_enable, hint_default_black;
 uniform sampler2D noise_tex : filter_linear_mipmap, repeat_enable, hint_default_white;
-uniform sampler2D edge_tex : filter_linear_mipmap, repeat_disable, hint_default_white;
+uniform sampler2D edge_tex : filter_linear_mipmap, repeat_enable, hint_default_white;
 uniform vec2 uv_scroll_per_second = vec2(0.0, 0.0);
 uniform float opacity = 1.0;
 uniform float shroud = 1.0;
 uniform float output_gamma = 2.2;
 
 varying vec2 v_noise_uv;
+varying vec2 v_river_uv;
+varying vec2 v_edge_uv;
 // lane ZOOM-1: the local player's shroud (GameWorld::refresh_shroud sets these on the terrain and on this layer): ZH WaterRenderObjClass modulates its
 // water with the shroud texture in a second pass / stage (W3DWater.cpp, the ST_SHROUD_TEXTURE passes); the border level outside the map is black
 uniform sampler2D shroud_tex : filter_linear, repeat_disable, hint_default_white;
@@ -38,6 +41,10 @@ varying vec2 v_clip_xy;
 varying vec2 v_shroud_uv;
 
 void vertex() {
+	float origin = TIME * uv_scroll_per_second.x;
+	float v = UV.y + sin(6.28318530718 * UV.y - 3.0 * origin) / 22.0 - origin;
+	v_river_uv = vec2(UV.x, v);
+	v_edge_uv = vec2(UV2.x, v);
 	vec2 world_xy = vec2(VERTEX.x, -VERTEX.z);
 	v_noise_uv = world_xy * 0.0625 + TIME * uv_scroll_per_second;
 	vec3 shroud_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -60,10 +67,10 @@ void fragment() {
 	if (v_clip_xy.x < clip_rect.x || v_clip_xy.y < clip_rect.y || v_clip_xy.x > clip_rect.z || v_clip_xy.y > clip_rect.w) {
 		discard;
 	}
-	vec4 river = texture(river_tex, UV);
-	vec3 sparkle = texture(sparkle_tex, UV).rgb;
+	vec4 river = texture(river_tex, v_river_uv);
+	vec3 sparkle = texture(sparkle_tex, v_river_uv).rgb;
 	vec3 noise = texture(noise_tex, v_noise_uv).rgb;
-	vec4 edge = texture(edge_tex, UV2);
+	vec4 edge = texture(edge_tex, v_edge_uv);
 	vec3 rgb = COLOR.rgb * river.rgb + edge.rgb + sparkle * noise;
 	rgb *= shroud;
 	if (shroud_enabled) {

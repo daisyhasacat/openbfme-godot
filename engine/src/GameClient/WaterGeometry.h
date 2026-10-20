@@ -3,8 +3,9 @@
 // Water mesh geometry (no Godot dependency): ear-clipping triangulation of standing-water polygons and the
 // river ribbon built from cross-section lines. Spec maps-and-terrain.md 3.6 ("triangulate each polygon (ear
 // clipping; points may be non-convex) at z = waterHeight"; "rivers: a strip from consecutive line pairs, UV v
-// along the strip"). The retail river mesh/UV generation (WaterRenderObj) is not ported: the strip UVs are a
-// named assumption (stop S-035): uv0 = (across 0..1, along = distance / uvLength), uv1 = (across, 0.5).
+// along the strip"). River UVs follow BFME2 W3DWaterDrawRiverWater.cpp (RVA 0x100A0B):
+// uv0 spans 0..0.5 across, uv1 spans 0..1, both share width-scaled V. The
+// exact RotWK boundary generation and animation clock remain unverified (S-035).
 
 #pragma once
 
@@ -30,6 +31,6 @@ struct RiverStrip
 	std::vector<std::uint32_t> index;
 };
 
-// z = river.waterHeight. uvLength: world units of river length per texture repetition along the strip.
-bool buildRiverStrip(const RiverArea &river, float uvLength, RiverStrip &out);
+// z = river.waterHeight. BFME2 donor boundary-width repeat scale; shader applies the animated V wobble.
+bool buildRiverStrip(const RiverArea &river, RiverStrip &out);
 } // namespace WaterGeometry

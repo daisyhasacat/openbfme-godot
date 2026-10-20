@@ -126,30 +126,43 @@ bool WaterGeometry::triangulate(const std::vector<Point2F> &polygon, std::vector
 	return !indices.empty();
 }
 
-bool WaterGeometry::buildRiverStrip(const RiverArea &river, float uvLength, RiverStrip &out)
+bool WaterGeometry::buildRiverStrip(const RiverArea &river, RiverStrip &out)
 {
 	out = RiverStrip();
-	if (river.lines.size() < 2 || uvLength <= 0.0f)
+	if (river.lines.size() < 2) return false;
+	auto distance = [](float x0, float y0, float x1, float y1) {
+		return std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+	};
+	const auto &first = river.lines.front();
+	const auto &last = river.lines.back();
+	const float endLen = distance(first.x0, first.y0, first.x1, first.y1);
+	if (endLen == 0.0f) return false;
+	// BFME2 W3DWaterDrawRiverWater.cpp, RVA 0x100A0B: walk the boundary
+	// perimeter, divide by two, subtract the first end, then divide by its
+	// width and the rectangle count. No hardcoded world-space tile length.
+	float perimeter = endLen;
+	for (size_t i = 1; i < river.lines.size(); ++i)
 	{
-		return false;
+		const auto &a = river.lines[i - 1];
+		const auto &b = river.lines[i];
+		perimeter += distance(a.x1, a.y1, b.x1, b.y1);
 	}
-	float along = 0.0f;
-	float px = 0, py = 0;
+	perimeter += distance(last.x0, last.y0, last.x1, last.y1);
+	for (size_t i = river.lines.size() - 1; i > 0; --i)
+	{
+		const auto &a = river.lines[i];
+		const auto &b = river.lines[i - 1];
+		perimeter += distance(a.x0, a.y0, b.x0, b.y0);
+	}
+	const float vScale = ((perimeter / 2.0f - endLen) / endLen) / float(river.lines.size() - 1);
 	for (size_t i = 0; i < river.lines.size(); ++i)
 	{
-		const RiverArea::Line &l = river.lines[i];
-		const float cx = (l.x0 + l.x1) * 0.5f, cy = (l.y0 + l.y1) * 0.5f;
-		if (i > 0)
-		{
-			along += std::sqrt((cx - px) * (cx - px) + (cy - py) * (cy - py));
-		}
-		px = cx;
-		py = cy;
+		const auto &l = river.lines[i];
 		const float z = (float)river.waterHeight;
-		const float v = along / uvLength;
+		const float v = vScale * float(i);
 		out.position.insert(out.position.end(), { l.x0, l.y0, z, l.x1, l.y1, z });
-		out.uv0.insert(out.uv0.end(), { 0.0f, v, 1.0f, v });
-		out.uv1.insert(out.uv1.end(), { 0.0f, 0.5f, 1.0f, 0.5f });
+		out.uv0.insert(out.uv0.end(), { 0.0f, v, 0.5f, v });
+		out.uv1.insert(out.uv1.end(), { 0.0f, v, 1.0f, v });
 		if (i > 0)
 		{
 			const std::uint32_t a = (std::uint32_t)(2 * (i - 1)), b = a + 1, c = a + 2, d = a + 3;

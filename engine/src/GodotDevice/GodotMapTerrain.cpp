@@ -1079,7 +1079,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 			for (const RiverArea &r : map.chunks.riverAreas)
 			{
 				WaterGeometry::RiverStrip strip;
-				if (!WaterGeometry::buildRiverStrip(r, 80.0f, strip) || sh.is_null())
+				if (!WaterGeometry::buildRiverStrip(r, strip) || sh.is_null())
 				{
 					continue;
 				}

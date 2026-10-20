@@ -227,28 +227,30 @@ TEST_CASE("WaterGeometry::triangulate: convex, non-convex and either winding giv
 	CHECK_FALSE(WaterGeometry::triangulate({ { 0, 0 }, { 1, 1 } }, tri));
 }
 
-TEST_CASE("WaterGeometry::buildRiverStrip: two vertices per cross-section line, UV v by distance along the centre line")
+TEST_CASE("WaterGeometry::buildRiverStrip: donor width-scaled UVs")
 {
 	RiverArea r;
 	r.waterHeight = 290;
-	r.lines = { { 0, 0, 0, 10 }, { 30, 0, 30, 10 }, { 30, 40, 30, 50 } };
+	r.lines = { {0,0,0,10}, {30,0,30,10}, {100,0,100,10} };
 	WaterGeometry::RiverStrip s;
-	REQUIRE(WaterGeometry::buildRiverStrip(r, 80.0f, s));
-	REQUIRE(s.position.size() == 6 * 3);
-	CHECK(s.position[0] == 0.0f);  CHECK(s.position[1] == 0.0f);  CHECK(s.position[2] == 290.0f);
-	CHECK(s.position[3] == 0.0f);  CHECK(s.position[4] == 10.0f);
+	REQUIRE(WaterGeometry::buildRiverStrip(r, s));
+	CHECK(s.position.size() == 18);
+	CHECK(s.position[2] == 290.0f);
 	CHECK(s.index.size() == 12);
-	// centres (0,5) -> (30,5) -> (30,45): along = 0, 30, 70
-	CHECK(s.uv0[1] == 0.0f);
-	CHECK(s.uv0[5] == 30.0f / 80.0f);
-	CHECK(s.uv0[9] == 70.0f / 80.0f);
-	CHECK(s.uv0[0] == 0.0f);
-	CHECK(s.uv0[2] == 1.0f);
-	CHECK(s.uv1[1] == 0.5f);
-	// one line is not a river
-	RiverArea one;
-	one.lines = { { 0, 0, 1, 1 } };
-	CHECK_FALSE(WaterGeometry::buildRiverStrip(one, 80.0f, s));
+	// Rectangle perimeter 220, width 10 => ten repeats over two sections.
+	const std::vector<float> main = {0,0,0.5f,0,0,5,0.5f,5,0,10,0.5f,10};
+	const std::vector<float> edge = {0,0,1,0,0,5,1,5,0,10,1,10};
+	CHECK(s.uv0 == main);
+	CHECK(s.uv1 == edge);
+	for (auto &l : r.lines) { l.x0 *= 2; l.y0 *= 2; l.x1 *= 2; l.y1 *= 2; }
+	WaterGeometry::RiverStrip scaled;
+	REQUIRE(WaterGeometry::buildRiverStrip(r, scaled));
+	CHECK(scaled.uv0 == main);
+	CHECK(scaled.uv1 == edge);
+	r.lines.front().y1 = r.lines.front().y0;
+	CHECK_FALSE(WaterGeometry::buildRiverStrip(r, s));
+	r.lines.resize(1);
+	CHECK_FALSE(WaterGeometry::buildRiverStrip(r, s));
 }
 
 // ------------------------------------------------------------------------------------------------
