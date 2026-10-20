@@ -15,6 +15,45 @@
 
 using namespace hudtest;
 
+TEST_CASE("UI-4 hero notifications retain each view's subscription")
+{
+	if (!hudtest::haveWorld("UI-4 multi-view notifications")) return;
+	Rig rig(shared());
+	// Separate manager starts its sequence at zero, independently of the map.
+	DrawableManager drawables(rig.assets, rig.game->logic());
+	int primaryOwner = 0, secondaryOwner = 0;
+	std::vector<ObjectID> primaryAttacks, secondaryAttacks;
+	std::vector<std::pair<std::string, int>> primaryFlashes, secondaryFlashes;
+	drawables.setHeroAttackedHandler([&](ObjectID id) { primaryAttacks.push_back(id); }, &primaryOwner);
+	drawables.setHeroAttackedHandler([&](ObjectID id) { secondaryAttacks.push_back(id); }, &secondaryOwner);
+	drawables.setHeroFlashHandler([&](const std::string &name, int frames) { primaryFlashes.emplace_back(name, frames); }, &primaryOwner);
+	drawables.setHeroFlashHandler([&](const std::string &name, int frames) { secondaryFlashes.emplace_back(name, frames); }, &secondaryOwner);
+	ClientEvent attack;
+	attack.kind = ClientEvent::HERO_ATTACKED;
+	attack.object = 42;
+	ClientEvent flash;
+	flash.kind = ClientEvent::HERO_FLASH;
+	flash.seq = 1;
+	flash.name = "TestHero";
+	flash.flashFrames = 30;
+	drawables.applyEvents({attack, flash});
+	CHECK(primaryAttacks == std::vector<ObjectID>{42});
+	CHECK(secondaryAttacks == primaryAttacks);
+	REQUIRE(primaryFlashes.size() == 1);
+	CHECK(primaryFlashes.front().first == "TestHero");
+	CHECK(primaryFlashes.front().second == 30);
+	CHECK(secondaryFlashes == primaryFlashes);
+	drawables.setHeroAttackedHandler(nullptr, &secondaryOwner);
+	drawables.setHeroFlashHandler(nullptr, &secondaryOwner);
+	attack.seq = 2;
+	flash.seq = 3;
+	drawables.applyEvents({attack, flash});
+	CHECK(primaryAttacks == std::vector<ObjectID>{42, 42});
+	CHECK(secondaryAttacks == std::vector<ObjectID>{42});
+	CHECK(primaryFlashes.size() == 2);
+	CHECK(secondaryFlashes.size() == 1);
+}
+
 namespace
 {
 struct Recorder

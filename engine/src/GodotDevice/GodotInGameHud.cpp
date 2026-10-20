@@ -175,6 +175,9 @@ struct HudDevice : public AptNativeHook
 {
 	bool controllerLayout = false;
 	bool nativeHudVisible = true;
+	bool secondaryView = false;
+	bool viewActive = true;
+	uint64_t peerViewId = 0;
 	std::map<int,bool> adaptiveHiddenLevels;
 	Ref<ImageTexture> adaptiveMapTexture;
 	std::set<int> overlayTouches;
@@ -1295,7 +1298,7 @@ void HudDevice::applyCamera(const Vector2 &window, double alpha)
 	camera->set_far((real_t)cam->farPlane());
 	// lane PLAY-1: the free camera's fog shift (0 at retail heights), sent only when it changes
 	const float shift = cam->fogShift();
-	if (shift != fogShift)
+	if (viewActive && shift != fogShift)
 	{
 		fogShift = shift;
 		W3D_Set_Fog_Shift(shift);
@@ -1365,6 +1368,8 @@ void InGameHudNode::_bind_methods()
 	ClassDB::bind_method(D_METHOD("set_controller_hover", "slot", "arc", "unit", "spell"), &InGameHudNode::set_controller_hover);
 	ClassDB::bind_method(D_METHOD("set_controller_layout", "active"), &InGameHudNode::set_controller_layout);
 	ClassDB::bind_method(D_METHOD("set_native_hud_visible", "visible"), &InGameHudNode::set_native_hud_visible);
+	ClassDB::bind_method(D_METHOD("link_secondary_view", "primary"), &InGameHudNode::link_secondary_view);
+	ClassDB::bind_method(D_METHOD("set_view_active", "active"), &InGameHudNode::set_view_active);
 	ClassDB::bind_method(D_METHOD("get_adaptive_minimap"), &InGameHudNode::get_adaptive_minimap);
 	ClassDB::bind_method(D_METHOD("get_adaptive_resources"), &InGameHudNode::get_adaptive_resources);
 	ClassDB::bind_method(D_METHOD("adaptive_minimap_click", "uv", "order"), &InGameHudNode::adaptive_minimap_click, DEFVAL(false));
@@ -1713,6 +1718,13 @@ void HudDevice::drawSelectionDecals()
 			++selUploads;
 		}
 		// only what changed (a set marks the server's global buffer for upload)
+		// A focus switch changes which HUD owns these global bindings even
+		// when both selections have unchanged cached grids and textures.
+		if (selMode < 0)
+		{
+			if (selData.is_valid()) rs->global_shader_parameter_set("sel_data", selData->get_rid());
+			if (selAtlas.is_valid()) rs->global_shader_parameter_set("sel_atlas", selAtlas->get_rid());
+		}
 		const Vector4 grid(selGrid.minX, selGrid.minY, selGrid.cellSize, (float)selGrid.cellsX);
 		const Vector4 grid2((float)selGrid.cellsY, (float)selGrid.cellOffset, (float)selGrid.indexOffset, (float)mode);
 		if (mode != selMode || grid != selGridSet)
@@ -1876,6 +1888,7 @@ DecalImage HudDevice::decalImageFor(const std::string &file)
 
 void HudDevice::setMapSiteMarkers(bool enabled)
 {
+	if (secondaryView) return; // Shared world: the primary surface owns these markers.
 	auto *node = mapSiteMarkersId ? Object::cast_to<MeshInstance3D>(ObjectDB::get_instance(godot::ObjectID(mapSiteMarkersId))) : nullptr;
 	if (node) { node->set_visible(enabled); return; }
 	if (!enabled || !world || !world->hud_game()) return;
@@ -1935,6 +1948,7 @@ void HudDevice::setMapSiteMarkers(bool enabled)
 
 void HudDevice::freeSelectionDecals()
 {
+	const bool clearGlobals = viewActive || !peerViewId || !ObjectDB::get_instance(ObjectID(peerViewId));
 	if (Node *markers = mapSiteMarkersId ? Object::cast_to<Node>(ObjectDB::get_instance(godot::ObjectID(mapSiteMarkersId))) : nullptr)
 		markers->queue_free();
 	mapSiteMarkersId = 0;
@@ -1944,7 +1958,7 @@ void HudDevice::freeSelectionDecals()
 	}
 	decalRootId = 0;
 	decalIds.clear();
-	if (radiusCursorBound)
+	if (radiusCursorBound && clearGlobals)
 	{
 		if (RenderingServer *rs = RenderingServer::get_singleton())
 		{
@@ -1956,7 +1970,7 @@ void HudDevice::freeSelectionDecals()
 	radiusDecalDrawn = false;
 	mergeKey.clear();
 	// lane SELPERF-1: the terrain shader draws no merge decals once the HUD is gone
-	if (selMode > 0 || selData.is_valid() || selAtlas.is_valid())
+	if (clearGlobals && (selMode > 0 || selData.is_valid() || selAtlas.is_valid()))
 	{
 		if (RenderingServer *rs = RenderingServer::get_singleton())
 		{
@@ -1977,7 +1991,7 @@ InGameHudNode::InGameHudNode() : d(std::make_unique<HudDevice>()) {}
 InGameHudNode::~InGameHudNode()
 {
 	d->freeSelectionDecals(); // lane UI-4
-	if (d->fogShift != 0.0f)
+	if (d->viewActive && d->fogShift != 0.0f)
 	{
 		W3D_Set_Fog_Shift(0.0f); // lane PLAY-1: the free camera's fog shift goes with the game
 	}
@@ -2045,7 +2059,8 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 	d->fs = fs;
 	d->owner = this;
 	d->world = world;
-	world->set_lua_hud_source(get_instance_id());
+	d->secondaryView = (bool)options.get("secondary_view", false);
+	if (!d->secondaryView) world->set_lua_hud_source(get_instance_id());
 	d->camera = camera;
 	LiveGame &game = *world->hud_game();
 	Player *local = game.players().findPlayerWithName(local_player.utf8().get_data());
@@ -2175,6 +2190,7 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 	}
 	d->controllerText = gameText;
 	InGameHud::Config cfg{ game, *world->hud_world(), afs, d->services, d->shown, d->mouse, d->meta, gameText, shellPlayer ? shellPlayer->window_manager() : nullptr, shellPlayer ? shellPlayer->shell_object() : nullptr };
+	cfg.secondaryView = d->secondaryView;
 	cfg.endGameTimer = [world]() { return world->hud_end_game_timer(); };
 	d->hud = std::make_unique<InGameHud>(cfg);
 	d->hud->input().attachCamera(*d->cam);
@@ -3060,6 +3076,18 @@ void InGameHudNode::_process(double delta)
 	{
 		return;
 	}
+	if (!d->viewActive && d->peerViewId)
+	{
+		auto *peer = Object::cast_to<InGameHudNode>(ObjectDB::get_instance(ObjectID(d->peerViewId)));
+		if (peer && peer->d->ready && peer->d->viewActive)
+		{
+			d->hud->input().ui().mirrorSelection(peer->d->hud->input().ui().selected());
+			// Shared transparent batches are sorted using the main camera. Keep
+			// both views parallel, while retaining their independent positions.
+			d->cam->setAngle(peer->d->cam->getAngle());
+			d->cam->setPitch(peer->d->cam->getPitch());
+		}
+	}
 	Viewport *vp = get_viewport();
 	const Vector2 window = vp ? vp->get_visible_rect().get_size() : Vector2(1024, 768);
 	d->hud->setWindowSize((int)window.x, (int)window.y);
@@ -3098,6 +3126,19 @@ void InGameHudNode::_process(double delta)
 	 if(auto *root=d->hud->windows().apt().level(hidden.first))root->visible=hidden.second;
 	d->adaptiveHiddenLevels.clear();
 	d->hud->update(delta);
+	if (d->secondaryView && d->peerViewId)
+	{
+		auto *peer = Object::cast_to<InGameHudNode>(ObjectDB::get_instance(ObjectID(d->peerViewId)));
+		ShellServices *services = peer && peer->d->player && peer->d->player->shell_object()
+			? peer->d->player->shell_object()->environment().services : nullptr;
+		if (services)
+		{
+			for (const auto &request : d->services.requests) services->request(request);
+			d->services.requests.clear();
+			for (const auto &sound : d->services.sounds) services->playSound(sound);
+			d->services.sounds.clear();
+		}
+	}
 	if(!d->nativeHudVisible && d->hud->palantir()) {
 	 auto hideLevel=[&](int level){if(auto *root=d->hud->windows().apt().level(level)){d->adaptiveHiddenLevels[level]=root->visible;root->visible=false;}};
 	 hideLevel(d->hud->palantir()->level());
@@ -3132,9 +3173,16 @@ void InGameHudNode::_process(double delta)
 	const uint64_t ta = Time::get_singleton()->get_ticks_usec();
 	d->drawIconOps(get_canvas_item()); // lane HUD-5
 	const uint64_t tb = Time::get_singleton()->get_ticks_usec();
-	d->drawSelectionDecals();          // lane UI-4
-	d->drawRadiusCursor();             // lane SPELL-4
-	d->drawResourceFeedback();         // lane OWNERFIX-2
+	// World-space decals and shader globals belong to the active input surface.
+	// Both viewports see them, without the passive HUD clearing aiming state.
+	if (auto *root = d->decalRootId ? Object::cast_to<Node3D>(ObjectDB::get_instance(ObjectID(d->decalRootId))) : nullptr)
+		root->set_visible(d->viewActive);
+	if (d->viewActive)
+	{
+		d->drawSelectionDecals();          // lane UI-4
+		d->drawRadiusCursor();             // lane SPELL-4
+		d->drawResourceFeedback();         // lane OWNERFIX-2
+	}
 	const uint64_t tc = Time::get_singleton()->get_ticks_usec();
 	if (d->hud6 && d->nativeHudVisible)
 	{
@@ -3190,7 +3238,7 @@ void InGameHudNode::_process(double delta)
 	// (behind the same logic gate as the HUD's update: a frame the logic still runs keeps last frame's ghost)
 	// lane BUILD-5 r3: every render frame (review r2 #2): the pose follows the live pointer through the displayed camera also while the logic worker runs; the
 	// builder lookup, the legality and new drawables wait for an idle frame (they read the live logic)
-	if (d->ghost && d->world && d->world->hud_game())
+	if (d->viewActive && d->ghost && d->world && d->world->hud_game())
 	{
 		const bool idle = d->world->hud_game()->logicHeld(); // RENDERWAIT-1: the client window (or an idle worker)
 		if (d->livePointerSeen)
@@ -3201,6 +3249,7 @@ void InGameHudNode::_process(double delta)
 		d->ghost->sync(*d->world->hud_game(), d->hud->input().ui(), delta, PlaceEventTranslator::ghostOptions(), idle);
 	}
 	const uint64_t t2 = Time::get_singleton()->get_ticks_usec();
+	if (d->viewActive)
 	{
 		// lane BUILD-5: while scrolling the cursor is InGameUI's Scroll whatever is under the pointer (createMouseoverHint's window test RW 0x69F637 is skipped
 		// while scrolling); its direction follows the scroll amount
@@ -3404,6 +3453,49 @@ bool InGameHudNode::press_command_button(const String &template_name)
 void InGameHudNode::set_controller_hover(int slot, bool arc, int64_t unit, int spell)
 {
     if (d->hud) d->hud->setControllerHover(slot, arc, (::ObjectID)unit, spell);
+}
+
+void InGameHudNode::link_secondary_view(InGameHudNode *primary)
+{
+	if (!primary || primary == this || !d->ready || !primary->d->ready ||
+		d->world != primary->d->world || d->localPlayerIndex != primary->d->localPlayerIndex) return;
+	d->peerViewId = primary->get_instance_id();
+	primary->d->peerViewId = get_instance_id();
+	d->hud->input().ui().mirrorSelection(primary->d->hud->input().ui().selected());
+	if (primary->d->hud->scriptMouseHidden()) script_input(false);
+}
+
+void InGameHudNode::set_view_active(bool active)
+{
+	if (!d->ready || d->viewActive == active) return;
+	if (active && d->peerViewId)
+	{
+		auto *peer = Object::cast_to<InGameHudNode>(ObjectDB::get_instance(ObjectID(d->peerViewId)));
+		if (peer && peer->d->ready)
+			d->hud->input().ui().mirrorSelection(peer->d->hud->input().ui().selected());
+	}
+	d->viewActive = active;
+	if (!active && d->ghost) d->ghost->clear();
+	if (active)
+	{
+		d->selMode = -1; // Rebind the active view's cached selection textures.
+		d->fogShift = d->cam->fogShift();
+		W3D_Set_Fog_Shift(d->fogShift);
+	}
+	d->hud->input().cancelHeld();
+	d->hud->input().selectionTranslator().setLeftMouseButton(false);
+	d->hud->input().selectionTranslator().setDragSelecting(false);
+	d->hud->input().ui().setSelecting(false);
+	d->hud->input().ui().endAreaSelectHint();
+	d->overlayMouseHeld = false;
+	d->overlayTouches.clear();
+	d->mods = ModifierTracker();
+	d->keyState = 0;
+	d->massRecruitKey = false;
+	d->uberRecruitPress = false;
+	d->pendingInput.clear();
+	// Update the active selection before the other view mirrors it.
+	set_process_priority(active ? -101 : -100);
 }
 
 void InGameHudNode::set_native_hud_visible(bool visible)
@@ -4102,12 +4194,22 @@ void InGameHudNode::script_input(bool enable)
 {
 	if (d->ready && d->hud)
 	{
+		// The primary hook already posts the script's logic messages. Mirror
+		// its client restrictions without posting them a second time.
+		if (d->secondaryView) d->hud->input().ui().setMessageStream(nullptr);
 		d->hud->scriptInput(enable);
+		if (d->secondaryView) d->hud->input().ui().setMessageStream(&d->hud->input().stream());
+		if (!d->secondaryView && d->peerViewId)
+		{
+			auto *peer = Object::cast_to<InGameHudNode>(ObjectDB::get_instance(ObjectID(d->peerViewId)));
+			if (peer) peer->script_input(enable);
+		}
 	}
 }
 
 void InGameHudNode::_input(const Ref<InputEvent> &event)
 {
+	if (!d->viewActive) return;
 	// Independent rectangles preserve world input between collapsed HUD panels.
 	const auto engine = Engine::get_singleton();
 	Vector2 overlayPoint;bool hasOverlayPoint=false;
@@ -4118,7 +4220,7 @@ void InGameHudNode::_input(const Ref<InputEvent> &event)
 	if(touch){overlayPoint=touch->get_position();hasOverlayPoint=true;}
 	if(drag){overlayPoint=drag->get_position();hasOverlayPoint=true;}
 	bool overlayHit=false;
-	if(hasOverlayPoint && engine->has_meta("adaptive_hud_rects")) {
+	if(!d->secondaryView && hasOverlayPoint && engine->has_meta("adaptive_hud_rects")) {
 	 const Array rects=engine->get_meta("adaptive_hud_rects");
 	 for(int i=0;i<rects.size();++i)if(Rect2(rects[i]).has_point(overlayPoint)){overlayHit=true;break;}
 	}
@@ -4138,7 +4240,7 @@ void InGameHudNode::_input(const Ref<InputEvent> &event)
 	if(mouse && (overlayHit || d->overlayMouseHeld))return;
 	// Godot controls draw this toolbar above the native HUD; its taps belong to
 	// the controls, never to world selection or contextual orders underneath.
-	if (Engine::get_singleton()->has_meta("touch_toolbar_rect"))
+	if (!d->secondaryView && Engine::get_singleton()->has_meta("touch_toolbar_rect"))
 	{
 		const Rect2 toolbar = Engine::get_singleton()->get_meta("touch_toolbar_rect");
 		const auto *mouse = Object::cast_to<InputEventMouse>(event.ptr());
@@ -4150,10 +4252,10 @@ void InGameHudNode::_input(const Ref<InputEvent> &event)
 	{
 		const Key code = key->get_keycode();
 		if (code == Key::KEY_BACKSLASH) return;
-		if (code == Key::KEY_F10 && Engine::get_singleton()->has_meta("adaptive_hud_rects")) return;
-		if ((code == Key::KEY_COMMA || code == Key::KEY_PERIOD) && (bool)Engine::get_singleton()->get_meta("controller_camera_keys", false) && !key->is_ctrl_pressed() && !key->is_alt_pressed()) return;
-		if (code == Key::KEY_TAB && (bool)Engine::get_singleton()->get_meta("controller_keyboard_enabled", false)) return;
-		if ((bool)Engine::get_singleton()->get_meta("controller_keyboard_active", false) && !key->is_ctrl_pressed() && !key->is_alt_pressed() &&
+		if (!d->secondaryView && code == Key::KEY_F10 && Engine::get_singleton()->has_meta("adaptive_hud_rects")) return;
+		if (!d->secondaryView && (code == Key::KEY_COMMA || code == Key::KEY_PERIOD) && (bool)Engine::get_singleton()->get_meta("controller_camera_keys", false) && !key->is_ctrl_pressed() && !key->is_alt_pressed()) return;
+		if (!d->secondaryView && code == Key::KEY_TAB && (bool)Engine::get_singleton()->get_meta("controller_keyboard_enabled", false)) return;
+		if (!d->secondaryView && (bool)Engine::get_singleton()->get_meta("controller_keyboard_active", false) && !key->is_ctrl_pressed() && !key->is_alt_pressed() &&
 			(code == Key::KEY_LEFT || code == Key::KEY_RIGHT || code == Key::KEY_UP || code == Key::KEY_DOWN ||
 			code == Key::KEY_ENTER || code == Key::KEY_KP_ENTER || code == Key::KEY_BACKSPACE || code == Key::KEY_X || code == Key::KEY_Y)) return;
 		if (key->get_keycode() == Key::KEY_QUOTELEFT || key->get_physical_keycode() == Key::KEY_QUOTELEFT

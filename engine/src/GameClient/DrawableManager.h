@@ -39,8 +39,18 @@ public:
 
 	// the simulation's client events, in order: creation, destruction, model conditions, module / sub object visibility, placement
 	void applyEvents(const std::vector<ClientEvent> &events);
-	void setHeroAttackedHandler(std::function<void(ObjectID)> handler) { m_heroAttackedHandler = std::move(handler); }
-	void setHeroFlashHandler(std::function<void(const std::string &, int)> handler) { m_heroFlashHandler = std::move(handler); }
+	// Each presentation surface owns its subscription; closing one cannot
+	// remove another live surface's hero notifications.
+	void setHeroAttackedHandler(std::function<void(ObjectID)> handler, const void *owner = nullptr)
+	{
+		if (handler) m_heroAttackedHandlers[owner] = std::move(handler);
+		else m_heroAttackedHandlers.erase(owner);
+	}
+	void setHeroFlashHandler(std::function<void(const std::string &, int)> handler, const void *owner = nullptr)
+	{
+		if (handler) m_heroFlashHandlers[owner] = std::move(handler);
+		else m_heroFlashHandlers.erase(owner);
+	}
 	size_t eventsApplied() const { return m_eventsApplied; }
 
 	Drawable *find(DrawableID id) const { return id >= 1 && id < m_slots.size() ? m_slots[id].get() : nullptr; }
@@ -132,8 +142,8 @@ private:
 	AnimationSoundModuleManager m_animationSounds; ///< lane AUDIO-4 (before the drawables: their modules leave its lists when they go)
 	DrawServices m_services;
 	std::map<ObjectID, DrawableID> m_byObject;
-	std::function<void(ObjectID)> m_heroAttackedHandler;
-	std::function<void(const std::string &, int)> m_heroFlashHandler;
+	std::map<const void *, std::function<void(ObjectID)>> m_heroAttackedHandlers;
+	std::map<const void *, std::function<void(const std::string &, int)>> m_heroFlashHandlers;
 	size_t m_dependencyUpdates = 0; ///< lane COMBAT-4: dependent drawables whose shared flags changed (RW 0x4BF2D8)
 	std::uint32_t m_nextSeq = 0;
 	size_t m_eventsApplied = 0;

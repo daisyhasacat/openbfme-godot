@@ -71,6 +71,7 @@ public:
 		WindowManager *windows = nullptr;
 		Shell *shell = nullptr;
 		std::function<int()> endGameTimer; ///< RW 0x80786B; the host owns EndGameController, absent before a game starts.
+		bool secondaryView = false; ///< Shares the primary HUD's logic notification audio owner.
 	};
 	explicit InGameHud(Config config);
 	// the retail world's context (its command store, locomotor / weapon stores, audio validator) for a scope: every entry point below holds one, because the control bar and the

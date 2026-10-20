@@ -130,7 +130,9 @@ InGameHud::InGameHud(Config config)
 		PlayUnitVoiceForMessage(*m_voice, m_input->ui().selected(), msg);
 	});
 	// the logic's voice events (ProductionUpdate's VoiceCreated RW 0x8A2A48, ...): the made object alone is the "selection" (RW passes its drawable list)
-	AudioApi::installUnitVoiceHandler([this](int voiceEvent, std::uint32_t objectId, std::uint32_t producerId) {
+	// Additional views still voice their own input commands, but logic events
+	// retain the primary HUD's registration and play once for the shared game.
+	if (!m_config.secondaryView) AudioApi::installUnitVoiceHandler([this](int voiceEvent, std::uint32_t objectId, std::uint32_t producerId) {
 		if (const Player *local = m_input->context().localPlayer())
 		{
 			m_voice->setLocalPlayerIndex(local->getPlayerIndex());
@@ -150,15 +152,15 @@ InGameHud::~InGameHud()
 	{
 		m_palantirRef->setHeroSelectHandler(nullptr); // lane UI-4
 	}
-	m_config.game.drawables().setHeroAttackedHandler(nullptr);
-	m_config.game.drawables().setHeroFlashHandler(nullptr);
+	m_config.game.drawables().setHeroAttackedHandler(nullptr, this);
+	m_config.game.drawables().setHeroFlashHandler(nullptr, this);
 	m_heroSelect.reset();
 	// the screen before the window manager it registered on
 	m_ownedPalantir.reset();
 	m_palantirRef = nullptr;
 	m_radar.reset();
 	m_bar.reset();
-	AudioApi::uninstallUnitVoiceHandler(this); // only this HUD's registration (another live HUD keeps its own)
+	AudioApi::uninstallUnitVoiceHandler(this); // owner check preserves the primary when a secondary view closes
 	m_input.reset();
 	m_voice.reset();
 	m_ownedShell.reset();
@@ -246,8 +248,8 @@ bool InGameHud::boot(std::string *error)
 	}
 	// lane UI-4: the hero bar (InGameHeroSelect.h): AptPalantir::OnHeroSelectLoaded hands the movie's clip path (InGameHeroSelectInterface ctor RW 0x92DDE7)
 	m_heroSelect = std::make_unique<InGameHeroSelect>(m_input->context(), builderCycleTimeoutMs);
-	m_config.game.drawables().setHeroAttackedHandler([this](ObjectID id) { m_heroSelect->onHeroAttacked(id); });
-	m_config.game.drawables().setHeroFlashHandler([this](const std::string &name, int frames) { m_heroSelect->flashHeroButton(name, frames); });
+	m_config.game.drawables().setHeroAttackedHandler([this](ObjectID id) { m_heroSelect->onHeroAttacked(id); }, this);
+	m_config.game.drawables().setHeroFlashHandler([this](const std::string &name, int frames) { m_heroSelect->flashHeroButton(name, frames); }, this);
 	m_palantirRef->setHeroSelectHandler([this](const std::string &clipPath, bool loaded) {
 		if (!loaded)
 		{
@@ -338,6 +340,8 @@ std::unique_ptr<RetailObjectWorld::ContextScope> InGameHud::enterContext(const c
 
 void InGameHud::updateRallyPoint()
 {
+	// Both views share the same client drawables and selection; one marker suffices.
+	if (m_config.secondaryView) return;
 	// RW 0x943D6F / 0x944EFB: the command / construction context asks the exit for its rally point.
 	// Multi-selection's representative drawable remains part of S-1202; use this HUD's single-object context.
 	const auto &selection = m_input->ui().selected();

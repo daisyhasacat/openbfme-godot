@@ -292,15 +292,15 @@ void DrawableManager::applyEvents(const std::vector<ClientEvent> &events)
 		case ClientEvent::CAH_STATISTICS: // consumed by LiveGame profile statistics, not a drawable event
 			break;
 		case ClientEvent::HERO_ATTACKED:
-			if (m_heroAttackedHandler)
+			for (const auto &handler : m_heroAttackedHandlers)
 			{
-				m_heroAttackedHandler(ev.object);
+				handler.second(ev.object);
 			}
 			break;
 		case ClientEvent::HERO_FLASH:
-			if (m_heroFlashHandler)
+			for (const auto &handler : m_heroFlashHandlers)
 			{
-				m_heroFlashHandler(ev.name, ev.flashFrames);
+				handler.second(ev.name, ev.flashFrames);
 			}
 			break;
 		}

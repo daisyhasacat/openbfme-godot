@@ -52,6 +52,10 @@ public:
 	// The game scene's form (lane START-1, game.gd _install_hud): the HUD works on the shell-mode player that already runs the game's movies, with Palantir.apt pushed. `player` is
 	// that AptMenuPlayer (shell mode); it keeps stepping its window manager and draws, the HUD feeds the camera and the input and draws the native components.
 	Dictionary attach(const Ref<RetailFileSystem> &fs, GameWorld *world, Camera3D *camera, AptMenuPlayer *player, const String &local_player, const Dictionary &options);
+	// A second presentation/input surface for the same local player. Selection
+	// mirrors without emitting commands; each surface retains its own camera.
+	void link_secondary_view(InGameHudNode *primary);
+	void set_view_active(bool active);
 	bool is_ready() const;
 	bool is_logic_held() const; ///< nonblocking: per-frame overlays only refresh in a client window
 

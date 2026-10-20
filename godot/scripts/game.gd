@@ -326,6 +326,7 @@ var _lua_console: CanvasLayer
 var _console_input_states: Array[Dictionary] = []
 var _shell: Node2D           # AptMenuPlayer
 var _camera: Camera3D
+var _second_view: Node
 var _env: WorldEnvironment
 var _sun: DirectionalLight3D
 var _quit_q_time := -1
@@ -599,6 +600,8 @@ var _scripted_skirmish_ini := ""
 
 
 func _exit_tree() -> void:
+	if is_instance_valid(_second_view):
+		_second_view.close_view()
 	if not _scripted_skirmish_ini.is_empty():
 		# lane MENU-1: the scripted run's own Skirmish.ini; lane OWNERFIX-3: its folder and the profiles' stats files in it
 		var dir := _scripted_skirmish_ini.get_base_dir()
@@ -1183,13 +1186,15 @@ func _build_stage() -> void:
 	_camera.far = 60000.0
 	_camera.current = false
 	add_child(_camera)
-	var second_view := preload("res://scripts/second_view.gd").new()
-	second_view.source = _camera
-	second_view.game = self
-	add_child(second_view)
+	_second_view = preload("res://scripts/second_view.gd").new()
+	_second_view.source = _camera
+	_second_view.game = self
+	add_child(_second_view)
 
 
 func _fail(message: String) -> void:
+	if is_instance_valid(_second_view):
+		_second_view.close_view()
 	get_tree().call_group("ios_startup", "finished")
 	_cah_cleanup() # lane CAH-2 r2: a failed --cah run leaves no hero behind either
 	_failed = message
@@ -1521,15 +1526,23 @@ func _process(delta: float) -> void:
 func _update_listener() -> void:
 	if _audio == null or _hud == null or not _hud.has_method("get_camera"):
 		return
-	var cam: Dictionary = _hud.get_camera()
+	var input_hud: Node = _hud
+	var surfaces: Array[Node] = [_hud]
+	if is_instance_valid(_second_view) and is_instance_valid(_second_view.hud):
+		surfaces.append(_second_view.hud)
+		if _second_view.secondary_active:
+			input_hud = _second_view.hud
+	var cam: Dictionary = input_hud.get_camera()
 	if not cam.has("eye") or not cam.has("target"):
 		return
 	var e: Vector3 = cam.eye
 	var t: Vector3 = cam.target
 	_audio.update_microphone(Vector3(e.x, -e.z, e.y), Vector3(t.x, -t.z, t.y), true)
 	# lane BUILD-5: the MiscAudio sounds the input asked for (BadBuildingPlacementSound of a refused building site, RW 0x83EAC5)
-	if _hud.has_method("take_misc_sounds"):
-		for field in _hud.take_misc_sounds():
+	for surface in surfaces:
+		if not surface.has_method("take_misc_sounds"):
+			continue
+		for field in surface.take_misc_sounds():
 			var handle: int = _audio.play_misc(str(field))
 			# lane DEVPORT-8: the last MiscAudio plays (field, the handle play_misc gave: AHSV_NoSound for a NoSound slot), for the checks
 			_misc_sounds_played.append({"field": str(field), "handle": handle, "frame": _frames})
@@ -4019,6 +4032,8 @@ func _online_relay_tick(st: Dictionary) -> void:
 
 ## the running game cleared without the score screen (Restart, lane SAVE-2: a save loaded over a game): the HUD and the game's nodes go, the shell is emptied
 func _tear_down_game(why: String, clear_world: bool = true) -> void:
+	if is_instance_valid(_second_view):
+		_second_view.close_view()
 	if is_instance_valid(_caster) and _caster.overlays != null:
 		_caster.overlays.set_clean(false)
 	if is_instance_valid(_map_editor):
@@ -4054,6 +4069,8 @@ func _tear_down_game(why: String, clear_world: bool = true) -> void:
 func _exit_to_score_screen() -> void:
 	if _state != State.PLAYING:
 		return
+	if is_instance_valid(_second_view):
+		_second_view.close_view()
 	_state = State.SCORE
 	if _quit_open:
 		_close_quit_menu()
