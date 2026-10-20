@@ -215,6 +215,7 @@ struct HudDevice : public AptNativeHook
 	bool ready = false;
 	bool modal = false;      ///< lane OPTS-6: a menu is the input's top over the game (InGameHud::setModal)
 	unsigned modalEntries = 0; ///< lane OPTS-6: the menus that took the input over the game (get_state keys.modal_entries)
+	bool massRecruitKey = false;
 	bool uberRecruitPress = false; // consume the matching release after Lua handles a K+recruit
 	unsigned heldButtons = 0; ///< lane OPTS-6: the mouse buttons the world saw go down (bit 1 left, 2 right, 3 middle), released when a menu opens
 	bool ownsPlayer = false;
@@ -3376,7 +3377,7 @@ bool InGameHudNode::press_command_button(const String &template_name)
 	{
 		if (const ControlBarButton *b = find())
 		{
-			return cb.pressButton(b->slot, b->inPalantir);
+			return tryMassRecruit(b->slot, b->inPalantir) || cb.pressButton(b->slot, b->inPalantir);
 		}
 		const ControlBarButton *push = nullptr;
 		for (const std::vector<ControlBarButton> *list : { &cb.palantirButtons(), &cb.sideButtons() })
@@ -3744,6 +3745,30 @@ bool InGameHudNode::touch_build(const String &action, const Vector2 &value)
 	return false;
 }
 
+bool InGameHudNode::tryMassRecruit(int slot, bool in_palantir)
+{
+	// Local sandbox feature (docs/BFME_LUA.md), not a retail command modifier.
+	// Adaptive buttons activate directly; classic buttons arrive through mouse input.
+	if (!d->ready || !d->world || d->modal || !d->hud->input().ui().getInputEnabled()) return false;
+	if (!d->massRecruitKey && !Input::get_singleton()->is_physical_key_pressed(Key::KEY_K)) return false;
+	const auto context = d->hud->enterContext();
+	const auto &bar = d->hud->controlBar();
+	for (const auto *buttons : { &bar.palantirButtons(), &bar.radialButtons(), &bar.sideButtons(), &bar.offBarButtons() })
+		for (const auto &b : *buttons)
+		{
+			if (b.slot != slot || b.inPalantir != in_palantir || !b.button || b.state == ButtonState::Hidden) continue;
+			if (b.button->m_command != GUI_COMMAND_UNIT_BUILD && b.button->m_command != GUI_COMMAND_SECONDARY_UNIT_BUILD) return false;
+			const auto *unit = b.button->getThingTemplate();
+			if (!unit) return false;
+			const String name = toGodot(unit->getName());
+			const auto id = d->hud->input().ui().firstSelected();
+			// Pass the actual HUD selection; the Lua snapshot may precede this click.
+			const Dictionary result = d->world->execute_lua("local b=bfme.buildingInstances[" + String::num_uint64(id) + "]; return b and ubermode and ubermode.massTrain(\"" + name.json_escape() + "\",b) or false");
+			return (bool)result.get("ok", false) && String(result.get("output", String())).strip_edges() == "true";
+		}
+	return false;
+}
+
 bool InGameHudNode::activate_command(int slot, bool in_palantir, bool cancel)
 {
     waitLogic(d.get());
@@ -3756,7 +3781,7 @@ bool InGameHudNode::activate_command(int slot, bool in_palantir, bool cancel)
     for (const auto *buttons : { &bar.palantirButtons(), &bar.radialButtons(), &bar.sideButtons(), &bar.offBarButtons() })
         for (const auto &b : *buttons)
             if (b.slot == slot && b.inPalantir == in_palantir && b.button && b.state != ButtonState::Hidden)
-                return cancel ? bar.cancelQueued(slot, in_palantir) : bar.pressButton(slot, in_palantir);
+                return cancel ? bar.cancelQueued(slot, in_palantir) : (tryMassRecruit(slot, in_palantir) || bar.pressButton(slot, in_palantir));
     return false;
 }
 
@@ -3963,6 +3988,8 @@ void InGameHudNode::syncModal()
 			}
 		}
 		d->heldButtons = 0;
+		d->massRecruitKey = false;
+		d->uberRecruitPress = false;
 		for (const ModifierTracker::Transition &t : d->mods.sync(false, false, false))
 		{
 			keyEvent(t.key, false, 0);
@@ -3994,6 +4021,7 @@ void InGameHudNode::keyEvent(int dik, bool down, char32_t character)
 	{
 		return;
 	}
+	if (dik == ::KEY_K) d->massRecruitKey = down;
 	d->mods.key(dik, down); // lane INPUT-1 r2: a bit per side (KEY_STATE_LCONTROL / _RCONTROL ...)
 	d->keyState = d->mods.state();
 	d->hud->key(dik, (down ? KEY_STATE_DOWN : KEY_STATE_UP) | d->keyState, character);
@@ -4039,6 +4067,8 @@ void InGameHudNode::_notification(int what)
 			kept.push_back(e);
 		}
 		d->pendingInput.swap(kept);
+		d->massRecruitKey = false;
+		d->uberRecruitPress = false;
 		d->hud->input().resetKeys();
 		++d->focusResets;
 	}
@@ -4324,19 +4354,12 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 			get_viewport()->set_input_as_handled();
 			return;
 		}
-		if (idx == 1 && mb->is_pressed() && !d->modal && d->world && d->hud->input().ui().getInputEnabled() && Input::get_singleton()->is_physical_key_pressed(Key::KEY_K)) {
+		if (idx == 1 && mb->is_pressed() && d->nativeHudVisible) {
 			const Dictionary hit = command_button_at(mb->get_position());
-			if ((bool)hit.get("found", false)) for (const Variant &item : get_command_buttons()) {
-				const Dictionary button = item;
-				const String command = button.get("command", String());
-				if (button.get("name", String()) != hit.get("name", String()) || (command != "UNIT_BUILD" && command != "SECONDARY_UNIT_BUILD")) continue;
-				const String unit = button.get("template", String());
-				const Dictionary result = d->world->execute_lua("return ubermode and ubermode.massTrain(\"" + unit.json_escape() + "\") or false");
-				if ((bool)result.get("ok", false) && String(result.get("output", String())).strip_edges() == "true") {
-					d->uberRecruitPress = true;
-					get_viewport()->set_input_as_handled();
-					return;
-				}
+			if ((bool)hit.get("found", false) && tryMassRecruit((int)hit.get("slot", -1), (bool)hit.get("arc", false))) {
+				d->uberRecruitPress = true;
+				get_viewport()->set_input_as_handled();
+				return;
 			}
 		}
 

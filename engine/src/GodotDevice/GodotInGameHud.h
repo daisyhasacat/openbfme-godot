@@ -191,6 +191,7 @@ protected:
 	void _notification(int what); ///< lane BACKLOG3 (S-454): the window lost the focus: the keyboard's keys are up (HudInput::resetKeys)
 
 private:
+	bool tryMassRecruit(int slot, bool in_palantir); // local ubermode K+recruit, shared by both HUD layouts
 	void syncModifiers(const InputEventWithModifiers *event);
 	void keyEvent(int dik, bool down, char32_t character);
 	void syncModal(); ///< lane OPTS-6: a menu became (or stopped being) the input's top: the world's held input is cancelled ///< lane INPUT-1: inject_key with the layout's character ///< lane INPUT-1: Ctrl / Shift / Alt as the event reports them

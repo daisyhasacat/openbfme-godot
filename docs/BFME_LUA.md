@@ -610,7 +610,8 @@ five of that unit at the selected building and every other completed, owned
 building of the same template. Normal eligibility, uniqueness and queue limits
 still apply. Lua retains pending requests and waits for available queue slots;
 destroyed/captured producers drop their pending requests. Other command buttons
-keep their normal behavior. The Lua entry point can also be called as
+keep their normal behavior. K-click works in both the classic and adaptive
+HUDs; the adaptive command tiles use the same recruitment bridge. The Lua entry point can also be called as
 `ubermode.massTrain(unitType, building)` (the building defaults to the selection).
 
 Disabling restores the previous CP base/cap/bonus, removes timing callbacks and
@@ -622,7 +623,8 @@ match; it refuses network games and replay playback. It owns the three local
 Ubermode validation: the installed-data test `godot/tests/ubermode_test.gd`
 checks the million gold/CP grant, construction incomplete after four frames and
 complete after five, maximum-level fully equipped recruits, five recruits from
-each of two matching producers, and restoring CP on disable. The research
+each of two matching producers through an actual adaptive HUD K-click, and
+restoring CP on disable. The research
 regression in `test_prod_production.cpp` asserts completion on the fifth frame;
 the Lua runtime and console tests cover the new API and enable/disable buttons.
 Local builds and these checks pass. The full simulation AST audit remains

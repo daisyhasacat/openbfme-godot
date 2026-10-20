@@ -50,7 +50,37 @@ func _run() -> void:
 	for i in 8:
 		world.advance(0.2)
 		world.update_lua()
-	check_lua(world, "b2=assert(bfme.mutations.getBuilding(build2)); assert(ubermode.massTrain('GondorFighterHorde',b)); assert(#ubermode.pending==2); assert(ubermode.pending[1].left==5 and ubermode.pending[2].left==5)")
+	check_lua(world, "b2=assert(bfme.mutations.getBuilding(build2))")
+	var producer_result: Dictionary = world.execute_lua("return b.id")
+	assert(producer_result.ok, str(producer_result))
+	var producer := int(String(producer_result.output).strip_edges())
+	var camera := Camera3D.new()
+	root.add_child(camera)
+	var hud = ClassDB.instantiate("InGameHudNode")
+	root.add_child(hud)
+	assert(hud.setup(fs, world, camera, "Player_1", {"camera_start": Vector3(1800, 0, -1800)}).ok)
+	hud.select_controller_group(PackedInt64Array([producer]))
+	var ui = load("res://scripts/adaptive_hud.gd").new()
+	ui.hud = func(): return hud
+	ui.gameplay = func(): return true
+	ui.open_menu = func(): pass
+	root.add_child(ui)
+	ui.mode = "modern"
+	ui._apply_mode()
+	for i in 6: await process_frame
+	ui._refresh()
+	var tile := -1
+	for i in ui._command_entries.size():
+		if ui._command_entries[i].get("template", "") == "GondorFighterHorde": tile = i; break
+	assert(tile != -1, str(ui._command_entries))
+	# DirectInput KEY_K = 0x25, the same held key the native HUD receives.
+	hud.inject_key(0x25, true)
+	ui._command_tiles[tile].pressed.emit()
+	hud.inject_key(0x25, false)
+	check_lua(world, "assert(#ubermode.pending==2); assert(ubermode.pending[1].left==5 and ubermode.pending[2].left==5)")
+	ui.free()
+	hud.free()
+	camera.free()
 	for i in 130:
 		world.advance(0.2)
 		await create_timer(0.21).timeout
