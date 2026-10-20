@@ -78,12 +78,14 @@ def make_gd(png: bytes, where: str, mac_png: bytes) -> str:
         "## The PNG is base64 text: the release packs hold text resources only (tools/release/audit_package.py PCK_RULES).\n"
         "extends RefCounted\n\n"
         "const SIZE := 256\n"
-        "const PNG_BASE64 := (\"\"\n" + "".join(f'\t+ "{l}"\n' for l in lines) + ")\n\n\n"
-        "const MAC_PNG_BASE64 := (\"\"\n" + "".join(f'\t+ "{l}"\n' for l in mac_lines) + ")\n\n\n"
+        # array literals, joined at run time: a chain of ~800 "+" is analyzed recursively, one stack frame pair per operator, and overflows
+        # the 512 KiB stack of an iOS loader thread (GDScriptAnalyzer::reduce_binary_op); array elements are reduced in a loop
+        "const PNG_BASE64: PackedStringArray = [\n" + "".join(f'\t"{l}",\n' for l in lines) + "]\n\n\n"
+        "const MAC_PNG_BASE64: PackedStringArray = [\n" + "".join(f'\t"{l}",\n' for l in mac_lines) + "]\n\n\n"
         "## the icon's image; null when the text does not decode to the 256 x 256 PNG (a damaged script)\n"
         "static func image(macos: bool = false) -> Image:\n"
         "\tvar img := Image.new()\n"
-        "\tif img.load_png_from_buffer(Marshalls.base64_to_raw(MAC_PNG_BASE64 if macos else PNG_BASE64)) != OK or img.get_width() != SIZE or img.get_height() != SIZE:\n"
+        "\tif img.load_png_from_buffer(Marshalls.base64_to_raw(\"\".join(MAC_PNG_BASE64 if macos else PNG_BASE64))) != OK or img.get_width() != SIZE or img.get_height() != SIZE:\n"
         "\t\treturn null\n"
         "\treturn img\n\n\n"
         "## sets the window icon; \"\" when done, else why not (the caller reports it). A headless run has no window: nothing to set\n"

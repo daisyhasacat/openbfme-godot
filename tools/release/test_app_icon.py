@@ -88,7 +88,7 @@ def test_runtime_icon_keeps_windows_and_mac_sources_separate():
     script = app_icon.make_gd(windows, "test", mac)
     import base64
     for constant, expected in [("PNG_BASE64", windows), ("MAC_PNG_BASE64", mac)]:
-        block = script.split("const " + constant + " := (", 1)[1].split(")", 1)[0]
+        block = script.split("const " + constant + ": PackedStringArray = [", 1)[1].split("]", 1)[0]
         encoded = "".join(re.findall(r'"([A-Za-z0-9+/=]*)"', block))
         assert base64.b64decode(encoded) == expected
     assert 'image(OS.get_name() == "macOS")' in script
