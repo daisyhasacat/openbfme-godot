@@ -373,6 +373,7 @@ std::vector<std::string> HudInput::acceptanceStops()
 				  "(RW 0x49249D extents, TBRedBib / TBBib); W_Arrow while anchored (RW 0x48EAD8); the alpha blend (ZH dx8renderer's translucent pass, W3DShaderKey::AlphaOverride); "
 				  "not ported: the restricted-area code 8 (RW 0x707141), its shadow (SHADOW_VOLUME; no drawable casts one yet, S-3304), RotWK's own "
 				  "tint lighting (the donor is ZH's), the bib quad's own buffer (ZH's W3DBibBuffer)");
+	out.push_back(FormationPlacement::stopLine());
 	return out;
 }
 
@@ -417,6 +418,41 @@ std::vector<std::string> HudInput::stops() const
 		out.push_back("[S-1673] met (no retail handler): " + kv.first + " x" + std::to_string(kv.second));
 	}
 	return out;
+}
+
+bool FormationPlacement::withinChordDistance(const ICoord2D &first, const ICoord2D &next)
+{
+	// BFME2 RVA 0x431978. Widen before subtracting so hostile device coordinates cannot overflow.
+	const auto dx = (std::int64_t)next.x - first.x;
+	const auto dy = (std::int64_t)next.y - first.y;
+	return dx > -5 && dx < 5 && dy > -5 && dy < 5;
+}
+
+bool FormationPlacement::isStartOfDrag(const ClientMessage &first, const ClientMessage &next)
+{
+	// BFME2 RVA 0x431BDD: unsigned subtraction, including timestamp wraparound.
+	const int left = CMSG_RAW_MOUSE_LEFT_BUTTON_DOWN, right = CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN;
+	if (!((first.type() == left && next.type() == right) || (first.type() == right && next.type() == left)))
+		return false;
+	return withinChordDistance(first.arg(0).pixel, next.arg(0).pixel) && (std::uint32_t(next.arg(2).integer) - std::uint32_t(first.arg(2).integer)) < 500u;
+}
+
+const char *FormationPlacement::stopLine()
+{
+	return "[S-4464] Two-button formation: BFME2's first-press buffering, <5-pixel / <500-ms chord and first-press anchor are ported "
+		   "(BFME2 RVAs 0x431978 / 0x431BDD / 0x431C9D / 0x432038); RotWK parity is unverified (S-001). "
+		   "The FormationAssistant templates, selection criteria, native preview decals and MSG_DO_MOVETO_FORMATION template handling are not ported: "
+		   "the preview grid and individual move-and-orientate orders remain an OpenBFME reconstruction.";
+}
+
+void FormationPlacement::replayFirstPress(const ClientMessage &before)
+{
+	if (!m_firstPress)
+		return;
+	// BFME2 RVA 0x431C35: reinsert the stored press before the event that ended the wait.
+	// This translator already handled it; all later translators see the original press first.
+	m_ctx.stream.insertBefore(m_firstPress->type(), before) = *m_firstPress;
+	m_firstPress.reset();
 }
 
 // Two-button placement takes priority over selection and right-drag scrolling.
@@ -485,25 +521,65 @@ void FormationPlacement::frame() {
  if(m_ctx.ui.formationActive && (!m_ctx.ui.getInputEnabled() || m_ctx.ui.isQuitMenuVisible() || m_ctx.ui.selected()!=m_originalSelection)) cancel();
 }
 void FormationPlacement::cancel() {
- m_ctx.ui.formationActive=false;m_ctx.ui.formationSlots.clear();m_left=m_right=false;
+ m_ctx.ui.formationActive=false;m_ctx.ui.formationSlots.clear();m_left=m_right=false;m_firstPress.reset();
 }
-MessageDisposition FormationPlacement::translate(const ClientMessage &msg) {
- const int t=msg.type();
- if(m_ctx.ui.formationActive && (!m_ctx.ui.getInputEnabled() || m_ctx.ui.isPlacing() || m_ctx.ui.getGUICommand())) cancel();
- if(t==CMSG_RAW_KEY_DOWN && msg.arg(0).integer==KEY_ESC && m_ctx.ui.formationActive) {cancel();return MessageDisposition::Destroy;}
- const bool leftDown=t==CMSG_RAW_MOUSE_LEFT_BUTTON_DOWN,rightDown=t==CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN;
- const bool leftUp=t==CMSG_RAW_MOUSE_LEFT_BUTTON_UP,rightUp=t==CMSG_RAW_MOUSE_RIGHT_BUTTON_UP;
- if(leftDown||rightDown) {
-  if(!m_left&&!m_right&&!m_ctx.ui.formationActive) m_consumed=false;
-  if(leftDown)m_left=true;else m_right=true;
-  if(m_left&&m_right&&!m_ctx.ui.formationActive) begin(msg.arg(0).pixel);
- }
- if(leftUp||rightUp) {
-  if(leftUp)m_left=false;else m_right=false;
-  if(m_ctx.ui.formationActive && !m_controller) commit();
- }
- if(t==CMSG_RAW_MOUSE_POSITION && m_ctx.ui.formationActive && !m_controller) aim(msg.arg(0).pixel);
- const bool click=t==CMSG_MOUSE_LEFT_CLICK||t==CMSG_MOUSE_RIGHT_CLICK||t==CMSG_MOUSE_LEFT_DOUBLE_CLICK||t==CMSG_MOUSE_RIGHT_DOUBLE_CLICK;
- if(m_consumed && (leftDown||rightDown||leftUp||rightUp||click||(t==CMSG_RAW_MOUSE_POSITION && m_ctx.ui.formationActive))) return MessageDisposition::Destroy;
- return MessageDisposition::Keep;
+MessageDisposition FormationPlacement::translate(const ClientMessage &msg)
+{
+	const int t = msg.type();
+	if (m_ctx.ui.formationActive && (!m_ctx.ui.getInputEnabled() || m_ctx.ui.isPlacing() || m_ctx.ui.getGUICommand()))
+		cancel();
+	if (t == CMSG_RAW_KEY_DOWN && msg.arg(0).integer == KEY_ESC && m_ctx.ui.formationActive)
+	{
+		cancel();
+		return MessageDisposition::Destroy;
+	}
+	const bool leftDown = t == CMSG_RAW_MOUSE_LEFT_BUTTON_DOWN, rightDown = t == CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN;
+	const bool leftUp = t == CMSG_RAW_MOUSE_LEFT_BUTTON_UP, rightUp = t == CMSG_RAW_MOUSE_RIGHT_BUTTON_UP;
+	if (leftDown || rightDown)
+	{
+		const bool idle = !m_left && !m_right && !m_ctx.ui.formationActive;
+		if (idle)
+			m_consumed = false;
+		if (leftDown)
+			m_left = true;
+		else
+			m_right = true;
+		if (m_firstPress)
+		{
+			if (isStartOfDrag(*m_firstPress, msg) && begin(m_firstPress->arg(0).pixel))
+			{
+				m_firstPress.reset();
+				aim(msg.arg(0).pixel);
+				return MessageDisposition::Destroy;
+			}
+			replayFirstPress(msg);
+		}
+		else if (!m_consumed && !m_ctx.ui.formationActive)
+		{
+			// BFME2 RVA 0x431AEC: neither selection nor right-drag scrolling sees a
+			// speculative first press. A failed chord replays it with its original modifiers/time.
+			m_firstPress = std::make_unique<ClientMessage>(msg);
+			return MessageDisposition::Destroy;
+		}
+	}
+	if (m_firstPress &&
+		((t == CMSG_RAW_MOUSE_POSITION && !withinChordDistance(m_firstPress->arg(0).pixel, msg.arg(0).pixel)) ||
+		 (leftUp && m_firstPress->type() == CMSG_RAW_MOUSE_LEFT_BUTTON_DOWN) || (rightUp && m_firstPress->type() == CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN)))
+		replayFirstPress(msg);
+	if (leftUp || rightUp)
+	{
+		if (leftUp)
+			m_left = false;
+		else
+			m_right = false;
+		// BFME2 RVAs 0x4320B1 / 0x431E95: either release finalizes placement.
+		if (m_ctx.ui.formationActive && !m_controller)
+			commit();
+	}
+	if (t == CMSG_RAW_MOUSE_POSITION && m_ctx.ui.formationActive && !m_controller)
+		aim(msg.arg(0).pixel);
+	const bool click = t == CMSG_MOUSE_LEFT_CLICK || t == CMSG_MOUSE_RIGHT_CLICK || t == CMSG_MOUSE_LEFT_DOUBLE_CLICK || t == CMSG_MOUSE_RIGHT_DOUBLE_CLICK;
+	if (m_consumed && (leftDown || rightDown || leftUp || rightUp || click || (t == CMSG_RAW_MOUSE_POSITION && m_ctx.ui.formationActive)))
+		return MessageDisposition::Destroy;
+	return MessageDisposition::Keep;
 }
