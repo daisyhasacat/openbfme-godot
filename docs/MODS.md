@@ -143,3 +143,45 @@ These are warnings, not errors, because mods ship them:
   rank-icon images do not draw.
 - `rjnewsky01` asks for `rjsky01.tga`, but RJ ships `rjsky01.jpg`, so the sky
   texture is reported missing.
+
+## Sharing content on the LAN
+
+Run the Python 3.11+ server on the computer holding the packs:
+
+```sh
+python3 tools/lan_content/serve.py
+```
+
+It listens on port **8765**, without passwords, and shares configured OpenBFME
+mods, texture packs, bundled wall towers/2.02 maps, installed maps, and the BFME
+Launcher map libraries. On this Mac it also discovers AOTR (including its runtime
+dependency) and Edain's mod archives. Base game installations and executables are
+not distributed. Each receiving device still needs its own base game files.
+Sharing a mod does not establish engine compatibility with it.
+
+Use **Mods → LAN downloads… → Connect** on another device. The initial address
+is `http://192.168.121.42:8765`; edit it if the host's address changes. A successful
+connection saves the address. Downloads show progress and verify SHA-256 and
+size before unpacking. Texture-only flags are retained; ordinary mods install
+disabled and are enabled in Mods, followed by a restart. Wall towers and 2.02
+maps use their existing Options switches. Maps use the installed-map importer;
+reopen the map browser after importing. AOTR is stored as a separate game and
+can be selected in Mods. Downloads never replace a running match's data.
+
+Additional locations can be shared explicitly (repeat each option as needed):
+
+```sh
+python3 tools/lan_content/serve.py --mod /path/to/mod --textures /path/to/textures --maps /path/to/map-library
+```
+
+`--bind`, `--port`, `--user-dir`, and `--cache` override the defaults. Archives
+are created lazily on the first request and cached; changed source files create
+a new archive. Stop the foreground server with Ctrl+C. Only catalogued packs
+are served; hidden files, symlinks and program files are excluded. No login is
+required: any device that can reach the listening port can download shared packs.
+
+Checks: `python3 -m unittest discover -s tools/lan_content`; the Godot
+`res://tests/lan_content_test.gd` checks the client and can exercise an isolated
+synthetic server with `OPENBFME_LAN_TEST_URL`. iOS exports include local-network
+permission and HTTP access for numeric LAN addresses; device validation is still
+required after rebuilding the iOS app.

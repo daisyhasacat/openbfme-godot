@@ -206,6 +206,10 @@ func _build() -> void:
 	var buttons := HFlowContainer.new()
 	col.add_child(buttons)
 	buttons.add_child(_button("Add mod folder…", _open_dialog))
+	buttons.add_child(_button("LAN downloads…", func() -> void:
+		var browser = load("res://scripts/lan_content.gd").new()
+		browser.installed.connect(func(): _load(); _discover(); _refresh())
+		add_child(browser)))
 	buttons.add_child(_button("Open mods folder", func() -> void: Release.open_user_folder(Release.UserFolder.MODS)))
 	buttons.add_child(_button("Restart to apply", _restart))
 	buttons.add_child(_button("Close", _close))

@@ -152,6 +152,10 @@ def main():
     plist = plistlib.loads(info.read_bytes())
     plist['LSSupportsOpeningDocumentsInPlace'] = True
     plist['UIFileSharingEnabled'] = True
+    plist['NSLocalNetworkUsageDescription'] = 'Download maps and mods shared by computers on your local network.'
+    plist.setdefault('NSAppTransportSecurity', {})['NSAllowsLocalNetworking'] = True
+    # The editable LAN address may be a numeric IPv4 address over plain HTTP.
+    plist['NSAppTransportSecurity']['NSAllowsArbitraryLoads'] = True
     info.write_bytes(plistlib.dumps(plist))
     # Keep launch feedback visible before Godot can render its first frame.
     configure_launch_screen(output.parent / 'OpenBFME/Launch Screen.storyboard')
