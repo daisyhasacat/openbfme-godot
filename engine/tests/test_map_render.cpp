@@ -556,3 +556,29 @@ TEST_CASE("TerrainRoads: authored JOIN endpoints receive alpha end caps in eithe
 		CHECK(report.endCaps==0);
 	}
 }
+
+TEST_CASE("TerrainRoads: an editor path width replaces the road type's visible width and keeps the atlas band")
+{
+	WorldHeightMap map = flatMap(10, 10, 0, 256);
+	RoadTypeIndex types;
+	RoadType t;
+	t.name = "R";
+	t.texture = "TR.tga";
+	t.roadWidth = 20.0f;
+	t.roadWidthInTexture = 0.5f;
+	types.byName["r"] = t;
+	std::vector<MapObject> objs = { roadPoint("R", 0, 0, FLAG_ROAD_POINT1), roadPoint("R", 30, 0, FLAG_ROAD_POINT2) };
+	objs[0].m_properties.setReal(TerrainRoads::kEditorRoadWidthKey, 30.0f);
+	std::vector<RoadStrip> strips;
+	RoadBuildReport rep;
+	TerrainRoads::buildStrips(objs, types, map, 0.0f, strips, rep);
+	REQUIRE(strips.size() == 1);
+	const RoadStrip &s = strips[0];
+	// visible width 30 -> half 15; scale = 30 / 0.5 = 60, so v still spans 85/512 +- RoadWidthInTexture/8
+	CHECK(s.position[1] == -15.0f);
+	CHECK(s.position[4] == 15.0f);
+	// tolerance: the UV is float32 V / (scale * 4) with scale = 30 / 0.5, the expectation folds 0.5 / 8 exactly
+	CHECK(s.uv[1] == doctest::Approx(85.0f / 512.0f + 0.5f / 8.0f).epsilon(1e-6));
+	// tolerance: as above
+	CHECK(s.uv[3] == doctest::Approx(85.0f / 512.0f - 0.5f / 8.0f).epsilon(1e-6));
+}

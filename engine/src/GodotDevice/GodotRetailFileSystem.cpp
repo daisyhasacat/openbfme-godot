@@ -12,6 +12,7 @@
 #include "GameClient/GameText.h"
 #include <algorithm>
 #include <filesystem>
+#include <set>
 #include <chrono>
 #include <godot_cpp/classes/config_file.hpp>
 #include <godot_cpp/classes/file_access.hpp>
@@ -326,6 +327,7 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 		}
 		// lane MODS-1: the enabled mods (user://mods.cfg [mods] enabled, in load order; RotWK's -mod "<folder>" as --mod=<folder> too)
 		PackedStringArray modPaths;
+		std::set<std::string> texturesOnly; // mods.cfg [mods] textures_only: mods mounted as texture packs (TextureOnlyArchiveFile)
 		{
 			Ref<ConfigFile> modsCfg;
 			modsCfg.instantiate();
@@ -334,18 +336,17 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 				const Array enabled = modsCfg->get_value("mods", "enabled", Array());
 				for (int64_t i = 0; i < enabled.size(); ++i)
 					modPaths.push_back(String(enabled[i]));
+				const Array textures = modsCfg->get_value("mods", "textures_only", Array());
+				for (int64_t i = 0; i < textures.size(); ++i)
+					texturesOnly.insert(toNative(ProjectSettings::get_singleton()->globalize_path(String(textures[i]))));
 			}
 			const PackedStringArray modArgs = OS::get_singleton()->get_cmdline_user_args();
 			for (int64_t i = 0; i < modArgs.size(); ++i)
 				if (modArgs[i].begins_with("--mod="))
 					modPaths.push_back(modArgs[i].substr(6));
 		}
-		// the BFME2Lua wall tower pack is written against the stock game data (its INI uses the stock gamedata.ini macros): not with a mod
-		if (report.ok && wantsTowers && hasTowerPack && !modPaths.is_empty())
-		{
-			report.warnings.push_back("Wall tower pack not loaded: a mod is enabled (the pack is written for the unmodded game data).");
-		}
-		if (report.ok && wantsTowers && hasTowerPack && modPaths.is_empty())
+		// the BFME2Lua wall tower pack stacks under the enabled mods: they mount after it and win any file both provide
+		if (report.ok && wantsTowers && hasTowerPack)
 		{
 			const String resource = "res://mods/wall_towers.big";
 			String path = ProjectSettings::get_singleton()->globalize_path(resource);
@@ -406,8 +407,11 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 			for (int64_t i = 0; i < modPaths.size() && report.ok; ++i)
 			{
 				const std::string modPath = toNative(ProjectSettings::get_singleton()->globalize_path(modPaths[i]));
+				const bool textureOnly = texturesOnly.count(modPath) != 0;
+				size_t textureFiles = 0;
 				Dictionary mod;
 				mod["path"] = toGodot(modPath);
+				mod["textures_only"] = textureOnly;
 				std::error_code dirError;
 				std::vector<std::string> bigs;
 				size_t looseFiles = 0, skipped = 0;
@@ -429,7 +433,7 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 					looseFiles = loose->fileCount();
 					skipped = loose->skippedPrograms();
 					for (const std::string &p : loose->paths())
-						if (p.rfind("data\\ini\\object\\", 0) == 0 && p.size() > 4 && p.compare(p.size() - 4, 4, ".ini") == 0)
+						if (!textureOnly && p.rfind("data\\ini\\object\\", 0) == 0 && p.size() > 4 && p.compare(p.size() - 4, 4, ".ini") == 0)
 							modObjectInis.push_back(p);
 				}
 				size_t emptyBigs = 0;
@@ -453,10 +457,23 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 							report.errors.push_back("mod " + modPath + ": " + problem);
 							break;
 						}
-						target->mountArchive(std::move(archive), big, true);
+						if (textureOnly)
+						{
+							auto textures = std::make_unique<TextureOnlyArchiveFile>(std::move(archive));
+							textureFiles += textures->fileCount();
+							target->mountArchive(std::move(textures), big, true);
+						}
+						else
+							target->mountArchive(std::move(archive), big, true);
 					}
 				}
-				if (loose && report.ok)
+				if (loose && report.ok && textureOnly)
+				{
+					auto textures = std::make_unique<TextureOnlyArchiveFile>(std::move(loose));
+					textureFiles += textures->fileCount();
+					fs->mountArchive(std::move(textures), modPath, true);
+				}
+				else if (loose && report.ok)
 				{
 					fs->mountArchive(std::move(loose), modPath, true);
 
@@ -465,8 +482,13 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 				mod["empty_big_files"] = (int64_t)emptyBigs;
 				mod["loose_files"] = (int64_t)looseFiles;
 				mod["skipped_programs"] = (int64_t)skipped;
+				mod["texture_files"] = (int64_t)textureFiles;
 				modsMounted.push_back(mod);
-				report.warnings.push_back("mod " + modPath + ": " + std::to_string(bigs.size() - emptyBigs) + " archive(s) and " + std::to_string(looseFiles) +
+				if (textureOnly)
+					report.warnings.push_back("mod " + modPath + ": texture pack, " + std::to_string(textureFiles) +
+						" texture file(s) override the verified game's (not verified; its models, INI, maps and UI are not mounted)");
+				else
+					report.warnings.push_back("mod " + modPath + ": " + std::to_string(bigs.size() - emptyBigs) + " archive(s) and " + std::to_string(looseFiles) +
 					" loose file(s) override the verified game files (not verified; " + std::to_string(skipped) + " program file(s) not mounted)");
 			}
 		}

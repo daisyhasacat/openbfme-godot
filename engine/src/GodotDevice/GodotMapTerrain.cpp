@@ -257,6 +257,7 @@ void MapTerrainBuilder::_bind_methods()
 	ClassDB::bind_method(D_METHOD("build_map", "fs", "map_name", "options"), &MapTerrainBuilder::build_map, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("get_report"), &MapTerrainBuilder::get_report);
 	ClassDB::bind_method(D_METHOD("preview_texture", "fs", "terrain_name"), &MapTerrainBuilder::preview_texture);
+	ClassDB::bind_method(D_METHOD("preview_road_texture", "fs", "texture_file"), &MapTerrainBuilder::preview_road_texture);
 	ClassDB::bind_method(D_METHOD("build_test_patch", "spec"), &MapTerrainBuilder::build_test_patch);
 }
 
@@ -271,6 +272,15 @@ Dictionary MapTerrainBuilder::preview_texture(const Ref<RetailFileSystem> &fs, c
 	Array errors;auto texture=loadTexture(*fs.ptr(),*file,errors);
 	if(texture.is_null()) {result["error"]="Could not load terrain texture";result["errors"]=errors;return result;}
 	result["ok"]=true;result["texture"]=texture;result["file"]=toGodot(*file);return result;
+}
+
+Dictionary MapTerrainBuilder::preview_road_texture(const Ref<RetailFileSystem> &fs, const String &texture_file)
+{
+	Dictionary result;result["ok"]=false;
+	if(fs.is_null() || !fs->archive_fs()) {result["error"]="No mounted assets";return result;}
+	Array errors;auto texture=loadTexture(*fs.ptr(),toNative(texture_file),errors,false);
+	if(texture.is_null()) {result["error"]="Could not load road texture "+texture_file;result["errors"]=errors;return result;}
+	result["ok"]=true;result["texture"]=texture;return result;
 }
 
 Ref<Texture2D> MapTerrainBuilder::loadTexture(RetailFileSystem &fs, const std::string &name, Array &errors, bool mipmaps)
@@ -539,7 +549,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 		auto &objects=map.chunks.objects;
 		objects.erase(std::remove_if(objects.begin(),objects.end(),[](const MapObject &o){return o.getFlag(FLAG_ROAD_FLAGS);}),objects.end());
 		Array roads=options["editor_roads"];
-		for(int64_t i=0;i<roads.size();++i) {Dictionary d=roads[i];Array points=d["points"];for(int j=0;j<2;++j) {Array p=points[j];MapObject o;o.m_objectName=toNative(String(d["name"]));Array flags=d.get("flags",Array()),angles=d.get("angles",Array());o.m_flags=(flags.size()==2?int(flags[j]) & ~FLAG_ROAD_FLAGS:0) | (j?FLAG_ROAD_POINT2:FLAG_ROAD_POINT1);if(angles.size()==2)o.m_angle=double(angles[j]);o.m_location.x=double(p[0]);o.m_location.y=double(p[1]);o.m_location.z=0;objects.push_back(o);}}
+		for(int64_t i=0;i<roads.size();++i) {Dictionary d=roads[i];Array points=d["points"];for(int j=0;j<2;++j) {Array p=points[j];MapObject o;o.m_objectName=toNative(String(d["name"]));Array flags=d.get("flags",Array()),angles=d.get("angles",Array());o.m_flags=(flags.size()==2?int(flags[j]) & ~FLAG_ROAD_FLAGS:0) | (j?FLAG_ROAD_POINT2:FLAG_ROAD_POINT1);if(angles.size()==2)o.m_angle=double(angles[j]);o.m_location.x=double(p[0]);o.m_location.y=double(p[1]);o.m_location.z=0;const double width=d.get("width",0.0);if(width>0)o.m_properties.setReal(TerrainRoads::kEditorRoadWidthKey,(float)width);objects.push_back(o);}}
 	}
 	// Editor overrides operate on a parsed copy; the installed retail archive is untouched.
 	if (options.has("editor_heights"))

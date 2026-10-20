@@ -2,7 +2,8 @@
 ##
 ## A mod is a RotWK 2.01 "-mod" folder (loose data\ini, art, maps ... and *.big inside it) or a single .big file. They live in
 ## user://mods (or anywhere, added with "Add mod folder..."); user://mods.cfg holds the order and which are on:
-##   [mods] order = [absolute game roots, load order], enabled = [the enabled ones, in that order]
+##   [mods] order = [absolute game roots, load order], enabled = [the enabled ones, in that order],
+##   textures_only = [mods mounted as texture packs: only their art\compiledtextures, art\textures and art\terrain files]
 ## The engine mounts the enabled ones at startup over the verified game files (RetailFileSystem, GodotRetailFileSystem.cpp), so a change
 ## takes effect after a restart. A downloaded mod folder often has its game files one level down (RJ RotWK: "RJ RotWK 1 06 3 3" beside
 ## the screenshots); the game root is the folder itself when it holds data / art / maps / *.big, else its one subfolder that does.
@@ -18,6 +19,7 @@ const UI_SCALE := 1.5
 var active_mods: Array = []   ## the mount report's "mods" (what this session runs with)
 var _order: Array[String] = []
 var _enabled: Dictionary = {}
+var _textures_only: Dictionary = {}
 var _list: VBoxContainer
 var _status: Label
 var _dialog: FileDialog
@@ -78,6 +80,8 @@ func _load() -> void:
 		_enabled[String(p)] = true
 		if not _order.has(String(p)):
 			_order.append(String(p))
+	for p in cfg.get_value("mods", "textures_only", []):
+		_textures_only[String(p)] = true
 
 
 func _save() -> void:
@@ -88,6 +92,11 @@ func _save() -> void:
 			enabled.append(p)
 	cfg.set_value("mods", "order", Array(_order))
 	cfg.set_value("mods", "enabled", enabled)
+	var textures: Array = []
+	for p in _order:
+		if _textures_only.get(p, false):
+			textures.append(p)
+	cfg.set_value("mods", "textures_only", textures)
 	var err := cfg.save(CONFIG)
 	_status.text = "Saved. Restart OpenBFME to apply." if err == OK else "Could not save %s: %s" % [CONFIG, error_string(err)]
 	print("MODS saved: %d enabled of %d (%s)" % [enabled.size(), _order.size(), error_string(err)])
@@ -230,6 +239,16 @@ func _refresh() -> void:
 			_changed = true
 			_save())
 		row.add_child(check)
+		var textures := CheckBox.new()
+		textures.text = "Textures only"
+		textures.button_pressed = _textures_only.get(path, false)
+		textures.disabled = _game=="bfme1"
+		textures.tooltip_text = "Use this mod as a texture pack: only its texture files override the game's"
+		textures.toggled.connect(func(on: bool) -> void:
+			_textures_only[path] = on
+			_changed = true
+			_save())
+		row.add_child(textures)
 		var state := Label.new()
 		var exists := DirAccess.dir_exists_absolute(path) or FileAccess.file_exists(path)
 		state.text = "missing" if not exists else ("active" if _is_active(path) else "")
@@ -261,6 +280,7 @@ func _move(i: int, d: int) -> void:
 ## forgets the mod (its files stay where they are)
 func _remove(i: int) -> void:
 	_enabled.erase(_order[i])
+	_textures_only.erase(_order[i])
 	_order.remove_at(i)
 	_changed = true
 	_save()

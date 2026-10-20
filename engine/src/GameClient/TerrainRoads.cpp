@@ -216,8 +216,10 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 		seen.push_back({ loc1, loc2 });
 		seenName.push_back(lower(a.m_objectName));
 
-		const float scale = road->roadWidth;
 		const float widthInTexture = road->roadWidthInTexture > 0.0f ? road->roadWidthInTexture : 1.0f;
+		bool hasEditorWidth = false;
+		const float editorWidth = a.m_properties.getReal(kEditorRoadWidthKey, &hasEditorWidth);
+		const float scale = hasEditorWidth && editorWidth > 0.0f ? editorWidth / widthInTexture : road->roadWidth;
 		V2 roadVector = { loc2.x - loc1.x, loc2.y - loc1.y };
 		const float len = std::sqrt(roadVector.x * roadVector.x + roadVector.y * roadVector.y);
 		V2 roadNormal = { -roadVector.y, roadVector.x };

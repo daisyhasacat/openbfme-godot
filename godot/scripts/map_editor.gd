@@ -90,6 +90,15 @@ var selected_objects: Array[int] = []
 var apply_owner: Button
 var road_controls: VBoxContainer
 var road_type: OptionButton
+var road_width: SpinBox
+var road_catalog: Array = []      ## the engine's road types (name, texture, width, width_in_texture), in road_type's item order
+var box_diagonal: CheckButton    ## Border box: drag a box rotated 45° (its corners square in the rotated frame)
+var border_none := false          ## Border box: paint the box without border roads
+var path_library: VBoxContainer
+var path_library_title: Label
+var path_search: LineEdit
+var path_grid: GridContainer
+var path_thumbnails: Dictionary = {} ## texture file -> ImageTexture of its straight-road band, or the load error (String)
 var road_action: OptionButton
 var road_list: ItemList
 var roads: Array = []
@@ -127,7 +136,7 @@ class Outline extends Control:
     var obj:Dictionary=editor.world.get_object(id)
     if obj.get('ok',false):draw_circle(editor.hud.world_to_pixel(Vector2(obj.x,obj.y)),12,Color(1,.8,.2),false,3)
   if editor.dragging and editor.tool.selected==10 and not editor.points.is_empty():
-   var corners=editor._box_corners(editor.points[0],editor.hud.pixel_to_world(editor.cursor))
+   var corners=editor._box_corners(editor.points[0],editor.hud.pixel_to_world(editor.cursor),editor.box_diagonal.button_pressed)
    var border=PackedVector2Array()
    for point in corners:border.append(editor.hud.world_to_pixel(point))
    border.append(border[0]);draw_colored_polygon(border,Color(.3,1,.6,.15));draw_polyline(border,Color(1,.8,.2),3)
@@ -176,12 +185,14 @@ func _ready():
  texture_caption=Label.new();texture_caption.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;box.add_child(texture_caption)
  road_controls=VBoxContainer.new();box.add_child(road_controls)
  road_type=OptionButton.new();road_controls.add_child(road_type)
+ road_width=_number(road_controls,'Path width (0 = road type default)',0,400,0,1)
+ box_diagonal=CheckButton.new();box_diagonal.text='Diagonal (45°)';box_diagonal.tooltip_text='Drag a box rotated 45°: the drag sets two opposite corners';road_controls.add_child(box_diagonal)
  road_action=OptionButton.new()
  for label in ['Select / move points','Add connected points','Insert point on segment']:road_action.add_item(label)
  road_controls.add_child(road_action)
  road_list=ItemList.new();road_list.custom_minimum_size=Vector2(480,180);road_controls.add_child(road_list)
  road_list.item_selected.connect(func(i):road_selected=i;road_endpoint=1;road_anchor=_road_point(roads[i].points[1]);_select_road_type())
- for pair in [['New path',_new_road],['Apply road type',_change_road_type],['Delete selected segment',_delete_road]]:
+ for pair in [['New path',_new_road],['Apply road type and width',_change_road_type],['Delete selected segment',_delete_road]]:
   var button=Button.new();button.text=pair[0];button.custom_minimum_size.y=52;button.pressed.connect(pair[1]);road_controls.add_child(button)
  var controls=HBoxContainer.new();box.add_child(controls);box.move_child(controls,3)
  var delete=Button.new();delete.text='Delete objects';delete.pressed.connect(func():tool.select(0);_clear_preview();_update_controls());controls.add_child(delete)
@@ -239,6 +250,7 @@ func _build_workspace(ui_theme: Theme,background: StyleBoxFlat):
  var light=DirectionalLight3D.new();light.rotation_degrees=Vector3(-45,-30,0);light.light_energy=1.5;object_stage.add_child(light)
  var environment=WorldEnvironment.new();var env=Environment.new();env.background_mode=Environment.BG_COLOR;env.background_color=Color('#15232e');env.ambient_light_source=Environment.AMBIENT_SOURCE_COLOR;env.ambient_light_color=Color.WHITE;env.ambient_light_energy=.7;environment.environment=env;object_stage.add_child(environment)
  texture_caption.reparent(browser)
+ _build_path_browser(browser)
  # Replace the original stacked heading/actions with the toolbar.
  for child in content.get_children():
   if child is Label and child!=status and not child.has_meta('keep'):child.hide()
@@ -247,6 +259,50 @@ func _build_workspace(ui_theme: Theme,background: StyleBoxFlat):
  panel.custom_minimum_size=Vector2(360,0);scroll.custom_minimum_size.x=336;status.custom_minimum_size.x=320;road_list.custom_minimum_size.x=320
  for field in [radius,strength,angle_control,owner_slot]:
   var caption:Label=field.get_meta('label');caption.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;caption.custom_minimum_size.x=300;caption.show()
+
+func _build_path_browser(browser: VBoxContainer):
+ path_library=VBoxContainer.new();browser.add_child(path_library)
+ path_library_title=Label.new();path_library_title.text='PATH LIBRARY';path_library.add_child(path_library_title)
+ path_search=LineEdit.new();path_search.placeholder_text='Search path name or texture file…';path_search.text_changed.connect(func(_q):_render_paths());path_library.add_child(path_search)
+ var results=ScrollContainer.new();results.size_flags_vertical=Control.SIZE_EXPAND_FILL;results.custom_minimum_size.y=300;results.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED;path_library.add_child(results)
+ path_grid=GridContainer.new();path_grid.columns=3;path_grid.size_flags_horizontal=Control.SIZE_EXPAND_FILL;path_grid.add_theme_constant_override('h_separation',8);path_grid.add_theme_constant_override('v_separation',8);results.add_child(path_grid)
+
+## the straight-road band of a road atlas (TerrainRoads.cpp: centred on v=85/512, RoadWidthInTexture/4 of the height)
+func _path_thumbnail(item: Dictionary):
+ var file=str(item.texture)
+ if path_thumbnails.has(file):return path_thumbnails[file]
+ var result:Dictionary=terrain_loader.preview_road_texture(fs,file)
+ if not result.get('ok',false):path_thumbnails[file]=str(result.get('error','Road texture unavailable'))+'\n'+'\n'.join(result.get('errors',[]));return path_thumbnails[file]
+ var image:Image=result.texture.get_image()
+ if image.is_compressed():image.decompress()
+ var height=float(image.get_height());var band=maxi(1,int(float(item.width_in_texture)/4.0*height))
+ var top=clampi(int(85.0/512.0*height)-band/2,0,image.get_height()-band)
+ path_thumbnails[file]=ImageTexture.create_from_image(image.get_region(Rect2i(0,top,image.get_width(),band)))
+ return path_thumbnails[file]
+
+func _path_card(title: String,detail: String,thumbnail,selected: bool,choose: Callable):
+ var card=Button.new();card.toggle_mode=true;card.button_pressed=selected;card.size_flags_horizontal=Control.SIZE_EXPAND_FILL;card.custom_minimum_size=Vector2(190,150);card.tooltip_text=title+'\n'+detail;path_grid.add_child(card);card.pressed.connect(choose)
+ var box=VBoxContainer.new();box.mouse_filter=Control.MOUSE_FILTER_IGNORE;box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT);box.offset_left=8;box.offset_right=-8;box.offset_top=8;box.offset_bottom=-8;card.add_child(box)
+ var image=TextureRect.new();image.mouse_filter=Control.MOUSE_FILTER_IGNORE;image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE;image.stretch_mode=TextureRect.STRETCH_SCALE;image.custom_minimum_size.y=56;image.size_flags_vertical=Control.SIZE_EXPAND_FILL;box.add_child(image)
+ if thumbnail is Texture2D:image.texture=thumbnail
+ elif thumbnail is String:
+  var missing=Label.new();missing.text='Texture failed to load';missing.horizontal_alignment=HORIZONTAL_ALIGNMENT_CENTER;missing.vertical_alignment=VERTICAL_ALIGNMENT_CENTER;missing.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT);missing.add_theme_font_size_override('font_size',14);missing.mouse_filter=Control.MOUSE_FILTER_IGNORE;image.add_child(missing);card.tooltip_text+='\n'+thumbnail
+ var label=Label.new();label.mouse_filter=Control.MOUSE_FILTER_IGNORE;label.text=title+'\n'+detail;label.horizontal_alignment=HORIZONTAL_ALIGNMENT_CENTER;label.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;label.add_theme_font_size_override('font_size',15);box.add_child(label)
+
+func _render_paths():
+ if path_grid==null:return
+ # a card's own pressed signal rebuilds the grid, so cards leave now and are freed after it
+ for child in path_grid.get_children():path_grid.remove_child(child);child.queue_free()
+ if not (active and tool.selected in [8,10]):return
+ var boxing=tool.selected==10
+ var query=path_search.text.strip_edges().to_lower()
+ if boxing and (query.is_empty() or query in 'none no border'):
+  _path_card('None','No border roads',null,border_none,func():border_none=true;_render_paths())
+ for i in mini(road_catalog.size(),road_type.item_count):
+  var item:Dictionary=road_catalog[i]
+  if not query.is_empty() and query not in (str(item.name)+' '+str(item.texture)).to_lower():continue
+  var chosen=road_type.selected==i and not (boxing and border_none)
+  _path_card(str(item.name),'%s · width %d'%[item.texture,roundi(float(item.width))],_path_thumbnail(item),chosen,func():border_none=false;road_type.select(i);_render_paths())
 
 func _over_editor(pixel: Vector2) -> bool:
  for window in [panel,toolbar,lookup]:
@@ -364,15 +420,18 @@ func _update_controls():
  var placing=tool.selected in [1,2]
  tool.hide()
  for i in mode_buttons.size():mode_buttons[i].set_pressed_no_signal(i==tool.selected)
- lookup.visible=active and tool.selected in [1,2,6,7,10]
- lookup_title.text='OBJECT LIBRARY' if placing else 'TERRAIN LIBRARY'
+ lookup.visible=active and tool.selected in [1,2,6,7,8,10]
+ lookup_title.text='OBJECT LIBRARY' if placing else ('PATH LIBRARY' if tool.selected==8 else 'TERRAIN LIBRARY')
+ path_library.visible=tool.selected in [8,10];path_library_title.visible=tool.selected==10
+ _render_paths()
  if placing:texture_caption.text=_selected()
  if tool.selected in [6,10]:_texture_selected(texture.selected)
  object_image.visible=placing and not grid_mode and not _selected().is_empty()
  object_view.render_target_update_mode=SubViewport.UPDATE_ALWAYS if placing and active and not grid_mode else SubViewport.UPDATE_DISABLED
  texture_caption.visible=(placing and not grid_mode) or tool.selected in [6,7,10]
  road_controls.visible=tool.selected in [8,10]
- for control in road_controls.get_children():control.visible=tool.selected==8 or control==road_type
+ # road_type backs the path library's selection (like objects for the object library)
+ for control in road_controls.get_children():control.visible=control!=road_type and (control in [road_width,road_width.get_meta('label')] or (control==box_diagonal)==(tool.selected==10) and tool.selected in [8,10])
  _field_visible(angle_control,placing);_field_visible(owner_slot,placing or tool.selected==9);apply_owner.visible=tool.selected==9
  _field_visible(radius,tool.selected>=2 and tool.selected<7);shape.visible=tool.selected>=2 and tool.selected<7;grid_rotation.visible=tool.selected>=2 and tool.selected<7
  _field_visible(strength,tool.selected in [2,3,4])
@@ -382,13 +441,14 @@ func _update_controls():
 func set_active(enabled: bool):
  if active==enabled:return
  if not enabled and inspector!=null:inspector.hide()
- active=enabled;active_changed.emit(enabled);panel.visible=enabled;toolbar.visible=enabled;lookup.visible=enabled and tool.selected in [1,2,6,7,10];set_process(enabled)
+ active=enabled;active_changed.emit(enabled);panel.visible=enabled;toolbar.visible=enabled;lookup.visible=enabled and tool.selected in [1,2,6,7,8,10];set_process(enabled)
  if enabled:
   was_free_camera=hud.get_camera().get('free_camera',false);hud.set_free_camera(true)
   was_paused=world.is_paused();hud_was_processing=hud.is_processing_input();world.set_paused(true);was_shroud=world.get_shroud_report().get('displayed',true);world.set_shroud_drawn(false);hud.deselect_all();hud.set_process_input(false)
   terrain_info=world.map_editor_terrain({});_load_texture_catalog()
   roads=terrain_info.get('roads',[]).duplicate(true);road_type.clear()
-  for item in terrain_info.get('road_types',[]):road_type.add_item(item.name)
+  road_catalog=terrain_info.get('road_types',[]);road_catalog.sort_custom(func(a,b):return str(a.name).naturalnocasecmp_to(str(b.name))<0)
+  for item in road_catalog:road_type.add_item(item.name)
   _refresh_roads()
   if catalog.is_empty():_load_object_catalog()
   status.text='Editing live map. Save edits as a reusable JSON overlay.'
@@ -602,9 +662,17 @@ func handle_input(event: InputEvent) -> bool:
  if event is InputEventMouse:
   cursor=event.position
   if _over_editor(cursor) and not dragging and not road_drag:return false
+ # macOS trackpads and Magic Mouse report scrolling as pan gestures and pinch as magnify, not wheel buttons; gameplay's HUD
+ # handles those but its input is off in the editor. Scrolling up / spreading the fingers zooms in, like the wheel.
+ if event is InputEventPanGesture or event is InputEventMagnifyGesture:
+  cursor=event.position
+  if _over_editor(cursor):return false
+  if event is InputEventPanGesture and is_finite(event.delta.y):_zoom_camera(-event.delta.y*0.5)
+  elif event is InputEventMagnifyGesture and is_finite(event.factor) and event.factor>0:_zoom_camera(log(event.factor)/log(1/.85))
+  return true
  if event is InputEventMouseButton:
   if event.button_index in [MOUSE_BUTTON_WHEEL_UP,MOUSE_BUTTON_WHEEL_DOWN] and event.pressed:
-   _zoom_camera((1 if event.button_index==MOUSE_BUTTON_WHEEL_UP else -1)*event.factor);return true
+   _zoom_camera((1 if event.button_index==MOUSE_BUTTON_WHEEL_UP else -1)*(event.factor if event.factor>0 else 1.0));return true
   if event.button_index==MOUSE_BUTTON_LEFT:
    if event.pressed:
     if tool.selected==8:_road_press()
@@ -653,8 +721,15 @@ func _refresh_roads():
 
 func _select_road_type():
  if road_selected<0:return
+ road_width.value=float(roads[road_selected].get('width',0))
  for i in road_type.item_count:
-  if road_type.get_item_text(i).to_lower()==str(roads[road_selected].name).to_lower():road_type.select(i);return
+  if road_type.get_item_text(i).to_lower()==str(roads[road_selected].name).to_lower():road_type.select(i);_render_paths();return
+
+## a new segment of the selected road type, with the width setting when it is not the type's default (0)
+func _road_segment(name: String,a: Vector2,b: Vector2,width: float) -> Dictionary:
+ var segment={'name':name,'points':[[a.x,a.y],[b.x,b.y]]}
+ if width>0:segment['width']=width
+ return segment
 
 func _new_road():
  road_selected=-1;road_endpoint=-1;road_anchor=Vector2(INF,INF);road_action.select(1);road_list.deselect_all()
@@ -662,7 +737,10 @@ func _new_road():
 
 func _change_road_type():
  if road_selected<0 or road_type.selected<0:return
- var before=roads.duplicate(true);roads[road_selected].name=road_type.get_item_text(road_type.selected);_commit_roads(before)
+ var before=roads.duplicate(true);roads[road_selected].name=road_type.get_item_text(road_type.selected)
+ if road_width.value>0:roads[road_selected]['width']=road_width.value
+ else:roads[road_selected].erase('width')
+ _commit_roads(before)
 
 func _delete_road():
  if road_selected<0:return
@@ -682,7 +760,7 @@ func _road_press():
   if road_type.selected<0:status.text='No road types available.';return
   if is_finite(road_anchor.x) and p.distance_to(road_anchor)>1:
    var before=roads.duplicate(true)
-   roads.append({'name':road_type.get_item_text(road_type.selected),'points':[[road_anchor.x,road_anchor.y],[p.x,p.y]]})
+   roads.append(_road_segment(road_type.get_item_text(road_type.selected),road_anchor,p,road_width.value))
    road_selected=roads.size()-1;road_endpoint=1;_commit_roads(before)
   road_anchor=p;return
  var closest=18.0;road_selected=-1;road_endpoint=-1
@@ -704,7 +782,9 @@ func _road_press():
   var split=Geometry2D.get_closest_point_to_segment(p,_road_point(road.points[0]),_road_point(road.points[1]))
   if split.distance_to(_road_point(road.points[0]))<1 or split.distance_to(_road_point(road.points[1]))<1:return
   var end=road.points[1].duplicate();road.points[1]=[split.x,split.y]
-  roads.insert(road_selected+1,{'name':road.name,'points':[[split.x,split.y],end]});_commit_roads(before)
+  var tail={'name':road.name,'points':[[split.x,split.y],end]}
+  if road.has('width'):tail['width']=road.width
+  roads.insert(road_selected+1,tail);_commit_roads(before)
  else:road_endpoint=1;road_anchor=_road_point(roads[road_selected].points[1])
 
 func _road_motion():
@@ -882,30 +962,45 @@ func _apply():
  _paint_live()
  _finish_terrain_stroke()
 
-func _box_corners(a: Vector2,b: Vector2) -> Array[Vector2]:
- var lo=Vector2(minf(a.x,b.x),minf(a.y,b.y));var hi=Vector2(maxf(a.x,b.x),maxf(a.y,b.y))
- return [lo,Vector2(hi.x,lo.y),hi,Vector2(lo.x,hi.y)]
+## the box's corners in order; diagonal: the box with a and b as opposite corners in a frame rotated 45°
+func _box_corners(a: Vector2,b: Vector2,diagonal:=false) -> Array[Vector2]:
+ var turn=PI/4 if diagonal else 0.0
+ var ra=a.rotated(-turn);var rb=b.rotated(-turn)
+ var lo=Vector2(minf(ra.x,rb.x),minf(ra.y,rb.y));var hi=Vector2(maxf(ra.x,rb.x),maxf(ra.y,rb.y))
+ var corners:Array[Vector2]=[]
+ for c in [lo,Vector2(hi.x,lo.y),hi,Vector2(lo.x,hi.y)]:corners.append(c.rotated(turn))
+ return corners
 
 func _apply_bordered_box(a: Vector2,b: Vector2,saved: Dictionary={}):
  for point in [a,b]:
   if not is_finite(point.x) or not is_finite(point.y) or absf(point.x)>1e7 or absf(point.y)>1e7:return false
- if saved.is_empty() and (texture.selected<0 or road_type.selected<0):status.text='Choose a ground texture and border road.';return false
- var corners=_box_corners(a,b)
- if corners[2].x-corners[0].x<10 or corners[2].y-corners[0].y<10:status.text='Drag a box at least one terrain cell wide and high.';return false
+ if saved.is_empty() and (texture.selected<0 or (road_type.selected<0 and not border_none)):status.text='Choose a ground texture and a border path (or None).';return false
+ var diagonal=bool(saved.get('diagonal',false)) if not saved.is_empty() else box_diagonal.button_pressed
+ var corners=_box_corners(a,b,diagonal)
+ if corners[0].distance_to(corners[1])<10 or corners[1].distance_to(corners[2])<10:status.text='Drag a box at least one terrain cell wide and high.';return false
  var name=str(saved.texture) if saved.has('texture') else str(texture_filtered[texture.selected].name)
- var border_name=str(saved.road) if saved.has('road') else road_type.get_item_text(road_type.selected)
- var command={'mode':'paint','texture':name,'points':[(a+b)*.5],'rectangle':[corners[0].x,corners[0].y,corners[2].x,corners[2].y]}
+ var border_name=str(saved.road) if saved.has('road') else ('' if border_none else road_type.get_item_text(road_type.selected))
+ var border_width=float(saved.get('width',0)) if not saved.is_empty() else road_width.value
+ var command={'mode':'paint','texture':name,'points':[(a+b)*.5]}
+ if diagonal:command['polygon']=corners.map(func(c):return [c.x,c.y])
+ else:command['rectangle']=[corners[0].x,corners[0].y,corners[2].x,corners[2].y]
  var painted:Dictionary=world.map_editor_terrain(command)
  if not painted.get('ok',false):status.text=str(painted.get('error'));return false
+ if border_name.is_empty():
+  undo_stack.append({'terrain':painted.undo})
+  overlay.append({'bordered_box':{'a':[a.x,a.y],'b':[b.x,b.y],'texture':name,'road':'','width':0,'diagonal':diagonal}})
+  _refresh_camera();status.text='Painted box without borders.'
+  return true
  var bordered=roads.duplicate(true)
  for i in 4:
   var p=corners[i];var q=corners[(i+1)%4]
-  bordered.append({'name':border_name,'points':[[p.x,p.y],[q.x,q.y]]})
+  # FLAG_ROAD_CORNER_ANGLED (0x08) on both ends: mitred square corners, not the rounded curve artwork
+  var side=_road_segment(border_name,p,q,border_width);side['flags']=[8,8];bordered.append(side)
  var result:Dictionary=world.map_editor_terrain({'roads':bordered})
  if not result.get('ok',false):
   world.map_editor_terrain({'patch':painted.undo});status.text=str(result.get('error'));return false
  undo_stack.append({'terrain':painted.undo,'roads':result.undo_roads})
- overlay.append({'bordered_box':{'a':[a.x,a.y],'b':[b.x,b.y],'texture':name,'road':border_name}})
+ overlay.append({'bordered_box':{'a':[a.x,a.y],'b':[b.x,b.y],'texture':name,'road':border_name,'width':border_width,'diagonal':diagonal}})
  roads=bordered;_refresh_roads();_refresh_camera();status.text='Painted box with four road borders.'
  return true
 

@@ -42,6 +42,8 @@ public:
 	// { map, errors: [..], stops: [..], assumptions: [..], timings_ms: {..}, map_info: {..}, atlas: {..},
 	//   mesh: {..}, water: {..}, rivers: {..}, roads: {..}, objects: {..}, camera: {..} }
 	Dictionary preview_texture(const Ref<RetailFileSystem> &fs, const String &terrain_name);
+	// the map editor's path library: a roads.ini road texture (its whole atlas) by the file name the Road block names
+	Dictionary preview_road_texture(const Ref<RetailFileSystem> &fs, const String &texture_file);
 
 	Dictionary get_report() const { return m_report; }
 

@@ -57,19 +57,26 @@ in the inspector, then drag between opposite corners on the map. The preview
 shows a rectangle aligned to the map axes. Release to paint its interior and add
 four road segments along its borders. Existing roads remain; Undo removes the
 whole box as one action. Boxes are included in Save/Load edit overlays.
-Road corners use the existing straight-strip renderer.
+**Path width** sets the border's visible width in world units (0 keeps the road
+type's width). Border corners are square (mitred). Choose **None** in the path
+library to paint the box without borders. **Diagonal (45°)** draws the box
+rotated 45°: the drag sets two opposite corners, and the ground fill follows the
+rotated outline.
 
 ## Roads and terrain paths
 
 Choose **Edit roads / paths** to show the map's road centerlines and endpoint
-handles. Select a segment on the map or in the list. In **Select / move points**,
+handles. The path library (right) lists every road type with its texture and
+default width; search it by name or texture file and click a card to choose it. Select a segment on the map or in the list. In **Select / move points**,
 drag a handle to move it; coincident endpoints move together to keep the path
 connected. The line previews the drag and the textured road rebuilds on release.
 
 **New path** starts a connected chain: click the first point, then click each
 additional point. Select an existing endpoint and switch to **Add connected
 points** to extend it. **Insert point on segment** splits a clicked segment into
-two, giving it another movable point. Choose a road type and **Apply road type**
+two, giving it another movable point. **Path width** sets the visible width in
+world units of new segments (0 keeps the road type's width); selecting a segment
+shows its width. Choose a road type and width and **Apply road type and width**
 to change the selected segment, or **Delete selected segment** to remove it.
 Road changes support Undo and the same saved JSON overlays as terrain edits.
 

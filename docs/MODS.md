@@ -58,8 +58,15 @@ This is done in `GodotRetailFileSystem.cpp` `mountFrom`, using
   `.const` files are RotWK's and don't pair with BFME2 movies, so the
   BFME2-style menu view leaves them out, with a warning. RJ ships only RotWK
   `.const` files. Choose the RotWK menus in Options to see a mod's own menus.
-- The **wall tower pack** is not loaded while a mod is enabled. It is written
-  for the unmodded game's INI and refers to macros a mod may not define.
+- **Texture packs.** A mod marked *Textures only* in the mod manager (`mods.cfg`
+  `[mods] textures_only`) mounts only its `art\compiledtextures`, `art\textures`
+  and `art\terrain` files over the game's. Its models, INI, maps, UI and
+  `asset.dat` are not mounted, and its object INIs are not merged into
+  GameData. Use this for HD texture mods such as RotWK 2.02 HD Edition.
+- **Local packs stack under mods.** The wall tower pack and the 2.02 map pack
+  mount first; enabled mods mount after them and win any file both provide.
+  The tower pack's INI uses the stock game's macros, so a mod that removes
+  them makes the INI fail to parse, which is reported as an error.
 
 ## Tolerated mod problems
 

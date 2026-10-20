@@ -3424,12 +3424,12 @@ Dictionary GameWorld::map_editor_terrain(const Dictionary &operation)
 	const auto &objects=m_game->map().chunks.objects;
 	for(size_t i=0;i+1<objects.size();++i) if(objects[i].getFlag(FLAG_ROAD_POINT1) && objects[i+1].getFlag(FLAG_ROAD_POINT2)) {
 		Dictionary d;d["name"]=toGodot(objects[i].m_objectName);Array points;
-		for(size_t j=i;j<=i+1;++j) {Array p;p.push_back(objects[j].m_location.x);p.push_back(objects[j].m_location.y);points.push_back(p);}d["points"]=points;Array flags,angles;for(size_t j=i;j<=i+1;++j) {flags.push_back(objects[j].m_flags);angles.push_back(objects[j].m_angle);}d["flags"]=flags;d["angles"]=angles;roads.push_back(d);++i;
+		for(size_t j=i;j<=i+1;++j) {Array p;p.push_back(objects[j].m_location.x);p.push_back(objects[j].m_location.y);points.push_back(p);}d["points"]=points;Array flags,angles;for(size_t j=i;j<=i+1;++j) {flags.push_back(objects[j].m_flags);angles.push_back(objects[j].m_angle);}d["flags"]=flags;d["angles"]=angles;bool hasWidth=false;const float width=objects[i].m_properties.getReal(TerrainRoads::kEditorRoadWidthKey,&hasWidth);if(hasWidth)d["width"]=width;roads.push_back(d);++i;
 	}
 	result["roads"]=roads;
 	if(operation.is_empty()) {
 		RoadTypeIndex types;std::string error;Array catalog;
-		if(TerrainRoads::load(*m_fs->archive_fs(),types,&error)) for(const auto &item:types.byName) if(!item.second.isBridge) {Dictionary d;d["name"]=toGodot(item.second.name);d["texture"]=toGodot(item.second.texture);catalog.push_back(d);}
+		if(TerrainRoads::load(*m_fs->archive_fs(),types,&error)) for(const auto &item:types.byName) if(!item.second.isBridge) {Dictionary d;d["name"]=toGodot(item.second.name);d["texture"]=toGodot(item.second.texture);const float inTexture=item.second.roadWidthInTexture>0?item.second.roadWidthInTexture:1.0f;d["width"]=item.second.roadWidth*inTexture;d["width_in_texture"]=inTexture;catalog.push_back(d);}
 		result["road_types"]=catalog;
 	}
 	if(operation.has("sample")) {
@@ -3467,8 +3467,10 @@ Dictionary GameWorld::map_editor_terrain(const Dictionary &operation)
 		for(int64_t i=0;i<replacement.size();++i) {
 			Dictionary d=replacement[i];String name=d.get("name",String());Array points=d.get("points",Array());
 			if(!types.find(toNative(name)) || points.size()!=2) {result["ok"]=false;result["error"]="Invalid road segment";return result;}
+			const double width=d.get("width",0.0);
+			if(!std::isfinite(width) || width<0 || width>2000) {result["ok"]=false;result["error"]="Invalid road width";return result;}
 			for(int j=0;j<2;++j) {Array p=points[j];if(p.size()!=2 || !std::isfinite(double(p[0])) || !std::isfinite(double(p[1])) || std::abs(double(p[0]))>1e7 || std::abs(double(p[1]))>1e7) {result["ok"]=false;result["error"]="Invalid road point";return result;}
-				MapObject o;o.m_objectName=toNative(name);Array flags=d.get("flags",Array()),angles=d.get("angles",Array());o.m_flags=(flags.size()==2?int(flags[j]) & ~FLAG_ROAD_FLAGS:0) | (j?FLAG_ROAD_POINT2:FLAG_ROAD_POINT1);if(angles.size()==2)o.m_angle=double(angles[j]);o.m_location.x=double(p[0]);o.m_location.y=double(p[1]);o.m_location.z=logic.getGroundHeight(o.m_location.x,o.m_location.y);additions.push_back(o);}
+				MapObject o;o.m_objectName=toNative(name);Array flags=d.get("flags",Array()),angles=d.get("angles",Array());o.m_flags=(flags.size()==2?int(flags[j]) & ~FLAG_ROAD_FLAGS:0) | (j?FLAG_ROAD_POINT2:FLAG_ROAD_POINT1);if(angles.size()==2)o.m_angle=double(angles[j]);o.m_location.x=double(p[0]);o.m_location.y=double(p[1]);o.m_location.z=logic.getGroundHeight(o.m_location.x,o.m_location.y);if(width>0)o.m_properties.setReal(TerrainRoads::kEditorRoadWidthKey,(float)width);additions.push_back(o);}
 		}
 		auto &edited=const_cast<LoadedMap &>(m_game->map()).chunks.objects;
 		edited.erase(std::remove_if(edited.begin(),edited.end(),[](const MapObject &o){return o.getFlag(FLAG_ROAD_FLAGS);}),edited.end());
@@ -3517,6 +3519,12 @@ Dictionary GameWorld::map_editor_terrain(const Dictionary &operation)
 			const double angle=double(operation.get("grid_angle",0.0));
 			int cx=int(point.x/10)+hm.m_borderSize, cy=int(point.y/10)+hm.m_borderSize, r=int(radius*(square?1.415:1.0)/10)+1;
 			Array rectangle=operation.get("rectangle",Array());
+			// map editor diagonal boxes: cells whose corner lies inside this polygon of [x, y] world points (even-odd rule)
+			Array polygonIn=operation.get("polygon",Array());std::vector<Vector2> polygon;
+			for(int64_t k=0;k<polygonIn.size();++k) {Array q=polygonIn[k];if(q.size()!=2 || !std::isfinite(double(q[0])) || !std::isfinite(double(q[1])) || std::abs(double(q[0]))>1e7 || std::abs(double(q[1]))>1e7) {result["ok"]=false;result["error"]="Invalid paint polygon";return result;}polygon.push_back(Vector2(double(q[0]),double(q[1])));}
+			if(!polygonIn.is_empty() && polygon.size()<3) {result["ok"]=false;result["error"]="Invalid paint polygon";return result;}
+			if(!polygon.empty()) {double reach=0;for(const Vector2 &q:polygon) reach=std::max(reach,(double)std::max(std::abs(q.x-point.x),std::abs(q.y-point.y)));r=int(reach/10)+2;}
+			auto insidePolygon=[&](double wx,double wy) {bool in=false;for(size_t a=0,b=polygon.size()-1;a<polygon.size();b=a++) if(((polygon[a].y>wy)!=(polygon[b].y>wy)) && wx<(polygon[b].x-polygon[a].x)*(wy-polygon[a].y)/(polygon[b].y-polygon[a].y)+polygon[a].x) in=!in;return in;};
 			if (rectangle.size()==4) {
 				for(int k=0;k<4;++k) if(!std::isfinite(double(rectangle[k])) || std::abs(double(rectangle[k]))>1e7) {result["ok"]=false;result["error"]="Invalid paint rectangle";return result;}
 				r=int(std::max(double(rectangle[2])-double(rectangle[0]),double(rectangle[3])-double(rectangle[1]))/10)+2;
@@ -3525,7 +3533,9 @@ Dictionary GameWorld::map_editor_terrain(const Dictionary &operation)
 			{
 				double dx=(x-hm.m_borderSize)*10-point.x,dy=(y-hm.m_borderSize)*10-point.y;
 				const double rx=dx*std::cos(angle)+dy*std::sin(angle),ry=-dx*std::sin(angle)+dy*std::cos(angle);
-				if(rectangle.size()==4) {
+				if(!polygon.empty()) {
+					if(!insidePolygon((x-hm.m_borderSize)*10.0,(y-hm.m_borderSize)*10.0)) continue;
+				} else if(rectangle.size()==4) {
 					const double wx=(x-hm.m_borderSize)*10,wy=(y-hm.m_borderSize)*10;
 					if(wx<double(rectangle[0]) || wx>=double(rectangle[2]) || wy<double(rectangle[1]) || wy>=double(rectangle[3])) continue;
 				} else if(square ? std::max(std::abs(rx),std::abs(ry))>radius : dx*dx+dy*dy>radius*radius) continue;

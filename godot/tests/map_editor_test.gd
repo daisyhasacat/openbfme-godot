@@ -63,6 +63,22 @@ func _run():
  var camera_height=real_hud.get_camera().height_above_ground
  editor._zoom_camera(1)
  check(real_hud.get_camera().height_above_ground==PackedFloat32Array([camera_height*.85])[0],'Zoom bypasses disabled gameplay input')
+ # the headless viewport is 64 px wide, under the panels: a point beyond every panel stands for the map
+ var map_pixel=Vector2(4000,4000)
+ check(not editor._over_editor(map_pixel),'A map pixel outside the editor panels')
+ var wheel=InputEventMouseButton.new();wheel.button_index=MOUSE_BUTTON_WHEEL_UP;wheel.pressed=true;wheel.position=map_pixel
+ camera_height=real_hud.get_camera().height_above_ground
+ check(editor.handle_input(wheel) and real_hud.get_camera().height_above_ground<camera_height,'Mouse wheel zooms in')
+ var scroll=InputEventPanGesture.new();scroll.position=map_pixel;scroll.delta=Vector2(0,2)
+ camera_height=real_hud.get_camera().height_above_ground
+ check(editor.handle_input(scroll) and real_hud.get_camera().height_above_ground>camera_height,'Trackpad scroll zooms out')
+ scroll.delta=Vector2(0,-2);camera_height=real_hud.get_camera().height_above_ground
+ check(editor.handle_input(scroll) and real_hud.get_camera().height_above_ground<camera_height,'Trackpad scroll zooms in')
+ var pinch=InputEventMagnifyGesture.new();pinch.position=map_pixel;pinch.factor=1.25
+ camera_height=real_hud.get_camera().height_above_ground
+ check(editor.handle_input(pinch) and is_equal_approx(real_hud.get_camera().height_above_ground,camera_height/1.25),'Pinch zooms by its factor')
+ var over_panel=InputEventPanGesture.new();over_panel.position=editor.toolbar.get_global_rect().get_center();over_panel.delta=Vector2(0,2)
+ check(not editor.handle_input(over_panel),'Scrolling over an editor panel is left to the panel')
  editor.exit_button.pressed.emit()
  check(not editor.active and not real_hud.get_camera().free_camera,'Prominent exit restores camera limits')
  real_hud.free();pick_camera.free()
@@ -191,13 +207,54 @@ func _run():
   await RenderingServer.frame_post_draw
   root.get_texture().get_image().save_png('/tmp/map-editor-object-ui.png')
  editor.tool.select(10);editor._update_controls()
- check(editor.texture.visible and editor.road_type.visible,'Border box offers ground and road choices')
+ check(editor.texture.visible and editor.path_library.visible,'Border box offers ground and path choices')
  var before_box=editor.roads.duplicate(true)
  var original_sample=world.map_editor_terrain({'sample':Vector2(1750,1750)})
  var outside_sample=world.map_editor_terrain({'sample':Vector2(1800,1750)})
  var undo_count=editor.undo_stack.size()
  check(editor._apply_bordered_box(Vector2(1800,1800),Vector2(1700,1700)),'Reverse drag box applies')
  check(editor.roads.size()==before_box.size()+4,'Box adds four border segments')
+ check(editor.roads.slice(before_box.size()).all(func(r):return r.flags.all(func(f):return int(f)&8)),'Box border corners are angled (square)')
+ editor._undo()
+ editor.road_width.value=90
+ check(editor._apply_bordered_box(Vector2(1800,1800),Vector2(1700,1700)),'Wide box applies')
+ var wide=world.map_editor_terrain({}).roads.slice(before_box.size())
+ check(wide.size()==4 and wide.all(func(r):return is_equal_approx(float(r.get('width',0)),90)),'Box border width round-trips through the engine')
+ editor.road_width.value=0
+ editor._undo()
+ var roads_before_none=editor.roads.duplicate(true)
+ editor.border_none=true
+ check(editor._apply_bordered_box(Vector2(1800,1800),Vector2(1700,1700)),'Borderless box applies')
+ check(editor.roads==roads_before_none,'Borderless box adds no roads')
+ check(str(world.map_editor_terrain({'sample':Vector2(1750,1750)}).get('texture','')).to_lower()==str(editor.texture_filtered[editor.texture.selected].name).to_lower(),'Borderless box paints its interior')
+ editor._undo()
+ editor.border_none=false
+ check(editor._apply_bordered_box(Vector2(1800,1800),Vector2(1700,1700)),'Bordered box applies after a borderless one')
+ editor._undo()
+ editor.box_diagonal.button_pressed=true
+ var diamond=editor._box_corners(Vector2(1700,1750),Vector2(1800,1750),true)
+ check(diamond[0].distance_to(diamond[1])>10 and is_equal_approx((diamond[1]-diamond[0]).dot(diamond[2]-diamond[1]),0.0),'Diagonal box corners are square')
+ var outside_diamond=world.map_editor_terrain({'sample':Vector2(1705,1705)})
+ check(editor._apply_bordered_box(Vector2(1700,1750),Vector2(1800,1750)),'Diagonal box applies')
+ check(str(world.map_editor_terrain({'sample':Vector2(1750,1750)}).get('texture','')).to_lower()==str(editor.texture_filtered[editor.texture.selected].name).to_lower(),'Diagonal box paints its centre')
+ check(world.map_editor_terrain({'sample':Vector2(1705,1705)}).get('tile')==outside_diamond.get('tile'),'Diagonal box leaves the bounding-square corners')
+ var sides=editor.roads.slice(editor.roads.size()-4)
+ check(sides.all(func(r):return absf(absf(r.points[1][0]-r.points[0][0])-absf(r.points[1][1]-r.points[0][1]))<0.01),'Diagonal box borders run at 45°')
+ check(editor.overlay[-1].bordered_box.diagonal,'Diagonal box is saved as diagonal')
+ editor._undo()
+ editor.box_diagonal.button_pressed=false
+ check(editor._apply_bordered_box(Vector2(1800,1800),Vector2(1700,1700)),'Box applies again after a diagonal one')
+ editor.tool.select(8);editor._update_controls()
+ check(not editor.box_diagonal.visible,'Diagonal toggle is a Border box option')
+ check(editor.path_library.visible and editor.path_grid.get_child_count()==editor.road_catalog.size(),'Path library lists every road type')
+ editor.path_search.text='BFME1Gondor';editor._render_paths()
+ check(editor.path_grid.get_child_count()==editor.road_catalog.filter(func(r):return 'bfme1gondor' in str(r.name).to_lower()).size() and editor.path_grid.get_child_count()<editor.road_catalog.size(),'Path library search filters road types')
+ var card:Button=editor.path_grid.get_child(1);card.pressed.emit()
+ check(editor.road_type.get_item_text(editor.road_type.selected)=='BFME1GondorOrnamentalTrim','Path card selects its road type')
+ var thumb=editor._path_thumbnail(editor.road_catalog[editor.road_type.selected])
+ check(thumb is Texture2D and thumb.get_width()==512 and thumb.get_height()==78,'Path thumbnail is the straight-road band: '+str(thumb))
+ editor.tool.select(10);editor.path_search.text='';editor._update_controls()
+ check(editor.path_grid.get_child_count()==editor.road_catalog.size()+1,'Border box path library offers None')
  check(editor.undo_stack.size()==undo_count+1,'Box is a single undo action')
  var box_sample=world.map_editor_terrain({'sample':Vector2(1750,1750)})
  check(str(box_sample.get('texture','')).to_lower()==str(editor.texture_filtered[editor.texture.selected].name).to_lower(),'Box interior uses chosen texture')

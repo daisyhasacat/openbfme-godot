@@ -118,6 +118,42 @@ bool FolderArchiveFile::readFile(const std::string &filename, std::vector<std::u
 	return true;
 }
 
+TextureOnlyArchiveFile::TextureOnlyArchiveFile(std::unique_ptr<ArchiveFile> inner) : m_inner(std::move(inner))
+{
+	FilenameList all;
+	m_inner->getFileListInDirectory(std::string(), std::string(), "*", all, true);
+	for (const std::string &path : all)
+	{
+		const std::string k = FolderArchiveFile::key(path);
+		const ArchivedFileInfo *info = m_inner->getArchivedFileInfo(k);
+		if (!info || !isTexturePath(k))
+			continue;
+		const size_t sep = k.find_last_of('\\');
+		addFile(sep == std::string::npos ? std::string() : k.substr(0, sep + 1), info);
+		++m_count;
+	}
+}
+
+bool TextureOnlyArchiveFile::isTexturePath(const std::string &path)
+{
+	const std::string k = FolderArchiveFile::key(path);
+	for (const char *dir : { "art\\compiledtextures\\", "art\\textures\\", "art\\terrain\\" })
+		if (k.rfind(dir, 0) == 0)
+			return true;
+	return false;
+}
+
+bool TextureOnlyArchiveFile::readFile(const std::string &filename, std::vector<std::uint8_t> &out, std::string *error)
+{
+	if (!isTexturePath(filename))
+	{
+		if (error)
+			*error = "file " + filename + " is not a texture of the texture pack " + getPath();
+		return false;
+	}
+	return m_inner->readFile(filename, out, error);
+}
+
 void MemoryArchiveFile::put(const std::string &path, std::vector<std::uint8_t> bytes)
 {
 	const std::string k = FolderArchiveFile::key(path);

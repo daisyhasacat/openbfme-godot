@@ -10,6 +10,7 @@
 #include "Common/ArchiveFile.h"
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -62,6 +63,24 @@ public:
 private:
 	std::string m_name;
 	std::map<std::string, std::vector<std::uint8_t>> m_files;
+};
+
+// A texture pack: the texture files of another archive (art\compiledtextures\, art\textures\, art\terrain\) and nothing else,
+// so a mod used as a texture pack overrides only images, never INI, models, maps or UI (mods.cfg [mods] textures_only)
+class TextureOnlyArchiveFile : public ArchiveFile
+{
+public:
+	explicit TextureOnlyArchiveFile(std::unique_ptr<ArchiveFile> inner);
+	static bool isTexturePath(const std::string &path);
+	size_t fileCount() const { return m_count; }
+	bool readFile(const std::string &filename, std::vector<std::uint8_t> &out, std::string *error) override;
+	std::string getName() const override { return m_inner->getName(); }
+	std::string getPath() const override { return m_inner->getPath(); }
+	bool isIdentityEnforced() const override { return m_inner->isIdentityEnforced(); }
+
+private:
+	std::unique_ptr<ArchiveFile> m_inner;
+	size_t m_count = 0;
 };
 
 // RotWK reads a GameData block from any INI file it loads (its block table is shared): a mod may keep its GameData in

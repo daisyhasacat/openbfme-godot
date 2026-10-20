@@ -79,6 +79,10 @@ bool load(ArchiveFileSystem &fs, RoadTypeIndex &out, std::string *error);
 void buildStrips(const std::vector<MapObject> &objects, const RoadTypeIndex &types, const WorldHeightMap &map,
 	float liftWorldUnits, std::vector<RoadStrip> &out, RoadBuildReport &report);
 
+// OpenBFME map editor: a road point's own visible path width in world units (the editor's width setting). When present on a
+// segment's first point it replaces RoadWidth * RoadWidthInTexture of the road type; retail maps never carry it.
+inline constexpr const char *kEditorRoadWidthKey = "editorRoadWidth";
+
 // ZH getMaxCellHeight: the maximum of the four corner heights of the cell containing (x,y), in world units.
 float getMaxCellHeight(const WorldHeightMap &map, float x, float y);
 } // namespace TerrainRoads
