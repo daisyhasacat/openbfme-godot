@@ -338,10 +338,20 @@ std::unique_ptr<RetailObjectWorld::ContextScope> InGameHud::enterContext(const c
 	return m_config.world.enterContext();
 }
 
+void InGameHud::setViewActive(bool active)
+{
+	m_viewActive = active;
+	if (!active)
+	{
+		m_config.game.drawables().destroyClientDrawable(m_rallyPointDrawable);
+		m_rallyPointDrawable = 0;
+	}
+}
+
 void InGameHud::updateRallyPoint()
 {
-	// Both views share the same client drawables and selection; one marker suffices.
-	if (m_config.secondaryView) return;
+	// The active window's selection owns the shared world's rally marker.
+	if (!m_viewActive) return;
 	// RW 0x943D6F / 0x944EFB: the command / construction context asks the exit for its rally point.
 	// Multi-selection's representative drawable remains part of S-1202; use this HUD's single-object context.
 	const auto &selection = m_input->ui().selected();

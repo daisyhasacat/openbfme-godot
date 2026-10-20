@@ -8,8 +8,9 @@ window's adaptive HUD panels.
 
 The camera starts to the right of the main view. Normal selection, orders,
 building commands, keyboard shortcuts, minimap clicks, scrolling, and zoom work
-in the focused window with the same mouse and camera preferences. Selection is
-shared between the windows. Camera positions stay independent; rotating the
+in the focused window with the same mouse and camera preferences. Each window
+keeps its own selection, command buttons, and camera position. Switching focus
+restores that window's selected group before orders are sent. Rotating the
 focused view also rotates the other view to preserve shared transparent-object
 ordering. Escape opens the main game menu and focuses its window. Clicking the button again
 focuses the existing window. Closing it leaves the game running. Leaving gameplay
@@ -32,6 +33,6 @@ godot --headless --path godot --script res://tests/second_view_native_test.gd
 ```
 
 The checks cover world sharing, camera isolation, native keyboard dispatch,
-selection mirroring, scripted input restriction, focus switching, cleanup on
+independent selections and selected-group restoration, scripted input restriction, focus switching, cleanup on
 menu/world transitions, and culling restoration. Native
 window placement and visual rendering require a desktop gameplay check.

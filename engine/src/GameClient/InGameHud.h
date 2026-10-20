@@ -128,6 +128,7 @@ public:
 	HudInput &input() { return *m_input; }
 	ControlBar &controlBar() { return *m_bar; }
 	std::uint32_t rallyPointDrawableId() const { return m_rallyPointDrawable; }
+	void setViewActive(bool active);
 	Radar &radar() { return *m_radar; }
 	// AUDIO-2: the unit voices of the local player's selection and commands (through the installed audio manager and Eva)
 	UnitVoiceResponse &voice() { return *m_voice; }
@@ -256,6 +257,7 @@ private:
 	Config m_config;
 	void updateRallyPoint();
 	std::uint32_t m_rallyPointDrawable = 0;
+	bool m_viewActive = true;
 	ObjectID m_rallyPointSource = INVALID_ID;
 	float m_downwindAngle = 0.0f;
 	bool m_haveDownwindAngle = false;

@@ -3081,7 +3081,6 @@ void InGameHudNode::_process(double delta)
 		auto *peer = Object::cast_to<InGameHudNode>(ObjectDB::get_instance(ObjectID(d->peerViewId)));
 		if (peer && peer->d->ready && peer->d->viewActive)
 		{
-			d->hud->input().ui().mirrorSelection(peer->d->hud->input().ui().selected());
 			// Shared transparent batches are sorted using the main camera. Keep
 			// both views parallel, while retaining their independent positions.
 			d->cam->setAngle(peer->d->cam->getAngle());
@@ -3461,7 +3460,6 @@ void InGameHudNode::link_secondary_view(InGameHudNode *primary)
 		d->world != primary->d->world || d->localPlayerIndex != primary->d->localPlayerIndex) return;
 	d->peerViewId = primary->get_instance_id();
 	primary->d->peerViewId = get_instance_id();
-	d->hud->input().ui().mirrorSelection(primary->d->hud->input().ui().selected());
 	if (primary->d->hud->scriptMouseHidden()) script_input(false);
 }
 
@@ -3470,11 +3468,23 @@ void InGameHudNode::set_view_active(bool active)
 	if (!d->ready || d->viewActive == active) return;
 	if (active && d->peerViewId)
 	{
+		// Retail has one authoritative selected group per player. Each window
+		// retains its own client selection; restore that group before its next
+		// order. A held zero-time HUD update drains deferred movie presses as
+		// well as the input stream, before replacing the authoritative group.
+		waitLogic(d.get());
 		auto *peer = Object::cast_to<InGameHudNode>(ObjectDB::get_instance(ObjectID(d->peerViewId)));
 		if (peer && peer->d->ready)
-			d->hud->input().ui().mirrorSelection(peer->d->hud->input().ui().selected());
+			peer->d->hud->update(0.0);
+		d->hud->update(0.0);
+		const auto &selected = d->hud->input().ui().selected();
+		GameMessage group(selected.empty() ? MSG_DESTROY_SELECTED_GROUP : MSG_CREATE_SELECTED_GROUP_NO_SOUND, d->localPlayerIndex);
+		group.appendBooleanArgument(true);
+		for (auto id : selected) group.appendObjectIDArgument(id);
+		d->world->hud_game()->commands().append(std::move(group));
 	}
 	d->viewActive = active;
+	d->hud->setViewActive(active);
 	if (!active && d->ghost) d->ghost->clear();
 	if (active)
 	{
@@ -3494,7 +3504,7 @@ void InGameHudNode::set_view_active(bool active)
 	d->massRecruitKey = false;
 	d->uberRecruitPress = false;
 	d->pendingInput.clear();
-	// Update the active selection before the other view mirrors it.
+	// Update the active camera before the other view follows its orientation.
 	set_process_priority(active ? -101 : -100);
 }
 

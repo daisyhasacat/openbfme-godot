@@ -55,19 +55,28 @@ func run() -> void:
 	var position: Vector2 = primary.get_camera().position
 	secondary.camera_pan(Vector2(100, 0))
 	assert(primary.get_camera().position == position)
-	var id := 0
+	var units: Array[int] = []
 	for object in world.get_player_objects(started.start.local_player):
 		if not object.structure:
-			id = object.id
-			break
+			units.append(object.id)
+	assert(units.slice(0, 2).size() == 2)
+	var id: int = units[0]
+	var other_id: int = units[1]
 	assert(primary.select_controller_group(PackedInt64Array([id])) == 1)
 	for i in 4: await process_frame
-	assert(secondary.get_selection() == primary.get_selection())
+	assert(primary.get_selection() == [id])
+	assert(secondary.get_selection() == [])
 	assert(secondary.get_adaptive_minimap().ready)
 	assert(secondary.is_ready())
 	# A command key in the second viewport must reach that HUD exactly once.
 	secondary.set_view_active(true)
 	primary.set_view_active(false)
+	assert(secondary.select_controller_group(PackedInt64Array([other_id])) == 1)
+	for i in 4: await process_frame
+	world.advance(0.2)
+	assert(secondary.get_selection() == [other_id])
+	assert(primary.get_selection() == [id])
+	assert(secondary.get_logic_selection() == [other_id])
 	var before: int = secondary.get_state().keys.key_events
 	var main_before: int = primary.get_state().keys.key_events
 	var key := InputEventKey.new()
@@ -83,7 +92,19 @@ func run() -> void:
 	assert(primary.get_state().keys.key_events == main_before)
 	secondary.deselect_all()
 	for i in 4: await process_frame
-	assert(primary.get_selection() == [])
+	assert(primary.get_selection() == [id])
+	assert(secondary.get_selection() == [])
+	# Focus restores the destination group, including an empty selection.
+	primary.set_view_active(true)
+	secondary.set_view_active(false)
+	world.advance(0.2)
+	assert(primary.get_logic_selection() == [id])
+	assert(secondary.get_selection() == [])
+	secondary.set_view_active(true)
+	primary.set_view_active(false)
+	world.advance(0.2)
+	assert(secondary.get_logic_selection() == [])
+	assert(primary.get_selection() == [id])
 	# Switching away mid-drag must cancel the old viewport's drag selection.
 	primary.set_view_active(true)
 	secondary.set_view_active(false)

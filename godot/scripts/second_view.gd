@@ -120,7 +120,7 @@ func _activate(secondary: bool) -> void:
 		return
 	secondary = secondary and not _input_blocked()
 	secondary_active = secondary
-	# Activate the destination before disabling its source, preserving selection.
+	# Restore the destination's own selection before accepting its input.
 	if secondary:
 		hud.set_view_active(true)
 		primary_hud.set_view_active(false)
