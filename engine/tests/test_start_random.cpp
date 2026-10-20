@@ -19,11 +19,15 @@
 
 #include "StartGolden.h"
 #include "CombatTestUtil.h"
+#include "PathfindTestUtil.h"
+#include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/Module/CastleModules.h"
 #include "GameLogic/Map/TerrainLogic.h"
 
 #include <array>
 #include <cfenv>
 #include <cstring>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <set>
@@ -564,6 +568,60 @@ struct InwardStartMap
 	}
 	void init() { terrain.init(map, chunks); }
 };
+}
+
+TEST_CASE("starting base: zero-offset units search around the base or rally instead of rejecting the match")
+{
+	bool building = false, explicitRally = false, castle = false, blocked = false;
+	SUBCASE("no building uses radius fifty") {}
+	SUBCASE("generated building supplies radius and half-radius rally shift") { building = true; }
+	SUBCASE("map rally overrides derived rally") { building = true; explicitRally = true; }
+	SUBCASE("castle search radius differs from geometry rally shift") { building = true; castle = true; }
+	SUBCASE("no valid spot skips the unit without failing the map") { blocked = true; }
+	auto run = [&]()
+	{
+		InwardStartMap map;
+		map.add("Player_1_Start", 300, 300);
+		if (explicitRally) map.add("Player_1_Rally", 600, 600);
+		map.init();
+		combattest::CombatWorld w(
+			"Object StartKeep\n KindOf = STRUCTURE IMMOBILE\n Geometry = CYLINDER\n GeometryMajorRadius = 20\n GeometryHeight = 30\nEnd\n"
+			"Object StartMarker\n KindOf = INERT IMMOBILE\n Geometry = CYLINDER\n GeometryMajorRadius = 1\n GeometryHeight = 1\nEnd\n");
+		if (castle)
+		{
+			CastleModules::registerAll(w.w.modules);
+			REQUIRE(w.w.load("Object StartCastle\n KindOf = STRUCTURE IMMOBILE\n Geometry = CYLINDER\n GeometryMajorRadius = 20\n GeometryHeight = 30\n Behavior = CastleBehavior Castle\n MaxCastleRadius = 80\n End\nEnd\n", INI_LOAD_OVERWRITE, "castle.ini").empty());
+		}
+		w.logic->setTerrain(&map.terrain);
+		pathtest::SyntheticTerrain pathTerrain(100, 100);
+		if (blocked) pathTerrain.water.push_back({0,0,1000,1000,10});
+		AIWorldConfig config; config.pathfind = pathtest::testConfig();
+		INIMacroTable macros;
+		AIWorld ai(*w.logic, config, macros); ai.attach(); ai.newMap(pathTerrain);
+		PlayerTemplate faction;
+		if (building) faction.m_startingBuilding = castle ? "StartCastle" : "StartKeep";
+		faction.m_startingUnit[8] = "StartMarker";
+		SkirmishGameSlot slot; slot.startPos = 0;
+		StartingBase::Result result;
+		StartingBase::placeForPlayer(*w.logic, 0, slot, *w.teamA()->getControllingPlayer(), faction, result);
+		REQUIRE(result.errors.empty());
+		if (blocked)
+		{
+			CHECK(result.placed.empty());
+			return std::array<float,3>{0,0,0};
+		}
+		REQUIRE(result.placed.size() == (building ? 2 : 1));
+		const auto &placed = result.placed.back();
+		CHECK(placed.templateName == "StartMarker");
+		const float x = explicitRally ? 600.0f : 300.0f;
+		const float y = explicitRally ? 600.0f : (building ? 287.5f : 300.0f);
+		const double distance = std::hypot(placed.position.x - x, placed.position.y - y);
+		const double radius = castle ? 80.0 : (building ? 20.0 : 50.0);
+		CHECK(distance >= radius - 0.001); // tolerance: float32 trig and stored coordinates on the search ring
+		CHECK(distance <= radius * 1.4 + 0.001); // tolerance: float32 ring placement within the retail search bounds
+		return std::array<float,3>{placed.position.x, placed.position.y, placed.position.z};
+	};
+	CHECK(run() == run());
 }
 
 TEST_CASE("starting base facing: default faces the average start area rather than a fixed template angle")

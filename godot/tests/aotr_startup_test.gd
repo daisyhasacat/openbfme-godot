@@ -51,8 +51,21 @@ func run() -> void:
 		await process_frame
 		await RenderingServer.frame_post_draw
 		assert(root.get_texture().get_image().save_png(OS.get_environment("AOTR_MENU_SHOT")) == OK)
-	var map: Dictionary = world.load_map("map mp fall back 4p", {"slots":[{"player":"Player_1","faction":"FactionMen","human":true}]})
+	var map_name := OS.get_environment("AOTR_TEST_MAP")
+	if map_name.is_empty(): map_name = "map mp itakh khand"
+	var map_key := map_name if map_name.begins_with("maps/") else "maps/%s/%s.map" % [map_name, map_name]
+	var slots: Array = []
+	for i in 8:
+		slots.append({"state":1,"name":"Closed","accepted":true,"color":-1,"start_pos":-1,"player_template":-1,"team":-1})
+	var rohan: Array = lobby.factions.filter(func(faction): return faction.template == "FactionRohan")
+	assert(rohan.size() == 1)
+	slots[0] = {"state":6,"name":"AOTR test","accepted":true,"color":-1,"start_pos":0,"player_template":rohan[0].value,"team":0}
+	var prepared: Dictionary = world.prepare_new_game({"mode":"skirmish","difficulty":1,"rank_points":0,
+		"map":map_key,"map_crc":0,"map_size":0,"map_mask":0,"seed":1,"starting_cash":1500,"slots":slots})
+	assert(prepared.ok, str(prepared.get("errors", [])))
+	var map: Dictionary = world.start_new_game({"logic_thread":false})
 	assert(map.ok, str(map.get("errors", [])))
+	assert(map.start.starting_objects.any(func(object): return object.template == "CommandPointSpawn"))
 	var before: int = world.get_frame()
 	world.advance(0.2)
 	assert(world.get_frame() != before)

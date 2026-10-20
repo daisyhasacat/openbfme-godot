@@ -43,6 +43,14 @@ Infinite resources is labelled as an OpenBFME addition. Other rule tables retain
 the supported RotWK semantics; this is data-driven menu integration, not a claim
 that all rules of AOTR's patched executable are implemented.
 
+Zero-offset starting units, including AOTR's `CommandPointSpawn`, use the retail
+nearby-position search around the map's rally point or the generated base. They
+are spawned as real objects with their normal behaviors; zero offsets are valid.
+The optional AOTR startup test uses Rohan and checks that its marker was created.
+Set `AOTR_TEST_MAP` to run that check on a different installed map. Custom maps
+still need matching object definitions and script libraries in the mounted game;
+missing dependencies remain load errors.
+
 This remains an experimental compatibility profile. Macro override/inheritance
 rules and added category IDs are inferred from the installed data; they have not
 been verified against AOTR's patched executable. Loading its assets does not
