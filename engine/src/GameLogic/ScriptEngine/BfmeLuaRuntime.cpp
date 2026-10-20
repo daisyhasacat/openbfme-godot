@@ -326,9 +326,7 @@ local methods={
 R"lua(   return queue(h.kind,h.id,':trainUnit',unit,count)
   end,
   getTrainableUnits=objectQuery('trainable'),
-  getUpgrades=objectQuery('upgrades'),
   getLayoutInfo=objectQuery('buildingLayout'),
-  giveUpgrade=function(b,u) local _,h=record(b); return queue(h.kind,h.id,':giveUpgrade',name(u,'an upgrade')) end,
   linkWallPiece=function(b,other) local _,h=record(b); return queue(h.kind,h.id,':linkWallPiece',instanceId(other,'wall piece')) end,
   canTrain=function(b,unit)
    local _,h=record(b); unit=templateName(unit,'unitTypes','unit template')
@@ -345,6 +343,8 @@ for _,n in ipairs{'attack','attackGround','stop','evacuate','sell','researchUpgr
 end
 for _,kind in ipairs{'unitInstances','buildingInstances'} do
  methods[kind].getAbilities=objectQuery('abilities')
+ methods[kind].getUpgrades=objectQuery('upgrades')
+ methods[kind].giveUpgrade=function(o,u) local _,h=record(o); return queue(h.kind,h.id,':giveUpgrade',name(u,'an upgrade')) end
  methods[kind].isKindOf=function(o,k) local _,h=record(o); return query('kindOf',tonumber(h.id),name(k,'a KindOf')) end
 end
 local mt={
@@ -465,7 +465,8 @@ library('buildMode',{
 library('timing',{
 	onBuild=function(fn) return timingNative('build',fn) end,
 	onTrain=function(fn) return timingNative('train',fn) end,
-	clear=function() timingNative('build',nil); timingNative('train',nil) end,
+	onUpgrade=function(fn) return timingNative('upgrade',fn) end,
+	clear=function() timingNative('build',nil); timingNative('train',nil); timingNative('upgrade',nil) end,
 })
 library('match',{
  getFrame=function() return view.frame or 0 end,
@@ -616,7 +617,7 @@ struct BfmeLuaRuntime::Impl
 		try {
 			auto &s = self(L);
 			const std::string kind = luaL_checkstring(L, 1);
-			if (kind != "build" && kind != "train") throw std::runtime_error("unknown timing kind");
+			if (kind != "build" && kind != "train" && kind != "upgrade") throw std::runtime_error("unknown timing kind");
 			const bool removing = lua_isnoneornil(L, 2);
 			if (!removing && !lua_isfunction(L, 2)) throw std::runtime_error("expected a function or nil");
 			if (!removing) {

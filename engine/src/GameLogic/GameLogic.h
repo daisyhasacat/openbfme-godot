@@ -442,6 +442,7 @@ public:
 		const Object *producer;
 		const Object *object;
 		int frames;
+		std::string operationId; // optional research upgrade name
 	};
 	// OpenBFME notification only: consumers queue IDs/data and never execute Lua here.
 	using BuildingPlacedHook = std::function<void(const Object &, const Object *)>;

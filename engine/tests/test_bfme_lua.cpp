@@ -542,6 +542,9 @@ TEST_CASE("bfme timing: callbacks can edit seconds or return a duration; removal
 	CHECK(f.run("return seenFrame") == "42\n");
 	CHECK(f.run("return calls,seen.typeId,seen.playerId,seen.baseSeconds,seen.kind") == "1\tHall\t1\t20\tbuild\n");
 	CHECK(f.vm->adjustTiming("train", {}, 100) == 100);
+	f.run("bfme.timing.onUpgrade(function(c) upgradeSeen=c; return 1 end)");
+	CHECK(f.vm->adjustTiming("upgrade", {{"typeId","TestUpgrade"},{"playerId",1}}, 150) == 5);
+	CHECK(f.run("return upgradeSeen.typeId,upgradeSeen.kind") == "TestUpgrade\tupgrade\n");
 	f.run("bfme.timing:onTrain(function(c) return 0.21 end)");
 	CHECK(f.vm->adjustTiming("train", {}, 100) == 2); // seconds round up to whole logic frames
 	CHECK_FALSE(f.vm->execute("bfme.timing.onBuild(3)").ok);

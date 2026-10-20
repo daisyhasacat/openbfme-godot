@@ -893,3 +893,32 @@ TEST_CASE("completion audio: a standalone unit speaks created once without a hor
 	f.frames(100);
 	CHECK(events == std::vector<int>{0x7DA});
 }
+
+TEST_CASE("timing upgrade: research captures a five-frame duration once and completes in one simulation second")
+{
+	BarracksFx f;
+	f.load("Upgrade TimingResearch\n Type = PLAYER\n BuildTime = 10\n BuildCost = 0\nEnd\n");
+	const auto *upgrade = f.upgradeCenter.findUpgrade("TimingResearch");
+	REQUIRE(upgrade);
+	auto *production = f.barracks->getProductionUpdate();
+	int calls = 0;
+	f.logic->setTimingHook("upgrade", [&](const GameLogic::TimingRequest &r) {
+		++calls;
+		CHECK(r.kind == "upgrade");
+		CHECK(r.operationId == "TimingResearch");
+		CHECK(r.frames == 50);
+		CHECK(r.producer == f.barracks);
+		return 5;
+	});
+	REQUIRE(production->queueUpgrade(upgrade));
+	CHECK(calls == 0);
+	f.frames(4);
+	CHECK(calls == 1);
+	CHECK_FALSE(f.alice()->hasUpgradeComplete(upgrade));
+	REQUIRE(production->firstProduction());
+	CHECK(production->firstProduction()->scriptTimingFrames == 5);
+	f.logic->setTimingHook("upgrade", {});
+	f.frames(1);
+	CHECK(f.alice()->hasUpgradeComplete(upgrade));
+	CHECK(calls == 1);
+}

@@ -14,6 +14,8 @@
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/Module/BehaviorModule.h"
 #include "GameLogic/Object/ExperienceTracker.h"
+#include "GameLogic/ExperienceLevels.h"
+#include "GameLogic/Economy.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
 #include "GameLogic/ObjectTemplateInfo.h"
@@ -198,7 +200,11 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 			r["invulnerable"] = body->isIndestructible();
 		}
 		if (auto xp = obj->getExperienceTracker())
+		{
 			r["level"] = xp->getRank();
+			const auto *last = TheExperienceLevelSystem ? TheExperienceLevelSystem->lastLevel(xp->levelTargetName(), obj->logic().economy().isMultiplayerGame()) : nullptr;
+			r["maxLevel"] = last ? last->m_rank : xp->getRank();
+		}
 		if (building)
 		{
 			r["underConstruction"] = obj->isUnderConstruction();

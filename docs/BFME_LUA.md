@@ -149,7 +149,7 @@ follow the engine's native creation rules; the call updates current contents.
 
 `bfme.timing` intercepts durations **once, immediately before work starts** in a
 local live match. It covers builder/plot/fortress/self-building construction and
-ordinary unit recruitment queues. UI estimates never invoke callbacks. Queued
+ordinary unit recruitment queues and upgrade research. UI estimates never invoke callbacks. Queued
 training that is waiting for another item or command points calls its callback
 when it actually starts, rather than when purchased.
 
@@ -166,10 +166,10 @@ timing.onTrain(function(context)
     end
 end)
 -- timing.onBuild(nil)  -- remove only the building callback
--- timing.clear()       -- remove both callbacks
+-- timing.clear()       -- remove all three callbacks
 ```
 
-The mutable context contains `kind` (`build` or `train`), `typeId`, `playerId`,
+The mutable context contains `kind` (`build`, `train`, or `upgrade`), `typeId`, `playerId`,
 `producerId`, `objectId`, `baseSeconds`, and `seconds`. IDs are engine IDs, with
 0 for an absent producer/object; a unit has not been created when training
 starts. Edit `seconds`, return a replacement number, or return nil to use the
@@ -181,7 +181,7 @@ started operations retain their chosen duration when a callback is replaced or
 removed. Errors and invalid durations are reported by the engine and leave that
 operation's native duration in place. Callbacks have the console's execution
 budget. They are cleared on a new match. They do not change template defaults,
-prices, research/upgrade timers, or hero revival timers.
+prices or hero revival timers. `onUpgrade(fn)` intercepts research; its `typeId` is the upgrade name.
 
 Callbacks run on the main Lua thread: while registered, simulation uses the main
 thread, and restores its previous worker setting when removed. Registration is
@@ -199,7 +199,7 @@ refused in network matches and replay playback; these are local scripting hooks.
 | `bfme.debug` | `getSelectedBuilding()`, `getSelectedUnit()`, `inspect(handle)` |
 | `bfme.console` | `reload()`, `log(text)` |
 | `bfme.orders` | the unit and building orders below, for a handle or a list of handles of one player |
-| `bfme.timing` | `onBuild(fn)`, `onTrain(fn)`, `clear()`; see timing callbacks above |
+| `bfme.timing` | `onBuild(fn)`, `onTrain(fn)`, `onUpgrade(fn)`, `clear()`; see timing callbacks above |
 | `bfme.ai` | `list()`, `setEnabled(player, enabled)`, `isEnabled(player)`, `getStatus(player)` |
 | `bfme.events` | `onUpdate(name, fn, intervalMs)`, `remove(name)`, `list()` |
 | `bfme.map` | `getStartPositions()`, `getFarmSites()`, `getGroundHeight(x, y)`, `distance(a, b)` |
@@ -574,3 +574,43 @@ starting slot, including a computer player. New recordings store `sourceStartSlo
 (the zero-based map start index). Older layouts infer the owner from the starting
 position nearest their saved fortress or first building. An unoccupied saved slot
 is an error; `{player=...}` explicitly overrides ownership.
+
+## Ubermode sandbox cheat
+
+`godot/dev/ubermode.lua` is loaded with the console scripts. In a local live
+match, use the console Cheats tab's **Enable ubermode** / **Disable ubermode**
+buttons, or `ubermode.enable()`, `ubermode.disable()`, `ubermode.toggle()`.
+This cheat is independent of the Uber simulation/performance profile.
+
+Enabling sets the local player's gold and CP capacity to 1,000,000. Subsequent
+construction, recruitment and upgrade research take one simulation second
+(five logic frames); existing work keeps its captured duration. Newly created
+units receive their native maximum experience level and all purchasable object
+upgrades in their command set, including battalion propagation through the
+native upgrade path. Internal mode-switch/ability flags are not equipment.
+`unit.maxLevel`, `unit:getUpgrades()` and `unit:giveUpgrade(name)` are also
+available independently of the cheat.
+
+Hold **K** while clicking a building's recruitment command button to request
+five of that unit at the selected building and every other completed, owned
+building of the same template. Normal eligibility, uniqueness and queue limits
+still apply. Lua retains pending requests and waits for available queue slots;
+destroyed/captured producers drop their pending requests. Other command buttons
+keep their normal behavior. The Lua entry point can also be called as
+`ubermode.massTrain(unitType, building)` (the building defaults to the selection).
+
+Disabling restores the previous CP base/cap/bonus, removes timing callbacks and
+cancels pending mass requests. Gold, trained units, levels, upgrades and requests
+already in native queues remain. The mode is off by default and resets for a new
+match; it refuses network games and replay playback. It owns the three local
+`bfme.timing` callback slots while enabled.
+
+Ubermode validation: the installed-data test `godot/tests/ubermode_test.gd`
+checks the million gold/CP grant, construction incomplete after four frames and
+complete after five, maximum-level fully equipped recruits, five recruits from
+each of two matching producers, and restoring CP on disable. The research
+regression in `test_prod_production.cpp` asserts completion on the fifth frame;
+the Lua runtime and console tests cover the new API and enable/disable buttons.
+Local builds and these checks pass. The full simulation AST audit remains
+blocked by the existing missing libclang installation (S-230); compile/link flag
+checks pass, with the existing unclassified source reported by classification.

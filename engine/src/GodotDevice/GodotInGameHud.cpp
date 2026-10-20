@@ -215,6 +215,7 @@ struct HudDevice : public AptNativeHook
 	bool ready = false;
 	bool modal = false;      ///< lane OPTS-6: a menu is the input's top over the game (InGameHud::setModal)
 	unsigned modalEntries = 0; ///< lane OPTS-6: the menus that took the input over the game (get_state keys.modal_entries)
+	bool uberRecruitPress = false; // consume the matching release after Lua handles a K+recruit
 	unsigned heldButtons = 0; ///< lane OPTS-6: the mouse buttons the world saw go down (bit 1 left, 2 right, 3 middle), released when a menu opens
 	bool ownsPlayer = false;
 	std::uint64_t playerId = 0;
@@ -4328,6 +4329,27 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 	{
 		syncModifiers(mb);
 		const int idx = (int)mb->get_button_index();
+		if (idx == 1 && !mb->is_pressed() && d->uberRecruitPress) {
+			d->uberRecruitPress = false;
+			get_viewport()->set_input_as_handled();
+			return;
+		}
+		if (idx == 1 && mb->is_pressed() && !d->modal && d->world && d->hud->input().ui().getInputEnabled() && Input::get_singleton()->is_physical_key_pressed(Key::KEY_K)) {
+			const Dictionary hit = command_button_at(mb->get_position());
+			if ((bool)hit.get("found", false)) for (const Variant &item : get_command_buttons()) {
+				const Dictionary button = item;
+				const String command = button.get("command", String());
+				if (button.get("name", String()) != hit.get("name", String()) || (command != "UNIT_BUILD" && command != "SECONDARY_UNIT_BUILD")) continue;
+				const String unit = button.get("template", String());
+				const Dictionary result = d->world->execute_lua("return ubermode and ubermode.massTrain(\"" + unit.json_escape() + "\") or false");
+				if ((bool)result.get("ok", false) && String(result.get("output", String())).strip_edges() == "true") {
+					d->uberRecruitPress = true;
+					get_viewport()->set_input_as_handled();
+					return;
+				}
+			}
+		}
+
 		if (idx == 1 || idx == 2 || idx == 3)
 		{
 			inject_mouse_button(idx, mb->is_pressed(), mb->get_position(), mb->is_double_click());

@@ -4200,10 +4200,10 @@ void GameWorld::refreshTimingHooks()
 	if (!m_consoleRuntime->hasTimingHooks() && !m_timingHooksAttached) return;
 	auto &logic = m_game->logic();
 	m_timingHooksAttached = m_consoleRuntime->hasTimingHooks();
-	for (const std::string kind : {"build", "train"}) {
+	for (const std::string kind : {"build", "train", "upgrade"}) {
 		if (!m_consoleRuntime->hasTimingHook(kind)) { logic.setTimingHook(kind, {}); continue; }
 		logic.setTimingHook(kind, [this](const GameLogic::TimingRequest &r) {
-			BfmeLuaValue::Table context{{"typeId", r.type.getName()}, {"playerId", r.player ? r.player->getPlayerIndex() : -1},
+			BfmeLuaValue::Table context{{"typeId", r.operationId.empty() ? r.type.getName() : r.operationId}, {"playerId", r.player ? r.player->getPlayerIndex() : -1},
 				{"producerId", r.producer ? r.producer->getID() : 0u}, {"objectId", r.object ? r.object->getID() : 0u}};
 			return m_consoleRuntime->adjustTiming(r.kind, std::move(context), r.frames);
 		});

@@ -108,6 +108,10 @@ func _run() -> void:
 			button.pressed.emit()
 	assert(commands.size() == 1, str(commands))
 	assert(commands[0] in ["bfme.match.setGameSpeed(2)", "bfme.match.setGameSpeed(2.0)"], str(commands))
+	for cheat_button in cheats.find_children("*", "Button", true, false):
+		if cheat_button.text in ["Enable ubermode", "Disable ubermode"]:
+			cheat_button.pressed.emit()
+	assert(commands.slice(1) == ["ubermode.enable()", "ubermode.disable()"], str(commands))
 	assert(console._tabs.current_tab == 2)
 	assert(console._entry.text == "-- preserve cheat draft")
 	var history_after := ConfigFile.new()

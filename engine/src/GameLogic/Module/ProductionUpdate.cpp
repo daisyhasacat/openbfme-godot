@@ -987,6 +987,8 @@ UpdateSleepTime ProductionUpdate::update()
 	int total = totalProductionFrames(*entry, player);
 	if (entry->type == PRODUCTION_UNIT && !entry->scriptTimingFrames && entry->framesUnderConstruction == 0.0f && logic.hasTimingHook("train"))
 		entry->scriptTimingFrames = logic.interceptTiming({"train", *entry->objectToProduce, player, us, nullptr, total});
+	if (entry->type == PRODUCTION_UPGRADE && !entry->scriptTimingFrames && entry->framesUnderConstruction == 0.0f && logic.hasTimingHook("upgrade"))
+		entry->scriptTimingFrames = logic.interceptTiming({"upgrade", *us->getTemplate(), player, us, nullptr, total, entry->upgradeToResearch->getUpgradeName()});
 	if (entry->scriptTimingFrames) total = entry->scriptTimingFrames;
 	entry->framesUnderConstruction = SimMath::addf32(entry->framesUnderConstruction, rate);
 	entry->percentComplete = SimMath::mulf32(SimMath::divf32(entry->framesUnderConstruction, (float)total), 100.0f); // RW 0xBD88D8 = 100.0f; the divide before the multiply
