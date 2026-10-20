@@ -1760,7 +1760,7 @@ func _clean_main_menu() -> bool:
 
 func _configure_menu_style(style: String) -> bool:
 	# BFME1 always presents its own archives; the BFME2/RotWK choice is retained for switching back.
-	var use_bfme2: bool = style == "bfme2" and not _fs.is_bfme1()
+	var use_bfme2: bool = style == "bfme2" and not _fs.is_bfme1() and Release.selected_game() != "aotr"
 	if use_bfme2:
 		if _bfme2_shell_fs == null:
 			_bfme2_shell_fs = _fs.create_bfme2_shell()

@@ -8,6 +8,24 @@ also counts as a mod.
 
 ## The mod manager
 
+Age of the Ring is a separate choice in the launcher's game picker and the
+in-game game selector, alongside BFME1 and standard RotWK. **AOTR files…** accepts
+the installed `aotr` folder, its enclosing `AotR` folder, or its CrossOver
+`drive_c` folder. On macOS the BFME Launcher's AgeOfTheRing CrossOver installation
+is detected automatically. `AOTR_INSTALL` or `--aotr-install=<folder>` also
+selects its files; `--game=aotr` selects the game for one launch.
+
+AOTR uses verified RotWK 2.01 and BFME II 1.06 base installations plus its own
+asset overlay. Standard RotWK mods and the optional wall pack are excluded from
+this game choice. Its menus use the AOTR overlay rather than the BFME II menu
+presentation source. Executables and DLLs from the mod are not run.
+
+This is an experimental asset profile, not a claim of playable AOTR support.
+The tested installation mounts, but object-world initialization currently fails
+on duplicate macro definitions (including `MORDOR_HARADRIM_HEALTH`) and unresolved
+AOTR constants. These errors remain visible; selecting the game does not bypass
+parsing or provide the behavior of AOTR's patched Windows executable.
+
 The **Mods** link under **Logs** (below the version number in the menus) opens
 the mod manager (`godot/scripts/mod_manager.gd`). It lists:
 

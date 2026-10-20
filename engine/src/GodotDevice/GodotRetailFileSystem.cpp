@@ -63,6 +63,7 @@ void RetailFileSystem::_bind_methods()
 	ClassDB::bind_method(D_METHOD("mount_bfme1_path", "root"), &RetailFileSystem::mount_bfme1_path);
 	ClassDB::bind_method(D_METHOD("is_bfme1"), &RetailFileSystem::is_bfme1);
 	ClassDB::bind_method(D_METHOD("mount_retail"), &RetailFileSystem::mount_retail);
+	ClassDB::bind_method(D_METHOD("mount_aotr_path", "path"), &RetailFileSystem::mount_aotr_path);
 	ClassDB::bind_method(D_METHOD("mount_retail_paths", "rotwk", "bfme2"), &RetailFileSystem::mount_retail_paths); // RELEASE-1
 	ClassDB::bind_method(D_METHOD("create_bfme2_shell"), &RetailFileSystem::create_bfme2_shell);
 	ClassDB::bind_method(D_METHOD("is_mounted"), &RetailFileSystem::is_mounted);
@@ -101,6 +102,17 @@ Dictionary RetailFileSystem::mount_retail()
 		errors.push_back(toGodot(error));
 	}
 	return mountFrom(rotwkRoot, bfme2Root, errors);
+}
+
+Dictionary RetailFileSystem::mount_aotr_path(const String &path)
+{
+	PackedStringArray errors;
+	const std::string config = toNative(ProjectSettings::get_singleton()->globalize_path("user://install-paths.cfg"));
+	std::string rotwk, bfme2, error;
+	if (path.is_empty()) errors.push_back("Choose the Age of the Ring installation folder.");
+	if (!ResolveInstallPath("ROTWK_INSTALL", config, rotwk, &error)) errors.push_back(toGodot(error));
+	if (!ResolveInstallPath("BFME2_INSTALL", config, bfme2, &error)) errors.push_back(toGodot(error));
+	return mountFrom(rotwk, bfme2, errors, toNative(path));
 }
 
 Dictionary RetailFileSystem::mount_retail_paths(const String &rotwk, const String &bfme2)
@@ -273,7 +285,7 @@ Dictionary RetailFileSystem::mount_bfme1_path(const String &root)
 	return result;
 }
 
-Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::string &bfme2Root, PackedStringArray errors)
+Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::string &bfme2Root, PackedStringArray errors, const std::string &aotr)
 {
  m_installedMaps.clear();m_installedLoaded=false;m_libraryText.reset();
 	Dictionary result;
@@ -319,7 +331,7 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 		wallOptions->load("res://dev/wall_balance.cfg");
 		Ref<ConfigFile> savedWalls; savedWalls.instantiate();
 		if (savedWalls->load("user://wall_balance.cfg") == OK) wallOptions = savedWalls;
-		const bool wantsTowers = (bool)wallOptions->get_value("walls","new_towers",false);
+		const bool wantsTowers = aotr.empty() && (bool)wallOptions->get_value("walls","new_towers",false);
 		const bool hasTowerPack = FileAccess::file_exists("res://mods/wall_towers.big");
 		if (report.ok && wantsTowers && !hasTowerPack)
 		{
@@ -328,6 +340,8 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 		// lane MODS-1: the enabled mods (user://mods.cfg [mods] enabled, in load order; RotWK's -mod "<folder>" as --mod=<folder> too)
 		PackedStringArray modPaths;
 		std::set<std::string> texturesOnly; // mods.cfg [mods] textures_only: mods mounted as texture packs (TextureOnlyArchiveFile)
+		if (!aotr.empty()) modPaths.push_back(toGodot(aotr));
+		else
 		{
 			Ref<ConfigFile> modsCfg;
 			modsCfg.instantiate();

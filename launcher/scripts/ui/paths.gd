@@ -149,3 +149,18 @@ static func bfme1_folder(user_dir: String = GameOptions.game_user_dir()) -> Stri
 		if candidate != "" and DirAccess.dir_exists_absolute(candidate):
 			return candidate
 	return ""
+
+static func aotr_folder(user_dir: String = GameOptions.game_user_dir()) -> String:
+	var candidates := [OS.get_environment("AOTR_INSTALL")]
+	var cfg := ConfigFile.new()
+	cfg.load(user_dir.path_join("game-selection.cfg"))
+	candidates.append(str(cfg.get_value("aotr", "install", "")))
+	if OS.get_name() == "macOS":
+		candidates.append(OS.get_data_dir().path_join("BFMELauncher/Installation/Mods/AgeOfTheRing/CrossOverPrefix/drive_c"))
+	for path in candidates:
+		if path.is_empty(): continue
+		for suffix in ["", "aotr", "AotR/aotr"]:
+			var folder: String = path.path_join(suffix).simplify_path().trim_suffix("/")
+			if FileAccess.file_exists(folder.path_join("AOTRSkirmish.big")) and DirAccess.dir_exists_absolute(folder.path_join("data")):
+				return folder
+	return ""

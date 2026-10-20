@@ -297,10 +297,11 @@ func set_in_game(in_game: bool) -> void:
 func selected_game() -> String:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--game="):
-			return "bfme1" if arg.trim_prefix("--game=")=="bfme1" else "bfme2"
+			return arg.trim_prefix("--game=") if arg.trim_prefix("--game=") in ["bfme1", "aotr"] else "bfme2"
 	var cfg := ConfigFile.new()
 	cfg.load("user://game-selection.cfg")
-	return "bfme1" if cfg.get_value("game", "selected", "bfme2")=="bfme1" else "bfme2"
+	var selected: String = cfg.get_value("game", "selected", "bfme2")
+	return selected if selected in ["bfme1", "aotr"] else "bfme2"
 
 
 func bfme1_install() -> String:
@@ -320,7 +321,33 @@ func bfme1_install() -> String:
 	return ""
 
 
+func aotr_install() -> String:
+	var candidates: Array[String] = []
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--aotr-install="): candidates.append(arg.trim_prefix("--aotr-install="))
+	candidates.append(OS.get_environment("AOTR_INSTALL"))
+	var cfg := ConfigFile.new()
+	cfg.load("user://game-selection.cfg")
+	candidates.append(str(cfg.get_value("aotr", "install", "")))
+	if OS.get_name() == "macOS":
+		candidates.append(OS.get_data_dir().path_join("BFMELauncher/Installation/Mods/AgeOfTheRing/CrossOverPrefix/drive_c"))
+	for candidate in candidates:
+		var folder := aotr_folder(candidate)
+		if not folder.is_empty(): return folder
+	return ""
+
+static func aotr_folder(path: String) -> String:
+	if path.is_empty(): return ""
+	for suffix in ["", "aotr", "AotR/aotr"]:
+		var folder := path.path_join(suffix).simplify_path().trim_suffix("/")
+		if FileAccess.file_exists(folder.path_join("AOTRSkirmish.big")) and DirAccess.dir_exists_absolute(folder.path_join("data")):
+			return folder
+	return ""
+
+
 func mount_retail(fs: RefCounted) -> Dictionary:
+	if selected_game() == "aotr":
+		return fs.mount_aotr_path(aotr_install())
 	if selected_game()=="bfme1":
 		return fs.mount_bfme1_path(bfme1_install())
 	# Portable macOS packages carry installs beside the PCK. Resolve at launch so
@@ -575,7 +602,7 @@ func _add_watermark() -> void:
 	# lane MODS-1: the mod manager, under the Logs link (menus only, like the rest of the corner)
 	var mods := LinkButton.new()
 	mods.text = "Games / Mods (%d)" % active_mods.size() if not active_mods.is_empty() else "Games / Mods"
-	mods.tooltip_text = "Switch between BFME1 and RotWK, or choose RotWK mods"
+	mods.tooltip_text = "Switch between BFME1, RotWK and Age of the Ring, or choose RotWK mods"
 	mods.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
 	mods.add_theme_font_size_override("font_size", 13)
 	mods.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))

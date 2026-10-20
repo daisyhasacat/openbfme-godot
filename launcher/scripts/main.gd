@@ -608,8 +608,8 @@ func _run_cli(args: PackedStringArray, problem: String) -> int:
 	for a in args:
 		if a.begins_with("--game="):
 			var game := a.trim_prefix("--game=")
-			if game not in ["bfme1", "bfme2"]:
-				Log.line("LAUNCHER --game takes bfme1 or bfme2")
+			if game not in ["bfme1", "bfme2", "aotr"]:
+				Log.line("LAUNCHER --game takes bfme1, bfme2, or aotr")
 				return 1
 			updater.set_state("launcher", "game", game)
 	if "--version" in args:
@@ -956,7 +956,7 @@ func _build_ui() -> void:
 	stack.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	cv.add_child(stack)
 	_play_screen = PlayScreen.new()
-	_play_screen.game_picker.select(1 if updater.get_state("launcher", "game", "bfme2") == "bfme1" else 0)
+	_play_screen.game_picker.select(["bfme2", "bfme1", "aotr"].find(updater.get_state("launcher", "game", "bfme2")))
 	_play_screen.game_selected.connect(func(game: String):
 		updater.set_state("launcher", "game", game)
 		_refresh_games())
@@ -1407,6 +1407,10 @@ func _show_games(g: Dictionary, demo := false) -> void:
 	# community PR #36: BFME1 is the player's own install; its download is optional (Game files, from BFME Arena, a third party)
 	_play_screen.missing_games.text = "Battle for Middle-earth I 1.03 was not found: set BFME1_INSTALL to its folder, put it in %s, or download it (optional, from BFME Arena) in Game files." % Paths.short(Paths.default_games_dir().path_join("BFME1")) if use_bfme1 else "The Rise of the Witch-king 2.01 and Battle for Middle-earth II 1.06 were not found."
 	_play_screen.set_games(not bfme1.is_empty() if use_bfme1 else g.found, aio.enabled(), Paths.short(bfme1) if use_bfme1 else where)
+	if updater.get_state("launcher", "game", "bfme2") == "aotr":
+		var aotr := Paths.aotr_folder()
+		_play_screen.missing_games.text = "Age of the Ring requires its installed aotr folder (AOTR_INSTALL), plus verified RotWK 2.01 and BFME II 1.06 files."
+		_play_screen.set_games(g.found and not aotr.is_empty(), false, Paths.short(aotr))
 	_mods.set_games(g.found)
 	_games_screen.set_folders(g, demo)
 	_set_buttons()

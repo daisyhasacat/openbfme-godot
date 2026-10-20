@@ -99,7 +99,7 @@ func _initialize() -> void:
 	u.set_state("launcher", "game", "bfme2")
 	_check(u.game_arguments().args.is_empty(), "BFME II starts without BFME1 arguments")
 	var screen = PlayScreen.new()
-	_check(screen.game_picker.item_count == 2 and screen.game_picker.get_item_text(1) == "Battle for Middle-earth I 1.03", "the game picker")
+	_check(screen.game_picker.item_count == 3 and screen.game_picker.get_item_text(1) == "Battle for Middle-earth I 1.03", "the game picker")
 	screen.free()
 	print("BFME1 ASSETS OK: pins, manifest checks, opt-in, handoff, launch arguments" if _failures == 0 else "BFME1 ASSETS FAILED: %d" % _failures)
 	quit(0 if _failures == 0 else 1)

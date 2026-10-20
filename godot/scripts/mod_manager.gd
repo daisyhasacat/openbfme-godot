@@ -27,6 +27,7 @@ var _changed := false
 var _game_picker: OptionButton
 var _game := "bfme2"
 var _bfme1_path := ""
+var _aotr_path := ""
 
 
 func _ready() -> void:
@@ -34,6 +35,7 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_game = Release.selected_game()
 	_bfme1_path = Release.bfme1_install()
+	_aotr_path = Release.aotr_install()
 	_load()
 	_discover()
 	_build()
@@ -172,16 +174,21 @@ func _build() -> void:
 	_game_picker.name = "GamePicker"
 	_game_picker.add_item("The Rise of the Witch-king / BFME II")
 	_game_picker.add_item("Battle for Middle-earth I")
-	_game_picker.select(1 if _game=="bfme1" else 0)
+	_game_picker.add_item("Age of the Ring")
+	_game_picker.select(["bfme2", "bfme1", "aotr"].find(_game))
 	_game_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_game_picker.item_selected.connect(func(index: int):
-		_game = "bfme1" if index==1 else "bfme2"
-		_status.text = "Restart to switch games." if _game!="bfme1" or not _bfme1_path.is_empty() else "Choose the BFME1 installation folder below before restarting."
+		_game = ["bfme2", "bfme1", "aotr"][index]
+		if _game == "aotr" and _aotr_path.is_empty():
+			_status.text = "Choose the AOTR installation folder below before restarting."
+		else:
+			_status.text = "Restart to switch games." if _game!="bfme1" or not _bfme1_path.is_empty() else "Choose the BFME1 installation folder below before restarting."
 		_refresh())
 	game_row.add_child(_game_picker)
 	game_row.add_child(_button("BFME1 files…", _choose_bfme1))
+	game_row.add_child(_button("AOTR files…", _choose_aotr))
 	var note := Label.new()
-	note.text = "Switch games with Restart to apply. BFME1 uses separate game files and settings. Mods below apply to RotWK only; lower entries win."
+	note.text = "Switch games with Restart to apply. Age of the Ring uses its own assets over verified base files. Mods below apply to standard RotWK only; lower entries win."
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.add_theme_font_size_override("font_size", 12)
 	note.modulate = Color(1, 1, 1, 0.75)
@@ -230,7 +237,7 @@ func _refresh() -> void:
 		var row := HBoxContainer.new()
 		var check := CheckBox.new()
 		check.button_pressed = _enabled.get(path, false)
-		check.disabled = _game=="bfme1"
+		check.disabled = _game!="bfme2"
 		check.text = _display_name(path)
 		check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		check.tooltip_text = path
@@ -242,7 +249,7 @@ func _refresh() -> void:
 		var textures := CheckBox.new()
 		textures.text = "Textures only"
 		textures.button_pressed = _textures_only.get(path, false)
-		textures.disabled = _game=="bfme1"
+		textures.disabled = _game!="bfme2"
 		textures.tooltip_text = "Use this mod as a texture pack: only its texture files override the game's"
 		textures.toggled.connect(func(on: bool) -> void:
 			_textures_only[path] = on
@@ -300,23 +307,25 @@ func _on_folder(dir: String) -> void:
 		_status.text = "No game files (data, art, maps or .big) in " + dir
 
 
-static func restart_arguments(args: PackedStringArray, game_name: String, bfme1_path := "") -> PackedStringArray:
+static func restart_arguments(args: PackedStringArray, game_name: String, bfme1_path := "", aotr_path := "") -> PackedStringArray:
 	var result := PackedStringArray()
 	for arg in args:
 		if arg.begins_with("--game="): continue
 		if not bfme1_path.is_empty() and arg.begins_with("--bfme1-install="): continue
+		if not aotr_path.is_empty() and arg.begins_with("--aotr-install="): continue
 		result.append(arg)
 	if not result.has("--"): result.append("--")
 	result.append("--game="+game_name)
 	if not bfme1_path.is_empty(): result.append("--bfme1-install="+bfme1_path)
+	if not aotr_path.is_empty(): result.append("--aotr-install="+aotr_path)
 	return result
 
 
-static func current_restart_arguments(game_name: String, bfme1_path := "") -> PackedStringArray:
+static func current_restart_arguments(game_name: String, bfme1_path := "", aotr_path := "") -> PackedStringArray:
 	var args := OS.get_cmdline_args()
 	args.append("--")
 	args.append_array(OS.get_cmdline_user_args())
-	return restart_arguments(args,game_name,bfme1_path)
+	return restart_arguments(args,game_name,bfme1_path,aotr_path)
 
 
 func _choose_bfme1() -> void:
@@ -350,19 +359,44 @@ func _choose_bfme1() -> void:
 	chooser.popup_centered_ratio(0.6)
 
 
+func _choose_aotr() -> void:
+	var chooser := FileDialog.new()
+	chooser.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+	chooser.access = FileDialog.ACCESS_FILESYSTEM
+	chooser.use_native_dialog = true
+	chooser.title = "Choose Age of the Ring (aotr, AotR, or drive_c folder)"
+	chooser.canceled.connect(chooser.queue_free)
+	chooser.dir_selected.connect(func(path: String):
+		chooser.queue_free()
+		var folder: String = Release.aotr_folder(path)
+		if folder.is_empty():
+			_status.text = "Age of the Ring files were not found in that folder."
+			return
+		_aotr_path = folder
+		var cfg := ConfigFile.new()
+		cfg.load("user://game-selection.cfg")
+		cfg.set_value("aotr", "install", folder)
+		_status.text = "AOTR folder saved. Restart to switch games." if cfg.save("user://game-selection.cfg") == OK else "Could not save AOTR folder.")
+	add_child(chooser)
+	chooser.popup_centered_ratio(0.6)
+
 func _restart() -> void:
+	if _game == "aotr" and _aotr_path.is_empty():
+		_status.text = "Choose the AOTR installation folder first."
+		return
 	if _game=="bfme1" and _bfme1_path.is_empty():
 		_status.text="Choose the BFME1 installation folder first."
 		return
 	_save()
 	var cfg := ConfigFile.new()
+	cfg.load("user://game-selection.cfg")
 	cfg.set_value("game","selected",_game)
 	if cfg.save("user://game-selection.cfg")!=OK:
 		_status.text="Could not save the game selection."
 		return
 	# Godot separates engine arguments and arguments after `--`. Preserve both:
 	# get_cmdline_args() alone drops player options such as --max-fps and paths.
-	OS.set_restart_on_exit(true, current_restart_arguments(_game,_bfme1_path))
+	OS.set_restart_on_exit(true, current_restart_arguments(_game,_bfme1_path,_aotr_path))
 	get_tree().quit()
 
 

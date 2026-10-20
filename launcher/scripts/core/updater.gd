@@ -1097,6 +1097,13 @@ func game_arguments(args: PackedStringArray = PackedStringArray()) -> Dictionary
 			return {"ok": false, "error": "BFME1 assets were not found. Download the games from Game files, or set BFME1_INSTALL."}
 		if not "--" in args: args.append("--")
 		args.append_array(PackedStringArray(["--game=bfme1", "--bfme1-install=" + folder]))
+	if get_state("launcher", "game", "bfme2") == "aotr":
+		if Array(args).any(func(a): return a.begins_with("--online-")):
+			return {"ok": false, "error": "AOTR must be started separately from standard online matches."}
+		var folder := Paths.aotr_folder()
+		if folder.is_empty(): return {"ok": false, "error": "Age of the Ring assets were not found. Set AOTR_INSTALL or choose its folder in the game's game selector."}
+		if not "--" in args: args.append("--")
+		args.append_array(PackedStringArray(["--game=aotr", "--aotr-install=" + folder]))
 	return {"ok": true, "args": args}
 
 
