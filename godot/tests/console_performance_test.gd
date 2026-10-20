@@ -1,5 +1,8 @@
 extends SceneTree
 const PerfPanel = preload("res://scripts/console_performance.gd")
+class FakeHud extends Node:
+	func get_frame_timings() -> Dictionary:
+		return {"hud_update_ms": 12.5, "hud_windows_ms": 8.0, "hud_radar_ms": 2.0}
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
 	var world = ClassDB.instantiate("GameWorld")
@@ -11,6 +14,9 @@ func _run() -> void:
 	root.add_child(console)
 	var panel = PerfPanel.new()
 	panel.world = world
+	var hud := FakeHud.new()
+	root.add_child(hud)
+	panel.hud = func() -> Node: return hud
 	console.add_performance_tab(panel)
 	assert(console._tabs.get_tab_count() == 6)
 	assert(console._tabs.get_tab_title(5) == "Performance")
@@ -30,6 +36,10 @@ func _run() -> void:
 	# tolerance: scheduling determines frame count; a capture must have at least one complete sample.
 	assert(panel.last_report.frames > 0)
 	assert(panel.last_report.summary.has("lua"))
+	assert(panel.last_report.summary.hud_update_ms.mean_ms == 12.5)
+	assert(panel.last_report.summary.hud_windows_ms.mean_ms == 8.0)
+	assert(panel.last_report.summary.hud_radar_ms.mean_ms == 2.0)
+	assert(panel.last_report.summary.has("godot_process"))
 	assert(panel.last_report.summary.worker_wait.max_ms == 0.0)
 	for metric in ["presentation_events", "drawable_animation", "drawable_transforms", "client_effects"]:
 		assert(panel.last_report.summary.has(metric))
@@ -52,6 +62,7 @@ func _run() -> void:
 		await process_frame
 		await RenderingServer.frame_post_draw
 		root.get_texture().get_image().save_png(OS.get_environment("PERF_SCREENSHOT"))
+	hud.free()
 	console.free()
 	world.free()
 	print("CONSOLE PERFORMANCE PASS")

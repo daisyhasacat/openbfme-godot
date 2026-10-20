@@ -2,6 +2,7 @@
 extends VBoxContainer
 
 var world: Node
+var hud: Callable
 var capturing := false
 var capture_seconds := 10.0
 var samples: Array[Dictionary] = []
@@ -45,6 +46,15 @@ const METRICS := [
 	["dyn_upload_ms", "Instance uploads", "Dynamic instancer transform / buffer upload submission."],
 	["dyn_mapper_ms", "Dynamic texture animation", "Dynamic instancer texture mapper updates."],
 	["static_mapper_ms", "Static texture animation", "Static instancer texture mapper updates."],
+	["hud_update_ms", "HUD · total update", "HUD update outside GameWorld.advance; includes the HUD rows below."],
+	["hud_input_ms", "  HUD input / picking", "Subset of HUD update."],
+	["hud_bar_ms", "  HUD command bar", "Subset of HUD update."],
+	["hud_windows_ms", "  HUD windows / movies", "Subset of HUD update."],
+	["hud_palantir_ms", "  HUD Palantir", "Subset of HUD update."],
+	["hud_radar_ms", "  HUD minimap", "Subset of HUD update."],
+	["hud_icons_ms", "  HUD icon submission", "Subset of HUD update."],
+	["hud_decals_ms", "  HUD world decals", "Subset of HUD update."],
+	["godot_process", "Godot · process callbacks", "Godot process-frame timing, including game scripts and native node callbacks; overlaps other rows."],
 	["render_cpu", "Viewport rendering · CPU", "RenderingServer viewport CPU timing; overlaps main work."],
 	["render_gpu", "Viewport rendering · GPU", "Asynchronous viewport GPU timing. Unavailable with the headless renderer."],
 	["godot_physics", "Godot physics", "Godot physics processing, separate from BFME unit physics."],
@@ -135,6 +145,8 @@ func _process(_delta: float) -> void:
 	var interval := float(now - _last_us) / 1000.0
 	_last_us = now
 	var sample: Dictionary = world.get_frame_timings()
+	var live_hud: Node = hud.call() if hud.is_valid() else null
+	if is_instance_valid(live_hud): sample.merge(live_hud.get_frame_timings())
 	var wait_total := float(sample.get("logic_wait_ms",0.0))
 	sample["worker_wait"] = maxf(0.0,wait_total-_previous_wait_ms)
 	_previous_wait_ms = wait_total
@@ -150,7 +162,9 @@ func _process(_delta: float) -> void:
 		var gpu := RenderingServer.viewport_get_measured_render_time_gpu(rid)
 		if cpu > 0: sample["render_cpu"] = cpu
 		if gpu > 0: sample["render_gpu"] = gpu
+	sample["godot_process"] = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
 	sample["godot_physics"] = Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
+	sample["draw_calls"] = int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
 	_live.append(sample)
 	if _live.size() > LIVE_FRAMES: _live.pop_front()
 	if capturing:

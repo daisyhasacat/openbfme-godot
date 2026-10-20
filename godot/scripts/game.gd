@@ -1260,6 +1260,7 @@ func _boot() -> void:
 	add_child(_lua_console)
 	var performance_tab := preload("res://scripts/console_performance.gd").new()
 	performance_tab.world = _world
+	performance_tab.hud = func() -> Node: return _hud
 	_lua_console.add_performance_tab(performance_tab)
 	var controller := preload("res://scripts/controller_input.gd").new()
 	controller.name = "ControllerInput"

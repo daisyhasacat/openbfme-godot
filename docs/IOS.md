@@ -68,6 +68,12 @@ mute the game. System volume and in-game volume controls still apply.
 
 ## Building completion performance
 
+For steady low FPS, the Performance tab also shows HUD update, input/picking,
+command bar, movie/window updates, Palantir, minimap, icon submission and world
+decals. These run outside `GameWorld.advance`; a low game-advance time alone does
+not establish low total CPU cost. Godot process-callback timing is shown
+separately, and exported frame samples retain draw-call counts alongside timings.
+
 Menu transitions have separate CPU diagnostics. `AptMenuPlayer.get_stats()`
 retains `peak_steps_us`, `peak_list_us`, `peak_canvas_us`, and `peak_submit_us`
 until `reset_timing()` (or boot). These cover the movie/window update, render-list
