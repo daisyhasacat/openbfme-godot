@@ -1,5 +1,5 @@
 extends CanvasLayer
-## Explicit, main-menu player sync. Never sync installation data or device paths.
+## Player sync UI and transfer worker. Never sync installation data or device paths.
 const SETTINGS = "user://player-sync.cfg"
 const FILES = ["Skirmish.ini", "map-favorites.cfg", "controller_options.cfg", "adaptive-hud-layout.json", "wall_balance.cfg"]
 const FOLDERS = ["Save", "Profiles", "Replays", "Campaign", "HeroStats", "map_edits"]
@@ -11,8 +11,11 @@ var request: HTTPRequest
 var busy = false
 var roots = {}
 var scope = "rotwk-"
+var background = false
+var succeeded = false
 
 func _ready():
+ add_to_group("player_sync_workers")
  layer = 130
  var backdrop = ColorRect.new();backdrop.color=Color(0,0,0,.95)
  backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT);add_child(backdrop)
@@ -22,7 +25,7 @@ func _ready():
  var config=ConfigFile.new();config.load(SETTINGS)
  server=LineEdit.new();server.placeholder_text="Server URL";server.text=str(config.get_value("sync","server","http://192.168.121.42:8766"));panel.add_child(server)
  username=LineEdit.new();username.placeholder_text="Username (letters, numbers, _ or -)";username.text=str(config.get_value("sync","username",""));panel.add_child(username)
- var help=Label.new();help.text="Saves, profiles, heroes, hero statistics, replays and player preferences.\nUse the same username on each device. Sync from the main menu, then restart to reload profiles.\nConflicting files are kept locally in sync-conflicts. Deletions are not shared.";help.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;panel.add_child(help)
+ var help=Label.new();help.text="Saves, profiles, heroes, hero statistics, replays and player preferences.\nUse the same username on each device. Changes upload automatically after configuring sync. Use Sync now in the main menu to download changes.\nConflicting files are kept locally in sync-conflicts. Deletions are not shared.";help.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;panel.add_child(help)
  button=Button.new();button.text="Sync now";button.pressed.connect(_sync);panel.add_child(button)
  status=Label.new();status.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;panel.add_child(status)
  var close=Button.new();close.text="Close";close.pressed.connect(func():if not busy:queue_free());panel.add_child(close)
@@ -39,7 +42,7 @@ func _scan(folder:String, prefix:String, result:Dictionary):
  var dir=DirAccess.open(folder)
  if dir==null:return
  for name in dir.get_files():
-  if not name.begins_with(".") and not dir.is_link(name):result[prefix+name]=folder.path_join(name)
+  if not name.begins_with(".") and not name.ends_with(".sync-part") and not dir.is_link(name):result[prefix+name]=folder.path_join(name)
  for name in dir.get_directories():
   if not name.begins_with(".") and not dir.is_link(name):_scan(folder.path_join(name),prefix+name+"/",result)
 
@@ -69,25 +72,7 @@ func _target(key:String)->String:
   current=current.path_join(part)
  return current
 
-func _sync():
- if busy:return
- var game=get_tree().current_scene
- if game!=null and game.get("_save_flow")!=null and game._save_flow._in_game:
-  status.text="Return to the main menu before syncing.";return
- var regex=RegEx.new();regex.compile("^[A-Za-z0-9_-]{1,64}$")
- if regex.search(username.text)==null:status.text="Enter a username using 1–64 letters, numbers, _ or -.";return
- var origin=server.text.strip_edges().trim_suffix("/")
- if not (origin.begins_with("http://") or origin.begins_with("https://")):status.text="Enter an http:// or https:// server URL.";return
- busy=true;button.disabled=true;server.editable=false;username.editable=false
- var config=ConfigFile.new();config.set_value("sync","server",origin);config.set_value("sync","username",username.text)
- if config.save(SETTINGS)!=OK:_finish("Could not save sync settings.");return
- var url=origin+"/v1/"+username.text
- status.text="Reading server files…"
- var response=await _call(url+"/manifest/current")
- if response.is_empty() or response[0]!=HTTPRequest.RESULT_SUCCESS or response[1]!=200:_finish("Cannot reach sync server.");return
- var remote=JSON.parse_string(response[3].get_string_from_utf8())
- if not remote is Dictionary:_finish("Invalid server manifest.");return
- _roots()
+func local_files()->Dictionary:
  var local={}
  for key in roots:
   if key==scope+"player":
@@ -95,6 +80,33 @@ func _sync():
     if (name in FILES or name.ends_with("RealTimeStats.ini")) and FileAccess.file_exists("user://"+name):local[scope+"player/"+name]="user://"+name
    for name in FOLDERS:_scan("user://"+name,scope+"player/"+name+"/",local)
   else:_scan(roots[key],key+"/",local)
+ return local
+
+func _sync():
+ succeeded=false
+ if busy:return
+ for worker in get_tree().get_nodes_in_group("player_sync_workers"):
+  if worker!=self and worker.busy:
+   if not background:status.text="Automatic sync is uploading changes; try again in a moment."
+   return
+ var game=get_tree().current_scene
+ if not background and game!=null and game.get("_save_flow")!=null and game._save_flow._in_game:
+  status.text="Return to the main menu before syncing.";return
+ var regex=RegEx.new();regex.compile("^[A-Za-z0-9_-]{1,64}$")
+ if regex.search(username.text)==null:status.text="Enter a username using 1–64 letters, numbers, _ or -.";return
+ var origin=server.text.strip_edges().trim_suffix("/")
+ if not (origin.begins_with("http://") or origin.begins_with("https://")):status.text="Enter an http:// or https:// server URL.";return
+ busy=true;button.disabled=true;server.editable=false;username.editable=false
+ var config=ConfigFile.new();config.set_value("sync","server",origin);config.set_value("sync","username",username.text)
+ if not background and config.save(SETTINGS)!=OK:_finish("Could not save sync settings.");return
+ var url=origin+"/v1/"+username.text
+ status.text="Reading server files…"
+ var response=await _call(url+"/manifest/current")
+ if response.is_empty() or response[0]!=HTTPRequest.RESULT_SUCCESS or response[1]!=200:_finish("Cannot reach sync server.");return
+ var remote=JSON.parse_string(response[3].get_string_from_utf8())
+ if not remote is Dictionary:_finish("Invalid server manifest.");return
+ _roots()
+ var local=local_files()
  var state_path="user://sync-state-"+(origin+"/"+username.text).sha256_text()+".cfg"
  var state=ConfigFile.new();state.load(state_path)
  var keys=local.keys()
@@ -107,6 +119,12 @@ func _sync():
   var old=str(state.get_value("files",key,""));var theirs=str(remote.get(key,""))
   var ours=FileAccess.get_sha256(target) if FileAccess.file_exists(target) else ""
   status.text="Syncing %d / %d: %s"%[count+1,keys.size(),key]
+  if background and ours!=theirs and not theirs.is_empty() and (ours.is_empty() or ours==old or theirs!=old):
+   # Background work must not replace files held in memory by the game.
+   if not ours.is_empty() and ours!=old:
+    conflicts+=1
+    push_warning("Automatic sync conflict: "+key+"; use Sync now in the main menu to preserve both versions.")
+   continue
   if ours==theirs:pass
   elif not theirs.is_empty() and (ours.is_empty() or ours==old or (ours!=old and theirs!=old)):
    var result=await _call(url+"/file/"+str(key).uri_encode())
@@ -140,6 +158,7 @@ func _sync():
   state.set_value("files",key,theirs)
   if state.save(state_path)!=OK:_finish("Cannot save sync state.");return
   count+=1
+ succeeded=true
  _finish("Synced %d files. %d conflicts preserved in sync-conflicts. Restart to reload profiles and heroes."%[count,conflicts])
 
 func _finish(message:String):

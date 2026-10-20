@@ -2,8 +2,16 @@
 
 Open **Options → Sync → Player sync**. Enter the sync server URL and a username,
 then press **Sync now**. Use the same username on each device. Settings persist
-locally. Sync explicitly from the main menu; restart afterwards to reload the
-profiles and heroes that the game keeps in memory.
+locally. Once configured with **Sync now**, changes upload automatically while
+playing or browsing menus. The watcher checks every two seconds and waits for
+two matching observations before uploading. New saves, profile edits, created
+heroes and hero statistics are included. Offline failures retry after 30 seconds.
+
+Automatic sync uploads local changes only; it never replaces files that the game
+may have loaded in memory. Use **Sync now** in the main menu to download changes
+from another device or resolve a conflict, then restart to reload profiles and
+heroes. Conflicts remain untouched by automatic uploads and are reported in the
+session log. Only one manual or automatic transfer runs at a time.
 
 Run the separate server with Python 3.11 or newer (no third-party packages):
 
@@ -39,7 +47,8 @@ Uploads use compare-and-swap version checks to reject concurrent changes. The
 server retains content-addressed previous versions under each username's
 `blobs/` folder; `manifest.json` points to current versions. Client downloads
 verify SHA-256 before and after writing a temporary file, then replace the
-original. Files are limited to 128 MiB each. Interrupted syncs can be retried;
+original. Files are limited to 128 MiB each. Sync runs while the app is open; closing the
+app immediately after saving can leave the upload pending until the next run. Interrupted syncs can be retried;
 successful files have their sync state saved individually.
 
 Validation:

@@ -75,6 +75,9 @@ func _set_window_title() -> void:
 
 
 func _ready() -> void:
+	var sync_watch = preload("res://scripts/player_sync_watch.gd").new()
+	sync_watch.name = "PlayerSyncWatch"
+	add_child(sync_watch)
 	# lane UI-4: the packages run Godot's DEBUG export template on purpose (tools/release/package.sh: its crash handler writes the native backtrace
 	# into the session log), and that template titles the window "<name> (DEBUG)". The title is the project's name, "OpenBFME", in every
 	# package. (Retail RotWK titles its window with gi.dat's GameName or the installer's registry DisplayName, RW 0x640ED0 / CreateWindowExW at
