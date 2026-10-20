@@ -30,6 +30,19 @@ func run() -> void:
 		shell.tick(1.0 / 30.0)
 		shell.render(true)
 	assert(shell.lobby_state().found)
+	var lobby: Dictionary = shell.lobby_state()
+	assert(lobby.rules_profile == "Age of the Ring")
+	var cash_found := false
+	for rule in lobby.rule_definitions:
+		if int(rule.id) == 4:
+			cash_found = true
+			assert(int(rule.default) == 1500)
+			var values: Array = []
+			for choice in rule.choices: values.append(int(choice.value))
+			assert(values == [500, 1000, 1500, 2000, 2500, 10000000])
+	assert(cash_found)
+	assert(shell.lobby_apply({"browser_rules":[{"id":4,"value":1500}]}).ok)
+	assert(int(shell.lobby_state().rules[4]) == 1500)
 	assert(shell.get_shell_report().errors.is_empty(), str(shell.get_shell_report().errors))
 	# tolerance: a successfully loaded menu must submit visible canvas content; prevents a backdrop-only false pass.
 	assert(shell.get_stats().last_ops > 0)

@@ -30,7 +30,9 @@ struct SkirmishComboEntry
 class SkirmishGameSetup
 {
 public:
-	SkirmishGameSetup(const SkirmishSetupSource &source, const GameTextSource *text);
+	SkirmishGameSetup(const SkirmishSetupSource &source, const GameTextSource *text, bool aotrProfile = false);
+	bool aotrProfile() const { return m_aotrProfile; }
+	GameRules defaultRules() const;
 
 	// ZH SkirmishGameOptionsMenuInit: the game info is reset, slot 0 is the player (SLOT_PLAYER, `userName`, no colour / template chosen), slot 1
 	// is an easy AI (honors.getWins() <= 5), every other slot closed (GameInfo::clearSlotList), the seed and the starting cash are set and
@@ -202,6 +204,7 @@ private:
 
 	const SkirmishSetupSource &m_source;
 	const GameTextSource *m_text;
+	bool m_aotrProfile = false;
 	SkirmishGameInfo m_info;
 	SimulationProfile m_simulationProfile = SimulationProfile::Faithful; ///< lane UBER-1
 	std::string m_error;

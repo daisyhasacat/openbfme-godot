@@ -3034,7 +3034,8 @@ Dictionary AptMenuPlayer::lobby_state()
  }
  out["factions"] = factions; out["teams"] = entries(setup.teamEntries());
  Array definitions;
- const auto defaults = MpGameRules::defaults(setup.rulesMode());
+ const auto defaults = setup.defaultRules();
+ out["rules_profile"] = setup.aotrProfile() ? "Age of the Ring" : "vanilla";
  for (int i = 0; i < NUM_GAME_RULES; ++i) {
   const auto *combo = MpGameRules::findCombo(setup.rulesMode(), i);
   const auto *check = MpGameRules::findCheck(setup.rulesMode(), i);

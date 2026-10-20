@@ -180,6 +180,38 @@ SkirmishGameSetup makeSetup(FakeSetup &source, MapGameText &text)
 // The slot logic (ZH SkirmishGameOptionsMenu.cpp, GameInfo.cpp, GUIUtil.cpp)
 // ============================================================================================================================
 
+TEST_CASE("AOTR rules: mounted resource choices, defaults and reset stay separate from retail")
+{
+	FakeSetup source;
+	source.cash = { 2500, 500, 1000, 2000, 1000, InfiniteResources::kValue }; // normalize duplicates and label the extension once
+	MapGameText text;
+	text.set("VALUE:Value", "%d");
+	text.set("VALUE:Default", " *");
+	SkirmishGameSetup aotr(source, &text, true);
+	std::string error;
+	REQUIRE(aotr.init(u"Player", 1, "", &error));
+	CHECK(aotr.info().rules[RULE_INITIAL_RESOURCES] == 1500);
+	const auto *combo = MpGameRules::findCombo(RULES_MODE_SKIRMISH, RULE_INITIAL_RESOURCES);
+	REQUIRE(combo);
+	const auto entries = aotr.ruleComboEntries(*combo);
+	REQUIRE(entries.size() == 6);
+	std::vector<int> values;
+	for (const auto &entry : entries) values.push_back(entry.itemData);
+	CHECK(values == std::vector<int>{500, 1000, 1500, 2000, 2500, InfiniteResources::kValue});
+	CHECK(entries[2].text == u"1500 *");
+	CHECK(entries.back().text == u"Infinite (OpenBFME)");
+	REQUIRE(aotr.setRule(RULE_INITIAL_RESOURCES, 2500));
+	aotr.resetRules();
+	CHECK(aotr.info().rules[RULE_INITIAL_RESOURCES] == 1500);
+	SkirmishGameSetup retail(source, &text);
+	REQUIRE(retail.init(u"Player", 1, "", &error));
+	CHECK(retail.info().rules[RULE_INITIAL_RESOURCES] == 1000);
+	CHECK(retail.ruleComboEntries(*combo).size() == 12);
+	CHECK(retail.ruleComboEntries(*combo)[2].text == u"1000 *");
+	aotr.setStrategicMode(true);
+	CHECK(aotr.defaultRules() == MpGameRules::defaults(RULES_MODE_WOTR));
+}
+
 TEST_CASE("skirmish setup: init follows SkirmishGameOptionsMenuInit (player in slot 0, an easy AI in slot 1, the rest reset, the default map, the injected seed)")
 {
 	FakeSetup src;

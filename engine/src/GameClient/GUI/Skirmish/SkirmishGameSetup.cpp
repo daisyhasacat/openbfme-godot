@@ -60,7 +60,18 @@ std::u16string formatInt(const std::u16string &format, int value)
 }
 } // namespace
 
-SkirmishGameSetup::SkirmishGameSetup(const SkirmishSetupSource &source, const GameTextSource *text) : m_source(source), m_text(text) {}
+SkirmishGameSetup::SkirmishGameSetup(const SkirmishSetupSource &source, const GameTextSource *text, bool aotrProfile)
+	: m_source(source), m_text(text), m_aotrProfile(aotrProfile) {}
+
+GameRules SkirmishGameSetup::defaultRules() const
+{
+	GameRules rules = MpGameRules::defaults(rulesMode());
+	// AOTR menu integration: use the mounted GameData default and MultiplayerSettings
+	// credits instead of the stock executable's fixed list (not a patched-executable parity claim).
+	if (m_aotrProfile && rulesMode() == RULES_MODE_SKIRMISH)
+		rules[RULE_INITIAL_RESOURCES] = m_source.defaultStartingCash();
+	return rules;
+}
 
 const MapCacheEntry *SkirmishGameSetup::findMap(const std::string &mapName) const
 {
@@ -144,7 +155,7 @@ bool SkirmishGameSetup::init(const std::u16string &userName, std::uint32_t seed,
 	// rule instead (RW 0x6B0578); AptSkirmish::InitTheGame (RW 0x9288D0) copies the mode's default rules into the game when the profile has no kept game
 	// (lane UI-6: restoreSaved takes the kept one's)
 	m_info.startingCash = -1;
-	m_info.rules = MpGameRules::defaults(rulesMode());
+	m_info.rules = defaultRules();
 	m_info.legendaryHeroes = LegendaryHeroes::kOff;
 	m_info.fortressConstruction = false;
 	m_info.peaceTimeMinutes = PeaceTime::kOff;
@@ -635,7 +646,7 @@ void SkirmishGameSetup::setStrategicMode(bool strategic)
 		return;
 	}
 	m_strategic = strategic;
-	m_info.rules = MpGameRules::defaults(rulesMode());
+	m_info.rules = defaultRules();
 }
 
 std::u16string SkirmishGameSetup::ruleName(int rule) const
@@ -648,6 +659,22 @@ std::vector<SkirmishComboEntry> SkirmishGameSetup::ruleComboEntries(const MpRule
 {
 	// RW 0x986B1C: text.format(fetchFormat(choice.label), choice.value); the default index appends fetch("VALUE:Default"); item data = the value
 	std::vector<SkirmishComboEntry> out;
+	if (m_aotrProfile && combo.id == RULE_INITIAL_RESOURCES)
+	{
+		auto values = m_source.startingCashChoices();
+		values.push_back(m_source.defaultStartingCash());
+		std::sort(values.begin(), values.end());
+		values.erase(std::unique(values.begin(), values.end()), values.end());
+		for (int value : values)
+		{
+			if (value == InfiniteResources::kValue) continue; // keep the extension separately labelled once
+			auto text = formatInt(label("VALUE:Value"), value);
+			if (value == m_source.defaultStartingCash()) text += label("VALUE:Default");
+			out.push_back({ text, 0xFFFFFFFFu, value });
+		}
+		out.push_back({ u"Infinite (OpenBFME)", 0xFFFFFFFFu, InfiniteResources::kValue });
+		return out;
+	}
 	for (int j = 0; j < combo.count; ++j)
 	{
 		const MpRuleChoice &choice = combo.choices[j];
@@ -680,7 +707,7 @@ bool SkirmishGameSetup::setRule(int rule, int value)
 
 void SkirmishGameSetup::resetRules()
 {
-	m_info.rules = MpGameRules::defaults(rulesMode());
+	m_info.rules = defaultRules();
 	m_info.legendaryHeroes = LegendaryHeroes::kOff;
 	m_info.fortressConstruction = false;
 	m_info.peaceTimeMinutes = PeaceTime::kOff;

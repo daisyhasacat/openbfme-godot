@@ -35,6 +35,14 @@ Its APT exports also use nonzero boolean flags such as word-wrap value `111`;
 these are interpreted as true only in the AOTR profile. The standard APT parser
 continues to require canonical `0`/`1` flags.
 
+The AOTR skirmish Rules menu uses the mounted `MultiplayerSettings` initial-credit
+choices and `GameData DefaultStartingCash` instead of RotWK's fixed resource
+table. In this installation these are 500, 1,000, 1,500 (default), 2,000 and 2,500.
+Both the APT and native menus apply these values; Reset restores the AOTR default.
+Infinite resources is labelled as an OpenBFME addition. Other rule tables retain
+the supported RotWK semantics; this is data-driven menu integration, not a claim
+that all rules of AOTR's patched executable are implemented.
+
 This remains an experimental compatibility profile. Macro override/inheritance
 rules and added category IDs are inferred from the installed data; they have not
 been verified against AOTR's patched executable. Loading its assets does not

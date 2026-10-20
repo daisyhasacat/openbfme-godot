@@ -462,7 +462,7 @@ func _setup_tabs():
    var check=CheckButton.new();check.button_pressed=int(rule_edits.get(id,definition.value))!=0;row.add_child(check)
    check.toggled.connect(func(on):rule_edits[id]=int(on))
   else:_choice(row,definition.choices,int(rule_edits.get(id,definition.value)),func(value):rule_edits[id]=value)
- var reset=Button.new();reset.text='Reset vanilla rules';rows.add_child(reset)
+ var reset=Button.new();reset.text='Reset %s rules' % draft.get('rules_profile','vanilla');rows.add_child(reset)
  reset.pressed.connect(func():
   for definition in draft.get('rule_definitions',[]):rule_edits[int(definition.id)]=int(definition.default)
   _setup_tabs())
