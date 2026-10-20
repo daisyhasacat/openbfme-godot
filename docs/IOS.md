@@ -92,6 +92,13 @@ and `new_model_ms` to distinguish synchronous model creation from other stalls.
 
 ## Touch and Apple Pencil controls
 
+Native text fields use one explicit soft-keyboard presentation path. The hidden
+Godot editor's automatic keyboard requests are disabled, and repeated taps do
+not request another presentation while the keyboard is visible or during its
+opening interval. Switching fields still updates the native editor's text.
+Physical-device testing is required to measure UIKit's first-open delay and any
+associated audio interruption.
+
 Drag one finger over the battlefield to pan the camera. Pinch two fingers
 together to zoom out, or spread them to zoom in; moving both fingers also pans.
 A finger tap on a selectable unit or building replaces the current selection;
