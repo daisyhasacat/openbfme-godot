@@ -21,6 +21,18 @@ extern "C"
 namespace
 {
 using V = BfmeLuaValue;
+void push(lua_State *L, const V &v);
+// Marshal existing tables directly. Converting an lvalue Table to V first
+// deep-copied the entire army snapshot (including every nested record).
+void push(lua_State *L, const V::Table &table)
+{
+	lua_createtable(L, 0, static_cast<int>(table.size()));
+	for (const auto &kv : table)
+	{
+		push(L, kv.second);
+		lua_setfield(L, -2, kv.first.c_str());
+	}
+}
 void push(lua_State *L, const V &v)
 {
 	if (std::holds_alternative<std::monostate>(v.data))
@@ -37,17 +49,10 @@ void push(lua_State *L, const V &v)
 	else if (auto p = std::get_if<std::string>(&v.data))
 		lua_pushlstring(L, p->data(), p->size());
 	else if (auto p = std::get_if<V::Table>(&v.data))
-	{
-		lua_newtable(L);
-		for (const auto &kv : *p)
-		{
-			push(L, kv.second);
-			lua_setfield(L, -2, kv.first.c_str());
-		}
-	}
+		push(L, *p);
 	else if (auto p = std::get_if<V::List>(&v.data))
 	{
-		lua_newtable(L);
+		lua_createtable(L, static_cast<int>(p->size()), 0);
 		int i = 0;
 		for (const auto &item : *p)
 		{
@@ -789,16 +794,19 @@ struct BfmeLuaRuntime::Impl
 			t["selection"] = std::move(selection);
 			if (s.localPlayerId >= 0)
 				t["localPlayerId"] = s.localPlayerId;
-			V::Table all;
-			for (auto &c : s.collections)
-			{
-				V::Table records;
-				for (auto &r : c.second)
-					records[r.first] = std::move(r.second);
-				all[c.first] = std::move(records);
-			}
-			t["collections"] = std::move(all);
 			push(L, t);
+			lua_createtable(L, 0, static_cast<int>(s.collections.size()));
+			for (const auto &collection : s.collections)
+			{
+				lua_createtable(L, 0, static_cast<int>(collection.second.size()));
+				for (const auto &record : collection.second)
+				{
+					push(L, record.second);
+					lua_setfield(L, -2, record.first.c_str());
+				}
+				lua_setfield(L, -2, collection.first.c_str());
+			}
+			lua_setfield(L, -2, "collections");
 			// Static definitions are marshalled once per catalog, not once per callback.
 			// Only engine-owned tables are shared; the public proxy API returns copies.
 			auto &runtime = self(L);

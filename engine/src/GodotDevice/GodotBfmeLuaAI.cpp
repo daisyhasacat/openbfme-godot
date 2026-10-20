@@ -779,6 +779,9 @@ void GameWorld::bfme_snapshot_ai(BfmeLuaRuntime::Snapshot &out)
 					relations[std::to_string(i)] = relationName(p->getRelationship(other));
 		r["relations"] = std::move(relations);
 	}
+	// Placement radius is template-wide, but re-evaluated in each snapshot so
+	// template edits cannot leave a persistent stale geometry cache.
+	std::map<const ThingTemplate *, double> footprintRadii;
 	for (const char *kind : {"unitInstances", "buildingInstances"})
 		for (auto &kv : out.collections[kind])
 		{
@@ -790,7 +793,10 @@ void GameWorld::bfme_snapshot_ai(BfmeLuaRuntime::Snapshot &out)
 			r["isBuilder"] = o->isKindOfName("DOZER");
 			if (o->isKindOfName("STRUCTURE"))
 			{
-				r["radius"] = footprintRadius(logic, *o->getTemplate()->getFinalOverride());
+				const auto *tt = o->getTemplate()->getFinalOverride();
+				auto radius = footprintRadii.find(tt);
+				if (radius == footprintRadii.end()) radius = footprintRadii.emplace(tt, footprintRadius(logic, *tt)).first;
+				r["radius"] = radius->second;
 				r["isEconomy"] = o->isKindOfName("ECONOMY_STRUCTURE");
 				r["isFactory"] = !o->isKindOfName("ECONOMY_STRUCTURE") && o->isKindOfName("FS_FACTORY");
 			}

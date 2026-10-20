@@ -134,3 +134,53 @@ containment/destruction and repeated movement determinism. The opt-in
 two-scenario benchmark passes 5,772 assertions per run. Compiler/link audit
 checks pass; the full AST audit remains blocked by the existing missing
 libclang and unclassified FloatingText source described above.
+
+## Buckland with a restored base: Lua snapshots
+
+A profile of the snow Buckland workload with 334 fighter battalions and a
+recorded base found significant time copying nested Lua snapshot tables.
+The marshaler now writes existing tables directly into pre-sized Lua tables,
+including each instance collection, rather than implicitly deep-copying them
+through temporary values. Instance definitions and building placement radii
+are parsed once per template within each snapshot. These caches expire with
+the snapshot, so subsequent template edits remain visible. Public nested
+values remain detached copies and existing instance handles still refresh.
+
+The opt-in installed-data harness reads an existing user layout without
+modifying it, mounts the configured profile (including enabled mods), starts
+snow Buckland at its recorded start slot, and invokes the console's actual
+`replayBuildings` command with `level3=true`. For example:
+
+```sh
+BUCKLAND_LAYOUT=snowBuck BUCKLAND_HORDES=334 BUCKLAND_FRAMES=120 \
+workspace/godot/Godot.app/Contents/MacOS/Godot --headless --path godot \
+  --script res://tests/buckland_army_bench.gd
+```
+
+It measures `advance` and `update_lua` separately after spawning and ordering
+the army. `BUCKLAND_HASHES` optionally writes the measured state hashes.
+Missing user layouts skip with exit 77; layout data and retail assets are
+never included in the repository. The army count uses the mounted profile's
+CP costs; 334 battalions are approximately 20,000 CP in the tested profile.
+
+On Apple Silicon, two original and two optimized samples in original /
+optimized / optimized / original order measured mean Lua-update times of
+27.98 / 15.79 / 14.98 / 25.70 ms. The averages are 26.84 versus 15.39 ms,
+about 43% less time in this part of the main-thread workload. This is a
+headless wall-time observation, not rendered FPS or a timing assertion.
+
+The tested 251-entry layout did not replay completely: after 120 setup
+passes it reported 233 completed entries, 212 errors and pending callbacks.
+Errors included unavailable experience levels and overlapping wall sites.
+The harness retains pending callbacks to exercise the console workload and
+reports the replay counters separately from benchmark completion. Wall-clock
+callbacks produced 5,779 objects in the original runs and 5,790 in optimized
+runs, so these runs do not establish identical simulation hashes or isolate
+an improvement in movement itself. The Lua timing reduction should not be
+interpreted as a measured pathfinding improvement.
+
+Validation covers a 5,000-record nested snapshot with detached public values,
+record removal and live-handle refresh, plus installed-data template edits
+observed by two same-template instances with distinct positions. The focused
+native Lua and enclosure suite passes 27 cases / 464 assertions, and the
+Godot snapshot regression passes with the configured mounted profile.

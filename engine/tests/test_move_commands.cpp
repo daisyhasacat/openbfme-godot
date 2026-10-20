@@ -215,6 +215,7 @@ TEST_CASE("reachability: closed walls refuse ground orders and builder placement
 	mw.spawn("ReachWallY", 300, 500);
 	Object *wall = mw.spawn("ReachWallY", 700, 500);
 	Object *unit = mw.spawn("ReachBuilder", 150, 150);
+	Object *trapped = mw.spawn("ReachBuilder", 500, 500);
 	mw.buildMap();
 	mw.frames(2);
 	mw.logic->players().setLocalPlayer(unit->getControllingPlayer());
@@ -239,10 +240,23 @@ TEST_CASE("reachability: closed walls refuse ground orders and builder placement
 	REQUIRE(build);
 	CHECK(BuildPlacement::isLocationLegalToBuild(*mw.logic, inside, *build, 0, LLF_CLEAR_PATH, unit, unit->getControllingPlayer()) == LBC_NO_CLEAR_PATH);
 	CHECK(BuildPlacement::isLocationLegalToBuild(*mw.logic, outside, *build, 0, LLF_CLEAR_PATH, unit, unit->getControllingPlayer()) == LBC_OK);
+	// Leaving a sealed base must be refused as well as entering it. Otherwise
+	// a normal click can feed the mover's closest-point fallback at the wall.
+	ui.deselectObject(unit->getID());
+	ui.selectObject(trapped->getID());
+	CHECK(translator.evaluateContextCommand(nullptr, &outside, EvaluateType::DoHint) == 0);
+	CHECK(ui.cursor() == MouseCursorName::GenericInvalid);
+	CHECK(translator.evaluateContextCommand(nullptr, &outside, EvaluateType::DoCommand) == 0);
+	translator.issueRadarMove(outside);
+	CHECK(stream.pending() == 0);
 	// Removing a wall footprint (the same pathfinder update used by open gates)
 	// must restore both commands and placement without stale client state.
 	mw.ai->removeObjectFromPathfindMap(*wall);
 	mw.frames(2);
+	CHECK(translator.evaluateContextCommand(nullptr, &outside, EvaluateType::DoHint) == MSG_DO_MOVETO);
+	CHECK(ui.cursor() == MouseCursorName::Move);
+	ui.deselectObject(trapped->getID());
+	ui.selectObject(unit->getID());
 	CHECK(translator.evaluateContextCommand(nullptr, &inside, EvaluateType::DoHint) == MSG_DO_MOVETO);
 	CHECK(ui.cursor() == MouseCursorName::Move);
 	CHECK(BuildPlacement::isLocationLegalToBuild(*mw.logic, inside, *build, 0, LLF_CLEAR_PATH, unit, unit->getControllingPlayer()) == LBC_OK);

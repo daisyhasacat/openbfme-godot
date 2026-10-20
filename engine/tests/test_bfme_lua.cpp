@@ -699,3 +699,31 @@ TEST_CASE("bfme Lua: engine events queue across threads and dispatch once at saf
 	CHECK(f.run("return starts") == "2\n");
 	CHECK_FALSE(f.vm->execute("bfme.events.onBuildingPlaced('x', false)").ok);
 }
+
+TEST_CASE("bfme Lua: a large nested snapshot remains detached and refreshes live records after marshaling")
+{
+	BfmeFixture f;
+	using V = BfmeLuaValue;
+	f.snapshot.collections["unitInstances"].clear();
+	for (int id = 1; id <= 5000; ++id)
+		f.snapshot.collections["unitInstances"][std::to_string(id)] = {
+			{"id", id}, {"playerId", 1}, {"typeId", "GondorSoldier"},
+			{"position", V::Table{{"x", id}, {"y", -id}}},
+			{"nested", V::List{V::Table{{"value", id}}, V::List{true, "label", 3}}}
+		};
+	CHECK(f.run(R"lua(
+local count,sum=0,0
+for id,u in pairs(bfme.unitInstances) do
+ count=count+1; sum=sum+u.position.x
+ local a=u.nested; a[1].value=-1; a[2][1]=false
+ assert(u.nested[1].value==id and u.nested[2][1]==true)
+end
+saved=bfme.unitInstances[5000]
+return count,sum,saved.position.y
+)lua") == "5000\t12502500\t-5000\n");
+	f.snapshot.collections["unitInstances"]["5000"]["position"] = V::Table{{"x", 9}, {"y", 12}};
+	f.snapshot.collections["unitInstances"].erase("1");
+	CHECK(f.run("return #bfme.unitInstances,saved.position.x,saved.position.y,bfme.unitInstances[1]") == "4999\t9\t12\tnil\n");
+	const auto &nested = std::get<V::List>(f.snapshot.collections["unitInstances"]["5000"]["nested"].data);
+	CHECK(std::get<double>(std::get<V::Table>(nested[0].data).at("value").data) == 5000);
+}

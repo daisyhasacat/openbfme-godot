@@ -169,6 +169,9 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 				{"faction", p->getSide()}};
 		out.collections["players"][std::to_string(i)] = std::move(r);
 	}
+	// Definitions are template-wide. Reuse their parsed fields within this
+	// snapshot only; subsequent snapshots still observe template mutations.
+	std::map<const ThingTemplate *, Table> definitions;
 	for (auto obj = logic.getFirstObject(); obj; obj = obj->getNextObject())
 	{
 		const auto tt = obj->getTemplate();
@@ -178,7 +181,9 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 		const bool building = kind(info, 7);
 		if (!building && !kind(info, 1))
 			continue;
-		Table r = definition(*tt);
+		auto definitionIt = definitions.find(tt);
+		if (definitionIt == definitions.end()) definitionIt = definitions.emplace(tt, definition(*tt)).first;
+		Table r = definitionIt->second;
 		const auto pos = obj->getPosition();
 		r["id"] = double(obj->getID());
 		r["objectId"] = double(obj->getID());
