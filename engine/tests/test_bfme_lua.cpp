@@ -16,6 +16,7 @@ struct BfmeFixture
 	BfmeLuaRuntime::Snapshot snapshot;
 	std::vector<BfmeLuaRuntime::Mutation> applied;
 	int writes = 0;
+	int snapshotReads = 0;
 	std::string constructionState = "building";
 	std::vector<std::pair<std::string, std::string>> scripts;
 	std::vector<std::pair<std::string, std::vector<BfmeLuaValue>>> queries;
@@ -32,7 +33,7 @@ struct BfmeFixture
 		snapshot.collections["unitInstances"]["1234"] = {
 			{"id", 1234}, {"playerId", 1}, {"typeId", "GondorSoldier"}, {"position", BfmeLuaValue::Table{{"x", 5}}}};
 		BfmeLuaRuntime::Host host;
-		host.snapshot = [this] { return snapshot; };
+		host.snapshot = [this] { ++snapshotReads; return snapshot; };
 		host.apply = [this](const auto &m) {
 			applied.push_back(m);
 			if (m.id == "1" && m.field == "money")
@@ -726,4 +727,39 @@ return count,sum,saved.position.y
 	CHECK(f.run("return #bfme.unitInstances,saved.position.x,saved.position.y,bfme.unitInstances[1]") == "4999\t9\t12\tnil\n");
 	const auto &nested = std::get<V::List>(f.snapshot.collections["unitInstances"]["5000"]["nested"].data);
 	CHECK(std::get<double>(std::get<V::Table>(nested[0].data).at("value").data) == 5000);
+}
+
+TEST_CASE("bfme timing: context-only production hooks skip snapshots; API reads refresh once per invocation")
+{
+	BfmeFixture f;
+	f.run("bfme.timing.onTrain(function(c) if c.playerId==1 then return 1 end end)");
+	f.snapshotReads = 0;
+	for (int i = 0; i != 1000; ++i)
+		CHECK(f.vm->adjustTiming("train", {{"playerId",1}}, 100) == 5);
+	CHECK(f.snapshotReads == 0);
+	// A saved instance handle and match state must see changes since registration.
+	f.run("timing_unit=bfme.unitInstances[1234]; bfme.timing.onTrain(function(c) local frame=bfme.match.getFrame(); assert(frame==bfme.match.getStatus().frame); return timing_unit.position.x+frame end)");
+	f.snapshot.frame = 7;
+	f.snapshot.collections["unitInstances"]["1234"]["position"] = BfmeLuaValue::Table{{"x", 3}};
+	f.snapshotReads = 0;
+	CHECK(f.vm->adjustTiming("train", {}, 100) == 50);
+	CHECK(f.snapshotReads == 1);
+	f.snapshot.frame = 8;
+	CHECK(f.vm->adjustTiming("train", {}, 100) == 55);
+	CHECK(f.snapshotReads == 2);
+	f.snapshot.collections["unitInstances"].erase("1234");
+	CHECK_THROWS(f.vm->adjustTiming("train", {}, 100));
+	CHECK(f.snapshotReads == 3);
+	CHECK(f.run("return pcall(function() return timing_unit.position end)").find("false\t") == 0);
+	// Failure and hook removal must not leak a stale deferred snapshot.
+	f.run("bfme.timing.onTrain(function(c) error('bad timing') end)");
+	f.snapshotReads = 0;
+	CHECK_THROWS(f.vm->adjustTiming("train", {}, 100));
+	CHECK(f.snapshotReads == 0);
+	f.snapshot.frame = 99;
+	CHECK(f.run("return bfme.match.getFrame()") == "99\n");
+	f.run("bfme.timing.clear()");
+	f.snapshotReads = 0;
+	CHECK(f.vm->adjustTiming("train", {}, 100) == 100);
+	CHECK(f.snapshotReads == 0);
 }

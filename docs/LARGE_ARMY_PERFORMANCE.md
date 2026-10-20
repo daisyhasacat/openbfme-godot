@@ -184,3 +184,59 @@ record removal and live-handle refresh, plus installed-data template edits
 observed by two same-template instances with distinct positions. The focused
 native Lua and enclosure suite passes 27 cases / 464 assertions, and the
 Godot snapshot regression passes with the configured mounted profile.
+
+## 40,020 CP: production timing callbacks
+
+A live sample of the packaged game during a reported 4 FPS session identified
+repeated full-army snapshots under `ProductionUpdate::update` →
+`GameLogic::interceptTiming` → `BfmeLuaRuntime::adjustTiming`. Ubermode's timing
+callback only examines its supplied `playerId` and returns one second, but
+previously every invocation refreshed all units, buildings and players.
+Several active producers could therefore each copy the entire army in one
+logic tick, even after the snapshot marshaling optimization above.
+
+Timing callbacks now defer their snapshot until the first read of game state
+through the Lua API. Context-only callbacks build no snapshot. A callback
+reading a saved handle, collection or match state still receives a fresh
+snapshot for each invocation and reuses it for subsequent reads in that
+invocation. Expired handles, callback validation, error recovery, duration
+rounding, native production and the callback execution limit remain covered
+by tests. Native snapshot construction stays outside the callback's time
+budget, as it was before the change.
+
+The installed-data production benchmark isolates this cost on snow Buckland
+with the configured mounted profile, 667 fighter battalions (40,020 CP in the
+tested HD profile), eight barracks and five queued battalions per barracks.
+It uses the same context-only timing function as Ubermode, without wall-clock
+update callbacks or a user layout, so before/after state hashes can be compared.
+It measures 40 `advance(0.2)` calls; map loading, spawning, queue submission
+and hashing are outside the timing interval:
+
+```sh
+PRODUCTION_HASHES=/tmp/production-hashes.json \
+workspace/godot/Godot.app/Contents/MacOS/Godot --headless --path godot \
+  --script res://tests/production_army_bench.gd
+```
+
+`PRODUCTION_HORDES` optionally changes army size. Timing is observational,
+never a pass/fail threshold. Two runs of each binary on Apple Silicon gave:
+
+| Measurement | Original, two runs | Optimized, two runs |
+|---|---:|---:|
+| First production tick | 271.53 / 288.49 ms | 53.07 / 56.52 ms |
+| Mean simulation tick | 62.44 / 67.46 ms | 51.79 / 55.62 ms |
+| Slowest tick | 271.53 / 288.49 ms | 56.90 / 62.07 ms |
+
+The first-tick averages fall about 80%; whole-test averages fall about 17%.
+Every one of the 40 frame hashes matched across all four runs, with 11,139
+objects at completion and final hash `141271425`. These are headless
+simulation measurements, not rendered FPS or a promise of the same gain
+for idle armies, combat or other bottlenecks. The separate restored-layout
+limitations above still apply to that workload.
+
+The native Lua/timing suite passes 25 cases / 1,483 assertions. The new
+regression proves 1,000 context-only callbacks request zero snapshots, then
+checks current match/handle data, one refresh per state-reading invocation,
+removed records, callback failure and hook removal. The installed-data
+Ubermode regression checks one-second construction and training plus K-click
+recruitment across duplicate buildings.

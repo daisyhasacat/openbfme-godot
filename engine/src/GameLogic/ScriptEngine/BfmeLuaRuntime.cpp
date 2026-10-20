@@ -601,9 +601,15 @@ function print(...)
  local parts={}; for i=1,select('#',...) do parts[i]=tostring(select(i,...)):sub(1,65536) end
  writeLog(table.concat(parts,'\t'))
 end
-function _bfmeRefresh()
+local function refreshView()
  view=snapshot()
  for key,p in pairs(cache) do local h=info[p]; if not (view.collections[h.kind] and view.collections[h.kind][h.id]) then h.expired=true;cache[key]=nil end end
+end
+_bfmeRefresh=refreshView
+function _bfmeDeferRefresh()
+ -- Timing callbacks often only use their supplied context. Fetch the current
+ -- world on their first API read instead of copying the army for every producer.
+ view=setmetatable({}, {__index=function(_,key) refreshView(); return view[key] end})
 end
 function _bfmeInvalidate()
  generation=generation+1;cache={};view={collections={}}
@@ -653,7 +659,7 @@ struct BfmeLuaRuntime::Impl
 	std::map<unsigned long long, unsigned> constructionResults;
 	std::map<unsigned long long, std::string> results;
 	std::chrono::steady_clock::time_point deadline;
-	int refreshRef = LUA_NOREF, invalidateRef = LUA_NOREF, printRef = LUA_NOREF;
+	int refreshRef = LUA_NOREF, deferRefreshRef = LUA_NOREF, invalidateRef = LUA_NOREF, printRef = LUA_NOREF;
 	std::shared_ptr<const Collections> catalog;
 	int catalogRef = LUA_NOREF;
 	// bfme.events.onUpdate: named callbacks run by flush() every intervalMs (wall clock), each under the execution budget
@@ -785,7 +791,9 @@ struct BfmeLuaRuntime::Impl
 	{
 		try
 		{
-			auto s = self(L).host.snapshot();
+			auto &runtime = self(L);
+			const auto timingStart = runtime.timingBusy ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+			auto s = runtime.host.snapshot();
 			V::Table t{{"ready", s.ready}, {"paused", s.paused}, {"frame", s.frame}, {"cursorPosition", s.cursorPosition},
 				{"networkGame", s.networkGame}, {"replay", s.replay}, {"luaAuthority", s.luaAuthority}, {"peaceTimeActive", s.peaceTimeActive}};
 			V::List selection;
@@ -809,7 +817,6 @@ struct BfmeLuaRuntime::Impl
 			lua_setfield(L, -2, "collections");
 			// Static definitions are marshalled once per catalog, not once per callback.
 			// Only engine-owned tables are shared; the public proxy API returns copies.
-			auto &runtime = self(L);
 			if (runtime.catalog != s.catalog)
 			{
 				luaL_unref(L, LUA_REGISTRYINDEX, runtime.catalogRef);
@@ -846,6 +853,9 @@ struct BfmeLuaRuntime::Impl
 				}
 				lua_pop(L, 2);
 			}
+			// Timing snapshots previously ran before the callback's execution
+			// budget began. Keep their native construction cost outside that budget.
+			if (runtime.timingBusy) runtime.deadline += std::chrono::steady_clock::now() - timingStart;
 			return 1;
 		}
 		catch (const std::exception &e)
@@ -1018,6 +1028,10 @@ BfmeLuaRuntime::BfmeLuaRuntime(Host host, void *luaState) : m(new Impl)
 	m->refreshRef = luaL_ref(L, LUA_REGISTRYINDEX);
 	lua_pushnil(L);
 	lua_setglobal(L, "_bfmeRefresh");
+	lua_getglobal(L, "_bfmeDeferRefresh");
+	m->deferRefreshRef = luaL_ref(L, LUA_REGISTRYINDEX);
+	lua_pushnil(L);
+	lua_setglobal(L, "_bfmeDeferRefresh");
 	lua_getglobal(L, "_bfmeInvalidate");
 	m->invalidateRef = luaL_ref(L, LUA_REGISTRYINDEX);
 	lua_pushnil(L);
@@ -1289,7 +1303,7 @@ int BfmeLuaRuntime::adjustTiming(const std::string &kind, Value::Table context, 
 	auto restore = [&] { lua_settop(L, top); lua_sethook(L, oldHook, oldMask, oldCount); m->deadline = oldDeadline; m->timingBusy = false; };
 	m->timingBusy = true;
 	try {
-		m->call(m->refreshRef); // callbacks read current handles and match state, not the last console snapshot
+		m->call(m->deferRefreshRef); // first API read refreshes current handles and match state
 		// RotWK's five logic frames per second: seconds round UP to a whole frame.
 		context["kind"] = kind;
 		context["seconds"] = double(std::max(1, nativeFrames)) / 5.0;
