@@ -1,5 +1,12 @@
 # Linux AppImage CI
 
+Bundled UI PNG assets under `godot/assets/` are inline Git binaries, exempt from the
+repository's general LFS rules. Without that exception, an LFS-enabled runner
+can clean the committed PNG bytes into pointers and report a dirty checkout,
+causing strict packaging to stop. The workflow checks the tracked diff before
+and after compilation so any future checkout mutation is named in the log;
+release provenance checks remain enabled.
+
 The **Linux AppImage** workflow (`.github/workflows/appimage.yml`) builds an
 x86_64 AppImage on pull requests, pushes to `main` or `ci/**`, version tags, and
 manual **Run workflow** requests. It needs no credentials or retail game files.

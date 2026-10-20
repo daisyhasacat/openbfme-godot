@@ -69,3 +69,49 @@ def test_apprun_launches_from_any_directory_and_preserves_arguments(tmp_path, mo
         with monkeypatch.context() as patch:
             patch.setattr(subprocess, "run", lambda *_args, **_kwargs: None)
             appimage.stage(package, output)
+
+
+def test_inline_ui_assets_stay_clean_with_lfs_filter(tmp_path):
+    """Model runner LFS clean filtering without needing git-lfs on the test host."""
+    import os
+    attributes = (appimage.ROOT / '.gitattributes').read_text()
+    exception = 'godot/assets/**/*.png binary -filter'
+    assert exception in attributes
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+
+    def git(*args, check=True):
+        return subprocess.run(['git', '-C', str(repo), *args], check=check,
+                              text=True, capture_output=True)
+
+    git('init')
+    git('config', 'user.name', 'Fixture')
+    git('config', 'user.email', 'fixture@example.invalid')
+    image = repo / 'godot/assets/platform_icons/fixture.png'
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b'\x89PNG\r\n\x1a\nsynthetic inline UI asset')
+    attr = repo / '.gitattributes'
+    attr.write_text(attributes.replace(exception, ''))
+    git('add', '.gitattributes', 'godot/assets/platform_icons/fixture.png')
+    git('commit', '-m', 'Synthetic inline asset')
+    # A clean filter has the same relevant behavior as LFS: raw bytes clean to
+    # a pointer, whereas an already-normalized pointer stays a pointer.
+    cleaner = tmp_path / 'clean.py'
+    cleaner.write_text('import sys,hashlib\nb=sys.stdin.buffer.read()\n'
+                       'sys.stdout.buffer.write(b if b.startswith(b"version https://git-lfs") else '
+                       'b"version https://git-lfs.github.com/spec/v1\\noid sha256:" + '
+                       'hashlib.sha256(b).hexdigest().encode() + b"\\nsize " + str(len(b)).encode() + b"\\n")\n')
+    import shlex
+    git('config', 'filter.lfs.clean', shlex.join([sys.executable, str(cleaner)]))
+    stamp = image.stat().st_mtime + 10
+    os.utime(image, (stamp, stamp))
+    assert git('describe', '--always', '--dirty').stdout.strip().endswith('-dirty')
+    assert 'fixture.png' in git('diff', '--name-only').stdout
+    attr.write_text(attributes)
+    git('add', '.gitattributes')
+    git('commit', '-m', 'Keep bundled assets inline')
+    assert git('diff', '--exit-code', 'HEAD').returncode == 0
+    assert not git('describe', '--always', '--dirty').stdout.strip().endswith('-dirty')
+    for path in ('godot/assets/openbfme-icon.png', 'godot/assets/brand/poweredby_openbfme.png',
+                 'godot/assets/platform_icons/linux.png'):
+        assert git('check-attr', 'filter', '--', path).stdout.strip().endswith('filter: unset')
