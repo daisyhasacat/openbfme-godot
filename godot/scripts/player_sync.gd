@@ -64,7 +64,7 @@ func _target(key:String)->String:
  for part in parts:
   if part in ["", ".", ".."] or ":" in part or "\\" in part:return ""
  var relative=key.substr(key.find("/")+1)
- if parts[0]==scope+"player" and not (relative in FILES or (parts.size()==2 and relative.ends_with("RealTimeStats.ini")) or parts[1] in FOLDERS):return ""
+ if parts[0]==scope+"player" and not (relative in player_files() or (parts.size()==2 and relative.ends_with("RealTimeStats.ini")) or parts[1] in FOLDERS):return ""
  var current=ProjectSettings.globalize_path(str(roots[parts[0]]))
  for part in relative.split("/"):
   var dir=DirAccess.open(current)
@@ -72,12 +72,51 @@ func _target(key:String)->String:
   current=current.path_join(part)
  return current
 
+## the user-folder files of the selected game: BFME1 keeps its profiles in bfme1-Skirmish.ini (game.gd), RotWK and BFME2 in Skirmish.ini
+func player_files()->Array:
+ var files=FILES.duplicate()
+ if scope=="bfme1-":files[files.find("Skirmish.ini")]="bfme1-Skirmish.ini"
+ return files
+
+## Skirmish.ini holds every profile in one file, so whole-file sync lets a stale or empty list replace profiles made on another device
+## (or by this game before a download). Profile files are merged instead: every profile of both versions is kept (deletions are not
+## shared); where both have an entry, this device's wins when it changed since the last sync, else the server's; this device's current
+## profile stays current.
+func _is_profiles(key:String)->bool:
+ return key==scope+"player/Skirmish.ini" or key==scope+"player/bfme1-Skirmish.ini"
+
+func _ini(text:String)->Dictionary:
+ var values={}
+ for line in text.split("\n"):
+  var at=line.find("=")
+  if at>0:values[line.substr(0,at).strip_edges()]=line.substr(at+1).strip_edges()
+ return values
+
+func merge_profiles(ours:String, theirs:String, ours_win:=true)->String:
+ var mine=_ini(ours);var other=_ini(theirs)
+ var merged=other.duplicate() if ours_win else mine.duplicate()
+ merged.merge(mine if ours_win else other,true)
+ # UserNames: quoted-printable names, each followed by an encoded "," (_2C_00); names compare without case like the game's
+ var names=PackedStringArray();var seen={}
+ for list in [str(mine.get("UserNames","")),str(other.get("UserNames",""))]:
+  for name in list.split("_2C_00",false):
+   if not name.strip_edges().is_empty() and not seen.has(name.to_lower()):seen[name.to_lower()]=true;names.append(name)
+ if not names.is_empty() or merged.has("UserNames"):merged["UserNames"]="".join(Array(names).map(func(n):return n+"_2C_00"))
+ merged["CurrentUserName"]=mine.get("CurrentUserName","") if not str(mine.get("CurrentUserName","")).is_empty() else other.get("CurrentUserName","")
+ if str(merged["CurrentUserName"]).is_empty() and not (mine.has("CurrentUserName") or other.has("CurrentUserName")):merged.erase("CurrentUserName")
+ # the game's writer: every key in byte order as "key = value" (OptionPreferences::text), with the file's own line ending
+ var eol="\r\n" if "\r\n" in ours or (ours.is_empty() and "\r\n" in theirs) else "\n"
+ var keys=merged.keys();keys.sort()
+ var out=""
+ for key in keys:out+=str(key)+" = "+str(merged[key])+eol
+ return out
+
 func local_files()->Dictionary:
  var local={}
  for key in roots:
   if key==scope+"player":
    for name in DirAccess.get_files_at("user://"):
-    if (name in FILES or name.ends_with("RealTimeStats.ini")) and FileAccess.file_exists("user://"+name):local[scope+"player/"+name]="user://"+name
+    if (name in player_files() or name.ends_with("RealTimeStats.ini")) and FileAccess.file_exists("user://"+name):local[scope+"player/"+name]="user://"+name
    for name in FOLDERS:_scan("user://"+name,scope+"player/"+name+"/",local)
   else:_scan(roots[key],key+"/",local)
  return local
@@ -119,6 +158,32 @@ func _sync():
   var old=str(state.get_value("files",key,""));var theirs=str(remote.get(key,""))
   var ours=FileAccess.get_sha256(target) if FileAccess.file_exists(target) else ""
   status.text="Syncing %d / %d: %s"%[count+1,keys.size(),key]
+  if _is_profiles(key) and ours!=theirs and not ours.is_empty() and not theirs.is_empty():
+   var fetched=await _call(url+"/file/"+str(key).uri_encode())
+   if fetched.is_empty() or fetched[0]!=HTTPRequest.RESULT_SUCCESS or fetched[1]!=200:_finish("Download failed: "+key);return
+   var check_hash=HashingContext.new();check_hash.start(HashingContext.HASH_SHA256);check_hash.update(fetched[3])
+   if check_hash.finish().hex_encode()!=theirs:_finish("Download checksum failed: "+key);return
+   var local_bytes=FileAccess.get_file_as_bytes(target)
+   if FileAccess.get_sha256(target)!=ours:_finish("File changed during sync; try again: "+key);return
+   var merged_bytes=merge_profiles(local_bytes.get_string_from_utf8(),fetched[3].get_string_from_utf8(),ours!=old).to_utf8_buffer()
+   var merged_hash_ctx=HashingContext.new();merged_hash_ctx.start(HashingContext.HASH_SHA256);merged_hash_ctx.update(merged_bytes)
+   var merged_hash=merged_hash_ctx.finish().hex_encode()
+   if merged_hash!=theirs:
+    var put=await _call(url+"/file/"+str(key).uri_encode(),HTTPClient.METHOD_PUT,merged_bytes,theirs)
+    if put.is_empty() or put[0]!=HTTPRequest.RESULT_SUCCESS or put[1]!=200:_finish("Upload failed or another device changed the file; sync again: "+key);return
+   # the running game holds its profiles in memory: automatic sync only uploads; Sync now (main menu, then restart) writes the merge
+   if merged_hash!=ours and not background:
+    if FileAccess.get_sha256(target)!=ours:_finish("File changed during sync; try again: "+key);return
+    var part=FileAccess.open(target+".sync-part",FileAccess.WRITE)
+    if part==null:_finish("Cannot write: "+key);return
+    part.store_buffer(merged_bytes);var part_error=part.get_error();part.close()
+    if part_error!=OK or FileAccess.get_sha256(target+".sync-part")!=merged_hash:
+     DirAccess.remove_absolute(target+".sync-part");_finish("Incomplete disk write: "+key);return
+    if DirAccess.rename_absolute(target+".sync-part",target)!=OK:_finish("Cannot replace: "+key);return
+   state.set_value("files",key,merged_hash)
+   if state.save(state_path)!=OK:_finish("Cannot save sync state.");return
+   count+=1
+   continue
   if background and ours!=theirs and not theirs.is_empty() and (ours.is_empty() or ours==old or theirs!=old):
    # Background work must not replace files held in memory by the game.
    if not ours.is_empty() and ours!=old:
