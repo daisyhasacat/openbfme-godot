@@ -1183,6 +1183,10 @@ func _build_stage() -> void:
 	_camera.far = 60000.0
 	_camera.current = false
 	add_child(_camera)
+	var second_view := preload("res://scripts/second_view.gd").new()
+	second_view.source = _camera
+	second_view.game = self
+	add_child(second_view)
 
 
 func _fail(message: String) -> void:
