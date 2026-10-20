@@ -20,6 +20,9 @@
 #include "Common/INIException.h"
 
 #include "GameClient/AptCanvas.h"
+#include "GameClient/GUI/AptScreens/AptImageMode.h"
+#include <godot_cpp/classes/shader.hpp>
+#include <godot_cpp/classes/shader_material.hpp>
 #include "GameClient/FontSubstitution.h"
 #include "GameClient/GdiFontMetrics.h"
 #include "GameClient/GUI/AptGadgetLayer.h"
@@ -762,6 +765,7 @@ struct AptMenuPlayer::Impl
 	GameTextTable strings;
 	FontSubstitution fonts;
 	std::map<std::string, Ref<ImageTexture>> godotTextures;
+	std::map<int, Ref<ShaderMaterial>> imageModes;
 	AptImageReplacements imageReplacements;
 	std::map<std::string, Ref<Texture2D>> brandTextures;
 	std::map<std::string, Ref<FontFile>> fontByName; // lower-cased family name and file stem
@@ -4411,6 +4415,22 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 						const Rect2 src(img->uvLo[0] * size.x, img->uvLo[1] * size.y, (img->uvHi[0] - img->uvLo[0]) * size.x, (img->uvHi[1] - img->uvLo[1]) * size.y);
 						RID item = newItem(parents.back());
 						current = RID();
+						// RenderImage._mode is also used by the CAH medal's _gray/_color
+						// frames. Reuse the HUD's decoded mode parser and S-5016 shaders.
+						std::string modeText;
+						for (const auto &kv : op.nativeVars) if (kv.first == "_mode") modeText = kv.second;
+						const AptImageMode mode = parseAptImageMode(modeText);
+						if (mode != APT_IMAGE_ALPHA)
+						{
+							auto &material = m->imageModes[(int)mode];
+							if (material.is_null())
+							{
+								Ref<Shader> shader; shader.instantiate();
+								shader->set_code(String(aptImageModeShader(mode).c_str()));
+								material.instantiate(); material->set_shader(shader);
+							}
+							rs->canvas_item_set_material(item, material->get_rid());
+						}
 						rs->canvas_item_add_texture_rect_region(item, Rect2(minx, miny, maxx - minx, maxy - miny), tex->get_rid(), src, Color(1, 1, 1, 1));
 						break;
 					}

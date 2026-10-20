@@ -15,6 +15,8 @@
 #include "GameClient/GUI/Shell/Shell.h"
 #include "GameClient/GUI/ShellServices.h"
 #include "GameLogic/CreateAHeroSystem.h"
+#include "Libraries/Source/Apt/Apt.h"
+#include "Libraries/Source/Apt/AptCharacterInst.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -792,7 +794,6 @@ void AptCreateAHero::registerAll()
 		{
 			const std::string name = "MyHero::AwardState_" + std::to_string(i);
 			registerProvider(name, [this](const std::string &n, std::string &value, bool setting) { return !setting && m_myHero && m_myHero->provide(n, value); });
-			windows().markNumericProvider(name);
 		}
 	}
 	windows().markNumericProvider("MyHero::IsSystemHero"); // the movie tests it with Not: "0" must be false (as AptTimeLine's flags, S-1063)
@@ -1687,6 +1688,7 @@ void AptCreateAHero::refreshPowersPage()
 
 void AptCreateAHero::update()
 {
+	refreshAwardBindings();
 	if (m_box)
 	{
 		m_box->update();
@@ -1784,4 +1786,36 @@ void AptCreateAHero::selectAward(int index)
 			if (const auto *award = system.awardSystem.award(sub->awards[(size_t)index])) description = loadScreenU16ToUtf8(fetchOrMissing(m_env.gameText, award->descriptionTag));
 	}
 	windows().setAptText("Cah:SelectedAwardDesc", description);
+}
+
+void AptCreateAHero::refreshAwardBindings()
+{
+	if (!m_myHero || !m_env.createAHero || !m_env.createAHero->system) return;
+	const auto &system = *m_env.createAHero->system;
+	const auto &hero = m_myHero->hero();
+	const auto *sub = system.subClass(hero.classIndex, hero.subClassIndex);
+	if (!sub) return;
+	auto &apt = windows().apt();
+	auto *root = apt.level(level());
+	const std::string path = "Main.mcManagerScreen.Screen.TabNav.ScreenAwards.AwardList.mcAwards";
+	auto *list = apt.resolvePath(root, path);
+	if (!list || !list->asSprite()) return;
+	// The retail award template's first-frame script (CreateAHero.apt 0x1CC7C)
+	// binds Image._imageMap and AwardName.text using its instance name. The port's
+	// deferred child first frame clears _imageMap afterwards (S-104). Integration
+	// inference: restore those same bindings after initialization, without changing
+	// the movie's grid, scrolling, visibility or locked/earned animation.
+	for (size_t i = 0; i < sub->awards.size(); ++i)
+	{
+		auto *slot = list->asSprite()->childByName(std::to_string(i));
+		auto *image = slot && slot->asSprite() ? slot->asSprite()->childByName("Image") : nullptr;
+		AptValue type, binding;
+		if (!image || !image->getOwn("_type", type)) continue; // child's first frame has not run yet
+		const std::string key = "CahAward:Image_" + std::to_string(i);
+		if (!image->getOwn("_imageMap", binding) || binding.toString() != key)
+		{
+			image->setMember("_imageMap", AptValue::string(key));
+			windows().setAptFieldText(level(), path + "." + std::to_string(i) + ".AwardName", "$CahAward:Name_" + std::to_string(i));
+		}
+	}
 }

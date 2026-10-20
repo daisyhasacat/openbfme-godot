@@ -184,6 +184,7 @@ private:
 	void fillHeroList();
 	void refreshTexts();
 	void refreshStatistics();
+	void refreshAwardBindings();
 	void selectAward(int index);
 	void refreshClassPage();
 	void refreshPowersPage();

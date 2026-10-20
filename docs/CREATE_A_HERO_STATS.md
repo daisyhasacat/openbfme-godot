@@ -47,3 +47,18 @@ replacement writes and retail decimal-prefix conversion. `cah statistics
 retail:*` uses mounted retail definitions/movies to check persisted medal
 unlocking and real kill events, including duplicate scoring and unchanged
 simulation hashes when profile recording is enabled.
+
+The Awards tab restores the retail template's image/name bindings after its
+child image clips finish initialization. The current APT player clears the
+parent's first-frame image assignment when the child's first frame runs;
+this is a scoped presentation bridge, with general initialization ordering
+still covered by S-104. Award states remain strings, as consumed by the
+movie's empty / "0" / "1" comparisons. Shell RenderImage clips now use the
+same image-mode shaders as HUD clips, so locked medals are grayscale and
+earned medals retain their colour (mode render-state inference: S-5016).
+
+The retail shell regression opens the actual Awards tab, checks every medal
+binding and label, reopens the tab, then earns a medal and checks its colour
+mode. `godot/tests/cah_awards_display_test.gd` checks the mounted movie with an
+empty temporary `CAH_TEST_PROFILE`; a windowed run also permits `--shot=...`
+for visual inspection. It never writes to the player's hero profile.
