@@ -93,7 +93,7 @@ def handler(store):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--bind', default='127.0.0.1')
+    parser.add_argument('--bind', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8766)
     parser.add_argument('--data', type=Path, default=Path('workspace/player-sync'))
     args = parser.parse_args()

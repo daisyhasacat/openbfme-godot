@@ -11,8 +11,8 @@ Run the separate server with Python 3.11 or newer (no third-party packages):
 python3 tools/player_sync/serve.py --data workspace/player-sync --port 8766
 ```
 
-It listens on localhost by default. `--bind LAN-IP` explicitly enables access on
-the chosen LAN interface. Clients
+It listens on all IPv4 interfaces (`0.0.0.0`) by default. `--bind` can restrict
+it to a chosen interface. Clients
 use `http://SERVER-IP:8766`. The default client address is the LAN content host,
 with a separate port. This service uses usernames without passwords for a trusted
 LAN; a username selects storage, not authentication. Keep the data directory on
