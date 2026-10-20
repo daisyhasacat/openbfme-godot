@@ -175,6 +175,34 @@ TEST_CASE("visual2 sway: the first update builds the 100-entry table, the ten st
 	CHECK(sway.offset(3) == doctest::Approx(100.0 / (20.0 * 6.0) * draw).epsilon(1e-6)); // tolerance: float32 code vs the double re-derivation of the retail formula
 }
 
+TEST_CASE("visual2 sway: smooth presentation closes the loop without an upright snap")
+{
+	auto b = retailDefaultBreeze();
+	b.randomness = 0.0f;
+	b.breezePeriod = 1; // step exactly 1 with the supplied rate
+	FixedRandom random;
+	W3DVegetationSway sway(100.0f);
+	sway.update(b, random, 99.0);
+	W3DVegetationSway::Vec3 out[W3DVegetationSway::MAX_SWAY_TYPES + 1];
+	sway.swayOffsets(out); // preserve the raw retail gap
+	CHECK(out[1].x == 0.0f);
+	sway.update(b, random, 0.5);
+	sway.swayOffsets(out, true);
+	for (int t = 1; t <= W3DVegetationSway::MAX_SWAY_TYPES; ++t)
+	{
+		CHECK(out[t].x == ((sway.tableEntry(99).x + sway.tableEntry(0).x) * 0.5f));
+		CHECK(out[t].y == ((sway.tableEntry(99).y + sway.tableEntry(0).y) * 0.5f));
+		CHECK(out[t].z == ((sway.tableEntry(99).z + sway.tableEntry(0).z) * 0.5f));
+	}
+	CHECK(out[0].x == 0.0f);
+	sway.update(b, random, 0.5); // phase exactly 100 also closes cleanly
+	sway.swayOffsets(out, true);
+	CHECK(out[1].x == sway.tableEntry(0).x);
+	sway.update(b, random, 0.5);
+	sway.swayOffsets(out, true);
+	CHECK(out[1].x == ((sway.tableEntry(0).x + sway.tableEntry(1).x) * 0.5f));
+}
+
 TEST_CASE("visual2 sway: the offsets wrap above 100, the SwayOffsets lerp two table entries times the factor, entry 0 is no sway")
 {
 	W3DVegetationSway::Breeze b = retailDefaultBreeze();

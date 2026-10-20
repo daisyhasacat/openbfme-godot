@@ -2480,7 +2480,7 @@ void GameWorld::updateTreeSway(double dt)
 	}
 	m_vegSway->advanceSeconds(presented->breeze, m_clientRuntime->random(), dt);
 	W3DVegetationSway::Vec3 sway[W3DVegetationSway::MAX_SWAY_TYPES + 1];
-	m_vegSway->swayOffsets(sway);
+	m_vegSway->swayOffsets(sway, true);
 	float offsets[10][3];
 	for (int i = 0; i < 10; ++i)
 	{
@@ -4370,7 +4370,7 @@ Dictionary GameWorld::get_tree_sway() const
 	{
 		d["version"] = (int64_t)m_vegSway->version();
 		W3DVegetationSway::Vec3 sway[W3DVegetationSway::MAX_SWAY_TYPES + 1];
-		m_vegSway->swayOffsets(sway);
+		m_vegSway->swayOffsets(sway, true);
 		for (int i = 1; i <= W3DVegetationSway::MAX_SWAY_TYPES; ++i)
 		{
 			offsets.push_back(Vector3(sway[i].x, sway[i].y, sway[i].z));
