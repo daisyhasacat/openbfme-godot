@@ -4,6 +4,7 @@
 #include "doctest.h"
 
 #include "HudTestUtil.h"
+#include "MoveTestUtil.h"
 #include "PeImage.h"
 
 #include "Common/Dict.h"
@@ -1270,4 +1271,28 @@ TEST_CASE("backlog3 camera: disabling the input under a held scroll ends it with
 	r.frame(3);
 	CHECK(c.position().x == before.x);
 	r.key(kKeyRight, false);
+}
+
+TEST_CASE("camera: mountain view keeps valley terrain inside the far clip plane")
+{
+ movetest::MoveWorld world;
+ CameraSettings settings;std::string error;
+ REQUIRE(CameraSettings::scan(kGameData,settings,&error));
+ TacticalCamera camera(settings);camera.setViewport(1024,768);
+ auto heights=flatMap(100,24000);heights.m_data[0]=0;heights.m_boundaries.push_back({98,98});
+ TerrainLogic terrain;terrain.init(heights,MapChunks{});world.logic->setTerrain(&terrain);
+ camera.startMap(*world.logic,heights,nullptr,{500,500,0});
+ for(int i=0;i<120;++i)camera.update(false);
+ Coord3D origin,ray;REQUIRE(camera.screenToRay({512,0},origin,ray));
+ const float t=-origin.z/ray.z;
+ const Coord3D eye=camera.eye(),target=camera.target();
+ const Coord3D forward{target.x-eye.x,target.y-eye.y,target.z-eye.z};
+ const float length=std::sqrt(forward.x*forward.x+forward.y*forward.y+forward.z*forward.z);
+ const float depth=t*(ray.x*forward.x+ray.y*forward.y+ray.z*forward.z)/length;
+ // tolerance: visible valley depth must lie strictly inside the geometric far plane.
+ CHECK(depth < camera.farPlane());
+ // tolerance: this regression must exceed the old fixed clipping distance.
+ CHECK(depth > 1800.0f);
+ CHECK(camera.farPlane()==depth+16.0f);
+ world.logic->setTerrain(nullptr);
 }

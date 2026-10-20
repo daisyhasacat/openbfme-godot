@@ -392,6 +392,7 @@ void TacticalCamera::setCameraTransform()
 void TacticalCamera::startMap(const GameLogic &logic, const WorldHeightMap &heights, const Dict *worldInfo, const Coord3D &start)
 {
 	m_logic = &logic;
+	m_terrainFloor = heights.m_data.empty() ? 0.0f : *std::min_element(heights.m_data.begin(), heights.m_data.end()) * kHeightSampleToWorld;
 	m_map = MapCameraValues::resolve(m_gd, worldInfo);
 	// the settings object (RW 0x501162): min / max height, scroll scalar from the map or GameData
 	m_minHeight = m_map.minHeight;
@@ -536,7 +537,19 @@ float TacticalCamera::freeMaxHeight() const
 
 float TacticalCamera::farPlane() const
 {
-	return 1800.0f + 2.0f * fogShift(); // RW 0x48B7B1: 1800 (GlobalData + 0x950 = 1.0 times 1800); lane PLAY-1 / ZOOM-1: the extra eye distance
+	const float baseline = 1800.0f + 2.0f * fogShift(); // RW 0x48B7B1; PLAY-1 / ZOOM-1 extension.
+	// Presentation fix: a mountain lifts the eye above distant valley terrain.
+	// Reach the lowest terrain along the top-centre ray instead of clipping it
+	// to black at retail's fixed far plane. Far clipping uses forward depth,
+	// rather than radial distance; leave a small margin for roundoff.
+	Coord3D origin, ray;
+	if (!m_logic || !screenToRay({size().x / 2, 0}, origin, ray) || ray.z >= -0.0001f) return baseline;
+	const float t = (m_terrainFloor - origin.z) / ray.z;
+	const Coord3D forward{m_target.x-m_eye.x, m_target.y-m_eye.y, m_target.z-m_eye.z};
+	const float length = std::sqrt(forward.x*forward.x + forward.y*forward.y + forward.z*forward.z);
+	if (t <= 0.0f || length <= 0.0f) return baseline;
+	const float depth = t * (ray.x*forward.x + ray.y*forward.y + ray.z*forward.z) / length;
+	return std::max(baseline, depth + 16.0f);
 }
 
 float TacticalCamera::fogShift() const

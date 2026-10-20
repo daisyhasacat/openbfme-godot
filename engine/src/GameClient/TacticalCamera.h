@@ -157,7 +157,7 @@ public:
 	void snapInterpolation();
 	void commitFrame();
 	float nearPlane() const { return 10.0f; }
-	// retail's 1800 (RW 0x48B7B1); with the free camera or a zoom-out factor, plus twice fogShift() so the far map stays drawn when zoomed out beyond retail's limit
+	// Retail baseline 1800 (RW 0x48B7B1), extended for zoom-out and valley terrain visible from mountain elevations (presentation fix).
 	float farPlane() const;
 
 	// ---- lane PLAY-1: the free camera (the owner's presentation option, NOT retail; client state only, never seen by the logic) ----
@@ -239,6 +239,7 @@ private:
 	float m_defaultAngle = 0.0f, m_defaultPitch = 0.0f;
 	float m_fov = 0.8726646f; // RW 0xBDD410: 50 degrees
 	bool m_widescreenWider = false; // lane UI-6: the Widescreen view option (Wider = Hor+; false = retail)
+	float m_terrainFloor = 0.0f; ///< Lowest map height for presentation clipping over mountains.
 	float m_terrainHeight = 0.0f, m_currentHeightAboveGround = 0.0f;
 	float m_groundLevel = 0.0f;
 	// the settings object (RW 0x501xxx)
