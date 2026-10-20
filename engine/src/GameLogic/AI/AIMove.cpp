@@ -228,6 +228,14 @@ float AIMover::locomotorDistanceToGoal() const
 // ---------------------------------------------------------------------------------------------------------
 // path requests
 // ---------------------------------------------------------------------------------------------------------
+void AIMover::queuePathRequest()
+{
+	// Enhanced overflow recovery: the retail-sized ring can refuse a mass order.
+	// Keep the request's existing flags/destination and retry next logic frame,
+	// rather than waiting forever for a request that never entered the ring.
+	if (!m_pf.queueForPath(id())) setQueueForPathTime(1);
+}
+
 void AIMover::requestPath(const Coord3D &dest, bool isFinalGoal)
 {
 	// RW 0x667ED1
@@ -246,6 +254,19 @@ void AIMover::requestPath(const Coord3D &dest, bool isFinalGoal)
 		computeQuickPath(dest);
 		return;
 	}
+	// Requested mass-order response enhancement, not retail scheduling: a
+	// fully checked straight route needs no A* search or queue slot. Scope is
+	// limited to synchronous compact-group dispatch (including its members).
+	PathfindObject &obj = m_host.pathfindObject();
+	if (m_pf.isSharedGoalOwner(id()) && obj.getLayer() == LAYER_GROUND &&
+		m_pf.isLinePassable(&obj, info.validSurfaces, obj.getLayer(), obj.getPosition(), dest, false, false))
+	{
+		m_waitingForPath = false;
+		m_queueForPathFrame = 0;
+		m_retryPath = false;
+		computeQuickPath(dest);
+		return;
+	}
 	if ((int)m_pathTimestamp > (int)m_host.frame() - 2)
 	{
 		setQueueForPathTime(5);
@@ -253,7 +274,7 @@ void AIMover::requestPath(const Coord3D &dest, bool isFinalGoal)
 	else
 	{
 		m_waitingForPath = true;
-		m_pf.queueForPath(id());
+		queuePathRequest();
 	}
 }
 
@@ -274,7 +295,7 @@ void AIMover::requestAttackPath(PathfindObjectID victim, const Coord3D &pos)
 	else
 	{
 		m_waitingForPath = true;
-		m_pf.queueForPath(id());
+		queuePathRequest();
 	}
 }
 
@@ -361,7 +382,7 @@ bool AIMover::requestMeleeApproachPath(const Coord3D &target, bool bypassOffset)
 	else
 	{
 		m_waitingForPath = true;
-		m_pf.queueForPath(id());
+		queuePathRequest();
 	}
 	return true;
 }
@@ -941,8 +962,10 @@ unsigned AIMover::update(unsigned stateSleep)
 		const unsigned frame = m_host.frame();
 		if (frame >= m_queueForPathFrame)
 		{
-			m_pf.queueForPath(id());
 			m_queueForPathFrame = 0;
+			queuePathRequest();
+			// A refused retry must wake again even if the caller otherwise sleeps forever.
+			if (m_queueForPathFrame != 0 && sleep > 1) sleep = 1;
 		}
 		else if (m_queueForPathFrame - frame < sleep)
 		{
@@ -1297,6 +1320,15 @@ bool AIMoveToState::computePath()
 	else
 	{
 		m_ai.requestPath(m_goal, m_adjustsDestination);
+		if (m_ai.m_pf.isSharedGoalOwner(m_ai.id()) && !m_ai.m_waitingForPath &&
+			m_ai.m_queueForPathFrame == 0 && m_ai.m_path)
+		{
+			// The mass-order shortcut completed synchronously, so there is no
+			// queued-path completion to adopt this goal on the next update.
+			m_pathGoal = m_goal;
+			m_pathTimestamp = m_ai.host().frame();
+			if (!m_ai.m_retryPath) m_tryOneMoreRepath = false;
+		}
 	}
 	m_waitingForPath = m_ai.m_waitingForPath;
 	m_ai.startingMove();

@@ -377,6 +377,7 @@ bool Pathfinder::isLinePassable(const PathfindObject *obj, unsigned acceptableSu
 				// an occupant the world no longer knows blocks like an unknown object (retail dereferences it)
 				return true;
 			}
+			if (obj && obj->getRelationship(*o) == PATHFIND_ALLIES && sharesGroupMove(obj->getID(), o->getID())) continue;
 			if (o != obj && o->getContainer() != obj)
 			{
 				return true;

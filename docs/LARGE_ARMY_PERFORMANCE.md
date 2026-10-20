@@ -330,3 +330,35 @@ for rendered layout inspection. Native performance tests cover disabled scopes,
 nesting, cross-thread counting, disabling during a scope and identical hashes
 for 80 moving-army frames with profiling off/on. The focused combined suite
 passes 107 cases / 4,676 assertions.
+
+
+## Large-selection command response
+
+A 600-unit synthetic open-ground order originally produced 16 paths on its
+command frame, with 584 units waiting. The revised compact-order dispatch gives
+all 600 a checked direct path on that frame. Only fully passable straight routes
+use this shortcut; blocked routes still enter the cell-budgeted search queue.
+Queue-overflow recovery uses the existing serialized retry timer so a refused
+request cannot leave a unit waiting for a path that was never queued. The
+512-slot ring retains 511 usable entries; its size and FIFO policy are unchanged.
+
+The installed-data Buckland harness now prints path/wait/retry/moving counts at
+ticks 1, 2, 5, 10 and 20. With 667 fighter battalions (40,020 CP), the configured
+HD profile and saved snowBuck layout, one before/after comparison gave:
+
+| Observation | Original | Revised |
+|---|---:|---:|
+| Paths present after tick 1 | 22 | 587 |
+| Waiting for paths after tick 1 | 646 | 77 |
+| Waiting after tick 10 | 154 | 0 |
+| Waiting after tick 20 | 154 | 0 |
+
+These are path-readiness counts, not rendered FPS or a claim that every unit can
+leave a sealed base. A unit can retain an old path while waiting for its
+replacement. Unreachable destination slots still retain the unit's current
+position. Both runs reported 233 completed layout entries, 212 errors and a
+pending replay, with 11,118 objects; the known restored-layout limitations still
+apply. Destination count/bounds matched (641 distinct, 667 active). Real-time
+layout/Ubermode callbacks and concurrent machine load make these runs unsuitable
+for deterministic hash or isolated CPU-speed comparisons. The synthetic suite
+separately checks deterministic hashes, walls, retargets and overflow recovery.

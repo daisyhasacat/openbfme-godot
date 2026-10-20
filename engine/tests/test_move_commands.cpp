@@ -440,3 +440,88 @@ TEST_CASE("commands spread: repeated large orders produce the same simulation ha
 	CHECK(first == second);
 	CHECK(first.front() != first.back());
 }
+
+TEST_CASE("commands mass response: all 600 clear-route units receive paths on the command frame")
+{
+	MoveWorld mw(300, 300);
+	std::vector<Object *> units;
+	for (int i = 0; i < 600; ++i)
+		units.push_back(mw.spawn("Walker", 105.0f + 20.0f * (i % 30), 105.0f + 20.0f * (i / 30)));
+	mw.buildMap();
+	mw.frames(30); // past the startup's x100 queue budget
+	const int player = mw.playerIndex("Alice");
+	mw.select(player, units);
+	mw.moveTo(player, 2005, 2005);
+	mw.frames(1);
+	int ready = 0, waiting = 0;
+	for (Object *o : units)
+	{
+		auto &mover = o->getAIUpdateInterface()->mover();
+		ready += mover.path() != nullptr;
+		waiting += mover.isWaitingForPath();
+	}
+	CHECK(ready == 600);
+	CHECK(waiting == 0);
+	CHECK(mw.ai->pathfinder().queuedRequests() == 0);
+}
+
+TEST_CASE("commands mass response: a blocked direct line still queues a route around the wall")
+{
+	MoveWorld mw(150, 150,
+		"Object ResponseWall\n KindOf = STRUCTURE IMMOBILE\n Geometry = BOX\n GeometryMajorRadius = 20\n GeometryMinorRadius = 250\n End\n");
+	mw.spawn("ResponseWall", 650, 500);
+	std::vector<Object *> units;
+	for (int i = 0; i < 16; ++i) units.push_back(mw.spawn("Walker", 305.0f + 30.0f * (i % 4), 405.0f + 30.0f * (i / 4)));
+	mw.buildMap();
+	mw.frames(30);
+	const int player = mw.playerIndex("Alice");
+	mw.select(player, units);
+	mw.moveTo(player, 1005, 505);
+	// Execute the command row without later phases draining the search queue.
+	mw.logic->update(1);
+	for (Object *o : units)
+	{
+		const auto &mover = o->getAIUpdateInterface()->mover();
+		CHECK(mover.path() == nullptr);
+		CHECK(mover.isWaitingForPath());
+	}
+	CHECK(mw.ai->pathfinder().queuedRequests() == 16);
+	for (int phase = 2; phase <= 6; ++phase) mw.logic->update(phase);
+	// The normal pathfinder can route around this wall. Its endpoints must not
+	// replace a blocked direct route with a two-node shortcut through masonry.
+	mw.frames(12);
+	for (Object *o : units)
+	{
+		const Path *path = o->getAIUpdateInterface()->mover().path();
+		REQUIRE(path != nullptr);
+		CHECK(path->getFirstNode()->getNext() != path->getLastNode());
+	}
+}
+
+TEST_CASE("commands mass response: battalions and rapid retargets start clear routes without queueing")
+{
+	MoveWorld mw(400, 400);
+	std::vector<Object *> units;
+	for (int i = 0; i < 64; ++i)
+		units.push_back(mw.spawn("Horde", 305.0f + 100.0f * (i % 8), 305.0f + 100.0f * (i / 8)));
+	mw.buildMap();
+	mw.frames(30);
+	const int player = mw.playerIndex("Alice");
+	mw.select(player, units);
+	for (int pass = 0; pass < 2; ++pass)
+	{
+		mw.moveTo(player, pass == 0 ? 2005 : 3005, 2005, pass == 0 ? MSG_DO_MOVETO : MSG_DO_ATTACKMOVETO);
+		mw.frames(1); // the second order arrives inside the usual two-frame path cooldown
+		for (Object *o : units)
+		{
+			const auto &mover = o->getAIUpdateInterface()->mover();
+			CHECK_FALSE(mover.isWaitingForPath());
+			CHECK(mover.queueForPathFrame() == 0);
+			REQUIRE(mover.path() != nullptr);
+			// tolerance: the two requested grids are wholly on their respective side of x=2500.
+			if (pass == 0) CHECK(mover.path()->getLastNode()->getPosition()->x < 2500.0f);
+			// tolerance: validates the replacement path targets the second click, not the old route.
+			else CHECK(mover.path()->getLastNode()->getPosition()->x > 2500.0f);
+		}
+	}
+}

@@ -243,9 +243,13 @@ TEST_CASE("move: a unit's movement data is read once per template, parse errors 
 	CHECK(mw.ai->movementErrors().empty());
 }
 
-TEST_CASE("move: fifty units ordered at once are pathed within the per-tick cell budget and all arrive")
+TEST_CASE("move: fifty units route around a wall within the per-tick cell budget and all arrive")
 {
-	MoveWorld mw(120, 120);
+	// Clear-route mass orders now bypass the queue; keep this budget regression
+	// on an obstructed route that genuinely needs A* rather than weakening it.
+	MoveWorld mw(120, 120,
+		"Object BudgetWall\n KindOf = STRUCTURE IMMOBILE\n Geometry = BOX\n GeometryMajorRadius = 20\n GeometryMinorRadius = 250\n End\n");
+	mw.spawn("BudgetWall", 650, 605);
 	mw.buildMap();
 	const int alice = mw.playerIndex("Alice");
 	std::vector<Object *> us;

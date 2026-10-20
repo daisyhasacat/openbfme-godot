@@ -606,6 +606,9 @@ public:
 		const std::vector<PathfindObjectID> *m_previous;
 	};
 
+	bool isSharedGoalOwner(PathfindObjectID id) const;
+	bool sharesGroupMove(PathfindObjectID a, PathfindObjectID b) const;
+
 	// ---- map ----
 	// Allocate the grid over the terrain, classify every cell, add the footprint of every object of `objects` (may be null) and
 	// compute the zones (RW newMap 0x6EA1F2: classifyMap, every object's footprint, mark dirty, zone calculation).

@@ -252,6 +252,7 @@ private:
 	bool isDoingGroundMovement() const;
 	bool pointAheadIsPortal() const;
 
+	void queuePathRequest(); // retry queue overflow with the existing serialized timer
 	AIMoveHost &m_host;
 	Pathfinder &m_pf;
 	Path *m_path = nullptr;

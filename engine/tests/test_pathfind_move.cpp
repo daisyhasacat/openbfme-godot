@@ -1135,3 +1135,52 @@ TEST_CASE("backlog5: the two withdrawn rules are named at runtime with their mea
 			"field cannot hold a wall layer (16 and up); a patch or a search never crosses a layer or a portal (S-161)"));
 	}
 }
+
+TEST_CASE("ai move queues: overflow retries until a slot opens instead of waiting forever")
+{
+	Sim sim(80, 30);
+	sim.build();
+	std::vector<Unit *> units;
+	for (int i = 0; i < PATHFIND_QUEUE_LEN; ++i)
+	{
+		Unit &unit = sim.add(PathfindObjectID(i + 1), 105.0f, 105.0f);
+		units.push_back(&unit);
+		unit.ai->requestPath(Coord3D{605, 105, 0}, false);
+	}
+	REQUIRE(sim.pf->queuedRequests() == PATHFIND_QUEUE_LEN - 1);
+	Unit &last = *units.back();
+	REQUIRE(last.ai->isWaitingForPath());
+	CHECK(last.ai->queueForPathFrame() == 101);
+	// A still-full ring keeps a retry alive, without adding entries or losing the goal.
+	sim.frame = sim.world.frame = 101;
+	CHECK(last.ai->update(AI_SLEEP_FOREVER) == 1);
+	CHECK(sim.pf->queuedRequests() == PATHFIND_QUEUE_LEN - 1);
+	CHECK(last.ai->queueForPathFrame() == 102);
+	sim.mw->processQueues();
+	CHECK(sim.pf->queuedRequests() == 0);
+	sim.frame = sim.world.frame = 102;
+	last.ai->update(AI_SLEEP_FOREVER);
+	CHECK(sim.pf->queuedRequests() == 1);
+	CHECK(last.ai->queueForPathFrame() == 0);
+	sim.mw->processQueues();
+	CHECK_FALSE(last.ai->isWaitingForPath());
+	REQUIRE(last.ai->path() != nullptr);
+	CHECK(last.ai->path()->getLastNode()->getPosition()->x == 605.0f);
+	CHECK(last.ai->path()->getLastNode()->getPosition()->y == 105.0f);
+}
+
+TEST_CASE("ai move queues: stopping an overflowed move cancels its retry")
+{
+	Sim sim(80, 30);
+	sim.build();
+	for (int i = 0; i < PATHFIND_QUEUE_LEN - 1; ++i) REQUIRE(sim.pf->queueForPath(PathfindObjectID(i + 1)));
+	Unit &unit = sim.add(1000, 105, 105);
+	unit.ai->requestPath(Coord3D{605, 105, 0}, false);
+	REQUIRE(unit.ai->queueForPathFrame() == 101);
+	unit.ai->endingMove();
+	sim.frame = sim.world.frame = 101;
+	unit.ai->update(AI_SLEEP_FOREVER);
+	CHECK(unit.ai->queueForPathFrame() == 0);
+	CHECK_FALSE(unit.ai->isWaitingForPath());
+	CHECK(unit.ai->path() == nullptr);
+}

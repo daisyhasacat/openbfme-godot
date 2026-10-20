@@ -316,6 +316,16 @@ const Pathfinder::OccupantFacts *Pathfinder::occupantFacts(const PathfindObject 
 // ---------------------------------------------------------------------------------------------------------
 // checkForMovement (RW 0x6EB792 / 0x6EBAA0)
 // ---------------------------------------------------------------------------------------------------------
+bool Pathfinder::isSharedGoalOwner(PathfindObjectID id) const
+{
+	return m_sharedGoalOwners && std::binary_search(m_sharedGoalOwners->begin(), m_sharedGoalOwners->end(), id);
+}
+
+bool Pathfinder::sharesGroupMove(PathfindObjectID a, PathfindObjectID b) const
+{
+	return isSharedGoalOwner(a) && isSharedGoalOwner(b);
+}
+
 bool Pathfinder::checkForMovement(const PathfindObject *obj, PathfindCheckMovement &info, const ICoord2D *prev)
 {
 	info.allyFixed = false;
@@ -401,6 +411,9 @@ bool Pathfinder::checkForMovement(const PathfindObject *obj, PathfindCheckMoveme
 				}
 				lastId = o->getID();
 				const bool ally = f->rel == PATHFIND_ALLIES;
+				// Enhanced mass-order dispatch: selected allies are about to move too.
+				// Terrain / footprints were checked above; only their position reservations yield.
+				if (ally && sharesGroupMove(obj->getID(), o->getID())) continue;
 				if (ally)
 				{
 					info.allyPresent = true;
@@ -515,8 +528,7 @@ bool Pathfinder::blockerCallback(const PathfindObject *obj, const PathfindCell *
 		{
 			continue;
 		}
-		if (m_sharedGoalOwners && std::binary_search(m_sharedGoalOwners->begin(), m_sharedGoalOwners->end(), obj->getID()) &&
-			std::binary_search(m_sharedGoalOwners->begin(), m_sharedGoalOwners->end(), o->getID())) continue;
+		if (sharesGroupMove(obj->getID(), o->getID())) continue;
 		if (top && o->getTopContainer() == top)
 		{
 			continue;

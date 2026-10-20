@@ -65,6 +65,18 @@ func _run() -> void:
 		world.update_lua()
 		lua_ms.append((Time.get_ticks_usec() - start) / 1000.0)
 		hashes.append(world.get_state_hash())
+		if i in [0, 1, 4, 9, 19]:
+			var ready := 0
+			var waiting := 0
+			var retrying := 0
+			var moving := 0
+			for id in ids:
+				var state: Dictionary = world.get_object(id)
+				ready += int(state.get("ai_has_path", false))
+				waiting += int(state.get("ai_waiting_for_path", false))
+				retrying += int(int(state.get("ai_queue_for_path_frame", 0)) != 0)
+				moving += int(state.get("ai_moving", false))
+			print("BUCKLAND RESPONSE tick=", i + 1, " paths=", ready, " waiting=", waiting, " retrying=", retrying, " moving=", moving, "/", ids.size())
 		if i == 0:
 			var goals: Dictionary = {}
 			var bounds := Rect2()

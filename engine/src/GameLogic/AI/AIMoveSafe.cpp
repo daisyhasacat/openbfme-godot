@@ -27,5 +27,5 @@ void AIMover::requestSafePath(PathfindObjectID repulsor)
 	}
 	m_waitingForPath = true; // + 0x3B1
 	m_requestedDest = m_host.pathfindObject().getPosition(); // + 0x148 = the object's position
-	m_pf.queueForPath(id()); // RW 0x6ED0FB
+	queuePathRequest(); // RW 0x6ED0FB, with enhanced overflow retry
 }
