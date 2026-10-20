@@ -136,6 +136,8 @@ public:
 	// `frames` client frames (0: shown at once)
 	virtual void fadeIn(Object &obj, UnsignedInt frames) { (void)obj; (void)frames; }
 	// RW 0x67B78C -> 0x6D4789: a qualifying hit on a local hero, independently of the EVA gate.
+	// RW 0x69560B: profile statistics are recorded before the normal kill-score gates.
+	virtual void createAHeroKill(Object &, Object &) {}
 	virtual void heroAttacked(Object &obj) { (void)obj; }
 	virtual void flashHeroButton(const std::string &templateName, int frames) { (void)templateName; (void)frames; }
 	// lane CAH-2, RW 0x80AF0B (a Create-a-Hero record's flag 8): the drawable's house colour set (RW 0x80959A: kind 3 and the record's three colours,

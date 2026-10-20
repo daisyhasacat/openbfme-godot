@@ -289,6 +289,8 @@ void DrawableManager::applyEvents(const std::vector<ClientEvent> &events)
 				d->setDrawsInMirror(ev.mirror);
 			}
 			break;
+		case ClientEvent::CAH_STATISTICS: // consumed by LiveGame profile statistics, not a drawable event
+			break;
 		case ClientEvent::HERO_ATTACKED:
 			if (m_heroAttackedHandler)
 			{

@@ -100,7 +100,7 @@ RetailObjectWorld::State::State(ArchiveFileSystem &fs)
 		"ExperienceLevel", "ExperienceScalarTable", "ModifierList", // XP-1: these three are parsed for real
 		"StanceTemplate", // INTEG-1: TheStanceTemplateStore (RW 0x835967)
 		"EmotionNugget", // MODULES-2: TheEmotionSystem (RW 0x8E0D59)
-		"CreateAHeroSystem", // HERO-2: TheCreateAHeroSystem (its own file, RW 0x61A10F)
+		"CreateAHeroSystem", "AwardSystem", // HERO-2: TheCreateAHeroSystem (its own file, RW 0x61A10F)
 		"LinearCampaign", "MissionObjectiveList" }; // CAMP-1: TheLinearCampaignManager (RW 0x5ECCB9)
 	// AUDIO-1: the audio blocks (AudioEvent, DialogEvent, MusicTrack, ..., EvaEvent, AudioSettings, MiscAudio) are parsed for real
 	skip.insert(skip.end(), AudioIniState::blockKeywords().begin(), AudioIniState::blockKeywords().end());
@@ -480,6 +480,21 @@ bool RetailObjectWorld::loadState(std::string *error)
 	if (!options.bfme1) try
 	{
 		m_s->m_createAHero.load(m_s->m_env);
+		// AwardSystemManager::parseThingStat donor RVA 0x40BC7C validates all
+		// included/excluded template references after finishing each statistic.
+		for (const auto &stat : m_s->m_createAHero.awardSystem.statistics)
+		{
+			for (const auto *names : { &stat.included, &stat.excluded })
+				for (const auto &name : *names)
+					if (!m_s->m_things->findTemplate(name)) throw INIException(3, "ThingStat %s references unknown template %s", stat.name.c_str(), name.c_str());
+		}
+		for (const auto &cls : m_s->m_createAHero.classes()) for (const auto &sub : cls.subClasses)
+		{
+			for (const auto &name : sub.awards)
+				if (!m_s->m_createAHero.awardSystem.award(name)) throw INIException(3, "Create-a-Hero subclass references unknown award %s", name.c_str());
+			for (const auto &name : sub.stats)
+				if (!m_s->m_createAHero.awardSystem.stat(name)) throw INIException(3, "Create-a-Hero subclass references unknown statistic %s", name.c_str());
+		}
 		if (!m_s->m_createAHero.loaded())
 		{
 			throw INIException(3, "Data\\INI\\CreateAHeroSystem.ini has no CreateAHeroSystem block");

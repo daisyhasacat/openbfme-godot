@@ -73,6 +73,12 @@ LiveGame::LiveGame(RetailObjectWorld &world, ArchiveFileSystem &fs, WW3DAssetMan
 LiveGame::~LiveGame()
 {
 	stopWorker(); // SMOOTH-1: the worker is joined before anything it uses goes
+	if (m_loaded && m_recorder)
+	{
+		consumeHeroStatistics(m_heldEvents, nullptr);
+		consumeHeroStatistics(m_publishedEvents, nullptr);
+		consumeHeroStatistics(m_recorder->take(false), m_published.get());
+	}
 	if (m_scripting)
 	{
 		m_scripting->detach(); // while the logic is alive
@@ -574,6 +580,28 @@ bool LiveGame::load(const Options &options, std::string *error)
 	if (options.hashEveryFrame)
 	{
 		m_frameHashes.emplace_back(m_logic->getFrame(), m_logic->computeStateHash());
+	}
+	m_cahHeroID.clear();
+	m_cahResultRecorded = false;
+	m_cahEarned.clear();
+	m_cahMode = m_logic->economy().context().gameMode;
+	if (!options.heroStatsProfile.empty() && options.start && !options.start->observer && m_cahMode != EconomyContext::MODE_REPLAY)
+	{
+		if (const auto *hero = m_logic->createAHeroes().heroOf(*m_players->getLocalPlayer()))
+		{
+			std::string statsError;
+			if (!m_heroStatistics.load(options.heroStatsProfile, hero->uniqueID, &statsError))
+			{
+				m_report.errors.push_back(statsError);
+				if (options.heroStatsMessage) options.heroStatsMessage(statsError);
+			}
+			else
+			{
+				m_cahHeroID = hero->uniqueID;
+				for (const auto &award : m_world.createAHeroSystem().awardSystem.awards)
+					if (award.earned(m_heroStatistics.counters)) m_cahEarned.push_back(award.name);
+			}
+		}
 	}
 	publish(); // SMOOTH-1: the first snapshot and the load's client events; the drawables exist when load() returns, as before
 	m_dueFrame = m_logic->getFrame();
@@ -1223,7 +1251,7 @@ LiveGame::Report LiveGame::report() const
 	{
 		r.scripting = m_scripting->stats();
 	}
-	r.errors = r.mapIniErrors;
+	r.errors.insert(r.errors.end(), r.mapIniErrors.begin(), r.mapIniErrors.end());
 	for (const std::string &e : r.classificationErrors)
 	{
 		r.errors.push_back(e);

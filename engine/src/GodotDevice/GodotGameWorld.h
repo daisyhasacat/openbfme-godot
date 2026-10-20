@@ -304,6 +304,7 @@ public:
 	// scenario helper: money for a player (Player::depositMoney)
 	void give_money(int64_t player, int64_t amount);
 	// lane HERO-2: the system Create-a-Heroes of the archives (data\\systemheroes\\*.cah): [{ name, class, subclass, unique_id, valid }]
+	void set_hero_stats_profile(const std::string &profile) { m_heroStatsProfile = profile; }
 	Array get_system_heroes() const;
 	// lane HERO-2: a Create-a-Hero record for a game setup's slot, read at the setup (never during play): `name` is a system hero's name or the path of a
 	// .cah file; { ok, record: PackedByteArray (the .cah form a slot's create_a_hero takes: load_map's slots, the new game message, the LAN lobby),
@@ -695,6 +696,7 @@ private:
 	std::unique_ptr<WW3DAssetManager> m_assets;
 	mutable UnsignedInt m_netHashFrame = 0;   ///< lane RENDERWAIT-1: net_status's last state hash (computed where the logic is held) and its frame
 	mutable std::uint32_t m_netHash = 0;
+	std::string m_heroStatsProfile;
 	std::unique_ptr<LiveGame> m_game;
 	// Per loaded game/map; cleared alongside m_game, including data-source resets.
 	mutable bool m_cahCameraOffsetValid = false;

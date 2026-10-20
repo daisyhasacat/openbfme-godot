@@ -6,6 +6,9 @@
 #include "GameClient/ClientEvents.h"
 
 #include "Common/Player.h"
+#include "Common/PlayerList.h"
+#include "GameLogic/CreateAHeroSystem.h"
+#include "GameLogic/Economy.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameClient/MapObjectDrawables.h"
 #include "GameLogic/Combat/ObjectWeapons.h"
@@ -325,4 +328,24 @@ void ClientEventRecorder::upgradeTexture(Object &obj, const TextureSwap &swap, b
 	auto &event = push(ClientEvent::UPGRADE_TEXTURE, obj);
 	event.textureSwap = swap;
 	event.on = enabled;
+}
+
+void ClientEventRecorder::createAHeroKill(Object &killer, Object &victim)
+{
+	// TARGET RW 0x69560B: only the locally controlled hero; RW 0x80B1D4
+	// excludes replays. No relation/IGNORED_IN_GUI/scoreType gate precedes this.
+	const int mode = m_logic.economy().context().gameMode;
+	if (mode == EconomyContext::MODE_REPLAY || killer.getControllingPlayer() != m_logic.players().getLocalPlayer() || !TheCreateAHeroSystem) return;
+	const auto *hero = m_logic.createAHeroes().heroOfObject(killer.getID());
+	if (!hero || !hero->valid) return;
+	const auto *sub = TheCreateAHeroSystem->subClass(hero->classIndex, hero->subClassIndex);
+	if (!sub) return;
+	std::vector<std::string> names;
+	for (const auto &name : sub->stats)
+		if (const auto *stat = TheCreateAHeroSystem->awardSystem.stat(name))
+			if (stat->isContributor(victim, mode == EconomyContext::MODE_LAN || mode == EconomyContext::MODE_INTERNET)) names.push_back(name);
+	if (names.empty()) return;
+	auto &event = push(ClientEvent::CAH_STATISTICS, killer);
+	event.heroUniqueID = hero->uniqueID;
+	event.heroStatistics = std::move(names);
 }

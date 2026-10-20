@@ -492,8 +492,9 @@ const std::vector<std::string> &AptCreateAHero::stopLines()
 		"summarised; AppearanceRandom draws from the device's client random",
 		"[S-1402] Create-a-Hero message boxes (lane CAH-2: NamePrompt's Ok box RW 0x81A375 and the delete question RW 0x81A452(2) are ported): the box's "
 		"timeout and its state callbacks are not used",
-		"[S-1403] Create-a-Hero awards and statistics: Manager::OnSelectAward, the SavedHeroStats rows, MyHero::AwardState_<i> and MaxAwards (0) are "
-		"not ported (the award bling RW 0x8096B0 and the statistics file RW 0x80B339 are HERO-2's S-1226)",
+		"[S-1403] Create-a-Hero awards: statistics files, kill counters, award triggers and Manager presentation are implemented; "
+		"reward UpgradeAwards drawable bling and in-game award popup are not ported; match-result timing is inferred from EndGameView, "
+		"not yet verified against retail (RW 0x80B2AB); WotR result counters and PrimaryKey/SecondaryKey statistics remain unverified",
 		"[S-1404] Create-a-Hero powers page: the matrix's row order (RW 0x9C38EB's comparator not read: the command store's name order), the cell states "
 		"(RW 0x9C2xxx not read in full: selected, book full, level too low, prerequisite, palantir full), the icons (CreateAHeroUIIconImageName, else the "
 		"first ButtonImage), the row names, the labels without their hot-key marks, the wizard line and the matrix's first scroll position are inferred",
@@ -783,6 +784,17 @@ void AptCreateAHero::registerAll()
 			windows().markNumericProvider(name);
 		}
 	}
+	if (m_env.createAHero && m_env.createAHero->system)
+	{
+		size_t maximum = 0;
+		for (const auto &c : m_env.createAHero->system->classes()) for (const auto &sub : c.subClasses) maximum = std::max(maximum, sub.awards.size());
+		for (size_t i = 0; i < maximum; ++i)
+		{
+			const std::string name = "MyHero::AwardState_" + std::to_string(i);
+			registerProvider(name, [this](const std::string &n, std::string &value, bool setting) { return !setting && m_myHero && m_myHero->provide(n, value); });
+			windows().markNumericProvider(name);
+		}
+	}
 	windows().markNumericProvider("MyHero::IsSystemHero"); // the movie tests it with Not: "0" must be false (as AptTimeLine's flags, S-1063)
 
 	// ---- Manager (RW 0x9C5EA4) ----
@@ -792,10 +804,8 @@ void AptCreateAHero::registerAll()
 		windows().note("unported-command", "AptCreateAHero::Manager::OnPlayGame: the test map is not started [S-1405]");
 		notAvailable(u"Trying a hero on a test map is not available yet: play a skirmish with the hero instead.");
 	});
-	registerCommand("AptCreateAHero::Manager::OnSelectAward", [this](const std::string &a) {
-		windows().note("unported-command", "AptCreateAHero::Manager::OnSelectAward(" + a + "): the awards are not ported [S-1403]");
-		notAvailable(u"Hero awards are not available yet: OpenBFME does not record them.");
-	});
+	registerCommand("AptCreateAHero::Manager::OnSelectAward", [this](const std::string &a) { selectAward(atoiArg(a)); });
+
 	// lane MENUWORK-1: the hero list's headers (the Manager's constructor RW 0x9C5EA4 binds them to RW 0x9C5D42 / 0x9C5D51 / 0x9C5D60: the key
 	// 0 icon / 2 name / 4 type through RW 0x9C4EBD, then the list again, RW 0x9C5A66); they used to be noted only
 	registerCommand("Mission::OnSortIcon", [this](const std::string &) { selectHeroSort(0); });
@@ -836,6 +846,7 @@ void AptCreateAHero::registerAll()
 			const int widths[2] = { 80, 20 };
 			GadgetListBoxSetColumnWidths(w, 2, widths);
 			m_heroStats = w;
+			refreshStatistics();
 		}
 	});
 
@@ -1260,6 +1271,14 @@ void AptCreateAHero::selectHero(int index)
 	}
 	m_selectedHero = index;
 	m_myHero->edit(e->hero, false);
+	m_myHero->statistics.counters.clear();
+	std::string statsError;
+	if (!list->profileDir().empty() && !m_myHero->statistics.load(list->profileDir(), e->hero.uniqueID, &statsError))
+	{
+		windows().note("create-a-hero-statistics-error", statsError);
+		m_lastMessage = statsError;
+	}
+	refreshStatistics();
 	// DONOR AptMyHero RVA 0x5B0446 refreshes all ten level entries through
 	// RVA 0x5B0416 (MyPowerLevel text and MyPowerIcon image). This is also
 	// needed on the manager, which does not run refreshPowersPage.
@@ -1724,4 +1743,45 @@ void AptCreateAHero::update()
 			windows().invokeASAt(level(), "Main.mcPowersScreen.Screen.mcPowersMenu", "OnScrollTo", { "0" }, nullptr, &error);
 		}
 	}
+}
+
+// RW 0x9C523F: the subclass's statistics, localized label and numeric value.
+void AptCreateAHero::refreshStatistics()
+{
+	if (m_heroStats) GadgetListBoxReset(m_heroStats);
+	windows().setAptText("Cah:SelectedAwardDesc", " ");
+	if (!m_myHero || !m_env.createAHero || !m_env.createAHero->system) return;
+	const auto &system = *m_env.createAHero->system;
+	const auto &hero = m_myHero->hero();
+	const auto *sub = system.subClass(hero.classIndex, hero.subClassIndex);
+	if (!sub) return;
+	if (m_heroStats) for (const auto &name : sub->stats)
+	{
+		const auto *stat = system.awardSystem.stat(name);
+		if (!stat) { windows().note("create-a-hero-statistics-error", "Unknown statistic " + name); continue; }
+		const int row = GadgetListBoxAddEntryText(m_heroStats, fetchOrMissing(m_env.gameText, stat->nameTag), 0xFFFFFFFFu, -1, 0);
+		const std::string digits = std::to_string(m_myHero->statistics.get(name));
+		GadgetListBoxAddEntryText(m_heroStats, std::u16string(digits.begin(), digits.end()), 0xFFFFFFFFu, row, 1);
+	}
+	for (size_t i = 0; i < sub->awards.size(); ++i)
+	{
+		const auto *award = system.awardSystem.award(sub->awards[i]);
+		if (!award) { windows().note("create-a-hero-statistics-error", "Unknown award " + sub->awards[i]); continue; }
+		setImage("CahAward:Image_" + std::to_string(i), award->image);
+		windows().setAptText("CahAward:Name_" + std::to_string(i), loadScreenU16ToUtf8(fetchOrMissing(m_env.gameText, award->nameTag)));
+	}
+	invoke("UpdateAwards", {});
+}
+void AptCreateAHero::selectAward(int index)
+{
+	std::string description = " ";
+	if (m_myHero && m_env.createAHero && m_env.createAHero->system)
+	{
+		const auto &system = *m_env.createAHero->system;
+		const auto &hero = m_myHero->hero();
+		const auto *sub = system.subClass(hero.classIndex, hero.subClassIndex);
+		if (sub && index >= 0 && (size_t)index < sub->awards.size())
+			if (const auto *award = system.awardSystem.award(sub->awards[(size_t)index])) description = loadScreenU16ToUtf8(fetchOrMissing(m_env.gameText, award->descriptionTag));
+	}
+	windows().setAptText("Cah:SelectedAwardDesc", description);
 }

@@ -7,6 +7,8 @@
 #include "GameClient/LiveGame.h"
 
 #include "Common/NumericState.h"
+#include "GameClient/EndGame.h"
+#include "GameLogic/EconomySettings.h"
 
 #include <algorithm>
 #include <chrono>
@@ -213,8 +215,10 @@ void LiveGame::present(double seconds)
 	{
 		std::vector<ClientEvent> now(std::make_move_iterator(m_heldEvents.begin()), std::make_move_iterator(m_heldEvents.begin() + (std::ptrdiff_t)n));
 		m_heldEvents.erase(m_heldEvents.begin(), m_heldEvents.begin() + (std::ptrdiff_t)n);
+		consumeHeroStatistics(now, shown.get());
 		m_drawables->applyEvents(now);
 	}
+	consumeHeroStatistics({}, shown.get());
 	m_presented = shown;
 	m_presentedAlpha = a;
 	m_drawables->advance(seconds * 1000.0);
@@ -246,6 +250,7 @@ void LiveGame::refreshClient(double elapsedMs, double alpha)
 	{
 		m_heldEvents.push_back(std::move(e));
 	}
+	consumeHeroStatistics(m_heldEvents, snap.get());
 	m_drawables->applyEvents(m_heldEvents);
 	m_heldEvents.clear();
 	m_presented = snap;
@@ -622,3 +627,44 @@ void LiveGame::workerLoop()
 	}
 }
 
+
+void LiveGame::consumeHeroStatistics(const std::vector<ClientEvent> &events, const LogicSnapshot *snapshot)
+{
+	if (m_cahHeroID.empty() || m_replayObserver) return;
+	bool changed = false;
+	for (const auto &event : events)
+		if (event.kind == ClientEvent::CAH_STATISTICS && event.heroUniqueID == m_cahHeroID)
+			for (const auto &name : event.heroStatistics) { m_heroStatistics.add(name); changed = true; }
+	const auto &system = m_world.createAHeroSystem();
+	if (!m_cahResultRecorded && snapshot && snapshot->endGame && !snapshot->endGame->observer)
+	{
+		const auto &end = *snapshot->endGame;
+		const bool won = end.alliedVictory;
+		if (won || end.alliedDefeat || end.playerOnlyDefeat)
+		{
+			// CreateAHeroSystem's named counters, never literal content names.
+			const int base = m_cahMode == EconomyContext::MODE_SKIRMISH ? 4 :
+				(m_cahMode == EconomyContext::MODE_LAN || m_cahMode == EconomyContext::MODE_INTERNET) ? 6 : -1;
+			if (base != -1 && !system.statNames[(size_t)(base + (won ? 1 : 0))].empty())
+			{
+				m_heroStatistics.add(system.statNames[(size_t)(base + (won ? 1 : 0))]);
+				changed = true;
+			}
+			m_cahResultRecorded = true;
+		}
+	}
+	if (!changed) return;
+	std::string error;
+	if (!m_heroStatistics.save(m_options.heroStatsProfile, m_cahHeroID, &error))
+	{
+		m_report.errors.push_back(error);
+		if (m_options.heroStatsMessage) m_options.heroStatsMessage(error);
+		return;
+	}
+	for (const auto &award : system.awardSystem.awards)
+		if (std::find(m_cahEarned.begin(), m_cahEarned.end(), award.name) == m_cahEarned.end() && award.earned(m_heroStatistics.counters))
+		{
+			m_cahEarned.push_back(award.name);
+			if (m_options.heroStatsMessage) m_options.heroStatsMessage("Create-a-Hero award earned: " + award.name);
+		}
+}

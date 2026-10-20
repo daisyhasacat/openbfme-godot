@@ -37,8 +37,8 @@
 //     PalantirToolTip / MatrixToolTip / MyPowerToolTip, the providers NumPowerRows / DisablePowerInstructions / CurrentPowerIndex / NumCurrentPowers
 //     (RW 0x9C1A55), CahPowers::InitGadgets;
 //   * Class::Exit (RW 0xC8B4CC; the Manager's and NewFeatures' back buttons) leaves the screen.
-// NOT PORTED / INFERENCE (stops S-1400 .. S-1405): the take-picture path (OnTakePicture, the portrait file), the awards / statistics page
-// (OnSelectAward, SavedHeroStats rows, MyHero::AwardState_<i>), OnPlayGame (the test map), the message boxes (an error is a note and the screen's
+// NOT PORTED / INFERENCE (stops S-1400 .. S-1405): the take-picture path (OnTakePicture, the portrait file), award reward bling and popups
+// (Manager stats/awards are implemented; see docs/CREATE_A_HERO_STATS.md), OnPlayGame (the test map), the message boxes (an error is a note and the screen's
 // lastMessage()), the delete confirmation (the delete happens at once), the SuppressCahPromo preference is kept for the session only, the camera
 // views of ViewInfo are the device's (GodotDevice), the sort of the power rows, which page "CreateAHero" forwards to.
 
@@ -183,6 +183,8 @@ private:
 	void update();
 	void fillHeroList();
 	void refreshTexts();
+	void refreshStatistics();
+	void selectAward(int index);
 	void refreshClassPage();
 	void refreshPowersPage();
 	void setImage(const std::string &name, const std::string &image);

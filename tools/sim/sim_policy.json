@@ -17,6 +17,7 @@
   "SimMath::acosDet"
  ],
  "excluded": [
+  {"glob": "src/GameClient/CreateAHeroStats.cpp", "reason": "Create-a-Hero client profile statistics file IO; never simulation state"},
   {
    "glob": "src/GameClient/WallUpgradePreview.cpp",
    "reason": "Client-only wall expansion hover spacing: reads recorded wall links and replacement templates, returns highlight IDs without changing simulation state"

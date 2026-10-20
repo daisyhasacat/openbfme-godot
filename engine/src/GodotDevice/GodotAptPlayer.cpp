@@ -6411,6 +6411,7 @@ Dictionary AptMenuPlayer::set_create_a_hero(Object *worldObject, const String &p
 	}
 	ShellMode &sm = *m->shell;
 	std::vector<std::string> listErrors;
+	world->set_hero_stats_profile(profileDir.utf8().get_data());
 	sm.cahHeroes.load(m->fs->archive_fs(), profileDir.utf8().get_data(), &listErrors);
 	for (const std::string &e : listErrors)
 	{

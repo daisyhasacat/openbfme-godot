@@ -1160,6 +1160,8 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	m_textureAnimation = optBool(options, "texture_animation", true);
 
 	LiveGame::Options lo = loIn;
+	lo.heroStatsProfile = m_heroStatsProfile;
+	lo.heroStatsMessage = [](const std::string &message) { UtilityFunctions::print(toGodot(message)); };
 	// Optional BFME2Lua wall profile, captured once before creating any objects.
 	Ref<ConfigFile> wallConfig; wallConfig.instantiate();
 	wallConfig->load("res://dev/wall_balance.cfg");

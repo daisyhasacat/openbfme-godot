@@ -22,6 +22,8 @@
 #include "GameClient/GUI/CreateAHero/AptMyHero.h"
 #include "GameLogic/CreateAHeroSystem.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
+#include "GameLogic/Object/Object.h"
+#include "GameLogic/VictoryConditions.h"
 #include "GameClient/LiveGame.h"
 #include "GameClient/GUI/Skirmish/IniSkirmishSetupSource.h"
 #include "GameLogic/NewGame/NewGame.h"
@@ -351,6 +353,7 @@ TEST_CASE("cah1 retail shell: the main menu's Create-a-Hero pushes CreateAHero.a
 		CHECK(AptCreateAHero::stopLines()[(size_t)k].rfind("[S-140" + std::to_string(k) + "]", 0) == 0);
 	}
 	CHECK(AptCreateAHero::stopLines()[6].rfind("[S-1408]", 0) == 0);
+	CHECK(AptCreateAHero::stopLines()[3] == "[S-1403] Create-a-Hero awards: statistics files, kill counters, award triggers and Manager presentation are implemented; reward UpgradeAwards drawable bling and in-game award popup are not ported; match-result timing is inferred from EndGameView, not yet verified against retail (RW 0x80B2AB); WotR result counters and PrimaryKey/SecondaryKey statistics remain unverified");
 	REQUIRE(scr->heroList());
 	CHECK(GadgetListBoxGetNumEntries(scr->heroList()) == 8);
 	CHECK(scr->selectedHero() == 0);
@@ -1057,7 +1060,7 @@ TEST_CASE("ui6 cah1 retail lobby: the chosen Create-a-Hero is kept with the lobb
 
 // Lane MENUWORK-1: the hero list's headers sort it as RotWK's Manager does (RW 0x9C4EBD keys, RW 0x9C54C4 comparator, RW 0x9C5A66 list); a row is
 // still its own hero after the sort; Take Picture, Play Game and the awards tell the player they are not available (S-4755)
-TEST_CASE("menuwork1 cah retail shell: the hero list's headers sort it (RW 0x9C4EBD / 0x9C54C4); Take Picture, Play Game and awards say they are not available")
+TEST_CASE("menuwork1 cah retail shell: the hero list's headers sort it (RW 0x9C4EBD / 0x9C54C4); Take Picture and Play Game report their gaps; award selection shows its description")
 {
 	OPENBFME_REQUIRE_START(s);
 	CahShellFx c(s, true);
@@ -1116,11 +1119,123 @@ TEST_CASE("menuwork1 cah retail shell: the hero list's headers sort it (RW 0x9C4
 	CHECK(c.fx->wm->noteCount("command-unhandled") == 0);
 	// the controls with nothing behind them say so
 	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::OnTakePicture", ""));
-	CHECK(scr->lastMessage() == "OpenBFME: Taking a hero portrait is not available yet: the hero keeps its class's picture.");
+	CHECK(scr->lastMessage() == "OpenBFME: Taking a hero portrait is not available yet: the hero keeps its model's portrait.");
 	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::Manager::OnPlayGame", ""));
 	CHECK(scr->lastMessage() == "OpenBFME: Trying a hero on a test map is not available yet: play a skirmish with the hero instead.");
 	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::Manager::OnSelectAward", "1"));
-	CHECK(scr->lastMessage() == "OpenBFME: Hero awards are not available yet: OpenBFME does not record them.");
+	REQUIRE(c.fx->wm->aptText("Cah:SelectedAwardDesc"));
+	const auto &hero = scr->myHero()->hero();
+	const auto *sub = c.ctx.system->subClass(hero.classIndex, hero.subClassIndex);
+	REQUIRE(sub);
+	const auto *award = c.ctx.system->awardSystem.award(sub->awards[1]);
+	REQUIRE(award);
+	CHECK(*c.fx->wm->aptText("Cah:SelectedAwardDesc") == loadScreenU16ToUtf8(fetchOrMissing(c.fx->environment.gameText, award->descriptionTag)));
+}
+
+TEST_CASE("cah statistics retail: saved counters populate the manager and unlock the exact Vanquisher threshold")
+{
+	OPENBFME_REQUIRE_START(s);
+	CahShellFx c(s, true);
+	auto *screen = c.screen();
+	REQUIRE(screen);
+	const auto &system = *c.ctx.system;
+	CHECK(system.awardSystem.awards.size() == 28);
+	CHECK(system.awardSystem.statistics.size() == 71);
+	const auto *entry = c.heroes.at(0);
+	REQUIRE(entry);
+	const auto *sub = system.subClass(entry->hero.classIndex, entry->hero.subClassIndex);
+	REQUIRE(sub);
+	const auto it = std::find(sub->awards.begin(), sub->awards.end(), "Vanquisher");
+	REQUIRE(it != sub->awards.end());
+	const auto index = (size_t)(it - sub->awards.begin());
+	const std::string provider = "MyHero::AwardState_" + std::to_string(index);
+	CreateAHeroStats stats;
+	stats.add("ENEMIES_KILLED", 2999);
+	std::string error, value;
+	REQUIRE(stats.save(c.dir.path, entry->hero.uniqueID, &error));
+	screen->selectHero(0);
+	REQUIRE(screen->myHero()->provide(provider, value));
+	CHECK(value == "0");
+	CHECK(c.fx->wm->getExtern(provider, value) == AptExternResult::Number);
+	stats.add("ENEMIES_KILLED");
+	REQUIRE(stats.save(c.dir.path, entry->hero.uniqueID, &error));
+	screen->selectHero(0);
+	REQUIRE(screen->myHero()->provide(provider, value));
+	CHECK(value == "1");
+	CHECK(c.fx->wm->noteCount("create-a-hero-statistics-error") == 0);
+	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::Manager::OnSelectAward", std::to_string(index)));
+	const auto *description = c.fx->wm->aptText("Cah:SelectedAwardDesc");
+	REQUIRE(description);
+	CHECK(*description == loadScreenU16ToUtf8(fetchOrMissing(c.fx->environment.gameText, "Award:Vanquisher_Desc")));
+}
+
+TEST_CASE("cah statistics retail: local hero kills persist once and client profile recording leaves the simulation hash unchanged")
+{
+	OPENBFME_REQUIRE_START(s);
+	TempDir dir;
+	CreateAHeroHeroList heroes;
+	heroes.load(s->mount->fs.get(), dir.path, nullptr);
+	REQUIRE(heroes.at(0));
+	const CreateAHeroHero hero = heroes.at(0)->hero;
+	NewGameMessage message;
+	std::string error;
+	{
+		starttest::ShellFx fx(*s, 99u);
+		SkirmishGameSetup setup(fx.setup, &fx.text);
+		REQUIRE(setup.init(u"StatsTest", 99u, "maps/map mp evendim/map mp evendim.map", &error));
+		REQUIRE(setup.setSlotCreateAHero(0, &hero, &error));
+		message = setup.makeNewGameMessage();
+	}
+	std::vector<MapCacheEntry> cache;
+	REQUIRE(IniSkirmishSetupSource::loadMapCache(*s->mount->fs, cache, &error));
+	std::vector<std::uint32_t> hashes;
+	for (bool record : { false, true })
+	{
+		NewGameStart start(RandomAlgorithm::ZH_CarryChain);
+		REQUIRE(NewGame::prepareNewGame(message, s->world->playerTemplates(), s->settings, cache, RandomAlgorithm::ZH_CarryChain, start, &error));
+		ArchiveW3DFileSource source(*s->mount->fs);
+		WW3DAssetManager assets(source);
+		LiveGame game(*s->world, *s->mount->fs, assets, s->options);
+		LiveGame::Options options;
+		options.start = &start;
+		options.heroStatsProfile = record ? dir.path : "";
+		REQUIRE_MESSAGE(game.load(options, &error), error);
+		auto *local = game.players().getLocalPlayer();
+		REQUIRE(local);
+		auto *killer = game.createObject("CreateAHero", local->getPlayerIndex(), { 1000.0f, 1000.0f, 0.0f }, 0.0f, &error);
+		auto *victim = game.createObject("GondorFighter", local->getPlayerIndex(), { 1050.0f, 1000.0f, 0.0f }, 0.0f, &error);
+		REQUIRE(killer);
+		REQUIRE(victim);
+		// RW 0x69560B records before the relationship gate, even for this allied victim.
+		killer->scoreTheKill(*victim);
+		killer->scoreTheKill(*victim);
+		game.advance(0.0);
+		game.advance(0.0);
+		hashes.push_back(game.logic().computeStateHash());
+		if (record)
+		{
+			CreateAHeroStats stats;
+			REQUIRE_MESSAGE(stats.load(dir.path, hero.uniqueID, &error), error);
+			CHECK(stats.get("ENEMIES_KILLED") == 1);
+			CHECK(stats.get("MEN_OF_THE_WEST_INFANTRY_KILLED") == 1);
+			game.logic().victory().selfDestruct(local, false);
+			// Wait for the published defeat, with a watchdog rather than assuming
+			// the delayed self-destruct/presentation completes at a guessed frame.
+			for (int frame = 0; frame < 100; ++frame)
+			{
+				game.advance(0.2);
+				REQUIRE_MESSAGE(stats.load(dir.path, hero.uniqueID, &error), error);
+				if (game.logic().victory().localAlliedDefeat() && stats.get(s->world->createAHeroSystem().statNames[4]) == 1) break;
+			}
+			CHECK(game.logic().victory().localAlliedDefeat());
+			CHECK(stats.get(s->world->createAHeroSystem().statNames[4]) == 1);
+			for (int frame = 0; frame < 5; ++frame) game.advance(0.2);
+			REQUIRE_MESSAGE(stats.load(dir.path, hero.uniqueID, &error), error);
+			CHECK(stats.get(s->world->createAHeroSystem().statNames[4]) == 1);
+		}
+	}
+	REQUIRE(hashes.size() == 2);
+	CHECK(hashes[0] == hashes[1]);
 }
 
 TEST_CASE("cah attributes: duplicate tick initializers position all thirty-two segments of each bar")
