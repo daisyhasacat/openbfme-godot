@@ -51,5 +51,5 @@ void fragment() {
 }
 // Lighting is already baked by terrain_output; apply only sun visibility.
 void light() {
-	if (LIGHT_IS_DIRECTIONAL) DIFFUSE_LIGHT += ALBEDO * ATTENUATION;
+	if (LIGHT_IS_DIRECTIONAL) DIFFUSE_LIGHT += vec3(ATTENUATION);
 }

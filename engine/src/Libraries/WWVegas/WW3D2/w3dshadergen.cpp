@@ -584,6 +584,6 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy sam
 		line("\tSPECULAR = 0.0;");
 	}
 	line("}");
-	if (shadowReceiver) line("void light() { if (LIGHT_IS_DIRECTIONAL) DIFFUSE_LIGHT += ALBEDO * ATTENUATION; }");
+	if (shadowReceiver) line("void light() { if (LIGHT_IS_DIRECTIONAL) DIFFUSE_LIGHT += vec3(ATTENUATION); }");
 	return c;
 }

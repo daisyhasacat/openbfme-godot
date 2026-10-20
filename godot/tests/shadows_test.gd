@@ -31,10 +31,23 @@ func _run() -> void:
 	root.add_child(camera)
 	camera.current=true
 	root.size=Vector2i(512,512)
-	RenderingServer.global_shader_parameter_set("w3d_shadow_strength",.65)
+	RenderingServer.global_shader_parameter_set("w3d_shadow_strength",0.0)
 	for i in 12: await process_frame
 	await RenderingServer.frame_post_draw
 	var baseline: Image=root.get_texture().get_image()
+	# No occluder shadow: enabling reception must preserve the baked retail colour.
+	RenderingServer.global_shader_parameter_set("w3d_shadow_strength",.65)
+	for i in 12: await process_frame
+	await RenderingServer.frame_post_draw
+	var receiving: Image=root.get_texture().get_image()
+	var max_error:=0.0
+	for y in range(0,512,4):
+		for x in range(0,512,4):
+			var a=baseline.get_pixel(x,y)
+			var b=receiving.get_pixel(x,y)
+			max_error=maxf(max_error,maxf(absf(a.r-b.r),maxf(absf(a.g-b.g),absf(a.b-b.b))))
+	# tolerance: RGBA16F round trips and final 8-bit output can differ by one byte.
+	assert(max_error<=1.0/255.0,"Shadow reception darkens unoccluded surfaces: %f" % max_error)
 	light.shadow_enabled=true
 	for i in 12: await process_frame
 	await RenderingServer.frame_post_draw
