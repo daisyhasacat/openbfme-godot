@@ -203,3 +203,6 @@ use at least 48-pixel touch targets, visible controller focus, and sequential
 D-pad/keyboard navigation that scrolls focused rows into view. Accept activates
 a button; Back closes the top dialog and restores focus. Back or directional
 navigation from Options’ Mods entry returns to the options tabs.
+
+Player saves, profiles and heroes use the separate [player sync service](SYNC.md),
+configured under **Options → Sync**.

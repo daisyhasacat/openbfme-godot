@@ -26,7 +26,7 @@
 extends CanvasLayer
 
 const DisplaySettings := preload("res://scripts/display_settings.gd")
-const TABS := ["Display", "Graphics", "Audio", "Camera", "Interface", "Online", "Performance", "Controls", "Mods"]
+const TABS := ["Display", "Graphics", "Audio", "Camera", "Interface", "Online", "Performance", "Controls", "Mods", "Sync"]
 ## lane OPTS-5: the tab the menu shows first when the main menu's CUSTOM SETTINGS opened it
 const DETAIL_TAB := "Graphics"
 ## lane OPTS-5: the help lines of OpenBFME's own rows and the tabs' notes (NOT RETAIL; one table: the original game's rows take theirs from the game's
@@ -121,7 +121,7 @@ var _menu := false                 # lane OPTS-5: the page is the Options screen
 var _mods_button: Button
 
 func _input(event: InputEvent) -> void:
-	if not is_instance_valid(_mods_button) or not _mods_button.has_focus() or not _open or _tab != "Mods":
+	if not is_instance_valid(_mods_button) or not _mods_button.has_focus() or not _open or _tab not in ["Mods", "Sync"]:
 		return
 	if get_tree().root.has_node("ModManagerLayer"):
 		return
@@ -144,7 +144,12 @@ func _ready() -> void:
 	_mods_button.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_mods_button.grow_vertical = Control.GROW_DIRECTION_BOTH
 	_mods_button.hide()
-	_mods_button.pressed.connect(func(): Release.open_mod_manager())
+	_mods_button.pressed.connect(func():
+		if _tab == "Sync":
+			var sync = preload("res://scripts/player_sync.gd").new()
+			get_tree().root.add_child(sync)
+		else:
+			Release.open_mod_manager())
 	add_child(_mods_button)
 	if overlay != null:
 		overlay.screen = self
@@ -183,7 +188,7 @@ func _process(_delta: float) -> void:
 		return
 	var stack: PackedStringArray = shell.shell_stack()
 	_options_top = not stack.is_empty() and stack[-1] == "Options.apt"
-	_mods_button.visible = _open and _options_top and _tab == "Mods"
+	_mods_button.visible = _open and _options_top and _tab in ["Mods", "Sync"]
 	if _open and not _options_top:
 		close(false) # the shell left Options.apt (a game ended, the quit menu closed): the page goes with it
 		return
@@ -369,7 +374,8 @@ func _apply_pending() -> void:
 # ---------------------------------------------------------------------------------------------------------------------------------
 func _show_tab(name: String) -> void:
 	_tab = name
-	_mods_button.visible = _open and name == "Mods"
+	_mods_button.text = "Player sync…" if name == "Sync" else "Games, mods and LAN downloads…"
+	_mods_button.visible = _open and name in ["Mods", "Sync"]
 	if _mods_button.visible:
 		_mods_button.call_deferred("grab_focus")
 	if not _open:
@@ -423,6 +429,9 @@ func _spec() -> Dictionary:
 			rows = _performance_rows()
 		"Controls":
 			rows = []
+		"Sync":
+			rows = []
+			note = "Sync saves, profiles, heroes and player data with your server and username."
 		"Mods":
 			rows = []
 			note = "Switch games, manage texture packs and mods, or download shared maps and built-ins from your LAN."
