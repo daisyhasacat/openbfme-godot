@@ -497,6 +497,16 @@ library('match',{
  end,
 })
 -- Detached terrain position sampled with this Lua chunk; no simulation mutation.
+library('movements',{
+ record=function(options) return query('movementCapture','record',options or {}) end,
+ finish=function() return query('movementCapture','finish') end,
+ play=function(options) return query('movementCapture','play',options or {}) end,
+ stop=function() return query('movementCapture','stop') end,
+ clear=function() return query('movementCapture','clear') end,
+ status=function() return query('movementCapture','status') end,
+ seek=function(seconds) numeric(seconds,0,300,false); return query('movementCapture','seek',{seconds=seconds}) end,
+ pause=function(paused) if paused==nil then paused=true end; return query('movementCapture','pause',{paused=paused}) end,
+})
 library('layouts',{
  save=function(key,data) return query('saveBuildingLayout',key,data) end,
  load=function(key) return query('loadBuildingLayout',key) end,

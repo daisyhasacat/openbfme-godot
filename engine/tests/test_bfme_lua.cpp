@@ -313,7 +313,7 @@ TEST_CASE("bfme Lua: libraries are read-only objects reachable through bfme, imp
 	BfmeFixture f;
 	CHECK(f.run("return bfme.debug==import('bfme.debug'), bfme.debug==require('bfme.debug'), tostring(bfme.debug)") ==
 		  "true\ttrue\tbfme.debug\n");
-	CHECK(f.run("return table.concat(bfme.capabilities.libraries,',')") == "ai,buildMode,console,debug,events,graphics,input,layouts,map,match,mutations,orders,selection,timing\n");
+	CHECK(f.run("return table.concat(bfme.capabilities.libraries,',')") == "ai,buildMode,console,debug,events,graphics,input,layouts,map,match,movements,mutations,orders,selection,timing\n");
 	CHECK(f.run("bfme.capabilities.libraries[1]='x'; return bfme.capabilities.libraries[1]") == "ai\n");
 	CHECK(f.run("return getmetatable(bfme.selection), getmetatable(bfme), type(bfme.match.getFrame), bfme.debug.missing") ==
 		  "bfme library\tbfme module\tfunction\tnil\n");
@@ -762,4 +762,24 @@ TEST_CASE("bfme timing: context-only production hooks skip snapshots; API reads 
 	f.snapshotReads = 0;
 	CHECK(f.vm->adjustTiming("train", {}, 100) == 100);
 	CHECK(f.snapshotReads == 0);
+}
+
+TEST_CASE("bfme Lua: movement controls dispatch to the presentation-only host")
+{
+	BfmeFixture f;
+	f.answers["movementCapture"] = BfmeLuaValue::Table{{"ok",true},{"samples",4}};
+	CHECK(f.run("return bfme.movements==import('bfme.movements'),bfme.movements==require('bfme.movements')") == "true\ttrue\n");
+	CHECK(f.run("return bfme.movements.record({seconds=20,interval=0.2}).samples") == "4\n");
+	CHECK(f.queries.back().first == "movementCapture");
+	CHECK(std::get<std::string>(f.queries.back().second[0].data) == "record");
+	const auto options = std::get<BfmeLuaValue::Table>(f.queries.back().second[1].data);
+	CHECK(std::get<double>(options.at("seconds").data) == 20);
+	CHECK(f.applied.empty());
+	CHECK_FALSE(f.vm->hasPending());
+	for (const char *code : {"finish()", "play({loop=true,speed=2})", "pause()", "seek(1)", "status()", "stop()", "clear()"})
+		CHECK(f.vm->execute(std::string("bfme.movements.") + code).ok);
+	CHECK_FALSE(f.vm->execute("bfme.movements.seek(-1)").ok);
+	CHECK_FALSE(f.vm->execute("bfme.movements.seek(0/0)").ok);
+	CHECK(f.applied.empty());
+	CHECK_FALSE(f.vm->hasPending());
 }

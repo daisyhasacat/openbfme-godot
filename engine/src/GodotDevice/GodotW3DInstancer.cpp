@@ -73,6 +73,34 @@ const char *kindName(RenderSubObject::Kind k)
 
 } // namespace
 
+struct W3DInstancer::MovementClip
+{
+	struct Appearance {
+		int model = 0;
+		float houseColor = 0;
+		bool infantry = false, fogged = false;
+		std::vector<std::uint8_t> hidden;
+		std::vector<std::pair<int, float>> spins;
+		int64_t clone = -1;
+	};
+	struct Pose {
+		uint32_t track = 0;
+		Transform3D transform;
+		const HAnimClass *anim0 = nullptr, *anim1 = nullptr;
+		float frame0 = 0, frame1 = 0, blend = 0, opacity = 1;
+	};
+	struct Frame { double time = 0; std::vector<Pose> poses; };
+	std::unordered_map<int64_t, uint32_t> sources;
+	std::vector<Appearance> tracks;
+	std::vector<Frame> frames;
+	std::vector<std::pair<int64_t, float>> originals;
+	std::vector<int64_t> visibleClones;
+	bool recording = false, playing = false, paused = false, loop = false;
+	double elapsed = 0, time = 0, interval = 0.2, nextSample = 0.2, maxSeconds = 60, speed = 1;
+	size_t bytes = 0, maxBytes = 256 * 1024 * 1024;
+	String stopReason;
+};
+
 W3DInstancer::W3DInstancer()
 {
 	Epoch = std::chrono::steady_clock::now();
@@ -1884,4 +1912,222 @@ PackedInt32Array W3DInstancer::get_draw_order(int64_t model, int64_t draw) const
 	return out;
 }
 
+} // namespace godot
+
+namespace godot
+{
+bool W3DInstancer::movement_playing() const { return Movement && Movement->playing; }
+
+void W3DInstancer::movement_sample()
+{
+	auto &m = *Movement;
+	MovementClip::Frame frame;
+	frame.time = m.elapsed;
+	for (size_t id = 0; id < Instances.size(); ++id)
+	{
+		const auto &instance = Instances[id];
+		if (instance.Removed) continue;
+		if (m.bytes + (frame.poses.size() + 1) * sizeof(MovementClip::Pose) + sizeof(frame) > m.maxBytes)
+		{
+			m.recording = false; m.stopReason = "memory_limit"; return;
+		}
+		auto found = m.sources.find(id);
+		if (found == m.sources.end())
+		{
+			MovementClip::Appearance track;
+			track.model = instance.Model; track.houseColor = instance.HcPacked;
+			track.infantry = instance.InfantryLight; track.fogged = instance.Fogged;
+			track.hidden = instance.HiddenSubs; track.spins = instance.BoneSpins;
+			const uint32_t index = static_cast<uint32_t>(m.tracks.size());
+			m.bytes += sizeof(track) + track.hidden.size() + track.spins.size() * sizeof(std::pair<int,float>);
+			m.tracks.push_back(std::move(track));
+			found = m.sources.emplace(id, index).first;
+		}
+		MovementClip::Pose pose;
+		pose.track = found->second; pose.transform = instance.Xf;
+		pose.anim0 = instance.Anim; pose.anim1 = instance.Anim1;
+		pose.frame0 = instance.Frame0; pose.frame1 = instance.Frame1;
+		pose.blend = instance.Percentage; pose.opacity = instance.Opacity;
+		if (!instance.Explicit && instance.Anim)
+		{
+			const double span = instance.Anim->Get_Num_Frames() - 1;
+			pose.frame0 = span > 0 ? std::fmod((GlobalTime * instance.Speed + instance.Start) * instance.Anim->Get_Frame_Rate(), span) : 0;
+			if (pose.frame0 < 0) pose.frame0 += span;
+			pose.anim1 = nullptr; pose.blend = 0;
+		}
+		frame.poses.push_back(pose);
+	}
+	std::sort(frame.poses.begin(), frame.poses.end(), [](const MovementClip::Pose &a, const MovementClip::Pose &b) { return a.track < b.track; });
+	const size_t added = sizeof(frame) + frame.poses.size() * sizeof(MovementClip::Pose);
+	if (m.bytes + added > m.maxBytes)
+	{
+		m.recording = false; m.stopReason = "memory_limit";
+		return;
+	}
+	m.bytes += added;
+	m.frames.push_back(std::move(frame));
+}
+
+void W3DInstancer::movement_present()
+{
+	auto &m = *Movement;
+	if (m.frames.empty()) return;
+	for (int64_t id : m.visibleClones) set_instance_opacity(id, 0);
+	m.visibleClones.clear();
+	auto upper = std::upper_bound(m.frames.begin(), m.frames.end(), m.time,
+		[](double t, const MovementClip::Frame &f) { return t < f.time; });
+	const auto &a = upper == m.frames.begin() ? m.frames.front() : *(upper - 1);
+	const auto &b = upper == m.frames.end() ? a : *upper;
+	const double alpha = b.time > a.time ? (m.time - a.time) / (b.time - a.time) : 0;
+	size_t next = 0;
+	for (const auto &pose : a.poses)
+	{
+		while (next < b.poses.size() && b.poses[next].track < pose.track) ++next;
+		const auto *other = next < b.poses.size() && b.poses[next].track == pose.track ? &b.poses[next] : nullptr;
+		auto &track = m.tracks[pose.track];
+		if (track.clone < 0)
+		{
+			track.clone = add_instance(track.model, pose.transform, String(), 0, 1);
+			auto &clone = Instances[size_t(track.clone)];
+			clone.HcPacked = track.houseColor; clone.InfantryLight = track.infantry;
+			clone.Fogged = track.fogged; clone.HiddenSubs = track.hidden; clone.BoneSpins = track.spins;
+		}
+		auto &clone = Instances[size_t(track.clone)];
+		clone.Xf = other ? pose.transform.interpolate_with(other->transform, alpha) : pose.transform;
+		clone.Anim = pose.anim0; clone.Anim1 = pose.anim1; clone.Explicit = true;
+		clone.Frame0 = pose.frame0; clone.Frame1 = pose.frame1; clone.Percentage = pose.blend;
+		if (other && other->anim0 == pose.anim0 && other->anim1 == pose.anim1)
+		{
+			// Do not interpolate backwards across a recorded clip wrap or restart.
+			if (other->frame0 >= pose.frame0) clone.Frame0 += (other->frame0 - pose.frame0) * alpha;
+			if (other->frame1 >= pose.frame1) clone.Frame1 += (other->frame1 - pose.frame1) * alpha;
+			clone.Percentage += (other->blend - pose.blend) * alpha;
+		}
+		clone.Opacity = pose.opacity;
+		clone.PoseStale = true;
+		mark_model(track.clone);
+		m.visibleClones.push_back(track.clone);
+	}
+	PoseDirty = true;
+}
+
+void W3DInstancer::movement_tick(double seconds)
+{
+	if (!Movement || !std::isfinite(seconds) || seconds < 0) return;
+	auto &m = *Movement;
+	if (m.recording)
+	{
+		m.elapsed = std::min(m.elapsed + seconds, m.maxSeconds);
+		if (m.elapsed >= m.nextSample || m.elapsed >= m.maxSeconds)
+		{
+			movement_sample();
+			m.nextSample = (std::floor(m.elapsed / m.interval) + 1) * m.interval;
+		}
+		if (m.elapsed >= m.maxSeconds) { m.recording = false; m.stopReason = "duration_limit"; }
+	}
+	if (m.playing)
+	{
+		if (!m.paused)
+		{
+			m.time += seconds * m.speed;
+			const double duration = m.frames.back().time;
+			if (m.loop && duration > 0) m.time = std::fmod(m.time, duration);
+			else m.time = std::min(m.time, duration);
+		}
+		movement_present();
+	}
+}
+
+bool W3DInstancer::movement_transform(int64_t source, Transform3D &transform) const
+{
+	if (!movement_playing()) return false;
+	const auto found = Movement->sources.find(source);
+	if (found == Movement->sources.end()) return false;
+	const auto id = Movement->tracks[found->second].clone;
+	if (id < 0 || Instances[size_t(id)].Opacity == 0) return false;
+	transform = Instances[size_t(id)].Xf;
+	return true;
+}
+
+Dictionary W3DInstancer::movement_control(const String &action, const Dictionary &options)
+{
+	Dictionary result;
+	result["ok"] = false;
+	try
+	{
+		auto number = [&](const char *name, double fallback, double lo, double hi) {
+			const Variant value = options.get(name, fallback);
+			if (value.get_type() != Variant::INT && value.get_type() != Variant::FLOAT) throw std::runtime_error("movement option must be numeric");
+			const double n = value;
+			if (!std::isfinite(n) || n < lo || n > hi) throw std::runtime_error("movement option out of range");
+			return n;
+		};
+		auto stop = [&] {
+			if (!Movement || !Movement->playing) return;
+			for (const auto &entry : Movement->originals) set_instance_opacity(entry.first, entry.second);
+			for (int64_t id : Movement->visibleClones) set_instance_opacity(id, 0);
+			Movement->visibleClones.clear(); Movement->originals.clear(); Movement->playing = false; Movement->paused = false;
+		};
+		if (action == "record" || action == "clear")
+		{
+			const double interval = number("interval", 0.2, 1.0 / 30.0, 1.0);
+			const double seconds = number("seconds", 60, 0.2, 300);
+			const size_t bytes = size_t(number("memory_mb", 256, 1, 1024) * 1024 * 1024);
+			stop();
+			if (Movement) for (const auto &track : Movement->tracks) if (track.clone >= 0) remove_instance(track.clone);
+			Movement.reset();
+			if (action == "record")
+			{
+				Movement = std::make_unique<MovementClip>();
+				Movement->interval = interval; Movement->nextSample = interval; Movement->maxSeconds = seconds; Movement->maxBytes = bytes;
+				Movement->recording = true;
+				movement_sample();
+			}
+		}
+		else if (action == "finish")
+		{
+			if (!Movement || !Movement->recording) throw std::runtime_error("no movement recording is running");
+			if (Movement->frames.empty() || Movement->elapsed > Movement->frames.back().time) movement_sample();
+			Movement->recording = false; Movement->stopReason = "finished";
+		}
+		else if (action == "play")
+		{
+			if (!Movement || Movement->frames.size() < 2) throw std::runtime_error("record at least two movement samples first");
+			const double speed = number("speed", 1, 0.01, 16);
+			const Variant loop = options.get("loop", false);
+			if (loop.get_type() != Variant::BOOL) throw std::runtime_error("movement loop must be boolean");
+			stop();
+			auto &m = *Movement;
+			m.recording = false; m.playing = true; m.paused = false; m.loop = loop; m.speed = speed; m.time = 0;
+			std::set<int64_t> clones;
+			for (const auto &track : m.tracks) if (track.clone >= 0) clones.insert(track.clone);
+			for (size_t id = 0; id < Instances.size(); ++id)
+				if (!Instances[id].Removed && !clones.count(id)) { m.originals.emplace_back(id, Instances[id].Opacity); set_instance_opacity(id, 0); }
+			movement_present();
+		}
+		else if (action == "stop") stop();
+		else if (action == "seek" || action == "pause")
+		{
+			if (!movement_playing()) throw std::runtime_error("movement playback is not running");
+			if (action == "seek") Movement->time = number("seconds", 0, 0, Movement->frames.back().time);
+			else { const Variant paused = options.get("paused", true); if (paused.get_type() != Variant::BOOL) throw std::runtime_error("movement paused must be boolean"); Movement->paused = paused; }
+			movement_present();
+		}
+		else if (action != "status") throw std::runtime_error("unknown movement action");
+		result["ok"] = true;
+	}
+	catch (const std::exception &error) { result["error"] = String::utf8(error.what()); }
+	result["recording"] = Movement && Movement->recording;
+	result["playing"] = movement_playing();
+	result["paused"] = Movement && Movement->paused;
+	result["samples"] = Movement ? int64_t(Movement->frames.size()) : 0;
+	result["tracks"] = Movement ? int64_t(Movement->tracks.size()) : 0;
+	result["visible_tracks"] = Movement ? int64_t(Movement->visibleClones.size()) : 0;
+	result["bytes"] = Movement ? int64_t(Movement->bytes) : 0;
+	result["duration"] = Movement && !Movement->frames.empty() ? Movement->frames.back().time : 0;
+	result["time"] = Movement ? Movement->time : 0;
+	result["ended"] = movement_playing() && !Movement->loop && Movement->time == Movement->frames.back().time;
+	result["stop_reason"] = Movement ? Movement->stopReason : String();
+	return result;
+}
 } // namespace godot

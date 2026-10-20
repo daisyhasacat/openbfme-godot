@@ -99,6 +99,11 @@ public:
 	// everything again. Unknown names are an error (returns false, recorded). (Added by lane MAPOBJ-1.)
 	bool set_instance_hidden_subobjects(int64_t instance, const PackedStringArray &names);
 	int64_t get_instance_count() const { return (int64_t)Instances.size(); }
+	// Same-scene visual movement clip. Asset references never leave this instancer.
+	Dictionary movement_control(const String &action, const Dictionary &options);
+	bool movement_playing() const;
+	void movement_tick(double seconds);
+	bool movement_transform(int64_t source, Transform3D &transform) const;
 	// Stop S-119 (lane MAPOBJ-1): team colours. After setup() and BEFORE the first add_model, enable them and every classic surface whose stage
 	// 0 texture has a housecolor.ini texture gets the HouseColor shader permutation (W3DShaderKey::HouseColor: base = mix(base, base * team,
 	// house texture alpha), a HYPOTHESIS: the combine is unrecovered, S-022); the per-surface S-022 reports are replaced by one S-119 report
@@ -300,6 +305,10 @@ private:
 	std::vector<TextureSwap> PendingSwaps; // stop S-4832: Set_Build_Texture_Swaps, taken by the next add_model
 	std::vector<std::unique_ptr<Model>> Models;
 	std::vector<Instance> Instances;
+	struct MovementClip;
+	std::unique_ptr<MovementClip> Movement;
+	void movement_sample();
+	void movement_present();
 	std::vector<Ref<ShaderMaterial>> AllMaterials;
 	std::vector<W3DMapperBinding> Mappers;
 

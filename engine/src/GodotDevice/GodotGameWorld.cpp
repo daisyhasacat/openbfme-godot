@@ -344,6 +344,8 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("execute_lua", "code"), &GameWorld::execute_lua);
 	ClassDB::bind_method(D_METHOD("get_lua_state"), &GameWorld::get_lua_state);
 	ClassDB::bind_method(D_METHOD("update_lua"), &GameWorld::update_lua);
+	ClassDB::bind_method(D_METHOD("movement_control", "action", "options"), &GameWorld::movement_control, DEFVAL(Dictionary()));
+	ClassDB::bind_method(D_METHOD("movement_playing"), &GameWorld::movement_playing);
 	ClassDB::bind_method(D_METHOD("order_move", "ids", "x", "y", "options"), &GameWorld::order_move, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("order_stop", "ids"), &GameWorld::order_stop);
 	ClassDB::bind_method(D_METHOD("build2_wall_hub", "player", "hub_template"), &GameWorld::build2_wall_hub);
@@ -740,6 +742,7 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 
 void GameWorld::clear_scene()
 {
+	m_movementPendingCommands.reset();
 	m_mapWeatherId = 0;
 	m_pavingPlants.clear();m_pavingTexture.unref();m_pavingSignature=0;m_pavingFrame=~0u;m_pavingError=String();
 	m_endGame.reset(); // lane END-1: the end sequence of the game that goes
@@ -2113,6 +2116,17 @@ void GameWorld::advance(double delta)
 	{
 		return;
 	}
+	if (movement_playing())
+	{
+		// Recorded visuals only: no LiveGame::advance, AI, collisions, Lua,
+		// production, shroud or gameplay FX updates on this path.
+		const double start = nowMs();
+		instancerOf(m_dynamicId)->movement_tick(m_paused ? 0.0 : delta);
+		m_lastLogicFrames = 0; m_lastLogicMs = 0;
+		m_lastSyncMs = timing::elapsedMs(start); m_lastAdvanceMs = m_lastSyncMs;
+		m_game->endClientWindow();
+		return;
+	}
 	if (m_paused)
 	{
 		// the simulation and the animations stand still; the streak ribbons still face the camera of this frame (the camera moves while paused)
@@ -2241,6 +2255,7 @@ void GameWorld::advance(double delta)
 	m_lastLogicMs = timing::spanMs(t1, t0);
 	m_lastSyncMs = timing::spanMs(t2, t1);
 	m_lastAdvanceMs = timing::elapsedMs(t0);
+	if (auto *dyn = instancerOf(m_dynamicId)) dyn->movement_tick(dt);
 }
 
 // lane RENDERWAIT-1: the render side's work that reads the live logic, at a point the logic is held (the client window, or single-threaded after the frames):
@@ -4217,6 +4232,7 @@ void GameWorld::ensureConsoleRuntime()
 	if (!m_consoleRuntime)
 	{
 		BfmeLuaRuntime::Host host;
+		host.onMutation = [this] { if (movement_playing()) throw std::runtime_error("gameplay writes are disabled during movement playback"); };
 		host.snapshot = [this] { return bfme_snapshot(); };
 		host.apply = [this](const BfmeLuaRuntime::Mutation &mutation) { return bfme_apply(mutation); };
 		struct LuaSubmissions { std::uint64_t sequence = 0; std::map<unsigned long long, std::uint64_t> requests; };
@@ -4321,8 +4337,44 @@ Dictionary GameWorld::execute_lua(const String &code)
 	return result;
 }
 
+bool GameWorld::movement_playing() const
+{
+	const auto *dyn = instancerOf(m_dynamicId);
+	return dyn && dyn->movement_playing();
+}
+
+Dictionary GameWorld::movement_control(const String &action, const Dictionary &options)
+{
+	Dictionary result;
+	result["ok"] = false;
+	if (!m_game || !instancerOf(m_dynamicId)) { result["error"] = "start a match before recording movements"; return result; }
+	if (m_netSession || bfme_network_game()) { result["error"] = "movement clips require a local match"; return result; }
+	const bool wasPlaying = movement_playing();
+	if (action == "play") m_game->waitIdle();
+	result = instancerOf(m_dynamicId)->movement_control(action, options);
+	const bool playing = movement_playing();
+	if (!wasPlaying && playing)
+	{
+		m_movementPendingCommands = m_game->commands();
+		m_movementFxVisible = m_fxPlayer && m_fxPlayer->is_visible();
+		m_movementStreakVisible = m_streakNode && m_streakNode->is_visible();
+		if (m_fxPlayer) m_fxPlayer->hide();
+		if (m_streakNode) m_streakNode->hide();
+	}
+	else if (wasPlaying && !playing)
+	{
+		// Inputs during a visual-only clip must not become delayed battle orders.
+		m_game->commands() = m_movementPendingCommands;
+		m_movementPendingCommands.reset();
+		if (m_fxPlayer) m_fxPlayer->set_visible(m_movementFxVisible);
+		if (m_streakNode) m_streakNode->set_visible(m_movementStreakVisible);
+	}
+	return result;
+}
+
 void GameWorld::update_lua()
 {
+	if (movement_playing()) return;
 	if (!m_consoleRuntime) return;
 	if (!m_consoleRuntime->hasPending()) {
 		if (m_game && m_timingRestoreLogicThread && !m_consoleRuntime->hasTimingHooks()) {
@@ -4424,6 +4476,18 @@ Dictionary GameWorld::get_render_pose(int64_t id) const
 	d["presented_shrouded"] = rec->shroudedForLocal;
 	const size_t view = (size_t)dr->getID();
 	d["view_valid"] = view < m_views.size() && m_views[view].valid;
+	if (movement_playing() && view < m_views.size())
+	{
+		Transform3D transform;
+		for (const auto &entry : m_views[view].entries)
+			if (instancerOf(m_dynamicId)->movement_transform(entry.instance, transform))
+			{
+				d["x"] = transform.origin.x; d["y"] = -transform.origin.z; d["z"] = transform.origin.y;
+				d["angle"] = transform.basis.get_euler().y;
+				d["movement_playback"] = true;
+				break;
+			}
+	}
 	d["view_hidden"] = view < m_views.size() && m_views[view].fogHidden;
 	d["fully_obscured"] = dr->shroudLook().fullyObscured; // lane VISUAL-2: RW Drawable + 0x440 (the attached particle systems do not emit)
 	// lane VISUAL-2 r2: the model instances handed the fogged light (RW 0x46F48E) and the drawn ones (instance >= 0)

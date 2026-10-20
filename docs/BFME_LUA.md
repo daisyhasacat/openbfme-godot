@@ -631,3 +631,11 @@ the Lua runtime and console tests cover the new API and enable/disable buttons.
 Local builds and these checks pass. The full simulation AST audit remains
 blocked by the existing missing libclang installation (S-230); compile/link flag
 checks pass, with the existing unclassified source reported by classification.
+
+### Visual movement clips
+
+`bfme.movements.record({seconds=60})`, `finish()` and `play({loop=true})`
+record and replay fixed visual tracks in the current local match. Playback
+runs no simulation or pathfinding. `pause()`, `seek(seconds)`, `stop()`,
+`status()` and `clear()` control the in-memory clip. See
+[MOVEMENT_CLIPS.md](MOVEMENT_CLIPS.md) for options, limits and validation.

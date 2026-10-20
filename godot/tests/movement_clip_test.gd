@@ -1,0 +1,125 @@
+extends SceneTree
+var world: Node
+func _initialize() -> void: call_deferred("_run")
+func lua(code: String) -> String:
+	var r: Dictionary = world.execute_lua(code)
+	assert(r.ok, str(r))
+	return String(r.output).strip_edges()
+func control(action: String, options := {}) -> Dictionary:
+	var r: Dictionary = world.movement_control(action, options)
+	assert(r.ok, str(r))
+	return r
+func _run() -> void:
+	var fs = ClassDB.instantiate("RetailFileSystem")
+	assert(fs.mount_retail().ok)
+	world = ClassDB.instantiate("GameWorld")
+	root.add_child(world)
+	assert(world.setup(fs).ok)
+	assert(not world.movement_control("record").ok)
+	var slots: Array = []
+	for i in 8: slots.append({"state":1,"name":"Closed","accepted":true,"color":-1,"start_pos":-1,"player_template":-1,"team":-1})
+	slots[0] = {"state":6,"name":"Movement clip","accepted":true,"color":0,"start_pos":0,"player_template":4,"team":0}
+	assert(world.prepare_new_game({"mode":"skirmish","difficulty":1,"rank_points":0,"map":"maps/map mp bamfurlong/map mp bamfurlong.map","map_crc":0,"map_size":0,"map_mask":0,"seed":4711,"starting_cash":100000,"slots":slots}).ok)
+	assert(world.start_new_game({"logic_thread":false}).ok)
+	var owner := int(lua("return bfme.players.localPlayer.id"))
+	var unit: int = world.create_object("GondorFighter", owner, 1000, 1000, 0)
+	var army: Array = [unit]
+	var hordes := int(OS.get_environment("MOVEMENT_HORDES"))
+	for i in hordes:
+		army.append(world.create_object("GondorFighterHorde", owner, 1500 + (i % 19) * 40, 450 + (i / 19) * 40, 0))
+	for i in 4: world.advance(0.2)
+	assert(not world.movement_control("play").ok)
+	assert(not world.movement_control("record", {"interval":0}).ok)
+	lua("assert(bfme.movements.record({seconds=10}).recording)")
+	assert(world.order_move(army, 1300, 1000, {}).ok)
+	var record_start := Time.get_ticks_usec()
+	for i in 20: world.advance(0.2)
+	print("MOVEMENT live advance ms=", (Time.get_ticks_usec() - record_start) / 20000.0)
+	var status := control("finish")
+	# tolerance: floating render timestamps can skip a boundary; the clip must contain an interpolatable track.
+	assert(status.samples >= 2, str(status))
+	var before: Dictionary = world.get_render_pose(unit)
+	var state: int = world.get_state_hash()
+	var frame: int = world.get_frame()
+	control("play")
+	var start: Dictionary = world.get_render_pose(unit)
+	assert(start.get("movement_playback", false), str(start))
+	var play_start := Time.get_ticks_usec()
+	for i in 10:
+		world.advance(0.1)
+		world.update_lua()
+	print("MOVEMENT playback advance ms=", (Time.get_ticks_usec() - play_start) / 10000.0, " tracks=", status.tracks)
+	assert(world.get_state_hash() == state)
+	assert(world.get_frame() == frame)
+	var moved: Dictionary = world.get_render_pose(unit)
+	assert(moved.x != start.x, str([start, moved]))
+	control("seek", {"seconds":0.5})
+	var middle: Dictionary = world.get_render_pose(unit)
+	control("pause")
+	world.advance(1)
+	assert(world.get_render_pose(unit).x == middle.x)
+	assert(not world.execute_lua("bfme.players.localPlayer.money=1").ok)
+	control("seek", {"seconds":status.duration})
+	var end: Dictionary = world.get_render_pose(unit)
+	assert(end.x == before.x, str([end, before]))
+	assert(control("status").ended)
+	control("play", {"loop":true,"speed":2})
+	world.advance(status.duration + 0.25)
+	assert(not control("status").ended)
+	assert(world.get_state_hash() == state)
+	control("stop")
+	assert(not world.movement_playing())
+	assert(world.get_render_pose(unit).x == before.x)
+	world.advance(0.2)
+	assert(world.get_frame() != frame)
+	control("clear")
+	assert(control("status").samples == 0)
+	# Threaded simulation must also stay completely still during visual playback.
+	world.set_logic_thread(true)
+	control("record", {"seconds":0.4})
+	for i in 4: world.advance(0.2)
+	assert(not control("status").recording)
+	assert(control("status").stop_reason == "duration_limit")
+	control("play")
+	state = world.get_state_hash()
+	frame = world.get_frame()
+	for i in 4: world.advance(0.1)
+	assert(world.get_state_hash() == state)
+	assert(world.get_frame() == frame)
+	control("clear")
+	assert(not world.movement_playing())
+	world.set_logic_thread(false)
+	# Newly spawned and removed models have sample-bounded lifetimes.
+	control("record")
+	var initial_tracks: int = control("status").tracks
+	var extra: int = world.create_object("GondorFighter", owner, 1400, 1000, 0)
+	for i in 3: world.advance(0.2)
+	var born_tracks: int = control("status").tracks
+	# tolerance: the created unit must add at least one visible model track.
+	assert(born_tracks > initial_tracks)
+	assert(world.destroy_object(extra))
+	for i in 3: world.advance(0.2)
+	status = control("finish")
+	control("play")
+	var visible_before: int = control("status").visible_tracks
+	control("seek", {"seconds":0.6})
+	# tolerance: at the sample before deletion, the created unit is present.
+	assert(control("status").visible_tracks > visible_before)
+	control("seek", {"seconds":status.duration})
+	# tolerance: removal can also retire ambient model instances; the new unit must no longer inflate the visible track count.
+	assert(control("status").visible_tracks <= visible_before, str(control("status")))
+	control("clear")
+	# Memory limits stop capture explicitly rather than growing indefinitely.
+	control("record", {"seconds":60,"memory_mb":1})
+	for i in 60:
+		if not control("status").recording: break
+		world.advance(0.2)
+	status = control("status")
+	assert(not status.recording)
+	assert(status.stop_reason == "memory_limit")
+	# tolerance: the configured one-MiB payload budget is an upper bound.
+	assert(status.bytes <= 1024 * 1024)
+	control("clear")
+	world.free()
+	print("MOVEMENT CLIP PASS")
+	quit()

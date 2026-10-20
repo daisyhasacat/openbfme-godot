@@ -407,6 +407,20 @@ std::string GameWorld::bfme_set_ai(int playerIndex, bool enabled)
 
 BfmeLuaRuntime::Value GameWorld::bfme_query(const std::string &name, const std::vector<BfmeLuaRuntime::Value> &args)
 {
+	if (name == "movementCapture")
+	{
+		const auto action = text(at(args, 0, "movement action"), "movement action");
+		Dictionary options;
+		if (args.size() > 1)
+		{
+			const Variant value = layoutVariant(args[1]);
+			if (value.get_type() != Variant::DICTIONARY) throw std::runtime_error("movement options must be a table");
+			options = value;
+		}
+		const Dictionary result = movement_control(String::utf8(action.c_str()), options);
+		if (!bool(result["ok"])) throw std::runtime_error(std::string(String(result["error"]).utf8().get_data()));
+		return layoutValue(result);
+	}
 	// Restricted persistence: named JSON documents in one application-owned folder.
 	if (name == "saveBuildingLayout" || name == "loadBuildingLayout" || name == "listBuildingLayouts")
 	{

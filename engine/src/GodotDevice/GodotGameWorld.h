@@ -475,6 +475,8 @@ public:
 	Ref<RefCounted> get_lua_state();
 	const BfmeLuaValue::List &wall_hub_markers() const { return m_wallHubMarkers; }
 	void update_lua();
+	Dictionary movement_control(const String &action, const Dictionary &options = Dictionary());
+	bool movement_playing() const;
 	BfmeLuaRuntime::Snapshot bfme_snapshot();
 	unsigned bfme_construct(const BfmeLuaRuntime::Mutation &mutation);
 	std::string bfme_construction_status(unsigned id);
@@ -698,6 +700,8 @@ private:
 	mutable std::uint32_t m_netHash = 0;
 	std::string m_heroStatsProfile;
 	std::unique_ptr<LiveGame> m_game;
+	CommandList m_movementPendingCommands;
+	bool m_movementFxVisible = false, m_movementStreakVisible = false;
 	// Per loaded game/map; cleared alongside m_game, including data-source resets.
 	mutable bool m_cahCameraOffsetValid = false;
 	mutable Vector3 m_cahCameraOffset;
