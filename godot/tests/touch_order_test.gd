@@ -6,6 +6,14 @@ func touch(hud: Node, index: int, down: bool, pos: Vector2) -> void:
 	event.pressed = down
 	event.position = pos
 	Input.parse_input_event(event)
+func selection_pixel(hud: Node, id: int, position: Vector2) -> Vector2:
+	var center: Vector2 = hud.world_to_pixel(position)
+	for y in range(-80, 81, 4):
+		for x in range(-80, 81, 4):
+			var pixel := center + Vector2(x, y)
+			if hud.pick_probe(pixel, id).picked == id: return pixel
+	assert(false, "No selection pixel for object %s" % id)
+	return center
 func _run() -> void:
 	root.size = Vector2i(1280,720)
 	var fs = ClassDB.instantiate("RetailFileSystem")
@@ -48,5 +56,20 @@ func _run() -> void:
 	assert("MSG_DO_MOVETO" in str(hud.get_message_log()), str(hud.get_message_log()))
 	assert(Vector2(before.x,before.y).distance_to(Vector2(after.x,after.y)) > 10, str(after))
 	assert(not hud.get_selection().is_empty())
+	# Object taps replace an existing selection instead of issuing move/attack
+	# orders, including when the new selection is a building.
+	for template in ["GondorFighter", "GondorBarracks"]:
+		var position := Vector2(1850, 1650) if template == "GondorFighter" else Vector2(1600, 1800)
+		var target: int = world.create_object(template, int(owner.output), position.x, position.y, 0)
+		assert(world.get_object(target).ok)
+		world.advance(0.2)
+		for i in 3: await process_frame
+		pixel = selection_pixel(hud, target, position)
+		for down in [true, false]:
+			touch(hud, 0, down, pixel)
+			await process_frame
+		for i in 3: await process_frame
+		assert(hud.get_selection() == [target], str(hud.get_selection()))
+		assert(hud.get_state().keys.touch_orders == 1)
 	print("TOUCH CONTEXT ORDER ROUTING PASS")
 	quit()

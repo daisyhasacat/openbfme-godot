@@ -4474,7 +4474,23 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 				else if (tap && !d->hud->isOverGui((int)p.x, (int)p.y))
 				{
 					int button = 1;
+					bool selectedTarget = false;
 					if (!d->hud->input().ui().getGUICommand() && !d->hud->input().ui().isPlacing() && !d->hud->spellBar().targeting())
+					{
+						const auto &ctx = d->hud->input().context();
+						if (::Object *target = HudObjects::pickForSelection(ctx, {(int)p.x, (int)p.y});
+							target && HudObjects::canSelect(ctx, *target, false))
+						{
+							// Finger taps prefer inspecting/selecting an object over
+							// issuing a contextual order from the current selection.
+							ctx.ui.deselectAll(true);
+							ctx.ui.selectObject(target->getID());
+							ClientMessage &message = ctx.stream.append(MSG_CREATE_SELECTED_GROUP);
+							message.appendBoolean(true);
+							message.appendObjectID(target->getID());
+							selectedTarget = true;
+						}
+						if (!selectedTarget)
 						for (::ObjectID id : d->hud->input().ui().selected())
 							if (const ::Object *unit = d->world->hud_game()->logic().findObjectByID(id); unit && !unit->isKindOfName("STRUCTURE"))
 							{
@@ -4482,9 +4498,13 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 								++d->touchOrders;
 								break;
 							}
-					inject_mouse_move(p);
-					inject_mouse_button(button, true, p, d->touchDoubleTap);
-					inject_mouse_button(button, false, p, false);
+					}
+					if (!selectedTarget)
+					{
+						inject_mouse_move(p);
+						inject_mouse_button(button, true, p, d->touchDoubleTap);
+						inject_mouse_button(button, false, p, false);
+					}
 				}
 			}
 			d->touchPoints.erase(point);
