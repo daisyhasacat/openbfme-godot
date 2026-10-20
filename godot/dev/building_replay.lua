@@ -204,9 +204,10 @@ function replayBuildings(name, options)
             }
         end
 
-        if level3 and building.level ~= nil and building.level < 3 then
+        local targetLevel = level3 and 3 or layout[i].level
+        if targetLevel and building.level ~= nil and building.level < targetLevel then
             state.tasks[#state.tasks + 1] = {
-                kind = 'level'
+                kind = 'level', value = targetLevel
             }
         end
 
@@ -396,7 +397,7 @@ function replayBuildings(name, options)
         if task.kind == 'upgrade' then
             label = label .. ' ' .. tostring(task.value)
         else
-            label = label .. ' level 3'
+            label = label .. ' level ' .. task.value
         end
 
         local ok, result = pcall(function()
@@ -409,7 +410,7 @@ function replayBuildings(name, options)
                 return building:giveUpgrade(task.value)
             end
 
-            return building:set('level', 3)
+            return building:set('level', task.value)
         end)
 
         if ok then

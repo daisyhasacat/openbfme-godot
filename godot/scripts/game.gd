@@ -2066,6 +2066,7 @@ func _begin_game(message: Dictionary) -> void:
 
 
 func _recover_local_load_error(rep: Dictionary) -> void:
+	_restart_building_layout = ""
 	_hide_rules_summary()
 	_tear_down_game("load failed")
 	_shell.auto_process = true
@@ -2285,6 +2286,7 @@ func _enter_game(rep: Dictionary) -> void:
 	_world.set_auto_advance(true)
 	_state = State.PLAYING
 	_games_started += 1
+	_restore_restart_buildings()
 	_report_shell_pictures("in game (%s)" % _game_kind) # lane CAMP-2
 	print("GAME playing: frame %d, %d objects, hash %d" % [_world.get_frame(), _world.get_object_count(), _world.get_state_hash()])
 	if _print_report:
@@ -3819,6 +3821,8 @@ func _quit_menu_exit() -> void:
 ## Restart (RW 0x9220DE): the game is cleared without the score screen and the same new-game message starts again (a skirmish keeps its seed: RW 0x922222 reseeds
 ## only outside mode 2)
 const CONSOLE_RESTART_FILE := "user://console_restart.cfg"
+const CONSOLE_RESTART_LAYOUT := "console-restart-buildings"
+var _restart_building_layout := ""
 
 func _open_map_editor() -> void:
 	if _state != State.PLAYING or not _net_state.is_empty() or _game_kind not in ["skirmish", "restart"]:
@@ -3855,18 +3859,33 @@ func _editor_visibility_changed(enabled: bool) -> void:
 				node.set_process(_editor_hud_state[node_name].processing)
 		_editor_hud_state.clear()
 
-func _console_restart() -> void:
+func _save_console_restart() -> bool:
 	var config := ConfigFile.new()
 	# A local skirmish starts over with its resolved map, seed and player slots.
 	# Network sessions, campaigns and replays return to the menu.
 	if _state == State.PLAYING and _game_kind in ["skirmish", "restart"] and _net_state.is_empty():
+		var recorded: Dictionary = _record_restart_buildings()
+		if not recorded.get("ok",false):
+			_lua_console._append("Restart cancelled: could not save buildings. " + str(recorded) + "\n")
+			push_error("Restart building snapshot failed: " + str(recorded))
+			return false
+		config.set_value("restart", "buildings", CONSOLE_RESTART_LAYOUT)
 		config.set_value("restart", "skirmish", _last_new_game.duplicate(true))
 	else:
 		config.set_value("restart", "skirmish", {})
 	var err := config.save(CONSOLE_RESTART_FILE)
 	if err != OK:
 		push_error("Could not prepare game restart: " + error_string(err))
-		return
+		return false
+	return true
+
+func _record_restart_buildings() -> Dictionary:
+	_world.update_lua()
+	return _world.execute_lua("return recordRestartBuildings(" + JSON.stringify(CONSOLE_RESTART_LAYOUT) + ")")
+
+func _console_restart() -> void:
+	if not _save_console_restart(): return
+	var err := OK
 	if OS.has_feature("mobile") or OS.has_feature("web"):
 		# These platforms cannot relaunch their application process.
 		err = get_tree().reload_current_scene()
@@ -3889,9 +3908,22 @@ func _resume_console_restart() -> bool:
 	var message: Dictionary = config.get_value("restart", "skirmish", {})
 	if message.is_empty():
 		return false
+	_restart_building_layout = config.get_value("restart", "buildings", "")
 	_begin_game(message)
 	return true
 
+func _restore_restart_buildings() -> void:
+	if _restart_building_layout.is_empty(): return
+	var layout := _restart_building_layout
+	_restart_building_layout = ""
+	var restored: Dictionary = _replay_restart_buildings(layout)
+	if not restored.get("ok",false):
+		push_error("Restart building reconstruction failed: " + str(restored))
+		_lua_console._append("Could not reconstruct restart buildings: " + str(restored) + "\n")
+
+func _replay_restart_buildings(layout: String) -> Dictionary:
+	_world.update_lua() # Dispatch match-start resets before restoring uber mode.
+	return _world.execute_lua("return replayRestartBuildings(" + JSON.stringify(layout) + ")")
 
 func _restart_game() -> void:
 	if _campaign_flow != null and _campaign_flow.active:

@@ -12,6 +12,7 @@ end
 
 function mode.enable()
     local player = localMatch()
+    player:setFogOfWar(false)
     if mode.enabled then return end
     mode.previousCP = {base = player.commandPointsBase, cap = player.commandPointsCap,
         bonus = player.commandPointsBonus}
@@ -30,12 +31,13 @@ function mode.enable()
     bfme.timing.onUpgrade(oneSecond)
     -- Existing units are left as they are; newly trained/created units are enhanced.
     for _, unit in ipairs(player:units()) do mode.seen[unit.id] = true end
-    print("ubermode enabled: 1,000,000 gold/CP; one-second production; K+recruit = five per matching building")
+    print("ubermode enabled: 1,000,000 gold/CP; fog disabled; one-second production; K+recruit = five per matching building")
 end
 
 function mode.disable()
     if not mode.enabled then return end
     local player = bfme.players[mode.playerId]
+    if player then player:setFogOfWar(true) end
     if player and mode.previousCP then
         player.commandPointsBase = mode.previousCP.base
         player.commandPointsCap = mode.previousCP.cap

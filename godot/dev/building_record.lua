@@ -10,7 +10,7 @@ function recordBuildings(name, player)
         local info = b:getLayoutInfo()
         -- Fortresses themselves are BASE_FOUNDATION too; retain their castle root.
         if info.castle or (not b:isKindOf('BASE_FOUNDATION') and not b:isKindOf('BASE_DEFENSE_FOUNDATION') and not b:isKindOf('EXPANSION_PAD')) then
-            layout[#layout + 1] = {id=b.id, sourceStartSlot=player.startSlot, template=b.typeId, x=b.x, y=b.y, rotation=b.rotation,
+            layout[#layout + 1] = {id=b.id, sourceStartSlot=player.startSlot, template=b.typeId, x=b.x, y=b.y, rotation=b.rotation, level=b.level,
                 wallHub=b:isKindOf('WALL_HUB') or nil, castle=info.castle or nil, castleId=info.castleId, keepId=info.keepId, plot=info.plot, upgrades=info.upgrades, links=info.links}
         end
     end

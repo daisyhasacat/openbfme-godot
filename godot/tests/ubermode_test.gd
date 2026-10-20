@@ -28,6 +28,9 @@ func _run() -> void:
 	check_lua(world, "local p=bfme.players.localPlayer; oldCP={p.commandPointsBase,p.commandPointsCap,p.commandPointsBonus}; ubermode.enable()")
 	world.update_lua()
 	check_lua(world, "local p=bfme.players.localPlayer; assert(p.money==1000000); assert(p.commandPoints==1000000)")
+	var fog: Dictionary = world.get_shroud_report()
+	assert(fog.fogged==0 and fog.shrouded==0)
+	assert(fog.clear==fog.cells_x*fog.cells_y)
 	check_lua(world, "local p=bfme.players.localPlayer; local near=p:buildings()[1].position; local at=p:findBuildSite('GondorBarracks',near,2000); assert(at); build=p:construct('GondorBarracks',at)")
 	world.update_lua()
 	for i in 4:
