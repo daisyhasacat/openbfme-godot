@@ -310,6 +310,7 @@ private:
 	void movement_sample();
 	void movement_present();
 	std::vector<Ref<ShaderMaterial>> AllMaterials;
+	size_t PaletteBoundMaterials = 0; // append-only materials already bound to the current palette
 	std::vector<W3DMapperBinding> Mappers;
 
 	// palette (lane PERF-3: the poses are written into PaletteImage's own buffer, PaletteWrite during an update; no separate copy is kept)

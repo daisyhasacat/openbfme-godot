@@ -331,15 +331,18 @@ std::shared_ptr<W3DInstancer::MeshGpu> W3DInstancer::build_mesh(const MeshModelC
 	PackedVector3Array positions, normals;
 	positions.resize(nv);
 	normals.resize(nv);
+	// Acquire writable storage once: per-element set() crosses the extension ABI.
+	Vector3 *positionData = positions.ptrw(), *normalData = normals.ptrw();
 	for (int64_t v = 0; v < nv; ++v)
 	{
-		positions.set(v, Vector3(d.Position[v * 3], d.Position[v * 3 + 1], d.Position[v * 3 + 2]));
-		normals.set(v, Vector3(d.Normal[v * 3], d.Normal[v * 3 + 1], d.Normal[v * 3 + 2]));
+		positionData[v] = Vector3(d.Position[v * 3], d.Position[v * 3 + 1], d.Position[v * 3 + 2]);
+		normalData[v] = Vector3(d.Normal[v * 3], d.Normal[v * 3 + 1], d.Normal[v * 3 + 2]);
 	}
 	PackedFloat32Array tangents;
 	if (!d.Tangent.empty())
 	{
 		tangents.resize(nv * 4);
+		float *tangentData = tangents.ptrw();
 		for (int64_t v = 0; v < nv; ++v)
 		{
 			Vector3 n(d.Normal[v * 3], d.Normal[v * 3 + 1], d.Normal[v * 3 + 2]);
@@ -347,36 +350,38 @@ std::shared_ptr<W3DInstancer::MeshGpu> W3DInstancer::build_mesh(const MeshModelC
 			Vector3 b(d.Bitangent[v * 3], d.Bitangent[v * 3 + 1], d.Bitangent[v * 3 + 2]);
 			// V is flipped on load (u, 1 - v), so +v' runs along -bitangent; Godot's binormal = cross(normal, tangent) * w
 			float w = n.cross(t).dot(-b) < 0.0f ? -1.0f : 1.0f;
-			tangents.set(v * 4 + 0, t.x);
-			tangents.set(v * 4 + 1, t.y);
-			tangents.set(v * 4 + 2, t.z);
-			tangents.set(v * 4 + 3, w);
+			tangentData[v * 4 + 0] = t.x;
+			tangentData[v * 4 + 1] = t.y;
+			tangentData[v * 4 + 2] = t.z;
+			tangentData[v * 4 + 3] = w;
 		}
 	}
 	PackedFloat32Array custom0, custom1, custom2;
 	if (d.Skin)
 	{
 		custom0.resize(nv * 4);
+		float *custom0Data = custom0.ptrw();
 		for (int64_t v = 0; v < nv; ++v)
 		{
-			custom0.set(v * 4 + 0, (float)d.Bone0[v]);
-			custom0.set(v * 4 + 1, (float)d.Bone1[v]);
-			custom0.set(v * 4 + 2, d.Weight0[v]);
-			custom0.set(v * 4 + 3, d.Weight1[v]);
+			custom0Data[v * 4 + 0] = (float)d.Bone0[v];
+			custom0Data[v * 4 + 1] = (float)d.Bone1[v];
+			custom0Data[v * 4 + 2] = d.Weight0[v];
+			custom0Data[v * 4 + 3] = d.Weight1[v];
 		}
 		if (d.DualBone)
 		{
 			custom1.resize(nv * 4);
 			custom2.resize(nv * 4);
+			float *custom1Data = custom1.ptrw(), *custom2Data = custom2.ptrw();
 			for (int64_t v = 0; v < nv; ++v)
 			{
 				for (int k = 0; k < 3; ++k)
 				{
-					custom1.set(v * 4 + k, d.Position1[v * 3 + k]);
-					custom2.set(v * 4 + k, d.Normal1[v * 3 + k]);
+					custom1Data[v * 4 + k] = d.Position1[v * 3 + k];
+					custom2Data[v * 4 + k] = d.Normal1[v * 3 + k];
 				}
-				custom1.set(v * 4 + 3, 0.0f);
-				custom2.set(v * 4 + 3, 0.0f);
+				custom1Data[v * 4 + 3] = 0.0f;
+				custom2Data[v * 4 + 3] = 0.0f;
 			}
 		}
 	}
@@ -408,8 +413,9 @@ std::shared_ptr<W3DInstancer::MeshGpu> W3DInstancer::build_mesh(const MeshModelC
 		{
 			PackedVector2Array uv;
 			uv.resize(nv);
+			Vector2 *uvData = uv.ptrw();
 			const std::vector<float> &src = d.PassUV[(size_t)shared].UV;
-			for (int64_t v = 0; v < nv; ++v) uv.set(v, Vector2(src[v * 2], src[v * 2 + 1]));
+			for (int64_t v = 0; v < nv; ++v) uvData[v] = Vector2(src[v * 2], src[v * 2 + 1]);
 			arrays[Mesh::ARRAY_TEX_UV] = uv;
 		}
 		bool hasUv2 = false;
@@ -417,8 +423,9 @@ std::shared_ptr<W3DInstancer::MeshGpu> W3DInstancer::build_mesh(const MeshModelC
 		{
 			PackedVector2Array uv;
 			uv.resize(nv);
+			Vector2 *uvData = uv.ptrw();
 			const std::vector<float> &src = d.PassUV[(size_t)uv1].UV;
-			for (int64_t v = 0; v < nv; ++v) uv.set(v, Vector2(src[v * 2], src[v * 2 + 1]));
+			for (int64_t v = 0; v < nv; ++v) uvData[v] = Vector2(src[v * 2], src[v * 2 + 1]);
 			arrays[Mesh::ARRAY_TEX_UV2] = uv;
 			hasUv2 = true;
 		}
@@ -426,8 +433,9 @@ std::shared_ptr<W3DInstancer::MeshGpu> W3DInstancer::build_mesh(const MeshModelC
 		{
 			PackedColorArray colors;
 			colors.resize(nv);
+			Color *colorData = colors.ptrw();
 			const std::vector<std::uint8_t> &src = d.PassDCG[(size_t)surf.Pass];
-			for (int64_t v = 0; v < nv; ++v) colors.set(v, Color(src[v * 4] / 255.0f, src[v * 4 + 1] / 255.0f, src[v * 4 + 2] / 255.0f, src[v * 4 + 3] / 255.0f));
+			for (int64_t v = 0; v < nv; ++v) colorData[v] = Color(src[v * 4] / 255.0f, src[v * 4 + 1] / 255.0f, src[v * 4 + 2] / 255.0f, src[v * 4 + 3] / 255.0f);
 			arrays[Mesh::ARRAY_COLOR] = colors;
 		}
 		if (!tangents.is_empty() && d.Camera == MESH_CAMERA_NONE) arrays[Mesh::ARRAY_TANGENT] = tangents;
@@ -446,12 +454,13 @@ std::shared_ptr<W3DInstancer::MeshGpu> W3DInstancer::build_mesh(const MeshModelC
 		}
 		PackedInt32Array indices;
 		indices.resize((int64_t)surf.Indices.size());
+		int32_t *indexData = indices.ptrw();
 		for (size_t t = 0; t + 2 < surf.Indices.size() + 0; t += 3)
 		{
 			// W3D front faces are counter-clockwise; Godot's are clockwise: swap the last two
-			indices.set((int64_t)t, (int32_t)surf.Indices[t]);
-			indices.set((int64_t)t + 1, (int32_t)surf.Indices[t + 2]);
-			indices.set((int64_t)t + 2, (int32_t)surf.Indices[t + 1]);
+			indexData[(int64_t)t] = (int32_t)surf.Indices[t];
+			indexData[(int64_t)t + 1] = (int32_t)surf.Indices[t + 2];
+			indexData[(int64_t)t + 2] = (int32_t)surf.Indices[t + 1];
 		}
 		arrays[Mesh::ARRAY_INDEX] = indices;
 		gpu->Mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, Array(), Dictionary(), flags);
@@ -1100,10 +1109,14 @@ void W3DInstancer::rebuild_layout()
 	{
 		grow_palette(std::max(PaletteUsed, 1));
 	}
-	for (const Ref<ShaderMaterial> &m : AllMaterials)
+	// A new model only needs its new materials bound. Rebind historical
+	// materials only when growth actually replaces the palette texture.
+	const size_t firstMaterial = PaletteGrown ? 0 : PaletteBoundMaterials;
+	for (size_t i = firstMaterial; i < AllMaterials.size(); ++i)
 	{
-		m->set_shader_parameter("w3d_palette", PaletteTexture);
+		AllMaterials[i]->set_shader_parameter("w3d_palette", PaletteTexture);
 	}
+	PaletteBoundMaterials = AllMaterials.size();
 	PaletteGrown = false;
 	PaletteTexels = PaletteUsed;
 	for (std::unique_ptr<Model> &mp : Models)

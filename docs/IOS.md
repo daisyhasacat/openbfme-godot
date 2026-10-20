@@ -62,6 +62,21 @@ the contribution of Metal/engine startup before the first script executes.
 Game audio uses the iOS Playback session category, so the silent switch does not
 mute the game. System volume and in-game volume controls still apply.
 
+## Building completion performance
+
+Completed buildings and fortress upgrades can introduce a model for the first
+time. Mesh creation now fills Godot vertex buffers through bulk writable storage
+instead of making extension calls per vertex component. Adding a model also
+binds only its new materials to the animation palette; existing materials are
+rebound when the palette texture grows.
+
+`godot/tests/mesh_upload_test.gd` checks byte-identical vertex/index buffers
+against the previous renderer and verifies palette bindings before and after
+growth. Its load timings are diagnostics, not a portable FPS threshold. These
+changes reduce CPU work; they do not establish physical iPad shader compilation
+or texture-upload latency. `GameWorld.get_frame_timings()` exposes `new_models`
+and `new_model_ms` to distinguish synchronous model creation from other stalls.
+
 ## Touch and Apple Pencil controls
 
 Drag one finger over the battlefield to pan the camera. Pinch two fingers
