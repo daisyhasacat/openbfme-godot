@@ -1,0 +1,78 @@
+name: Linux AppImage
+
+on:
+  push:
+    branches:
+      - main
+      - "ci/**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    name: Build Linux x86_64 AppImage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      JOBS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare isolated build paths
+        run: |
+          echo "OPENBFME_SDK_CACHE=$RUNNER_TEMP/openbfme-linux-sdk" >> "$GITHUB_ENV"
+          echo "XDG_DATA_HOME=$RUNNER_TEMP/openbfme-appimage-data" >> "$GITHUB_ENV"
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends bzip2 file unzip squashfs-tools desktop-file-utils libx11-6 libxcursor1 libxinerama1 libxrandr2 libxi6 libgl1 libvulkan1 libasound2t64 libpulse0
+      - name: Fetch and verify pinned Godot and AppImage tools
+        run: >-
+          python3 tools/release/appimage.py fetch-tools
+          --directory "$RUNNER_TEMP/appimage-tools"
+          --templates "$XDG_DATA_HOME/godot/export_templates/4.7.2.stable"
+      - name: Build with the portable Godot Linux SDK
+        run: tools/release/build_linux.sh
+      - name: Export and audit the game (including reproducibility check)
+        run: >-
+          tools/release/package.sh --platforms linux --no-launcher
+          --out "$RUNNER_TEMP/linux-package" --godot "$RUNNER_TEMP/appimage-tools/godot"
+      - name: Create AppImage and checksum
+        run: |
+          set -euo pipefail
+          version=$(git describe --tags --match 'v[0-9]*' --exclude '*-playtest.*' --always --abbrev=10)
+          python3 tools/release/make_archive.py --extract-all "$RUNNER_TEMP/linux-package/openbfme-$version-linux-x64.tar.gz" "$RUNNER_TEMP/game-payload"
+          python3 tools/release/appimage.py stage --package "$RUNNER_TEMP/game-payload" --output "$RUNNER_TEMP/OpenBFME.AppDir"
+          desktop-file-validate "$RUNNER_TEMP/OpenBFME.AppDir/openbfme.desktop"
+          mkdir -p dist
+          export ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 VERSION="$version"
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          "$RUNNER_TEMP/appimage-tools/appimagetool" --no-appstream --runtime-file "$RUNNER_TEMP/appimage-tools/runtime-x86_64" "$RUNNER_TEMP/OpenBFME.AppDir" "dist/OpenBFME-$version-x86_64.AppImage"
+          cd dist
+          sha256sum ./*.AppImage > SHA256SUMS.txt
+      - name: Boot the actual AppImage without FUSE or retail files
+        run: |
+          set -euo pipefail
+          image=$(realpath dist/*.AppImage)
+          cd "$RUNNER_TEMP"
+          APPIMAGE_EXTRACT_AND_RUN=1 timeout 90 "$image" --headless --script res://tests/appimage_boot_test.gd 2>&1 | tee "$GITHUB_WORKSPACE/dist/appimage-boot.log"
+          grep -Fx 'APPIMAGE BOOT PASS' "$GITHUB_WORKSPACE/dist/appimage-boot.log"
+      - name: Upload AppImage, checksum and boot log
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: OpenBFME-linux-x86_64-AppImage
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

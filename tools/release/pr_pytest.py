@@ -43,6 +43,7 @@ SUBSET = [
     "tools/platformicon/test_make_icons.py",
     "tools/qa/test_qa_matrix.py",
     "tools/release/test_aio.py",
+    "tools/release/test_appimage.py",
     "tools/release/test_autorelease.py",
     "tools/release/test_big_entries.py",
     "tools/release/test_community_prs.py",
