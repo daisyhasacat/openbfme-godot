@@ -797,8 +797,8 @@ void PlacementGhostRenderer::updateFootprints(LiveGame &game, const InGameUI &ui
 	const Coord3D &cursor = ui.placeLocation();
 	const float reach = 1500.0f;
     m_buildingAlignmentLines = 0;
-    std::array<const ::Object *,4> aligned{};
-    std::array<float,4> distances{reach,reach,reach,reach};
+    std::array<const ::Object *,8> aligned{};
+    std::array<float,8> distances;distances.fill(reach);
     const float gc=std::cos(ui.placementGridAngle), gs=std::sin(ui.placementGridAngle);
     const Player *local=game.logic().players().getLocalPlayer();
 	for (::Object *o = game.logic().getFirstObject(); o; o = o->getNextObject())
@@ -814,7 +814,9 @@ void PlacementGhostRenderer::updateFootprints(LiveGame &game, const InGameUI &ui
         const float dx=p.x-cursor.x, dy=p.y-cursor.y;
         const float u=dx*gc+dy*gs, v=-dx*gs+dy*gc;
         const int direction=std::abs(v)<=1.0f && std::abs(u)>1.0f ? (u>0?0:1) :
-            (std::abs(u)<=1.0f && std::abs(v)>1.0f ? (v>0?2:3) : -1);
+            (std::abs(u)<=1.0f && std::abs(v)>1.0f ? (v>0?2:3) :
+            (std::abs(u)>1.0f && std::abs(u-v)<=1.41421356f ? (u>0?4:5) :
+            (std::abs(u)>1.0f && std::abs(u+v)<=1.41421356f ? (u>0?6:7) : -1)));
         const float distance=std::sqrt(dx*dx+dy*dy);
         if (direction>=0 && distance<distances[direction]) {aligned[direction]=o;distances[direction]=distance;}
 

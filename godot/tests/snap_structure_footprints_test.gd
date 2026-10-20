@@ -55,12 +55,21 @@ func _run() -> void:
 	# tolerance: The placed farm must contribute a footprint; other registered structures may also contribute.
 	assert(state.structure_footprint_count >= 1, str(state))
 	assert(is_zero_approx(state.grid_angle), str(state))
-	# Moving off the existing farm's row and column removes its guide.
+	# All four diagonal rays count, with only the nearest building per ray.
+	var diagonal_ids=[]
+	for offset in [Vector2(200,200),Vector2(-200,-200),Vector2(200,-200),Vector2(-200,200),Vector2(400,400)]:
+		diagonal_ids.append(world.create_object("GondorFarm",int(player.output),position.x+offset.x,position.y+offset.y,0))
+	world.advance(.2)
+	for i in 8: await process_frame
+	assert(hud.get_placement_ghost_state().building_alignment_lines == 5)
+	# Moving off every aligned axis removes the guides.
 	hud.inject_mouse_move(hud.world_to_pixel(position + Vector2(50,100)))
 	for i in 8: await process_frame
 	assert(hud.get_placement_ghost_state().building_alignment_lines == 0)
 	hud.inject_mouse_move(hud.world_to_pixel(position))
 	for i in 8: await process_frame
+	for id in diagonal_ids:assert(world.destroy_object(id))
+	world.advance(.2)
 	# G while placing turns the grid 45 degrees; the snapped site lies on the turned grid
 	var g := InputEventKey.new()
 	g.keycode = KEY_G
@@ -85,6 +94,12 @@ func _run() -> void:
 	world.advance(.2)
 	for i in 8: await process_frame
 	assert(hud.get_placement_ghost_state().building_alignment_lines == 1)
+	# Diagonals of the rotated grid lie along world X/Y.
+	for offset in [Vector2(200,0),Vector2(-200,0),Vector2(0,200),Vector2(0,-200)]:
+		world.create_object("GondorFarm",int(player.output),at.x+offset.x,at.y+offset.y,0)
+	world.advance(.2)
+	for i in 8: await process_frame
+	assert(hud.get_placement_ghost_state().building_alignment_lines == 5)
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--shot="):
 			root.get_viewport().get_texture().get_image().save_png(arg.trim_prefix("--shot="))
