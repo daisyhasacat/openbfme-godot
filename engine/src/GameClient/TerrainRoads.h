@@ -11,7 +11,8 @@
 //   target: Open-BFME-2 .../W3DRoadBuffer.cpp and W3DRoadBufferAdjustStacking.cpp exist for BFME2 but the
 //     BFME1 W3DRoadBuffer::miter, insertCurveSegmentAt and loadCurve supply the connected
 //     degree-two corner rules and atlas pieces. See docs/PATH_RENDERING.md for adaptations.
-//     Tee/cross/alpha-join machinery and BFME2 stacking remain S-036.
+//     Tee/four-way stubs and authored JOIN caps use the BFME1 atlas layout.
+//     Y/H junctions, cross-type alignment and BFME2 stacking remain S-036.
 //
 // Name-level INI scan, not the INI system (another lane).
 
@@ -51,6 +52,10 @@ struct RoadStrip
 
 struct RoadBuildReport
 {
+	int teeJoins = 0;
+	int fourWayJoins = 0;
+	int endCaps = 0;
+	int specialJunctionsPending = 0;
 	int miteredJoins = 0;
 	int roundedJoins = 0;
 	int pairs = 0;            // valid POINT1/POINT2 pairs

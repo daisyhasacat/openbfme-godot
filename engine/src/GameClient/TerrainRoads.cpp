@@ -32,7 +32,14 @@ std::string trim(const std::string &s)
 struct V2
 {
 	float x, y;
+	V2 operator+(V2 b) const { return {x+b.x,y+b.y}; }
+	V2 operator-(V2 b) const { return {x-b.x,y-b.y}; }
+	V2 operator*(float n) const { return {x*n,y*n}; }
 };
+float dot(V2 a,V2 b) { return a.x*b.x+a.y*b.y; }
+float cross(V2 a,V2 b) { return a.x*b.y-a.y*b.x; }
+V2 normal(V2 a) { return {-a.y,a.x}; }
+V2 normalized(V2 a) { const float n=std::hypot(a.x,a.y); return n ? a*(1.0f/n) : V2{1,0}; }
 
 } // namespace
 
@@ -272,11 +279,13 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 	// BFME1 W3DRoadBuffer::miter / insertCurveSegmentAt: degree-two shallow
 	// corners (<0.9 * 30 degrees), or explicitly ANGLED corners, intersect
 	// the two offset edges. Match endpoints independently of map object order.
-	// Rounded corners use the donor atlas patches below; multi-way junctions remain S-036.
+	// Rounded corners and ordinary junctions use the donor atlas patches below.
 	auto equal = [](V2 a, V2 b) { return a.x == b.x && a.y == b.y; };
 	struct Ends { V2 bottom[2], top[2]; };
 	struct CurvePatch { V2 loc, dir; float scale, half; bool tight; size_t source; };
 	std::vector<CurvePatch> curves;
+	struct AtlasPatch { V2 loc, dir, bl, br, tl, tr; float u, v, uScale, vScale; size_t source; };
+	std::vector<AtlasPatch> junctions;
 	std::vector<Ends> ends;
 	for (const auto &seg : segments)
 	{
@@ -289,6 +298,78 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 		}
 		ends.push_back(e);
 	}
+	// Degree-three/four junctions: BFME1 insertTee / insert4Way choose the
+	// most opposite branch pair, then offset3Way / offset4Way align the stubs.
+	struct Branch { size_t segment; int end; V2 dir; };
+	for (size_t i=0;i<segments.size();++i)
+		for (int endpoint=0;endpoint<2;++endpoint)
+		{
+			const auto &base=segments[i];
+			const V2 node=endpoint?base.b:base.a;
+			std::vector<Branch> branches;
+			for(size_t j=0;j<segments.size();++j)
+			{
+				if(lower(out[i].roadName)!=lower(out[j].roadName)) continue;
+				for(int e=0;e<2;++e)
+					if(equal(node,e?segments[j].b:segments[j].a)) branches.push_back({j,e,segments[j].dir*(e?-1.0f:1.0f)});
+			}
+			if(branches.empty() || branches.front().segment!=i || branches.front().end!=endpoint) continue;
+			if(branches.size()==1)
+			{
+				// insertCrossTypeJoins: only authored JOIN endpoints use the
+				// fade artwork; unmarked dead ends are deliberately square.
+				if(!((endpoint?base.flagsB:base.flagsA)&FLAG_ROAD_JOIN)) continue;
+				const V2 d=branches[0].dir;
+				const V2 axis=d*(base.scale*48.0f/128.0f);
+				const float span=base.scale*(1.0f+8.0f/128.0f);
+				const V2 n=normal(d)*span;
+				const V2 tl=node+n*0.5f-axis*0.65f;
+				junctions.push_back({node,d,tl-n,tl-n+axis,tl,tl+axis,106.0f/512.0f,425.0f/512.0f,base.scale,base.scale,i});
+				++report.endCaps;
+				continue;
+			}
+			if(branches.size()!=3 && branches.size()!=4) continue;
+			size_t a=0,b=1;
+			float mostOpposite=dot(branches[a].dir,branches[b].dir);
+			for(size_t x=0;x<branches.size();++x)
+				for(size_t y=x+1;y<branches.size();++y)
+					if(dot(branches[x].dir,branches[y].dir)<mostOpposite) {a=x;b=y;mostOpposite=dot(branches[x].dir,branches[y].dir);}
+			std::vector<size_t> other;
+			for(size_t k=0;k<branches.size();++k) if(k!=a && k!=b) other.push_back(k);
+			V2 up=normalized(branches[b].dir-branches[a].dir);
+			V2 tee=normal(up);
+			if(dot(tee,branches[other[0]].dir)<0) tee=tee*-1.0f;
+			// Y and H-shaped three-way junctions have separate atlas artwork;
+			// retain their source geometry and report the remaining S-036 gap.
+			if(branches.size()==3 && (mostOpposite>=-0.866f || std::fabs(dot(up,branches[other[0]].dir))>0.5f))
+			{
+				++report.specialJunctionsPending;
+				continue;
+			}
+			const float half=base.scale*0.5f;
+			auto setStub=[&](size_t k,V2 offset,V2 edge) {
+				const auto &branch=branches[k];
+				const V2 center=node+offset;
+				if(dot(edge,segments[branch.segment].normal)<0) edge=edge*-1.0f;
+				ends[branch.segment].bottom[branch.end]=center-edge;
+				ends[branch.segment].top[branch.end]=center+edge;
+			};
+			setStub(a,up*(-half),tee*base.half);
+			setStub(b,up*half,tee*base.half);
+			setStub(other[0],tee*half,up*base.half);
+			if(branches.size()==4) setStub(other[1],tee*(-half),up*base.half);
+			// loadTee / loadFloatSection: 1.03-wide artwork overlaps the
+			// stubs slightly, with its own atlas UV origin.
+			V2 d=branches.size()==4?up:tee;
+			if(branches.size()==4 && d.x<0) d=d*-1.0f;
+			const float extent=half*1.03f;
+			const float left=branches.size()==4?extent:base.half;
+			const V2 n=normal(d)*extent;
+			const V2 start=node-d*left;
+			const V2 finish=node+d*extent;
+			junctions.push_back({node,d,start-n,finish-n,start+n,finish+n,425.0f/512.0f,(branches.size()==4?425.0f:255.0f)/512.0f,base.scale,base.scale,i});
+			if(branches.size()==4) ++report.fourWayJoins; else ++report.teeJoins;
+		}
 	for (size_t i = 0; i < segments.size(); ++i)
 		for (int ei = 0; ei < 2; ++ei)
 		{
@@ -424,5 +505,38 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 		report.triangles+=strip.index.size()/3;
 		out.push_back(std::move(strip));
 	}
+	for(const auto &patch:junctions)
+	{
+		RoadStrip strip;
+		strip.roadName=out[patch.source].roadName;
+		strip.texture=out[patch.source].texture;
+		const float length=std::max(std::hypot(patch.br.x-patch.bl.x,patch.br.y-patch.bl.y),std::hypot(patch.tr.x-patch.tl.x,patch.tr.y-patch.tl.y));
+		const float width=std::hypot(patch.tl.x-patch.bl.x,patch.tl.y-patch.bl.y);
+		const int columns=std::max(2,int(length/MAP_XY_FACTOR)+1);
+		const int samples=std::clamp(int(width/MAP_XY_FACTOR)+1,2,100);
+		for(int c=0;c<columns;++c)
+		{
+			const float f=float(c)/float(columns-1);
+			const V2 points[2]={patch.bl+(patch.br-patch.bl)*f,patch.tl+(patch.tr-patch.tl)*f};
+			float z=-1e30f;
+			for(int j=0;j<samples;++j)
+			{
+				const V2 p=points[0]+(points[1]-points[0])*(float(j)/float(samples-1));
+				z=std::max(z,getMaxCellHeight(map,p.x,p.y));
+			}
+			for(const V2 p:points)
+			{
+				strip.position.insert(strip.position.end(),{p.x,p.y,z+liftWorldUnits});
+				const V2 delta=p-patch.loc;
+				strip.uv.push_back(patch.u+dot(delta,patch.dir)/(patch.uScale*4));
+				strip.uv.push_back(patch.v-dot(delta,normal(patch.dir))/(patch.vScale*4));
+			}
+			if(c) {const std::uint32_t a=2*(c-1);strip.index.insert(strip.index.end(),{a,a+1,a+3,a,a+3,a+2});}
+		}
+		report.vertices+=strip.position.size()/3;
+		report.triangles+=strip.index.size()/3;
+		out.push_back(std::move(strip));
+	}
+
 	report.strips = out.size();
 }

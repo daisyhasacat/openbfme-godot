@@ -1251,6 +1251,10 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 		rd["duplicate_segments"] = rrep.duplicateSegments;
 		rd["unknown_road_types"] = rrep.unknownRoadTypes;
 		rd["mitered_joins"] = rrep.miteredJoins;
+		rd["tee_joins"] = rrep.teeJoins;
+		rd["four_way_joins"] = rrep.fourWayJoins;
+		rd["end_caps"] = rrep.endCaps;
+		rd["special_junctions_pending"] = rrep.specialJunctionsPending;
 		rd["rounded_joins"] = rrep.roundedJoins;
 		rd["strips"] = (int64_t)rrep.strips;
 		rd["vertices"] = (int64_t)rrep.vertices;

@@ -32,9 +32,10 @@ node. The final curve piece uses the remaining turn angle. Available leg length
 accounts for an earlier trim at the far end. These choices are renderer-only;
 simulation, pathfinding and authoritative map data are unchanged.
 
-S-036 remains open for tees, crosses, cross-type alpha joins, BFME2 stacking,
-and exact curve parity. Such junctions retain their authored straight geometry;
-they are not silently treated as degree-two bends.
+S-036 remains open for Y/H junctions, cross-type alpha alignment, BFME2
+stacking and exact curve parity. Ordinary tees and four-way junctions now use
+their dedicated tiles; unsupported junction shapes retain source geometry
+and increment `special_junctions_pending`.
 
 ## Validation
 
@@ -49,3 +50,34 @@ Final checks: 9 road/corpus tests passed (2,938,654 assertions), including all
 pure RotWK/BFME2 map parses and their existing oracle checks. Metal overview
 and close captures of Harlindon were inspected for connected edges and curved
 artwork. Native Release build passed.
+
+## Tees, four-way junctions and end caps
+
+The same donor's `insertTee`, `insert4Way`, `offset3Way`, `offset4Way`,
+`loadTee`, `loadFloatSection`, `insertCrossTypeJoins` and `loadAlphaJoin`
+supply these additions. At a degree-three/four node the most opposite pair
+sets the junction axis. Stub centers move half a road width outward and their
+edges align to the tile. The tee UV origin is (425,255)/512; four-way is
+(425,425)/512. The tile uses the donor's 1.03 width adjustment.
+
+A degree-one endpoint carrying WorldBuilder's JOIN flag receives the alpha
+end piece at UV origin (106,425)/512. Its length is 48/128 road widths,
+with 8/128 extra width and the donor's 0.65 backward placement. Unmarked
+square ends stay square: automatically adding caps would change the map's
+authored design. Both ends of a segment may independently request a cap.
+
+Adaptation: this uses the existing endpoint graph rather than the donor's
+reordered RoadSegment list. Y/H three-way shapes have different artwork and
+are explicitly counted as pending when the donor angle gates identify them.
+Cross-type alignment/stacking remains open; free-standing JOIN caps use the
+road's own axis. These are rendering changes, with no pathfinding changes.
+
+Tests cover ordinary tees, a four-way with reversed branches, both endpoint
+directions for caps, and unmarked square ends. The Harlindon Metal render
+adds six tees and thirteen caps, with zero pending special junctions.
+
+Junction validation: 11 road/corpus tests passed (2,938,675 assertions).
+Metal captures include Harlindon's actual six tees and thirteen authored caps,
+and a controlled four-way junction with four caps using TRHarlindon01. The
+controlled scene reports one four-way tile, four caps and no pending special
+junctions. Its center and cap artwork were visually inspected.

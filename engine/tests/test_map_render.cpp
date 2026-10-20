@@ -482,7 +482,7 @@ TEST_CASE("TerrainRoads: rounded corners trim their legs and use dedicated norma
 	}
 }
 
-TEST_CASE("TerrainRoads: multi-way junctions retain geometry and explicitly report remaining junction work")
+TEST_CASE("TerrainRoads: tees replace overlapping center rectangles with their authored atlas tile")
 {
 	WorldHeightMap map = flatMap(30,30,0,0);
 	RoadTypeIndex types;
@@ -496,9 +496,63 @@ TEST_CASE("TerrainRoads: multi-way junctions retain geometry and explicitly repo
 	std::vector<RoadStrip> strips;
 	RoadBuildReport report;
 	TerrainRoads::buildStrips(objects,types,map,0,strips,report);
-	CHECK(strips.size() == 3);
+	CHECK(strips.size() == 4);
+	CHECK(report.teeJoins == 1);
 	CHECK(report.miteredJoins == 0);
 	CHECK(report.roundedJoins == 0);
 	REQUIRE(MapStops::find("S-036"));
-	CHECK(std::string(MapStops::find("S-036")->gap) == "Straight segments, degree-two mitered joins and normal/tight curve atlas pieces are rendered; tee, cross and alpha joins and BFME2 stacking remain unported");
+	CHECK(std::string(MapStops::find("S-036")->gap) == "Straight paths, mitered and curved corners, tee and four-way atlas junctions and authored JOIN end caps are rendered; Y/H junctions, cross-type alpha alignment and BFME2 stacking remain unported");
+}
+
+TEST_CASE("TerrainRoads: four-way tile connects four stubs independent of branch direction")
+{
+	WorldHeightMap map = flatMap(40,40,0,0);
+	RoadTypeIndex types;
+	types.byName["r"] = {"R","R.tga",20,1,false};
+	std::vector<MapObject> objects;
+	const std::vector<Point2F> points={{50,150},{250,150},{150,50},{150,250}};
+	for(size_t i=0;i<points.size();++i)
+	{
+		const auto p=points[i];
+		objects.push_back(roadPoint("R",i%2?150:p.x,i%2?150:p.y,FLAG_ROAD_POINT1));
+		objects.push_back(roadPoint("R",i%2?p.x:150,i%2?p.y:150,FLAG_ROAD_POINT2));
+	}
+	std::vector<RoadStrip> strips;
+	RoadBuildReport report;
+	TerrainRoads::buildStrips(objects,types,map,0,strips,report);
+	REQUIRE(strips.size()==5);
+	CHECK(report.fourWayJoins==1);
+	CHECK(report.teeJoins==0);
+	const auto &tile=strips.back();
+	// Symmetrical donor four-way tile: center (425,425)/512, radius 10.3.
+	CHECK(tile.position.front()==doctest::Approx(139.7f)); // tolerance: decimal donor 1.03 extent rounds in float.
+	CHECK(tile.uv[0]==doctest::Approx(425.0f/512.0f-10.3f/80.0f)); // tolerance: projected atlas coordinate float rounding.
+	CHECK(tile.uv[1]==doctest::Approx(425.0f/512.0f+10.3f/80.0f)); // tolerance: projected atlas coordinate float rounding.
+}
+
+TEST_CASE("TerrainRoads: authored JOIN endpoints receive alpha end caps in either direction, square ends remain authored")
+{
+	WorldHeightMap map = flatMap(40,40,0,0);
+	RoadTypeIndex types;
+	types.byName["r"] = {"R","R.tga",20,1,false};
+	for(bool reversed:{false,true})
+	{
+		std::vector<MapObject> objects={
+			roadPoint("R",reversed?200:100,150,FLAG_ROAD_POINT1|(reversed?0:FLAG_ROAD_JOIN)),
+			roadPoint("R",reversed?100:200,150,FLAG_ROAD_POINT2|(reversed?FLAG_ROAD_JOIN:0))};
+		std::vector<RoadStrip> strips;
+		RoadBuildReport report;
+		TerrainRoads::buildStrips(objects,types,map,0,strips,report);
+		REQUIRE(strips.size()==2);
+		CHECK(report.endCaps==1);
+		// Donor fade extends 0.65 * (48/128)*width outside the endpoint.
+		CHECK(strips.back().position[0]==95.125f);
+		CHECK(strips.back().uv[0]==106.0f/512.0f-4.875f/80.0f);
+		CHECK(strips.back().uv[1]==425.0f/512.0f+10.625f/80.0f);
+		objects[0].m_flags&=~FLAG_ROAD_JOIN;
+		objects[1].m_flags&=~FLAG_ROAD_JOIN;
+		TerrainRoads::buildStrips(objects,types,map,0,strips,report);
+		CHECK(strips.size()==1);
+		CHECK(report.endCaps==0);
+	}
 }
