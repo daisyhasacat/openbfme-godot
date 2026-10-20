@@ -353,8 +353,8 @@ struct HudDevice : public AptNativeHook
 	DecalImage decalImageFor(const std::string &file);
 	void drawSelectionDecals();
 	void freeSelectionDecals();
-	// lane SPELL-4: the radius cursor (InGameHud::radiusCursor, GameClient/RadiusCursor.h) as one Godot Decal beside the selection markers
-	uint64_t radiusDecalId = 0;
+	// SPELL-4: the radius cursor is composited by the terrain before its baked-light split.
+	bool radiusCursorBound = false;
 	bool radiusDecalDrawn = false;
 	std::string radiusDecalError; ///< the texture of the cursor that could not be read (also in the HUD's draw errors)
 	void drawRadiusCursor();
@@ -1406,48 +1406,29 @@ void InGameHudNode::_bind_methods()
 
 void HudDevice::drawRadiusCursor()
 {
-	// lane SPELL-4: drawn as the selection decals are (S-2522, S-4640): the texture times the RGB, the alpha the throb's opacity (the alpha styles, 0x1420),
-	// laid on the terrain layer; an additive style's RGB already carries the opacity (Shadow::setColor RW 0x73232B)
 	const RadiusCursorDecal &rc = hud->radiusCursor().decal();
-	Decal *decal = radiusDecalId ? Object::cast_to<Decal>(ObjectDB::get_instance(godot::ObjectID(radiusDecalId))) : nullptr;
-	Node3D *root = decalRootId ? Object::cast_to<Node3D>(ObjectDB::get_instance(godot::ObjectID(decalRootId))) : nullptr;
+	RenderingServer *rs = RenderingServer::get_singleton();
 	radiusDecalDrawn = false;
-	if (!rc.visible || !root)
-	{
-		if (decal)
-		{
-			decal->set_visible(false);
-		}
-		return;
-	}
+	radiusDecalError.clear();
+	if (!rs) return;
+	// A zero size disables sampling, including cancellation and missing textures.
+	rs->global_shader_parameter_set("radius_cursor_transform", Vector4());
+	if (!rc.visible) return;
 	const bool alphaStyle = (rc.style & 0x1420u) != 0;
 	const DecalTextures *dt = unlitDecalFor(rc.texture, alphaStyle ? rc.rgb : (rc.packed & 0xFFFFFFu));
 	if (!dt)
 	{
 		radiusDecalError = "radius cursor " + rc.type + ": no texture " + rc.texture;
-		if (decal)
-		{
-			decal->set_visible(false);
-		}
-		return; // textureFor reported it in drawErrors
+		return;
 	}
-	if (!decal)
-	{
-		decal = memnew(Decal);
-		root->add_child(decal);
-		radiusDecalId = decal->get_instance_id();
-	}
-	// SAGE (x, y, z up) -> Godot (x, z, -y); projected down over a box 2 * radius wide and 200 units deep around the point
-	decal->set_position(Vector3(rc.position.x, rc.position.z, -rc.position.y));
-	decal->set_rotation(Vector3(0.0f, rc.angle, 0.0f));
-	decal->set_size(Vector3(rc.size, 200.0f, rc.size));
-	decal->set_texture(Decal::TEXTURE_ALBEDO, dt->albedo);
-	decal->set_modulate(Color(1, 1, 1, alphaStyle ? rc.opacity / 255.0f : 1.0f));
-	decal->set_albedo_mix(1.0f);
-	decal->set_cull_mask(1u << 19); // the terrain's layer (GodotMapTerrain)
-	decal->set_upper_fade(0.0f);
-	decal->set_lower_fade(0.0f);
-	decal->set_visible(true);
+	// Godot's albedo-only Decal is invisible on the terrain's emission-based
+	// baked lighting when shadow strength is zero. Composite the same texture
+	// and opacity before that split, as the selection's merge decals do.
+	// S-4640: this remains the port's terrain projection, not retail's stencil pass.
+	rs->global_shader_parameter_set("radius_cursor_texture", dt->albedo->get_rid());
+	rs->global_shader_parameter_set("radius_cursor_params", Vector4(alphaStyle ? rc.opacity / 255.0f : 1.0f, alphaStyle ? 1.0f : 0.0f, 0.0f, 0.0f));
+	rs->global_shader_parameter_set("radius_cursor_transform", Vector4(rc.position.x, rc.position.y, rc.size, rc.angle));
+	radiusCursorBound = true;
 	radiusDecalDrawn = true;
 }
 
@@ -1962,7 +1943,16 @@ void HudDevice::freeSelectionDecals()
 	}
 	decalRootId = 0;
 	decalIds.clear();
-	radiusDecalId = 0; // lane SPELL-4: the cursor's decal was the root's child
+	if (radiusCursorBound)
+	{
+		if (RenderingServer *rs = RenderingServer::get_singleton())
+		{
+			rs->global_shader_parameter_set("radius_cursor_transform", Vector4());
+			rs->global_shader_parameter_set("radius_cursor_texture", RID());
+		}
+		radiusCursorBound = false;
+	}
+	radiusDecalDrawn = false;
 	mergeKey.clear();
 	// lane SELPERF-1: the terrain shader draws no merge decals once the HUD is gone
 	if (selMode > 0 || selData.is_valid() || selAtlas.is_valid())

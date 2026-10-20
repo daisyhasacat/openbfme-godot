@@ -20,6 +20,7 @@
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/Module/SpecialPowerModules.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/System/ShroudManager.h"
 
 #include <cstdio>
@@ -78,6 +79,75 @@ size_t castsQueued(LiveGame &game)
 }
 
 } // namespace
+
+TEST_CASE("SPELL-4 retail: a selected hero's Tornado previews its white area texture and clears on cancel, cast and disabled input")
+{
+	if (!haveWorld("spell4 hero cursor")) return;
+	SharedWorld &s = shared();
+	CursorRig r(s);
+	auto context = r.hud->enterContext();
+	GameLogic &logic = r.rig.logic();
+	Object *hero = r.rig.make("ElvenElrond", 800.0f, 650.0f);
+	REQUIRE(hero);
+	hero->getExperienceTracker()->gainExpForLevel(10, true, false);
+	r.hud->input().ui().selectObject(hero->getID());
+	r.rig.game->shroud().revealMapForPlayerPermanently(r.rig.local->getPlayerIndex());
+	r.frames(20);
+	ControlBarButton tornado;
+	for (const auto *buttons : { &r.hud->controlBar().palantirButtons(), &r.hud->controlBar().sideButtons() })
+		for (const auto &button : *buttons)
+			if (button.button && button.button->m_name == "Command_SpecialPowerSpawnWhirlwind") tornado = button;
+	REQUIRE(tornado.button);
+	REQUIRE(tornado.state == ButtonState::Enabled);
+	const Coord3D target{ 800.0f, 700.0f, logic.getGroundHeight(800.0f, 700.0f) };
+	r.rig.lookAt(target);
+	const ICoord2D pixel = r.rig.screenOf(target);
+	r.hud->mouseMove(pixel.x, pixel.y, 0);
+	CHECK_FALSE(r.hud->radiusCursor().active());
+	REQUIRE(r.hud->controlBar().pressButton(tornado.slot, tornado.inPalantir));
+	CHECK_FALSE(r.hud->spellBar().targeting()); // hero targeting uses InGameUI's pending command
+	r.hud->update(0.034);
+	const auto &decal = r.hud->radiusCursor().decal();
+	CHECK(r.hud->radiusCursor().type() == "NaturesWrathRadiusCursor");
+	CHECK(decal.visible);
+	CHECK(decal.texture == "SCCNaturesWrath");
+	CHECK(decal.size == 140.0f); // SpecialPowerSpawnTornado RadiusCursorRadius = 70
+	CHECK(decal.valid);
+	CHECK(decal.rgb == 0xFFFFFFu);
+	CHECK(r.hud->input().ui().cursor() == "None");
+	float loX = 0, loY = 0, hiX = 0, hiY = 0;
+	logic.aiWorld()->pathfinder().terrainView()->getMaximumPathfindExtent(loX, loY, hiX, hiY);
+	const Coord3D edge{ loX + 35.0f, target.y, logic.getGroundHeight(loX + 35.0f, target.y) };
+	r.rig.lookAt(edge);
+	const auto edgePixel = r.rig.screenOf(edge);
+	r.hud->mouseMove(edgePixel.x, edgePixel.y, 0);
+	r.hud->update(0.034);
+	CHECK_FALSE(decal.valid);
+	CHECK(decal.rgb == 0xFF1414u);
+	r.hud->input().ui().setInputEnabled(false);
+	CHECK_FALSE(r.hud->radiusCursor().active());
+	r.hud->input().ui().setInputEnabled(true);
+	r.rig.lookAt(target);
+	r.hud->mouseMove(pixel.x, pixel.y, 0);
+	r.hud->update(0.034);
+	CHECK(decal.visible);
+	CHECK(decal.rgb == 0xFFFFFFu);
+	r.hud->mouseButton(HudInput::Button::Right, true, pixel.x, pixel.y, 0, 1000);
+	r.hud->mouseButton(HudInput::Button::Right, false, pixel.x, pixel.y, 0, 1050);
+	r.hud->update(0.034);
+	CHECK_FALSE(r.hud->radiusCursor().active());
+	CHECK(r.hud->input().ui().cursor() == "Arrow");
+	REQUIRE(r.hud->controlBar().pressButton(tornado.slot, tornado.inPalantir));
+	r.hud->update(0.034);
+	CHECK(decal.visible);
+	const auto queued = castsQueued(*r.rig.game);
+	r.hud->mouseButton(HudInput::Button::Left, true, pixel.x, pixel.y, 0, 1100);
+	r.hud->mouseButton(HudInput::Button::Left, false, pixel.x, pixel.y, 0, 1150);
+	r.hud->update(0.034);
+	CHECK(castsQueued(*r.rig.game) == queued + 1);
+	CHECK_FALSE(r.hud->radiusCursor().active());
+	CHECK(r.hud->input().ui().cursor() == "Arrow");
+}
 
 TEST_CASE("SPELL-4: RadiusCursor follows RW 0x6A077A / 0x732DE7 / 0x732926 / 0x73232B (template, size, player colour, owner rule, throb, hint colours)")
 {

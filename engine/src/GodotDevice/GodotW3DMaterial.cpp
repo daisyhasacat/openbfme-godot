@@ -160,6 +160,10 @@ void W3D_Ensure_Light_Globals()
 	rs->global_shader_parameter_add(StringName("sel_grid"), RenderingServer::GLOBAL_VAR_TYPE_VEC4, Vector4(0.0f, 0.0f, 1.0f, 0.0f));
 	rs->global_shader_parameter_add(StringName("sel_grid2"), RenderingServer::GLOBAL_VAR_TYPE_VEC4, Vector4(0.0f, 0.0f, 0.0f, 0.0f));
 	rs->global_shader_parameter_add(StringName("sel_alpha_ref"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 96.0f);
+	// The targeted power's texture must participate in the terrain's baked lighting.
+	rs->global_shader_parameter_add(StringName("radius_cursor_texture"), RenderingServer::GLOBAL_VAR_TYPE_SAMPLER2D, Variant());
+	rs->global_shader_parameter_add(StringName("radius_cursor_transform"), RenderingServer::GLOBAL_VAR_TYPE_VEC4, Vector4());
+	rs->global_shader_parameter_add(StringName("radius_cursor_params"), RenderingServer::GLOBAL_VAR_TYPE_VEC4, Vector4());
 }
 
 void W3D_Set_Fog_Shift(float shift)

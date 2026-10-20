@@ -146,7 +146,7 @@ public:
 	bool openSpellStore(std::string *error = nullptr);
 	void closeSpellStore();
 	AptSpellStore *spellStore() { return m_store.get(); }
-	// lane SPELL-4: the aiming marker of a spell book power waiting for its target (GameClient/RadiusCursor.h), updated each update(); the device draws it
+	// lane SPELL-4: the aiming marker of a spell book or selected-unit ground power waiting for its target (GameClient/RadiusCursor.h), updated each update(); the device draws it
 	const RadiusCursor &radiusCursor() const { return m_radiusCursor; }
 	const RadiusCursorTemplates &radiusCursorTemplates() const { return m_radiusTemplates; }
 	// lane OWNERFIX-2: the resource claim feedback (GameClient/TerrainResourceFeedback.h): the placement's claimable percentage and decal, the selected
@@ -313,7 +313,7 @@ private:
 	unsigned m_storeRequests = 0;             // lane PLAY-1
 	std::string m_storeError;
 	void syncSpellBook();
-	// lane SPELL-4: InGameUI's radius cursor for the spell book's targeting (RW 0x6A3B77 -> RW 0x6A077A, RadiusDecal::update RW 0x732926)
+	// lane SPELL-4: InGameUI's radius cursor for spell-book and selected-unit targeting (RW 0x6A3B77 -> RW 0x6A077A, RadiusDecal::update RW 0x732926)
 	void updateRadiusCursor();
 	void updateResourceFeedback(); // lane OWNERFIX-2
 	TerrainResourceFeedback m_resourceFeedback;
@@ -322,7 +322,7 @@ private:
 	int m_pointerX = 0, m_pointerY = 0;
 	bool m_pointerSeen = false;
 	bool m_modal = false; // lane OPTS-6
-	bool m_targetingCursor = false; ///< the spell book's targeting set the pointer (it is given back at its end)
+	bool m_targetingCursor = false; ///< power targeting set the pointer (it is given back at its end)
 	std::set<std::string> m_cursorStopPowers; ///< the powers whose unported location test the cursor met (S-4641), once each
 	std::vector<std::string> m_cursorStops;
 	void send(const std::vector<GameMessage> &msgs);

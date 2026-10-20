@@ -9,6 +9,7 @@
 #include "GameClient/GUI/GameTextSource.h"
 #include "GameClient/GUI/LoadScreenInfo.h"
 #include "GameLogic/Economy.h"
+#include "GameLogic/ActionManager.h"
 #include "GameLogic/System/ShroudManager.h"
 #include "GameClient/UnitHelpSource.h"
 #include "Common/Thing/ThingTemplate.h"
@@ -804,11 +805,23 @@ void InGameHud::updateResourceFeedback()
 
 void InGameHud::updateRadiusCursor()
 {
-	const InGameSpellBookModel::Button *b = m_spellBar.targeting() ? m_spellBar.targetButton() : nullptr;
+	GameLogic &logic = m_config.game.logic();
+	const InGameSpellBookModel::Button *spell = m_spellBar.targeting() ? m_spellBar.targetButton() : nullptr;
+	const CommandButton *command = spell ? spell->button : m_input->ui().getGUICommand();
+	// RW 0x6A3B77 handles the pending command's RadiusCursorType for both
+	// spell-book and selected-object powers. Hero powers enter GUI command
+	// mode through ControlBar::processCommandUI, rather than m_spellBar.
+	if (!spell && command && (command->m_command != GUI_COMMAND_SPECIAL_POWER || !command->hasOption(COMMAND_OPTION_NEED_TARGET_POS)))
+	{
+		command = nullptr;
+	}
+	const SpecialPowerTemplate *power = spell ? spell->power :
+		(command && TheSpecialPowerStore ? TheSpecialPowerStore->findSpecialPowerTemplate(command->m_specialPowerName) : nullptr);
+	Object *source = logic.findObjectByID(spell ? m_spellBar.book() : m_input->ui().firstSelected());
 	Player *local = m_config.game.players().getLocalPlayer();
-	// lane OWNERFIX-1: setRadiusCursorNone on the input's disable edge (RW 0x69B5ED), and no hint creates one while it is off (the translators that make the
-	// hints never see the pointer); the aim itself stays pending and shows again with the input
-	if (!b || !b->power || !local || !m_input->ui().getInputEnabled())
+	// OWNERFIX-1: disabling input clears the decal immediately; a pending
+	// command can show it again when input is enabled.
+	if (!command || !power || !source || !local || !m_input->ui().getInputEnabled())
 	{
 		if (m_radiusCursor.active() || m_targetingCursor)
 		{
@@ -818,27 +831,34 @@ void InGameHud::updateRadiusCursor()
 		}
 		return;
 	}
-	GameLogic &logic = m_config.game.logic();
+	auto verdictAt = [&](const Coord3D &where) {
+		if (spell) return m_spellBar.targetVerdict(logic, where);
+		bool unported = false;
+		if (ActionManager::canDoSpecialPowerAtLocation(*source, where, power, command->m_options, &unported))
+		{
+			return InGameSpellBookModel::Target::VALID;
+		}
+		return unported ? InGameSpellBookModel::Target::UNPORTED : InGameSpellBookModel::Target::INVALID;
+	};
 	m_targetingCursor = true;
-	if (b->radiusCursor.empty())
+	if (command->m_radiusCursor.empty())
 	{
-		// RW 0x6A3D2A .. 0x6A3D60: no RadiusCursorType: setRadiusCursorNone and the button's CursorName (valid) / InvalidCursorName (invalid) as the pointer,
-		// cursor 4 (Target) when TheMouse has no cursor of that name (RW 0x5EE9CA answers -1). INFERENCE (S-4640): an empty name stands for -1; a name
-		// Mouse.ini lacks is handed on (the device draws no pointer for it)
+		// RW 0x6A3D2A .. 0x6A3D60: no radius template, use the command's
+		// valid/invalid pointer. The existing empty-name inference is S-4640.
 		m_radiusCursor.clear();
 		if (m_pointerSeen && !isOverGui(m_pointerX, m_pointerY))
 		{
 			Coord3D w;
 			if (m_config.view.screenToTerrain(ICoord2D{ m_pointerX, m_pointerY }, logic, w))
 			{
-				const std::string &name = m_spellBar.targetValid(logic, w) ? b->button->m_cursorName : b->button->m_invalidCursorName;
+				const std::string &name = verdictAt(w) != InGameSpellBookModel::Target::INVALID ? command->m_cursorName : command->m_invalidCursorName;
 				m_input->ui().hintCursor(name.empty() ? std::string(MouseCursorName::Target) : name);
 			}
 		}
 		return;
 	}
 	Coord3D at = m_radiusCursor.decal().position;
-	bool valid = m_radiusCursor.active() ? m_radiusCursor.decal().valid : true; // setGUICommand's first call (RW 0x69B3B3) passes valid
+	bool valid = m_radiusCursor.active() ? m_radiusCursor.decal().valid : true;
 	bool hinted = false;
 	if (m_pointerSeen && !isOverGui(m_pointerX, m_pointerY))
 	{
@@ -846,24 +866,24 @@ void InGameHud::updateRadiusCursor()
 		if (m_config.view.screenToTerrain(ICoord2D{ m_pointerX, m_pointerY }, logic, w))
 		{
 			at = w;
-			const InGameSpellBookModel::Target verdict = m_spellBar.targetVerdict(logic, w);
+			const auto verdict = verdictAt(w);
 			valid = verdict != InGameSpellBookModel::Target::INVALID;
 			hinted = true;
-			if (verdict == InGameSpellBookModel::Target::UNPORTED && m_cursorStopPowers.insert(b->power->getName()).second)
+			if (verdict == InGameSpellBookModel::Target::UNPORTED && m_cursorStopPowers.insert(power->getName()).second)
 			{
-				m_cursorStops.push_back("[S-4641] the location test of " + b->power->getName()
+				m_cursorStops.push_back("[S-4641] the location test of " + power->getName()
 					+ " is not ported (S-1874): its radius cursor shows valid where the generic tests pass and the click casts there");
 			}
 		}
 	}
-	// RW 0x6A077A: the radius's object is the local player's spell book (command type 0x20, RW 0x6AD0D9), the player its controller (RW 0x68B678)
-	Object *book = logic.findObjectByID(m_spellBar.book());
-	Player *controller = book ? book->getControllingPlayer() : nullptr;
-	m_radiusCursor.set(b->radiusCursor, m_radiusTemplates.find(b->radiusCursor), b->power->getFinalOverride()->getRadiusCursorRadius(), controller != nullptr,
+	// RW 0x6A077A: the radius belongs to the command's source object: the
+	// spell book or the selected unit, and uses that object's controller.
+	Player *controller = source->getControllingPlayer();
+	m_radiusCursor.set(command->m_radiusCursor, m_radiusTemplates.find(command->m_radiusCursor), power->getFinalOverride()->getRadiusCursorRadius(), controller != nullptr,
 		controller == local, controller ? controller->getPlayerColor() : 0u, valid);
 	if (hinted)
 	{
-		m_input->ui().hintCursor(MouseCursorName::None); // RW 0x6A3D65: cursor 0 through RW 0x69BD53
+		m_input->ui().hintCursor(MouseCursorName::None);
 	}
 	m_radiusCursor.update(at, m_clientFrames, m_decalSettings.drawIconUI);
 }
@@ -1335,9 +1355,9 @@ std::vector<std::string> InGameHud::stops() const
 				  "screen, then map; the donor ZH selectUnitsMatchingCurrentSelection supplies the bodies); H (VIEW_HOME_BASE) looks at the local player's best structure by RW 0x81FD5B -> "
 				  "0x6AC722 (a command centre, the lowest id, else the costliest); not identified: the status bits 0 and 3 of + 0x458 the walk skips (bit 0 taken as destroyed) and "
 				  "the look-at argument");
-	out.push_back("[S-4640] radius cursor (lane SPELL-4): InGameUI's RadiusCursorTemplate decal of a targeted spell book power (RW 0x6A077A / 0x732DE7 / "
+	out.push_back("[S-4640] radius cursor (lane SPELL-4): InGameUI's RadiusCursorTemplate decal of a targeted spell-book or selected-unit ground power (RW 0x6A077A / 0x732DE7 / "
 				  "0x732926 / 0x73232B); handleRadiusCursor's radar pixel and shroud second pass are not ported (the view's terrain point), the spiral branch and "
-				  "the radius > 110 flag are not used, the decal is a Godot Decal on the terrain layer (S-2522)");
+				  "the radius > 110 flag are not used, the cursor texture is composited by the terrain shader before its baked-light split (S-2522)");
 	out.push_back(TerrainResourceFeedback::stopLine()); // lane OWNERFIX-2
 	out.push_back("[S-5032] placement ghost decal shadows (lane OWNERFIX-2): the ghost draws its model state's SHADOW_ALPHA_DECAL / SHADOW_ADDITIVE_DECAL "
 				  "(a well's / statue's area of effect) as a terrain decal at the texture's alpha; the shadow opacity fade and every other drawable's decal "
