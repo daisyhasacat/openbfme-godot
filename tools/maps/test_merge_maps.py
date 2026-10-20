@@ -63,6 +63,11 @@ class MergeTests(unittest.TestCase):
         original=self.source.read_bytes();fixture(self.root/'scripted.map',True)
         with self.assertRaisesRegex(ValueError,'Scripted maps'):m.merge([self.root/'scripted.map'],2,2,'x')
         self.assertEqual(self.source.read_bytes(),original)
+    def test_mixed_source_companions_refused(self):
+        (self.root/"map.ini").write_text("Object Example\nEnd\n")
+        out=self.root/"new.map"
+        with self.assertRaises(SystemExit):m.main(["--source",str(self.source),"--out",str(out),"--name","x"])
+        self.assertFalse(out.exists())
     def test_existing_output_refused(self):
         out=self.root/'existing.map';out.write_bytes(b'keep')
         with self.assertRaises(SystemExit):m.main(['--source',str(self.source),'--out',str(out),'--name','x'])

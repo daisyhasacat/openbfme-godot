@@ -12,9 +12,12 @@ func _run():
   if request.mode=='extract':
    var data:PackedByteArray=fs.read_file(request.key)
    result={'ok':not data.is_empty(),'archive':fs.get_archive_for_file(request.key),'key':request.key}
+   result['companions']=[]
    for companion in ['map.ini','map.str']:
     if fs.file_exists(str(request.key).get_base_dir().path_join(companion)):
-     result={'ok':false,'error':'Source companion '+companion+' needs explicit merging'}
+     var output_file=FileAccess.open(str(request.path).get_base_dir().path_join(companion),FileAccess.WRITE)
+     output_file.store_buffer(fs.read_file(str(request.key).get_base_dir().path_join(companion)));output_file.close()
+     result.companions.append(companion)
    if result.ok:
     var file=FileAccess.open(request.path,FileAccess.WRITE)
     if file==null:result={'ok':false,'error':error_string(FileAccess.get_open_error())}

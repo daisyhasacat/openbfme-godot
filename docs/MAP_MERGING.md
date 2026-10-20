@@ -29,8 +29,9 @@ nonempty water/river/trigger/camera/link data, differing globals and unknown roo
 chunks are refused; arbitrary unrelated maps need additional reference and
 palette remapping. Terrain raster layers and packed bitplanes are copied,
 roads are clipped to visible edges, objects translated, and names, waypoint IDs,
-player sides and starts made unique. Companion map.ini/map.str content is not
-merged: use maps whose gameplay is supplied by the mounted profile.
+player sides and starts made unique. For one repeated mounted source, companion map.ini/map.str definitions are
+copied once, unchanged, and hashed in the manifest. Mixed disk sources with
+companions remain refused because their definitions may conflict.
 
 Internal height seams are blended over 16 cells on either side, to connect
 unequal edge heights. `--seam-cells 0` preserves exact source heights, which can
@@ -59,3 +60,9 @@ engine/build/openbfme_tests --test-case='local sixteen:*'
 # With the merged map installed, pass its installation.key from the manifest:
 Godot --headless --path godot --script res://tests/skirmish_sixteen_test.gd -- '<map key>'
 ```
+
+
+For **Forochel 2x2**, use source key
+`maps/map mp forochel/map mp forochel.map`, name `Forochel 2x2`, and a new
+output folder. Its eight starts per tile produce 32 available starts (16 active players maximum). The
+mounted source's shared map.ini and map.str are preserved in the installed map.

@@ -325,9 +325,17 @@ def main(argv=None):
             if args.map_key:
                 source=temporary/'source.map';origin=worker(args.godot,'extract',source,temporary,args.map_key);sources=[source]
             result,manifest=merge(sources,args.columns,args.rows,args.name,args.seam_cells)
+            # An exact repeated mounted source shares its global companion definitions.
+            # Mixed disk sources with companions remain refused above.
             if args.map_key:
                 for entry in manifest['sources']:entry['path']=args.map_key;entry['archive']=origin['archive']
             args.out.parent.mkdir(parents=True,exist_ok=True);args.out.write_bytes(result)
+            if args.map_key and origin.get('companions'):
+                manifest['companions']={}
+                for companion in origin['companions']:
+                    data=(temporary/companion).read_bytes()
+                    (args.out.parent/companion).write_bytes(data)
+                    manifest['companions'][companion]=hashlib.sha256(data).hexdigest()
             if args.godot:manifest['validation']=worker(args.godot,'inspect',args.out,temporary)
             if args.install:manifest['installation']=worker(args.godot,'install',args.out,temporary)
             args.out.with_suffix('.merge.json').write_text(json.dumps(manifest,indent=2)+'\n')
