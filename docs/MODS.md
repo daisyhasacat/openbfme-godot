@@ -170,7 +170,10 @@ browser’s **Map Library** tab; they do not join the installed/playable map lis
 until you choose **Install map** there. **Download all 2.02 content / built-ins**
 queues the shared 2.02 packs (including textures) and all built-in packs. Both
 actions skip packs already present and stop with the error if a download fails;
-press the button again to continue the remaining queue. AOTR is stored as a separate game and
+the overall progress bar shows completed/total packs, including existing maps,
+while the separate file bar shows the current download. A failed pack does not
+advance the overall count.
+Press the button again to continue the remaining queue. AOTR is stored as a separate game and
 can be selected in Mods. Downloads never replace a running match's data.
 
 Additional locations can be shared explicitly (repeat each option as needed):

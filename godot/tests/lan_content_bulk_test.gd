@@ -15,7 +15,12 @@ func run():
   if pack.kind=='builtin':DirAccess.remove_absolute('user://mods/'+str(pack.name)+'.big')
   else:client._remove_tree('user://mods/lan-%s'%pack.id)
  # This test must run in an isolated userdata profile: packs contain synthetic bytes.
+ var counts:Array=[]
+ client.overall_progress.value_changed.connect(func(value):counts.append(int(value)))
  await client._download_batch(client.map_packs,'maps')
+ assert(counts==[1,2],'Overall bar advances once for each completed map')
+ assert(client.overall_progress.visible and client.overall_progress.max_value==2)
+ assert(client.overall_label.text=='Overall: 2 / 2 maps')
  assert(client.status.text.begins_with('Downloaded 2 '),client.status.text)
  assert(not DirAccess.dir_exists_absolute('user://installed-maps'))
  for pack in client.map_packs:
@@ -23,14 +28,22 @@ func run():
   assert(FileAccess.file_exists(path))
  await client._download_batch(client.map_packs,'maps')
  assert('2 already present' in client.status.text,client.status.text)
+ assert(client.overall_progress.value==2)
+ assert(client.overall_label.text=='Overall: 2 / 2 maps (2 already present)')
  await client._download_batch(client.builtin_packs,'built-ins')
  assert(client.status.text.begins_with('Downloaded 2 '),client.status.text)
  assert(FileAccess.get_file_as_string('user://mods/wall_towers.big')=='synthetic builtin')
+ await client._download_batch([client.map_packs[0],{'id':'d'.repeat(64),'name':'Missing fixture','kind':'map','game':'bfme2'}],'maps')
+ assert(client.status.text.begins_with('Stopped '))
+ assert(client.overall_progress.value==1,'Failed download does not count as completed')
+ assert(client.overall_progress.max_value==2)
+ assert(client.overall_label.text=='Overall: 1 / 2 maps (1 already present)')
  var fs=ClassDB.instantiate('RetailFileSystem')
  var browser=load('res://scripts/skirmish_map_browser.gd').new();browser.fs=fs;root.add_child(browser)
  browser.library_path='user://map-library/rotwk'
  browser._discover_library()
  assert(browser.library_catalog.size()==2,'Downloaded maps visible in browser library')
- browser.free();client.free()
+ browser.free();client.queue_free()
+ await process_frame
  print('LAN BULK PASS: grouped catalogue, queues, resume, library discovery, built-ins')
  quit()

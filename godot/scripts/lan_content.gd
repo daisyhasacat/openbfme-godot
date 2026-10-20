@@ -7,6 +7,8 @@ const PROGRAMS := ["exe","dll","dylib","so","bat","cmd","sh","com","scr"]
 var address: LineEdit
 var status: Label
 var progress: ProgressBar
+var overall_progress: ProgressBar
+var overall_label: Label
 var rows: VBoxContainer
 var request: HTTPRequest
 var busy := false
@@ -53,6 +55,8 @@ func _ready() -> void:
  var scroll:=ScrollContainer.new();scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL;column.add_child(scroll)
  rows=VBoxContainer.new();rows.size_flags_horizontal=Control.SIZE_EXPAND_FILL;scroll.add_child(rows)
  status=Label.new();status.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;status.text="Connect to see the packs shared by this computer.";column.add_child(status)
+ overall_label=Label.new();overall_label.hide();column.add_child(overall_label)
+ overall_progress=ProgressBar.new();overall_progress.name="OverallProgress";overall_progress.hide();column.add_child(overall_progress)
  progress=ProgressBar.new();progress.max_value=100;column.add_child(progress)
  var close:=Button.new();close.text="Close";close.pressed.connect(queue_free);column.add_child(close)
  request=HTTPRequest.new();request.use_threads=true;request.timeout=1800;add_child(request)
@@ -125,6 +129,7 @@ func _download_batch(packs:Array, description:String)->void:
  batch_running=true
  var completed:=0
  var skipped:=0
+ _update_overall(0,packs.size(),description,0)
  for pack in packs:
   var present:=false
   if str(pack.kind)=="map":
@@ -132,13 +137,25 @@ func _download_batch(packs:Array, description:String)->void:
   elif str(pack.kind)=="builtin":
    present=FileAccess.file_exists("user://mods/"+str(pack.name)+".big")
   else:present=DirAccess.dir_exists_absolute("user://mods/lan-%s"%pack.id)
-  if present:skipped+=1;continue
+  if present:
+   skipped+=1
+   _update_overall(completed+skipped,packs.size(),description,skipped)
+   if skipped%32==0:await get_tree().process_frame
+   continue
   if not await _download(pack,true):
    status.text="Stopped after %d of %d: %s"%[completed,packs.size(),status.text]
    batch_running=false;return
   completed+=1
+  _update_overall(completed+skipped,packs.size(),description,skipped)
  batch_running=false
  status.text="Downloaded %d %s; %d already present. Maps remain in Map Library until you install them in the browser."%[completed,description,skipped]
+
+func _update_overall(done:int,total:int,description:String,skipped:int)->void:
+ overall_progress.show();overall_label.show()
+ overall_progress.max_value=maxi(total,1)
+ overall_progress.value=done
+ overall_label.text="Overall: %d / %d %s"%[done,total,description]
+ if skipped>0:overall_label.text+=" (%d already present)"%skipped
 
 static func valid_id(id:String)->bool:
  if id.length()!=64:return false
