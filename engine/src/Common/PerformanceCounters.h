@@ -4,7 +4,7 @@
 #include <cstdint>
 namespace perf
 {
-enum Category { Simulation, Lua, Pathing, Physics, Collision, Count };
+enum Category { Simulation, Lua, Pathing, Physics, Collision, PresentationEvents, DrawableAnimation, DrawableTransforms, ClientEffects, Count };
 struct Counter { std::uint64_t ns = 0, calls = 0; };
 using Snapshot = std::array<Counter, Count>;
 void setEnabled(bool enabled);

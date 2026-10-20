@@ -2445,6 +2445,7 @@ void GameWorld::heldClientWork()
 	{
 		return;
 	}
+	perf::Scope clientEffectsScope(perf::ClientEffects);
 	refresh_wall_paving();
 	LiveGameAudio::drainDeferredAudio(); // S-814 (also without the effect player)
 	applyPendingScriptAudio(); // RENDERWAIT-1 r2: the script requests' sounds taken in render frames the logic was not held in
@@ -4109,7 +4110,7 @@ Dictionary GameWorld::get_performance_counters() const
 {
  Dictionary result;
  const auto counters = perf::snapshot();
- const char *names[] = { "simulation", "lua", "pathing", "physics", "collision" };
+ const char *names[] = { "simulation", "lua", "pathing", "physics", "collision", "presentation_events", "drawable_animation", "drawable_transforms", "client_effects" };
  for (int i=0; i<perf::Count; ++i) {
   Dictionary value;
   value["ms"] = double(counters[i].ns) / 1000000.0;

@@ -9,6 +9,7 @@ var last_report: Dictionary = {}
 var _live: Array[Dictionary] = []
 var _previous: Dictionary = {}
 var _last_us := 0
+var _previous_wait_ms := 0.0
 var _elapsed := 0.0
 var _refresh := 0.0
 var _enabled := false
@@ -30,7 +31,12 @@ const METRICS := [
 	["pathing", "Pathfinding / group orders", "Path searches, queue, patches and group destination planning; subset of simulation or commands."],
 	["physics", "Unit physics updates", "PhysicsBehavior updates; subset of simulation."],
 	["collision", "Unit collision", "AI collision broadphase and contact processing; subset of simulation."],
-	["advance_ms", "Main · advance / worker wait", "GameWorld advance wall time, including waits; overlaps simulation."],
+	["advance_ms", "Main · game advance total", "Entire GameWorld advance, including simulation, presentation, effects and render synchronization. This is not worker wait time."],
+	["worker_wait", "Main · actual worker wait", "Time blocked waiting for the logic worker since the previous sample; includes waits from scripts and input outside advance."],
+	["presentation_events", "  Presentation events", "Applying completed simulation events and hero statistics; part of game advance."],
+	["drawable_animation", "  Drawable animations", "Client animation state updates; part of game advance."],
+	["drawable_transforms", "  Drawable transforms", "Snapshot interpolation, transform synchronization and animation sounds; part of game advance."],
+	["client_effects", "  Client effects / audio", "Attached effects, ambient sounds, buffs, wall paving and tree events; part of game advance."],
 	["sync_ms", "Main · render synchronization", "Client drawable / visibility synchronization; includes rows below."],
 	["shroud_ms", "  Shroud", "Subset of render synchronization."],
 	["views_ms", "  Drawable views", "Subset of render synchronization."],
@@ -124,10 +130,14 @@ func _process(_delta: float) -> void:
 	if _last_us == 0:
 		_last_us = now
 		_previous = counters
+		_previous_wait_ms = float(world.get_frame_timings().get("logic_wait_ms",0.0))
 		return
 	var interval := float(now - _last_us) / 1000.0
 	_last_us = now
 	var sample: Dictionary = world.get_frame_timings()
+	var wait_total := float(sample.get("logic_wait_ms",0.0))
+	sample["worker_wait"] = maxf(0.0,wait_total-_previous_wait_ms)
+	_previous_wait_ms = wait_total
 	sample["frame"] = interval
 	sample["calls"] = {}
 	for key in counters:

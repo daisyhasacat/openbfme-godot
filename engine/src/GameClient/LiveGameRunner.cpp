@@ -7,6 +7,7 @@
 #include "GameClient/LiveGame.h"
 
 #include "Common/NumericState.h"
+#include "Common/PerformanceCounters.h"
 #include "GameClient/EndGame.h"
 #include "GameLogic/EconomySettings.h"
 
@@ -206,6 +207,8 @@ void LiveGame::present(double seconds)
 		a = 0.0;
 	}
 	// the events of every frame up to the presented one, in order; later ones wait
+	{
+	perf::Scope eventScope(perf::PresentationEvents);
 	size_t n = 0;
 	while (n < m_heldEvents.size() && m_heldEvents[n].frame <= shown->frame)
 	{
@@ -219,10 +222,11 @@ void LiveGame::present(double seconds)
 		m_drawables->applyEvents(now);
 	}
 	consumeHeroStatistics({}, shown.get());
+	}
 	m_presented = shown;
 	m_presentedAlpha = a;
-	m_drawables->advance(seconds * 1000.0);
-	m_drawables->syncTransforms(*shown, a, m_renderInterpolation);
+	{ perf::Scope scope(perf::DrawableAnimation); m_drawables->advance(seconds * 1000.0); }
+	{ perf::Scope scope(perf::DrawableTransforms); m_drawables->syncTransforms(*shown, a, m_renderInterpolation); }
 }
 
 double LiveGame::presentationExtraDelaySeconds() const

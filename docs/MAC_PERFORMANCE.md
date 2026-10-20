@@ -107,3 +107,11 @@ Validation: four existing loading-screen tests (83 assertions), a headless
 scripted Skirmish, and a windowed scripted Skirmish. A render-frame observer
 confirmed progress from 0% through 100% while LoadScreen.apt was still on the
 stack, before gameplay; the completed bar was also captured and inspected.
+
+The console's **Main · game advance total** includes animation state updates,
+snapshot interpolation, effects/audio and render synchronization, as well as
+simulation when it runs on the main thread. It is not a worker-wait measurement.
+**Main · actual worker wait** measures the delta of recorded blocking waits,
+including script/input calls outside advance. Presentation events, drawable
+animations, drawable transforms and client effects/audio have separate opt-in
+scopes so a high total can be attributed without assuming a large army.

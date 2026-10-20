@@ -30,6 +30,9 @@ func _run() -> void:
 	# tolerance: scheduling determines frame count; a capture must have at least one complete sample.
 	assert(panel.last_report.frames > 0)
 	assert(panel.last_report.summary.has("lua"))
+	assert(panel.last_report.summary.worker_wait.max_ms == 0.0)
+	for metric in ["presentation_events", "drawable_animation", "drawable_transforms", "client_effects"]:
+		assert(panel.last_report.summary.has(metric))
 	if DisplayServer.get_name() == "headless": assert(not panel.last_report.summary.has("render_gpu"))
 	var report_copy: Dictionary = panel.last_report.duplicate(true)
 	panel._live.clear()
