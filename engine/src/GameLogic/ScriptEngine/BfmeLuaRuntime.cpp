@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0. The bfme.* API on LuaJIT (lane LUAGD-1: the VM of lua-gdextension; before, a Lua 5.4 companion); no Lua 4 headers
 // or ABI cross this boundary. LuaJIT is Lua 5.1 with its Lua 5.2 extensions (LUAJIT_ENABLE_LUA52COMPAT): no integer subtype, no //
 // operator, no utf8 library.
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/ScriptEngine/BfmeLuaRuntime.h"
 #include "Libraries/LuaJIT/prefix.h"
 extern "C"
@@ -1067,6 +1068,7 @@ BfmeLuaRuntime::Value BfmeLuaRuntime::readData(const std::string &source, const 
 BfmeLuaRuntime::~BfmeLuaRuntime() = default;
 BfmeLuaRuntime::Result BfmeLuaRuntime::execute(const std::string &code)
 {
+	perf::Scope performanceScope(perf::Lua);
 	auto L = m->L;
 	lua_settop(L, 0);
 	m->output.clear();
@@ -1143,6 +1145,7 @@ bool BfmeLuaRuntime::hasPending() const
 }
 void BfmeLuaRuntime::flush()
 {
+	perf::Scope performanceScope(perf::Lua);
 	// Only consume the queue present on entry. A completion callback can enqueue
 	// another request, which runs on the next safe point rather than recursively.
 	m->output.clear(); // what Lua prints during this flush goes to Host::output at its end
@@ -1307,6 +1310,7 @@ bool BfmeLuaRuntime::hasTimingHook(const std::string &kind) const { return m->ti
 bool BfmeLuaRuntime::hasTimingHooks() const { return !m->timingHooks.empty(); }
 int BfmeLuaRuntime::adjustTiming(const std::string &kind, Value::Table context, int nativeFrames)
 {
+	perf::Scope performanceScope(perf::Lua);
 	auto found = m->timingHooks.find(kind);
 	if (found == m->timingHooks.end()) return nativeFrames;
 	if (m->timingBusy) throw std::runtime_error("recursive timing callback");

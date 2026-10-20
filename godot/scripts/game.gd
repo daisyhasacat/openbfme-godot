@@ -1242,6 +1242,9 @@ func _boot() -> void:
 	_lua_console.restart_requested.connect(func(): call_deferred("_console_restart"))
 	_lua_console.map_editor_requested.connect(func(): call_deferred("_open_map_editor"))
 	add_child(_lua_console)
+	var performance_tab := preload("res://scripts/console_performance.gd").new()
+	performance_tab.world = _world
+	_lua_console.add_performance_tab(performance_tab)
 	var controller := preload("res://scripts/controller_input.gd").new()
 	controller.name = "ControllerInput"
 	var controller_loaded: Dictionary = _world.execute_lua("bfme.console.reload()")

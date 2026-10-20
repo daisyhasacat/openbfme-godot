@@ -18,6 +18,7 @@
 // DONOR (ZH AIPathfind.cpp:4924-5650, 5648-5965, 9694-10112): the shape of the above where RW was not read. See docs/STOPS.md S-163 and
 // S-164 for what is not ported (kind-1 slot, rotated-rectangle fill, the AI target rules of checkForMovement, the partition grid).
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/AI/AIPathfindStops.h"
@@ -1428,6 +1429,7 @@ void Pathfinder::setLogicalExtentFromTerrain()
 
 void Pathfinder::processPathfindQueue(PathfindRequestHandler &handler)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	note(pathstops::kQueueTime);
 	// TARGET RW 0x6F2364: the zone update (every call), the extent, then ONE counter of cells allocated, reset once. Budget = GameData
 	// MaxPathfindCellsPerFrame (x100 while the logic frame is below 5 * LOGICFRAMES = 25). Pass 1 drains the blocked-repath ring (AI vtable

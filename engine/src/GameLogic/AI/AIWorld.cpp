@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0.
 // See GameLogic/AI/AIWorld.h for the sources and what is inference.
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Module/CrateCollide.h"
 #include "GameLogic/Object/ObjectGeometry.h"
@@ -1040,6 +1041,7 @@ void AIWorld::processPathfindQueue()
 // pair is found once through the cell of the lower id's neighbourhood.
 void AIWorld::processCollisions()
 {
+	perf::Scope performanceScope(perf::Collision);
 	m_collisionPairs = 0;
 	if (m_mapReady) CrateCollide::processContacts(m_logic);
 	if (!m_mapReady || m_ais.size() < 2)

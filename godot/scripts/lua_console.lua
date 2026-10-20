@@ -323,6 +323,10 @@ function LuaConsole:_ready()
 	root:hide()
 end
 
+function LuaConsole:add_performance_tab(panel)
+ self._tabs:add_child(panel)
+end
+
 function LuaConsole:_build_cheats()
 	local scroll = ScrollContainer:new()
 	scroll.name = "Cheats"

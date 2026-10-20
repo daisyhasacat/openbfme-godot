@@ -1,5 +1,6 @@
 // OpenBFME. GPL-3.0. See LuaScriptEngine.h.
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/ScriptEngine/LuaScriptEngine.h"
 
 #include "GameLogic/ScriptEngine/LuaBindings.h"
@@ -443,6 +444,7 @@ void LuaScriptEngine::spyNotify(NameKeyType eventKey, const LuaObjectInfo &self)
 
 void LuaScriptEngine::dispatch(const LuaEventRef &event, const LuaObjectInfo &self, const LuaEventArgs &args)
 {
+	perf::Scope performanceScope(perf::Lua);
 	// RW 0x735F53 (spec 4.3)
 	if (!m_logic || m_depth > 10) // RW 0x735F71: `cmp [esi+0xD4], 0xA; jg`: entering at depth 10 is allowed, so 11 handlers can be nested
 	{
@@ -545,6 +547,7 @@ void LuaScriptEngine::updateModelConditionEvents(const LuaObjectInfo &self, cons
 // ---------------------------------------------------------------------------------------------------------------------
 int LuaScriptEngine::runDrawableScript(const std::string &script, const std::string &chunkName, LuaDrawableContext *ctx, std::string *result)
 {
+	perf::Scope performanceScope(perf::Lua);
 	// RW 0x734D62
 	if (!m_drawable)
 	{

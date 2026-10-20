@@ -5,6 +5,7 @@
 #pragma GCC diagnostic ignored "-Winvalid-offsetof"
 #endif
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/Module/PhysicsBehavior.h"
 #include "GameLogic/SnapshotXfer.h"
 
@@ -363,6 +364,7 @@ bool PhysicsBehavior::buildCurve(bool recount, float apex)
 // RW 0x79350E
 UpdateSleepTime PhysicsBehavior::update()
 {
+	perf::Scope performanceScope(perf::Physics);
 	Object *obj = getObject();
 	const PhysNames &n = physNames();
 	m_bounced = false; // + 0x5E

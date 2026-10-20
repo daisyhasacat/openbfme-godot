@@ -16,11 +16,13 @@
 // INFERENCE: the zone manager's setAllPassable is the port's PathfindZoneManager::setAllPassable (PATH-2); RW 0x6F3082 is checkDestination with a zero crowd count, as
 // PHYS-1 reads it (AIPathfindMoveAway.cpp, S-785).
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/SimMath.h"
 
 Path *Pathfinder::findSafePath(const PathfindObject *obj, const PathfindLocomotorInfo &loco, const Coord3D &repulsor1, const Coord3D &repulsor2, float repulsorRadius)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	if (!m_isMapReady || obj == nullptr)
 	{
 		return nullptr;

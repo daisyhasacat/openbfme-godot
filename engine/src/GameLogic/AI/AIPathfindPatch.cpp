@@ -36,6 +36,7 @@
 // PORT NOTES: the occupant lists are the port's per-cell lists (OCC_GROUND_GOAL = + 0x14, OCC_POSITION = + 0x20, OCC_HORDE_POSITION = + 0x24); only the
 // ground layer exists (S-161), so the layer tests of the expansion always pass and RW 0x6F6286 adds nothing.
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/AI/AIPathfindStops.h"
 #include "GameLogic/SimMath.h"
@@ -194,6 +195,7 @@ bool Pathfinder::patchPointIsFree(PathfindObject &obj, const PathfindLocomotorIn
 
 Path *Pathfinder::patchPath(PathfindObject &obj, const PathfindLocomotorInfo &loco, const Coord3D &point, const PathNode *node)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	// TARGET RW 0x6F7938
 	note(pathstops::kPatchLayers);
 	m_ignoreObstacleID = PATHFIND_INVALID_ID; // pathfinder + 0x48 = 0
@@ -412,6 +414,7 @@ void Pathfinder::checkChangeLayers(PathfindCell *parentCell, const PathfindObjec
 
 Path *Pathfinder::patchPath(PathfindObject *obj, const PathfindLocomotorInfo &loco, Path *originalPath, bool blocked)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	// TARGET RW 0x6FC9DA (pathfinder vtable 0xC1B8D8 slot 0x10, the call of computePath RW 0x6663F4 for a unit with blocked frames; BFME2 decomp
 	// pathfinder.cpp Pathfinder::PatchPath as donor, tier B: one byte longer in RotWK, the logic read from the RotWK disassembly):
 	//   * no original path: nothing. The footprint radius / centring RW 0x6ED071; isHuman (player + 0x5C != 1); the pending hops emptied and every block

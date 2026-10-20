@@ -22,6 +22,7 @@
 // passable), the portal / waypoint routing (RW 0x6F5547, 0x6F6286, the waypoint vector), the attack-path scorer, the partition grid
 // word, LARGE_RECTANGLE_PATHFIND's offset goal and the patch mode.
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/AI/AIPathfindLine.h"
 #include "GameLogic/SimMath.h"
@@ -824,6 +825,7 @@ int Pathfinder::examineNeighboringCells(PathfindCell *parentCell, PathfindCell *
 // ---------------------------------------------------------------------------------------------------------
 Path *Pathfinder::findPath(PathfindObject *obj, const PathfindLocomotorInfo &loco, const Coord3D *from, const Coord3D *rawTo, bool *partial)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	// Enhanced peace zones are player-specific and absent from the shared terrain-zone corridor.
 	// Use the full cell search so the dynamic restriction can be routed around.
 	if (obj && obj->hasMovementRestrictions()) return findPathWithoutCorridor(obj, loco, from, rawTo, partial);
@@ -907,6 +909,7 @@ struct Pathfinder::SearchMemoScope
 
 Path *Pathfinder::findPathWithoutCorridor(PathfindObject *obj, const PathfindLocomotorInfo &loco, const Coord3D *from, const Coord3D *to, bool *partial)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	// the search findPath was before lane PATHPERF-1 (every block passable, no goal step-back), kept for AIMover::pathReachingGoal: it stands for RW 0x6F74D0,
 	// a search of its own (HORDE-2, S-532), not for findPath; and for the callers of pathfinder slot + 4 (FindClosestPath RW 0x6FB869, not ported: S-166)
 	if (partial)
@@ -920,6 +923,7 @@ Path *Pathfinder::findPathWithoutCorridor(PathfindObject *obj, const PathfindLoc
 Path *Pathfinder::internalFindPath(PathfindObject *obj, const PathfindLocomotorInfo &loco, const Coord3D *from, const Coord3D *rawTo, bool hierarchical,
 	bool *partial)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	// RW 0x6FD06F only ever SETS *partial (a path to the closest cell); findPath clears it
 	SearchMemoScope memo(*this, obj);
 	int radius = 0;

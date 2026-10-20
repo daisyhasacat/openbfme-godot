@@ -21,6 +21,7 @@
 // none); the occupancy count is the port's checkDestination count (allied goals block, S-164); a popped cell is always closed (RW 0x6F6286 is skipped with
 // the path-through flag; the port's records would not return to the pool).
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/AI/AIPathfindStops.h"
 #include "GameLogic/SimMath.h"
@@ -30,6 +31,7 @@
 Path *Pathfinder::findAttackPath(const PathfindObject *obj, const PathfindLocomotorInfo &loco, const Coord3D *from, const PathfindObject *victim, const Coord3D *victimPos,
 	float victimRadius, const PathfindAttackRange &range, bool pathThrough, bool *fallback)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	if (fallback)
 	{
 		*fallback = false;

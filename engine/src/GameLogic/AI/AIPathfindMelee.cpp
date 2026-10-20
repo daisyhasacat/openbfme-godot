@@ -18,6 +18,7 @@
 // INFERENCE (stop S-786): RW 0x938939's obstacle-zone mapping has no counterpart in the zone manager: a unit standing in an obstacle cell uses its cell's zone; only the
 // ground layer exists (S-161).
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/SimMath.h"
 
@@ -276,6 +277,7 @@ float lengthOf(float x, float y, float z)
 bool Pathfinder::findMeleeEngagementLocation(const PathfindObject &obj, const PathfindLocomotorInfo &loco, const PathfindObject &target, const PathfindAttackRange &range,
 	Coord3D *dest)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	const Coord3D self = obj.getPosition();
 	if (range.inRangeFrom(self, 0.0f) && meleeOwnFootprintFree(obj))
 	{

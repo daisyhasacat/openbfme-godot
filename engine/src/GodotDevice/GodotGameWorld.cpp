@@ -1,3 +1,4 @@
+#include "Common/PerformanceCounters.h"
 #include "GameClient/MapClassification.h"
 // OpenBFME. GPL-3.0.
 // See GodotDevice/GodotGameWorld.h.
@@ -355,6 +356,8 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("build2_repair", "dozers", "target"), &GameWorld::build2_repair);
 	ClassDB::bind_method(D_METHOD("get_stats"), &GameWorld::get_stats);
 	ClassDB::bind_method(D_METHOD("get_frame_timings"), &GameWorld::get_frame_timings);
+	ClassDB::bind_method(D_METHOD("set_performance_enabled", "enabled"), &GameWorld::set_performance_enabled);
+	ClassDB::bind_method(D_METHOD("get_performance_counters"), &GameWorld::get_performance_counters);
 	ClassDB::bind_method(D_METHOD("get_logic_wait_sites"), &GameWorld::get_logic_wait_sites);
 	ClassDB::bind_method(D_METHOD("is_logic_held"), &GameWorld::is_logic_held);
 	ClassDB::bind_method(D_METHOD("get_client_window_stats"), &GameWorld::get_client_window_stats);
@@ -4099,6 +4102,21 @@ Dictionary GameWorld::get_stats() const
 		s["static"] = st->get_stats();
 	}
 	return s;
+}
+
+void GameWorld::set_performance_enabled(bool enabled) { perf::setEnabled(enabled); }
+Dictionary GameWorld::get_performance_counters() const
+{
+ Dictionary result;
+ const auto counters = perf::snapshot();
+ const char *names[] = { "simulation", "lua", "pathing", "physics", "collision" };
+ for (int i=0; i<perf::Count; ++i) {
+  Dictionary value;
+  value["ms"] = double(counters[i].ns) / 1000000.0;
+  value["calls"] = int64_t(counters[i].calls);
+  result[names[i]] = value;
+ }
+ return result;
 }
 
 Dictionary GameWorld::get_frame_timings() const

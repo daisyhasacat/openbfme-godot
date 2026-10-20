@@ -283,3 +283,50 @@ The combined movement, enclosure, formation, Lua and timing native suite passes
 105 cases / 4,620 assertions. Simulation audit flags and link checks report zero
 issues; the AST audit remains unavailable without libclang, and classification
 still lists the existing unclassified FloatingText type.
+
+## Console Performance tab
+
+Open the console with backtick and select **Performance**. Live timings show the
+last 240 display frames. **Start benchmark** captures 1–120 seconds (10 by
+default); close the console to measure ordinary gameplay while it records.
+**Stop benchmark** finishes early. Completed results remain visible until
+**Show live** or another capture. Average, nearest-rank p95 and maximum are in
+milliseconds per display sample. The header also shows FPS, presented objects,
+draw calls and rendered primitives.
+
+The table includes simulation phases, gameplay/console Lua (including snapshots
+and mutations), path searches/queue/patching/group destination planning,
+PhysicsBehavior updates, AI unit collision, main-thread advance/waits, render
+synchronization and its shroud/views/effects, animation poses, uploads, texture
+animation, viewport rendering CPU/GPU, Godot physics and main-thread CPU time.
+Hover a row for its scope. Godot physics is separate from BFME unit physics.
+Missing renderer timings show `n/a`, including headless CPU/GPU measurements.
+Zero/unavailable GPU timestamps are not reported as measured zero work.
+
+These are **overlapping wall-clock scopes**, not an additive flame graph:
+physics, collision and pathing can be inside simulation; Lua can call mutations
+and pathfinding; render synchronization has child rows; GPU and worker threads
+run in parallel. A worker scope's entire duration is attributed when it completes,
+so a displayed spike may span multiple display intervals. Simulation diagnostics
+measure phase work, not the worker's snapshot publication or hashing. Rendering
+rows cover their named stages, not every part of the engine or driver; there is
+no invented “unaccounted” remainder. VSync and scheduling affect frame intervals.
+
+**Export JSON** writes `user://benchmarks/performance-<time>-<ticks>.json` and
+shows the absolute path. Reports contain renderer, capture duration, metric
+scope descriptions, summary and individual samples with native scope call
+counts. Captures are bounded to 36,000 frames and live history to 240. Sampling
+uses cheap counters and `get_frame_timings()`, never `get_stats()` or state hashes.
+The process-wide native diagnostic counters are opt-in, enabled while this tab
+is visible with live timings on or a capture is running; they stop when the tab
+is hidden, sampling is disabled, or the console is removed. Counters use atomics
+across logic/main threads; recursive same-category scopes count only once per
+thread. No timings affect simulation decisions, saves or state hashes.
+
+Validation: `console_performance_test.gd` checks tab integration, exact summary
+statistics, unavailable metrics, automatic completion while the console is
+closed, held results, and JSON export. It also supports `PERF_SCREENSHOT=<path>`
+for rendered layout inspection. Native performance tests cover disabled scopes,
+nesting, cross-thread counting, disabling during a scope and identical hashes
+for 80 moving-army frames with profiling off/on. The focused combined suite
+passes 107 cases / 4,676 assertions.

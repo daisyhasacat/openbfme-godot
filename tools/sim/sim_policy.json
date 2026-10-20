@@ -17,6 +17,7 @@
   "SimMath::acosDet"
  ],
  "excluded": [
+  {"glob": "src/Common/System/PerformanceCounters.cpp", "reason": "Opt-in wall-clock diagnostics; counters are only read by the console, never simulation state or decisions"},
   {"glob": "src/GameClient/CreateAHeroStats.cpp", "reason": "Create-a-Hero client profile statistics file IO; never simulation state"},
   {
    "glob": "src/GameClient/WallUpgradePreview.cpp",

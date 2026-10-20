@@ -644,3 +644,11 @@ record and replay fixed visual tracks in the current local match. Playback
 runs no simulation or pathfinding. `pause()`, `seek(seconds)`, `stop()`,
 `status()` and `clear()` control the in-memory clip. See
 [MOVEMENT_CLIPS.md](MOVEMENT_CLIPS.md) for options, limits and validation.
+
+### Performance console tab
+
+The console's **Performance** tab shows live timings and captures timed
+benchmarks while the console is closed. It includes Lua, simulation, unit
+physics/collision, pathfinding and rendering stages with average/p95/worst
+milliseconds, plus JSON export. Scopes overlap and worker costs appear when
+completed. See [the timing definitions and benchmark workflow](LARGE_ARMY_PERFORMANCE.md#console-performance-tab).

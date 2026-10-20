@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0.
 // See GameLogic/GameLogic.h for the sources of every rule.
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/GameLogic.h"
 
 #include "Common/Player.h"
@@ -559,6 +560,7 @@ void GameLogic::invisibilityNoteCreated(Object &obj)
 // RW 0x62E4E8 (B1 GameLogic.cpp:8264-8392)
 void GameLogic::update(int phase)
 {
+	perf::Scope performanceScope(perf::Simulation);
 	if (phase < 1 || phase > 6)
 	{
 		throw std::logic_error("GameLogic::update: phase must be 1..6");

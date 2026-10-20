@@ -241,6 +241,7 @@ include(cmake/Visual2.cmake)    # VISUAL-2: the owner's fog leak, tree sway and 
 include(cmake/Ownerfix2.cmake)  # OWNERFIX-2: the owner's playtest of 2026-10-17 (OPENBFME_OWNERFIX2_CLIENT_SOURCES / _TESTS)
 include(cmake/Backlog8.cmake)   # BACKLOG-8: formations, horde wall scaling, auto ability melee position (appends to OPENBFME_SIM_SOURCES)
 add_library(openbfme_core STATIC
+    src/Common/System/PerformanceCounters.cpp
     ${OPENBFME_PLAY2_SOURCES}
     ${OPENBFME_APT_SOURCES}
     ${OPENBFME_AUDIO4_CLIENT_SOURCES}
@@ -822,6 +823,7 @@ add_executable(openbfme_tests
     tests/test_lua_runtime.cpp
     tests/test_bfme_lua_network.cpp
     tests/test_bfme_lua.cpp
+    tests/test_performance_counters.cpp
     tests/test_lua_events.cpp
     tests/test_lua_engine.cpp
     tests/test_lua_retail.cpp

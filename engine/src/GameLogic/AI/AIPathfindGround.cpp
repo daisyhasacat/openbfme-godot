@@ -30,6 +30,7 @@
 // INFERENCE / NOT PORTED (stop S-4462): the terrain fire system's burning cells (RotWK adds 10 to a burning neighbour and stops the line at one: grid
 // RW 0xDE46A8, S-191) are never marked; the mineshaft fields (+ 0x1C1D8 ..) and the layer changes (RW 0x6F6286) are not modelled (S-161).
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/AI/AIPathfindLine.h"
 #include "Common/NumericState.h"
@@ -370,6 +371,7 @@ Path *Pathfinder::buildGroundPath(const Coord3D *from, PathfindCell *goalCell, b
 
 Path *Pathfinder::findGroundPath(PathfindObject *obj, const Coord3D *from, const Coord3D *rawTo, int diameter, float formationColumnWidth)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	// RW 0x6FAA6D (see the file comment)
 	m_zoneManager.clearPassableFlags(); // RW 0x937C23
 	const PathfindLocomotorInfo ground{ LOCOMOTORSURFACE_GROUND, false, false };

@@ -39,6 +39,7 @@
 // INFERENCE: a start cell whose record already existed (a reservation keeps it) gets its parent link cleared (retail leaves a stale one, which the chain walk
 // would follow); a record the pool cannot give ends the search with no corridor (retail dereferences null).
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/AI/AIPathfind.h"
 
 #include "GameLogic/AI/AIPathfindStops.h"
@@ -222,6 +223,7 @@ void Pathfinder::examineHierarchicalEdgeCell(const ICoord2D &cell, const ICoord2
 bool Pathfinder::findClosestHierarchicalPath(PathfindObject *obj, const PathfindLocomotorInfo &loco, bool isHuman, const Coord3D *from, const Coord3D *to,
 	Coord3D *adjustedTo)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	// TARGET RW 0x6F9829 -> RW 0x6F8601 (see the file comment)
 	m_hierLast = -1;
 	if ((to->x == 0.0f && to->y == 0.0f) || !m_isMapReady)

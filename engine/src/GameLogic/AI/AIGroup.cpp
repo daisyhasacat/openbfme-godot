@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0.
 // See GameLogic/AI/AIGroup.h.
 
+#include "Common/PerformanceCounters.h"
 #include "GameLogic/AI/AIGroup.h"
 
 #include "GameLogic/AI/AIWorld.h"
@@ -459,6 +460,7 @@ const char *AIGroup::planningStopLine()
 
 void AIGroup::planningMoveToPosition(const Coord3D &pos, bool attackMove, CommandSourceType source)
 {
+	perf::Scope performanceScope(perf::Pathing);
 	AIWorld *world = m_logic.aiWorld();
 	if (!world || m_members.empty())
 	{
