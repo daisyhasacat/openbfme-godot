@@ -72,7 +72,11 @@ For steady low FPS, the Performance tab also shows HUD update, input/picking,
 command bar, movie/window updates, Palantir, minimap, icon submission and world
 decals. These run outside `GameWorld.advance`; a low game-advance time alone does
 not establish low total CPU cost. Godot process-callback timing is shown
-separately, and exported frame samples retain draw-call counts alongside timings.
+separately as `Scene · process callbacks`, measured from `process_frame` to the
+late-priority sampler, excluding the sampler itself and subsequent render work.
+`Godot · frame processing peak` is Godot's `TIME_PROCESS`: it includes rendering
+sync/draw and is a peak over Godot's sampling interval, not a callback duration.
+Exported frame samples retain draw-call counts alongside timings.
 
 Menu transitions have separate CPU diagnostics. `AptMenuPlayer.get_stats()`
 retains `peak_steps_us`, `peak_list_us`, `peak_canvas_us`, and `peak_submit_us`

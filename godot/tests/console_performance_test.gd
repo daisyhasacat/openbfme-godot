@@ -40,6 +40,7 @@ func _run() -> void:
 	assert(panel.last_report.summary.hud_windows_ms.mean_ms == 8.0)
 	assert(panel.last_report.summary.hud_radar_ms.mean_ms == 2.0)
 	assert(panel.last_report.summary.has("godot_process"))
+	assert(panel.last_report.summary.has("scene_callbacks_ms"))
 	assert(panel.last_report.summary.worker_wait.max_ms == 0.0)
 	for metric in ["presentation_events", "drawable_animation", "drawable_transforms", "client_effects"]:
 		assert(panel.last_report.summary.has(metric))

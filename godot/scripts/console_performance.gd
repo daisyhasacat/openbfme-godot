@@ -10,6 +10,7 @@ var last_report: Dictionary = {}
 var _live: Array[Dictionary] = []
 var _previous: Dictionary = {}
 var _last_us := 0
+var _callbacks_begin_us := 0
 var _previous_wait_ms := 0.0
 var _elapsed := 0.0
 var _refresh := 0.0
@@ -54,7 +55,8 @@ const METRICS := [
 	["hud_radar_ms", "  HUD minimap", "Subset of HUD update."],
 	["hud_icons_ms", "  HUD icon submission", "Subset of HUD update."],
 	["hud_decals_ms", "  HUD world decals", "Subset of HUD update."],
-	["godot_process", "Godot · process callbacks", "Godot process-frame timing, including game scripts and native node callbacks; overlaps other rows."],
+	["scene_callbacks_ms", "Scene · process callbacks", "Wall time from SceneTree.process_frame to this late-priority sampler; excludes subsequent RenderingServer sync/draw and the sampler itself."],
+	["godot_process", "Godot · frame processing peak", "Godot TIME_PROCESS is the peak over its sampling interval, including SceneTree processing, RenderingServer sync and drawing. It is not a per-frame callback measurement."],
 	["render_cpu", "Viewport rendering · CPU", "RenderingServer viewport CPU timing; overlaps main work."],
 	["render_gpu", "Viewport rendering · GPU", "Asynchronous viewport GPU timing. Unavailable with the headless renderer."],
 	["godot_physics", "Godot physics", "Godot physics processing, separate from BFME unit physics."],
@@ -64,6 +66,7 @@ const METRICS := [
 func _ready() -> void:
 	name = "Performance"
 	process_priority = 10000
+	get_tree().process_frame.connect(_begin_callbacks)
 	add_theme_constant_override("separation", 8)
 	var toolbar := HFlowContainer.new()
 	add_child(toolbar)
@@ -131,8 +134,13 @@ func _set_enabled(value: bool) -> void:
 	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), value)
 	_previous = {}
 	_last_us = 0
+	_callbacks_begin_us = 0
+
+func _begin_callbacks() -> void:
+	if _enabled: _callbacks_begin_us = Time.get_ticks_usec()
 
 func _process(_delta: float) -> void:
+	var callbacks_end_us := Time.get_ticks_usec()
 	_set_enabled(is_instance_valid(world) and (capturing or (is_visible_in_tree() and _live_toggle.button_pressed)))
 	if not _enabled: return
 	var now := Time.get_ticks_usec()
@@ -145,6 +153,8 @@ func _process(_delta: float) -> void:
 	var interval := float(now - _last_us) / 1000.0
 	_last_us = now
 	var sample: Dictionary = world.get_frame_timings()
+	if _callbacks_begin_us != 0:
+		sample["scene_callbacks_ms"] = float(callbacks_end_us - _callbacks_begin_us) / 1000.0
 	var live_hud: Node = hud.call() if hud.is_valid() else null
 	if is_instance_valid(live_hud): sample.merge(live_hud.get_frame_timings())
 	var wait_total := float(sample.get("logic_wait_ms",0.0))
