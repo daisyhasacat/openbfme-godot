@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <fstream>
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
@@ -39,6 +40,7 @@ struct OrderRun
 	std::vector<int> cells;            ///< the path cells processPathfindQueue counted in each of them
 	std::vector<int> served;           ///< the path requests taken off the queue in each of them (queue length before + new - after, approximated by the drop)
 	size_t units = 0;
+	int commandPoints = 0;
 	size_t pathsQueuedMax = 0;
 };
 
@@ -129,6 +131,7 @@ OrderRun runOrder(const char *mapName, const char *templ, int count, float spaci
 	game.commands().append(mv);
 	OrderRun out;
 	out.units = ids.size();
+	out.commandPoints = pa->commandPoints().getUsage();
 	perfControl("enable");
 	for (int f = 0; f < frames; ++f)
 	{
@@ -188,7 +191,7 @@ TEST_CASE("pathperf1 bench: one move order for 10 / 50 / 150 hordes and 300 infa
 	{
 		const bool infantry = c[0] == 'i';
 		const int n = std::atoi(c.c_str() + (infantry ? 1 : 0));
-		const OrderRun r = runOrder(mapName, infantry ? "GondorFighter" : "GondorFighterHorde", n, infantry ? 14.0f : 70.0f, frames, false);
+		const OrderRun r = runOrder(mapName, infantry ? "GondorFighter" : "GondorFighterHorde", n, infantry ? 14.0f : 70.0f, frames, std::getenv("PATHPERF1_HASHES") != nullptr);
 		std::vector<double> march(r.ms.begin() + 1, r.ms.end());
 		const perfbench::FrameStats m = perfbench::stats(march);
 		const double worst = *std::max_element(r.ms.begin(), r.ms.end());
@@ -196,6 +199,14 @@ TEST_CASE("pathperf1 bench: one move order for 10 / 50 / 150 hordes and 300 infa
 		std::printf("  info: pathperf1 %s %s x%zu: order frame %.1f ms; worst frame %.1f ms (frame %d after the order); march mean %.2f ms, p95 %.2f ms, max %.2f ms; "
 		            "most queued path requests %zu\n",
 			mapName, infantry ? "infantry" : "hordes", r.units, r.ms[0], worst, worstAt, m.mean, m.p95, m.max, r.pathsQueuedMax);
+		std::printf("    army CP: %d; frame hash chain: %08x\n", r.commandPoints, (unsigned)perfbench::chain(r.hashes));
+		if (const char *prefix = std::getenv("PATHPERF1_HASHES"))
+		{
+			std::ofstream output(std::string(prefix) + "." + c + ".txt");
+			REQUIRE(output.good());
+			for (auto hash : r.hashes) output << hash << '\n';
+			REQUIRE(output.good());
+		}
 		if (std::getenv("PATHPERF1_FRAMES_DUMP"))
 		{
 			std::printf("    frames:");

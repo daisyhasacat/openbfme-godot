@@ -877,3 +877,34 @@ TEST_CASE("crate pickups retail: destroyed lair treasure can be collected throug
 	// tolerance: the total cannot exceed four maximum retail chest rewards.
 	CHECK(g.player->getMoney()->countMoney() <= before + 400);
 }
+
+TEST_CASE("crate pickups retail: cached collision interfaces preserve the module walk across objects and restored module state")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	Game g(*sh.world, *sh.mount);
+	for (const char *name : { "GondorFighter", "GondorFighterHorde", "GondorBarracks", "MordorAttackTroll", "TreasureChest100", "TreasureChestLevelUpMedium" })
+	{
+		INFO(name);
+		Object *object = g.make(sh.world->things().findTemplate(name));
+		REQUIRE(object);
+		std::vector<CollideModuleInterface *> expected;
+		bool crate = false;
+		for (const auto &module : object->modules())
+		{
+			if (auto *collide = module->getCollide()) expected.push_back(collide);
+			crate = crate || dynamic_cast<CrateCollide *>(module.get()) != nullptr;
+		}
+		CHECK(object->collideModules() == expected);
+		CHECK(object->hasCrateCollide() == crate);
+		for (const auto &module : object->modules()) if (auto *collide = dynamic_cast<SalvageCrateCollide *>(module.get()))
+		{
+			XferSave saved;
+			collide->xfer(saved);
+			XferLoad load(saved.data());
+			collide->xfer(load);
+			CHECK(load.atEnd());
+			CHECK(object->collideModules() == expected);
+			CHECK(object->hasCrateCollide() == crate);
+		}
+	}
+}

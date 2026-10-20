@@ -65,3 +65,72 @@ The simulation audit's compiler-flag and link checks pass. The full audit remain
 blocked on this checkout: libclang Python bindings are unavailable (S-230), and
 existing `src/GameClient/FloatingText.cpp` is unclassified by the simulation
 manifest/exclusion policy. Neither audit policy nor its baseline was changed.
+
+## Moving 20,000 CP armies
+
+The collision phase previously rediscovered crate modules by walking every
+behavior of every object on each of the six engine ticks. Even an army with
+no crates paid for those RTTI checks. Every actual contact also walked the
+whole behavior list to find its collision callbacks.
+
+Objects now index their collision interfaces and crate classification once,
+after building their immutable module list. The index includes helpers and
+retains module order. Contact dispatch still stops immediately when the
+object is destroyed. Module state, transfers and callbacks are unchanged;
+the index is derived data outside state hashes and saves. Crate discovery
+still visits live objects and retains its object-ID order, so creation,
+destruction and restored objects need no separate registry to invalidate.
+
+The collision grid now applies its existing float32 overlap test before
+sorting neighbors. Only actual overlapping partners need sorting. The same
+pairs reach the same callbacks in the same ID order. This reduces scratch
+traffic and sorting in a large mixed-radius army; it does not change grid
+size, pathfinding budgets, tick rate, collisions or movement rules.
+
+### Reproduce the movement measurement
+
+With the verified retail install paths configured, build `openbfme_tests` and
+run this opt-in benchmark separately on the original and optimized binaries:
+
+```sh
+PATHPERF1_CASES=334,i5000 PATHPERF1_FRAMES=180 \
+PATHPERF1_HASHES=/tmp/army-movement \
+engine/build/openbfme_tests --test-case='pathperf1 bench*' --no-skip --no-colors
+```
+
+The existing Brown Lands march scenario settles for 30 frames, then sends one
+selection/move message and measures 180 complete `LiveGame::advance` calls.
+The first order frame is reported separately from the 179-frame march. Each
+run reports actual army CP: 334 Gondor fighter battalions use 20,040 CP;
+5,000 individual Gondor fighters use 20,000 CP. Creation, map loading and
+state hashing are outside the timed interval. These are thread CPU times
+for the native live-game simulation/client path, not rendered FPS or a GPU
+benchmark. Explicitly mounted mods can have different CP costs and workloads.
+
+`PATHPERF1_HASHES` writes every measured frame's state hash to a separate file
+per case; compare those files between builds. Hash output is optional and does
+not affect simulation state. The benchmark itself is never a timing threshold.
+
+### Measured result
+
+On an Apple Silicon Release build, original/optimized/optimized/original runs
+with no concurrent builds/tests produced these averages of two samples:
+
+| Army | CP | Original march mean | Optimized march mean | Less CPU time |
+|---|---:|---:|---:|---:|
+| 334 battalions | 20,040 | 55.05 ms | 40.94 ms | 25.6% |
+| 5,000 individual soldiers | 20,000 | 29.83 ms | 20.34 ms | 31.8% |
+
+Every one of the 180 state hashes per scenario matched across all four runs.
+The battalion hash chain was `1dc34080`; the individual-soldier chain was
+`7878afd5`. Path queue peaks were also unchanged (339 and 510 respectively).
+The order-frame cost remains significant, particularly for 5,000 individual
+orders; this change does not claim to eliminate that spike.
+
+Both the macOS extension and native test runner build. The focused movement,
+pathfinder and crate suite passes 30 cases / 1,399 assertions, including
+cached-interface order, restored crate state, pickup once-only behavior,
+containment/destruction and repeated movement determinism. The opt-in
+two-scenario benchmark passes 5,772 assertions per run. Compiler/link audit
+checks pass; the full AST audit remains blocked by the existing missing
+libclang and unclassified FloatingText source described above.

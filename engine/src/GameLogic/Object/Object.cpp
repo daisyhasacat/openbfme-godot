@@ -47,6 +47,7 @@
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
 #include "GameLogic/AI/TurretAI.h"
 #include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/Module/CrateCollide.h"
 #include "GameLogic/Module/AutoDepositUpdate.h"
 #include "GameLogic/Module/ObjectHelper.h"
 #include "GameClient/Drawable.h"
@@ -317,6 +318,14 @@ void Object::buildModules()
 		{
 			m_ai = a;
 		}
+	}
+	// The module list is fixed for this Object’s lifetime. Preserve its dispatch
+	// order, resolving interfaces and crate classification once rather than on
+	// every overlap / six-times-per-frame contact pass. Includes helper modules.
+	for (const auto &module : m_modules)
+	{
+		if (auto *collide = module->getCollide()) m_collideModules.push_back(collide);
+		m_hasCrateCollide = m_hasCrateCollide || dynamic_cast<CrateCollide *>(module.get()) != nullptr;
 	}
 	// COMBAT-2: the finished object's body applies its initial damage state once (an INI InitialHealth below the thresholds shows DAMAGED / REALLYDAMAGED / RUBBLE from the start)
 	if (m_body)

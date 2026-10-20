@@ -642,16 +642,13 @@ void SquishCollide::onCollide(Object *other, const Coord3D *, const Coord3D *)
 // ZH Object::onCollide (Object.cpp): every collide module in module order; stop once the object is destroyed
 void ObjectCollide::onCollide(Object &self, Object &other)
 {
-	for (const std::unique_ptr<BehaviorModule> &m : self.modules())
+	for (CollideModuleInterface *c : self.collideModules())
 	{
 		if (self.isDestroyed())
 		{
 			return;
 		}
-		if (CollideModuleInterface *c = m->getCollide())
-		{
-			c->onCollide(&other, nullptr, nullptr);
-		}
+		c->onCollide(&other, nullptr, nullptr);
 	}
 }
 

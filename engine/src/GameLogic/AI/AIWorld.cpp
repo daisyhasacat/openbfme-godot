@@ -1142,22 +1142,19 @@ void AIWorld::processCollisions()
 						const int j = items[(size_t)k];
 						if ((size_t)j > i) // the pair is handled from the lower index
 						{
+							const CollisionUnit &b = units[(size_t)j];
+							const float dx = SimMath::subf32(a.x, b.x), dy = SimMath::subf32(a.y, b.y), rr = SimMath::addf32(a.r, b.r);
+							if (SimMath::addf32(SimMath::mulf32(dx, dx), SimMath::mulf32(dy, dy)) >= SimMath::mulf32(rr, rr)) continue;
 							candidates.push_back(j);
 						}
 					}
 				}
 			}
-			std::sort(candidates.begin(), candidates.end()); // the pairs of one unit meet in id order, whatever the bucket layout
-			for (int j : candidates)
-			{
-				const CollisionUnit &b = units[(size_t)j];
-				const float dx = SimMath::subf32(a.x, b.x), dy = SimMath::subf32(a.y, b.y), rr = SimMath::addf32(a.r, b.r);
-				if (SimMath::addf32(SimMath::mulf32(dx, dx), SimMath::mulf32(dy, dy)) >= SimMath::mulf32(rr, rr))
-				{
-					continue;
-				}
-				pairs.emplace_back((int)i, j);
-			}
+			// The distance test is pure snapshot work: reject non-overlapping
+			// neighbours before sorting. Only actual contacts need ID ordering;
+			// the comparison and callback order are unchanged.
+			std::sort(candidates.begin(), candidates.end());
+			for (int j : candidates) pairs.emplace_back((int)i, j);
 		}
 	});
 	bool alliedPair = false;

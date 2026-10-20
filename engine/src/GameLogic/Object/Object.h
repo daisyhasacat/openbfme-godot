@@ -61,6 +61,7 @@
 #include <string>
 #include <vector>
 
+class CollideModuleInterface;
 class ExperienceTracker;
 class GameLogic;
 class ObjectClientHooks;
@@ -362,6 +363,9 @@ public:
 	// ---- modules ----------------------------------------------------------------------------------------------------------
 	const std::vector<std::unique_ptr<BehaviorModule>> &modules() const { return m_modules; }
 	size_t helperCount() const { return m_helperCount; }
+	// Derived module-interface index: immutable after buildModules, never serialized/hashed.
+	const std::vector<CollideModuleInterface *> &collideModules() const { return m_collideModules; }
+	bool hasCrateCollide() const { return m_hasCrateCollide; }
 	BodyModuleInterface *getBodyModule() const { return m_body; }
 	ContainModuleInterface *getContain() const { return m_contain; }
 	AIUpdateInterface *getAIUpdateInterface() const { return m_ai; }
@@ -522,6 +526,8 @@ private:
 	UnsignedInt m_enteredOrExitedFrame = 0;      ///< RW + 0x414
 	std::int32_t m_triggerCellX = 0, m_triggerCellY = 0; ///< RW + 0x418 / + 0x41C (the integer position of the last check)
 
+	std::vector<CollideModuleInterface *> m_collideModules;
+	bool m_hasCrateCollide = false;
 	std::vector<std::unique_ptr<BehaviorModule>> m_modules; ///< helpers first, then the template's behaviors
 	size_t m_helperCount = 0;
 	BodyModuleInterface *m_body = nullptr;

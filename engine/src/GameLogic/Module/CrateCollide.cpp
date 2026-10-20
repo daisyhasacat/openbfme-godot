@@ -151,8 +151,7 @@ void CrateCollide::processContacts(GameLogic &logic)
 {
 	std::vector<Object *> crates;
 	for (Object *obj = logic.getFirstObject(); obj; obj = obj->getNextObject())
-		for (const auto &module : obj->modules())
-			if (dynamic_cast<CrateCollide *>(module.get())) { crates.push_back(obj); break; }
+		if (obj->hasCrateCollide()) crates.push_back(obj);
 	std::sort(crates.begin(), crates.end(), [](Object *a, Object *b) { return a->getID() < b->getID(); });
 	for (Object *crate : crates)
 	{
