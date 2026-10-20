@@ -232,16 +232,20 @@ MessageDisposition LookAtTranslator::translate(const ClientMessage &msg)
 				break;
 			}
 			const bool selecting = m_ctx.ui.isSelecting();
+			// Windowed host adaptation: allow the same small border outside the window,
+			// but never treat the rest of another display as a screen edge.
+			const bool nearWindow = m_cur.x >= -kEdge && m_cur.y >= -kEdge &&
+				m_cur.x < size.x + kEdge && m_cur.y < size.y + kEdge;
 			if (m_edgeScrollEnabled && !selecting)
 			{
 				if (m_scrolling)
 				{
-					if (m_scrollType == SCROLL_SCREENEDGE && interior(m_cur, size))
+					if (m_scrollType == SCROLL_SCREENEDGE && (!nearWindow || interior(m_cur, size)))
 					{
 						stopScrolling();
 					}
 				}
-				else if (!interior(m_cur, size))
+				else if (nearWindow && !interior(m_cur, size))
 				{
 					setScrolling(SCROLL_SCREENEDGE);
 				}

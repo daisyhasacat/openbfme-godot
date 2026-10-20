@@ -219,6 +219,7 @@ struct HudDevice : public AptNativeHook
 	bool ownsPlayer = false;
 	std::uint64_t playerId = 0;
 	Vector2 lastPointer;
+	bool pointerOutsideWindow = false;
 	bool livePointerSeen = false;
 	Vector2 livePointer; ///< lane BUILD-5 r3: the pointer as the OS reports it, also while the HUD's input waits for the logic worker (the ghost's pose: RotWK Mouse + 0x4F0C)
 	int localPlayerIndex = -1;                   ///< SMOOTH-1: the local player's index (the radar's own blips, from the snapshot)
@@ -3170,6 +3171,15 @@ void InGameHudNode::_process(double delta)
 		const bool retail = d->edgeScroll || wm == DisplayServer::WINDOW_MODE_FULLSCREEN || wm == DisplayServer::WINDOW_MODE_EXCLUSIVE_FULLSCREEN;
 		la->setEdgeScrollEnabled(d->edgeScrollMode == 1 ? true : (d->edgeScrollMode == 2 ? false : retail)); // lane OPTS-2: the option
 	}
+	// A window may stop delivering motion events after the pointer leaves it.
+	// Refresh an active edge pan from the host position until it leaves the
+	// narrow outer border, rather than retaining the last in-window edge.
+	if (d->pointerOutsideWindow && vp)
+	{
+		LookAtTranslator *la = d->hud->input().lookAt();
+		if (la && la->scrollType() == LookAtTranslator::SCROLL_SCREENEDGE)
+			inject_mouse_move(vp->get_mouse_position());
+	}
 	const double step = 1.0 / 30.0;
 	d->clientClock += delta;
 	int guard = 0;
@@ -4017,6 +4027,8 @@ void InGameHudNode::syncModifiers(const InputEventWithModifiers *e)
 // only end what the HUD already holds
 void InGameHudNode::_notification(int what)
 {
+	if (d && what == NOTIFICATION_WM_MOUSE_EXIT) d->pointerOutsideWindow = true;
+	if (d && what == NOTIFICATION_WM_MOUSE_ENTER) d->pointerOutsideWindow = false;
 	if ((what == NOTIFICATION_WM_WINDOW_FOCUS_OUT || what == NOTIFICATION_APPLICATION_FOCUS_OUT) && d && d->ready && d->hud)
 	{
 		if (d->touchPan && !d->touchPoints.empty()) d->hud->input().ui().setInputEnabled(d->touchInputWasEnabled);

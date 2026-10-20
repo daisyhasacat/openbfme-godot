@@ -671,6 +671,25 @@ TEST_CASE("camera: the screen edge scrolls with a ramp of ScreenEdgeScrollRampTi
 	// leaving the edge stops it
 	r.move(500, 400);
 	CHECK_FALSE(la.isScrolling());
+	// The outer border is small too: leaving it stops an existing pan, and a
+	// distant pointer (including outside a corner) cannot start one.
+	for (const ICoord2D p : { ICoord2D{ -3, 400 }, ICoord2D{ 1026, 400 }, ICoord2D{ 500, -3 }, ICoord2D{ 500, 770 } })
+	{
+		r.move(p.x, p.y);
+		REQUIRE(la.isScrolling());
+		const int x = p.x < 0 ? -4 : (p.x >= 1024 ? 1027 : p.x);
+		const int y = p.y < 0 ? -4 : (p.y >= 768 ? 771 : p.y);
+		r.move(x, y);
+		CHECK_FALSE(la.isScrolling());
+		r.frame(1);
+		CHECK(la.offsetX() == 0.0f);
+		CHECK(la.offsetY() == 0.0f);
+	}
+	for (const ICoord2D p : { ICoord2D{ -100, 0 }, ICoord2D{ 0, -100 }, ICoord2D{ 2000, 0 }, ICoord2D{ 1023, 1500 } })
+	{
+		r.move(p.x, p.y);
+		CHECK_FALSE(la.isScrolling());
+	}
 	// the top edge scrolls forward (y = 0 -> offset.y negative = up the map)
 	const float y0 = c.position().y;
 	r.move(500, 0);
