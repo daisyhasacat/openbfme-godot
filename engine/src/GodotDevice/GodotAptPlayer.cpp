@@ -3,6 +3,7 @@
 // See GodotAptPlayer.h.
 
 #include "GodotDevice/GodotAptPlayer.h"
+#include "GodotDevice/GodotIOSTouch.h"
 #include "GodotDevice/GodotVideoStream.h"
 #include "GameClient/GUI/PlatformIcons.h"
 #include "GameClient/CameraSettings.h"
@@ -97,6 +98,8 @@
 #include <godot_cpp/classes/input_event_key.hpp>
 #include <godot_cpp/classes/input_event_mouse_button.hpp>
 #include <godot_cpp/classes/input_event_mouse_motion.hpp>
+#include <godot_cpp/classes/input_event_screen_touch.hpp>
+#include <godot_cpp/classes/input_event_screen_drag.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/theme_db.hpp>
 #include <godot_cpp/classes/time.hpp>
@@ -754,6 +757,12 @@ struct AptMenuPlayer::Impl
 	WindowManager *external = nullptr;
 	AptNativeHook *nativeHook = nullptr;
 	bool inputForwarded = false;
+	// OpenBFME touch adaptation only: defer list clicks until a finger lifts.
+	int listTouch = -1;
+	Vector2 listTouchOrigin, listTouchLast;
+	bool listTouchDragging = false;
+	float listTouchScroll = 0.0f;
+	bool touchPointerHeld = false;
 	String keyboardButton;
 	int mainMenuGroup = -1, mainMenuItem = -1;
 	bool keyboardButtonPressed = false;
@@ -1444,6 +1453,8 @@ Dictionary AptMenuPlayer::boot(const Ref<RetailFileSystem> &fs, const Dictionary
 	Dictionary result;
 	Array errors;
 	m_booted = false;
+	m->listTouch = -1;
+	m->touchPointerHeld = false;
 	const std::uint64_t start = Time::get_singleton()->get_ticks_usec();
 	if (fs.is_null() || !fs->is_mounted())
 	{
@@ -1538,6 +1549,8 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 	Dictionary result;
 	Array errors;
 	m_booted = false;
+	m->listTouch = -1;
+	m->touchPointerHeld = false;
 	const std::uint64_t start = Time::get_singleton()->get_ticks_usec();
 	GameWorld *world = Object::cast_to<GameWorld>(worldObject);
 	Ref<RetailFileSystem> presentationFs = config.get("presentation_fs", Ref<RetailFileSystem>());
@@ -5575,6 +5588,75 @@ void AptMenuPlayer::_input(const Ref<InputEvent> &event)
 	// Godot text fields over the shell own their typing and caret navigation.
 	if (Object::cast_to<InputEventKey>(event.ptr()) && get_viewport()->gui_get_focus_owner())
 		return;
+	// Touch is a device adaptation, not a retail input rule. Restrict it to
+	// actual scroll-list gadgets; sliders, buttons and movie-only controls keep
+	// their ordinary mouse/Pencil input. A modal blocking components also wins.
+	auto overList = [&](const Vector2 &point) {
+		if (!m->shell || !m->shell->layer || !m->shell->wm || m->shell->wm->componentInputBlocked()) return false;
+		const Vector2 stage = window_to_stage(point);
+		GameWindow *window = m->shell->layer->gadgets().winPickPointerWindow((int)stage.x, (int)stage.y);
+		return window && BitTest(window->winGetStyle(), GWS_SCROLL_LISTBOX);
+	};
+	if (const InputEventMouse *mouse = Object::cast_to<InputEventMouse>(event.ptr()))
+	{
+		// Godot synthesizes its emulated press BEFORE delivering ScreenTouch.
+		if (event->get_device() == InputEvent::DEVICE_ID_EMULATION && (m->listTouch >= 0 || overList(mouse->get_position())))
+		{
+			get_viewport()->set_input_as_handled();
+			return;
+		}
+	}
+	if (const InputEventScreenTouch *touch = Object::cast_to<InputEventScreenTouch>(event.ptr()))
+	{
+		if (touch->is_pressed() && m->listTouch < 0 && overList(touch->get_position()))
+		{
+			m->listTouch = touch->get_index();
+			m->listTouchOrigin = m->listTouchLast = touch->get_position();
+			m->listTouchDragging = false;
+			m->listTouchScroll = 0.0f;
+		}
+		else if (!touch->is_pressed() && touch->get_index() == m->listTouch)
+		{
+			m->listTouch = -1;
+			if (!m->listTouchDragging && !touch->is_canceled() && overList(touch->get_position()))
+			{
+				menu_pointer_moved();
+				post_mouse_move_stage(window_to_stage(touch->get_position()));
+				post_mouse_button(true);
+				post_mouse_button(false);
+			}
+		}
+		else return;
+		get_viewport()->set_input_as_handled();
+		return;
+	}
+	if (const InputEventScreenDrag *drag = Object::cast_to<InputEventScreenDrag>(event.ptr()))
+	{
+		if (drag->get_index() != m->listTouch) return;
+		if (!m->listTouchDragging && drag->get_position().distance_to(m->listTouchOrigin) >= 12.0f)
+			m->listTouchDragging = true;
+		if (m->listTouchDragging)
+		{
+			// Keep the wheel anchored to the captured list even outside its box.
+			// One wheel step per 24 stage pixels; the gadget retains its own row
+			// heights and scroll bounds. Downward finger motion scrolls upward.
+			m->listTouchScroll += window_to_stage(drag->get_position()).y - window_to_stage(m->listTouchLast).y;
+			m->listTouchLast = drag->get_position();
+			if (overList(m->listTouchOrigin))
+			{
+				menu_pointer_moved();
+				post_mouse_move_stage(window_to_stage(m->listTouchOrigin));
+				while (std::abs(m->listTouchScroll) >= 24.0f)
+				{
+					const int direction = m->listTouchScroll > 0.0f ? 1 : -1;
+					post_mouse_wheel(direction);
+					m->listTouchScroll -= direction * 24.0f;
+				}
+			}
+		}
+		get_viewport()->set_input_as_handled();
+		return;
+	}
 	if (const InputEventMouseMotion *mm = Object::cast_to<InputEventMouseMotion>(event.ptr()))
 	{
 		menu_pointer_moved();
@@ -5586,7 +5668,17 @@ void AptMenuPlayer::_input(const Ref<InputEvent> &event)
 		post_mouse_move_stage(window_to_stage(mb->get_position()));
 		if (mb->get_button_index() == MOUSE_BUTTON_LEFT)
 		{
-			post_mouse_button(mb->is_pressed());
+			const bool touchDevice = event->get_device() == InputEvent::DEVICE_ID_EMULATION || event->get_device() == OpenBFMEIOSTouch::PencilDevice;
+			if (touchDevice && !mb->is_pressed() && mb->is_canceled())
+			{
+				// ReleaseOutside clears the pressed gadget/movie without activating
+				// the button under a canceled finger/Pencil. Preserve pointer hover.
+				post_mouse_move_stage(Vector2(-1000000, -1000000));
+				post_mouse_button(false);
+				post_mouse_move_stage(window_to_stage(mb->get_position()));
+			}
+			else post_mouse_button(mb->is_pressed());
+			if (touchDevice) m->touchPointerHeld = mb->is_pressed();
 		}
 		else if (mb->is_pressed() && mb->get_button_index() == MOUSE_BUTTON_WHEEL_UP)
 		{
@@ -5604,6 +5696,23 @@ void AptMenuPlayer::_input(const Ref<InputEvent> &event)
 			get_viewport()->set_input_as_handled();
 		}
 	}
+}
+
+void AptMenuPlayer::_notification(int what)
+{
+	if (what != NOTIFICATION_APPLICATION_FOCUS_OUT && what != NOTIFICATION_WM_WINDOW_FOCUS_OUT) return;
+	m->listTouch = -1;
+	m->listTouchDragging = false;
+	m->listTouchScroll = 0.0f;
+	if (m_booted && !m->external && !m->inputForwarded && m->touchPointerHeld)
+	{
+		float x = 0, y = 0;
+		m->A()->mousePosition(x, y);
+		post_mouse_move_stage(Vector2(-1000000, -1000000));
+		post_mouse_button(false);
+		post_mouse_move_stage(Vector2(x, y));
+	}
+	m->touchPointerHeld = false;
 }
 
 // lane OPTS-6: the navigation keys (MenuNavigator.h; not retail): the arrows, Tab / Shift+Tab, Enter / Space, Esc, PageUp / PageDown

@@ -62,6 +62,28 @@ the contribution of Metal/engine startup before the first script executes.
 Game audio uses the iOS Playback session category, so the silent switch does not
 mute the game. System volume and in-game volume controls still apply.
 
+## Touch and Apple Pencil controls
+
+Drag one finger over the battlefield to pan the camera. Pinch two fingers
+together to zoom out, or spread them to zoom in; moving both fingers also pans.
+A finger tap selects or issues the normal contextual order. Apple Pencil keeps
+mouse-style selection: tap to select, or drag to draw a selection box. Drags
+start after 12 pixels of movement at a 720-pixel viewport height, scaling with
+larger viewports, so small movements during a tap do not start a drag.
+
+Swipe lists and scrollable panels to scroll, including the map list and native
+menu lists. Tapping still activates their entries. Interrupted touches and
+canceled Pencil strokes release capture without activating the control below.
+
+The classic native HUD gains a top touch toolbar on touch devices: Deselect,
+Stop, Menu, Console, Attack Move (A), Select Army (Q), Home Base (H), and Last
+Event (Space). These shortcuts use the same input path as the keyboard. The
+modern HUD retains its own controls.
+
+The iOS bridge distinguishes Pencil from fingers before Godot emulates mouse
+input. Automated gesture tests and simulator compilation cover routing and
+selection behavior; physical Pencil interaction still needs device validation.
+
 ## iOS Simulator (Apple Silicon)
 
 The export uses native arm64 simulators with a matching source-built Godot library. Its pre-build phase reads Xcode's selected

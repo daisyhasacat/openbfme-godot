@@ -14,6 +14,9 @@ var placement_hint: Label
 var build_button: Button
 var placement_rotation := 0.0
 var _building := ""
+## Use the same scan-code input path as a hardware keyboard (and mounted hotkeys).
+const SHORTCUTS := {"Stop": 0x1f, "Attack move": 0x1e, "Select army": 0x10,
+	"Home base": 0x23, "Last event": 0x39}
 func _ready() -> void:
 	layer = 35
 	compact_mode = OS.get_model_name().begins_with("iPhone") or get_viewport().get_visible_rect().size.aspect() >= 1.9
@@ -30,7 +33,7 @@ func _ready() -> void:
 	bar.add_theme_constant_override("h_separation", 12)
 	bar.add_theme_constant_override("v_separation", 12)
 	menu_contents.add_child(bar)
-	for title in ["Deselect units", "Stop", "Menu", "Console"]:
+	for title in ["Deselect units", "Stop", "Menu", "Console", "Attack move", "Select army", "Home base", "Last event"]:
 		var button := _button(title, Vector2(180, 72))
 		button.pressed.connect(_activate.bind(title))
 		bar.add_child(button)
@@ -58,15 +61,17 @@ func _process(_delta: float) -> void:
 	var active: bool = gameplay.is_valid() and gameplay.call()
 	var viewport_size := get_viewport().get_visible_rect().size
 	var ui_scale := maxf(1.0, viewport_size.y / 768.0)
-	menu_panel.scale = Vector2.ONE * ui_scale
-	placement_background.scale = Vector2.ONE * ui_scale
 	menu_panel.visible = active
 	menu_button.visible = compact_mode
 	menu_button.text = "Close touch menu" if expanded else "Touch menu"
 	bar.visible = active and (not compact_mode or expanded)
 	menu_panel.size = menu_panel.get_combined_minimum_size()
+	# Portrait tablets have less horizontal space even when their height is large.
+	ui_scale = minf(ui_scale, maxf(0.1, (viewport_size.x - 24.0) / maxf(menu_panel.size.x, placement_background.get_combined_minimum_size().x)))
+	menu_panel.scale = Vector2.ONE * ui_scale
+	placement_background.scale = Vector2.ONE * ui_scale
 	menu_panel.position = Vector2((viewport_size.x - menu_panel.size.x * ui_scale) * 0.5, 16 * ui_scale)
-	var live: Node = hud.call()
+	var live: Node = hud.call() if hud.is_valid() else null
 	var placement: Dictionary = live.get_placement() if live != null and live.has_method("get_placement") else {}
 	placement_panel.visible = active and placement.get("placing", false)
 	placement_background.visible = placement_panel.visible
@@ -83,7 +88,7 @@ func _process(_delta: float) -> void:
 		build_button.disabled = not positioned or not rotating or not legal
 	else:
 		_building = ""
-	Engine.set_meta("touch_build_controls", active)
+	Engine.set_meta("touch_build_controls", active or bool(Engine.get_meta("adaptive_hud_active", false)))
 	var blocked := menu_panel.get_global_rect() if active else Rect2()
 	if placement_panel.visible: blocked = blocked.merge(placement_background.get_global_rect())
 	Engine.set_meta("touch_toolbar_rect", blocked)
@@ -91,14 +96,17 @@ func _exit_tree() -> void:
 	Engine.remove_meta("touch_toolbar_rect")
 	Engine.remove_meta("touch_build_controls")
 func _activate(title: String) -> void:
-	var live: Node = hud.call()
+	var live: Node = hud.call() if hud.is_valid() else null
 	if live == null: return
+	if SHORTCUTS.has(title):
+		live.inject_key(SHORTCUTS[title], true)
+		live.inject_key(SHORTCUTS[title], false)
+		expanded = false
+		return
 	match title:
 		"Deselect units": live.deselect_all()
-		"Stop":
-			live.inject_key(31, true) # DirectInput S
-			live.inject_key(31, false)
-		"Menu": open_menu.call()
+		"Menu":
+			if open_menu.is_valid(): open_menu.call()
 		"Console":
 			if open_console.is_valid(): open_console.call()
 	expanded = false

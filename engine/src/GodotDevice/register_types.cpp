@@ -27,6 +27,13 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IOS
+#include "GodotDevice/GodotIOSTouch.h"
+#endif
+#endif
+
 using namespace godot;
 
 static void initialize_openbfme(ModuleInitializationLevel p_level)
@@ -56,12 +63,18 @@ static void initialize_openbfme(ModuleInitializationLevel p_level)
 	GDREGISTER_CLASS(InstallSetup);
 	GDREGISTER_CLASS(VP6MovieStream); // CAMP-2
 	LuaGDExtension::initialize(); // LUAGD-1: LuaState, LuaTable, ... and Lua as a script language
+#if defined(__APPLE__) && TARGET_OS_IOS
+	OpenBFMEIOSTouch::install();
+#endif
 }
 
 static void uninitialize_openbfme(ModuleInitializationLevel p_level)
 {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE)
 	{
+#if defined(__APPLE__) && TARGET_OS_IOS
+		OpenBFMEIOSTouch::uninstall();
+#endif
 		LuaGDExtension::uninitialize(); // LUAGD-1
 		WindowsCrashDump::uninstall();
 		ConsoleFilter::uninstall(); // RELEASE-1: the original stdout / stderr back before the extension's code goes

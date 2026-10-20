@@ -614,8 +614,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         set_target_properties(openbfme PROPERTIES OUTPUT_NAME "openbfme.ios.template_debug.arm64")
     endif()
     enable_language(OBJCXX)
-    target_sources(openbfme PRIVATE src/GodotDevice/GodotIOSAssets.mm)
-    set_source_files_properties(src/GodotDevice/GodotIOSAssets.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_sources(openbfme PRIVATE src/GodotDevice/GodotIOSAssets.mm src/GodotDevice/GodotIOSTouch.mm)
+    set_source_files_properties(src/GodotDevice/GodotIOSAssets.mm src/GodotDevice/GodotIOSTouch.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(openbfme PRIVATE "-framework UIKit" "-framework UniformTypeIdentifiers" "-framework Foundation")
     set_target_properties(openbfme PROPERTIES FRAMEWORK TRUE
         FRAMEWORK_VERSION A

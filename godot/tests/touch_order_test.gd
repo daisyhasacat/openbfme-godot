@@ -1,7 +1,7 @@
 extends SceneTree
 func _initialize() -> void: call_deferred("_run")
 func touch(hud: Node, index: int, down: bool, pos: Vector2) -> void:
-	var event := InputEventMouseButton.new()
+	var event := InputEventScreenTouch.new()
 	event.index = index
 	event.pressed = down
 	event.position = pos
@@ -28,12 +28,15 @@ func _run() -> void:
 	for i in 3: await process_frame
 	var before: Dictionary = world.get_object(unit)
 	assert(not hud.get_selection().is_empty())
+	# Aim at known nearby terrain instead of an arbitrary screen point, which
+	# can project outside the playable map as camera projection changes.
+	var destination := Vector2(2000, 1800)
+	var pixel: Vector2 = hud.world_to_pixel(destination)
 	for down in [true,false]:
-		var event := InputEventMouseButton.new()
-		event.device = -1
-		event.button_index = MOUSE_BUTTON_LEFT
+		var event := InputEventScreenTouch.new()
+		event.index = 0
 		event.pressed = down
-		event.position = Vector2(900,200)
+		event.position = pixel
 		Input.parse_input_event(event)
 		world.advance(0.2)
 		await process_frame
@@ -42,6 +45,7 @@ func _run() -> void:
 		await process_frame
 	var after: Dictionary = world.get_object(unit)
 	assert(hud.get_state().keys.touch_orders == 1, str(hud.get_state()))
+	assert("MSG_DO_MOVETO" in str(hud.get_message_log()), str(hud.get_message_log()))
 	assert(Vector2(before.x,before.y).distance_to(Vector2(after.x,after.y)) > 10, str(after))
 	assert(not hud.get_selection().is_empty())
 	print("TOUCH CONTEXT ORDER ROUTING PASS")

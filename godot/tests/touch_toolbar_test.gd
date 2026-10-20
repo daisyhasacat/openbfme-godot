@@ -24,7 +24,7 @@ func _run() -> void:
 	root.add_child(toolbar)
 	await process_frame
 	toolbar._process(0)
-	assert(toolbar.bar.visible and toolbar.bar.get_child_count() == 4)
+	assert(toolbar.bar.visible and toolbar.bar.get_child_count() == 8)
 	toolbar.bar.get_child(0).pressed.emit()
 	toolbar.bar.get_child(1).pressed.emit()
 	toolbar.bar.get_child(2).pressed.emit()
@@ -45,10 +45,22 @@ func _run() -> void:
 	var menu_rect: Rect2 = toolbar.menu_panel.get_global_rect()
 	assert(menu_rect.position.x >= 0 and menu_rect.end.x <= 1920)
 	assert(Engine.get_meta("touch_toolbar_rect").encloses(menu_rect))
+	root.size = Vector2i(768, 1024)
+	toolbar.compact_mode = false
+	await process_frame
+	await process_frame
+	toolbar._process(0)
+	menu_rect = toolbar.menu_panel.get_global_rect()
+	# tolerance: the toolbar must fit the physical viewport in portrait orientation.
+	assert(menu_rect.position.x >= 0 and menu_rect.end.x <= 768)
+	toolbar.compact_mode = true
 	toolbar.bar.get_child(0).pressed.emit()
 	toolbar._process(0)
 	assert(not toolbar.bar.visible)
 	assert(hud.cleared and hud.keys == [[31,true],[31,false]] and menu.opened)
+	for title in ["Attack move", "Select army", "Home base", "Last event"]:
+		toolbar._activate(title)
+	assert(hud.keys == [[31,true],[31,false],[30,true],[30,false],[16,true],[16,false],[35,true],[35,false],[57,true],[57,false]])
 	hud.placement = {"placing":true,"template":"GondorBarracks","anchored":false,"legal":0}
 	toolbar._process(0)
 	assert(toolbar.placement_panel.visible and toolbar.build_button.disabled)

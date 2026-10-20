@@ -327,6 +327,7 @@ var _console_input_states: Array[Dictionary] = []
 var _shell: Node2D           # AptMenuPlayer
 var _camera: Camera3D
 var _second_view: Node
+var _touch_ui_scroll: Node
 var _env: WorldEnvironment
 var _sun: DirectionalLight3D
 var _quit_q_time := -1
@@ -600,6 +601,8 @@ var _scripted_skirmish_ini := ""
 
 
 func _exit_tree() -> void:
+	if is_instance_valid(_touch_ui_scroll):
+		_touch_ui_scroll.free()
 	if is_instance_valid(_second_view):
 		_second_view.close_view()
 	if not _scripted_skirmish_ini.is_empty():
@@ -662,6 +665,10 @@ func _ready() -> void:
 		var code: int = await preload("res://tests/smoke_checks.gd").new().run(get_tree())
 		get_tree().quit(code)
 		return
+	_touch_ui_scroll = preload("res://scripts/touch_ui_scroll.gd").new()
+	# Root sibling input runs before every game UI/HUD, including nodes added
+	# after loading. A swipe must be recognized before mouse emulation clicks.
+	get_tree().root.add_child.call_deferred(_touch_ui_scroll)
 	_display_setup() # lane OPTS-1: the player's display settings first; the command line below wins for the run
 	print("FRAME PACING ", preload("res://scripts/frame_pacing.gd").apply_from_args(OS.get_cmdline_user_args())) # lane SMOOTH-1
 	# lane OWNERFIX-3: the window / taskbar / dock icon is the OpenBFME ring (the project sets none, so Godot's logo showed); a failure is reported
@@ -2526,6 +2533,17 @@ func _install_hud(rep: Dictionary) -> void:
 			if _lua_console != null: _lua_console.toggle()
 		adaptive.bridge = get_node_or_null("ControllerInput")
 		add_child(adaptive)
+	if not has_node("TouchToolbar") and (OS.has_feature("mobile") or DisplayServer.is_touchscreen_available()):
+		var touch_toolbar := preload("res://scripts/touch_toolbar.gd").new()
+		touch_toolbar.name = "TouchToolbar"
+		touch_toolbar.hud = func() -> Node: return _hud
+		touch_toolbar.gameplay = func() -> bool:
+			var adaptive: Node = get_node_or_null("AdaptiveHUD")
+			return _state == State.PLAYING and not _quit_open and is_instance_valid(_hud) and (adaptive == null or adaptive.mode == "classic") and (_lua_console == null or not _lua_console.is_open()) and (not is_instance_valid(_map_editor) or not _map_editor.active)
+		touch_toolbar.open_menu = _toggle_quit_menu
+		touch_toolbar.open_console = func() -> void:
+			if _lua_console != null: _lua_console.toggle()
+		add_child(touch_toolbar)
 	if _game_options != null:
 		_game_options.game_started(_world, hud) # lane OPTS-2: the detail's particle limits, the camera and interface options
 	_shell.set_tribute_world(_world) # lane PLAY-1: PlayerTribute.apt's rows and Send (the Palantir's flag)

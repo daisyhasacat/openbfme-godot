@@ -4,6 +4,7 @@
 #include "Common/BfmeGame.h"
 #include "Common/AsciiString.h"
 #include "GodotDevice/GodotInGameHud.h"
+#include "GodotDevice/GodotIOSTouch.h"
 #include "GameClient/GUI/AptScreens/AptImageMode.h"
 #include "GodotDevice/GodotPackedTexture.h"
 #include "GameLogic/Module/HeroAbilityModules.h"
@@ -312,15 +313,21 @@ struct HudDevice : public AptNativeHook
 	// lane PLAY-3: the drag selection box drawn in the last frame, the box, the frames it was drawn in
 	bool dragBoxShown = false;
 	std::map<int, Vector2> touchPoints;
+	std::set<int> worldTouchCapture;
+	std::set<int> touchGuiIds;
+	Vector2 touchGestureStart, touchGestureLast;
+	bool touchMulti = false, touchCanceled = false, touchGuiMouse = false;
+	bool touchDoubleTap = false, touchPinching = false;
+	float touchPinchDistance = 0.0f, touchPinchHeight = 0.0f;
+	bool pencilPending = false, pencilDragging = false, pencilDoubleClick = false;
+	bool pencilWorldCapture = false;
+	Vector2 pencilStart;
 	bool touchPan = false;
-	bool touchOrderPending = false;
 	bool touchBuildGesture = false;
 	bool touchBuildRotate = false, touchBuildMoved = false;
 	Vector2 touchBuildStart;
 	std::string touchBuildTemplate;
-	Vector2 touchOrderStart;
 	unsigned touchOrders = 0;
-	bool touchInputWasEnabled = true;
 	IconUIOp dragBox;
 	unsigned long long dragBoxFrames = 0;
 	void drawIconOps(RID parent);
@@ -3499,6 +3506,13 @@ void InGameHudNode::set_view_active(bool active)
 	d->hud->input().ui().endAreaSelectHint();
 	d->overlayMouseHeld = false;
 	d->overlayTouches.clear();
+	d->touchPoints.clear();
+	d->worldTouchCapture.clear();
+	d->touchGuiIds.clear();
+	d->touchCanceled = true;
+	d->touchGuiMouse = false;
+	d->pencilPending = d->pencilDragging = false;
+	d->pencilWorldCapture = false;
 	d->mods = ModifierTracker();
 	d->keyState = 0;
 	d->massRecruitKey = false;
@@ -4082,6 +4096,12 @@ void InGameHudNode::syncModal()
 	}
 	if (modal)
 	{
+		d->touchPoints.clear();
+		d->worldTouchCapture.clear();
+		d->touchGuiIds.clear();
+		d->touchCanceled = true;
+		d->pencilPending = d->pencilDragging = false;
+		d->pencilWorldCapture = false;
 		for (int button = 1; button <= 3; ++button)
 		{
 			if (d->heldButtons & (1u << button))
@@ -4152,16 +4172,26 @@ void InGameHudNode::_notification(int what)
 	if (d && what == NOTIFICATION_WM_MOUSE_ENTER) d->pointerOutsideWindow = false;
 	if ((what == NOTIFICATION_WM_WINDOW_FOCUS_OUT || what == NOTIFICATION_APPLICATION_FOCUS_OUT) && d && d->ready && d->hud)
 	{
-		if (d->touchPan && !d->touchPoints.empty()) d->hud->input().ui().setInputEnabled(d->touchInputWasEnabled);
 		d->touchPoints.clear();
+		d->worldTouchCapture.clear();
+		d->touchGuiIds.clear();
 		d->touchPan = false;
-		d->touchOrderPending = false;
+		d->touchCanceled = true;
+		d->touchGuiMouse = false;
+		d->pencilPending = d->pencilDragging = false;
+		d->pencilWorldCapture = false;
+		d->heldButtons = 0;
+		d->hud->input().selectionTranslator().setLeftMouseButton(false);
+		d->hud->input().selectionTranslator().setDragSelecting(false);
+		d->hud->input().ui().setSelecting(false);
+		d->hud->input().ui().endAreaSelectHint();
 		std::vector<Ref<InputEvent>> kept;
 		for (const Ref<InputEvent> &e : d->pendingInput)
 		{
 			const InputEventKey *k = Object::cast_to<InputEventKey>(e.ptr());
 			const InputEventMouseButton *b = Object::cast_to<InputEventMouseButton>(e.ptr());
-			if ((k && k->is_pressed()) || (b && b->is_pressed()))
+			if (Object::cast_to<InputEventScreenTouch>(e.ptr()) || Object::cast_to<InputEventScreenDrag>(e.ptr()) ||
+				(k && k->is_pressed()) || (b && b->is_pressed()))
 			{
 				++d->droppedInput;
 				continue;
@@ -4219,6 +4249,7 @@ void InGameHudNode::script_input(bool enable)
 
 void InGameHudNode::_input(const Ref<InputEvent> &event)
 {
+	if (!d->ready || !d->hud || event.is_null()) return;
 	if (!d->viewActive) return;
 	// Independent rectangles preserve world input between collapsed HUD panels.
 	const auto engine = Engine::get_singleton();
@@ -4234,6 +4265,24 @@ void InGameHudNode::_input(const Ref<InputEvent> &event)
 	 const Array rects=engine->get_meta("adaptive_hud_rects");
 	 for(int i=0;i<rects.size();++i)if(Rect2(rects[i]).has_point(overlayPoint)){overlayHit=true;break;}
 	}
+	if (!d->secondaryView && hasOverlayPoint && engine->has_meta("touch_toolbar_rect"))
+		overlayHit = overlayHit || Rect2(engine->get_meta("touch_toolbar_rect")).has_point(overlayPoint);
+	// A gesture belongs to the surface where it began. Its final drag/release
+	// must still reach cleanup when the pointer crosses an overlay boundary.
+	if (touch && touch->is_pressed() && !overlayHit && !d->hud->isOverGui((int)overlayPoint.x, (int)overlayPoint.y))
+		d->worldTouchCapture.insert(touch->get_index());
+	const auto *pencilButton = event->get_device() == OpenBFMEIOSTouch::PencilDevice ? Object::cast_to<InputEventMouseButton>(event.ptr()) : nullptr;
+	if (pencilButton && pencilButton->is_pressed())
+		d->pencilWorldCapture = !overlayHit && !d->hud->isOverGui((int)overlayPoint.x, (int)overlayPoint.y);
+	const bool worldCaptured = (touch && d->worldTouchCapture.count(touch->get_index())) ||
+		(drag && d->worldTouchCapture.count(drag->get_index())) ||
+		(mouse && event->get_device() == OpenBFMEIOSTouch::PencilDevice && d->pencilWorldCapture);
+	if (worldCaptured && (overlayHit || d->hud->isOverGui((int)overlayPoint.x, (int)overlayPoint.y)) &&
+		((touch && !touch->is_pressed()) || (pencilButton && !pencilButton->is_pressed())))
+		event->set_meta("openbfme_end_over_ui", true);
+	if (worldCaptured) overlayHit = false;
+	if (touch && !touch->is_pressed()) d->worldTouchCapture.erase(touch->get_index());
+	if (pencilButton && !pencilButton->is_pressed()) d->pencilWorldCapture = false;
 	if(touch) {
 	 const bool captured=d->overlayTouches.count(touch->get_index())!=0;
 	 if(touch->is_pressed() && overlayHit)d->overlayTouches.insert(touch->get_index());
@@ -4248,15 +4297,6 @@ void InGameHudNode::_input(const Ref<InputEvent> &event)
 	 if(captured || overlayHit)return;
 	}
 	if(mouse && (overlayHit || d->overlayMouseHeld))return;
-	// Godot controls draw this toolbar above the native HUD; its taps belong to
-	// the controls, never to world selection or contextual orders underneath.
-	if (!d->secondaryView && Engine::get_singleton()->has_meta("touch_toolbar_rect"))
-	{
-		const Rect2 toolbar = Engine::get_singleton()->get_meta("touch_toolbar_rect");
-		const auto *mouse = Object::cast_to<InputEventMouse>(event.ptr());
-		const auto *touch = Object::cast_to<InputEventScreenTouch>(event.ptr());
-		if ((mouse && toolbar.has_point(mouse->get_position())) || (touch && toolbar.has_point(touch->get_position()))) return;
-	}
 	// Console shortcuts must never reach the HUD, even when it runs before the overlay's input callback.
 	if (const auto *key = Object::cast_to<InputEventKey>(event.ptr()))
 	{
@@ -4306,6 +4346,18 @@ void InGameHudNode::_input(const Ref<InputEvent> &event)
 void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 {
 	syncModal(); // lane OPTS-6
+	if (const auto *button = Object::cast_to<InputEventMouseButton>(event.ptr()); button && button->is_canceled() &&
+		(event->get_device() == InputEvent::DEVICE_ID_EMULATION || event->get_device() == OpenBFMEIOSTouch::PencilDevice) && !d->pencilPending)
+	{
+		// A canceled native GUI press releases outside its hit region; it must
+		// not activate the button UIKit canceled (or create a world click).
+		const Vector2 outside(-10000, -10000);
+		inject_mouse_move(outside);
+		inject_mouse_button((int)button->get_button_index(), false, outside, false);
+		inject_mouse_move(button->get_position());
+		d->touchGuiMouse = false;
+		return;
+	}
 	if (const auto *scroll = Object::cast_to<InputEventPanGesture>(event.ptr()))
 	{
 		const Vector2 delta = scroll->get_delta();
@@ -4331,118 +4383,175 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 		return;
 	}
 
+	// Enhanced touch controls: fingers move the view; Pencil remains a precise
+	// selection pointer. Wait for deliberate movement before either drag starts.
+	const float dragDistance = 12.0f * std::max(1.0f, (float)get_viewport_rect().size.y / 720.0f);
+	if (event->get_device() == OpenBFMEIOSTouch::PencilDevice)
+	{
+		if (const auto *button = Object::cast_to<InputEventMouseButton>(event.ptr()); button && button->get_button_index() == MOUSE_BUTTON_LEFT)
+		{
+			if (button->is_pressed() && !d->hud->isOverGui((int)button->get_position().x, (int)button->get_position().y))
+			{
+				d->pencilPending = true;
+				d->pencilDragging = false;
+				d->pencilStart = button->get_position();
+				d->pencilDoubleClick = button->is_double_click();
+				return;
+			}
+			if (!button->is_pressed() && d->pencilPending)
+			{
+				d->pencilPending = false;
+				if (button->is_canceled() || (bool)event->get_meta("openbfme_end_over_ui", false))
+				{
+					d->hud->input().selectionTranslator().setLeftMouseButton(false);
+					d->hud->input().selectionTranslator().setDragSelecting(false);
+					d->hud->input().ui().setSelecting(false);
+					d->hud->input().ui().endAreaSelectHint();
+					d->heldButtons &= ~(1u << 1);
+				}
+				else
+				{
+					if (!d->pencilDragging) inject_mouse_button(1, true, button->get_position(), d->pencilDoubleClick);
+					inject_mouse_button(1, false, button->get_position(), false);
+				}
+				d->pencilDragging = false;
+				return;
+			}
+		}
+		if (const auto *motion = Object::cast_to<InputEventMouseMotion>(event.ptr()); motion && d->pencilPending)
+		{
+			if (!d->pencilDragging && motion->get_position().distance_to(d->pencilStart) < dragDistance) return;
+			if (!d->pencilDragging) inject_mouse_button(1, true, d->pencilStart, d->pencilDoubleClick);
+			d->pencilDragging = true;
+			inject_mouse_move(motion->get_position());
+			return;
+		}
+	}
 	if (const auto *touch = Object::cast_to<InputEventScreenTouch>(event.ptr()))
 	{
+		const Vector2 p = touch->get_position();
 		if (touch->is_pressed())
 		{
+			if (!d->touchGuiIds.empty() || d->hud->isOverGui((int)p.x, (int)p.y))
+			{
+				d->touchGuiIds.insert(touch->get_index());
+				return;
+			}
 			if (d->touchPoints.empty())
 			{
-				d->touchPan = false;
+				d->touchPan = d->touchMulti = d->touchCanceled = d->touchPinching = false;
+				d->touchDoubleTap = touch->is_double_tap();
+				d->touchGestureStart = d->touchGestureLast = p;
 				d->touchBuildGesture = (bool)Engine::get_singleton()->get_meta("touch_build_controls", false) && d->hud->input().ui().isPlacing();
-				d->touchBuildStart = touch->get_position();
+				d->touchBuildStart = p;
 				d->touchBuildMoved = false;
 				if (d->touchBuildTemplate != d->hud->input().ui().placeBuildTemplate()) d->touchBuildRotate = false;
 			}
-			d->touchPoints[touch->get_index()] = touch->get_position();
-			if (d->touchPoints.size() >= 2 && !d->touchPan)
+			d->touchPoints[touch->get_index()] = p;
+			if (d->touchPoints.size() == 2)
 			{
-				d->touchPan = true;
-				d->touchOrderPending = false;
-				d->touchInputWasEnabled = d->hud->input().ui().getInputEnabled();
-				d->hud->input().ui().setInputEnabled(false);
-				d->hud->input().selectionTranslator().setLeftMouseButton(false);
-				d->hud->input().selectionTranslator().setDragSelecting(false);
-				d->hud->input().ui().setSelecting(false);
-				d->hud->input().ui().endAreaSelectHint();
+				d->touchMulti = true;
+				auto a = d->touchPoints.begin(), b = std::next(a);
+				d->touchGestureStart = d->touchGestureLast = (a->second + b->second) * 0.5f;
+				d->touchPinchDistance = a->second.distance_to(b->second);
+				d->touchPinchHeight = d->cam->getHeightAboveGround();
 			}
 		}
 		else
 		{
-			if (d->touchBuildGesture && !d->touchPan && d->touchPoints.size() == 1 && !touch->is_canceled())
+			if (d->touchGuiIds.erase(touch->get_index())) return;
+			auto point = d->touchPoints.find(touch->get_index());
+			if (point == d->touchPoints.end()) return;
+			d->touchCanceled = d->touchCanceled || touch->is_canceled() || (bool)event->get_meta("openbfme_end_over_ui", false);
+			const bool tap = d->touchPoints.size() == 1 && !d->touchMulti && !d->touchPan && !d->touchCanceled;
+			if (d->hud->input().ui().getInputEnabled())
 			{
-				if (!d->touchBuildMoved)
-					touch_build(d->touchBuildRotate ? "confirm" : "lock", Vector2());
-				else if (!d->touchBuildRotate)
-					touch_build("position", touch->get_position());
+				if (d->touchBuildGesture && !d->touchMulti && !d->touchCanceled)
+				{
+					if (!d->touchBuildMoved) touch_build(d->touchBuildRotate ? "confirm" : "lock", Vector2());
+					else if (!d->touchBuildRotate) touch_build("position", p);
+				}
+				else if (tap && !d->hud->isOverGui((int)p.x, (int)p.y))
+				{
+					int button = 1;
+					if (!d->hud->input().ui().getGUICommand() && !d->hud->input().ui().isPlacing() && !d->hud->spellBar().targeting())
+						for (::ObjectID id : d->hud->input().ui().selected())
+							if (const ::Object *unit = d->world->hud_game()->logic().findObjectByID(id); unit && !unit->isKindOfName("STRUCTURE"))
+							{
+								button = d->hud->input().commandTranslator().useAlternateMouse() ? 2 : 1;
+								++d->touchOrders;
+								break;
+							}
+					inject_mouse_move(p);
+					inject_mouse_button(button, true, p, d->touchDoubleTap);
+					inject_mouse_button(button, false, p, false);
+				}
 			}
-			d->touchPoints.erase(touch->get_index());
-			if (d->touchPoints.empty() && d->touchPan)
-				d->hud->input().ui().setInputEnabled(d->touchInputWasEnabled);
+			d->touchPoints.erase(point);
+			if (d->touchPoints.size() == 1) d->touchGestureStart = d->touchGestureLast = d->touchPoints.begin()->second;
+			else if (d->touchPoints.size() == 2)
+			{
+				auto a = d->touchPoints.begin(), b = std::next(a);
+				d->touchGestureStart = d->touchGestureLast = (a->second + b->second) * 0.5f;
+				d->touchPinchDistance = a->second.distance_to(b->second);
+				d->touchPinchHeight = d->cam->getHeightAboveGround();
+				d->touchPinching = false;
+			}
 		}
 		return;
 	}
 	if (const auto *drag = Object::cast_to<InputEventScreenDrag>(event.ptr()))
 	{
 		auto point = d->touchPoints.find(drag->get_index());
-		if (point != d->touchPoints.end())
+		if (point == d->touchPoints.end()) return;
+		point->second = drag->get_position();
+		if (d->touchCanceled || !d->hud->input().ui().getInputEnabled()) return;
+		if (d->touchBuildGesture && !d->touchMulti)
 		{
-			const Vector2 delta = drag->get_position() - point->second;
-			point->second = drag->get_position();
-			if (d->touchBuildGesture && !d->touchPan && d->touchPoints.size() == 1)
+			if (drag->get_position().distance_to(d->touchBuildStart) >= dragDistance) d->touchBuildMoved = true;
+			if (d->touchBuildMoved)
 			{
-				const float tolerance = 12.0f * get_viewport_rect().size.y / 720.0f;
-				if (drag->get_position().distance_to(d->touchBuildStart) > tolerance) d->touchBuildMoved = true;
-				if (d->touchBuildMoved)
+				if (!d->touchBuildRotate) touch_build("position", drag->get_position());
+				else
 				{
-					if (!d->touchBuildRotate) touch_build("position", drag->get_position());
-					else
-					{
-						const auto anchor = d->hud->input().ui().placementStart();
-						touch_build("rotate", drag->get_position() - Vector2(anchor.x, anchor.y));
-					}
+					const auto anchor = d->hud->input().ui().placementStart();
+					touch_build("rotate", drag->get_position() - Vector2(anchor.x, anchor.y));
 				}
 			}
-			if (d->touchPan && d->touchPoints.size() >= 2)
-				camera_pan(-delta / (float)d->touchPoints.size());
+			return;
+		}
+		Vector2 center = point->second;
+		if (d->touchPoints.size() >= 2)
+		{
+			auto a = d->touchPoints.begin(), b = std::next(a);
+			center = (a->second + b->second) * 0.5f;
+			const float distance = a->second.distance_to(b->second);
+			if (std::abs(distance - d->touchPinchDistance) >= dragDistance) d->touchPinching = true;
+			if (d->touchPinching && distance > 0.0f && d->touchPinchDistance > 0.0f)
+			{
+				d->cam->setHeightAboveGround(d->touchPinchHeight * d->touchPinchDistance / distance);
+				d->cam->snapInterpolation();
+			}
+		}
+		if (!d->touchPan && center.distance_to(d->touchGestureStart) >= dragDistance) d->touchPan = true;
+		if (d->touchPan)
+		{
+			camera_pan(d->touchGestureLast - center);
+			d->touchGestureLast = center;
 		}
 		return;
 	}
-	// Godot synthesizes left-mouse drags from the first touch. Once a gesture
-	// becomes a pan, swallow those events until a fresh touch sequence starts.
-	if (d->touchPan && event->get_device() == InputEvent::DEVICE_ID_EMULATION && Object::cast_to<InputEventMouse>(event.ptr())) return;
-	if (d->touchBuildGesture && event->get_device() == InputEvent::DEVICE_ID_EMULATION && Object::cast_to<InputEventMouse>(event.ptr())) return;
-	if (event->get_device() == InputEvent::DEVICE_ID_EMULATION)
+	// Stock Godot synthesizes the first finger's mouse event BEFORE delivering
+	// the raw screen event. World gestures are handled above, exactly once.
+	if (event->get_device() == InputEvent::DEVICE_ID_EMULATION && Object::cast_to<InputEventMouse>(event.ptr()))
 	{
-		if (const auto *button = Object::cast_to<InputEventMouseButton>(event.ptr()))
+		bool gui = d->touchGuiMouse;
+		if (const auto *button = Object::cast_to<InputEventMouseButton>(event.ptr()); button && button->get_button_index() == MOUSE_BUTTON_LEFT)
 		{
-			if (button->get_button_index() == MOUSE_BUTTON_LEFT)
-			{
-				const Vector2 p = button->get_position();
-				if (button->is_pressed() && !d->hud->isOverGui((int)p.x, (int)p.y) &&
-					!d->hud->input().ui().getGUICommand() && !d->hud->input().ui().isPlacing() && !d->hud->spellBar().targeting())
-				{
-					for (::ObjectID id : d->hud->input().ui().selected())
-					{
-						const ::Object *unit = d->world->hud_game()->logic().findObjectByID(id);
-						if (unit && !unit->isKindOfName("STRUCTURE"))
-						{
-							d->touchOrderPending = true;
-							d->touchOrderStart = p;
-							return;
-						}
-					}
-				}
-				if (!button->is_pressed() && d->touchOrderPending)
-				{
-					d->touchOrderPending = false;
-					if (!d->hud->isOverGui((int)p.x, (int)p.y))
-					{
-						const int orderButton = d->hud->input().commandTranslator().useAlternateMouse() ? 2 : 1;
-						inject_mouse_button(orderButton, true, p, false);
-						inject_mouse_button(orderButton, false, p, false);
-						++d->touchOrders;
-					}
-					return;
-				}
-			}
+			if (button->is_pressed()) gui = d->touchGuiMouse = d->hud->isOverGui((int)button->get_position().x, (int)button->get_position().y);
+			else d->touchGuiMouse = false;
 		}
-		if (const auto *motion = Object::cast_to<InputEventMouseMotion>(event.ptr()); motion && d->touchOrderPending)
-		{
-			const float tolerance = 12.0f * get_viewport_rect().size.y / 720.0f;
-			if (motion->get_position().distance_to(d->touchOrderStart) <= tolerance) return;
-			d->touchOrderPending = false;
-			inject_mouse_button(1, true, d->touchOrderStart, false);
-		}
+		if (!gui) return;
 	}
 	if (LookAtTranslator *la = d->hud->input().lookAt())
 	{
