@@ -20,6 +20,7 @@
 #include "GameClient/GUI/Skirmish/IniSkirmishSetupSource.h"
 #include "GameClient/LiveGame.h"
 #include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/AI/AIXfer.h"
 #include "GameLogic/NewGame/NewGame.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Object/Object.h"
@@ -29,6 +30,7 @@
 #include "GameLogic/System/ShroudManager.h"
 #include "Common/PlayerList.h"
 #include "GameLogic/AI/AIGarrisonStates.h"
+#include "GameLogic/AI/AIAttack.h"
 #include "GameLogic/AI/AIGuard.h"
 #include "GameLogic/AI/AIHunt.h"
 #include "GameLogic/Module/GiantBirdAIUpdate.h"
@@ -448,11 +450,12 @@ TEST_CASE("save4c retail T5: each block's version window (RW 0xA1F5B9's two mess
 		late.logic().gameState().saveBlocks({ t }, one);
 		const size_t at = payloadOffset(t);
 		REQUIRE(one.size() > at); // tolerance: an index precondition (the version byte must exist before it is read)
-		REQUIRE(one[at] == 1); // every SAVE-4c block starts with its version 1
+		const unsigned version = t == "obfme:SkirmishAI" ? 2 : 1;
+		REQUIRE(one[at] == version);
 		std::vector<std::uint8_t> above = one, below = one;
-		above[at] = 2;
+		above[at] = (std::uint8_t)(version + 1);
 		below[at] = 0;
-		CHECK(loadError(late.logic(), { t }, above) == "block '" + t + "': Don't know how to load version 2 (most recent is 1)");
+		CHECK(loadError(late.logic(), { t }, above) == "block '" + t + "': Don't know how to load version " + std::to_string(version + 1) + " (most recent is " + std::to_string(version) + ")");
 		CHECK(loadError(late.logic(), { t }, below) == "block '" + t + "': Found version 0 but the earliest supported is 1");
 	}
 	// another moment of the same game: the AI modules are not the same set
@@ -2207,4 +2210,116 @@ TEST_CASE("save4c review r7 (archive 593e83cd): the state machine kept across a 
 		const std::string d = agree();
 		REQUIRE_MESSAGE(d == "", "frame " << a.logic().getFrame() << ":" << d);
 	}
+}
+
+TEST_CASE("save4c load freeze: attack approach retry fields and enhanced skirmish AI survive a snapshot")
+{
+	OPENBFME_REQUIRE_START(s);
+	Game g;
+	load(*s, fourPlayerMessage(*s, 9023), g);
+	auto context = s->world->enterContext();
+	runTo(g, 2);
+	GameLogic &l = g.logic();
+	AISkirmishPlayer *men = aiOfSide(l, "Men");
+	REQUIRE(men);
+	Object *unit = l.newObject(l.things().findTemplate("GondorArcherHorde"), l.players().getNthPlayer(men->playerIndex)->getDefaultTeam(), ObjectStatusMaskType{});
+	REQUIRE(unit);
+	AIUpdateInterface *ai = unit->getAIUpdateInterface();
+	REQUIRE(ai);
+	AIStateMachine machine(*ai, "approach snapshot regression");
+	AIAttackApproachState approach(machine, nullptr, false);
+	// Construct a valid native v2 state with a waiting retry and a nonzero owner position.
+	XferSave seed;
+	XferVersion version{1, 2}; seed.xferVersion(version);
+	bool move = false; seed.xferBool(&move);
+	Coord3D previous{11.0f, 22.0f, 33.0f}; AIXfer::coord(seed, previous);
+	unsigned frame = 17; seed.xferUnsignedInt(&frame);
+	float x = 101.0f, y = 202.0f; seed.xferReal(&x); seed.xferReal(&y);
+	bool waiting = true; seed.xferBool(&waiting);
+	unsigned waitFrame = 67; seed.xferUnsignedInt(&waitFrame);
+	XferLoad input(seed.data()); approach.xfer(input);
+	StateHasher expected;
+	expected.addBool(false);
+	for (float v : {11.0f, 22.0f, 33.0f}) expected.addFloat(v);
+	expected.addU32(17); expected.addFloat(x); expected.addFloat(y); expected.addBool(true); expected.addU32(67);
+	StateHasher actual; approach.crc(actual);
+	CHECK(actual.value() == expected.value());
+	XferSave again; approach.xfer(again);
+	CHECK(again.data() == seed.data());
+	// Reading v1 into an already populated state clears the fields v1 never held.
+	auto legacy = seed.data(); legacy.resize(18); legacy[0] = 1;
+	XferLoad old(legacy); approach.xfer(old);
+	StateHasher legacyExpected;
+	legacyExpected.addBool(false);
+	for (float v : {11.0f, 22.0f, 33.0f}) legacyExpected.addFloat(v);
+	legacyExpected.addU32(17); legacyExpected.addFloat(0); legacyExpected.addFloat(0); legacyExpected.addBool(false); legacyExpected.addU32(0);
+	StateHasher legacyActual; approach.crc(legacyActual);
+	CHECK(legacyActual.value() == legacyExpected.value());
+
+	const ObjectID id = unit->getID();
+	men->scriptControlled = true;
+	men->build.moneyReserve = 4321;
+	men->build.nextSaveFrame = 123;
+	men->build.units.attackerFactory = std::make_shared<AIBuildRequest>();
+	men->build.units.attackerFactory->templateName = "GondorBarracks";
+	men->build.units.attackerFactory->serial = men->build.nextSerial++;
+	men->build.pending.push_back(men->build.units.attackerFactory);
+	men->brain.strategyRecovering[id] = 72;
+	men->brain.fortificationTarget = id;
+	men->brain.siegeEscorts.insert(id);
+	men->brain.siegeUnits.insert(id);
+	men->brain.siegeGatherFrame = 29;
+	men->brain.siegeLaunched = true;
+	const auto before = sectionValues(l).at("skirmish AI");
+	std::vector<std::uint8_t> saved;
+	l.gameState().saveBlocks({"obfme:SkirmishAI"}, saved);
+	men->scriptControlled = false;
+	men->brain = {};
+	REQUIRE(loadError(l, {"obfme:SkirmishAI"}, saved).empty());
+	men = aiOfSide(l, "Men");
+	REQUIRE(men);
+	CHECK(men->scriptControlled);
+	CHECK(men->build.moneyReserve == 4321);
+	CHECK(men->build.nextSaveFrame == 123);
+	REQUIRE(men->build.units.attackerFactory);
+	CHECK(men->build.units.attackerFactory->templateName == "GondorBarracks");
+	CHECK(men->build.pending.back() == men->build.units.attackerFactory);
+	CHECK(men->brain.strategyRecovering == std::map<ObjectID, std::uint32_t>{{id, 72}});
+	CHECK(men->brain.fortificationTarget == id);
+	CHECK(men->brain.siegeEscorts == std::set<ObjectID>{id});
+	CHECK(men->brain.siegeUnits == std::set<ObjectID>{id});
+	CHECK(men->brain.siegeGatherFrame == 29);
+	CHECK(men->brain.siegeLaunched);
+	CHECK(sectionValues(l).at("skirmish AI") == before);
+	std::vector<std::uint8_t> restored;
+	l.gameState().saveBlocks({"obfme:SkirmishAI"}, restored);
+	CHECK(restored == saved);
+}
+
+TEST_CASE("save4c load freeze: enhanced AI reservations reject future object ids transactionally")
+{
+	OPENBFME_REQUIRE_START(s);
+	Game g;
+	load(*s, fourPlayerMessage(*s, 9024), g);
+	auto context = s->world->enterContext();
+	runTo(g, 2);
+	GameLogic &l = g.logic();
+	AISkirmishPlayer *men = aiOfSide(l, "Men");
+	REQUIRE(men);
+	const ObjectID future = l.getNextObjectID();
+	std::string field;
+	SUBCASE("recovering") { men->brain.strategyRecovering[future] = 50; field = "recovering object id"; }
+	SUBCASE("fortification") { men->brain.fortificationTarget = future; field = "fortification target id"; }
+	SUBCASE("escort") { men->brain.siegeEscorts.insert(future); field = "siege escort id"; }
+	SUBCASE("siege") { men->brain.siegeUnits.insert(future); field = "siege unit id"; }
+	std::vector<std::uint8_t> damaged;
+	l.gameState().saveBlocks({"obfme:SkirmishAI"}, damaged);
+	men->brain.strategyRecovering.clear(); men->brain.fortificationTarget = INVALID_ID;
+	men->brain.siegeEscorts.clear(); men->brain.siegeUnits.clear();
+	std::vector<std::uint8_t> before, after;
+	l.gameState().saveBlocks({"obfme:SkirmishAI"}, before);
+	CHECK(loadError(l, {"obfme:SkirmishAI"}, damaged) == "block 'obfme:SkirmishAI': skirmish ai: " + field + " " + std::to_string(future) +
+		" is an object id the game has not issued (the next is " + std::to_string(future) + ")");
+	l.gameState().saveBlocks({"obfme:SkirmishAI"}, after);
+	CHECK(after == before);
 }

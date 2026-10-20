@@ -387,7 +387,7 @@ void AIStatCollector::xfer(Xfer &x)
 
 void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 {
-	XferVersion v{ 1, 1 };
+	XferVersion v{ 1, 2 };
 	x.xferVersion(v);
 	const bool loading = x.isLoading();
 	bool started = loading ? false : m_started;
@@ -474,6 +474,7 @@ void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 				table.noteAll(s.pending);
 				table.noteAll(s.inProgress);
 				table.noteAll(s.units.requests);
+				if (s.units.attackerFactory) table.note(s.units.attackerFactory);
 				table.noteAll(s.economy.requests);
 			}
 		}
@@ -573,6 +574,24 @@ void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 			}
 			xferBuild(x, ai->build, table, *m_store, player->getSide());
 			xferBrain(x, ai->brain);
+			// Version 1 omitted this authoritative OpenBFME extension state.
+			if (v.current >= 2)
+			{
+				x.xferBool(&ai->scriptControlled);
+				x.xferUnsignedInt(&ai->build.moneyReserve);
+				x.xferUnsignedInt(&ai->build.nextSaveFrame);
+				xferRef(x, ai->build.units.attackerFactory, table);
+				AIBrainState &b = ai->brain;
+				AIXfer::map(x, b.strategyRecovering, 8, [&](ObjectID &id, std::uint32_t &expiry) {
+					AIXfer::objectId(x, id, "skirmish ai: recovering object id");
+					x.xferUnsignedInt(&expiry);
+				});
+				AIXfer::objectId(x, b.fortificationTarget, "skirmish ai: fortification target id");
+				AIXfer::idSet(x, b.siegeEscorts);
+				x.xferUnsignedInt(&b.siegeGatherFrame);
+				x.xferBool(&b.siegeLaunched);
+				AIXfer::idSet(x, b.siegeUnits);
+			}
 			first = ai->firstOfGroup ? ai : first;
 		}
 		if (loading)
@@ -652,6 +671,15 @@ void SkirmishAIManager::checkLoaded() const
 	for (const auto &kv : ais)
 	{
 		const AIBrainState &b = kv.second->brain;
+		// Reservations can outlive capture/death until the next strategy update,
+		// but may only refer to ids already issued by this game.
+		for (const auto &entry : b.strategyRecovering)
+			AIXfer::issued(entry.first, "skirmish ai: recovering object id");
+		AIXfer::issued(b.fortificationTarget, "skirmish ai: fortification target id");
+		for (ObjectID id : b.siegeEscorts)
+			AIXfer::issued(id, "skirmish ai: siege escort id");
+		for (ObjectID id : b.siegeUnits)
+			AIXfer::issued(id, "skirmish ai: siege unit id");
 		if (b.currentEnemy != -1)
 		{
 			player(b.currentEnemy, "skirmish ai: the current enemy");
@@ -732,6 +760,7 @@ void SkirmishAIManager::checkLoaded() const
 	{
 		const AISkirmishPlayer &ai = *kv.second;
 		const AIBuildState &s = ai.build;
+		if (s.units.attackerFactory) request(s.units.attackerFactory);
 		for (const AIBaseInstance &base : s.bases)
 		{
 			if (base.fortress)

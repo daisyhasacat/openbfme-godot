@@ -1004,3 +1004,34 @@ and T3 (Linux and Windows bytes equal) gate it.
 - **War of the Ring battles:** not supported by this build (no War of the Ring battle start), so not in T1.
 - **Stops:** S-5010 .. S-5014.
 
+
+### Load failure recovery (October 2026)
+
+A failed load restores automatic shell movie ticks and hides the still loading
+screen before reopening SaveLoad.apt. The failure remains visible rather than
+leaving an apparently frozen menu (`save_load_error_test.gd`). Generated
+Create-a-Hero experience-level targets are valid even though they have no
+ThingTemplate; unknown targets remain errors (`test_save4b.cpp`).
+
+Native attack-approach snapshot version 2 adds the owner's XY position and the
+unreachable-target wait flag/frame. Native SkirmishAI block version 2 adds script
+control, build money reserves/timing, the shared attacker-factory request, recovery reservations and siege response state. These fields already
+participated in the state hash but version 1 omitted them. Version 1 loads use
+deterministic defaults for the omitted fields; a save whose recorded hash
+requires their original values still fails verification. Byte-identical
+reserialization cannot establish that omitted state was restored, so it never
+bypasses the hash check. Existing save files are not rewritten.
+
+Validation: the focused retail regression restores each extension, checks the
+hash and serialized bytes, and rejects future object IDs transactionally.
+`save_file_load_test.gd` optionally loads a supplied save, advances two frames,
+and saves/reloads a separate output selected by `OPENBFME_SAVE_ROUNDTRIP`.
+The affected older save at frame 4635 still fails its hash check after the
+custom hero validation succeeds. A separate temporary command-log-only copy also
+fails replay verification at frame 22 (21 hashes compared); recovery of the
+older game remains unresolved. The original file was left untouched.
+
+Final local checks: 21 synthetic save tests (1,388 assertions), four focused
+retail cases (2,700 assertions, including 600 continued frames matching the
+uninterrupted game), the shell error recovery test, and the snapshot closed-set
+audit (1,007 transfers, zero problems) passed. Sol 6.1 reviewed the changes.

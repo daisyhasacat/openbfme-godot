@@ -117,7 +117,8 @@ std::vector<std::string> CommandLogLoad::stopLines()
 		"block refused later is undone by loading the game's own snapshot back (teams past the older snapshot's are removed, trees go back to the map's "
 		"first), checked by its state hash and bytes; a game that cannot be put back is closed. A load from the quit menu keeps the running game's own save "
 		"in memory and loads it back when the chosen save is refused (OpenBFME's: retail returns to the shell). The command log stays the replay so far "
-		"and the cross-check of the verify mode (off by default). A snapshot the game refuses fails the save, named (no log-only fallback)");
+		"and the cross-check of the verify mode (off by default). A snapshot the game refuses fails the save, named (no log-only fallback). Older native version-1 attack approach / SkirmishAI snapshots "
+		"omit retry and enhanced AI state: deterministic defaults cannot recover missing values, and a mismatching hash still refuses the save");
 	lines.push_back("[S-5011] saves: after a snapshot load the client gets each object's whole model condition set and a flush (INFERENCE: retail's loaded "
 		"drawables are made from the loaded objects, ZH GameClient::xfer); not given back: the drawables' module / sub object visibility requests of "
 		"upgrades and scripts, Create-a-Hero colours set after the object's creation, a disguised object's look, effects, sounds and animations in "

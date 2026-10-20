@@ -65,11 +65,25 @@ void AIAttackState::xfer(Xfer &x)
 
 void AIAttackApproachState::xfer(Xfer &x)
 {
-	XferVersion v{ 1, 1 };
+	XferVersion v{ 1, 2 };
 	x.xferVersion(v);
 	xferMove(x, ai().mover(), m_move);
 	AIXfer::coord(x, m_prevVictimPos);
 	x.xferUnsignedInt(&m_approachFrame);
+	// OpenBFME approach retry state is authoritative (AIAttackApproachState::crc).
+	if (v.current >= 2)
+	{
+		x.xferReal(&m_ownerPosition.x);
+		x.xferReal(&m_ownerPosition.y);
+		x.xferBool(&m_waiting);
+		x.xferUnsignedInt(&m_waitFrame);
+	}
+	else if (x.isLoading())
+	{
+		m_ownerPosition = {};
+		m_waiting = false;
+		m_waitFrame = 0;
+	}
 }
 
 void AIAttackAimState::xfer(Xfer &x)

@@ -260,6 +260,11 @@ func _back_to_menu(name: String, error: String) -> void:
 	if not game._save_test.is_empty():
 		game._fail("the saved game could not be loaded: " + error)
 		return
+	# The loading path pauses automatic movie ticks. Resume them before opening
+	# the error and Load page, otherwise the recovered menu looks frozen.
+	_hide_overlay()
+	game._shell.hide_still_load_screen()
+	game._shell.auto_process = true
 	game._start_stack = PackedStringArray(["MainMenu.apt"])
 	game._state = game.State.SCORE
 	game._score_continue()

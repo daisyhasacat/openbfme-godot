@@ -30,6 +30,7 @@
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "GameLogic/Object/Contain/TunnelContainRuntime.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/System/DOTManager.h"
 #include "GameLogic/System/InvisibilityManager.h"
 #include "GameLogic/SnapshotXfer.h"
@@ -1242,4 +1243,42 @@ TEST_CASE("save4b section 8 (review r2): every class frames its own version (Imm
 		CHECK(refusal(version, [&](Xfer &r) { core.xfer(r); }) == declares + "28 bytes, more than the 0 bytes left");
 		CHECK(saved.logic->dot().entries().empty());
 	}
+}
+
+TEST_CASE("save4b experience: generated hero level targets round-trip without an object template, unknown targets are refused")
+{
+	S4World saved(kObjects), fresh(kObjects);
+	ExperienceLevelSystem levels;
+	struct RestoreLevels
+	{
+		ExperienceLevelSystem *previous;
+		~RestoreLevels() { TheExperienceLevelSystem = previous; }
+	} restore{TheExperienceLevelSystem};
+	TheExperienceLevelSystem = &levels;
+	levels.registerBlocks(saved.w.fx.env.blocks);
+	REQUIRE(saved.w.load("ExperienceLevel CustomHeroRank1\n TargetNames = CustomHeroTarget\n RequiredExperience = 1\n Rank = 1\nEnd\n",INI_LOAD_OVERWRITE,"hero-levels.ini").empty());
+	Object *source=saved.make("Soldier",saved.teamOf("Alice"));
+	Object *target=fresh.make("Soldier",fresh.teamOf("Alice"));
+	REQUIRE(saved.w.things.findTemplate("CustomHeroTarget")==nullptr);
+	auto *tracker=source->getExperienceTracker();
+	REQUIRE(tracker != nullptr);
+	tracker->setLevelTargetName("CustomHeroTarget");
+	tracker->reset();
+	XferSave output;
+	tracker->xfer(output);
+	XferLoad input(output.data());
+	target->getExperienceTracker()->xfer(input);
+	CHECK(input.atEnd());
+	CHECK(target->getExperienceTracker()->levelTargetName()=="CustomHeroTarget");
+	CHECK(target->getExperienceTracker()->getLevelName()=="CustomHeroRank1");
+	CHECK(target->getExperienceTracker()->getRank()==1);
+	XferSave again;
+	target->getExperienceTracker()->xfer(again);
+	CHECK(again.data()==output.data());
+	tracker->setLevelTargetName("MissingTarget");
+	XferSave bad;
+	tracker->xfer(bad);
+	XferLoad badInput(bad.data());
+	CHECK_THROWS_WITH_AS(target->getExperienceTracker()->xfer(badInput),
+		"an experience tracker's level target 'MissingTarget' is not an object template or experience-level target of this game's data",XferException);
 }

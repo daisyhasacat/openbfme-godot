@@ -373,10 +373,13 @@ void ExperienceTracker::xfer(Xfer &x)
 	SnapshotXfer::version(x, 1, 1);
 	x.xferAsciiString(&m_templateName);
 	x.xferAsciiString(&m_levelName);
-	// identities: the level target is a template of this game's data, the level one of its experience levels (or none)
-	if (x.isLoading() && !m_parent->logic().things().findTemplate(m_templateName))
+	// RW 0x80AA8A sets a Create-a-Hero's target to its generated experience chain,
+	// not an object template. Mods can likewise define TargetNames independently.
+	// Validate against both registries instead of refusing these valid snapshots.
+	const auto *targetLevels = x.isLoading() && TheExperienceLevelSystem ? TheExperienceLevelSystem->levelsFor(m_templateName) : nullptr;
+	if (x.isLoading() && !m_parent->logic().things().findTemplate(m_templateName) && (!targetLevels || targetLevels->empty()))
 	{
-		throw XferException("an experience tracker's level target '" + m_templateName + "' is not a template of this game's data");
+		throw XferException("an experience tracker's level target '" + m_templateName + "' is not an object template or experience-level target of this game's data");
 	}
 	if (x.isLoading() && !m_levelName.empty() && !(TheExperienceLevelSystem && TheExperienceLevelSystem->findLevel(m_levelName)))
 	{
