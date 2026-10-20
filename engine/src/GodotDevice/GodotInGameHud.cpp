@@ -321,6 +321,8 @@ struct HudDevice : public AptNativeHook
 	float touchPinchDistance = 0.0f, touchPinchHeight = 0.0f;
 	float touchTwistLast = 0.0f, touchTwistDelta = 0.0f;
 	bool touchTwisting = false;
+	bool deselectBuildersAfterBuild = false;
+	unsigned long long buildsSeen = 0;
 	bool pencilPending = false, pencilDragging = false, pencilDoubleClick = false;
 	bool pencilWorldCapture = false;
 	Vector2 pencilStart;
@@ -2296,6 +2298,7 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 	}
 	d->hud->setSelectionDecalSettings(decalSettings); // lane UI-4
 	d->ready = errors.is_empty();
+	d->deselectBuildersAfterBuild = (bool)options.get("deselect_builders_after_build", OS::get_singleton()->has_feature("ios"));
 	if (d->ready && (bool)options.get("prewarm_buildings", OS::get_singleton()->has_feature("ios")))
 	{
 		const auto context = d->hud->enterContext();
@@ -3134,6 +3137,25 @@ void InGameHudNode::_process(double delta)
 	 if(auto *root=d->hud->windows().apt().level(hidden.first))root->visible=hidden.second;
 	d->adaptiveHiddenLevels.clear();
 	d->hud->update(delta);
+	const auto &placementStats = d->hud->input().placeTranslator().stats();
+	const auto builds = placementStats.placed + placementStats.wallSpans;
+	if (builds != d->buildsSeen)
+	{
+		d->buildsSeen = builds;
+		if (d->deselectBuildersAfterBuild)
+		{
+			const auto &ctx = d->hud->input().context();
+			bool buildersOnly = !ctx.ui.selected().empty();
+			for (::ObjectID id : ctx.ui.selected())
+			{
+				const ::Object *object = ctx.logic.findObjectByID(id);
+				buildersOnly = buildersOnly && object && object->isKindOfName("DOZER");
+			}
+			// The construct command has already traversed the message stream.
+			// Queue deselection after it so logic still sees the issuing builder.
+			if (buildersOnly) ctx.ui.deselectAll(true);
+		}
+	}
 	if (d->secondaryView && d->peerViewId)
 	{
 		auto *peer = Object::cast_to<InGameHudNode>(ObjectDB::get_instance(ObjectID(d->peerViewId)));
