@@ -262,3 +262,172 @@ TEST_CASE("reachability: closed walls refuse ground orders and builder placement
 	CHECK(BuildPlacement::isLocationLegalToBuild(*mw.logic, inside, *build, 0, LLF_CLEAR_PATH, unit, unit->getControllingPlayer()) == LBC_OK);
 
 }
+
+TEST_CASE("commands spread: 100 ground units reserve a growing grid around the destination, including repeated orders")
+{
+	MoveWorld mw(200, 200);
+	std::vector<Object *> units;
+	for (int i = 0; i != 100; ++i) units.push_back(mw.spawn("Walker", 105.0f + 30.0f * (i % 10), 105.0f + 30.0f * (i / 10)));
+	mw.buildMap();
+	mw.frames(2);
+	const int player = mw.playerIndex("Alice");
+	mw.select(player, units);
+	std::vector<Coord3D> previous;
+	for (int pass = 0; pass != 2; ++pass)
+	{
+		mw.moveTo(player, 1405, 1405, pass == 0 ? MSG_DO_MOVETO : MSG_DO_ATTACKMOVETO);
+		mw.frames(1);
+		std::set<float> xs, ys;
+		std::set<std::pair<float, float>> cells;
+		std::vector<Coord3D> goals;
+		for (Object *o : units)
+		{
+			Coord3D goal;
+			REQUIRE(mw.ai->pathfinder().goalPosition(mw.ai->adapterFor(*o), &goal));
+			xs.insert(goal.x); ys.insert(goal.y); cells.emplace(goal.x, goal.y);
+			goals.push_back(goal);
+		}
+		CHECK(cells.size() == 100);
+		CHECK(xs.size() == 10);
+		CHECK(ys.size() == 10);
+		// Walker reserves two cells plus one cell of spacing: ten slots span 9 * 30.
+		CHECK(*xs.rbegin() - *xs.begin() == 270.0f);
+		CHECK(*ys.rbegin() - *ys.begin() == 270.0f);
+		if (pass == 1)
+			for (size_t i = 0; i != goals.size(); ++i)
+			{
+				CHECK(goals[i].x == previous[i].x);
+				CHECK(goals[i].y == previous[i].y);
+			}
+		previous = std::move(goals);
+	}
+}
+
+TEST_CASE("commands spread: battalions get space for their full bounding geometry")
+{
+	MoveWorld mw(300, 300);
+	std::vector<Object *> units;
+	for (int i = 0; i != 16; ++i) units.push_back(mw.spawn("Horde", 305.0f + 150.0f * (i % 4), 305.0f + 150.0f * (i / 4)));
+	mw.buildMap();
+	mw.frames(2);
+	const int player = mw.playerIndex("Alice");
+	mw.select(player, units);
+	mw.moveTo(player, 2005, 2005);
+	mw.frames(1);
+	std::set<float> xs, ys;
+	std::set<std::pair<float, float>> cells;
+	for (Object *o : units)
+	{
+		Coord3D goal;
+		REQUIRE(mw.ai->pathfinder().goalPosition(mw.ai->adapterFor(*o), &goal));
+		xs.insert(goal.x); ys.insert(goal.y); cells.emplace(goal.x, goal.y);
+	}
+	CHECK(cells.size() == 16);
+	CHECK(xs.size() == 4);
+	CHECK(ys.size() == 4);
+	// The 30 x 45 box needs diameter sqrt(30^2+45^2)*2 plus 10,
+	// rounded up to cells: 120 units. Four slots span 360.
+	CHECK(*xs.rbegin() - *xs.begin() == 360.0f);
+	CHECK(*ys.rbegin() - *ys.begin() == 360.0f);
+}
+
+TEST_CASE("commands spread: edge clicks shift the whole layout inside the map")
+{
+	MoveWorld mw;
+	std::vector<Object *> units;
+	for (int i = 0; i != 16; ++i) units.push_back(mw.spawn("Walker", 105.0f + 30.0f * (i % 4), 105.0f + 30.0f * (i / 4)));
+	mw.buildMap();
+	mw.frames(2);
+	const int player = mw.playerIndex("Alice");
+	mw.select(player, units);
+	mw.moveTo(player, 995, 995);
+	mw.frames(1);
+	std::set<float> xs, ys;
+	std::set<std::pair<float, float>> cells;
+	for (Object *o : units)
+	{
+		Coord3D goal;
+		REQUIRE(mw.ai->pathfinder().goalPosition(mw.ai->adapterFor(*o), &goal));
+		xs.insert(goal.x); ys.insert(goal.y); cells.emplace(goal.x, goal.y);
+		CHECK(mw.ai->pathfinder().clientSafeQuickDoesPathExist(o->getAIUpdateInterface()->locomotorInfo(), o->getPosition(), &goal));
+	}
+	CHECK(cells.size() == 16);
+	CHECK(*xs.rbegin() - *xs.begin() == 90.0f);
+	CHECK(*ys.rbegin() - *ys.begin() == 90.0f);
+	// Last row is cell 98, leaving room for the footprint at the cell-99 edge.
+	CHECK(*xs.rbegin() == 980.5f);
+	CHECK(*ys.rbegin() == 980.5f);
+}
+
+TEST_CASE("commands spread: sealed walls keep units in reachable slots; opening an exit permits the spread order")
+{
+	const char walls[] =
+		"Object SpreadWallX\n KindOf = STRUCTURE IMMOBILE\n Geometry = BOX\n GeometryMajorRadius = 215\n GeometryMinorRadius = 15\n End\n"
+		"Object SpreadWallY\n KindOf = STRUCTURE IMMOBILE\n Geometry = BOX\n GeometryMajorRadius = 15\n GeometryMinorRadius = 215\n End\n";
+	MoveWorld mw(100, 100, walls);
+	mw.spawn("SpreadWallX", 500, 300);
+	mw.spawn("SpreadWallX", 500, 700);
+	mw.spawn("SpreadWallY", 300, 500);
+	Object *gate = mw.spawn("SpreadWallY", 700, 500);
+	std::vector<Object *> units;
+	std::vector<Coord3D> starts;
+	for (int i = 0; i != 16; ++i)
+	{
+		Object *o = mw.spawn("Walker", 400.5f + 30.0f * (i % 4), 400.5f + 30.0f * (i / 4));
+		units.push_back(o);
+		starts.push_back(*o->getPosition());
+	}
+	mw.buildMap();
+	mw.frames(2);
+	const int player = mw.playerIndex("Alice");
+	mw.select(player, units);
+	mw.moveTo(player, 850, 850);
+	mw.frames(1);
+	for (size_t i = 0; i != units.size(); ++i)
+	{
+		Coord3D goal;
+		REQUIRE(mw.ai->pathfinder().goalPosition(mw.ai->adapterFor(*units[i]), &goal));
+		CHECK(goal.x == starts[i].x);
+		CHECK(goal.y == starts[i].y);
+	}
+	mw.ai->removeObjectFromPathfindMap(*gate);
+	mw.frames(2);
+	mw.moveTo(player, 850, 850);
+	mw.frames(1);
+	std::set<std::pair<float,float>> goals;
+	for (Object *o : units)
+	{
+		Coord3D goal;
+		REQUIRE(mw.ai->pathfinder().goalPosition(mw.ai->adapterFor(*o), &goal));
+		CHECK(mw.ai->pathfinder().clientSafeQuickDoesPathExist(o->getAIUpdateInterface()->locomotorInfo(), o->getPosition(), &goal));
+		// tolerance: the entire four-by-four target grid lies beyond the ring's x=700 wall.
+		CHECK(goal.x > 700.0f);
+		goals.emplace(goal.x, goal.y);
+	}
+	CHECK(goals.size() == 16);
+}
+
+TEST_CASE("commands spread: repeated large orders produce the same simulation hashes")
+{
+	auto run = [] {
+		MoveWorld mw(150, 150);
+		std::vector<Object *> units;
+		for (int i = 0; i != 25; ++i) units.push_back(mw.spawn("Walker", 105.0f + 30.0f * (i % 5), 105.0f + 30.0f * (i / 5)));
+		mw.buildMap();
+		mw.frames(2);
+		const int player = mw.playerIndex("Alice");
+		mw.select(player, units);
+		mw.moveTo(player, 1005, 1005);
+		std::vector<std::uint32_t> hashes;
+		for (int i = 0; i != 40; ++i)
+		{
+			if (i == 20) mw.moveTo(player, 1005, 205, MSG_DO_ATTACKMOVETO);
+			mw.frames(1);
+			hashes.push_back(mw.logic->computeStateHash());
+		}
+		return hashes;
+	};
+	const auto first = run(), second = run();
+	CHECK(first == second);
+	CHECK(first.front() != first.back());
+}

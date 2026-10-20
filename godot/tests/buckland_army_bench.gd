@@ -65,6 +65,20 @@ func _run() -> void:
 		world.update_lua()
 		lua_ms.append((Time.get_ticks_usec() - start) / 1000.0)
 		hashes.append(world.get_state_hash())
+		if i == 0:
+			var goals: Dictionary = {}
+			var bounds := Rect2()
+			var active := 0
+			for id in ids:
+				var object: Dictionary = world.get_object(id)
+				if object.has("ai_goal"):
+					var goal: Vector2 = object.ai_goal
+					if goal == Vector2.ZERO: continue # idle/failed move states have no destination
+					active += 1
+					if goals.is_empty(): bounds = Rect2(goal, Vector2.ZERO)
+					else: bounds = bounds.expand(goal)
+					goals[goal] = true
+			print("BUCKLAND DESTINATIONS unique=", goals.size(), " active=", active, "/", ids.size(), " bounds=", bounds)
 	_report("advance", advance_ms)
 	_report("lua", lua_ms)
 	var out := OS.get_environment("BUCKLAND_HASHES")

@@ -16,12 +16,78 @@
 #include "GameLogic/System/InvisibilityManager.h"
 
 #include <algorithm>
+#include <map>
 
 namespace
 {
 const float kCellSize = 10.0f;                       // PATHFIND_CELL_SIZE_F
 const float kWaypointClampMargin = 40.0f;             // ZH STD_WAYPOINT_CLAMP_MARGIN = PATHFIND_CELL_SIZE_F * 4 (exactly representable)
 const int kLogicFramesPerSecond = 5;                  // RW 0xD9F608
+
+// Enhanced large-selection arrival spacing, requested for mass army orders.
+// This is not RotWK's same-point/ring-search destination policy. Keep small
+// selections on that path; large groups receive stable, footprint-sized slots.
+std::map<ObjectID, Coord3D> spreadMoveGoals(GameLogic &logic, AIWorld &world, const std::vector<Object *> &members,
+	const Coord3D &target, CommandSourceType source)
+{
+	std::vector<Object *> units;
+	float spacing = 20.0f;
+	Pathfinder &pf = world.pathfinder();
+	for (Object *o : members)
+	{
+		auto *ai = o->getAIUpdateInterface();
+		if (o->isDestroyed() || !ai || ai->isContained() || !ai->isDoingGroundMovement() ||
+			!ai->allowedToRespondToCommand(source, 0) || o->isKindOfName("IMMOBILE")) continue;
+		units.push_back(o);
+		auto &adapter = world.adapterFor(*o);
+		int radius;
+		bool center;
+		pf.getRadiusAndCenter(&adapter, radius, center);
+		const float footprint = SimMath::mulf32(float(2 * radius + (center ? 1 : 0) + 1), kCellSize);
+		const float diameter = SimMath::addf32(SimMath::mulf32(2.0f, adapter.getGeometry().boundingCircleRadius()), kCellSize);
+		spacing = std::max(spacing, std::max(footprint, diameter));
+	}
+	if (units.size() < 16) return {};
+	spacing = SimMath::mulf32(float(SimMath::ceilToInt(SimMath::divf32(spacing, kCellSize))), kCellSize);
+	std::sort(units.begin(), units.end(), [](const Object *a, const Object *b) {
+		const auto &ap = *a->getPosition(), &bp = *b->getPosition();
+		if (ap.y != bp.y) return ap.y < bp.y;
+		if (ap.x != bp.x) return ap.x < bp.x;
+		return a->getID() < b->getID();
+	});
+	ICoord2D lo, hi;
+	pf.getLogicalExtent(lo, hi);
+	// Destination snapping can round an even-sized footprint up by half a
+	// cell; leave a full cell so edge slots do not need separate inward repairs.
+	const float margin = SimMath::addf32(SimMath::mulf32(spacing, 0.5f), kCellSize);
+	const float minX = SimMath::addf32(SimMath::mulf32(float(lo.x), kCellSize), margin);
+	const float minY = SimMath::addf32(SimMath::mulf32(float(lo.y), kCellSize), margin);
+	const float maxX = SimMath::subf32(SimMath::mulf32(float(hi.x + 1), kCellSize), margin);
+	const float maxY = SimMath::subf32(SimMath::mulf32(float(hi.y + 1), kCellSize), margin);
+	const size_t maxColumns = size_t(std::max(0, SimMath::floorToInt(SimMath::divf32(SimMath::subf32(maxX, minX), spacing)) + 1));
+	const size_t maxRows = size_t(std::max(0, SimMath::floorToInt(SimMath::divf32(SimMath::subf32(maxY, minY), spacing)) + 1));
+	size_t columns = 1;
+	while (columns * columns < units.size()) ++columns;
+	columns = std::min(columns, maxColumns);
+	const size_t rows = columns ? std::min(maxRows, (units.size() + columns - 1) / columns) : 0;
+	const float spanX = SimMath::mulf32(float(columns ? columns - 1 : 0), spacing);
+	const float spanY = SimMath::mulf32(float(rows ? rows - 1 : 0), spacing);
+	const float left = std::max(minX, std::min(SimMath::subf32(target.x, SimMath::mulf32(spanX, 0.5f)), SimMath::subf32(maxX, spanX)));
+	const float bottom = std::max(minY, std::min(SimMath::subf32(target.y, SimMath::mulf32(spanY, 0.5f)), SimMath::subf32(maxY, spanY)));
+	std::map<ObjectID, Coord3D> goals;
+	for (size_t i = 0; i < units.size(); ++i)
+	{
+		Coord3D goal = *units[i]->getPosition();
+		if (i < columns * rows)
+		{
+			goal.x = SimMath::addf32(left, SimMath::mulf32(float(i % columns), spacing));
+			goal.y = SimMath::addf32(bottom, SimMath::mulf32(float(i / columns), spacing));
+			goal.z = logic.getGroundHeight(goal.x, goal.y);
+		}
+		goals.emplace(units[i]->getID(), goal);
+	}
+	return goals;
+}
 }
 
 AIGroup::AIGroup(GameLogic &logic, const std::vector<ObjectID> &ids)
@@ -398,6 +464,9 @@ void AIGroup::planningMoveToPosition(const Coord3D &pos, bool attackMove, Comman
 		return;
 	}
 	world->noteStop(planningStopLine());
+	const auto spreadGoals = world->mapReady() ? spreadMoveGoals(m_logic, *world, m_members, pos, source) : std::map<ObjectID, Coord3D>{};
+	for (Object *o : m_members)
+		if (spreadGoals.count(o->getID())) world->pathfinder().removeGoal(world->adapterFor(*o));
 	for (Object *o : m_members)
 	{
 		if (o->isDestroyed())
@@ -416,14 +485,19 @@ void AIGroup::planningMoveToPosition(const Coord3D &pos, bool attackMove, Comman
 		}
 		// RW 0x94DF97: the destination of a unit without an AI doing ground movement is the point itself
 		Coord3D dest = pos;
+		const auto spread = spreadGoals.find(o->getID());
+		if (spread != spreadGoals.end()) dest = spread->second;
 		if (world->mapReady() && ai->isDoingGroundMovement())
 		{
 			Pathfinder &pf = world->pathfinder();
 			PathfindObject &adapter = world->adapterFor(*o);
-			Coord3D p{ pos.x, pos.y, m_logic.getGroundHeight(pos.x, pos.y) }; // RW TerrainLogic vslot 0x1C at the point's layer (only the ground exists, S-161)
-			if (!pf.adjustDestination(adapter, ai->locomotorInfo(), &p, &pos))
+			Coord3D p{ dest.x, dest.y, m_logic.getGroundHeight(dest.x, dest.y) }; // RW TerrainLogic vslot 0x1C at the point's layer (only the ground exists, S-161)
+			const bool adjusted = pf.adjustDestination(adapter, ai->locomotorInfo(), &p, &pos);
+			const bool reachable = spread == spreadGoals.end() || pf.clientSafeQuickDoesPathExist(ai->locomotorInfo(), o->getPosition(), &p);
+			if (!adjusted || !reachable)
 			{
-				p = pos;
+				// A blocked spread slot must not send its unit to the common click.
+				p = spread == spreadGoals.end() ? pos : *o->getPosition();
 			}
 			if (adapter.isKindOf(PK_LARGE_RECTANGLE_PATHFIND))
 			{
