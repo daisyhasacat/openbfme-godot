@@ -152,6 +152,8 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 	report = RoadBuildReport();
 	std::vector<std::pair<V2, V2>> seen; // for the identical-segment test (per road type name)
 	std::vector<std::string> seenName;
+	struct Segment { V2 a, b, normal, dir; float scale, half; int flagsA, flagsB; };
+	std::vector<Segment> segments;
 	for (size_t i = 0; i < objects.size(); ++i)
 	{
 		const MapObject &a = objects[i];
@@ -192,8 +194,8 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 		bool dup = false;
 		for (size_t s = 0; s < seen.size(); ++s)
 		{
-			if ((seen[s].first.x == loc1.x && seen[s].first.y == loc1.y && seen[s].second.x == loc2.x && seen[s].second.y == loc2.y)
-				|| (seen[s].first.x == loc2.x && seen[s].first.y == loc2.y && seen[s].second.x == loc1.x && seen[s].second.y == loc1.y))
+			if (seenName[s] == lower(a.m_objectName) && ((seen[s].first.x == loc1.x && seen[s].first.y == loc1.y && seen[s].second.x == loc2.x && seen[s].second.y == loc2.y)
+				|| (seen[s].first.x == loc2.x && seen[s].first.y == loc2.y && seen[s].second.x == loc1.x && seen[s].second.y == loc1.y)))
 			{
 				dup = true;
 				break;
@@ -205,6 +207,7 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 			continue;
 		}
 		seen.push_back({ loc1, loc2 });
+		seenName.push_back(lower(a.m_objectName));
 
 		const float scale = road->roadWidth;
 		const float widthInTexture = road->roadWidthInTexture > 0.0f ? road->roadWidthInTexture : 1.0f;
@@ -263,6 +266,162 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 		}
 		report.vertices += strip.position.size() / 3;
 		report.triangles += strip.index.size() / 3;
+		out.push_back(std::move(strip));
+		segments.push_back({loc1, loc2, roadNormal, dir, scale, half, a.m_flags, b.m_flags});
+	}
+	// BFME1 W3DRoadBuffer::miter / insertCurveSegmentAt: degree-two shallow
+	// corners (<0.9 * 30 degrees), or explicitly ANGLED corners, intersect
+	// the two offset edges. Match endpoints independently of map object order.
+	// Rounded corners use the donor atlas patches below; multi-way junctions remain S-036.
+	auto equal = [](V2 a, V2 b) { return a.x == b.x && a.y == b.y; };
+	struct Ends { V2 bottom[2], top[2]; };
+	struct CurvePatch { V2 loc, dir; float scale, half; bool tight; size_t source; };
+	std::vector<CurvePatch> curves;
+	std::vector<Ends> ends;
+	for (const auto &seg : segments)
+	{
+		Ends e;
+		const V2 p[] = {seg.a, seg.b};
+		for (int k = 0; k < 2; ++k)
+		{
+			e.bottom[k] = {p[k].x - seg.normal.x * seg.half, p[k].y - seg.normal.y * seg.half};
+			e.top[k] = {p[k].x + seg.normal.x * seg.half, p[k].y + seg.normal.y * seg.half};
+		}
+		ends.push_back(e);
+	}
+	for (size_t i = 0; i < segments.size(); ++i)
+		for (int ei = 0; ei < 2; ++ei)
+		{
+			const auto &a = segments[i];
+			const V2 node = ei ? a.b : a.a;
+			size_t match = segments.size();
+			int ej = 0, degree = 1;
+			for (size_t j = 0; j < segments.size(); ++j)
+			{
+				if (j == i || lower(out[i].roadName) != lower(out[j].roadName)) continue;
+				for (int e = 0; e < 2; ++e)
+					if (equal(node, e ? segments[j].b : segments[j].a)) { ++degree; match = j; ej = e; }
+			}
+			if (degree != 2 || match <= i) continue;
+			const auto &b = segments[match];
+			const float orientation = ei == ej ? -1.0f : 1.0f;
+			const float dot = std::clamp((a.dir.x * b.dir.x + a.dir.y * b.dir.y) * orientation, -1.0f, 1.0f);
+			const int flags = (ei ? a.flagsB : a.flagsA) | (ej ? b.flagsB : b.flagsA);
+			if (!(flags & FLAG_ROAD_CORNER_ANGLED) && std::acos(dot) >= 0.9f * 3.14159265358979323846f / 6.0f)
+			{
+				// BFME1 insertCurveSegmentAt: radius 1.5 widths, or 0.5
+				// for TIGHT; if trimming consumes either leg, use miter.
+				const float angle = std::acos(dot);
+				const bool tight = (flags & FLAG_ROAD_CORNER_TIGHT) != 0;
+				const float radius = a.scale * (tight ? 0.5f : 1.5f);
+				const float trim = radius * std::tan(angle * 0.5f);
+				const V2 incoming = {a.dir.x * (ei ? 1.0f : -1.0f), a.dir.y * (ei ? 1.0f : -1.0f)};
+				const V2 outgoing = {b.dir.x * (ej ? -1.0f : 1.0f), b.dir.y * (ej ? -1.0f : 1.0f)};
+				const V2 farA = {(ends[i].bottom[1-ei].x+ends[i].top[1-ei].x)*0.5f,(ends[i].bottom[1-ei].y+ends[i].top[1-ei].y)*0.5f};
+				const V2 farB = {(ends[match].bottom[1-ej].x+ends[match].top[1-ej].x)*0.5f,(ends[match].bottom[1-ej].y+ends[match].top[1-ej].y)*0.5f};
+				const float lengthA = std::hypot(node.x-farA.x,node.y-farA.y);
+				const float lengthB = std::hypot(node.x-farB.x,node.y-farB.y);
+				if (lengthA-trim > 0.5f && lengthB-trim > 0.5f && dot > -1.0f)
+				{
+					const V2 start = {node.x-incoming.x*trim,node.y-incoming.y*trim};
+					const V2 finish = {node.x+outgoing.x*trim,node.y+outgoing.y*trim};
+					const float turn = incoming.x*outgoing.y-incoming.y*outgoing.x > 0 ? 1.0f : -1.0f;
+					const V2 center = {start.x-incoming.y*turn*radius,start.y+incoming.x*turn*radius};
+					ends[i].bottom[ei] = {start.x-a.normal.x*a.half,start.y-a.normal.y*a.half};
+					ends[i].top[ei] = {start.x+a.normal.x*a.half,start.y+a.normal.y*a.half};
+					ends[match].bottom[ej] = {finish.x-b.normal.x*b.half,finish.y-b.normal.y*b.half};
+					ends[match].top[ej] = {finish.x+b.normal.x*b.half,finish.y+b.normal.y*b.half};
+					const V2 origin = turn < 0 ? start : finish;
+					const float base = std::atan2(origin.y-center.y,origin.x-center.x);
+					const float step = 3.14159265358979323846f/6.0f;
+					for (int n = 1; n <= int(std::ceil(angle/step)); ++n)
+					{
+						const float theta = base-std::min(float(n)*step,angle);
+						const V2 radial = {std::cos(theta),std::sin(theta)};
+						curves.push_back({{center.x+radius*radial.x,center.y+radius*radial.y},{-radial.y,radial.x},a.scale,a.half,tight,i});
+					}
+					++report.roundedJoins;
+					continue;
+				}
+			}
+			const float det = a.dir.x * b.dir.y - a.dir.y * b.dir.x;
+			if (det == 0.0f) continue;
+			for (int side = 0; side < 2; ++side)
+			{
+				V2 &p = side ? ends[i].top[ei] : ends[i].bottom[ei];
+				V2 &q = (side == (orientation > 0.0f ? 1 : 0)) ? ends[match].top[ej] : ends[match].bottom[ej];
+				const float t = ((q.x - p.x) * b.dir.y - (q.y - p.y) * b.dir.x) / det;
+				p = {p.x + t * a.dir.x, p.y + t * a.dir.y};
+				q = p;
+			}
+			++report.miteredJoins;
+		}
+	// Rebuild columns between the joined corners, retaining donor projected UVs
+	// and width-wise terrain maxima. Both sides now meet at identical XY points.
+	for (size_t i = 0; i < out.size(); ++i)
+	{
+		auto &strip = out[i];
+		const auto &seg = segments[i];
+		const auto &e = ends[i];
+		const size_t columns = strip.position.size() / 6;
+		const int samples = std::clamp(int(2 * seg.half / MAP_XY_FACTOR) + 1, 2, 100);
+		for (size_t c = 0; c < columns; ++c)
+		{
+			const float f = float(c) / float(columns - 1);
+			V2 p[2] = {{e.bottom[0].x + (e.bottom[1].x-e.bottom[0].x)*f, e.bottom[0].y + (e.bottom[1].y-e.bottom[0].y)*f},
+				{e.top[0].x + (e.top[1].x-e.top[0].x)*f, e.top[0].y + (e.top[1].y-e.top[0].y)*f}};
+			float z = -1e30f;
+			for (int j = 0; j < samples; ++j)
+			{
+				const float v = float(j) / float(samples - 1);
+				z = std::max(z, getMaxCellHeight(map, p[0].x + (p[1].x-p[0].x)*v, p[0].y + (p[1].y-p[0].y)*v));
+			}
+			for (int k = 0; k < 2; ++k)
+			{
+				const size_t v = c*2+k;
+				strip.position[v*3] = p[k].x; strip.position[v*3+1] = p[k].y; strip.position[v*3+2] = z + liftWorldUnits;
+				const V2 origin = {(e.bottom[0].x+e.top[0].x)*0.5f,(e.bottom[0].y+e.top[0].y)*0.5f};
+				const V2 delta = {p[k].x-origin.x, p[k].y-origin.y};
+				strip.uv[v*2] = (delta.x*seg.dir.x + delta.y*seg.dir.y)/(seg.scale*4);
+				strip.uv[v*2+1] = 85.0f/512.0f - (delta.x*seg.normal.x+delta.y*seg.normal.y)/(seg.scale*4);
+			}
+		}
+	}
+	// BFME1 loadCurve: sample the dedicated 30-degree curve artwork in
+	// the road atlas (255/512 normal, 425/512 tight), not the straight row.
+	for (const auto &curve : curves)
+	{
+		const V2 d = {curve.dir.x*curve.scale,curve.dir.y*curve.scale};
+		const V2 n = {-curve.dir.y*curve.half,curve.dir.x*curve.half};
+		const float reach = curve.tight ? 0.5f : 1.0f;
+		const float flare = curve.tight ? 0.2f : 0.4f;
+		const float extra = curve.tight ? 0.1f : 0.2f;
+		V2 bl = {curve.loc.x-n.x*(1+extra)-d.x*0.02f,curve.loc.y-n.y*(1+extra)-d.y*0.02f};
+		V2 tl = {curve.loc.x+n.x-d.x*0.02f,curve.loc.y+n.y-d.y*0.02f};
+		V2 br = {curve.loc.x-n.x+d.x*(reach+0.1f)+n.x*flare,curve.loc.y-n.y+d.y*(reach+0.1f)+n.y*flare};
+		V2 tr = {curve.loc.x+n.x+d.x*(reach-0.4f)+n.x*flare,curve.loc.y+n.y+d.y*(reach-0.4f)+n.y*flare};
+		RoadStrip strip;
+		strip.roadName = out[curve.source].roadName;
+		strip.texture = out[curve.source].texture;
+		const int columns = std::max(2,int(curve.scale/MAP_XY_FACTOR)+1);
+		const int samples = std::clamp(int(curve.half*2/MAP_XY_FACTOR)+1,2,100);
+		for (int c=0;c<columns;++c)
+		{
+			const float f=float(c)/float(columns-1);
+			V2 p[2]={{bl.x+(br.x-bl.x)*f,bl.y+(br.y-bl.y)*f},{tl.x+(tr.x-tl.x)*f,tl.y+(tr.y-tl.y)*f}};
+			float z=-1e30f;
+			for(int j=0;j<samples;++j) {const float t=float(j)/float(samples-1); z=std::max(z,getMaxCellHeight(map,p[0].x+(p[1].x-p[0].x)*t,p[0].y+(p[1].y-p[0].y)*t));}
+			for(int k=0;k<2;++k)
+			{
+				strip.position.insert(strip.position.end(),{p[k].x,p[k].y,z+liftWorldUnits});
+				const V2 delta={p[k].x-curve.loc.x,p[k].y-curve.loc.y};
+				strip.uv.push_back(4.0f/512.0f+(delta.x*curve.dir.x+delta.y*curve.dir.y)/(curve.scale*4));
+				strip.uv.push_back((curve.tight?425.0f:255.0f)/512.0f-(-delta.x*curve.dir.y+delta.y*curve.dir.x)/(curve.scale*4));
+			}
+			if(c) {const std::uint32_t a=2*(c-1);strip.index.insert(strip.index.end(),{a,a+1,a+3,a,a+3,a+2});}
+		}
+		report.vertices+=strip.position.size()/3;
+		report.triangles+=strip.index.size()/3;
 		out.push_back(std::move(strip));
 	}
 	report.strips = out.size();

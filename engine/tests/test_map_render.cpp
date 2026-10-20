@@ -409,3 +409,96 @@ TEST_CASE("MapWeather: map snowfall overrides defaults, including dense snow and
 	MapWeatherScan::applyText("Weather\n SnowEnabled = No\nEnd\n", w);
 	CHECK_FALSE(w.snowEnabled);
 }
+
+TEST_CASE("TerrainRoads: authored angled corners meet on both edges regardless of segment direction")
+{
+	WorldHeightMap map = flatMap(30, 30, 0, 0);
+	RoadTypeIndex types;
+	types.byName["r"] = {"R", "TR.tga", 20.0f, 1.0f, false};
+	for (bool reversed : {false, true})
+	{
+		std::vector<MapObject> objects = {
+			roadPoint("R", 50, 100, FLAG_ROAD_POINT1), roadPoint("R", 100, 100, FLAG_ROAD_POINT2 | FLAG_ROAD_CORNER_ANGLED),
+			roadPoint("R", 100, reversed ? 150 : 100, FLAG_ROAD_POINT1 | FLAG_ROAD_CORNER_ANGLED),
+			roadPoint("R", 100, reversed ? 100 : 150, FLAG_ROAD_POINT2 | FLAG_ROAD_CORNER_ANGLED)};
+		std::vector<RoadStrip> strips;
+		RoadBuildReport report;
+		TerrainRoads::buildStrips(objects, types, map, 0.15f, strips, report);
+		REQUIRE(strips.size() == 2);
+		CHECK(report.miteredJoins == 1);
+		const auto &a = strips[0].position;
+		const auto &b = strips[1].position;
+		const size_t endpoint = reversed ? b.size()-6 : 0;
+		CHECK(a[a.size()-6] == 110.0f);
+		CHECK(a[a.size()-5] == 90.0f);
+		CHECK(a[a.size()-3] == 90.0f);
+		CHECK(a[a.size()-2] == 110.0f);
+		CHECK(a[a.size()-6] == b[endpoint + (reversed ? 3 : 0)]);
+		CHECK(a[a.size()-5] == b[endpoint + (reversed ? 4 : 1)]);
+		CHECK(a[a.size()-3] == b[endpoint + (reversed ? 0 : 3)]);
+		CHECK(a[a.size()-2] == b[endpoint + (reversed ? 1 : 4)]);
+	}
+}
+
+TEST_CASE("TerrainRoads: duplicate suppression preserves different authored road types")
+{
+	WorldHeightMap map = flatMap(20,20,0,0);
+	RoadTypeIndex types;
+	types.byName["r"] = {"R","R.tga",20,1,false};
+	types.byName["s"] = {"S","S.tga",20,1,false};
+	std::vector<MapObject> objects = {
+		roadPoint("R",0,50,FLAG_ROAD_POINT1),roadPoint("R",100,50,FLAG_ROAD_POINT2),
+		roadPoint("S",0,50,FLAG_ROAD_POINT1),roadPoint("S",100,50,FLAG_ROAD_POINT2)};
+	std::vector<RoadStrip> strips;
+	RoadBuildReport report;
+	TerrainRoads::buildStrips(objects,types,map,0,strips,report);
+	CHECK(strips.size() == 2);
+	CHECK(report.duplicateSegments == 0);
+}
+
+TEST_CASE("TerrainRoads: rounded corners trim their legs and use dedicated normal and tight atlas rows")
+{
+	WorldHeightMap map = flatMap(50,50,0,0);
+	RoadTypeIndex types;
+	types.byName["r"] = {"R","R.tga",20,1,false};
+	for(bool tight : {false,true})
+	{
+		const int corner = tight ? FLAG_ROAD_CORNER_TIGHT : 0;
+		std::vector<MapObject> objects = {
+			roadPoint("R",50,150,FLAG_ROAD_POINT1),roadPoint("R",150,150,FLAG_ROAD_POINT2|corner),
+			roadPoint("R",150,150,FLAG_ROAD_POINT1|corner),roadPoint("R",150,250,FLAG_ROAD_POINT2)};
+		std::vector<RoadStrip> strips;
+		RoadBuildReport report;
+		TerrainRoads::buildStrips(objects,types,map,0,strips,report);
+		CHECK(report.roundedJoins == 1);
+		CHECK(report.miteredJoins == 0);
+		REQUIRE(strips.size() == 5); // three 30-degree curve pieces
+		const float tangentX = tight ? 140.0f : 120.0f;
+		CHECK(strips[0].position[strips[0].position.size()-6] == tangentX);
+		// tolerance: atlas projection can extend slightly around its tile, but stays in the selected row.
+		CHECK(strips[2].uv[1] > (tight ? 0.7f : 0.4f));
+		// tolerance: the curve must not sample the straight road row near V=85/512.
+		CHECK(strips[2].uv[1] < (tight ? 1.0f : 0.7f));
+	}
+}
+
+TEST_CASE("TerrainRoads: multi-way junctions retain geometry and explicitly report remaining junction work")
+{
+	WorldHeightMap map = flatMap(30,30,0,0);
+	RoadTypeIndex types;
+	types.byName["r"] = {"R","R.tga",20,1,false};
+	std::vector<MapObject> objects;
+	for (const auto &end : std::vector<Point2F>{{50,100},{150,100},{100,150}})
+	{
+		objects.push_back(roadPoint("R",100,100,FLAG_ROAD_POINT1));
+		objects.push_back(roadPoint("R",end.x,end.y,FLAG_ROAD_POINT2));
+	}
+	std::vector<RoadStrip> strips;
+	RoadBuildReport report;
+	TerrainRoads::buildStrips(objects,types,map,0,strips,report);
+	CHECK(strips.size() == 3);
+	CHECK(report.miteredJoins == 0);
+	CHECK(report.roundedJoins == 0);
+	REQUIRE(MapStops::find("S-036"));
+	CHECK(std::string(MapStops::find("S-036")->gap) == "Straight segments, degree-two mitered joins and normal/tight curve atlas pieces are rendered; tee, cross and alpha joins and BFME2 stacking remain unported");
+}
