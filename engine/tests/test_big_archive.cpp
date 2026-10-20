@@ -13,9 +13,51 @@
 #include <initializer_list>
 #include <memory>
 #include <random>
+#ifdef __APPLE__
+#include <sys/resource.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 using namespace bigtest;
 namespace stdfs = std::filesystem;
+
+#ifdef __APPLE__
+TEST_CASE("BIG: macOS archive open recovers from Finder descriptor limit")
+{
+	struct DescriptorScope
+	{
+		rlimit saved{};
+		bool restore = false;
+		std::vector<int> descriptors;
+		~DescriptorScope()
+		{
+			for (int fd : descriptors) close(fd);
+			if (restore) setrlimit(RLIMIT_NOFILE, &saved);
+		}
+	} scope;
+	REQUIRE(getrlimit(RLIMIT_NOFILE, &scope.saved) == 0);
+	if (scope.saved.rlim_max <= 256)
+	{
+		WARN_MESSAGE(false, "descriptor-limit recovery requires an OS hard limit above 256");
+		return;
+	}
+	scope.restore = true;
+	rlimit low = scope.saved;
+	low.rlim_cur = 256;
+	REQUIRE(setrlimit(RLIMIT_NOFILE, &low) == 0);
+	for (int fd; (fd = open("/dev/null", O_RDONLY)) >= 0;)
+		scope.descriptors.push_back(fd);
+	Win32BIGFileSystem fs;
+	std::string error;
+	// /dev/null opens successfully after the limit increases, then fails BIG parsing.
+	CHECK_FALSE(fs.openArchiveFile("/dev/null", &error));
+	CHECK(error.find("could not open archive file") == std::string::npos);
+	rlimit raised{};
+	REQUIRE(getrlimit(RLIMIT_NOFILE, &raised) == 0);
+	CHECK(raised.rlim_cur > low.rlim_cur); // tolerance: OS hard limit can cap the increase below 4096
+}
+#endif
 
 namespace
 {

@@ -3,7 +3,13 @@
 #include "GameEngineDevice/Win32Device/Common/ArchiveHandle.h"
 
 #include <filesystem>
+#include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <vector>
+#ifdef __APPLE__
+#include <sys/resource.h>
+#endif
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -72,6 +78,23 @@ std::FILE *openRead(const std::filesystem::path &p, bool protect)
 	return protect ? _wfsopen(p.c_str(), L"rb", _SH_DENYWR) : _wfsopen(p.c_str(), L"rb", _SH_DENYNO);
 #else
 	(void)protect;
+#ifdef __APPLE__
+	// Finder-launched apps inherit a 256-descriptor soft limit. AOTR plus the
+	// renderer can exhaust it, leaving no room for loose assets either. Raise
+	// only our process limit within the OS allowance before mounting archives.
+	{
+		struct rlimit limit;
+		if (getrlimit(RLIMIT_NOFILE, &limit) == 0)
+		{
+			const rlim_t target = std::min<rlim_t>(limit.rlim_max, 4096);
+			if (target > limit.rlim_cur)
+			{
+				limit.rlim_cur = target;
+				(void)setrlimit(RLIMIT_NOFILE, &limit); // open below reports failure if descriptors remain exhausted
+			}
+		}
+	}
+#endif
 	return std::fopen(p.c_str(), "rb");
 #endif
 }
@@ -113,7 +136,7 @@ std::shared_ptr<ArchiveHandle> ArchiveHandle::open(const std::string &path, std:
 	{
 		if (error)
 		{
-			*error = "could not open archive file " + path;
+			*error = "could not open archive file " + path + ": " + std::strerror(errno);
 		}
 		return nullptr;
 	}

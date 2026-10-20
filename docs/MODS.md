@@ -43,6 +43,11 @@ missing assets remain errors. `godot/tests/aotr_startup_test.gd` exercises an
 external installation when `AOTR_INSTALL`, `ROTWK_INSTALL` and `BFME2_INSTALL`
 are set.
 
+On macOS, archive mounting raises the process's open-file soft limit to at most
+4,096 (within the OS hard limit). Finder launches otherwise inherit a limit of
+256, which can exhaust descriptors with AOTR and the renderer before all archives
+and loose assets are opened. Archive-open errors include the OS reason.
+
 The **Mods** link under **Logs** (below the version number in the menus) opens
 the mod manager (`godot/scripts/mod_manager.gd`). It lists:
 
