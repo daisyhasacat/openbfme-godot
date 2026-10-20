@@ -514,6 +514,8 @@ bool Pathfinder::blockerCallback(const PathfindObject *obj, const PathfindCell *
 		{
 			continue;
 		}
+		if (m_sharedGoalOwners && std::binary_search(m_sharedGoalOwners->begin(), m_sharedGoalOwners->end(), obj->getID()) &&
+			std::binary_search(m_sharedGoalOwners->begin(), m_sharedGoalOwners->end(), o->getID())) continue;
 		if (top && o->getTopContainer() == top)
 		{
 			continue;

@@ -591,6 +591,20 @@ public:
 	~Pathfinder();
 	Pathfinder(const Pathfinder &) = delete;
 	Pathfinder &operator=(const Pathfinder &) = delete;
+	// Enhanced compact orders may share reservations within their selection.
+	// The sorted owner list lives only across synchronous command dispatch;
+	// terrain tests and reservations belonging to other units remain active.
+	class SharedGoalScope
+	{
+	public:
+		SharedGoalScope(Pathfinder &pf, const std::vector<PathfindObjectID> &owners) : m_pf(pf), m_previous(pf.m_sharedGoalOwners) { pf.m_sharedGoalOwners = &owners; }
+		~SharedGoalScope() { m_pf.m_sharedGoalOwners = m_previous; }
+		SharedGoalScope(const SharedGoalScope &) = delete;
+		SharedGoalScope &operator=(const SharedGoalScope &) = delete;
+	private:
+		Pathfinder &m_pf;
+		const std::vector<PathfindObjectID> *m_previous;
+	};
 
 	// ---- map ----
 	// Allocate the grid over the terrain, classify every cell, add the footprint of every object of `objects` (may be null) and
@@ -847,6 +861,7 @@ public:
 	void setSearchShortcuts(bool on) { m_searchShortcuts = on; }
 private:
 	enum { kUnitIndexMax = 1 << 20 };
+	const std::vector<PathfindObjectID> *m_sharedGoalOwners = nullptr; // transient call scope, never survives a frame
 	void releaseSlot(PathfindObjectID id, Slot &slot);
 	void registerSlot(PathfindObject &obj, Slot &slot);
 	void footprintCells(const PathfindObject &obj, const ICoord2D &cell, int angleCode, std::vector<ICoord2D> &out);

@@ -290,9 +290,18 @@ TEST_CASE("commands spread: 100 ground units reserve a growing grid around the d
 		CHECK(cells.size() == 100);
 		CHECK(xs.size() == 10);
 		CHECK(ys.size() == 10);
-		// Walker reserves two cells plus one cell of spacing: ten slots span 9 * 30.
-		CHECK(*xs.rbegin() - *xs.begin() == 270.0f);
-		CHECK(*ys.rbegin() - *ys.begin() == 270.0f);
+		// Compact spacing is clamped to one 10-unit cell: ten slots span 9 * 10.
+		CHECK(*xs.rbegin() - *xs.begin() == 90.0f);
+		CHECK(*ys.rbegin() - *ys.begin() == 90.0f);
+		// Sharing applies only during this selection's synchronous order. The
+		// ordinary reservation test must reject another unit's occupied goal.
+		int radius;
+		bool center;
+		auto &adapter = mw.ai->adapterFor(*units[1]);
+		mw.ai->pathfinder().getRadiusAndCenter(&adapter, radius, center);
+		ICoord2D cell;
+		mw.ai->pathfinder().worldToCell(&goals[0], center, &cell);
+		CHECK_FALSE(mw.ai->pathfinder().checkDestination(&adapter, cell.x, cell.y, LAYER_GROUND, radius, center));
 		if (pass == 1)
 			for (size_t i = 0; i != goals.size(); ++i)
 			{
@@ -303,7 +312,7 @@ TEST_CASE("commands spread: 100 ground units reserve a growing grid around the d
 	}
 }
 
-TEST_CASE("commands spread: battalions get space for their full bounding geometry")
+TEST_CASE("commands spread: battalions overlap their envelopes while retaining distinct centres")
 {
 	MoveWorld mw(300, 300);
 	std::vector<Object *> units;
@@ -325,10 +334,10 @@ TEST_CASE("commands spread: battalions get space for their full bounding geometr
 	CHECK(cells.size() == 16);
 	CHECK(xs.size() == 4);
 	CHECK(ys.size() == 4);
-	// The 30 x 45 box needs diameter sqrt(30^2+45^2)*2 plus 10,
-	// rounded up to cells: 120 units. Four slots span 360.
-	CHECK(*xs.rbegin() - *xs.begin() == 360.0f);
-	CHECK(*ys.rbegin() - *ys.begin() == 360.0f);
+	// The old 120-unit spacing is scaled by 1/sqrt(10); snapped
+	// centres are 40 units apart here and span 120 instead of 360.
+	CHECK(*xs.rbegin() - *xs.begin() == 120.0f);
+	CHECK(*ys.rbegin() - *ys.begin() == 120.0f);
 }
 
 TEST_CASE("commands spread: edge clicks shift the whole layout inside the map")
@@ -352,8 +361,8 @@ TEST_CASE("commands spread: edge clicks shift the whole layout inside the map")
 		CHECK(mw.ai->pathfinder().clientSafeQuickDoesPathExist(o->getAIUpdateInterface()->locomotorInfo(), o->getPosition(), &goal));
 	}
 	CHECK(cells.size() == 16);
-	CHECK(*xs.rbegin() - *xs.begin() == 90.0f);
-	CHECK(*ys.rbegin() - *ys.begin() == 90.0f);
+	CHECK(*xs.rbegin() - *xs.begin() == 30.0f);
+	CHECK(*ys.rbegin() - *ys.begin() == 30.0f);
 	// Last row is cell 98, leaving room for the footprint at the cell-99 edge.
 	CHECK(*xs.rbegin() == 980.5f);
 	CHECK(*ys.rbegin() == 980.5f);

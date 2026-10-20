@@ -49,17 +49,18 @@ std::map<ObjectID, Coord3D> spreadMoveGoals(GameLogic &logic, AIWorld &world, co
 	}
 	if (units.size() < 16) return {};
 	spacing = SimMath::mulf32(float(SimMath::ceilToInt(SimMath::divf32(spacing, kCellSize))), kCellSize);
+	// Requested density: one tenth the previous area, hence 1/sqrt(10) of
+	// each axis. Battalion envelopes may overlap; their centres stay distinct.
+	const float footprintSpacing = spacing;
+	spacing = std::max(kCellSize, SimMath::mulf32(spacing, 0.316227766f));
 	std::sort(units.begin(), units.end(), [](const Object *a, const Object *b) {
-		const auto &ap = *a->getPosition(), &bp = *b->getPosition();
-		if (ap.y != bp.y) return ap.y < bp.y;
-		if (ap.x != bp.x) return ap.x < bp.x;
 		return a->getID() < b->getID();
 	});
 	ICoord2D lo, hi;
 	pf.getLogicalExtent(lo, hi);
 	// Destination snapping can round an even-sized footprint up by half a
 	// cell; leave a full cell so edge slots do not need separate inward repairs.
-	const float margin = SimMath::addf32(SimMath::mulf32(spacing, 0.5f), kCellSize);
+	const float margin = SimMath::addf32(SimMath::mulf32(footprintSpacing, 0.5f), kCellSize);
 	const float minX = SimMath::addf32(SimMath::mulf32(float(lo.x), kCellSize), margin);
 	const float minY = SimMath::addf32(SimMath::mulf32(float(lo.y), kCellSize), margin);
 	const float maxX = SimMath::subf32(SimMath::mulf32(float(hi.x + 1), kCellSize), margin);
@@ -465,6 +466,15 @@ void AIGroup::planningMoveToPosition(const Coord3D &pos, bool attackMove, Comman
 	}
 	world->noteStop(planningStopLine());
 	const auto spreadGoals = world->mapReady() ? spreadMoveGoals(m_logic, *world, m_members, pos, source) : std::map<ObjectID, Coord3D>{};
+	std::vector<PathfindObjectID> sharedGoals;
+	for (const auto &goal : spreadGoals) sharedGoals.push_back(goal.first);
+	for (Object *o : m_members)
+		if (spreadGoals.count(o->getID()) && o->getContain() && o->getContain()->getContainedItemsList())
+			for (const auto *member : *o->getContain()->getContainedItemsList())
+				if (member) sharedGoals.push_back(member->getID());
+	std::sort(sharedGoals.begin(), sharedGoals.end());
+	sharedGoals.erase(std::unique(sharedGoals.begin(), sharedGoals.end()), sharedGoals.end());
+	Pathfinder::SharedGoalScope sharedGoalScope(world->pathfinder(), sharedGoals);
 	for (Object *o : m_members)
 		if (spreadGoals.count(o->getID())) world->pathfinder().removeGoal(world->adapterFor(*o));
 	for (Object *o : m_members)

@@ -1,51 +1,47 @@
 # Large-selection destination spacing
 
 Normal move and attack-move commands with at least 16 eligible ground objects
-now distribute their destinations over a near-square grid around the click.
-A battalion counts as one object. The grid grows with the selection instead
-of repeatedly searching the same small ring around a single destination.
+assign distinct destinations on a compact grid around the click. A battalion
+counts as one object. Smaller selections retain the existing destination
+policy. Force moves, waypoints and dragged formations retain their existing
+command paths.
 
-This is an explicitly requested movement enhancement, not a reconstruction
-of RotWK's same-point planning-order behavior. Smaller selections retain the
-existing destination policy. Force moves, waypoints and dragged formations
-continue to use their existing command paths.
+This is a requested enhancement, not a reconstruction of RotWK's same-point
+planning orders. The initial version used full, separated battalion envelopes;
+the requested revision occupies about one-tenth of that area. It scales each
+axis by `1/sqrt(10)` and allows battalion envelopes to overlap. Centres remain
+at least one 10-unit pathfinder cell apart. Destination snapping can therefore
+make small layouts slightly larger than exactly one tenth: the synthetic
+100-unit layout now spans 90 by 90 instead of 270 by 270, and the 16-battalion
+layout spans 120 by 120 instead of 360 by 360 (one ninth the area in both).
 
-Slot spacing uses the largest selected object's pathfinder footprint and
-bounding-circle diameter, with an extra pathfinder cell of clearance, rounded
-up to whole cells. This gives battalions room for their full geometry. Units
-are assigned in current y/x order with object ID as the tie-breaker, while
-commands still execute in the original selection order. No RNG is used.
+Base spacing still derives from the largest selected object's footprint and
+bounding geometry. Map-edge margins retain room for that full footprint, while
+the grid itself uses compact spacing. Assignment uses stable object ID order,
+so repeated orders do not reshuffle slots as units change position.
 
-The whole grid shifts inside the playable extent when the click is near an
-edge. Existing goals of the affected selection are released before assigning
-new ones, so repeated orders do not fight stale reservations. Each slot still
-passes destination adjustment and a reachability check. A blocked or
-unreachable slot keeps its unit near its current position rather than falling
-back to the shared click. If the layout cannot fit on the map, excess units
-also retain their current positions.
+During synchronous dispatch, the selected units and their battalion members
+may share goal reservations with one another. Reservations belonging to other
+units, terrain footprints, wall checks and reachability tests still apply.
+The scoped sharing list is restored before the frame proceeds; it is not
+persistent simulation state and does not alter collision handling. Regression
+checks verify ordinary reservation refusal after dispatch.
 
-Regression checks cover 100 individual units with distinct destinations on a
-270-by-270 grid; 16 battalions on a 360-by-360 grid; edge clicks; repeated move
-and attack-move orders; sealed walls and reopening an exit; and matching
-simulation hashes across two runs. The synthetic movement suite passes
-78 cases / 3,102 assertions.
+Existing goals of the selection are released before new ones are assigned.
+A blocked or unreachable slot keeps its unit near its current position rather
+than falling back to the common click. If a layout cannot fit, excess units
+also retain their positions. Physical collision and formation behavior can
+still affect the final resting arrangement; overlapping target envelopes do
+not disable those systems.
 
-The opt-in `buckland_army_bench.gd` now reports unique active destinations and
-their bounds. With the configured HD mod, 667 battalions and the user's
-restored snow Buckland base, the first order tick reported 666 unique active
-destinations for 667 battalions, spanning 3,130 by 2,990 world units. One
-battalion had no active destination. This checks the actual mounted workload;
-it does not establish that every battalion has arrived. The saved layout
-still reported 233 completed entries and 212 replay errors, as documented in
-`LARGE_ARMY_PERFORMANCE.md`.
+Tests cover 100 distinct individual-unit goals, compact battalion goals,
+repeated move/attack-move orders, edge clicks, sealed walls and reopened exits,
+reservation-scope cleanup, and matching state hashes across two runs. The
+combined synthetic movement and Lua suite passes 105 cases / 4,620 assertions.
+Installed-data retail sweeps previously reported failures for `Sheep` and
+`NeutralGollum_RingHero`; the original binary reproduced both. Their checks
+were not changed or relaxed.
 
-Compiler and linker simulation checks pass. The full simulation audit remains
-blocked by unavailable libclang and the existing unclassified FloatingText
-source; its allowances were not changed.
-
-With verified retail installations enabled, the wider movement run passed
-77 cases and failed the existing all-template sweep on `Sheep` and
-`NeutralGollum_RingHero` (15,597 assertions passed, two failed). The original
-pre-change binary reproduces both failures with the same diagnostics; that
-sweep calls individual `aiMoveToPosition` directly and does not use the group
-arrival layout. These failures were not hidden or relaxed.
+The opt-in `buckland_army_bench.gd` reports active destination count and bounds
+for the mounted profile and saved base. The saved layout's known incomplete
+replay remains documented in `LARGE_ARMY_PERFORMANCE.md`.
