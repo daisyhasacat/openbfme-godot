@@ -68,7 +68,9 @@ Drag one finger over the battlefield to pan the camera. Pinch two fingers
 together to zoom out, or spread them to zoom in; moving both fingers also pans.
 A finger tap on a selectable unit or building replaces the current selection;
 tapping empty ground issues the normal contextual order. Explicit ability and
-building-placement targeting retain their normal behavior. Apple Pencil keeps
+building-placement targeting retain their normal behavior. Tapping a capturable
+flag with an eligible unit selected starts capture and keeps that unit selected.
+Apple Pencil keeps
 mouse-style selection: tap to select, or drag to draw a selection box. Drags
 start after 12 pixels of movement at a 720-pixel viewport height, scaling with
 larger viewports, so small movements during a tap do not start a drag.

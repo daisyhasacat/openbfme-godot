@@ -4478,8 +4478,10 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 					if (!d->hud->input().ui().getGUICommand() && !d->hud->input().ui().isPlacing() && !d->hud->spellBar().targeting())
 					{
 						const auto &ctx = d->hud->input().context();
-						if (::Object *target = HudObjects::pickForSelection(ctx, {(int)p.x, (int)p.y});
-							target && HudObjects::canSelect(ctx, *target, false))
+						::Object *target = HudObjects::pickForSelection(ctx, {(int)p.x, (int)p.y});
+						const bool captureTarget = target && target->isKindOfName("CAPTURABLE") &&
+							d->hud->input().commandTranslator().evaluateContextCommand(target, target->getPosition(), EvaluateType::EvaluateOnly) == MSG_DO_SPECIAL_POWER_AT_OBJECT;
+						if (target && !captureTarget && HudObjects::canSelect(ctx, *target, false))
 						{
 							// Finger taps prefer inspecting/selecting an object over
 							// issuing a contextual order from the current selection.

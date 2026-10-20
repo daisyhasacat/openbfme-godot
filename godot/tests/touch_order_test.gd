@@ -71,5 +71,21 @@ func _run() -> void:
 		for i in 3: await process_frame
 		assert(hud.get_selection() == [target], str(hud.get_selection()))
 		assert(hud.get_state().keys.touch_orders == 1)
+	# A capturable flag remains an order target, rather than replacing the party.
+	var party: int = world.create_object("AngmarThrallMaster", int(owner.output), 2100, 1800, 0)
+	var neutral = world.execute_lua("for id,p in pairs(bfme.players) do if p.name=='PlyrCivilian' then return id end end")
+	var flag: int = world.create_object("CaptureFlag", int(neutral.output), 2200, 1800, 0)
+	var outpost: int = world.create_object("Outpost", int(neutral.output), 2320, 1800, 0)
+	assert(world.get_object(party).ok and world.get_object(flag).ok and world.get_object(outpost).ok)
+	world.advance(0.2)
+	hud.select_controller_group(PackedInt64Array([party]))
+	for i in 3: await process_frame
+	pixel = selection_pixel(hud, flag, Vector2(2200, 1800))
+	for down in [true, false]:
+		touch(hud, 0, down, pixel)
+		await process_frame
+	for i in 3: await process_frame
+	assert(hud.get_selection() == [party], str(hud.get_selection()))
+	assert("MSG_DO_SPECIAL_POWER_AT_OBJECT" in str(hud.get_message_log()), str(hud.get_message_log()))
 	print("TOUCH CONTEXT ORDER ROUTING PASS")
 	quit()
