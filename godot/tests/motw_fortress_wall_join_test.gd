@@ -55,6 +55,11 @@ func _run():
  var preview=hud.get_placement_ghost_state()
  assert(not preview.icons.is_empty(),str(preview))
  for icon in preview.icons:assert(icon.code==0,str(icon))
+ var uber_wall=OS.get_cmdline_user_args().has('--uber-wall')
+ if uber_wall:
+  assert(w.execute_lua(FileAccess.get_file_as_string('res://dev/ubermode.lua')).ok)
+  assert(w.execute_lua('ubermode.enable()').ok)
+  w.update_lua()
  assert(w.build2_wall_span(source.id,'MenWallHubSmall',source.x,source.y,target.x,target.y,0))
  w.advance(.2)
  var built=0
@@ -62,6 +67,14 @@ func _run():
   var o=w.get_object(id)
   if o.get('template','')=='MenWallSegmentSmall' and o.y==736 and o.x>864 and o.x<1136:built+=1
  assert(built==preview.icons.size(),'Every legal segment was created')
+ if uber_wall:
+  for i in 7:
+   w.advance(.2)
+   await create_timer(.21).timeout
+  w.update_lua()
+  var unfinished=w.execute_lua("local n=0; for _,b in ipairs(bfme.players.localPlayer:buildings()) do if b.typeId=='MenWallSegmentSmall' and b.y==736 and b.x>864 and b.x<1136 and b.underConstruction then n=n+1 end end; return n")
+  assert(unfinished.ok and int(unfinished.output)==0,str(unfinished))
+  print('UBER WALL TIMING PASS: entire span completed without stagger waits')
  assert(w.get_object(source.id).ok and w.get_object(target.id).ok)
  print('MOTW FORTRESS WALL JOIN PASS: ',built,' segments')
  hud.free();camera.free();w.free();quit()

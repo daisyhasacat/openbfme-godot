@@ -83,3 +83,10 @@ This also applies to the destination fortress, fixing red endpoint segments
 between adjacent fortresses. The exemption follows the outward side of the hub;
 a wall directed through the fortress interior or through an unrelated fortress
 still fails the collision check. Castle pieces are collected once per span plan.
+
+Uber mode's one-second construction also skips the stagger delay between wall
+segments. More generally, a build timing hook that shortens a segment's native
+duration lets it start immediately; unchanged durations retain the normal wave.
+The span also restores that scripted duration after its finished-object creation
+step, which otherwise replaces it with the slower repair duration.
+This applies independently of wall rebalance and only to newly started work.

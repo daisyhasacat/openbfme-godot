@@ -8,7 +8,39 @@
 #include "Common/BuildAssistant.h"
 #include "GameLogic/Module/ReplaceSelfUpgrade.h"
 #include "GameLogic/Module/CastleModules.h"
+#include "GameLogic/Module/ConstructionModules.h"
+#include "GameLogic/Construction.h"
 using namespace combattest;
+TEST_CASE("accelerated wall construction skips stagger only for accelerated owners") {
+ CombatWorld w(
+ "Object FastWall\n KindOf = STRUCTURE IMMOBILE WALL_SEGMENT\n BuildTime = 30\n Body = ActiveBody Body\n MaxHealth = 100\n End\n Behavior = GettingBuiltBehavior Build\n SpawnTimer = 0\n End\nEnd\n");
+ auto &production=w.logic->productionSettings();
+ production.loaded=true; production.multipleFactory=1; production.multiPlayEntries=8;
+ for(int i=0;i<8;++i) { production.multiPlayUnitSpeedMult[i]=1; production.multiPlayBuildingSpeedMult[i]=1; }
+ const auto player=w.teamA()->getControllingPlayer();
+ int calls=0;
+ w.logic->setTimingHook("build",[&](const GameLogic::TimingRequest &r) {
+  ++calls; return r.player==player ? 5 : r.frames;
+ });
+ auto *fast=w.unit("FastWall",'A',300,500);
+ auto *normal=w.unit("FastWall",'B',600,500);
+ for (Object *wall : {fast,normal}) {
+  // Match WallSpan's finished-object bootstrap before starting the span.
+  Construction::completeConstruction(*wall,nullptr);
+  auto *body=dynamic_cast<ActiveBody *>(wall->getBodyModule());
+  body->internalChangeHealth(1-body->getHealth());
+  auto *build=dynamic_cast<GettingBuiltBehavior *>(wall->findModule("GettingBuiltBehavior"));
+  REQUIRE(build);
+  build->runNowThenSleep(200);
+  CHECK(build->friend_getNextCallFrame()==w.logic->getFrame()+(wall==fast ? 0 : 200));
+ }
+ CHECK(calls==2);
+ w.frames(7);
+ CHECK_FALSE(fast->isUnderConstruction());
+ CHECK(w.health(fast)==100);
+ CHECK(w.health(normal)==1);
+ CHECK(calls==2);
+}
 namespace {
 const char objects[] =
 "Object BalanceWall\n KindOf = STRUCTURE IMMOBILE WALL_SEGMENT SELECTABLE\n BuildCost = 200\n Geometry = BOX\n GeometryMajorRadius = 200\n GeometryMinorRadius = 5\n GeometryHeight = 20\n Body = ActiveBody Body\n MaxHealth = 100\n End\nEnd\n"

@@ -931,6 +931,21 @@ UpdateSleepTime GettingBuiltBehavior::update()
 void GettingBuiltBehavior::runNowThenSleep(UnsignedInt frames)
 {
 	update(); // RW 0x8574F0: the module's update interface slot 0 (its return value is not used)
+	// OpenBFME sandbox: accelerated scripted construction (including ubermode)
+	// must not spend longer waiting for the wall wave than actually building.
+	// The update above resolves/caches the hook once for this construction job.
+	if (m_scriptBuildFrames > 0) {
+		Object *obj = getObject();
+		auto &logic = obj->logic();
+		const int nativeFrames = BuildAssistant::calcTimeToBuild(*obj->getTemplate(), obj->getControllingPlayer(), nullptr, -1, logic.productionSettings(), logic);
+		if (m_scriptBuildFrames < nativeFrames) {
+			frames = 0;
+			// WallSpan creates a finished object before restarting construction.
+			// That completion installs the repair duration; restore the scripted
+			// build duration cached before this bootstrap completion.
+			m_buildFrames = (UnsignedInt)m_scriptBuildFrames;
+		}
+	}
 	setWakeFrame(getObject(), (UpdateSleepTime)frames); // RW 0x850C32(object, frames): now + frames (0: this frame)
 }
 
