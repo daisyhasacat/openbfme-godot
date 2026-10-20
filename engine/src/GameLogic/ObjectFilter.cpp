@@ -66,6 +66,19 @@ void ParseObjectFilter(INI *ini, void *instance, void *store, const void *)
 	ObjectFilter filter; // RW 0x762BDF
 	std::vector<std::string> tokens;
 	INI::parseAsciiStringVector(ini, instance, &tokens, nullptr); // RW 0x42EED6
+	if (ini->environment().aotrData)
+	{
+		// AOTR's GameData contains "- InnDesert": the sign and name may
+		// be separate tokens in this profile, but neither may be missing.
+		for (size_t i = 0; i < tokens.size(); ++i)
+			if (tokens[i] == "+" || tokens[i] == "-")
+			{
+				if (i + 1 == tokens.size() || tokens[i + 1].empty() || tokens[i + 1][0] == '+' || tokens[i + 1][0] == '-')
+					throw INIException(3, "AOTR object filter classification sign has no name");
+				tokens[i] += tokens[i + 1];
+				tokens.erase(tokens.begin() + i + 1);
+			}
+	}
 
 	bool first = true;
 	bool ruleSeen = false;

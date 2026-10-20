@@ -39,12 +39,14 @@ namespace SkirmishAI
 {
 enum
 {
+	AI_KINDOF_CAPACITY = 20, // AOTR adds SPAM, SLAYER and PATROL after the retail indices.
 	AI_KINDOF_COUNT = 17, ///< RW 0xDB55C8: INFANTRY .. SUPPORT (the loops of RW 0x8ED505 / 0x8ED5C4 stop at 0x11)
 	AI_TARGET_COUNT = 5,  ///< RW 0xDA1208: ENEMY_STRUCTURE .. TARGETLESS (RW 0x6C6A4E stops at 5)
 	DIFFICULTY_COUNT = 4  ///< EASY, NORMAL, HARD, BRUTAL (RW 0x64501B); RW 0x6A9807 builds 4 tuning rows
 };
 // nullptr-terminated, in the binary's order
 extern const char *const TheAIKindOfNames[AI_KINDOF_COUNT + 1];
+extern const char *const TheAotrAIKindOfNames[AI_KINDOF_CAPACITY + 1];
 extern const char *const TheAITargetNames[AI_TARGET_COUNT + 1];
 extern const char *const TheGameDifficultyNames[DIFFICULTY_COUNT + 1];
 } // namespace SkirmishAI
@@ -54,8 +56,8 @@ extern const char *const TheGameDifficultyNames[DIFFICULTY_COUNT + 1];
 struct AICombatChain
 {
 	int unit = -1;                                           ///< + 0x00 Unit (an AI_KINDOF index)
-	int targetTypes[SkirmishAI::AI_KINDOF_COUNT];            ///< + 0x04 TargetTypes (AI_KINDOF indices, -1 = unused)
-	float targetPriorityModifiers[SkirmishAI::AI_KINDOF_COUNT]; ///< + 0x48 TargetPriorityModifiers
+	int targetTypes[SkirmishAI::AI_KINDOF_CAPACITY];            ///< + 0x04 TargetTypes (AI_KINDOF indices, -1 = unused)
+	float targetPriorityModifiers[SkirmishAI::AI_KINDOF_CAPACITY]; ///< + 0x48 TargetPriorityModifiers
 	AICombatChain();
 };
 
@@ -86,7 +88,8 @@ struct AIBrutalCheats
 // TheSkirmishAIData (manager + 0x10; RW ctor 0x6A9807; offsets below are relative to the data object)
 struct SkirmishAIData
 {
-	AICombatChain combatChains[SkirmishAI::AI_KINDOF_COUNT]; ///< + 0x000, indexed by AI_KINDOF
+	bool aotrProfile = false;
+	AICombatChain combatChains[SkirmishAI::AI_KINDOF_CAPACITY]; ///< + 0x000, indexed by AI_KINDOF
 	AIBrutalCheats brutalCheats;                             ///< + 0x94C
 	bool disableBaseBuilding = false;                        ///< + 0x954
 	bool disableEconomyBuilding = false;                     ///< + 0x955

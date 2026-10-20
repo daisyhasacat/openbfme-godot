@@ -20,11 +20,28 @@ asset overlay. Standard RotWK mods and the optional wall pack are excluded from
 this game choice. Its menus use the AOTR overlay rather than the BFME II menu
 presentation source. Executables and DLLs from the mod are not run.
 
-This is an experimental asset profile, not a claim of playable AOTR support.
-The tested installation mounts, but object-world initialization currently fails
-on duplicate macro definitions (including `MORDOR_HARADRIM_HEALTH`) and unresolved
-AOTR constants. These errors remain visible; selecting the game does not bypass
-parsing or provide the behavior of AOTR's patched Windows executable.
+The AOTR profile also mounts the installed runtime's sibling
+`rotwk/#aotr_patch202.big` before the `aotr` folder. Its GameData macros provide
+the dependency definitions; AOTR definitions then override them. Every INI reader
+uses that same explicit profile, including settings and effects. Standard RotWK
+and BFME1 retain strict duplicate-macro checks.
+
+AOTR data support includes nested filter macros (cycles are errors), separated
+object-filter signs, scenario map-cache blocks, the Rohan/Mirkwood/Guldur hero
+factions, and SPAM/SLAYER/PATROL AI categories. Retail category IDs and the retail
+AI hash range are preserved. AOTR's terminal STR `END` and slash-comment font
+substitutions are accepted without accepting unterminated entries or blocks.
+Its APT exports also use nonzero boolean flags such as word-wrap value `111`;
+these are interpreted as true only in the AOTR profile. The standard APT parser
+continues to require canonical `0`/`1` flags.
+
+This remains an experimental compatibility profile. Macro override/inheritance
+rules and added category IDs are inferred from the installed data; they have not
+been verified against AOTR's patched executable. Loading its assets does not
+establish gameplay or network parity with that executable. Unknown syntax and
+missing assets remain errors. `godot/tests/aotr_startup_test.gd` exercises an
+external installation when `AOTR_INSTALL`, `ROTWK_INSTALL` and `BFME2_INSTALL`
+are set.
 
 The **Mods** link under **Logs** (below the version number in the menus) opens
 the mod manager (`godot/scripts/mod_manager.gd`). It lists:

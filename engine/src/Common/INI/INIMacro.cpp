@@ -155,7 +155,7 @@ void INI::runDefinePass()
 			throw INIException(8, "%s:\nError parsing MACRO.\n%s has no value", m_filename.c_str(), name.c_str());
 		}
 
-		if (!m_env.macros.define(name, value, m_loadType == INI_LOAD_RELOAD))
+		if (!m_env.macros.define(name, value, m_loadType == INI_LOAD_RELOAD || m_env.aotrData))
 		{
 			throw INIException(8, "%s:\nDuplicate MACRO names.\n%s.", m_filename.c_str(), name.c_str());
 		}

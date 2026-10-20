@@ -280,7 +280,7 @@ public:
 	std::shared_ptr<const std::vector<std::uint8_t>> data; // raw .apt bytes (bytecode lives here)
 
 	static bool parse(const std::string &movieName, std::shared_ptr<const std::vector<std::uint8_t>> aptBytes,
-		const AptConstFile &consts, AptFile &out, std::string *error);
+		const AptConstFile &consts, AptFile &out, std::string *error, bool aotr = false);
 
 	// Export lookup is ASCII case-insensitive (retail uses _strcmpi tables).  Returns the character
 	// id of the first export with that name; *ambiguous is set when another export of the same

@@ -147,6 +147,7 @@ struct CreateAHeroClass ///< RW 0xD9F198 (0x20 bytes)
 };
 
 extern const char *const TheCreateAHeroBlingTypeNames[];  ///< RW 0xD9EDB8
+extern const char *const TheCreateAHeroAotrFactionNames[];
 extern const char *const TheCreateAHeroFactionNames[];    ///< RW 0xD9EDD0
 
 class CreateAHeroSystem

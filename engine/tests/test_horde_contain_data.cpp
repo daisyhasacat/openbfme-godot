@@ -917,3 +917,17 @@ TEST_CASE("HordeContain retail: every HordeContain / HorseHordeContain module of
 	CHECK(BitFlagsTest(g.m_transport.m_open.m_passengerFilter.includeKindOf, 8)); // +INFANTRY
 	CHECK_FALSE(g.m_transport.m_open.m_showPips);
 }
+
+TEST_CASE("AOTR profile: object-filter signs may be separated from names")
+{
+	Fixture fx;
+	fx.env.aotrData = true;
+	ObjectFilter filter;
+	fx.env.blocks.registerBlock("F", [&](INI *ini) { ParseObjectFilter(ini, nullptr, &filter, nullptr); });
+	CHECK(loadError(fx.env, "filter.ini", "F NONE + STRUCTURE - InnDesert\n").empty());
+	CHECK(filter.excludeNames == std::vector<std::string>{"InnDesert"});
+	CHECK_FALSE(loadError(fx.env, "filter.ini", "F NONE -\n").empty());
+	Fixture retail;
+	retail.env.blocks.registerBlock("F", [&](INI *ini) { ParseObjectFilter(ini, nullptr, &filter, nullptr); });
+	CHECK_FALSE(loadError(retail.env, "filter.ini", "F NONE - InnDesert\n").empty());
+}

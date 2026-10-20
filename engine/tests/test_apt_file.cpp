@@ -875,3 +875,23 @@ TEST_CASE("loader: .swf urls name movies (EA DispatchLiteral008C5840: suffix tes
 	CHECK_FALSE(AptLoader::movieNameFromSwf("swf", name));
 	CHECK_FALSE(AptLoader::movieNameFromSwf("FSCommand:Foo", name));
 }
+
+TEST_CASE("AOTR profile: exported text flags use nonzero truth while retail stays canonical")
+{
+	TestMovie movie;
+	const auto record = movie.addEditText("Title", "");
+	const auto id = movie.addCharacter(record);
+	movie.setRootFrames({{}});
+	std::vector<std::uint8_t> apt, constants;
+	movie.build(apt, constants);
+	apt[record + 48] = 111; // observed non-canonical word-wrap flag in AOTRMenuExport
+	AptConstFile cf;
+	std::string error;
+	REQUIRE(AptConstFile::parse(constants, cf, &error));
+	auto bytes = std::make_shared<const std::vector<std::uint8_t>>(apt);
+	AptFile parsed;
+	CHECK_FALSE(AptFile::parse("Test", bytes, cf, parsed, &error));
+	REQUIRE(AptFile::parse("Test", bytes, cf, parsed, &error, true));
+	REQUIRE(parsed.characters[id].text);
+	CHECK(parsed.characters[id].text->wordWrap);
+}

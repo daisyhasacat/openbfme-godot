@@ -185,6 +185,8 @@ struct INIEnvironment
 {
 	ArchiveFileSystem *fileSystem = nullptr; ///< where files and #includes come from
 	INIMacroTable macros;
+	bool aotrDependencyLoaded = false;
+	bool aotrData = false; // Explicit AOTR profile; retail loads remain strict.
 	INIBlockRegistry blocks;
 	// community PR #36: the file system holds BFME1's data (isBfme1Data, Common/BfmeGame.h); asked once, then cached (false without a file system)
 	bool bfme1Data();

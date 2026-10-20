@@ -27,6 +27,8 @@ std::string lowerAscii(const std::string &s)
 
 } // namespace
 
+bool AptArchiveFileSource::aotrProfile() const { return m_fs.aotrProfile(); }
+
 bool AptArchiveFileSource::readFile(const std::string &virtualPath, std::vector<std::uint8_t> &out, std::string *error)
 {
 	return m_fs.readFile(virtualPath, out, error);
@@ -93,7 +95,7 @@ std::shared_ptr<const AptFile> AptLoader::loadMovie(const std::string &movieName
 		return nullptr;
 	}
 	auto file = std::make_shared<AptFile>();
-	if (!AptFile::parse(movieName, aptBytes, consts, *file, &err))
+	if (!AptFile::parse(movieName, aptBytes, consts, *file, &err, m_source.aotrProfile()))
 	{
 		if (error)
 		{

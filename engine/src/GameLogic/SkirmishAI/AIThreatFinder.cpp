@@ -215,9 +215,11 @@ int AIThreatFinder::threatCategory(const ThingTemplate &tt)
 			}
 			if (tokens.size() >= 2 && tokens[0] == "AIKindOf")
 			{
-				for (int i = 0; i < SkirmishAI::AI_KINDOF_COUNT; ++i)
+				const int count = b.aotrData ? SkirmishAI::AI_KINDOF_CAPACITY : SkirmishAI::AI_KINDOF_COUNT;
+				const char *const *names = b.aotrData ? SkirmishAI::TheAotrAIKindOfNames : SkirmishAI::TheAIKindOfNames;
+				for (int i = 0; i < count; ++i)
 				{
-					if (std::strcmp(SkirmishAI::TheAIKindOfNames[i], tokens[1].c_str()) == 0) // RW 0x8ED505 (an unknown name throws at load: S-1300)
+					if (std::strcmp(names[i], tokens[1].c_str()) == 0) // RW 0x8ED505 (an unknown name throws at load: S-1300)
 					{
 						category = i;
 					}
@@ -331,7 +333,7 @@ double AIThreatFinder::counterDifference(ThreatRecord &a, const ThreatRecord &b,
 	// RW 0x7EDC2F(this = a, b): for each category c of 17 with a positive value in b, sum = fstp(RW 0x7ED963(c, value) + sum) (a's categories are consumed);
 	// the outputs a's total and the sum; the result a's total minus the sum, in the register
 	float sum = 0.0f;
-	for (int c = 0; c < SkirmishAI::AI_KINDOF_COUNT; ++c)
+	for (int c = 0; c < SkirmishAI::AI_KINDOF_CAPACITY; ++c)
 	{
 		const float x = b.v[c + 1];
 		if (x > 0.0f)

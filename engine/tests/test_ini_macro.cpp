@@ -412,3 +412,55 @@ TEST_CASE("math evaluates inside the scanners that field parsers call: scanBool 
 	// scanBool expands macros but has no math: "#MULTIPLY(" is just a bad token
 	CHECK_THROWS_AS(ini.scanBool("HALF"), INIException);
 }
+
+TEST_CASE("AOTR profile: explicit macro redefinitions replace earlier values without relaxing retail")
+{
+	Fixture aotr;
+	aotr.env.aotrData = true;
+	REQUIRE(defineOnly(aotr.env, "a.ini", "#define PROFILE_VALUE 1\n#define PROFILE_VALUE 2\n").empty());
+	REQUIRE(aotr.env.macros.findByName("PROFILE_VALUE") != nullptr);
+	CHECK(aotr.env.macros.findByName("PROFILE_VALUE")->value == "2");
+	REQUIRE(defineOnly(aotr.env, "b.ini", "#define PROFILE_VALUE 3\n").empty());
+	CHECK(aotr.env.macros.findByName("PROFILE_VALUE")->value == "3");
+	CHECK(defineOnly(aotr.env, "map.ini", "#define MAP_VALUE 1\n").find("MACROs not allowed") != std::string::npos);
+	Fixture retail;
+	CHECK(defineOnly(retail.env, "a.ini", "#define PROFILE_VALUE 1\n#define PROFILE_VALUE 2\n").find("Duplicate MACRO names") != std::string::npos);
+}
+
+TEST_CASE("AOTR profile: nested string-vector macros expand and cycles remain errors")
+{
+	Fixture fx;
+	fx.env.aotrData = true;
+	REQUIRE(defineOnly(fx.env, "defines.ini", "#define INNER ANY +Unit\n#define OUTER INNER -Building\n").empty());
+	std::vector<std::string> values;
+	fx.env.blocks.registerBlock("List", [&](INI *ini) {
+		ini->readLine();
+		ini->firstToken();
+		INI::parseAsciiStringVector(ini, nullptr, &values, nullptr);
+	});
+	INI ini(fx.env);
+	ini.loadMemory("list.ini", toBytes("List x\nValues OUTER\n"), INI_LOAD_OVERWRITE);
+	CHECK(values == std::vector<std::string>{"ANY", "+Unit", "-Building"});
+	REQUIRE(defineOnly(fx.env, "cycle.ini", "#define CYCLE_A CYCLE_B\n#define CYCLE_B CYCLE_A\n").empty());
+	CHECK_THROWS_AS(ini.loadMemory("list.ini", toBytes("List x\nValues CYCLE_A\n"), INI_LOAD_OVERWRITE), INIException);
+}
+
+TEST_CASE("AOTR mount profile: every INI environment inherits dependency macros once")
+{
+	Fixture fx({{"Data/INI/OpenBFME_AOTR_Dependency_GameData.ini", "#define BASE_VALUE 11\n"}});
+	fx.fsys.setAotrProfile(true);
+	INI ini(fx.env);
+	CHECK(fx.env.aotrData);
+	REQUIRE(fx.env.macros.findByName("BASE_VALUE") != nullptr);
+	CHECK(fx.env.macros.findByName("BASE_VALUE")->value == "11");
+	REQUIRE(defineOnly(fx.env, "overlay.ini", "#define BASE_VALUE 22\n").empty());
+	INI another(fx.env);
+	CHECK(fx.env.macros.findByName("BASE_VALUE")->value == "22");
+	INIEnvironment independent;
+	independent.fileSystem = &fx.fsys;
+	INI otherConsumer(independent);
+	CHECK(independent.macros.findByName("BASE_VALUE")->value == "11");
+	Fixture retail;
+	INI normal(retail.env);
+	CHECK_FALSE(retail.env.aotrData);
+}

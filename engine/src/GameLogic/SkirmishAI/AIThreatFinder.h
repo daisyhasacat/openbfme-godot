@@ -41,7 +41,7 @@ class ThingTemplate;
 namespace AIThreatFinder
 {
 constexpr int kRecords = 20; // RW 0x7EDB33 / 0x7EE166: 0x14 players
-constexpr int kSlots = 18;   // 0x48 bytes: the total and 17 categories
+constexpr int kSlots = 21;   // 0x48 bytes: the total and 17 categories
 
 struct ThreatRecord
 {

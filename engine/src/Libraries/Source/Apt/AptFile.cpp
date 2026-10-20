@@ -44,7 +44,8 @@ const std::uint64_t kMaxTotalStringBytes = 1u << 26;
 class AptReader
 {
 public:
-	AptReader(const std::uint8_t *data, std::size_t size, std::string label) : m_data(data), m_size(size), m_label(std::move(label)) {}
+	AptReader(const std::uint8_t *data, std::size_t size, std::string label, bool aotr = false) : m_data(data), m_size(size), m_label(std::move(label)), m_aotr(aotr) {}
+	bool aotrProfile() const { return m_aotr; }
 
 	bool ok() const { return m_error.empty(); }
 	const std::string &error() const { return m_error; }
@@ -195,16 +196,17 @@ private:
 	std::size_t m_size;
 	std::string m_label;
 	std::string m_error;
+	bool m_aotr = false;
 };
 
 bool boolField(AptReader &r, std::uint64_t offset, const char *what)
 {
 	std::uint32_t v = r.u32(offset, what);
-	if (r.ok() && v > 1)
+	if (r.ok() && v > 1 && !r.aotrProfile())
 	{
 		r.fail(std::string(what) + " at " + std::to_string(offset) + " is not a boolean (" + std::to_string(v) + ")");
 	}
-	return v == 1;
+	return v != 0;
 }
 
 bool setError(std::string *error, const std::string &message)
@@ -636,14 +638,14 @@ bool AptConstFile::parse(const std::vector<std::uint8_t> &bytes, AptConstFile &o
 // =============================================================================================
 
 bool AptFile::parse(const std::string &movieName, std::shared_ptr<const std::vector<std::uint8_t>> aptBytes, const AptConstFile &consts, AptFile &out,
-	std::string *error)
+	std::string *error, bool aotr)
 {
 	out = AptFile();
 	if (!aptBytes)
 	{
 		return setError(error, movieName + ".apt: no data");
 	}
-	AptReader r(aptBytes->data(), aptBytes->size(), movieName + ".apt");
+	AptReader r(aptBytes->data(), aptBytes->size(), movieName + ".apt", aotr);
 	const std::vector<std::uint8_t> &d = *aptBytes;
 	if (d.size() < 12 || std::memcmp(d.data(), "Apt Data", 8) != 0 || d[8] != ':' || d[10] != 0x1A || d[11] != 0)
 	{

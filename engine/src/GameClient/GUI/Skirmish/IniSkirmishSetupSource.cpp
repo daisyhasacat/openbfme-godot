@@ -448,7 +448,7 @@ bool IniSkirmishSetupSource::loadMapCache(ArchiveFileSystem &fs, std::vector<Map
 		return false;
 	}
 	std::string mapError;
-	if (!MapCache::parse(text, out, &mapError, isBfme1Data(fs)))
+	if (!MapCache::parse(text, out, &mapError, isBfme1Data(fs) || fs.aotrProfile()))
 	{
 		if (error)
 		{

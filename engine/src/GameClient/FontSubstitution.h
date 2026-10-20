@@ -33,7 +33,7 @@ class FontSubstitution
 {
 public:
 	// Parse the file text; false + error on a line the grammar does not accept.
-	bool parse(const std::string &text, std::string *error);
+	bool parse(const std::string &text, std::string *error, bool aotr = false);
 	FontRequestResult resolve(const std::string &fontName, float size) const;
 	std::size_t blockCount() const { return m_blocks.size(); }
 

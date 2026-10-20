@@ -65,7 +65,7 @@ bool takeName(const std::string &in, std::string &name, std::string &rest)
 
 } // namespace
 
-bool FontSubstitution::parse(const std::string &text, std::string *error)
+bool FontSubstitution::parse(const std::string &text, std::string *error, bool aotr)
 {
 	std::istringstream in(text);
 	std::string raw;
@@ -84,7 +84,7 @@ bool FontSubstitution::parse(const std::string &text, std::string *error)
 		++lineNo;
 		std::size_t semi = raw.find(';');
 		std::string line = trim(semi == std::string::npos ? raw : raw.substr(0, semi));
-		if (line.empty())
+		if (line.empty() || (aotr && line.rfind("//", 0) == 0))
 		{
 			continue;
 		}

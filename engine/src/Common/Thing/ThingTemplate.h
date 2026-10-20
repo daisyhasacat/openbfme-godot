@@ -66,6 +66,7 @@ struct RawBlock
 {
 	std::string field;
 	std::vector<RawLine> lines;
+	bool aotrData = false; ///< explicit source profile, retained when templates inherit raw blocks
 };
 
 typedef std::variant<std::monostate, bool, long long, float, std::string, std::vector<std::string>, Coord3D, RawTokens> FieldValue;

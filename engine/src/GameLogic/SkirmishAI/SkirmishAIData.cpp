@@ -23,6 +23,8 @@ namespace SkirmishAI
 // RW 0xDB55C8
 const char *const TheAIKindOfNames[AI_KINDOF_COUNT + 1] = { "INFANTRY", "ARCHER", "PIKEMAN", "CAVALRY", "CREEP", "CREEP_STRUCTURE", "STRUCTURE", "SIEGEWEAPON",
 	"EXPLORABLE_AREA", "WALL", "HERO", "BATTLE_TOWER", "SHIP_BATTLESHIP", "SHIP_BOMBARD", "SHIP_TRANSPORT", "SHIP_SUICIDE", "SUPPORT", nullptr };
+const char *const TheAotrAIKindOfNames[AI_KINDOF_CAPACITY + 1] = { "INFANTRY", "ARCHER", "PIKEMAN", "CAVALRY", "CREEP", "CREEP_STRUCTURE", "STRUCTURE", "SIEGEWEAPON",
+	"EXPLORABLE_AREA", "WALL", "HERO", "BATTLE_TOWER", "SHIP_BATTLESHIP", "SHIP_BOMBARD", "SHIP_TRANSPORT", "SHIP_SUICIDE", "SUPPORT", "SPAM", "SLAYER", "PATROL", nullptr };
 // RW 0xDA1208
 const char *const TheAITargetNames[AI_TARGET_COUNT + 1] = { "ENEMY_STRUCTURE", "DEFENSIVE", "OPPORTUNITY", "EXPANSION", "TARGETLESS", nullptr };
 // RW 0x64501B compares with EASY / NORMAL / HARD / BRUTAL in this order
@@ -31,7 +33,7 @@ const char *const TheGameDifficultyNames[DIFFICULTY_COUNT + 1] = { "EASY", "NORM
 
 AICombatChain::AICombatChain()
 {
-	for (int i = 0; i < SkirmishAI::AI_KINDOF_COUNT; ++i)
+	for (int i = 0; i < SkirmishAI::AI_KINDOF_CAPACITY; ++i)
 	{
 		targetTypes[i] = -1;               // RW 0x6A92FA: memset(+4, 0xFF, 0x44)
 		targetPriorityModifiers[i] = 0.0f; // RW 0x6A9307: memset(+0x48, 0, 0x44)
@@ -50,13 +52,13 @@ SkirmishAIData::SkirmishAIData()
 namespace
 {
 // RW 0x8ED505: the AI_KINDOF index of a name (exact compare RW 0x406585); an unknown name throws
-int aiKindOf(const char *name)
+int aiKindOf(const char *name, bool aotr)
 {
 	if (name)
 	{
-		for (int i = 0; i < SkirmishAI::AI_KINDOF_COUNT; ++i)
+		for (int i = 0; i < (aotr ? SkirmishAI::AI_KINDOF_CAPACITY : SkirmishAI::AI_KINDOF_COUNT); ++i)
 		{
-			if (std::strcmp(SkirmishAI::TheAIKindOfNames[i], name) == 0)
+			if (std::strcmp((aotr ? SkirmishAI::TheAotrAIKindOfNames : SkirmishAI::TheAIKindOfNames)[i], name) == 0)
 			{
 				return i;
 			}
@@ -69,7 +71,7 @@ int aiKindOf(const char *name)
 void parseAIKindOf(INI *ini, void *, void *store, const void *)
 {
 	const std::string name = ini->getNextAsciiString();
-	*(int *)store = aiKindOf(name.c_str());
+	*(int *)store = aiKindOf(name.c_str(), ini->environment().aotrData);
 }
 
 // RW 0x8ED5C4 (TargetTypes): getNextToken, then up to 17 names; an 18th throws
@@ -79,11 +81,11 @@ void parseAIKindOfList(INI *ini, void *, void *store, const void *)
 	int i = 0;
 	for (const char *token = ini->getNextToken(); token != nullptr; token = ini->getNextTokenOrNull())
 	{
-		if (i >= SkirmishAI::AI_KINDOF_COUNT)
+		if (i >= (ini->environment().aotrData ? SkirmishAI::AI_KINDOF_CAPACITY : SkirmishAI::AI_KINDOF_COUNT))
 		{
 			throw INIException(2, "In an AIKINDOF list, each type may only appear once\n");
 		}
-		out[i++] = aiKindOf(token);
+		out[i++] = aiKindOf(token, ini->environment().aotrData);
 	}
 }
 
@@ -94,7 +96,7 @@ void parseAIKindOfReals(INI *ini, void *, void *store, const void *)
 	int i = 0;
 	for (const char *token = ini->getNextToken(); token != nullptr; token = ini->getNextTokenOrNull())
 	{
-		if (i >= SkirmishAI::AI_KINDOF_COUNT)
+		if (i >= (ini->environment().aotrData ? SkirmishAI::AI_KINDOF_CAPACITY : SkirmishAI::AI_KINDOF_COUNT))
 		{
 			throw INIException(2, "In an AIKINDOF list, each type may only appear once\n");
 		}
@@ -355,10 +357,11 @@ void parseCombatChainDefinition(INI *ini, void *, void *store, const void *)
 {
 	AICombatChain chain;
 	ini->initFromINI(&chain, kCombatChainFields);
-	if (chain.unit < 0 || chain.unit >= SkirmishAI::AI_KINDOF_COUNT)
+	if (chain.unit < 0 || chain.unit >= (ini->environment().aotrData ? SkirmishAI::AI_KINDOF_CAPACITY : SkirmishAI::AI_KINDOF_COUNT))
 	{
 		throw INIException(3, "[S-411] CombatChainDefinition without a Unit: retail writes the row before the table\n");
 	}
+	((SkirmishAIData *)store)->aotrProfile = ini->environment().aotrData;
 	((SkirmishAIData *)store)->combatChains[chain.unit] = chain;
 }
 
@@ -687,10 +690,12 @@ void SkirmishAIStore::crc(StateHasher &h) const
 	// every parsed field of every block and the loaded layouts (the AI's decisions read them: two peers must have the same)
 	h.addU32(0x41494441u); // "AIDA"
 	h.addU32(m_dataBlocks);
-	for (const AICombatChain &c : m_data.combatChains)
+	const int kindCount = m_data.aotrProfile ? SkirmishAI::AI_KINDOF_CAPACITY : SkirmishAI::AI_KINDOF_COUNT;
+	for (int kind = 0; kind < kindCount; ++kind)
 	{
+		const AICombatChain &c = m_data.combatChains[kind];
 		h.addI32(c.unit);
-		for (int i = 0; i < SkirmishAI::AI_KINDOF_COUNT; ++i)
+		for (int i = 0; i < kindCount; ++i)
 		{
 			h.addI32(c.targetTypes[i]);
 			h.addFloat(c.targetPriorityModifiers[i]);

@@ -29,6 +29,8 @@
 
 const char *const TheCreateAHeroBlingTypeNames[] = { "ATTRIBUTE", "APPEARANCE", "INVALID", nullptr }; // RW 0xD9EDB8
 const char *const TheCreateAHeroFactionNames[] = { "Men", "Elves", "Dwarves", "Isengard", "Mordor", "Wild", "Angmar", "Arnor", "Neutral", nullptr }; // RW 0xD9EDD0
+// AOTR data extension; retail indices stay unchanged.
+const char *const TheCreateAHeroAotrFactionNames[] = { "Men", "Elves", "Dwarves", "Isengard", "Mordor", "Wild", "Angmar", "Arnor", "Neutral", "Rohan", "Mirkwood", "Guldur", nullptr };
 
 thread_local CreateAHeroSystem *TheCreateAHeroSystem = nullptr;
 
@@ -54,7 +56,8 @@ void parseBlingType(INI *ini, void *, void *store, const void *)
 
 void parseFaction(INI *ini, void *, void *store, const void *)
 {
-	INI::parseIndexList(ini, nullptr, store, TheCreateAHeroFactionNames);
+	INI::parseIndexList(ini, nullptr, store, ini->environment().aotrData ? TheCreateAHeroAotrFactionNames : TheCreateAHeroFactionNames);
+	if (*(int *)store >= 9 && !ini->environment().aotrData) throw INIException(3, "AOTR faction outside AOTR profile");
 }
 
 // RW 0x61C0A5 -> 0x61B55B: the faction names of the rest of the line (INFERENCE: read as names of the RW 0xD9EDD0 list; an unknown one throws)
@@ -64,14 +67,15 @@ void parseUsableFactions(INI *ini, void *, void *store, const void *)
 	for (const char *t = ini->getNextTokenOrNull(); t; t = ini->getNextTokenOrNull())
 	{
 		int found = -1;
-		for (int i = 0; TheCreateAHeroFactionNames[i]; ++i)
+		const auto *names = ini->environment().aotrData ? TheCreateAHeroAotrFactionNames : TheCreateAHeroFactionNames;
+		for (int i = 0; names[i]; ++i)
 		{
-			if (std::string(t) == TheCreateAHeroFactionNames[i])
+			if (std::string(t) == names[i])
 			{
 				found = i;
 			}
 		}
-		if (found < 0)
+		if (found < 0 || (found >= 9 && !ini->environment().aotrData))
 		{
 			throw INIException(3, "UsableFactions: '%s' is not a faction", t);
 		}

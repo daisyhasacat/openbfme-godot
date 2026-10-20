@@ -224,6 +224,32 @@ void INI::parseQuotedAsciiString(INI *ini, void *, void *store, const void *)
 void INI::parseAsciiStringVectorAppend(INI *ini, void *, void *store, const void *)
 {
 	std::vector<std::string> *vec = (std::vector<std::string> *)store;
+	if (ini->environment().aotrData)
+	{
+		// AOTR composes filters from other filter macros. Expand each token,
+		// with a recursion stack so malformed cyclic definitions fail loudly.
+		std::vector<std::string> stack;
+		std::function<void(const std::string &)> append = [&](const std::string &token) {
+			const auto *macro = ini->environment().macros.findByName(token.c_str());
+			if (!macro) { vec->push_back(token); return; }
+			for (const auto &name : stack)
+				if (AsciiStringUtil::compareNoCase(name, token) == 0)
+					throw INIException(8, "Cyclic AOTR macro expansion: %s", token.c_str());
+			stack.push_back(token);
+			const std::string value = macro->value;
+			size_t pos = 0;
+			while ((pos = value.find_first_not_of(" \n\r\t", pos)) != std::string::npos)
+			{
+				const size_t end = value.find_first_of(" \n\r\t", pos);
+				append(value.substr(pos, end == std::string::npos ? end : end - pos));
+				if (end == std::string::npos) break;
+				pos = end;
+			}
+			stack.pop_back();
+		};
+		for (const char *token = ini->getNextTokenOrNull(); token; token = ini->getNextTokenOrNull()) append(token);
+		return;
+	}
 	for (const char *token = ini->getNextTokenOrNull(); token != nullptr; token = ini->getNextTokenOrNull())
 	{
 		const char *expanded = ini->preprocessMacro(token);

@@ -2296,9 +2296,10 @@ int AptSkirmish::heroSide(int slot) const
 	{
 		return -1;
 	}
-	for (int i = 0; i < 9; ++i) // TheCreateAHeroFactionNames (RW 0xD9EDD0): Men .. Neutral; INFERENCE (S-1406): the template's Side name picks the index
+	const char *const *names = m_env.fileSystem && m_env.fileSystem->aotrProfile() ? TheCreateAHeroAotrFactionNames : TheCreateAHeroFactionNames;
+	for (int i = 0; names[i]; ++i) // TheCreateAHeroFactionNames (RW 0xD9EDD0): Men .. Neutral; INFERENCE (S-1406): the template's Side name picks the index
 	{
-		if (AsciiStringUtil::compareNoCase(f->side, TheCreateAHeroFactionNames[i]) == 0)
+		if (AsciiStringUtil::compareNoCase(f->side, names[i]) == 0)
 		{
 			return i;
 		}

@@ -243,7 +243,7 @@ bool GameTextTable::loadRetail(ArchiveFileSystem &fs, std::string *error)
 	std::vector<std::uint8_t> bytes;
 	if (!isBfme1Data(fs))
 	{
-		return fs.readFile("data/lotr.str", bytes, error) && parse(bytes, error);
+		return fs.readFile("data/lotr.str", bytes, error) && parse(bytes, error, fs.aotrProfile());
 	}
 	FilenameList candidates;
 	fs.getFileListInDirectory("lang", "", "lotr.csf", candidates, true);
@@ -256,7 +256,7 @@ bool GameTextTable::loadRetail(ArchiveFileSystem &fs, std::string *error)
 	return fs.readFile(path, bytes, error) && parseCSF(bytes.data(), bytes.size(), error);
 }
 
-bool GameTextTable::parse(const std::uint8_t *data, std::size_t size, std::string *error)
+bool GameTextTable::parse(const std::uint8_t *data, std::size_t size, std::string *error, bool aotr)
 {
 	Stream in{ data, size };
 	std::string line;
@@ -266,6 +266,19 @@ bool GameTextTable::parse(const std::uint8_t *data, std::size_t size, std::strin
 		if (line.empty() || (line.size() >= 2 && line[0] == '/' && line[1] == '/'))
 		{
 			continue;
+		}
+		if (aotr && lowerAscii(line) == "end")
+		{
+			while (in.readLine(line))
+			{
+				line = trim(line);
+				if (!line.empty() && line.rfind("//", 0) != 0)
+				{
+					if (error) *error = "unexpected data after the string file's terminal END";
+					return false;
+				}
+			}
+			return true;
 		}
 		const std::string label = line;
 		bool haveString = false;

@@ -14,6 +14,8 @@
 #include "Common/INIException.h"
 #include "Common/NameKeyGenerator.h"
 #include "Common/StateHash.h"
+#include "Common/Thing/ThingTemplate.h"
+#include "GameLogic/SkirmishAI/AIThreatFinder.h"
 #include "GameLogic/SkirmishAI/SkirmishAIData.h"
 
 #include <cstring>
@@ -394,4 +396,39 @@ TEST_CASE("skirmish ai data: the store hash covers every parsed field and the la
 	CHECK(moved([&] { base.structures.back().slot = 2; }));
 	CHECK(moved([&] { base.structures.back().angle = 0.5f; }));
 	CHECK(moved([&] { const_cast<PlayerAIType &>(l.store.playerAITypes()[0]).libraryMap = "M"; }));
+}
+
+TEST_CASE("AOTR profile: extended combat categories retain retail IDs and parse their chains")
+{
+	Loader aotr;
+	aotr.env.aotrData = true;
+	aotr.load("SkirmishAIData\n CombatChainDefinition Added\n Unit = PATROL\n TargetTypes = SPAM SLAYER INFANTRY\n TargetPriorityModifiers = 1 2 3\n End\nEnd\n");
+	const auto &data = aotr.store.data();
+	CHECK(data.aotrProfile);
+	CHECK(data.combatChains[19].unit == 19);
+	CHECK(data.combatChains[19].targetTypes[0] == 17);
+	CHECK(data.combatChains[19].targetTypes[1] == 18);
+	CHECK(data.combatChains[19].targetTypes[2] == 0);
+	CHECK(data.combatChains[19].targetPriorityModifiers[2] == 3.0f);
+	Loader retail;
+	CHECK_THROWS_AS(retail.load("SkirmishAIData\n CombatChainDefinition Added\n Unit = PATROL\n End\nEnd\n"), INIException);
+}
+
+TEST_CASE("AOTR profile: raw threat categories remain isolated from standard mods")
+{
+	ThingTemplate tt;
+	RawBlock block;
+	block.field = "ThreatBreakdown";
+	RawLine line;
+	line.text = "AIKindOf = SPAM";
+	block.lines.push_back(line);
+	auto &blocks = const_cast<std::vector<RawBlock> &>(tt.rawBlocks());
+	blocks.push_back(block);
+	CHECK(AIThreatFinder::threatCategory(tt) == -1);
+	blocks.back().aotrData = true;
+	CHECK(AIThreatFinder::threatCategory(tt) == 17);
+	blocks.back().lines.back().text = "AIKindOf = INFANTRY";
+	CHECK(AIThreatFinder::threatCategory(tt) == 0);
+	blocks.back().aotrData = false;
+	CHECK(AIThreatFinder::threatCategory(tt) == 0);
 }

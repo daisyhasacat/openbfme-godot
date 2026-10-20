@@ -66,6 +66,15 @@ INI::INI(INIEnvironment &env)
 {
 	m_buffer[0] = 0;
 	std::strcpy(m_curBlockStart, "NO_BLOCK");
+	if (m_env.fileSystem && m_env.fileSystem->aotrProfile())
+	{
+		m_env.aotrData = true;
+		if (!m_env.aotrDependencyLoaded)
+		{
+			preprocessFile("Data\\INI\\OpenBFME_AOTR_Dependency_GameData.ini", INI_LOAD_OVERWRITE);
+			m_env.aotrDependencyLoaded = true;
+		}
+	}
 }
 
 INI::~INI() = default;

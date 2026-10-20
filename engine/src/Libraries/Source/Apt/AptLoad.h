@@ -28,6 +28,7 @@ class AptFileSource
 {
 public:
 	virtual ~AptFileSource() = default;
+	virtual bool aotrProfile() const { return false; }
 	virtual bool readFile(const std::string &virtualPath, std::vector<std::uint8_t> &out, std::string *error) = 0;
 	virtual bool fileExists(const std::string &virtualPath) = 0;
 	// Names of every movie available ("MainMenu" etc. as stored, no extension).
@@ -39,6 +40,7 @@ class AptArchiveFileSource : public AptFileSource
 {
 public:
 	explicit AptArchiveFileSource(ArchiveFileSystem &fileSystem) : m_fs(fileSystem) {}
+	bool aotrProfile() const override;
 	bool readFile(const std::string &virtualPath, std::vector<std::uint8_t> &out, std::string *error) override;
 	bool fileExists(const std::string &virtualPath) override;
 	std::vector<std::string> listMovies() override;

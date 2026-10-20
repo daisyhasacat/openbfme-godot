@@ -602,7 +602,8 @@ var _scripted_skirmish_ini := ""
 
 func _exit_tree() -> void:
 	if is_instance_valid(_touch_ui_scroll):
-		_touch_ui_scroll.free()
+		_touch_ui_scroll.set_process_input(false)
+		_touch_ui_scroll.queue_free()
 	if is_instance_valid(_second_view):
 		_second_view.close_view()
 	if not _scripted_skirmish_ini.is_empty():

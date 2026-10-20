@@ -84,6 +84,8 @@ class ArchiveFileSystem
 {
 public:
 	ArchiveFileSystem();
+	void setAotrProfile(bool enabled) { m_aotrProfile = enabled; }
+	bool aotrProfile() const { return m_aotrProfile; }
 	virtual ~ArchiveFileSystem();
 
 	// Parse an archive's directory. Returns nullptr and sets *error on failure.
@@ -113,6 +115,7 @@ public:
 protected:
 	virtual void loadIntoDirectoryTree(const ArchiveFile *archiveFile, const std::string &archiveFilename, bool overwrite = false);
 
+	bool m_aotrProfile = false;
 	ArchiveFileMap m_archiveFileMap;
 	ArchivedDirectoryInfo m_rootDirectory;
 };

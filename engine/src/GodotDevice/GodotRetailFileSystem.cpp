@@ -323,6 +323,7 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 		// md5 of every archive is always verified; the cache only makes repeat mounts fast.
 		options.md5CachePath = toNative(ProjectSettings::get_singleton()->globalize_path("user://retail-md5-cache.tsv"));
 		std::unique_ptr<Win32BIGFileSystem> fs = std::make_unique<Win32BIGFileSystem>();
+		fs->setAotrProfile(!aotr.empty());
 		const auto mountStart = std::chrono::steady_clock::now();
 		auto elapsed = [&]() { return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - mountStart).count(); };
 		RetailMountReport report = MountRetailArchives(*fs, installs, options);
@@ -340,7 +341,12 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 		// lane MODS-1: the enabled mods (user://mods.cfg [mods] enabled, in load order; RotWK's -mod "<folder>" as --mod=<folder> too)
 		PackedStringArray modPaths;
 		std::set<std::string> texturesOnly; // mods.cfg [mods] textures_only: mods mounted as texture packs (TextureOnlyArchiveFile)
-		if (!aotr.empty()) modPaths.push_back(toGodot(aotr));
+		if (!aotr.empty())
+		{
+			const String dependency = toGodot(aotr).get_base_dir().path_join("rotwk/#aotr_patch202.big");
+			modPaths.push_back(dependency);
+			modPaths.push_back(toGodot(aotr));
+		}
 		else
 		{
 			Ref<ConfigFile> modsCfg;
@@ -491,6 +497,23 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 				{
 					fs->mountArchive(std::move(loose), modPath, true);
 
+				}
+				if (!aotr.empty() && i == 0 && report.ok)
+				{
+					// The installed AOTR runtime includes its own 2.02 dependency.
+					// Keep that layer's macro source available before the AOTR overlay.
+					std::vector<std::uint8_t> definitions;
+					if (!fs->readFile("data\\ini\\gamedata.ini", definitions, &problem))
+					{
+						report.ok = false;
+						report.errors.push_back("AOTR dependency GameData: " + problem);
+					}
+					else
+					{
+						auto source = std::make_unique<MemoryArchiveFile>("AOTR dependency macro source");
+						source->put("data\\ini\\openbfme_aotr_dependency_gamedata.ini", definitions);
+						fs->mountArchive(std::move(source), "AOTR dependency macro source", true);
+					}
 				}
 				mod["big_files"] = (int64_t)(bigs.size() - emptyBigs);
 				mod["empty_big_files"] = (int64_t)emptyBigs;

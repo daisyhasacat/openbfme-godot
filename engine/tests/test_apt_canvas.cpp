@@ -1224,3 +1224,28 @@ TEST_CASE("GameText: BFME1 CSF decodes complemented Unicode and wave records, re
 		CHECK(truncated.size() == 0);
 	}
 }
+
+TEST_CASE("AOTR profile: string-table terminal END does not hide malformed entries")
+{
+	std::string error;
+	GameTextTable aotr;
+	CHECK(aotr.parse(bytesOf("TEST:Label\n\"value\"\nEnd\nEND"), &error, true));
+	CHECK(aotr.size() == 1);
+	GameTextTable retail;
+	CHECK_FALSE(retail.parse(bytesOf("TEST:Label\n\"value\"\nEnd\nEND"), &error));
+	GameTextTable malformed;
+	CHECK_FALSE(malformed.parse(bytesOf("TEST:Label\n\"value\"\n"), &error, true));
+	CHECK_FALSE(malformed.parse(bytesOf("END\nTEST:Label\n\"value\"\nEnd\n"), &error, true));
+}
+
+TEST_CASE("AOTR profile: font substitution accepts slash comment lines")
+{
+	std::string error;
+	const std::string source = "// comment\nFontSubstitution Test\n Size 8 = 12 Arial\nEnd\n";
+	FontSubstitution aotr;
+	CHECK(aotr.parse(source, &error, true));
+	CHECK(aotr.resolve("Test", 8).size == 12.0f);
+	FontSubstitution retail;
+	CHECK_FALSE(retail.parse(source, &error));
+	CHECK_FALSE(aotr.parse("FontSubstitution Test\n Size 8 = 12 Arial\n", &error, true));
+}

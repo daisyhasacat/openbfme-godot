@@ -656,6 +656,7 @@ void ThingFactory::parseField(INI *ini, void *instance, void *, const void *user
 	}
 	RawBlock block;
 	block.field = b->name;
+	block.aotrData = ini->environment().aotrData;
 	block.lines.push_back(header);
 	const size_t first = ini->getLineNum();
 	if (b->sem == S_WeaponSet) // WEAPON-1: the typed parser (RW 0x6C99C6), same extent as the grammar's

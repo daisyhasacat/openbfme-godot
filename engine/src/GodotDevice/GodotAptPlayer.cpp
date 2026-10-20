@@ -1043,7 +1043,7 @@ struct AptMenuPlayer::Impl
 		{
 			bytes.clear();
 			error.clear();
-			if (!originalSource->readFile("data/lotr.str", bytes, &error) || !strings.parse(bytes, &error))
+			if (!originalSource->readFile("data/lotr.str", bytes, &error) || !strings.parse(bytes, &error, fs->archive_fs()->aotrProfile()))
 			{
 				errorsOut.push_back(toGodot("original data/lotr.str: " + error));
 			}
@@ -1080,7 +1080,7 @@ struct AptMenuPlayer::Impl
 				strings.setOverride(toNative(String(keys[i])), toNative(String(labels[keys[i]])));
 			}
 		}
-		if (!source->readFile("data/ini/fontsubstitution.ini", bytes, &error) || !fonts.parse(std::string(bytes.begin(), bytes.end()), &error))
+		if (!source->readFile("data/ini/fontsubstitution.ini", bytes, &error) || !fonts.parse(std::string(bytes.begin(), bytes.end()), &error, fs->archive_fs()->aotrProfile()))
 		{
 			errorsOut.push_back(toGodot("data/ini/fontsubstitution.ini: " + error));
 		}

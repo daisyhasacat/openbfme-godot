@@ -36,8 +36,8 @@ public:
 	bool parseCSF(const std::uint8_t *data, std::size_t size, std::string *error);
 
 	// Parse one STR file (appends to the table; a label that is already present keeps its first string).
-	bool parse(const std::uint8_t *data, std::size_t size, std::string *error);
-	bool parse(const std::vector<std::uint8_t> &data, std::string *error) { return parse(data.data(), data.size(), error); }
+	bool parse(const std::uint8_t *data, std::size_t size, std::string *error, bool aotr = false);
+	bool parse(const std::vector<std::uint8_t> &data, std::string *error, bool aotr = false) { return parse(data.data(), data.size(), error, aotr); }
 
 	// Case-insensitive lookup; the text is UTF-8.
 	bool lookup(const std::string &label, std::string &text) const;
