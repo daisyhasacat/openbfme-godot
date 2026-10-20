@@ -22,6 +22,7 @@
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/Module/ConstructionModules.h"
+#include "GameLogic/Module/CastleModules.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/Object/ObjectGeometry.h"
@@ -336,6 +337,32 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
   return INVALID_ID;
  };
 
+ // Expansion hubs inherit castle ownership from their pads. Cache only their
+ // own foundation/keep pieces; these footprints protrude past built-in hubs.
+ struct CastleJunction { Coord3D hub{},centre{};std::vector<ObjectID> pieces; };
+ auto castleJunction = [&](const Object *endpoint) {
+  CastleJunction result;
+  if (!endpoint || !logic.settings().wallBalance.enabled) return result;
+  const auto *member=dynamic_cast<const CastleMemberBehavior *>(endpoint->findModule("CastleMemberBehavior"));
+  if (!member) {
+   const Object *producer=logic.findObjectByID(endpoint->getProducerID());
+   member=producer ? dynamic_cast<const CastleMemberBehavior *>(producer->findModule("CastleMemberBehavior")) : nullptr;
+  }
+  const Object *castle=member ? logic.findObjectByID(member->castleId()) : nullptr;
+  if (!castle || castle->isDestroyed() || castle->getControllingPlayer()!=owner) return result;
+  result.hub=*endpoint->getPosition();result.centre=*castle->getPosition();
+  if (result.hub.x==result.centre.x && result.hub.y==result.centre.y) return result;
+  for (Object *o=logic.getFirstObject();o;o=o->getNextObject()) {
+   if (o->isDestroyed() || o->getControllingPlayer()!=owner) continue;
+   const auto *part=dynamic_cast<const CastleMemberBehavior *>(o->findModule("CastleMemberBehavior"));
+   if (o==castle || (part && part->castleId()==castle->getID() &&
+    (o->isKindOfName("BASE_FOUNDATION") || o->isKindOfName("BASE_DEFENSE_FOUNDATION") ||
+     o->isKindOfName("EXPANSION_PAD") || o->isKindOfName("CASTLE_KEEP") || o->isKindOfName("WALL_HUB")))) result.pieces.push_back(o->getID());
+  }
+  return result;
+ };
+ const auto sourceCastle=castleJunction(&hub),targetCastle=castleJunction(endHub);
+
 	auto legal = [&](const Coord3D &p, const ThingTemplate &tt, bool ignoreCollision=false) {
         // Enhanced junction tolerance is local to the destination hub. Permit
         // friendly wall pieces touching it, without ignoring crossings mid-span.
@@ -356,6 +383,16 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
                 }
             }
         }
+        auto clearCastleJunction = [&](const CastleJunction &junction) {
+            if (junction.pieces.empty()) return;
+            const float dx=SimMath::subf32(p.x,junction.hub.x),dy=SimMath::subf32(p.y,junction.hub.y);
+            const float outward=SimMath::addf32(SimMath::mulf32(dx,SimMath::subf32(junction.hub.x,junction.centre.x)),SimMath::mulf32(dy,SimMath::subf32(junction.hub.y,junction.centre.y)));
+            if (outward < 0.0f) return;
+            if (collisionIgnored!=&localIgnored) {localIgnored=ignored;collisionIgnored=&localIgnored;}
+            localIgnored.insert(localIgnored.end(),junction.pieces.begin(),junction.pieces.end());
+        };
+        clearCastleJunction(sourceCastle);
+        clearCastleJunction(targetCastle);
 		int code = (int)BuildPlacement::isLocationLegalToBuild(logic, p, tt, angle, ignoreCollision ? (0x55 & ~LLF_NO_OBJECT_OVERLAP) : 0x55, &hub, nullptr, collisionIgnored);
 		if(trebuchetEnd && !ignoreCollision && code==LBC_OBJECTS_IN_THE_WAY)
 			code=(int)BuildPlacement::isLocationLegalToBuild(logic,p,tt,angle,0x55,endHub,owner,&ignored);

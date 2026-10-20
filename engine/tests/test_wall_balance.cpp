@@ -7,6 +7,7 @@
 #include "GameLogic/WallSpan.h"
 #include "Common/BuildAssistant.h"
 #include "GameLogic/Module/ReplaceSelfUpgrade.h"
+#include "GameLogic/Module/CastleModules.h"
 using namespace combattest;
 namespace {
 const char objects[] =
@@ -355,4 +356,37 @@ TEST_CASE("wall junction tolerance only permits friendly endpoint walls")
  REQUIRE(WallSpan::plan(*w.logic,*hub,{300,500,0},{600,500,0},0,crossed));
  CHECK(crossed.worstCode==LBC_OBJECTS_IN_THE_WAY);
  CHECK_FALSE(crossing->isDestroyed());
+}
+
+TEST_CASE("fortress wall endpoints ignore their own castle foundations only on the outward side") {
+ const char defs[]=
+ "Object CastleJoinHub\n KindOf = STRUCTURE IMMOBILE WALL_HUB\n Geometry = BOX\n GeometryMajorRadius = 4\n GeometryMinorRadius = 10\n GeometryHeight = 20\n Behavior = CastleMemberBehavior Member\n End\n Behavior = WallHubBehavior Hub\n SegmentTemplateName = CastleJoinTile\n DefaultSegmentTemplateName = CastleJoinTile\n HubCapTemplateName = CastleJoinHub\n BuilderRadius = 10\n End\nEnd\n"
+ "Object CastleJoinTile\n KindOf = STRUCTURE IMMOBILE WALL_SEGMENT\n Geometry = BOX\n GeometryMajorRadius = 4\n GeometryMinorRadius = 10\n GeometryHeight = 20\nEnd\n"
+ "Object CastleJoinFoundation\n KindOf = STRUCTURE IMMOBILE BASE_FOUNDATION\n Geometry = BOX\n GeometryMajorRadius = 115\n GeometryMinorRadius = 100\n GeometryHeight = 20\nEnd\n";
+ CombatWorld w(defs);
+ w.logic->settings().buildRulesLoaded=true;w.logic->settings().allowedHeightVariationForBuilding=10;w.logic->settings().maxLineBuildObjects=50;
+ auto *left=w.unit("CastleJoinFoundation",'A',210,500),*right=w.unit("CastleJoinFoundation",'A',690,500);
+ auto *a=w.unit("CastleJoinHub",'A',300,500),*b=w.unit("CastleJoinHub",'A',600,500);
+ dynamic_cast<CastleMemberBehavior *>(a->findModule("CastleMemberBehavior"))->setCastleId(left->getID());
+ dynamic_cast<CastleMemberBehavior *>(b->findModule("CastleMemberBehavior"))->setCastleId(right->getID());
+ WallSpan::Plan strict;
+ REQUIRE(WallSpan::plan(*w.logic,*a,{300,500,0},{600,500,0},0,strict));
+ CHECK(strict.worstCode==LBC_OBJECTS_IN_THE_WAY);
+ w.logic->settings().wallBalance.enabled=true;
+ WallSpan::Plan joined;
+ REQUIRE(WallSpan::plan(*w.logic,*a,{300,500,0},{600,500,0},0,joined));
+ CHECK(joined.worstCode==0);CHECK(joined.endHub==b->getID());
+ WallSpan::Plan backwards;
+ REQUIRE(WallSpan::plan(*w.logic,*b,{600,500,0},{300,500,0},0,backwards));
+ CHECK(backwards.worstCode==0);
+ auto *inside=w.unit("CastleJoinHub",'A',180,500);
+ dynamic_cast<CastleMemberBehavior *>(inside->findModule("CastleMemberBehavior"))->setCastleId(left->getID());
+ WallSpan::Plan inward;
+ REQUIRE(WallSpan::plan(*w.logic,*a,{300,500,0},{180,500,0},0,inward));
+ CHECK(inward.worstCode==LBC_OBJECTS_IN_THE_WAY);
+ auto *blocker=w.unit("CastleJoinFoundation",'A',450,500);
+ WallSpan::Plan blocked;
+ REQUIRE(WallSpan::plan(*w.logic,*a,{300,500,0},{600,500,0},0,blocked));
+ CHECK(blocked.worstCode==LBC_OBJECTS_IN_THE_WAY);
+ CHECK_FALSE(blocker->isDestroyed());
 }

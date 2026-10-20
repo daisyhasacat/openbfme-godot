@@ -75,3 +75,11 @@ requirements remain active. Regular gates still require the source wall tile
 and one live, friendly, unupgraded, aligned wall segment immediately on either
 side; a hub or existing upgrade cannot substitute. Postern portals still occupy
 one tile. The setting is included in the simulation rules hash.
+
+Built-in fortress hubs (including MOTW wall-hub expansions) retain their castle
+membership. With rebalance enabled, their outgoing wall connections may overlap
+the foundation, keep and hub pieces belonging to that endpoint's own fortress.
+This also applies to the destination fortress, fixing red endpoint segments
+between adjacent fortresses. The exemption follows the outward side of the hub;
+a wall directed through the fortress interior or through an unrelated fortress
+still fails the collision check. Castle pieces are collected once per span plan.
