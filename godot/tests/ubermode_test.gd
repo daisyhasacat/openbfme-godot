@@ -60,25 +60,38 @@ func _run() -> void:
 	root.add_child(hud)
 	assert(hud.setup(fs, world, camera, "Player_1", {"camera_start": Vector3(1800, 0, -1800)}).ok)
 	hud.select_controller_group(PackedInt64Array([producer]))
-	var ui = load("res://scripts/adaptive_hud.gd").new()
-	ui.hud = func(): return hud
-	ui.gameplay = func(): return true
-	ui.open_menu = func(): pass
-	root.add_child(ui)
-	ui.mode = "modern"
-	ui._apply_mode()
-	for i in 6: await process_frame
-	ui._refresh()
-	var tile := -1
-	for i in ui._command_entries.size():
-		if ui._command_entries[i].get("template", "") == "GondorFighterHorde": tile = i; break
-	assert(tile != -1, str(ui._command_entries))
-	# DirectInput KEY_K = 0x25, the same held key the native HUD receives.
-	hud.inject_key(0x25, true)
-	ui._command_tiles[tile].pressed.emit()
-	hud.inject_key(0x25, false)
+	hud.camera_look_at(Vector2(world.get_object(producer).x, world.get_object(producer).y))
+	for i in 12: await process_frame
+	var button: Dictionary = {}
+	for entry in hud.get_hud6_state().radial.buttons:
+		if entry.name == "Command_ConstructGondorFighterHorde": button = entry; break
+	assert(not button.is_empty(), str(hud.get_hud6_state()))
+	var point: Vector2 = button.rect.get_center()
+	var picked: Dictionary = hud.command_button_at(point)
+	assert(picked.found and picked.slot == button.slot, str(picked))
+	# Exercise real viewport input, including Control focus and button release.
+	var key := InputEventKey.new()
+	key.keycode = KEY_K
+	key.physical_keycode = KEY_K
+	key.pressed = true
+	root.push_input(key)
+	await process_frame
+	var motion := InputEventMouseMotion.new()
+	motion.position = point
+	root.push_input(motion)
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.position = point
+	click.pressed = true
+	root.push_input(click)
+	await process_frame
+	click = click.duplicate()
+	click.pressed = false
+	root.push_input(click)
+	key = key.duplicate()
+	key.pressed = false
+	root.push_input(key)
 	check_lua(world, "assert(#ubermode.pending==2); assert(ubermode.pending[1].left==5 and ubermode.pending[2].left==5)")
-	ui.free()
 	hud.free()
 	camera.free()
 	for i in 130:

@@ -1175,6 +1175,11 @@ bool InGameHud::commandContentAt(int x, int y)
 
 bool InGameHud::commandSlotAt(int x, int y, bool &arc, int &slot)
 {
+	// The world-space circular command buttons are native HUD-6 windows,
+	// outside the Palantir movie. Match the mouse dispatcher’s hit order.
+	slot = m_radial.hit(x, y);
+	if (slot >= 0) { arc = false; return true; }
+
 	AptStageMapping m;
 	m.windowW = (float)m_windowW;
 	m.windowH = (float)m_windowH;

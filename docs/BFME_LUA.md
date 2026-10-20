@@ -623,8 +623,9 @@ match; it refuses network games and replay playback. It owns the three local
 Ubermode validation: the installed-data test `godot/tests/ubermode_test.gd`
 checks the million gold/CP grant, construction incomplete after four frames and
 complete after five, maximum-level fully equipped recruits, five recruits from
-each of two matching producers through an actual adaptive HUD K-click, and
-restoring CP on disable. The research
+each of two matching producers through viewport key and mouse events on the
+classic circular recruitment button, and restoring CP on disable. Circular
+buttons use the native radial hit test before the Palantir movie hit test. The research
 regression in `test_prod_production.cpp` asserts completion on the fifth frame;
 the Lua runtime and console tests cover the new API and enable/disable buttons.
 Local builds and these checks pass. The full simulation AST audit remains

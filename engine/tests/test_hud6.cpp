@@ -482,6 +482,14 @@ TEST_CASE("hud6 retail: a structure's Radial buttons ring over it, a builder's g
 	// the pointer on the first bubble: RadialOver, the help box samples its width, then shows the button's help
 	const ControlBarRadialMenu::Button first = radial.buttons()[0];
 	const int px = first.rect.x + first.rect.w / 2, py = first.rect.y + first.rect.h / 2;
+	// Device command picking must find native circular buttons too: K+recruit
+	// intercepts this hit before dispatching the ordinary single-unit click.
+	bool arc = true;
+	int pickedSlot = -1;
+	REQUIRE(h.hud->commandSlotAt(px, py, arc, pickedSlot));
+	CHECK_FALSE(arc);
+	CHECK(pickedSlot == first.slot);
+
 	h.hud->mouseMove(px, py, 0);
 	h.frames(2);
 	CHECK(radial.hilitedSlot() == first.slot);
