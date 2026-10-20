@@ -35,6 +35,15 @@ Each selected game has its own namespace. Installation paths, mods, game assets,
 map downloads, caches, logs, online session credentials, and device graphics
 settings are excluded.
 
+Profiles (`Skirmish.ini`, and `bfme1-Skirmish.ini` in BFME1 mode) hold every
+profile in one file, so they are merged rather than replaced: every profile from
+both versions is kept, and where both have the same setting the side that changed
+since the last sync wins (this device when both did). This device's current
+profile stays selected. Automatic sync uploads the merge without rewriting the
+local file the game has loaded; **Sync now** also writes it locally (restart to
+see the other device's profiles). A stale or empty profile list therefore cannot
+remove profiles, and a profile deleted on one device returns from the others.
+
 Missing local files are restored; missing server files are uploaded. A file
 changed only locally replaces its previous server version. When both sides
 changed, the server version is downloaded and the local version is preserved
