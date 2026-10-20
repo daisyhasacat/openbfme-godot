@@ -56,7 +56,11 @@ at the loading screen, game-scene loading, game readiness, archive verification
 world and shell logs report their initialization durations. A first mount may
 read all game archives for integrity verification; repeat mounts use the MD5
 cache. Data mounting remains synchronous, so its loading message can remain
-static while the drive is being read. Physical-device logs are needed to measure
+static while the drive is being read. The startup screen shows a progress bar
+using Godot's scene-loading progress for “Loading OpenBFME” and an indeterminate
+bar for “Verifying game files”; verification has no incremental callback, so it
+does not display a percentage. Its animation can pause during synchronous work.
+Physical-device logs are needed to measure
 the contribution of Metal/engine startup before the first script executes.
 
 Game audio uses the iOS Playback session category, so the silent switch does not
