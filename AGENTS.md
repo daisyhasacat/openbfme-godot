@@ -3,6 +3,12 @@
 Follow `docs/PLAN.md` for engineering rules and acceptance gates. Read
 `CLAUDE.md` for the repository layout and build guidance.
 
+## macOS app packaging
+
+- Keep the app bundle named `OpenBFME.app` when building or packaging updates.
+- Do not add feature names or other suffixes to the `.app` name unless the user
+  explicitly requests a different name.
+
 ## Commits
 
 - After each completed implementation task, create a new local Git commit
