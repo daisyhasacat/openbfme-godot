@@ -87,6 +87,22 @@ func run() -> void:
 	touch(1, false, Vector2(600, 200))
 	touch(0, false, Vector2(500, 200))
 	assert(hud.get_state().keys.touch_orders == 0)
+	# Twist uses the shortest signed angle and ignores small finger jitter.
+	hud.camera_set_angle_pitch(0.0, hud.get_camera().pitch)
+	touch(0, true, Vector2(500, 200))
+	touch(1, true, Vector2(600, 200))
+	drag(1, Vector2(600, 201))
+	assert(hud.get_camera().angle == 0.0)
+	drag(1, Vector2(500, 300))
+	# tolerance: camera angles are stored as float32; compare a quarter turn within float rounding.
+	assert(absf(hud.get_camera().angle + PI / 2.0) < 0.000001)
+	drag(1, Vector2(600, 200))
+	# tolerance: summing the reverse float32 angle can retain a rounding residual.
+	assert(absf(hud.get_camera().angle) < 0.000001)
+	touch(1, false, Vector2(600, 200))
+	touch(0, false, Vector2(500, 200))
+	assert(not hud.get_state().drag_box.selecting)
+	assert(hud.get_state().keys.touch_orders == 0)
 	hud.hold_input(true)
 	touch(0, true, Vector2(500, 200))
 	drag(0, Vector2(540, 200))

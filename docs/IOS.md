@@ -101,6 +101,8 @@ associated audio interruption.
 
 Drag one finger over the battlefield to pan the camera. Pinch two fingers
 together to zoom out, or spread them to zoom in; moving both fingers also pans.
+Twist two fingers to rotate the camera. Rotation starts after deliberate finger
+movement, so small jitter during a pinch does not turn the view.
 A finger tap on a selectable unit or building replaces the current selection;
 tapping empty ground issues the normal contextual order. Explicit ability and
 building-placement targeting retain their normal behavior. Tapping a capturable

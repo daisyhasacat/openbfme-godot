@@ -319,6 +319,8 @@ struct HudDevice : public AptNativeHook
 	bool touchMulti = false, touchCanceled = false, touchGuiMouse = false;
 	bool touchDoubleTap = false, touchPinching = false;
 	float touchPinchDistance = 0.0f, touchPinchHeight = 0.0f;
+	float touchTwistLast = 0.0f, touchTwistDelta = 0.0f;
+	bool touchTwisting = false;
 	bool pencilPending = false, pencilDragging = false, pencilDoubleClick = false;
 	bool pencilWorldCapture = false;
 	Vector2 pencilStart;
@@ -4455,6 +4457,10 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 				d->touchGestureStart = d->touchGestureLast = (a->second + b->second) * 0.5f;
 				d->touchPinchDistance = a->second.distance_to(b->second);
 				d->touchPinchHeight = d->cam->getHeightAboveGround();
+				const Vector2 direction = b->second - a->second;
+				d->touchTwistLast = std::atan2(direction.y, direction.x);
+				d->touchTwistDelta = 0.0f;
+				d->touchTwisting = false;
 			}
 		}
 		else
@@ -4517,6 +4523,10 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 				d->touchGestureStart = d->touchGestureLast = (a->second + b->second) * 0.5f;
 				d->touchPinchDistance = a->second.distance_to(b->second);
 				d->touchPinchHeight = d->cam->getHeightAboveGround();
+				const Vector2 direction = b->second - a->second;
+				d->touchTwistLast = std::atan2(direction.y, direction.x);
+				d->touchTwistDelta = 0.0f;
+				d->touchTwisting = false;
 				d->touchPinching = false;
 			}
 		}
@@ -4548,6 +4558,22 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 			auto a = d->touchPoints.begin(), b = std::next(a);
 			center = (a->second + b->second) * 0.5f;
 			const float distance = a->second.distance_to(b->second);
+			const Vector2 direction = b->second - a->second;
+			if (distance > 0.0f && d->touchPinchDistance > 0.0f)
+			{
+				const float angle = std::atan2(direction.y, direction.x);
+				const float delta = std::atan2(std::sin(angle - d->touchTwistLast), std::cos(angle - d->touchTwistLast));
+				d->touchTwistLast = angle;
+				d->touchTwistDelta += delta;
+				if (!d->touchTwisting && std::abs(d->touchTwistDelta) * d->touchPinchDistance * 0.5f >= dragDistance)
+					d->touchTwisting = true;
+				if (d->touchTwisting)
+				{
+					d->cam->setAngle(d->cam->getAngle() - d->touchTwistDelta);
+					d->cam->snapInterpolation();
+					d->touchTwistDelta = 0.0f;
+				}
+			}
 			if (std::abs(distance - d->touchPinchDistance) >= dragDistance) d->touchPinching = true;
 			if (d->touchPinching && distance > 0.0f && d->touchPinchDistance > 0.0f)
 			{
