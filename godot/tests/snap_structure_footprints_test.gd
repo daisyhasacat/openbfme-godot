@@ -51,9 +51,16 @@ func _run() -> void:
 	var state: Dictionary = hud.get_placement_ghost_state()
 	assert(state.footprint_visible, str(state))
 	assert(state.footprint_count == 1, str(state))
+	assert(state.building_alignment_lines == 1, str(state))
 	# tolerance: The placed farm must contribute a footprint; other registered structures may also contribute.
 	assert(state.structure_footprint_count >= 1, str(state))
 	assert(is_zero_approx(state.grid_angle), str(state))
+	# Moving off the existing farm's row and column removes its guide.
+	hud.inject_mouse_move(hud.world_to_pixel(position + Vector2(50,100)))
+	for i in 8: await process_frame
+	assert(hud.get_placement_ghost_state().building_alignment_lines == 0)
+	hud.inject_mouse_move(hud.world_to_pixel(position))
+	for i in 8: await process_frame
 	# G while placing turns the grid 45 degrees; the snapped site lies on the turned grid
 	var g := InputEventKey.new()
 	g.keycode = KEY_G
@@ -71,6 +78,13 @@ func _run() -> void:
 	var v: float = (at.y - at.x) / sqrt(2.0) / 50.0
 	# tolerance: World-to-grid float conversion permits one hundredth of a cell of rounding error.
 	assert(absf(u - roundf(u)) < 0.01 and absf(v - roundf(v)) < 0.01, str(at))
+	# The same guide follows the rotated grid, rather than world X/Y only.
+	var diagonal = world.create_object("GondorFarm", int(player.output), at.x + sqrt(2.0)*100, at.y + sqrt(2.0)*100, 0)
+	# tolerance: zero is create_object's failure sentinel.
+	assert(diagonal > 0)
+	world.advance(.2)
+	for i in 8: await process_frame
+	assert(hud.get_placement_ghost_state().building_alignment_lines == 1)
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--shot="):
 			root.get_viewport().get_texture().get_image().save_png(arg.trim_prefix("--shot="))
@@ -82,5 +96,6 @@ func _run() -> void:
 	for i in 4: await process_frame
 	state = hud.get_placement_ghost_state()
 	assert(not state.footprint_visible and state.structure_footprint_count == 0, str(state))
+	assert(state.building_alignment_lines == 0, str(state))
 	print("SNAP STRUCTURE FOOTPRINTS PASS: ", state)
 	quit()

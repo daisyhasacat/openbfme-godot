@@ -117,6 +117,7 @@ private:
 	MeshInstance3D *m_footprint = nullptr;
 	uint64_t m_footprintId = 0;
 	unsigned m_footprintCount = 0;
+	unsigned m_buildingAlignmentLines = 0;
 	unsigned m_structureFootprintCount = 0; ///< the built structures near the cursor given the snap square too
 	MeshInstance3D *m_wallAlign = nullptr;   ///< the outlines of the hub's spans square to (or opposite) the dragged span
 	uint64_t m_wallAlignId = 0;

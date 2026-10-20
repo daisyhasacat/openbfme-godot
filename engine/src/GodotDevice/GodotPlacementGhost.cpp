@@ -156,7 +156,7 @@ void PlacementGhostRenderer::clear()
 	freeNode(m_footprintId);
 	m_footprintId = 0;
 	m_footprint = nullptr;
-	m_footprintCount = 0;
+	m_footprintCount = m_buildingAlignmentLines = 0;
 	freeNode(m_wallAlignId);
 	m_wallAlignId = 0;
 	m_wallAlign = nullptr;
@@ -770,7 +770,7 @@ void PlacementGhostRenderer::updateFootprints(LiveGame &game, const InGameUI &ui
 	if (!ui.isPlacing() || !ui.placeHasGhost() || !ui.placementSnap)
 	{
 		if (m_footprint) m_footprint->hide();
-		m_structureFootprintCount = 0;
+		m_structureFootprintCount = m_buildingAlignmentLines = 0;
 		return;
 	}
 	if (!idle) return; // footprint geometry reads the live movement cache
@@ -796,6 +796,11 @@ void PlacementGhostRenderer::updateFootprints(LiveGame &game, const InGameUI &ui
 	// the built structures within reach of the cursor (a bounded radius keeps the mesh small on a large base)
 	const Coord3D &cursor = ui.placeLocation();
 	const float reach = 1500.0f;
+    m_buildingAlignmentLines = 0;
+    std::array<const ::Object *,4> aligned{};
+    std::array<float,4> distances{reach,reach,reach,reach};
+    const float gc=std::cos(ui.placementGridAngle), gs=std::sin(ui.placementGridAngle);
+    const Player *local=game.logic().players().getLocalPlayer();
 	for (::Object *o = game.logic().getFirstObject(); o; o = o->getNextObject())
 	{
 		if (!o->isInWorld() || o->isEffectivelyDead() || o->getContainedBy() || !o->getTemplate() || !o->isKindOfName("STRUCTURE")) continue;
@@ -805,8 +810,35 @@ void PlacementGhostRenderer::updateFootprints(LiveGame &game, const InGameUI &ui
 		const Coord3D &p = *o->getPosition();
 		if (std::abs(p.x-cursor.x) > reach || std::abs(p.y-cursor.y) > reach) continue;
 		addFootprint(*o->getTemplate(),p,o->getOrientation(),m_structureFootprintCount);
+        if (owner != local || o->getTemplate()->getFinalOverride()->getName()!=ui.placeBuildTemplate()) continue;
+        const float dx=p.x-cursor.x, dy=p.y-cursor.y;
+        const float u=dx*gc+dy*gs, v=-dx*gs+dy*gc;
+        const int direction=std::abs(v)<=1.0f && std::abs(u)>1.0f ? (u>0?0:1) :
+            (std::abs(u)<=1.0f && std::abs(v)>1.0f ? (v>0?2:3) : -1);
+        const float distance=std::sqrt(dx*dx+dy*dy);
+        if (direction>=0 && distance<distances[direction]) {aligned[direction]=o;distances[direction]=distance;}
+
 	}
 	if (begun) mesh->surface_end();
+    Ref<StandardMaterial3D> green;green.instantiate();
+    green->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+    green->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
+    green->set_albedo(Color(.1f,1.0f,.2f));
+    bool lines=false;
+    for (const auto *o:aligned) if(o) {
+        if (!lines) {mesh->surface_begin(Mesh::PRIMITIVE_TRIANGLES,green);lines=true;}
+        ++m_buildingAlignmentLines;
+        const auto &end=*o->getPosition();
+        const float dx=end.x-cursor.x,dy=end.y-cursor.y,length=std::sqrt(dx*dx+dy*dy);
+        const float nx=-dy/length*1.5f,ny=dx/length*1.5f;
+        const int steps=std::max(1,int(std::ceil(length/20.0f)));
+        auto at=[&](int step,float side) {
+            const float t=float(step)/steps,x=cursor.x+dx*t+nx*side,y=cursor.y+dy*t+ny*side;
+            return Vector3(x,game.logic().getGroundHeight(x,y)+2.0f,-y);
+        };
+        for(int i=0;i<steps;++i) for(const auto &v: {at(i,-1),at(i,1),at(i+1,1),at(i,-1),at(i+1,1),at(i+1,-1)}) mesh->surface_add_vertex(v);
+    }
+    if(lines) {mesh->surface_end();begun=true;}
 	if (!m_footprint && begun)
 	{
 		m_footprint=memnew(MeshInstance3D);
@@ -1065,6 +1097,7 @@ Dictionary PlacementGhostRenderer::state() const
 	s["footprint_visible"] = m_footprint && m_footprint->is_visible();
 	s["footprint_count"] = m_footprintCount;
 	s["structure_footprint_count"] = m_structureFootprintCount;
+	s["building_alignment_lines"] = m_buildingAlignmentLines;
 	s["wall_aligned_spans"] = m_wallAlignSpans;
 	s["wall_aligned_segments"] = m_wallAlignSegments;
 	s["grid_visible"] = m_grid && m_grid->is_visible();
