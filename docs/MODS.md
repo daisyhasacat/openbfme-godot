@@ -164,13 +164,19 @@ is `http://192.168.121.42:8765`; edit it if the host's address changes. A succes
 connection saves the address. Downloads show progress and verify SHA-256 and
 size before unpacking. Texture-only flags are retained; ordinary mods install
 disabled and are enabled in Mods, followed by a restart. Wall towers and 2.02
-maps use their existing Options switches. Use **Download all maps to library** to fetch maps as a queue. They are stored
-in `user://map-library/rotwk` or `user://map-library/bfme1` and appear in the
+maps use their existing Options switches. Use **Download all maps to library** to fetch one cached ZIP containing the complete shared map library and its sidecar
+files. The client verifies the archive, stream-extracts it with per-map progress,
+and publishes the library only when extraction completes. BFME1 and RotWK maps
+are separated inside `user://map-library/bundles/<id>/` and appear in the
 browser’s **Map Library** tab; they do not join the installed/playable map list
 until you choose **Install map** there. **Download all 2.02 content / built-ins**
 queues the shared 2.02 packs (including textures) and all built-in packs. Both
-actions skip packs already present and stop with the error if a download fails;
-press the button again to continue the remaining queue. AOTR is stored as a separate game and
+actions skip packages already present and stop with the error if a download fails;
+the file progress bar shows the archive transfer, and the overall bar shows
+extracted/total maps during extraction. Interrupted extractions are discarded;
+press Download again to retry. Previously downloaded individual maps remain
+available in the library.
+Press the button again to continue the remaining queue. AOTR is stored as a separate game and
 can be selected in Mods. Downloads never replace a running match's data.
 
 Additional locations can be shared explicitly (repeat each option as needed):
@@ -190,3 +196,13 @@ Checks: `python3 -m unittest discover -s tools/lan_content`; the Godot
 synthetic server with `OPENBFME_LAN_TEST_URL`. iOS exports include local-network
 permission and HTTP access for numeric LAN addresses; device validation is still
 required after rebuilding the iOS app.
+
+The main menu’s **Games / Mods** control is a full-size button. You can also open
+**Options → Mods → Games, mods and LAN downloads**. Native mod/download controls
+use at least 48-pixel touch targets, visible controller focus, and sequential
+D-pad/keyboard navigation that scrolls focused rows into view. Accept activates
+a button; Back closes the top dialog and restores focus. Back or directional
+navigation from Options’ Mods entry returns to the options tabs.
+
+Player saves, profiles and heroes use the separate [player sync service](SYNC.md),
+configured under **Options → Sync**.

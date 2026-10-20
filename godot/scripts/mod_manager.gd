@@ -40,6 +40,12 @@ func _ready() -> void:
 	_discover()
 	_build()
 	_refresh()
+	_game_picker.call_deferred("grab_focus")
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("ui_cancel") and not has_node("LanDownloads") and not (is_instance_valid(_dialog) and _dialog.visible):
+		get_viewport().set_input_as_handled()
+		_close()
 
 
 ## the game root of a mod folder (see the header); "" when it holds no game files
@@ -208,7 +214,9 @@ func _build() -> void:
 	buttons.add_child(_button("Add mod folder…", _open_dialog))
 	buttons.add_child(_button("LAN downloads…", func() -> void:
 		var browser = load("res://scripts/lan_content.gd").new()
+		browser.name = "LanDownloads"
 		browser.installed.connect(func(): _load(); _discover(); _refresh())
+		browser.tree_exited.connect(func(): _game_picker.grab_focus())
 		add_child(browser)))
 	buttons.add_child(_button("Open mods folder", func() -> void: Release.open_user_folder(Release.UserFolder.MODS)))
 	buttons.add_child(_button("Restart to apply", _restart))
@@ -231,6 +239,7 @@ func _button(text: String, action: Callable) -> Button:
 
 func _refresh() -> void:
 	for c in _list.get_children():
+		_list.remove_child(c)
 		c.queue_free()
 	if _order.is_empty():
 		var empty := Label.new()
@@ -274,6 +283,9 @@ func _refresh() -> void:
 		row.add_child(down)
 		row.add_child(_button("Remove", func() -> void: _remove(i)))
 		_list.add_child(row)
+	preload("res://scripts/menu_accessibility.gd").prepare(self)
+	if get_viewport().gui_get_focus_owner() == null:
+		_game_picker.call_deferred("grab_focus")
 
 
 func _move(i: int, d: int) -> void:

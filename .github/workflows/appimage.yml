@@ -44,7 +44,10 @@ jobs:
           --directory "$RUNNER_TEMP/appimage-tools"
           --templates "$XDG_DATA_HOME/godot/export_templates/4.7.2.stable"
       - name: Build with the portable Godot Linux SDK
-        run: tools/release/build_linux.sh
+        run: |
+          git diff --exit-code --submodule=diff HEAD
+          tools/release/build_linux.sh
+          git diff --exit-code --submodule=diff HEAD
       - name: Export and audit the game (including reproducibility check)
         run: >-
           tools/release/package.sh --platforms linux --no-launcher

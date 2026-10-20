@@ -42,7 +42,7 @@ var log_path := ""          # user://logs/openbfme-....log of this run
 var previous_crash_log := "" # the log of a run that did not end normally ("" = none)
 var _marker := ""
 var _watermark: CanvasLayer
-var _mods_link: LinkButton
+var _mods_link: BaseButton
 var active_mods: Array = []   ## lane MODS-1: the mods this session mounted (the mount report's "mods"; game.gd sets it)
 var _in_game := false
 var _handover: RefCounted   # UpdateHandover of this start (null: the launcher was not asked)
@@ -75,6 +75,9 @@ func _set_window_title() -> void:
 
 
 func _ready() -> void:
+	var sync_watch = preload("res://scripts/player_sync_watch.gd").new()
+	sync_watch.name = "PlayerSyncWatch"
+	add_child(sync_watch)
 	# lane UI-4: the packages run Godot's DEBUG export template on purpose (tools/release/package.sh: its crash handler writes the native backtrace
 	# into the session log), and that template titles the window "<name> (DEBUG)". The title is the project's name, "OpenBFME", in every
 	# package. (Retail RotWK titles its window with gi.dat's GameName or the installer's registry DisplayName, RW 0x640ED0 / CreateWindowExW at
@@ -600,18 +603,18 @@ func _add_watermark() -> void:
 	logs.pressed.connect(func() -> void: open_log_folder())
 	_watermark.add_child(logs)
 	# lane MODS-1: the mod manager, under the Logs link (menus only, like the rest of the corner)
-	var mods := LinkButton.new()
+	var mods := Button.new()
 	mods.text = "Games / Mods (%d)" % active_mods.size() if not active_mods.is_empty() else "Games / Mods"
 	mods.tooltip_text = "Switch between BFME1, RotWK and Age of the Ring, or choose RotWK mods"
-	mods.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
-	mods.add_theme_font_size_override("font_size", 13)
+	mods.custom_minimum_size = Vector2(220, 52)
+	mods.add_theme_font_size_override("font_size", 20)
 	mods.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
 	mods.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
 	mods.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	mods.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	mods.offset_right = -8
 	mods.offset_top = logs.offset_top + logs.get_combined_minimum_size().y + 4
-	mods.focus_mode = Control.FOCUS_NONE
+	mods.focus_mode = Control.FOCUS_ALL
 	mods.name = "OpenMods"
 	mods.pressed.connect(open_mod_manager)
 	_watermark.add_child(mods)
@@ -652,6 +655,10 @@ func open_mod_manager() -> void:
 	var manager: CanvasLayer = preload("res://scripts/mod_manager.gd").new()
 	manager.name = "ModManagerLayer"
 	manager.active_mods = active_mods
+	var previous_focus := get_viewport().gui_get_focus_owner()
+	manager.tree_exited.connect(func():
+		if is_instance_valid(previous_focus) and previous_focus.is_visible_in_tree():
+			previous_focus.call_deferred("grab_focus"))
 	get_tree().root.add_child(manager)
 
 
