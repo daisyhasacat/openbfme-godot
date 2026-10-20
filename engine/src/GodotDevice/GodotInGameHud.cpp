@@ -4444,7 +4444,9 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 				d->touchPan = d->touchMulti = d->touchCanceled = d->touchPinching = false;
 				d->touchDoubleTap = touch->is_double_tap();
 				d->touchGestureStart = d->touchGestureLast = p;
-				d->touchBuildGesture = (bool)Engine::get_singleton()->get_meta("touch_build_controls", false) && d->hud->input().ui().isPlacing();
+				// Raw finger placement must not depend on which HUD last wrote
+				// the shared toolbar metadata (classic and modern update separately).
+				d->touchBuildGesture = d->hud->input().ui().isPlacing();
 				d->touchBuildStart = p;
 				d->touchBuildMoved = false;
 				if (d->touchBuildTemplate != d->hud->input().ui().placeBuildTemplate()) d->touchBuildRotate = false;
@@ -4474,7 +4476,11 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 			{
 				if (d->touchBuildGesture && !d->touchMulti && !d->touchCanceled)
 				{
-					if (!d->touchBuildMoved) touch_build(d->touchBuildRotate ? "confirm" : "lock", Vector2());
+					if (!d->touchBuildMoved)
+					{
+						if (!d->touchBuildRotate && !d->hud->input().ui().isPlacementAnchored()) touch_build("position", p);
+						touch_build(d->touchBuildRotate ? "confirm" : "lock", Vector2());
+					}
 					else if (!d->touchBuildRotate) touch_build("position", p);
 				}
 				else if (tap && !d->hud->isOverGui((int)p.x, (int)p.y))

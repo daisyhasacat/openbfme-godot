@@ -33,7 +33,7 @@ func _run() -> void:
 		if entry.command == "DOZER_CONSTRUCT": command = entry; break
 	assert(not command.is_empty())
 	assert(hud.activate_command(command.slot, command.in_palantir, false))
-	Engine.set_meta("touch_build_controls", true)
+	Engine.set_meta("touch_build_controls", false)
 	var finger := InputEventScreenTouch.new()
 	finger.index = 0
 	finger.position = Vector2(600,360)
@@ -82,5 +82,31 @@ func _run() -> void:
 	assert(hud.touch_build("position", Vector2(640,360)))
 	for i in 4: await process_frame
 	assert(hud.get_placement_ghost_state().model_loads == model_loads, "reopening placement should reuse loaded preview models")
+	assert(hud.touch_build("cancel", Vector2.ZERO))
+	for i in 3: await process_frame
+	hud.select_controller_group(PackedInt64Array([builder]))
+	for i in 4: await process_frame
+	assert(hud.activate_command(command.slot, command.in_palantir, false))
+	# A tap without an earlier drag must anchor and enter rotation even if
+	# another HUD has disabled its toolbar metadata.
+	for down in [true, false]:
+		finger.position = Vector2(800, 350)
+		finger.pressed = down
+		Input.parse_input_event(finger.duplicate())
+		await process_frame
+	for i in 3: await process_frame
+	assert(hud.get_placement().anchored and hud.get_placement().touch_rotating)
+	var anchored: Dictionary = hud.get_placement()
+	for down in [true, false]:
+		finger.position = Vector2(900, 450)
+		finger.pressed = down
+		Input.parse_input_event(finger.duplicate())
+		await process_frame
+	for i in 3: await process_frame
+	# A confirmation never repositions the preview at the second tap.
+	if hud.get_placement().placing:
+		assert(hud.get_placement().x == anchored.x and hud.get_placement().y == anchored.y)
+		assert(hud.touch_build("cancel", Vector2.ZERO))
+	Engine.remove_meta("touch_build_controls")
 	print("TOUCH BUILD POSITION ROTATE CANCEL PASS")
 	quit()
