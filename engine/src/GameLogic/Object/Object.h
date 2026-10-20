@@ -59,6 +59,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class CollideModuleInterface;
@@ -369,7 +370,7 @@ public:
 	BodyModuleInterface *getBodyModule() const { return m_body; }
 	ContainModuleInterface *getContain() const { return m_contain; }
 	AIUpdateInterface *getAIUpdateInterface() const { return m_ai; }
-	BehaviorModule *findModule(const std::string &className) const; // the first module of this class (helpers included), or null
+	BehaviorModule *findModule(std::string_view className) const; // the first module of this class (helpers included), or null; literal lookups allocate nothing
 	// RW 0x68BB14: the first module with an exit interface (array order); lane PROD-1
 	ExitInterface *getObjectExitInterface() const;
 	// RW 0x68C327: the ProductionUpdate's queue interface, or null

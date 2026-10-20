@@ -240,3 +240,46 @@ checks current match/handle data, one refresh per state-reading invocation,
 removed records, callback failure and hook removal. The installed-data
 Ubermode regression checks one-second construction and training plus K-click
 recruitment across duplicate buildings.
+
+
+## 40,020 CP: resting army
+
+`godot/tests/idle_army_bench.gd` spawns 667 fighter battalions on snow Buckland
+with the configured HD profile, settles 30 logic ticks, enables Ubermode and
+measures 120 ticks plus Lua updates and client pose processing. Override
+`IDLE_HORDES`, `IDLE_FRAMES`, `IDLE_UBER` (0 disables Ubermode), or
+`IDLE_HASHES` (JSON output path) as needed:
+
+```sh
+workspace/godot/Godot.app/Contents/MacOS/Godot --headless --path godot \
+  --script res://tests/idle_army_bench.gd
+```
+
+Idle update callbacks now defer full snapshots until their first state read.
+Ubermode queries a sorted unit-ID roster and requests unit details only when
+new units or pending recruitment need work. Existing units changing ownership
+are detected too. Attribute modifier module lookups accept string views,
+avoiding temporary string allocations without caching mutable module pointers.
+Simulation phase and object ordering are unchanged.
+
+Four consecutive original/optimized/optimized/original runs, each with 10,828
+objects, produced these averages across the two runs of each version:
+
+| Measurement | Original | Optimized |
+|---|---:|---:|
+| Simulation advance | 51.71 ms | 49.54 ms |
+| Lua update | 44.18 ms | 2.85 ms |
+| Headless frame interval | 99.05 ms | 55.55 ms |
+
+Lua time fell about 94% and frame interval about 44%. These are headless
+measurements, not rendered FPS, and do not include the restored snowBuck layout.
+One complete before/after pair matched all 120 frame hashes (final
+`1518341590`). Later repeats diverged near the end in both versions; real-time
+Ubermode callbacks make those repetitions unsuitable as deterministic evidence.
+A separate before/after control with Ubermode disabled matched all 120 hashes,
+ending at `850545814`. No timing threshold is asserted.
+
+The combined movement, enclosure, formation, Lua and timing native suite passes
+105 cases / 4,620 assertions. Simulation audit flags and link checks report zero
+issues; the AST audit remains unavailable without libclang, and classification
+still lists the existing unclassified FloatingText type.

@@ -1109,7 +1109,7 @@ void Object::clearDisabled(unsigned type)
 	checkDisabledStatus(m_logic.getFrame()); // RW 0x69261D
 }
 
-BehaviorModule *Object::findModule(const std::string &className) const
+BehaviorModule *Object::findModule(std::string_view className) const
 {
 	for (const std::unique_ptr<BehaviorModule> &m : m_modules)
 	{

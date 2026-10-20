@@ -474,6 +474,7 @@ library('timing',{
 	clear=function() timingNative('build',nil); timingNative('train',nil); timingNative('upgrade',nil) end,
 })
 library('match',{
+	getUnitRoster=function(playerId) numeric(playerId,0,19,true); return query('unitRoster',playerId) end,
  getFrame=function() return view.frame or 0 end,
  getTimeMs=clock,
  isPaused=function() return view.paused or false end,
@@ -633,6 +634,7 @@ struct BfmeLuaRuntime::Impl
 	Host host;
 	std::map<std::string, int> timingHooks;
 	bool timingBusy = false;
+	bool updateBusy = false;
 	static int timing(lua_State *L)
 	{
 		try {
@@ -802,7 +804,8 @@ struct BfmeLuaRuntime::Impl
 		try
 		{
 			auto &runtime = self(L);
-			const auto timingStart = runtime.timingBusy ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+			const bool budgetedCallback = runtime.timingBusy || runtime.updateBusy;
+			const auto timingStart = budgetedCallback ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 			auto s = runtime.host.snapshot();
 			V::Table t{{"ready", s.ready}, {"paused", s.paused}, {"frame", s.frame}, {"cursorPosition", s.cursorPosition},
 				{"networkGame", s.networkGame}, {"replay", s.replay}, {"luaAuthority", s.luaAuthority}, {"peaceTimeActive", s.peaceTimeActive}};
@@ -865,7 +868,7 @@ struct BfmeLuaRuntime::Impl
 			}
 			// Timing snapshots previously ran before the callback's execution
 			// budget began. Keep their native construction cost outside that budget.
-			if (runtime.timingBusy) runtime.deadline += std::chrono::steady_clock::now() - timingStart;
+			if (budgetedCallback) runtime.deadline += std::chrono::steady_clock::now() - timingStart;
 			return 1;
 		}
 		catch (const std::exception &e)
@@ -1262,7 +1265,7 @@ void BfmeLuaRuntime::flush()
 	if (!due.empty())
 	{
 		auto L = m->L;
-		try { m->call(m->refreshRef); }
+		try { m->call(m->deferRefreshRef); }
 		catch (const std::exception &e) { m->output += std::string("bfme update snapshot failed: ") + e.what() + "\n"; due.clear(); }
 		for (const std::string &name : due)
 		{
@@ -1275,7 +1278,9 @@ void BfmeLuaRuntime::flush()
 			lua_sethook(L, Impl::hook, LUA_MASKCOUNT, 1000);
 			lua_rawgeti(L, LUA_REGISTRYINDEX, cb.ref);
 			lua_pushstring(L, name.c_str());
+			m->updateBusy = true;
 			const int status = lua_pcall(L, 1, 0, 0);
+			m->updateBusy = false;
 			lua_sethook(L, nullptr, 0, 0);
 			it = m->updates.find(name); // the callback may have replaced or removed itself
 			if (status != LUA_OK)

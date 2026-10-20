@@ -783,3 +783,28 @@ TEST_CASE("bfme Lua: movement controls dispatch to the presentation-only host")
 	CHECK(f.applied.empty());
 	CHECK_FALSE(f.vm->hasPending());
 }
+
+TEST_CASE("bfme Lua: idle update callbacks avoid snapshots until their first state read")
+{
+	BfmeFixture f;
+	f.answers["unitRoster"] = BfmeLuaValue::Table{{"ready",true},{"ids",BfmeLuaValue::List{1234}}};
+	f.run("bfme.events.onUpdate('idle',function() local r=bfme.match.getUnitRoster(1); assert(r.ready and r.ids[1]==1234); r.ids[1]=-1 end,50)");
+	f.snapshotReads = 0;
+	f.vm->flush();
+	CHECK(f.snapshotReads == 0);
+	CHECK(f.queries.back().first == "unitRoster");
+	f.run("bfme.events.remove('idle'); saved=bfme.unitInstances[1234]; bfme.events.onUpdate('live',function() seen=saved.position.x; seenFrame=bfme.match.getFrame() end,50)");
+	f.snapshot.frame = 71;
+	f.snapshot.collections["unitInstances"]["1234"]["position"] = BfmeLuaValue::Table{{"x", 456}};
+	f.snapshotReads = 0;
+	f.vm->flush();
+	CHECK(f.snapshotReads == 1);
+	CHECK(f.run("return seen,seenFrame") == "456\t71\n");
+	f.run("bfme.events.remove('live'); bfme.events.onUpdate('broken',function() error('idle failure') end,50)");
+	f.snapshotReads = 0;
+	f.vm->flush();
+	CHECK(f.snapshotReads == 0);
+	CHECK(f.asyncOutput.find("idle failure") != std::string::npos);
+	CHECK(f.run("return bfme.match.getFrame()") == "71\n");
+	CHECK_FALSE(f.vm->execute("bfme.match.getUnitRoster(-1)").ok);
+}

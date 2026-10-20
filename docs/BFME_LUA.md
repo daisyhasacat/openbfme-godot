@@ -192,7 +192,7 @@ refused in network matches and replay playback; these are local scripting hooks.
 
 | Library | Functions |
 | --- | --- |
-| `bfme.match` | `getStatus()`, `getFrame()`, `getTimeMs()`, `setGameSpeed(x)`, `pause()`, `unpause()`, `isPaused()` |
+| `bfme.match` | `getStatus()`, `getUnitRoster(playerId)`, `getFrame()`, `getTimeMs()`, `setGameSpeed(x)`, `pause()`, `unpause()`, `isPaused()` |
 | `bfme.input` | `getCursorPosition()` |
 | `bfme.selection` | `all()`, `units()`, `buildings()`, `first()`, `count()` |
 | `bfme.mutations` | `getStatus(ticket)`, `getBuilding(ticket)` |
@@ -289,11 +289,16 @@ computer player at the start of each skirmish, on the host in multiplayer. Guest
 `luaai.status()` reports each player. It sees the whole map, ignoring the shroud.
 Its numbers are in `luaai.config`.
 
+`bfme.match.getUnitRoster(playerId)` returns `{ready, ids}` with sorted live unit IDs
+for player 0–19, using the same membership as `player:units()`. The returned list
+is detached. This lightweight query avoids a full snapshot and is suitable for
+checking whether an idle army has gained units. Without a match, `ready` is false.
+
 ### Update callbacks
 
 `bfme.events.onUpdate(name, fn, intervalMs)` runs `fn(name)` every `intervalMs` milliseconds of real time (default 500,
-range 50 to 3,600,000) at a safe point between simulation frames. Each run sees a fresh snapshot and has the 250 ms
-execution budget. Registering a name again replaces it, so reloading a script does not duplicate its callbacks.
+range 50 to 3,600,000) at a safe point between simulation frames. Due callbacks share a fresh snapshot, built lazily on their first state read, and each has the 250 ms
+execution budget. Query-only callbacks avoid building it; native snapshot construction is outside that budget. Registering a name again replaces it, so reloading a script does not duplicate its callbacks.
 A failing callback keeps its schedule and writes its error to the log once per new message. `bfme.events.list()` shows
 each callback's runs, failures and last error, and `remove(name)` stops one. Output from callbacks goes to the session log
 (`LUA ...` lines). Callbacks survive match changes; check `bfme.match.getStatus().ready`.

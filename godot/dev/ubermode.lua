@@ -73,11 +73,19 @@ end
 
 bfme.events.onUpdate("ubermode", function()
     if not mode.enabled then return end
-    local status = bfme.match.getStatus()
-    if not status.ready then mode.enabled, mode.pending = false, {}; return end
+    -- Most ticks have no new troops or recruitment jobs. A detached ID list
+    -- avoids building the full army snapshot merely to discover nothing changed.
+    local roster = bfme.match.getUnitRoster(mode.playerId)
+    if not roster.ready then mode.enabled, mode.pending = false, {}; return end
+    local unseen = false
+    for _, id in ipairs(roster.ids) do
+        if not mode.seen[id] then unseen = true; break end
+    end
+    if not unseen and #mode.pending == 0 then return end
     local player = localMatch()
-    for _, unit in ipairs(player:units()) do
-        if not mode.seen[unit.id] then
+    for _, id in ipairs(roster.ids) do
+        local unit = not mode.seen[id] and bfme.unitInstances[id]
+        if unit then
             mode.seen[unit.id] = true
             if unit.maxLevel and unit.maxLevel > unit.level then unit.level = unit.maxLevel end
             for _, upgrade in ipairs(unit:getUpgrades()) do
