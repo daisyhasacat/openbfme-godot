@@ -23,7 +23,9 @@ func _run():
  var prep=world.prepare_new_game({'mode':'skirmish','difficulty':1,'rank_points':0,'map':'maps/map wor buckland/map wor buckland.map','map_crc':0,'map_size':0,'map_mask':0,'seed':42,'starting_cash':100000,'slots':slots})
  var loaded=world.start_new_game({}) if prep.ok else prep
  if not loaded.ok: push_error(str(loaded)); quit(1); return
- check_lua("bfme.console.reload(); bfme.players.localPlayer:setMoney(1000000)")
+ # This test verifies native construction/replay, not storage (covered separately).
+ # Keep its layouts in memory so it never overwrites a user's named layout files.
+ check_lua("bfme.console.reload(); saveBuildings=function(name) return name end; bfme.players.localPlayer:setMoney(1000000)")
  frames(1)
  check_lua("local p=bfme.players.localPlayer; local site=assert(p:findBuildSite('MenFortress',{x=800,y=800},1200)); fortress=p:construct('MenFortress',site,100)")
  frames(100)
@@ -42,11 +44,15 @@ func _run():
  check_lua("assert(bfme.mutations.getStatus(tower)=='complete',bfme.mutations.getStatus(tower)); local a,b=bfme.mutations.getBuilding(wall),bfme.mutations.getBuilding(tower); link=a:linkWallPiece(b)")
  frames(1)
  check_lua("assert(bfme.mutations.getStatus(link)=='applied'); assert(#bfme.mutations.getBuilding(wall):getLayoutInfo().links>0)")
- check_lua("testPlayer=bfme.players.localPlayer.id; recordBuildings('roundtrip'); for _,b in ipairs(bfme.players.localPlayer:buildings()) do b:destroy() end")
+ # Keep a separate fortress alive: destroying every original building would
+ # defeat this player before the replay starts, so victory cleanup removes its new base.
+ check_lua("testPlayer=bfme.players.localPlayer.id; recordBuildings('roundtrip'); local p=bfme.players[testPlayer]; removeIds={}; for _,b in ipairs(p:buildings()) do removeIds[#removeIds+1]=b.id end; local at=assert(p:findBuildSite('MenFortress',{x=3000,y=3000},1200)); guard=p:construct('MenFortress',at,100)")
+ frames(100)
+ check_lua("assert(bfme.mutations.getStatus(guard)=='complete'); for _,id in ipairs(removeIds) do local b=bfme.buildingInstances[id]; if b then b:destroy() end end")
  frames(2)
  check_lua("bfme.players[testPlayer]:setMoney(1000000)")
  frames(1)
- check_lua("replayBuildings('roundtrip',{player=testPlayer,speed=100})")
+ check_lua("replayBuildings('roundtrip',{player=testPlayer})")
  for i in 200:
   frames(10)
   await create_timer(0.11).timeout

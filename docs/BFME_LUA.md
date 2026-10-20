@@ -575,6 +575,20 @@ starting slot, including a computer player. New recordings store `sourceStartSlo
 position nearest their saved fortress or first building. An unoccupied saved slot
 is an error; `{player=...}` explicitly overrides ownership.
 
+Building layout replay defaults to **100× construction speed** and schedules
+work every 50 ms. Use `replayBuildings("base2", {speed=1})` for normal
+construction pacing. Independent structures still start concurrently, fortress
+attachments wait for their parent, and walls wait for live hubs. Nearby reuse
+looks up a spatial index built once per update; it keeps the strict one-unit
+position tolerance. Wall links are restored in batches of up to 64 pending
+native mutations instead of one per update; every result is checked before the
+replay finishes. This applies to `building_record.lua` / `building_replay.lua`,
+not match replay playback. The regression restores 320 directed wall links
+in eight updates with every endpoint checked; the installed-data test rebuilds
+fortresses, attachments and linked walls using the default speed.
+
+
+
 ## Ubermode sandbox cheat
 
 `godot/dev/ubermode.lua` is loaded with the console scripts. In a local live

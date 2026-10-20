@@ -1,5 +1,5 @@
 
--- Concurrent native self-building construction.
+-- Concurrent native self-building construction, defaulting to 100x speed.
 -- Fortress dependencies are respected.
 -- Independent structures start together; wall pieces wait only for their hubs to begin.
 
@@ -61,7 +61,7 @@ function replayBuildings(name, options)
         end
     end
 
-    local speed = options.speed or 1
+    local speed = options.speed or 100
     local level3 = options.level3
 
     assert(type(speed) == 'number' and speed >= .01 and speed <= 100,
@@ -88,8 +88,9 @@ function replayBuildings(name, options)
     local states = {}
     local links = {}
     local phase = 'buildings'
-    local wallTicket = nil
-    local wallLabel = nil
+    local linkTickets = {}
+    local nextLink = 1
+    local nearbyIndex = {}
 
     for i, b in ipairs(layout) do
         if b.id then byId[b.id] = i end
@@ -136,17 +137,34 @@ function replayBuildings(name, options)
         print(message)
     end
 
-    local function nearby(owner, template, x, y, castle)
-        for _, b in ipairs(owner:buildings()) do
-            if b.typeId == template
-                and math.abs(b.x - x) < 1
-                and math.abs(b.y - y) < 1 then
+    -- Rebuild once per update, instead of enumerating every owned building for
+    -- each layout entry. Neighboring integer cells preserve the <1-unit test.
+    local function indexBuildings(owner)
+        nearbyIndex = {}
+        for _, building in ipairs(owner:buildings()) do
+            local templates = nearbyIndex[building.typeId] or {}
+            nearbyIndex[building.typeId] = templates
+            local key = math.floor(building.x) .. ':' .. math.floor(building.y)
+            local cell = templates[key] or {}
+            templates[key] = cell
+            cell[#cell + 1] = building
+        end
+    end
 
-                if not castle or b:getLayoutInfo().castleId == castle then
-                    return b
+    local function nearby(template, x, y, castle)
+        local templates = nearbyIndex[template] or {}
+        local best
+        for dx = -1, 1 do
+            for dy = -1, 1 do
+                local key = (math.floor(x) + dx) .. ':' .. (math.floor(y) + dy)
+                for _, b in ipairs(templates[key] or {}) do
+                    if math.abs(b.x - x) < 1 and math.abs(b.y - y) < 1
+                        and (not castle or b:getLayoutInfo().castleId == castle)
+                        and (not best or b.id < best.id) then best = b end
                 end
             end
         end
+        return best
     end
 
     local function setTicket(state, ticket)
@@ -234,7 +252,7 @@ function replayBuildings(name, options)
         local castle = parent and restored[parent]
 
         local existing = nearby(
-            owner, b.template, b.x, b.y, castle
+            b.template, b.x, b.y, castle
         )
 
         if existing then
@@ -261,7 +279,6 @@ function replayBuildings(name, options)
 
         if b.plot then
             local plot = nearby(
-                owner,
                 b.plot.template,
                 b.plot.x,
                 b.plot.y,
@@ -345,7 +362,7 @@ function replayBuildings(name, options)
             if not info or not info.castleReady then
                 state.waiting = state.waiting + 1
 
-                if state.waiting < 100
+                if state.waiting < 200
                     and info
                     and (not info.castleError
                         or info.castleError == '') then
@@ -403,6 +420,7 @@ function replayBuildings(name, options)
     end
 
     local function processBuildings(owner)
+        indexBuildings(owner)
         for i in ipairs(states) do updateBuilding(i) end
         -- Submit hubs first so dependent pieces become eligible on the next update.
         for _, hubs in ipairs({true, false}) do
@@ -466,51 +484,35 @@ function replayBuildings(name, options)
         end
 
         if phase == 'links' then
-            if wallTicket then
-                local status = bfme.mutations.getStatus(wallTicket)
-
-                if status == 'pending' or status == 'building' then
-                    return
-                end
-
-                job.pending[wallTicket] = nil
-                wallTicket = nil
-
-                if status ~= 'complete' and status ~= 'applied' then
-                    failure(wallLabel or 'wall link', status)
+            -- Keep the same bounded pending-work limit as construction. Links
+            -- are independent native mutations; waiting for each one serialized
+            -- large walls at one link per timer tick.
+            for ticket in pairs(linkTickets) do
+                local status = bfme.mutations.getStatus(ticket)
+                if status ~= 'pending' and status ~= 'building' then
+                    linkTickets[ticket] = nil
+                    job.pending[ticket] = nil
+                    if status ~= 'complete' and status ~= 'applied' then
+                        failure('wall link', status)
+                    end
                 end
             end
-
-            local link = table.remove(links, 1)
-
-            if link then
+            while nextLink <= #links and capacity() do
+                local link = links[nextLink]
+                nextLink = nextLink + 1
                 local ok, result = pcall(function()
-                    local source = assert(
-                        bfme.buildingInstances[link[1]],
-                        'Wall destroyed'
-                    )
-
-                    local target = assert(
-                        bfme.buildingInstances[link[2]],
-                        'Linked wall destroyed'
-                    )
-
+                    local source = assert(bfme.buildingInstances[link[1]], 'Wall destroyed')
+                    local target = assert(bfme.buildingInstances[link[2]], 'Linked wall destroyed')
                     return source:linkWallPiece(target)
                 end)
-
-                wallLabel = 'wall link'
-
-                if ok then
-                    wallTicket = result
-                    if result then
-                        job.pending[result] = true
-                    end
-                else
-                    failure(wallLabel, result)
+                if ok and result then
+                    linkTickets[result] = true
+                    job.pending[result] = true
+                elseif not ok then
+                    failure('wall link', result)
                 end
-
-                return
             end
+            if nextLink <= #links or next(linkTickets) then return end
 
             stopBuildingReplay()
 
@@ -521,7 +523,7 @@ function replayBuildings(name, options)
                 .. job.failed .. ' errors'
             )
         end
-    end, 100)
+    end, 50)
 
     return #layout
 end
