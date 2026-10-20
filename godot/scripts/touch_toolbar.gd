@@ -70,14 +70,14 @@ func _process(_delta: float) -> void:
 	ui_scale = minf(ui_scale, maxf(0.1, (viewport_size.x - 24.0) / maxf(menu_panel.size.x, placement_background.get_combined_minimum_size().x)))
 	var menu_scale := ui_scale / 3.0
 	menu_panel.scale = Vector2.ONE * menu_scale
-	placement_background.scale = Vector2.ONE * ui_scale
+	placement_background.scale = Vector2.ONE * menu_scale
 	menu_panel.position = Vector2((viewport_size.x - menu_panel.size.x * menu_scale) * 0.5, 16 * ui_scale)
 	var live: Node = hud.call() if hud.is_valid() else null
 	var placement: Dictionary = live.get_placement() if live != null and live.has_method("get_placement") else {}
 	placement_panel.visible = active and placement.get("placing", false)
 	placement_background.visible = placement_panel.visible
 	placement_background.size = placement_background.get_combined_minimum_size()
-	placement_background.position = Vector2((viewport_size.x - placement_background.size.x * ui_scale) * 0.5, menu_panel.position.y + menu_panel.size.y * menu_scale + 12 * ui_scale)
+	placement_background.position = Vector2((viewport_size.x - placement_background.size.x * menu_scale) * 0.5, menu_panel.position.y + menu_panel.size.y * menu_scale + 12 * ui_scale)
 	if placement_panel.visible:
 		if _building != placement.get("template", ""):
 			_building = placement.get("template", "")
