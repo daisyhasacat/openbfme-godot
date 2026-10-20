@@ -1,6 +1,6 @@
 // OpenBFME. GPL-3.0.
 //
-// CommandLogLoad (lane SAVE-2, docs/SAVES.md section 2 "How a save loads", case 2 "same build, no snapshot: catch up from the log"): a game loaded from a
+// CommandLogLoad (lane SAVE-2, docs/SAVES.md section 2 "How a save loads", case 2 "no snapshot: catch up from the log"): a game loaded from a
 // command-log save (Common/System/SaveGame/SaveGameFile.h) is brought to the saved frame F by playing the save's log back at full speed (the replay player,
 // Common/Recorder.h's ReplayPlayback, ZH RECORDERMODETYPE_PLAYBACK) with every recorded state hash compared; at F the state hash must equal the header's,
 // then the caller hands the game to the player (a recording driver that continues the log: ReplayWriter::openContinuing).
@@ -15,7 +15,7 @@
 // nothing is copied from it. What it can reuse later: this class drives a ReplayPlayback, so a rejoin from a saved log would need only the relay log's
 // assembly into a ReplayFile.
 //
-// Lane SAVE-4e (SAVES.md section 2, case 1 "same build and identity, snapshot present"): a save that carries a snapshot (SAVE-4a..d's blocks at F) is
+// Lane SAVE-4e (SAVES.md section 2, case 1 "matching data/rules, snapshot present"): a save that carries a snapshot (SAVE-4a..d's blocks at F) is
 // loaded from it: begin() hands the snapshot to the started game (LiveGame::loadSnapshot: transactional, a refused snapshot leaves the game as it was
 // or closes it, never half-loaded), checks the frame and the state hash against the header and is Ready at once: no frame of the log runs. The log is
 // still parsed and checked as for a catch-up (it is the replay so far, continued by handOver) and is the cross-check of the verify mode

@@ -420,15 +420,16 @@ SaveGameCompatibility SaveGameCompatibility::check(const SaveGameHeader &save, c
 	const std::string &runningBuildVersion, bool multiplayer)
 {
 	SaveGameCompatibility c;
-	if (save.engineId != runningEngineId)
+	if (multiplayer && save.engineId != runningEngineId)
 	{
-		// owner decision 2: a log-only save is refused by another build, naming the build that made it (SAVES.md section 5: replay with that build)
+		// Single-player loading accepts another build; multiplayer still needs an identical engine.
 		c.refusal = "this game was saved by OpenBFME " + save.buildVersion + " (engine " + shortId(save.engineId) + "); this is OpenBFME "
 			+ runningBuildVersion + " (engine " + shortId(runningEngineId) + "). A save loads only in the build that made it.";
 		return c;
 	}
-	const ProfileIdentity a = ProfileIdentity::fromText(withoutProfileLine(running.text));
-	const ProfileIdentity b = ProfileIdentity::fromText(withoutProfileLine(save.profile.text));
+	// Ignore build identity for single-player saves, including the engine line embedded in the profile.
+	const ProfileIdentity a = ProfileIdentity::fromText(multiplayer ? withoutProfileLine(running.text) : dataOnly(running.text));
+	const ProfileIdentity b = ProfileIdentity::fromText(multiplayer ? withoutProfileLine(save.profile.text) : dataOnly(save.profile.text));
 	if (a != b)
 	{
 		c.refusal = "this game was saved with other game data or rules: " + ProfileIdentity::difference(a, b);

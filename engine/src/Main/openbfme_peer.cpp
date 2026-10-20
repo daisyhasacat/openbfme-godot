@@ -558,9 +558,10 @@ int runReplay(const Args &a, World &w)
 		std::fprintf(stderr, "openbfme_peer: %s\n", error.c_str());
 		return 1;
 	}
-	// PLAN: a replay of another profile identity is refused before the game is loaded
+	// Ordinary replay playback requires its replay identity. --load-save instead uses
+	// SaveGameCompatibility below and verifies that the continuation replay matches the save log.
 	const std::string mismatch = replay.profileMismatch(w.profile);
-	if (!mismatch.empty())
+	if (!mismatch.empty() && a.loadSave.empty())
 	{
 		std::fprintf(stderr, "openbfme_peer: the replay was recorded by another profile: %s\n", mismatch.c_str());
 		return 1;

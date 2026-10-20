@@ -1,6 +1,6 @@
 // OpenBFME unit tests. GPL-3.0.
 // Lane SAVE-2 (docs/SAVES.md): the save container (Common/System/SaveGame/SaveGameFile.h) and its SHA-256, every failure mode with its named error (T5), the
-// load rules (another build refused by name, other data refused with the differing line, a save of the other execution profile loadable in single player
+// load rules (another build accepted in single player, other data refused with the differing line, a save of the other execution profile loadable in single player
 // only), and the recorder's save hooks (ReplayWriter::logUpTo / openContinuing). No game files needed.
 
 #include "doctest.h"
@@ -322,7 +322,7 @@ TEST_CASE("save2 T5: no part is allocated before its declared size is checked: a
 	std::remove(path.c_str());
 }
 
-TEST_CASE("save2: a save loads only in the build that made it (refused by name), with the same data; the other execution profile loads in single player")
+TEST_CASE("save2: single-player saves load across builds with matching data; multiplayer still requires the same build")
 {
 	const ProfileIdentity running = identity("enhanced");
 	SaveGameHeader h = sample().header;
@@ -333,16 +333,42 @@ TEST_CASE("save2: a save loads only in the build that made it (refused by name),
 		CHECK_FALSE(c.crossProfile);
 		CHECK(c.refusal.empty());
 	}
-	SUBCASE("another build")
+	SUBCASE("another build: both header and embedded engine identity differ")
 	{
 		h.engineId = "1111111111112222222222223333333333334444444444445555555555556666";
 		h.buildVersion = "v0.2.9-preview.3";
+		std::string text = h.profile.text;
+		const size_t engine = text.find("engine ") + 7;
+		text.replace(engine, text.find('\n',engine) - engine, h.engineId);
+		h.profile = ProfileIdentity::fromText(text);
 		const std::string ours = ProfileIdentity::buildId();
 		const SaveGameCompatibility c = SaveGameCompatibility::check(h, running, ours, "v0.3.0-test", false);
-		CHECK_FALSE(c.loadable);
-		CHECK(c.refusal == "this game was saved by OpenBFME v0.2.9-preview.3 (engine 111111111111); this is OpenBFME v0.3.0-test (engine " + ours.substr(0, 12)
+		CHECK(c.loadable);
+		CHECK(c.refusal.empty());
+		CHECK_FALSE(c.crossProfile);
+		const SaveGameCompatibility mp = SaveGameCompatibility::check(h, running, ours, "v0.3.0-test", true);
+		CHECK_FALSE(mp.loadable);
+		CHECK(mp.refusal == "this game was saved by OpenBFME v0.2.9-preview.3 (engine 111111111111); this is OpenBFME v0.3.0-test (engine " + ours.substr(0, 12)
 			+ "). A save loads only in the build that made it.");
 	}
+	SUBCASE("another build does not bypass changed data")
+	{
+		h.engineId = "other-engine";
+		h.profile = identity("enhanced", "ffffffffffffffffffffffffffffffff");
+		const auto c = SaveGameCompatibility::check(h,running,ProfileIdentity::buildId(),"test",false);
+		CHECK_FALSE(c.loadable);
+		CHECK(c.refusal.rfind("this game was saved with other game data or rules: ",0) == 0);
+	}
+	SUBCASE("only the embedded build differs")
+	{
+		std::string text = h.profile.text;
+		const size_t engine = text.find("engine ") + 7;
+		text.replace(engine, text.find('\n',engine) - engine, "older-engine");
+		h.profile = ProfileIdentity::fromText(text);
+		CHECK(SaveGameCompatibility::check(h,running,ProfileIdentity::buildId(),"test",false).loadable);
+		CHECK_FALSE(SaveGameCompatibility::check(h,running,ProfileIdentity::buildId(),"test",true).loadable);
+	}
+
 	SUBCASE("other game data")
 	{
 		h.profile = identity("enhanced", "ffffffffffffffffffffffffffffffff");

@@ -38,7 +38,7 @@ struct SaveLoadInfo
 		std::string mapUtf8;       ///< the map's display label as saved (column 0 when the map cache does not know the map)
 		std::string dateUtf8, timeUtf8; ///< column 3 (date) and column 2 (time)
 		int gameKind = 2;          ///< 1 Campaign, 2 Skirmish (the page it is listed on)
-		bool loadable = true;      ///< false: refused (another build, other data, a damaged file); drawn grey, Load shows `refusalUtf8`
+		bool loadable = true;      ///< false: refused (other data, incompatible snapshot, a damaged file); drawn grey, Load shows `refusalUtf8`
 		std::string refusalUtf8;
 		bool retailImport = false; ///< a retail save (.BfME2Skirmish / .BfME2Campaign): listed, never loaded yet (import is SAVE-7)
 		bool autoSave = false;     ///< lane CAMPSAVE-1: the campaign's auto-save (IsAutoSaveOrNot): listed in the AutoSaveList (RW 0x6E04AD)

@@ -1,6 +1,6 @@
 // OpenBFME unit tests. GPL-3.0.
 // Lane SAVE-2: SaveLoad.apt's saved-game pages through the real shell and the retail movie (GameClient/GUI/AptScreens/AptSaveLoad.h): the Load page lists
-// the host's saves by type with populateSaveGameListbox's columns and colours (a save another build made grey, a retail save as a grey import entry), Load
+// the host's saves by type with populateSaveGameListbox's columns and colours (a save with other data grey, a retail save as a grey import entry), Load
 // hands a loadable save to the host and shows the refusal of the others, a load over a game asks first (the movie's showMessageBox "Load"), Delete asks and
 // then hands the file to the host and lists again; the Save page starts with GUI:NewSaveGame and the default name GUI:DefaultSaveFileName with the first free
 // number, asks before overwriting, refuses file-name characters and shows the host's result. SKIP loudly without the retail installs.
@@ -42,8 +42,7 @@ SaveLoadInfo::Save save(const std::string &name, int kind, bool loadable, const 
 	return s;
 }
 
-const char *kOtherBuild = "this game was saved by OpenBFME v0.2.9 (engine 111111111111); this is OpenBFME v0.3.0 (engine 222222222222). A save loads only in "
-						  "the build that made it.";
+const char *kOtherData = "this game was saved with other game data or rules: archive hashes differ";
 
 struct Pages
 {
@@ -58,7 +57,7 @@ struct Pages
 		info.flags = flags;
 		info.inGame = inGame;
 		info.saves.push_back(save("Saved Game 1", 2, true));
-		info.saves.push_back(save("old build", 2, false, kOtherBuild));
+		info.saves.push_back(save("old data", 2, false, kOtherData));
 		info.saves.push_back(save("retail skirmish", 2, false, "", true));
 		info.saves.push_back(save("Helm's Deep", 1, true));
 		SaveLoadInfo::Save cached = save("Evendim 2", 2, true); // as list_saves gives it: the map's path and the cache's display label
@@ -126,20 +125,19 @@ TEST_CASE("save2 retail: SaveLoad.apt's Load page lists the saves by type, loads
 	// column 0 of the last one is the map cache's base display name (getMapDisplayName): the test's text source has no map labels, so the map's file name
 	// (SkirmishGameSetup::mapBaseDisplayName's last answer), not the saved label
 	const std::vector<std::string> skirmish = { "GameList|Evendim|Saved Game 1|10:00:00|2026-10-12|FFFFFFFF",
-		"GameList|Evendim|old build|10:00:00|2026-10-12|FF808080", "GameList||retail skirmish (import: coming later)|10:00:00|2026-10-12|FF808080",
+		"GameList|Evendim|old data|10:00:00|2026-10-12|FF808080", "GameList||retail skirmish (import: coming later)|10:00:00|2026-10-12|FF808080",
 		"GameList|map mp evendim|Evendim 2|10:00:00|2026-10-12|FFFFFFFF" };
 	CHECK(p.screen->rows() == skirmish);
 	CHECK(GadgetListBoxGetNumColumns(p.screen->gameList()) == 4);
 	CHECK(GadgetListBoxGetNumEntries(p.screen->gameList()) == 4);
 	CHECK((p.screen->autoSaveList() == nullptr || GadgetListBoxGetNumEntries(p.screen->autoSaveList()) == 0));
-	// a save another build made: Load shows why, nothing loads
+	// A save with other game data: Load shows why, nothing loads
 	p.select(1);
 	p.command("Load");
 	CHECK(p.fx.services.countRequests(ShellAction::LoadGameFile) == 0);
-	CHECK(p.screen->boxTitle() == u"Error loading game 'old build'");
+	CHECK(p.screen->boxTitle() == u"Error loading game 'old data'");
 	// one clause per line in the box (its text field shrinks a long line)
-	CHECK(loadScreenU16ToUtf8(p.screen->boxText()) == "this game was saved by OpenBFME v0.2.9 (engine 111111111111);\nthis is OpenBFME v0.3.0 (engine 222222222222).\nA save "
-														"loads only in the build that made it.");
+	CHECK(loadScreenU16ToUtf8(p.screen->boxText()) == kOtherData);
 	// a retail save: an import entry, refused with the "coming later" note
 	p.select(2);
 	p.command("Load");
@@ -162,7 +160,7 @@ TEST_CASE("save2 retail: SaveLoad.apt's Load page lists the saves by type, loads
 	p.command("Delete");
 	p.command("ConfirmationOk");
 	REQUIRE(p.fx.services.countRequests(ShellAction::DeleteGameFile) == 1);
-	CHECK(p.fx.services.requests.back().argument == "/s/old build.obfmesave");
+	CHECK(p.fx.services.requests.back().argument == "/s/old data.obfmesave");
 	// the host deletes it and gives the new list: the page fills its list again
 	p.info.saves.erase(p.info.saves.begin() + 1);
 	++p.info.generation;

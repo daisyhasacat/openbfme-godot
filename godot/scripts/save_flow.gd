@@ -14,7 +14,7 @@
 ##
 ## --save-test (with --auto, --screens=DIR for the pictures): in the skirmish Esc, the quit menu's Save, the page's Save (the default name), the result box;
 ## later Esc, Load, the save, Load and the confirmation; the catch-up; the game must come back at the saved frame with the saved state hash; then the
-## game is left for the main menu: a copy of the save with another build's engine id is listed grey, refused by name and deleted (asked first); Load
+## game is left for the main menu: a copy of the save with another build's engine id is loadable and deleted (asked first); Load
 ## Game then loads the save again (no question there). Prints
 ## "GAME SAVE RESULT: ok" and exits 0, or FAILED / 1.
 extends RefCounted
@@ -483,7 +483,7 @@ func run_test() -> bool:
 		w += 0.25
 	game._score_continue()
 	await game._wait_seconds(3.0)
-	# a copy of the save as another build would have made it (its engine id changed, the header re-signed): listed grey, refused by name, deleted
+	# Another build's engine id no longer disables single-player loading; the file can still be deleted from the Load page.
 	var other := _other_build_copy(str(last_save.get("path", "")))
 	ok = ok and not other.is_empty()
 	game._on_shell_request("LoadGame", "")
@@ -493,11 +493,12 @@ func run_test() -> bool:
 	ok = ok and await _click_top("Skirmish") # the page opens on the first type of 0xB, Campaign (RW 0x816692)
 	await game._wait_seconds(1.5)
 	game._save_named("save2-mainmenu-load-skirmish")
-	ok = ok and await _click_top("Load") # the newest file, the other build's copy: refused, named
-	await game._wait_seconds(1.5)
-	game._save_named("save2-refused-other-build")
-	ok = ok and await _click_any_level("MessageBox", "Ok")
-	await game._wait_seconds(1.0)
+	var other_listed := false
+	for entry in game._world.list_saves(save_dir()):
+		if str(entry.get("path", "")) == other:
+			other_listed = bool(entry.get("loadable", false))
+	ok = ok and other_listed and bool(game._world.check_save(other).get("ok", false))
+	game._save_named("save2-loadable-other-build")
 	ok = ok and FileAccess.file_exists(other)
 	ok = ok and await _click_top("Delete")
 	await game._wait_seconds(1.5)

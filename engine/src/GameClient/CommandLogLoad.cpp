@@ -74,7 +74,7 @@ std::vector<std::string> CommandLogLoad::stopLines()
 {
 	std::vector<std::string> lines = {
 		"[S-4000] saves: a save is the game's command log up to the saved frame (OpenBFME's .obfmesave, SAVES.md phase SAVE-2): a load replays it at full speed "
-		"(about 1.8 minutes for a 60-minute game on a fast PC), and only the build that made it can (another build's save is refused naming that build); "
+		"(about 1.8 minutes for a 60-minute game on a fast PC); single-player loads accept another build with matching data/rules, subject to snapshot and replay checks; "
 		"retail's Xfer snapshot (SAVE-4: its framework is built, S-4120) and multiplayer saves (SAVE-3) are not built",
 		"[S-4001] saves: a save of the other execution profile (Faithful <-> Uber) loads in single player (owner decision 7): its log is replayed under "
 		"the profiles it ran (every hash compared), then GameLogic::setSimulationProfile switches to the player's profile at the saved frame and the "

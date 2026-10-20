@@ -1,5 +1,11 @@
 # Saves: retail's snapshot, a command-log save, and how they fit
 
+Current single-player policy (2026-10-19): saves may load across builds. Build
+identity is kept as provenance and does not disable the Load row. Game data and
+rules must match; snapshot framing/schema, saved-state hashes and replay checks
+still apply. Multiplayer keeps the exact-engine requirement. This supersedes
+the original same-build-only decision described in the historical plan below.
+
 Lane SAVE-1, 2026-10-12. The owner accepted every recommendation the same
 day. Phase SAVE-2 (the command-log save for single player) is built: see
 section 8, "What is built".
@@ -457,7 +463,7 @@ Sizes are in lanes (one implementation pass plus review), as in the ROADMAP.
 
 | Phase | Content | Size | Depends on |
 |---|---|---|---|
-| **SAVE-2** | **B for single player.** The container with header and log only (the running replay up to F, with the identity and the build id). Load means replay playback to F at full speed, then live control. SaveLoad.apt's Save and Load pages for skirmish (and campaign missions, S-1360). Same build only: a different build is a named refusal. Tests: T1 (the log variant), T5. | 1 | nothing new (the replay recorder exists) |
+| **SAVE-2** | **B for single player.** The container with header and log only (the running replay up to F, with the identity and the build id). Load means replay playback to F at full speed, then live control. SaveLoad.apt's Save and Load pages for skirmish (and campaign missions, S-1360). Single-player loading accepts other builds with matching data/rules, subject to snapshot/replay checks. Tests: T1 (the log variant), T5. | 1 | nothing new (the replay recorder exists) |
 | **SAVE-A0** (in parallel) | **The retail inventory.** A read-only retail save reader (`tools/save/`, Python): the container, blocks, versions and sizes. The table of every RotWK `xfer` with its RW address, its (earliest, current) version constants and its tier, and every class's field order where the decomp has it. Questions settled: Object::xfer's module skip, GameStateMap's embedded map, the 'DSCR' marker, CHUNK_VENDOR, the meaning of modes 0-6, whether a multiplayer skirmish can be saved. Needs sample retail saves (the owner's own, or made on the reference PC under the retail-run rules). | 1 | owner: sample saves (D9) |
 | **SAVE-3** | **Multiplayer save and resume with the log.** The save request, confirmation and command (retail's kinds 1, 2 and 5, all humans), each peer's container, the relay's save point and stored log, the lobby's resume entry, and the resume START with a hash check at F. LAN and online. Tests: T6 (log variant), the e2e online scripts. | 1-2 | SAVE-2, ONLINE-2/3 merged |
 | **SAVE-4** | **The Xfer framework and the native snapshot**, by class group: (a) the framework, GameState block lists, post-process, container part, GameLogic core, players, teams, RNG; (b) objects and the 137 module runtimes, in retail field order where they are 1:1 ports; (c) AI, pathfinder, partition, shroud; (d) script engine, victory, weather and the other subsystems. Tests T1-T5 and T8 grow with each group, and T4 is the gate. | 4-8 | SAVE-2; numeric facade unchanged |
@@ -563,8 +569,7 @@ acceptable as the final answer, which is why SAVE-4 follows.
   go on unrecorded (`CommandLogLoad::handOver`).
 - **Refusals** are named and tested (T5): not a save, truncated anywhere, a
   part's digest, another container or header version, a part out of order,
-  bytes after the end, a snapshot, an unknown game type, another build ("this
-  game was saved by OpenBFME <version> (engine <id>) ..."), other data (the
+  bytes after the end, a snapshot, an unknown game type, other data (the
   differing identity lines), a log that ends elsewhere than its header says,
   a log of another identity, a log without its end, and a log that does not
   replay the same (its first differing frame).

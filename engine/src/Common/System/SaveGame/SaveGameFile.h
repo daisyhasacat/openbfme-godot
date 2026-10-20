@@ -44,7 +44,7 @@
 struct SaveGameHeader
 {
 	std::string buildVersion; ///< BuildVersion::kVersion of the build that saved ("v0.3.0-preview.1-4-g0123456789")
-	std::string engineId;     ///< ProfileIdentity::buildId(): the engine compatibility id; a log replays only in the build with the same id
+	std::string engineId;     ///< ProfileIdentity::buildId(): the engine compatibility id; retained as provenance for cross-build single-player loads
 	std::string commit;       ///< provenance only
 	ProfileIdentity profile;  ///< the data, rules and execution profile the game ran under
 	std::string executionProfile; ///< the profile the game ran at F (the identity's "profile" line value: "enhanced" for Faithful, UBER-1's "uber")
@@ -92,8 +92,8 @@ struct SaveGameFile
 	static std::string executionProfileOf(const std::string &identityText);
 };
 
-// Whether a save may be loaded by the running build (owner decisions, 2026-10-12: a save loads only in the build that made it, refused with a message
-// naming that build; in single player a save of one execution profile may load under the other).
+// Single-player saves may load across builds with matching data/rules; schema and replay checks still apply.
+// Multiplayer still requires the same engine; cross-execution-profile loading is single-player only.
 struct SaveGameCompatibility
 {
 	bool loadable = false;
