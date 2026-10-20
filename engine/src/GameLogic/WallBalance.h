@@ -15,7 +15,7 @@ struct WallBalance
 {
  bool enabled = false, intermediateHubs = true, shareArrows = false;
  bool trebuchetWallTargets = false;
- bool startingWalls = false, requireEnclosed = false, gateGap = true;
+ bool startingWalls = false, requireEnclosed = false, gateGap = true, disableUpgradeSeparation = false;
  float enclosedIncome = 1, startingRadius = 450, startingSpacing = 300;
  std::map<std::string,std::string> startingHubs, startingGates;
  mutable std::shared_ptr<WallEnclosureCache> enclosureCache;

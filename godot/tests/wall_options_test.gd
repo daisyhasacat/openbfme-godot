@@ -9,12 +9,16 @@ func _run() -> void:
 	for check in tabs.find_children("*","CheckBox",true,false):
 		if check.text == "Enable wall rebalance": check.button_pressed = false
 		if check.text.begins_with("Begin with"): check.button_pressed = true
+		if check.text.begins_with("Disable wall upgrade separation"):
+			assert(not check.button_pressed)
+			check.button_pressed = true
 	for button in tabs.find_children("*","Button",true,false):
 		if button.text == "Save wall rules": button.pressed.emit()
 	var config := ConfigFile.new()
 	assert(config.load(PATH) == OK)
 	assert(config.get_value("walls","enabled") == false)
 	assert(config.get_value("walls","starting_walls") == true)
+	assert(config.get_value("walls","disable_upgrade_separation") == true)
 	assert(config.get_value("walls","intermediate_hubs") == false)
 	assert(config.get_value("walls","hub_health") == 30)
 	assert(config.get_value("starting_hubs","Men") == "MenWallHubSmall")

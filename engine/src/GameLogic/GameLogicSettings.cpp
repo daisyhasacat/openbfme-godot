@@ -527,6 +527,7 @@ void GameLogicSettings::crc(StateHasher &h) const
 		for (float n : wallBalance.cost) h.addFloat(n);
 		h.addFloat(wallBalance.fortressRange); h.addFloat(wallBalance.hubRange);
 		h.addU32(wallBalance.startingWalls); h.addU32(wallBalance.requireEnclosed); h.addU32(wallBalance.gateGap);
+		h.addU32(wallBalance.disableUpgradeSeparation);
 		h.addFloat(wallBalance.enclosedIncome); h.addFloat(wallBalance.startingRadius); h.addFloat(wallBalance.startingSpacing);
 		for (const auto &p : wallBalance.startingHubs) { h.addString(p.first); h.addString(p.second); }
 		for (const auto &p : wallBalance.startingGates) { h.addString(p.first); h.addString(p.second); }

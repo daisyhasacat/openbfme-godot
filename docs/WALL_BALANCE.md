@@ -57,3 +57,21 @@ outward at ±3, ±5, and so on. Hubs, other spans, enemy walls and existing
 expansions are excluded; missing tiles retain their original spacing.
 The preview works in the native and modern HUDs and with controller focus.
 It clears when hover ends and does not purchase or place any expansion.
+
+## Forgiving connections and adjacent upgrades
+
+With wall rebalance enabled, a span snaps to a friendly destination hub within
+its footprint plus one cap half-length (at least the original 20-unit radius).
+Friendly ordinary wall pieces touching that hub may overlap the final span
+pieces inside the hub's connection area. Enemy walls, unrelated structures and
+crossings away from the endpoint remain obstacles. Actual unit collision and
+wall navigation footprints are unchanged.
+
+**Disable wall upgrade separation (gates still require 3 tiles)** is available
+in both Wall rules interfaces. It defaults off and applies to the next match.
+When enabled with wall rebalance, replacement upgrades can sit beside other
+upgrades or hubs. Terrain-height checks, construction state and upgrade trigger
+requirements remain active. Regular gates still require the source wall tile
+and one live, friendly, unupgraded, aligned wall segment immediately on either
+side; a hub or existing upgrade cannot substitute. Postern portals still occupy
+one tile. The setting is included in the simulation rules hash.

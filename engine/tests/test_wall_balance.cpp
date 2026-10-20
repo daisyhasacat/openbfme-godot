@@ -278,3 +278,81 @@ TEST_CASE("wall spans: disabling intermediate hubs covers outer and expansion pa
   CHECK(native.tiles[1].tmpl->getName() == name);
  }
 }
+
+TEST_CASE("wall upgrade separation can be disabled while gates require three plain tiles") {
+ CombatWorld w(
+ "Object RelaxSegment\n KindOf = STRUCTURE IMMOBILE WALL_SEGMENT\n Geometry = BOX\n GeometryMajorRadius = 5\n GeometryMinorRadius = 10\n GeometryHeight = 20\nEnd\n"
+ "ChildObject RelaxTower RelaxSegment\n KindOf = STRUCTURE IMMOBILE WALL_UPGRADE\n GeometryMinorRadius = 20\nEnd\n"
+ "ChildObject RelaxHub RelaxSegment\n KindOf = STRUCTURE IMMOBILE WALL_HUB\nEnd\n"
+ "ChildObject RelaxGate RelaxSegment\n KindOf = STRUCTURE IMMOBILE WALL_UPGRADE WALL_GATE\n GeometryMinorRadius = 30\nEnd\n");
+ w.logic->settings().allowedHeightVariationForBuilding=10;
+ auto *center=w.unit("RelaxSegment",'A',500,500);
+ auto *nearby=w.unit("RelaxTower",'A',500,518);
+ auto &rules=w.logic->settings().wallBalance;rules.enabled=true;
+ ReplaceSelfUpgradeModuleData data;data.m_pieces={"RelaxTower"};data.m_activationMask.set(0);
+ UpgradeMaskType mask;mask.set(0);
+ ReplaceSelfUpgrade upgrade(center,&data);
+ CHECK_FALSE(upgrade.wouldUpgrade(mask));
+ const auto originalHash=w.logic->computeStateHash();
+ rules.disableUpgradeSeparation=true;
+ CHECK(w.logic->computeStateHash()!=originalHash);
+ CHECK(upgrade.wouldUpgrade(mask));
+ rules.enabled=false;CHECK_FALSE(upgrade.wouldUpgrade(mask));rules.enabled=true;
+ data.m_pieces={"RelaxGate"};
+ CHECK_FALSE(upgrade.wouldUpgrade(mask));
+ w.logic->destroyObject(nearby);
+ auto *left=w.unit("RelaxSegment",'A',500,482);
+ CHECK_FALSE(upgrade.wouldUpgrade(mask));
+ auto *right=w.unit("RelaxSegment",'A',500,518);
+ CHECK(upgrade.wouldUpgrade(mask));
+ right->setOrientation(1.57079632679f);CHECK_FALSE(upgrade.wouldUpgrade(mask));right->setOrientation(0);
+ const Coord3D far{500,536,0};right->setPosition(&far);
+ CHECK_FALSE(upgrade.wouldUpgrade(mask));
+ const Coord3D restored{500,518,0};right->setPosition(&restored);
+ w.logic->destroyObject(left);CHECK_FALSE(upgrade.wouldUpgrade(mask));
+ auto *blocked=w.unit("RelaxHub",'A',500,482);CHECK_FALSE(upgrade.wouldUpgrade(mask));
+ w.logic->destroyObject(blocked);
+ w.unit("RelaxSegment",'B',500,482);CHECK_FALSE(upgrade.wouldUpgrade(mask));
+}
+
+TEST_CASE("wall junction tolerance only permits friendly endpoint walls")
+{
+ const char junctionDefinitions[] =
+ "Object TerrainWallHub\n KindOf = STRUCTURE IMMOBILE WALL_HUB\n BuildCost = 20\n Geometry = BOX\n GeometryMajorRadius = 4\n GeometryMinorRadius = 10\n GeometryHeight = 20\n Behavior = WallHubBehavior Hub\n SegmentTemplateName = TerrainWallTile\n DefaultSegmentTemplateName = TerrainWallTile\n HubCapTemplateName = TerrainWallHub\n CliffCapTemplateName = TerrainWallEnd\n BuilderRadius = 10\n End\nEnd\n"
+ "Object TerrainWallTile\n KindOf = STRUCTURE IMMOBILE WALL_SEGMENT\n BuildCost = 10\n Geometry = BOX\n GeometryMajorRadius = 4\n GeometryMinorRadius = 10\n GeometryHeight = 20\nEnd\n"
+ "ChildObject TerrainWallEnd TerrainWallTile\n BuildCost = 7\nEnd\n";
+ CombatWorld w(junctionDefinitions);
+ w.logic->settings().buildRulesLoaded=true;
+ w.logic->settings().allowedHeightVariationForBuilding=10;
+ w.logic->settings().maxLineBuildObjects=50;
+ auto *hub=w.unit("TerrainWallHub",'A',300,500);
+ auto *end=w.unit("TerrainWallHub",'A',600,500);
+ // A perpendicular wall ending on the destination can overlap the last tile.
+ auto *attached=w.unit("TerrainWallTile",'A',596,506);
+ WallSpan::Plan strict;
+ REQUIRE(WallSpan::plan(*w.logic,*hub,{300,500,0},{600,500,0},0,strict));
+ CHECK(strict.worstCode==LBC_OBJECTS_IN_THE_WAY);
+ w.logic->settings().wallBalance.enabled=true;
+ WallSpan::Plan forgiving;
+ REQUIRE(WallSpan::plan(*w.logic,*hub,{300,500,0},{600,500,0},0,forgiving));
+ CHECK(forgiving.endHub==end->getID());
+ CHECK(forgiving.worstCode==0);
+ // Cursor snapping extends to the hub's footprint, rather than only 20 units.
+ const Coord3D larger{600,500,0};
+ end->setPosition(&larger);
+ WallSpan::Plan snap;
+ REQUIRE(WallSpan::plan(*w.logic,*hub,{300,500,0},{620.5f,500,0},0,snap));
+ CHECK(snap.endHub==end->getID());
+ // Neither a hostile endpoint wall nor a crossing in the span is exempt.
+ w.logic->destroyObject(attached);
+ auto *enemy=w.unit("TerrainWallTile",'B',596,506);
+ WallSpan::Plan hostile;
+ REQUIRE(WallSpan::plan(*w.logic,*hub,{300,500,0},{600,500,0},0,hostile));
+ CHECK(hostile.worstCode==LBC_OBJECTS_IN_THE_WAY);
+ w.logic->destroyObject(enemy);
+ auto *crossing=w.unit("TerrainWallTile",'A',440,500);
+ WallSpan::Plan crossed;
+ REQUIRE(WallSpan::plan(*w.logic,*hub,{300,500,0},{600,500,0},0,crossed));
+ CHECK(crossed.worstCode==LBC_OBJECTS_IN_THE_WAY);
+ CHECK_FALSE(crossing->isDestroyed());
+}

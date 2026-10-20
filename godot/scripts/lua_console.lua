@@ -172,7 +172,7 @@ local function build_wall_rules(tabs)
   {"intermediate_hubs","Intermediate wall hubs",false}, {"share_arrows","Share fortress arrow upgrades with towers",true},
   {"starting_walls","Begin with completed walls and front/back gates",false},
   {"require_enclosed","Require enclosure for non-resource buildings (human players)",true},
-  {"gate_gap","Require native clearance beside gates",false}
+  {"gate_gap","Require native clearance beside gates",false}, {"disable_upgrade_separation","Disable wall upgrade separation (gates still require 3 tiles)",false}
  } do
   local key = entry[1]
   local check = CheckBox:new()

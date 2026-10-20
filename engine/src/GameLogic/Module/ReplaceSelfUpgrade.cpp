@@ -26,6 +26,7 @@
 #include "GameLogic/WallSpan.h"
 
 #include <cstddef>
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 
@@ -143,6 +144,32 @@ bool ReplaceSelfUpgrade::wouldUpgrade(const UpgradeMaskType &mask) const
 		return false;
 	}
 	GameLogic &logic = obj->logic();
+    const bool relaxed = logic.settings().wallBalance.enabled && logic.settings().wallBalance.disableUpgradeSeparation &&
+        (obj->isKindOfName("WALL_SEGMENT") || obj->isKindOfName("WALL_HUB") || obj->isKindOfName("WALL_UPGRADE"));
+    if (relaxed) {
+        const float spacing = SimMath::mulf32(2.0f, SimMath::subf32(WallSpan::halfExtentY(*obj->getTemplate()), 1.0f));
+        for (const auto *piece : list) if (gateTemplate(*piece)) {
+            if (!obj->isKindOfName("WALL_SEGMENT") || spacing <= 0.0f) return false;
+            const auto direction = directionOf(*obj);
+            for (const int side : {-1,1}) {
+                bool found = false;
+                for (Object *o=logic.getFirstObject();o;o=o->getNextObject()) {
+                    if (o==obj || o->isDestroyed() || o->isEffectivelyDead() || !o->isInWorld() ||
+                        o->getControllingPlayer()!=obj->getControllingPlayer() || !o->isKindOfName("WALL_SEGMENT") ||
+                        o->isKindOfName("WALL_UPGRADE") || o->isKindOfName("WALL_HUB")) continue;
+                    const auto &p=*o->getPosition(); const auto &c=*obj->getPosition();
+                    const float dx=SimMath::subf32(p.x,c.x), dy=SimMath::subf32(p.y,c.y);
+                    const float along=SimMath::addf32(SimMath::mulf32(dx,-direction.y),SimMath::mulf32(dy,direction.x));
+                    const float normal=SimMath::addf32(SimMath::mulf32(dx,direction.x),SimMath::mulf32(dy,direction.y));
+                    const auto other=directionOf(*o);
+                    if (std::abs(SimMath::subf32(along,SimMath::mulf32(float(side),spacing)))<=2.0f && std::abs(normal)<=1.0f &&
+                        std::abs(SimMath::addf32(SimMath::mulf32(other.x,direction.x),SimMath::mulf32(other.y,direction.y)))>=0.999f && std::abs(SimMath::subf32(p.z,c.z))<=logic.settings().allowedHeightVariationForBuilding)
+                        found=true;
+                }
+                if (!found) return false;
+            }
+        }
+    }
 	const Coord3D pos = *obj->getPosition();
 	const float angle = obj->getOrientation();
 	const Coord3D d = directionOf(*obj);
@@ -160,6 +187,7 @@ bool ReplaceSelfUpgrade::wouldUpgrade(const UpgradeMaskType &mask) const
 		// the walls in the way (RW 0x8BB454 .. 0x8BB503)
 		const std::vector<ObjectGeometry::Shape> shapes = ObjectGeometry::shapesOf(*tt->getFinalOverride());
 		PartitionFilterFn inTheWay([&](Object &o) {
+            if (relaxed) return false;
 			if (logic.settings().wallBalance.enabled && !logic.settings().wallBalance.gateGap && o.isKindOf((unsigned)wallHub) && templateKindOf(*tt,kindBit("WALL_GATE"))) return false;
 			if (!o.isKindOf((unsigned)wallUpgrade) && !o.isKindOf((unsigned)wallHub))
 			{

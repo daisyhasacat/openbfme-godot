@@ -250,7 +250,7 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
 				continue;
 			}
 			const float d = (float)SimMath::length3d(SimMath::subf32(o->getPosition()->x, end.x), SimMath::subf32(o->getPosition()->y, end.y), SimMath::subf32(o->getPosition()->z, end.z));
-			if (d <= 20.0f && (!endHub || d < best))
+			if (d <= (logic.settings().wallBalance.enabled ? std::max(20.0f, CombatQueries::boundingCircleRadius(*o) + capHalf) : 20.0f) && (!endHub || d < best))
 			{
 				endHub = o;
 				best = d;
@@ -337,7 +337,26 @@ bool WallSpan::plan(GameLogic &logic, Object &hub, const Coord3D &start, const C
  };
 
 	auto legal = [&](const Coord3D &p, const ThingTemplate &tt, bool ignoreCollision=false) {
-		int code = (int)BuildPlacement::isLocationLegalToBuild(logic, p, tt, angle, ignoreCollision ? (0x55 & ~LLF_NO_OBJECT_OVERLAP) : 0x55, &hub, nullptr, &ignored);
+        // Enhanced junction tolerance is local to the destination hub. Permit
+        // friendly wall pieces touching it, without ignoring crossings mid-span.
+        std::vector<ObjectID> localIgnored;
+        const std::vector<ObjectID> *collisionIgnored = &ignored;
+        if (logic.settings().wallBalance.enabled && endHub && endHub->isKindOfName("WALL_HUB")) {
+            const float reach = extent + halfExtentY(tt);
+            if (SimMath::length3d(SimMath::subf32(p.x,endAt.x),SimMath::subf32(p.y,endAt.y),0.0f) <= reach) {
+                localIgnored = ignored;
+                collisionIgnored = &localIgnored;
+                for (Object *o=logic.getFirstObject();o;o=o->getNextObject()) {
+                    if (o->isDestroyed() || !o->getTemplate() || !o->isInWorld() || o->getControllingPlayer()!=owner ||
+                        !(o->isKindOfName("WALL_SEGMENT") || o->isKindOfName("DEFENSIVE_WALL")) ||
+                        o->isKindOfName("WALL_UPGRADE") || o->isKindOfName("WALL_GATE") || o->isKindOfName("WALL_HUB")) continue;
+                    const auto &at=*o->getPosition();
+                    if (SimMath::length3d(SimMath::subf32(at.x,endAt.x),SimMath::subf32(at.y,endAt.y),0.0f) <= extent + halfExtentY(*o->getTemplate()))
+                        localIgnored.push_back(o->getID());
+                }
+            }
+        }
+		int code = (int)BuildPlacement::isLocationLegalToBuild(logic, p, tt, angle, ignoreCollision ? (0x55 & ~LLF_NO_OBJECT_OVERLAP) : 0x55, &hub, nullptr, collisionIgnored);
 		if(trebuchetEnd && !ignoreCollision && code==LBC_OBJECTS_IN_THE_WAY)
 			code=(int)BuildPlacement::isLocationLegalToBuild(logic,p,tt,angle,0x55,endHub,owner,&ignored);
 		if (!centres.empty())

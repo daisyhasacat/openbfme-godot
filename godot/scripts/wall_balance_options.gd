@@ -15,7 +15,7 @@ static func build(tabs: TabContainer, options_path := "user://wall_balance.cfg")
 	config.load("res://dev/wall_balance.cfg")
 	var saved := ConfigFile.new()
 	if saved.load(options_path) == OK: config = saved
-	for entry in [["enabled","Enable wall rebalance",true], ["new_towers","Elven and Isengard wall arrow towers",true], ["intermediate_hubs","Intermediate wall hubs",false], ["share_arrows","Share fortress arrow upgrades with towers",true], ["starting_walls","Begin with completed walls and front/back gates",false], ["require_enclosed","Require enclosure for non-resource buildings (human players)",true], ["gate_gap","Require native clearance beside gates",false]]:
+	for entry in [["enabled","Enable wall rebalance",true], ["new_towers","Elven and Isengard wall arrow towers",true], ["intermediate_hubs","Intermediate wall hubs",false], ["share_arrows","Share fortress arrow upgrades with towers",true], ["starting_walls","Begin with completed walls and front/back gates",false], ["require_enclosed","Require enclosure for non-resource buildings (human players)",true], ["gate_gap","Require native clearance beside gates",false], ["disable_upgrade_separation","Disable wall upgrade separation (gates still require 3 tiles)",false]]:
 		var check := CheckBox.new()
 		check.text = entry[1]
 		check.button_pressed = config.get_value("walls",entry[0],entry[2])

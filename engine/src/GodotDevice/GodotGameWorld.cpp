@@ -1195,6 +1195,7 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	walls.startingWalls = setting("starting_walls",false);
 	walls.requireEnclosed = setting("require_enclosed",true);
 	walls.gateGap = setting("gate_gap",false);
+	walls.disableUpgradeSeparation = setting("disable_upgrade_separation",false);
 	walls.enclosedIncome = scalar("enclosed_income",2,1,10);
 	walls.startingRadius = scalar("starting_radius",450,150,1500);
 	walls.startingSpacing = scalar("starting_spacing",300,100,1000);
