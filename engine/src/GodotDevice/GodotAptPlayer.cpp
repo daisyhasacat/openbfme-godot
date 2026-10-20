@@ -837,6 +837,7 @@ struct AptMenuPlayer::Impl
 	double carryMs = 0;
 	std::uint64_t frames = 0, steps = 0, rebuilds = 0;
 	std::uint64_t stepUs = 0, listUs = 0, canvasUs = 0, submitUs = 0;
+	std::uint64_t peakStepUs = 0, peakListUs = 0, peakCanvasUs = 0, peakSubmitUs = 0;
 	std::uint64_t textureLoads = 0;
 	double textureLoadMs = 0;
 	std::set<std::string> unverified, errors, missingLabels, fontSubstitutions, placeholders;
@@ -1491,6 +1492,7 @@ Dictionary AptMenuPlayer::boot(const Ref<RetailFileSystem> &fs, const Dictionary
 	m->boldFonts.clear();
 	m->frames = m->steps = m->rebuilds = 0;
 	m->stepUs = m->listUs = m->canvasUs = m->submitUs = 0;
+	m->peakStepUs = m->peakListUs = m->peakCanvasUs = m->peakSubmitUs = 0;
 
 	// the engine side of the extern object and the native-component list come from the caller (retail facts live in the script)
 	Dictionary externs = config.get("extern_values", Dictionary());
@@ -1619,6 +1621,7 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 	m->boldFonts.clear();
 	m->frames = m->steps = m->rebuilds = 0;
 	m->stepUs = m->listUs = m->canvasUs = m->submitUs = 0;
+	m->peakStepUs = m->peakListUs = m->peakCanvasUs = m->peakSubmitUs = 0;
 	m->loadResources(errors);
 	if (presentationFs->is_shell_source())
 	{
@@ -3619,7 +3622,12 @@ int AptMenuPlayer::tick(double delta)
 	{
 		stepped = m->A()->update(ms);
 	}
-	m->stepUs += Time::get_singleton()->get_ticks_usec() - t0;
+	const std::uint64_t stepUs = Time::get_singleton()->get_ticks_usec() - t0;
+	m->stepUs += stepUs;
+	m->peakStepUs = std::max(m->peakStepUs, stepUs);
+	if (stepUs >= 50000)
+		UtilityFunctions::print("MENU STALL update_us=", (int64_t)stepUs,
+			" screen=", m->shell ? toGodot(m->shell->lastTop) : String("movie"));
 	m->frames += 1;
 	m->steps += (std::uint64_t)stepped;
 	if (stepped > 0)
@@ -3815,6 +3823,13 @@ void AptMenuPlayer::render(bool force)
 		m->drawnValid = true;
 	}
 	std::uint64_t t3 = time->get_ticks_usec();
+	m->peakListUs = std::max(m->peakListUs, t1 - t0);
+	m->peakCanvasUs = std::max(m->peakCanvasUs, t2 - t1);
+	m->peakSubmitUs = std::max(m->peakSubmitUs, t3 - t2);
+	if (t3 - t0 >= 50000)
+		UtilityFunctions::print("MENU STALL list_us=", (int64_t)(t1 - t0),
+			" canvas_us=", (int64_t)(t2 - t1), " submit_us=", (int64_t)(t3 - t2),
+			" screen=", m->shell ? toGodot(m->shell->lastTop) : String("movie"));
 	m->listUs += t1 - t0;
 	m->canvasUs += t2 - t1;
 	m->submitUs += t3 - t2;
@@ -5970,6 +5985,7 @@ void AptMenuPlayer::reset_timing()
 {
 	m->frames = m->steps = m->rebuilds = 0;
 	m->stepUs = m->listUs = m->canvasUs = m->submitUs = 0;
+	m->peakStepUs = m->peakListUs = m->peakCanvasUs = m->peakSubmitUs = 0;
 }
 
 Dictionary AptMenuPlayer::get_stats() const
@@ -5989,6 +6005,10 @@ Dictionary AptMenuPlayer::get_stats() const
 	s["list_us"] = m->rebuilds ? (double)m->listUs / (double)m->rebuilds : 0.0;
 	s["canvas_us"] = m->rebuilds ? (double)m->canvasUs / (double)m->rebuilds : 0.0;
 	s["submit_us"] = m->rebuilds ? (double)m->submitUs / (double)m->rebuilds : 0.0;
+	s["peak_steps_us"] = (int64_t)m->peakStepUs;
+	s["peak_list_us"] = (int64_t)m->peakListUs;
+	s["peak_canvas_us"] = (int64_t)m->peakCanvasUs;
+	s["peak_submit_us"] = (int64_t)m->peakSubmitUs;
 	s["texture_loads"] = (int64_t)m->textureLoads;
 	s["texture_load_ms"] = m->textureLoadMs;
 	return s;

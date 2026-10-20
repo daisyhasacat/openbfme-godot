@@ -64,6 +64,15 @@ mute the game. System volume and in-game volume controls still apply.
 
 ## Building completion performance
 
+Menu transitions have separate CPU diagnostics. `AptMenuPlayer.get_stats()`
+retains `peak_steps_us`, `peak_list_us`, `peak_canvas_us`, and `peak_submit_us`
+until `reset_timing()` (or boot). These cover the movie/window update, render-list
+generation, canvas construction including first texture decoding, and Godot draw
+submission respectively. Stages totaling at least 50 ms print `MENU STALL` with
+the current screen and stage durations. This reports CPU work; a GPU stall after
+submission still needs a device trace. `godot/tests/menu_timing_test.gd` exercises
+Main Menu, Options, and Skirmish transitions and verifies the peak counters.
+
 Completed buildings and fortress upgrades can introduce a model for the first
 time. Mesh creation now fills Godot vertex buffers through bulk writable storage
 instead of making extension calls per vertex component. Adding a model also
