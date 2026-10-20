@@ -485,6 +485,7 @@ void Object::joinTeam(Team *team)
 		m_logic.skirmishAI().objectRemoved(*this);
 	}
 	m_team = team;
+	m_logic.combat().noteTeamMembershipChange();
 	if (ownerEvent)
 	{
 		m_logic.skirmishAI().objectAdded(*this);

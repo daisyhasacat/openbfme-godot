@@ -94,6 +94,10 @@ public:
 
 	// the spatial index of the attackable objects
 	TargetFinder &targets() { return m_targets; }
+	// Derived-cache invalidation only: ownership remains on the objects/teams and is hashed there.
+	// All TargetFinder instances in this world observe changes, including queries within one logic frame.
+	void noteTeamMembershipChange() { ++m_teamMembershipVersion; }
+	std::uint64_t teamMembershipVersion() const { return m_teamMembershipVersion; }
 
 	// scenario switch (default on): the idle mood scan that makes units look for enemies. A movement sweep that crosses enemy lines turns it off; the setting is part of the state hash
 	bool autoAcquireEnabled() const { return m_autoAcquire; }
@@ -131,6 +135,7 @@ private:
 	ProjectileLauncher *m_launcher = nullptr;
 	ProjectileLaunchOffsets *m_launchOffsets = nullptr;
 	TargetFinder m_targets;
+	std::uint64_t m_teamMembershipVersion = 0;
 	Counters m_counters;
 	DamageTrace m_damageTrace;
 	std::vector<CastleBreach> m_breaches;

@@ -26,6 +26,7 @@ set(OPENBFME_COMBAT_TESTS
     tests/test_hud_combat_retail.cpp
     tests/test_hud_combat_input.cpp
     tests/test_combat_hash.cpp
+    tests/test_large_army_targets.cpp
     tests/test_proj_arc.cpp
     tests/test_proj_flight.cpp
     tests/test_proj_hash.cpp

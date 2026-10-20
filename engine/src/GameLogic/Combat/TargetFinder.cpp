@@ -5,6 +5,8 @@
 #include "GameLogic/Combat/TargetFinder.h"
 
 #include "Common/Thing/ThingTemplate.h"
+#include "Common/Team.h"
+#include "GameLogic/Combat/CombatState.h"
 #include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/Combat/CombatQueries.h"
 #include "GameLogic/Combat/ObjectWeapons.h"
@@ -21,7 +23,7 @@ int cellOf(float v)
 {
 	return SimMath::floorToInt(SimMath::divf32(v, kCell));
 }
-}
+} // namespace
 
 void TargetFinder::reset()
 {
@@ -44,22 +46,57 @@ void TargetFinder::rebuild()
 			continue;
 		}
 		const Coord3D &p = *o->getPosition();
-		m_cells[{ cellOf(p.x), cellOf(p.y) }].push_back(o->getID());
+		m_cells[{cellOf(p.x), cellOf(p.y)}].objects.push_back(o->getID());
 		m_maxRadius = std::max(m_maxRadius, CombatQueries::boundingCircleRadius(*o));
 		++m_count;
 	}
 	m_builtFrame = m_logic.getFrame();
 	m_builtCount = m_logic.getObjectCount();
 	m_builtTransitions = m_logic.containWorldTransitions();
+	refreshTeams();
 }
 
 void TargetFinder::collectInRadius(const Coord3D &center, float radius, std::vector<Object *> &out)
 {
-	// a frame's first query builds the index; objects created later in the same frame make it stale (their count differs), so does an object a contain moved into or
-	// out of the world (lane GARRISON-1)
+	collectInRadius(center, radius, out, nullptr);
+}
+
+void TargetFinder::refreshTeams()
+{
+	// Reclassify the EXISTING index after captures/team changes. Rebuilding its positions
+	// here would change the original frame-snapshot behavior for objects that already moved.
+	for (auto &entry : m_cells)
+	{
+		Cell &cell = entry.second;
+		cell.teams.clear();
+		for (size_t i = 0; i < cell.objects.size(); ++i)
+		{
+			const Object *object = m_logic.findObjectByID(cell.objects[i]);
+			const Team *team = object ? object->getTeam() : nullptr;
+			if (cell.teams.empty() || cell.teams.back().team != team)
+			{
+				cell.teams.push_back({team, i + 1});
+			}
+			else
+			{
+				cell.teams.back().end = i + 1;
+			}
+		}
+	}
+	m_builtTeams = m_logic.combat().teamMembershipVersion();
+}
+
+void TargetFinder::collectInRadius(const Coord3D &center, float radius, std::vector<Object *> &out, const Object *enemyOf)
+{
+	// a frame's first query builds the index; objects created later in the same frame make it stale (their count differs), so does an object a contain moved
+	// into or out of the world (lane GARRISON-1)
 	if (m_builtFrame != m_logic.getFrame() || m_builtCount != m_logic.getObjectCount() || m_builtTransitions != m_logic.containWorldTransitions())
 	{
 		rebuild();
+	}
+	if (enemyOf && m_builtTeams != m_logic.combat().teamMembershipVersion())
+	{
+		refreshTeams();
 	}
 	const int x0 = cellOf(SimMath::subf32(center.x, radius)), x1 = cellOf(SimMath::addf32(center.x, radius));
 	const int y0 = cellOf(SimMath::subf32(center.y, radius)), y1 = cellOf(SimMath::addf32(center.y, radius));
@@ -67,23 +104,43 @@ void TargetFinder::collectInRadius(const Coord3D &center, float radius, std::vec
 	{
 		for (int cy = y0; cy <= y1; ++cy)
 		{
-			auto it = m_cells.find({ cx, cy });
+			auto it = m_cells.find({cx, cy});
 			if (it == m_cells.end())
 			{
 				continue;
 			}
-			for (ObjectID id : it->second)
+			const Cell &cell = it->second;
+			auto collect = [&](size_t begin, size_t end) {
+				for (size_t i = begin; i < end; ++i)
+				{
+					const ObjectID id = cell.objects[i];
+					Object *o = m_logic.findObjectByID(id);
+					if (!o || !CombatQueries::isAlive(*o) || !o->isInWorld())
+					{
+						continue;
+					}
+					const float d2 = CombatQueries::centerDistanceSquared2D(*o->getPosition(), center);
+					if (d2 <= SimMath::mulf32(radius, radius))
+					{
+						out.push_back(o);
+					}
+				}
+			};
+			if (!enemyOf)
 			{
-				Object *o = m_logic.findObjectByID(id);
-				if (!o || !CombatQueries::isAlive(*o) || !o->isInWorld())
+				collect(0, cell.objects.size());
+				continue;
+			}
+			// Object::getRelationship delegates to these same Team::getRelationship
+			// calls. Read relationships now, rather than caching diplomacy per frame.
+			size_t begin = 0;
+			for (const TeamRun &run : cell.teams)
+			{
+				if (enemyOf->getTeam() && run.team && enemyOf->getTeam()->getRelationship(run.team) == ENEMIES)
 				{
-					continue;
+					collect(begin, run.end);
 				}
-				const float d2 = CombatQueries::centerDistanceSquared2D(*o->getPosition(), center);
-				if (d2 <= SimMath::mulf32(radius, radius))
-				{
-					out.push_back(o);
-				}
+				begin = run.end;
 			}
 		}
 	}
@@ -111,7 +168,7 @@ Object *TargetFinder::findClosestEnemyNear(const Object &seeker, const Coord3D &
 		rebuild();
 	}
 	std::vector<Object *> near;
-	collectInRadius(center, SimMath::addf32(range, m_maxRadius), near);
+	collectInRadius(center, SimMath::addf32(range, m_maxRadius), near, &seeker);
 	Object *best = nullptr;
 	float bestD = 0.0f;
 	for (Object *o : near)
@@ -139,12 +196,12 @@ Object *TargetFinder::findClosestEnemyNear(const Object &seeker, const Coord3D &
 			continue;
 		}
 		const float edge = SimMath::subf32(SimMath::length2d(SimMath::subf32(o->getPosition()->x, center.x), SimMath::subf32(o->getPosition()->y, center.y)),
-			CombatQueries::boundingCircleRadius(*o));
+										   CombatQueries::boundingCircleRadius(*o));
 		if (edge > range)
 		{
 			continue;
 		}
-		if (!AIFortification::allowAutoTarget(seeker,*o) || !weapons->canAttackObject(*o, source, false))
+		if (!AIFortification::allowAutoTarget(seeker, *o) || !weapons->canAttackObject(*o, source, false))
 		{
 			continue;
 		}

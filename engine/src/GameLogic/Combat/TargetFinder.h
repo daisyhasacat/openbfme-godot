@@ -11,12 +11,14 @@
 #include "GameLogic/AI/AICommandSink.h"
 #include "GameLogic/ObjectTypes.h"
 
+#include <cstdint>
 #include <map>
 #include <utility>
 #include <vector>
 
 class GameLogic;
 class Object;
+class Team;
 
 class TargetFinder
 {
@@ -41,12 +43,27 @@ public:
 	size_t indexedObjects() const { return m_count; }
 
 private:
+	// Adjacent objects with the same team keep their original cell/list positions.
+	// Enemy scans can reject a whole run without computing distances for friendly troops.
+	struct TeamRun
+	{
+		const Team *team = nullptr;
+		size_t end = 0;
+	};
+	struct Cell
+	{
+		std::vector<ObjectID> objects;
+		std::vector<TeamRun> teams;
+	};
 	void rebuild();
+	void refreshTeams();
+	void collectInRadius(const Coord3D &center, float radius, std::vector<Object *> &out, const Object *enemyOf);
 	GameLogic &m_logic;
 	unsigned m_builtFrame = 0xFFFFFFFFu;
 	size_t m_builtCount = 0;
 	unsigned m_builtTransitions = 0; // GameLogic::containWorldTransitions at the build: a contain's rider leaving or entering the world (lane GARRISON-1) rebuilds
 	size_t m_count = 0;
 	float m_maxRadius = 0.0f;
-	std::map<std::pair<int, int>, std::vector<ObjectID>> m_cells;
+	std::uint64_t m_builtTeams = 0;
+	std::map<std::pair<int, int>, Cell> m_cells;
 };
