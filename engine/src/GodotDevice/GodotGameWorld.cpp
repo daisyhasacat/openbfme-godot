@@ -6501,7 +6501,7 @@ Dictionary GameWorld::get_player_status_state()
 	d["game"] = newGameToDictionary(m_start->message);
 	Array orig, slots;
 	const LiveGame::Report report = m_game->report();
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < game.slotCount(); ++i)
 	{
 		Dictionary o;
 		o["template"] = game.slots[i].origPlayerTemplate;
@@ -6518,7 +6518,7 @@ Dictionary GameWorld::get_player_status_state()
 	}
 	// lane PLATFORMICON-1: each slot's system (PlatformKind 0 .. 3: display data from the LAN lobby / the online START, none in single player)
 	Array platforms;
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < game.slotCount(); ++i)
 	{
 		platforms.push_back(m_netStarted && m_netSession ? (int64_t)m_netStart.game.game.slots[i].platform : (int64_t)PlatformKind::None);
 	}

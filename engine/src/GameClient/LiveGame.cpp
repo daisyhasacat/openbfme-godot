@@ -397,7 +397,7 @@ bool LiveGame::load(const Options &options, std::string *error)
 			observers.push_back(observer->getPlayerIndex());
 		}
 		const SkirmishGameInfo &game = options.start->message.game;
-		for (int i = 0; i < MAX_SLOTS; ++i)
+		for (int i = 0; i < game.slotCount(); ++i)
 		{
 			const SkirmishGameSlot &slot = game.slots[i];
 			if (!slot.isOccupied() || (size_t)i >= m_report.startSlotPlayers.size())
@@ -468,7 +468,7 @@ bool LiveGame::load(const Options &options, std::string *error)
 		const SkirmishGameInfo &game = options.start->message.game;
 		StartingBase::Result placed;
 		int counter = 41;
-		for (int i = 0; i < MAX_SLOTS; ++i)
+		for (int i = 0; i < game.slotCount(); ++i)
 		{
 			const SkirmishGameSlot &slot = game.slots[i];
 			if (!slot.isOccupied() || slot.playerTemplate == PLAYERTEMPLATE_OBSERVER)
@@ -506,7 +506,7 @@ bool LiveGame::load(const Options &options, std::string *error)
 		if (options.start)
 		{
 			const SkirmishGameInfo &game = options.start->message.game;
-			for (int i = 0; i < MAX_SLOTS; ++i)
+			for (int i = 0; i < game.slotCount(); ++i)
 			{
 				if (game.slots[i].hasCreateAHero && !game.customHeroesAllowed())
 				{

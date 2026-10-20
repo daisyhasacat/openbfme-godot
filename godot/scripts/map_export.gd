@@ -53,6 +53,8 @@ func _run():
   var entries:Array=shell.lobby_map_catalog()
   if entries.is_empty():_fail('Mounted skirmish catalog is empty');return
   quit(0 if _save(request.output,{'ok':true,'content_signature':fs.content_signature(),'maps':entries}) else 1);return
+ # Installed maps register isolated preview aliases per filesystem session.
+ fs.installed_maps()
  var entry:Dictionary=request.entry
  var key=str(entry.key).replace('\\','/').get_file().get_basename()
  var visual=not request.metadata_only

@@ -31,9 +31,26 @@ std::int32_t colorInt(std::uint32_t rgb)
 }
 } // namespace
 
-bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &info, int localSlot, const std::vector<GameLogicSettings::MultiplayerColorDef> &colors,
+std::vector<GameLogicSettings::MultiplayerColorDef> SkirmishSides::localColors(const std::vector<GameLogicSettings::MultiplayerColorDef> &base, int slots)
+{
+ auto result = base;
+ if (slots <= MAX_SLOTS) return result;
+ // Additional UI colours for local sixteen-player matches only; retail palettes stay untouched.
+ for (std::uint32_t rgb : {0xF28EBCu,0x8CD17Du,0xB6992Du,0x499894u,0xD37295u,0xA0CBE8u,0xFFBE7Du,0xD4A6C8u,0x86BCB6u,0xFABFD2u,0xBAB0ACu,0x9D7660u,0x59A14Fu,0xE15759u,0x4E79A7u,0xEDC948u}) {
+  if (result.size() >= MAX_LOCAL_SLOTS) break;
+  bool used = false; for (const auto &c : result) used |= c.rgb == rgb;
+  if (used) continue;
+  GameLogicSettings::MultiplayerColorDef c; c.name = "LocalColor" + std::to_string(result.size()+1);
+  c.rgb = c.nightRgb = c.livingWorldRgb = c.livingWorldBannerRgb = rgb;
+  result.push_back(c);
+ }
+ return result;
+}
+
+bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &info, int localSlot, const std::vector<GameLogicSettings::MultiplayerColorDef> &baseColors,
 	const PlayerTemplateStore &templates, Built &out, std::string *error)
 {
+	const auto colors = localColors(baseColors, info.slotCount());
 	out = Built();
 	SidesList &sides = out.sides;
 	sides.sidesVersion = mapSides.sidesVersion;
@@ -62,8 +79,8 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		}
 	}
 	// the side names
-	out.slotPlayerNames.assign(MAX_SLOTS, std::string());
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	out.slotPlayerNames.assign(info.slotCount(), std::string());
+	for (int i = 0; i < info.slotCount(); ++i)
 	{
 		const SkirmishGameSlot &slot = info.slots[i];
 		if (!slot.isOccupied())
@@ -85,7 +102,7 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		anyAI = anyAI || slot.isAI();
 	}
 	std::string allNames;
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < info.slotCount(); ++i)
 	{
 		if (info.slots[i].isOccupied())
 		{
@@ -93,9 +110,9 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		}
 	}
 	// two slots must not share a side name (a start position held twice)
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < info.slotCount(); ++i)
 	{
-		for (int j = i + 1; j < MAX_SLOTS; ++j)
+		for (int j = i + 1; j < info.slotCount(); ++j)
 		{
 			if (info.slots[i].isOccupied() && info.slots[j].isOccupied() && out.slotPlayerNames[(size_t)i] == out.slotPlayerNames[(size_t)j])
 			{
@@ -104,7 +121,7 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		}
 	}
 	// addSidesForSlots
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < info.slotCount(); ++i)
 	{
 		const SkirmishGameSlot &slot = info.slots[i];
 		if (!slot.isOccupied())
@@ -140,7 +157,7 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		d.setUnicodeString("playerDisplayName", slot.name);
 		d.setAsciiString("playerFaction", pt->getName());
 		std::string allies, enemies;
-		for (int j = 0; j < MAX_SLOTS; ++j)
+		for (int j = 0; j < info.slotCount(); ++j)
 		{
 			if (j == i || !info.slots[j].isOccupied())
 			{
@@ -167,7 +184,7 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		d.setInt("multiplayerStartIndex", slot.startPos);
 		d.setInt("playerHandicap", slot.handicap); // lane OWNERFIX-2: RW 0x627F8F .. 0x627FA0 (CreateMPPlayers): every occupied slot's + 0x20
 		bool isLocal = false;
-		if (slot.isHuman() && localSlot >= 0 && localSlot < MAX_SLOTS)
+		if (slot.isHuman() && localSlot >= 0 && localSlot < info.slotCount())
 		{
 			isLocal = slot.name == info.slots[localSlot].name;
 		}

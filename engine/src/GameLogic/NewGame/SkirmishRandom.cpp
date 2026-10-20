@@ -40,15 +40,15 @@ bool SkirmishRandom::populateRandomStartPosition(SkirmishGameInfo &info, const S
 	{
 		numPlayers = in.map->numPlayers;
 	}
-	if (numPlayers < 0 || numPlayers > MAX_SLOTS)
+	if (numPlayers < 0 || numPlayers > MAX_MAP_STARTS)
 	{
-		return fail(error, "the map cache entry has numPlayers " + std::to_string(numPlayers) + " (1.." + std::to_string(MAX_SLOTS) + " expected)");
+		return fail(error, "the map cache entry has numPlayers " + std::to_string(numPlayers) + " (1.." + std::to_string(MAX_MAP_STARTS) + " expected)");
 	}
 	// the distance matrix [i][j] (RW stack [ebp + (i * 8 + j) * 4 - 0x15C])
-	float dist[MAX_SLOTS][MAX_SLOTS];
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	float dist[MAX_MAP_STARTS][MAX_MAP_STARTS];
+	for (int i = 0; i < MAX_MAP_STARTS; ++i)
 	{
-		for (int j = 0; j < MAX_SLOTS; ++j)
+		for (int j = 0; j < MAX_MAP_STARTS; ++j)
 		{
 			if (in.map && i != j && i < numPlayers && j < numPlayers)
 			{
@@ -70,14 +70,14 @@ bool SkirmishRandom::populateRandomStartPosition(SkirmishGameInfo &info, const S
 		}
 	}
 	bool hasStartSpotBeenPicked = false;
-	bool taken[MAX_SLOTS];
-	int posOwner[MAX_SLOTS];
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	bool taken[MAX_MAP_STARTS];
+	int posOwner[MAX_MAP_STARTS];
+	for (int i = 0; i < MAX_MAP_STARTS; ++i)
 	{
 		taken[i] = i >= numPlayers;
 		posOwner[i] = -1;
 	}
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < info.slotCount(); ++i)
 	{
 		const SkirmishGameSlot &slot = info.slots[i];
 		if (!slot.isOccupied() || slot.playerTemplate == PLAYERTEMPLATE_OBSERVER)
@@ -91,7 +91,7 @@ bool SkirmishRandom::populateRandomStartPosition(SkirmishGameInfo &info, const S
 			posOwner[slot.startPos] = i;
 		}
 	}
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < info.slotCount(); ++i)
 	{
 		SkirmishGameSlot &slot = info.slots[i];
 		bool teamHit = false; // RW [ebp - 0x1D]: reset per slot only
@@ -189,14 +189,14 @@ bool SkirmishRandom::populateRandomStartPosition(SkirmishGameInfo &info, const S
 	}
 	// observers: RW 0x62DB99 ff
 	int numPlayersInGame = 0;
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < info.slotCount(); ++i)
 	{
 		if (info.slots[i].isOccupied() && info.slots[i].playerTemplate != PLAYERTEMPLATE_OBSERVER)
 		{
 			++numPlayersInGame;
 		}
 	}
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < info.slotCount(); ++i)
 	{
 		SkirmishGameSlot &slot = info.slots[i];
 		if (!slot.isOccupied() || slot.playerTemplate != PLAYERTEMPLATE_OBSERVER)
@@ -237,7 +237,7 @@ bool SkirmishRandom::populateRandomSideAndColor(SkirmishGameInfo &info, const Sk
 			startSlots.push_back(i);
 		}
 	}
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < info.slotCount(); ++i)
 	{
 		SkirmishGameSlot &slot = info.slots[i];
 		if (!slot.isOccupied())
@@ -278,6 +278,9 @@ bool SkirmishRandom::populateRandomSideAndColor(SkirmishGameInfo &info, const Sk
 			{
 				return fail(error, "slot " + std::to_string(i) + ": multiplayer.ini defines no colour to choose from");
 			}
+			bool available = false;
+			for (int c = 0; c < in.numColors; ++c) available |= !info.isColorTaken(c, -1);
+			if (!available) return fail(error, "No unused multiplayer colour remains");
 			colorIdx = -1;
 			while (colorIdx == -1)
 			{

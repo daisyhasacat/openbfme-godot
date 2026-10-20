@@ -188,7 +188,8 @@ bool SkirmishGameSetup::restoreSaved(const SkirmishGameInfo &saved, const std::s
 		return fail("the kept game's slot 0 is not a human");
 	}
 	SkirmishGameInfo info = m_info;
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	info.slots.resize(saved.slotCount());
+	for (int i = 0; i < saved.slotCount(); ++i)
 	{
 		SkirmishGameSlot slot = saved.slots[i];
 		// lane OWNERFIX-2: retail's parser takes + 0x20 in -100 .. 0 (RW 0x802DBA); the lobby's combo offers 0, -5 .. -95 only (RW 0x840B9D)
@@ -302,7 +303,7 @@ std::vector<SkirmishComboEntry> SkirmishGameSetup::colorEntries(int slot) const
 {
 	const std::vector<SkirmishColor> &colors = m_source.colors();
 	std::vector<bool> available(colors.size(), true);
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < m_info.slotCount(); ++i)
 	{
 		const int c = m_info.slots[i].color;
 		if (i != slot && c >= 0 && c < (int)colors.size())
@@ -327,7 +328,7 @@ std::vector<SkirmishComboEntry> SkirmishGameSetup::teamEntries() const
 {
 	std::vector<SkirmishComboEntry> out;
 	out.push_back({ label("Team:0"), 0xFFFFFFFFu, -1 });
-	for (int c = 0; c < MAX_SLOTS / 2; ++c)
+	for (int c = 0; c < m_info.slotCount() / 2; ++c)
 	{
 		out.push_back({ label("Team:" + std::to_string(c + 1)), 0xFFFFFFFFu, c });
 	}
@@ -506,9 +507,9 @@ std::vector<SkirmishComboEntry> SkirmishGameSetup::startingCashEntries() const
 
 bool SkirmishGameSetup::setSlotState(int slot, SlotState state, const std::u16string &title)
 {
-	if (slot <= 0 || slot >= MAX_SLOTS)
+	if (slot <= 0 || slot >= m_info.slotCount() || state < SLOT_OPEN || state > SLOT_PLAYER)
 	{
-		return false; // handlePlayerSelection: index == 0 || index >= MAX_SLOTS
+		return false; // handlePlayerSelection: index == 0 || index >= m_info.slotCount()
 	}
 	setSlotStateInternal(m_info.slots[slot], state, title);
 	return true;
@@ -516,7 +517,7 @@ bool SkirmishGameSetup::setSlotState(int slot, SlotState state, const std::u16st
 
 bool SkirmishGameSetup::setSlotColor(int slot, int color)
 {
-	if (slot < 0 || slot >= MAX_SLOTS)
+	if (slot < 0 || slot >= m_info.slotCount())
 	{
 		return false;
 	}
@@ -529,7 +530,7 @@ bool SkirmishGameSetup::setSlotColor(int slot, int color)
 	{
 		if (color != -1)
 		{
-			for (int i = 0; i < MAX_SLOTS; ++i)
+			for (int i = 0; i < m_info.slotCount(); ++i)
 			{
 				if (i != slot && m_info.slots[i].color == color)
 				{
@@ -544,7 +545,7 @@ bool SkirmishGameSetup::setSlotColor(int slot, int color)
 
 bool SkirmishGameSetup::setSlotTemplate(int slot, int playerTemplate)
 {
-	if (slot < 0 || slot >= MAX_SLOTS)
+	if (slot < 0 || slot >= m_info.slotCount())
 	{
 		return false;
 	}
@@ -554,7 +555,7 @@ bool SkirmishGameSetup::setSlotTemplate(int slot, int playerTemplate)
 
 bool SkirmishGameSetup::setSlotTeam(int slot, int team)
 {
-	if (slot < 0 || slot >= MAX_SLOTS)
+	if (slot < 0 || slot >= m_info.slotCount())
 	{
 		return false;
 	}
@@ -564,7 +565,7 @@ bool SkirmishGameSetup::setSlotTeam(int slot, int team)
 
 bool SkirmishGameSetup::setSlotHandicap(int slot, int handicap)
 {
-	if (slot < 0 || slot >= MAX_SLOTS || !SkirmishGameSlot::handicapValid(handicap))
+	if (slot < 0 || slot >= m_info.slotCount() || !SkirmishGameSlot::handicapValid(handicap))
 	{
 		return false;
 	}
@@ -574,7 +575,7 @@ bool SkirmishGameSetup::setSlotHandicap(int slot, int handicap)
 
 bool SkirmishGameSetup::setSlotCreateAHero(int slot, const CreateAHeroHero *hero, std::string *error)
 {
-	if (slot < 0 || slot >= MAX_SLOTS)
+	if (slot < 0 || slot >= m_info.slotCount())
 	{
 		return false;
 	}
@@ -596,7 +597,7 @@ bool SkirmishGameSetup::setSlotCreateAHero(int slot, const CreateAHeroHero *hero
 
 bool SkirmishGameSetup::setSlotStartPos(int slot, int position)
 {
-	if (slot < 0 || slot >= MAX_SLOTS)
+	if (slot < 0 || slot >= m_info.slotCount())
 	{
 		return false;
 	}
@@ -610,7 +611,7 @@ bool SkirmishGameSetup::setSlotStartPos(int slot, int position)
 		s.startPos = position;
 		return true;
 	}
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < m_info.slotCount(); ++i)
 	{
 		if (i != slot && m_info.slots[i].startPos == position)
 		{
@@ -755,9 +756,9 @@ SkirmishGameSetup::StartCheck SkirmishGameSetup::checkStart(int flags, bool will
 	// RW 0x843245 .. 0x843276: the maximum (RW 0x9758E3: the map's player count, 0 without the map; above 8 the constant 8 at RW 0xC53F2C) and the minimum
 	// (RW 0x97597F: 0 outside the War of the Ring; its scenario's minimum is not ported, stop S-3610)
 	int maxPlayers = md ? (int)md->numPlayers : 0;
-	if (maxPlayers >= 9)
+	if (maxPlayers > m_info.slotCount())
 	{
-		maxPlayers = MAX_SLOTS;
+		maxPlayers = m_info.slotCount();
 	}
 	const int minPlayers = 0;
 	if (wotr)
@@ -776,7 +777,7 @@ SkirmishGameSetup::StartCheck SkirmishGameSetup::checkStart(int flags, bool will
 	bool allHaveMap = true, allAccepted = true, allSpots = true;
 	int numUsers = 0, numHumans = 0, numRandom = 0, numMissingClan = 0;
 	std::set<int> teams;
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < m_info.slotCount(); ++i)
 	{
 		const SkirmishGameSlot &slot = m_info.slots[i];
 		if (slot.state == SLOT_OPEN)

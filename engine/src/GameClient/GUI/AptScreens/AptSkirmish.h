@@ -64,6 +64,7 @@ public:
 	// Null when the environment lacked the setup source or the new-game sink (reported) or the map cache had no multiplayer map.
 	const SkirmishGameSetup *setup() const { return m_setup.get(); }
 	bool setLobbyStartPosition(int slot, int position);
+	bool setBrowserSlots(int count);
 	bool setBrowserRule(int rule, int value);
 	bool setBrowserLegendary(int value);
 	bool setBrowserFortressConstruction(bool enabled);

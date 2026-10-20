@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+constexpr int MAX_LOCAL_SLOTS = 16;
+constexpr int MAX_MAP_STARTS = 32;
 constexpr int MAX_SLOTS = 8;              // ZH GameNetwork/GameInfo.h
 constexpr int PLAYERTEMPLATE_RANDOM = -1; // ZH Common/PlayerTemplate.h
 constexpr int PLAYERTEMPLATE_OBSERVER = -2;
@@ -142,7 +144,8 @@ struct SkirmishGameSlot
 
 struct SkirmishGameInfo
 {
-	SkirmishGameSlot slots[MAX_SLOTS];
+	std::vector<SkirmishGameSlot> slots = std::vector<SkirmishGameSlot>(MAX_SLOTS);
+	int slotCount() const { return int(slots.size()); }
 	std::string mapName; // the map cache key
 	std::uint32_t mapCRC = 0;
 	std::uint32_t mapSize = 0;
@@ -183,7 +186,7 @@ struct SkirmishGameInfo
 	std::vector<std::string> unresolvedRandomChoices() const
 	{
 		std::vector<std::string> out;
-		for (int i = 0; i < MAX_SLOTS; ++i)
+		for (int i = 0; i < slotCount(); ++i)
 		{
 			const SkirmishGameSlot &s = slots[i];
 			if (!s.isOccupied())
@@ -209,7 +212,7 @@ struct SkirmishGameInfo
 	// RotWK GameInfo::isStartPositionTaken (0x800C20): some slot (occupied or not: no state test) other than `exceptSlot` holds `pos`
 	bool isStartPositionTaken(int pos, int exceptSlot) const
 	{
-		for (int i = 0; i < MAX_SLOTS; ++i)
+		for (int i = 0; i < slotCount(); ++i)
 		{
 			if (slots[i].startPos == pos && i != exceptSlot)
 			{
@@ -221,7 +224,7 @@ struct SkirmishGameInfo
 	// RotWK GameInfo::isColorTaken (0x800BF6): likewise for the colour
 	bool isColorTaken(int colorIndex, int exceptSlot) const
 	{
-		for (int i = 0; i < MAX_SLOTS; ++i)
+		for (int i = 0; i < slotCount(); ++i)
 		{
 			if (slots[i].color == colorIndex && i != exceptSlot)
 			{
@@ -237,7 +240,7 @@ struct SkirmishGameInfo
 	bool isSandbox(int localSlot) const
 	{
 		int localTeam = -1;
-		if (localSlot < 0 || localSlot >= MAX_SLOTS)
+		if (localSlot < 0 || localSlot >= slotCount())
 		{
 			localSlot = -1;
 			for (const SkirmishGameSlot &s : slots)
@@ -253,7 +256,7 @@ struct SkirmishGameInfo
 		{
 			localTeam = slots[localSlot].teamNumber;
 		}
-		for (int i = 0; i < MAX_SLOTS; ++i)
+		for (int i = 0; i < slotCount(); ++i)
 		{
 			if (i == localSlot)
 			{
@@ -279,7 +282,8 @@ struct SkirmishGameInfo
 	}
 	bool operator==(const SkirmishGameInfo &o) const
 	{
-		for (int i = 0; i < MAX_SLOTS; ++i)
+		if (slots.size() != o.slots.size()) return false;
+		for (int i = 0; i < slotCount(); ++i)
 		{
 			if (!(slots[i] == o.slots[i]))
 			{

@@ -150,6 +150,11 @@ func show_browser():
  previous_shell_processing=shell.is_processing();previous_shell_visible=shell.visible
  shell.set_process(false);shell.hide()
  var state:Dictionary=shell.lobby_state();draft=state.duplicate(true);rule_edits={};slot.clear();assignments={};tabs.current_tab=0
+ # Sixteen editable local slots, while the retail lobby keeps eight until committed.
+ while draft.slots.size()<16:
+  var extra:Dictionary=state.slots[1].duplicate(true)
+  extra.state=1;extra.name='';extra.start=-1;extra.color=-1;extra.team=-1
+  draft.slots.append(extra)
  _setup_tabs()
  for i in state.get('slots',[]).size():
   var entry=state.slots[i]
@@ -160,7 +165,7 @@ func show_browser():
  for entry in catalog:
   if int(entry.players)>0:counts[int(entry.players)]=true
  var sorted_counts=counts.keys();sorted_counts.sort()
- for n in sorted_counts:players_filter.add_item('%d players'%n,n)
+ for n in sorted_counts:players_filter.add_item('%d starts (16 players max)'%n if int(n)>16 else '%d players'%n,n)
  search.text='';open=true;root.show();set_process(true);_filter()
  for i in filtered.size():
   if filtered[i].key==state.get('map',''):maps.select(i);_select(i);return
@@ -239,7 +244,7 @@ func _select(index: int):
   for i in draft.slots.size():assignments[i]=int(draft.slots[i].start)
  _setup_players()
  description.text=str(selected.description);title.text=_display_name(selected)
- stats.text='%d players\n%s'%[selected.players,'Official map' if selected.official else 'Custom map']
+ stats.text='%d starts · up to %d players\n%s'%[selected.players,mini(16,int(selected.players)),'Official map' if selected.official else 'Custom map']
  _update_definition_stats()
  _clear_markers()
  if loaded_key==selected.key and is_instance_valid(terrain):_show_scene();_full_scan(revision);return
@@ -324,7 +329,7 @@ func _show_scene():
  _refresh_fortresses(selected)
  var info:Dictionary=scene_info.info;var sx:float=scene_info.sx;var sy:float=scene_info.sy
  center=scene_info.center;distance=maxf(sx,sy)*1.15;pitch=.85;yaw=0;_camera_pose()
- stats.text='%d players · %s\n%.0f × %.0f map units\n%d × %d height samples\nElevation %.0f–%.0f\n%d objects · %d roads\n%d terrain textures'%[selected.players,'Official' if selected.official else 'Custom',sx,sy,info.get('width',0),info.get('height',0),info.get('elevation_min',0),info.get('elevation_max',0),info.get('objects',0),info.get('road_segments',0),info.get('texture_classes',0)]
+ stats.text='%d starts · %s\n%.0f × %.0f map units\n%d × %d height samples\nElevation %.0f–%.0f\n%d objects · %d roads\n%d terrain textures'%[selected.players,'Official' if selected.official else 'Custom',sx,sy,info.get('width',0),info.get('height',0),info.get('elevation_min',0),info.get('elevation_max',0),info.get('objects',0),info.get('road_segments',0),info.get('texture_classes',0)]
  _update_definition_stats()
  for n in selected.starts.size():
   var start=selected.starts[n]
@@ -412,7 +417,7 @@ func _commit() -> bool:
  if selected.get('library',false):
   message.text='Install/add this map to the main list, then select it under Loaded maps to play.';return false
  var slots=[]
- for i in mini(int(selected.players),draft.slots.size()):
+ for i in mini(mini(int(selected.players),16),draft.slots.size()):
   var entry=draft.slots[i]
   var change={'slot':i,'start':int(assignments.get(i,-1))}
   if i>0:change.state=entry.state
@@ -423,7 +428,7 @@ func _commit() -> bool:
   slots.append(change)
  var rules=[]
  for key in rule_edits:rules.append({'id':int(key),'value':rule_edits[key]})
- var result:Dictionary=shell.lobby_apply({'map_search':'','map':selected.key,'slots':slots,'browser_rules':rules,'browser_fortress_construction':draft.get('fortress_construction',false),'browser_legendary':draft.get('legendary_heroes',1),'browser_peace_time':draft.get('peace_time_minutes',0)})
+ var result:Dictionary=shell.lobby_apply({'browser_slot_count':16 if int(selected.players)>8 else 8,'map_search':'','map':selected.key,'slots':slots,'browser_rules':rules,'browser_fortress_construction':draft.get('fortress_construction',false),'browser_legendary':draft.get('legendary_heroes',1),'browser_peace_time':draft.get('peace_time_minutes',0)})
  if not result.get('ok',false):message.text=str(result.get('errors',[]))
  return result.get('ok',false)
 
@@ -549,6 +554,7 @@ func _setup_players():
   slot.add_item(name if not name.is_empty() else 'Player %d'%(i+1),i)
   if i==current:slot.select(i)
  for child in players_page.get_children():players_page.remove_child(child);child.queue_free()
+ var fill=Button.new();fill.text='Fill players & spread starts';fill.pressed.connect(_fill_players);players_page.add_child(fill)
  var scroll=ScrollContainer.new();scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL;players_page.add_child(scroll)
  var rows=VBoxContainer.new();rows.size_flags_horizontal=Control.SIZE_EXPAND_FILL;scroll.add_child(rows)
  var headings=HBoxContainer.new();rows.add_child(headings)
@@ -661,7 +667,7 @@ func _change_source(index: int):
  catalog=loaded_catalog if index==0 else library_catalog
  _empty_selection('Select a map to preview.' if index==0 else 'Browse library maps here. Install/add a map to the main list before playing.')
  players_filter.clear();players_filter.add_item('Any players',0)
- for count in range(1,9):players_filter.add_item('%d players'%count,count)
+ for count in range(1,33):players_filter.add_item('%d players'%count,count)
  _prepare_definitions();_filter()
  if not filtered.is_empty():maps.select(0);_select(0)
  elif index==1:message.text=library_error if not library_error.is_empty() else 'No maps in Map Library: '+library_path
@@ -726,3 +732,14 @@ func _install_selected():
  for i in filtered.size():
   if filtered[i].key==result.key:maps.select(i);_select(i);break
  message.text='Map installed. Select Use map or Play to continue.'
+
+# A sixteen-player draft can use every start marker on a larger composite map.
+func _fill_players():
+ var count=mini(16,int(selected.get('players',0)))
+ assignments.clear()
+ for i in draft.slots.size():
+  if i>=count:draft.slots[i].state=1;continue
+  if i>0:draft.slots[i].state=4
+  assignments[i]=floori(float(i)*int(selected.players)/count)
+ _setup_players();_refresh_cards()
+ message.text='%d players across %d available starts. Matches above 8 players are local; recordings and saves are unavailable.'%[count,int(selected.players)]

@@ -636,3 +636,11 @@ TEST_CASE("save2: the replay records an execution profile switch, refuses a bad 
 	CHECK(error == "replay profile switches out of order (frame 2)");
 }
 
+
+TEST_CASE("local sixteen: recording refuses extended slots before opening a file")
+{
+ ReplayHeader header;header.game=smallGame();header.game.game.slots.resize(MAX_LOCAL_SLOTS);
+ ReplayWriter writer;std::string error;
+ CHECK_FALSE(writer.open("/this/path/must/not/be/opened/extended.rep",header,&error));
+ CHECK(error=="16-player local games do not yet support recordings or saves");
+}

@@ -207,6 +207,7 @@ bool ReplayWriter::openTarget(const std::string &path, std::string *error)
 
 bool ReplayWriter::open(const std::string &path, const ReplayHeader &h, std::string *error)
 {
+	if (h.game.game.slotCount() != MAX_SLOTS) return failWith(error, "16-player local games do not yet support recordings or saves");
 	// lane UBER-1: a header whose identity and game disagree on the simulation profile is never written
 	if (const std::string why = h.profileConflict(); !why.empty())
 	{

@@ -616,7 +616,7 @@ void AptSkirmish::keepGame()
 		c = c == '/' ? '\\' : c;
 	}
 	m_profiles->setProfileValue(mode, "Map", map);
-	m_profiles->setProfileValue(mode, "GameInfo", SkirmishGameInfoToString(m_setup->info(), mode));
+	if (m_setup->info().slotCount() == MAX_SLOTS) m_profiles->setProfileValue(mode, "GameInfo", SkirmishGameInfoToString(m_setup->info(), mode));
 	m_profiles->setProfileValue(mode, "HeroIndexes", SkirmishHeroIndexesString());
 	m_profiles->setProfileValue(mode, kFortressKey, m_setup->info().fortressConstruction ? "1" : "0");
 	m_profiles->setProfileValue(mode, kPeaceKey, std::to_string(m_setup->info().peaceTimeMinutes));
@@ -2557,6 +2557,8 @@ void AptSkirmish::refreshProfileList()
 		GadgetListBoxSetSelected(m_profileList, selection);
 	}
 }
+
+bool AptSkirmish::setBrowserSlots(int count) { return m_setup && m_setup->setLocalSlotCount(count); }
 
 bool AptSkirmish::setLobbyStartPosition(int slot,int position)
 {

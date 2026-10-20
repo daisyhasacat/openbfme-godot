@@ -807,3 +807,15 @@ exact S-090 limitation. Owner/capturer sides come from the live players; client
 flush events carry the capturer’s colour while raising and the owner’s after
 cancellation or transfer. Regression: `capture flag presentation: ...` in
 `test_hero_retail.cpp`.
+
+## LOCAL-16: extended local skirmish persistence and network formats
+
+The new browser supports 16 active slots and maps with 32 starts. Existing
+network and recording/save headers encode eight slots. Their formats remain
+unchanged: the network writer refuses extended slot arrays, and ReplayWriter
+reports `16-player local games do not yet support recordings or saves` before
+opening a target. The browser states this limitation when filling players.
+The native `local sixteen` tests pin extended start resolution and the recorder
+stop. Resolving this needs an explicitly versioned enhanced recording/save and
+network format, plus round-trip tests for all sixteen slots; retail formats
+must remain unchanged.

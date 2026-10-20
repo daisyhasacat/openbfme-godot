@@ -4,6 +4,7 @@
 #include "GameNetwork/NetPacket.h"
 
 #include <cstring>
+#include <stdexcept>
 
 namespace
 {
@@ -310,6 +311,7 @@ std::unique_ptr<GameMessage> NetPacket::readGameMessage(NetByteReader &r, std::s
 
 void NetPacket::writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g)
 {
+	if (g.slotCount() != MAX_SLOTS) throw std::invalid_argument("16-player setups are local-only; network/replay format has eight slots");
 	for (const SkirmishGameSlot &s : g.slots)
 	{
 		w.i32((std::int32_t)s.state);
@@ -354,6 +356,7 @@ void NetPacket::writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g)
 
 bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool profileOptionalAtEnd, bool slotHandicaps, bool withPeaceTime, bool withLuaAuthority)
 {
+	g.slots.resize(MAX_SLOTS);
 	for (SkirmishGameSlot &s : g.slots)
 	{
 		const std::int32_t state = r.i32();
@@ -381,7 +384,7 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 			{
 				break;
 			}
-			const int slot = (int)(&s - g.slots);
+			const int slot = (int)(&s - g.slots.data());
 			std::string why;
 			if (!s.setCreateAHeroBytes(bytes, &why))
 			{

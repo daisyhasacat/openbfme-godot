@@ -33,6 +33,7 @@
 
 namespace SkirmishSides
 {
+std::vector<GameLogicSettings::MultiplayerColorDef> localColors(const std::vector<GameLogicSettings::MultiplayerColorDef> &base, int slots);
 struct Built
 {
 	SidesList sides;

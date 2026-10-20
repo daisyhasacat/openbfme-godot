@@ -26,6 +26,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -634,4 +635,25 @@ TEST_CASE("starting base facing: placement rotates the starting building and pre
 	const Coord3D expectedPosition = StartingBase::unitPositionFromOffset({100,300,0}, {100,0,0});
 	CHECK(worker->getPosition()->x == expectedPosition.x);
 	CHECK(worker->getPosition()->y == expectedPosition.y);
+}
+
+TEST_CASE("local sixteen: sixteen slots resolve unique starts among thirty-two without changing eight-slot defaults")
+{
+ Store st;
+ MapCacheEntry map=evendim();map.numPlayers=32;map.startPositions.clear();
+ for(int i=0;i<32;++i) map.startPositions[i+1]=Coord3D{float(i%8)*1000,float(i/8)*1000,0};
+ SkirmishGameInfo info;CHECK(info.slotCount()==8);info.slots.resize(MAX_LOCAL_SLOTS);
+ for(int i=0;i<16;++i) {auto &s=info.slots[i];s.state=i==0?SLOT_PLAYER:SLOT_HARD_AI;s.startPos=-1;s.color=-1;s.playerTemplate=4;s.teamNumber=i/4;}
+ SkirmishResolveInput input;input.templates=&st.store;input.numColors=16;input.map=&map;
+ GameLogicRandom rng(RandomAlgorithm::ZH_CarryChain);rng.initGameLogicRandom(4811,-1);
+ std::string error;REQUIRE_MESSAGE(SkirmishRandom::resolve(info,input,rng,&error),error);
+ std::set<int> starts,colors;
+ for(const auto &s:info.slots) {starts.insert(s.startPos);colors.insert(s.color);}
+ CHECK(starts.size()==16);CHECK(colors.size()==16);CHECK(info.unresolvedRandomChoices().empty());
+ // Explicit high-index starts must survive the same resolver and side builder.
+ for(int i=0;i<16;++i)info.slots[i].startPos=i==15?31:2*i;
+ auto palette=SkirmishSides::localColors(colours(),16);CHECK(palette.size()==16);
+ SkirmishSides::Built built;REQUIRE(SkirmishSides::build(mapSides(),info,0,palette,st.store,built,&error));
+ CHECK(built.slotPlayerNames.size()==16);CHECK(built.slotPlayerNames[15]=="Player_32");
+ CHECK(SkirmishSides::localColors(colours(),8).size()==colours().size());
 }

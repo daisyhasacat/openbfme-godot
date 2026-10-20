@@ -76,7 +76,7 @@ Dictionary newGameToDictionary(const NewGameMessage &m)
 	d["peace_time_minutes"] = m.game.peaceTimeMinutes;
 	d["simulation_profile"] = (int)m.game.simulationProfile; // lane UBER-1: 0 Faithful, 1 Uber (Common/SimulationProfile.h)
 	Array slots;
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < m.game.slotCount(); ++i)
 	{
 		const SkirmishGameSlot &s = m.game.slots[i];
 		Dictionary sd;
@@ -176,11 +176,12 @@ bool newGameFromDictionary(const Dictionary &d, NewGameMessage &out, std::string
 	}
 	m.game.simulationProfile = (SimulationProfile)profile;
 	const Array slots = d["slots"];
-	if (slots.size() != MAX_SLOTS)
+	if (slots.size() != MAX_SLOTS && slots.size() != MAX_LOCAL_SLOTS)
 	{
-		return fail("slots has " + std::to_string((int)slots.size()) + " entries, expected " + std::to_string(MAX_SLOTS));
+		return fail("slots has " + std::to_string((int)slots.size()) + " entries, expected 8 or 16");
 	}
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	m.game.slots.resize(slots.size());
+	for (int i = 0; i < m.game.slotCount(); ++i)
 	{
 		const Dictionary sd = slots[i];
 		for (const char *key : { "state", "name", "color", "start_pos", "player_template", "team" })

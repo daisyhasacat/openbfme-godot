@@ -54,7 +54,8 @@ bool NewGame::prepareNewGame(const NewGameMessage &in, const PlayerTemplateStore
 	NewGameStart start(algorithm);
 	start.message = in;
 	SkirmishGameInfo &info = start.message.game;
-	if (info.luaAuthoritySlot < -1 || info.luaAuthoritySlot >= MAX_SLOTS || (info.luaAuthoritySlot >= 0 && !info.slots[info.luaAuthoritySlot].isHuman())) return failWith(error, "invalid Lua authority slot");
+	if (info.slotCount() != MAX_SLOTS && info.slotCount() != MAX_LOCAL_SLOTS) return failWith(error, "local skirmishes require 8 or 16 slots");
+	if (info.luaAuthoritySlot < -1 || info.luaAuthoritySlot >= info.slotCount() || (info.luaAuthoritySlot >= 0 && !info.slots[info.luaAuthoritySlot].isHuman())) return failWith(error, "invalid Lua authority slot");
 	if (!PeaceTime::valid(info.peaceTimeMinutes)) return failWith(error, "invalid peace time");
 	if (info.numPlayers() == 0)
 	{
@@ -78,7 +79,7 @@ bool NewGame::prepareNewGame(const NewGameMessage &in, const PlayerTemplateStore
 		return failWith(error, "the map cache key '" + info.mapName + "' is not maps/<name>/<name>.map");
 	}
 	start.localSlot = -1;
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < info.slotCount(); ++i)
 	{
 		if (info.slots[i].isHuman())
 		{
@@ -90,7 +91,7 @@ bool NewGame::prepareNewGame(const NewGameMessage &in, const PlayerTemplateStore
 	start.random.initGameLogicRandom(info.seed, -1);
 	SkirmishResolveInput input;
 	input.templates = &templates;
-	input.numColors = (int)settings.multiplayerColors.size();
+	input.numColors = (int)SkirmishSides::localColors(settings.multiplayerColors, info.slotCount()).size();
 	input.map = entry;
 	std::string why;
 	if (!SkirmishRandom::resolve(info, input, start.random, &why))

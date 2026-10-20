@@ -832,7 +832,7 @@ godot::Dictionary godot::RetailFileSystem::inspect_library_map(const String &pat
  Array starts;
  for(const auto &object:map.chunks.objects) {
   if(!object.isWaypoint())continue;
-  for(int i=1;i<=8;++i)if(object.getWaypointName()=="Player_"+std::to_string(i)+"_Start") {
+  for(int i=1;i<=32;++i)if(object.getWaypointName()=="Player_"+std::to_string(i)+"_Start") {
    Dictionary start; start["index"]=i-1; start["x"]=object.m_location.x; start["y"]=object.m_location.y; start["z"]=object.m_location.z; starts.push_back(start);
   }
  }

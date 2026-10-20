@@ -3132,6 +3132,9 @@ Dictionary AptMenuPlayer::lobby_apply(const Dictionary &spec)
 		errors.push_back("the Skirmish screen is not up");
 		return out;
 	}
+ if (spec.has("browser_slot_count") && !screen->setBrowserSlots(int(spec["browser_slot_count"]))) {
+  errors.push_back("Only local skirmishes can use 8 or 16 browser slots"); out["ok"]=false; return out;
+ }
 	if (spec.has("map_search"))
 		screen->setMapSearch(utf8ToU16(toNative(String(spec["map_search"]))));
 	if (!lan && spec.has("box"))
@@ -3268,7 +3271,20 @@ Dictionary AptMenuPlayer::lobby_apply(const Dictionary &spec)
 	{
 		const Dictionary sd = slots[i];
 		const int slot = (int)(int64_t)sd["slot"];
-		if(sd.has("start")) {if(!screen->setLobbyStartPosition(slot,int(sd["start"])))errors.push_back("Start position is unavailable");}
+		if(!spec.has("browser_slot_count") && sd.has("start")) {if(!screen->setLobbyStartPosition(slot,int(sd["start"])))errors.push_back("Start position is unavailable");}
+  if (spec.has("browser_slot_count")) {
+   auto *setup = const_cast<SkirmishGameSetup *>(screen->setup());
+   if (slot < 0 || slot >= setup->info().slotCount()) { errors.push_back("Invalid local browser slot"); continue; }
+   if (sd.has("state") && slot != 0 && !setup->setSlotState(slot, SlotState(int(sd["state"])), u"")) errors.push_back("Invalid local player state");
+   if (sd.has("faction")) {
+    const std::string name=toNative(String(sd["faction"])); int faction=-1;
+    for (int f=0; f<int(sm.setup.factions().size()); ++f) if(sm.setup.factions()[f].templateName==name) faction=f;
+    if ((!name.empty() && faction<0) || !setup->setSlotTemplate(slot,faction)) errors.push_back("Invalid local faction");
+   }
+   if (sd.has("team") && !setup->setSlotTeam(slot,int(sd["team"]))) errors.push_back("Invalid local team");
+   if (sd.has("start") && !screen->setLobbyStartPosition(slot,int(sd["start"]))) errors.push_back("Start position is unavailable");
+   continue;
+  }
 		if (sd.has("state"))
 		{
 			GameWindow *combo = screen->slotGadget(slot, "Player");

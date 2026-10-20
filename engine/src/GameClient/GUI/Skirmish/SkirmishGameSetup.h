@@ -46,6 +46,7 @@ public:
 	bool restoreSaved(const SkirmishGameInfo &saved, const std::string &preferredMap, std::uint32_t seed, std::string *error);
 
 	const SkirmishGameInfo &info() const { return m_info; }
+	bool setLocalSlotCount(int count) { if (m_network || (count != MAX_SLOTS && count != MAX_LOCAL_SLOTS)) return false; m_info.slots.resize(count); return true; }
 	const SkirmishSetupSource &source() const { return m_source; }
 	const std::string &lastError() const { return m_error; }
 
