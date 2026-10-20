@@ -15,6 +15,7 @@
 #include "GameLogic/Module/ObjectCreationUpgrade.h"
 #include "GameLogic/Module/SpawnBehavior.h"
 #include "CreepTestUtil.h"
+#include "GameLogic/AI/AIAttack.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/Module/SpecialAbilityModules.h"
@@ -1688,5 +1689,50 @@ TEST_CASE("factc neutral lairs: every creep lair of the skirmish maps spawns its
 			// tolerance: how many hits land depends on the creeps and the party's approach; one shows the creeps fought
 			CHECK_MESSAGE(hits > 0, "the creeps of " << lairName << " did not attack the party");
 		}
+	}
+}
+
+TEST_CASE("Buckland wights acquire and engage Boromir from eight approach directions")
+{
+	if (!haveWorld("Buckland wight")) return;
+	for (int direction = 0; direction < 8; ++direction)
+	{
+		HudRig h(shared(), "FactionMen", "map wor buckland");
+		const auto ctx = h.hud->enterContext();
+		auto &logic = h.logic();
+		Player *creeps = h.rig.game->players().findPlayerWithName("PlyrCreeps");
+		REQUIRE(creeps);
+		creeps->setPlayerRelationship(h.rig.local, ENEMIES);
+		h.rig.local->setPlayerRelationship(creeps, ENEMIES);
+		h.frames(150);
+		Object *wight = nullptr;
+		for (Object *o = logic.getFirstObject(); o && !wight; o = o->getNextObject())
+			if (o->getTemplate()->getName() == "BarrowWight_Slaved") wight = o;
+		REQUIRE(wight);
+		const auto p = *wight->getPosition();
+		const float angle = (float)direction * 0.785398163f;
+		Object *hero = h.rig.make("GondorBoromir", p.x + 100.0f * std::cos(angle), p.y + 100.0f * std::sin(angle));
+		REQUIRE(hero);
+		const ObjectID wid = wight->getID(), hid = hero->getID();
+		h.frames(2);
+		REQUIRE(hero->getAIUpdateInterface()->aiAttackObject(wight, CMD_FROM_PLAYER));
+		const float hp = hero->getBodyModule()->getHealth();
+		float minimum = hp;
+		bool responded = false;
+		for (int f = 0; f < 150; ++f)
+		{
+			h.frames(1);
+			hero = logic.findObjectByID(hid);
+			wight = logic.findObjectByID(wid);
+			if (!hero || !wight || wight->isEffectivelyDead()) break;
+			minimum = std::min(minimum, hero->getBodyModule()->getHealth());
+			auto *ai = wight->getAIUpdateInterface();
+			auto *attack = dynamic_cast<AIAttackState *>(ai->stateMachine().currentState());
+			responded = responded || (ai->currentVictimId() == hid && attack && attack->attackMachine());
+		}
+		std::printf("BUCKLAND direction %d hp %f -> %f wight hp %f state %u target %u\n", direction, hp, minimum, wight ? wight->getBodyModule()->getHealth() : -1.0f, wight ? wight->getAIUpdateInterface()->stateMachine().currentStateId() : 0, wight ? wight->getAIUpdateInterface()->currentVictimId() : 0);
+		// Boromir can kill the creep before its 600 ms wind-up ends; damage is
+		// not required to prove that the AI chose him and began retaliating.
+		CHECK_MESSAGE(responded, "direction " << direction);
 	}
 }
