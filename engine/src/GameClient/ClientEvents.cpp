@@ -46,6 +46,13 @@ void ClientEventRecorder::objectCreated(Object &obj)
 {
 	ClientEvent &e = push(ClientEvent::CREATED, obj);
 	e.tmpl = obj.getTemplate();
+	// Modules can set model conditions during onObjectCreated, before the
+	// recorder is bound (e.g. GettingBuiltBehavior's self-building wall hubs).
+	// Carry that initial state into the drawable; later deltas cannot replay it.
+	for (int bit = 0; bit < 19 * 32 && bit < e.flags.size(); ++bit)
+	{
+		if (obj.testModelCondition(bit)) e.flags.set(bit);
+	}
 	// ZH Object::friend_bindToDrawable: new drawables follow the map's time of day and weather (was DrawableManager::objectCreated)
 	const GameLogicSettings &settings = m_logic.settings();
 	if (settings.forceModelsToFollowTimeOfDay && settings.night)

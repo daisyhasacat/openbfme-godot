@@ -421,3 +421,27 @@ TEST_CASE("render2 launch (live report): the launch-bone provider's S-460 stop a
 	std::printf("  info: live report: %d of the start's objects name a launch bone; %zu launch-bone data problems in the report\n", answered,
 		r.launchBoneProblems.size());
 }
+
+TEST_CASE("render2 construction: standalone Men wall hub uses its build-up model and animation")
+{
+	OPENBFME_REQUIRE_START(s);
+	const BuildRun r = build(*s, "MenWallHubSmall", true);
+	for (const auto &p : r.problems) FAIL_CHECK(p);
+	REQUIRE(r.problems.empty());
+	REQUIRE(!r.samples.empty());
+	CHECK(r.samples.front().buildFrame == 0.0f);
+	CHECK(r.samples.back().percent == -1.0f);
+	CHECK(AsciiStringUtil::compareNoCase(r.samples.back().model, "GBWallRmprtN") == 0);
+	bool rising = false;
+	for (const auto &sample : r.samples)
+	{
+		if (sample.percent >= 0.0f && sample.percent < 100.0f)
+		{
+			INFO("percent=" << sample.percent << " model=" << sample.model << " frame=" << sample.buildFrame);
+			CHECK(AsciiStringUtil::compareNoCase(sample.model, "GBWallRmprtN_A") == 0);
+			CHECK(sample.buildFrames > 1); // tolerance: require an animated build-up rather than a missing or single-frame pose; frame count comes from mounted assets
+			if (sample.percent > 0.0f && sample.buildFrame > 0.0f) rising = true;
+		}
+	}
+	CHECK(rising);
+}
