@@ -8,6 +8,8 @@ signal active_changed(enabled: bool)
 var active := false
 var was_paused := false
 var was_shroud := true
+var was_free_camera := false
+var exit_button: Button
 var grid_rotation: CheckButton
 var hovered_texture := ''
 var terrain_cursor_cell := Vector2(INF,INF)
@@ -200,6 +202,15 @@ func _ready():
 func _build_workspace(ui_theme: Theme,background: StyleBoxFlat):
  toolbar=PanelContainer.new();toolbar.theme=ui_theme;toolbar.add_theme_stylebox_override('panel',background);add_child(toolbar)
  var rows=VBoxContainer.new();toolbar.add_child(rows)
+ var header=HBoxContainer.new();rows.add_child(header)
+ var title=Label.new();title.text='MAP EDITOR · simulation paused';title.size_flags_horizontal=Control.SIZE_EXPAND_FILL;header.add_child(title)
+ exit_button=Button.new();exit_button.text='Exit editor · Esc';exit_button.custom_minimum_size=Vector2(230,60);exit_button.tooltip_text='Return to the game';exit_button.pressed.connect(func():set_active(false));header.add_child(exit_button)
+ for state in ['normal','hover','pressed','focus']:
+  var style=StyleBoxFlat.new();style.bg_color=Color('#98432d') if state=='normal' else Color('#be603c');style.border_color=Color('#ffda8a');style.set_border_width_all(2);style.set_corner_radius_all(6);style.set_content_margin_all(12);exit_button.add_theme_stylebox_override(state,style)
+ exit_button.add_theme_color_override('font_color',Color.WHITE)
+ exit_button.add_theme_color_override('font_hover_color',Color.WHITE)
+ exit_button.add_theme_color_override('font_pressed_color',Color.WHITE)
+ header.move_child(exit_button,0);header.add_theme_constant_override('separation',16)
  var modes=HFlowContainer.new();rows.add_child(modes)
  var names=['Delete','Object','Object brush','Raise','Lower','Flatten','Paint','Pick texture','Roads','Select','Border box']
  var icons=['⌫','⬡','▦','▲','▼','▬','▧','⌖','⌁','↖','▣']
@@ -209,7 +220,7 @@ func _build_workspace(ui_theme: Theme,background: StyleBoxFlat):
   button.pressed.connect(func():tool.select(i);hovered_texture='';_clear_preview();_update_controls());modes.add_child(button);mode_buttons.append(button)
  tool.hide()
  var actions=HBoxContainer.new();rows.add_child(actions)
- for pair in [['Undo',_undo],['Save',_save],['Load',_load],['Exit editor',func():set_active(false)]]:
+ for pair in [['Undo',_undo],['Save',_save],['Load',_load],['Zoom +',func():_zoom_camera(1)],['Zoom −',func():_zoom_camera(-1)]]:
   var button=Button.new();button.text=pair[0];button.custom_minimum_size.y=48;button.pressed.connect(pair[1]);actions.add_child(button)
  save_name.reparent(actions);save_name.custom_minimum_size.x=180;save_name.size_flags_horizontal=Control.SIZE_EXPAND_FILL
  grid_rotation.reparent(actions);grid_rotation.text='45° brush'
@@ -373,6 +384,7 @@ func set_active(enabled: bool):
  if not enabled and inspector!=null:inspector.hide()
  active=enabled;active_changed.emit(enabled);panel.visible=enabled;toolbar.visible=enabled;lookup.visible=enabled and tool.selected in [1,2,6,7,10];set_process(enabled)
  if enabled:
+  was_free_camera=hud.get_camera().get('free_camera',false);hud.set_free_camera(true)
   was_paused=world.is_paused();hud_was_processing=hud.is_processing_input();world.set_paused(true);was_shroud=world.get_shroud_report().get('displayed',true);world.set_shroud_drawn(false);hud.deselect_all();hud.set_process_input(false)
   terrain_info=world.map_editor_terrain({});_load_texture_catalog()
   roads=terrain_info.get('roads',[]).duplicate(true);road_type.clear()
@@ -383,6 +395,7 @@ func set_active(enabled: bool):
  else:
   if road_drag:roads=road_before.duplicate(true);road_drag=false
   if dragging and tool.selected in [3,4,5,6]:_paint_live();_finish_terrain_stroke()
+  hud.set_free_camera(was_free_camera)
   dragging=false;touches.clear();_clear_preview();world.set_shroud_drawn(was_shroud);hud.set_process_input(hud_was_processing);world.set_paused(was_paused);outline.queue_redraw()
 
 func _load_object_catalog():
@@ -571,6 +584,14 @@ func _process(_delta):
  if preview_instance>=0:
   preview.show();preview.set_instance_transform(preview_instance,Transform3D(Basis(Vector3.UP,_placement_angle()),Vector3(point.x,world.get_ground_height(point.x,point.y),-point.y)))
 
+func _zoom_camera(notches: float):
+ # Editor mode disables gameplay input; zoom the client camera directly.
+ var state:Dictionary=hud.get_camera()
+ if not state.has('height_above_ground'):return
+ var height=float(state.height_above_ground)
+ hud.camera_set_height(height*pow(.85,notches))
+ outline.queue_redraw()
+
 func handle_input(event: InputEvent) -> bool:
  if not active:return false
  if event is InputEventWithModifiers:snap_held=event.shift_pressed or toolbar.find_child('SnapToggle',true,false).button_pressed
@@ -583,7 +604,7 @@ func handle_input(event: InputEvent) -> bool:
   if _over_editor(cursor) and not dragging and not road_drag:return false
  if event is InputEventMouseButton:
   if event.button_index in [MOUSE_BUTTON_WHEEL_UP,MOUSE_BUTTON_WHEEL_DOWN] and event.pressed:
-   hud.inject_mouse_wheel(1 if event.button_index==MOUSE_BUTTON_WHEEL_UP else -1,cursor);return true
+   _zoom_camera((1 if event.button_index==MOUSE_BUTTON_WHEEL_UP else -1)*event.factor);return true
   if event.button_index==MOUSE_BUTTON_LEFT:
    if event.pressed:
     if tool.selected==8:_road_press()

@@ -6,6 +6,10 @@ restores the previous pause state and gameplay HUD visibility. The normal comman
 
 The editor uses compact panels that shrink on smaller windows and stop growing
 at 1440 pixels of viewport height, leaving more of the map visible on large displays.
+The highlighted **Exit editor · Esc** button stays in the toolbar header.
+Use the mouse wheel over the map or **Zoom + / Zoom −** in the toolbar to zoom
+while paused. Editing temporarily enables the wider free-camera zoom range;
+exiting restores your previous camera-limit setting. Right-drag pans the map.
 
 - **Delete objects:** click an object, or drag a rectangle to delete objects whose
   origins fall inside it. This includes objects you cannot normally select.

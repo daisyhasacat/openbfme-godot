@@ -1,6 +1,8 @@
 extends SceneTree
 class EditorHUD extends Node:
  var picked := 0
+ func get_camera():return {'free_camera':false}
+ func set_free_camera(_enabled):pass
  func deselect_all():pass
  func pixel_to_world(pixel):return pixel
  func world_to_pixel(point):return point
@@ -53,10 +55,18 @@ func _run():
   if real_hud.editor_pick(pixel)==fountain:hit=true
  check(hit,'Editor ray picks a non-selectable fountain')
  world.destroy_object(fountain);world.map_editor_terrain({'sync':true})
- real_hud.free();pick_camera.free()
- var hud=EditorHUD.new();root.add_child(hud)
  var editor=load('res://scripts/map_editor.gd').new()
- editor.world=world;editor.hud=hud;editor.fs=fs;root.add_child(editor)
+ editor.world=world;editor.hud=real_hud;editor.fs=fs;root.add_child(editor)
+ real_hud.set_free_camera(false)
+ editor.set_active(true)
+ check(real_hud.get_camera().free_camera,'Editor enables overview zoom')
+ var camera_height=real_hud.get_camera().height_above_ground
+ editor._zoom_camera(1)
+ check(real_hud.get_camera().height_above_ground==PackedFloat32Array([camera_height*.85])[0],'Zoom bypasses disabled gameplay input')
+ editor.exit_button.pressed.emit()
+ check(not editor.active and not real_hud.get_camera().free_camera,'Prominent exit restores camera limits')
+ real_hud.free();pick_camera.free()
+ var hud=EditorHUD.new();root.add_child(hud);editor.hud=hud
  world.set_shroud_drawn(true)
  editor.set_active(true)
  check(editor.active and world.is_paused() and not editor.catalog.is_empty(),'Editor enters paused mode with catalog')
