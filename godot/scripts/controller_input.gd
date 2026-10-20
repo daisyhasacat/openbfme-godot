@@ -129,6 +129,8 @@ func _release_all(preserve_snap := false) -> void:
 	_menu_direction = Vector2i.ZERO
 
 func _input(event: InputEvent) -> void:
+	if _native_menu_focus():
+		return # Godot's GUI handles D-pad/stick, accept and back for native dialogs.
 	if event is InputEventKey:
 		if event.keycode in [KEY_COMMA, KEY_PERIOD] and not event.ctrl_pressed and not event.alt_pressed:
 			if not event.pressed:
@@ -387,7 +389,19 @@ func _camera_stick(right: Vector2, delta: float) -> void:
 	if right.y != 0:
 		camera_zoom.emit(right.y * camera_zoom_speed * delta)
 
+func _native_menu_focus() -> bool:
+	var focus := get_viewport().gui_get_focus_owner()
+	var node: Node = focus
+	while node != null:
+		if node.has_meta("openbfme_native_menu"):
+			return true
+		node = node.get_parent()
+	return false
+
 func _process(delta: float) -> void:
+	if _native_menu_focus():
+		_release_all()
+		return
 	if _formation_held and (not _gameplay() or _suspended): _release_all()
 	if _area_pending:
 		if not _gameplay() or _suspended:

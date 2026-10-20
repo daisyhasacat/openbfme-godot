@@ -42,7 +42,7 @@ func _ready() -> void:
  address.text=str(config.get_value("server","url",DEFAULT_SERVER));connection.add_child(address)
  var connect_button:=Button.new();connect_button.text="Connect";connection.add_child(connect_button)
  connect_button.pressed.connect(_connect_server)
- var bulk:=HBoxContainer.new();column.add_child(bulk)
+ var bulk:=HFlowContainer.new();column.add_child(bulk)
  maps_button=Button.new();maps_button.text="Download all maps to library";maps_button.disabled=true;bulk.add_child(maps_button)
  maps_button.pressed.connect(func():_download_batch(map_packs,"maps to the map library"))
  builtin_button=Button.new();builtin_button.text="Download all 2.02 content / built-ins";builtin_button.disabled=true;bulk.add_child(builtin_button)
@@ -56,6 +56,12 @@ func _ready() -> void:
  progress=ProgressBar.new();progress.max_value=100;column.add_child(progress)
  var close:=Button.new();close.text="Close";close.pressed.connect(queue_free);column.add_child(close)
  request=HTTPRequest.new();request.use_threads=true;request.timeout=1800;add_child(request)
+ preload("res://scripts/menu_accessibility.gd").prepare(self)
+ connect_button.call_deferred("grab_focus")
+
+func _unhandled_input(event:InputEvent)->void:
+ if event.is_action_pressed("ui_cancel"):
+  get_viewport().set_input_as_handled();queue_free()
 
 func _process(_delta:float)->void:
  if busy and not request.download_file.is_empty():
@@ -89,7 +95,7 @@ func _connect_server()->void:
   if not catalog.is_empty():status.text="Unsupported catalogue version."
   return
  var config:=ConfigFile.new();config.set_value("server","url",origin);config.save(SETTINGS)
- for child in rows.get_children():child.queue_free()
+ for child in rows.get_children():rows.remove_child(child);child.queue_free()
  map_packs=[];builtin_packs=[]
  for value in catalog.get("packs",[]):
   if not value is Dictionary:continue
@@ -110,6 +116,8 @@ func _connect_server()->void:
   button.pressed.connect(func():_download(pack))
  maps_button.disabled=map_packs.is_empty();builtin_button.disabled=builtin_packs.is_empty()
  maps_button.text="Download all maps to library (%d)"%map_packs.size()
+ preload("res://scripts/menu_accessibility.gd").prepare(self)
+ if not maps_button.disabled:maps_button.grab_focus()
  status.text="%d packs available. Mods take effect after enabling them and restarting; maps appear after reopening the map browser." % catalog.get("packs",[]).size()
 
 func _download_batch(packs:Array, description:String)->void:

@@ -190,3 +190,10 @@ Checks: `python3 -m unittest discover -s tools/lan_content`; the Godot
 synthetic server with `OPENBFME_LAN_TEST_URL`. iOS exports include local-network
 permission and HTTP access for numeric LAN addresses; device validation is still
 required after rebuilding the iOS app.
+
+The main menu’s **Games / Mods** control is a full-size button. You can also open
+**Options → Mods → Games, mods and LAN downloads**. Native mod/download controls
+use at least 48-pixel touch targets, visible controller focus, and sequential
+D-pad/keyboard navigation that scrolls focused rows into view. Accept activates
+a button; Back closes the top dialog and restores focus. Back or directional
+navigation from Options’ Mods entry returns to the options tabs.
