@@ -142,7 +142,7 @@ TEST_CASE("render lighting: classic W3D surfaces are lit like defaultw3d.fxo, in
 	// The local directional shadow receiver keeps retail lighting in the vertex
 	// shader and uses Godot lighting only to apply shadow attenuation.
 	CHECK_FALSE(has(code, "unshaded"));
-	CHECK(has(code, "void light() { if (LIGHT_IS_DIRECTIONAL) DIFFUSE_LIGHT += ALBEDO * ATTENUATION; }"));
+	CHECK(has(code, "void light() { if (LIGHT_IS_DIRECTIONAL) DIFFUSE_LIGHT += vec3(ATTENUATION); }"));
 	CHECK_FALSE(has(code, "source_color")); // the retail arithmetic runs on the stored texel values
 	CHECK(has(code, "global uniform vec3 w3d_amb_obj;"));
 	CHECK(has(code, "global uniform mat3 w3d_lcol_inf;"));
@@ -226,4 +226,18 @@ TEST_CASE("render lighting: the classic lit power is clamped to +-127.9961 like 
 	k.PriGradient = W3D_GRADIENT_MODULATE;
 	const std::string code = Generate_W3D_Shader_Code(k);
 	CHECK(has(code, "pow(ndh, clamp(w3d_shininess, -127.996101, 127.996101))"));
+}
+
+TEST_CASE("render lighting: terrain SAS sun scale respects the overbright version gate")
+{
+	GlobalLightingData g;
+	g.version = 8;
+	g.terrainLightingMultiplier = 2.0f;
+	CHECK(W3DObjectLightingUtil::effectColorScale(g) == 2.0f);
+	g.terrainLightingMultiplier = 1.0f;
+	CHECK(W3DObjectLightingUtil::effectColorScale(g) == 1.0f);
+	g.terrainLightingMultiplier = 1.5f;
+	CHECK(W3DObjectLightingUtil::effectColorScale(g) == 2.0f);
+	g.version = 4;
+	CHECK(W3DObjectLightingUtil::effectColorScale(g) == 1.0f);
 }

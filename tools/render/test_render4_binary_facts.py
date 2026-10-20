@@ -116,3 +116,24 @@ def test_default_lookup_is_the_identity_strip(mount):
 
     for slice_, x, y in ((0, 0, 0), (5, 7, 11), (31, 31, 31), (16, 3, 29)):
         assert rgb(slice_ * 32 + x, y) == (x * 255 // 31, y * 255 // 31, slice_ * 255 // 31)
+
+
+@needs_installs
+def test_terrain_main_light_uses_sas_directional_binding(mount):
+    # terrain.fxo's MainDirectionalLight is not a raw INI colour: its SAS
+    # binding reaches the same colour callback as object directional lights.
+    data = mount.read("shaders\\compiled\\terrain.fxo")
+    assert b"MainDirectionalLight\0" in data
+    assert b"Sas.DirectionalLight[0]\0" in data
+
+
+@needs_binary
+def test_sas_directional_colour_doubles_before_terrain_overbright_halving(img):
+    lines = body(img, 0x54D001, 0x40)
+    assert "54d001 cmp byte ptr [0xd9b03c], 0" in lines
+    assert "54d029 je 0x54d04e" in lines
+    assert "54d02b movss xmm0, dword ptr [0xbd889c]" in lines
+    assert "54d033 mulss xmm1, xmm0" in lines
+    assert "54d037 mulss xmm2, xmm0" in lines
+    assert "54d03b mulss xmm3, xmm0" in lines
+    assert struct.unpack_from("<f", img.data, img.off(0xBD889C))[0] == 2.0
