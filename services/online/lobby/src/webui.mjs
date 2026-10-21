@@ -146,7 +146,7 @@ async function loadRooms(more=false){
 }
 async function selectRoom(id){
  const auth=state.key;const data=await adminApi('/v1/admin/games/'+encodeURIComponent(id));if(state.key!==auth)return;state.room=data.game;const g=data.game;
- renderMatchStatistics(g.statistics);$('room-title').textContent=g.name; $('room-detail').textContent=g.state+' · '+mapName(g.map)+(g.private?' · Private':'')+' · '+g.roster.map(p=>p.name+(p.ready?' (ready)':'')).join(', ');
+ renderMatchStatistics(g.statistics);for(const report of g.desyncReports??[]){const details=element('details');details.append(element('summary','Desync · slot '+report.slot+' · '+report.body.platform+' · '+report.body.commit),element('pre',report.body.dump));$('room-statistics').append(details);}$('room-title').textContent=g.name; $('room-detail').textContent=g.state+' · '+mapName(g.map)+(g.private?' · Private':'')+' · '+g.roster.map(p=>p.name+(p.ready?' (ready)':'')).join(', ');
  const target=$('chat-lines'),atBottom=target.scrollHeight-target.scrollTop-target.clientHeight<40;target.replaceChildren();
  for(const line of g.chat){const li=element('li');li.append(element('small',new Date(line.at).toLocaleString()+' · '+line.from),element('span',line.text));target.append(li);}
  if(!g.chat.length)target.append(element('li','No messages in this room.'));if(atBottom)target.scrollTop=target.scrollHeight;

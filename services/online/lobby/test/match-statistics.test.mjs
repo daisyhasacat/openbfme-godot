@@ -34,7 +34,9 @@ test('Worker accepts detailed reports and restores chunked metadata across objec
  const f=await fixture(store);let ready;const state={storage:{put:async(k,v)=>stored.set(k,structuredClone(v)),delete:async k=>stored.delete(k),list:async({prefix})=>new Map([...stored].filter(([k])=>k.startsWith(prefix)))},blockConcurrencyWhile:fn=>{ready=fn();}};
  let worker=new LobbyObject(state,config);await ready;const body=report();body.players[0].templates=Array.from({length:250},(_,i)=>({name:'ModBuilding'+i+'X'.repeat(80),kind:'structure',built:2,lost:0,destroyed:1,hordes_built:0}));
  const response=await worker.fetch(new Request('https://lobby/v1/games/'+f.id+'/statistics',{method:'POST',headers:{authorization:'Bearer '+f.a.token,'Content-Type':'application/json'},body:JSON.stringify(body)}));assert.equal(response.status,200);
- worker=new LobbyObject(state,config);await ready;const stats=accountStatistics(worker.lobby.matchStatistics.values(),f.a.account.id);assert.equal(stats.wins,1);assert.equal(stats.templates.length,250);assert.equal(stats.templates[0].built,2);
+ const diagnostic={v:1,platform:'iOS',commit:'worker-test',dump:'DESYNC: frame 100'};
+ const diagnosticResponse=await worker.fetch(new Request('https://lobby/v1/games/'+f.id+'/desync',{method:'POST',headers:{authorization:'Bearer '+f.a.token,'Content-Type':'application/json'},body:JSON.stringify(diagnostic)}));assert.equal(diagnosticResponse.status,200);
+ worker=new LobbyObject(state,config);await ready;assert.equal(worker.lobby.desyncReports.get(f.id+':0').body.dump,diagnostic.dump);const stats=accountStatistics(worker.lobby.matchStatistics.values(),f.a.account.id);assert.equal(stats.wins,1);assert.equal(stats.templates.length,250);assert.equal(stats.templates[0].built,2);
 });
 
 test('private match details and statistics never leak through public history, and revoked sessions cannot report',async()=>{
@@ -44,4 +46,26 @@ test('private match details and statistics never leak through public history, an
  const publicText=JSON.stringify((await call(f.lobby,'GET','/v1/history')).body);assert.equal(publicText.includes('ModBarracks'),false);
  await call(f.lobby,'POST','/v1/admin/users/'+encodeURIComponent(f.b.account.id),{action:'revoke',revision:0},undefined,true);
  assert.equal((await send(f,report(),f.b.token)).status,401);
+});
+
+
+test('desync diagnostics authenticate original participants, persist both slots and stay admin-only',async()=>{
+ const saved=new Map(),f=await fixture({saveMeta:async(k,v)=>saved.set(k,structuredClone(v))});
+ const body={v:1,platform:'iOS',commit:'abc123',dump:'Frame #103\nDESYNC: frame 100 differs'};
+ const post=(token,b=body)=>call(f.lobby,'POST',`/v1/games/${f.id}/desync`,b,token);
+ assert.equal((await post(f.c.token)).status,403);
+ assert.equal((await post()).status,401);
+ assert.equal((await post(f.a.token)).status,200);
+ assert.equal((await post(f.a.token)).body.unchanged,true);
+ assert.equal((await post(f.b.token,{...body,platform:'macOS'})).status,200);
+ assert.equal((await post(f.a.token,{...body,dump:'unrelated log'})).status,400);
+ assert.equal((await post(f.a.token,{...body,dump:'DESYNC:'+ 'x'.repeat(48000)})).status,413);
+ assert.equal((await post(f.a.token,{...body,token:'secret'})).status,400);
+ const restored=new Lobby(nodeEnv({}),configFromEnv(config));restored.load([...f.lobby.games.values()],[...saved.values()]);
+ assert.equal(restored.desyncReports.size,2);
+ const admin=await call(restored,'GET',`/v1/admin/games/${f.id}`,undefined,undefined,true);
+ assert.equal(admin.body.game.desyncReports.length,2);
+ assert.equal(admin.body.game.desyncReports[0].body.dump,body.dump);
+ assert.equal(JSON.stringify((await call(f.lobby,'GET','/v1/history')).body).includes('DESYNC:'),false);
+ assert.equal((await call(f.lobby,'GET',`/v1/admin/games/${f.id}`)).status,401);
 });

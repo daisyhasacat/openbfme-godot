@@ -40,4 +40,13 @@ func _run() -> void:
 	share=false
 	check(await wait_for(func(): return restored.pending.is_empty()),"opt-out clears queued credentials")
 	restored.free()
+	var diagnostics = Reports.new()
+	diagnostics.endpoint = "desync"
+	diagnostics.path = folder.path_join("desync.json")
+	diagnostics.sharing = func(): return true
+	root.add_child(diagnostics)
+	context.url = base + "/diagnostics"
+	check(diagnostics.enqueue(context, {"v": 1, "platform": "iOS", "commit": "test", "dump": "DESYNC: frame 100"}), "desync queued independently of statistics sharing")
+	check(await wait_for(func(): return diagnostics.pending.is_empty()), "desync uploaded")
+	diagnostics.free()
 	quit(0 if failures==0 else 1)

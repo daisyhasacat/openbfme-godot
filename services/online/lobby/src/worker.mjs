@@ -197,7 +197,8 @@ export class LobbyObject {
       const history = await state.storage.list({ prefix: 'game-history:' });
       const matches = await state.storage.list({ prefix: 'match-statistics:' });
       const reports = await state.storage.list({ prefix: 'match-report:' });
-      this.lobby.load([...games.values()], [...relays.values(), ...users.values(), ...history.values(), ...matches.values(), ...reports.values()]);
+      const desyncs = await state.storage.list({ prefix: 'match-desync:' });
+      this.lobby.load([...games.values()], [...relays.values(), ...users.values(), ...history.values(), ...matches.values(), ...reports.values(), ...desyncs.values()]);
       await this.lobby.restoreArchives();
     });
   }
@@ -218,7 +219,7 @@ export class LobbyObject {
     if (isLog) this.reading.logs += 1;
     let out;
     try {
-      const body = await readBodyLimited(request, isLog ? this.lobby.maxLogBytes() : /^\/v1\/games\/[0-9a-f]{16}\/statistics$/.test(path) ? MAX_REPORT_BYTES : MAX_JSON_BYTES, this.bodyTimeoutMs);
+      const body = await readBodyLimited(request, isLog ? this.lobby.maxLogBytes() : /^\/v1\/games\/[0-9a-f]{16}\/(?:statistics|desync)$/.test(path) ? MAX_REPORT_BYTES : MAX_JSON_BYTES, this.bodyTimeoutMs);
       if (body.status) return refuse(body.status, body.code, body.error);
       const run = this.queue.then(() => this.handle(request, body.bytes));
       this.queue = run.catch(() => {});

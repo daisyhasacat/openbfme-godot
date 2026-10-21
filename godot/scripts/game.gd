@@ -417,6 +417,7 @@ var _platform_http: Node = null
 var _platform_ready := false
 var _statistics_context := {}
 var _statistics_uploader: Node
+var _desync_uploader: Node
 var _hub_online := {}              # the online game being started: { id, match, tournament } (the record's id: the match's when there is one)
 var _hub_kind := ""                # "skirmish" / "lan" / "online": the kind of the game being played ("" none: not recorded)
 var _hub_game_id := ""
@@ -5208,6 +5209,7 @@ func _share_results() -> bool:
 ## request goes out only when the player opens an online page or a LAN / online game ends (and shares results)
 func _platform_setup() -> void:
 	_statistics_setup()
+	_desync_reporting_setup()
 	if _platform_ready:
 		return
 	_platform_ready = true
@@ -6000,6 +6002,7 @@ func _net_tick() -> void:
 		printerr(d)
 	if not st.desyncs.is_empty() and not _desync_shown:
 		_desync_shown = true
+		_report_desync(_statistics_context.duplicate(true), st.get("desync_dumps", []).duplicate(), st.desyncs.duplicate())
 		_show_desync_box(st.get("desync_dumps", []))
 	_net_disconnect_tick(st.get("disconnect", {}))
 	_online_relay_tick(st) # lane ONLINEUX-1
@@ -7151,3 +7154,29 @@ func _run_menu_colours() -> void:
 	var ok := green == 0 and _menu_colours_problems.is_empty()
 	print("UI4 COLOURS %s: %d screens, %d green-dominant texts, %d problems" % ["PASS" if ok else "FAIL", screens, green, _menu_colours_problems.size()])
 	get_tree().quit(0 if ok else 1)
+
+
+## Send only the bounded desync dump, never the session log or relay credentials.
+## Wait briefly for the other peer's hash breakdown to arrive before reading the dump.
+func _report_desync(context: Dictionary, dumps: Array, summaries: Array) -> void:
+	if context.is_empty():
+		return
+	await get_tree().create_timer(2.0).timeout
+	_desync_reporting_setup()
+	var dump := "\n".join(summaries)
+	if not dumps.is_empty() and FileAccess.file_exists(str(dumps[0])):
+		var file := FileAccess.open(str(dumps[0]), FileAccess.READ)
+		if file != null:
+			dump = file.get_buffer(16000).get_string_from_utf8()
+	var body := {"v": 1, "platform": OS.get_name(), "commit": str(Release.info.commit()) if Release.info != null else "unknown", "dump": dump.left(16000)}
+	if _desync_uploader.enqueue(context, body):
+		print("GAME DESYNC report queued: ", context.id)
+
+
+func _desync_reporting_setup() -> void:
+	if _desync_uploader == null:
+		_desync_uploader = load("res://scripts/match_statistics.gd").new()
+		_desync_uploader.endpoint = "desync"
+		_desync_uploader.path = "user://online_desync_outbox.json"
+		_desync_uploader.sharing = func(): return true
+		add_child(_desync_uploader)

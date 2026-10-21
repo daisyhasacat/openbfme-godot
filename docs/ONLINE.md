@@ -1296,3 +1296,15 @@ the started games the account left (`"left": [ids]`, newest 32; optional for the
 after the leave lists those games neither as REJOIN nor as WATCH (the lobby refuses a player of the game as its spectator, `409 player`). A rejoin or
 watch that fails before it is live (`game.gd _online_game_failed`) is no leave: the client forgets the game without `POST .../leave`, the network
 session sends no frame counts and no PLAYERLEAVE for an incarnation that never went live, and the lobby keeps offering the game for a rejoin.
+
+
+This fork automatically sends a bounded desync diagnostic to the same lobby when
+an online match goes out of sync (`POST /v1/games/<id>/desync`). Each original
+participant can submit one report per match, authenticated with their lobby
+session. The report contains the platform, build commit and the first 16,000
+bytes of the desync dump (or its summary), including subsystem and object hashes.
+It excludes the session log, replay and credentials. The client queues it privately
+and retries interrupted uploads, including after restart. This diagnostic is
+automatic independently of match-statistics sharing. Reports are retained with
+the match and visible only in its administrator detail view, never public history.
+Both apps must be rebuilt, and the server must include this endpoint.

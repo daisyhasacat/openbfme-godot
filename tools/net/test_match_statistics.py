@@ -49,6 +49,7 @@ def main():
             print(result.stdout, result.stderr)
             assert result.returncode == 0
             assert '/trap' not in seen
+            assert '/diagnostics/v1/games/0123456789abcdef/desync' in seen
             assert len([p for p in seen if p.startswith('/retry/')]) == 2
             assert all(value == 'Bearer test-secret' for value in authorizations)
             if os.name == 'posix':

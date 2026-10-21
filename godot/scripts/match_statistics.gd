@@ -4,6 +4,7 @@ extends Node
 
 const MAX_BYTES := 512 * 1024
 const MAX_PENDING := 32
+var endpoint := "statistics"
 var path := "user://online_statistics_outbox.json"
 var sharing: Callable
 var pending: Array = []
@@ -36,7 +37,7 @@ func _ready() -> void:
 
 func _stop(message: String) -> void:
 	problem = message
-	printerr("GAME STATISTICS: ", message)
+	printerr("GAME " + endpoint.to_upper() + ": ", message)
 
 func _valid_entry(entry) -> bool:
 	return entry is Dictionary and entry.get("id") is String and entry.id.length() == 16 and entry.id.to_lower() == entry.id and entry.id.is_valid_hex_number(false) and entry.get("url") is String and load("res://scripts/online_lobby.gd").lobby_url_problem(entry.url).is_empty() and entry.get("token") is String and not entry.token.is_empty() and entry.token.length() <= 4096 and entry.get("body") is Dictionary and JSON.stringify(entry.body).to_utf8_buffer().size() <= MAX_BYTES
@@ -72,16 +73,16 @@ func enqueue(context: Dictionary, body: Dictionary) -> bool:
 		return false
 	var entry := {"id": context.get("id", ""), "url": context.get("url", ""), "token": context.get("token", ""), "body": body}
 	if not problem.is_empty() or not _valid_entry(entry):
-		printerr("GAME STATISTICS report could not be queued: invalid context, oversized body, or unavailable outbox.")
+		printerr("GAME " + endpoint.to_upper() + " report could not be queued: invalid context, oversized body, or unavailable outbox.")
 		return false
 	for old in pending:
 		if old.id == entry.id and old.url == entry.url:
 			if JSON.stringify(old.body) != JSON.stringify(body):
-				printerr("GAME STATISTICS duplicate game has a different snapshot; existing report retained.")
+				printerr("GAME " + endpoint.to_upper() + " duplicate game has a different snapshot; existing report retained.")
 				return false
 			return true
 	if pending.size() == MAX_PENDING:
-		printerr("GAME STATISTICS outbox has 32 pending games; existing reports were retained and will keep uploading.")
+		printerr("GAME " + endpoint.to_upper() + " outbox has 32 pending games; existing reports were retained and will keep uploading.")
 		return false
 	var next := pending.duplicate(true)
 	next.append(entry)
@@ -110,7 +111,7 @@ func _process(_delta: float) -> void:
 	_active = entry
 	_busy = true
 	requests_sent += 1
-	var error := _http.request(entry.url.trim_suffix("/") + "/v1/games/" + entry.id + "/statistics", PackedStringArray(["Content-Type: application/json", "Authorization: Bearer " + entry.token]), HTTPClient.METHOD_POST, JSON.stringify(entry.body))
+	var error := _http.request(entry.url.trim_suffix("/") + "/v1/games/" + entry.id + "/" + endpoint, PackedStringArray(["Content-Type: application/json", "Authorization: Bearer " + entry.token]), HTTPClient.METHOD_POST, JSON.stringify(entry.body))
 	if error != OK:
 		_done(HTTPRequest.RESULT_CANT_CONNECT, 0, PackedStringArray(), PackedByteArray())
 
@@ -123,7 +124,7 @@ func _done(result: int, code: int, _headers: PackedStringArray, bytes: PackedByt
 	if result == HTTPRequest.RESULT_SUCCESS and code == 200 and response is Dictionary and response.get("v") == 1 and response.get("stored") == true:
 		var next: Array = pending.filter(func(entry): return entry.id != _active.id or entry.url != _active.url)
 		if _persist(next):
-			print("GAME STATISTICS stored: ", _active.id, " (client-reported)")
+			print("GAME " + endpoint.to_upper() + " stored: ", _active.id, " (client-reported)")
 		_attempts = 0
 		_next = 0.0
 		return
@@ -132,7 +133,7 @@ func _done(result: int, code: int, _headers: PackedStringArray, bytes: PackedByt
 	if permanent or _attempts == 12:
 		_blocked[_active.id + _active.url] = true
 		_attempts = 0
-		printerr("GAME STATISTICS not accepted (HTTP %d); report retained privately for recovery: %s" % [code, _active.id])
+		printerr("GAME " + endpoint.to_upper() + " not accepted (HTTP %d); report retained privately for recovery: %s" % [code, _active.id])
 	else:
-		printerr("GAME STATISTICS upload interrupted (HTTP %d); retained for retry: %s" % [code, _active.id])
+		printerr("GAME " + endpoint.to_upper() + " upload interrupted (HTTP %d); retained for retry: %s" % [code, _active.id])
 	_next = Time.get_ticks_msec() / 1000.0 + minf(60.0, retry_seconds * pow(2.0, _attempts - 1))

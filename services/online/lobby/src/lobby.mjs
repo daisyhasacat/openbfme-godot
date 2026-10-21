@@ -241,6 +241,7 @@ export class Lobby {
     }
     this.users = new Map(); // persisted guest identities and moderation revisions; never session tokens
     this.matchStatistics = new Map();
+    this.desyncReports = new Map();
     this.history = new Map(); // durable sanitized completed/cancelled games, separate from expiring live rooms
     this.games = new Map(); // id -> game
     this.buckets = new Map(); // rate limit key -> { tokens, at }
@@ -320,6 +321,7 @@ export class Lobby {
 
   load(games, relayStatus = []) {
     this.matchStatistics = loadStatistics(relayStatus);
+    this.desyncReports = new Map(relayStatus.filter(r => r.kind === "match-desync").map(r => [r.id + ":" + r.slot, r]));
     for (const g of games) this.games.set(g.id, g);
     for (const r of relayStatus) {
       if (r.kind === 'user') this.users.set(r.id, r);
@@ -468,7 +470,7 @@ export class Lobby {
     const current = this.games.get(id);
     const record = this.history.get(id) ?? (current ? gameRecord(this, current) : null);
     if (!record) throw new LobbyError(404, 'no_game', 'this game is not available');
-    return { v: VERSION, game: { ...record, statistics: this.matchStatistics.has(id) ? summarizeMatch(this.matchStatistics.get(id), { details: true }) : null } };
+    return { v: VERSION, game: { ...record, desyncReports: [...this.desyncReports.values()].filter(r => r.id === id), statistics: this.matchStatistics.has(id) ? summarizeMatch(this.matchStatistics.get(id), { details: true }) : null } };
   }
   async archiveGame(game) {
     const record = gameRecord(this, game);
@@ -508,6 +510,28 @@ export class Lobby {
     await this.env.store.saveMeta?.(`match-statistics:${game.id}`, record);
     this.matchStatistics.set(game.id, record);
   }
+  async reportDesync(account, id, body) {
+    const match = this.matchStatistics.get(id);
+    if (!match) throw new LobbyError(404, 'no_match', 'no started match for diagnostics');
+    const person = match.roster.find(p => p.accountId === account.id && !p.computer);
+    if (!person) throw new LobbyError(403, 'not_a_player', 'only original participants may report diagnostics');
+    this.limit(`desync:${account.id}`, 6, 6);
+    if (!body || body.v !== 1 || typeof body.platform !== 'string' || body.platform.length > 64 ||
+        typeof body.commit !== 'string' || body.commit.length > 64 || typeof body.dump !== 'string' || !body.dump.startsWith('Frame #') && !body.dump.startsWith('DESYNC:') ||
+        new TextEncoder().encode(JSON.stringify(body)).length > 48000 || Object.keys(body).some(k => !['v', 'platform', 'commit', 'dump'].includes(k)))
+      throw bad('bad_report', 'invalid or oversized desync report');
+    const key = id + ':' + person.slot;
+    const old = this.desyncReports.get(key);
+    if (old) {
+      if (JSON.stringify(old.body) !== JSON.stringify(body)) throw new LobbyError(409, 'report_exists', 'desync report already stored');
+      return { v: 1, stored: true, unchanged: true };
+    }
+    const entry = { kind: 'match-desync', id, slot: person.slot, receivedAt: this.env.now(), body };
+    await this.env.store.saveMeta?.('match-desync:' + key, entry);
+    this.desyncReports.set(key, entry);
+    return { v: 1, stored: true };
+  }
+
   async reportStatistics(account, id, body) {
     const match = this.matchStatistics.get(id);
     if (!match) throw new LobbyError(404, 'no_match', 'no started match for statistics');
@@ -1355,6 +1379,7 @@ export async function route(lobby, req) {
       return answer(hold?.backoff); // Sol r1: not held for a bound: the client is told how long to wait
 
     }
+    if (m === 'POST' && p.length === 4 && p[3] === 'desync') return json(200, await lobby.reportDesync(account, id, await body(48000)));
     if (m === 'POST' && p.length === 4 && p[3] === 'statistics') return json(200, await lobby.reportStatistics(account, id, await body(MAX_REPORT_BYTES)));
     const actions = { join: 'join', leave: 'leave', slot: 'setSlot', setup: 'setSetup', ready: 'ready', chat: 'chat', kick: 'kick', start: 'start', rejoin: 'rejoin', spectate: 'spectate' };
     if (m === 'POST' && p.length === 4 && actions[p[3]]) {
