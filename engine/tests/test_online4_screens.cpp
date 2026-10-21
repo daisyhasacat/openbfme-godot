@@ -1450,6 +1450,30 @@ TEST_CASE("online4 retail: OnlineShell.apt on a local lobby: guest sign-in, the 
 			representative |= target.id.find(section == 2 ? ".MapList" : section == 0 ? ".PlayGame." : ".PlayerList.") != std::string::npos;
 		CHECK(representative);
 	}
+	// RB cycles Map -> Rules -> Chat -> Map; LB wraps back through Chat.
+	const char *activeTabs[] = { "RulesTab", "ChatTab", "MapTab", "ChatTab", "RulesTab", "MapTab" };
+	int tabStep = 0;
+	for (MenuNavKey key : { MenuNavKey::PageNext, MenuNavKey::PageNext, MenuNavKey::PageNext,
+		MenuNavKey::PagePrevious, MenuNavKey::PagePrevious, MenuNavKey::PagePrevious })
+	{
+		REQUIRE(controller.key(key));
+		host.tick(60);
+		CHECK(controller.controllerSection() == 2);
+		for (const char *name : { "MapTab", "RulesTab", "ChatTab" })
+		{
+			bool available = false;
+			for (const auto &target : controller.targets()) available |= target.id.find(std::string(".TabButtons.") + name + ".") != std::string::npos;
+			CHECK(available == (std::string(name) != activeTabs[tabStep]));
+		}
+		++tabStep;
+		if (std::string(activeTabs[tabStep - 1]) == "ChatTab")
+		{
+			REQUIRE(host.sh->chatEntryWindow());
+			bool chatInSection = false;
+			for (const auto &target : controller.targets()) chatInSection |= target.window == host.sh->chatEntryWindow();
+			CHECK(chatInSection);
+		}
+	}
 	controller.setControllerSections(false);
 
 

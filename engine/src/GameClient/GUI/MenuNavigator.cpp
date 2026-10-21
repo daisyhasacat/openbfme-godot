@@ -107,13 +107,16 @@ std::string leafOf(const std::string &path)
 
 int sectionOf(const MenuNavTarget &target)
 {
+	const std::string leaf = leafOf(target.id);
+	if (leaf == "Chat" || leaf == "ChatPlayers" || leaf == "ChatEntry") return 2;
 	if (target.id.find(".MpMapAndSettings.") != std::string::npos ||
 		target.id.find(".MpMapSettings.") != std::string::npos ||
 		target.id.find(".TabButtons.") != std::string::npos ||
 		target.id.find(".TabMap.") != std::string::npos ||
 		target.id.find(".MapsTabSelected.") != std::string::npos ||
 		target.id.find(".RulesTabSelected.") != std::string::npos ||
-		target.id.find(".ChatTabSelected.") != std::string::npos) return 2;
+		target.id.find(".ChatTabSelected.") != std::string::npos ||
+		target.id.find(".TabChat.") != std::string::npos) return 2;
 	if (target.id.find(".lobby.") != std::string::npos || target.id.find(".MainButtons.") != std::string::npos || target.id.find(".ProfileNav.") != std::string::npos ||
 		target.id.find(".LowerButtons_") != std::string::npos || target.id.find(".MessengerButton.") != std::string::npos) return 0;
 	return 1;
@@ -813,17 +816,26 @@ bool MenuNavigator::key(MenuNavKey key)
 	}
 	if (key == MenuNavKey::PageNext || key == MenuNavKey::PagePrevious)
 	{
-		// The lobby movie exposes only the inactive Maps/Rules tab as a button.
+		// Active tabs have no button. The remaining buttons identify the current
+		// page and whether this movie offers Chat as its third page.
+		const char *names[] = { ".TabButtons.MapTab.", ".TabButtons.RulesTab.", ".TabButtons.ChatTab." };
+		const MenuNavTarget *tabs[3] = {};
+		int found = 0;
 		for (const auto &target : list)
+			if (target.kind == MenuNavTarget::Kind::Button)
+				for (int i = 0; i < 3; ++i)
+					if (target.id.find(names[i]) != std::string::npos && !tabs[i]) { tabs[i] = &target; ++found; }
+		const int count = found == 2 || tabs[2] ? 3 : 2;
+		for (int active = 0; active < count; ++active)
 		{
-			if (target.kind == MenuNavTarget::Kind::Button &&
-				(target.id.find(".TabButtons.MapTab.") != std::string::npos || target.id.find(".TabButtons.RulesTab.") != std::string::npos))
-			{
-				focus(target);
-				press(target);
-				clearFocus();
-				return true;
-			}
+			if (tabs[active]) continue;
+			const int next = (active + (key == MenuNavKey::PageNext ? 1 : count - 1)) % count;
+			if (!tabs[next]) continue;
+			if (m_controllerSections) m_section = 2;
+			focus(*tabs[next]);
+			press(*tabs[next]);
+			clearFocus();
+			return true;
 		}
 		return false; // a screen without pages
 	}
