@@ -1737,7 +1737,7 @@ TEST_CASE("Buckland wights acquire and engage Boromir from eight approach direct
 	}
 }
 
-TEST_CASE("Forlindon docks: two flags capture their shipwrights; the third is outside the verified 150-unit lookup")
+TEST_CASE("Forlindon docks: the pinned misplaced-flag correction makes all three shipwrights capturable")
 {
 	if (!haveWorld("Forlindon docks")) return;
 	SharedWorld &s = shared();
@@ -1780,6 +1780,6 @@ TEST_CASE("Forlindon docks: two flags capture their shipwrights; the third is ou
 		std::printf("Forlindon flag %u / dock %u: distance squared %.3f, capture order %d, flag owned %d, dock owned %d\n",
 			flag->getID(), dock->getID(), nearest, sent, flag->getControllingPlayer() == h.rig.local, dock->getControllingPlayer() == h.rig.local);
 	}
-	CHECK(captured == 2);
-	CHECK(outsideRange == 1);
+	CHECK(captured == 3);
+	CHECK(outsideRange == 0);
 }

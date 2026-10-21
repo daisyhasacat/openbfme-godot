@@ -1,4 +1,4 @@
-# Forlindon dock capture investigation
+# Forlindon dock capture correction
 
 The installed RotWK map `maps/map wor forlindon/map wor forlindon.map` has three
 ShipWright objects, each beside a separate CaptureFlag. Infantry target the flag:
@@ -9,7 +9,7 @@ measured between object centers in 3D. Both the context action's permission chec
 and the special ability's eventual capture lookup use that limit. A flag without
 a linked building in range receives no capture order.
 
-The map placements and observed results with a GondorFighterHorde are:
+Before the correction, the map placements and observed results with a GondorFighterHorde were:
 
 | Flag position (x, y, z) | Shipwright position (x, y, z) | Distance | Result |
 | --- | --- | --- | --- |
@@ -30,11 +30,28 @@ Evidence:
   (RW 0x82D0A1) and `SpecialAbilityUpdate`'s capture trigger (RW 0x8544F2).
   `PartitionManager.h` defines distance type 1 as `FROM_CENTER_3D`.
 - `test_factc_sweep.cpp`, `Forlindon docks: ...`: loads the actual map, creates
-  capture-capable infantry, right-clicks each dock's flag, and asserts the order
-  and ownership results above after allowing the capture to complete.
+  capture-capable infantry, right-clicks each dock's flag, and now asserts successful orders and ownership transfer for all three docks.
 
-This establishes the cause in the port with the installed map data. It does not
-establish that the original retail executable exhibits the same map issue:
-RotWK binary provenance still carries S-001, and this investigation did not run
-an original retail client. A retail capture attempt at the out-of-range flag is
-the next useful comparison before changing the range or map data.
+## Applied fix
+
+The named fork correction `forlindon-dock-flag-v1` moves only the misplaced flag
+50 world units toward its dock (y decreases from 2668.652 to 2618.652). Its height
+is resampled from the terrain while preserving its authored height offset. The
+resulting center distance is approximately 139.7 units, within the unchanged
+150-unit capture lookup. All three flags and docks now transfer ownership in the
+normal infantry right-click regression test.
+
+The correction table is `engine/data/map_object_corrections.inc`; content names
+and coordinates live there rather than in capture or simulation code. The shared
+map-classification path applies a row only when the map name and original map-file
+CRC32 match. The tested file has CRC32 `0x0b5173f0` after archive extraction. A
+modified map with different bytes is left as authored. An exact matching file
+whose expected placement cannot be uniquely found produces a loading error.
+Application is reported as `[MAP-FIX forlindon-dock-flag-v1]` in classification
+stops. No game archive is rewritten and no retail assets are committed.
+
+This is a deliberate, named correction in this fork, not a claim about original
+retail behavior. RotWK binary provenance still carries S-001, and the original
+retail client was not tested. The engine compatibility ID hashes both the
+correction code and its data table, so multiplayer peers need matching rebuilt
+engines; old native saves/replays retain their existing compatibility checks.
