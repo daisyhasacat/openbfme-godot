@@ -1,3 +1,4 @@
+#include <godot_cpp/classes/input.hpp>
 #include <godot_cpp/classes/engine.hpp>
 // OpenBFME. GPL-3.0.
 // See GodotAptPlayer.h.
@@ -5763,6 +5764,8 @@ void AptMenuPlayer::syncNav() const
 	// MainMenu uses the pre-OPTS-6 dropdown group navigation in menuKey.
 	// Keep the spatial navigator off that movie and its animated submenus.
 	m->shell->nav->setMenu(top && top->filename() != "MainMenu.apt" && top->isMenu() && !top->isHidden() && top->level() >= 0 ? top->level() : -1, top);
+	m->shell->nav->setControllerResults(top && top->filename() == "TimeLine.apt" &&
+		!Input::get_singleton()->get_connected_joypads().is_empty());
 }
 
 bool AptMenuPlayer::modal_menu() const

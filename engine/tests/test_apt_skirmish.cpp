@@ -2523,3 +2523,36 @@ TEST_CASE("skirmish controller: bottom bar reaches Profile and player corners st
 	}
 	CHECK(corners == 8);
 }
+
+TEST_CASE("results controller: A skips preview, More and Continue default, B returns")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	LobbyFx fx(mount, false);
+	ScoreScreenData score;
+	score.valid = true;
+	score.type = 2;
+	fx.environment.scoreScreen = &score;
+	fx.shell->push("TimeLine.apt");
+	fx.tick(30);
+	MenuNavigator nav(*fx.wm);
+	nav.setMenu(fx.shell->top()->level(), fx.shell->top());
+	nav.setControllerResults(true);
+	CHECK(nav.focusId().find(".MainButtons.Skip") != std::string::npos);
+	REQUIRE(nav.key(MenuNavKey::Previous));
+	const std::string previewFocus = nav.focusId();
+	nav.setControllerResults(true);
+	CHECK(nav.focusId() == previewFocus);
+	REQUIRE(nav.key(MenuNavKey::Activate));
+	fx.tick(60);
+	nav.setControllerResults(true);
+	CHECK(nav.focusId().find(".MainButtons.More") != std::string::npos);
+	REQUIRE(nav.key(MenuNavKey::Activate));
+	fx.tick(60);
+	nav.setControllerResults(true);
+	CHECK(nav.focusId().find(".MainButtons.Continue") != std::string::npos);
+	REQUIRE(nav.key(MenuNavKey::Previous));
+	REQUIRE(nav.key(MenuNavKey::Back));
+	fx.tick(60);
+	nav.setControllerResults(true);
+	CHECK(nav.focusId().find(".MainButtons.More") != std::string::npos);
+}

@@ -92,6 +92,8 @@ public:
 	// True when the key was the navigation's (the caller passes it on to nothing else).
 	bool key(MenuNavKey key);
 	void setControllerSections(bool enabled);
+	// OpenBFME result-screen defaults, refreshed as the authored movie changes pages.
+	void setControllerResults(bool enabled);
 	void switchControllerSection(int delta);
 	int controllerSection() const { return m_controllerSections ? m_section : -1; }
 	// The real pointer moved (or pressed): the focus frame goes until the next key; the focus itself stays.
@@ -140,6 +142,8 @@ private:
 	bool m_frameShown = false;
 	bool m_controllerSections = false;
 	int m_section = 1; // bottom bar, player setup, maps/rules
+	bool m_controllerResults = false;
+	std::string m_resultPage;
 	bool m_noted = false; // the S-4981 note was given
 	std::vector<std::string> m_log;
 };

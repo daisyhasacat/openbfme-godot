@@ -145,6 +145,8 @@ void MenuNavigator::setMenu(int level, const void *screen)
 		m_level = level;
 		m_screen = screen;
 		m_focusId.clear();
+		m_resultPage.clear();
+		m_controllerResults = false;
 		m_frameShown = false;
 		m_controllerSections = false;
 		m_section = 1;
@@ -156,6 +158,29 @@ void MenuNavigator::setControllerSections(bool enabled)
 	if (m_controllerSections == enabled) return;
 	m_controllerSections = enabled;
 	clearFocus();
+}
+
+void MenuNavigator::setControllerResults(bool enabled)
+{
+	m_controllerResults = enabled;
+	if (!enabled) { m_resultPage.clear(); return; }
+	const auto list = targets();
+	// Prefer the preview's Skip, then More, then the statistics' Continue.
+	// Only transfer focus on a page change; the player can still browse tabs.
+	for (const char *name : { "Skip", "More", "Continue" })
+	{
+		const std::string path = std::string(".MainButtons.") + name;
+		for (const auto &target : list)
+		{
+			if (target.id.find(path) == std::string::npos) continue;
+			if (m_resultPage != name)
+			{
+				m_resultPage = name;
+				focus(target);
+			}
+			return;
+		}
+	}
 }
 
 void MenuNavigator::switchControllerSection(int delta)
@@ -715,6 +740,20 @@ bool MenuNavigator::key(MenuNavKey key)
 	std::vector<MenuNavTarget> list, catchers;
 	collect(list, &catchers, key != MenuNavKey::PageNext && key != MenuNavKey::PagePrevious);
 	const MenuNavTarget *current = find(list, m_focusId);
+	if (m_controllerResults && (key == MenuNavKey::Back || (key == MenuNavKey::Activate && m_resultPage == "Skip")))
+	{
+		const std::string path = key == MenuNavKey::Back ? ".MainButtons.Back" : ".MainButtons.Skip";
+		for (const auto &target : list)
+		{
+			if (target.id.find(path) != std::string::npos)
+			{
+				focus(target);
+				press(target);
+				return true;
+			}
+		}
+	}
+
 	// PROFILE is a movie-driven rollover menu, not a native combo box. Its
 	// heading remains a separate toggle while its entries animate in. Transfer
 	// focus into those entries; clicking the heading again closes the menu.
