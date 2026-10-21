@@ -406,7 +406,7 @@ void AptStats::yourRows()
 	const OnlineHubContext *hub = m_env.onlineHub;
 	if (!hub || !hub->records)
 	{
-		row(u"No games are recorded on this computer.", u"", u"");
+		row(u"No games are recorded yet.", u"", u"");
 		return;
 	}
 	const std::string focused = m_focus >= 0 && m_focus < (int)m_cardTemplates.size() && m_focus < kCards ? m_cardTemplates[(std::size_t)m_focus] : "";
@@ -422,7 +422,7 @@ void AptStats::yourRows()
 	const PlayerStats f = GameRecords::summarise(mine);
 	const bool hasFaction = !focused.empty();
 	auto fv = [&](const std::u16string &v) { return hasFaction ? v : std::u16string(); };
-	row(u"YOUR GAMES (this computer)", u"", u"");
+	row(u"YOUR GAMES", u"", u""); // player sync merges the games of every device (game_records.jsonl)
 	row(u"Games", fv(num(f.games)), num(all.games));
 	row(u"Wins", fv(num(f.wins)), num(all.wins));
 	row(u"Losses", fv(num(f.losses)), num(all.losses));

@@ -15,6 +15,7 @@ func run():
  await process_frame
  var client=load("res://scripts/player_sync.gd").new();root.add_child(client)
  client.server.text=url;client.username.text="fixture_"+str(Time.get_ticks_usec())
+ DirAccess.remove_absolute("user://game_records.jsonl")
  DirAccess.remove_absolute("user://Skirmish.ini") # profiles are merged (never dropped): start each run without leftovers
  var path="user://map-favorites.cfg"
  var file=FileAccess.open(path,FileAccess.WRITE);file.store_string("original profile");file.close()
@@ -110,6 +111,24 @@ func run():
  await client._sync()
  var local_profiles=FileAccess.get_file_as_string(profiles_path)
  check("B_00o_00b_00_2C_00" in local_profiles and "Map = maps\\e.map" in local_profiles and "G_00i_00m_00l_00i_00_2C_00" in local_profiles,"Sync now merges the other device's profile and setting locally: "+local_profiles)
+
+ # Game records (the stats pages): every game of both devices, once, oldest first; automatic sync writes them locally too
+ var game_a='{"v":1,"id":"sk-a","end":100}'
+ var game_b='{"v":1,"id":"sk-b","end":200}'
+ var game_c='{"v":1,"id":"sk-c","end":300}'
+ check(client.merge_records(game_a+"\n"+game_c+"\n",game_b+"\n"+game_a+"\n")==game_a+"\n"+game_b+"\n"+game_c+"\n","Records merge by id in time order")
+ var records_path="user://game_records.jsonl";var records_key=client.scope+"player/game_records.jsonl"
+ file=FileAccess.open(records_path,FileAccess.WRITE);file.store_string(game_a+"\n");file.close()
+ await client._sync()
+ var server_records=await client._call(url+"/v1/"+client.username.text+"/file/"+records_key.uri_encode())
+ response=await client._call(url+"/v1/"+client.username.text+"/file/"+records_key.uri_encode(),HTTPClient.METHOD_PUT,(game_a+"\n"+game_b+"\n").to_utf8_buffer(),sha256(server_records[3]))
+ check(response[1]==200,"Another device uploads its games")
+ file=FileAccess.open(records_path,FileAccess.READ_WRITE);file.seek_end();file.store_string(game_c+"\n");file.close()
+ await watch.worker._sync()
+ check(FileAccess.get_file_as_string(records_path)==game_a+"\n"+game_b+"\n"+game_c+"\n","Automatic sync merges the other device's games locally: "+FileAccess.get_file_as_string(records_path))
+ server_records=await client._call(url+"/v1/"+client.username.text+"/file/"+records_key.uri_encode())
+ check(server_records[3].get_string_from_utf8()==game_a+"\n"+game_b+"\n"+game_c+"\n","Automatic sync uploads every game")
+ DirAccess.remove_absolute(records_path)
  watch.worker.succeeded=true
  watch.worker.busy=true
  await client._sync()
@@ -122,5 +141,5 @@ func run():
  watch.queue_free()
  client.queue_free()
  await process_frame
- if not failed:print("PLAYER SYNC PASS: upload, restore, conflict backup, path restrictions, profile merge")
+ if not failed:print("PLAYER SYNC PASS: upload, restore, conflict backup, path restrictions, profile and game record merge")
  quit(1 if failed else 0)

@@ -1341,7 +1341,7 @@ TEST_CASE("onlinehub1 retail: the STATS page: the cards and Your stats from the 
 	CHECK(*p.fx.wm->aptText("Stats:PointsNextLevel_0") == "50% won");
 	CHECK(level(4) == "1 game, 100% won");
 	CHECK(level(1) == "No games");
-	CHECK(st->rowLines() == std::vector<std::string>{ "YOUR GAMES (this computer)||", "Games|2|3", "Wins|1|2", "Losses|1|1", "Win rate|50%|67%",
+	CHECK(st->rowLines() == std::vector<std::string>{ "YOUR GAMES||", "Games|2|3", "Wins|1|2", "Losses|1|1", "Win rate|50%|67%",
 								 "Longest win streak|1|1", "Current streak||1 win", "Favourite army||" + name("FactionMen"),
 								 "Favourite map|" + fordsName + "|" + fordsName, "LAST GAMES||", fordsName + "|" + name("FactionMordor") + "|Won",
 								 fordsName + "|" + name("FactionMen") + "|Lost", fordsName + "|" + name("FactionMen") + "|Won" });

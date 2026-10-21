@@ -1,7 +1,7 @@
 extends CanvasLayer
 ## Player sync UI and transfer worker. Never sync installation data or device paths.
 const SETTINGS = "user://player-sync.cfg"
-const FILES = ["Skirmish.ini", "map-favorites.cfg", "controller_options.cfg", "adaptive-hud-layout.json", "wall_balance.cfg"]
+const FILES = ["Skirmish.ini", "game_records.jsonl", "map-favorites.cfg", "controller_options.cfg", "adaptive-hud-layout.json", "wall_balance.cfg"]
 const FOLDERS = ["Save", "Profiles", "Replays", "Campaign", "HeroStats", "map_edits"]
 var server: LineEdit
 var username: LineEdit
@@ -85,6 +85,26 @@ func player_files()->Array:
 func _is_profiles(key:String)->bool:
  return key==scope+"player/Skirmish.ini" or key==scope+"player/bfme1-Skirmish.ini"
 
+## game_records.jsonl (the Profile / Stats pages' games, GameRecords.h) is merged as well: every game of both versions once (by its id),
+## oldest first, the newest 5000 kept like the game's own reader. The game only appends to the file and can reload it, so this merge is
+## written locally even by automatic sync and the stats pages are refreshed at once.
+func _is_records(key:String)->bool:
+ return key==scope+"player/game_records.jsonl"
+
+func merge_records(ours:String, theirs:String)->String:
+ var seen={};var rows=[]
+ for text in [ours,theirs]:
+  for line in text.split("\n",false):
+   if line.strip_edges().is_empty():continue
+   var record=JSON.parse_string(line)
+   var id=str(record.get("id","")) if record is Dictionary and not str(record.get("id","")).is_empty() else line
+   if seen.has(id):continue
+   seen[id]=true
+   rows.append([int(record.get("end",0)) if record is Dictionary else 0,id,line])
+ rows.sort_custom(func(a,b):return a[0]<b[0] or (a[0]==b[0] and a[1]<b[1]))
+ if rows.size()>5000:rows=rows.slice(rows.size()-5000)
+ return "".join(rows.map(func(r):return r[2]+"\n"))
+
 func _ini(text:String)->Dictionary:
  var values={}
  for line in text.split("\n"):
@@ -158,21 +178,23 @@ func _sync():
   var old=str(state.get_value("files",key,""));var theirs=str(remote.get(key,""))
   var ours=FileAccess.get_sha256(target) if FileAccess.file_exists(target) else ""
   status.text="Syncing %d / %d: %s"%[count+1,keys.size(),key]
-  if _is_profiles(key) and ours!=theirs and not ours.is_empty() and not theirs.is_empty():
+  if (_is_profiles(key) or _is_records(key)) and ours!=theirs and not ours.is_empty() and not theirs.is_empty():
    var fetched=await _call(url+"/file/"+str(key).uri_encode())
    if fetched.is_empty() or fetched[0]!=HTTPRequest.RESULT_SUCCESS or fetched[1]!=200:_finish("Download failed: "+key);return
    var check_hash=HashingContext.new();check_hash.start(HashingContext.HASH_SHA256);check_hash.update(fetched[3])
    if check_hash.finish().hex_encode()!=theirs:_finish("Download checksum failed: "+key);return
    var local_bytes=FileAccess.get_file_as_bytes(target)
    if FileAccess.get_sha256(target)!=ours:_finish("File changed during sync; try again: "+key);return
-   var merged_bytes=merge_profiles(local_bytes.get_string_from_utf8(),fetched[3].get_string_from_utf8(),ours!=old).to_utf8_buffer()
+   var merged_text=merge_records(local_bytes.get_string_from_utf8(),fetched[3].get_string_from_utf8()) if _is_records(key) else merge_profiles(local_bytes.get_string_from_utf8(),fetched[3].get_string_from_utf8(),ours!=old)
+   var merged_bytes=merged_text.to_utf8_buffer()
    var merged_hash_ctx=HashingContext.new();merged_hash_ctx.start(HashingContext.HASH_SHA256);merged_hash_ctx.update(merged_bytes)
    var merged_hash=merged_hash_ctx.finish().hex_encode()
    if merged_hash!=theirs:
     var put=await _call(url+"/file/"+str(key).uri_encode(),HTTPClient.METHOD_PUT,merged_bytes,theirs)
     if put.is_empty() or put[0]!=HTTPRequest.RESULT_SUCCESS or put[1]!=200:_finish("Upload failed or another device changed the file; sync again: "+key);return
-   # the running game holds its profiles in memory: automatic sync only uploads; Sync now (main menu, then restart) writes the merge
-   if merged_hash!=ours and not background:
+   # the running game holds its profiles in memory: automatic sync only uploads; Sync now (main menu, then restart) writes the merge.
+   # Game records are only appended to by the game and are reloaded below, so both write them.
+   if merged_hash!=ours and (not background or _is_records(key)):
     if FileAccess.get_sha256(target)!=ours:_finish("File changed during sync; try again: "+key);return
     var part=FileAccess.open(target+".sync-part",FileAccess.WRITE)
     if part==null:_finish("Cannot write: "+key);return
@@ -180,6 +202,8 @@ func _sync():
     if part_error!=OK or FileAccess.get_sha256(target+".sync-part")!=merged_hash:
      DirAccess.remove_absolute(target+".sync-part");_finish("Incomplete disk write: "+key);return
     if DirAccess.rename_absolute(target+".sync-part",target)!=OK:_finish("Cannot replace: "+key);return
+    # the stats pages read the records the game loaded: hand them the merged file
+    if _is_records(key) and game!=null and game.get("_platform_ready") and game.get("_shell")!=null:game._shell.set_game_records(merged_text)
    state.set_value("files",key,merged_hash)
    if state.save(state_path)!=OK:_finish("Cannot save sync state.");return
    count+=1

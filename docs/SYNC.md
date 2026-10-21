@@ -44,6 +44,13 @@ local file the game has loaded; **Sync now** also writes it locally (restart to
 see the other device's profiles). A stale or empty profile list therefore cannot
 remove profiles, and a profile deleted on one device returns from the others.
 
+The games behind the Profile / Stats pages (`game_records.jsonl`) are merged the
+same way: every game recorded on any device appears once, oldest first, keeping
+the newest 5000. The game only appends to that file, so automatic sync writes the
+merge locally too and the stats pages update without a restart. Besides syncing
+after local changes, the watcher syncs once a minute so games and profiles from
+other devices arrive while the app is open.
+
 Missing local files are restored; missing server files are uploaded. A file
 changed only locally replaces its previous server version. When both sides
 changed, the server version is downloaded and the local version is preserved
@@ -59,6 +66,22 @@ verify SHA-256 before and after writing a temporary file, then replace the
 original. Files are limited to 128 MiB each. Sync runs while the app is open; closing the
 app immediately after saving can leave the upload pending until the next run. Interrupted syncs can be retried;
 successful files have their sync state saved individually.
+
+Backups: every change is also mirrored to `--backup` (default
+`workspace/player-sync-backup`; put it on another disk, or pass `none`): the
+version blobs, `manifest.json`, `history.jsonl` and `manifests/<UTC date>.json`,
+the file list as it stood at the end of each day. Starting the server brings the
+mirror up to date. `history.jsonl` records each change with its time and the
+previous and new SHA-256. To bring back an earlier version, stop the server, then:
+
+```sh
+python3 tools/player_sync/serve.py --history USERNAME [FILE]
+python3 tools/player_sync/serve.py --restore USERNAME FILE SHA256
+```
+
+The restore is recorded in the history like an upload, and devices pick it up on
+their next sync. To recover from a lost data folder, copy the backup folder back
+in its place.
 
 Validation:
 
