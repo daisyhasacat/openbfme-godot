@@ -4,7 +4,8 @@
 ##   D-pad, left stick          the arrows (a held direction repeats: first after 0.4 s, then every 0.12 s)
 ##   A / B                      Enter / Esc
 ##   LB / RB                    PageUp / PageDown (the tabs)
-##   right stick (x), triggers  Left / Right (sliders, choices)
+##   triggers                   skirmish focus sections; Left / Right elsewhere
+##   right stick (x)             Left / Right (sliders, choices)
 ##   Start                      Esc (also over a game without a menu: the in-game menu opens, as Esc opens it)
 ## Only while a menu has the input (AptMenuPlayer.menu_has_input), Start always. take_log() lists the keys sent ("down KEY_UP" ...), for the tests.
 extends Node
@@ -27,6 +28,8 @@ const REPEATING := [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT]
 var start_lobby: Callable # returns true when Start was handled by the skirmish lobby
 var _start_consumed := false
 var _shell: Node
+var _section_trigger := {}
+var _section_captured := {}
 var _axis_key := {}   # axis -> the key it holds now (KEY_NONE: none)
 var _held := {}       # key -> the time (s) of its next repeat
 var _log := PackedStringArray()
@@ -67,6 +70,17 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 	elif event is InputEventJoypadMotion:
 		var m := event as InputEventJoypadMotion
+		if m.axis in [JOY_AXIS_TRIGGER_LEFT, JOY_AXIS_TRIGGER_RIGHT]:
+			var pressed := m.axis_value >= DEADZONE
+			var had: bool = _section_trigger.get(m.axis, false)
+			_section_trigger[m.axis] = pressed
+			if pressed and not had and _active() and _shell.has_method("menu_controller_section"):
+				_section_captured[m.axis] = _shell.menu_controller_section(-1 if m.axis == JOY_AXIS_TRIGGER_LEFT else 1)
+			if _section_captured.get(m.axis, false):
+				if not pressed:
+					_section_captured.erase(m.axis)
+				get_viewport().set_input_as_handled()
+				return
 		if not AXES.has(m.axis):
 			return
 		var keys: Array = AXES[m.axis]
@@ -102,6 +116,7 @@ func _send(key: int, pressed: bool, echo: bool) -> void:
 	ev.physical_keycode = key as Key
 	ev.pressed = pressed
 	ev.echo = echo
+	ev.set_meta("menu_controller", true)
 	_log.append("%s %s%s" % ["down" if pressed else "up", OS.get_keycode_string(key), " (repeat)" if echo else ""])
 	if pressed and REPEATING.has(key):
 		_held[key] = Time.get_ticks_msec() / 1000.0 + (REPEAT_NEXT if echo else REPEAT_FIRST)

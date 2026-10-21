@@ -105,6 +105,13 @@ std::string leafOf(const std::string &path)
 	return dot == std::string::npos ? path : path.substr(dot + 1);
 }
 
+int sectionOf(const MenuNavTarget &target)
+{
+	if (target.id.find(".MpMapAndSettings.") != std::string::npos) return 2;
+	if (target.id.find(".lobby.") != std::string::npos || target.id.find(".MainButtons.") != std::string::npos || target.id.find(".ProfileNav.") != std::string::npos) return 0;
+	return 1;
+}
+
 bool isImageCombo(GameWindow *w)
 {
 	using Input = WindowMsgHandledType (*)(GameWindow *, std::uint32_t, WindowMsgData, WindowMsgData);
@@ -139,7 +146,26 @@ void MenuNavigator::setMenu(int level, const void *screen)
 		m_screen = screen;
 		m_focusId.clear();
 		m_frameShown = false;
+		m_controllerSections = false;
+		m_section = 1;
 	}
+}
+
+void MenuNavigator::setControllerSections(bool enabled)
+{
+	if (m_controllerSections == enabled) return;
+	m_controllerSections = enabled;
+	clearFocus();
+}
+
+void MenuNavigator::switchControllerSection(int delta)
+{
+	if (!m_controllerSections || m_windows.componentInputBlocked()) return;
+	if (auto *layer = m_windows.gadgetLayer()) layer->gadgets().winSetLoneWindow(nullptr);
+	m_section = (m_section + (delta < 0 ? 2 : 1)) % 3;
+	clearFocus();
+	const auto list = targets();
+	if (!list.empty()) focus(list.front());
 }
 
 void MenuNavigator::clearFocus()
@@ -148,7 +174,7 @@ void MenuNavigator::clearFocus()
 	m_frameShown = false;
 }
 
-void MenuNavigator::collect(std::vector<MenuNavTarget> &out, std::vector<MenuNavTarget> *catchers) const
+void MenuNavigator::collect(std::vector<MenuNavTarget> &out, std::vector<MenuNavTarget> *catchers, bool section) const
 {
 	out.clear();
 	if (catchers)
@@ -237,6 +263,9 @@ void MenuNavigator::collect(std::vector<MenuNavTarget> &out, std::vector<MenuNav
 	{
 		source->navTargets(out);
 	}
+	const bool popup = std::any_of(out.begin(), out.end(), [](const MenuNavTarget &t) { return t.id.find(".ProfilePopup.") != std::string::npos; });
+	if (section && m_controllerSections && !popup && !m_windows.componentInputBlocked())
+		out.erase(std::remove_if(out.begin(), out.end(), [this](const MenuNavTarget &t) { return sectionOf(t) != m_section; }), out.end());
 	std::stable_sort(out.begin(), out.end(), readingBefore);
 }
 
@@ -288,10 +317,29 @@ bool MenuNavigator::focusBox(float out[4]) const
 
 void MenuNavigator::appendFocusFrame(GadgetDrawList &out) const
 {
-	if (!m_frameShown) return;
+	if (!m_frameShown && !m_controllerSections) return;
 	// Authored movie buttons already show their Over artwork or rollover
 	// animation through focus()'s pointer move. Do not cover it with a box.
 	const auto list = targets();
+	if (m_controllerSections && !list.empty() && !m_windows.componentInputBlocked())
+	{
+		float x0 = 1024, y0 = 768, x1 = 0, y1 = 0;
+		for (const auto &t : list) { x0 = std::min(x0, t.x0); y0 = std::min(y0, t.y0); x1 = std::max(x1, t.x1); y1 = std::max(y1, t.y1); }
+		GadgetDrawCommand region;
+		region.kind = GadgetDrawCommand::Kind::OpenRect;
+		region.window = "ControllerSection";
+		region.x0 = (int)x0 - 6; region.y0 = (int)y0 - 6;
+		region.x1 = (int)x1 + 6; region.y1 = (int)y1 + 6;
+		region.color = 0xFF63B8EAu;
+		region.lineWidth = 2;
+		out.commands.push_back(region);
+		region.kind = GadgetDrawCommand::Kind::Text;
+		region.y0 -= 18;
+		region.text = m_section == 0 ? u"LT  Buttons  RT" : m_section == 1 ? u"LT  Players  RT" : u"LT  Maps / Rules  RT";
+		region.font.name = "Arial";
+		region.font.pointSize = 12;
+		out.commands.push_back(region);
+	}
 	if (const auto *target = find(list, m_focusId); target && target->kind == MenuNavTarget::Kind::Button)
 	{
 		const auto *button = m_windows.apt().input().hitTestButtons(target->cx(), target->cy());
@@ -636,7 +684,7 @@ bool MenuNavigator::key(MenuNavKey key)
 		return false;
 	}
 	std::vector<MenuNavTarget> list, catchers;
-	collect(list, &catchers);
+	collect(list, &catchers, key != MenuNavKey::PageNext && key != MenuNavKey::PagePrevious);
 	const MenuNavTarget *current = find(list, m_focusId);
 	MenuNavigationSource *source = m_windows.navigationSource();
 	if (source && source->navKey(key, m_frameShown ? current : nullptr))
@@ -648,7 +696,13 @@ bool MenuNavigator::key(MenuNavKey key)
 	{
 		if (!leave(catchers, list))
 		{
-			back(list);
+			if (m_controllerSections)
+			{
+				std::vector<MenuNavTarget> all;
+				collect(all, nullptr, false);
+				back(all);
+			}
+			else back(list);
 		}
 		return true;
 	}
@@ -761,7 +815,7 @@ bool MenuNavigator::key(MenuNavKey key)
 			{
 				focus(list[(std::size_t)next]);
 			}
-			else if (!leave(catchers, list))
+			else if (m_controllerSections || !leave(catchers, list))
 			{
 				m_frameShown = true; // the edge: the focus stays
 			}

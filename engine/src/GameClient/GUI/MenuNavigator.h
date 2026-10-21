@@ -91,6 +91,9 @@ public:
 	int level() const { return m_level; }
 	// True when the key was the navigation's (the caller passes it on to nothing else).
 	bool key(MenuNavKey key);
+	void setControllerSections(bool enabled);
+	void switchControllerSection(int delta);
+	int controllerSection() const { return m_controllerSections ? m_section : -1; }
 	// The real pointer moved (or pressed): the focus frame goes until the next key; the focus itself stays.
 	void pointerMoved() { m_frameShown = false; }
 	void clearFocus();
@@ -118,7 +121,7 @@ public:
 	static const std::vector<std::string> &backButtonNames();
 
 private:
-	void collect(std::vector<MenuNavTarget> &out, std::vector<MenuNavTarget> *catchers = nullptr) const;
+	void collect(std::vector<MenuNavTarget> &out, std::vector<MenuNavTarget> *catchers = nullptr, bool section = true) const;
 	bool leave(const std::vector<MenuNavTarget> &catchers, const std::vector<MenuNavTarget> &list);
 	const MenuNavTarget *find(const std::vector<MenuNavTarget> &list, const std::string &id) const;
 	void focus(const MenuNavTarget &t);
@@ -135,6 +138,8 @@ private:
 	std::string m_focusId;
 	MenuNavTarget m_focusTarget; // the focused target as it was focused (Tab goes on from its place when the screen changed under it)
 	bool m_frameShown = false;
+	bool m_controllerSections = false;
+	int m_section = 1; // bottom bar, player setup, maps/rules
 	bool m_noted = false; // the S-4981 note was given
 	std::vector<std::string> m_log;
 };

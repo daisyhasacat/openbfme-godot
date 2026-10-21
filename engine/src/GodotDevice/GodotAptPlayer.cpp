@@ -1323,6 +1323,7 @@ void AptMenuPlayer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("quit_menu", "request"), &AptMenuPlayer::quit_menu);
 	ClassDB::bind_method(D_METHOD("get_cursor_tooltip"), &AptMenuPlayer::get_cursor_tooltip); // lane HOVER-1
 	ClassDB::bind_method(D_METHOD("list_buttons", "level"), &AptMenuPlayer::list_buttons);
+	ClassDB::bind_method(D_METHOD("menu_controller_section", "delta"), &AptMenuPlayer::menu_controller_section);
 	ClassDB::bind_method(D_METHOD("menu_input", "event"), &AptMenuPlayer::menu_input); // lane OPTS-6
 	ClassDB::bind_method(D_METHOD("open_options", "network_enabled", "allow_resolution", "allow_advanced", "advanced_only"), &AptMenuPlayer::open_options);
 	ClassDB::bind_method(D_METHOD("menu_has_input"), &AptMenuPlayer::menu_has_input);
@@ -5810,8 +5811,21 @@ void AptMenuPlayer::menu_pointer_moved()
 	m->mainMenuGroup = m->mainMenuItem = -1;
 	if (m_booted && m->shell && m->shell->nav)
 	{
+		m->shell->nav->setControllerSections(false);
 		m->shell->nav->pointerMoved();
 	}
+}
+
+bool AptMenuPlayer::menu_controller_section(int delta)
+{
+	if (!m_booted || !m->shell || !m->shell->shell) return false;
+	const auto *top = m->shell->shell->inputTop();
+	if (!top || top->filename() != "Skirmish.apt") return false;
+	syncNav();
+	m->shell->nav->setControllerSections(true);
+	m->shell->nav->switchControllerSection(delta);
+	m->dirty = true;
+	return true;
 }
 
 bool AptMenuPlayer::menu_input(const Ref<InputEvent> &event)
@@ -5832,6 +5846,7 @@ Dictionary AptMenuPlayer::menu_nav_state()
 	MenuNavigator &nav = *m->shell->nav;
 	r["level"] = nav.level();
 	r["focus"] = toGodot(nav.focusId());
+	r["controller_section"] = nav.controllerSection();
 	r["frame"] = nav.frameShown();
 	float box[4];
 	if (nav.focusBox(box))
@@ -5970,6 +5985,12 @@ bool AptMenuPlayer::menuKey(const InputEventKey *key)
 			return true;
 		}
 
+	if (m->shell && m->shell->nav && m->shell->shell)
+	{
+		syncNav();
+		const auto *top = m->shell->shell->inputTop();
+		m->shell->nav->setControllerSections(top && top->filename() == "Skirmish.apt" && (bool)key->get_meta("menu_controller", false));
+	}
 	// lane SAVE-UI1: the top screen's own Escape procedure first (its press and its release are its alone)
 	if (key->get_keycode() == Key::KEY_ESCAPE && !key->is_echo() && menu_escape(key->is_pressed()))
 	{

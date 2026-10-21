@@ -2412,3 +2412,54 @@ TEST_CASE("skirmish controller: shoulder tabs and explicit dropdown confirmation
 	REQUIRE(nav.key(MenuNavKey::Back));
 	CHECK(fx.wm->gadgetLayer()->openDropDown() == nullptr);
 }
+
+TEST_CASE("skirmish controller: triggers confine navigation to three sections; keyboard is unrestricted")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	LobbyFx fx(mount);
+	ruleLabels(fx.text);
+	openRulesTab(fx);
+	MenuNavigator nav(*fx.wm);
+	nav.setMenu(fx.screen->level(), fx.screen);
+	const auto all = nav.targets();
+	nav.setControllerSections(true);
+	for (int section : { 2, 0, 1 })
+	{
+		nav.switchControllerSection(1);
+		CHECK(nav.controllerSection() == section);
+		const auto targets = nav.targets();
+		REQUIRE_FALSE(targets.empty());
+		for (const auto &t : targets)
+		{
+			if (section == 1) CHECK(t.id.find(".PlayerList.") != std::string::npos);
+			if (section == 2) CHECK(t.id.find(".MpMapAndSettings.") != std::string::npos);
+		}
+		if (section == 0)
+		{
+			bool start = false, back = false, profile = false;
+			for (const auto &t : targets)
+			{
+				start |= t.id.find(".StartGame.") != std::string::npos;
+				back |= t.id.find(".MainMenu.") != std::string::npos;
+				profile |= t.id.find(".ProfileNav.") != std::string::npos;
+			}
+			CHECK(start); CHECK(back); CHECK(profile);
+		}
+		for (MenuNavKey key : { MenuNavKey::Up, MenuNavKey::Down, MenuNavKey::Left, MenuNavKey::Right })
+			for (int i = 0; i < 10; ++i)
+			{
+				nav.key(key);
+				bool inside = false;
+				for (const auto &t : targets) inside |= t.id == nav.focusId();
+				CHECK(inside);
+			}
+		GadgetDrawList draw;
+		nav.appendFocusFrame(draw);
+		bool indicated = false;
+		for (const auto &command : draw.commands) indicated |= command.window == "ControllerSection";
+		CHECK(indicated);
+	}
+	nav.setControllerSections(false);
+	CHECK(nav.controllerSection() == -1);
+	CHECK(nav.targets().size() == all.size());
+}

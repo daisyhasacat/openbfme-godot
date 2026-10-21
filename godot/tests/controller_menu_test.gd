@@ -3,6 +3,10 @@ extends SceneTree
 class FakeShell extends Node2D:
 	var stack := PackedStringArray(["MainMenu.apt"])
 	var calls: Array = []
+	var sections: Array = []
+	func menu_controller_section(delta: int) -> bool:
+		sections.append(delta)
+		return true
 	func shell_stack() -> PackedStringArray: return stack
 	func menu_has_input() -> bool: return true
 	func shell_fscommand(command: String, argument: String) -> bool:
@@ -43,6 +47,19 @@ func _run() -> void:
 	game._state = game.State.PLAYING
 	game._controller_menu_action("skirmish")
 	assert(shell.calls.size() == 3)
+	var trigger := InputEventJoypadMotion.new()
+	trigger.axis = JOY_AXIS_TRIGGER_LEFT
+	for value in [0.8, 0.9, 0.0, 0.8, 0.0]:
+		trigger.axis_value = value
+		pad._input(trigger)
+	trigger.axis = JOY_AXIS_TRIGGER_RIGHT
+	trigger.axis_value = 0.8
+	pad._input(trigger)
+	trigger.axis_value = 0.0
+	pad._input(trigger)
+	assert(shell.sections == [-1, -1, 1], "Triggers switch once per pull")
+	assert(pad.take_log().is_empty(), "Section triggers must not also send arrow keys")
+	pad.queue_free()
 	game._shell = null
 	game.free()
 	shell.free()
