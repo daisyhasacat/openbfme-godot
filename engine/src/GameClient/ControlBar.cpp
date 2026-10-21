@@ -3,6 +3,7 @@
 
 #include "GameClient/ControlBar.h"
 #include "GameLogic/CreateAHeroSystem.h"
+#include "GameLogic/Economy.h"
 #include "Common/Upgrade.h"
 
 #include "Common/BuildAssistant.h"
@@ -858,7 +859,25 @@ bool ControlBar::reviveButton(ControlBarButton &cb, int n, Player &player, Objec
 	cb.reviveIndex = n;
 	cb.image = heroRecordImage(*r, player);
 	cb.cost = list.costAt(m_ctx.logic, player, n, &producer);
-	cb.state = evaluate(*cb.button, producer);
+	CommandButton availability = *cb.button;
+	const ThingTemplate *heroTemplate = list.templateAt(m_ctx.logic, n);
+	if (r->dead && heroTemplate && m_ctx.logic.economy().templateKindOf(*heroTemplate, "CREATE_A_HERO") && TheCreateAHeroSystem)
+	{
+		// RW 0x61B28B consumes the custom hero's purchase permission on creation;
+		// RW 0x781792 retains a separate dead-hero record for revival. INFERENCE:
+		// reuse its fortress slot without that purchase-only prerequisite. Retail's
+		// general second REVIVE placement pass remains S-850 (not reproduced here).
+		auto &needed = availability.m_neededUpgrade;
+		const auto end = std::remove_if(needed.begin(), needed.end(), [](const std::string &name) {
+			return AsciiStringUtil::compareNoCase(name, TheCreateAHeroSystem->canBuildUpgradeName) == 0;
+		});
+		if (end != needed.end())
+		{
+			needed.erase(end, needed.end());
+			if (needed.empty()) availability.m_options &= ~COMMAND_OPTION_NEED_UPGRADE;
+		}
+	}
+	cb.state = evaluate(availability, producer);
 	if (cb.state != ButtonState::Enabled)
 	{
 		return true;

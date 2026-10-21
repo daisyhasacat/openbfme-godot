@@ -13,6 +13,8 @@
 #include "GameLogic/Module/SpecialAbilityModules.h"
 #include "GameLogic/Module/SpecialPowerModules.h"
 #include "GameLogic/Object/ExperienceTracker.h"
+#include "GameLogic/Damage.h"
+#include "Common/Upgrade.h"
 
 using namespace hudtest;
 
@@ -402,4 +404,46 @@ TEST_CASE("hero hud: custom hero recruitment uses the selected Shield Maiden ima
 		}
 	}
 	CHECK(sawHero);
+	// Recruit through the actual fortress HUD, then kill and revive the same
+	// custom hero. Creation consumes the purchase upgrade in skirmish/LAN.
+	h.rig.local->getMoney()->deposit(100000);
+	auto customButton = [&]() {
+		for (const auto &button : h.buttons(GUI_COMMAND_REVIVE))
+			if (const auto *record = h.rig.local->heroes().at(button.reviveIndex))
+				if (record->templateName == "CreateAHero") return button;
+		return ControlBarButton{};
+	};
+	auto liveHero = [&]() -> Object * {
+		for (Object *o = h.rig.logic().getFirstObject(); o; o = o->getNextObject())
+			if (o->isKindOfName("CREATE_A_HERO") && !o->isEffectivelyDead() && o->getControllingPlayer() == h.rig.local) return o;
+		return nullptr;
+	};
+	auto button = customButton();
+	REQUIRE(button.button);
+	REQUIRE(h.hud->controlBar().pressButton(button.slot, button.inPalantir));
+	for (int i = 0; i < 4000 && !liveHero(); ++i) h.frames(1);
+	Object *first = liveHero();
+	REQUIRE(first);
+	const ObjectID firstID = first->getID();
+	const auto *purchaseUpgrade = TheUpgradeCenter->findUpgrade(TheCreateAHeroSystem->canBuildUpgradeName);
+	REQUIRE(purchaseUpgrade);
+	CHECK_FALSE(h.rig.local->hasUpgradeComplete(purchaseUpgrade));
+	h.frames(300); // finish the spawn animation before death
+	DamageInfo damage;
+	damage.m_input.m_damageType = DAMAGE_UNRESISTABLE;
+	damage.m_input.m_amount = 100000.0f;
+	damage.m_input.m_kill = true;
+	first->attemptDamage(damage);
+	REQUIRE(first->isEffectivelyDead());
+	h.frames(20);
+	button = customButton();
+	REQUIRE_MESSAGE(button.button, "dead custom hero must remain available at the fortress");
+	CHECK(button.state == ButtonState::Enabled);
+	CHECK(h.rig.local->heroes().at(button.reviveIndex)->dead);
+	CHECK(button.image == "HICAHShieldMaiden");
+	REQUIRE(h.hud->controlBar().pressButton(button.slot, button.inPalantir));
+	for (int i = 0; i < 4000 && !liveHero(); ++i) h.frames(1);
+	REQUIRE(liveHero());
+	CHECK(liveHero()->getID() != firstID);
+	CHECK_FALSE(h.rig.local->hasUpgradeComplete(purchaseUpgrade));
 }
