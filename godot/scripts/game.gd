@@ -5459,7 +5459,16 @@ func _online_wait(what: String, cond: Callable, sec: float) -> bool:
 
 ## a click on a button of the shell movie: the pointer to its centre, then the button down and up on later frames (as a player's)
 func _online_click(path: String) -> void:
-	_online_apply({"point": path})
+	# The movie can expose a button before its reveal animation leaves it reachable.
+	var until := Time.get_ticks_msec() + 10000
+	var pointed: Dictionary = _shell.online_apply({"point": path})
+	while not pointed.ok and Time.get_ticks_msec() < until:
+		await get_tree().process_frame
+		pointed = _shell.online_apply({"point": path})
+	if not pointed.ok:
+		printerr("GAME ONLINE WALK cannot click %s: %s" % [path, str(pointed.errors)])
+		return
+	print("GAME ONLINE WALK %s -> ok" % JSON.stringify({"point": path}))
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_online_apply({"mouse": true})
@@ -6283,6 +6292,12 @@ func _begin_replay(path: String) -> void:
 func _replay_tick() -> void:
 	var st: Dictionary = _world.replay_status()
 	if not st.get("active", false):
+		return
+	if (_replay_check or _replay_menu_test) and int(st.get("mismatches", 0)) != 0:
+		_replay_active = false
+		printerr("GAME REPLAY mismatch at frame %d" % int(st.get("first_mismatch_frame", -1)))
+		print("GAME REPLAY RESULT: FAILED")
+		get_tree().quit(1)
 		return
 	if _replay_menu_test and str(st.get("path", "")) != _replay_menu_recorded_path:
 		_fail("the Replays menu loaded a different recording: " + str(st.get("path", "")))

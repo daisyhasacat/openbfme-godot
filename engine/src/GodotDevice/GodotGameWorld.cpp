@@ -1216,7 +1216,8 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	if (options.has("wall_rebalance")) walls.enabled = options["wall_rebalance"];
 	if (options.has("starting_walls")) walls.startingWalls = options["starting_walls"];
 	if (options.has("require_enclosed")) walls.requireEnclosed = options["require_enclosed"];
-	if (m_netStarted) walls.startingHubs.clear(); // reference starting-wall jobs are offline only
+	// A network replay restores the network game's settings, including its absence of offline starting-wall jobs.
+	if (m_netStarted || optBool(options, "network_replay", false)) walls.startingHubs.clear();
 
 	if (progress.is_valid())
 	{
@@ -7366,6 +7367,8 @@ Dictionary GameWorld::start_replay(const Dictionary &options)
 	Dictionary o = options.duplicate();
 	o.erase("record");
 	std::unique_ptr<ReplayFile> file = std::move(m_pendingReplay);
+	// Network recordings store their human slot/player mapping; offline recordings leave every entry at -1.
+	o["network_replay"] = std::any_of(file->header.network.slotPlayerIndex.begin(), file->header.network.slotPlayerIndex.end(), [](int player) { return player >= 0; });
 	Dictionary report = start_new_game(o);
 	if (!(bool)report.get("ok", false))
 	{

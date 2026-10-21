@@ -222,7 +222,7 @@ test('r2 (Sol): a finished game stays finished after the lobby restarts (the rec
   const lobby = new Lobby(env, configFromEnv(ENV));
   const [a, b, c, d] = [await guest(lobby, 'Ann'), await guest(lobby, 'Bea'), await guest(lobby, 'Cy'), await guest(lobby, 'Di')];
   const over = await startedGame(lobby, a, b);
-  await startedGame(lobby, c, d);
+  const ongoing = await startedGame(lobby, c, d);
   const log = new Uint8Array(25);
   log.set(Buffer.from('OBFMERLG'));
   new DataView(log.buffer).setUint32(8, 1, true);
@@ -237,6 +237,19 @@ test('r2 (Sol): a finished game stays finished after the lobby restarts (the rec
   again.load([...env.savedGames.values()]);
   const after = (await stats(again)).body;
   assert.deepEqual([after.players, after.games_running], [2, 1], 'the finished game did not come back');
+  for (const current of [lobby, again]) {
+    assert.deepEqual((await call(current, 'GET', '/v1/mine', { token: a.token })).body.games, [], 'a finished game is never offered for rejoin');
+    assert.deepEqual(current.list(true).games.map((g) => g.id), [ongoing], 'the browser lists only unfinished running games');
+    assert.deepEqual((await call(current, 'GET', '/v1/mine', { token: c.token })).body.games.map((g) => g.id), [ongoing]);
+    const rejoin = await call(current, 'POST', `/v1/games/${over}/rejoin`, { token: a.token });
+    assert.equal(rejoin.status, 409);
+    assert.equal(rejoin.body.error, 'finished');
+    const watch = await call(current, 'POST', `/v1/games/${over}/spectate`, { token: c.token });
+    assert.equal(watch.status, 409);
+    assert.equal(watch.body.error, 'finished');
+    const replay = await current.replayFile(await current.account(`Bearer ${a.token}`), over, 'start');
+    assert.equal(JSON.parse(new TextDecoder().decode(replay)).kind, 'openbfme-replay-start', 'players retain replay access');
+  }
   // the same log uploaded again after the restart changes nothing and writes nothing new
   const saves = env.savedGames.size;
   assert.equal((await call(again, 'POST', `/v1/relay/logs/${over}`, { body: log, headers: { 'x-openbfme-signature': sig } })).status, 200);

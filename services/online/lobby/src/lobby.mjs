@@ -621,7 +621,7 @@ export class Lobby {
   // ONLINE-4: `running` also lists the started games (the server browser offers them to watch: POST .../spectate), after the open ones
   list(running = false) {
     this.sweep();
-    const games = [...this.games.values()].filter((g) => !g.roomCode && (g.state === 'open' || (running && g.state === 'started')))
+    const games = [...this.games.values()].filter((g) => !g.roomCode && (g.state === 'open' || (running && g.state === 'started' && !g.finished)))
       .sort((a, b) => (b.state === 'open') - (a.state === 'open') || b.created - a.created).slice(0, 200).map((g) => this.publicGame(g));
     return { v: VERSION, games };
   }
@@ -916,7 +916,7 @@ export class Lobby {
   // ONLINEUX-1 r2 (Sol 4): `left` names the started games the account left (newest first, at most MINE_LEFT_MAX): they stay in the running list for
   // spectators, and a client started after the leave knows them (it offers neither a rejoin nor a WATCH the lobby refuses to a player of the game)
   mine(account) {
-    const started = [...this.games.values()].filter((g) => g.state === 'started' && this.slotOf(g, account) >= 0);
+    const started = [...this.games.values()].filter((g) => g.state === 'started' && !g.finished && this.slotOf(g, account) >= 0);
     const games = started
       .filter((g) => !g.left?.[this.slotOf(g, account)])
       .map((g) => ({ ...this.publicGame(g), slot: this.slotOf(g, account), rejoin: `/v1/games/${g.id}/rejoin` }));
@@ -935,6 +935,7 @@ export class Lobby {
     const slot = this.slotOf(g, account);
     if (slot < 0) throw new LobbyError(403, 'not_in_game', 'you have no slot in this game');
     if (g.state !== 'started' || !g.starts?.[slot]) throw new LobbyError(409, 'not_started', 'the game has not started');
+    if (g.finished) throw new LobbyError(409, 'finished', 'the game has finished: it cannot be rejoined');
     if (g.left?.[slot]) throw new LobbyError(409, 'left', 'you left this game: it can not be rejoined'); // ONLINEUX-1
     g.rejoins ??= {};
     const generation = (g.rejoins[slot] ?? 0) + 1;
@@ -958,6 +959,7 @@ export class Lobby {
     if (this.slotOf(g, account) >= 0) throw new LobbyError(409, 'player', 'players of the game play it; spectators are other accounts');
     if (g.roomCode) throw new LobbyError(403, 'private', 'a private room is not open to spectators'); // ONLINEHUB-1 (Sol)
     if (g.state !== 'started' || !g.starts) throw new LobbyError(409, 'not_started', 'the game has not started yet: ask again once it has');
+    if (g.finished) throw new LobbyError(409, 'finished', 'the game has finished: watch its replay instead');
     const index = g.spectatorsIssued ?? 0;
     if (index >= 16) throw new LobbyError(409, 'spectators_full', 'the game has had its 16 spectator places');
     g.spectatorsIssued = index + 1;

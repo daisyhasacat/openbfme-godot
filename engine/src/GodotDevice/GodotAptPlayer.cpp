@@ -7114,15 +7114,16 @@ Dictionary AptMenuPlayer::online_apply(const Dictionary &spec)
 			return nullptr;
 		};
 		AptButtonInst *b = first(clip);
-		float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-		if (!b || !b->contentBounds(x0, y0, x1, y1))
+		// A button's content centre need not lie in its transformed Hit records (the online Create Game button is one such case).
+		// Use the same hit-area search as the other device click helpers, and refuse a point covered by a different button.
+		const Dictionary point = b ? find_button(screen->level(), toGodot(b->targetPath())) : Dictionary();
+		if (!b || !point.get("found", false) || !point.get("self_hit", false) || String(point.get("hit", "")) != toGodot(b->targetPath()))
 		{
-			errors.push_back(String("no button under ") + String(spec["point"]));
+			errors.push_back(String("no reachable button under ") + String(spec["point"]));
 		}
 		else
 		{
-			float x = 0, y = 0;
-			b->globalMatrix().apply((x0 + x1) / 2, (y0 + y1) / 2, x, y);
+			const float x = (float)point["x"], y = (float)point["y"];
 			sm.wm->postMouseMove(x, y);
 			out["x"] = x;
 			out["y"] = y;

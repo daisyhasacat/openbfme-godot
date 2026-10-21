@@ -100,7 +100,8 @@ for g in $GAMES; do
     line="game $g: $N peers, ${secs}s, peers_ok $((grc == 0)) frames_ok $frames_ok/$N relay_bound $bound/$N desyncs $desyncs final_hashes $finals log $([ -n "$LOG" ] && echo yes || echo no) convert_exit $conv replay_exit $play crc_compared ${compared:-0} mismatches ${mism:-?}"
     echo "$line" | tee -a "$OUT/summary.txt"
     grep -h "^transport_bytes\|^relay \|^stall_ms" "$D"/p*.txt | sed 's/^/    /' >> "$OUT/summary.txt"
-    if [ "$grc" != 0 ] || [ "$frames_ok" != "$N" ] || [ "$bound" != "$N" ] || [ "$desyncs" != 0 ] || [ "$finals" != 1 ] || [ "$conv" != 0 ] || [ "$play" != 0 ] \
+    # BSD wc pads its counts; compare counts numerically so passing macOS runs are not reported as failures.
+    if [ "$grc" != 0 ] || [ "$frames_ok" -ne "$N" ] || [ "$bound" != "$N" ] || [ "$desyncs" != 0 ] || [ "$finals" -ne 1 ] || [ "$conv" != 0 ] || [ "$play" != 0 ] \
         || [ "${compared:-0}" -lt 1 ] || [ "${mism:-1}" != 0 ]; then
         rc=1
     fi
