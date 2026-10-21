@@ -6320,6 +6320,7 @@ Dictionary AptMenuPlayer::get_report() const
 	r["placeholders"] = toArray(m->placeholders);
 	r["view3d_errors"] = toArray(m->view3d.errors()); // lane UI-2
 	r["view3d_viewers"] = (int64_t)m->view3d.viewerCount();
+	r["view3d_render_updates"] = (int64_t)m->view3d.renderUpdates();
 	r["keyboard_button"] = m->keyboardButton;
 	r["gadget_keyboard_focus"] = m->shell && m->shell->layer && m->shell->layer->gadgets().winGetFocus() != nullptr;
 	r["view3d_notes"] = toArray(m->view3d.notes());
