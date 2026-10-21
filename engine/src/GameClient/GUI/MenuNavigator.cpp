@@ -389,6 +389,10 @@ int MenuNavigator::nearest(const std::vector<MenuNavTarget> &list, int from, Men
 			continue;
 		}
 		const MenuNavTarget &b = list[i];
+		// Horizontal navigation stays in the current row. Adjacent player
+		// rows can touch/overlap, so edge distance alone admits diagonals.
+		if ((dir == MenuNavKey::Left || dir == MenuNavKey::Right) &&
+			std::fabs(a.cy() - b.cy()) > 0.5f * std::min(a.y1 - a.y0, b.y1 - b.y0)) continue;
 		float along = 0, across = 0; // the distance the way the key goes (positive) and beside it
 		switch (dir)
 		{

@@ -25,6 +25,7 @@
 #include "Libraries/Source/Apt/AptActionDecoder.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -2382,6 +2383,24 @@ TEST_CASE("skirmish controller: shoulder tabs and explicit dropdown confirmation
 			if (fn && *fn == GadgetImageComboBoxInput) { color = target.window; id = target.id; break; }
 		}
 	REQUIRE(color);
+	for (int i = 0; i < 100 && nav.focusId() != id; ++i) REQUIRE(nav.key(MenuNavKey::Next));
+	REQUIRE(nav.focusId() == id);
+	// Crossing the player grid must preserve the row, including at its edges.
+	for (MenuNavKey direction : { MenuNavKey::Left, MenuNavKey::Right })
+	{
+		for (int i = 0; i < 100 && nav.focusId() != id; ++i) REQUIRE(nav.key(MenuNavKey::Next));
+		REQUIRE(nav.focusId() == id);
+		for (int step = 0; step < 8; ++step)
+		{
+			float previous[4], current[4];
+			REQUIRE(nav.focusBox(previous));
+			REQUIRE(nav.key(direction));
+			REQUIRE(nav.focusBox(current));
+			const float delta = std::fabs((previous[1] + previous[3] - current[1] - current[3]) * 0.5f);
+			// tolerance: same-row controls have different heights/centres; half the smaller height admits them but excludes the adjacent player row.
+			CHECK(delta <= 0.5f * std::min(previous[3] - previous[1], current[3] - current[1]));
+		}
+	}
 	for (int i = 0; i < 100 && nav.focusId() != id; ++i) REQUIRE(nav.key(MenuNavKey::Next));
 	REQUIRE(nav.focusId() == id);
 	GadgetImageComboBoxGetSelectedPos(color, &before);
