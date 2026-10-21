@@ -183,7 +183,7 @@
 ##     --online-join=ID      join that game of the lobby (also openbfme://join/ID, the launcher's link), say ready, play when the host starts it
 ##     --online-host         host a game on the lobby: --map, --online-slots=STATE:faction:start:team;... (STATE player / open / closed / easy / medium /
 ##                           hard / brutal, faction a player template index or -1), starts once --online-players=N humans are in and ready
-##     --online-lobby=URL    the lobby service (default: the OPENBFME_LOBBY environment variable); --online-name=NAME the guest name
+##     --online-lobby=URL    legacy argument (ignored by this fork); --online-name=NAME the guest name
 ##   lane ONLINE-3 (reconnect and pause, docs/ONLINE.md "Phase O3"; test features):
 ##     --online-rejoin[=ID]  the game restarted: rejoin the player's running game (the saved lobby session; the lobby's rejoin START), re-simulate it from
 ##                           the relay's log ("Rejoining" on screen), then play on
@@ -199,7 +199,7 @@
 ##                           (OPENBFME_LOBBY_TOKEN: a lobby session token instead of a new guest; never sent to another origin: no redirects)
 ##   lane ONLINE-4, the online screens (a test feature; docs/ONLINE.md section 5): the main menu's Online opens RotWK's OnlineShell.apt (guest sign-in, the
 ##   home page with the lobby's message of the day, Open Play = the server browser, the MpGameSetup staging room) on the lobby service (scripts/online_http.gd).
-##   The lobby: --online-lobby=URL, else OPENBFME_LOBBY, else Options.ini's OpenBFMEOnlineLobby, else https://play.openbfme.com. The guest name of the last
+##   This fork always uses https://secondage.dev for its lobby. The guest name of the last
 ##   sign-in is kept in Options.ini (OpenBFMEOnlineName).
 ##   lane ONLINEHUB-1 (docs/PLATFORM_API.md): the TOURNAMENT page (Quick Match, tournaments) and the STATS pages read the OpenBFME platform:
 ##     --platform-url=URL    its base URL (default: OPENBFME_PLATFORM, else Options.ini's OpenBFMEPlatformUrl, else https://api.openbfme.com/v1)
@@ -401,7 +401,7 @@ var _online_note: CanvasLayer = null ## "Online play is a test feature", shown w
 var _stats: Node = null              ## lane ONLINECOUNT-1: scripts/online_stats.gd (null: not asked for: off, or not made yet)
 var _stats_off := ""                 ## why the count is not asked for ("" = it is); set once, when the menu first shows
 var _stats_label: Label = null       ## the main menu's / the online menu's "N players online" line
-const ONLINE_DEFAULT_LOBBY := "https://play.openbfme.com"
+const ONLINE_DEFAULT_LOBBY := "https://secondage.dev"
 const ONLINE_SESSION_FILE := "user://online_session.txt" # lane ONLINE-3's file (scripts/online_lobby.gd SESSION_FILE)
 var _online_saved_session := ""
 # lane ONLINEHUB-1 (docs/PLATFORM_API.md): the OpenBFME platform API (Quick Match, tournaments, statistics, game results) and the games this installation
@@ -5123,7 +5123,7 @@ func _print_perf_stat(w: Dictionary) -> void:
 
 func _online_open() -> void:
 	_online = load("res://scripts/online_lobby.gd").new()
-	_online.lobby_url = _online_lobby if not _online_lobby.is_empty() else OS.get_environment("OPENBFME_LOBBY")
+	_online.lobby_url = _online_lobby_url()
 	_online.player_name = _online_name if not _online_name.is_empty() else (_net_name if _net_name != "Joiner" else "Player")
 	_online.token = OS.get_environment("OPENBFME_LOBBY_TOKEN")
 	_online.profile = _world.net_profile_digest()
@@ -5150,7 +5150,7 @@ func _online_open() -> void:
 
 # ---- lane ONLINE-4: the online screens (OnlineShell.apt on the lobby service) -----------------------------------------------------------------------------
 
-## The lobby the online screens use: --online-lobby, OPENBFME_LOBBY, Options.ini's OpenBFMEOnlineLobby, then the release default
+## This fork pins both the online screens and command-line online games to Second Age.
 # ---- lane ONLINEHUB-1: the platform API, the game records and the results ----------------------------------------------------------------------
 
 func _platform_base_url() -> String:
@@ -5325,14 +5325,8 @@ func _record_finished_game(r: Dictionary) -> void:
 
 
 func _online_lobby_url() -> String:
-	if not _online_lobby.is_empty():
-		return _online_lobby
-	var env := OS.get_environment("OPENBFME_LOBBY")
-	if not env.is_empty():
-		return env
-	var opts: Dictionary = _shell.get_options()
-	var configured: String = str(opts.get("OpenBFMEOnlineLobby", ""))
-	return configured if not configured.is_empty() else ONLINE_DEFAULT_LOBBY
+	# Keep Mac and iOS on the same service, including installations with older saved settings.
+	return ONLINE_DEFAULT_LOBBY
 
 
 ## The main menu's Online (RW 0x91D7A3 pushes OnlineShell.apt): the shell's lobby client, its HTTP transport, then the screens

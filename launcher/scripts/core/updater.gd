@@ -49,7 +49,7 @@ const LAUNCHER_EXE := {"linux-x64": "OpenBFMELauncher.x86_64", "windows-x64": "O
 ## (godot/scripts/release/update_handover.gd)
 const STARTED_BY_LAUNCHER := "OPENBFME_STARTED_BY_LAUNCHER"
 
-const DEFAULT_LOBBY := "https://play.openbfme.com"  # lane ONLINECOUNT-1 (the game's ONLINE_DEFAULT_LOBBY)
+const DEFAULT_LOBBY := "https://secondage.dev"  # lane ONLINECOUNT-1 (the game's ONLINE_DEFAULT_LOBBY)
 
 var info: RefCounted  # BuildInfo
 var data_dir := ""
@@ -221,10 +221,9 @@ func set_show_online_count(on: bool) -> void:
 	set_state("launcher", "show_online_count", on)
 
 
-## the online lobby the launcher's links and the count use: --lobby=<url> (state online/lobby), else the release's lobby
+## This fork uses Second Age for invite links and online counts, including older launcher installations.
 func lobby_url() -> String:
-	var kept := str(get_state("online", "lobby", "")).strip_edges()
-	return kept if kept != "" else DEFAULT_LOBBY
+	return DEFAULT_LOBBY
 
 
 func _save_state() -> void:
