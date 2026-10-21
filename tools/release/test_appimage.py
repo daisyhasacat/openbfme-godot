@@ -115,3 +115,39 @@ def test_inline_ui_assets_stay_clean_with_lfs_filter(tmp_path):
     for path in ('godot/assets/openbfme-icon.png', 'godot/assets/brand/poweredby_openbfme.png',
                  'godot/assets/platform_icons/linux.png'):
         assert git('check-attr', 'filter', '--', path).stdout.strip().endswith('filter: unset')
+
+
+def test_workflow_preserves_release_folder_name_when_extracting(tmp_path):
+    import os
+    import shutil
+
+    import audit_package
+    import make_archive
+
+    version = "v1.2.3"
+    name = f"openbfme-{version}-linux-x64"
+    source = tmp_path / "source" / name
+    source.mkdir(parents=True)
+    (source / "VERSION").write_text(version + "\n")
+    runner = tmp_path / "runner temp"
+    archives = runner / "linux-package"
+    archives.mkdir(parents=True)
+    make_archive.tar_gz(source, archives / f"{name}.tar.gz", 0)
+    workspace = tmp_path / "workspace"
+    scripts = workspace / "tools/release"
+    scripts.mkdir(parents=True)
+    shutil.copyfile(appimage.ROOT / "tools/release/make_archive.py", scripts / "make_archive.py")
+    # Capture the actual workflow's stage arguments after the real extractor runs.
+    (scripts / "appimage.py").write_text(
+        "import sys\nfrom pathlib import Path\n"
+        "Path('stage-args.txt').write_text('\\n'.join(sys.argv[1:]))\n")
+    workflow = (appimage.ROOT / ".github/workflows/appimage.yml").read_text()
+    block = workflow.split("      - name: Create AppImage and checksum\n", 1)[1]
+    commands = block.split("          version=", 1)[1].split("\n", 1)[1]
+    commands = commands.split("          desktop-file-validate", 1)[0]
+    subprocess.run(["bash", "-euc", commands], cwd=workspace, check=True,
+                   env={**os.environ, "RUNNER_TEMP": str(runner), "version": version})
+    args = (workspace / "stage-args.txt").read_text().splitlines()
+    assert args == ["stage", "--package", str(runner / name), "--output", str(runner / "OpenBFME.AppDir")]
+    assert audit_package.TOP_DIR.fullmatch(Path(args[2]).name) is not None
+    assert (Path(args[2]) / "VERSION").read_text() == version + "\n"
