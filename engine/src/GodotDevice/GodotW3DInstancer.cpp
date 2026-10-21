@@ -118,6 +118,7 @@ void W3DInstancer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("add_instance", "model", "transform", "clip", "start_time", "speed"), &W3DInstancer::add_instance, DEFVAL(String()), DEFVAL(0.0), DEFVAL(1.0));
 	ClassDB::bind_method(D_METHOD("set_instance_transform", "instance", "transform"), &W3DInstancer::set_instance_transform);
 	ClassDB::bind_method(D_METHOD("remove_instance", "instance"), &W3DInstancer::remove_instance);
+	ClassDB::bind_method(D_METHOD("set_instance_shrouded", "instance", "hidden"), &W3DInstancer::set_instance_shrouded);
 	ClassDB::bind_method(D_METHOD("set_instance_clip", "instance", "clip", "start_time", "speed"), &W3DInstancer::set_instance_clip, DEFVAL(0.0), DEFVAL(1.0));
 	ClassDB::bind_method(D_METHOD("set_instance_pose", "instance", "clip0", "frame0", "clip1", "frame1", "percentage"), &W3DInstancer::set_instance_pose, DEFVAL(String()), DEFVAL(0.0), DEFVAL(0.0));
 	ClassDB::bind_method(D_METHOD("get_instance_count"), &W3DInstancer::get_instance_count);
@@ -820,9 +821,25 @@ bool W3DInstancer::remove_instance(int64_t instance)
 
 		inst.PaletteSize = 0;
 		inst.Pose = HTreePose();
+		// Keep the stable id tombstone, but release per-instance heap storage on death.
+		std::vector<std::uint8_t>().swap(inst.HiddenSubs);
+		std::vector<std::uint8_t>().swap(inst.BufferVisibility);
+		std::vector<float>().swap(inst.BufferFade);
+		std::vector<Vector3>().swap(inst.BufferSortOrigins);
+		std::vector<std::pair<int, float>>().swap(inst.BoneSpins);
+		for (auto &name : inst.MemoClip) std::string().swap(name);
 	}
 	PoseDirty = true;
 	return true;
+}
+
+void W3DInstancer::set_instance_shrouded(int64_t instance, bool hidden)
+{
+	if (instance < 0 || instance >= (int64_t)Instances.size()) return;
+	Instance &inst = Instances[(size_t)instance];
+	if (inst.Removed || inst.ShroudHidden == hidden) return;
+	inst.ShroudHidden = hidden;
+	mark_model(instance);
 }
 
 void W3DInstancer::mark_model(int64_t instance)
@@ -1331,7 +1348,7 @@ void W3DInstancer::write_buffers()
 			for (int id : m.InstanceIds)
 			{
 				const Instance &inst = Instances[(size_t)id];
-				if (inst.Removed) continue;
+				if (inst.Removed || inst.RenderCulled || inst.ShroudHidden) continue;
 				if (!inst.HiddenSubs.empty() && inst.HiddenSubs[(size_t)d.SubIndex]) continue;
 				if (!inst.Pose.IsVisible[(size_t)bone]) continue;
 				if (inst.Pose.PivotFade[(size_t)bone] * inst.Opacity <= 0.0f) continue;
@@ -1533,7 +1550,8 @@ void W3DInstancer::update_now()
 	for (size_t i = 0; i < Instances.size(); ++i)
 	{
 		Instance &inst = Instances[i];
-		if (!inst.Removed && (inst.PoseStale || (timeMoved && inst.Anim != nullptr && !inst.Explicit)))
+		if (inst.Removed) continue;
+		bool outside = false;
 		{
 			if (cull)
 			{
@@ -1542,7 +1560,6 @@ void W3DInstancer::update_now()
 				const Vector3 sc = inst.Xf.basis.get_scale_abs();
 				const Vector3 ns = nodeXf.basis.get_scale_abs();
 				const real_t r = cull_radius(*Models[(size_t)inst.Model]) * std::max(sc.x, std::max(sc.y, sc.z)) * std::max(ns.x, std::max(ns.y, ns.z));
-				bool outside = false;
 				for (const Plane &pl : frustum)
 				{
 					if (pl.distance_to(centre) > r)
@@ -1563,13 +1580,23 @@ void W3DInstancer::update_now()
 						}
 					}
 				}
-				if (outside)
-				{
-					inst.PoseStale = true; // pending: posed by the first update that sees it (with the inputs of that frame)
-					++PoseCulled;
-					continue;
-				}
 			}
+		}
+		// Presentation only: compact the shared MultiMeshes as well as deferring poses.
+		// Refresh every live instance, including static poses, on camera/frustum changes.
+		if (inst.RenderCulled != outside)
+		{
+			inst.RenderCulled = outside;
+			mark_model((int64_t)i);
+		}
+		if (outside || inst.ShroudHidden || inst.Opacity <= 0.0f)
+		{
+			if (timeMoved && inst.Anim != nullptr && !inst.Explicit) inst.PoseStale = true;
+			if (outside) ++PoseCulled;
+			continue;
+		}
+		if (inst.PoseStale || (timeMoved && inst.Anim != nullptr && !inst.Explicit))
+		{
 			StaleScratch.push_back(i);
 		}
 	}

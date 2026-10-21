@@ -166,6 +166,41 @@ func _run() -> int:
 	for b in 23:
 		bones_equal = bones_equal and culled.get_bone_position(far_id, b) == full.get_bone_position(far_id, b)
 	_check(bones_equal, "a culled instance's bone query answers with the pose of the current clock")
+	# Static poses must disappear from GPU batches when both cameras turn away.
+	camera.position = Vector3(0.0, 40.0, 100000.0)
+	camera.rotation.y = PI
+	await process_frame
+	culled.update_now()
+	_check(culled.get_stats().visible_draw_instances == 0, "off-screen static instances submit no draw instances")
+	culled.set_pose_culling(false)
+	culled.update_now()
+	_check(culled.get_stats().visible_draw_instances == full.get_stats().visible_draw_instances, "disabling culling restores every draw instance")
+	# Fog/hidden opacity suppresses both GPU submission and animation evaluation.
+	for id in ids:
+		culled.set_instance_opacity(id, 0.0)
+		culled.set_instance_pose(id, "GUManMocap_IDLB", 200.0, "", 0.0, 0.0)
+	culled.update_now()
+	_check(culled.get_stats().visible_draw_instances == 0, "hidden instances submit no draws")
+	_check(culled.get_stats().pose_evaluations == 0, "hidden instances do not evaluate poses")
+	for id in ids:
+		culled.set_instance_opacity(id, 1.0)
+	culled.update_now()
+	_check(culled.get_stats().pose_evaluations == ids.size(), "revealed instances evaluate pending poses")
+	for id in ids:
+		culled.set_instance_shrouded(id, true)
+	culled.update_now()
+	_check(culled.get_stats().visible_draw_instances == 0, "undiscovered scenery submits no draws independently of opacity")
+	for id in ids:
+		culled.set_instance_shrouded(id, false)
+	culled.update_now()
+	_check(culled.get_stats().visible_draw_instances == full.get_stats().visible_draw_instances, "discovered scenery returns to draw batches")
+	for id in ids:
+		_check(culled.remove_instance(id), "remove live instance")
+		_check(culled.remove_instance(id), "removal is idempotent")
+		_check(culled.get_instance_palette(id).is_empty(), "removed instance releases its palette")
+	culled.update_now()
+	_check(culled.get_stats().visible_draw_instances == 0, "removed instances submit no draws")
+	_check(culled.get_stats().pose_evaluations == 0, "removed instances do not evaluate poses")
 	var reported := false
 	for w in culled.get_warnings():
 		reported = reported or String(w).begins_with("[S-1730] ")

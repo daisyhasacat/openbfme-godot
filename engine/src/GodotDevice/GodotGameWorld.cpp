@@ -780,6 +780,7 @@ void GameWorld::clear_scene()
 	m_staticModels.clear();
 	m_buffInstances.clear(); // lane SPELL-4: the buffs' instances went with the instancer
 	m_staticId = m_dynamicId = 0;
+	m_staticShroudInstances.clear();
 	m_textureClock = 0.0;
 	m_animatedDrawables = 0;
 	m_streaks.clear();
@@ -835,6 +836,8 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 	}
 	staticInst->set_house_colors_enabled(false); // client-only trees and props have no owner
 	staticInst->set_auto_update(false);
+	staticInst->set_pose_culling(true);
+	m_staticShroudInstances.clear();
 	m_clientRuntime.reset(new MapObjectRuntime(*m_assets));
 	m_clientRuntime->build(m_game->clientOnly(), false);
 	m_treeTopple.reset(new TreeTopple()); // lane SPELL-3
@@ -884,6 +887,7 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 			continue;
 		}
 		++instances;
+		m_staticShroudInstances.push_back({instance, Vector2(d.position.x, d.position.y)});
 		if(d.info && (d.info->tree || d.info->shrub || d.info->shrubbery || d.info->clearedByBuild || d.info->optimizedProp)
 			&& !d.info->kindOf_test(MapObjectCreation::kindOfIndex("STRUCTURE")))
 			m_pavingPlants.push_back({instance,Vector2(d.position.x,d.position.y)});
@@ -2238,6 +2242,7 @@ void GameWorld::advance(double delta)
 	const double tv = nowMs();
 	m_lastShroudMs = timing::spanMs(tv, t1);
 	refresh_views(dt * 1000.0);
+	if (W3DInstancer *st = instancerOf(m_staticId)) st->update_now();
 	const double tf = nowMs();
 	m_lastViewsMs = timing::spanMs(tf, tv);
 	updateTreeTopple(dt); // lane SPELL-3
@@ -2546,7 +2551,7 @@ void GameWorld::updateTreeTopple(double dt)
 		m_treeTopple->placement(i, v.basis, v.position, b, pos);
 		if (m_treeTopple->trees()[i].state == TreeTopple::GONE)
 		{
-			st->set_instance_transform(v.instance, toTransform(b, pos, 0.0f)); // sunk away: drawn at scale 0
+			st->remove_instance(v.instance); // sunk away: release pose/palette and remove GPU submission
 		}
 		else
 		{
@@ -5909,6 +5914,17 @@ void GameWorld::refresh_shroud(bool force)
 	if (nx <= 0 || ny <= 0)
 	{
 		return;
+	}
+	// Presentation inference: undiscovered client-only scenery has no GPU submission.
+	// Explored scenery remains visible in fog, consistent with immobile objects.
+	if (W3DInstancer *st = instancerOf(m_staticId))
+	{
+		for (const auto &entry : m_staticShroudInstances)
+		{
+			const auto status = sm.localPlayer < 0 ? CELLSHROUD_CLEAR : sm.statusAt(entry.second.x, entry.second.y);
+			st->set_instance_shrouded(entry.first, m_shroudDrawn && status == CELLSHROUD_SHROUDED);
+			st->set_instance_fogged(entry.first, m_shroudDrawn && status == CELLSHROUD_FOGGED);
+		}
 	}
 	const VisionSettings &vs = m_game->visionSettings();
 	// lane ZOOM-1: the texture is the cells plus a one-texel border at the border level (see above)

@@ -806,6 +806,7 @@ private:
 	uint64_t m_staticId = 0, m_dynamicId = 0;
 	std::vector<DrawableView> m_views;       ///< index = drawable id
 	std::map<std::string, int64_t> m_dynamicModels, m_staticModels;
+	std::vector<std::pair<int64_t, Vector2>> m_staticShroudInstances;
 	Dictionary m_report;
 	bool m_autoAdvance = false;
 	bool m_paused = false;
