@@ -69,6 +69,7 @@ export async function uploadFinishedLogs({ dir, url, key, signal = AbortSignal.t
 }
 
 export async function startOnlineServer(options = {}) {
+  if (options.trustProxy !== undefined && options.trustProxy !== 'loopback') throw new Error('trust-proxy must be loopback');
   const data = resolve(options.data ?? join(here, '.state'));
   const relayBin = resolve(options.relayBin ?? join(here, '.build/relay/openbfme_relay'));
   const http = options.http ?? '127.0.0.1:8787';
@@ -140,7 +141,7 @@ export async function startOnlineServer(options = {}) {
       LOBBY_BIND: http, LOBBY_DATA: join(data, 'lobby'), RELAYS: `local=${relayPublic}`,
       TICKET_KEYS_FILE: keys['ticket.keys'], SESSION_KEY_FILE: keys['session.key'],
       UPLOAD_KEY_FILE: keys['upload.key'], ADMIN_KEY_FILE: keys['admin.key'],
-      PUBLIC_URL: options.publicUrl ?? '', MOTD: options.motd ?? '',
+      LOBBY_TRUST_PROXY: options.trustProxy ?? '', PUBLIC_URL: options.publicUrl ?? '', MOTD: options.motd ?? '',
     });
     child = spawn(relayBin, ['--bind', relayBind, '--keys', keys['ticket.keys'], '--log-dir', join(data, 'relay-logs'), '--status', join(data, 'relay-status.json')], { stdio: ['ignore', 'pipe', 'pipe'] });
     const ready = new Promise((yes, no) => {
@@ -189,7 +190,7 @@ export async function startOnlineServer(options = {}) {
 }
 
 export function parseArgs(args) {
-  const names = { '--data': 'data', '--http': 'http', '--relay-bind': 'relayBind', '--relay-public': 'relayPublic', '--relay-bin': 'relayBin', '--public-url': 'publicUrl', '--motd': 'motd', '--upload-ms': 'uploadMs' };
+  const names = { '--trust-proxy': 'trustProxy', '--data': 'data', '--http': 'http', '--relay-bind': 'relayBind', '--relay-public': 'relayPublic', '--relay-bin': 'relayBin', '--public-url': 'publicUrl', '--motd': 'motd', '--upload-ms': 'uploadMs' };
   const out = {};
   for (let i = 0; i < args.length; ++i) {
     if (args[i] === '--help') return { help: true };
@@ -203,7 +204,7 @@ export function parseArgs(args) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const options = parseArgs(process.argv.slice(2));
-    if (options.help) console.log('Usage: node services/online/server.mjs [--data DIR] [--http IPv4:PORT] [--relay-bind IPv4:PORT] [--relay-public IPv4:PORT] [--relay-bin FILE] [--public-url URL] [--motd TEXT] [--upload-ms N]');
+    if (options.help) console.log('Usage: node services/online/server.mjs [--data DIR] [--http IPv4:PORT] [--relay-bind IPv4:PORT] [--relay-public IPv4:PORT] [--relay-bin FILE] [--public-url URL] [--motd TEXT] [--upload-ms N] [--trust-proxy loopback]');
     else {
       let service, interrupted = false;
       for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { interrupted = true; if (service) void service.stop(); });

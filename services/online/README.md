@@ -53,6 +53,11 @@ Replace the example relay address and URL with the host's reachable IPv4 address
 
 The chosen data directory must be writable by the service user. Run one instance per directory. A process manager such as systemd can restart the entire program on failure; keep its default control-group termination so both Node and its relay are stopped together. No hosting or deployment is performed by these commands until run on the chosen host.
 
+For the deployed Second Age host, service configuration and maintenance commands,
+see [deploy/README.md](deploy/README.md). Behind a trusted local reverse proxy,
+`--trust-proxy loopback` enables per-client rate limits using the proxy's
+single validated `X-Real-IP` header; it is ignored for non-loopback peers.
+
 ## Online web interface
 
 Open the lobby’s root URL in a browser, for example `http://127.0.0.1:8787/` after starting the local server. `/online/` opens the same interface. It is served by both the Node lobby and the Cloudflare Worker, with no frontend build or npm dependencies. When using a reverse proxy, forward `/`, `/online/`, `/web/*`, `/v1/*` and `/healthz` to the lobby.

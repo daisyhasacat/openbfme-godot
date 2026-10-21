@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import { Lobby, route, configFromEnv } from '../src/lobby.mjs';
-import { nodeEnv, fileStore, startServer } from '../src/server.mjs';
+import { nodeEnv, fileStore, startServer, clientAddress } from '../src/server.mjs';
 import { webResponse } from '../src/webui.mjs';
 
 const config = { TICKET_KEYS: '1:'+'11'.repeat(32), SESSION_KEY:'22'.repeat(32), ADMIN_KEY:'33'.repeat(32), RELAYS:'local=127.0.0.1:7350' };
@@ -206,4 +206,14 @@ test('Worker retains completed history through reload; legacy migration reports 
  const {lobby}=fixture({saveMeta:async()=>{throw new Error('archive disk full');}});const legacy=structuredClone(g);delete legacy.completedAt;lobby.games.set(legacy.id,legacy);
  await assert.rejects(lobby.restoreArchives(),/archive disk full/);assert.equal(lobby.history.size,0);
  lobby.env.store.saveMeta=async()=>{};await lobby.restoreArchives();assert.equal(lobby.history.get(g.id).completedAt,null);
+});
+
+
+test('proxy client addresses require explicit trust, a loopback peer and a single valid IP',()=>{
+ const req=(peer,ip)=>({socket:{remoteAddress:peer},headers:{'x-real-ip':ip}});
+ assert.equal(clientAddress(req('127.0.0.1','203.0.113.9')),'127.0.0.1');
+ assert.equal(clientAddress(req('127.0.0.1','203.0.113.9'),'loopback'),'203.0.113.9');
+ assert.equal(clientAddress(req('::1','2001:db8::1'),'loopback'),'2001:db8::1');
+ assert.equal(clientAddress(req('198.51.100.1','203.0.113.9'),'loopback'),'198.51.100.1');
+ for(const ip of ['203.0.113.9, 203.0.113.10','not-an-ip',undefined])assert.equal(clientAddress(req('127.0.0.1',ip),'loopback'),'127.0.0.1');
 });

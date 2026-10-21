@@ -84,6 +84,8 @@ test('keys persist, have private permissions, and missing established keys are a
 test('CLI rejects unknown options and invalid advertised addresses', async () => {
   assert.deepEqual(parseArgs(['--http', '127.0.0.1:8787', '--upload-ms', '100']), { http: '127.0.0.1:8787', uploadMs: 100 });
   assert.throws(() => parseArgs(['--bogus']), /unknown/);
+  assert.equal(parseArgs(['--trust-proxy', 'loopback']).trustProxy, 'loopback');
+  await assert.rejects(startOnlineServer({ trustProxy: 'any' }), /trust-proxy must be loopback/);
   await assert.rejects(startOnlineServer({ relayPublic: '0.0.0.0:7350' }), /reachable/);
   await assert.rejects(startOnlineServer({ relayBind: '127.0.0.999:7350' }), /IPv4/);
   await assert.rejects(startOnlineServer({ relayBind: '127.0.0.1:0' }), /IPv4/);

@@ -1,0 +1,35 @@
+[Unit]
+Description=OpenBFME online lobby and UDP relay
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=openbfme-online
+Group=openbfme-online
+WorkingDirectory=/opt/openbfme-online/current
+ExecStart=/opt/openbfme-online/node/bin/node services/online/server.mjs --data /var/lib/openbfme-online --http 127.0.0.1:8787 --relay-bind 0.0.0.0:7350 --relay-public 165.22.13.12:7350 --public-url https://secondage.dev --trust-proxy loopback --motd "Welcome to Second Age OpenBFME"
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+StateDirectory=openbfme-online
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=256M
+TasksMax=64
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

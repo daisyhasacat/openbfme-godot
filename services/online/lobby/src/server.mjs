@@ -7,6 +7,7 @@
 // Usage: node server.mjs   (the deploy notes run it under systemd)
 
 import { createServer } from 'node:http';
+import { isIP } from 'node:net';
 import { createHmac, randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,6 +20,15 @@ export function readEnv(env = process.env) {
     if (k.endsWith('_FILE') && v) out[k.slice(0, -5)] = readFileSync(v, 'utf8').trim() + (k === 'TICKET_KEYS_FILE' ? '\n' : '');
   }
   return out;
+}
+
+// Only a loopback proxy can supply the single client address. Never trust a
+// caller-supplied chain or enable forwarded headers on a public listener.
+export function clientAddress(req, trustProxy = '') {
+  const peer = req.socket.remoteAddress ?? '';
+  if (trustProxy !== 'loopback' || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(peer)) return peer;
+  const forwarded = req.headers['x-real-ip'];
+  return typeof forwarded === 'string' && isIP(forwarded) ? forwarded : peer;
 }
 
 export function fileStore(dir) {
@@ -116,7 +126,7 @@ export async function startServer(env = readEnv(), { log = console.log, health =
         path: url.pathname,
         query: url.searchParams,
         headers: req.headers,
-        ip: req.socket.remoteAddress ?? '',
+        ip: clientAddress(req, env.LOBBY_TRUST_PROXY),
         bytes: async () => new Uint8Array(raw),
       };
       // ONLINE-5: a held poll (route's `deferred`) is answered when it resolves; the chain goes on with the next request meanwhile
