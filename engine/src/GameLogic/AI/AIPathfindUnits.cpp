@@ -23,6 +23,7 @@
 #include "GameLogic/SimMath.h"
 #include "GameLogic/AI/AIPathfindStops.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
