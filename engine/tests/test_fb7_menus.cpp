@@ -3122,6 +3122,27 @@ TEST_CASE("opts6 menu navigation retail: the main menu's OPTIONS > SETTINGS by k
 		settings = nav.focusId().find("Settings") != std::string::npos;
 	}
 	REQUIRE_MESSAGE(settings, nav.focusId());
+	// Navigation follows the authored dropdown hit region and lets its own
+	// rollover animation show focus, without a white rectangle over the label.
+	const auto targets = nav.targets();
+	bool checked = false;
+	for (const auto &target : targets)
+		if (target.id == nav.focusId())
+		{
+			AptButtonInst *button = fx.wm->apt().input().hitTestButtons(target.cx(), target.cy());
+			REQUIRE(button);
+			float hit[4];
+			REQUIRE(button->hitBounds(hit));
+			CHECK(target.x0 == hit[0]);
+			CHECK(target.y0 == hit[1]);
+			CHECK(target.x1 == hit[2]);
+			CHECK(target.y1 == hit[3]);
+			checked = true;
+		}
+	REQUIRE(checked);
+	GadgetDrawList focus;
+	nav.appendFocusFrame(focus);
+	CHECK(focus.commands.empty());
 	REQUIRE(nav.key(MenuNavKey::Activate));
 	fx.tick(80);
 	REQUIRE(fx.shell->top());

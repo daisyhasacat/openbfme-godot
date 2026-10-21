@@ -18,7 +18,7 @@
 // on from where the focus was.
 // Focus: Tab / Shift+Tab walk them in reading order (top to bottom, then left to right), the arrows go to the nearest target that way; the focused
 // target gets the pointer's hover (the virtual pointer moves onto its centre through WindowManager::postMouseMove, so a button shows its own Over
-// state, a page row its help line, as the mouse would) and a frame drawn over it (appendFocusFrame). Enter / Space press and release it there
+// state, a page row its help line, as the mouse would). A frame is drawn only when no native button highlight is available (appendFocusFrame). Enter / Space press and release it there
 // through WindowManager::postMouseButton: the click a player makes, through the same input path. Left / Right change a slider (its position by a
 // step, then the messages a drag sends: GSM_SLIDER_TRACK and, at the end, GSM_SLIDER_CLICKED, RW 0x7234EC's 0x4010) or a combo box (the next choice,
 // then GCM_SELECTED as its list's click sends); a list box takes Up / Down / Enter itself (ZH GadgetListBoxInput's GWM_CHAR keys); an open drop-down

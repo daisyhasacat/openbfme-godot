@@ -158,26 +158,14 @@ void MenuNavigator::collect(std::vector<MenuNavTarget> &out, std::vector<MenuNav
 	const float stageW = 1024.0f, stageH = 768.0f; // the menus' stage (AptStageMapping)
 	for (AptButtonInst *b : buttons)
 	{
-		float bx0, by0, bx1, by1;
-		if (!b->contentBounds(bx0, by0, bx1, by1))
-		{
-			continue;
-		}
-		const AptMatrix g = b->globalMatrix();
-		const float xs[4] = { bx0, bx1, bx0, bx1 }, ys[4] = { by0, by0, by1, by1 };
+		// Use the authored hit area, not the current state's artwork bounds.
+		// Hover animations/dropdowns can replace that artwork after focus moves.
+		float box[4];
+		if (!b->hitBounds(box)) continue;
 		MenuNavTarget t;
 		t.kind = MenuNavTarget::Kind::Button;
-		t.x0 = t.y0 = 1e30f;
-		t.x1 = t.y1 = -1e30f;
-		for (int i = 0; i < 4; ++i)
-		{
-			float x, y;
-			g.apply(xs[i], ys[i], x, y);
-			t.x0 = std::min(t.x0, x);
-			t.y0 = std::min(t.y0, y);
-			t.x1 = std::max(t.x1, x);
-			t.y1 = std::max(t.y1, y);
-		}
+		t.x0 = box[0]; t.y0 = box[1];
+		t.x1 = box[2]; t.y1 = box[3];
 		if (t.x1 - t.x0 >= 0.9f * stageW && t.y1 - t.y0 >= 0.9f * stageH)
 		{
 			if (catchers && b->enabled)
@@ -292,6 +280,32 @@ bool MenuNavigator::focusBox(float out[4]) const
 
 void MenuNavigator::appendFocusFrame(GadgetDrawList &out) const
 {
+	if (!m_frameShown) return;
+	// Authored movie buttons already show their Over artwork or rollover
+	// animation through focus()'s pointer move. Do not cover it with a box.
+	const auto list = targets();
+	if (const auto *target = find(list, m_focusId); target && target->kind == MenuNavTarget::Kind::Button)
+	{
+		const auto *button = m_windows.apt().input().hitTestButtons(target->cx(), target->cy());
+		if (button && button->info())
+		{
+			for (const auto &record : button->info()->records)
+				if (bool(record.stateMask & 1) != bool(record.stateMask & 2)) return;
+			for (const auto &action : button->info()->actions)
+				if (action.transitionMask & 3) return; // rollover / rollout actions
+		}
+	}
+	if (const auto *target = find(list, m_focusId); target && target->window &&
+		(target->window->winGetStyle() & (GWS_PUSH_BUTTON | GWS_CHECK_BOX)))
+	{
+		GameWindow *w = target->window;
+		for (int i = 0; i < MAX_DRAW_DATA; ++i)
+		{
+			if (!w->winGetHiliteImage(i).empty() && w->winGetHiliteImage(i) != w->winGetEnabledImage(i)) return;
+			if ((w->winGetHiliteColor(i) >> 24) && w->winGetHiliteColor(i) != w->winGetEnabledColor(i)) return;
+		}
+		if ((w->winGetHiliteTextColor() >> 24) && w->winGetHiliteTextColor() != w->winGetEnabledTextColor()) return;
+	}
 	float box[4];
 	if (!m_frameShown || !focusBox(box))
 	{
