@@ -17,12 +17,85 @@ The object culling and cleanup changes in RENDER-CULLING.md also apply to iOS:
 off-screen and undiscovered model instances are excluded from GPU draw buffers,
 hidden poses are deferred, and fully sunk trees release their instances.
 
-Device validation still required: a long battle on iPhone 15 Pro with Metal
-profiling, checking sustained frame time, thermals, memory and image quality.
+Further device validation is required for long battles, sustained frame time,
+thermals, memory and image quality. The short physical-device measurements below
+do not establish sustained performance.
 The 60 FPS cap is a target, not a guarantee. No thermal-state adaptive controller
 or automatic device-model detection is introduced.
 
 Validation: iPhoneOS arm64 extension built successfully with the installed Xcode
 SDK; IOS DISPLAY DEFAULTS PASS; existing OPTS1 settings/apply checks PASS. The
 optional full-game OPTS1 subprocesses were skipped in this settings-only run.
-No physical-device frame-time or thermal measurement has been made.
+The original defaults change had no physical-device measurement; the later
+short benchmark below measures frame time, but not thermals.
+
+## Physical iPhone startup investigation — 2026-10-21
+
+A signed development build at `0dc438d8b6` was installed on the paired iPhone 15
+Pro (iOS 27.0, build 24A5424a), retaining its downloaded game data and settings.
+The Settings benchmark completed on the physical device with native Metal and
+the Mobile renderer at 2556 × 1179, 100% render scale, UltraHigh detail and AA
+off. The saved display configuration was uncapped with VSync on; the benchmark's
+uncapped option temporarily disabled VSync. These settings override the newer
+75%/60 FPS defaults. Instruments Time Profiler was attached during the run, so
+these are diagnostic observations, not portable performance targets.
+
+The real Men match startup measured:
+
+| Measurement | Time |
+| --- | ---: |
+| Synchronous map load | 643.755 ms |
+| HUD installation (`hud_started` to `hud_complete`) | 973.948 ms |
+| Request to first submitted world frame | 1856.462 ms |
+| Request to acknowledged gameplay input | 1886.172 ms |
+| First submitted world frame to acknowledged input | 29.710 ms |
+| Input probe queue latency | 0.029 ms |
+| Longest frame gap in the post-reveal observation | 32.371 ms |
+
+The first-world-frame marker is a render submission marker, not GPU completion
+or visual recognition of a particular building. The native input acknowledgement
+passes through the normal deferred HUD queue, with gameplay input enabled and no
+modal; it is not just the PLAYING flag. The workload and measurement definitions
+are in `SETTINGS_BENCHMARK.md`.
+
+The four ten-second captures reported:
+
+| Scene | Average FPS | Frame p95 | Frame p99 |
+| --- | ---: | ---: | ---: |
+| Main menu | 113.39 | 10.261 ms | 24.555 ms |
+| Lobby | 82.89 | 29.284 ms | 35.672 ms |
+| Men, 1,000 CP with zoom/pan | 54.14 | 32.754 ms | 34.029 ms |
+| Men, 20,000 CP with zoom/pan | 28.38 | 58.099 ms | 82.979 ms |
+
+### Confirmed earlier stalls and remaining uncertainty
+
+The existing device session `openbfme-20261021-123344.log` at `971cd17897`
+contains a main-thread freeze of 11.2 seconds immediately after Palantir appeared,
+then a 7.2-second freeze during its first 3D model activity. An older session
+(`openbfme-20261020-230540.log`) reports 12,478,950 microseconds inside the
+Palantir canvas submission section. That section includes native 3D viewers and
+Godot resource creation, so the CPU marker alone cannot distinguish asset
+construction, shader compilation, driver waits or GPU work.
+
+The current benchmark did **not** reproduce those multi-second post-base stalls.
+The captured CPU profiles show canvas rendering, game/script work and some
+shader/material creation; they do not establish the cause of the earlier freeze.
+Some extension stack frames lack symbols. Cache state and first-use rendering
+are plausible contributors, not proven causes. No fix for that freeze is claimed.
+A useful next capture must catch the actual stall, with extension debug symbols
+and a Metal/System Trace; do not delete the user's caches to force a reproduction.
+
+A separate app-launch stall was reproduced after installing the update:
+verification rehashed all 213 archives (zero cache hits) in 20,811 ms; initial
+loading finished at engine elapsed time 23,008 ms. This occurred before the main
+menu, not after the base appeared. The same kind of full rehash appears in the
+previous session. The app-container path changes on updates, but why this
+invalidated the verification cache has not been established here. Keep that
+launch delay separate from map loading and gameplay-input readiness.
+
+Local evidence is kept under `workspace/diagnostics/iphone-20261021/` (ignored):
+the exported benchmark, session logs, two Instruments traces and their sampled
+CPU stacks. No retail data or device credentials are committed. Validation:
+iPhoneOS extension build, signed Xcode Debug build and on-device benchmark all
+completed successfully. The app update preserves the phone's downloaded assets;
+its saved display settings were restored by the benchmark.
