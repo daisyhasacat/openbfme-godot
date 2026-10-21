@@ -92,6 +92,7 @@ public:
 	// True when the key was the navigation's (the caller passes it on to nothing else).
 	bool key(MenuNavKey key);
 	void setControllerSections(bool enabled);
+	bool supportsControllerSections() const;
 	// OpenBFME result-screen defaults, refreshed as the authored movie changes pages.
 	void setControllerResults(bool enabled);
 	void switchControllerSection(int delta);

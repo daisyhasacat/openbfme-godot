@@ -9,6 +9,7 @@
 
 #include "GameClient/GUI/AptMessageBox.h"
 #include "GameClient/GUI/WindowManager.h"
+#include "GameClient/GUI/MenuNavigator.h"
 #include "Libraries/Source/Apt/Apt.h"
 #include "Libraries/Source/Apt/AptCharacterInst.h"
 #include "Libraries/Source/Apt/AptRenderList.h"
@@ -154,6 +155,24 @@ TEST_CASE("mp2 retail: LanLobby.apt hosts and joins a LAN game: the list, Join, 
 	CHECK(host.wm->invokeCallback("AptLanLobby::OnCreateGameBttn", ""));
 	REQUIRE(run([&] { return hs->state() == 4; }));
 	CHECK(hostLan->amIHost());
+	host.tick(60);
+	MenuNavigator controller(*host.wm);
+	controller.setMenu(hs->level(), hs);
+	REQUIRE(controller.supportsControllerSections());
+	controller.setControllerSections(true);
+	for (int section : { 2, 0, 1 })
+	{
+		controller.switchControllerSection(1);
+		INFO("controller section ", section);
+		CHECK(controller.controllerSection() == section);
+		REQUIRE_FALSE(controller.targets().empty());
+		bool representative = false;
+		for (const auto &target : controller.targets())
+			representative |= target.id.find(section == 2 ? ".MapList" : section == 0 ? ".PlayGame." : ".PlayerList.") != std::string::npos;
+		CHECK(representative);
+	}
+	controller.setControllerSections(false);
+
 	// the joiner's list shows it (columns GameName, Players, Map, Ping, Status)
 	REQUIRE(run([&] { return js->gameRows().size() == 1; }));
 	CHECK(js->gameRows()[0].rfind("Host|1/8|", 0) == 0);
@@ -173,6 +192,11 @@ TEST_CASE("mp2 retail: LanLobby.apt hosts and joins a LAN game: the list, Join, 
 	CHECK(joinLan->localSlot() == 1);
 	REQUIRE(run([&] { return hs->setup()->info().slots[1].name == u"Joiner"; }));
 	CHECK(js->setup()->info().slots[0].name == u"Host");
+	join.tick(60);
+	MenuNavigator guestController(*join.wm);
+	guestController.setMenu(js->level(), js);
+	CHECK(guestController.supportsControllerSections());
+
 	// the joiner's own faction through its combo: a request the host applies and re-broadcasts
 	// (DoJoinGame plays the lobby out and the setup in: its gadgets come up a few frames later)
 	REQUIRE(run([&] {

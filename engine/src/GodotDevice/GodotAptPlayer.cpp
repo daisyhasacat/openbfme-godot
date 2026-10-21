@@ -5823,8 +5823,9 @@ bool AptMenuPlayer::menu_controller_section(int delta)
 {
 	if (!m_booted || !m->shell || !m->shell->shell) return false;
 	const auto *top = m->shell->shell->inputTop();
-	if (!top || top->filename() != "Skirmish.apt") return false;
+	if (!top || !dynamic_cast<const AptSkirmish *>(top)) return false;
 	syncNav();
+	if (!m->shell->nav->supportsControllerSections()) return false;
 	m->shell->nav->setControllerSections(true);
 	m->shell->nav->switchControllerSection(delta);
 	m->dirty = true;
@@ -5992,7 +5993,7 @@ bool AptMenuPlayer::menuKey(const InputEventKey *key)
 	{
 		syncNav();
 		const auto *top = m->shell->shell->inputTop();
-		m->shell->nav->setControllerSections(top && top->filename() == "Skirmish.apt" && (bool)key->get_meta("menu_controller", false));
+		m->shell->nav->setControllerSections(top && dynamic_cast<const AptSkirmish *>(top) && m->shell->nav->supportsControllerSections() && (bool)key->get_meta("menu_controller", false));
 	}
 	// lane SAVE-UI1: the top screen's own Escape procedure first (its press and its release are its alone)
 	if (key->get_keycode() == Key::KEY_ESCAPE && !key->is_echo() && menu_escape(key->is_pressed()))

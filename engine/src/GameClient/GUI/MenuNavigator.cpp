@@ -107,8 +107,15 @@ std::string leafOf(const std::string &path)
 
 int sectionOf(const MenuNavTarget &target)
 {
-	if (target.id.find(".MpMapAndSettings.") != std::string::npos) return 2;
-	if (target.id.find(".lobby.") != std::string::npos || target.id.find(".MainButtons.") != std::string::npos || target.id.find(".ProfileNav.") != std::string::npos) return 0;
+	if (target.id.find(".MpMapAndSettings.") != std::string::npos ||
+		target.id.find(".MpMapSettings.") != std::string::npos ||
+		target.id.find(".TabButtons.") != std::string::npos ||
+		target.id.find(".TabMap.") != std::string::npos ||
+		target.id.find(".MapsTabSelected.") != std::string::npos ||
+		target.id.find(".RulesTabSelected.") != std::string::npos ||
+		target.id.find(".ChatTabSelected.") != std::string::npos) return 2;
+	if (target.id.find(".lobby.") != std::string::npos || target.id.find(".MainButtons.") != std::string::npos || target.id.find(".ProfileNav.") != std::string::npos ||
+		target.id.find(".LowerButtons_") != std::string::npos || target.id.find(".MessengerButton.") != std::string::npos) return 0;
 	return 1;
 }
 
@@ -151,6 +158,20 @@ void MenuNavigator::setMenu(int level, const void *screen)
 		m_controllerSections = false;
 		m_section = 1;
 	}
+}
+
+bool MenuNavigator::supportsControllerSections() const
+{
+	// All three lobby screens host MpGameSetup. Detect its visible controls,
+	// so browsing games, signing in, and profile pages keep normal navigation.
+	std::vector<MenuNavTarget> list;
+	collect(list, nullptr, false);
+	bool players = false;
+	for (const auto &target : list)
+	{
+		players |= target.id.find(".PlayerList.") != std::string::npos;
+	}
+	return players;
 }
 
 void MenuNavigator::setControllerSections(bool enabled)
@@ -294,7 +315,7 @@ void MenuNavigator::collect(std::vector<MenuNavTarget> &out, std::vector<MenuNav
 	{
 		float toolbarTop = stageH;
 		for (const auto &t : out)
-			if (t.id.find(".lobby.") != std::string::npos || t.id.find(".MainButtons.") != std::string::npos)
+			if (sectionOf(t) == 0 && t.id.find(".MessengerButton.") == std::string::npos && t.id.find(".ProfileNav.") == std::string::npos)
 				toolbarTop = std::min(toolbarTop, t.y0);
 		out.erase(std::remove_if(out.begin(), out.end(), [toolbarTop](const MenuNavTarget &t) {
 			return sectionOf(t) == 1 && t.y1 >= toolbarTop;
