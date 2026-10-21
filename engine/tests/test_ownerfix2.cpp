@@ -518,6 +518,48 @@ TEST_CASE("ownerfix2 retail: a farm's placement shows its claimable share (RW 0x
 #include "GameClient/DrawableIconUI.h"
 #include "GameClient/FloatingText.h"
 
+#include "GameClient/CommandButtonHelp.h"
+
+TEST_CASE("floating text: numeric settings accept INI math and report missing or malformed values")
+{
+	const std::string ini = "InGameUI\n FloatingTextTimeOut = #MULTIPLY( 500 2 )\n FloatingTextMoveUpSpeed = #MULTIPLY( 15 2 )\n FloatingTextVanishRate = #ADD( 1 2 )\nEnd\n";
+	unsigned timeout = 0;
+	float speed = 0, vanish = 0;
+	std::string error;
+	REQUIRE(loadInGameUiUnsigned(nullptr, &ini, "FloatingTextTimeOut", timeout, &error));
+	REQUIRE(loadInGameUiReal(nullptr, &ini, "FloatingTextMoveUpSpeed", speed, &error));
+	REQUIRE(loadInGameUiReal(nullptr, &ini, "FloatingTextVanishRate", vanish, &error));
+	CHECK(timeout == 1000);
+	CHECK(speed == 30.0f);
+	CHECK(vanish == 3.0f);
+	const std::string missing = "InGameUI\nEnd\n";
+	CHECK_FALSE(loadInGameUiReal(nullptr, &missing, "FloatingTextVanishRate", vanish, &error));
+	CHECK(error.find("FloatingTextVanishRate") != std::string::npos);
+	const std::string malformed = "InGameUI\n FloatingTextVanishRate = bad\nEnd\n";
+	CHECK_FALSE(loadInGameUiReal(nullptr, &malformed, "FloatingTextVanishRate", vanish, &error));
+	CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("floating text: unavailable settings disable creation and discard existing labels")
+{
+	FloatingTextList list;
+	for (unsigned f = 0; f < 100; ++f) list.add("+25", Coord3D{}, 0xE6FFFFFFu, f);
+	CHECK(list.records().empty());
+	CHECK(list.added() == 0);
+	FloatingTextSettings settings;
+	settings.vanishRate = 3.0f;
+	list.setSettings(settings);
+	list.add("+25", Coord3D{}, 0xE6FFFFFFu, 100);
+	REQUIRE(list.records().size() == 1);
+	list.disable();
+	for (unsigned f = 101; f < 200; ++f) list.add("+25", Coord3D{}, 0xE6FFFFFFu, f);
+	CHECK(list.records().empty());
+	CHECK(list.added() == 1);
+	list.setSettings(settings);
+	list.add("+25", Coord3D{}, 0xE6FFFFFFu, 200);
+	CHECK(list.records().size() == 1);
+}
+
 TEST_CASE("floating text: GUI:AddCash records hold for FloatingTextTimeOut, rise at FloatingTextMoveUpSpeed and fade at FloatingTextVanishRate")
 {
 	FloatingTextSettings s;

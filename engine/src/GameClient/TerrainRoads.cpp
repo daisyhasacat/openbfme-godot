@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <tuple>
 
 namespace
 {
@@ -37,7 +38,6 @@ struct V2
 	V2 operator*(float n) const { return {x*n,y*n}; }
 };
 float dot(V2 a,V2 b) { return a.x*b.x+a.y*b.y; }
-float cross(V2 a,V2 b) { return a.x*b.y-a.y*b.x; }
 V2 normal(V2 a) { return {-a.y,a.x}; }
 V2 normalized(V2 a) { const float n=std::hypot(a.x,a.y); return n ? a*(1.0f/n) : V2{1,0}; }
 
@@ -278,11 +278,10 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 		out.push_back(std::move(strip));
 		segments.push_back({loc1, loc2, roadNormal, dir, scale, half, a.m_flags, b.m_flags});
 	}
-	// BFME1 W3DRoadBuffer::miter / insertCurveSegmentAt: degree-two shallow
+	// BFME2 W3DRoadBuffer::miter / insertCurveSegmentAt: degree-two shallow
 	// corners (<0.9 * 30 degrees), or explicitly ANGLED corners, intersect
 	// the two offset edges. Match endpoints independently of map object order.
 	// Rounded corners and ordinary junctions use the donor atlas patches below.
-	auto equal = [](V2 a, V2 b) { return a.x == b.x && a.y == b.y; };
 	struct Ends { V2 bottom[2], top[2]; };
 	struct CurvePatch { V2 loc, dir; float scale, half; bool tight; size_t source; };
 	std::vector<CurvePatch> curves;
@@ -300,21 +299,28 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 		}
 		ends.push_back(e);
 	}
-	// Degree-three/four junctions: BFME1 insertTee / insert4Way choose the
+	// Degree-three/four junctions: BFME2 insertTee / insert4Way choose the
 	// most opposite branch pair, then offset3Way / offset4Way align the stubs.
 	struct Branch { size_t segment; int end; V2 dir; };
+	using EndpointKey = std::tuple<std::string, float, float>;
+	std::map<EndpointKey, std::vector<Branch>> endpointGroups;
+	std::vector<std::string> roadNames;
+	for (size_t i=0;i<segments.size();++i)
+	{
+		roadNames.push_back(lower(out[i].roadName));
+		for (int e=0;e<2;++e)
+		{
+			const V2 p=e?segments[i].b:segments[i].a;
+			endpointGroups[{roadNames.back(),p.x,p.y}].push_back({i,e,segments[i].dir*(e?-1.0f:1.0f)});
+		}
+	}
+
 	for (size_t i=0;i<segments.size();++i)
 		for (int endpoint=0;endpoint<2;++endpoint)
 		{
 			const auto &base=segments[i];
 			const V2 node=endpoint?base.b:base.a;
-			std::vector<Branch> branches;
-			for(size_t j=0;j<segments.size();++j)
-			{
-				if(lower(out[i].roadName)!=lower(out[j].roadName)) continue;
-				for(int e=0;e<2;++e)
-					if(equal(node,e?segments[j].b:segments[j].a)) branches.push_back({j,e,segments[j].dir*(e?-1.0f:1.0f)});
-			}
+			const auto &branches=endpointGroups.at({roadNames[i],node.x,node.y});
 			if(branches.empty() || branches.front().segment!=i || branches.front().end!=endpoint) continue;
 			if(branches.size()==1)
 			{
@@ -343,23 +349,37 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 			if(dot(tee,branches[other[0]].dir)<0) tee=tee*-1.0f;
 			// Y and H-shaped three-way junctions have separate atlas artwork;
 			// retain their source geometry and report the remaining S-036 gap.
-			if(branches.size()==3 && (mostOpposite>=-0.866f || std::fabs(dot(up,branches[other[0]].dir))>0.5f))
+			// A cross needs two transverse arms on opposite sides of the axis.
+			// Validate before setStub mutates any endpoint: a same-side pair
+			// must not acquire a phantom arm across the junction center.
+			const bool crossUnsupported=branches.size()==4 &&
+				(dot(tee,branches[other[1]].dir)>=0.0f || std::fabs(dot(up,branches[other[1]].dir))>0.5f);
+			if(mostOpposite>=-0.866f || std::fabs(dot(up,branches[other[0]].dir))>0.5f || crossUnsupported)
 			{
 				++report.specialJunctionsPending;
 				continue;
 			}
 			const float half=base.scale*0.5f;
+			Ends pending[4];
+			bool stubsFit=true;
 			auto setStub=[&](size_t k,V2 offset,V2 edge) {
 				const auto &branch=branches[k];
 				const V2 center=node+offset;
 				if(dot(edge,segments[branch.segment].normal)<0) edge=edge*-1.0f;
-				ends[branch.segment].bottom[branch.end]=center-edge;
-				ends[branch.segment].top[branch.end]=center+edge;
+				pending[k]=ends[branch.segment];
+				pending[k].bottom[branch.end]=center-edge;
+				pending[k].top[branch.end]=center+edge;
+				// Keep both edges pointing toward the remaining far endpoint.
+				// Validate the entire junction before changing any source strip.
+				if (dot(pending[k].bottom[1-branch.end]-pending[k].bottom[branch.end],branch.dir)<=0.5f ||
+					dot(pending[k].top[1-branch.end]-pending[k].top[branch.end],branch.dir)<=0.5f) stubsFit=false;
 			};
 			setStub(a,up*(-half),tee*base.half);
 			setStub(b,up*half,tee*base.half);
 			setStub(other[0],tee*half,up*base.half);
 			if(branches.size()==4) setStub(other[1],tee*(-half),up*base.half);
+			if (!stubsFit) { ++report.specialJunctionsPending; continue; }
+			for (size_t k=0;k<branches.size();++k) ends[branches[k].segment]=pending[k];
 			// loadTee / loadFloatSection: 1.03-wide artwork overlaps the
 			// stubs slightly, with its own atlas UV origin.
 			V2 d=branches.size()==4?up:tee;
@@ -378,21 +398,19 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 			const auto &a = segments[i];
 			const V2 node = ei ? a.b : a.a;
 			size_t match = segments.size();
-			int ej = 0, degree = 1;
-			for (size_t j = 0; j < segments.size(); ++j)
-			{
-				if (j == i || lower(out[i].roadName) != lower(out[j].roadName)) continue;
-				for (int e = 0; e < 2; ++e)
-					if (equal(node, e ? segments[j].b : segments[j].a)) { ++degree; match = j; ej = e; }
-			}
-			if (degree != 2 || match <= i) continue;
+			const auto &branches=endpointGroups.at({roadNames[i],node.x,node.y});
+			if (branches.size()!=2) continue;
+			const Branch &other=branches[0].segment==i?branches[1]:branches[0];
+			match=other.segment;
+			const int ej=other.end;
+			if (match<=i) continue;
 			const auto &b = segments[match];
 			const float orientation = ei == ej ? -1.0f : 1.0f;
 			const float dot = std::clamp((a.dir.x * b.dir.x + a.dir.y * b.dir.y) * orientation, -1.0f, 1.0f);
 			const int flags = (ei ? a.flagsB : a.flagsA) | (ej ? b.flagsB : b.flagsA);
 			if (!(flags & FLAG_ROAD_CORNER_ANGLED) && std::acos(dot) >= 0.9f * 3.14159265358979323846f / 6.0f)
 			{
-				// BFME1 insertCurveSegmentAt: radius 1.5 widths, or 0.5
+				// BFME2 insertCurveSegmentAt: radius 1.5 widths, or 0.5
 				// for TIGHT; if trimming consumes either leg, use miter.
 				const float angle = std::acos(dot);
 				const bool tight = (flags & FLAG_ROAD_CORNER_TIGHT) != 0;
@@ -429,13 +447,34 @@ void TerrainRoads::buildStrips(const std::vector<MapObject> &objects, const Road
 			}
 			const float det = a.dir.x * b.dir.y - a.dir.y * b.dir.x;
 			if (det == 0.0f) continue;
+			V2 joined[2];
+			bool fits = true;
 			for (int side = 0; side < 2; ++side)
 			{
-				V2 &p = side ? ends[i].top[ei] : ends[i].bottom[ei];
-				V2 &q = (side == (orientation > 0.0f ? 1 : 0)) ? ends[match].top[ej] : ends[match].bottom[ej];
+				const bool topB = side == (orientation > 0.0f ? 1 : 0);
+				const V2 p = side ? ends[i].top[ei] : ends[i].bottom[ei];
+				const V2 q = topB ? ends[match].top[ej] : ends[match].bottom[ej];
+				const V2 farA = side ? ends[i].top[1-ei] : ends[i].bottom[1-ei];
+				const V2 farB = topB ? ends[match].top[1-ej] : ends[match].bottom[1-ej];
 				const float t = ((q.x - p.x) * b.dir.y - (q.y - p.y) * b.dir.x) / det;
-				p = {p.x + t * a.dir.x, p.y + t * a.dir.y};
-				q = p;
+				const float u = ((q.x - p.x) * a.dir.y - (q.y - p.y) * a.dir.x) / det;
+				// Renderer adaptation: bound both edge intersections by the
+				// remaining legs, including earlier changes at their far ends.
+				// Near-reversals can have nonzero det but unbounded miters.
+				const float availableA = std::fabs((farA.x-p.x)*a.dir.x+(farA.y-p.y)*a.dir.y);
+				const float availableB = std::fabs((farB.x-q.x)*b.dir.x+(farB.y-q.y)*b.dir.y);
+				if (!std::isfinite(t) || !std::isfinite(u) || std::fabs(t)+0.5f>=availableA || std::fabs(u)+0.5f>=availableB)
+				{
+					fits = false;
+					break;
+				}
+				joined[side] = {p.x + t * a.dir.x, p.y + t * a.dir.y};
+			}
+			if (!fits) continue; // retain both source edges; never commit half a join
+			for (int side = 0; side < 2; ++side)
+			{
+				(side ? ends[i].top[ei] : ends[i].bottom[ei]) = joined[side];
+				(side == (orientation > 0.0f ? 1 : 0) ? ends[match].top[ej] : ends[match].bottom[ej]) = joined[side];
 			}
 			++report.miteredJoins;
 		}

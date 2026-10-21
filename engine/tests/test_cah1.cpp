@@ -1333,3 +1333,30 @@ TEST_CASE("cah statistics retail: award tab binds each medal image after child i
 	CHECK(mode.toString() == "ALPHA");
 
 }
+
+TEST_CASE("cah attributes: duplicate tick initializers position all thirty-two segments of each bar")
+{
+	OPENBFME_REQUIRE_START(s);
+	CahShellFx c(s, true);
+	auto *scr = c.screen();
+	REQUIRE(scr);
+	REQUIRE(c.fx->wm->invokeAS(scr->level(), "SetCreateNewHero", { "true" }));
+	c.show(scr, "Class");
+	scr->setClassAndType(0, 1);
+	c.show(scr, "Appearance");
+	REQUIRE(c.fx->wm->invokeASAt(scr->level(), "Main.mcAppearanceScreen.Screen.TypeWindow", "gotoAndPlay", { "_attributes" }));
+	c.fx->tick(60);
+	CHECK(c.fx->wm->apt().noteCount("duplicate-init-object-unverified") == 1);
+	for (int attribute = 0; attribute < 5; ++attribute)
+	{
+		const std::string path = "Main.mcAppearanceScreen.Screen.TypeWindow.instance12." + std::to_string(attribute) + ".AttribBar";
+		for (int tick = 0; tick < 32; ++tick)
+		{
+			auto *segment = c.fx->at(scr->level(), path + ".Tick_" + std::to_string(tick));
+			REQUIRE(segment);
+			// The retail movie starts at -100 and advances by its 9-pixel tick width.
+			CHECK(segment->matrix.tx == -100.0f + 9.0f * tick);
+			CHECK(segment->matrix.ty == -242.0f);
+		}
+	}
+}

@@ -845,6 +845,7 @@ TEST_CASE("visual2 stops: S-4970 .. S-4974 reach the live report (GodotGameWorld
 	CHECK(lines[1].rfind("[S-4971] effects in the shroud:", 0) == 0);
 	CHECK(lines[2].rfind("[S-4972] breeze:", 0) == 0);
 	CHECK(lines[3].rfind("[S-4973] tree sway:", 0) == 0);
+	CHECK(lines[3].find("final table interval blends back to entry 0") != std::string::npos);
 	CHECK(lines[4].rfind("[S-4974] structure floors:", 0) == 0);
 	bool found682 = false;
 	for (const std::string &l : LiveFX::stops())

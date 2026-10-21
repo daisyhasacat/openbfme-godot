@@ -555,11 +555,7 @@ void Economy::noteIncome(Object &obj, Player &owner, int amount, IncomeEvent::Te
 	e.frame = m_logic.getFrame();
 	e.textPos = *obj.getPosition();
 	e.textAnchor = anchor;
-	if (anchor == IncomeEvent::TEXT_RAISED_10)
-	{
-		e.textPos.z += 10.0f; // BFME2 decomp AutoDepositUpdateUpdate.cpp: "add a little z to make it show up above the unit"
-	}
-	else if (obj.getTemplate())
+	if (anchor == IncomeEvent::TEXT_GEOMETRY_TOP && obj.getTemplate())
 	{
 		e.templateName = obj.getTemplate()->getName();
 	}

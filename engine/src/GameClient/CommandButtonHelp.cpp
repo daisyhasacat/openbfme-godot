@@ -318,7 +318,8 @@ bool HelpBoxSettings::load(ArchiveFileSystem &fs, HelpBoxSettings &out, std::str
 	return l.run("data\\ini\\ingameui.ini", nullptr, error) && l.run("language.ini", nullptr, error) && finish(l, out, error);
 }
 
-bool loadInGameUiString(ArchiveFileSystem *fs, const std::string *memory, const char *field, std::string &out, std::string *error)
+template <typename T, INIFieldParseProc Parse>
+static bool loadInGameUiValue(ArchiveFileSystem *fs, const std::string *memory, const char *field, T &out, std::string *error)
 {
 	const char *file = "data\\ini\\ingameui.ini";
 	if (!memory && (!fs || !fs->doesFileExist(file)))
@@ -331,12 +332,12 @@ bool loadInGameUiString(ArchiveFileSystem *fs, const std::string *memory, const 
 	}
 	struct State
 	{
-		std::string value;
+		T value{};
 		bool seen = false, inGameUi = false;
 	} state;
 	const FieldParse fields[] = {
 		{ field, [](INI *ini, void *instance, void *store, const void *) {
-			  INI::parseAsciiString(ini, instance, store, nullptr);
+			  Parse(ini, instance, store, nullptr);
 			  static_cast<State *>(instance)->seen = true;
 		  }, nullptr, (int)offsetof(State, value) },
 		{ "RadiusCursorTemplate", skipNestedBlock, "RadiusCursorTemplate", 0 },
@@ -380,6 +381,21 @@ bool loadInGameUiString(ArchiveFileSystem *fs, const std::string *memory, const 
 	}
 	out = state.value;
 	return true;
+}
+
+bool loadInGameUiString(ArchiveFileSystem *fs, const std::string *memory, const char *field, std::string &out, std::string *error)
+{
+	return loadInGameUiValue<std::string, INI::parseAsciiString>(fs, memory, field, out, error);
+}
+
+bool loadInGameUiUnsigned(ArchiveFileSystem *fs, const std::string *memory, const char *field, unsigned &out, std::string *error)
+{
+	return loadInGameUiValue<unsigned, INI::parseUnsignedInt>(fs, memory, field, out, error);
+}
+
+bool loadInGameUiReal(ArchiveFileSystem *fs, const std::string *memory, const char *field, float &out, std::string *error)
+{
+	return loadInGameUiValue<float, INI::parseReal>(fs, memory, field, out, error);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------

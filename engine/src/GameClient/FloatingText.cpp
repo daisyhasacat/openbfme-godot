@@ -6,43 +6,22 @@
 #include "GameClient/CommandButtonHelp.h"
 #include "GameClient/DrawableIconUI.h"
 
-#include <cstdlib>
-
 bool FloatingTextSettings::load(ArchiveFileSystem &fs, FloatingTextSettings &out, std::string *error)
 {
-	std::string timeOut, moveUp, vanish;
-	if (!loadInGameUiString(&fs, nullptr, "FloatingTextTimeOut", timeOut, error) || !loadInGameUiString(&fs, nullptr, "FloatingTextMoveUpSpeed", moveUp, error) ||
-		!loadInGameUiString(&fs, nullptr, "FloatingTextVanishRate", vanish, error))
+	FloatingTextSettings parsed;
+	if (!loadInGameUiUnsigned(&fs, nullptr, "FloatingTextTimeOut", parsed.timeOutMs, error) ||
+		!loadInGameUiReal(&fs, nullptr, "FloatingTextMoveUpSpeed", parsed.moveUpSpeed, error) ||
+		!loadInGameUiReal(&fs, nullptr, "FloatingTextVanishRate", parsed.vanishRate, error))
 	{
 		return false;
 	}
-	char *end = nullptr;
-	const unsigned long t = std::strtoul(timeOut.c_str(), &end, 10);
-	if (end == timeOut.c_str())
-	{
-		if (error) *error = "InGameUI FloatingTextTimeOut is not a number: " + timeOut;
-		return false;
-	}
-	const float m = std::strtof(moveUp.c_str(), &end);
-	if (end == moveUp.c_str())
-	{
-		if (error) *error = "InGameUI FloatingTextMoveUpSpeed is not a number: " + moveUp;
-		return false;
-	}
-	const float v = std::strtof(vanish.c_str(), &end);
-	if (end == vanish.c_str())
-	{
-		if (error) *error = "InGameUI FloatingTextVanishRate is not a number: " + vanish;
-		return false;
-	}
-	out.timeOutMs = (unsigned)t;
-	out.moveUpSpeed = m;
-	out.vanishRate = v;
+	out = parsed; // Keep milliseconds and raw speeds here; client-frame conversions happen below (S-283).
 	return true;
 }
 
 void FloatingTextList::add(const std::string &text, const Coord3D &pos, std::uint32_t color, unsigned frame)
 {
+	if (!m_enabled) return;
 	Record r;
 	r.text = text;
 	r.color = color;

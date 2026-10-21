@@ -236,6 +236,7 @@ void InGameHud::bootHud6()
 	}
 	{
 		// the money texts' timings (GameClient/FloatingText.h): InGameUI FloatingTextTimeOut / MoveUpSpeed / VanishRate
+		m_floatingText.disable();
 		FloatingTextSettings floating;
 		if (FloatingTextSettings::load(m_config.fs, floating, &error))
 		{

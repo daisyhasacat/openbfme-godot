@@ -741,6 +741,9 @@ void InGameHud::updateFloatingText(const TacticalView &view, bool shroudDrawn)
 				continue;
 			}
 			Coord3D pos = e.textPos;
+			// BFME2 AutoDepositUpdateUpdate.cpp: "add a little z to make it show up above the unit".
+			// Presentation offset: the income log keeps the simulation position unchanged.
+			if (e.textAnchor == Economy::IncomeEvent::TEXT_RAISED_10) pos.z += 10.0f;
 			if (e.textAnchor == Economy::IncomeEvent::TEXT_GEOMETRY_TOP)
 			{
 				// TerrainResourceBehavior: the text sits on the geometry's top (getMaxHeightAbovePosition); a template whose geometry does not parse

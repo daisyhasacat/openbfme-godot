@@ -57,7 +57,9 @@ public:
 		unsigned addedFrame = 0; ///< the client frame of addFloatingText (the record steps on the frames after it)
 	};
 
-	void setSettings(const FloatingTextSettings &s) { m_settings = s; }
+	void setSettings(const FloatingTextSettings &s) { m_settings = s; m_enabled = true; }
+	// A failed HUD settings load must not retain labels with a zero fade rate.
+	void disable() { m_enabled = false; clear(); }
 	// addFloatingText at client frame `frame`
 	void add(const std::string &text, const Coord3D &pos, std::uint32_t color, unsigned frame);
 	// updateFloatingText for every client frame since the last call (several when a render frame took more than one client frame): each record
@@ -77,5 +79,6 @@ private:
 	std::list<Record> m_records; ///< newest first (push_front)
 	unsigned m_lastFrame = 0;
 	bool m_haveLastFrame = false;
+	bool m_enabled = false;
 	unsigned long long m_added = 0;
 };
