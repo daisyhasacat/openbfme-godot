@@ -119,7 +119,7 @@ test('HTTP server serves browser assets and dashboard without enabling unsigned 
  const dir=mkdtempSync(join(tmpdir(),'openbfme-web-http-')); let server;
  try {
   const started=await startServer({...config,LOBBY_DATA:dir,LOBBY_BIND:'127.0.0.1:0'},{log:()=>{}}); server=started.server; const base='http://127.0.0.1:'+started.port;
-  assert.match(await (await fetch(base+'/')).text(),/The battlefield awaits/);
+  assert.match(await (await fetch(base+'/')).text(),/<h1>Games<\/h1>/);
   assert.match((await fetch(base+'/web/app.js')).headers.get('content-type'),/javascript/);
   assert.equal((await fetch(base+'/v1/dashboard')).status,200);
   assert.equal((await fetch(base+'/v1/admin/users')).status,401);
