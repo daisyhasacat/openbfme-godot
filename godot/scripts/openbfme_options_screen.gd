@@ -46,6 +46,7 @@ const HELP := {
 	"OpenBFMEAntiAliasing": "Smooths the edges of the 3D view. MSAA: models; FXAA and TAA: the whole picture (TAA is FSR 2's temporal anti-aliasing, sharp in motion).",
 	"OpenBFMEAnisotropic": "Anisotropic filtering: keeps the models' textures sharp at a slant.",
 	"OpenBFMELook": "Enhanced: AgX tone mapping and a glow on the brightest effects. Original: the game's own picture.",
+	"OpenBFMEShadowProfile": "Auto: Balanced on iOS, High on desktop. Balanced uses two shadow cascades; High uses four with smoother transitions. The original detail setting still controls whether shadows are enabled.",
 	"OpenBFMESoftParticles": "Smoke, fire and dust fade where they meet the ground instead of a hard cut. Off: the original look.",
 	"OpenBFMEUIScale": "Enlarges the health bars, the frame counter and the game clock for large screens; the menus already scale with the window.",
 	"OpenBFMEMainMenuStyle": "Uses the selected game's original menus, music and background. After Accept, changes when you return to the main menu. Gameplay is unchanged.",
@@ -576,6 +577,7 @@ func _graphics_rows() -> Array:
 		_extra_choice("OpenBFMEAntiAliasing", "Anti-aliasing", AA_ITEMS, HELP.OpenBFMEAntiAliasing, no_aa),
 		_extra_choice("OpenBFMEAnisotropic", "Anisotropic", ANISO_ITEMS, HELP.OpenBFMEAnisotropic),
 		_extra_choice("OpenBFMELook", "Look", LOOK_ITEMS, HELP.OpenBFMELook),
+		_extra_choice("OpenBFMEShadowProfile", "Shadow quality", [["auto", "Auto"], ["balanced", "Balanced"], ["high", "High"]], HELP.OpenBFMEShadowProfile),
 		_extra_check("OpenBFMESoftParticles", "Soft particles", HELP.OpenBFMESoftParticles),
 	]:
 		r["column"] = 1

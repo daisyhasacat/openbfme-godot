@@ -18,7 +18,10 @@ normal match-loading path, including audio, Palantir, the native HUD and mobile
 controls. Results show synchronous map-loading time, the delay from the first
 world frame to responsive controls, and the longest frame gap during the first
 second after reveal. JSON includes prepare/load/HUD/end-screen-preload/PLAYING
-milestones and the engine's detailed load timings.
+milestones and the engine's detailed load timings. Startup milestones also record
+Godot pipeline compilation counts, with deltas after HUD setup. Each FPS capture
+records its own pipeline-count deltas. These are counts, not compile durations;
+headless and Compatibility rendering report them unavailable.
 
 The first world frame means `frame_post_draw` with the loaded world visible and
 the gameplay camera current: render submission, not GPU completion or pixel
@@ -45,7 +48,9 @@ warm up at maximum zoom-out, then pan diagonally across the base and army while
 zooming to minimum height. The first and last 20% of capture hold the endpoints;
 the middle 60% moves continuously. Limits come from the live map camera in free
 camera mode. Each report records the limits, endpoint camera states and a timed
-position/height trace. Loading, spawning and warmup are excluded from the FPS captures; startup timings are
+position/height trace. Real matches and synthetic scenes use the selected
+Graphics → Shadow quality profile (Auto defaults to Balanced on iOS, High on
+desktop); reports record the effective shadow configuration. Loading, spawning and warmup are excluded from the FPS captures; startup timings are
 reported separately. The in-game scenes use a local viewer match and HUD, with the normal logic-thread preference. No score screen,
 replay, game record or online result is created.
 

@@ -99,3 +99,70 @@ CPU stacks. No retail data or device credentials are committed. Validation:
 iPhoneOS extension build, signed Xcode Debug build and on-device benchmark all
 completed successfully. The app update preserves the phone's downloaded assets;
 its saved display settings were restored by the benchmark.
+
+## Shadow budget and pipeline diagnostics
+
+Graphics → Shadow quality is an OpenBFME presentation option:
+
+- **Auto** (default): Balanced on iOS; High on desktop.
+- **Balanced**: two directional-shadow cascades, without cascade blending.
+- **High**: four cascades with blending, matching the previous gameplay setup.
+
+The original detail setting still disables shadows when its shadow LOD is off.
+Both profiles keep the existing 3,000-unit coverage and shadow bias; reducing
+coverage can remove shadows at wide zoom, so it is not reduced here. The same
+profile helper configures actual matches and benchmark scenes. This also fixes
+the benchmark's previous use of different cascade-blending/bias defaults from
+the real match. Existing benchmark numbers therefore are not directly comparable
+to the new captures. Profile changes preview immediately and Cancel restores the
+previous profile. The chosen profile is stored as `OpenBFMEShadowProfile` in
+Options.ini; an explicit High selection overrides Auto on iOS.
+
+Godot documents four cascades as its slowest directional-shadow mode and notes
+the added cost of split blending:
+https://docs.godotengine.org/en/4.7/classes/class_directionallight3d.html
+Two cascades trade near/far shadow detail and transition smoothness for less
+rendering work; there is no measured iPhone FPS improvement claim yet.
+
+The Settings benchmark records Godot's cumulative compilation counters at
+request, map load, HUD setup, first world frame and observation completion.
+Reports include deltas for the entire startup, the period after HUD setup, and
+each timed FPS capture, for canvas, mesh, surface, draw and specialization
+pipelines. The results screen shows canvas/draw counts after HUD setup. Counters
+are counts, not milliseconds; compilation activity near a hitch does not prove
+that it caused the hitch. Headless/Compatibility runs label these measurements
+unavailable. Godot's pipeline guidance explains that 2D canvas pipelines still
+compile on first draw, while many 3D pipelines can be prepared during loading:
+https://docs.godotengine.org/en/4.7/tutorials/performance/pipeline_compilations.html
+
+No forced HUD warmup is added without evidence that compilation is the remaining
+cause. The new counters let the next physical-device reproduction distinguish
+that case without deleting caches. Cached W3D shaders, instancing, frustum
+culling and the existing 30 Hz iOS menu-decoration cadence remain in use.
+
+Validation: `render_budget_test.gd` checks platform defaults, explicit overrides,
+actual light properties, retail shadow-off behavior and invalid-setting reports.
+`settings_benchmark_test.gd` checks profile metadata and pipeline milestones in
+addition to its loading, input readiness and restoration checks. Its optional
+`BENCHMARK_SHADOW_PROFILE` and `BENCHMARK_RENDER_SCALE` environment variables
+select test configurations without saving them to the user's settings file.
+
+Short Mac Metal comparison (three-second captures, same 3024 × 1898 output;
+single runs, not sustained or repeated trials):
+
+| Configuration | Main menu FPS | Lobby FPS | 1,000 CP FPS | 20,000 CP FPS |
+| --- | ---: | ---: | ---: | ---: |
+| Forward+, High shadows, 100% scale | 462.1 | 90.6 | 166.9 | 76.1 |
+| Mobile, High shadows, 100% scale | 567.7 | 254.8 | 268.9 | 83.4 |
+| Mobile, Balanced shadows, 75% scale | 615.2 | 224.6 | 192.5 | 82.3 |
+
+The reduced-budget row changes two variables and was not consistently faster.
+These captures do not isolate a shadow benefit or establish thermally sustained
+performance. The same-quality renderer comparison favors Mobile in this run,
+but the Mac default remains Forward+ pending visual/feature validation (including
+TAA/FSR users). Both native renderers passed the full benchmark orchestration,
+input readiness, cancellation and restoration checks. On the Forward+ run,
+post-HUD counts were three canvas, eight surface and 41 specialization pipelines,
+with zero on-demand draw pipelines; this is compilation activity, not a measured
+cause of a freeze. Raw reports are retained under
+`workspace/diagnostics/shadow-budget-20261021/` (ignored).

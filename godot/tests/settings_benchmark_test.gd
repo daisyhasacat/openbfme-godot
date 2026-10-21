@@ -19,12 +19,20 @@ func _run() -> void:
 	get_tree_watchdog()
 	var game = load("res://scripts/game.gd").new()
 	game._intro = "off"
-	game._options_file = "/tmp/openbfme-benchmark-test-options.ini"
+	game._options_file = OS.get_user_data_dir().path_join("benchmark-test-options.ini") if OS.get_name() == "iOS" else "/tmp/openbfme-benchmark-test-options.ini"
 	root.add_child(game)
 	while game._state not in [game.State.MENU, game.State.FAILED] or game._display_screen == null:
 		await process_frame
 	assert(game._state == game.State.MENU)
 	await create_timer(1.0).timeout
+	var profile := OS.get_environment("BENCHMARK_SHADOW_PROFILE")
+	if not profile.is_empty():
+		assert(profile in ["auto", "balanced", "high"])
+		assert(game._shell.set_option("OpenBFMEShadowProfile", profile))
+	var scale := OS.get_environment("BENCHMARK_RENDER_SCALE")
+	if not scale.is_empty():
+		game._display.render_scale = float(scale)
+		game._display.apply(root)
 	var tool = await open_tool(game)
 	var environment_before = game._env.environment
 	var sun_before = game._sun
@@ -72,6 +80,17 @@ func _run() -> void:
 	assert(tool.report.status == "complete", str(tool.report.get("error", "")))
 	assert(tool.report.match_startup.status == "complete")
 	var startup: Dictionary = tool.report.match_startup
+	assert(startup.pipeline_compilations.available == (DisplayServer.get_name() != "headless"))
+	var milestone_names: Array = []
+	for milestone in startup.pipeline_compilations.milestones:
+		milestone_names.append(milestone.phase)
+		assert(milestone.counts.keys() == ["canvas", "mesh", "surface", "draw", "specialization"])
+	assert(milestone_names.has("hud_started") and milestone_names.has("hud_complete"))
+	if DisplayServer.get_name() != "headless": assert(milestone_names[-1] == "observation_complete")
+	var effective: String = preload("res://scripts/shadow_profile.gd").resolved(game._game_options.current().OpenBFMEShadowProfile)
+	assert(tool.report.shadow_profile.effective == effective)
+	assert(tool.report.shadow_profile.cascades == (2 if effective == "balanced" else 4))
+	assert(tool.report.shadow_profile.blend_splits == (effective == "high"))
 	assert(startup.phases_ms.has("prepare_complete") and startup.phases_ms.has("hud_complete") and startup.phases_ms.has("playing"))
 	assert(startup.map_load_ms == startup.phases_ms.map_load_complete - startup.phases_ms.map_load_started)
 	if DisplayServer.get_name() != "headless":
@@ -90,6 +109,7 @@ func _run() -> void:
 	assert(tool.report.stages[3].workload.cp == 20000)
 	for stage in tool.report.stages:
 		assert(not stage.samples.is_empty())
+		assert(stage.pipeline_compilations.capture_delta.keys() == ["canvas", "mesh", "surface", "draw", "specialization"])
 		if stage.workload.has("cp"):
 			var motion: Dictionary = stage.workload.camera_motion
 			assert(motion.path == "diagonal_pan_max_to_min_zoom")
@@ -147,6 +167,10 @@ func _run() -> void:
 func open_tool(game):
 	assert(game._shell.open_options(false, false, false, false))
 	while not game._display_screen.is_open(): await process_frame
+	game._display_screen._show_tab("Graphics")
+	var shadow_rows: Array = game._display_screen._spec().rows.filter(func(row): return row.get("key", "") == "OpenBFMEShadowProfile")
+	assert(shadow_rows.size() == 1)
+	assert(shadow_rows[0].values == ["auto", "balanced", "high"])
 	game._display_screen._show_tab("Benchmark")
 	assert(game._display_screen._mods_button.visible)
 	game._display_screen._mods_button.pressed.emit()

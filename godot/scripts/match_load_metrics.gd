@@ -1,6 +1,8 @@
 ## Observational startup timings. No simulation commands or synchronization waits.
 extends Node
 
+const Pipelines := preload("res://scripts/pipeline_metrics.gd")
+var pipeline_milestones: Array = []
 var game: Node
 var phases := {}
 var started_usec := 0
@@ -20,6 +22,7 @@ func mark(phase: String) -> void:
 	var now := Time.get_ticks_usec()
 	if started_usec == 0: started_usec = now
 	phases[phase] = float(now - started_usec) / 1000.0
+	pipeline_milestones.append({"phase": phase, "elapsed_ms": phases[phase], "counts": Pipelines.snapshot()})
 
 func _process(_delta: float) -> void:
 	if complete: return
@@ -49,6 +52,7 @@ func _drawn() -> void:
 		frame_gaps_ms.append(float(now - last_draw_usec) / 1000.0)
 	last_draw_usec = now
 	if acknowledged_usec > 0 and float(now - first_draw_usec) / 1000000.0 >= observation_seconds:
+		mark("observation_complete")
 		complete = true
 
 func result() -> Dictionary:
@@ -56,6 +60,13 @@ func result() -> Dictionary:
 		"phases_ms": phases.duplicate(), "map_load_ms": phases.get("map_load_complete", 0.0) - phases.get("map_load_started", 0.0),
 		"render_available": DisplayServer.get_name() != "headless",
 		"definition": "First world frame = frame_post_draw with loaded world exposed and gameplay camera current (render submission, not GPU completion). Controls = harmless Viewport input probe acknowledged through the HUD queue after PLAYING, with input enabled and no modal. Frame gaps include post-reveal stalls. Warm process caches; not a cold application launch."}
+	out["pipeline_compilations"] = {"available": Pipelines.available(), "milestones": pipeline_milestones.duplicate(true)}
+	if not pipeline_milestones.is_empty():
+		var latest: Dictionary = pipeline_milestones[-1].counts
+		out.pipeline_compilations["total_delta"] = Pipelines.difference(pipeline_milestones[0].counts, latest)
+		for milestone in pipeline_milestones:
+			if milestone.phase == "hud_complete":
+				out.pipeline_compilations["after_hud_setup_delta"] = Pipelines.difference(milestone.counts, latest)
 	if first_draw_usec > 0 and acknowledged_usec > 0:
 		out["request_to_first_world_frame_ms"] = float(first_draw_usec - started_usec) / 1000.0
 		out["request_to_controls_ms"] = float(acknowledged_usec - started_usec) / 1000.0

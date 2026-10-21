@@ -2733,12 +2733,8 @@ func _apply_lighting(rep: Dictionary) -> void:
 	_sun.name = "ObjectSun"
 	_sun.light_color = lit.diffuse
 	var shadow_lod := int(_shell.get_detail_state().get("shadow_lod", 3)) if _shell != null else 3
-	_sun.shadow_enabled = shadow_lod > 0
-	_sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
-	_sun.directional_shadow_max_distance = 3000.0
-	_sun.directional_shadow_blend_splits = true
-	_sun.shadow_bias = 0.03
-	_sun.shadow_normal_bias = 1.0
+	var profile: String = _game_options.current().OpenBFMEShadowProfile if _game_options != null else "auto"
+	preload("res://scripts/shadow_profile.gd").apply(_sun, profile, shadow_lod)
 	RenderingServer.global_shader_parameter_set("w3d_shadow_strength", 0.65 if _sun.shadow_enabled else 0.0)
 	var dir: Vector3 = lit.direction
 	if dir.length() > 0.0001:

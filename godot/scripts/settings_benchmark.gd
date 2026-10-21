@@ -2,6 +2,8 @@
 ## match/score/replay flows. All scenarios run with the same saved settings.
 extends CanvasLayer
 
+const Pipelines := preload("res://scripts/pipeline_metrics.gd")
+const Shadows := preload("res://scripts/shadow_profile.gd")
 const Plan := preload("res://scripts/benchmark_plan.gd")
 const Sampler := preload("res://scripts/console_performance.gd")
 const PRESET := "res://benchmarks/men.json"
@@ -376,6 +378,7 @@ func _measure(stage: String, workload: Dictionary) -> bool:
 		camera_motion = {"min_height": float(camera.min_height), "max_height": float(camera.zoom_out_limit),
 			"path": "diagonal_pan_max_to_min_zoom", "endpoint_hold_fraction": 0.2,
 			"start": camera, "trace": []}
+	var pipelines_before := Pipelines.snapshot()
 	var frame_before: int = game._world.get_presented_frame() if _world_loaded else 0
 	_sampler.start_capture(capture_seconds)
 	while running and is_instance_valid(_sampler) and _sampler.capturing:
@@ -406,6 +409,7 @@ func _measure(stage: String, workload: Dictionary) -> bool:
 			_stage_error = "%s changed during capture: requested %d CP, measured %d CP." % [stage, int(workload.cp), int(workload.cp_after)]
 			return false
 		workload["logic_frames"] = game._world.get_presented_frame() - frame_before
+	captured["pipeline_compilations"] = {"available": Pipelines.available(), "capture_delta": Pipelines.difference(pipelines_before, Pipelines.snapshot())}
 	captured["shell_stack"] = game._shell.shell_stack()
 	captured["stage"] = stage
 	captured["workload"] = workload
@@ -493,8 +497,8 @@ func _prepare_world() -> String:
 		game._env.environment.ambient_light_energy = 1.0
 		var sun := DirectionalLight3D.new()
 		sun.light_color = loaded.lighting.diffuse
-		sun.shadow_enabled = int(game._shell.get_detail_state().get("shadow_lod", 3)) > 0
-		sun.directional_shadow_max_distance = 3000.0
+		var shadows := Shadows.apply(sun, game._game_options.current().OpenBFMEShadowProfile, int(game._shell.get_detail_state().get("shadow_lod", 3)))
+		report["shadow_profile"] = shadows
 		_scene.add_child(sun)
 		var dir: Vector3 = loaded.lighting.direction
 		if not dir.is_zero_approx(): sun.basis = Basis.looking_at(dir.normalized(), Vector3.UP if absf(dir.normalized().y) < 0.99 else Vector3.RIGHT)
@@ -638,6 +642,9 @@ func _show_results() -> void:
 		if startup.get("render_available", false) and startup.has("world_frame_to_controls_ms"):
 			_results.text += "Start → base frame: %.1f ms · controls: %.1f ms\n" % [startup.request_to_first_world_frame_ms, startup.request_to_controls_ms]
 			_results.text += "Base frame → controls: %.1f ms · longest startup frame: %.1f ms\n" % [startup.world_frame_to_controls_ms, startup.post_reveal_max_frame_gap_ms]
+			var pipelines: Dictionary = startup.get("pipeline_compilations", {})
+			if pipelines.get("available", false) and pipelines.has("after_hud_setup_delta"):
+				_results.text += "After HUD setup: %d canvas / %d draw pipeline compilations\n" % [pipelines.after_hud_setup_delta.canvas, pipelines.after_hud_setup_delta.draw]
 		else:
 			_results.text += "Base frame → controls: unavailable (no rendered measurement)\n"
 	for stage in report.get("stages", []):

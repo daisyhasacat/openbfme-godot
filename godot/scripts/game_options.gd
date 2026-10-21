@@ -22,6 +22,7 @@
 extends Node
 
 const DisplaySettings := preload("res://scripts/display_settings.gd") # lane OWNERFIX-1: TAA through its scaler
+const Shadows := preload("res://scripts/shadow_profile.gd")
 const PREFIX := "OpenBFME"
 const MENU_STYLE_KEY := "OpenBFMEMainMenuStyle"
 const MENU_STYLES := [["rotwk", "Rise of the Witch-king"], ["bfme2", "Battle for Middle-earth II"]]
@@ -33,6 +34,7 @@ const EXTRAS := {
 	"OpenBFMEAntiAliasing": {"default": "off", "choices": ["off", "fxaa", "msaa2", "msaa4", "taa"]},
 	"OpenBFMEAnisotropic": {"default": "16x", "choices": ["off", "2x", "4x", "8x", "16x"]},
 	"OpenBFMELook": {"default": "original", "choices": ["original", "enhanced"]},
+	"OpenBFMEShadowProfile": {"default": "auto", "choices": ["auto", "balanced", "high"]},
 	"OpenBFMESoftParticles": {"default": "yes", "choices": ["yes", "no"]},
 	"OpenBFMEUIScale": {"default": "100", "choices": ["100", "125", "150", "200"]},
 	"OpenBFMEFreeCamera": {"default": "no", "choices": ["yes", "no"]},
@@ -275,6 +277,8 @@ func apply_global(values: Dictionary) -> PackedStringArray:
 	done.append("audio device " + AudioServer.output_device)
 	apply_brightness()
 	apply_detail()
+	if game != null and game.get("_sun") != null:
+		Shadows.apply(game._sun, values.get("OpenBFMEShadowProfile", "auto"), int(_detail.get("shadow_lod", 3)))
 	if _hud != null:
 		_hud.set_view_options(view_options(values))
 	_apply_confine(values)
