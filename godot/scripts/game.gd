@@ -418,6 +418,7 @@ var _platform_ready := false
 var _statistics_context := {}
 var _statistics_uploader: Node
 var _desync_uploader: Node
+var _local_control: Node
 var _remote_testing: Node
 var _hub_online := {}              # the online game being started: { id, match, tournament } (the record's id: the match's when there is one)
 var _hub_kind := ""                # "skirmish" / "lan" / "online": the kind of the game being played ("" none: not recorded)
@@ -5276,6 +5277,11 @@ func _share_results() -> bool:
 ## the records of the games this installation played (the STATS pages) and the platform client with its transport. Nothing is sent from here: a
 ## request goes out only when the player opens an online page or a LAN / online game ends (and shares results)
 func _platform_setup() -> void:
+	if OS.is_debug_build() and _local_control == null and OS.get_environment("OPENBFME_LOCAL_CONTROL") != "0":
+		_local_control = preload("res://scripts/local_diagnostic_control.gd").new()
+		_local_control.name = "LocalDiagnosticControl"
+		_local_control.game = self
+		add_child(_local_control)
 	if _remote_testing == null and ProjectSettings.get_setting("testing/remote_control/enabled", false):
 		_remote_testing = load("res://scripts/remote_testing.gd").new()
 		_remote_testing.game = self
