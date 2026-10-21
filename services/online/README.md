@@ -64,7 +64,22 @@ Open the lobby’s root URL in a browser, for example `http://127.0.0.1:8787/` a
 
 The public dashboard lists hosted rooms and unfinished games in progress, with host, map, roster, open slots and password status. Search and status filters narrow the list. Join links launch the existing `openbfme://join/<game>` handler. The players page shows display names and estimated presence from activity in the last 150 seconds or unfinished matches (up to three hours). It exposes no account IDs, session tokens, relay tickets, IP addresses or game passwords. The page refreshes every ten seconds while visible.
 
-For **User management**, connect using the hexadecimal admin key from `<data-directory>/secrets/admin.key` (the local default is `services/online/.state/secrets/admin.key`). Standalone lobby/Worker deployments use their existing `ADMIN_KEY` setting. Use HTTPS or localhost: browser request signing requires WebCrypto. The key is imported into memory for this tab only; it is never stored in browser storage or sent as a raw key. Disconnect clears it. This is the same powerful operator key used for backups; do not share it with ordinary players.
+For **User management**, open `https://admin.secondage.dev/online/` and choose
+**Sign in with passkey**, using the existing admin.secondage.dev passkey.
+An already signed-in administrator connects automatically. The public dashboard
+links to this admin origin; it never asks for a server signing key. Sign out
+revokes the shared administrator session, including access to the existing
+Second Age control panel. Expired sessions clear private data and require sign-in.
+
+The loopback-only admin gateway validates the existing authentication service's
+session on every management request, requires its full `admin` role, and rejects
+enrollment-only sessions and authentication test bypasses. Changes require the
+exact admin origin and session CSRF token. It signs allowlisted lobby management
+requests using a systemd-provided credential. The raw key stays server-side;
+browser cookies never reach the lobby. The public origin blocks `/v1/admin/*`.
+Direct signed requests remain available only through the private lobby listener
+for server maintenance and replay backups. Standalone Node/Worker API deployments
+retain their signed-admin API; the shared browser UI uses the passkey portal.
 
 Administrators can search and page through the account directory, rename an account, suspend or restore it, and revoke its existing lobby sessions. Suspension and revocation remove users from waiting rooms (closing a room if its host is removed). They prevent further authenticated lobby actions but cannot disconnect an already established UDP relay connection. Rename updates waiting rooms; running matches keep their original START identities. Revision checks reject stale or repeated moderation writes.
 

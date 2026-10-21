@@ -32,6 +32,9 @@ nginx TLS; its port 8787 is not exposed publicly.
 - `/etc/nginx/sites-available/secondage.before-openbfme-20261020`: original
   site configuration backup from before installing the include.
 
+The passkey integration release is `/opt/openbfme-online/releases/20261020-passkey/`;
+`current` points there. The original release remains available for rollback.
+
 The service uses `--trust-proxy loopback`: Node honors a single valid
 `X-Real-IP` address only when the immediate peer is loopback. Nginx overwrites
 that header with its verified client address. Never enable this option for
@@ -47,17 +50,27 @@ curl --fail https://secondage.dev/healthz
 curl --fail https://secondage.dev/v1/health
 ```
 
-Retrieve the administrator key privately over SSH, then enter it in
-**User management** at the HTTPS dashboard:
+Open `https://admin.secondage.dev/online/` and sign in with the existing
+administrator passkey. An active full administrator session connects automatically.
+No new passkey enrollment or server-key copying is needed. Sign out revokes the
+same session used by the original Second Age admin control panel.
 
-```sh
-ssh hailey@165.22.13.12 'sudo cat /var/lib/openbfme-online/secrets/admin.key'
-```
+`openbfme-online-admin.service` runs a separate loopback gateway on port 8791 as
+`openbfme-online-admin`. Its systemd `LoadCredential` entries supply the lobby
+signing key and the pinned authentication-service CA without giving the gateway
+access to the persistent data directory or original TLS private key. It verifies
+`https://127.0.0.1:54233/api/auth` with the admin hostname and pinned certificate;
+only an unexpired full `admin` session may use management routes. Enrollment roles,
+bypass mode, invalid CSRF, a wrong origin, or an unavailable authenticator fail
+closed. It never forwards browser cookies or supplied signatures to the lobby.
 
-Do not paste this key into tickets, chat, deployment manifests or Git.
-It grants full server administration and replay-blob backup access.
-The deployment creates independent production keys and accounts; it does
-not migrate the development machine's guest sessions or history.
+Nginx's `openbfme-online-admin-{locations,proxy}.conf` snippets live only in the
+admin.secondage.dev TLS server. Existing `/api/auth/*` and `/api/logout` still
+use the original passkey service. Public `/v1/admin/*` on secondage.dev returns
+404, including requests with a valid raw signing key. Server operators may still
+use signed requests directly against `127.0.0.1:8787` over SSH for maintenance.
+Do not paste signing keys into browser fields, tickets, chat, manifests or Git.
+Production accounts and keys remain independent of development-machine state.
 
 For updates, upload only the required source/config files into a new,
 root-owned release directory, build the relay with CMake, and run the tests
@@ -75,7 +88,7 @@ sudo systemd-analyze verify /etc/systemd/system/openbfme-online.service
 sudo systemctl restart openbfme-online
 ```
 
-Initial validation: all 85 tests passed on Linux/Node 24. Two external UDP
+Initial server deployment validation: all 85 tests passed on Linux/Node 24. Two external UDP
 clients completed the HTTPS guest/create/join/ready/start flow, received
 WELCOME packets, forwarded a valid frame, sent BYE, and downloaded the
 uploaded replay. Completed history survived a service restart, signed admin
@@ -83,3 +96,11 @@ requests succeeded, and unsigned admin requests were refused. The retained
 `Internet deployment verification` record is a synthetic test, not a retail
 match or a simulation-correctness result. Full graphical cross-machine play
 is a separate acceptance check. No off-host backup destination is configured.
+
+
+Passkey integration validation includes real gateway-to-lobby signing, full-session
+and CSRF enforcement, enrollment/expiry/bypass rejection, authentication outages,
+route allowlisting, key/cookie isolation, and public-API blocking. Completing the
+production passkey ceremony requires the administrator's existing authenticator.
+The integration does not enroll credentials, mint test production sessions, or
+modify the existing passkey database.
