@@ -124,3 +124,20 @@ returned 401. Updated game clients submit `POST /v1/games/<id>/desync`; preserve
 `lobby/meta/match-desync:*` records in backups. Reports are shown in the admin
 match detail view. Mac and iOS client rebuilds and a physical-device desync
 upload remain separate rollout checks.
+
+Unattended testing release: `/opt/openbfme-online/releases/20261020-testing-3dee3c0dd6/`
+is the active `current` target. Both the lobby/relay supervisor and passkey admin
+gateway were restarted with no open or running games. All 102 server tests passed
+on the host before activation; the prior desync release is retained for rollback.
+The signed `tools/net/remote_testing.py list` command succeeds against the live
+server. Unsigned client polls and unauthenticated gateway controls return 401.
+Back up `testing-run:*` metadata along with match diagnostics.
+
+Local end-to-end validation used two isolated Godot clients and a real local
+lobby/UDP relay on Carrock: both automatically hosted/joined, readied, entered
+lockstep and reached frame 310 with three matching CRC checks and 36/38 scripted
+commands, then returned to the menu. Network-policy checks, 13 policy tests and
+Godot control/reporting/sync checks passed. This validates the runner on two Mac
+processes; a physical Mac/iPhone run requires rebuilt clients and remains a
+separate check. Updated clients register automatically from the main menu when
+foregrounded; no updated production clients were registered at deployment.
