@@ -24,6 +24,8 @@ const AXES := {
 }
 const REPEATING := [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT]
 
+var start_lobby: Callable # returns true when Start was handled by the skirmish lobby
+var _start_consumed := false
 var _shell: Node
 var _axis_key := {}   # axis -> the key it holds now (KEY_NONE: none)
 var _held := {}       # key -> the time (s) of its next repeat
@@ -49,6 +51,15 @@ func _active() -> bool:
 func _input(event: InputEvent) -> void:
 	if event is InputEventJoypadButton:
 		var b := event as InputEventJoypadButton
+		if b.button_index == JOY_BUTTON_START:
+			if b.pressed and start_lobby.is_valid() and start_lobby.call():
+				_start_consumed = true
+				get_viewport().set_input_as_handled()
+				return
+			if not b.pressed and _start_consumed:
+				_start_consumed = false
+				get_viewport().set_input_as_handled()
+				return
 		if not BUTTONS.has(b.button_index):
 			return
 		if not b.pressed or _active() or b.button_index == JOY_BUTTON_START:

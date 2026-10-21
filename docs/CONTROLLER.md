@@ -86,6 +86,7 @@ is an OpenBFME input improvement independent of wall rebalance and weapon range.
 
 ## Skirmish lobby
 
+Start starts the game from the skirmish lobby through its normal start checks.
 LB/RB switches between Maps and Rules. The D-pad moves between controls,
 favoring controls aligned with the current row or column. Map lists use Up/Down
 to browse maps. For a closed dropdown, directions move focus without changing
