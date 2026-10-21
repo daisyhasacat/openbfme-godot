@@ -1252,7 +1252,7 @@ func _boot() -> void:
 		return
 	_fs = ClassDB.instantiate("RetailFileSystem")
 	# lane RELEASE-1: the environment, the remembered folders, or the first-run screen (scripts/release/release.gd)
-	get_tree().call_group("ios_startup", "stage", "Verifying game files…")
+	get_tree().call_group("ios_startup", "stage", "Loading game files…")
 	await get_tree().process_frame
 	var mount_started := Time.get_ticks_msec()
 	var mount: Dictionary = await Release.mount_retail(_fs)

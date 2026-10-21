@@ -137,3 +137,6 @@ godot/mods/gondor_plots/gbstablet.dds
 godot/mods/gondor_plots/gbstablet.dds.uid
 godot/mods/gondor_plots/gbworkshop_bib.dds
 godot/mods/gondor_plots/gbworkshop_bib.dds.uid
+
+# Locally extracted retail startup artwork.
+/godot/startup_art/

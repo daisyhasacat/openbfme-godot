@@ -19,7 +19,7 @@ extends EditorExportPlugin
 ## (release_key.pub is a CryptoKey resource; the key is compiled into build_info.json)
 const SKIP: PackedStringArray = ["addons/*", "assets/second-age.png", "assets/second-age.icns"]
 ## Optional local packs are included only when present.
-const ADD: PackedStringArray = ["tests/*.txt", "data/*.json", "data/*.lua", "dev/*.lua", "dev/*.cfg", "mods/*.big", "mods/gondor_plots/*.dds"]
+const ADD: PackedStringArray = ["startup_art/*.json", "tests/*.txt", "data/*.json", "data/*.lua", "dev/*.lua", "dev/*.cfg", "mods/*.big", "mods/gondor_plots/*.dds"]
 
 ## build_launcher.sh fails the export on a line holding this
 const ERROR_PREFIX := "PACK FILES FAIL: "

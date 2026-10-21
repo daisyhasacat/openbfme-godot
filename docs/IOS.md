@@ -182,3 +182,22 @@ folder before signing, for either device or simulator. `rsync` updates changed
 files on subsequent builds. Setting the toggle back to `NO` removes that folder
 from the built app; original installations remain untouched. Allow several GB
 of additional disk space and a longer initial build. Nothing is committed to Git.
+
+## Startup artwork
+
+Prepare startup art from your own installation before exporting (requires ffmpeg):
+
+```sh
+python3 tools/release/prepare_startup_art.py \
+  --loading-image /path/to/load_w_ea.jpg \
+  --ring-movie /path/to/data/movies/LoadingRing.vp6
+```
+
+The loading image is cropped to its upper 4:3 panel, removing the retail texture's
+black padding. Generated files in `godot/startup_art` are ignored by Git and
+included in local exports. Without them the startup screen shows text and a
+progress bar. With them it shows the artwork and animated retail ring below it
+while the scene and game files load, on desktop and iOS. The native iOS launch
+screen uses the same artwork and a static first ring frame; animation starts
+once Godot runs. Synchronous archive verification and world setup can still pause
+the animation. Xcode source refresh also updates the launch artwork.

@@ -66,6 +66,39 @@ def configure_launch_screen(storyboard):
         ET.SubElement(view.find('constraints'), 'constraint', {
             'firstItem': 'OBF-start-label', 'firstAttribute': axis,
             'secondItem': view.get('id'), 'secondAttribute': axis, 'id': 'OBF-' + axis})
+    art = ROOT / 'godot/startup_art'
+    if (art / 'loading.png').exists() and (art / 'ring_first.png').exists():
+        catalog = storyboard.parent / 'Images.xcassets'
+        for name, source in [('SplashImage', 'loading.png'), ('StartupRing', 'ring_first.png')]:
+            imageset = catalog / (name + '.imageset')
+            imageset.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(art / source, imageset / 'startup.png')
+            (imageset / 'Contents.json').write_text(json.dumps({
+                'images': [{'idiom': 'universal', 'filename': 'startup.png'}],
+                'info': {'version': 1, 'author': 'xcode'}}, indent=2) + '\n')
+        image = view.find('.//imageView')
+        image.set('hidden', 'NO')
+        image.set('contentMode', 'scaleAspectFit')
+        constraints = view.find('constraints')
+        for constraint in list(constraints):
+            if constraint.get('id') == 'OBF-centerY':
+                constraints.remove(constraint)
+            elif constraint.get('secondItem') == image.get('id') and constraint.get('firstAttribute') == 'bottom':
+                constraint.set('constant', '120')
+        label.find('fontDescription').set('pointSize', '20')
+        ring = ET.SubElement(view.find('subviews'), 'imageView', {
+            'image': 'StartupRing', 'contentMode': 'scaleAspectFit',
+            'translatesAutoresizingMaskIntoConstraints': 'NO', 'id': 'OBF-ring'})
+        sizes = ET.SubElement(ring, 'constraints')
+        for axis in ('width', 'height'):
+            ET.SubElement(sizes, 'constraint', {'firstAttribute': axis, 'constant': '64', 'id': 'OBF-ring-' + axis})
+        for attrs in [
+            {'firstItem': 'OBF-ring', 'firstAttribute': 'centerX', 'secondItem': view.get('id'), 'secondAttribute': 'centerX'},
+            {'firstItem': 'OBF-ring', 'firstAttribute': 'bottom', 'secondItem': 'OBF-start-label', 'secondAttribute': 'top'},
+            {'firstItem': 'OBF-start-label', 'firstAttribute': 'bottom', 'secondItem': view.get('id'), 'secondAttribute': 'bottom', 'constant': '-24'},
+        ]:
+            ET.SubElement(constraints, 'constraint', dict(attrs, id='OBF-art-' + str(len(constraints))))
+        ET.SubElement(tree.find('resources'), 'image', {'name': 'StartupRing', 'width': '128', 'height': '128'})
     tree.write(storyboard, encoding='UTF-8', xml_declaration=True)
 
 
