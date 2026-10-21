@@ -5901,7 +5901,7 @@ bool AptMenuPlayer::menuKey(const InputEventKey *key)
 			struct Menu { const char *clip; std::vector<const char *> items; };
 			const std::vector<Menu> menus = {
 				{ "TutorialsNav", { "BasicTutorial", "AdvancedTutorial", "StrategicTutorial" } },
-				{ "SoloPlayNav", { "Skirmish", "WarOfTheRing", "EvilCampaign", "GoodCampaign", "LoadGame" } },
+				{ "SoloPlayNav", { "Skirmish", "WarOfTheRing", "LoadGame" } },
 				{ "MultiPlayNav", { "Online", "LocalNetwork", "Replay" } },
 				{ "OptionsNav", { "Settings", "AdvancedSettings", "Credits" } },
 				{ "MyHeores", {} }, { "QuitMainMenu", {} }
@@ -5930,7 +5930,7 @@ bool AptMenuPlayer::menuKey(const InputEventKey *key)
 					{
 						if (m->mainMenuGroup < 0) m->mainMenuGroup = 0;
 						const int count = (int)menus[m->mainMenuGroup].items.size();
-						if (count) m->mainMenuItem = m->mainMenuItem < 0 ? 0 : (m->mainMenuItem + (menuKey == Key::KEY_UP ? 1 : -1) + count) % count;
+						if (count) m->mainMenuItem = m->mainMenuItem < 0 ? 0 : (m->mainMenuItem + (menuKey == Key::KEY_DOWN ? 1 : -1) + count) % count;
 					}
 				}
 				else if (m->mainMenuItem < 0 && !menus[m->mainMenuGroup].items.empty()) m->mainMenuItem = 0;
@@ -5938,7 +5938,7 @@ bool AptMenuPlayer::menuKey(const InputEventKey *key)
 				{
 					const std::vector<std::vector<const char *>> actions = {
 						{ "OnTutorial", "OnTutorial", "OnTutorial" },
-						{ "Skirmish", "WarOfTheRing", "EvilCampaignButton", "GoodCampaignButton", "LoadGame" },
+						{ "Skirmish", "WarOfTheRing", "LoadGame" },
 						{ "OnlineButtonPressed", "LAN", "LoadReplay" },
 						{ "SettingsButton", "AdvancedSettingsButton", "Credits" }, { "CreateAHero" }, { "ExitGame" }
 					};

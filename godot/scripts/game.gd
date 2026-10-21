@@ -1877,13 +1877,16 @@ func _hide_bfme2_campaign_buttons() -> void:
 	for clip in buttons.visible:
 		if not _shell.set_clip_property(top, clip, "_visible", 0.0):
 			print("GAME stop: the BFME2 campaign button ", clip, " could not be hidden")
-	# the list without its two rows: Load Game moves up into the first hidden row (EvilCampaign's), so the list has no hole
-	# (Skirmish, War of the Ring, Load Game; the nav's frame keeps its five-row size)
-	if "SoloPlayNav.EvilCampaign" in buttons.found:
-		var evil_y: Dictionary = _shell.get_member(top, "SoloPlayNav.EvilCampaign", "_y")
-		var load_y: Dictionary = _shell.get_member(top, "SoloPlayNav.LoadGame", "_y")
-		if evil_y.get("found", false) and load_y.get("found", false) and str(load_y.value) != str(evil_y.value):
-			_shell.set_clip_property(top, "SoloPlayNav.LoadGame", "_y", float(evil_y.value))
+	# The authored list grows upward. Keep its middle row and row spacing,
+	# with Skirmish above War of the Ring and Load Game below it.
+	var top_row: Dictionary = _shell.get_member(top, "SoloPlayNav.EvilCampaign", "_y")
+	var middle_row: Dictionary = _shell.get_member(top, "SoloPlayNav.WarOfTheRing", "_y")
+	if top_row.get("found", false) and middle_row.get("found", false):
+		var middle_y := float(middle_row.value)
+		var spacing := absf(middle_y - float(top_row.value))
+		_shell.set_clip_property(top, "SoloPlayNav.Skirmish", "_y", middle_y - spacing)
+		_shell.set_clip_property(top, "SoloPlayNav.LoadGame", "_y", middle_y + spacing)
+
 
 
 ## lane DEVPORT-8: the BFME2 campaigns are behind BFME2_CAMPAIGNS (off until B2CAMP-1): their buttons are hidden, so a request is a bug somewhere; it is
