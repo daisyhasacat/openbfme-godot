@@ -78,13 +78,14 @@ def configure_launch_screen(storyboard):
                 'info': {'version': 1, 'author': 'xcode'}}, indent=2) + '\n')
         image = view.find('.//imageView')
         image.set('hidden', 'NO')
-        image.set('contentMode', 'scaleAspectFit')
+        image.set('contentMode', 'scaleAspectFill')
+        image.set('clipsSubviews', 'YES')
         constraints = view.find('constraints')
         for constraint in list(constraints):
             if constraint.get('id') == 'OBF-centerY':
                 constraints.remove(constraint)
             elif constraint.get('secondItem') == image.get('id') and constraint.get('firstAttribute') == 'bottom':
-                constraint.set('constant', '120')
+                constraint.set('constant', '0')
         label.find('fontDescription').set('pointSize', '20')
         ring = ET.SubElement(view.find('subviews'), 'imageView', {
             'image': 'StartupRing', 'contentMode': 'scaleAspectFit',

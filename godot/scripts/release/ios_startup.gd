@@ -40,9 +40,8 @@ func _build_screen() -> void:
 	add_child(background)
 	var artwork := TextureRect.new()
 	artwork.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	artwork.offset_bottom = -120
 	artwork.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	artwork.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	artwork.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	if ResourceLoader.exists("res://startup_art/loading.png"):
 		artwork.texture = load("res://startup_art/loading.png")
 	add_child(artwork)

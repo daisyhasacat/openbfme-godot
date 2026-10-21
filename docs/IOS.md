@@ -196,7 +196,7 @@ python3 tools/release/prepare_startup_art.py \
 The loading image is cropped to its upper 4:3 panel, removing the retail texture's
 black padding. Generated files in `godot/startup_art` are ignored by Git and
 included in local exports. Without them the startup screen shows text and a
-progress bar. With them it shows the artwork and animated retail ring below it
+progress bar. With them it fills the display with cropped artwork and overlays the animated retail ring at the bottom
 while the scene and game files load, on desktop and iOS. The native iOS launch
 screen uses the same artwork and a static first ring frame; animation starts
 once Godot runs. Synchronous archive verification and world setup can still pause
