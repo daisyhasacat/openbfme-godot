@@ -63,3 +63,12 @@ test('production gateway configuration requires loopback upstreams and authentic
  const options={origin:'https://admin.secondage.dev',authUrl:'https://127.0.0.1:54233/api/auth',lobbyUrl:'http://127.0.0.1:8787',adminKey:'33'.repeat(32),port:0};
  for(const bad of [{authUrl:'http://127.0.0.1/api/auth'},{authUrl:'https://evil.example/api/auth'},{lobbyUrl:'http://evil.example'},{bind:'0.0.0.0'},{origin:'http://admin.secondage.dev'},{adminKey:'short'}])await assert.rejects(startGateway({...options,...bad}),/invalid admin gateway configuration/);
 });
+
+test('remote test controls require an administrator passkey and CSRF',async t=>{
+ const f=await fixture(t);
+ assert.equal((await f.call('/v1/admin/testing',{cookie:''})).status,401);
+ assert.equal((await f.call('/v1/admin/testing')).status,200);
+ assert.equal((await f.call('/v1/admin/testing',{method:'POST',body:{action:'run'}})).status,403);
+ const response=await f.call('/v1/admin/testing',{method:'POST',headers:{Origin:'http://localhost','X-CSRF-Token':'session-csrf','Content-Type':'application/json'},body:{action:'shell',command:'unused'}});
+ assert.equal(response.status,400);assert.equal(response.body.error,'bad_test');
+});

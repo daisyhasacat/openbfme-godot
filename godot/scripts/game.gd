@@ -418,6 +418,7 @@ var _platform_ready := false
 var _statistics_context := {}
 var _statistics_uploader: Node
 var _desync_uploader: Node
+var _remote_testing: Node
 var _hub_online := {}              # the online game being started: { id, match, tournament } (the record's id: the match's when there is one)
 var _hub_kind := ""                # "skirmish" / "lan" / "online": the kind of the game being played ("" none: not recorded)
 var _hub_game_id := ""
@@ -5208,6 +5209,10 @@ func _share_results() -> bool:
 ## the records of the games this installation played (the STATS pages) and the platform client with its transport. Nothing is sent from here: a
 ## request goes out only when the player opens an online page or a LAN / online game ends (and shares results)
 func _platform_setup() -> void:
+	if _remote_testing == null and ProjectSettings.get_setting("testing/remote_control/enabled", false):
+		_remote_testing = load("res://scripts/remote_testing.gd").new()
+		_remote_testing.game = self
+		add_child(_remote_testing)
 	_statistics_setup()
 	_desync_reporting_setup()
 	if _platform_ready:
@@ -5838,6 +5843,8 @@ func _on_online_started(start_json: String) -> void:
 		return
 	var document = JSON.parse_string(start_json)
 	if document is Dictionary:
+		if str(_hub_online.get("id", "")).is_empty():
+			_hub_online["id"] = str(document.get("game", ""))
 		var session: String = _online.token if _online != null else str(_shell.online_status().get("session_token", ""))
 		var url: String = _online.lobby_url if _online != null else (_online_http.lobby_url if _online_http != null else _online_lobby_url())
 		_statistics_context = {"id": str(document.get("game", "")), "slot": document.get("slot", -1), "url": url, "token": session}

@@ -18,7 +18,7 @@ function exchange(url, { method = 'GET', headers = {}, body = '', ca, servername
   req.on('timeout', () => req.destroy(new Error('upstream timeout'))); req.on('error', reject); req.end(body);
  });
 }
-const managed = path => /^\/v1\/admin\/(?:users(?:\/[^/]+(?:\/statistics)?)?|games(?:\/[0-9a-f]{16})?)$/.test(path);
+const managed = path => /^\/v1\/admin\/(?:testing|users(?:\/[^/]+(?:\/statistics)?)?|games(?:\/[0-9a-f]{16})?)$/.test(path);
 const publicPath = path => ['/online/', '/online', '/web/app.js', '/web/style.css', '/v1/dashboard', '/v1/history'].includes(path);
 
 export async function startGateway({ origin, authUrl, authCa, lobbyUrl, adminKey, bind = '127.0.0.1', port = 8791 }) {

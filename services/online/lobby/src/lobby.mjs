@@ -1,3 +1,4 @@
+import { RemoteTesting, TestingError } from './remote-testing.mjs';
 import { MAX_REPORT_BYTES, ReportError, makeStatisticsMatch, validateReport, summarizeMatch, accountStatistics, persistReport, loadStatistics } from './match-statistics.mjs';
 import { webResponse } from './webui.mjs';
 import { gameRecord, listGames, ManagementQueryError } from './management.mjs';
@@ -239,6 +240,7 @@ export class Lobby {
     for (const r of this.config.relays) {
       if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$/.test(r.address)) throw new Error(`lobby: relay address ${r.address} must be a.b.c.d:port`);
     }
+    this.testing = new RemoteTesting(this);
     this.users = new Map(); // persisted guest identities and moderation revisions; never session tokens
     this.matchStatistics = new Map();
     this.desyncReports = new Map();
@@ -320,6 +322,7 @@ export class Lobby {
   }
 
   load(games, relayStatus = []) {
+    this.testing.load(relayStatus);
     this.matchStatistics = loadStatistics(relayStatus);
     this.desyncReports = new Map(relayStatus.filter(r => r.kind === "match-desync").map(r => [r.id + ":" + r.slot, r]));
     for (const g of games) this.games.set(g.id, g);
@@ -1278,6 +1281,18 @@ export async function route(lobby, req) {
       return { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: `<!doctype html><meta charset="utf-8"><title>OpenBFME game invite</title><h1>OpenBFME online game</h1><p><a href="${link}">Join game ${p[1]}</a> (opens the OpenBFME launcher).</p><p>Or start OpenBFME with <code>--online-join ${p[1]}</code>. Online play is a test feature.</p>` };
     }
     if (!v1) return json(404, { v: VERSION, error: 'not_found', message: 'unknown path' });
+    if (p[1] === 'admin' && p[2] === 'testing' && p.length === 3) {
+      const raw = await req.bytes(); await lobby.adminCheck(req, raw);
+      try {
+        if (m === 'GET') return json(200, await lobby.testing.list());
+        if (m === 'POST') return json(200, await lobby.testing.manage(await body()));
+      } catch(e) { if(e instanceof TestingError) throw bad('bad_test',e.message); throw e; }
+    }
+    if (p[1] === 'testing' && p[2] === 'poll' && p.length === 3 && m === 'POST') {
+      const account = await lobby.account(req.headers.authorization);
+      try { return json(200, await lobby.testing.heartbeat(account, await body())); }
+      catch(e) { if(e instanceof TestingError) throw bad('bad_test',e.message); throw e; }
+    }
     if (m === 'GET' && p[1] === 'health') return json(200, lobby.health());
     // ONLINE-4: the message of the day the game's online home page shows (OnlineHome.apt); null when the lobby has none
     // ONLINECOUNT-1: the counts the menus and the launcher show. No sign-in needed; a valid token on the request also marks its player present

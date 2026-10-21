@@ -36,7 +36,8 @@ test('Worker accepts detailed reports and restores chunked metadata across objec
  const response=await worker.fetch(new Request('https://lobby/v1/games/'+f.id+'/statistics',{method:'POST',headers:{authorization:'Bearer '+f.a.token,'Content-Type':'application/json'},body:JSON.stringify(body)}));assert.equal(response.status,200);
  const diagnostic={v:1,platform:'iOS',commit:'worker-test',dump:'DESYNC: frame 100'};
  const diagnosticResponse=await worker.fetch(new Request('https://lobby/v1/games/'+f.id+'/desync',{method:'POST',headers:{authorization:'Bearer '+f.a.token,'Content-Type':'application/json'},body:JSON.stringify(diagnostic)}));assert.equal(diagnosticResponse.status,200);
- worker=new LobbyObject(state,config);await ready;assert.equal(worker.lobby.desyncReports.get(f.id+':0').body.dump,diagnostic.dump);const stats=accountStatistics(worker.lobby.matchStatistics.values(),f.a.account.id);assert.equal(stats.wins,1);assert.equal(stats.templates.length,250);assert.equal(stats.templates[0].built,2);
+ await state.storage.put('testing-run:fixture',{kind:'testing-run',id:'fixture',clients:[],state:'passed',createdAt:1,expiresAt:2,results:{}});
+ worker=new LobbyObject(state,config);await ready;assert.equal(worker.lobby.testing.runs.get('fixture').state,'passed');assert.equal(worker.lobby.desyncReports.get(f.id+':0').body.dump,diagnostic.dump);const stats=accountStatistics(worker.lobby.matchStatistics.values(),f.a.account.id);assert.equal(stats.wins,1);assert.equal(stats.templates.length,250);assert.equal(stats.templates[0].built,2);
 });
 
 test('private match details and statistics never leak through public history, and revoked sessions cannot report',async()=>{
@@ -68,4 +69,42 @@ test('desync diagnostics authenticate original participants, persist both slots 
  assert.equal(admin.body.game.desyncReports[0].body.dump,body.dump);
  assert.equal(JSON.stringify((await call(f.lobby,'GET','/v1/history')).body).includes('DESYNC:'),false);
  assert.equal((await call(f.lobby,'GET',`/v1/admin/games/${f.id}`)).status,401);
+});
+
+test('remote testing pairs authenticated clients, controls readiness workflow and persists outcomes',async()=>{
+ const saved=new Map(),f=await fixture({saveMeta:async(k,v)=>saved.set(k,structuredClone(v))});
+ const host='a'.repeat(32),join='b'.repeat(32);
+ const poll=(id,token,status={})=>call(f.lobby,'POST','/v1/testing/poll',{client:id,platform:'iOS',commit:'test',status},token);
+ assert.equal((await poll(host,f.a.token)).status,200);
+ assert.equal((await poll(join,f.b.token)).status,200);
+ assert.equal((await poll(host,f.b.token)).status,400);
+ assert.equal((await call(f.lobby,'GET','/v1/admin/testing')).status,401);
+ const create=await call(f.lobby,'POST','/v1/admin/testing',{action:'run',clients:[host,join],map:'maps/test.map',frames:100},undefined,true);
+ assert.equal(create.status,200);const run=create.body.run.id;
+ assert.equal((await poll(host,f.a.token)).body.command.role,'host');
+ assert.equal((await poll(join,f.b.token)).body.command.game,undefined);
+ const pending=await poll(host,f.a.token,{run,state:'lobby',game:f.id});assert.equal(pending.status,200);
+ assert.equal((await poll(join,f.b.token)).body.command.game,f.id);
+ assert.equal((await call(f.lobby,'POST','/v1/admin/testing',{action:'run',clients:[host,join],map:'maps/test.map'},undefined,true)).status,400);
+ assert.equal((await poll(host,f.a.token,{run,state:'passed',frame:10,crc_checks:0,scripted_commands:0})).status,400);
+ await poll(host,f.a.token,{run,state:'passed',frame:110,crc_checks:1,scripted_commands:8});
+ assert.equal(f.lobby.testing.runs.get(run).state,'running');
+ await poll(join,f.b.token,{run,state:'desync',frame:103,crc_checks:0,scripted_commands:8});
+ assert.equal(f.lobby.testing.runs.get(run).state,'desync');
+ assert.equal((await poll(host,f.a.token,{run,state:'passed'})).body.command.action,'stop');
+ const restored=new Lobby(nodeEnv({}),configFromEnv(config));restored.load([],[...saved.values()]);
+ assert.equal(restored.testing.runs.get(run).state,'desync');
+ assert.equal(JSON.stringify((await call(f.lobby,'GET','/v1/dashboard')).body).includes('testing-run'),false);
+});
+
+test('remote test deadlines, duplicate targets and arbitrary commands are refused',async()=>{
+ const f=await fixture(),ids=['c'.repeat(32),'d'.repeat(32)];
+ for(const id of ids)assert.equal((await call(f.lobby,'POST','/v1/testing/poll',{client:id,platform:'macOS',commit:'test'},f.a.token)).status,200);
+ const admin=body=>call(f.lobby,'POST','/v1/admin/testing',body,undefined,true);
+ assert.equal((await admin({action:'shell',command:'echo test'})).status,400);
+ assert.equal((await admin({action:'run',clients:[ids[0],ids[0]],map:'maps/test.map'})).status,400);
+ const made=await admin({action:'run',clients:ids,map:'maps/test.map',frames:100});
+ const r=f.lobby.testing.runs.get(made.body.run.id);r.expiresAt=0;
+ await f.lobby.testing.list();assert.equal(f.lobby.testing.runs.get(r.id).state,'failed');
+ assert.equal((await admin({action:'cancel',run:r.id})).body.run.state,'cancelled');
 });

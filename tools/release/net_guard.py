@@ -70,6 +70,10 @@ ALLOWED_LAUNCHER = {"launcher/scripts/net/http_fetch.gd": {"HTTPClient"},
 # Every request and redirect is checked by scripts/net/net_policy.gd, with pinned AIO files.
 ALLOWED_GAME = {"godot/scripts/net/http_fetch.gd": {"HTTPClient"}, "godot/scripts/online_lobby.gd": {"HTTPRequest", "HTTPClient"}, "godot/scripts/online_http.gd": {"HTTPRequest", "HTTPClient"},
                 "godot/scripts/online_stats.gd": {"HTTPRequest"},
+                "godot/scripts/lan_content.gd": {"HTTPRequest"},
+                "godot/scripts/player_sync.gd": {"HTTPRequest", "HTTPClient"},
+                "godot/scripts/remote_testing.gd": {"HTTPRequest", "HTTPClient"},
+                "godot/scripts/match_statistics.gd": {"HTTPRequest", "HTTPClient"},
                 "godot/scripts/release/update_handover.gd": {"OS.create_process"}}
 ONLINE_LOBBY = "godot/scripts/online_lobby.gd"
 ONLINE_LOBBY_FILES = ("godot/scripts/online_lobby.gd", "godot/scripts/online_http.gd", "godot/scripts/online_stats.gd")
@@ -416,16 +420,17 @@ def game_finding_allowed(path: str, finding: str) -> bool:
     return finding.split(": ", 1)[-1] in ALLOWED_GAME.get(path.replace("\\", "/"), set())
 
 
-def online_lobby_problems(text: str) -> list[str]:
+def online_lobby_problems(text: str, expected_requests: int = 1, url_root: str = "lobby_url") -> list[str]:
     """lane ONLINE-2: the lobby client's requests go to the lobby the player named: exactly one `.request(` call, its URL argument starting with
     the `lobby_url` member (comments and strings do not count)"""
     tokens = [(t, line) for t, line in lex_gd(text)[0]]
-    calls = [k for k in range(1, len(tokens) - 1) if tokens[k][0] == "request" and tokens[k - 1][0] == "." and tokens[k + 1][0] == "("]
-    if len(calls) != 1:
-        return [f"{len(calls)} .request( calls (exactly one, to the lobby, is allowed)"]
-    k = calls[0]
-    if k + 2 >= len(tokens) or tokens[k + 2][0] != "lobby_url":
-        return [f"line {tokens[k][1]}: the request's URL does not start with lobby_url"]
+    calls = [k for k in range(1, len(tokens) - 1) if tokens[k][0] in ("request", "request_raw") and tokens[k - 1][0] == "." and tokens[k + 1][0] == "("]
+    if len(calls) != expected_requests:
+        expected = "one" if expected_requests == 1 else str(expected_requests)
+        return [f"{len(calls)} .request( calls (exactly {expected}, to the lobby, is allowed)"]
+    for k in calls:
+        if k + 2 >= len(tokens) or tokens[k + 2][0] != url_root:
+            return [f"line {tokens[k][1]}: the request's URL does not start with lobby_url"]
     # ONLINE-2 r2 (Sol r1): Godot follows a redirect to another origin with the headers (the bearer token): redirects must be off
     names = [t for t, _ in tokens]
     if not any(names[i:i + 3] == ["max_redirects", "=", "0"] for i in range(len(names) - 2)):
@@ -444,6 +449,12 @@ def main() -> int:
         for p in online_lobby_problems((REPO / lobby_file).read_text(encoding="utf-8")):
             bad += 1
             print(f"FINDING {lobby_file}: {p}")
+    # Test control polls and cleanup use two fixed-origin requests, each with redirects disabled.
+    for path, count, root in (("godot/scripts/remote_testing.gd", 2, "lobby_url"), ("godot/scripts/match_statistics.gd", 1, "lobby_url"),
+                              ("godot/scripts/lan_content.gd", 1, "origin"), ("godot/scripts/player_sync.gd", 1, "url")):
+        for problem in online_lobby_problems((REPO / path).read_text(encoding="utf-8"), count, root):
+            bad += 1
+            print(f"FINDING {path}: {problem}")
     for path, findings in scan_launcher().items():
         for f in findings:
             allowed = launcher_finding_allowed(path, f)

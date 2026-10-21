@@ -1308,3 +1308,51 @@ and retries interrupted uploads, including after restart. This diagnostic is
 automatic independently of match-statistics sharing. Reports are retained with
 the match and visible only in its administrator detail view, never public history.
 Both apps must be rebuilt, and the server must include this endpoint.
+
+## Unattended tests on this fork
+
+Test builds have `testing/remote_control/enabled=true` in `godot/project.godot`.
+After opening the main menu they register automatically with Second Age, using
+a separate saved guest identity (`user://remote_testing.cfg`). There is no
+per-run interaction on either device. Set that project setting to `false` for
+builds that should not be controlled for testing. A client already playing or
+outside the main menu refuses a new test rather than interrupting its game.
+
+The administrator can list devices, pair a host and joiner, or cancel a run:
+
+```sh
+python3 tools/net/remote_testing.py list
+python3 tools/net/remote_testing.py run --clients HOST_ID JOINER_ID \
+  --map 'maps/map wor carrock/map wor carrock.map' --frames 1500 --timeout-seconds 600
+python3 tools/net/remote_testing.py cancel RUN_ID
+```
+
+The tool signs administrator API requests on the host through SSH; server keys
+never leave the host. The same restricted API is available through the passkey
+gateway: `GET /v1/admin/testing`, `POST /v1/admin/testing` with `action: run`
+(`clients`, `map`, `frames`, `timeoutSeconds`) or `action: cancel` (`run`).
+Ordinary players cannot enqueue commands. Clients poll `/v1/testing/poll` with
+their own guest sessions. Commands are limited to this fixed scenario and stop;
+there is no remote shell, arbitrary script, file upload, or executable command.
+
+The host creates a two-player room; the server gives its ID to the joiner. The
+existing online driver joins, readies, starts when both players are present,
+and enters the real relay game. Both peers enable the existing `ScriptedPlayer`:
+selection, movement, attack-move, stop, unit/structure production, upgrades and
+powers go through normal lockstep commands. Individual actions depend on the
+faction's available commands and resources; a run does not claim every action
+was executed. Every two seconds the client reports frames, passed CRC checks
+and scripted command counts. A pass requires **both** clients to reach the
+requested frame count plus CRC delivery grace, pass the requested number of
+configured CRC intervals, and issue scripted commands. These are client-reported results,
+not independent verification of simulation correctness.
+
+A desync or explicit client failure fails the run and stops its partner; the
+automatic desync reporter uploads diagnostics separately. Deadline expiry fails
+hung, disconnected, backgrounded or missing clients. Restarted clients retain
+the last run ID and never repeat its commands. Run results persist through a
+server restart (`testing-run:*` metadata); connected-device registrations are
+short-lived and reappear on the next poll. Cleanup leaves the test room and
+returns the clients through the score screen. iOS must remain foregrounded:
+this cannot wake a suspended app or launch an app that is not running. Both
+apps must include this change before they appear in the device list.

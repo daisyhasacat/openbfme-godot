@@ -29,7 +29,7 @@ func _ready():
  button=Button.new();button.text="Sync now";button.pressed.connect(_sync);panel.add_child(button)
  status=Label.new();status.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;panel.add_child(status)
  var close=Button.new();close.text="Close";close.pressed.connect(func():if not busy:queue_free());panel.add_child(close)
- request=HTTPRequest.new();request.use_threads=true;request.timeout=120;request.body_size_limit=128*1024*1024;add_child(request)
+ request=HTTPRequest.new();request.max_redirects=0;request.use_threads=true;request.timeout=120;request.body_size_limit=128*1024*1024;add_child(request)
  preload("res://scripts/menu_accessibility.gd").prepare(self)
 
 func _call(url:String, method:int=HTTPClient.METHOD_GET, data:PackedByteArray=PackedByteArray(), base:String="") -> Array:

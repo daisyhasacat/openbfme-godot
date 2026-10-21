@@ -61,3 +61,7 @@ textures/vram_compression/import_etc2_astc=true
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/pack_files/plugin.cfg")
+
+[testing]
+
+remote_control/enabled=true

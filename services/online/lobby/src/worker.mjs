@@ -197,8 +197,9 @@ export class LobbyObject {
       const history = await state.storage.list({ prefix: 'game-history:' });
       const matches = await state.storage.list({ prefix: 'match-statistics:' });
       const reports = await state.storage.list({ prefix: 'match-report:' });
+      const testing = await state.storage.list({ prefix: 'testing-run:' });
       const desyncs = await state.storage.list({ prefix: 'match-desync:' });
-      this.lobby.load([...games.values()], [...relays.values(), ...users.values(), ...history.values(), ...matches.values(), ...reports.values(), ...desyncs.values()]);
+      this.lobby.load([...games.values()], [...relays.values(), ...users.values(), ...history.values(), ...matches.values(), ...reports.values(), ...desyncs.values(), ...testing.values()]);
       await this.lobby.restoreArchives();
     });
   }

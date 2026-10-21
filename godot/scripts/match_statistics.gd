@@ -4,6 +4,7 @@ extends Node
 
 const MAX_BYTES := 512 * 1024
 const MAX_PENDING := 32
+var lobby_url := ""
 var endpoint := "statistics"
 var path := "user://online_statistics_outbox.json"
 var sharing: Callable
@@ -111,7 +112,8 @@ func _process(_delta: float) -> void:
 	_active = entry
 	_busy = true
 	requests_sent += 1
-	var error := _http.request(entry.url.trim_suffix("/") + "/v1/games/" + entry.id + "/" + endpoint, PackedStringArray(["Content-Type: application/json", "Authorization: Bearer " + entry.token]), HTTPClient.METHOD_POST, JSON.stringify(entry.body))
+	lobby_url = entry.url
+	var error := _http.request(lobby_url.trim_suffix("/") + "/v1/games/" + entry.id + "/" + endpoint, PackedStringArray(["Content-Type: application/json", "Authorization: Bearer " + entry.token]), HTTPClient.METHOD_POST, JSON.stringify(entry.body))
 	if error != OK:
 		_done(HTTPRequest.RESULT_CANT_CONNECT, 0, PackedStringArray(), PackedByteArray())
 
