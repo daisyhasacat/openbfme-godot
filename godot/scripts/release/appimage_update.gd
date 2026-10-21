@@ -33,6 +33,7 @@ static func image_error(path: String) -> String:
 	return ""
 
 func _ready() -> void:
+	set_meta("openbfme_native_menu", true)
 	layer = 140
 	var shade := ColorRect.new()
 	shade.color = Color(0.025, 0.035, 0.05, 0.98)
