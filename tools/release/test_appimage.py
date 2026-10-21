@@ -151,3 +151,38 @@ def test_workflow_preserves_release_folder_name_when_extracting(tmp_path):
     assert args == ["stage", "--package", str(runner / name), "--output", str(runner / "OpenBFME.AppDir")]
     assert audit_package.TOP_DIR.fullmatch(Path(args[2]).name) is not None
     assert (Path(args[2]) / "VERSION").read_text() == version + "\n"
+
+
+def test_boot_workflow_runs_native_checks_through_game_entrypoint(tmp_path):
+    """Opt-in native integration: use the workflow's arguments with a local Godot build."""
+    import os
+    import shlex
+
+    godot = os.environ.get("OPENBFME_APPIMAGE_TEST_GODOT")
+    if not godot:
+        pytest.skip("set OPENBFME_APPIMAGE_TEST_GODOT; requires the built native extension")
+    workflow = (appimage.ROOT / ".github/workflows/appimage.yml").read_text()
+    command = workflow.split('timeout 90 ', 1)[1].split(' 2>&1', 1)[0]
+    args = shlex.split(command)
+    assert args == ["$image", "--headless", "--", "--appimage-boot-test"]
+    env = {key: value for key, value in os.environ.items()
+           if key not in ("ROTWK_INSTALL", "BFME2_INSTALL")}
+    result = subprocess.run([godot, "--path", str(appimage.ROOT / "godot"), *args[1:]],
+                            cwd=tmp_path, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "APPIMAGE BOOT PASS" in result.stdout.splitlines()
+    assert "GAME FAIL" not in result.stdout + result.stderr
+    assert "STARTUP game ready" not in result.stdout
+
+    # The same check must fail with a missing extension, rather than claim a pass.
+    project = tmp_path / "missing-extension"
+    project.mkdir()
+    (project / "project.godot").write_text(
+        'config_version=5\n[debug]\nfile_logging/enable_file_logging=false\n'
+        'file_logging/enable_file_logging.pc=false\n')
+    (project / "boot.gd").write_bytes((appimage.ROOT / "godot/tests/appimage_boot_test.gd").read_bytes())
+    rejected = subprocess.run([godot, "--headless", "--path", str(project), "--script", "res://boot.gd"],
+                              cwd=tmp_path, env=env, text=True, capture_output=True, timeout=30)
+    assert rejected.returncode == 1, rejected.stdout + rejected.stderr
+    assert "APPIMAGE BOOT FAIL: missing native class RetailFileSystem" in rejected.stdout + rejected.stderr
+    assert "APPIMAGE BOOT PASS" not in rejected.stdout
