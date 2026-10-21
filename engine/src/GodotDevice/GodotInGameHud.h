@@ -66,6 +66,7 @@ public:
 	PackedStringArray get_message_log() const;
 	// { cursor, selecting, gui_command, over_gui, messages: [...], stops: [...], palantir: { initialized, loaded: {...} } }
 	Dictionary get_state() const;
+	int64_t get_startup_probe_usec() const; ///< Non-blocking acknowledgement of the diagnostic input probe.
 	Array get_command_map() const; ///< lane INPUT-1: the CommandMap records in the order the MetaEventTranslator tries them
 	// the HUD movie's own report (unverified rules, errors) and the stops
 	Dictionary get_report() const;

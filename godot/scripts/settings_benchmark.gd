@@ -86,7 +86,7 @@ func _ready() -> void:
 	_title.text = "Performance benchmark"
 	column.add_child(_title)
 	var description := Label.new()
-	description.text = "Main menu → Skirmish lobby → Men base + 1,000 CP → Men base + 20,000 CP.\n12 buildings, mixed idle Men battalions and siege, fixed cameras. Loading and spawning are excluded.\nUses saved settings; apply any changes before starting. The 20,000 CP setup may take several minutes.\nCancel at any time. Returns to the main menu; results are saved locally."
+	description.text = "Main menu → Skirmish lobby → Men base + 1,000 CP → Men base + 20,000 CP.\nReal match loading and input readiness, then 12 buildings and mixed idle Men armies with zoom/pan sweeps.\nUses saved settings; apply any changes before starting. The 20,000 CP setup may take several minutes.\nCancel at any time. Returns to the main menu; results are saved locally."
 	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(description)
 	var options := HFlowContainer.new()
@@ -254,7 +254,11 @@ func start() -> void:
 	if not await _measure("lobby", {}):
 		await _finish("Cancelled or no lobby samples.")
 		return
-	var error: String = await _prepare_world()
+	var error: String = await _measure_match_start()
+	if not error.is_empty():
+		await _finish(error)
+		return
+	error = await _prepare_world()
 	if not error.is_empty():
 		await _finish(error)
 		return
@@ -279,6 +283,65 @@ func start() -> void:
 				await _finish(error)
 				return
 	await _finish("")
+
+func _measure_match_start() -> String:
+	_status.text = "Measuring map load and gameplay input readiness…"
+	var metrics = preload("res://scripts/match_load_metrics.gd").new()
+	metrics.game = game
+	game.add_child(metrics)
+	game._load_metrics = metrics
+	# Starting a real match exercises the same loader, audio, HUD and mobile
+	# controls as Play. Preserve session bookkeeping; never record this match.
+	var environment_before = game._env.environment
+	game._env.environment = environment_before.duplicate()
+	var sun_before = game._sun
+	var sun_visible_before: bool = sun_before.visible if is_instance_valid(sun_before) else false
+	game._sun = null # _apply_lighting must not free the menu's light.
+	if is_instance_valid(sun_before): sun_before.hide()
+	var camera_before := {}
+	for key in ["current", "transform", "fov", "far", "near", "size", "projection"]:
+		camera_before[key] = game._camera.get(key)
+	var saved := {}
+	for key in ["_last_new_game", "_start_stack", "_last_local_slot", "_game_kind", "_games_started", "_local_name", "_local_index", "_game_frames", "_report", "_restart_stack", "_control_bar_hidden", "_online_spectate"]:
+		saved[key] = game.get(key)
+	var slots: Array = []
+	for index in 8:
+		slots.append({"state": 1, "name": "Closed", "accepted": true, "color": -1, "start_pos": -1, "player_template": -1, "team": -1})
+	for index in 2:
+		slots[index] = {"state": 6 if index == 0 else 3, "name": "Benchmark" if index == 0 else "Opponent", "accepted": true,
+			"color": index, "start_pos": index, "faction": _preset.faction, "player_template": -1, "team": index}
+	await game._begin_game({"mode": "skirmish", "difficulty": 1, "rank_points": 0, "map": _preset.startup_map,
+		"map_crc": 0, "map_size": 0, "map_mask": 0, "seed": int(_preset.seed), "starting_cash": 2000, "slots": slots})
+	var error := ""
+	if game._state != game.State.PLAYING:
+		error = "Benchmark match startup failed."
+	else:
+		# Headless orchestration has no render submission signal.
+		if DisplayServer.get_name() == "headless":
+			metrics.complete = true
+		else:
+			while not metrics.complete and not cancelled:
+				await get_tree().process_frame
+		error = metrics.error
+		report["match_startup"] = metrics.result()
+		report.match_startup["engine_timings_ms"] = game._report.get("timings_ms", {}).duplicate(true)
+	game._load_metrics = null
+	metrics.free()
+	game._tear_down_game("benchmark startup")
+	game._env.environment = environment_before
+	if is_instance_valid(game._sun): game._sun.queue_free()
+	game._sun = sun_before
+	if is_instance_valid(sun_before): sun_before.visible = sun_visible_before
+	for key in camera_before: game._camera.set(key, camera_before[key])
+	game._state = game.State.MENU
+	game._shell.auto_process = true
+	game._shell_back_from_game()
+	game._audio.play_shell_music(false)
+	for key in saved: game.set(key, saved[key])
+	if cancelled: return "Cancelled."
+	if not error.is_empty(): return error
+	if not await _main_menu(): return "Could not restore the main menu after the startup measurement."
+	return ""
 
 func _main_menu() -> bool:
 	for attempt in 300:
@@ -569,6 +632,14 @@ func _save_report() -> void:
 
 func _show_results() -> void:
 	_results.text = "Benchmark: %s\n" % report.get("status", "")
+	if report.has("match_startup"):
+		var startup: Dictionary = report.match_startup
+		_results.text += "Map load: %.1f ms\n" % startup.map_load_ms
+		if startup.get("render_available", false) and startup.has("world_frame_to_controls_ms"):
+			_results.text += "Start → base frame: %.1f ms · controls: %.1f ms\n" % [startup.request_to_first_world_frame_ms, startup.request_to_controls_ms]
+			_results.text += "Base frame → controls: %.1f ms · longest startup frame: %.1f ms\n" % [startup.world_frame_to_controls_ms, startup.post_reveal_max_frame_gap_ms]
+		else:
+			_results.text += "Base frame → controls: unavailable (no rendered measurement)\n"
 	for stage in report.get("stages", []):
 		var summary: Dictionary = stage.frames_summary
 		var gpu: Dictionary = stage.get("summary", {}).get("render_gpu", {})

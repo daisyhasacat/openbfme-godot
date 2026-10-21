@@ -25,5 +25,6 @@
     "GondorFarm",
     "GondorFarm",
     "GondorFarm"
-  ]
+  ],
+  "startup_map": "maps/map mp fall back 4p/map mp fall back 4p.map"
 }

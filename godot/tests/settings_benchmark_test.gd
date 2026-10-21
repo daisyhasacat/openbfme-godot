@@ -2,6 +2,9 @@
 ## Headless runs verify orchestration only; native runs exercise GPU timings.
 extends SceneTree
 
+var _probe_held := false
+var _hold_frames := 0
+
 var _logger = preload("res://scripts/walk_error_logger.gd").new()
 
 func _initialize() -> void:
@@ -23,6 +26,9 @@ func _run() -> void:
 	assert(game._state == game.State.MENU)
 	await create_timer(1.0).timeout
 	var tool = await open_tool(game)
+	var environment_before = game._env.environment
+	var sun_before = game._sun
+	var camera_transform: Transform3D = game._camera.transform
 	var cap := Engine.max_fps
 	var vsync := DisplayServer.window_get_vsync_mode()
 	# Cancel during warmup; no match is loaded and display caps come back.
@@ -35,10 +41,46 @@ func _run() -> void:
 	# Run from the actual Settings > Benchmark button, not a direct signal.
 	tool.free()
 	tool = await open_tool(game)
+	var hold_probe := func():
+		if game._state != game.State.PLAYING or not is_instance_valid(game._load_metrics): return
+		if not _probe_held:
+			_probe_held = true
+			_hold_frames = 3
+			game._hud.hold_input(true)
+			var pending: int = game._hud.get_state().keys.pending
+			var key := InputEventKey.new()
+			key.keycode = KEY_F1
+			key.pressed = true
+			root.push_input(key)
+			var click := InputEventMouseButton.new()
+			click.button_index = MOUSE_BUTTON_LEFT
+			click.pressed = true
+			root.push_input(click)
+			var unrelated := InputEventAction.new()
+			unrelated.action = "benchmark_unrelated_action"
+			root.push_input(unrelated)
+			assert(game._hud.get_state().keys.pending == pending, "Real input must not enter the diagnostic match")
+		if _hold_frames > 0:
+			assert(game._hud.get_startup_probe_usec() == 0, "A held input queue must not be reported as responsive")
+			_hold_frames -= 1
+			if _hold_frames == 0: game._hud.hold_input(false)
+	process_frame.connect(hold_probe)
 	tool.start()
 	while tool.running:
 		await process_frame
+	process_frame.disconnect(hold_probe)
 	assert(tool.report.status == "complete", str(tool.report.get("error", "")))
+	assert(tool.report.match_startup.status == "complete")
+	var startup: Dictionary = tool.report.match_startup
+	assert(startup.phases_ms.has("prepare_complete") and startup.phases_ms.has("hud_complete") and startup.phases_ms.has("playing"))
+	assert(startup.map_load_ms == startup.phases_ms.map_load_complete - startup.phases_ms.map_load_started)
+	if DisplayServer.get_name() != "headless":
+		assert(_probe_held and _hold_frames == 0)
+		assert(startup.render_available)
+		# tolerance: wall-clock measurements vary by device; only causal ordering is required.
+		assert(startup.world_frame_to_controls_ms >= 0 and startup.input_queue_ms >= 0)
+		assert(not startup.post_reveal_frame_gaps_ms.is_empty())
+		assert(startup.post_reveal_max_frame_gap_ms == startup.post_reveal_frame_gaps_ms.max())
 	assert(tool.report.stages.size() == 4)
 	assert(tool.report.stages[0].stage == "main_menu")
 	assert(tool.report.stages[1].stage == "lobby")
@@ -63,6 +105,8 @@ func _run() -> void:
 			assert(int(stage.workload.cp_after) == int(stage.workload.cp))
 	assert(Engine.max_fps == cap and DisplayServer.window_get_vsync_mode() == vsync)
 	assert(game.is_processing())
+	assert(game._env.environment == environment_before and game._sun == sun_before)
+	assert(game._camera.transform == camera_transform)
 	assert(game._shell.shell_stack() == PackedStringArray(["MainMenu.apt"]))
 	assert(game._world.get_object_count() == 0)
 	assert(not tool.report.has("export_error"))
@@ -79,6 +123,21 @@ func _run() -> void:
 	tool.cancelled = true
 	while tool.running: await process_frame
 	assert(tool.report.status == "cancelled")
+	assert(game._world.get_object_count() == 0 and game.is_processing())
+	assert(game._shell.shell_stack() == PackedStringArray(["MainMenu.apt"]))
+	assert(Engine.max_fps == cap and DisplayServer.window_get_vsync_mode() == vsync)
+	tool.free()
+	tool = await open_tool(game)
+	tool.start()
+	var cancel_phase := "prepare_complete" if DisplayServer.get_name() == "headless" else "playing"
+	while tool.running and (not is_instance_valid(game._load_metrics) or not game._load_metrics.phases.has(cancel_phase)):
+		await process_frame
+	tool.cancelled = true
+	while tool.running: await process_frame
+	assert(tool.report.status == "cancelled")
+	assert(not is_instance_valid(game._load_metrics))
+	assert(game._env.environment == environment_before and game._sun == sun_before)
+	assert(game._camera.transform == camera_transform)
 	assert(game._world.get_object_count() == 0 and game.is_processing())
 	assert(game._shell.shell_stack() == PackedStringArray(["MainMenu.apt"]))
 	assert(Engine.max_fps == cap and DisplayServer.window_get_vsync_mode() == vsync)

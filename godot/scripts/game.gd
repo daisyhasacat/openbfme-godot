@@ -2043,17 +2043,24 @@ func _boot_audio() -> bool:
 
 # ---- starting a game -------------------------------------------------------------------------------------------------------------------------
 
+var _load_metrics: Node = null # Attached only by the Settings benchmark.
+
+func _load_mark(phase: String) -> void:
+	if is_instance_valid(_load_metrics): _load_metrics.mark(phase)
+
 func _begin_game(message: Dictionary) -> void:
+	_load_mark("requested")
 	print("GAME new game: map %s seed %d cash %d" % [message.map, message.seed, message.starting_cash])
 	_rejoin_watch.reset() # lane ONLINEUX-1 r2: every game's rejoin is watched afresh (the watch also starts afresh on a new net_status attempt)
 	_game_kind = "lan" if _net_state == "loading" else ("network" if not _net_state.is_empty() else ("restart" if not _restart_stack.is_empty() else "skirmish"))
-	_hub_begin(message) # lane ONLINEHUB-1: what the score screen records
+	if not is_instance_valid(_load_metrics): _hub_begin(message) # lane ONLINEHUB-1: what the score screen records
 	_last_new_game = message.duplicate(true) # lane END-2: the quit menu's Restart starts it again (RW 0x9220DE)
 	if _restart_stack.is_empty():
 		_start_stack = _shell.shell_stack() # lane END-2: the screens the score screen's Continue shows again (TheShell + 0x9C, RW 0x925798)
 	_restart_stack = PackedStringArray()
 	_sync_simulation_profile() # lane UBER-1 (a LAN game keeps its lobby's profile: prepare_new_game names any mismatch)
 	var prep: Dictionary = _world.prepare_new_game(message)
+	_load_mark("prepare_complete")
 	_last_local_slot = int(prep.get("local_slot", -1))
 	if not prep.ok:
 		_fail("prepare_new_game: " + "\n".join(prep.errors))
@@ -2092,9 +2099,11 @@ func _begin_game(message: Dictionary) -> void:
 	_world.hide() # keep partially constructed terrain behind the loading screen
 	_on_load_progress(0) # present the initial bar before synchronous loading
 	var opts := {"progress": Callable(self, "_on_load_progress"), "test_hooks": _end or not _zoom1.is_empty() or _rules_shot > 0 or not _gamemodes.is_empty() or _uber1 > 0 or _play_script.ends_with("spell3_player.gd") or _play_script.ends_with("ownerfix1_player.gd") or _play_script.ends_with("devport7_player.gd") or _play_script.ends_with("ownerfix2_player.gd")} # lane ZOOM-1: the bars scenario hurts some units (logged)
-	if _record and _net_state.is_empty():
+	if _record and _net_state.is_empty() and not is_instance_valid(_load_metrics):
 		opts["record"] = _last_replay_path() # lane MP-2: every skirmish is recorded
+	_load_mark("map_load_started")
 	var rep: Dictionary = _world.start_new_game(opts)
+	_load_mark("map_load_complete")
 	_report = rep
 	print("GAME load: %d ms, ok=%s" % [Time.get_ticks_msec() - started, rep.ok])
 	if rep.has("timings_ms"): # lane PERF-1: where the load went (ms per stage)
@@ -2109,6 +2118,7 @@ func _begin_game(message: Dictionary) -> void:
 			_fail("start_new_game failed: " + "\n".join(rep.get("errors", [])))
 		return
 	_world.visible = world_was_visible
+	_load_mark("world_exposed")
 	await _enter_game(rep)
 	if _online_spectate:
 		for arg in OS.get_cmdline_user_args():
@@ -2312,6 +2322,7 @@ func _on_load_progress(percent: int) -> void:
 
 
 func _enter_game(rep: Dictionary) -> void:
+	_load_mark("enter_game_started")
 	_world.set_auto_advance(false)
 	_hide_rules_summary() # lane RULES-1
 	_shell.hide_still_load_screen() # lane MENU-1: a campaign mission's picture loading screen
@@ -2343,11 +2354,14 @@ func _enter_game(rep: Dictionary) -> void:
 		print("GAME REPORT ", JSON.stringify(rep))
 		for o in rep.start.starting_objects:
 			print("GAME starting object: ", JSON.stringify(_world.get_object(o.id)))
+	_load_mark("hud_started")
 	_install_hud(rep)
+	_load_mark("hud_complete")
 	if not _hud_installed:
 		return
 	# lane END-1: GuiFX.apt (the end screen's movie) is loaded with the game, so ShowEndGame finds it
 	var gfx: Dictionary = _shell.end_game_screen({"kind": "preload"})
+	_load_mark("end_screen_preload_complete")
 	print("GAME GuiFX for the end screen: level %d %s" % [gfx.get("level", -1), str(gfx.get("error", ""))])
 	if not _net_state.is_empty():
 		_net_begin()
@@ -2369,6 +2383,7 @@ func _enter_game(rep: Dictionary) -> void:
 		print("GAME NET all players loaded; beginning simulation")
 	_world.set_auto_advance(true)
 	_state = State.PLAYING
+	_load_mark("playing")
 	_games_started += 1
 	print("GAME playing: frame %d, %d objects, hash %d" % [_world.get_frame(), _world.get_object_count(), _world.get_state_hash()])
 	_online_spectate = bool(_world.caster_transport_status().get("live", false))
@@ -2556,7 +2571,7 @@ func _install_hud(rep: Dictionary) -> void:
 	var wider := _widescreen_setting()
 	print("GAME widescreen view: %s" % ("wider (OpenBFME option, not retail)" if wider else "original"))
 	var r: Dictionary = hud.attach(_fs, _world, _camera, _shell, local, {"alternate_mouse": alternate, "camera_start": camera_start, "free_camera": free_camera,
-		"all_health_bars": all_bars != null and str(all_bars) == "yes", "zoom_out_factor": zoom_out, "widescreen_wider": wider})
+		"startup_probe_only": is_instance_valid(_load_metrics), "all_health_bars": all_bars != null and str(all_bars) == "yes", "zoom_out_factor": zoom_out, "widescreen_wider": wider})
 	print("GAME HUD installed: ok=%s errors=%s" % [r.ok, r.errors])
 	if not r.ok:
 		# Detach the native hook before the shell gets another draw/update.
