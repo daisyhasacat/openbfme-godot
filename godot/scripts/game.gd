@@ -1262,6 +1262,10 @@ func _boot() -> void:
 	print("STARTUP data mount took %d ms" % (Time.get_ticks_msec() - mount_started))
 	print("STARTUP archive verification: %d hashed, %d cached" % [mount.get("archives_hashed", 0), mount.get("md5_cache_hits", 0)])
 	get_tree().call_group("ios_startup", "stage", "Loading game…")
+	if DisplayServer.get_name() == "headless":
+		await get_tree().process_frame
+	else:
+		await RenderingServer.frame_post_draw
 	_rotwk_install = str(mount.get("rotwk_install", "")) # lane CAH-2: the Create-a-Hero save folder's name is in the install's gi.dat
 	if mount.get("quit", false):
 		get_tree().quit(0)
