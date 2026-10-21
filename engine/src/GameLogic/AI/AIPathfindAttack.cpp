@@ -25,6 +25,7 @@
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/AI/AIPathfindStops.h"
 #include "GameLogic/SimMath.h"
+#include "GameLogic/Locomotor.h"
 
 #include <limits>
 
@@ -49,6 +50,13 @@ Path *Pathfinder::findAttackPath(const PathfindObject *obj, const PathfindLocomo
 	getRadiusAndCenter(obj, radius, center);
 	const PathfindMovement mv = makeMovement(obj, loco);
 	const bool isHuman = !obj->isComputerControlled();
+	const unsigned water = LOCOMOTORSURFACE_WATER | LOCOMOTORSURFACE_DEEP_WATER;
+	const bool waterOnly = (loco.validSurfaces & water) && !(loco.validSurfaces & ~water);
+	// Requested shoreline fix, rather than a port of the retail ship search
+	// (S-784). A water cell may have only one submerged corner.
+	const auto waterPositionAllowed = [&](const Coord3D &p) {
+		return !waterOnly || (m_terrain && m_terrain->isUnderwater(p.x, p.y, nullptr, nullptr));
+	};
 	const Coord3D pos = *from;
 	const Coord3D target = victim ? victim->getPosition() : *victimPos;
 	// 1. the forward probe
@@ -76,7 +84,7 @@ Path *Pathfinder::findAttackPath(const PathfindObject *obj, const PathfindLocomo
 				break;
 			}
 			const PathfindCell *cell = getCell(LAYER_GROUND, c.x, c.y);
-			if (cell == nullptr || !validMovementPosition(mv, cell))
+			if (cell == nullptr || !validMovementPosition(mv, cell) || !waterPositionAllowed(p))
 			{
 				break;
 			}
@@ -85,7 +93,9 @@ Path *Pathfinder::findAttackPath(const PathfindObject *obj, const PathfindLocomo
 			{
 				break;
 			}
-			if (range.inRangeFrom(p, 10.0f))
+			// Shoreline fix: this short attack probe bypasses the normal expansion.
+			// A water-classified cell can contain dry land; validate its route too.
+			if (range.inRangeFrom(p, 10.0f) && (!waterOnly || isLinePassable(obj, loco.validSurfaces, obj->getLayer(), pos, p, false)))
 			{
 				Path *path = new Path();
 				path->prependNode(&p, LAYER_GROUND);
@@ -112,14 +122,17 @@ Path *Pathfinder::findAttackPath(const PathfindObject *obj, const PathfindLocomo
 		goal.x = SimMath::addf32(SimMath::mulf32(k, ux), goal.x);
 	}
 	Coord3D start = pos;
-	if (center)
+	// Shoreline fix: the generic attack search nudges its start by half a
+	// cell. For a water-only mover that can seed a dry neighbouring cell
+	// and manufacture a short path ashore before any expansion is checked.
+	if (center && !waterOnly)
 	{
 		start.x = SimMath::addf32(start.x, 5.0f);
 		start.y = SimMath::addf32(start.y, 5.0f);
 	}
 	ICoord2D startNdx;
 	worldToCell(&start, true, &startNdx);
-	PathfindCell *parentCell = getClippedCell(obj->getLayer(), &start);
+	PathfindCell *parentCell = waterOnly ? getCell(obj->getLayer(), startNdx.x, startNdx.y) : getClippedCell(obj->getLayer(), &start);
 	if (parentCell == nullptr || !obj->hasAI())
 	{
 		return nullptr;
