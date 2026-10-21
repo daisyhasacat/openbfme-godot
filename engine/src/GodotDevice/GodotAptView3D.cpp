@@ -266,6 +266,15 @@ void AptView3DViewers::draw(RID item, const Rect2 &rect, const AptCanvasOp &op, 
 	// stays around its panels; any other View3D (GuiFX's end-screen rings) keeps retail's aspect
 	int imageW = 1, imageH = 1;
 	AptView3DImageSize(rect.size.x, rect.size.y, op.scaleX, op.scaleY, slot.keepAspect, stretchWithStage, imageW, imageH);
+	// Diagnostic simulator exports use CPU rasterization. Bound the embedded
+	// scene independently of the canvas; preserve its aspect and camera framing.
+	const int maxDimension = std::max(0, (int)ProjectSettings::get_singleton()->get_setting("openbfme/rendering/menu_3d_max_dimension", 0));
+	if (maxDimension > 0 && std::max(imageW, imageH) > maxDimension)
+	{
+		const double scale = (double)maxDimension / std::max(imageW, imageH);
+		imageW = std::max(1, (int)std::round(imageW * scale));
+		imageH = std::max(1, (int)std::round(imageH * scale));
+	}
 	const Vector2i size(imageW, imageH);
 	if (slot.black->get_size() != size)
 	{

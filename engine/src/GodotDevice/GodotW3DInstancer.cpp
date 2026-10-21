@@ -19,6 +19,8 @@
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/camera3d.hpp>
 #include <godot_cpp/classes/geometry_instance3d.hpp>
+#include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/aabb.hpp>
@@ -43,6 +45,22 @@ namespace godot
 
 namespace
 {
+
+Ref<Image> paletteUploadImage(const Ref<Image> &image)
+{
+	// GLES may convert unsupported float textures in place. Keep the CPU
+	// palette float32: animation writers and palette growth depend on it.
+	if (RenderingServer::get_singleton()->get_current_rendering_method() == StringName("gl_compatibility"))
+	{
+		Ref<Image> upload = image->duplicate();
+		// iOS GLES has no linear RGBAF support. Convert explicitly so texture
+		// metadata agrees with storage and every animated update avoids a warning.
+		if (OS::get_singleton()->has_feature("ios"))
+			upload->convert(Image::FORMAT_RGBAH);
+		return upload;
+	}
+	return image;
+}
 
 String toGodot(const std::string &s)
 {
@@ -884,7 +902,7 @@ void W3DInstancer::grow_palette(int texels)
 		}
 		std::memset(dst + oldBytes, 0, bytes - oldBytes);
 	}
-	PaletteTexture = ImageTexture::create_from_image(PaletteImage);
+	PaletteTexture = ImageTexture::create_from_image(paletteUploadImage(PaletteImage));
 	PaletteGrown = true;
 	PaletteChanged = true;
 	LayoutDirty = true; // the materials take the new texture in rebuild_layout
@@ -1691,7 +1709,7 @@ void W3DInstancer::update_now()
 	if (PaletteChanged)
 	{
 		// lane PERF-3: the poses were written into the image's own buffer: no byte array allocated and copied per frame
-		PaletteTexture->update(PaletteImage);
+		PaletteTexture->update(paletteUploadImage(PaletteImage));
 		++PaletteUploads;
 		PaletteChanged = false;
 	}

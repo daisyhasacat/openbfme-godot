@@ -141,7 +141,18 @@ selection behavior; physical Pencil interaction still needs device validation.
 
 The export uses native arm64 simulators with a matching source-built Godot library. Its pre-build phase reads Xcode's selected
 platform and rebuilds/copies the matching framework automatically. Select an
-iPad Simulator in Xcode and build. Switching back to a physical iPad rebuilds
+iPad or iPhone Simulator in Xcode and build. Before the first simulator build of
+an existing device export, refresh its framework before Xcode resolves the
+XCFramework slice:
+
+```sh
+PLATFORM_NAME=iphonesimulator python3 engine/build-ios/export-main-sync/sync-openbfme.py
+```
+
+Xcode can resolve the old library before its pre-build refresh phase, so doing
+this once avoids linking a stale x86 simulator library. The exporter selects the
+iOS preset by name and platform, independent of its numeric position in
+`export_presets.cfg`. Switching back to a physical iPad rebuilds
 and copies the device framework; the two native build directories are separate.
 
 To prepare the simulator framework explicitly:
@@ -166,6 +177,12 @@ The exporter inserts it into a local template automatically and selects the
 Compatibility renderer for the simulator. The project selects arm64 for simulator
 builds; no Rosetta destination is required. Physical iPad builds remain arm64
 with the Mobile renderer.
+Simulator exports render into a 960-pixel-wide viewport (540 high at 16:9,
+expanded to the device aspect ratio), then upscale to the display. This also
+reduces menu canvas work: the Duo's Compatibility driver was observed using
+Apple's CPU software rasterizer at its native 2853 × 2007 resolution.
+Embedded APT 3D scenes are also capped at 320 pixels on their longest axis
+(`openbfme/rendering/menu_3d_max_dimension`); device exports leave this uncapped.
 Simulator interaction cannot validate physical iPad performance, removable-drive
 access, or the silent switch.
 

@@ -166,3 +166,32 @@ post-HUD counts were three canvas, eight surface and 41 specialization pipelines
 with zero on-demand draw pipelines; this is compilation activity, not a measured
 cause of a freeze. Raw reports are retained under
 `workspace/diagnostics/shadow-budget-20261021/` (ignored).
+
+## iPhone Duo simulator, 2026-10-21
+
+The arm64 iOS 27.1 Duo simulator boots the current debug export and accepts the
+local diagnostic status, screenshot and benchmark commands. The stock export
+previously selected the wrong preset's custom template after preset reordering;
+the exporter now identifies iOS by name and platform.
+
+Menu freeze samples show Apple's `GLRendererFloat` / `glvmInterpretFPTransform`
+software rasterizer below GLES canvas and embedded 3D scene draws. A native-size
+menu frame stalled for 23.6 seconds; lowering the root viewport alone still left
+15–27 second lobby frames. Godot's matching iOS platform build explicitly disables
+Metal and Vulkan for Simulator. These are simulator functional tests, not iPhone
+GPU performance measurements. Simulator exports now use a 960-wide viewport and
+cap embedded APT 3D scene textures to 320 pixels on their longest axis.
+The capped build renders the lobby and accepts screenshots and cancellation,
+but still recorded a 16.5-second frame; these caps do not solve software rendering.
+
+GLES also converted the shared CPU animation palette from RGBAF to RGBAH in place,
+invalidating subsequent float32 writes and texture updates. Compatibility uploads
+now use a separate image; iOS converts that upload to half-float explicitly.
+The CPU palette remains float32 and native Metal retains its direct upload path.
+Palette growth, pose preservation and animated buffer tests pass headless and
+with the graphical macOS Compatibility renderer. The simulator benchmark was
+cancelled in the lobby while investigating software-rendering stalls; no complete
+20,000-CP simulator result is claimed.
+The macOS native build and arm64 Xcode simulator build passed, as did all 11
+menu/end-screen tests (214 assertions), three exporter regression tests, and the
+commit gate. No palette-format update errors appeared in the final simulator log.
