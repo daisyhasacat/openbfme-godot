@@ -131,11 +131,8 @@ func _input(event: InputEvent) -> void:
 	for action in ["ui_cancel", "ui_left", "ui_right", "ui_up", "ui_down"]:
 		if event.is_action_pressed(action):
 			get_viewport().set_input_as_handled()
-			if _tab in ["Benchmark", "Updates"]:
-				if action == "ui_cancel": close(false)
-				else: _show_tab(TABS[posmod(TABS.find(_tab) + (-1 if action in ["ui_left", "ui_up"] else 1), TABS.size())])
-			else:
-				_show_tab("Controls" if action in ["ui_left", "ui_up"] else "Display")
+			if action == "ui_cancel": close(false)
+			else: _show_tab(TABS[posmod(TABS.find(_tab) + (-1 if action in ["ui_left", "ui_up"] else 1), TABS.size())])
 			return
 
 func _ready() -> void:

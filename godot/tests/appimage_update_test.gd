@@ -11,6 +11,16 @@ func _initialize() -> void:
 	assert(Updater.image_error("") == "Run the Linux AppImage to update it.")
 	call_deferred("_ui")
 func _ui() -> void:
+	var options = load("res://tests/appimage_options_probe.gd").new()
+	root.add_child(options)
+	options._tab = "Sync"
+	options._mods_button.grab_focus()
+	var right := InputEventAction.new(); right.action = "ui_right"; right.pressed = true
+	options._input(right)
+	assert(options._tab == "Updates")
+	options._input(right)
+	assert(options._tab == "Display")
+	options.free()
 	var updater := Updater.new()
 	root.add_child(updater)
 	assert(updater._start.disabled)
