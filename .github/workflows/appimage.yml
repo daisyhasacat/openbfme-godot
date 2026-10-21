@@ -56,8 +56,9 @@ jobs:
         run: |
           set -euo pipefail
           version=$(git describe --tags --match 'v[0-9]*' --exclude '*-playtest.*' --always --abbrev=10)
-          python3 tools/release/make_archive.py --extract-all "$RUNNER_TEMP/linux-package/openbfme-$version-linux-x64.tar.gz" "$RUNNER_TEMP/game-payload"
-          python3 tools/release/appimage.py stage --package "$RUNNER_TEMP/game-payload" --output "$RUNNER_TEMP/OpenBFME.AppDir"
+          package="$RUNNER_TEMP/openbfme-$version-linux-x64"
+          python3 tools/release/make_archive.py --extract-all "$RUNNER_TEMP/linux-package/openbfme-$version-linux-x64.tar.gz" "$package"
+          python3 tools/release/appimage.py stage --package "$package" --output "$RUNNER_TEMP/OpenBFME.AppDir"
           desktop-file-validate "$RUNNER_TEMP/OpenBFME.AppDir/openbfme.desktop"
           mkdir -p dist
           export ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 VERSION="$version"
