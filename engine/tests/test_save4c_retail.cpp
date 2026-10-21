@@ -2281,9 +2281,9 @@ TEST_CASE("save4c load freeze: attack approach retry fields and enhanced skirmis
 	CHECK(men->scriptControlled);
 	CHECK(men->build.moneyReserve == 4321);
 	CHECK(men->build.nextSaveFrame == 123);
-	REQUIRE(men->build.units.attackerFactory);
+	REQUIRE(static_cast<bool>(men->build.units.attackerFactory));
 	CHECK(men->build.units.attackerFactory->templateName == "GondorBarracks");
-	CHECK(men->build.pending.back() == men->build.units.attackerFactory);
+	CHECK(men->build.pending.back().get() == men->build.units.attackerFactory.get());
 	CHECK(men->brain.strategyRecovering == std::map<ObjectID, std::uint32_t>{{id, 72}});
 	CHECK(men->brain.fortificationTarget == id);
 	CHECK(men->brain.siegeEscorts == std::set<ObjectID>{id});
