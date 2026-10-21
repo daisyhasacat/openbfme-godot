@@ -20,9 +20,8 @@
 // target gets the pointer's hover (the virtual pointer moves onto its centre through WindowManager::postMouseMove, so a button shows its own Over
 // state, a page row its help line, as the mouse would). A frame is drawn only when no native button highlight is available (appendFocusFrame). Enter / Space press and release it there
 // through WindowManager::postMouseButton: the click a player makes, through the same input path. Left / Right change a slider (its position by a
-// step, then the messages a drag sends: GSM_SLIDER_TRACK and, at the end, GSM_SLIDER_CLICKED, RW 0x7234EC's 0x4010) or a combo box (the next choice,
-// then GCM_SELECTED as its list's click sends); a list box takes Up / Down / Enter itself (ZH GadgetListBoxInput's GWM_CHAR keys); an open drop-down
-// list takes Up / Down (the next choice, the list stays open), Enter and Esc close it. Esc (Back) and PageUp / PageDown go to the screen's source;
+// step, then the messages a drag sends: GSM_SLIDER_TRACK and, at the end, GSM_SLIDER_CLICKED, RW 0x7234EC's 0x4010) ; closed combo boxes keep the directions for moving between controls. A opens a combo box; a list box takes Up / Down / Enter itself (ZH GadgetListBoxInput's GWM_CHAR keys); an open drop-down
+// list takes Up / Down (preview only), Enter confirms, and Esc cancels. Maps/Rules lobby tabs switch with PageUp/PageDown (LB/RB). Esc (Back) and PageUp / PageDown go to the screen's source;
 // without one Back presses the screen's back button when it has exactly one (backButtonNames). A text entry with the keyboard focus keeps the keys
 // it edits with (Left / Right / Enter / Space and characters). Keys arriving before any focus only show the focus (the first target), they press
 // nothing.

@@ -20,6 +20,7 @@
 #include "GameClient/EndGame.h"
 #include "GameClient/GUI/Skirmish/SkirmishGameSetup.h"
 #include "GameClient/GUI/WindowManager.h"
+#include "GameClient/GUI/MenuNavigator.h"
 
 #include "Libraries/Source/Apt/AptActionDecoder.h"
 
@@ -2324,4 +2325,71 @@ TEST_CASE("ownerfix3 retail lobby: a won skirmish against a Hard AI marks its ma
 	after << again.rdbuf();
 	CHECK(after.str() == before);
 	CHECK(score.honorsRecorded);
+}
+
+TEST_CASE("skirmish controller: shoulder tabs and explicit dropdown confirmation")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	LobbyFx fx(mount);
+	ruleLabels(fx.text);
+	openRulesTab(fx);
+	MenuNavigator nav(*fx.wm);
+	nav.setMenu(fx.screen->level(), fx.screen);
+	REQUIRE(nav.key(MenuNavKey::PagePrevious));
+	fx.tick(30);
+	bool maps = false;
+	for (const auto &target : nav.targets()) maps |= target.id.find(".TabButtons.RulesTab.") != std::string::npos;
+	CHECK(maps);
+	REQUIRE(nav.key(MenuNavKey::PageNext));
+	fx.tick(30);
+	REQUIRE(fx.screen->rulesPopulated());
+	GameWindow *combo = fx.screen->legendaryHeroesWindow();
+	REQUIRE(combo);
+	std::string id;
+	for (const auto &target : nav.targets()) if (target.window == combo) id = target.id;
+	REQUIRE_FALSE(id.empty());
+	for (int i = 0; i < 100 && nav.focusId() != id; ++i) REQUIRE(nav.key(MenuNavKey::Next));
+	REQUIRE(nav.focusId() == id);
+	int before = -1;
+	GadgetComboBoxGetSelectedPos(combo, &before);
+	REQUIRE(nav.key(MenuNavKey::Right));
+	int after = -1;
+	GadgetComboBoxGetSelectedPos(combo, &after);
+	CHECK(after == before); // closed dropdown navigation must not change the rule
+	for (int i = 0; i < 100 && nav.focusId() != id; ++i) REQUIRE(nav.key(MenuNavKey::Next));
+	REQUIRE(nav.focusId() == id);
+	REQUIRE(nav.key(MenuNavKey::Activate));
+	REQUIRE(fx.wm->gadgetLayer()->openDropDown() == combo);
+	REQUIRE(nav.key(MenuNavKey::Down));
+	GadgetComboBoxGetSelectedPos(combo, &after);
+	CHECK(after == before);
+	REQUIRE(nav.key(MenuNavKey::Activate));
+	CHECK(fx.wm->gadgetLayer()->openDropDown() == nullptr);
+	GadgetComboBoxGetSelectedPos(combo, &after);
+	CHECK(after == before + 1);
+	REQUIRE(nav.key(MenuNavKey::Activate));
+	REQUIRE(nav.key(MenuNavKey::Up));
+	REQUIRE(nav.key(MenuNavKey::Back));
+	GadgetComboBoxGetSelectedPos(combo, &before);
+	CHECK(before == after); // B cancels the preview
+	GameWindow *color = nullptr;
+	for (const auto &target : nav.targets())
+		if (target.window)
+		{
+			using Input = WindowMsgHandledType (*)(GameWindow *, std::uint32_t, WindowMsgData, WindowMsgData);
+			const auto input = target.window->winGetInputFunc();
+			const auto *fn = input.target<Input>();
+			if (fn && *fn == GadgetImageComboBoxInput) { color = target.window; id = target.id; break; }
+		}
+	REQUIRE(color);
+	for (int i = 0; i < 100 && nav.focusId() != id; ++i) REQUIRE(nav.key(MenuNavKey::Next));
+	REQUIRE(nav.focusId() == id);
+	GadgetImageComboBoxGetSelectedPos(color, &before);
+	REQUIRE(nav.key(MenuNavKey::Activate));
+	REQUIRE(fx.wm->gadgetLayer()->openDropDown() == color);
+	REQUIRE(nav.key(MenuNavKey::Down));
+	GadgetImageComboBoxGetSelectedPos(color, &after);
+	CHECK(after == before);
+	REQUIRE(nav.key(MenuNavKey::Back));
+	CHECK(fx.wm->gadgetLayer()->openDropDown() == nullptr);
 }

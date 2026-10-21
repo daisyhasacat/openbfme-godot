@@ -105,6 +105,14 @@ std::string leafOf(const std::string &path)
 	return dot == std::string::npos ? path : path.substr(dot + 1);
 }
 
+bool isImageCombo(GameWindow *w)
+{
+	using Input = WindowMsgHandledType (*)(GameWindow *, std::uint32_t, WindowMsgData, WindowMsgData);
+	const auto input = w->winGetInputFunc();
+	const auto *fn = input.target<Input>();
+	return fn && *fn == GadgetImageComboBoxInput;
+}
+
 bool isTextEntry(GameWindow *w)
 {
 	return w && BitTest(w->winGetStyle(), GWS_ENTRY_FIELD);
@@ -199,7 +207,7 @@ void MenuNavigator::collect(std::vector<MenuNavTarget> &out, std::vector<MenuNav
 				continue;
 			}
 			const std::uint32_t style = w->winGetStyle();
-			if (!(style & (GWS_PUSH_BUTTON | GWS_CHECK_BOX | GWS_HORZ_SLIDER | GWS_SCROLL_LISTBOX | GWS_ENTRY_FIELD | GWS_COMBO_BOX)))
+			if (!isImageCombo(w) && !(style & (GWS_PUSH_BUTTON | GWS_CHECK_BOX | GWS_HORZ_SLIDER | GWS_SCROLL_LISTBOX | GWS_ENTRY_FIELD | GWS_COMBO_BOX)))
 			{
 				continue;
 			}
@@ -396,7 +404,7 @@ int MenuNavigator::nearest(const std::vector<MenuNavTarget> &list, int from, Men
 		{
 			continue;
 		}
-		const float score = std::max(along, 0.0f) + 2.0f * across;
+		const float score = std::max(along, 0.0f) + 4.0f * across;
 		if (best < 0 || score < bestScore)
 		{
 			best = (int)i;
@@ -477,35 +485,48 @@ bool MenuNavigator::leave(const std::vector<MenuNavTarget> &catchers, const std:
 bool MenuNavigator::dropDownKey(MenuNavKey key, GameWindow *combo)
 {
 	GameWindowManager &gwm = m_windows.gadgetLayer()->gadgets();
-	if (!BitTest(combo->winGetStyle(), GWS_COMBO_BOX))
-	{
-		return false; // an image combo box's open list: the pointer's (its keys are not ported)
-	}
+	const bool image = isImageCombo(combo);
+	GameWindow *list = image ? GadgetImageComboBoxGetListBox(combo) : GadgetComboBoxGetListBox(combo);
+	if (!list) return false;
+	auto *data = static_cast<ListboxData *>(list->winGetUserData());
+	if (!data) return false;
 	switch (key)
 	{
 		case MenuNavKey::Up:
 		case MenuNavKey::Down:
 		{
-			int index = -1;
-			GadgetComboBoxGetSelectedPos(combo, &index);
-			const int count = GadgetComboBoxGetLength(combo);
-			const int next = std::clamp(index + (key == MenuNavKey::Up ? -1 : 1), 0, std::max(count - 1, 0));
-			if (count > 0 && next != index)
+			// Preview through the list's native hover highlight; selection and
+			// GCM_SELECTED stay untouched until the second A press.
+			const int count = image ? GadgetImageComboBoxGetLength(combo) : GadgetComboBoxGetLength(combo);
+			int index = data->hoverActive ? data->hoverPos : data->selectPos;
+			if (count > 0)
 			{
-				GadgetComboBoxSetSelectedPos(combo, next, true); // the list stays open
-				gwm.winSendSystemMsg(combo->winGetOwner(), GCM_SELECTED, reinterpret_cast<WindowMsgData>(combo), 0);
-				m_log.push_back("choice " + m_focusId + " " + std::to_string(next));
+				index = std::clamp(index + (key == MenuNavKey::Up ? -1 : 1), 0, count - 1);
+				data->trackHover = data->hoverActive = true;
+				data->hoverPos = index;
+				if (index < GadgetListBoxGetTopVisibleEntry(list)) GadgetListBoxSetTopVisibleEntry(list, index);
+				if (index > GadgetListBoxGetBottomVisibleEntry(list)) GadgetListBoxSetBottomVisibleEntry(list, index);
 			}
 			return true;
 		}
 		case MenuNavKey::Activate:
+		{
+			const int index = data->hoverActive ? data->hoverPos : data->selectPos;
+			if (index >= 0)
+			{
+				data->selectPos = index;
+				gwm.winSendSystemMsg(combo, GLM_SELECTED, reinterpret_cast<WindowMsgData>(list), (WindowMsgData)index);
+			}
+			gwm.winSetLoneWindow(nullptr);
+			return true;
+		}
 		case MenuNavKey::Back:
-			gwm.winSetLoneWindow(nullptr); // as a click away from it closes it (GGM_CLOSE, and the combo box is no longer the lone window)
-			m_log.push_back("close-list " + m_focusId);
+			gwm.winSetLoneWindow(nullptr); // cancel the preview
 			return true;
 		default:
-			return true; // the open list keeps the focus
+			return true;
 	}
+
 }
 
 bool MenuNavigator::gadgetKey(MenuNavKey key, const MenuNavTarget &t)
@@ -538,28 +559,10 @@ bool MenuNavigator::gadgetKey(MenuNavKey key, const MenuNavTarget &t)
 		}
 		return true;
 	}
-	if (style & GWS_COMBO_BOX)
+	if ((style & GWS_COMBO_BOX) || isImageCombo(w))
 	{
-		if (key != MenuNavKey::Left && key != MenuNavKey::Right)
-		{
-			return false;
-		}
-		int index = -1;
-		GadgetComboBoxGetSelectedPos(w, &index);
-		const int count = GadgetComboBoxGetLength(w);
-		// the next choice the owner keeps (the OpenBFME page refuses a greyed one and puts the shown choice back: the one after it is tried)
-		for (int i = index + (key == MenuNavKey::Left ? -1 : 1); i >= 0 && i < count; i += key == MenuNavKey::Left ? -1 : 1)
-		{
-			GadgetComboBoxSetSelectedPos(w, i);
-			gwm.winSendSystemMsg(w->winGetOwner(), GCM_SELECTED, reinterpret_cast<WindowMsgData>(w), 0);
-			int now = -1;
-			GadgetComboBoxGetSelectedPos(w, &now);
-			if (now == i)
-			{
-				m_log.push_back("choice " + t.id + " " + std::to_string(i));
-				break;
-			}
-		}
+		if (key != MenuNavKey::Activate) return false; // closed choices are navigation targets
+		gwm.winSendInputMsg(w, GWM_LEFT_UP, 0, 0);
 		return true;
 	}
 	if (style & GWS_SCROLL_LISTBOX)
@@ -616,7 +619,11 @@ bool MenuNavigator::key(MenuNavKey key)
 	{
 		if (const GameWindow *drop = layer->openDropDown())
 		{
-			return dropDownKey(key, const_cast<GameWindow *>(drop));
+			if (key == MenuNavKey::PageNext || key == MenuNavKey::PagePrevious)
+			{
+				layer->gadgets().winSetLoneWindow(nullptr); // shoulder changes cancel an unconfirmed choice
+			}
+			else return dropDownKey(key, const_cast<GameWindow *>(drop));
 		}
 	}
 	// a text entry with the keyboard focus edits with these itself
@@ -643,6 +650,18 @@ bool MenuNavigator::key(MenuNavKey key)
 	}
 	if (key == MenuNavKey::PageNext || key == MenuNavKey::PagePrevious)
 	{
+		// The lobby movie exposes only the inactive Maps/Rules tab as a button.
+		for (const auto &target : list)
+		{
+			if (target.kind == MenuNavTarget::Kind::Button &&
+				(target.id.find(".TabButtons.MapTab.") != std::string::npos || target.id.find(".TabButtons.RulesTab.") != std::string::npos))
+			{
+				focus(target);
+				press(target);
+				clearFocus();
+				return true;
+			}
+		}
 		return false; // a screen without pages
 	}
 	if (list.empty())
