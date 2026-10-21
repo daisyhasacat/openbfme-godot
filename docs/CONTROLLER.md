@@ -100,3 +100,6 @@ D-pad/left-stick navigation stays within it; triggers cancel an unconfirmed
 dropdown before changing area. Mouse movement and real keyboard input leave
 section mode, retaining their existing navigation. Modal profile dialogs remain
 fully navigable. LB/RB still changes Maps/Rules, and Start still starts the game.
+
+Keyboard shortcut: **Shift+Q** immediately closes the game, including during a
+match, without the quit confirmation.

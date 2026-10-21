@@ -3611,6 +3611,11 @@ func _end_game_tick() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	# Explicit immediate exit, including during gameplay, editing and console input.
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_Q and event.shift_pressed and not (event.ctrl_pressed or event.alt_pressed or event.meta_pressed):
+		get_viewport().set_input_as_handled()
+		get_tree().quit()
+		return
 	if is_instance_valid(_map_editor) and _map_editor.active and (_lua_console == null or not _lua_console.is_open()) and _map_editor.handle_input(event):
 		get_viewport().set_input_as_handled()
 		return
