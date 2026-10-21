@@ -2198,7 +2198,7 @@ void GameWorld::advance(double delta)
 				m_netLoaded = m_netSession->pollLoaded();
 			}
 		}
-		if (m_netScript && m_game->frame() != m_netScriptFrame && m_game->logicHeld()) // RENDERWAIT-1: its commands only where the logic is held
+		if (m_netScript && m_netLoaded && m_game->frame() != m_netScriptFrame && m_game->logicHeld()) // RENDERWAIT-1: its commands only where the logic is held
 		{
 			m_netScriptFrame = m_game->frame();
 			m_netScripted += ScriptedPlayer::issue(*m_game, m_netPlayer, m_netStartPos, m_game->commands());

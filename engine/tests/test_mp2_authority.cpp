@@ -464,3 +464,27 @@ TEST_CASE("mp2 authority: the router's leave reached one survivor only; a succes
 		CHECK(e4 == 1);
 	}
 }
+
+TEST_CASE("mp2 loading: frame data from a slow peer cannot release the load barrier before its LOADCOMPLETE")
+{
+	FedTransport transport;
+	Network network(config3(0), transport);
+	network.sendLoadComplete();
+	NetCommandMsg loaded;
+	loaded.type = NETCOMMANDTYPE_LOADCOMPLETE;
+	loaded.slot = 1;
+	transport.put(loaded);
+	transport.put(frameInfo(1, 0, 0));
+	transport.put(frameInfo(2, 0, 0));
+	CommandList pending;
+	network.update(0, pending);
+	CHECK(network.allLoaded() == false);
+	LockstepDriver driver(&network, nullptr);
+	FrameBatch batch;
+	CHECK(driver.acquire(0, batch) == false);
+	CHECK(network.allLoaded() == false);
+	loaded.slot = 2;
+	transport.put(loaded);
+	network.update(0, pending);
+	CHECK(network.allLoaded() == true);
+}

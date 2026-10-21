@@ -50,7 +50,7 @@ func _process(_delta: float) -> void:
 		if Time.get_ticks_msec() - started_at > 3600000 or Time.get_unix_time_from_system() * 1000 > float(command.expiresAt):
 			status.state = "failed"
 			status.error = "test deadline exceeded"
-		elif game._net_state == "playing":
+		elif game._net_state == "playing" and game._state == game.State.PLAYING:
 			var net: Dictionary = game._world.net_status()
 			status.state = "playing"
 			status.frame = int(net.get("frame", 0))

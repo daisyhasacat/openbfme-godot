@@ -1356,3 +1356,10 @@ short-lived and reappear on the next poll. Cleanup leaves the test room and
 returns the clients through the score screen. iOS must remain foregrounded:
 this cannot wake a suspended app or launch an app that is not running. Both
 apps must include this change before they appear in the device list.
+
+Multiplayer entry keeps automatic simulation disabled until the local HUD/audio
+setup is complete, the network session has sent LOADCOMPLETE, and the existing
+peer load barrier confirms all participating clients are loaded. While waiting,
+the client services the handshake with zero simulation time and shows a waiting
+message. Scripted test commands also wait for this barrier. A missing peer causes
+an explicit loading timeout after three minutes rather than starting early.

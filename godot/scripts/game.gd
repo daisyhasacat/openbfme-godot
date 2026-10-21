@@ -2092,7 +2092,7 @@ func _begin_game(message: Dictionary) -> void:
 			_fail("start_new_game failed: " + "\n".join(rep.get("errors", [])))
 		return
 	_world.visible = world_was_visible
-	_enter_game(rep)
+	await _enter_game(rep)
 	if _online_spectate:
 		for arg in OS.get_cmdline_user_args():
 			if arg.begins_with("--caster-live-check="):
@@ -2295,6 +2295,7 @@ func _on_load_progress(percent: int) -> void:
 
 
 func _enter_game(rep: Dictionary) -> void:
+	_world.set_auto_advance(false)
 	_hide_rules_summary() # lane RULES-1
 	_shell.hide_still_load_screen() # lane MENU-1: a campaign mission's picture loading screen
 	# retail: the shell is popped, the HUD movie (Palantir) is the only movie left
@@ -2319,12 +2320,8 @@ func _enter_game(rep: Dictionary) -> void:
 	var ar: Dictionary = _world.get_audio_report()
 	if not str(ar.get("music_error", "")).is_empty():
 		printerr("GAME in-game music: ", ar.music_error)
-	_world.set_auto_advance(true)
-	_state = State.PLAYING
-	_games_started += 1
 	_restore_restart_buildings()
 	_report_shell_pictures("in game (%s)" % _game_kind) # lane CAMP-2
-	print("GAME playing: frame %d, %d objects, hash %d" % [_world.get_frame(), _world.get_object_count(), _world.get_state_hash()])
 	if _print_report:
 		print("GAME REPORT ", JSON.stringify(rep))
 		for o in rep.start.starting_objects:
@@ -2337,6 +2334,26 @@ func _enter_game(rep: Dictionary) -> void:
 	print("GAME GuiFX for the end screen: level %d %s" % [gfx.get("level", -1), str(gfx.get("error", ""))])
 	if not _net_state.is_empty():
 		_net_begin()
+		if _state == State.FAILED:
+			return
+		var waiting := Label.new()
+		waiting.text = "Waiting for all players to finish loading…"
+		waiting.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+		var layer := CanvasLayer.new()
+		layer.layer = 110
+		layer.add_child(waiting)
+		add_child(layer)
+		print("GAME NET waiting for all players to finish loading")
+		var barrier: Dictionary = await load("res://scripts/multiplayer_load_barrier.gd").wait(get_tree(), _world)
+		layer.queue_free()
+		if not barrier.ok:
+			_fail(str(barrier.error))
+			return
+		print("GAME NET all players loaded; beginning simulation")
+	_world.set_auto_advance(true)
+	_state = State.PLAYING
+	_games_started += 1
+	print("GAME playing: frame %d, %d objects, hash %d" % [_world.get_frame(), _world.get_object_count(), _world.get_state_hash()])
 	_online_spectate = bool(_world.caster_transport_status().get("live", false))
 	if _game_kind == "replay" or _online_spectate:
 		_caster = load("res://scripts/caster_hud.gd").new()
@@ -2450,7 +2467,7 @@ func _caster_seek(target: int, go_live: bool = false) -> void:
 			slice_started = Time.get_ticks_msec()
 	if restarted:
 		_report = rep
-		_enter_game(rep)
+		await _enter_game(rep)
 		if live:
 			_net_state = net_state
 		_caster.history = history
@@ -6304,7 +6321,7 @@ func _begin_replay(path: String) -> void:
 		return
 	print("GAME replay loaded: %d frames, %d commands" % [rep.final_frame, rep.commands])
 	_replay_active = true
-	_enter_game(rep)
+	await _enter_game(rep)
 	if _replay_speed != 1.0:
 		_world.set_time_scale(_replay_speed)
 	for arg in OS.get_cmdline_user_args():
