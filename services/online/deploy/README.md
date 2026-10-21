@@ -113,3 +113,14 @@ allowlist includes `/v1/admin/users/<encoded-id>/statistics`. Preserve
 Legacy clients and previously uploaded relay logs do not supply these counters;
 see [MATCH_STATISTICS.md](../../../docs/MATCH_STATISTICS.md) for client rollout,
 result-sharing, confidence labels and counter coverage limits.
+
+Desync diagnostics release: `/opt/openbfme-online/releases/20261020-desync-849c1458ed/`
+is now the active `current` target; the previous `20261020-statistics` release
+remains available for rollback. It contains server source from `849c1458ed` and
+the existing relay build. All 99 server tests passed on the host before activation;
+no open or running games were present at the restart. Afterwards the service was
+active, `/v1/health` reported healthy, and an unauthenticated diagnostic submission
+returned 401. Updated game clients submit `POST /v1/games/<id>/desync`; preserve
+`lobby/meta/match-desync:*` records in backups. Reports are shown in the admin
+match detail view. Mac and iOS client rebuilds and a physical-device desync
+upload remain separate rollout checks.
