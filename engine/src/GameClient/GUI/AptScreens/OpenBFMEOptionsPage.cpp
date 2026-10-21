@@ -414,6 +414,13 @@ int OpenBFMEOptionsPage::rowAt(float x, float y) const
 	return -1;
 }
 
+int OpenBFMEOptionsPage::tabPitch() const
+{
+	// Keep every settings tab inside the frame as new pages are added.
+	const int count = std::max(1, (int)m_spec.tabs.size());
+	return std::min(kTabPitch, std::max(1, (kBottom - kTabTop) / count));
+}
+
 int OpenBFMEOptionsPage::tabAt(float x, float y) const
 {
 	if (x < kTabsLeft + 12 || x >= kTabsRight - 12) // lane OPTS-6: the drawn bar (decorate: the selection image kTabsLeft + 12 .. kTabsRight - 12); OPTS-3 took 4 more each side
@@ -422,8 +429,8 @@ int OpenBFMEOptionsPage::tabAt(float x, float y) const
 	}
 	for (std::size_t i = 0; i < m_spec.tabs.size(); ++i)
 	{
-		const int top = kTabTop + (int)i * kTabPitch;
-		if (y >= top && y < top + kTabPitch - 6)
+		const int top = kTabTop + (int)i * tabPitch();
+		if (y >= top && y < top + tabPitch() - 6)
 		{
 			return (int)i;
 		}
@@ -551,7 +558,7 @@ void OpenBFMEOptionsPage::decorate(GadgetDrawList &out) const
 	// the tabs: the chosen one on the list box's selection image (listbox.wnd's highlight, AptListBoxHilite*), the pointed one brighter
 	for (std::size_t i = 0; i < m_spec.tabs.size(); ++i)
 	{
-		const int top = kTabTop + (int)i * kTabPitch;
+		const int top = kTabTop + (int)i * tabPitch();
 		const bool chosen = (int)i == m_spec.tab;
 		if (chosen)
 		{
@@ -562,7 +569,7 @@ void OpenBFMEOptionsPage::decorate(GadgetDrawList &out) const
 			hi.x0 = kTabsLeft + 12;
 			hi.x1 = kTabsRight - 12;
 			hi.y0 = top;
-			hi.y1 = top + kTabPitch - 6;
+			hi.y1 = top + tabPitch() - 6;
 			hi.color = 0xFFFFFFFFu;
 			out.commands.push_back(std::move(hi));
 		}
@@ -633,8 +640,8 @@ bool OpenBFMEOptionsPage::rect(const std::string &name, std::array<int, 4> &out)
 		{
 			return false;
 		}
-		const int top = kTabTop + i * kTabPitch;
-		out = { kTabsLeft + 12, top, kTabsRight - 12, top + kTabPitch - 6 };
+		const int top = kTabTop + i * tabPitch();
+		out = { kTabsLeft + 12, top, kTabsRight - 12, top + tabPitch() - 6 };
 		return true;
 	}
 	if (name == "list" && m_list)

@@ -3258,3 +3258,31 @@ TEST_CASE("shellfix1 options retail: in the BFME2 style no frame border of the r
 	REQUIRE(version);
 	CHECK(version->globallyVisible());
 }
+
+TEST_CASE("opts3 options retail: twelve settings tabs fit the frame and the last tab is clickable")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	ShellFx fx(mount, "StaticGameLOD = High\n");
+	AptOptionsScreen *options = fx.openOptionsFromMainMenu();
+	REQUIRE(options);
+	options->setExtensionAvailable(true);
+	std::string error;
+	REQUIRE_MESSAGE(options->openExtension(&error), error);
+	OpenBFMEOptionsPage *page = options->extensionPage();
+	REQUIRE(page);
+	auto spec = samplePage();
+	spec.tabs.resize(12, u"Page");
+	spec.tabs.back() = u"Updates";
+	spec.tab = 0;
+	REQUIRE_MESSAGE(page->show(spec, &error), error);
+	std::array<int, 4> rect{};
+	REQUIRE(page->rect("tab:11", rect));
+	CHECK((rect == std::array<int, 4>{109, 576, 275, 602}));
+	options->takeExtensionEvents();
+	CHECK(page->mouse(1, 192, 589));
+	CHECK(page->mouse(2, 192, 589));
+	const auto events = options->takeExtensionEvents();
+	REQUIRE(events.size() == 1);
+	CHECK(events[0].kind == OpenBFMEPageEvent::Kind::Tab);
+	CHECK(events[0].value == 11);
+}

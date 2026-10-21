@@ -184,6 +184,7 @@ public:
 	UnicodeString helpText() const;
 
 private:
+	int tabPitch() const;
 	struct Built
 	{
 		GameWindow *window = nullptr;
