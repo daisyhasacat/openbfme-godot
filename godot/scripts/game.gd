@@ -415,6 +415,8 @@ var _online_qm_side := -1          # --online-qm-side=N: the walk's Army choice 
 var _onlinehub1_check := false     # --onlinehub1-check (scripts/onlinehub1_check.gd)
 var _platform_http: Node = null
 var _platform_ready := false
+var _statistics_context := {}
+var _statistics_uploader: Node
 var _hub_online := {}              # the online game being started: { id, match, tournament } (the record's id: the match's when there is one)
 var _hub_kind := ""                # "skirmish" / "lan" / "online": the kind of the game being played ("" none: not recorded)
 var _hub_game_id := ""
@@ -5205,6 +5207,7 @@ func _share_results() -> bool:
 ## the records of the games this installation played (the STATS pages) and the platform client with its transport. Nothing is sent from here: a
 ## request goes out only when the player opens an online page or a LAN / online game ends (and shares results)
 func _platform_setup() -> void:
+	_statistics_setup()
 	if _platform_ready:
 		return
 	_platform_ready = true
@@ -5253,6 +5256,8 @@ func _platform_tick() -> void:
 
 ## what the score screen will record: the kind of game and its id (a LAN game's id is the same on every peer: made from the shared start message)
 func _hub_begin(message: Dictionary) -> void:
+	if _hub_online.is_empty():
+		_statistics_context = {} # a LAN/skirmish/replay must never reuse online credentials
 	_game_start_unix = int(Time.get_unix_time_from_system())
 	if not _hub_online.is_empty():
 		_hub_kind = "online"
@@ -5273,8 +5278,23 @@ func _hub_begin(message: Dictionary) -> void:
 
 
 ## the score screen opened: the game is recorded (user://game_records.jsonl) and, for a LAN or online game the player shares, reported in the background
+func _statistics_setup() -> void:
+	if _statistics_uploader != null:
+		return
+	_statistics_uploader = load("res://scripts/match_statistics.gd").new()
+	_statistics_uploader.sharing = _share_results
+	add_child(_statistics_uploader)
+
+
 func _record_finished_game(r: Dictionary) -> void:
 	var base: Dictionary = r.get("record", {})
+	var details: Dictionary = base.get("statistics", {})
+	base.erase("statistics") # the legacy/platform record keeps its existing 4 KiB format
+	if not _statistics_context.is_empty() and not details.is_empty():
+		_statistics_setup()
+		_statistics_uploader.enqueue(_statistics_context, details)
+	_statistics_context = {}
+
 	if base.is_empty() or _hub_kind.is_empty() or not _platform_ready:
 		print("GAME RECORD: not recorded (%s)" % ("an observer, a replay or no game record" if base.is_empty() else "not a skirmish, LAN or online game"))
 		return
@@ -5802,6 +5822,7 @@ func _online_walk_end(ok: bool) -> void:
 
 
 func _on_online_started(start_json: String) -> void:
+	_statistics_context = {}
 	# lane ONLINEHUB-1: the game's id for its record and result: the platform's match (Quick Match, tournament) or the lobby's game
 	var ps: Dictionary = _shell.platform_status()
 	var match_id := str(ps.get("match_id", ""))
@@ -5810,6 +5831,7 @@ func _on_online_started(start_json: String) -> void:
 	var r: Dictionary = _world.net_online(start_json)
 	print("GAME ONLINE start: ", AptMenuPlayer.online_redact(str(r)))
 	if not r.ok:
+		_hub_online = {}
 		var why := AptMenuPlayer.online_redact(str(r.get("error", "")))
 		# Sol r1: from the online screens a START that cannot be played is a lobby error the player is told about (back at the game list); the
 		# command-line path (ONLINE-2's --online-*) has no screen to go back to
@@ -5818,6 +5840,11 @@ func _on_online_started(start_json: String) -> void:
 			return
 		_fail("online: " + why)
 		return
+	var document = JSON.parse_string(start_json)
+	if document is Dictionary:
+		var session: String = _online.token if _online != null else str(_shell.online_status().get("session_token", ""))
+		var url: String = _online.lobby_url if _online != null else (_online_http.lobby_url if _online_http != null else _online_lobby_url())
+		_statistics_context = {"id": str(document.get("game", "")), "slot": document.get("slot", -1), "url": url, "token": session}
 	_net_state = "lobby" # net_poll reports the START as started: the LAN path loads and plays it
 
 

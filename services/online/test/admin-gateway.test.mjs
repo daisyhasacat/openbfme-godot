@@ -40,6 +40,7 @@ test('gateway signs real lobby actions server-side; enforces CSRF and origin, st
  const path='/v1/admin/users/'+encodeURIComponent(guest.account.id),body={action:'rename',revision:0,name:'Passkey renamed'};
  for(const headers of [{},{Origin:'https://evil.example','X-CSRF-Token':'session-csrf','Content-Type':'application/json'},{Origin:'http://localhost','X-CSRF-Token':'bad','Content-Type':'application/json'},{Origin:'http://localhost','X-CSRF-Token':'session-csrf','Content-Type':'text/plain'}])assert.equal((await f.call(path,{method:'POST',body,headers})).status,403);
  const changed=await f.call(path,{method:'POST',body,headers:{Origin:'http://localhost','X-CSRF-Token':'session-csrf','Content-Type':'application/json','X-OpenBFME-Admin':'attacker-controlled'}});
+ assert.equal((await f.call('/v1/admin/users/'+encodeURIComponent(guest.account.id)+'/statistics')).body.games,0);
  assert.equal(changed.status,200);assert.equal(forwardedHeaders.cookie,undefined);assert.equal(forwardedHeaders.authorization,undefined);assert.notEqual(forwardedHeaders['x-openbfme-admin'],'attacker-controlled');assert.equal(f.lobby.users.get(guest.account.id).name,'Passkey renamed');
  assert.equal((await f.call(path,{method:'POST',body,headers:{Origin:'http://localhost','X-CSRF-Token':'session-csrf','Content-Type':'application/json'}})).status,409);
  const dump=JSON.stringify(changed.body);for(const secret of ['33'.repeat(32),'sa_session=valid','session-csrf'])assert.equal(dump.includes(secret),false);

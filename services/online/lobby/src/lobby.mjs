@@ -1,3 +1,4 @@
+import { MAX_REPORT_BYTES, ReportError, makeStatisticsMatch, validateReport, summarizeMatch, accountStatistics, persistReport, loadStatistics } from './match-statistics.mjs';
 import { webResponse } from './webui.mjs';
 import { gameRecord, listGames, ManagementQueryError } from './management.mjs';
 // OpenBFME online lobby. GPL-3.0.
@@ -239,6 +240,7 @@ export class Lobby {
       if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$/.test(r.address)) throw new Error(`lobby: relay address ${r.address} must be a.b.c.d:port`);
     }
     this.users = new Map(); // persisted guest identities and moderation revisions; never session tokens
+    this.matchStatistics = new Map();
     this.history = new Map(); // durable sanitized completed/cancelled games, separate from expiring live rooms
     this.games = new Map(); // id -> game
     this.buckets = new Map(); // rate limit key -> { tokens, at }
@@ -317,6 +319,7 @@ export class Lobby {
   }
 
   load(games, relayStatus = []) {
+    this.matchStatistics = loadStatistics(relayStatus);
     for (const g of games) this.games.set(g.id, g);
     for (const r of relayStatus) {
       if (r.kind === 'user') this.users.set(r.id, r);
@@ -431,7 +434,7 @@ export class Lobby {
     const rows = [...this.users.values()].filter((u) => u.id > after && (status !== 'online' || online.has(u.id)) && (status !== 'suspended' || u.banned)
       && (!search || [u.name, u.id, ...(u.previousNames ?? [])].some((value) => value.toLowerCase().includes(search))))
       .sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).slice(0, limit + 1);
-    return { v: VERSION, users: rows.slice(0, limit).map((u) => ({ ...u, online: online.has(u.id), lastSeenAt: u.lastSeenAt ?? null })),
+    return { v: VERSION, users: rows.slice(0, limit).map((u) => ({ ...u, statistics: accountStatistics(this.matchStatistics.values(), u.id, { details: false }), online: online.has(u.id), lastSeenAt: u.lastSeenAt ?? null })),
       next: rows.length > limit ? rows[limit-1].id : null };
   }
   async moderateUser(id, body) {
@@ -465,7 +468,7 @@ export class Lobby {
     const current = this.games.get(id);
     const record = this.history.get(id) ?? (current ? gameRecord(this, current) : null);
     if (!record) throw new LobbyError(404, 'no_game', 'this game is not available');
-    return { v: VERSION, game: record };
+    return { v: VERSION, game: { ...record, statistics: this.matchStatistics.has(id) ? summarizeMatch(this.matchStatistics.get(id), { details: true }) : null } };
   }
   async archiveGame(game) {
     const record = gameRecord(this, game);
@@ -473,6 +476,7 @@ export class Lobby {
     this.history.set(game.id, record);
   }
   async restoreArchives() {
+    for (const game of [...this.games.values(), ...this.history.values()]) if ((game.startedAt || game.state === 'completed') && !this.matchStatistics.has(game.id)) await this.prepareStatistics(game);
     for (const game of this.games.values()) if ((game.finished || game.state === 'closed') && !this.history.has(game.id)) await this.archiveGame(game);
   }
   async manageGame(id, body) {
@@ -496,6 +500,32 @@ export class Lobby {
       this.wake(id);
     } else throw bad('bad_field', 'unknown game management action');
     return this.managedGame(id);
+  }
+
+  async prepareStatistics(game) {
+    if (this.matchStatistics.has(game.id)) return;
+    const record = makeStatisticsMatch(game);
+    await this.env.store.saveMeta?.(`match-statistics:${game.id}`, record);
+    this.matchStatistics.set(game.id, record);
+  }
+  async reportStatistics(account, id, body) {
+    const match = this.matchStatistics.get(id);
+    if (!match) throw new LobbyError(404, 'no_match', 'no started match for statistics');
+    const person = match.roster.find(p => p.accountId === account.id && !p.computer);
+    if (!person) throw new LobbyError(403, 'not_a_player', 'only the original match participants may report statistics');
+    this.limit(`statistics:${account.id}`, 12, 6);
+    let report;
+    try { report = validateReport(body, match); }
+    catch (error) { if (error instanceof ReportError) throw new LobbyError(error.status, 'bad_report', error.message); throw error; }
+    const old = match.reports[person.slot];
+    if (old) {
+      if (JSON.stringify(old.body) !== JSON.stringify(report)) throw new LobbyError(409, 'report_exists', 'this participant already reported a different snapshot');
+      return { v: 1, stored: true, unchanged: true, status: summarizeMatch(match).status };
+    }
+    const entry = { slot: person.slot, receivedAt: this.env.now(), body: report };
+    await persistReport(this.env.store, id, entry);
+    match.reports[person.slot] = entry;
+    return { v: 1, stored: true, status: summarizeMatch(match).status };
   }
 
   // ---- games ----
@@ -916,6 +946,7 @@ export class Lobby {
     g.startedAt = this.env.now();
     this.event(g, 'the game started');
     await this.save(g);
+    await this.prepareStatistics(g);
     // ONLINE-2 r2 (Sol: /v1/replays/<id>/start handed anyone a live ticket): the published record of the game names no slot, no relay and no
     // ticket ("openbfme-replay-start", GameNetwork/OnlineStart.h): enough to turn the relay's log into a replay, never a credential
     const replayStart = { v: VERSION, kind: 'openbfme-replay-start', game: g.id, runAhead: this.config.runAhead, crcInterval: this.config.crcInterval, profile: g.profile, setup };
@@ -1203,11 +1234,11 @@ export async function route(lobby, req) {
   try {
     const p = req.path.split('/').filter(Boolean);
     const m = req.method;
-    const body = async () => {
+    const body = async (limit = MAX_JSON_BYTES) => {
       // ONLINE-2 r2 (Sol: a chunked 20 KB body passed the Content-Length check): the bytes actually received count, whatever the headers say
-      if (Number(req.headers['content-length'] ?? 0) > MAX_JSON_BYTES) throw new LobbyError(413, 'too_big', `request body over ${MAX_JSON_BYTES} bytes`);
+      if (Number(req.headers['content-length'] ?? 0) > limit) throw new LobbyError(413, 'too_big', `request body over ${limit} bytes`);
       const raw = await req.bytes();
-      if (raw.length > MAX_JSON_BYTES) throw new LobbyError(413, 'too_big', `request body over ${MAX_JSON_BYTES} bytes`);
+      if (raw.length > limit) throw new LobbyError(413, 'too_big', `request body over ${limit} bytes`);
       try {
         return raw.length ? (JSON.parse(dec.decode(raw)) ?? {}) : {};
       } catch {
@@ -1248,11 +1279,21 @@ export async function route(lobby, req) {
       if (m === 'POST' && p.length === 4) return json(200, await lobby.manageGame(p[3], await body()));
       return json(404, { v: VERSION, error: 'not_found', message: 'unknown game management path' });
     }
+    if (m === 'GET' && p[1] === 'players' && p[2] === 'me' && p[3] === 'statistics' && p.length === 4) {
+      const account = await lobby.account(req.headers.authorization);
+      lobby.limit(`account-statistics:${account.id}`, 30, 10);
+      return json(200, accountStatistics(lobby.matchStatistics.values(), account.id));
+    }
     if (p[1] === 'admin' && p[2] === 'users') {
       lobby.limit(`moderation:${req.ip}`, 60, 20);
       const raw = await req.bytes();
       await lobby.adminCheck(req, raw);
       if (m === 'GET' && p.length === 3) return json(200, lobby.adminUsers(req.query));
+      if (m === 'GET' && p.length === 5 && p[4] === 'statistics') {
+        let id; try { id = decodeURIComponent(p[3]); } catch { throw bad('bad_field', 'invalid user id'); }
+        if (!lobby.users.has(id)) throw new LobbyError(404, 'no_user', 'unknown account');
+        return json(200, accountStatistics(lobby.matchStatistics.values(), id));
+      }
       if (m === 'POST' && p.length === 4) {
         let id;
         try { id = decodeURIComponent(p[3]); } catch { throw bad('bad_field', 'invalid user id'); }
@@ -1314,6 +1355,7 @@ export async function route(lobby, req) {
       return answer(hold?.backoff); // Sol r1: not held for a bound: the client is told how long to wait
 
     }
+    if (m === 'POST' && p.length === 4 && p[3] === 'statistics') return json(200, await lobby.reportStatistics(account, id, await body(MAX_REPORT_BYTES)));
     const actions = { join: 'join', leave: 'leave', slot: 'setSlot', setup: 'setSetup', ready: 'ready', chat: 'chat', kick: 'kick', start: 'start', rejoin: 'rejoin', spectate: 'spectate' };
     if (m === 'POST' && p.length === 4 && actions[p[3]]) {
       const b = p[3] === 'leave' || p[3] === 'start' || p[3] === 'rejoin' || p[3] === 'spectate' ? {} : await body();

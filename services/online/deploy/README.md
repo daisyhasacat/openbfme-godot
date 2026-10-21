@@ -104,3 +104,12 @@ route allowlisting, key/cookie isolation, and public-API blocking. Completing th
 production passkey ceremony requires the administrator's existing authenticator.
 The integration does not enroll credentials, mint test production sessions, or
 modify the existing passkey database.
+
+
+Client statistics use `POST /v1/games/<id>/statistics` through the existing
+public `/v1/` proxy, with a 512 KiB application limit. The admin gateway's route
+allowlist includes `/v1/admin/users/<encoded-id>/statistics`. Preserve
+`lobby/meta/match-statistics:*` and `match-report:*` records in full backups.
+Legacy clients and previously uploaded relay logs do not supply these counters;
+see [MATCH_STATISTICS.md](../../../docs/MATCH_STATISTICS.md) for client rollout,
+result-sharing, confidence labels and counter coverage limits.

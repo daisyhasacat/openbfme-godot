@@ -1,3 +1,4 @@
+import { MAX_REPORT_BYTES } from './match-statistics.mjs';
 // OpenBFME online lobby on Cloudflare (lane ONLINE-2, docs/ONLINE.md option (d)): a Worker that hands every /v1 request to ONE Durable Object (the lobby:
 // it keeps the games in its storage). Bindings: LOBBY (the Durable Object namespace), LOGS (an R2 bucket, only with LOG_STORE = "r2"); secrets:
 // TICKET_KEYS, SESSION_KEY, UPLOAD_KEY, ADMIN_KEY (INFRA-2: the backup export); vars: RELAYS (may be empty: no relay yet), PUBLIC_URL, LOG_STORE.
@@ -194,7 +195,9 @@ export class LobbyObject {
       const relays = await state.storage.list({ prefix: 'relay-status:' });
       const users = await state.storage.list({ prefix: 'user:' });
       const history = await state.storage.list({ prefix: 'game-history:' });
-      this.lobby.load([...games.values()], [...relays.values(), ...users.values(), ...history.values()]);
+      const matches = await state.storage.list({ prefix: 'match-statistics:' });
+      const reports = await state.storage.list({ prefix: 'match-report:' });
+      this.lobby.load([...games.values()], [...relays.values(), ...users.values(), ...history.values(), ...matches.values(), ...reports.values()]);
       await this.lobby.restoreArchives();
     });
   }
@@ -215,7 +218,7 @@ export class LobbyObject {
     if (isLog) this.reading.logs += 1;
     let out;
     try {
-      const body = await readBodyLimited(request, isLog ? this.lobby.maxLogBytes() : MAX_JSON_BYTES, this.bodyTimeoutMs);
+      const body = await readBodyLimited(request, isLog ? this.lobby.maxLogBytes() : /^\/v1\/games\/[0-9a-f]{16}\/statistics$/.test(path) ? MAX_REPORT_BYTES : MAX_JSON_BYTES, this.bodyTimeoutMs);
       if (body.status) return refuse(body.status, body.code, body.error);
       const run = this.queue.then(() => this.handle(request, body.bytes));
       this.queue = run.catch(() => {});

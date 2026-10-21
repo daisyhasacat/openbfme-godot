@@ -1,10 +1,11 @@
+import { summarizeMatch } from './match-statistics.mjs';
 // OpenBFME. GPL-3.0. Sanitized game history and signed-administrator room controls.
 // Archive records deliberately contain no passwords, private room codes, sessions, or relay tickets.
 export class ManagementQueryError extends Error {}
 
 export function gameRecord(lobby, game) {
   return {
-    kind: 'game-history', id: game.id, name: game.name, host: game.slots[game.hostSlot].name,
+    kind: 'game-history', hostSlot: game.hostSlot, id: game.id, name: game.name, host: game.slots[game.hostSlot].name,
     map: game.setup.map, mode: game.mode ?? 'normal', private: !!game.roomCode,
     state: game.finished ? 'completed' : game.state === 'closed' ? 'cancelled' : game.state,
     createdAt: game.created, startedAt: game.startedAt ?? null, completedAt: game.completedAt ?? null,
@@ -40,6 +41,6 @@ export function listGames(lobby, query, { admin = false, history = false } = {})
   const index = after ? rows.findIndex((game) => game.id === after) : -1;
   if (after && index === -1) throw new ManagementQueryError('the page cursor no longer matches this search: refresh the list');
   const offset = index + 1, page = rows.slice(offset, offset + size);
-  return { v: 1, asOf: lobby.env.now(), total: rows.length, games: page.map((game) => admin ? game : publicRecord(game)),
+  return { v: 1, asOf: lobby.env.now(), total: rows.length, games: page.map((game) => ({ ...(admin ? game : publicRecord(game)), statistics: lobby.matchStatistics.has(game.id) ? summarizeMatch(lobby.matchStatistics.get(game.id)) : null })),
     next: offset + size < rows.length ? page.at(-1).id : null };
 }

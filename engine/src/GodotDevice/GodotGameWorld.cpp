@@ -6767,6 +6767,73 @@ Dictionary GameWorld::gameRecordBase(GameLogic &logic, const std::vector<int> &s
 	r["players"] = list;
 	r["me"] = m_recordLocalSlot;
 	r["winner_team"] = split ? -1 : winner;
+	// Client-reported statistics: existing score-screen/ScoreKeeper data only.
+	// No scoring rule, logic state, retail replay or network command changes.
+	Dictionary report;
+	report["v"] = 1;
+	report["frames"] = (int64_t)logic.getFrame();
+	Array statistics;
+	for (const GameRecord::Player &p : players)
+	{
+		const int index = p.slot < (int)slotPlayers.size() ? slotPlayers[(std::size_t)p.slot] : -1;
+		for (const auto &e : m_scoreScreen.entries)
+		{
+			if (e.playerIndex != index) continue;
+			Dictionary row, counters;
+			row["slot"] = p.slot; row["result"] = e.result; row["faction"] = toGodot(p.faction);
+			counters["score"] = (int64_t)e.score;
+			counters["units_built"] = (int64_t)e.unitsBuilt;
+			counters["units_lost"] = (int64_t)e.unitsLost;
+			counters["units_destroyed"] = (int64_t)e.unitsDestroyed;
+			counters["structures_built"] = (int64_t)e.structuresBuilt;
+			counters["structures_lost"] = (int64_t)e.structuresLost;
+			counters["structures_destroyed"] = (int64_t)e.structuresDestroyed;
+			counters["money_earned"] = (int64_t)e.moneyEarned;
+			counters["money_spent"] = (int64_t)e.moneySpent;
+			counters["power_points"] = (int64_t)e.purchasePoints;
+			counters["skill_points"] = (double)e.skillPoints;
+			counters["session_seconds"] = (int64_t)e.sessionSeconds;
+			counters["first_hero_seconds"] = (int64_t)e.firstHeroSeconds;
+			counters["fortresses_built"] = (int64_t)e.fortressesBuilt;
+			counters["money_received"] = (int64_t)e.moneyReceived;
+			counters["money_given"] = (int64_t)e.moneyGiven;
+			counters["spent_structures"] = (int64_t)e.spentStructures;
+			counters["spent_units"] = (int64_t)e.spentUnits;
+			counters["spent_heroes"] = (int64_t)e.spentHeroes;
+			counters["heroes_built"] = (int64_t)e.heroesBuilt;
+			counters["heroes_lost"] = (int64_t)e.heroesLost;
+			counters["units_alive"] = (int64_t)e.unitsAlive;
+			counters["structures_alive"] = (int64_t)e.structuresAlive;
+			counters["elimination_bonus"] = (double)e.eliminationBonus;
+			row["stats"] = counters;
+			Array templates;
+			for (const auto &item : e.templates)
+			{
+				Dictionary value;
+				value["name"] = toGodot(item.first); value["kind"] = toGodot(item.second.kind);
+				value["built"] = item.second.built; value["lost"] = item.second.lost;
+				value["destroyed"] = item.second.destroyed; value["hordes_built"] = item.second.hordesBuilt;
+				templates.push_back(value);
+			}
+			row["templates"] = templates;
+			Array timeline;
+			const std::size_t stride = std::max<std::size_t>(1, (e.perFrame.size() + 119) / 120);
+			for (std::size_t f = 0; f < e.perFrame.size(); ++f)
+			{
+				const auto &sample = e.perFrame[f];
+				if (!sample.recorded || (f % stride != 0 && f + 1 != e.perFrame.size())) continue;
+				Dictionary point;
+				point["frame"] = (int64_t)f; point["money"] = (int64_t)sample.money;
+				point["score"] = (double)sample.score; point["units"] = sample.unitsAlive;
+				point["structures"] = sample.structuresAlive; point["skill_points"] = sample.skillPoints;
+				timeline.push_back(point);
+			}
+			row["timeline"] = timeline;
+			statistics.push_back(row);
+		}
+	}
+	report["players"] = statistics;
+	r["statistics"] = report;
 	return r;
 }
 

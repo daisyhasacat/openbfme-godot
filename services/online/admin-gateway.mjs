@@ -8,7 +8,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 function loopback(url) { return ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname); }
-function exchange(url, { method = 'GET', headers = {}, body = '', ca, servername, max = 8 * 1024 * 1024 } = {}) {
+function exchange(url, { method = 'GET', headers = {}, body = '', ca, servername, max = 16 * 1024 * 1024 } = {}) {
  return new Promise((resolve, reject) => {
   const req = (url.protocol === 'https:' ? https : http).request(url, { method, headers, ca, servername, timeout: 5000 }, res => {
    const chunks = []; let size = 0;
@@ -18,7 +18,7 @@ function exchange(url, { method = 'GET', headers = {}, body = '', ca, servername
   req.on('timeout', () => req.destroy(new Error('upstream timeout'))); req.on('error', reject); req.end(body);
  });
 }
-const managed = path => /^\/v1\/admin\/(?:users(?:\/[^/]+)?|games(?:\/[0-9a-f]{16})?)$/.test(path);
+const managed = path => /^\/v1\/admin\/(?:users(?:\/[^/]+(?:\/statistics)?)?|games(?:\/[0-9a-f]{16})?)$/.test(path);
 const publicPath = path => ['/online/', '/online', '/web/app.js', '/web/style.css', '/v1/dashboard', '/v1/history'].includes(path);
 
 export async function startGateway({ origin, authUrl, authCa, lobbyUrl, adminKey, bind = '127.0.0.1', port = 8791 }) {

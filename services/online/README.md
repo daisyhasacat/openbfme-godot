@@ -93,6 +93,17 @@ Additional endpoints: public `GET /v1/history?search=&limit=30&after=`; signed `
 
 API additions: public `GET /v1/dashboard`; signed-admin `GET /v1/admin/users?search=&limit=50&after=`; signed-admin `POST /v1/admin/users/<encoded-account-id>` with `{action, revision, name?}`. Actions are `rename`, `ban`, `unban` and `revoke`. Existing game-client APIs remain compatible.
 
+## Match statistics
+
+Clients reaching the score screen report existing ScoreKeeper counters, including
+wins/losses, per-type units/buildings, resources, heroes and sampled timelines.
+Reports are tied to their authenticated original slots, retained across restarts,
+and deduplicated. Conflicting outcomes remain disputed and do not inflate totals.
+Use **User management → Statistics** and the selected game's statistics in the
+passkey admin UI. Reports are client-supplied, not server-verified; upgraded
+clients and the existing result-sharing setting are required. See
+[the schema, trust rules and tests](../../docs/MATCH_STATISTICS.md).
+
 ## Persistence and shutdown
 
 The data directory contains:

@@ -103,13 +103,13 @@ test('suspensions and session revocation persist across restart; restoration can
 });
 
 test('admin listing supports search and stable bounded pagination; persistence failures issue no session',async()=>{
- const {lobby}=fixture(); await guest(lobby,'Ann'); await guest(lobby,'Bea'); await guest(lobby,'Cy');
+ const {lobby}=fixture(); await guest(lobby,'Ann'); await guest(lobby,'Beatrice'); await guest(lobby,'Cy');
  const page=(await call(lobby,'GET','/v1/admin/users?limit=2',{admin:true})).body;
  assert.equal(page.users.length,2); assert.ok(page.next);
  const second=(await call(lobby,'GET','/v1/admin/users?limit=2&after='+encodeURIComponent(page.next),{admin:true})).body;
  assert.equal(second.users.length,1); assert.equal(second.next,null);
- const found=(await call(lobby,'GET','/v1/admin/users?search=bea',{admin:true})).body;
- assert.equal(found.users.length,1); assert.equal(found.users[0].name,'Bea');
+ const found=(await call(lobby,'GET','/v1/admin/users?search=beatrice',{admin:true})).body;
+ assert.equal(found.users.length,1); assert.equal(found.users[0].name,'Beatrice');
  assert.equal((await call(lobby,'GET','/v1/admin/users?limit=101',{admin:true})).status,400);
  const failed=fixture({saveMeta:async()=>{throw new Error('disk full');}}).lobby;
  assert.equal((await call(failed,'POST','/v1/auth/guest',{body:{name:'Ann'}})).status,500); assert.equal(failed.users.size,0); assert.equal(failed.present.size,0);
