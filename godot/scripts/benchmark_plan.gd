@@ -46,3 +46,10 @@ static func frame_summary(samples: Array) -> Dictionary:
 		"frame_p95_ms": intervals[ceili(samples.size() * 0.95) - 1],
 		"frame_p99_ms": intervals[ceili(samples.size() * 0.99) - 1],
 		"seconds": total / 1000.0, "frames": samples.size()}
+
+## Hold each endpoint for 20% of capture so both extremes are rendered and sampled.
+## The middle 60% pans diagonally across the base/army while zooming inward.
+static func camera_pose(progress: float, center: Vector2, minimum: float, maximum: float) -> Dictionary:
+	var travel := clampf((progress - 0.2) / 0.6, 0.0, 1.0)
+	return {"position": center + Vector2(-600, -200).lerp(Vector2(600, 200), travel),
+		"height": lerpf(maximum, minimum, travel)}

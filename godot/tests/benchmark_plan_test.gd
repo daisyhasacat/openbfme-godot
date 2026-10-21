@@ -17,6 +17,11 @@ func _initialize() -> void:
 	assert(Plan.frame_summary([]).is_empty())
 	assert(Plan.frame_summary([{"frame": 10}, {"frame": 20}, {"frame": 30}, {"frame": 40}]) == {
 		"fps": 40.0, "frame_p95_ms": 40.0, "frame_p99_ms": 40.0, "seconds": 0.1, "frames": 4})
+	assert(Plan.camera_pose(0.0, Vector2(1000, 1000), 100, 5000) == {"position": Vector2(400, 800), "height": 5000.0})
+	assert(Plan.camera_pose(0.2, Vector2.ZERO, 100, 5000) == Plan.camera_pose(0.0, Vector2.ZERO, 100, 5000))
+	assert(Plan.camera_pose(0.5, Vector2.ZERO, 100, 5000) == {"position": Vector2.ZERO, "height": 2550.0})
+	assert(Plan.camera_pose(0.8, Vector2.ZERO, 100, 5000) == {"position": Vector2(600, 200), "height": 100.0})
+	assert(Plan.camera_pose(1.0, Vector2.ZERO, 100, 5000) == Plan.camera_pose(0.8, Vector2.ZERO, 100, 5000))
 	var screen = load("res://scripts/openbfme_options_screen.gd").new()
 	assert("Benchmark" in screen.TABS)
 	screen._tab = "Benchmark"

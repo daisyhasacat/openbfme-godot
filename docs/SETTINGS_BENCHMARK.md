@@ -23,7 +23,11 @@ content, script errors or a changed population fail the stage explicitly.
 This is an idle synthetic workload, not a combat benchmark. Auto-acquisition
 is disabled and units are invulnerable to keep the population stable. Units
 and buildings occupy separate reserved areas. The normal and stress scenes
-use fixed, different camera heights, recorded with the report. Loading,
+warm up at maximum zoom-out, then pan diagonally across the base and army while
+zooming to minimum height. The first and last 20% of capture hold the endpoints;
+the middle 60% moves continuously. Limits come from the live map camera in free
+camera mode. Each report records the limits, endpoint camera states and a timed
+position/height trace. Loading,
 spawning and warmup are excluded from timing. The in-game scenes use a local
 viewer match and HUD, with the normal logic-thread preference. No score screen,
 replay, game record or online result is created.
@@ -43,9 +47,9 @@ Launching inside a match or lobby is refused.
 Validation:
 
 - `godot/tests/benchmark_plan_test.gd`: exact/deterministic CP planning,
-  unfillable targets, invalid costs and frame statistics.
+  unfillable targets, invalid costs, camera path endpoints and frame statistics.
 - `godot/tests/settings_benchmark_test.gd`: real Settings-tab launch, early
-  and loaded-world cancellation, four stages, exact CP, report serialization,
+  and loaded-world cancellation, four stages, exact CP, rendered zoom/pan endpoints, report serialization,
   main-menu restoration and cap restoration. Needs installed retail data.
   `BENCHMARK_FULL=1` uses three-second warmups/captures; otherwise captures are
   shortened for orchestration checks. Graphical execution validates rendering;

@@ -49,6 +49,13 @@ func _run() -> void:
 	for stage in tool.report.stages:
 		assert(not stage.samples.is_empty())
 		if stage.workload.has("cp"):
+			var motion: Dictionary = stage.workload.camera_motion
+			assert(motion.path == "diagonal_pan_max_to_min_zoom")
+			assert(motion.start.height_above_ground == motion.max_height)
+			assert(motion.end.height_above_ground == motion.min_height)
+			assert(motion.trace[0].height == motion.max_height)
+			assert(motion.trace[-1].height == motion.min_height)
+			assert(motion.trace[-1].position - motion.trace[0].position == Vector2(1200, 400))
 			var cp := 0
 			for cost in tool.report.preset.unit_costs:
 				cp += int(cost.cp) * int(stage.workload.roster.get(cost.name, 0))

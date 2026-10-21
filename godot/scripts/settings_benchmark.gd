@@ -307,17 +307,37 @@ func _measure(stage: String, workload: Dictionary) -> bool:
 	if workload.has("cp") and _used_cp() != int(workload.cp):
 		_stage_error = "%s changed during warmup: requested %d CP, measured %d CP." % [stage, int(workload.cp), _used_cp()]
 		return false
+	var camera_motion := {}
+	if workload.has("cp"):
+		var camera: Dictionary = _hud.get_camera()
+		camera_motion = {"min_height": float(camera.min_height), "max_height": float(camera.zoom_out_limit),
+			"path": "diagonal_pan_max_to_min_zoom", "endpoint_hold_fraction": 0.2,
+			"start": camera, "trace": []}
 	var frame_before: int = game._world.get_presented_frame() if _world_loaded else 0
 	_sampler.start_capture(capture_seconds)
 	while running and is_instance_valid(_sampler) and _sampler.capturing:
 		if cancelled:
 			_sampler.finish_capture()
 			return false
+		if not camera_motion.is_empty():
+			var pose := Plan.camera_pose(_sampler._elapsed / _sampler.capture_seconds, _center,
+				camera_motion.min_height, camera_motion.max_height)
+			_hud.camera_look_at(pose.position)
+			_hud.camera_set_height(pose.height)
+			var actual: Dictionary = _hud.get_camera()
+			camera_motion.trace.append({"seconds": _sampler._elapsed,
+				"position": actual.position, "height": actual.height_above_ground})
 		_status.text = "%s · %.1f / %.0f s" % [stage.replace("_", " ").capitalize(), _sampler._elapsed, capture_seconds]
 		await get_tree().process_frame
 	if not running or cancelled or not is_instance_valid(_sampler) or _sampler.samples.is_empty(): return false
 	var captured: Dictionary = _sampler.last_report.duplicate(true)
 	if workload.has("cp"):
+		camera_motion["end"] = _hud.get_camera()
+		var endpoint := Plan.camera_pose(1.0, _center, camera_motion.min_height, camera_motion.max_height)
+		if camera_motion.end.height_above_ground != endpoint.height or camera_motion.end.position != endpoint.position:
+			_stage_error = "%s capture ended before the zoom/pan sweep completed. Increase capture duration." % stage
+			return false
+		workload["camera_motion"] = camera_motion
 		workload["cp_after"] = _used_cp()
 		if int(workload.cp_after) != int(workload.cp):
 			_stage_error = "%s changed during capture: requested %d CP, measured %d CP." % [stage, int(workload.cp), int(workload.cp_after)]
@@ -459,13 +479,12 @@ func _populate(target: int) -> String:
 		if cancelled: return "Cancelled."
 		await get_tree().process_frame
 	if _used_cp() != target: return "CP verification failed: requested %d, created %d." % [target, _used_cp()]
-	# Bring the relevant army area into view. The larger case uses a wider
-	# camera, recorded in the report rather than pretending both views match.
-	var height := 2200.0 if target == int(_preset.normal_cp) else 3200.0
-	var aim := _center + Vector2(-100, 0) if target == int(_preset.normal_cp) else _center + Vector2(250, 0)
-	_hud.camera_look_at(aim)
-	_hud.camera_set_height(height)
-	report["camera_%d_cp" % target] = _hud.get_camera()
+	# Warm up at the widest view; capture pans across the populated area and
+	# zooms down to the mounted map's minimum camera height.
+	var camera: Dictionary = _hud.get_camera()
+	var pose := Plan.camera_pose(0.0, _center, camera.min_height, camera.zoom_out_limit)
+	_hud.camera_look_at(pose.position)
+	_hud.camera_set_height(pose.height)
 	game._world.set_paused(false)
 	game._world.set_logic_thread(_old_logic_thread)
 	game._world.set_auto_advance(true)
