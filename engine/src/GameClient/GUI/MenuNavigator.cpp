@@ -325,20 +325,29 @@ void MenuNavigator::appendFocusFrame(GadgetDrawList &out) const
 	{
 		float x0 = 1024, y0 = 768, x1 = 0, y1 = 0;
 		for (const auto &t : list) { x0 = std::min(x0, t.x0); y0 = std::min(y0, t.y0); x1 = std::max(x1, t.x1); y1 = std::max(y1, t.y1); }
-		GadgetDrawCommand region;
-		region.kind = GadgetDrawCommand::Kind::OpenRect;
-		region.window = "ControllerSection";
-		region.x0 = (int)x0 - 6; region.y0 = (int)y0 - 6;
-		region.x1 = (int)x1 + 6; region.y1 = (int)y1 + 6;
-		region.color = 0xFF63B8EAu;
-		region.lineWidth = 2;
-		out.commands.push_back(region);
-		region.kind = GadgetDrawCommand::Kind::Text;
-		region.y0 -= 18;
-		region.text = m_section == 0 ? u"LT  Buttons  RT" : m_section == 1 ? u"LT  Players  RT" : u"LT  Maps / Rules  RT";
-		region.font.name = "Arial";
-		region.font.pointSize = 12;
-		out.commands.push_back(region);
+		// Quiet corner accents in the native menu's slate/pale-blue palette.
+		// Leave the authored panel borders and headings visible.
+		const int left = (int)x0 - 5, top = (int)y0 - 5;
+		const int right = (int)x1 + 5, bottom = (int)y1 + 5;
+		for (int corner = 0; corner < 4; ++corner)
+		{
+			const int x = (corner & 1) ? right : left;
+			const int y = (corner & 2) ? bottom : top;
+			const int dx = (corner & 1) ? -14 : 14;
+			const int dy = (corner & 2) ? -14 : 14;
+			for (int edge = 0; edge < 2; ++edge)
+			{
+				GadgetDrawCommand accent;
+				accent.kind = GadgetDrawCommand::Kind::Line;
+				accent.window = "ControllerSection";
+				accent.x0 = x; accent.y0 = y;
+				accent.x1 = x + (edge ? 0 : dx);
+				accent.y1 = y + (edge ? dy : 0);
+				accent.color = edge ? 0xFF738090u : 0xFFBFEDFFu;
+				accent.lineWidth = 1;
+				out.commands.push_back(accent);
+			}
+		}
 	}
 	if (const auto *target = find(list, m_focusId); target && target->kind == MenuNavTarget::Kind::Button)
 	{

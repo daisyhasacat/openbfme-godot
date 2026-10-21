@@ -94,8 +94,8 @@ the setting. Press A to open it, Up/Down to preview a choice, then A to confirm.
 B cancels the preview. Changing tabs also cancels an unconfirmed dropdown.
 This includes the player-color image dropdowns.
 
-In the skirmish lobby, LT/RT cycles Bottom Bar → Players → Maps/Rules (and
-backward with LT). A blue outline and section label show the active area.
+In the skirmish lobby, LT cycles Bottom Bar → Players → Maps/Rules; RT cycles backward.
+Thin corner accents in the native menu palette mark the active area.
 D-pad/left-stick navigation stays within it; triggers cancel an unconfirmed
 dropdown before changing area. Mouse movement and real keyboard input leave
 section mode, retaining their existing navigation. Modal profile dialogs remain

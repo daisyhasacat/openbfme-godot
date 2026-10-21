@@ -57,7 +57,7 @@ func _run() -> void:
 	pad._input(trigger)
 	trigger.axis_value = 0.0
 	pad._input(trigger)
-	assert(shell.sections == [-1, -1, 1], "Triggers switch once per pull")
+	assert(shell.sections == [1, 1, -1], "Triggers switch once per pull")
 	assert(pad.take_log().is_empty(), "Section triggers must not also send arrow keys")
 	pad.queue_free()
 	game._shell = null

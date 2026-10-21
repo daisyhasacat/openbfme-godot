@@ -75,7 +75,7 @@ func _input(event: InputEvent) -> void:
 			var had: bool = _section_trigger.get(m.axis, false)
 			_section_trigger[m.axis] = pressed
 			if pressed and not had and _active() and _shell.has_method("menu_controller_section"):
-				_section_captured[m.axis] = _shell.menu_controller_section(-1 if m.axis == JOY_AXIS_TRIGGER_LEFT else 1)
+				_section_captured[m.axis] = _shell.menu_controller_section(1 if m.axis == JOY_AXIS_TRIGGER_LEFT else -1)
 			if _section_captured.get(m.axis, false):
 				if not pressed:
 					_section_captured.erase(m.axis)

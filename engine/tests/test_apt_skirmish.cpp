@@ -2455,9 +2455,15 @@ TEST_CASE("skirmish controller: triggers confine navigation to three sections; k
 			}
 		GadgetDrawList draw;
 		nav.appendFocusFrame(draw);
-		bool indicated = false;
-		for (const auto &command : draw.commands) indicated |= command.window == "ControllerSection";
-		CHECK(indicated);
+		int accents = 0;
+		for (const auto &command : draw.commands)
+			if (command.window == "ControllerSection")
+			{
+				CHECK(command.kind == GadgetDrawCommand::Kind::Line);
+				CHECK(command.lineWidth == 1);
+				++accents;
+			}
+		CHECK(accents == 8);
 	}
 	nav.setControllerSections(false);
 	CHECK(nav.controllerSection() == -1);
