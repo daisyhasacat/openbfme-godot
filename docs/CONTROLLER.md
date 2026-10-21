@@ -103,3 +103,10 @@ fully navigable. LB/RB still changes Maps/Rules, and Start still starts the game
 
 Keyboard shortcut: **Shift+Q** immediately closes the game, including during a
 match, without the quit confirmation.
+
+Menu input must not consume gameplay events: when no menu is active, trigger
+motion and A releases go to the gameplay controller. Only releases belonging to
+an earlier menu press are retained across a menu-to-game transition. The real
+scene-dispatch regression in `godot/tests/controller_routing_test.gd` checks RT
+palette open/close, A selection completion, resumed camera panning and release
+ownership. The Lua binding table remains the gameplay action source.

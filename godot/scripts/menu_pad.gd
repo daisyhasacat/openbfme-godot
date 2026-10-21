@@ -41,6 +41,7 @@ var _shell: Node
 var _section_trigger := {}
 var _section_captured := {}
 var _axis_key := {}   # axis -> the key it holds now (KEY_NONE: none)
+var _captured_buttons := {} # Only consume releases whose press belonged to this menu.
 var _pressed_keys := {}
 var _held := {}       # key -> the time (s) of its next repeat
 var _log := PackedStringArray()
@@ -63,6 +64,7 @@ func _connection(id: int, connected: bool) -> void:
 	else:
 		_disconnected_devices[id] = true
 	if not connected and id == _device:
+		_captured_buttons.clear()
 		_reset()
 		_device = -1
 
@@ -147,6 +149,16 @@ func _input(event: InputEvent) -> void:
 		_device = event.device
 	if event.device != _device:
 		return
+	if not _active():
+		_reset()
+		if event is InputEventJoypadButton:
+			if not event.pressed and _captured_buttons.has(event.button_index):
+				_captured_buttons.erase(event.button_index)
+				get_viewport().set_input_as_handled()
+				return
+			if event.button_index != JOY_BUTTON_START: return
+		else:
+			return
 	if event is InputEventJoypadButton:
 		var b := event as InputEventJoypadButton
 		if b.pressed and b.button_index in [JOY_BUTTON_DPAD_UP, JOY_BUTTON_DPAD_DOWN, JOY_BUTTON_DPAD_LEFT, JOY_BUTTON_DPAD_RIGHT]:
@@ -155,11 +167,13 @@ func _input(event: InputEvent) -> void:
 			if b.pressed and _active():
 				_pointer_a = mouse_mode
 				if _pointer_a:
+					_captured_buttons[b.button_index] = true
 					_mouse(true)
 			elif not b.pressed and _pointer_a:
 				if _mouse_down:
 					_mouse(false)
 				_pointer_a = false
+				_captured_buttons.erase(b.button_index)
 				get_viewport().set_input_as_handled()
 				return
 			if _pointer_a:
@@ -167,16 +181,20 @@ func _input(event: InputEvent) -> void:
 				return
 		if b.button_index == JOY_BUTTON_START:
 			if b.pressed and start_lobby.is_valid() and start_lobby.call():
+				_captured_buttons[b.button_index] = true
 				_start_consumed = true
 				get_viewport().set_input_as_handled()
 				return
 			if not b.pressed and _start_consumed:
 				_start_consumed = false
+				_captured_buttons.erase(b.button_index)
 				get_viewport().set_input_as_handled()
 				return
 		if not BUTTONS.has(b.button_index):
 			return
-		if not b.pressed or _active() or b.button_index == JOY_BUTTON_START:
+		if b.pressed or _captured_buttons.has(b.button_index):
+			if b.pressed: _captured_buttons[b.button_index] = true
+			else: _captured_buttons.erase(b.button_index)
 			_send(BUTTONS[b.button_index], b.pressed, false)
 			get_viewport().set_input_as_handled()
 	elif event is InputEventJoypadMotion:
