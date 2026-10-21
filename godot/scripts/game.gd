@@ -650,6 +650,12 @@ var _cah_hero_id := ""          # lane CAH-1: the unique id of the hero the --ca
 var _startup_shortcut: Node
 
 func _ready() -> void:
+	# Export templates ignore the editor-only --script option. Run the packaged
+	# loader check before display setup or retail mounting, through a user flag.
+	if OS.get_cmdline_user_args().has("--appimage-boot-test"):
+		process_mode = Node.PROCESS_MODE_DISABLED
+		get_tree().quit(preload("res://tests/appimage_boot_test.gd").run())
+		return
 	if OS.has_feature("ios"):
 		var keyboard := preload("res://scripts/release/ios_keyboard.gd").new()
 		keyboard.shell = func() -> Node: return _shell

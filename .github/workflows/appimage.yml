@@ -71,7 +71,7 @@ jobs:
           set -euo pipefail
           image=$(realpath dist/*.AppImage)
           cd "$RUNNER_TEMP"
-          APPIMAGE_EXTRACT_AND_RUN=1 timeout 90 "$image" --headless --script res://tests/appimage_boot_test.gd 2>&1 | tee "$GITHUB_WORKSPACE/dist/appimage-boot.log"
+          APPIMAGE_EXTRACT_AND_RUN=1 timeout 90 "$image" --headless -- --appimage-boot-test 2>&1 | tee "$GITHUB_WORKSPACE/dist/appimage-boot.log"
           grep -Fx 'APPIMAGE BOOT PASS' "$GITHUB_WORKSPACE/dist/appimage-boot.log"
       - name: Upload AppImage, checksum and boot log
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
