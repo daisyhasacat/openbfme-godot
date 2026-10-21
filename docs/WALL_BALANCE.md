@@ -4,7 +4,7 @@ The console’s **Wall rules** tab saves options to `user://wall_balance.cfg`. M
 
 The profile supplies:
 
-- Wall and fortress damage modes: native, wall-capable attackers only, or siege engines only. Healing, scripted kills, and damage without a source keep their native behavior.
+- Wall and fortress damage modes: native, wall-capable attackers only, or siege engines only. Bombardment ships (`SHIP` with `ThreatBreakdown.AIKindOf = SHIP_BOMBARD`) qualify in both restricted modes, including mod-defined ships; ordinary warships and transports do not gain siege access. Healing, scripted kills, and damage without a source keep their native behavior.
 - Health multipliers: walls 6×, hubs 30×, gates 6×.
 - Cost multipliers: walls 0.5×, run hubs 0.7×, standalone hubs 0.3×, expansions 0.8×.
 - Fortress and standalone hub wall ranges: 2×.

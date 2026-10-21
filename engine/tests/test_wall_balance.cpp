@@ -10,6 +10,7 @@
 #include "GameLogic/Module/CastleModules.h"
 #include "GameLogic/Module/ConstructionModules.h"
 #include "GameLogic/Construction.h"
+#include "GameLogic/Combat/ObjectWeapons.h"
 using namespace combattest;
 TEST_CASE("accelerated wall construction skips stagger only for accelerated owners") {
  CombatWorld w(
@@ -64,6 +65,38 @@ TEST_CASE("wall balance: damage restrictions, health and costs preserve native m
  r.enabled=false;CHECK(WallBalance::attackerAllowed(*wall,*a));
  damage.m_input.m_sourceID=a->getID();wall->attemptDamage(damage);CHECK(w.health(wall)==550);
  CHECK(BuildAssistant::calcCostToBuild(*wall->getTemplate(),a->getControllingPlayer(),a,-1)==200);
+}
+TEST_CASE("wall balance: bombardment ships damage walls and fortresses in both restricted modes") {
+ CombatWorld w(
+ "Object TestWall\n KindOf = STRUCTURE IMMOBILE WALL_SEGMENT\n Body = ActiveBody Body\n MaxHealth = 100\n End\nEnd\n"
+ "Object TestFortress\n KindOf = STRUCTURE IMMOBILE COMMANDCENTER\n Body = ActiveBody Body\n MaxHealth = 100\n End\nEnd\n"
+ "Object ModBombardShip\n KindOf = SHIP CAN_ATTACK\n ThreatBreakdown Naval\n AIKindOf = SHIP_BOMBARD\n End\n WeaponSet\n Conditions = None\n Weapon = PRIMARY SwordWeapon\n End\n Body = ActiveBody Body\n MaxHealth = 100\n End\nEnd\n"
+ "Object ModWarShip\n KindOf = SHIP CAN_ATTACK\n ThreatBreakdown Naval\n AIKindOf = SHIP_BATTLESHIP\n End\n Body = ActiveBody Body\n MaxHealth = 100\n End\nEnd\n"
+ "Object ModTransport\n KindOf = SHIP\n ThreatBreakdown Naval\n AIKindOf = SHIP_TRANSPORT\n End\n Body = ActiveBody Body\n MaxHealth = 100\n End\nEnd\n");
+ auto *ship=w.unit("ModBombardShip",'A',100,100);
+ auto *warship=w.unit("ModWarShip",'A',100,120);
+ auto *transport=w.unit("ModTransport",'A',100,140);
+ auto *infantry=w.unit("Swordsman",'A',100,160);
+ auto &rules=w.logic->settings().wallBalance; rules.enabled=true;
+ for(int mode : {1,2}) {
+  rules.wallDamage=rules.fortressDamage=mode;
+  for(const char *name : {"TestWall","TestFortress"}) {
+   auto *target=w.unit(name,'B',150,150);
+   CHECK(WallBalance::attackerAllowed(*target,*ship));
+   CHECK_FALSE(WallBalance::attackerAllowed(*target,*warship));
+   CHECK_FALSE(WallBalance::attackerAllowed(*target,*transport));
+   CHECK_FALSE(WallBalance::attackerAllowed(*target,*infantry));
+   REQUIRE(ship->getWeapons());
+   CHECK(ship->getWeapons()->canAttackObject(*target,CMD_FROM_SCRIPT,false));
+   auto *weapon=ship->getWeapons()->weaponInSlot(PRIMARY_WEAPON);
+   REQUIRE(weapon);
+   CHECK(ship->getWeapons()->canDamage(*weapon,*target));
+   DamageInfo damage;damage.m_input.m_sourceID=ship->getID();damage.m_input.m_amount=100;damage.m_input.m_damageType=DAMAGE_UNRESISTABLE;
+   target->attemptDamage(damage);
+   CHECK(w.health(target)==0);
+   CHECK(target->isEffectivelyDead());
+  }
+ }
 }
 TEST_CASE("wall balance: a closed wall region is enclosed, a breach opens it") {
  CombatWorld w(objects);
