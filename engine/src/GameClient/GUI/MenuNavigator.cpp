@@ -263,6 +263,18 @@ void MenuNavigator::collect(std::vector<MenuNavTarget> &out, std::vector<MenuNav
 	{
 		source->navTargets(out);
 	}
+	// Player rows laid out below the bottom toolbar are not visible controls.
+	// Do not let LOCAL16's extra rows extend the controller region behind it.
+	if (section && m_controllerSections && m_section == 1)
+	{
+		float toolbarTop = stageH;
+		for (const auto &t : out)
+			if (t.id.find(".lobby.") != std::string::npos || t.id.find(".MainButtons.") != std::string::npos)
+				toolbarTop = std::min(toolbarTop, t.y0);
+		out.erase(std::remove_if(out.begin(), out.end(), [toolbarTop](const MenuNavTarget &t) {
+			return sectionOf(t) == 1 && t.y1 >= toolbarTop;
+		}), out.end());
+	}
 	const bool popup = std::any_of(out.begin(), out.end(), [](const MenuNavTarget &t) { return t.id.find(".ProfilePopup.") != std::string::npos; });
 	if (section && m_controllerSections && !popup && !m_windows.componentInputBlocked())
 		out.erase(std::remove_if(out.begin(), out.end(), [this](const MenuNavTarget &t) { return sectionOf(t) != m_section; }), out.end());
@@ -448,7 +460,7 @@ int MenuNavigator::nearest(const std::vector<MenuNavTarget> &list, int from, Men
 		const MenuNavTarget &b = list[i];
 		// Horizontal navigation stays in the current row. Adjacent player
 		// rows can touch/overlap, so edge distance alone admits diagonals.
-		if ((dir == MenuNavKey::Left || dir == MenuNavKey::Right) &&
+		if (!(m_controllerSections && m_section == 0) && (dir == MenuNavKey::Left || dir == MenuNavKey::Right) &&
 			std::fabs(a.cy() - b.cy()) > 0.5f * std::min(a.y1 - a.y0, b.y1 - b.y0)) continue;
 		float along = 0, across = 0; // the distance the way the key goes (positive) and beside it
 		switch (dir)
@@ -465,7 +477,8 @@ int MenuNavigator::nearest(const std::vector<MenuNavTarget> &list, int from, Men
 		{
 			continue;
 		}
-		const float score = std::max(along, 0.0f) + 4.0f * across;
+		const float score = m_controllerSections && m_section == 0 && (dir == MenuNavKey::Left || dir == MenuNavKey::Right)
+			? centre : std::max(along, 0.0f) + 4.0f * across;
 		if (best < 0 || score < bestScore)
 		{
 			best = (int)i;

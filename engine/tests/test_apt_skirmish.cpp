@@ -2469,3 +2469,42 @@ TEST_CASE("skirmish controller: triggers confine navigation to three sections; k
 	CHECK(nav.controllerSection() == -1);
 	CHECK(nav.targets().size() == all.size());
 }
+
+TEST_CASE("skirmish controller: bottom bar reaches Profile and player corners stop above toolbar")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	LobbyFx fx(mount);
+	ruleLabels(fx.text);
+	openRulesTab(fx);
+	MenuNavigator nav(*fx.wm);
+	nav.setMenu(fx.screen->level(), fx.screen);
+	const auto all = nav.targets();
+	float toolbarTop = 768;
+	for (const auto &t : all) if (t.id.find(".lobby.") != std::string::npos) toolbarTop = std::min(toolbarTop, t.y0);
+	nav.setControllerSections(true);
+	nav.switchControllerSection(-1);
+	for (int i = 0; i < 10 && nav.focusId().find(".MainMenu.") == std::string::npos; ++i) nav.key(MenuNavKey::Left);
+	REQUIRE(nav.focusId().find(".MainMenu.") != std::string::npos);
+	nav.key(MenuNavKey::Right);
+	CHECK(nav.focusId().find(".ProfileNav.") != std::string::npos);
+	fx.tick(60);
+	bool change = false;
+	for (const auto &t : nav.targets()) change |= t.id.find(".ProfileNav.ChangeProfile.") != std::string::npos;
+	CHECK(change);
+	nav.key(MenuNavKey::Back);
+	fx.tick(90);
+	nav.switchControllerSection(1);
+	fx.tick(90);
+	GadgetDrawList draw;
+	nav.appendFocusFrame(draw);
+	int corners = 0;
+	for (const auto &command : draw.commands) if (command.window == "ControllerSection")
+	{
+		// tolerance: the section accents must stay above the authored toolbar boundary.
+		CHECK(command.y0 < toolbarTop);
+		// tolerance: both endpoints of each corner stroke must stay above the toolbar.
+		CHECK(command.y1 < toolbarTop);
+		++corners;
+	}
+	CHECK(corners == 8);
+}
