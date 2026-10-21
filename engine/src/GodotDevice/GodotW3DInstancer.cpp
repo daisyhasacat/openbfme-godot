@@ -184,7 +184,9 @@ void W3DInstancer::set_instance_house_color(int64_t instance, const Color &color
 	if (instance < 0 || instance >= (int64_t)Instances.size()) return;
 	Instance &inst = Instances[(size_t)instance];
 
-	inst.HcPacked = color.a < 0.5f ? 0.0f : W3D_Pack_House_Color((int)std::lround(color.r * 255.0f), (int)std::lround(color.g * 255.0f), (int)std::lround(color.b * 255.0f));
+	const float packed = color.a < 0.5f ? 0.0f : W3D_Pack_House_Color((int)std::lround(color.r * 255.0f), (int)std::lround(color.g * 255.0f), (int)std::lround(color.b * 255.0f));
+	if (inst.HcPacked == packed) return;
+	inst.HcPacked = packed;
 	PoseDirty = true;
 	mark_model(instance);
 }
@@ -192,6 +194,7 @@ void W3DInstancer::set_instance_house_color(int64_t instance, const Color &color
 void W3DInstancer::set_instance_infantry_light(int64_t instance, bool infantry)
 {
 	if (instance < 0 || instance >= (int64_t)Instances.size()) return;
+	if (Instances[(size_t)instance].InfantryLight == infantry) return;
 	Instances[(size_t)instance].InfantryLight = infantry;
 	PoseDirty = true;
 	mark_model(instance);
@@ -200,6 +203,7 @@ void W3DInstancer::set_instance_infantry_light(int64_t instance, bool infantry)
 void W3DInstancer::set_instance_sway(int64_t instance, int type)
 {
 	if (instance < 0 || instance >= (int64_t)Instances.size() || type < 0 || type > 10) return;
+	if (Instances[(size_t)instance].Sway == type) return;
 	Instances[(size_t)instance].Sway = type;
 	PoseDirty = true;
 	mark_model(instance);
@@ -784,6 +788,7 @@ void W3DInstancer::set_instance_transform(int64_t instance, const Transform3D &t
 {
 	if (instance >= 0 && instance < (int64_t)Instances.size())
 	{
+		if (Instances[(size_t)instance].Xf == transform) return;
 		Instances[(size_t)instance].Xf = transform;
 		PoseDirty = true;
 		mark_model(instance);
@@ -1245,19 +1250,26 @@ void W3DInstancer::ensure_pose(const Instance &inst) const
 	}
 }
 
-void W3DInstancer::write_palette(const Instance &inst)
+bool W3DInstancer::write_palette(const Instance &inst)
 {
 	const int pivots = inst.Pose.Num_Pivots();
 	if (!PaletteWrite || inst.PaletteSize == 0)
 	{
-		return;
+		return false;
 	}
 	float *out = PaletteWrite + (size_t)inst.PaletteOffset * 4;
+	bool changed = false;
 	for (int p = 0; p < pivots; ++p)
 	{
 		const Matrix3D &m = inst.Pose.Transform[(size_t)p];
-		std::memcpy(out + (size_t)p * 12, &m.Row[0][0], sizeof(float) * 12); // three rows of (x, y, z, translation)
+		float *dst = out + (size_t)p * 12;
+		if (std::memcmp(dst, &m.Row[0][0], sizeof(float) * 12) != 0)
+		{
+			std::memcpy(dst, &m.Row[0][0], sizeof(float) * 12); // three rows of (x, y, z, translation)
+			changed = true;
+		}
 	}
+	return changed;
 }
 
 void W3DInstancer::write_buffers()
@@ -1494,6 +1506,7 @@ void W3DInstancer::update_now()
 	// instances); before, every instance was evaluated and every palette texel uploaded each render frame
 	auto t0 = std::chrono::steady_clock::now();
 	std::atomic<int> poseErrors(0);
+	std::atomic<bool> paletteWritten(false);
 	std::string firstError;
 	std::mutex errorMutex;
 	const bool timeMoved = GlobalTime != PosedTime;
@@ -1577,20 +1590,49 @@ void W3DInstancer::update_now()
 					firstError = e.what();
 				}
 			}
-			write_palette(inst);
+			inst.DrawStateChanged = inst.BufferVisibility != inst.Pose.IsVisible || inst.BufferFade != inst.Pose.PivotFade;
+			if (inst.DrawStateChanged)
+			{
+				inst.BufferVisibility = inst.Pose.IsVisible;
+				inst.BufferFade = inst.Pose.PivotFade;
+			}
+			const Model &model = *Models[(size_t)inst.Model];
+			if (model.HasSorted)
+			{
+				if (inst.BufferSortOrigins.size() != model.Draws.size())
+				{
+					inst.BufferSortOrigins.resize(model.Draws.size());
+					inst.DrawStateChanged = true;
+				}
+				for (size_t d = 0; d < model.Draws.size(); ++d)
+				{
+					const DrawItem &draw = model.Draws[d];
+					if (!draw.Mesh->HasSorted) continue;
+					const ::Vector3 p = inst.Pose.Transform[(size_t)draw.Sub->BoneIndex].Get_Translation();
+					const Vector3 origin(p.X, p.Z, -p.Y);
+					if (inst.BufferSortOrigins[d] != origin) inst.DrawStateChanged = true;
+					inst.BufferSortOrigins[d] = origin;
+				}
+			}
+			if (write_palette(inst)) paletteWritten.store(true, std::memory_order_relaxed);
 			inst.PoseStale = false;
 		}
 	});
 	for (size_t i : StaleScratch)
 	{
-		Models[(size_t)Instances[i].Model]->BuffersDirty = true; // the pivot visibility and fade the buffers read may have changed
+		const Instance &inst = Instances[i];
+		Model &model = *Models[(size_t)inst.Model];
+		// Opaque instance data does not contain bone matrices. Keep its packed
+		// buffers when only bones moved; sorted meshes invalidate when their
+		// sorting pivots move (camera and instance movement invalidate separately).
+		if (inst.DrawStateChanged) model.BuffersDirty = true;
 	}
 	PoseEvaluations = (int)StaleScratch.size();
 	if (PoseCulled > 0)
 	{
 		warn(W3D_Pose_Cull_Stop().Message); // S-1730 (once: warn keeps each message once)
 	}
-	if (!StaleScratch.empty())
+	if (paletteWritten.load(std::memory_order_relaxed))
 	{
 		PaletteChanged = true;
 	}
@@ -1618,10 +1660,12 @@ void W3DInstancer::update_now()
 
 	t0 = std::chrono::steady_clock::now();
 	write_buffers();
+	PaletteUploads = 0;
 	if (PaletteChanged)
 	{
 		// lane PERF-3: the poses were written into the image's own buffer: no byte array allocated and copied per frame
 		PaletteTexture->update(PaletteImage);
+		++PaletteUploads;
 		PaletteChanged = false;
 	}
 	UploadMs = msSince(t0);
@@ -1709,6 +1753,7 @@ Dictionary W3DInstancer::get_stats() const
 	s["upload_ms"] = UploadMs;
 	s["pose_evaluations"] = PoseEvaluations; // SMOOTH-1: instances posed in the last update (only the changed ones)
 	s["pose_culled"] = PoseCulled;           // lane PERF-3: instances whose pose the last update left pending (outside the frustum, set_pose_culling)
+	s["palette_uploads"] = PaletteUploads;
 	s["buffer_uploads"] = BufferUploads;
 	s["buffer_writes"] = BufferWrites;       // SMOOTH-1: models whose MultiMesh buffers were rewritten in the last update
 	s["mapper_ms"] = MapperMs;

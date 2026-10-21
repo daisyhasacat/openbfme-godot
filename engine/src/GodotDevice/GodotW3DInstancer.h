@@ -267,6 +267,12 @@ private:
 		bool Removed = false;                 // remove_instance: skipped by the pose and buffer passes
 		float Opacity = 1.0f;                 // set_instance_opacity (lane PROJ-2)
 		bool PoseStale = true;                // SMOOTH-1: the pose inputs changed since the last evaluation (clip-driven instances follow GlobalTime)
+		// Bone motion uses the palette; instance buffers depend only on these
+		// pose channels (and transparent sorting, handled at model level).
+		std::vector<std::uint8_t> BufferVisibility;
+		std::vector<float> BufferFade;
+		std::vector<Vector3> BufferSortOrigins;
+		bool DrawStateChanged = true;
 		bool Inexact = false;                 // SMOOTH-1: the last evaluation used an arm whose summation order is not retail's (S-028)
 		int PaletteSize = 0;                  // SMOOTH-1: texels of the palette block (pivots * W3D_PALETTE_TEXELS_PER_PIVOT); 0 = none yet
 		// lane PERF-3: the clip names of the last set_instance_pose_native and what they resolved to (a drawable asks for the same clips frame after frame)
@@ -286,7 +292,7 @@ private:
 	void rebuild_layout();
 	void evaluate_pose(Instance &inst) const;
 	void evaluate_animation_pose(Instance &inst) const; ///< the animation part of evaluate_pose (lane COMBAT-4 adds the bone spins after it)
-	void write_palette(const Instance &inst);
+	bool write_palette(const Instance &inst);
 	void write_buffers();
 	const HAnimClass *resolve_clip_cached(Model &m, const std::string &name);
 	void allocate_palette(Instance &inst);   // SMOOTH-1: a block of the palette for one instance (a free block of the size, else the end)
@@ -337,6 +343,7 @@ private:
 	std::vector<std::pair<StringName, StringName>> MapperNames; // SMOOTH-1: per stage, the w3d_m<stage>r0 / r1 uniform names
 	std::uint32_t MapperSyncMs = 0xFFFFFFFFu;     // the mapper clock of the last update_mappers
 	size_t MapperCount = 0;
+	int PaletteUploads = 0; // full palette texture uploads in the last update
 	int BufferUploads = 0; // MultiMesh uploads whose packed contents changed
 	int PoseEvaluations = 0, BufferWrites = 0;   // stats of the last update: instances posed, models rewritten
 

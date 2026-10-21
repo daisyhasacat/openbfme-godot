@@ -33,6 +33,30 @@ renderer with `--perf`; compare frame-time p95/p99 as well as average FPS.
 The comparison adds CPU work, so measure CPU-bound scenes too. Metal/GPU timing
 and long gameplay sessions still need windowed profiling.
 
+## Avoid unchanged pose and instance submissions
+
+The instancer now distinguishes bone motion from the pose channels used in
+MultiMesh instance records. It caches visibility, pivot fading, and the pivot
+origins used for transparent depth sorting. A changed pose only rebuilds the
+instance records if those inputs changed. Camera/node movement, instance
+transforms, tint, lighting, hidden subobjects and opacity still invalidate the
+records through their existing paths. Identical transform, packed tint,
+infantry-light and sway assignments no longer invalidate a model.
+
+Palette blocks are compared byte for byte before copying. Re-evaluating the
+same matrices no longer uploads the full palette texture. Growth still forces
+an upload, and real bone changes continue to update it. The new
+`get_stats().palette_uploads` counter reports these updates per `update_now()`;
+initial texture creation during palette growth is separate.
+
+`mesh_upload_test.gd` checks unchanged bind-pose requests (four evaluations,
+zero model-buffer rebuilds or palette uploads), actual visual changes,
+palette growth and byte-identical mesh fixtures. Two animated soldiers with
+different animation phases are compared against forced instance-buffer
+rebuilds, including their transparent sorting data. These checks pass with
+native Metal 4 / Forward+ on Apple Silicon and headlessly; pose culling also
+passes. This verifies avoided work and output preservation, not an FPS gain.
+
 ## Skirmish menu entry
 
 Skirmish's map list now uses a scoped row-measurement cache. Previously every
