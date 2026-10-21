@@ -36,6 +36,20 @@ func _run() -> void:
 	controller._input(button)
 	assert(generated.back() is InputEventMouseButton and generated.back().button_index == MOUSE_BUTTON_LEFT and generated.back().pressed)
 	assert(generated[0] is InputEventMouseMotion and generated[0].position == root.get_visible_rect().get_center())
+
+	# The shell's MenuPad owns analog menu input; the gameplay bridge must not
+	# also move its old right-stick mouse or send left-stick arrow taps.
+	playing.value = false
+	controller.menu_navigation_active = func() -> bool: return true
+	controller._release_all()
+	controller._was_gameplay = false
+	controller._menu_direction = Vector2i.RIGHT
+	generated.clear()
+	controller._process(0.01)
+	assert(controller._menu_direction == Vector2i.ZERO and generated.is_empty())
+	controller.menu_navigation_active = Callable()
+	playing.value = true
+	controller._input(button)
 	var trigger := InputEventJoypadMotion.new()
 	trigger.device = 0
 	trigger.axis = JOY_AXIS_TRIGGER_RIGHT

@@ -1284,6 +1284,7 @@ func _boot() -> void:
 			printerr("CONTROLLER Lua: ", result.output)
 			return ""
 		return str(result.output).strip_edges()
+	controller.menu_navigation_active = func() -> bool: return _menu_pad != null and _menu_pad._active()
 	controller.gameplay = func() -> bool: return _state == State.PLAYING and not _quit_open and (_lua_console == null or not _lua_console.is_open()) and (not is_instance_valid(_map_editor) or not _map_editor.active)
 	controller.input_generated.connect(func(event: InputEvent) -> void: Input.parse_input_event(event))
 	controller.command_action.connect(_controller_menu_action)
