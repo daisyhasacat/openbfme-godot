@@ -2491,7 +2491,22 @@ TEST_CASE("skirmish controller: bottom bar reaches Profile and player corners st
 	bool change = false;
 	for (const auto &t : nav.targets()) change |= t.id.find(".ProfileNav.ChangeProfile.") != std::string::npos;
 	CHECK(change);
-	nav.key(MenuNavKey::Back);
+	REQUIRE(nav.key(MenuNavKey::Activate));
+	fx.tick(10);
+	CHECK(nav.focusId().find(".ProfileNav.") != std::string::npos);
+	bool selected = false;
+	for (int i = 0; i < 6 && !selected; ++i)
+	{
+		selected = nav.focusId().find(".ChangeProfile.") != std::string::npos;
+		if (!selected) { nav.key(MenuNavKey::Up); fx.tick(10); }
+	}
+	REQUIRE(selected);
+	REQUIRE(nav.key(MenuNavKey::Activate));
+	fx.tick(60);
+	CHECK(popupButton(fx, "ProfilePopup.Main.Cancel") != nullptr);
+	REQUIRE(fx.wm->invokeASAt(1, "ProfilePopup", "ClosePop", {}));
+	fx.tick(60);
+	fx.wm->postMouseMove(512, 300);
 	fx.tick(90);
 	nav.switchControllerSection(1);
 	fx.tick(90);

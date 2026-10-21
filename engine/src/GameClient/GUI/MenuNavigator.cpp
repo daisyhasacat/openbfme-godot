@@ -275,6 +275,13 @@ void MenuNavigator::collect(std::vector<MenuNavTarget> &out, std::vector<MenuNav
 			return sectionOf(t) == 1 && t.y1 >= toolbarTop;
 		}), out.end());
 	}
+	if (section && m_controllerSections && m_section == 0 &&
+		std::any_of(out.begin(), out.end(), [](const MenuNavTarget &t) { return t.id.find(".ProfileNav.ChangeProfile.") != std::string::npos; }))
+	{
+		// DisableComponents blocks the native gadgets, but they still exist
+		// geometrically behind the movie dropdown. They are not its choices.
+		out.erase(std::remove_if(out.begin(), out.end(), [](const MenuNavTarget &t) { return t.id.find(".ProfileNav.") == std::string::npos; }), out.end());
+	}
 	const bool popup = std::any_of(out.begin(), out.end(), [](const MenuNavTarget &t) { return t.id.find(".ProfilePopup.") != std::string::npos; });
 	if (section && m_controllerSections && !popup && !m_windows.componentInputBlocked())
 		out.erase(std::remove_if(out.begin(), out.end(), [this](const MenuNavTarget &t) { return sectionOf(t) != m_section; }), out.end());
@@ -708,6 +715,22 @@ bool MenuNavigator::key(MenuNavKey key)
 	std::vector<MenuNavTarget> list, catchers;
 	collect(list, &catchers, key != MenuNavKey::PageNext && key != MenuNavKey::PagePrevious);
 	const MenuNavTarget *current = find(list, m_focusId);
+	// PROFILE is a movie-driven rollover menu, not a native combo box. Its
+	// heading remains a separate toggle while its entries animate in. Transfer
+	// focus into those entries; clicking the heading again closes the menu.
+	if (m_controllerSections && m_section == 0 &&
+		m_focusId.find(".ProfileNav.bttn") != std::string::npos &&
+		m_focusId.find(".ProfileNav.") != std::string::npos &&
+		(key == MenuNavKey::Activate || key == MenuNavKey::Up || key == MenuNavKey::Down))
+	{
+		const MenuNavTarget *entry = nullptr;
+		for (const auto &target : list)
+			if (target.id.find(".ProfileNav.") != std::string::npos &&
+				(target.id.find(".ChangeProfile.") != std::string::npos || target.id.find(".NewProfile.") != std::string::npos || target.id.find(".DeleteProfile.") != std::string::npos))
+				if (!entry || target.cy() > entry->cy()) entry = &target;
+		if (entry) { focus(*entry); return true; }
+	}
+
 	MenuNavigationSource *source = m_windows.navigationSource();
 	if (source && source->navKey(key, m_frameShown ? current : nullptr))
 	{
