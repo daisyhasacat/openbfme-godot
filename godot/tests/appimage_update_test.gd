@@ -1,0 +1,21 @@
+extends SceneTree
+const Updater := preload("res://scripts/release/appimage_update.gd")
+func _initialize() -> void:
+	var sha := "a".repeat(64)
+	var good := {"schema": 1, "sha256": sha, "url": Updater.DOWNLOAD_ROOT + sha + ".AppImage", "size": 123, "version": "test"}
+	assert(Updater.select_asset(good).sha256 == sha)
+	for change in [{"schema": 2}, {"sha256": "g".repeat(64)}, {"url": "https://evil.invalid/update.AppImage"}, {"size": 0}, {"size": 2147483649}]:
+		var bad := good.duplicate(); bad.merge(change, true)
+		assert(Updater.select_asset(bad).is_empty())
+	assert(Updater.select_asset([]).is_empty())
+	assert(Updater.image_error("") == "Run the Linux AppImage to update it.")
+	call_deferred("_ui")
+func _ui() -> void:
+	var updater := Updater.new()
+	root.add_child(updater)
+	assert(updater._start.disabled)
+	assert(updater._status.text == "Return to the main menu and leave the lobby before updating.")
+	updater._close()
+	await process_frame
+	print("APPIMAGE UPDATE PASS")
+	quit()

@@ -31,7 +31,8 @@ APPRUN = '''#!/bin/sh
 set -eu
 appdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$appdir/usr/lib/openbfme"
-# AppImage mounts are read-only. CI artifacts update by downloading a new image.
+# The launcher cannot update a read-only mount. Settings uses APPIMAGE to replace
+# the outer image through an external helper instead.
 export OPENBFME_NO_UPDATE_CHECK=1
 exec ./OpenBFME.x86_64 "$@"
 '''

@@ -25,9 +25,10 @@
 ## greys out the main menu"; tests/opts1_test.gd checks the main menu's and Options.apt's buttons across every mode change).
 extends CanvasLayer
 signal benchmark_requested
+signal appimage_update_requested
 
 const DisplaySettings := preload("res://scripts/display_settings.gd")
-const TABS := ["Display", "Graphics", "Audio", "Camera", "Interface", "Online", "Performance", "Benchmark", "Controls", "Mods", "Sync"]
+const TABS := ["Display", "Graphics", "Audio", "Camera", "Interface", "Online", "Performance", "Benchmark", "Controls", "Mods", "Sync", "Updates"]
 ## lane OPTS-5: the tab the menu shows first when the main menu's CUSTOM SETTINGS opened it
 const DETAIL_TAB := "Graphics"
 ## lane OPTS-5: the help lines of OpenBFME's own rows and the tabs' notes (NOT RETAIL; one table: the original game's rows take theirs from the game's
@@ -123,14 +124,14 @@ var _menu := false                 # lane OPTS-5: the page is the Options screen
 var _mods_button: Button
 
 func _input(event: InputEvent) -> void:
-	if not is_instance_valid(_mods_button) or not _mods_button.has_focus() or not _open or _tab not in ["Mods", "Sync", "Benchmark"]:
+	if not is_instance_valid(_mods_button) or not _mods_button.has_focus() or not _open or _tab not in ["Mods", "Sync", "Benchmark", "Updates"]:
 		return
 	if get_tree().root.has_node("ModManagerLayer"):
 		return
 	for action in ["ui_cancel", "ui_left", "ui_right", "ui_up", "ui_down"]:
 		if event.is_action_pressed(action):
 			get_viewport().set_input_as_handled()
-			if _tab == "Benchmark":
+			if _tab in ["Benchmark", "Updates"]:
 				if action == "ui_cancel": close(false)
 				else: _show_tab(TABS[posmod(TABS.find(_tab) + (-1 if action in ["ui_left", "ui_up"] else 1), TABS.size())])
 			else:
@@ -153,6 +154,8 @@ func _ready() -> void:
 	_mods_button.pressed.connect(func():
 		if _tab == "Benchmark":
 			benchmark_requested.emit()
+		elif _tab == "Updates":
+			appimage_update_requested.emit()
 		elif _tab == "Sync":
 			var sync = preload("res://scripts/player_sync.gd").new()
 			get_tree().root.add_child(sync)
@@ -196,7 +199,7 @@ func _process(_delta: float) -> void:
 		return
 	var stack: PackedStringArray = shell.shell_stack()
 	_options_top = not stack.is_empty() and stack[-1] == "Options.apt"
-	_mods_button.visible = _open and _options_top and _tab in ["Mods", "Sync", "Benchmark"]
+	_mods_button.visible = _open and _options_top and _tab in ["Mods", "Sync", "Benchmark", "Updates"]
 	if _open and not _options_top:
 		close(false) # the shell left Options.apt (a game ended, the quit menu closed): the page goes with it
 		return
@@ -382,8 +385,8 @@ func _apply_pending() -> void:
 # ---------------------------------------------------------------------------------------------------------------------------------
 func _show_tab(name: String) -> void:
 	_tab = name
-	_mods_button.text = "Open benchmark…" if name == "Benchmark" else ("Player sync…" if name == "Sync" else "Games, mods and LAN downloads…")
-	_mods_button.visible = _open and name in ["Mods", "Sync", "Benchmark"]
+	_mods_button.text = "AppImage updates…" if name == "Updates" else "Open benchmark…" if name == "Benchmark" else ("Player sync…" if name == "Sync" else "Games, mods and LAN downloads…")
+	_mods_button.visible = _open and name in ["Mods", "Sync", "Benchmark", "Updates"]
 	if _mods_button.visible:
 		_mods_button.call_deferred("grab_focus")
 	if not _open:
@@ -440,6 +443,9 @@ func _spec() -> Dictionary:
 			note = "Measure the main menu, lobby, a Men base and 1,000 CP army, then 20,000 CP. Run from the main menu."
 		"Controls":
 			rows = []
+		"Updates":
+			rows = []
+			note = "Download the latest Linux AppImage from Second Age and restart. Run from the main menu."
 		"Sync":
 			rows = []
 			note = "Sync saves, profiles, heroes and player data with your server and username."
