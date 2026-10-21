@@ -1131,11 +1131,23 @@ func _game_options_setup() -> void:
 
 
 ## lane OPTS-1: the OPENBFME button over Options.apt and the screen it opens (scripts/openbfme_options_screen.gd)
+var _benchmark_tool: CanvasLayer
+
+
+func _open_benchmark() -> void:
+	if is_instance_valid(_benchmark_tool):
+		return
+	_benchmark_tool = preload("res://scripts/settings_benchmark.gd").new()
+	_benchmark_tool.game = self
+	add_child(_benchmark_tool)
+
+
 func _display_screen_setup() -> void:
 	_display_screen = load("res://scripts/openbfme_options_screen.gd").new()
 	_display_screen.name = "OpenBFMEOptions"
 	_display_screen.shell = _shell
 	_display_screen.hud_getter = func() -> Node: return _hud
+	_display_screen.benchmark_requested.connect(_open_benchmark)
 	_display_screen.room_getter = _lobby_room_name # lane UBERJOIN-1
 	_display_screen.settings = _display
 	_display_screen.settings_path = _display_path

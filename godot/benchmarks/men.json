@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "map": "map mp fall back 4p",
+  "faction": "FactionMen",
+  "seed": 4711,
+  "normal_cp": 1000,
+  "stress_cp": 20000,
+  "units": [
+    "GondorFighterHorde",
+    "GondorArcherHorde",
+    "GondorTowerShieldGuardHorde",
+    "RohanRohirrimHorde",
+    "GondorTrebuchet"
+  ],
+  "buildings": [
+    "MenFortress",
+    "GondorBarracks",
+    "GondorBarracks",
+    "GondorArcherRange",
+    "GondorStable",
+    "GondorWorkshop",
+    "GondorFarm",
+    "GondorFarm",
+    "GondorFarm",
+    "GondorFarm",
+    "GondorFarm",
+    "GondorFarm"
+  ]
+}
