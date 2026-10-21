@@ -5759,7 +5759,9 @@ void AptMenuPlayer::syncNav() const
 		return;
 	}
 	const AptScreen *top = m->shell->shell ? m->shell->shell->inputTop() : nullptr;
-	m->shell->nav->setMenu(top && top->isMenu() && !top->isHidden() && top->level() >= 0 ? top->level() : -1, top);
+	// MainMenu uses the pre-OPTS-6 dropdown group navigation in menuKey.
+	// Keep the spatial navigator off that movie and its animated submenus.
+	m->shell->nav->setMenu(top && top->filename() != "MainMenu.apt" && top->isMenu() && !top->isHidden() && top->level() >= 0 ? top->level() : -1, top);
 }
 
 bool AptMenuPlayer::modal_menu() const
@@ -5798,11 +5800,14 @@ bool AptMenuPlayer::menu_has_input() const
 		return false;
 	}
 	syncNav();
-	return m->shell->nav->level() >= 0;
+	const AptScreen *top = m->shell->shell ? m->shell->shell->inputTop() : nullptr;
+	return top && top->isMenu() && !top->isHidden() && top->level() >= 0;
 }
 
 void AptMenuPlayer::menu_pointer_moved()
 {
+	m->keyboardButton = String();
+	m->mainMenuGroup = m->mainMenuItem = -1;
 	if (m_booted && m->shell && m->shell->nav)
 	{
 		m->shell->nav->pointerMoved();
@@ -5881,6 +5886,89 @@ bool AptMenuPlayer::menuKey(const InputEventKey *key)
 		if ((bool)Engine::get_singleton()->get_meta("controller_keyboard_active", false) && !key->is_ctrl_pressed() && !key->is_alt_pressed() &&
 			(controllerKey == Key::KEY_LEFT || controllerKey == Key::KEY_RIGHT || controllerKey == Key::KEY_UP || controllerKey == Key::KEY_DOWN ||
 			controllerKey == Key::KEY_ENTER || controllerKey == Key::KEY_KP_ENTER || controllerKey == Key::KEY_BACKSPACE || controllerKey == Key::KEY_X || controllerKey == Key::KEY_Y)) return false;
+
+		// BFME2Lua dev/lib/main_menu.lua: explicit group/item policy and native
+		// timeline highlights. Expanded groups cover other headings in APT hit
+		// testing, so spatial mouse traversal cannot establish this order.
+		const Key menuKey = key->get_keycode();
+		const bool menuArrow = menuKey == Key::KEY_LEFT || menuKey == Key::KEY_RIGHT || menuKey == Key::KEY_UP || menuKey == Key::KEY_DOWN;
+		const bool mainScreen = m->shell && m->shell->shell && m->shell->shell->top() && m->shell->shell->top()->filename() == "MainMenu.apt";
+		AptCharacterInst *mainHeading = mainScreen ? m->A()->resolvePath(m->A()->level(m->shell->shell->top()->level()), "SoloPlayNav") : nullptr;
+		const bool main = mainHeading && mainHeading->globallyVisible() && !m->shell->wm->componentInputBlocked();
+		if (!main || menuKey == Key::KEY_TAB) m->mainMenuGroup = m->mainMenuItem = -1;
+		if (main && (menuArrow || (m->mainMenuGroup >= 0 && (menuKey == Key::KEY_ENTER || menuKey == Key::KEY_KP_ENTER || menuKey == Key::KEY_SPACE))))
+		{
+			struct Menu { const char *clip; std::vector<const char *> items; };
+			const std::vector<Menu> menus = {
+				{ "TutorialsNav", { "BasicTutorial", "AdvancedTutorial", "StrategicTutorial" } },
+				{ "SoloPlayNav", { "Skirmish", "WarOfTheRing", "EvilCampaign", "GoodCampaign", "LoadGame" } },
+				{ "MultiPlayNav", { "Online", "LocalNetwork", "Replay" } },
+				{ "OptionsNav", { "Settings", "AdvancedSettings", "Credits" } },
+				{ "MyHeores", {} }, { "QuitMainMenu", {} }
+			};
+			const int level = m->shell->shell->top()->level();
+			auto animate = [&](const std::string &path, const char *label, bool play) {
+				AptCharacterInst *clip = m->A()->resolvePath(m->A()->level(level), path);
+				AptSpriteInst *sprite = clip ? clip->asSprite() : nullptr;
+				const int frame = sprite ? sprite->labelFrame(label) : -1;
+				if (frame >= 0) { sprite->gotoFrame(frame); sprite->playing = play; }
+			};
+			if (key->is_pressed())
+			{
+				const int previousGroup = m->mainMenuGroup;
+				const bool horizontal = menuKey == Key::KEY_LEFT || menuKey == Key::KEY_RIGHT;
+				if (menuArrow)
+				{
+					if (horizontal)
+					{
+						const int delta = menuKey == Key::KEY_RIGHT ? 1 : -1;
+						if (m->mainMenuGroup < 0) m->mainMenuGroup = delta > 0 ? -1 : 0;
+						m->mainMenuGroup = (m->mainMenuGroup + delta + (int)menus.size()) % (int)menus.size();
+						m->mainMenuItem = -1;
+					}
+					else
+					{
+						if (m->mainMenuGroup < 0) m->mainMenuGroup = 0;
+						const int count = (int)menus[m->mainMenuGroup].items.size();
+						if (count) m->mainMenuItem = m->mainMenuItem < 0 ? 0 : (m->mainMenuItem + (menuKey == Key::KEY_UP ? 1 : -1) + count) % count;
+					}
+				}
+				else if (m->mainMenuItem < 0 && !menus[m->mainMenuGroup].items.empty()) m->mainMenuItem = 0;
+				else
+				{
+					const std::vector<std::vector<const char *>> actions = {
+						{ "OnTutorial", "OnTutorial", "OnTutorial" },
+						{ "Skirmish", "WarOfTheRing", "EvilCampaignButton", "GoodCampaignButton", "LoadGame" },
+						{ "OnlineButtonPressed", "LAN", "LoadReplay" },
+						{ "SettingsButton", "AdvancedSettingsButton", "Credits" }, { "CreateAHero" }, { "ExitGame" }
+					};
+					const int item = std::max(0, m->mainMenuItem);
+					const std::string action = actions[m->mainMenuGroup][item];
+					if (action.find("Button") != std::string::npos && action != "OnlineButtonPressed")
+					{
+						std::string error;
+						if (!m->shell->wm->invokeASAt(level, "", action, {}, nullptr, &error)) m->errors.insert(error);
+					}
+					else
+					{
+						const char *tutorials[] = { "Basic", "Advanced", "Strategic" };
+						m->shell->wm->invokeCallback("AptMainMenu::" + action, m->mainMenuGroup == 0 ? tutorials[item] : "");
+					}
+				}
+				for (int g = 0; g < (int)menus.size(); ++g)
+				{
+					const bool chosen = g == m->mainMenuGroup;
+					const bool single = menus[g].items.empty();
+					if (previousGroup != m->mainMenuGroup) animate(menus[g].clip, single ? (chosen ? "_over" : "_up") : (chosen ? "_show" : "_hide"), chosen || single);
+					if (!single && previousGroup != m->mainMenuGroup) animate(std::string(menus[g].clip) + ".OpenButton", chosen ? "_over" : "_up", true);
+					for (int j = 0; j < (int)menus[g].items.size(); ++j)
+						animate(std::string(menus[g].clip) + "." + menus[g].items[j], chosen && j == m->mainMenuItem ? "_over" : "_up", true);
+				}
+				m->keyboardButton = String(menus[m->mainMenuGroup].clip);
+				if (m->mainMenuItem >= 0) m->keyboardButton += String(".") + menus[m->mainMenuGroup].items[m->mainMenuItem];
+			}
+			return true;
+		}
 
 	// lane SAVE-UI1: the top screen's own Escape procedure first (its press and its release are its alone)
 	if (key->get_keycode() == Key::KEY_ESCAPE && !key->is_echo() && menu_escape(key->is_pressed()))
