@@ -140,3 +140,70 @@ test('Worker loads account moderation from its own user metadata without leaking
  const page=await object.fetch(new Request('http://lobby/')); assert.equal(page.status,200);
  assert.match(await page.text(),/User management/);
 });
+
+test('game management protects private rooms, signs announcements, closes waiting rooms and rejects stale writes',async()=>{
+ const {lobby}=fixture();const a=await guest(lobby,'Admin test');
+ const made=await call(lobby,'POST','/v1/games',{token:a.token,body:{name:'Private gathering',profile,setup,room_code:'ABCDEF'}});
+ assert.equal(made.status,200);const id=made.body.id;const game=lobby.games.get(id);assert.equal(game.roomCode,'ABCDEF');
+ assert.equal((await call(lobby,'GET','/v1/dashboard')).body.games.length,0);
+ assert.equal((await call(lobby,'GET','/v1/admin/games')).status,401);
+ assert.equal((await call(lobby,'GET','/v1/admin/games/'+id,{token:a.token})).status,401);
+ let detail=(await call(lobby,'GET','/v1/admin/games/'+id,{admin:true})).body.game;
+ assert.equal(detail.private,true);assert.equal(detail.roster[0].accountId,a.account.id);
+ const manage=body=>call(lobby,'POST','/v1/admin/games/'+id,{admin:true,body});
+ assert.equal((await manage({action:'announce',revision:detail.revision,text:'   '})).status,400);
+ assert.equal((await manage({action:'announce',revision:detail.revision,text:'🔥'.repeat(51)})).status,400);
+ assert.equal((await manage({action:'announce',revision:detail.revision,text:'Welcome, friends'})).status,200);
+ assert.equal((await manage({action:'close',revision:detail.revision})).status,409);
+ detail=(await call(lobby,'GET','/v1/admin/games/'+id,{admin:true})).body.game;
+ assert.equal(detail.chat.at(-1).text,'Welcome, friends');assert.equal(detail.chat.at(-1).from,'Server');
+ assert.equal((await manage({action:'close',revision:detail.revision})).status,200);
+ assert.equal(lobby.games.has(id),false);assert.equal(lobby.history.get(id).state,'cancelled');
+ assert.equal((await call(lobby,'GET','/v1/history')).body.games.length,0);
+ assert.equal(JSON.stringify(lobby.history.get(id)).includes('ABCDEF'),false);
+});
+
+test('completed archive survives expiry and restart, is sanitized publicly, and supports pagination',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'openbfme-history-'));
+ try{
+ const store=fileStore(dir);let {lobby,env}=fixture(store);const a=await guest(lobby,'Historian');
+ for(let n=0;n<3;n++){
+ const made=await call(lobby,'POST','/v1/games',{token:a.token,body:{name:'History '+n,profile,setup,password:'secret'}});assert.equal(made.status,200);
+ const g=lobby.games.get(made.body.id);g.state='started';g.startedAt=env.now();if(n===2)g.roomCode='secret-room';
+ await lobby.markFinished(g.id);await lobby.markFinished(g.id);env.advance(1000);
+ assert.equal((await call(lobby,'POST','/v1/admin/games/'+g.id,{admin:true,body:{action:'announce',text:'Late',revision:g.seq}})).status,409);
+ }
+ env.advance(4*60*60*1000);lobby.sweep();assert.equal(lobby.games.size,0);
+ lobby=fixture(store).lobby;lobby.load(store.loadGames(),store.loadMeta());assert.equal(lobby.history.size,3);
+ const page=(await call(lobby,'GET','/v1/history?limit=1')).body;assert.equal(page.total,2);assert.equal(page.games.length,1);assert.ok(page.next);
+ const second=(await call(lobby,'GET','/v1/history?limit=1&after='+page.next)).body;assert.equal(second.games.length,1);assert.equal(second.next,null);
+ const text=JSON.stringify(page);for(const secret of ['secret',a.token,a.account.id,'chat','revision'])assert.equal(text.includes(secret),false);
+ assert.equal((await call(lobby,'GET','/v1/admin/games?status=completed',{admin:true})).body.games.length,3);
+ assert.equal((await call(lobby,'GET','/v1/history?limit=101')).status,400);
+ assert.equal((await call(lobby,'GET','/v1/history?after=unknown')).status,400);
+ assert.equal((await call(lobby,'GET','/v1/history?status=wrong')).status,400);
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('nickname history and account status search are retained; completion persistence can retry a failed write',async()=>{
+ const {lobby}=fixture();const a=await guest(lobby,'Original');await admin(lobby,a.account.id,{action:'rename',name:'Renamed',revision:0});
+ const found=(await call(lobby,'GET','/v1/admin/users?search=original&status=online',{admin:true})).body.users;
+ assert.equal(found.length,1);assert.deepEqual(found[0].previousNames,['Original']);
+ assert.equal((await call(lobby,'GET','/v1/admin/users?status=unknown',{admin:true})).status,400);
+ const made=await call(lobby,'POST','/v1/games',{token:a.token,body:{name:'Retry',profile,setup}});const game=lobby.games.get(made.body.id);
+ lobby.env.store.saveGame=async()=>{throw new Error('disk full');};await assert.rejects(lobby.markFinished(game.id),/disk full/);assert.equal(game.finished,undefined);
+ lobby.env.store.saveGame=async()=>{};await lobby.markFinished(game.id);assert.equal(game.finished,true);assert.equal(lobby.history.size,1);
+});
+
+test('Worker retains completed history through reload; legacy migration reports failed storage',async()=>{
+ const {LobbyObject}=await import('../src/worker.mjs');const stored=new Map();let ready;
+ const state={storage:{put:async(k,v)=>stored.set(k,structuredClone(v)),delete:async k=>stored.delete(k),list:async({prefix})=>new Map([...stored].filter(([k])=>k.startsWith(prefix)))},blockConcurrencyWhile:fn=>{ready=fn();}};
+ let object=new LobbyObject(state,config);await ready;const a=await guest(object.lobby,'Worker archive');
+ const made=await call(object.lobby,'POST','/v1/games',{token:a.token,body:{name:'Worker game',profile,setup}});const g=object.lobby.games.get(made.body.id);g.state='started';
+ assert.equal((await call(object.lobby,'POST','/v1/admin/games/'+g.id,{admin:true,body:{action:'close',revision:g.seq}})).status,409);
+ await object.lobby.markFinished(g.id);await state.storage.delete('game:'+g.id);
+ object=new LobbyObject(state,config);await ready;assert.equal((await call(object.lobby,'GET','/v1/history')).body.games[0].name,'Worker game');
+ const {lobby}=fixture({saveMeta:async()=>{throw new Error('archive disk full');}});const legacy=structuredClone(g);delete legacy.completedAt;lobby.games.set(legacy.id,legacy);
+ await assert.rejects(lobby.restoreArchives(),/archive disk full/);assert.equal(lobby.history.size,0);
+ lobby.env.store.saveMeta=async()=>{};await lobby.restoreArchives();assert.equal(lobby.history.get(g.id).completedAt,null);
+});

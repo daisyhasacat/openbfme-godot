@@ -59,12 +59,13 @@ export function nodeEnv(store) {
   };
 }
 
-export function startServer(env = readEnv(), { log = console.log, health = null } = {}) {
+export async function startServer(env = readEnv(), { log = console.log, health = null } = {}) {
   const dataDir = env.LOBBY_DATA;
   if (!dataDir) throw new Error('LOBBY_DATA (a directory) is required');
   const store = fileStore(dataDir);
   const lobby = new Lobby(nodeEnv(store), configFromEnv(env));
   lobby.load(store.loadGames(), store.loadMeta());
+  await lobby.restoreArchives();
   const [host, port] = String(env.LOBBY_BIND ?? '127.0.0.1:8787').split(':');
   // one request at a time through the lobby (as a Durable Object serialises them)
   let chain = Promise.resolve();

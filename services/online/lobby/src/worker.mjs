@@ -193,7 +193,9 @@ export class LobbyObject {
       const games = await state.storage.list({ prefix: 'game:' });
       const relays = await state.storage.list({ prefix: 'relay-status:' });
       const users = await state.storage.list({ prefix: 'user:' });
-      this.lobby.load([...games.values()], [...relays.values(), ...users.values()]);
+      const history = await state.storage.list({ prefix: 'game-history:' });
+      this.lobby.load([...games.values()], [...relays.values(), ...users.values(), ...history.values()]);
+      await this.lobby.restoreArchives();
     });
   }
   async fetch(request) {

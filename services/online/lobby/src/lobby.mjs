@@ -1,4 +1,5 @@
 import { webResponse } from './webui.mjs';
+import { gameRecord, listGames, ManagementQueryError } from './management.mjs';
 // OpenBFME online lobby. GPL-3.0.
 //
 // The lobby's logic (lane ONLINE-2, docs/ONLINE.md phase O1), without a platform: the Cloudflare Worker + Durable Object (worker.mjs) and the self-hosted
@@ -238,6 +239,7 @@ export class Lobby {
       if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$/.test(r.address)) throw new Error(`lobby: relay address ${r.address} must be a.b.c.d:port`);
     }
     this.users = new Map(); // persisted guest identities and moderation revisions; never session tokens
+    this.history = new Map(); // durable sanitized completed/cancelled games, separate from expiring live rooms
     this.games = new Map(); // id -> game
     this.buckets = new Map(); // rate limit key -> { tokens, at }
     this.relayStatus = new Map(); // INFRA-2 r2: relay address -> its uploader's last status (relayStatus())
@@ -318,6 +320,7 @@ export class Lobby {
     for (const g of games) this.games.set(g.id, g);
     for (const r of relayStatus) {
       if (r.kind === 'user') this.users.set(r.id, r);
+      else if (r.kind === 'game-history') this.history.set(r.id, r);
       else if (r.relay) this.relayStatus.set(r.relay, r);
     }
     // Existing matches predate the directory; recover their display identities without credentials.
@@ -410,7 +413,7 @@ export class Lobby {
   }
   dashboard() {
     const online = this.onlineUsers();
-    const games = [...this.games.values()].filter((g) => g.state === 'open' || (g.state === 'started' && !g.finished))
+    const games = [...this.games.values()].filter((g) => !g.roomCode && (g.state === 'open' || (g.state === 'started' && !g.finished)))
       .map((g) => ({ ...this.publicGame(g), createdAt: g.created, startedAt: g.startedAt ?? null,
         capacity: g.slots.filter((slot) => slot.state !== 'closed').length,
         roster: g.slots.filter((slot) => slot.state === 'player' || AI_STATES.has(slot.state)).map((slot) => ({ name: slot.name, computer: AI_STATES.has(slot.state) })) }));
@@ -423,7 +426,10 @@ export class Lobby {
     const search = String(query.get('search') ?? '').toLowerCase().slice(0, 100);
     const after = String(query.get('after') ?? '');
     const limit = intIn(Number(query.get('limit') ?? 50), 1, 100, 'limit');
-    const rows = [...this.users.values()].filter((u) => u.id > after && (!search || u.name.toLowerCase().includes(search) || u.id.toLowerCase().includes(search)))
+    const status = query.get('status') ?? 'all';
+    if (!['all', 'online', 'suspended'].includes(status)) throw bad('bad_field', 'unknown account status');
+    const rows = [...this.users.values()].filter((u) => u.id > after && (status !== 'online' || online.has(u.id)) && (status !== 'suspended' || u.banned)
+      && (!search || [u.name, u.id, ...(u.previousNames ?? [])].some((value) => value.toLowerCase().includes(search))))
       .sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).slice(0, limit + 1);
     return { v: VERSION, users: rows.slice(0, limit).map((u) => ({ ...u, online: online.has(u.id), lastSeenAt: u.lastSeenAt ?? null })),
       next: rows.length > limit ? rows[limit-1].id : null };
@@ -439,6 +445,7 @@ export class Lobby {
     else if (body.action === 'rename') {
       next.name = str(body.name, 24, 'name').trim();
       if (!next.name) throw bad('bad_field', 'name must not be blank');
+      next.previousNames = [...new Set([...(user.previousNames ?? []), user.name])].filter((name) => name !== next.name).slice(-20);
     } else throw bad('bad_field', 'unknown user action');
     await this.saveUser(next);
     if (body.action === 'ban' || body.action === 'revoke') this.present.delete(id);
@@ -448,6 +455,47 @@ export class Lobby {
     }
     this.statsCache = null;
     return { v: VERSION, user: next };
+  }
+
+  managedGames(query, options) {
+    try { return listGames(this, query, options); }
+    catch (error) { if (error instanceof ManagementQueryError) throw bad('bad_field', error.message); throw error; }
+  }
+  managedGame(id) {
+    const current = this.games.get(id);
+    const record = this.history.get(id) ?? (current ? gameRecord(this, current) : null);
+    if (!record) throw new LobbyError(404, 'no_game', 'this game is not available');
+    return { v: VERSION, game: record };
+  }
+  async archiveGame(game) {
+    const record = gameRecord(this, game);
+    await this.env.store.saveMeta?.(`game-history:${game.id}`, record);
+    this.history.set(game.id, record);
+  }
+  async restoreArchives() {
+    for (const game of this.games.values()) if ((game.finished || game.state === 'closed') && !this.history.has(game.id)) await this.archiveGame(game);
+  }
+  async manageGame(id, body) {
+    const game = this.game(id);
+    if (body.revision !== game.seq) throw new LobbyError(409, 'revision', 'the room changed: refresh before trying again');
+    if (game.finished || game.state === 'closed') throw new LobbyError(409, 'finished', 'completed games are read-only');
+    if (body.action === 'announce') {
+      const text = str(body.text, 200, 'text').trim();
+      if (!text) throw bad('bad_field', 'message must not be blank');
+      this.event(game, text, 'Server');
+      await this.save(game);
+    } else if (body.action === 'close') {
+      if (game.state !== 'open') throw new LobbyError(409, 'started', 'only waiting rooms can be closed; relay matches continue independently');
+      this.event(game, 'The administrator closed this room', 'Server');
+      game.state = 'closed';
+      game.completedAt = this.env.now();
+      await this.save(game);
+      await this.archiveGame(game);
+      this.games.delete(id);
+      await this.env.store.deleteGame?.(id);
+      this.wake(id);
+    } else throw bad('bad_field', 'unknown game management action');
+    return this.managedGame(id);
   }
 
   // ---- games ----
@@ -495,6 +543,7 @@ export class Lobby {
     for (const [id, g] of this.games) {
       const keep = g.state === 'started' ? this.config.startedGameKeepMs : this.config.openGameIdleMs;
       if (now - g.touched > keep) {
+        if (g.finished && !this.history.has(id)) continue; // retain legacy/unarchived records until durable migration succeeds
         this.games.delete(id);
         this.env.store.deleteGame?.(id);
         this.wake(id);
@@ -1049,10 +1098,14 @@ export class Lobby {
   // the seq and the idle clock are not touched)
   async markFinished(id) {
     const g = this.games.get(id);
-    if (!g || g.finished) return;
-    g.finished = true;
-    this.statsCache = null;
-    await this.env.store.saveGame?.(g);
+    if (!g) return;
+    if (!g.finished) {
+      const completed = { ...g, finished: true, completedAt: this.env.now() };
+      await this.env.store.saveGame?.(completed);
+      Object.assign(g, completed);
+      this.statsCache = null;
+    }
+    if (!this.history.has(id)) await this.archiveGame(g);
   }
   async replayFile(account, id, which) {
     const store = this.logStore();
@@ -1181,6 +1234,19 @@ export async function route(lobby, req) {
     if (m === 'GET' && p[1] === 'dashboard' && p.length === 2) {
       lobby.limit(`dashboard:${req.ip}`, 30, 10);
       return json(200, lobby.dashboard());
+    }
+    if (m === 'GET' && p[1] === 'history' && p.length === 2) {
+      lobby.limit(`history:${req.ip}`, 30, 10);
+      return json(200, lobby.managedGames(req.query, { history: true }));
+    }
+    if (p[1] === 'admin' && p[2] === 'games') {
+      lobby.limit(`game-management:${req.ip}`, 60, 20);
+      const raw = await req.bytes();
+      await lobby.adminCheck(req, raw);
+      if (m === 'GET' && p.length === 3) return json(200, lobby.managedGames(req.query, { admin: true }));
+      if (m === 'GET' && p.length === 4) return json(200, lobby.managedGame(p[3]));
+      if (m === 'POST' && p.length === 4) return json(200, await lobby.manageGame(p[3], await body()));
+      return json(404, { v: VERSION, error: 'not_found', message: 'unknown game management path' });
     }
     if (p[1] === 'admin' && p[2] === 'users') {
       lobby.limit(`moderation:${req.ip}`, 60, 20);
