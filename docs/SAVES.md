@@ -1038,6 +1038,11 @@ audit (1,007 transfers, zero problems) passed. Sol 6.1 reviewed the changes.
 
 ## Direct save without menus
 
+Press **Ctrl+Shift+S** during gameplay to write `Quick Save.obfmesave`. A brief
+on-screen message confirms success or explains the failure. The hotkey stays
+inactive in menus, the console, the map editor, and text fields. Holding the key
+does not repeatedly save. F5 retains its original saved-camera-view binding.
+
 The console command `/save Fortress test` saves a snapshot as
 `Fortress test.obfmesave` in the normal Save folder. `/save` uses `Quick Save`.
 Names with spaces are entered directly, without quotes. An existing save of the

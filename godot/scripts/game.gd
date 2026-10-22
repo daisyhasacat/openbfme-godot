@@ -292,6 +292,7 @@ const OnlineStats := preload("res://scripts/online_stats.gd") # lane ONLINECOUNT
 const AppIcon := preload("res://scripts/app_icon.gd") # lane OWNERFIX-3: the OpenBFME window icon (not Godot's)
 var _display: RefCounted                 # lane OPTS-1: the display settings in effect (openbfme-display.cfg)
 var _display_path := ""
+var _quick_save_hotkey: CanvasLayer
 var _display_overlay: CanvasLayer        # scripts/fps_overlay.gd: the counter and the F10 / Alt+Enter keys
 var _display_screen: CanvasLayer         # scripts/openbfme_options_screen.gd
 var _game_options: Node                  # lane OPTS-2: scripts/game_options.gd, the retail detail / brightness / scroll and the OpenBFME extras in effect
@@ -606,6 +607,9 @@ var _scripted_skirmish_ini := ""
 
 
 func _exit_tree() -> void:
+	if is_instance_valid(_quick_save_hotkey):
+		_quick_save_hotkey.set_process_input(false)
+		_quick_save_hotkey.queue_free()
 	if is_instance_valid(_touch_ui_scroll):
 		_touch_ui_scroll.set_process_input(false)
 		_touch_ui_scroll.queue_free()
@@ -1294,6 +1298,12 @@ func _boot() -> void:
 	_lua_console = preload("res://scripts/lua_console.lua").new()
 	_lua_console.execute = func(code: String) -> Dictionary: return _world.execute_lua(code)
 	_lua_console.save_game = save_game
+	_quick_save_hotkey = preload("res://scripts/quick_save_hotkey.gd").new()
+	_quick_save_hotkey.name = "QuickSaveHotkey"
+	_quick_save_hotkey.save = save_game
+	_quick_save_hotkey.available = func() -> bool:
+		return _state == State.PLAYING and not _lua_console.is_open() and not _shell.menu_has_input() and not (is_instance_valid(_map_editor) and _map_editor.active)
+	get_tree().root.add_child.call_deferred(_quick_save_hotkey)
 	_lua_console.toggled.connect(_lua_console_toggled)
 	_lua_console.restart_requested.connect(func(): call_deferred("_console_restart"))
 	_lua_console.map_editor_requested.connect(func(): call_deferred("_open_map_editor"))
