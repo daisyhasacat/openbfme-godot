@@ -1026,3 +1026,34 @@ TEST_CASE("shroud: diagnostic ground-height queries preserve authoritative cache
 	CHECK(f.shroud.groundReferenceFor(*scout, vision, false) == reference);
 	CHECK(hashOf(f.shroud) == cached);
 }
+
+TEST_CASE("shroud retail: campaign maps draw unexplored black shroud while bare viewers opt out")
+{
+	OPENBFME_REQUIRE_START(s);
+	ArchiveW3DFileSource source(*s->mount->fs);
+	WW3DAssetManager assets(source);
+	LiveGame game(*s->world, *s->mount->fs, assets, s->options);
+	LiveGame::Options options;
+	options.mapName = "map beginner tutorial";
+	options.campaign = true;
+	options.mapScripts = 0; // isolate initial visibility from authored reveal actions
+	SUBCASE("tutorial") {}
+	SUBCASE("campaign") { options.mapName = "map ang angmar"; }
+	SUBCASE("bare viewer") { options.campaign = false; }
+	std::string error;
+	REQUIRE_MESSAGE(game.load(options, &error), error);
+	ShroudManager &shroud = game.shroud();
+	CHECK(shroud.displayed() == options.campaign);
+	CHECK(shroud.displayLevel(CELLSHROUD_SHROUDED) == 0u); // mounted GameData ShroudAlpha: black unexplored terrain
+	const Player *local = game.logic().players().getLocalPlayer();
+	REQUIRE(local != nullptr);
+	bool unexplored = false;
+	for (int y = 0; y < shroud.cellCountY(); ++y)
+	{
+		for (int x = 0; x < shroud.cellCountX(); ++x)
+		{
+			unexplored = unexplored || shroud.getCellStatus(local->getPlayerIndex(), x, y) == CELLSHROUD_SHROUDED;
+		}
+	}
+	CHECK(unexplored);
+}

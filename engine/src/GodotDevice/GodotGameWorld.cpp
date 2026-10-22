@@ -1370,8 +1370,8 @@ void fragment() {
 	}
 	else errors.push_back(toGodot("weather: " + weatherError));
 
-	// VIS-1: the shroud is drawn for a game started from a game setup (a skirmish: RW 0x62F91A gave every player its explored map); a bare map load (the map and HUD
-	// viewers, the smoke test) has no explored cells and is drawn without it (set_shroud_drawn switches it)
+	// VIS-1: playable skirmishes, campaigns and tutorials draw the local player's shroud. Bare map/HUD viewers and the smoke test
+	// opt out; set_shroud_drawn remains the explicit viewer override.
 	m_shroudDrawn = m_game->shroud().displayed();
 	if (m_fxPlayer && m_fxPlayer->playback())
 	{

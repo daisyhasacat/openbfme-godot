@@ -35,6 +35,7 @@ func _run() -> void:
 	assert(game._campaign_flow.tutorial == lesson)
 	assert(game._campaign_flow.campaign.is_empty())
 	assert(game._hud_installed)
+	_assert_unexplored_shroud(game._world)
 	assert(game._report.stops.has("[S-175] tutorial entry: Objective and loading voice presentation are not ported; tutorial saves are not recorded"))
 	assert(game._report.map.to_lower() == String(def.map).to_lower())
 	# Restart uses the same standalone tutorial, without advancing campaign progress.
@@ -42,6 +43,7 @@ func _run() -> void:
 	assert(game._state == game.State.PLAYING)
 	assert(game._campaign_flow.tutorial == lesson)
 	assert(game._hud_installed)
+	_assert_unexplored_shroud(game._world)
 	var loaded_map := String(game._report.map)
 	# Leaving and Continue return to the main menu without campaign autosaves or unlocks.
 	game._campaign_flow.leave_to_score_screen()
@@ -54,3 +56,26 @@ func _run() -> void:
 	print("TUTORIAL START PASS: ", lesson, " ", loaded_map)
 	game.free()
 	quit()
+
+func _assert_unexplored_shroud(world: Node) -> void:
+	var report: Dictionary = world.get_shroud_report()
+	assert(report.displayed)
+	var cells: PackedByteArray = world.get_shroud_cells()
+	assert(cells.has(2)) # never explored cells remain shrouded
+	var hidden := cells.find(2)
+	var x := hidden % int(report.cells_x)
+	var y := hidden / int(report.cells_x)
+	var checked := false
+	for mesh in world.get_node("Terrain").find_children("*", "MeshInstance3D", true, false):
+		for surface in mesh.mesh.get_surface_count():
+			var material = mesh.get_active_material(surface)
+			if material is ShaderMaterial and material.shader.code.contains("terrain_common"):
+				assert(material.get_shader_parameter("shroud_enabled") == true)
+				var texture: Texture2D = material.get_shader_parameter("shroud_tex")
+				assert(texture != null)
+				# The texture has a one-texel border. Unexplored cells multiply terrain RGB by zero.
+				assert(texture.get_image().get_pixel(x + 1, y + 1).r == 0.0)
+				checked = true
+				break
+		if checked: break
+	assert(checked, "A terrain material must bind the black unexplored shroud texture")

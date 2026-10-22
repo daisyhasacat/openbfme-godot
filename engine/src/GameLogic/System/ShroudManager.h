@@ -211,7 +211,7 @@ public:
 		m_levels[2] = shroud;
 	}
 	unsigned displayLevel(CellShroudStatus s) const { return m_levels[(int)s]; }
-	// whether the client draws the shroud (a game started from a game setup; a bare map load is drawn without it); client data, not hashed
+	// whether the client draws the shroud (skirmish or campaign/tutorial; a bare viewer load is drawn without it); client data, not hashed
 	void setDisplayed(bool on) { m_displayed = on; }
 	bool displayed() const { return m_displayed; }
 
