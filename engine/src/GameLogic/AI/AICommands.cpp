@@ -225,6 +225,13 @@ bool AICommands::formationMove(GameLogic &logic, const GameMessage &m)
 	const float c=SimMath::cosDet(SimMath::addf32(angle->real,1.5707964f)),s=SimMath::sinDet(SimMath::addf32(angle->real,1.5707964f));
 	for(const auto &slot:slots) {
 		Coord3D position{SimMath::subf32(SimMath::addf32(dest->location.x,SimMath::mulf32(slot.offset.x,c)),SimMath::mulf32(slot.offset.y,s)),SimMath::addf32(SimMath::addf32(dest->location.y,SimMath::mulf32(slot.offset.x,s)),SimMath::mulf32(slot.offset.y,c)),0};
+		// The preview centres occupied ranks; the horde object origin need not.
+		if(const auto *object=logic.findObjectByID(slot.object)) {
+		 const auto center=FormationAssistant::rankCenter(*object);
+		 const float facingCos=SimMath::cosDet(angle->real),facingSin=SimMath::sinDet(angle->real);
+		 position.x=SimMath::subf32(position.x,SimMath::subf32(SimMath::mulf32(center.x,facingCos),SimMath::mulf32(center.y,facingSin)));
+		 position.y=SimMath::subf32(position.y,SimMath::addf32(SimMath::mulf32(center.x,facingSin),SimMath::mulf32(center.y,facingCos)));
+		}
 		position.z=logic.getGroundHeight(position.x,position.y);
 		AIGroup group(logic,{slot.object});group.groupMoveToPosition(position,false,CMD_FROM_PLAYER,true,angle->real,attack->boolean);
 	}

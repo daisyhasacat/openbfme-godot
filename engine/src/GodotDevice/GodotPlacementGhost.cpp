@@ -1200,14 +1200,11 @@ void PlacementGhostRenderer::updateFormation(LiveGame &game, const InGameUI &ui,
   auto *object=game.logic().findObjectByID(slot.object);
   auto *horde=object?dynamic_cast<HordeContain *>(object->getContain()):nullptr;
   if(horde) {
-   const auto &positions=horde->core().slots();
-   const size_t count=std::min(positions.size(),(size_t)horde->getContainCount());
-   float averageX=0,averageY=0;
-   for(size_t i=0;i<count;++i){averageX+=positions[i].x;averageY+=positions[i].y;}
-   if(count){averageX/=count;averageY/=count;}
-   const float c=std::cos(slot.angle+1.5707964f),s=std::sin(slot.angle+1.5707964f);
-   for(size_t i=0;i<count;++i) {
-    const float x=averageY-positions[i].y,y=averageX-positions[i].x;
+   const auto positions=FormationAssistant::rankOffsets(*object);
+   const auto center=FormationAssistant::rankCenter(*object);
+   const float c=std::cos(slot.angle),s=std::sin(slot.angle);
+   for(const auto &position:positions) {
+    const float x=position.x-center.x,y=position.y-center.y;
     add(slot.preview,slot.position.x+x*c-y*s,slot.position.y+x*s+y*c,slot.angle+1.5707964f);
    }
   } else add(slot.preview,slot.position.x,slot.position.y,slot.angle+1.5707964f);

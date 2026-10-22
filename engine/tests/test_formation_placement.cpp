@@ -2,6 +2,8 @@
 #include "doctest.h"
 
 #include "CombatTestUtil.h"
+#include "MoveTestUtil.h"
+#include "GameLogic/SimMath.h"
 #include "GameClient/FormationAssistant.h"
 #include "GameClient/FormationPlacement.h"
 #include "GameClient/HudInput.h"
@@ -224,8 +226,8 @@ TEST_CASE("formation assistant: INI selection limits, repeated ordered rows and 
 	auto *b = r.world.unit("Slasher", 'A', 100, 110), *c = r.world.unit("Slasher", 'A', 100, 120);
 	const auto slots = r.formations.layout(*r.world.logic, {r.ui.selected()[0], b->getID(), c->getID()}, 0, {100, 100, 0});
 	REQUIRE(slots.size() == 3);
-	CHECK(slots[0].offset.x == -14);
-	CHECK(slots[1].offset.x == 13);
+	CHECK(slots[0].offset.x == -21);
+	CHECK(slots[1].offset.x == 21);
 	CHECK(slots[2].offset.x == 0);
 	CHECK(slots[2].offset.y == 27);
 	CHECK(slots[0].preview == "Preview");
@@ -266,4 +268,94 @@ TEST_CASE("formation assistant: execution excludes the same dead and filtered se
  CHECK(mixed[0].object==eligible[0].object);
  CHECK(mixed[0].offset.x==eligible[0].offset.x);
  CHECK(mixed[0].offset.y==eligible[0].offset.y);
+}
+
+TEST_CASE("formation assistant: occupied rank centre differs from the horde "
+		  "object origin")
+{
+	movetest::MoveWorld world;
+	auto *horde = world.spawn("Horde", 305, 305);
+	auto *walker = world.spawn("Walker", 505, 305);
+	const auto offsets = FormationAssistant::rankOffsets(*horde);
+	REQUIRE(offsets.size() == 15);
+	const auto center = FormationAssistant::rankCenter(*horde);
+	CHECK(center.x == 30);
+	CHECK(center.y == 0);
+	CHECK(FormationAssistant::rankOffsets(*walker).empty());
+	CHECK(FormationAssistant::rankCenter(*walker).x == 0);
+	CHECK(FormationAssistant::rankCenter(*walker).y == 0);
+	// A casualty changes the occupied centroid; do not substitute the first N
+	// slots.
+	auto *contain = world.hordeOf(horde);
+	const auto *members = contain->getContainedItemsList();
+	REQUIRE_FALSE(members->empty());
+	members->front()->friend_setEffectivelyDead(true);
+	const auto reduced = FormationAssistant::rankOffsets(*horde);
+	CHECK(reduced.size() == 14);
+	CHECK(FormationAssistant::rankCenter(*horde).x == SimMath::divf32(400, 14));
+}
+
+TEST_CASE("formation assistant: hero sprite footprint and unequal row depths "
+		  "leave a gap")
+{
+	movetest::MoveWorld world;
+	auto *horde = world.spawn("Horde", 305, 305);
+	auto *hero = world.spawn("Walker", 505, 305);
+	FormationAssistant formations;
+	std::string error;
+	REQUIRE(formations.scan("Object HeroPreview\n FormationPreviewItemDecal\n "
+							"Texture = Hero\n Width = 128\n Height = 128\n End\nEnd\n"
+							"FormationAssistant\n RowPadding = 10\n UnitDefinition "
+							"Battalion\n ObjectFilter = NONE +Horde\n End\n"
+							"UnitDefinition Hero\n ObjectFilter = NONE +Walker\n "
+							"PreviewObject = HeroPreview\n End\n"
+							"FormationTemplate Mixed\n Rows\n Row = Battalion\n Row "
+							"= Hero\n End\n End\nEnd\n",
+							&error));
+	const auto slots = formations.layout(*world.logic, {horde->getID(), hero->getID()}, 0, {305, 305, 0});
+	REQUIRE(slots.size() == 2);
+	CHECK(slots[0].object == horde->getID());
+	CHECK(slots[1].object == hero->getID());
+	CHECK(slots[0].offset.y == 0);
+	// Half the horde's 64-unit depth + half the 128-unit decal + 10 padding.
+	CHECK(slots[1].offset.y == 106);
+}
+
+TEST_CASE("formation assistant: movement targets the occupied rank centre at "
+		  "each cardinal facing")
+{
+	for (float angle : {0.0f, 1.5707964f, 3.1415927f})
+	{
+		movetest::MoveWorld world;
+		world.buildMap();
+		auto *horde = world.spawn("Horde", 305, 305);
+		world.frames(2);
+		FormationAssistant formations;
+		std::string error;
+		REQUIRE(formations.scan("FormationAssistant\n UnitDefinition Unit\n ObjectFilter = ALL\n End\n "
+								"FormationTemplate Line\n Rows\n Row = Unit\n End\n End\nEnd\n",
+								&error));
+		world.aiCommands.setFormationAssistant(&formations);
+		const auto player = world.playerIndex("Alice");
+		world.select(player, {horde});
+		GameMessage message(MSG_DO_MOVETO_FORMATION, player);
+		message.appendLocationArgument({605, 605, 0});
+		message.appendRealArgument(angle);
+		message.appendIntegerArgument(0);
+		message.appendBooleanArgument(false);
+		world.send(message);
+		world.frames(100);
+		const auto *contain = world.hordeOf(horde);
+		Coord2D center{};
+		for (const auto *member : *contain->getContainedItemsList())
+		{
+			center.x += member->getPosition()->x;
+			center.y += member->getPosition()->y;
+		}
+		center.x /= 15;
+		center.y /= 15;
+		const auto dx = center.x - 605, dy = center.y - 605;
+		// tolerance: 10-unit grid snapping plus 1-unit locomotor stopping distance.
+		CHECK(dx * dx + dy * dy < 225);
+	}
 }

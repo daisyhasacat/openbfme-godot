@@ -55,5 +55,7 @@ class FormationAssistant
 	bool scan(const std::string &text, std::string *error);
 	int choose(float distance, size_t count) const;
 	std::vector<Slot> layout(GameLogic &logic, const std::vector<unsigned> &ids, int type, const Coord3D &origin) const;
+	static std::vector<Coord2D> rankOffsets(const Object &object);
+	static Coord2D rankCenter(const Object &object);
 	const Decal *decal(const std::string &name, bool item = false) const;
 };

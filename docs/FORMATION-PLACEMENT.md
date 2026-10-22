@@ -37,3 +37,18 @@ S-4464 records the remaining parity limits: native group pathing/slot optimizati
 activation settings for modified data, firing-arc AI state behavior, and independent
 RotWK verification. Current movement uses the port's existing per-slot movement
 and locomotor facing. This change does not claim a complete byte-identical port.
+
+The port treats each preview cell as the centre of its occupied ranks. Movement
+subtracts the rotated rank centroid from the battalion object's destination;
+figures use the same occupied slot coordinates and facing as HordeContain. This
+corrects the differing object origins of mixed battalions (Knights and Archers)
+and keeps casualties from substituting unrelated slots in the preview. This is
+an explicit adaptation of the current per-slot movement, not a claim that the
+native formation-group execution has been recovered. Solo figures reserve at
+least their decal dimensions, and successive rows use both rows' half-depths,
+so hero icons and rows of different sizes have space between them.
+
+`mixed_formation_placement_test.gd` exercises three Gondor Knight battalions and
+one Gondor Archer battalion, checking their soldiers' centres after arrival
+against the preview cells. It approaches clear ground from the north; terrain
+and blocked destinations can still legitimately prevent a requested formation.

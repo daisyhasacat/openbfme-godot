@@ -13,6 +13,9 @@ func _run() -> void:
 	assert(player.ok)
 	var unit_template := OS.get_environment("FORMATION_UNIT")
 	if unit_template.is_empty(): unit_template = "MenPorter"
+	# Keep map creeps from killing porters while arrival and final facing are measured.
+	for id in world.get_object_ids(): world.destroy_object(id)
+	world.advance(0.2)
 	var units := PackedInt64Array()
 	for i in 4: units.append(world.create_object(unit_template,int(player.output),1800+i*40,1800,0))
 	var camera = Camera3D.new()
@@ -60,7 +63,8 @@ func _run() -> void:
 	await create_timer(2.1).timeout
 	assert(not hud.get_placement_ghost_state().formation_visible)
 	assert(hud.get_selection().size()==4,"Releasing the chord deselected units")
-	for i in 50: world.advance(0.2)
+	# Allow the slower porters to finish paths to the wider decal-sized rows.
+	for i in 150: world.advance(0.2)
 	for slot in slots:
 		var unit: Dictionary = world.get_object(slot.id)
 		assert(unit.ok,str([unit,slot]))

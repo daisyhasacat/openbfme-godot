@@ -13,6 +13,8 @@
 #include "GameLogic/SimMath.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/Contain/HordeContainRuntime.h"
+#include "GameLogic/Object/Contain/HordeContainCore.h"
 #include "GameLogic/Object/ObjectGeometry.h"
 #include "GameLogic/ObjectFilterMatch.h"
 #include <algorithm>
@@ -223,7 +225,9 @@ std::vector<FormationAssistant::Slot> FormationAssistant::layout(GameLogic &logi
 						 };
 						 return distance(a) < distance(b);
 					 });
-	int y = 0;
+	float y = 0;
+	int previousHeight = 0;
+	bool firstRow = true;
 	for (const auto &cells : templates[type].rows)
 		while (!objects.empty())
 		{
@@ -254,7 +258,16 @@ std::vector<FormationAssistant::Slot> FormationAssistant::layout(GameLogic &logi
 						const auto &shape = CombatQueries::geometry(**obj);
 						slot.width = SimMath::cvttss2si(SimMath::addf32(SimMath::mulf32(shape.minorRadius,2),4));
 						slot.height = SimMath::cvttss2si(SimMath::addf32(SimMath::mulf32(shape.majorRadius,2),4));
+
 					}
+					// The preview sprite can be larger than collision geometry (heroes).
+					// Reserve its full footprint so adjacent figures do not overlap.
+					if (!(*obj)->isKindOfName("HORDE"))
+						if (const auto *art = decal(slot.unit->preview.empty()?defaultPreview:slot.unit->preview,true))
+						{
+							slot.width=std::max(slot.width,SimMath::cvttss2si(art->width));
+							slot.height=std::max(slot.height,SimMath::cvttss2si(art->height));
+						}
 					objects.erase(obj);
 					placed = true;
 					break;
@@ -269,6 +282,10 @@ std::vector<FormationAssistant::Slot> FormationAssistant::layout(GameLogic &logi
 					width = SimMath::cvttss2si(SimMath::addf32((float)(slot.width + width),columnPadding));
 					height = std::max(height, slot.height);
 				}
+			if (!firstRow)
+				y=SimMath::addf32(y,SimMath::addf32(SimMath::mulf32((float)(previousHeight+height),.5f),rowPadding));
+			firstRow=false;
+			previousHeight=height;
 			const int center = SimMath::cvttss2si(SimMath::mulf32(SimMath::subf32((float)width,columnPadding),.5f));
 			for (auto index : centerOut(row.size()))
 			{
@@ -277,7 +294,43 @@ std::vector<FormationAssistant::Slot> FormationAssistant::layout(GameLogic &logi
 					result.push_back({slot.object->getID(), slot.unit->preview.empty() ? defaultPreview : slot.unit->preview,
 									  Coord3D{(float)(slot.x - center), (float)y, 0}});
 			}
-			y = SimMath::cvttss2si(SimMath::addf32((float)(height+y),rowPadding));
+
 		}
 	return result;
+}
+
+// Port adaptation: preview cells denote the visual centre of the occupied ranks.
+// HordeContain places members at R(facing) * rank + object position (RW 0x875847).
+std::vector<Coord2D> FormationAssistant::rankOffsets(const Object &object)
+{
+	std::vector<Coord2D> result;
+	const auto *horde = dynamic_cast<const HordeContain *>(object.getContain());
+	if (!horde)
+		return result;
+	const auto &slots = horde->core().slots();
+	for (const auto *member : *horde->getContainedItemsList())
+	{
+		if (!member || member->isEffectivelyDead())
+			continue;
+		const int index = horde->getMemberSlot(member);
+		if (index >= 0 && (size_t)index < slots.size())
+			result.push_back({slots[index].x, slots[index].y});
+	}
+	return result;
+}
+Coord2D FormationAssistant::rankCenter(const Object &object)
+{
+	const auto offsets = rankOffsets(object);
+	Coord2D center{};
+	for (const auto &offset : offsets)
+	{
+		center.x = SimMath::addf32(center.x, offset.x);
+		center.y = SimMath::addf32(center.y, offset.y);
+	}
+	if (!offsets.empty())
+	{
+		center.x = SimMath::divf32(center.x, (float)offsets.size());
+		center.y = SimMath::divf32(center.y, (float)offsets.size());
+	}
+	return center;
 }
