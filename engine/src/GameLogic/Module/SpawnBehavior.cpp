@@ -551,7 +551,7 @@ void SpawnBehavior::killSpawns(int count)
 	}
 }
 
-void SpawnBehavior::onBodyDamageStateChange(BodyDamageType oldState, BodyDamageType newState)
+void SpawnBehavior::onBodyDamageStateChange(const DamageInfo *, BodyDamageType oldState, BodyDamageType newState)
 {
 	// RW 0x863585
 	if (!m_data->m_killSpawnsBasedOnModelConditionState)

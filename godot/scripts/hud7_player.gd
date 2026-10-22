@@ -7,28 +7,18 @@
 ##   sell        a barracks the builder buys and builds, selected by a click, its Sell button clicked: half the price back (income excluded), then it is gone
 ##   upgrade     the fortress's first affordable upgrade bubble clicked: the button shows the purchased state while it is researched (RW 0x943C40 availability 8)
 ##   herocancel  the fortress's hero ring, a hero recruited by a click, then a right click on the same bubble cancels it with the refund (RW 0x940C57)
-extends RefCounted
+extends "res://scripts/scenario_player.gd"
 
 var game: Node
 var hud: Node
 var world: Node
-var ok_count := 0
-var fail_count := 0
 
 
-func run(p_game: Node, scenarios: PackedStringArray) -> void:
+func _run(p_game: Node, scenarios: PackedStringArray) -> void:
 	game = p_game
 	hud = game._hud
 	world = game._world
-	for s in scenarios:
-		var r: String = await call("_scenario_" + s)
-		if r == "":
-			ok_count += 1
-			print("HUD7 %s: ok" % s)
-		else:
-			fail_count += 1
-			print("HUD7 %s: FAIL %s" % [s, r])
-	print("HUD7 RESULT: %d ok, %d failed" % [ok_count, fail_count])
+	await _run_scenarios(scenarios)
 
 
 # ---- helpers ----------------------------------------------------------------------------------------------------------------------------------------------

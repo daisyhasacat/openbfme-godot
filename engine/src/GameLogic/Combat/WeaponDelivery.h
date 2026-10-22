@@ -55,6 +55,10 @@ struct ProjectileShot
 // model space and composes it with the launcher's transform (RW 0x70BCE7). The answer is a pure function of the template's draw data, the drawable's model condition
 // flags (set by the logic, synchronously), its scale and its angle: the bones come from a pristine pose (the animation state's first animation at
 // FrameForPristineBonePositions, RW 0x4BD9A7), never from the animation frame the client is showing (lane RENDER-2, stop S-360).
+// RW 0x70BCE7 Object::convertBonePosToWorldPos (position only, no transform out): `obj`'s transform applied to the model-space point `bone`, retail's SSE
+// order (per row: z then y, then x, then the translation). Shared by the fire FX aim (RW 0x6CB85A) and TransitionDamageFX (RW 0x8BE077, lane FX-4)
+Coord3D ConvertBonePosToWorldPos(const Object &obj, const Coord3D &bone);
+
 class ProjectileLaunchOffsets
 {
 public:

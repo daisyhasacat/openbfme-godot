@@ -185,6 +185,7 @@ private:
 	// lane ONLINEUX-1
 	void applyLoginButton(bool force);         ///< RW 0x97A668 (BFME2 0x5706D4): Login enabled while the nickname has a printable character
 	void navTo(const std::string &page);        ///< the shell's ButtonNav clip to the page's frame label (its highlighted button)
+	void retryNav();                            ///< DEVINPR-1: navTo's label once the clip is there (at most kNavRetryFrames updates)
 	void fillTicker();                          ///< RW 0x9C881D / 0x9C8694: the home page's ticker rows
 	bool gameLeft(const std::string &id) const; ///< a started game this player left (ctx leftGames)
 	void showSelectedGameMap();                 ///< the browser's MAP panel shows the selected game's map (the panel is read only there)
@@ -276,6 +277,9 @@ private:
 	// lane ONLINEUX-1
 	int m_loginButton = -1;                 ///< what the movie's Login button was last told (1 enabled, 0 disabled, -1 not yet)
 	bool m_shownOnce = false;               ///< the shell's movie has been up (a later runInit is a return from a covering screen)
+	std::string m_navDue;                   ///< DEVINPR-1: the ButtonNav frame label still to be played ("" none)
+	int m_navTries = 0;
+	static constexpr int kNavRetryFrames = 60; ///< DEVINPR-1: about a second of shell updates
 	bool m_barDue = false;                  ///< the button bar is to be shown again on the next update (the movie's ShowButtonBar)
 	std::string m_runningId;                ///< the running game a rejoin / watch was asked for
 	std::vector<std::string> m_tickerRows;

@@ -66,7 +66,7 @@ static func _cases() -> Dictionary:
 		"downloading": _case("downloading", "play", ["Pause", "Cancel", "Updating to*"]),
 		"error": _case("error", "play", ["Update to*"], ["Update not installed", "Copy details", "Open log folder", "Close"]),
 		"glibc": _case("glibc", "play", ["PLAY"], ["The game did not start", "Close"]),
-		"first-run": _case("first-run", "play", ["Not installed", "Download the games", "No preview release yet"]),
+		"first-run": _case("first-run", "play", ["Not installed", "Download the games", "No nightly release yet"]),
 		"offline": _case("offline", "play", ["Could not check for updates"]),
 		"verifying": _case("verifying", "play", ["Checking*", "Pause", "Cancel"]),
 		"paused": _case("paused", "play", ["Resume", "Cancel"]),

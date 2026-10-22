@@ -47,8 +47,9 @@ public:
 	AptView3DViewers &operator=(const AptView3DViewers &) = delete;
 
 	void setOwner(Node *owner, const Ref<RetailFileSystem> &fs);
-	// A canvas build starts: every viewer is marked unused (an unused one stops rendering at endBuild).
-	void beginBuild();
+	// A canvas build starts: every viewer is marked unused (an unused one stops rendering at endBuild). Lane HUDREDRAW-1: `paths` (non-null) limits that
+	// to the viewers of those clip paths (the level ranges drawn again; the kept ones' viewers stay in use)
+	void beginBuild(const std::set<std::string> *paths = nullptr);
 	// The View3D placeholder `op` (nativeTag, symbolName "View3D") drawn into `item` over `rect` (window pixels). Creates the viewer on first use.
 	// `stretchWithStage`: Sol r1 (ONLINE-5, S-4555): the clip is on a shell menu screen (AptView3DOnMenuLevel): it stretches with the stage
 	void draw(RID item, const Rect2 &rect, const AptCanvasOp &op, bool stretchWithStage);

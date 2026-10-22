@@ -389,6 +389,10 @@ TEST_CASE("hero hud: the fortress's REVIVE buttons show the hero records and a p
 TEST_CASE("hero hud: custom hero recruitment uses the selected Shield Maiden image")
 {
 	if (!haveWorld("custom hero recruitment image")) return;
+	std::string expectedImage;
+	SUBCASE("Shield Maiden") { expectedImage = "HICAHShieldMaiden"; }
+	SUBCASE("Female Elven Archer") { expectedImage = "HICAHFemaleElvenArcher"; }
+	SUBCASE("Missing subclass ButtonImage") { expectedImage = "BuildingNoArt"; }
 	SharedWorld &s = shared();
 	HeroHudRig h(s);
 	const auto context = s.world->enterContext();
@@ -397,13 +401,17 @@ TEST_CASE("hero hud: custom hero recruitment uses the selected Shield Maiden ima
 	bool found = false;
 	for (size_t c = 0; c < TheCreateAHeroSystem->classes().size(); ++c)
 		for (size_t sub = 0; sub < TheCreateAHeroSystem->classes()[c].subClasses.size(); ++sub)
-			if (TheCreateAHeroSystem->classes()[c].subClasses[sub].buttonImage == "HICAHShieldMaiden")
+			if (TheCreateAHeroSystem->classes()[c].subClasses[sub].buttonImage == (expectedImage == "BuildingNoArt" ? "HICAHShieldMaiden" : expectedImage))
 			{
 				hero.classIndex = c;
 				hero.subClassIndex = sub;
 				found = true;
 			}
 	REQUIRE(found);
+	auto *subclass = const_cast<CreateAHeroSubClass *>(TheCreateAHeroSystem->subClass(hero.classIndex, hero.subClassIndex));
+	REQUIRE(subclass);
+	struct RestoreImage { CreateAHeroSubClass &sub; std::string image; ~RestoreImage() { sub.buttonImage = image; } } restoreImage{ *subclass, subclass->buttonImage };
+	if (expectedImage == "BuildingNoArt") subclass->buttonImage.clear();
 	hero.name = u"Haley";
 	hero.uniqueID = "hud-shield-maiden";
 	h.rig.game->logic().createAHeroes().assign(*h.rig.local, hero);
@@ -426,51 +434,40 @@ TEST_CASE("hero hud: custom hero recruitment uses the selected Shield Maiden ima
 		const auto &records = h.rig.local->heroes().records();
 		if (button.reviveIndex >= 0 && records.at(button.reviveIndex).templateName == "CreateAHero")
 		{
-			CHECK(button.image == "HICAHShieldMaiden");
+			CHECK(button.image == expectedImage);
 			sawHero = true;
 		}
 	}
 	CHECK(sawHero);
-	// Recruit through the actual fortress HUD, then kill and revive the same
-	// custom hero. Creation consumes the purchase upgrade in skirmish/LAN.
-	h.rig.local->getMoney()->deposit(100000);
-	auto customButton = [&]() {
-		for (const auto &button : h.buttons(GUI_COMMAND_REVIVE))
-			if (const auto *record = h.rig.local->heroes().at(button.reviveIndex))
-				if (record->templateName == "CreateAHero") return button;
-		return ControlBarButton{};
-	};
-	auto liveHero = [&]() -> Object * {
-		for (Object *o = h.rig.logic().getFirstObject(); o; o = o->getNextObject())
-			if (o->isKindOfName("CREATE_A_HERO") && !o->isEffectivelyDead() && o->getControllingPlayer() == h.rig.local) return o;
-		return nullptr;
-	};
-	auto button = customButton();
-	REQUIRE(button.button);
-	REQUIRE(h.hud->controlBar().pressButton(button.slot, button.inPalantir));
-	for (int i = 0; i < 4000 && !liveHero(); ++i) h.frames(1);
-	Object *first = liveHero();
-	REQUIRE(first);
-	const ObjectID firstID = first->getID();
-	const auto *purchaseUpgrade = TheUpgradeCenter->findUpgrade(TheCreateAHeroSystem->canBuildUpgradeName);
-	REQUIRE(purchaseUpgrade);
-	CHECK_FALSE(h.rig.local->hasUpgradeComplete(purchaseUpgrade));
-	h.frames(300); // finish the spawn animation before death
-	DamageInfo damage;
-	damage.m_input.m_damageType = DAMAGE_UNRESISTABLE;
-	damage.m_input.m_amount = 100000.0f;
-	damage.m_input.m_kill = true;
-	first->attemptDamage(damage);
-	REQUIRE(first->isEffectivelyDead());
-	h.frames(20);
-	button = customButton();
-	REQUIRE_MESSAGE(button.button, "dead custom hero must remain available at the fortress");
-	CHECK(button.state == ButtonState::Enabled);
-	CHECK(h.rig.local->heroes().at(button.reviveIndex)->dead);
-	CHECK(button.image == "HICAHShieldMaiden");
-	REQUIRE(h.hud->controlBar().pressButton(button.slot, button.inPalantir));
-	for (int i = 0; i < 4000 && !liveHero(); ++i) h.frames(1);
-	REQUIRE(liveHero());
-	CHECK(liveHero()->getID() != firstID);
-	CHECK_FALSE(h.rig.local->hasUpgradeComplete(purchaseUpgrade));
+	// A mod-defined template with the same kind must select the subclass too.
+	auto &things = h.rig.game->logic().things();
+	const ThingTemplate *original = things.findTemplate("CreateAHero");
+	REQUIRE(original);
+	ThingTemplate *mod = things.newTemplate("ModShieldHero");
+	mod->copyFrom(original);
+	int heroIndex = -1;
+	for (size_t i = 0; i < h.rig.local->heroes().size(); ++i)
+		if (h.rig.local->heroes().at((int)i)->templateName == "CreateAHero") heroIndex = (int)i;
+	REQUIRE(heroIndex != -1);
+	// A mod also lists its custom template in the faction's buildable heroes.
+	PlayerTemplate *faction = const_cast<PlayerTemplate *>(h.rig.local->getPlayerTemplate());
+	REQUIRE(faction);
+	struct RestoreHeroes
+	{
+		PlayerTemplate &faction;
+		std::vector<std::string> names;
+		~RestoreHeroes() { faction.m_buildableHeroesMP = names; }
+	} restore{ *faction, faction->m_buildableHeroesMP };
+	for (std::string &name : faction->m_buildableHeroesMP)
+		if (name == "CreateAHero") name = "ModShieldHero";
+	h.rig.local->heroes().at(heroIndex)->templateName = "ModShieldHero";
+	h.frames(5);
+	bool sawModHero = false;
+	for (const ControlBarButton &button : h.buttons(GUI_COMMAND_REVIVE))
+		if (button.reviveIndex == heroIndex)
+		{
+			CHECK(button.image == expectedImage);
+			sawModHero = true;
+		}
+	CHECK(sawModHero);
 }

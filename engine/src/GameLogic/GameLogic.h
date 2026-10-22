@@ -64,6 +64,7 @@
 #include "GameLogic/ObjectTypes.h"
 
 #include <array>
+#include <cfloat>
 #include <functional>
 #include <map>
 #include <memory>
@@ -180,6 +181,9 @@ struct GameLogicSettings
 	float formationEnemyDistance = 600.0f;
 	float narrowPassageScale = 1.0f;
 	bool waitForOthers = false;
+	// lane STEALTHFLY1: AIData MinFlightHeight (+ 0xB0, row RW 0xC1CE60 parseReal RW 0x42ED00; the constructor's FLT_MAX RW 0xBD1910 = none): the flight ground
+	// height's floor (RW 0x777ED7). No retail aidata.ini sets it; a map's map.ini AIData block does (map wor dol guldur 76, map evil rivendell 300)
+	float minFlightHeight = FLT_MAX;
 	float groupMoveClickToGatherAreaFactor = 1.0f;
 	bool forceModelsToFollowTimeOfDay = false;       ///< GameData ForceModelsToFollowTimeOfDay (a new drawable gets NIGHT)
 	bool forceModelsToFollowWeather = false;         ///< GameData ForceModelsToFollowWeather (SNOW)
@@ -249,6 +253,9 @@ struct GameLogicSettings
 	// lane SPELL-2 (GameData SpecialPowerViewObject, row RW 0xC006C0, parseAsciiString, GlobalData + 0xBA4): the object a special power with a ViewObjectDuration /
 	// ViewObjectRange leaves at its target (RW 0x896FD9); empty when gamedata.ini names none
 	std::string specialPowerViewObject;
+	// lane NUGGET-1 (GameData GenericDamageFieldName, row RW 0xBFF5D0, parseAsciiString RW 0x42EE5E, GlobalData + 0x14): the object a DamageFieldNugget makes
+	// (RW 0x90F600); empty when gamedata.ini names none. Not in the settings hash: it holds no state and a mod changing it changes the INI checksum
+	std::string genericDamageFieldName;
 	// lane OWNERFIX-1 (GameData DefaultUnitHealingBuffFxList, row RW 0xBFF8C0, parseAsciiString RW 0x42EE5E, GlobalData + 0x9DC): the FXList every
 	// ActiveBodyModuleData starts with as its HealingBuffFx (constructor RW 0x8C373F: findFXList of this name when it is not empty); RotWK's gamedata.ini
 	// names FX_DefaultUnitHealBuff (the HealingBuff glow). Client effect only: not part of the settings hash
@@ -306,6 +313,9 @@ bool load(ArchiveFileSystem &fs, GameLogicSettings &out, std::string *error);
 bool scanGameData(const std::string &text, GameLogicSettings &out, std::string *error);
 bool scanAIData(const std::string &text, GameLogicSettings &out, std::string *error);
 bool scanMultiplayer(const std::string &text, GameLogicSettings &out, std::string *error);
+// lane STEALTHFLY1: the AIData block of the map directory's map.ini and solo.ini (RW 0x627224 / 0x627290) applied over `out` (retail data: MinFlightHeight,
+// and the client's LowLodTreeName, which stays unapplied). A file that cannot be read or parsed adds its error to `errors` (false); a missing file is none
+bool applyMapAIData(ArchiveFileSystem &fs, const std::string &mapDir, GameLogicSettings &out, std::vector<std::string> &errors);
 } // namespace GameLogicSettingsLoader
 
 class GameLogic
@@ -573,6 +583,20 @@ public:
 	void setScriptEventProc(ScriptEventProc proc) { m_scriptEventProc = std::move(proc); }
 	void dispatchScriptEvent(int slot, Object &self, const LuaEventArgs &args);
 	unsigned long long scriptEventsWithoutDispatch() const { return m_scriptEventsWithoutDispatch; }
+	// lane NUGGET-1: LuaEventNugget's events by name (RW 0x911EDC): TheLuaScriptEvents' FindEvent (RW 0x735388) answers whether the name is an event (internal slot,
+	// scripted event, model condition or object status record); then each receiver gets the dispatch RW 0x735F53. The live game installs both; with none
+	// installed the lookup says "unknown" and the delivery is counted in scriptEventsWithoutDispatch (stop S-1220)
+	typedef std::function<bool(const std::string &name)> NamedScriptEventFindProc;
+	typedef std::function<void(const std::string &name, Object &self, const LuaEventArgs &args)> NamedScriptEventProc;
+	void setNamedScriptEventProcs(NamedScriptEventFindProc find, NamedScriptEventProc dispatch)
+	{
+		m_namedScriptEventFind = std::move(find);
+		m_namedScriptEventProc = std::move(dispatch);
+	}
+	bool hasNamedScriptEvents() const { return (bool)m_namedScriptEventFind && (bool)m_namedScriptEventProc; }
+	bool findNamedScriptEvent(const std::string &name) const { return m_namedScriptEventFind && m_namedScriptEventFind(name); }
+	void dispatchNamedScriptEvent(const std::string &name, Object &self, const LuaEventArgs &args);
+	void countScriptEventWithoutDispatch() { ++m_scriptEventsWithoutDispatch; }
 	// lane HERO-2: RW 0x663E32, the ModelCondition script events, called first in the AI update (RW 0x66964D) with the snapshot the AI keeps (+ 0x290):
 	// before logic frame 2 only the snapshot is taken; afterwards, when the object's flags (+ 0x10C) differ from it, the installed proc dispatches the
 	// ModelConditionEvent records the change entered (RW 0x7378DA) and the snapshot takes the flags. The ObjectStatusEvent half (RW 0x737954 with + 0x2DC)
@@ -817,6 +841,8 @@ private:
 	ObjectClientHooks *m_clientHooks = nullptr;
 	ObjectCreatedProc m_objectCreatedProc;
 	ScriptEventProc m_scriptEventProc;
+	NamedScriptEventFindProc m_namedScriptEventFind;
+	NamedScriptEventProc m_namedScriptEventProc;
 	ModelConditionEventProc m_modelConditionEventProc;
 	ModelConditionEventProc m_animationConditionEventProc;
 	unsigned long long m_scriptEventsWithoutDispatch = 0;

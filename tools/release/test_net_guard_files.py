@@ -221,3 +221,16 @@ def test_existing_download_and_sync_transports_are_origin_bound_without_redirect
         text = (REPO / f"godot/scripts/{name}.gd").read_text()
         assert net_guard.online_lobby_problems(text, 1, root) == []
         assert net_guard.online_lobby_problems(text.replace("max_redirects=0", "max_redirects=1"), 1, root)
+def test_netguard1_player_reports_make_no_network_call_of_their_own():
+    """lane NETGUARD-1: godot/scripts/online_reports.gd (DEVINPR-1's player reports) opens no connection: its POST goes through the lobby client's
+    post_oneshot, so the one request path of the game stays online_lobby.gd's `_http.request(lobby_url...)`, and the file is not allow-listed"""
+    path = "godot/scripts/online_reports.gd"
+    assert path not in net_guard.ALLOWED_GAME and path not in net_guard.ONLINE_LOBBY_FILES
+    text = (REPO / path).read_text()
+    assert net_guard.gdscript_findings(text, path) == []
+    assert "post_oneshot(" in text and ".request(" not in text
+    # a request of its own is a finding again, even with an allowed-looking class
+    assert net_guard.gdscript_findings(text + "\nfunc leak():\n\tvar h := HTTPRequest.new()\n", path) != []
+    assert not net_guard.game_finding_allowed(path, "line 1: HTTPRequest")
+    lobby = (REPO / net_guard.ONLINE_LOBBY).read_text()
+    assert "func post_oneshot(" in lobby and net_guard.online_lobby_problems(lobby) == []

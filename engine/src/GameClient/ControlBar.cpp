@@ -459,14 +459,16 @@ std::string ControlBar::heroRecordImage(const HeroRecord &r, const Player &playe
 	// RW 0x7810BC's custom-hero branch uses the player's chosen record.
 	// Until custom screenshots are supported, use its retail subclass button
 	// image, consistent with CreateAHeroModels.inc rather than the wizard template.
-	if (r.templateName == "CreateAHero")
+	const ThingTemplate *tt = m_ctx.logic.things().findTemplate(r.templateName);
+	static const int customHeroKind = ObjectTemplateInfoBuilder::kindOfIndex("CREATE_A_HERO");
+	if (tt && customHeroKind >= 0 && MaskTest(ObjectTemplateInfoBuilder::build(*tt).kindOf, (unsigned)customHeroKind))
 	{
 		const CreateAHeroHero *hero = m_ctx.logic.createAHeroes().heroOf(player);
 		const CreateAHeroSubClass *sub = hero && TheCreateAHeroSystem
 			? TheCreateAHeroSystem->subClass(hero->classIndex, hero->subClassIndex) : nullptr;
-		if (sub && !sub->buttonImage.empty()) return sub->buttonImage;
+		// RW 0x7810BC -> 0x61B2DF / 0x61B379 -> 0x61AF37.
+		return sub && !sub->buttonImage.empty() ? sub->buttonImage : "BuildingNoArt";
 	}
-	const ThingTemplate *tt = m_ctx.logic.things().findTemplate(r.templateName);
 	if (tt)
 	{
 		for (const char *field : { "ButtonImage", "SelectPortrait" })

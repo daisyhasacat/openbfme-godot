@@ -318,6 +318,82 @@ const OnlineLobbyClient::Event *findEvent(const std::vector<OnlineLobbyClient::E
 	}
 } // namespace
 
+TEST_CASE("online4: install identity and pending notices (no lobby needed)")
+{
+	auto options = clientOptions(4, 4);
+	options.installId = std::string(32, 'a');
+	options.deviceHash = std::string(64, 'b');
+	options.clientPlatform = "linux";
+	options.clientVersion = "test-build";
+	OnlineLobbyClient client(options);
+	client.signInGuest(u"Guest");
+	auto requests = client.takeRequests();
+	REQUIRE(requests.size() == 1);
+	CHECK(requests[0].body == "{\"name\":\"Guest\",\"install\":\"" + options.installId + "\",\"device\":\"" + options.deviceHash +
+		"\",\"client\":{\"platform\":\"linux\",\"version\":\"test-build\"}}");
+	const std::string answer = R"({"v":1,"token":"test-session-token","account":{"name":"Guest"},"notice":{"id":"N-1","text":"Please read this warning. test-session-token"}})";
+	client.deliver(requests[0].id, 200, answer, "");
+	auto events = client.takeEvents();
+	REQUIRE(events.size() == 2);
+	CHECK(events[0].kind == OnlineLobbyClient::Event::SignedIn);
+	CHECK(events[1].kind == OnlineLobbyClient::Event::Notice);
+	CHECK(events[1].text == u"Please read this warning. <redacted>");
+	client.signInGuest(u"Guest");
+	requests = client.takeRequests();
+	REQUIRE(requests.size() == 1);
+	client.deliver(requests[0].id, 200, answer, "");
+	CHECK(client.takeEvents().size() == 1);
+	for (const std::string code : {"banned", "suspended", "muted"})
+	{
+		client.refreshList();
+		requests = client.takeRequests();
+		REQUIRE(requests.size() == 1);
+		client.deliver(requests[0].id, 403, "{\"v\":1,\"error\":\"" + code + "\",\"message\":\"Reason\"}", "");
+		events = client.takeEvents();
+		REQUIRE(events.size() == 1);
+		CHECK(events[0].kind == OnlineLobbyClient::Event::Refused);
+		CHECK(events[0].code == code);
+		CHECK(events[0].text == u"Reason");
+	}
+	options.installId = "invalid";
+	OnlineLobbyClient invalid(options);
+	invalid.signInGuest(u"Guest");
+	CHECK(invalid.takeRequests().empty());
+	events = invalid.takeEvents();
+	REQUIRE(events.size() == 1);
+	CHECK(events[0].code == "bad_identity");
+	options.installId = std::string(32, 'a');
+	options.clientVersion = std::string(65, 'v');
+	OnlineLobbyClient invalidVersion(options);
+	invalidVersion.signInGuest(u"Guest");
+	CHECK(invalidVersion.takeRequests().empty());
+	events = invalidVersion.takeEvents();
+	REQUIRE(events.size() == 1);
+	CHECK(events[0].code == "bad_identity");
+	client.signInGuest(u"Guest");
+	requests = client.takeRequests();
+	REQUIRE(requests.size() == 1);
+	client.deliver(requests[0].id, 200, R"({"v":1,"token":"token","account":{"name":"Guest"},"notice":{"id":"N-2","text":5}})", "");
+	CHECK_FALSE(client.signedIn());
+	events = client.takeEvents();
+	REQUIRE(events.size() == 1);
+	CHECK(events[0].code == "protocol");
+}
+
+// DEVINPR-1 (review of WP-C): AptOnlineShell keeps a session only when it was issued to this install (sessionInstall == Options::installId); a
+// session from before the client sent an install, or another install's, signs in again so the lobby's enforcement and reports see the install
+TEST_CASE("devinpr1: a session token names the install it was issued to (no lobby needed)")
+{
+	const std::string withInstall = "eyJpZCI6Imd1ZXN0OjAxMjM0NTY3ODlhYmNkZWYiLCJuYW1lIjoiR3Vlc3QiLCJraW5kIjoiZ3Vlc3QiLCJpbnN0YWxsIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJleHAiOjF9.c2ln"; // {"id":"guest:0123456789abcdef","name":"Guest","kind":"guest","install":"aa..a","exp":1}
+	const std::string without = "eyJpZCI6Imd1ZXN0OjAxMjM0NTY3ODlhYmNkZWYiLCJuYW1lIjoiR3Vlc3QiLCJraW5kIjoiZ3Vlc3QiLCJleHAiOjF9.c2ln";     // the same without "install" (a lobby before WP-C, or a client that sent none)
+	CHECK(OnlineLobbyClient::sessionName(withInstall) == u"Guest");
+	CHECK(OnlineLobbyClient::sessionInstall(withInstall) == std::string(32, 'a'));
+	CHECK(OnlineLobbyClient::sessionName(without) == u"Guest");
+	CHECK(OnlineLobbyClient::sessionInstall(without).empty());
+	CHECK(OnlineLobbyClient::sessionInstall("not a token").empty());
+	CHECK(OnlineLobbyClient::sessionInstall("").empty());
+}
+
 TEST_CASE("online4: the lobby client's requests and its checks of the answers (no lobby needed)")
 {
 	OnlineLobbyClient c(clientOptions(4, 4));
@@ -382,6 +458,17 @@ TEST_CASE("online4: the lobby client's requests and its checks of the answers (n
 	CHECK(es[0].code == "protocol");
 	CHECK(OnlineLobbyClient::utf16ToUtf8(es[0].text).find("faction / color / startPos / team out of range (4 factions") != std::string::npos);
 	CHECK_FALSE(c.inGame());
+	std::string reportView = view;
+	const std::string badFaction = "\"faction\":9";
+	reportView.replace(reportView.find(badFaction), badFaction.size(), "\"faction\":-1");
+	reportView.insert(reportView.find("\"you\":"), "\"player_id\":\"guest:2222222222222222\",");
+	c.joinGame("0123456789abcdef", "");
+	rs = c.takeRequests();
+	REQUIRE(rs.size() == 1);
+	c.deliver(rs[0].id, 200, "{\"v\":1,\"slot\":1,\"game\":" + reportView + "}", "");
+	CHECK(c.inGame());
+	CHECK(c.slotViews()[0].playerId == "guest:2222222222222222");
+	CHECK(c.slotViews()[1].playerId.empty());
 }
 
 // lane UBERJOIN-1 (S-4860): the lobby's "mode" of a room: listed, read from the view, sent at create / join, closed set, refused inside a room

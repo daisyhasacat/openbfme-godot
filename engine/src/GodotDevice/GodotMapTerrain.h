@@ -39,6 +39,7 @@ public:
 	//   markers: bool (default true)   water: bool   rivers: bool   roads: bool   terrain: bool
 	//   resolve_objects: bool (default false)
 	//   height_probes: PackedVector2Array of SAGE (x, y); their ground heights come back as map_info.probe_heights
+	//   user_map: bool (default false; lane MOD-5) the map is in the user maps folder (RetailFileSystem::get_user_map_folder), not the archives
 	Node3D *build_map(const Ref<RetailFileSystem> &fs, const String &map_name, const Dictionary &options);
 
 	// Native gameplay path: reuse its already validated map; editor requests parse their own map.

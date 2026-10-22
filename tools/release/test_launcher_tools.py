@@ -165,6 +165,21 @@ def test_make_manifest(tmp_path):
         make_manifest.channel_of("0.3.0")
 
 
+def test_nightly_release_version():
+    """NIGHTLY-1 (owner, 2026-10-21): v<x>.<y>.<z>-nightly.<YYYYMMDD> is a pre-release (channel id "preview"), ordered between alpha and
+    preview of its release and below the release (the launcher's semver.gd order)"""
+    import make_macos_manifest
+    order = ["v0.4.12", "v0.4.13-alpha.1", "v0.4.13-nightly.1", "v0.4.13-nightly.20261021", "v0.4.13-nightly.20261022",
+             "v0.4.13-preview.1", "v0.4.13"]
+    assert sorted(reversed(order), key=make_manifest.version_key) == order
+    assert make_manifest.channel_of("v0.4.13-nightly.20261022") == "preview" and make_manifest.channel_of("v0.4.13") == "stable"
+    for bad in ["v0.4.13-nightly", "v0.4.13-nightly.", "v0.4.13-nightly.020261022", "v0.4.13-nightly.1234567890", "v0.4.13-nightly.1x"]:
+        with pytest.raises(SystemExit):
+            make_manifest.channel_of(bad)
+    assert make_macos_manifest.MACOS_ASSET.match("openbfme-v0.4.13-nightly.20261022-macos-arm64.zip")
+    assert not make_macos_manifest.MACOS_ASSET.match("openbfme-v0.4.13-nightly.-macos-arm64.zip")
+
+
 def test_publish_dry_run(tmp_path):
     if os.name == "nt":
         pytest.skip("intrinsically POSIX: production Bash publish dry-run")

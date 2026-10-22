@@ -74,10 +74,12 @@ const char *const kStop =
 	"partition's unsorted order";
 
 const char *const kStopSpellBook =
-	"[S-1875] AIPlayer's science upgrade builder (AIPlayer + 0x12C -> + 0xC, class RW 0x99FB84, vtables RW 0xC88208 / 0xC881FC, update RW 0x9A0023 -> RW "
-	"0x99FCC4 / 0x99FD0E / 0x99FE74 / 0x99FAEF / 0x99FA40, run by AIPlayer::update RW 0x8F0F39, S-412) is not ported: a computer player's sciences come "
-	"only from its AI scripts (PURCHASE_SCIENCE / GRANT_SCIENCE), so a spell book power whose science retail's builder buys may never become ready (the "
-	"science gates readiness, RW 0x8B708B; the command set's button activates the decision module, RW 0x8B714F)";
+	"[S-1875] computer players' science purchases (lane AI5): retail RotWK has no skirmish AI science buyer. Player::attemptToPurchaseScience RW 0x6AE36F is "
+	"called only by the script action PLAYER_PURCHASE_SCIENCE (RW 0x7BD210), MSG_PURCHASE_SCIENCE (RW 0x779A3D) and ZH's AIPlayer::doUpgradesAndSkills "
+	"(RW 0x8F7B3B, AIData SideInfo SkillSet1..5), which RW 0x8F9705 runs only for a computer player without a skirmish AI; the AIPlayer + 0x12C class "
+	"(RW 0x99FB84, AIUpgradeScienceBuilder) buys structure upgrades and expansions (ported, AIUpgrade.h). So a skirmish AI's sciences come from its "
+	"scripts as in retail. Not ported: doUpgradesAndSkills for a computer player without a skirmish AI (retail AIData defines no SkillSet: it buys and "
+	"draws nothing; a mod's SkillSets would make such players buy sciences)";
 
 const unsigned kExecuteFrames = 5u * LOGICFRAMES_PER_SECOND; // RW 0x993024: [0xD9F608] * 5
 

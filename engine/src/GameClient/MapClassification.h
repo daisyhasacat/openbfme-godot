@@ -20,9 +20,10 @@
 
 namespace MapClassification
 {
-// "maps\<name>" and "maps\<name>\<name>.map" for the lower-cased map name
-std::string mapDirectory(const std::string &lowerName);
-std::string mapPath(const std::string &lowerName);
+// "<mapsFolder>\<name>" and "<mapsFolder>\<name>\<name>.map" for the lower-cased map name. mapsFolder is the game's "maps" (MapCache::getMapDir,
+// RW 0x701C6D), which the archives hold, or the user maps folder (lane MOD-5: UserDataFolder::userMapFolder, MapCache::getUserMapDir RW 0x70254F)
+std::string mapDirectory(const std::string &lowerName, const std::string &mapsFolder = "maps");
+std::string mapPath(const std::string &lowerName, const std::string &mapsFolder = "maps");
 
 struct Result
 {
@@ -38,5 +39,5 @@ struct Result
 // changed is NOT loaded again (about 1 s): the object blocks of a map previewed before stay until the next map.ini applies to a fresh load.
 bool run(const std::vector<std::uint8_t> &bytes, const std::string &sourceName, const std::string &lowerName, RetailObjectWorld &world,
 	const MapObjectOptions &options, LoadedMap &map, TerrainLogic &terrain, MapObjectDrawables &classified, MapObjectDrawables *clientOnly,
-	Result &result, std::string *error, bool applyMapIni = true);
+	Result &result, std::string *error, const std::string &mapsFolder = "maps", bool applyMapIni = true);
 } // namespace MapClassification

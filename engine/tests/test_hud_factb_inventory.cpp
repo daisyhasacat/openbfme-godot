@@ -56,7 +56,7 @@ TEST_CASE("factb inventory: Isengard and Mordor reach every structure, unit, her
 		}
 		md += "\n";
 		// the pins (stops S-1993 .. S-1995, docs/STOPS.md): the behaviour module classes of the faction that run as the UnportedModule (it says so
-		// at runtime) or as the base AI. A class ported later leaves the list: move the pin (lane FACT-C ported ObjectCreationUpgrade)
+		// at runtime) or as the base AI. A class ported later leaves the list: move the pin (lane FACT-C ported ObjectCreationUpgrade, SUMMON-1 DoCommandUpgrade, lane FX-4 TransitionDamageFX)
 		std::set<std::string> classes;
 		for (const auto &kv : gaps)
 		{
@@ -64,13 +64,12 @@ TEST_CASE("factb inventory: Isengard and Mordor reach every structure, unit, her
 		}
 		const std::set<std::string> isengard = { "AnnounceBirthAndDeathBehavior", "AudioLoopUpgrade", "BaseUpgrade",
 			"EvacuateDamage", "FlingPassengerSpecialAbilityUpdate", "GeometryUpgrade",
-			"PickupStuffUpdate", "SiegeDeployHordeSpecialPower", "SlaveWatcherBehavior", "SupplyCenterCreate", "SupplyCenterDockUpdate",
-			"TransitionDamageFX" };
+			"PickupStuffUpdate", "SiegeDeployHordeSpecialPower", "SlaveWatcherBehavior", "SupplyCenterCreate", "SupplyCenterDockUpdate" }; // lane FX-4 ported TransitionDamageFX
 		const std::set<std::string> mordor = { "AimWeaponBehavior", "AnnounceBirthAndDeathBehavior", "AudioLoopUpgrade", "AutoPickUpUpdate", "BaseUpgrade",
-			"BoredUpdate", "ClickReactionBehavior", "DoCommandUpgrade", "EvacuateDamage",
+			"BoredUpdate", "ClickReactionBehavior", "EvacuateDamage", // lane SUMMON-1 ported DoCommandUpgrade
 			"FlingPassengerSpecialAbilityUpdate", "GeometryUpgrade", "GrabPassengerSpecialPower", "HordeTransportContainDamage",
 			"PickupStuffUpdate", "RunOffMapBehavior", "SiegeDeployHordeSpecialPower", "SlaughterHordeContain", "SlaveWatcherBehavior",
-			"SupplyCenterCreate", "SupplyCenterDockUpdate", "TransitionDamageFX" };
+			"SupplyCenterCreate", "SupplyCenterDockUpdate" }; // lane FX-4 ported TransitionDamageFX
 		CHECK(classes == (std::string(f) == "FactionIsengard" ? isengard : mordor));
 	}
 	if (const char *out = std::getenv("FACTB_INVENTORY_OUT"))

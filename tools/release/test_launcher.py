@@ -569,6 +569,20 @@ def test_preview_channel_gets_the_alpha_builds(tmp_path, server, keys):
     assert r.code == 0 and r.has("update installed v0.2.0"), r
 
 
+def test_nightly_channel_name(tmp_path, server, keys):
+    """NIGHTLY-1 (owner, 2026-10-21): --channel=nightly is the channel id "preview"; a nightly build is offered to it and not to stable"""
+    server.publish("v0.4.12", release_files(tmp_path, "v0.4.12", keys["release"]))
+    server.publish("v0.4.13-nightly.20261022", release_files(tmp_path, "v0.4.13-nightly.20261022", keys["release"]))
+    r = launch(tmp_path, server, keys["release"], "--channel=nightly", "--update")
+    assert r.code == 0 and r.has("channel preview") and r.has("update installed v0.4.13-nightly.20261022"), r
+    other = tmp_path / "stable"
+    other.mkdir()
+    r = launch(other, server, keys["release"], "--channel=stable", "--update")
+    assert r.code == 0 and r.has("update installed v0.4.12"), r
+    r = launch(other, server, keys["release"], "--channel=bogus", "--list")
+    assert r.code == 1 and r.has("unknown channel 'bogus' (stable, nightly)"), r
+
+
 def test_offline_launch(tmp_path, server, keys):
     server.publish("v0.2.0", release_files(tmp_path, "v0.2.0", keys["release"]))
     assert launch(tmp_path, server, keys["release"], "--update").code == 0

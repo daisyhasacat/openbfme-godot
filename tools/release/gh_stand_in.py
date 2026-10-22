@@ -15,6 +15,8 @@ repository ($FAKE_GH_REMOTE: PR merges are merge commits there, tags are read th
   upload-fail     uploading assets fails (nothing is stored)
   publish-after-read  someone publishes a draft right after it was read by its id (Sol r3: the race between a read and a delete)
   homepage-fail   setting the repository's homepage fails (it stays)
+  tag-read-fail   (RELCAND-1) reading a commit / tag (repos/R/commits/<ref>) fails: publish_release.sh stops before it creates a draft, so
+                  a run fails after its push with the tag on the remote and no release
   community-merge-lost     (GHPR-1) a community pull request is merged but the call fails
   community-merge-refused  (GHPR-1) merging a community pull request fails and changes nothing
   pull-read-fail  (GHPR-1) reading a pull request fails
@@ -115,6 +117,8 @@ def api(args: list[str]) -> int:
         out(jq(pull_record(m.group(1), p), expr)); return 0
     m = re.fullmatch(r"repos/[^/]+/[^/]+/commits/(.+)", path)
     if m:
+        if "tag-read-fail" in FAULTS:
+            print("gh: HTTP 502", file=sys.stderr); return 1
         r = subprocess.run(["git", "-C", REMOTE, "rev-parse", "-q", "--verify", m.group(1) + "^{commit}"], capture_output=True, text=True)
         if r.returncode:
             print("gh: Not Found (HTTP 404)", file=sys.stderr); return 1

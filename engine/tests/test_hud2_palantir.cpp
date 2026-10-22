@@ -8,6 +8,7 @@
 #include "Common/ModelState.h"
 #include "GameClient/GUI/ShellServices.h"
 #include "GameClient/InGameHud.h"
+#include "GameClient/InGameHeroSelect.h"
 #include "GameClient/PalantirCommandUI.h"
 #include "GameClient/InGameHeroSelect.h"
 #include "Libraries/Source/Apt/AptCharacterInst.h"
@@ -297,4 +298,20 @@ TEST_CASE("hud2 palantir: custom heroes use their model-state portraits rather t
 	h.hud->input().ui().selectObject(captain->getID());
 	h.frames(10);
 	CHECK(h.hud->palantir()->portraitShown() == h.rig.local->getPlayerTemplate()->m_multiSelectionPortrait);
+}
+
+TEST_CASE("hud2 custom hero buttons: model-state icons distinguish Shield Maiden and Captain")
+{
+	if (!haveWorld("hud2 custom hero button")) return;
+	PalantirRig h(shared());
+	Object *maiden = h.rig.make("CreateAHero", 2800, 1400);
+	Object *captain = h.rig.make("CreateAHero", 3000, 1400);
+	REQUIRE(maiden);
+	REQUIRE(captain);
+	maiden->setModelConditionState(ModelCondition::indexOf("CREATE_A_HERO_02"), true);
+	captain->setModelConditionState(ModelCondition::indexOf("CREATE_A_HERO_00"), true);
+	CHECK(InGameHeroSelect::buttonImage(*maiden) == "HICAHShieldMaiden");
+	CHECK(InGameHeroSelect::buttonImage(*captain) == "HICAHCaptainGondor");
+	maiden->setModelConditionState(ModelCondition::indexOf("MOUNTED"), true);
+	CHECK(InGameHeroSelect::buttonImage(*maiden) == "HICAHShieldMaiden");
 }

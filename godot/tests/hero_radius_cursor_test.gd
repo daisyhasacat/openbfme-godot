@@ -54,8 +54,11 @@ func _run() -> void:
 	assert(cursor.rgb == 0xFFFFFF, str(cursor))
 	assert(cursor.drawn and cursor.error.is_empty(), str(cursor))
 	assert(cursor.pointer == "None", str(cursor))
+	var hidden: Image
+	var bounds := Rect2()
 	if DisplayServer.get_name() != "headless":
-		# Freeze the scene and UI so the pixel comparison isolates the overlay.
+		# Freeze the clocks and scene so the pixel comparison isolates the overlay.
+		Engine.time_scale = 0.0
 		hud.set_process(false)
 		world.set_process(false)
 		await RenderingServer.frame_post_draw
@@ -64,8 +67,8 @@ func _run() -> void:
 			if arg.begins_with("--shot="): shown.save_png(arg.trim_prefix("--shot="))
 		RenderingServer.global_shader_parameter_set("radius_cursor_transform", Vector4.ZERO)
 		await RenderingServer.frame_post_draw
-		var hidden := root.get_texture().get_image()
-		var bounds := Rect2(pixel, Vector2.ZERO)
+		hidden = root.get_texture().get_image()
+		bounds = Rect2(pixel, Vector2.ZERO)
 		for offset in [Vector2(-70, -70), Vector2(-70, 70), Vector2(70, -70), Vector2(70, 70)]:
 			bounds = bounds.expand(hud.world_to_pixel(aim + offset))
 		bounds = bounds.intersection(Rect2(Vector2.ZERO, Vector2(root.size)))
@@ -77,12 +80,25 @@ func _run() -> void:
 				if before.get_luminance() - after.get_luminance() > 0.02: brighter_pixels += 1
 		# tolerance: a visible white overlay must brighten pixels; counts vary with GPU sampling and antialiasing.
 		assert(brighter_pixels > 0, "cursor state was active but no white texture reached the terrain pixels")
+		# Restore the texture with the frozen scene before exercising cancellation.
 		hud.set_process(true)
-		world.set_process(true)
+		await process_frame
+		await process_frame
+		hud.set_process(false)
+		await RenderingServer.frame_post_draw
+		assert(root.get_texture().get_image().get_data() == shown.get_data())
 
 	hud.inject_mouse_button(2, true, pixel, false)
 	hud.inject_mouse_button(2, false, pixel, false)
+	# The HUD publishes cancellation while the scene and elapsed time stay frozen.
+	hud.set_process(true)
 	for i in 4: await process_frame
 	assert(not hud.get_spellbook_state().radius_cursor.visible)
+	if hidden != null:
+		await RenderingServer.frame_post_draw
+		var cancelled := root.get_texture().get_image()
+		# The scene stays frozen: cancellation must remove exactly the same pixels
+		# as disabling the shader transform, including a stale terrain texture.
+		assert(cancelled.get_region(Rect2i(bounds)).get_data() == hidden.get_region(Rect2i(bounds)).get_data(), "cancel left cursor pixels on the terrain")
 	print("HERO RADIUS CURSOR PASS: white SCCNaturesWrath terrain decal, diameter 140; cancel clears it")
 	quit()

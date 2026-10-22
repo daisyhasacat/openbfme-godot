@@ -412,10 +412,29 @@ void AptOnlineShell::navTo(const std::string &page)
 	{
 		return;
 	}
-	std::string err;
-	if (level() < 0 || !windows().invokeASAt(level(), "Toggles.ButtonNav", "gotoAndPlay", { it->second }, nullptr, &err))
+	// DEVINPR-1: the clip is looked for on the next updates too: right after the page the player came from is loaded again, Toggles.ButtonNav
+	// can be absent for a few frames (a slower lobby answer moves when that happens); only a clip still absent after kNavRetryFrames is reported
+	m_navDue = it->second;
+	m_navTries = 0;
+	retryNav();
+}
+
+void AptOnlineShell::retryNav()
+{
+	if (m_navDue.empty())
 	{
-		windows().note("movie-function-missing", "Toggles.ButtonNav.gotoAndPlay(" + it->second + "): " + err);
+		return;
+	}
+	std::string err = "the shell movie is not loaded";
+	if (level() >= 0 && windows().invokeASAt(level(), "Toggles.ButtonNav", "gotoAndPlay", { m_navDue }, nullptr, &err))
+	{
+		m_navDue.clear();
+		return;
+	}
+	if (++m_navTries >= kNavRetryFrames)
+	{
+		windows().note("movie-function-missing", "Toggles.ButtonNav.gotoAndPlay(" + m_navDue + "): " + err);
+		m_navDue.clear();
 	}
 }
 
@@ -579,7 +598,9 @@ const std::vector<std::string> &AptOnlineShell::loginAccountParts()
 const float AptOnlineShell::kNicknameFrameX = 155.7f + 38.4f;
 const float AptOnlineShell::kNicknameFrameY = 96.65f + 78.5f;
 const float AptOnlineShell::kNicknameFrameXScale = 126.4f;
-const char *const AptOnlineShell::kNicknameLine = "Online play needs no account: your nickname is the name other players see in the game list and in games.";
+// lane MENUFIX-1: short enough for the AccountName label at full width (the 104-character line before was squeezed: RotWK squeezes a string wider
+// than its field, RW 0x4A90B5, AptCanvas.cpp)
+const char *const AptOnlineShell::kNicknameLine = "No account needed: other players see this nickname.";
 
 void AptOnlineShell::showNicknameOnly()
 {
@@ -643,8 +664,10 @@ void AptOnlineShell::login()
 	m_loginSent = true;
 	m_loginName = name;
 	// lane ONLINE-4: the session a restarted game kept (ONLINE-3's user://online_session.txt) signs in as the same player when the name is its own: the
-	// lobby then knows the running game to rejoin. Another name is another guest
-	if (m_ctx && !m_ctx->sessionToken.empty() && OnlineLobbyClient::sessionName(m_ctx->sessionToken) == name)
+	// lobby then knows the running game to rejoin. Another name is another guest. DEVINPR-1 (review of WP-C): only a session issued to this install
+	// is kept; one from before the client sent its install (or another install's) is a fresh guest sign-in, so enforcement and reporting see the install
+	if (m_ctx && !m_ctx->sessionToken.empty() && OnlineLobbyClient::sessionName(m_ctx->sessionToken) == name
+		&& OnlineLobbyClient::sessionInstall(m_ctx->sessionToken) == m_client->options().installId)
 	{
 		windows().note("online-session", "the kept lobby session of " + narrow(name) + " is used");
 		m_client->useSession(m_ctx->sessionToken);
@@ -1814,6 +1837,9 @@ void AptOnlineShell::pumpClient()
 			}
 			loadChildScreen("OnlineHome"); // BFME2 0x5700A0: a login that succeeded loads the home page
 			break;
+		case OnlineLobbyClient::Event::Notice:
+			showBox(text("GUI:GSErrorTitle"), wrapLines(e.text, kWrap), "online-notice|" + narrow(e.text));
+			break;
 		case OnlineLobbyClient::Event::Mine:
 			m_listDirty = true;
 			offerRejoin();
@@ -1890,6 +1916,14 @@ void AptOnlineShell::pumpClient()
 		{
 			const std::string record = e.request + ": " + e.code + ": " + narrow(e.text);
 			windows().note("online-refused", record);
+			const bool statusRefusal = e.code == "banned" || e.code == "suspended" || e.code == "muted";
+			if (statusRefusal && e.request == "session")
+			{
+				m_loginSent = false;
+				applyLoginButton(true); // DEVINPR-1: through the page's own Login rule (enabled with a name), as every refused sign-in
+				showBox(text("GUI:GSErrorTitle"), wrapLines(e.text, kWrap), "online-refused|" + narrow(e.text));
+				break;
+			}
 			if (e.request == "session")
 			{
 				// the kept session is not this lobby's any more (expired, another lobby): a new guest of the same name (it has no running game)
@@ -1979,13 +2013,15 @@ void AptOnlineShell::pumpClient()
 				if (!m_pollTrouble && m_client->inGame())
 				{
 					m_pollTrouble = true;
-					systemChat(u"The online lobby does not answer (still trying): " + playerMessage(e.request, e.code, e.text)); // lane ONLINEUX-1
+					if (statusRefusal) showBox(text("GUI:GSErrorTitle"), wrapLines(e.text, kWrap), "online-refused|" + narrow(e.text));
+					else systemChat(u"The online lobby does not answer (still trying): " + playerMessage(e.request, e.code, e.text)); // lane ONLINEUX-1
 				}
 			}
 			else if (e.request != "leave")
 			{
 				// a slot / setup / ready / chat / kick the lobby refused: a system line in the staging room
-				systemChat(e.text);
+				if (statusRefusal) showBox(text("GUI:GSErrorTitle"), wrapLines(e.text, kWrap), "online-refused|" + narrow(e.text));
+				else systemChat(e.text);
 			}
 			break;
 		}
@@ -1997,6 +2033,7 @@ void AptOnlineShell::update()
 {
 	prune();
 	pumpClient();
+	retryNav(); // DEVINPR-1
 	if (level() >= 0 && !isHidden())
 	{
 		m_shownOnce = true;

@@ -184,6 +184,8 @@ bool LiveGame::load(const Options &options, std::string *error)
 	{
 		return false;
 	}
+	// lane STEALTHFLY1: the map's own AIData (map.ini / solo.ini, RW 0x627224 / 0x627290), e.g. a MinFlightHeight; its errors join the map.ini's
+	GameLogicSettingsLoader::applyMapAIData(m_fs, MapClassification::mapDirectory(lowerName), settings, m_report.mapIniErrors);
 	std::uint32_t defaultCash = options.defaultStartingCash ? options.defaultStartingCash : settings.defaultStartingCash;
 	// lane RULES-1: RW Player::init 0x6B0578: with TheGameInfo (a started game) a player whose template has no money gets the InitialResources rule
 	// (TheGameInfo + 0x70), not GameData's DefaultStartingCash (GlobalData + 0xBB8, the branch without a game). A game with no rule block (-1: tests and
@@ -583,6 +585,8 @@ bool LiveGame::load(const Options &options, std::string *error)
 	}
 	m_cahHeroID.clear();
 	m_cahResultRecorded = false;
+	m_cahStatisticsDirty = false;
+	m_cahSaveError.clear();
 	m_cahEarned.clear();
 	m_cahMode = m_logic->economy().context().gameMode;
 	if (!options.heroStatsProfile.empty() && options.start && !options.start->observer && m_cahMode != EconomyContext::MODE_REPLAY)
@@ -791,6 +795,8 @@ int LiveGame::advance(double seconds)
 		if (m_frameDriver)
 		{
 			consumeCompletions();
+			// lane NETLAG-2 (Sol): no frame timing in six tick pacing (no early orders there): its alpha stays at the frame start while the lockstep
+			// holds phase 1, so a held FRAMEINFO would be renewed for ever
 			m_frameDriver->pump(m_protocolFrame, m_commands); // the local input, stamped once against the protocol frame
 		}
 		int ticks = m_tickClock.advance(seconds);
@@ -863,6 +869,15 @@ int LiveGame::advance(double seconds)
 	}
 	if (m_frameDriver)
 	{
+		// lane NETLAG-2: a frame that waited for the lockstep is still due (its clock time was kept, at most one frame): it runs as soon as its input
+		// is complete, not at the next 200 ms tick, and the frames after it keep their times (RotWK's frame gate RW 0x65DD0F keeps up to 2 s of lag;
+		// ZH Network::timeForNewFrame two frames). Dropping it made any lateness, even 1 ms, cost a whole frame
+		// (only when time passes: advance(0) is a presentation-only step, SMOOTH-1)
+		m_owedThisCall = seconds > 0.0 ? m_owedFrames : 0;
+		due += m_owedThisCall;
+		m_owedFrames -= m_owedThisCall;
+		// lane NETLAG-2: when the next batch is due (now, if the clock already made it due or a frame that waited is still owed)
+		m_frameDriver->frameDue(m_nextBatchFrame, due > 0 || m_owedFrames > 0 ? 0u : msUntilNextFrame());
 		const int acquired = advanceWithDriver(due);
 		m_dueFrame += (UnsignedInt)acquired;
 		endWindowForPresent(); // RENDERWAIT-1: the batches are queued: the worker may run them while this thread presents
@@ -930,6 +945,7 @@ int LiveGame::advanceWithDriver(int due)
 	if (inputWaits && due > 0)
 	{
 		++m_inputHolds;
+		m_owedFrames = 1; // lane NETLAG-2 (Sol r1): the frame stays due until the input is pumped, as for a lockstep wait
 	}
 	int acquired = 0;
 	for (int i = 0; i < due && !inputWaits; ++i)
@@ -939,13 +955,16 @@ int LiveGame::advanceWithDriver(int due)
 			const std::unique_lock<std::mutex> lock = lockPublication("advanceWithDriver");
 			if (m_work.size() >= kMaxQueuedBatches)
 			{
-				break; // backpressure: the next batch stays with the driver
+				m_owedFrames = 1; // lane NETLAG-2 (Sol r1): the frame stays due, as for a lockstep wait
+				break;            // backpressure: the next batch stays with the driver
 			}
 		}
 		auto batch = std::make_shared<FrameBatch>();
 		if (!m_frameDriver->acquire(m_nextBatchFrame, *batch))
 		{
-			m_stalledFrames += (unsigned long long)(due - i);
+			// lane NETLAG-2: this frame stays due (advance); the rest of the clock's time is dropped; a frame owed from an earlier call counts once
+			m_stalledFrames += (unsigned long long)(due - i - std::max(0, m_owedThisCall - i));
+			m_owedFrames = 1;
 			break;
 		}
 		++m_nextBatchFrame;

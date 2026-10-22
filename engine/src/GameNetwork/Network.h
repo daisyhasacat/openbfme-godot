@@ -47,6 +47,7 @@
 #include "GameNetwork/NetPacket.h"
 #include "GameNetwork/NetworkSettings.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <deque>
@@ -85,6 +86,14 @@ public:
 	{
 		(void)slot;
 		return -1;
+	}
+	// lane NETLAG-2: the round trip the adaptive run-ahead plans for (ms), -1 while too little is measured. The transport takes a high percentile of its
+	// recent samples, so one late ack (a client's hitch, the load barrier) does not move it; this default (in-memory test transports) is the smoothed
+	// round trip plus twice its variation
+	virtual int plannedRoundTripMs(int slot) const
+	{
+		const int rtt = roundTripMs(slot);
+		return rtt < 0 ? -1 : rtt + 2 * std::max(0, roundTripVarMs(slot));
 	}
 	// lane ONLINE-3 (relay mode; LAN keeps these defaults): the relay's view of a slot (RelayProtocol STATUS): the incarnation the relay bound it with (a
 	// rejoin's fresh ticket raises it) and whether the relay has not heard it lately
@@ -126,6 +135,9 @@ struct NetworkConfig
 	// lane MP-2: the run-ahead follows the packet router's measured round trip (Network::updateRunAhead): the router sends RUNAHEAD as a frame command and
 	// every peer takes the new value when that frame runs (equal run-aheads keep every peer's MSG_LOGIC_CRC on one execution frame)
 	bool adaptiveRunAhead = false;
+	// lane NETLAG-2 (the owner's choice of 2026-10-20: orders faster than RotWK where the link allows): a player's order may execute one frame before the
+	// run-ahead's frame when every peer can still learn of it in time (Network::setFrameDue; OpenBFME's own, retail always waits the full frame + 1)
+	bool earlyOrders = true;
 	int maxRunAhead = 25;  ///< frames (5 s)
 	int crcInterval = 100; ///< GameInfo::getCRCInterval; 0 = no CRC exchange
 	// lane MP-2: the disconnect path (GameNetwork/DisconnectManager.h)
@@ -209,6 +221,14 @@ public:
 	unsigned long long commandsRelayed() const { return m_commandsRelayed; }
 
 	UnsignedInt executionFrame(UnsignedInt logicFrame);
+	// lane NETLAG-2: the protocol owner's clock: logic frame `frame` (the next one it runs) is due in `msFromNow` ms (0: due now or overdue); later frames
+	// are taken a 200 ms period apart until the next call. Without it (a test, a replay) every order executes on the run-ahead's frame. With it and NetworkConfig::earlyOrders, an order issued while the frame before the
+	// run-ahead's one is at least earlyLeadMs() away executes on that frame, and that frame's FRAMEINFO goes out only once it is closer than the lead
+	void setFrameDue(UnsignedInt frame, std::uint32_t msFromNow);
+	// the time a FRAMEINFO needs to reach every peer before its frame runs there: the planned one-way latency to the farthest peer + NetworkRunAheadSlack
+	// percent + a margin; -1 while a peer's round trip is unknown (no early orders then)
+	long long earlyLeadMs() const;
+	unsigned long long earlyOrdersSent() const { return m_earlyOrders; }
 	// lane MP-2: the run-ahead this peer uses now, and how often the adaptation changed it
 	int currentRunAhead() const { return m_config.runAhead; }
 	int runAheadChanges() const { return m_runAheadChanges; }
@@ -379,6 +399,12 @@ private:
 	std::array<SlotData, MAX_SLOTS> m_slots;
 	UnsignedInt m_lastExecutionFrame = 0;
 	long long m_lastFrameAnnounced = -1; ///< ZH m_lastFrameCompleted
+	// lane NETLAG-2: the protocol owner's timing (setFrameDue) and the latest execution frame of a local player's order (orders keep their issue order)
+	bool m_dueKnown = false;
+	UnsignedInt m_dueFrame = 0;
+	std::uint64_t m_dueAtMs = 0;
+	UnsignedInt m_lastOrderFrame = 0;
+	unsigned long long m_earlyOrders = 0;
 	UnsignedInt m_lastRelayed = 0;
 	bool m_relayedAny = false;
 	bool m_leaving = false;

@@ -40,7 +40,7 @@ import audit_package  # noqa: E402
 import make_manifest  # noqa: E402
 
 DEFAULT_REPO = make_manifest.DEFAULT_REPO
-MACOS_ASSET = re.compile(r"^openbfme-(v[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|preview)\.[0-9]+)?)-macos-arm64\.zip$")
+MACOS_ASSET = re.compile(r"^openbfme-(v[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|nightly|preview)\.[0-9]+)?)-macos-arm64\.zip$")
 
 
 def fail(message: str) -> None:

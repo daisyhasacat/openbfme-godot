@@ -17,6 +17,9 @@ extends Node
 signal started(start_json: String)
 signal game_created(id: String)
 signal failed(message: String)
+signal notice(message: String)
+signal report_context(context: Dictionary)
+signal oneshot_done(result: int, code: int, body: PackedByteArray) ## NETGUARD-1: the answer of a post_oneshot request
 
 const BODY_LIMIT := 262144 ## Sol r1 (ONLINE-4): the largest lobby answer read (OnlineLobbyClient::kMaxBodyBytes)
 
@@ -47,13 +50,35 @@ static func lobby_url_problem(url: String) -> String:
 	return "" if m != null and m.get_string() == url else "the lobby URL must be http(s)://host[:port][/path], got %s" % url
 
 
-func begin() -> void:
+## NETGUARD-1: one authenticated POST of an already serialized body to the lobby (the player reports of online_reports.gd), through this
+## client's one HTTP path: same lobby_url check, no redirect, same body bound, the session `token` as the bearer. The answer arrives as
+## oneshot_done (a refused URL or a failed start arrives the same way, result -1 / code 0). No sign-in, no state machine.
+func post_oneshot(path: String, body_text: String, extra_headers: PackedStringArray) -> void:
+	_step = "oneshot"
+	var problem := lobby_url_problem(lobby_url)
+	if not problem.is_empty() or token.is_empty():
+		oneshot_done.emit(-1, 0, PackedByteArray())
+		return
+	_make_http()
+	_busy = true
+	if not _send(HTTPClient.METHOD_POST, path, null, extra_headers, body_text):
+		_busy = false
+		oneshot_done.emit(-1, 0, PackedByteArray())
+
+
+func _make_http() -> void:
+	if _http != null:
+		return
 	_http = HTTPRequest.new()
 	_http.timeout = 20.0
 	_http.max_redirects = 0 # ONLINE-2 r2: never follow a redirect (Godot would send the bearer token to the new origin)
 	_http.body_size_limit = BODY_LIMIT # Sol r1 (ONLINE-4): a hostile lobby's answer is not read beyond the bound
 	add_child(_http)
 	_http.request_completed.connect(_on_response)
+
+
+func begin() -> void:
+	_make_http()
 	if lobby_url.is_empty():
 		_fail("no lobby: --online-lobby=URL (or OPENBFME_LOBBY)")
 		return
@@ -70,8 +95,13 @@ func begin() -> void:
 			_fail("no saved lobby session to rejoin with (%s): the game that restarted never signed in on this computer" % SESSION_FILE)
 			return
 	if token.is_empty():
+		var identity: Dictionary = load("res://scripts/online_identity.gd").identity()
+		if identity.has("error"):
+			_fail(str(identity.error))
+			return
+		identity["name"] = player_name
 		_step = "signin"
-		_send(HTTPClient.METHOD_POST, "/v1/auth/guest", {"name": player_name})
+		_send(HTTPClient.METHOD_POST, "/v1/auth/guest", identity)
 	else:
 		_after_signin()
 
@@ -84,14 +114,17 @@ func _process(_delta: float) -> void:
 		_send(HTTPClient.METHOD_POST, "/v1/games/%s/spectate" % join_id)
 
 
-func _send(method: int, path: String, body: Variant = null) -> void:
+func _send(method: int, path: String, body: Variant = null, extra_headers := PackedStringArray(), body_text := "") -> bool:
 	var headers := PackedStringArray(["content-type: application/json", "accept: application/json"])
 	if not token.is_empty():
 		headers.append("authorization: Bearer " + token)
+	headers.append_array(extra_headers)
 	_busy = true
-	var err := _http.request(lobby_url.trim_suffix("/") + path, headers, method, "" if body == null else JSON.stringify(body))
-	if err != OK:
+	var text := body_text if body == null else JSON.stringify(body)
+	var err := _http.request(lobby_url.trim_suffix("/") + path, headers, method, text)
+	if err != OK and _step != "oneshot":
 		_fail("cannot reach the lobby %s: %s" % [lobby_url, error_string(err)])
+	return err == OK
 
 
 func _fail(message: String) -> void:
@@ -127,6 +160,9 @@ func _after_signin() -> void:
 
 func _on_response(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	_busy = false
+	if _step == "oneshot":
+		oneshot_done.emit(result, code, body)
+		return
 	if result == HTTPRequest.RESULT_REDIRECT_LIMIT_REACHED or (code >= 300 and code < 400):
 		_fail("the lobby %s answered with a redirect: not followed (the session stays with the lobby you named)" % lobby_url)
 		return
@@ -149,8 +185,20 @@ func _on_response(result: int, code: int, _headers: PackedStringArray, body: Pac
 	if code != 200:
 		_fail("%s (%s)" % [data.get("message", "HTTP %d" % code), data.get("error", "")])
 		return
+	if data.get("game") is Dictionary and data.game.get("slots") is Array:
+		var players: Array = []
+		for slot in data.game.slots:
+			if slot is Dictionary and slot.get("state") == "player" and slot.get("player_id") is String:
+				players.append({"id": slot.player_id, "name": slot.get("name", ""), "you": slot.get("you", false)})
+		report_context.emit({"game_id": data.game.get("id", _game_id), "session_token": token, "report_players": players})
 	match _step:
 		"signin":
+			if data.get("notice") != null:
+				var pending: Variant = data.notice
+				if not pending is Dictionary or not pending.get("id") is String or not pending.get("text") is String or pending.id.is_empty() or pending.id.to_utf8_buffer().size() > 128 or pending.text.is_empty() or pending.text.to_utf8_buffer().size() > 4000:
+					_fail("the sign-in notice is malformed")
+					return
+				notice.emit(AptMenuPlayer.online_redact(pending.text))
 			token = data.token
 			print("GAME ONLINE signed in as %s (%s)" % [data.account.name, data.account.kind])
 			var f: FileAccess = null if spectate else FileAccess.open(SESSION_FILE, FileAccess.WRITE) # lane ONLINE-3: kept for a rejoin after a restart

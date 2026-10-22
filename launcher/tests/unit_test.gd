@@ -91,8 +91,26 @@ func _init() -> void:
 			var want := 0 if i == j else (-1 if i < j else 1)
 			_check(Semver.compare(alpha[i], alpha[j]) == want, "semver %s vs %s" % [alpha[i], alpha[j]])
 	_check(Semver.channel_of("v0.4.0-alpha.1") == "preview", "an alpha build is in the pre-release channel (id preview)")
-	# lane VERSION-1: the plain releases ("Alpha 0.4.5") are the stable channel, shown as "Alpha"; the pre-release channel is "Preview"
-	_check(Semver.channel_name("stable") == "Alpha" and Semver.channel_name("preview") == "Preview", "stable is shown as Alpha, preview as Preview")
+	# lane NIGHTLY-1 (owner, 2026-10-21): the channels are shown as "Stable" (id stable) and "Nightly" (id preview)
+	_check(Semver.channel_name("stable") == "Stable" and Semver.channel_name("preview") == "Nightly", "stable is shown as Stable, preview as Nightly")
+	# the nightly word: v<x>.<y>.<z>-nightly.<YYYYMMDD>, between alpha and preview of one release, below the release
+	var nightly := ["v0.4.12", "v0.4.13-alpha.1", "v0.4.13-nightly.1", "v0.4.13-nightly.20261021", "v0.4.13-nightly.20261022",
+		"v0.4.13-nightly.999999999", "v0.4.13-preview.1", "v0.4.13", "v0.4.14-nightly.20261023"]
+	for i in nightly.size():
+		for j in nightly.size():
+			var want := 0 if i == j else (-1 if i < j else 1)
+			_check(Semver.compare(nightly[i], nightly[j]) == want, "semver %s vs %s" % [nightly[i], nightly[j]])
+	_check(Semver.is_valid("v0.4.13-nightly.20261022") and not Semver.is_valid("v0.4.13-nightly.") and not Semver.is_valid("v0.4.13-nightly.020261022")
+		and not Semver.is_valid("v0.4.13-nightly.1234567890") and not Semver.is_valid("v0.4.13-nightly") and not Semver.is_valid("v0.4.13-nightly.1\n"),
+		"nightly grammar")
+	var pn := Semver.parse("v0.4.13-nightly.20261022")
+	_check(pn.ok and pn.kind == "nightly" and pn.preview == 20261022 and pn.core == [0, 4, 13], "nightly parse")
+	_check(Semver.channel_of("v0.4.13-nightly.20261022") == "preview" and Semver.channel_of("v0.4.13") == "stable", "a nightly is in the pre-release channel (id preview)")
+	for d in [["v0.4.13-nightly.20261022", "Nightly 0.4.13 (2026-10-22)"], ["v0.4.13-nightly.20260101", "Nightly 0.4.13 (2026-01-01)"],
+			["v0.4.13-nightly.20261322", "Nightly 0.4.13 build 20261322"], ["v0.4.13-nightly.20261032", "Nightly 0.4.13 build 20261032"],
+			["v0.4.13-nightly.20261000", "Nightly 0.4.13 build 20261000"], ["v0.4.13-nightly.7", "Nightly 0.4.13 build 7"]]:
+		_check(Semver.display(d[0]) == d[1], "display %s: %s, not %s" % [d[0], d[1], Semver.display(d[0])])
+	_check(ReleaseNotes.title_of("v0.4.13-nightly.20261022") == "Nightly 0.4.13 (2026-10-22)", "notes: nightly title")
 	var plain := ["v0.4.0-alpha.1", "v0.4.0-alpha.4", "v0.4.0-alpha.10", "v0.4.0", "v0.4.5", "v0.4.6", "v0.4.10", "v0.5.0", "v1.0.0"]
 	for i in plain.size():
 		for j in plain.size():

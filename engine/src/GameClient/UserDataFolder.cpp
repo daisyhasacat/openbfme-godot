@@ -5,6 +5,9 @@
 
 #include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 
 namespace
 {
@@ -118,9 +121,35 @@ std::string userDataFolder(const std::string &appData, const std::string &leaf, 
 	return out;
 }
 
+std::string userDataFolderOfInstall(const std::string &installRoot, const std::string &appData, char separator, std::string *leaf, std::string *error)
+{
+	const std::string path = installRoot + "/gi.dat";
+	std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
+	if (!in)
+	{
+		if (error)
+		{
+			*error = "cannot read " + path + " (RW 0xAAA6C0 reads the install's gi.dat for the user data folder's name)";
+		}
+		return std::string();
+	}
+	const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	const std::string name = leafName(bytes, error);
+	if (leaf)
+	{
+		*leaf = name;
+	}
+	return name.empty() ? std::string() : userDataFolder(appData, name, separator);
+}
+
 std::string heroSaveFolder(const std::string &userData, char separator)
 {
 	return userData + "Save" + separator;
+}
+
+std::string userMapFolder(const std::string &userData)
+{
+	return userData + "Maps"; // RW 0x701C6D's "Maps" after getPath_UserData, which ends with its separator
 }
 
 } // namespace UserDataFolder

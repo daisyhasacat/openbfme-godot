@@ -13,6 +13,7 @@
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/PlayerTemplate.h"
+#include "Common/Science.h"
 #include "Common/StateHash.h"
 #include "GameLogic/SimMath.h"
 #include "GameClient/GUI/Skirmish/IniSkirmishSetupSource.h"
@@ -132,6 +133,15 @@ std::string summary(GameLogic &logic, const Player *p)
 		   << " tactics " << ai->brain.tactics.size() << " started " << ai->brain.tacticsStarted << " attacks " << ai->brain.attacksLaunched << " ended " << ai->brain.tacticsEnded
 		   << " dozersQueued " << ai->build.dozerManager.queued;
 		os << " cp " << p->commandPoints().getUsage() << "/" << p->commandPointLimit();
+		// lane AI5: the upgrade builders (records made, handed to the queue) and the spell book (purchase points, sciences owned)
+		os << " unitUpgrades " << ai->build.unitUpgrader.registered << "/" << ai->build.unitUpgrader.submitted << "/" << ai->build.unitUpgrader.declined
+		   << " structureUpgrades " << ai->build.scienceBuilder.registered << "/" << ai->build.scienceBuilder.upgradesSubmitted << " expansions "
+		   << ai->build.scienceBuilder.expansionsSubmitted;
+		os << " pp " << p->science().getSciencePurchasePoints() << " sciences";
+		for (ScienceType st : p->science().sciences())
+		{
+			os << " " << (TheScienceStore ? TheScienceStore->getInternalNameForScience(st) : std::to_string((int)st));
+		}
 		const AISkirmishPlayer *owner = ai->brain.chooser ? ai : ai->groupFirst;
 		for (const AITarget &t : owner ? owner->brain.targets : ai->brain.targets)
 		{
@@ -766,7 +776,23 @@ TEST_CASE("skirmish ai vs ai: Evendim, 30 game-minutes: every pairing ends - Mor
 	// and measured once on the merged tree (remote-measure.sh on a CI host; the messages by another host's run of the same build): the losers are unchanged, seed 7 (Mordor,
 	// start position 1) ends at 4103 (6763), seed 1234 (Mordor, start position 0) at 5701 (5289), seed 2 stays open at 9000 with the table changed from the
 	// 2000 window on. Engine pins, not retail values.
-	for (const Game &g : { Game{ "FactionMordor", "FactionMen", 2u, -1, -1 }, Game{ "FactionMen", "FactionMordor", 7u, 1, 4103 }, Game{ "FactionMordor", "FactionMen", 1234u, 0, 5701 } })
+	// Lane STEALTHFLY1 (a giant bird's exit path: GiantBirdAIUpdate's follow path state 0x3F6, RW 0x76B491): in seed 2 Mordor recruits MorgomirFellBeast at
+	// frame 7145, which now leaves the fortress flying its exit path instead of running the ground path state; the table is unchanged up to the 7000 window
+	// and changes from the 8000 window on. Seeds 7 and 1234 are unchanged (no bird leaves a building before their ends). Engine pins, not retail values.
+	// Lane SUMMON-1 (the CreateObject nuggets' retail random draws and dispositions, DoCommandUpgrade's rock-throw toggle on every troll, ent and giant
+	// scripts.lua grants Upgrade_SwitchToRockThrowing at creation, the Thrall Master's summons), measured on the lane's tree (Deck, the test alone): the losers
+	// are unchanged, seed 7 (Mordor, start position 1) ends at 3790 (4103), seed 1234 (Mordor, start position 0) at 4095 (5701), seed 2 stays open at 9000
+	// with the table changed from the 2000 window on. Merged with the archive 5f7c6635b (STEALTHFLY-1's bird exit path among it) and measured on the merged
+	// tree (Deck, the test file alone, twice): the same three results. Engine pins, not retail values.
+	// Lane AI5 (the AI's upgrade purchases: AIUnitUpgrader, AIUpgradeScienceBuilder with the plot expansions, the upgrade heuristics, and the money saver /
+	// reserve RW 0x8F0502: new draws at registration and decision, money spent on upgrades and saved for heroes), measured on the lane's tree (Deck): seed 2
+	// stays open at 9000 with a new progress table (changed from the first window), seed 7 is now open at 9000 (Mordor's defeat at 4103 before), seed 1234
+	// ends with Mordor's defeat (start position 0) at 4768 (5701 before). Engine pins, not retail values.
+	// Merge queue q22 (SUMMON-1 + FX-4 + AI5 + NUGGET-1: SUMMON-1's OCL draws / rock-throw toggles together with AI5's upgrade draws, purchases and money
+	// saver; each lane alone measured the values above), measured once on the merged tree (srv1, the test file alone, twice): seed 2 stays open at 9000 with a new
+	// progress table (changed from the first window), seed 7 ends with Mordor's defeat (start position 1) at 5693 (3790 before), seed 1234 is open at 9000
+	// (Mordor's defeat at 4095 before). Engine pins, not retail values.
+	for (const Game &g : { Game{ "FactionMordor", "FactionMen", 2u, -1, -1 }, Game{ "FactionMen", "FactionMordor", 7u, 1, 5693 }, Game{ "FactionMordor", "FactionMen", 1234u, -1, -1 } })
 	{
 		INFO(g.a << " vs " << g.b << " seed " << g.seed);
 		VersusRun run;
@@ -789,15 +815,15 @@ TEST_CASE("skirmish ai vs ai: Evendim, 30 game-minutes: every pairing ends - Mor
 		{
 			// the game that stays open: no late stall, every counter still rises in each of the last windows (a sample every 1000 frames, cumulative)
 			CHECK(run.progress ==
-		"frame 1000: [0 attacks 1 built 82u/8s destroyed 7u/0s] [1 attacks 2 built 75u/7s destroyed 9u/1s]\n"
-		"frame 2000: [0 attacks 4 built 293u/11s destroyed 115u/2s] [1 attacks 3 built 187u/11s destroyed 151u/2s]\n"
-		"frame 3000: [0 attacks 8 built 567u/14s destroyed 260u/2s] [1 attacks 6 built 333u/13s destroyed 428u/2s]\n"
-		"frame 4000: [0 attacks 9 built 726u/17s destroyed 412u/2s] [1 attacks 8 built 450u/15s destroyed 654u/3s]\n"
-		"frame 5000: [0 attacks 12 built 928u/18s destroyed 487u/4s] [1 attacks 9 built 577u/16s destroyed 848u/3s]\n"
-		"frame 6000: [0 attacks 15 built 1088u/19s destroyed 641u/4s] [1 attacks 10 built 721u/17s destroyed 1009u/3s]\n"
-		"frame 7000: [0 attacks 17 built 1212u/21s destroyed 662u/6s] [1 attacks 10 built 765u/20s destroyed 1164u/4s]\n"
-		"frame 8000: [0 attacks 18 built 1337u/22s destroyed 692u/7s] [1 attacks 11 built 793u/24s destroyed 1237u/4s]\n"
-		"frame 9000: [0 attacks 20 built 1676u/22s destroyed 863u/11s] [1 attacks 15 built 940u/26s destroyed 1522u/4s]\n");
+		"frame 1000: [0 attacks 2 built 90u/8s destroyed 16u/0s] [1 attacks 1 built 75u/7s destroyed 9u/1s]\n"
+		"frame 2000: [0 attacks 5 built 288u/11s destroyed 95u/2s] [1 attacks 4 built 172u/11s destroyed 241u/1s]\n"
+		"frame 3000: [0 attacks 6 built 450u/12s destroyed 268u/3s] [1 attacks 9 built 309u/12s destroyed 386u/1s]\n"
+		"frame 4000: [0 attacks 10 built 652u/14s destroyed 363u/3s] [1 attacks 12 built 434u/14s destroyed 588u/1s]\n"
+		"frame 5000: [0 attacks 12 built 832u/18s destroyed 477u/5s] [1 attacks 14 built 504u/15s destroyed 706u/3s]\n"
+		"frame 6000: [0 attacks 15 built 975u/19s destroyed 647u/6s] [1 attacks 17 built 683u/15s destroyed 879u/3s]\n"
+		"frame 7000: [0 attacks 17 built 1098u/21s destroyed 724u/7s] [1 attacks 19 built 776u/15s destroyed 1102u/3s]\n"
+		"frame 8000: [0 attacks 20 built 1257u/23s destroyed 825u/7s] [1 attacks 23 built 881u/15s destroyed 1201u/3s]\n"
+		"frame 9000: [0 attacks 22 built 1431u/23s destroyed 953u/7s] [1 attacks 26 built 993u/15s destroyed 1313u/3s]\n");
 		}
 	}
 }
@@ -953,7 +979,9 @@ TEST_CASE("skirmish ai tactics: the offensive bodies make retail's draws in orde
 	// 18 seeds on the merged tree found seeds 29 and 67 (one Pincer each)
 	// Merge of IDLE-1 (update phases) into MOVE-3 r4: none of these ten hands a Pincer team its waypoints within 2600 frames (1234 and 11 start one); a probe of
 	// 15 seeds on the merged tree found seeds 37 and 41
-	for (std::uint32_t seed : { 1234u, 2u, 7u, 11u, 13u, 17u, 19u, 31u, 29u, 67u, 37u, 41u })
+	// Lane SUMMON-1 (the OCLs' retail random draws, DoCommandUpgrade's rock-throw toggles): none of these twelve hands a Pincer team its waypoints within 2600
+	// frames; a probe of 16 seeds on the lane's tree (Deck) found 53 (two distances), 71, 101 and 113 (one each)
+	for (std::uint32_t seed : { 1234u, 2u, 7u, 11u, 13u, 17u, 19u, 31u, 29u, 67u, 37u, 41u, 53u, 71u })
 	{
 		NewGameStart start(RandomAlgorithm::ZH_CarryChain);
 		REQUIRE_MESSAGE(NewGame::prepareNewGame(versusMessage(*s, "FactionMen", -1, "FactionMordor", 2, seed), s->world->playerTemplates(), s->settings, cache,

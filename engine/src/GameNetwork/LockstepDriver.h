@@ -35,6 +35,7 @@ public:
 
 	Capture capture() const override;
 	void pump(UnsignedInt protocolFrame, CommandList &pending) override;
+	void frameDue(UnsignedInt frame, std::uint32_t msFromNow) override; ///< lane NETLAG-2: handed to the Network (Network::setFrameDue)
 	bool acquire(UnsignedInt frame, FrameBatch &out) override;
 	void completed(const FrameCompletion &c) override;
 	void simulationAfterFrame(GameLogic &logic) override;

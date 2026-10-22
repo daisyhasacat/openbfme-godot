@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <cctype>
 #include <cstdio>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -947,7 +948,9 @@ bool equalsNoCase(const std::string &a, const char *b)
 	return i == a.size() && b[i] == 0;
 }
 
-// ZH UnicodeString::format of a "%d"-style game text: %d / %s are replaced in order by the integers (the only conversions Version:Format2 uses)
+// ZH UnicodeString::format (a vswprintf) of a "%d"-style game text: the integer conversions are replaced in order by the integers, with their flags,
+// width and precision (Version:Format2 is "Version %d.%02d": the minor version 1 shows as "01", RotWK's "Version 2.01"; lane MENUFIX-1, before the
+// width was dropped: "Version 2.1")
 std::u16string formatInts(const std::u16string &format, std::initializer_list<int> values)
 {
 	std::u16string out;
@@ -957,15 +960,20 @@ std::u16string formatInts(const std::u16string &format, std::initializer_list<in
 		if (format[i] == u'%' && i + 1 < format.size())
 		{
 			std::size_t j = i + 1;
-			while (j < format.size() && (format[j] == u'0' || format[j] == u'.' || (format[j] >= u'1' && format[j] <= u'9')))
+			std::string spec = "%";
+			while (j < format.size() && (format[j] == u'-' || format[j] == u'+' || format[j] == u' ' || format[j] == u'#' || format[j] == u'.' ||
+					(format[j] >= u'0' && format[j] <= u'9')))
 			{
-				++j;
+				spec += (char)format[j++];
 			}
 			if (j < format.size() && (format[j] == u'd' || format[j] == u'i' || format[j] == u'u'))
 			{
 				if (it != values.end())
 				{
-					out += asciiToU16(std::to_string(*it++));
+					spec += (char)format[j];
+					char buf[64];
+					std::snprintf(buf, sizeof(buf), spec.c_str(), *it++);
+					out += asciiToU16(buf);
 				}
 				i = j;
 				continue;

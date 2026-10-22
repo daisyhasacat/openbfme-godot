@@ -10,6 +10,7 @@
 #include "Common/MD5.h"
 #include "GameClient/MapUtil.h"
 #include "GameClient/GameText.h"
+#include "GameClient/UserDataFolder.h"
 #include <algorithm>
 #include <filesystem>
 #include <set>
@@ -41,6 +42,14 @@ std::string toNative(const String &s)
 {
 	CharString utf8 = s.utf8();
 	return std::string(utf8.get_data(), (size_t)utf8.length());
+}
+
+// lane MOD-5: the user maps folder of a RotWK install (the user data folder that its gi.dat names in the device's application data folder, then
+// RW 0x70254F's "Maps"); "" + `error` when the install's gi.dat cannot be read
+std::string userMapFolderOf(const std::string &rotwkRoot, std::string &error)
+{
+	const std::string userData = UserDataFolder::userDataFolderOfInstall(rotwkRoot, toNative(OS::get_singleton()->get_data_dir()), '/', nullptr, &error);
+	return userData.empty() ? std::string() : UserDataFolder::userMapFolder(userData);
 }
 }
 
@@ -74,6 +83,7 @@ void RetailFileSystem::_bind_methods()
 	ClassDB::bind_method(D_METHOD("get_archive_for_file", "path"), &RetailFileSystem::get_archive_for_file);
 	ClassDB::bind_method(D_METHOD("get_last_error"), &RetailFileSystem::get_last_error);
 	ClassDB::bind_method(D_METHOD("get_loose_files"), &RetailFileSystem::get_loose_files);
+	ClassDB::bind_method(D_METHOD("get_user_map_folder"), &RetailFileSystem::get_user_map_folder); // lane MOD-5
 }
 
 Dictionary RetailFileSystem::mount_retail()
@@ -140,6 +150,8 @@ Dictionary RetailFileSystem::mount_bfme1_path(const String &root)
 	m_bfme1Root.clear();
 	m_mountedArchives.clear();
 	m_loose.clear();
+	m_userMapFolder.clear();
+	m_userMapError.clear();
 	PackedStringArray errors;
 	auto fs = std::make_unique<Win32BIGFileSystem>();
 	const auto directory = std::filesystem::u8path(toNative(root));
@@ -297,6 +309,8 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 	m_bfme1Root.clear();
 	m_mountedArchives.clear();
 	m_loose.clear();
+	m_userMapFolder.clear();
+	m_userMapError.clear();
 	m_shellSource = false;
 	m_installRoot.clear();
 
@@ -624,10 +638,25 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 			{
 				UtilityFunctions::push_warning("RetailFileSystem: ", toGodot(f.line));
 			}
+			// lane MOD-5: the user maps folder, the one folder the archive file system reads from disk (RW 0xA149A2's local step)
+			if (m_fs)
+			{
+				m_userMapFolder = userMapFolderOf(rotwkRoot, m_userMapError);
+				m_fs->setLocalFolder(m_userMapFolder);
+				if (!m_userMapError.empty())
+				{
+					UtilityFunctions::push_warning("RetailFileSystem: no user maps folder: ", toGodot(m_userMapError));
+				}
+			}
 		}
 	}
 
 	result["loose_files"] = get_loose_files();
+	result["user_map_folder"] = toGodot(m_userMapFolder);
+	if (!m_userMapError.empty())
+	{
+		result["user_map_error"] = toGodot(m_userMapError);
+	}
 	result["ok"] = m_mounted;
 	result["errors"] = errors;
 	m_lastError = errors.is_empty() ? String() : errors[0];
@@ -670,6 +699,8 @@ Dictionary RetailFileSystem::mountBfme2Shell(const std::string &bfme2Root)
 	m_shellSource = false;
 	m_installRoot.clear();
 	m_loose.clear();
+	m_userMapFolder.clear();
+	m_userMapError.clear();
 	m_mountedArchives.clear();
 
 	RetailInstall install;
@@ -796,6 +827,26 @@ bool RetailFileSystem::readBytes(const std::string &path, std::vector<uint8_t> &
 		return false;
 	}
 	return m_fs->readFile(path, out, error);
+}
+
+bool RetailFileSystem::mapsFolder(bool userMap, std::string &out, std::string *error) const
+{
+	if (!userMap)
+	{
+		out = "maps";
+		return true;
+	}
+	out = m_userMapFolder;
+	if (out.empty() && error)
+	{
+		*error = "no user maps folder: " + (m_userMapError.empty() ? std::string("only the RotWK 2.01 mount has one") : m_userMapError);
+	}
+	return !out.empty();
+}
+
+String RetailFileSystem::get_user_map_folder() const
+{
+	return toGodot(m_userMapFolder);
 }
 
 bool RetailFileSystem::file_exists(const String &path) const

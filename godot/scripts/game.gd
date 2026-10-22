@@ -240,6 +240,9 @@
 ##
 ##   lane CAH-1, Create-a-Hero: the main menu's Create-a-Hero opens CreateAHero.apt over its map mode (scripts/create_a_hero_view.gd); the heroes are the system
 ##   heroes of the archives and the profile's MyHero_<id>.cah in retail's save folder (--cah-profile=DIR); the Skirmish / LAN lobby's Hero combo picks one for the slot
+##     --cah-picture         (lane CAHPIC-1, with --auto) the main menu's My Heroes, past the promo page, then the Manager's TAKE PICTURE with real clicks:
+##                           the panels close, the picture is saved in the pictures folder (the box says where), the panels come back; --screens writes
+##                           cahpic-<step>.png; "CAHPIC RESULT ok|FAIL <why>" ends the run
 ##     --cah                 (with --auto) build a hero in the builder through the movies' own functions and commands (class, appearance, name, powers), save it,
 ##                           back to the main menu, pick it in the Skirmish lobby's Hero combo (with --faction), start, recruit it at the fortress; exit 0 when the
 ##                           hero was saved, chosen, installed and made. --screens writes cah1-*.png. Lane CAH-2 r2: the run saves into a temporary folder
@@ -280,6 +283,7 @@ var _perf_log_path := ""      # lane MP-3: --perf-log=<file>: every rendered fra
 var _perf_log: FileAccess = null
 var _perf_log_prev_us := 0
 var _net_census := ""         # lane MP-3: --net-census=<file>: the network game's per-logic-frame census CSV, written when the game ends
+var _net_early_orders := true # lane NETLAG-2: --no-early-orders: every order waits for RotWK's frame + 1 (early orders run a frame sooner where the link allows)
 var _perf_stat_pid := -1      # the perf stat of the current window
 var _perf_stat_index := 0
 var _perf_stat_done := {}     # the finished window's { file, frames }, read at the next window's end
@@ -289,6 +293,7 @@ var _perf_last := 0
 var _perf_prev_us := 0
 const DisplaySettings := preload("res://scripts/display_settings.gd") # lane OPTS-1
 const OnlineStats := preload("res://scripts/online_stats.gd") # lane ONLINECOUNT-1
+const MenuText := preload("res://scripts/menu_text.gd") # lane MENUFIX-1: OpenBFME's lines over the menus in the menus' look
 const AppIcon := preload("res://scripts/app_icon.gd") # lane OWNERFIX-3: the OpenBFME window icon (not Godot's)
 var _display: RefCounted                 # lane OPTS-1: the display settings in effect (openbfme-display.cfg)
 var _display_path := ""
@@ -392,6 +397,7 @@ var _online_players := 2
 var _online: Node = null
 # lane ONLINE-4
 var _online_http: Node = null
+var _online_reports: Node = null
 var _online_walk := ""
 var _online_start_file := "" # lane MP-DROP-1: --online-start-file=FILE
 var _online_shots := ""
@@ -403,6 +409,10 @@ var _online_note: CanvasLayer = null ## "Online play is a test feature", shown w
 var _stats: Node = null              ## lane ONLINECOUNT-1: scripts/online_stats.gd (null: not asked for: off, or not made yet)
 var _stats_off := ""                 ## why the count is not asked for ("" = it is); set once, when the menu first shows
 var _stats_label: Label = null       ## the main menu's / the online menu's "N players online" line
+var _menu_text_errors: Array = []    ## lane MENUFIX-1: faces scripts/menu_text.gd did not find (reported once each)
+var _menu_text_reported := {}        ## lane MENUFIX-1: the faces of _menu_text_errors already reported
+var _menu_text_top := 30.0           ## lane MENUFIX-1: the top left lines' first line (window pixels; under the fps counter's line)
+var _menu_text_line := 18.0          ## lane MENUFIX-1: a top left line's height (window pixels)
 const ONLINE_DEFAULT_LOBBY := "https://secondage.dev"
 const ONLINE_SESSION_FILE := "user://online_session.txt" # lane ONLINE-3's file (scripts/online_lobby.gd SESSION_FILE)
 var _online_saved_session := ""
@@ -424,6 +434,7 @@ var _local_control: Node
 var _remote_testing: Node
 var _hub_online := {}              # the online game being started: { id, match, tournament } (the record's id: the match's when there is one)
 var _hub_kind := ""                # "skirmish" / "lan" / "online": the kind of the game being played ("" none: not recorded)
+var _last_game_online := false     # DEVINPR-1: the game the score screen is of was an online one (its Report button; not after a skirmish / LAN game)
 var _hub_game_id := ""
 var _game_start_unix := 0
 var _online_rejoin := false        # lane ONLINE-3
@@ -650,6 +661,7 @@ var _quit_flow := ""            # lane END-2: --quit / --quit-restart (the scrip
 var _cah: Node = null           # lane CAH-1: the Create-a-Hero builder's 3D view while CreateAHero.apt is up
 var _cah_profile := ""          # lane CAH-1: --cah-profile=DIR (the folder of the profile's MyHero*.cah; default <user data>/Save)
 var _cah_demo := false          # lane CAH-1: --cah (the scripted builder -> lobby -> game run)
+var _cah_picture := false       # lane CAHPIC-1: --cah-picture (Create-a-Hero's TAKE PICTURE with real clicks)
 var _cah_builder_only := false  # lane CAH-1: --cah-builder-only (quit after the builder part)
 var _cah_real_profile := false   # lane CAH-2 r2: --cah-real-profile (the --cah run writes the player's real save folder; default: a temporary one)
 var _cah_temp_root := ""        # lane CAH-2 r2: the --cah run's temporary user data folder (removed at its end)
@@ -696,6 +708,8 @@ func _ready() -> void:
 		if arg.begins_with("--res="):
 			var p := arg.substr(6).split("x")
 			_res = Vector2i(int(p[0]), int(p[1]))
+		elif arg == "--cah-picture":
+			_cah_picture = true
 		elif arg == "--cah":
 			_cah_demo = true
 		elif arg == "--cah-builder-only":
@@ -713,6 +727,8 @@ func _ready() -> void:
 			_perf_stat = arg.substr(12)
 		elif arg.begins_with("--perf-log="):
 			_perf_log_path = arg.substr(11)
+		elif arg == "--no-early-orders":
+			_net_early_orders = false
 		elif arg.begins_with("--net-census="):
 			_net_census = arg.substr(13)
 		elif arg == "--perf":
@@ -1402,6 +1418,8 @@ func _boot() -> void:
 		return
 	_sync_shell_volumes()
 	print("GAME shell booted in %.0f ms: %d strings, lobby seed %d" % [boot.load_ms, boot.strings, boot.seed])
+	get_viewport().size_changed.connect(_style_menu_texts) # lane MENUFIX-1
+	_style_menu_texts()
 	# lane CAH-1: the Create-a-Hero builder's and the lobby's heroes: the system heroes of the archives and the profile's MyHero*.cah (RW 0x61EEB6: <user data>\\Save\\)
 	if not _fs.is_bfme1():
 		var profile_dir := _cah_profile_dir()
@@ -1513,6 +1531,10 @@ func _process(delta: float) -> void:
 		_capture_tick() # lane ONLINE-4
 	Release.set_in_game(_state == State.PLAYING) # lane RELEASE-1: the version corner in the menus only
 	_campaign_check_tick() # lane CAMP-1
+	if _online_reports != null:
+		if _online_http != null:
+			_online_reports.set_context(_shell.online_status())
+		_online_reports.set_available((_state == State.SCORE and _last_game_online) or (_state == State.MENU and _shell.shell_stack().has("OnlineShell.apt")))
 	if _state == State.MENU:
 		if _pending_menu_style != _menu_style and not _switching_menu_style and _clean_main_menu():
 			_switching_menu_style = true
@@ -1550,6 +1572,9 @@ func _process(delta: float) -> void:
 				_fail("the main menu refused AptMainMenu::" + cmd)
 			elif _save_ui_test:
 				_save_flow.run_ui_test() # lane SAVE-UI1: the mission the main menu's campaign started
+		elif _cah_picture and _menu_revealed and _frames >= LEVEL_MAIN_MENU_FRAMES + 30 and _shell_pictures_seen > 0:
+			_cah_picture = false
+			_cah_picture_run()
 		elif not _campaign_click.is_empty() and _menu_revealed and _frames >= LEVEL_MAIN_MENU_FRAMES + 30 and _shell_pictures_seen > 0:
 			var click := _campaign_click
 			_campaign_click = ""
@@ -1867,6 +1892,7 @@ func _apply_pending_menu_style() -> void:
 	if not heroes.get("ok", false):
 		_fail("shell style switch heroes: " + str(heroes.get("errors", [])))
 		return
+	_style_menu_texts() # lane MENUFIX-1: the other style's archives carry their own faces
 	_shell.set_openbfme_available(true)
 	if _platform_ready:
 		_shell.set_game_records(FileAccess.get_file_as_string(RECORDS_FILE) if FileAccess.file_exists(RECORDS_FILE) else "")
@@ -1969,6 +1995,47 @@ func campaign_click(button: String, difficulty: String) -> String:
 	await _click_at_stage(Vector2(choice.x, choice.y))
 	print("GAME clicked ", choice.path)
 	return ""
+
+
+## lane CAHPIC-1: --cah-picture. Frames, not seconds, between the clicks (the run also works under Movie Maker's fixed frame rate)
+func _cah_picture_run() -> void:
+	var why := ""
+	if not await _click_button(_shell.shell_top_level(), "MyHeroes"):
+		why = "no My Heroes button"
+	else:
+		await _step(150)
+		if not await _click_button(_shell.shell_top_level(), "Main.mcNewFeaturesScreen.mcClassButtons.Continue"):
+			why = "no Continue button on the promo page"
+	if why.is_empty():
+		await _step(150)
+		if not _screens.is_empty():
+			_save_named("cahpic-1-manager")
+		if not await _click_button(_shell.shell_top_level(), "Main.mcManagerScreen.Screen.TabNav.Appearance.TakePicture"):
+			why = "no TAKE PICTURE button"
+	if why.is_empty():
+		await _step(12)
+		if not _screens.is_empty():
+			_save_named("cahpic-2-panels-closing")
+		var waited := 0
+		while waited < 600 and not _cah_picture_box():
+			await _step(10)
+			waited += 10
+		if not _cah_picture_box():
+			why = "no picture box after %d frames" % waited
+		else:
+			await _step(45) # the panels' opening animation under the box
+			if not _screens.is_empty():
+				_save_named("cahpic-3-box")
+			print("CAHPIC box: ", _shell.get_create_a_hero_view().get("last_message", ""))
+			await _step(90)
+	print("CAHPIC RESULT %s" % ("ok" if why.is_empty() else "FAIL " + why))
+	get_tree().quit(0 if why.is_empty() else 1)
+
+
+## lane CAHPIC-1: the screen showed TAKE PICTURE's box (its last message names the picture texts or the could-not-save box)
+func _cah_picture_box() -> bool:
+	var m := str(_shell.get_create_a_hero_view().get("last_message", ""))
+	return m.begins_with("GUI:OnPictureTakenTitle") or m.contains("could not be saved")
 
 
 func _campaign_click_run(button: String, difficulty: String) -> void:
@@ -2298,16 +2365,27 @@ func _show_rules_summary(text: String) -> void:
 	_rules_layer.layer = 91
 	add_child(_rules_layer)
 	var label := Label.new()
+	label.name = "Rules"
 	label.set_meta("game_text", true)
 	label.text = text
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.anchor_right = 1.0
 	label.anchor_top = 0.13 # below the movie's title, above its map panel
-	label.add_theme_font_size_override("font_size", 24)
-	label.add_theme_color_override("font_color", Color(1.0, 0.84, 0.35))
-	label.add_theme_color_override("font_outline_color", Color.BLACK)
-	label.add_theme_constant_override("outline_size", 6)
 	_rules_layer.add_child(label)
+	_style_rules_summary()
+
+
+## lane MENUFIX-1: the menus' face at 17 stage pixels (was Godot's face at 24 window pixels), gold as before, an outline that scales too.
+## Lane MENUFIX-2 (Sol's MENUFIX-1 follow-up): again on a resize while the loading screen shows it (_style_menu_texts)
+func _style_rules_summary() -> void:
+	if _rules_layer == null:
+		return
+	var label: Label = _rules_layer.get_node("Rules")
+	var size := get_viewport().get_visible_rect().size
+	MenuText.apply(label, _shell, size, 17.0, _menu_text_errors, Color(1.0, 0.84, 0.35))
+	label.add_theme_color_override("font_outline_color", Color.BLACK)
+	label.add_theme_constant_override("outline_size", maxi(2, roundi(4 * MenuText.scale_of(size))))
+	_report_menu_text_errors()
 
 
 func _hide_rules_summary() -> void:
@@ -5232,6 +5310,9 @@ func _online_open() -> void:
 			"setup": {"map": _map_key, "startingCash": 1500, "slots": slots}}
 	_online.started.connect(_on_online_started)
 	_online.failed.connect(func(m: String): _fail("online: " + m))
+	_online.notice.connect(func(m: String): Release._message(m, "Online notice", "", false))
+	_online_report_panel(_online.lobby_url)
+	_online.report_context.connect(func(context: Dictionary): _online_reports.set_context(context))
 	add_child(_online)
 	print("GAME ONLINE lobby %s, profile %s, %s" % [_online.lobby_url, _online.profile, "rejoin" if _online_rejoin else ("spectate " + _online_join) if _online_spectate else ("join " + _online_join) if not _online_join.is_empty() else "host"])
 	_online.begin()
@@ -5358,6 +5439,7 @@ func _hub_begin(message: Dictionary) -> void:
 	if _hub_online.is_empty():
 		_statistics_context = {} # a LAN/skirmish/replay must never reuse online credentials
 	_game_start_unix = int(Time.get_unix_time_from_system())
+	_last_game_online = not _hub_online.is_empty() # DEVINPR-1 (review of WP-C)
 	if not _hub_online.is_empty():
 		_hub_kind = "online"
 		_hub_game_id = str(_hub_online.get("id", ""))
@@ -5439,7 +5521,12 @@ func _open_online_shell() -> void:
 	if FileAccess.file_exists(ONLINE_SESSION_FILE):
 		session = FileAccess.get_file_as_string(ONLINE_SESSION_FILE).strip_edges()
 	_online_saved_session = session
-	var r: Dictionary = _shell.set_online(_world, {"lobby_url": url, "remembered_name": name, "session_token": session})
+	var options: Dictionary = load("res://scripts/online_identity.gd").identity()
+	if options.has("error"):
+		_fail("online screens: " + str(options.error))
+		return
+	options.merge({"lobby_url": url, "remembered_name": name, "session_token": session})
+	var r: Dictionary = _shell.set_online(_world, options)
 	if not r.ok:
 		_fail("online screens: " + str(r.get("error", "")))
 		return
@@ -5450,10 +5537,21 @@ func _open_online_shell() -> void:
 	_online_http.shell = _shell
 	_online_http.lobby_url = url
 	add_child(_online_http)
+	_online_report_panel(url)
 	print("GAME ONLINE screens: lobby %s (online play is a test feature)" % url)
 	_online_test_note()
 	if not _shell.shell_push("OnlineShell.apt"):
 		_fail("the shell refused OnlineShell.apt: " + str(_shell.get_shell_report().errors))
+
+
+func _online_report_panel(url: String) -> void:
+	if _online_reports != null and _online_reports.lobby_url == url:
+		return
+	if _online_reports != null:
+		_online_reports.queue_free()
+	_online_reports = load("res://scripts/online_reports.gd").new()
+	_online_reports.lobby_url = url
+	add_child(_online_reports)
 
 
 ## The whole Online menu is a test feature (docs/PLAYING.md): a note in the top left corner says so while its screens are up (the retail screens keep
@@ -5465,18 +5563,44 @@ func _online_test_note() -> void:
 	_online_note.layer = 100
 	_online_note.name = "OnlineTestNote"
 	var label := Label.new()
+	label.name = "Note"
 	label.text = "Online play is a test feature"
-	label.add_theme_font_size_override("font_size", 13)
-	label.add_theme_color_override("font_color", Color(1, 0.9, 0.6, 0.9))
-	label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
-	label.add_theme_constant_override("shadow_offset_x", 1)
-	label.add_theme_constant_override("shadow_offset_y", 1)
-	label.offset_left = 8
-	label.offset_top = 30 # lane ONLINE-5: under the fps counter's line (scripts/fps_overlay.gd draws at y 4, 16 px): the two never overlap
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	label.set_meta("game_text", true) # the game's own text (not a developer overlay)
 	_online_note.add_child(label)
 	add_child(_online_note)
+	_style_menu_texts() # lane MENUFIX-1: the menus' look, in the top left corner under the fps counter's line
+
+
+## lane MENUFIX-1: OpenBFME's own lines over the menus in the menus' look (scripts/menu_text.gd) at the window's size; again on every resize. The top
+## left lines (the online test note, then the players-online line) start under the fps counter's line (scripts/fps_overlay.gd: y 4, 16 px times the
+## interface scale) and never overlap it; the version corner is top right (Release.style_corner).
+func _style_menu_texts() -> void:
+	if _shell == null:
+		return
+	var size := get_viewport().get_visible_rect().size
+	var k := MenuText.scale_of(size)
+	Release.style_corner(_shell, size, _menu_text_errors)
+	var left := roundf(MenuText.MARGIN_PX * k)
+	_menu_text_top = maxf(30.0, left)
+	var y := _menu_text_top
+	if _online_note != null:
+		var note: Label = _online_note.get_node("Note")
+		_menu_text_line = MenuText.apply(note, _shell, size, MenuText.CORNER_PX, _menu_text_errors)
+		note.position = Vector2(left, y)
+	if _stats_label != null:
+		_menu_text_line = MenuText.apply(_stats_label, _shell, size, MenuText.CORNER_PX, _menu_text_errors)
+		var online: bool = _online_note != null and _online_note.visible and _shell.shell_stack().has("OnlineShell.apt")
+		_stats_label.position = Vector2(left, y + (_menu_text_line if online else 0.0))
+	_style_rules_summary() # lane MENUFIX-2
+	_report_menu_text_errors()
+
+
+func _report_menu_text_errors() -> void:
+	for face: String in _menu_text_errors:
+		if not _menu_text_reported.has(face):
+			_menu_text_reported[face] = true
+			push_error("GAME ERROR menu text: the archives have no %s; OpenBFME's lines over the menus use Godot's face" % face)
 
 
 ## lane ONLINECOUNT-1: "N players online" (scripts/online_stats.gd). The main menu shows it in its own line, the online menu's pages under the test-feature note;
@@ -5505,7 +5629,8 @@ func _online_count_tick() -> void:
 		_stats.counts_changed.connect(func(c: Dictionary) -> void: _shell.online_set_counts(c)) # lane ONLINEUX-1 r2: the home page's ticker
 	_stats.set_mode(mode)
 	if _stats_label != null:
-		_stats_label.position = Vector2(8, 48) if mode == "online" else Vector2(8, 30)
+		# lane MENUFIX-1: the online pages show it under the test-feature note
+		_stats_label.position = Vector2(_stats_label.position.x, _menu_text_top + (_menu_text_line if mode == "online" else 0.0))
 
 
 func _online_count_show(text: String) -> void:
@@ -5515,16 +5640,13 @@ func _online_count_show(text: String) -> void:
 		layer.name = "OnlineCountLayer"
 		_stats_label = Label.new()
 		_stats_label.name = "OnlineCount"
-		_stats_label.add_theme_font_size_override("font_size", 13)
-		_stats_label.add_theme_color_override("font_color", Color(1, 0.9, 0.6, 0.9))
-		_stats_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
-		_stats_label.add_theme_constant_override("shadow_offset_x", 1)
-		_stats_label.add_theme_constant_override("shadow_offset_y", 1)
+		_stats_label.position = Vector2(8, _menu_text_top)
 		_stats_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_stats_label.tooltip_text = "Players in OpenBFME's online lobbies and games"
 		_stats_label.set_meta("game_text", true)
 		layer.add_child(_stats_label)
 		add_child(layer)
+		_style_menu_texts() # lane MENUFIX-1
 	_stats_label.text = text
 	_stats_label.visible = not text.is_empty()
 	if _stats != null:
@@ -5985,7 +6107,7 @@ func _net_poll_lobby() -> void:
 
 
 func _net_begin() -> void:
-	var opts := {"script": _net_script, "desync_dir": OS.get_user_data_dir(), "census": not _net_census.is_empty()}
+	var opts := {"script": _net_script, "desync_dir": OS.get_user_data_dir(), "census": not _net_census.is_empty(), "early_orders": _net_early_orders}
 	if not _net_record.is_empty():
 		opts["record"] = _net_record
 	elif _record:
@@ -6080,6 +6202,11 @@ func _net_tick() -> void:
 		if st.has("relay"):
 			# lane ONLINE-2: an online game's relay link (no address on screen)
 			_net_label.text += "  ONLINE via relay: %s, round trip %d ms" % ["bound" if st.relay.bound else "not bound", int(st.relay.round_trip_ms)]
+		# lane NETLAG-2: the command delay a player feels (the run-ahead in 200 ms frames, the orders' mean time from issue to the frame that ran them)
+		var lat := str(st.get("input_latency_ms", ""))
+		var mean := lat.substr(lat.find("mean ") + 5).get_slice(" ", 0) if lat.find("mean ") >= 0 else "-"
+		_net_label.text += "\norder delay: run-ahead %d frame(s), orders so far: mean %s ms, frames held %d" % [int(st.get("run_ahead", -1)), mean,
+			int(st.get("stalled_frames", 0))]
 	if st.frame / 50 != _net_last_print:
 		_net_last_print = st.frame / 50
 		# lane RENDERWAIT-1: the hash is the last one taken where the logic was held (of frame hash_frame)
@@ -6843,12 +6970,18 @@ func _campaign_check_tick() -> void:
 ## --qa: the scripted human plays (or, --qa-idle, watches an AI game), then the game is left the way a player leaves it and the score screen's Continue must
 ## return to the lobby. One QA SUMMARY line carries the player's findings and the flow's.
 func _run_qa() -> void:
+	var guard = load("res://scripts/qa_player.gd").RunGuard.new()
+	await guard.run(self, PackedStringArray([_qa_tag]))
+	get_tree().quit(0 if guard.fail_count == 0 else 1)
+
+
+func _run_qa_scenario() -> String:
 	if not _net_state.is_empty() or _net_host > 0 or not _net_join.is_empty() or not _lan_mode.is_empty() or not _replay_file.is_empty():
 		_fail("QA: the scripted player does not play a network session or a replay")
-		return
+		return "the scripted player does not play a network session or a replay"
 	if _hud == null:
 		_fail("QA: the HUD was not installed")
-		return
+		return "the HUD was not installed"
 	var qa: Node = load("res://scripts/qa_scene.gd" if not _qa_scene.is_empty() else "res://scripts/qa_player.gd").new()
 	qa.name = "QAPlayer"
 	add_child(qa)
@@ -6863,6 +6996,8 @@ func _run_qa() -> void:
 	else:
 		summary = await qa.play()
 	_world.set_time_scale(1.0)
+	if summary.is_empty():
+		return "QA player produced no summary (final assertion not reached)"
 	summary["real_seconds"] = (Time.get_ticks_msec() - started) / 1000.0
 	var flow := {"end_screen": false, "end_hidden": false, "auto_score": false, "quit_exit": false, "score_screen": false, "continue_to_lobby": false}
 	if summary.get("victory", false) or summary.get("defeat", false):
@@ -6931,7 +7066,7 @@ func _run_qa() -> void:
 	print("QA SUMMARY ", JSON.stringify(summary))
 	var complete: bool = flow.score_screen and flow.continue_to_lobby
 	print("QA RESULT: flow %s, %d issues" % ["complete" if complete else "INCOMPLETE", summary.get("issues", []).size()])
-	get_tree().quit(0 if complete else 1)
+	return "" if complete else "flow INCOMPLETE"
 
 
 

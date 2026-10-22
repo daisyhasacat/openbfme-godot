@@ -106,6 +106,17 @@ AptOnlineHub::~AptOnlineHub()
 	if (AptGadgetLayer *layer = m_shell.windows().gadgetLayer())
 	{
 		layer->clearDecorator(this);
+		// lane MENUFIX-2: the tournaments panel's two list boxes (engine gadgets, not Apt components: nothing else frees them) went only with
+		// showPanel(false); leaving the online menu otherwise left them alive and drawn over every later menu (the menu inventory saw
+		// "No tournaments are planned." and two scroll bars over Create-a-Hero), owned by the shell's freed owner window
+		for (GameWindow *w : { m_list, m_details })
+		{
+			if (w)
+			{
+				layer->destroyEngineGadget(w);
+			}
+		}
+		m_list = m_details = nullptr;
 	}
 }
 

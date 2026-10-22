@@ -33,7 +33,7 @@ const OFF_ARG := "--no-update-check"
 const REQUESTS := "user://update-check"
 const KEEP_REQUEST_SECONDS := 86400
 const MAX_ANSWER := 4096
-const VERSION_RE := "^v(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(-(alpha|preview)\\.(0|[1-9][0-9]{0,8}))?$"
+const VERSION_RE := "^v(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(-(alpha|nightly|preview)\\.(0|[1-9][0-9]{0,8}))?$"
 
 var dir := ""
 var key := PackedByteArray()   # tests give their own key and repository (the packaged game: release_trust.gd)

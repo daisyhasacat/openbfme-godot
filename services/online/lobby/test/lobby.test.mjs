@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MAX_WAIT_S, MAX_WAITERS_PER_GAME, MAX_HOLDS_PER_ACCOUNT, HOLD_BACKOFF_S, Lobby, route, signTicket, signRejoinTicket, signSpectatorTicket, base64UrlDecode, parseKeyRing, configFromEnv, LobbyError } from '../src/lobby.mjs';
 import { startServer, nodeEnv } from '../src/server.mjs';
+import { identityStorage } from './identity-storage.mjs';
 // node:sqlite (Node 22.5+) stands in for a Durable Object's SQLite storage; an older Node skips those tests loudly
 const sqlite = await import('node:sqlite').catch(() => null);
 const NO_SQLITE = !sqlite && 'SKIP LOUDLY: node:sqlite (Node 22.5+) is missing, so the Durable Object SQLite log store tests did not run';
@@ -243,13 +244,15 @@ test('ONLINE-2 r2 (Sol): a join while START signs its tickets is refused; every 
 test('ONLINE-2 r2 (Sol): the Durable Object runs one request at a time, even when they await', async () => {
   const { LobbyObject } = await import('../src/worker.mjs');
   const order = [];
-  const stored = new Map();
+  const storage = identityStorage();
+  const put = storage.put.bind(storage);
+  storage.put = async (k, v) => {
+    order.push(`put ${v.seq}`);
+    await new Promise((r) => setTimeout(r, 10));
+    await put(k, v);
+  };
   const state = {
-    storage: {
-      put: async (k, v) => { order.push(`put ${v.seq}`); await new Promise((r) => setTimeout(r, 10)); stored.set(k, v); },
-      delete: async (k) => stored.delete(k),
-      list: async () => new Map(),
-    },
+    storage,
     blockConcurrencyWhile: (fn) => fn(),
   };
   const obj = new LobbyObject(state, { ...ENV, LOGS: { put: async () => {}, get: async () => null } });
@@ -290,7 +293,7 @@ test('ONLINE-2 r2 (Sol): a chunked JSON body over 16 KiB is refused by its real 
 
 test('ONLINE-2 r3 (Sol r2): the Durable Object reads a body with a byte limit and a timeout before its queue: an endless body blocks nothing', async () => {
   const { LobbyObject } = await import('../src/worker.mjs');
-  const state = { storage: { put: async () => {}, delete: async () => {}, list: async () => new Map() }, blockConcurrencyWhile: (fn) => fn() };
+  const state = { storage: identityStorage(), blockConcurrencyWhile: (fn) => fn() };
   const obj = new LobbyObject(state, { ...ENV, BODY_TIMEOUT_MS: '300', LOGS: { put: async () => {}, get: async () => null } });
   // a body stream that sends `n` bytes and never ends
   const endless = (n) => new ReadableStream({ start(c) { for (let i = 0; i < n; i += 1000) c.enqueue(new TextEncoder().encode('x'.repeat(Math.min(1000, n - i)))); } });
@@ -487,6 +490,24 @@ test('CFDEPLOY-1 r2 (Sol r1): only the players of a game download its replay fil
   }
 });
 
+test('LOBBYSTATS-1: the SQLite store lists the write times of START records and relay logs since a time, not player lists, and writes nothing', { skip: NO_SQLITE }, async () => {
+  const { SqliteLogStore } = await import('../src/worker.mjs');
+  const storage = doStorage();
+  const store = new SqliteLogStore(storage);
+  store.putBlob('starts/0000000000000001.json', new TextEncoder().encode('{}'));
+  store.putBlob('starts/0000000000000002.json', new TextEncoder().encode('{}'));
+  store.putBlob('players/0000000000000001.json', new TextEncoder().encode('[]'));
+  store.putBlob('logs/0000000000000001.obfmerlog', relayLog(100, 1, '0000000000000001'));
+  storage.db.prepare("UPDATE blobs SET stored_at = 1000 WHERE key = 'starts/0000000000000002.json'").run();
+  const changes = storage.db.prepare('SELECT total_changes() AS n').get().n;
+  const t = store.gameTimes(2000);
+  assert.equal(t.started.length, 1, 'the old START record is before the window');
+  assert.equal(t.finished.length, 1);
+  assert.ok(t.started.every((at) => Number.isInteger(at) && at >= 2000));
+  assert.deepEqual(store.gameTimes(0).started.sort(), [1000, t.started[0]].sort());
+  assert.equal(storage.db.prepare('SELECT total_changes() AS n').get().n, changes);
+});
+
 test('CFDEPLOY-1: a log over the store\'s 8 MiB is refused (413 too_big) and a full store refuses with log_store_full; nothing is evicted', { skip: NO_SQLITE }, async () => {
   const { SqliteLogStore, SQL_MAX_LOG_BYTES } = await import('../src/worker.mjs');
   const { storage, upload } = await doObject({ ...ENV, LOG_STORE: 'durable-object' });
@@ -558,7 +579,7 @@ test('CFDEPLOY-1 r2 (Sol r1): a body of 20,000 empty chunks is refused (too_many
     let left = n;
     return new ReadableStream({ pull(c) { if (left-- > 0) c.enqueue(new Uint8Array(0)); else c.close(); } });
   };
-  const obj = new LobbyObject({ storage: { put: async () => {}, delete: async () => {}, list: async () => new Map() }, blockConcurrencyWhile: (fn) => fn() }, { ...ENV });
+  const obj = new LobbyObject({ storage: identityStorage(), blockConcurrencyWhile: (fn) => fn() }, { ...ENV });
   const r = await obj.fetch(post(empties(20000)));
   assert.equal(r.status, 413);
   assert.equal((await r.json()).error, 'too_many_chunks');
@@ -583,7 +604,7 @@ test('CFDEPLOY-1 r2 (Sol r1): a body of 20,000 empty chunks is refused (too_many
 
 test('CFDEPLOY-1 r2 (Sol r1): at most two log uploads and 64 bodies are received at once; more are refused with 503 overloaded', async () => {
   const { LobbyObject, MAX_LOG_UPLOADS, MAX_BODIES } = await import('../src/worker.mjs');
-  const obj = new LobbyObject({ storage: { put: async () => {}, delete: async () => {}, list: async () => new Map() }, blockConcurrencyWhile: (fn) => fn() },
+  const obj = new LobbyObject({ storage: identityStorage(), blockConcurrencyWhile: (fn) => fn() },
     { ...ENV, BODY_TIMEOUT_MS: '300' });
   const endless = () => new ReadableStream({ start(c) { c.enqueue(new Uint8Array(10)); } });
   const upload = (body) => obj.fetch(new Request('http://lobby/v1/relay/logs/0123456789abcdef', { method: 'POST', headers: { 'x-openbfme-signature': '00' }, body, duplex: 'half' }));
@@ -609,7 +630,7 @@ test('CFDEPLOY-1 r2 (Sol r1): at most two log uploads and 64 bodies are received
 
 test('CFDEPLOY-1 r3 (Sol r2): capacity is held while a body waits in the queue: six 8 MiB uploads behind a stalled request are not all accepted', async () => {
   const { LobbyObject, MAX_LOG_UPLOADS } = await import('../src/worker.mjs');
-  const storage = { put: async () => {}, delete: async () => {}, list: async () => new Map() };
+  const storage = identityStorage();
   const env = { ...ENV, BODY_TIMEOUT_MS: '2000' };
   const obj = new LobbyObject({ storage, blockConcurrencyWhile: (fn) => fn() }, env);
   // the first request stalls in the lobby (a signing that does not return until released), as Sol's did in HMAC signing
@@ -688,7 +709,10 @@ test('ONLINE-3: a player whose game restarted lists its running game and gets a 
   assert.equal(mine.games[0].rejoin, `/v1/games/${id}/rejoin`);
   assert.equal((await call(lobby, 'GET', '/v1/mine')).status, 401);
   // the rejoin START: the same game, slot and setup; a new ticket of generation 1, then 2
-  const r1 = (await call(lobby, 'POST', `/v1/games/${id}/rejoin`, { token: b.token })).body.start;
+  const rejoinResponse = await call(lobby, 'POST', `/v1/games/${id}/rejoin`, { token: b.token });
+  assert.equal(rejoinResponse.body.game.id, id);
+  assert.equal(rejoinResponse.body.game.slots[1].player_id, b.account.id);
+  const r1 = rejoinResponse.body.start;
   assert.equal(r1.kind, 'openbfme-start');
   assert.equal(r1.slot, 1);
   assert.equal(r1.rejoin, 1);
@@ -1099,7 +1123,7 @@ test('ONLINE-5: through the HTTP server a held poll does not block other request
 
 test('ONLINE-5: the Durable Object answers other requests while polls are held, and held polls take no body place', async () => {
   const { LobbyObject, MAX_BODIES } = await import('../src/worker.mjs');
-  const obj = new LobbyObject({ storage: { put: async () => {}, delete: async () => {}, list: async () => new Map() }, blockConcurrencyWhile: (fn) => fn() }, { ...ENV });
+  const obj = new LobbyObject({ storage: identityStorage(), blockConcurrencyWhile: (fn) => fn() }, { ...ENV });
   const req = async (method, path, token, body) => {
     const r = await obj.fetch(new Request(`http://lobby${path}`, { method, headers: token ? { authorization: `Bearer ${token}` } : {}, body: body === undefined ? undefined : JSON.stringify(body) }));
     return { status: r.status, body: await r.json() };

@@ -286,6 +286,26 @@ func set_update_note(text: String) -> void:
 		_update_note.visible = not text.is_empty()
 
 
+## Lane MENUFIX-1: the version corner (the version, the Logs link, the update note) in the menus' look (scripts/menu_text.gd): game.gd calls it once the
+## shell's fonts are there and whenever the window's size changes. The lines stack from the window's top right, MARGIN_PX stage pixels in.
+func style_corner(shell: Object, size: Vector2, errors: Array) -> void:
+	if _watermark == null:
+		return
+	var menu_text: GDScript = load("res://scripts/menu_text.gd")
+	var k: float = menu_text.scale_of(size)
+	var margin := roundf(menu_text.MARGIN_PX * k)
+	var plate: StyleBoxFlat = _update_note.get_theme_stylebox("normal")
+	plate.set_content_margin_all(roundf(4 * k))
+	_update_note.custom_minimum_size = Vector2(roundf(270 * k), 0)
+	var y := margin
+	for line: Control in [_watermark.get_node("Version"), _watermark.get_node("OpenLogs"), _update_note]:
+		var h: float = menu_text.apply(line, shell, size, menu_text.CORNER_PX, errors)
+		line.offset_right = -margin
+		line.offset_top = y
+		line.offset_bottom = y
+		y += h
+
+
 ## game.gd: true while a game is on screen (the version corner is shown in the menus only).
 func set_in_game(in_game: bool) -> void:
 	if in_game == _in_game:

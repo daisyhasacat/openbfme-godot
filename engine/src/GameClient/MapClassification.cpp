@@ -18,19 +18,19 @@ double secondsSince(const std::chrono::steady_clock::time_point &t0)
 }
 } // namespace
 
-std::string MapClassification::mapDirectory(const std::string &lowerName)
+std::string MapClassification::mapDirectory(const std::string &lowerName, const std::string &mapsFolder)
 {
-	return "maps\\" + lowerName;
+	return mapsFolder + "\\" + lowerName;
 }
 
-std::string MapClassification::mapPath(const std::string &lowerName)
+std::string MapClassification::mapPath(const std::string &lowerName, const std::string &mapsFolder)
 {
-	return mapDirectory(lowerName) + "\\" + lowerName + ".map";
+	return mapDirectory(lowerName, mapsFolder) + "\\" + lowerName + ".map";
 }
 
 bool MapClassification::run(const std::vector<std::uint8_t> &bytes, const std::string &sourceName, const std::string &lowerName, RetailObjectWorld &world,
 	const MapObjectOptions &options, LoadedMap &map, TerrainLogic &terrain, MapObjectDrawables &classified, MapObjectDrawables *clientOnly,
-	Result &result, std::string *error, bool applyMapIni)
+	Result &result, std::string *error, const std::string &mapsFolder, bool applyMapIni)
 {
 	auto t0 = std::chrono::steady_clock::now();
 	const auto worldContext = world.enterContext(); // this world's stores and audio validator for the map.ini parse and the classification
@@ -48,7 +48,7 @@ bool MapClassification::run(const std::vector<std::uint8_t> &bytes, const std::s
 	{
 		if (applyMapIni)
 		{
-			result.mapIni = world.applyMapIni(mapDirectory(lowerName));
+			result.mapIni = world.applyMapIni(mapDirectory(lowerName, mapsFolder));
 		}
 	}
 	catch (const std::logic_error &e) // lane MAPRESET-1: a game of this world is still live (its map would be torn out from under it)

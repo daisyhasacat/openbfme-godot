@@ -163,6 +163,11 @@ public:
 	// lane MP-2: the smoothed round trip to the slot and its variation (ms, RFC 6298 from acknowledged records sent once); -1 before the first sample
 	int roundTripMs(int slot) const override { return m_peers[(size_t)slot].rttSamples ? (int)m_peers[(size_t)slot].srtt : -1; }
 	int roundTripVarMs(int slot) const override { return m_peers[(size_t)slot].rttSamples ? (int)m_peers[(size_t)slot].rttvar : -1; }
+	// lane NETLAG-2: the 80th percentile of the last kRttWindow round-trip samples (the run-ahead's input), -1 before kRttPlanSamples of them: a few
+	// outliers (one late ack after a hitch of the other client, the load barrier) leave it where the link is; a slower link moves it within seconds
+	int plannedRoundTripMs(int slot) const override;
+	static constexpr size_t kRttWindow = 32;      ///< about six seconds of samples (a record goes to every peer each 200 ms frame)
+	static constexpr size_t kRttPlanSamples = 16; ///< about three seconds
 	// the last time anything arrived from the slot (NetMilliseconds), 0 never
 	std::uint64_t lastHeardFrom(int slot) const override { return m_peers[(size_t)slot].lastHeard; }
 	// every record sent to the slot is acked (a retired or unknown slot: true)
@@ -235,6 +240,7 @@ private:
 		std::uint64_t srtt = 0, rttvar = 0; ///< lane MP-2: the smoothed round trip and its variation (ms)
 		std::uint64_t rto = 0;              ///< lane MP-2: the resend timeout (ms; at least Options::resendMs)
 		unsigned long long rttSamples = 0;
+		std::array<std::uint32_t, kRttWindow> recentRtt{}; ///< lane NETLAG-2: the last samples, a ring (rttSamples counts every sample)
 	};
 	void flush(int slot, std::uint64_t now);
 	void sendDatagram(int slot, const NetAddress &to, std::vector<std::uint8_t> datagram, std::uint64_t now);

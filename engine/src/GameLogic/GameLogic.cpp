@@ -986,6 +986,17 @@ void GameLogic::dispatchScriptEvent(int slot, Object &self, const LuaEventArgs &
 	++m_scriptEventsWithoutDispatch;
 }
 
+// lane NUGGET-1: RW 0x735F53 for an event found by name (see GameLogic.h)
+void GameLogic::dispatchNamedScriptEvent(const std::string &name, Object &self, const LuaEventArgs &args)
+{
+	if (m_namedScriptEventProc)
+	{
+		m_namedScriptEventProc(name, self, args);
+		return;
+	}
+	++m_scriptEventsWithoutDispatch;
+}
+
 // lane HERO-2: RW 0x663E32 (see GameLogic.h)
 void GameLogic::scriptModelConditionEvents(Object &self, std::array<std::uint32_t, 19> &snapshot)
 {

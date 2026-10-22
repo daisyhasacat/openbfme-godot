@@ -832,7 +832,14 @@ run-ahead follows the measured round trip. Since NETLAG-1 the lobby's
 run-ahead (the floor) is 1, RotWK's own command delay: an order runs on the
 frame after the one it was given on, 200 to 400 ms after the click (v0.4.0-alpha.3
 used 2: 400 to 600 ms). It rises by a frame for about every 200 ms of one-way
-latency above roughly 90 ms (stop S-4530). A relay hop adds a few
+latency above roughly 159 ms (with three or more players the router plans for
+its two longest links added, the worst a pair of other players can have;
+stop S-4530; NETLAG-2 moved it from 90 ms and
+made it plan for the 80th percentile of the recent round trips, so one late
+acknowledgement no longer raises it, and it falls back a frame a second).
+Early orders (NETLAG-2, beyond retail; `--no-early-orders` turns them off):
+an order clicked while the next frame is still far enough away for every
+peer to learn of it runs on that frame, about 100 ms sooner on average. A relay hop adds a few
 milliseconds in-region. A transatlantic game picks one relay, and both sides
 see roughly the Atlantic round trip. MP-3 measured games at 150 ± 50 ms with
 5 % loss: 2.8 s of stalls per 80 s with fast resend. That is a playable game,

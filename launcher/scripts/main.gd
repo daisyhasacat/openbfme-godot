@@ -14,7 +14,8 @@
 ##   --select=<version>       play that installed version from now on (--select= clears the pick)
 ##   --self-update            stage a newer launcher (replaced on the next start)
 ##   --check-game-files       exit 0 when both configured game folders exist, 1 when either is missing
-##   --channel=stable|preview remember the channel (--channel=alpha is the same as stable, the channel's shown name since VERSION-1)
+##   --channel=stable|nightly remember the channel (lane NIGHTLY-1: nightly is the id "preview", as is the old --channel=preview;
+##                            --channel=alpha is the same as stable, the old shown name of the stable channel since VERSION-1)
 ##   --list                   print the installed versions
 ##   --play                   start the version Play starts
 ##   --version                print the launcher's version
@@ -466,7 +467,7 @@ func _show_demo(screen: String) -> void:
 	_releases = rels
 	var chan := updater.in_channel(rels, updater.channel())
 	if chan.is_empty():
-		updater.set_channel("preview")  # the screenshots' launcher is a development run (Stable); the demo is a preview player's
+		updater.set_channel("preview")  # the screenshots' launcher is a development run (Stable); the demo is a Nightly player's
 		_show_channel()
 		chan = rels
 	var installed: String = chan[1].tag if screen in ["update", "downloading", "error", "paused", "update-launcher", "long"] and chan.size() > 1 else chan[0].tag
@@ -599,9 +600,11 @@ func _run_cli(args: PackedStringArray, problem: String) -> int:
 		if a.begins_with("--channel="):
 			var ch := a.substr(10)
 			if ch == "alpha":
-				ch = "stable"  # lane VERSION-1: the shown name of the stable channel, where the plain releases ("Alpha 0.4.5") are
+				ch = "stable"  # lane VERSION-1: the old shown name of the stable channel, where the plain releases ("Alpha 0.4.5") are
+			elif ch == "nightly":
+				ch = "preview"  # lane NIGHTLY-1 (owner, 2026-10-21): the shown name of the pre-release channel, whose id stays "preview"
 			if not ch in ["stable", "preview"]:
-				Log.line("LAUNCHER unknown channel '%s' (stable, preview)" % ch)
+				Log.line("LAUNCHER unknown channel '%s' (stable, nightly)" % ch)
 				return 1
 			updater.set_channel(ch)
 			Log.line("LAUNCHER channel %s" % ch)
@@ -1136,7 +1139,7 @@ func _set_macos_releases_link(visible: bool) -> void:
 func _refresh_head() -> void:
 	if _status_head == null:
 		return
-	var ch := Semver.channel_name(updater.channel())  # lane VERSION-1: stable is shown as "Alpha", the pre-release channel as "Preview"
+	var ch := Semver.channel_name(updater.channel())  # lane NIGHTLY-1: "Stable" / "Nightly"
 	var pv := Semver.display(_pv)
 	var head: String = {"idle": "Ready", "checking": "Checking for updates", "updating": "Updating", "current": "Up to date",
 		"update": "Update available", "manual": "Mac preview — manual updates", "no_macos_entry": "No signed Mac package",
@@ -1577,7 +1580,7 @@ func _on_progress(text: String, done: int, total: int) -> void:
 		if _job_kind == "aio":
 			_games_screen.set_progress(_bar_title.text + "  ·  " + _bar_label.text, done, total)
 		elif _job_kind in ["check", "install"] and text.begins_with("Downloading") and _update_state != "updating":
-			var m := RegEx.create_from_string("-(v\\d+\\.\\d+\\.\\d+(?:-(?:alpha|preview)\\.\\d+)?)-").search(text)
+			var m := RegEx.create_from_string("-(v\\d+\\.\\d+\\.\\d+(?:-(?:alpha|nightly|preview)\\.\\d+)?)-").search(text)
 			_set_update_state("updating", m.get_string(1) if m != null else _update_tag)
 		if not _progress.visible:
 			_show_progress(true)   # MACFIX-1 (issue #46): not every chunk: it refreshes every button (_set_buttons, _play_blocked)

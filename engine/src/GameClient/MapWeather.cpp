@@ -147,7 +147,7 @@ bool MapWeatherScan::load(ArchiveFileSystem &fs, const std::string &mapDir, MapW
 	}
 	applyText(std::string(bytes.begin(), bytes.end()), out);
 	out.fogKeysSeen = false; // only map.ini fog counts as "the map set fog"
-	const std::string mapIni = "maps\\" + mapDir + "\\map.ini";
+	const std::string mapIni = mapDir + "\\map.ini";
 	if (fs.doesFileExist(mapIni))
 	{
 		if (!fs.readFile(mapIni, bytes, error))

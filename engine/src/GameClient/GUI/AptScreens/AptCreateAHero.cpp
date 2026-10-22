@@ -500,7 +500,7 @@ const std::vector<std::string> &AptCreateAHero::stopLines()
 		"[S-1404] Create-a-Hero powers page: the matrix's row order (RW 0x9C38EB's comparator not read: the command store's name order), the cell states "
 		"(RW 0x9C2xxx not read in full: selected, book full, level too low, prerequisite, palantir full), the icons (CreateAHeroUIIconImageName, else the "
 		"first ButtonImage), the row names, the labels without their hot-key marks, the wizard line and the matrix's first scroll position are inferred",
-		"[S-1405] Create-a-Hero screen: the hero portrait (OnTakePicture), OnPlayGame's test map, which page \"CreateAHero\" forwards to, the "
+		"[S-1405] Create-a-Hero screen: OnPlayGame's test map, the picture's date and time in US English (TAKE PICTURE, lane CAHPIC-1: RotWK uses the system locale), which page \"CreateAHero\" forwards to, the "
 		"SuppressCahPromo preference (kept for the session), the color picker's \"?<picker>Color\" externs (undefined), the 3D view's camera (ViewInfo, "
 		"RW 0x9BFE74: the ground point, angle, blend and field of view as retail; the mode-1 eye transform follows BFME2; RotWK named-camera mode and remaining device flags unverified, lane CAH-2) and the name prompt (ShowNamePrompt: \"1\" while the entry is empty; the movie reads it when the page opens, so its text "
 		"stays over a name typed later) are inferred or not ported",
@@ -715,24 +715,91 @@ void AptCreateAHero::refreshTexts()
 	}
 }
 
+namespace
+{
+std::u16string asciiU16(const std::string &s)
+{
+	return std::u16string(s.begin(), s.end());
+}
+
+// ZH UnicodeString::format with one %s (the two picture texts carry one each)
+std::u16string formatOne(const std::u16string &format, const std::u16string &value)
+{
+	const std::size_t at = format.find(u"%s");
+	return at == std::u16string::npos ? format : format.substr(0, at) + value + format.substr(at + 2);
+}
+} // namespace
+
+std::u16string AptCreateAHero::pictureFileName(const std::u16string &heroName, const PictureTime &t)
+{
+	// see AptCreateAHero.h (RW 0x91A20A)
+	char date[32];
+	std::snprintf(date, sizeof(date), "%d/%d/%04d", t.month, t.day, t.year);
+	const int hour12 = t.hour % 12 == 0 ? 12 : t.hour % 12;
+	char clock[32];
+	std::snprintf(clock, sizeof(clock), "%d:%02d:%02d %s", hour12, t.minute, t.second, t.hour < 12 ? "AM" : "PM");
+	std::u16string name = heroName + u" " + asciiU16(date) + u" " + asciiU16(clock);
+	for (char16_t &c : name)
+	{
+		if (!GadgetTextEntryValidateCharacter(c, 8))
+		{
+			c = u'-';
+		}
+	}
+	return name;
+}
+
+std::u16string AptCreateAHero::beginPicture(const PictureTime &time)
+{
+	m_takePicture = false; // RW 0x91A46A
+	m_pictureInProgress = true;
+	m_pictureHero = m_myHero ? m_myHero->hero().name : std::u16string();
+	return pictureFileName(m_pictureHero, time);
+}
+
+void AptCreateAHero::pictureTaken(const std::u16string &shownPath, const std::string &error)
+{
+	m_pictureInProgress = false;
+	m_takePicture = false; // Sol r1: nothing armed while the device saved stays armed for a second picture
+	invoke("OnGameTookPicture", {}); // RW 0x91A4C8: the movie reopens its panels
+	if (!error.empty())
+	{
+		windows().note("create-a-hero-picture", "the picture was not saved: " + error);
+		notAvailable(u"The picture could not be saved: " + asciiU16(error));
+		return;
+	}
+	// RW 0x91A525 .. 0x91A595: an OK box (RW 0x84ED5D) titled for the hero, naming where the picture went
+	if (!m_box)
+	{
+		m_box = std::make_unique<AptMessageBox>(windows(), shell());
+	}
+	const std::u16string title = formatOne(fetchOrMissing(m_env.gameText, "GUI:OnPictureTakenTitle"), m_pictureHero);
+	const std::u16string text = formatOne(fetchOrMissing(m_env.gameText, "GUI:OnPictureTaken"), shownPath);
+	m_lastMessage = "GUI:OnPictureTakenTitle: GUI:OnPictureTaken";
+	m_box->show(AptMessageBox::TYPE_OK, title, text);
+}
+
 void AptCreateAHero::registerAll()
 {
 	// ---- the screen (RW 0x91A6BF) ----
 	registerCommand("AptCreateAHero::OnShowScreen", [this](const std::string &arg) { showPage(arg.empty() ? 0 : arg[0]); });
-	registerCommand("AptCreateAHero::PrepareToTakePicture", [this](const std::string &) { m_pictureFrames = 0; });
+	registerCommand("AptCreateAHero::PrepareToTakePicture", [this](const std::string &) { m_pictureFrames = 0; }); // RW 0x919D85
 	registerCommand("AptCreateAHero::OnTakePicture", [this](const std::string &) {
-		windows().note("unported-command", "AptCreateAHero::OnTakePicture: the hero portrait is not taken [S-1405]");
-		notAvailable(u"Taking a hero portrait is not available yet: the hero keeps its model's portrait."); // lane MENUWORK-1 (S-4755)
-		invoke("OnGameTookPicture", {});
+		// RW 0x919D8F (lane CAHPIC-1): armed once the guard clip has been drawn twice; before that the press does nothing and the movie's
+		// _takePictureLoop asks again
+		// lane CAHPIC-1: RotWK saves the picture and tells the movie OnGameTookPicture inside the one draw that took it (RW 0x91A3A9); the device saves it
+		// on the next frame, so a retry of the movie's loop in between must not arm a second picture
+		if (m_pictureFrames >= 2 && !m_pictureInProgress)
+		{
+			m_takePicture = true;
+		}
 	});
 	registerCommand("AptCreateAHero::RotateLeft", [this](const std::string &a) { m_rotateLeft = !a.empty() && a[0] == 't'; });
 	registerCommand("AptCreateAHero::RotateRight", [this](const std::string &a) { m_rotateRight = !a.empty() && a[0] == 't'; });
 	registerCommand("AptCreateAHero::ZoomIn", [this](const std::string &a) { m_zoomIn = !a.empty() && a[0] == 't'; });
 	registerCommand("AptCreateAHero::ZoomOut", [this](const std::string &a) { m_zoomOut = !a.empty() && a[0] == 't'; });
-	registerComponent("CreateAHero::RenderPictureGuard", [this](AptComponentRequest &) -> std::shared_ptr<GameWindow> {
-		++m_pictureFrames;
-		return nullptr;
-	});
+	// RW 0x919DA2: a render callback (++ + 0x43C per draw of the clip): the device counts the clip's draws (pictureGuardDrawn); no window is kept
+	registerComponent("CreateAHero::RenderPictureGuard", [](AptComponentRequest &) -> std::shared_ptr<GameWindow> { return nullptr; });
 	// RW 0x91A3A9: the 3D view is drawn by the device into the clip's rectangle (GodotDevice: the preview); no window is kept
 	registerComponent("CreateAHero::DrawMapComponent", [](AptComponentRequest &) -> std::shared_ptr<GameWindow> { return nullptr; });
 	registerProvider("CreateAHeroDemo", [](const std::string &, std::string &value, bool setting) {

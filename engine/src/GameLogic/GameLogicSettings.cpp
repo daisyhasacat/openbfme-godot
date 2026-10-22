@@ -197,6 +197,8 @@ const FieldParse kGameDataFields[] = {
 	{ "StandardPublicBone", INI::parseAsciiStringVectorAppend, nullptr, (int)offsetof(BlockState, values.standardPublicBones) },
 	// lane SPELL-2: SpecialPowerViewObject (row RW 0xC006C0, parseAsciiString RW 0x42EE5E, + 0xBA4): the reveal object of RW 0x896FD9
 	{ "SpecialPowerViewObject", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.specialPowerViewObject) },
+	// lane NUGGET-1: GenericDamageFieldName (row RW 0xBFF5D0, parseAsciiString RW 0x42EE5E, + 0x14): DamageFieldNugget's object (RW 0x90F600)
+	{ "GenericDamageFieldName", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.genericDamageFieldName) },
 	// lane OWNERFIX-1: DefaultUnitHealingBuffFxList (row RW 0xBFF8C0, parseAsciiString RW 0x42EE5E, + 0x9DC): the healing glow of a healed unit (ActiveBody)
 	{ "DefaultUnitHealingBuffFxList", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.defaultUnitHealingBuffFxList) },
 	// lane STEALTH-1: the invisibility rows (RW 0xC00C30 CamouflageDetectorObjectFilter + 0xEB4, RW 0xC01070 ReinvisibityDelay + 0x11CC, RW 0xC01080 / 0xC01090
@@ -237,6 +239,8 @@ const FieldParse kAIDataFields[] = {
 	{ "NarrowPassageScale", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.narrowPassageScale) },
 	{ "WaitForOthers", parseNoting<INI::parseBool>, 0, (int)offsetof(BlockState, values.waitForOthers) },
 	{ "UseFormations", parseNoting<INI::parseBool>, 0, (int)offsetof(BlockState, values.useFormations) },
+	// lane STEALTHFLY1: MinFlightHeight (row RW 0xC1CE60 parseReal RW 0x42ED00, AIData + 0xB0): the aerial path's ground floor (RW 0x777ED7)
+	{ "MinFlightHeight", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.minFlightHeight) },
 	{ nullptr, noteUnapplied, nullptr, 0 }
 };
 const FieldParse kMultiplayerFields[] = {
@@ -277,10 +281,19 @@ std::uint32_t packRgb(const RGBColor &c)
 class Load
 {
 public:
-	Load(ArchiveFileSystem *fs, const GameLogicSettings &start)
+	// `aiDataOnly` (a map's map.ini / solo.ini): AIData is the one real block, every other keyword a recording stub
+	Load(ArchiveFileSystem *fs, const GameLogicSettings &start, bool aiDataOnly = false)
 	{
 		m_env.fileSystem = fs;
 		m_state.values = start;
+		if (aiDataOnly)
+		{
+			// recording stubs only: the world's own map.ini pass parses the Weapon / Locomotor / Armor / DamageFX / FX blocks into their stores, a second
+			// parse here would apply them again
+			RegisterRecordingBlockStubs(m_env.blocks, m_recorder, { "AIData" }, StubExtent::Lenient, false);
+			reg("AIData", kAIDataFields, 2u);
+			return;
+		}
 		RegisterRecordingBlockStubs(m_env.blocks, m_recorder, { "GameData", "AIData", "MultiplayerSettings", "MultiplayerColor" }, StubExtent::Lenient);
 		reg("GameData", kGameDataFields, 1u);
 		reg("AIData", kAIDataFields, 2u);
@@ -517,6 +530,42 @@ bool GameLogicSettingsLoader::load(ArchiveFileSystem &fs, GameLogicSettings &out
 	return true;
 }
 
+bool GameLogicSettingsLoader::applyMapAIData(ArchiveFileSystem &fs, const std::string &mapDir, GameLogicSettings &out, std::vector<std::string> &errors)
+{
+	// RW 0x627224 / 0x627290: the map directory's map.ini, then its solo.ini, each through the INI table (load type 2); their AIData block writes TheAI's data
+	// (+ 0x18) like aidata.ini's, field by field. Only the AIData block is read here: the world applies the object blocks (RetailObjectWorld::applyMapIni) and
+	// the rest stays stop S-116
+	bool ok = true;
+	for (const char *file : { "map.ini", "solo.ini" })
+	{
+		const std::string path = mapDir + "\\" + file;
+		if (!fs.doesFileExist(path))
+		{
+			continue;
+		}
+		std::vector<std::uint8_t> bytes;
+		std::string error;
+		if (!fs.readFile(path, bytes, &error))
+		{
+			errors.push_back(path + ": " + error);
+			ok = false;
+			continue;
+		}
+		Load l(&fs, out, true);
+		if (!l.text(path, std::string(bytes.begin(), bytes.end()), &error))
+		{
+			errors.push_back(error);
+			ok = false;
+			continue;
+		}
+		std::set<std::string> unapplied = out.unappliedFields;
+		unapplied.insert(l.state().unapplied.begin(), l.state().unapplied.end());
+		out = l.state().values;
+		out.unappliedFields = std::move(unapplied);
+	}
+	return ok;
+}
+
 void GameLogicSettings::crc(StateHasher &h) const
 {
 	// Native games keep their historical hash. Modified games identify every wall rule.
@@ -550,6 +599,10 @@ void GameLogicSettings::crc(StateHasher &h) const
 	h.addFloat(narrowPassageScale);
 	h.addBool(waitForOthers);
 	h.addBool(useFormations);
+	if (minFlightHeight != FLT_MAX)
+	{
+		h.addFloat(minFlightHeight); // lane STEALTHFLY1: only a map that sets it (the hash of every other game is unchanged)
+	}
 	h.addFloat(groupMoveClickToGatherAreaFactor);
 	h.addBool(forceModelsToFollowTimeOfDay);
 	h.addBool(forceModelsToFollowWeather);

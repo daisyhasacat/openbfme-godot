@@ -233,8 +233,9 @@ void InGameHeroSelect::flashHeroButton(const std::string &templateName, int fram
 
 std::string InGameHeroSelect::buttonImage(const Object &obj)
 {
-	// Donor CreateAHeroHero::Update caches the drawable's model-state button
-	// image alongside its portrait (see PalantirCommandUI::objectPortrait).
+	// BFME2 donor CreateAHeroHero::Update (RVA 0x4083FF..0x408839) caches
+	// the drawable's model-state button image (RVA 0x27272B) alongside its
+	// portrait (RVA 0x272709; see PalantirCommandUI::objectPortrait).
 	if (obj.isKindOfName("CREATE_A_HERO"))
 	{
 		ModelConditionFlags flags;

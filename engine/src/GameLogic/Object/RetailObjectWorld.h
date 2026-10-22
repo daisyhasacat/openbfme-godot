@@ -105,7 +105,8 @@ public:
 		std::vector<std::string> definitions;   ///< "Kind Name" of the object blocks the files defined or overrode
 	};
 	// Loads <mapDir>\map.ini and <mapDir>\solo.ini (load type 2) into a world as a fresh load makes it: when an earlier map or game changed
-	// this world, it is reloaded first (reload()). mapDir is the map's directory in the archives, e.g. "maps\\map wor fangorn". Throws
+	// this world, it is reloaded first (reload()). mapDir is the map's directory (MapClassification::mapDirectory), e.g. "maps\\map wor fangorn"
+	// in the archives or a user map's folder (lane MOD-5). Throws
 	// std::logic_error before load() and while a game of this world whose map is applied is live.
 	MapIniResult applyMapIni(const std::string &mapDir);
 

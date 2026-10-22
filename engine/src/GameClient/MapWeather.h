@@ -34,7 +34,7 @@ namespace MapWeatherScan
 {
 // Applies the keys of every "Weather ... End" block in `text` on top of `weather`.
 void applyText(const std::string &text, MapWeather &weather);
-// weather.ini then maps\<mapDir>\map.ini (mapDir = "map mp evendim"). Missing map.ini is fine; a missing
-// weather.ini is an error.
+// weather.ini then <mapDir>\map.ini (mapDir = MapClassification::mapDirectory, "maps\map mp evendim" or a user map's folder). Missing map.ini
+// is fine; a missing weather.ini is an error.
 bool load(ArchiveFileSystem &fs, const std::string &mapDir, MapWeather &out, std::string *error);
 } // namespace MapWeatherScan

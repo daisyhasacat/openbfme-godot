@@ -896,6 +896,11 @@ void AIUpdateInterface::aiFollowPath(const std::vector<Coord3D> &path, Object *i
 	{
 		return; // lane MODULES-3: RW 0x667174
 	}
+	privateFollowPath(path, ignoreObject, source, exitProduction);
+}
+
+void AIUpdateInterface::privateFollowPath(const std::vector<Coord3D> &path, Object *ignoreObject, CommandSourceType source, bool exitProduction)
+{
 	m_world->noteStop(kStopCommands);
 	if (path.empty())
 	{
@@ -959,6 +964,11 @@ void AIUpdateInterface::aiFollowPathAppend(const Coord3D &pos, CommandSourceType
 	{
 		return; // lane MODULES-3: RW 0x667174
 	}
+	privateFollowPathAppend(pos, source);
+}
+
+void AIUpdateInterface::privateFollowPathAppend(const Coord3D &pos, CommandSourceType source)
+{
 	m_world->noteStop(kStopCommands);
 	const unsigned st = m_machine->currentStateId();
 	if (st != (unsigned)AI_FOLLOW_PATH)

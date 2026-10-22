@@ -36,6 +36,7 @@
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DStreakDraw.h"
 #include "GameEngineDevice/W3DDevice/GameClient/W3DVegetationSway.h"
 #include "GodotDevice/GodotW3DMaterial.h"
+#include "GameEngineDevice/W3DDevice/GameClient/HouseColor.h" // lane HCKEY-1: EntryView::staticKeyPalette
 
 #include <godot_cpp/classes/immediate_mesh.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
@@ -526,7 +527,7 @@ public:
 
 	// ---- lane MP-1: a LAN game (GameNetwork/LANLobby.h, NetGameSession.h). net_host / net_join open the lobby; net_poll returns {state: "lobby" | "started" |
 	// "error", message (the NewGameMessage Dictionary every peer starts, for prepare_new_game), local_slot, error}; prepare_new_game then takes the lobby's local
-	// slot; after start_new_game, net_begin({record: path, script: bool}) installs the lockstep driver; advance() then services the network and runs a frame
+	// slot; after start_new_game, net_begin({record: path, script: bool, early_orders: bool (lane NETLAG-2, default true)}) installs the lockstep driver; advance() then services the network and runs a frame
 	// only when every player's commands for it are in. net_status: frame, CRC checks, desync reports, waiting slots, stalls, errors.
 	Dictionary net_host(int64_t port, const Dictionary &message, int64_t run_ahead, int64_t crc_interval);
 	Dictionary net_join(const String &address, const String &name);
@@ -621,6 +622,7 @@ public:
 	// lane HUD-1 (C++ only, not bound): what the in-game HUD node needs of the game; null until setup() / load_map() ran
 	void set_lua_hud_source(uint64_t id) { m_luaHudSource = id; }
 	LiveGame *hud_game() const { return m_game.get(); }
+	LiveFX *live_fx() const { return m_liveFX.get(); } // lane FX-4: the HUD takes the camera shakes (LiveFX::takeViewShakes)
 	// AUDIO-2: connects the loaded game to the installed audio manager (a booted GameAudio): object / drawable owned sounds follow their owners, the
 	// player filter knows the local player, the objects' ambient sounds run. { ok, error }
 	Dictionary attach_audio();
@@ -658,6 +660,18 @@ private:
 		bool fogLook = false;               ///< lane VISUAL-2: the instance is drawn with the fogged light (a last-seen object in the fog)
 		int64_t fogLookInstance = -1;       ///< the instance it was handed to
 		std::uint32_t colorsRevision = 0;   ///< lane CAH-2: Drawable::customColorRevision the model choice saw
+		// lane HCKEY-1: a static entry's model key (lowered name + floor swap suffix + palette) and the inputs it was made from, rebuilt only
+		// when one of them changes (community PR #60 made it every frame for every coloured static drawable)
+		bool staticKeyValid = false;
+		std::string staticKeySource;       ///< DrawEntry::staticModel the key was made from
+		const void *staticKeyData = nullptr; ///< DrawEntry::data (the floor swaps' module data)
+		int staticKeyKind = -1, staticKeyWeather = -1, staticKeyCustomKind = -1;
+		bool staticKeyHouse = false;        ///< m_houseColors when it was made
+		std::uint32_t staticKeyOwner = 0, staticKeyCustom[3] = { 0u, 0u, 0u };
+		std::string staticKey;             ///< the key
+		HouseColorParams staticKeyPalette; ///< and what it was made from (used when a new model is built)
+		bool staticKeyColored = false;
+		std::vector<TextureSwap> staticKeySwaps;
 	};
 	struct DrawableView
 	{

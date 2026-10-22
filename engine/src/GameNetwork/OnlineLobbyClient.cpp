@@ -282,7 +282,29 @@ void OnlineLobbyClient::refuse(const std::string &request, const std::string &co
 
 void OnlineLobbyClient::signInGuest(const std::u16string &name)
 {
-	queue("signin", "POST", "/v1/auth/guest", "{\"name\":" + jsonQuote(utf16ToUtf8(name)) + "}");
+	std::string body = "{\"name\":" + jsonQuote(utf16ToUtf8(name));
+	if (m_options.installId.empty() && !m_options.deviceHash.empty())
+	{
+		refuse("signin", "bad_identity", "a device hash needs an install id");
+		return;
+	}
+	if (!m_options.installId.empty())
+	{
+		const auto hex = [](const std::string &s, size_t n) {
+			return s.size() == n && s.find_first_not_of("0123456789abcdef") == std::string::npos;
+		};
+		if (!hex(m_options.installId, 32) || (!m_options.deviceHash.empty() && !hex(m_options.deviceHash, 64)) ||
+			m_options.clientPlatform.empty() || m_options.clientPlatform.size() > 32 ||
+			m_options.clientVersion.empty() || m_options.clientVersion.size() > 64)
+		{
+			refuse("signin", "bad_identity", "the install identity or client version is invalid");
+			return;
+		}
+		body += ",\"install\":" + jsonQuote(m_options.installId);
+		if (!m_options.deviceHash.empty()) body += ",\"device\":" + jsonQuote(m_options.deviceHash);
+		body += ",\"client\":{\"platform\":" + jsonQuote(m_options.clientPlatform) + ",\"version\":" + jsonQuote(m_options.clientVersion) + "}";
+	}
+	queue("signin", "POST", "/v1/auth/guest", body + "}");
 }
 
 void OnlineLobbyClient::refreshList(bool running)
@@ -290,12 +312,13 @@ void OnlineLobbyClient::refreshList(bool running)
 	queue("list", "GET", running ? "/v1/games?running=1" : "/v1/games", "");
 }
 
-std::u16string OnlineLobbyClient::sessionName(const std::string &token)
+// a session token's payload (lobby.mjs makeToken: base64url(JSON).base64url(HMAC)); false when it is not one
+static bool sessionPayload(const std::string &token, JsonValue &payload)
 {
 	const size_t dot = token.find('.');
 	if (dot == std::string::npos || dot == 0)
 	{
-		return std::u16string();
+		return false;
 	}
 	// base64url without padding
 	std::string bytes;
@@ -307,7 +330,7 @@ std::u16string OnlineLobbyClient::sessionName(const std::string &token)
 		int v = c >= 'A' && c <= 'Z' ? c - 'A' : c >= 'a' && c <= 'z' ? c - 'a' + 26 : c >= '0' && c <= '9' ? c - '0' + 52 : c == '-' ? 62 : c == '_' ? 63 : -1;
 		if (v < 0)
 		{
-			return std::u16string();
+			return false;
 		}
 		acc = (acc << 6) | (unsigned)v;
 		bits += 6;
@@ -317,13 +340,24 @@ std::u16string OnlineLobbyClient::sessionName(const std::string &token)
 			bytes.push_back((char)((acc >> bits) & 0xFF));
 		}
 	}
-	JsonValue payload;
 	std::string why;
 	if (!JsonValue::parse(bytes, payload, &why) || !payload.isObject())
 	{
-		return std::u16string();
+		return false;
 	}
-	return u16(strOf(payload.get("name")));
+	return true;
+}
+
+std::u16string OnlineLobbyClient::sessionName(const std::string &token)
+{
+	JsonValue payload;
+	return sessionPayload(token, payload) ? u16(strOf(payload.get("name"))) : std::u16string();
+}
+
+std::string OnlineLobbyClient::sessionInstall(const std::string &token)
+{
+	JsonValue payload;
+	return sessionPayload(token, payload) ? strOf(payload.get("install")) : std::string();
 }
 
 void OnlineLobbyClient::useSession(const std::string &token)
@@ -877,6 +911,15 @@ bool OnlineLobbyClient::readGameView(const JsonValue &g, std::string *error, boo
 			}
 		}
 		views[(size_t)i] = SlotView{ state, ready->boolean, you->boolean };
+		const JsonValue *playerId = js.get("player_id");
+		if (playerId && playerId->type != JsonValue::NUL)
+		{
+			if (!playerId->isString() || playerId->string.empty() || playerId->string.size() > 128)
+			{
+				return fail(at + "invalid reporting player id");
+			}
+			views[(size_t)i].playerId = playerId->string;
+		}
 		if (you->boolean)
 		{
 			local = i;
@@ -970,8 +1013,9 @@ void OnlineLobbyClient::deliver(int id, int status, const std::string &body, con
 	if (status != 200)
 	{
 		const std::string code = fits(root.get("error"), 64) ? strOf(root.get("error")) : std::string("protocol");
-		const std::string message = fits(root.get("message"), kMaxRefusalBytes) ? strOf(root.get("message"))
-			: "the lobby's refusal is longer than " + std::to_string(kMaxRefusalBytes) + " bytes";
+		const std::size_t limit = code == "banned" || code == "suspended" || code == "muted" ? kMaxStatusBytes : kMaxRefusalBytes;
+		const std::string message = fits(root.get("message"), limit) ? strOf(root.get("message"))
+			: "the lobby's refusal is longer than " + std::to_string(limit) + " bytes";
 		if (kind == "poll" && inGame() && (code == "not_in_game" || code == "no_game"))
 		{
 			// lobby.mjs poll: a kicked player gets 403 not_in_game ("kicked or left"), a game the host closed is gone (404 no_game)
@@ -1038,9 +1082,25 @@ void OnlineLobbyClient::handle(const Pending &p, int, const JsonValue &root)
 		}
 		m_token = token;
 		m_accountName = u16(strOf(account->get("name")));
+		const JsonValue *notice = root.get("notice");
+		if (notice && notice->type != JsonValue::NUL && (!notice->isObject() ||
+			!fits(notice->get("id"), 128) || strOf(notice->get("id")).empty() ||
+			!fits(notice->get("text"), kMaxNoticeBytes) || strOf(notice->get("text")).empty()))
+		{
+			m_token.clear();
+			m_accountName.clear();
+			refuse(kind, "protocol", "the sign-in notice is malformed");
+			return;
+		}
 		Event e{ Event::SignedIn };
 		e.text = m_accountName;
 		m_events.push_back(e);
+		if (notice && notice->isObject() && strOf(notice->get("id")) != m_lastNotice)
+		{
+			m_lastNotice = strOf(notice->get("id"));
+			refuse("notice", "notice", strOf(notice->get("text")));
+			m_events.back().kind = Event::Notice;
+		}
 		return;
 	}
 	if (kind == "motd")
@@ -1175,6 +1235,12 @@ void OnlineLobbyClient::handle(const Pending &p, int, const JsonValue &root)
 	}
 	if (kind == "rejoin" || kind == "spectate")
 	{
+		const JsonValue *game = root.get("game");
+		if (kind == "rejoin" && game && !readGameView(*game, &error, true))
+		{
+			refuse(kind, "protocol", error);
+			return;
+		}
 		const JsonValue *start = root.get("start");
 		if (!start || !start->isObject())
 		{

@@ -209,11 +209,14 @@ bool AptView3DViewers::create(Slot &slot, const AptCanvasOp &op)
 	return true;
 }
 
-void AptView3DViewers::beginBuild()
+void AptView3DViewers::beginBuild(const std::set<std::string> *paths)
 {
 	for (auto &kv : m_slots)
 	{
-		kv.second.used = false;
+		if (!paths || paths->count(kv.first.substr(0, kv.first.find('|')))) // the key is "<clip path>|<render object>" (draw)
+		{
+			kv.second.used = false;
+		}
 	}
 }
 

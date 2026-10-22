@@ -182,25 +182,48 @@ void checkReplay(const std::string &replay, const Run &game, const std::string &
 }
 } // namespace
 
-// The pinned runs keep the lobby's run-ahead (--fixed-run-ahead): on a loaded test machine a peer process starved for a second measures that as its
+// The pinned runs keep the lobby's run-ahead (--fixed-run-ahead) and RotWK's frame + 1 for every order (--no-early-orders, lane NETLAG-2: an early order
+// may run a frame sooner, its own case below): on a loaded test machine a peer process starved for a second measures that as its
 // round trip, and the adaptive run-ahead then rightly raises the delay for a while (the unit test "netlag1 run-ahead: ..." in test_mp2_disconnect.cpp pins
 // the adaptive target for LAN round trips). The adaptive run is reported beside them.
 TEST_CASE("netlag1 net retail: a 2-player LAN game on real UDP with 5 Hz clocks: every order runs on the frame after the one it was issued on (RotWK's "
 		  "frame + 1) with the lobby's run-ahead 1; MP-1's run-ahead 2 (alpha.3) took a frame more; the Uber profile the same")
 {
 	OPENBFME_REQUIRE_START(s);
-	const Run now = lanGame("lan", "--fixed-run-ahead", "--record netlag1_ra1.replay");
+	const Run now = lanGame("lan", "--fixed-run-ahead --no-early-orders", "--record netlag1_ra1.replay");
 	checkGame(now, 1, "LAN, run-ahead 1 (the lobby's default)");
 	checkReplay("netlag1_ra1.replay", now, "the run-ahead 1 game's replay");
-	const Run before = lanGame("lan2", "--run-ahead 2 --fixed-run-ahead", "--record netlag1_ra2.replay");
+	const Run before = lanGame("lan2", "--run-ahead 2 --fixed-run-ahead --no-early-orders", "--record netlag1_ra2.replay");
 	checkGame(before, 2, "LAN, run-ahead 2 (v0.4.0-alpha.3)");
 	checkReplay("netlag1_ra2.replay", before, "a replay recorded with the run-ahead 2 (alpha.3's)");
 	// UBER-1: the Uber profile changes the logic's threads, not the command path
-	const Run uber = lanGame("uber", "--uber --fixed-run-ahead");
+	const Run uber = lanGame("uber", "--uber --fixed-run-ahead --no-early-orders");
 	checkGame(uber, 1, "LAN, run-ahead 1, Uber profile on both peers");
 	// what a player gets: the adaptive run-ahead from the lobby's 1 (the measured delays and the run-ahead it ended with are in the message)
 	const Run adaptive = lanGame("adaptive", "");
 	checkGame(adaptive, -1, "LAN, adaptive run-ahead from 1");
+}
+
+// lane NETLAG-2 (the owner's choice of 2026-10-20: orders faster than RotWK's frame + 1 where the link allows): with early orders an order clicked while
+// the next frame is still further away than the lead (the planned one-way latency + 10 % + 40 ms: about 41 ms on loopback) runs on that next frame
+TEST_CASE("netlag2 net retail: a 2-player LAN game on real UDP with early orders and clicks anywhere in the frame: every order runs on the next frame or "
+		  "the one after, some on the next, both peers in lockstep, and the recording plays back with every hash equal")
+{
+	OPENBFME_REQUIRE_START(s);
+	const Run r = lanGame("early", "--fixed-run-ahead --script-phase random", "--record netlag2_early.replay");
+	checkGame(r, -1, "LAN, run-ahead 1, early orders");
+	for (size_t i = 0; i < r.reports.size(); ++i)
+	{
+		INFO("peer " << i << ": " << field(r.reports[i], "command_delay_frames") << "; " << field(r.reports[i], "early_orders"));
+		const std::map<int, int> d = delays(r.reports[i]);
+		CHECK(d.count(0) == 1); // some orders ran on the next frame
+		for (const auto &kv : d)
+		{
+			CHECK((kv.first == 0 || kv.first == 1));
+		}
+		CHECK(std::atoi(field(r.reports[i], "early_orders").c_str()) == d.at(0));
+	}
+	checkReplay("netlag2_early.replay", r, "the early-orders game's replay");
 }
 
 // lane NETLAG-1 (Sol's review): a recording made by the build BEFORE this lane (the q19 tree with NETLAG-1's command-delay sources reverted, run-ahead 2, its own engine id) still plays back here,
@@ -362,7 +385,7 @@ TEST_CASE("netlag1 net retail: a 2-player online game through the relay process 
 			+ "\",\"runAhead\":1,\"crcInterval\":100,\"profile\":\"" + digest + "\",\"setup\":" + setup + "}";
 		const std::string file = (dir / ("start-" + std::to_string(slot) + ".json")).string();
 		std::ofstream(file) << start;
-		commands.push_back(peerBase() + " --online-start \"" + file + "\" --bind 127.0.0.1 --script --frames 150 --paced --fixed-run-ahead --desync-dir \""
+		commands.push_back(peerBase() + " --online-start \"" + file + "\" --bind 127.0.0.1 --script --frames 150 --paced --fixed-run-ahead --no-early-orders --desync-dir \""
 			+ dir.string() + "\"");
 	}
 	{

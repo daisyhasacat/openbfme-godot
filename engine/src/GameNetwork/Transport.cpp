@@ -636,6 +636,19 @@ void Transport::sendDatagram(int slot, const NetAddress &to, std::vector<std::ui
 	}
 }
 
+int Transport::plannedRoundTripMs(int slot) const
+{
+	const Peer &p = m_peers[(size_t)slot];
+	if (p.rttSamples < kRttPlanSamples)
+	{
+		return -1;
+	}
+	const size_t n = (size_t)std::min<unsigned long long>(p.rttSamples, kRttWindow);
+	std::array<std::uint32_t, kRttWindow> sorted = p.recentRtt;
+	std::sort(sorted.begin(), sorted.begin() + (std::ptrdiff_t)n);
+	return (int)std::min<std::uint32_t>(sorted[n * 4 / 5], 0x7FFFFFFF); // the 80th percentile: the 26th of 32
+}
+
 void Transport::flush(int slot, std::uint64_t now)
 {
 	Peer &p = m_peers[(size_t)slot];
@@ -946,6 +959,7 @@ void Transport::handlePacket(const NetAddress &from, const std::vector<std::uint
 					p.rttvar = (3 * p.rttvar + err) / 4;
 					p.srtt = (7 * p.srtt + (std::uint64_t)sample) / 8;
 				}
+				p.recentRtt[(size_t)(p.rttSamples % kRttWindow)] = (std::uint32_t)std::min<long long>(sample, 0xFFFFFFFFLL);
 				++p.rttSamples;
 				p.rto = std::max<std::uint64_t>((std::uint64_t)m_options.resendMs, std::min<std::uint64_t>(2000, p.srtt + 4 * p.rttvar));
 			}

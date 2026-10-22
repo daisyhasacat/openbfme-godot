@@ -61,6 +61,7 @@ public:
 	//   clip_rect: Rect2 of SAGE x/y; only drawables standing inside it are placed
 	//   skybox: bool (default true) false leaves out KindOf SKYBOX drawables
 	//   map_ini: "objects" loads the map.ini / solo.ini only when they define objects (a preview; other blocks change no drawable)
+	//   user_map: bool (default false; lane MOD-5) the map is in the user maps folder (RetailFileSystem::get_user_map_folder), not the archives
 	Node3D *build_objects(const Ref<RetailFileSystem> &fs, const String &map_name, const Dictionary &options);
 
 	// Steps the animations of the dynamic drawables and the material clocks of both instancers by `delta` seconds of render time (call once

@@ -346,9 +346,9 @@
   },
   {
    "match": "TakePicture",
-   "retail": "Create-a-Hero: takes the hero's portrait (not ported: the box says so, S-4755)",
-   "source": "AptCreateAHero::OnTakePicture",
-   "effect": "unavailable"
+   "retail": "Create-a-Hero: the panels close, the window's picture is saved in the pictures folder named for the hero and an OK box says where (lane CAHPIC-1)",
+   "source": "AptCreateAHero::OnTakePicture RW 0x919D8F, DrawMapComponent RW 0x91A3A9",
+   "effect": "box"
   },
   {
    "match": "PlayGame",
@@ -697,6 +697,12 @@
    "effect": "probe:online_page | box"
   },
   {
+   "match": "OnlineLogin\\.GameSpy",
+   "retail": "GameSpy's logo: opens GameSpy's site; OpenBFME's seal in its place opens the project's website (lane MENUFIX-2: the row was missing)",
+   "source": "AptOnline::Login::GameSpy (AptOnlineShell.cpp, S-4071)",
+   "effect": "request:OpenProjectWebsite | command:AptOnline::Login::GameSpy"
+  },
+  {
    "match": "OnlineLogin::Nickname",
    "retail": "the nickname: typing edits it, the drop-down lists the names used before",
    "source": "AptOnlineLogin::InitGadgets RW 0x97A413",
@@ -812,11 +818,14 @@
    "match": "popup\\.navSearching\\.Yes",
    "retail": "the question's Yes: carries the restart / exit out",
    "source": "QuitMenu.apt popup",
-   "effect": "screen:LoadScreen.apt | screen:TimeLine.apt",
+   "effect": "screen:LoadScreen.apt | screen:TimeLine.apt | request:QuitMenuRestart",
+   "retail_unhandled": [
+    "AptGameLoading::OnInitialized"
+   ],
    "ignore_unhandled": [
     "OnAptInGameSideCommandBarButtonFrameUnloaded"
    ],
-   "note": "the HUD's side command bar teardown callback (a game.dat name) has no handler: an in-game HUD gap, not this button's"
+   "note": "the HUD's side command bar teardown callback (a game.dat name) has no handler: an in-game HUD gap, not this button's. Lane MENUFIX-2: the restart's load is synchronous, so the walk can sample the stack after the new game is up (Palantir.apt before and after): the restart request the host carries out counts too; AptGameLoading::OnInitialized has no handler in the binary (AptSimpleScreens.h)"
   },
   {
    "match": "MainButtons\\.Skip",

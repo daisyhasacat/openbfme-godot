@@ -463,6 +463,11 @@ struct EffectProbe
 				// a MountedTemplate replaces the unit (seen by the caller, nothing else counts); without one the unit itself mounts: its status or weapon set
 				p.expects.push_back({ MOUNT, cls + (td->m_mountedTemplate.empty() ? "" : " MountedTemplate " + td->m_mountedTemplate), td->m_mountedTemplate });
 			}
+			else if (const SummonReplacementSpecialAbilityUpdateModuleData *sd = dynamic_cast<const SummonReplacementSpecialAbilityUpdateModuleData *>(d))
+			{
+				// lane SUMMON-1: the Thrall Master's summons, ToggleMounted's replacement over its own data (RW 0x8B228C)
+				p.expects.push_back({ MOUNT, cls + (sd->m_mountedTemplate.empty() ? "" : " MountedTemplate " + sd->m_mountedTemplate), sd->m_mountedTemplate });
+			}
 			else if (const ActivateModuleSpecialPowerModuleData *amd = dynamic_cast<const ActivateModuleSpecialPowerModuleData *>(d))
 			{
 				for (const ActivateModuleSpecialPowerModuleData::Entry &e : amd->m_triggers)
@@ -1211,6 +1216,12 @@ void unitsOf(const std::string &faction, Results &res)
 				{
 					modelGated = modelGated || w != 0;
 				}
+				// lane SUMMON-1: likewise a button the unit's current model condition disables (DisableOnModelCondition: the Mountain Giant's Stomp while he throws
+				// rocks) is restricted until the weapon toggle below
+				for (size_t w = 0; w < cb->m_disableOnModelCondition.size(); ++w)
+				{
+					modelGated = modelGated || (u->getModelConditionBits()[w] & cb->m_disableOnModelCondition[w]) != 0;
+				}
 				modelGated = modelGated && !upgrade && b.state == ButtonState::Restricted;
 				if (b.state != ButtonState::Enabled && b.state != ButtonState::Active && !modelGated)
 				{
@@ -1381,6 +1392,29 @@ void unitsOf(const std::string &faction, Results &res)
 					needsToggle = needsToggle || (a && a->abilityData()->m_specialPowerTemplateName == t->getName() && (a->abilityData()->m_requiredConditions & 2u) != 0);
 				}
 				if (needsToggle && ((u->getWeaponSetFlags()[0] >> 24) & 1u) == 0)
+				{
+					ControlBarButton toggle;
+					if (g.select(u) && g.reveal(u, [](const CommandButton &x) { return x.m_command == GUI_COMMAND_TOGGLE_WEAPONSET; }, toggle))
+					{
+						g.press(toggle);
+						g.step(15);
+					}
+					g.select(u);
+					if (!g.reveal(u, [&](const CommandButton &x) { return &x == cb; }, b))
+					{
+						res.fail(item, "the button left the bar after the weapon toggle");
+						continue;
+					}
+				}
+				// lane SUMMON-1: a button the unit's current model condition disables (DisableOnModelCondition WEAPONSET_TOGGLE_1: the Mountain Giant's Stomp;
+				// the giant starts throwing rocks, scripts.lua's OnMountainGiantCreated grants Upgrade_SwitchToRockThrowing and DoCommandUpgrade toggles the set)
+				// is used the way a player does: the unit's weapon toggle first
+				bool disabledNow = false;
+				for (size_t w = 0; w < cb->m_disableOnModelCondition.size(); ++w)
+				{
+					disabledNow = disabledNow || (u->getModelConditionBits()[w] & cb->m_disableOnModelCondition[w]) != 0;
+				}
+				if (disabledNow)
 				{
 					ControlBarButton toggle;
 					if (g.select(u) && g.reveal(u, [](const CommandButton &x) { return x.m_command == GUI_COMMAND_TOGGLE_WEAPONSET; }, toggle))
@@ -2833,8 +2867,11 @@ TEST_CASE("factb spell book: every Isengard spell book power cast through the HU
 	Results r;
 	spellBookOf("FactionIsengard", r);
 	r.print("spell book FactionIsengard");
+	// lane SUMMON-1: Isengard's Taint shows no effect of its own (its terrain taint is S-921, as Mordor's Taint below); it passed before only because the
+	// hordes' own fight in the control and cast runs differed by more than the 500 margin, which the OCLs' added retail random draws changed
 	r.check({ { "spell SpellBookDevastation", "S-921 (SPELL-3)" }, { "spell SpellBookIndustry", "S-1997" },
-		{ "spell SpellBookFueltheFires", "S-1997" }, { "spell SpellBookDragonStrike", "S-1997" } });
+		{ "spell SpellBookFueltheFires", "S-1997" }, { "spell SpellBookDragonStrike", "S-1997" },
+		{ "spell SpellBookIsengardTaint", "S-1997|no effect of TaintSpecialPower" } });
 }
 
 TEST_CASE("factb spell book: every Mordor spell book power cast through the HUD's spell bar shows its effect")

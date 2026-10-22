@@ -2050,11 +2050,37 @@ void GameWorld::refresh_views(double deltaMs)
 			}
 			else if (!e.staticModel.empty() && !e.moduleHidden)
 			{
-				const auto palette=Render_House_Color_Params(d->getHouseColor(),d->customColorKind(),d->customColors());
-				const bool colored=m_houseColors && palette.kind>0;
-				const std::vector<TextureSwap> swaps=e.kind==W3D_DRAWKIND_FLOOR ? floorWeatherSwaps(e.data,m_streakWeather) : std::vector<TextureSwap>();
-				std::string model=AsciiStringUtil::lowered(e.staticModel)+W3DInstancer::Texture_Swap_Suffix(swaps);
-				if(colored) model+="#palette&"+std::to_string(palette.kind)+"&"+std::to_string(palette.colors[0])+"&"+std::to_string(palette.colors[1])+"&"+std::to_string(palette.colors[2]);
+				// lane HCKEY-1: the key and its palette / swaps are made again only when an input changed (not every frame)
+				const std::uint32_t owner = d->getHouseColor();
+				const int customKind = d->customColorKind();
+				const std::uint32_t *custom = d->customColors();
+				if (!ev.staticKeyValid || ev.staticKeySource != e.staticModel || ev.staticKeyData != e.data || ev.staticKeyKind != (int)e.kind ||
+					ev.staticKeyWeather != m_streakWeather || ev.staticKeyHouse != m_houseColors || ev.staticKeyOwner != owner ||
+					ev.staticKeyCustomKind != customKind || std::memcmp(ev.staticKeyCustom, custom, sizeof(ev.staticKeyCustom)) != 0)
+				{
+					ev.staticKeyPalette = Render_House_Color_Params(owner, customKind, custom);
+					ev.staticKeyColored = m_houseColors && ev.staticKeyPalette.kind > 0;
+					ev.staticKeySwaps = e.kind == W3D_DRAWKIND_FLOOR ? floorWeatherSwaps(e.data, m_streakWeather) : std::vector<TextureSwap>();
+					ev.staticKey = AsciiStringUtil::lowered(e.staticModel) + W3DInstancer::Texture_Swap_Suffix(ev.staticKeySwaps);
+					if (ev.staticKeyColored)
+					{
+						const HouseColorParams &pp = ev.staticKeyPalette;
+						ev.staticKey += "#palette&" + std::to_string(pp.kind) + "&" + std::to_string(pp.colors[0]) + "&" + std::to_string(pp.colors[1]) + "&" + std::to_string(pp.colors[2]);
+					}
+					ev.staticKeySource = e.staticModel;
+					ev.staticKeyData = e.data;
+					ev.staticKeyKind = (int)e.kind;
+					ev.staticKeyWeather = m_streakWeather;
+					ev.staticKeyHouse = m_houseColors;
+					ev.staticKeyOwner = owner;
+					ev.staticKeyCustomKind = customKind;
+					std::memcpy(ev.staticKeyCustom, custom, sizeof(ev.staticKeyCustom));
+					ev.staticKeyValid = true;
+				}
+				const HouseColorParams &palette = ev.staticKeyPalette;
+				const bool colored = ev.staticKeyColored;
+				const std::vector<TextureSwap> &swaps = ev.staticKeySwaps;
+				const std::string &model = ev.staticKey;
 				if(ev.model!=model && ev.instance>=0) {dyn->remove_instance(ev.instance);ev.instance=-1;ev.posed=false;}
 				if (!ev.posed)
 				{
@@ -4864,6 +4890,7 @@ Dictionary GameWorld::net_begin(const Dictionary &options)
 		so.replayPath = std::string(String(options["record"]).utf8().get_data());
 	}
 	so.census = optBool(options, "census", false); // lane MP-3: the per-frame census (net_write_census)
+	so.earlyOrders = optBool(options, "early_orders", true); // lane NETLAG-2: NetworkConfig::earlyOrders (false: RotWK's frame + 1 for every order)
 	// lane ONLINE-3: a rejoin START (its ticket's generation) rejoins the running game instead of starting it; it records no replay (the game's start
 	// was not this process's: the relay's log is the game's record, /v1/replays/<id>/log)
 	m_netRejoining = m_netStart.online && m_netStart.rejoinGeneration > 0;

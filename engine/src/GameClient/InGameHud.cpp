@@ -14,6 +14,7 @@
 #include "GameClient/UnitHelpSource.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/Object/ObjectGeometry.h"
+#include "GameLogic/ActionManager.h"
 
 #include "Common/Audio/AudioEntryPoints.h"
 

@@ -1,13 +1,14 @@
 import { MAX_REPORT_BYTES } from './match-statistics.mjs';
 // OpenBFME online lobby on Cloudflare (lane ONLINE-2, docs/ONLINE.md option (d)): a Worker that hands every /v1 request to ONE Durable Object (the lobby:
 // it keeps the games in its storage). Bindings: LOBBY (the Durable Object namespace), LOGS (an R2 bucket, only with LOG_STORE = "r2"); secrets:
-// TICKET_KEYS, SESSION_KEY, UPLOAD_KEY, ADMIN_KEY (INFRA-2: the backup export); vars: RELAYS (may be empty: no relay yet), PUBLIC_URL, LOG_STORE.
+// TICKET_KEYS, SESSION_KEY, UPLOAD_KEY, ADMIN_KEY, MOD_KEY; vars: RELAYS (may be empty: no relay yet), PUBLIC_URL, LOG_STORE, REQUIRE_INSTALL.
 // CFDEPLOY-1: LOG_STORE picks where the relay's command logs go: "durable-object" (the object's own SQLite storage, on the Workers Free plan),
 // "r2" (the LOGS bucket), or unset (no store: uploads and replay reads fail with 'no_log_store').
 // ONLINE-2 r2 (Sol r1): a Durable Object runs another request whenever one awaits (storage, crypto, R2), so the object queues the requests itself: one
 // request through the lobby at a time, as the self-hosted server does.
 
-import { Lobby, LobbyError, route, configFromEnv, MAX_JSON_BYTES } from './lobby.mjs';
+import { Lobby, LobbyError, route, configFromEnv, MAX_JSON_BYTES, validateEnforcementRecord, validateSighting, withoutGameIp } from './lobby.mjs';
+import { SqliteIdentityStore } from './identity-store.mjs';
 
 const subtle = crypto.subtle;
 
@@ -64,6 +65,16 @@ export class SqliteLogStore {
     return this.sql.exec('SELECT key, size, stored_at FROM blobs WHERE key > ? ORDER BY key LIMIT ?', after, limit).toArray()
       .map((r) => ({ key: r.key, size: Number(r.size), storedAt: Number(r.stored_at) }));
   }
+  // LOBBYSTATS-1: when the START records and relay logs stored since `sinceMs` were written (ms), for /v1/stats' games per day. One read of the
+  // blobs table, run once per object lifetime (the lobby keeps the times in memory after it): the range on the key reads only starts/ and logs/
+  // rows, but every one of them (stored_at has no index: an index would cost a row write per blob), so a restarted object pays one row read per
+  // stored game; nothing is written
+  gameTimes(sinceMs) {
+    const rows = this.sql.exec("SELECT substr(key, 1, 6) AS kind, stored_at FROM blobs WHERE ((key >= 'logs/' AND key < 'logs0') OR (key >= 'starts/' AND key < 'starts0')) AND stored_at >= ?", sinceMs).toArray();
+    const out = { started: [], finished: [] };
+    for (const r of rows) (r.kind === 'starts' ? out.started : out.finished).push(Number(r.stored_at));
+    return out;
+  }
   getBlob(key) {
     const meta = this.sql.exec('SELECT size, parts FROM blobs WHERE key = ?', key).toArray()[0];
     if (!meta) return null;
@@ -105,9 +116,48 @@ export function logStoreFor(state, env) {
   throw new Error(`unknown LOG_STORE "${kind}" (durable-object, r2, or unset)`);
 }
 
+export function durableReportTransaction(storage) {
+  if (typeof storage.transaction !== 'function') return null;
+  return (fn) => storage.transaction(async (transaction) => fn({
+    get: async (key) => (await transaction.get(key)) ?? null,
+    put: (key, value) => transaction.put(key, value),
+    delete: (key) => transaction.delete(key),
+    list: async (prefix, { after = null, limit = 100, reverse = false } = {}) => {
+      const rows = await transaction.list({
+        prefix,
+        ...(after === null ? {} : (reverse ? { end: after } : { startAfter: after })),
+        limit: Math.min(1000, limit),
+        reverse,
+      });
+      return new Map(rows);
+    },
+  }));
+}
+
 function workerEnv(state, env) {
   const keys = new Map();
   const logs = logStoreFor(state, env);
+  const identity = new SqliteIdentityStore(state.storage);
+  const reportTransaction = durableReportTransaction(state.storage);
+  const claimModerationReceipt = (commandHash, record) => state.storage.transactionSync(() => {
+    const sql = state.storage.sql;
+    sql.exec('CREATE TABLE IF NOT EXISTS moderation_receipts (command_hash TEXT PRIMARY KEY, payload TEXT NOT NULL)');
+    const row = sql.exec('SELECT payload FROM moderation_receipts WHERE command_hash = ?', commandHash).toArray()[0];
+    if (row) return JSON.parse(row.payload);
+    sql.exec('INSERT INTO moderation_receipts VALUES (?, ?)', commandHash, JSON.stringify(record));
+    return null;
+  });
+  const completeModerationReceipt = (commandHash, record) => state.storage.transactionSync(() => {
+    const sql = state.storage.sql;
+    sql.exec('CREATE TABLE IF NOT EXISTS moderation_receipts (command_hash TEXT PRIMARY KEY, payload TEXT NOT NULL)');
+    const row = sql.exec('SELECT payload FROM moderation_receipts WHERE command_hash = ?', commandHash).toArray()[0];
+    if (!row) throw new Error('moderation command claim is missing');
+    const existing = JSON.parse(row.payload);
+    if (existing.status !== 'pending' || existing.fingerprint !== record.fingerprint) {
+      throw new Error('moderation command claim is not pending');
+    }
+    sql.exec('UPDATE moderation_receipts SET payload = ? WHERE command_hash = ?', JSON.stringify(record), commandHash);
+  });
   return {
     hmac: async (key, data) => {
       const id = Array.from(key).join(',');
@@ -118,16 +168,27 @@ function workerEnv(state, env) {
       }
       return new Uint8Array(await subtle.sign('HMAC', k, data));
     },
+    sha256: async (data) => new Uint8Array(await subtle.digest('SHA-256', data)),
     randomBytes: (n) => crypto.getRandomValues(new Uint8Array(n)),
     now: () => Date.now(),
     store: {
-      saveGame: (g) => state.storage.put(`game:${g.id}`, g),
+      saveGame: (g) => state.storage.put(`game:${g.id}`, withoutGameIp(g)),
       saveMeta: (k, v) => state.storage.put(k, v), // INFRA-2 r2: the relay uploader's status (relay-status:<address>)
       deleteGame: (id) => state.storage.delete(`game:${id}`),
+      claimModerationReceipt,
+      completeModerationReceipt,
+      identity,
+      saveEnforcement: (record) => identity.saveEnforcement(record),
+      loadEnforcement: () => [],
+      saveSighting: (record) => identity.saveSighting(record),
+      deleteSighting: (install) => identity.deleteSighting(install),
+      loadSightings: () => [],
       kind: logs.kind,
+      ...(reportTransaction ? { reportTransaction } : {}),
       maxLogBytes: logs.maxLogBytes,
       putBlob: logs.putBlob?.bind(logs),
       getBlob: logs.getBlob?.bind(logs),
+      gameTimes: logs.gameTimes?.bind(logs),
       listBlobs: logs.listBlobs?.bind(logs),
     },
   };
@@ -188,27 +249,106 @@ export class LobbyObject {
   constructor(state, env) {
     this.lobby = new Lobby(workerEnv(state, env), configFromEnv(env));
     this.queue = Promise.resolve();
+    this.state = state;
+    this.identity = this.lobby.env.store.identity;
+    this.ready = false;
+    this.migrationError = null;
     this.bodyTimeoutMs = Number(env.BODY_TIMEOUT_MS ?? 10000);
     this.reading = { logs: 0, all: 0 };
-    state.blockConcurrencyWhile(async () => {
-      const games = await state.storage.list({ prefix: 'game:' });
-      const relays = await state.storage.list({ prefix: 'relay-status:' });
-      const users = await state.storage.list({ prefix: 'user:' });
-      const history = await state.storage.list({ prefix: 'game-history:' });
-      const matches = await state.storage.list({ prefix: 'match-statistics:' });
-      const reports = await state.storage.list({ prefix: 'match-report:' });
-      const testing = await state.storage.list({ prefix: 'testing-run:' });
-      const desyncs = await state.storage.list({ prefix: 'match-desync:' });
-      this.lobby.load([...games.values()], [...relays.values(), ...users.values(), ...history.values(), ...matches.values(), ...reports.values(), ...desyncs.values(), ...testing.values()]);
+    let initialization;
+    const initialize = () => {
+      initialization = this.initialize(5);
+      return initialization;
+    };
+    try {
+      const blocked = state.blockConcurrencyWhile(initialize);
+      this.readyPromise = Promise.resolve(blocked ?? initialization);
+    } catch {
+      this.migrationError = 'initialization_failed';
+      this.readyPromise = this.scheduleMigration().catch(() => {
+        this.migrationError = 'initialization_failed';
+        this.ready = false;
+      });
+    }
+  }
+  async initialize(maxPages) {
+    this.ready = false;
+    try {
+      this.lobby.games.clear();
+      this.lobby.relayStatus.clear();
+      const gamePageLimit = 1000;
+      let startAfter = '';
+      for (;;) {
+        const games = await this.state.storage.list({ prefix: 'game:', limit: gamePageLimit, startAfter });
+        if (!(games instanceof Map) || games.size > gamePageLimit) throw new Error('stored game page is malformed');
+        let lastKey = startAfter;
+        const page = [];
+        for (const [key, game] of games) {
+          if (typeof key !== 'string' || !key.startsWith('game:') || key <= lastKey) {
+            throw new Error('stored game page is not strictly ordered');
+          }
+          const id = key.slice('game:'.length);
+          if (!/^[0-9a-f]{16}$/.test(id) || !game || typeof game !== 'object' || Array.isArray(game) || game.id !== id) {
+            throw new Error('stored game key does not match its id');
+          }
+          lastKey = key;
+          const clean = withoutGameIp(game);
+          if (Object.hasOwn(game, 'ip')) await this.state.storage.put(key, clean);
+          page.push(clean);
+        }
+        this.lobby.loadGames(page);
+        if (games.size < gamePageLimit) break;
+        if (lastKey <= startAfter) throw new Error('stored game pagination made no progress');
+        startAfter = lastKey;
+      }
+      const relays = await this.state.storage.list({ prefix: 'relay-status:' });
+      const metadata = [...relays.values()];
+      for (const prefix of ['user:', 'game-history:', 'match-statistics:', 'match-report:', 'testing-run:', 'match-desync:']) {
+        const records = await this.state.storage.list({prefix});
+        metadata.push(...records.values());
+      }
+      this.lobby.load([], metadata, [], []);
       await this.lobby.restoreArchives();
-    });
+      for (let i = 0; i < maxPages && !this.ready; i++) {
+        this.ready = await this.identity.migratePage(validateEnforcementRecord, validateSighting);
+      }
+      this.migrationError = null;
+    } catch {
+      this.migrationError = 'initialization_failed';
+      this.ready = false;
+    }
+    if (!this.ready) {
+      try {
+        await this.scheduleMigration();
+      } catch {
+        this.migrationError = 'initialization_failed';
+      }
+    }
+  }
+  async scheduleMigration() {
+    if (typeof this.state.storage.setAlarm === 'function') await this.state.storage.setAlarm(Date.now() + 1000);
+  }
+  async processMigration() {
+    if (this.ready) return;
+    await this.initialize(10);
+  }
+  async alarm() {
+    await this.readyPromise;
+    const run = this.queue.then(() => this.processMigration());
+    this.queue = run.catch(() => {});
+    await run;
   }
   async fetch(request) {
+    await this.readyPromise;
     const path = new URL(request.url).pathname;
     // INFRA-2: an admin import (POST /v1/admin/blobs/...) carries a log too: the same byte limit and upload places as the relay's uploads
     const isLog = path.startsWith('/v1/relay/logs/') || path.startsWith('/v1/admin/blobs/');
     const refuse = (status, code, message, extra = {}) => new Response(JSON.stringify({ v: 1, error: code, message }),
       { status, headers: { 'content-type': 'application/json; charset=utf-8', connection: 'close', ...extra } });
+    if (!this.ready) {
+      const health = request.method === 'GET' && path === '/v1/health';
+      return refuse(503, 'identity_migrating', health ? 'the lobby identity store is not ready' : 'the lobby is not ready', { 'cache-control': 'no-store' });
+    }
     if (request.body && (this.reading.all >= MAX_BODIES || (isLog && this.reading.logs >= MAX_LOG_UPLOADS))) {
       request.body.cancel().catch(() => {});
       return refuse(503, 'overloaded', isLog ? `${MAX_LOG_UPLOADS} log uploads are being received: retry later` : 'too many requests in flight: retry later',
@@ -221,8 +361,11 @@ export class LobbyObject {
     let out;
     try {
       const body = await readBodyLimited(request, isLog ? this.lobby.maxLogBytes() : /^\/v1\/games\/[0-9a-f]{16}\/(?:statistics|desync)$/.test(path) ? MAX_REPORT_BYTES : MAX_JSON_BYTES, this.bodyTimeoutMs);
-      if (body.status) return refuse(body.status, body.code, body.error);
-      const run = this.queue.then(() => this.handle(request, body.bytes));
+      const reportPost = request.method === 'POST' && path === '/v1/reports';
+      if (body.status && !(reportPost && body.status === 413)) return refuse(body.status, body.code, body.error);
+      const run = this.queue.then(() => this.handle(request, body.bytes ?? new Uint8Array(), body.status && reportPost
+        ? { status: body.status, code: body.code, message: body.error }
+        : null));
       this.queue = run.catch(() => {});
       out = await run;
     } finally {
@@ -233,7 +376,7 @@ export class LobbyObject {
     if (out.deferred) out = await out.deferred;
     return new Response(out.body, { status: out.status, headers: out.headers });
   }
-  async handle(request, bytes) {
+  async handle(request, bytes, bodyRejection = null) {
     const url = new URL(request.url);
     const headers = {};
     for (const [k, v] of request.headers) headers[k.toLowerCase()] = v;
@@ -244,6 +387,7 @@ export class LobbyObject {
       headers,
       ip: request.headers.get('cf-connecting-ip') ?? '',
       bytes: async () => bytes,
+      ...(bodyRejection ? { bodyRejection } : {}),
     });
     return out;
   }

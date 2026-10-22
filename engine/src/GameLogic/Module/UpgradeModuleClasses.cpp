@@ -12,13 +12,18 @@
 #include "Common/INIException.h"
 #include "Common/Player.h"
 #include "Common/StateHash.h"
+#include "Common/SpecialPower.h"
 #include "Common/Thing/ModuleFactory.h"
+#include "GameClient/ControlBarCommands.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
 #include "GameLogic/ArmorSet.h"
 #include "GameLogic/Combat/ObjectWeapons.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
+#include "GameLogic/Module/SpecialPowerModules.h"
+#include "GameLogic/ObjectTemplateInfo.h"
+#include "GameLogic/WeaponSetToggle.h"
 
 #include <cstddef>
 #include <cstring>
@@ -209,6 +214,14 @@ const FieldParse kGrantUpgradeCreate[] = { // RW 0xC70158
 };
 #undef GU_OFF
 
+#define DC_OFF(m) (int)offsetof(DoCommandUpgradeModuleData, m)
+const FieldParse kDoCommand[] = { // RW 0xC6E7B4 (lane SUMMON-1)
+	{ "GetUpgradeCommandButtonName", INI::parseAsciiString, nullptr, DC_OFF(m_getUpgradeCommandButtonName) },
+	{ "RemoveUpgradeCommandButtonName", INI::parseAsciiString, nullptr, DC_OFF(m_removeUpgradeCommandButtonName) },
+	{ nullptr, nullptr, nullptr, 0 }
+};
+#undef DC_OFF
+
 const int kArmorSetConditionNames = 21;
 } // namespace
 
@@ -236,6 +249,11 @@ void CommandSetUpgradeModuleData::buildFieldParse(MultiIniFieldParse &p)
 {
 	buildBaseFieldParse(p);
 	p.add(kCommandSet);
+}
+void DoCommandUpgradeModuleData::buildFieldParse(MultiIniFieldParse &p)
+{
+	buildBaseFieldParse(p);
+	p.add(kDoCommand);
 }
 void SubObjectsUpgradeModuleData::buildFieldParse(MultiIniFieldParse &p)
 {
@@ -455,6 +473,55 @@ void CommandSetUpgrade::postUpgradeCheck()
 	UpgradeMaskType mask = player->getCompletedUpgradeMask();
 	mask.orWith(obj->getUpgradeMask());
 	attemptUpgrade(mask);
+}
+
+// ---- DoCommandUpgrade (lane SUMMON-1) -----------------------------------------------------------------------------------------------------
+void DoCommandUpgrade::doCommandButton(Object &obj, const CommandButton &b)
+{
+	static const int kSummoning = ObjectTemplateInfoBuilder::objectStatusIndex("SUMMONING_REPLACEMENT"); // 0x66, Object + 0xA0 bit 6
+	if (obj.getDisabledMask() != 0 && !(kSummoning >= 0 && obj.testStatus((unsigned)kSummoning)))
+	{
+		return; // RW 0x697008 .. 0x69706C: RW 0x9325B4 (any disabled type) and no SUMMONING_REPLACEMENT
+	}
+	switch (b.m_command)
+	{
+	case GUI_COMMAND_SPECIAL_POWER: // 0x18
+	case GUI_COMMAND_SPELL_BOOK:    // 0x26
+	{
+		const SpecialPowerTemplate *t = TheSpecialPowerStore && !b.m_specialPowerName.empty() ? TheSpecialPowerStore->findSpecialPowerTemplate(b.m_specialPowerName) : nullptr;
+		if (t) // a button without a power (+ 0x44 null) does nothing
+		{
+			SpecialPowerModules::doSpecialPower(obj, t, b.m_options | 0x40000u, false); // RW 0x68E5A3(power, options | 0x40000, source == 1: 0)
+		}
+		return;
+	}
+	case GUI_COMMAND_TOGGLE_WEAPONSET: // 0x2D
+		WeaponSetToggle::toggleFromCommandButton(obj);
+		return;
+	default:
+		++UpgradeModuleClasses::stats().doCommandsNotPorted; // S-5145
+		obj.logic().noteStop("[S-5145] DoCommandUpgrade: a button of a command type RW 0x696FD2 runs but the port does not (PLAYER_UPGRADE's research queue, ...) did nothing");
+		return;
+	}
+}
+
+void DoCommandUpgrade::run(const std::string &name)
+{
+	const CommandButton *b = TheCommandStore && !name.empty() ? TheCommandStore->findCommandButton(name) : nullptr; // RW 0x71D6EA (TheControlBar RW 0xDE7744)
+	if (b)
+	{
+		doCommandButton(*getObject(), *b); // RW 0x696FD2(button, 0, 0)
+	}
+}
+
+void DoCommandUpgrade::upgradeImplementation()
+{
+	run(m_data->m_getUpgradeCommandButtonName); // + 0x138
+}
+
+void DoCommandUpgrade::processUpgradeRemoval()
+{
+	run(m_data->m_removeUpgradeCommandButtonName); // + 0x13C
 }
 
 // ---- SubObjectsUpgrade --------------------------------------------------------------------------------------------------------------------
@@ -679,6 +746,8 @@ void UpgradeModuleClasses::registerAll(ModuleFactory &modules)
 	bindRuntime<WeaponSetUpgrade, WeaponSetUpgradeModuleData>(modules, "WeaponSetUpgrade");
 	modules.bindTypedData<CommandSetUpgradeModuleData>("CommandSetUpgrade", MODULETYPE_BEHAVIOR);
 	bindRuntime<CommandSetUpgrade, CommandSetUpgradeModuleData>(modules, "CommandSetUpgrade");
+	modules.bindTypedData<DoCommandUpgradeModuleData>("DoCommandUpgrade", MODULETYPE_BEHAVIOR); // lane SUMMON-1: RW 0x65A3DA
+	bindRuntime<DoCommandUpgrade, DoCommandUpgradeModuleData>(modules, "DoCommandUpgrade");
 	modules.bindTypedData<SubObjectsUpgradeModuleData>("SubObjectsUpgrade", MODULETYPE_BEHAVIOR);
 	bindRuntime<SubObjectsUpgrade, SubObjectsUpgradeModuleData>(modules, "SubObjectsUpgrade");
 	modules.bindTypedData<RemoveUpgradeUpgradeModuleData>("RemoveUpgradeUpgrade", MODULETYPE_BEHAVIOR);
@@ -694,7 +763,7 @@ std::vector<std::string> UpgradeModuleClasses::stopLines()
 		"[S-480] upgrade module classes: the UpgradeMux and StatusBits / ModelCondition / Armor / WeaponSet / CommandSet / SubObjects / RemoveUpgrade / CommandPoints / "
 		"CostModifier upgrades and GrantUpgradeCreate run; LevelUpUpgrade and ExperienceScalarUpgrade (lane XP-1) run; every other upgrade class the binary registers (AttributeModifierUpgrade, "
 		"UnpauseSpecialPowerUpgrade, GeometryUpgrade, MaxHealthUpgrade, LocomotorSetUpgrade, "
-		"DoCommandUpgrade, ...; CastleUpgrade, ObjectCreationUpgrade and ReplaceSelfUpgrade run since lane FACT-A) and InheritUpgradeCreate / UpgradeDie are UnportedModules (S-140): a granted upgrade does nothing through them; " +
+		"...; DoCommandUpgrade runs since lane SUMMON-1 (S-5145); CastleUpgrade, ObjectCreationUpgrade and ReplaceSelfUpgrade run since lane FACT-A) and InheritUpgradeCreate / UpgradeDie are UnportedModules (S-140): a granted upgrade does nothing through them; " +
 			std::to_string(unknownUpgradeNames().size()) + " unknown upgrade names met at run time (RW's debug messages)",
 		"[S-482] upgrade walks: onUpgradeCompleted / onUpgradeRemoved (RW 0x6AE483 / 0x6AE546) walk the player's teams' members; here the logic object list in list order "
 		"(the order an upgrade reaches the objects in is inferred)",
@@ -707,6 +776,8 @@ std::vector<std::string> UpgradeModuleClasses::stopLines()
 		"0x693A1A, RW 0x6ABDC2), HordeContain's second member list (+0x150) in the upgrade hand-down (RW 0x87566B) and in Object::hasUpgrade (RW 0x86EC2D: module + 0x170), the UI "
 		"messages of the completion",
 		"[S-485] closed: ModelConditionUpgrade RemoveConditionFlagsInRange (RW 0x8BA71A) is ported (the Create-A-Hero model condition upgrades use it)",
+		"[S-5145] DoCommandUpgrade (lane SUMMON-1): SPECIAL_POWER / SPELL_BOOK and TOGGLE_WEAPONSET buttons run (RW 0x696FD2); the other command types (the Hall of "
+		"Twilight's PLAYER_UPGRADE technologies: the queue of RW 0x695338 / production slot 0xC, ...) do nothing: " + std::to_string(s.doCommandsNotPorted) + " met",
 	};
 }
 
@@ -739,6 +810,12 @@ void WeaponSetUpgrade::xfer(Xfer &x)
 void CommandSetUpgrade::xfer(Xfer &x)
 {
 	SnapshotXfer::version(x, 1, 1);
+	UpgradeModule::xfer(x);
+}
+
+void DoCommandUpgrade::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1); // lane SUMMON-1
 	UpgradeModule::xfer(x);
 }
 

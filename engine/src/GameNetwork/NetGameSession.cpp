@@ -65,6 +65,7 @@ bool NetGameSession::setUp(LiveGame &game, std::string *error)
 	m_config.crcInterval = m_start.crcInterval;
 	m_config.settings = m_options.network; // lane MP-2
 	m_config.adaptiveRunAhead = m_options.adaptiveRunAhead; // the lobby's run-ahead is the minimum
+	m_config.earlyOrders = m_options.earlyOrders;           // lane NETLAG-2
 	m_config.holdForRejoin = m_start.online;                // lane ONLINE-3: an online drop holds the player for a rejoin (LAN: retail's hand-over)
 	m_config.rejoinWindowMs = m_options.rejoinWindowMs;
 	for (int s = 0; s < MAX_SLOTS; ++s)

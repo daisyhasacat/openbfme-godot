@@ -42,6 +42,7 @@
 class Apt;
 class AptFileSource;
 class WindowManager;
+class GameWindow;
 class Shell;
 class AptGodotHost;
 class AptTextureStore;
@@ -50,6 +51,8 @@ class FontSubstitution;
 struct AptCanvasList;
 class GadgetDrawList;
 struct AptCanvasOp;
+struct AptCanvasSegment;
+struct AptCanvasRedrawPlan;
 
 namespace godot
 {
@@ -303,6 +306,7 @@ public:
 	Dictionary get_create_a_hero_view() const;
 	Array get_create_a_hero_heroes() const;
 	void set_create_a_hero_portrait(const String &image);
+	void takeCreateAHeroPicture(); // lane CAHPIC-1: Create-a-Hero's TAKE PICTURE (the guard's frames, the armed picture saved), from _process
 	void set_create_a_hero_view_texture(const Ref<Texture2D> &texture);
 	// lane CAH-2: retail's Create-a-Hero save folder (GameClient/UserDataFolder.h): the application data folder (OS::get_data_dir: %APPDATA% on Windows,
 	// CSIDL_APPDATA) + the install's gi.dat UserDataLeafName + "Save" (RW 0x644148 / 0x6DD398). { ok, folder, user_data, leaf, error }
@@ -441,12 +445,16 @@ private:
 	RID takeItem(RID parent, int drawIndex); // a pooled (reset) or new canvas item
 	void freeItemPool();
 	void advanceMovies(double deltaMs); // lane CAMP-2: the BinkMovie components' frames
-	// lane PERF-1 r2: whether two canvas lists draw the same (every op field drawCanvas reads); the native components of the drawn list redrawn alone
-	static bool sameCanvas(const AptCanvasList &a, const AptCanvasList &b);
-	void redrawNativePlaceholders();
-	void redrawCallbackPlaceholders();                                  // lane UI-4
+	// lane PERF-1 r2: the native components of one drawn segment (lane HUDREDRAW-1) redrawn alone
+	void redrawNativePlaceholders(size_t segment);
+	void redrawCallbackPlaceholders(size_t segment);                      // lane UI-4
 	void drawRenderCallback(const AptCanvasOp &op, const RID &item);   // lane UI-4
 	void drawCanvas(const AptCanvasList &list);
+	// lane HUDREDRAW-1: the list's segments (AptCanvasSegments) on screen as `plan` says (AptCanvasPlanRedraw: kept, drawn again, drawn anew)
+	void redrawSegments(const std::vector<AptCanvasSegment> &segments, const AptCanvasRedrawPlan &plan);
+	void drawSegment(const AptCanvasList &list, size_t segment, const std::map<std::string, const GameWindow *> &gadgetOfPath);
+	void countLevels(const AptCanvasRedrawPlan &plan); // get_stats "levels"
+	std::map<std::string, const GameWindow *> gadgetPaths() const; // lane MENU-1
 	// lane PERF-1 r2: the gadget layer's commands (false: not in shell mode), whether two lists draw the same, and the drawing
 	bool buildGadgets(GadgetDrawList &commands);
 	static bool sameGadgets(const GadgetDrawList &a, const GadgetDrawList &b);

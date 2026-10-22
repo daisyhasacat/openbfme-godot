@@ -136,7 +136,7 @@ The live report's `unported_modules` (objects alive at the end of the run) of ei
 | 36 | FlammableUpdate | Behavior | 179 | 21 | ported |
 | 37 | TerrainResourceBehavior | Behavior | 175 | 152 | ported |
 | 38 | StatusBitsUpgrade | Behavior | 170 | 159 | ported |
-| 39 | TransitionDamageFX | Behavior | 170 | 150 | missing |
+| 39 | TransitionDamageFX | Behavior | 170 | 150 | ported |
 | 40 | HordeAIUpdate | Behavior | 163 | 84 | ported |
 | 41 | FireSpreadUpdate | Behavior | 150 | 10 | ported |
 | 42 | HordeMemberCollide | Behavior | 147 | 91 | ported |

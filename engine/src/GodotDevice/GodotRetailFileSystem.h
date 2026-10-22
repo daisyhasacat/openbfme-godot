@@ -86,6 +86,13 @@ public:
 	Array installed_maps(const String &root = "user://installed-maps");
 	// Shared metadata for both lobby listing and actual game preparation.
 	void append_installed_maps(std::vector<MapCacheEntry> &maps);
+	// lane MOD-5: the user maps folder of the RotWK mount (UserDataFolder::userMapFolder: the user data folder that the install's gi.dat names, in the
+	// device's application data folder, + "Maps"), which the archive file system reads from disk (ArchiveFileSystem::setLocalFolder). "" when the
+	// mount has none (not mounted, BFME1, or gi.dat unreadable: the mount report's user_map_error says why).
+	String get_user_map_folder() const;
+	// Engine side: the folder a map name's maps are in (MapClassification::mapDirectory): "maps", or with userMap the user maps folder. False +
+	// *error when there is no user maps folder.
+	bool mapsFolder(bool userMap, std::string &out, std::string *error) const;
 
 protected:
 	static void _bind_methods();
@@ -106,6 +113,8 @@ private:
 	std::unique_ptr<GameTextTable> m_libraryText;
 	std::vector<LooseFileFinding> m_loose;
 	std::vector<MountedArchive> m_mountedArchives;
+	std::string m_userMapFolder; // lane MOD-5
+	std::string m_userMapError;
 };
 
 } // namespace godot

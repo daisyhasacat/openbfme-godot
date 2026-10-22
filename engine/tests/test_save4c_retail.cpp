@@ -34,6 +34,7 @@
 #include "GameLogic/AI/AIGuard.h"
 #include "GameLogic/AI/AIHunt.h"
 #include "GameLogic/Module/GiantBirdAIUpdate.h"
+#include "GameLogic/AI/AIStateMachine.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/Module/HeroAbilityModules.h"
 #include "GameLogic/VictoryConditions.h"
@@ -451,13 +452,16 @@ TEST_CASE("save4c retail T5: each block's version window (RW 0xA1F5B9's two mess
 		late.logic().gameState().saveBlocks({ t }, one);
 		const size_t at = payloadOffset(t);
 		REQUIRE(one.size() > at); // tolerance: an index precondition (the version byte must exist before it is read)
-		const unsigned version = t == "obfme:SkirmishAI" ? 2 : 1;
+		// every SAVE-4c block starts with its version: 1, except obfme:SkirmishAI's (2, 2) since lane AI5 (the upgrade builders and the money reserve)
+		const std::uint8_t version = t == "obfme:SkirmishAI" ? 2 : 1;
 		REQUIRE(one[at] == version);
 		std::vector<std::uint8_t> above = one, below = one;
 		above[at] = (std::uint8_t)(version + 1);
-		below[at] = 0;
-		CHECK(loadError(late.logic(), { t }, above) == "block '" + t + "': Don't know how to load version " + std::to_string(version + 1) + " (most recent is " + std::to_string(version) + ")");
-		CHECK(loadError(late.logic(), { t }, below) == "block '" + t + "': Found version 0 but the earliest supported is 1");
+		below[at] = (std::uint8_t)(version - 1);
+		CHECK(loadError(late.logic(), { t }, above) == "block '" + t + "': Don't know how to load version " + std::to_string(version + 1) + " (most recent is " +
+			std::to_string(version) + ")");
+		CHECK(loadError(late.logic(), { t }, below) == "block '" + t + "': Found version " + std::to_string(version - 1) + " but the earliest supported is " +
+			std::to_string(version));
 	}
 	// another moment of the same game: the AI modules are not the same set
 	std::vector<std::uint8_t> ai;
@@ -1657,6 +1661,115 @@ TEST_CASE("save4c review r3: a giant bird saved mid-flight: its module (the flig
 		step(a);
 		step(b);
 		REQUIRE(a.logic().computeStateHash() == b.logic().computeStateHash());
+	}
+}
+
+TEST_CASE("stealthfly1: a giant bird saved on its queued waypoints (follow path state 0x3F6, two points left) loads into the same bird of an identical game, "
+		  "saves the same bytes and both games stay equal for 75 frames; a machine saved before a build added states loads (they keep their constructor's fields)")
+{
+	OPENBFME_REQUIRE_START(s);
+	Game a, b;
+	const NewGameMessage m = fourPlayerMessage(*s, 4126);
+	load(*s, m, a);
+	load(*starttest::peerWorld(), m, b);
+	runTo(a, 50);
+	runTo(b, 50);
+	const ThingTemplate *beast = s->world->things().findTemplate("MordorWitchKingOnFellBeast");
+	REQUIRE(beast != nullptr);
+	ObjectID id = INVALID_ID;
+	for (Game *g : { &a, &b })
+	{
+		GameLogic &l = g->logic();
+		AISkirmishPlayer *mordor = aiOfSide(l, "Mordor");
+		REQUIRE(mordor != nullptr);
+		Object *o = l.newObject(beast, l.players().getNthPlayer(mordor->playerIndex)->getDefaultTeam(), ObjectStatusMaskType{});
+		REQUIRE(o != nullptr);
+		Coord3D pos{ 1500.0f, 800.0f, l.getGroundHeight(1500.0f, 800.0f) };
+		o->setPosition(&pos);
+		REQUIRE((id == INVALID_ID || id == o->getID()));
+		id = o->getID();
+	}
+	auto bird = [&](Game &g) {
+		GiantBirdAIUpdate *ai = dynamic_cast<GiantBirdAIUpdate *>(g.logic().findObjectByID(id)->getAIUpdateInterface());
+		REQUIRE(ai != nullptr);
+		return ai;
+	};
+	step(a);
+	step(b);
+	for (Game *g : { &a, &b })
+	{
+		bird(*g)->aiMoveToPosition(Coord3D{ 1900.0f, 800.0f, 0.0f }, CMD_FROM_PLAYER);
+		bird(*g)->aiFollowPathAppend(Coord3D{ 1900.0f, 1200.0f, 0.0f }, CMD_FROM_PLAYER);
+		bird(*g)->aiFollowPathAppend(Coord3D{ 1500.0f, 1200.0f, 0.0f }, CMD_FROM_PLAYER);
+	}
+	step(a);
+	step(b);
+	XferSave earlier;
+	bird(b)->xferAIState(earlier);
+	for (int i = 0; i < 15; ++i)
+	{
+		step(a);
+		step(b);
+	}
+	REQUIRE(a.logic().computeStateHash() == b.logic().computeStateHash());
+	GiantBirdAIUpdate *ai = bird(a), *bi = bird(b);
+	REQUIRE(ai->currentStateId() == (unsigned)GiantBirdAIUpdate::STATE_FOLLOW_PATH);
+	REQUIRE(ai->stateMachine().goalPath().size() == 3);
+	XferSave saved;
+	ai->xferAIState(saved);
+	{
+		XferLoad xl(earlier.data());
+		bi->xferAIState(xl);
+	}
+	{
+		XferLoad xl(saved.data());
+		bi->xferAIState(xl);
+		CHECK(xl.atEnd());
+	}
+	XferSave again;
+	bi->xferAIState(again);
+	CHECK(again.data() == saved.data());
+	StateHasher ha, hb;
+	ai->crc(ha);
+	bi->crc(hb);
+	CHECK(ha.value() == hb.value());
+	CHECK(a.logic().computeStateHash() == b.logic().computeStateHash());
+	for (int i = 0; i < 75; ++i)
+	{
+		step(a);
+		step(b);
+		REQUIRE(a.logic().computeStateHash() == b.logic().computeStateHash());
+	}
+
+	// SAVES.md section 5, mechanism 1: an older build's machine had fewer states. Saved {5, 7}: loads into {5, 6, 7} (6 keeps its fields), refused by {5, 8}
+	// (no 7) and by {5} (more saved states than it has)
+	auto machine = [&](const std::vector<unsigned> &ids) {
+		auto mm = std::make_unique<AIStateMachine>(*ai, "STEALTHFLY1Machine");
+		for (unsigned i : ids)
+		{
+			mm->defineState(i, std::make_unique<AIWaitState>(*mm), i, i);
+		}
+		return mm;
+	};
+	auto older = machine({ 5, 7 });
+	older->setGoalPosition(Coord3D{ 12.0f, 34.0f, 56.0f });
+	older->setGoalPath({ Coord3D{ 1.0f, 2.0f, 3.0f }, Coord3D{ 4.0f, 5.0f, 6.0f } });
+	XferSave old;
+	older->xfer(old);
+	{
+		auto newer = machine({ 5, 6, 7 });
+		XferLoad xl(old.data());
+		newer->xfer(xl);
+		CHECK(xl.atEnd());
+		CHECK(newer->goalPosition().y == 34.0f);
+		CHECK(newer->goalPath().size() == 2);
+	}
+	const std::vector<std::vector<unsigned>> refusing = { { 5, 8 }, { 5 } };
+	for (const std::vector<unsigned> &ids : refusing)
+	{
+		auto other = machine(ids);
+		XferLoad xl(old.data());
+		CHECK_THROWS_AS(other->xfer(xl), XferException);
 	}
 }
 

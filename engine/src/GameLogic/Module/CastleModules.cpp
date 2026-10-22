@@ -1401,7 +1401,7 @@ void CastleMemberBehavior::onDamage(const DamageInfo &info)
 	}
 }
 
-void CastleMemberBehavior::onBodyDamageStateChange(BodyDamageType, BodyDamageType newState)
+void CastleMemberBehavior::onBodyDamageStateChange(const DamageInfo *, BodyDamageType, BodyDamageType newState)
 {
 	Object *obj = getObject();
 	if (newState == BODY_RUBBLE)

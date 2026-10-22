@@ -21,7 +21,7 @@
 //   * IDLE_ALL_UNITS RW 0x7BC631: the players of the parameter (an empty mask: every player whose + 0x5C is 0, a human) -> RW 0x6AFBBC(1): every member
 //     of the player's teams that is not a STRUCTURE and has an AI moves to its own position (aiMoveToPosition(pos, CMD_FROM_SCRIPT), RW 0x66C4CA).
 //   * NAMED_STOP_FLUSH RW 0x7C9CA2: an AI object: RW 0x756C87(3, id), RW 0x68DF11(1), aiIdle(CMD_FROM_SCRIPT).
-//   * NAMED_ATTACK_NAMED RW 0x7C8D86: aiAttackObject(victim, 0x7FFFFFFF shots, CMD_FROM_SCRIPT) (RW 0x66C536; a horde member: RW 0x77131B).
+//   * NAMED_ATTACK_NAMED RW 0x7C8D86: aiAttackObject(victim, 0x7FFFFFFF shots, CMD_FROM_SCRIPT) (RW 0x66C536; a GiantBirdAIUpdate, AI vslot 0x168: command 0x39 RW 0x77131B).
 //     TEAM_ATTACK_NAMED RW 0x7C4613: an AI group of the team (RW 0x70042A / 0x7A3D3D) attacks the object (RW 0x77208A).
 //   * ATTACK_MOVE_NAMED_UNIT_TO RW 0x7C858F / ATTACK_MOVE_TEAM_TO RW 0x7BF594: the waypoint by name (TheTerrainLogic vslot 0x88); the attack move.
 //   * NAMED_FOLLOW_WAYPOINTS RW 0x7C9196 / _EXACT RW 0x7C928D / NAMED_ATTACK_FOLLOW_WAYPOINTS RW 0x7C920F: the waypoint of the path label closest to
@@ -59,6 +59,8 @@
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/DozerAIUpdate.h"
+#include "GameLogic/Module/GiantBirdAIUpdate.h"
+#include "GameLogic/AI/AIGarrisonStates.h"
 #include "GameLogic/Module/EmotionModules.h"
 #include "GameLogic/Module/HeroAbilityModules.h"
 #include "GameClient/ControlBarCommands.h"
@@ -216,8 +218,9 @@ std::vector<Object *> aiGroupOf(Team &t)
 // lane SCRIPT-3: RW 0x77208A AIGroup::groupAttackObject(force, victim, shots, source): the group's members but DISABLED_HELD ones (+ 0x1C8 bit 3), by
 // the squared 2D distance to the victim (the list RW 0x95204E sorted ascending, RW 0x952EE1(1): MSVC's std::sort, an insertion sort, stable, up to 32
 // members; INFERENCE beyond), each: the passengers of a contain that lets them fire (contain vslot 0xB4, RW 0x772157) attack too (not ported: S-1186);
-// then a member with an AI that is not the victim attacks it: a GiantBirdAIUpdate (AI vslot 0x168, RW 0x68BA5C) through command 0x39 (not ported:
-// S-1186), else force ? RW 0x771380 : aiAttackObject (RW 0x66C536)
+// then a member with an AI that is not the victim attacks it: a GiantBirdAIUpdate (AI vslot 0x168, RW 0x68BA5C) through command 0x39 (RW 0x7721EF ..
+// 0x772212: only when ActionManager::getCanAttackObject RW 0x82CFD4(member, victim, source, 0) says POSSIBLE or POSSIBLE_AFTER_MOVING, then RW 0x77131B;
+// lane STEALTHFLY1), else force ? RW 0x771380 : aiAttackObject (RW 0x66C536)
 void groupAttackObject(ScriptEngine &engine, Team &team, Object &victim, bool force, CommandSourceType source)
 {
 	std::vector<std::pair<Object *, float>> order;
@@ -247,9 +250,12 @@ void groupAttackObject(ScriptEngine &engine, Team &team, Object &victim, bool fo
 		{
 			continue;
 		}
-		if (isKindOfName(*o, "GIANT_BIRD"))
+		if (GiantBirdAIUpdate *bird = dynamic_cast<GiantBirdAIUpdate *>(ai))
 		{
-			engine.note("[S-1186] TEAM_ATTACK_NAMED: a GiantBirdAIUpdate member's attack (command 0x39) is not ported");
+			if (GarrisonRules::canAttackAsNewTarget(*o, victim, source))
+			{
+				bird->aiSwoopAttackObject(&victim, source);
+			}
 			continue;
 		}
 		if (force)
@@ -559,7 +565,11 @@ bool ScriptActions::executeUnitAction(ScriptEngine &engine, const ScriptActionRe
 		}
 		for (Object *o : unitOrTeam(engine, param(a, 0).stringValue, false))
 		{
-			if (AIUpdateInterface *ai = o->getAIUpdateInterface())
+			if (GiantBirdAIUpdate *bird = dynamic_cast<GiantBirdAIUpdate *>(o->getAIUpdateInterface()))
+			{
+				bird->aiSwoopAttackObject(victim, CMD_FROM_SCRIPT); // RW 0x7C8DC6 .. 0x7C8DD5 (lane STEALTHFLY1): AI vslot 0x168 -> RW 0x77131B(victim, 1)
+			}
+			else if (AIUpdateInterface *ai = o->getAIUpdateInterface())
 			{
 				ai->aiAttackObject(victim, CMD_FROM_SCRIPT);
 			}

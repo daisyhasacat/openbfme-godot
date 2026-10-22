@@ -18,6 +18,7 @@
 #include "GameClient/GUI/AptColorPicker.h"
 #include "GameClient/GUI/AptGadgetLayer.h"
 #include "GameClient/GUI/GameTextSource.h"
+#include "GameClient/GameTextTableSource.h"
 #include "GameNetwork/LANAPI.h"
 #include "GameClient/GUI/CreateAHero/AptMyHero.h"
 #include "GameLogic/CreateAHeroSystem.h"
@@ -1118,8 +1119,11 @@ TEST_CASE("menuwork1 cah retail shell: the hero list's headers sort it (RW 0x9C4
 	CHECK(scr->selectedHero() == scr->rowEntries()[(size_t)selected]);
 	CHECK(c.fx->wm->noteCount("command-unhandled") == 0);
 	// the controls with nothing behind them say so
+	// lane CAHPIC-1: Take Picture is ported (the cahpic1 cases below); a press before the guard clip was drawn twice arms nothing (RW 0x919D8F)
+	const std::string beforePicture = scr->lastMessage();
 	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::OnTakePicture", ""));
-	CHECK(scr->lastMessage() == "OpenBFME: Taking a hero portrait is not available yet: the hero keeps its model's portrait.");
+	CHECK_FALSE(scr->takePicturePending());
+	CHECK(scr->lastMessage() == beforePicture);
 	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::Manager::OnPlayGame", ""));
 	CHECK(scr->lastMessage() == "OpenBFME: Trying a hero on a test map is not available yet: play a skirmish with the hero instead.");
 	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::Manager::OnSelectAward", "1"));
@@ -1206,6 +1210,8 @@ TEST_CASE("cah statistics retail: local hero kills persist once and client profi
 		auto *victim = game.createObject("GondorFighter", local->getPlayerIndex(), { 1050.0f, 1000.0f, 0.0f }, 0.0f, &error);
 		REQUIRE(killer);
 		REQUIRE(victim);
+		const auto blocked = std::filesystem::u8path(dir.path) / (hero.uniqueID + ".tmp");
+		if (record) std::filesystem::create_directory(blocked); // fail writes even as an administrator
 		// RW 0x69560B records before the relationship gate, even for this allied victim.
 		killer->scoreTheKill(*victim);
 		killer->scoreTheKill(*victim);
@@ -1216,8 +1222,17 @@ TEST_CASE("cah statistics retail: local hero kills persist once and client profi
 		{
 			CreateAHeroStats stats;
 			REQUIRE_MESSAGE(stats.load(dir.path, hero.uniqueID, &error), error);
+			CHECK(stats.get("ENEMIES_KILLED") == 0);
+			CHECK_FALSE(game.report().errors.empty());
+			const auto errorCount = game.report().errors.size();
+			game.advance(0.0);
+			CHECK(game.report().errors.size() == errorCount);
+			std::filesystem::remove(blocked);
+			game.advance(0.0); // no new events: retry the dirty counters
+			REQUIRE_MESSAGE(stats.load(dir.path, hero.uniqueID, &error), error);
 			CHECK(stats.get("ENEMIES_KILLED") == 1);
 			CHECK(stats.get("MEN_OF_THE_WEST_INFANTRY_KILLED") == 1);
+			std::filesystem::create_directory(blocked);
 			game.logic().victory().selfDestruct(local, false);
 			// Wait for the published defeat, with a watchdog rather than assuming
 			// the delayed self-destruct/presentation completes at a guessed frame.
@@ -1225,9 +1240,15 @@ TEST_CASE("cah statistics retail: local hero kills persist once and client profi
 			{
 				game.advance(0.2);
 				REQUIRE_MESSAGE(stats.load(dir.path, hero.uniqueID, &error), error);
-				if (game.logic().victory().localAlliedDefeat() && stats.get(s->world->createAHeroSystem().statNames[4]) == 1) break;
+				if (game.logic().victory().localAlliedDefeat()) break;
 			}
 			CHECK(game.logic().victory().localAlliedDefeat());
+			for (int frame = 0; frame < 5; ++frame) game.advance(0.2);
+			REQUIRE_MESSAGE(stats.load(dir.path, hero.uniqueID, &error), error);
+			CHECK(stats.get(s->world->createAHeroSystem().statNames[4]) == 0);
+			std::filesystem::remove(blocked);
+			game.advance(0.0);
+			REQUIRE_MESSAGE(stats.load(dir.path, hero.uniqueID, &error), error);
 			CHECK(stats.get(s->world->createAHeroSystem().statNames[4]) == 1);
 			for (int frame = 0; frame < 5; ++frame) game.advance(0.2);
 			REQUIRE_MESSAGE(stats.load(dir.path, hero.uniqueID, &error), error);
@@ -1359,4 +1380,151 @@ TEST_CASE("cah attributes: duplicate tick initializers position all thirty-two s
 			CHECK(segment->matrix.ty == -242.0f);
 		}
 	}
+}
+
+TEST_CASE("cah statistics retail: award tab binds each medal image after child initialization and survives reopening")
+{
+	OPENBFME_REQUIRE_START(s);
+	CahShellFx c(s, true);
+	auto *screen = c.screen();
+	REQUIRE(screen);
+	auto &apt = c.fx->wm->apt();
+	auto *root = apt.level(screen->level());
+	const std::string tabs = "Main.mcManagerScreen.Screen.TabNav";
+	const std::string grid = tabs + ".ScreenAwards.AwardList.mcAwards";
+	for (int visit = 0; visit < 2; ++visit)
+	{
+		auto *button = starttest::firstButtonIn(apt.resolvePath(root, tabs + ".Tab_Nav_Button.UnselectedTabButtons.Awards"));
+		REQUIRE(button);
+		starttest::clickButton(*c.fx, *button);
+		c.fx->tick(40);
+		const auto &hero = screen->myHero()->hero();
+		const auto *sub = c.ctx.system->subClass(hero.classIndex, hero.subClassIndex);
+		REQUIRE(sub);
+		for (size_t i = 0; i < sub->awards.size(); ++i)
+		{
+			auto *image = apt.resolvePath(root, grid + "." + std::to_string(i) + ".Image");
+			REQUIRE(image);
+			AptValue binding;
+			REQUIRE(image->getOwn("_imageMap", binding));
+			CHECK(binding.toString() == "CahAward:Image_" + std::to_string(i));
+			AptValue mode;
+			REQUIRE(image->getOwn("_mode", mode));
+			CHECK(mode.toString() == "GRAYSCALE");
+			const auto *record = c.fx->wm->aptImage(binding.toString());
+			REQUIRE(record);
+			CHECK(*record == c.ctx.system->awardSystem.award(sub->awards[i])->image);
+			auto *name = apt.resolvePath(root, grid + "." + std::to_string(i) + ".AwardName");
+			REQUIRE(name);
+			AptValue text;
+			REQUIRE(name->getMember("text", text));
+			CHECK(text.toString() == "$CahAward:Name_" + std::to_string(i));
+		}
+		auto *appearance = starttest::firstButtonIn(apt.resolvePath(root, tabs + ".Tab_Nav_Button.UnselectedTabButtons.Appearance"));
+		REQUIRE(appearance);
+		starttest::clickButton(*c.fx, *appearance);
+		c.fx->tick(40);
+	}
+	const auto &hero = screen->myHero()->hero();
+	const auto *sub = c.ctx.system->subClass(hero.classIndex, hero.subClassIndex);
+	REQUIRE(sub);
+	const auto *award = c.ctx.system->awardSystem.award(sub->awards.front());
+	REQUIRE(award);
+	CreateAHeroStats stats;
+	for (const auto &trigger : award->triggers)
+	{
+		REQUIRE_FALSE(trigger.stats.empty());
+		stats.add(trigger.stats.front(), trigger.threshold);
+	}
+	std::string error;
+	REQUIRE(stats.save(c.dir.path, hero.uniqueID, &error));
+	screen->selectHero(screen->selectedHero());
+	auto *button = starttest::firstButtonIn(apt.resolvePath(root, tabs + ".Tab_Nav_Button.UnselectedTabButtons.Awards"));
+	REQUIRE(button);
+	starttest::clickButton(*c.fx, *button);
+	c.fx->tick(40);
+	auto *earned = apt.resolvePath(root, grid + ".0.Image");
+	REQUIRE(earned);
+	AptValue mode;
+	REQUIRE(earned->getOwn("_mode", mode));
+	CHECK(mode.toString() == "ALPHA");
+}
+
+TEST_CASE("cahpic1 picture name: the hero's name, the short date and the time with seconds, the characters a file name cannot take made '-' (RW 0x91A20A)")
+{
+	// GetDateFormatW(DATE_SHORTDATE) / GetTimeFormatW(0) in US English: "10/21/2026", "3:04:05 PM"; '/' and ':' are refused by flag 8 (RW 0x75E4DF)
+	AptCreateAHero::PictureTime t;
+	t.year = 2026;
+	t.month = 10;
+	t.day = 21;
+	t.hour = 15;
+	t.minute = 4;
+	t.second = 5;
+	CHECK(AptCreateAHero::pictureFileName(u"Fhaleen", t) == u"Fhaleen 10-21-2026 3-04-05 PM");
+	t.hour = 0; // midnight is 12 AM
+	t.minute = 0;
+	t.second = 9;
+	CHECK(AptCreateAHero::pictureFileName(u"Fhaleen", t) == u"Fhaleen 10-21-2026 12-00-09 AM");
+	t.hour = 12; // noon is 12 PM
+	CHECK(AptCreateAHero::pictureFileName(u"A*B?C\\D|E<F>G\"H", t) == u"A-B-C-D-E-F-G-H 10-21-2026 12-00-09 PM");
+	CHECK(AptCreateAHero::pictureFileName(u"", t) == u" 10-21-2026 12-00-09 PM"); // an unnamed hero: retail's empty name and its space
+}
+
+TEST_CASE("cahpic1 retail shell: TAKE PICTURE arms after two guard draws, names the picture for the hero and shows RotWK's OK box")
+{
+	OPENBFME_REQUIRE_START(s);
+	CahShellFx c(s, true);
+	AptCreateAHero *scr = c.screen();
+	REQUIRE(scr);
+	REQUIRE(scr->myHero());
+	const std::u16string hero = scr->myHero()->hero().name;
+	// the two box texts from the 2.01 string file (the fixture's text source holds test labels only)
+	{
+		std::vector<std::uint8_t> str;
+		std::string error;
+		REQUIRE_MESSAGE(s->mount->fs->readFile("data/lotr.str", str, &error), error);
+		GameTextTableSource retail;
+		REQUIRE_MESSAGE(retail.table.parse(str, &error), error);
+		for (const char *label : { "GUI:OnPictureTakenTitle", "GUI:OnPictureTaken" })
+		{
+			std::u16string value;
+			REQUIRE(retail.fetch(label, value));
+			c.fx->text.labels[label] = value;
+		}
+	}
+	// the movie's PrepareToTakePicture zeroes the guard count (RW 0x919D85); OnTakePicture arms only from the second guard draw (RW 0x919D8F)
+	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::PrepareToTakePicture", ""));
+	CHECK(scr->pictureFrames() == 0);
+	scr->pictureGuardDrawn();
+	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::OnTakePicture", ""));
+	CHECK_FALSE(scr->takePicturePending());
+	scr->pictureGuardDrawn();
+	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::OnTakePicture", ""));
+	CHECK(scr->takePicturePending());
+	// the 3D view's next draw: the flag goes, the file is named for the hero (RW 0x91A46A / 0x91A47C)
+	AptCreateAHero::PictureTime t;
+	t.year = 2026;
+	t.month = 10;
+	t.day = 21;
+	t.hour = 9;
+	t.minute = 30;
+	t.second = 0;
+	const std::u16string name = scr->beginPicture(t);
+	CHECK_FALSE(scr->takePicturePending());
+	CHECK(name == AptCreateAHero::pictureFileName(hero, t));
+	// the movie's loop asks again before the device has saved: no second picture (RotWK answers within the same draw)
+	REQUIRE(c.fx->wm->invokeCallback("AptCreateAHero::OnTakePicture", ""));
+	CHECK_FALSE(scr->takePicturePending());
+	// saved: the OK box GUI:OnPictureTakenTitle ("Picture saved for %s") / GUI:OnPictureTaken ("Picture was saved as:\n%s.") with the folder + name
+	const std::u16string shown = u"/pictures/The Lord of the Rings, The Rise of the Witch-king Screenshots/" + name;
+	scr->pictureTaken(shown, std::string());
+	c.fx->tick(5);
+	REQUIRE(scr->messageBox());
+	CHECK(scr->lastMessage() == "GUI:OnPictureTakenTitle: GUI:OnPictureTaken");
+	CHECK(scr->messageBox()->title() == u"Picture saved for " + hero);
+	CHECK(scr->messageBox()->text() == u"Picture was saved as:\n" + shown + u".");
+	CHECK(c.fx->wm->noteCount("command-unhandled") == 0);
+	// a picture the device could not save is said plainly, and the movie still reopens its panels
+	scr->pictureTaken(u"", "the folder cannot be written");
+	CHECK(scr->lastMessage() == "OpenBFME: The picture could not be saved: the folder cannot be written");
 }

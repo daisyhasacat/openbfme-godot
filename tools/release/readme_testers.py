@@ -186,7 +186,13 @@ def title_of(version: str, platform_name: str) -> str:
     """the first line: "OpenBFME Alpha 0.4.5 for Linux" for a plain release (lane VERSION-1: the owner's plain numbers, 2026-10-14),
     "OpenBFME <version> - alpha build for Linux" for anything else (an alpha build, a preview, a development package)"""
     m = re.fullmatch(r"v((?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8}))", version)
-    return f"OpenBFME Alpha {m.group(1)} for {platform_name}" if m else f"OpenBFME {version} - alpha build for {platform_name}"
+    if m:
+        return f"OpenBFME Alpha {m.group(1)} for {platform_name}"
+    # lane NIGHTLY-1: "OpenBFME Nightly 0.4.12 (2026-10-22) for Linux"
+    n = re.fullmatch(r"v((?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8}))-nightly\.(20\d\d)(\d\d)(\d\d)", version)
+    if n:
+        return f"OpenBFME Nightly {n.group(1)} ({n.group(2)}-{n.group(3)}-{n.group(4)}) for {platform_name}"
+    return f"OpenBFME {version} - alpha build for {platform_name}"
 
 
 def render(version: str, platform: str, issues: list[str], game_only: bool = False) -> str:

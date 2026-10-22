@@ -89,6 +89,8 @@
 #include <godot_cpp/classes/random_number_generator.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/display_server.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/font.hpp>
 #include <godot_cpp/classes/font_variation.hpp>
@@ -105,6 +107,7 @@
 #include <godot_cpp/classes/theme_db.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/viewport.hpp>
+#include <godot_cpp/classes/viewport_texture.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/packed_color_array.hpp>
@@ -747,6 +750,10 @@ struct ShellMode
 // ---------------------------------------------------------------------------------------------------------------------------------
 struct AptMenuPlayer::Impl
 {
+	bool cahGuardShown = false;   ///< lane CAHPIC-1: the last picture showed Create-a-Hero's RenderPictureGuard clip
+	bool cahMapShown = false;     ///< lane CAHPIC-1: ... and its DrawMapComponent clip (the 3D view)
+	bool cahPicturePending = false; ///< lane CAHPIC-1: a picture is taken from the next frame drawn
+	std::u16string cahPictureName;  ///< lane CAHPIC-1: its file name (no extension)
 	Ref<RetailFileSystem> fs;
 	Ref<RetailFileSystem> presentationFs;
 	AptView3DViewers view3d; // lane UI-2: the View3D render objects (the end screen's rings, the menu frame)
@@ -813,12 +820,31 @@ struct AptMenuPlayer::Impl
 	std::set<std::string> movieErrors;
 	struct NativeSlot
 	{
-		size_t op;   ///< index in drawnList.ops
-		size_t item; ///< index in items
+		size_t op;   ///< index in the segment's ops (drawnList.ops[segment.opBegin + op])
+		size_t item; ///< index in the segment's items
 		RID parent;
 	};
-	std::vector<NativeSlot> nativeSlots;
-	std::vector<NativeSlot> callbackSlots; // lane UI-4: the clips an engine render callback draws (WindowManager::renderCallback)
+	// lane HUDREDRAW-1: the drawn list's segments (AptCanvasSegments: an op, or a mask bracket), each under a canvas item of its own (a child of the player's
+	// item after the backdrop, in list order): a frame whose list changed in some segments draws those again and keeps the others' items
+	struct Segment
+	{
+		int firstLevel = 0, lastLevel = 0;
+		size_t opBegin = 0, opEnd = 0; ///< the range in drawnList.ops
+		RID parent;                    ///< a child of the player's item (draw index 1 + its place: the backdrop is 0)
+		std::vector<RID> items;        ///< the items drawn under parent, in creation order (their draw index)
+		std::vector<NativeSlot> nativeSlots;
+		std::vector<NativeSlot> callbackSlots; // lane UI-4: the clips an engine render callback draws (WindowManager::renderCallback)
+	};
+	std::vector<Segment> segments;
+	struct LevelCounts
+	{
+		std::string movie;
+		std::uint64_t redrawnFrames = 0, keptFrames = 0; ///< rebuilds that drew some of the level's segments again / kept all of them
+		std::uint64_t segmentsRedrawn = 0;               ///< its segments drawn again, summed over the rebuilds
+		std::uint64_t segments = 0;                      ///< in the last rebuild
+	};
+	std::map<int, LevelCounts> levelCounts; // by the segment's first level
+	std::uint64_t partialFrames = 0;        // rebuilds that drew some segments again and kept the others
 	// lane MENU-1: the canvas item at each gadget component's placeholder depth (drawCanvas): drawGadgets puts the window's commands under it, so the
 	// movie's later content (a popup box) covers the gadget as in retail, which draws the window inside the movie's render (RW 0x814BEC -> 0x6C1B52)
 	std::map<const GameWindow *, RID> gadgetAnchors;
@@ -1409,6 +1435,89 @@ void AptMenuPlayer::_process(double delta)
 	render(false);
 	m->view3d.advance(); // lane UI-2
 	advanceMovies(delta * 1000.0); // lane CAMP-2
+	takeCreateAHeroPicture(); // lane CAHPIC-1
+}
+
+void AptMenuPlayer::takeCreateAHeroPicture()
+{
+	// lane CAHPIC-1: Create-a-Hero's TAKE PICTURE (AptCreateAHero.h). RotWK draws the 3D view, then (OnTakePicture having armed it) saves the window's
+	// picture (TheDisplay->takeScreenShot, RW 0x4474A0: a 24-bit .bmp named for the hero in the pictures folder, RW 0x6427E6: My Pictures + the game text
+	// APPDATA:PictureFolder). Here the picture is the window's frame the armed draw produced, read on the next frame (the viewport's texture is the frame
+	// last drawn), saved as PNG (the presentation format the F12 screenshot already uses, GodotInGameHud) in the system's pictures folder + the same
+	// subfolder; the box names the folder + the file name without its extension, as retail's does
+	AptCreateAHero *cah = m->shell && m->shell->shell ? dynamic_cast<AptCreateAHero *>(m->shell->shell->findScreenByFilename("CreateAHero.apt")) : nullptr;
+	if (!cah)
+	{
+		m->cahPicturePending = false;
+		return;
+	}
+	if (m->cahPicturePending)
+	{
+		m->cahPicturePending = false;
+		std::string error;
+		String shown;
+		const String base = OS::get_singleton()->get_system_dir(OS::SYSTEM_DIR_PICTURES);
+		const bool headless = DisplayServer::get_singleton() && DisplayServer::get_singleton()->get_name() == String("headless");
+		Viewport *vp = get_viewport();
+		Ref<Image> image = (!headless && vp && vp->get_texture().is_valid()) ? vp->get_texture()->get_image() : Ref<Image>();
+		std::u16string sub;
+		if (!m->shell->environment.gameText || !m->shell->environment.gameText->fetch("APPDATA:PictureFolder", sub))
+		{
+			error = "the game text APPDATA:PictureFolder is missing";
+		}
+		else if (base.is_empty())
+		{
+			error = "the system has no pictures folder";
+		}
+		else if (image.is_null())
+		{
+			error = "no picture was drawn (a run without a window)";
+		}
+		else
+		{
+			const String folder = base.path_join(toGodot(loadScreenU16ToUtf8(sub)));
+			const String name = toGodot(loadScreenU16ToUtf8(m->cahPictureName));
+			if (DirAccess::make_dir_recursive_absolute(folder) != OK && !DirAccess::dir_exists_absolute(folder))
+			{
+				error = "the folder " + toNative(folder) + " cannot be made";
+			}
+			else
+			{
+				const String file = folder.path_join(name + String(".png"));
+				const Error err = image->save_png(file);
+				if (err != OK)
+				{
+					error = "saving " + toNative(file) + " failed (" + toNative(UtilityFunctions::error_string(err)) + ")";
+				}
+				else
+				{
+					shown = folder.path_join(name);
+					UtilityFunctions::print("CAH picture saved: ", file);
+				}
+			}
+		}
+		const Char16String wide = shown.utf16();
+		cah->pictureTaken(std::u16string(wide.get_data(), (size_t)wide.length()), error);
+		m->dirty = true;
+		return;
+	}
+	if (m->cahGuardShown)
+	{
+		cah->pictureGuardDrawn(); // RW 0x919DA2: one per frame the guard clip is drawn
+	}
+	if (cah->takePicturePending() && m->cahMapShown)
+	{
+		const Dictionary now = Time::get_singleton()->get_datetime_dict_from_system(false); // GetLocalTime
+		AptCreateAHero::PictureTime t;
+		t.year = (int)now["year"];
+		t.month = (int)now["month"];
+		t.day = (int)now["day"];
+		t.hour = (int)now["hour"];
+		t.minute = (int)now["minute"];
+		t.second = (int)now["second"];
+		m->cahPictureName = cah->beginPicture(t);
+		m->cahPicturePending = true;
+	}
 }
 
 void AptMenuPlayer::advanceMovies(double deltaMs)
@@ -3663,14 +3772,21 @@ void AptMenuPlayer::clearCanvas()
 		return;
 	}
 	// children first: a freed parent does not free its children
+	for (const Impl::Segment &g : m->segments)
+	{
+		for (size_t i = g.items.size(); i-- > 0;)
+		{
+			rs->free_rid(g.items[i]);
+		}
+		rs->free_rid(g.parent);
+	}
+	m->segments.clear();
 	for (size_t i = m->items.size(); i-- > 0;)
 	{
 		rs->free_rid(m->items[i]);
 	}
 	m->items.clear();
 	m->drawnValid = false;
-	m->nativeSlots.clear();
-	m->callbackSlots.clear();
 	m->gadgetAnchors.clear(); // lane MENU-1
 	m->drawnBackdrop.clear(); // lane CAMP-2
 
@@ -3682,11 +3798,15 @@ void AptMenuPlayer::clearCanvas()
 // and the native hooks set: the mask's canvas group, clip, custom rect, material, back-buffer copy) and gives it its new parent and index
 void AptMenuPlayer::recycleCanvas()
 {
+	for (const Impl::Segment &g : m->segments)
+	{
+		m->itemPool.insert(m->itemPool.end(), g.items.begin(), g.items.end());
+		m->itemPool.push_back(g.parent);
+	}
+	m->segments.clear();
 	m->itemPool.insert(m->itemPool.end(), m->items.begin(), m->items.end());
 	m->items.clear();
 	m->drawnValid = false;
-	m->nativeSlots.clear();
-	m->callbackSlots.clear();
 	m->drawnBackdrop.clear(); // lane CAMP-2
 }
 
@@ -3774,8 +3894,17 @@ void AptMenuPlayer::render(bool force)
 	m->levelCommands.clear();
 	m->backgroundPaths.clear();
 	const int backgroundLevel = m->shell && m->shell->wm ? m->shell->wm->backgroundLevel() : -1;
+	// lane CAHPIC-1: Create-a-Hero's render callbacks in this picture: the guard clip (RW 0x919DA2 counts its draws) and the 3D view (RW 0x91A3A9 saves the
+	// picture after drawing it); _process counts a frame for each frame the picture shows them (the canvas is rebuilt only when it changes)
+	m->cahGuardShown = false;
+	m->cahMapShown = false;
 	for (const AptRenderCommand &c : rl.commands)
 	{
+		if (c.kind == AptRenderCommand::Kind::Placeholder && c.nativeTag && c.color.mul[3] > 0.0f)
+		{
+			m->cahGuardShown = m->cahGuardShown || c.symbolName == "CreateAHero::RenderPictureGuard";
+			m->cahMapShown = m->cahMapShown || c.symbolName == "CreateAHero::DrawMapComponent";
+		}
 		if ((c.kind == AptRenderCommand::Kind::Shape || c.kind == AptRenderCommand::Kind::Text || c.kind == AptRenderCommand::Kind::Placeholder)
 			&& c.color.mul[3] > 0.0f)
 		{
@@ -3807,13 +3936,44 @@ void AptMenuPlayer::render(bool force)
 	{
 		appendTextBadges(rl, m->shell->wm->textBadges(), m->gadgets); // lane PLATFORMICON-1: the icons beside the movie rows' names
 	}
-	if (!m->stillLoadOn && m->drawnValid && sameCanvas(m->list, m->drawnList) && (!haveGadgets || sameGadgets(m->gadgets, m->drawnGadgets)))
+	// lane HUDREDRAW-1: the list's segments against the ones on screen (AptCanvasPlanRedraw): with the same gadgets on screen, the segments whose ops changed
+	// are drawn again, the others keep their items
+	const std::vector<AptCanvasSegment> segments = AptCanvasSegments(m->list);
+	AptCanvasRedrawPlan plan;
+	bool sameShape = !m->stillLoadOn && m->drawnValid && (!haveGadgets || sameGadgets(m->gadgets, m->drawnGadgets));
+	if (sameShape)
+	{
+		std::vector<AptCanvasSegment> drawn;
+		drawn.reserve(m->segments.size());
+		for (const Impl::Segment &g : m->segments)
+		{
+			drawn.push_back(AptCanvasSegment{ g.firstLevel, g.lastLevel, g.opBegin, g.opEnd });
+		}
+		plan = AptCanvasPlanRedraw(m->list, segments, m->drawnList, drawn);
+		sameShape = !plan.full;
+	}
+	const bool unchanged = sameShape && segments.size() == m->segments.size() &&
+		std::all_of(plan.same.begin(), plan.same.end(), [](bool same) { return same; });
+	if (unchanged)
 	{
 		// lane PERF-1 r2: the HUD's canvas list (and in shell mode its gadget list) is the same as the one on screen in most render frames; its items
 		// stay, only the native components are drawn again, each into a new item at its place (what a full redraw does for them)
-		redrawNativePlaceholders();
-		redrawCallbackPlaceholders(); // lane UI-4
+		for (size_t i = 0; i < m->segments.size(); ++i)
+		{
+			redrawNativePlaceholders(i);
+			redrawCallbackPlaceholders(i); // lane UI-4
+		}
+		countLevels(plan);
 		m->unchangedFrames += 1;
+	}
+	else if (sameShape && (!haveGadgets || m->gadgets.commands.empty()))
+	{
+		// lane HUDREDRAW-1: some segments changed (a movie looping a state: the spell store's buyable powers, the Palantir's powers button). A gadget window is
+		// drawn under its placeholder's item (drawGadgets): with gadgets on screen a redrawn segment could take their anchor away, so that case draws
+		// everything again (below)
+		redrawSegments(segments, plan);
+		countLevels(plan);
+		m->partialFrames += 1;
 	}
 	else
 	{
@@ -3824,6 +3984,10 @@ void AptMenuPlayer::render(bool force)
 		m->drawnList = m->list;
 		m->drawnGadgets = m->gadgets;
 		m->drawnValid = true;
+		AptCanvasRedrawPlan all;
+		all.old.assign(m->segments.size(), -1);
+		all.same.assign(m->segments.size(), false);
+		countLevels(all);
 	}
 	std::uint64_t t3 = time->get_ticks_usec();
 	m->peakListUs = std::max(m->peakListUs, t1 - t0);
@@ -3838,34 +4002,6 @@ void AptMenuPlayer::render(bool force)
 	m->submitUs += t3 - t2;
 	m->rebuilds += 1;
 	m->noteList();
-}
-
-bool AptMenuPlayer::sameCanvas(const AptCanvasList &a, const AptCanvasList &b)
-{
-	// every field drawCanvas reads, compared bit for bit (floats too: the same bits draw the same)
-	auto sameFloats = [](const float *x, const float *y, size_t n) { return n == 0 || std::memcmp(x, y, n * sizeof(float)) == 0; };
-	auto sameVec = [&](const std::vector<float> &x, const std::vector<float> &y) { return x.size() == y.size() && sameFloats(x.data(), y.data(), x.size()); };
-	if (a.ops.size() != b.ops.size())
-	{
-		return false;
-	}
-	for (size_t i = 0; i < a.ops.size(); ++i)
-	{
-		const AptCanvasOp &x = a.ops[i], &y = b.ops[i];
-		const float mx[6] = { x.matrix.a, x.matrix.b, x.matrix.c, x.matrix.d, x.matrix.tx, x.matrix.ty };
-		const float my[6] = { y.matrix.a, y.matrix.b, y.matrix.c, y.matrix.d, y.matrix.tx, y.matrix.ty };
-		const float tx[6] = { x.fontHeight, x.drawSize, x.scaleX, x.scaleY, x.offsetX, x.offsetY };
-		const float ty[6] = { y.fontHeight, y.drawSize, y.scaleX, y.scaleY, y.offsetX, y.offsetY };
-		if (x.kind != y.kind || x.maskShape != y.maskShape || x.bold != y.bold || x.alignment != y.alignment || x.wordWrap != y.wordWrap || x.multiline != y.multiline ||
-			x.readOnly != y.readOnly || x.dropShadow != y.dropShadow || x.nativeTag != y.nativeTag || !sameFloats(x.shadowColor, y.shadowColor, 4) || !sameFloats(x.textColor, y.textColor, 4) ||
-			!sameFloats(x.bounds, y.bounds, 4) || !sameFloats(mx, my, 6) || !sameFloats(tx, ty, 6) || !sameVec(x.positions, y.positions) || !sameVec(x.colors, y.colors) ||
-			!sameVec(x.uvs, y.uvs) || x.texture != y.texture || x.text != y.text || x.fontName != y.fontName || x.drawFont != y.drawFont || x.path != y.path ||
-			x.symbolMovie != y.symbolMovie || x.symbolName != y.symbolName || x.renderObject != y.renderObject || x.nativeVars != y.nativeVars)
-		{
-			return false;
-		}
-	}
-	return true;
 }
 
 void AptMenuPlayer::drawRenderCallback(const AptCanvasOp &op, const RID &item)
@@ -3920,37 +4056,169 @@ void AptMenuPlayer::drawRenderCallback(const AptCanvasOp &op, const RID &item)
 	}
 }
 
-void AptMenuPlayer::redrawCallbackPlaceholders()
+void AptMenuPlayer::redrawCallbackPlaceholders(size_t segment)
 {
 	RenderingServer *rs = RenderingServer::get_singleton();
-	for (const Impl::NativeSlot &slot : m->callbackSlots)
+	Impl::Segment &g = m->segments[segment];
+	for (const Impl::NativeSlot &slot : g.callbackSlots)
 	{
-		RID &item = m->items[slot.item];
+		RID &item = g.items[slot.item];
 		rs->free_rid(item);
 		item = rs->canvas_item_create();
 		rs->canvas_item_set_parent(item, slot.parent);
 		rs->canvas_item_set_draw_index(item, static_cast<int>(slot.item));
 		rs->canvas_item_set_default_texture_filter(item, RenderingServer::CANVAS_ITEM_TEXTURE_FILTER_LINEAR);
 		rs->canvas_item_set_default_texture_repeat(item, RenderingServer::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
-		drawRenderCallback(m->drawnList.ops[slot.op], item);
+		drawRenderCallback(m->drawnList.ops[g.opBegin + slot.op], item);
 	}
 }
 
-void AptMenuPlayer::redrawNativePlaceholders()
+void AptMenuPlayer::redrawNativePlaceholders(size_t segment)
 {
 	if (!m->nativeHook)
 	{
 		return;
 	}
 	RenderingServer *rs = RenderingServer::get_singleton();
-	for (const Impl::NativeSlot &slot : m->nativeSlots)
+	const Impl::Segment &g = m->segments[segment];
+	for (const Impl::NativeSlot &slot : g.nativeSlots)
 	{
 		// lane SELPERF-1: the slot's item is cleared and drawn again in place (it keeps its parent, draw index and texture settings); freeing and making
 		// a new item per slot every frame cost the selection's command bar (its button images, the portrait) about 0.1 ms a frame on the Deck
-		RID item = m->items[slot.item];
+		RID item = g.items[slot.item];
 		rs->canvas_item_clear(item);
-		m->nativeHook->drawPlaceholder(m->drawnList.ops[slot.op], item);
+		m->nativeHook->drawPlaceholder(m->drawnList.ops[g.opBegin + slot.op], item);
 	}
+}
+
+void AptMenuPlayer::countLevels(const AptCanvasRedrawPlan &plan)
+{
+	// lane HUDREDRAW-1 (get_stats "levels"): per level, whether this rebuild drew some of its segments again and how many
+	std::map<int, std::pair<std::uint64_t, std::uint64_t>> seen; // level -> (segments, drawn again)
+	for (size_t i = 0; i < m->segments.size(); ++i)
+	{
+		auto &c = seen[m->segments[i].firstLevel];
+		c.first += 1;
+		c.second += i < plan.same.size() && plan.same[i] ? 0 : 1;
+	}
+	for (auto &kv : m->levelCounts)
+	{
+		kv.second.segments = 0; // a level no longer drawn has none
+	}
+	for (const auto &kv : seen)
+	{
+		Impl::LevelCounts &counts = m->levelCounts[kv.first];
+		counts.segments = kv.second.first;
+		counts.segmentsRedrawn += kv.second.second;
+		(kv.second.second ? counts.redrawnFrames : counts.keptFrames) += 1;
+	}
+}
+
+void AptMenuPlayer::redrawSegments(const std::vector<AptCanvasSegment> &segments, const AptCanvasRedrawPlan &plan)
+{
+	// lane HUDREDRAW-1: the drawn list takes the new list's ops (the kept segments' ops are the same: moved, not copied); a kept segment keeps its items, a
+	// changed one with an old counterpart is drawn again under that one's item, the rest under new items; old segments nothing replaces go to the pool
+	RenderingServer *rs = RenderingServer::get_singleton();
+	std::vector<bool> taken(m->segments.size(), false);
+	std::set<std::string> oldPaths; // the placeholders of what is drawn again: their BinkMovies and View3D viewers are marked unused (used again if still drawn)
+	auto release = [&](Impl::Segment &g, bool parentToo) {
+		for (size_t k = g.opBegin; k < g.opEnd; ++k)
+		{
+			const AptCanvasOp &op = m->drawnList.ops[k];
+			if (op.kind == AptCanvasOp::Kind::Placeholder)
+			{
+				oldPaths.insert(op.path);
+			}
+		}
+		m->itemPool.insert(m->itemPool.end(), g.items.begin(), g.items.end());
+		if (parentToo)
+		{
+			m->itemPool.push_back(g.parent);
+		}
+		g.items.clear();
+		g.nativeSlots.clear();
+		g.callbackSlots.clear();
+	};
+	std::vector<Impl::Segment> next(segments.size());
+	std::vector<AptCanvasOp> ops;
+	ops.reserve(m->list.ops.size());
+	bool moved = false; // a segment's parent took another place among the player's children
+	for (size_t j = 0; j < segments.size(); ++j)
+	{
+		Impl::Segment &n = next[j];
+		n.firstLevel = segments[j].firstLevel;
+		n.lastLevel = segments[j].lastLevel;
+		const std::ptrdiff_t o = plan.old[j];
+		if (o >= 0)
+		{
+			Impl::Segment &g = m->segments[(size_t)o];
+			taken[(size_t)o] = true;
+			if (!plan.same[j])
+			{
+				release(g, false);
+			}
+			n.parent = g.parent;
+			n.items = std::move(g.items);
+			n.nativeSlots = std::move(g.nativeSlots);
+			n.callbackSlots = std::move(g.callbackSlots);
+			moved = moved || (size_t)o != j;
+		}
+		n.opBegin = ops.size();
+		if (o >= 0 && plan.same[j])
+		{
+			const Impl::Segment &g = m->segments[(size_t)o];
+			ops.insert(ops.end(), std::make_move_iterator(m->drawnList.ops.begin() + (std::ptrdiff_t)g.opBegin),
+				std::make_move_iterator(m->drawnList.ops.begin() + (std::ptrdiff_t)g.opEnd));
+		}
+		else
+		{
+			ops.insert(ops.end(), m->list.ops.begin() + (std::ptrdiff_t)segments[j].begin, m->list.ops.begin() + (std::ptrdiff_t)segments[j].end);
+		}
+		n.opEnd = ops.size();
+	}
+	for (size_t k = 0; k < m->segments.size(); ++k)
+	{
+		if (!taken[k])
+		{
+			release(m->segments[k], true);
+			moved = true;
+		}
+	}
+	for (auto &kv : m->movies)
+	{
+		if (oldPaths.count(kv.first))
+		{
+			kv.second.drawn = false;
+		}
+	}
+	m->drawnList.ops.swap(ops);
+	m->segments.swap(next);
+	const RID root = get_canvas_item();
+	const std::map<std::string, const GameWindow *> gadgetOfPath = gadgetPaths();
+	m->view3d.beginBuild(&oldPaths);
+	for (size_t j = 0; j < m->segments.size(); ++j)
+	{
+		Impl::Segment &g = m->segments[j];
+		if (!g.parent.is_valid())
+		{
+			g.parent = takeItem(root, static_cast<int>(1 + j));
+		}
+		else if (moved)
+		{
+			rs->canvas_item_set_draw_index(g.parent, static_cast<int>(1 + j));
+		}
+		if (plan.old[j] >= 0 && plan.same[j])
+		{
+			redrawNativePlaceholders(j);
+			redrawCallbackPlaceholders(j);
+		}
+		else
+		{
+			drawSegment(m->drawnList, j, gadgetOfPath);
+		}
+	}
+	m->view3d.endBuild();
+	freeItemPool(); // the replaced segments' items their new drawing did not reuse
 }
 
 void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
@@ -3962,23 +4230,12 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 		kv.second.drawn = false; // lane CAMP-2: a BinkMovie this list does not draw is closed (advanceMovies)
 	}
 	const RID root = get_canvas_item();
-	std::vector<RID> parents{ root };
-	RID current;
-
 	auto newItem = [&](RID parent) {
 		// Godot sorts the children of a parent by their draw index, which is 0 for every new item, with an unstable sort: siblings
 		// need increasing indices to keep the render list's order (review finding; masks and material changes make many siblings)
 		RID r = takeItem(parent, static_cast<int>(m->items.size()));
 		m->items.push_back(r);
 		return r;
-	};
-	auto itemFor = [&]() {
-		// one item until a mask bracket opens or closes (the colour transform is in the vertex colours: no per-op material)
-		if (!current.is_valid())
-		{
-			current = newItem(parents.back());
-		}
-		return current;
 	};
 	// lane FB7-1: the display's backdrop behind every Apt level (Shell::update RW 0x75E1D3 -> RW 0x65C42C slot 0): the mapped image ShellMapLowLOD
 	// (HandCreatedMappedImages.ini: InstallLoad.tga, 1024 x 768 of a 1024 x 1024 texture). INFERENCE (S-1912): it covers the stage as the movies do
@@ -4063,6 +4320,72 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 			}
 		}
 	}
+	m->gadgetAnchors.clear();
+	const std::map<std::string, const GameWindow *> gadgetOfPath = gadgetPaths();
+	m->view3d.beginBuild(); // lane UI-2
+	// lane HUDREDRAW-1: each segment under an item of its own, in list order after the backdrop
+	int labelled = 0;
+	for (const AptCanvasSegment &r : AptCanvasSegments(list))
+	{
+		Impl::Segment g;
+		g.firstLevel = r.firstLevel;
+		g.lastLevel = r.lastLevel;
+		g.opBegin = r.begin;
+		g.opEnd = r.end;
+		g.parent = takeItem(root, static_cast<int>(1 + m->segments.size()));
+		m->segments.push_back(std::move(g));
+		if (m->segments.size() == 1 || r.firstLevel != labelled)
+		{
+			// "_level<n>.<clip>...": the level and its first top clip name the level's movie in get_stats (a level loads other movies over a session)
+			labelled = r.firstLevel;
+			const std::string &path = list.ops[r.begin].path;
+			const size_t dot = path.find('.');
+			m->levelCounts[r.firstLevel].movie = path.substr(0, dot == std::string::npos ? std::string::npos : path.find('.', dot + 1));
+		}
+		drawSegment(list, m->segments.size() - 1, gadgetOfPath);
+	}
+	m->view3d.endBuild(); // lane UI-2: viewers no op drew stop rendering
+}
+
+// lane MENU-1: the gadget window of each component placeholder path (WindowManager's component records)
+std::map<std::string, const GameWindow *> AptMenuPlayer::gadgetPaths() const
+{
+	std::map<std::string, const GameWindow *> gadgetOfPath;
+	if (m->shell)
+	{
+		for (const WindowManager::ComponentRecord &rec : m->shell->wm->components())
+		{
+			if (rec.instance && rec.window)
+			{
+				gadgetOfPath[rec.instancePath] = rec.window.get();
+			}
+		}
+	}
+	return gadgetOfPath;
+}
+
+// lane HUDREDRAW-1: the ops of one segment under its own item (drawCanvas, redrawSegments)
+void AptMenuPlayer::drawSegment(const AptCanvasList &list, size_t segment, const std::map<std::string, const GameWindow *> &gadgetOfPath)
+{
+	RenderingServer *rs = RenderingServer::get_singleton();
+	Impl::Segment &g = m->segments[segment];
+	std::vector<RID> parents{ g.parent };
+	RID current;
+	auto newItem = [&](RID parent) {
+		// Godot sorts the children of a parent by their draw index, which is 0 for every new item, with an unstable sort: siblings
+		// need increasing indices to keep the render list's order (review finding; masks and material changes make many siblings)
+		RID r = takeItem(parent, static_cast<int>(g.items.size()));
+		g.items.push_back(r);
+		return r;
+	};
+	auto itemFor = [&]() {
+		// one item until a mask bracket opens or closes (the colour transform is in the vertex colours: no per-op material)
+		if (!current.is_valid())
+		{
+			current = newItem(parents.back());
+		}
+		return current;
+	};
 	// a diagnostic for artifact hunts (lane HUD-3): OPENBFME_APT_SKIP=<substring>[,<substring>...] leaves out the mesh ops whose instance path contains one
 	static const std::vector<std::string> skipPaths = [] {
 		std::vector<std::string> v;
@@ -4077,22 +4400,7 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 		return v;
 	}();
 
-	m->nativeSlots.clear();
-	m->callbackSlots.clear();
-	m->gadgetAnchors.clear();
-	// lane MENU-1: the gadget window of each component placeholder path (WindowManager's component records)
-	std::map<std::string, const GameWindow *> gadgetOfPath;
-	if (m->shell)
-	{
-		for (const WindowManager::ComponentRecord &rec : m->shell->wm->components())
-		{
-			if (rec.instance && rec.window)
-			{
-				gadgetOfPath[rec.instancePath] = rec.window.get();
-			}
-		}
-	}
-	for (size_t opIndex = 0; opIndex < list.ops.size(); ++opIndex)
+	for (size_t opIndex = g.opBegin; opIndex < g.opEnd; ++opIndex)
 	{
 		const AptCanvasOp &op = list.ops[opIndex];
 		if (op.kind == AptCanvasOp::Kind::Mesh && !skipPaths.empty()
@@ -4230,7 +4538,7 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 				{
 					// lane UI-4: an engine render callback that draws text (AptMainMenu::RenderCredits): drawn in the clip's place, and again in every
 					// render frame whose canvas list is unchanged (its text moves without the list changing)
-					m->callbackSlots.push_back(Impl::NativeSlot{ opIndex, m->items.size(), parents.back() });
+					g.callbackSlots.push_back(Impl::NativeSlot{ opIndex - g.opBegin, g.items.size(), parents.back() });
 					RID item = newItem(parents.back());
 					current = RID();
 					drawRenderCallback(op, item);
@@ -4328,7 +4636,7 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 				if (m->nativeHook && op.nativeTag && m->nativeHook->handlesPlaceholder(op))
 				{
 					// lane HUD-1: the clip is a native render component (the radar, a command button image, a timer): its owner draws into a canvas item of its own
-					m->nativeSlots.push_back(Impl::NativeSlot{ opIndex, m->items.size(), parents.back() });
+					g.nativeSlots.push_back(Impl::NativeSlot{ opIndex - g.opBegin, g.items.size(), parents.back() });
 					RID item = newItem(parents.back());
 					current = RID();
 					m->nativeHook->drawPlaceholder(op, item);
@@ -4508,14 +4816,14 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 			{
 				RID item = itemFor();
 				const float det = op.matrix.a * op.matrix.d - op.matrix.b * op.matrix.c;
-				const float sdet = std::sqrt(std::fabs(det));
-				if (sdet <= 0.0f)
+				const float fieldScale = AptTextFontScale(op.matrix); // lane MENUFIX-1: the field's vertical scale (AptCanvas.h), not sqrt(|det|)
+				if (det == 0.0f || fieldScale <= 0.0f)
 				{
 					break;
 				}
 				// the font follows the device scale by min(scaleX, scaleY) (donor AptDisplayStringAllocation_ctor.cpp:105-110)
 				const float k = std::min(op.scaleX, op.scaleY);
-				const int px = std::max(1, (int)std::lround(op.drawSize * k * sdet));
+				const int px = std::max(1, (int)std::lround(op.drawSize * k * fieldScale));
 				Ref<Font> font;
 				auto fit = m->fontByName.find(lowerAscii(op.drawFont));
 				if (fit == m->fontByName.end())
@@ -4589,7 +4897,6 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 			}
 		}
 	}
-	m->view3d.endBuild(); // lane UI-2: viewers no op drew stop rendering
 }
 
 
@@ -4644,7 +4951,7 @@ void AptMenuPlayer::drawStillLoadScreen()
 	auto newItem = [&]() {
 		RID r = rs->canvas_item_create();
 		rs->canvas_item_set_parent(r, get_canvas_item());
-		rs->canvas_item_set_draw_index(r, static_cast<int>(m->items.size()));
+		rs->canvas_item_set_draw_index(r, static_cast<int>(1 + m->segments.size() + m->items.size())); // lane HUDREDRAW-1: after the movies' segments
 		rs->canvas_item_set_default_texture_filter(r, RenderingServer::CANVAS_ITEM_TEXTURE_FILTER_LINEAR);
 		rs->canvas_item_set_default_texture_repeat(r, RenderingServer::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 		m->items.push_back(r);
@@ -4813,7 +5120,7 @@ void AptMenuPlayer::drawGadgets(const GadgetDrawList &commands)
 	bool firstCommand = true;
 	m->unanchoredGadgets = 0;
 	auto newItem = [&](RID parent) {
-		RID r = takeItem(parent, static_cast<int>(m->items.size()));
+		RID r = takeItem(parent, static_cast<int>(1 + m->segments.size() + m->items.size())); // lane HUDREDRAW-1: a root item after the movies' segments
 		m->items.push_back(r);
 		return r;
 	};
@@ -6113,7 +6420,33 @@ Dictionary AptMenuPlayer::get_stats() const
 	s["last_triangles"] = (int64_t)m->list.triangles;
 	s["last_text_ops"] = (int64_t)m->list.count(AptCanvasOp::Kind::Text);
 	s["last_mask_ops"] = (int64_t)m->list.count(AptCanvasOp::Kind::MaskBegin);
-	s["canvas_items"] = (int64_t)m->items.size();
+	size_t items = m->items.size();
+	// lane HUDREDRAW-1: per level (its segments' first level): the movie, the rebuilds that drew some of its segments again / kept all, the segments drawn
+	// again (summed) and its segments in the last rebuild
+	Dictionary levels;
+	for (const Impl::Segment &g : m->segments)
+	{
+		items += 1 + g.items.size();
+	}
+	for (const auto &kv : m->levelCounts)
+	{
+		Dictionary l;
+		l["movie"] = toGodot(kv.second.movie);
+		l["redrawn"] = (int64_t)kv.second.redrawnFrames;
+		l["kept"] = (int64_t)kv.second.keptFrames;
+		l["segments_redrawn"] = (int64_t)kv.second.segmentsRedrawn;
+		l["segments"] = (int64_t)kv.second.segments;
+		levels[kv.first] = l;
+	}
+	s["canvas_items"] = (int64_t)items;
+	s["segments"] = (int64_t)m->segments.size();
+	s["partial_frames"] = (int64_t)m->partialFrames;
+	s["gadget_commands"] = (int64_t)m->gadgets.commands.size(); // lane HUDREDRAW-1: gadgets on screen make a changed level draw everything again
+	s["levels"] = levels;
+	// lane HUDREDRAW-1: the note lists' lengths (they must not grow with the frames: Apt::noteOnce / WindowManager::noteOnce)
+	s["apt_notes"] = m->A() ? (int64_t)m->A()->notes().size() : (int64_t)0;
+	WindowManager *notesWm = window_manager();
+	s["wm_notes"] = notesWm ? (int64_t)notesWm->notes().size() : (int64_t)0;
 	// microseconds per call of each stage (steps_us per tick, the rest per rebuild)
 	s["steps_us"] = m->frames ? (double)m->stepUs / (double)m->frames : 0.0;
 	s["list_us"] = m->rebuilds ? (double)m->listUs / (double)m->rebuilds : 0.0;
@@ -6276,8 +6609,6 @@ void AptMenuPlayer::set_native_hook(AptNativeHook *hook)
 		// lane QA-1: the items the old hook drew into may carry its resources (the HUD's globe material): they go now, before their owner frees them, and the
 		// next frame draws the canvas again (else leaving a game freed the material under live items: "Parameter material is null")
 		clearCanvas();
-		m->nativeSlots.clear();
-		m->callbackSlots.clear();
 	}
 	m->nativeHook = hook;
 	m->drawnValid = false; // lane PERF-1 r2: the native placeholders are drawn by another owner
@@ -6721,6 +7052,8 @@ Dictionary AptMenuPlayer::get_create_a_hero_view() const
 	const char page = screen->currentPage();
 	out["page"] = page ? String(std::string(1, page).c_str()) : String();
 	out["revision"] = (int64_t)screen->displayRevision();
+	out["last_message"] = String(screen->lastMessage().c_str()); // lane CAHPIC-1: the last box's labels (the --cah-picture run waits for it)
+	out["picture_frames"] = (int64_t)screen->pictureFrames();     // lane CAHPIC-1: the guard clip's draws since PrepareToTakePicture
 	PackedByteArray record;
 	if (const CreateAHeroHero *h = screen->displayedHero())
 	{
@@ -6821,25 +7154,13 @@ Dictionary AptMenuPlayer::create_a_hero_save_folder(const String &rotwkInstall) 
 {
 	Dictionary out;
 	out["ok"] = false;
-	std::vector<std::uint8_t> bytes;
-	const std::string path = toNative(rotwkInstall) + "/gi.dat";
-	{
-		std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
-		if (!in)
-		{
-			out["error"] = toGodot("cannot read " + path + " (RW 0xAAA6C0 reads the install's gi.dat for the user data folder's name)");
-			return out;
-		}
-		bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-	}
-	std::string error;
-	const std::string leaf = UserDataFolder::leafName(bytes, &error);
-	if (leaf.empty())
+	std::string leaf, error;
+	const std::string userData = UserDataFolder::userDataFolderOfInstall(toNative(rotwkInstall), toNative(OS::get_singleton()->get_data_dir()), '/', &leaf, &error);
+	if (userData.empty())
 	{
 		out["error"] = toGodot(error);
 		return out;
 	}
-	const std::string userData = UserDataFolder::userDataFolder(toNative(OS::get_singleton()->get_data_dir()), leaf, '/');
 	out["ok"] = true;
 	out["leaf"] = toGodot(leaf);
 	out["user_data"] = toGodot(userData);
@@ -6918,6 +7239,11 @@ Dictionary AptMenuPlayer::set_online(Object *worldObject, const Dictionary &opti
 		return r;
 	}
 	OnlineLobbyClient::Options o;
+	o.installId = toNative(String(options.get("install", String())));
+	o.deviceHash = toNative(String(options.get("device", String())));
+	const Dictionary client = options.get("client", Dictionary());
+	o.clientPlatform = toNative(String(client.get("platform", String())));
+	o.clientVersion = toNative(String(client.get("version", String())));
 	o.profileDigest = toNative(world->net_profile_digest());
 	o.platform = localPlatform(); // lane PLATFORMICON-1: the one value told about this machine
 	o.playerTemplateCount = factions;
@@ -7100,6 +7426,18 @@ Dictionary AptMenuPlayer::online_status()
 		ready.push_back(v.ready);
 	}
 	r["ready"] = ready;
+	Array reportPlayers;
+	for (size_t i = 0; i < c.slotViews().size(); ++i)
+	{
+		const auto &slot = c.slotViews()[i];
+		if (slot.state != "player" || slot.playerId.empty()) continue;
+		Dictionary player;
+		player["id"] = toGodot(slot.playerId);
+		player["name"] = u8(c.gameInfo().slots[i].name);
+		player["you"] = slot.you;
+		reportPlayers.push_back(player);
+	}
+	r["report_players"] = reportPlayers;
 	// lane ONLINE-5: the players' start positions (-1: random) and whether the lobby holds the staging room's polls
 	Array startPos;
 	for (const SkirmishGameSlot &gs : c.gameInfo().slots)

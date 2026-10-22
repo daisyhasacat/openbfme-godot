@@ -9,7 +9,8 @@ set(OPENBFME_SKIRMISH_AI_SOURCES
     src/GameLogic/SkirmishAI/AITacticalAI.cpp
     src/GameLogic/SkirmishAI/AIFortification.cpp
     src/GameLogic/SkirmishAI/AIThreatFinder.cpp
-    src/GameLogic/SkirmishAI/AIStatCollector.cpp)
+    src/GameLogic/SkirmishAI/AIStatCollector.cpp
+    src/GameLogic/SkirmishAI/AIUpgrade.cpp)
 
 set(OPENBFME_SKIRMISH_AI_TESTS
     tests/test_ai_strategy.cpp
@@ -20,4 +21,5 @@ set(OPENBFME_SKIRMISH_AI_TESTS
     tests/test_skirmish_ai_attack.cpp
     tests/test_skirmish_ai_vs_ai.cpp
     tests/test_skirmish_ai_u22.cpp
+    tests/test_skirmish_ai_upgrades.cpp
     tests/test_horde_cavalry_retail.cpp)

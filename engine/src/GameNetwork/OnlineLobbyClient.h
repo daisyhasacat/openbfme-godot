@@ -42,6 +42,8 @@ class OnlineLobbyClient
 public:
 	struct Options
 	{
+		std::string installId, deviceHash; ///< supplied by the host; never part of simulation state
+		std::string clientPlatform, clientVersion;
 		std::string profileDigest;   ///< the profile identity's MD5 (ProfileIdentity::digest): the lobby compares it at the join
 		// lane UBERJOIN-1: the simulation profile that digest is of (the player's performance mode): the room made and the room joined carry it as their
 		// "mode" ("normal" / "uber"); a join of a room in the other mode is the lobby's "mode" refusal. setProfile changes both together
@@ -94,6 +96,7 @@ public:
 		enum Kind
 		{
 			SignedIn,     ///< text = the account's name
+			Notice,       ///< text = a pending sign-in notice
 			GameList,     ///< games() changed
 			Motd,         ///< the lobby's message of the day arrived (hasMotd() may be false: the lobby has none)
 			GameCreated,  ///< we host currentGame()
@@ -117,6 +120,7 @@ public:
 		std::string state;  ///< open / closed / player / easy / medium / hard / brutal
 		bool ready = false;
 		bool you = false;
+		std::string playerId; ///< opaque reporting target, never an install or device identifier
 	};
 
 	// the bounds of an answer (lobby.mjs's own limits; Sol r1: a hostile lobby must not exhaust memory). The transport stops reading a body at
@@ -130,6 +134,8 @@ public:
 	static constexpr std::size_t kMaxTokenBytes = 1024;        ///< a session token (base64url(JSON).base64url(HMAC): about 150 bytes)
 	static constexpr std::size_t kMaxStartBytes = 16 * 1024;   ///< a START (8 slots, no Create-a-Hero records: about 1.5 KiB)
 	static constexpr std::size_t kMaxRefusalBytes = 512;       ///< a refusal's message ("not ready: " and up to 8 names)
+	static constexpr std::size_t kMaxStatusBytes = 8192;
+	static constexpr std::size_t kMaxNoticeBytes = 4000;
 	static constexpr std::size_t kMaxGames = 200;              ///< lobby.mjs list: .slice(0, 200)
 	static constexpr std::size_t kMaxMine = 32;                ///< the player's running games
 	static constexpr std::size_t kMaxChatLines = 200;          ///< lobby.mjs keeps the last 200 lines of a game
@@ -161,6 +167,8 @@ public:
 	const std::vector<std::string> &mineLeft() const { return m_mineLeft; }
 	// the account name a session token names (its payload, lobby.mjs makeToken: base64url(JSON).base64url(HMAC)); "" when it is not one
 	static std::u16string sessionName(const std::string &token);
+	// DEVINPR-1: the install id a session token was issued to (lobby.mjs guest puts the account's install in it); "" when none or not a token
+	static std::string sessionInstall(const std::string &token);
 	void fetchMotd();                                     // GET /v1/motd
 	// POST /v1/games: host a game; `setup` gives the map, the cash, the rules and the slot states (the host's slot must be SLOT_PLAYER, the other human
 	// slots open). `password` "" = none
@@ -267,6 +275,7 @@ private:
 
 	Options m_options;
 	std::string m_token;
+	std::string m_lastNotice;
 	std::u16string m_accountName;
 	std::vector<Listing> m_games;
 	std::vector<Listing> m_mine;

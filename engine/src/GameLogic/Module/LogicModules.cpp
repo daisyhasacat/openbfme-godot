@@ -19,6 +19,7 @@
 #include "GameLogic/Module/SquishCollide.h"
 #include "GameLogic/Module/BannerCarrierUpdate.h"
 #include "GameLogic/Module/ExtraModules.h"
+#include "GameLogic/Module/TransitionDamageFX.h"
 #include "GameLogic/Module/GateModules.h"
 #include "GameLogic/Module/AreaScanModules.h"
 #include "GameLogic/Module/NotifyCrushModules.h"
@@ -113,6 +114,7 @@ void LogicModules::registerAll(ModuleFactory &modules)
 	HordeDispatchSpecialPower::registerClass(modules); // lane FACT-C: a horde's power passed on to its members
 	ObjectCreationUpgrade::registerClass(modules); // lane FACT-C: the delayed spawn / grant upgrade (spike moats, wall catapults, the Sanctum's readiness)
 	SpawnBehavior::registerClass(modules); // lane MOD-4: the lairs' spawns
+	TransitionDamageFXModule::registerClass(modules); // lane FX-4: the damage state transition effects (S-686)
 	SlavedUpdate::registerClass(modules); // lane MOD-4: the spawns' guard
 	LargeGroupAudioUpdate::registerClass(modules); // lane AUDIO-4: the logic half of the large group battle sounds
 	ClientBehaviorModules::registerAll(modules); // lane AUDIO-4: the footsteps (a ClientBehavior: the drawables make it, GameClient/)

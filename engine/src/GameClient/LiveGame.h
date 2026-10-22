@@ -203,7 +203,8 @@ public:
 	UnsignedInt protocolFrame() const { return m_protocolFrame; }
 	UnsignedInt nextBatchFrame() const { return m_nextBatchFrame; }
 	// frames that were due but could not run because the driver held them (the lockstep waited); their time is not caught up (ZH Network::timeForNewFrame
-	// resets its frame time when it falls more than two frames behind). Only the clock's time is dropped: an authoritative batch is never skipped
+	// resets its frame time when it falls more than two frames behind), except the frame that waited: lane NETLAG-2 keeps it due, so it runs as soon as
+	// its input is complete. Only the clock's time is dropped: an authoritative batch is never skipped
 	unsigned long long stalledFrames() const { return m_stalledFrames; }
 	// SMOOTH-1: batches the driver handed out, and completions it consumed (each exactly once, in frame order)
 	unsigned long long batchesAcquired() const { return m_batchesAcquired; }
@@ -212,6 +213,8 @@ public:
 	static constexpr size_t kMaxQueuedBatches = 16;
 	// the fraction of the logic frame elapsed, in [0, 1): the 5 Hz clock's, or in six tick pacing the phases done plus the tick's fraction over six
 	double alpha() const;
+	// lane NETLAG-2: whole milliseconds until the 5 Hz clock makes the next logic frame due (presentation timing for the frame driver, LiveGameRunner.cpp)
+	std::uint32_t msUntilNextFrame() const;
 	// lane SMOOTH-1: the drawables are posed between two logic frames by alpha (default), or, off, at the current logic transform: the stepped 5 Hz
 	// look of a client without interpolation (the before / after comparison of the benchmark and the video). Presentation only, never the logic.
 	void setRenderInterpolation(bool enabled) { m_renderInterpolation = enabled; }
@@ -384,6 +387,8 @@ private:
 	std::string m_cahHeroID;
 	int m_cahMode = -1;
 	bool m_cahResultRecorded = false;
+	bool m_cahStatisticsDirty = false;
+	std::string m_cahSaveError;
 	std::vector<std::string> m_cahEarned;
 	void consumeHeroStatistics(const std::vector<ClientEvent> &events, const LogicSnapshot *snapshot);
 
@@ -393,6 +398,8 @@ private:
 	unsigned long long m_droppedFrames = 0;
 	LiveGameFrameDriver *m_frameDriver = nullptr; ///< lane MP-1 (protocol owner; the worker sees it only through a queued WorkItem)
 	unsigned long long m_stalledFrames = 0;
+	int m_owedFrames = 0;   ///< lane NETLAG-2: a frame the clock made due that waited for the lockstep: due at the next advance
+	int m_owedThisCall = 0; ///< lane NETLAG-2: the owed frames included in this advance's due count
 	bool m_loaded = false;
 	bool m_closed = false; ///< lane SAVE-4e (loadSnapshot)
 	// ---- SMOOTH-1 + MP-1 (review r4): numbered batches and completion records ----

@@ -146,6 +146,7 @@ include(cmake/Horde2.cmake)     # OPENBFME_HORDE2_SOURCES / OPENBFME_HORDE2_TEST
 include(cmake/Integ1.cmake)     # INTEG-1: StancesBehavior (appends to OPENBFME_SIM_SOURCES; OPENBFME_INTEG1_TESTS)
 include(cmake/Fx2.cmake)        # FX-2: effects in the live game (appends to OPENBFME_SIM_SOURCES; OPENBFME_FX2_SOURCES / OPENBFME_FX2_TESTS)
 include(cmake/Fx3.cmake)        # FX-3: particle and draw gaps (OPENBFME_FX3_SOURCES / OPENBFME_FX3_TESTS)
+include(cmake/Fx4.cmake)        # FX-4: TransitionDamageFX, the camera shake (appends to OPENBFME_SIM_SOURCES; OPENBFME_FX4_TESTS)
 include(cmake/Hero.cmake)       # HERO-1: heroes (appends to OPENBFME_SIM_SOURCES; OPENBFME_HERO_TESTS)
 include(cmake/Proj2.cmake)      # PROJ-2: siege projectiles (appends to OPENBFME_SIM_SOURCES; OPENBFME_PROJ2_TESTS)
 include(cmake/Castle1.cmake)    # OPENBFME_CASTLE1_TESTS (lane CASTLE-1: the castle after its unpack)
@@ -186,6 +187,7 @@ include(cmake/Ui2.cmake)        # UI-2: owner menu feedback (client only; OPENBF
 include(cmake/Ui4.cmake)        # UI-4: owner menu / HUD findings on v0.3.0-preview.1 (client only)
 include(cmake/Ui6.cmake)        # UI-6: a tester's menu findings on v0.3.0-preview.6, widescreen view (client only)
 include(cmake/Ownerfix3.cmake)  # OWNERFIX-3: the map list's battle honors (client only; OPENBFME_OWNERFIX3_CLIENT_SOURCES / _TESTS)
+include(cmake/Anticheat.cmake)  # ANTICHEAT-1: detector D1 over a re-simulated replay (reads the logic only; OPENBFME_ANTICHEAT_SOURCES / _TESTS)
 include(cmake/Selperf1.cmake)   # SELPERF-1: the selection's frame cost (client only; OPENBFME_SELPERF1_TESTS)
 include(cmake/Anim1.cmake)      # OPENBFME_ANIM1_TESTS (lane ANIM-1: combat animation)
 include(cmake/Win1.cmake)       # WIN-1: the MSVCR71 real parser (appends to OPENBFME_SIM_SOURCES; OPENBFME_WIN1_TESTS: cross-OS lockstep)
@@ -226,6 +228,7 @@ include(cmake/Save2.cmake)      # SAVE-2: the command-log save (OPENBFME_SAVE2_C
 include(cmake/Save4a.cmake)     # SAVE-4a: the Xfer framework, GameState, the core blocks (appends to OPENBFME_SIM_SOURCES; OPENBFME_SAVE4A_TESTS)
 include(cmake/Save4c.cmake)     # SAVE-4c: the AI, pathfinder, partition, emotions, shroud and skirmish AI blocks (appends to OPENBFME_SIM_SOURCES; OPENBFME_SAVE4C_TESTS)
 include(cmake/Fly1.cmake)       # FLY-1: the GIANT_BIRD flyers (appends to OPENBFME_SIM_SOURCES; OPENBFME_FLY1_TESTS)
+include(cmake/Summon1.cmake)    # SUMMON-1: the Thrall Master's summons, the OCL spawned groups (OPENBFME_SUMMON1_TESTS)
 include(cmake/Backlog4.cmake)  # BACKLOG4: the teleport forms, the special power runtime, defection (OPENBFME_BACKLOG4_TESTS)
 include(cmake/Ship1.cmake)      # SHIP-1: ships and hover units (OPENBFME_SHIP1_TESTS)
 include(cmake/RenderWait1.cmake) # RENDERWAIT-1: the render never waits on the logic worker (OPENBFME_RENDERWAIT1_TESTS)
@@ -240,6 +243,8 @@ include(cmake/Ownerfix1.cmake)  # OWNERFIX-1: problems the owner hit playing (OP
 include(cmake/Visual2.cmake)    # VISUAL-2: the owner's fog leak, tree sway and colouring (OPENBFME_VISUAL2_SOURCES / _TESTS)
 include(cmake/Ownerfix2.cmake)  # OWNERFIX-2: the owner's playtest of 2026-10-17 (OPENBFME_OWNERFIX2_CLIENT_SOURCES / _TESTS)
 include(cmake/Backlog8.cmake)   # BACKLOG-8: formations, horde wall scaling, auto ability melee position (appends to OPENBFME_SIM_SOURCES)
+include(cmake/Menufix1.cmake)   # MENUFIX-1: the menus, consistent and retail-looking (OPENBFME_MENUFIX1_TESTS)
+include(cmake/Hudredraw1.cmake) # HUDREDRAW-1: the HUD redraws only the changed Apt levels (OPENBFME_HUDREDRAW1_TESTS)
 add_library(openbfme_core STATIC
     src/Common/System/PerformanceCounters.cpp
     ${OPENBFME_PLAY2_SOURCES}
@@ -276,6 +281,7 @@ add_library(openbfme_core STATIC
     ${OPENBFME_OWNERFIX2_CLIENT_SOURCES}
     ${OPENBFME_UI6_CLIENT_SOURCES}
     ${OPENBFME_OWNERFIX3_CLIENT_SOURCES}
+    ${OPENBFME_ANTICHEAT_SOURCES}
     ${OPENBFME_SCRIPT1_SOURCES}
     ${OPENBFME_CAMP1_SOURCES}
     ${OPENBFME_HUD5_CLIENT_SOURCES}
@@ -674,6 +680,7 @@ add_executable(openbfme_tests
     ${OPENBFME_RENDER4_TESTS}
     ${OPENBFME_FX2_TESTS}
     ${OPENBFME_FX3_TESTS}
+    ${OPENBFME_FX4_TESTS}
     ${OPENBFME_HERO_TESTS}
     ${OPENBFME_MOD1_TESTS}
     ${OPENBFME_MOD2_TESTS}
@@ -712,6 +719,7 @@ add_executable(openbfme_tests
     ${OPENBFME_UI4_TESTS}
     ${OPENBFME_UI6_TESTS}
     ${OPENBFME_OWNERFIX3_TESTS}
+    ${OPENBFME_ANTICHEAT_TESTS}
     ${OPENBFME_SELPERF1_TESTS}
     ${OPENBFME_GARRISON3_TESTS}
     ${OPENBFME_BACKLOG1_TESTS}
@@ -744,6 +752,7 @@ add_executable(openbfme_tests
     ${OPENBFME_BUGS1_TESTS}
     ${OPENBFME_BACKLOG4_TESTS}
     ${OPENBFME_FLY1_TESTS}
+    ${OPENBFME_SUMMON1_TESTS}
     ${OPENBFME_SHIP1_TESTS}
     ${OPENBFME_RENDERWAIT1_TESTS}
     ${OPENBFME_BACKLOG2_TESTS}
@@ -753,6 +762,8 @@ add_executable(openbfme_tests
     ${OPENBFME_OWNERFIX1_TESTS}
     ${OPENBFME_VISUAL2_TESTS}
     ${OPENBFME_OWNERFIX2_TESTS}
+    ${OPENBFME_MENUFIX1_TESTS}
+    ${OPENBFME_HUDREDRAW1_TESTS}
     tests/test_main.cpp
     tests/test_big_archive.cpp
     tests/test_archive_order.cpp
@@ -781,6 +792,7 @@ add_executable(openbfme_tests
     tests/test_map_terrain.cpp
     tests/test_map_render.cpp
     tests/test_texture_pack_archive.cpp
+    tests/test_mod5_user_maps.cpp
     tests/RetailTestMount.cpp
     tests/test_md5_json.cpp
     tests/test_textfile.cpp

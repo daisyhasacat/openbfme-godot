@@ -296,7 +296,7 @@ public:
 	// below REALLYDAMAGED (2) clears the flag (a repaired member)
 	DamageModuleInterface *getDamage() override { return this; }
 	void onDamage(const DamageInfo &info) override;
-	void onBodyDamageStateChange(BodyDamageType oldState, BodyDamageType newState) override;
+	void onBodyDamageStateChange(const DamageInfo *info, BodyDamageType oldState, BodyDamageType newState) override;
 	bool breached() const { return m_breached; }
 
 private:

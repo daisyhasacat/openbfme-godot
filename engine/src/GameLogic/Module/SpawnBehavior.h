@@ -116,7 +116,7 @@ public:
 	void onDelete() override;                                            // RW 0x86280D
 	void onDie(const DieModuleInterface::Event &event) override;         // RW 0x862865
 	void onDamage(const DamageInfo &info) override;                      // RW 0x862EA3
-	void onBodyDamageStateChange(BodyDamageType oldState, BodyDamageType newState) override; // RW 0x863585
+	void onBodyDamageStateChange(const DamageInfo *info, BodyDamageType oldState, BodyDamageType newState) override; // RW 0x863585
 	void onSpawnDeath(ObjectID deadSpawn, const DieModuleInterface::Event *info) override;   // RW 0x862DAB
 	void stopSpawning() override { m_active = false; }                   // RW 0x8623D6
 	void reclaimDueOrphans() override;                                   // RW 0x86327C

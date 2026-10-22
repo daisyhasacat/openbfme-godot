@@ -54,6 +54,14 @@ void LockstepDriver::pump(UnsignedInt protocolFrame, CommandList &pending)
 	}
 }
 
+void LockstepDriver::frameDue(UnsignedInt frame, std::uint32_t msFromNow)
+{
+	if (m_network)
+	{
+		m_network->setFrameDue(frame, msFromNow);
+	}
+}
+
 bool LockstepDriver::acquire(UnsignedInt frame, FrameBatch &out)
 {
 	if (m_started && frame != m_nextBatch)

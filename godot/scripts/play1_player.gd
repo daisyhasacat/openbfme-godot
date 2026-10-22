@@ -43,31 +43,21 @@
 ##             The pointer is drawn into the shots from the HUD's own cursor image (a capture omits the OS pointer)
 ##   portraits (lane UI-4) a builder, a building, a hero and a horde of the local player, each selected with a left click: the Palantir's portrait
 ##             clip (CommandUI.Portrait) must draw the selection's SelectPortrait (PalantirCommandUI, RW 0x92FE33); play1-portrait-<kind>.png
-extends RefCounted
+extends "res://scripts/scenario_player.gd"
 
 var game: Node
 var hud: Node
 var world: Node
 var shell: Node
-var ok_count := 0
 var tour_heroes: Array = []      # the heroes the tour recruited (the garrison step takes soldiers)
-var fail_count := 0
 
 
-func run(p_game: Node, scenarios: PackedStringArray) -> void:
+func _run(p_game: Node, scenarios: PackedStringArray) -> void:
 	game = p_game
 	hud = game._hud
 	world = game._world
 	shell = game._shell
-	for s in scenarios:
-		var r: String = await call("_scenario_" + s)
-		if r == "":
-			ok_count += 1
-			print("PLAY1 %s: ok" % s)
-		else:
-			fail_count += 1
-			print("PLAY1 %s: FAIL %s" % [s, r])
-	print("PLAY1 RESULT: %d ok, %d failed" % [ok_count, fail_count])
+	await _run_scenarios(scenarios)
 
 
 # ---- input -----------------------------------------------------------------------------------------------------------------------------------------------

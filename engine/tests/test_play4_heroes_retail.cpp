@@ -406,7 +406,12 @@ TEST_CASE("play4 heroes retail: every faction's heroes, recruited from the fortr
 				const bool drogoth = hero == "Drogoth";
 				// lane BACKLOG4: 3 strikes (4 before): the hero's creation uses the teleport form (RW 0x7814CF: RW 0x696E63(pos, 0)), which idles the new
 				// hero's AI and wakes it; the fight's damage and kills are unchanged (measured with and without that call)
-				CHECK(ord.shots == (drogoth ? 3u : 0u));
+				// lane STEALTHFLY1: 2 strikes (3 before): recruited from the fortress, Drogoth leaves along its production exit path in the bird's own follow
+				// state 0x3F6 (privateFollowPath RW 0x76B491) instead of the ground path state, so the ordered fight starts from another place and time;
+				// the damage and the kills are the same
+				// merge queue q22 (SUMMON-1 + FX-4 + AI5 + NUGGET-1, measured on the merged tree on srv1): 4 strikes (2 before): the scene's computer opponent draws
+				// AI5's upgrade-registration random values and SUMMON-1's OCL draws, which shift the ordered fight's timing; the damage and the kills are the same
+				CHECK(ord.shots == (drogoth ? 4u : 0u));
 				CHECK(ord.lost == (drogoth ? 1500.0f : 450.0f));
 				CHECK(ord.membersKilled == (drogoth ? 20u : 5u));
 				continue;
@@ -515,7 +520,11 @@ TEST_CASE("attack1 heroes retail: the mounted Witch-king and Mouth of Sauron, or
 	// Merge queue q12 (the q11 ATTACK-1 / BACKLOG-1 pins against this batch, measured on the merged tree on a CI host; the lane that moved them was not separated): the swing, kill, blocked and distance
 	// pins moved. The CRUSHER_LEVEL -1 case is no longer blocked (blocked 0 frames; the Witch-king makes no swing at all and stays 69.9 away, the Mouth of Sauron swings once
 	// from 41.3): a change of behaviour to review, not only of numbers.
-	for (const Case &c : { Case{ "FactionAngmar", "AngmarWitchking", 5u, 12u, 225.0f, { 800.0f, 112.0f }, 2u, 450.0f, 675.0f, { { 1500.0f, 800.0f }, { 700.0f, 700.0f } }, 0, -1, 0u, 0.0f, 69.9072f, 0.789662f },
+	// Lane AI5: the scene's computer opponent (Mordor) now registers its units' upgrade buttons, one GetGameLogicRandomValue each (AIUnitUpgrader.cpp
+	// 0x5D), which shifts the random sequence of the Witch-king's fight: 7 shots, 18 killed (300 in the crush run), 3 swings (the first took 525, 1050
+	// outside the run), the control's nearest 0.381908, the lowered case's 70.444. With only that registration switched off the old pins (5 / 12 / 225, 2 /
+	// 450 / 675, 0.789662 / 69.9072) come back exactly; the Mouth of Sauron's case does not move. Engine pins, not retail values.
+	for (const Case &c : { Case{ "FactionAngmar", "AngmarWitchking", 7u, 18u, 300.0f, { 800.0f, 112.0f }, 3u, 525.0f, 1050.0f, { { 1500.0f, 800.0f }, { 700.0f, 700.0f } }, 0, -1, 0u, 0.0f, 70.444f, 0.381908f },
 			 Case{ "FactionMordor", "MordorMouthOfSauron", 11u, 11u, 150.0f, { 640.0f, 320.0f }, 7u, 75.0f, 525.0f, { { 1500.0f, 640.0f }, { 860.0f, 640.0f }, { 220.0f, 220.0f } }, 0, -1, 1u, 75.0f, 41.3165f, 20.1465f } })
 	{
 		INFO(std::string(c.hero));

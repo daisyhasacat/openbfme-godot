@@ -11,7 +11,8 @@
 //  * directory tokenisation quirk: a token containing '.' is still treated as a directory while
 //    the rest of the path contains another '.'
 // Changes: std::string replaces AsciiString; openFile() returning a RAMFile is replaced by
-// readFile() filling a byte vector; archives are owned by unique_ptr.
+// readFile() filling a byte vector; archives are owned by unique_ptr; readFile() and doesFileExist()
+// also take the local step of retail's FileSystem::openFile for one folder (setLocalFolder, lane MOD-5).
 
 #pragma once
 
@@ -91,10 +92,22 @@ public:
 	// Parse an archive's directory. Returns nullptr and sets *error on failure.
 	virtual std::unique_ptr<ArchiveFile> openArchiveFile(const std::string &filename, std::string *error) = 0;
 
-	// Read a virtual file from whichever archive owns it. False + *error if absent/unreadable.
+	// Read a virtual file from whichever archive owns it, else from the local folder (below). False + *error if absent/unreadable.
 	bool readFile(const std::string &filename, std::vector<std::uint8_t> &out, std::string *error);
 	bool doesFileExist(const std::string &filename) const;
 	std::string getArchiveFilenameForFile(const std::string &filename) const;
+
+	// OpenBFME, lane MOD-5: the one folder read from disk. Retail's FileSystem::openFile (RW 0xA149A2) asks the archives (TheArchiveFileSystem,
+	// RW 0xDEC9A4) first and, when they do not hold the file and local files are not preferred (RW 0xDEC490, set by -mod), TheLocalFileSystem
+	// (RW 0xDEC9AC); its filter (RW 0xA147FB) lets every path with a drive letter through. That is how a user map (UserDataFolder::userMapFolder)
+	// and its map.ini are read. OpenBFME has no local file system otherwise (loose files in the install folders are refused: PLAN rule 7, stop
+	// S-039), so only a file the archives do not hold, whose path lies under this folder (absolute, either separator, compared without case),
+	// is read from disk; each part of its path below the folder is matched without case, as Windows opens it, and a part may not step out
+	// of it ("..", or a ':' for a drive or a stream); links inside it are followed, as retail follows them. "" (the default) reads nothing
+	// from disk. The archives' file lists (getFileListInDirectory) do not include it (retail's FileSystem lists local files too: stop
+	// S-5160). Retail's -mod precedence (RW 0xDEC490, lane MOD-1) asks the local files first; this step comes after the archives only.
+	void setLocalFolder(const std::string &folder);
+	const std::string &localFolder() const { return m_localFolder; }
 
 	// Union of every mounted archive's file list (ZH getFileListInDirectory).
 	void getFileListInDirectory(const std::string &currentDirectory, const std::string &originalDirectory,
@@ -118,4 +131,10 @@ protected:
 	bool m_aotrProfile = false;
 	ArchiveFileMap m_archiveFileMap;
 	ArchivedDirectoryInfo m_rootDirectory;
+
+private:
+	// the file on disk for `filename` under the local folder ("" when there is none)
+	std::string findLocalFile(const std::string &filename) const;
+
+	std::string m_localFolder;
 };

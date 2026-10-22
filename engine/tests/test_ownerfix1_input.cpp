@@ -961,8 +961,11 @@ struct CampaignHud
 //   * merge queue q18: the intro's fights earn 265.38 skill points on the merged tree (rank 3, 7 power points), measured; the lane's own tree (base b5c2095d) ended the
 //     intro between 100 and 200 (rank 2, 6 points). The movement is already in the tree before DEVPORT-3C (measured on the OWNERFIX-1 merge alone) and is
 //     not DEVPORT-3C's Horde provider (reverting it left 265.38): a simulation change of merge queues q16 / q17 moved the intro's fight, not attributed further;
+//   * lane SUMMON-1: the intro's GoblinCaveTroll now starts throwing rocks as retail's does (scripts.lua OnTrollCreated grants Upgrade_SwitchToRockThrowing, its
+//     DoCommandUpgrade runs Command_ToggleMountainTrollRockThrow at frame 0: measured by logging DoCommandUpgrade, and the intro reaches rank 3 again with
+//     DoCommandUpgrade switched off), so the intro's fights earn 160 skill points: rank 2, 6 power points;
 //   * the store sells Chill Wind (AngmarSpellStoreCommandSet slot 2) for EVIL_RANK_1_COST 5; a cast of it makes a SpellBookChillWind (OCL_SpellBookChillWind).
-TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights earn rank 3, Powers opens by the Palantir's button, Chill Wind is bought by clicks, aimed and cast, and its object stands")
+TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights earn rank 2, Powers opens by the Palantir's button, Chill Wind is bought by clicks, aimed and cast, and its object stands")
 {
 	if (!haveWorld("ownerfix1 campaign powers played"))
 	{
@@ -986,10 +989,11 @@ TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights e
 	REQUIRE(c.enables == 1);
 	CHECK(c.disables == 1);
 	c.frames(20);
-	CHECK(sc.getRankLevel() == 3);
-	CHECK(SimMath::floorToInt(sc.getSkillPoints()) >= 200); // tolerance: the rank 3 threshold (200) is the property; the intro's kills decide how far past it (q18: 265.38, rank 4 is 300)
+	CHECK(sc.getRankLevel() == 2);
+	CHECK(SimMath::floorToInt(sc.getSkillPoints()) >= 100); // tolerance: the rank 2 threshold (100) is the property; the intro's kills decide how far past it (SUMMON-1: 160)
+	CHECK(SimMath::floorToInt(sc.getSkillPoints()) < 197);  // tolerance: three more kills below must stay under rank 3 (200)
 	const int points0 = sc.getSciencePurchasePoints();
-	CHECK(points0 == 7); // 5 at the start + 1 for each of the two ranks
+	CHECK(points0 == 6); // 5 at the start + 1 for the rank
 	// three more kills by the Witch King: each exactly the data's award
 	Object *wk = c.game->logic().scriptEngine().getUnitNamed("Witch King");
 	REQUIRE(wk);
@@ -1011,7 +1015,7 @@ TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights e
 		++killed;
 	}
 	REQUIRE(killed == 3);
-	CHECK(sc.getRankLevel() == 3);
+	CHECK(sc.getRankLevel() == 2);
 	CHECK(sc.getSciencePurchasePoints() == points0);
 	// Powers: the Palantir's button, by the mouse
 	const int pal = c.hud->palantir()->level();
@@ -1023,7 +1027,7 @@ TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights e
 	REQUIRE_MESSAGE(st, c.hud->spellStoreError());
 	const int lvl = st->level();
 	REQUIRE(c.hud->windows().aptText("APT:SpellStoreSpellPoints") != nullptr);
-	CHECK(*c.hud->windows().aptText("APT:SpellStoreSpellPoints") == "7"); // the points the screen shows are the ones the player earned
+	CHECK(*c.hud->windows().aptText("APT:SpellStoreSpellPoints") == "6"); // the points the screen shows are the ones the player earned
 	REQUIRE(st->model().buttons().size() == 12u); // AngmarSpellStoreCommandSet: 12 powers
 	CHECK(st->model().buttons()[1].scienceName == "SCIENCE_ChillWind");
 	CHECK(st->model().buttons()[1].cost == 5);
@@ -1033,13 +1037,13 @@ TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights e
 	c.clickAt(x, y);
 	c.frames(3);
 	CHECK(AptSpellStore::stateName(st->buttonState(1)) == std::string("_already_purchased"));
-	CHECK(*c.hud->windows().aptText("APT:SpellStoreSpellPoints") == "2");
+	CHECK(*c.hud->windows().aptText("APT:SpellStoreSpellPoints") == "1");
 	REQUIRE(hitPoint(*c.hud, lvl, "SpellStore.Buttons.ButtonsMain.Accept", x, y));
 	c.clickAt(x, y);
 	c.frames(40);
 	CHECK(c.hud->spellStore() == nullptr);
 	CHECK(sc.hasScience(TheScienceStore->getScienceFromInternalName("SCIENCE_ChillWind")));
-	CHECK(sc.getSciencePurchasePoints() == 2);
+	CHECK(sc.getSciencePurchasePoints() == 1);
 	// the spell book shows it; the press aims; the click on the ground in front of the Witch King casts
 	AptPalantir *p = c.hud->palantir();
 	CHECK(std::string(AptPalantir::spellStateName(p->spellSlotState(0))) == "_up");

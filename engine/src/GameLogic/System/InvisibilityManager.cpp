@@ -23,6 +23,7 @@
 #include "GameLogic/Module/InvisibilityModules.h"
 #include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/Module/EmotionModules.h"
 #include "GameLogic/Module/StealthAbilityModules.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Object/PartitionManager.h"
@@ -152,18 +153,6 @@ float camouflageMultiplier(const Object &o, bool *known)
 				*known = true;
 				return *f;
 			}
-		}
-	}
-	return 0.0f;
-}
-
-float visionRange(const Object &o)
-{
-	if (const FieldValue *v = o.getTemplate()->getFinalOverride()->findField("VisionRange"))
-	{
-		if (const float *f = std::get_if<float>(v))
-		{
-			return *f;
 		}
 	}
 	return 0.0f;
@@ -911,8 +900,9 @@ void InvisibilityManager::reveal(Object *obj, Entry &e, unsigned delay, bool byF
 	++m_reveals;
 }
 
-// RW 0x81A6E7: every player that is ENEMIES to the object's player wakes its idle AIs that see the object (RW 0x81A6B5 -> 0x68FA3D(obj, -1) vision test, RW 0x662DB3:
-// an idle AI's next mood check becomes now); INFERENCE (S-1040): the vision test is the AI object's VisionRange, 2D centre distance
+// RW 0x81A6E7: every player that is ENEMIES to the object's player wakes its idle AIs that see the object (RW 0x81A6B5: an object with an AI whose
+// Object::canSee(obj, -1) RW 0x68FA3D is true, -1 its vision range RW 0x68E43B; lane STEALTHFLY1: the range + both bounding circles along its facing, was
+// the bare 2D centre distance to the template's VisionRange; then RW 0x662DB3: an idle AI's next mood check becomes now)
 void InvisibilityManager::wakeEnemiesThatSee(Object *obj)
 {
 	const Player *op = obj->getControllingPlayer();
@@ -928,9 +918,7 @@ void InvisibilityManager::wakeEnemiesThatSee(Object *obj)
 		{
 			continue;
 		}
-		const float range = visionRange(*o);
-		const float dx = SimMath::subf32(obj->getPosition()->x, o->getPosition()->x), dy = SimMath::subf32(obj->getPosition()->y, o->getPosition()->y);
-		if (range > 0.0f && SimMath::sumSquares2(dx, dy) <= SimMath::mulf32(range, range))
+		if (EmotionModules::canSeeObject(*o, *obj, AIUpdateInterface::objectVisionRangeOf(*o)))
 		{
 			ai->wakeUpNow();
 		}
@@ -981,7 +969,7 @@ std::vector<std::string> InvisibilityManager::stopLines()
 	return { "[S-1040] invisibility (lane STEALTH-1): the InvisibilityManager (TheGameLogic + 0x178) runs as RW 0x81BE85 / 0x81C217 / 0x81C32C do; not ported: the camouflage "
 		"detector (RW 0x81B758, with the +0x10 multiplier) and TREE (RW 0x81AC56) queries run on ThePartitionManager (lanes MODULES-2 / STEALTH-2) with the same-map "
 		"filter always passing, the terrain tree list holds the map's TREE map objects (no toppling), the client notification of a reveal (RW 0x81ACD7) and the "
-		"opacity pulse (RW 0x81AA85) are the client's, the reveal wakes idle enemy AIs by VisionRange (RW 0x68FA3D's vision test is not read), TAKING_DAMAGE reads the "
+		"opacity pulse (RW 0x81AA85) are the client's, TAKING_DAMAGE reads the "
 		"last damaging hit frame only, the script's stealth switch (Object + 0x457 bit 8) is absent, and RW "
 		"0x694C0D's draw module slot 0xF0 is read as AffectedByStealth",
 		"[S-1042] stealth look (lane STEALTH-1, client): an enemy's invisible object is not drawn or picked; a friend's pulses between GameData InvisibilityOpacityMin "

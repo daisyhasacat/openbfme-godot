@@ -6,9 +6,11 @@
 
 #include "Common/ArchiveFileSystem.h"
 #include "Common/AsciiString.h"
+#include "GameClient/MapClassification.h"
 #include "GameClient/MapObjectDrawables.h"
 #include "GameClient/MapPathfindObjects.h"
 #include "GameClient/MapUtil.h"
+#include "GameClient/UserDataFolder.h"
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/AI/AIPathfindConfig.h"
 #include "GameLogic/Map/TerrainLogic.h"
@@ -188,11 +190,21 @@ Dictionary PathfindView::build(const Ref<RetailFileSystem> &fsRef, const String 
 
 	RetailFileSystem &rfs = *fsRef.ptr();
 	const std::string lowerName = AsciiStringUtil::lowered(toNative(map_name));
-	const std::string mapDir = "maps\\" + lowerName;
-	const std::string path = mapDir + "\\" + lowerName + ".map";
+	// lane MOD-5: a user map is <user maps folder>\<name>\<name>.map (RW 0x70254F), read from disk; any other map is the archives' maps\<name>
+	const bool userMap = optBool(options, "user_map", false);
+	std::string mapsFolder, error;
+	if (!rfs.mapsFolder(userMap, mapsFolder, &error))
+	{
+		return fail(error);
+	}
+	if (userMap)
+	{
+		stops.push_back(UserDataFolder::kUserMapStop);
+	}
+	const std::string mapDir = MapClassification::mapDirectory(lowerName, mapsFolder);
+	const std::string path = MapClassification::mapPath(lowerName, mapsFolder);
 	double t0 = nowMs();
 	std::vector<uint8_t> bytes;
-	std::string error;
 	if (!rfs.readBytes(path, bytes, &error))
 	{
 		return fail(error);

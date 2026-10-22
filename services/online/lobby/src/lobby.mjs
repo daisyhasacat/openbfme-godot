@@ -20,6 +20,17 @@ import { gameRecord, listGames, ManagementQueryError } from './management.mjs';
 // Platform hooks (`env`): hmac(keyBytes, dataBytes) -> Promise<Uint8Array> (HMAC-SHA256), randomBytes(n) -> Uint8Array, now() -> ms, store (games and
 // blobs: saveGame / deleteGame / putBlob / getBlob), config (below). No secret is in this file: keys come from the environment / files.
 
+import {
+  chargeReportAttempt,
+  cleanupReportData,
+  endReportRoster,
+  persistReportRoster,
+  ReportError,
+  readPlayerReport,
+  readPlayerReports,
+  submitPlayerReport,
+} from './reports.mjs';
+
 export const VERSION = 1;
 // UBERJOIN-1: the simulation profile a room runs (docs/ONLINE.md): "normal" (Faithful) or "uber" (the Uber performance mode). A room made by a client that
 // predates the field has none and is "normal"; any other value is refused by name
@@ -50,9 +61,27 @@ export const HOLD_BACKOFF_S = 10;
 // (the lobby hears of a game's end only through the relay's log upload, so a game whose log never arrives counts for startedGameKeepMs). Nothing is
 // stored: presence lives in memory and a restarted lobby counts from zero again. The answer is computed at most every STATS_CACHE_S seconds.
 export const STATS_STOP = '[S-4830] players online = accounts whose token was seen in the last 150 s plus the humans of started games whose relay log has not been uploaded (3 h at most): an estimate, not a connection count';
+// LOBBYSTATS-1: games per day. A game counts as started when its replay START record (starts/<id>.json) is stored and as finished when the relay's log
+// of it (logs/<id>.obfmerlog) arrives, both at the time the store wrote the record: counts only, from records the lobby keeps anyway (no write of its
+// own). The times are read from the store once (store.gameTimes) and then kept in memory as the lobby writes those records; a store without
+// gameTimes (R2, none) answers null. A restore (the admin import) writes its records at the time of the import, so they count on that day
+export const GAME_DAYS = 7;
+const DAY_MS = 24 * 3600 * 1000;
 export const PRESENCE_S = 150;
 export const STATS_CACHE_S = 30;
 export const MAX_PRESENT = 50000; // the presence table's bound (sign-ins are rate-limited per address; past it a new session is not remembered)
+export const MAX_SIGHTINGS = 50000;
+export const MAX_SIGHTING_CLEANUP = 100;
+const SIGHTING_TTL_S = 365 * 24 * 60 * 60;
+const PLAYER_PAGE = 50;
+const ENFORCEMENT_PAGE = 50;
+const MAX_ROUTING_BYTES = 64;
+const SIGHTING_CLEANUP_INTERVAL_S = 60;
+const MAX_REASON_CHARS = 1000;
+const MAX_REASON_BYTES = 4000;
+const MAX_MOD_MESSAGE_BYTES = 8192;
+const MAX_NOTICE_TEXT_BYTES = 4000;
+const MAX_NOTICE_ID_BYTES = 128;
 const SLOT_STATES = ['open', 'closed', 'player', 'easy', 'medium', 'hard', 'brutal'];
 const AI_STATES = new Set(['easy', 'medium', 'hard', 'brutal']);
 // ONLINE-5 (Sol r1): the choices of a slot no one holds: an open or closed slot keeps none (they would come back with the next occupant)
@@ -183,13 +212,18 @@ export async function signSpectatorTicket(env, keyId, key, gameIdHex, index, mas
 
 // ---- errors ----------------------------------------------------------------------------------------------------------------------------------------------
 export class LobbyError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, details = {}) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 const bad = (code, msg) => new LobbyError(400, code, msg);
+function restoreGame(target, snapshot) {
+  for (const key of Object.keys(target)) delete target[key];
+  Object.assign(target, snapshot);
+}
 
 function intIn(v, lo, hi, what) {
   if (!Number.isInteger(v) || v < lo || v > hi) throw bad('bad_field', `${what} must be an integer in ${lo} .. ${hi}`);
@@ -205,6 +239,189 @@ function str(v, maxLen, what, { empty = false } = {}) {
   // no control characters (names and chat are shown in the game's UI)
   if (/[\u0000-\u001f\u007f]/.test(v)) throw bad('bad_field', `${what} has control characters`);
   return v;
+}
+function exactFields(value, fields, what) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw bad('bad_field', `${what} must be an object`);
+  const unknown = Object.keys(value).filter((key) => !fields.includes(key));
+  if (unknown.length) throw bad('unknown_field', `${what} has unknown field ${unknown[0]}`);
+  const missing = fields.filter((key) => !Object.hasOwn(value, key));
+  if (missing.length) throw bad('missing_field', `${what} is missing required field ${missing[0]}`);
+}
+function allowFields(value, fields, what) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw bad('bad_field', `${what} must be an object`);
+  const unknown = Object.keys(value).filter((key) => !fields.includes(key));
+  if (unknown.length) throw bad('unknown_field', `${what} has unknown field ${unknown[0]}`);
+}
+function boundedText(value, maxBytes, what, { empty = false } = {}) {
+  if (typeof value !== 'string' || (!empty && !value.length) || enc.encode(value).length > maxBytes) {
+    throw bad('bad_field', `${what} must be a string of ${empty ? 0 : 1} .. ${maxBytes} bytes`);
+  }
+  if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(value)) throw bad('bad_field', `${what} has control characters`);
+  return value;
+}
+function modReason(value, what = 'reason') {
+  const text = boundedText(value, MAX_REASON_BYTES, what);
+  if (Array.from(text).length > MAX_REASON_CHARS) throw bad('bad_field', `${what} must be at most ${MAX_REASON_CHARS} characters`);
+  return text;
+}
+function storedModerationReceipt(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      !validSha256(value.fingerprint) || value.v !== VERSION) {
+    throw new LobbyError(503, 'command_store_unavailable', 'moderation command receipts are unavailable');
+  }
+  if (value.status === 'pending' && Object.keys(value).sort().join(',') === 'fingerprint,status,v') return value;
+  if (value.status === 'complete' && Object.keys(value).sort().join(',') === 'fingerprint,response,status,v' &&
+      value.response && typeof value.response === 'object' && !Array.isArray(value.response) &&
+      Object.keys(value.response).sort().join(',') === 'body,status' &&
+      Number.isSafeInteger(value.response.status) && value.response.status >= 200 && value.response.status <= 599 &&
+      value.response.body && typeof value.response.body === 'object' && !Array.isArray(value.response.body)) return value;
+  throw new LobbyError(503, 'command_store_unavailable', 'moderation command receipts are unavailable');
+}
+function epochOrNull(value, what) {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || value < 0) throw bad('bad_field', `${what} must be null or non-negative unix seconds`);
+  return value;
+}
+const validInstall = (value) => typeof value === 'string' && /^[0-9a-f]{32}$/.test(value);
+const validDevice = (value) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+const validCommandId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(value);
+const validSha256 = (value) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+const compareText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+function validateEffectiveState(value, { stored = false } = {}) {
+  const fields = ['v', 'version', 'block', 'mute_until', 'routing', 'notice', 'devices', 'block_devices'];
+  allowFields(value, fields, 'enforcement');
+  for (const field of ['v', 'version', 'block', 'mute_until', 'routing', 'notice']) {
+    if (!Object.hasOwn(value, field)) throw bad('missing_field', `enforcement is missing required field ${field}`);
+  }
+  if (Object.hasOwn(value, 'block_devices') && typeof value.block_devices !== 'boolean') {
+    throw bad('bad_field', 'block_devices must be a boolean');
+  }
+  const blockDevices = value.block_devices === true;
+  if (value.devices === undefined && !blockDevices) throw bad('missing_field', 'enforcement is missing required field devices');
+  if (value.v !== VERSION) throw bad('bad_version', `v must be ${VERSION}`);
+  if (!Number.isSafeInteger(value.version) || value.version < 1) throw bad('bad_field', 'version must be a positive safe integer');
+  let block = null;
+  if (value.block !== null) {
+    allowFields(value.block, ['kind', 'until', 'reason', 'appeal'], 'block');
+    for (const field of ['kind', 'until', 'reason']) {
+      if (!Object.hasOwn(value.block, field)) throw bad('missing_field', `block is missing required field ${field}`);
+    }
+    if (value.block.kind !== 'ban' && value.block.kind !== 'suspend') throw bad('bad_field', 'block.kind must be ban or suspend');
+    block = {
+      kind: value.block.kind,
+      until: epochOrNull(value.block.until, 'block.until'),
+      reason: modReason(value.block.reason, 'block.reason'),
+      appeal: value.block.appeal === undefined ? '' : boundedText(value.block.appeal, MAX_REASON_BYTES, 'block.appeal', { empty: true }),
+    };
+    const message = `${block.kind === 'ban' ? 'Access is unavailable' : 'Access is temporarily unavailable'}: ${block.reason}`;
+    if (enc.encode(message).length > MAX_MOD_MESSAGE_BYTES) throw bad('bad_field', `the access message must be at most ${MAX_MOD_MESSAGE_BYTES} bytes`);
+  }
+  const muteUntil = epochOrNull(value.mute_until, 'mute_until');
+  const routing = boundedText(value.routing, MAX_ROUTING_BYTES, 'routing', { empty: true });
+  let notice = null;
+  if (value.notice !== null) {
+    exactFields(value.notice, ['id', 'text'], 'notice');
+    notice = {
+      id: boundedText(value.notice.id, MAX_NOTICE_ID_BYTES, 'notice.id'),
+      text: boundedText(value.notice.text, MAX_NOTICE_TEXT_BYTES, 'notice.text'),
+    };
+  }
+  const requestedDevices = value.devices === undefined ? [] : value.devices;
+  if (!Array.isArray(requestedDevices) || requestedDevices.length > 5 || requestedDevices.some((device) => !validDevice(device))) {
+    throw bad('bad_field', 'devices must contain at most five lowercase 64-digit hashes');
+  }
+  const devices = [...new Set(requestedDevices)].sort();
+  if (devices.length !== requestedDevices.length) throw bad('bad_field', 'devices must not contain duplicates');
+  if (blockDevices && block?.kind !== 'ban') throw bad('bad_field', 'block_devices requires a ban');
+  if (blockDevices && devices.length && !stored) throw bad('bad_field', 'block_devices cannot be combined with explicit devices');
+  if (stored && blockDevices && devices.length > 5) throw bad('bad_field', 'stored block_devices snapshot is invalid');
+  return {
+    v: VERSION, version: value.version, block, mute_until: muteUntil, routing, notice, devices,
+    ...(blockDevices ? { block_devices: true } : {}),
+  };
+}
+export function validateEnforcementRecord(value) {
+  try {
+    allowFields(value, ['install', 'v', 'version', 'block', 'mute_until', 'routing', 'notice', 'devices', 'block_devices'], 'stored enforcement');
+    if (!validInstall(value.install)) throw new Error('install must be 32 lowercase hex digits');
+    const { install, ...state } = value;
+    return { install, ...validateEffectiveState(state, { stored: true }) };
+  } catch (error) {
+    const install = validInstall(value?.install) ? ` for ${value.install}` : '';
+    throw new Error(`lobby: stored enforcement${install} is malformed: ${error.message}`);
+  }
+}
+export function knownPlatform(value) {
+  return ['windows', 'linux', 'macos'].includes(value) ? value : null;
+}
+
+export function withoutGameIp(game) {
+  const record = { ...game };
+  delete record.ip;
+  return record;
+}
+
+export function validateSighting(value) {
+  const fields = ['install', 'nicks', 'first_seen', 'last_seen', 'signins', 'platform', 'version', 'devices'];
+  try {
+    exactFields(value, fields, 'stored sighting');
+    if (!validInstall(value.install)) throw bad('bad_field', 'install must be 32 lowercase hex digits');
+    if (!Number.isSafeInteger(value.first_seen) || value.first_seen < 0 || !Number.isSafeInteger(value.last_seen) ||
+        value.last_seen < value.first_seen || !Number.isSafeInteger(value.signins) || value.signins < 1) {
+      throw bad('bad_field', 'stored sighting timestamps and signins are invalid');
+    }
+    if (value.platform !== null) boundedText(value.platform, 32, 'stored sighting platform');
+    if (value.version !== null) boundedText(value.version, 64, 'stored sighting version');
+    if (!Array.isArray(value.nicks) || value.nicks.length < 1 || value.nicks.length > 10) throw bad('bad_field', 'stored sighting nicks are invalid');
+    const nicks = value.nicks.map((entry) => {
+      exactFields(entry, ['nick', 'first_seen', 'last_seen'], 'stored nickname');
+      const nick = str(entry.nick, 24, 'stored nickname');
+      if (!Number.isSafeInteger(entry.first_seen) || entry.first_seen < value.first_seen ||
+          !Number.isSafeInteger(entry.last_seen) || entry.last_seen < entry.first_seen || entry.last_seen > value.last_seen) {
+        throw bad('bad_field', 'stored nickname timestamps are invalid');
+      }
+      return { nick, first_seen: entry.first_seen, last_seen: entry.last_seen };
+    });
+    if (new Set(nicks.map((entry) => entry.nick)).size !== nicks.length) throw bad('bad_field', 'stored sighting nicks must be unique');
+    if (!Array.isArray(value.devices) || value.devices.length > 5) throw bad('bad_field', 'stored sighting devices are invalid');
+    const devices = value.devices.map((entry) => {
+      exactFields(entry, ['hash', 'count', 'first_seen', 'last_seen'], 'stored device');
+      if (!validDevice(entry.hash) || !Number.isSafeInteger(entry.count) || entry.count < 1 ||
+          !Number.isSafeInteger(entry.first_seen) || entry.first_seen < value.first_seen ||
+          !Number.isSafeInteger(entry.last_seen) || entry.last_seen < entry.first_seen || entry.last_seen > value.last_seen) {
+        throw bad('bad_field', 'stored device fields are invalid');
+      }
+      return { hash: entry.hash, count: entry.count, first_seen: entry.first_seen, last_seen: entry.last_seen };
+    });
+    if (new Set(devices.map((entry) => entry.hash)).size !== devices.length) throw bad('bad_field', 'stored sighting devices must be unique');
+    return {
+      install: value.install,
+      nicks,
+      first_seen: value.first_seen,
+      last_seen: value.last_seen,
+      signins: value.signins,
+      platform: knownPlatform(value.platform),
+      version: value.version,
+      devices,
+    };
+  } catch (error) {
+    throw new Error(`lobby: stored sighting is malformed: ${error.message}`);
+  }
+}
+function isActiveBlock(block, now) {
+  return block && (block.until === null || block.until > now) ? block : null;
+}
+function sightingExpired(record, now) {
+  return now - record.last_seen > SIGHTING_TTL_S;
+}
+function compareBlocks(a, b) {
+  if (!a) return -1;
+  if (!b) return 1;
+  const rank = (block) => block.kind === 'ban' ? 2 : 1;
+  if (rank(a) !== rank(b)) return rank(a) - rank(b);
+  if (a.until === null && b.until !== null) return 1;
+  if (a.until !== null && b.until === null) return -1;
+  return (a.until ?? 0) - (b.until ?? 0);
 }
 
 // the game id a relay log names in its header (services/online/relay/RelayCore.h, "Log format": "OBFMERLG", u32 version, u64 game id, ...)
@@ -228,6 +445,7 @@ export class Lobby {
       crcInterval: 100,
       ticketSeconds: 6 * 3600,
       sessionSeconds: 30 * 24 * 3600,
+      requireInstall: false,
       openGameIdleMs: 10 * 60 * 1000,
       startedGameKeepMs: 3 * 3600 * 1000,
       maxGames: 2000,
@@ -235,6 +453,18 @@ export class Lobby {
     };
     if (!(this.config.ticketKeys instanceof Map) || !this.config.ticketKeys.size) throw new Error('lobby: no ticket keys (TICKET_KEYS)');
     if (!this.config.sessionKey || this.config.sessionKey.length < 16) throw new Error('lobby: no session key (SESSION_KEY, 16+ bytes of hex)');
+    if (this.config.adminKey && this.config.modKey && bytesToHex(this.config.adminKey) === bytesToHex(this.config.modKey)) {
+      throw new Error('lobby: ADMIN_KEY and MOD_KEY must be different');
+    }
+    if (this.config.enforcementCheckKey && this.config.enforcementCheckKey.length !== 32) {
+      throw new Error('lobby: ENFORCEMENT_CHECK_KEY must be 32 bytes');
+    }
+    if (this.config.enforcementCheckKey && (
+      (this.config.adminKey && bytesToHex(this.config.enforcementCheckKey) === bytesToHex(this.config.adminKey)) ||
+      (this.config.modKey && bytesToHex(this.config.enforcementCheckKey) === bytesToHex(this.config.modKey))
+    )) {
+      throw new Error('lobby: ENFORCEMENT_CHECK_KEY must be different from ADMIN_KEY and MOD_KEY');
+    }
     // CFDEPLOY-1: an empty RELAYS is allowed (the lobby can run before its relay exists): /v1/health says so and START is refused ('no_relay')
     if (!Array.isArray(this.config.relays)) throw new Error('lobby: RELAYS is not a list');
     for (const r of this.config.relays) {
@@ -253,6 +483,34 @@ export class Lobby {
     this.accountHolds = new Map(); // Sol r1: account id -> its held polls
     this.present = new Map(); // ONLINECOUNT-1: account id -> the last time (ms) the lobby saw its token
     this.statsCache = null; // { at (ms), answer }
+    this.gameTimes = null; // LOBBYSTATS-1: { started: [ms], finished: [ms] } since the first of the GAME_DAYS days, once read from the store
+    this.enforcement = new Map();
+    this.enforcementDeviceOwners = new Map();
+    this.sightings = new Map();
+    this.sightingDeviceOwners = new Map();
+    this.lastSightingCleanupAt = null;
+    this.sightingCleanupCursor = null;
+    this.reportCleanupAt = null;
+    this.reportCleanupCursor = { index: 0, after: null };
+    this.reportLifecycleError = null;
+  }
+
+  identityStore() {
+    return this.env.store.identity ?? null;
+  }
+
+  identityIndexed() {
+    return this.identityStore() !== null;
+  }
+
+  getEnforcement(install) {
+    const identity = this.identityStore();
+    return identity ? identity.getEnforcement(install) : this.enforcement.get(install);
+  }
+
+  getSighting(install) {
+    const identity = this.identityStore();
+    return identity ? identity.getSighting(install) : this.sightings.get(install);
   }
 
   // ---- ONLINECOUNT-1: who is online ----
@@ -285,9 +543,36 @@ export class Lobby {
         for (const s of g.slots) if (s.state === 'player' && s.account) online.add(s.account);
       }
     }
-    const answer = { v: VERSION, players: online.size, games_open: open, games_running: running, as_of: Math.floor(now / 1000) };
+    const answer = { v: VERSION, players: online.size, games_open: open, games_running: running, ...this.gamesPerDay(now), as_of: Math.floor(now / 1000) };
     this.statsCache = { at: now, answer };
     return answer;
+  }
+  // LOBBYSTATS-1: the last 24 hours, and the games started on each of the last GAME_DAYS UTC days (oldest first, today last, today so far)
+  gamesPerDay(now) {
+    const first = Math.floor(now / DAY_MS) * DAY_MS - (GAME_DAYS - 1) * DAY_MS;
+    if (!this.gameTimes) {
+      if (typeof this.env.store.gameTimes !== 'function') return { games_started_24h: null, games_finished_24h: null, games_started_by_day: null };
+      const t = this.env.store.gameTimes(first);
+      this.gameTimes = { started: [...t.started], finished: [...t.finished] };
+    }
+    const keep = (list) => list.filter((at) => at >= first);
+    this.gameTimes.started = keep(this.gameTimes.started);
+    this.gameTimes.finished = keep(this.gameTimes.finished);
+    const since = now - DAY_MS;
+    const byDay = Array.from({ length: GAME_DAYS }, (_, i) => ({ day: new Date(first + i * DAY_MS).toISOString().slice(0, 10), games: 0 }));
+    for (const at of this.gameTimes.started) {
+      const i = Math.floor((at - first) / DAY_MS);
+      if (i < GAME_DAYS) byDay[i].games += 1;
+    }
+    return {
+      games_started_24h: this.gameTimes.started.filter((at) => at > since && at <= now).length,
+      games_finished_24h: this.gameTimes.finished.filter((at) => at > since && at <= now).length,
+      games_started_by_day: byDay,
+    };
+  }
+  // a START record or relay log the lobby has just stored (the store's own time is the same clock); after a restore the times are read again
+  noteGameRecord(kind) {
+    if (this.gameTimes) this.gameTimes[kind].push(this.env.now());
   }
 
   // ---- ONLINE-5: held polls ----
@@ -321,19 +606,74 @@ export class Lobby {
     if (set) for (const w of [...set]) w();
   }
 
-  load(games, relayStatus = []) {
+  wakeAll() {
+    for (const id of [...this.waiters.keys()]) this.wake(id);
+  }
+
+  load(games, relayStatus = [], enforcementRecords = [], sightings = []) {
+    if (!Array.isArray(games) || !Array.isArray(relayStatus) || !Array.isArray(enforcementRecords) || !Array.isArray(sightings)) {
+      throw new Error('lobby: persisted state collections must be arrays');
+    }
+    this.loadGames(games);
     this.testing.load(relayStatus);
     this.matchStatistics = loadStatistics(relayStatus);
     this.desyncReports = new Map(relayStatus.filter(r => r.kind === "match-desync").map(r => [r.id + ":" + r.slot, r]));
-    for (const g of games) this.games.set(g.id, g);
     for (const r of relayStatus) {
       if (r.kind === 'user') this.users.set(r.id, r);
       else if (r.kind === 'game-history') this.history.set(r.id, r);
       else if (r.relay) this.relayStatus.set(r.relay, r);
     }
-    // Existing matches predate the directory; recover their display identities without credentials.
     for (const g of games) for (const slot of g.slots) if (slot.account && !this.users.has(slot.account)) {
-      this.users.set(slot.account, { kind: 'user', id: slot.account, name: slot.name, accountKind: 'guest', revision: 0, tokenVersion: 0, banned: false, createdAt: g.created });
+      this.users.set(slot.account, {kind:'user', id:slot.account, name:slot.name, accountKind:'guest', revision:0, tokenVersion:0, banned:false, createdAt:g.created});
+    }
+    if (this.identityIndexed()) return;
+    for (const raw of enforcementRecords) {
+      const record = validateEnforcementRecord(raw);
+      if (this.enforcement.has(record.install)) throw new Error(`lobby: duplicate stored enforcement for ${record.install}`);
+      const { install, ...state } = record;
+      this.enforcement.set(install, state);
+      for (const device of state.devices) {
+        const owners = this.enforcementDeviceOwners.get(device) ?? new Set();
+        owners.add(install);
+        this.enforcementDeviceOwners.set(device, owners);
+      }
+    }
+    for (const raw of sightings) {
+      const record = validateSighting(raw);
+      if (this.sightings.has(record.install)) throw new Error(`lobby: duplicate stored sighting for ${record.install}`);
+      if (this.sightings.size >= MAX_SIGHTINGS) throw new Error(`lobby: stored sightings exceed ${MAX_SIGHTINGS}`);
+      this.sightings.set(record.install, record);
+      for (const { hash } of record.devices) {
+        const installs = this.sightingDeviceOwners.get(hash) ?? new Set();
+        installs.add(record.install);
+        this.sightingDeviceOwners.set(hash, installs);
+      }
+    }
+  }
+
+  loadGames(games) {
+    if (!Array.isArray(games)) throw new Error('lobby: persisted games must be an array');
+    for (const raw of games) {
+      const g = withoutGameIp(raw);
+      if (!g || typeof g.id !== 'string' || !/^[0-9a-f]{16}$/.test(g.id) || !Array.isArray(g.slots) || g.slots.length !== MAX_SLOTS) {
+        throw new Error('lobby: stored game is malformed');
+      }
+      if (this.games.has(g.id)) throw new Error(`lobby: duplicate stored game ${g.id}`);
+      if (g.routing === undefined) g.routing = '';
+      if (typeof g.routing !== 'string' || enc.encode(g.routing).length > MAX_ROUTING_BYTES) throw new Error(`lobby: stored game ${g.id} has invalid routing`);
+      if (g.reportParticipants === undefined) {
+        g.reportParticipants = g.slots.filter((slot) => slot.state === 'player' && typeof slot.account === 'string')
+          .map((slot) => ({ account: slot.account, install: slot.install ?? null, nick: slot.name }));
+      }
+      if (!Array.isArray(g.reportParticipants) || g.reportParticipants.length > 256 ||
+          new Set(g.reportParticipants.map((participant) => participant?.account)).size !== g.reportParticipants.length) {
+        throw new Error(`lobby: stored game ${g.id} has invalid report participants`);
+      }
+      for (const slot of g.slots) {
+        if (slot.install === undefined) slot.install = null;
+        if (slot.install !== null && !validInstall(slot.install)) throw new Error(`lobby: stored game ${g.id} has an invalid slot install`);
+      }
+      this.games.set(g.id, g);
     }
   }
 
@@ -360,7 +700,9 @@ export class Lobby {
     const mac = await this.env.hmac(this.config.sessionKey, body);
     return `${base64(body, true)}.${base64(mac, true)}`;
   }
-  async account(authorization) {
+  // `leaving` (DEVINPR-1, review of WP-C): a banned or suspended player may still leave the room they are in (POST .../leave), so their slot does not
+  // stay taken until the host kicks them; nothing else is allowed and the token itself is checked as always
+  async account(authorization, { leaving = false } = {}) {
     const m = /^Bearer ([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(authorization ?? '');
     if (!m) throw new LobbyError(401, 'signed_out', 'sign in first');
     let body;
@@ -375,26 +717,212 @@ export class Lobby {
     let diff = want.length ^ mac.length;
     for (let i = 0; i < Math.min(want.length, mac.length); i++) diff |= want[i] ^ mac[i];
     if (diff) throw new LobbyError(401, 'signed_out', 'the session token is not this lobby\'s');
-    const a = JSON.parse(dec.decode(body));
+    let a;
+    try {
+      a = JSON.parse(dec.decode(body));
+    } catch {
+      throw new LobbyError(401, 'signed_out', 'a malformed session token');
+    }
+    if (typeof a !== 'object' || a === null || Array.isArray(a) || typeof a.id !== 'string' || typeof a.name !== 'string') {
+      throw new LobbyError(401, 'signed_out', 'a malformed session token');
+    }
     if (!(a.exp > this.env.now() / 1000)) throw new LobbyError(401, 'signed_out', 'the session expired: sign in again');
     if (typeof a.id !== 'string' || typeof a.name !== 'string') throw new LobbyError(401, 'signed_out', 'invalid account');
     let user = this.users.get(a.id);
     if (!user) user = await this.saveUser({ kind: 'user', id: a.id, name: a.name, accountKind: a.kind, revision: 0, tokenVersion: 0, banned: false, createdAt: this.env.now() });
     if (user.banned) throw new LobbyError(403, 'banned', 'this account is suspended');
     if ((a.tokenVersion ?? 0) !== user.tokenVersion) throw new LobbyError(401, 'revoked', 'this session was revoked: sign in again');
-    this.seen(a.id);
-    return { ...a, name: user.name };
+    if ((a.install !== undefined && !validInstall(a.install)) || (a.device !== undefined && !validDevice(a.device))) {
+      throw new LobbyError(401, 'signed_out', 'the session identity is malformed');
+    }
+    if (this.config.requireInstall && !a.install) throw new LobbyError(401, 'signed_out', 'sign in again (an OpenBFME version older than this lobby: update OpenBFME if this repeats)');
+    const current = leaving ? { ...a, routing: (a.install ? this.getEnforcement(a.install)?.routing : null) ?? '' } : this.checkAccount(a);
+    this.seen(a.id); // ONLINECOUNT-1
+    return current;
   }
 
   async guest(body, ip) {
     this.limit(`signin:${ip}`, 10, 20);
+    allowFields(body, ['v', 'name', 'install', 'device', 'client'], 'guest');
+    if (body.v !== undefined && body.v !== VERSION) throw bad('bad_version', `v must be ${VERSION}`);
     const name = str(body?.name, 24, 'name').trim();
     if (!name) throw bad('bad_field', 'name must not be blank');
+    if (body.install !== undefined && !validInstall(body.install)) throw bad('bad_field', 'install must be 32 lowercase hex digits');
+    if (body.device !== undefined && !validDevice(body.device)) throw bad('bad_field', 'device must be 64 lowercase hex digits');
+    if (this.config.requireInstall && !body.install) throw new LobbyError(400, 'install_required', 'this OpenBFME version is too old for online play: update OpenBFME (the launcher updates it) and sign in again');
+    let client;
+    if (body.client !== undefined) {
+      exactFields(body.client, ['platform', 'version'], 'client');
+      const platform = boundedText(body.client.platform, 32, 'client.platform');
+      if (knownPlatform(platform) === null) throw bad('bad_field', 'client.platform must be windows, linux or macos');
+      client = { platform, version: boundedText(body.client.version, 64, 'client.version') };
+    }
     const id = `guest:${bytesToHex(this.env.randomBytes(8))}`;
-    const account = { id, name, kind: 'guest' };
-    await this.saveUser({ kind: 'user', id, name, accountKind: 'guest', revision: 0, tokenVersion: 0, banned: false, createdAt: this.env.now() });
+    const account = {
+      id,
+      name,
+      kind: 'guest',
+      ...(body.install !== undefined ? { install: body.install } : {}),
+      ...(body.device !== undefined ? { device: body.device } : {}),
+      ...(client ? { client } : {}),
+    };
+    await this.saveUser({kind:'user', id, name, accountKind:'guest', revision:0, tokenVersion:0, banned:false, createdAt:this.env.now()});
+    const current = this.checkAccount(account);
+    if (body.install) await this.recordSighting(body.install, name, body.device ?? null, client ?? null);
     this.seen(id); // ONLINECOUNT-1
-    return { v: VERSION, token: await this.makeToken(account), account };
+    const response = { v: VERSION, token: await this.makeToken(account), account: { id, name, kind: 'guest' } };
+    const notice = body.install ? this.getEnforcement(body.install)?.notice : null;
+    if (notice) response.notice = { ...notice };
+    return response;
+  }
+
+  deviceBlock(device) {
+    if (!device) return null;
+    const now = Math.floor(this.env.now() / 1000);
+    if (this.identityIndexed()) return this.identityStore().deviceBlock(device, now);
+    let selected = null;
+    let owner = null;
+    for (const install of [...(this.enforcementDeviceOwners.get(device) ?? [])].sort(compareText)) {
+      const candidate = isActiveBlock(this.enforcement.get(install)?.block, now);
+      const order = compareBlocks(candidate, selected);
+      if (candidate && (order > 0 || (order === 0 && (owner === null || install < owner)))) {
+        selected = candidate;
+        owner = install;
+      }
+    }
+    return selected;
+  }
+
+  checkAccount(account, { chat = false } = {}) {
+    if (this.config.requireInstall && !account.install) throw new LobbyError(401, 'signed_out', 'sign in again (an OpenBFME version older than this lobby: update OpenBFME if this repeats)');
+    const now = Math.floor(this.env.now() / 1000);
+    const effective = account.install ? this.getEnforcement(account.install) : null;
+    const directBlock = isActiveBlock(effective?.block, now);
+    const deviceBlock = this.deviceBlock(account.device);
+    const block = compareBlocks(deviceBlock, directBlock) > 0 ? deviceBlock : directBlock;
+    if (block) {
+      const until = block.until === null ? '' : ` until ${new Date(block.until * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC`; // DEVINPR-1
+      const message = `${block.kind === 'ban' ? 'Access is unavailable' : 'Access is temporarily unavailable'}${until}: ${block.reason}`;
+      if (enc.encode(message).length > MAX_MOD_MESSAGE_BYTES) throw new Error('lobby: stored access message exceeds its limit');
+      throw new LobbyError(403, block.kind === 'ban' ? 'banned' : 'suspended', message, {
+        until: block.until,
+        reason: block.reason,
+      });
+    }
+    if (chat && effective?.mute_until !== null && effective?.mute_until > now) {
+      // DEVINPR-1 (review of WP-C): a time the player can read (UTC), not a Unix time; `until` keeps the number for clients
+      const message = `Chat is unavailable until ${new Date(effective.mute_until * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC.`;
+      if (enc.encode(message).length > MAX_MOD_MESSAGE_BYTES) throw new Error('lobby: stored mute message exceeds its limit');
+      throw new LobbyError(403, 'muted', message, { until: effective.mute_until });
+    }
+    return { ...account, routing: effective?.routing ?? '' };
+  }
+
+  async recordSighting(install, nick, device, client) {
+    const now = Math.floor(this.env.now() / 1000);
+    await this.cleanupSightingsIfDue(now);
+    const previous = this.getSighting(install);
+    if (!this.identityIndexed() && !previous && this.sightings.size >= MAX_SIGHTINGS) {
+      // DEVINPR-1 (review of WP-C): a full table forgets the install seen longest ago (a moderation signal only: bans and suspensions are the
+      // enforcement records, never evicted) instead of refusing every new player's sign-in until a year of sightings expires
+      let oldest = null;
+      for (const [key, value] of this.sightings) {
+        if (oldest === null || value.last_seen < oldest[1].last_seen || (value.last_seen === oldest[1].last_seen && key < oldest[0])) oldest = [key, value];
+      }
+      await this.forgetSighting(oldest[0], oldest[1]);
+    }
+    const record = previous
+      ? {
+        ...previous,
+        nicks: previous.nicks.map((entry) => ({ ...entry })),
+        devices: previous.devices.map((entry) => ({ ...entry })),
+        last_seen: now,
+        signins: previous.signins,
+        platform: client?.platform ?? previous.platform,
+        version: client?.version ?? previous.version,
+      }
+      : {
+        install,
+        nicks: [],
+        first_seen: now,
+        last_seen: now,
+        signins: 0,
+        platform: client?.platform ?? null,
+        version: client?.version ?? null,
+        devices: [],
+      };
+    record.signins += 1;
+    const nickIndex = record.nicks.findIndex((entry) => entry.nick === nick);
+    if (nickIndex >= 0) {
+      const [nickRecord] = record.nicks.splice(nickIndex, 1);
+      nickRecord.last_seen = now;
+      record.nicks.unshift(nickRecord);
+    } else {
+      record.nicks.unshift({ nick, first_seen: now, last_seen: now });
+    }
+    if (record.nicks.length > 10) record.nicks.length = 10;
+    if (device) {
+      const deviceIndex = record.devices.findIndex((entry) => entry.hash === device);
+      if (deviceIndex >= 0) {
+        const [deviceRecord] = record.devices.splice(deviceIndex, 1);
+        deviceRecord.last_seen = now;
+        deviceRecord.count += 1;
+        record.devices.unshift(deviceRecord);
+      } else {
+        record.devices.unshift({ hash: device, count: 1, first_seen: now, last_seen: now });
+      }
+      if (record.devices.length > 5) record.devices.length = 5;
+    }
+    if (typeof this.env.store.saveSighting !== 'function') throw new LobbyError(501, 'no_sighting_store', 'sighting storage is not configured');
+    await this.env.store.saveSighting(record);
+    if (previous && !this.identityIndexed()) {
+      for (const { hash } of previous.devices) {
+        const installs = this.sightingDeviceOwners.get(hash);
+        installs?.delete(install);
+        if (installs && !installs.size) this.sightingDeviceOwners.delete(hash);
+      }
+    }
+    if (!this.identityIndexed()) {
+      this.sightings.set(install, record);
+      for (const { hash } of record.devices) {
+        const installs = this.sightingDeviceOwners.get(hash) ?? new Set();
+        installs.add(install);
+        this.sightingDeviceOwners.set(hash, installs);
+      }
+    }
+  }
+
+  async forgetSighting(install, record) {
+    if (typeof this.env.store.deleteSighting !== 'function') throw new LobbyError(501, 'no_sighting_store', 'sighting storage is not configured');
+    await this.env.store.deleteSighting(install);
+    this.sightings.delete(install);
+    for (const { hash } of record.devices) {
+      const installs = this.sightingDeviceOwners.get(hash);
+      installs?.delete(install);
+      if (installs && !installs.size) this.sightingDeviceOwners.delete(hash);
+    }
+  }
+
+  async cleanupSightingsIfDue(now = Math.floor(this.env.now() / 1000)) {
+    if (this.lastSightingCleanupAt !== null && now - this.lastSightingCleanupAt < SIGHTING_CLEANUP_INTERVAL_S) return;
+    if (this.identityIndexed()) {
+      this.identityStore().cleanupSightings(now);
+      this.lastSightingCleanupAt = now;
+      return;
+    }
+    if (!this.sightings.size) return;
+    if (typeof this.env.store.deleteSighting !== 'function') throw new LobbyError(501, 'no_sighting_store', 'sighting storage is not configured');
+    const keys = [...this.sightings.keys()].sort();
+    let start = this.sightingCleanupCursor === null ? 0 : keys.findIndex((key) => key > this.sightingCleanupCursor);
+    if (start < 0) start = 0;
+    const visits = Math.min(MAX_SIGHTING_CLEANUP, keys.length);
+    for (let i = 0; i < visits; i++) {
+      const install = keys[(start + i) % keys.length];
+      const record = this.sightings.get(install);
+      if (record && sightingExpired(record, now)) await this.forgetSighting(install, record);
+    }
+    this.sightingCleanupCursor = keys[(start + visits - 1) % keys.length] ?? null;
+    this.lastSightingCleanupAt = now;
   }
 
   // ---- browser dashboard and account moderation ----
@@ -583,6 +1111,7 @@ export class Lobby {
         slot: i,
         state: s.state,
         name: s.name ?? null,
+        player_id: s.state === 'player' ? (s.account ?? null) : null,
         faction: s.faction,
         color: s.color,
         startPos: s.startPos,
@@ -601,16 +1130,85 @@ export class Lobby {
       const keep = g.state === 'started' ? this.config.startedGameKeepMs : this.config.openGameIdleMs;
       if (now - g.touched > keep) {
         if (g.finished && !this.history.has(id)) continue; // retain legacy/unarchived records until durable migration succeeds
+        if (typeof this.env.store.reportTransaction === 'function' && g.reportEndedAt == null) continue;
         this.games.delete(id);
         this.env.store.deleteGame?.(id);
         this.wake(id);
       }
     }
   }
+  async prepareReportExpiries() {
+    if (typeof this.env.store.reportTransaction !== 'function') return;
+    const now = this.env.now();
+    for (const g of this.games.values()) {
+      const keep = g.state === 'started' ? this.config.startedGameKeepMs : this.config.openGameIdleMs;
+      if (now - g.touched <= keep || g.reportEndedAt != null) continue;
+      const endedAt = Math.floor((g.touched + keep) / 1000);
+      try {
+        await endReportRoster(this.env.store, g.id, endedAt, g);
+        g.reportEndedAt = endedAt;
+      } catch (error) {
+        this.reportLifecycleError = error;
+        throw new LobbyError(503, 'report_store', 'the game end could not be recorded');
+      }
+    }
+    const nowSeconds = Math.floor(now / 1000);
+    if (this.reportCleanupAt === null || nowSeconds - this.reportCleanupAt >= 60) {
+      try {
+        this.reportCleanupCursor = await cleanupReportData(this.env.store, nowSeconds, this.reportCleanupCursor);
+        this.reportCleanupAt = nowSeconds;
+      } catch (error) {
+        this.reportLifecycleError = error;
+        throw new LobbyError(503, 'report_store', 'report retention cleanup could not be completed');
+      }
+    }
+  }
+  addReportParticipant(g, account) {
+    g.reportParticipants ??= [];
+    if (g.reportParticipants.some((participant) => participant.account === account.id)) return false;
+    if (g.reportParticipants.length >= 256) throw new LobbyError(409, 'roster_full', 'this game has reached its participant history limit');
+    g.reportParticipants.push({ account: account.id, install: account.install ?? null, nick: account.name });
+    return true;
+  }
+  async syncReportRoster(g) {
+    if (typeof this.env.store.reportTransaction !== 'function') return;
+    try {
+      await persistReportRoster(this.env.store, g, g.reportEndedAt ?? null);
+    } catch (error) {
+      this.reportLifecycleError = error;
+      throw new LobbyError(503, 'report_store', 'the game roster could not be saved');
+    }
+  }
+  async finishReportRoster(id, g = null) {
+    if (typeof this.env.store.reportTransaction !== 'function') return;
+    try {
+      const result = await endReportRoster(this.env.store, id, Math.floor(this.env.now() / 1000), g);
+      if (g && result) g.reportEndedAt = result.ended_at;
+    } catch (error) {
+      this.reportLifecycleError = error;
+      throw new LobbyError(503, 'report_store', 'the game end could not be recorded');
+    }
+  }
   game(id) {
     const g = this.games.get(id);
     if (!g) throw new LobbyError(404, 'no_game', `no game ${id}`);
     return g;
+  }
+  deniedFromGame(g, account) {
+    return (g.denied ?? []).some((entry) =>
+      (entry.account && entry.account === account.id) || (entry.install && account.install && entry.install === account.install));
+  }
+  gameFor(account, id) {
+    const g = this.game(id);
+    if ((g.routing ?? '') !== (account.routing ?? '')) throw new LobbyError(404, 'no_game', `no game ${id}`);
+    if (this.deniedFromGame(g, account)) throw new LobbyError(403, 'not_in_game', 'you are not in this game (kicked or left)');
+    return g;
+  }
+  gameForInstall(install) {
+    for (const g of this.games.values()) {
+      if (g.slots.some((slot) => slot.state === 'player' && slot.install === install)) return g.id;
+    }
+    return null;
   }
   slotOf(g, account) {
     return g.slots.findIndex((s) => s.account === account.id);
@@ -672,7 +1270,7 @@ export class Lobby {
     return out;
   }
 
-  async create(account, body, ip) {
+  async create(account, body) {
     this.limit(`create:${account.id}`, 6, 6);
     this.sweep();
     if (this.games.size >= this.config.maxGames) throw new LobbyError(503, 'full', 'the lobby holds its maximum number of games');
@@ -713,21 +1311,29 @@ export class Lobby {
       if (s.state === 'player' && i !== hostSlot) throw bad('bad_field', 'other human slots start "open" (players join them)');
     }
     slots[hostSlot].account = account.id;
+    slots[hostSlot].install = account.install ?? null;
     slots[hostSlot].name = account.name;
     slots[hostSlot].platform = platform;
     const id = bytesToHex(this.env.randomBytes(8));
-    const g = { id, name, password, profile, mode, setup, slots, hostSlot, state: 'open', chat: [], seq: 0, created: this.env.now(), touched: this.env.now(), ip };
+    const g = {
+      id, name, password, profile, mode, setup, slots, hostSlot, state: 'open', routing: account.routing ?? '',
+      chat: [], seq: 0, created: this.env.now(), touched: this.env.now(),
+      reportParticipants: [{ account: account.id, install: account.install ?? null, nick: account.name }],
+    };
     if (roomCode !== null) g.roomCode = roomCode;
     this.event(g, `${account.name} created the game`);
+    await this.syncReportRoster(g);
     this.games.set(id, g);
     await this.save(g);
     return { v: VERSION, id, game: this.gameView(g, account) };
   }
 
   // ONLINE-4: `running` also lists the started games (the server browser offers them to watch: POST .../spectate), after the open ones
-  list(running = false) {
+  list(running = false, account = null) {
     this.sweep();
-    const games = [...this.games.values()].filter((g) => !g.roomCode && (g.state === 'open' || (running && g.state === 'started' && !g.finished)))
+    const routing = account?.routing ?? '';
+    const games = [...this.games.values()].filter((g) => (g.routing ?? '') === routing && !this.deniedFromGame(g, account ?? {})
+      && !g.roomCode && (g.state === 'open' || (running && g.state === 'started' && !g.finished)))
       .sort((a, b) => (b.state === 'open') - (a.state === 'open') || b.created - a.created).slice(0, 200).map((g) => this.publicGame(g));
     return { v: VERSION, games };
   }
@@ -735,7 +1341,7 @@ export class Lobby {
   // `byCode`: the caller found the room by its code (joinByCode); every other entry into a private room (the game id) must present the code itself
   async join(account, id, body, byCode = false) {
     this.limit(`join:${account.id}`, 20, 10);
-    const g = this.game(id);
+    const g = this.gameFor(account, id);
     // UBERJOIN-1: the mode is checked first, before the member / started / password branches (an existing member's repeated join too): a client that sends
     // none is "normal"; a malformed one is bad_field, the other mode is the 409 "mode" refusal
     const joinerMode = modeOf(body?.mode, 'mode');
@@ -758,10 +1364,14 @@ export class Lobby {
     }
     const slot = g.slots.findIndex((s) => s.state === 'open');
     if (slot < 0) throw new LobbyError(409, 'full', 'the game is full');
+    const candidate = structuredClone(g);
+    this.addReportParticipant(candidate, account);
     // Sol r1 (ONLINE-5): a joiner takes the slot with no choices of its own: nothing an earlier AI of the slot held (a start position, a colour others
     // may have claimed since) carries over to the player
-    Object.assign(g.slots[slot], { state: 'player', account: account.id, name: account.name, ready: false, platform, ...NO_CHOICES });
-    this.unreadyAll(g);
+    Object.assign(candidate.slots[slot], { state: 'player', account: account.id, install: account.install ?? null, name: account.name, ready: false, platform, ...NO_CHOICES });
+    this.unreadyAll(candidate);
+    await this.syncReportRoster(candidate);
+    restoreGame(g, candidate);
     this.event(g, `${account.name} joined`);
     await this.save(g);
     return { v: VERSION, slot, game: this.gameView(g, account) };
@@ -783,11 +1393,14 @@ export class Lobby {
   }
 
   async leave(account, id) {
-    const g = this.game(id);
+    const g = this.gameFor(account, id);
     const slot = this.slotOf(g, account);
     if (slot < 0) return { v: VERSION, left: false };
     if (g.state === 'open' && slot === g.hostSlot) {
-      g.state = 'closed';
+      const candidate = structuredClone(g);
+      candidate.state = 'closed';
+      await this.finishReportRoster(id, candidate);
+      restoreGame(g, candidate);
       this.event(g, 'the host closed the game');
       await this.save(g);
       this.games.delete(id);
@@ -795,8 +1408,11 @@ export class Lobby {
       return { v: VERSION, left: true, closed: true };
     }
     if (g.state === 'open') {
-      Object.assign(g.slots[slot], { state: 'open', account: undefined, name: undefined, platform: undefined, ready: false, faction: -1, color: -1, startPos: -1, team: -1 });
-      this.unreadyAll(g);
+      const candidate = structuredClone(g);
+      Object.assign(candidate.slots[slot], { state: 'open', account: undefined, install: null, name: undefined, platform: undefined, ready: false, faction: -1, color: -1, startPos: -1, team: -1 });
+      this.unreadyAll(candidate);
+      await this.syncReportRoster(candidate);
+      restoreGame(g, candidate);
     }
     // ONLINEUX-1: a player who leaves a started game is done with it (the game ended for them, they forfeited or quit): its slot stays theirs (the
     // START, the replay), but it is no longer offered in /v1/mine and a rejoin is refused. Before, a forfeited game was offered for a rejoin at the
@@ -809,7 +1425,7 @@ export class Lobby {
 
   async setSlot(account, id, body) {
     this.limit(`slot:${account.id}`, 120, 20);
-    const g = this.game(id);
+    const g = this.gameFor(account, id);
     if (g.state !== 'open') throw new LobbyError(409, 'started', 'the game has started');
     const own = this.slotOf(g, account);
     if (own < 0) throw new LobbyError(403, 'not_in_game', 'join the game first');
@@ -851,7 +1467,7 @@ export class Lobby {
   }
 
   async setSetup(account, id, body) {
-    const g = this.game(id);
+    const g = this.gameFor(account, id);
     if (g.state !== 'open') throw new LobbyError(409, 'started', 'the game has started');
     if (this.slotOf(g, account) !== g.hostSlot) throw new LobbyError(403, 'not_host', 'only the host changes the game options');
     const setup = this.checkSetup({ ...g.setup, ...body }, false);
@@ -865,7 +1481,7 @@ export class Lobby {
   }
 
   async ready(account, id, body) {
-    const g = this.game(id);
+    const g = this.gameFor(account, id);
     const slot = this.slotOf(g, account);
     if (slot < 0) throw new LobbyError(403, 'not_in_game', 'join the game first');
     if (typeof body?.ready !== 'boolean') throw bad('bad_field', 'ready must be true or false');
@@ -880,8 +1496,9 @@ export class Lobby {
 
   async chat(account, id, body) {
     this.limit(`chat:${account.id}`, 30, 8);
-    const g = this.game(id);
+    const g = this.gameFor(account, id);
     if (this.slotOf(g, account) < 0) throw new LobbyError(403, 'not_in_game', 'join the game first');
+    this.checkAccount(account, { chat: true });
     const text = str(body?.text, 200, 'text');
     this.event(g, text, account.name, account.id);
     await this.save(g);
@@ -889,13 +1506,13 @@ export class Lobby {
   }
 
   async kick(account, id, body) {
-    const g = this.game(id);
+    const g = this.gameFor(account, id);
     if (this.slotOf(g, account) !== g.hostSlot) throw new LobbyError(403, 'not_host', 'only the host kicks');
     const slot = intIn(body?.slot, 0, MAX_SLOTS - 1, 'slot');
     if (slot === g.hostSlot || g.slots[slot].state !== 'player') throw bad('bad_field', 'kick another player\'s slot');
     if (g.state !== 'open') throw new LobbyError(409, 'started', 'the game has started');
     const name = g.slots[slot].name;
-    Object.assign(g.slots[slot], { state: 'open', account: undefined, name: undefined, platform: undefined, ready: false, faction: -1, color: -1, startPos: -1, team: -1 });
+    Object.assign(g.slots[slot], { state: 'open', account: undefined, install: null, name: undefined, platform: undefined, ready: false, faction: -1, color: -1, startPos: -1, team: -1 });
     (g.kicked ??= []).push(slot);
     this.unreadyAll(g);
     this.event(g, `${name} was kicked`);
@@ -905,7 +1522,7 @@ export class Lobby {
 
   // The START (OnlineStart.h): the service decides the seed, the run-ahead, the CRC interval and the relay, and signs one ticket per human slot
   async start(account, id) {
-    const g = this.game(id);
+    const g = this.gameFor(account, id);
     if (this.slotOf(g, account) !== g.hostSlot) throw new LobbyError(403, 'not_host', 'only the host starts the game');
     if (g.state !== 'open') throw new LobbyError(409, 'started', 'the game has started');
     if (!this.config.relays.length) throw new LobbyError(503, 'no_relay', 'no relay configured: online games cannot start yet');
@@ -925,6 +1542,7 @@ export class Lobby {
   }
 
   async signAndStart(g, account, humans) {
+    const candidate = structuredClone(g);
     const mask = humans.reduce((m, [, i]) => m | (1 << i), 0);
     const seedBytes = this.env.randomBytes(4);
     const seed = new DataView(seedBytes.buffer, seedBytes.byteOffset, 4).getUint32(0, true);
@@ -932,45 +1550,47 @@ export class Lobby {
     const keyId = Math.max(...this.config.ticketKeys.keys());
     const key = this.config.ticketKeys.get(keyId);
     const expires = Math.floor(this.env.now() / 1000) + this.config.ticketSeconds;
-    let last = g.slots.length;
-    while (last > 0 && g.slots[last - 1].state === 'closed') last -= 1;
+    let last = candidate.slots.length;
+    while (last > 0 && candidate.slots[last - 1].state === 'closed') last -= 1;
     const setup = Object.freeze({
-      map: g.setup.map,
+      map: candidate.setup.map,
       seed,
-      startingCash: g.setup.startingCash,
-      superweaponRestriction: g.setup.superweaponRestriction,
-      rules: g.setup.rules,
-      legendaryHeroes: g.setup.legendaryHeroes,
-      fortressConstruction: g.setup.fortressConstruction,
-      peaceTimeMinutes: g.setup.peaceTimeMinutes,
-      luaAuthoritySlot: g.hostSlot, // fixed by the service, never taken from a client setup
-      slots: g.slots.slice(0, last).map((s) => (s.state === 'player' || AI_STATES.has(s.state)
+      startingCash: candidate.setup.startingCash,
+      superweaponRestriction: candidate.setup.superweaponRestriction,
+      rules: candidate.setup.rules,
+      legendaryHeroes: candidate.setup.legendaryHeroes,
+      fortressConstruction: candidate.setup.fortressConstruction,
+      peaceTimeMinutes: candidate.setup.peaceTimeMinutes,
+      luaAuthoritySlot: candidate.hostSlot,
+      slots: candidate.slots.slice(0, last).map((s) => (s.state === 'player' || AI_STATES.has(s.state)
         ? { state: s.state, name: s.name, faction: s.faction, color: s.color, startPos: s.startPos, team: s.team }
         : { state: s.state })),
     });
     // PLATFORMICON-1: each player's system, by slot (null: not told, an AI, no one): display data for the running game's player list. It rides in each
     // player's own START only, never in `setup` (the replay's record)
-    const platforms = g.slots.map((s) => (s.state === 'player' ? s.platform ?? null : null));
+    const platforms = candidate.slots.map((s) => (s.state === 'player' ? s.platform ?? null : null));
     const starts = {};
     for (const [, i] of humans) {
       starts[i] = {
         v: VERSION,
         kind: 'openbfme-start',
-        game: g.id,
+        game: candidate.id,
         slot: i,
         relay: relay.address,
         ticket: await signTicket(this.env, keyId, key, g.id, i, mask, expires),
         runAhead: this.config.runAhead,
         crcInterval: this.config.crcInterval,
-        profile: g.profile,
+        profile: candidate.profile,
         platforms,
         setup,
       };
     }
-    g.starts = starts;
-    g.mask = mask; // lane ONLINE-3: a rejoin ticket names the same slots
-    g.state = 'started';
-    g.startedAt = this.env.now();
+    candidate.starts = starts;
+    candidate.mask = mask; // lane ONLINE-3: a rejoin ticket names the same slots
+    candidate.state = 'started';
+    candidate.startedAt = this.env.now();
+    await this.syncReportRoster(candidate);
+    restoreGame(g, candidate);
     this.event(g, 'the game started');
     await this.save(g);
     await this.prepareStatistics(g);
@@ -979,6 +1599,7 @@ export class Lobby {
     const replayStart = { v: VERSION, kind: 'openbfme-replay-start', game: g.id, runAhead: this.config.runAhead, crcInterval: this.config.crcInterval, profile: g.profile, setup };
     // (no log store: no replay record either; /v1/replays then answers 'no_log_store')
     await this.env.store.putBlob?.(`starts/${g.id}.json`, enc.encode(JSON.stringify(replayStart)));
+    if (this.env.store.putBlob) this.noteGameRecord('started');
     // CFDEPLOY-1 r2 (Sol r1: replay downloads were open to anyone): the accounts that played; only they read the game's replay files. docs/ONLINE.md
     // promises no public replays ("view online" is the player's own link), so a public listing would be a new decision
     await this.env.store.putBlob?.(`players/${g.id}.json`, enc.encode(JSON.stringify(humans.map(([s]) => s.account))));
@@ -987,7 +1608,8 @@ export class Lobby {
 
   // ONLINE-5: no awaits inside (a held poll is answered in one step when it wakes)
   poll(account, id, since) {
-    const g = this.game(id);
+    account = this.checkAccount(account);
+    const g = this.gameFor(account, id);
     // the host closed the game (leave): it is being removed; a poll held until then says what the next one would
     if (g.state === 'closed') throw new LobbyError(404, 'no_game', `no game ${id}`);
     const slot = this.slotOf(g, account);
@@ -1011,7 +1633,7 @@ export class Lobby {
   pollHold(account, id, seqText, waitText) {
     if (seqText === null || waitText === null || !/^\d{1,10}$/.test(seqText) || !/^\d{1,3}$/.test(waitText)) return null;
     const wait = Math.min(Number(waitText), MAX_WAIT_S);
-    const g = this.games.get(id);
+    const g = this.gameFor(account, id);
     if (!g || wait < 1 || g.state !== 'open' || g.seq !== Number(seqText) || this.slotOf(g, account) < 0) return null;
     g.touched = this.env.now();
     const held = this.holdPoll(id, wait * 1000, account.id);
@@ -1023,7 +1645,9 @@ export class Lobby {
   // ONLINEUX-1 r2 (Sol 4): `left` names the started games the account left (newest first, at most MINE_LEFT_MAX): they stay in the running list for
   // spectators, and a client started after the leave knows them (it offers neither a rejoin nor a WATCH the lobby refuses to a player of the game)
   mine(account) {
-    const started = [...this.games.values()].filter((g) => g.state === 'started' && !g.finished && this.slotOf(g, account) >= 0);
+    account = this.checkAccount(account);
+    const started = [...this.games.values()]
+      .filter((g) => (g.routing ?? '') === account.routing && !this.deniedFromGame(g, account) && g.state === 'started' && !g.finished && this.slotOf(g, account) >= 0);
     const games = started
       .filter((g) => !g.left?.[this.slotOf(g, account)])
       .map((g) => ({ ...this.publicGame(g), slot: this.slotOf(g, account), rejoin: `/v1/games/${g.id}/rejoin` }));
@@ -1038,7 +1662,7 @@ export class Lobby {
   // incarnation with it and refuses every older ticket of the slot); "rejoin" names the generation. Only the slot's own account gets one
   async rejoin(account, id) {
     this.limit(`rejoin:${account.id}`, 6, 6);
-    const g = this.game(id);
+    const g = this.gameFor(account, id);
     const slot = this.slotOf(g, account);
     if (slot < 0) throw new LobbyError(403, 'not_in_game', 'you have no slot in this game');
     if (g.state !== 'started' || !g.starts?.[slot]) throw new LobbyError(409, 'not_started', 'the game has not started');
@@ -1055,14 +1679,14 @@ export class Lobby {
     g.rejoins[slot] = generation;
     this.event(g, `${g.slots[slot].name} rejoins the game`);
     await this.save(g);
-    return { v: VERSION, start: { ...g.starts[slot], ticket, rejoin: generation } };
+    return { v: VERSION, game: this.gameView(g, account), start: { ...g.starts[slot], ticket, rejoin: generation } };
   }
 
   // lane ONLINE-3: a spectator START for a signed-in account that is not a player of the started game: a spectator ticket (a fresh index each time, so a
   // spectator whose game restarted asks again) and the game's setup; the relay serves it the game's log, `delay` seconds behind the players
   async spectate(account, id) {
     this.limit(`spectate:${account.id}`, 12, 12);
-    const g = this.game(id);
+    const g = this.gameFor(account, id);
     if (this.slotOf(g, account) >= 0) throw new LobbyError(409, 'player', 'players of the game play it; spectators are other accounts');
     if (g.roomCode) throw new LobbyError(403, 'private', 'a private room is not open to spectators'); // ONLINEHUB-1 (Sol)
     if (g.state !== 'started' || !g.starts) throw new LobbyError(409, 'not_started', 'the game has not started yet: ask again once it has');
@@ -1149,6 +1773,7 @@ export class Lobby {
       throw new LobbyError(409, 'log_exists', `game ${id} has a different log stored already`);
     }
     await store.putBlob(key, bytes);
+    this.noteGameRecord('finished');
     await this.markFinished(id); // ONLINECOUNT-1: the relay's log is in, the game is over
     return { v: VERSION, stored: key };
   }
@@ -1156,14 +1781,45 @@ export class Lobby {
   // the seq and the idle clock are not touched)
   async markFinished(id) {
     const g = this.games.get(id);
+    const candidate = g ? structuredClone(g) : null;
+    if (candidate) candidate.finished = true;
+    await this.finishReportRoster(id, candidate);
     if (!g) return;
-    if (!g.finished) {
-      const completed = { ...g, finished: true, completedAt: this.env.now() };
-      await this.env.store.saveGame?.(completed);
-      Object.assign(g, completed);
-      this.statsCache = null;
-    }
+    g.finished = true;
+    if (candidate.reportEndedAt !== undefined) g.reportEndedAt = candidate.reportEndedAt;
+    this.statsCache = null;
+    await this.env.store.saveGame?.(g);
+    g.completedAt ??= this.env.now();
     if (!this.history.has(id)) await this.archiveGame(g);
+  }
+  async report(account, rawBody, idempotencyKey) {
+    account = this.checkAccount(account);
+    const result = await submitPlayerReport({
+      store: this.env.store,
+      now: () => this.env.now(),
+      randomBytes: this.env.randomBytes,
+      account,
+      rawBody,
+      idempotencyKey,
+      getLiveGame: (id) => this.games.get(id) ?? null,
+    });
+    return result;
+  }
+  async chargeReportAttempt(install) {
+    return chargeReportAttempt(this.env.store, install, () => this.env.now());
+  }
+  async adminReports(after, limit) {
+    return readPlayerReports({
+      store: this.env.store,
+      now: () => this.env.now(),
+      hmac: this.env.hmac,
+      modKey: this.config.modKey,
+      after,
+      limit,
+    });
+  }
+  async adminReport(id) {
+    return readPlayerReport({ store: this.env.store, now: () => this.env.now(), reportId: id });
   }
   async replayFile(account, id, which) {
     const store = this.logStore();
@@ -1181,8 +1837,10 @@ export class Lobby {
   // Every admin request carries X-OpenBFME-Admin: <unix seconds>.<hex HMAC-SHA256(ADMIN_KEY, "<METHOD> <path>?<query>\n<seconds>\n" + body)>, within
   // ADMIN_WINDOW_S of the lobby's clock. A replayed request inside the window can only repeat a read or an identical import (blobs are never replaced).
   // The admin key is its own secret (admin.key), not the relays' upload key: a relay host can store its logs but never read anyone's.
-  async adminCheck(req, bytes) {
-    if (!this.config.adminKey) throw new LobbyError(501, 'not_configured', 'the admin backup is not configured (ADMIN_KEY)');
+  async adminCheck(req, bytes, keyKinds = ['admin']) {
+    const keys = keyKinds.map((kind) => kind === 'admin' ? this.config.adminKey :
+      kind === 'mod' ? this.config.modKey : this.config.enforcementCheckKey).filter(Boolean);
+    if (!keys.length) throw new LobbyError(501, 'not_configured', 'the requested admin key is not configured');
     const m = /^(\d{1,12})\.([0-9a-f]{64})$/.exec(String(req.headers['x-openbfme-admin'] ?? ''));
     if (!m) throw new LobbyError(401, 'admin_signature', 'an admin request needs X-OpenBFME-Admin: <unix seconds>.<hex HMAC>');
     if (Math.abs(Number(m[1]) - this.env.now() / 1000) > ADMIN_WINDOW_S) throw new LobbyError(401, 'admin_clock', `the admin signature's time is more than ${ADMIN_WINDOW_S} s from the lobby's`);
@@ -1191,10 +1849,53 @@ export class Lobby {
     const signed = new Uint8Array(head.length + bytes.length);
     signed.set(head);
     signed.set(bytes, head.length);
-    const want = bytesToHex(await this.env.hmac(this.config.adminKey, signed));
-    let diff = 0;
-    for (let i = 0; i < 64; i++) diff |= want.charCodeAt(i) ^ m[2].charCodeAt(i);
-    if (diff) throw new LobbyError(401, 'admin_signature', 'the admin signature does not match');
+    let matched = 0;
+    for (const key of keys) {
+      const want = bytesToHex(await this.env.hmac(key, signed));
+      let diff = 0;
+      for (let i = 0; i < 64; i++) diff |= want.charCodeAt(i) ^ m[2].charCodeAt(i);
+      matched |= Number(diff === 0);
+    }
+    if (!matched) throw new LobbyError(401, 'admin_signature', 'the admin signature does not match');
+  }
+
+  async enforcementCheck(req, raw) {
+    await this.adminCheck(req, raw, ['check']);
+    if (req.query.toString() !== '') throw bad('bad_query', 'the enforcement check query must be empty');
+    let body;
+    try {
+      body = JSON.parse(dec.decode(raw));
+    } catch {
+      throw bad('bad_json', 'the body must be JSON');
+    }
+    exactFields(body, ['v', 'nonce', 'installs'], 'enforcement check');
+    if (body.v !== VERSION || typeof body.nonce !== 'string' || !/^[0-9a-f]{32}$/.test(body.nonce) ||
+        !Array.isArray(body.installs) || body.installs.length < 1 || body.installs.length > 128 ||
+        body.installs.some((install) => !validInstall(install)) ||
+        new Set(body.installs).size !== body.installs.length) {
+      throw bad('bad_field', 'enforcement check requires a unique nonce and 1 .. 128 installs');
+    }
+    const now = Math.floor(this.env.now() / 1000);
+    const decisions = body.installs.map((install) => {
+      const state = this.getEnforcement(install);
+      const direct = isActiveBlock(state?.block, now);
+      const sighting = this.getSighting(install);
+      let device = null;
+      if (sighting && !sightingExpired(sighting, now)) {
+        for (const { hash } of sighting.devices) {
+          const candidate = this.deviceBlock(hash);
+          if (compareBlocks(candidate, device) > 0) device = candidate;
+        }
+      }
+      const block = compareBlocks(device, direct) > 0 ? device : direct;
+      return {
+        install,
+        allowed: !block,
+        code: block ? (block.kind === 'ban' ? 'banned' : 'suspended') : null,
+        routing: state?.routing ?? '',
+      };
+    });
+    return { v: VERSION, nonce: body.nonce, checked_at: now, decisions };
   }
   // one page of the stored blobs in key order after `after`: { blobs: [{ key, size, storedAt (ms) }], next (the `after` of the next page, or null) }
   async adminList(after, limit) {
@@ -1236,7 +1937,330 @@ export class Lobby {
       throw new LobbyError(409, 'blob_exists', `${key} holds different bytes already`);
     }
     await store.putBlob(key, bytes);
+    if (k.kind !== 'players') {
+      this.gameTimes = null;
+      this.statsCache = null;
+    }
     return { v: VERSION, stored: key };
+  }
+
+  adminGames(state = null) {
+    if (state !== null && state !== '' && state !== 'open' && state !== 'started') throw bad('bad_field', 'state must be open or started');
+    const games = [...this.games.values()]
+      .filter((g) => (g.state === 'open' || g.state === 'started') && (!state || g.state === state))
+      .sort((a, b) => b.created - a.created || compareText(a.id, b.id))
+      .map((g) => ({
+        id: g.id,
+        seq: g.seq,
+        name: g.name,
+        state: g.state,
+        map: g.setup.map,
+        password: !!g.password,
+        routing: g.routing ?? '',
+        created: Math.floor(g.created / 1000),
+        started: g.startedAt ? Math.floor(g.startedAt / 1000) : null,
+        spectators: g.spectators?.length ?? g.spectatorsIssued ?? 0,
+        slots: g.slots.map((slot, index) => ({
+          slot: index,
+          account: slot.account ?? null,
+          name: slot.name ?? null,
+          install: slot.install ?? null,
+          faction: slot.faction,
+          team: slot.team,
+          state: slot.state,
+        })),
+      }));
+    return { v: VERSION, games };
+  }
+
+  async moderateGame(req, raw, operation, id, input) {
+    const store = this.env.store;
+    if (typeof store.claimModerationReceipt !== 'function' ||
+        typeof store.completeModerationReceipt !== 'function' ||
+        typeof this.env.sha256 !== 'function') {
+      throw new LobbyError(503, 'command_store_unavailable', 'durable moderation command receipts are not configured');
+    }
+    const digest = async (bytes) => {
+      const result = await this.env.sha256(bytes);
+      if (!(result instanceof Uint8Array) || result.length !== 32) {
+        throw new LobbyError(503, 'command_store_unavailable', 'durable moderation command receipts are not configured');
+      }
+      return bytesToHex(result);
+    };
+    const parts = [
+      enc.encode(operation),
+      enc.encode(req.method),
+      enc.encode(req.path),
+      enc.encode(req.query.toString()),
+      raw,
+    ];
+    const packed = new Uint8Array(parts.reduce((size, part) => size + 4 + part.length, 0));
+    const view = new DataView(packed.buffer);
+    let offset = 0;
+    for (const part of parts) {
+      view.setUint32(offset, part.length);
+      offset += 4;
+      packed.set(part, offset);
+      offset += part.length;
+    }
+    let commandHash;
+    let fingerprint;
+    try {
+      commandHash = await digest(enc.encode(`openbfme-moderation-command-v1\0${input.command_id}`));
+      fingerprint = await digest(packed);
+    } catch (error) {
+      if (error instanceof LobbyError) throw error;
+      throw new LobbyError(503, 'command_store_unavailable', 'durable moderation command receipts are unavailable');
+    }
+
+    let previous;
+    try {
+      previous = await store.claimModerationReceipt(commandHash, { v: VERSION, fingerprint, status: 'pending' });
+    } catch {
+      throw new LobbyError(503, 'command_store_unavailable', 'durable moderation command receipts are unavailable');
+    }
+    if (previous !== null) {
+      const receipt = storedModerationReceipt(previous);
+      if (receipt.fingerprint !== fingerprint) {
+        throw new LobbyError(409, 'command_conflict', 'command_id was already used for a different request');
+      }
+      if (receipt.status === 'pending') {
+        throw new LobbyError(409, 'command_pending', 'the command result is pending operator reconciliation');
+      }
+      return receipt.response;
+    }
+
+    const complete = async (response) => {
+      try {
+        await store.completeModerationReceipt(commandHash, { v: VERSION, fingerprint, status: 'complete', response });
+      } catch {
+        throw new LobbyError(503, 'command_store_unavailable', 'moderation command completion could not be recorded');
+      }
+      return response;
+    };
+    try {
+      const body = operation === 'kick'
+        ? await this.adminKickGame(id, input.slot, input.reason, input.expected_seq, input.expected_account, input.expected_install)
+        : await this.adminCloseGame(id, input.reason, input.expected_seq);
+      return await complete({ status: 200, body });
+    } catch (error) {
+      if (!(error instanceof LobbyError) || error.status >= 500) throw error;
+      return await complete({
+        status: error.status,
+        body: { v: VERSION, error: error.code, message: error.message, ...error.details },
+      });
+    }
+  }
+
+  assertModerationSequence(game, expected) {
+    if (!Number.isSafeInteger(game.seq) || game.seq < 0) {
+      throw new LobbyError(503, 'game_unavailable', 'the game revision is unavailable');
+    }
+    if (game.seq !== expected) throw new LobbyError(409, 'stale_game', 'the game changed after the moderator selected it');
+  }
+
+  async adminKickGame(id, slotIndex, reason, expectedSeq, expectedAccount, expectedInstall) {
+    const g = this.game(id);
+    this.assertModerationSequence(g, expectedSeq);
+    const slot = intIn(slotIndex, 0, MAX_SLOTS - 1, 'slot');
+    const why = modReason(reason);
+    const target = g.slots[slot];
+    if (target.account !== expectedAccount || (target.install ?? null) !== expectedInstall) {
+      throw new LobbyError(409, 'stale_target', 'the selected slot occupant changed');
+    }
+    const targetName = target.name;
+    const effect = g.state === 'started' ? 'rejoin_refused' : 'removed_from_room';
+    if (g.state === 'open' && slot === g.hostSlot) {
+      const candidate = structuredClone(g);
+      candidate.state = 'closed';
+      candidate.closeReason = why;
+      await this.finishReportRoster(id, candidate);
+      restoreGame(g, candidate);
+      this.event(g, 'the room was closed');
+      await this.save(g);
+      this.games.delete(id);
+      await this.env.store.deleteGame?.(id);
+      return { v: VERSION, id, closed: true, effect };
+    }
+    if (target.state !== 'player') throw bad('bad_field', 'kick a player slot');
+    if (g.state === 'open') {
+      const candidate = structuredClone(g);
+      const candidateTarget = candidate.slots[slot];
+      if (slot === g.hostSlot) throw bad('bad_field', 'kick a non-host player slot');
+      (candidate.adminKicks ??= []).push({ slot, account: candidateTarget.account, install: candidateTarget.install ?? null, reason: why });
+      // DEVINPR-1 (review of WP-C): a moderator's kick keeps the player out of this room (before: they could join it again at once), as for a started game
+      (candidate.denied ??= []).push({ slot, account: candidateTarget.account, install: candidateTarget.install ?? null });
+      Object.assign(candidateTarget, { state: 'open', account: undefined, install: null, name: undefined, platform: undefined, ready: false, ...NO_CHOICES });
+      (candidate.kicked ??= []).push(slot);
+      this.unreadyAll(candidate);
+      await this.syncReportRoster(candidate);
+      restoreGame(g, candidate);
+    } else if (g.state === 'started') {
+      g.denied ??= [];
+      const denied = g.denied.find((entry) => entry.account === target.account && entry.install === (target.install ?? null));
+      if (!denied) g.denied.push({ slot, account: target.account, install: target.install ?? null });
+      (g.adminKicks ??= []).push({ slot, account: target.account, install: target.install ?? null, reason: why });
+    } else {
+      throw new LobbyError(409, 'not_open', 'the game is not open');
+    }
+    this.event(g, `${targetName} was kicked`);
+    await this.save(g);
+    return { v: VERSION, id, slot, kicked: true, effect };
+  }
+
+  async adminCloseGame(id, reason, expectedSeq) {
+    const g = this.game(id);
+    this.assertModerationSequence(g, expectedSeq);
+    if (g.state !== 'open') throw new LobbyError(409, 'not_open', 'only an open game can be closed');
+    const candidate = structuredClone(g);
+    candidate.closeReason = modReason(reason);
+    candidate.state = 'closed';
+    await this.finishReportRoster(id, candidate);
+    restoreGame(g, candidate);
+    this.event(g, 'the room was closed');
+    await this.save(g);
+    this.games.delete(id);
+    await this.env.store.deleteGame?.(id);
+    return { v: VERSION, id, closed: true };
+  }
+
+  playerSummary(record) {
+    return {
+      install: record.install,
+      nick: record.nicks[0]?.nick ?? '',
+      nick_history: record.nicks.map((entry) => ({ ...entry })),
+      first_seen: record.first_seen,
+      last_seen: record.last_seen,
+      signins: record.signins,
+      platform: knownPlatform(record.platform),
+      version: record.version,
+      devices: record.devices.length,
+      in_game: this.gameForInstall(record.install),
+    };
+  }
+
+  adminPlayers(query = '', after = null, limit = null) {
+    const q = str(query, 32, 'q', { empty: true }).toLocaleLowerCase('en-US');
+    const now = Math.floor(this.env.now() / 1000);
+    const pageSize = limit === null ? PLAYER_PAGE : Number(limit);
+    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > PLAYER_PAGE) throw bad('bad_field', `limit must be an integer in 1 .. ${PLAYER_PAGE}`);
+    let cursor = null;
+    if (after !== null && after !== '') {
+      try {
+        if (after.length > 512) throw new Error('long cursor');
+        cursor = JSON.parse(dec.decode(base64UrlDecode(after)));
+        exactFields(cursor, ['q', 'last_seen', 'install'], 'after');
+        if (cursor.q !== q || !validInstall(cursor.install) || !Number.isSafeInteger(cursor.last_seen) || cursor.last_seen < 0) throw new Error('invalid cursor');
+      } catch {
+        throw bad('bad_field', 'after is not a valid cursor for this query');
+      }
+    }
+    if (this.identityIndexed()) {
+      const rows = this.identityStore().players(q, cursor, pageSize + 1, now);
+      const selected = rows.slice(0, pageSize);
+      const next = rows.length > pageSize && selected.length
+        ? base64(enc.encode(JSON.stringify({ q, last_seen: selected.at(-1).last_seen, install: selected.at(-1).install })), true)
+        : null;
+      return { v: VERSION, players: selected.map((record) => this.playerSummary(record)), next };
+    }
+    const rows = [...this.sightings.values()].filter((record) => !sightingExpired(record, now) && (!q ||
+      record.install.startsWith(q) || record.nicks.some((entry) => entry.nick.toLocaleLowerCase('en-US').startsWith(q))))
+      .sort((a, b) => b.last_seen - a.last_seen || compareText(a.install, b.install))
+      .filter((record) => !cursor || record.last_seen < cursor.last_seen ||
+        (record.last_seen === cursor.last_seen && record.install > cursor.install));
+    const selected = rows.slice(0, pageSize);
+    const next = rows.length > pageSize && selected.length
+      ? base64(enc.encode(JSON.stringify({ q, last_seen: selected.at(-1).last_seen, install: selected.at(-1).install })), true)
+      : null;
+    return { v: VERSION, players: selected.map((record) => this.playerSummary(record)), next };
+  }
+
+  adminPlayer(install) {
+    if (!validInstall(install)) throw bad('bad_field', 'install must be 32 lowercase hex digits');
+    const now = Math.floor(this.env.now() / 1000);
+    const record = this.getSighting(install);
+    if (!record || sightingExpired(record, now)) throw new LobbyError(404, 'no_player', `no player sighting for ${install}`);
+    const deviceSet = new Set(record.devices.map((entry) => entry.hash));
+    const linked = [];
+    if (this.identityIndexed()) {
+      return { v: VERSION, ...this.playerSummary(record), linked: this.identityStore().linked(install, now) };
+    }
+    for (const [hash, installs] of this.sightingDeviceOwners) {
+      if (!deviceSet.has(hash)) continue;
+      for (const other of installs) {
+        const item = this.sightings.get(other);
+        if (other !== install && item && !sightingExpired(item, now)) linked.push(other);
+      }
+    }
+    const counts = new Map();
+    for (const other of linked) counts.set(other, (counts.get(other) ?? 0) + 1);
+    const players = [...counts].map(([other, shared_devices]) => {
+      const item = this.sightings.get(other);
+      return { install: other, nick: item.nicks[0]?.nick ?? '', shared_devices, signins: item.signins, last_seen: item.last_seen };
+    }).sort((a, b) => b.shared_devices - a.shared_devices || b.last_seen - a.last_seen || compareText(a.install, b.install));
+    return { v: VERSION, ...this.playerSummary(record), linked: players };
+  }
+
+  adminEnforcement(after = null) {
+    if (after !== null && after !== '' && !validInstall(after)) throw bad('bad_field', 'after must be a 32-digit install id');
+    if (this.identityIndexed()) {
+      const rows = this.identityStore().enforcementPage(after, ENFORCEMENT_PAGE + 1);
+      const selected = rows.slice(0, ENFORCEMENT_PAGE);
+      return {
+        v: VERSION,
+        items: selected.map(([install, state]) => ({ install, ...state, devices: [...state.devices] })),
+        next: rows.length > ENFORCEMENT_PAGE ? selected.at(-1)[0] : null,
+      };
+    }
+    const rows = [...this.enforcement].filter(([install]) => !after || install > after).sort(([a], [b]) => compareText(a, b));
+    const selected = rows.slice(0, ENFORCEMENT_PAGE);
+    return {
+      v: VERSION,
+      items: selected.map(([install, state]) => ({ install, ...state, devices: [...state.devices] })),
+      next: rows.length > ENFORCEMENT_PAGE ? selected.at(-1)[0] : null,
+    };
+  }
+
+  async setEnforcement(install, body) {
+    if (!validInstall(install)) throw bad('bad_field', 'install must be 32 lowercase hex digits');
+    const previous = this.getEnforcement(install);
+    const next = validateEffectiveState(body);
+    if (previous?.block_devices === true && next.block_devices === true && previous.version === next.version) {
+      next.devices = [...previous.devices];
+    }
+    if (previous && next.version < previous.version) return { v: VERSION, stale: true };
+    if (previous && next.version === previous.version) {
+      if (JSON.stringify(previous) === JSON.stringify(next)) return { v: VERSION, unchanged: true };
+      throw new LobbyError(409, 'version_conflict', 'the same version has different effective state');
+    }
+    if (next.block_devices) {
+      const sighting = this.getSighting(install);
+      next.devices = previous?.block_devices === true && previous.version === next.version
+        ? [...previous.devices]
+        : sighting && !sightingExpired(sighting, Math.floor(this.env.now() / 1000))
+          ? sighting.devices.map((device) => device.hash).slice(0, 5).sort()
+          : [];
+    }
+    if (typeof this.env.store.saveEnforcement !== 'function') throw new LobbyError(501, 'no_enforcement_store', 'enforcement storage is not configured');
+    await this.env.store.saveEnforcement({ install, ...next });
+    if (previous && !this.identityIndexed()) {
+      for (const device of previous.devices) {
+        const owners = this.enforcementDeviceOwners.get(device);
+        owners?.delete(install);
+        if (owners && !owners.size) this.enforcementDeviceOwners.delete(device);
+      }
+    }
+    if (!this.identityIndexed()) {
+      this.enforcement.set(install, next);
+      for (const device of next.devices) {
+        const owners = this.enforcementDeviceOwners.get(device) ?? new Set();
+        owners.add(install);
+        this.enforcementDeviceOwners.set(device, owners);
+      }
+    }
+    this.statsCache = null;
+    this.wakeAll();
+    return { v: VERSION, version: next.version, updated: true };
   }
 
   health() {
@@ -1258,23 +2282,35 @@ export class Lobby {
 // returns { status, headers, body (string | Uint8Array) }
 export async function route(lobby, req) {
   const json = (status, obj) => ({ status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }, body: JSON.stringify(obj) });
+  const failure = (error) => ({ v: VERSION, error: error.code, message: error.message, ...error.details });
+  let reportRequest = false;
   try {
     const p = req.path.split('/').filter(Boolean);
     const m = req.method;
-    const body = async (limit = MAX_JSON_BYTES) => {
+    reportRequest = p[0] === 'v1' && (
+      (p[1] === 'reports' && p.length === 2) ||
+      (p[1] === 'admin' && p[2] === 'mod' && p[3] === 'reports' && (p.length === 4 || p.length === 5))
+    );
+    const rawBody = async (limit = MAX_JSON_BYTES) => {
       // ONLINE-2 r2 (Sol: a chunked 20 KB body passed the Content-Length check): the bytes actually received count, whatever the headers say
       if (Number(req.headers['content-length'] ?? 0) > limit) throw new LobbyError(413, 'too_big', `request body over ${limit} bytes`);
       const raw = await req.bytes();
       if (raw.length > limit) throw new LobbyError(413, 'too_big', `request body over ${limit} bytes`);
+      return raw;
+    };
+    const parseBody = (raw) => {
       try {
         return raw.length ? (JSON.parse(dec.decode(raw)) ?? {}) : {};
       } catch {
         throw bad('bad_json', 'the body must be JSON');
       }
     };
+    const body = async (limit = MAX_JSON_BYTES) => parseBody(await rawBody(limit));
     const web = webResponse(req.method, req.path);
     if (web) return web;
     const v1 = p[0] === 'v1';
+    const hasAuthorization = Object.hasOwn(req.headers, 'authorization');
+    if (v1) await lobby.prepareReportExpiries?.();
     if (m === 'GET' && p[0] === 'j' && p.length === 2 && /^[0-9a-f]{16}$/.test(p[1])) {
       // the invite page: the openbfme:// link (the launcher's handler) and the id for the debug join
       const link = `openbfme://join/${p[1]}`;
@@ -1293,12 +2329,18 @@ export async function route(lobby, req) {
       try { return json(200, await lobby.testing.heartbeat(account, await body())); }
       catch(e) { if(e instanceof TestingError) throw bad('bad_test',e.message); throw e; }
     }
-    if (m === 'GET' && p[1] === 'health') return json(200, lobby.health());
+    if (m === 'GET' && p[1] === 'health') {
+      if (hasAuthorization) await lobby.account(req.headers.authorization);
+      return json(200, lobby.health());
+    }
     // ONLINE-4: the message of the day the game's online home page shows (OnlineHome.apt); null when the lobby has none
     // ONLINECOUNT-1: the counts the menus and the launcher show. No sign-in needed; a valid token on the request also marks its player present
     if (m === 'GET' && p[1] === 'stats' && p.length === 2) {
       lobby.limit(`stats:${req.ip}`, 60, 20);
-      if (req.headers.authorization) await lobby.account(req.headers.authorization).catch(() => {});
+      if (hasAuthorization) {
+        await lobby.account(req.headers.authorization);
+        return { status: 200, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }, body: JSON.stringify(lobby.stats()) };
+      }
       return { status: 200, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': `public, max-age=${STATS_CACHE_S}` }, body: JSON.stringify(lobby.stats()) };
     }
     if (m === 'GET' && p[1] === 'dashboard' && p.length === 2) {
@@ -1340,16 +2382,91 @@ export async function route(lobby, req) {
       }
       return json(404, { v: VERSION, error: 'not_found', message: 'unknown user management path' });
     }
-    if (m === 'GET' && p[1] === 'motd' && p.length === 2) return json(200, { v: VERSION, motd: lobby.config.motd || null });
+    if (m === 'GET' && p[1] === 'motd' && p.length === 2) {
+      if (hasAuthorization) await lobby.account(req.headers.authorization);
+      return json(200, { v: VERSION, motd: lobby.config.motd || null });
+    }
     if (m === 'POST' && p[1] === 'auth' && p[2] === 'guest') return json(200, await lobby.guest(await body(), req.ip));
+    if (m === 'POST' && p[1] === 'reports' && p.length === 2) {
+      const account = await lobby.account(req.headers.authorization);
+      if (!account.install) throw new ReportError(401, 'install_required', 'sign in with an install identity before reporting');
+      if (req.bodyRejection) {
+        const retry = await lobby.chargeReportAttempt(account.install);
+        if (retry !== null) throw new ReportError(429, 'rate_limited', 'the report attempt limit has been reached', { retry_after: retry });
+        throw new LobbyError(req.bodyRejection.status, req.bodyRejection.code, req.bodyRejection.message);
+      }
+      let raw;
+      try {
+        raw = await rawBody();
+      } catch (error) {
+        if (error instanceof LobbyError && error.status === 413) {
+          if (!account.install) throw new ReportError(401, 'install_required', 'sign in with an install identity before reporting');
+          const retry = await lobby.chargeReportAttempt(account.install);
+          if (retry !== null) throw new ReportError(429, 'rate_limited', 'the report attempt limit has been reached', { retry_after: retry });
+        }
+        throw error;
+      }
+      const result = await lobby.report(account, raw, req.headers['idempotency-key']);
+      const response = json(201, result.receipt);
+      if (result.replay) response.headers['idempotent-replay'] = 'true';
+      return response;
+    }
+    if (m === 'POST' && p[1] === 'internal' && p[2] === 'enforcement' && p[3] === 'check' && p.length === 4) {
+      const raw = await rawBody();
+      return json(200, await lobby.enforcementCheck(req, raw));
+    }
     if (m === 'POST' && p[1] === 'relay' && p[2] === 'logs' && p.length === 4) {
       return json(200, await lobby.uploadLog(p[3], await req.bytes(), String(req.headers['x-openbfme-signature'] ?? '')));
     }
     if (m === 'POST' && p[1] === 'relay' && p[2] === 'status' && p.length === 3) {
       return json(200, await lobby.relayStatusPost(await req.bytes(), String(req.headers['x-openbfme-signature'] ?? '')));
     }
+    if (p[1] === 'admin' && p[2] === 'mod') {
+      const raw = await rawBody();
+      await lobby.adminCheck(req, raw, ['mod']);
+      if (m === 'GET' && p[3] === 'reports' && p.length === 4) {
+        const limitText = req.query.get('limit');
+        return json(200, await lobby.adminReports(req.query.get('after'), limitText === null ? null : Number(limitText)));
+      }
+      if (m === 'GET' && p[3] === 'reports' && p.length === 5) return json(200, await lobby.adminReport(p[4]));
+      if (m === 'GET' && p[3] === 'players') await lobby.cleanupSightingsIfDue();
+      if (m === 'GET' && p[3] === 'games' && p.length === 4) return json(200, lobby.adminGames(req.query.get('state')));
+      if (m === 'GET' && p[3] === 'players' && p.length === 4) {
+        const limitText = req.query.get('limit');
+        return json(200, lobby.adminPlayers(req.query.get('q') ?? '', req.query.get('after'), limitText === null ? null : Number(limitText)));
+      }
+      if (m === 'GET' && p[3] === 'players' && p.length === 5) return json(200, lobby.adminPlayer(p[4]));
+      if (m === 'GET' && p[3] === 'enforcement' && p.length === 4) return json(200, lobby.adminEnforcement(req.query.get('after')));
+      if ((m === 'POST' && p[3] === 'games' && p.length === 6 && p[5] === 'kick') ||
+          (m === 'POST' && p[3] === 'games' && p.length === 6 && p[5] === 'close')) {
+        const input = parseBody(raw);
+        if (input?.v !== VERSION) throw bad('bad_version', `v must be ${VERSION}`);
+        if (!/^[0-9a-f]{16}$/.test(p[4])) throw bad('bad_field', 'game id must be 16 lowercase hex digits');
+        if (p[5] === 'kick') {
+          exactFields(input, ['v', 'command_id', 'expected_seq', 'slot', 'expected_account', 'expected_install', 'reason'], 'kick');
+          if (!validCommandId(input.command_id)) throw bad('bad_field', 'command_id must be 8 to 64 URL-safe characters');
+          if (!Number.isSafeInteger(input.expected_seq) || input.expected_seq < 0) throw bad('bad_field', 'expected_seq must be a non-negative safe integer');
+          intIn(input.slot, 0, MAX_SLOTS - 1, 'slot');
+          str(input.expected_account, 128, 'expected_account');
+          if (input.expected_install !== null && !validInstall(input.expected_install)) {
+            throw bad('bad_field', 'expected_install must be null or 32 lowercase hex digits');
+          }
+          modReason(input.reason);
+          const response = await lobby.moderateGame(req, raw, 'kick', p[4], input);
+          return json(response.status, response.body);
+        }
+        exactFields(input, ['v', 'command_id', 'expected_seq', 'reason'], 'close');
+        if (!validCommandId(input.command_id)) throw bad('bad_field', 'command_id must be 8 to 64 URL-safe characters');
+        if (!Number.isSafeInteger(input.expected_seq) || input.expected_seq < 0) throw bad('bad_field', 'expected_seq must be a non-negative safe integer');
+        modReason(input.reason);
+        const response = await lobby.moderateGame(req, raw, 'close', p[4], input);
+        return json(response.status, response.body);
+      }
+      if (m === 'PUT' && p[3] === 'enforcement' && p.length === 5) return json(200, await lobby.setEnforcement(p[4], parseBody(raw)));
+      return json(404, { v: VERSION, error: 'not_found', message: 'unknown admin path' });
+    }
     if (p[1] === 'admin' && p[2] === 'relay-status' && p.length === 3) {
-      await lobby.adminCheck(req, await req.bytes());
+      await lobby.adminCheck(req, await req.bytes(), ['admin', 'mod']);
       if (m !== 'GET') return json(404, { v: VERSION, error: 'not_found', message: 'unknown admin path' });
       return json(200, lobby.relayStatusList());
     }
@@ -1372,9 +2489,12 @@ export async function route(lobby, req) {
       return json(200, await lobby.joinByCode(account, p[2], await body()));
     }
     if (p[1] !== 'games') return json(404, { v: VERSION, error: 'not_found', message: 'unknown path' });
-    if (m === 'GET' && p.length === 2) return json(200, lobby.list(req.query.get('running') === '1'));
-    const account = await lobby.account(req.headers.authorization);
-    if (m === 'POST' && p.length === 2) return json(200, await lobby.create(account, await body(), req.ip));
+    if (m === 'GET' && p.length === 2) {
+      const account = hasAuthorization ? await lobby.account(req.headers.authorization) : null;
+      return json(200, lobby.list(req.query.get('running') === '1', account));
+    }
+    const account = await lobby.account(req.headers.authorization, { leaving: m === 'POST' && p.length === 4 && p[3] === 'leave' });
+    if (m === 'POST' && p.length === 2) return json(200, await lobby.create(account, await body()));
     const id = p[2];
     if (!/^[0-9a-f]{16}$/.test(id ?? '')) return json(404, { v: VERSION, error: 'no_game', message: 'a game id is 16 hex digits' });
     if (m === 'GET' && p.length === 3) {
@@ -1384,7 +2504,7 @@ export async function route(lobby, req) {
           const out = lobby.poll(account, id, since === null ? 0 : Number(since));
           return json(200, backoff ? { ...out, backoff } : out);
         } catch (e) {
-          if (e instanceof LobbyError) return json(e.status, { v: VERSION, error: e.code, message: e.message });
+          if (e instanceof LobbyError) return json(e.status, failure(e));
           return json(500, { v: VERSION, error: 'internal', message: 'internal error' });
         }
       };
@@ -1403,13 +2523,29 @@ export async function route(lobby, req) {
     }
     return json(404, { v: VERSION, error: 'not_found', message: 'unknown path' });
   } catch (e) {
-    if (e instanceof LobbyError) return json(e.status, { v: VERSION, error: e.code, message: e.message });
+    if (reportRequest) {
+      const known = e instanceof ReportError || e instanceof LobbyError;
+      const status = known ? e.status : 500;
+      const code = known ? e.code : 'internal';
+      const message = known ? e.message : 'internal error';
+      const requestId = bytesToHex(lobby.env.randomBytes(12));
+      const response = json(status, {
+        v: VERSION,
+        error: { code, message, request_id: requestId },
+        ...(known ? e.details : {}),
+      });
+      if (known && Number.isSafeInteger(e.details?.retry_after)) {
+        response.headers['retry-after'] = String(e.details.retry_after);
+      }
+      return response;
+    }
+    if (e instanceof LobbyError) return json(e.status, { v: VERSION, ...failure(e) });
     return json(500, { v: VERSION, error: 'internal', message: 'internal error' });
   }
 }
 
 // ---- configuration from environment-style strings (both platforms) -----------------------------------------------------------------------------------------
-// TICKET_KEYS: the key ring text; SESSION_KEY / UPLOAD_KEY / ADMIN_KEY (INFRA-2: the backup export): hex; RELAYS: "id=a.b.c.d:port,..."; PUBLIC_URL;
+// TICKET_KEYS: the key ring text; SESSION_KEY / UPLOAD_KEY / ADMIN_KEY / MOD_KEY: hex; RELAYS: "id=a.b.c.d:port,..."; PUBLIC_URL; REQUIRE_INSTALL: 0 or 1;
 // RUN_AHEAD; CRC_INTERVAL; MOTD (ONLINE-4: the message of the day, up to 2000 bytes, lines separated by \n)
 function motdFromEnv(text) {
   if (text === undefined || text === null || text === '') return null;
@@ -1424,11 +2560,25 @@ export function configFromEnv(e) {
     const [id, address] = x.includes('=') ? x.split('=') : ['default', x];
     return { id, address };
   });
+  const requireInstallText = String(e.REQUIRE_INSTALL ?? '0');
+  if (requireInstallText !== '0' && requireInstallText !== '1') throw new Error('REQUIRE_INSTALL must be 0 or 1');
+  const adminKey = e.ADMIN_KEY ? hexToBytes(String(e.ADMIN_KEY)) : null;
+  const modKey = e.MOD_KEY ? hexToBytes(String(e.MOD_KEY)) : null;
+  const enforcementCheckKey = e.ENFORCEMENT_CHECK_KEY ? hexToBytes(String(e.ENFORCEMENT_CHECK_KEY)) : null;
+  if (enforcementCheckKey && enforcementCheckKey.length !== 32) throw new Error('ENFORCEMENT_CHECK_KEY must be 32 bytes of hex');
+  if (adminKey && modKey && bytesToHex(adminKey) === bytesToHex(modKey)) throw new Error('ADMIN_KEY and MOD_KEY must be different');
+  if (enforcementCheckKey && ((adminKey && bytesToHex(enforcementCheckKey) === bytesToHex(adminKey)) ||
+      (modKey && bytesToHex(enforcementCheckKey) === bytesToHex(modKey)))) {
+    throw new Error('ENFORCEMENT_CHECK_KEY must be different from ADMIN_KEY and MOD_KEY');
+  }
   return {
     ticketKeys: parseKeyRing(String(e.TICKET_KEYS ?? '')),
     sessionKey: hexToBytes(String(e.SESSION_KEY ?? '')),
     uploadKey: e.UPLOAD_KEY ? hexToBytes(String(e.UPLOAD_KEY)) : null,
-    adminKey: e.ADMIN_KEY ? hexToBytes(String(e.ADMIN_KEY)) : null,
+    adminKey,
+    modKey,
+    enforcementCheckKey,
+    requireInstall: requireInstallText === '1',
     relays,
     publicUrl: String(e.PUBLIC_URL ?? '').replace(/\/$/, ''),
     motd: motdFromEnv(e.MOTD),

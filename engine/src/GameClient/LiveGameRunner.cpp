@@ -83,6 +83,13 @@ void LiveGame::resetLogicWaitSites()
 	m_windowStats.maxWindowMs = 0.0; // the longest client window is per measurement window too
 }
 
+std::uint32_t LiveGame::msUntilNextFrame() const
+{
+	// lane NETLAG-2: timing only (the frame driver's early orders, Network::setFrameDue); never part of a frame's computation
+	const double ms = (1.0 - m_clock.getAlpha()) * 1000.0 / LOGICFRAMES_PER_SECOND;
+	return ms > 0.0 ? (std::uint32_t)ms : 0u;
+}
+
 void LiveGame::present(double seconds)
 {
 	// the render side (the caller's thread): take what was published, apply the events of the presented frames in order, pose from one snapshot
@@ -635,10 +642,9 @@ void LiveGame::workerLoop()
 void LiveGame::consumeHeroStatistics(const std::vector<ClientEvent> &events, const LogicSnapshot *snapshot)
 {
 	if (m_cahHeroID.empty() || m_replayObserver) return;
-	bool changed = false;
 	for (const auto &event : events)
 		if (event.kind == ClientEvent::CAH_STATISTICS && event.heroUniqueID == m_cahHeroID)
-			for (const auto &name : event.heroStatistics) { m_heroStatistics.add(name); changed = true; }
+			for (const auto &name : event.heroStatistics) { m_heroStatistics.add(name); m_cahStatisticsDirty = true; }
 	const auto &system = m_world.createAHeroSystem();
 	if (!m_cahResultRecorded && snapshot && snapshot->endGame && !snapshot->endGame->observer)
 	{
@@ -652,19 +658,26 @@ void LiveGame::consumeHeroStatistics(const std::vector<ClientEvent> &events, con
 			if (base != -1 && !system.statNames[(size_t)(base + (won ? 1 : 0))].empty())
 			{
 				m_heroStatistics.add(system.statNames[(size_t)(base + (won ? 1 : 0))]);
-				changed = true;
+				m_cahStatisticsDirty = true;
 			}
 			m_cahResultRecorded = true;
 		}
 	}
-	if (!changed) return;
+	// Events and match results are consumed once; failed saves remain pending.
+	if (!m_cahStatisticsDirty) return;
 	std::string error;
 	if (!m_heroStatistics.save(m_options.heroStatsProfile, m_cahHeroID, &error))
 	{
-		m_report.errors.push_back(error);
-		if (m_options.heroStatsMessage) m_options.heroStatsMessage(error);
+		if (error != m_cahSaveError)
+		{
+			m_cahSaveError = error;
+			m_report.errors.push_back(error);
+			if (m_options.heroStatsMessage) m_options.heroStatsMessage(error);
+		}
 		return;
 	}
+	m_cahStatisticsDirty = false;
+	m_cahSaveError.clear();
 	for (const auto &award : system.awardSystem.awards)
 		if (std::find(m_cahEarned.begin(), m_cahEarned.end(), award.name) == m_cahEarned.end() && award.earned(m_heroStatistics.counters))
 		{
