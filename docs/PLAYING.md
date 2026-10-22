@@ -781,3 +781,18 @@ this layout; you don't need them.
   line of the log) and what you did when it happened.
 - Tell us what looks, sounds or plays differently from the original game:
   that is the most useful feedback of all.
+
+Navigation diagnostics (OpenBFME developer option): launch with
+`--debug-navigation` to show checkboxes for moving-unit paths and ground
+navigation cells. Both start enabled and can be switched independently during
+play. Cyan lines show the remaining optimized path from the unit's current
+position; yellow lines show direct steering toward a goal (including formation
+slots), not a computed path. Stopped units disappear on the next refresh.
+
+The terrain overlay covers a 600-unit square around the camera at native
+10-unit cell resolution: green clear/rubble, amber pinched, red blocked, blue
+water. These are ground-grid classifications, not a promise that a particular
+unit's footprint or locomotor can traverse them; bridges and other layers are
+not shown. It refreshes at most five times per second, reads only during safe
+logic client windows, and never requests paths or changes simulation state.
+The option is off by default and is not saved.

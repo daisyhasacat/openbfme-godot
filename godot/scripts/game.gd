@@ -614,7 +614,7 @@ var _movie_skip_after := -1     # lane CAMP-2: --movie-skip-after=MS (tests: eve
 var _intro := "off"            # lane CAMP-2: --intro (on) / --no-intro (off)
 var _intro_check := false       # lane CAMP-2: --intro-check (tests): the start-up movies, then quit
 ## lane MENU-1: the options a player's own start may carry (the launcher's, the display options); any other option makes a scripted run
-const PLAYER_ARG_PREFIXES := ["--fps", "--dev-overlay", "--intro", "--no-intro", "--alternate-mouse", "--classic-mouse", "--free-camera", "--res=",
+const PLAYER_ARG_PREFIXES := ["--fps", "--debug-navigation", "--dev-overlay", "--intro", "--no-intro", "--alternate-mouse", "--classic-mouse", "--free-camera", "--res=",
 	"--vsync=", "--max-fps=", "--movies=", "--zoom-out=", "--widescreen=", "--online-lobby=", "--no-update-check", "--game=", "--bfme1-install="] # --zoom-out: ZOOM-1, --widescreen: UI-6, player options (PLAYING.md)
 var _scripted_skirmish_ini := ""
 
@@ -647,7 +647,8 @@ func _scripted_run() -> bool:
 	return false
 
 
-const INTRO_QUIET_ARGS := ["--fps", "--dev-overlay", "--intro", "--alternate-mouse", "--free-camera"] # options that are not automation
+const INTRO_QUIET_ARGS := ["--fps", "--debug-navigation", "--dev-overlay", "--intro", "--alternate-mouse", "--free-camera"] # options that are not automation
+var _debug_navigation := false # --debug-navigation: read-only moving paths and ground cells
 var _dev_overlay := false       # lane CAMP-2: --dev-overlay (developer text on screen; never in the real game)
 var _control_bar_hidden := false # lane CAMP-2: HideControlBar / ShowControlBar (RW 0x804576 / 0x8046A1) of the script's letterbox and HIDE_UI / SHOW_UI
 var _qa := false                # lane QA-1
@@ -1013,6 +1014,8 @@ func _ready() -> void:
 			_campaign_check = int(arg.substr(17))
 		elif arg == "--movies=off":
 			_campaign_movies = false
+		elif arg == "--debug-navigation":
+			_debug_navigation = true
 		elif arg == "--dev-overlay":
 			_dev_overlay = true
 		elif arg.begins_with("--movie-file="):
@@ -2683,6 +2686,12 @@ func _install_hud(rep: Dictionary) -> void:
 		return
 	_hud = hud
 	_hud_installed = true
+	if _debug_navigation:
+		var navigation := preload("res://scripts/navigation_debug.gd").new()
+		navigation.world = _world
+		navigation.hud = hud
+		add_child(navigation)
+		_game_nodes.append(navigation)
 	if not has_node("AdaptiveHUD"):
 		var adaptive := preload("res://scripts/adaptive_hud.gd").new()
 		adaptive.name = "AdaptiveHUD"

@@ -305,6 +305,7 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("debug_kill_player_objects", "player", "keep"), &GameWorld::debug_kill_player_objects);
 	ClassDB::bind_method(D_METHOD("debug_find_path", "id", "x", "y"), &GameWorld::debug_find_path);
 	ClassDB::bind_method(D_METHOD("debug_pathfind_cell", "x", "y"), &GameWorld::debug_pathfind_cell);
+	ClassDB::bind_method(D_METHOD("debug_navigation", "x", "y", "terrain"), &GameWorld::debug_navigation);
 	ClassDB::bind_method(D_METHOD("get_ai_build_report"), &GameWorld::get_ai_build_report);
 	ClassDB::bind_method(D_METHOD("debug_placement", "template_name", "x", "y", "angle", "options", "builder_id"), &GameWorld::debug_placement);
 	ClassDB::bind_method(D_METHOD("debug_damage_object", "id", "amount", "source_id"), &GameWorld::debug_damage_object);
@@ -7090,6 +7091,72 @@ Dictionary GameWorld::debug_kill_player_objects(const String &player, const Stri
 	}
 	out["ok"] = true;
 	out["killed"] = (int64_t)victims.size();
+	return out;
+}
+
+// OpenBFME diagnostic, not retail presentation. Read existing paths/cells only: no
+// searches, follower updates, passability cache warming or simulation RNG consumption.
+Dictionary GameWorld::debug_navigation(double x, double y, bool terrain)
+{
+	Dictionary out;
+	out["ok"] = false;
+	if (!m_game || !m_game->logicHeld() || !m_game->logic().aiWorld() || !std::isfinite(x) || !std::isfinite(y)) return out;
+	auto &logic = m_game->logic();
+	Array routes;
+	for (const ::Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+	{
+		const AIUpdateInterface *ai = o->getAIUpdateInterface();
+		if (!ai || o->isDestroyed() || !ai->mover().isMoving()) continue;
+		const AIMover &mover = ai->mover();
+		Dictionary route;
+		route["id"] = (int64_t)o->getID();
+		PackedVector3Array points;
+		const auto append = [&](const Coord3D &p) {
+			points.push_back(Vector3(p.x, std::max(p.z, logic.getGroundHeight(p.x, p.y)) + 3.0f, -p.y));
+		};
+		append(*o->getPosition());
+		const Path *path = mover.path();
+		route["has_path"] = path != nullptr;
+		if (path)
+		{
+			const PathNode *node = path->currentNode();
+			// currentNode is the start of the occupied segment; skip its already traversed endpoint.
+			node = node ? node->getNextOptimized() : path->getFirstNode();
+			for (; node; node = node->getNextOptimized()) append(*node->getPosition());
+		}
+		else append(mover.goalPosition()); // direct steering (including formation slots), not a computed path
+		route["points"] = points;
+		routes.push_back(route);
+	}
+	out["routes"] = routes;
+	if (terrain)
+	{
+		// Fixed 600-unit square, 10-unit native ground cells. Keep cost independent of map size.
+		Pathfinder &pf = logic.aiWorld()->pathfinder();
+		const ICoord2D *extent = pf.getExtent();
+		const int cx = (int)(std::clamp(x, 0.0, (double)extent->x * 10.0) / 10.0);
+		const int cy = (int)(std::clamp(y, 0.0, (double)extent->y * 10.0) / 10.0);
+		const int x0 = std::max(0, cx - 30), y0 = std::max(0, cy - 30);
+		const int x1 = std::min(extent->x, cx + 30), y1 = std::min(extent->y, cy + 30);
+		PackedVector3Array vertices;
+		PackedByteArray types, pinched;
+		for (int iy = y0; iy <= y1; ++iy)
+			for (int ix = x0; ix <= x1; ++ix)
+				vertices.push_back(Vector3(ix * 10.0f, logic.getGroundHeight(ix * 10.0f, iy * 10.0f) + 1.5f, -iy * 10.0f));
+		for (int iy = y0; iy < y1; ++iy)
+			for (int ix = x0; ix < x1; ++ix)
+			{
+				const PathfindCell *cell = pf.getCell(LAYER_GROUND, ix, iy);
+				types.push_back(cell ? (uint8_t)cell->getType() : (uint8_t)PathfindCell::CELL_IMPASSABLE);
+				pinched.push_back(cell && cell->getPinched());
+			}
+		out["vertices"] = vertices;
+		out["types"] = types;
+		out["pinched"] = pinched;
+		out["width"] = x1 - x0;
+		out["height"] = y1 - y0;
+	}
+	out["ok"] = true;
 	return out;
 }
 

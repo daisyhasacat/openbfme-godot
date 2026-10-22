@@ -184,6 +184,8 @@ public:
 	Dictionary debug_find_path(int64_t id, double x, double y);
 	// AI debugging: the pathfinder cell at (x, y) on the ground layer: { ok, type, zone, pinched, ground, water_height (when standing water covers it) }
 	Dictionary debug_pathfind_cell(double x, double y);
+	// Read-only navigation overlay snapshot; returns unavailable while the logic worker runs.
+	Dictionary debug_navigation(double x, double y, bool terrain);
 	// AI debugging: each computer player's build state: phase, money reserve, the unit builder's factories and requests, the pending queue with last check codes
 	Array get_ai_build_report() const;
 	// AI debugging: BuildPlacement::isLocationLegalToBuild for `template_name` at (x, y) with `options` for builder `builder_id` (its player): the LegalBuildCode
