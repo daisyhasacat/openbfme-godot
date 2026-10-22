@@ -276,7 +276,34 @@ TEST_CASE("hero hud: the fortress's REVIVE buttons show the hero records and a p
 	MESSAGE("REVIVE buttons: " << revive.size() << ", Aragorn's image " << aragornButton->image << " cost " << aragornButton->cost);
 	// a press recruits Aragorn: the button shows the progress, then the hero comes
 	REQUIRE(h.hud->controlBar().pressButton(aragornButton->slot, aragornButton->inPalantir));
-	h.frames(30);
+	// Inspect every render refresh across the production-start tick, including
+	// exactly zero elapsed logic frames. HIDE_WHILE_DISABLED must not remove it.
+	bool sawZeroProgress = false;
+	for (int frame = 0; frame < 30; ++frame)
+	{
+		h.frames(1);
+		h.hud->controlBar().update();
+		const auto visible = h.buttons(GUI_COMMAND_REVIVE);
+		CHECK(visible.size() == heroes);
+		bool found = false;
+		for (const auto &button : visible)
+		{
+			if (button.reviveIndex != aragornIndex) continue;
+			found = true;
+			if (list.at(aragornIndex)->startFrame != -1)
+			{
+				CHECK(button.state == ButtonState::NotReady);
+				CHECK(button.queued == 1);
+				if (list.at(aragornIndex)->startFrame == (int)h.rig.logic().getFrame())
+				{
+					sawZeroProgress = true;
+					CHECK(button.timer == 0.0f);
+				}
+			}
+		}
+		CHECK(found);
+	}
+	CHECK(sawZeroProgress);
 	revive = h.buttons(GUI_COMMAND_REVIVE);
 	const ControlBarButton *pending = nullptr;
 	for (const ControlBarButton &b : revive)

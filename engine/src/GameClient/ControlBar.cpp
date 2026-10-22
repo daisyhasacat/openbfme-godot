@@ -905,7 +905,10 @@ bool ControlBar::reviveButton(ControlBarButton &cb, int n, Player &player, Objec
 	const float stored = (float)progress;
 	cb.queued = r->startFrame != -1 ? 1 : 0;
 	cb.timer = cb.queued ? stored : -1.0f;
-	cb.state = progress == 0.0 ? ButtonState::Restricted : stored != 1.0f ? ButtonState::NotReady :
+	// Presentation fix: a queued hero has zero progress on its start frame.
+	// Keep that slot cooling down instead of hiding it via HIDE_WHILE_DISABLED;
+	// otherwise the side bar removes/reinserts it and replays its entrance.
+	cb.state = cb.queued ? ButtonState::NotReady : progress == 0.0 ? ButtonState::Restricted : stored != 1.0f ? ButtonState::NotReady :
 		player.getMoney()->countMoney() < cost ? ButtonState::CantAfford : ButtonState::Enabled;
 	return true;
 }
