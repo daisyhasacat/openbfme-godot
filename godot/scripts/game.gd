@@ -2302,12 +2302,20 @@ func _set_control_bar_hidden(hidden: bool) -> void:
 		return
 	_control_bar_hidden = hidden
 	print("GAME control bar %s" % ("hidden" if hidden else "shown"))
-	var stack: PackedStringArray = _shell.shell_stack()
-	if stack.size() > 0 and stack[0] == "Palantir.apt":
-		# the HUD movie is the shell's only game screen (_enter_game); a menu pushed over it (the quit menu) stays as it is
-		_shell.set_level_visible(_palantir_level(), not hidden)
 	if _hud != null:
 		_hud.visible = not hidden
+	var hud := _hud
+	var level := _palantir_level()
+	# The opening script can run before the pending Palantir movie loads. Keep
+	# its visibility request until the root exists; discard it if the HUD or
+	# requested visibility changes while loading.
+	while level >= 0 and not _shell.has_level(level):
+		await get_tree().process_frame
+		if not is_instance_valid(hud) or hud != _hud or hidden != _control_bar_hidden:
+			return
+	var stack: PackedStringArray = _shell.shell_stack()
+	if stack.size() > 0 and stack[0] == "Palantir.apt" and hidden == _control_bar_hidden:
+		_shell.set_level_visible(level, not hidden)
 	# the tests read it back from the render list a few frames later
 	for i in 3:
 		await get_tree().process_frame
@@ -2702,7 +2710,7 @@ func _install_hud(rep: Dictionary) -> void:
 		var adaptive := preload("res://scripts/adaptive_hud.gd").new()
 		adaptive.name = "AdaptiveHUD"
 		adaptive.hud = func() -> Node: return _hud
-		adaptive.gameplay = func() -> bool: return _state == State.PLAYING and not _quit_open and (_lua_console == null or not _lua_console.is_open()) and (not is_instance_valid(_map_editor) or not _map_editor.active)
+		adaptive.gameplay = func() -> bool: return _state == State.PLAYING and not _control_bar_hidden and not _quit_open and (_lua_console == null or not _lua_console.is_open()) and (not is_instance_valid(_map_editor) or not _map_editor.active)
 		adaptive.execute = func(code: String) -> Dictionary: return _world.execute_lua(code)
 		adaptive.open_menu = _toggle_quit_menu
 		adaptive.open_console = func() -> void:
@@ -2715,7 +2723,7 @@ func _install_hud(rep: Dictionary) -> void:
 		touch_toolbar.hud = func() -> Node: return _hud
 		touch_toolbar.gameplay = func() -> bool:
 			var adaptive: Node = get_node_or_null("AdaptiveHUD")
-			return _state == State.PLAYING and not _quit_open and is_instance_valid(_hud) and (adaptive == null or adaptive.mode == "classic") and (_lua_console == null or not _lua_console.is_open()) and (not is_instance_valid(_map_editor) or not _map_editor.active)
+			return _state == State.PLAYING and not _control_bar_hidden and not _quit_open and is_instance_valid(_hud) and (adaptive == null or adaptive.mode == "classic") and (_lua_console == null or not _lua_console.is_open()) and (not is_instance_valid(_map_editor) or not _map_editor.active)
 		touch_toolbar.open_menu = _toggle_quit_menu
 		touch_toolbar.open_console = func() -> void:
 			if _lua_console != null: _lua_console.toggle()

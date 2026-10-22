@@ -27,6 +27,11 @@ func _run() -> void:
 	var report: Dictionary = shell.get_notification_report()
 	assert(report.loaded and report.visible and not report.pending)
 	assert(report.opened == 1)
+	assert(game._control_bar_hidden)
+	assert(not game.control_bar_drawn())
+	assert(not game._hud.visible)
+	assert(not game.get_node("AdaptiveHUD")._top.visible)
+	assert(not game._second_view.button.visible)
 	assert(report.sound == "Gui_DaveBox")
 	assert(game._audio.is_valid_event(report.sound))
 	assert(shell.script_notification("MissingNotificationType", "SCRIPT:MBTutorial_MissionText03", 0).error == "Unknown notification type: MissingNotificationType")
@@ -41,6 +46,13 @@ func _run() -> void:
 	if OS.get_environment("NOTIFICATION_SHOT") != "":
 		await RenderingServer.frame_post_draw
 		root.get_texture().get_image().save_png(OS.get_environment("NOTIFICATION_SHOT"))
+	assert(game._world.debug_script_action("CAMERA_LETTERBOX_END", []).ok)
+	game._world.advance(0.2)
+	for i in 8: await process_frame
+	assert(not game._control_bar_hidden)
+	assert(game.control_bar_drawn())
+	assert(game._hud.visible)
+	assert(game.get_node("AdaptiveHUD")._top.visible)
 	assert(shell.script_notification("ObjectiveCompleted", "SCRIPT:MBTutorial_MissionText03", 0.1).ok)
 	for i in 120:
 		await create_timer(0.02).timeout
