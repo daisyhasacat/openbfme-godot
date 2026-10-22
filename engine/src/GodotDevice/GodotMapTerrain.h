@@ -19,6 +19,8 @@
 #include <map>
 #include <string>
 
+struct LoadedMap;
+
 namespace godot
 {
 
@@ -39,6 +41,9 @@ public:
 	//   height_probes: PackedVector2Array of SAGE (x, y); their ground heights come back as map_info.probe_heights
 	Node3D *build_map(const Ref<RetailFileSystem> &fs, const String &map_name, const Dictionary &options);
 
+	// Native gameplay path: reuse its already validated map; editor requests parse their own map.
+	Node3D *build_loaded_map(const Ref<RetailFileSystem> &fs, const String &map_name, const Dictionary &options, const LoadedMap &map);
+
 	// { map, errors: [..], stops: [..], assumptions: [..], timings_ms: {..}, map_info: {..}, atlas: {..},
 	//   mesh: {..}, water: {..}, rivers: {..}, roads: {..}, objects: {..}, camera: {..} }
 	Dictionary preview_texture(const Ref<RetailFileSystem> &fs, const String &terrain_name);
@@ -58,6 +63,7 @@ protected:
 	static void _bind_methods();
 
 private:
+	Node3D *build_internal(const Ref<RetailFileSystem> &fs, const String &map_name, const Dictionary &options, const LoadedMap *loaded);
 	Ref<Texture2D> loadTexture(RetailFileSystem &fs, const std::string &name, Array &errors, bool mipmaps = true);
 
 	Dictionary m_report;

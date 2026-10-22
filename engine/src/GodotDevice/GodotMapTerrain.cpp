@@ -491,6 +491,18 @@ Node3D *MapTerrainBuilder::build_test_patch(const Dictionary &spec)
 
 Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const String &map_name, const Dictionary &options)
 {
+	return build_internal(fsRef, map_name, options, nullptr);
+}
+
+Node3D *MapTerrainBuilder::build_loaded_map(const Ref<RetailFileSystem> &fsRef, const String &map_name, const Dictionary &options,
+											const LoadedMap &map)
+{
+	return build_internal(fsRef, map_name, options, &map);
+}
+
+Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, const String &map_name, const Dictionary &options,
+										  const LoadedMap *loaded)
+{
 	m_report = Dictionary();
 	Array errors, assumptions, stops;
 	Dictionary timings;
@@ -530,25 +542,28 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 	double t0 = nowMs();
 
 	// ---- 1. load the map ------------------------------------------------------------------------
-	std::vector<uint8_t> bytes;
 	std::string error;
-	if (!rfs.readBytes(path, bytes, &error))
+	LoadedMap ownedMap;
+	const bool editor = options.has("editor_roads") || options.has("editor_heights");
+	if (!loaded || editor)
 	{
-		return fail(error);
-	}
-	LoadedMap map;
-	{
-		MapReadOptions mro; // strict: unknown chunks and unread bytes are errors
-		mro.bfme1 = rfs.archive_fs() && isBfme1Data(*rfs.archive_fs()); // community PR #36
-		if (!MapReader::load(bytes, path, mro, map, &error))
-		{
+		std::vector<uint8_t> bytes;
+		if (!rfs.readBytes(path, bytes, &error))
 			return fail(error);
-		}
+		MapReadOptions mro;
+		mro.bfme1 = rfs.archive_fs() && isBfme1Data(*rfs.archive_fs());
+		if (!MapReader::load(bytes, path, mro, ownedMap, &error))
+			return fail(error);
 	}
-	if(options.has("editor_roads")) {
-		auto &objects=map.chunks.objects;
-		objects.erase(std::remove_if(objects.begin(),objects.end(),[](const MapObject &o){return o.getFlag(FLAG_ROAD_FLAGS);}),objects.end());
-		Array roads=options["editor_roads"];
+	m_report["reused_gameplay_map"] = loaded && !editor;
+	// Edits apply only to the independently parsed editor map.
+	auto &map = ownedMap;
+	if (options.has("editor_roads"))
+	{
+		auto &objects = map.chunks.objects;
+		objects.erase(std::remove_if(objects.begin(), objects.end(), [](const MapObject &o) { return o.getFlag(FLAG_ROAD_FLAGS); }),
+					  objects.end());
+		Array roads = options["editor_roads"];
 		for(int64_t i=0;i<roads.size();++i) {Dictionary d=roads[i];Array points=d["points"];for(int j=0;j<2;++j) {Array p=points[j];MapObject o;o.m_objectName=toNative(String(d["name"]));Array flags=d.get("flags",Array()),angles=d.get("angles",Array());o.m_flags=(flags.size()==2?int(flags[j]) & ~FLAG_ROAD_FLAGS:0) | (j?FLAG_ROAD_POINT2:FLAG_ROAD_POINT1);if(angles.size()==2)o.m_angle=double(angles[j]);o.m_location.x=double(p[0]);o.m_location.y=double(p[1]);o.m_location.z=0;const double width=d.get("width",0.0);if(width>0)o.m_properties.setReal(TerrainRoads::kEditorRoadWidthKey,(float)width);objects.push_back(o);}}
 	}
 	// Editor overrides operate on a parsed copy; the installed retail archive is untouched.
@@ -569,8 +584,9 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 		for (int64_t i=0;i<extra.size() && i<(int64_t)map.heightMap.m_extraBlendTileNdxes.size();++i) map.heightMap.m_extraBlendTileNdxes[i]=extra[i];
 		for (int64_t i=0;i<cliffs.size() && i<(int64_t)map.heightMap.m_cliffInfoNdxes.size();++i) map.heightMap.m_cliffInfoNdxes[i]=cliffs[i];
 	}
+	const LoadedMap &renderMap=loaded && !editor ? *loaded : ownedMap;
 	timings["load_map"] = nowMs() - t0;
-	for (const std::string &id : map.stops)
+	for (const std::string &id : renderMap.stops)
 	{
 		stops.push_back(toGodot(id));
 	}
@@ -579,7 +595,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 	Ref<LookupTablePostEffect> lookupEffect;
 	{
 		Array posts;
-		for (const PostEffect &e : map.chunks.postEffects)
+		for (const PostEffect &e : renderMap.chunks.postEffects)
 		{
 			Dictionary d;
 			d["name"] = toGodot(e.name);
@@ -634,36 +650,37 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 			}
 		}
 	}
-	const WorldHeightMap &hm = map.heightMap;
-	if (!map.hasHeightMap || !hm.m_hasBlendTileData)
+	// TerrainAtlas packs class offsets; keep those presentation writes private.
+	WorldHeightMap hm = renderMap.heightMap;
+	if (!renderMap.hasHeightMap || !hm.m_hasBlendTileData)
 	{
 		return fail("map has no height map / blend tile data");
 	}
 	TerrainLogic terrain;
 	std::vector<std::string> logicProblems;
-	terrain.init(hm, map.chunks, &logicProblems);
+	terrain.init(hm, renderMap.chunks, &logicProblems);
 
 	Dictionary info;
 	info["archive"] = toGodot(arch->getArchiveFilenameForFile(path));
-	info["stored_bytes"] = (int64_t)map.storedSize;
-	info["decoded_bytes"] = (int64_t)map.decodedSize;
+	info["stored_bytes"] = (int64_t)renderMap.storedSize;
+	info["decoded_bytes"] = (int64_t)renderMap.decodedSize;
 	info["width"] = hm.m_width;
 	info["height"] = hm.m_height;
 	info["border"] = hm.m_borderSize;
 	info["boundaries"] = (int64_t)hm.m_boundaries.size();
-	info["objects"] = (int64_t)map.chunks.objects.size();
+	info["objects"] = (int64_t)renderMap.chunks.objects.size();
 	info["waypoints"] = (int64_t)terrain.waypoints().size();
 	info["blend_version"] = hm.m_blendTileVersion;
 	info["texture_classes"] = (int64_t)hm.m_textureClasses.size();
 	if(!hm.m_data.empty()){auto range=std::minmax_element(hm.m_data.begin(),hm.m_data.end());info["elevation_min"]=*range.first*MAP_HEIGHT_SCALE;info["elevation_max"]=*range.second*MAP_HEIGHT_SCALE;}
-	int roadPoints=0;for(const auto &o:map.chunks.objects)if(o.getFlag(FLAG_ROAD_POINT1))++roadPoints;info["road_segments"]=roadPoints;
+	int roadPoints=0;for(const auto &o:renderMap.chunks.objects)if(o.getFlag(FLAG_ROAD_POINT1))++roadPoints;info["road_segments"]=roadPoints;
 	// the map's bridges: pairs of objects flagged as bridge ends (FLAG_BRIDGE_POINT1 then FLAG_BRIDGE_POINT2); the terrain makes no bridge of them yet (S-161)
 	{
 		Array bridges;
-		for (size_t i = 0; i + 1 < map.chunks.objects.size(); ++i)
+		for (size_t i = 0; i + 1 < renderMap.chunks.objects.size(); ++i)
 		{
-			const auto &a = map.chunks.objects[i];
-			const auto &b = map.chunks.objects[i + 1];
+			const auto &a = renderMap.chunks.objects[i];
+			const auto &b = renderMap.chunks.objects[i + 1];
 			if (a.getFlag(FLAG_BRIDGE_POINT1) && b.getFlag(FLAG_BRIDGE_POINT2))
 			{
 				Dictionary br;
@@ -686,14 +703,14 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 		}
 		info["probe_heights"] = heights;
 	}
-	info["time_of_day"] = map.chunks.hasGlobalLighting ? map.chunks.lighting.timeOfDay : 0;
+	info["time_of_day"] = renderMap.chunks.hasGlobalLighting ? renderMap.chunks.lighting.timeOfDay : 0;
 	Array problems;
 	for (const std::string &p : logicProblems)
 	{
 		problems.push_back(toGodot(p));
 	}
 	info["terrain_logic_problems"] = problems;
-	for (const std::string &w : map.warnings)
+	for (const std::string &w : renderMap.warnings)
 	{
 		problems.push_back(toGodot(w));
 	}
@@ -711,7 +728,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 		post->setEffect(lookupEffect);
 		root->add_child(post);
 	}
-	const GlobalLightingData *lighting = map.chunks.hasGlobalLighting ? &map.chunks.lighting : nullptr;
+	const GlobalLightingData *lighting = renderMap.chunks.hasGlobalLighting ? &renderMap.chunks.lighting : nullptr;
 	const TimeOfDayLights *tod = lighting ? &lighting->tod[std::max(0, std::min(3, lighting->timeOfDay - 1))] : nullptr;
 	const float effectColorScale = lighting ? W3DObjectLightingUtil::effectColorScale(*lighting) : 1.0f;
 	const bool overbright = effectColorScale > 1.0f;
@@ -764,7 +781,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 		}
 		TerrainAtlasImages images;
 		TerrainAtlasReport arep;
-		if (!TerrainAtlas::build(const_cast<WorldHeightMap &>(hm), *arch, types, images, arep, &error))
+		if (!TerrainAtlas::build(hm, *arch, types, images, arep, &error))
 		{
 			memdelete(root);
 			return fail(error);
@@ -885,11 +902,11 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 		W3D_Apply_Fog(weather.fogEnabled, weather.fogColor, weather.fogStart, weather.fogEnd);
 		m_report["object_fog"] = toGodot(W3DHardwareFog::StopText());
 		Ref<Texture2D> cloudTex, macroTex;
-		if (map.chunks.hasEnvironmentData)
+		if (renderMap.chunks.hasEnvironmentData)
 		{
 			Array texErrors;
-			cloudTex = loadTexture(rfs, map.chunks.environment.cloudTexture, texErrors);
-			macroTex = loadTexture(rfs, map.chunks.environment.macroTexture, texErrors);
+			cloudTex = loadTexture(rfs, renderMap.chunks.environment.cloudTexture, texErrors);
+			macroTex = loadTexture(rfs, renderMap.chunks.environment.macroTexture, texErrors);
 			for (int64_t i = 0; i < texErrors.size(); ++i)
 			{
 				errors.push_back(texErrors[i]);
@@ -919,9 +936,9 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 			m->set_shader_parameter("debug_mode", (int)(options.has("debug_mode") ? (int)options["debug_mode"] : 0));
 			m->set_shader_parameter("cloud_scale", Vector2(1.0f / weather.cloudSize[0], 1.0f / weather.cloudSize[1]));
 			m->set_shader_parameter("cloud_offset_per_second", Vector2(weather.cloudOffsetPerSecond[0], weather.cloudOffsetPerSecond[1]));
-			if (map.chunks.hasEnvironmentData)
+			if (renderMap.chunks.hasEnvironmentData)
 			{
-				m->set_shader_parameter("macro_stretched", map.chunks.environment.isMacroTextureStretched);
+				m->set_shader_parameter("macro_stretched", renderMap.chunks.environment.isMacroTextureStretched);
 			}
 			m->set_shader_parameter("map_size", Vector2((float)hm.m_width * MAP_XY_FACTOR, (float)hm.m_height * MAP_XY_FACTOR));
 			m->set_shader_parameter("map_border_width", (float)hm.m_borderSize * MAP_XY_FACTOR);
@@ -981,8 +998,8 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 		ms["overbright"] = overbright;
 		ms["fog_enabled"] = weather.fogEnabled;
 		ms["fog_from_map_ini"] = weather.fogKeysSeen;
-		ms["cloud_texture"] = map.chunks.hasEnvironmentData ? toGodot(map.chunks.environment.cloudTexture) : String();
-		ms["macro_texture"] = map.chunks.hasEnvironmentData ? toGodot(map.chunks.environment.macroTexture) : String();
+		ms["cloud_texture"] = renderMap.chunks.hasEnvironmentData ? toGodot(renderMap.chunks.environment.cloudTexture) : String();
+		ms["macro_texture"] = renderMap.chunks.hasEnvironmentData ? toGodot(renderMap.chunks.environment.macroTexture) : String();
 		ms["cloud_texture_loaded"] = cloudTex.is_valid();
 		ms["macro_texture_loaded"] = macroTex.is_valid();
 		ms["terrain_render_priority"] = TERRAIN_RENDER_PRIORITY;
@@ -996,14 +1013,14 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 	{
 		Dictionary w;
 		int64_t areas = 0, tris = 0, failed = 0;
-		if (wantWater && !map.chunks.standingWaterAreas.empty())
+		if (wantWater && !renderMap.chunks.standingWaterAreas.empty())
 		{
 			Ref<Shader> sh = loadShader("res://shaders/water_standing.gdshader", errors);
 			Node3D *waterRoot = memnew(Node3D);
 			waterRoot->set_name("StandingWater");
 			root->add_child(waterRoot);
 			std::map<std::string, Ref<ShaderMaterial>> matCache;
-			for (const StandingWaterArea &a : map.chunks.standingWaterAreas)
+			for (const StandingWaterArea &a : renderMap.chunks.standingWaterAreas)
 			{
 				std::vector<std::uint32_t> tri;
 				if (a.points.size() < 3 || !WaterGeometry::triangulate(a.points, tri))
@@ -1076,8 +1093,8 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 		w["areas"] = areas;
 		w["triangles"] = tris;
 		w["triangulation_failed"] = failed;
-		w["areas_in_map"] = (int64_t)map.chunks.standingWaterAreas.size();
-		w["wave_areas_not_rendered"] = (int64_t)map.chunks.standingWaveAreas.size();
+		w["areas_in_map"] = (int64_t)renderMap.chunks.standingWaterAreas.size();
+		w["wave_areas_not_rendered"] = (int64_t)renderMap.chunks.standingWaveAreas.size();
 		m_report["water"] = w;
 	}
 
@@ -1085,13 +1102,13 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 	{
 		Dictionary rv;
 		int64_t rendered = 0, tris = 0;
-		if (wantRivers && !map.chunks.riverAreas.empty())
+		if (wantRivers && !renderMap.chunks.riverAreas.empty())
 		{
 			Ref<Shader> sh = loadShader("res://shaders/river.gdshader", errors);
 			Node3D *riverRoot = memnew(Node3D);
 			riverRoot->set_name("Rivers");
 			root->add_child(riverRoot);
-			for (const RiverArea &r : map.chunks.riverAreas)
+			for (const RiverArea &r : renderMap.chunks.riverAreas)
 			{
 				WaterGeometry::RiverStrip strip;
 				if (!WaterGeometry::buildRiverStrip(r, strip) || sh.is_null())
@@ -1162,7 +1179,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 		}
 		rv["rendered"] = rendered;
 		rv["triangles"] = tris;
-		rv["areas_in_map"] = (int64_t)map.chunks.riverAreas.size();
+		rv["areas_in_map"] = (int64_t)renderMap.chunks.riverAreas.size();
 		m_report["rivers"] = rv;
 	}
 
@@ -1181,7 +1198,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 			}
 			else
 			{
-				TerrainRoads::buildStrips(map.chunks.objects, roadTypes, hm, lift, strips, rrep);
+				TerrainRoads::buildStrips(renderMap.chunks.objects, roadTypes, hm, lift, strips, rrep);
 			}
 		}
 		if (!strips.empty())
@@ -1301,7 +1318,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 		}
 		std::set<std::string> unresolved;
 		const std::string mapIni = "maps\\" + name + "\\map.ini";
-		for (const MapObject &o : map.chunks.objects)
+		for (const MapObject &o : renderMap.chunks.objects)
 		{
 			if (o.getFlag(FLAG_ROAD_FLAGS))
 			{

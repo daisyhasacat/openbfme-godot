@@ -1164,7 +1164,9 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	{
 		return fail("GameWorld.setup has not run");
 	}
+	const double teardownStart = nowMs();
 	clear_scene();
+	timings["previous_game_teardown_ms"] = timing::elapsedMs(teardownStart);
 	m_animations = optBool(options, "animations", true);
 	m_houseColors = optBool(options, "house_colors", true);
 	m_textureAnimation = optBool(options, "texture_animation", true);
@@ -1400,7 +1402,7 @@ void fragment() {
 		{
 			terrainOptions["fog"] = false;
 		}
-		Node3D *terrain = terrainBuilder->build_map(m_fs, map_name, terrainOptions);
+		Node3D *terrain = terrainBuilder->build_loaded_map(m_fs, map_name, terrainOptions, m_game->map());
 		const Dictionary trep = terrainBuilder->get_report();
 		// the terrain builder's own report (the map viewer prints the same "texture not found: SkyEnv.tga": no such file in the archives, RENDER-1's): kept in the
 		// report under terrain_errors and not counted as a failure of the start unless no terrain was built
