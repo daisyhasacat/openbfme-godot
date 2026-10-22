@@ -515,3 +515,36 @@ TEST_CASE("retail: weapon launch bones, public bones and turret bones of an arch
 		CHECK(bones.barrels[0].empty());
 	}
 }
+
+TEST_CASE("retail: Gondor cavalry banner USER_3 plays and advances the mounted idle animation")
+{
+	auto *mount = retailtest::pureMount();
+	if (!mount)
+	{
+		retailtest::printSkip("retail: Gondor cavalry banner animation");
+		return;
+	}
+	const auto *module = findModule("GondorCavalryBanner", "W3DScriptedModelDraw");
+	REQUIRE(module);
+	REQUIRE(module->data);
+	ArchiveW3DFileSource source(*mount->fs);
+	WW3DAssetManager assets(source);
+	WW3DDrawAssets drawAssets(assets);
+	ScriptedRandom random;
+	random.values = std::deque<int>(32, 1);
+	W3DLuaDrawScriptHost scripts;
+	W3DScriptedModelDraw::Options options;
+	options.buildBones = false;
+	W3DScriptedModelDraw draw(*module->data, drawAssets, random, &scripts, options);
+	draw.setModelConditionFlags(flagsOf({"USER_3"}));
+	const auto before = draw.frame();
+	REQUIRE(before.trackCount != 0); // tolerance: at least one live track must exist to sample its animation.
+	CHECK(equalsNoCase(before.tracks[before.trackCount - 1].clipName, "RURrmBnr_SKL.RURrmBnr_IDLB"));
+	CHECK(before.tracks[before.trackCount - 1].frame == 0);
+	draw.advance(100);
+	const auto after = draw.frame();
+	REQUIRE(after.trackCount != 0); // tolerance: the idle loop must retain a live animation track.
+	CHECK(equalsNoCase(after.tracks[after.trackCount - 1].clipName, "RURrmBnr_SKL.RURrmBnr_IDLB"));
+	// 30 fps * 100 ms * float32(0.001), rounded to float32: 3.000000238418579.
+	CHECK(after.tracks[after.trackCount - 1].frame == 0x1.800002p+1f);
+}

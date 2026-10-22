@@ -61,7 +61,8 @@ TEST_CASE("horde2 banner: no carrier at rank 0; at rank 1 the carrier joins, sta
 	CHECK(hc(h)->getContainCount() == 4);
 	CHECK(hc(h)->freeSlotIndices().empty());
 	REQUIRE(b->data().m_morphConditions.size() == 1);
-	CHECK(b->data().m_morphConditions[0] == "UnitType:Swordsman ModelState:\"USER_2\"");
+	CHECK(b->data().m_morphConditions[0].unitType == "Swordsman");
+	CHECK(banner->testModelCondition(185)); // USER_2, applied as the carrier joins.
 }
 
 TEST_CASE("horde2 banner: nearby replenishment waits for its pulse, skips construction and fills one or all in distance order")
@@ -188,4 +189,53 @@ TEST_CASE("horde2 AutoHeal: a horde healer's under-attack test reads its members
 	CHECK((hordeBody == nullptr || hordeBody->lastDamageFrame() == 0xFFFFFFFFu));
 	// one member hit again, the others' frames are old: the newest (the larger) decides, so the pulse is blocked
 	CHECK_FALSE(pulseAfter([&] { hit(members[2]); }));
+}
+
+TEST_CASE("horde2 banner: morph selects the first matching payload, mounted locomotor and quoted model flags")
+{
+	std::string objects = kBannerObjects;
+	const std::string old = "MorphCondition = UnitType:Swordsman ModelState:\"USER_2\"";
+	objects.replace(objects.find(old), old.size(),
+					old + "\n MorphCondition = UnitType:Cavalry Locomotor:SET_MOUNTED ModelState:\"USER_3 MOUNTED\""
+						  "\n MorphCondition = UnitType:Cavalry ModelState:\"USER_4\"");
+	const std::string end = "    Speed = 55\n  End\nEnd\n";
+	objects.replace(objects.find(end), end.size(),
+					"    Speed = 55\n  End\n LocomotorSet\n Locomotor = WalkerLoco\n Condition = SET_MOUNTED\n Speed = 90\n End\nEnd\n");
+	CombatWorld w(objects.c_str());
+	Object *banner = w.unit("Bannerman", 'A', 300, 300);
+	auto *module = dynamic_cast<BannerCarrierUpdate *>(banner->findModule("BannerCarrierUpdate"));
+	REQUIRE(module);
+	banner->setModelConditionState(185, true); // previous USER_2 form
+	banner->setModelConditionState(3, true);   // DAMAGED must survive the morph
+	module->applyMorph("cAvAlRy");
+	CHECK_FALSE(banner->testModelCondition(185));
+	CHECK(banner->testModelCondition(186));		  // USER_3
+	CHECK(banner->testModelCondition(214));		  // MOUNTED
+	CHECK_FALSE(banner->testModelCondition(187)); // later duplicate is ignored
+	CHECK(banner->testModelCondition(3));
+	CHECK(banner->getAIUpdateInterface()->curLocomotorSet() == LOCOMOTORSET_MOUNTED);
+	module->applyMorph("Swordsman");
+	CHECK(banner->testModelCondition(185));
+	CHECK_FALSE(banner->testModelCondition(186));
+	CHECK_FALSE(banner->testModelCondition(214));
+	// An absent optional locomotor leaves the current set, as in the donor.
+	CHECK(banner->getAIUpdateInterface()->curLocomotorSet() == LOCOMOTORSET_MOUNTED);
+	module->applyMorph("UnknownPayload");
+	CHECK_FALSE(banner->testModelCondition(185));
+	CHECK(banner->testModelCondition(3));
+}
+
+TEST_CASE("horde2 banner: the update pulse repairs a carrier restored without its morph flags")
+{
+	CombatWorld w(kBannerObjects);
+	w.combat().setAutoAcquireEnabled(false);
+	Object *h = w.unit("BannerHorde", 'A', 300, 300);
+	ExperienceTrackerTestAccess::setRank(*h->getExperienceTracker(), 1);
+	w.frames(2);
+	Object *banner = w.byId(hc(h)->bannerCarrier());
+	REQUIRE(banner);
+	CHECK(banner->testModelCondition(185));
+	banner->setModelConditionState(185, false); // model flags from a pre-fix save
+	w.frames(10);								// IdleSpawnRate = 2000ms = 10 logic frames
+	CHECK(banner->testModelCondition(185));
 }

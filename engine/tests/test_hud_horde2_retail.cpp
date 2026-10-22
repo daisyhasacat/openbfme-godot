@@ -937,3 +937,23 @@ TEST_CASE("backlog8 retail: the FLOATING_Z horde members of the retail data: the
 	CHECK(hc->passStats().snaps == 0);
 	CHECK(hc->passStats().walks == 0);
 }
+
+TEST_CASE("horde2 retail: Gondor Knights banner enters its mounted USER_3 animation form")
+{
+	if (!haveWorld())
+		return;
+	Arena a(shared(), "FactionMen", "FactionMordor");
+	Object *horde = a.place("GondorKnightHorde", 0, 300, 300, 0);
+	a.logic.runLogicFrame();
+	horde->getExperienceTracker()->gainLevels(1, false);
+	for (int f = 0; f < 2; ++f)
+		a.logic.runLogicFrame();
+	auto *contain = hordeContainOf(horde);
+	REQUIRE(contain);
+	Object *banner = a.logic.findObjectByID(contain->bannerCarrier());
+	REQUIRE(banner);
+	CHECK(banner->getTemplate()->getName() == "GondorCavalryBanner");
+	CHECK(banner->testModelCondition(186)); // USER_3 gates both idle and riding states.
+	REQUIRE(banner->getAIUpdateInterface());
+	CHECK(banner->getAIUpdateInterface()->curLocomotorSet() == LOCOMOTORSET_MOUNTED);
+}

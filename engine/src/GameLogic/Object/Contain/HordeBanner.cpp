@@ -20,6 +20,9 @@
 #include "GameLogic/SnapshotXfer.h"
 
 #include "Common/GameCommon.h"
+#include "Common/AsciiString.h"
+#include "Common/INIException.h"
+#include "GameLogic/Locomotor.h"
 #include "Common/Player.h"
 #include "Common/StateHash.h"
 #include "Common/Thing/ModuleFactory.h"
@@ -49,9 +52,10 @@ const char *const kStop =
 	"[S-587] banner carriers: the spawn (RW 0x8719E4 / 0x870204: countdown, BannerCarrierMinLevel below the veterancy level, no shot for 4 seconds, BannerCarriersAllowed[0], "
 	"the countdown from MeleeFreeBannerReSpawnTime; the rank is XP-1's ExperienceTracker rank, and a horde's rank gain forces the check, RW 0x873ACF) and BannerCarrierUpdate's "
 	"replenishment (RW 0x89ACE4 / 0x89A392: every IdleSpawnRate, out of combat for MeleeFreeUnitSpawnTime, a new payload member at the carrier while the horde is not full) are "
-	"ported, as is nearby replenishment (RW 0x89AB8F: allied hordes in distance order, capacity, one/all, shroud/UnitSpawnFX, expedited banner countdown); "
-	"NOT ported: RW 0x8B50A5, the AllowBannerSpawnUpgrade test, the copied upgrades / experience, the producer's exit, MorphCondition / ExpLevelDraw "
-	"grammars (raw tokens) and the FX; INFERENCE: the carrier stands at its BannerCarrierPosition, the carrier id is cleared when it leaves, 'in combat' is a member damaged or "
+	"ported; MorphCondition parses UnitType/Locomotor/ModelState and applies model flags and locomotor on spawn/module pulses (BFME2 donor). "
+	"Also ported is nearby replenishment (RW 0x89AB8F: allied hordes in distance order, capacity, one/all, shroud/UnitSpawnFX, expedited banner countdown); "
+	"NOT ported: RW 0x8B50A5, the AllowBannerSpawnUpgrade test, the copied upgrades / experience, the producer's exit, ExpLevelDraw "
+	"grammar (raw tokens), morph shroud refresh / BannerMorphFX and native transfer/combo selection; INFERENCE: the carrier stands at its BannerCarrierPosition, the carrier id is cleared when it leaves, 'in combat' is a member damaged or "
 	"attacking within the window (RW 0x68C933 not read)";
 
 HordeContain *hordeContainOf(Object *o)
@@ -69,7 +73,7 @@ const FieldParse kBannerParse[] = {
 	{ "MeleeFreeUnitSpawnTime", INI::parseDurationUnsignedInt, nullptr, (int)offsetof(BannerCarrierUpdateModuleData, m_meleeFreeUnitSpawnTime) },
 	{ "DiedRespawnTime", INI::parseDurationUnsignedInt, nullptr, (int)offsetof(BannerCarrierUpdateModuleData, m_diedRespawnTime) },
 	{ "MeleeFreeBannerReSpawnTime", INI::parseDurationUnsignedInt, nullptr, (int)offsetof(BannerCarrierUpdateModuleData, m_meleeFreeBannerReSpawnTime) },
-	{ "MorphCondition", BannerCarrierUpdateModuleData::parseRawLine, nullptr, (int)offsetof(BannerCarrierUpdateModuleData, m_morphConditions) },
+	{ "MorphCondition", BannerCarrierUpdateModuleData::parseMorphCondition, nullptr, (int)offsetof(BannerCarrierUpdateModuleData, m_morphConditions) },
 	{ "ExpLevelDraw", BannerCarrierUpdateModuleData::parseRawLine, nullptr, (int)offsetof(BannerCarrierUpdateModuleData, m_expLevelDraws) },
 	{ "BannerMorphFX", INI::parseAsciiString, nullptr, (int)offsetof(BannerCarrierUpdateModuleData, m_bannerMorphFX) },
 	{ "UnitSpawnFX", INI::parseAsciiString, nullptr, (int)offsetof(BannerCarrierUpdateModuleData, m_unitSpawnFX) },
@@ -80,6 +84,51 @@ const FieldParse kBannerParse[] = {
 	{ nullptr, nullptr, nullptr, 0 }
 };
 } // namespace
+
+// DONOR BFME2 BannerCarrierUpdateParseMorphCondition.cpp (0x49714F): UnitType,
+// optional Locomotor, then a quoted ModelState bit string. RotWK table: 0x89A90F.
+void BannerCarrierUpdateModuleData::parseMorphCondition(INI *ini, void *, void *store, const void *)
+{
+	MorphCondition entry;
+	entry.unitType = ini->getNextSubToken("UnitType");
+	std::string field = ini->getNextToken(ini->getSepsColon());
+	if (field == "Locomotor")
+	{
+		entry.locomotor = INI::scanIndexList(ini->getNextToken(ini->getSepsColon()), TheLocomotorSetNames);
+		field = ini->getNextToken(ini->getSepsColon());
+	}
+	if (field != "ModelState")
+		throw INIException(3, "'ModelState' expected");
+	const auto text = ini->getNextQuotedAsciiString();
+	ini->pushText(text);
+	ParseModelConditionFlags(ini, nullptr, &entry.modelState, nullptr);
+	static_cast<std::vector<MorphCondition> *>(store)->push_back(std::move(entry));
+}
+
+// DONOR BFME2 BannerCarrierUpdateMorph.cpp (0x496E05), LocomotorName (0x496DA3),
+// Rva00496D43Finish: first case-insensitive UnitType match, clear the morph family,
+// set the matched conditions and select its optional locomotor. The donor's 81
+// clear-mask indices name the same conditions in the RotWK registry.
+void BannerCarrierUpdate::applyMorph(const std::string &unitType)
+{
+	Object::ModelConditionBits clear{}, set{};
+	for (unsigned bit : {214u, 194u, 195u, 196u, 197u, 198u, 184u, 185u, 186u, 187u, 188u})
+		BitFlagsSet(clear, bit);
+	for (unsigned bit = 458; bit <= 527; ++bit)
+		BitFlagsSet(clear, bit);
+	const BannerCarrierUpdateModuleData::MorphCondition *match = nullptr;
+	for (const auto &entry : m_data->m_morphConditions)
+		if (AsciiStringUtil::compareNoCase(entry.unitType, unitType) == 0)
+		{
+			match = &entry;
+			set = entry.modelState;
+			break;
+		}
+	getObject()->clearAndSetModelConditionFlags(clear, set);
+	if (match && match->locomotor != -1)
+		if (auto *ai = getObject()->getAIUpdateInterface())
+			ai->chooseLocomotorSet(match->locomotor);
+}
 
 void BannerCarrierUpdateModuleData::parseRawLine(INI *ini, void *, void *store, const void *)
 {
@@ -125,6 +174,10 @@ void BannerCarrierUpdate::registerClass(ModuleFactory &modules)
 UpdateSleepTime BannerCarrierUpdate::update()
 {
 	Object *obj = getObject();
+	// Port seam: also refresh on the module pulse so pre-fix saves and a changed
+	// horde payload recover. Native transfers invoke the morph via 0x473197.
+	if (auto *horde = hordeContainOf(obj->getContainedBy()); horde && horde->bannerCarrier() == obj->getID())
+		applyMorph(horde->getPayloadMemberTemplateName());
 	const UpdateSleepTime sleep = UPDATE_SLEEP((int)(m_data->m_idleSpawnRate > 0 ? m_data->m_idleSpawnRate : 1));
 	if (!m_data->m_upgradeRequired.empty() && !obj->hasUpgrade(m_data->m_upgradeRequired))
 	{
@@ -288,6 +341,7 @@ void HordeContain::bannerCheck(bool force)
 	addToContain(carrier);
 	if (BannerCarrierUpdate *b = dynamic_cast<BannerCarrierUpdate *>(carrier->findModule("BannerCarrierUpdate")))
 	{
+		b->applyMorph(getPayloadMemberTemplateName());
 		m_bannerCountdown = b->data().m_meleeFreeBannerReSpawnTime;
 	}
 	m_dirty = true;
