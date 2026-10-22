@@ -145,7 +145,7 @@ void ScriptEngine::xfer(Xfer &x)
 	}
 	// lane SAVE-4e: version 2 adds BACKLOG4's triggered special power lists (merged after SAVE-4d); no version 1 snapshot was ever written by a
 	// release (loads of snapshots begin with SAVE-4e), so version 1 is not read (a list it lacked would load empty, silently)
-	XferVersion v{ 2, 3 }; // version 3 adds named regional reveals; version 2 predates their implementation
+	XferVersion v{ 2, 4 }; // version 3 adds named regional reveals; version 2 predates their implementation
 	x.xferVersion(v);
 	bool loaded = loading ? false : m_loaded;
 	x.xferBool(&loaded);
@@ -405,6 +405,9 @@ void ScriptEngine::xfer(Xfer &x)
 			}
 		}
 	}
+	float cameraTravel = loading ? 0.0f : m_cameraTravel;
+	if (v.current >= 4) x.xferReal(&cameraTravel);
+	if (loading && (!std::isfinite(cameraTravel) || cameraTravel < 0.0f)) throw XferException("script engine: invalid camera travel");
 	if (!loading)
 	{
 		return;
@@ -458,8 +461,9 @@ void ScriptEngine::xfer(Xfer &x)
 			}
 		}
 	}
-	m_pendingLoad = [this, staged, firstUpdate, difficulty, bonus]() {
+	m_pendingLoad = [this, staged, firstUpdate, difficulty, bonus, cameraTravel]() {
 		m_firstUpdate = firstUpdate;
+		m_cameraTravel = cameraTravel;
 		m_gameDifficulty = difficulty;
 		m_objectsReceiveDifficultyBonus = bonus;
 		for (size_t i = 0; i < m_sides.size(); ++i)

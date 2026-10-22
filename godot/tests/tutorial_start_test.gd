@@ -42,7 +42,9 @@ func _run() -> void:
 	assert(game._report.stops.has("[S-175] tutorial entry: Objective and loading voice presentation are not ported; tutorial saves are not recorded"))
 	assert(game._report.map.to_lower() == String(def.map).to_lower())
 	_assert_camera_start(game)
-	if lesson == "Basic": _assert_scripted_camera_move(game)
+	if lesson == "Basic":
+		_assert_scripted_camera_move(game)
+		await _assert_camera_controls(game)
 	# Restart uses the same standalone tutorial, without advancing campaign progress.
 	await game._campaign_flow.restart_mission()
 	assert(game._state == game.State.PLAYING)
@@ -140,3 +142,17 @@ func _assert_scripted_camera_move(game: Node) -> void:
 	game._world.advance(0.2)
 	cine._process(0.0)
 	assert(game._hud.get_camera().position == state.position)
+
+func _assert_camera_controls(game: Node) -> void:
+	var hud: Node = game._hud
+	assert(game._world.get_script_report().camera_scroll_distance == 0.0, "Scripted opening pan must not count as player scrolling")
+	var centre := root.get_visible_rect().size * 0.5
+	hud.inject_mouse_button(MOUSE_BUTTON_RIGHT, true, centre, false)
+	hud.inject_mouse_move(centre + Vector2(180, 0))
+	await create_timer(1.2).timeout
+	hud.inject_mouse_button(MOUSE_BUTTON_RIGHT, false, centre + Vector2(180, 0), false)
+	var travelled: float = hud.get_camera().user_scroll_distance
+	# tolerance: BFME2's tutorial explicitly requires accumulated scroll travel strictly beyond 250 world units.
+	assert(travelled > 250.0, "Right mouse drag must accumulate the tutorial's required camera travel")
+	game._world.advance(0.2)
+	assert(game._world.get_script_report().camera_scroll_distance == travelled)

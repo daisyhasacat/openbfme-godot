@@ -96,6 +96,7 @@ public:
 
 	// ---- View state ----
 	float getAngle() const { return m_angle; }
+	float userScrollDistance() const { return m_userScrollDistance; }
 	float getPitch() const { return m_pitch; }
 	float getZoom() const { return m_zoom; }
 	float getHeightAboveGround() const { return m_heightAboveGround; }
@@ -244,6 +245,7 @@ private:
 
 	// View + 0xC, + 0x28, + 0x2C, + 0x3C, + 0x40, + 0x44
 	Coord3D m_pos{ 870.0f, 770.0f, 0.0f }; // RW 0x48B6A4 (87.0f * 10, 77.0f * 10)
+	float m_userScrollDistance = 0.0f; // accumulated actual scrollBy travel, excluding scripted lookAt
 	float m_angle = 0.0f, m_pitch = 0.0f, m_zoom = 1.0f, m_heightAboveGround = 0.0f;
 	bool m_zoomLimited = true;
 	bool m_controllerBounds = false;

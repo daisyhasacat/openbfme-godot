@@ -158,6 +158,7 @@ const char *const kLogicMessageNames[] = {
 
 const char *GameMessageTypeName(int type)
 {
+	if (type == MSG_OPENBFME_CAMERA_TRAVEL) return "MSG_OPENBFME_CAMERA_TRAVEL";
 	if (type == MSG_OPENBFME_LUA_ACTION) return "MSG_OPENBFME_LUA_ACTION";
 	if (type == MSG_BEGIN_NETWORK_MESSAGES)
 	{

@@ -193,7 +193,7 @@ std::vector<std::uint8_t> NetByteReader::bytes()
 
 bool NetPacket::writeGameMessage(NetByteWriter &w, const GameMessage &m, std::string *error)
 {
-	if (m.getType() != MSG_OPENBFME_LUA_ACTION && (m.getType() <= MSG_BEGIN_NETWORK_MESSAGES || m.getType() >= MSG_END_NETWORK_MESSAGES))
+	if (m.getType() != MSG_OPENBFME_LUA_ACTION && m.getType() != MSG_OPENBFME_CAMERA_TRAVEL && (m.getType() <= MSG_BEGIN_NETWORK_MESSAGES || m.getType() >= MSG_END_NETWORK_MESSAGES))
 	{
 		return failWith(error, "GameMessage type " + std::to_string(m.getType()) + " is not a logic message (1001 .. 1147)");
 	}
@@ -256,7 +256,7 @@ std::unique_ptr<GameMessage> NetPacket::readGameMessage(NetByteReader &r, std::s
 			", and the bytes left hold " + std::to_string(r.remaining() / 2) + ")");
 		return nullptr;
 	}
-	if (type != MSG_OPENBFME_LUA_ACTION && (type <= MSG_BEGIN_NETWORK_MESSAGES || type >= MSG_END_NETWORK_MESSAGES))
+	if (type != MSG_OPENBFME_LUA_ACTION && type != MSG_OPENBFME_CAMERA_TRAVEL && (type <= MSG_BEGIN_NETWORK_MESSAGES || type >= MSG_END_NETWORK_MESSAGES))
 	{
 		failWith(error, "GameMessage type " + std::to_string(type) + " is not a logic message (1001 .. 1147)");
 		return nullptr;

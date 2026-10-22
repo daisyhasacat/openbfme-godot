@@ -130,6 +130,8 @@ public:
 	// (must outlive the engine). `warOfTheRing`: the game mode for the template masks.
 	void newGame(const std::vector<SideScripts> &sides, const std::vector<TriggerArea> *triggers, const std::vector<NamedCamera> *cameras,
 		bool warOfTheRing);
+	void setCameraTravel(float distance) { m_cameraTravel = distance; }
+	float cameraTravel() const { return m_cameraTravel; }
 	void setHost(ScriptEngineHost *host) { m_host = host; }
 	// ScriptEngine + 0x1A5C4, the scripts' difficulty (0 easy, 1 normal, 2 hard; the script difficulty filter RW 0x603878, an AIPlayer's difficulty RW 0x8F7FEB).
 	// lane CAMP-1H: reset (RW 0x609685) and prepareNewGame (RW 0x77948E -> RW 0x603517(1)) set it to 1 for every game, the campaign's included: the chosen
@@ -421,6 +423,7 @@ private:
 	GameLogic &m_logic;
 	ScriptEngineHost *m_host = nullptr;
 	bool m_loaded = false;
+	float m_cameraTravel = 0.0f; // command-sampled single-player camera input
 	bool m_firstUpdate = true;
 	bool m_warOfTheRing = false;
 	int m_gameDifficulty = 1;

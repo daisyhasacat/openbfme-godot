@@ -868,3 +868,23 @@ tutorial's opening reveal plus distant black terrain are covered by tests.
 Named definitions are hashed and stored in version 3 of the OpenBFME script
 snapshot block; version 2 remains readable with no named definitions, since it
 predates regional reveal support. Retail save formats are unchanged.
+
+## S-6103: BFME2 tutorial camera travel accumulation
+
+`CAMERA_SCROLL_DISTANCE` now uses actual player `scrollBy` travel, including
+right mouse drag, arrow/edge scrolling and controller panning. Scripted
+`lookAt` camera movement is excluded. BFME2 matching source
+`ScriptConditions_Rva003E4ED5.cpp` (commit
+`dd5807dd586ff8fc699140bc4971e29f3c682e35`, 0x3E4ED5) establishes a strict
+`TacticalView` float getter greater-than the parameter. The exact getter's
+accumulation/reset behavior has not been established; accumulating actual XY
+travel is an explicit inference. Every accepted sample reports S-6103.
+
+Local single-player input is submitted as OpenBFME command 0x7001 and applied
+in the command phase, so render callbacks never directly mutate authoritative
+mission state. Other game modes and non-local issuers are refused. The metric
+is hashed and saved in OpenBFME script snapshot version 4; older snapshots
+load zero (the condition previously never completed). Retail message numbers
+and retail save formats are unchanged. Tests cover exact threshold equality,
+passing 250/750, save/load, and an actual right-button drag while excluding the
+scripted opening pan. Resolve parity with BFME2 getter/scroll/reset traces.

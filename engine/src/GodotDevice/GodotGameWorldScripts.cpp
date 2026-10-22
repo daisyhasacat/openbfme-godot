@@ -529,6 +529,7 @@ Dictionary GameWorld::get_script_report() const
 	const GameLogic &logic = m_game->logic();
 	const ScriptEngine &e = logic.scriptEngine();
 	d["loaded"] = e.loaded();
+	d["camera_scroll_distance"] = e.cameraTravel();
 	const ScriptEngine::Stats &s = e.stats();
 	d["scripts"] = (int64_t)s.scripts;
 	d["groups"] = (int64_t)s.groups;

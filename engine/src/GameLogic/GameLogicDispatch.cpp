@@ -9,6 +9,9 @@
 #include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Economy.h"
+#include "GameLogic/ScriptEngine/ScriptEngine.h"
+#include <cmath>
 #include "GameLogic/Module/ExitInterface.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/Object/Object.h"
@@ -47,6 +50,7 @@ bool GameLogicDispatch::executedHere(int type)
 		case MSG_CANCEL_UNIT_CREATE:
 		case MSG_SET_RALLY_POINT:
 		case MSG_OPENBFME_LUA_ACTION:
+		case MSG_OPENBFME_CAMERA_TRAVEL:
 			return true;
 		default:
 			return false;
@@ -168,6 +172,21 @@ void GameLogicDispatch::dispatch(const GameMessage &m)
 {
 	switch (m.getType())
 	{
+		case MSG_OPENBFME_CAMERA_TRAVEL:
+		{
+			const auto *a = m.getArgument(0);
+			const Player *local = m_logic.players().getLocalPlayer();
+			if (m_logic.economy().context().gameMode != EconomyContext::MODE_SINGLE_PLAYER || !local ||
+				m.getPlayerIndex() != local->getPlayerIndex() || m.getArgumentCount() != 1 || !a ||
+				a->type != ARGUMENTDATATYPE_REAL || !std::isfinite(a->real) || a->real < m_logic.scriptEngine().cameraTravel())
+			{
+				error(m, "invalid single-player camera travel");
+				break;
+			}
+			m_logic.scriptEngine().setCameraTravel(a->real);
+			m_logic.scriptEngine().note("[S-6103] camera travel accumulates actual player scroll distance; BFME2 getter accumulation parity remains unverified");
+			break;
+		}
 		case MSG_OPENBFME_LUA_ACTION:
 		{
 			const auto reason = BfmeLuaActions::dispatch(m_logic, *this, m);

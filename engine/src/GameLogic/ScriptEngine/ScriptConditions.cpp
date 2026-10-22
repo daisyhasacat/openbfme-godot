@@ -722,6 +722,10 @@ bool ScriptConditions::pointInTrigger(const TriggerArea &t, float px, float py)
 
 bool ScriptConditions::evaluate(ScriptEngine &engine, const ScriptCondition &c)
 {
+	// BFME2 ScriptConditions_Rva003E4ED5.cpp: strict greater-than against the TacticalView travel getter.
+	// OpenBFME samples player scroll travel through a local single-player command; accumulation parity is S-6103.
+	if (c.resolved == 189) return engine.cameraTravel() > param(c, 0).realValue;
+
 	const ScriptTemplate *t = ScriptTemplates::condition(c.resolved);
 	if (!t || !t->retailCase)
 	{

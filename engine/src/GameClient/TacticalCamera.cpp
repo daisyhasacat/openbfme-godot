@@ -624,6 +624,7 @@ int TacticalCamera::scrollBy(float dx, float dy)
 	{
 		return 0;
 	}
+	const Coord3D before = m_pos;
 	m_scrollX = dx;
 	m_scrollY = dy;
 	const ICoord2D s = m_pinhole.size();
@@ -665,6 +666,8 @@ int TacticalCamera::scrollBy(float dx, float dy)
 		}
 	}
 	setCameraTransform();
+	const float travelledX = m_pos.x - before.x, travelledY = m_pos.y - before.y;
+	m_userScrollDistance += std::sqrt(travelledX * travelledX + travelledY * travelledY);
 	return mask;
 }
 

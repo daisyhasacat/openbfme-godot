@@ -2,6 +2,9 @@
 // See GodotInGameHud.h.
 
 #include "Common/BfmeGame.h"
+#include "GameLogic/Economy.h"
+#include "GameLogic/ScriptEngine/ScriptEngine.h"
+#include "GameLogic/GameMessage.h"
 #include "Common/AsciiString.h"
 #include "GodotDevice/GodotInGameHud.h"
 #include "GodotDevice/GodotIOSTouch.h"
@@ -202,6 +205,8 @@ struct HudDevice : public AptNativeHook
 	std::unique_ptr<TacticalCamera> cam;
 	DisplayedCameraView shown; // picking and projection follow the displayed (interpolated) pose (TacticalCamera.h, lane BUILD-5 r3)
 	double clientClock = 0.0;
+	float cameraTravelSent = 0.0f, cameraTravelTotal = 0.0f;
+	bool cameraTravelInitialized = false;
 	double updateMs = 0.0, cameraMs = 0.0, cursorMs = 0.0; ///< SMOOTH-1: the parts of the last _process
 	double hudMs = 0.0, iconsMs = 0.0, decalsMs = 0.0, radialMs = 0.0; ///< SELPERF-1: updateMs's parts (InGameHud::update, the icon ops, the selection decals, HUD-6)
 	bool edgeScroll = false;
@@ -3300,6 +3305,33 @@ void InGameHudNode::_process(double delta)
 		d->clientClock = 0.0; // a stall: no catching up
 	}
 	d->applyCamera(window, d->clientClock / step);
+	// Local mission input is sampled as a command, never written into simulation state by the renderer.
+	if (d->cam && d->world && d->world->hud_game() && d->world->hud_game()->logicHeld() && !d->world->bfme_network_game())
+	{
+		LiveGame *game = d->world->hud_game();
+		if (game->logic().economy().context().gameMode == EconomyContext::MODE_SINGLE_PLAYER)
+		{
+			const float travel = d->cam->userScrollDistance();
+			if (!d->cameraTravelInitialized)
+			{
+				d->cameraTravelTotal = game->logic().scriptEngine().cameraTravel();
+				d->cameraTravelInitialized = true;
+			}
+			if (travel > d->cameraTravelSent)
+			{
+				d->cameraTravelTotal += travel - d->cameraTravelSent;
+				d->cameraTravelSent = travel;
+				const Player *local = game->logic().players().getLocalPlayer();
+				if (local)
+				{
+					GameMessage message(MSG_OPENBFME_CAMERA_TRAVEL, local->getPlayerIndex());
+					message.appendRealArgument(d->cameraTravelTotal);
+					game->commands().append(message);
+				}
+			}
+		}
+	}
+
 	// lane BUILD-5 r2: the placement update (RW 0x6A2AE5) projects the pointer through the camera of the frame drawn, then the ghost's drawables are drawn
 	// (behind the same logic gate as the HUD's update: a frame the logic still runs keeps last frame's ghost)
 	// lane BUILD-5 r3: every render frame (review r2 #2): the pose follows the live pointer through the displayed camera also while the logic worker runs; the
@@ -4925,6 +4957,7 @@ Dictionary InGameHudNode::get_camera() const
 	}
 	const TacticalCamera &c = *d->cam;
 	out["position"] = Vector2(c.position().x, c.position().y);
+	out["user_scroll_distance"] = c.userScrollDistance();
 	out["angle"] = c.getAngle();
 	out["pitch"] = c.getPitch();
 	out["zoom"] = c.getZoom();

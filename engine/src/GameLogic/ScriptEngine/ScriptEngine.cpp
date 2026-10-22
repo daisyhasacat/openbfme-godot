@@ -108,6 +108,7 @@ void ScriptEngine::reset()
 {
 	m_loaded = false;
 	m_firstUpdate = true;
+	m_cameraTravel = 0.0f;
 	m_gameDifficulty = 1;                  // lane CAMP-1H: RW 0x609851 (+ 0x1A5C4 = 1)
 	m_objectsReceiveDifficultyBonus = true; // lane CAMP-1H: RW 0x609857 (+ 0x1A5D5 = 1)
 	m_sides.clear();
@@ -1845,6 +1846,7 @@ void crcGroup(StateHasher &h, const ScriptEngine::RGroup &g)
 
 void ScriptEngine::crc(StateHasher &h) const
 {
+	if (m_cameraTravel != 0.0f) { h.addU32(0xCA7u); h.addFloat(m_cameraTravel); }
 	h.addBool(m_loaded);
 	h.addBool(m_firstUpdate);
 	h.addI32(m_gameDifficulty);

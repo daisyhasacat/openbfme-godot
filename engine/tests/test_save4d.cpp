@@ -36,6 +36,10 @@
 #include "GameLogic/System/TerrainResourceManager.h"
 #include "GameLogic/System/ShroudManager.h"
 #include "GameLogic/ScriptEngine/ScriptActions.h"
+#include "GameLogic/ScriptEngine/ScriptConditions.h"
+#include "GameLogic/GameMessage.h"
+#include "GameLogic/GameLogicDispatch.h"
+#include "GameNetwork/NetPacket.h"
 #include "GameLogic/SpellStores.h"
 #include "GameLogic/VictoryConditions.h"
 
@@ -1079,4 +1083,48 @@ TEST_CASE("save4d regional reveals: named polygon reveals survive snapshots and 
 	// A one-time reveal explores but does not keep a looker.
 	ScriptActions::execute(b.engine(), act("MAP_REVEAL_IN_TRIGGER", {sp(9,"Opening"), sp(11,"Bob")}));
 	CHECK(sb.getCellStatus(bob, 2, 2) == CELLSHROUD_FOGGED);
+}
+
+TEST_CASE("tutorial controls: camera travel commands complete strict scroll thresholds and survive snapshots")
+{
+	ScriptGame a, b;
+	a.start(); b.start();
+	a.lw.logic->economy().context().gameMode = EconomyContext::MODE_SINGLE_PLAYER;
+	a.lw.players.setLocalPlayer(a.lw.players.findPlayerWithName("Alice"));
+	GameLogicDispatch dispatch(*a.lw.logic);
+	auto submit = [&](float distance) {
+		GameMessage message(MSG_OPENBFME_CAMERA_TRAVEL, a.lw.players.getLocalPlayer()->getPlayerIndex());
+		message.appendRealArgument(distance);
+		dispatch.dispatch(message);
+	};
+	const auto first = cond("CAMERA_SCROLL_DISTANCE", {rp(250.0f)});
+	CHECK_FALSE(ScriptConditions::evaluate(a.engine(), first));
+	submit(250.0f);
+	CHECK_FALSE(ScriptConditions::evaluate(a.engine(), first)); // BFME2's getter comparison is strictly greater
+	submit(251.0f);
+	CHECK(ScriptConditions::evaluate(a.engine(), first));
+	CHECK_FALSE(ScriptConditions::evaluate(a.engine(), cond("CAMERA_SCROLL_DISTANCE", {rp(750.0f)})));
+	submit(751.0f);
+	CHECK(ScriptConditions::evaluate(a.engine(), cond("CAMERA_SCROLL_DISTANCE", {rp(750.0f)})));
+	CHECK(a.engine().stats().notes.at("[S-6103] camera travel accumulates actual player scroll distance; BFME2 getter accumulation parity remains unverified") == 3u);
+	GameMessage encoded(MSG_OPENBFME_CAMERA_TRAVEL, a.lw.players.getLocalPlayer()->getPlayerIndex());
+	encoded.appendRealArgument(751.0f);
+	NetByteWriter writer;
+	std::string error;
+	REQUIRE_MESSAGE(NetPacket::writeGameMessage(writer, encoded, &error), error);
+	NetByteReader reader(writer.data());
+	auto decoded = NetPacket::readGameMessage(reader, &error);
+	REQUIRE_MESSAGE(decoded != nullptr, error);
+	CHECK(decoded->getType() == MSG_OPENBFME_CAMERA_TRAVEL);
+	CHECK(decoded->getArgument(0)->real == 751.0f);
+	submit(100.0f); // reject a backwards cumulative measurement
+	CHECK(a.engine().cameraTravel() == 751.0f);
+	a.lw.logic->economy().context().gameMode = EconomyContext::MODE_SKIRMISH;
+	submit(900.0f);
+	CHECK(a.engine().cameraTravel() == 751.0f);
+
+	const auto saved = blockBytes(*a.lw.logic, "obfme:ScriptEngine");
+	b.lw.logic->gameState().loadBlocks({"obfme:ScriptEngine"}, saved);
+	CHECK(b.engine().cameraTravel() == 751.0f);
+	CHECK(blockBytes(*b.lw.logic, "obfme:ScriptEngine") == saved);
 }
