@@ -7,6 +7,8 @@
 #include "HudTestUtil.h"
 
 #include "Common/PlayerList.h"
+#include "Common/XferLoad.h"
+#include "Common/XferSave.h"
 #include "Common/Team.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/AI/AIGarrisonStates.h"
@@ -25,6 +27,9 @@
 #include "GameLogic/GameLogicDispatch.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/InvisibilityModules.h"
+#include "GameLogic/Module/SpecialPowerModules.h"
+#include "GameLogic/FXEvents.h"
+#include "GameLogic/Object/PartitionManager.h"
 #include "GameLogic/Object/Contain/GarrisonContainRuntime.h"
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "GameLogic/PlayerCommands.h"
@@ -691,4 +696,66 @@ TEST_CASE("garrison retail: the enter and exit orders pass aiDoCommand's gate (R
 		a.run(1);
 	}
 	CHECK(unit->getContainedBy() == nullptr);
+}
+
+TEST_CASE("ring delivery retail: own fortress accepts a ring carrier, consumes the ring, unlocks the ring hero and returns the carrier")
+{
+	if (!haveWorld()) return;
+	for (const char *carrierName : { "GondorFighter", "GondorArcherHorde", "GondorKnightHorde", "GondorGandalf" })
+	{
+		CAPTURE(std::string(carrierName));
+		Arena a(shared());
+		a.logic.partition().setRegion(0.0f,0.0f,1200.0f,1200.0f);
+		Object *fortress = a.place("MenFortressCitadel", 0, 600.0f, 600.0f);
+		Object *carrier = a.place(carrierName, 0, 350.0f, 600.0f);
+		Object *ring = a.place("TheDroppedRing", 0, 350.0f, 600.0f);
+		const ObjectID ringID = ring->getID();
+		REQUIRE(SpecialPowerModules::createSpellBook(a.logic, *a.player(0)));
+		a.run(3);
+		REQUIRE(carrier->testStatus((unsigned)CombatNames::status("HOLDING_THE_RING")));
+		a.send(0, MSG_ENTER, { carrier->getID() }, { carrier->getID(), fortress->getID() });
+		CHECK_FALSE(a.player(0)->hasUpgradeComplete("Upgrade_RingHero"));
+		// tolerance: bounded wait for real pathfinding and fortress entry, not an exact travel duration.
+		for (int i = 0; i < 600 && !a.player(0)->hasUpgradeComplete("Upgrade_RingHero"); ++i) a.run(1);
+		REQUIRE(a.player(0)->hasUpgradeComplete("Upgrade_RingHero"));
+		CHECK(fortress->hasUpgrade("Upgrade_FortressRingHero"));
+		// Delivery has scheduled the carrier's exit. Its module snapshot must
+		// preserve that pending order, including a battalion still inside.
+		auto *contain = dynamic_cast<CitadelSlaughterHordeContain *>(fortress->getContain());
+		REQUIRE(contain != nullptr);
+		XferSave saved;
+		contain->xfer(saved);
+		XferLoad restored(saved.data());
+		contain->xfer(restored);
+		XferSave roundtrip;
+		contain->xfer(roundtrip);
+		CHECK(roundtrip.data() == saved.data());
+		a.run(100);
+		CHECK_FALSE(carrier->testStatus((unsigned)CombatNames::status("HOLDING_THE_RING")));
+		CHECK(a.logic.findObjectByID(ringID) == nullptr);
+		CHECK(carrier->getContainedBy() == nullptr);
+		CHECK(carrier->isInWorld());
+		CHECK_FALSE(carrier->isEffectivelyDead());
+		CHECK_FALSE(carrier->testStatus((unsigned)CombatNames::status("UNSELECTABLE")));
+		CHECK(a.player(0)->heroes().records().back().templateName == "ElvenGaladriel_RingHero");
+		CHECK(a.logic.fxEvents().perSite().at("CitadelSlaughterHordeContain") == 1);
+	}
+}
+
+TEST_CASE("ring delivery retail: fortress refuses ordinary troops and another player's ring carrier")
+{
+	if (!haveWorld()) return;
+	Arena a(shared());
+	Object *fortress = a.place("MenFortressCitadel", 0, 600.0f, 600.0f);
+	Object *ordinary = a.place("GondorFighter", 0, 400.0f, 600.0f);
+	Object *enemy = a.place("GondorFighter", 1, 450.0f, 600.0f);
+	enemy->setStatus((unsigned)CombatNames::status("HOLDING_THE_RING"), true);
+	auto *contain = dynamic_cast<CitadelSlaughterHordeContain *>(fortress->getContain());
+	REQUIRE(contain != nullptr);
+	CHECK_FALSE(contain->isValidContainerFor(*ordinary, true, true));
+	CHECK_FALSE(contain->isValidContainerFor(*enemy, true, true));
+	CHECK_FALSE(contain->addToContain(ordinary));
+	CHECK_FALSE(contain->addToContain(enemy));
+	CHECK_FALSE(a.player(0)->hasUpgradeComplete("Upgrade_RingHero"));
+	CHECK_FALSE(fortress->hasUpgrade("Upgrade_FortressRingHero"));
 }
