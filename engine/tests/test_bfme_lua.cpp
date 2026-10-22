@@ -681,6 +681,33 @@ TEST_CASE("bfme Lua: unobserved engine events do not request a simulation safe p
 	CHECK_FALSE(f.vm->hasPending());
 }
 
+TEST_CASE("bfme Lua: completion events batch and defer bursts without losing notifications")
+{
+ BfmeFixture f;
+ auto sink = f.vm->eventSink();
+ f.run("count=0; bfme.events.onBuildingsCompleted('done',function(e) count=count+#e.objects end)");
+ sink("buildingsCompleted", {{"objectId", 1}});
+ sink("buildingsCompleted", {{"objectId", 2}});
+ f.snapshotReads = 0;
+ CHECK(f.vm->hasPending());
+ f.vm->flush();
+ CHECK(f.snapshotReads == 0);
+ CHECK(f.run("return count") == "2\n");
+ sink("buildingsCompleted", {{"objectId", 3}});
+ CHECK_FALSE(f.vm->hasPending());
+ f.vm->flush();
+ CHECK(f.run("return count") == "2\n");
+ std::this_thread::sleep_for(std::chrono::milliseconds(260));
+ CHECK(f.vm->hasPending());
+ f.vm->flush();
+ CHECK(f.run("return count") == "3\n");
+ f.vm->invalidate();
+ sink("buildingsCompleted", {{"objectId", 4}});
+ CHECK(f.vm->hasPending());
+ f.vm->flush();
+ CHECK(f.run("return count") == "4\n");
+}
+
 TEST_CASE("bfme Lua: engine events queue across threads and dispatch once at safe points")
 {
 	BfmeFixture f;

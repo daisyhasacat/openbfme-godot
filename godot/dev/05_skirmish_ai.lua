@@ -44,7 +44,7 @@ luaai.config = {
 local cfg = luaai.config
 local function syncUpdates()
     if next(luaai.players) then
-        bfme.events.onUpdate("luaai", function() luaai.thinkAll() end, cfg.thinkMs)
+        bfme.events.onUpdate("luaai", function() luaai.thinkAll() end, math.max(250, cfg.thinkMs))
     else
         bfme.events.remove("luaai")
     end

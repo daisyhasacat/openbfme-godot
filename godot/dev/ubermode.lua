@@ -3,7 +3,12 @@
 ubermode = ubermode or { enabled = false, seen = {}, pending = {} }
 local mode = ubermode
 mode.seenBuildings = mode.seenBuildings or {}
-local update
+mode.newUnits, mode.newBuildings = mode.newUnits or {}, mode.newBuildings or {}
+local update, watchCompletions
+local scheduled = false
+local function schedule()
+    if not scheduled then bfme.events.onUpdate("ubermode", update, 250); scheduled = true end
+end
 
 local function localMatch()
     local status = bfme.match.getStatus()
@@ -20,8 +25,9 @@ function mode.enable()
         bonus = player.commandPointsBonus}
     mode.playerId = player.id
     mode.seen, mode.pending, mode.seenBuildings = {}, {}, {}
+    mode.newUnits, mode.newBuildings = {}, {}
     mode.enabled = true
-    bfme.events.onUpdate("ubermode", update, 200)
+    watchCompletions()
     player.money = 1000000
     player.commandPointsBonus = 0
     player.commandPointsBase = 1000000
@@ -50,7 +56,10 @@ function mode.disable()
         player.commandPointsBonus = mode.previousCP.bonus
     end
     mode.enabled, mode.pending = false, {}
-    bfme.events.remove("ubermode")
+    mode.newUnits, mode.newBuildings = {}, {}
+    bfme.events.remove("ubermode"); scheduled = false
+    bfme.events.remove("ubermode-units")
+    bfme.events.remove("ubermode-buildings")
     bfme.timing.clear()
     print("ubermode disabled; granted gold, levels and upgrades are retained")
 end
@@ -77,43 +86,35 @@ function mode.massTrain(unitType, selected)
             end
         end
     end
+    if matched then schedule() end
     return matched
 end
 
 update = function()
     if not mode.enabled then return end
-    -- Most ticks have no new troops or recruitment jobs. A detached ID list
-    -- avoids building the full army snapshot merely to discover nothing changed.
-    local roster = bfme.match.getUnitRoster(mode.playerId)
-    if not roster.ready then mode.enabled, mode.pending = false, {}; bfme.events.remove("ubermode"); return end
-    local unseen = false
-    for _, id in ipairs(roster.ids) do
-        if not mode.seen[id] then unseen = true; break end
-    end
-    local buildings = bfme.match.getCompletedBuildingRoster(mode.playerId)
-    local completed = false
-    for _, id in ipairs(buildings.ids) do
-        if not mode.seenBuildings[id] then completed = true; break end
-    end
-    if not unseen and not completed and #mode.pending == 0 then return end
     local player = localMatch()
-    for _, id in ipairs(roster.ids) do
-        local unit = not mode.seen[id] and bfme.unitInstances[id]
-        if unit then
-            mode.seen[unit.id] = true
-            if unit.maxLevel and unit.maxLevel > unit.level then unit.level = unit.maxLevel end
-            for _, upgrade in ipairs(unit:getUpgrades()) do
-                if upgrade.kind == "object" and upgrade.status ~= "complete" then unit:giveUpgrade(upgrade.upgrade) end
+    -- Preserve a burst's unprocessed IDs if the native mutation queue fills.
+    local function enhance(pending, collection, equipment)
+        for id in pairs(pending) do
+            local ok, err = pcall(function()
+                local object = collection[id]
+                if not object or object.playerId ~= mode.playerId then return end
+                if object.underConstruction then return end
+                if object.maxLevel and object.maxLevel > object.level then object.level = object.maxLevel end
+                if equipment then
+                    for _, upgrade in ipairs(object:getUpgrades()) do
+                        if upgrade.kind == "object" and upgrade.status ~= "complete" then object:giveUpgrade(upgrade.upgrade) end
+                    end
+                end
+            end)
+            if ok then pending[id] = nil
+            elseif mode.enhanceError ~= tostring(err) then
+                mode.enhanceError = tostring(err); print("ubermode enhancement waiting: " .. tostring(err))
             end
         end
     end
-    for _, id in ipairs(buildings.ids) do
-        local building = not mode.seenBuildings[id] and bfme.buildingInstances[id]
-        if building and not building.underConstruction then
-            if building.maxLevel and building.maxLevel > building.level then building.level = building.maxLevel end
-            mode.seenBuildings[id] = true
-        end
-    end
+    enhance(mode.newUnits, bfme.unitInstances, true)
+    enhance(mode.newBuildings, bfme.buildingInstances, false)
     -- One request per producer per tick; wait for its result before consuming the
     -- count. A full native queue waits instead of silently dropping recruits.
     local busy = {}
@@ -138,13 +139,49 @@ update = function()
             end
         end
     end
+    if #mode.pending == 0 and not next(mode.newUnits) and not next(mode.newBuildings) then
+        bfme.events.remove("ubermode"); scheduled = false
+    else
+        schedule()
+    end
+end
+
+watchCompletions = function()
+    bfme.events.onUnitsCreated("ubermode-units", function(event)
+        if not mode.enabled then return end
+        for _, record in ipairs(event.objects) do
+            if record.playerId == mode.playerId and not mode.seen[record.objectId] then
+                mode.newUnits[record.objectId] = true
+                mode.seen[record.objectId] = true
+            end
+        end
+        if next(mode.newUnits) then update() end
+    end)
+    bfme.events.onBuildingsCompleted("ubermode-buildings", function(event)
+        if not mode.enabled then return end
+        for _, record in ipairs(event.objects) do
+            if record.playerId == mode.playerId and not mode.seenBuildings[record.objectId] then
+                mode.newBuildings[record.objectId] = true
+                mode.seenBuildings[record.objectId] = true
+            end
+        end
+        if next(mode.newBuildings) then update() end
+    end)
 end
 
 -- Disabled helpers must not stop the simulation worker just to return immediately.
-if mode.enabled then bfme.events.onUpdate("ubermode", update, 200)
-else bfme.events.remove("ubermode") end
+bfme.events.remove("ubermode")
+bfme.events.remove("ubermode-units")
+bfme.events.remove("ubermode-buildings")
+if mode.enabled then
+    watchCompletions()
+    if #mode.pending > 0 or next(mode.newUnits) or next(mode.newBuildings) then schedule() end
+end
 
 bfme.events.onMatchStarted("ubermode-reset", function()
     mode.enabled, mode.seen, mode.pending, mode.previousCP, mode.seenBuildings = false, {}, {}, nil, {}
-    bfme.events.remove("ubermode")
+    mode.newUnits, mode.newBuildings = {}, {}
+    bfme.events.remove("ubermode"); scheduled = false
+    bfme.events.remove("ubermode-units")
+    bfme.events.remove("ubermode-buildings")
 end)

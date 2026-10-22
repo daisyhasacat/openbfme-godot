@@ -457,6 +457,9 @@ public:
 		std::string operationId; // optional research upgrade name
 	};
 	// OpenBFME notification only: consumers queue IDs/data and never execute Lua here.
+	using BuildingCompletedHook = std::function<void(const Object &)>;
+	void setBuildingCompletedHook(BuildingCompletedHook hook) { m_buildingCompletedHook = std::move(hook); }
+	void notifyBuildingCompleted(const Object &building) const { if (m_buildingCompletedHook) m_buildingCompletedHook(building); }
 	using BuildingPlacedHook = std::function<void(const Object &, const Object *)>;
 	void setBuildingPlacedHook(BuildingPlacedHook hook) { m_buildingPlacedHook = std::move(hook); }
 	void notifyBuildingPlaced(const Object &building, const Object *builder) const { if (m_buildingPlacedHook) m_buildingPlacedHook(building, builder); }
@@ -894,6 +897,7 @@ private:
 	int m_gameDifficulty = 1;     ///< lane CAMP-1H: RW GameLogic + 0xA4
 	GameRules m_gameRules = MpGameRules::none(); ///< lane RULES-1
 	BuildingPlacedHook m_buildingPlacedHook;
+	BuildingCompletedHook m_buildingCompletedHook;
 	std::map<std::string, TimingHook> m_timingHooks;
 	bool m_fortressConstruction = false;
 	int m_peaceTimeMinutes = PeaceTime::kOff;

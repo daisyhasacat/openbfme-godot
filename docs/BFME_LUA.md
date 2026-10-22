@@ -612,7 +612,7 @@ construction, recruitment and upgrade research take one simulation second
 units receive their native maximum experience level and all purchasable object
 upgrades in their command set, including battalion propagation through the
 native upgrade path. Buildings completed while the cheat is enabled receive their
-native maximum experience level at the next 200 ms cheat update. Unfinished
+native maximum experience level through batched native completion notifications (250 ms cooldown). Unfinished
 buildings retain their level until construction completes. Internal
 mode-switch/ability flags are not equipment.
 `unit.maxLevel`, `unit:getUpgrades()` and `unit:giveUpgrade(name)` are also
@@ -660,3 +660,31 @@ benchmarks while the console is closed. It includes Lua, simulation, unit
 physics/collision, pathfinding and rendering stages with average/p95/worst
 milliseconds, plus JSON export. Scopes overlap and worker costs appear when
 completed. See [the timing definitions and benchmark workflow](LARGE_ARMY_PERFORMANCE.md#console-performance-tab).
+
+## Lua callback audit
+
+| Script / handler | Scheduling |
+| --- | --- |
+| Uber unit births / building completion | Native `onUnitsCreated` / `onBuildingsCompleted` notifications; no roster polling |
+| Uber mass recruitment / overflow retry | 250 ms, only while work remains |
+| Lua AI | Default 1,000 ms, minimum 250 ms, only while players are controlled |
+| Building layout replay | 200 ms while replay is active; bounded queue/status checks |
+| Restart replay handoff | 250 ms while restoration is active |
+| Controller | Input-driven, existing 300 ms initial / 150 ms repeat delay; configuration refreshed on transitions |
+| Neutral decoration placement | Once per match-start event |
+| Production timing hooks | Synchronous native request callbacks; deliberately not throttled because each request needs its own duration |
+
+`bfme.events.onUnitsCreated(name, fn)` and `onBuildingsCompleted(name, fn)`
+receive `{objects={...}}`, each record containing `objectId`, `playerId`, and
+`frame`. Notifications are queued as values by the simulation and dispatched in
+Lua at a safe point. Bursts are batched per kind with a 250 ms wall-clock cooldown;
+notifications during the cooldown remain queued. Unobserved notifications do not
+request a simulation pause. Match changes discard queued events and cooldowns.
+Completion uses the native build-complete callback; unit creation uses world entry
+without containment re-entry. Records may refer to objects destroyed before dispatch;
+listeners must check the live handle. Existing `onBuildingPlaced` remains per-object.
+
+Replay scheduling still needs timers: cancellation, placement retry, mutation and
+wall-link results can progress without a building-completion event. Replacing these
+with construction-only events would strand those jobs. Their timers unregister on
+completion/cancellation. Lua AI decisions likewise need a periodic think.

@@ -82,7 +82,7 @@ function checkReplay()
   {id=14,template='Wall',x=740,y=20,links={12}}
  }
  local before=#calls
- replayBuildings('concurrent'); local scansBefore=buildingScans; tick(); assert(buildingScans==scansBefore+1); assert(interval==50)
+ replayBuildings('concurrent'); local scansBefore=buildingScans; tick(); assert(buildingScans==scansBefore+1); assert(interval==200)
  assert(#calls==before+3, 'Independent buildings and hub should submit together')
  assert(calls[before+1].speed==100 and calls[before+2].speed==100 and calls[before+3].speed==100)
  local hubTicket

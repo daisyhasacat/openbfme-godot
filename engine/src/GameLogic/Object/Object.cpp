@@ -906,6 +906,8 @@ void Object::friend_onBuildComplete()
 			c->onBuildComplete();
 		}
 	}
+	// Console notification only: queued value data is consumed on the client safe point.
+	logic().notifyBuildingCompleted(*this);
 }
 
 void Object::friend_onDie(const DieModuleInterface::Event &event)

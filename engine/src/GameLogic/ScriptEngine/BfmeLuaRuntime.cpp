@@ -12,6 +12,7 @@ extern "C"
 #include <luajit/lualib.h>
 }
 #include <algorithm>
+#include <set>
 #include <chrono>
 #include <mutex>
 #include <cmath>
@@ -561,8 +562,10 @@ library('events',{
   onUpdateNative(n,fn,intervalMs)
  end,
  onMatchStarted=function(n,fn) name(n,'an event'); if type(fn)~='function' then error('expected a function',2) end; onEventNative('matchStarted',n,fn) end,
+ onUnitsCreated=function(n,fn) name(n,'an event'); if type(fn)~='function' then error('expected a function',2) end; onEventNative('unitsCreated',n,fn) end,
+ onBuildingsCompleted=function(n,fn) name(n,'an event'); if type(fn)~='function' then error('expected a function',2) end; onEventNative('buildingsCompleted',n,fn) end,
  onBuildingPlaced=function(n,fn) name(n,'an event'); if type(fn)~='function' then error('expected a function',2) end; onEventNative('buildingPlaced',n,fn) end,
- remove=function(n) name(n,'an event'); onUpdateNative(n,nil); onEventNative('matchStarted',n,nil); onEventNative('buildingPlaced',n,nil) end,
+ remove=function(n) name(n,'an event'); onUpdateNative(n,nil); onEventNative('matchStarted',n,nil); onEventNative('buildingPlaced',n,nil); onEventNative('unitsCreated',n,nil); onEventNative('buildingsCompleted',n,nil) end,
  list=updateList,
 })
 library('map',{
@@ -687,14 +690,18 @@ struct BfmeLuaRuntime::Impl
 	};
 	std::map<std::string, UpdateCallback> updates;
 	struct Event { std::string kind; V::Table payload; };
-	struct EventQueue { std::mutex mutex; std::deque<Event> pending; };
+	struct EventQueue {
+		std::mutex mutex;
+		std::deque<Event> pending;
+		std::map<std::string, std::chrono::steady_clock::time_point> next;
+	};
 	std::shared_ptr<EventQueue> events = std::make_shared<EventQueue>();
 	std::map<std::string, std::map<std::string, UpdateCallback>> eventCallbacks;
 	static int onEvent(lua_State *L)
 	{
 		auto &s = self(L);
 		const std::string kind = luaL_checkstring(L, 1), name = luaL_checkstring(L, 2);
-		if (kind != "matchStarted" && kind != "buildingPlaced") return luaL_error(L, "unknown engine event");
+		if (kind != "matchStarted" && kind != "buildingPlaced" && kind != "unitsCreated" && kind != "buildingsCompleted") return luaL_error(L, "unknown engine event");
 		auto &callbacks = s.eventCallbacks[kind];
 		auto old = callbacks.find(name);
 		if (old != callbacks.end()) { luaL_unref(L, LUA_REGISTRYINDEX, old->second.ref); callbacks.erase(old); }
@@ -1144,7 +1151,9 @@ bool BfmeLuaRuntime::hasPending() const
 			const auto callbacks = m->eventCallbacks.find(event.kind);
 			return callbacks == m->eventCallbacks.end() || callbacks->second.empty();
 		}), events.end());
-		if (!events.empty()) return true;
+		const auto now = std::chrono::steady_clock::now();
+		for (const auto &event : events)
+			if ((event.kind != "unitsCreated" && event.kind != "buildingsCompleted") || now >= m->events->next[event.kind]) return true;
 	}
 	if (!m->pending.empty() || !m->constructions.empty() || !m->deferred.empty())
 		return true;
@@ -1161,7 +1170,30 @@ void BfmeLuaRuntime::flush()
 	// another request, which runs on the next safe point rather than recursively.
 	m->output.clear(); // what Lua prints during this flush goes to Host::output at its end
 	std::deque<Impl::Event> events;
-	{ std::lock_guard<std::mutex> lock(m->events->mutex); events.swap(m->events->pending); }
+	{
+		std::lock_guard<std::mutex> lock(m->events->mutex);
+		const auto now = std::chrono::steady_clock::now();
+		std::set<std::string> ready;
+		for (const auto &event : m->events->pending)
+			if ((event.kind != "unitsCreated" && event.kind != "buildingsCompleted") || now >= m->events->next[event.kind]) ready.insert(event.kind);
+		for (auto it = m->events->pending.begin(); it != m->events->pending.end();)
+		{
+			if (!ready.count(it->kind)) { ++it; continue; }
+			events.push_back(std::move(*it));
+			it = m->events->pending.erase(it);
+		}
+		for (const auto &kind : ready)
+			if (kind == "unitsCreated" || kind == "buildingsCompleted") m->events->next[kind] = now + std::chrono::milliseconds(250);
+	}
+	// Births and completions may arrive by the hundreds: one value-only batch per kind.
+	std::map<std::string, Value::List> batches;
+	for (auto it = events.begin(); it != events.end();)
+	{
+		if (it->kind != "unitsCreated" && it->kind != "buildingsCompleted") { ++it; continue; }
+		batches[it->kind].emplace_back(std::move(it->payload));
+		it = events.erase(it);
+	}
+	for (auto &batch : batches) events.push_back({batch.first, {{"objects", std::move(batch.second)}}});
 	auto count = m->pending.size();
 	while (count--)
 	{
@@ -1245,7 +1277,7 @@ void BfmeLuaRuntime::flush()
 		std::vector<std::string> names;
 		for (const auto &entry : m->eventCallbacks[event.kind]) names.push_back(entry.first);
 		if (names.empty()) continue;
-		try { if (!eventSnapshot) { m->call(m->refreshRef); eventSnapshot = true; } }
+		try { if (!eventSnapshot) { m->call(m->deferRefreshRef); eventSnapshot = true; } }
 		catch (const std::exception &e) { m->output += std::string("bfme event snapshot failed: ") + e.what() + "\n"; break; }
 		for (const auto &name : names)
 		{
@@ -1361,7 +1393,7 @@ int BfmeLuaRuntime::adjustTiming(const std::string &kind, Value::Table context, 
 
 void BfmeLuaRuntime::invalidate()
 {
-	{ std::lock_guard<std::mutex> lock(m->events->mutex); m->events->pending.clear(); }
+	{ std::lock_guard<std::mutex> lock(m->events->mutex); m->events->pending.clear(); m->events->next.clear(); }
 	for (const auto &hook : m->timingHooks) luaL_unref(m->L, LUA_REGISTRYINDEX, hook.second);
 	m->timingHooks.clear();
 	if (m->host.onTimingChanged) m->host.onTimingChanged();

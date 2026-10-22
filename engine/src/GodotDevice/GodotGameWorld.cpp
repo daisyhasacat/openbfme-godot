@@ -1689,6 +1689,17 @@ void fragment() {
 		if (threaded) m_game->setLogicThread(false);
 		ensureConsoleRuntime();
 		auto sink = m_consoleRuntime->eventSink();
+		auto objectEvent = [](const ::Object &object) {
+			const auto *owner = object.getControllingPlayer();
+			return BfmeLuaValue::Table{{"objectId", object.getID()}, {"playerId", owner ? owner->getPlayerIndex() : -1},
+				{"frame", object.logic().getFrame()}};
+		};
+		m_game->logic().addWorldHooks([sink, objectEvent](::Object &object) {
+			if (object.isKindOf(1) && !object.isKindOf(7)) sink("unitsCreated", objectEvent(object));
+		}, {});
+		m_game->logic().setBuildingCompletedHook([sink, objectEvent](const ::Object &object) {
+			if (object.isKindOf(7)) sink("buildingsCompleted", objectEvent(object));
+		});
 		m_game->logic().setBuildingPlacedHook([sink](const ::Object &building, const ::Object *builder) {
 			const auto *position = building.getPosition();
 			const auto *owner = building.getControllingPlayer();
