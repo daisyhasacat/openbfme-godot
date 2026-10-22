@@ -2128,6 +2128,9 @@ func _begin_game(message: Dictionary) -> void:
 	for i in 4:
 		await get_tree().process_frame
 	_shell.auto_process = false
+	# LoadScreen's opening timeline hides the front-end background. Restore its
+	# rotating ring after those opening frames, before presenting load progress.
+	_shell.shell_fscommand("SetBackground", "fadein")
 	var started := Time.get_ticks_msec()
 	_load_log.clear()
 	var world_was_visible: bool = _world.visible
@@ -2338,8 +2341,6 @@ func _hide_rules_summary() -> void:
 
 
 func _shell_load_screen_push() -> void:
-	# Keep the retail ring artwork behind the player cards while loading.
-	_shell.shell_show_shell_map(true)
 	if not _shell.shell_push("LoadScreen.apt"):
 		_fail("the shell refused LoadScreen.apt: " + str(_shell.get_shell_report().errors))
 
@@ -2360,7 +2361,7 @@ func _on_load_progress(percent: int) -> void:
 
 func _enter_game(rep: Dictionary) -> void:
 	_load_mark("enter_game_started")
-	_shell.shell_show_shell_map(false) # The loading backdrop must not cover gameplay.
+	_shell_leave_for_game() # Remove the loading ring before exposing gameplay.
 	_world.set_auto_advance(false)
 	_hide_rules_summary() # lane RULES-1
 	_shell.hide_still_load_screen() # lane MENU-1: a campaign mission's picture loading screen

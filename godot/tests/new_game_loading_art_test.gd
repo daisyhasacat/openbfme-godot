@@ -22,6 +22,7 @@ func _run() -> void:
 	game._shell.tick(0.033)
 	game._shell.render(true)
 	assert(game._shell.get_backdrop_state().backdrop_image == "")
+	assert(game._shell.get_backdrop_state().background_mode == 0)
 	game.free()
 	await process_frame
 	print("NEW GAME LOADING ART PASS")
