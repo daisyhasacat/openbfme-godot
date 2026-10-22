@@ -8,6 +8,7 @@
 #include "Common/INIException.h"
 
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -17,6 +18,17 @@ const char *const kNames[] = {
 	nullptr,
 };
 static_assert(sizeof(kNames) / sizeof(kNames[0]) == MODELCONDITION_COUNT + 1, "ModelConditionNames.inc has the wrong number of names");
+
+int scanCondition(const char *name)
+{
+	const int bit = ModelCondition::indexOf(name);
+	if (bit == -1)
+	{
+		// Preserve scanIndexList's error code and text for an unknown condition.
+		throw INIException(3, "Token '%s' is not a valid member of the index list", name);
+	}
+	return bit;
+}
 
 // RW 0x4B5E05, per token. Returns false when the list ends (NONE).
 bool applyToken(const char *name, ModelConditionFlags &flags, bool &sawNormal, bool &sawPlusMinus)
@@ -36,7 +48,7 @@ bool applyToken(const char *name, ModelConditionFlags &flags, bool &sawNormal, b
 		{
 			throw INIException(2, "you may not mix normal and +- ops in bitstring lists");
 		}
-		const int bit = INI::scanIndexList(name + 1, ModelCondition::bitNames());
+		const int bit = scanCondition(name + 1);
 		flags.set(bit, name[0] == '+');
 		sawPlusMinus = true;
 		return true;
@@ -49,7 +61,7 @@ bool applyToken(const char *name, ModelConditionFlags &flags, bool &sawNormal, b
 	{
 		flags.clear();
 	}
-	const int bit = INI::scanIndexList(name, ModelCondition::bitNames());
+	const int bit = scanCondition(name);
 	flags.set(bit);
 	sawNormal = true;
 	return true;
@@ -87,14 +99,18 @@ int count() { return MODELCONDITION_COUNT; }
 
 int indexOf(const std::string &name)
 {
-	for (int i = 0; i < MODELCONDITION_COUNT; ++i)
-	{
-		if (AsciiStringUtil::compareNoCase(name, kNames[i]) == 0)
+	// Only immutable engine grammar is indexed. Mutable INI lists still use the
+	// ordered scanners; no world-owned pointers survive a world reset here.
+	static const auto indices = [] {
+		std::unordered_map<std::string, int> result;
+		for (int i = 0; i < MODELCONDITION_COUNT; ++i)
 		{
-			return i;
+			result.emplace(AsciiStringUtil::lowered(kNames[i]), i); // first match, as scanIndexList
 		}
-	}
-	return -1;
+		return result;
+	}();
+	const auto found = indices.find(AsciiStringUtil::lowered(name));
+	return found == indices.end() ? -1 : found->second;
 }
 
 const char *nameOf(int bit) { return (bit >= 0 && bit < MODELCONDITION_COUNT) ? kNames[bit] : nullptr; }

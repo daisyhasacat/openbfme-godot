@@ -6,6 +6,7 @@ var uploaded = ""
 var configured = ""
 var retry_at = 0
 var elapsed = 0.0
+var next_check = 0 ## a sync without a local change, so games and profiles from other devices arrive (merged files)
 var warned = ""
 var hashes = {} ## path -> [size, modified time, sha256]: a file is read again only when these change or it is recent
 
@@ -53,7 +54,9 @@ func poll():
  var fingerprint="\n".join(parts).sha256_text()
  if fingerprint!=observed:
   observed=fingerprint;retry_at=0;return
- if fingerprint==uploaded or Time.get_ticks_msec()<retry_at:return
+ if Time.get_ticks_msec()<retry_at:return
+ if fingerprint==uploaded and Time.get_ticks_msec()<next_check:return
+ next_check=Time.get_ticks_msec()+60000
  await worker._sync()
  if worker.succeeded:
   uploaded=fingerprint;retry_at=0;warned=""

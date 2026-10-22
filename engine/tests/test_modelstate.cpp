@@ -63,7 +63,17 @@ TEST_CASE("ModelConditionFlags is 19 words, and the table has the 591 names of R
 	for (int i = 0; i < 591; ++i)
 	{
 		CHECK(seen.insert(ModelCondition::nameOf(i)).second);
+		CHECK(ModelCondition::indexOf(ModelCondition::nameOf(i)) == i);
+		std::string mixed = ModelCondition::nameOf(i);
+		for (size_t j = 0; j < mixed.size(); j += 2)
+		{
+			if (mixed[j] >= 'A' && mixed[j] <= 'Z') mixed[j] += 'a' - 'A';
+		}
+		CHECK(ModelCondition::indexOf(mixed) == i);
 	}
+	CHECK(ModelCondition::indexOf("MOVING_EXTRA") == -1);
+	CHECK(ModelCondition::indexOf("MOVIN") == -1);
+	CHECK(ModelCondition::indexOf("") == -1);
 }
 
 TEST_CASE("ModelConditionFlags: the table is a registry, not just the names retail INI uses (PLAN rule 6)")

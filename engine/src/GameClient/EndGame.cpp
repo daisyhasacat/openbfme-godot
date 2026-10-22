@@ -16,6 +16,7 @@
 #include "GameClient/MapUtil.h"
 #include "GameLogic/Economy.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/ScriptEngine/Scripts.h"
 
 #include <algorithm>
@@ -715,6 +716,24 @@ ScoreScreenData ScoreScreenData::build(GameLogic &logic, int type, const std::ve
 		e.spentHeroes = s.moneySpentOnHeroes();
 		e.heroesBuilt = s.heroesBuilt(logic);
 		e.heroesLost = s.heroesLost(logic);
+		e.unitsAlive = s.unitsAlive();
+		e.structuresAlive = s.structuresAlive();
+		e.eliminationBonus = s.eliminationBonus();
+		for (const auto &item : s.builtByTemplate()) e.templates[item.first].built = item.second;
+		for (const auto &item : s.lostByTemplate()) e.templates[item.first].lost = item.second;
+		for (const auto &item : s.hordesBuiltByTemplate()) e.templates[item.first].hordesBuilt = item.second;
+		for (int victim = 0; victim < ScoreKeeper::MAX_PLAYERS; ++victim)
+			for (const auto &item : s.destroyedByTemplate(victim)) e.templates[item.first].destroyed += item.second;
+		for (auto &item : e.templates)
+		{
+			const ThingTemplate *tt = logic.things().findTemplate(item.first);
+			item.second.kind = "unknown"; // explicit missing-template classification; counts remain intact
+			if (tt)
+			{
+				const auto &kinds = logic.templateInfo(tt->getFinalOverride()).kindOf;
+				item.second.kind = MaskTest(kinds, 7) ? "structure" : MaskTest(kinds, 90) ? "hero" : MaskTest(kinds, 109) ? "horde" : "unit";
+			}
+		}
 		if (e.local && !d.entries.empty())
 		{
 			d.entries[0] = std::move(e);

@@ -12,6 +12,7 @@ func _run() -> void:
 	assert(first.backdrop_image == "Shell02_01", str(first))
 	await create_timer(0.5).timeout
 	var second: Dictionary = shell.get_backdrop_state()
+	# tolerance: elapsed render time determines the number of advanced animation frames.
 	assert(second.animation_frame > first.animation_frame, "shell animation did not advance")
 	assert(shell.get_report().view3d_errors.is_empty(), str(shell.get_report().view3d_errors))
 	if DisplayServer.get_name() != "headless":

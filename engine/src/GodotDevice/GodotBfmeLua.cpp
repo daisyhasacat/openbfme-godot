@@ -56,6 +56,7 @@ Table definition(const ThingTemplate &tt)
 			{"faction", field(tt, "Side")},
 			{"side", field(tt, "Side")},
 			{"cost", int(BuildAssistant::buildCost(tt))},
+			{"commandPoints", field(tt, "CommandPoints")},
 			{"refund", field(tt, "RefundValue")},
 			{"buildTime", field(tt, "BuildTime")},
 			{"trainTime", field(tt, "BuildTime")},

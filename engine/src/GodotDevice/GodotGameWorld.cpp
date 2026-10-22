@@ -745,6 +745,7 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 
 void GameWorld::clear_scene()
 {
+	m_sessionSaves.clear();
 	m_movementPendingCommands.reset();
 	m_mapWeatherId = 0;
 	m_pavingPlants.clear();m_pavingTexture.unref();m_pavingSignature=0;m_pavingFrame=~0u;m_pavingError=String();
@@ -780,6 +781,7 @@ void GameWorld::clear_scene()
 	m_staticModels.clear();
 	m_buffInstances.clear(); // lane SPELL-4: the buffs' instances went with the instancer
 	m_staticId = m_dynamicId = 0;
+	m_staticShroudInstances.clear();
 	m_textureClock = 0.0;
 	m_animatedDrawables = 0;
 	m_streaks.clear();
@@ -835,6 +837,8 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 	}
 	staticInst->set_house_colors_enabled(false); // client-only trees and props have no owner
 	staticInst->set_auto_update(false);
+	staticInst->set_pose_culling(true);
+	m_staticShroudInstances.clear();
 	m_clientRuntime.reset(new MapObjectRuntime(*m_assets));
 	m_clientRuntime->build(m_game->clientOnly(), false);
 	m_treeTopple.reset(new TreeTopple()); // lane SPELL-3
@@ -884,6 +888,7 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 			continue;
 		}
 		++instances;
+		m_staticShroudInstances.push_back({instance, Vector2(d.position.x, d.position.y)});
 		if(d.info && (d.info->tree || d.info->shrub || d.info->shrubbery || d.info->clearedByBuild || d.info->optimizedProp)
 			&& !d.info->kindOf_test(MapObjectCreation::kindOfIndex("STRUCTURE")))
 			m_pavingPlants.push_back({instance,Vector2(d.position.x,d.position.y)});
@@ -1160,7 +1165,9 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	{
 		return fail("GameWorld.setup has not run");
 	}
+	const double teardownStart = nowMs();
 	clear_scene();
+	timings["previous_game_teardown_ms"] = timing::elapsedMs(teardownStart);
 	m_animations = optBool(options, "animations", true);
 	m_houseColors = optBool(options, "house_colors", true);
 	m_textureAnimation = optBool(options, "texture_animation", true);
@@ -1216,7 +1223,8 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	if (options.has("wall_rebalance")) walls.enabled = options["wall_rebalance"];
 	if (options.has("starting_walls")) walls.startingWalls = options["starting_walls"];
 	if (options.has("require_enclosed")) walls.requireEnclosed = options["require_enclosed"];
-	if (m_netStarted) walls.startingHubs.clear(); // reference starting-wall jobs are offline only
+	// A network replay restores the network game's settings, including its absence of offline starting-wall jobs.
+	if (m_netStarted || optBool(options, "network_replay", false)) walls.startingHubs.clear();
 
 	if (progress.is_valid())
 	{
@@ -1395,7 +1403,7 @@ void fragment() {
 		{
 			terrainOptions["fog"] = false;
 		}
-		Node3D *terrain = terrainBuilder->build_map(m_fs, map_name, terrainOptions);
+		Node3D *terrain = terrainBuilder->build_loaded_map(m_fs, map_name, terrainOptions, m_game->map());
 		const Dictionary trep = terrainBuilder->get_report();
 		// the terrain builder's own report (the map viewer prints the same "texture not found: SkyEnv.tga": no such file in the archives, RENDER-1's): kept in the
 		// report under terrain_errors and not counted as a failure of the start unless no terrain was built
@@ -2197,7 +2205,7 @@ void GameWorld::advance(double delta)
 				m_netLoaded = m_netSession->pollLoaded();
 			}
 		}
-		if (m_netScript && m_game->frame() != m_netScriptFrame && m_game->logicHeld()) // RENDERWAIT-1: its commands only where the logic is held
+		if (m_netScript && m_netLoaded && m_game->frame() != m_netScriptFrame && m_game->logicHeld()) // RENDERWAIT-1: its commands only where the logic is held
 		{
 			m_netScriptFrame = m_game->frame();
 			m_netScripted += ScriptedPlayer::issue(*m_game, m_netPlayer, m_netStartPos, m_game->commands());
@@ -2237,6 +2245,7 @@ void GameWorld::advance(double delta)
 	const double tv = nowMs();
 	m_lastShroudMs = timing::spanMs(tv, t1);
 	refresh_views(dt * 1000.0);
+	if (W3DInstancer *st = instancerOf(m_staticId)) st->update_now();
 	const double tf = nowMs();
 	m_lastViewsMs = timing::spanMs(tf, tv);
 	updateTreeTopple(dt); // lane SPELL-3
@@ -2545,7 +2554,7 @@ void GameWorld::updateTreeTopple(double dt)
 		m_treeTopple->placement(i, v.basis, v.position, b, pos);
 		if (m_treeTopple->trees()[i].state == TreeTopple::GONE)
 		{
-			st->set_instance_transform(v.instance, toTransform(b, pos, 0.0f)); // sunk away: drawn at scale 0
+			st->remove_instance(v.instance); // sunk away: release pose/palette and remove GPU submission
 		}
 		else
 		{
@@ -5909,6 +5918,17 @@ void GameWorld::refresh_shroud(bool force)
 	{
 		return;
 	}
+	// Presentation inference: undiscovered client-only scenery has no GPU submission.
+	// Explored scenery remains visible in fog, consistent with immobile objects.
+	if (W3DInstancer *st = instancerOf(m_staticId))
+	{
+		for (const auto &entry : m_staticShroudInstances)
+		{
+			const auto status = sm.localPlayer < 0 ? CELLSHROUD_CLEAR : sm.statusAt(entry.second.x, entry.second.y);
+			st->set_instance_shrouded(entry.first, m_shroudDrawn && status == CELLSHROUD_SHROUDED);
+			st->set_instance_fogged(entry.first, m_shroudDrawn && status == CELLSHROUD_FOGGED);
+		}
+	}
 	const VisionSettings &vs = m_game->visionSettings();
 	// lane ZOOM-1: the texture is the cells plus a one-texel border at the border level (see above)
 	const int tw = nx + 2, th = ny + 2;
@@ -6766,6 +6786,73 @@ Dictionary GameWorld::gameRecordBase(GameLogic &logic, const std::vector<int> &s
 	r["players"] = list;
 	r["me"] = m_recordLocalSlot;
 	r["winner_team"] = split ? -1 : winner;
+	// Client-reported statistics: existing score-screen/ScoreKeeper data only.
+	// No scoring rule, logic state, retail replay or network command changes.
+	Dictionary report;
+	report["v"] = 1;
+	report["frames"] = (int64_t)logic.getFrame();
+	Array statistics;
+	for (const GameRecord::Player &p : players)
+	{
+		const int index = p.slot < (int)slotPlayers.size() ? slotPlayers[(std::size_t)p.slot] : -1;
+		for (const auto &e : m_scoreScreen.entries)
+		{
+			if (e.playerIndex != index) continue;
+			Dictionary row, counters;
+			row["slot"] = p.slot; row["result"] = e.result; row["faction"] = toGodot(p.faction);
+			counters["score"] = (int64_t)e.score;
+			counters["units_built"] = (int64_t)e.unitsBuilt;
+			counters["units_lost"] = (int64_t)e.unitsLost;
+			counters["units_destroyed"] = (int64_t)e.unitsDestroyed;
+			counters["structures_built"] = (int64_t)e.structuresBuilt;
+			counters["structures_lost"] = (int64_t)e.structuresLost;
+			counters["structures_destroyed"] = (int64_t)e.structuresDestroyed;
+			counters["money_earned"] = (int64_t)e.moneyEarned;
+			counters["money_spent"] = (int64_t)e.moneySpent;
+			counters["power_points"] = (int64_t)e.purchasePoints;
+			counters["skill_points"] = (double)e.skillPoints;
+			counters["session_seconds"] = (int64_t)e.sessionSeconds;
+			counters["first_hero_seconds"] = (int64_t)e.firstHeroSeconds;
+			counters["fortresses_built"] = (int64_t)e.fortressesBuilt;
+			counters["money_received"] = (int64_t)e.moneyReceived;
+			counters["money_given"] = (int64_t)e.moneyGiven;
+			counters["spent_structures"] = (int64_t)e.spentStructures;
+			counters["spent_units"] = (int64_t)e.spentUnits;
+			counters["spent_heroes"] = (int64_t)e.spentHeroes;
+			counters["heroes_built"] = (int64_t)e.heroesBuilt;
+			counters["heroes_lost"] = (int64_t)e.heroesLost;
+			counters["units_alive"] = (int64_t)e.unitsAlive;
+			counters["structures_alive"] = (int64_t)e.structuresAlive;
+			counters["elimination_bonus"] = (double)e.eliminationBonus;
+			row["stats"] = counters;
+			Array templates;
+			for (const auto &item : e.templates)
+			{
+				Dictionary value;
+				value["name"] = toGodot(item.first); value["kind"] = toGodot(item.second.kind);
+				value["built"] = item.second.built; value["lost"] = item.second.lost;
+				value["destroyed"] = item.second.destroyed; value["hordes_built"] = item.second.hordesBuilt;
+				templates.push_back(value);
+			}
+			row["templates"] = templates;
+			Array timeline;
+			const std::size_t stride = std::max<std::size_t>(1, (e.perFrame.size() + 119) / 120);
+			for (std::size_t f = 0; f < e.perFrame.size(); ++f)
+			{
+				const auto &sample = e.perFrame[f];
+				if (!sample.recorded || (f % stride != 0 && f + 1 != e.perFrame.size())) continue;
+				Dictionary point;
+				point["frame"] = (int64_t)f; point["money"] = (int64_t)sample.money;
+				point["score"] = (double)sample.score; point["units"] = sample.unitsAlive;
+				point["structures"] = sample.structuresAlive; point["skill_points"] = sample.skillPoints;
+				timeline.push_back(point);
+			}
+			row["timeline"] = timeline;
+			statistics.push_back(row);
+		}
+	}
+	report["players"] = statistics;
+	r["statistics"] = report;
 	return r;
 }
 
@@ -7366,6 +7453,8 @@ Dictionary GameWorld::start_replay(const Dictionary &options)
 	Dictionary o = options.duplicate();
 	o.erase("record");
 	std::unique_ptr<ReplayFile> file = std::move(m_pendingReplay);
+	// Network recordings store their human slot/player mapping; offline recordings leave every entry at -1.
+	o["network_replay"] = std::any_of(file->header.network.slotPlayerIndex.begin(), file->header.network.slotPlayerIndex.end(), [](int player) { return player >= 0; });
 	Dictionary report = start_new_game(o);
 	if (!(bool)report.get("ok", false))
 	{

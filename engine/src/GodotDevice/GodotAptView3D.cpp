@@ -8,6 +8,8 @@
 #include "GodotDevice/GodotW3DInstancer.h"
 
 #include <godot_cpp/classes/environment.hpp>
+#include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/viewport_texture.hpp>
@@ -150,17 +152,27 @@ bool AptView3DViewers::create(Slot &slot, const AptCanvasOp &op)
 	slot.black->set_use_own_world_3d(true);
 	slot.black->set_transparent_background(false);
 	slot.black->set_size(Vector2i(4, 4));
+	slot.black->set_update_mode(SubViewport::UPDATE_DISABLED);
+	slot.black->set_name("AptView3DBlack");
 	slot.blackId = slot.black->get_instance_id();
 	m_owner->add_child(slot.black);
 	slot.camBlack = makeCamera(slot.black, Color(0, 0, 0, 1));
 	slot.white = memnew(SubViewport);
 	slot.white->set_transparent_background(false);
 	slot.white->set_size(Vector2i(4, 4));
+	slot.white->set_update_mode(SubViewport::UPDATE_DISABLED);
+	slot.white->set_name("AptView3DWhite");
 	slot.whiteId = slot.white->get_instance_id();
 	m_owner->add_child(slot.white);
 	slot.white->set_world_3d(slot.black->find_world_3d()); // one scene, two clears
 	slot.camWhite = makeCamera(slot.white, Color(1, 1, 1, 1));
+	slot.createdMs = nowMs();
+	const int defaultFps = OS::get_singleton()->get_name() == "iOS" ? 30 : 0;
+	slot.maxFps = std::max(0, (int)ProjectSettings::get_singleton()->get_setting("openbfme/rendering/menu_3d_max_fps", defaultFps));
 	slot.inst = memnew(W3DInstancer);
+	// pose() owns the animation clock and uploads; a second _process is redundant.
+	slot.inst->set_auto_update(false);
+	slot.inst->set_playing(false);
 	slot.black->add_child(slot.inst);
 	const Dictionary setup = slot.inst->setup_menu(m_fs);
 	if (!bool(setup.get("ok", false)))
@@ -223,6 +235,7 @@ void AptView3DViewers::draw(RID item, const Rect2 &rect, const AptCanvasOp &op, 
 	{
 		return;
 	}
+	if (!slot.wasUsed) slot.forceRender = true;
 	slot.used = true;
 	// RW 0x8145DD: `_KeepAspectRatio` (true unless its text has an 'f') and `_AnimMode`
 	bool hasKeep = false;
@@ -245,6 +258,7 @@ void AptView3DViewers::draw(RID item, const Rect2 &rect, const AptCanvasOp &op, 
 	if (hasFrame && frame != slot.frameCommand && slot.numFrames > 0)
 	{
 		slot.frameCommand = frame;
+		slot.forceRender = true;
 		slot.anim.setAnimation(slot.numFrames, AptView3DFrameOf(frame), mode, now);
 	}
 	// RW 0xB5470F: the viewport is the clip's rectangle. Lane ONLINE-5 [S-4555]: under an uneven stage stretch (a window that is not 4:3) a menu
@@ -252,11 +266,21 @@ void AptView3DViewers::draw(RID item, const Rect2 &rect, const AptCanvasOp &op, 
 	// stays around its panels; any other View3D (GuiFX's end-screen rings) keeps retail's aspect
 	int imageW = 1, imageH = 1;
 	AptView3DImageSize(rect.size.x, rect.size.y, op.scaleX, op.scaleY, slot.keepAspect, stretchWithStage, imageW, imageH);
+	// Diagnostic simulator exports use CPU rasterization. Bound the embedded
+	// scene independently of the canvas; preserve its aspect and camera framing.
+	const int maxDimension = std::max(0, (int)ProjectSettings::get_singleton()->get_setting("openbfme/rendering/menu_3d_max_dimension", 0));
+	if (maxDimension > 0 && std::max(imageW, imageH) > maxDimension)
+	{
+		const double scale = (double)maxDimension / std::max(imageW, imageH);
+		imageW = std::max(1, (int)std::round(imageW * scale));
+		imageH = std::max(1, (int)std::round(imageH * scale));
+	}
 	const Vector2i size(imageW, imageH);
 	if (slot.black->get_size() != size)
 	{
 		slot.black->set_size(size);
 		slot.white->set_size(size);
+		slot.forceRender = true;
 	}
 	RenderingServer *rs = RenderingServer::get_singleton();
 	rs->canvas_item_set_copy_to_backbuffer(item, true, rect);
@@ -274,9 +298,12 @@ void AptView3DViewers::endBuild()
 		{
 			continue;
 		}
-		const SubViewport::UpdateMode mode = slot.used && !slot.failed ? SubViewport::UPDATE_ALWAYS : SubViewport::UPDATE_DISABLED;
-		slot.black->set_update_mode(mode);
-		slot.white->set_update_mode(mode);
+		if (!slot.used || slot.failed)
+		{
+			slot.black->set_update_mode(SubViewport::UPDATE_DISABLED);
+			slot.white->set_update_mode(SubViewport::UPDATE_DISABLED);
+		}
+		slot.wasUsed = slot.used;
 	}
 }
 
@@ -286,6 +313,26 @@ void AptView3DViewers::pose(Slot &slot, double now)
 	{
 		return;
 	}
+	// A decoration's cadence is independent of input and the Apt movie clock.
+	// Accumulated real time is used on the next update; animation does not slow down.
+	if (!slot.forceRender && slot.maxFps > 0 && now < slot.nextRenderMs) return;
+	if (slot.maxFps > 0)
+	{
+		const double interval = 1000.0 / slot.maxFps;
+		if (slot.forceRender) slot.nextRenderMs = now + interval;
+		else slot.nextRenderMs += (std::floor((now - slot.nextRenderMs) / interval) + 1.0) * interval;
+	}
+	slot.forceRender = false;
+	++slot.renderUpdates;
+	if (m_owner && m_owner->get_viewport())
+	{
+		const float scale = m_owner->get_viewport()->get_scaling_3d_scale();
+		slot.black->set_scaling_3d_scale(scale);
+		slot.white->set_scaling_3d_scale(scale);
+	}
+	slot.inst->set_global_time((now - slot.createdMs) * 0.001);
+	slot.black->set_update_mode(SubViewport::UPDATE_ONCE);
+	slot.white->set_update_mode(SubViewport::UPDATE_ONCE);
 	slot.anim.progress(now, slot.frameRate);
 	if (slot.numFrames > 0)
 	{
@@ -304,6 +351,13 @@ void AptView3DViewers::pose(Slot &slot, double now)
 	}
 	GammaComposite::ensure(slot.camBlack);
 	GammaComposite::ensure(slot.camWhite);
+}
+
+std::uint64_t AptView3DViewers::renderUpdates() const
+{
+	std::uint64_t count = 0;
+	for (const auto &entry : m_slots) count += entry.second.renderUpdates;
+	return count;
 }
 
 float AptView3DViewers::animationFrame(const std::string &path) const

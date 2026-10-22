@@ -1,0 +1,23 @@
+extends SceneTree
+const Settings := preload("res://scripts/display_settings.gd")
+func _initialize() -> void:
+	var desktop = Settings.new("macOS")
+	var mobile = Settings.new("iOS")
+	assert(desktop.max_fps == 0)
+	assert(desktop.render_scale == 1.0)
+	assert(mobile.max_fps == 60)
+	assert(mobile.render_scale == 0.75)
+	assert(mobile.scaler == "bilinear")
+	assert(mobile.copy().to_dict() == mobile.to_dict())
+	mobile.from_dict({"max_fps": 120, "render_scale": 1.0})
+	assert(mobile.max_fps == 120)
+	assert(mobile.render_scale == 1.0)
+	assert(mobile.errors.is_empty())
+	var path := "user://ios-display-defaults-test.cfg"
+	assert(mobile.save_file(path))
+	var loaded = Settings.new("iOS")
+	assert(loaded.load_file(path))
+	assert(loaded.to_dict() == mobile.to_dict())
+	DirAccess.remove_absolute(path)
+	print("IOS DISPLAY DEFAULTS PASS")
+	quit(0)

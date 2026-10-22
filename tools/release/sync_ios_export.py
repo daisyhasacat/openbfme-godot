@@ -56,6 +56,11 @@ def main():
                         '--godot', godot, '--output-dir', temp, '--no-source-sync'] + target_args, check=True)
         generated = Path(temp)
         shutil.copy2(generated / 'OpenBFME.pck', export / 'OpenBFME.pck')
+        shutil.copy2(generated / 'OpenBFME/Launch Screen.storyboard', export / 'OpenBFME/Launch Screen.storyboard')
+        for name in ('SplashImage', 'StartupRing'):
+            imageset = Path('OpenBFME/Images.xcassets') / (name + '.imageset')
+            if (generated / imageset).is_dir():
+                shutil.copytree(generated / imageset, export / imageset, dirs_exist_ok=True)
         framework = Path('OpenBFME/dylibs/bin/openbfme.ios.template_debug.arm64.framework')
         shutil.copytree(generated / framework, export / framework, dirs_exist_ok=True)
         if simulator:

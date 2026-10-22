@@ -1736,3 +1736,50 @@ TEST_CASE("Buckland wights acquire and engage Boromir from eight approach direct
 		CHECK_MESSAGE(responded, "direction " << direction);
 	}
 }
+
+TEST_CASE("Forlindon docks: the pinned misplaced-flag correction makes all three shipwrights capturable")
+{
+	if (!haveWorld("Forlindon docks")) return;
+	SharedWorld &s = shared();
+	HudRig h(s, "FactionMen", "map wor forlindon");
+	const auto ctx = h.hud->enterContext();
+	GameLogic &logic = h.rig.logic();
+	creeptest::removeCreeps(logic);
+	std::vector<Object *> flags;
+	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject()) if (o->isKindOfName("CAPTURABLE")) flags.push_back(o);
+	int captured = 0, outsideRange = 0;
+	for (Object *flag : flags)
+	{
+		Object *dock = nullptr;
+		float nearest = 100000000.0f;
+		for (Object *o = logic.getFirstObject(); o; o = o->getNextObject()) if (o->getTemplate()->getName() == "ShipWright")
+		{
+			const auto &a = *o->getPosition(), &b = *flag->getPosition();
+			const float distance = (a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y)+(a.z-b.z)*(a.z-b.z);
+			if (distance < nearest) { nearest=distance; dock=o; }
+		}
+		if (!dock || nearest > 40000.0f) continue;
+		const auto c = h.rig.freeSpot(flag->getPosition()->x, flag->getPosition()->y-150.0f, 80.0f);
+		Object *party = h.rig.make("GondorFighterHorde",c.x,c.y);
+		h.frames(10);
+		REQUIRE(h.select(party));
+		const auto log = h.hud->input().messageLog().size();
+		h.rig.lookAt(*flag->getPosition());
+		h.clickAt({flag->getPosition()->x,flag->getPosition()->y,flag->getPosition()->z+8.0f},true);
+		h.frames(2);
+		bool sent = false;
+		for (size_t i=log;i<h.hud->input().messageLog().size();++i) sent=sent||h.hud->input().messageLog()[i].find("MSG_DO_SPECIAL_POWER_AT_OBJECT")!=std::string::npos;
+		for(int i=0;i<600 && flag->getControllingPlayer()!=h.rig.local;++i)h.frames(1);
+		// ActionManagerSpecialPowerChecks.cpp (BFME2 0x81C79C), and the existing RW 0x82D0A1 port: 150, distance type 1 (center 3D).
+		const bool inCaptureRange = nearest <= 150.0f * 150.0f;
+		CHECK(sent == inCaptureRange);
+		CHECK((flag->getControllingPlayer() == h.rig.local) == inCaptureRange);
+		CHECK((dock->getControllingPlayer() == h.rig.local) == inCaptureRange);
+		captured += inCaptureRange ? 1 : 0;
+		outsideRange += inCaptureRange ? 0 : 1;
+		std::printf("Forlindon flag %u / dock %u: distance squared %.3f, capture order %d, flag owned %d, dock owned %d\n",
+			flag->getID(), dock->getID(), nearest, sent, flag->getControllingPlayer() == h.rig.local, dock->getControllingPlayer() == h.rig.local);
+	}
+	CHECK(captured == 3);
+	CHECK(outsideRange == 0);
+}

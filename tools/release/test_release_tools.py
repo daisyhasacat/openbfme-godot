@@ -1261,3 +1261,43 @@ def test_the_aio_table_fails_closed(tmp_path, monkeypatch, content):
     monkeypatch.setattr(audit_package, "AIO_FILES", tmp_path / "missing.json")
     with pytest.raises(SystemExit, match="AUDIT"):
         audit_package.aio_file(b"x")
+
+
+def test_current_game_runtime_data_passes_release_allowlist():
+    entries = [(name, (REPO / "godot" / name).read_bytes())
+               for name in audit_package.GAME_RUNTIME_TEXT]
+    assert audit_package.pck_release_problems("OpenBFME.pck", pck(entries)) == []
+    assert all("not a resource type" in problem for problem in
+               audit_package.pck_release_problems("launcher.pck", pck(entries), audit_package.LAUNCHER_PCK_RULES))
+
+
+@pytest.mark.parametrize("path", audit_package.GAME_RUNTIME_TEXT)
+def test_runtime_data_exemptions_keep_content_checks_and_exact_paths(path):
+    assert any("retail-format bytes" in problem for problem in
+               audit_package.pck_release_problems("game.pck", pck([(path, DDS)])))
+    assert any("not a resource type" in problem for problem in
+               audit_package.pck_release_problems("game.pck", pck([(path + ".extra", b"text")])))
+
+
+def test_project_icon_source_matches_public_binary_pin():
+    path = "assets/openbfme-icon.png"
+    digest = hashlib.sha256((REPO / "godot" / path).read_bytes()).hexdigest()
+    assert digest == audit_package.PINNED_PROJECT_ICON[path]
+    assert f"{digest}  godot/{path} " in (HERE / "public_binaries.txt").read_text()
+    assert audit_package.pck_release_problems("game.pck", pck([(path, (REPO / "godot" / path).read_bytes())])) == []
+
+
+@pytest.mark.parametrize("path", audit_package.PINNED_PROJECT_ICON)
+def test_project_icon_pins_reject_modified_resources(path, monkeypatch):
+    entries = [(name, f"project icon fixture {i}".encode())
+               for i, name in enumerate(audit_package.PINNED_PROJECT_ICON)]
+    for name, content in entries:
+        monkeypatch.setitem(audit_package.PINNED_PROJECT_ICON, name, hashlib.sha256(content).hexdigest())
+    assert audit_package.pck_release_problems("game.pck", pck(entries)) == []
+    changed = [(name, content + b"changed" if name == path else content) for name, content in entries]
+    assert audit_package.pck_release_problems("game.pck", pck(changed)) == [
+        f"game.pck:{path}: not the hash-pinned project icon resource"]
+    assert any("not a resource type" in problem for problem in
+               audit_package.pck_release_problems("game.pck", pck([(path + ".extra", b"text")])))
+    assert any("not a resource type" in problem for problem in
+               audit_package.pck_release_problems("launcher.pck", pck(entries), audit_package.LAUNCHER_PCK_RULES))

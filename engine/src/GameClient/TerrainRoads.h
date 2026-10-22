@@ -8,10 +8,10 @@
 //     are dropped), preloadRoadSegment :1142-1170 and loadFloat4PtSection :567-780 (corners = locations +-
 //     normal * (RoadWidth * RoadWidthInTexture / 2); columns every MAP_XY_FACTOR; u = U/(scale*4),
 //     v = 85/512 - V/(scale*4); z = the maximum cell height across the segment's width).
-//   target: Open-BFME-2 .../W3DRoadBuffer.cpp and W3DRoadBufferAdjustStacking.cpp exist for BFME2 but the
-//     BFME1 W3DRoadBuffer::miter, insertCurveSegmentAt and loadCurve supply the connected
+//   higher-priority donor: Open-BFME-2 Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DRoadBuffer.cpp:
+//     miter, insertCurveSegmentAt and loadCurve supply the connected
 //     degree-two corner rules and atlas pieces. See docs/PATH_RENDERING.md for adaptations.
-//     Tee/four-way stubs and authored JOIN caps use the BFME1 atlas layout.
+//     Tee/four-way stubs and authored JOIN caps use the BFME2 atlas layout.
 //     Y/H junctions, cross-type alignment and BFME2 stacking remain S-036.
 //
 // Name-level INI scan, not the INI system (another lane).

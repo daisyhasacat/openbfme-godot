@@ -2,6 +2,8 @@
 // See GameLogic/AI/AICommands.h.
 
 #include "GameLogic/AI/AICommands.h"
+#include "GameLogic/Object/RetailObjectWorld.h"
+#include "GameLogic/SimMath.h"
 
 #include "Common/PlayerList.h"
 #include "Common/Player.h"
@@ -37,6 +39,16 @@ void AICommands::registerHandlers(GameLogicDispatch &d)
 	}
 	d.registerHandler(MSG_DO_FORCE_ATTACK_GROUND, "PLAY-2", [this](GameLogic &l, const GameMessage &m) { return forceAttackGround(l, m); });
 	d.registerHandler(MSG_DO_STOP, kLane, [this](GameLogic &l, const GameMessage &m) { return stop(l, m); });
+	d.registerHandler(MSG_DO_ROTATE_FIRINGARC, kLane, [this](GameLogic &logic, const GameMessage &m) {
+		const auto *target=arg(m,0,ARGUMENTDATATYPE_LOCATION);
+		if(!target || !validPlayer(logic,m)) {++m_stats.rejected;return false;}
+		for(auto id:selection(logic,m.getPlayerIndex()))if(auto *object=logic.findObjectByID(id)) {
+			const float dx=SimMath::subf32(target->location.x,object->getPosition()->x),dy=SimMath::subf32(target->location.y,object->getPosition()->y);
+			if(SimMath::addf32(SimMath::mulf32(dx,dx),SimMath::mulf32(dy,dy))<1)continue;
+			if(auto *ai=object->getAIUpdateInterface())ai->setLocomotorGoalOrientation(SimMath::fstpDword(SimMath::atan2d(dy,dx)));
+		}
+		return true;
+	});
 	d.registerHandler(MSG_DO_MOVETO_FORMATION, kLane, [this](GameLogic &l, const GameMessage &m) { return formationMove(l, m); });
 	d.registerHandler(MSG_DO_MOVE_AND_ORIENTATE_OBJECTTO, kLane, [this](GameLogic &l, const GameMessage &m) { return moveAndOrientate(l, m); });
 }
@@ -202,8 +214,27 @@ bool AICommands::formationMove(GameLogic &logic, const GameMessage &m)
 		++m_stats.rejected;
 		return false;
 	}
-	AIGroup group(logic, selection(logic, m.getPlayerIndex()));
-	group.groupMoveToPosition(dest->location, false, CMD_FROM_PLAYER, true, angle->real);
+	const auto *type=arg(m,2,ARGUMENTDATATYPE_INTEGER);
+	const auto *attack=arg(m,3,ARGUMENTDATATYPE_BOOLEAN);
+	const auto *world=RetailObjectWorld::currentContext();
+	if (!type || !attack || (!world && !m_formations)) { ++m_stats.rejected; return false; }
+	const auto ids=selection(logic,m.getPlayerIndex());
+	const auto &assistant=world?world->formations():*m_formations;
+	const auto slots=assistant.layout(logic,ids,type->integer,dest->location);
+	if(slots.empty()){++m_stats.rejected;return false;}
+	const float c=SimMath::cosDet(SimMath::addf32(angle->real,1.5707964f)),s=SimMath::sinDet(SimMath::addf32(angle->real,1.5707964f));
+	for(const auto &slot:slots) {
+		Coord3D position{SimMath::subf32(SimMath::addf32(dest->location.x,SimMath::mulf32(slot.offset.x,c)),SimMath::mulf32(slot.offset.y,s)),SimMath::addf32(SimMath::addf32(dest->location.y,SimMath::mulf32(slot.offset.x,s)),SimMath::mulf32(slot.offset.y,c)),0};
+		// The preview centres occupied ranks; the horde object origin need not.
+		if(const auto *object=logic.findObjectByID(slot.object)) {
+		 const auto center=FormationAssistant::rankCenter(*object);
+		 const float facingCos=SimMath::cosDet(angle->real),facingSin=SimMath::sinDet(angle->real);
+		 position.x=SimMath::subf32(position.x,SimMath::subf32(SimMath::mulf32(center.x,facingCos),SimMath::mulf32(center.y,facingSin)));
+		 position.y=SimMath::subf32(position.y,SimMath::addf32(SimMath::mulf32(center.x,facingSin),SimMath::mulf32(center.y,facingCos)));
+		}
+		position.z=logic.getGroundHeight(position.x,position.y);
+		AIGroup group(logic,{slot.object});group.groupMoveToPosition(position,false,CMD_FROM_PLAYER,true,angle->real,attack->boolean);
+	}
 	++m_stats.formationMoves;
 	return true;
 }

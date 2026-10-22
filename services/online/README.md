@@ -53,19 +53,56 @@ Replace the example relay address and URL with the host's reachable IPv4 address
 
 The chosen data directory must be writable by the service user. Run one instance per directory. A process manager such as systemd can restart the entire program on failure; keep its default control-group termination so both Node and its relay are stopped together. No hosting or deployment is performed by these commands until run on the chosen host.
 
+For the deployed Second Age host, service configuration and maintenance commands,
+see [deploy/README.md](deploy/README.md). Behind a trusted local reverse proxy,
+`--trust-proxy loopback` enables per-client rate limits using the proxy's
+single validated `X-Real-IP` header; it is ignored for non-loopback peers.
+
 ## Online web interface
 
 Open the lobby’s root URL in a browser, for example `http://127.0.0.1:8787/` after starting the local server. `/online/` opens the same interface. It is served by both the Node lobby and the Cloudflare Worker, with no frontend build or npm dependencies. When using a reverse proxy, forward `/`, `/online/`, `/web/*`, `/v1/*` and `/healthz` to the lobby.
 
 The public dashboard lists hosted rooms and unfinished games in progress, with host, map, roster, open slots and password status. Search and status filters narrow the list. Join links launch the existing `openbfme://join/<game>` handler. The players page shows display names and estimated presence from activity in the last 150 seconds or unfinished matches (up to three hours). It exposes no account IDs, session tokens, relay tickets, IP addresses or game passwords. The page refreshes every ten seconds while visible.
 
-For **User management**, connect using the hexadecimal admin key from `<data-directory>/secrets/admin.key` (the local default is `services/online/.state/secrets/admin.key`). Standalone lobby/Worker deployments use their existing `ADMIN_KEY` setting. Use HTTPS or localhost: browser request signing requires WebCrypto. The key is imported into memory for this tab only; it is never stored in browser storage or sent as a raw key. Disconnect clears it. This is the same powerful operator key used for backups; do not share it with ordinary players.
+For **User management**, open `https://admin.secondage.dev/online/` and choose
+**Sign in with passkey**, using the existing admin.secondage.dev passkey.
+An already signed-in administrator connects automatically. The public dashboard
+links to this admin origin; it never asks for a server signing key. Sign out
+revokes the shared administrator session, including access to the existing
+Second Age control panel. Expired sessions clear private data and require sign-in.
+
+The loopback-only admin gateway validates the existing authentication service's
+session on every management request, requires its full `admin` role, and rejects
+enrollment-only sessions and authentication test bypasses. Changes require the
+exact admin origin and session CSRF token. It signs allowlisted lobby management
+requests using a systemd-provided credential. The raw key stays server-side;
+browser cookies never reach the lobby. The public origin blocks `/v1/admin/*`.
+Direct signed requests remain available only through the private lobby listener
+for server maintenance and replay backups. Standalone Node/Worker API deployments
+retain their signed-admin API; the shared browser UI uses the passkey portal.
 
 Administrators can search and page through the account directory, rename an account, suspend or restore it, and revoke its existing lobby sessions. Suspension and revocation remove users from waiting rooms (closing a room if its host is removed). They prevent further authenticated lobby actions but cannot disconnect an already established UDP relay connection. Rename updates waiting rooms; running matches keep their original START identities. Revision checks reject stale or repeated moderation writes.
 
 The current identity system is guest-only. A suspended guest can create a new identity; these controls are account-level, not IP bans or registered-user authentication. Restoring an account does not revive revoked tokens. Account metadata and moderation survive restarts; live presence is reconstructed from new activity and unfinished matches. Existing valid guest tokens are adopted into the directory when first seen. The directory is stored in Node’s `lobby/meta/` or Worker Durable Object `user:` records; retain it with the signing keys when backing up.
 
+The **Completed games** page searches and pages through durable game summaries, including map, host, roster and completion time when available. Completed means a relay log was received, not a verified winner. Old finished records migrate on startup; games already deleted before this feature cannot be recovered. Archives survive the normal live-room expiry. Private rooms and their histories are visible only to signed administrators.
+
+**Room chat & controls** lists waiting, active, completed and administratively closed rooms. Administrators can inspect the latest 200 room messages, send a server announcement to a live room, and close a waiting room after confirmation. Completed games are read-only. This is room chat: running game clients may stop polling it after launch. Closing an already running UDP match is not supported. Disconnect clears private room and chat data from the tab, including pending responses. Accounts can also be filtered by online/suspended status and searched by their previous nicknames (latest 20 retained).
+
+Additional endpoints: public `GET /v1/history?search=&limit=30&after=`; signed `GET /v1/admin/games?status=all|open|started|completed|cancelled&search=&limit=30&after=`; signed `GET /v1/admin/games/<id>` includes room chat; signed `POST /v1/admin/games/<id>` accepts `{action: "announce", revision, text}` or `{action: "close", revision}`. History records live beside user metadata under `game-history:` keys and must be included in full data-directory/Durable Object backups; the replay-blob export endpoint does not export metadata. Public summaries omit chat and account IDs; archives never store passwords, room codes, sessions or relay tickets.
+
 API additions: public `GET /v1/dashboard`; signed-admin `GET /v1/admin/users?search=&limit=50&after=`; signed-admin `POST /v1/admin/users/<encoded-account-id>` with `{action, revision, name?}`. Actions are `rename`, `ban`, `unban` and `revoke`. Existing game-client APIs remain compatible.
+
+## Match statistics
+
+Clients reaching the score screen report existing ScoreKeeper counters, including
+wins/losses, per-type units/buildings, resources, heroes and sampled timelines.
+Reports are tied to their authenticated original slots, retained across restarts,
+and deduplicated. Conflicting outcomes remain disputed and do not inflate totals.
+Use **User management → Statistics** and the selected game's statistics in the
+passkey admin UI. Reports are client-supplied, not server-verified; upgraded
+clients and the existing result-sharing setting are required. See
+[the schema, trust rules and tests](../../docs/MATCH_STATISTICS.md).
 
 ## Persistence and shutdown
 

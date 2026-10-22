@@ -6,7 +6,7 @@
 // flags and a list with push_front; here the ids of the selected objects, the NEWEST first: the first one drives the control bar); the simulation's selection is Player::selection(),
 // changed only by the selection messages the translators append (MSG_CREATE_SELECTED_GROUP ...), never from here.
 //
-// What is not ported (stop S-283): the radius cursor decals, the military subtitles, floating text, superweapon timers, the popup messages, the
+// What is not ported (stop S-283): the radius cursor decals, the military subtitles, superweapon timers, the popup messages, the
 // beacon / replay controls, the "can selected objects do X" queries beyond what the translators call and
 // the alternate mouse bookkeeping (RotWK's default setup is the alternate one, RW 0x642A4B: CommandTranslator::setUseAlternateMouse, lane PLAY-1).
 
@@ -22,6 +22,7 @@
 
 class CommandButton;
 class GameLogic;
+class FormationAssistant;
 class MessageStream;
 struct HudContext;
 
@@ -53,8 +54,13 @@ inline constexpr const char *Scroll = "Scroll";
 class InGameUI
 {
 public:
-	struct FormationSlot { ObjectID object; Coord3D position; float angle; float radius; };
+	struct FormationSlot { ObjectID object; Coord3D position; float angle; float radius; std::string preview; };
 	bool formationActive = false;
+	int formationType = -1;
+	unsigned formationExpires = 0;
+	Coord3D formationAnchor{};
+	float formationAngle = 0, formationDragLength = 0;
+	const FormationAssistant *formationData = nullptr;
 	std::vector<FormationSlot> formationSlots;
 	InGameUI() = default;
 	InGameUI(const InGameUI &) = delete;
@@ -173,7 +179,8 @@ public:
 	unsigned screenshotRequests() const { return m_screenshots; }
 
 	// ---- messages for the player (ZH InGameUI::message(label)): game text labels, drained by the HUD ----
-	void message(const std::string &label) { m_messages.push_back(label); }
+	void message(const std::string &label) { m_messages.push_back(label); if (m_messageHandler) m_messageHandler(label); }
+	void setMessageHandler(std::function<void(const std::string &)> handler) { m_messageHandler = std::move(handler); }
 	std::vector<std::string> takeMessages();
 	const std::vector<std::string> &messages() const { return m_messages; }
 
@@ -323,6 +330,7 @@ private:
 	Coord3D m_mouseoverLocation;
 	bool m_hasMouseoverLocation = false;
 	std::vector<std::string> m_messages;
+	std::function<void(const std::string &)> m_messageHandler;
 	std::string m_placeTemplate;
 	ObjectID m_placeSource = INVALID_ID;
 	const CommandButton *m_placeCommand = nullptr;

@@ -1,3 +1,4 @@
+import { MAX_REPORT_BYTES } from './match-statistics.mjs';
 // OpenBFME online lobby, self-hosted (lane ONLINE-2): the lobby (lobby.mjs) as a plain Node HTTP service, for a home lab or a VPS beside the relay. Node 18+
 // standard library only (no packages). Put TLS in front of it (a reverse proxy) before exposing it beyond a LAN: the bearer tokens travel in it.
 //
@@ -7,6 +8,7 @@
 // Usage: node server.mjs   (the deploy notes run it under systemd)
 
 import { createServer } from 'node:http';
+import { isIP } from 'node:net';
 import { createHmac, randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,6 +21,15 @@ export function readEnv(env = process.env) {
     if (k.endsWith('_FILE') && v) out[k.slice(0, -5)] = readFileSync(v, 'utf8').trim() + (k === 'TICKET_KEYS_FILE' ? '\n' : '');
   }
   return out;
+}
+
+// Only a loopback proxy can supply the single client address. Never trust a
+// caller-supplied chain or enable forwarded headers on a public listener.
+export function clientAddress(req, trustProxy = '') {
+  const peer = req.socket.remoteAddress ?? '';
+  if (trustProxy !== 'loopback' || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(peer)) return peer;
+  const forwarded = req.headers['x-real-ip'];
+  return typeof forwarded === 'string' && isIP(forwarded) ? forwarded : peer;
 }
 
 export function fileStore(dir) {
@@ -59,12 +70,13 @@ export function nodeEnv(store) {
   };
 }
 
-export function startServer(env = readEnv(), { log = console.log, health = null } = {}) {
+export async function startServer(env = readEnv(), { log = console.log, health = null } = {}) {
   const dataDir = env.LOBBY_DATA;
   if (!dataDir) throw new Error('LOBBY_DATA (a directory) is required');
   const store = fileStore(dataDir);
   const lobby = new Lobby(nodeEnv(store), configFromEnv(env));
   lobby.load(store.loadGames(), store.loadMeta());
+  await lobby.restoreArchives();
   const [host, port] = String(env.LOBBY_BIND ?? '127.0.0.1:8787').split(':');
   // one request at a time through the lobby (as a Durable Object serialises them)
   let chain = Promise.resolve();
@@ -77,7 +89,7 @@ export function startServer(env = readEnv(), { log = console.log, health = null 
     }
     // ONLINE-2 r2 (Sol: a chunked 20 KB JSON body passed the 16 KiB check): the bytes are counted as they arrive; beyond the route's limit the
     // request is answered 413 at once and the rest is not read
-    const limit = req.url.startsWith('/v1/relay/logs/') || req.url.startsWith('/v1/admin/blobs/') ? MAX_LOG_BYTES : MAX_JSON_BYTES;
+    const limit = /^\/v1\/games\/[0-9a-f]{16}\/(?:statistics|desync)(?:\?|$)/.test(req.url) ? MAX_REPORT_BYTES : req.url.startsWith('/v1/relay/logs/') || req.url.startsWith('/v1/admin/blobs/') ? MAX_LOG_BYTES : MAX_JSON_BYTES;
     // ONLINE-2 r4 (Sol r3): a body-only TOTAL deadline (not an inactivity timer: a dripping body must not outlast it), started with the request
     // and cleared once the body is complete or refused, so a complete request is never cut while the lobby handles it
     let refused = false;
@@ -115,7 +127,7 @@ export function startServer(env = readEnv(), { log = console.log, health = null 
         path: url.pathname,
         query: url.searchParams,
         headers: req.headers,
-        ip: req.socket.remoteAddress ?? '',
+        ip: clientAddress(req, env.LOBBY_TRUST_PROXY),
         bytes: async () => new Uint8Array(raw),
       };
       // ONLINE-5: a held poll (route's `deferred`) is answered when it resolves; the chain goes on with the next request meanwhile

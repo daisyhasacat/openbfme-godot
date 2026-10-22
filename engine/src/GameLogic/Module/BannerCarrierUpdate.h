@@ -13,13 +13,15 @@
 //     HordeContainInterface slot 0x90 RW 0x86EE52), the horde gets a member (RW 0x89A392: when it has fewer members than slots and RW 0x89A308 allows, HordeContainInterface
 //     slot 0x18C RW 0x873AE3 creates the member at the carrier's position; UnitSpawnFX plays); with ReplenishNearbyHorde RW 0x89AB8F scans allied hordes nearest
 //     first, skips UNDER_CONSTRUCTION, replenishes one member per horde (one/all), updates shroud and emits UnitSpawnFX; a full horde's banner countdown drops to 1.
-// INFERENCE / NOT PORTED (stop S-587): MorphCondition / ExpLevelDraw keep their raw tokens (the grammars RW 0x89A90F / 0x89AA69 are not read; drawing only); the model
-// condition / status gates are read by number from the binary's registries; RW 0x8B50A5 and the AllowBannerSpawnUpgrade test of RW 0x89A308 are not
+// INFERENCE / NOT PORTED (stop S-587): ExpLevelDraw keeps its raw tokens; MorphCondition uses the BFME2 parser and morph step (see HordeBanner.cpp).
+// Morph-triggered shroud refresh / BannerMorphFX and native transfer/combo selection remain unported. The current single-payload spawn and pulse
+// hooks are explicit port seams. The condition / status gates are read by number from the binary's registries; RW 0x8B50A5 and the AllowBannerSpawnUpgrade test of RW 0x89A308 are not
 // ported; "in combat" is a member with IS_ATTACKING or a horde melee within the window (RW 0x86EE52 asks a per-member test RW 0x68C933 that is not read); the FX are the client's.
 
 #pragma once
 
 #include "Common/INI.h"
+#include "GameLogic/BitFlags.h"
 #include "GameLogic/Module/UpdateModule.h"
 
 #include <string>
@@ -34,7 +36,13 @@ public:
 	unsigned m_meleeFreeUnitSpawnTime = 0;     ///< +0xC
 	unsigned m_diedRespawnTime = 0;            ///< +0x10
 	unsigned m_meleeFreeBannerReSpawnTime = 0; ///< +0x14
-	std::vector<std::string> m_morphConditions; ///< +0x18 raw lines
+	struct MorphCondition
+	{
+		std::string unitType;
+		int locomotor = -1;
+		ModelConditionMask modelState{};
+	};
+	std::vector<MorphCondition> m_morphConditions; ///< +0x18
 	std::vector<std::string> m_expLevelDraws;   ///< +0x24 raw lines
 	std::string m_bannerMorphFX;               ///< +0x30
 	std::string m_unitSpawnFX;                 ///< +0x34
@@ -43,6 +51,7 @@ public:
 	float m_scanHordeDistance = 0.0f;          ///< +0x3C
 	std::string m_upgradeRequired;             ///< +0x40
 	static void buildFieldParse(MultiIniFieldParse &p);
+	static void parseMorphCondition(INI *ini, void *instance, void *store, const void *userData);
 	static void parseRawLine(INI *ini, void *instance, void *store, const void *userData);
 };
 
@@ -55,6 +64,7 @@ public:
 	UpdateSleepTime update() override; // RW 0x89ACE4
 	const BannerCarrierUpdateModuleData &data() const { return *m_data; }
 	unsigned long long membersSpawned() const { return m_spawned; }
+	void applyMorph(const std::string &unitType);
 	void crc(StateHasher &hasher) const override;
 	static const char *stopLine();
 

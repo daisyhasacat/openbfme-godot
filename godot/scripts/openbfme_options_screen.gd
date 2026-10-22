@@ -24,9 +24,12 @@
 ## The page never calls into the shell's other screens: a window change made through it cannot change a widget's state (the owner's "maximising
 ## greys out the main menu"; tests/opts1_test.gd checks the main menu's and Options.apt's buttons across every mode change).
 extends CanvasLayer
+signal benchmark_requested
+signal appimage_update_requested
 
 const DisplaySettings := preload("res://scripts/display_settings.gd")
-const TABS := ["Display", "Graphics", "Audio", "Camera", "Interface", "Online", "Performance", "Controls", "Mods", "Sync"]
+const TexturePacks := preload("res://scripts/texture_pack_settings.gd")
+const TABS := ["Display", "Graphics", "Audio", "Camera", "Interface", "Online", "Performance", "Benchmark", "Controls", "Mods", "Sync", "Updates"]
 ## lane OPTS-5: the tab the menu shows first when the main menu's CUSTOM SETTINGS opened it
 const DETAIL_TAB := "Graphics"
 ## lane OPTS-5: the help lines of OpenBFME's own rows and the tabs' notes (NOT RETAIL; one table: the original game's rows take theirs from the game's
@@ -45,6 +48,7 @@ const HELP := {
 	"OpenBFMEAntiAliasing": "Smooths the edges of the 3D view. MSAA: models; FXAA and TAA: the whole picture (TAA is FSR 2's temporal anti-aliasing, sharp in motion).",
 	"OpenBFMEAnisotropic": "Anisotropic filtering: keeps the models' textures sharp at a slant.",
 	"OpenBFMELook": "Enhanced: AgX tone mapping and a glow on the brightest effects. Original: the game's own picture.",
+	"OpenBFMEShadowProfile": "Auto: Balanced on iOS, High on desktop. Balanced uses two shadow cascades; High uses four with smoother transitions. The original detail setting still controls whether shadows are enabled.",
 	"OpenBFMESoftParticles": "Smoke, fire and dust fade where they meet the ground instead of a hard cut. Off: the original look.",
 	"OpenBFMEUIScale": "Enlarges the health bars, the frame counter and the game clock for large screens; the menus already scale with the window.",
 	"OpenBFMEMainMenuStyle": "Uses the selected game's original menus, music and background. After Accept, changes when you return to the main menu. Gameplay is unchanged.",
@@ -103,6 +107,11 @@ var game_options: Node             # lane OPTS-2: scripts/game_options.gd (Optio
 var audio_getter: Callable         # lane OPTS-4: () -> the GameAudio node or null (the Master volume's sample)
 var room_getter: Callable          # lane UBERJOIN-1: () -> "" or why the player is in a lobby room ("an online room" / "a LAN room"): the Uber row is locked there
 
+var texture_packs_path := TexturePacks.PATH
+var _hd_textures := true
+var _hd_textures_original := true
+var _texture_error := ""
+
 var _open := false
 var _original: RefCounted          # the settings when the page opened (CANCEL)
 var _runtime := {}                 # what the game ran with when the page opened (DisplaySettings.snapshot: CLI caps, the window's mode and place)
@@ -121,14 +130,15 @@ var _menu := false                 # lane OPTS-5: the page is the Options screen
 var _mods_button: Button
 
 func _input(event: InputEvent) -> void:
-	if not is_instance_valid(_mods_button) or not _mods_button.has_focus() or not _open or _tab not in ["Mods", "Sync"]:
+	if not is_instance_valid(_mods_button) or not _mods_button.has_focus() or not _open or _tab not in ["Mods", "Sync", "Benchmark", "Updates"]:
 		return
 	if get_tree().root.has_node("ModManagerLayer"):
 		return
 	for action in ["ui_cancel", "ui_left", "ui_right", "ui_up", "ui_down"]:
 		if event.is_action_pressed(action):
 			get_viewport().set_input_as_handled()
-			_show_tab("Controls" if action in ["ui_left", "ui_up"] else "Display")
+			if action == "ui_cancel": close(false)
+			else: _show_tab(TABS[posmod(TABS.find(_tab) + (-1 if action in ["ui_left", "ui_up"] else 1), TABS.size())])
 			return
 
 func _ready() -> void:
@@ -145,7 +155,11 @@ func _ready() -> void:
 	_mods_button.grow_vertical = Control.GROW_DIRECTION_BOTH
 	_mods_button.hide()
 	_mods_button.pressed.connect(func():
-		if _tab == "Sync":
+		if _tab == "Benchmark":
+			benchmark_requested.emit()
+		elif _tab == "Updates":
+			appimage_update_requested.emit()
+		elif _tab == "Sync":
 			var sync = preload("res://scripts/player_sync.gd").new()
 			get_tree().root.add_child(sync)
 		else:
@@ -188,7 +202,7 @@ func _process(_delta: float) -> void:
 		return
 	var stack: PackedStringArray = shell.shell_stack()
 	_options_top = not stack.is_empty() and stack[-1] == "Options.apt"
-	_mods_button.visible = _open and _options_top and _tab in ["Mods", "Sync"]
+	_mods_button.visible = _open and _options_top and _tab in ["Mods", "Sync", "Benchmark", "Updates"]
 	if _open and not _options_top:
 		close(false) # the shell left Options.apt (a game ended, the quit menu closed): the page goes with it
 		return
@@ -216,6 +230,12 @@ func open(first_tab := 0) -> void:
 	if not r.get("ok", false):
 		printerr("GAME DISPLAY the OpenBFME page cannot open: ", r.get("error", "?"))
 		return
+	var packs := TexturePacks.read(texture_packs_path)
+	_texture_error = "" if packs.ok else "Could not read texture settings: " + str(packs.error)
+	if not packs.ok:
+		printerr("GAME OPTIONS texture packs: ", packs.error)
+	_hd_textures = bool(packs.get("enabled", true))
+	_hd_textures_original = _hd_textures
 	_open = true
 	var root := get_tree().root
 	_original = settings.copy()
@@ -237,8 +257,15 @@ func open(first_tab := 0) -> void:
 func close(keep: bool) -> void:
 	if not _open:
 		return
+	if keep and _hd_textures != _hd_textures_original:
+		var error := TexturePacks.save_enabled(_hd_textures, texture_packs_path)
+		if error != OK:
+			_texture_error = "Could not save HD textures: " + error_string(error)
+			printerr("GAME OPTIONS ", _texture_error)
+			_show_tab(_tab)
+			return
 	if game_options != null:
-		game_options.hold_gamma = false # the saved brightness is back in effect from here (ACCEPT: the shell's Save; CANCEL: its Cancel)
+		game_options.hold_gamma = false # release the menu preview only once saving can proceed
 	if keep:
 		settings.from_dict(_pending.to_dict())
 		if not settings_path.is_empty() and not settings.save_file(settings_path):
@@ -297,6 +324,7 @@ func set_value(key: String, value) -> void:
 func reset_defaults() -> void:
 	if not _open:
 		return
+	_hd_textures = true
 	_pending = DisplaySettings.new()
 	_apply_pending()
 	if game_options != null:
@@ -374,8 +402,8 @@ func _apply_pending() -> void:
 # ---------------------------------------------------------------------------------------------------------------------------------
 func _show_tab(name: String) -> void:
 	_tab = name
-	_mods_button.text = "Player sync…" if name == "Sync" else "Games, mods and LAN downloads…"
-	_mods_button.visible = _open and name in ["Mods", "Sync"]
+	_mods_button.text = "AppImage updates…" if name == "Updates" else "Open benchmark…" if name == "Benchmark" else ("Player sync…" if name == "Sync" else "Games, mods and LAN downloads…")
+	_mods_button.visible = _open and name in ["Mods", "Sync", "Benchmark", "Updates"]
 	if _mods_button.visible:
 		_mods_button.call_deferred("grab_focus")
 	if not _open:
@@ -427,14 +455,22 @@ func _spec() -> Dictionary:
 			rows = _online_rows()
 		"Performance":
 			rows = _performance_rows()
+		"Benchmark":
+			rows = []
+			note = "Measure the main menu, lobby, a Men base and 1,000 CP army, then 20,000 CP. Run from the main menu."
 		"Controls":
 			rows = []
+		"Updates":
+			rows = []
+			note = "Download the latest Linux AppImage from Second Age and restart. Run from the main menu."
 		"Sync":
 			rows = []
 			note = "Sync saves, profiles, heroes and player data with your server and username."
 		"Mods":
 			rows = []
 			note = "Switch games, manage texture packs and mods, or download shared maps and built-ins from your LAN."
+	if not _texture_error.is_empty():
+		note = _texture_error + ("\n" + note if not note.is_empty() else "")
 	var spec := {
 		"subtitle": SUBTITLE,
 		"tabs_header": "OpenBFME",
@@ -563,9 +599,11 @@ func _graphics_rows() -> Array:
 	for i in 9:
 		rows.append(_retail_row("Retail.AdvancedOption%d" % i))
 	for r in [
+		_check("hd_textures", "HD textures (restart required)", _hd_textures, "Use enabled texture packs, including HD Edition. Off uses the original game textures. Restart OpenBFME after accepting."),
 		_extra_choice("OpenBFMEAntiAliasing", "Anti-aliasing", AA_ITEMS, HELP.OpenBFMEAntiAliasing, no_aa),
 		_extra_choice("OpenBFMEAnisotropic", "Anisotropic", ANISO_ITEMS, HELP.OpenBFMEAnisotropic),
 		_extra_choice("OpenBFMELook", "Look", LOOK_ITEMS, HELP.OpenBFMELook),
+		_extra_choice("OpenBFMEShadowProfile", "Shadow quality", [["auto", "Auto"], ["balanced", "Balanced"], ["high", "High"]], HELP.OpenBFMEShadowProfile),
 		_extra_check("OpenBFMESoftParticles", "Soft particles", HELP.OpenBFMESoftParticles),
 	]:
 		r["column"] = 1
@@ -697,6 +735,9 @@ func _on_value(key: String, value: int) -> void:
 	if not _open:
 		return
 	match key:
+		"hd_textures":
+			_hd_textures = value != 0
+			_sync()
 		"window_mode":
 			if value >= 0 and value < DisplaySettings.WINDOW_MODES.size():
 				set_value("window_mode", DisplaySettings.WINDOW_MODES[value])

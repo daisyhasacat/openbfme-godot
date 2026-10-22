@@ -119,6 +119,10 @@ This is done in `GodotRetailFileSystem.cpp` `mountFrom`, using
   and `art\terrain` files over the game's. Its models, INI, maps, UI and
   `asset.dat` are not mounted, and its object INIs are not merged into
   GameData. Use this for HD texture mods such as RotWK 2.02 HD Edition.
+  **Settings → Graphics → HD textures** switches all enabled texture-only packs
+  off or on after a restart, keeping their selection and load order. The switch
+  defaults to on and is saved as `[mods] hd_textures` in `mods.cfg`. Full gameplay
+  mods retain their own textures; this switch controls texture-only packs.
 - **Local packs stack under mods.** The wall tower pack and the 2.02 map pack
   mount first; enabled mods mount after them and win any file both provide.
   The tower pack's INI uses the stock game's macros, so a mod that removes

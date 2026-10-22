@@ -19,6 +19,8 @@
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/camera3d.hpp>
 #include <godot_cpp/classes/geometry_instance3d.hpp>
+#include <godot_cpp/classes/os.hpp>
+#include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/aabb.hpp>
@@ -43,6 +45,22 @@ namespace godot
 
 namespace
 {
+
+Ref<Image> paletteUploadImage(const Ref<Image> &image)
+{
+	// GLES may convert unsupported float textures in place. Keep the CPU
+	// palette float32: animation writers and palette growth depend on it.
+	if (RenderingServer::get_singleton()->get_current_rendering_method() == StringName("gl_compatibility"))
+	{
+		Ref<Image> upload = image->duplicate();
+		// iOS GLES has no linear RGBAF support. Convert explicitly so texture
+		// metadata agrees with storage and every animated update avoids a warning.
+		if (OS::get_singleton()->has_feature("ios"))
+			upload->convert(Image::FORMAT_RGBAH);
+		return upload;
+	}
+	return image;
+}
 
 String toGodot(const std::string &s)
 {
@@ -118,6 +136,7 @@ void W3DInstancer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("add_instance", "model", "transform", "clip", "start_time", "speed"), &W3DInstancer::add_instance, DEFVAL(String()), DEFVAL(0.0), DEFVAL(1.0));
 	ClassDB::bind_method(D_METHOD("set_instance_transform", "instance", "transform"), &W3DInstancer::set_instance_transform);
 	ClassDB::bind_method(D_METHOD("remove_instance", "instance"), &W3DInstancer::remove_instance);
+	ClassDB::bind_method(D_METHOD("set_instance_shrouded", "instance", "hidden"), &W3DInstancer::set_instance_shrouded);
 	ClassDB::bind_method(D_METHOD("set_instance_clip", "instance", "clip", "start_time", "speed"), &W3DInstancer::set_instance_clip, DEFVAL(0.0), DEFVAL(1.0));
 	ClassDB::bind_method(D_METHOD("set_instance_pose", "instance", "clip0", "frame0", "clip1", "frame1", "percentage"), &W3DInstancer::set_instance_pose, DEFVAL(String()), DEFVAL(0.0), DEFVAL(0.0));
 	ClassDB::bind_method(D_METHOD("get_instance_count"), &W3DInstancer::get_instance_count);
@@ -184,7 +203,9 @@ void W3DInstancer::set_instance_house_color(int64_t instance, const Color &color
 	if (instance < 0 || instance >= (int64_t)Instances.size()) return;
 	Instance &inst = Instances[(size_t)instance];
 
-	inst.HcPacked = color.a < 0.5f ? 0.0f : W3D_Pack_House_Color((int)std::lround(color.r * 255.0f), (int)std::lround(color.g * 255.0f), (int)std::lround(color.b * 255.0f));
+	const float packed = color.a < 0.5f ? 0.0f : W3D_Pack_House_Color((int)std::lround(color.r * 255.0f), (int)std::lround(color.g * 255.0f), (int)std::lround(color.b * 255.0f));
+	if (inst.HcPacked == packed) return;
+	inst.HcPacked = packed;
 	PoseDirty = true;
 	mark_model(instance);
 }
@@ -192,6 +213,7 @@ void W3DInstancer::set_instance_house_color(int64_t instance, const Color &color
 void W3DInstancer::set_instance_infantry_light(int64_t instance, bool infantry)
 {
 	if (instance < 0 || instance >= (int64_t)Instances.size()) return;
+	if (Instances[(size_t)instance].InfantryLight == infantry) return;
 	Instances[(size_t)instance].InfantryLight = infantry;
 	PoseDirty = true;
 	mark_model(instance);
@@ -200,6 +222,7 @@ void W3DInstancer::set_instance_infantry_light(int64_t instance, bool infantry)
 void W3DInstancer::set_instance_sway(int64_t instance, int type)
 {
 	if (instance < 0 || instance >= (int64_t)Instances.size() || type < 0 || type > 10) return;
+	if (Instances[(size_t)instance].Sway == type) return;
 	Instances[(size_t)instance].Sway = type;
 	PoseDirty = true;
 	mark_model(instance);
@@ -784,6 +807,7 @@ void W3DInstancer::set_instance_transform(int64_t instance, const Transform3D &t
 {
 	if (instance >= 0 && instance < (int64_t)Instances.size())
 	{
+		if (Instances[(size_t)instance].Xf == transform) return;
 		Instances[(size_t)instance].Xf = transform;
 		PoseDirty = true;
 		mark_model(instance);
@@ -815,9 +839,25 @@ bool W3DInstancer::remove_instance(int64_t instance)
 
 		inst.PaletteSize = 0;
 		inst.Pose = HTreePose();
+		// Keep the stable id tombstone, but release per-instance heap storage on death.
+		std::vector<std::uint8_t>().swap(inst.HiddenSubs);
+		std::vector<std::uint8_t>().swap(inst.BufferVisibility);
+		std::vector<float>().swap(inst.BufferFade);
+		std::vector<Vector3>().swap(inst.BufferSortOrigins);
+		std::vector<std::pair<int, float>>().swap(inst.BoneSpins);
+		for (auto &name : inst.MemoClip) std::string().swap(name);
 	}
 	PoseDirty = true;
 	return true;
+}
+
+void W3DInstancer::set_instance_shrouded(int64_t instance, bool hidden)
+{
+	if (instance < 0 || instance >= (int64_t)Instances.size()) return;
+	Instance &inst = Instances[(size_t)instance];
+	if (inst.Removed || inst.ShroudHidden == hidden) return;
+	inst.ShroudHidden = hidden;
+	mark_model(instance);
 }
 
 void W3DInstancer::mark_model(int64_t instance)
@@ -862,7 +902,7 @@ void W3DInstancer::grow_palette(int texels)
 		}
 		std::memset(dst + oldBytes, 0, bytes - oldBytes);
 	}
-	PaletteTexture = ImageTexture::create_from_image(PaletteImage);
+	PaletteTexture = ImageTexture::create_from_image(paletteUploadImage(PaletteImage));
 	PaletteGrown = true;
 	PaletteChanged = true;
 	LayoutDirty = true; // the materials take the new texture in rebuild_layout
@@ -1245,19 +1285,26 @@ void W3DInstancer::ensure_pose(const Instance &inst) const
 	}
 }
 
-void W3DInstancer::write_palette(const Instance &inst)
+bool W3DInstancer::write_palette(const Instance &inst)
 {
 	const int pivots = inst.Pose.Num_Pivots();
 	if (!PaletteWrite || inst.PaletteSize == 0)
 	{
-		return;
+		return false;
 	}
 	float *out = PaletteWrite + (size_t)inst.PaletteOffset * 4;
+	bool changed = false;
 	for (int p = 0; p < pivots; ++p)
 	{
 		const Matrix3D &m = inst.Pose.Transform[(size_t)p];
-		std::memcpy(out + (size_t)p * 12, &m.Row[0][0], sizeof(float) * 12); // three rows of (x, y, z, translation)
+		float *dst = out + (size_t)p * 12;
+		if (std::memcmp(dst, &m.Row[0][0], sizeof(float) * 12) != 0)
+		{
+			std::memcpy(dst, &m.Row[0][0], sizeof(float) * 12); // three rows of (x, y, z, translation)
+			changed = true;
+		}
 	}
+	return changed;
 }
 
 void W3DInstancer::write_buffers()
@@ -1319,7 +1366,7 @@ void W3DInstancer::write_buffers()
 			for (int id : m.InstanceIds)
 			{
 				const Instance &inst = Instances[(size_t)id];
-				if (inst.Removed) continue;
+				if (inst.Removed || inst.RenderCulled || inst.ShroudHidden) continue;
 				if (!inst.HiddenSubs.empty() && inst.HiddenSubs[(size_t)d.SubIndex]) continue;
 				if (!inst.Pose.IsVisible[(size_t)bone]) continue;
 				if (inst.Pose.PivotFade[(size_t)bone] * inst.Opacity <= 0.0f) continue;
@@ -1494,6 +1541,7 @@ void W3DInstancer::update_now()
 	// instances); before, every instance was evaluated and every palette texel uploaded each render frame
 	auto t0 = std::chrono::steady_clock::now();
 	std::atomic<int> poseErrors(0);
+	std::atomic<bool> paletteWritten(false);
 	std::string firstError;
 	std::mutex errorMutex;
 	const bool timeMoved = GlobalTime != PosedTime;
@@ -1520,7 +1568,8 @@ void W3DInstancer::update_now()
 	for (size_t i = 0; i < Instances.size(); ++i)
 	{
 		Instance &inst = Instances[i];
-		if (!inst.Removed && (inst.PoseStale || (timeMoved && inst.Anim != nullptr && !inst.Explicit)))
+		if (inst.Removed) continue;
+		bool outside = false;
 		{
 			if (cull)
 			{
@@ -1529,7 +1578,6 @@ void W3DInstancer::update_now()
 				const Vector3 sc = inst.Xf.basis.get_scale_abs();
 				const Vector3 ns = nodeXf.basis.get_scale_abs();
 				const real_t r = cull_radius(*Models[(size_t)inst.Model]) * std::max(sc.x, std::max(sc.y, sc.z)) * std::max(ns.x, std::max(ns.y, ns.z));
-				bool outside = false;
 				for (const Plane &pl : frustum)
 				{
 					if (pl.distance_to(centre) > r)
@@ -1550,13 +1598,23 @@ void W3DInstancer::update_now()
 						}
 					}
 				}
-				if (outside)
-				{
-					inst.PoseStale = true; // pending: posed by the first update that sees it (with the inputs of that frame)
-					++PoseCulled;
-					continue;
-				}
 			}
+		}
+		// Presentation only: compact the shared MultiMeshes as well as deferring poses.
+		// Refresh every live instance, including static poses, on camera/frustum changes.
+		if (inst.RenderCulled != outside)
+		{
+			inst.RenderCulled = outside;
+			mark_model((int64_t)i);
+		}
+		if (outside || inst.ShroudHidden || inst.Opacity <= 0.0f)
+		{
+			if (timeMoved && inst.Anim != nullptr && !inst.Explicit) inst.PoseStale = true;
+			if (outside) ++PoseCulled;
+			continue;
+		}
+		if (inst.PoseStale || (timeMoved && inst.Anim != nullptr && !inst.Explicit))
+		{
 			StaleScratch.push_back(i);
 		}
 	}
@@ -1577,20 +1635,49 @@ void W3DInstancer::update_now()
 					firstError = e.what();
 				}
 			}
-			write_palette(inst);
+			inst.DrawStateChanged = inst.BufferVisibility != inst.Pose.IsVisible || inst.BufferFade != inst.Pose.PivotFade;
+			if (inst.DrawStateChanged)
+			{
+				inst.BufferVisibility = inst.Pose.IsVisible;
+				inst.BufferFade = inst.Pose.PivotFade;
+			}
+			const Model &model = *Models[(size_t)inst.Model];
+			if (model.HasSorted)
+			{
+				if (inst.BufferSortOrigins.size() != model.Draws.size())
+				{
+					inst.BufferSortOrigins.resize(model.Draws.size());
+					inst.DrawStateChanged = true;
+				}
+				for (size_t d = 0; d < model.Draws.size(); ++d)
+				{
+					const DrawItem &draw = model.Draws[d];
+					if (!draw.Mesh->HasSorted) continue;
+					const ::Vector3 p = inst.Pose.Transform[(size_t)draw.Sub->BoneIndex].Get_Translation();
+					const Vector3 origin(p.X, p.Z, -p.Y);
+					if (inst.BufferSortOrigins[d] != origin) inst.DrawStateChanged = true;
+					inst.BufferSortOrigins[d] = origin;
+				}
+			}
+			if (write_palette(inst)) paletteWritten.store(true, std::memory_order_relaxed);
 			inst.PoseStale = false;
 		}
 	});
 	for (size_t i : StaleScratch)
 	{
-		Models[(size_t)Instances[i].Model]->BuffersDirty = true; // the pivot visibility and fade the buffers read may have changed
+		const Instance &inst = Instances[i];
+		Model &model = *Models[(size_t)inst.Model];
+		// Opaque instance data does not contain bone matrices. Keep its packed
+		// buffers when only bones moved; sorted meshes invalidate when their
+		// sorting pivots move (camera and instance movement invalidate separately).
+		if (inst.DrawStateChanged) model.BuffersDirty = true;
 	}
 	PoseEvaluations = (int)StaleScratch.size();
 	if (PoseCulled > 0)
 	{
 		warn(W3D_Pose_Cull_Stop().Message); // S-1730 (once: warn keeps each message once)
 	}
-	if (!StaleScratch.empty())
+	if (paletteWritten.load(std::memory_order_relaxed))
 	{
 		PaletteChanged = true;
 	}
@@ -1618,10 +1705,12 @@ void W3DInstancer::update_now()
 
 	t0 = std::chrono::steady_clock::now();
 	write_buffers();
+	PaletteUploads = 0;
 	if (PaletteChanged)
 	{
 		// lane PERF-3: the poses were written into the image's own buffer: no byte array allocated and copied per frame
-		PaletteTexture->update(PaletteImage);
+		PaletteTexture->update(paletteUploadImage(PaletteImage));
+		++PaletteUploads;
 		PaletteChanged = false;
 	}
 	UploadMs = msSince(t0);
@@ -1709,6 +1798,7 @@ Dictionary W3DInstancer::get_stats() const
 	s["upload_ms"] = UploadMs;
 	s["pose_evaluations"] = PoseEvaluations; // SMOOTH-1: instances posed in the last update (only the changed ones)
 	s["pose_culled"] = PoseCulled;           // lane PERF-3: instances whose pose the last update left pending (outside the frustum, set_pose_culling)
+	s["palette_uploads"] = PaletteUploads;
 	s["buffer_uploads"] = BufferUploads;
 	s["buffer_writes"] = BufferWrites;       // SMOOTH-1: models whose MultiMesh buffers were rewritten in the last update
 	s["mapper_ms"] = MapperMs;

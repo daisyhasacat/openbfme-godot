@@ -34,9 +34,19 @@ const float kRadsPerDegree = 0.017453292f;
 
 bool equalsNoCase(const char *a, const char *b)
 {
-	return AsciiStringUtil::compareNoCase(a, b) == 0;
+	// Same ASCII folding as AsciiStringUtil::compareNoCase, without making two
+	// temporary strings for every candidate in the INI index/lookup lists.
+	for (;; ++a, ++b)
+	{
+		const unsigned char ca = (*a >= 'A' && *a <= 'Z') ? *a - 'A' + 'a' : (unsigned char)*a;
+		const unsigned char cb = (*b >= 'A' && *b <= 'Z') ? *b - 'A' + 'a' : (unsigned char)*b;
+		if (ca != cb)
+			return false;
+		if (ca == 0)
+			return true;
+	}
 }
-}
+} // namespace
 
 // ---------------------------------------------------------------------------------------------
 // Integers. B1 ini_parsers.cpp:57-141: out-of-range values throw the plain int 1.

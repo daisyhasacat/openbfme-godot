@@ -11,6 +11,7 @@
 #include "Common/Player.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameClient/ControlBarCommands.h"
+#include "GameClient/LogicSnapshot.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/BuildPlacement.h"
 #include "GameLogic/GameMessage.h"
@@ -87,6 +88,8 @@ struct Build
 	bool taskWhileWorking = true;        // the dozer's current task was BUILD in every frame it worked
 	bool idleWorkerAfter = false;        // the dozer became an idle worker after the completion
 	bool hiddenWhileWorking = true;      // RW 0x88C51B: a porter is out of the world and UNATTACKABLE in every frame it works
+	bool renderHiddenWhileWorking = true;
+	bool renderShownAfter = false;
 	bool shownAfter = false;             // RW 0x88D6AE: back in the world, the statuses cleared, after the completion
 	int framesToIdle = -1;
 	std::string problem;
@@ -99,6 +102,7 @@ void buildOne(LiveGame &live, Player &player, Object &dozerObj, const ThingTempl
 	GameLogic &logic = live.logic();
 	DozerAIUpdate *dozer = dynamic_cast<DozerAIUpdate *>(dozerObj.getAIUpdateInterface());
 	const int pi = player.getPlayerIndex();
+	bool checkedRenderHidden = false;
 	std::set<ObjectID> before;
 	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
 	{
@@ -145,10 +149,18 @@ void buildOne(LiveGame &live, Player &player, Object &dozerObj, const ThingTempl
 		{
 			static const int unattackable = ObjectTemplateInfoBuilder::objectStatusIndex("UNATTACKABLE");
 			out.hiddenWhileWorking = out.hiddenWhileWorking && !dozerObj.isInWorld() && dozerObj.testStatus((unsigned)unattackable);
+			if (!checkedRenderHidden)
+			{
+				const auto snapshot = LogicSnapshot::build(logic, nullptr, false, 0);
+				const auto *record = snapshot->find(dozerObj.getID());
+				out.renderHiddenWhileWorking = record && record->drawableHidden;
+				checkedRenderHidden = true;
+			}
 			out.idleWorkerWhileWorking = out.idleWorkerWhileWorking || dozer->isIdleWorker();
 			out.taskWhileWorking = out.taskWhileWorking && dozer->getCurrentTask() == DozerAIUpdate::DOZER_TASK_BUILD;
 		}
 	}
+	out.renderHiddenWhileWorking = checkedRenderHidden && out.renderHiddenWhileWorking;
 	out.frames = (int)logic.getFrame() - t0;
 	building = logic.findObjectByID(id);
 	out.completed = building && !building->isUnderConstruction() && !building->isDestroyed();
@@ -163,6 +175,9 @@ void buildOne(LiveGame &live, Player &player, Object &dozerObj, const ThingTempl
 	{
 		static const int unattackable = ObjectTemplateInfoBuilder::objectStatusIndex("UNATTACKABLE");
 		out.shownAfter = dozerObj.isInWorld() && !dozerObj.testStatus((unsigned)unattackable);
+		const auto snapshot = LogicSnapshot::build(logic, nullptr, false, 0);
+		const auto *record = snapshot->find(dozerObj.getID());
+		out.renderShownAfter = record && !record->drawableHidden;
 	}
 	// the porter walks BuilderMoveFromNewStructureDistance away from the structure (RW 0x88D6AE) and is an idle worker when it stands
 	for (int i = 0; i < 100 && !out.idleWorkerAfter; ++i)
@@ -294,6 +309,8 @@ void buildEverything(starttest::Shared &s, const char *faction, const char *map,
 			CHECK_MESSAGE(b.taskWhileWorking, faction, " ", b.name);
 			CHECK_MESSAGE(b.idleWorkerAfter, faction, " ", b.name, ": not an idle worker after the completion");
 			CHECK_MESSAGE(b.hiddenWhileWorking, faction, " ", b.name, ": the porter was not inside the structure while it worked");
+			CHECK(b.renderHiddenWhileWorking);
+			CHECK(b.renderShownAfter);
 			CHECK_MESSAGE(b.shownAfter, faction, " ", b.name, ": the porter did not come out");
 		}
 	}
@@ -350,6 +367,8 @@ TEST_CASE("BUILD-3 U17: the Goblins' GoblinCave at QA-1's spot on Tournament MP1
 	CHECK_FALSE(b.idleWorkerWhileWorking);
 	CHECK(b.idleWorkerAfter);
 	CHECK(b.hiddenWhileWorking);
+	CHECK(b.renderHiddenWhileWorking);
+	CHECK(b.renderShownAfter);
 	CHECK(b.shownAfter);
 	// the dock position is a Repair contact point of the cave, turned with the structure and placed at its position (angle 0: the offsets themselves)
 	Object *built = nullptr;
@@ -457,4 +476,55 @@ TEST_CASE("BUILD-3: a site cancelled before its Porter arrives is paid back once
 	CHECK(dozer->unplacedStructure() == INVALID_ID);
 	CHECK(dozer->taskTarget() == INVALID_ID);
 	CHECK(player->getMoney()->countMoney() == before); // one refund (the dispatcher's), not two
+}
+
+TEST_CASE("BUILD-3 porter visibility: approach is visible, construction hides the drawable, cancelling restores it without a render-side logic mutation")
+{
+	OPENBFME_REQUIRE_START(s);
+	std::string error;
+	buildtest::Game g;
+	REQUIRE_MESSAGE(buildtest::startGame(*s, "FactionMen", "FactionMordor", 5150, g, &error), error);
+	LiveGame &live = *g.live;
+	GameLogic &logic = live.logic();
+	Player *player = humanOf(live);
+	REQUIRE(player);
+	Object *porter = dozerOf(live, player);
+	Object *fortress = fortressOf(live, player);
+	REQUIRE(porter);
+	REQUIRE(fortress);
+	auto *dozer = dynamic_cast<DozerAIUpdate *>(porter->getAIUpdateInterface());
+	REQUIRE(dozer);
+	const ThingTemplate *farm = logic.things().findTemplate("GondorFarm");
+	REQUIRE(farm);
+	farm = farm->getFinalOverride();
+	Coord3D site;
+	Coord3D centre = *fortress->getPosition();
+	centre.x += 400.0f; // a remote site: the porter must remain visible on its approach
+	REQUIRE(findSite(live, *dozer, *player, *farm, centre, site));
+	auto shown = LogicSnapshot::build(logic, nullptr, false, 0);
+	REQUIRE(shown->find(porter->getID()));
+	CHECK(shown->find(porter->getID())->drawableHidden == false);
+	live.commands().append(selectMsg(player->getPlayerIndex(), porter->getID()));
+	live.commands().append(dozerMsg(player->getPlayerIndex(), *farm, site, 0.0f));
+	logic.runLogicFrame();
+	REQUIRE(porter->isInWorld() == true);
+	auto approaching = LogicSnapshot::build(logic, nullptr, false, 0);
+	REQUIRE(approaching->find(porter->getID()));
+	CHECK(approaching->find(porter->getID())->drawableHidden == false);
+	for (int frame = 0; frame < 1500 && porter->isInWorld(); ++frame)
+	{
+		logic.runLogicFrame();
+	}
+	REQUIRE(porter->isInWorld() == false);
+	const auto hash = logic.computeStateHash();
+	auto hidden = LogicSnapshot::build(logic, nullptr, false, 0);
+	REQUIRE(hidden->find(porter->getID()));
+	CHECK(hidden->find(porter->getID())->drawableHidden == true);
+	CHECK(logic.computeStateHash() == hash);
+	CHECK(porter->isDrawableHidden() == false); // presentation derives visibility; authoritative drawable state is untouched
+	dozer->cancelTask();
+	CHECK(porter->isInWorld() == true);
+	auto cancelled = LogicSnapshot::build(logic, nullptr, false, 0);
+	REQUIRE(cancelled->find(porter->getID()));
+	CHECK(cancelled->find(porter->getID())->drawableHidden == false);
 }

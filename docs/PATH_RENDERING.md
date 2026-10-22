@@ -10,12 +10,15 @@ of endpoint direction and object ordering. Shallow bends and authored ANGLED
 corners intersect their two offset edges. Other bends trim the adjoining legs
 and insert the normal or tight curve pieces from the road texture atlas. The
 normal radius is 1.5 road widths; tight is 0.5. Each piece covers up to 30 degrees.
-Corners too short to trim fall back to the donor miter branch. Different road
+Corners too short to trim attempt the donor miter branch. Both edge
+intersections must fit within both remaining legs (retaining the 0.5-unit
+margin); otherwise both source edges remain unchanged. This renderer guard
+prevents near-reversing corners from producing long spikes. Different road
 types at the same coordinates are preserved.
 
 ## Evidence and adaptations
 
-Donor: Open-BFME-1 matching `game/GameEngineDevice/Source/W3DDevice/GameClient/`
+Donor: Open-BFME-2 matching `Code/GameEngineDevice/Source/W3DDevice/GameClient/`
 `W3DRoadBuffer.cpp`: `miter`, `insertCurveSegmentAt`, `loadCurve`, and
 `loadFloat4PtSection`. The shallow-angle cutoff is 0.9 times 30 degrees;
 the remaining-leg cutoff is 0.5. Curve UV origins are (4/512,255/512), or
@@ -81,3 +84,36 @@ Metal captures include Harlindon's actual six tees and thirteen authored caps,
 and a controlled four-way junction with four caps using TRHarlindon01. The
 controlled scene reports one four-way tile, four caps and no pending special
 junctions. Its center and cap artwork were visually inspected.
+
+## Review guards
+
+Four-way tiles require two transverse arms on opposite sides of the chosen
+axis, with the same angle limits used for ordinary tees. Unsupported four-way
+shapes preserve all authored branch endpoints and increment
+`special_junctions_pending`; validation occurs before any stub is changed.
+
+Regression tests reproduce the review's near-reversal and east/west/north/
+northeast examples. They compare rejected geometry and UVs with independent
+source strips, cover reversed endpoint order, ANGLED and unmarked corners,
+and same-side transverse branches in both northern and southern hemispheres.
+
+Review validation: focused native road runner passed all 12 road tests
+(580 assertions). Both new regression cases failed against the pre-fix MR
+source. Existing angled/rounded corners, tees, valid crosses and end caps
+continue to pass; short-leg rejection is covered alongside near-reversals.
+
+## Maintainer follow-ups
+
+Endpoint adjacency is indexed once by lowercase road name and exact XY
+coordinate in an ordered map. Names are lowercased once per segment; junction
+and corner passes reuse the same branch lists rather than scanning every road.
+Group insertion preserves segment/endpoint order, so donor axis ties and draw
+ordering remain stable. Endpoint grouping takes O(n log n); the pre-existing
+duplicate-segment scan is unchanged.
+
+Tee/cross stub proposals are validated together before any edge changes. Both
+edges must leave more than 0.5 units toward their far endpoint. A junction that
+cannot fit retains its authored strips and increments the pending count.
+Regression coverage exercises every short arm of a tee/cross, with reversed
+endpoints. The unused cross-product helper was removed. Source citations now
+prefer the equivalent Open-BFME-2 donor functions over BFME1.

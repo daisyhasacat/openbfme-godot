@@ -353,7 +353,7 @@ void Apt::installNatives()
 		// enumeration order is not decoded; retain that runtime disclosure.
 		if (copy && c.args.size() > 2 && c.args[2].isObject() && c.args[2].asObject())
 		{
-			self->note("duplicate-init-object-unverified", "[S-104] duplicateMovieClip initializer properties applied in enumerable order; EA property-copy order is unverified");
+			if (self->noteCount("duplicate-init-object-unverified") == 0) self->note("duplicate-init-object-unverified", "[S-104] duplicateMovieClip initializer properties applied in enumerable order; EA property-copy order is unverified");
 			std::vector<std::string> names;
 			std::string error;
 			if (!c.args[2].asObject()->enumerateForIn(names, error)) c.vm.reportError(error);

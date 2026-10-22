@@ -167,6 +167,17 @@ TEST_CASE("end2 retail: the spend by kind (RW 0x79DFC2), the HORDE map, the favo
 	}
 	const ScoreScreenData d = ScoreScreenData::build(logic, 2, slots, {});
 	REQUIRE_FALSE(d.entries.empty());
+	// Read-only online exports retain the original per-template/horde counters.
+	CHECK(d.entries[0].templates.at(horde->getName()).hordesBuilt == 1);
+	CHECK(d.entries[0].templates.at(horde->getName()).kind == "horde");
+	CHECK(d.entries[0].unitsAlive == k.unitsAlive());
+	CHECK(d.entries[0].structuresAlive == k.structuresAlive());
+	for (const auto &item : k.builtByTemplate()) CHECK(d.entries[0].templates.at(item.first).built == item.second);
+	for (const auto &item : k.lostByTemplate()) CHECK(d.entries[0].templates.at(item.first).lost == item.second);
+	const auto hashBeforeExport = logic.computeStateHash();
+	const auto exportedAgain = ScoreScreenData::build(logic, 2, slots, {});
+	CHECK(exportedAgain.entries[0].templates.at(horde->getName()).hordesBuilt == 1);
+	CHECK(logic.computeStateHash() == hashBeforeExport);
 	CHECK(d.entries[0].spentHeroes == 1050);
 	CHECK(d.entries[0].spentStructures == 300);
 	CHECK_FALSE(d.entries[0].favoriteUnitLabel.empty());

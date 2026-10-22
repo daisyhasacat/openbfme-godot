@@ -398,6 +398,9 @@ public:
 	// game or a replay, or when the recording is incomplete. Lane SAVE-4e: the snapshot at F too (snapshot_bytes; option "snapshot": false writes a
 	// log-only save as the earlier alphas did); a snapshot the game refuses fails the save, named (review r1).
 	Dictionary save_game(const String &path, const Dictionary &options);
+	// Retained-scene rewind of an exact save made by this live skirmish. supported=false requests normal full loading;
+	// supported=true/ok=false is a refused rewind (the running state is retained by the transactional snapshot loader).
+	Dictionary quick_load_game(const String &path);
 	// lane CAMPSAVE-1: CampaignMenu.apt's state written as a campaign menu save (the auto-save, the menu's Save): options campaign, mission, difficulty,
 	// victorious, ready, advanced, description, auto_save -> {ok, path, map, menu_mission} or {ok false, error}
 	Dictionary save_campaign_menu(const String &path, const Dictionary &options);
@@ -733,6 +736,7 @@ private:
 	std::string m_replayPath, m_recordPath;
 	// lane SAVE-2: the save being loaded (prepare_save_load / start_save_load / save_load_step)
 	std::unique_ptr<SaveGameFile> m_pendingSave;
+	std::set<std::string> m_sessionSaves; ///< SHA-256 of complete saves made by this live match; discarded with the scene
 	std::unique_ptr<SaveGameFile> m_keptSave; ///< lane SAVE-4e review r1: keep_running_game
 	bool buildSave(const Dictionary &options, SaveGameFile &f, UnsignedInt &frame, std::uint32_t &hash, std::string &error); ///< save_game's file
 	Dictionary prepareSaveLoad(std::unique_ptr<SaveGameFile> file); ///< prepare_save_load's checks and preparation of a read file
@@ -806,6 +810,7 @@ private:
 	uint64_t m_staticId = 0, m_dynamicId = 0;
 	std::vector<DrawableView> m_views;       ///< index = drawable id
 	std::map<std::string, int64_t> m_dynamicModels, m_staticModels;
+	std::vector<std::pair<int64_t, Vector2>> m_staticShroudInstances;
 	Dictionary m_report;
 	bool m_autoAdvance = false;
 	bool m_paused = false;

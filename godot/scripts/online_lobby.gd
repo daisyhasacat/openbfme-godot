@@ -15,6 +15,7 @@
 extends Node
 
 signal started(start_json: String)
+signal game_created(id: String)
 signal failed(message: String)
 
 const BODY_LIMIT := 262144 ## Sol r1 (ONLINE-4): the largest lobby answer read (OnlineLobbyClient::kMaxBodyBytes)
@@ -177,6 +178,7 @@ func _on_response(result: int, code: int, _headers: PackedStringArray, body: Pac
 			started.emit(JSON.stringify(data.start))
 		"create":
 			_game_id = data.id
+			game_created.emit(_game_id)
 			print("GAME ONLINE hosting game %s: invite openbfme://join/%s" % [_game_id, _game_id])
 			_step = "wait"
 		"join":

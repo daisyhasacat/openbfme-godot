@@ -59,7 +59,7 @@ func _ready() -> void:
  overall_progress=ProgressBar.new();overall_progress.name="OverallProgress";overall_progress.hide();column.add_child(overall_progress)
  progress=ProgressBar.new();progress.max_value=100;column.add_child(progress)
  var close:=Button.new();close.text="Close";close.pressed.connect(queue_free);column.add_child(close)
- request=HTTPRequest.new();request.use_threads=true;request.timeout=1800;add_child(request)
+ request=HTTPRequest.new();request.max_redirects=0;request.use_threads=true;request.timeout=1800;add_child(request)
  preload("res://scripts/menu_accessibility.gd").prepare(self)
  connect_button.call_deferred("grab_focus")
 

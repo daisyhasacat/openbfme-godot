@@ -149,6 +149,7 @@ public:
 	void closeSpellStore();
 	AptSpellStore *spellStore() { return m_store.get(); }
 	// lane SPELL-4: the aiming marker of a spell book or selected-unit ground power waiting for its target (GameClient/RadiusCursor.h), updated each update(); the device draws it
+	const PlayerMessageLog &playerMessages() const { return m_playerMessages; }
 	const RadiusCursor &radiusCursor() const { return m_radiusCursor; }
 	const RadiusCursorTemplates &radiusCursorTemplates() const { return m_radiusTemplates; }
 	// lane OWNERFIX-2: the resource claim feedback (GameClient/TerrainResourceFeedback.h): the placement's claimable percentage and decal, the selected
@@ -190,6 +191,7 @@ public:
 	// SMOOTH-1: render frames whose update was skipped because the logic worker was busy
 	unsigned long long skippedUpdates() const { return m_skippedUpdates; }
 	unsigned long long deferredPresses() const { return m_deferredPressCount; } ///< RENDERWAIT-1: movie presses that waited for a held update
+	void discardInputForRewind();
 
 	// ---- lane HUD-6 (InGameHudHud6.cpp): the radial command bubbles, the help box ----
 	ControlBarRadialMenu &radialMenu() { return m_radial; }
@@ -320,6 +322,8 @@ private:
 	void updateRadiusCursor();
 	void updateResourceFeedback(); // lane OWNERFIX-2
 	TerrainResourceFeedback m_resourceFeedback;
+	PlayerMessageLog m_playerMessages;
+	unsigned m_messageClientFrame = 0;
 	RadiusCursorTemplates m_radiusTemplates;
 	RadiusCursor m_radiusCursor;
 	int m_pointerX = 0, m_pointerY = 0;

@@ -110,6 +110,7 @@ private:
 	Ref<Texture2D> texture(const std::string &name);
 
 	std::vector<InGameUI::FormationSlot> m_formationSlots;
+	std::vector<std::string> m_formationTextures;
 	MeshInstance3D *m_formation = nullptr;
 	uint64_t m_formationId = 0;
 	MeshInstance3D *m_selectionCircle = nullptr;

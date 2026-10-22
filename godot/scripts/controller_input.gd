@@ -44,6 +44,7 @@ var deadzone := 0.25
 var cursor_speed := 900.0
 var menu_repeat_delay := 300
 var menu_repeat_rate := 150
+var menu_navigation_active: Callable # the shell menu owns both thumbsticks and A
 var gameplay: Callable
 var resolve_action: Callable
 var device := -1
@@ -427,6 +428,9 @@ func _process(delta: float) -> void:
 	if playing != _was_gameplay:
 		_release_all()
 		_was_gameplay = playing
+	if not playing and menu_navigation_active.is_valid() and menu_navigation_active.call():
+		_menu_direction = Vector2i.ZERO
+		return
 	var left := _analog_stick(Vector2(Input.get_joy_axis(device, JOY_AXIS_LEFT_X), Input.get_joy_axis(device, JOY_AXIS_LEFT_Y)))
 	_pan_stick(left, delta)
 	var right := Vector2(_axis(JOY_AXIS_RIGHT_X), _axis(JOY_AXIS_RIGHT_Y))

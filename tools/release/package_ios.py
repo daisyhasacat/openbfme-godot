@@ -66,7 +66,63 @@ def configure_launch_screen(storyboard):
         ET.SubElement(view.find('constraints'), 'constraint', {
             'firstItem': 'OBF-start-label', 'firstAttribute': axis,
             'secondItem': view.get('id'), 'secondAttribute': axis, 'id': 'OBF-' + axis})
+    art = ROOT / 'godot/startup_art'
+    if (art / 'loading.png').exists() and (art / 'ring_first.png').exists():
+        catalog = storyboard.parent / 'Images.xcassets'
+        for name, source in [('SplashImage', 'loading.png'), ('StartupRing', 'ring_first.png')]:
+            imageset = catalog / (name + '.imageset')
+            imageset.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(art / source, imageset / 'startup.png')
+            (imageset / 'Contents.json').write_text(json.dumps({
+                'images': [{'idiom': 'universal', 'filename': 'startup.png'}],
+                'info': {'version': 1, 'author': 'xcode'}}, indent=2) + '\n')
+        image = view.find('.//imageView')
+        image.set('hidden', 'NO')
+        image.set('contentMode', 'scaleAspectFill')
+        image.set('clipsSubviews', 'YES')
+        constraints = view.find('constraints')
+        for constraint in list(constraints):
+            if constraint.get('id') == 'OBF-centerY':
+                constraints.remove(constraint)
+            elif constraint.get('secondItem') == image.get('id') and constraint.get('firstAttribute') == 'bottom':
+                constraint.set('constant', '0')
+        label.find('fontDescription').set('pointSize', '20')
+        ring = ET.SubElement(view.find('subviews'), 'imageView', {
+            'image': 'StartupRing', 'contentMode': 'scaleAspectFit',
+            'translatesAutoresizingMaskIntoConstraints': 'NO', 'id': 'OBF-ring'})
+        sizes = ET.SubElement(ring, 'constraints')
+        for axis in ('width', 'height'):
+            ET.SubElement(sizes, 'constraint', {'firstAttribute': axis, 'constant': '64', 'id': 'OBF-ring-' + axis})
+        for attrs in [
+            {'firstItem': 'OBF-ring', 'firstAttribute': 'centerX', 'secondItem': view.get('id'), 'secondAttribute': 'centerX'},
+            {'firstItem': 'OBF-ring', 'firstAttribute': 'bottom', 'secondItem': 'OBF-start-label', 'secondAttribute': 'top'},
+            {'firstItem': 'OBF-start-label', 'firstAttribute': 'bottom', 'secondItem': view.get('id'), 'secondAttribute': 'bottom', 'constant': '-24'},
+        ]:
+            ET.SubElement(constraints, 'constraint', dict(attrs, id='OBF-art-' + str(len(constraints))))
+        ET.SubElement(tree.find('resources'), 'image', {'name': 'StartupRing', 'width': '128', 'height': '128'})
     tree.write(storyboard, encoding='UTF-8', xml_declaration=True)
+
+
+def configure_ios_preset(text, template, team):
+    """Select the iOS preset by identity; preset numbers change as targets grow."""
+    candidates = []
+    for match in re.finditer(r'^\[preset\.(\d+)\]\s*\n(.*?)(?=^\[|\Z)', text, re.M | re.S):
+        body = match.group(2)
+        if re.search(r'^name="iOS"\s*$', body, re.M) and re.search(r'^platform="iOS"\s*$', body, re.M):
+            candidates.append(match.group(1))
+    if len(candidates) != 1:
+        raise ValueError('Expected exactly one iOS export preset')
+    section = re.search(r'^\[preset\.' + candidates[0] + r'\.options\]\s*\n(.*?)(?=^\[|\Z)', text, re.M | re.S)
+    if section is None:
+        raise ValueError('The iOS export preset has no options section')
+    options = section.group(1)
+    for key, value in [('custom_template/debug', str(template)), ('custom_template/release', str(template)),
+                       ('application/app_store_team_id', team)]:
+        options, count = re.subn(r'^' + re.escape(key) + r'=.*$',
+                                lambda _: key + '=' + json.dumps(value), options, flags=re.M)
+        if count != 1:
+            raise ValueError('Expected exactly one iOS option: ' + key)
+    return text[:section.start(1)] + options + text[section.end(1):]
 
 
 def main():
@@ -117,21 +173,21 @@ def main():
             'run/main_scene="res://scenes/ios_startup.tscn"'))
         if args.simulator:
             project_config.write_text(project_config.read_text().replace(
-                'renderer/rendering_method.ios="mobile"', 'renderer/rendering_method.ios="gl_compatibility"'))
+                'renderer/rendering_method.ios="mobile"', 'renderer/rendering_method.ios="gl_compatibility"').replace(
+                'window/size/viewport_width=1280', 'window/size/viewport_width=960').replace(
+                'window/size/viewport_height=720',
+                'window/size/viewport_height=540\nwindow/stretch/mode="viewport"\nwindow/stretch/aspect="expand"').replace(
+                '[openbfme]', '[openbfme]\n\nrendering/menu_3d_max_dimension=320'))
         (stage / 'bin').mkdir()
         shutil.copytree(framework, stage / 'bin' / framework.name)
         # The editor imports scripts using the host extension before exporting the iOS one.
         host = ROOT / 'godot/bin/openbfme.macos.template_debug.arm64.dylib'
         shutil.copy2(host, stage / 'bin' / host.name)
         presets = stage / 'export_presets.cfg'
-        before, options = presets.read_text().split('[preset.3.options]', 1)
-        options = options.replace('custom_template/debug=""', f'custom_template/debug="{template}"', 1)
-        options = options.replace('custom_template/release=""', f'custom_template/release="{template}"', 1)
-        # Godot requires a nonempty team even for project-only export. Strip this
-        # temporary placeholder from the generated project before any Xcode build.
+        # Godot requires a team even for project-only export. Strip the
+        # temporary placeholder from the generated project before Xcode builds.
         team = args.team_id or 'UNSIGNED00'
-        options = options.replace('application/app_store_team_id=""', f'application/app_store_team_id="{team}"', 1)
-        presets.write_text(before + '[preset.3.options]' + options)
+        presets.write_text(configure_ios_preset(presets.read_text(), template, team))
         subprocess.run([args.godot, '--headless', '--path', str(stage), '--editor', '--import', '--quit'], check=True)
         subprocess.run([args.godot, '--headless', '--path', str(stage), '--export-debug', 'iOS', str(output)], check=True)
     # The official template references SDL's UIKit idiom queries without defining them.

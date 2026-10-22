@@ -203,6 +203,14 @@ private:
 // What TimeLine.apt shows (RW 0x9275EC / 0x9270AD), taken from the logic when the game is left (GameLogic::clearGameData).
 struct ScoreScreenData
 {
+	// Read-only export of the already-ported ScoreKeeper maps (RW 0x79F0E1,
+	// 0x79F303, 0x79F486; provenance/caveats in Common/ScoreKeeper.h).
+	// OpenBFME reporting metadata, not a new simulation counter or retail format.
+	struct TemplateTotals
+	{
+		std::string kind;
+		int built = 0, lost = 0, destroyed = 0, hordesBuilt = 0;
+	};
 	struct Entry
 	{
 		int playerIndex = -1;
@@ -229,6 +237,9 @@ struct ScoreScreenData
 		std::uint32_t moneyReceived = 0, moneyGiven = 0; ///< + 0xC / + 0x10
 		int spentStructures = 0, spentUnits = 0, spentHeroes = 0; ///< + 0x18 / + 0x14 / + 0x1C
 		int heroesBuilt = 0, heroesLost = 0;
+		int unitsAlive = 0, structuresAlive = 0;
+		float eliminationBonus = 0.0f;
+		std::map<std::string, TemplateTotals> templates;
 	};
 	int type = 2;                    ///< the screen's game type (+ 0x284): 2 skirmish, 3 LAN, 4 Internet
 	bool localIsObserver = false;    ///< + 0x294

@@ -26,6 +26,7 @@
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/string.hpp>
 
+#include <cstdint>
 #include <map>
 #include <set>
 #include <string>
@@ -58,6 +59,7 @@ public:
 	const std::set<std::string> &notes() const { return m_notes; }
 	std::size_t viewerCount() const { return m_slots.size(); }
 	float animationFrame(const std::string &path) const;
+	std::uint64_t renderUpdates() const;
 	String sourceStyle() const;
 
 private:
@@ -76,6 +78,10 @@ private:
 		std::string modeName, frameCommand;
 		bool keepAspect = true;
 		bool used = false, failed = false;
+		bool wasUsed = false, forceRender = true;
+		int maxFps = 0; // iOS: 30 for 3D decorations, independent of UI/input
+		double createdMs = 0, nextRenderMs = 0;
+		std::uint64_t renderUpdates = 0;
 		Ref<ShaderMaterial> material;
 	};
 	bool create(Slot &slot, const AptCanvasOp &op);

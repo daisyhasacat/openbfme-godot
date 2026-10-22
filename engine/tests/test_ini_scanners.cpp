@@ -279,6 +279,22 @@ TEST_CASE("index lists and lookup lists compare with stricmp and report BFME tex
 	CHECK(code == 2);
 }
 
+TEST_CASE("index and lookup scans preserve first match, exact length and ASCII-only folding")
+{
+	// B1 scanIndexList/scanLookupList use first stricmp match. Long names exercise
+	// the comparison path used by the retail model-condition lists during reload.
+	const char *names[] = { "", "MODEL_CONDITION_VERY_LONG_NAME", "model_condition_very_long_name", "PREFIX_SUFFIX", "\xC0Z", nullptr };
+	const LookupListRec lookup[] = { {names[1], 17}, {names[2], 23}, {names[3], 42}, {names[4], 51}, {nullptr, 0} };
+	CHECK(INI::scanIndexList("", names) == 0);
+	CHECK(INI::scanIndexList("Model_Condition_Very_Long_Name", names) == 1);
+	CHECK(INI::scanLookupList("Model_Condition_Very_Long_Name", lookup) == 17);
+	CHECK(INI::scanIndexList("\xC0z", names) == 4);
+	CHECK(INI::scanLookupList("\xC0z", lookup) == 51);
+	CHECK_THROWS_AS(INI::scanIndexList("PREFIX", names), INIException);
+	CHECK_THROWS_AS(INI::scanLookupList("PREFIX_SUFFIX_EXTRA", lookup), INIException);
+	CHECK_THROWS_AS(INI::scanIndexList("\xE0z", names), INIException);
+}
+
 TEST_CASE("bit strings: plain names clear then set, +/- edit, NONE clears, mixing throws (spec 1.8, ZH INI.cpp:903-969)")
 {
 	static const char *flags[] = { "A", "B", "C", "D", nullptr };

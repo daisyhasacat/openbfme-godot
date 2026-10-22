@@ -35,7 +35,9 @@
 #include "GameClient/DrawableScriptTarget.h"
 #include "GameClient/ObserverTimeline.h"
 
+#include <array>
 #include <cstdint>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -142,7 +144,9 @@ public:
 
 private:
 	ClientEvent &push(ClientEvent::Kind kind, const Object &obj);
-	void pushFlush(const Object &obj);
+	void pushFlush(Object &obj);
+	// S-090: last flushed capture-flag conditions, separate from the AI snapshot.
+	std::map<ObjectID, std::array<std::uint32_t, 19>> m_animationConditions;
 
 	// lane ANIM-1: the objects whose MODEL_CONDITION events have not been flushed (RW Drawable + 0x443), in the order of their first change
 	std::vector<ObjectID> m_dirty;

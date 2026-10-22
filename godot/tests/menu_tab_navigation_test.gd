@@ -25,11 +25,11 @@ func _run() -> void:
 			return
 	_key(KEY_RIGHT)
 	await create_timer(0.5).timeout
-	for item in ["Skirmish", "WarOfTheRing", "EvilCampaign", "GoodCampaign", "LoadGame", "Skirmish"]:
-		_key(KEY_UP)
+	for item in ["Skirmish", "WarOfTheRing", "LoadGame", "Skirmish"]:
+		_key(KEY_DOWN)
 		await create_timer(0.5).timeout
 		assert(str(shell.get_report().keyboard_button).contains(item), str(shell.get_report().keyboard_button))
-	_key(KEY_DOWN)
+	_key(KEY_UP)
 	await create_timer(0.5).timeout
 	assert(str(shell.get_report().keyboard_button).contains("LoadGame"))
 	var pad := InputEventJoypadButton.new()
@@ -42,8 +42,18 @@ func _run() -> void:
 	_key(KEY_LEFT)
 	await create_timer(0.5).timeout
 	assert(str(shell.get_report().keyboard_button).contains("SoloPlayNav"))
-	_key(KEY_UP)
+	_key(KEY_DOWN)
 	await create_timer(0.5).timeout
+	var previous_y := -INF
+	for item in ["Skirmish", "WarOfTheRing", "LoadGame"]:
+		var position: Dictionary = shell.get_member(shell.shell_top_level(), "SoloPlayNav." + item, "_y")
+		assert(position.get("found", false))
+		var y := float(position.value)
+		print("ROW ", item, " y=", y)
+		if not y > previous_y:
+			quit(1)
+			return
+		previous_y = y
 	var skirmish_visible := false
 	for button in shell.list_buttons(shell.shell_top_level()):
 		if str(button.path).contains("SoloPlayNav.Skirmish") and button.hittable:

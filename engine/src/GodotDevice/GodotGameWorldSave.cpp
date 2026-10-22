@@ -6,11 +6,14 @@
 
 #include "GodotDevice/GodotGameWorld.h"
 #include "GodotDevice/GodotGameStart.h"
+#include "GodotDevice/GodotFXPlayer.h"
+#include "GodotDevice/GodotInGameHud.h"
 
 #include "Common/Audio/AudioEntryPoints.h"
 #include "Common/AsciiString.h"
 #include "Common/BuildVersion.h"
 #include "Common/GameState.h"
+#include "Common/Sha256.h"
 #include "GameClient/GUI/LoadScreenInfo.h"
 #include "GameClient/LinearCampaign.h"
 #include "GameClient/LiveFX.h"
@@ -38,6 +41,13 @@ std::string n(const String &s)
 	return std::string(s.utf8().get_data());
 }
 
+std::string saveFingerprint(const SaveGameFile &file)
+{
+	const auto bytes = file.encode();
+	const auto digest = Sha256::hash(bytes.data(), bytes.size());
+	return HexBytes(digest.data(), digest.size());
+}
+
 std::string two(int64_t v)
 {
 	return (v < 10 ? "0" : "") + std::to_string(v);
@@ -58,6 +68,7 @@ void dateTime(int64_t unixTime, std::string &date, std::string &time)
 void GameWorld::bindSaveMethods()
 {
 	ClassDB::bind_method(D_METHOD("save_game", "path", "options"), &GameWorld::save_game);
+	ClassDB::bind_method(D_METHOD("quick_load_game", "path"), &GameWorld::quick_load_game);
 	ClassDB::bind_method(D_METHOD("list_saves", "directory"), &GameWorld::list_saves);
 	ClassDB::bind_method(D_METHOD("check_save", "path"), &GameWorld::check_save);
 	ClassDB::bind_method(D_METHOD("prepare_save_load", "path"), &GameWorld::prepare_save_load);
@@ -178,6 +189,7 @@ Dictionary GameWorld::save_game(const String &path, const Dictionary &options)
 	{
 		return fail(error);
 	}
+	if (!f.snapshot.empty() && h.campaign.empty()) m_sessionSaves.insert(saveFingerprint(f));
 	r["ok"] = true;
 	Array stops;
 	for (const std::string &l : CommandLogLoad::stopLines())
@@ -194,9 +206,99 @@ Dictionary GameWorld::save_game(const String &path, const Dictionary &options)
 	return r;
 }
 
-// lane SAVE-4e review r1 (Sol): a load from the quit menu keeps the running game until the saved one is in: its own save in memory (the same as
-// save_game's), which restore_kept_game loads back (prepare_kept_load) when the chosen save is refused after the running game had to go (one live game per
-// world, S-3808). { ok, frame, hash, error }
+Dictionary GameWorld::quick_load_game(const String &path)
+{
+	const auto context = m_world ? m_world->enterContext() : nullptr;
+	Dictionary r;
+	r["ok"] = false;
+	r["supported"] = false;
+	// Identity means this exact save was produced by this still-live match, not just the same map.
+	if (!m_game || m_game->closed() || !m_localDriver || !m_localWriter || m_sessionSaves.empty() || m_netSession || m_netStarted ||
+		!m_campaignStart.campaign.empty())
+		return r;
+	SaveGameFile file;
+	std::string error;
+	if (!SaveGameFile::load(n(path), file, &error))
+	{
+		r["supported"] = true;
+		r["error"] = g(error);
+		return r;
+	}
+	if (file.snapshot.empty() || !m_sessionSaves.count(saveFingerprint(file)))
+		return r;
+	r["supported"] = true;
+	CommandLogLoad load;
+	if (!load.prepare(file, &error))
+	{
+		r["error"] = g(error);
+		return r;
+	}
+	// Prepare the continuing recording before committing the rewind: no writer failure can strand a restored game without a driver.
+	auto writer = std::make_unique<ReplayWriter>();
+	writer->setKeepCopy(true);
+	if (!writer->openContinuing("", file.log, &error) || !writer->flush(&error))
+	{
+		r["error"] = g(error);
+		return r;
+	}
+	if (load.targetProfile() != m_choice.current)
+	{
+		writer->recordProfileSwitch(file.header.frame, m_choice.current);
+		if (!writer->flush(&error))
+		{
+			r["error"] = g(error);
+			return r;
+		}
+	}
+	const uint64_t start = Time::get_singleton()->get_ticks_usec();
+	m_game->drainFrames();
+	const UnsignedInt oldFrame = m_game->logic().getFrame();
+	const uint32_t oldHash = m_game->logic().computeStateHash();
+	m_game->setFrameDriver(nullptr);
+	if (!load.beginInPlace(*m_game, &error))
+	{
+		if (!m_game->closed())
+			m_game->setFrameDriver(m_localDriver.get());
+		r["error"] = g(error);
+		return r;
+	}
+	// Continue the restored branch in memory; retain the original on-disk replay as its completed branch.
+	m_game->logic().setSimulationProfile(m_choice.current);
+	m_localWriter->close(oldFrame, oldHash);
+	m_localDriver.reset();
+	m_localWriter = std::move(writer);
+	m_localDriver = std::make_unique<LockstepDriver>(nullptr, m_localWriter.get());
+	RegisterLogicCRCHandler(m_game->dispatch());
+	m_game->setFrameDriver(m_localDriver.get());
+	m_recordPath.clear();
+	m_saveLoad.reset();
+	m_pendingSave.reset();
+	m_movementPendingCommands.reset();
+	m_pendingScriptRequests.clear();
+	m_pendingScriptAudio.clear();
+	m_fxPendingDt = 0.0;
+	if (m_liveFX)
+		m_liveFX->discardPending();
+	if (m_fxPlayer)
+		m_fxPlayer->clear();
+	m_endGame.reset();
+	m_endGameRequests.clear();
+	m_endGameFrame = 0;
+	m_endGameErrors.clear();
+	if (auto *hud = Object::cast_to<InGameHudNode>(ObjectDB::get_instance(ObjectID(m_luaHudSource))))
+		hud->reset_after_quick_load();
+	r["ok"] = true;
+	r["state"] = "ready";
+	r["frame"] = (int64_t)m_game->frame();
+	r["hash"] = (int64_t)m_game->logic().computeStateHash();
+	r["snapshot_ms"] = load.snapshotLoadMs();
+	r["elapsed_ms"] = (Time::get_singleton()->get_ticks_usec() - start) / 1000.0;
+	return r;
+}
+
+// lane SAVE-4e review r1 (Sol): a load from the quit menu keeps the running game until the saved one is in: its own save in memory (the
+// same as save_game's), which restore_kept_game loads back (prepare_kept_load) when the chosen save is refused after the running game had
+// to go (one live game per world, S-3808). { ok, frame, hash, error }
 Dictionary GameWorld::keep_running_game()
 {
 	const auto worldContext = m_world ? m_world->enterContext() : nullptr;

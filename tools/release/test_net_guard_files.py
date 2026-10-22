@@ -141,7 +141,7 @@ def test_the_game_tree_passes_and_release_gd_keeps_its_guard():
     owner = release[release.index("func _show_in_file_manager(path: String) -> Error:"):]
     owner = owner[:owner.index("\nfunc ") if "\nfunc " in owner else len(owner)]
     assert "OS.get_user_data_dir()" in owner and "simplify_path()" in owner and 'begins_with(root + "/")' in owner and '"://"' in owner
-    assert "enum UserFolder { LOGS }" in release and "if not _is_session_log_name(name):" in release
+    assert "enum UserFolder { LOGS, MODS }" in release and "if not _is_session_log_name(name):" in release
 
 
 def test_ui3_the_launcher_has_one_file_manager_owner_too():
@@ -202,3 +202,22 @@ def test_onlinecount1_the_player_count_requests_only_the_named_lobby():
     assert net_guard.online_lobby_problems(text.replace("max_redirects = 0", "max_redirects = 8")) != []
     assert not net_guard.game_finding_allowed(path, "line 1: HTTPClient")
     assert not net_guard.game_finding_allowed(path, "line 1: TCPServer")
+
+
+def test_remote_control_transports_keep_requests_on_the_lobby_origin():
+    path = REPO / 'godot/scripts/remote_testing.gd'
+    text = path.read_text()
+    assert net_guard.online_lobby_problems(text, 2) == []
+    assert net_guard.online_lobby_problems(text)
+    changed = text.replace('leave.request(lobby_url', 'leave.request(untrusted_url')
+    assert net_guard.online_lobby_problems(changed, 2)
+    for finding in net_guard.gdscript_findings(text):
+        assert net_guard.game_finding_allowed('godot/scripts/remote_testing.gd', finding)
+    assert net_guard.online_lobby_problems((REPO / 'godot/scripts/match_statistics.gd').read_text()) == []
+
+
+def test_existing_download_and_sync_transports_are_origin_bound_without_redirects():
+    for name, root in (("lan_content", "origin"), ("player_sync", "url")):
+        text = (REPO / f"godot/scripts/{name}.gd").read_text()
+        assert net_guard.online_lobby_problems(text, 1, root) == []
+        assert net_guard.online_lobby_problems(text.replace("max_redirects=0", "max_redirects=1"), 1, root)

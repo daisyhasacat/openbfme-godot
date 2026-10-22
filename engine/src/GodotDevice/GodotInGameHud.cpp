@@ -71,6 +71,7 @@
 #include <godot_cpp/classes/input_event_pan_gesture.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/time.hpp>
+#include <godot_cpp/classes/input_event_action.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/decal.hpp>
 #include <godot_cpp/classes/node3d.hpp>
@@ -189,6 +190,8 @@ struct HudDevice : public AptNativeHook
 	GameWorld *world = nullptr;
 	Camera3D *camera = nullptr;
 	AptMenuPlayer *player = nullptr;
+	int64_t startupProbeUsec = 0;
+	bool startupProbeOnly = false;
 	int64_t menuKeyEvents = 0; // lane OPTS-6: the keys a menu over the game took
 	std::unique_ptr<INIEnvironment> metaEnv;
 	MetaMap meta;
@@ -1335,6 +1338,7 @@ bool InGameHudNode::is_logic_held() const
 
 void InGameHudNode::_bind_methods()
 {
+	ClassDB::bind_method(D_METHOD("reset_after_quick_load"), &InGameHudNode::reset_after_quick_load);
 	ClassDB::bind_method(D_METHOD("setup", "fs", "world", "camera", "local_player", "options"), &InGameHudNode::setup, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("attach", "fs", "world", "camera", "player", "local_player", "options"), &InGameHudNode::attach, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("is_ready"), &InGameHudNode::is_ready);
@@ -1394,6 +1398,7 @@ void InGameHudNode::_bind_methods()
 	ClassDB::bind_method(D_METHOD("inject_mouse_button", "button", "down", "position", "double_click"), &InGameHudNode::inject_mouse_button, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("inject_key", "dik_code", "down"), &InGameHudNode::inject_key);
 	ClassDB::bind_method(D_METHOD("hold_input", "on"), &InGameHudNode::hold_input);                 // lane BACKLOG3 (QA)
+	ClassDB::bind_method(D_METHOD("get_startup_probe_usec"), &InGameHudNode::get_startup_probe_usec);
 	ClassDB::bind_method(D_METHOD("set_input_enabled", "on"), &InGameHudNode::set_input_enabled); // lane BACKLOG3 (QA)
 	ClassDB::bind_method(D_METHOD("script_input", "enable"), &InGameHudNode::script_input); // lane OWNERFIX-1
 	ClassDB::bind_method(D_METHOD("set_broadcast_clean", "on"), &InGameHudNode::set_broadcast_clean);
@@ -2071,6 +2076,8 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 	d->owner = this;
 	d->world = world;
 	d->secondaryView = (bool)options.get("secondary_view", false);
+	d->startupProbeOnly = (bool)options.get("startup_probe_only", false);
+	d->startupProbeUsec = 0;
 	if (!d->secondaryView) world->set_lua_hud_source(get_instance_id());
 	d->camera = camera;
 	LiveGame &game = *world->hud_game();
@@ -2387,6 +2394,12 @@ Array InGameHudNode::get_command_map() const
 	return out;
 }
 
+int64_t InGameHudNode::get_startup_probe_usec() const
+{
+	// Presentation-thread value only: do not wait for the simulation worker.
+	return d->startupProbeUsec;
+}
+
 Dictionary InGameHudNode::get_state() const
 {
 	waitLogic(d.get());
@@ -2609,6 +2622,15 @@ Dictionary InGameHudNode::get_state() const
 		msgs.push_back(toGodot(m));
 	}
 	s["messages"] = msgs;
+	Array displayedMessages;
+	for (const auto &entry : d->hud->playerMessages().entries())
+	{
+		Dictionary message;
+		message["text"] = String::utf16(reinterpret_cast<const char16_t *>(entry.text.data()), (int64_t)entry.text.size());
+		message["color"] = (int64_t)entry.color;
+		displayedMessages.push_back(message);
+	}
+	s["player_messages"] = displayedMessages;
 	{
 		ControlBar &cb = d->hud->controlBar();
 		Dictionary bar;
@@ -3217,6 +3239,7 @@ void InGameHudNode::_process(double delta)
 	if (d->hud6 && d->nativeHudVisible)
 	{
 		d->hud6->drawRadial(get_canvas_item()); // lane HUD-6
+		d->hud6->drawMessages(get_canvas_item());
 		if (d->fs.is_valid() && d->fs->is_bfme1())
 		{
 			const Vector2 size = get_viewport_rect().size;
@@ -3239,7 +3262,7 @@ void InGameHudNode::_process(double delta)
 		DisplayServer *ds = DisplayServer::get_singleton();
 		const DisplayServer::WindowMode wm = ds ? ds->window_get_mode() : DisplayServer::WINDOW_MODE_WINDOWED;
 		const bool retail = d->edgeScroll || wm == DisplayServer::WINDOW_MODE_FULLSCREEN || wm == DisplayServer::WINDOW_MODE_EXCLUSIVE_FULLSCREEN;
-		la->setEdgeScrollEnabled(d->edgeScrollMode == 1 ? true : (d->edgeScrollMode == 2 ? false : retail)); // lane OPTS-2: the option
+		la->setEdgeScrollEnabled(!d->startupProbeOnly && (d->edgeScrollMode == 1 ? true : (d->edgeScrollMode == 2 ? false : retail))); // lane OPTS-2: the option
 	}
 	// A window may stop delivering motion events after the pointer leaves it.
 	// Refresh an active edge pan from the host position until it leaves the
@@ -4231,6 +4254,23 @@ void InGameHudNode::_notification(int what)
 }
 
 // lane BACKLOG3 (QA, review r1): _input queues every event as it does while the logic worker runs a frame, until released (the focus test's deferred presses)
+void InGameHudNode::reset_after_quick_load()
+{
+	auto reset = [](InGameHudNode *node) {
+		if (!node || !node->d->hud)
+			return;
+		node->_notification(NOTIFICATION_APPLICATION_FOCUS_OUT);
+		node->d->pendingInput.clear();
+		node->d->hud->discardInputForRewind();
+		node->d->selMode = -1;
+		if (node->d->ghost)
+			node->d->ghost->clear();
+	};
+	reset(this);
+	if (d->peerViewId)
+		reset(Object::cast_to<InGameHudNode>(ObjectDB::get_instance(ObjectID(d->peerViewId))));
+}
+
 void InGameHudNode::hold_input(bool on)
 {
 	d->holdInput = on;
@@ -4275,6 +4315,11 @@ void InGameHudNode::_input(const Ref<InputEvent> &event)
 {
 	if (!d->ready || !d->hud || event.is_null()) return;
 	if (!d->viewActive) return;
+	if (d->startupProbeOnly)
+	{
+		const auto *probe = Object::cast_to<InputEventAction>(event.ptr());
+		if (!probe || probe->get_action() != StringName("openbfme_startup_probe")) return;
+	}
 	// Independent rectangles preserve world input between collapsed HUD panels.
 	const auto engine = Engine::get_singleton();
 	Vector2 overlayPoint;bool hasOverlayPoint=false;
@@ -4370,6 +4415,15 @@ void InGameHudNode::_input(const Ref<InputEvent> &event)
 void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 {
 	syncModal(); // lane OPTS-6
+	// The benchmark sends this through Viewport input and the ordinary deferred
+	// input queue. Acknowledging it never posts a game command or changes RNG.
+	if (const auto *probe = Object::cast_to<InputEventAction>(event.ptr());
+		probe && probe->get_action() == StringName("openbfme_startup_probe"))
+	{
+		if (!d->modal && d->hud->input().ui().getInputEnabled() && !d->startupProbeUsec)
+			d->startupProbeUsec = (int64_t)Time::get_singleton()->get_ticks_usec();
+		return;
+	}
 	if (const auto *button = Object::cast_to<InputEventMouseButton>(event.ptr()); button && button->is_canceled() &&
 		(event->get_device() == InputEvent::DEVICE_ID_EMULATION || event->get_device() == OpenBFMEIOSTouch::PencilDevice) && !d->pencilPending)
 	{

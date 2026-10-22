@@ -141,7 +141,18 @@ selection behavior; physical Pencil interaction still needs device validation.
 
 The export uses native arm64 simulators with a matching source-built Godot library. Its pre-build phase reads Xcode's selected
 platform and rebuilds/copies the matching framework automatically. Select an
-iPad Simulator in Xcode and build. Switching back to a physical iPad rebuilds
+iPad or iPhone Simulator in Xcode and build. Before the first simulator build of
+an existing device export, refresh its framework before Xcode resolves the
+XCFramework slice:
+
+```sh
+PLATFORM_NAME=iphonesimulator python3 engine/build-ios/export-main-sync/sync-openbfme.py
+```
+
+Xcode can resolve the old library before its pre-build refresh phase, so doing
+this once avoids linking a stale x86 simulator library. The exporter selects the
+iOS preset by name and platform, independent of its numeric position in
+`export_presets.cfg`. Switching back to a physical iPad rebuilds
 and copies the device framework; the two native build directories are separate.
 
 To prepare the simulator framework explicitly:
@@ -166,6 +177,12 @@ The exporter inserts it into a local template automatically and selects the
 Compatibility renderer for the simulator. The project selects arm64 for simulator
 builds; no Rosetta destination is required. Physical iPad builds remain arm64
 with the Mobile renderer.
+Simulator exports render into a 960-pixel-wide viewport (540 high at 16:9,
+expanded to the device aspect ratio), then upscale to the display. This also
+reduces menu canvas work: the Duo's Compatibility driver was observed using
+Apple's CPU software rasterizer at its native 2853 × 2007 resolution.
+Embedded APT 3D scenes are also capped at 320 pixels on their longest axis
+(`openbfme/rendering/menu_3d_max_dimension`); device exports leave this uncapped.
 Simulator interaction cannot validate physical iPad performance, removable-drive
 access, or the silent switch.
 
@@ -182,3 +199,57 @@ folder before signing, for either device or simulator. `rsync` updates changed
 files on subsequent builds. Setting the toggle back to `NO` removes that folder
 from the built app; original installations remain untouched. Allow several GB
 of additional disk space and a longer initial build. Nothing is committed to Git.
+
+## Startup artwork
+
+Prepare startup art from your own installation before exporting (requires ffmpeg):
+
+```sh
+python3 tools/release/prepare_startup_art.py \
+  --loading-image /path/to/load_w_ea.jpg \
+  --ring-movie /path/to/data/movies/LoadingRing.vp6
+```
+
+The loading image is cropped to its upper 4:3 panel, removing the retail texture's
+black padding. Generated files in `godot/startup_art` are ignored by Git and
+included in local exports. Without them the startup screen shows text and a
+progress bar. With them it fills the display with cropped artwork and overlays the animated retail ring at the bottom
+while the scene and game files load, on desktop and iOS. The native iOS launch
+screen uses the same artwork and a static first ring frame; animation starts
+once Godot runs. Synchronous archive verification and world setup can still pause
+the animation. Xcode source refresh also updates the launch artwork.
+
+## Automatic single-player quick resume
+
+Normal iOS launches automatically resume the last interrupted single-player
+match. A dedicated checkpoint is taken when entering a match, every 30 seconds
+of foreground play, and synchronously on focus loss / application pause. Repeated
+lifecycle callbacks within 1.5 seconds at the same logic frame are deduplicated.
+A still-running app returning to the foreground continues its current match;
+it does not reload the checkpoint. Scripted test/benchmark launches skip automatic
+resume. Desktop builds keep their existing startup behavior.
+
+Files live under `user://quick-resume/<selected game>/`, separate from manual
+saves and Quick Save. Alternating `a.obfmesave` / `b.obfmesave` snapshots are written
+through the normal atomic save writer. Only after success is `current.state`
+atomically replaced with the slot and camera/selection/pause metadata. Interrupted
+or refused writes retain the previously published checkpoint. Deliberately leaving
+or finishing a game clears the marker so it will not resurrect an ended match.
+Network games, replays and benchmark matches are excluded; native snapshot/data
+compatibility checks still apply.
+
+On a cold start, the normal saved-game loader restores the match and verifies its
+frame and state hash, then restores camera position/orientation/height, selection,
+and pause/quit-menu state. It does not restore arbitrary menu animations. Before
+loading, `attempt.state` records the checkpoint generation. A crash or failure during
+restoration disables automatic retry of that generation, preventing launch loops;
+the underlying save remains available for recovery. A failure is reported in the
+main-menu update/status line, console and session log. To recover manually, copy
+the selected `.obfmesave` into the normal Save folder and use Load Game.
+
+The background save must finish within iOS's short suspension window; there is
+no guarantee of a callback for every termination. Periodic saves limit loss to
+the last completed checkpoint when no final save is possible. Save durations are
+logged as `QUICK RESUME saved ... in ... ms`. Functional cold-start tests run
+headlessly on the Mac; actual iPhone suspension/termination timing still needs
+on-device verification.

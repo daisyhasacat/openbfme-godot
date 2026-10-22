@@ -94,6 +94,10 @@ func _load() -> void:
 
 func _save() -> void:
 	var cfg := ConfigFile.new()
+	var loaded := cfg.load(CONFIG)
+	if loaded != OK and loaded != ERR_FILE_NOT_FOUND:
+		_status.text = "Could not read %s: %s" % [CONFIG, error_string(loaded)]
+		return
 	var enabled: Array = []
 	for p in _order:
 		if _enabled.get(p, false):

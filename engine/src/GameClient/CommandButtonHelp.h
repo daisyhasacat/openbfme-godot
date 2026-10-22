@@ -75,6 +75,9 @@ struct HelpBoxSettings
 // One string row of the InGameUI block (data\ini\ingameui.ini, parseAsciiString), e.g. PlaceTerrainResourceClaimantDecal (the farm placement's mapped
 // image). The other rows are skipped as HelpBoxSettings skips them. A missing file, block or row is an error (no default); `memory` (tests) replaces the file
 bool loadInGameUiString(ArchiveFileSystem *fs, const std::string *memory, const char *field, std::string &out, std::string *error);
+// Numeric scanners preserve INI macros/math; these helpers do not convert units.
+bool loadInGameUiUnsigned(ArchiveFileSystem *fs, const std::string *memory, const char *field, unsigned &out, std::string *error);
+bool loadInGameUiReal(ArchiveFileSystem *fs, const std::string *memory, const char *field, float &out, std::string *error);
 
 // What the help box draws (window pixels), in order.
 struct HelpDrawOp

@@ -115,8 +115,18 @@ bool LiveScripting::start(const std::string &mapFolder, std::string *error)
 			snap.words()[w] = before[w];
 		}
 		++m_stats.modelConditionChanges;
-		const ModelConditionFlags previous = snap;
 		m_engine->updateModelConditionEvents(info, now, &snap, m_logic.getFrame());
+	});
+	// S-090: draw-state events follow client flushes, independently of AI sleep.
+	m_logic.setAnimationConditionEventProc([this](Object &obj, const std::array<std::uint32_t, 19> &before) {
+		LuaObjectInfo info;
+		if (!describe(obj, &info, false)) return;
+		ModelConditionFlags now, snap;
+		for (size_t w = 0; w < 19; ++w)
+		{
+			now.words()[w] = obj.getModelConditionBits()[w];
+			snap.words()[w] = before[w];
+		}
 		if (obj.isKindOfName("CAPTUREFLAG"))
 		{
 			// Capture flag LuaEvents select subobjects through the shipped generic handler.
@@ -127,7 +137,7 @@ bool LiveScripting::start(const std::string &mapFolder, std::string *error)
 			{
 				const auto *data = dynamic_cast<const W3DModelDrawModuleData *>(n.data.get());
 				if (!data) continue;
-				const AnimationStateInfo *oldState = data->findBestAnimationState(previous);
+				const AnimationStateInfo *oldState = data->findBestAnimationState(snap);
 				const AnimationStateInfo *newState = data->findBestAnimationState(now);
 				if (oldState == newState) continue;
 				for (const auto &state : { std::make_pair(oldState, 2), std::make_pair(newState, 1) })
@@ -157,6 +167,7 @@ void LiveScripting::detach()
 		m_logic.setWorldHooks(GameLogic::WorldHook(), GameLogic::WorldHook());
 		m_logic.setScriptEventProc(GameLogic::ScriptEventProc());
 		m_logic.setModelConditionEventProc(GameLogic::ModelConditionEventProc());
+		m_logic.setAnimationConditionEventProc(GameLogic::ModelConditionEventProc());
 		m_attached = false;
 	}
 }

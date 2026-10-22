@@ -56,8 +56,9 @@ jobs:
         run: |
           set -euo pipefail
           version=$(git describe --tags --match 'v[0-9]*' --exclude '*-playtest.*' --always --abbrev=10)
-          python3 tools/release/make_archive.py --extract-all "$RUNNER_TEMP/linux-package/openbfme-$version-linux-x64.tar.gz" "$RUNNER_TEMP/game-payload"
-          python3 tools/release/appimage.py stage --package "$RUNNER_TEMP/game-payload" --output "$RUNNER_TEMP/OpenBFME.AppDir"
+          package="$RUNNER_TEMP/openbfme-$version-linux-x64"
+          python3 tools/release/make_archive.py --extract-all "$RUNNER_TEMP/linux-package/openbfme-$version-linux-x64.tar.gz" "$package"
+          python3 tools/release/appimage.py stage --package "$package" --output "$RUNNER_TEMP/OpenBFME.AppDir"
           desktop-file-validate "$RUNNER_TEMP/OpenBFME.AppDir/openbfme.desktop"
           mkdir -p dist
           export ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 VERSION="$version"
@@ -70,7 +71,7 @@ jobs:
           set -euo pipefail
           image=$(realpath dist/*.AppImage)
           cd "$RUNNER_TEMP"
-          APPIMAGE_EXTRACT_AND_RUN=1 timeout 90 "$image" --headless --script res://tests/appimage_boot_test.gd 2>&1 | tee "$GITHUB_WORKSPACE/dist/appimage-boot.log"
+          APPIMAGE_EXTRACT_AND_RUN=1 timeout 90 "$image" --headless -- --appimage-boot-test 2>&1 | tee "$GITHUB_WORKSPACE/dist/appimage-boot.log"
           grep -Fx 'APPIMAGE BOOT PASS' "$GITHUB_WORKSPACE/dist/appimage-boot.log"
       - name: Upload AppImage, checksum and boot log
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

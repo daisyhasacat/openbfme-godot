@@ -216,7 +216,7 @@ retail movies. **The whole Online menu is a test feature** (docs/PLAYING.md).
 | The lobby client | `engine/src/GameNetwork/OnlineLobbyClient.{h,cpp}` | The online counterpart of `LANAPI`: guest sign-in, the game list, the message of the day, create (name, password, the setup), join (the profile identity, the password), the player's own slot, the host's slots and setup, ready, chat, kick, start, leave; it polls the staging room once a second. It does no I/O: it queues HTTP requests (one in flight, in order) and reads the answers. Every answer is checked (version 1, the fields, the faction and colour ranges); a refusal or a transport error is an event with the lobby's code and message. |
 | The screens | `engine/src/GameClient/GUI/AptScreens/AptOnlineShell.{h,cpp}` | `OnlineShell.apt` (CodePrefix `AptOnline`) with retail's pages: `AptOnline::ShellLoadScreen` / `ShellUnloadScreen` make and delete the page objects, which register the retail names (`AptOnline::Login::*` + `AptOnlineLogin::InitGadgets`, `AptOnline::OnlineHome::*` + `AptOnlineHome::InitGadgets`, `AptOnline::CustomMatch::*` + `AptOnlineCustomMatch::InitGadgets`, `GameSorter::OnSort*`). The staging room is AptSkirmish's MpGameSetup handling on the lobby game, as `AptLanLobby` does for the LAN. RW addresses and the BFME2 decomp files are cited in the header; the gaps are stops S-4070 .. S-4076. |
 | The transport | `godot/scripts/online_http.gd`, `AptMenuPlayer.set_online / online_take_requests / online_deliver / online_status / online_apply` | Godot's `HTTPRequest` (TLS for https), no redirects, the lobby URL checked as ONLINE-2's client does. |
-| The game | `godot/scripts/game.gd` | The main menu's Online (`AptMainMenu::OnlineButtonPressed`) opens the screens on the lobby from `--online-lobby`, `OPENBFME_LOBBY`, Options.ini `OpenBFMEOnlineLobby`, else `https://play.openbfme.com`. The guest name is kept in Options.ini (`OpenBFMEOnlineName`). The staging room's START (`ShellAction::OnlineGameStart`) is played by ONLINE-2's path (`GameWorld.net_online`). `--online-walk=host|join` drives the screens for tests and screenshots. |
+| The game | `godot/scripts/game.gd` | The main menu's Online (`AptMainMenu::OnlineButtonPressed`) and command-line online games always use `https://secondage.dev` in this fork. Legacy `--online-lobby`, `OPENBFME_LOBBY` and Options.ini `OpenBFMEOnlineLobby` overrides are ignored. The launcher also uses Second Age for invite links and online counts, ignoring its saved lobby override. The guest name is kept in Options.ini (`OpenBFMEOnlineName`). The staging room's START (`ShellAction::OnlineGameStart`) is played by ONLINE-2's path (`GameWorld.net_online`). `--online-walk=host|join` drives the screens for tests and screenshots. |
 | The lobby | `services/online/lobby/src/lobby.mjs` | `GET /v1/motd`: the message of the day (`MOTD`, up to 2,000 bytes, `\n` for line breaks), `null` when none. |
 
 Proof (2026-10-12, the Deck, two Godot clients on a local `server.mjs`):
@@ -1296,3 +1296,70 @@ the started games the account left (`"left": [ids]`, newest 32; optional for the
 after the leave lists those games neither as REJOIN nor as WATCH (the lobby refuses a player of the game as its spectator, `409 player`). A rejoin or
 watch that fails before it is live (`game.gd _online_game_failed`) is no leave: the client forgets the game without `POST .../leave`, the network
 session sends no frame counts and no PLAYERLEAVE for an incarnation that never went live, and the lobby keeps offering the game for a rejoin.
+
+
+This fork automatically sends a bounded desync diagnostic to the same lobby when
+an online match goes out of sync (`POST /v1/games/<id>/desync`). Each original
+participant can submit one report per match, authenticated with their lobby
+session. The report contains the platform, build commit and the first 16,000
+bytes of the desync dump (or its summary), including subsystem and object hashes.
+It excludes the session log, replay and credentials. The client queues it privately
+and retries interrupted uploads, including after restart. This diagnostic is
+automatic independently of match-statistics sharing. Reports are retained with
+the match and visible only in its administrator detail view, never public history.
+Both apps must be rebuilt, and the server must include this endpoint.
+
+## Unattended tests on this fork
+
+Test builds have `testing/remote_control/enabled=true` in `godot/project.godot`.
+After opening the main menu they register automatically with Second Age, using
+a separate saved guest identity (`user://remote_testing.cfg`). There is no
+per-run interaction on either device. Set that project setting to `false` for
+builds that should not be controlled for testing. A client already playing or
+outside the main menu refuses a new test rather than interrupting its game.
+
+The administrator can list devices, pair a host and joiner, or cancel a run:
+
+```sh
+python3 tools/net/remote_testing.py list
+python3 tools/net/remote_testing.py run --clients HOST_ID JOINER_ID \
+  --map 'maps/map wor carrock/map wor carrock.map' --frames 1500 --timeout-seconds 600
+python3 tools/net/remote_testing.py cancel RUN_ID
+```
+
+The tool signs administrator API requests on the host through SSH; server keys
+never leave the host. The same restricted API is available through the passkey
+gateway: `GET /v1/admin/testing`, `POST /v1/admin/testing` with `action: run`
+(`clients`, `map`, `frames`, `timeoutSeconds`) or `action: cancel` (`run`).
+Ordinary players cannot enqueue commands. Clients poll `/v1/testing/poll` with
+their own guest sessions. Commands are limited to this fixed scenario and stop;
+there is no remote shell, arbitrary script, file upload, or executable command.
+
+The host creates a two-player room; the server gives its ID to the joiner. The
+existing online driver joins, readies, starts when both players are present,
+and enters the real relay game. Both peers enable the existing `ScriptedPlayer`:
+selection, movement, attack-move, stop, unit/structure production, upgrades and
+powers go through normal lockstep commands. Individual actions depend on the
+faction's available commands and resources; a run does not claim every action
+was executed. Every two seconds the client reports frames, passed CRC checks
+and scripted command counts. A pass requires **both** clients to reach the
+requested frame count plus CRC delivery grace, pass the requested number of
+configured CRC intervals, and issue scripted commands. These are client-reported results,
+not independent verification of simulation correctness.
+
+A desync or explicit client failure fails the run and stops its partner; the
+automatic desync reporter uploads diagnostics separately. Deadline expiry fails
+hung, disconnected, backgrounded or missing clients. Restarted clients retain
+the last run ID and never repeat its commands. Run results persist through a
+server restart (`testing-run:*` metadata); connected-device registrations are
+short-lived and reappear on the next poll. Cleanup leaves the test room and
+returns the clients through the score screen. iOS must remain foregrounded:
+this cannot wake a suspended app or launch an app that is not running. Both
+apps must include this change before they appear in the device list.
+
+Multiplayer entry keeps automatic simulation disabled until the local HUD/audio
+setup is complete, the network session has sent LOADCOMPLETE, and the existing
+peer load barrier confirms all participating clients are loaded. While waiting,
+the client services the handshake with zero simulation time and shows a waiting
+message. Scripted test commands also wait for this barrier. A missing peer causes
+an explicit loading timeout after three minutes rather than starting early.

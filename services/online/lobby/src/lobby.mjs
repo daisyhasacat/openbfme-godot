@@ -1,4 +1,7 @@
+import { RemoteTesting, TestingError } from './remote-testing.mjs';
+import { MAX_REPORT_BYTES, ReportError, makeStatisticsMatch, validateReport, summarizeMatch, accountStatistics, persistReport, loadStatistics } from './match-statistics.mjs';
 import { webResponse } from './webui.mjs';
+import { gameRecord, listGames, ManagementQueryError } from './management.mjs';
 // OpenBFME online lobby. GPL-3.0.
 //
 // The lobby's logic (lane ONLINE-2, docs/ONLINE.md phase O1), without a platform: the Cloudflare Worker + Durable Object (worker.mjs) and the self-hosted
@@ -237,7 +240,11 @@ export class Lobby {
     for (const r of this.config.relays) {
       if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$/.test(r.address)) throw new Error(`lobby: relay address ${r.address} must be a.b.c.d:port`);
     }
+    this.testing = new RemoteTesting(this);
     this.users = new Map(); // persisted guest identities and moderation revisions; never session tokens
+    this.matchStatistics = new Map();
+    this.desyncReports = new Map();
+    this.history = new Map(); // durable sanitized completed/cancelled games, separate from expiring live rooms
     this.games = new Map(); // id -> game
     this.buckets = new Map(); // rate limit key -> { tokens, at }
     this.relayStatus = new Map(); // INFRA-2 r2: relay address -> its uploader's last status (relayStatus())
@@ -315,9 +322,13 @@ export class Lobby {
   }
 
   load(games, relayStatus = []) {
+    this.testing.load(relayStatus);
+    this.matchStatistics = loadStatistics(relayStatus);
+    this.desyncReports = new Map(relayStatus.filter(r => r.kind === "match-desync").map(r => [r.id + ":" + r.slot, r]));
     for (const g of games) this.games.set(g.id, g);
     for (const r of relayStatus) {
       if (r.kind === 'user') this.users.set(r.id, r);
+      else if (r.kind === 'game-history') this.history.set(r.id, r);
       else if (r.relay) this.relayStatus.set(r.relay, r);
     }
     // Existing matches predate the directory; recover their display identities without credentials.
@@ -410,7 +421,7 @@ export class Lobby {
   }
   dashboard() {
     const online = this.onlineUsers();
-    const games = [...this.games.values()].filter((g) => g.state === 'open' || (g.state === 'started' && !g.finished))
+    const games = [...this.games.values()].filter((g) => !g.roomCode && (g.state === 'open' || (g.state === 'started' && !g.finished)))
       .map((g) => ({ ...this.publicGame(g), createdAt: g.created, startedAt: g.startedAt ?? null,
         capacity: g.slots.filter((slot) => slot.state !== 'closed').length,
         roster: g.slots.filter((slot) => slot.state === 'player' || AI_STATES.has(slot.state)).map((slot) => ({ name: slot.name, computer: AI_STATES.has(slot.state) })) }));
@@ -423,9 +434,12 @@ export class Lobby {
     const search = String(query.get('search') ?? '').toLowerCase().slice(0, 100);
     const after = String(query.get('after') ?? '');
     const limit = intIn(Number(query.get('limit') ?? 50), 1, 100, 'limit');
-    const rows = [...this.users.values()].filter((u) => u.id > after && (!search || u.name.toLowerCase().includes(search) || u.id.toLowerCase().includes(search)))
+    const status = query.get('status') ?? 'all';
+    if (!['all', 'online', 'suspended'].includes(status)) throw bad('bad_field', 'unknown account status');
+    const rows = [...this.users.values()].filter((u) => u.id > after && (status !== 'online' || online.has(u.id)) && (status !== 'suspended' || u.banned)
+      && (!search || [u.name, u.id, ...(u.previousNames ?? [])].some((value) => value.toLowerCase().includes(search))))
       .sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).slice(0, limit + 1);
-    return { v: VERSION, users: rows.slice(0, limit).map((u) => ({ ...u, online: online.has(u.id), lastSeenAt: u.lastSeenAt ?? null })),
+    return { v: VERSION, users: rows.slice(0, limit).map((u) => ({ ...u, statistics: accountStatistics(this.matchStatistics.values(), u.id, { details: false }), online: online.has(u.id), lastSeenAt: u.lastSeenAt ?? null })),
       next: rows.length > limit ? rows[limit-1].id : null };
   }
   async moderateUser(id, body) {
@@ -439,6 +453,7 @@ export class Lobby {
     else if (body.action === 'rename') {
       next.name = str(body.name, 24, 'name').trim();
       if (!next.name) throw bad('bad_field', 'name must not be blank');
+      next.previousNames = [...new Set([...(user.previousNames ?? []), user.name])].filter((name) => name !== next.name).slice(-20);
     } else throw bad('bad_field', 'unknown user action');
     await this.saveUser(next);
     if (body.action === 'ban' || body.action === 'revoke') this.present.delete(id);
@@ -448,6 +463,96 @@ export class Lobby {
     }
     this.statsCache = null;
     return { v: VERSION, user: next };
+  }
+
+  managedGames(query, options) {
+    try { return listGames(this, query, options); }
+    catch (error) { if (error instanceof ManagementQueryError) throw bad('bad_field', error.message); throw error; }
+  }
+  managedGame(id) {
+    const current = this.games.get(id);
+    const record = this.history.get(id) ?? (current ? gameRecord(this, current) : null);
+    if (!record) throw new LobbyError(404, 'no_game', 'this game is not available');
+    return { v: VERSION, game: { ...record, desyncReports: [...this.desyncReports.values()].filter(r => r.id === id), statistics: this.matchStatistics.has(id) ? summarizeMatch(this.matchStatistics.get(id), { details: true }) : null } };
+  }
+  async archiveGame(game) {
+    const record = gameRecord(this, game);
+    await this.env.store.saveMeta?.(`game-history:${game.id}`, record);
+    this.history.set(game.id, record);
+  }
+  async restoreArchives() {
+    for (const game of [...this.games.values(), ...this.history.values()]) if ((game.startedAt || game.state === 'completed') && !this.matchStatistics.has(game.id)) await this.prepareStatistics(game);
+    for (const game of this.games.values()) if ((game.finished || game.state === 'closed') && !this.history.has(game.id)) await this.archiveGame(game);
+  }
+  async manageGame(id, body) {
+    const game = this.game(id);
+    if (body.revision !== game.seq) throw new LobbyError(409, 'revision', 'the room changed: refresh before trying again');
+    if (game.finished || game.state === 'closed') throw new LobbyError(409, 'finished', 'completed games are read-only');
+    if (body.action === 'announce') {
+      const text = str(body.text, 200, 'text').trim();
+      if (!text) throw bad('bad_field', 'message must not be blank');
+      this.event(game, text, 'Server');
+      await this.save(game);
+    } else if (body.action === 'close') {
+      if (game.state !== 'open') throw new LobbyError(409, 'started', 'only waiting rooms can be closed; relay matches continue independently');
+      this.event(game, 'The administrator closed this room', 'Server');
+      game.state = 'closed';
+      game.completedAt = this.env.now();
+      await this.save(game);
+      await this.archiveGame(game);
+      this.games.delete(id);
+      await this.env.store.deleteGame?.(id);
+      this.wake(id);
+    } else throw bad('bad_field', 'unknown game management action');
+    return this.managedGame(id);
+  }
+
+  async prepareStatistics(game) {
+    if (this.matchStatistics.has(game.id)) return;
+    const record = makeStatisticsMatch(game);
+    await this.env.store.saveMeta?.(`match-statistics:${game.id}`, record);
+    this.matchStatistics.set(game.id, record);
+  }
+  async reportDesync(account, id, body) {
+    const match = this.matchStatistics.get(id);
+    if (!match) throw new LobbyError(404, 'no_match', 'no started match for diagnostics');
+    const person = match.roster.find(p => p.accountId === account.id && !p.computer);
+    if (!person) throw new LobbyError(403, 'not_a_player', 'only original participants may report diagnostics');
+    this.limit(`desync:${account.id}`, 6, 6);
+    if (!body || body.v !== 1 || typeof body.platform !== 'string' || body.platform.length > 64 ||
+        typeof body.commit !== 'string' || body.commit.length > 64 || typeof body.dump !== 'string' || !body.dump.startsWith('Frame #') && !body.dump.startsWith('DESYNC:') ||
+        new TextEncoder().encode(JSON.stringify(body)).length > 48000 || Object.keys(body).some(k => !['v', 'platform', 'commit', 'dump'].includes(k)))
+      throw bad('bad_report', 'invalid or oversized desync report');
+    const key = id + ':' + person.slot;
+    const old = this.desyncReports.get(key);
+    if (old) {
+      if (JSON.stringify(old.body) !== JSON.stringify(body)) throw new LobbyError(409, 'report_exists', 'desync report already stored');
+      return { v: 1, stored: true, unchanged: true };
+    }
+    const entry = { kind: 'match-desync', id, slot: person.slot, receivedAt: this.env.now(), body };
+    await this.env.store.saveMeta?.('match-desync:' + key, entry);
+    this.desyncReports.set(key, entry);
+    return { v: 1, stored: true };
+  }
+
+  async reportStatistics(account, id, body) {
+    const match = this.matchStatistics.get(id);
+    if (!match) throw new LobbyError(404, 'no_match', 'no started match for statistics');
+    const person = match.roster.find(p => p.accountId === account.id && !p.computer);
+    if (!person) throw new LobbyError(403, 'not_a_player', 'only the original match participants may report statistics');
+    this.limit(`statistics:${account.id}`, 12, 6);
+    let report;
+    try { report = validateReport(body, match); }
+    catch (error) { if (error instanceof ReportError) throw new LobbyError(error.status, 'bad_report', error.message); throw error; }
+    const old = match.reports[person.slot];
+    if (old) {
+      if (JSON.stringify(old.body) !== JSON.stringify(report)) throw new LobbyError(409, 'report_exists', 'this participant already reported a different snapshot');
+      return { v: 1, stored: true, unchanged: true, status: summarizeMatch(match).status };
+    }
+    const entry = { slot: person.slot, receivedAt: this.env.now(), body: report };
+    await persistReport(this.env.store, id, entry);
+    match.reports[person.slot] = entry;
+    return { v: 1, stored: true, status: summarizeMatch(match).status };
   }
 
   // ---- games ----
@@ -495,6 +600,7 @@ export class Lobby {
     for (const [id, g] of this.games) {
       const keep = g.state === 'started' ? this.config.startedGameKeepMs : this.config.openGameIdleMs;
       if (now - g.touched > keep) {
+        if (g.finished && !this.history.has(id)) continue; // retain legacy/unarchived records until durable migration succeeds
         this.games.delete(id);
         this.env.store.deleteGame?.(id);
         this.wake(id);
@@ -621,7 +727,7 @@ export class Lobby {
   // ONLINE-4: `running` also lists the started games (the server browser offers them to watch: POST .../spectate), after the open ones
   list(running = false) {
     this.sweep();
-    const games = [...this.games.values()].filter((g) => !g.roomCode && (g.state === 'open' || (running && g.state === 'started')))
+    const games = [...this.games.values()].filter((g) => !g.roomCode && (g.state === 'open' || (running && g.state === 'started' && !g.finished)))
       .sort((a, b) => (b.state === 'open') - (a.state === 'open') || b.created - a.created).slice(0, 200).map((g) => this.publicGame(g));
     return { v: VERSION, games };
   }
@@ -867,6 +973,7 @@ export class Lobby {
     g.startedAt = this.env.now();
     this.event(g, 'the game started');
     await this.save(g);
+    await this.prepareStatistics(g);
     // ONLINE-2 r2 (Sol: /v1/replays/<id>/start handed anyone a live ticket): the published record of the game names no slot, no relay and no
     // ticket ("openbfme-replay-start", GameNetwork/OnlineStart.h): enough to turn the relay's log into a replay, never a credential
     const replayStart = { v: VERSION, kind: 'openbfme-replay-start', game: g.id, runAhead: this.config.runAhead, crcInterval: this.config.crcInterval, profile: g.profile, setup };
@@ -916,7 +1023,7 @@ export class Lobby {
   // ONLINEUX-1 r2 (Sol 4): `left` names the started games the account left (newest first, at most MINE_LEFT_MAX): they stay in the running list for
   // spectators, and a client started after the leave knows them (it offers neither a rejoin nor a WATCH the lobby refuses to a player of the game)
   mine(account) {
-    const started = [...this.games.values()].filter((g) => g.state === 'started' && this.slotOf(g, account) >= 0);
+    const started = [...this.games.values()].filter((g) => g.state === 'started' && !g.finished && this.slotOf(g, account) >= 0);
     const games = started
       .filter((g) => !g.left?.[this.slotOf(g, account)])
       .map((g) => ({ ...this.publicGame(g), slot: this.slotOf(g, account), rejoin: `/v1/games/${g.id}/rejoin` }));
@@ -935,6 +1042,7 @@ export class Lobby {
     const slot = this.slotOf(g, account);
     if (slot < 0) throw new LobbyError(403, 'not_in_game', 'you have no slot in this game');
     if (g.state !== 'started' || !g.starts?.[slot]) throw new LobbyError(409, 'not_started', 'the game has not started');
+    if (g.finished) throw new LobbyError(409, 'finished', 'the game has finished: it cannot be rejoined');
     if (g.left?.[slot]) throw new LobbyError(409, 'left', 'you left this game: it can not be rejoined'); // ONLINEUX-1
     g.rejoins ??= {};
     const generation = (g.rejoins[slot] ?? 0) + 1;
@@ -958,6 +1066,7 @@ export class Lobby {
     if (this.slotOf(g, account) >= 0) throw new LobbyError(409, 'player', 'players of the game play it; spectators are other accounts');
     if (g.roomCode) throw new LobbyError(403, 'private', 'a private room is not open to spectators'); // ONLINEHUB-1 (Sol)
     if (g.state !== 'started' || !g.starts) throw new LobbyError(409, 'not_started', 'the game has not started yet: ask again once it has');
+    if (g.finished) throw new LobbyError(409, 'finished', 'the game has finished: watch its replay instead');
     const index = g.spectatorsIssued ?? 0;
     if (index >= 16) throw new LobbyError(409, 'spectators_full', 'the game has had its 16 spectator places');
     g.spectatorsIssued = index + 1;
@@ -1047,10 +1156,14 @@ export class Lobby {
   // the seq and the idle clock are not touched)
   async markFinished(id) {
     const g = this.games.get(id);
-    if (!g || g.finished) return;
-    g.finished = true;
-    this.statsCache = null;
-    await this.env.store.saveGame?.(g);
+    if (!g) return;
+    if (!g.finished) {
+      const completed = { ...g, finished: true, completedAt: this.env.now() };
+      await this.env.store.saveGame?.(completed);
+      Object.assign(g, completed);
+      this.statsCache = null;
+    }
+    if (!this.history.has(id)) await this.archiveGame(g);
   }
   async replayFile(account, id, which) {
     const store = this.logStore();
@@ -1148,11 +1261,11 @@ export async function route(lobby, req) {
   try {
     const p = req.path.split('/').filter(Boolean);
     const m = req.method;
-    const body = async () => {
+    const body = async (limit = MAX_JSON_BYTES) => {
       // ONLINE-2 r2 (Sol: a chunked 20 KB body passed the Content-Length check): the bytes actually received count, whatever the headers say
-      if (Number(req.headers['content-length'] ?? 0) > MAX_JSON_BYTES) throw new LobbyError(413, 'too_big', `request body over ${MAX_JSON_BYTES} bytes`);
+      if (Number(req.headers['content-length'] ?? 0) > limit) throw new LobbyError(413, 'too_big', `request body over ${limit} bytes`);
       const raw = await req.bytes();
-      if (raw.length > MAX_JSON_BYTES) throw new LobbyError(413, 'too_big', `request body over ${MAX_JSON_BYTES} bytes`);
+      if (raw.length > limit) throw new LobbyError(413, 'too_big', `request body over ${limit} bytes`);
       try {
         return raw.length ? (JSON.parse(dec.decode(raw)) ?? {}) : {};
       } catch {
@@ -1168,6 +1281,18 @@ export async function route(lobby, req) {
       return { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: `<!doctype html><meta charset="utf-8"><title>OpenBFME game invite</title><h1>OpenBFME online game</h1><p><a href="${link}">Join game ${p[1]}</a> (opens the OpenBFME launcher).</p><p>Or start OpenBFME with <code>--online-join ${p[1]}</code>. Online play is a test feature.</p>` };
     }
     if (!v1) return json(404, { v: VERSION, error: 'not_found', message: 'unknown path' });
+    if (p[1] === 'admin' && p[2] === 'testing' && p.length === 3) {
+      const raw = await req.bytes(); await lobby.adminCheck(req, raw);
+      try {
+        if (m === 'GET') return json(200, await lobby.testing.list());
+        if (m === 'POST') return json(200, await lobby.testing.manage(await body()));
+      } catch(e) { if(e instanceof TestingError) throw bad('bad_test',e.message); throw e; }
+    }
+    if (p[1] === 'testing' && p[2] === 'poll' && p.length === 3 && m === 'POST') {
+      const account = await lobby.account(req.headers.authorization);
+      try { return json(200, await lobby.testing.heartbeat(account, await body())); }
+      catch(e) { if(e instanceof TestingError) throw bad('bad_test',e.message); throw e; }
+    }
     if (m === 'GET' && p[1] === 'health') return json(200, lobby.health());
     // ONLINE-4: the message of the day the game's online home page shows (OnlineHome.apt); null when the lobby has none
     // ONLINECOUNT-1: the counts the menus and the launcher show. No sign-in needed; a valid token on the request also marks its player present
@@ -1180,11 +1305,34 @@ export async function route(lobby, req) {
       lobby.limit(`dashboard:${req.ip}`, 30, 10);
       return json(200, lobby.dashboard());
     }
+    if (m === 'GET' && p[1] === 'history' && p.length === 2) {
+      lobby.limit(`history:${req.ip}`, 30, 10);
+      return json(200, lobby.managedGames(req.query, { history: true }));
+    }
+    if (p[1] === 'admin' && p[2] === 'games') {
+      lobby.limit(`game-management:${req.ip}`, 60, 20);
+      const raw = await req.bytes();
+      await lobby.adminCheck(req, raw);
+      if (m === 'GET' && p.length === 3) return json(200, lobby.managedGames(req.query, { admin: true }));
+      if (m === 'GET' && p.length === 4) return json(200, lobby.managedGame(p[3]));
+      if (m === 'POST' && p.length === 4) return json(200, await lobby.manageGame(p[3], await body()));
+      return json(404, { v: VERSION, error: 'not_found', message: 'unknown game management path' });
+    }
+    if (m === 'GET' && p[1] === 'players' && p[2] === 'me' && p[3] === 'statistics' && p.length === 4) {
+      const account = await lobby.account(req.headers.authorization);
+      lobby.limit(`account-statistics:${account.id}`, 30, 10);
+      return json(200, accountStatistics(lobby.matchStatistics.values(), account.id));
+    }
     if (p[1] === 'admin' && p[2] === 'users') {
       lobby.limit(`moderation:${req.ip}`, 60, 20);
       const raw = await req.bytes();
       await lobby.adminCheck(req, raw);
       if (m === 'GET' && p.length === 3) return json(200, lobby.adminUsers(req.query));
+      if (m === 'GET' && p.length === 5 && p[4] === 'statistics') {
+        let id; try { id = decodeURIComponent(p[3]); } catch { throw bad('bad_field', 'invalid user id'); }
+        if (!lobby.users.has(id)) throw new LobbyError(404, 'no_user', 'unknown account');
+        return json(200, accountStatistics(lobby.matchStatistics.values(), id));
+      }
       if (m === 'POST' && p.length === 4) {
         let id;
         try { id = decodeURIComponent(p[3]); } catch { throw bad('bad_field', 'invalid user id'); }
@@ -1246,6 +1394,8 @@ export async function route(lobby, req) {
       return answer(hold?.backoff); // Sol r1: not held for a bound: the client is told how long to wait
 
     }
+    if (m === 'POST' && p.length === 4 && p[3] === 'desync') return json(200, await lobby.reportDesync(account, id, await body(48000)));
+    if (m === 'POST' && p.length === 4 && p[3] === 'statistics') return json(200, await lobby.reportStatistics(account, id, await body(MAX_REPORT_BYTES)));
     const actions = { join: 'join', leave: 'leave', slot: 'setSlot', setup: 'setSetup', ready: 'ready', chat: 'chat', kick: 'kick', start: 'start', rejoin: 'rejoin', spectate: 'spectate' };
     if (m === 'POST' && p.length === 4 && actions[p[3]]) {
       const b = p[3] === 'leave' || p[3] === 'start' || p[3] === 'rejoin' || p[3] === 'spectate' ? {} : await body();

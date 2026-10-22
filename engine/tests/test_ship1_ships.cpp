@@ -65,7 +65,7 @@ Player *shipPlayerAtStart(GameLogic &logic, int start)
 	return nullptr;
 }
 
-// a retail skirmish game on Evendim (a map with standing water and port sites) between two factions; objects are made at will (lane FLY-1's arena)
+// A retail skirmish between two factions; defaults to Evendim (standing water and port sites).
 struct ShipArena
 {
 	starttest::Shared &s;
@@ -75,7 +75,7 @@ struct ShipArena
 	std::unique_ptr<LiveGame> game;
 	Player *a = nullptr, *b = nullptr;
 
-	ShipArena(starttest::Shared &shared, const char *factionA, const char *factionB, unsigned seed = 2)
+	ShipArena(starttest::Shared &shared, const char *factionA, const char *factionB, unsigned seed = 2, const char *mapName = "maps/map mp evendim/map mp evendim.map")
 		: s(shared)
 	{
 		static std::vector<MapCacheEntry> cache;
@@ -85,7 +85,7 @@ struct ShipArena
 			REQUIRE_MESSAGE(IniSkirmishSetupSource::loadMapCache(*s.mount->fs, cache, &error), error);
 		}
 		NewGameMessage m;
-		m.game.mapName = "maps/map mp evendim/map mp evendim.map";
+		m.game.mapName = mapName;
 		m.game.seed = seed;
 		m.game.startingCash = 1500;
 		const char *factions[2] = { factionA, factionB };
@@ -430,7 +430,9 @@ TEST_CASE("ship1 retail: an Elven battle ship sails into range, its five archers
 	CHECK(otherHits == 0);
 	CHECK(shipHits == 20); // 250 / 12.5: the twentieth arrow sank the ship
 	CHECK(shipTaken == 250.0f);
-	CHECK(pitHits == 489); // measured on this tree: the archers turn to the pit after the sinking and shoot it for the rest of the 300 frames
+	// Without half-cell attack nudges the carrier holds its water position;
+	// the fixed 300-frame firing window delivers 488 shore arrows.
+	CHECK(pitHits == 488); // measured on this tree: the archers turn to the pit after the sinking and shoot it for the rest of the 300 frames
 	CHECK(pitTaken == 1500.0f - hp(pitNow));
 	Object *shipNow = logic.findObjectByID(shipId);
 	CHECK((shipNow == nullptr || shipNow->isEffectivelyDead()));
@@ -584,4 +586,77 @@ TEST_CASE("ship1 retail: S-4161: the polygon walk's stale first backward edge is
 	CHECK(row10.front().x == 0);
 	CHECK(row10.back().x == 10);
 	CHECK(std::string(pathstops::kShoreScanStaleEdge).rfind("S-4161 ", 0) == 0);
+}
+
+TEST_CASE("ship1 retail: Forlindon bombardment attacks stay on water and still hit shore buildings")
+{
+	OPENBFME_REQUIRE_START(s);
+	ShipArena arena(*s, "FactionMen", "FactionMordor", 2, "maps/map wor forlindon/map wor forlindon.map");
+	GameLogic &logic = arena.logic();
+	arena.clearCreeps();
+	const Coord3D inland{ 2800.0f, 3600.0f, logic.getGroundHeight(2800.0f, 3600.0f) };
+	REQUIRE_FALSE(underwater(logic, inland.x, inland.y));
+	Object *fortress = arena.make("MordorFortress", arena.b, inland.x, inland.y);
+	auto makeShip = [&](const char *name, float x = 1700.0f) {
+		Object *ship = arena.make(name, arena.a, x, 1400.0f);
+		float waterZ = 0.0f;
+		REQUIRE(underwater(logic, x, 1400.0f, &waterZ));
+		const Coord3D spawn{ x, 1400.0f, waterZ };
+		ship->setPosition(&spawn);
+		return ship;
+	};
+	for (const char *name : { "ElvenShoreBombardShip", "EvilShoreBombardShip" })
+	{
+		CAPTURE(std::string(name));
+		for (bool groundAttack : { false, true })
+		{
+			CAPTURE(groundAttack);
+			Object *ship = makeShip(name);
+			// Keep another ship ahead, as in a fleet approaching the coast.
+			Object *escort = makeShip("ElvenShoreBombardShip", 1800.0f);
+			arena.step(2);
+			AIUpdateInterface *ai = ship->getAIUpdateInterface();
+			REQUIRE(ai != nullptr);
+			const Coord3D start = *ship->getPosition();
+			REQUIRE(underwater(logic, start.x, start.y));
+			// Script source bypasses fog for the distant target; the position order
+			// exercises the player bombard command. This inland point cannot be
+			// reached from the water; repeated attack retries must never nudge ashore.
+			if (groundAttack) REQUIRE(ai->aiAttackPosition(inland, 1000, CMD_FROM_PLAYER));
+			else REQUIRE(ai->aiAttackObject(fortress, CMD_FROM_SCRIPT, 1));
+			WaterWatch watch;
+			for (int f = 0; f < 300; ++f)
+			{
+				arena.step();
+				watch.see(logic, *ship);
+			}
+			CHECK(watch.dry == 0);
+			CHECK(watch.offLevel == 0);
+			logic.destroyObject(ship);
+			logic.destroyObject(escort);
+		}
+
+		Object *ship = makeShip(name);
+		Object *pit = arena.make("MordorOrcPit", arena.b, 2600.0f, 1400.0f);
+		const ObjectID targetId = pit->getID();
+		REQUIRE_FALSE(underwater(logic, pit->getPosition()->x, pit->getPosition()->y));
+		arena.step(2);
+		int hits = 0;
+		logic.combat().setDamageTrace([&](const Object &victim, std::uint32_t, float, float) {
+			if (victim.getID() == targetId) ++hits;
+		});
+		REQUIRE(ship->getAIUpdateInterface()->aiAttackObject(pit, CMD_FROM_SCRIPT, 1));
+		WaterWatch watch;
+		for (int f = 0; f < 300; ++f)
+		{
+			arena.step();
+			watch.see(logic, *ship);
+		}
+		logic.combat().setDamageTrace(nullptr);
+		CHECK(watch.dry == 0);
+		CHECK(watch.offLevel == 0);
+		CHECK(hits > 0); // tolerance: at least one delivered projectile proves shore bombardment still works
+		logic.destroyObject(ship);
+		if (Object *remaining = logic.findObjectByID(targetId)) logic.destroyObject(remaining);
+	}
 }

@@ -2,6 +2,7 @@
 
 #include "doctest.h"
 #include "MoveTestUtil.h"
+#include "GameClient/FormationAssistant.h"
 
 #include <algorithm>
 
@@ -118,6 +119,10 @@ TEST_CASE("commands: a formation move message ends with the units facing the ang
 	Object *b = mw.spawn("Walker", 305.0f, 105.0f);
 	mw.frames(2);
 	mw.select(alice, { a });
+	FormationAssistant formation;
+	std::string formationError;
+	REQUIRE(formation.scan("FormationAssistant\n UnitDefinition Unit\n ObjectFilter = ALL\n End\n FormationTemplate Line\n Rows\n Row = Unit\n End\n End\nEnd\n", &formationError));
+	mw.aiCommands.setFormationAssistant(&formation);
 	GameMessage fm(MSG_DO_MOVETO_FORMATION, alice);
 	fm.appendLocationArgument(Coord3D{ 105.0f, 405.0f, 0.0f });
 	fm.appendRealArgument(3.14159265f);
@@ -524,4 +529,22 @@ TEST_CASE("commands mass response: battalions and rapid retargets start clear ro
 			else CHECK(mover.path()->getLastNode()->getPosition()->x > 2500.0f);
 		}
 	}
+}
+
+TEST_CASE("commands: rotate firing arc turns selected units toward the target without moving")
+{
+ MoveWorld mw;
+ mw.buildMap();
+ const int alice=mw.playerIndex("Alice");
+ Object *unit=mw.spawn("Walker",110.5f,110.5f);
+ mw.frames(2);
+ mw.select(alice,{unit});
+ GameMessage order(MSG_DO_ROTATE_FIRINGARC,alice);
+ order.appendLocationArgument({110.5f,410.5f,0});
+ mw.send(order);
+ mw.frames(30);
+ CHECK(unit->getPosition()->x==110.5f);
+ CHECK(unit->getPosition()->y==110.5f);
+ // tolerance: recovered AIRotateFiringarc::update (BFME2 RVA 0x34274A) completes below 0.01 radians.
+ CHECK(std::fabs(unit->getOrientation()-1.57079632679f)<0.01f);
 }

@@ -197,7 +197,7 @@ public:
 	// half-loaded game) and *error says so. `accept` (optional) checks the loaded state (the frame and state hash a save's header names): a non-empty
 	// answer is a refusal like a refused block. Either way the client is told the objects' model conditions (ClientEventRecorder::loadedObject) and
 	// the state is published and presented (refreshClient), so the next advance continues from the loaded frame.
-	bool loadSnapshot(const std::vector<std::uint8_t> &bytes, std::string *error, const std::function<std::string(GameLogic &)> &accept = nullptr);
+	bool loadSnapshot(const std::vector<std::uint8_t> &bytes, std::string *error, const std::function<std::string(GameLogic &)> &accept = nullptr, bool rewindClient = false);
 	bool closed() const { return m_closed; } ///< lane SAVE-4e: a refused snapshot could not be undone (loadSnapshot)
 	// SMOOTH-1 (protocol owner): the logic frame of the last completion the driver consumed (what local input is stamped against), and the next batch frame
 	UnsignedInt protocolFrame() const { return m_protocolFrame; }

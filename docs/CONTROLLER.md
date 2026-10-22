@@ -83,3 +83,30 @@ unit shows the red attack cursor or controller reticle, and clicking or pressing
 orders an attack on that same target. Direct model hits keep priority; nearby
 attack assistance does not affect building placement or targeted abilities. This
 is an OpenBFME input improvement independent of wall rebalance and weapon range.
+
+## Skirmish lobby
+
+Start starts the game from the skirmish lobby through its normal start checks.
+LB/RB switches between Maps and Rules. The D-pad moves between controls,
+favoring controls aligned with the current row or column. Map lists use Up/Down
+to browse maps. For a closed dropdown, directions move focus without changing
+the setting. Press A to open it, Up/Down to preview a choice, then A to confirm.
+B cancels the preview. Changing tabs also cancels an unconfirmed dropdown.
+This includes the player-color image dropdowns.
+
+In the skirmish lobby, LT cycles Bottom Bar → Players → Maps/Rules; RT cycles backward.
+Thin corner accents in the native menu palette mark the active area.
+D-pad/left-stick navigation stays within it; triggers cancel an unconfirmed
+dropdown before changing area. Mouse movement and real keyboard input leave
+section mode, retaining their existing navigation. Modal profile dialogs remain
+fully navigable. LB/RB still changes Maps/Rules, and Start still starts the game.
+
+Keyboard shortcut: **Shift+Q** immediately closes the game, including during a
+match, without the quit confirmation.
+
+Menu input must not consume gameplay events: when no menu is active, trigger
+motion and A releases go to the gameplay controller. Only releases belonging to
+an earlier menu press are retained across a menu-to-game transition. The real
+scene-dispatch regression in `godot/tests/controller_routing_test.gd` checks RT
+palette open/close, A selection completion, resumed camera panning and release
+ownership. The Lua binding table remains the gameplay action source.

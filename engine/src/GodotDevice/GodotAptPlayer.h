@@ -125,6 +125,7 @@ public:
 	// a game); menu_pointer_moved: the real pointer moved (the focus frame goes); menu_nav_state: { level, focus, frame, focus_rect (stage), targets:
 	// [{ id, kind, rect }], log: [String] } (scripted checks)
 	bool menu_input(const Ref<InputEvent> &event);
+	bool menu_controller_section(int delta);
 	bool menu_has_input() const;
 	// lane SAVE-UI1 / OPTS-6: modal_menu: a menu is the input's top (the world's input is cancelled and not served); menu_escape: the top screen's own Escape
 	// procedure took the key (SaveLoad.apt closes on its release)
@@ -395,7 +396,7 @@ public:
 	void attach_window_manager(WindowManager *wm);
 	void set_native_hook(AptNativeHook *hook);
 	// lane HUD-6: the font the movie's texts draw with for (name, point size): fontsubstitution.ini, the corpus fonts (C++ only; the HUD's help box)
-	Ref<Font> font_for(const std::string &name, float size, float *drawSize);
+	Ref<Font> font_for(const std::string &name, float size, float *drawSize, bool bold = false);
 	// lane UI-6: `font` (from font_for) at `px` pixels with RotWK's GDI text cell (ascent = the cell's baseline, height = the char height)
 	Ref<Font> font_cell(const Ref<Font> &font, int px);
 	// the shell mode's window manager and shell (null in the other modes) and a switch that hands the mouse and keys to the HUD node instead of this player (C++ only)

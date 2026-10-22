@@ -56,6 +56,10 @@
    "reason": "lane HUD-6: the radial command bubbles' layout and look in window pixels: user interface, reads the logic and the drawables; its presses go through ControlBar::pressButton"
   },
   {
+   "glob": "src/GameClient/FloatingText.cpp",
+   "reason": "client floating income labels: position, rise and fade on the presentation clock; reads income events and shroud, never changes simulation state"
+  },
+  {
    "glob": "src/GameClient/TerrainResourceFeedback.cpp",
    "reason": "lane OWNERFIX-2: the resource claim feedback (the placement's claimable percentage, its colour and decal mask, the selected resource building's claim decals): user interface, reads the logic's claim grid and shroud, never changes them"
   },

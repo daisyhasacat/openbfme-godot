@@ -1,0 +1,37 @@
+[Unit]
+Description=OpenBFME administrator passkey session gateway
+After=network.target openbfme-online.service secondage-admin.service
+Wants=openbfme-online.service secondage-admin.service
+
+[Service]
+Type=simple
+User=openbfme-online-admin
+Group=openbfme-online-admin
+WorkingDirectory=/opt/openbfme-online/current
+ExecStart=/opt/openbfme-online/node/bin/node services/online/admin-gateway.mjs
+Environment=ADMIN_ORIGIN=https://admin.secondage.dev
+Environment=ADMIN_AUTH_URL=https://127.0.0.1:54233/api/auth
+Environment=ADMIN_LOBBY_URL=http://127.0.0.1:8787
+Environment=ADMIN_AUTH_CA=%d/auth-ca
+Environment=ADMIN_KEY_FILE=%d/admin-key
+LoadCredential=auth-ca:/srv/secondage/tls/admin.crt
+LoadCredential=admin-key:/var/lib/openbfme-online/secrets/admin.key
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=128M
+TasksMax=32
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

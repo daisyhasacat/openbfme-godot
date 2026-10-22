@@ -74,6 +74,7 @@ Dictionary newGameToDictionary(const NewGameMessage &m)
 	d["legendary_heroes"] = m.game.legendaryHeroes;
 	d["fortress_construction"] = m.game.fortressConstruction;
 	d["peace_time_minutes"] = m.game.peaceTimeMinutes;
+	d["lua_authority_slot"] = m.game.luaAuthoritySlot;
 	d["simulation_profile"] = (int)m.game.simulationProfile; // lane UBER-1: 0 Faithful, 1 Uber (Common/SimulationProfile.h)
 	Array slots;
 	for (int i = 0; i < m.game.slotCount(); ++i)
@@ -234,6 +235,15 @@ bool newGameFromDictionary(const Dictionary &d, NewGameMessage &out, std::string
 				return fail("slot " + std::to_string(i) + " has a Create-a-Hero but no human player");
 			}
 		}
+	}
+	if (d.has("lua_authority_slot"))
+	{
+		const Variant authority = d["lua_authority_slot"];
+		if (authority.get_type() != Variant::INT) return fail("lua_authority_slot must be an integer");
+		const int64_t slot = authority;
+		if (slot < -1 || slot >= m.game.slotCount()) return fail("lua_authority_slot is outside the game's slots");
+		if (slot >= 0 && !m.game.slots[(size_t)slot].isHuman()) return fail("lua_authority_slot must name a human slot");
+		m.game.luaAuthoritySlot = (int)slot;
 	}
 	out = m;
 	return true;

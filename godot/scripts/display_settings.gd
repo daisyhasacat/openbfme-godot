@@ -15,6 +15,7 @@
 ##   scaler         bilinear | fsr | fsr2   (Viewport.scaling_3d_mode). The game's renderer is Forward+ (project.godot), which has all three; Godot's
 ##                  Mobile renderer has no FSR 2 and the Compatibility renderer bilinear only, so a scaler the renderer lacks is reported, not applied.
 ##                  FSR 3 / DLSS / XeSS are not part of Godot 4.7 (docs/ROADMAP.md: later, through plugins).
+## iOS starts at 60 FPS / 75% 3D scale; saved values override those platform defaults.
 ## The command line wins over the file for the run (--res, --vsync, --max-fps, --fps); it never writes the file.
 ## A value the file holds that is not one of these is an error in `errors` (the game prints it) and that key keeps its default.
 extends RefCounted
@@ -44,6 +45,15 @@ var show_fps := false
 var render_scale := 1.0
 var scaler := "bilinear"
 var errors := PackedStringArray()
+
+
+## Presentation-only iOS starting point, including iPhone 15 Pro. Saved settings
+## load afterwards and override these defaults, as do command-line FPS options.
+## Keep 2D at native resolution; 0.75 scales only the 3D scene (56.25% pixels).
+func _init(platform: String = OS.get_name()) -> void:
+	if platform == "iOS":
+		max_fps = 60
+		render_scale = 0.75
 
 
 static func default_path() -> String:

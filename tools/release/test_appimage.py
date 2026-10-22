@@ -115,3 +115,74 @@ def test_inline_ui_assets_stay_clean_with_lfs_filter(tmp_path):
     for path in ('godot/assets/openbfme-icon.png', 'godot/assets/brand/poweredby_openbfme.png',
                  'godot/assets/platform_icons/linux.png'):
         assert git('check-attr', 'filter', '--', path).stdout.strip().endswith('filter: unset')
+
+
+def test_workflow_preserves_release_folder_name_when_extracting(tmp_path):
+    import os
+    import shutil
+
+    import audit_package
+    import make_archive
+
+    version = "v1.2.3"
+    name = f"openbfme-{version}-linux-x64"
+    source = tmp_path / "source" / name
+    source.mkdir(parents=True)
+    (source / "VERSION").write_text(version + "\n")
+    runner = tmp_path / "runner temp"
+    archives = runner / "linux-package"
+    archives.mkdir(parents=True)
+    make_archive.tar_gz(source, archives / f"{name}.tar.gz", 0)
+    workspace = tmp_path / "workspace"
+    scripts = workspace / "tools/release"
+    scripts.mkdir(parents=True)
+    shutil.copyfile(appimage.ROOT / "tools/release/make_archive.py", scripts / "make_archive.py")
+    # Capture the actual workflow's stage arguments after the real extractor runs.
+    (scripts / "appimage.py").write_text(
+        "import sys\nfrom pathlib import Path\n"
+        "Path('stage-args.txt').write_text('\\n'.join(sys.argv[1:]))\n")
+    workflow = (appimage.ROOT / ".github/workflows/appimage.yml").read_text()
+    block = workflow.split("      - name: Create AppImage and checksum\n", 1)[1]
+    commands = block.split("          version=", 1)[1].split("\n", 1)[1]
+    commands = commands.split("          desktop-file-validate", 1)[0]
+    subprocess.run(["bash", "-euc", commands], cwd=workspace, check=True,
+                   env={**os.environ, "RUNNER_TEMP": str(runner), "version": version})
+    args = (workspace / "stage-args.txt").read_text().splitlines()
+    assert args == ["stage", "--package", str(runner / name), "--output", str(runner / "OpenBFME.AppDir")]
+    assert audit_package.TOP_DIR.fullmatch(Path(args[2]).name) is not None
+    assert (Path(args[2]) / "VERSION").read_text() == version + "\n"
+
+
+def test_boot_workflow_runs_native_checks_through_game_entrypoint(tmp_path):
+    """Opt-in native integration: use the workflow's arguments with a local Godot build."""
+    import os
+    import shlex
+
+    godot = os.environ.get("OPENBFME_APPIMAGE_TEST_GODOT")
+    if not godot:
+        pytest.skip("set OPENBFME_APPIMAGE_TEST_GODOT; requires the built native extension")
+    workflow = (appimage.ROOT / ".github/workflows/appimage.yml").read_text()
+    command = workflow.split('timeout 90 ', 1)[1].split(' 2>&1', 1)[0]
+    args = shlex.split(command)
+    assert args == ["$image", "--headless", "--", "--appimage-boot-test"]
+    env = {key: value for key, value in os.environ.items()
+           if key not in ("ROTWK_INSTALL", "BFME2_INSTALL")}
+    result = subprocess.run([godot, "--path", str(appimage.ROOT / "godot"), *args[1:]],
+                            cwd=tmp_path, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "APPIMAGE BOOT PASS" in result.stdout.splitlines()
+    assert "GAME FAIL" not in result.stdout + result.stderr
+    assert "STARTUP game ready" not in result.stdout
+
+    # The same check must fail with a missing extension, rather than claim a pass.
+    project = tmp_path / "missing-extension"
+    project.mkdir()
+    (project / "project.godot").write_text(
+        'config_version=5\n[debug]\nfile_logging/enable_file_logging=false\n'
+        'file_logging/enable_file_logging.pc=false\n')
+    (project / "boot.gd").write_bytes((appimage.ROOT / "godot/tests/appimage_boot_test.gd").read_bytes())
+    rejected = subprocess.run([godot, "--headless", "--path", str(project), "--script", "res://boot.gd"],
+                              cwd=tmp_path, env=env, text=True, capture_output=True, timeout=30)
+    assert rejected.returncode == 1, rejected.stdout + rejected.stderr
+    assert "APPIMAGE BOOT FAIL: missing native class RetailFileSystem" in rejected.stdout + rejected.stderr
+    assert "APPIMAGE BOOT PASS" not in rejected.stdout

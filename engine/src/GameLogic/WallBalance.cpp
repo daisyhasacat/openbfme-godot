@@ -1,5 +1,7 @@
 // OpenBFME. GPL-3.0. Ported policy from BFME2Lua siege_damage/live_data.
 #include "GameLogic/WallBalance.h"
+#include "GameLogic/SkirmishAI/AIThreatFinder.h"
+#include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Object/PartitionManager.h"
@@ -17,6 +19,7 @@
 #include "Common/Thing/ThingFactory.h"
 #include "Common/Player.h"
 #include <cmath>
+#include <cstring>
 #include <algorithm>
 #include <cstdint>
 #include <set>
@@ -44,7 +47,14 @@ int WallBalance::costCategory(const ThingTemplate &tt) {
 }
 bool WallBalance::attackerAllowed(const Object &target, const Object &attacker) {
  const char *required = requiredAttackerKind(target);
- return !required || attacker.isKindOfName(required);
+ if (!required || attacker.isKindOfName(required)) return true;
+ // Enhanced wall policy: retail bombardment ships carry SHIP and the
+ // SHIP_BOMBARD threat category, but neither land-siege KindOf flag.
+ // Admit that data-defined category for both restricted modes; ordinary
+ // battleships, transports and suicide ships retain the existing rules.
+ const int category = AIThreatFinder::threatCategory(*attacker.getTemplate());
+ return attacker.isKindOfName("SHIP") && category >= 0 && category < SkirmishAI::AI_KINDOF_COUNT &&
+  std::strcmp(SkirmishAI::TheAIKindOfNames[category], "SHIP_BOMBARD") == 0;
 }
 const char *WallBalance::requiredAttackerKind(const Object &target) {
  const auto &r = target.logic().settings().wallBalance;

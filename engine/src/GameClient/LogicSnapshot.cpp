@@ -17,6 +17,7 @@
 #include "GameClient/Radar.h"
 #include "GameLogic/Locomotor.h"
 #include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/Module/DozerAIUpdate.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/System/InvisibilityManager.h"
@@ -288,7 +289,15 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 			s.objectShroud = (int)os;
 			s.shroudRecord = sm->hasRecord(*o); // lane VISUAL-2 r2
 		}
-		s.drawableHidden = o->isDrawableHidden(); // lane GARRISON-1
+		// TARGET: DozerAIUpdate::hideInStructure (RW 0x88C51B) removes a porter from the world and sets WONT_RIDE_WITH_YOU;
+		// showFromStructure (RW 0x88D6AE) reverses both on completion/cancellation. WorkerAIUpdate does not enter the structure.
+		// DONOR CHECK: Open-BFME-2 Object/Update/AIUpdate/DozerAIUpdate.cpp is a verbatim ZH import, not the BFME hiding body.
+		// PRESENTATION ADAPTER: represent that existing target state as drawable-hidden in the immutable snapshot. Do not add
+		// a simulation status/CRC field or hide builders merely because they have a pending construction/repair order.
+		const DozerAIUpdate *builder = dynamic_cast<const DozerAIUpdate *>(o->getAIUpdateInterface());
+		static const int kInsideBuilder = ObjectTemplateInfoBuilder::objectStatusIndex("WONT_RIDE_WITH_YOU");
+		const bool insideStructure = builder && !builder->isWorker() && !o->isInWorld() && o->testStatus((unsigned)kInsideBuilder);
+		s.drawableHidden = o->isDrawableHidden() || insideStructure; // also hides selection rings, bars, shadows and picking via the normal drawable path
 		s.effectivelyDead = o->isEffectivelyDead(); // lane VISUAL-2
 		s.containedBy = o->getContainedBy() ? o->getContainedBy()->getID() : (ObjectID)INVALID_ID; // lane COMBAT-4
 		s.stealthLook = InvisibilityManager::clientLook(*o, local); // lane STEALTH-1

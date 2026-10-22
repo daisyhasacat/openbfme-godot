@@ -68,7 +68,9 @@ func run(p_game: Node, p_shots: String) -> int:
 
 	# 3. the OpenBFME page: the tabs (lane OPTS-3: a page of Options.apt, its tabs clicked as a player clicks them)
 	await game._step(10)
-	check("the page is the shell's own drawing (no Godot Control of the former screen)", screen.get_child_count() == 0, str(screen.get_children()))
+	check("the page keeps only its hidden native action bridge", screen.get_child_count() == 1
+		and screen.get_child(0) == screen._mods_button and screen._mods_button.has_meta("openbfme_native_menu")
+		and not screen._mods_button.visible, str(screen.get_children()))
 	check("Options opens the page on its Display tab", screen.is_open() and screen.current_tab() == "Display" and page().get("open", false),
 		"open %s tab %s" % [screen.is_open(), screen.current_tab()])
 	if not screen.is_open():
@@ -86,6 +88,7 @@ func run(p_game: Node, p_shots: String) -> int:
 		await shot("opts2-%s-%dx%d" % [tab.to_lower(), root.size.x, root.size.y])
 		_text_colours_check(tab)
 		await _green_pixels_check(tab)
+	await click_tab("Controls")
 	check("the Controls tab lists the CommandMap's hot keys (%d) in a list box" % screen.hotkey_count(), screen.hotkey_count() >= 20 and page().has("list"),
 		str(screen.hotkey_count()))
 
@@ -132,6 +135,8 @@ func run(p_game: Node, p_shots: String) -> int:
 	check("anti-aliasing FXAA is applied", root.screen_space_aa == Viewport.SCREEN_SPACE_AA_FXAA and root.msaa_3d == Viewport.MSAA_DISABLED, str(root.screen_space_aa))
 	check("leaving TAA gives the display settings' scaler back", root.scaling_3d_mode == scaler_before and not root.use_taa, "scaling %d (was %d)" % [root.scaling_3d_mode, scaler_before])
 	check("anisotropic filtering 16x (the default since lane OWNERFIX-1) is in effect", root.anisotropic_filtering_level == Viewport.ANISOTROPY_16X, str(root.anisotropic_filtering_level))
+	await select("OpenBFMEShadowProfile", 1)
+	check("Balanced shadow quality previews in Graphics", screen.extra_value("OpenBFMEShadowProfile") == "balanced", str(screen.extra_value("OpenBFMEShadowProfile")))
 	await select("OpenBFMEAnisotropic", 3) # 8x
 	check("anisotropic filtering 8x is applied", root.anisotropic_filtering_level == Viewport.ANISOTROPY_8X, str(root.anisotropic_filtering_level))
 	await select("OpenBFMELook", 1)
@@ -175,7 +180,7 @@ func run(p_game: Node, p_shots: String) -> int:
 			lost.append(line)
 	check("the other retail entries are unchanged (%d)" % before_lines.size(), lost.is_empty(), str(lost))
 	for pair in [["OpenBFMEAntiAliasing", "fxaa"], ["OpenBFMEAnisotropic", "8x"], ["OpenBFMELook", "enhanced"], ["OpenBFMEMasterVolume", "50"],
-			["OpenBFMEHealthBars", "always"], ["OpenBFMEGameClock", "yes"], ["ScrollFactor", "70"], ["OpenBFMEEdgeScroll", "always"]]:
+			["OpenBFMEShadowProfile", "balanced"], ["OpenBFMEHealthBars", "always"], ["OpenBFMEGameClock", "yes"], ["ScrollFactor", "70"], ["OpenBFMEEdgeScroll", "always"]]:
 		check("Options.ini holds %s = %s" % pair, after_lines.has("%s = %s" % pair), "")
 	check("the file is sorted ZH-style (\"key = value\" lines in key order)", _sorted(after_lines), "")
 
@@ -183,10 +188,12 @@ func run(p_game: Node, p_shots: String) -> int:
 	await open_options()
 	await click_tab("Graphics")
 	await select("OpenBFMEAntiAliasing", 3)
+	await select("OpenBFMEShadowProfile", 2)
 	await select("OpenBFMELook", 0)
 	await click_bar("cancel")
 	check("CANCEL restores the anti-aliasing and the look", root.screen_space_aa == Viewport.SCREEN_SPACE_AA_FXAA and root.msaa_3d == Viewport.MSAA_DISABLED
 		and env.tonemap_mode == Environment.TONE_MAPPER_AGX, "aa %d msaa %d tonemap %d" % [root.screen_space_aa, root.msaa_3d, env.tonemap_mode])
+	check("CANCEL restores Balanced shadow quality", game._game_options.current().OpenBFMEShadowProfile == "balanced", "")
 	check("CANCEL writes nothing", FileAccess.get_file_as_string(file) == after, "")
 	await game._step(90)
 	await open_options()

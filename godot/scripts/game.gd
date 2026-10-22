@@ -183,7 +183,7 @@
 ##     --online-join=ID      join that game of the lobby (also openbfme://join/ID, the launcher's link), say ready, play when the host starts it
 ##     --online-host         host a game on the lobby: --map, --online-slots=STATE:faction:start:team;... (STATE player / open / closed / easy / medium /
 ##                           hard / brutal, faction a player template index or -1), starts once --online-players=N humans are in and ready
-##     --online-lobby=URL    the lobby service (default: the OPENBFME_LOBBY environment variable); --online-name=NAME the guest name
+##     --online-lobby=URL    legacy argument (ignored by this fork); --online-name=NAME the guest name
 ##   lane ONLINE-3 (reconnect and pause, docs/ONLINE.md "Phase O3"; test features):
 ##     --online-rejoin[=ID]  the game restarted: rejoin the player's running game (the saved lobby session; the lobby's rejoin START), re-simulate it from
 ##                           the relay's log ("Rejoining" on screen), then play on
@@ -199,7 +199,7 @@
 ##                           (OPENBFME_LOBBY_TOKEN: a lobby session token instead of a new guest; never sent to another origin: no redirects)
 ##   lane ONLINE-4, the online screens (a test feature; docs/ONLINE.md section 5): the main menu's Online opens RotWK's OnlineShell.apt (guest sign-in, the
 ##   home page with the lobby's message of the day, Open Play = the server browser, the MpGameSetup staging room) on the lobby service (scripts/online_http.gd).
-##   The lobby: --online-lobby=URL, else OPENBFME_LOBBY, else Options.ini's OpenBFMEOnlineLobby, else https://play.openbfme.com. The guest name of the last
+##   This fork always uses https://secondage.dev for its lobby. The guest name of the last
 ##   sign-in is kept in Options.ini (OpenBFMEOnlineName).
 ##   lane ONLINEHUB-1 (docs/PLATFORM_API.md): the TOURNAMENT page (Quick Match, tournaments) and the STATS pages read the OpenBFME platform:
 ##     --platform-url=URL    its base URL (default: OPENBFME_PLATFORM, else Options.ini's OpenBFMEPlatformUrl, else https://api.openbfme.com/v1)
@@ -292,6 +292,8 @@ const OnlineStats := preload("res://scripts/online_stats.gd") # lane ONLINECOUNT
 const AppIcon := preload("res://scripts/app_icon.gd") # lane OWNERFIX-3: the OpenBFME window icon (not Godot's)
 var _display: RefCounted                 # lane OPTS-1: the display settings in effect (openbfme-display.cfg)
 var _display_path := ""
+var _ios_quick_resume: Node
+var _quick_save_hotkey: CanvasLayer
 var _display_overlay: CanvasLayer        # scripts/fps_overlay.gd: the counter and the F10 / Alt+Enter keys
 var _display_screen: CanvasLayer         # scripts/openbfme_options_screen.gd
 var _game_options: Node                  # lane OPTS-2: scripts/game_options.gd, the retail detail / brightness / scroll and the OpenBFME extras in effect
@@ -401,7 +403,7 @@ var _online_note: CanvasLayer = null ## "Online play is a test feature", shown w
 var _stats: Node = null              ## lane ONLINECOUNT-1: scripts/online_stats.gd (null: not asked for: off, or not made yet)
 var _stats_off := ""                 ## why the count is not asked for ("" = it is); set once, when the menu first shows
 var _stats_label: Label = null       ## the main menu's / the online menu's "N players online" line
-const ONLINE_DEFAULT_LOBBY := "https://play.openbfme.com"
+const ONLINE_DEFAULT_LOBBY := "https://secondage.dev"
 const ONLINE_SESSION_FILE := "user://online_session.txt" # lane ONLINE-3's file (scripts/online_lobby.gd SESSION_FILE)
 var _online_saved_session := ""
 # lane ONLINEHUB-1 (docs/PLATFORM_API.md): the OpenBFME platform API (Quick Match, tournaments, statistics, game results) and the games this installation
@@ -415,6 +417,11 @@ var _online_qm_side := -1          # --online-qm-side=N: the walk's Army choice 
 var _onlinehub1_check := false     # --onlinehub1-check (scripts/onlinehub1_check.gd)
 var _platform_http: Node = null
 var _platform_ready := false
+var _statistics_context := {}
+var _statistics_uploader: Node
+var _desync_uploader: Node
+var _local_control: Node
+var _remote_testing: Node
 var _hub_online := {}              # the online game being started: { id, match, tournament } (the record's id: the match's when there is one)
 var _hub_kind := ""                # "skirmish" / "lan" / "online": the kind of the game being played ("" none: not recorded)
 var _hub_game_id := ""
@@ -601,6 +608,9 @@ var _scripted_skirmish_ini := ""
 
 
 func _exit_tree() -> void:
+	if is_instance_valid(_quick_save_hotkey):
+		_quick_save_hotkey.set_process_input(false)
+		_quick_save_hotkey.queue_free()
 	if is_instance_valid(_touch_ui_scroll):
 		_touch_ui_scroll.set_process_input(false)
 		_touch_ui_scroll.queue_free()
@@ -650,6 +660,12 @@ var _cah_hero_id := ""          # lane CAH-1: the unique id of the hero the --ca
 var _startup_shortcut: Node
 
 func _ready() -> void:
+	# Export templates ignore the editor-only --script option. Run the packaged
+	# loader check before display setup or retail mounting, through a user flag.
+	if OS.get_cmdline_user_args().has("--appimage-boot-test"):
+		process_mode = Node.PROCESS_MODE_DISABLED
+		get_tree().quit(preload("res://tests/appimage_boot_test.gd").run())
+		return
 	if OS.has_feature("ios"):
 		var keyboard := preload("res://scripts/release/ios_keyboard.gd").new()
 		keyboard.shell = func() -> Node: return _shell
@@ -1121,11 +1137,34 @@ func _game_options_setup() -> void:
 
 
 ## lane OPTS-1: the OPENBFME button over Options.apt and the screen it opens (scripts/openbfme_options_screen.gd)
+var _benchmark_tool: CanvasLayer
+
+
+func _open_benchmark() -> void:
+	if is_instance_valid(_benchmark_tool):
+		return
+	_benchmark_tool = preload("res://scripts/settings_benchmark.gd").new()
+	_benchmark_tool.game = self
+	add_child(_benchmark_tool)
+
+
+func _open_appimage_update() -> void:
+	if has_node("AppImageUpdater"): return
+	var updater := preload("res://scripts/release/appimage_update.gd").new()
+	updater.name = "AppImageUpdater"
+	updater.can_update = _state == State.MENU and _lobby_room_name().is_empty()
+	for screen in _shell.shell_stack():
+		if screen not in ["MainMenu.apt", "Options.apt"]: updater.can_update = false
+	add_child(updater)
+
+
 func _display_screen_setup() -> void:
 	_display_screen = load("res://scripts/openbfme_options_screen.gd").new()
 	_display_screen.name = "OpenBFMEOptions"
 	_display_screen.shell = _shell
 	_display_screen.hud_getter = func() -> Node: return _hud
+	_display_screen.benchmark_requested.connect(_open_benchmark)
+	_display_screen.appimage_update_requested.connect(_open_appimage_update)
 	_display_screen.room_getter = _lobby_room_name # lane UBERJOIN-1
 	_display_screen.settings = _display
 	_display_screen.settings_path = _display_path
@@ -1230,7 +1269,7 @@ func _boot() -> void:
 		return
 	_fs = ClassDB.instantiate("RetailFileSystem")
 	# lane RELEASE-1: the environment, the remembered folders, or the first-run screen (scripts/release/release.gd)
-	get_tree().call_group("ios_startup", "stage", "Verifying game files…")
+	get_tree().call_group("ios_startup", "stage", "Loading game files…")
 	await get_tree().process_frame
 	var mount_started := Time.get_ticks_msec()
 	var mount: Dictionary = await Release.mount_retail(_fs)
@@ -1240,6 +1279,10 @@ func _boot() -> void:
 	print("STARTUP data mount took %d ms" % (Time.get_ticks_msec() - mount_started))
 	print("STARTUP archive verification: %d hashed, %d cached" % [mount.get("archives_hashed", 0), mount.get("md5_cache_hits", 0)])
 	get_tree().call_group("ios_startup", "stage", "Loading game…")
+	if DisplayServer.get_name() == "headless":
+		await get_tree().process_frame
+	else:
+		await RenderingServer.frame_post_draw
 	_rotwk_install = str(mount.get("rotwk_install", "")) # lane CAH-2: the Create-a-Hero save folder's name is in the install's gi.dat
 	if mount.get("quit", false):
 		get_tree().quit(0)
@@ -1255,6 +1298,17 @@ func _boot() -> void:
 	add_child(_world)
 	_lua_console = preload("res://scripts/lua_console.lua").new()
 	_lua_console.execute = func(code: String) -> Dictionary: return _world.execute_lua(code)
+	_lua_console.save_game = save_game
+	_quick_save_hotkey = preload("res://scripts/quick_save_hotkey.gd").new()
+	_quick_save_hotkey.name = "QuickSaveHotkey"
+	_quick_save_hotkey.save = save_game
+	_quick_save_hotkey.available = func() -> bool:
+		return _state == State.PLAYING and not _lua_console.is_open() and not _shell.menu_has_input() and not (is_instance_valid(_map_editor) and _map_editor.active)
+	_quick_save_hotkey.load_available = func() -> bool:
+		return _state in [State.PLAYING, State.MENU, State.SCORE] and _net_state.is_empty() and not _lua_console.is_open() and not (is_instance_valid(_map_editor) and _map_editor.active)
+	_quick_save_hotkey.quick_load = func() -> Dictionary:
+		return await _save_flow.quick_load()
+	get_tree().root.add_child.call_deferred(_quick_save_hotkey)
 	_lua_console.toggled.connect(_lua_console_toggled)
 	_lua_console.restart_requested.connect(func(): call_deferred("_console_restart"))
 	_lua_console.map_editor_requested.connect(func(): call_deferred("_open_map_editor"))
@@ -1274,6 +1328,7 @@ func _boot() -> void:
 			printerr("CONTROLLER Lua: ", result.output)
 			return ""
 		return str(result.output).strip_edges()
+	controller.menu_navigation_active = func() -> bool: return _menu_pad != null and _menu_pad._active()
 	controller.gameplay = func() -> bool: return _state == State.PLAYING and not _quit_open and (_lua_console == null or not _lua_console.is_open()) and (not is_instance_valid(_map_editor) or not _map_editor.active)
 	controller.input_generated.connect(func(event: InputEvent) -> void: Input.parse_input_event(event))
 	controller.command_action.connect(_controller_menu_action)
@@ -1303,6 +1358,7 @@ func _boot() -> void:
 	map_search.world = _world
 	add_child(map_search)
 	_menu_pad = load("res://scripts/menu_pad.gd").new(_shell) # lane OPTS-6: the game controller in the menus
+	_menu_pad.start_lobby = _controller_start_lobby
 	add_child(_menu_pad)
 	_save_flow = load("res://scripts/save_flow.gd").new(self) # lane SAVE-2
 	# lane FB7-1: the Options screen's inputs the device knows (AptSimpleScreens.h): the AudioSettings default volumes and the display modes (Godot lists
@@ -1376,6 +1432,13 @@ func _boot() -> void:
 	_startup_shortcut.queue_free()
 	if _resume_console_restart():
 		return
+	if OS.get_name() == "iOS" and not _scripted_run():
+		_ios_quick_resume = preload("res://scripts/ios_quick_resume.gd").new()
+		_ios_quick_resume.name = "IOSQuickResume"
+		_ios_quick_resume.game = self
+		_ios_quick_resume.directory = "user://quick-resume/" + Release.selected_game().validate_filename()
+		add_child(_ios_quick_resume)
+		if await _ios_quick_resume.try_restore(): return
 	if quick_skirmish:
 		_run_startup_skirmish()
 		return
@@ -1451,8 +1514,6 @@ func _process(delta: float) -> void:
 	Release.set_in_game(_state == State.PLAYING) # lane RELEASE-1: the version corner in the menus only
 	_campaign_check_tick() # lane CAMP-1
 	if _state == State.MENU:
-		if not _fs.is_bfme1() and _menu_style == "bfme2" and _frames % 5 == 0 and _shell.shell_stack().size() > 0 and _shell.shell_stack()[-1] == "MainMenu.apt":
-			_hide_bfme2_campaign_buttons() # lane DEVPORT-8: the BFME2 campaigns are not in this tree (BFME2_CAMPAIGNS)
 		if _pending_menu_style != _menu_style and not _switching_menu_style and _clean_main_menu():
 			_switching_menu_style = true
 			call_deferred("_apply_pending_menu_style")
@@ -1639,9 +1700,9 @@ func _on_shell_request(action: String, argument: String) -> void:
 	elif action == "BonusCampaign": # RW 0x91BEFA
 		_campaign_flow.start("ANGMAR_BONUS_CAMPAIGN", _campaign_flow.difficulty_from_command(argument))
 	elif action == "LoadCampaign" and argument.begins_with("bfme2:good:"):
-		start_bfme2_campaign("good")
+		start_bfme2_campaign("good", argument.trim_prefix("bfme2:good:"))
 	elif action == "LoadCampaign" and argument.begins_with("bfme2:evil:"):
-		start_bfme2_campaign("evil")
+		start_bfme2_campaign("evil", argument.trim_prefix("bfme2:evil:"))
 	elif action == "ContinueCampaign":
 		_campaign_flow.continue_saved() # lane CAMPSAVE-1: RW 0x91B50D, nothing without 00000000.sav (RotWK's MainMenu.apt has no button for it)
 
@@ -1822,14 +1883,9 @@ func _apply_pending_menu_style() -> void:
 	print("GAME main menu style: ", _menu_style)
 
 
-## lane DEVPORT-8: THE switch of the BFME2 Good / Evil campaigns (lane B2CAMP-1 turns it on with its campaign entry point). Off, BFME2's own MainMenu.apt
-## GoodCampaign / EvilCampaign buttons are hidden (below) and a request that still names them is refused by name (start_bfme2_campaign). Lane CAMPMENU-1
-## moved it here from the OpenBFME campaign panel (scripts/menu_campaigns.gd, removed: the campaigns start from retail's own Solo Play buttons)
-const BFME2_CAMPAIGNS := false
-
-## lane DEVPORT-8: BFME2's own MainMenu.apt has GoodCampaign / EvilCampaign buttons (its Solo Play list: Skirmish, WarOfTheRing, EvilCampaign,
-## GoodCampaign, LoadGame). While BFME2_CAMPAIGNS is off they are hidden (their clip's _visible); { found: [clip paths], visible: [the
-## clips still visible], hittable: [their buttons the pointer would take] }
+## Campaign entries belong to each presentation movie's Solo Play dropdown.
+## Keep BFME2's Good/Evil entries visible even while their gameplay entry point
+## reports unsupported; RotWK retains its authored Angmar/bonus entries.
 const BFME2_CAMPAIGN_CLIPS := ["GoodCampaign", "EvilCampaign"]
 func bfme2_campaign_buttons() -> Dictionary:
 	var out := {"found": [], "visible": [], "hittable": []}
@@ -1859,33 +1915,15 @@ func bfme2_campaign_buttons() -> Dictionary:
 	return out
 
 
-func _hide_bfme2_campaign_buttons() -> void:
-	if BFME2_CAMPAIGNS:
-		return
-	var top: int = _shell.shell_top_level()
-	var buttons := bfme2_campaign_buttons()
-	for clip in buttons.visible:
-		if not _shell.set_clip_property(top, clip, "_visible", 0.0):
-			print("GAME stop: the BFME2 campaign button ", clip, " could not be hidden")
-	# the list without its two rows: Load Game moves up into the first hidden row (EvilCampaign's), so the list has no hole
-	# (Skirmish, War of the Ring, Load Game; the nav's frame keeps its five-row size)
-	if "SoloPlayNav.EvilCampaign" in buttons.found:
-		var evil_y: Dictionary = _shell.get_member(top, "SoloPlayNav.EvilCampaign", "_y")
-		var load_y: Dictionary = _shell.get_member(top, "SoloPlayNav.LoadGame", "_y")
-		if evil_y.get("found", false) and load_y.get("found", false) and str(load_y.value) != str(evil_y.value):
-			_shell.set_clip_property(top, "SoloPlayNav.LoadGame", "_y", float(evil_y.value))
-
-
-## lane DEVPORT-8: the BFME2 campaigns are behind BFME2_CAMPAIGNS (off until B2CAMP-1): their buttons are hidden, so a request is a bug somewhere; it is
-## refused by name with the main menu's "not available" box (AptMainMenu::screenUnavailable, lane CAMPMENU-1: retail's GuiFX.apt message box, whose Ok
-## gives the menu back) and the stop line, which is returned. B2CAMP-1 replaces the body with its campaign entry point.
-func start_bfme2_campaign(alignment: String) -> String:
+## BFME2's menu sends LoadCampaign with an alignment and difficulty suffix.
+## Use the existing data-driven linear campaign loader for both alignments.
+func start_bfme2_campaign(alignment: String, difficulty_argument := "") -> String:
 	if alignment not in ["good", "evil"]:
-		_fail("unknown BFME2 campaign alignment: " + alignment)
-		return ""
-	var line: String = _shell.shell_screen_unavailable("BFME2%sCampaign" % alignment.capitalize())
-	print("GAME stop: ", line)
-	return line
+		var error := "unknown BFME2 campaign alignment: " + alignment
+		_fail(error)
+		return error
+	_campaign_flow.start(alignment.to_upper() + "_CAMPAIGN", _campaign_flow.difficulty_from_command(difficulty_argument))
+	return ""
 
 
 ## lane CAMPMENU-1: the player's way into a campaign, with real clicks: the main menu's Solo Play nav, retail's SoloPlayNav.<button> (RotWK MainMenu.apt's
@@ -2016,17 +2054,24 @@ func _boot_audio() -> bool:
 
 # ---- starting a game -------------------------------------------------------------------------------------------------------------------------
 
+var _load_metrics: Node = null # Attached only by the Settings benchmark.
+
+func _load_mark(phase: String) -> void:
+	if is_instance_valid(_load_metrics): _load_metrics.mark(phase)
+
 func _begin_game(message: Dictionary) -> void:
+	_load_mark("requested")
 	print("GAME new game: map %s seed %d cash %d" % [message.map, message.seed, message.starting_cash])
 	_rejoin_watch.reset() # lane ONLINEUX-1 r2: every game's rejoin is watched afresh (the watch also starts afresh on a new net_status attempt)
 	_game_kind = "lan" if _net_state == "loading" else ("network" if not _net_state.is_empty() else ("restart" if not _restart_stack.is_empty() else "skirmish"))
-	_hub_begin(message) # lane ONLINEHUB-1: what the score screen records
+	if not is_instance_valid(_load_metrics): _hub_begin(message) # lane ONLINEHUB-1: what the score screen records
 	_last_new_game = message.duplicate(true) # lane END-2: the quit menu's Restart starts it again (RW 0x9220DE)
 	if _restart_stack.is_empty():
 		_start_stack = _shell.shell_stack() # lane END-2: the screens the score screen's Continue shows again (TheShell + 0x9C, RW 0x925798)
 	_restart_stack = PackedStringArray()
 	_sync_simulation_profile() # lane UBER-1 (a LAN game keeps its lobby's profile: prepare_new_game names any mismatch)
 	var prep: Dictionary = _world.prepare_new_game(message)
+	_load_mark("prepare_complete")
 	_last_local_slot = int(prep.get("local_slot", -1))
 	if not prep.ok:
 		_fail("prepare_new_game: " + "\n".join(prep.errors))
@@ -2059,15 +2104,20 @@ func _begin_game(message: Dictionary) -> void:
 	for i in 4:
 		await get_tree().process_frame
 	_shell.auto_process = false
+	# LoadScreen's opening timeline hides the front-end background. Restore its
+	# rotating ring after those opening frames, before presenting load progress.
+	_shell.shell_fscommand("SetBackground", "fadein")
 	var started := Time.get_ticks_msec()
 	_load_log.clear()
 	var world_was_visible: bool = _world.visible
 	_world.hide() # keep partially constructed terrain behind the loading screen
 	_on_load_progress(0) # present the initial bar before synchronous loading
 	var opts := {"progress": Callable(self, "_on_load_progress"), "test_hooks": _end or not _zoom1.is_empty() or _rules_shot > 0 or not _gamemodes.is_empty() or _uber1 > 0 or _play_script.ends_with("spell3_player.gd") or _play_script.ends_with("ownerfix1_player.gd") or _play_script.ends_with("devport7_player.gd") or _play_script.ends_with("ownerfix2_player.gd")} # lane ZOOM-1: the bars scenario hurts some units (logged)
-	if _record and _net_state.is_empty():
+	if _record and _net_state.is_empty() and not is_instance_valid(_load_metrics):
 		opts["record"] = _last_replay_path() # lane MP-2: every skirmish is recorded
+	_load_mark("map_load_started")
 	var rep: Dictionary = _world.start_new_game(opts)
+	_load_mark("map_load_complete")
 	_report = rep
 	print("GAME load: %d ms, ok=%s" % [Time.get_ticks_msec() - started, rep.ok])
 	if rep.has("timings_ms"): # lane PERF-1: where the load went (ms per stage)
@@ -2082,7 +2132,8 @@ func _begin_game(message: Dictionary) -> void:
 			_fail("start_new_game failed: " + "\n".join(rep.get("errors", [])))
 		return
 	_world.visible = world_was_visible
-	_enter_game(rep)
+	_load_mark("world_exposed")
+	await _enter_game(rep)
 	if _online_spectate:
 		for arg in OS.get_cmdline_user_args():
 			if arg.begins_with("--caster-live-check="):
@@ -2285,6 +2336,9 @@ func _on_load_progress(percent: int) -> void:
 
 
 func _enter_game(rep: Dictionary) -> void:
+	_load_mark("enter_game_started")
+	_shell_leave_for_game() # Remove the loading ring before exposing gameplay.
+	_world.set_auto_advance(false)
 	_hide_rules_summary() # lane RULES-1
 	_shell.hide_still_load_screen() # lane MENU-1: a campaign mission's picture loading screen
 	# retail: the shell is popped, the HUD movie (Palantir) is the only movie left
@@ -2309,24 +2363,44 @@ func _enter_game(rep: Dictionary) -> void:
 	var ar: Dictionary = _world.get_audio_report()
 	if not str(ar.get("music_error", "")).is_empty():
 		printerr("GAME in-game music: ", ar.music_error)
-	_world.set_auto_advance(true)
-	_state = State.PLAYING
-	_games_started += 1
 	_restore_restart_buildings()
 	_report_shell_pictures("in game (%s)" % _game_kind) # lane CAMP-2
-	print("GAME playing: frame %d, %d objects, hash %d" % [_world.get_frame(), _world.get_object_count(), _world.get_state_hash()])
 	if _print_report:
 		print("GAME REPORT ", JSON.stringify(rep))
 		for o in rep.start.starting_objects:
 			print("GAME starting object: ", JSON.stringify(_world.get_object(o.id)))
+	_load_mark("hud_started")
 	_install_hud(rep)
+	_load_mark("hud_complete")
 	if not _hud_installed:
 		return
 	# lane END-1: GuiFX.apt (the end screen's movie) is loaded with the game, so ShowEndGame finds it
 	var gfx: Dictionary = _shell.end_game_screen({"kind": "preload"})
+	_load_mark("end_screen_preload_complete")
 	print("GAME GuiFX for the end screen: level %d %s" % [gfx.get("level", -1), str(gfx.get("error", ""))])
 	if not _net_state.is_empty():
 		_net_begin()
+		if _state == State.FAILED:
+			return
+		var waiting := Label.new()
+		waiting.text = "Waiting for all players to finish loading…"
+		waiting.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+		var layer := CanvasLayer.new()
+		layer.layer = 110
+		layer.add_child(waiting)
+		add_child(layer)
+		print("GAME NET waiting for all players to finish loading")
+		var barrier: Dictionary = await load("res://scripts/multiplayer_load_barrier.gd").wait(get_tree(), _world)
+		layer.queue_free()
+		if not barrier.ok:
+			_fail(str(barrier.error))
+			return
+		print("GAME NET all players loaded; beginning simulation")
+	_world.set_auto_advance(true)
+	_state = State.PLAYING
+	_load_mark("playing")
+	_games_started += 1
+	print("GAME playing: frame %d, %d objects, hash %d" % [_world.get_frame(), _world.get_object_count(), _world.get_state_hash()])
 	_online_spectate = bool(_world.caster_transport_status().get("live", false))
 	if _game_kind == "replay" or _online_spectate:
 		_caster = load("res://scripts/caster_hud.gd").new()
@@ -2335,6 +2409,7 @@ func _enter_game(rep: Dictionary) -> void:
 		_caster.seek_requested.connect(_caster_seek, CONNECT_DEFERRED)
 		_caster.go_live_requested.connect(_caster_go_live, CONNECT_DEFERRED)
 		_game_nodes.append(_caster)
+	if is_instance_valid(_ios_quick_resume): _ios_quick_resume.entered_game()
 
 
 var _caster_seeking := false
@@ -2440,7 +2515,7 @@ func _caster_seek(target: int, go_live: bool = false) -> void:
 			slice_started = Time.get_ticks_msec()
 	if restarted:
 		_report = rep
-		_enter_game(rep)
+		await _enter_game(rep)
 		if live:
 			_net_state = net_state
 		_caster.history = history
@@ -2512,7 +2587,7 @@ func _install_hud(rep: Dictionary) -> void:
 	var wider := _widescreen_setting()
 	print("GAME widescreen view: %s" % ("wider (OpenBFME option, not retail)" if wider else "original"))
 	var r: Dictionary = hud.attach(_fs, _world, _camera, _shell, local, {"alternate_mouse": alternate, "camera_start": camera_start, "free_camera": free_camera,
-		"all_health_bars": all_bars != null and str(all_bars) == "yes", "zoom_out_factor": zoom_out, "widescreen_wider": wider})
+		"startup_probe_only": is_instance_valid(_load_metrics), "all_health_bars": all_bars != null and str(all_bars) == "yes", "zoom_out_factor": zoom_out, "widescreen_wider": wider})
 	print("GAME HUD installed: ok=%s errors=%s" % [r.ok, r.errors])
 	if not r.ok:
 		# Detach the native hook before the shell gets another draw/update.
@@ -2670,12 +2745,8 @@ func _apply_lighting(rep: Dictionary) -> void:
 	_sun.name = "ObjectSun"
 	_sun.light_color = lit.diffuse
 	var shadow_lod := int(_shell.get_detail_state().get("shadow_lod", 3)) if _shell != null else 3
-	_sun.shadow_enabled = shadow_lod > 0
-	_sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
-	_sun.directional_shadow_max_distance = 3000.0
-	_sun.directional_shadow_blend_splits = true
-	_sun.shadow_bias = 0.03
-	_sun.shadow_normal_bias = 1.0
+	var profile: String = _game_options.current().OpenBFMEShadowProfile if _game_options != null else "auto"
+	preload("res://scripts/shadow_profile.gd").apply(_sun, profile, shadow_lod)
 	RenderingServer.global_shader_parameter_set("w3d_shadow_strength", 0.65 if _sun.shadow_enabled else 0.0)
 	var dir: Vector3 = lit.direction
 	if dir.length() > 0.0001:
@@ -2802,6 +2873,19 @@ func _run_campaign_play1() -> void:
 	var player = script.new()
 	await player.run(self, _play1)
 	get_tree().quit(0 if player.fail_count == 0 else 1)
+
+
+
+func _controller_start_lobby() -> bool:
+	if _state != State.MENU or _shell == null or _quit_open:
+		return false
+	if _lua_console != null and _lua_console.is_open():
+		return false
+	var stack = _shell.shell_stack()
+	if stack.is_empty() or stack[-1] != "Skirmish.apt":
+		return false
+	_controller_menu_action("skirmish")
+	return true
 
 
 func _controller_menu_action(action: String) -> void:
@@ -3567,6 +3651,11 @@ func _end_game_tick() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	# Explicit immediate exit, including during gameplay, editing and console input.
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_Q and event.shift_pressed and not (event.ctrl_pressed or event.alt_pressed or event.meta_pressed):
+		get_viewport().set_input_as_handled()
+		get_tree().quit()
+		return
 	if is_instance_valid(_map_editor) and _map_editor.active and (_lua_console == null or not _lua_console.is_open()) and _map_editor.handle_input(event):
 		get_viewport().set_input_as_handled()
 		return
@@ -3620,6 +3709,12 @@ func _input(event: InputEvent) -> void:
 			_close_tribute()
 			return
 		_toggle_quit_menu()
+
+
+## Save a named snapshot directly, without navigating any menu.
+func save_game(name := "Quick Save") -> Dictionary:
+	if _save_flow == null: return {"ok": false, "error": "The save system is not ready."}
+	return _save_flow.save_game(name)
 
 
 func _lua_console_toggled(open: bool) -> void:
@@ -4052,6 +4147,7 @@ func _online_relay_tick(st: Dictionary) -> void:
 
 ## the running game cleared without the score screen (Restart, lane SAVE-2: a save loaded over a game): the HUD and the game's nodes go, the shell is emptied
 func _tear_down_game(why: String, clear_world: bool = true) -> void:
+	if is_instance_valid(_ios_quick_resume) and why not in ["load", "load failed"]: _ios_quick_resume.discard()
 	if is_instance_valid(_second_view):
 		_second_view.close_view()
 	if is_instance_valid(_caster) and _caster.overlays != null:
@@ -4089,6 +4185,7 @@ func _tear_down_game(why: String, clear_world: bool = true) -> void:
 func _exit_to_score_screen() -> void:
 	if _state != State.PLAYING:
 		return
+	if is_instance_valid(_ios_quick_resume): _ios_quick_resume.discard()
 	if is_instance_valid(_second_view):
 		_second_view.close_view()
 	_state = State.SCORE
@@ -5115,7 +5212,7 @@ func _print_perf_stat(w: Dictionary) -> void:
 
 func _online_open() -> void:
 	_online = load("res://scripts/online_lobby.gd").new()
-	_online.lobby_url = _online_lobby if not _online_lobby.is_empty() else OS.get_environment("OPENBFME_LOBBY")
+	_online.lobby_url = _online_lobby_url()
 	_online.player_name = _online_name if not _online_name.is_empty() else (_net_name if _net_name != "Joiner" else "Player")
 	_online.token = OS.get_environment("OPENBFME_LOBBY_TOKEN")
 	_online.profile = _world.net_profile_digest()
@@ -5142,7 +5239,7 @@ func _online_open() -> void:
 
 # ---- lane ONLINE-4: the online screens (OnlineShell.apt on the lobby service) -----------------------------------------------------------------------------
 
-## The lobby the online screens use: --online-lobby, OPENBFME_LOBBY, Options.ini's OpenBFMEOnlineLobby, then the release default
+## This fork pins both the online screens and command-line online games to Second Age.
 # ---- lane ONLINEHUB-1: the platform API, the game records and the results ----------------------------------------------------------------------
 
 func _platform_base_url() -> String:
@@ -5199,6 +5296,17 @@ func _share_results() -> bool:
 ## the records of the games this installation played (the STATS pages) and the platform client with its transport. Nothing is sent from here: a
 ## request goes out only when the player opens an online page or a LAN / online game ends (and shares results)
 func _platform_setup() -> void:
+	if OS.is_debug_build() and _local_control == null and OS.get_environment("OPENBFME_LOCAL_CONTROL") != "0":
+		_local_control = preload("res://scripts/local_diagnostic_control.gd").new()
+		_local_control.name = "LocalDiagnosticControl"
+		_local_control.game = self
+		add_child(_local_control)
+	if _remote_testing == null and ProjectSettings.get_setting("testing/remote_control/enabled", false):
+		_remote_testing = load("res://scripts/remote_testing.gd").new()
+		_remote_testing.game = self
+		add_child(_remote_testing)
+	_statistics_setup()
+	_desync_reporting_setup()
 	if _platform_ready:
 		return
 	_platform_ready = true
@@ -5247,6 +5355,8 @@ func _platform_tick() -> void:
 
 ## what the score screen will record: the kind of game and its id (a LAN game's id is the same on every peer: made from the shared start message)
 func _hub_begin(message: Dictionary) -> void:
+	if _hub_online.is_empty():
+		_statistics_context = {} # a LAN/skirmish/replay must never reuse online credentials
 	_game_start_unix = int(Time.get_unix_time_from_system())
 	if not _hub_online.is_empty():
 		_hub_kind = "online"
@@ -5267,8 +5377,23 @@ func _hub_begin(message: Dictionary) -> void:
 
 
 ## the score screen opened: the game is recorded (user://game_records.jsonl) and, for a LAN or online game the player shares, reported in the background
+func _statistics_setup() -> void:
+	if _statistics_uploader != null:
+		return
+	_statistics_uploader = load("res://scripts/match_statistics.gd").new()
+	_statistics_uploader.sharing = _share_results
+	add_child(_statistics_uploader)
+
+
 func _record_finished_game(r: Dictionary) -> void:
 	var base: Dictionary = r.get("record", {})
+	var details: Dictionary = base.get("statistics", {})
+	base.erase("statistics") # the legacy/platform record keeps its existing 4 KiB format
+	if not _statistics_context.is_empty() and not details.is_empty():
+		_statistics_setup()
+		_statistics_uploader.enqueue(_statistics_context, details)
+	_statistics_context = {}
+
 	if base.is_empty() or _hub_kind.is_empty() or not _platform_ready:
 		print("GAME RECORD: not recorded (%s)" % ("an observer, a replay or no game record" if base.is_empty() else "not a skirmish, LAN or online game"))
 		return
@@ -5299,14 +5424,8 @@ func _record_finished_game(r: Dictionary) -> void:
 
 
 func _online_lobby_url() -> String:
-	if not _online_lobby.is_empty():
-		return _online_lobby
-	var env := OS.get_environment("OPENBFME_LOBBY")
-	if not env.is_empty():
-		return env
-	var opts: Dictionary = _shell.get_options()
-	var configured: String = str(opts.get("OpenBFMEOnlineLobby", ""))
-	return configured if not configured.is_empty() else ONLINE_DEFAULT_LOBBY
+	# Keep Mac and iOS on the same service, including installations with older saved settings.
+	return ONLINE_DEFAULT_LOBBY
 
 
 ## The main menu's Online (RW 0x91D7A3 pushes OnlineShell.apt): the shell's lobby client, its HTTP transport, then the screens
@@ -5459,7 +5578,16 @@ func _online_wait(what: String, cond: Callable, sec: float) -> bool:
 
 ## a click on a button of the shell movie: the pointer to its centre, then the button down and up on later frames (as a player's)
 func _online_click(path: String) -> void:
-	_online_apply({"point": path})
+	# The movie can expose a button before its reveal animation leaves it reachable.
+	var until := Time.get_ticks_msec() + 10000
+	var pointed: Dictionary = _shell.online_apply({"point": path})
+	while not pointed.ok and Time.get_ticks_msec() < until:
+		await get_tree().process_frame
+		pointed = _shell.online_apply({"point": path})
+	if not pointed.ok:
+		printerr("GAME ONLINE WALK cannot click %s: %s" % [path, str(pointed.errors)])
+		return
+	print("GAME ONLINE WALK %s -> ok" % JSON.stringify({"point": path}))
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_online_apply({"mouse": true})
@@ -5787,6 +5915,7 @@ func _online_walk_end(ok: bool) -> void:
 
 
 func _on_online_started(start_json: String) -> void:
+	_statistics_context = {}
 	# lane ONLINEHUB-1: the game's id for its record and result: the platform's match (Quick Match, tournament) or the lobby's game
 	var ps: Dictionary = _shell.platform_status()
 	var match_id := str(ps.get("match_id", ""))
@@ -5795,6 +5924,7 @@ func _on_online_started(start_json: String) -> void:
 	var r: Dictionary = _world.net_online(start_json)
 	print("GAME ONLINE start: ", AptMenuPlayer.online_redact(str(r)))
 	if not r.ok:
+		_hub_online = {}
 		var why := AptMenuPlayer.online_redact(str(r.get("error", "")))
 		# Sol r1: from the online screens a START that cannot be played is a lobby error the player is told about (back at the game list); the
 		# command-line path (ONLINE-2's --online-*) has no screen to go back to
@@ -5803,6 +5933,13 @@ func _on_online_started(start_json: String) -> void:
 			return
 		_fail("online: " + why)
 		return
+	var document = JSON.parse_string(start_json)
+	if document is Dictionary:
+		if str(_hub_online.get("id", "")).is_empty():
+			_hub_online["id"] = str(document.get("game", ""))
+		var session: String = _online.token if _online != null else str(_shell.online_status().get("session_token", ""))
+		var url: String = _online.lobby_url if _online != null else (_online_http.lobby_url if _online_http != null else _online_lobby_url())
+		_statistics_context = {"id": str(document.get("game", "")), "slot": document.get("slot", -1), "url": url, "token": session}
 	_net_state = "lobby" # net_poll reports the START as started: the LAN path loads and plays it
 
 
@@ -5810,6 +5947,9 @@ func _on_online_started(start_json: String) -> void:
 
 func _net_open() -> void:
 	var r: Dictionary
+	# lane UBER-1: the player's simulation profile (Options.ini OpenBFMEUberPerformance) before the session opens, as the LAN lobby does: the host announces
+	# it and the joining side's identity must match it
+	_sync_simulation_profile()
 	if _net_host > 0:
 		var slots: Array = []
 		var i := 0
@@ -5822,6 +5962,8 @@ func _net_open() -> void:
 		while slots.size() < 8:
 			slots.append({"state": 1, "name": "", "faction": "", "color": -1, "start_pos": -1, "team": -1, "player_template": -1}) # SLOT_CLOSED
 		var message := {"mode": "skirmish", "map": _map_key, "map_crc": 0, "map_size": 0, "seed": _seed if _seed != 0 else Time.get_ticks_msec(), "starting_cash": 1500, "slots": slots}
+		if _world.simulation_profile() == "uber":
+			message["simulation_profile"] = 1 # lane UBER-1: the game it starts carries the profile (absent: Faithful; GodotGameStart reads it), as the lobby's identity does
 		r = _world.net_host(_net_host, message, _net_run_ahead, _net_crc)
 	else:
 		r = _world.net_join(_net_join, _net_name)
@@ -5964,6 +6106,7 @@ func _net_tick() -> void:
 		printerr(d)
 	if not st.desyncs.is_empty() and not _desync_shown:
 		_desync_shown = true
+		_report_desync(_statistics_context.duplicate(true), st.get("desync_dumps", []).duplicate(), st.desyncs.duplicate())
 		_show_desync_box(st.get("desync_dumps", []))
 	_net_disconnect_tick(st.get("disconnect", {}))
 	_online_relay_tick(st) # lane ONLINEUX-1
@@ -6258,7 +6401,7 @@ func _begin_replay(path: String) -> void:
 		return
 	print("GAME replay loaded: %d frames, %d commands" % [rep.final_frame, rep.commands])
 	_replay_active = true
-	_enter_game(rep)
+	await _enter_game(rep)
 	if _replay_speed != 1.0:
 		_world.set_time_scale(_replay_speed)
 	for arg in OS.get_cmdline_user_args():
@@ -6283,6 +6426,12 @@ func _begin_replay(path: String) -> void:
 func _replay_tick() -> void:
 	var st: Dictionary = _world.replay_status()
 	if not st.get("active", false):
+		return
+	if (_replay_check or _replay_menu_test) and int(st.get("mismatches", 0)) != 0:
+		_replay_active = false
+		printerr("GAME REPLAY mismatch at frame %d" % int(st.get("first_mismatch_frame", -1)))
+		print("GAME REPLAY RESULT: FAILED")
+		get_tree().quit(1)
 		return
 	if _replay_menu_test and str(st.get("path", "")) != _replay_menu_recorded_path:
 		_fail("the Replays menu loaded a different recording: " + str(st.get("path", "")))
@@ -7109,3 +7258,29 @@ func _run_menu_colours() -> void:
 	var ok := green == 0 and _menu_colours_problems.is_empty()
 	print("UI4 COLOURS %s: %d screens, %d green-dominant texts, %d problems" % ["PASS" if ok else "FAIL", screens, green, _menu_colours_problems.size()])
 	get_tree().quit(0 if ok else 1)
+
+
+## Send only the bounded desync dump, never the session log or relay credentials.
+## Wait briefly for the other peer's hash breakdown to arrive before reading the dump.
+func _report_desync(context: Dictionary, dumps: Array, summaries: Array) -> void:
+	if context.is_empty():
+		return
+	await get_tree().create_timer(2.0).timeout
+	_desync_reporting_setup()
+	var dump := "\n".join(summaries)
+	if not dumps.is_empty() and FileAccess.file_exists(str(dumps[0])):
+		var file := FileAccess.open(str(dumps[0]), FileAccess.READ)
+		if file != null:
+			dump = file.get_buffer(16000).get_string_from_utf8()
+	var body := {"v": 1, "platform": OS.get_name(), "commit": str(Release.info.commit()) if Release.info != null else "unknown", "dump": dump.left(16000)}
+	if _desync_uploader.enqueue(context, body):
+		print("GAME DESYNC report queued: ", context.id)
+
+
+func _desync_reporting_setup() -> void:
+	if _desync_uploader == null:
+		_desync_uploader = load("res://scripts/match_statistics.gd").new()
+		_desync_uploader.endpoint = "desync"
+		_desync_uploader.path = "user://online_desync_outbox.json"
+		_desync_uploader.sharing = func(): return true
+		add_child(_desync_uploader)

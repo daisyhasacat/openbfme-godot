@@ -78,6 +78,7 @@ public:
 	// Takes an instance out of the picture (it is no longer posed or written to any MultiMesh; its id is not reused). Idempotent; false for an
 	// unknown id. (Added by lane LOGIC-1: live objects die.)
 	bool remove_instance(int64_t instance);
+	void set_instance_shrouded(int64_t instance, bool hidden);
 	bool set_instance_clip(int64_t instance, const String &clip, double start_time, double speed);
 	// Poses an instance exactly, from the draw module runtime (W3DScriptedModelDraw::frame): clip0 at frame0, blended with clip1 at
 	// frame1 by `percentage` (0 = clip0, 1 = clip1; HTreeClass::Blend_Pose); an empty clip1 poses clip0 alone, an empty clip0 gives the
@@ -151,8 +152,8 @@ public:
 	void set_worker_threads(int count);
 	int get_worker_threads() const { return Workers; }
 	// lane PERF-3 (presentation only): instances whose bounds lie outside the current camera's frustum are not posed; their pose stays pending and is
-	// evaluated in the first update that sees them (and by the bone queries below). Godot draws a MultiMesh whole, so a culled instance is drawn with its
-	// last pose, off screen. Off by default; additional views must supply their frustum or leave culling disabled.
+	// evaluated in the first update that sees them (and by the bone queries below). Culled instances are omitted from the shared MultiMesh buffers.
+	// The existing S-1730 conservative sphere is used for both pose and draw culling. Off by default; additional views must supply their frustum or leave culling disabled.
 	void set_pose_culling(bool enabled) { PoseCulling = enabled; }
 	// An additional presentation camera's six world-space planes; empty removes it. Poses visible in either camera stay current.
 	bool set_extra_pose_frustum(const TypedArray<Plane> &planes);
@@ -264,9 +265,17 @@ private:
 		int Sway = 0;                         // lane VISUAL-2: set_instance_sway (INSTANCE_CUSTOM.w += 1024 * Sway)
 		bool Fogged = false;                  // lane VISUAL-2: set_instance_fogged (INSTANCE_CUSTOM.w += 16384)
 		std::vector<std::uint8_t> HiddenSubs; // by sub object index; empty = none hidden (set_instance_hidden_subobjects)
+		bool ShroudHidden = false;            // independent of opacity (e.g. paving plants)
+		bool RenderCulled = false;            // outside both presentation cameras; omitted from MultiMeshes
 		bool Removed = false;                 // remove_instance: skipped by the pose and buffer passes
 		float Opacity = 1.0f;                 // set_instance_opacity (lane PROJ-2)
 		bool PoseStale = true;                // SMOOTH-1: the pose inputs changed since the last evaluation (clip-driven instances follow GlobalTime)
+		// Bone motion uses the palette; instance buffers depend only on these
+		// pose channels (and transparent sorting, handled at model level).
+		std::vector<std::uint8_t> BufferVisibility;
+		std::vector<float> BufferFade;
+		std::vector<Vector3> BufferSortOrigins;
+		bool DrawStateChanged = true;
 		bool Inexact = false;                 // SMOOTH-1: the last evaluation used an arm whose summation order is not retail's (S-028)
 		int PaletteSize = 0;                  // SMOOTH-1: texels of the palette block (pivots * W3D_PALETTE_TEXELS_PER_PIVOT); 0 = none yet
 		// lane PERF-3: the clip names of the last set_instance_pose_native and what they resolved to (a drawable asks for the same clips frame after frame)
@@ -286,7 +295,7 @@ private:
 	void rebuild_layout();
 	void evaluate_pose(Instance &inst) const;
 	void evaluate_animation_pose(Instance &inst) const; ///< the animation part of evaluate_pose (lane COMBAT-4 adds the bone spins after it)
-	void write_palette(const Instance &inst);
+	bool write_palette(const Instance &inst);
 	void write_buffers();
 	const HAnimClass *resolve_clip_cached(Model &m, const std::string &name);
 	void allocate_palette(Instance &inst);   // SMOOTH-1: a block of the palette for one instance (a free block of the size, else the end)
@@ -337,6 +346,7 @@ private:
 	std::vector<std::pair<StringName, StringName>> MapperNames; // SMOOTH-1: per stage, the w3d_m<stage>r0 / r1 uniform names
 	std::uint32_t MapperSyncMs = 0xFFFFFFFFu;     // the mapper clock of the last update_mappers
 	size_t MapperCount = 0;
+	int PaletteUploads = 0; // full palette texture uploads in the last update
 	int BufferUploads = 0; // MultiMesh uploads whose packed contents changed
 	int PoseEvaluations = 0, BufferWrites = 0;   // stats of the last update: instances posed, models rewritten
 

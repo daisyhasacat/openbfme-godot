@@ -1035,3 +1035,34 @@ Final local checks: 21 synthetic save tests (1,388 assertions), four focused
 retail cases (2,700 assertions, including 600 continued frames matching the
 uninterrupted game), the shell error recovery test, and the snapshot closed-set
 audit (1,007 transfers, zero problems) passed. Sol 6.1 reviewed the changes.
+
+## Direct save without menus
+
+Press **F5** (or **Ctrl+Shift+S**) during gameplay to write `Quick Save.obfmesave`. A brief
+on-screen message confirms success or explains the failure. The hotkey stays
+inactive in menus, the console, the map editor, and text fields. Holding the key
+does not repeatedly save. F5 takes priority over its saved-camera-view binding.
+
+Press **F9** during gameplay or in menus to restore `Quick Save.obfmesave`.
+Quick Load skips the loading picture, progress overlay, and presentation waits;
+map loading and snapshot validation still run. Older saves still need command-log
+catch-up. Failed restores retain the existing running-game recovery path.
+F9 is inactive during loading, network play, console use, and map editing.
+
+The console command `/save Fortress test` saves a snapshot as
+`Fortress test.obfmesave` in the normal Save folder. `/save` uses `Quick Save`.
+Names with spaces are entered directly, without quotes. An existing save of the
+same name is replaced through the normal atomic save writer. Success prints the
+saved frame and file path; failures print the save system's reason. No Save/Load
+screen or quit menu opens, and the current menu and pause state are unchanged.
+Load the result through the existing Load Game screen.
+
+Scripts with the game host can call `game.save_game("Fortress test")` and inspect
+its `{ok, path, frame, hash, ...}` result (or `{ok: false, error}`). This saves a
+running single-player match, with campaign metadata when appropriate. The native
+save system still rejects network games, replays, incomplete recordings and
+unsupported snapshots. This is a match save, not a checkpoint of menu state.
+
+On iOS, a separate [automatic quick-resume checkpoint](IOS.md#automatic-single-player-quick-resume)
+is saved every 30 seconds and when backgrounding. It is loaded automatically on
+normal cold launches; it never replaces `/save` or the player's named saves.

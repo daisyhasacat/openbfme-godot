@@ -3122,6 +3122,27 @@ TEST_CASE("opts6 menu navigation retail: the main menu's OPTIONS > SETTINGS by k
 		settings = nav.focusId().find("Settings") != std::string::npos;
 	}
 	REQUIRE_MESSAGE(settings, nav.focusId());
+	// Navigation follows the authored dropdown hit region and lets its own
+	// rollover animation show focus, without a white rectangle over the label.
+	const auto targets = nav.targets();
+	bool checked = false;
+	for (const auto &target : targets)
+		if (target.id == nav.focusId())
+		{
+			AptButtonInst *button = fx.wm->apt().input().hitTestButtons(target.cx(), target.cy());
+			REQUIRE(button);
+			float hit[4];
+			REQUIRE(button->hitBounds(hit));
+			CHECK(target.x0 == hit[0]);
+			CHECK(target.y0 == hit[1]);
+			CHECK(target.x1 == hit[2]);
+			CHECK(target.y1 == hit[3]);
+			checked = true;
+		}
+	REQUIRE(checked);
+	GadgetDrawList focus;
+	nav.appendFocusFrame(focus);
+	CHECK(focus.commands.empty());
 	REQUIRE(nav.key(MenuNavKey::Activate));
 	fx.tick(80);
 	REQUIRE(fx.shell->top());
@@ -3236,4 +3257,32 @@ TEST_CASE("shellfix1 options retail: in the BFME2 style no frame border of the r
 	AptCharacterInst *version = main->asSprite()->childAtDepth(1);
 	REQUIRE(version);
 	CHECK(version->globallyVisible());
+}
+
+TEST_CASE("opts3 options retail: twelve settings tabs fit the frame and the last tab is clickable")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	ShellFx fx(mount, "StaticGameLOD = High\n");
+	AptOptionsScreen *options = fx.openOptionsFromMainMenu();
+	REQUIRE(options);
+	options->setExtensionAvailable(true);
+	std::string error;
+	REQUIRE_MESSAGE(options->openExtension(&error), error);
+	OpenBFMEOptionsPage *page = options->extensionPage();
+	REQUIRE(page);
+	auto spec = samplePage();
+	spec.tabs.resize(12, u"Page");
+	spec.tabs.back() = u"Updates";
+	spec.tab = 0;
+	REQUIRE_MESSAGE(page->show(spec, &error), error);
+	std::array<int, 4> rect{};
+	REQUIRE(page->rect("tab:11", rect));
+	CHECK((rect == std::array<int, 4>{109, 576, 275, 602}));
+	options->takeExtensionEvents();
+	CHECK(page->mouse(1, 192, 589));
+	CHECK(page->mouse(2, 192, 589));
+	const auto events = options->takeExtensionEvents();
+	REQUIRE(events.size() == 1);
+	CHECK(events[0].kind == OpenBFMEPageEvent::Kind::Tab);
+	CHECK(events[0].value == 11);
 }
