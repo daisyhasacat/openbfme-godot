@@ -1208,9 +1208,9 @@ void PlacementGhostRenderer::updateFormation(LiveGame &game, const InGameUI &ui,
    const float c=std::cos(slot.angle+1.5707964f),s=std::sin(slot.angle+1.5707964f);
    for(size_t i=0;i<count;++i) {
     const float x=averageY-positions[i].y,y=averageX-positions[i].x;
-    add(slot.preview,slot.position.x+x*c-y*s,slot.position.y+x*s+y*c,slot.angle-1.5707964f);
+    add(slot.preview,slot.position.x+x*c-y*s,slot.position.y+x*s+y*c,slot.angle+1.5707964f);
    }
-  } else add(slot.preview,slot.position.x,slot.position.y,slot.angle-1.5707964f);
+  } else add(slot.preview,slot.position.x,slot.position.y,slot.angle+1.5707964f);
  }
  const float angle=ui.formationAngle,c=std::cos(angle),s=std::sin(angle);
  const auto *head=fa->decal(fa->head),*body=fa->decal(fa->body),*base=fa->decal(fa->base);
@@ -1221,7 +1221,8 @@ void PlacementGhostRenderer::updateFormation(LiveGame &game, const InGameUI &ui,
  add(fa->body,anchor.x+offset*c,anchor.y+offset*s,angle-1.5707964f,side*2-baseWidth);
  add(fa->base,anchor.x+offset*c-(side-10)*s,anchor.y+offset*s+(side-10)*c,angle+1.5707964f);
  add(fa->base,anchor.x+offset*c+(side-10)*s,anchor.y+offset*s-(side-10)*c,angle-1.5707964f);
- add(fa->head,anchor.x+front*c,anchor.y+front*s,angle-1.5707964f);
+ // The texture quad axes differ from the native decal: flip directional art.
+ add(fa->head,anchor.x+front*c,anchor.y+front*s,angle+1.5707964f);
  std::map<std::string,std::vector<Sprite>> batches;for(const auto &sprite:sprites)batches[sprite.texture].push_back(sprite);
  const Player *player=game.logic().players().getLocalPlayer();
  const auto rgb=player?player->getPlayerColor():0xffffff;
