@@ -2,6 +2,7 @@
 #include "doctest.h"
 
 #include "CombatTestUtil.h"
+#include "GameClient/FormationAssistant.h"
 #include "GameClient/FormationPlacement.h"
 #include "GameClient/HudInput.h"
 #include <limits>
@@ -48,9 +49,15 @@ struct Rig
 	InGameUI ui;
 	MessageStream stream;
 	HudContext ctx{*world.logic, world.ai.get(), view, ui, stream, nullptr, {}};
+	FormationAssistant formations;
 	FormationPlacement placement{ctx};
 	Rig()
 	{
+		std::string error;
+		REQUIRE(formations.scan("FormationAssistant\n UnitDefinition Unit\n ObjectFilter = ALL\n End\n FormationTemplate Line\n Rows\n Row = Unit\n End\n "
+								"End\n FormationSelection Line\n MaxDragLength = 400\n MaxUnitsSelected = 10\n End\nEnd\n",
+								&error));
+		ctx.formations = &formations;
 		Object *unit = world.unit("Slasher", 'A', 100, 100);
 		world.logic->players().setLocalPlayer(unit->getControllingPlayer());
 		ui.selectObject(unit->getID());
@@ -92,7 +99,9 @@ TEST_CASE("formation chord: native first-press anchor, either release commits on
 		CHECK(r.ui.formationSlots[0].position.y == 200.f);
 		auto out = r.send(button(CMSG_RAW_MOUSE_LEFT_BUTTON_UP, 204, 204, 1040));
 		REQUIRE(out.size() == 1);
-		CHECK(out[0].type() == MSG_DO_MOVE_AND_ORIENTATE_OBJECTTO);
+		CHECK(out[0].type() == MSG_DO_MOVETO_FORMATION);
+		CHECK(out[0].arg(2).integer == 0);
+		CHECK_FALSE(out[0].arg(3).boolean);
 		CHECK_FALSE(r.ui.formationActive);
 		CHECK(r.send(button(CMSG_RAW_MOUSE_RIGHT_BUTTON_UP, 204, 204, 1060)).empty());
 		CHECK(r.send(ClientMessage(CMSG_MOUSE_LEFT_CLICK)).empty());
@@ -142,11 +151,10 @@ TEST_CASE("formation chord: failed placement replays both buttons; reset discard
 
 TEST_CASE("formation chord: S-4464 explicitly reports the remaining reconstructed layout and commands")
 {
-	const std::string expected =
-		"[S-4464] Two-button formation: BFME2's first-press buffering, <5-pixel / <500-ms chord and first-press anchor are ported "
-		"(BFME2 RVAs 0x431978 / 0x431BDD / 0x431C9D / 0x432038); RotWK parity is unverified (S-001). "
-		"The FormationAssistant templates, selection criteria, native preview decals and MSG_DO_MOVETO_FORMATION template handling are not ported: "
-		"the preview grid and individual move-and-orientate orders remain an OpenBFME reconstruction.";
+	const std::string expected = "[S-4464] Two-button formation: BFME2 gesture, INI cell filters, repeated rows, selection criteria, preview textures and "
+								 "four-argument formation orders are ported. "
+								 "RotWK parity, native formation-group pathing/slot optimization and firing-arc AI state parity remain unverified; current "
+								 "execution uses per-slot movement and locomotor facing.";
 	CHECK(FormationPlacement::stopLine() == expected);
 	const auto stops = HudInput::acceptanceStops();
 	CHECK(std::count(stops.begin(), stops.end(), expected) == 1);
@@ -162,11 +170,13 @@ TEST_CASE("formation chord: ordinary clicks and box drags still pass through the
 	world.logic->players().setLocalPlayer(unit->getControllingPlayer());
 	HudInput input(*world.logic, world.ai.get(), view, commands, MouseSettings{15, 5, 150}, meta);
 	input.commandTranslator().setUseAlternateMouse(true);
-	auto down = [&](int x, int y, int time) {
+	auto down = [&](int x, int y, int time)
+	{
 		input.mouseButton(HudInput::Button::Left, true, x, y, 0, time);
 		input.update();
 	};
-	auto up = [&](int x, int y, int time) {
+	auto up = [&](int x, int y, int time)
+	{
 		input.mouseButton(HudInput::Button::Left, false, x, y, 0, time);
 		input.update();
 	};
@@ -194,4 +204,66 @@ TEST_CASE("formation chord: after a failed drag the next down starts a new wait 
 	REQUIRE(r.ui.formationSlots.size() == 1);
 	CHECK(r.ui.formationSlots[0].position.x == 300.f);
 	CHECK(r.ui.formationSlots[0].position.y == 300.f);
+}
+
+TEST_CASE("formation assistant: INI selection limits, repeated ordered rows and preview descriptors")
+{
+	Rig r;
+	std::string error;
+	REQUIRE(
+		r.formations.scan("Object Preview\n FormationPreviewDecal\n Texture = UnitTexture\n Width = 32\n Height = 16\n End\nEnd\nFormationAssistant\n "
+						  "RowPadding = 10\n ColumnPadding = 10\n UnitDefinition Unit\n ObjectFilter = ALL\n PreviewObject = Preview\n End\n FormationTemplate "
+						  "Two\n Rows\n Row = Unit Unit\n End\n End\n FormationSelection Two\n MaxDragLength = 80\n MaxUnitsSelected = 4\n End\nEnd\n",
+						  &error));
+	CHECK(r.formations.choose(80, 4) == 0);
+	CHECK(r.formations.choose(800, 4) == 0);
+	REQUIRE(r.formations.decal("Preview") != nullptr);
+	CHECK(r.formations.decal("Preview")->texture == "UnitTexture");
+	CHECK(r.formations.decal("Preview")->width == 32);
+	CHECK(r.formations.decal("Preview")->height == 16);
+	auto *b = r.world.unit("Slasher", 'A', 100, 110), *c = r.world.unit("Slasher", 'A', 100, 120);
+	const auto slots = r.formations.layout(*r.world.logic, {r.ui.selected()[0], b->getID(), c->getID()}, 0, {100, 100, 0});
+	REQUIRE(slots.size() == 3);
+	CHECK(slots[0].offset.x == -14);
+	CHECK(slots[1].offset.x == 13);
+	CHECK(slots[2].offset.x == 0);
+	CHECK(slots[2].offset.y == 27);
+	CHECK(slots[0].preview == "Preview");
+	CHECK_FALSE(r.formations.scan("FormationAssistant\n FormationTemplate Bad\n Rows\n Row = A B\n Row = A\n End\n End\nEnd\n", &error));
+	CHECK(error.find("row widths differ") != std::string::npos);
+}
+
+TEST_CASE("formation chord: attack-move payload and release cleanup")
+{
+	Rig r;
+	r.ui.setAttackMoveToMode(true);
+	r.send(button(CMSG_RAW_MOUSE_LEFT_BUTTON_DOWN, 200, 200, 1000));
+	r.send(button(CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN, 200, 200, 1020));
+	const auto messages = r.send(button(CMSG_RAW_MOUSE_RIGHT_BUTTON_UP, 250, 200, 1040));
+	REQUIRE(messages.size() == 1);
+	CHECK(messages[0].type() == MSG_DO_MOVETO_FORMATION);
+	CHECK(messages[0].arg(3).boolean);
+	CHECK_FALSE(r.ui.isInAttackMoveToMode());
+	CHECK(r.ui.formationExpires == r.ui.clientFrame() + 45);
+}
+
+TEST_CASE("formation assistant: execution excludes the same dead and filtered selections as preview")
+{
+ Rig r;
+ auto *dead=r.world.unit("Slasher",'A',100,101);
+ auto *filtered=r.world.unit("Dummy",'A',100,102);
+ dead->friend_setEffectivelyDead(true);
+ std::string error;
+ INIEnvironment environment;
+ environment.blocks.registerBlock("Filter",[&](INI *ini){const FieldParse fields[]={{"Value",ParseObjectFilter,nullptr,0},{nullptr,nullptr,nullptr,0}};ini->initFromINI(&r.formations.valid,fields);});
+ INI ini(environment);
+ const std::string text="Filter\n Value = ALL -Dummy\nEnd\n";
+ ini.loadMemory("formation-filter.ini",std::vector<std::uint8_t>(text.begin(),text.end()),INI_LOAD_OVERWRITE);
+ const auto eligible=r.formations.layout(*r.world.logic,{r.ui.selected()[0]},0,{200,200,0});
+ const auto mixed=r.formations.layout(*r.world.logic,{dead->getID(),filtered->getID(),r.ui.selected()[0]},0,{200,200,0});
+ REQUIRE(eligible.size()==1);
+ REQUIRE(mixed.size()==1);
+ CHECK(mixed[0].object==eligible[0].object);
+ CHECK(mixed[0].offset.x==eligible[0].offset.x);
+ CHECK(mixed[0].offset.y==eligible[0].offset.y);
 }

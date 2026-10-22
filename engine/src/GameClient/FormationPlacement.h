@@ -35,6 +35,7 @@ class FormationPlacement : public MessageTranslator
 	HudContext &m_ctx;
 	std::unique_ptr<ClientMessage> m_firstPress;
 	bool m_left = false, m_right = false, m_consumed = false, m_controller = false;
-	Coord3D m_anchor{};
+	Coord3D m_anchor{}, m_end{};
+	bool m_rotatingArc = false;
 	std::vector<ObjectID> m_selection, m_originalSelection;
 };

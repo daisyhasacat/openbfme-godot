@@ -22,6 +22,7 @@
 
 class CommandButton;
 class GameLogic;
+class FormationAssistant;
 class MessageStream;
 struct HudContext;
 
@@ -53,8 +54,13 @@ inline constexpr const char *Scroll = "Scroll";
 class InGameUI
 {
 public:
-	struct FormationSlot { ObjectID object; Coord3D position; float angle; float radius; };
+	struct FormationSlot { ObjectID object; Coord3D position; float angle; float radius; std::string preview; };
 	bool formationActive = false;
+	int formationType = -1;
+	unsigned formationExpires = 0;
+	Coord3D formationAnchor{};
+	float formationAngle = 0, formationDragLength = 0;
+	const FormationAssistant *formationData = nullptr;
 	std::vector<FormationSlot> formationSlots;
 	InGameUI() = default;
 	InGameUI(const InGameUI &) = delete;

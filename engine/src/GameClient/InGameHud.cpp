@@ -67,6 +67,7 @@ InGameHud::InGameHud(Config config)
 	m_environment.gameText = m_config.gameText;
 	m_input = std::make_unique<HudInput>(m_config.game.logic(), &m_config.game.ai(), m_config.view, m_config.game.commands(), m_config.mouse, m_config.metaMap);
 	m_input->context().commands = &m_config.world.commands();
+	m_input->context().formations = &m_config.world.formations();
 	// lane OWNERFIX-1 r2: InGameUI's setRadiusCursorNone (the disable edge, RW 0x69B632): the aiming circle goes in that call, the pointer back to the arrow
 	m_input->ui().setRadiusCursorNoneHook([this]() {
 		m_radiusCursor.clear();

@@ -434,6 +434,14 @@ bool RetailObjectWorld::loadState(std::string *error)
 			m_s->m_report.errors.push_back(fe);
 		}
 	}
+	if (m_fs.doesFileExist("data/ini/formationassistant.ini"))
+	{
+		std::string error;
+		if (!m_s->m_formations.load(m_fs, &error))
+		{
+			SubsystemLoadReport::FileError fe;fe.file="FormationAssistant.ini";fe.code=3;fe.message=error;m_s->m_report.errors.push_back(fe);
+		}
+	}
 	// The BFME2 front end exposes both base-game campaigns alongside the expansion.
 	// RotWK's subsystem legend only loads LinearCampaignExpansion1.ini.
 	if (!m_s->m_linearCampaigns.find("GOOD_CAMPAIGN") && m_fs.doesFileExist("Data\\INI\\LinearCampaign.ini"))

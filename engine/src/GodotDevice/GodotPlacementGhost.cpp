@@ -23,6 +23,9 @@
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/immediate_mesh.hpp>
 #include "GameLogic/GameLogic.h"
+#include "GameClient/FormationAssistant.h"
+#include "GameLogic/Object/Contain/HordeContainRuntime.h"
+#include "GameLogic/Object/Contain/HordeContainCore.h"
 #include "GameLogic/Module/ConstructionModules.h"
 #include "GameLogic/BuildPlacement.h"
 #include "GameLogic/Object/Object.h"
@@ -1087,6 +1090,8 @@ Dictionary PlacementGhostRenderer::state() const
 	for (const IconView &view : m_views) cachedModels += (int)view.models.size();
 	s["cached_models"] = cachedModels;
 	s["model_loads"] = m_modelLoads;
+	Array formationTextures;for(const auto &name:m_formationTextures)formationTextures.push_back(toGodotString(name));
+	s["formation_textures"]=formationTextures;
 	s["formation_visible"] = m_formation && m_formation->is_visible();
 	Array formation;
 	for(const auto &slot:m_formationSlots) {
@@ -1175,7 +1180,8 @@ Dictionary PlacementGhostRenderer::state() const
 
 namespace godot {
 void PlacementGhostRenderer::updateFormation(LiveGame &game, const InGameUI &ui, bool idle) {
- if(!ui.formationActive || ui.formationSlots.empty()) { if(m_formation)m_formation->hide();return; }
+ const float opacity=ui.formationActive || ui.clientFrame()<=ui.formationExpires?1.f:std::max(0.f,1.f-(ui.clientFrame()-ui.formationExpires)/15.f);
+ if(opacity<=0 || ui.formationSlots.empty()) { if(m_formation)m_formation->hide();return; }
  if(!idle)return;
  if(!m_formation) {
   m_formation=memnew(MeshInstance3D);m_parent->add_child(m_formation);
@@ -1183,27 +1189,66 @@ void PlacementGhostRenderer::updateFormation(LiveGame &game, const InGameUI &ui,
   m_formation->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
  }
  Ref<ImmediateMesh> mesh;mesh.instantiate();
- Ref<StandardMaterial3D> material;material.instantiate();
- material->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
- material->set_albedo(Color(.25f,1,.4f,.9f));
- material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
- mesh->surface_begin(Mesh::PRIMITIVE_LINES,material);
- auto point=[&](float x,float y){return Vector3(x,game.logic().getGroundHeight(x,y)+2,-y);};
+ const auto *fa=ui.formationData;if(!fa)return;
+ struct Sprite {std::string texture;float x,y,width,height,angle;};
+ std::vector<Sprite> sprites;
+ auto add=[&](const std::string &name,float x,float y,float angle,float width=-1.f){
+  const auto *decal=fa->decal(name,true);if(!decal || decal->texture.empty()){if(!name.empty())error("formation preview decal missing: "+name);return;}
+  sprites.push_back({decal->texture,x,y,width<0?decal->width:width,decal->height,angle});
+ };
  for(const auto &slot:ui.formationSlots) {
-  const float x=slot.position.x,y=slot.position.y,r=slot.radius;
-  for(int i=0;i<24;++i) {
-   const float a=i*6.28318530718f/24,b=(i+1)*6.28318530718f/24;
-   mesh->surface_add_vertex(point(x+r*std::cos(a),y+r*std::sin(a)));
-   mesh->surface_add_vertex(point(x+r*std::cos(b),y+r*std::sin(b)));
-  }
-  const float c=std::cos(slot.angle),s=std::sin(slot.angle),tipX=x+r*c,tipY=y+r*s;
-  mesh->surface_add_vertex(point(x,y));mesh->surface_add_vertex(point(tipX,tipY));
-  for(float side:{-1.f,1.f}) {
-   mesh->surface_add_vertex(point(tipX,tipY));
-   mesh->surface_add_vertex(point(tipX-r*.4f*c-side*r*.3f*s,tipY-r*.4f*s+side*r*.3f*c));
-  }
+  auto *object=game.logic().findObjectByID(slot.object);
+  auto *horde=object?dynamic_cast<HordeContain *>(object->getContain()):nullptr;
+  if(horde) {
+   const auto &positions=horde->core().slots();
+   const size_t count=std::min(positions.size(),(size_t)horde->getContainCount());
+   float averageX=0,averageY=0;
+   for(size_t i=0;i<count;++i){averageX+=positions[i].x;averageY+=positions[i].y;}
+   if(count){averageX/=count;averageY/=count;}
+   const float c=std::cos(slot.angle+1.5707964f),s=std::sin(slot.angle+1.5707964f);
+   for(size_t i=0;i<count;++i) {
+    const float x=averageY-positions[i].y,y=averageX-positions[i].x;
+    add(slot.preview,slot.position.x+x*c-y*s,slot.position.y+x*s+y*c,slot.angle-1.5707964f);
+   }
+  } else add(slot.preview,slot.position.x,slot.position.y,slot.angle-1.5707964f);
  }
- mesh->surface_end();m_formation->set_mesh(mesh);m_formation->show();
+ const float angle=ui.formationAngle,c=std::cos(angle),s=std::sin(angle);
+ const auto *head=fa->decal(fa->head),*body=fa->decal(fa->body),*base=fa->decal(fa->base);
+ const float baseWidth=base?base->width:0,bodyWidth=body?body->width:0;
+ const float side=std::max(ui.formationDragLength,baseWidth*.5f+bodyWidth*.5f);
+ const float offset=(body?body->height*.5f:0)+30,front=(body?body->height:0)+30+(head?head->height*.5f:0);
+ const auto anchor=ui.formationAnchor;
+ add(fa->body,anchor.x+offset*c,anchor.y+offset*s,angle-1.5707964f,side*2-baseWidth);
+ add(fa->base,anchor.x+offset*c-(side-10)*s,anchor.y+offset*s+(side-10)*c,angle+1.5707964f);
+ add(fa->base,anchor.x+offset*c+(side-10)*s,anchor.y+offset*s-(side-10)*c,angle-1.5707964f);
+ add(fa->head,anchor.x+front*c,anchor.y+front*s,angle-1.5707964f);
+ std::map<std::string,std::vector<Sprite>> batches;for(const auto &sprite:sprites)batches[sprite.texture].push_back(sprite);
+ const Player *player=game.logic().players().getLocalPlayer();
+ const auto rgb=player?player->getPlayerColor():0xffffff;
+ const Color tint(((rgb>>16)&255)/255.f,((rgb>>8)&255)/255.f,(rgb&255)/255.f,opacity);
+ m_formationTextures.clear();
+ for(const auto &batch:batches) {
+  const Ref<Texture2D> tex=texture(batch.first+".tga");if(tex.is_null())continue;
+  m_formationTextures.push_back(batch.first+".tga");
+  Ref<StandardMaterial3D> material;material.instantiate();
+  material->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);material->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
+  material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+  const bool arrow=(head && batch.first==head->texture)||(body && batch.first==body->texture)||(base && batch.first==base->texture);
+  material->set_albedo(arrow?Color(1,1,1,opacity):tint);
+  material->set_texture(BaseMaterial3D::TEXTURE_ALBEDO,tex);
+  mesh->surface_begin(Mesh::PRIMITIVE_TRIANGLES,material);
+  for(const auto &sprite:batch.second) {
+   const float c=std::cos(sprite.angle),s=std::sin(sprite.angle);
+   const Vector2 uv[4]={{0,0},{1,0},{1,1},{0,1}};
+   for(int index:{0,1,2,0,2,3}) {
+    const float lx=(uv[index].x-.5f)*sprite.width,ly=(uv[index].y-.5f)*sprite.height;
+    const float x=sprite.x+lx*c-ly*s,y=sprite.y+lx*s+ly*c;
+    mesh->surface_set_uv(uv[index]);mesh->surface_add_vertex(Vector3(x,game.logic().getGroundHeight(x,y)+2,-y));
+   }
+  }
+  mesh->surface_end();
+ }
+ m_formation->set_mesh(mesh);m_formation->show();
 }
 
 } // namespace godot

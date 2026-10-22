@@ -1,6 +1,7 @@
 extends SceneTree
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
+	create_timer(120).timeout.connect(func(): printerr("FORMATION TIMEOUT"); quit(1))
 	root.size = Vector2i(1280,720)
 	var fs = ClassDB.instantiate("RetailFileSystem")
 	assert(fs.mount_retail().ok)
@@ -10,8 +11,10 @@ func _run() -> void:
 	assert(world.load_map("map mp fall back 4p",{"slots":[{"player":"Player_1","faction":"FactionMen","human":true}]}).ok)
 	var player = world.execute_lua("for id,p in pairs(bfme.players) do if p.name=='Player_1' then return id end end")
 	assert(player.ok)
+	var unit_template := OS.get_environment("FORMATION_UNIT")
+	if unit_template.is_empty(): unit_template = "MenPorter"
 	var units := PackedInt64Array()
-	for i in 4: units.append(world.create_object("MenPorter",int(player.output),1800+i*40,1800,0))
+	for i in 4: units.append(world.create_object(unit_template,int(player.output),1800+i*40,1800,0))
 	var camera = Camera3D.new()
 	root.add_child(camera)
 	var hud = ClassDB.instantiate("InGameHudNode")
@@ -27,6 +30,10 @@ func _run() -> void:
 	for i in 3: await process_frame
 	var preview: Dictionary = hud.get_placement_ghost_state()
 	assert(preview.formation_visible and preview.formation_slots.size()==4,str(preview))
+	assert(preview.formation_textures.has("FPHeroDecal.tga" if unit_template=="MenPorter" else "FPInfSingle.tga"),str(preview))
+	assert(preview.formation_textures.has("FPFacingArrowHead.tga"),str(preview))
+	assert(preview.formation_textures.has("FPFacingArrowBody.tga"),str(preview))
+	assert(preview.formation_textures.has("FPSmallFacingArrow.tga"),str(preview))
 	var narrow: Array = preview.formation_slots
 	var end: Vector2 = hud.world_to_pixel(Vector2(2400,2100))
 	hud.inject_mouse_move(end)
@@ -35,6 +42,13 @@ func _run() -> void:
 	assert(preview.formation_visible and preview.formation_slots.size()==4,str(preview))
 	assert(preview.formation_slots != narrow,"Drag did not change formation width")
 	assert(hud.get_selection().size()==4,"Formation changed selection")
+	if DisplayServer.get_name() != "headless" and not OS.get_environment("FORMATION_SHOT").is_empty():
+		await RenderingServer.frame_post_draw
+		assert(root.get_texture().get_image().save_png(OS.get_environment("FORMATION_SHOT")) == OK)
+	if "--preview-only" in OS.get_cmdline_user_args():
+		print("FORMATION PREVIEW PASS: ", unit_template)
+		quit()
+		return
 	var slots: Array = preview.formation_slots
 	for i in 4:
 		var unit: Dictionary = world.get_object(units[i])
@@ -42,6 +56,8 @@ func _run() -> void:
 	hud.inject_mouse_button(MOUSE_BUTTON_LEFT,false,end)
 	hud.inject_mouse_button(MOUSE_BUTTON_RIGHT,false,end)
 	for i in 3: await process_frame
+	assert("MSG_DO_MOVETO_FORMATION" in str(hud.get_message_log()))
+	await create_timer(2.1).timeout
 	assert(not hud.get_placement_ghost_state().formation_visible)
 	assert(hud.get_selection().size()==4,"Releasing the chord deselected units")
 	for i in 50: world.advance(0.2)
@@ -93,6 +109,7 @@ func _run() -> void:
 		event.button_index=second
 		controller._input(event)
 		for i in 3: await process_frame
+		await create_timer(2.1).timeout
 		assert(not hud.get_placement_ghost_state().formation_visible)
 		assert(not controller._formation_held and controller._wait_stick_neutral)
 	controller.queue_free()

@@ -12,6 +12,7 @@
 // map.ini take effect here.
 
 #pragma once
+#include "GameClient/FormationAssistant.h"
 
 #include "Common/BfmeGame.h"
 #include "Common/ArchiveFileSystem.h"
@@ -90,6 +91,7 @@ public:
 	const EmotionSystem &emotions() const { return m_s->m_emotions; }     // MODULES-2: TheEmotionSystem (the EmotionNugget blocks)
 	const std::vector<std::pair<std::string, bool>> &missionObjectives() const { return m_s->m_missionObjectives; }
 	bool bfme1Data() const { return isBfme1Data(m_fs); } // community PR #36 (Common/BfmeGame.h)
+	const FormationAssistant &formations() const { return m_s->m_formations; }
 	const LinearCampaignManager &linearCampaigns() const { return m_s->m_linearCampaigns; } // CAMP-1: TheLinearCampaignManager (the LinearCampaign blocks)
 	const CreateAHeroSystem &createAHeroSystem() const { return m_s->m_createAHero; } // HERO-2: TheCreateAHeroSystem (Data\INI\CreateAHeroSystem.ini)
 	// MOVE-1: the INI macro table the object templates were loaded with (a LocomotorSet block's Speed may be a macro: AIWorld parses those blocks at runtime)
@@ -190,6 +192,7 @@ private:
 		StanceTemplateStore m_stances;                // INTEG-1
 		EmotionSystem m_emotions;                     // MODULES-2
 		std::vector<std::pair<std::string, bool>> m_missionObjectives; // label, bonus; map.ini order, one-based IDs
+		FormationAssistant m_formations;
 		LinearCampaignManager m_linearCampaigns;      // CAMP-1
 		CreateAHeroSystem m_createAHero;              // HERO-2
 		std::unique_ptr<AudioIniState> m_audio;

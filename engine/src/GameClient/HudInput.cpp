@@ -2,6 +2,11 @@
 // See HudInput.h.
 
 #include "GameClient/HudInput.h"
+#include "GameClient/FormationAssistant.h"
+#include "GameClient/ControlBarCommands.h"
+#include "GameLogic/ObjectFilterMatch.h"
+#include "GameClient/HudObjects.h"
+
 #include "Common/Thing/ThingTemplate.h"
 
 #include <stdexcept>
@@ -439,10 +444,8 @@ bool FormationPlacement::isStartOfDrag(const ClientMessage &first, const ClientM
 
 const char *FormationPlacement::stopLine()
 {
-	return "[S-4464] Two-button formation: BFME2's first-press buffering, <5-pixel / <500-ms chord and first-press anchor are ported "
-		   "(BFME2 RVAs 0x431978 / 0x431BDD / 0x431C9D / 0x432038); RotWK parity is unverified (S-001). "
-		   "The FormationAssistant templates, selection criteria, native preview decals and MSG_DO_MOVETO_FORMATION template handling are not ported: "
-		   "the preview grid and individual move-and-orientate orders remain an OpenBFME reconstruction.";
+	return "[S-4464] Two-button formation: BFME2 gesture, INI cell filters, repeated rows, selection criteria, preview textures and four-argument formation orders are ported. "
+		"RotWK parity, native formation-group pathing/slot optimization and firing-arc AI state parity remain unverified; current execution uses per-slot movement and locomotor facing.";
 }
 
 void FormationPlacement::replayFirstPress(const ClientMessage &before)
@@ -458,13 +461,19 @@ void FormationPlacement::replayFirstPress(const ClientMessage &before)
 // Two-button placement takes priority over selection and right-drag scrolling.
 bool FormationPlacement::begin(const ICoord2D &pixel, bool controller) {
  auto &ui=m_ctx.ui;
- if(!ui.getInputEnabled() || ui.isPlacing() || ui.getGUICommand() || !m_ctx.localPlayer()) return false;
+ if(!ui.getInputEnabled() || ui.isPlacing() || (ui.getGUICommand() && ui.getGUICommand()->m_command != GUI_COMMAND_ATTACK_MOVE) || !m_ctx.localPlayer() || !m_ctx.formations) return false;
+ m_rotatingArc=false;
+ if(auto *picked=HudObjects::pickForHover(m_ctx,pixel)) {
+  if(const auto *field=picked->getTemplate()->findField("FiringArc")) {
+   if(const auto *arc=std::get_if<float>(field))m_rotatingArc=*arc<360.f;
+  }
+ }
  m_selection.clear();
  for(ObjectID id:ui.selected()) {
   Object *o=m_ctx.logic.findObjectByID(id);
   if(!o || o->isDestroyed() || o->isEffectivelyDead() || o->getControllingPlayer()!=m_ctx.localPlayer()) continue;
   auto *ai=o->getAIUpdateInterface();
-  if(ai && !ai->isImmobile() && !o->isKindOfName("HORDE_MEMBER")) m_selection.push_back(id);
+  if(ai && (m_rotatingArc || !ai->isImmobile()) && !o->isKindOfName("HORDE_MEMBER") && ObjectFilterMatch::allows(m_ctx.logic,m_ctx.formations->valid,*o,nullptr)) m_selection.push_back(id);
  }
  if(m_selection.empty() || !m_ctx.view.screenToTerrain(pixel,m_ctx.logic,m_anchor)) return false;
  m_controller=controller;
@@ -480,43 +489,35 @@ void FormationPlacement::aim(const ICoord2D &pixel) {
  if(auto *terrain=m_ctx.logic.terrain();terrain && terrain->getLargestExtent(mx,my)) {
   if(end.x<0||end.y<0||end.x>mx||end.y>my)return;
  }
+ m_end=end;
  const float dx=end.x-m_anchor.x,dy=end.y-m_anchor.y;
  const float length=std::sqrt(dx*dx+dy*dy);
  float angle=length>1 ? std::atan2(dy,dx) : 0;
- float spacing=30;
- std::vector<Object *> units;
- for(ObjectID id:m_selection) {
-  Object *o=m_ctx.logic.findObjectByID(id);
-  if(!o || o->isDestroyed() || o->isEffectivelyDead() || o->getControllingPlayer()!=m_ctx.localPlayer()) continue;
-  units.push_back(o); spacing=std::max(spacing,2*CombatQueries::boundingCircleRadius(*o)+10);
- }
- if(units.empty()) { cancel(); return; }
- std::stable_sort(units.begin(),units.end(),[](Object *a,Object *b){
-  auto priority=[](Object *o){auto *l=o->getAIUpdateInterface()->curLocomotor();return l ? (int)l->getTemplate().m_formationPriority : 0;};
-  return priority(a)<priority(b);
- });
- const int columns=(int)std::clamp(length/spacing+1,1.f,(float)units.size());
- const float c=std::cos(angle),s=std::sin(angle);
+ ui.formationType=m_ctx.formations->choose(length,m_selection.size());
+ ui.formationAnchor=m_anchor;ui.formationAngle=angle;ui.formationDragLength=length;ui.formationData=m_ctx.formations;
+ const auto slots=m_ctx.formations->layout(m_ctx.logic,m_selection,ui.formationType,m_anchor);
+ const float c=std::cos(angle+1.5707964f),s=std::sin(angle+1.5707964f);
  ui.formationSlots.clear();
- for(size_t i=0;i<units.size();++i) {
-  const int row=(int)i/columns,col=(int)i%columns;
-  const int rowSize=std::min(columns,(int)units.size()-row*columns);
-  const float across=(col-(rowSize-1)*.5f)*spacing,back=-row*spacing;
-  Coord3D p{m_anchor.x+back*c-across*s,m_anchor.y+back*s+across*c,0};
-  if(mx>0&&my>0){p.x=std::clamp(p.x,0.f,mx);p.y=std::clamp(p.y,0.f,my);}
+ for(const auto &slot:slots) {
+  Coord3D p{m_anchor.x+slot.offset.x*c-slot.offset.y*s,m_anchor.y+slot.offset.x*s+slot.offset.y*c,0};
   p.z=m_ctx.logic.getGroundHeight(p.x,p.y);
-  ui.formationSlots.push_back({units[i]->getID(),p,angle,spacing*.4f});
+  ui.formationSlots.push_back({slot.object,p,angle,0,slot.preview});
  }
 }
 void FormationPlacement::commit() {
- for(const auto &slot:m_ctx.ui.formationSlots) {
-  Object *o=m_ctx.logic.findObjectByID(slot.object);
-  if(!o || o->isDestroyed() || o->isEffectivelyDead() || o->getControllingPlayer()!=m_ctx.localPlayer()) continue;
-  ClientMessage &order=m_ctx.stream.append(MSG_DO_MOVE_AND_ORIENTATE_OBJECTTO);
-  order.appendObjectID(slot.object);order.appendLocation(slot.position);order.appendReal(slot.angle);
+ if(m_rotatingArc || !m_ctx.ui.formationSlots.empty()) {
+  ClientMessage &order=m_ctx.stream.append(m_rotatingArc?MSG_DO_ROTATE_FIRINGARC:MSG_DO_MOVETO_FORMATION);
+  if(m_rotatingArc)order.appendLocation(m_end);
+  else {
+  order.appendLocation(m_ctx.ui.formationAnchor);order.appendReal(m_ctx.ui.formationAngle);
+  order.appendInteger(m_ctx.ui.formationType);
+  order.appendBoolean((m_ctx.ui.getGUICommand() && m_ctx.ui.getGUICommand()->m_command==GUI_COMMAND_ATTACK_MOVE) || m_ctx.ui.isInAttackMoveToMode());
+  }
  }
- m_ctx.ui.formationActive=false;m_ctx.ui.formationSlots.clear();
+ m_ctx.ui.formationActive=false;m_ctx.ui.formationExpires=m_ctx.ui.clientFrame()+45;
+ m_ctx.ui.clearAttackMoveToMode();
 }
+
 void FormationPlacement::frame() {
  if(m_ctx.ui.formationActive && (!m_ctx.ui.getInputEnabled() || m_ctx.ui.isQuitMenuVisible() || m_ctx.ui.selected()!=m_originalSelection)) cancel();
 }
@@ -526,7 +527,7 @@ void FormationPlacement::cancel() {
 MessageDisposition FormationPlacement::translate(const ClientMessage &msg)
 {
 	const int t = msg.type();
-	if (m_ctx.ui.formationActive && (!m_ctx.ui.getInputEnabled() || m_ctx.ui.isPlacing() || m_ctx.ui.getGUICommand()))
+	if (m_ctx.ui.formationActive && (!m_ctx.ui.getInputEnabled() || m_ctx.ui.isPlacing() || (m_ctx.ui.getGUICommand() && m_ctx.ui.getGUICommand()->m_command != GUI_COMMAND_ATTACK_MOVE)))
 		cancel();
 	if (t == CMSG_RAW_KEY_DOWN && msg.arg(0).integer == KEY_ESC && m_ctx.ui.formationActive)
 	{
