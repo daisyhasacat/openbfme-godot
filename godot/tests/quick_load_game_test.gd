@@ -28,8 +28,21 @@ func _run() -> void:
 	var saved: Dictionary = game.save_game()
 	assert(saved.ok, str(saved))
 	var expected_hash: int = game._world.get_state_hash()
+	var retained_children: Array = game._world.get_children()
+	for i in 10: game._world.advance(0.2)
+	game._hud.hold_input(true)
+	var press := InputEventKey.new()
+	press.keycode = KEY_RIGHT
+	press.physical_keycode = KEY_RIGHT
+	press.pressed = true
+	root.push_input(press)
+	assert(game._hud.get_state().keys.pending == 1)
 	var second: Dictionary = await game._save_flow.quick_load()
 	assert(second.ok, str(second))
+	assert(second.supported)
+	assert(game._world.get_children() == retained_children)
+	assert(game._hud.get_state().keys.pending == 0)
+	game._hud.hold_input(false)
 	assert(game._state == game.State.PLAYING)
 	game._world.set_auto_advance(false)
 	assert(game._world.get_frame() == frame)

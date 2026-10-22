@@ -88,12 +88,16 @@ func save_game(name := "Quick Save") -> Dictionary:
 	return last_save
 
 
-## F9 uses the same checked restore and rollback path as Load Game, without its presentation screen.
+## F9 rewinds saves made by the still-running skirmish in place; other saves use the full checked loading path.
 func quick_load() -> Dictionary:
 	var dir := save_dir()
 	if dir.is_empty(): return {"ok": false, "error": "There is no Save folder."}
 	var path := dir.path_join("Quick Save.obfmesave")
 	if not FileAccess.file_exists(path): return {"ok": false, "error": "No Quick Save exists yet. Press F5 during a game first."}
+	var in_place: Dictionary = game._world.quick_load_game(path)
+	if in_place.get("supported", false):
+		last_load = in_place
+		return in_place
 	var check: Dictionary = game._world.check_save(path)
 	if not check.get("ok", false): return {"ok": false, "error": str(check.get("error", "Invalid Quick Save."))}
 	last_load = {}

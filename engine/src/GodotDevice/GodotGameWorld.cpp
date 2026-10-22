@@ -745,6 +745,7 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 
 void GameWorld::clear_scene()
 {
+	m_sessionSaves.clear();
 	m_movementPendingCommands.reset();
 	m_mapWeatherId = 0;
 	m_pavingPlants.clear();m_pavingTexture.unref();m_pavingSignature=0;m_pavingFrame=~0u;m_pavingError=String();

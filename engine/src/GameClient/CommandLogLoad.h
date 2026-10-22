@@ -76,6 +76,9 @@ public:
 	// installs the playback driver on the started game (its frame must be the log's first frame or earlier than F); lane SAVE-4e: in the Snapshot mode
 	// loads the snapshot instead (the state is then Ready or Failed on return)
 	bool begin(LiveGame &game, std::string *error);
+	// Host has verified this snapshot was saved by this still-running match.
+	// Unlike begin(), the current frame may be later than the saved frame.
+	bool beginInPlace(LiveGame &game, std::string *error);
 	// runs frames for at most `budgetMs` (at least one frame); returns the state
 	State step(LiveGame &game, std::uint32_t budgetMs);
 
@@ -110,7 +113,7 @@ private:
 	bool m_restoreThread = false;
 	double m_elapsedMs = 0.0;
 	// lane SAVE-4e
-	bool beginSnapshot(LiveGame &game, std::string *error);
+	bool beginSnapshot(LiveGame &game, std::string *error, bool rewindClient = false);
 	bool m_verifyLog = false;
 	Mode m_mode = Mode::CatchUp;
 	std::vector<std::uint8_t> m_snapshot;

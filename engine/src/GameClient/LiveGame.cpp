@@ -1029,7 +1029,7 @@ int LiveGame::stepFrame()
 	return ran;
 }
 
-bool LiveGame::loadSnapshot(const std::vector<std::uint8_t> &bytes, std::string *error, const std::function<std::string(GameLogic &)> &accept)
+bool LiveGame::loadSnapshot(const std::vector<std::uint8_t> &bytes, std::string *error, const std::function<std::string(GameLogic &)> &accept, bool rewindClient)
 {
 	const auto worldContext = m_world.enterContext();
 	NumericState::normalizeFloatingPointEnvironment(); // the load runs simulation code (object creation, post-process)
@@ -1100,6 +1100,22 @@ bool LiveGame::loadSnapshot(const std::vector<std::uint8_t> &bytes, std::string 
 		m_recorder->loadedObject(*o);
 	}
 	m_lastBuilt.reset(); // the next snapshot is built from the loaded state alone (no history of the frames before)
+	if (ok && rewindClient)
+	{
+		// A rewind must not execute input or partial clock time from the abandoned future.
+		m_commands.reset();
+		m_pendingInput.reset();
+		m_clock.reset();
+		m_tickClock.reset();
+		m_nextPhase = 1;
+		m_logic->scriptEngine().takeClientRequests();
+		m_presentedPrev.reset();
+		std::lock_guard<std::mutex> lock(m_pubMutex);
+		m_published.reset();
+		m_publishedPrev.reset();
+		m_publishedScriptRequests.clear();
+		m_frameHashes.clear();
+	}
 	m_presentTimeValid = false;
 	m_shroudChanged = true;
 	if (!undo.empty())

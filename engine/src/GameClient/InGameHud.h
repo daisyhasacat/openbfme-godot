@@ -191,6 +191,7 @@ public:
 	// SMOOTH-1: render frames whose update was skipped because the logic worker was busy
 	unsigned long long skippedUpdates() const { return m_skippedUpdates; }
 	unsigned long long deferredPresses() const { return m_deferredPressCount; } ///< RENDERWAIT-1: movie presses that waited for a held update
+	void discardInputForRewind();
 
 	// ---- lane HUD-6 (InGameHudHud6.cpp): the radial command bubbles, the help box ----
 	ControlBarRadialMenu &radialMenu() { return m_radial; }

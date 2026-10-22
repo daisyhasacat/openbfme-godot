@@ -231,25 +231,41 @@ bool CommandLogLoad::takeSnapshot(LiveGame &game, std::vector<std::uint8_t> &out
 	return true;
 }
 
-bool CommandLogLoad::beginSnapshot(LiveGame &game, std::string *error)
+bool CommandLogLoad::beginInPlace(LiveGame &game, std::string *error)
+{
+	if (m_state != State::Idle || m_mode != Mode::Snapshot)
+	{
+		if (error)
+			*error = "in-place loading requires a prepared snapshot";
+		return false;
+	}
+	m_startFrame = game.frame();
+	return beginSnapshot(game, error, true);
+}
+
+bool CommandLogLoad::beginSnapshot(LiveGame &game, std::string *error, bool rewindClient)
 {
 	// lane SAVE-4e: the started game (the log's START, frame m_startFrame) takes the snapshot's state at F
 	const double t0 = nowMs();
 	std::string why;
-	// the frame and the state hash the header names are checked inside the load: a mismatch is refused like a refused block (the game is put back)
-	const bool loaded = game.loadSnapshot(m_snapshot, &why, [this](GameLogic &logic) -> std::string {
-		if (logic.getFrame() != m_target)
-		{
-			return "it is of frame " + std::to_string(logic.getFrame()) + ", the save's header says frame " + std::to_string(m_target);
-		}
-		const std::uint32_t hash = logic.computeStateHash();
-		if (hash != m_targetHash)
-		{
-			return "it loads with state hash " + std::to_string(hash) + " at frame " + std::to_string(m_target) + ", the save recorded "
-				+ std::to_string(m_targetHash);
-		}
-		return std::string();
-	});
+	// the frame and the state hash the header names are checked inside the load: a mismatch is refused like a refused block (the game is
+	// put back)
+	const bool loaded = game.loadSnapshot(
+		m_snapshot, &why,
+		[this](GameLogic &logic) -> std::string {
+			if (logic.getFrame() != m_target)
+			{
+				return "it is of frame " + std::to_string(logic.getFrame()) + ", the save's header says frame " + std::to_string(m_target);
+			}
+			const std::uint32_t hash = logic.computeStateHash();
+			if (hash != m_targetHash)
+			{
+				return "it loads with state hash " + std::to_string(hash) + " at frame " + std::to_string(m_target) +
+					   ", the save recorded " + std::to_string(m_targetHash);
+			}
+			return std::string();
+		},
+		rewindClient);
 	m_snapshotMs = nowMs() - t0;
 	m_elapsedMs = m_snapshotMs;
 	if (!loaded)
@@ -258,7 +274,8 @@ bool CommandLogLoad::beginSnapshot(LiveGame &game, std::string *error)
 	}
 	else if (game.frame() != m_target)
 	{
-		fail(&game, "the loaded game's published frame is " + std::to_string(game.frame()) + ", not the saved frame " + std::to_string(m_target));
+		fail(&game,
+			 "the loaded game's published frame is " + std::to_string(game.frame()) + ", not the saved frame " + std::to_string(m_target));
 	}
 	if (m_state == State::Failed)
 	{

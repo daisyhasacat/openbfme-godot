@@ -123,6 +123,7 @@ public:
 	// lane PLAY-1: the free camera (the owner's presentation option, not retail: TacticalCamera::setFreeCamera); also the attach option free_camera
 	void set_free_camera(bool on);
 	void hold_input(bool on);        ///< lane BACKLOG3 (QA): queue _input's events as while the logic worker runs
+	void reset_after_quick_load();
 	void set_input_enabled(bool on); ///< lane BACKLOG3 (QA): InGameUI's input flag (the scripts' DISABLE_INPUT / ENABLE_INPUT)
 	void script_input(bool enable);  ///< lane OWNERFIX-1: a map script's DISABLE_INPUT / ENABLE_INPUT as retail runs them (InGameHud::scriptInput)
 	void set_broadcast_clean(bool on);

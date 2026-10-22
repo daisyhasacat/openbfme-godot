@@ -165,6 +165,7 @@ public:
 	// Replay a deferred input before the event that ended its wait. Later translators see both in input order.
 	ClientMessage &insertBefore(int type, const ClientMessage &before);
 	size_t pending() const { return m_messages.size(); }
+	void discardPending() { m_messages.clear(); } ///< abandon client input when rewinding a live match
 
 	// One pass (ZH propagateMessages). The messages that reach the end are returned in order; the stream is empty afterwards.
 	std::vector<ClientMessage> propagate();

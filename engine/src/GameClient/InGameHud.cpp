@@ -1249,6 +1249,26 @@ bool InGameHud::isOverGui(int x, int y)
 	return m_booted && (m_wm->capturesMouse() || m_wm->apt().input().hitTestButtons(sx, sy) != nullptr);
 }
 
+void InGameHud::discardInputForRewind()
+{
+	m_deferredPresses.clear();
+	m_input->cancelHeld();
+	m_input->stream().discardPending();
+	m_input->ui().setGUICommand(nullptr);
+	m_input->ui().setForceAttackMode(false);
+	m_input->ui().setForceMoveToMode(false);
+	m_input->ui().setAttackMoveToMode(false);
+	m_input->ui().setWaypointMode(false);
+	m_input->ui().setPreferSelectionMode(false);
+	m_input->ui().setPlacementStart(nullptr);
+	m_input->ui().setSelecting(false);
+	m_input->ui().endAreaSelectHint();
+	m_spellBar.cancel();
+	m_radiusCursor.clear();
+	if (auto *local = m_config.game.players().getLocalPlayer())
+		m_input->ui().mirrorSelection(local->selection());
+}
+
 void InGameHud::setModal(bool modal)
 {
 	const auto worldContext = enterContext(); // this world's stores for the whole call (see InGameHud.h)

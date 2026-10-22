@@ -1338,6 +1338,7 @@ bool InGameHudNode::is_logic_held() const
 
 void InGameHudNode::_bind_methods()
 {
+	ClassDB::bind_method(D_METHOD("reset_after_quick_load"), &InGameHudNode::reset_after_quick_load);
 	ClassDB::bind_method(D_METHOD("setup", "fs", "world", "camera", "local_player", "options"), &InGameHudNode::setup, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("attach", "fs", "world", "camera", "player", "local_player", "options"), &InGameHudNode::attach, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("is_ready"), &InGameHudNode::is_ready);
@@ -4253,6 +4254,23 @@ void InGameHudNode::_notification(int what)
 }
 
 // lane BACKLOG3 (QA, review r1): _input queues every event as it does while the logic worker runs a frame, until released (the focus test's deferred presses)
+void InGameHudNode::reset_after_quick_load()
+{
+	auto reset = [](InGameHudNode *node) {
+		if (!node || !node->d->hud)
+			return;
+		node->_notification(NOTIFICATION_APPLICATION_FOCUS_OUT);
+		node->d->pendingInput.clear();
+		node->d->hud->discardInputForRewind();
+		node->d->selMode = -1;
+		if (node->d->ghost)
+			node->d->ghost->clear();
+	};
+	reset(this);
+	if (d->peerViewId)
+		reset(Object::cast_to<InGameHudNode>(ObjectDB::get_instance(ObjectID(d->peerViewId))));
+}
+
 void InGameHudNode::hold_input(bool on)
 {
 	d->holdInput = on;
