@@ -57,10 +57,10 @@ func _run() -> void:
 	_assert_unexplored_shroud(game._world)
 	if lesson == "Basic": _assert_opening_reveal(game._world)
 	var loaded_map := String(game._report.map)
-	# Leaving and Continue return to the main menu without campaign autosaves or unlocks.
-	game._campaign_flow.leave_to_score_screen()
-	assert(game._campaign_flow.score_pending)
-	await game._campaign_flow.after_score()
+	# Leaving returns directly to the main menu without results, campaign autosaves or unlocks.
+	await game._campaign_flow.finish_mission()
+	assert(not game._shell.shell_stack().has("TimeLine.apt"))
+	assert(game._score_report.is_empty())
 	assert(game._state == game.State.MENU)
 	assert(game._campaign_flow.tutorial.is_empty())
 	for i in 60: await process_frame

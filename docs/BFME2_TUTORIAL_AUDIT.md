@@ -204,3 +204,19 @@ temporary-team/restoration colors. `tutorial_team_color_test.gd` checks the
 installed Basic map's exact script action and all 15 rendered soldier model
 variants, transferring blue to white and back to blue. These are focused
 transfer tests, rather than a full tutorial playthrough.
+
+### Mission exits without results
+
+Requested OpenBFME behavior: tutorials and campaign missions skip the retail
+TimeLine/score statistics screen. The mission end timer and quit-menu Exit
+now tear down the game without collecting score-screen data. Tutorials go
+directly to MainMenu.apt. Campaigns still run game-over and post-mission
+progression: wins advance and autosave before CampaignMenu.apt, defeats offer
+Replay Mission, and final victory keeps the existing unlock/main-menu path.
+This deliberately changes the retail campaign presentation documented in
+CAMPSAVE-1; skirmish and multiplayer results retain their existing path.
+
+`campaign_no_results_test.gd` checks campaign win, quit/defeat and final
+script-victory/end-timer transitions, autosave and unlock preservation, and
+absence of score data/screens. `tutorial_start_test.gd` checks direct tutorial
+return; `net_score_continue_test.gd` covers multiplayer results continuation.

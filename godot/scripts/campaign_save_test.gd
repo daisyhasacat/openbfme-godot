@@ -3,21 +3,21 @@
 ## (scripts/campaign_flow.gd; the C++ side is GameClient/LinearCampaign.h and GUI/AptScreens/AptCampaignMenu.h). With --screens=DIR every screen is saved as
 ## campsave1-<scenario>-<step>.png. Prints "CAMPSAVE1 RESULT: ok" and exits 0, or "CAMPSAVE1 RESULT: FAILED <why>" and exits 1.
 ##
-##   menu      (--campaign=ANGMAR_CAMPAIGN --mission=N --campaign-win): mission N is won by the test hook; the score screen's Continue; the auto-save is
+##   menu      (--campaign=ANGMAR_CAMPAIGN --mission=N --campaign-win): mission N is won by the test hook; the direct post-mission transition; the auto-save is
 ##             written (RW 0x6DE8F1, its header an auto-save of the campaign menu save point) and CampaignMenu.apt names the next mission (Next Mission);
 ##             the menu's Save writes a campaign menu save on SaveLoad.apt's page and the menu comes back; its Load loads that save and the menu comes
-##             back with the same state; Next Mission starts mission N + 1; that mission is lost (the local player's objects killed); the score screen; the
+##             back with the same state; Next Mission starts mission N + 1; that mission is lost (the local player's objects killed); the mission ends; the
 ##             menu after a defeat (Failed Mission, no new auto-save); Replay Mission starts mission N + 1 again
-##   bonus     (--campaign=ANGMAR_CAMPAIGN --mission=7 --campaign-win): the last mission won, the score screen's Continue: no auto-save, no menu, Options.ini's
+##   bonus     (--campaign=ANGMAR_CAMPAIGN --mission=7 --campaign-win): the last mission won, the direct post-mission transition: no auto-save, no menu, Options.ini's
 ##             BCU = "true" (RW 0x927EC6), the main menu with MainMenuUnlockBonusCampaign set
 ##   continue  (no --campaign, a Save folder holding an auto-save, e.g. the one "menu" wrote): a restarted game's main menu, Load Game, the auto-save (the
 ##             only campaign save: selected), Load, CampaignMenu.apt with the saved mission, Next Mission starts it
 ##   eight     (--campaign=ANGMAR_CAMPAIGN --mission=0 --campaign-win): the whole campaign through its menus: every mission ended by the cheat hook (Amon Sul
-##             and Fornost by their own win moves), the score screen's Continue, the auto-save (its header names the next mission, its listing is an
+##             and Fornost by their own win moves), the direct post-mission transition, the auto-save (its header names the next mission, its listing is an
 ##             auto-save of the Campaign page), CampaignMenu.apt naming the next mission of the campaign's INI (name, picture), Next Mission; the
 ##             eighth mission's win unlocks the bonus campaign (no auto-save, no menu)
 ##   quit      (--campaign=ANGMAR_CAMPAIGN --mission=N): the in-game menu during the mission: Restart (RW 0x9220DE -> RW 0x5EC5D1) starts the same mission
-##             again; Exit Mission leaves to the score screen, whose Continue shows CampaignMenu.apt after a defeat (Replay Mission)
+##             again; Exit Mission returns directly to CampaignMenu.apt after a defeat (Replay Mission)
 ##   single_player (no --campaign): the main menu's single player page (SoloPlayNav), saved as a picture: EPILOGUE (BonusCampaign) is enabled only with
 ##             Options.ini's BCU = true (MainMenuUnlockBonusCampaign, RW 0x91BBAD)
 ##   continue_command (no --campaign, a Save folder holding an auto-save): AptMainMenu::ContinueCampaign (RW 0x91B50D) without 00000000.sav starts
@@ -72,18 +72,9 @@ func _click(path: String) -> bool:
 	return await game._click_button(level, String(b.path))
 
 
-## the score screen's Continue until the campaign took it (the button's release animation runs before its command)
-func _continue_score() -> bool:
-	if not await _wait_until(func(): return game._state == game.State.SCORE, 120.0):
-		return false
-	await game._wait_seconds(3.0)
-	_shot("score")
-	for attempt in 6:
-		if not flow.score_pending:
-			return true
-		await _click("Main.MainButtons.Continue")
-		await game._wait_seconds(3.0)
-	return not flow.score_pending
+## Missions return directly to their campaign menu (or main menu after completion).
+func _wait_mission_end() -> bool:
+	return await _wait_until(func(): return not flow.active and game._state == game.State.MENU, 120.0)
 
 
 func _menu_shown() -> bool:
@@ -119,7 +110,7 @@ func _run_menu() -> bool:
 	if not _check(await _wait_until(func(): return flow.ended_log.size() >= 1, 300.0), "mission %d ended" % first):
 		return false
 	_check(String(flow.ended_log[0]).contains(" victory "), "mission %d won: %s" % [first, flow.ended_log[0]])
-	if not _check(await _continue_score(), "the score screen's Continue ran RW 0x927EC6"):
+	if not _check(await _wait_mission_end(), "the direct post-mission transition ran RW 0x927EC6"):
 		return false
 	if not _check(await _wait_until(_menu_shown, 30.0), "CampaignMenu.apt is shown after the won mission"):
 		return false
@@ -190,7 +181,7 @@ func _run_menu() -> bool:
 		return false
 	_check(String(flow.ended_log[1]).contains(" defeat "), "mission %d lost: %s" % [first + 1, flow.ended_log[1]])
 	var autos_before: Array = flow.menu_log.filter(func(l): return String(l).begins_with("auto_save"))
-	if not _check(await _continue_score(), "the score screen's Continue after the defeat"):
+	if not _check(await _wait_mission_end(), "the direct post-mission transition after the defeat"):
 		return false
 	if not _check(await _wait_until(_menu_shown, 30.0), "CampaignMenu.apt is shown after the lost mission"):
 		return false
@@ -213,7 +204,7 @@ func _run_bonus() -> bool:
 		return false
 	_check(String(flow.ended_log[0]).contains(" victory "), "the last mission won: %s" % flow.ended_log[0])
 	var files_before := DirAccess.get_files_at(game._save_flow.save_dir()).size()
-	if not _check(await _continue_score(), "the score screen's Continue ran RW 0x927EC6"):
+	if not _check(await _wait_mission_end(), "the direct post-mission transition ran RW 0x927EC6"):
 		return false
 	if not _check(await _wait_until(func(): return game._state == game.State.MENU and _top() == "MainMenu.apt", 30.0), "the main menu after the campaign"):
 		return false
@@ -307,7 +298,7 @@ func _run_quit() -> bool:
 	await game._wait_seconds(3.0)
 	if not _check(await _quit_menu("ExitMission"), "the in-game menu's Exit Mission and its Yes"):
 		return false
-	if not _check(await _continue_score(), "Exit Mission led to the score screen and its Continue ran RW 0x927EC6"):
+	if not _check(await _wait_mission_end(), "Exit Mission ran post-mission progression directly"):
 		return false
 	if not _check(await _wait_until(_menu_shown, 30.0), "CampaignMenu.apt after Exit Mission"):
 		return false
@@ -354,7 +345,7 @@ func _run_eight() -> bool:
 		if not _check(await _wait_until(func(): return flow.ended_log.size() >= i + 1, 400.0), "mission %d (%s) ended" % [i, m.name]):
 			return false
 		_check(String(flow.ended_log[i]).contains(" victory ") and String(flow.ended_log[i]).contains(String(m.map)), "mission %d won on %s: %s" % [i, m.map, flow.ended_log[i]])
-		if not _check(await _continue_score(), "mission %d: the score screen's Continue ran RW 0x927EC6" % i):
+		if not _check(await _wait_mission_end(), "mission %d: the direct post-mission transition ran RW 0x927EC6" % i):
 			return false
 		if i == 7:
 			break

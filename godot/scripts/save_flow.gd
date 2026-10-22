@@ -222,7 +222,6 @@ func _load_prepared(prep: Dictionary, name: String, quick := false) -> String:
 		flow.victorious = false # lane CAMPSAVE-1: a mission being played (RW 0x5EAB8F's flags)
 		flow.campaign_ready = false
 		flow.advanced = false
-		flow.score_pending = false
 		game._last_new_game = {}
 		if quick:
 			game._state = game.State.LOADING

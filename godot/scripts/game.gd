@@ -1622,8 +1622,6 @@ func _process(delta: float) -> void:
 			_perf_log_frame()
 	elif _state == State.SCORE:
 		_score_tick()
-		if _campaign_win and _campaign_flow != null and _campaign_flow.score_pending:
-			_campaign_flow.auto_score_tick() # lane CAMPSAVE-1: --campaign-win presses the score screen's Continue
 
 
 # lane AUDIO-5: the 3D sounds (effects, deaths, weapons) are heard from retail's microphone (RW recalculateMicrophone 0x45235B): between the tactical
@@ -4100,7 +4098,7 @@ func _quit_menu_exit() -> void:
 		# frame that also clears the game: the score screen is built before the victory rules look again)
 		print("GAME QUIT exit self-destruct: ", JSON.stringify(_world.self_destruct(true)))
 	if _campaign_flow != null and _campaign_flow.active:
-		_campaign_flow.leave_to_score_screen() # lane CAMPSAVE-1: the campaign is told (RW 0x5EAB0A) and its score screen's end shows CampaignMenu.apt
+		_campaign_flow.finish_mission() # Campaigns/tutorials return directly to their menu.
 		return
 	_exit_to_score_screen()
 
@@ -4344,6 +4342,9 @@ func _exit_to_score_screen() -> void:
 	_close_objectives()
 	if _state != State.PLAYING:
 		return
+	if _campaign_flow != null and _campaign_flow.active:
+		_campaign_flow.finish_mission()
+		return
 	if is_instance_valid(_ios_quick_resume): _ios_quick_resume.discard()
 	if is_instance_valid(_second_view):
 		_second_view.close_view()
@@ -4516,12 +4517,6 @@ func _score_continue() -> void:
 	while _shell.shell_stack().size() > 0:
 		_shell.shell_pop()
 		_shell.tick(0.033)
-	if _campaign_flow != null and _campaign_flow.score_pending:
-		# lane CAMPSAVE-1: a campaign game's score screen (type 1): its destructor runs RW 0x927EC6 (the bonus unlock, or the auto-save and CampaignMenu.apt);
-		# RW 0x925699 restarts the shell's music only for the types 2 / 3, so the score screen's music plays on
-		_continuing = false
-		await _campaign_flow.after_score()
-		return
 	_audio.stop_music(false)
 	_restore_start_screens()
 
@@ -7043,7 +7038,7 @@ func _campaign_check_tick() -> void:
 	# quit once the flow went on after the N-th end: the next mission is playing, or the main menu is back
 	var next_playing: bool = _campaign_flow.active and _campaign_flow.begun > ended.size() and _state == State.PLAYING
 	# lane CAMPSAVE-1: the campaign menu between missions is not the main menu
-	var menu_back: bool = not _campaign_flow.active and _state == State.MENU and not _campaign_flow.menu_open and not _campaign_flow.score_pending
+	var menu_back: bool = not _campaign_flow.active and _state == State.MENU and not _campaign_flow.menu_open
 	if ended.size() >= _campaign_check and (next_playing or menu_back) and _shell_pictures_pending == 0: # lane CAMP-2: after the SHELL PICTURES lines
 		var won := 0
 		for l in ended:

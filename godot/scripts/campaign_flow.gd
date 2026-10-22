@@ -10,9 +10,9 @@
 ## Lane CAMPSAVE-1: what follows the end is RotWK's (GameClient/LinearCampaign.h, GUI/AptScreens/AptCampaignMenu.h; the campaign's state is a
 ## CampaignProgress the engine steps, GameWorld.campaign_progress_step):
 ##   * a won mission sets the campaign's won flag (RW 0x5EBAEE); 25 logic frames after the end the end-game timer leaves the game (RW 0x602FFE ->
-##     MSG_CLEAR_GAME_DATA; the dispatcher shows the score screen for a campaign, RW 0x779A3D) and the campaign is told the game is over (RW 0x5EAB0A:
-##     a won mission moves the index on); the score screen is TimeLine.apt of type 1 (RW 0x927898, single player);
-##   * the score screen's Continue ends the screen, whose destructor (RW 0x926E0A, type 1) runs RW 0x927EC6: the last mission won -> the preference
+##     MSG_CLEAR_GAME_DATA) and the campaign is told the game is over (RW 0x5EAB0A:
+##     a won mission moves the index on). Requested OpenBFME behavior skips the retail TimeLine.apt results screen;
+##   * post-mission progression (retail RW 0x927EC6, now called directly): the last mission won -> the preference
 ##     BCU = "true" (Options.ini) and TheGlobalData + 0xAF5 (the main menu's BonusCampaign is enabled), then the main menu; otherwise a won mission is
 ##     auto-saved (RW 0x6DE8F1: "Auto Save for <map>", the AutoSaveList of the Load page) and CampaignMenu.apt is shown, won or lost;
 ##   * CampaignMenu.apt: Next Mission (the mission after the won one, with its IntroMovie), Replay Mission after a defeat (the same mission without its
@@ -56,7 +56,6 @@ var movie: Node            # lane CAMP-1H: scripts/movie_player.gd
 var victorious := false
 var campaign_ready := false  # + 0xD2 (Node has its own "ready")
 var advanced := false
-var score_pending := false  # the score screen of a campaign game is up: its Continue runs RW 0x927EC6
 var menu_open := false      # CampaignMenu.apt is up (between missions)
 var menu_log: Array = []    # [ "<event> ..." ] for the scripted checks: "menu <campaign> <index> won|lost", "auto_save <path>", "bonus_unlock ..."
 var last_auto_save := ""    # the auto-save written last
@@ -191,7 +190,6 @@ func begin_mission(intro := true) -> void:
 		game._fail("CAMPAIGN the mission start was refused")
 		return
 	menu_open = false
-	score_pending = false
 	_end_timer_ran = false
 	_end_frame = -1
 	active = true
@@ -291,7 +289,7 @@ func tick() -> void:
 		print("CAMPAIGN end: ", line, " (", st.action, ")")
 		if st.victory and tutorial.is_empty():
 			step("won") # RW 0x5EBAEE: + 0xD0
-	# lane CAMPSAVE-1: the end-game timer (RW 0x602FFE: 25 logic frames after VICTORY / DEFEAT) leaves the game for the score screen, as in a skirmish
+	# The end-game timer (RW 0x602FFE: 25 logic frames after VICTORY / DEFEAT) leaves the mission directly for its menu
 	# (the end sequence's own request, end_timer_ran, or the frame count); lane CAMP-1H: an exit movie (PLAY_MOVIE_IN_GAME) plays to its end first
 	if movie != null and not String(movie.playing).is_empty():
 		return
@@ -300,7 +298,7 @@ func tick() -> void:
 			return # lane RENDERWAIT-1: the frame count is read only in a render frame that holds the logic
 		if world.get_frame() < _end_frame + END_GAME_TIMER_FRAMES:
 			return
-	leave_to_score_screen()
+	finish_mission()
 
 
 ## the end sequence's timer ran out (game.gd's clear_game_data request in a campaign game)
@@ -308,17 +306,21 @@ func end_timer_ran() -> void:
 	_end_timer_ran = true
 
 
-## MSG_CLEAR_GAME_DATA in a campaign game: the campaign is told the game is over (RW 0x5EAB0A, INFERENCE: when the game is cleared), the score screen
-## (RW 0x779A3D: shown for a campaign; TimeLine.apt type 1)
-func leave_to_score_screen() -> void:
+## Requested OpenBFME behavior: campaign/tutorial missions skip the results screen.
+## Keep the campaign's game-over and post-mission progression (including autosaves and unlocks).
+func finish_mission() -> void:
 	if not active:
 		return
 	active = false
 	_cine = null
 	if tutorial.is_empty(): step("game_over")
-	score_pending = true
-	print("CAMPAIGN the game is left for the score screen (%s %s; the campaign's mission index is now %d)" % [campaign, "won" if victorious else "lost", mission])
-	game._exit_to_score_screen()
+	game._close_quit_menu()
+	if world.get_end_game_state().get("showing", false):
+		game._shell.end_game_screen({"kind": "hide_end_game"})
+	game._tear_down_game("mission end")
+	if game._end_message_label != null:
+		game._end_message_label.text = ""
+	await after_mission()
 
 
 ## the quit menu's Restart in a campaign mission (RW 0x9220DE: a campaign -> TheLinearCampaignManager RW 0x5EC62F -> restartCurrentCampaignMission RW
@@ -337,16 +339,15 @@ func restart_mission() -> void:
 	await begin_mission(bool(r.get("intro_movie", false)))
 
 
-## the score screen's Continue in a campaign game: RW 0x926E0A (TimeLine's destructor, type 1) -> RW 0x927EC6
-func after_score() -> void:
-	score_pending = false
+## Post-mission progression from RW 0x927EC6, now run directly after teardown.
+func after_mission() -> void:
 	if not tutorial.is_empty():
 		tutorial = ""
 		_to_main_menu()
 		return
 	var r := step("after_score")
 	var after := String(r.get("after", ""))
-	print("CAMPAIGN after the score screen (RW 0x927EC6): ", after)
+	print("CAMPAIGN after the mission (RW 0x927EC6): ", after)
 	if after == "bonus_unlock":
 		# RW 0x927F00 .. 0x927F5B: OptionPreferences BCU = "true" written, TheGlobalData + 0xAF5 = 1, the shell shown (RW 0x75E43C(1)): the main menu
 		var u: Dictionary = game._shell.unlock_bonus_campaign()
@@ -419,7 +420,6 @@ func open_from_save(check: Dictionary) -> void:
 	campaign_ready = bool(check.ready)
 	advanced = bool(check.advanced)
 	active = false
-	score_pending = false
 	print("CAMPAIGN loaded the campaign menu: %s mission %d %s" % [campaign, mission, JSON.stringify(progress())])
 	await open_menu()
 
@@ -507,27 +507,12 @@ func _to_main_menu() -> void:
 	print("CAMPAIGN back to the main menu")
 
 
-## lane CAMPSAVE-1: --campaign-win also goes through the screens between missions as a player does, with real clicks: the score screen's Continue,
-## then CampaignMenu.apt's Next Mission (Replay Mission after a defeat); with --screens each screen is saved first (campsave1-<mission>-score / -menu)
+## --campaign-win clicks CampaignMenu.apt's Next Mission (Replay Mission after a defeat).
+## With --screens the menu is saved first (campsave1-<mission>-menu).
 var _auto_busy := false
 var auto_menu_choice := ""   # a test's own choice of menu button ("" Next / Replay Mission by the outcome)
 var auto_win_all := false    # the cheat hook ends the missions that have no win move of their own (scripts/campaign_save_test.gd "eight")
 var auto_screens := true     # false: a test (scripts/campaign_save_test.gd) clicks the screens itself
-
-
-func auto_score_tick() -> void:
-	if _auto_busy or not auto_screens:
-		return
-	_auto_busy = true
-	await game._wait_seconds(3.0)
-	game._save_named("campsave1-%d-score" % mission)
-	var level: int = game._shell.shell_top_level()
-	for attempt in 6:
-		if not score_pending:
-			break
-		await game._click_button(level, "Main.MainButtons.Continue")
-		await game._wait_seconds(3.0) # the button's release animation runs before its command
-	_auto_busy = false
 
 
 func auto_menu_tick() -> void:
