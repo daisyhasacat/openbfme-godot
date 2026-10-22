@@ -81,6 +81,10 @@ enum ConditionType
 	NAMED_DESTROYED = 15,
 	NAMED_NOT_DESTROYED = 16,
 	NAMED_CREATED = 24,
+	NAMED_SELECTED = 37,
+	TYPE_SELECTED = 200,
+	NAMED_ATTACKED_BY_OBJECTTYPE = 19,
+	NAMED_BUILDING_IS_EMPTY = 78,
 	NAMED_DISCOVERED = 27,
 	TEAM_DISCOVERED = 28,
 	NAMED_ENTERED_AREA = 38,
@@ -734,6 +738,49 @@ bool ScriptConditions::evaluate(ScriptEngine &engine, const ScriptCondition &c)
 	GameLogic &logic = engine.logic();
 	switch (c.resolved)
 	{
+	case NAMED_SELECTED:
+	case TYPE_SELECTED:
+	{
+		// BFME2 1.06: ScriptConditions_evaluateTeamStateIs.cpp, 0x3E9B6A / 0x3E6BC5.
+		// Both reject multiplayer; named selection compares exact names, type selection uses
+		// ObjectTypes membership, not reskin equivalence. OpenBFME reads the local player's
+		// command-synchronized selection instead of drawables and recomputes without the UI cache.
+		const int mode = logic.economy().context().gameMode;
+		if (mode == EconomyContext::MODE_LAN || mode == EconomyContext::MODE_INTERNET) return false;
+		const Player *local = logic.players().getLocalPlayer();
+		if (!local) return false;
+		const auto types = c.resolved == TYPE_SELECTED ? typeNames(engine, param(c, 0).stringValue) : std::vector<std::string>{};
+		for (ObjectID id : local->selection())
+		{
+			const Object *o = logic.findObjectByID(id);
+			if (!o) continue;
+			if (c.resolved == NAMED_SELECTED && o->getName() == param(c, 0).stringValue) return true;
+			if (c.resolved == TYPE_SELECTED && o->getTemplate())
+				for (const auto &name : types)
+					if (o->getTemplate()->getName() == name) return true;
+		}
+		return false;
+	}
+	case NAMED_BUILDING_IS_EMPTY:
+	{
+		// BFME2 ScriptConditions_evaluateIsBuildingEmpty.cpp (0x3E4079): missing
+		// object or contain returns false; a present contain must have zero occupants.
+		const Object *o = engine.getUnitNamed(param(c, 0).stringValue);
+		return o && o->getContain() && o->getContain()->getContainCount() == 0;
+	}
+	case NAMED_ATTACKED_BY_OBJECTTYPE:
+	{
+		// BFME2 evaluateNamedAttackedByType (0x3E9556): resolve the last damage
+		// source in the current world, then test its template name in ObjectTypes.
+		const Object *o = engine.getUnitNamed(param(c, 0).stringValue);
+		const ActiveBody *body = o ? dynamic_cast<const ActiveBody *>(o->getBodyModule()) : nullptr;
+		if (!body || body->lastDamageFrame() == 0xFFFFFFFFu) return false;
+		const Object *attacker = logic.findObjectByID(body->lastDamager());
+		if (!attacker || !attacker->getTemplate()) return false;
+		for (const auto &name : typeNames(engine, param(c, 1).stringValue))
+			if (attacker->getTemplate()->getName() == name) return true;
+		return false;
+	}
 	case NAMED_DESTROYED: // RW 0x7E49D4: the unit, else "did it exist"
 	{
 		const Object *o = engine.getUnitNamed(param(c, 0).stringValue);
