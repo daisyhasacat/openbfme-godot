@@ -218,3 +218,38 @@ while the scene and game files load, on desktop and iOS. The native iOS launch
 screen uses the same artwork and a static first ring frame; animation starts
 once Godot runs. Synchronous archive verification and world setup can still pause
 the animation. Xcode source refresh also updates the launch artwork.
+
+## Automatic single-player quick resume
+
+Normal iOS launches automatically resume the last interrupted single-player
+match. A dedicated checkpoint is taken when entering a match, every 30 seconds
+of foreground play, and synchronously on focus loss / application pause. Repeated
+lifecycle callbacks within 1.5 seconds at the same logic frame are deduplicated.
+A still-running app returning to the foreground continues its current match;
+it does not reload the checkpoint. Scripted test/benchmark launches skip automatic
+resume. Desktop builds keep their existing startup behavior.
+
+Files live under `user://quick-resume/<selected game>/`, separate from manual
+saves and Quick Save. Alternating `a.obfmesave` / `b.obfmesave` snapshots are written
+through the normal atomic save writer. Only after success is `current.state`
+atomically replaced with the slot and camera/selection/pause metadata. Interrupted
+or refused writes retain the previously published checkpoint. Deliberately leaving
+or finishing a game clears the marker so it will not resurrect an ended match.
+Network games, replays and benchmark matches are excluded; native snapshot/data
+compatibility checks still apply.
+
+On a cold start, the normal saved-game loader restores the match and verifies its
+frame and state hash, then restores camera position/orientation/height, selection,
+and pause/quit-menu state. It does not restore arbitrary menu animations. Before
+loading, `attempt.state` records the checkpoint generation. A crash or failure during
+restoration disables automatic retry of that generation, preventing launch loops;
+the underlying save remains available for recovery. A failure is reported in the
+main-menu update/status line, console and session log. To recover manually, copy
+the selected `.obfmesave` into the normal Save folder and use Load Game.
+
+The background save must finish within iOS's short suspension window; there is
+no guarantee of a callback for every termination. Periodic saves limit loss to
+the last completed checkpoint when no final save is possible. Save durations are
+logged as `QUICK RESUME saved ... in ... ms`. Functional cold-start tests run
+headlessly on the Mac; actual iPhone suspension/termination timing still needs
+on-device verification.

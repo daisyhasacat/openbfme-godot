@@ -292,6 +292,7 @@ const OnlineStats := preload("res://scripts/online_stats.gd") # lane ONLINECOUNT
 const AppIcon := preload("res://scripts/app_icon.gd") # lane OWNERFIX-3: the OpenBFME window icon (not Godot's)
 var _display: RefCounted                 # lane OPTS-1: the display settings in effect (openbfme-display.cfg)
 var _display_path := ""
+var _ios_quick_resume: Node
 var _quick_save_hotkey: CanvasLayer
 var _display_overlay: CanvasLayer        # scripts/fps_overlay.gd: the counter and the F10 / Alt+Enter keys
 var _display_screen: CanvasLayer         # scripts/openbfme_options_screen.gd
@@ -1427,6 +1428,13 @@ func _boot() -> void:
 	_startup_shortcut.queue_free()
 	if _resume_console_restart():
 		return
+	if OS.get_name() == "iOS" and not _scripted_run():
+		_ios_quick_resume = preload("res://scripts/ios_quick_resume.gd").new()
+		_ios_quick_resume.name = "IOSQuickResume"
+		_ios_quick_resume.game = self
+		_ios_quick_resume.directory = "user://quick-resume/" + Release.selected_game().validate_filename()
+		add_child(_ios_quick_resume)
+		if await _ios_quick_resume.try_restore(): return
 	if quick_skirmish:
 		_run_startup_skirmish()
 		return
@@ -2421,6 +2429,7 @@ func _enter_game(rep: Dictionary) -> void:
 		_caster.seek_requested.connect(_caster_seek, CONNECT_DEFERRED)
 		_caster.go_live_requested.connect(_caster_go_live, CONNECT_DEFERRED)
 		_game_nodes.append(_caster)
+	if is_instance_valid(_ios_quick_resume): _ios_quick_resume.entered_game()
 
 
 var _caster_seeking := false
@@ -4158,6 +4167,7 @@ func _online_relay_tick(st: Dictionary) -> void:
 
 ## the running game cleared without the score screen (Restart, lane SAVE-2: a save loaded over a game): the HUD and the game's nodes go, the shell is emptied
 func _tear_down_game(why: String, clear_world: bool = true) -> void:
+	if is_instance_valid(_ios_quick_resume) and why not in ["load", "load failed"]: _ios_quick_resume.discard()
 	if is_instance_valid(_second_view):
 		_second_view.close_view()
 	if is_instance_valid(_caster) and _caster.overlays != null:
@@ -4195,6 +4205,7 @@ func _tear_down_game(why: String, clear_world: bool = true) -> void:
 func _exit_to_score_screen() -> void:
 	if _state != State.PLAYING:
 		return
+	if is_instance_valid(_ios_quick_resume): _ios_quick_resume.discard()
 	if is_instance_valid(_second_view):
 		_second_view.close_view()
 	_state = State.SCORE

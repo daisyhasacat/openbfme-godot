@@ -1056,3 +1056,7 @@ its `{ok, path, frame, hash, ...}` result (or `{ok: false, error}`). This saves 
 running single-player match, with campaign metadata when appropriate. The native
 save system still rejects network games, replays, incomplete recordings and
 unsupported snapshots. This is a match save, not a checkpoint of menu state.
+
+On iOS, a separate [automatic quick-resume checkpoint](IOS.md#automatic-single-player-quick-resume)
+is saved every 30 seconds and when backgrounding. It is loaded automatically on
+normal cold launches; it never replaces `/save` or the player's named saves.

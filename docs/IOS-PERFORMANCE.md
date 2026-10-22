@@ -195,3 +195,23 @@ cancelled in the lobby while investigating software-rendering stalls; no complet
 The macOS native build and arm64 Xcode simulator build passed, as did all 11
 menu/end-screen tests (214 assertions), three exporter regression tests, and the
 commit gate. No palette-format update errors appeared in the final simulator log.
+
+## Quick resume checkpoints
+
+`ios_quick_resume.gd` saves on match entry, every 30 foreground seconds, and in
+the focus-loss/application-pause callback. Snapshot serialization runs synchronously
+through the existing save path; it does not queue work that might be frozen by
+suspension. Two rotating slots and a marker published last preserve the previous
+checkpoint if a write is interrupted. The existing native save drains completed
+logic work before serializing it, so measured duration includes that wait.
+Godot documents the limited iOS suspension window:
+https://docs.godotengine.org/en/4.5/tutorials/inputs/handling_quit_requests.html
+
+The two-process native smoke test saved a small recorded Buckland match in 12 ms
+on the Mac, then restored its exact frame/hash and pause state in a fresh process.
+This is functional evidence, not an iPhone timing result. The lifecycle regression
+covers periodic capture, duplicate notifications, suspension, failed saves,
+relaunch restoration, retry-loop protection and multiplayer/replay exclusions.
+The full game-host test also passes capture and restore in separate processes
+through the actual SaveFlow and HUD, verifying exact camera coordinates, selected
+unit, pause/quit menu and checkpoint removal when leaving the match.
