@@ -44,6 +44,7 @@ inline constexpr const char *ForceAttackObj = "ForceAttackObj";
 inline constexpr const char *ForceAttackGround = "ForceAttackGround";
 inline constexpr const char *GenericInvalid = "GenericInvalid";
 inline constexpr const char *EnterFriendly = "EnterFriendly";
+inline constexpr const char *DeliverRing = "DeliverRing";
 inline constexpr const char *EnterAggressive = "EnterAggressive";
 inline constexpr const char *SetRallyPoint = "SetRallyPoint";
 inline constexpr const char *ResumeConstruction = "ResumeConstruction"; // lane QA-1 (Mouse.ini MouseCursor ResumeConstruction)

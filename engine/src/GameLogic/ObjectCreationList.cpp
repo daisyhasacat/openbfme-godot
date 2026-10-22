@@ -13,6 +13,7 @@
 #include "Common/Player.h"
 #include "Common/Thing/ThingFactory.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/FindPositionAround.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
 
@@ -65,9 +66,17 @@ const FieldParse kGenericFieldParse[] = {
 	{ "Offset", INI::parseCoord3D, nullptr, N_OFF(offset) },
 	{ "Disposition", parseDisposition, kOCLDispositionNames, N_OFF(disposition) },
 	KEPT("DispositionIntensity"), KEPT("DispositionAngle"), KEPT("VelocityScale"), KEPT("MinForceMagnitude"), KEPT("MaxForceMagnitude"),
-	KEPT("MinForcePitch"), KEPT("MaxForcePitch"), KEPT("MinLifetime"), KEPT("MaxLifetime"), KEPT("SpreadFormation"), KEPT("MinDistanceAFormation"),
-	KEPT("MinDistanceBFormation"), KEPT("MaxDistanceFormation"), KEPT("FadeIn"), KEPT("FadeOut"), KEPT("FadeTime"), KEPT("FadeSound"),
-	KEPT("PreserveLayer"), KEPT("IgnoreAllObjects"), KEPT("IgnoreEnemyUnits"), KEPT("IgnoreAllyUnits"), KEPT("StartingConditions"),
+	KEPT("MinForcePitch"), KEPT("MaxForcePitch"), KEPT("MinLifetime"), KEPT("MaxLifetime"),
+	{ "SpreadFormation", INI::parseBool, nullptr, N_OFF(spreadFormation) },
+	{ "MinDistanceAFormation", INI::parseReal, nullptr, N_OFF(minDistanceAFormation) },
+	{ "MinDistanceBFormation", INI::parseReal, nullptr, N_OFF(minDistanceBFormation) },
+	{ "MaxDistanceFormation", INI::parseReal, nullptr, N_OFF(maxDistanceFormation) },
+	KEPT("FadeIn"), KEPT("FadeOut"), KEPT("FadeTime"), KEPT("FadeSound"),
+	KEPT("PreserveLayer"),
+	{ "IgnoreAllObjects", INI::parseBool, nullptr, N_OFF(ignoreAllObjects) },
+	{ "IgnoreEnemyUnits", INI::parseBool, nullptr, N_OFF(ignoreEnemyUnits) },
+	{ "IgnoreAllyUnits", INI::parseBool, nullptr, N_OFF(ignoreAllyUnits) },
+	KEPT("StartingConditions"),
 	KEPT("IssueMoveAfterCreation"), KEPT("OrientInPrimaryDirection"), KEPT("OrientInSecondaryDirection"), KEPT("OrientationOffset"),
 	KEPT("DestinationPlayer"), KEPT("MoveUsesStrafeUpdate"), KEPT("OffsetInLocalSpace"), KEPT("ClearRemovables"), KEPT("RequiredUpgrades"),
 	KEPT("ForbiddenUpgrades"),
@@ -227,7 +236,24 @@ std::vector<Object *> ObjectCreationList::create(GameLogic &logic, const Object 
 			{
 				continue;
 			}
-			const Coord3D pos{ SimMath::addf32(where.x, n.offset.x), SimMath::addf32(where.y, n.offset.y), SimMath::addf32(where.z, n.offset.z) };
+			Coord3D center = where;
+			if (n.spreadFormation && source)
+			{
+				// BFME2 GenericObjectCreationNugget::reallyCreate, line 1808:
+				// choose the inner radius, then use the shared ring-position search.
+				// Highest-layer selection remains S-1280/S-161; this uses ground.
+				logic.noteStop("[S-530] OCL SpreadFormation uses the BFME2 donor radius/search path on the ground layer; highest-layer selection remains unported (S-1280/S-161)");
+				FindPositionOptions options;
+				options.minRadius = logic.random().getValueReal(n.minDistanceAFormation, n.minDistanceBFormation, kOCLCpp, 1808);
+				options.maxRadius = n.maxDistanceFormation;
+				if (n.ignoreAllObjects) options.flags |= FPF_IGNORE_ALL_OBJECTS;
+				if (n.ignoreEnemyUnits) options.flags |= FPF_IGNORE_ENEMY_UNITS;
+				if (n.ignoreAllyUnits) options.flags |= FPF_IGNORE_ALLY_OR_NEUTRAL_UNITS;
+				if (n.disposition & 0x20000) options.flags |= FPF_IGNORE_WATER;
+				if (n.disposition & 0x40000) options.flags |= FPF_CLEAR_CELLS_ONLY;
+				if (!FindPosition::findPositionAround(logic, where, options, center)) center = *source->getPosition();
+			}
+			const Coord3D pos{ SimMath::addf32(center.x, n.offset.x), SimMath::addf32(center.y, n.offset.y), SimMath::addf32(center.z, n.offset.z) };
 			o->setPosition(&pos);
 			o->friend_onBuildComplete(); // RW 0x5F1623 -> 0x68D252
 			made.push_back(o);

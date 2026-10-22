@@ -132,6 +132,23 @@ struct Game
 	std::uint32_t hash() const { return logic->computeStateHash(); }
 };
 
+// Terrain is required for treasure formation placement as well as pickup collisions.
+struct CrateGame : Game
+{
+	pathtest::SyntheticTerrain terrain{100, 100};
+	AIWorldConfig config;
+	std::unique_ptr<AIWorld> ai;
+	CrateGame(RetailObjectWorld &world, retailtest::Mount &mount) : Game(world, mount)
+	{
+		std::string error;
+		REQUIRE_MESSAGE(AIWorldConfigLoader::load(*mount.fs, config, &error), error);
+		ai = std::make_unique<AIWorld>(*logic, config, world.iniMacros());
+		ai->attach();
+		ai->newMap(terrain);
+	}
+	~CrateGame() { logic->reset(); ai.reset(); }
+};
+
 // the first template (registry order, defaults and cinematic copies skipped) one of whose behaviour modules of class `cls` has data of type D for which `accept` holds
 template <class D>
 const ThingTemplate *findTemplate(RetailObjectWorld &world, const char *cls, const std::function<bool(const ThingTemplate &, const D &)> &accept, const D **out = nullptr)
@@ -237,7 +254,7 @@ TEST_CASE("modules retail: a creep lair leaves its rubble hole (RebuildHoleExpos
 	REQUIRE_RETAIL_WORLD(sh);
 	const ThingTemplate *lairTmpl = sh.world->things().findTemplate("HillTrollLair");
 	REQUIRE(lairTmpl);
-	Game g(*sh.world, *sh.mount);
+	CrateGame g(*sh.world, *sh.mount);
 	Object *lair = g.make(lairTmpl);
 	RebuildHoleExposeDie *expose = moduleOf<RebuildHoleExposeDie>(lair);
 	REQUIRE(expose);
@@ -303,7 +320,7 @@ TEST_CASE("modules retail: CreateObjectDie runs its ObjectCreationList when the 
 	std::uint32_t hashes[2] = {};
 	for (int run = 0; run < 2; ++run)
 	{
-		Game g(*sh.world, *sh.mount);
+		CrateGame g(*sh.world, *sh.mount);
 		Object *o = g.make(tt);
 		CreateObjectDie *cod = moduleOf<CreateObjectDie>(o);
 		REQUIRE(cod);
@@ -706,24 +723,6 @@ TEST_CASE("modules retail: HeroDie makes its special power ready at once on the 
 	CHECK(sp->getReadyFrame() == g.logic->getFrame());
 	CHECK(g.hash() != h0);
 	CHECK_FALSE(reportHas(g, "[S-980] HeroDie")); // lane MODULES-2: the walk order is unobservable (RW 0x8C642D only sets the ready frame)
-}
-
-namespace {
-struct CrateGame : Game
-{
-	pathtest::SyntheticTerrain terrain{100, 100};
-	AIWorldConfig config;
-	std::unique_ptr<AIWorld> ai;
-	CrateGame(RetailObjectWorld &world, retailtest::Mount &mount) : Game(world, mount)
-	{
-		std::string error;
-		REQUIRE_MESSAGE(AIWorldConfigLoader::load(*mount.fs, config, &error), error);
-		ai = std::make_unique<AIWorld>(*logic, config, world.iniMacros());
-		ai->attach();
-		ai->newMap(terrain);
-	}
-	~CrateGame() { logic->reset(); ai.reset(); }
-};
 }
 
 TEST_CASE("crate pickups retail: walking over a fixed-value gold chest pays once and removes it")

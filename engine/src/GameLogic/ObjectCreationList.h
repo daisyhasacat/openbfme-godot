@@ -20,8 +20,11 @@
 //     line 0x686, drawn even for one name); the template by name (RW 0x6D1305; unknown: nothing for this count); unless IgnoreCommandPointLimit
 //     the source's player must afford the template's command points (RW 0x5F1238 -> 0x6A7F79), else the nugget stops; the object is made on the
 //     source's team (RW 0x5F1391 -> ThingFactory::newObject) at the position + Offset and gets onBuildComplete (RW 0x5F1623 -> 0x68D252).
+// DONOR: BFME2 GenericObjectCreationNugget::reallyCreate line 1808: SpreadFormation samples
+// MinDistanceAFormation..MinDistanceBFormation then FindPositionAround out to MaxDistanceFormation.
+// Ground-layer adaptation: FPF_USE_HIGHEST_LAYER remains S-1280 / S-161, reported on use.
 // NOT PORTED (stop S-530): the other nugget kinds' effects (CreateDebris, ApplyRandomForce, FireWeapon, Attack), the RequiresLivePlayer /
-// MaxSimultaneousOfType / WaypointSpawnPoints / container / formation / disposition physics / fade / invulnerable / busy / veterancy /
+// MaxSimultaneousOfType / WaypointSpawnPoints / container / disposition physics / fade / invulnerable / busy / veterancy /
 // health / just-built / orientation paths of RW 0x5F0EE6, and every logic random draw those paths make besides the name pick.
 
 #pragma once
@@ -53,6 +56,9 @@ struct OCLNugget
 	std::string putInContainer, particleSystem;
 	int count = 1;                     // + 0x28
 	Coord3D offset{};                  // + 0x34
+	bool spreadFormation = false;
+	float minDistanceAFormation = 0.0f, minDistanceBFormation = 0.0f, maxDistanceFormation = 0.0f;
+	bool ignoreAllObjects = false, ignoreEnemyUnits = false, ignoreAllyUnits = false;
 	unsigned disposition = 2;          // + 0x40 ON_GROUND_ALIGNED
 	bool ignoreCommandPointLimit = false; // + 0x91 (CreateObject table)
 	bool requiresLivePlayer = false;      // + 0x90

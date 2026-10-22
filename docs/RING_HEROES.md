@@ -1,7 +1,8 @@
 # Ring delivery and ring heroes
 
 A ring carrier can now enter its own fortress to deliver the One Ring. The
-fortress consumes the dropped-ring object, clears the carrier's ring status,
+delivery cursor uses retail Mouse.ini `DeliverRing` and its animated `OneRing`
+asset. The fortress consumes the dropped-ring object, clears the carrier's ring status,
 grants the configured player and fortress upgrades, emits the configured FX,
 and sends the carrier back outside. A battalion delivers once, after its members
 have reached the entrance. Existing hero recruitment uses these upgrades to

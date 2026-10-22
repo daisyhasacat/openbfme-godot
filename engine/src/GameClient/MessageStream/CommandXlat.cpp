@@ -8,6 +8,8 @@
 #include "GameLogic/AI/AIGarrisonStates.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/Combat/CombatNames.h"
+#include "GameLogic/Object/Contain/GarrisonContainRuntime.h"
 
 #include "Common/BuildAssistant.h"
 #include "Common/SpecialPower.h"
@@ -423,10 +425,27 @@ int CommandTranslator::evaluateContextCommand(Object *obj, const Coord3D *pos, E
 			}
 			else if (type == EvaluateType::DoHint)
 			{
-				hint(MouseCursorName::EnterFriendly);
+				// Retail Mouse.ini supplies the animated OneRing asset for this action.
+				hint(dynamic_cast<CitadelSlaughterHordeContain *>(obj->getContain()) &&
+					enterer->testStatus((unsigned)CombatNames::status("HOLDING_THE_RING"))
+					? MouseCursorName::DeliverRing : MouseCursorName::EnterFriendly);
 			}
 			return msgType;
 		}
+	}
+	// Crates are pickup destinations, even when owned by an enemy lair.
+	// Use their location rather than treating their owner as an attack target.
+	if (obj && obj->isKindOf((unsigned)CombatNames::kindOf("CRATE")) && !m_ctx.ui.isInForceAttackMode())
+	{
+		const Coord3D destination = *obj->getPosition();
+		if (!selectionCanReach(destination))
+		{
+			hint(MouseCursorName::GenericInvalid);
+			return 0;
+		}
+		if (type == EvaluateType::DoHint) hint(MouseCursorName::Move);
+		else return issueMove(nullptr, &destination, type);
+		return m_teamExists ? MSG_DO_MOVETO : 0;
 	}
 	if (obj && !m_ctx.ui.isInForceAttackMode() && HudObjects::relationshipToLocal(m_ctx, *obj) == ENEMIES && selectionCanAttack())
 	{

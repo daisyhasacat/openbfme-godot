@@ -55,3 +55,8 @@ Tests in `test_mod1_retail.cpp` use mounted retail templates and a real AI
 world. The existing lair/rubble/OCL test pins creation of four TreasureChest1
 objects; pickup tests cover gold, shields, rejected collectors, and exact
 stop text. No retail assets are checked into the repository.
+
+Lair treasure now applies its configured SpreadFormation radii, and ordinary
+context clicks on crates move to their position even when the crate belongs
+to an enemy lair. See [treasure placement and input](TREASURE-PICKUP.md) for
+sources, tests, and the remaining ground-layer limitation.
