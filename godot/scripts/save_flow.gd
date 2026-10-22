@@ -74,6 +74,20 @@ func request(action: String, argument: String) -> void:
 		call_deferred("load_save", argument)
 
 
+## Direct host API: no SaveLoad.apt, quit menu, or shell callbacks.
+func save_game(name := "Quick Save") -> Dictionary:
+	name = name.strip_edges()
+	if name.is_empty() or name.length() > 100 or name in [".", ".."] or name != name.validate_filename():
+		return {"ok": false, "error": "Use a save name of 1–100 characters without path separators or filename punctuation."}
+	if game._state != game.State.PLAYING:
+		return {"ok": false, "error": "There is no running game to save."}
+	var dir := save_dir()
+	if dir.is_empty(): return {"ok": false, "error": "There is no Save folder."}
+	var kind := 1 if game._campaign_flow != null and game._campaign_flow.active else 2
+	last_save = game._world.save_game(dir.path_join(name + ".obfmesave"), {"description": name, "kind": kind})
+	return last_save
+
+
 func _save(name: String) -> void:
 	var dir := save_dir()
 	if dir.is_empty():

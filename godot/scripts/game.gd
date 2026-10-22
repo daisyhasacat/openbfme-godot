@@ -1293,6 +1293,7 @@ func _boot() -> void:
 	add_child(_world)
 	_lua_console = preload("res://scripts/lua_console.lua").new()
 	_lua_console.execute = func(code: String) -> Dictionary: return _world.execute_lua(code)
+	_lua_console.save_game = save_game
 	_lua_console.toggled.connect(_lua_console_toggled)
 	_lua_console.restart_requested.connect(func(): call_deferred("_console_restart"))
 	_lua_console.map_editor_requested.connect(func(): call_deferred("_open_map_editor"))
@@ -3709,6 +3710,12 @@ func _input(event: InputEvent) -> void:
 			_close_tribute()
 			return
 		_toggle_quit_menu()
+
+
+## Save a named snapshot directly, without navigating any menu.
+func save_game(name := "Quick Save") -> Dictionary:
+	if _save_flow == null: return {"ok": false, "error": "The save system is not ready."}
+	return _save_flow.save_game(name)
 
 
 func _lua_console_toggled(open: bool) -> void:

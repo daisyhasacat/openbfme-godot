@@ -9,6 +9,7 @@ local LuaConsole = {
 	restart_requested = signal(),
 	map_editor_requested = signal(),
 	execute = property { type = Callable },
+	save_game = property { type = Callable },
 	history_path = "user://console_history.cfg",
 	controller_options_path = "user://controller_options.cfg",
 }
@@ -317,7 +318,7 @@ function LuaConsole:_ready()
 	local footer = label("` toggle · Esc close · ↑ / ↓ history · Ctrl+Shift+F5 reload", MUTED, 12)
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	chrome:add_child(footer)
-	self:_append("BFME scripting console\nInspect the realm, shape the battle.\n\nTry  bfme.match.getStatus()  or  bfme.players.localPlayer.money\n")
+	self:_append("BFME scripting console\nInspect the realm, shape the battle.\n\nTry  bfme.match.getStatus()  or  bfme.players.localPlayer.money\n/save [name] saves the current game without menus.\n")
 	self:get_viewport().size_changed:connect(Callable(self, "_layout"))
 	self:_layout()
 	root:hide()
@@ -579,7 +580,21 @@ function LuaConsole:_execute_command(code)
 		return
 	end
 	self:_append("\n› " .. code .. "\n")
-	local result = self.execute:call(code)
+	local result
+	local command = trim(code)
+	if command == "/save" or command:sub(1, 6) == "/save " then
+		local name = trim(command:sub(6))
+		if name == "" then name = "Quick Save" end
+		if self.save_game:is_valid() then
+			local saved = self.save_game:call(name)
+			local ok = saved:get("ok", false) == true
+			result = Dictionary { ok = ok, output = ok and ("Saved " .. name .. " at frame " .. tostring(saved:get("frame", 0)) .. "\n" .. tostring(saved:get("path", ""))) or tostring(saved:get("error", "Save failed")) }
+		else
+			result = Dictionary { ok = false, output = "The save system is not ready." }
+		end
+	else
+		result = self.execute:call(code)
+	end
 	local output = tostring(result:get("output", ""))
 	local ok = result:get("ok", false) == true
 	if output ~= "" then
@@ -594,6 +609,7 @@ end
 -- Release callbacks into GDScript while the scene tree and its script language are
 -- still alive. Lua may otherwise retain them until its later shutdown collection.
 function LuaConsole:_exit_tree()
+ self.save_game = Callable()
  self.execute = Callable()
  collectgarbage("collect")
  collectgarbage("collect")
