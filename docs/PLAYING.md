@@ -796,3 +796,12 @@ unit's footprint or locomotor can traverse them; bridges and other layers are
 not shown. It refreshes at most five times per second, reads only during safe
 logic client windows, and never requests paths or changes simulation state.
 The option is off by default and is not saved.
+
+OpenBFME gate-clearance enhancement: opened gates reserve their posts and other
+fixed shapes on the navigation grid, but omit shapes listed in the gate
+behavior's `GeometryForOpen`. For the tutorial's small Men gate, this widens the
+nominal passage from 40 to 80 world units. Closed-gate blocking, opening/closing
+timing, visible models and collision/combat geometry remain as authored. This
+is an intentional gameplay change from BFME2, requested for wider gate
+clearance; it is not a claim of retail-compatible pathfinding. Existing terrain
+blockers and the 10-unit grid still affect the usable passage.

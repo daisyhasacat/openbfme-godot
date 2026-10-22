@@ -27,6 +27,10 @@
 
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/AI/AIPathfindStops.h"
+#include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/Module/GateModules.h"
+#include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/ObjectGeometry.h"
 #include "GameLogic/SimMath.h"
 
 #include <algorithm>
@@ -194,12 +198,32 @@ void Pathfinder::internal_classifyObjectFootprint(PathfindObject &obj, bool inse
 		cellRef.setBit22(s22);
 		if (!m_buildingMap) m_zoneManager.markCellDirty(cx, cy);
 	};
+	// OpenBFME enhancement requested by the owner: once a gate has switched to
+	// open navigation geometry, its swung door leaves no longer narrow the lane.
+	// Keep every other active shape (posts, towers, walls) and leave collision /
+	// combat geometry unchanged. BFME2 itself rasterises the open leaves too.
+	// Use the module's configured names so modded gates need no template special cases.
+	std::vector<bool> openLeaves(geom.shapeCount(), false);
+	if (const auto *adapter = dynamic_cast<const ObjectPathfindAdapter *>(&obj))
+	{
+		const Object &object = adapter->object();
+		if (const auto *gate = GateOpenAndCloseBehavior::findGate(object))
+		{
+			if (gate->geometryState() == GateOpenAndCloseBehavior::GEOMETRY_OPEN)
+			{
+				const auto *data = static_cast<const GateOpenAndCloseBehaviorModuleData *>(gate->getModuleData());
+				const auto shapes = ObjectGeometry::shapesOf(*object.getTemplate());
+				for (size_t i = 0; i < shapes.size() && i < openLeaves.size(); ++i)
+					openLeaves[i] = std::find(data->m_geometryForOpen.begin(), data->m_geometryForOpen.end(), shapes[i].name) != data->m_geometryForOpen.end();
+			}
+		}
+	}
 	// RW 0x936E25 .. 0x937463: every shape of the object's geometry in turn (lane PATH-2, S-341): an inactive shape (+0x20) and a shape whose z offset is
 	// above 10 (+0x18, RW 0xBD83D8) are skipped; the others are rasterised at the object's position moved by the shape's turned offset (RW 0xAD14F0)
 	for (size_t shapeIndex = 0; shapeIndex < geom.shapeCount(); ++shapeIndex)
 	{
 		const PathfindShape shape = geom.shape(shapeIndex);
-		if (!shape.active || shape.offsetZ > 10.0f)
+		if (!shape.active || shape.offsetZ > 10.0f || openLeaves[shapeIndex])
 		{
 			continue;
 		}
