@@ -820,3 +820,5 @@ The native `local sixteen` tests pin extended start resolution and the recorder
 stop. Resolving this needs an explicitly versioned enhanced recording/save and
 network format, plus round-trip tests for all sixteen slots; retail formats
 must remain unchanged.
+
+| S-6101 | code | Player message log | BFME2 recovered InGameUIMessages.cpp (RVA 0x0029BA58), InGameUIPostDraw.cpp (RVA 0x002A0161), InGameUIUpdate.cpp and ctor supply the implemented queue, style and fade. Independent RotWK display-routine verification is outstanding. | InGameHud::stops `[S-6101]` | `player message log:*`, `player_message_log_test.gd` | Exact cross-version presentation parity | Verify the RotWK twins against a trusted target. |

@@ -6259,9 +6259,9 @@ void AptMenuPlayer::set_input_forwarded(bool forwarded)
 	m->inputForwarded = forwarded;
 }
 
-Ref<Font> AptMenuPlayer::font_for(const std::string &name, float size, float *drawSize)
+Ref<Font> AptMenuPlayer::font_for(const std::string &name, float size, float *drawSize, bool bold)
 {
-	return m->fontFor(name, size, drawSize);
+	return m->fontFor(name, size, drawSize, bold);
 }
 
 Ref<Font> AptMenuPlayer::font_cell(const Ref<Font> &font, int px)

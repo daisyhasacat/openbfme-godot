@@ -2621,6 +2621,15 @@ Dictionary InGameHudNode::get_state() const
 		msgs.push_back(toGodot(m));
 	}
 	s["messages"] = msgs;
+	Array displayedMessages;
+	for (const auto &entry : d->hud->playerMessages().entries())
+	{
+		Dictionary message;
+		message["text"] = String::utf16(reinterpret_cast<const char16_t *>(entry.text.data()), (int64_t)entry.text.size());
+		message["color"] = (int64_t)entry.color;
+		displayedMessages.push_back(message);
+	}
+	s["player_messages"] = displayedMessages;
 	{
 		ControlBar &cb = d->hud->controlBar();
 		Dictionary bar;
@@ -3229,6 +3238,7 @@ void InGameHudNode::_process(double delta)
 	if (d->hud6 && d->nativeHudVisible)
 	{
 		d->hud6->drawRadial(get_canvas_item()); // lane HUD-6
+		d->hud6->drawMessages(get_canvas_item());
 		if (d->fs.is_valid() && d->fs->is_bfme1())
 		{
 			const Vector2 size = get_viewport_rect().size;

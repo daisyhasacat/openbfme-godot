@@ -149,6 +149,7 @@ public:
 	void closeSpellStore();
 	AptSpellStore *spellStore() { return m_store.get(); }
 	// lane SPELL-4: the aiming marker of a spell book or selected-unit ground power waiting for its target (GameClient/RadiusCursor.h), updated each update(); the device draws it
+	const PlayerMessageLog &playerMessages() const { return m_playerMessages; }
 	const RadiusCursor &radiusCursor() const { return m_radiusCursor; }
 	const RadiusCursorTemplates &radiusCursorTemplates() const { return m_radiusTemplates; }
 	// lane OWNERFIX-2: the resource claim feedback (GameClient/TerrainResourceFeedback.h): the placement's claimable percentage and decal, the selected
@@ -320,6 +321,8 @@ private:
 	void updateRadiusCursor();
 	void updateResourceFeedback(); // lane OWNERFIX-2
 	TerrainResourceFeedback m_resourceFeedback;
+	PlayerMessageLog m_playerMessages;
+	unsigned m_messageClientFrame = 0;
 	RadiusCursorTemplates m_radiusTemplates;
 	RadiusCursor m_radiusCursor;
 	int m_pointerX = 0, m_pointerY = 0;

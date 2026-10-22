@@ -173,7 +173,8 @@ public:
 	unsigned screenshotRequests() const { return m_screenshots; }
 
 	// ---- messages for the player (ZH InGameUI::message(label)): game text labels, drained by the HUD ----
-	void message(const std::string &label) { m_messages.push_back(label); }
+	void message(const std::string &label) { m_messages.push_back(label); if (m_messageHandler) m_messageHandler(label); }
+	void setMessageHandler(std::function<void(const std::string &)> handler) { m_messageHandler = std::move(handler); }
 	std::vector<std::string> takeMessages();
 	const std::vector<std::string> &messages() const { return m_messages; }
 
@@ -323,6 +324,7 @@ private:
 	Coord3D m_mouseoverLocation;
 	bool m_hasMouseoverLocation = false;
 	std::vector<std::string> m_messages;
+	std::function<void(const std::string &)> m_messageHandler;
 	std::string m_placeTemplate;
 	ObjectID m_placeSource = INVALID_ID;
 	const CommandButton *m_placeCommand = nullptr;
