@@ -340,6 +340,7 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 		}
 		// lane MODS-1: the enabled mods (user://mods.cfg [mods] enabled, in load order; RotWK's -mod "<folder>" as --mod=<folder> too)
 		PackedStringArray modPaths;
+		bool hdTextures = true;
 		std::set<std::string> texturesOnly; // mods.cfg [mods] textures_only: mods mounted as texture packs (TextureOnlyArchiveFile)
 		if (!aotr.empty())
 		{
@@ -353,6 +354,7 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 			modsCfg.instantiate();
 			if (modsCfg->load("user://mods.cfg") == OK)
 			{
+				hdTextures = (bool)modsCfg->get_value("mods", "hd_textures", true);
 				const Array enabled = modsCfg->get_value("mods", "enabled", Array());
 				for (int64_t i = 0; i < enabled.size(); ++i)
 					modPaths.push_back(String(enabled[i]));
@@ -428,6 +430,11 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 			{
 				const std::string modPath = toNative(ProjectSettings::get_singleton()->globalize_path(modPaths[i]));
 				const bool textureOnly = texturesOnly.count(modPath) != 0;
+				if (textureOnly && !hdTextures)
+				{
+					report.warnings.push_back("texture pack " + modPath + ": disabled by the HD textures setting");
+					continue;
+				}
 				size_t textureFiles = 0;
 				Dictionary mod;
 				mod["path"] = toGodot(modPath);

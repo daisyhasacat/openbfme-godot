@@ -28,6 +28,7 @@ signal benchmark_requested
 signal appimage_update_requested
 
 const DisplaySettings := preload("res://scripts/display_settings.gd")
+const TexturePacks := preload("res://scripts/texture_pack_settings.gd")
 const TABS := ["Display", "Graphics", "Audio", "Camera", "Interface", "Online", "Performance", "Benchmark", "Controls", "Mods", "Sync", "Updates"]
 ## lane OPTS-5: the tab the menu shows first when the main menu's CUSTOM SETTINGS opened it
 const DETAIL_TAB := "Graphics"
@@ -105,6 +106,11 @@ var skin_errors := PackedStringArray()
 var game_options: Node             # lane OPTS-2: scripts/game_options.gd (Options.ini's settings in effect)
 var audio_getter: Callable         # lane OPTS-4: () -> the GameAudio node or null (the Master volume's sample)
 var room_getter: Callable          # lane UBERJOIN-1: () -> "" or why the player is in a lobby room ("an online room" / "a LAN room"): the Uber row is locked there
+
+var texture_packs_path := TexturePacks.PATH
+var _hd_textures := true
+var _hd_textures_original := true
+var _texture_error := ""
 
 var _open := false
 var _original: RefCounted          # the settings when the page opened (CANCEL)
@@ -224,6 +230,12 @@ func open(first_tab := 0) -> void:
 	if not r.get("ok", false):
 		printerr("GAME DISPLAY the OpenBFME page cannot open: ", r.get("error", "?"))
 		return
+	var packs := TexturePacks.read(texture_packs_path)
+	_texture_error = "" if packs.ok else "Could not read texture settings: " + str(packs.error)
+	if not packs.ok:
+		printerr("GAME OPTIONS texture packs: ", packs.error)
+	_hd_textures = bool(packs.get("enabled", true))
+	_hd_textures_original = _hd_textures
 	_open = true
 	var root := get_tree().root
 	_original = settings.copy()
@@ -245,8 +257,15 @@ func open(first_tab := 0) -> void:
 func close(keep: bool) -> void:
 	if not _open:
 		return
+	if keep and _hd_textures != _hd_textures_original:
+		var error := TexturePacks.save_enabled(_hd_textures, texture_packs_path)
+		if error != OK:
+			_texture_error = "Could not save HD textures: " + error_string(error)
+			printerr("GAME OPTIONS ", _texture_error)
+			_show_tab(_tab)
+			return
 	if game_options != null:
-		game_options.hold_gamma = false # the saved brightness is back in effect from here (ACCEPT: the shell's Save; CANCEL: its Cancel)
+		game_options.hold_gamma = false # release the menu preview only once saving can proceed
 	if keep:
 		settings.from_dict(_pending.to_dict())
 		if not settings_path.is_empty() and not settings.save_file(settings_path):
@@ -305,6 +324,7 @@ func set_value(key: String, value) -> void:
 func reset_defaults() -> void:
 	if not _open:
 		return
+	_hd_textures = true
 	_pending = DisplaySettings.new()
 	_apply_pending()
 	if game_options != null:
@@ -449,6 +469,8 @@ func _spec() -> Dictionary:
 		"Mods":
 			rows = []
 			note = "Switch games, manage texture packs and mods, or download shared maps and built-ins from your LAN."
+	if not _texture_error.is_empty():
+		note = _texture_error + ("\n" + note if not note.is_empty() else "")
 	var spec := {
 		"subtitle": SUBTITLE,
 		"tabs_header": "OpenBFME",
@@ -577,6 +599,7 @@ func _graphics_rows() -> Array:
 	for i in 9:
 		rows.append(_retail_row("Retail.AdvancedOption%d" % i))
 	for r in [
+		_check("hd_textures", "HD textures (restart required)", _hd_textures, "Use enabled texture packs, including HD Edition. Off uses the original game textures. Restart OpenBFME after accepting."),
 		_extra_choice("OpenBFMEAntiAliasing", "Anti-aliasing", AA_ITEMS, HELP.OpenBFMEAntiAliasing, no_aa),
 		_extra_choice("OpenBFMEAnisotropic", "Anisotropic", ANISO_ITEMS, HELP.OpenBFMEAnisotropic),
 		_extra_choice("OpenBFMELook", "Look", LOOK_ITEMS, HELP.OpenBFMELook),
@@ -712,6 +735,9 @@ func _on_value(key: String, value: int) -> void:
 	if not _open:
 		return
 	match key:
+		"hd_textures":
+			_hd_textures = value != 0
+			_sync()
 		"window_mode":
 			if value >= 0 and value < DisplaySettings.WINDOW_MODES.size():
 				set_value("window_mode", DisplaySettings.WINDOW_MODES[value])

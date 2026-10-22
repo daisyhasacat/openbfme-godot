@@ -25,7 +25,7 @@ extends RefCounted
 const REQUIRED_TABS := ["Display", "Graphics", "Audio", "Camera", "Interface", "Online", "Performance", "Controls"]
 const REQUIRED_ROWS := {
 	"Display": ["OpenBFMEWidescreen", "Retail.Brightness", "max_fps", "render_scale", "resolution", "scaler", "show_fps", "vsync", "window_mode"],
-	"Graphics": ["OpenBFMEAnisotropic", "OpenBFMEAntiAliasing", "OpenBFMELook", "OpenBFMESoftParticles", "Retail.AdvancedOption0", "Retail.AdvancedOption1",
+	"Graphics": ["hd_textures", "OpenBFMEAnisotropic", "OpenBFMEAntiAliasing", "OpenBFMELook", "OpenBFMESoftParticles", "Retail.AdvancedOption0", "Retail.AdvancedOption1",
 		"Retail.AdvancedOption2", "Retail.AdvancedOption3", "Retail.AdvancedOption4", "Retail.AdvancedOption5", "Retail.AdvancedOption6", "Retail.AdvancedOption7",
 		"Retail.AdvancedOption8", "Retail.Detail"],
 	"Audio": ["OpenBFMEAudioDevice", "OpenBFMEMasterVolume", "OpenBFMEMuteUnfocused", "Retail.AmbientVolume", "Retail.EAX3", "Retail.HighAudioQuality",
