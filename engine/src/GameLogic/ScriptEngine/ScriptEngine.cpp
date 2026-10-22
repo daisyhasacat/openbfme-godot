@@ -23,6 +23,8 @@
 #include "GameLogic/ScriptEngine/ScriptConditions.h"
 #include "GameLogic/ScriptEngine/ScriptTemplates.h"
 #include "GameLogic/SimMath.h"
+#include "GameLogic/System/ShroudManager.h"
+#include "GameLogic/Map/TerrainLogic.h"
 
 #include <algorithm>
 
@@ -112,6 +114,7 @@ void ScriptEngine::reset()
 	m_counters.clear();
 	m_flags.clear();
 	m_namedObjects.clear();
+	m_namedMapReveals.clear();
 	m_objectLists.clear();
 	m_triggers = nullptr;
 	m_runtimeTriggers.clear(); // lane HUD-5
@@ -1926,6 +1929,15 @@ void ScriptEngine::crc(StateHasher &h) const
 			h.addU32(t.endFrame);
 		}
 	}
+	if (!m_namedMapReveals.empty())
+	{
+		h.addU32(0x5E6102u);
+		h.addU32((std::uint32_t)m_namedMapReveals.size());
+		for (const NamedMapReveal &r : m_namedMapReveals)
+		{
+			h.addU32(r.nameCrc); h.addString(r.target); h.addString(r.player); h.addFloat(r.radius); h.addBool(r.trigger);
+		}
+	}
 	for (size_t i = 0; i < m_triggeredSpecialPowers.size(); ++i) // lane BACKLOG4: hashed once a player has an entry
 	{
 		const std::vector<TriggeredSpecialPower> &l = m_triggeredSpecialPowers[i];
@@ -1939,6 +1951,66 @@ void ScriptEngine::crc(StateHasher &h) const
 				h.addU32(e.source);
 			}
 		}
+	}
+}
+
+// DONOR: BFME2 ScriptEngineNamedMapReveal.cpp (0x3577DA/0x35789D), ScriptEngineRva00358853.cpp,
+// Rva003BC9E0Do.cpp / Rva003BCA12Do.cpp / Rva003BCA43Do.cpp. Named records are first-match CRC keyed; undo removes the record.
+// DATA FACT: the tutorial's Map Setup uses these actions for its opening reveal. Target wrapper/polygon edge parity remains S-6102.
+void ScriptEngine::executeMapReveal(const ScriptActionRec &action)
+{
+	ShroudManager *shroud = m_logic.shroud();
+	if (!shroud) { note("[S-1180] regional map reveal: the game has no shroud manager"); return; }
+	const auto &p = action.params;
+	const bool undo = action.resolved == 294 || action.resolved == 555;
+	const bool permanent = action.resolved == 293 || action.resolved == 554;
+	const bool trigger = action.resolved == 552 || action.resolved == 554;
+	const size_t expected = undo ? 1 : trigger ? (permanent ? 3 : 2) : (permanent ? 4 : 3);
+	if (p.size() != expected) { note("[S-1180] regional map reveal: invalid parameter count"); return; }
+	NamedMapReveal definition;
+	auto named = m_namedMapReveals.end();
+	if (undo || permanent)
+	{
+		const std::uint32_t crc = specialPowerNameCrc(p[undo ? 0 : expected - 1].stringValue);
+		named = std::find_if(m_namedMapReveals.begin(), m_namedMapReveals.end(), [crc](const NamedMapReveal &r) { return r.nameCrc == crc; });
+		if (undo && named == m_namedMapReveals.end()) return;
+		if (named != m_namedMapReveals.end()) definition = *named;
+		else definition.nameCrc = crc;
+	}
+	if (named == m_namedMapReveals.end())
+	{
+		definition.target = p[0].stringValue;
+		definition.trigger = trigger;
+		definition.radius = trigger ? 0.0f : p[1].realValue;
+		definition.player = p[trigger ? 1 : 2].stringValue;
+		if (permanent) m_namedMapReveals.push_back(definition);
+	}
+	std::uint32_t mask = 0;
+	for (Player *player : ScriptConditions::players(*this, definition.player)) mask |= 1u << player->getPlayerIndex();
+	note("[S-6102] regional script reveals use BFME2 wrappers; trigger cell-edge parity remains unverified");
+	auto apply = [&](bool add) {
+		if (definition.trigger)
+		{
+			const TriggerArea *area = findTrigger(definition.target);
+			if (area) shroud->revealTrigger(*area, mask, add);
+			else note("regional map reveal: trigger not found: " + definition.target);
+		}
+		else
+		{
+			const Waypoint *waypoint = m_logic.terrain() ? m_logic.terrain()->findWaypointByName(definition.target) : nullptr;
+			if (waypoint) shroud->revealCircle(waypoint->location.x, waypoint->location.y, definition.radius, mask, add);
+			else note("regional map reveal: waypoint not found: " + definition.target);
+		}
+	};
+	if (undo)
+	{
+		apply(false);
+		m_namedMapReveals.erase(named);
+	}
+	else
+	{
+		apply(true);
+		if (!permanent) apply(false); // reveal once leaves explored fog; permanent reveals retain a looker
 	}
 }
 

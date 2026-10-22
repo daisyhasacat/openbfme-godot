@@ -67,8 +67,7 @@ const std::set<int> &clientActions()
 			"AUDIO_RESTORE_VOLUME_ALL_TYPE", "AUDIO_OVERRIDE_VOLUME_TYPE", "AUDIO_RESTORE_VOLUME_TYPE", "AUDIO_SET_VOLUME_TYPE", "CAMEO_FLASH",
 			"NAMED_FLASH", "TEAM_FLASH", "ENABLE_HOUSE_COLOR", "DRAW_SKYBOX_BEGIN", "DRAW_SKYBOX_END", "SUSPEND_BACKGROUND_SOUNDS",
 			"RESUME_BACKGROUND_SOUNDS", "SET_VISUAL_SPEED_MULTIPLIER", "SHOW_WEATHER", "SCREEN_SHAKE", "SELECT_BUILDER_BUTTON_FLASH", "HERO_SELECT_BUTTON_FLASH",
-			"CLOSE_OBJECTIVES_SCREEN", "PLAYER_SELECT_SKILLSET", "MAP_REVEAL_AT_WAYPOINT", "MAP_SHROUD_AT_WAYPOINT", "MAP_REVEAL_PERMANENTLY_AT_WAYPOINT",
-			"MAP_UNDO_REVEAL_PERMANENTLY_AT_WAYPOINT", "MAP_REVEAL_PERMANENTLY_IN_TRIGGER", "MAP_UNDO_REVEAL_PERMANENTLY_IN_TRIGGER",
+			"CLOSE_OBJECTIVES_SCREEN", "PLAYER_SELECT_SKILLSET", "MAP_SHROUD_AT_WAYPOINT",
 			// lane SCRIPT-2: the victory screen (RW 0x7BF05C: TheShell's victory window, no logic), the objectives button flash (RW 0x7BDF4E), the command
 			// bar edits (RW 0x7C6793 ...: TheControlBar). Lane BACKLOG3: the radar event actions are ported below (radarEventAction)
 			"VICTORY_SCREEN", "FLASH_OBJECTIVES_BUTTON", "COMMANDBAR_REMOVE_BUTTON_OBJECTTYPE", "COMMANDBAR_ADD_BUTTON_OBJECTTYPE_SLOT",
@@ -506,6 +505,12 @@ void ScriptActions::execute(ScriptEngine &engine, const ScriptActionRec &a)
 				p->setCanBuildUnits(enable);
 			}
 		}
+		return;
+	}
+	if (a.resolved == 93 || a.resolved == 293 || a.resolved == 294 ||
+		a.resolved == 552 || a.resolved == 554 || a.resolved == 555)
+	{
+		engine.executeMapReveal(a);
 		return;
 	}
 	if (name == "MAP_REVEAL_ALL" || name == "MAP_REVEAL_ALL_PERM" || name == "MAP_REVEAL_ALL_UNDO_PERM" || name == "MAP_SHROUD_ALL")

@@ -846,3 +846,25 @@ exposed but their separate entry presentation is not applied. Tutorial games
 currently have no save recording (`save_game` reports that the game is not
 recorded); they do not write or advance linear campaign progress. The installed
 data test covers Basic/Advanced launch, restart and return to the main menu.
+
+## S-6102: regional scripted shroud reveal parity
+
+The engine now applies one-time waypoint/trigger reveals and named permanent
+waypoint/trigger reveals and undo in the logic, using the mounted map's data.
+Evidence: Open-BFME-2 commit `b81eb7cd607c85897426fe0cc28f622a14b7324d`,
+`ScriptEngineNamedMapReveal.cpp` (0x3577DA/0x35789D),
+`ScriptEngineRva00358853.cpp`, `Rva003BC9E0Do.cpp`, `Rva003BCA12Do.cpp`,
+`Rva003BCA43Do.cpp`, `Rva00739BE0.cpp`, `Rva00739AF0Siblings.cpp` and
+`ScriptActions_rva003C013C.cpp`. The Basic tutorial's Map Setup independently
+authors a 550-unit permanent waypoint reveal and a start-area trigger reveal.
+
+The BFME2 trigger raster's precise cell-edge predicate is unverified. The implementation gates cell centres with the already ported
+RotWK polygon predicate; that choice is an inference, not a retail parity claim.
+Each regional action reports the exact S-6102 note asserted by the
+`save4d regional reveals` test. The remaining parity gate needs a trusted target
+trace of radius conversion and polygon-edge cells. Circle overlap/masks,
+concave trigger exclusion, named undo, snapshot round trips, and the Basic
+tutorial's opening reveal plus distant black terrain are covered by tests.
+Named definitions are hashed and stored in version 3 of the OpenBFME script
+snapshot block; version 2 remains readable with no named definitions, since it
+predates regional reveal support. Retail save formats are unchanged.

@@ -36,6 +36,7 @@ func _run() -> void:
 	assert(game._campaign_flow.campaign.is_empty())
 	assert(game._hud_installed)
 	_assert_unexplored_shroud(game._world)
+	if lesson == "Basic": _assert_opening_reveal(game._world)
 	assert(game._report.stops.has("[S-175] tutorial entry: Objective and loading voice presentation are not ported; tutorial saves are not recorded"))
 	assert(game._report.map.to_lower() == String(def.map).to_lower())
 	# Restart uses the same standalone tutorial, without advancing campaign progress.
@@ -44,6 +45,7 @@ func _run() -> void:
 	assert(game._campaign_flow.tutorial == lesson)
 	assert(game._hud_installed)
 	_assert_unexplored_shroud(game._world)
+	if lesson == "Basic": _assert_opening_reveal(game._world)
 	var loaded_map := String(game._report.map)
 	# Leaving and Continue return to the main menu without campaign autosaves or unlocks.
 	game._campaign_flow.leave_to_score_screen()
@@ -79,3 +81,23 @@ func _assert_unexplored_shroud(world: Node) -> void:
 				break
 		if checked: break
 	assert(checked, "A terrain material must bind the black unexplored shroud texture")
+
+func _assert_opening_reveal(world: Node) -> void:
+	# Retail Basic tutorial Map Setup: permanent radius 550 at this waypoint, plus its start-area trigger.
+	var waypoint: Dictionary = world.get_waypoint("WP - Move Fighters Here")
+	assert(waypoint.ok)
+	assert(world.get_shroud_status_at(waypoint.x, waypoint.y) == 0)
+	var report: Dictionary = world.get_shroud_report()
+	var x := floori(float(waypoint.x) / float(report.cell_size))
+	var y := floori(float(waypoint.y) / float(report.cell_size))
+	var checked := false
+	for mesh in world.get_node("Terrain").find_children("*", "MeshInstance3D", true, false):
+		for surface in mesh.mesh.get_surface_count():
+			var material = mesh.get_active_material(surface)
+			if material is ShaderMaterial and material.shader.code.contains("terrain_common"):
+				var texture: Texture2D = material.get_shader_parameter("shroud_tex")
+				assert(texture.get_image().get_pixel(x + 1, y + 1).r == 1.0)
+				checked = true
+				break
+		if checked: break
+	assert(checked, "The scripted opening reveal must reach the terrain's shroud texture")

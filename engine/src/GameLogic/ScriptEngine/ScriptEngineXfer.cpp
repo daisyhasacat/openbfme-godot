@@ -40,6 +40,8 @@
 #include "GameLogic/GameLogic.h"
 
 #include <algorithm>
+#include <cmath>
+#include <set>
 #include <memory>
 #include <tuple>
 
@@ -143,7 +145,7 @@ void ScriptEngine::xfer(Xfer &x)
 	}
 	// lane SAVE-4e: version 2 adds BACKLOG4's triggered special power lists (merged after SAVE-4d); no version 1 snapshot was ever written by a
 	// release (loads of snapshots begin with SAVE-4e), so version 1 is not read (a list it lacked would load empty, silently)
-	XferVersion v{ 2, 2 };
+	XferVersion v{ 2, 3 }; // version 3 adds named regional reveals; version 2 predates their implementation
 	x.xferVersion(v);
 	bool loaded = loading ? false : m_loaded;
 	x.xferBool(&loaded);
@@ -384,6 +386,25 @@ void ScriptEngine::xfer(Xfer &x)
 			}
 		}
 	}
+	std::vector<NamedMapReveal> loadedReveals;
+	auto &reveals = loading ? loadedReveals : m_namedMapReveals;
+	if (v.current >= 3)
+	{
+		x.xferVectorSize(reveals, 13);
+		std::set<std::uint32_t> names;
+		for (NamedMapReveal &r : reveals)
+		{
+			x.xferUnsignedInt(&r.nameCrc);
+			x.xferAsciiString(&r.target);
+			x.xferAsciiString(&r.player);
+			x.xferReal(&r.radius);
+			x.xferBool(&r.trigger);
+			if (loading && (!names.insert(r.nameCrc).second || !std::isfinite(r.radius)))
+			{
+				throw XferException("script engine: invalid named map reveal");
+			}
+		}
+	}
 	if (!loading)
 	{
 		return;
@@ -423,9 +444,9 @@ void ScriptEngine::xfer(Xfer &x)
 		std::map<std::pair<std::string, std::string>, Counter>, std::map<std::pair<std::string, std::string>, bool>,
 		std::vector<std::pair<std::string, std::vector<std::string>>>, std::vector<std::pair<std::string, ObjectID>>,
 		std::vector<std::vector<SequentialScript>>, std::array<AcquiredScienceQueue, 20>, std::vector<AudioTimer>,
-		std::array<std::vector<TriggeredSpecialPower>, kSpecialPowerListPlayers>>>(std::move(tree), std::move(loadedGeneric), std::move(loadedCounters),
+		std::array<std::vector<TriggeredSpecialPower>, kSpecialPowerListPlayers>, std::vector<NamedMapReveal>>>(std::move(tree), std::move(loadedGeneric), std::move(loadedCounters),
 		std::move(loadedFlags), std::move(loadedLists), std::move(loadedNamed), std::move(loadedSequential), loadedQueues, std::move(loadedTimers),
-		std::move(loadedTriggered));
+		std::move(loadedTriggered), std::move(loadedReveals));
 	m_pendingTeams.clear();
 	for (const auto &chain : std::get<6>(*staged))
 	{
@@ -455,6 +476,7 @@ void ScriptEngine::xfer(Xfer &x)
 		m_acquiredSciences = std::get<7>(*staged);
 		m_audioTimers = std::move(std::get<8>(*staged));
 		m_triggeredSpecialPowers = std::move(std::get<9>(*staged)); // lane SAVE-4e
+		m_namedMapReveals = std::move(std::get<10>(*staged));
 	};
 }
 

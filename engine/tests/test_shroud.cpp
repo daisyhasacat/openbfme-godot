@@ -1057,3 +1057,22 @@ TEST_CASE("shroud retail: campaign maps draw unexplored black shroud while bare 
 	}
 	CHECK(unexplored);
 }
+
+TEST_CASE("shroud regional reveal: world circles preserve player masks and overlapping permanent looks")
+{
+	Fx f;
+	const int alice = f.idx("Alice"), bob = f.idx("Bob");
+	const std::uint32_t mask = 1u << alice;
+	f.shroud.revealCircle(420, 420, 40, mask, true); // cell (10,10), ceil(40/40) = 1
+	CHECK(f.shroud.getCellStatus(alice, 10, 10) == CELLSHROUD_CLEAR);
+	CHECK(f.shroud.getCellStatus(alice, 9, 10) == CELLSHROUD_CLEAR);
+	CHECK(f.shroud.getCellStatus(alice, 12, 10) == CELLSHROUD_SHROUDED);
+	CHECK(f.shroud.getCellStatus(bob, 10, 10) == CELLSHROUD_SHROUDED);
+	f.shroud.revealCircle(460, 420, 40, mask, true);
+	f.shroud.revealCircle(420, 420, 40, mask, false);
+	CHECK(f.shroud.getCellStatus(alice, 9, 10) == CELLSHROUD_FOGGED);
+	CHECK(f.shroud.getCellStatus(alice, 10, 10) == CELLSHROUD_CLEAR);
+	f.shroud.revealCircle(460, 420, 40, mask, false);
+	CHECK(f.shroud.getCellStatus(alice, 10, 10) == CELLSHROUD_FOGGED);
+	CHECK(f.shroud.getCellStatus(alice, 13, 10) == CELLSHROUD_SHROUDED);
+}
