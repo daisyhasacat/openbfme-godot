@@ -493,6 +493,7 @@ library('match',{
   if type(enabled)~='boolean' then error('expected enabled boolean',2) end
   return queue('match','',':clearNeutralDecorations',enabled)
  end,
+ setAIBaseExclusion=function(radius) numeric(radius,0,10000,false); return queue('match','',':setAIBaseExclusion',radius) end,
  setGameSpeed=function(value) numeric(value,0,100,false); return queue('match','',':setGameSpeed',value) end,
  getStatus=function()
   return {ready=view.ready or false,generation=generation,frame=view.frame or 0,paused=view.paused or false,localPlayerId=view.localPlayerId,

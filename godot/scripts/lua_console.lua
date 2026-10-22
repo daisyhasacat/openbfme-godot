@@ -376,6 +376,12 @@ function LuaConsole:_build_cheats()
 		speed.value = 1
 		self:_execute_command("bfme.match.setGameSpeed(1)")
 	end))
+	local protection = flow(rows)
+	protection:add_child(label("Keep enemy AI away from base"))
+	local radius = spin_box("AIBaseRadius", 0, 10000, 100, 1500, 110)
+	protection:add_child(radius)
+	protection:add_child(button("Protect base", function() self:_execute_command("bfme.match.setAIBaseExclusion(" .. tostring(radius.value) .. ")") end))
+	protection:add_child(button("Disable protection", function() self:_execute_command("bfme.match.setAIBaseExclusion(0)") end))
 	actions:add_child(button("Pause", function() self:_execute_command("bfme.match.pause()") end))
 	actions:add_child(button("Resume", function() self:_execute_command("bfme.match.unpause()") end))
 

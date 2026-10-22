@@ -112,6 +112,12 @@ func _run() -> void:
 		if cheat_button.text in ["Enable ubermode", "Disable ubermode"]:
 			cheat_button.pressed.emit()
 	assert(commands.slice(1) == ["ubermode.enable()", "ubermode.disable()"], str(commands))
+	for cheat_button in cheats.find_children("*", "Button", true, false):
+		if cheat_button.text == "Protect base": cheat_button.pressed.emit()
+	assert(commands[-1] in ["bfme.match.setAIBaseExclusion(1500)", "bfme.match.setAIBaseExclusion(1500.0)"])
+	for cheat_button in cheats.find_children("*", "Button", true, false):
+		if cheat_button.text == "Disable protection": cheat_button.pressed.emit()
+	assert(commands[-1] == "bfme.match.setAIBaseExclusion(0)")
 	assert(console._tabs.current_tab == 2)
 	assert(console._entry.text == "-- preserve cheat draft")
 	var history_after := ConfigFile.new()

@@ -646,3 +646,28 @@ Replay scheduling still needs timers: cancellation, placement retry, mutation an
 wall-link results can progress without a building-completion event. Replacing these
 with construction-only events would strand those jobs. Their timers unregister on
 completion/cancellation.
+
+## Base protection for local AI testing
+
+Console → Cheats has **Keep enemy AI away from base**, a radius field (default
+1,500 world units), **Protect base**, and **Disable protection**. Protection is
+centered on the local player's fortress/command center when enabled, with another
+owned structure as fallback. Reapply to recenter. The Lua equivalent is
+`bfme.match.setAIBaseExclusion(1500)`; pass `0` to disable it.
+
+Enemy computer-controlled mobile units approaching within the radius plus a
+300-unit warning margin receive native movement orders away, toward radius + 600.
+The AI strategy releases them from squads and excludes them from recruitment while
+inside that margin. Movement steering checks are staggered once per simulation second,
+without Lua polling. The existing peace-time movement restriction also rejects
+pathfinding cells and swept movement crossing the radius (including unit footprint).
+Existing nearby enemies may escape but cannot move deeper. Long-range attacks
+and projectiles are not blocked; this is not invulnerability. Increase the radius to
+keep siege weapons farther away.
+
+The option is local-match-only and refuses multiplayer and replay playback. It
+is temporary, not written into saves, and resets with the game logic. Human and
+allied units are unaffected. Disabling resumes normal AI decisions.
+
+Replays recorded while this testing policy is enabled are not supported for
+determinism comparisons: the temporary AI override is not saved in replay metadata.

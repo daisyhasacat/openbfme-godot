@@ -457,6 +457,9 @@ public:
 		std::string operationId; // optional research upgrade name
 	};
 	// OpenBFME notification only: consumers queue IDs/data and never execute Lua here.
+	// Local testing aid, reset with the match; never enabled for network/replay games.
+	void setAIBaseExclusion(int player, const Coord3D &center, float radius) { m_aiBasePlayer = player; m_aiBaseCenter = center; m_aiBaseRadius = radius; }
+	bool aiBaseExclusion(const Object &unit, Coord3D &goal) const;
 	using BuildingCompletedHook = std::function<void(const Object &)>;
 	void setBuildingCompletedHook(BuildingCompletedHook hook) { m_buildingCompletedHook = std::move(hook); }
 	void notifyBuildingCompleted(const Object &building) const { if (m_buildingCompletedHook) m_buildingCompletedHook(building); }
@@ -898,6 +901,9 @@ private:
 	GameRules m_gameRules = MpGameRules::none(); ///< lane RULES-1
 	BuildingPlacedHook m_buildingPlacedHook;
 	BuildingCompletedHook m_buildingCompletedHook;
+	int m_aiBasePlayer = -1;
+	Coord3D m_aiBaseCenter{};
+	float m_aiBaseRadius = 0;
 	std::map<std::string, TimingHook> m_timingHooks;
 	bool m_fortressConstruction = false;
 	int m_peaceTimeMinutes = PeaceTime::kOff;

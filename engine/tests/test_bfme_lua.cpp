@@ -189,6 +189,21 @@ TEST_CASE("bfme Lua: reload rereads scripts, replaces functions and preserves co
 	CHECK(f.run("keep") == "99\n");
 }
 
+TEST_CASE("bfme Lua: base protection radius validates and queues local match actions")
+{
+ BfmeFixture f;
+ CHECK(f.vm->execute("bfme.match.setAIBaseExclusion(1500)").ok);
+ CHECK(f.vm->execute("bfme.match.setAIBaseExclusion(0)").ok);
+ for (const char *value : {"-1", "10001", "0/0", "math.huge", "'1500'", "nil"})
+  CHECK_FALSE(f.vm->execute(std::string("bfme.match.setAIBaseExclusion(") + value + ")").ok);
+ CHECK(f.applied.empty());
+ f.vm->flush();
+ REQUIRE(f.applied.size() == 2);
+ CHECK(f.applied[0].field == ":setAIBaseExclusion");
+ CHECK(std::get<double>(f.applied[0].value.data) == 1500);
+ CHECK(std::get<double>(f.applied[1].value.data) == 0);
+}
+
 TEST_CASE("bfme Lua: game speed validates multipliers before queuing")
 {
 	BfmeFixture f;

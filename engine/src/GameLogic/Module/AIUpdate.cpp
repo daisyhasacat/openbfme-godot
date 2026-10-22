@@ -535,6 +535,11 @@ int AIUpdateInterface::modelConditionBit(const char *name)
 // ---------------------------------------------------------------------------------------------------------------------------------
 UpdateSleepTime AIUpdateInterface::update()
 {
+	Coord3D exclusionGoal;
+	if (getObject()->logic().getFrame() % 5 == getObject()->getID() % 5 &&
+		!getObject()->getContainedBy() && getObject()->logic().aiBaseExclusion(*getObject(), exclusionGoal))
+		aiMoveToPosition(exclusionGoal, CMD_FROM_AI);
+
 	m_isInUpdate = true;
 	getObject()->setStatus((unsigned)CombatNames::statuses().updatingAI, true); // RW: damage dealt to this object during its own update waits a frame
 	// lane EXIT-1: RW 0x66E6E1 .. 0x66E70C: a horde member that is busy or has an explicit / angle goal runs the member update RW 0x66C748 instead of RW 0x6695EF

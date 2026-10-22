@@ -201,6 +201,13 @@ void AIStrategy::update(GameLogic &logic, AISkirmishPlayer &ai)
  {
   if (unit->getControllingPlayer() != player || !army(*unit) || !unit->getAIUpdateInterface() ||
       ai.brain.siegeUnits.count(unit->getID()) || ai.brain.siegeEscorts.count(unit->getID())) continue;
+  Coord3D exclusionGoal;
+  if (logic.aiBaseExclusion(*unit, exclusionGoal))
+  {
+   releaseFromTactics(ai, unit->getID());
+   unit->getAIUpdateInterface()->aiMoveToPosition(exclusionGoal, CMD_FROM_AI);
+   continue;
+  }
   if (capturing(*unit)) continue;
   auto *u = unit->getAIUpdateInterface();
   auto *weapons = unit->getWeapons();

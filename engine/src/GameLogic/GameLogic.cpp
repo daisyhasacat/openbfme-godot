@@ -902,6 +902,9 @@ void GameLogic::noteRadarEvent(int type, const Coord3D &position, RadarEventNoti
 
 void GameLogic::reset()
 {
+	m_aiBasePlayer = -1;
+	m_aiBaseRadius = 0;
+	m_aiBaseCenter = {};
 	m_radarEventNotices.clear(); // lane BACKLOG3: a new game's radar starts empty (the sequence goes on: a client's cursor stays behind it)
 	// ZH GameLogic::reset: every object goes; the scheduler vectors are cleared with their modules' indices
 	m_current = nullptr;
@@ -1465,15 +1468,19 @@ void GameLogic::setPeaceTimeMinutes(int minutes)
 // OpenBFME extension, independent of the retail terrain classification and simulation RNG.
 bool GameLogic::hasPeaceExclusion(const Object &unit) const
 {
-	if (!peaceTimeActive() || unit.isDestroyed() || unit.isEffectivelyDead() || !unit.getControllingPlayer() ||
-		unit.isKindOfName("STRUCTURE") || unit.isKindOfName("PROJECTILE")) return false;
-	for (ObjectID id : m_peaceFortresses)
-	{
-		const Object *fortress = findObjectByID(id);
-		if (fortress && !fortress->isDestroyed() && !fortress->isEffectivelyDead() && fortress->getControllingPlayer() &&
-			unit.getRelationship(*fortress) == ENEMIES) return true;
-	}
-	return false;
+ if (unit.isDestroyed() || unit.isEffectivelyDead() || !unit.getControllingPlayer() ||
+     unit.isKindOfName("STRUCTURE") || unit.isKindOfName("PROJECTILE")) return false;
+ const Player *protectedPlayer = m_aiBasePlayer >= 0 ? m_players.getNthPlayer(m_aiBasePlayer) : nullptr;
+ if (m_aiBaseRadius > 0 && protectedPlayer && unit.getControllingPlayer()->getPlayerType() == PLAYER_COMPUTER &&
+     unit.getControllingPlayer()->getRelationship(protectedPlayer->getDefaultTeam()) == ENEMIES) return true;
+ if (!peaceTimeActive()) return false;
+ for (ObjectID id : m_peaceFortresses)
+ {
+  const Object *fortress = findObjectByID(id);
+  if (fortress && !fortress->isDestroyed() && !fortress->isEffectivelyDead() && fortress->getControllingPlayer() &&
+      unit.getRelationship(*fortress) == ENEMIES) return true;
+ }
+ return false;
 }
 
 bool GameLogic::peaceExclusionAllows(const Object &unit, const Coord3D &position, bool swept, float clearance) const
@@ -1490,14 +1497,10 @@ bool GameLogic::peaceExclusionAllows(const Object &unit, const Coord3D &position
 		ObjectGeometry::fillPathfindGeometry(*unit.getTemplate(), geometry);
 		footprint = geometry.boundingCircleRadius();
 	}
-	const float radius = SimMath::addf32(SimMath::addf32(PeaceTime::kFortressExclusionRadius, footprint), clearance);
-	const float radiusSq = SimMath::mulf32(radius, radius);
-	for (ObjectID id : m_peaceFortresses)
-	{
-		const Object *fortress = findObjectByID(id);
-		if (!fortress || fortress->isDestroyed() || fortress->isEffectivelyDead() || !fortress->getControllingPlayer() ||
-			unit.getRelationship(*fortress) != ENEMIES) continue;
-		const Coord3D &center = *fortress->getPosition(), &from = *unit.getPosition();
+ auto allowsCircle = [&](const Coord3D &center, float distance) {
+  const float radius = SimMath::addf32(SimMath::addf32(distance, footprint), clearance);
+  const float radiusSq = SimMath::mulf32(radius,radius);
+		const Coord3D &from = *unit.getPosition();
 		const float ax = SimMath::subf32(from.x, center.x), ay = SimMath::subf32(from.y, center.y);
 		const float bx = SimMath::subf32(position.x, center.x), by = SimMath::subf32(position.y, center.y);
 		const float fromSq = SimMath::addf32(SimMath::mulf32(ax, ax), SimMath::mulf32(ay, ay));
@@ -1511,20 +1514,32 @@ bool GameLogic::peaceExclusionAllows(const Object &unit, const Coord3D &position
 				const float dx = SimMath::subf32(bx, ax), dy = SimMath::subf32(by, ay);
 				if (SimMath::addf32(SimMath::mulf32(ax, dx), SimMath::mulf32(ay, dy)) < 0.0f) return false;
 			}
-			continue;
+			return true;
 		}
 		if (toSq < radiusSq) return false;
-		if (!swept) continue;
+		if (!swept) return true;
 		const float dx = SimMath::subf32(bx, ax), dy = SimMath::subf32(by, ay);
 		const float lengthSq = SimMath::addf32(SimMath::mulf32(dx, dx), SimMath::mulf32(dy, dy));
-		if (!(lengthSq > 0.0f)) continue;
+		if (!(lengthSq > 0.0f)) return true;
 		const float dot = SimMath::addf32(SimMath::mulf32(ax, dx), SimMath::mulf32(ay, dy));
 		const float t = SimMath::divf32(SimMath::subf32(0.0f, dot), lengthSq);
-		if (!(t > 0.0f && t < 1.0f)) continue;
+		if (!(t > 0.0f && t < 1.0f)) return true;
 		const float x = SimMath::addf32(ax, SimMath::mulf32(t, dx)), y = SimMath::addf32(ay, SimMath::mulf32(t, dy));
 		if (SimMath::addf32(SimMath::mulf32(x, x), SimMath::mulf32(y, y)) < radiusSq) return false;
-	}
-	return true;
+  return true;
+ };
+ const Player *protectedPlayer = m_aiBasePlayer >= 0 ? m_players.getNthPlayer(m_aiBasePlayer) : nullptr;
+ if (m_aiBaseRadius > 0 && protectedPlayer && unit.getControllingPlayer()->getPlayerType() == PLAYER_COMPUTER &&
+     unit.getControllingPlayer()->getRelationship(protectedPlayer->getDefaultTeam()) == ENEMIES &&
+     !allowsCircle(m_aiBaseCenter,m_aiBaseRadius)) return false;
+ if (peaceTimeActive())
+  for (ObjectID id : m_peaceFortresses)
+  {
+   const Object *fortress = findObjectByID(id);
+   if (fortress && !fortress->isDestroyed() && !fortress->isEffectivelyDead() && fortress->getControllingPlayer() &&
+       unit.getRelationship(*fortress) == ENEMIES && !allowsCircle(*fortress->getPosition(),PeaceTime::kFortressExclusionRadius)) return false;
+  }
+ return true;
 }
 
 BfmeLuaActionState &GameLogic::luaActions()
@@ -1533,3 +1548,25 @@ BfmeLuaActionState &GameLogic::luaActions()
 	return *m_luaActions;
 }
 int GameLogic::luaAuthorityPlayer() const { return m_luaActions ? m_luaActions->authorityPlayer : -1; }
+
+// OpenBFME local testing policy: turn approaching enemy computer units back
+// before they reach the protected radius. Normal movement still resolves terrain.
+bool GameLogic::aiBaseExclusion(const Object &unit, Coord3D &goal) const
+{
+ const Player *owner = unit.getControllingPlayer();
+ const Player *protectedPlayer = m_aiBasePlayer >= 0 ? m_players.getNthPlayer(m_aiBasePlayer) : nullptr;
+ if (m_aiBaseRadius <= 0 || !owner || !protectedPlayer || owner->getPlayerType() != PLAYER_COMPUTER ||
+     owner->getRelationship(protectedPlayer->getDefaultTeam()) != ENEMIES || unit.isKindOfName("STRUCTURE")) return false;
+ const auto &p = *unit.getPosition();
+ const float dx = SimMath::subf32(p.x, m_aiBaseCenter.x), dy = SimMath::subf32(p.y, m_aiBaseCenter.y);
+ const float d2 = SimMath::addf32(SimMath::mulf32(dx,dx),SimMath::mulf32(dy,dy));
+ const float boundary = SimMath::addf32(m_aiBaseRadius, 300.0f);
+ if (d2 >= SimMath::mulf32(boundary,boundary)) return false;
+ const float length = d2 > 0 ? (float)SimMath::sqrtd(d2) : 1.0f;
+ const float radius = SimMath::addf32(m_aiBaseRadius,600.0f);
+ goal = m_aiBaseCenter;
+ goal.x = SimMath::addf32(goal.x,SimMath::mulf32(d2 > 0 ? SimMath::divf32(dx,length) : 1.0f,radius));
+ goal.y = SimMath::addf32(goal.y,SimMath::mulf32(d2 > 0 ? SimMath::divf32(dy,length) : 0.0f,radius));
+ goal.z = getGroundHeight(goal.x,goal.y);
+ return true;
+}

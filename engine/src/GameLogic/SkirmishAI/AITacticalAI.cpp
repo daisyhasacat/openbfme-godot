@@ -638,7 +638,8 @@ bool offensiveAllowed(GameLogic &logic, const AISkirmishPlayer &ai, const Player
 
 bool inAnyTeamOf(const AIBrainState &b, const Object &object)
 {
- if (AIStrategy::capturing(object)) return true;
+ Coord3D exclusionGoal;
+ if (object.logic().aiBaseExclusion(object, exclusionGoal) || AIStrategy::capturing(object)) return true;
  const ObjectID id = object.getID();
 
 	if (b.siegeUnits.count(id) || b.siegeEscorts.count(id) || b.strategyRecovering.count(id)) return true;

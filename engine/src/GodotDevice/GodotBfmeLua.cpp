@@ -372,6 +372,23 @@ std::string GameWorld::bfme_apply(const BfmeLuaRuntime::Mutation &m)
 			logic.settings().clearNeutralDecorations = *enabled;
 			return {};
 		}
+		if (m.field == ":setAIBaseExclusion")
+		{
+			const auto status = bfme_snapshot();
+			if (status.networkGame || status.replay) return "base protection requires a local live match";
+			const float radius = (float)numeric(m.value, 0, 10000, false);
+			const Player *player = logic.players().getLocalPlayer();
+			if (!player) return "no local player";
+			Coord3D center{};
+			const ::Object *base = nullptr;
+			for (::Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+				if (o->getControllingPlayer() == player && !o->isEffectivelyDead() && o->isKindOfName("STRUCTURE") &&
+					(!base || (o->isKindOfName("COMMANDCENTER") && !base->isKindOfName("COMMANDCENTER")))) base = o;
+			if (radius > 0 && !base) return "local player has no base building";
+			if (base) center = *base->getPosition();
+			logic.setAIBaseExclusion(player->getPlayerIndex(), center, radius);
+			return {};
+		}
 		if (m.field == ":setGameSpeed")
 		{
 			set_time_scale(numeric(m.value, 0, 100, false));
