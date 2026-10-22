@@ -179,3 +179,18 @@ the identity refusal, names the recorded and current profiles, and presents
 SaveLoad's non-closing message box. Its Godot controller regression fails with
 the original fatal block and passes with the fix; the retail replay-page test
 checks modal dismissal, list re-enablement and a subsequent selection.
+
+## BFME2 menu launch
+
+The BFME2 Good/Evil menu callbacks send `LoadCampaign` with
+`bfme2:good:<difficulty>` or `bfme2:evil:<difficulty>`. The host now starts
+`GOOD_CAMPAIGN` / `EVIL_CAMPAIGN` through the existing linear campaign flow,
+using the selected difficulty, instead of opening the unavailable popup.
+Campaign definitions, mission ordering, loading artwork, cinematics and map
+scripts remain supplied by the mounted game data and existing campaign loader.
+
+`bfme2_campaign_start_test.gd` invokes each real menu callback with Hard selected
+and verifies gameplay, installed HUD, campaign index zero, difficulty and the
+first map from the campaign definition. Both pass with local retail data:
+Good starts Rivendell and Evil starts Lorien. This verifies entry to the first
+missions; it does not establish that every mission can be completed.

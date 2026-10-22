@@ -1696,9 +1696,9 @@ func _on_shell_request(action: String, argument: String) -> void:
 	elif action == "BonusCampaign": # RW 0x91BEFA
 		_campaign_flow.start("ANGMAR_BONUS_CAMPAIGN", _campaign_flow.difficulty_from_command(argument))
 	elif action == "LoadCampaign" and argument.begins_with("bfme2:good:"):
-		start_bfme2_campaign("good")
+		start_bfme2_campaign("good", argument.trim_prefix("bfme2:good:"))
 	elif action == "LoadCampaign" and argument.begins_with("bfme2:evil:"):
-		start_bfme2_campaign("evil")
+		start_bfme2_campaign("evil", argument.trim_prefix("bfme2:evil:"))
 	elif action == "ContinueCampaign":
 		_campaign_flow.continue_saved() # lane CAMPSAVE-1: RW 0x91B50D, nothing without 00000000.sav (RotWK's MainMenu.apt has no button for it)
 
@@ -1911,15 +1911,15 @@ func bfme2_campaign_buttons() -> Dictionary:
 	return out
 
 
-## BFME2 campaign gameplay remains unavailable; selecting a restored entry uses
-## the existing named error dialog instead of silently hiding the entry.
-func start_bfme2_campaign(alignment: String) -> String:
+## BFME2's menu sends LoadCampaign with an alignment and difficulty suffix.
+## Use the existing data-driven linear campaign loader for both alignments.
+func start_bfme2_campaign(alignment: String, difficulty_argument := "") -> String:
 	if alignment not in ["good", "evil"]:
-		_fail("unknown BFME2 campaign alignment: " + alignment)
-		return ""
-	var line: String = _shell.shell_screen_unavailable("BFME2%sCampaign" % alignment.capitalize())
-	print("GAME stop: ", line)
-	return line
+		var error := "unknown BFME2 campaign alignment: " + alignment
+		_fail(error)
+		return error
+	_campaign_flow.start(alignment.to_upper() + "_CAMPAIGN", _campaign_flow.difficulty_from_command(difficulty_argument))
+	return ""
 
 
 ## lane CAMPMENU-1: the player's way into a campaign, with real clicks: the main menu's Solo Play nav, retail's SoloPlayNav.<button> (RotWK MainMenu.apt's

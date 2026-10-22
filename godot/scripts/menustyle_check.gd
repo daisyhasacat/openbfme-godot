@@ -154,17 +154,6 @@ func _check_campaign_buttons(style: String) -> void:
 		check(native.get("visible", []).is_empty() and native.get("hittable", []).is_empty(), "%s: no BFME2 campaigns mixed into this menu" % style)
 	if opened:
 		await _close_list(nav)
-	for alignment in ["good", "evil"]:
-		var line: String = game.start_bfme2_campaign(alignment)
-		check(line.begins_with("[S-1914] The BFME2 %s campaign " % alignment.capitalize()), style + ": a " + alignment + " request is refused by name: " + line)
-		# the main menu's "not available" box (GuiFX.apt's MessageBox): its Ok gives the menu back
-		await game._step(30)
-		var ok: Dictionary = game._walk_find_box_ok()
-		check(not ok.is_empty(), style + ": the " + alignment + " refusal shows the not-available box")
-		if not ok.is_empty():
-			await _click(Vector2(ok.x, ok.y))
-		await game._wait_main_ready()
-		check(game._clean_main_menu(), style + ": the menu is usable again after the " + alignment + " box")
 
 
 ## lane CAMPMENU-1: the Godot buttons drawn over the clean main menu (an OpenBFME panel such as MENUSTYLE-1's campaign panel), by their node paths
