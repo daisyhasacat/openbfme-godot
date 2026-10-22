@@ -255,7 +255,9 @@ func enter_mission(rep: Dictionary) -> void:
 	_cine.input_hook = Callable(game, "_script_input") # lane OWNERFIX-1: no selection or orders during the cutscenes (RW 0x7BC586)
 	game.add_child(_cine)
 	game._game_nodes.append(_cine)
-	_cine.setup(world, game._camera, rep.start.camera_start, _cine, null) # its overlay goes with it
+	_cine.camera_hud = game._hud
+	var camera_start: Vector3 = rep.start.camera_start # Godot axes -> SAGE axes expected by campaign_cine
+	_cine.setup(world, game._camera, Vector3(camera_start.x, -camera_start.z, camera_start.y), _cine, null) # its overlay goes with it
 	_cine.movie_hook = Callable(self, "_on_movie_request") # lane CAMP-1H: PLAY_MOVIE_IN_GAME
 
 

@@ -6,6 +6,9 @@ extends Node
 
 var world: Node3D
 var camera: Camera3D
+var camera_hud: Node # playable missions share the HUD tactical camera; viewers retain their standalone camera
+var _base_height := 0.0
+var _hud_pitch := 0.0
 var target := Vector3.ZERO   # SAGE x, y, z the camera looks at
 var angle := 0.0             # SAGE camera angle (radians)
 var distance := 520.0        # camera distance from the look-at point (inference: the RotWK default framing is CAM-1's; S-1182)
@@ -47,6 +50,11 @@ func setup(w: Node3D, cam: Camera3D, start: Vector3, ui_parent: Node, audio: Nod
 	world = w
 	camera = cam
 	target = start
+	if is_instance_valid(camera_hud):
+		var state: Dictionary = camera_hud.get_camera()
+		angle = float(state.angle)
+		_hud_pitch = float(state.pitch)
+		_base_height = float(state.height_above_ground)
 	var ui := CanvasLayer.new()
 	ui.layer = 5
 	_ui = ui
@@ -141,6 +149,11 @@ func _process(delta: float) -> void:
 				control_bar_hook.call(true)
 			elif r.action == "CAMERA_LETTERBOX_END" or r.action == "SHOW_UI":
 				control_bar_hook.call(false)
+	# Between cinematic moves the player owns the view. Start the next script move from that current view.
+	if hud_mode and is_instance_valid(camera_hud):
+		var current: Dictionary = camera_hud.get_camera()
+		target = Vector3(current.position.x, current.position.y, current.ground_level)
+		angle = float(current.angle)
 	var st: Dictionary = world.update_script_view(delta * 1000.0, {"x": target.x, "y": target.y, "z": target.z, "angle": angle})
 	if st.has_target and (_look.is_empty() or st.moving): # a drive's follow (lane SCRIPT-3) holds the camera between the script's moves
 		target = Vector3(st.x, st.y, world.get_ground_height(st.x, st.y) if held else target.z) # the height follows in the next held frame
@@ -186,6 +199,14 @@ func _process(delta: float) -> void:
 
 
 func _place_camera() -> void:
+	if is_instance_valid(camera_hud):
+		camera_hud.camera_look_at(Vector2(target.x, target.y))
+		camera_hud.camera_set_angle_pitch(angle, _hud_pitch + pitch - _base_pitch)
+		camera_hud.camera_set_height(_base_height * distance / _base_distance)
+		var state: Dictionary = camera_hud.get_camera()
+		camera.position = state.eye
+		camera.look_at(state.target)
+		return
 	var look := Vector3(target.x, target.z, -target.y)
 	# the camera behind the look-at point along the SAGE angle (angle 0 looks north, +y SAGE = -z Godot)
 	var back := Vector3(-sin(angle), 0.0, cos(angle))

@@ -18,6 +18,8 @@ func _run() -> void:
 	while game._campaign_flow == null or game._state not in [game.State.MENU, game.State.FAILED]: await process_frame
 	assert(game._state == game.State.MENU, game._failed)
 	await game._wait_main_ready()
+	game._world.set_logic_thread(false)
+	game._campaign_flow.hooks = true
 	var def: Dictionary = game._world.get_tutorial(lesson)
 	assert(def.ok, str(def))
 	assert(not String(def.map).is_empty())
@@ -39,6 +41,8 @@ func _run() -> void:
 	if lesson == "Basic": _assert_opening_reveal(game._world)
 	assert(game._report.stops.has("[S-175] tutorial entry: Objective and loading voice presentation are not ported; tutorial saves are not recorded"))
 	assert(game._report.map.to_lower() == String(def.map).to_lower())
+	_assert_camera_start(game)
+	if lesson == "Basic": _assert_scripted_camera_move(game)
 	# Restart uses the same standalone tutorial, without advancing campaign progress.
 	await game._campaign_flow.restart_mission()
 	assert(game._state == game.State.PLAYING)
@@ -101,3 +105,38 @@ func _assert_opening_reveal(world: Node) -> void:
 				break
 		if checked: break
 	assert(checked, "The scripted opening reveal must reach the terrain's shroud texture")
+
+func _assert_camera_start(game: Node) -> void:
+	var cine: Node = game._campaign_flow._cine
+	var start: Vector3 = game._report.start.camera_start
+	assert(Vector2(cine.target.x, cine.target.y) == Vector2(start.x, -start.z))
+	var state: Dictionary = game._hud.get_camera()
+	assert(game._camera.position == state.eye)
+	assert(Vector2(cine.target.x, cine.target.y) == state.position)
+	assert(cine._base_height == state.height_above_ground)
+
+func _assert_scripted_camera_move(game: Node) -> void:
+	var cine: Node = game._campaign_flow._cine
+	game._world.set_auto_advance(false)
+	cine.set_process(false)
+	cine._process(0.0) # consume the opening input lock and letterbox at the initial position
+	var start: Vector3 = cine.target
+	var waypoint: Dictionary = game._world.get_waypoint("WP - Spotlight Fighters")
+	assert(waypoint.ok)
+	assert(game._world.debug_script_action("MOVE_CAMERA_TO", [
+		{"type":51, "string":"WP - Spotlight Fighters"}, {"type":1, "real":8.0},
+		{"type":1, "real":0.0}, {"type":1, "real":0.0}, {"type":1, "real":1.0}]).ok)
+	game._world.advance(0.2) # publish the injected script request
+	cine._process(0.0)
+	assert(Vector2(cine.target.x, cine.target.y) == Vector2(start.x, start.y))
+	cine._process(8.0)
+	assert(Vector2(cine.target.x, cine.target.y) == Vector2(waypoint.x, waypoint.y))
+	var state: Dictionary = game._hud.get_camera()
+	assert(state.position == Vector2(waypoint.x, waypoint.y))
+	assert(game._camera.position == state.eye)
+	# The same tactical state remains when the script returns input to the player.
+	assert(game._world.debug_script_action("CAMERA_LETTERBOX_END", []).ok)
+	assert(game._world.debug_script_action("ENABLE_INPUT", []).ok)
+	game._world.advance(0.2)
+	cine._process(0.0)
+	assert(game._hud.get_camera().position == state.position)
