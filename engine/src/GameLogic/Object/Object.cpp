@@ -494,6 +494,9 @@ void Object::joinTeam(Team *team)
 		m_logic.skirmishAI().objectRemoved(*this);
 	}
 	m_team = team;
+	// DONOR BFME2 ObjectSetTeam.cpp setOrRestoreTeam -> Drawable::changedTeam (0x2742AC).
+	// Creation binds the initial colour separately; subsequent changes notify the client.
+	if (m_constructed && m_client) m_client->teamChanged(*this);
 	m_logic.combat().noteTeamMembershipChange();
 	if (ownerEvent)
 	{
@@ -582,6 +585,8 @@ void Object::setTeam(Team *team)
 		// object still being created gets the same pass from the creation path's initObject (RW 0x693D38), so the port makes it once constructed
 		if (team)
 		{
+			// DONOR BFME2 ObjectSetTeam.cpp: contain slot 92 before the upgrade pass.
+			if (m_contain) m_contain->onTeamChanged(team);
 			updateUpgradeModules(); // RW 0x6936FE
 		}
 	}

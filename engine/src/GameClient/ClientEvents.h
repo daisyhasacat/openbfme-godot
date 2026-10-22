@@ -51,6 +51,7 @@ struct ClientEvent
 	{
 		CREATED,         ///< tmpl, flags (time of day / weather), house colour, position, angle
 		DESTROYED,
+		TEAM_CHANGED,    ///< BFME2 Drawable::changedTeam (0x2742AC): new owner house colour
 		MODEL_CONDITION, ///< bit, on
 		SHOW_MODULE,     ///< name (the module tag), visible, permanent
 		UPGRADE_TEXTURE, ///< upgrade texture and excluded subobjects
@@ -114,6 +115,7 @@ public:
 
 	void objectCreated(Object &obj) override;
 	void objectDestroyed(Object &obj) override;
+	void teamChanged(Object &obj) override;
 	void modelConditionChanged(Object &obj, int bit, bool on) override;
 	void flushModelConditions(Object &obj) override;
 	bool showModule(Object &obj, const std::string &tag, bool visible, bool permanent) override;

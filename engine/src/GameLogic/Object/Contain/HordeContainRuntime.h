@@ -175,6 +175,7 @@ public:
 	SleepyUpdatePhase getUpdatePhase() const override { return PHASE_PHYSICS; }
 	// ContainModuleInterface
 	const ContainedItemsList *getContainedItemsList() const override { return &m_members; }
+	void onTeamChanged(Team *team) override;
 	void onDefect(Object *newOwner, bool permanent) override; // lane HERO-2: RW 0x86ED25
 	void onDefectionEnded() override;                          // lane HERO-2: RW 0x86EDB0
 	unsigned getContainCount() const override { return (unsigned)m_members.size(); }

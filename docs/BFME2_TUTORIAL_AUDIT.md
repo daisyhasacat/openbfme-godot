@@ -184,3 +184,23 @@ at this stage. `tutorial_builders_test.gd` checks both real sites and completed
 construction through the exact tower orders issued by that transition.
 The test opens Gate 01 first, matching the earlier attack lesson. It does not
 claim a full combat-driven tutorial playthrough.
+
+### Ownership transfer and team colors
+
+The Basic map transfers Fighters 01/02 to `<Local Player>`; it does not issue
+an explicit blue-color action. The loaded local player `PlyrMen` already has
+RGB `#0080C0`, while `PlyrCivilian` is white. The missing behavior was team
+propagation and drawable notification. Donor BFME2 `ObjectSetTeam.cpp`
+notifies `Drawable::changedTeam` (0x2742AC) and calls contain slot 92;
+`HordeContainIface11CSlots.cpp` (0x46D384) transfers contained members, then
+live members in the +0x170 entering-garrison set. The port follows that order
+and carries the owner's color through an ordered client event. Radar already
+reads each object's controlling player, so corrected member ownership also
+corrects its indicator color input. No player color is hardcoded by the fix.
+
+`ownerfix1 team transfer` checks all 15 members, horde/member drawable colors,
+radar indicators/local ownership, reverse transfers and a single unit's
+temporary-team/restoration colors. `tutorial_team_color_test.gd` checks the
+installed Basic map's exact script action and all 15 rendered soldier model
+variants, transferring blue to white and back to blue. These are focused
+transfer tests, rather than a full tutorial playthrough.

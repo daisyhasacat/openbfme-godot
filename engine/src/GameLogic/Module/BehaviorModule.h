@@ -21,6 +21,7 @@
 #include <vector>
 
 class Object;
+class Team;
 struct Coord3D;
 struct DamageInfo;
 struct DamageInfoInput;
@@ -108,6 +109,8 @@ public:
 	typedef std::list<Object *> ContainedItemsList;
 	virtual const ContainedItemsList *getContainedItemsList() const = 0;
 	virtual unsigned getContainCount() const = 0;
+	// DONOR BFME2 contain slot 92: HordeContain propagates Object::setTeam; other containers keep their passengers' teams.
+	virtual void onTeamChanged(Team *team) { (void)team; }
 	// true when the object was added
 	virtual bool addToContain(Object *obj) = 0;
 	virtual void removeFromContain(Object *obj) = 0;

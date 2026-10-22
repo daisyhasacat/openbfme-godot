@@ -192,6 +192,16 @@ void ClientEventRecorder::modelConditionChanged(Object &obj, int bit, bool on)
 	}
 }
 
+// DONOR BFME2 ObjectSetTeam.cpp -> Drawable::changedTeam (0x2742AC).
+// Port structure: carry the owner's colour through the ordered client event stream.
+void ClientEventRecorder::teamChanged(Object &obj)
+{
+	ClientEvent &e = push(ClientEvent::TEAM_CHANGED, obj);
+	const Player *owner = obj.getControllingPlayer();
+	e.hasHouseColor = true;
+	e.houseColor = owner ? owner->getPlayerColor() : 0xFF000000u;
+}
+
 // lane ANIM-1: the flush of one drawable (RW 0x67449C with force 0: nothing when it is not dirty)
 void ClientEventRecorder::flushModelConditions(Object &obj)
 {

@@ -11,6 +11,9 @@
 #include "Common/SpecialPower.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameClient/SpellBookUI.h"
+#include "GameClient/Radar.h"
+#include "GameClient/LogicSnapshot.h"
+#include "GameClient/Drawable.h"
 #include "GameLogic/FXEvents.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/SimMath.h"
@@ -320,4 +323,58 @@ TEST_CASE("ownerfix1 healing glow: each self-heal of the Witch King plays GameDa
 		unitGlows += std::string(e.site) == "HealingBuffFx" ? 1 : 0;
 	}
 	CHECK(unitGlows == 1);
+}
+
+// DONOR BFME2 ObjectSetTeam.cpp and HordeContainIface11CSlots.cpp 0x46D384.
+TEST_CASE("ownerfix1 team transfer: horde members, drawable colours and radar follow the actual owner")
+{
+	if (!hudtest::haveWorld("ownerfix1 team transfer")) return;
+	hudtest::Rig r(hudtest::shared());
+	Player *other = r.game->players().findPlayerWithName("Player_2");
+	REQUIRE(other);
+	r.local->setPlayerColor(0xFF0080C0u);
+	other->setPlayerColor(0xFFFF8000u);
+	Object *horde = r.make("GondorFighterHorde", 1000.0f, 1000.0f, other);
+	REQUIRE(horde->getContain());
+	const auto *items = horde->getContain()->getContainedItemsList();
+	REQUIRE(items);
+	REQUIRE(items->size() == 15);
+	const std::vector<Object *> members(items->begin(), items->end());
+	r.frame();
+	for (Player *owner : { r.local, other, r.local })
+	{
+		horde->setTeam(owner->getDefaultTeam());
+		r.frame();
+		std::vector<Object *> objects = members;
+		objects.push_back(horde);
+		for (Object *obj : objects)
+		{
+			CHECK(obj->getControllingPlayer() == owner);
+			const Drawable *draw = r.game->drawables().findByObject(obj->getID());
+			REQUIRE(draw);
+			CHECK(draw->getHouseColor() == owner->getPlayerColor());
+			ObjectSnapshot::RadarEntry radar;
+			Radar::captureObject(r.logic(), *obj, r.local, radar);
+			if (obj == horde)
+			{
+				CHECK_FALSE(radar.listed); // GondorFighterHorde has no RadarPriority; the soldiers supply the dots.
+			}
+			else
+			{
+				REQUIRE(radar.listed);
+				CHECK(radar.indicator == owner->getPlayerColor());
+				CHECK(radar.local == (owner == r.local));
+			}
+		}
+	}
+	// The common drawable notification also covers temporary ownership and restoration.
+	Object *soldier = r.make("GondorFighter", 1200.0f, 1000.0f, r.local);
+	soldier->setTemporaryTeam(other->getDefaultTeam());
+	r.frame();
+	REQUIRE(r.game->drawables().findByObject(soldier->getID()));
+	CHECK(r.game->drawables().findByObject(soldier->getID())->getHouseColor() == other->getPlayerColor());
+	soldier->restoreOriginalTeam();
+	r.frame();
+	CHECK(soldier->getControllingPlayer() == r.local);
+	CHECK(r.game->drawables().findByObject(soldier->getID())->getHouseColor() == r.local->getPlayerColor());
 }

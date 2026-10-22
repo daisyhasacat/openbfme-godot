@@ -237,6 +237,12 @@ void DrawableManager::applyEvents(const std::vector<ClientEvent> &events)
 				d->storeModelConditions(ev.flags);
 			}
 			break;
+		case ClientEvent::TEAM_CHANGED:
+			if (Drawable *d = findByObject(ev.object))
+			{
+				d->setHouseColor(ev.houseColor);
+			}
+			break;
 		case ClientEvent::MODEL_FLUSH:
 			if (Drawable *d = findByObject(ev.object))
 			{

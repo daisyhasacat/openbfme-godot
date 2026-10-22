@@ -123,6 +123,7 @@ public:
 	virtual void modelConditionChanged(Object &obj, int bit, bool on) { (void)obj; (void)bit; (void)on; }
 	// lane ANIM-1, RW 0x67449C(0): the drawable's changed flags reach its draw modules now (see Object::flushDrawableModelConditions); without this call they
 	// reach them once at the end of the logic frame (RW 0x6759C4)
+	virtual void teamChanged(Object &obj) { (void)obj; }
 	virtual void flushModelConditions(Object &obj) { (void)obj; }
 	// RW 0x6789B4 Drawable::showModule: true when one of the template's draw modules has the tag (the drawable makes every draw module of its
 	// template, S-114, so the template answers exactly what the drawable would); the visibility change goes to the client

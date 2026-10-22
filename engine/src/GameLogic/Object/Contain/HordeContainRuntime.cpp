@@ -909,3 +909,19 @@ void HordeContain::xfer(Xfer &x)
 	SnapshotXfer::checkRange(m_wallIdlePasses, 0, 4, "a horde's wall scaling idle passes"); // checkWallScalingDone: the fifth idle pass ends the scaling and resets it
 	x.xferReal(&m_scalingReach);
 }
+
+// DONOR BFME2 HordeContainIface11CSlots.cpp 0x46D384, slot 92:
+// transfer contained objects, then the live objects in +0x170 (members entering a garrison).
+void HordeContain::onTeamChanged(Team *team)
+{
+	const std::vector<Object *> members(m_members.begin(), m_members.end());
+	for (Object *member : members)
+	{
+		if (member) member->setTeam(team);
+	}
+	const std::vector<ObjectID> entering(m_garrisonEntering.begin(), m_garrisonEntering.end());
+	for (ObjectID id : entering)
+	{
+		if (Object *member = getObject()->logic().findObjectByID(id)) member->setTeam(team);
+	}
+}
