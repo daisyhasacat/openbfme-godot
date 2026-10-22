@@ -812,6 +812,13 @@ TEST_CASE("bfme Lua: idle update callbacks avoid snapshots until their first sta
 	f.vm->flush();
 	CHECK(f.snapshotReads == 0);
 	CHECK(f.queries.back().first == "unitRoster");
+	f.answers["completedBuildingRoster"] = BfmeLuaValue::Table{{"ready",true},{"ids",BfmeLuaValue::List{77}}};
+	f.run("bfme.events.onUpdate('buildings',function() local r=bfme.match.getCompletedBuildingRoster(1); assert(r.ready and r.ids[1]==77); r.ids[1]=-1 end,50)");
+	f.snapshotReads = 0;
+	f.vm->flush();
+	CHECK(f.snapshotReads == 0);
+	CHECK(f.queries.back().first == "completedBuildingRoster");
+	f.run("bfme.events.remove('buildings')");
 	f.run("bfme.events.remove('idle'); saved=bfme.unitInstances[1234]; bfme.events.onUpdate('live',function() seen=saved.position.x; seenFrame=bfme.match.getFrame() end,50)");
 	f.snapshot.frame = 71;
 	f.snapshot.collections["unitInstances"]["1234"]["position"] = BfmeLuaValue::Table{{"x", 456}};
@@ -826,4 +833,5 @@ TEST_CASE("bfme Lua: idle update callbacks avoid snapshots until their first sta
 	CHECK(f.asyncOutput.find("idle failure") != std::string::npos);
 	CHECK(f.run("return bfme.match.getFrame()") == "71\n");
 	CHECK_FALSE(f.vm->execute("bfme.match.getUnitRoster(-1)").ok);
+	CHECK_FALSE(f.vm->execute("bfme.match.getCompletedBuildingRoster(-1)").ok);
 }

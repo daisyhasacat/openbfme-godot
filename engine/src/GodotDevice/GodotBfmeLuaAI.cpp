@@ -407,18 +407,23 @@ std::string GameWorld::bfme_set_ai(int playerIndex, bool enabled)
 
 BfmeLuaRuntime::Value GameWorld::bfme_query(const std::string &name, const std::vector<BfmeLuaRuntime::Value> &args)
 {
-	if (name == "unitRoster")
+	if (name == "unitRoster" || name == "completedBuildingRoster")
 	{
 		Value::List ids;
 		const int owner = int(number(at(args, 0, "player"), "player", 0, 19));
 		if (m_game && m_world)
 		{
 			const auto worldContext = m_world->enterContext();
+			const bool buildings = name == "completedBuildingRoster";
 			for (auto *o = m_game->logic().getFirstObject(); o; o = o->getNextObject())
-				// Match bfme_snapshot's unitInstances membership, without copying
-				// definitions, geometry, production queues or per-object tables.
-				if (o->isKindOf(1) && !o->isKindOf(7) && o->getControllingPlayer() && o->getControllingPlayer()->getPlayerIndex() == owner)
+			{
+				// Return detached IDs, without copying definitions, queues or object tables.
+				const bool member = buildings
+					? o->isKindOf(7) && !o->isUnderConstruction() && !o->isDestroyed() && !o->isEffectivelyDead()
+					: o->isKindOf(1) && !o->isKindOf(7);
+				if (member && o->getControllingPlayer() && o->getControllingPlayer()->getPlayerIndex() == owner)
 					ids.emplace_back(o->getID());
+			}
 		}
 		std::sort(ids.begin(), ids.end(), [](const Value &a, const Value &b) { return std::get<double>(a.data) < std::get<double>(b.data); });
 		return Table{{"ready", bool(m_game)}, {"ids", std::move(ids)}};

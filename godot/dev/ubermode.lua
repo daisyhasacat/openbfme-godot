@@ -2,6 +2,7 @@
 -- Console: ubermode.enable(), ubermode.disable(), ubermode.toggle().
 ubermode = ubermode or { enabled = false, seen = {}, pending = {} }
 local mode = ubermode
+mode.seenBuildings = mode.seenBuildings or {}
 local update
 
 local function localMatch()
@@ -18,7 +19,7 @@ function mode.enable()
     mode.previousCP = {base = player.commandPointsBase, cap = player.commandPointsCap,
         bonus = player.commandPointsBonus}
     mode.playerId = player.id
-    mode.seen, mode.pending = {}, {}
+    mode.seen, mode.pending, mode.seenBuildings = {}, {}, {}
     mode.enabled = true
     bfme.events.onUpdate("ubermode", update, 200)
     player.money = 1000000
@@ -33,7 +34,10 @@ function mode.enable()
     bfme.timing.onUpgrade(oneSecond)
     -- Existing units are left as they are; newly trained/created units are enhanced.
     for _, unit in ipairs(player:units()) do mode.seen[unit.id] = true end
-    print("ubermode enabled: 1,000,000 gold/CP; fog disabled; Gollum revealed; one-second production; K+recruit = five per matching building")
+    for _, building in ipairs(player:buildings()) do
+        if not building.underConstruction then mode.seenBuildings[building.id] = true end
+    end
+    print("ubermode enabled: 1,000,000 gold/CP; fog disabled; Gollum revealed; one-second production; completed buildings reach max level; K+recruit = five per matching building")
 end
 
 function mode.disable()
@@ -86,7 +90,12 @@ update = function()
     for _, id in ipairs(roster.ids) do
         if not mode.seen[id] then unseen = true; break end
     end
-    if not unseen and #mode.pending == 0 then return end
+    local buildings = bfme.match.getCompletedBuildingRoster(mode.playerId)
+    local completed = false
+    for _, id in ipairs(buildings.ids) do
+        if not mode.seenBuildings[id] then completed = true; break end
+    end
+    if not unseen and not completed and #mode.pending == 0 then return end
     local player = localMatch()
     for _, id in ipairs(roster.ids) do
         local unit = not mode.seen[id] and bfme.unitInstances[id]
@@ -96,6 +105,13 @@ update = function()
             for _, upgrade in ipairs(unit:getUpgrades()) do
                 if upgrade.kind == "object" and upgrade.status ~= "complete" then unit:giveUpgrade(upgrade.upgrade) end
             end
+        end
+    end
+    for _, id in ipairs(buildings.ids) do
+        local building = not mode.seenBuildings[id] and bfme.buildingInstances[id]
+        if building and not building.underConstruction then
+            if building.maxLevel and building.maxLevel > building.level then building.level = building.maxLevel end
+            mode.seenBuildings[id] = true
         end
     end
     -- One request per producer per tick; wait for its result before consuming the
@@ -129,6 +145,6 @@ if mode.enabled then bfme.events.onUpdate("ubermode", update, 200)
 else bfme.events.remove("ubermode") end
 
 bfme.events.onMatchStarted("ubermode-reset", function()
-    mode.enabled, mode.seen, mode.pending, mode.previousCP = false, {}, {}, nil
+    mode.enabled, mode.seen, mode.pending, mode.previousCP, mode.seenBuildings = false, {}, {}, nil, {}
     bfme.events.remove("ubermode")
 end)

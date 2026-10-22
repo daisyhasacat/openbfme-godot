@@ -7,10 +7,11 @@ func _initialize() -> void:
 updates, events = {}, {}
 local player = {id=1, faction='Men', money=1000, commandPointsBase=100, commandPointsCap=100, commandPointsBonus=0}
 function player:units() return {} end
+function player:buildings() return {} end
 function player:setFogOfWar() end
 function player:setAIEnabled(enabled) self.aiEnabled=enabled; return 1 end
 bfme = {players={[1]=player,localPlayer=player},
- match={getStatus=function() return {ready=true,generation=1} end,getUnitRoster=function() return {ready=true,ids={}} end},
+ match={getStatus=function() return {ready=true,generation=1} end,getUnitRoster=function() return {ready=true,ids={}} end,getCompletedBuildingRoster=function() return {ready=true,ids={}} end},
  timing={onBuild=function()end,onTrain=function()end,onUpgrade=function()end,clear=function()end},
  ai={list=function() return {player} end},
  events={onUpdate=function(name,fn) updates[name]=fn end,remove=function(name) updates[name]=nil end,

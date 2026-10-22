@@ -476,6 +476,7 @@ library('timing',{
 })
 library('match',{
 	getUnitRoster=function(playerId) numeric(playerId,0,19,true); return query('unitRoster',playerId) end,
+	getCompletedBuildingRoster=function(playerId) numeric(playerId,0,19,true); return query('completedBuildingRoster',playerId) end,
  getFrame=function() return view.frame or 0 end,
  getTimeMs=clock,
  isPaused=function() return view.paused or false end,

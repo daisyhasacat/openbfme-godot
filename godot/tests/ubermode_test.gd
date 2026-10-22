@@ -13,6 +13,7 @@ func _run() -> void:
 	root.add_child(world)
 	assert(world.setup(fs).ok)
 	assert(world.execute_lua("return bfme.match.getUnitRoster(1).ready").output == "false\n")
+	assert(world.execute_lua("return bfme.match.getCompletedBuildingRoster(1).ready").output == "false\n")
 	var script := FileAccess.get_file_as_string("res://dev/ubermode.lua")
 	assert(world.execute_lua(script).ok)
 	assert(not world.execute_lua("ubermode.enable()").ok)
@@ -36,10 +37,18 @@ func _run() -> void:
 	for i in 4:
 		world.advance(0.2)
 		world.update_lua()
-	check_lua(world, "assert(bfme.mutations.getBuilding(build).underConstruction)")
+	check_lua(world, "local b=bfme.mutations.getBuilding(build); assert(b.underConstruction); unfinishedLevel=b.level; for _,id in ipairs(bfme.match.getCompletedBuildingRoster(b.playerId).ids) do assert(id~=b.id) end")
+	OS.delay_msec(210) # Let the 200 ms cheat update run before construction completes.
+	world.update_lua()
+	world.update_lua()
+	check_lua(world, "assert(bfme.mutations.getBuilding(build).level==unfinishedLevel)")
 	world.advance(0.2)
 	world.update_lua()
 	check_lua(world, "assert(not bfme.mutations.getBuilding(build).underConstruction)")
+	OS.delay_msec(210)
+	world.update_lua()
+	world.update_lua() # Apply the level mutation queued by the cheat callback.
+	check_lua(world, "local b=bfme.mutations.getBuilding(build); assert(b.level==b.maxLevel); assert(b.level==3); local found=false; for _,id in ipairs(bfme.match.getCompletedBuildingRoster(b.playerId).ids) do if id==b.id then found=true end end; assert(found)")
 	for i in 3:
 		world.advance(0.2)
 		world.update_lua()

@@ -296,6 +296,8 @@ play does not pause the simulation worker to poll inactive tools.
 for player 0–19, using the same membership as `player:units()`. The returned list
 is detached. This lightweight query avoids a full snapshot and is suitable for
 checking whether an idle army has gained units. Without a match, `ready` is false.
+`bfme.match.getCompletedBuildingRoster(playerId)` has the same detached ID-list
+format, restricted to that player's living structures whose construction is complete.
 
 ### Update callbacks
 
@@ -609,7 +611,10 @@ construction, recruitment and upgrade research take one simulation second
 (five logic frames); existing work keeps its captured duration. Newly created
 units receive their native maximum experience level and all purchasable object
 upgrades in their command set, including battalion propagation through the
-native upgrade path. Internal mode-switch/ability flags are not equipment.
+native upgrade path. Buildings completed while the cheat is enabled receive their
+native maximum experience level at the next 200 ms cheat update. Unfinished
+buildings retain their level until construction completes. Internal
+mode-switch/ability flags are not equipment.
 `unit.maxLevel`, `unit:getUpgrades()` and `unit:giveUpgrade(name)` are also
 available independently of the cheat.
 
@@ -630,7 +635,7 @@ match; it refuses network games and replay playback. It owns the three local
 
 Ubermode validation: the installed-data test `godot/tests/ubermode_test.gd`
 checks the million gold/CP grant, construction incomplete after four frames and
-complete after five, maximum-level fully equipped recruits, five recruits from
+complete after five, maximum building level after completion, maximum-level fully equipped recruits, five recruits from
 each of two matching producers through viewport key and mouse events on the
 classic circular recruitment button, and restoring CP on disable. Circular
 buttons use the native radial hit test before the Palantir movie hit test. The research
