@@ -3991,7 +3991,7 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 	// Keep submenu/settings backgrounds and RotWK's static theme on their existing path.
 	m->view3d.beginBuild();
 	const bool animatedShell = m->shell && m->shell->shell && m->fs.is_valid() &&
-		m->fs->archive_fs() != m->fs->archive_fs() && m->shell->shell->shellMapRequested() &&
+		m->presentationFs.is_valid() && m->presentationFs->is_shell_source() && m->shell->shell->shellMapRequested() &&
 		m->shell->shell->top() && m->shell->shell->top()->filename() == "MainMenu.apt";
 	if (animatedShell)
 	{
