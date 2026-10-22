@@ -325,14 +325,26 @@ End
  REQUIRE(s.commands.findCommandSet(lab->getCommandSetName())->getCommandButton(0));
  REQUIRE_FALSE(lab->hasUpgrade(upgrade));
  REQUIRE(upgrade->getUpgradeType() == UPGRADE_TYPE_PLAYER);
- const auto before = payer->getMoney()->countMoney() + s.bot.build.moneyReserve;
+ // Start the manager's record store, then stop native decisions: this scenario owns its detached policy.
+ REQUIRE(s.w.w.load("SkirmishAIData TheSkirmishAIData\nEnd\n").empty());
+ s.w.logic->skirmishAI().setStore(&s.store);
+ s.w.logic->skirmishAI().newGame(true);
+ s.w.logic->skirmishAI().setScriptControlled(payer->getPlayerIndex(), true);
+ auto *record = s.w.logic->skirmishAI().record(payer->getPlayerIndex());
+ REQUIRE(record != nullptr);
+ payer->getMoney()->withdraw(payer->getMoney()->countMoney(), nullptr, false);
+ record->setReserve(1000);
+ REQUIRE(s.bot.build.moneyReserve == 0);
+ const auto before = (std::uint32_t)AIBaseBuilder::moneyPlusReserve(*s.w.logic, *payer);
  for (int i = 0; i < 5; ++i) { AIBaseBuilder::update(*s.w.logic, s.bot); s.w.frames(1); }
  CHECK_FALSE(payer->hasUpgradeComplete(upgrade));
  CHECK_FALSE(lab->getProductionUpdate()->isUpgradeInQueue(upgrade));
- CHECK(payer->getMoney()->countMoney() + s.bot.build.moneyReserve == before);
+ CHECK((std::uint32_t)AIBaseBuilder::moneyPlusReserve(*s.w.logic, *payer) == before);
  s.w.logic->destroyObject(enemy);
  s.w.frames(1); // Destruction unlinks the enemy on the next simulation frame.
  for (int i = 0; i < 5; ++i) { AIBaseBuilder::update(*s.w.logic, s.bot); s.w.frames(1); }
  CHECK((payer->hasUpgradeComplete(upgrade) || lab->getProductionUpdate()->isUpgradeInQueue(upgrade)));
- CHECK(payer->getMoney()->countMoney() + s.bot.build.moneyReserve == before - 200);
+ CHECK(record->reserve() == 800);
+ CHECK((std::uint32_t)AIBaseBuilder::moneyPlusReserve(*s.w.logic, *payer) == before - 200);
+ s.w.logic->skirmishAI().reset();
 }

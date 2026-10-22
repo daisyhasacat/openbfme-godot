@@ -1,5 +1,5 @@
 import { RemoteTesting, TestingError } from './remote-testing.mjs';
-import { MAX_REPORT_BYTES, ReportError, makeStatisticsMatch, validateReport, summarizeMatch, accountStatistics, persistReport, loadStatistics } from './match-statistics.mjs';
+import { MAX_REPORT_BYTES, ReportError as StatisticsReportError, makeStatisticsMatch, validateReport, summarizeMatch, accountStatistics, persistReport, loadStatistics } from './match-statistics.mjs';
 import { webResponse } from './webui.mjs';
 import { gameRecord, listGames, ManagementQueryError } from './management.mjs';
 // OpenBFME online lobby. GPL-3.0.
@@ -738,7 +738,7 @@ export class Lobby {
     if (this.config.requireInstall && !a.install) throw new LobbyError(401, 'signed_out', 'sign in again (an OpenBFME version older than this lobby: update OpenBFME if this repeats)');
     const current = leaving ? { ...a, routing: (a.install ? this.getEnforcement(a.install)?.routing : null) ?? '' } : this.checkAccount(a);
     this.seen(a.id); // ONLINECOUNT-1
-    return current;
+    return { ...current, name: user.name };
   }
 
   async guest(body, ip) {
@@ -1071,7 +1071,7 @@ export class Lobby {
     this.limit(`statistics:${account.id}`, 12, 6);
     let report;
     try { report = validateReport(body, match); }
-    catch (error) { if (error instanceof ReportError) throw new LobbyError(error.status, 'bad_report', error.message); throw error; }
+    catch (error) { if (error instanceof StatisticsReportError) throw new LobbyError(error.status, 'bad_report', error.message); throw error; }
     const old = match.reports[person.slot];
     if (old) {
       if (JSON.stringify(old.body) !== JSON.stringify(report)) throw new LobbyError(409, 'report_exists', 'this participant already reported a different snapshot');
@@ -1785,11 +1785,10 @@ export class Lobby {
     if (candidate) candidate.finished = true;
     await this.finishReportRoster(id, candidate);
     if (!g) return;
-    g.finished = true;
-    if (candidate.reportEndedAt !== undefined) g.reportEndedAt = candidate.reportEndedAt;
+    candidate.completedAt ??= this.env.now();
+    await this.env.store.saveGame?.(candidate);
+    Object.assign(g, candidate);
     this.statsCache = null;
-    await this.env.store.saveGame?.(g);
-    g.completedAt ??= this.env.now();
     if (!this.history.has(id)) await this.archiveGame(g);
   }
   async report(account, rawBody, idempotencyKey) {

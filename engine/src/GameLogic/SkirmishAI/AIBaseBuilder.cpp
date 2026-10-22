@@ -1145,7 +1145,7 @@ void updateUnitBuilder(GameLogic &logic, AISkirmishPlayer &ai, const Player &pla
  const auto saving = ai.brain.namedCounters.find("UpgradeSavingsTarget");
  if (!req && saving != ai.brain.namedCounters.end() && saving->second > 0 &&
      economyStructureCount(logic, player) > 0 &&
-     (std::uint64_t)player.getMoney()->countMoney() + ai.build.moneyReserve < (unsigned)saving->second) return;
+     (std::uint32_t)AIBaseBuilder::moneyPlusReserve(logic, player) < (unsigned)saving->second) return;
  if (!req) req = chooseBreachUnit(logic, ai, player);
 	if (!req) req = shouldBuildHero(logic, ai, player) ? createBestHero(logic, ai, player) : nullptr;
 	if (!req)
@@ -2229,15 +2229,14 @@ static void buyCombatUpgrade(GameLogic &logic, AISkirmishPlayer &ai, Player &pla
  ai.brain.namedCounters["UpgradeSavingsTarget"]=chosen ? std::max(0,chosen->calcCostToBuild(&player,producer))+500 : 0;
  if (producer && chosen)
  {
-  if((std::uint64_t)chosen->calcCostToBuild(&player,producer)+500u>(std::uint64_t)player.getMoney()->countMoney()+ai.build.moneyReserve)return;
+  if((std::uint64_t)chosen->calcCostToBuild(&player,producer)+500u>(std::uint32_t)AIBaseBuilder::moneyPlusReserve(logic,player))return;
   const auto cost = (std::uint32_t)chosen->calcCostToBuild(&player, producer);
   const auto money = player.getMoney()->countMoney();
   if (cost > money)
   {
    const auto draw = cost - money;
-   ai.build.moneyReserve -= draw;
+   AIBaseBuilder::withdrawFromReserve(logic, player, draw);
    ai.build.reserveDrawn += draw;
-   player.getMoney()->deposit(draw, nullptr, false);
   }
   producer->getProductionUpdate()->queueUpgrade(chosen);
  }

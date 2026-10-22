@@ -71,4 +71,3 @@ private:
 	const ReplayFile &m_replay;
 	OrdersIntoFog &m_check;
 };
-

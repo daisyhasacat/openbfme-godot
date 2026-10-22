@@ -16,10 +16,11 @@ and then apply the nugget offset. The shared position search supplies its own
 random angle and terrain/object checks. The retail lair lists configure four
 or two chests, inner radius 50..60, outer radius 80, and IgnoreAllObjects.
 
-The donor asks for the highest layer. Our existing ground-only search is used
-and S-530 reports the missing highest-layer lookup (S-1280/S-161); exact bridge
-placement and full OCL binary parity remain incomplete. Invulnerability time,
-fade and other OCL fields remain under S-530. No retail assets are added.
+Upstream SUMMON-1 now supplies the fuller CreateObject implementation and its
+highest-layer position-search request. The current terrain-layer implementation
+still resolves ground-only (S-161); exact bridge placement and full OCL binary
+parity remain incomplete. Invulnerability time and the other documented OCL
+gaps remain under S-530. No retail assets are added.
 
 `treasure hud:*` checks actual right-click input on an enemy-owned chest.
 `treasure retail:*` checks the mounted retail lair OCL makes four distinct

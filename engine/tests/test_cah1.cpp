@@ -1271,102 +1271,6 @@ TEST_CASE("cah attributes: duplicate tick initializers position all thirty-two s
 	c.show(scr, "Appearance");
 	REQUIRE(c.fx->wm->invokeASAt(scr->level(), "Main.mcAppearanceScreen.Screen.TypeWindow", "gotoAndPlay", { "_attributes" }));
 	c.fx->tick(60);
-	CHECK(c.fx->wm->apt().noteCount("duplicate-init-object-unverified") == 160);
-	for (int attribute = 0; attribute < 5; ++attribute)
-	{
-		const std::string path = "Main.mcAppearanceScreen.Screen.TypeWindow.instance12." + std::to_string(attribute) + ".AttribBar";
-		for (int tick = 0; tick < 32; ++tick)
-		{
-			auto *segment = c.fx->at(scr->level(), path + ".Tick_" + std::to_string(tick));
-			REQUIRE(segment);
-			// The retail movie starts at -100 and advances by its 9-pixel tick width.
-			CHECK(segment->matrix.tx == -100.0f + 9.0f * tick);
-			CHECK(segment->matrix.ty == -242.0f);
-		}
-	}
-}
-
-TEST_CASE("cah statistics retail: award tab binds each medal image after child initialization and survives reopening")
-{
-	OPENBFME_REQUIRE_START(s);
-	CahShellFx c(s, true);
-	auto *screen = c.screen();
-	REQUIRE(screen);
-	auto &apt = c.fx->wm->apt();
-	auto *root = apt.level(screen->level());
-	const std::string tabs = "Main.mcManagerScreen.Screen.TabNav";
-	const std::string grid = tabs + ".ScreenAwards.AwardList.mcAwards";
-	for (int visit = 0; visit < 2; ++visit)
-	{
-		auto *button = starttest::firstButtonIn(apt.resolvePath(root, tabs + ".Tab_Nav_Button.UnselectedTabButtons.Awards"));
-		REQUIRE(button);
-		starttest::clickButton(*c.fx, *button);
-		c.fx->tick(40);
-		const auto &hero = screen->myHero()->hero();
-		const auto *sub = c.ctx.system->subClass(hero.classIndex, hero.subClassIndex);
-		REQUIRE(sub);
-		for (size_t i = 0; i < sub->awards.size(); ++i)
-		{
-			auto *image = apt.resolvePath(root, grid + "." + std::to_string(i) + ".Image");
-			REQUIRE(image);
-			AptValue binding;
-			REQUIRE(image->getOwn("_imageMap", binding));
-			CHECK(binding.toString() == "CahAward:Image_" + std::to_string(i));
-			AptValue mode;
-			REQUIRE(image->getOwn("_mode", mode));
-			CHECK(mode.toString() == "GRAYSCALE");
-			const auto *record = c.fx->wm->aptImage(binding.toString());
-			REQUIRE(record);
-			CHECK(*record == c.ctx.system->awardSystem.award(sub->awards[i])->image);
-			auto *name = apt.resolvePath(root, grid + "." + std::to_string(i) + ".AwardName");
-			REQUIRE(name);
-			AptValue text;
-			REQUIRE(name->getMember("text", text));
-			CHECK(text.toString() == "$CahAward:Name_" + std::to_string(i));
-		}
-		auto *appearance = starttest::firstButtonIn(apt.resolvePath(root, tabs + ".Tab_Nav_Button.UnselectedTabButtons.Appearance"));
-		REQUIRE(appearance);
-		starttest::clickButton(*c.fx, *appearance);
-		c.fx->tick(40);
-	}
-	const auto &hero = screen->myHero()->hero();
-	const auto *sub = c.ctx.system->subClass(hero.classIndex, hero.subClassIndex);
-	REQUIRE(sub);
-	const auto *award = c.ctx.system->awardSystem.award(sub->awards.front());
-	REQUIRE(award);
-	CreateAHeroStats stats;
-	for (const auto &trigger : award->triggers)
-	{
-		REQUIRE_FALSE(trigger.stats.empty());
-		stats.add(trigger.stats.front(), trigger.threshold);
-	}
-	std::string error;
-	REQUIRE(stats.save(c.dir.path, hero.uniqueID, &error));
-	screen->selectHero(screen->selectedHero());
-	auto *button = starttest::firstButtonIn(apt.resolvePath(root, tabs + ".Tab_Nav_Button.UnselectedTabButtons.Awards"));
-	REQUIRE(button);
-	starttest::clickButton(*c.fx, *button);
-	c.fx->tick(40);
-	auto *earned = apt.resolvePath(root, grid + ".0.Image");
-	REQUIRE(earned);
-	AptValue mode;
-	REQUIRE(earned->getOwn("_mode", mode));
-	CHECK(mode.toString() == "ALPHA");
-
-}
-
-TEST_CASE("cah attributes: duplicate tick initializers position all thirty-two segments of each bar")
-{
-	OPENBFME_REQUIRE_START(s);
-	CahShellFx c(s, true);
-	auto *scr = c.screen();
-	REQUIRE(scr);
-	REQUIRE(c.fx->wm->invokeAS(scr->level(), "SetCreateNewHero", { "true" }));
-	c.show(scr, "Class");
-	scr->setClassAndType(0, 1);
-	c.show(scr, "Appearance");
-	REQUIRE(c.fx->wm->invokeASAt(scr->level(), "Main.mcAppearanceScreen.Screen.TypeWindow", "gotoAndPlay", { "_attributes" }));
-	c.fx->tick(60);
 	CHECK(c.fx->wm->apt().noteCount("duplicate-init-object-unverified") == 1);
 	for (int attribute = 0; attribute < 5; ++attribute)
 	{
@@ -1448,6 +1352,7 @@ TEST_CASE("cah statistics retail: award tab binds each medal image after child i
 	AptValue mode;
 	REQUIRE(earned->getOwn("_mode", mode));
 	CHECK(mode.toString() == "ALPHA");
+
 }
 
 TEST_CASE("cahpic1 picture name: the hero's name, the short date and the time with seconds, the characters a file name cannot take made '-' (RW 0x91A20A)")
