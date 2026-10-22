@@ -662,6 +662,25 @@ TEST_CASE("bfme Lua: shared catalogs refresh independently from live state witho
 	CHECK(f.run("return bfme.unitTypes.Other.cost") == "10\n");
 }
 
+TEST_CASE("bfme Lua: unobserved engine events do not request a simulation safe point")
+{
+	BfmeFixture f;
+	auto sink = f.vm->eventSink();
+	std::thread producer([sink] { for (int i = 0; i < 100; ++i) sink("buildingPlaced", {{"objectId", i}}); });
+	producer.join();
+	CHECK_FALSE(f.vm->hasPending());
+	f.run("placed=0; bfme.events.onBuildingPlaced('place', function(e) placed=placed+1 end)");
+	f.vm->flush();
+	CHECK(f.run("return placed") == "0\n");
+	sink("buildingPlaced", {{"objectId", 1234}});
+	CHECK(f.vm->hasPending());
+	f.vm->flush();
+	CHECK(f.run("return placed") == "1\n");
+	f.run("bfme.events.remove('place')");
+	sink("buildingPlaced", {});
+	CHECK_FALSE(f.vm->hasPending());
+}
+
 TEST_CASE("bfme Lua: engine events queue across threads and dispatch once at safe points")
 {
 	BfmeFixture f;

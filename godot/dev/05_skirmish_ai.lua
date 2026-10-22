@@ -42,6 +42,13 @@ luaai.config = {
 }
 
 local cfg = luaai.config
+local function syncUpdates()
+    if next(luaai.players) then
+        bfme.events.onUpdate("luaai", function() luaai.thinkAll() end, cfg.thinkMs)
+    else
+        bfme.events.remove("luaai")
+    end
+end
 -- buildings are told apart by their KindOf (isEconomy: ECONOMY_STRUCTURE, isFactory: FS_FACTORY without it), the same for every faction
 
 local function resolve(player)
@@ -53,6 +60,7 @@ function luaai.enable(player)
     local p = resolve(player)
     local ticket = p:setAIEnabled(false)
     luaai.players[p.id] = luaai.players[p.id] or { lastStatus = 0, attackSize = 0 }
+    syncUpdates()
     print("LUAAI player " .. p.id .. " (" .. tostring(p.faction) .. ") is now controlled by Lua")
     return ticket
 end
@@ -60,6 +68,7 @@ end
 function luaai.disable(player)
     local p = resolve(player)
     luaai.players[p.id] = nil
+    syncUpdates()
     print("LUAAI player " .. p.id .. " is handed back to the native AI")
     return p:setAIEnabled(true)
 end
@@ -77,6 +86,7 @@ function luaai.disableAll()
         if bfme.players[id] then luaai.disable(id) end
     end
     luaai.players = {}
+    syncUpdates()
 end
 
 -- ---- what the player has -------------------------------------------------------------------------------------------
@@ -463,6 +473,7 @@ end
 
 -- one think of every controlled player (the update callback below; tests call it directly to step with the simulation)
 function luaai.thinkAll()
+    if not cfg.autoEnable and not next(luaai.players) then return end
     local status = bfme.match.getStatus()
     if not status.ready then return end
     -- once per match: the computer players go to the Lua AI (a player handed back by hand stays native until the next match)
@@ -487,6 +498,9 @@ function luaai.thinkAll()
         end
         ::continue::
     end
+    if not next(luaai.players) then bfme.events.remove("luaai") end
 end
 
-bfme.events.onUpdate("luaai", function() luaai.thinkAll() end, cfg.thinkMs)
+-- Automatic takeover is checked at match start; inactive native-AI games do not poll Lua.
+bfme.events.onMatchStarted("luaai-start", function() luaai.thinkAll() end)
+syncUpdates()

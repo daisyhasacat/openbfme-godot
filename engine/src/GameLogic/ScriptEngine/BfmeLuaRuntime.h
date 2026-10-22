@@ -100,7 +100,8 @@ class BfmeLuaRuntime
 	Result execute(const std::string &code);
 	// Evaluate a data-only Lua chunk in an isolated state without libraries or engine access.
 	static Value readData(const std::string &source, const std::string &name);
-	// queued writes, construction jobs, or an update callback that is due (wall clock): the caller should flush() at its next safe point
+	// queued writes, construction jobs, observed engine events, or a due update callback (wall clock).
+	// Discards unobserved notifications; the caller should flush() at its next safe point.
 	bool hasPending() const;
 	void flush();	   // caller holds the simulation between frames; also runs the due update callbacks
 	bool hasTimingHook(const std::string &kind) const;

@@ -287,7 +287,10 @@ computer player at the start of each skirmish, on the host in multiplayer. Guest
 `luaai.disableAll()` (or **Computers: native AI** in the console's Cheats tab) hands them back until the next match, and
 `luaai.enableAll()` takes them again.
 `luaai.status()` reports each player. It sees the whole map, ignoring the shroud.
-Its numbers are in `luaai.config`.
+Its numbers are in `luaai.config`. Changing `autoEnable` applies at the next match;
+call `luaai.thinkAll()` or `luaai.enableAll()` to apply it immediately in an existing match.
+Disabled Lua AI and Uber mode helpers do not register periodic callbacks, so normal
+play does not pause the simulation worker to poll inactive tools.
 
 `bfme.match.getUnitRoster(playerId)` returns `{ready, ids}` with sorted live unit IDs
 for player 0–19, using the same membership as `player:units()`. The returned list

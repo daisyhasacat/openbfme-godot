@@ -2,6 +2,7 @@
 -- Console: ubermode.enable(), ubermode.disable(), ubermode.toggle().
 ubermode = ubermode or { enabled = false, seen = {}, pending = {} }
 local mode = ubermode
+local update
 
 local function localMatch()
     local status = bfme.match.getStatus()
@@ -19,6 +20,7 @@ function mode.enable()
     mode.playerId = player.id
     mode.seen, mode.pending = {}, {}
     mode.enabled = true
+    bfme.events.onUpdate("ubermode", update, 200)
     player.money = 1000000
     player.commandPointsBonus = 0
     player.commandPointsBase = 1000000
@@ -44,6 +46,7 @@ function mode.disable()
         player.commandPointsBonus = mode.previousCP.bonus
     end
     mode.enabled, mode.pending = false, {}
+    bfme.events.remove("ubermode")
     bfme.timing.clear()
     print("ubermode disabled; granted gold, levels and upgrades are retained")
 end
@@ -73,12 +76,12 @@ function mode.massTrain(unitType, selected)
     return matched
 end
 
-bfme.events.onUpdate("ubermode", function()
+update = function()
     if not mode.enabled then return end
     -- Most ticks have no new troops or recruitment jobs. A detached ID list
     -- avoids building the full army snapshot merely to discover nothing changed.
     local roster = bfme.match.getUnitRoster(mode.playerId)
-    if not roster.ready then mode.enabled, mode.pending = false, {}; return end
+    if not roster.ready then mode.enabled, mode.pending = false, {}; bfme.events.remove("ubermode"); return end
     local unseen = false
     for _, id in ipairs(roster.ids) do
         if not mode.seen[id] then unseen = true; break end
@@ -119,8 +122,13 @@ bfme.events.onUpdate("ubermode", function()
             end
         end
     end
-end, 200)
+end
+
+-- Disabled helpers must not stop the simulation worker just to return immediately.
+if mode.enabled then bfme.events.onUpdate("ubermode", update, 200)
+else bfme.events.remove("ubermode") end
 
 bfme.events.onMatchStarted("ubermode-reset", function()
     mode.enabled, mode.seen, mode.pending, mode.previousCP = false, {}, {}, nil
+    bfme.events.remove("ubermode")
 end)

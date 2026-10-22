@@ -1134,7 +1134,17 @@ BfmeLuaRuntime::EventSink BfmeLuaRuntime::eventSink() const
 }
 bool BfmeLuaRuntime::hasPending() const
 {
-	{ std::lock_guard<std::mutex> lock(m->events->mutex); if (!m->events->pending.empty()) return true; }
+	{
+		std::lock_guard<std::mutex> lock(m->events->mutex);
+		// Notifications without listeners need no simulation safe point. In particular,
+		// placing AI buildings must not drain the high-speed worker just to discard an event.
+		auto &events = m->events->pending;
+		events.erase(std::remove_if(events.begin(), events.end(), [this](const Impl::Event &event) {
+			const auto callbacks = m->eventCallbacks.find(event.kind);
+			return callbacks == m->eventCallbacks.end() || callbacks->second.empty();
+		}), events.end());
+		if (!events.empty()) return true;
+	}
 	if (!m->pending.empty() || !m->constructions.empty() || !m->deferred.empty())
 		return true;
 	const auto now = std::chrono::steady_clock::now();

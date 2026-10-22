@@ -237,3 +237,37 @@ When `--perf-log` is enabled, frames taking at least 100 ms now also print
 pipeline compilation deltas. The two-column timing file remains unchanged.
 The diagnostics are disabled during ordinary play. Pipeline counts alone do
 not measure compilation time or prove a causal relationship.
+
+## High-speed simulation stalls on M4 Pro
+
+The reported slowdown also occurs at 20× game speed, a different workload from
+the normal-speed shader-cache investigation above. CPU sampling and `--perf`
+identified `GameWorld::update_lua` repeatedly calling `setLogicThread(false)`,
+which drains requested simulation frames and joins the worker. The disabled
+Uber helper scheduled a callback every 200 ms, and the inactive Lua AI still
+polled every second. Building notifications without listeners also requested
+a safe point before being discarded. Faster simulation amplified those waits.
+
+Disabled helpers now unregister their periodic callbacks. Enabling them installs
+the callbacks again; disabling, match reset, and the last Lua AI player's removal
+remove them. Lua AI auto-enable is checked at match start, and explicit `thinkAll()`
+continues to support immediate takeover. `hasPending()` discards notifications
+without listeners without requesting a simulation safe point. Actual callbacks,
+mutations and construction jobs retain their synchronization.
+
+Repeatable CPU reproduction on this M4 Pro, seed 42, Men on Buckland:
+`--headless --auto --map="maps/map wor buckland/map wor buckland.map"
+--faction=FactionMen --seed=42 --warp=600 --warp-scale=20 --advance=0 --perf`.
+Before the fix, three five-second measurement windows recorded 559.3, 1275.6 and
+918.4 ms waiting at `LiveGameRunner.cpp:522 <- game.gd:1527 _process`, with a
+143.3 ms maximum individual wait. The same run after the fix recorded no waits
+at that site. Reported worst-frame time fell from 151.37 to 26.77 ms; the worst
+reported p99 fell from 119.89 to 8.49 ms. Headless measurements isolate CPU
+pacing and do not establish rendered GPU FPS or pre-merge performance parity.
+
+The earlier HUD-renderer comparison was inconclusive: alternating fixed-camera
+runs of the old and merged renderers overlapped, with the merged renderer's
+repeat sometimes faster. No HUD renderer rollback or batching change was made.
+
+Validation: native build; 26 Lua runtime tests / 458 assertions; Lua helper
+scheduling test; real-match Uber mode and Lua AI tests; before/after 20× CPU run.
