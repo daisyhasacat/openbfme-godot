@@ -155,6 +155,7 @@ public:
 
 	// ---- map-wide operations ----
 	void setCheatFogDisabled(int player, bool disabled);
+	bool isCheatFogDisabled(int player) const;
 	void revealMapForPlayer(int player);               ///< RW 0xB4F570
 	void revealMapForPlayerPermanently(int player);    ///< RW 0xB4F5D0
 	void undoRevealMapForPlayerPermanently(int player);///< RW 0xB519B0

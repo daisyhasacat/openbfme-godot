@@ -482,3 +482,30 @@ TEST_CASE("stealth retail (review r1): a detector marks a container's occupant f
 	CHECK(StealthUpdate::of(*occupant)->detectionExpiresFrame() == now + rate + 2);
 	CHECK(StealthUpdate::of(*candidate)->detectionExpiresFrame() == now + rate + 1);
 }
+
+TEST_CASE("stealth retail: Uber fog cheat reveals Gollum only to its player and restores stealth on disable")
+{
+	if (!haveWorld()) return;
+	hudtest::Rig rig(shared());
+	Player *enemy = rig.game->players().findPlayerWithName("Player_2");
+	REQUIRE(enemy != nullptr);
+	Object *gollum = rig.make("NeutralGollum", 1000.0f, 1000.0f);
+	Object *other = rig.make("GondorFighter", 1100.0f, 1000.0f);
+	const unsigned stealth = (unsigned)CombatNames::status("STEALTHED");
+	gollum->setStatus(stealth, true);
+	other->setStatus(stealth, true);
+	auto &shroud = rig.game->shroud();
+	REQUIRE(InvisibilityManager::clientLook(*gollum, enemy) == 5);
+	REQUIRE(InvisibilityManager::isStealthedAndUndetected(*gollum, enemy));
+	shroud.setCheatFogDisabled(enemy->getPlayerIndex(), true);
+	shroud.setCheatFogDisabled(enemy->getPlayerIndex(), true);
+	CHECK(InvisibilityManager::clientLook(*gollum, enemy) == 0);
+	CHECK(InvisibilityManager::isStealthedAndUndetected(*gollum, enemy));
+	CHECK(InvisibilityManager::isStealthedAndUndetected(*gollum, rig.local));
+	CHECK(InvisibilityManager::clientLook(*other, enemy) == 5);
+	CHECK(InvisibilityManager::isStealthedAndUndetected(*other, enemy));
+	CHECK(gollum->testStatus(stealth));
+	shroud.setCheatFogDisabled(enemy->getPlayerIndex(), false);
+	CHECK(InvisibilityManager::clientLook(*gollum, enemy) == 5);
+	CHECK(InvisibilityManager::isStealthedAndUndetected(*gollum, enemy));
+}

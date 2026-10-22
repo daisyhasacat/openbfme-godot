@@ -517,3 +517,18 @@ job at a time):
 - the reference measurement proper: the game gate (`--uber1`) in the native
   Windows build on the RTX 4090, idle, at normal priority;
 - a native Windows run of the Uber pin test.
+
+## Local console Uber Mode cheat
+
+The console's `ubermode.enable()` sandbox cheat is separate from the Uber
+performance profile. Its fog override also reveals objects with the retail
+`NEUTRALGOLLUM` kind to the player using the cheat, including Gollum spawned
+while it is enabled. Gollum is visible without a detector; normal combat detection rules remain.
+Other stealth units retain their normal concealment. Disabling the cheat
+restores Gollum's normal visibility rules without changing his stealth state.
+This is an OpenBFME cheat extension, not a retail behavior port. The shared
+`player:setFogOfWar(false)` console override has the same Gollum reveal;
+ordinary map reveals and the performance profile do not enable it.
+
+`stealth retail: Uber fog cheat ...` covers player scope, other stealth units,
+repeated enable, and restoration on disable.

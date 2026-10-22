@@ -1598,3 +1598,9 @@ void ShroudManager::setCheatFogDisabled(int player, bool disabled)
         m_cheatFogPlayers.erase(found);
     }
 }
+
+// Local sandbox visibility override; not the ordinary reveal-map operation.
+bool ShroudManager::isCheatFogDisabled(int player) const
+{
+	return std::find(m_cheatFogPlayers.begin(), m_cheatFogPlayers.end(), player) != m_cheatFogPlayers.end();
+}

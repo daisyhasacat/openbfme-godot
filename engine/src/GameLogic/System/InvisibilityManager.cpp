@@ -2,6 +2,7 @@
 // See GameLogic/System/InvisibilityManager.h for the target facts, the call sites and what is inference.
 
 #include "GameLogic/System/InvisibilityManager.h"
+#include "GameLogic/System/ShroudManager.h"
 
 #include "GameLogic/Map/TerrainTrees.h"
 
@@ -267,6 +268,18 @@ bool InvisibilityManager::isFiring(const Object &obj)
 	return last > 2u && last + 2u * kLogicFramesPerSecond > obj.logic().getFrame();
 }
 
+namespace
+{
+// OpenBFME sandbox extension: Uber Mode's fog cheat also exposes Gollum to
+// that viewer. Keep his actual stealth untouched so disabling restores it.
+bool cheatRevealsGollum(const Object &obj, const Player *viewer)
+{
+	static const int gollum = CombatNames::kindOf("NEUTRALGOLLUM");
+	const ShroudManager *shroud = obj.logic().shroud();
+	return viewer && shroud && obj.isKindOf((unsigned)gollum) && shroud->isCheatFogDisabled(viewer->getPlayerIndex());
+}
+}
+
 // RW 0x694C0D. Every test is a pure read, so the cheap status tests come first here (RW tests the draw modules first; the answer is the same)
 bool InvisibilityManager::isStealthedAndUndetected(const Object &obj, const Player *viewer)
 {
@@ -321,6 +334,7 @@ bool InvisibilityManager::isStealthedAndUndetected(const Object &obj, const Play
 // RW 0x81AA03
 int InvisibilityManager::clientLook(const Object &obj, const Player *local)
 {
+	if (cheatRevealsGollum(obj, local)) return 0;
 	bool friendView = true; // RW 0x81AA2B / 0x81AA39: no team: 1 (not a friend); an inactive local player: 2 (a friend)
 	if (local)
 	{
