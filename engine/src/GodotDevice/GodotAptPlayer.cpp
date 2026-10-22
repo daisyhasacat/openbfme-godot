@@ -583,6 +583,7 @@ const char *shellActionName(ShellAction a)
 		case ShellAction::QuitMenuForfeit: return "QuitMenuForfeit";
 		case ShellAction::QuitMenuOptions: return "QuitMenuOptions";
 		case ShellAction::ToggleQuitMenu: return "ToggleQuitMenu";
+		case ShellAction::ObjectivesReturnToGame: return "ObjectivesReturnToGame";
 		case ShellAction::PalantirObjectives: return "PalantirObjectives"; // lane PLAY-1
 		case ShellAction::TributeReturnToGame: return "TributeReturnToGame";
 		case ShellAction::CreateAHeroExit: return "CreateAHeroExit";
@@ -1295,6 +1296,7 @@ void AptMenuPlayer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("drawn_texts", "clear"), &AptMenuPlayer::drawn_texts); // lane UI-4
 	ClassDB::bind_method(D_METHOD("gadget_draw_list"), &AptMenuPlayer::gadget_draw_list); // lane OPTS-4
 	ClassDB::bind_method(D_METHOD("set_tribute_world", "world"), &AptMenuPlayer::set_tribute_world);
+	ClassDB::bind_method(D_METHOD("set_mission_objectives", "rows", "input_enabled"), &AptMenuPlayer::set_mission_objectives);
 	ClassDB::bind_method(D_METHOD("set_player_status", "state"), &AptMenuPlayer::set_player_status); // lane HUD-5
 	ClassDB::bind_method(D_METHOD("shell_top_level"), &AptMenuPlayer::shell_top_level);
 	ClassDB::bind_method(D_METHOD("shell_invoke", "level", "function", "args"), &AptMenuPlayer::shell_invoke, DEFVAL(PackedStringArray()));
@@ -8425,3 +8427,17 @@ Dictionary AptMenuPlayer::platform_apply(const Dictionary &spec)
 }
 
 } // namespace godot
+
+void godot::AptMenuPlayer::set_mission_objectives(const Array &rows, bool input_enabled)
+{
+	if (!m || !m->shell) return;
+	auto &env = m->shell->environment;
+	env.missionObjectives.clear();
+	env.objectivesInputEnabled = input_enabled;
+	for (int i = 0; i < rows.size(); ++i)
+	{
+		const Dictionary row = rows[i];
+		const String label = row.get("label", String());
+		env.missionObjectives.push_back({label.utf8().get_data(), (bool)row.get("completed", false), (bool)row.get("bonus", false)});
+	}
+}

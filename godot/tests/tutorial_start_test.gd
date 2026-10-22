@@ -45,10 +45,13 @@ func _run() -> void:
 	if lesson == "Basic":
 		_assert_scripted_camera_move(game)
 		await _assert_camera_controls(game)
+	await _assert_native_objectives(game)
 	# Restart uses the same standalone tutorial, without advancing campaign progress.
 	await game._campaign_flow.restart_mission()
 	assert(game._state == game.State.PLAYING)
 	assert(game._campaign_flow.tutorial == lesson)
+	assert(not game._objectives_open)
+	assert(not game._shell.shell_stack().has("Objectives.apt"))
 	assert(game._hud_installed)
 	_assert_unexplored_shroud(game._world)
 	if lesson == "Basic": _assert_opening_reveal(game._world)
@@ -156,3 +159,89 @@ func _assert_camera_controls(game: Node) -> void:
 	assert(travelled > 250.0, "Right mouse drag must accumulate the tutorial's required camera travel")
 	game._world.advance(0.2)
 	assert(game._world.get_script_report().camera_scroll_distance == travelled)
+
+func _assert_native_objectives(game: Node) -> void:
+	var world: Node = game._world
+	var cine: Node = game._campaign_flow._cine
+	world.set_auto_advance(false)
+	cine.set_process(false)
+	for action in ["ENABLE_INPUT", "CAMERA_LETTERBOX_END", "ENABLE_OBJECTIVES_SCREEN"]:
+		assert(world.debug_script_action(action, []).ok)
+	world.advance(0.2)
+	cine._process(0.0)
+	game._palantir_objectives()
+	assert(game._objectives_open)
+	assert(game._shell.shell_stack()[-1] == "Objectives.apt")
+	assert(not world.is_paused(), "BFME2 tutorial mode keeps simulation running for the objectives-open check")
+	assert(not cine._objectives_panel.visible, "The native movie replaces the Godot objectives panel")
+	world.advance(0.2)
+	assert(world.get_script_report().objectives_open)
+	await create_timer(1.0).timeout
+	var buttons: Array = []
+	for button in game._shell.list_buttons(game._shell.shell_top_level()):
+		if button.hittable and String(button.path).contains(".Resume."): buttons.append(button)
+	assert(buttons.size() == 1, str(buttons))
+	var shot := OS.get_environment("OBJECTIVES_TEST_SHOT")
+	if not shot.is_empty():
+		await RenderingServer.frame_post_draw
+		assert(root.get_texture().get_image().save_png(shot) == OK)
+	var centre := Vector2(buttons[0].x, buttons[0].y)
+	game._mouse_event(centre, false, false)
+	await game._step(2)
+	game._mouse_event(centre, true, true)
+	await game._step(2)
+	game._mouse_event(centre, false, true)
+	# The retail movie sends ReturnToGame after its button/out animation.
+	for attempt in 120:
+		if not game._objectives_open: break
+		await create_timer(0.02).timeout
+	assert(not game._objectives_open)
+	assert(not game._shell.shell_stack().has("Objectives.apt"))
+	world.advance(0.2)
+	assert(not world.get_script_report().objectives_open)
+	# The script gate blocks opening; enabling it allows another native instance.
+	assert(world.debug_script_action("DISABLE_OBJECTIVES_SCREEN", []).ok)
+	world.advance(0.2)
+	cine._process(0.0)
+	game._palantir_objectives()
+	assert(not game._objectives_open)
+	assert(world.debug_script_action("ENABLE_OBJECTIVES_SCREEN", []).ok)
+	world.advance(0.2)
+	cine._process(0.0)
+	game._palantir_objectives()
+	assert(game._objectives_open)
+	assert(world.debug_script_action("DISABLE_INPUT", []).ok)
+	world.advance(0.2)
+	cine._process(0.0)
+	assert(game._shell.shell_fscommand("AptObjectivesMenu::ReturnToGame", ""))
+	for i in 2: await process_frame
+	assert(game._objectives_open, "Tutorial input lock keeps its objectives lesson on screen")
+	await game._press_escape()
+	assert(game._objectives_open)
+	assert(world.debug_script_action("ENABLE_INPUT", []).ok)
+	world.advance(0.2)
+	cine._process(0.0)
+	assert(world.debug_script_action("CLOSE_OBJECTIVES_SCREEN", []).ok)
+	world.advance(0.2)
+	cine._process(0.0)
+	assert(not game._objectives_open)
+	world.advance(0.2)
+	assert(not world.get_script_report().objectives_open)
+	game._palantir_objectives()
+	assert(game._objectives_open)
+	await game._press_escape()
+	assert(not game._objectives_open)
+	world.advance(0.2)
+	assert(not world.get_script_report().objectives_open)
+
+	# The same single-player economy mode pauses for a campaign rather than a tutorial.
+	var lesson: String = game._campaign_flow.tutorial
+	game._campaign_flow.tutorial = ""
+	game._palantir_objectives()
+	assert(world.is_paused())
+	game._close_objectives()
+	assert(not world.is_paused())
+	game._campaign_flow.tutorial = lesson
+	# The caller restarts while this instance is open, exercising teardown cleanup.
+	game._palantir_objectives()
+	assert(game._objectives_open)

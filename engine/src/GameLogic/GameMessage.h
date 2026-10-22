@@ -172,6 +172,7 @@ enum GameMessageType : int
 	MSG_ADD_TO_TEAM8 = 1146,
 	MSG_ADD_TO_TEAM9 = 1147,
 	MSG_END_NETWORK_MESSAGES = 1148,
+	MSG_OPENBFME_OBJECTIVES_OPEN = 0x7002, // local single-player UI state, not a retail message number
 	MSG_OPENBFME_CAMERA_TRAVEL = 0x7001, // local single-player tutorial input, never a retail message number
 	MSG_OPENBFME_LUA_ACTION = 0x7000 // enhanced command; never a retail message number
 };

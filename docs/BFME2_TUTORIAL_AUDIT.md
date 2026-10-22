@@ -12,9 +12,9 @@ BFME2 source: the local Open-BFME-2 checkout, revision `73df4683fb677c052c9ad49a
 
 ## Remaining progression work
 
-Selection and camera scrolling alone do not complete these tutorials. Basic still waits on construction, objectives-window interaction and command-button abilities; Advanced additionally waits on stance/submenu, formation, spell-store interaction and transport setup. Unported instructions remain reported by name through S-1180. Recorded presentation requests remain covered by S-1182; a recorded request is not proof that its effect is applied.
+Selection and camera scrolling alone do not complete these tutorials. Basic still waits on construction and command-button abilities; Advanced additionally waits on stance/submenu, formation, spell-store interaction and transport setup. Unported instructions remain reported by name through S-1180. Recorded presentation requests remain covered by S-1182; a recorded request is not proof that its effect is applied.
 
-Start with the source-backed unit setup actions (`ScriptActions_doStandGround.cpp`, `ScriptActions_doTeamAttackTeam.cpp`), then trace nearest-unit references, construction counting and instant garrison through the BFME2 dispatch. UI conditions require a deliberate client-to-logic event bridge, including reset/save handling and multiplayer restrictions; returning true unconditionally would skip the lesson. Human-impassable areas require pathfinder integration rather than a cosmetic overlay. None of these gaps is silently treated as completed here.
+Start with the source-backed unit setup actions (`ScriptActions_doStandGround.cpp`, `ScriptActions_doTeamAttackTeam.cpp`), then trace nearest-unit references, construction counting and instant garrison through the BFME2 dispatch. The objectives condition now uses a single-player command bridge and resets when menus close on load. Other UI conditions still require a deliberate client-to-logic event bridge; returning true unconditionally would skip the lesson. Human-impassable areas require pathfinder integration rather than a cosmetic overlay. None of these gaps is silently treated as completed here.
 
 ## Instruction inventory
 
@@ -30,20 +30,20 @@ Counts include inactive scripts and all branches. “Existing route” means the
 | `FLAG` | 1 | 4 | Existing route |
 | `HAS_FINISHED_AUDIO` | 54 | 30 | Existing route |
 | `NAMED_ATTACKED_BY_OBJECTTYPE` | 0 | 1 | Ported in this change |
-| `NAMED_BUILDING_IS_EMPTY` | 0 | 5 | Ported in this change |
+| `NAMED_BUILDING_IS_EMPTY` | 0 | 7 | Ported in this change |
 | `NAMED_DESTROYED` | 11 | 23 | Existing route |
 | `NAMED_ENTERED_AREA` | 0 | 3 | Existing route |
 | `NAMED_INSIDE_AREA` | 3 | 0 | Existing route |
 | `NAMED_OWNED_BY_PLAYER` | 1 | 1 | Existing route |
 | `NAMED_SELECTED` | 7 | 2 | Ported in this change |
-| `OBJECTIVES_SCREEN_IS_OPEN` | 1 | 0 | Gap (S-1180) |
+| `OBJECTIVES_SCREEN_IS_OPEN` | 2 | 0 | Native Objectives.apt |
 | `PLAYER_ACQUIRED_SCIENCE` | 0 | 2 | Existing route |
 | `PLAYER_HAS_COMPARISON_UNIT_TYPE_IN_TRIGGER_AREA` | 6 | 0 | Existing route |
-| `PLAYER_HAS_COMPARISON_UNIT_TYPE_IN_TRIGGER_AREA_COMPLETELY_BUILT` | 8 | 0 | Existing route |
+| `PLAYER_HAS_COMPARISON_UNIT_TYPE_IN_TRIGGER_AREA_COMPLETELY_BUILT` | 12 | 0 | Existing route |
 | `PLAYER_HAS_OBJECT_COMPARISON` | 7 | 1 | Existing route |
 | `PLAYER_ISSUED_FORMATION_ORDER` | 0 | 1 | Gap (S-1180) |
 | `SKIRMISH_PLAYER_HAS_UNITS_IN_AREA` | 8 | 12 | Existing route |
-| `SPELL_STORE_IS_OPEN` | 0 | 1 | Gap (S-1180) |
+| `SPELL_STORE_IS_OPEN` | 0 | 4 | Gap (S-1180) |
 | `TEAM_DESTROYED` | 1 | 3 | Existing route |
 | `TIMER_EXPIRED` | 10 | 12 | Existing route |
 | `TOGGLE_STANCE_SUBMENU_IS_OPEN` | 0 | 1 | Gap (S-1180) |
@@ -74,7 +74,7 @@ Counts include inactive scripts and all branches. “Existing route” means the
 | `DISABLE_SPELL_STORE` | 1 | 1 | Gap (S-1180) |
 | `DISPLAY_NOTIFICATION_BOX` | 71 | 48 | Existing route |
 | `ENABLE_INPUT` | 4 | 4 | Existing route |
-| `ENABLE_OBJECTIVES_SCREEN` | 1 | 0 | Gap (S-1180) |
+| `ENABLE_OBJECTIVES_SCREEN` | 1 | 0 | Native Objectives.apt |
 | `ENABLE_SCRIPT` | 72 | 44 | Existing route |
 | `ENABLE_SPELL_STORE` | 0 | 1 | Gap (S-1180) |
 | `FLASH_OBJECTIVES_BUTTON` | 1 | 0 | Presentation audit (S-1182) |
@@ -130,3 +130,13 @@ Counts include inactive scripts and all branches. “Existing route” means the
 The new condition tests pass (3 cases, 57 assertions). Basic and Advanced installed-data launch tests pass, including the existing camera and shroud checks; these do not exercise every lesson through completion.
 
 The native `script*` suite with installed data passes 80 of 81 cases. The existing `script2 client audio` case fails three assertions: it expects missing named speakers to stay silent, while `LiveGameAudio` intentionally plays missing voice speakers without an object. The same three failures reproduce with the pre-change script-engine sources. That audio behavior and its test are unchanged here. Without installed data, all 81 cases pass, with retail cases reporting skips.
+
+## Native objectives menu
+
+`Objectives.apt` now runs through the native APT shell, opened from the Palantir flag or Tab in a campaign/tutorial. The Godot objectives panel remains a map-viewer diagnostic only. BFME2 sources: `AptPlayerStatusScreen.cpp` (0x4E4A45 registration, 0x4E41AB opening), `AptPlayerStatusObjectiveText.cpp` (0x4E4553), `AptPlayerStatusCallbacks.cpp` (0x4E4446), and `AptObjectivesMenu.cpp` (0x4E43F2 visible-row scan). Twelve row providers return `$label` and completed/bonus digits in mission definition order, skipping hidden rows.
+
+The script enable/disable actions gate opening, and the close action closes the native screen. Return to Game and Escape respect scripted input lock in tutorials; campaigns keep the return button enabled, matching BFME2 Rva004E40A6. Campaigns pause while the menu is up; tutorials keep running, matching BFME2's mode-6 exception. The host identifies tutorial sessions through CampaignFlow while its economy mode stays single player. Open/closed presence reaches condition 198 through the enhanced single-player command stream (0x7002, not a retail message ID). It is transient UI state, excluded from snapshot bytes and hashing, and reset on snapshot load/new game; menus close when a game is loaded or restarted. No retail format is changed.
+
+S-1922 now covers the remaining native objectives differences: exact opening transition/script-hold guards and closing animation. This caveat is reported by the native screen and pinned in a test. Tutorial GameData `Objective` presentation and loading voice (S-175) are separate from mission objective rows and remain unported.
+
+Native-menu validation: 102 focused native script, save-block and shell cases pass (2,683 assertions; installed-data-only native cases skip without the games). Basic and Advanced installed-data integration tests cover native opening, actual Resume button pointer input, tutorial input lock, script close, Escape, enable/disable, campaign pause and restart cleanup. The Basic menu was also captured and visually inspected with the graphical renderer. Exact transition/script-hold parity remains S-1922.

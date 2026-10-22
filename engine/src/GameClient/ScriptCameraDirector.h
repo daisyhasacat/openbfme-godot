@@ -23,6 +23,7 @@
 #include "Common/INIDataTypes.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -65,6 +66,7 @@ public:
 	float pitch() const { return m_pitch.value; }
 	const std::string &notificationLabel() const { return m_notificationLabel; }
 	void initializeObjectives(unsigned count) { for (unsigned i = 0; i < count; ++i) m_objectives.emplace_back(i + 1, false); }
+	bool objectivesEnabled() const { return m_objectivesEnabled; }
 	const std::vector<std::pair<int, bool>> &objectives() const { return m_objectives; } ///< (index, completed) in the order shown
 	const std::vector<std::string> &unhandled() const { return m_unhandled; }
 
@@ -103,6 +105,8 @@ private:
 	std::uint32_t m_followId = 0;
 	std::string m_notificationLabel;
 	double m_notificationMs = 0.0;
+	std::map<int, bool> m_hiddenObjectives; // visibility changes preserve completion
+	bool m_objectivesEnabled = true;
 	std::vector<std::pair<int, bool>> m_objectives;
 
 	Move m_move;

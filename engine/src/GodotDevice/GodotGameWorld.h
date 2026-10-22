@@ -352,6 +352,7 @@ public:
 	// ---- lane SCRIPT-1 (GodotDevice/GodotGameWorldScripts.cpp): the map script engine ----
 	// the script engine's client requests since the last call, applied to the script camera director: [ { frame, action, player, script, params: [ { type, int,
 	// real, string } ], has_position, x, y, z } ]
+	bool set_objectives_open(bool open);
 	Array take_script_requests();
 	// steps the script camera director by `delta_ms` of render time: { moving, has_target, x, y, z (SAGE), has_angle, angle, reset_view, letterbox,
 	// input_disabled, caption (label), caption_text (the game text), caption_ms, fade }; `camera` gives the current look-at { x, y, z, angle } (the start of a move)

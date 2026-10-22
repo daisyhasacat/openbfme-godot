@@ -50,6 +50,7 @@ bool GameLogicDispatch::executedHere(int type)
 		case MSG_CANCEL_UNIT_CREATE:
 		case MSG_SET_RALLY_POINT:
 		case MSG_OPENBFME_LUA_ACTION:
+		case MSG_OPENBFME_OBJECTIVES_OPEN:
 		case MSG_OPENBFME_CAMERA_TRAVEL:
 			return true;
 		default:
@@ -172,6 +173,19 @@ void GameLogicDispatch::dispatch(const GameMessage &m)
 {
 	switch (m.getType())
 	{
+		case MSG_OPENBFME_OBJECTIVES_OPEN:
+		{
+			const auto *a = m.getArgument(0);
+			const Player *local = m_logic.players().getLocalPlayer();
+			if (m_logic.economy().context().gameMode != EconomyContext::MODE_SINGLE_PLAYER || !local ||
+				m.getPlayerIndex() != local->getPlayerIndex() || m.getArgumentCount() != 1 || !a || a->type != ARGUMENTDATATYPE_BOOLEAN)
+			{
+				error(m, "invalid single-player objectives state");
+				break;
+			}
+			m_logic.scriptEngine().setObjectivesOpen(a->boolean);
+			break;
+		}
 		case MSG_OPENBFME_CAMERA_TRAVEL:
 		{
 			const auto *a = m.getArgument(0);

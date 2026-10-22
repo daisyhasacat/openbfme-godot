@@ -46,8 +46,16 @@ struct QuitMenuContext
 	bool isMultiplayer() const { return gameMode == 1 || gameMode == 5; } // RW 0x441B7C
 };
 
+struct MissionObjectiveRow
+{
+	std::string label;
+	bool completed = false, bonus = false;
+};
+
 struct ShellEnvironment
 {
+	std::vector<MissionObjectiveRow> missionObjectives; // visible objectives in mission index order
+	bool objectivesInputEnabled = true;
 	GameTextSource *gameText = nullptr;       // labels -> text (GameText.h)
 	SkirmishSetupSource *skirmish = nullptr;  // factions, maps, colours for the skirmish lobby (GUI/Skirmish/SkirmishSetup.h)
 	NewGameSink *newGame = nullptr;           // where StartGame posts the new-game message (GUI/Skirmish/SkirmishSetup.h)

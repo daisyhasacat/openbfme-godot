@@ -20,6 +20,10 @@
 #include "GameLogic/ScriptEngine/Scripts.h"
 #include "GameLogic/ScriptEngine/ScriptConditions.h"
 #include "Common/Team.h"
+#include "Common/Player.h"
+#include "Common/PlayerList.h"
+#include "GameLogic/Economy.h"
+#include "GameLogic/GameMessage.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
 
 #include <godot_cpp/core/class_db.hpp>
@@ -51,6 +55,7 @@ const GameTextTable *gameText(ArchiveFileSystem *fs)
 
 void GameWorld::bindScriptMethods()
 {
+	ClassDB::bind_method(D_METHOD("set_objectives_open", "open"), &GameWorld::set_objectives_open);
 	ClassDB::bind_method(D_METHOD("take_script_requests"), &GameWorld::take_script_requests);
 	ClassDB::bind_method(D_METHOD("update_script_view", "delta_ms", "camera"), &GameWorld::update_script_view);
 	ClassDB::bind_method(D_METHOD("get_script_report"), &GameWorld::get_script_report);
@@ -242,11 +247,13 @@ Dictionary GameWorld::update_script_view(double delta_ms, const Dictionary &came
 				const auto *table = gameText(m_fs.is_valid() ? m_fs->archive_fs() : nullptr);
 				if (!table || !table->lookup(definition.first, text)) text = definition.first;
 				od["text"] = g(text);
+				od["label"] = g(definition.first);
 				od["bonus"] = definition.second;
 			}
 			objectives.push_back(od);
 		}
 		d["objectives"] = objectives;
+		d["objectives_enabled"] = v.objectivesEnabled();
 	}
 	d["has_angle"] = v.hasAngle();
 	d["angle"] = v.angle();
@@ -530,6 +537,7 @@ Dictionary GameWorld::get_script_report() const
 	const ScriptEngine &e = logic.scriptEngine();
 	d["loaded"] = e.loaded();
 	d["camera_scroll_distance"] = e.cameraTravel();
+	d["objectives_open"] = e.objectivesOpen();
 	const ScriptEngine::Stats &s = e.stats();
 	d["scripts"] = (int64_t)s.scripts;
 	d["groups"] = (int64_t)s.groups;
@@ -589,4 +597,16 @@ Dictionary GameWorld::get_script_report() const
 	}
 	d["setup"] = setup;
 	return d;
+}
+
+// UI state enters the same deterministic command stream as player input.
+bool GameWorld::set_objectives_open(bool open)
+{
+	if (!m_game || bfme_network_game()) return false;
+	const auto snapshot = m_game->presentedSnapshot();
+	if (!snapshot || !snapshot->players || snapshot->players->localIndex < 0) return false;
+	GameMessage message(MSG_OPENBFME_OBJECTIVES_OPEN, snapshot->players->localIndex);
+	message.appendBooleanArgument(open);
+	m_game->commands().append(message);
+	return true;
 }

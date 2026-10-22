@@ -65,6 +65,9 @@ void registerAptScreenFactories(AptScreenFactoryTable &table)
 	table.registerFactory("PlayerTribute.apt", [](AptScreenContext &c) -> std::unique_ptr<AptScreen> {
 		return std::make_unique<AptPlayerTribute>(c.windows, c.shell, c.services, c.environment);
 	});
+	table.registerFactory("Objectives.apt", [](AptScreenContext &c) -> std::unique_ptr<AptScreen> {
+		return std::make_unique<AptObjectivesMenu>(c.windows, c.shell, c.environment);
+	});
 	// lane CAH-1: the Create-a-Hero builder (the main menu's CreateAHero, RW 0x91A018)
 	table.registerFactory("CreateAHero.apt", [](AptScreenContext &c) -> std::unique_ptr<AptScreen> {
 		return std::make_unique<AptCreateAHero>(c.windows, c.shell, c.environment);

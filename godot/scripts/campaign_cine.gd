@@ -19,6 +19,8 @@ var _caption: Label
 var _fade: ColorRect
 var _status: Label
 var _note: Label         # lane SCRIPT-2: DISPLAY_NOTIFICATION_BOX's text
+var objectives_hook := Callable() # native Objectives.apt content
+var objectives_close_hook := Callable()
 var objectives_open := false
 var _objectives_panel: PanelContainer
 var _objectives: Label   # lane SCRIPT-2: SHOW_MISSION_OBJECTIVE / MARK_MISSION_OBJECTIVE_COMPLETED
@@ -133,7 +135,9 @@ func _process(delta: float) -> void:
 		for p in r.params:
 			ps.append(p.string if not String(p.string).is_empty() else (str(p.real) if p.type == 1 else str(p.int)))
 		print("SCRIPTREQ frame %d %s(%s) [%s]" % [r.frame, r.action, ", ".join(ps), r.script])
-		if r.action == "CLOSE_OBJECTIVES_SCREEN": objectives_open = false
+		if r.action == "CLOSE_OBJECTIVES_SCREEN":
+			objectives_open = false
+			if objectives_close_hook.is_valid(): objectives_close_hook.call()
 		if r.action == "PLAY_MOVIE_IN_GAME" and movie_hook.is_valid() and r.params.size() > 0:
 			movie_hook.call(String(r.params[0].string))
 		# lane CAMP-2: ScriptActions::executeAction (RW 0x7CAFA5): cases 118 / 119 doLetterBoxMode (RW 0x7BC8B7: HideControlBar(true) or ShowControlBar(false),
@@ -155,6 +159,7 @@ func _process(delta: float) -> void:
 		target = Vector3(current.position.x, current.position.y, current.ground_level)
 		angle = float(current.angle)
 	var st: Dictionary = world.update_script_view(delta * 1000.0, {"x": target.x, "y": target.y, "z": target.z, "angle": angle})
+	if objectives_hook.is_valid(): objectives_hook.call(st)
 	if st.has_target and (_look.is_empty() or st.moving): # a drive's follow (lane SCRIPT-3) holds the camera between the script's moves
 		target = Vector3(st.x, st.y, world.get_ground_height(st.x, st.y) if held else target.z) # the height follows in the next held frame
 	if st.has_angle:
@@ -183,7 +188,7 @@ func _process(delta: float) -> void:
 	_caption.position = Vector2(size.x * 0.1, size.y - bar - 120.0)
 	_caption.size = Vector2(size.x * 0.8, 100.0)
 	_status.visible = dev_overlay # lane CAMP-2: developer text never shows in the real game (the owner saw "frame 90   input disabled")
-	_objectives_panel.visible = objectives_open or dev_overlay
+	_objectives_panel.visible = not hud_mode and (objectives_open or dev_overlay)
 	_status.text = "frame %d   %s%s" % [world.get_presented_frame(), "camera moving   " if st.moving else "", "input disabled" if st.input_disabled else ""] if dev_overlay else ""
 	_status.position = Vector2(12, bar + 8.0)
 	_note.text = st.get("notification_text", "")

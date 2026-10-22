@@ -130,6 +130,8 @@ public:
 	// (must outlive the engine). `warOfTheRing`: the game mode for the template masks.
 	void newGame(const std::vector<SideScripts> &sides, const std::vector<TriggerArea> *triggers, const std::vector<NamedCamera> *cameras,
 		bool warOfTheRing);
+	void setObjectivesOpen(bool open) { m_objectivesOpen = open; }
+	bool objectivesOpen() const { return m_objectivesOpen; }
 	void setCameraTravel(float distance) { m_cameraTravel = distance; }
 	float cameraTravel() const { return m_cameraTravel; }
 	void setHost(ScriptEngineHost *host) { m_host = host; }
@@ -423,6 +425,7 @@ private:
 	GameLogic &m_logic;
 	ScriptEngineHost *m_host = nullptr;
 	bool m_loaded = false;
+	bool m_objectivesOpen = false; // command-sampled UI presence; transient, menus close on load
 	float m_cameraTravel = 0.0f; // command-sampled single-player camera input
 	bool m_firstUpdate = true;
 	bool m_warOfTheRing = false;

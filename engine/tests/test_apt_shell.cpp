@@ -530,7 +530,7 @@ TEST_CASE("Shell: the A4 factory table holds MainMenu, Skirmish, LoadScreen, Opt
 	CHECK(have == std::set<std::string>{ "MainMenu.apt", "Skirmish.apt", "LoadScreen.apt", "Options.apt", "GuiFX.apt", "Background.apt", "AptLevel0.apt", "Palantir.apt",
 		"TimeLine.apt", "ScoreScreen.apt", "QuitMenu.apt", // lane END-1: the score screen; lane END-2: the quit menu
 		"SaveLoad.apt", "LanLobby.apt", // lane MP-2: the replay page, the LAN lobby
-		"PlayerTribute.apt", // lane PLAY-1: the Palantir flag's screen
+		"Objectives.apt", "PlayerTribute.apt", // lane PLAY-1: the Palantir flag's screen
 		"CreateAHero.apt", // lane CAH-1: the Create-a-Hero builder
 		"OnlineShell.apt", // lane ONLINE-4: the online screens
 		"CampaignMenu.apt" }); // lane CAMPSAVE-1: the campaign between missions
@@ -1006,4 +1006,51 @@ TEST_CASE("BFME2 main menu: Good and Evil campaign callbacks retain difficulty")
  CHECK(fx.services.requests[0].argument == "bfme2:good:E");
  CHECK(fx.services.requests[1].action == ShellAction::LoadCampaign);
  CHECK(fx.services.requests[1].argument == "bfme2:evil:H");
+}
+
+TEST_CASE("native objectives: twelve retail row providers, live status, input gate and return callback")
+{
+	ShellFx fx;
+	registerAptScreenFactories(fx.factories);
+	fx.addMovie("Objectives", {});
+	fx.wm->init();
+	fx.environment.services = &fx.services;
+	fx.environment.missionObjectives = {{"Mission:First", false, false}, {"Mission:Bonus", true, true}};
+	fx.shell->push("Objectives.apt");
+	REQUIRE(fx.shell->top() != nullptr);
+	CHECK(fx.shell->top()->filename() == "Objectives.apt");
+	bool reported = false;
+	for (const auto &note : fx.wm->notes())
+		reported = reported || note.detail == "[S-1922] native Objectives.apt: opening transition/script-hold guards and close animation are unverified";
+	CHECK(reported);
+	std::string value;
+	auto read = [&](const std::string &name) {
+		CHECK(fx.wm->getExtern(name, value) == (name == "AptObjectivesMenu::InputEnabled" ? AptExternResult::Number : AptExternResult::Value));
+		return value;
+	};
+	CHECK(read("Objective1") == "$Mission:First");
+	CHECK(read("Objective1Status") == "00");
+	CHECK(read("Objective2") == "$Mission:Bonus");
+	CHECK(read("Objective2Status") == "11");
+	CHECK(read("Objective12").empty());
+	CHECK(read("Objective12Status") == "00");
+	CHECK(fx.wm->getExtern("Objective13", value) == AptExternResult::NoProvider);
+	fx.environment.missionObjectives[0].completed = true;
+	CHECK(read("Objective1Status") == "10");
+	fx.environment.missionObjectives.erase(fx.environment.missionObjectives.begin());
+	CHECK(read("Objective1") == "$Mission:Bonus");
+	CHECK(read("Objective2").empty());
+	fx.environment.objectivesInputEnabled = false;
+	CHECK(read("AptObjectivesMenu::InputEnabled") == "0");
+	CHECK(fx.wm->invokeCallback("AptObjectivesMenu::ReturnToGame", ""));
+	CHECK(fx.services.requests.empty());
+	fx.environment.objectivesInputEnabled = true;
+	CHECK(read("AptObjectivesMenu::InputEnabled") == "1");
+	CHECK(fx.wm->invokeCallback("AptObjectivesMenu::ReturnToGame", ""));
+	REQUIRE(fx.services.requests.size() == 1);
+	CHECK(fx.services.requests.front().action == ShellAction::ObjectivesReturnToGame);
+	fx.shell->popImmediate();
+	CHECK_FALSE(fx.wm->hasCommand("AptObjectivesMenu::ReturnToGame"));
+	fx.shell->push("Objectives.apt");
+	CHECK(read("Objective1Status") == "11");
 }

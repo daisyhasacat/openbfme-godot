@@ -90,7 +90,7 @@ public:
 // INFERENCE: retail accepts a status row index == count (one past the rows; the slot then holds no player): the port refuses it and reports it.
 // NOT PORTED / INFERENCE (stop S-1922): the opening's pause / input calls (RW 0x914FA2 .. 0x914FE2); a skirmish AI ally's extra money term (RW 0x6A950B /
 // 0x6A9999 -> + 0xC -> + 0x14) in a tribute row's field 1; the text entry's 5-digit limit and its character filter (RW 0x81606D / 0x721FA9); when RW 0x91578C
-// runs (here: after every change); the campaign's objectives screen.
+// runs (here: after every change). The BFME2 objectives screen below retains its own opening/closing timing caveat.
 class TributeSource;
 struct TributePlayerRow;
 class AptPlayerTribute : public AptScreen
@@ -426,3 +426,11 @@ private:
 };
 
 // Palantir.apt (CodePrefix AptPalantir) is lane HUD-1's AptPalantir (AptPalantir.h); the factory below creates it.
+
+// BFME2 AptPlayerStatusScreen / AptPlayerStatusObjectiveText / AptPlayerStatusCallbacks:
+// Objectives.apt uses twelve visible rows, $label text, and completed/bonus status digits.
+class AptObjectivesMenu : public AptScreen
+{
+public:
+	AptObjectivesMenu(WindowManager &windows, Shell &shell, ShellEnvironment &environment);
+};

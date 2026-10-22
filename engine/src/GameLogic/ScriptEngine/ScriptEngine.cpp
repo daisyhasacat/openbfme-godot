@@ -109,6 +109,7 @@ void ScriptEngine::reset()
 	m_loaded = false;
 	m_firstUpdate = true;
 	m_cameraTravel = 0.0f;
+	m_objectivesOpen = false;
 	m_gameDifficulty = 1;                  // lane CAMP-1H: RW 0x609851 (+ 0x1A5C4 = 1)
 	m_objectsReceiveDifficultyBonus = true; // lane CAMP-1H: RW 0x609857 (+ 0x1A5D5 = 1)
 	m_sides.clear();
@@ -2128,7 +2129,7 @@ std::vector<std::string> ScriptEngine::stopLines()
 		"[S-1182] map scripts: camera, UI, audio, input, fade and end-screen actions are recorded as client requests; the client applies the camera moves / "
 		"resets / rotations / follow / zoom / pitch / look-toward, letterbox, captions, fades, notifications, objectives and (lane SCRIPT-2) the sounds, speech "
 		"and music tracks, not the rest; the RotWK camera controller's ease (W3DView + 0x280) is the ZH ParabolicEase here; the conditions that read the "
-		"client (CAMERA_MOVEMENT_FINISHED, OBJECTIVES_SCREEN_IS_OPEN ...) are unported and false, and FLAG's UI-interaction fallback is not implemented",
+		"client (CAMERA_MOVEMENT_FINISHED, SPELL_STORE_IS_OPEN ...) are unported and false, and FLAG's UI-interaction fallback is not implemented",
 		"[S-1183] map scripts: a script with a condition team does not run once per team member",
 		"[S-1184] map scripts: SET_COUNTER_TO_CLIENT_RANDOM_VALUE keeps its low bound (retail draws the client generator RW 0x6D32E4 inside the logic)",
 		"[S-1185] map scripts: the War of the Ring per-player gate and RW 0x862535 are not ported (lane CAMP-1H: the team states, RW 0x6A8541, run); sequential scripts run "

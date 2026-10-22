@@ -740,8 +740,8 @@ const char *AptPlayerTribute::stopLine()
 		   "(its Cancel / Escape: <path>_ReturnToGame, RW 0x914C51); the status rows are HUD-5's (S-1953); the tribute rows with their sliders and amounts "
 		   "(RW 0x915F5D .. 0x91578C) and Send (RW 0x914DD6 -> MSG_GIVE_MONEY, RW 0x6264E1) are ported (PLAY-1 r2); not ported: the opening's pause / input calls "
 		   "(RW 0x914FA2 .. 0x914FE2), a skirmish AI ally's extra money term in a tribute row's field 1 (RW 0x6A950B / 0x6A9999), the text entry's limit and filter "
-		   "(RW 0x81606D / 0x721FA9), RW 0x91578C's call points (here after every change), RW 0x6264E1's + 0x754 test taken as Player::isDefeated, and the campaign's "
-		   "objectives screen (RW 0x8E8843, AptObjectivesMenu)";
+		   "(RW 0x81606D / 0x721FA9), RW 0x91578C's call points (here after every change), RW 0x6264E1's + 0x754 test taken as Player::isDefeated; "
+		   "BFME2 Objectives.apt is ported, with opening transition/script-hold guards and close animation unverified";
 }
 
 AptLoadScreen::AptLoadScreen(WindowManager &windows, Shell &shell, ShellEnvironment &environment)
@@ -3017,4 +3017,48 @@ void AptOptionsScreen::resetMenu()
 		refreshHealthBarsBox(gadget("HealthBars"));
 	}
 	refreshRetailRows();
+}
+
+AptObjectivesMenu::AptObjectivesMenu(WindowManager &windows, Shell &shell, ShellEnvironment &environment)
+	: AptScreen(windows, shell, "Objectives.apt", "AptObjectivesMenu")
+{
+	// BFME2 0x4E4A45 registers these names. The host handles pause/input and deferred close.
+	windows.note("objectives-unverified", "[S-1922] native Objectives.apt: opening transition/script-hold guards and close animation are unverified");
+	registerCommand("AptObjectivesMenu::OnInitialized", [](const std::string &) {});
+	registerCommand("AptObjectivesMenu::ReturnToGame", [this, &environment](const std::string &) {
+		if (!environment.objectivesInputEnabled) return;
+		if (environment.services) environment.services->request({ShellAction::ObjectivesReturnToGame, {}});
+		else this->windows().note("command-unwired", "AptObjectivesMenu::ReturnToGame: no shell services");
+	});
+	registerProvider("NumOfPlayers", [](const std::string &, std::string &value, bool) { value = "0"; return true; });
+	registerProvider("InSkirmish", [](const std::string &, std::string &value, bool) { value = "0"; return true; });
+	registerProvider("AptObjectivesMenu::InputEnabled", [&environment](const std::string &, std::string &value, bool setting) {
+		value = !setting && environment.objectivesInputEnabled ? "1" : "0"; return true;
+	});
+	windows.markNumericProvider("AptObjectivesMenu::InputEnabled");
+	windows.markNumericProvider("InSkirmish");
+	windows.markNumericProvider("NumOfPlayers");
+	for (size_t row = 0; row < 12; ++row)
+	{
+		const std::string name = "Objective" + std::to_string(row + 1);
+		registerProvider(name, [&environment, row](const std::string &, std::string &value, bool setting) {
+			value.clear();
+			if (!setting && row < environment.missionObjectives.size())
+			{
+				const auto &label = environment.missionObjectives[row].label;
+				// BFME2 ExternsObjective 0x4E4553: length + 2 < 255.
+				if (!label.empty() && label.size() + 2 < 255) value = "$" + label;
+			}
+			return true;
+		});
+		registerProvider(name + "Status", [&environment, row](const std::string &, std::string &value, bool setting) {
+			value = "00";
+			if (!setting && row < environment.missionObjectives.size())
+			{
+				value[0] += environment.missionObjectives[row].completed;
+				value[1] += environment.missionObjectives[row].bonus;
+			}
+			return true;
+		});
+	}
 }

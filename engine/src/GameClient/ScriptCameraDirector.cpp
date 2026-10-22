@@ -5,6 +5,7 @@
 #include "GameClient/ScriptCameraDirector.h"
 
 #include <cmath>
+#include <algorithm>
 
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
 
@@ -191,6 +192,12 @@ void ScriptCameraDirector::apply(const ScriptClientRequest &r, const Coord3D &ca
 		}
 		return;
 	}
+	if (a == "CLOSE_OBJECTIVES_SCREEN") return; // host closes the native shell screen
+	if (a == "ENABLE_OBJECTIVES_SCREEN" || a == "DISABLE_OBJECTIVES_SCREEN")
+	{
+		m_objectivesEnabled = a == "ENABLE_OBJECTIVES_SCREEN";
+		return;
+	}
 	if (a == "DISPLAY_NOTIFICATION_BOX" || a == "DISPLAY_NOTIFICATION_BOX_WITH_OBJECT_TYPE_IMAGE_OVERRIDE")
 	{
 		// (type, label, seconds)
@@ -210,12 +217,23 @@ void ScriptCameraDirector::apply(const ScriptClientRequest &r, const Coord3D &ca
 		{
 			if (it != m_objectives.end())
 			{
+				m_hiddenObjectives[index] = it->second;
 				m_objectives.erase(it);
 			}
 		}
 		else if (it == m_objectives.end())
 		{
-			m_objectives.emplace_back(index, a == "MARK_MISSION_OBJECTIVE_COMPLETED");
+			// BFME2 tracker keeps visibility (flag1) separate from completion (flag2).
+			auto hidden = m_hiddenObjectives.find(index);
+			if (a == "SHOW_MISSION_OBJECTIVE")
+			{
+				const bool completed = hidden != m_hiddenObjectives.end() && hidden->second;
+				m_objectives.emplace_back(index, completed);
+				if (hidden != m_hiddenObjectives.end()) m_hiddenObjectives.erase(hidden);
+				std::sort(m_objectives.begin(), m_objectives.end());
+			}
+			else if (hidden != m_hiddenObjectives.end()) hidden->second = a == "MARK_MISSION_OBJECTIVE_COMPLETED";
+			else m_objectives.emplace_back(index, a == "MARK_MISSION_OBJECTIVE_COMPLETED");
 		}
 		else if (a == "MARK_MISSION_OBJECTIVE_COMPLETED" || a == "MARK_MISSION_OBJECTIVE_NOT_COMPLETED")
 		{

@@ -1128,3 +1128,52 @@ TEST_CASE("tutorial controls: camera travel commands complete strict scroll thre
 	CHECK(b.engine().cameraTravel() == 751.0f);
 	CHECK(blockBytes(*b.lw.logic, "obfme:ScriptEngine") == saved);
 }
+
+TEST_CASE("native objectives: open-state command satisfies the tutorial condition and resets on snapshot load")
+{
+	ScriptGame a, b;
+	a.start(); b.start();
+	a.lw.logic->economy().context().gameMode = EconomyContext::MODE_SINGLE_PLAYER;
+	Player *local = a.lw.players.findPlayerWithName("Alice");
+	a.lw.players.setLocalPlayer(local);
+	GameLogicDispatch dispatch(*a.lw.logic);
+	const auto condition = cond("OBJECTIVES_SCREEN_IS_OPEN", {});
+	CHECK_FALSE(ScriptConditions::evaluate(a.engine(), condition));
+	GameMessage open(MSG_OPENBFME_OBJECTIVES_OPEN, local->getPlayerIndex());
+	open.appendBooleanArgument(true);
+	NetByteWriter writer;
+	std::string error;
+	REQUIRE_MESSAGE(NetPacket::writeGameMessage(writer, open, &error), error);
+	NetByteReader reader(writer.data());
+	auto decoded = NetPacket::readGameMessage(reader, &error);
+	REQUIRE_MESSAGE(decoded != nullptr, error);
+	dispatch.dispatch(*decoded);
+	CHECK(ScriptConditions::evaluate(a.engine(), condition));
+	const auto saved = blockBytes(*a.lw.logic, "obfme:ScriptEngine");
+	b.engine().setObjectivesOpen(true);
+	b.lw.logic->gameState().loadBlocks({"obfme:ScriptEngine"}, saved);
+	CHECK_FALSE(ScriptConditions::evaluate(b.engine(), condition)); // menus are closed on load
+	CHECK(blockBytes(*b.lw.logic, "obfme:ScriptEngine") == saved);
+	GameMessage close(MSG_OPENBFME_OBJECTIVES_OPEN, local->getPlayerIndex());
+	close.appendBooleanArgument(false);
+	for (int mode : {EconomyContext::MODE_LAN, EconomyContext::MODE_INTERNET, EconomyContext::MODE_SKIRMISH})
+	{
+		a.lw.logic->economy().context().gameMode = mode;
+		dispatch.dispatch(close);
+		CHECK(a.engine().objectivesOpen());
+	}
+	a.lw.logic->economy().context().gameMode = EconomyContext::MODE_SINGLE_PLAYER;
+	GameMessage wrongPlayer(MSG_OPENBFME_OBJECTIVES_OPEN, a.lw.players.findPlayerWithName("Bob")->getPlayerIndex());
+	wrongPlayer.appendBooleanArgument(false);
+	dispatch.dispatch(wrongPlayer);
+	CHECK(a.engine().objectivesOpen());
+	GameMessage wrongType(MSG_OPENBFME_OBJECTIVES_OPEN, local->getPlayerIndex());
+	wrongType.appendIntegerArgument(0);
+	dispatch.dispatch(wrongType);
+	CHECK(a.engine().objectivesOpen());
+	dispatch.dispatch(close);
+	CHECK_FALSE(ScriptConditions::evaluate(a.engine(), condition));
+	a.engine().setObjectivesOpen(true);
+	a.start();
+	CHECK_FALSE(a.engine().objectivesOpen());
+}

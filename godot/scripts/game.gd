@@ -1751,6 +1751,8 @@ func _on_shell_request(action: String, argument: String) -> void:
 		_toggle_quit_menu()
 	elif action == "PalantirObjectives":
 		_palantir_objectives()
+	elif action == "ObjectivesReturnToGame":
+		_close_objectives()
 	elif action == "TributeReturnToGame":
 		_close_tribute()
 	elif action.begins_with("QuitMenu"):
@@ -3787,6 +3789,9 @@ func _input(event: InputEvent) -> void:
 			print("GAME powers screen closed by Escape")
 			return
 		# lane PLAY-1: Escape over the tribute screen closes it (its key handler RW 0x914E91 -> RW 0x914C51), not the quit menu
+		if not stack.is_empty() and stack[-1] == "Objectives.apt":
+			if _objectives_can_close(): _close_objectives()
+			return
 		if not stack.is_empty() and stack[-1] == "PlayerTribute.apt":
 			_close_tribute()
 			return
@@ -3816,7 +3821,7 @@ func _lua_console_toggled(open: bool) -> void:
 
 ## lane PLAY-1: the Palantir's flag (AptPalantir::OnBttnObjectives RW 0x6D40C9). In a skirmish or a multiplayer game (RW 0x625456: mode 2 or a network game)
 ## RW 0x914EF0 pushes PlayerTribute.apt over the game when none is up and the game is not ending (the end-game timer, RW 0x914F37); otherwise RW 0x8E8843 opens
-## the objectives screen, which is not ported (S-1922)
+## the native Objectives.apt screen in a campaign or tutorial.
 ## lane PLATFORMICON-1: --net-score-shot: the local player forfeits through the quit menu (as --net-end's joiner does); the game leaves to the score screen, which is saved
 func _net_score_flow() -> void:
 	await _press_escape()
@@ -3844,12 +3849,56 @@ func _net_players_open() -> void:
 	_net_players_shot = ""
 
 
+var _objectives_state: Dictionary = {}
+var _objectives_open := false
+var _objectives_paused := false
+
+func _objectives_can_close() -> bool:
+	# BFME2 Rva004E40A6 only guards Return to Game during a tutorial input lock.
+	return _campaign_flow == null or _campaign_flow.tutorial.is_empty() or not _objectives_state.get("input_disabled", false)
+
+func _objectives_view(state: Dictionary) -> void:
+	_objectives_state = state
+	if _objectives_open:
+		_shell.set_mission_objectives(state.get("objectives", []), _objectives_can_close())
+
+func _open_objectives() -> void:
+	if _objectives_open or _quit_open or _state != State.PLAYING or _objectives_state.is_empty():
+		return
+	# BFME2 Rva004E41AB: the objectives gate, movie/letterbox and scripted input lock block opening.
+	if not _objectives_state.get("objectives_enabled", true) or _objectives_state.get("letterbox", false) or _objectives_state.get("input_disabled", false):
+		return
+	_shell.set_mission_objectives(_objectives_state.get("objectives", []), true)
+	if not _shell.shell_push("Objectives.apt"):
+		printerr("GAME Objectives.apt: ", str(_shell.get_shell_report().errors))
+		return
+	if not _world.set_objectives_open(true):
+		_shell.shell_pop()
+		printerr("GAME Objectives.apt: could not post the single-player open state")
+		return
+	_objectives_open = true
+	_set_game_overlays_covered(true)
+	# BFME2 Rva004E41AB pauses single player except tutorial mode 6. This host
+	# identifies tutorials through CampaignFlow rather than a separate economy mode.
+	_objectives_paused = not (_campaign_flow != null and not _campaign_flow.tutorial.is_empty()) and not _world.is_paused()
+	if _objectives_paused: _world.set_paused(true)
+
+func _close_objectives() -> void:
+	if not _objectives_open: return
+	var stack: PackedStringArray = _shell.shell_stack()
+	if not stack.is_empty() and stack[-1] == "Objectives.apt": _shell.shell_pop()
+	_objectives_open = false
+	_world.set_objectives_open(false)
+	_set_game_overlays_covered(false)
+	if _objectives_paused: _world.set_paused(false)
+	_objectives_paused = false
+
+
 func _palantir_objectives() -> void:
 	var ctx: Dictionary = _world.get_quit_menu_context()
 	var mode: int = ctx.get("mode", 2)
 	if mode != 2 and mode != 1 and mode != 5:
-		if _campaign_flow != null and is_instance_valid(_campaign_flow._cine):
-			_campaign_flow._cine.toggle_objectives()
+		_open_objectives()
 		return
 	if _shell.shell_stack().has("PlayerTribute.apt") or _quit_open or _state != State.PLAYING:
 		return
@@ -3937,6 +3986,7 @@ var _restart_stack := PackedStringArray()
 ## ToggleQuitMenu (RW 0x921C9D): an open menu closes with code 0 (back to the game), else QuitMenu.apt opens over the game; a game that is not a network game
 ## pauses while it is open (RW 0x921C4C: RW 0x625AF1(1, 0, 1))
 func _toggle_quit_menu() -> void:
+	if _objectives_open: return
 	if _state != State.PLAYING:
 		return
 	if _quit_open:
@@ -4229,6 +4279,8 @@ func _online_relay_tick(st: Dictionary) -> void:
 
 ## the running game cleared without the score screen (Restart, lane SAVE-2: a save loaded over a game): the HUD and the game's nodes go, the shell is emptied
 func _tear_down_game(why: String, clear_world: bool = true) -> void:
+	_close_objectives()
+	_objectives_state.clear()
 	if is_instance_valid(_ios_quick_resume) and why not in ["load", "load failed"]: _ios_quick_resume.discard()
 	if is_instance_valid(_second_view):
 		_second_view.close_view()
@@ -4265,6 +4317,7 @@ func _tear_down_game(why: String, clear_world: bool = true) -> void:
 ## GameLogic::clearGameData(true) (RW 0x7792BC) and the score screen (RW 0x927898 pushes TimeLine.apt): the game is torn down (the worker stopped, objects,
 ## drawables, audio and the network session released), the HUD goes, the shell shows the score screen with the statistics the logic kept.
 func _exit_to_score_screen() -> void:
+	_close_objectives()
 	if _state != State.PLAYING:
 		return
 	if is_instance_valid(_ios_quick_resume): _ios_quick_resume.discard()

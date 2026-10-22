@@ -464,6 +464,9 @@ void ScriptEngine::xfer(Xfer &x)
 	m_pendingLoad = [this, staged, firstUpdate, difficulty, bonus, cameraTravel]() {
 		m_firstUpdate = firstUpdate;
 		m_cameraTravel = cameraTravel;
+		// BFME2 ObjectivesMenu snapshot stores its enable gate, not the live screen instance.
+		// A snapshot load closes presentation menus; the UI-presence condition starts false.
+		m_objectivesOpen = false;
 		m_gameDifficulty = difficulty;
 		m_objectsReceiveDifficultyBonus = bonus;
 		for (size_t i = 0; i < m_sides.size(); ++i)
