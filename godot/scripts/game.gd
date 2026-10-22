@@ -281,6 +281,7 @@ var _perf_windows := {}      # lane RENDERWAIT-1: the client window counts at th
 var _perf_stat := ""          # lane PERF-3: --perf-stat=<prefix>
 var _perf_log_path := ""      # lane MP-3: --perf-log=<file>: every rendered frame of the game, "<logic frame> <frame time us>" (tools/net/mp3_perf_table.py)
 var _perf_log: FileAccess = null
+var _perf_pipeline_counts := {}
 var _perf_log_prev_us := 0
 var _net_census := ""         # lane MP-3: --net-census=<file>: the network game's per-logic-frame census CSV, written when the game ends
 var _net_early_orders := true # lane NETLAG-2: --no-early-orders: every order waits for RotWK's frame + 1 (early orders run a frame sooner where the link allows)
@@ -5176,7 +5177,12 @@ func _perf_log_frame() -> void:
 			_perf_log_path = ""
 			return
 		_perf_log_prev_us = now
+		_perf_pipeline_counts = preload("res://scripts/pipeline_metrics.gd").snapshot()
 		return
+	var pipelines := preload("res://scripts/pipeline_metrics.gd").snapshot()
+	if now - _perf_log_prev_us >= 100000:
+		print("GAME PERF STALL ", JSON.stringify({"frame_ms": (now - _perf_log_prev_us) / 1000.0, "world": _world.get_frame_timings(), "pipelines": preload("res://scripts/pipeline_metrics.gd").difference(_perf_pipeline_counts, pipelines)}))
+	_perf_pipeline_counts = pipelines
 	_perf_log.store_line("%d %d" % [_world.get_presented_frame(), now - _perf_log_prev_us]) # lane PATHPERF-1: get_frame waits for the logic worker
 	_perf_log_prev_us = now
 

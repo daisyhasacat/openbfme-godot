@@ -215,3 +215,25 @@ relaunch restoration, retry-loop protection and multiplayer/replay exclusions.
 The full game-host test also passes capture and restore in separate processes
 through the actual SaveFlow and HUD, verifying exact camera coordinates, selected
 unit, pause/quit menu and checkpoint removal when leaving the match.
+
+## Post-merge gameplay stalls, 2026-10-22
+
+A rendered macOS Metal run at 3024×1964, Forward+, no VSync, seed 42, Men
+on Buckland used `--auto --play1=skirmish --perf-log=/tmp/gameplay.log`.
+The script places a barracks and trains Gondor Fighter hordes. The first run
+recorded 4,338 frames: median 9.738 ms, p99 24.415 ms, 12 frames over 100 ms,
+and worst 2,152.930 ms. An immediate repeat without clearing caches recorded
+5,124 frames: median 9.728 ms, p99 26.556 ms, zero frames over 100 ms,
+and worst 78.489 ms. CPU sampling included Metal compilation work.
+
+The merge changed generated W3D shader source, invalidating the old shader
+cache entries. The repeat supports first-use work as a major cause of these
+stalls; it does not establish pre-merge FPS parity or identify the cause of
+lower steady FPS on another device. The scripted test's later radar-move
+assertion failed in both runs; these measurements are not a gameplay test pass.
+
+When `--perf-log` is enabled, frames taking at least 100 ms now also print
+`GAME PERF STALL` with world-stage timings, new-model work, and per-frame
+pipeline compilation deltas. The two-column timing file remains unchanged.
+The diagnostics are disabled during ordinary play. Pipeline counts alone do
+not measure compilation time or prove a causal relationship.
