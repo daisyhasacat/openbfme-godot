@@ -3022,6 +3022,9 @@ void AptOptionsScreen::resetMenu()
 AptObjectivesMenu::AptObjectivesMenu(WindowManager &windows, Shell &shell, ShellEnvironment &environment)
 	: AptScreen(windows, shell, "Objectives.apt", "AptObjectivesMenu")
 {
+	// BFME2 AptPlayerStatus constructor 0x4E4A45 selects mode 2: the
+	// transparent in-game ring background, shared with the pause menu.
+	windows.setBackground(2);
 	// BFME2 0x4E4A45 registers these names. The host handles pause/input and deferred close.
 	windows.note("objectives-unverified", "[S-1922] native Objectives.apt: opening transition/script-hold guards and close animation are unverified");
 	registerCommand("AptObjectivesMenu::OnInitialized", [](const std::string &) {});
@@ -3061,4 +3064,10 @@ AptObjectivesMenu::AptObjectivesMenu(WindowManager &windows, Shell &shell, Shell
 			return true;
 		});
 	}
+}
+
+AptObjectivesMenu::~AptObjectivesMenu()
+{
+	// BFME2 AptPlayerStatusDtor: hide the in-game background on return.
+	windows().hideBackground(false);
 }

@@ -1019,6 +1019,7 @@ TEST_CASE("native objectives: twelve retail row providers, live status, input ga
 	fx.shell->push("Objectives.apt");
 	REQUIRE(fx.shell->top() != nullptr);
 	CHECK(fx.shell->top()->filename() == "Objectives.apt");
+	CHECK(fx.wm->backgroundMode() == 2);
 	bool reported = false;
 	for (const auto &note : fx.wm->notes())
 		reported = reported || note.detail == "[S-1922] native Objectives.apt: opening transition/script-hold guards and close animation are unverified";
@@ -1051,6 +1052,7 @@ TEST_CASE("native objectives: twelve retail row providers, live status, input ga
 	CHECK(fx.services.requests.front().action == ShellAction::ObjectivesReturnToGame);
 	fx.shell->popImmediate();
 	CHECK_FALSE(fx.wm->hasCommand("AptObjectivesMenu::ReturnToGame"));
+	CHECK(fx.wm->backgroundMode() == 0);
 	fx.shell->push("Objectives.apt");
 	CHECK(read("Objective1Status") == "11");
 }

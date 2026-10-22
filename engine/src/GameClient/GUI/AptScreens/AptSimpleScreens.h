@@ -433,4 +433,5 @@ class AptObjectivesMenu : public AptScreen
 {
 public:
 	AptObjectivesMenu(WindowManager &windows, Shell &shell, ShellEnvironment &environment);
+	~AptObjectivesMenu() override;
 };

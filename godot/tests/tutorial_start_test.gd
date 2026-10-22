@@ -173,6 +173,7 @@ func _assert_native_objectives(game: Node) -> void:
 	game._palantir_objectives()
 	assert(game._objectives_open)
 	assert(game._shell.shell_stack()[-1] == "Objectives.apt")
+	assert(game._shell.get_backdrop_state().background_mode == 2)
 	assert(not world.is_paused(), "BFME2 tutorial mode keeps simulation running for the objectives-open check")
 	assert(not cine._objectives_panel.visible, "The native movie replaces the Godot objectives panel")
 	world.advance(0.2)
