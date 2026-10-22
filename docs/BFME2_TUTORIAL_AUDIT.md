@@ -140,3 +140,11 @@ The script enable/disable actions gate opening, and the close action closes the 
 S-1922 now covers the remaining native objectives differences: exact opening transition/script-hold guards and closing animation. This caveat is reported by the native screen and pinned in a test. Tutorial GameData `Objective` presentation and loading voice (S-175) are separate from mission objective rows and remain unported.
 
 Native-menu validation: 102 focused native script, save-block and shell cases pass (2,683 assertions; installed-data-only native cases skip without the games). Basic and Advanced installed-data integration tests cover native opening, actual Resume button pointer input, tutorial input lock, script close, Escape, enable/disable, campaign pause and restart cleanup. The Basic menu was also captured and visually inspected with the graphical renderer. Exact transition/script-hold parity remains S-1922.
+
+## Ground spotlight
+
+The scripts create and move `InGameMarker` objects rather than requesting a separate spotlight effect. Their mounted model-condition data specifies an additive dynamic decal, `EXSpotLight`, at 135 by 135 world units. Live drawable rendering now projects explicit-size additive model decals from their `Shadow`/`ShadowTexture` fields; no tutorial object name is special-cased. The nodes follow drawable positions, hide with the drawable's visibility, and leave with its removal. Textures stay in the installed game archives.
+
+BFME2 source evidence: `W3DShadowManagerAddShadow.cpp` routes types 0x40/0x800 to the projected-shadow manager, and `W3DProjectedShadowManagerFlushDecals.cpp` selects the additive shader for both. S-3304 remains for exact blend/projection parity, ShadowOpacity timing, rotated offsets, automatic sizing and per-pixel shroud clipping at decal boundaries. The initial implementation displays the texture at full intensity; retail fade timing is not claimed.
+
+Spotlight validation: the installed-data Basic test creates the retail marker through the script action, checks its texture, dimensions, additive emission and terrain mask, moves it, and verifies removal after NAMED_KILL. A graphical capture confirms the white spotlight on the ground.

@@ -417,6 +417,7 @@ Dictionary GameWorld::debug_script_unit(const String &name)
 	if (o)
 	{
 		out["ok"] = true;
+		out["id"] = (int64_t)o->getID();
 		out["x"] = o->getPosition()->x;
 		out["y"] = o->getPosition()->y;
 		out["z"] = o->getPosition()->z;

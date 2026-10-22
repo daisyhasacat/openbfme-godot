@@ -45,6 +45,7 @@ func _run() -> void:
 	if lesson == "Basic":
 		_assert_scripted_camera_move(game)
 		await _assert_camera_controls(game)
+		await _assert_spotlight(game)
 	await _assert_native_objectives(game)
 	# Restart uses the same standalone tutorial, without advancing campaign progress.
 	await game._campaign_flow.restart_mission()
@@ -245,3 +246,49 @@ func _assert_native_objectives(game: Node) -> void:
 	# The caller restarts while this instance is open, exercising teardown cleanup.
 	game._palantir_objectives()
 	assert(game._objectives_open)
+
+func _spotlight_node(world: Node, object_id: int) -> Decal:
+	for node in world.find_children("DrawableAdditiveDecal_*", "Decal", false, false):
+		if int(node.get_meta("object_id", 0)) == object_id: return node
+	return null
+
+func _assert_spotlight(game: Node) -> void:
+	var world: Node = game._world
+	var waypoint: Dictionary = world.get_waypoint("WP - Spotlight Fighters")
+	assert(world.debug_script_action("CREATE_NAMED_ON_TEAM_AT_WAYPOINT", [
+		{"type":14, "string":"Test Spotlight"}, {"type":15, "string":"InGameMarker"},
+		{"type":3, "string":"PlyrCivilian/teamPlyrCivilian"}, {"type":7, "string":"WP - Spotlight Fighters"}]).ok)
+	world.advance(0.2)
+	for i in 3: await process_frame
+	var marker: Dictionary = world.debug_script_unit("Test Spotlight")
+	assert(marker.ok, str(marker))
+	var decal := _spotlight_node(world, marker.id)
+	assert(decal != null, "The retail marker's additive shadow must create a ground decal")
+	assert(decal.visible)
+	assert(decal.size == Vector3(135.0, 200.0, 135.0))
+	assert(decal.position == Vector3(marker.x, marker.z, -marker.y))
+	assert(decal.cull_mask == 524288) # terrain layer, bit 19
+	assert(decal.get_texture(Decal.TEXTURE_EMISSION) != null)
+	assert(decal.get_texture(Decal.TEXTURE_ALBEDO) == null)
+	assert(decal.get_meta("shadow_texture") == "EXSpotLight.tga")
+	assert(decal.get_meta("acceptance_stop") == "[S-3304] additive drawable decals: projection/blend and ShadowOpacity timing are unverified")
+	var shot := OS.get_environment("SPOTLIGHT_TEST_SHOT")
+	if not shot.is_empty():
+		game._hud.camera_look_at(Vector2(waypoint.x, waypoint.y))
+		game._hud.camera_set_height(400.0)
+		game._campaign_flow._cine._process(0.0)
+		await create_timer(0.5).timeout
+		await RenderingServer.frame_post_draw
+		assert(root.get_texture().get_image().save_png(shot) == OK)
+	# Position follows the ordinary drawable transform, not a fixed tutorial coordinate.
+	assert(world.debug_script_place_at("Test Spotlight", waypoint.x + 40.0, waypoint.y + 20.0).ok)
+	world.advance(0.2)
+	for i in 3: await process_frame
+	marker = world.debug_script_unit("Test Spotlight")
+	assert(decal.position == Vector3(marker.x, marker.z, -marker.y))
+	assert(world.debug_script_action("NAMED_KILL", [{"type":14, "string":"Test Spotlight"}]).ok)
+	for i in 10:
+		world.advance(0.2)
+		await process_frame
+	var remaining := _spotlight_node(world, marker.id)
+	assert(remaining == null or not remaining.visible, "Removing the scripted marker must remove its ground spotlight")
