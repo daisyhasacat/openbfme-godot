@@ -1510,8 +1510,6 @@ func _process(delta: float) -> void:
 	Release.set_in_game(_state == State.PLAYING) # lane RELEASE-1: the version corner in the menus only
 	_campaign_check_tick() # lane CAMP-1
 	if _state == State.MENU:
-		if not _fs.is_bfme1() and _menu_style == "bfme2" and _frames % 5 == 0 and _shell.shell_stack().size() > 0 and _shell.shell_stack()[-1] == "MainMenu.apt":
-			_hide_bfme2_campaign_buttons() # lane DEVPORT-8: the BFME2 campaigns are not in this tree (BFME2_CAMPAIGNS)
 		if _pending_menu_style != _menu_style and not _switching_menu_style and _clean_main_menu():
 			_switching_menu_style = true
 			call_deferred("_apply_pending_menu_style")
@@ -1881,14 +1879,9 @@ func _apply_pending_menu_style() -> void:
 	print("GAME main menu style: ", _menu_style)
 
 
-## lane DEVPORT-8: THE switch of the BFME2 Good / Evil campaigns (lane B2CAMP-1 turns it on with its campaign entry point). Off, BFME2's own MainMenu.apt
-## GoodCampaign / EvilCampaign buttons are hidden (below) and a request that still names them is refused by name (start_bfme2_campaign). Lane CAMPMENU-1
-## moved it here from the OpenBFME campaign panel (scripts/menu_campaigns.gd, removed: the campaigns start from retail's own Solo Play buttons)
-const BFME2_CAMPAIGNS := false
-
-## lane DEVPORT-8: BFME2's own MainMenu.apt has GoodCampaign / EvilCampaign buttons (its Solo Play list: Skirmish, WarOfTheRing, EvilCampaign,
-## GoodCampaign, LoadGame). While BFME2_CAMPAIGNS is off they are hidden (their clip's _visible); { found: [clip paths], visible: [the
-## clips still visible], hittable: [their buttons the pointer would take] }
+## Campaign entries belong to each presentation movie's Solo Play dropdown.
+## Keep BFME2's Good/Evil entries visible even while their gameplay entry point
+## reports unsupported; RotWK retains its authored Angmar/bonus entries.
 const BFME2_CAMPAIGN_CLIPS := ["GoodCampaign", "EvilCampaign"]
 func bfme2_campaign_buttons() -> Dictionary:
 	var out := {"found": [], "visible": [], "hittable": []}
@@ -1918,29 +1911,8 @@ func bfme2_campaign_buttons() -> Dictionary:
 	return out
 
 
-func _hide_bfme2_campaign_buttons() -> void:
-	if BFME2_CAMPAIGNS:
-		return
-	var top: int = _shell.shell_top_level()
-	var buttons := bfme2_campaign_buttons()
-	for clip in buttons.visible:
-		if not _shell.set_clip_property(top, clip, "_visible", 0.0):
-			print("GAME stop: the BFME2 campaign button ", clip, " could not be hidden")
-	# The authored list grows upward. Keep its middle row and row spacing,
-	# with Skirmish above War of the Ring and Load Game below it.
-	var top_row: Dictionary = _shell.get_member(top, "SoloPlayNav.EvilCampaign", "_y")
-	var middle_row: Dictionary = _shell.get_member(top, "SoloPlayNav.WarOfTheRing", "_y")
-	if top_row.get("found", false) and middle_row.get("found", false):
-		var middle_y := float(middle_row.value)
-		var spacing := absf(middle_y - float(top_row.value))
-		_shell.set_clip_property(top, "SoloPlayNav.Skirmish", "_y", middle_y - spacing)
-		_shell.set_clip_property(top, "SoloPlayNav.LoadGame", "_y", middle_y + spacing)
-
-
-
-## lane DEVPORT-8: the BFME2 campaigns are behind BFME2_CAMPAIGNS (off until B2CAMP-1): their buttons are hidden, so a request is a bug somewhere; it is
-## refused by name with the main menu's "not available" box (AptMainMenu::screenUnavailable, lane CAMPMENU-1: retail's GuiFX.apt message box, whose Ok
-## gives the menu back) and the stop line, which is returned. B2CAMP-1 replaces the body with its campaign entry point.
+## BFME2 campaign gameplay remains unavailable; selecting a restored entry uses
+## the existing named error dialog instead of silently hiding the entry.
 func start_bfme2_campaign(alignment: String) -> String:
 	if alignment not in ["good", "evil"]:
 		_fail("unknown BFME2 campaign alignment: " + alignment)

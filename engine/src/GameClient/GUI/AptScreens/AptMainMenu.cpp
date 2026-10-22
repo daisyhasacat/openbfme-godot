@@ -100,7 +100,7 @@ const UnavailableScreen kUnavailableScreens[] = {
 	{ "GoodCampaign", "BFME1 Good campaign (Living World)", "OpenBFME does not have it yet" },
 	{ "EvilCampaign", "BFME1 Evil campaign (Living World)", "OpenBFME does not have it yet" },
 	// lane CAMPMENU-1: not Expansion1Campaign / BonusCampaign: the host starts them (godot/scripts/campaign_flow.gd). BFME2's Good / Evil campaigns (BFME2
-	// MainMenu.apt's GoodCampaign / EvilCampaign, hidden while godot/scripts/game.gd BFME2_CAMPAIGNS is off) are refused by these names
+	// MainMenu.apt's GoodCampaign / EvilCampaign) are refused by these names until their gameplay flow is implemented
 	{ "BFME2GoodCampaign", "The BFME2 Good campaign", "OpenBFME does not have it yet" },
 	{ "BFME2EvilCampaign", "The BFME2 Evil campaign", "OpenBFME does not have it yet" },
 	{ "WarOfTheRing", "War of the Ring", "its strategy map game is still being rebuilt" },

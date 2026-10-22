@@ -9,7 +9,7 @@ const Options := preload("res://scripts/game_options.gd")
 var _switches := 0
 
 
-## lane DEVPORT-8: with --screens=DIR, the clean main menu (after its reveal) and its Solo Play list (BFME2's campaign buttons hidden there), named
+## lane DEVPORT-8: with --screens=DIR, the clean main menu (after its reveal) and its Solo Play list (each game's campaign buttons visible there), named
 ## menustyle-<WxH>-<tag>.png
 func _shots(tag: String) -> void:
 	if game._screens.is_empty():
@@ -116,12 +116,9 @@ func run(owner: Node) -> void:
 	game.get_tree().quit(0 if failures == 0 else 1)
 
 
-## lane DEVPORT-8: with game.gd BFME2_CAMPAIGNS off (until B2CAMP-1) no BFME2 campaign button is in the menu (BFME2's own MainMenu.apt buttons are hidden by
-## game.gd), and a request that names one is refused by name. Lane CAMPMENU-1: the campaigns are retail's own Solo Play entries (no OpenBFME panel):
-## RotWK's list holds Expansion1Campaign and BonusCampaign (MainMenu.apt; tools/menus/retail_controls.json), clicked as the player would
+## Each presentation movie retains its authored campaigns and dropdown layout.
 const ROTWK_SOLO_ENTRIES := ["BonusCampaign", "Expansion1Campaign", "LoadGame", "Skirmish", "WarOfTheRing"]
 func _check_campaign_buttons(style: String) -> void:
-	check(not game.BFME2_CAMPAIGNS, "the BFME2 campaign switch is off in this tree")
 	var overlay := _visible_godot_buttons(game)
 	check(overlay.is_empty(), "%s: no Godot button over the main menu (every button is the movie's): %s" % [style, overlay])
 	var top: int = game._shell.shell_top_level()
@@ -146,15 +143,15 @@ func _check_campaign_buttons(style: String) -> void:
 	if style == "bfme2":
 		check(opened, "bfme2: the Solo Play list opened")
 		check(native.get("found", []) == ["SoloPlayNav.GoodCampaign", "SoloPlayNav.EvilCampaign"], "bfme2: BFME2's MainMenu.apt GoodCampaign / EvilCampaign found: %s" % JSON.stringify(native))
-		var evil_y: Dictionary = game._shell.get_member(top, "SoloPlayNav.EvilCampaign", "_y")
-		var load_y: Dictionary = game._shell.get_member(top, "SoloPlayNav.LoadGame", "_y")
-		check(load_y.get("found", false) and str(load_y.value) == str(evil_y.get("value", "")), "bfme2: Load Game took the hidden rows' place: %s / %s" % [load_y, evil_y])
 		var shown := []
 		for b in game._shell.list_buttons(top):
 			if bool(b.hittable) and str(b.path).begins_with("_level%d.SoloPlayNav." % top):
 				shown.append(str(b.path).split(".")[2])
 		check(shown.has("Skirmish") and shown.has("WarOfTheRing") and shown.has("LoadGame"), "bfme2: the list's other entries can be clicked: %s" % [shown])
-	check(native.get("visible", []).is_empty() and native.get("hittable", []).is_empty(), "%s: no BFME2 campaign button of MainMenu.apt is visible or clickable: %s" % [style, JSON.stringify(native)])
+		check(native.visible == native.found and not native.hittable.is_empty(), "bfme2: Good/Evil campaign entries remain visible and clickable: %s" % [native])
+		check(shown.has("GoodCampaign") and shown.has("EvilCampaign"), "bfme2: both campaigns take pointer input")
+	else:
+		check(native.get("visible", []).is_empty() and native.get("hittable", []).is_empty(), "%s: no BFME2 campaigns mixed into this menu" % style)
 	if opened:
 		await _close_list(nav)
 	for alignment in ["good", "evil"]:
