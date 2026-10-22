@@ -21,6 +21,7 @@
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
+#include "GameLogic/SkirmishAI/AIStrategy.h"
 #include "GameLogic/WallBalance.h"
 #include "GameLogic/Weapon.h"
 #include "GameLogic/WeaponNugget.h"
@@ -313,21 +314,24 @@ void AIFortification::update(GameLogic &logic, AISkirmishPlayer &ai)
   b.siegeUnits.insert(unit->getID());
  }
  const bool staging = target && passiveBarrier(*target);
+ if (staging && b.siegeUnits.empty()) b.siegeLaunched = false;
  if (staging || (target && !previousEscorts.empty()))
  {
   for (Object *unit = logic.getFirstObject(); unit; unit = unit->getNextObject())
   {
-   if (b.siegeEscorts.size() == 6) break;
+   // An intact breach blocks the whole army, not just six escorts. Surplus
+   // infantry and previously dispatched squads must not march in without siege.
+   if (!staging && b.siegeEscorts.size() == 6) break;
    auto *a = unit->getAIUpdateInterface();
    if (unit->getControllingPlayer() != player || !unit->isInWorld() || !CombatQueries::isAlive(*unit) || !a ||
-       unit->getContainedBy() || b.strategyRecovering.count(unit->getID()) || unit->isUnderConstruction() || !unit->isKindOfName("CAN_ATTACK") ||
+       unit->getContainedBy() || AIStrategy::capturing(*unit) || b.strategyRecovering.count(unit->getID()) || unit->isUnderConstruction() || !unit->isKindOfName("CAN_ATTACK") ||
        unit->isKindOfName("STRUCTURE") || unit->isKindOfName("DOZER") || unit->isKindOfName("IGNORES_SELECT_ALL") ||
        unit->isKindOfName("SIEGEENGINE") || b.siegeUnits.count(unit->getID())) continue;
    bool assigned = false;
    for (const auto &tactic : b.tactics) for (const auto &team : tactic.teams)
     assigned = assigned || (std::find(team.members.begin(), team.members.end(), unit->getID()) != team.members.end() &&
                             !(team.type == 0 && team.wantsMembers && !team.handedOver));
-   if (!previousEscorts.count(unit->getID()) && (assigned || a->currentVictim())) continue;
+   if (!staging && !previousEscorts.count(unit->getID()) && (assigned || a->currentVictim())) continue;
    b.siegeEscorts.insert(unit->getID());
   }
  }
@@ -346,7 +350,9 @@ void AIFortification::update(GameLogic &logic, AISkirmishPlayer &ai)
   if (!a || !target) return;
   if (!b.siegeLaunched)
   {
-   if (!(siege ? previous : previousEscorts).count(id)) a->aiIdle(CMD_FROM_AI);
+   // A policy takeover must cancel the previous attack-move. CMD_FROM_AI
+   // idle intentionally preserves it (temporary combat diversion semantics).
+   if (!(siege ? previous : previousEscorts).count(id)) a->aiIdle(CMD_FROM_PLAYER);
    if (CombatQueries::centerDistanceSquared2D(*unit->getPosition(), rally) > 40000.0f && a->isIdle()) a->aiMoveToPosition(rally, CMD_FROM_AI);
   }
   else if (siege)
@@ -373,7 +379,7 @@ void AIFortification::update(GameLogic &logic, AISkirmishPlayer &ai)
    }
    const bool tooClose = CombatQueries::centerDistanceSquared2D(*unit->getPosition(),wall) < SimMath::mulf32(standOff,standOff);
    const bool wrongGoal = CombatQueries::centerDistanceSquared2D(a->stateMachine().goalPosition(),hold) > 2500.0f;
-   if (!previousEscorts.count(id) || (tooClose && wrongGoal) || a->currentVictim()) a->aiIdle(CMD_FROM_AI);
+   if (!previousEscorts.count(id) || (tooClose && wrongGoal) || a->currentVictim()) a->aiIdle(CMD_FROM_PLAYER);
    if (a->isIdle() && CombatQueries::centerDistanceSquared2D(*unit->getPosition(),hold) > 2500.0f)
     a->aiMoveToPosition(hold,CMD_FROM_AI);
   }

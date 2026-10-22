@@ -21,3 +21,15 @@ cannot automatically acquire wall towers. Siege weapons keep attacking the breac
 Once the route opens and the objective changes past the wall, escorts resume
 the normal assault. This fixes the previous launch order that sent escorts
 directly to the intact wall's center. Distances are enhanced-policy tuning.
+
+While an intact breach blocks the objective, all eligible ordinary combat units
+are held, including surplus infantry and members of active attack squads. The
+six-escort cap applies only after the objective is no longer an intact barrier.
+Without any usable siege unit, the army does not launch even after the gathering
+timeout; losing the last siege unit clears a previously launched assault.
+Capture tasks and recovery reservations remain protected. A ten-infantry, zero-siege
+regression runs beyond the launch timeout and checks actual holding movement.
+
+Taking over an existing attack squad explicitly cancels its previous attack-move:
+AI-source idle orders preserve attack-move for temporary diversions, so the hold
+policy uses the normal permanent order-override path before issuing its AI move.

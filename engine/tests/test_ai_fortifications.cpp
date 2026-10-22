@@ -406,6 +406,40 @@ TEST_CASE("fortification AI: a hub is a last-resort blocker, never a cleanup obj
  CHECK(s.w.health(hub)==500);
 }
 
+TEST_CASE("fortification AI: an infantry-only army holds outside intact walls beyond the launch timeout")
+{
+ Scenario s; s.restrict();
+ auto *gate=s.w.unit("BlockingGate",'B',600,500);
+ s.w.unit("BreachFortress",'B',850,500);
+ for(int y=0;y<100;++y)s.w.terrain.cliff.insert({60,y});s.w.buildMap();
+ AITactic tactic; tactic.teams.emplace_back();
+ tactic.teams.front().handedOver=true;
+ for(int i=0;i<10;++i)
+ {
+  auto *unit=s.w.unit("Swordsman",'A',150+i*10,550);
+  tactic.teams.front().members.push_back(unit->getID());
+  unit->getAIUpdateInterface()->aiMoveToPosition(*gate->getPosition(),CMD_FROM_AI);
+  unit->getAIUpdateInterface()->armAttackMove(*gate->getPosition(),CMD_FROM_AI);
+ }
+ s.bot.brain.tactics.push_back(tactic);
+ for(int i=0;i<240;++i) { AIFortification::update(*s.w.logic,s.bot); s.w.frames(1); }
+ CHECK(s.bot.brain.siegeUnits.empty());
+ CHECK(s.bot.brain.siegeEscorts.size()==10);
+ CHECK_FALSE(s.bot.brain.siegeLaunched);
+ // Losing the last engine after an earlier launch must also cancel the assault.
+ s.bot.brain.siegeLaunched=true;
+ AIFortification::update(*s.w.logic,s.bot);
+ CHECK_FALSE(s.bot.brain.siegeLaunched);
+ CHECK(s.bot.brain.tactics.front().teams.front().members.empty());
+ for(auto id:s.bot.brain.siegeEscorts)
+ {
+  auto *unit=s.w.logic->findObjectByID(id);
+  CHECK(unit->getAIUpdateInterface()->currentVictimId()==INVALID_ID);
+  // tolerance: all held infantry remain on the home side of the wall.
+  CHECK(unit->getPosition()->x < 400);
+ }
+}
+
 TEST_CASE("fortification AI: a walled base gathers three engines and six escorts before launching")
 {
  Scenario s; s.restrict();
