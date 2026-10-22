@@ -636,8 +636,11 @@ bool offensiveAllowed(GameLogic &logic, const AISkirmishPlayer &ai, const Player
 	return logic.random().getValue(0, p.denominator - 1, "AIDifficulty.cpp", 0x5B) < p.numerator;
 }
 
-bool inAnyTeamOf(const AIBrainState &b, ObjectID id)
+bool inAnyTeamOf(const AIBrainState &b, const Object &object)
 {
+ if (AIStrategy::capturing(object)) return true;
+ const ObjectID id = object.getID();
+
 	if (b.siegeUnits.count(id) || b.siegeEscorts.count(id) || b.strategyRecovering.count(id)) return true;
 	for (const AITactic &tac : b.tactics)
 	{
@@ -710,7 +713,7 @@ bool hasSiegeEngine(GameLogic &logic, const AISkirmishPlayer &ai, const AIBrainS
 	for (ObjectID id : AITacticalAI::recordOf(logic, ai.playerIndex).army())
 	{
 		const Object *o = logic.findObjectByID(id);
-		if (o && is(*o, siege) && alive(o) && !is(*o, k.ignoresSelectAll) && !inAnyTeamOf(b, id))
+		if (o && is(*o, siege) && alive(o) && !is(*o, k.ignoresSelectAll) && !inAnyTeamOf(b, *o))
 		{
 			return true;
 		}
@@ -2161,7 +2164,7 @@ bool anyKind(const Object &o, const std::vector<int> &bits)
 bool recruitable(GameLogic &logic, const AIBrainState &b, const AITacticTeam &team, const Object &o)
 {
 	const Kinds &k = kinds();
-	if (!alive(&o) || is(o, k.ignoresSelectAll) || inAnyTeamOf(b, o.getID()))
+	if (!alive(&o) || is(o, k.ignoresSelectAll) || inAnyTeamOf(b, o))
 	{
 		return false;
 	}
@@ -2304,7 +2307,7 @@ void dispatchIdleUnits(GameLogic &logic, AISkirmishPlayer &ai, const std::vector
 	for (ObjectID id : army)
 	{
 		Object *o = logic.findObjectByID(id);
-		if (!o || inAnyTeamOf(b, id) || !(is(*o, k.canAttack) || is(*o, k.hero) || is(*o, k.support)) || is(*o, k.structure))
+		if (!o || inAnyTeamOf(b, *o) || !(is(*o, k.canAttack) || is(*o, k.hero) || is(*o, k.support)) || is(*o, k.structure))
 		{
 			continue;
 		}
@@ -2594,7 +2597,7 @@ void AITacticalAI::updateIdleArmy(GameLogic &logic, AISkirmishPlayer &ai)
 	for (ObjectID id : recordOf(logic, ai.playerIndex).army())
 	{
 		const Object *o = logic.findObjectByID(id);
-		if (!o || !o->getTemplate() || inAnyTeamOf(ai.brain, id))
+		if (!o || !o->getTemplate() || inAnyTeamOf(ai.brain, *o))
 		{
 			continue;
 		}

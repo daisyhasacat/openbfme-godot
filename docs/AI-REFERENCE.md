@@ -192,3 +192,24 @@ role-based targeting, pike avoidance and timed retreat ownership. Siege engines
 and escorts retain the existing wall/breach controller's orders. Optional upgrade
 saving yields to visible home threats and counter requests. See
 [AI-STRATEGY.md](AI-STRATEGY.md) for research, implementation boundaries and tests.
+
+## Capturable map buildings
+
+The native AI strategy policy now sends capture-capable army units to visible
+non-allied capturable structures, such as the flags linked to inns and outposts.
+It chooses the nearest available target, reserves one capturer per target, and
+leaves the native special ability to approach, channel and transfer ownership.
+Units currently capturing are protected from tactical recruitment and strategy
+micro; their previous squad membership is released. Nearby combat threats take
+priority over starting a capture. Owned/allied, unfinished, sold, immune and
+garrisoned targets are excluded. Peace-time and AI-disable switches remain honored.
+
+This is OpenBFME strategy policy, not a claim to port RotWK's unread
+FlagCaptureSquad (RW 0x9BC39F). Capture legality follows the existing
+CommandTranslator checks documented against RW 0x82D0A1, and execution uses
+SpecialPowerModules / SpecialAbilityUpdate. The unit's existing serialized ability
+target and activity provide reservations; no additional save-state format is added.
+
+Validation: retail-data strategy tests capture both an Inn and an Outpost, keep
+an unfinished flag untouched, and verify two available heroes do not compete for
+one flag while the tactical team builder runs.

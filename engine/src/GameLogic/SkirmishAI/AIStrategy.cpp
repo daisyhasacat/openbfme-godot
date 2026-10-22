@@ -23,6 +23,10 @@
 #include "GameLogic/Weapon.h"
 #include "GameLogic/WeaponNugget.h"
 #include <algorithm>
+#include <set>
+#include "Common/SpecialPower.h"
+#include "GameLogic/Module/SpecialPowerModules.h"
+#include "GameLogic/Module/SpecialAbilityModules.h"
 
 namespace
 {
@@ -132,6 +136,17 @@ int AIStrategy::productionNeed(Role candidate, const Situation &s)
  return desired > s.own[candidate] ? importance + desired - s.own[candidate] : 0;
 }
 
+bool AIStrategy::capturing(const Object &unit)
+{
+ for (const auto &module : unit.modules())
+  if (const auto *ability = dynamic_cast<const SpecialAbilityUpdate *>(module.get()))
+  {
+   const auto *power = ability->abilityData()->m_specialPowerTemplate;
+   if (power && power->getSpecialPowerType() == 0x1D && ability->isActive()) return true;
+  }
+ return false;
+}
+
 void AIStrategy::update(GameLogic &logic, AISkirmishPlayer &ai)
 {
  if (!ai.store || ai.disabled || ai.scriptControlled || ai.store->data().disableTacticalAI ||
@@ -149,6 +164,34 @@ void AIStrategy::update(GameLogic &logic, AISkirmishPlayer &ai)
   { it = recovering.erase(it); }
   else ++it;
  }
+ // OpenBFME strategy policy, not a port of the still-unread FlagCaptureSquad
+ // (RW 0x9BC39F). Capture legality follows CommandXlat's RW 0x82D0A1 checks;
+ // the actual approach/channel/ownership change uses the native special ability.
+ std::vector<Object *> flags;
+ for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+  if (o->isInWorld() && !o->isEffectivelyDead() && !o->isUnderConstruction() &&
+      o->isKindOfName("CAPTURABLE") && o->isKindOfName("STRUCTURE") &&
+      !o->isKindOfName("IMMUNE_TO_CAPTURE") &&
+      !o->testStatus((unsigned)ObjectTemplateInfoBuilder::objectStatusIndex("SOLD")) && player->getRelationship(o->getTeam()) != ALLIES &&
+      visible(logic, *o, ai.playerIndex) && (!o->getContain() || o->getContain()->getContainCount() == 0))
+  {
+   bool linked = false;
+   for (Object *b = logic.getFirstObject(); b && !linked; b = b->getNextObject())
+    if (b->isKindOfName("LINKED_TO_FLAG") && !b->isEffectivelyDead())
+    {
+     const auto &a = *o->getPosition(); const auto &p = *b->getPosition();
+     const float dz = SimMath::subf32(a.z, p.z);
+     linked = SimMath::addf32(distance(*o, *b), SimMath::mulf32(dz, dz)) <= 22500.0f;
+    }
+   if (linked) flags.push_back(o);
+  }
+ std::set<ObjectID> assigned;
+ // Keep existing capture intent; do not restart its unpack/channel every second.
+ for (Object *unit = logic.getFirstObject(); unit; unit = unit->getNextObject())
+  if (unit->getControllingPlayer() == player && capturing(*unit))
+   for (const auto &module : unit->modules())
+    if (const auto *ability = dynamic_cast<const SpecialAbilityUpdate *>(module.get()))
+     if (ability->isActive()) assigned.insert(ability->targetID());
  std::vector<Object *> enemies;
  for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
   if (o->isInWorld() && !o->getContainedBy() && CombatQueries::isAttackable(*o) &&
@@ -158,6 +201,7 @@ void AIStrategy::update(GameLogic &logic, AISkirmishPlayer &ai)
  {
   if (unit->getControllingPlayer() != player || !army(*unit) || !unit->getAIUpdateInterface() ||
       ai.brain.siegeUnits.count(unit->getID()) || ai.brain.siegeEscorts.count(unit->getID())) continue;
+  if (capturing(*unit)) continue;
   auto *u = unit->getAIUpdateInterface();
   auto *weapons = unit->getWeapons();
   const Role r = role(logic, *unit->getTemplate());
@@ -202,6 +246,28 @@ void AIStrategy::update(GameLogic &logic, AISkirmishPlayer &ai)
    u->aiIdle(CMD_FROM_AI);
    u->aiMoveToPosition(away, CMD_FROM_AI);
    continue;
+  }
+  if (!nearestThreat && !recovering.count(unit->getID()))
+  {
+   const SpecialPowerTemplate *capture = nullptr;
+   for (const auto &module : unit->modules())
+    if (auto *power = module->getSpecialPower())
+    {
+     const auto *t = power->getSpecialPowerTemplate();
+     if (t && t->getSpecialPowerType() == 0x1D && !t->m_objectFilter && power->getPercentReadyForDisplay() == 1.0f)
+     { capture = t; break; }
+    }
+   Object *target = nullptr;
+   if (capture)
+    for (Object *flag : flags)
+     if (!assigned.count(flag->getID()) && (!target || distance(*unit, *flag) < distance(*unit, *target) ||
+         (distance(*unit, *flag) == distance(*unit, *target) && flag->getID() < target->getID()))) target = flag;
+   if (target && SpecialPowerModules::doSpecialPowerAtObject(*unit, capture, target, 0, false))
+   {
+    releaseFromTactics(ai, unit->getID());
+    assigned.insert(target->getID());
+    continue;
+   }
   }
   if (!weapons || r == Siege || r == Other || r == Flyers || r == Monsters) continue;
   Object *best = nullptr;

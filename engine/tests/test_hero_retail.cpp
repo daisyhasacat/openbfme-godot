@@ -26,6 +26,9 @@
 #include "GameLogic/Economy.h"
 #include "GameLogic/EconomySettings.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/SkirmishAI/AIStrategy.h"
+#include "GameLogic/SkirmishAI/AITacticalAI.h"
+#include "GameLogic/SkirmishAI/SkirmishAIManager.h"
 #include "GameLogic/GameLogicDispatch.h"
 #include "GameLogic/SpellCommands.h"
 #include "Common/SpecialPower.h"
@@ -2456,4 +2459,47 @@ TEST_CASE("capture flag presentation: callbacks append dirty objects during the 
 		CHECK(flushes == 1);
 	}
 	CHECK(events.take().empty());
+}
+
+TEST_CASE("strategy AI retail: captures neutral inns and outposts through the native ability")
+{
+ REQUIRE_RETAIL_WORLD(sh);
+ for (const char *buildingName : { "Outpost", "Inn" })
+ {
+  CAPTURE(buildingName);
+  Game g(sh, "FactionMen", "FactionMordor", true);
+  g.me->setPlayerType(PLAYER_COMPUTER, true);
+  AISkirmishPlayer bot;
+  bot.playerIndex = g.me->getPlayerIndex();
+  bot.store = &sh.world->skirmishAI();
+  bot.build.startPosition = {1000,1000,0};
+  const auto *buildingTemplate = sh.world->things().findTemplate(buildingName);
+  REQUIRE(buildingTemplate);
+  auto *flag = g.make(sh.world->things().findTemplate("CaptureFlag"), g.players.getNeutralPlayer(), 1200, 1000);
+  auto *building = g.make(buildingTemplate, g.players.getNeutralPlayer(), 1340, 1000);
+  auto *hero = g.make(sh.world->things().findTemplate("GondorAragorn"), g.me, 1000, 1000);
+  auto *second = g.make(sh.world->things().findTemplate("GondorBoromir"), g.me, 980, 1000);
+  REQUIRE(flag); REQUIRE(building); REQUIRE(hero); REQUIRE(second);
+  // A busy attack squad must release its capturer instead of taking the order back.
+  AITactic tactic;
+  tactic.teams.emplace_back();
+  tactic.teams.front().members = {hero->getID(), second->getID()};
+  bot.brain.tactics.push_back(tactic);
+  flag->setStatus(OBJECT_STATUS_UNDER_CONSTRUCTION, true);
+  for (int i=0; i<5; ++i) { AIStrategy::update(*g.logic, bot); g.logic->runLogicFrame(); }
+  CHECK_FALSE(AIStrategy::capturing(*hero));
+  CHECK_FALSE(AIStrategy::capturing(*second));
+  flag->setStatus(OBJECT_STATUS_UNDER_CONSTRUCTION, false);
+  for (int i=0; i<300 && building->getControllingPlayer()!=g.me; ++i)
+  {
+   AITacticalAI::updateTeamBuilder(*g.logic, bot);
+   g.logic->runLogicFrame();
+   CHECK_FALSE((AIStrategy::capturing(*hero) && AIStrategy::capturing(*second)));
+  }
+  CHECK(building->getControllingPlayer() == g.me);
+  CHECK(flag->getControllingPlayer() == g.me);
+  for (int i=0; i<25; ++i) { AIStrategy::update(*g.logic, bot); g.logic->runLogicFrame(); }
+  CHECK_FALSE(AIStrategy::capturing(*hero));
+  CHECK_FALSE(AIStrategy::capturing(*second));
+ }
 }

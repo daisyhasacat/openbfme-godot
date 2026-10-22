@@ -234,6 +234,7 @@ public:
 
 	const SpecialAbilityUpdateModuleData *abilityData() const { return m_data; }
 	int packingState() const { return m_packingState; }
+	ObjectID targetID() const { return m_targetID; }
 	unsigned prepFrames() const { return m_prepFrames; }
 	int triggerCount() const { return m_triggerCount; }
 	unsigned abilitiesTriggered() const { return m_abilitiesTriggered; } // effects run (a test counter, hashed)

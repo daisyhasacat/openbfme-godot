@@ -22,4 +22,6 @@ Situation assess(GameLogic &logic, const AISkirmishPlayer &ai);
 int productionNeed(Role candidate, const Situation &s);
 // One local command pass per second. Reserved breach units keep their orders.
 void update(GameLogic &logic, AISkirmishPlayer &ai);
+// Native capture intent is already serialized by SpecialAbilityUpdate.
+bool capturing(const Object &unit);
 }
