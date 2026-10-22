@@ -51,6 +51,7 @@
 #include <functional>
 #include <set>
 #include <map>
+#include <ostream>
 #include <memory>
 #include <string>
 #include <vector>
