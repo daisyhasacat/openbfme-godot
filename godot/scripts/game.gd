@@ -1371,7 +1371,13 @@ func _boot() -> void:
 	await _play_intro_movies() # lane CAMP-2
 	_shell = ClassDB.instantiate("AptMenuPlayer")
 	_shell.name = "Shell"
-	add_child(_shell)
+	# Native windows draw after the script letterbox/captions (campaign_cine layer 5).
+	# In particular a tutorial notification must remain readable above the top bar.
+	var native_ui := CanvasLayer.new()
+	native_ui.name = "NativeUI"
+	native_ui.layer = 6
+	add_child(native_ui)
+	native_ui.add_child(_shell)
 	var map_search := preload("res://scripts/skirmish_map_search.gd").new()
 	map_search.shell = _shell
 	map_search.fs = _fs
@@ -4300,6 +4306,7 @@ func _tear_down_game(why: String, clear_world: bool = true) -> void:
 		_map_editor = null
 	_world.set_auto_advance(false)
 	_net_state = ""
+	_shell.clear_script_notification()
 	for n in _game_nodes:
 		if is_instance_valid(n):
 			remove_child(n)
@@ -4359,6 +4366,7 @@ func _exit_to_score_screen() -> void:
 		_relay_label.text = ""
 	_online_from_screens = false
 	# the HUD and the HUD movie go first (they read the game), then the game data
+	_shell.clear_script_notification()
 	for n in _game_nodes:
 		if is_instance_valid(n):
 			remove_child(n)

@@ -2,6 +2,7 @@
 # Included from cmake/Apt.cmake so the lane's file lists stay out of the shared engine/CMakeLists.txt.
 
 list(APPEND OPENBFME_APT_SOURCES
+    src/GameClient/GUI/InGameNotificationBox.cpp
     src/GameClient/GUI/WindowManager.cpp
     src/GameClient/GUI/AptScreen.cpp
     src/GameClient/GUI/Shell/Shell.cpp

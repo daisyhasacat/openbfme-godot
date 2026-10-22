@@ -60,6 +60,7 @@
 #include "GameClient/GUI/Skirmish/WorldSkirmishSetupSource.h"
 #include "GameClient/GUI/WindowManager.h"
 #include "GameClient/GameText.h"
+#include "GameClient/GUI/InGameNotificationBox.h"
 #include "GameClient/VideoPlayer.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
@@ -870,6 +871,7 @@ struct AptMenuPlayer::Impl
 	double textureLoadMs = 0;
 	std::set<std::string> unverified, errors, missingLabels, fontSubstitutions, placeholders;
 	std::unique_ptr<ShellMode> shell;  // shell mode (boot_shell): the Apt player is the window manager's
+	std::unique_ptr<InGameNotificationBox> notification;
 	Apt *A() const { return external ? &external->apt() : shell ? &shell->wm->apt() : apt.get(); }
 	// the Godot texture of a gadget mapped image's file, loaded as the gadget layer draws it (drawGadgets); null when it cannot be loaded (the reason goes to
 	// gadgetErrors). Lane OPTS-1: also the OpenBFME options screen's skin (shell_mapped_image)
@@ -1297,6 +1299,9 @@ void AptMenuPlayer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("gadget_draw_list"), &AptMenuPlayer::gadget_draw_list); // lane OPTS-4
 	ClassDB::bind_method(D_METHOD("set_tribute_world", "world"), &AptMenuPlayer::set_tribute_world);
 	ClassDB::bind_method(D_METHOD("set_mission_objectives", "rows", "input_enabled"), &AptMenuPlayer::set_mission_objectives);
+	ClassDB::bind_method(D_METHOD("script_notification", "type", "label", "seconds"), &AptMenuPlayer::script_notification);
+	ClassDB::bind_method(D_METHOD("get_notification_report"), &AptMenuPlayer::get_notification_report);
+	ClassDB::bind_method(D_METHOD("clear_script_notification"), &AptMenuPlayer::clear_script_notification);
 	ClassDB::bind_method(D_METHOD("set_player_status", "state"), &AptMenuPlayer::set_player_status); // lane HUD-5
 	ClassDB::bind_method(D_METHOD("shell_top_level"), &AptMenuPlayer::shell_top_level);
 	ClassDB::bind_method(D_METHOD("shell_invoke", "level", "function", "args"), &AptMenuPlayer::shell_invoke, DEFVAL(PackedStringArray()));
@@ -1583,6 +1588,7 @@ Dictionary AptMenuPlayer::boot(const Ref<RetailFileSystem> &fs, const Dictionary
 	m->fs = fs;
 	m->presentationFs = fs;
 	m->view3d.setOwner(this, fs); // lane UI-2
+	m->notification.reset();
 	m->shell.reset();
 	m->source = std::make_unique<AptArchiveFileSource>(*fs->archive_fs());
 	m->apt.reset(); // before the host it refers to is reused
@@ -1699,6 +1705,7 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 	clearCanvas(); // review r2: a reboot recreates textures / fonts, so the retained canvas is stale
 	m->movies.clear();
 	m->movieErrors.clear();
+	m->notification.reset();
 	m->shell.reset();
 	m->apt.reset();
 	m->source.reset();
@@ -2838,6 +2845,49 @@ Dictionary AptMenuPlayer::font_metrics(const String &name, int point_size, bool 
 	return r;
 }
 
+Dictionary AptMenuPlayer::script_notification(const String &type, const String &label, double seconds)
+{
+	Dictionary out;
+	out["ok"] = false;
+	if (!m->shell || m->fs.is_null())
+	{
+		out["error"] = "Notification requires the native shell";
+		return out;
+	}
+	try
+	{
+		if (!m->notification)
+			m->notification = std::make_unique<InGameNotificationBox>(*m->shell->wm, *m->fs->archive_fs(), m->strings);
+		m->notification->open(toNative(type), toNative(label), seconds);
+		out["ok"] = true;
+		out["level"] = m->notification->level();
+	}
+	catch (const std::exception &e)
+	{
+		out["error"] = toGodot(e.what());
+	}
+	return out;
+}
+Dictionary AptMenuPlayer::get_notification_report() const
+{
+	Dictionary out;
+	out["loaded"] = m->notification != nullptr;
+	if (m->notification)
+	{
+		out["level"] = m->notification->level();
+		out["opened"] = (int64_t)m->notification->opened();
+		out["sound"] = toGodot(m->notification->sound());
+		out["visible"] = m->notification->visible();
+		out["pending"] = m->notification->pending();
+		out["width"] = m->notification->width();
+	}
+	return out;
+}
+void AptMenuPlayer::clear_script_notification()
+{
+	m->notification.reset();
+}
+
 Dictionary AptMenuPlayer::set_player_status(const Dictionary &state)
 {
 	Dictionary r;
@@ -3719,6 +3769,7 @@ int AptMenuPlayer::tick(double delta)
 		// WindowManager::update (retail 0x0046E850): pending pop / loads, focus, the movies, the gadget layer, the screens' updates, the tooltip.  Gadgets change
 		// with input between movie steps, so the canvas is rebuilt on every tick in shell mode.
 		m->shell->wm->update(ms);
+		if (m->notification) { try { m->notification->update(ms); } catch (const std::exception &e) { UtilityFunctions::push_error(e.what()); m->notification.reset(); } }
 		stepped = 1;
 		if (m->shell->cursorTooltip && m->shell->metrics)
 		{
@@ -4051,9 +4102,15 @@ void AptMenuPlayer::drawRenderCallback(const AptCanvasOp &op, const RID &item)
 		const String text = toGodot(u16ToUtf8(c.text));
 		if ((c.dropColor >> 24) != 0)
 		{
-			font->draw_string(item, base + Vector2(1, 1) * k, text, HORIZONTAL_ALIGNMENT_LEFT, -1, px, colourOf(c.dropColor));
+			if (c.wrapWidth > 0)
+				font->draw_multiline_string(item, base + Vector2(1, 1) * k, text, c.wrapCentered ? HORIZONTAL_ALIGNMENT_CENTER : HORIZONTAL_ALIGNMENT_LEFT, c.wrapWidth * k, px, -1, colourOf(c.dropColor));
+			else
+				font->draw_string(item, base + Vector2(1, 1) * k, text, HORIZONTAL_ALIGNMENT_LEFT, -1, px, colourOf(c.dropColor));
 		}
-		font->draw_string(item, base, text, HORIZONTAL_ALIGNMENT_LEFT, -1, px, colourOf(c.color));
+		if (c.wrapWidth > 0)
+			font->draw_multiline_string(item, base, text, c.wrapCentered ? HORIZONTAL_ALIGNMENT_CENTER : HORIZONTAL_ALIGNMENT_LEFT, c.wrapWidth * k, px, -1, colourOf(c.color));
+		else
+			font->draw_string(item, base, text, HORIZONTAL_ALIGNMENT_LEFT, -1, px, colourOf(c.color));
 		m->noteDrawnText("callback", text, colourOf(c.color), Rect2(at, Vector2(font->get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x, font->get_height(px))));
 	}
 }

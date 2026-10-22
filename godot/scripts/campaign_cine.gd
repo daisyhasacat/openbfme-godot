@@ -19,6 +19,7 @@ var _caption: Label
 var _fade: ColorRect
 var _status: Label
 var _note: Label         # lane SCRIPT-2: DISPLAY_NOTIFICATION_BOX's text
+var notification_hook := Callable() # native InGameNotificationBox.apt
 var objectives_hook := Callable() # native Objectives.apt content
 var objectives_close_hook := Callable()
 var objectives_open := false
@@ -135,6 +136,8 @@ func _process(delta: float) -> void:
 		for p in r.params:
 			ps.append(p.string if not String(p.string).is_empty() else (str(p.real) if p.type == 1 else str(p.int)))
 		print("SCRIPTREQ frame %d %s(%s) [%s]" % [r.frame, r.action, ", ".join(ps), r.script])
+		if r.action in ["DISPLAY_NOTIFICATION_BOX", "DISPLAY_NOTIFICATION_BOX_WITH_OBJECT_TYPE_IMAGE_OVERRIDE"] and notification_hook.is_valid():
+			notification_hook.call(r)
 		if r.action == "CLOSE_OBJECTIVES_SCREEN":
 			objectives_open = false
 			if objectives_close_hook.is_valid(): objectives_close_hook.call()
@@ -191,6 +194,7 @@ func _process(delta: float) -> void:
 	_objectives_panel.visible = not hud_mode and (objectives_open or dev_overlay)
 	_status.text = "frame %d   %s%s" % [world.get_presented_frame(), "camera moving   " if st.moving else "", "input disabled" if st.input_disabled else ""] if dev_overlay else ""
 	_status.position = Vector2(12, bar + 8.0)
+	_note.visible = not notification_hook.is_valid()
 	_note.text = st.get("notification_text", "")
 	_note.position = Vector2(size.x * 0.15, bar + 40.0)
 	_note.size = Vector2(size.x * 0.7, 60.0)

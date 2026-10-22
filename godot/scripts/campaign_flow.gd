@@ -252,6 +252,9 @@ func enter_mission(rep: Dictionary) -> void:
 	_cine.hud_mode = true
 	_cine.dev_overlay = game._dev_overlay # lane CAMP-2: no developer text in the real game
 	_cine.control_bar_hook = Callable(game, "_set_control_bar_hidden") # lane CAMP-2: the letterbox hides the Palantir as retail's (RW 0x7BC8B7)
+	_cine.notification_hook = func(request: Dictionary):
+		var result: Dictionary = game._shell.script_notification(request.params[0].string, request.params[1].string, request.params[2].int)
+		if not result.ok: game._fail("Native notification: " + str(result.get("error", result)))
 	_cine.objectives_hook = Callable(game, "_objectives_view")
 	_cine.objectives_close_hook = Callable(game, "_close_objectives")
 	_cine.input_hook = Callable(game, "_script_input") # lane OWNERFIX-1: no selection or orders during the cutscenes (RW 0x7BC586)

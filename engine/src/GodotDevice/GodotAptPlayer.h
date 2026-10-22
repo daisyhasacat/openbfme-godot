@@ -213,6 +213,9 @@ public:
 	// and game text; PlayerTribute.apt reads them when it loads its Status page. Returns { ok, rows: [[name, army, team, status, colour]], error }
 	void set_mission_objectives(const Array &rows, bool input_enabled);
 	Dictionary set_player_status(const Dictionary &state);
+	Dictionary script_notification(const String &type, const String &label, double seconds);
+	void clear_script_notification();
+	Dictionary get_notification_report() const;
 	// lane MP-2: a movie -> engine command as the movie's fscommand runs it (WindowManager::invokeCallback: "AptLanLobby::OnCreateGameBttn",
 	// "MpGameSetup::OnReadyPress" ...): scripted lobbies. false: no screen registered the name
 	bool shell_fscommand(const String &command, const String &argument);

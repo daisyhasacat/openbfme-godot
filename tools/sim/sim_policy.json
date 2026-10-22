@@ -344,6 +344,10 @@
    "reason": "lane UI-6: the lobby's kept game in Skirmish.ini (RotWK's GameInfoToAsciiString / ParseAsciiStringToGameInfo text): menu preferences, never simulation state"
   },
   {
+   "glob": "src/GameClient/GUI/InGameNotificationBox.cpp",
+   "reason": "BFME2 native notification movie, text and UI sound: client presentation only; never changes simulation state"
+  },
+  {
    "glob": "src/GameClient/GUI/StillImageLoadScreen.cpp",
    "reason": "MENU-1 the loading screen choice and the campaign's picture loading screen: client-side presentation, nothing reaches the logic"
   },

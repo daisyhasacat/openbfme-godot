@@ -148,3 +148,22 @@ The scripts create and move `InGameMarker` objects rather than requesting a sepa
 BFME2 source evidence: `W3DShadowManagerAddShadow.cpp` routes types 0x40/0x800 to the projected-shadow manager, and `W3DProjectedShadowManagerFlushDecals.cpp` selects the additive shader for both. S-3304 remains for exact blend/projection parity, ShadowOpacity timing, rotated offsets, automatic sizing and per-pixel shroud clipping at decal boundaries. The initial implementation displays the texture at full intensity; retail fade timing is not claimed.
 
 Spotlight validation: the installed-data Basic test creates the retail marker through the script action, checks its texture, dimensions, additive emission and terrain mask, moves it, and verifies removal after NAMED_KILL. A graphical capture confirms the white spotlight on the ground.
+
+Tutorial notification messages now use `InGameNotificationBox.apt` through the
+native window manager, replacing the top-of-screen Godot label in playable
+missions. The presentation reads the mounted `InGameNotificationBox.ini` for
+notification titles, icons, message font/color and opening sound. The retail
+installed default sound is `Gui_DaveBox`; it is submitted once when the message
+opens, rather than each render frame. Duration zero keeps a message open until
+replacement or dismissal. Mission teardown unloads the movie and callbacks.
+
+BFME2 source: `GUI/InGame/InGameNotificationBoxMovieClip.cpp` (0x4E6C34 ctor,
+0x4E6F30 Open, 0x4E6898 RenderMessage),
+`InGameNotificationBoxUpdateNotice.cpp` (0x4E701E UpdateNotice),
+`Common/Rva004E67B3Stamp.cpp` (timeout starts after OnOpen), and
+`Common/AptStateCalls.cpp` (Close). Text uses the existing native font metrics
+and custom-render callback; the device now honors wrapped, centered text in
+such callbacks. This does not change simulation state. The independent map
+viewer retains its diagnostic label. The existing S-002 startup-order caveat
+still applies: presentation configuration is loaded on first use, not claimed
+as a reconstruction of the original subsystem initialization order.
