@@ -1304,6 +1304,10 @@ func _boot() -> void:
 	_quick_save_hotkey.save = save_game
 	_quick_save_hotkey.available = func() -> bool:
 		return _state == State.PLAYING and not _lua_console.is_open() and not _shell.menu_has_input() and not (is_instance_valid(_map_editor) and _map_editor.active)
+	_quick_save_hotkey.load_available = func() -> bool:
+		return _state in [State.PLAYING, State.MENU, State.SCORE] and _net_state.is_empty() and not _lua_console.is_open() and not (is_instance_valid(_map_editor) and _map_editor.active)
+	_quick_save_hotkey.quick_load = func() -> Dictionary:
+		return await _save_flow.quick_load()
 	get_tree().root.add_child.call_deferred(_quick_save_hotkey)
 	_lua_console.toggled.connect(_lua_console_toggled)
 	_lua_console.restart_requested.connect(func(): call_deferred("_console_restart"))

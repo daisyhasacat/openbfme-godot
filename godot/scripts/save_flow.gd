@@ -88,6 +88,21 @@ func save_game(name := "Quick Save") -> Dictionary:
 	return last_save
 
 
+## F9 uses the same checked restore and rollback path as Load Game, without its presentation screen.
+func quick_load() -> Dictionary:
+	var dir := save_dir()
+	if dir.is_empty(): return {"ok": false, "error": "There is no Save folder."}
+	var path := dir.path_join("Quick Save.obfmesave")
+	if not FileAccess.file_exists(path): return {"ok": false, "error": "No Quick Save exists yet. Press F5 during a game first."}
+	var check: Dictionary = game._world.check_save(path)
+	if not check.get("ok", false): return {"ok": false, "error": str(check.get("error", "Invalid Quick Save."))}
+	last_load = {}
+	restored_after_refusal = {}
+	await load_save(path, true)
+	if not restored_after_refusal.is_empty(): return {"ok": false, "error": str(restored_after_refusal.error)}
+	return {"ok": last_load.get("state", "") in ["ready", "campaign_menu"], "error": str(last_load.get("error", "Quick Save could not be loaded."))}
+
+
 func _save(name: String) -> void:
 	var dir := save_dir()
 	if dir.is_empty():
@@ -122,7 +137,7 @@ func _delete(path: String) -> void:
 ## snapshot), the kept game is loaded back (prepare_kept_load) and the refusal is shown over it on the load page: the player keeps the game they had
 
 
-func load_save(path: String) -> void:
+func load_save(path: String, quick := false) -> void:
 	var name := path.get_file().get_basename()
 	var check: Dictionary = game._world.check_save(path)
 	if not check.get("ok", false):
@@ -162,12 +177,12 @@ func load_save(path: String) -> void:
 		game._tear_down_game("load")
 	else:
 		game._start_stack = PackedStringArray(["MainMenu.apt"]) # the score screen's Continue goes back to the main menu
-	var error: String = await _load_prepared(game._world.prepare_save_load(path), name)
+	var error: String = await _load_prepared(game._world.prepare_save_load(path), name, quick)
 	if error.is_empty():
 		game._world.drop_kept_game()
 		return
 	if kept:
-		var back: String = await _load_prepared(game._world.prepare_kept_load(), name)
+		var back: String = await _load_prepared(game._world.prepare_kept_load(), name, quick)
 		if back.is_empty():
 			restored_after_refusal = {"name": name, "error": error, "frame": game._world.get_frame(), "hash": game._world.get_state_hash()}
 			print("GAME SAVE load of '%s' refused, the running game is back: %s" % [name, error])
@@ -183,7 +198,7 @@ func load_save(path: String) -> void:
 
 ## the prepared load (prepare_save_load / prepare_kept_load) started and caught up: "" when the game is the player's, else the error (the started game
 ## torn down)
-func _load_prepared(prep: Dictionary, name: String) -> String:
+func _load_prepared(prep: Dictionary, name: String, quick := false) -> String:
 	if not prep.get("ok", false):
 		return "\n".join(prep.get("errors", []))
 	while game._shell.shell_stack().size() > 0:
@@ -191,7 +206,7 @@ func _load_prepared(prep: Dictionary, name: String) -> String:
 		game._shell.tick(0.033)
 	var flow = game._campaign_flow
 	var campaign := str(prep.get("campaign", ""))
-	var opts := {"progress": Callable(game, "_on_load_progress")}
+	var opts := {} if quick else {"progress": Callable(game, "_on_load_progress")}
 	if not campaign.is_empty():
 		# a campaign mission: its own loading screen (the mission's picture) and, after the catch-up, the campaign flow takes over (its next mission)
 		var missions: Array = flow.missions_of(campaign)
@@ -205,7 +220,11 @@ func _load_prepared(prep: Dictionary, name: String) -> String:
 		flow.advanced = false
 		flow.score_pending = false
 		game._last_new_game = {}
-		if not await flow.show_load_screen(missions[flow.mission], true):
+		if quick:
+			game._state = game.State.LOADING
+			game._shell_leave_for_game()
+			game._shell.auto_process = false
+		elif not await flow.show_load_screen(missions[flow.mission], true):
 			return "the mission's load screen could not be shown"
 	else:
 		game._last_local_slot = int(prep.get("local_slot", -1))
@@ -213,16 +232,17 @@ func _load_prepared(prep: Dictionary, name: String) -> String:
 		game._state = game.State.LOADING
 		game._game_kind = "save"
 		game._shell_leave_for_game()
-		# lane SAVE-4e: retail's screen for a saved game (RW 0x626A87, a save loading, GameLogic + 0x114 == 0: S-5012): the picture screen, a film still
-		var choice: Dictionary = game._shell.choose_load_screen({"game_mode": 2, "screen_kind": 0, "loading_save": true})
-		if choice.get("kind", "") != "still" or not String(choice.get("error", "")).is_empty():
-			return "load screen: " + str(choice)
-		var shown: Dictionary = game._shell.show_still_load_screen(String(choice.picture))
-		print("GAME SAVE load screen: %s %s %s" % [choice.kind, choice.picture, "" if shown.ok else str(shown.error)])
-		if not shown.ok:
-			return "load screen: " + str(shown.error)
-		for i in 4:
-			await game.get_tree().process_frame
+		if not quick:
+			# lane SAVE-4e: retail's screen for a saved game (RW 0x626A87, a save loading, GameLogic + 0x114 == 0: S-5012): the picture screen, a film still
+			var choice: Dictionary = game._shell.choose_load_screen({"game_mode": 2, "screen_kind": 0, "loading_save": true})
+			if choice.get("kind", "") != "still" or not String(choice.get("error", "")).is_empty():
+				return "load screen: " + str(choice)
+			var shown: Dictionary = game._shell.show_still_load_screen(String(choice.picture))
+			print("GAME SAVE load screen: %s %s %s" % [choice.kind, choice.picture, "" if shown.ok else str(shown.error)])
+			if not shown.ok:
+				return "load screen: " + str(shown.error)
+			for i in 4:
+				await game.get_tree().process_frame
 		game._shell.auto_process = false
 		if game._record:
 			opts["record"] = game._last_replay_path() # the recording continues the saved log (the whole game stays one replay)
@@ -238,7 +258,7 @@ func _load_prepared(prep: Dictionary, name: String) -> String:
 		int(rep.start_frame), int(rep.target_frame), "" if campaign.is_empty() else " (%s mission %d)" % [campaign, int(prep.mission)]])
 	# a snapshot is loaded already (ready at the first step); an old save's catch-up: the log played at full speed, no game view (the load screen stays),
 	# its progress drawn on the load screen in its font (set_still_load_progress)
-	if mode != "snapshot":
+	if mode != "snapshot" and not quick:
 		_show_overlay()
 	var st := {}
 	var first := true

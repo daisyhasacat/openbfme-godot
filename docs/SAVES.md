@@ -1038,10 +1038,16 @@ audit (1,007 transfers, zero problems) passed. Sol 6.1 reviewed the changes.
 
 ## Direct save without menus
 
-Press **Ctrl+Shift+S** during gameplay to write `Quick Save.obfmesave`. A brief
+Press **F5** (or **Ctrl+Shift+S**) during gameplay to write `Quick Save.obfmesave`. A brief
 on-screen message confirms success or explains the failure. The hotkey stays
 inactive in menus, the console, the map editor, and text fields. Holding the key
-does not repeatedly save. F5 retains its original saved-camera-view binding.
+does not repeatedly save. F5 takes priority over its saved-camera-view binding.
+
+Press **F9** during gameplay or in menus to restore `Quick Save.obfmesave`.
+Quick Load skips the loading picture, progress overlay, and presentation waits;
+map loading and snapshot validation still run. Older saves still need command-log
+catch-up. Failed restores retain the existing running-game recovery path.
+F9 is inactive during loading, network play, console use, and map editing.
 
 The console command `/save Fortress test` saves a snapshot as
 `Fortress test.obfmesave` in the normal Save folder. `/save` uses `Quick Save`.
