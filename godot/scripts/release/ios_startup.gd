@@ -9,6 +9,13 @@ var began := Time.get_ticks_msec()
 func _ready() -> void:
 	layer = 80
 	add_to_group("ios_startup")
+	# This scene now runs on desktop too. Honor the saved window mode before
+	# drawing/loading the game, whose display setup otherwise runs much later.
+	var display = load("res://scripts/display_settings.gd").new()
+	if not display.load_file(display.default_path()):
+		for error in display.errors: printerr("STARTUP display settings: ", error)
+	get_tree().root.mode = display.window_mode_of(display.window_mode)
+	print("STARTUP display mode: %s (window mode %d)" % [display.window_mode, get_tree().root.mode])
 	_build_screen()
 	print("STARTUP iOS loading screen ready at %d ms" % Time.get_ticks_msec())
 	if DisplayServer.get_name() == "headless":
