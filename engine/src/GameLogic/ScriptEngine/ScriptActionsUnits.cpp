@@ -905,6 +905,41 @@ bool ScriptActions::executeUnitAction(ScriptEngine &engine, const ScriptActionRe
 		createReinforcements(engine, param(a, 0).stringValue, param(a, 1).stringValue);
 		return true;
 	}
+	if (name == "NAMED_USE_COMMANDBUTTON_ABILITY_AT_WAYPOINT")
+	{
+		// BFME2 ScriptActions_Rva003C57A9Do.cpp, 0x3C58C9: resolve the named
+		// unit and waypoint, then match the ability in its own 32-slot command set.
+		// Object.cpp 0x297149, command 53: buildObjectNow at angle zero.
+		// BuildAssistant.cpp 0x3952D8: a DOZER idles (CMD_FROM_AI), then constructs.
+		// Only that construction branch is ported here; other command kinds keep S-1180.
+		Object *o = engine.getUnitNamed(param(a, 0).stringValue);
+		const Waypoint *w = terrain ? terrain->findWaypointByName(param(a, 2).stringValue) : nullptr;
+		if (!o || !w || o->getDisabledMask() != 0)
+			return true;
+		const CommandSet *set = TheCommandStore ? TheCommandStore->findCommandSet(o->getCommandSetName()) : nullptr;
+		for (int i = 0; set && i < CommandSet::MAX_BUTTONS; ++i)
+		{
+			const CommandButton *button = set->getCommandButton(i);
+			if (!button || button->m_name != param(a, 1).stringValue)
+				continue;
+			if (button->m_command != GUI_COMMAND_DOZER_CONSTRUCT)
+				return false;
+			if (!o->isKindOfName("DOZER"))
+				return false; // non-dozer buildObjectNow branches are not covered by this port
+			if (auto *dozer = dynamic_cast<DozerAIUpdate *>(o->getAIUpdateInterface()))
+			{
+				if (const ThingTemplate *what = button->getThingTemplate())
+				{
+					if (Player *owner = o->getControllingPlayer())
+					{
+						dozer->aiIdle(CMD_FROM_AI);
+						dozer->construct(*what, w->location, 0.0f, *owner);
+					}
+				}
+			}
+		}
+		return true;
+	}
 	if (name == "NAMED_BUILD_STRUCTURE_AT_WAYPOINT")
 	{
 		// RW 0x7BCBD6 (unit, template, angle, waypoint): the unit's AI vslot 0x1F8 (DozerAIUpdate::construct, RW 0x88C2A5) with the waypoint's

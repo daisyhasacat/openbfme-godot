@@ -93,7 +93,7 @@ Counts include inactive scripts and all branches. “Existing route” means the
 | `NAMED_KILL` | 15 | 10 | Existing route |
 | `NAMED_RECEIVE_UPGRADE` | 0 | 2 | Existing route |
 | `NAMED_TRANSFER_OWNERSHIP_PLAYER` | 7 | 4 | Existing route |
-| `NAMED_USE_COMMANDBUTTON_ABILITY_AT_WAYPOINT` | 6 | 0 | Gap (S-1180) |
+| `NAMED_USE_COMMANDBUTTON_ABILITY_AT_WAYPOINT` | 6 | 0 | Dozer construction implemented; other command kinds remain S-1180 |
 | `NO_OP` | 1 | 0 | Existing route |
 | `OBJECT_CREATE_RADAR_EVENT` | 0 | 1 | Existing route |
 | `OVERRIDE_PLAYER_COMMAND_POINTS` | 1 | 1 | Existing route |
@@ -167,3 +167,20 @@ such callbacks. This does not change simulation state. The independent map
 viewer retains its diagnostic label. The existing S-002 startup-order caveat
 still applies: presentation configuration is loaded on first use, not claimed
 as a reconstruction of the original subsystem initialization order.
+
+The Basic tutorial's first-outpost transition now executes its scripted porter
+construction buttons. BFME2 `ScriptActions_Rva003C57A9Do.cpp` (0x3C58C9)
+searches the named unit's 32-slot command set for the requested button and
+forwards the waypoint to `Object::doCommandButtonAtPosition` (Object.cpp,
+0x297149). Its DOZER_CONSTRUCT case calls `BuildAssistant::buildObjectNow`
+(BuildAssistant.cpp, 0x3952D8) with angle zero: idle the dozer with CMD_FROM_AI,
+then construct using its controlling player. The port uses that sequence and
+the existing site legality, foundation, builder travel and construction work.
+It does not require player selection or transfer ownership. Missing units,
+waypoints or buttons are no-ops; non-construction command kinds remain
+explicitly unported through S-1180. The two tower buttons refer to
+GondorBattleTower in the installed data; the third porter only moves/reveals
+at this stage. `tutorial_builders_test.gd` checks both real sites and completed
+construction through the exact tower orders issued by that transition.
+The test opens Gate 01 first, matching the earlier attack lesson. It does not
+claim a full combat-driven tutorial playthrough.
