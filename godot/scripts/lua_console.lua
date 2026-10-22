@@ -378,11 +378,7 @@ function LuaConsole:_build_cheats()
 	end))
 	actions:add_child(button("Pause", function() self:_execute_command("bfme.match.pause()") end))
 	actions:add_child(button("Resume", function() self:_execute_command("bfme.match.unpause()") end))
-	-- lane LUAAI-1: the computer players to the Lua skirmish AI (godot/dev/05_skirmish_ai.lua) and back
-	local ai_row = flow(rows)
-	ai_row:add_child(button("Computers: Lua AI", function() self:_execute_command("assert(luaai,'Reload scripts first'); return luaai.enableAll()") end))
-	ai_row:add_child(button("Computers: native AI", function() self:_execute_command("assert(luaai,'Reload scripts first'); luaai.disableAll()") end))
-	ai_row:add_child(button("Lua AI status", function() self:_execute_command("assert(luaai,'Reload scripts first'); return luaai.status()") end))
+
 end
 
 function LuaConsole:_build_controller_options()

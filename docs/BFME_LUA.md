@@ -245,52 +245,12 @@ a construction ticket created while it exists in the current snapshot.
 
 `reload()` rereads the entry scripts and returns how many ran. `log(text)` writes one console line; `print(...)` also writes there.
 
-## Lua AI
+## Native AI control
 
-A computer player's skirmish AI can be switched off so a Lua script plays that player instead.
-Nothing is removed: the native AI keeps its state while it is off and resumes from it when it is handed back.
-
-```lua
-local ai = bfme.ai.list()[1]          -- a computer player
-ai:setAIEnabled(false)                -- the native AI stops deciding (a ticket, applied at the next update)
-bfme.events.onUpdate("myAI", function()
-    for _, b in ipairs(ai:buildings()) do
-        if b.isFactory and b.productionCount == 0 then
-            for _, t in ipairs(b:getTrainableUnits()) do
-                if t.ok and not t.isBuilder then b:trainUnit(t.unit) break end
-            end
-        end
-    end
-end, 1000)
-```
-
-While a script controls a player, its native base builder, team builder, brain (targets and attacks) and automatic
-unit ability casting do not run. Bookkeeping still runs: structures and builders are recorded, and a defeated AI shuts
-down. `ai:setAIEnabled(true)` hands the player back. `player.hasAI`, `player.aiEnabled` and `player.scriptControlled`
-show the state.
-
-[`godot/dev/05_skirmish_ai.lua`](../godot/dev/05_skirmish_ai.lua) is a complete Lua skirmish AI built only on this API.
-It covers economy, production buildings, training, upgrades, sciences, defense and attack waves, for every faction.
-Resource buildings (farms, Mallorn trees, furnaces, ...) go on the map's markers for them (`FarmTemplate` objects, as the
-native economy builder uses them). It takes the nearest free marker to the fortress, at the marker's position and angle,
-and skips markers within 900 of an enemy fortress or with enemies near. Only on a map without a usable marker does it
-use a widely spaced grid behind the fortress (`economySpacing`).
-Production buildings go in a block on a grid just in front of the fortress, aligned with its front, which faces the
-nearest enemy start.
-Each block fills from its middle outward (1 slot, then 3×2, then 5×3, up to `blockHalfWidth` and `blockDepth`), with
-walking room between buildings, and blocked slots are skipped. Each site is checked the way its builder's construction
-checks it, including a path to it. Sites already ordered are reserved until their foundations stand. A site the engine
-refuses is avoided for two minutes, and the next think picks another. A foundation that stops progressing gets an idle
-builder sent to finish it. `luaai.stats` counts placed and refused constructions.
-It is off by default, so computer players use the native AI. Set `luaai.config.autoEnable = true` to take over every
-computer player at the start of each skirmish, on the host in multiplayer. Guests cannot submit gameplay changes; replay playback consumes recorded actions. During peace time the example continues economy and production and suppresses combat orders.
-`luaai.disableAll()` (or **Computers: native AI** in the console's Cheats tab) hands them back until the next match, and
-`luaai.enableAll()` takes them again.
-`luaai.status()` reports each player. It sees the whole map, ignoring the shroud.
-Its numbers are in `luaai.config`. Changing `autoEnable` applies at the next match;
-call `luaai.thinkAll()` or `luaai.enableAll()` to apply it immediately in an existing match.
-Disabled Lua AI and Uber mode helpers do not register periodic callbacks, so normal
-play does not pause the simulation worker to poll inactive tools.
+Computer players use the native skirmish AI. The bundled Lua AI helper and its
+console takeover controls have been removed. The generic scripting API remains:
+`player:setAIEnabled(false)` suspends native decisions, and `true` resumes them;
+`player.hasAI`, `player.aiEnabled`, and `player.scriptControlled` report the state.
 
 `bfme.match.getUnitRoster(playerId)` returns `{ready, ids}` with sorted live unit IDs
 for player 0–19, using the same membership as `player:units()`. The returned list
@@ -537,8 +497,7 @@ Planned: `bfme.camera` (read/move the view), selection writes, and event callbac
 `engine/build/openbfme_tests --test-case='bfme Lua*'` checks module identity, the LuaJIT sandbox, library and handle structure, Lua syntax alongside the retail VM,
 handle identity, enumeration, detached copies, money tickets, validation, expired handles, queue limits, construction, training, selection, orders, queries,
 the AI switch, update callbacks and error recovery. `--test-case='skirmish ai script control*'` (retail files) checks that a script-controlled computer
-builds and trains nothing and builds again once handed back. `godot --headless --path godot --script res://tests/lua_ai_test.gd` plays the
-Lua skirmish AI on Evendim for five game minutes.
+builds and trains nothing and builds again once handed back.
 `godot --headless --path godot --script res://tests/lua_snapshot_test.gd` (installed retail data) reports repeated snapshot median/p95/max times and checks that runtime template edits invalidate the catalog.
 `godot --headless --path godot --script res://tests/lua_events_test.gd` (installed retail data) checks native match-start and accepted-placement notifications, safe-point dispatch, and the timer-free scenery script.
 `godot --headless --path godot --script res://tests/lua_console_test.gd` exercises the console and native extension together.
@@ -667,7 +626,6 @@ completed. See [the timing definitions and benchmark workflow](LARGE_ARMY_PERFOR
 | --- | --- |
 | Uber unit births / building completion | Native `onUnitsCreated` / `onBuildingsCompleted` notifications; no roster polling |
 | Uber mass recruitment / overflow retry | 250 ms, only while work remains |
-| Lua AI | Default 1,000 ms, minimum 250 ms, only while players are controlled |
 | Building layout replay | 200 ms while replay is active; bounded queue/status checks |
 | Restart replay handoff | 250 ms while restoration is active |
 | Controller | Input-driven, existing 300 ms initial / 150 ms repeat delay; configuration refreshed on transitions |
@@ -687,4 +645,4 @@ listeners must check the live handle. Existing `onBuildingPlaced` remains per-ob
 Replay scheduling still needs timers: cancellation, placement retry, mutation and
 wall-link results can progress without a building-completion event. Replacing these
 with construction-only events would strand those jobs. Their timers unregister on
-completion/cancellation. Lua AI decisions likewise need a periodic think.
+completion/cancellation.
