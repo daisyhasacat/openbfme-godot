@@ -18,6 +18,7 @@
 #include "GameClient/GUI/Shell/Shell.h"
 #include "GameClient/LiveGame.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/NewGame/NewGame.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
 #include "GameLogic/Module/AttachUpdate.h"
@@ -81,6 +82,7 @@ Dictionary missionDict(const LinearCampaignMission &m)
 void GameWorld::bindCampaignMethods()
 {
 	ClassDB::bind_method(D_METHOD("get_campaigns"), &GameWorld::get_campaigns);
+	ClassDB::bind_method(D_METHOD("get_tutorial", "name"), &GameWorld::get_tutorial);
 	ClassDB::bind_method(D_METHOD("start_campaign_mission", "options"), &GameWorld::start_campaign_mission);
 	ClassDB::bind_method(D_METHOD("campaign_status"), &GameWorld::campaign_status);
 	ClassDB::bind_method(D_METHOD("campaign_progress_load", "path"), &GameWorld::campaign_progress_load);
@@ -114,6 +116,50 @@ Array GameWorld::get_campaigns() const
 	return out;
 }
 
+Dictionary GameWorld::get_tutorial(const String &name) const
+{
+	Dictionary d;
+	d["ok"] = false;
+	if (!m_world || !m_settings)
+	{
+		d["error"] = "GameWorld.setup has not run";
+		return d;
+	}
+	const TutorialDefinition *t = name.nocasecmp_to("Basic") == 0 ? &m_settings->basicTutorial
+		: name.nocasecmp_to("Advanced") == 0 ? &m_settings->advancedTutorial : nullptr;
+	if (!t)
+	{
+		d["error"] = name.nocasecmp_to("Strategic") == 0
+			? "[S-175] Strategic Tutorial requires the unported War of the Ring tutorial flow"
+			: "Unknown tutorial: " + name;
+		return d;
+	}
+	if (t->map.empty())
+	{
+		d["error"] = "GameData has no map for tutorial " + name;
+		return d;
+	}
+	LinearCampaignMission mission;
+	mission.name = n(name);
+	std::string key = AsciiStringUtil::lowered(t->map);
+	for (char &c : key) if (c == '\\') c = '/';
+	if (!NewGame::mapNameOfKey(key, mission.map))
+	{
+		d["error"] = "Tutorial map path must use Maps/<name>/<name>.map: " + g(t->map);
+		return d;
+	}
+	mission.introMovie = t->loadMovie;
+	mission.loadScreenImage = t->loadScreenImage;
+	mission.loadScreenMusicTrack = t->loadScreenMusicTrack == "NoSound" ? "" : t->loadScreenMusicTrack;
+	mission.fadeUpFrames = t->fadeUpFrames;
+	d = missionDict(mission);
+	d["ok"] = true;
+	d["map_path"] = g(t->map);
+	d["load_screen_voice"] = g(t->loadScreenVoiceTrack);
+	d["objective"] = g(t->objective);
+	return d;
+}
+
 Dictionary GameWorld::start_campaign_mission(const Dictionary &options)
 {
 	Dictionary report;
@@ -129,7 +175,31 @@ Dictionary GameWorld::start_campaign_mission(const Dictionary &options)
 	progress.campaign = n(String(options.get("campaign", String())));
 	progress.mission = (int)intOpt(options, "mission", 0);
 	progress.difficulty = (int)intOpt(options, "difficulty", 1);
-	const LinearCampaignMission *mission = progress.current(m_world->linearCampaigns());
+	LinearCampaignMission tutorialMission;
+	const bool tutorial = options.has("tutorial");
+	if (tutorial)
+	{
+		progress.campaign.clear();
+		progress.mission = 0;
+		if (boolOpt(options, "record_memory", false))
+		{
+			errors.push_back("Tutorial save recording is not implemented (S-175)");
+			return report;
+		}
+		const Dictionary def = get_tutorial(String(options["tutorial"]));
+		if (!(bool)def.get("ok", false))
+		{
+			errors.push_back(def["error"]);
+			return report;
+		}
+		tutorialMission.name = n(String(options["tutorial"]));
+		tutorialMission.map = n(String(def["map"]));
+		tutorialMission.loadScreenImage = n(String(def["load_screen_image"]));
+		tutorialMission.loadScreenMusicTrack = n(String(def["load_screen_music"]));
+		tutorialMission.introMovie = n(String(def["intro_movie"]));
+		tutorialMission.fadeUpFrames = (unsigned)(int64_t)def["fade_up_frames"];
+	}
+	const LinearCampaignMission *mission = tutorial ? &tutorialMission : progress.current(m_world->linearCampaigns());
 	if (!mission)
 	{
 		errors.push_back(g("no mission " + std::to_string(progress.mission) + " in the campaign '" + progress.campaign + "'"));
@@ -185,6 +255,7 @@ Dictionary GameWorld::start_campaign_mission(const Dictionary &options)
 	start["camera_start_is_waypoint"] = haveWaypoint;
 	report["start"] = start;
 	Array stops = report.get("stops", Array()); // the lane's stops reach the load report
+	if (tutorial) stops.push_back("[S-175] tutorial entry: Objective and loading voice presentation are not ported; tutorial saves are not recorded");
 	for (const std::vector<std::string> &lines : { LinearCampaignManager::stopLines(), AttachUpdate::stopLines(), ScriptActions::campaignStopLines() })
 	{
 		for (const std::string &l : lines)
@@ -197,7 +268,7 @@ Dictionary GameWorld::start_campaign_mission(const Dictionary &options)
 	m_campaignStart.map = mission->map;
 	m_campaignStart.mission = progress.mission;
 	m_campaignStart.difficulty = progress.difficulty;
-	if (boolOpt(options, "record_memory", false))
+	if (!tutorial && boolOpt(options, "record_memory", false))
 	{
 		// lane SAVE-2: the mission is recorded in memory (not as a replay: a replay starts from a NewGameMessage, S-4002's former gap) so it can be saved;
 		// the recording driver is the one every skirmish runs behind (MP-1's LockstepDriver without a network: the local commands run on the next frame)

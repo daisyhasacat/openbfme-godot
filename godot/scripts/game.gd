@@ -1733,9 +1733,7 @@ func _on_shell_request(action: String, argument: String) -> void:
 		_campaign_flow.continue_saved() # lane CAMPSAVE-1: RW 0x91B50D, nothing without 00000000.sav (RotWK's MainMenu.apt has no button for it)
 
 	elif action == "Tutorial":
-		# Tutorial requests remain reported by the native shell (S-175), without an unavailable popup.
-		# The movie disables its menu before sending the request; restore it after that callback finishes.
-		_shell.call_deferred("shell_invoke", _shell.shell_top_level(), "OnFocus", PackedStringArray(["1"]))
+		_campaign_flow.call_deferred("start_tutorial", argument)
 
 	elif action == "Credits":
 		# lane UI-4: AptMainMenu::Credits (RW 0x91B5E9): the shell's music gives way (RW 0x35BD3F's twin) to the misc audio's CreditsMusic

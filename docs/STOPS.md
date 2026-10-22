@@ -827,3 +827,22 @@ must remain unchanged.
 | S-6101 | code | Player message log | BFME2 recovered InGameUIMessages.cpp (RVA 0x0029BA58), InGameUIPostDraw.cpp (RVA 0x002A0161), InGameUIUpdate.cpp and ctor supply the implemented queue, style and fade. Independent RotWK display-routine verification is outstanding. | InGameHud::stops `[S-6101]` | `player message log:*`, `player_message_log_test.gd` | Exact cross-version presentation parity | Verify the RotWK twins against a trusted target. |
 
 | S-6010 | code / parity | CitadelSlaughterHordeContain | Ring delivery is ported from BFME2 donor 0x48071D, 0x4807C7, 0x480E9A and 0x480FE2 using the RotWK 2.01 field tables 0xC5EFE8 / 0xC5F080. Ordinary troop slaughter, cashback and CanAlwaysEnter remain unported; ordinary troops are refused rather than garrisoned. RotWK binary equivalence is not established. | `CitadelSlaughterHordeContain::stopLine()` | `ring delivery retail: ...` (test_hud_garrison_retail.cpp), FACT-B inventory pins | Ring carrier delivery works; unrelated slaughter and target parity remain incomplete | Port remaining branches and compare target traces; see RING_HEROES.md |
+
+## Tutorial launch: remaining S-175 / S-1364 behavior
+
+Basic and Advanced menu tutorials now load the maps named by mounted GameData,
+with their own sides, scripts, loading picture, music and the mission HUD.
+The launcher reuses the campaign mission path; exact retail tutorial entry
+ordering is not established. GameData field names and values are data facts,
+while using this mission path is an implementation inference.
+
+Strategic Tutorial remains blocked: it requires War of the Ring's tutorial
+flow rather than either GameData tutorial map. `get_tutorial("Strategic")`
+returns the exact S-175 error pinned by `tutorial_start_test.gd`, and a click
+logs it and restores menu input without an unavailable popup. Resolve by
+porting the strategic tutorial entry and Living World flow against a trusted
+target. Fade timing remains S-1364; tutorial Objective and loading voice are
+exposed but their separate entry presentation is not applied. Tutorial games
+currently have no save recording (`save_game` reports that the game is not
+recorded); they do not write or advance linear campaign progress. The installed
+data test covers Basic/Advanced launch, restart and return to the main menu.

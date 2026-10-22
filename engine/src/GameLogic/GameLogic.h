@@ -151,8 +151,16 @@ class StateHasher;
 // What the creation path of an object needs from the game's data (read by the loaders from the mounted INI files, never hard coded).
 struct ObjectFilter;
 
+// Tutorial fields authored in mounted GameData. Empty paths stay unavailable, never guessed.
+struct TutorialDefinition
+{
+	std::string map, loadMovie, loadScreenImage, loadScreenMusicTrack, loadScreenVoiceTrack, objective;
+	unsigned fadeUpFrames = 0;
+};
+
 struct GameLogicSettings
 {
+	TutorialDefinition basicTutorial, advancedTutorial;
 	WallBalance wallBalance;
 	bool clearNeutralDecorations = false; // local Lua construction option, reset with the match
 	bool enableRepulsors = true;                     ///< AIData EnableRepulsors (RW 0xDE4B40 + 0x18 + 0x64): the RepulsorHelper condition

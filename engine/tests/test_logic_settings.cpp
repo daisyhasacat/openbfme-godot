@@ -109,3 +109,25 @@ TEST_CASE("logic settings: fields no row reads and nested blocks are consumed an
 	GameLogicSettings h;
 	CHECK_FALSE(L::scanAIData("AIData\n  EnableRepulsors = Yes\n  SideInfo Rohan\n    A = 1\n", h, &err));
 }
+
+TEST_CASE("logic settings: tutorial maps and loading fields come from GameData with quoted paths and overrides")
+{
+	GameLogicSettings settings;
+	std::string error;
+	const std::string text = std::string(kGameData) +
+		"GameData\n BasicTutorialMap = \"Maps\\Custom Lesson\\Custom Lesson.map\"\n"
+		" BasicTutorialLoadScreenStillImage = CustomTutorialImage\n BasicTutorialLoadScreenMusicTrack = LessonMusic\n"
+		" BasicTutorialLoadScreenVoiceTrack = LessonVoice\n BasicTutorialObjective = SCRIPT:Lesson\n"
+		" BasicTutorialMillisecondsAfterStartToStartFadeUp = 1400\n"
+		" AdvancedTutorialMap = Maps\\Advanced\\Advanced.map\nEnd\n"
+		"GameData\n BasicTutorialLoadMovie = LessonMovie\nEnd\n";
+	REQUIRE_MESSAGE(L::scanGameData(text, settings, &error), error);
+	CHECK(settings.basicTutorial.map == "Maps\\Custom Lesson\\Custom Lesson.map");
+	CHECK(settings.basicTutorial.loadScreenImage == "CustomTutorialImage");
+	CHECK(settings.basicTutorial.loadScreenMusicTrack == "LessonMusic");
+	CHECK(settings.basicTutorial.loadScreenVoiceTrack == "LessonVoice");
+	CHECK(settings.basicTutorial.objective == "SCRIPT:Lesson");
+	CHECK(settings.basicTutorial.loadMovie == "LessonMovie");
+	CHECK(settings.basicTutorial.fadeUpFrames == 7);
+	CHECK(settings.advancedTutorial.map == "Maps\\Advanced\\Advanced.map");
+}

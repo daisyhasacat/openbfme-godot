@@ -377,7 +377,9 @@ public:
 	// TheLinearCampaignManager's campaigns: [ { name, display_label, intro_movie, carryover: [..], missions: [ { name, map, intro_movie, load_screen_image,
 	// load_screen_music, fade_up_frames, delay_carryover: [..] } ] } ] (the world must be set up)
 	Array get_campaigns() const;
-	// loads a campaign mission as the game (load_map with the campaign rules): options { campaign, mission (index), difficulty (0 easy, 1 normal, 2 hard),
+	Dictionary get_tutorial(const String &name) const; // mounted GameData definition, or { ok: false, error }
+
+	// loads a campaign mission as the game (load_map with the campaign rules): options { campaign, mission (index), tutorial (Basic/Advanced instead of campaign), difficulty (0 easy, 1 normal, 2 hard),
 	// logic_thread, progress, test_hooks, record_memory (lane SAVE-2: the mission is recorded in memory so it can be saved) }; the report of start_new_game plus "start" { local_player, local_player_index, camera_start (the map's
 	// InitialCameraPosition waypoint, else Player_1_Start), slot_players [], starting_objects [] } and "mission" (the mission's record)
 	Dictionary start_campaign_mission(const Dictionary &options);

@@ -35,6 +35,9 @@ const END_GAME_TIMER_FRAMES := 25 # RW 0x602FFE: ScriptEngine + 0x1A204 (the end
 
 var game: Node            # scripts/game.gd
 var world: Node3D         # GameWorld
+var tutorial := "" # standalone tutorial, with no campaign progress or unlocks
+var _tutorial_definition := {}
+var tutorial_error := ""
 var campaign := ""
 var mission := 0
 var difficulty := 1
@@ -73,6 +76,7 @@ static func difficulty_from_command(argument: String) -> int:
 
 
 func missions_of(name: String) -> Array:
+	if not tutorial.is_empty(): return [_tutorial_definition]
 	for c in world.get_campaigns():
 		if String(c.name).to_upper() == name.to_upper():
 			return c.missions
@@ -81,6 +85,7 @@ func missions_of(name: String) -> Array:
 
 ## a main menu command: start a campaign at its first mission
 func start(name: String, diff: int) -> void:
+	tutorial = ""
 	campaign = name
 	mission = 0
 	difficulty = diff
@@ -102,6 +107,26 @@ func start(name: String, diff: int) -> void:
 	for c in world.get_campaigns():
 		if String(c.name).to_upper() == name.to_upper():
 			await play_movie(String(c.intro_movie))
+	await begin_mission()
+
+
+## Menu tutorials use the mounted GameData map and the existing single-player script/HUD path.
+func start_tutorial(name: String) -> void:
+	var definition: Dictionary = world.get_tutorial(name)
+	tutorial_error = String(definition.get("error", ""))
+	if not definition.get("ok", false):
+		printerr("TUTORIAL: ", tutorial_error)
+		game._shell.call_deferred("shell_invoke", game._shell.shell_top_level(), "OnFocus", PackedStringArray(["1"]))
+		return
+	tutorial = name
+	_tutorial_definition = definition
+	campaign = ""
+	mission = 0
+	difficulty = 1
+	victorious = false
+	campaign_ready = false
+	advanced = false
+	game._audio.stop_music(false)
 	await begin_mission()
 
 
@@ -173,8 +198,10 @@ func begin_mission(intro := true) -> void:
 	begun += 1
 	if not await show_load_screen(m):
 		return
-	var rep: Dictionary = world.start_campaign_mission({"campaign": campaign, "mission": mission, "difficulty": difficulty,
-		"progress": Callable(game, "_on_load_progress"), "test_hooks": hooks, "record_memory": true}) # lane SAVE-2: recorded so it can be saved
+	var options := {"campaign": campaign, "mission": mission, "difficulty": difficulty,
+		"progress": Callable(game, "_on_load_progress"), "test_hooks": hooks, "record_memory": tutorial.is_empty()}
+	if not tutorial.is_empty(): options["tutorial"] = tutorial
+	var rep: Dictionary = world.start_campaign_mission(options) # lane SAVE-2: recorded so it can be saved
 	game._report = rep
 	print("CAMPAIGN load ok=%s errors=%s" % [rep.ok, str(rep.get("errors", []).slice(0, 5))])
 	if not rep.ok:
@@ -219,7 +246,7 @@ func show_load_screen(m: Dictionary, loading_save := false) -> bool:
 ## the loaded mission handed to the player (lane SAVE-2: also a loaded save's mission, after its catch-up)
 func enter_mission(rep: Dictionary) -> void:
 	active = true
-	game._game_kind = "campaign %s %d" % [campaign, mission] # lane CAMP-2
+	game._game_kind = "tutorial " + tutorial if not tutorial.is_empty() else "campaign %s %d" % [campaign, mission] # lane CAMP-2
 	game._enter_game(rep)
 	_cine = load("res://scripts/campaign_cine.gd").new()
 	_cine.hud_mode = true
@@ -255,7 +282,7 @@ func tick() -> void:
 		var line := "%s %d %s %s %d" % [campaign, mission, missions[mission].map, "victory" if st.victory else "defeat", st.frame]
 		ended_log.append(line)
 		print("CAMPAIGN end: ", line, " (", st.action, ")")
-		if st.victory:
+		if st.victory and tutorial.is_empty():
 			step("won") # RW 0x5EBAEE: + 0xD0
 	# lane CAMPSAVE-1: the end-game timer (RW 0x602FFE: 25 logic frames after VICTORY / DEFEAT) leaves the game for the score screen, as in a skirmish
 	# (the end sequence's own request, end_timer_ran, or the frame count); lane CAMP-1H: an exit movie (PLAY_MOVIE_IN_GAME) plays to its end first
@@ -281,7 +308,7 @@ func leave_to_score_screen() -> void:
 		return
 	active = false
 	_cine = null
-	step("game_over")
+	if tutorial.is_empty(): step("game_over")
 	score_pending = true
 	print("CAMPAIGN the game is left for the score screen (%s %s; the campaign's mission index is now %d)" % [campaign, "won" if victorious else "lost", mission])
 	game._exit_to_score_screen()
@@ -295,6 +322,9 @@ func restart_mission() -> void:
 	active = false
 	_cine = null
 	game._tear_down_game("restart")
+	if not tutorial.is_empty():
+		await begin_mission(false)
+		return
 	var r := step("last_mission")
 	print("CAMPAIGN restart from the quit menu (RW 0x9220DE -> RW 0x5EC5D1): mission %d" % mission)
 	await begin_mission(bool(r.get("intro_movie", false)))
@@ -303,6 +333,10 @@ func restart_mission() -> void:
 ## the score screen's Continue in a campaign game: RW 0x926E0A (TimeLine's destructor, type 1) -> RW 0x927EC6
 func after_score() -> void:
 	score_pending = false
+	if not tutorial.is_empty():
+		tutorial = ""
+		_to_main_menu()
+		return
 	var r := step("after_score")
 	var after := String(r.get("after", ""))
 	print("CAMPAIGN after the score screen (RW 0x927EC6): ", after)

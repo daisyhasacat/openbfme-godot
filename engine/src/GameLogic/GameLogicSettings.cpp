@@ -149,6 +149,21 @@ void noteUnapplied(INI *ini, void *instance, void *, const void *userData)
 #define SEEN_DATA(bit) ((const void *)(std::uintptr_t)(bit))
 
 const FieldParse kGameDataFields[] = {
+	// DATA FACTS: GameData authors these tutorial fields. INFERENCE: launch them through the existing scripted mission loader.
+	{ "BasicTutorialMap", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.basicTutorial.map) },
+	{ "BasicTutorialLoadMovie", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.basicTutorial.loadMovie) },
+	{ "BasicTutorialLoadScreenStillImage", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.basicTutorial.loadScreenImage) },
+	{ "BasicTutorialLoadScreenMusicTrack", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.basicTutorial.loadScreenMusicTrack) },
+	{ "BasicTutorialLoadScreenVoiceTrack", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.basicTutorial.loadScreenVoiceTrack) },
+	{ "BasicTutorialObjective", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.basicTutorial.objective) },
+	{ "BasicTutorialMillisecondsAfterStartToStartFadeUp", INI::parseDurationUnsignedInt, nullptr, (int)offsetof(BlockState, values.basicTutorial.fadeUpFrames) },
+	{ "AdvancedTutorialMap", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.advancedTutorial.map) },
+	{ "AdvancedTutorialLoadMovie", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.advancedTutorial.loadMovie) },
+	{ "AdvancedTutorialLoadScreenStillImage", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.advancedTutorial.loadScreenImage) },
+	{ "AdvancedTutorialLoadScreenMusicTrack", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.advancedTutorial.loadScreenMusicTrack) },
+	{ "AdvancedTutorialLoadScreenVoiceTrack", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.advancedTutorial.loadScreenVoiceTrack) },
+	{ "AdvancedTutorialObjective", INI::parseAsciiString, nullptr, (int)offsetof(BlockState, values.advancedTutorial.objective) },
+	{ "AdvancedTutorialMillisecondsAfterStartToStartFadeUp", INI::parseDurationUnsignedInt, nullptr, (int)offsetof(BlockState, values.advancedTutorial.fadeUpFrames) },
 	{ "TimeAfterDamageUntilRepairAllowed", parseNoting<INI::parseUnsignedInt>, SEEN_DATA(SEEN_REPAIR_DELAY), (int)offsetof(BlockState, values.timeAfterDamageUntilRepairAllowed) },
 	{ "ForceModelsToFollowTimeOfDay", parseNoting<INI::parseBool>, SEEN_DATA(SEEN_TOD), (int)offsetof(BlockState, values.forceModelsToFollowTimeOfDay) },
 	{ "ForceModelsToFollowWeather", parseNoting<INI::parseBool>, SEEN_DATA(SEEN_WEATHER), (int)offsetof(BlockState, values.forceModelsToFollowWeather) },
