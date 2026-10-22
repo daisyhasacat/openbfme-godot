@@ -4,6 +4,7 @@
 #include "Common/Thing/ThingFactory.h"
 #include "GameClient/ControlBarCommands.h"
 #include "GameLogic/Combat/TargetFinder.h"
+#include "GameLogic/AI/AIStateMachine.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/SkirmishAI/AIFortification.h"
 #include "GameLogic/SkirmishAI/AIBaseBuilder.h"
@@ -424,6 +425,22 @@ TEST_CASE("fortification AI: a walled base gathers three engines and six escorts
  CHECK(s.bot.brain.siegeLaunched);
  CHECK(s.bot.brain.siegeEscorts.size()==6);
  for(auto id:s.bot.brain.siegeUnits)CHECK(s.w.logic->findObjectByID(id)->getAIUpdateInterface()->currentVictimId()==gate->getID());
+ for (auto id : s.bot.brain.siegeEscorts)
+ {
+  auto *escort = s.w.logic->findObjectByID(id);
+  auto *a = escort->getAIUpdateInterface();
+  CHECK(a->currentVictimId()==INVALID_ID);
+  // Hold on the home side, never at the gate's x=600 attack-move destination.
+  CHECK(a->stateMachine().goalPosition().x == 150);
+ }
+ // A straggler already at the wall must retreat without its path restarting each update.
+ auto *straggler = s.w.logic->findObjectByID(*s.bot.brain.siegeEscorts.begin());
+ Coord3D exposed{500,500,0}; straggler->setPosition(&exposed);
+ straggler->getAIUpdateInterface()->aiIdle(CMD_FROM_AI);
+ for (int i=0; i<25; ++i) { AIFortification::update(*s.w.logic,s.bot); s.w.frames(1); }
+ // tolerance: proves actual retreat progress; locomotor steps are not the policy's contract.
+ CHECK(straggler->getPosition()->x < 500);
+ CHECK(straggler->getAIUpdateInterface()->currentVictimId() == INVALID_ID);
  gate->setTeam(s.w.teamA());s.w.terrain.cliff.clear();s.w.buildMap();
  AIFortification::update(*s.w.logic,s.bot);
  CHECK(s.bot.brain.fortificationTarget!=gate->getID());

@@ -6,6 +6,7 @@
 #include "GameLogic/SkirmishAI/AIFortification.h"
 #include "Common/Player.h"
 #include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/AI/AIStateMachine.h"
 #include "Common/PlayerList.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "Common/Thing/ThingFactory.h"
@@ -171,8 +172,12 @@ bool AIFortification::passiveBarrier(const Object &o)
 bool AIFortification::allowAutoTarget(const Object &unit, const Object &target)
 {
  const Player *owner=unit.getControllingPlayer();
- if(!owner || owner->getPlayerType()!=PLAYER_COMPUTER || !passiveBarrier(target))return true;
+ if(!owner || owner->getPlayerType()!=PLAYER_COMPUTER)return true;
  const auto *ai=unit.logic().skirmishAI().findAI(owner->getPlayerIndex());
+ // Escorts defend the siege line; acquiring an armed wall tower would walk them
+ // back into the wall even after the tactic's attack-move was removed.
+ if (ai && ai->brain.siegeEscorts.count(unit.getID()) && WallBalance::wall(target)) return false;
+ if (!passiveBarrier(target)) return true;
  return ai && ai->brain.siegeLaunched && ai->brain.fortificationTarget==target.getID() && ai->brain.siegeUnits.count(unit.getID());
 }
 
@@ -347,6 +352,30 @@ void AIFortification::update(GameLogic &logic, AISkirmishPlayer &ai)
   else if (siege)
   {
    if (a->currentVictimId() != target->getID() || a->isIdle() || (logic.getFrame()%50==id%50 && a->mover().isBlocked())) a->aiAttackObject(target, CMD_FROM_AI);
+  }
+  else if (staging)
+  {
+   // Ordinary troops must not attack-move into an intact wall. Hold on the
+   // home side behind the siege firing line until findTarget sees an open route.
+   float standOff = 450.0f;
+   for (ObjectID engine : b.siegeUnits)
+    if (const Object *artillery = logic.findObjectByID(engine))
+     standOff = std::max(standOff, SimMath::addf32(siegeRange(*artillery->getTemplate()), 200.0f));
+   Coord3D hold = rally;
+   const Coord3D &wall = *target->getPosition();
+   const float dx = SimMath::subf32(rally.x, wall.x), dy = SimMath::subf32(rally.y, wall.y);
+   const float length = (float)SimMath::sqrtd(SimMath::addf32(SimMath::mulf32(dx,dx),SimMath::mulf32(dy,dy)));
+   if (length > standOff)
+   {
+    hold.x = SimMath::addf32(wall.x,SimMath::mulf32(SimMath::divf32(dx,length),standOff));
+    hold.y = SimMath::addf32(wall.y,SimMath::mulf32(SimMath::divf32(dy,length),standOff));
+    hold.z = logic.getGroundHeight(hold.x,hold.y);
+   }
+   const bool tooClose = CombatQueries::centerDistanceSquared2D(*unit->getPosition(),wall) < SimMath::mulf32(standOff,standOff);
+   const bool wrongGoal = CombatQueries::centerDistanceSquared2D(a->stateMachine().goalPosition(),hold) > 2500.0f;
+   if (!previousEscorts.count(id) || (tooClose && wrongGoal) || a->currentVictim()) a->aiIdle(CMD_FROM_AI);
+   if (a->isIdle() && CombatQueries::centerDistanceSquared2D(*unit->getPosition(),hold) > 2500.0f)
+    a->aiMoveToPosition(hold,CMD_FROM_AI);
   }
   else if (a->isIdle())
   {

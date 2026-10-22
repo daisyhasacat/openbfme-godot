@@ -11,3 +11,13 @@ Production estimates use a template's default weapon set, damage types, target a
 During peace time, production may prepare siege but the response issues no combat orders. The native AI's tactical/team disable settings continue to apply.
 
 Synthetic regression scenarios in `engine/tests/test_ai_fortifications.cpp` cover damage immunity, projectile and secondary weapons, siege-only versus wall-capable rules, actual wall damage, breach retargeting, ownership changes, peace expiry, zero-composition production, factory scheduling and bounded reinforcement demand. Live faction matches still require the user's retail archives.
+
+Siege escorts now hold on the home side of an intact breach target, at least
+450 units from it (or the longest assigned siege weapon range plus 200),
+unless the home rally point is already closer, in which case they hold at home. They
+receive a move order to the holding position, not an attack-move into the wall.
+An escort already too close or attacking is pulled back, and reserved escorts
+cannot automatically acquire wall towers. Siege weapons keep attacking the breach.
+Once the route opens and the objective changes past the wall, escorts resume
+the normal assault. This fixes the previous launch order that sent escorts
+directly to the intact wall's center. Distances are enhanced-policy tuning.
