@@ -104,7 +104,6 @@ const UnavailableScreen kUnavailableScreens[] = {
 	{ "BFME2GoodCampaign", "The BFME2 Good campaign", "OpenBFME does not have it yet" },
 	{ "BFME2EvilCampaign", "The BFME2 Evil campaign", "OpenBFME does not have it yet" },
 	{ "WarOfTheRing", "War of the Ring", "its strategy map game is still being rebuilt" },
-	{ "Tutorial", "The tutorial", "OpenBFME does not have it yet" },
 	{ "Lan", "Network", "this build has no screen for it" },
 	{ "LoadReplay", "Replays", "this build has no screen for it" },
 };
