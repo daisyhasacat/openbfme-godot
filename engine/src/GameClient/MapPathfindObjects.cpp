@@ -114,6 +114,7 @@ void MapPathfindObjects::kindsOf(const MapTemplateInfo &info, bool (&kinds)[PK_C
 		{ PK_CAVALRY, "CAVALRY" },
 		{ PK_HERO, "HERO" },
 		{ PK_SHIP, "SHIP" },
+		{ PK_SUBMARINE, "SUBMARINE" },
 		{ PK_PATH_THROUGH_INFANTRY, "PATH_THROUGH_INFANTRY" },
 		{ PK_HEAVY_MELEE_HITTER, "HEAVY_MELEE_HITTER" },
 		{ PK_DO_NOT_CLASSIFY, "DO_NOT_CLASSIFY" },

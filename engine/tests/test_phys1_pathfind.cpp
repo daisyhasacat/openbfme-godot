@@ -282,3 +282,82 @@ TEST_CASE("phys1 pathfind: the contact back-off keeps a reachable destination in
 	CHECK(dest.x == 205.0f);
 	CHECK(dest.y == 155.0f);
 }
+
+TEST_CASE("pathfind donor movement: transient probes check moving enemies as well as allies")
+{
+	SyntheticTerrain terrain(20, 20);
+	TestWorld world;
+	TestObject mover, occupant;
+	mover.id = 1;
+	mover.mobile = true;
+	mover.diameter = 10.0f;
+	mover.pos = {25.0f, 25.0f, 0.0f};
+	occupant.id = 2;
+	occupant.mobile = true;
+	occupant.diameter = 10.0f;
+	occupant.stationary = true;
+	occupant.team = 1;
+	occupant.pos = {85.0f, 85.0f, 0.0f};
+	world.objects = {{mover.id, &mover}, {occupant.id, &occupant}};
+	Pathfinder pf(testConfig(), &world);
+	pf.newMap(terrain);
+	pf.updatePos(occupant);
+	// A transient reservation remains until its next updatePos; it is not a parked goal.
+	occupant.stationary = false;
+	PathfindCheckMovement info;
+	info.cell = {8, 8};
+	info.flags = 1;
+	info.mv = pf.makeMovement(&mover, groundLoco());
+	// BFME2 checkCellUnits + RotWK 0x6EB8FF: transient is independent of relationship.
+	CHECK(pf.checkForMovement(&mover, info, nullptr));
+	info.transient = true;
+	CHECK_FALSE(pf.checkForMovement(&mover, info, nullptr));
+	const ICoord2D previous{2, 2};
+	CHECK_FALSE(pf.checkForMovement(&mover, info, &previous));
+	occupant.team = 0;
+	info.flags = 2;
+	CHECK_FALSE(pf.checkForMovement(&mover, info, nullptr));
+	CHECK(info.allyPresent);
+	info.ignoreId = occupant.id;
+	CHECK(pf.checkForMovement(&mover, info, nullptr));
+	pf.removePos(occupant);
+}
+
+TEST_CASE("pathfind donor movement: submarines ignore unit occupancy without ignoring terrain")
+{
+	SyntheticTerrain terrain(20, 20);
+	TestWorld world;
+	TestObject mover, occupant;
+	mover.id = 1;
+	mover.mobile = true;
+	mover.diameter = 10.0f;
+	mover.pos = {25.0f, 25.0f, 0.0f};
+	occupant.id = 2;
+	occupant.mobile = true;
+	occupant.diameter = 10.0f;
+	occupant.pos = {85.0f, 85.0f, 0.0f};
+	world.objects = {{mover.id, &mover}, {occupant.id, &occupant}};
+	Pathfinder pf(testConfig(), &world);
+	pf.newMap(terrain);
+	pf.updatePos(occupant);
+	pf.updateGoal(occupant, &occupant.pos, LAYER_GROUND);
+	PathfindCheckMovement info;
+	info.cell = {8, 8};
+	info.flags = 2;
+	info.transient = true;
+	info.mv = pf.makeMovement(&mover, groundLoco());
+	CHECK_FALSE(pf.checkForMovement(&mover, info, nullptr));
+	mover.kinds.insert(PK_SUBMARINE);
+	CHECK(pf.checkForMovement(&mover, info, nullptr));
+	CHECK_FALSE(info.goalListNonEmpty);
+	CHECK_FALSE(info.allyFixed);
+	occupant.team = 1;
+	info.flags = 0x11;
+	CHECK(pf.checkForMovement(&mover, info, nullptr));
+	// The unit exception follows terrain checks; an impassable cell still counts.
+	pf.getCell(LAYER_GROUND, info.cell.x, info.cell.y)->setType(PathfindCell::CELL_BRIDGE_IMPASSABLE);
+	CHECK(pf.checkForMovement(&mover, info, nullptr));
+	CHECK(info.terrainPenalty == 1);
+	pf.removeGoal(occupant);
+	pf.removePos(occupant);
+}

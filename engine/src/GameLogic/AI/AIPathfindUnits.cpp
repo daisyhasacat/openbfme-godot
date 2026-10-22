@@ -16,7 +16,7 @@
 //   * adjustDestination RW 0x6FE456 with the ring search 0x6FA2A4 and the per-cell test 0x6F66D9 / 0x6F83EB;
 //   * the request queue and processPathfindQueue RW 0x6F2364, 0x6ED0FB.
 // DONOR (ZH AIPathfind.cpp:4924-5650, 5648-5965, 9694-10112): the shape of the above where RW was not read. See docs/STOPS.md S-163 and
-// S-164 for what is not ported (kind-1 slot, rotated-rectangle fill, the AI target rules of checkForMovement, the partition grid).
+// S-164 for what is not ported (kind-1 slot, rotated-rectangle fill and the partition grid).
 
 #include "Common/PerformanceCounters.h"
 #include "GameLogic/AI/AIPathfind.h"
@@ -275,6 +275,7 @@ Pathfinder::SearcherFacts Pathfinder::searcherFacts(const PathfindObject *obj) c
 	f.hasLocomotor = obj->hasLocomotor();
 	f.largeRect = obj->isKindOf(PK_LARGE_RECTANGLE_PATHFIND);
 	f.pathThroughInfantry = obj->isKindOf(PK_PATH_THROUGH_INFANTRY);
+	f.submarine = obj->isKindOf(PK_SUBMARINE);
 	f.throughEachOther = obj->pathsThroughEachOther();
 	f.aiPriority = obj->aiPriority();
 	return f;
@@ -419,7 +420,9 @@ bool Pathfinder::checkForMovement(const PathfindObject *obj, PathfindCheckMoveme
 				{
 					info.allyPresent = true;
 				}
-				const bool check = (info.transient && ally) || f->parked || (!ally && (info.flags & 0x10));
+				// BFME2 checkCellUnits; RW 0x6EB8FF..0x6EB934 (S-001):
+				// +0x11 requests moving occupants of either relationship.
+				const bool check = info.transient || f->parked || (!ally && (info.flags & 0x10));
 				if (!check)
 				{
 					continue;
@@ -439,6 +442,13 @@ bool Pathfinder::checkForMovement(const PathfindObject *obj, PathfindCheckMoveme
 						info.goalListNonEmpty = false;
 						continue;
 					}
+				}
+				// BFME2 kind 0xBB; RW 0x6EB99C..0x6EB9A9 (S-001).
+				// A submarine ignores unit occupants, clearing the goal-list hint.
+				if (self.submarine)
+				{
+					info.goalListNonEmpty = false;
+					continue;
 				}
 				if (ally)
 				{

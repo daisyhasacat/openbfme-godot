@@ -13,6 +13,7 @@
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/AI/AIGarrisonStates.h"
 #include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/AI/AIStateMachine.h"
 #include "GameLogic/AI/GarrisonCommands.h"
 #include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/Combat/CombatQueries.h"
@@ -758,4 +759,62 @@ TEST_CASE("ring delivery retail: fortress refuses ordinary troops and another pl
 	CHECK_FALSE(contain->addToContain(enemy));
 	CHECK_FALSE(a.player(0)->hasUpgradeComplete("Upgrade_RingHero"));
 	CHECK_FALSE(fortress->hasUpgrade("Upgrade_FortressRingHero"));
+}
+
+TEST_CASE("pathfind donor retail: current goal and victim battalions do not block their attacker's movement")
+{
+	if (!haveWorld()) return;
+	Arena a(shared());
+	Object *attacker = a.place("GondorFighter", 0, 250.0f, 250.0f);
+	Object *target = a.place("MordorFighterHorde", 1, 500.0f, 500.0f);
+	Object *unrelated = a.place("MordorFighterHorde", 1, 800.0f, 800.0f);
+	a.run(2);
+	const auto targetMembers = membersOf(*target);
+	const auto unrelatedMembers = membersOf(*unrelated);
+	REQUIRE_FALSE(targetMembers.empty());
+	REQUIRE_FALSE(unrelatedMembers.empty());
+	AIUpdateInterface *ai = attacker->getAIUpdateInterface();
+	REQUIRE(ai != nullptr);
+	auto &adapter = ai->adapter();
+	auto &targetAdapter = target->getAIUpdateInterface()->adapter();
+	auto &memberAdapter = targetMembers.front()->getAIUpdateInterface()->adapter();
+	auto &otherMemberAdapter = targetMembers.back()->getAIUpdateInterface()->adapter();
+	auto &unrelatedAdapter = unrelatedMembers.front()->getAIUpdateInterface()->adapter();
+	ai->stateMachine().setGoalObject(INVALID_ID);
+	ai->setCurrentVictim(nullptr);
+	CHECK_FALSE(adapter.ignoresAsTarget(memberAdapter));
+	auto canCross = [&](Object &occupant) {
+		Pathfinder &pf = a.ai->pathfinder();
+		PathfindCheckMovement info;
+		int radius = 0;
+		bool centered = false;
+		pf.getRadiusAndCenter(&adapter, radius, centered);
+		info.radius = radius;
+		pf.worldToCell(occupant.getPosition(), centered, &info.cell);
+		info.center = centered;
+		info.flags = 1;
+		info.transient = true;
+		info.mv = pf.makeMovement(&adapter, ai->locomotorInfo());
+		return pf.checkForMovement(&adapter, info, nullptr);
+	};
+	CHECK_FALSE(canCross(*targetMembers.front()));
+	for (bool useVictim : {false, true})
+	{
+		for (Object *goal : {target, targetMembers.front()})
+		{
+			ai->stateMachine().setGoalObject(INVALID_ID);
+			ai->setCurrentVictim(nullptr);
+			if (useVictim) ai->setCurrentVictim(goal);
+			else ai->stateMachine().setGoalObject(goal->getID());
+			CHECK(adapter.ignoresAsTarget(targetAdapter));
+			CHECK(adapter.ignoresAsTarget(memberAdapter));
+			CHECK(adapter.ignoresAsTarget(otherMemberAdapter));
+			CHECK_FALSE(adapter.ignoresAsTarget(unrelatedAdapter));
+			CHECK(canCross(*targetMembers.front()));
+			CHECK_FALSE(canCross(*unrelatedMembers.front()));
+		}
+	}
+	ai->stateMachine().setGoalObject(INVALID_ID);
+	ai->setCurrentVictim(nullptr);
+	CHECK_FALSE(adapter.ignoresAsTarget(memberAdapter));
 }

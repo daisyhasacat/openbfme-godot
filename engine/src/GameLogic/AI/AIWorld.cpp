@@ -18,6 +18,7 @@
 #include "GameLogic/AI/AIPathfindConfig.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/AI/AIGroup.h"
+#include "GameLogic/AI/AIStateMachine.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "GameLogic/Object/Object.h"
@@ -324,6 +325,7 @@ struct KindBits
 			{ PK_PATH_THROUGH_INFANTRY, "PATH_THROUGH_INFANTRY" },
 			{ PK_HEAVY_MELEE_HITTER, "HEAVY_MELEE_HITTER" },
 			{ PK_LARGE_RECTANGLE_PATHFIND, "LARGE_RECTANGLE_PATHFIND" },
+			{ PK_SUBMARINE, "SUBMARINE" },
 			{ PK_WALK_ON_TOP_OF_WALL, "WALK_ON_TOP_OF_WALL" },
 			{ PK_DO_NOT_CLASSIFY, "DO_NOT_CLASSIFY" },
 			{ PK_SIEGE_LADDER, "SIEGE_LADDER" },
@@ -638,9 +640,23 @@ bool ObjectPathfindAdapter::footprintSkippedByStatus() const
 	return phantom >= 0 && m_object->testStatus((unsigned)phantom);
 }
 
-bool ObjectPathfindAdapter::ignoresAsTarget(const PathfindObject &) const
+bool ObjectPathfindAdapter::ignoresAsTarget(const PathfindObject &other) const
 {
-	return false; // the attack machine's target (RW 0x8DBACE, 0x668303) belongs to the combat milestone
+	// BFME2 PathfinderCheckForMovement.cpp checkCellUnits; target counterpart
+	// RW 0x6EBA09..0x6EBA5E (S-001): the machine goal, then current victim,
+	// each compared with the occupant and their immediate containers.
+	const auto *occupant = dynamic_cast<const ObjectPathfindAdapter *>(&other);
+	const AIUpdateInterface *update = ai();
+	if (!occupant || !update) return false;
+	const Object *unit = &occupant->object();
+	const Object *container = unit->getContainedBy();
+	auto matches = [&](const Object *target) {
+		if (!target) return false;
+		if (unit == target || container == target) return true;
+		const Object *parent = target->getContainedBy();
+		return parent && (unit == parent || container == parent);
+	};
+	return matches(ai()->stateMachine().goalObject()) || matches(update->currentVictim());
 }
 
 bool ObjectPathfindAdapter::pathsThroughEachOther() const

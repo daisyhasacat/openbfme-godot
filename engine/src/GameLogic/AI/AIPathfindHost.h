@@ -114,6 +114,7 @@ enum PathfindKind
 	PK_BLOCKING_GATE,             // BLOCKING_GATE (137)
 	PK_SCALEABLE_WALL,            // SCALEABLE_WALL (201)
 	PK_BASE_SITE,                 // BASE_SITE (120)
+	PK_SUBMARINE,                 // SUBMARINE (187)
 	PK_WALL_UPGRADE,              // WALL_UPGRADE (150), lane PHYS-1: RW 0x6F37B3's wall branch
 	PK_COUNT
 };
@@ -180,7 +181,7 @@ public:
 	// object status bits the footprint code reads (RW status index 0x58 and 0x4D; names INFERRED: S-164)
 	virtual bool footprintSkippedByStatus() const { return false; }
 	// RW checkForMovement (0x6EBAA0), enemy branch: `other` (or its container) is the unit's current attack / approach target, so a
-	// parked enemy of that kind does not block it (the AI state machine's target RW 0x8DBACE and 0x668303; S-164)
+	// enemy of that kind does not block it (the AI state machine's target RW 0x8DBACE and 0x668303)
 	virtual bool ignoresAsTarget(const PathfindObject &other) const { (void)other; return false; }
 	// KindOf PATH_THROUGH_EACH_OTHER (116)
 	virtual bool pathsThroughEachOther() const { return false; }

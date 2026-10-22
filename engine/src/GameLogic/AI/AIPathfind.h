@@ -907,7 +907,7 @@ private:
 	};
 	struct SearcherFacts
 	{
-		bool isHuman = false, hasAI = false, hasLocomotor = false, largeRect = false, pathThroughInfantry = false, throughEachOther = false;
+		bool isHuman = false, hasAI = false, hasLocomotor = false, largeRect = false, pathThroughInfantry = false, throughEachOther = false, submarine = false;
 		int aiPriority = 0;
 	};
 	const OccupantFacts *occupantFacts(const PathfindObject *obj, PathfindObjectID id);
