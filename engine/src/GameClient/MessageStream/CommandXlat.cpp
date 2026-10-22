@@ -447,6 +447,15 @@ int CommandTranslator::evaluateContextCommand(Object *obj, const Coord3D *pos, E
 		else return issueMove(nullptr, &destination, type);
 		return m_teamExists ? MSG_DO_MOVETO : 0;
 	}
+	// OpenBFME input improvement: prefer an eligible capture over an ordinary attack, including enemy-owned buildings.
+	// Explicit force attack still bypasses capture. Eligibility remains the FACT-C (S-2002) check below.
+	if (obj && !m_ctx.ui.isInForceAttackMode())
+	{
+		if (const int captureType = evaluateCapture(obj, pos, type))
+		{
+			return captureType;
+		}
+	}
 	if (obj && !m_ctx.ui.isInForceAttackMode() && HudObjects::relationshipToLocal(m_ctx, *obj) == ENEMIES && selectionCanAttack())
 	{
 		msgType = MSG_DO_ATTACK_OBJECT;
@@ -459,14 +468,6 @@ int CommandTranslator::evaluateContextCommand(Object *obj, const Coord3D *pos, E
 			hint(MouseCursorName::AttackObj);
 		}
 		return msgType;
-	}
-	// lane FACT-C (S-2002): a building the selection can capture (an inn, an outpost, a signal fire): its capture button's power at the building
-	if (obj && !m_ctx.ui.isInForceAttackMode())
-	{
-		if (const int captureType = evaluateCapture(obj, pos, type))
-		{
-			return captureType;
-		}
 	}
 	// lane QA-1 (stop S-1201): ZH evaluateContextCommand's ACTIONTYPE_RESUME_CONSTRUCTION and ACTIONTYPE_REPAIR_OBJECT (CommandXlat.cpp:1712 / 1785, SELECTION_ANY): a
 	// click with a builder selected on our structure that is still rising resumes it (MSG_RESUME_CONSTRUCTION, the logic case RW 0x77AEB6: every selected dozer of
