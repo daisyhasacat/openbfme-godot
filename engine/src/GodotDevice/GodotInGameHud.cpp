@@ -3249,16 +3249,6 @@ void InGameHudNode::_process(double delta)
 	{
 		d->hud6->drawRadial(get_canvas_item()); // lane HUD-6
 		d->hud6->drawMessages(get_canvas_item());
-		if (d->fs.is_valid() && d->fs->is_bfme1())
-		{
-			const Vector2 size = get_viewport_rect().size;
-			const float width = std::min(420.0f, (float)size.x * 0.4f);
-			const Rect2 rect(size.x - width - 24.0f, std::max(24.0f, (float)size.y - 370.0f), width, 300.0f);
-			if (d->hud->helpBox().isShown())
-				RenderingServer::get_singleton()->canvas_item_add_rect(get_canvas_item(), rect.grow(10), Color(0.06f, 0.05f, 0.03f, 0.95f));
-			d->hud6->drawHelp(rect, get_canvas_item());
-		}
-
 	}
 	const uint64_t t1 = Time::get_singleton()->get_ticks_usec();
 	d->hudMs = (double)(ta - t0) / 1000.0;

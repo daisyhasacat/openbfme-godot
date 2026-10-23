@@ -127,7 +127,9 @@ These are the places where BFME1's data or menus differ from RotWK's. Each one i
 - **Texture replacements:** PNG/JPEG files are accepted by BFME1 texture lookup (including `GBCampFloor`), and image signatures are recognized even when replacements retain `.dds` filenames.
 - **Palantir commands:** BFME1 uses six fixed `CommandButtons.Command1` … `Command6` slots and `SetCommandButtonState`, rather than BFME2's dynamic content frames. Slot state updates only run when content changes, so show animations can finish.
 - **Command tooltips:** BFME1's legacy cursor blocks are skipped to their `End` when loading help fonts. BFME1 has no `OnHelpBoxLoaded`:
-  the tooltip is `Palantir.apt`'s own bordered `HelpBox` clip. The RotWK help box state machine drives it through the root's
+  the tooltip is `Palantir.apt`'s own bordered `HelpBox` clip in the movie-authored center position.
+  The separate bottom-right device panel is removed; both frame and text use the native clip.
+  A live attached HUD waits for Palantir's `OnInitialized` before sampling width, since BFME1 has no load handshake. The RotWK help box state machine drives it through the root's
   `SampleHelpBoxTextWidth` / `HideHelpBox` / `ShowHelpBox(height, "%g")`, and the text is drawn into the clip typed `HelpBoxText`
   (Open-BFME-1 VA 0x00593E60, 0x005649A0, 0x00592640). INFERENCE: the width sample waits for the `Text` clip's shape, which is
   empty on the first frame after the call.
@@ -365,3 +367,11 @@ godot --path godot --script res://tests/bfme1_live_plot_zoom_test.gd -- --game=b
 Use `--bfme1-install` to select an installation, `--faction=FactionIsengard` for Isengard, and
 `BFME1_PLOT_SCREENSHOTS` to save the live views. The second start is essential: the first castle did not
 reproduce the draw-order failure in the original regression.
+
+`bfme1_hud_test.gd` checks the fixed `HelpBoxText` render callback and the native
+`SampleHelpBoxTextWidth`, `HideHelpBox` and `ShowHelpBox` calls as well as visible tooltip text.
+
+`bfme1_live_tooltip_test.gd` uses the normal game scene, opens Skirmish through its host command, starts
+through the lobby, selects a live plot and hovers a radial build command. It verifies the native callback,
+show calls and rendered text after the shell-to-game transition. Use the live plot test command above with
+this script; `BFME1_TOOLTIP_SCREENSHOT` optionally saves the full live frame to a PNG path.

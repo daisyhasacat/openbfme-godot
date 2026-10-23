@@ -54,6 +54,10 @@ func _run() -> void:
 	for i in 120: await process_frame
 	var help: Dictionary = hud.get_hud6_state().help
 	assert(help.shown and help.text_ops > 0 and not help.name.is_empty(), str(help))  # tolerance: the help box drew text
+	assert(help.render_name == "HelpBoxText", str(help))
+	assert(help.calls[0] == "SampleHelpBoxTextWidth()", str(help))
+	assert(help.calls.has("HideHelpBox()"), str(help))
+	assert(str(help.calls).contains("ShowHelpBox("), str(help))
 	var keep := 0
 	for id in world.get_object_ids():
 		if world.get_object(id).template == "GondorCastleBaseKeep": keep = id; break
