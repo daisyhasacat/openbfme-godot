@@ -337,6 +337,14 @@ TEST_CASE("cah1 BFME2 presentation retains RotWK empty-power selection through t
 	context.show(screen, "Powers");
 	CHECK(screen->currentPage() == 'P');
 	CHECK(context.fx->wm->errors().empty());
+	const auto *powersMenu = context.fx->at(screen->level(), "Main.mcPowersScreen.Screen.mcPowersMenu")->asSprite();
+	REQUIRE(powersMenu);
+	REQUIRE(powersMenu->timelineFile);
+	CHECK(powersMenu->timelineFile->name == "CahPowers");
+	std::vector<std::uint8_t> presented, bfme2;
+	REQUIRE(context.fx->source.readFile("CahPowers.apt", presented, &error));
+	REQUIRE(menus->fs->readFile("CahPowers.apt", bfme2, &error));
+	CHECK(presented == bfme2);
 	std::function<AptCharacterInst *(AptCharacterInst *)> findButton = [&](AptCharacterInst *instance) -> AptCharacterInst * {
 		if (instance->instName() == "NoPowerButton") return instance;
 		if (auto *sprite = instance->asSprite())

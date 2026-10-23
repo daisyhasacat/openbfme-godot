@@ -17,6 +17,8 @@
 #include "GameLogic/CreateAHeroSystem.h"
 #include "Libraries/Source/Apt/Apt.h"
 #include "Libraries/Source/Apt/AptCharacterInst.h"
+#include "Libraries/Source/Apt/AptActionInterpreter.h"
+#include "Libraries/Source/Apt/AptButtonInst.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -1775,6 +1777,35 @@ void AptCreateAHero::update()
 	}
 	if (m_page == 'P' && m_myHero)
 	{
+		auto &apt = windows().apt();
+		auto *menuInstance = apt.resolvePath(apt.level(level()), "Main.mcPowersScreen.Screen.mcPowersMenu");
+		auto *menu = menuInstance ? menuInstance->asSprite() : nullptr;
+		if (apt.loader().gameplayHeroButton() && menu && menu->timelineFile && menu->timelineFile->name == "CahPowers")
+		{
+			if (!menu->childByName("NoPowerButton"))
+			{
+				std::string error;
+				auto donor = apt.loader().loadMovie("cah_gameplay_CahPowers", &error);
+				if (donor)
+					for (const auto &character : donor->characters)
+						for (const auto &frame : character.frames)
+							for (const auto &item : frame.items)
+								if (item.place && (item.place->name == "NoPowerButton" || item.place->name == "NoPowerIcon") && !menu->childByName(item.place->name))
+								{
+									auto placement = *item.place;
+									placement.depth = item.place->name == "NoPowerButton" ? 30000 : 30001;
+									menu->placeObject(placement, *donor, donor);
+								}
+			}
+			std::function<void(AptCharacterInst *)> bindButton = [&](AptCharacterInst *instance) {
+				if (instance->asButton()) apt.vm().defineNative(instance, "onRelease", [this](AptCallInfo &) {
+					chooseNoPower();
+					return AptValue();
+				});
+				if (auto *sprite = instance->asSprite()) for (auto *child : sprite->children()) bindButton(child);
+			};
+			if (auto *button = menu->childByName("NoPowerButton")) bindButton(button);
+		}
 		// the page's update: a take-back first (+0x28), then the pending choice (+0x20)
 		if (m_keepPowers < m_powers.chosenCount())
 		{

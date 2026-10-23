@@ -19,12 +19,16 @@ TEST_CASE("Apt presentation keeps the gameplay hero builder asset family togethe
 		{"CahPowers_geometry/1.ru", "rotwk geometry"}, {"art/textures/apt_CahPowers_1.tga", "rotwk texture"},
 		{"art/compiledtextures/ap/apt_CahPowers_2.tga", "rotwk compiled texture"}, {"CreateAHero.dat", "rotwk atlas"}, {"CahBonus.apt", "rotwk bonus"}});
 	AptArchiveFileSource source(menus.fsys, &gameplay.fsys);
-	for (const std::string &path : {"CahPowers.apt", "CahPowers.const", "CahPowers_geometry/1.ru", "art/textures/apt_CahPowers_1.tga", "ART\\COMPILEDTEXTURES\\AP\\APT_CAHPOWERS_2.TGA"})
+	for (const std::string &path : {"cah_gameplay_CahPowers.apt", "cah_gameplay_CahPowers.const", "cah_gameplay_CahPowers_geometry/1.ru", "art/textures/apt_cah_gameplay_CahPowers_1.tga", "ART\\COMPILEDTEXTURES\\AP\\APT_CAH_GAMEPLAY_CAHPOWERS_2.TGA"})
 	{
 		std::vector<std::uint8_t> actual, expected;
 		REQUIRE(source.fileExists(path));
 		REQUIRE(source.readFile(path, actual, nullptr));
-		REQUIRE(gameplay.fsys.readFile(path, expected, nullptr));
+		std::string physical = path;
+		const auto prefix = physical.find("cah_gameplay_");
+		const auto upperPrefix = physical.find("CAH_GAMEPLAY_");
+		physical.erase(prefix == std::string::npos ? upperPrefix : prefix, 13);
+		REQUIRE(gameplay.fsys.readFile(physical, expected, nullptr));
 		CHECK(actual == expected);
 	}
 	std::vector<std::uint8_t> bytes;
@@ -40,8 +44,8 @@ TEST_CASE("Apt presentation keeps the gameplay hero builder asset family togethe
 	REQUIRE(source.readFile("CahManager.apt", bytes, nullptr));
 	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 manager");
 	AptFile heroMovie;
-	heroMovie.name = source.movieKey("CahPowers");
-	CHECK(heroMovie.name != "CahPowers");
+	heroMovie.name = "cah_gameplay_CahPowers";
+	CHECK(source.movieKey("CahPowers") == "CahPowers");
 	const std::string dependency = source.importMovieName(heroMovie, "MenuExport");
 	REQUIRE(source.readFile(dependency + ".apt", bytes, nullptr));
 	CHECK(std::string(bytes.begin(), bytes.end()) == "rotwk shared");
@@ -49,6 +53,8 @@ TEST_CASE("Apt presentation keeps the gameplay hero builder asset family togethe
 	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 shared");
 	REQUIRE(source.readFile("art/textures/apt_" + heroMovie.name + "_1.tga", bytes, nullptr));
 	CHECK(std::string(bytes.begin(), bytes.end()) == "rotwk texture");
+	REQUIRE(source.readFile("CahPowers.apt", bytes, nullptr));
+	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 powers");
 	AptArchiveFileSource standalone(menus.fsys);
 	REQUIRE(standalone.readFile("CahPowers.apt", bytes, nullptr));
 	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 powers");

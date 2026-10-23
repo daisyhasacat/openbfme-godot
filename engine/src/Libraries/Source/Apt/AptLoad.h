@@ -29,6 +29,7 @@ class AptFileSource
 public:
 	virtual ~AptFileSource() = default;
 	virtual bool aotrProfile() const { return false; }
+	virtual bool gameplayHeroButton() const { return false; }
 	virtual std::string movieKey(const std::string &name) const { return name; }
 	virtual std::string importMovieName(const AptFile &, const std::string &name) const { return name; }
 	virtual bool readFile(const std::string &virtualPath, std::vector<std::uint8_t> &out, std::string *error) = 0;
@@ -43,6 +44,7 @@ class AptArchiveFileSource : public AptFileSource
 public:
 	explicit AptArchiveFileSource(ArchiveFileSystem &fileSystem, ArchiveFileSystem *heroFileSystem = nullptr) : m_fs(fileSystem), m_heroFs(heroFileSystem) {}
 	bool aotrProfile() const override;
+	bool gameplayHeroButton() const override { return m_heroFs != nullptr; }
 	std::string movieKey(const std::string &name) const override;
 	std::string importMovieName(const AptFile &importer, const std::string &name) const override;
 	bool readFile(const std::string &virtualPath, std::vector<std::uint8_t> &out, std::string *error) override;
@@ -67,6 +69,7 @@ class AptLoader
 {
 public:
 	explicit AptLoader(AptFileSource &source) : m_source(source) {}
+	bool gameplayHeroButton() const { return m_source.gameplayHeroButton(); }
 
 	// Load and cache a movie by name (ASCII case-insensitive).  Null + *error on failure.
 	std::shared_ptr<const AptFile> loadMovie(const std::string &movieName, std::string *error);
