@@ -118,7 +118,7 @@ public:
 	static bool Reduce_Image(Ref<Image> &image, int reduction);
 
 private:
-	Ref<Texture2D> Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing = false);
+	Ref<Texture2D> Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing = false, int alphaCoverage = 0);
 	static Ref<Texture2D> Placeholder_Texture(bool flatNormal);
 
 	ArchiveFileSystem &Fs;

@@ -306,3 +306,34 @@ and their separate borders and tooltip regions, and handles the BFME1
 Cancel/Reset/Save buttons through the shared replacement menu events.
 `godot/tests/bfme1_options_test.gd` verifies that the replacement opens,
 original controls stay hidden, its bottom bar is available and it reopens.
+
+## Opening armies, Q and distant markings
+
+BFME1's opening battalions come from the mounted `Multiplayer_Start_Teams`
+script library, not the commented-out PlayerTemplate StartingUnit rows.
+The library's team definitions are now instantiated for each receiving player;
+`SET_UNIT_REFERENCE` binds the base reference and
+`CREATE_REINFORCEMENT_TEAM_AT_UNIT_POSITION` creates its configured team at
+that base. References use the receiving side's named cache, whose IDs already
+participate in CRC and save/load. Spawn layout retains the existing S-1186
+reinforcement-placement inference. Evidence: BFME1 ScriptActionsReferences
+(0x2F5A10), the shipped library scripts and SidesList's library-team merge.
+The asset-based test checks all four factions; the tested installed library
+configures two battalions for Gondor/Rohan/Mordor and one for Isengard.
+
+The shipped BFME1 CommandMap.ini contains no bindings. Q now has the requested
+select-army default when no explicit SELECT_ALL binding or other Q binding
+exists. Both the live input map and the settings listing use this default.
+
+Particle lookup uses BFME1's flat texture layout, with DDS signature detection
+for DDS streams stored under TGA names. Missing textures remain reported.
+As an OpenBFME rendering fix, alpha-tested BFME1 textures retain alpha coverage
+in their mip levels. The foundation textures' smallest authored mip levels
+fall below the alpha cutoff and otherwise disappear at distant zoom. Only
+mip alpha changes; base-level pixels, colours and simulation state stay intact.
+The same processing applies to live texture replacements and precedes texture
+quality reduction. RotWK/BFME2 keep their existing rendering path.
+
+Validation: `bfme1_starting_armies_test.gd` checks the mounted opening armies
+and live Q selection, and loads fire/smoke particle textures. `test_input1.cpp` pins binding precedence;
+`test_fx_review.cpp` checks flat particle lookup and shrinking alpha cutouts.

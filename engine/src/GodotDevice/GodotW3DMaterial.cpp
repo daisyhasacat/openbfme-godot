@@ -307,6 +307,22 @@ bool W3DMaterialFactory::Reduce_Image(Ref<Image> &image, int reduction)
 
 namespace
 {
+void preserveAlphaCoverage(Ref<Image> &image, int alphaCoverage)
+{
+	if (alphaCoverage <= 0) return;
+
+	// User-requested BFME1 plot visibility fix: its foundation DDS mips
+	// eventually have no alpha above the material's cutoff. Preserve coverage
+	// before texture reduction so zoom/detail changes cannot erase the plot.
+	if (image->is_compressed()) image->decompress();
+	image->convert(Image::FORMAT_RGBA8);
+	PackedByteArray data = image->get_data();
+	std::vector<unsigned char> rgba(data.ptr(), data.ptr() + data.size());
+	W3D_Preserve_Mip_Alpha_Coverage(rgba, image->get_width(), image->get_height(), alphaCoverage);
+	if (!rgba.empty()) std::memcpy(data.ptrw(), rgba.data(), rgba.size());
+	image = Image::create_from_data(image->get_width(), image->get_height(), image->has_mipmaps(), Image::FORMAT_RGBA8, data);
+
+}
 std::map<std::string, Ref<Image>> g_textureOverrides;
 std::set<W3DMaterialFactory *> g_materialFactories;
 std::string textureOverrideKey(std::string name)
@@ -366,6 +382,8 @@ void W3DMaterialFactory::Set_Texture_Override(const std::string &name, const Ref
 			}
 			if (!pixels->has_mipmaps() && !pixels->is_compressed())
 				pixels->generate_mipmaps();
+			const auto coverageAt = cached.first.find("#coverage");
+			if (coverageAt != std::string::npos) preserveAlphaCoverage(pixels, std::stoi(cached.first.substr(coverageAt + 9)));
 			auto reductionAt = cached.first.find("#reduction");
 			if (reductionAt != std::string::npos)
 				Reduce_Image(pixels, std::stoi(cached.first.substr(reductionAt + 10)));
@@ -375,7 +393,7 @@ void W3DMaterialFactory::Set_Texture_Override(const std::string &name, const Ref
 		}
 }
 
-Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing)
+Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing, int alphaCoverage)
 {
 	found = false;
 	TextureResolution res = Resolve_W3D_Texture(name, [&](const std::string &p) { return Fs.doesFileExist(p); }, isBfme1Data(Fs)); // community PR #36: the archives' layout
@@ -390,7 +408,8 @@ Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::ve
 		return Ref<Texture2D>();
 	}
 	const int reduction = g_textureReduction;
-	const std::string cacheKey = reduction > 0 ? res.Path + "#reduction" + std::to_string(reduction) : res.Path;
+	const std::string coverageKey = alphaCoverage > 0 ? res.Path + "#coverage" + std::to_string(alphaCoverage) : res.Path;
+	const std::string cacheKey = reduction > 0 ? coverageKey + "#reduction" + std::to_string(reduction) : coverageKey;
 	auto it = Textures.find(cacheKey);
 	if (it != Textures.end())
 	{
@@ -434,6 +453,7 @@ Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::ve
 	{
 		image->generate_mipmaps();
 	}
+	preserveAlphaCoverage(image, alphaCoverage);
 	Reduce_Image(image, reduction); // lane OPTS-2
 	Ref<ImageTexture> tex = ImageTexture::create_from_image(image);
 	Textures[cacheKey] = tex;
@@ -689,7 +709,7 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 	{
 		if (tex[s].empty()) continue;
 		key.Tex[s] = true;
-		textures[s] = loadTextures ? Load_Texture(tex[s], out.Errors, found[s]) : Placeholder_Texture(false);
+		textures[s] = loadTextures ? Load_Texture(tex[s], out.Errors, found[s], false, isBfme1Data(Fs) && key.AlphaTest && !key.AlphaTestLessEqual ? (int)std::ceil(alphaRef * 255.0f) : 0) : Placeholder_Texture(false);
 		if (hasInfo[s])
 		{
 			key.ClampU[s] = (info[s].Attributes & 0x08) != 0; // W3DTEXTURE_CLAMP_U

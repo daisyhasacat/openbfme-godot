@@ -2119,6 +2119,7 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 		result["errors"] = errors;
 		return result;
 	}
+	if (bfme1Keys) d->meta.addBfme1SelectionBinding();
 	bool showObjectHealth = false; // lane HUD-5
 	SelectionDecalSettings decalSettings; // lane UI-4
 	// lane CAM-1: the retail tactical camera over the map's terrain, looking at the start position (options.camera_start, Godot axes)
