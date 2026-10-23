@@ -112,6 +112,7 @@ public:
 	std::string m_groundHitWeapon;            // +0xA4 (a weapon template name; "None" or unknown: none)
 	std::string m_groundBounceWeapon;         // +0xA8
 	int m_preLandingEmotion = -1;             // +0xAC
+	bool m_preLandingEmotionAffectsAllies = false; // BFME2 0x841B58 +0xB4; emotion dispatch remains S-363.
 	float m_preLandingEmotionRadius = 0.0f;   // +0xB0
 	unsigned m_postLandingStateTime = 0;      // +0xB4
 	int m_postLandingEmotion = -1;            // +0xB8

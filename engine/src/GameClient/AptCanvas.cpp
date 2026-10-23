@@ -134,12 +134,12 @@ const AptTextureStore::Entry &AptTextureStore::getFile(const std::string &path)
 	return m_entries.emplace(key, std::move(entry)).first->second;
 }
 
-// the mount is BFME1's (Common/BfmeGame.h isBfme1Data, asked through the file source)
+// Match Common/BfmeGame.h: base BFME2 also lacks Expansion1, but has AwardSystem.ini.
 bool AptTextureStore::isBfme1()
 {
 	if (m_bfme1 < 0)
 	{
-		m_bfme1 = m_source.fileExists("Data\\INI\\Default\\SubsystemLegend.ini") && !m_source.fileExists("Data\\INI\\Default\\SubsystemLegendExpansion1.ini") ? 1 : 0;
+		m_bfme1 = m_source.fileExists("Data\\INI\\Default\\SubsystemLegend.ini") && !m_source.fileExists("Data\\INI\\Default\\SubsystemLegendExpansion1.ini") && !m_source.fileExists("Data\\INI\\AwardSystem.ini") ? 1 : 0;
 	}
 	return m_bfme1 == 1;
 }

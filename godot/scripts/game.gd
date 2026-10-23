@@ -1417,7 +1417,7 @@ func _boot() -> void:
 		return
 	if not str(menu_settings.problem).is_empty():
 		print("GAME options: ", menu_settings.problem)
-	_menu_style = menu_settings.style
+	_menu_style = "bfme2" if Release.selected_game() == "bfme2-106" else menu_settings.style
 	_pending_menu_style = _menu_style
 	_shell_config = shell_config
 	if not _configure_menu_style(_menu_style):
@@ -1842,6 +1842,7 @@ func _options_path() -> String:
 
 
 func request_menu_style(style: String) -> void:
+	if Release.selected_game() == "bfme2-106": return
 	if _fs != null and _fs.is_bfme1():
 		return # BFME1 uses its own shell; BFME2/RotWK presentation changes do not apply.
 	if style not in ["rotwk", "bfme2"]:
@@ -1874,7 +1875,7 @@ func _clean_main_menu() -> bool:
 
 func _configure_menu_style(style: String) -> bool:
 	# BFME1 always presents its own archives; the BFME2/RotWK choice is retained for switching back.
-	var use_bfme2: bool = style == "bfme2" and not _fs.is_bfme1() and Release.selected_game() != "aotr"
+	var use_bfme2: bool = (style == "bfme2" or Release.selected_game() == "bfme2-106") and not _fs.is_bfme1() and Release.selected_game() != "aotr"
 	if use_bfme2:
 		if _bfme2_shell_fs == null:
 			_bfme2_shell_fs = _fs.create_bfme2_shell()

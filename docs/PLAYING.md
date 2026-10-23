@@ -805,3 +805,14 @@ timing, visible models and collision/combat geometry remain as authored. This
 is an intentional gameplay change from BFME2, requested for wider gate
 clearance; it is not a claim of retail-compatible pathfinding. Existing terrain
 blockers and the 10-unit grid still affect the usable passage.
+
+### BFME2 gameplay
+
+Choose **Battle for Middle-earth II 1.06** in the launcher's game picker or
+in the in-game Mods game picker, then restart to apply. This loads verified
+BFME2 1.06 gameplay data without RotWK archives or configured RotWK mods.
+The existing Rise of the Witch-king choice retains its saved selection.
+The command-line selection is `--game=bfme2-106`; installation discovery uses
+the remembered BFME2 folder or `BFME2_INSTALL`. Standard RotWK online joins
+cannot use this selection. The shared simulation still has unverified
+BFME2/RotWK differences, recorded as S-5150; retail parity is not claimed.

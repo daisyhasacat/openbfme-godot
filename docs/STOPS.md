@@ -888,3 +888,5 @@ load zero (the condition previously never completed). Retail message numbers
 and retail save formats are unchanged. Tests cover exact threshold equality,
 passing 250/750, save/load, and an actual right-button drag while excluding the
 scripted opening pan. Resolve parity with BFME2 getter/scroll/reset traces.
+
+| S-5150 | code | BFME2 1.06 gameplay selection | BFME2-only archives are verified using the existing bfme2-106 policy and loaded into the shared simulation. The base subsystem manifest uses the shared init order (BFME2 order unverified). PreLandingEmotionAffectsAllies is parsed/stored from Open-BFME-2 0x841B58 +0xB4; emotion dispatch remains unported under S-363. BFME2 versus RotWK runtime differences have not been fully verified; this is experimental gameplay, not retail parity. RotWK mods and archives are excluded from this selection. | `RetailFileSystem::mount_bfme2_path` report `stops` | `godot/tests/bfme2_gameplay_test.gd` asserts the exact stop, BFME2-only archive list and successful game setup | retail-exact BFME2 gameplay | compare shared runtime behavior against Open-BFME-2 and the BFME2 1.06 binary |

@@ -320,11 +320,11 @@ func set_in_game(in_game: bool) -> void:
 func selected_game() -> String:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--game="):
-			return arg.trim_prefix("--game=") if arg.trim_prefix("--game=") in ["bfme1", "aotr"] else "bfme2"
+			return arg.trim_prefix("--game=") if arg.trim_prefix("--game=") in ["bfme1", "aotr", "bfme2-106"] else "bfme2"
 	var cfg := ConfigFile.new()
 	cfg.load("user://game-selection.cfg")
 	var selected: String = cfg.get_value("game", "selected", "bfme2")
-	return selected if selected in ["bfme1", "aotr"] else "bfme2"
+	return selected if selected in ["bfme1", "aotr", "bfme2-106"] else "bfme2"
 
 
 func bfme1_install() -> String:
@@ -369,6 +369,15 @@ static func aotr_folder(path: String) -> String:
 
 
 func mount_retail(fs: RefCounted) -> Dictionary:
+	if selected_game() == "bfme2-106":
+		var setup: RefCounted = ClassDB.instantiate("InstallSetup")
+		var conf: Dictionary = setup.configured()
+		var folder: String = conf.get("bfme2", "")
+		var bundled := OS.get_executable_path().get_base_dir().path_join("../Resources/retail/bfme2").simplify_path()
+		if OS.has_feature("standalone_game") and DirAccess.dir_exists_absolute(bundled): folder = bundled
+		if folder.is_empty():
+			return {"ok": false, "errors": ["Choose the BFME2 installation in Game files before switching to BFME2, or set BFME2_INSTALL."]}
+		return fs.mount_bfme2_path(folder)
 	if selected_game() == "aotr":
 		return fs.mount_aotr_path(aotr_install())
 	if selected_game()=="bfme1":

@@ -69,6 +69,7 @@ void RetailFileSystem::_bind_methods()
  ClassDB::bind_method(D_METHOD("installed_maps", "root"), &RetailFileSystem::installed_maps, DEFVAL(String("user://installed-maps")));
  ClassDB::bind_method(D_METHOD("inspect_library_map", "path", "preview"), &RetailFileSystem::inspect_library_map, DEFVAL(false));
  ClassDB::bind_method(D_METHOD("content_signature"), &RetailFileSystem::content_signature);
+	ClassDB::bind_method(D_METHOD("mount_bfme2_path", "root"), &RetailFileSystem::mount_bfme2_path);
 	ClassDB::bind_method(D_METHOD("mount_bfme1_path", "root"), &RetailFileSystem::mount_bfme1_path);
 	ClassDB::bind_method(D_METHOD("is_bfme1"), &RetailFileSystem::is_bfme1);
 	ClassDB::bind_method(D_METHOD("mount_retail"), &RetailFileSystem::mount_retail);
@@ -138,6 +139,25 @@ Dictionary RetailFileSystem::mount_retail_paths(const String &rotwk, const Strin
 		return result;
 	}
 	return mountFrom(toNative(rotwk), toNative(bfme2), PackedStringArray());
+}
+
+Dictionary RetailFileSystem::mount_bfme2_path(const String &root)
+{
+	setBfme1Mounted(false);
+	m_bfme1 = false;
+	m_bfme1Root.clear();
+	m_installedMaps.clear();
+	m_installedLoaded = false;
+	m_libraryText.reset();
+	// Reuse the verified BFME2 1.06 archive policy and loose-file scan,
+	// without RotWK archives or its configured mods. The resulting source is
+	// playable; the separate menu-only factory still marks its source read-only.
+	Dictionary result = mountBfme2Shell(toNative(root));
+	m_shellSource = false;
+	PackedStringArray stops;
+	stops.push_back("[S-5150] BFME2 1.06 gameplay loads BFME2-only data on the shared simulation; BFME2 versus RotWK runtime differences are not fully verified");
+	result["stops"] = stops;
+	return result;
 }
 
 Dictionary RetailFileSystem::mount_bfme1_path(const String &root)

@@ -47,6 +47,7 @@ public:
 	Dictionary mount_aotr_path(const String &path);
 	// Standalone BFME1 installation, using its own archives for both menus and gameplay.
 	Dictionary mount_bfme1_path(const String &root);
+	Dictionary mount_bfme2_path(const String &root);
 	bool is_bfme1() const { return m_bfme1; }
 	const std::string &bfme1_root() const { return m_bfme1Root; }
 	// lane RELEASE-1: the same mount from two folders the player picked on the first-run screen (nothing is read from the

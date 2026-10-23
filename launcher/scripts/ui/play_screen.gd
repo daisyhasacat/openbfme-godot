@@ -88,10 +88,11 @@ func _init() -> void:
 	# community PR #36: the game Play starts, in the games row where the names were (a row of its own made the panel's bottom almost meet What's
 	# New's: the layout check); its items name the versions
 	game_picker = OptionButton.new()
-	game_picker.add_item("RotWK 2.01 · BFME II 1.06")
+	game_picker.add_item("Rise of the Witch-king 2.01")
 	game_picker.add_item("Battle for Middle-earth I 1.03")
 	game_picker.add_item("Age of the Ring")
-	game_picker.item_selected.connect(func(index: int): game_selected.emit(["bfme2", "bfme1", "aotr"][index]))
+	game_picker.add_item("Battle for Middle-earth II 1.06")
+	game_picker.item_selected.connect(func(index: int): game_selected.emit(["bfme2", "bfme1", "aotr", "bfme2-106"][index]))
 	var status := W.label("")
 	_games_status = status
 	p.box.add_child(W.row(game_picker, status, true))

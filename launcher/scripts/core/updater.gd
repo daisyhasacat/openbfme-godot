@@ -1090,6 +1090,11 @@ func _prune_locked() -> void:
 ## ({ok: false, stopped: true}; the game that asked for this start went on by itself, main.gd --game-start).
 func game_arguments(args: PackedStringArray = PackedStringArray()) -> Dictionary:
 	args = args.duplicate()
+	if get_state("launcher", "game", "bfme2") == "bfme2-106":
+		if Array(args).any(func(a): return a.begins_with("--online-")):
+			return {"ok": false, "error": "BFME2 must be started separately from standard RotWK online matches."}
+		if not "--" in args: args.append("--")
+		args.append("--game=bfme2-106")
 	if get_state("launcher", "game", "bfme2") == "bfme1" and not Array(args).any(func(a): return a.begins_with("--online-")):
 		var folder := Paths.bfme1_folder()
 		if folder.is_empty():

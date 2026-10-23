@@ -31,7 +31,7 @@
 ##   --online-count=on|off    (lane ONLINECOUNT-1) the setting "Show how many players are online" (on by default): the Play card's "N players online" from
 ##                            the lobby's GET /v1/stats (scripts/core/online_count.gd); off, the launcher never asks the lobby, and the game's menus follow it
 ##   --free-camera=on|off     (lane INPUT-1) the game's free camera (Options.ini OpenBFMEFreeCamera, see scripts/core/game_options.gd)
-##   --game=bfme1|bfme2      remember which game Play starts (BFME1 uses its own asset folder)
+##   --game=bfme1|bfme2|bfme2-106|aotr remember which game Play starts (BFME1 uses its own asset folder)
 ##   --aio=on|off             (lane AIO-1, on by default: AioInstall.DEFAULT_ENABLED) the setting "Offer to download the games"
 ##                            (Settings; the All In One BFME Launcher's service)
 ##   --aio-install=<folder> --aio-consent   with that setting on: download BFME1 1.03, RotWK 2.01 and BFME2 1.06 from the All In One BFME Launcher's
@@ -611,8 +611,8 @@ func _run_cli(args: PackedStringArray, problem: String) -> int:
 	for a in args:
 		if a.begins_with("--game="):
 			var game := a.trim_prefix("--game=")
-			if game not in ["bfme1", "bfme2", "aotr"]:
-				Log.line("LAUNCHER --game takes bfme1, bfme2, or aotr")
+			if game not in ["bfme1", "bfme2", "aotr", "bfme2-106"]:
+				Log.line("LAUNCHER --game takes bfme1, bfme2 (RotWK), bfme2-106, or aotr")
 				return 1
 			updater.set_state("launcher", "game", game)
 	if "--version" in args:
@@ -959,7 +959,7 @@ func _build_ui() -> void:
 	stack.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	cv.add_child(stack)
 	_play_screen = PlayScreen.new()
-	_play_screen.game_picker.select(["bfme2", "bfme1", "aotr"].find(updater.get_state("launcher", "game", "bfme2")))
+	_play_screen.game_picker.select(["bfme2", "bfme1", "aotr", "bfme2-106"].find(updater.get_state("launcher", "game", "bfme2")))
 	_play_screen.game_selected.connect(func(game: String):
 		updater.set_state("launcher", "game", game)
 		_refresh_games())

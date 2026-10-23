@@ -1999,6 +1999,14 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 			{
 				errors.push_back(toGodot("boot_shell: data\\ini\\gamedata.ini: " + readError));
 			}
+			else if (!fs->is_bfme1() && !fs->archive_fs()->doesFileExist("Data\\INI\\Default\\SubsystemLegendExpansion1.ini"))
+			{
+				// BFME2 GlobalData.cpp constructor: m_shellMapOn(1), field table +0xAF0.
+				on = true;
+				bool found = false;
+				if (!Shell::readGameDataBool(std::string(bytes.begin(), bytes.end()), "ShellMapOn", on, found, &parseError))
+					errors.push_back(toGodot("boot_shell: " + parseError));
+			}
 			else if (!fs->is_bfme1() && !Shell::readShellMapOn(std::string(bytes.begin(), bytes.end()), on, &parseError))
 			{
 				errors.push_back(toGodot("boot_shell: " + parseError));
