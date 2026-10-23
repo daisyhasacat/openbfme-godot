@@ -110,6 +110,13 @@ These are the places where BFME1's data or menus differ from RotWK's. Each one i
   adjacent wall and gate geometry deliberately overlaps. Applying the RotWK placement check drops those pieces.
 - **Occupied plots:** starting construction hides and deselects a regular build plot, closing its commands. The plot returns when its occupant is removed.
 - **Ground texture alpha:** JPEG ground textures take priority over paired PNG alpha masks and load their alpha through the same packed-texture merge used by the UI.
+- **Distant build plots:** translucent, non-depth-writing `W3DFloorDraw` markings use base-level linear sampling.
+  Their alpha-blended source textures otherwise blur away under minification; the earlier alpha-test coverage correction
+  does not apply to these materials. Opaque castle floors retain mipmaps. This is an OpenBFME presentation policy
+  (S-5017), not a verified retail sampler setting; very distant thin lines can alias.
+- **Create-a-Hero and saves:** BFME1 does not initialize or open the BFME2/RotWK hero builder, or switch to their menu
+  presentation. OpenBFME saves use `user://bfme1/Save` (unless `--save-dir` overrides it), without consulting RotWK's
+  `gi.dat` or hero folder. This separate namespace is OpenBFME policy; retail BFME1 save import is still unavailable.
 - **Build-plot picking:** plot surfaces use `W3DFloorDraw`, so mouse picking tests their visible floor triangles
   as well as scripted model draws. Hidden floors remain unpickable.
 - **Skirmish maps:** the lobby lists multiplayer `map mp` entries with at least two players, excluding the
@@ -337,3 +344,8 @@ quality reduction. RotWK/BFME2 keep their existing rendering path.
 Validation: `bfme1_starting_armies_test.gd` checks the mounted opening armies
 and live Q selection, and loads fire/smoke particle textures. `test_input1.cpp` pins binding precedence;
 `test_fx_review.cpp` checks flat particle lookup and shrinking alpha cutouts.
+
+`godot/tests/bfme1_plot_zoom_test.gd` checks Gondor/Isengard live plot shaders and renders camera heights
+500, 800, 1200 and 1600. Run with a graphical renderer and `BFME1_INSTALL`; set `BFME1_PLOT_SCREENSHOTS`
+to an output directory for visual inspection. `godot/tests/bfme1_save_folder_test.gd` checks the mode-specific
+save namespace, explicit override, disabled CAH entry and ignored BFME2/RotWK style requests without retail data.

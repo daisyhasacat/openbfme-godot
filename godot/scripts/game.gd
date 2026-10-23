@@ -1785,6 +1785,8 @@ func _on_shell_request(action: String, argument: String) -> void:
 # ---- lane CAH-1: the Create-a-Hero builder (CreateAHero.apt over the map mode, scripts/create_a_hero_view.gd) ---------------------------------------------
 
 func _cah_profile_dir() -> String:
+	if _fs != null and _fs.is_bfme1():
+		return "" # BFME1 has no Create-a-Hero system or hero save folder.
 	# lane CAH-2: retail's folder: <application data>\<gi.dat UserDataLeafName>\Save\ (RW 0x644148 / 0x6DD398), e.g. %APPDATA%\My The Lord of the Rings,
 	# The Rise of the Witch-king Files\Save\ on Windows; --cah-profile=DIR overrides it (tests)
 	if not _cah_profile.is_empty():
@@ -1805,6 +1807,8 @@ func _cah_profile_dir() -> String:
 
 
 func _cah_begin() -> void:
+	if _fs != null and _fs.is_bfme1():
+		return
 	if _cah != null:
 		return
 	_cah = load("res://scripts/create_a_hero_view.gd").new()
@@ -1838,6 +1842,8 @@ func _options_path() -> String:
 
 
 func request_menu_style(style: String) -> void:
+	if _fs != null and _fs.is_bfme1():
+		return # BFME1 uses its own shell; BFME2/RotWK presentation changes do not apply.
 	if style not in ["rotwk", "bfme2"]:
 		_fail("unknown main menu style: " + style)
 		return
@@ -1909,10 +1915,11 @@ func _apply_pending_menu_style() -> void:
 		_fail("shell style switch: " + str(boot.get("errors", [])))
 		return
 	_sync_shell_volumes()
-	var heroes: Dictionary = _shell.set_create_a_hero(_world, _cah_profile_dir())
-	if not heroes.get("ok", false):
-		_fail("shell style switch heroes: " + str(heroes.get("errors", [])))
-		return
+	if not _fs.is_bfme1():
+		var heroes: Dictionary = _shell.set_create_a_hero(_world, _cah_profile_dir())
+		if not heroes.get("ok", false):
+			_fail("shell style switch heroes: " + str(heroes.get("errors", [])))
+			return
 	_style_menu_texts() # lane MENUFIX-1: the other style's archives carry their own faces
 	_shell.set_openbfme_available(true)
 	if _platform_ready:

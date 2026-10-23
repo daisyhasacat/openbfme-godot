@@ -716,6 +716,15 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 			key.ClampV[s] = (info[s].Attributes & 0x10) != 0; // W3DTEXTURE_CLAMP_V
 			key.NoLod[s] = (info[s].Attributes & 0x04) != 0;  // W3DTEXTURE_NO_LOD
 		}
+		// BFME1 plot floors are alpha blended, not alpha tested. Their authored
+		// mips average the sparse marking into near-transparent pixels. Keep the
+		// original marking when shrinking. OpenBFME presentation policy (S-5017),
+		// not a retail sampler claim; opaque castle floors keep their mipmaps.
+		if (FloorSampling && key.Blend == W3D_GODOT_BLEND_MIX && !key.DepthWrite)
+		{
+			key.NoLod[s] = true;
+			if (s == 0) out.Notes.push_back("[S-5017] BFME1 translucent floor markings use base-level linear sampling to retain visibility at distant zoom (OpenBFME policy)");
+		}
 	}
 	if (!normalMapName.empty())
 	{

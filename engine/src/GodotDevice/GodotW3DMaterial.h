@@ -89,6 +89,8 @@ public:
 	// stop S-4832: the texture swaps of the model being built (W3DInstancer::Set_Build_Texture_Swaps, a ModelConditionState's `Texture = A B` pairs):
 	// a surface texture named A (any case; A = "*": every texture) is loaded as B. Empty by default.
 	void Set_Texture_Swaps(const std::vector<TextureSwap> &swaps) { TextureSwaps = swaps; }
+	// S-5017: keep BFME1 translucent floor markings visible under minification.
+	void Set_Floor_Sampling(bool enabled) { FloorSampling = enabled; }
 	// lane BUILD-5 r3: the surfaces this factory builds belong to a translucent drawable (W3DShaderKey::AlphaOverride); off by default
 	void Set_Alpha_Override(bool on) { AlphaOverride = on; }
 	// RW 0x531C77 applied to the texture `name` (its A8R8G8B8 texels; another format stays as it is, as retail's switch leaves it), then mipmaps; cached
@@ -127,6 +129,7 @@ private:
 	std::vector<TextureSwap> TextureSwaps; // stop S-4832
 	bool AlphaOverride = false;
 	std::map<std::string, Ref<Shader>> Shaders;
+	bool FloorSampling = false;
 	std::map<std::string, Ref<Texture2D>> Textures; // by virtual path
 	std::map<std::string, std::string> PackedHouseTextureNotes; // retain S-1482 on cache hits
 	std::vector<std::string> TextureErrors;

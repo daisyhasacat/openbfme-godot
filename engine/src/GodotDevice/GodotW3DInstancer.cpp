@@ -559,23 +559,25 @@ std::string W3DInstancer::Texture_Swap_Suffix(const std::vector<TextureSwap> &sw
 
 int64_t W3DInstancer::add_model(const String &model_name)
 {
-	if (PendingSwaps.empty())
-	{
-		return build_model(model_name);
-	}
+
 	// stop S-4832: the swapped model's meshes are cached under their own name (after a colour set's suffix: add_model_colored sets that first)
 	std::vector<TextureSwap> swaps;
 	swaps.swap(PendingSwaps);
 	const std::string savedSuffix = BuildSuffix;
+	const bool floorSampling = PendingFloorSampling;
+	PendingFloorSampling = false;
 	BuildSuffix += Texture_Swap_Suffix(swaps);
+	if (floorSampling) BuildSuffix += "#floor-sampling";
 	if (Materials)
 	{
 		Materials->Set_Texture_Swaps(swaps);
+		Materials->Set_Floor_Sampling(floorSampling);
 	}
 	const int64_t id = build_model(model_name);
 	if (Materials)
 	{
 		Materials->Set_Texture_Swaps({});
+		Materials->Set_Floor_Sampling(false);
 	}
 	BuildSuffix = savedSuffix;
 	return id;
