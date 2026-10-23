@@ -13,6 +13,7 @@
 bool WorldSkirmishSetupSource::load(RetailObjectWorld &world, const GameLogicSettings &settings, ArchiveFileSystem &fs, std::string *error, bool bfme1)
 {
 	m_fs = &fs;
+	m_bfme1 = bfme1;
 	m_factions.clear();
 	m_colors.clear();
 	m_cashChoices.clear();
@@ -55,18 +56,15 @@ bool WorldSkirmishSetupSource::load(RetailObjectWorld &world, const GameLogicSet
 	}
 	std::sort(m_cashChoices.begin(), m_cashChoices.end());
 	m_defaultStartingCash = (int)settings.defaultStartingCash;
-	if (!IniSkirmishSetupSource::loadMapCache(fs, m_maps, error)) return false;
 	if (bfme1)
 	{
-		// BFME1 map packs also mark co-op campaigns and utility maps as MP.
-		// Keep them available by name, but only offer standard skirmish maps.
-		for (MapCacheEntry &map : m_maps)
-		{
-			if (map.name.rfind("maps/map mp ", 0) != 0 || map.numPlayers < 2 ||
-				map.name.rfind("maps/map mp test/", 0) == 0 || map.name.rfind("maps/map mp nctest/", 0) == 0)
-				map.isMultiplayer = false;
-		}
+		// Original retail maps only (OpenBFME catalog policy). A patch's isOfficial
+		// also includes added maps, so read the original catalog without unmounting patches.
+		std::vector<std::uint8_t> bytes;
+		if (!fs.readFileFromArchive("Maps.big", "maps/mapcache.ini", bytes, error) ||
+			!MapCache::parse(std::string(bytes.begin(), bytes.end()), m_maps, error, true)) return false;
 	}
+	else if (!IniSkirmishSetupSource::loadMapCache(fs, m_maps, error)) return false;
 	return true;
 }
 

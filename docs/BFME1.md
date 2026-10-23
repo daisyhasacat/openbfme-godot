@@ -269,3 +269,29 @@ menu music with the existing audio fade; exact view-wide transition timing is
 still unverified under S-5017. The BFME1 movie regression checks actual narration
 voices and music suppression/restoration; `shell_movie_audio_test.gd` checks
 handle ownership without retail assets.
+
+## Skirmish menu
+
+BFME1 offers Official Maps and Player-made Maps, with the native two-column
+map list (honors, name with player count). The built-in catalog comes from the
+original mounted `Maps.big` rather than a patch's `mapcache.ini`: only original
+retail multiplayer maps are offered, even when a 2.22 pack marks additional
+maps official. Map contents retain mounted patch precedence. Installed BFME1
+user maps appear separately under Player-made Maps; campaign and scenario maps
+are excluded. A missing or ambiguous original archive is a reported boot error.
+
+The profile dropdown supports selection, New Profile and Delete Profile.
+The main and expanded profile panels read BFME1's `<profile>SkirmishStats.ini`,
+including per-faction results, streaks and rank progress. A Random army shows
+retail's dash fields. S-3504 covers remaining statistics recording and platform
+date differences. Source evidence: BFME1 MpGameSetupComboPopulation,
+MpGameSetupOnInitGadget (0x525AB0), Rva00453480MapPointerCollector,
+SkirmishScreenRefreshProfile, SkirmishProfileMessage0057E9A0,
+BfmeAptScreenSkirmish::_bfme_updateProfileDisplay (0x57A470),
+Rva005674F0Profile, and RankProgress00579990.
+
+Validation: `godot/tests/bfme1_skirmish_menu_test.gd` with `BFME1_INSTALL`
+checks the retail catalog, translated names, filtering, scrolling and profile
+actions against the user's installed assets. `test_big_archive.cpp` pins
+archive-specific catalog reads without changing patch precedence;
+`test_apt_skirmish.cpp` pins BFME1 statistics and rank providers.

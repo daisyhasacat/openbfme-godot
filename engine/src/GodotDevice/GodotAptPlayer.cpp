@@ -920,7 +920,7 @@ struct AptMenuPlayer::Impl
 					ch = (char)std::tolower((unsigned char)ch);
 				}
 				bool paired = false;
-				Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*textureSource, "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
+				Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*textureSource, fs.is_valid() && fs->is_bfme1() ? "art/textures/" + stem : "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
 				if (paired)
 				{
 					sm.deviceUnverified.insert("[S-1482] texture " + img->filename + ": the packed .jpg's colour with its .png as the alpha (the loader's merge of the two streams was not read)");
