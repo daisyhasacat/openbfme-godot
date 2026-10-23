@@ -321,7 +321,7 @@ std::int32_t counterMath(std::int32_t lhs, int op, std::int32_t rhs, ScriptEngin
 // the transport (+ 0x22C) and its loading, the auto-transport (+ 0x234), the origin waypoint (+ 0x230: the units start at the waypoint here, so
 // no group move follows), a horde's own upgrade / level slots (RW 0x68C866 0xB4 / 0xB8,
 // 0x694BF8 0xC4: the object's own paths run)
-void createReinforcements(ScriptEngine &engine, const std::string &teamName, const Coord3D &spawn)
+void createReinforcements(ScriptEngine &engine, const std::string &teamName, const Coord3D &spawn, bool clearSpawn = false)
 {
 	GameLogic &logic = engine.logic();
 	const std::pair<std::string, std::string> q = engine.qualify(teamName);
@@ -342,6 +342,7 @@ void createReinforcements(ScriptEngine &engine, const std::string &teamName, con
 	{
 		engine.note("[S-1186] CREATE_REINFORCEMENT_TEAM: a team with a transport (the units start on the ground)");
 	}
+	if (clearSpawn) engine.note("[S-1186] BFME1 unit-position reinforcements resolve spawn footprints with adjustDestination (OpenBFME correction; native placement unverified)");
 	float rowY = spawn.y;
 	for (int i = 1; i <= 7; ++i)
 	{
@@ -372,6 +373,24 @@ void createReinforcements(ScriptEngine &engine, const std::string &teamName, con
 			if (!obj)
 			{
 				continue;
+			}
+			if (clearSpawn)
+			{
+				// BFME1's unit-position reinforcement action currently uses the base
+				// center as its origin. OpenBFME correction (S-1186): resolve each
+				// mobile unit's full pathfinding footprint before building its horde,
+				// so the first battalion cannot start inside the capital. The exact
+				// BFME1 action placement algorithm has not been located.
+				if (AIUpdateInterface *ai = obj->getAIUpdateInterface())
+				{
+					if (!logic.aiWorld()->pathfinder().adjustDestination(logic.aiWorld()->adapterFor(*obj), ai->locomotorInfo(), &pos))
+					{
+						engine.note("[S-1186] BFME1 reinforcement has no clear spawn footprint");
+						logic.destroyObject(obj);
+						continue;
+					}
+					obj->setPosition(&pos);
+				}
 			}
 			obj->friend_onBuildComplete();
 			size_t at = 0;
@@ -915,7 +934,7 @@ bool ScriptActions::executeUnitAction(ScriptEngine &engine, const ScriptActionRe
 		// spawn origin; the team payload/upgrade/activation path is shared with
 		// CREATE_REINFORCEMENT_TEAM. Layout around that origin retains S-1186.
 		if (Object *object = engine.getUnitNamed(param(a, 1).stringValue))
-			createReinforcements(engine, param(a, 0).stringValue, *object->getPosition());
+			createReinforcements(engine, param(a, 0).stringValue, *object->getPosition(), object->getTemplate()->bfme1Data());
 		return true;
 	}
 	if (name == "CREATE_REINFORCEMENT_TEAM")

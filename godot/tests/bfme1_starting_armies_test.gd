@@ -53,6 +53,22 @@ func _run() -> void:
 		for action in ["SET_UNIT_REFERENCE", "CREATE_REINFORCEMENT_TEAM_AT_UNIT_POSITION"]:
 			assert(not scripts.unported_actions.has(action), action)
 		if faction == 4:
+			# Retail GondorCastleBaseKeep: primary BOX with 19-unit half extents
+			# (goodfactionbuildings.ini); the extra cylinders fit inside that box.
+			# Check actual soldier positions, not just the invisible horde anchors.
+			for horde in hordes + other_hordes:
+				var keep := {}
+				for oid in world.get_object_ids():
+					var candidate = world.get_object(oid)
+					if candidate.template == "GondorCastleBaseKeep" and candidate.owner == horde.owner:
+						keep = candidate
+						break
+				assert(not keep.is_empty())
+				for member_id in horde.members:
+					var member = world.get_object(member_id)
+					var relative := Vector2(member.x - keep.x, member.y - keep.y).rotated(-float(keep.angle))
+					assert(not Rect2(-19, -19, 38, 38).has_point(relative), "Starting soldier inside capital: " + str(member))
+		if faction == 4:
 			var camera = Camera3D.new()
 			root.add_child(camera)
 			var hud = ClassDB.instantiate("InGameHudNode")

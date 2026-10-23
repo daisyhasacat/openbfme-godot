@@ -375,3 +375,12 @@ reproduce the draw-order failure in the original regression.
 through the lobby, selects a live plot and hovers a radial build command. It verifies the native callback,
 show calls and rendered text after the shell-to-game transition. Use the live plot test command above with
 this script; `BFME1_TOOLTIP_SCREENSHOT` optionally saves the full live frame to a PNG path.
+
+BFME1 unit-position reinforcements now resolve each mobile unit's spawn through the existing
+`Pathfinder::adjustDestination` before its build-complete callback populates the horde. Starting directly
+at the named base origin put the first battalion inside the capital. This is an OpenBFME correction,
+reported under S-1186; the original BFME1 action's placement algorithm is still unverified. A failed
+search reports the missing clear footprint and removes that spawn instead of leaving it embedded.
+Waypoint reinforcement placement and BFME2/RotWK behavior are unchanged. The opening-army regression
+checks the actual soldiers against both rotated Gondor keep footprints, as well as all four factions'
+starting counts; a live match on Fords of Isen start 2 confirms both battalions stand outside the keep.
