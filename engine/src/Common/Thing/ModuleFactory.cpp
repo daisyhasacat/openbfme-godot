@@ -81,6 +81,20 @@ void ModuleFactory::init()
 	}
 }
 
+void ModuleFactory::registerExtension(const std::string &name,
+                                      int interfaceMask) {
+  if (findModuleTemplate(name, MODULETYPE_BEHAVIOR))
+    throw std::logic_error("ModuleFactory: extension already registered: " +
+                           name);
+  const auto key = makeDecoratedNameKey(name, MODULETYPE_BEHAVIOR);
+  ModuleTemplate mt;
+  mt.name = name;
+  mt.type = MODULETYPE_BEHAVIOR;
+  mt.interfaceMask = interfaceMask;
+  m_templates.emplace(key, std::move(mt));
+  m_order.push_back(key);
+}
+
 const ModuleFactory::ModuleTemplate *ModuleFactory::findModuleTemplate(const std::string &name, ModuleType type)
 {
 	if (name.empty())

@@ -42,6 +42,7 @@ class ModuleFactory;
 class TurretAI;
 class Object;
 bool cancelBloodthirstyCommand(Object &object, int command, Object *target);
+void cancelFishingCommand(Object &object);
 struct TurretAIData;
 class ObjectPathfindAdapter;
 struct ObjectMovementInfo;
@@ -399,7 +400,8 @@ public:
 		{
 			return false;
 		}
-		stancesOnCommand(source);
+                cancelFishingCommand(*getObject());
+                stancesOnCommand(source);
 		cancelBloodthirstyCommand(*getObject(), command, target);
 		commandAccepted(source, command, target);
 		return true;

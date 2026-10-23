@@ -243,8 +243,17 @@ bool GameTextTable::loadRetail(ArchiveFileSystem &fs, std::string *error)
 	std::vector<std::uint8_t> bytes;
 	if (!isBfme1Data(fs))
 	{
-		return fs.readFile("data/lotr.str", bytes, error) && parse(bytes, error, fs.aotrProfile());
-	}
+          if (!fs.readFile("data/lotr.str", bytes, error) ||
+              !parse(bytes, error, fs.aotrProfile()))
+            return false;
+          // Optional authored fishing-mod labels; retain the complete base
+          // table.
+          if (fs.doesFileExist("data/ini/openbfme_fishing.ini") &&
+              fs.doesFileExist("data/openbfme_fishing.str"))
+            return fs.readFile("data/openbfme_fishing.str", bytes, error) &&
+                   parse(bytes, error);
+          return true;
+        }
 	FilenameList candidates;
 	fs.getFileListInDirectory("lang", "", "lotr.csf", candidates, true);
 	std::string path = "lang/english/lotr.csf";

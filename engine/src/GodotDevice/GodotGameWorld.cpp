@@ -9,6 +9,7 @@
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include "GodotDevice/GodotGameWorld.h"
+#include "GameLogic/Module/FishingUpdate.h"
 #include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 #include "GodotDevice/LuaGDExtensionRegister.h"
 #include <godot_cpp/classes/config_file.hpp>
@@ -3142,6 +3143,16 @@ Dictionary GameWorld::get_object(int64_t id) const
 	}
 	d["ok"] = true;
 	d["id"] = id;
+	if (const auto *fishing = dynamic_cast<const FishingUpdate *>(o->findModule("OpenBFMEFishingUpdate")))
+	{
+		d["fishing"] = fishing->working();
+		d["fishing_target"] = (int64_t)fishing->target();
+		int64_t income = 0;
+		for (const auto &event : m_game->logic().economy().incomeLog())
+			if (event.object == o->getID()) income += event.amount;
+		d["fishing_income"] = income;
+	}
+
 	d["drawable_hidden"] = o->isDrawableHidden();
 	d["template"] = toGodot(o->getTemplate()->getName());
 	d["team"] = o->getTeam() ? toGodot(o->getTeam()->getName()) : String();

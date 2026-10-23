@@ -3,6 +3,7 @@
 
 #include "GameLogic/Object/RetailObjectWorld.h"
 #include "GameLogic/FactionBuildPlots.h"
+#include "GameLogic/Module/FishingUpdate.h"
 
 #include "Common/Audio/AudioIni.h"
 #include "Common/GlobalOwnerChain.h"
@@ -82,7 +83,9 @@ RetailObjectWorld::State::State(ArchiveFileSystem &fs)
 	m_grammar = std::make_unique<RwGrammar>(isBfme1Data(m_fs) ? bfme1Grammar() : RwBinaryData::embedded());
 	m_modules = std::make_unique<ModuleFactory>(m_keys, *m_grammar);
 	m_modules->init();
-	W3DDrawModules::registerTypedDrawModuleData(*m_modules);
+        if (m_fs.doesFileExist("data/ini/openbfme_fishing.ini"))
+          FishingUpdate::registerExtension(*m_modules);
+        W3DDrawModules::registerTypedDrawModuleData(*m_modules);
 	// the horde contain data of the map's horde objects (their members are the drawables of a horde)
 	MapHordeSpawn::bindHordeContainData(*m_modules);
 	LogicModules::registerAll(*m_modules); // LOGIC-1: ActiveBody and HordeContain run for real, every other class is an UnportedModule (S-140)
@@ -485,7 +488,21 @@ bool RetailObjectWorld::loadState(std::string *error)
 		fe.message = e;
 		m_s->m_report.errors.push_back(fe);
 	}
-	// HERO-2: TheCreateAHeroSystem's init (RW 0x61A10F) loads Data\INI\CreateAHeroSystem.ini itself (type 1) once the upgrades and the control bar are loaded
+        // Apply the optional definitions only after the control bar's buttons
+        // exist.
+        if (m_fs.doesFileExist("data/ini/openbfme_fishing.ini")) {
+          try {
+            ini.load("data/ini/openbfme_fishing.ini",
+                     INI_LOAD_CREATE_OVERRIDES);
+          } catch (const std::exception &e) {
+            SubsystemLoadReport::FileError fe;
+            fe.file = "data/ini/openbfme_fishing.ini";
+            fe.code = 0;
+            fe.message = e.what();
+            m_s->m_report.errors.push_back(fe);
+          }
+        }
+        // HERO-2: TheCreateAHeroSystem's init (RW 0x61A10F) loads Data\INI\CreateAHeroSystem.ini itself (type 1) once the upgrades and the control bar are loaded
 	if (!options.bfme1) try
 	{
 		m_s->m_createAHero.load(m_s->m_env);

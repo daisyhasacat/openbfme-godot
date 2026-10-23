@@ -77,7 +77,11 @@ public:
 	// RW 0x656EF1 (+ NAMEKEY of the tag): throws INIException(3, ...) for an unknown class (stop S-075).
 	std::shared_ptr<ModuleData> newModuleDataFromINI(INI *ini, const std::string &name, ModuleType type, const std::string &tag);
 
-	// Binds a typed data class (see the file comment).
+        // Explicit opt-in OpenBFME mod extensions; retail registration is
+        // unchanged.
+        void registerExtension(const std::string &name, int interfaceMask);
+
+        // Binds a typed data class (see the file comment).
 	template <class T>
 	void bindTypedData(const std::string &name, ModuleType type)
 	{

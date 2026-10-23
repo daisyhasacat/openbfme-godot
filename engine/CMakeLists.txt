@@ -475,6 +475,7 @@ list(APPEND OPENBFME_SIM_SOURCES
     src/GameLogic/System/PathfinderResourceTerrain.cpp
     src/GameLogic/Module/TerrainResourceBehavior.cpp
     src/GameLogic/Module/AutoDepositUpdate.cpp
+    src/GameLogic/Module/FishingUpdate.cpp
     src/GameLogic/Module/UpgradeModules.cpp
     src/GameLogic/Module/MoneyEventModules.cpp
     src/GameLogic/Module/EconomyModules.cpp)
@@ -864,6 +865,7 @@ add_executable(openbfme_tests
     # lane ECON-1: the economy
     tests/test_econ_core.cpp
     tests/test_econ_resources.cpp
+    tests/test_fishing.cpp
     tests/test_econ_hash.cpp
     tests/test_econ_retail.cpp
     tests/test_falsedef_retail.cpp)

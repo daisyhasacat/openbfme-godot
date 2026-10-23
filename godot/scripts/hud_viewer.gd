@@ -277,7 +277,7 @@ func _ready() -> void:
 		elif arg.begins_with("--fx-speed="):
 			_fx_speed = float(arg.substr(11))
 	_fs = ClassDB.instantiate("RetailFileSystem")
-	var mount: Dictionary = _fs.mount_retail()
+	var mount: Dictionary = _mount_game_files()
 	if not mount.ok:
 		_fail("mount failed: %s" % [mount.errors])
 		return
@@ -2453,3 +2453,7 @@ func _main_thread_cpu_ms() -> float:
 		return -1.0
 	var parts := f.get_line().split(" ") # /proc files report size 0: read the line, not the "whole" file
 	return float(parts[0]) / 1.0e6 if parts.size() > 0 else -1.0
+
+
+func _mount_game_files() -> Dictionary:
+	return _fs.mount_retail()

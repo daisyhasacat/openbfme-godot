@@ -2,6 +2,7 @@
 // See CommandXlat.h.
 
 #include "GameClient/MessageStream/CommandXlat.h"
+#include "GameLogic/Module/FishingUpdate.h"
 
 #include "Common/Team.h"
 #include "GameClient/Radar.h"
@@ -398,7 +399,28 @@ int CommandTranslator::evaluateContextCommand(Object *obj, const Coord3D *pos, E
    return MSG_DO_ATTACKMOVETO;
   }
 	}
-	// lane GARRISON-1 (ZH evaluateContextCommand's ACTIONTYPE_ENTER_OBJECT): a click on a container some selected object may enter (ActionManager::canEnterObject,
+        // Optional fishing mod: a separate contextual action using the existing
+        // enter cursor/message envelope, never actual containment. The
+        // dispatcher revalidates it.
+        if (obj && !m_ctx.ui.isInForceAttackMode()) {
+          for (ObjectID id : m_ctx.ui.selected()) {
+            Object *boat = m_ctx.logic.findObjectByID(id);
+            auto *fishing = boat ? FishingUpdate::find(*boat) : nullptr;
+            if (!fishing ||
+                boat->getControllingPlayer() != m_ctx.localPlayer() ||
+                !fishing->canFish(obj))
+              continue;
+            if (type == EvaluateType::DoHint)
+              hint(MouseCursorName::EnterFriendly);
+            if (type == EvaluateType::DoCommand) {
+              ClientMessage &m = m_ctx.stream.append(MSG_ENTER);
+              m.appendObjectID(id);
+              m.appendObjectID(obj->getID());
+            }
+            return MSG_ENTER;
+          }
+        }
+        // lane GARRISON-1 (ZH evaluateContextCommand's ACTIONTYPE_ENTER_OBJECT): a click on a container some selected object may enter (ActionManager::canEnterObject,
 	// RW 0x82CBD5, mode 0) is MSG_ENTER (argument 0 the first selected object, argument 1 the container: the logic case RW 0x77AC26 reads argument 1); the cursor
 	// is EnterFriendly. INFERENCE (S-286): RotWK's order of the context checks is not read; the enter check comes before the attack check here (an enemy
 	// container is not enterable by the garrison rules)

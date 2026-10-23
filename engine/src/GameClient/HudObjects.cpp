@@ -2,6 +2,7 @@
 // See HudObjects.h.
 
 #include "GameClient/HudObjects.h"
+#include "GameLogic/Module/FishingUpdate.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 
 #include "Common/Player.h"
@@ -386,10 +387,27 @@ std::vector<PickHit> pickHits(const HudContext &ctx, const ICoord2D &pixel, unsi
 		{
 			hit = true; // lane QA-1: the ray met the drawn model (ZH W3DView::pickDrawable)
 		}
-		else if (drawn == DrawablePick::Result::Unknown)
+		else
 		{
-			const Shape s = shapeOf(ctx, *obj);
-			hit = rayCylinder(o, d, *obj->getPosition(), s.radius, s.height, t);
+			// A fishing spot is an interaction point. Its authored target area stays
+			// usable between the small animated fish, only for a selected fishing boat.
+			bool fishingPoint = false;
+			if (drawn == DrawablePick::Result::Miss)
+				for (ObjectID id : ctx.ui.selected())
+				{
+					Object *boat = ctx.logic.findObjectByID(id);
+					auto *fishing = boat ? FishingUpdate::find(*boat) : nullptr;
+					if (fishing && boat->getControllingPlayer() == ctx.localPlayer() && fishing->canFish(obj))
+					{
+						fishingPoint = true;
+						break;
+					}
+				}
+			if (drawn == DrawablePick::Result::Unknown || fishingPoint)
+			{
+				const Shape s = shapeOf(ctx, *obj);
+				hit = rayCylinder(o, d, *obj->getPosition(), s.radius, s.height, t);
+			}
 		}
 		if (hit)
 		{

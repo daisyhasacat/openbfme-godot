@@ -2,6 +2,7 @@
 // See GameLogic/AI/GarrisonCommands.h.
 
 #include "GameLogic/AI/GarrisonCommands.h"
+#include "GameLogic/Module/FishingUpdate.h"
 
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
@@ -51,7 +52,19 @@ bool enter(GameLogic &logic, const GameMessage &m)
 	}
 	AIGroup group(logic, AICommands::selection(logic, m.getPlayerIndex()));
 	group.releaseWeaponLockForGroup(LOCKED_TEMPORARILY); // RW 0x77AC55
-	if (!container->getContain())
+        // OpenBFME fishing is explicit and only exists on mod-defined boats.
+        // Ordinary units retain the retail enter path. Selection is owned by
+        // the issuing player.
+        bool fishingTarget = false;
+        for (Object *o : group.members())
+          if (auto *f = FishingUpdate::find(*o))
+            if (f->canFish(container)) {
+              f->order(container);
+              fishingTarget = true;
+            }
+        if (fishingTarget)
+          return true;
+        if (!container->getContain())
 	{
 		return true; // RW 0x774EEC: no contain, no order
 	}

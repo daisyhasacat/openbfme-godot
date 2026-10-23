@@ -154,7 +154,70 @@ Dictionary RetailFileSystem::mount_bfme2_path(const String &root)
 	// playable; the separate menu-only factory still marks its source read-only.
 	Dictionary result = mountBfme2Shell(toNative(root));
 	m_shellSource = false;
-	PackedStringArray stops;
+        // BFME2 gameplay accepts explicit directory mods too. Hash every loose
+        // file and archive in mount order so custom gameplay changes the
+        // content signature.
+        PackedStringArray modErrors = result["errors"];
+        if (m_mounted) {
+          for (const String &arg :
+               OS::get_singleton()->get_cmdline_user_args()) {
+            if (!arg.begins_with("--mod="))
+              continue;
+            const std::string path =
+                toNative(ProjectSettings::get_singleton()->globalize_path(
+                    arg.substr(6)));
+            std::string error;
+            auto folder = std::make_unique<FolderArchiveFile>();
+            if (!folder->open(path, &error)) {
+              modErrors.push_back(toGodot(error));
+              break;
+            }
+            auto record = [&](const std::string &name,
+                              const std::string &digest) {
+              MountedArchive entry;
+              entry.install = "bfme2-mod";
+              entry.canonicalPath = name;
+              entry.md5 = digest;
+              m_mountedArchives.push_back(std::move(entry));
+            };
+            for (auto it = folder->bigFiles().rbegin();
+                 it != folder->bigFiles().rend(); ++it) {
+              const auto digest = MD5::ofFile(*it, &error);
+              if (digest.empty()) {
+                modErrors.push_back(toGodot(error));
+                break;
+              }
+              auto archive = m_fs->openArchiveFile(*it, &error);
+              if (!archive) {
+                modErrors.push_back(toGodot(error));
+                break;
+              }
+              m_fs->mountArchive(std::move(archive), *it, true);
+              record(std::filesystem::path(*it).filename().string(), digest);
+            }
+            if (!modErrors.is_empty())
+              break;
+            for (const auto &name : folder->paths()) {
+              std::vector<std::uint8_t> bytes;
+              if (!folder->readFile(name, bytes, &error)) {
+                modErrors.push_back(toGodot(error));
+                break;
+              }
+              record(name, MD5::ofBytes(bytes.data(), bytes.size()));
+            }
+            if (!modErrors.is_empty())
+              break;
+            m_fs->mountArchive(std::move(folder), path, true);
+          }
+        }
+        if (!modErrors.is_empty()) {
+          m_mounted = false;
+          m_fs.reset();
+          result["ok"] = false;
+          result["errors"] = modErrors;
+          m_lastError = modErrors[0];
+        }
+        PackedStringArray stops;
 	stops.push_back("[S-5150] BFME2 1.06 gameplay loads BFME2-only data on the shared simulation; BFME2 versus RotWK runtime differences are not fully verified");
 	result["stops"] = stops;
 	return result;
