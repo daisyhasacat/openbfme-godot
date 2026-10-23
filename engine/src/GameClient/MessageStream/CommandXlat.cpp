@@ -2,6 +2,7 @@
 // See CommandXlat.h.
 
 #include "GameClient/MessageStream/CommandXlat.h"
+#include "GameLogic/CaptureLinks.h"
 #include "GameLogic/Module/FishingUpdate.h"
 
 #include "Common/Team.h"
@@ -1163,20 +1164,8 @@ bool CommandTranslator::canCaptureBuilding(const Object &capturer, const Object 
 	{
 		return false;
 	}
-	bool flag = false;
-	for (Object *o = m_ctx.logic.getFirstObject(); o && !flag; o = o->getNextObject())
-	{
-		if (o->isKindOfName("LINKED_TO_FLAG"))
-		{
-			const float dx = SimMath::subf32(o->getPosition()->x, target.getPosition()->x), dy = SimMath::subf32(o->getPosition()->y, target.getPosition()->y),
-			            dz = SimMath::subf32(o->getPosition()->z, target.getPosition()->z);
-			flag = SimMath::addf32(SimMath::addf32(SimMath::mulf32(dx, dx), SimMath::mulf32(dy, dy)), SimMath::mulf32(dz, dz)) <= 22500.0f; // 150^2
-		}
-	}
-	if (!flag)
-	{
+	if (!CaptureLinks::buildingForFlag(const_cast<Object &>(target)))
 		return false;
-	}
 	static const int kSold = ObjectTemplateInfoBuilder::objectStatusIndex("SOLD");
 	if (target.isUnderConstruction() || (kSold >= 0 && target.testStatus((unsigned)kSold)))
 	{
@@ -1198,6 +1187,15 @@ bool CommandTranslator::canCaptureBuilding(const Object &capturer, const Object 
 
 int CommandTranslator::evaluateCapture(Object *obj, const Coord3D *pos, EvaluateType type)
 {
+    if (!obj) return 0;
+    // Clicking a dock's hull directs infantry to its land-side capture flag.
+    if (obj->isKindOfName("LINKED_TO_FLAG") && !obj->isKindOfName("CAPTURABLE"))
+    {
+      obj = CaptureLinks::flagForBuilding(*obj);
+      if (!obj) return 0;
+      pos = obj->getPosition();
+    }
+
 	bool any = false;
 	for (ObjectID id : m_ctx.ui.selected())
 	{

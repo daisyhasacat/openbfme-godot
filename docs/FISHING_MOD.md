@@ -10,8 +10,11 @@ Generate the authored definitions with:
 python3 tools/create_fishing_mod.py workspace/fishing-mod
 ```
 
-Launch OpenBFME with `--mod=<absolute path to workspace/fishing-mod>` after Godot's
-`--` separator. It requires an extension rebuilt with this feature. The mod uses
+For regular BFME2 games, add the generated folder to Mods and enable it. BFME2
+mounts the enabled folders from `user://mods.cfg`; texture-only folders retain their
+texture restrictions and the HD toggle. Alternatively launch with
+`--mod=<absolute path to workspace/fishing-mod>` after Godot's `--` separator.
+Both paths require an updated app bundle, not only a rebuilt development library. The mod uses
 BFME2's Elven transport hull, movement, animation and sound at runtime. It adds a
 separate Fishing Ship to the good and evil port queues and the shipwright queue;
 ordinary transports keep their normal behavior.
@@ -62,3 +65,23 @@ godot --headless --path godot --script res://tests/fishing_auto_smoke.gd -- --mo
 It checks the real Evendim water map and Tournament Udun dry map, including neutral
 ownership, minimum depth, and spacing. The playable demo also verifies a raw
 mouse order and an income payment at an automatically generated school.
+
+Regular-game capture and production check (with `BFME2_INSTALL` set and the mod
+enabled in saved settings; no CLI mod argument is necessary):
+
+```sh
+godot --path godot res://tests/fishing_gameplay_smoke.tscn -- --no-audio
+```
+
+It verifies Evendim's eight automatically generated schools, captures all eight
+shipwrights through mouse orders, and builds a fishing ship through a captured
+dock's HUD button. Command-set lookups expose the final override so the appended
+fishing button appears in good and evil port menus.
+
+The shipwright association is an explicit OpenBFME repair requested for Evendim:
+the existing 150-unit building link remains preferred. When that link fails, a
+PORT can associate with its reciprocal nearest capture flag within 250 units.
+Five Evendim flags are 151–178 units from their docks. This bounded extra rule
+applies only to ports. Clicking a linked dock also redirects infantry capture
+to its associated land-side flag. This is authored gameplay behavior, not a claim
+about the original executable's handling of those map sites.

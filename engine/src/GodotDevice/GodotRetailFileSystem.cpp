@@ -158,14 +158,39 @@ Dictionary RetailFileSystem::mount_bfme2_path(const String &root)
         // file and archive in mount order so custom gameplay changes the
         // content signature.
         PackedStringArray modErrors = result["errors"];
+        PackedStringArray modArguments;
+        std::set<std::string> texturePaths, seenMods;
+        Ref<ConfigFile> config;
+        config.instantiate();
+        const Error configStatus = config->load("user://mods.cfg");
+        if (configStatus == OK)
+        {
+          const bool hd = (bool)config->get_value("mods", "hd_textures", true);
+          const Array textures = config->get_value("mods", "textures_only", Array());
+          for (int64_t i = 0; i < textures.size(); ++i)
+            texturePaths.insert(toNative(ProjectSettings::get_singleton()->globalize_path(String(textures[i]))));
+          const Array enabled = config->get_value("mods", "enabled", Array());
+          for (int64_t i = 0; i < enabled.size(); ++i)
+          {
+            const String path = ProjectSettings::get_singleton()->globalize_path(String(enabled[i]));
+            if (!hd && texturePaths.count(toNative(path))) continue;
+            modArguments.push_back("--mod=" + path);
+          }
+        }
+        else if (configStatus != ERR_FILE_NOT_FOUND)
+          modErrors.push_back("Cannot read enabled mods from mods.cfg");
+        for (const String &arg : OS::get_singleton()->get_cmdline_user_args())
+          if (arg.begins_with("--mod=")) modArguments.push_back(arg);
+
         if (m_mounted) {
-          for (const String &arg :
-               OS::get_singleton()->get_cmdline_user_args()) {
+          for (const String &arg : modArguments) {
             if (!arg.begins_with("--mod="))
               continue;
             const std::string path =
                 toNative(ProjectSettings::get_singleton()->globalize_path(
                     arg.substr(6)));
+            if (!seenMods.insert(path).second) continue;
+            const bool texturesOnly = texturePaths.count(path) != 0;
             std::string error;
             auto folder = std::make_unique<FolderArchiveFile>();
             if (!folder->open(path, &error)) {
@@ -192,7 +217,10 @@ Dictionary RetailFileSystem::mount_bfme2_path(const String &root)
                 modErrors.push_back(toGodot(error));
                 break;
               }
-              m_fs->mountArchive(std::move(archive), *it, true);
+              if (texturesOnly)
+                m_fs->mountArchive(std::make_unique<TextureOnlyArchiveFile>(std::move(archive)), *it, true);
+              else
+                m_fs->mountArchive(std::move(archive), *it, true);
               record(std::filesystem::path(*it).filename().string(), digest);
             }
             if (!modErrors.is_empty())
@@ -207,7 +235,10 @@ Dictionary RetailFileSystem::mount_bfme2_path(const String &root)
             }
             if (!modErrors.is_empty())
               break;
-            m_fs->mountArchive(std::move(folder), path, true);
+            if (texturesOnly)
+              m_fs->mountArchive(std::make_unique<TextureOnlyArchiveFile>(std::move(folder)), path, true);
+            else
+              m_fs->mountArchive(std::move(folder), path, true);
           }
         }
         if (!modErrors.is_empty()) {

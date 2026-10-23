@@ -477,6 +477,7 @@ list(APPEND OPENBFME_SIM_SOURCES
     src/GameLogic/Module/AutoDepositUpdate.cpp
     src/GameLogic/Module/FishingUpdate.cpp
     src/GameLogic/FishingPlacement.cpp
+    src/GameLogic/CaptureLinks.cpp
     src/GameLogic/Module/UpgradeModules.cpp
     src/GameLogic/Module/MoneyEventModules.cpp
     src/GameLogic/Module/EconomyModules.cpp)
@@ -868,6 +869,7 @@ add_executable(openbfme_tests
     tests/test_econ_resources.cpp
     tests/test_fishing.cpp
     tests/test_fishing_placement.cpp
+    tests/test_capture_links.cpp
     tests/test_econ_hash.cpp
     tests/test_econ_retail.cpp
     tests/test_falsedef_retail.cpp)

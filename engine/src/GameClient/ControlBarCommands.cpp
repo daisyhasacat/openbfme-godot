@@ -380,6 +380,14 @@ CommandSet *CommandStore::findNonConstCommandSet(const std::string &name) const
 	return it == m_sets.end() ? nullptr : it->second.get();
 }
 
+// Match command-button lookup: consumers see the final map/mod override.
+const CommandSet *CommandStore::findCommandSet(const std::string &name) const
+{
+ const CommandSet *set = findNonConstCommandSet(name);
+ while (set && set->m_nextOverride) set = set->m_nextOverride;
+ return set;
+}
+
 CommandButton *CommandStore::newCommandButton(const std::string &name, bool override)
 {
 	auto b = std::make_unique<CommandButton>();

@@ -1,3 +1,4 @@
+#include "GameLogic/CaptureLinks.h"
 // OpenBFME. GPL-3.0.
 // See GameLogic/Module/SpecialAbilityModules.h. DONOR: ZH GameLogic/Object/Update/SpecialAbilityUpdate.cpp (the state machine: update :192,
 // initiateIntentToDoSpecialPower, startPreparation, triggerAbilityEffect, onExit); every step below is RotWK's, from the addresses named.
@@ -1159,9 +1160,7 @@ bool SpecialAbilityUpdate::captureTarget(SpecialPowerModule *spm)
 	}
 	else
 	{
-		static const int kLinked = ObjectTemplateInfoBuilder::kindOfIndex("LINKED_TO_FLAG"); // KindOf 0x32
-		PartitionFilterFn linked([](Object &o) { return kLinked >= 0 && o.isKindOf((unsigned)kLinked); });
-		building = logic.partition().getClosestObject(*t->getPosition(), 150.0f, FROM_CENTER_3D, { &linked });
+		building = CaptureLinks::buildingForFlag(*t);
 		if (!building)
 		{
 			return false;

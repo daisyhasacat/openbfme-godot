@@ -241,7 +241,7 @@ public:
 	const CommandButton *findCommandButton(const std::string &name) const;
 	// RW 0x71EFA2: the BASE set, exact name match
 	CommandSet *findNonConstCommandSet(const std::string &name) const;
-	const CommandSet *findCommandSet(const std::string &name) const { return findNonConstCommandSet(name); }
+	const CommandSet *findCommandSet(const std::string &name) const;
 
 	// the blocks (RW 0x5DA711 / 0x7205B9); the block header is already read
 	void parseCommandButtonDefinition(INI *ini);
