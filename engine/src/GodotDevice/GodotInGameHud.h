@@ -139,6 +139,7 @@ public:
 	void camera_pan(const Vector2 &amount);
 	int get_controller_primary_button(float selection_assist_radius = 0.0f) const;
 	bool controller_attack_move();
+	bool controller_select_type();
 	bool controller_select_area(float radius, bool commit);
 	bool controller_formation(const String &action, const Vector2 &direction);
 	void set_placement_snap(bool active, float spacing);

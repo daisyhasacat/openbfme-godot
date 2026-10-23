@@ -37,6 +37,30 @@ func _run() -> void:
 	assert(generated.back() is InputEventMouseButton and generated.back().button_index == MOUSE_BUTTON_LEFT and generated.back().pressed)
 	assert(generated[0] is InputEventMouseMotion and generated[0].position == root.get_visible_rect().get_center())
 
+	button.pressed = false
+	controller._input(button)
+	controller._release_all()
+	var type_selects := {"count": 0}
+	controller.select_type = func() -> bool:
+		type_selects.count += 1
+		return true
+	generated.clear()
+	button.pressed = true
+	controller._input(button)
+	button.pressed = false
+	controller._input(button)
+	assert(type_selects.count == 0)
+	generated.clear()
+	button.pressed = true
+	controller._input(button)
+	button.pressed = false
+	controller._input(button)
+	assert(type_selects.count == 1)
+	assert(not generated.any(func(e): return e is InputEventMouseButton))
+	controller.select_type = Callable()
+	controller._release_all()
+	button.pressed = true
+
 	# The shell's MenuPad owns analog menu input; the gameplay bridge must not
 	# also move its old right-stick mouse or send left-stick arrow taps.
 	playing.value = false

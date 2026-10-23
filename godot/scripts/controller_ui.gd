@@ -98,6 +98,9 @@ func _ready() -> void:
 		var live: Node = hud.call()
 		if live != null and live.is_ready() and live.has_method("camera_pan"):
 			live.camera_pan(amount))
+	bridge.select_type = func() -> bool:
+		var live: Node = hud.call()
+		return live.controller_select_type() if live != null and live.has_method("controller_select_type") else false
 	bridge.attack_move = func() -> bool:
 		var live: Node = hud.call()
 		return live.controller_attack_move() if live != null and live.has_method("controller_attack_move") else false

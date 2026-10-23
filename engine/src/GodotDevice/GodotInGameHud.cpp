@@ -1376,6 +1376,7 @@ void InGameHudNode::_bind_methods()
 	ClassDB::bind_method(D_METHOD("controller_formation", "action", "direction"), &InGameHudNode::controller_formation);
 	ClassDB::bind_method(D_METHOD("controller_select_area", "radius", "commit"), &InGameHudNode::controller_select_area);
 	ClassDB::bind_method(D_METHOD("controller_attack_move"), &InGameHudNode::controller_attack_move);
+	ClassDB::bind_method(D_METHOD("controller_select_type"), &InGameHudNode::controller_select_type);
 	ClassDB::bind_method(D_METHOD("get_controller_primary_button", "selection_assist_radius"), &InGameHudNode::get_controller_primary_button, DEFVAL(0.0f));
 	ClassDB::bind_method(D_METHOD("get_controller_target", "selection_assist_radius"), &InGameHudNode::get_controller_target);
 	ClassDB::bind_method(D_METHOD("controller_deselect"), &InGameHudNode::controller_deselect);
@@ -3742,6 +3743,29 @@ Dictionary InGameHudNode::get_controller_target(float selection_assist_radius)
 	result["can_select"] = selectable && !order;
 	if (selectable || order) d->hud->setControllerSelectionHover(target->getID());
 	return result;
+}
+
+// Enhanced controller shortcut: double A selects this local unit's type across the map.
+bool InGameHudNode::controller_select_type()
+{
+	waitLogic(d.get());
+	if (!d->ready || !d->hud) return false;
+	const auto context = d->hud->enterContext();
+	auto &input = d->hud->input();
+	input.update();
+	auto &ctx = input.context();
+	auto &ui = ctx.ui;
+	if (!ui.getInputEnabled() || ui.isPlacing() || ui.getGUICommand() || d->hud->spellBar().targeting() ||
+		d->hud->isOverGui((int)d->lastPointer.x, (int)d->lastPointer.y)) return false;
+	::Object *target = HudObjects::pickForSelection(ctx, {(int)d->lastPointer.x, (int)d->lastPointer.y});
+	if (!target || target->isKindOfName("STRUCTURE") || !HudObjects::isLocallyControlled(ctx, *target) || !HudObjects::canSelect(ctx, *target, false)) return false;
+	ui.deselectAll(true);
+	ui.selectObject(target->getID());
+	ClientMessage &message = ctx.stream.append(MSG_CREATE_SELECTED_GROUP);
+	message.appendBoolean(true);
+	message.appendObjectID(target->getID());
+	ui.selectMatching(ctx, true);
+	return true;
 }
 
 int InGameHudNode::get_controller_primary_button(float selection_assist_radius) const

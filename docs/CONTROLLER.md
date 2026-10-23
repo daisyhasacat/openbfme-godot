@@ -28,6 +28,8 @@ The palette uses native circular RadialBorder/RadialOver/RadialPush artwork and 
 
 Held input releases on context changes, focus loss and disconnect. The palette closes when RT is released or gameplay ends. Controller state does not affect saved games.
 
+Double-press **A / Cross** within 300 ms with a friendly unit under the cursor to select your selectable units of that type across the map, subject to the normal selection limit. Enemy units and structures are excluded. Double A over ground retains attack-move. Placement, targeted abilities and disabled gameplay input keep their existing behavior.
+
 ## Lua adaptation and interfaces
 
 `godot/dev/00_controller_config.lua` through `04_controller.lua` adapt the local BFME2Lua repository's `controller.lua`, `lib/keybinds.lua`, and `lib/controller/{config,controls,palantir}.lua`. These modules use `package.preload` because the companion VM has no filesystem module loader. Numeric filename prefixes define reload order. The game loads them at startup; **Ctrl+Shift+F5** or `bfme.console.reload()` reloads them during play.
