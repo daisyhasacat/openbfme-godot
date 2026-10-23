@@ -385,10 +385,10 @@ Waypoint reinforcement placement and BFME2/RotWK behavior are unchanged. The ope
 checks the actual soldiers against both rotated Gondor keep footprints, as well as all four factions'
 starting counts; a live match on Fords of Isen start 2 confirms both battalions stand outside the keep.
 
-For BFME1 battalions, an incomplete coarse-corridor path is retried once with the existing
+For battalions in all games, an incomplete coarse-corridor path is retried once with the existing
 cell search without corridor ordering. Castle rear walls can otherwise leave the battalion
 at a partial endpoint despite an open gate providing a longer route. This is an OpenBFME
-compatibility correction, not a verified BFME1 retail algorithm. Both searches retain their
+pathfinding correction, not a verified retail algorithm. Both searches retain their
 cell limits, and a retry replaces the original result only when it reaches the destination.
 The regression issues one move behind Gondor's castle on Fords of Isen and Rohan's castle
 on Anorien and checks arrival of the battalion and each soldier.
