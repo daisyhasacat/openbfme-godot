@@ -275,6 +275,7 @@ public:
 	void setDrawableOpacity(float opacity) { m_fade.opacity = opacity; }
 
 private:
+	void applyBuildingWindowVisibility();
 	void addEntry(DrawServices &services, const ThingTemplate::Nugget &nugget, std::vector<std::string> &problems);
 
 	DrawServices &m_services;
