@@ -84,6 +84,16 @@ def create_mod(destination):
     ini = root / "data/ini/openbfme_fishing.ini"
     ini.parent.mkdir(parents=True, exist_ok=True)
     ini.write_text(DEFINITIONS, encoding="utf-8")
+    placement = root / "data/ini/openbfme_fishing_placement.ini"
+    placement.write_text("""FishingPlacement
+  Template = OpenBFMEFishingSpot
+  MinimumDepth = 20
+  ShoreClearance = 120
+  Spacing = 650
+  ScanStep = 120
+  MaximumSpots = 64
+End
+""", encoding="utf-8")
     # A separate mod string file is discovered by the game's string-table loader.
     strings = root / "data/openbfme_fishing.str"
     strings.write_text("\n".join(f'{key}\n"{value}"\nEND\n' for key, value in STRINGS.items()), encoding="utf-8")

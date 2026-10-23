@@ -16,7 +16,15 @@ BFME2's Elven transport hull, movement, animation and sound at runtime. It adds 
 separate Fishing Ship to the good and evil port queues and the shipwright queue;
 ordinary transports keep their normal behavior.
 
-Place `OpenBFMEFishingSpot` objects on reachable water in a custom map or scenario.
+On map load the mod automatically places neutral fishing schools in deep water.
+It requires both the ship pathfinder's deep-water classification and at least 20
+world units of water depth, samples a 120-unit clearance around each spot, and
+keeps schools at least 650 units apart. Maps without suitable water receive none.
+The cap is 64 spots per map, including any authored spots. Locations are chosen
+deterministically without consuming gameplay RNG, so clients agree. Parameters
+are in the generated `data/ini/openbfme_fishing_placement.ini`. Remove that file
+to disable automatic placement. Authored `OpenBFMEFishingSpot` objects are preserved
+and reserve their surrounding area.
 Select a fishing ship and hover over a spot: the enter cursor signals the fishing
 interaction. Right-click orders the ship there. It stops beside the point, stays
 visible and selectable, and earns 25 resources every five seconds, starting after
@@ -34,7 +42,7 @@ fish. This extension is not supported by the original BFME2 executable.
 
 The original models and textures are not copied into the repository or mod.
 
-A playable demo places a fishing ship and a spot on Evendim's lake:
+A playable demo places a fishing ship beside an automatically generated school on Evendim's lake:
 
 ```sh
 godot --path godot res://scenes/fishing_viewer.tscn -- --mod=<absolute path to workspace/fishing-mod> --no-audio
@@ -44,3 +52,13 @@ Set `BFME2_INSTALL` to your installation before running the demo. It mounts BFME
 alone, uses the real selection/command HUD, and starts with right-click orders.
 The fish spot uses a tropical fish school with a larger selectable footprint. The first
 version reuses the animated enter cursor as the fishing interaction indicator.
+
+Automatic-placement smoke check (with `BFME2_INSTALL` set):
+
+```sh
+godot --headless --path godot --script res://tests/fishing_auto_smoke.gd -- --mod=<absolute path to workspace/fishing-mod>
+```
+
+It checks the real Evendim water map and Tournament Udun dry map, including neutral
+ownership, minimum depth, and spacing. The playable demo also verifies a raw
+mouse order and an income payment at an automatically generated school.

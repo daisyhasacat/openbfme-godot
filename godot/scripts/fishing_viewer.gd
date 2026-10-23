@@ -15,12 +15,32 @@ func _mount_game_files() -> Dictionary:
 	return _fs.mount_bfme2_path(install)
 
 func _run_scenario() -> void:
-	var boat: int = _world.create_object("OpenBFMEFishingBoat", _local_index, 2000.0, 1800.0, 0.0)
-	var point: int = _world.create_object("OpenBFMEFishingSpot", _local_index, 2250.0, 1800.0, 0.0)
-	if boat <= 0 or point <= 0:
+	var spots: Array[int] = []
+	var point := 0
+	var nearest := INF
+	for id in _world.get_object_ids():
+		var candidate: Dictionary = _world.get_object(id)
+		if candidate.get("template", "") != "OpenBFMEFishingSpot":
+			continue
+		spots.append(int(id))
+		var cell: Dictionary = _world.debug_pathfind_cell(candidate.x, candidate.y)
+		if not cell.get("ok", false) or not cell.has("water_height") or float(cell.water_height) - float(cell.ground) < 20.0:
+			_fail("Automatically placed fishing spot is outside deep water")
+			return
+		var distance := Vector2(candidate.x - 2250.0, candidate.y - 1800.0).length_squared()
+		if distance < nearest:
+			nearest = distance
+			point = int(id)
+	if point == 0:
+		_fail("No automatic deep-water fishing spots were generated")
+		return
+	var target: Dictionary = _world.get_object(point)
+	var boat: int = _world.create_object("OpenBFMEFishingBoat", _local_index, target.x - 100.0, target.y, 0.0)
+	if boat <= 0:
 		_fail("Fishing mod missing: launch with --mod=<generated fishing mod>")
 		return
-	_cam_target = Vector2(2125, 1650)
+	print("FISHING automatic deep-water spots: ", spots.size())
+	_cam_target = Vector2(target.x - 50.0, target.y - 150.0)
 	_place_camera()
 	_hud.set_view_options({"zoom_out_factor": 3.0})
 	_hud.camera_set_height(650.0)
@@ -49,7 +69,7 @@ func _run_scenario() -> void:
 			print("FISHING failed pick selection: ", _hud.get_selection())
 			print("FISHING boat: ", JSON.stringify(_world.get_object(boat)))
 			print("FISHING point: ", JSON.stringify(_world.get_object(point)))
-			var projected := _camera.unproject_position(Vector3(2250.0, float(_world.get_object(point).get("z", 0.0)) + 8.0, -1800.0))
+			var projected := _camera.unproject_position(Vector3(target.x, float(_world.get_object(point).get("z", 0.0)) + 8.0, -target.y))
 			print("FISHING pick probe: ", projected, " ", JSON.stringify(_hud.pick_probe(projected, point)))
 			if not _screenshot_path.is_empty():
 				_save(_screenshot_path)

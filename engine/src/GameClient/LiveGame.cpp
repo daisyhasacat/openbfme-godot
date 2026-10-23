@@ -2,6 +2,7 @@
 // See GameClient/LiveGame.h.
 
 #include "GameClient/LiveGame.h"
+#include "GameLogic/FishingPlacement.h"
 #include "Common/BfmeGame.h"
 #include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 
@@ -463,6 +464,8 @@ bool LiveGame::load(const Options &options, std::string *error)
 	progress(30); // the map's objects (RW 0x62FE02 ff)
 	m_report.loop = MapObjectLoop::create(*m_logic, m_map, m_classified, [](Object &obj, const MapObjectDrawable &d) { DrawableManager::applyPlacement(obj, d); });
 	m_report.secondsLoop = secondsSince(t0);
+	// Optional fishing-mod resources are neutral, spaced in deep water, and respect map-authored spots.
+	if (!FishingPlacement::populate(m_fs, *m_logic, m_terrain, error)) return false;
 	if (options.start)
 	{
 		// RW 0x62B197: the starting bases, one slot after the other (progress 40, then one more per slot)
