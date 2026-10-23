@@ -33,7 +33,7 @@ bool AptArchiveFileSource::aotrProfile() const { return m_fs.aotrProfile(); }
 std::string AptArchiveFileSource::movieKey(const std::string &name) const
 {
 	const auto key = lowerAscii(name);
-	return m_heroFs && key.rfind(heroPrefix, 0) != 0 && (key.rfind("cah", 0) == 0 || key.rfind("createahero", 0) == 0) ? heroPrefix + name : name;
+	return m_heroFs && key == "cahpowers" ? heroPrefix + name : name;
 }
 
 std::string AptArchiveFileSource::importMovieName(const AptFile &importer, const std::string &name) const
@@ -60,7 +60,7 @@ ArchiveFileSystem &AptArchiveFileSource::sourceFor(const std::string &virtualPat
 	const std::string path = lowerAscii(virtualPath);
 	std::string name = path.substr(path.find_last_of("/\\") + 1);
 	if (name.rfind("apt_", 0) == 0) name.erase(0, 4);
-	auto heroAsset = [](const std::string &value) { return value.rfind("cah", 0) == 0 || value.rfind("createahero", 0) == 0; };
+	auto heroAsset = [](const std::string &value) { return value.rfind(heroPrefix, 0) == 0 || value.rfind("cahpowers.", 0) == 0 || value.rfind("cahpowers_", 0) == 0; };
 	return m_heroFs && (heroAsset(path) || heroAsset(name)) ? *m_heroFs : m_fs;
 }
 

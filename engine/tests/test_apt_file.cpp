@@ -14,12 +14,12 @@ using namespace apttest;
 TEST_CASE("Apt presentation keeps the gameplay hero builder asset family together")
 {
 	initest::Fixture menus({{"MainMenu.apt", "bfme2 menu"}, {"MenuExport.apt", "bfme2 shared"}, {"CahPowers.apt", "bfme2 powers"}, {"CahPowers.const", "bfme2 constants"},
-		{"CahPowers_geometry/1.ru", "bfme2 geometry"}, {"art/textures/apt_CahPowers_1.tga", "bfme2 texture"}, {"CreateAHero.dat", "bfme2 atlas"}});
+		{"CahPowers_geometry/1.ru", "bfme2 geometry"}, {"art/textures/apt_CahPowers_1.tga", "bfme2 texture"}, {"CreateAHero.dat", "bfme2 atlas"}, {"CahManager.apt", "bfme2 manager"}});
 	initest::Fixture gameplay({{"MenuExport.apt", "rotwk shared"}, {"CahPowers.apt", "rotwk powers"}, {"CahPowers.const", "rotwk constants"},
 		{"CahPowers_geometry/1.ru", "rotwk geometry"}, {"art/textures/apt_CahPowers_1.tga", "rotwk texture"},
 		{"art/compiledtextures/ap/apt_CahPowers_2.tga", "rotwk compiled texture"}, {"CreateAHero.dat", "rotwk atlas"}, {"CahBonus.apt", "rotwk bonus"}});
 	AptArchiveFileSource source(menus.fsys, &gameplay.fsys);
-	for (const std::string &path : {"CahPowers.apt", "CahPowers.const", "CahPowers_geometry/1.ru", "art/textures/apt_CahPowers_1.tga", "ART\\COMPILEDTEXTURES\\AP\\APT_CAHPOWERS_2.TGA", "CreateAHero.dat", "CahBonus.apt"})
+	for (const std::string &path : {"CahPowers.apt", "CahPowers.const", "CahPowers_geometry/1.ru", "art/textures/apt_CahPowers_1.tga", "ART\\COMPILEDTEXTURES\\AP\\APT_CAHPOWERS_2.TGA"})
 	{
 		std::vector<std::uint8_t> actual, expected;
 		REQUIRE(source.fileExists(path));
@@ -31,6 +31,14 @@ TEST_CASE("Apt presentation keeps the gameplay hero builder asset family togethe
 	REQUIRE(source.readFile("MainMenu.apt", bytes, nullptr));
 	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 menu");
 	CHECK(source.listMovies().size() == 4);
+	CHECK_FALSE(source.fileExists("CahBonus.apt"));
+	CHECK(source.movieKey("CreateAHero") == "CreateAHero");
+	CHECK(source.movieKey("CahManager") == "CahManager");
+	CHECK(source.movieKey("CahAppearance") == "CahAppearance");
+	REQUIRE(source.readFile("CreateAHero.dat", bytes, nullptr));
+	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 atlas");
+	REQUIRE(source.readFile("CahManager.apt", bytes, nullptr));
+	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 manager");
 	AptFile heroMovie;
 	heroMovie.name = source.movieKey("CahPowers");
 	CHECK(heroMovie.name != "CahPowers");

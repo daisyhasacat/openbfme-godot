@@ -1,13 +1,14 @@
 # Create-a-Hero menu corrections
 
-With BFME2 presentation and RotWK gameplay, the `CreateAHero` and `Cah*`
-asset families come from the gameplay mount. Their imported dependencies have
+With BFME2 presentation and RotWK gameplay, only the `CahPowers`
+asset family comes from the gameplay mount. Its imported dependencies have
 separate cache identities, so RotWK's `MenuExport` symbols and textures do not
 replace the BFME2 menu exports. This includes movies, constants,
 atlas mappings, geometry and movie textures. BFME2's shipped `CahPowers`
 movie lacks RotWK's `NoPowerButton` and `OnNoPowerSelect` callback; mixing that
 movie with RotWK hero records hides the empty-power choice. Other menus retain
-the selected presentation. This routing is OpenBFME presentation policy;
+the selected presentation, including the hero manager, class, appearance and
+statistics pages. This routing is OpenBFME presentation policy;
 standalone BFME2 continues using its own hero builder and gameplay data.
 
 Donor references are relative to Open-BFME-2:
