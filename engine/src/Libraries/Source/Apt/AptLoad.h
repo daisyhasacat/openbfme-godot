@@ -29,6 +29,8 @@ class AptFileSource
 public:
 	virtual ~AptFileSource() = default;
 	virtual bool aotrProfile() const { return false; }
+	virtual std::string movieKey(const std::string &name) const { return name; }
+	virtual std::string importMovieName(const AptFile &, const std::string &name) const { return name; }
 	virtual bool readFile(const std::string &virtualPath, std::vector<std::uint8_t> &out, std::string *error) = 0;
 	virtual bool fileExists(const std::string &virtualPath) = 0;
 	// Names of every movie available ("MainMenu" etc. as stored, no extension).
@@ -39,14 +41,19 @@ public:
 class AptArchiveFileSource : public AptFileSource
 {
 public:
-	explicit AptArchiveFileSource(ArchiveFileSystem &fileSystem) : m_fs(fileSystem) {}
+	explicit AptArchiveFileSource(ArchiveFileSystem &fileSystem, ArchiveFileSystem *heroFileSystem = nullptr) : m_fs(fileSystem), m_heroFs(heroFileSystem) {}
 	bool aotrProfile() const override;
+	std::string movieKey(const std::string &name) const override;
+	std::string importMovieName(const AptFile &importer, const std::string &name) const override;
 	bool readFile(const std::string &virtualPath, std::vector<std::uint8_t> &out, std::string *error) override;
 	bool fileExists(const std::string &virtualPath) override;
 	std::vector<std::string> listMovies() override;
 
 private:
 	ArchiveFileSystem &m_fs;
+	ArchiveFileSystem *m_heroFs;
+	ArchiveFileSystem &sourceFor(const std::string &virtualPath);
+	std::string physicalPath(const std::string &virtualPath) const;
 };
 
 struct AptResolvedImport

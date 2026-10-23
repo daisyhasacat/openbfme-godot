@@ -1749,7 +1749,7 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 	m->presentationFs = presentationFs;
 	m->worldId = world->get_instance_id(); // lane CAMP-2: the BinkMovie component's movies
 	m->view3d.setOwner(this, presentationFs); // lane UI-2: shell decoration follows the presentation source; gameplay View3D stays on the world path
-	m->source = std::make_unique<AptArchiveFileSource>(*presentationFs->archive_fs());
+	m->source = std::make_unique<AptArchiveFileSource>(*presentationFs->archive_fs(), presentationFs->is_shell_source() ? fs->archive_fs() : nullptr);
 	m->originalSource = std::make_unique<AptArchiveFileSource>(*fs->archive_fs());
 	m->textures = std::make_unique<AptTextureStore>(*m->source);
 	m->originalTextures = std::make_unique<AptTextureStore>(*m->originalSource);

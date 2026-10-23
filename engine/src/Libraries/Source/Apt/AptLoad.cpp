@@ -11,6 +11,7 @@
 
 namespace
 {
+const std::string heroPrefix = "cah_gameplay_";
 
 std::string lowerAscii(const std::string &s)
 {
@@ -29,23 +30,59 @@ std::string lowerAscii(const std::string &s)
 
 bool AptArchiveFileSource::aotrProfile() const { return m_fs.aotrProfile(); }
 
+std::string AptArchiveFileSource::movieKey(const std::string &name) const
+{
+	const auto key = lowerAscii(name);
+	return m_heroFs && key.rfind(heroPrefix, 0) != 0 && (key.rfind("cah", 0) == 0 || key.rfind("createahero", 0) == 0) ? heroPrefix + name : name;
+}
+
+std::string AptArchiveFileSource::importMovieName(const AptFile &importer, const std::string &name) const
+{
+	return m_heroFs && lowerAscii(importer.name).rfind(heroPrefix, 0) == 0 && lowerAscii(name).rfind(heroPrefix, 0) != 0 ? heroPrefix + name : name;
+}
+
+std::string AptArchiveFileSource::physicalPath(const std::string &virtualPath) const
+{
+	if (!m_heroFs) return virtualPath;
+	std::string path = virtualPath;
+	const auto lower = lowerAscii(path);
+	if (lower.rfind(heroPrefix, 0) == 0) path.erase(0, heroPrefix.size());
+	else
+	{
+		const size_t start = path.find_last_of("/\\") + 1;
+		if (lower.compare(start, 4 + heroPrefix.size(), "apt_" + heroPrefix) == 0) path.erase(start + 4, heroPrefix.size());
+	}
+	return path;
+}
+
+ArchiveFileSystem &AptArchiveFileSource::sourceFor(const std::string &virtualPath)
+{
+	const std::string path = lowerAscii(virtualPath);
+	std::string name = path.substr(path.find_last_of("/\\") + 1);
+	if (name.rfind("apt_", 0) == 0) name.erase(0, 4);
+	auto heroAsset = [](const std::string &value) { return value.rfind("cah", 0) == 0 || value.rfind("createahero", 0) == 0; };
+	return m_heroFs && (heroAsset(path) || heroAsset(name)) ? *m_heroFs : m_fs;
+}
+
 bool AptArchiveFileSource::readFile(const std::string &virtualPath, std::vector<std::uint8_t> &out, std::string *error)
 {
-	return m_fs.readFile(virtualPath, out, error);
+	return sourceFor(virtualPath).readFile(physicalPath(virtualPath), out, error);
 }
 
 bool AptArchiveFileSource::fileExists(const std::string &virtualPath)
 {
-	return m_fs.doesFileExist(virtualPath);
+	return sourceFor(virtualPath).doesFileExist(physicalPath(virtualPath));
 }
 
 std::vector<std::string> AptArchiveFileSource::listMovies()
 {
 	FilenameList list;
 	m_fs.getFileListInDirectory(std::string(), std::string(), std::string("*.apt"), list, true);
+	if (m_heroFs) m_heroFs->getFileListInDirectory(std::string(), std::string(), std::string("*.apt"), list, true);
 	std::vector<std::string> names;
 	for (const std::string &path : list)
 	{
+		if (!fileExists(path)) continue;
 		// Movies live at the archive root; anything with a directory part is not an Apt movie.
 		if (path.find('/') != std::string::npos || path.find('\\') != std::string::npos)
 		{
@@ -60,7 +97,8 @@ std::vector<std::string> AptArchiveFileSource::listMovies()
 
 std::shared_ptr<const AptFile> AptLoader::loadMovie(const std::string &movieName, std::string *error)
 {
-	std::string key = lowerAscii(movieName);
+	const std::string assetName = m_source.movieKey(movieName);
+	std::string key = lowerAscii(assetName);
 	auto it = m_movies.find(key);
 	if (it != m_movies.end())
 	{
@@ -69,7 +107,7 @@ std::shared_ptr<const AptFile> AptLoader::loadMovie(const std::string &movieName
 	std::vector<std::uint8_t> constBytes;
 	auto aptBytes = std::make_shared<std::vector<std::uint8_t>>();
 	std::string err;
-	if (!m_source.readFile(movieName + ".const", constBytes, &err))
+	if (!m_source.readFile(assetName + ".const", constBytes, &err))
 	{
 		if (error)
 		{
@@ -77,7 +115,7 @@ std::shared_ptr<const AptFile> AptLoader::loadMovie(const std::string &movieName
 		}
 		return nullptr;
 	}
-	if (!m_source.readFile(movieName + ".apt", *aptBytes, &err))
+	if (!m_source.readFile(assetName + ".apt", *aptBytes, &err))
 	{
 		if (error)
 		{
@@ -95,7 +133,7 @@ std::shared_ptr<const AptFile> AptLoader::loadMovie(const std::string &movieName
 		return nullptr;
 	}
 	auto file = std::make_shared<AptFile>();
-	if (!AptFile::parse(movieName, aptBytes, consts, *file, &err, m_source.aotrProfile()))
+	if (!AptFile::parse(assetName, aptBytes, consts, *file, &err, m_source.aotrProfile()))
 	{
 		if (error)
 		{
@@ -131,7 +169,7 @@ bool AptLoader::resolveImport(const AptFile &importer, const AptImport &import, 
 	}
 
 	std::string err;
-	std::shared_ptr<const AptFile> current = loadMovie(import.movie, &err);
+	std::shared_ptr<const AptFile> current = loadMovie(m_source.importMovieName(importer, import.movie), &err);
 	if (!current)
 	{
 		return fail(err);
@@ -179,7 +217,7 @@ bool AptLoader::resolveImport(const AptFile &importer, const AptImport &import, 
 		{
 			return fail("export '" + exportName + "' of " + current->name + " resolves to a null character slot with no import behind it");
 		}
-		std::shared_ptr<const AptFile> forward = loadMovie(next->movie, &err);
+		std::shared_ptr<const AptFile> forward = loadMovie(m_source.importMovieName(*current, next->movie), &err);
 		if (!forward)
 		{
 			return fail(err);

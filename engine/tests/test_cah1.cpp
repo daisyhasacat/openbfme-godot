@@ -291,7 +291,7 @@ struct CahShellFx
 	CreateAHeroHeroList heroes;
 	CreateAHeroScreenContext ctx;
 	std::unique_ptr<starttest::ShellFx> fx;
-	explicit CahShellFx(starttest::Shared *shared, bool suppressPromo) : s(shared)
+	explicit CahShellFx(starttest::Shared *shared, bool suppressPromo, ArchiveFileSystem *presentation = nullptr) : s(shared)
 	{
 		std::vector<std::string> errors;
 		heroes.load(s->mount->fs.get(), dir.path, &errors);
@@ -300,7 +300,7 @@ struct CahShellFx
 		ctx.heroes = &heroes;
 		ctx.suppressPromo = suppressPromo;
 		ctx.random = [](int lo, int hi) { return (lo + hi) / 2; };
-		fx = std::make_unique<starttest::ShellFx>(*s, 1u);
+		fx = std::make_unique<starttest::ShellFx>(*s, 1u, presentation);
 		fx->environment.createAHero = &ctx;
 		fx->environment.services = &fx->services;
 		fx->shell->push("MainMenu.apt");
@@ -317,6 +317,57 @@ struct CahShellFx
 	}
 };
 } // namespace
+
+TEST_CASE("cah1 BFME2 presentation retains RotWK empty-power selection through the movie button")
+{
+	OPENBFME_REQUIRE_START(s);
+	auto *menus = retailtest::bfme2Mount();
+	REQUIRE(menus);
+	REQUIRE_MESSAGE(menus->fs, menus->error);
+	CahShellFx context(s, true, menus->fs.get());
+	auto *screen = context.screen();
+	REQUIRE(screen);
+	std::string error;
+	REQUIRE_MESSAGE(context.fx->wm->invokeAS(screen->level(), "SetCreateNewHero", {"true"}, nullptr, &error), error);
+	context.show(screen, "Class");
+	REQUIRE(context.fx->wm->invokeCallback("AptCreateAHero::Class::SetClassAndType", "2 1"));
+	context.show(screen, "Appearance");
+	GadgetTextEntrySetText(screen->nameEntry(), u"Mixed Menu Hero");
+	REQUIRE(context.fx->wm->invokeCallback("AptCreateAHero::Appearance::OnComplete", ""));
+	context.show(screen, "Powers");
+	CHECK(screen->currentPage() == 'P');
+	CHECK(context.fx->wm->errors().empty());
+	std::function<AptCharacterInst *(AptCharacterInst *)> findButton = [&](AptCharacterInst *instance) -> AptCharacterInst * {
+		if (instance->instName() == "NoPowerButton") return instance;
+		if (auto *sprite = instance->asSprite())
+			for (auto *child : sprite->children())
+				if (auto *found = findButton(child)) return found;
+		return nullptr;
+	};
+	for (int count : {1, 2})
+	{
+		auto *clip = findButton(context.fx->wm->apt().level(screen->level()));
+		REQUIRE(clip);
+		auto *button = starttest::firstButtonIn(clip);
+		REQUIRE(button);
+		starttest::clickButton(*context.fx, *button);
+		context.fx->tick(2);
+		CHECK(screen->powers().chosenCount() == count);
+		const auto &power = screen->myHero()->hero().powers[(size_t)count - 1];
+		CHECK(power.commandButton == "Command_SpecialAbilityNoPowerDummy");
+		CHECK(power.buttonIndex == CahPowers::NO_POWER_SLOT + screen->powers().templateButtons());
+	}
+	const std::string available = screen->firstAvailablePower();
+	REQUIRE_FALSE(available.empty());
+	REQUIRE(context.fx->wm->invokeCallback("AptCreateAHero::OnPowerSelect", available));
+	context.fx->tick(2);
+	CHECK(screen->powers().chosenCount() == 3);
+	REQUIRE(context.fx->wm->invokeCallback("AptCreateAHero::OnPowerSelectionComplete", ""));
+	const auto &hero = screen->myHero()->hero();
+	const int saved = context.heroes.findByUniqueID(hero.uniqueID);
+	REQUIRE(saved == (int)context.heroes.size() - 1);
+	CHECK_MESSAGE(s->world->createAHeroSystem().validateHero(context.heroes.at(saved)->hero, *TheCommandStore, &error), error);
+}
 
 TEST_CASE("cah1 retail shell: the main menu's Create-a-Hero pushes CreateAHero.apt, the promo page first, then the Manager lists the system heroes")
 {

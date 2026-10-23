@@ -84,7 +84,7 @@ struct ShellFx
 	std::unique_ptr<AptGadgetLayer> layer;
 	std::unique_ptr<Shell> shell;
 
-	explicit ShellFx(Shared &s, std::uint32_t seed) : source(*s.mount->fs)
+	explicit ShellFx(Shared &s, std::uint32_t seed, ArchiveFileSystem *presentation = nullptr) : source(presentation ? *presentation : *s.mount->fs, presentation ? s.mount->fs.get() : nullptr)
 	{
 		std::string error;
 		REQUIRE_MESSAGE(loadGadgetSkinData(*s.mount->fs, skins, &error), error);
