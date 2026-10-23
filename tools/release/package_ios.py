@@ -208,6 +208,7 @@ def main():
     plist = plistlib.loads(info.read_bytes())
     plist['LSSupportsOpeningDocumentsInPlace'] = True
     plist['UIFileSharingEnabled'] = True
+    plist['UIApplicationSupportsIndirectInputEvents'] = True
     plist['NSLocalNetworkUsageDescription'] = 'Download maps and mods shared by computers on your local network.'
     plist.setdefault('NSAppTransportSecurity', {})['NSAllowsLocalNetworking'] = True
     # The editable LAN address may be a numeric IPv4 address over plain HTTP.

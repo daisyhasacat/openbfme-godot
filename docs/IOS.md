@@ -253,3 +253,19 @@ the last completed checkpoint when no final save is possible. Save durations are
 logged as `QUICK RESUME saved ... in ... ms`. Functional cold-start tests run
 headlessly on the Mac; actual iPhone suspension/termination timing still needs
 on-device verification.
+
+### Magic Keyboard trackpad
+
+Indirect pointer touches now enter the same Godot mouse-event path as macOS:
+primary click selects, primary drag selects a box, and secondary click/drag
+uses the normal game commands and camera controls. Hover moves the game
+pointer. UIKit scroll-only pan and indirect-pointer pinch recognizers emit
+Godot pan/magnify events, using the macOS precise-scroll normalization (0.03)
+and incremental pinch factors. Direct finger gestures and Pencil keep their
+separate controls. The export enables UIApplicationSupportsIndirectInputEvents
+so UIKit identifies pointer touches instead of presenting them as fingers.
+
+Validation covers arm64 iOS Simulator compilation and synthetic gameplay
+input. Physical Magic Keyboard hover, secondary-click settings, momentum and
+pinch still need an on-device check; the simulator does not reproduce the
+hardware event stream.
