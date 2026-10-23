@@ -295,3 +295,14 @@ checks the retail catalog, translated names, filtering, scrolling and profile
 actions against the user's installed assets. `test_big_archive.cpp` pins
 archive-specific catalog reads without changing patch precedence;
 `test_apt_skirmish.cpp` pins BFME1 statistics and rank providers.
+
+## Replacement settings menu
+
+BFME1 uses the shared OpenBFME settings menu used by BFME2/RotWK. Its original
+Options movie needs `assignOpen("normal")` (or `"online"`) after frame-zero
+initialization completes (BFME1 BfmeConv1072, 0x55DC00). The replacement waits
+for its animated controls to initialize, hides the two BFME1 settings clips
+and their separate borders and tooltip regions, and handles the BFME1
+Cancel/Reset/Save buttons through the shared replacement menu events.
+`godot/tests/bfme1_options_test.gd` verifies that the replacement opens,
+original controls stay hidden, its bottom bar is available and it reopens.
