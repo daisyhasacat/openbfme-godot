@@ -116,6 +116,12 @@ These are the places where BFME1's data or menus differ from RotWK's. Each one i
   castle floor. Sharing its default priority allowed the floor to cover every plot at some start positions,
   including the second castle on Fords of Isen. Depth testing stays enabled, and opaque castle floors retain mipmaps. This is an OpenBFME presentation policy
   (S-5017), not a verified retail sampler setting; very distant thin lines can alias.
+- **Building floor bibs:** the same translucent, non-depth-writing floor surfaces receive a one-world-unit
+  shader lift. The installed Gondor stable and archery-range bib vertices top out near 0.377, below the castle
+  floor at 0.4; draw priority alone cannot pass that depth test. The lift compensates for instance scale, leaves
+  object positions unchanged, and keeps depth testing enabled. This is OpenBFME presentation policy under
+  S-5017, not a recovered retail floor-buffer implementation. `bfme1_building_floor_test.gd` checks that both
+  bibs contribute rendered pixels with the castle floor present (requires a graphical renderer).
 - **Create-a-Hero and saves:** BFME1 does not initialize or open the BFME2/RotWK hero builder, or switch to their menu
   presentation. OpenBFME saves use `user://bfme1/Save` (unless `--save-dir` overrides it), without consulting RotWK's
   `gi.dat` or hero folder. This separate namespace is OpenBFME policy; retail BFME1 save import is still unavailable.
