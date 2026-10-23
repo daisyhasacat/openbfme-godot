@@ -48,6 +48,7 @@ func _run() -> void:
 				continue
 			for surface in node.multimesh.mesh.get_surface_count():
 				var material = node.multimesh.mesh.surface_get_material(surface)
+				assert(material.render_priority == 32, name)
 				assert(material.shader.code.contains("uniform sampler2D w3d_tex0 : filter_linear,"), name)
 				checked = true
 		assert(checked, "Missing rendered foundation material")

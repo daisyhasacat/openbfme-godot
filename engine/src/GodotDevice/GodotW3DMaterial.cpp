@@ -723,7 +723,7 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 		if (FloorSampling && key.Blend == W3D_GODOT_BLEND_MIX && !key.DepthWrite)
 		{
 			key.NoLod[s] = true;
-			if (s == 0) out.Notes.push_back("[S-5017] BFME1 translucent floor markings use base-level linear sampling to retain visibility at distant zoom (OpenBFME policy)");
+			if (s == 0) out.Notes.push_back("[S-5017] BFME1 translucent floor markings use base-level linear sampling and render after the castle floor to retain visibility (OpenBFME policy)");
 		}
 	}
 	if (!normalMapName.empty())
@@ -834,7 +834,10 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 	if (key.NormalMap) mat->set_shader_parameter("w3d_normal", normalTex);
 	if (key.HouseColor) mat->set_shader_parameter("w3d_hc_tex", hcTex);
 	const int priority = std::clamp(surf.Pass - std::min(surf.SortLevel, 31) * 4, -128, 127);
-	mat->set_render_priority(priority);
+	// S-5017: blended floor overlays must follow the depth-writing castle floor,
+	// whose batch order otherwise changes with camera position. Keep depth testing
+	// so buildings and units still occlude them. OpenBFME presentation policy.
+	mat->set_render_priority(FloorSampling && key.Blend == W3D_GODOT_BLEND_MIX && !key.DepthWrite ? 32 : priority);
 
 	for (int s = 0; s < 2; ++s)
 	{

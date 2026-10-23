@@ -111,8 +111,10 @@ These are the places where BFME1's data or menus differ from RotWK's. Each one i
 - **Occupied plots:** starting construction hides and deselects a regular build plot, closing its commands. The plot returns when its occupant is removed.
 - **Ground texture alpha:** JPEG ground textures take priority over paired PNG alpha masks and load their alpha through the same packed-texture merge used by the UI.
 - **Distant build plots:** translucent, non-depth-writing `W3DFloorDraw` markings use base-level linear sampling.
-  Their alpha-blended source textures otherwise blur away under minification; the earlier alpha-test coverage correction
-  does not apply to these materials. Opaque castle floors retain mipmaps. This is an OpenBFME presentation policy
+  Their alpha-blended source textures otherwise blur under minification; the earlier alpha-test coverage correction
+  does not apply to these materials. The overlays also render at transparent priority 32, after the depth-writing
+  castle floor. Sharing its default priority allowed the floor to cover every plot at some start positions,
+  including the second castle on Fords of Isen. Depth testing stays enabled, and opaque castle floors retain mipmaps. This is an OpenBFME presentation policy
   (S-5017), not a verified retail sampler setting; very distant thin lines can alias.
 - **Create-a-Hero and saves:** BFME1 does not initialize or open the BFME2/RotWK hero builder, or switch to their menu
   presentation. OpenBFME saves use `user://bfme1/Save` (unless `--save-dir` overrides it), without consulting RotWK's
@@ -349,3 +351,17 @@ and live Q selection, and loads fire/smoke particle textures. `test_input1.cpp` 
 500, 800, 1200 and 1600. Run with a graphical renderer and `BFME1_INSTALL`; set `BFME1_PLOT_SCREENSHOTS`
 to an output directory for visual inspection. `godot/tests/bfme1_save_folder_test.gd` checks the mode-specific
 save namespace, explicit override, disabled CAH entry and ignored BFME2/RotWK style requests without retail data.
+
+`godot/tests/bfme1_live_plot_zoom_test.gd` starts the normal game scene, clicks through the lobby with `--auto`,
+and keeps the simulation, HUD, shroud and tactical camera active. It checks 1x, 1.5x, 2x, 2.5x and 3x zoom:
+hiding only the floor-overlay nodes must change pixels at a local empty plot. This catches an overlay that is
+instantiated but covered by the castle floor. Run with the graphical renderer:
+
+```sh
+godot --path godot --script res://tests/bfme1_live_plot_zoom_test.gd -- --game=bfme1 --auto --advance=600 \
+  "--map=maps/map mp fords of isen/map mp fords of isen.map" --faction=FactionGondor --start-spot=1
+```
+
+Use `--bfme1-install` to select an installation, `--faction=FactionIsengard` for Isengard, and
+`BFME1_PLOT_SCREENSHOTS` to save the live views. The second start is essential: the first castle did not
+reproduce the draw-order failure in the original regression.
