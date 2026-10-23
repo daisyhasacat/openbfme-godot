@@ -25,6 +25,7 @@
 #include "GameLogic/ScriptEngine/ScriptActions.h"
 #include "GameLogic/ScriptEngine/ScriptConditions.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
+#include "GameLogic/AI/AIStateMachine.h"
 
 #include <algorithm>
 #include <set>
@@ -779,4 +780,52 @@ TEST_CASE("script2 BFME2 tutorial: building empty requires a contain with no occ
 	CHECK_FALSE(evalCond(g, empty));
 	container->getContain()->removeFromContain(f.u);
 	CHECK(evalCond(g, empty));
+}
+
+TEST_CASE("BFME1 script economy counters use player masks and retain native command point availability")
+{
+	Fixture f;
+	f.g.lw.players.findPlayerWithName("Alice")->depositMoney(123);
+	f.g.lw.players.findPlayerWithName("Bob")->depositMoney(77);
+	const int aliceMoney = (int)f.g.lw.players.findPlayerWithName("Alice")->getMoney()->countMoney();
+	run(f.g, act("SET_PLAYER_MONEY_TO_COUNTER", {sp(11, "Alice"), sp(4, "Funds")}));
+	CHECK(f.g.counter("Funds") == aliceMoney);
+	run(f.g, act("SET_PLAYER_COMMAND_POINTS_AVAILABLE_TO_COUNTER", {sp(11, "Alice"), sp(4, "FreeCP")}));
+	CHECK(f.g.counter("FreeCP") == f.g.lw.players.findPlayerWithName("Alice")->commandPointsAvailable());
+}
+
+TEST_CASE("BFME1 team recruitment takes matching default-team units and reports its ranking stop")
+{
+	Fixture f;
+	Player *owner = f.g.lw.players.findPlayerWithName("Alice");
+	TeamPrototype *prototype = f.g.lw.teams.initTeam("Scouts", owner, false);
+	Team *scouts = f.g.lw.teams.createTeam(prototype);
+	Object *other = f.g.lw.make("Unit", owner->getDefaultTeam());
+	REQUIRE(other);
+	run(f.g, act("TEAM_RECRUIT_UNITS", {sp(3, "Alice/Scouts"), ip(0, 1), sp(61, "Unit")}));
+	CHECK(f.u->getTeam() == scouts);
+	CHECK(other->getTeam() == owner->getDefaultTeam());
+	CHECK(scouts->getMemberCount() == 1);
+	CHECK(f.g.engine().stats().notes.count("[S-5017] BFME1 empty-team recruitment uses default-team candidates in object order; native ranking is unverified") == 1);
+}
+
+TEST_CASE("BFME1 script scouts move toward the nearest capturable resource plot")
+{
+	UnitQueues q;
+	q.w.buildMap();
+	REQUIRE(q.w.w.load("Object ResourcePlot\n KindOf = STRUCTURE CAPTUREFLAG IMMOBILE\nEnd\n").empty());
+	Player *owner = q.w.players.findPlayerWithName("Alice");
+	Team *scouts = q.w.teams.createTeam(q.w.teams.initTeam("Scouts", owner, false));
+	Object *unit = q.w.spawn("Walker", 500.0f, 500.0f, 0.0f, scouts);
+	Object *nearPlot = q.w.make("ResourcePlot", q.w.teamOf("Bob"));
+	Object *farPlot = q.w.make("ResourcePlot", q.w.teamOf("Bob"));
+	moveTo(*nearPlot, 800.0f, 500.0f);
+	moveTo(*farPlot, 1400.0f, 500.0f);
+	q.start();
+	ScriptActions::execute(q.w.logic->scriptEngine(), act("TEAM_MOVE_TO_NEAREST_OBJECT_OF_KINDOF", {sp(3, "Alice/Scouts"), sp(27, "CAPTUREFLAG")}));
+	REQUIRE(unit->getAIUpdateInterface());
+	const Coord3D goal = unit->getAIUpdateInterface()->stateMachine().goalPosition();
+	CHECK(goal.x == 800.0f);
+	CHECK(goal.y == 500.0f);
+	CHECK(goal.z == 0.0f);
 }
