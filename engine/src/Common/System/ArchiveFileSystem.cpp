@@ -36,7 +36,18 @@ ArchiveFileSystem::~ArchiveFileSystem() = default;
 void ArchiveFileSystem::mountArchive(std::unique_ptr<ArchiveFile> archiveFile, const std::string &archiveFilename, bool overwrite)
 {
 	loadIntoDirectoryTree(archiveFile.get(), archiveFilename, overwrite);
+	m_mountOperations.emplace_back(archiveFilename, overwrite);
 	m_archiveFileMap[archiveFilename] = std::move(archiveFile);
+}
+
+std::vector<ArchiveFileSystem::MountedLayer> ArchiveFileSystem::mountedLayers() const
+{
+    std::vector<MountedLayer> result;
+    for (const auto &operation : m_mountOperations) {
+        const auto archive = m_archiveFileMap.find(operation.first);
+        if (archive != m_archiveFileMap.end()) result.push_back({archive->second.get(), operation.first, operation.second});
+    }
+    return result;
 }
 
 // OpenBFME (S-012, docs/STOPS.md): runtime report, not a print. One line per archive whose identity

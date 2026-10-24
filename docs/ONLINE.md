@@ -1427,3 +1427,30 @@ history; the saved report is complete. Filesystem/read/save errors are surfaced.
 Archive hashing streams 64 KiB blocks on a worker thread to keep large movie
 entries from requiring a full entry-sized allocation. All clients and the lobby
 need the update; an older service cannot supply these comparisons.
+
+
+### Loose-mod compatibility fix (October 24, 2026)
+
+Investigation of a Mac/iPad desync on Adorn River found Fishing Ships enabled
+only on the Mac. Startup used the same seed and resolved factions, but the Mac loaded 4,704
+object templates and started with 144 objects, versus 4,692 and 138 on iPad.
+The three loose fishing-mod files had been mounted without entering the RotWK
+profile identity or checksum inventory. Therefore equal retail archive hashes
+incorrectly allowed incompatible games to join.
+
+Profile identities now capture every actual overlay mount after the verified
+retail archives, including directory mods, archive mods, filtered texture layers,
+packaged optional archives and generated in-memory GameData merges. Each selected
+virtual file contributes its MD5, size, stable layer ordinal and override mode;
+physical install locations are excluded. The existing `archive` line format is
+retained, with `mod-file` / `mod-archive` labels and an explicit
+`mods mounted-overlays-v1` marker. No enabled overlays keeps the original
+`mods none` identity. Inactive gameplay files in texture-only layers are excluded.
+
+The per-file report includes these captured mod-file checksums too. Loose and
+memory-layer hashes describe the mount-time snapshot; they are not proof against
+later external edits (the existing unverified-identity warning still applies).
+The compatibility check rejects different selected mod contents before START.
+Both clients require the fix; the server continues comparing profile digests and
+does not require another deployment. Users can immediately avoid this particular
+desync by disabling Fishing Ships on the Mac or installing the same mod on iPad.

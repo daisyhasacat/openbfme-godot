@@ -6,9 +6,11 @@
 #include "Common/ArchiveFile.h"
 #include "Common/MD5.h"
 #include "GameNetwork/ProfileIdentity.h"
+#include "GameEngineDevice/Win32Device/Common/FolderArchiveFile.h"
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFile.h"
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -333,4 +335,111 @@ TEST_CASE("file diagnostic manifest includes archived entries and embedded sourc
     mounted.diskPath = (tmp.path / "missing.big").u8string();
     CHECK(ProfileIdentity::fileChecksums({mounted}, &error).empty());
     CHECK(error.empty() == false);
+}
+
+TEST_CASE("mounted loose gameplay mods change the profile and appear in per-file diagnostics")
+{
+    TempDir first, second;
+    auto write = [](const stdfs::path &root, const std::string &text) {
+        stdfs::create_directories(root / "data/ini");
+        std::ofstream out(root / "data/ini/mod.ini"); out << text;
+    };
+    auto capture = [](const stdfs::path &root, bool texturesOnly) {
+        Win32BIGFileSystem fs;
+        auto folder = std::make_unique<FolderArchiveFile>();
+        std::string error;
+        REQUIRE(folder->open(root.u8string(), &error));
+        if (texturesOnly) fs.mountArchive(std::make_unique<TextureOnlyArchiveFile>(std::move(folder)), root.u8string(), true);
+        else fs.mountArchive(std::move(folder), root.u8string(), true);
+        std::vector<MountedArchive> identity;
+        REQUIRE(ProfileIdentity::captureMountedOverrides(fs, identity, &error));
+        CHECK(error == "");
+        return identity;
+    };
+    write(first.path, "abc"); write(second.path, "abc");
+    const auto a = capture(first.path, false), b = capture(second.path, false);
+    REQUIRE(a.size() == 1);
+    CHECK(a[0].canonicalPath == "layer-0-override/data/ini/mod.ini");
+    CHECK(a[0].md5 == "900150983cd24fb0d6963f7d28e17f72");
+    CHECK(a[0].size == 3);
+    const auto own = ProfileIdentity::compute(a, RandomAlgorithm::ZH_CarryChain);
+    CHECK(own == ProfileIdentity::compute(b, RandomAlgorithm::ZH_CarryChain));
+    CHECK(own != ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain));
+    CHECK(own.text.find("mods mounted-overlays-v1") != std::string::npos);
+    CHECK(own.text.find(first.path.u8string()) == std::string::npos);
+    write(second.path, "abd");
+    CHECK(own != ProfileIdentity::compute(capture(second.path, false), RandomAlgorithm::ZH_CarryChain));
+    // The filter mounted no gameplay files, so an INI-only texture pack has no effect.
+    CHECK(capture(first.path, true).empty());
+    std::string error;
+    const auto diagnostics = ProfileIdentity::fileChecksums(a, &error);
+    CHECK(error == "");
+    const auto found = std::find_if(diagnostics.begin(), diagnostics.end(), [](const auto &row) { return row.path == "entry/mod-file:layer-0-override/data/ini/mod.ini"; });
+    REQUIRE(found != diagnostics.end());
+    CHECK(found->checksum == "900150983cd24fb0d6963f7d28e17f72");
+    CHECK(found->size == 3);
+}
+
+TEST_CASE("mounted memory merges and layer precedence are included in the profile")
+{
+    auto capture = [](bool reverse) {
+        Win32BIGFileSystem fs;
+        for (int i = 0; i < 2; ++i) {
+            const char value = (i == 0) == reverse ? 'a' : 'b';
+            auto memory = std::make_unique<MemoryArchiveFile>("merge " + std::to_string(i));
+            memory->put("data/ini/gamedata.ini", {static_cast<std::uint8_t>(value)});
+            fs.mountArchive(std::move(memory), "merge " + std::to_string(i), true);
+        }
+        std::vector<MountedArchive> identity;
+        std::string error;
+        REQUIRE(ProfileIdentity::captureMountedOverrides(fs, identity, &error));
+        REQUIRE(identity.size() == 2);
+        return ProfileIdentity::compute(identity, RandomAlgorithm::ZH_CarryChain);
+    };
+    CHECK(capture(false) != capture(true));
+}
+
+TEST_CASE("an unreadable mod file fails identity capture without keeping a partial identity")
+{
+    class BrokenFile : public MemoryArchiveFile {
+    public:
+        BrokenFile() : MemoryArchiveFile("broken diagnostic fixture") { put("data/ini/broken.ini", {1,2,3}); }
+        bool readFile(const std::string &, std::vector<std::uint8_t> &, std::string *error) override {
+            if (error) *error = "fixture mod file cannot be read";
+            return false;
+        }
+    };
+    Win32BIGFileSystem fs;
+    fs.mountArchive(std::make_unique<BrokenFile>(), "fixture", true);
+    std::vector<MountedArchive> identity;
+    std::string error;
+    CHECK(ProfileIdentity::captureMountedOverrides(fs, identity, &error) == false);
+    CHECK(error == "fixture mod file cannot be read");
+    CHECK(identity.empty());
+}
+
+TEST_CASE("mounted archive mods hash the archive and selected files; texture filters exclude inactive INI bytes")
+{
+    TempDir temp;
+    auto capture = [&](const std::string &ini, bool texturesOnly) {
+        const auto bytes = makeBig("BIGF", {{"data/ini/mod.ini", ini}, {"art/textures/mod.dds", "texture fixture"}});
+        const auto path = temp.path / "mod.big";
+        { std::ofstream out(path, std::ios::binary); out.write(reinterpret_cast<const char *>(bytes.data()), bytes.size()); }
+        Win32BIGFileSystem fs;
+        std::string error;
+        auto archive = fs.openArchiveFile(path.u8string(), &error);
+        REQUIRE(archive);
+        if (texturesOnly) fs.mountArchive(std::make_unique<TextureOnlyArchiveFile>(std::move(archive)), path.u8string(), true);
+        else fs.mountArchive(std::move(archive), path.u8string(), true);
+        std::vector<MountedArchive> identity;
+        REQUIRE(ProfileIdentity::captureMountedOverrides(fs, identity, &error));
+        CHECK(error == "");
+        CHECK(identity.size() == (texturesOnly ? 1 : 3));
+        if (!texturesOnly) CHECK(identity[0].install == "mod-archive");
+        return ProfileIdentity::compute(identity, RandomAlgorithm::ZH_CarryChain);
+    };
+    const auto full = capture("first", false);
+    CHECK(full != capture("second", false));
+    const auto filtered = capture("first", true);
+    CHECK(filtered == capture("second", true));
 }

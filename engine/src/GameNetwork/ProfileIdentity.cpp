@@ -7,8 +7,12 @@
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFile.h"
 
+#include "GameEngineDevice/Win32Device/Common/FolderArchiveFile.h"
+
 #include <algorithm>
 #include <sstream>
+#include <filesystem>
+#include <set>
 
 // the id is generated at configure time (cmake/EngineId.cmake) or supplied by the release pipeline: a build without one does not compile
 #ifndef OPENBFME_ENGINE_ID
@@ -64,7 +68,8 @@ ProfileIdentity ProfileIdentity::compute(const std::vector<MountedArchive> &arch
 	o << "\n";
 	o << "numeric " << kNumeric << "\n";
 	o << "rng " << (rng == RandomAlgorithm::ZH_CarryChain ? "ZH_CarryChain" : "RotWK_GameDat_LCG") << "\n";
-	o << "mods none\n";
+	const bool overlays = std::any_of(archives.begin(), archives.end(), [](const MountedArchive &a) { return a.install == "mod-file" || a.install == "mod-archive"; });
+	o << (overlays ? "mods mounted-overlays-v1\n" : "mods none\n");
 	for (size_t i = 0; i < archives.size(); ++i)
 	{
 		const MountedArchive &a = archives[i];
@@ -187,9 +192,14 @@ std::vector<ProfileIdentity::FileChecksum> ProfileIdentity::fileChecksums(const 
     for (size_t index = 0; index < archives.size(); ++index) {
         const auto &mounted = archives[index];
         const auto name = mounted.install + ":" + mounted.canonicalPath;
+        if (mounted.install == "mod-file") {
+            result.push_back({"entry/" + name, mounted.md5, mounted.size});
+            continue;
+        }
         const auto archiveHash = MD5::ofFile(mounted.diskPath, error);
         if (archiveHash.empty()) return {};
         result.push_back({"archive/" + name, archiveHash, mounted.size});
+        if (mounted.install == "mod-archive") continue;
         const auto order = std::to_string(index);
         result.push_back({"mount/" + name, MD5::ofBytes(order.data(), order.size()), index});
         auto archive = fs.openArchiveFile(mounted.diskPath, error);
@@ -205,4 +215,49 @@ std::vector<ProfileIdentity::FileChecksum> ProfileIdentity::fileChecksums(const 
         }
     }
     return result;
+}
+
+bool ProfileIdentity::captureMountedOverrides(const ArchiveFileSystem &fs, std::vector<MountedArchive> &identity, std::string *error)
+{
+    if (error) error->clear();
+    std::set<std::string> baseline;
+    for (const auto &archive : identity) baseline.insert(archive.diskPath);
+    std::vector<MountedArchive> overlays;
+    size_t layerIndex = 0;
+    for (const auto &layer : fs.mountedLayers()) {
+        if (!layer.overwrite && baseline.count(layer.name)) continue;
+        const size_t firstOverlay = overlays.size();
+        const std::string label = "layer-" + std::to_string(layerIndex) + (layer.overwrite ? "-override/" : "-first/");
+        std::error_code ec;
+        if (!dynamic_cast<TextureOnlyArchiveFile *>(layer.archive) &&
+            std::filesystem::is_regular_file(std::filesystem::u8path(layer.archive->getPath()), ec)) {
+            MountedArchive archive;
+            archive.install = "mod-archive"; archive.canonicalPath = label + "archive.big";
+            archive.diskPath = layer.archive->getPath();
+            archive.md5 = MD5::ofFile(archive.diskPath, error);
+            archive.size = std::filesystem::file_size(std::filesystem::u8path(archive.diskPath), ec);
+            if (archive.md5.empty() || ec) { if (error && error->empty()) *error = "cannot stat mod archive: " + ec.message(); return false; }
+            overlays.push_back(std::move(archive));
+        }
+        FilenameList paths;
+        layer.archive->getFileListInDirectory("", "", "*", paths, true);
+        for (const auto &path : paths) {
+            MountedArchive file;
+            file.install = "mod-file"; file.canonicalPath = label + path;
+            std::replace(file.canonicalPath.begin(), file.canonicalPath.end(), '\\', '/');
+            if (auto *big = dynamic_cast<Win32BIGFile *>(layer.archive)) {
+                file.md5 = big->fileChecksum(path, error);
+                file.size = big->getArchivedFileInfo(path)->m_size;
+            } else {
+                std::vector<std::uint8_t> bytes;
+                if (!layer.archive->readFile(path, bytes, error)) return false;
+                file.md5 = MD5::ofBytes(bytes.data(), bytes.size()); file.size = bytes.size();
+            }
+            if (file.md5.empty()) return false;
+            overlays.push_back(std::move(file));
+        }
+        if (overlays.size() != firstOverlay) ++layerIndex;
+    }
+    identity.insert(identity.end(), overlays.begin(), overlays.end());
+    return true;
 }

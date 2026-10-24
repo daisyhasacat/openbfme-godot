@@ -13,8 +13,9 @@
 //   features <the owned format and rule versions: net wire, GameMessage encoding, replay, lobby, state hash; plus any extra feature names, sorted>
 //   numeric <the numeric mode: IEEE binary32 / binary64 through the facade, canonical MXCSR 0x1F80, no FMA contraction (cmake/SimFp.cmake)>
 //   rng <the logic RNG algorithm>
-//   mods none                               (this build mounts no directory mod: a mod lane adds one line per mod with its content hash)
+//   mods none | mounted-overlays-v1          (actual mounted overlays, with their selected file hashes and order below)
 //   archive <n> <install>:<path> <md5> <size>   (every mounted archive, in mount order = precedence: the first one holding a file wins)
+//   archive <n> mod-file:layer-<n>-override/<path> <md5> <size> (loose / filtered / merged overlay files; later override layers win)
 // Peers compare it in the lobby (JOIN and START, GameNetwork/LANLobby.h) before anything is loaded, and a replay carries it (Common/Recorder.h); a
 // different identity is refused, naming the first differing lines.
 //
@@ -28,6 +29,8 @@
 
 #include <string>
 #include <vector>
+
+class ArchiveFileSystem;
 
 struct ProfileIdentity
 {
@@ -57,6 +60,9 @@ struct ProfileIdentity
 	static const std::vector<VerifiedEngine> &verifiedReplayEngines();
 	// the build's engine compatibility id (OPENBFME_ENGINE_ID)
 	static const char *buildId();
+	// Append actual mounted overlays, including loose files, memory merges and texture filters.
+	// Hash at mount completion; labels never contain machine-specific install paths.
+	static bool captureMountedOverrides(const ArchiveFileSystem &fs, std::vector<MountedArchive> &identity, std::string *error);
 	static std::vector<std::string> buildFiles(); // exact source/config manifest captured at build time
 	struct FileChecksum { std::string path, checksum; std::uint64_t size; };
 	// All entries, including overridden archive entries. No retail bytes leave the machine.

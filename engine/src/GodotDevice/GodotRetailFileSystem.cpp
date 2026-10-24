@@ -202,21 +202,8 @@ Dictionary RetailFileSystem::mount_bfme2_path(const String &root)
               modErrors.push_back(toGodot(error));
               break;
             }
-            auto record = [&](const std::string &name,
-                              const std::string &digest) {
-              MountedArchive entry;
-              entry.install = "bfme2-mod";
-              entry.canonicalPath = name;
-              entry.md5 = digest;
-              m_mountedArchives.push_back(std::move(entry));
-            };
             for (auto it = folder->bigFiles().rbegin();
                  it != folder->bigFiles().rend(); ++it) {
-              const auto digest = MD5::ofFile(*it, &error);
-              if (digest.empty()) {
-                modErrors.push_back(toGodot(error));
-                break;
-              }
               auto archive = m_fs->openArchiveFile(*it, &error);
               if (!archive) {
                 modErrors.push_back(toGodot(error));
@@ -226,17 +213,6 @@ Dictionary RetailFileSystem::mount_bfme2_path(const String &root)
                 m_fs->mountArchive(std::make_unique<TextureOnlyArchiveFile>(std::move(archive)), *it, true);
               else
                 m_fs->mountArchive(std::move(archive), *it, true);
-              record(std::filesystem::path(*it).filename().string(), digest);
-            }
-            if (!modErrors.is_empty())
-              break;
-            for (const auto &name : folder->paths()) {
-              std::vector<std::uint8_t> bytes;
-              if (!folder->readFile(name, bytes, &error)) {
-                modErrors.push_back(toGodot(error));
-                break;
-              }
-              record(name, MD5::ofBytes(bytes.data(), bytes.size()));
             }
             if (!modErrors.is_empty())
               break;
@@ -245,6 +221,10 @@ Dictionary RetailFileSystem::mount_bfme2_path(const String &root)
             else
               m_fs->mountArchive(std::move(folder), path, true);
           }
+        }
+        if (modErrors.is_empty()) {
+          std::string identityError;
+          if (!ProfileIdentity::captureMountedOverrides(*m_fs, m_mountedArchives, &identityError)) modErrors.push_back(toGodot(identityError));
         }
         if (!modErrors.is_empty()) {
           m_mounted = false;
@@ -703,6 +683,13 @@ Dictionary RetailFileSystem::mountFrom(const std::string &rotwkRoot, const std::
 					target->mountArchive(std::move(mem), "mods: merged GameData", true);
 				}
 				report.warnings.push_back("mods: Data\\INI\\GameData.ini merged with the GameData block of " + sources + " (RotWK reads GameData from any INI)");
+			}
+		}
+		if (report.ok) {
+			std::string identityError;
+			if (!ProfileIdentity::captureMountedOverrides(*fs, report.mounted, &identityError)) {
+				report.ok = false;
+				report.errors.push_back("mod identity: " + identityError);
 			}
 		}
 		result["mods"] = modsMounted;

@@ -22,6 +22,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <utility>
 
 class ArchiveFile;
 
@@ -120,6 +121,9 @@ public:
 	// tests can drive it directly.
 	void mountArchive(std::unique_ptr<ArchiveFile> archiveFile, const std::string &archiveFilename, bool overwrite);
 
+	struct MountedLayer { ArchiveFile *archive; std::string name; bool overwrite; };
+	// Mount operations, in order. Pointers remain valid until the next mount.
+	std::vector<MountedLayer> mountedLayers() const;
 	size_t getArchiveCount() const { return m_archiveFileMap.size(); }
 
 	// OpenBFME mount report for ACCEPTANCE STOP S-012: one "S-012: ..." line per mounted archive
@@ -130,6 +134,7 @@ public:
 protected:
 	virtual void loadIntoDirectoryTree(const ArchiveFile *archiveFile, const std::string &archiveFilename, bool overwrite = false);
 
+	std::vector<std::pair<std::string, bool>> m_mountOperations;
 	bool m_aotrProfile = false;
 	ArchiveFileMap m_archiveFileMap;
 	ArchivedDirectoryInfo m_rootDirectory;

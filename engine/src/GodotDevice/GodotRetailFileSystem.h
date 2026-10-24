@@ -78,7 +78,8 @@ public:
 	// Loose .map/.scb files found in the mounted installs at mount time (PLAN rule 7 contamination,
 	// stop S-039). Never read; every map build reports them.
 	const std::vector<LooseFileFinding> &looseFindings() const { return m_loose; }
-	// lane MP-1: the mounted archives in load order with their verified md5 (the profile identity of a network game or replay)
+	// The verified retail archives plus captured overlay files, filters and mount order.
+	// Mod hashes are computed at mount time, not verified against a retail policy.
 	const std::vector<MountedArchive> &mountedArchives() const { return m_mountedArchives; }
 	// GDScript view of the same list: [{install, path, size, line}].
 	Array get_loose_files() const;
