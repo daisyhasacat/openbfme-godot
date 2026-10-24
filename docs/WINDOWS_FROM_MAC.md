@@ -144,3 +144,10 @@ release folders, verifies remote sizes and SHA-256 metadata, then publishes
 `manifest.json` last. A local `cdn-upload.json` records the destination and
 hashes. Failed uploads are retained for inspection and do not publish a
 completion marker. It never changes the bucket policy or deletes other objects.
+
+After a successful upload, the publisher verifies the remote completion manifest,
+then deletes the three unchanged local installer artifacts (the content TAR,
+setup EXE and README). It retains `cdn-upload.json`, unrelated files, and the
+incremental build/export cache. Upload or verification failures retain local
+artifacts. Use the standalone publisher's `--keep-local` option when a local
+installer copy is needed. Local files changed after uploading are retained.
