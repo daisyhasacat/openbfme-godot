@@ -867,6 +867,7 @@ add_executable(openbfme_tests
     # lane ECON-1: the economy
     tests/test_econ_core.cpp
     tests/test_econ_resources.cpp
+    tests/test_ios_pointer.cpp
     tests/test_fishing.cpp
     tests/test_fishing_placement.cpp
     tests/test_capture_links.cpp

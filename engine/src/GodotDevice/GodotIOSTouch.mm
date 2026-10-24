@@ -125,7 +125,7 @@ void emit_pointer(UIView *view, UITouch *touch, UIEvent *native, int phase) {
     if (!input) return;
     const CGPoint point = [touch locationInView:view];
     // UIKit primary/secondary bits match Godot's left/right button masks.
-    const NSUInteger next = phase == 3 ? 0 : native.buttonMask;
+    const NSUInteger next = OpenBFMEIOSTouch::pointerButtons(native.buttonMask, bridge.buttons, phase);
     const NSUInteger changed = bridge.buttons ^ next;
     bridge.last = point; bridge.hasLast = YES;
     if (phase == 1) {
