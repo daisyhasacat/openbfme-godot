@@ -34,9 +34,9 @@ MSF_MAGIC = b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\x00\x00\x00"
 HOME_PATHS = [re.compile(rb"(/home/)([^/\\\x00\s\"']+)"), re.compile(rb"(/Users/)([^/\\\x00\s\"']+)"),
               re.compile(rb"([A-Za-z]:[\\/]+Users[\\/]+)([^/\\\x00\s\"']+)", re.IGNORECASE)]
 # the pinned llvm-mingw release's prebuilt libc++abi carries the __FILE__ paths of its GitHub Actions build (the runner's, nobody's home)
-TOOLCHAIN_PATHS = (b"/home" b"/runner/work/llvm-mingw/",)  # split: tools/precommit.py rejects a home path in a committed file
+TOOLCHAIN_PATHS = (b"/home" b"/runner/work/llvm-mingw/", b"/Users" b"/runner/work/llvm-mingw/",)  # split: tools/precommit.py rejects a home path in a committed file
 # what scrub-dll writes over each of them: a relative path of the same length
-DLL_TOOLCHAIN_PATHS = {t: b"./" * ((len(t) - len(b"llvm-mingw/")) // 2) + b"llvm-mingw/" for t in TOOLCHAIN_PATHS}
+DLL_TOOLCHAIN_PATHS = {t: b"./" * ((len(t) - len(b"llvm-mingw/")) // 2) + b"/" * ((len(t) - len(b"llvm-mingw/")) % 2) + b"llvm-mingw/" for t in TOOLCHAIN_PATHS}
 assert all(len(t) == len(r) for t, r in DLL_TOOLCHAIN_PATHS.items())
 
 
