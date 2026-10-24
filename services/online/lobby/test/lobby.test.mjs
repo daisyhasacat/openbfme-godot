@@ -1732,3 +1732,23 @@ test('profile refusals compare compatibility details on direct and room-code joi
   const joined = await call(lobby, 'POST', '/v1/rooms/details-room/join', { token: b.token, body: { profile: PROFILE } });
   assert.equal(joined.status, 200);
 });
+
+test('per-file diagnostic endpoints grant access only after the normal private-room join checks', async () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const host = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'HostFiles' } })).body;
+  const join = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'JoinFiles' } })).body;
+  const created = await call(lobby, 'POST', '/v1/games', { token: host.token, body: { name: 'Files', profile: PROFILE, setup, password: 'secret' } });
+  const path = `/v1/games/${created.body.id}/compatibility`;
+  const page = { page: 0, total: 1, rows: [['entry/rotwk:ini.big/data/ini/a.ini', 'a'.repeat(32), 10]] };
+  assert.equal((await call(lobby, 'POST', path, { token: join.token, body: page })).status, 403);
+  assert.equal((await call(lobby, 'GET', path, { token: join.token })).status, 403);
+  assert.equal((await call(lobby, 'POST', `/v1/games/${created.body.id}/join`, { token: join.token, body: { profile: 'f'.repeat(32) } })).status, 403);
+  assert.equal((await call(lobby, 'GET', path, { token: join.token })).status, 403);
+  const refusal = await call(lobby, 'POST', `/v1/games/${created.body.id}/join`, { token: join.token, body: { profile: 'f'.repeat(32), password: 'secret' } });
+  assert.equal(refusal.body.compatibility_game, created.body.id);
+  assert.equal((await call(lobby, 'GET', path, { token: join.token })).body.ready, false);
+  assert.equal((await call(lobby, 'POST', path, { token: host.token, body: page })).status, 200);
+  const read = await call(lobby, 'GET', path, { token: join.token });
+  assert.equal(read.body.ready, true);
+  assert.deepEqual(read.body.rows, page.rows);
+});

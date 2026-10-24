@@ -1394,3 +1394,35 @@ is explicitly reported as incomplete or inconsistent metadata.
 Both the lobby service and client must be updated for detailed comparisons.
 Existing rooms without details must be recreated. This change does not deploy
 the service or alter compatibility requirements.
+
+### Per-file checksum reports
+
+Updated clients run a background diagnostic scan when hosting a room or after a
+profile rejection. It includes every mounted archive (fresh MD5), every entry
+inside each archive including entries overridden by a later mount (MD5 and byte
+size), mount positions, and all engine source/data/configuration files covered
+by `EngineId.cmake` (build-time SHA-256). The engine manifest is embedded in the
+binary, so source files on the player's machine are neither required nor read.
+A release compatibility-ID override is recorded separately from those sources.
+Loose user-map files outside the mounted archive identity are not part of this
+comparison. The scan is diagnostic and never changes join acceptance.
+
+The host shares checksum records through authenticated
+`POST /v1/games/<id>/compatibility` pages. Each page is at most 256 rows and its
+request is limited to 64 KiB. A rejected joiner can read the pages only after
+passing the room's password/code and access checks; other accounts cannot fetch
+them. There are no retail-format bytes, tokens or physical install paths in the
+records. Pages are immutable within a room, held for 15 minutes, and bounded to
+32 MiB per room and 64 MiB across 64 active diagnostic snapshots. A service
+restart discards diagnostic snapshots; unavailable, expired and capacity-limited
+reports are explicit errors. Recreating the room uploads a new snapshot.
+
+The join dialog directs the player to the Lua console, where changed and missing
+paths show both players' individual checksums and sizes. Matching files are kept
+in the inventories. Complete artifacts are saved as
+`user://compatibility-<game>-local.json`,
+`user://compatibility-<game>-host.json`, and `user://compatibility-<game>.txt`. The console display is limited to fit its
+history; the saved report is complete. Filesystem/read/save errors are surfaced.
+Archive hashing streams 64 KiB blocks on a worker thread to keep large movie
+entries from requiring a full entry-sized allocation. All clients and the lobby
+need the update; an older service cannot supply these comparisons.

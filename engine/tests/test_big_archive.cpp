@@ -4,6 +4,8 @@
 #include "BigTestUtil.h"
 
 #include "Common/ArchiveFile.h"
+#include "Common/MD5.h"
+#include "GameNetwork/ProfileIdentity.h"
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFile.h"
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 
@@ -289,4 +291,46 @@ TEST_CASE("BIG: original catalog reads bypass patches without changing virtual f
 	fs.mountArchive(std::move(duplicate), "other/maps.big", false);
 	CHECK_FALSE(fs.readFileFromArchive("Maps.big", "maps/mapcache.ini", bytes, &error));
 	CHECK(error == "ambiguous mounted archive: Maps.big");
+}
+
+TEST_CASE("BIG diagnostic checksums stream all entry bytes, including empty and multi-block files")
+{
+    Win32BIGFileSystem fs;
+    std::string error;
+    const std::string large(150000, 'a');
+    auto archive = openMem(fs, makeBig("BIGF", {{"empty.bin", ""}, {"large.bin", large}, {"data/ini/test.ini", "abc"}}), &error);
+    REQUIRE(archive);
+    auto *big = dynamic_cast<Win32BIGFile *>(archive.get());
+    REQUIRE(big);
+    CHECK(big->fileChecksum("empty.bin", &error) == "d41d8cd98f00b204e9800998ecf8427e");
+    CHECK(big->fileChecksum("data/ini/test.ini", &error) == "900150983cd24fb0d6963f7d28e17f72");
+    CHECK(big->fileChecksum("large.bin", &error) == "3ff39d998bc4e1732d895cb5e0e7793f");
+    CHECK(big->fileChecksum("missing", &error) == "");
+    CHECK(error == "missing archive entry: missing");
+}
+
+TEST_CASE("file diagnostic manifest includes archived entries and embedded source checksums")
+{
+    TempDir tmp;
+    const auto path = tmp.path / "files.big";
+    const auto bytes = makeBig("BIGF", {{"data/ini/a.ini", "abc"}, {"data/scripts/a.lua", ""}});
+    { std::ofstream out(path, std::ios::binary); out.write(reinterpret_cast<const char *>(bytes.data()), bytes.size()); }
+    MountedArchive mounted;
+    mounted.install = "test"; mounted.canonicalPath = "files.big"; mounted.diskPath = path.u8string();
+    mounted.size = bytes.size(); mounted.md5 = MD5::ofBytes(bytes.data(), bytes.size());
+    std::string error;
+    const auto rows = ProfileIdentity::fileChecksums({mounted}, &error);
+    REQUIRE(error == "");
+    std::map<std::string, ProfileIdentity::FileChecksum> byPath;
+    for (const auto &row : rows) byPath.emplace(row.path, row);
+    REQUIRE(byPath.count("entry/test:files.big/data\\ini\\a.ini") == 1);
+    CHECK(byPath.at("entry/test:files.big/data\\ini\\a.ini").checksum == "900150983cd24fb0d6963f7d28e17f72");
+    CHECK(byPath.at("entry/test:files.big/data\\ini\\a.ini").size == 3);
+    CHECK(byPath.at("archive/test:files.big").checksum == mounted.md5);
+    CHECK(byPath.at("mount/test:files.big").size == 0);
+    CHECK(byPath.count("engine/src/GameNetwork/ProfileIdentity.cpp") == 1);
+    CHECK(byPath.at("build/engine-id").checksum == ProfileIdentity::buildId());
+    mounted.diskPath = (tmp.path / "missing.big").u8string();
+    CHECK(ProfileIdentity::fileChecksums({mounted}, &error).empty());
+    CHECK(error.empty() == false);
 }

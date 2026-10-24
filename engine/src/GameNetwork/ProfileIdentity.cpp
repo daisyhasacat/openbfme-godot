@@ -4,6 +4,8 @@
 #include "GameNetwork/ProfileIdentity.h"
 
 #include "Common/MD5.h"
+#include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
+#include "GameEngineDevice/Win32Device/Common/Win32BIGFile.h"
 
 #include <algorithm>
 #include <sstream>
@@ -168,4 +170,39 @@ bool ProfileIdentity::replayCompatible(const ProfileIdentity &ours, const Profil
 		}
 	}
 	return false;
+}
+
+std::vector<ProfileIdentity::FileChecksum> ProfileIdentity::fileChecksums(const std::vector<MountedArchive> &archives, std::string *error)
+{
+    if (error) error->clear();
+    std::vector<FileChecksum> result;
+    result.push_back({"build/engine-id", buildId(), 0});
+    for (const auto &line : buildFiles()) {
+        if (line.rfind("file ", 0) == 0) {
+            const auto split = line.rfind(' ');
+            result.push_back({"engine/" + line.substr(5, split - 5), line.substr(split + 1), 0});
+        } else result.push_back({"build/" + line, MD5::ofBytes(line.data(), line.size()), 0});
+    }
+    Win32BIGFileSystem fs; // independent directory/parser; shared archive handles serialize reads
+    for (size_t index = 0; index < archives.size(); ++index) {
+        const auto &mounted = archives[index];
+        const auto name = mounted.install + ":" + mounted.canonicalPath;
+        const auto archiveHash = MD5::ofFile(mounted.diskPath, error);
+        if (archiveHash.empty()) return {};
+        result.push_back({"archive/" + name, archiveHash, mounted.size});
+        const auto order = std::to_string(index);
+        result.push_back({"mount/" + name, MD5::ofBytes(order.data(), order.size()), index});
+        auto archive = fs.openArchiveFile(mounted.diskPath, error);
+        if (!archive) return {};
+        auto *big = dynamic_cast<Win32BIGFile *>(archive.get());
+        if (!big) { if (error) *error = "unsupported diagnostic archive: " + name; return {}; }
+        FilenameList files;
+        big->getFileListInDirectory("", "", "*", files, true);
+        for (const auto &file : files) {
+            auto checksum = big->fileChecksum(file, error);
+            if (checksum.empty()) return {};
+            result.push_back({"entry/" + name + "/" + file, checksum, big->getArchivedFileInfo(file)->m_size});
+        }
+    }
+    return result;
 }

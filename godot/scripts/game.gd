@@ -5398,6 +5398,7 @@ func _online_open() -> void:
 	_online.token = OS.get_environment("OPENBFME_LOBBY_TOKEN")
 	_online.profile = _world.net_profile_digest()
 	_online.profile_details = _world.net_profile_details()
+	var diagnostics := _attach_compatibility_diagnostics(_online, _online.lobby_url)
 	_online.mode = "uber" if _world.simulation_profile() == "uber" else "normal" # lane UBERJOIN-1
 	_online.join_id = _online_join
 	_online.rejoin = _online_rejoin # lane ONLINE-3
@@ -5413,7 +5414,11 @@ func _online_open() -> void:
 		_online.host_setup = {"name": "%s's game" % _online.player_name, "players": _online_players,
 			"setup": {"map": _map_key, "startingCash": 1500, "slots": slots}}
 	_online.started.connect(_on_online_started)
-	_online.failed.connect(func(m: String): _fail("online: " + m))
+	_online.failed.connect(func(m: String):
+		if _online.profile_rejected and diagnostics.is_pending():
+			await diagnostics.finished
+		_fail("online: " + m)
+	)
 	_online.notice.connect(func(m: String): Release._message(m, "Online notice", "", false))
 	_online_report_panel(_online.lobby_url)
 	_online.report_context.connect(func(context: Dictionary): _online_reports.set_context(context))
@@ -5640,6 +5645,7 @@ func _open_online_shell() -> void:
 	_online_http.name = "OnlineHttp"
 	_online_http.shell = _shell
 	_online_http.lobby_url = url
+	_attach_compatibility_diagnostics(_online_http, url)
 	add_child(_online_http)
 	var maps: Node = load("res://scripts/online_maps.gd").new() # map transfer: the host's custom map through the lobby's map store
 	maps.shell = _shell
@@ -5651,6 +5657,19 @@ func _open_online_shell() -> void:
 	_online_test_note()
 	if not _shell.shell_push("OnlineShell.apt"):
 		_fail("the shell refused OnlineShell.apt: " + str(_shell.get_shell_report().errors))
+
+
+func _attach_compatibility_diagnostics(transport: Node, url: String) -> Node:
+	var diagnostics: Node = load("res://scripts/online_compatibility.gd").new()
+	diagnostics.fs = _fs
+	diagnostics.lobby_url = url
+	diagnostics.report_ready.connect(func(message: String) -> void:
+		print("GAME ONLINE compatibility: ", message)
+		if is_instance_valid(_lua_console): _lua_console._append(message + "\n")
+	)
+	transport.compatibility_scan.connect(diagnostics.begin)
+	transport.add_child(diagnostics)
+	return diagnostics
 
 
 func _online_report_panel(url: String) -> void:

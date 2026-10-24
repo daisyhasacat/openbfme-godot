@@ -360,7 +360,7 @@ export class LobbyObject {
     if (isLog) this.reading.logs += 1;
     let out;
     try {
-      const body = await readBodyLimited(request, isLog ? this.lobby.maxLogBytes() : /^\/v1\/games\/[0-9a-f]{16}\/(?:statistics|desync)$/.test(path) ? MAX_REPORT_BYTES : MAX_JSON_BYTES, this.bodyTimeoutMs);
+      const body = await readBodyLimited(request, isLog ? this.lobby.maxLogBytes() : /^\/v1\/games\/[0-9a-f]{16}\/(?:statistics|desync)$/.test(path) ? MAX_REPORT_BYTES : /^\/v1\/games\/[0-9a-f]{16}\/compatibility$/.test(path) ? 65536 : MAX_JSON_BYTES, this.bodyTimeoutMs);
       const reportPost = request.method === 'POST' && path === '/v1/reports';
       if (body.status && !(reportPost && body.status === 413)) return refuse(body.status, body.code, body.error);
       const run = this.queue.then(() => this.handle(request, body.bytes ?? new Uint8Array(), body.status && reportPost

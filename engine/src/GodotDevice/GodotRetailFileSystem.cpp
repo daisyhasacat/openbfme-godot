@@ -9,6 +9,7 @@
 #include "Common/ArchiveFile.h"
 #include "Common/MD5.h"
 #include "GameNetwork/MapPackage.h"
+#include "GameNetwork/ProfileIdentity.h"
 #include "GameClient/MapUtil.h"
 #include "GameClient/GameText.h"
 #include "GameClient/UserDataFolder.h"
@@ -85,6 +86,7 @@ void RetailFileSystem::_bind_methods()
 	ClassDB::bind_method(D_METHOD("file_exists", "path"), &RetailFileSystem::file_exists);
 	ClassDB::bind_method(D_METHOD("read_file", "path"), &RetailFileSystem::read_file);
 	ClassDB::bind_method(D_METHOD("get_archive_for_file", "path"), &RetailFileSystem::get_archive_for_file);
+	ClassDB::bind_method(D_METHOD("compatibility_checksums"), &RetailFileSystem::compatibility_checksums);
 	ClassDB::bind_method(D_METHOD("get_last_error"), &RetailFileSystem::get_last_error);
 	ClassDB::bind_method(D_METHOD("get_loose_files"), &RetailFileSystem::get_loose_files);
 	ClassDB::bind_method(D_METHOD("get_user_map_folder"), &RetailFileSystem::get_user_map_folder); // lane MOD-5
@@ -969,6 +971,21 @@ String RetailFileSystem::get_user_map_folder() const
 bool RetailFileSystem::file_exists(const String &path) const
 {
 	return existsNative(toNative(path));
+}
+
+Dictionary RetailFileSystem::compatibility_checksums() const
+{
+    std::string error;
+    const auto files = ProfileIdentity::fileChecksums(m_mountedArchives, &error);
+    Dictionary out;
+    out["error"] = toGodot(error);
+    Array rows;
+    for (const auto &file : files) {
+        Array row; row.push_back(toGodot(file.path)); row.push_back(toGodot(file.checksum)); row.push_back((int64_t)file.size);
+        rows.push_back(row);
+    }
+    out["files"] = rows;
+    return out;
 }
 
 String RetailFileSystem::get_archive_for_file(const String &path) const

@@ -32,6 +32,7 @@ import {
 } from './reports.mjs';
 
 import { profileMismatch } from './compatibility.mjs';
+import { CompatibilityStore } from './compatibility-store.mjs';
 
 export const VERSION = 1;
 // UBERJOIN-1: the simulation profile a room runs (docs/ONLINE.md): "normal" (Faithful) or "uber" (the Uber performance mode). A room made by a client that
@@ -444,6 +445,7 @@ function logGameOf(bytes) {
 export class Lobby {
   constructor(env, config) {
     this.env = env;
+    this.compatibility = new CompatibilityStore(() => this.env.now());
     this.config = {
       runAhead: 1, // lane NETLAG-1: RotWK's command delay, the current frame + 1 (was 2); the peers raise it on a slow link
       crcInterval: 100,
@@ -1367,7 +1369,11 @@ export class Lobby {
     if (body?.profile !== g.profile) {
       const ownDetails = body?.profile_details === undefined ? null : boundedText(body.profile_details, 10000, 'profile_details');
       const ownDigest = str(body?.profile, 32, 'profile');
-      throw new LobbyError(409, 'profile', profileMismatch(ownDetails, g.profileDetails, ownDigest, g.profile));
+      let diagnostic = {};
+      try { this.compatibility.authorize(g.id, account.id); diagnostic = { compatibility_game: g.id }; } catch (error) { diagnostic = { compatibility_error: error.message }; }
+      const reason = profileMismatch(ownDetails, g.profileDetails, ownDigest, g.profile)
+        + (diagnostic.compatibility_error ? `\nPer-file diagnostic access unavailable: ${diagnostic.compatibility_error}` : '');
+      throw new LobbyError(409, 'profile', reason, diagnostic);
     }
     for (const other of this.games.values()) {
       if (other !== g && other.state === 'open' && this.slotOf(other, account) >= 0) throw bad('in_game', `you are in game ${other.id} already: leave it first`);
@@ -2559,6 +2565,25 @@ export async function route(lobby, req) {
       if (hold?.held) return { deferred: hold.held.then(() => answer()) };
       return answer(hold?.backoff); // Sol r1: not held for a bound: the client is told how long to wait
 
+    }
+    if (p.length === 4 && p[3] === 'compatibility' && (m === 'GET' || m === 'POST')) {
+      const g = lobby.gameFor(account, id);
+      const host = g.slots[g.hostSlot].account === account.id;
+      if (m === 'POST' && !host) throw new LobbyError(403, 'host_only', 'only the host uploads compatibility hashes');
+      try {
+        if (m === 'POST') {
+          lobby.limit(`compatibility-upload:${account.id}`, 4096, 4096);
+          lobby.compatibility.put(id, await body(65536));
+          return json(200, { v: VERSION, ok: true });
+        }
+        lobby.limit(`compatibility-read:${account.id}`, 8192, 8192);
+        const data = lobby.compatibility.get(id, account.id, Number(req.query.get('page') ?? 0), host);
+        if (!data) throw new LobbyError(403, 'compatibility_private', 'diagnostic access is unavailable or expired: try joining the room again');
+        return json(200, { v: VERSION, ...data });
+      } catch (error) {
+        if (error instanceof LobbyError) throw error;
+        throw new LobbyError(400, 'compatibility', error.message);
+      }
     }
     if (m === 'POST' && p.length === 4 && p[3] === 'desync') return json(200, await lobby.reportDesync(account, id, await body(48000)));
     if (m === 'POST' && p.length === 4 && p[3] === 'statistics') return json(200, await lobby.reportStatistics(account, id, await body(MAX_REPORT_BYTES)));

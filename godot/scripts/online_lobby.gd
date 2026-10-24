@@ -13,6 +13,7 @@
 ## Lane ONLINE-3 (spectators): `spectate` asks for a spectator START for `join_id` (POST /v1/games/<id>/spectate: a version 3 ticket, a fresh index
 ## each time), once a second while the game has not started; the session is not kept (a spectator has no slot to rejoin: it asks again).
 extends Node
+signal compatibility_scan(game: String, session: String, hosting: bool)
 
 signal started(start_json: String)
 signal game_created(id: String)
@@ -27,6 +28,7 @@ var lobby_url := ""
 var player_name := "Player"
 var profile := ""
 var profile_details := ""
+var profile_rejected := false
 var mode := "normal"        ## lane UBERJOIN-1: the performance mode of this player's games ("normal" or "uber": the lobby refuses a join in the other)
 var join_id := ""          ## join this game; empty: host one with host_setup
 var host_setup := {}        ## {name, setup: {map, startingCash, slots: [...]}, players: N}
@@ -185,8 +187,13 @@ func _on_response(result: int, code: int, _headers: PackedStringArray, body: Pac
 		_poll_at = Time.get_ticks_msec() + 1000
 		return
 	if code != 200:
+		if code == 409 and data.get("error", "") == "profile":
+			profile_rejected = true
+			compatibility_scan.emit(str(data.get("compatibility_game", "")), token, false)
 		_fail("%s (%s)" % [data.get("message", "HTTP %d" % code), data.get("error", "")])
 		return
+	if _step == "create":
+		compatibility_scan.emit(str(data.get("id", "")), token, true)
 	if data.get("game") is Dictionary and data.game.get("slots") is Array:
 		var players: Array = []
 		for slot in data.game.slots:

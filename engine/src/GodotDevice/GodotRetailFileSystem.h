@@ -57,6 +57,7 @@ public:
 	// normal RotWK mount. The returned source never becomes a GameWorld source.
 	Ref<RetailFileSystem> create_bfme2_shell();
 
+	Dictionary compatibility_checksums() const; // worker-safe; snapshot of mounted archive metadata
 	String content_signature() const;
 	bool is_mounted() const { return m_mounted; }
 	bool is_shell_source() const { return m_shellSource; }

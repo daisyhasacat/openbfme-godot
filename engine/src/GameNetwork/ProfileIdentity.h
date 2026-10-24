@@ -57,6 +57,10 @@ struct ProfileIdentity
 	static const std::vector<VerifiedEngine> &verifiedReplayEngines();
 	// the build's engine compatibility id (OPENBFME_ENGINE_ID)
 	static const char *buildId();
+	static std::vector<std::string> buildFiles(); // exact source/config manifest captured at build time
+	struct FileChecksum { std::string path, checksum; std::uint64_t size; };
+	// All entries, including overridden archive entries. No retail bytes leave the machine.
+	static std::vector<FileChecksum> fileChecksums(const std::vector<MountedArchive> &archives, std::string *error);
 	// the commit the build was configured from ("none" without Git): provenance for reports, not identity
 	static const char *gitProvenance();
 };

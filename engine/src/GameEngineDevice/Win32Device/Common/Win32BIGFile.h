@@ -21,6 +21,7 @@ public:
 	Win32BIGFile();
 	~Win32BIGFile() override;
 
+	std::string fileChecksum(const std::string &filename, std::string *error);
 	bool readFile(const std::string &filename, std::vector<std::uint8_t> &out, std::string *error) override;
 	std::string getName() const override { return m_name; }
 	std::string getPath() const override { return m_path; }

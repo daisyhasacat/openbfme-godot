@@ -9,6 +9,7 @@
 ## Lane ONLINEHUB-1: the same transport carries the OpenBFME platform API's requests (kind "platform": AptMenuPlayer.platform_take_requests /
 ## platform_deliver; GET / POST / DELETE, no token); `lobby_url` is then the platform's base URL (it names the version: .../v1).
 extends Node
+signal compatibility_scan(game: String, token: String, hosting: bool)
 
 var shell: Object = null
 var lobby_url := ""
@@ -21,6 +22,7 @@ const HELD_SLACK := 15.0   ## a held poll's timeout beyond the seconds the lobby
 var _http: HTTPRequest
 var _held: HTTPRequest     ## lane ONLINE-5: the held poll's connection
 var _id := 0               ## the request in flight (0: none)
+var _ordinary_request: Dictionary = {}
 var _held_id := 0          ## the held poll in flight (0: none)
 
 
@@ -75,6 +77,7 @@ func _send(q: Dictionary) -> void:
 		_held_id = q.id
 	else:
 		_id = q.id
+		_ordinary_request = q
 	var headers := PackedStringArray(["content-type: application/json", "accept: application/json"])
 	if not String(q.token).is_empty():
 		headers.append("authorization: Bearer " + q.token)
@@ -103,4 +106,11 @@ func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedB
 	elif result != HTTPRequest.RESULT_SUCCESS:
 		_deliver(id, 0, "", "%s %s did not answer (%d)" % [_service(), lobby_url, result])
 	else:
+		if kind == "lobby" and not held:
+			var decoded = JSON.parse_string(body.get_string_from_utf8())
+			if decoded is Dictionary:
+				if code == 200 and _ordinary_request.get("path", "") == "/v1/games" and _ordinary_request.get("method", "") == "POST":
+					compatibility_scan.emit(str(decoded.get("id", "")), str(_ordinary_request.get("token", "")), true)
+				elif code == 409 and decoded.get("error", "") == "profile":
+					compatibility_scan.emit(str(decoded.get("compatibility_game", "")), str(_ordinary_request.get("token", "")), false)
 		_deliver(id, code, body.get_string_from_utf8(), "")
