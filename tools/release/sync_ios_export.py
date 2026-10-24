@@ -2,11 +2,26 @@
 """Xcode pre-build: regenerate code resources from the configured main checkout."""
 import json
 import os
+import plistlib
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import sys
+
+
+def configure_pointer_input(export):
+    """Upgrade existing Xcode exports before Xcode processes their Info.plist.
+
+    Without this opt-in UIKit reports pointer clicks as direct touches, so the
+    native bridge cannot distinguish the Magic Keyboard from a finger.
+    Preserve signing placeholders and all other project-specific settings.
+    """
+    info = Path(export) / 'OpenBFME/OpenBFME-Info.plist'
+    plist = plistlib.loads(info.read_bytes())
+    if plist.get('UIApplicationSupportsIndirectInputEvents') is not True:
+        plist['UIApplicationSupportsIndirectInputEvents'] = True
+        info.write_bytes(plistlib.dumps(plist))
 
 
 def package_assets(config):
@@ -44,6 +59,7 @@ def main():
     if '--assets-only' in sys.argv:
         package_assets(config)
         return
+    configure_pointer_input(export)
     source = Path(os.environ.get('OPENBFME_SOURCE_DIR', config['source'])).resolve()
     godot = os.environ.get('GODOT', config['godot'])
     if not (source / 'tools/release/package_ios.py').is_file():
