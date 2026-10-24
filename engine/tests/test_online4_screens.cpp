@@ -3324,6 +3324,12 @@ TEST_CASE("onlineux1 retail: a refused join is said in the player's words, on li
 	OPENBFME_REQUIRE_START(s);
 	NodeLobby lobby("", "");
 	OnlinePlayer other(*s, lobby.port, 84, u""), locked(*s, lobby.port, 85, u""), join(*s, lobby.port, 86, u"");
+	auto hostOptions = other.client.options();
+	hostOptions.profileDetails = []() { return "engine host-build\narchive 0 rotwk:ini.big aaaa 10\n"; };
+	other.client = OnlineLobbyClient(hostOptions);
+	auto joinOptions = join.client.options();
+	joinOptions.profileDetails = []() { return "engine join-build\narchive 0 rotwk:ini.big bbbb 20\n"; };
+	join.client = OnlineLobbyClient(joinOptions);
 	std::string why;
 	REQUIRE(other.client.setProfile(SimulationProfile::Faithful, "fedcba9876543210fedcba9876543210", &why));
 	const std::vector<OnlinePlayer *> all{ &other, &locked, &join };
@@ -3349,7 +3355,7 @@ TEST_CASE("onlineux1 retail: a refused join is said in the player's words, on li
 		}
 		return -1;
 	};
-	// another version's game: why, and what to do; no raw profile digest
+	// Another version: the box keeps executable and archive differences from the lobby.
 	GadgetListBoxSetSelected(join.sh->gameList(), rowOf("Other"));
 	REQUIRE(join.clickWhenShown("Main.Controls.JoinGame"));
 	REQUIRE_MESSAGE(runUntil(all, [&] { return join.sh->messageBox() && join.sh->messageBox()->type() != AptMessageBox::TYPE_NONE; }, 300), join.notes());
@@ -3357,8 +3363,11 @@ TEST_CASE("onlineux1 retail: a refused join is said in the player's words, on li
 	std::u16string flat = said;
 	std::replace(flat.begin(), flat.end(), u'\n', u' ');
 	CHECK_MESSAGE(flat.find(u"different OpenBFME version or different game files") != std::u16string::npos, OnlineLobbyClient::utf16ToUtf8(said));
-	CHECK(said.find(u"fedcba98") == std::u16string::npos);
-	CHECK(said.find(u"0123456789abcdef") == std::u16string::npos);
+	CHECK(said.find(u"fedcba98") != std::u16string::npos);
+	CHECK(flat.find(u"You: engine join-build") != std::u16string::npos);
+	CHECK(flat.find(u"Host: engine host-build") != std::u16string::npos);
+	CHECK(flat.find(u"rotwk:ini.big bbbb 20") != std::u16string::npos);
+	CHECK(flat.find(u"rotwk:ini.big aaaa 10") != std::u16string::npos);
 	CHECK(linesFit(said, 58));
 	join.dismissBox();
 	// a wrong password: RotWK's own text (GUI:JoinFailedBadPassword, the player's game text)
@@ -3687,3 +3696,26 @@ TEST_CASE("onlineux1 retail: the home page's ticker shows retail's Date / Time /
 	CHECK(fields == "4");
 }
 #endif
+
+TEST_CASE("online compatibility details survive requests and detailed refusals (no lobby needed)")
+{
+    auto options = clientOptions();
+    std::string details = "engine build-one\narchive 0 rotwk:ini.big aaaa 10\n";
+    options.profileDetails = [&]() { return details; };
+    OnlineLobbyClient client(options);
+    client.joinGame("0123456789abcdef", "");
+    auto requests = client.takeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].body.find("\"profile_details\":\"engine build-one\\u000aarchive 0 rotwk:ini.big aaaa 10\\u000a\"") != std::string::npos);
+    std::string reason = "Executable/build compatibility: ";
+    for (int i = 0; i < 40; ++i) reason += "Host build differs. ";
+    client.deliver(requests[0].id, 409, "{\"v\":1,\"error\":\"profile\",\"message\":\"" + reason + "\"}", "");
+    auto events = client.takeEvents();
+    REQUIRE(events.size() == 1);
+    CHECK(OnlineLobbyClient::utf16ToUtf8(events[0].text) == reason);
+    details = "engine build-two\n";
+    client.joinByCode("details-room");
+    requests = client.takeRequests();
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].body.find("engine build-two\\u000a") != std::string::npos);
+}

@@ -716,8 +716,7 @@ std::u16string AptOnlineShell::playerMessage(const std::string &request, const s
 	}
 	if (code == "profile")
 	{
-		return u"You can't join this game: it was made with a different OpenBFME version or different game files. Both players need the same "
-			   u"OpenBFME version and unmodified RotWK 2.01 files.";
+		return u"You can't join this game: it was made with a different OpenBFME version or different game files.\n\n" + lobbyText;
 	}
 	if (code == "password")
 	{

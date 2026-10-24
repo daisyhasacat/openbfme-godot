@@ -474,7 +474,7 @@ void OnlineLobbyClient::createGame(const std::u16string &name, const std::string
 		slots += "}";
 	}
 	std::string body = "{\"name\":" + jsonQuote(utf16ToUtf8(name)) + ",\"profile\":" + jsonQuote(m_options.profileDigest) + ",\"mode\":\"" +
-		modeName(m_options.profile) + "\"" + platformField() + ",\"hostSlot\":" +
+		modeName(m_options.profile) + "\"" + compatibilityField() + platformField() + ",\"hostSlot\":" +
 		std::to_string(hostSlot) + ",\"setup\":{" + setupFields(setup) + ",\"slots\":[" + slots + "]}";
 	if (!password.empty())
 	{
@@ -495,7 +495,7 @@ void OnlineLobbyClient::joinByCode(const std::string &roomCode)
 		refuse("join", "bad_field", "a room code is 6 .. 32 characters of A-Z a-z 0-9 _ -");
 		return;
 	}
-	queue("join:code", "POST", "/v1/rooms/" + roomCode + "/join", "{\"profile\":" + jsonQuote(m_options.profileDigest) + ",\"mode\":\"" + modeName(m_options.profile) + "\"" + platformField() + "}");
+	queue("join:code", "POST", "/v1/rooms/" + roomCode + "/join", "{\"profile\":" + jsonQuote(m_options.profileDigest) + ",\"mode\":\"" + modeName(m_options.profile) + "\"" + compatibilityField() + platformField() + "}");
 }
 
 bool OnlineLobbyClient::parseMode(const std::string &name, SimulationProfile *out)
@@ -530,6 +530,21 @@ bool OnlineLobbyClient::setProfile(SimulationProfile profile, const std::string 
 	return true;
 }
 
+std::string OnlineLobbyClient::compatibilityField() const
+{
+	if (!m_options.profileDetails) return {};
+	std::string details = m_options.profileDetails();
+	if (details.empty()) return {};
+	// Leave room for the setup in the lobby's 16 KiB request limit. Never send
+	// a partial line; the marker makes an incomplete comparison explicit.
+	if (details.size() > 10000) {
+		const auto end = details.rfind('\n', 9900);
+		details.resize(end == std::string::npos ? 0 : end + 1);
+		details += "details truncated\n";
+	}
+	return ",\"profile_details\":" + jsonQuote(details);
+}
+
 std::string OnlineLobbyClient::platformField() const
 {
 	// lane PLATFORMICON-1: lobby.mjs checkPlatform: windows / linux / macos or absent
@@ -543,7 +558,7 @@ void OnlineLobbyClient::joinGame(const std::string &id, const std::string &passw
 		refuse("join", "bad_field", "a game id is 16 hex digits");
 		return;
 	}
-	std::string body = "{\"profile\":" + jsonQuote(m_options.profileDigest) + ",\"mode\":\"" + modeName(m_options.profile) + "\"" + platformField();
+	std::string body = "{\"profile\":" + jsonQuote(m_options.profileDigest) + ",\"mode\":\"" + modeName(m_options.profile) + "\"" + compatibilityField() + platformField();
 	if (!password.empty())
 	{
 		body += ",\"password\":" + jsonQuote(password);
@@ -1050,7 +1065,7 @@ void OnlineLobbyClient::deliver(int id, int status, const std::string &body, con
 	if (status != 200)
 	{
 		const std::string code = fits(root.get("error"), 64) ? strOf(root.get("error")) : std::string("protocol");
-		const std::size_t limit = code == "banned" || code == "suspended" || code == "muted" ? kMaxStatusBytes : kMaxRefusalBytes;
+		const std::size_t limit = code == "banned" || code == "suspended" || code == "muted" || code == "profile" ? kMaxStatusBytes : kMaxRefusalBytes;
 		const std::string message = fits(root.get("message"), limit) ? strOf(root.get("message"))
 			: "the lobby's refusal is longer than " + std::to_string(limit) + " bytes";
 		if (kind == "poll" && inGame() && (code == "not_in_game" || code == "no_game"))

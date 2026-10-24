@@ -31,6 +31,8 @@ import {
   submitPlayerReport,
 } from './reports.mjs';
 
+import { profileMismatch } from './compatibility.mjs';
+
 export const VERSION = 1;
 // UBERJOIN-1: the simulation profile a room runs (docs/ONLINE.md): "normal" (Faithful) or "uber" (the Uber performance mode). A room made by a client that
 // predates the field has none and is "normal"; any other value is refused by name
@@ -1285,6 +1287,7 @@ export class Lobby {
     const name = str(body?.name, 48, 'name');
     const profile = str(body?.profile, 32, 'profile');
     if (!/^[0-9a-f]{32}$/.test(profile)) throw bad('bad_field', 'profile must be the profile identity\'s MD5 (32 hex digits)');
+    const profileDetails = body.profile_details === undefined ? null : boundedText(body.profile_details, 10000, 'profile_details');
     const mode = modeOf(body.mode, 'mode');
     const password = body.password === undefined || body.password === '' ? null : str(body.password, 32, 'password');
     // ONLINEHUB-1: a private room named by a code (a Quick Match or a tournament match: the platform hands every player the same code); not listed,
@@ -1321,7 +1324,7 @@ export class Lobby {
     slots[hostSlot].platform = platform;
     const id = bytesToHex(this.env.randomBytes(8));
     const g = {
-      id, name, password, profile, mode, setup, slots, hostSlot, state: 'open', routing: account.routing ?? '',
+      id, name, password, profile, profileDetails, mode, setup, slots, hostSlot, state: 'open', routing: account.routing ?? '',
       chat: [], seq: 0, created: this.env.now(), touched: this.env.now(),
       reportParticipants: [{ account: account.id, install: account.install ?? null, nick: account.name }],
     };
@@ -1362,7 +1365,9 @@ export class Lobby {
     if (g.password && body?.password !== g.password) throw new LobbyError(403, 'password', 'wrong password');
     const platform = checkPlatform(body?.platform);
     if (body?.profile !== g.profile) {
-      throw new LobbyError(409, 'profile', `your game files or build differ from the host's (profile ${body?.profile} vs ${g.profile}): both need the same OpenBFME version and RotWK 2.01 files`);
+      const ownDetails = body?.profile_details === undefined ? null : boundedText(body.profile_details, 10000, 'profile_details');
+      const ownDigest = str(body?.profile, 32, 'profile');
+      throw new LobbyError(409, 'profile', profileMismatch(ownDetails, g.profileDetails, ownDigest, g.profile));
     }
     for (const other of this.games.values()) {
       if (other !== g && other.state === 'open' && this.slotOf(other, account) >= 0) throw bad('in_game', `you are in game ${other.id} already: leave it first`);
@@ -1388,7 +1393,7 @@ export class Lobby {
     if (!ROOM_CODE.test(code ?? '')) throw bad('bad_field', 'a room code is 6 .. 32 characters of A-Z a-z 0-9 _ -');
     this.sweep();
     for (const g of this.games.values()) {
-      if (g.roomCode === code && g.state === 'open') return this.join(account, g.id, { profile: body?.profile, mode: body?.mode, platform: body?.platform }, true);
+      if (g.roomCode === code && g.state === 'open') return this.join(account, g.id, { profile: body?.profile, profile_details: body?.profile_details, mode: body?.mode, platform: body?.platform }, true);
     }
     throw new LobbyError(404, 'no_room', 'no open room has this code (the host has not made it yet, or it has started)');
   }

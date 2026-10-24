@@ -384,6 +384,7 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("net_poll"), &GameWorld::net_poll);
 	ClassDB::bind_method(D_METHOD("net_online", "start_json"), &GameWorld::net_online); // lane ONLINE-2
 	ClassDB::bind_method(D_METHOD("net_profile_digest"), &GameWorld::net_profile_digest);
+	ClassDB::bind_method(D_METHOD("net_profile_details"), &GameWorld::net_profile_details);
 	ClassDB::bind_method(D_METHOD("net_begin", "options"), &GameWorld::net_begin, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("net_status"), &GameWorld::net_status);
 	ClassDB::bind_method(D_METHOD("net_finish"), &GameWorld::net_finish);
@@ -4909,6 +4910,11 @@ bool GameWorld::onlineLimits(int &factions, int &colors) const
 String GameWorld::net_profile_digest() const
 {
 	return toGodot(net_profile().digest); // lane ONLINE-2: what the lobby compares between players
+}
+
+String GameWorld::net_profile_details() const
+{
+	return toGodot(net_profile().text);
 }
 
 Dictionary GameWorld::net_poll()

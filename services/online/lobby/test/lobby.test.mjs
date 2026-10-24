@@ -1707,3 +1707,28 @@ test('map transfer: a host stores its custom map under its content digest once; 
   assert.equal(lobby.checkSetup(setup, true).wallBalance, '');
   assert.throws(() => lobby.checkSetup({ ...setup, wallBalance: 7 }, true), /wallBalance/);
 });
+
+test('profile refusals compare compatibility details on direct and room-code joins', async () => {
+  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
+  const a = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Host' } })).body;
+  const b = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Joiner' } })).body;
+  const created = await call(lobby, 'POST', '/v1/games', { token: a.token, body: {
+    name: 'Detailed', profile: PROFILE, profile_details: 'engine host-build\narchive 0 rotwk:ini.big aaaa 10\n', setup, room_code: 'details-room',
+  } });
+  assert.equal(created.status, 200);
+  const body = { profile: 'f'.repeat(32), profile_details: 'engine join-build\narchive 0 rotwk:ini.big bbbb 20\n', room_code: 'details-room' };
+  for (const path of [`/v1/games/${created.body.id}/join`, '/v1/rooms/details-room/join']) {
+    const refused = await call(lobby, 'POST', path, { token: b.token, body });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.error, 'profile');
+    assert.match(refused.body.message, /You: engine join-build\nHost: engine host-build/);
+    assert.match(refused.body.message, /You: archive 0 rotwk:ini.big bbbb 20\nHost: archive 0 rotwk:ini.big aaaa 10/);
+  }
+  const legacy = await call(lobby, 'POST', '/v1/rooms/details-room/join', { token: b.token, body: { profile: 'f'.repeat(32) } });
+  assert.match(legacy.body.message, /your client did not send compatibility details/);
+  const invalid = await call(lobby, 'POST', '/v1/rooms/details-room/join', { token: b.token, body: { ...body, profile_details: 'x'.repeat(10001) } });
+  assert.equal(invalid.status, 400);
+  // Diagnostics never override compatibility or make a mismatched client join.
+  const joined = await call(lobby, 'POST', '/v1/rooms/details-room/join', { token: b.token, body: { profile: PROFILE } });
+  assert.equal(joined.status, 200);
+});

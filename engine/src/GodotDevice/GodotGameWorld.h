@@ -543,6 +543,7 @@ public:
 	// for a LAN game. net_profile_digest: this install's profile identity MD5 (the lobby compares the players')
 	Dictionary net_online(const String &start_json);
 	String net_profile_digest() const;
+	String net_profile_details() const;
 	Dictionary net_begin(const Dictionary &options);
 	Dictionary net_status() const;
 	// the local player leaves the game (PLAYERLEAVE after the frames it announced), the recording is closed; waits up to 2 s for the acks

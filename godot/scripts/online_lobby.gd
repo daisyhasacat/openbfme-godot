@@ -26,6 +26,7 @@ const BODY_LIMIT := 262144 ## Sol r1 (ONLINE-4): the largest lobby answer read (
 var lobby_url := ""
 var player_name := "Player"
 var profile := ""
+var profile_details := ""
 var mode := "normal"        ## lane UBERJOIN-1: the performance mode of this player's games ("normal" or "uber": the lobby refuses a join in the other)
 var join_id := ""          ## join this game; empty: host one with host_setup
 var host_setup := {}        ## {name, setup: {map, startingCash, slots: [...]}, players: N}
@@ -150,12 +151,13 @@ func _after_signin() -> void:
 		_step = "create"
 		var body: Dictionary = host_setup.duplicate(true)
 		body["profile"] = profile
+		body.merge(_compatibility_details())
 		body["mode"] = mode
 		body.erase("players")
 		_send(HTTPClient.METHOD_POST, "/v1/games", body)
 	else:
 		_step = "join"
-		_send(HTTPClient.METHOD_POST, "/v1/games/%s/join" % join_id, {"profile": profile, "mode": mode})
+		_send(HTTPClient.METHOD_POST, "/v1/games/%s/join" % join_id, _compatibility_details().merged({"profile": profile, "mode": mode}))
 
 
 func _on_response(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
@@ -261,3 +263,16 @@ func _on_response(result: int, code: int, _headers: PackedStringArray, body: Pac
 			elif not me.is_empty() and not me[0].ready:
 				_step = "ready" # an options change unreadies everyone: ready again
 				_send(HTTPClient.METHOD_POST, "/v1/games/%s/ready" % _game_id, {"ready": true})
+
+
+func _compatibility_details() -> Dictionary:
+	if profile_details.is_empty():
+		return {}
+	var bytes := profile_details.to_utf8_buffer()
+	if bytes.size() > 10000:
+		bytes.resize(9900)
+		# Cut before the final newline; never decode a split UTF-8 character.
+		var end := bytes.rfind(10)
+		bytes.resize(end + 1)
+		return {"profile_details": bytes.get_string_from_utf8() + "details truncated\n"}
+	return {"profile_details": profile_details}

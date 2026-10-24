@@ -44,6 +44,7 @@ public:
 	{
 		std::string installId, deviceHash; ///< supplied by the host; never part of simulation state
 		std::string clientPlatform, clientVersion;
+		std::function<std::string()> profileDetails; ///< current canonical identity text, diagnostic only (never the join gate)
 		std::string profileDigest;   ///< the profile identity's MD5 (ProfileIdentity::digest): the lobby compares it at the join
 		// lane UBERJOIN-1: the simulation profile that digest is of (the player's performance mode): the room made and the room joined carry it as their
 		// "mode" ("normal" / "uber"); a join of a room in the other mode is the lobby's "mode" refusal. setProfile changes both together
@@ -148,6 +149,7 @@ public:
 	// a rejoin or spectator ticket, a session token's HMAC; with its dot-joined parts: the whole token) becomes "<redacted>". The lobby's ids (16 hex
 	// digits) and the profile digest (32) stay
 	static std::string redact(const std::string &text);
+	std::string compatibilityField() const;
 	std::string platformField() const; // lane PLATFORMICON-1: ,"platform":"<name>" or nothing
 
 	explicit OnlineLobbyClient(const Options &options);

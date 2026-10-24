@@ -7355,6 +7355,7 @@ Dictionary AptMenuPlayer::set_online(Object *worldObject, const Dictionary &opti
 	o.clientPlatform = toNative(String(client.get("platform", String())));
 	o.clientVersion = toNative(String(client.get("version", String())));
 	o.profileDigest = toNative(world->net_profile_digest());
+	o.profileDetails = [world]() { return world->net_profile().text; };
 	o.platform = localPlatform(); // lane PLATFORMICON-1: the one value told about this machine
 	o.playerTemplateCount = factions;
 	o.colorCount = colors;

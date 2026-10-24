@@ -5397,6 +5397,7 @@ func _online_open() -> void:
 	_online.player_name = _online_name if not _online_name.is_empty() else (_net_name if _net_name != "Joiner" else "Player")
 	_online.token = OS.get_environment("OPENBFME_LOBBY_TOKEN")
 	_online.profile = _world.net_profile_digest()
+	_online.profile_details = _world.net_profile_details()
 	_online.mode = "uber" if _world.simulation_profile() == "uber" else "normal" # lane UBERJOIN-1
 	_online.join_id = _online_join
 	_online.rejoin = _online_rejoin # lane ONLINE-3

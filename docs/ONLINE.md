@@ -1370,3 +1370,27 @@ peer load barrier confirms all participating clients are loaded. While waiting,
 the client services the handshake with zero simulation time and shows a waiting
 message. Scripted test commands also wait for this barrier. A missing peer causes
 an explicit loading timeout after three minutes rather than starting early.
+
+### Detailed join compatibility refusals
+
+Create and join requests may include `profile_details`, the current canonical
+`ProfileIdentity` text (engine compatibility ID, feature/numeric/RNG settings,
+mods, and archives in mount order with MD5 and size). The server stores the
+host's details with the room and compares them when the profile digest refuses
+an ordinary or room-code join. The join dialog retains this reason, naming up
+to three differing lines with separate “You” and “Host” values and a count of
+additional differences. Long engine identifiers are grouped for wrapping and
+to avoid the client's credential redaction. These are compatibility IDs, not
+hashes of the platform executable or release version numbers.
+
+The profile digest remains the compatibility gate; diagnostic text never
+permits an otherwise incompatible join. Details are limited to 10,000 UTF-8
+bytes, clipped at a whole-line boundary with an explicit truncation marker.
+The server bounds each displayed line. A missing field (older client or room)
+is reported as an unavailable comparison, with instructions to update both
+clients and recreate the room. Equal diagnostic text with different digests
+is explicitly reported as incomplete or inconsistent metadata.
+
+Both the lobby service and client must be updated for detailed comparisons.
+Existing rooms without details must be recreated. This change does not deploy
+the service or alter compatibility requirements.
