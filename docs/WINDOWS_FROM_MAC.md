@@ -159,3 +159,19 @@ omitted. Loose movie files/directories are excluded; BIG archives are preserved
 byte-for-byte. The bootstrap accepts the explicit `installs` inventory and
 clears the RotWK environment override when only BFME2 is included. The Python
 workflow accepts the same flags; omit them to build the full content bundle.
+
+## Portable ZIP using existing installations
+
+For a ZIP with just the Windows runtime and no installer or game assets:
+
+```sh
+python3 tools/release/windows_existing_zip.py --output build/windows-portable/OpenBFME-Windows.zip
+```
+
+Extract the whole `OpenBFME` folder and run `OpenBFME.exe`. This export omits
+the private bundled-content bootstrap and uses the standard OpenBFME profile
+and first-run discovery: Windows registry entries and common install locations,
+followed by confirmation or manual selection of BFME2 1.06 and RotWK 2.01 folders.
+It does not require a `content` folder beside the executable. It excludes the
+optional local RotWK map/tower packs and contains only the EXE, PCK, DLL and
+instructions. ZIP integrity is checked before completing the output.

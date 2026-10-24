@@ -154,7 +154,7 @@ def toolchain(work):
     return target
 
 
-def export_project(work, godot, compiler, jobs, exclude_rotwk=False):
+def export_project(work, godot, compiler, jobs, exclude_rotwk=False, existing_install=False):
     build = work / 'build'; binary = work / 'bin'
     run('cmake', '-S', ROOT / 'engine', '-B', build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
         '-DOPENBFME_LAME=OFF', f'-DLLVM_MINGW_ROOT={compiler}', f'-DOPENBFME_GODOT_BIN={binary}',
@@ -177,11 +177,12 @@ def export_project(work, godot, compiler, jobs, exclude_rotwk=False):
     host_libs = list((ROOT / 'godot/bin').glob('*.macos.*.dylib'))
     if not host_libs: raise ValueError('Build the native Mac extension first; Godot needs it for script imports.')
     for path in host_libs: shutil.copy2(path, project / 'bin' / path.name)
-    shutil.copy2(TEMPLATES / 'content_bootstrap.gd', project / 'content_bootstrap.gd')
-    settings = (project / 'project.godot').read_text()
-    settings = settings.replace('[application]', '[application]\nconfig/use_custom_user_dir=true\nconfig/custom_user_dir="OpenBFME Windows Bundle"', 1)
-    settings = settings.replace('[autoload]', '[autoload]\nInstalledContent="*res://content_bootstrap.gd"', 1)
-    (project / 'project.godot').write_text(settings)
+    if not existing_install:
+        shutil.copy2(TEMPLATES / 'content_bootstrap.gd', project / 'content_bootstrap.gd')
+        settings = (project / 'project.godot').read_text()
+        settings = settings.replace('[application]', '[application]\nconfig/use_custom_user_dir=true\nconfig/custom_user_dir="OpenBFME Windows Bundle"', 1)
+        settings = settings.replace('[autoload]', '[autoload]\nInstalledContent="*res://content_bootstrap.gd"', 1)
+        (project / 'project.godot').write_text(settings)
     version = subprocess.check_output([str(godot), '--version'], text=True).strip().split('.stable')[0]
     if not re.fullmatch(r'4\.\d+(\.\d+)?', version): raise ValueError('Use a stable Godot 4 editor.')
     name = f'Godot_v{version}-stable_export_templates.tpz'
