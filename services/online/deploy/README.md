@@ -141,3 +141,28 @@ Godot control/reporting/sync checks passed. This validates the runner on two Mac
 processes; a physical Mac/iPhone run requires rebuilt clients and remains a
 separate check. Updated clients register automatically from the main menu when
 foregrounded; no updated production clients were registered at deployment.
+
+## File compatibility diagnostics deployment — October 24, 2026
+
+Active release: `/opt/openbfme-online/releases/20261024-file-diagnostics-9c4025e12b`.
+The previous `20261020-testing-3dee3c0dd6` release is retained for rollback.
+This release preserves that deployment and its relay binary, applying only the
+compatibility diagnostics from `07f8fcc5b8` and `9c4025e12b`.
+The reproducible backport is
+[patches/20261024-file-diagnostics.patch](patches/20261024-file-diagnostics.patch).
+It adapts the older lobby's validation helpers, error-detail serialization and
+room lookup API; it does not require deploying unrelated newer lobby features.
+
+Validation: 95 lobby tests passed locally; all 108 lobby and supervisor tests
+passed on the production host before activation. No running matches were present
+at restart. The service became active and its health endpoint returned `ok: true`.
+A public HTTPS smoke test created a temporary room, verified a detailed profile
+refusal and `compatibility_game`, uploaded a diagnostic page larger than 16 KiB
+containing 256 synthetic per-file hashes, and retrieved it as the rejected joiner.
+The temporary room was closed afterwards. No game bytes or production signing
+keys were copied into the test or repository.
+
+Existing rooms must be recreated to capture host profile details and trigger a
+fresh client checksum upload. Both players need diagnostics-capable clients.
+Persistent accounts, signing keys, lobby records and the original site remain in
+place. The relay was reused unchanged; only the lobby/relay service was restarted.
