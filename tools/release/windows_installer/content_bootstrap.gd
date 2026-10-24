@@ -25,10 +25,13 @@ static func configure(root: String, settings: String) -> String:
 	if not FileAccess.file_exists(profile_path): return "Missing or invalid installed content profile."
 	var profile = JSON.parse_string(FileAccess.get_file_as_string(profile_path))
 	if not profile is Dictionary: return "Missing or invalid installed content profile."
-	for game in ["rotwk", "bfme2"]:
+	var installs: Array = profile.get("installs", ["rotwk", "bfme2"])
+	if not "bfme2" in installs: return "Missing BFME2 content selection."
+	for game in installs:
 		var folder := root.path_join("content/" + game)
 		if not DirAccess.dir_exists_absolute(folder): return "Missing installed game content: " + game
 		OS.set_environment(game.to_upper() + "_INSTALL", folder)
+	if not "rotwk" in installs: OS.set_environment("ROTWK_INSTALL", "")
 	var error := DirAccess.make_dir_recursive_absolute(settings)
 	if error != OK: return "Cannot create settings directory: " + error_string(error)
 	var stamp := settings.path_join("bundle-root.txt")
@@ -54,7 +57,8 @@ static func configure(root: String, settings: String) -> String:
 	# Persist roots too, for loose movies/audio and tools that use InstallSetup.
 	var paths := FileAccess.open(settings.path_join("install-paths.cfg"), FileAccess.WRITE)
 	if paths == null: return "Cannot save installed game paths."
-	paths.store_string("ROTWK_INSTALL=" + root.path_join("content/rotwk") + "\nBFME2_INSTALL=" + root.path_join("content/bfme2") + "\n")
+	var rotwk := root.path_join("content/rotwk") if "rotwk" in installs else ""
+	paths.store_string("ROTWK_INSTALL=" + rotwk + "\nBFME2_INSTALL=" + root.path_join("content/bfme2") + "\n")
 	paths.close()
 	if FileAccess.file_exists(root.path_join("profile/wall_balance.cfg")):
 		error = DirAccess.copy_absolute(root.path_join("profile/wall_balance.cfg"), settings.path_join("wall_balance.cfg"))

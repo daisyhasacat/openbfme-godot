@@ -50,6 +50,18 @@ class WindowsBundleTests(unittest.TestCase):
         self.select([str(self.root / 'not installed')])
         with self.assertRaisesRegex(ValueError, 'Active mod does not exist'): workflow.inventory(self.user)
 
+    def test_bfme2_only_excludes_rotwk_and_loose_movies(self):
+        movies = self.bfme2 / 'data/movies'; movies.mkdir(parents=True)
+        (movies/'intro.vp6').write_text('movie fixture')
+        (self.bfme2/'keep.txt').write_text('keep')
+        profile, sources = workflow.inventory(self.user, exclude_rotwk=True)
+        self.assertEqual(profile['game'], 'bfme2-106')
+        self.assertEqual(profile['installs'], ['bfme2'])
+        targets = [target for _,target in workflow.files(sources, exclude_movies=True, exclude_rotwk=True)]
+        self.assertNotIn('content/bfme2/data/movies/intro.vp6', targets)
+        self.assertIn('content/bfme2/keep.txt', targets)
+        self.assertFalse(any('rotwk' in target.split('/') for target in targets))
+
     def test_installed_maps_are_included(self):
         maps = self.user / 'installed-maps'; maps.mkdir(); (maps / 'fixture.txt').write_text('map fixture')
         _, sources = workflow.inventory(self.user)

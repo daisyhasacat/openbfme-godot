@@ -61,7 +61,7 @@ def config(path):
     return result
 
 
-def inventory(userdata, rotwk=None, bfme2=None, map_library=None):
+def inventory(userdata, rotwk=None, bfme2=None, map_library=None, exclude_rotwk=False):
     remembered = {}
     paths = userdata / 'install-paths.cfg'
     if paths.exists():
@@ -70,6 +70,7 @@ def inventory(userdata, rotwk=None, bfme2=None, map_library=None):
             if sep: remembered[key.strip()] = value.strip()
     roots = {}
     for name, explicit in [('rotwk', rotwk), ('bfme2', bfme2)]:
+        if name == 'rotwk' and exclude_rotwk: continue
         value = explicit or os.environ.get(name.upper() + '_INSTALL') or remembered.get(name.upper() + '_INSTALL')
         if not value: raise ValueError(f'Missing {name} install; pass --{name}')
         path = Path(value).resolve()
@@ -80,6 +81,7 @@ def inventory(userdata, rotwk=None, bfme2=None, map_library=None):
     game = config(userdata / 'game-selection.cfg').get('game/selected', 'bfme2')
     if game not in ('bfme2', 'bfme2-106'):
         raise ValueError('This workflow packages BFME2/RotWK; select one of those games before building.')
+    if exclude_rotwk: game = 'bfme2-106'
     mods = []; sources = [(path, 'content/' + name) for name, path in roots.items()]
     hd = cfg.get('mods/hd_textures', True)
     textures = cfg.get('mods/textures_only', [])
@@ -95,14 +97,14 @@ def inventory(userdata, rotwk=None, bfme2=None, map_library=None):
         if folder.is_dir(): sources.append((folder, 'content/' + name))
     if map_library is not None and not map_library.is_dir():
         raise ValueError('Explicit map library does not exist or is not a directory')
-    if map_library is None and userdata.resolve() == USERDATA.resolve():
+    if not exclude_rotwk and map_library is None and userdata.resolve() == USERDATA.resolve():
         map_library = Path.home() / 'Library/Application Support/BFMELauncher/Maps/Library/rotwk'
-    if map_library is not None and map_library.is_dir():
+    if not exclude_rotwk and map_library is not None and map_library.is_dir():
         sources.append((map_library, 'content/map-library/bundles/mac-snapshot/rotwk'))
     walls = userdata / 'wall_balance.cfg'
     if not walls.exists(): walls = ROOT / 'godot/dev/wall_balance.cfg'
     sources.append((walls, 'profile/wall_balance.cfg'))
-    return {'version': 1, 'game': game, 'hd_textures': hd, 'mods': mods}, sources
+    return {'version': 1, 'game': game, 'hd_textures': hd, 'mods': mods, 'installs': list(roots)}, sources
 
 
 def walk_content(path, relative=Path(), ancestors=frozenset()):
@@ -117,12 +119,15 @@ def walk_content(path, relative=Path(), ancestors=frozenset()):
         raise ValueError(f'Unsupported content file: {path}')
 
 
-def files(sources):
+def files(sources, exclude_movies=False, exclude_rotwk=False):
     seen = set()
     for source, destination in sources:
         paths = walk_content(source) if source.is_dir() else [(source, Path())]
         for path, relative in paths:
             target = destination + '/' + relative.as_posix() if source.is_dir() else destination
+            parts = target.lower().split('/')
+            if exclude_movies and ('movies' in parts or path.suffix.lower() in ('.vp6', '.bik', '.mp4', '.avi', '.mov', '.webm')): continue
+            if exclude_rotwk and 'rotwk' in parts: continue
             if target.casefold() in seen: raise ValueError(f'Windows filename collision: {target}')
             # Reject Windows-invalid filenames before copying gigabytes of data.
             for part in target.split('/'):
@@ -149,7 +154,7 @@ def toolchain(work):
     return target
 
 
-def export_project(work, godot, compiler, jobs):
+def export_project(work, godot, compiler, jobs, exclude_rotwk=False):
     build = work / 'build'; binary = work / 'bin'
     run('cmake', '-S', ROOT / 'engine', '-B', build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
         '-DOPENBFME_LAME=OFF', f'-DLLVM_MINGW_ROOT={compiler}', f'-DOPENBFME_GODOT_BIN={binary}',
@@ -163,6 +168,9 @@ def export_project(work, godot, compiler, jobs):
     project = work / 'project'
     if project.exists(): shutil.rmtree(project)
     shutil.copytree(ROOT / 'godot', project, ignore=shutil.ignore_patterns('.godot', 'bin', '*.disabled'))
+    if exclude_rotwk:
+        for name in ('rotwk_202_maps.big', 'wall_towers.big'):
+            (project / 'mods' / name).unlink(missing_ok=True)
     (project / 'bin').mkdir()
     shutil.copy2(dll, project / 'bin' / dll.name)
     # Native host extension is needed to import scripts with registered engine types.
@@ -199,10 +207,10 @@ def export_project(work, godot, compiler, jobs):
     return exported
 
 
-def package(exported, output, profile, sources):
+def package(exported, output, profile, sources, exclude_movies=False, exclude_rotwk=False):
     if output.exists(): raise ValueError('Output already exists; choose a new directory')
     if exported.resolve() in output.resolve().parents: raise ValueError('Output must be outside the export')
-    rows = list(files([(exported, ''), *sources]))
+    rows = list(files([(exported, ''), *sources], exclude_movies, exclude_rotwk))
     # Empty export prefix means files belong at the installation root.
     rows = [(path, target.lstrip('/')) for path, target in rows]
     for path, _ in rows:
@@ -242,6 +250,8 @@ def package(exported, output, profile, sources):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--exclude-movies', action='store_true', help='Omit loose movie files without changing game archives')
+    parser.add_argument('--exclude-rotwk', action='store_true', help='Package BFME2 only, without RotWK installs or library')
     parser.add_argument('--upload', action='store_true', help='Upload completed installer to the maclauncher Space')
     parser.add_argument('--cdn-profile', help='AWS CLI profile for Spaces credentials')
     parser.add_argument('--cdn-release', help='Unique CDN release folder name')
@@ -256,8 +266,8 @@ def main():
     parser.add_argument('--check', action='store_true', help='Inspect selected content and prerequisites without building/copying')
     parser.add_argument('--exported', type=Path, help='Package an existing Windows export instead of compiling')
     args = parser.parse_args()
-    profile, sources = inventory(args.userdata, args.rotwk, args.bfme2, args.map_library)
-    rows = list(files(sources))
+    profile, sources = inventory(args.userdata, args.rotwk, args.bfme2, args.map_library, args.exclude_rotwk)
+    rows = list(files(sources, args.exclude_movies, args.exclude_rotwk))
     print(json.dumps(profile, indent=2))
     print(f'Content: {len(rows)} files, {sum(p.stat().st_size for p, _ in rows) / 1024**3:.2f} GiB')
     for command in ('cmake', 'ninja', 'curl', 'tar', 'makensis'):
@@ -271,10 +281,10 @@ def main():
             raise ValueError('Work and output must be outside content sources')
     if output.exists(): raise ValueError('Output already exists; choose a new directory')
     work.mkdir(parents=True, exist_ok=True)
-    exported = args.exported.resolve() if args.exported else export_project(work, args.godot, toolchain(work), args.jobs)
+    exported = args.exported.resolve() if args.exported else export_project(work, args.godot, toolchain(work), args.jobs, args.exclude_rotwk)
     for name in ('OpenBFME.exe', 'OpenBFME.pck', 'openbfme.windows.template_debug.x86_64.dll'):
         if not (exported / name).is_file(): raise ValueError(f'Windows export is missing {name}')
-    package(exported, output, profile, sources)
+    package(exported, output, profile, sources, args.exclude_movies, args.exclude_rotwk)
     if args.upload:
         from publish_windows_installer import publish
         publish(output, args.cdn_release, args.cdn_profile, args.cdn_public)

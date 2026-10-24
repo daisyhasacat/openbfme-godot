@@ -151,3 +151,11 @@ setup EXE and README). It retains `cdn-upload.json`, unrelated files, and the
 incremental build/export cache. Upload or verification failures retain local
 artifacts. Use the standalone publisher's `--keep-local` option when a local
 installer copy is needed. Local files changed after uploading are retained.
+
+The Mac double-click workflow now uses `--exclude-movies --exclude-rotwk`:
+it packages BFME2 only and selects `bfme2-106` at launch. RotWK installation
+files, the launcher's RotWK map library and RotWK-specific bundled packs are
+omitted. Loose movie files/directories are excluded; BIG archives are preserved
+byte-for-byte. The bootstrap accepts the explicit `installs` inventory and
+clears the RotWK environment override when only BFME2 is included. The Python
+workflow accepts the same flags; omit them to build the full content bundle.
