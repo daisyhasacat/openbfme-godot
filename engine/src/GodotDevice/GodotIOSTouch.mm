@@ -14,7 +14,10 @@
 #include <godot_cpp/classes/input_event_magnify_gesture.hpp>
 
 // UIKit pointer input must remain mouse input, independent of direct touch controls.
-@interface OpenBFMETrackpad : NSObject <UIGestureRecognizerDelegate>
+@interface OpenBFMETrackpad : NSObject <UIGestureRecognizerDelegate> {
+@public
+    OpenBFMEIOSTouch::PointerClick click;
+}
 @property(nonatomic, weak) UIView *view;
 @property(nonatomic) NSUInteger buttons;
 @property(nonatomic) CGPoint last;
@@ -125,7 +128,7 @@ void emit_pointer(UIView *view, UITouch *touch, UIEvent *native, int phase) {
     if (!input) return;
     const CGPoint point = [touch locationInView:view];
     // UIKit primary/secondary bits match Godot's left/right button masks.
-    const NSUInteger next = OpenBFMEIOSTouch::pointerButtons(native.buttonMask, bridge.buttons, phase);
+    const NSUInteger next = bridge->click.update(native.buttonMask, phase, (native.modifierFlags & UIKeyModifierControl) != 0);
     const NSUInteger changed = bridge.buttons ^ next;
     bridge.last = point; bridge.hasLast = YES;
     if (phase == 1) {
@@ -151,7 +154,7 @@ void emit_pointer(UIView *view, UITouch *touch, UIEvent *native, int phase) {
         button->set_button_index(static_cast<godot::MouseButton>(index));
         button->set_button_mask(godot::BitField<godot::MouseButtonMask>(next));
         button->set_pressed((next & mask) != 0);
-        button->set_double_click((next & mask) && touch.tapCount > 1);
+        button->set_double_click(OpenBFMEIOSTouch::pointerDoubleClick(index, (next & mask) != 0, touch.tapCount));
         button->set_canceled(phase == 3);
         input->parse_input_event(button);
     }
