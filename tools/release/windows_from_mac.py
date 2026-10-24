@@ -242,6 +242,10 @@ def package(exported, output, profile, sources):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--upload', action='store_true', help='Upload completed installer to the maclauncher Space')
+    parser.add_argument('--cdn-profile', help='AWS CLI profile for Spaces credentials')
+    parser.add_argument('--cdn-release', help='Unique CDN release folder name')
+    parser.add_argument('--cdn-public', action='store_true', help='Make the installer and included assets publicly downloadable')
     parser.add_argument('--userdata', type=Path, default=USERDATA)
     parser.add_argument('--map-library', type=Path, help='Additional RotWK map library to bundle')
     parser.add_argument('--rotwk', type=Path); parser.add_argument('--bfme2', type=Path)
@@ -271,6 +275,9 @@ def main():
     for name in ('OpenBFME.exe', 'OpenBFME.pck', 'openbfme.windows.template_debug.x86_64.dll'):
         if not (exported / name).is_file(): raise ValueError(f'Windows export is missing {name}')
     package(exported, output, profile, sources)
+    if args.upload:
+        from publish_windows_installer import publish
+        publish(output, args.cdn_release, args.cdn_profile, args.cdn_public)
 
 
 if __name__ == '__main__':

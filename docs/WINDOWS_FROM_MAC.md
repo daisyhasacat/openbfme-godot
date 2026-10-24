@@ -111,3 +111,36 @@ regression tests, and the Godot bootstrap test passed. The private installer
 archive's 6,615 file hashes were verified against its embedded manifest, including
 the installed maps and launcher map-library snapshot. Windows install/launch
 remains unverified on a native Windows machine.
+
+## Upload to DigitalOcean Spaces
+
+The double-click command now uploads each completed build to
+`maclauncher/openbfme/windows-installers/<UTC timestamp>/`. Supply credentials
+in the process environment as `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+(optional `AWS_SESSION_TOKEN`), or use `AWS_PROFILE`. Secrets are never passed
+on command lines or written into the installer. A Finder-launched command may
+not inherit exports from a Terminal; launch the command from that Terminal when
+using shell environment credentials.
+
+Optional destination environment variables:
+
+- `OPENBFME_CDN_BUCKET` (default `maclauncher`)
+- `OPENBFME_CDN_ENDPOINT` (default `https://sfo3.digitaloceanspaces.com`)
+- `OPENBFME_CDN_URL` (default `https://maclauncher.sfo3.digitaloceanspaces.com`)
+- `OPENBFME_CDN_RELEASE` (default UTC timestamp; must be a new release folder)
+
+The Python build command uploads with `--upload`. Upload an already-built
+installer without rebuilding:
+
+```sh
+python3 tools/release/publish_windows_installer.py build/windows-private-installer
+```
+
+Uploads keep the bucket's default access; no public ACL is applied automatically.
+Use `--public` on the publisher or `--cdn-public` on the build command to make
+all included assets publicly downloadable. Large sidecars use AWS CLI multipart
+uploads. The uploader checks the README's payload checksum, refuses existing
+release folders, verifies remote sizes and SHA-256 metadata, then publishes
+`manifest.json` last. A local `cdn-upload.json` records the destination and
+hashes. Failed uploads are retained for inspection and do not publish a
+completion marker. It never changes the bucket policy or deletes other objects.
