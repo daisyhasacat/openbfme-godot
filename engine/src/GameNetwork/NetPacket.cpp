@@ -2,6 +2,7 @@
 // See GameNetwork/NetPacket.h.
 
 #include "GameNetwork/NetPacket.h"
+#include "GameNetwork/WallBalanceSetup.h"
 
 #include <cstring>
 #include <stdexcept>
@@ -350,8 +351,9 @@ void NetPacket::writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g)
 	w.i32(g.luaAuthoritySlot);
 	// OpenBFME setup flags share the profile word. Off retains the existing wire/replay bytes;
 	// older readers reject the flagged profile rather than silently ignoring the rule.
-	w.i32((std::int32_t)g.simulationProfile | (g.fortressConstruction ? 0x100 : 0)); // lane UBER-1: the simulation profile (Common/SimulationProfile.h)
+	w.i32((std::int32_t)g.simulationProfile | (g.fortressConstruction ? 0x100 : 0) | (g.wallBalance.empty() ? 0 : 0x200)); // lane UBER-1: the simulation profile (Common/SimulationProfile.h)
 	for (const SkirmishGameSlot &s : g.slots) w.i32(s.handicap);
+	if (!g.wallBalance.empty()) w.str(g.wallBalance); // flag 0x200: the shared wall rules (GameNetwork/WallBalanceSetup.h)
 }
 
 bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string *error, bool profileOptionalAtEnd, bool slotHandicaps, bool withPeaceTime, bool withLuaAuthority)
@@ -414,7 +416,8 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 	g.luaAuthoritySlot = withLuaAuthority && !profileAbsent ? r.i32() : -1;
 	const std::int32_t profileFlags = profileAbsent ? (std::int32_t)SimulationProfile::Faithful : r.i32();
 	g.fortressConstruction = (profileFlags & 0x100) != 0;
-	const std::int32_t profile = profileFlags & ~0x100;
+	const bool withWalls = profileFlags >= 0 && (profileFlags & 0x200) != 0; // a negative word is no flag set (refused below as a profile)
+	const std::int32_t profile = profileFlags & ~0x300;
 	// lane OWNERFIX-2: the slots' handicaps (absent: an older replay / save format, or an announcement without the profile, UBERJOIN-1's case; the LAN
 	// messages that carry them are LANAPI protocol 4 / LANLobby version 5, so an announcement with the profile and without them is truncated)
 	const bool handicapsAbsent = !slotHandicaps || profileAbsent;
@@ -422,6 +425,7 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 	{
 		s.handicap = handicapsAbsent ? 0 : r.i32();
 	}
+	g.wallBalance = withWalls ? r.str() : std::string();
 	if (r.failed())
 	{
 		return failWith(error, r.badFlag() ? "GameInfo with a flag that is not 0 / 1" : "truncated GameInfo");
@@ -454,6 +458,11 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 	// sees another refuses the game options (a refused game, never a desync)
 	if (g.luaAuthoritySlot < -1 || g.luaAuthoritySlot >= MAX_SLOTS || (g.luaAuthoritySlot >= 0 && !g.slots[g.luaAuthoritySlot].isHuman())) return failWith(error, "invalid Lua authority slot");
 	if (!PeaceTime::valid(g.peaceTimeMinutes)) return failWith(error, "GameInfo invalid peace time");
+	{
+		WallBalance walls;
+		std::string why;
+		if (withWalls && (g.wallBalance.empty() || !WallBalanceSetup::fromText(g.wallBalance, walls, &why))) return failWith(error, "GameInfo " + (why.empty() ? std::string("wall balance flag without rules") : why));
+	}
 	if (!LegendaryHeroes::valid(g.legendaryHeroes))
 	{
 		return failWith(error, "GameInfo Legendary Heroes factor " + std::to_string(g.legendaryHeroes));

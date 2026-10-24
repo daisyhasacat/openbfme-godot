@@ -205,7 +205,7 @@ export async function startServer(env = readEnv(), { log = console.log, health =
     }
     // ONLINE-2 r2 (Sol: a chunked 20 KB JSON body passed the 16 KiB check): the bytes are counted as they arrive; beyond the route's limit the
     // request is answered 413 at once and the rest is not read
-    const limit = /^\/v1\/games\/[0-9a-f]{16}\/(?:statistics|desync)(?:\?|$)/.test(req.url) ? MAX_REPORT_BYTES : req.url.startsWith('/v1/relay/logs/') || req.url.startsWith('/v1/admin/blobs/') ? MAX_LOG_BYTES : MAX_JSON_BYTES;
+    const limit = /^\/v1\/games\/[0-9a-f]{16}\/(?:statistics|desync)(?:\?|$)/.test(req.url) ? MAX_REPORT_BYTES : req.url.startsWith('/v1/relay/logs/') || req.url.startsWith('/v1/admin/blobs/') || req.url.startsWith('/v1/maps/') ? MAX_LOG_BYTES : MAX_JSON_BYTES;
     // ONLINE-2 r4 (Sol r3): a body-only TOTAL deadline (not an inactivity timer: a dripping body must not outlast it), started with the request
     // and cleared once the body is complete or refused, so a complete request is never cut while the lobby handles it
     let refused = false;

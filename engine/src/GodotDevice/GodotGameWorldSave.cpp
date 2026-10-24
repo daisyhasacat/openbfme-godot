@@ -707,6 +707,7 @@ Dictionary GameWorld::start_save_load(const Dictionary &options)
 		return r;
 	}
 	Dictionary o = options.duplicate();
+	o["replay"] = true; // the saved log's setup decides its wall rules (GameNetwork/WallBalanceSetup.h)
 	const String record = o.get("record", String());
 	o.erase("record"); // the recording starts at the saved frame, continuing the save's log (save_load_step)
 	std::unique_ptr<SaveGameFile> file = std::move(m_pendingSave);

@@ -3,6 +3,7 @@
 // See GameNetwork/LANLobby.h.
 
 #include "GameNetwork/LANLobby.h"
+#include "GameNetwork/WallBalanceSetup.h"
 
 namespace
 {
@@ -135,6 +136,10 @@ LANLobbyHost::LANLobbyHost(UDP &socket, const NewGameMessage &game, int hostSlot
 	m_start.game = game;
 	m_start.game.game.luaAuthoritySlot = hostSlot;
 	m_start.game.game.simulationProfile = profile.simulationProfile(); // lane UBER-1: the host's game runs the host's profile (its identity's)
+	if (m_start.game.game.wallBalance.empty())
+	{
+		m_start.game.game.wallBalance = WallBalanceSetup::toText(WallBalanceSetup::local()); // the host's wall rules, for every peer (WallBalanceSetup.h)
+	}
 	m_start.localSlot = hostSlot;
 	m_start.runAhead = runAhead;
 	m_start.crcInterval = crcInterval;

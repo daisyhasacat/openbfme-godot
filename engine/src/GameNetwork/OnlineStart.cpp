@@ -5,6 +5,7 @@
 
 #include "Common/MiniJson.h"
 #include "GameNetwork/RelayProtocol.h"
+#include "GameNetwork/WallBalanceSetup.h"
 
 #include <cmath>
 
@@ -252,6 +253,14 @@ bool parse(const std::string &json, const ProfileIdentity &ownProfile, const Lim
 	if (setup->get("peaceTimeMinutes") && (!intField(*setup, "peaceTimeMinutes", 0, 20, peace, &sub) || !PeaceTime::valid((int)peace)))
 		return fail(error, "invalid peaceTimeMinutes");
 	g.peaceTimeMinutes = (int)peace;
+	g.wallBalance.clear(); // the creator's wall rules (GameNetwork/WallBalanceSetup.h; absent: off, also from a lobby service that does not pass them)
+	if (const JsonValue *walls = setup->get("wallBalance"))
+	{
+		WallBalance parsed;
+		std::string why;
+		if (!walls->isString() || !WallBalanceSetup::fromText(walls->string, parsed, &why)) return fail(error, why.empty() ? std::string("\"wallBalance\" must be a string") : why);
+		g.wallBalance = walls->string;
+	}
 	long long luaAuthority = -1;
 	if (setup->get("luaAuthoritySlot") && !intField(*setup, "luaAuthoritySlot", -1, MAX_SLOTS - 1, luaAuthority, &sub)) return fail(error, "invalid luaAuthoritySlot");
 	g.luaAuthoritySlot = (int)luaAuthority;

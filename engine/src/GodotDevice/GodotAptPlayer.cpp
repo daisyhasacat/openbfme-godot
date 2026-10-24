@@ -874,6 +874,7 @@ struct AptMenuPlayer::Impl
 	double textureLoadMs = 0;
 	std::set<std::string> unverified, errors, missingLabels, fontSubstitutions, placeholders;
 	std::unique_ptr<ShellMode> shell;  // shell mode (boot_shell): the Apt player is the window manager's
+	int64_t installedMapsSeen = -1; // map transfer: the installed maps the shell's map list holds (tick adds the ones received since)
 	std::unique_ptr<InGameNotificationBox> notification;
 	Apt *A() const { return external ? &external->apt() : shell ? &shell->wm->apt() : apt.get(); }
 	// the Godot texture of a gadget mapped image's file, loaded as the gadget layer draws it (drawGadgets); null when it cannot be loaded (the reason goes to
@@ -1328,6 +1329,7 @@ void AptMenuPlayer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("online_take_requests"), &AptMenuPlayer::online_take_requests);
 	ClassDB::bind_method(D_METHOD("online_deliver", "id", "status", "body", "error"), &AptMenuPlayer::online_deliver);
 	ClassDB::bind_method(D_METHOD("online_status"), &AptMenuPlayer::online_status);
+	ClassDB::bind_method(D_METHOD("online_map_note", "text"), &AptMenuPlayer::online_map_note);
 	ClassDB::bind_method(D_METHOD("online_apply", "spec"), &AptMenuPlayer::online_apply);
 	ClassDB::bind_method(D_METHOD("online_start_failed", "error"), &AptMenuPlayer::online_start_failed); // Sol r1
 	ClassDB::bind_method(D_METHOD("online_game_failed", "text"), &AptMenuPlayer::online_game_failed); // lane ONLINEUX-1
@@ -3779,6 +3781,12 @@ void AptMenuPlayer::pumpShellEvents()
 // ---------------------------------------------------------------------------------------------------------------------------------
 int AptMenuPlayer::tick(double delta)
 {
+	// map transfer (GameNetwork/MapPackage.h): a map received in a lobby joins the screens' map list (the setup screen shows it, the start finds it)
+	if (m->shell && m->fs.is_valid() && m->fs->installed_maps().size() != m->installedMapsSeen)
+	{
+		m->installedMapsSeen = m->fs->installed_maps().size();
+		addInstalledMaps(m->shell->setup, *m->fs.ptr());
+	}
 	if (!m_booted)
 	{
 		return 0;
@@ -7355,6 +7363,17 @@ Dictionary AptMenuPlayer::set_online(Object *worldObject, const Dictionary &opti
 	// turns it off (plain polls every poll_ms)
 	o.longPollS = (std::uint32_t)std::clamp<int64_t>((int64_t)options.get("long_poll_s", (int64_t)20), 0, OnlineLobbyClient::kMaxHoldSeconds);
 	o.profile = world->current_profile(); // lane UBERJOIN-1: net_profile_digest is that profile's
+	// map transfer (GameNetwork/MapPackage.h): a map is the player's when the shell's map list has it (the game's maps and the installed ones)
+	ShellMode *shellMode = &sm;
+	RetailFileSystem *mapFs = m->fs.ptr();
+	o.hasMap = [shellMode, mapFs](const std::string &mapName) {
+		if (mapFs)
+		{
+			addInstalledMaps(shellMode->setup, *mapFs);
+		}
+		const auto &maps = shellMode->setup.maps();
+		return std::any_of(maps.begin(), maps.end(), [&](const MapCacheEntry &e) { return e.name == mapName; });
+	};
 	sm.online = std::make_unique<OnlineLobbyClient>(o);
 	bindProfileSwitch(sm.profileSwitch, world->get_instance_id());
 	sm.environment.profileSwitch = &sm.profileSwitch;
@@ -7485,6 +7504,21 @@ String AptMenuPlayer::online_redact(const String &text)
 	return String::utf8(OnlineLobbyClient::redact(std::string(t.get_data(), (size_t)t.length())).c_str());
 }
 
+void AptMenuPlayer::online_map_note(const String &text)
+{
+	// map transfer: scripts/online_maps.gd's progress in the staging room's chat
+	if (m->shell && m->shell->online)
+	{
+		const String t = text;
+		std::u16string w;
+		for (int64_t i = 0; i < t.length(); ++i)
+		{
+			w.push_back((char16_t)t[i]);
+		}
+		m->shell->online->mapNote(w);
+	}
+}
+
 Dictionary AptMenuPlayer::online_status()
 {
 	Dictionary r;
@@ -7521,6 +7555,8 @@ Dictionary AptMenuPlayer::online_status()
 	r["room_mode"] = toGodot(std::string(OnlineLobbyClient::modeName(c.gameMode())));
 	r["slot"] = (int64_t)c.localSlot();
 	r["game_id"] = toGodot(c.gameId());
+	r["map"] = toGodot(c.gameInfo().mapName); // map transfer (scripts/online_maps.gd)
+	r["has_map"] = c.hasGameMap();
 	r["busy"] = c.busy();
 	Array ready;
 	for (const auto &v : c.slotViews())

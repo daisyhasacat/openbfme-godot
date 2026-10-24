@@ -4,6 +4,7 @@
 #include "GodotDevice/GodotGameStart.h"
 
 #include "GameClient/GUI/LoadScreenInfo.h"
+#include "GameNetwork/WallBalanceSetup.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/array.hpp>
@@ -74,6 +75,7 @@ Dictionary newGameToDictionary(const NewGameMessage &m)
 	d["legendary_heroes"] = m.game.legendaryHeroes;
 	d["fortress_construction"] = m.game.fortressConstruction;
 	d["peace_time_minutes"] = m.game.peaceTimeMinutes;
+	d["wall_balance"] = String::utf8(m.game.wallBalance.c_str()); // GameNetwork/WallBalanceSetup.h ("" = off)
 	d["lua_authority_slot"] = m.game.luaAuthoritySlot;
 	d["simulation_profile"] = (int)m.game.simulationProfile; // lane UBER-1: 0 Faithful, 1 Uber (Common/SimulationProfile.h)
 	Array slots;
@@ -164,6 +166,12 @@ bool newGameFromDictionary(const Dictionary &d, NewGameMessage &out, std::string
 	m.game.fortressConstruction = (bool)d.get("fortress_construction", false);
 	m.game.peaceTimeMinutes = (int)(int64_t)d.get("peace_time_minutes", (int64_t)PeaceTime::kOff);
 	if (!PeaceTime::valid(m.game.peaceTimeMinutes)) return fail("Invalid peace_time_minutes (Off, 5, 10, 15 or 20)");
+	m.game.wallBalance = std::string(String(d.get("wall_balance", String())).utf8().get_data());
+	{
+		WallBalance walls;
+		std::string why;
+		if (!WallBalanceSetup::fromText(m.game.wallBalance, walls, &why)) return fail(why);
+	}
 	m.game.legendaryHeroes = (int)(int64_t)d.get("legendary_heroes", (int64_t)LegendaryHeroes::kOff);
 	if (!LegendaryHeroes::valid(m.game.legendaryHeroes))
 	{

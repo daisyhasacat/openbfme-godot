@@ -43,6 +43,9 @@ public:
 		std::string desyncDirectory;
 		std::string exeName = "openbfme";
 		std::string playerName;
+		// the incident report (GameNetwork/NetIncidentReport.h) goes to desyncDirectory too; `build` names the build in it
+		bool incidentReport = true;
+		std::string build;
 		bool adaptiveRunAhead = true; ///< lane MP-2: the local command delay follows the measured round trip (Network::updateRunAhead)
 		bool earlyOrders = true;      ///< lane NETLAG-2: NetworkConfig::earlyOrders (an order runs a frame sooner where the link allows)
 		std::uint32_t rejoinWindowMs = 300000; ///< lane ONLINE-3: an online game's rejoin window (NetworkConfig::rejoinWindowMs)
@@ -138,6 +141,10 @@ public:
 	const std::vector<std::string> &desyncDumps() const { return m_desyncDumps; }
 	const std::vector<std::string> &desyncDumpErrors() const { return m_desyncDumpErrors; }
 	std::string quitReason() const { return m_network ? m_network->quitReason() : std::string(); }
+	// the incident report (GameNetwork/NetIncidentReport.h): its file once something went wrong ("" before), rewritten as more happens and when the
+	// game ends; the failures to write it
+	const std::string &incidentReport() const { return m_incidentPath; }
+	const std::vector<std::string> &incidentReportErrors() const { return m_incidentErrors; }
 	// the recording's errors (a command that could not be encoded, a failed write): never silent
 	std::vector<std::string> recordingErrors() const { return m_writer ? m_writer->errors() : std::vector<std::string>(); }
 
@@ -163,6 +170,12 @@ private:
 	std::vector<std::string> m_desyncDumps, m_desyncDumpErrors; ///< lane MP-2
 	std::vector<size_t> m_dumpedHalves;                         ///< per desync report, the halves its dump holds + 1 (0 = none written)
 	void writeDesyncDumps();
+	// the incident report: written when its facts changed (or `ended` is new) and something worth reporting happened
+	void writeIncidentReport(bool ended);
+	std::string m_incidentPath, m_incidentStamp, m_incidentStarted, m_incidentSignature;
+	std::vector<std::string> m_incidentErrors;
+	std::uint64_t m_incidentStartMs = 0;
+	bool m_incidentEnded = false;
 	bool setUp(LiveGame &game, std::string *error); ///< begin's common part: the config, the transport, the network, the driver (not installed)
 	// lane ONLINE-3
 	std::unique_ptr<RelayLogFetch> m_fetch;

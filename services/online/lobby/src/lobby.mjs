@@ -42,6 +42,8 @@ function modeOf(value, what) {
 }
 export const MAX_JSON_BYTES = 16384;          // a JSON request body (ONLINE-2 r2: counted as received)
 export const MAX_LOG_BYTES = 64 * 1024 * 1024; // a relay log upload
+// map transfer (engine GameNetwork/MapPackage.h): a custom map's package, stored by the first 32 hex digits of its SHA-256 (the digest its setup key names)
+export const MAX_MAP_BYTES = 64 * 1024 * 1024;
 const LOG_HEADER_BYTES = 25; // RelayCore.h "Log format": magic 8, version 4, game id 8, slot mask 1, start 4
 const MAX_SLOTS = 8;
 const MINE_LEFT_MAX = 32; // ONLINEUX-1 r2: the game client's cap of a /v1/mine list (OnlineLobbyClient::kMaxMine)
@@ -1253,6 +1255,9 @@ export class Lobby {
       superweaponRestriction: intIn(setup.superweaponRestriction ?? 0, 0, 1, 'setup.superweaponRestriction'),
       legendaryHeroes: intIn(setup.legendaryHeroes ?? 1, 1, 4, 'setup.legendaryHeroes'),
       fortressConstruction: setup.fortressConstruction ?? false,
+      // OpenBFME's wall rules of the game's creator (engine GameNetwork/WallBalanceSetup.h: one canonical line, '' = off): opaque here, every client
+      // checks it; carried to every player's START so no player plays its own local wall options
+      wallBalance: str(setup.wallBalance ?? '', 4000, 'setup.wallBalance', { empty: true }),
       peaceTimeMinutes: intIn(setup.peaceTimeMinutes ?? 0, 0, 20, 'setup.peaceTimeMinutes'),
       // lane ONLINE-3: how far behind the players the spectators watch (seconds of game time; the relay holds the log back that far)
       spectatorDelay: intIn(setup.spectatorDelay ?? 120, 0, 600, 'setup.spectatorDelay'),
@@ -1560,6 +1565,7 @@ export class Lobby {
       rules: candidate.setup.rules,
       legendaryHeroes: candidate.setup.legendaryHeroes,
       fortressConstruction: candidate.setup.fortressConstruction,
+      ...(candidate.setup.wallBalance ? { wallBalance: candidate.setup.wallBalance } : {}),
       peaceTimeMinutes: candidate.setup.peaceTimeMinutes,
       luaAuthoritySlot: candidate.hostSlot,
       slots: candidate.slots.slice(0, last).map((s) => (s.state === 'player' || AI_STATES.has(s.state)
@@ -1747,6 +1753,37 @@ export class Lobby {
   }
   relayStatusList() {
     return { v: VERSION, now: Math.floor(this.env.now() / 1000), relays: [...this.relayStatus.values()].sort((x, y) => (x.relay < y.relay ? -1 : 1)) };
+  }
+
+  // ---- map transfer: a game's host stores its custom map here, the other players fetch it before they can be Ready ----
+  // A map is stored once under maps/<digest>.obmp and never replaced: its name is its contents (the first 32 hex digits of the SHA-256 of the package,
+  // checked here), so a second upload of the same digest can only be the same bytes. Any signed-in player may store one (the host) or read one (the
+  // players of a game on it: the digest is in the game's setup); the store's own size limit applies
+  maxMapBytes() {
+    return Math.min(MAX_MAP_BYTES, this.env.store.maxLogBytes ?? MAX_MAP_BYTES);
+  }
+  async putMap(account, digest, bytes) {
+    account = this.checkAccount(account);
+    this.limit(`map:${account.id}`, 6, 6);
+    const store = this.logStore();
+    if (!/^[0-9a-f]{32}$/.test(digest)) throw bad('bad_field', 'a map digest is 32 hex digits');
+    const max = this.maxMapBytes();
+    if (bytes.length > max) throw new LobbyError(413, 'too_big', `a map of more than ${max} bytes (this lobby's limit)`);
+    if (bytes.length < 9 || dec.decode(bytes.subarray(0, 4)) !== 'OBMP') throw bad('bad_map', 'not a map package');
+    const hash = bytesToHex(await this.env.sha256(bytes));
+    if (hash.slice(0, 32) !== digest) throw new LobbyError(409, 'map_digest', `the map's contents hash to ${hash.slice(0, 32)}, not ${digest}`);
+    const key = `maps/${digest}.obmp`;
+    if (await store.getBlob(key)) return { v: VERSION, stored: key, unchanged: true };
+    await store.putBlob(key, bytes);
+    return { v: VERSION, stored: key };
+  }
+  async getMap(account, digest) {
+    account = this.checkAccount(account);
+    this.limit(`mapread:${account.id}`, 20, 10);
+    if (!/^[0-9a-f]{32}$/.test(digest)) throw bad('bad_field', 'a map digest is 32 hex digits');
+    const b = await this.logStore().getBlob(`maps/${digest}.obmp`);
+    if (!b) throw new LobbyError(404, 'no_map', 'the host has not uploaded this map (yet)');
+    return b;
   }
 
   async uploadLog(id, bytes, signatureHex) {
@@ -2486,6 +2523,11 @@ export async function route(lobby, req) {
     if (m === 'POST' && p[1] === 'rooms' && p.length === 4 && p[3] === 'join') { // ONLINEHUB-1: join a private room by its code
       const account = await lobby.account(req.headers.authorization);
       return json(200, await lobby.joinByCode(account, p[2], await body()));
+    }
+    if (p[1] === 'maps' && p.length === 3 && (m === 'POST' || m === 'GET')) { // map transfer
+      const account = await lobby.account(req.headers.authorization);
+      if (m === 'POST') return json(200, await lobby.putMap(account, p[2], await rawBody(lobby.maxMapBytes())));
+      return { status: 200, headers: { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' }, body: await lobby.getMap(account, p[2]) };
     }
     if (p[1] !== 'games') return json(404, { v: VERSION, error: 'not_found', message: 'unknown path' });
     if (m === 'GET' && p.length === 2) {

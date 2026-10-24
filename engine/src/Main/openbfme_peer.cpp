@@ -1413,7 +1413,7 @@ int main(int argc, char **argv)
 					if (current->info.slots[s].isHuman())
 					{
 						++humans;
-						if (s > 0 && !current->accepted[(size_t)s])
+						if (s > 0 && (!current->accepted[(size_t)s] || !current->info.slots[s].hasMap)) // map transfer: every player has the map
 						{
 							accepted = false;
 						}
@@ -1676,6 +1676,7 @@ int main(int argc, char **argv)
 	}
 	so.network = w.network;
 	so.desyncDirectory = a.desyncDir;
+	so.incidentReport = !a.desyncDir.empty(); // the incident report (GameNetwork/NetIncidentReport.h) only where the caller asked for the dumps: a test run writes none into its directory
 	so.adaptiveRunAhead = !a.fixedRunAhead;
 	so.earlyOrders = !a.noEarlyOrders; // lane NETLAG-2
 	so.exeName = "openbfme_peer";
@@ -2402,6 +2403,14 @@ int main(int argc, char **argv)
 	for (const std::string &e : session.desyncDumpErrors())
 	{
 		r << "desync_dump_error " << e << "\n";
+	}
+	if (!session.incidentReport().empty())
+	{
+		r << "incident_report " << session.incidentReport() << "\n";
+	}
+	for (const std::string &e : session.incidentReportErrors())
+	{
+		r << "incident_report_error " << e << "\n";
 	}
 	for (const DesyncReport &d : net.desyncs())
 	{

@@ -59,6 +59,9 @@ public:
 		std::uint32_t longPollS = 0;
 		// lane PLATFORMICON-1: the one value this client tells the lobby about itself (the create / join body's "platform"); None: nothing is sent
 		PlatformKind platform = PlatformKind::None; // the game's glue sets localPlatform()
+		// map transfer (GameNetwork/MapPackage.h): the local player has the map (none: every map counts as present). Without it Ready is refused here;
+		// the game's online_maps.gd fetches the map from the lobby's map store meanwhile
+		std::function<bool(const std::string &mapName)> hasMap;
 	};
 	struct HttpRequest
 	{
@@ -185,7 +188,10 @@ public:
 	void setOtherSlot(int slot, SlotState state, int faction, int color, int startPos, int team);
 	// host: the game options (POST .../setup)
 	void setSetup(const SkirmishGameInfo &setup);
-	void setReady(bool ready);
+	void setReady(bool ready); // map transfer: Ready is refused ("ready" / "no_map") while the local player does not have the map
+	// map transfer: a line of the transfer's progress in the staging room's chat (a system line)
+	void mapNote(const std::u16string &text);
+	bool hasGameMap() const { return !inGame() || !m_options.hasMap || m_options.hasMap(m_info.mapName); }
 	void chat(const std::u16string &text);
 	void kick(int slot);
 	void start();                                         // host: POST .../start (the lobby builds every player's START)

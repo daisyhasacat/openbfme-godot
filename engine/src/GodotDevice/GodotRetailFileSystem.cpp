@@ -8,6 +8,7 @@
 #include "Common/RetailArchivePolicy.h"
 #include "Common/ArchiveFile.h"
 #include "Common/MD5.h"
+#include "GameNetwork/MapPackage.h"
 #include "GameClient/MapUtil.h"
 #include "GameClient/GameText.h"
 #include "GameClient/UserDataFolder.h"
@@ -67,6 +68,8 @@ void RetailFileSystem::_bind_methods()
 {
  ClassDB::bind_method(D_METHOD("install_library_map", "path", "root"), &RetailFileSystem::install_library_map, DEFVAL(String("user://installed-maps")));
  ClassDB::bind_method(D_METHOD("installed_maps", "root"), &RetailFileSystem::installed_maps, DEFVAL(String("user://installed-maps")));
+ ClassDB::bind_method(D_METHOD("map_package", "key"), &RetailFileSystem::map_package);
+ ClassDB::bind_method(D_METHOD("install_map_package", "bytes", "key", "root"), &RetailFileSystem::install_map_package, DEFVAL(String("user://installed-maps")));
  ClassDB::bind_method(D_METHOD("inspect_library_map", "path", "preview"), &RetailFileSystem::inspect_library_map, DEFVAL(false));
  ClassDB::bind_method(D_METHOD("content_signature"), &RetailFileSystem::content_signature);
 	ClassDB::bind_method(D_METHOD("mount_bfme2_path", "root"), &RetailFileSystem::mount_bfme2_path);
@@ -1019,6 +1022,32 @@ public:
 
 godot::Dictionary godot::RetailFileSystem::inspect_library_map(const String &path, bool preview)
 {
+ return inspectMapFolder(path, preview, false);
+}
+
+namespace {
+// Map transfer: the package of the folder of `mapPath` (its .map and every sidecar; another .map of the folder is left out, as install_library_map does)
+bool folderPackage(const std::string &mapPath, std::vector<uint8_t> &out, std::string &id, std::string *error)
+{
+ FolderArchiveFile folder;
+ const std::filesystem::path p=std::filesystem::u8path(mapPath);
+ if(!folder.open(p.parent_path().u8string(),error))return false;
+ const std::string own=FolderArchiveFile::key(p.filename().u8string());
+ std::vector<MapPackage::File> files;
+ for(const auto &source:folder.paths()) {
+  if(source.find('\\')==std::string::npos && source.size()>4 && source.compare(source.size()-4,4,".map")==0 && source!=own)continue;
+  MapPackage::File f;f.name=source;
+  if(!folder.readFile(source,f.bytes,error))return false;
+  files.push_back(std::move(f));
+ }
+ if(!MapPackage::encode(std::move(files),out,error))return false;
+ id=MapPackage::id(out);
+ return true;
+}
+}
+
+godot::Dictionary godot::RetailFileSystem::inspectMapFolder(const String &path, bool preview, bool contentKey)
+{
  Dictionary result; result["ok"]=false;
  auto fail=[&](const std::string &error) { result["error"]=toGodot(error); return result; };
  if(!m_fs)return fail("Retail archives are not mounted");
@@ -1038,6 +1067,14 @@ godot::Dictionary godot::RetailFileSystem::inspect_library_map(const String &pat
   identity+=toGodot(source)+String::num_uint64(FileAccess::get_modified_time(disk));
  }
  String alias="openbfme_library_"+identity.sha256_text();
+ if(contentKey) {
+  // Map transfer: the name every machine with these files gives the map (GameNetwork/MapPackage.h), so a game setup names it the same everywhere
+  std::vector<uint8_t> package;std::string packageId;
+  if(!folderPackage(toNative(path),package,packageId,&error))return fail(error);
+  const std::string key=MapPackage::mapKey(packageId);
+  alias=toGodot(key.substr(5,key.find('/',5)-5));
+  result["package_id"]=toGodot(packageId);result["package_size"]=(int64_t)package.size();
+ }
  result["key"]=String("maps/")+alias+String("/")+alias+String(".map");
  result["preview_name"]=alias; result["library"]=true; result["official"]=false;
  // WorldInfo keys: BFME2 MapUtil.cpp / MapCache::addMap. Strings may be
@@ -1122,13 +1159,13 @@ godot::Dictionary godot::RetailFileSystem::install_library_map(const String &pat
   }
   // FolderArchiveFile normalizes names to lower case.
   target=destination.path_join(path.get_file().to_lower());
-  auto staged=inspect_library_map(toGodot(staging).path_join(path.get_file().to_lower()),false);
+  auto staged=inspectMapFolder(toGodot(staging).path_join(path.get_file().to_lower()),false,true);
   if(!bool(staged.get("ok",false)))return staged;
   std::filesystem::rename(std::filesystem::u8path(staging),std::filesystem::u8path(toNative(destination)),ec);
   if(ec)return fail(toGodot(ec.message()));
  }
  if(!FileAccess::file_exists(target))target=destination.path_join(path.get_file().to_lower());
- result=inspect_library_map(target,true);
+ result=inspectMapFolder(target,true,true);
  if(!bool(result.get("ok",false)))return result;
  result["library"]=false;result["installed"]=true;
  for(int64_t i=0;i<m_installedMaps.size();++i)if(String(Dictionary(m_installedMaps[i])["key"])==String(result["key"]))return result;
@@ -1146,13 +1183,80 @@ godot::Array godot::RetailFileSystem::installed_maps(const String &directory)
    if(folder.ends_with(".installing"))continue;
    auto files=DirAccess::open(root.path_join(folder));if(files.is_null())continue;
    for(const String &name:files->get_files())if(name.get_extension().to_lower()=="map") {
-    auto entry=inspect_library_map(root.path_join(folder).path_join(name),true);
+    auto entry=inspectMapFolder(root.path_join(folder).path_join(name),true,true);
     if(bool(entry.get("ok",false))) { entry["library"]=false;entry["installed"]=true;m_installedMaps.push_back(entry); }
     else UtilityFunctions::push_warning("Installed map: ",entry.get("error",String()));
    }
   }
  }
  return m_installedMaps;
+}
+
+bool godot::RetailFileSystem::mapPackageBytes(const std::string &key, std::vector<uint8_t> &out, std::string *error)
+{
+ // only a map installed here by its package key (a retail or archive map is every player's: never sent)
+ if(MapPackage::keyDigest(key).empty()) { if(error)*error="not a transferable map: "+key; return false; }
+ for(const Variant &value:installed_maps()) {
+  Dictionary d=value;
+  if(toNative(String(d["key"]))!=key)continue;
+  std::string id;
+  if(!folderPackage(toNative(String(d["path"])),out,id,error))return false;
+  if(!MapPackage::idMatchesKey(id,key)) { if(error)*error="the installed map changed on disk since it was listed: "+key; return false; }
+  return true;
+ }
+ if(error)*error="this player has no installed map "+key;
+ return false;
+}
+
+godot::PackedByteArray godot::RetailFileSystem::map_package(const String &key)
+{
+ std::vector<uint8_t> bytes;std::string error;
+ PackedByteArray out;
+ if(!mapPackageBytes(toNative(key),bytes,&error)) { UtilityFunctions::push_warning("map_package: ",toGodot(error)); return out; }
+ out.resize((int64_t)bytes.size());if(!bytes.empty())memcpy(out.ptrw(),bytes.data(),bytes.size());
+ return out;
+}
+
+godot::Dictionary godot::RetailFileSystem::install_map_package(const PackedByteArray &data, const String &key, const String &root)
+{
+ Dictionary result;result["ok"]=false;
+ auto fail=[&](const std::string &error){result["error"]=toGodot(error);return result;};
+ std::vector<uint8_t> bytes(data.ptr(),data.ptr()+data.size());
+ const std::string id=MapPackage::id(bytes);
+ if(!MapPackage::idMatchesKey(id,toNative(key)))return fail("the received map does not match the game's map (its contents hash to "+id.substr(0,32)+")");
+ std::vector<MapPackage::File> files;std::string error;
+ if(!MapPackage::decode(bytes,files,&error))return fail(error);
+ installed_maps(root);
+ for(const Variant &value:m_installedMaps)if(String(Dictionary(value)["key"])==key) { Dictionary d=value; d["ok"]=true; return d; }
+ String installRoot=m_bfme1 && root=="user://installed-maps" ? String("user://bfme1-installed-maps") : root;
+ const String destination=ProjectSettings::get_singleton()->globalize_path(installRoot).path_join(toGodot(id));
+ const std::filesystem::path staging=std::filesystem::u8path(toNative(destination)+".installing");
+ std::error_code ec;
+ std::filesystem::remove_all(staging,ec);
+ std::filesystem::create_directories(staging,ec);
+ if(ec)return fail("cannot create "+staging.u8string()+": "+ec.message());
+ for(const MapPackage::File &f:files) {
+  std::string rel=f.name;std::replace(rel.begin(),rel.end(),'\\','/');
+  const std::filesystem::path out=staging/std::filesystem::u8path(rel);
+  std::filesystem::create_directories(out.parent_path(),ec);
+  if(ec)return fail("cannot create "+out.parent_path().u8string()+": "+ec.message());
+  auto file=FileAccess::open(toGodot(out.u8string()),FileAccess::WRITE);
+  if(file.is_null())return fail("cannot write "+out.u8string());
+  PackedByteArray buffer;buffer.resize((int64_t)f.bytes.size());if(!f.bytes.empty())memcpy(buffer.ptrw(),f.bytes.data(),f.bytes.size());
+  file->store_buffer(buffer);file->close();
+ }
+ const String mapFile=toGodot(MapPackage::mapFileName(files));
+ auto staged=inspectMapFolder(toGodot(staging.u8string()).path_join(mapFile),false,true);
+ if(!bool(staged.get("ok",false)))return staged;
+ if(String(staged["key"])!=key)return fail("the installed files name another map: "+toNative(String(staged["key"])));
+ std::filesystem::remove_all(std::filesystem::u8path(toNative(destination)),ec);
+ std::filesystem::rename(staging,std::filesystem::u8path(toNative(destination)),ec);
+ if(ec)return fail("cannot publish the map: "+ec.message());
+ result=inspectMapFolder(destination.path_join(mapFile),true,true);
+ if(!bool(result.get("ok",false)))return result;
+ result["library"]=false;result["installed"]=true;result["received"]=true;
+ m_installedMaps.push_back(result);
+ return result;
 }
 
 void godot::RetailFileSystem::append_installed_maps(std::vector<MapCacheEntry> &maps)

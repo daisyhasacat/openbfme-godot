@@ -5,6 +5,7 @@
 
 #include "Common/MiniJson.h"
 #include "GameNetwork/OnlineStart.h"
+#include "GameNetwork/WallBalanceSetup.h"
 
 #include <algorithm>
 #include <cmath>
@@ -418,7 +419,14 @@ std::string slotChoices(int faction, int color, int startPos, int team)
 std::string setupFields(const SkirmishGameInfo &s)
 {
 	std::string out = "\"map\":" + OnlineLobbyClient::jsonQuote(s.mapName) + ",\"startingCash\":" + std::to_string(s.startingCash) +
-		",\"superweaponRestriction\":" + std::to_string(s.superweaponRestriction) + ",\"legendaryHeroes\":" + std::to_string(s.legendaryHeroes) + ",\"peaceTimeMinutes\":" + std::to_string(s.peaceTimeMinutes) + ",\"fortressConstruction\":" + (s.fortressConstruction ? "true" : "false") + ",\"rules\":";
+		",\"superweaponRestriction\":" + std::to_string(s.superweaponRestriction) + ",\"legendaryHeroes\":" + std::to_string(s.legendaryHeroes) + ",\"peaceTimeMinutes\":" + std::to_string(s.peaceTimeMinutes) + ",\"fortressConstruction\":" + (s.fortressConstruction ? "true" : "false");
+	// the creator's wall rules (GameNetwork/WallBalanceSetup.h), for every player of the online game; "" (off) is not sent
+	const std::string walls = s.wallBalance.empty() ? WallBalanceSetup::toText(WallBalanceSetup::local()) : s.wallBalance;
+	if (!walls.empty())
+	{
+		out += ",\"wallBalance\":" + OnlineLobbyClient::jsonQuote(walls);
+	}
+	out += ",\"rules\":";
 	if (MpGameRules::isNone(s.rules))
 	{
 		out += "null";
@@ -595,7 +603,28 @@ void OnlineLobbyClient::setReady(bool ready)
 	{
 		return;
 	}
+	if (ready && !hasGameMap())
+	{
+		Event e{ Event::Refused };
+		e.request = "ready";
+		e.code = "no_map";
+		e.text = u"You do not have this map yet: it is being downloaded from the lobby.";
+		m_events.push_back(e);
+		return;
+	}
 	queue("ready", "POST", "/v1/games/" + m_gameId + "/ready", std::string("{\"ready\":") + (ready ? "true" : "false") + "}");
+}
+
+void OnlineLobbyClient::mapNote(const std::u16string &text)
+{
+	if (!inGame())
+	{
+		return;
+	}
+	Event e{ Event::Chat };
+	e.text = text;
+	e.flag = true;
+	m_events.push_back(e);
 }
 
 void OnlineLobbyClient::chat(const std::u16string &text)
@@ -823,6 +852,14 @@ bool OnlineLobbyClient::readGameView(const JsonValue &g, std::string *error, boo
 	if (const JsonValue *value = setup->get("peaceTimeMinutes"))
 		if (!intOf(value, 0, 20, peace) || !PeaceTime::valid((int)peace)) return fail("invalid peaceTimeMinutes");
 	info.peaceTimeMinutes = (int)peace;
+	info.wallBalance.clear();
+	if (const JsonValue *walls = setup->get("wallBalance"))
+	{
+		WallBalance parsed;
+		std::string why;
+		if (!walls->isString() || !WallBalanceSetup::fromText(walls->string, parsed, &why)) return fail(why.empty() ? std::string("wallBalance must be a string") : why);
+		info.wallBalance = walls->string;
+	}
 	const JsonValue *rules = setup->get("rules");
 	info.rules = MpGameRules::none();
 	if (rules && rules->type != JsonValue::NUL)

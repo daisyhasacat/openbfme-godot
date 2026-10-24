@@ -552,6 +552,7 @@ var _dc_left_seen := 0
 var _dc_log_seen := 0 # lane MP-DROP-1: the disconnect path's log lines already printed
 var _dc_quit_handled := false
 var _desync_shown := false
+var _net_incident_report := "" # GameNetwork/NetIncidentReport.h: the network game's NETREPORT-*.txt once something went wrong
 var _net_shot_desync := ""
 var _replay_file := ""          # lane MP-2
 var _replay_check := false
@@ -4358,6 +4359,8 @@ func _exit_to_score_screen() -> void:
 	_close_objectives()
 	if _state != State.PLAYING:
 		return
+	var incident := _net_incident_report if not _net_state.is_empty() else "" # the session's final rewrite happens as the game data goes
+	_net_incident_report = ""
 	if _campaign_flow != null and _campaign_flow.active:
 		_campaign_flow.finish_mission()
 		return
@@ -4431,6 +4434,8 @@ func _exit_to_score_screen() -> void:
 	_audio.play_misc("ScoreScreenMusic") # MiscAudio ScoreScreenMusic
 	if not _fs.is_bfme1():
 		_install_graph_overlay()
+	if not incident.is_empty():
+		_show_net_report_notice(incident)
 
 
 ## AptTimeLine::RenderGraph is a device-drawn component (S-1063): the lines of the graph the movie's _graphMode picks, drawn over the movie's graph area.
@@ -5635,6 +5640,11 @@ func _open_online_shell() -> void:
 	_online_http.shell = _shell
 	_online_http.lobby_url = url
 	add_child(_online_http)
+	var maps: Node = load("res://scripts/online_maps.gd").new() # map transfer: the host's custom map through the lobby's map store
+	maps.shell = _shell
+	maps.fs = _fs
+	maps.lobby_url = url
+	_online_http.add_child(maps)
 	_online_report_panel(url)
 	print("GAME ONLINE screens: lobby %s (online play is a test feature)" % url)
 	_online_test_note()
@@ -6206,6 +6216,8 @@ func _net_poll_lobby() -> void:
 
 func _net_begin() -> void:
 	var opts := {"script": _net_script, "desync_dir": OS.get_user_data_dir(), "census": not _net_census.is_empty(), "early_orders": _net_early_orders}
+	opts["build"] = "%s %s" % [str(Release.info.commit()) if Release.info != null else "unknown", OS.get_name()] # the incident report's build line
+	_net_incident_report = ""
 	if not _net_record.is_empty():
 		opts["record"] = _net_record
 	elif _record:
@@ -6329,6 +6341,10 @@ func _net_tick() -> void:
 		call_deferred("_net_players_open") # (a proof hook: the logic worker is held when a deferred call runs, not in this per-frame path)
 	for d in st.desyncs:
 		printerr(d)
+	var incident := str(st.get("incident_report", ""))
+	if incident != _net_incident_report:
+		_net_incident_report = incident
+		print("GAME NET incident report: ", incident)
 	if not st.desyncs.is_empty() and not _desync_shown:
 		_desync_shown = true
 		_report_desync(_statistics_context.duplicate(true), st.get("desync_dumps", []).duplicate(), st.desyncs.duplicate())
@@ -6703,7 +6719,9 @@ func _print_replay_watch(frame: int) -> void:
 func _show_desync_box(dumps: Array) -> void:
 	var title: String = _shell.fetch_text("GUI:DesyncTitle").text
 	var text: String = _shell.fetch_text("GUI:DesyncText").text
-	if not dumps.is_empty():
+	if not _net_incident_report.is_empty():
+		text += "\n\nWhat happened: " + _net_incident_report
+	elif not dumps.is_empty():
 		text += "\n\n" + str(dumps[0])
 	print("GAME NET desync message: %s / %s" % [title, text])
 	var layer := CanvasLayer.new()
@@ -6728,15 +6746,56 @@ func _show_desync_box(dumps: Array) -> void:
 	body.text = text
 	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(body)
+	var buttons := HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.add_child(buttons)
+	if not _net_incident_report.is_empty():
+		var open := Button.new()
+		open.text = "Open report"
+		var path := _net_incident_report
+		open.pressed.connect(func(): OS.shell_open(path))
+		buttons.add_child(open)
 	var ok := Button.new()
 	ok.text = _shell.fetch_text("GUI:Ok").text
 	ok.pressed.connect(func(): layer.queue_free())
-	box.add_child(ok)
+	buttons.add_child(ok)
 	_game_nodes.append(layer)
 	if not _net_shot_desync.is_empty():
 		await get_tree().create_timer(1.0).timeout
 		get_viewport().get_texture().get_image().save_png(_net_shot_desync)
 		print("GAME NET desync screenshot: ", _net_shot_desync)
+
+
+## GameNetwork/NetIncidentReport.h: over the score screen after a network game that desynced or lost a player, the report's path (Open shows it). OpenBFME's
+## own notice (retail has none); it goes by Close or after 30 s
+func _show_net_report_notice(path: String) -> void:
+	print("GAME NET incident report final: ", path)
+	var layer := CanvasLayer.new()
+	layer.layer = 96
+	add_child(layer)
+	var panel := PanelContainer.new()
+	panel.anchor_left = 0.3
+	panel.anchor_right = 0.7
+	panel.anchor_top = 0.04
+	layer.add_child(panel)
+	var box := VBoxContainer.new()
+	panel.add_child(box)
+	var body := Label.new()
+	body.text = "Something went wrong in this network game. A report explaining what happened was saved to:\n" + path
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(body)
+	var buttons := HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.add_child(buttons)
+	var open := Button.new()
+	open.text = "Open report"
+	open.pressed.connect(func(): OS.shell_open(path))
+	buttons.add_child(open)
+	var close := Button.new()
+	close.text = "Close"
+	close.pressed.connect(func(): if is_instance_valid(layer): layer.queue_free())
+	buttons.add_child(close)
+	get_tree().create_timer(30.0).timeout.connect(func(): if is_instance_valid(layer): layer.queue_free())
 
 
 # lane PERF-1: the main thread's CPU time in ms (Linux: /proc/self/task/<pid>/schedstat, nanoseconds on the CPU; -1 elsewhere): a frame cost that other

@@ -7,12 +7,15 @@ set(OPENBFME_MP2_SOURCES
     src/GameNetwork/DisconnectManager.cpp
     src/GameNetwork/NetworkSettings.cpp
     src/GameLogic/SelfDestruct.cpp
+    src/GameNetwork/WallBalanceSetup.cpp
 )
 list(APPEND OPENBFME_SIM_SOURCES ${OPENBFME_MP2_SOURCES})
 # client-only sources (excluded from the simulation audit in tools/sim/sim_policy.json)
 set(OPENBFME_MP2_CLIENT_SOURCES
     src/GameClient/GUI/AptScreens/AptDisconnectScreen.cpp
     src/GameNetwork/DesyncDump.cpp
+    src/GameNetwork/NetIncidentReport.cpp
+    src/GameNetwork/MapPackage.cpp
     src/GameClient/GUI/AptScreens/AptSaveLoad.cpp
     src/GameNetwork/LANAPI.cpp
     src/GameClient/GUI/AptScreens/AptLanLobby.cpp
@@ -25,4 +28,7 @@ set(OPENBFME_MP2_TESTS
     tests/test_mp2_lan.cpp
     tests/test_mp2_lan_lobby.cpp
     tests/test_mp2_authority.cpp
+    tests/test_net_incident_report.cpp
+    tests/test_wall_balance_setup.cpp
+    tests/test_map_transfer.cpp
 )

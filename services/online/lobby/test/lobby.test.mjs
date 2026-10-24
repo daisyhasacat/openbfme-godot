@@ -1677,3 +1677,33 @@ test('ONLINEUX-1: a player who leaves a started game is done with it: not in /v1
   assert.equal((await call(reloaded, 'GET', '/v1/mine', { token: b.token })).body.games.length, 0);
   assert.deepEqual((await call(reloaded, 'GET', '/v1/mine', { token: b.token })).body.left, [id]);
 });
+
+test('map transfer: a host stores its custom map under its content digest once; players fetch it; other bytes and bad digests are refused', async () => {
+  const env = fakeEnv();
+  const lobby = new Lobby(env, configFromEnv(ENV));
+  const a = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Ann' } })).body;
+  const b = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Bea' } })).body;
+  const pkg = new Uint8Array([...new TextEncoder().encode('OBMP'), 1, 1, 0, 0, 0, 5, 0, 0, 0, ...new TextEncoder().encode('x.map'), 3, 0, 0, 0, 1, 2, 3]);
+  const digest = Buffer.from(await env.sha256(pkg)).toString('hex').slice(0, 32);
+  assert.equal((await call(lobby, 'POST', `/v1/maps/${digest}`, { body: pkg })).status, 401);
+  assert.equal((await call(lobby, 'GET', `/v1/maps/${digest}`, { token: b.token })).status, 404);
+  const put = await call(lobby, 'POST', `/v1/maps/${digest}`, { token: a.token, body: pkg });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  assert.equal(put.body.stored, `maps/${digest}.obmp`);
+  assert.equal((await call(lobby, 'POST', `/v1/maps/${digest}`, { token: a.token, body: pkg })).body.unchanged, true);
+  const got = await call(lobby, 'GET', `/v1/maps/${digest}`, { token: b.token });
+  assert.equal(got.status, 200);
+  assert.deepEqual(new Uint8Array(got.body), pkg);
+  const other = pkg.slice();
+  other[other.length - 1] ^= 1;
+  const refused = await call(lobby, 'POST', `/v1/maps/${digest}`, { token: a.token, body: other });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, 'map_digest');
+  assert.equal((await call(lobby, 'POST', '/v1/maps/nothex', { token: a.token, body: pkg })).status, 400);
+  assert.equal((await call(lobby, 'POST', `/v1/maps/${digest}`, { token: a.token, body: new TextEncoder().encode('not a package') })).status, 400);
+  // the setup carries the creator's wall rules through to the game (engine GameNetwork/WallBalanceSetup.h), absent when off
+  const walls = 'wallbalance 1;intermediate_hubs=0';
+  assert.equal(lobby.checkSetup({ ...setup, wallBalance: walls }, true).wallBalance, walls);
+  assert.equal(lobby.checkSetup(setup, true).wallBalance, '');
+  assert.throws(() => lobby.checkSetup({ ...setup, wallBalance: 7 }, true), /wallBalance/);
+});

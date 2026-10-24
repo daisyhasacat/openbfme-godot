@@ -133,6 +133,13 @@ public:
 	const std::string &quitReason() const { return m_quitReason; }
 	// what happened, one line each (screen on / off, votes, drops), for the peer reports
 	const std::vector<std::string> &log() const { return m_log; }
+	// when each log line was noted: the logic frame and the Network's clock of the update or command that noted it (the incident report's timeline)
+	struct LogTime
+	{
+		std::uint32_t frame = 0;
+		std::uint64_t ms = 0;
+	};
+	const std::vector<LogTime> &logTimes() const { return m_logTimes; }
 	// the slots this peer dropped as the next packet router
 	const std::vector<int> &dropped() const { return m_dropped; }
 
@@ -208,6 +215,8 @@ private:
 	Screen m_screen;
 	std::string m_quitReason;
 	std::vector<std::string> m_log;
+	std::vector<LogTime> m_logTimes; ///< parallel to m_log
+	LogTime m_noteTime;              ///< the frame and clock of the call in progress (update, a command, a vote, a rejoin)
 	std::vector<int> m_dropped;
 	std::array<std::string, MAX_SLOTS> m_dropWait; ///< lane MP-DROP-1: the last logged reason a due drop of the slot waits
 	std::array<bool, MAX_SLOTS> m_announcedBy{};                 ///< lane MP-DROP-1: the slot sent a DISCONNECTFRAME to this peer (validateDrop)

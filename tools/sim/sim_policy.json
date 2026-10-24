@@ -628,6 +628,14 @@
    "reason": "lane MP-2: the desync dump file (RW 0x6290C7's DESYNC-*.txt): it writes the exchanged hash breakdowns and copies the replay; it reads no logic state"
   },
   {
+   "glob": "src/GameNetwork/MapPackage.cpp",
+   "reason": "map transfer: the canonical package of an installed map's files and its SHA-256 name; the lobby sends it before a game, it reads no logic state"
+  },
+  {
+   "glob": "src/GameNetwork/NetIncidentReport.cpp",
+   "reason": "the network game's incident report (NETREPORT-*.txt): it words the Network's desync reports and disconnect log for the player; it reads no logic state"
+  },
+  {
    "glob": "src/GameClient/GUI/AptScreens/AptSaveLoad.cpp",
    "reason": "lane MP-2: SaveLoad.apt's replay page (the list the host gives, the chosen file handed back as a shell request); no logic state"
   },

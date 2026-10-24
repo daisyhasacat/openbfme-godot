@@ -83,8 +83,16 @@ public:
 	Array get_loose_files() const;
 	// Presentation-only aliases; never inserted into the skirmish map catalog.
 	Dictionary inspect_library_map(const String &path, bool preview = false);
+	// an installed map (contentKey): its key is its package's (MapPackage::mapKey, equal on every machine with the same files), not the path's
+	Dictionary inspectMapFolder(const String &path, bool preview, bool contentKey);
 	Dictionary install_library_map(const String &path, const String &root = "user://installed-maps");
 	Array installed_maps(const String &root = "user://installed-maps");
+	// Map transfer (GameNetwork/MapPackage.h): the package of an installed map by its setup key (empty: not an installed map of this player), and a
+	// received package installed under `root`/<package id>/ once its bytes hash to the id `key` names ({ok, key, error} like install_library_map)
+	PackedByteArray map_package(const String &key);
+	Dictionary install_map_package(const PackedByteArray &bytes, const String &key, const String &root = "user://installed-maps");
+	// the same for the engine side (the LAN lobby's and the online client's callbacks)
+	bool mapPackageBytes(const std::string &key, std::vector<uint8_t> &out, std::string *error);
 	// Shared metadata for both lobby listing and actual game preparation.
 	void append_installed_maps(std::vector<MapCacheEntry> &maps);
 	// lane MOD-5: the user maps folder of the RotWK mount (UserDataFolder::userMapFolder: the user data folder that the install's gi.dat names, in the

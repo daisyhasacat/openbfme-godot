@@ -9,6 +9,7 @@
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include "GodotDevice/GodotGameWorld.h"
+#include "GameNetwork/WallBalanceSetup.h"
 #include "GameLogic/Module/FishingUpdate.h"
 #include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 #include "GodotDevice/LuaGDExtensionRegister.h"
@@ -1028,6 +1029,10 @@ Dictionary GameWorld::prepare_new_game(const Dictionary &message)
 			simulationProfileName(m_choice.current) + " (the OpenBFME option Uber performance mode)"));
 		return result;
 	}
+	if (!m_netStarted)
+	{
+		in.game.wallBalance = WallBalanceSetup::toText(readLocalWallBalance()); // this player's own game: its rules go into the setup (and the replay)
+	}
 	auto start = std::make_unique<NewGameStart>(RandomAlgorithm::ZH_CarryChain);
 	// A map may have been installed after this world was set up. Only explicit
 	// installs join the simulation cache; preview aliases remain unplayable.
@@ -1145,6 +1150,60 @@ Dictionary GameWorld::start_new_game(const Dictionary &options)
 	return report;
 }
 
+// the BFME2Lua wall options: res://dev/wall_balance.cfg's defaults under this player's user://wall_balance.cfg
+Ref<ConfigFile> GameWorld::loadWallConfig()
+{
+	Ref<ConfigFile> wallConfig; wallConfig.instantiate();
+	wallConfig->load("res://dev/wall_balance.cfg");
+	Ref<ConfigFile> savedWalls; savedWalls.instantiate();
+	if (savedWalls->load("user://wall_balance.cfg") == OK)
+ {
+  for (const String &section : savedWalls->get_sections())
+   for (const String &key : savedWalls->get_section_keys(section))
+    wallConfig->set_value(section,key,savedWalls->get_value(section,key));
+ }
+	return wallConfig;
+}
+
+// this player's wall rules (WallBalanceSetup::local is set to them: the setup of a game this player starts carries them)
+WallBalance GameWorld::readLocalWallBalance()
+{
+	Ref<ConfigFile> wallConfig = loadWallConfig();
+	auto setting = [&](const char *key, const Variant &fallback) { return wallConfig->get_value("walls",key,fallback); };
+	auto scalar = [&](const char *key, float fallback, float lo, float hi) {
+		const float value = setting(key,fallback);
+		return std::isfinite(value) ? std::clamp(value,lo,hi) : fallback;
+	};
+	WallBalance walls;
+	walls.enabled = setting("enabled",false);
+	walls.trebuchetWallTargets = setting("trebuchet_wall_targets",false);
+	walls.intermediateHubs = setting("intermediate_hubs",false);
+	walls.shareArrows = setting("share_arrows",true);
+	walls.startingWalls = setting("starting_walls",false);
+	walls.requireEnclosed = setting("require_enclosed",true);
+	walls.gateGap = setting("gate_gap",false);
+	walls.disableUpgradeSeparation = setting("disable_upgrade_separation",false);
+	walls.enclosedIncome = scalar("enclosed_income",2,1,10);
+	walls.startingRadius = scalar("starting_radius",450,150,1500);
+	walls.startingSpacing = scalar("starting_spacing",300,100,1000);
+	const PackedStringArray factions = wallConfig->get_section_keys("starting_hubs");
+	for (int64_t i=0;i<factions.size();++i) walls.startingHubs[toNative(factions[i])] = toNative(wallConfig->get_value("starting_hubs",factions[i]));
+	const PackedStringArray gates = wallConfig->get_section_keys("starting_gates");
+	for (int64_t i=0;i<gates.size();++i) walls.startingGates[toNative(gates[i])] = toNative(wallConfig->get_value("starting_gates",gates[i]));
+	walls.wallDamage = (int)scalar("wall_damage",1,0,2);
+	walls.fortressDamage = (int)scalar("fortress_damage",1,0,2);
+	const char *healthKeys[] = {"wall_health","hub_health","gate_health"};
+	const float healthDefaults[] = {6,30,6};
+	for (int i=0;i<3;++i) walls.health[i] = scalar(healthKeys[i],healthDefaults[i],.01f,10000);
+	const char *costKeys[] = {"wall_cost","hub_cost","outer_hub_cost","expansion_cost"};
+	const float costDefaults[] = {.5f,.7f,.3f,.8f};
+	for (int i=0;i<4;++i) walls.cost[i] = scalar(costKeys[i],costDefaults[i],0,100);
+	walls.fortressRange = scalar("fortress_range",2,.01f,100);
+	walls.hubRange = scalar("hub_range",2,.01f,100);
+	WallBalanceSetup::setLocal(walls);
+	return walls;
+}
+
 Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String &map_name, const Dictionary &options, const Callable &progress, bool withTerrain)
 {
 	const auto worldContext = m_world ? m_world->enterContext() : nullptr; // this world's stores and audio validator while it runs (several worlds may live)
@@ -1178,54 +1237,38 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	LiveGame::Options lo = loIn;
 	lo.heroStatsProfile = m_heroStatsProfile;
 	lo.heroStatsMessage = [](const std::string &message) { UtilityFunctions::print(toGodot(message)); };
-	// Optional BFME2Lua wall profile, captured once before creating any objects.
-	Ref<ConfigFile> wallConfig; wallConfig.instantiate();
-	wallConfig->load("res://dev/wall_balance.cfg");
-	Ref<ConfigFile> savedWalls; savedWalls.instantiate();
-	if (savedWalls->load("user://wall_balance.cfg") == OK)
- {
-  for (const String &section : savedWalls->get_sections())
-   for (const String &key : savedWalls->get_section_keys(section))
-    wallConfig->set_value(section,key,savedWalls->get_value(section,key));
- }
-	auto setting = [&](const char *key, const Variant &fallback) { return wallConfig->get_value("walls",key,fallback); };
-	auto scalar = [&](const char *key, float fallback, float lo, float hi) {
-		const float value = setting(key,fallback);
-		return std::isfinite(value) ? std::clamp(value,lo,hi) : fallback;
-	};
+	// Optional BFME2Lua wall profile, captured once before creating any objects: a game with a setup (skirmish, network, replay, save) plays the rules
+	// the setup carries (GameNetwork/WallBalanceSetup.h: the starter's, shared with every peer); only a bare map load reads this player's file
+	Ref<ConfigFile> wallConfig = loadWallConfig();
  m_pavingEnabled=wallConfig->get_value("paving","enabled",true);
  m_pavingName=wallConfig->get_value("paving","texture",String());
  const float pavingSize=wallConfig->get_value("paving","tile_size",80.0);
  m_pavingTileSize=std::isfinite(pavingSize)?std::clamp(pavingSize,10.0f,1000.0f):80.0f;
 	auto &walls = lo.wallBalance;
-	walls.enabled = setting("enabled",false);
-	walls.trebuchetWallTargets = setting("trebuchet_wall_targets",false);
-	walls.intermediateHubs = setting("intermediate_hubs",false);
-	walls.shareArrows = setting("share_arrows",true);
-	walls.startingWalls = setting("starting_walls",false);
-	walls.requireEnclosed = setting("require_enclosed",true);
-	walls.gateGap = setting("gate_gap",false);
-	walls.disableUpgradeSeparation = setting("disable_upgrade_separation",false);
-	walls.enclosedIncome = scalar("enclosed_income",2,1,10);
-	walls.startingRadius = scalar("starting_radius",450,150,1500);
-	walls.startingSpacing = scalar("starting_spacing",300,100,1000);
-	const PackedStringArray factions = wallConfig->get_section_keys("starting_hubs");
-	for (int64_t i=0;i<factions.size();++i) walls.startingHubs[toNative(factions[i])] = toNative(wallConfig->get_value("starting_hubs",factions[i]));
-	const PackedStringArray gates = wallConfig->get_section_keys("starting_gates");
-	for (int64_t i=0;i<gates.size();++i) walls.startingGates[toNative(gates[i])] = toNative(wallConfig->get_value("starting_gates",gates[i]));
-	walls.wallDamage = (int)scalar("wall_damage",1,0,2);
-	walls.fortressDamage = (int)scalar("fortress_damage",1,0,2);
-	const char *healthKeys[] = {"wall_health","hub_health","gate_health"};
-	const float healthDefaults[] = {6,30,6};
-	for (int i=0;i<3;++i) walls.health[i] = scalar(healthKeys[i],healthDefaults[i],.01f,10000);
-	const char *costKeys[] = {"wall_cost","hub_cost","outer_hub_cost","expansion_cost"};
-	const float costDefaults[] = {.5f,.7f,.3f,.8f};
-	for (int i=0;i<4;++i) walls.cost[i] = scalar(costKeys[i],costDefaults[i],0,100);
-	walls.fortressRange = scalar("fortress_range",2,.01f,100);
-	walls.hubRange = scalar("hub_range",2,.01f,100);
-	if (options.has("wall_rebalance")) walls.enabled = options["wall_rebalance"];
-	if (options.has("starting_walls")) walls.startingWalls = options["starting_walls"];
-	if (options.has("require_enclosed")) walls.requireEnclosed = options["require_enclosed"];
+	walls = readLocalWallBalance();
+	const bool setupWalls = lo.start != nullptr;
+	if (setupWalls)
+	{
+		std::string why;
+		if (!WallBalanceSetup::fromText(lo.start->message.game.wallBalance, walls, &why))
+		{
+			return fail(why);
+		}
+	}
+	// the script options change the rules of a game this player runs alone (a bare load, or its own skirmish, whose setup and recording then say so)
+	const bool ownSetup = lo.start && lo.start == m_start.get() && !m_netStarted && !optBool(options, "network_replay", false) && !optBool(options, "replay", false);
+	if (!setupWalls || ownSetup)
+	{
+		if (options.has("wall_rebalance")) walls.enabled = options["wall_rebalance"];
+		if (options.has("starting_walls")) walls.startingWalls = options["starting_walls"];
+		if (options.has("require_enclosed")) walls.requireEnclosed = options["require_enclosed"];
+	}
+	if (ownSetup)
+	{
+		m_start->message.game.wallBalance = WallBalanceSetup::toText(walls);
+		m_startMessage.game.wallBalance = m_start->message.game.wallBalance;
+		m_recordMessage.game.wallBalance = m_start->message.game.wallBalance;
+	}
 	// A network replay restores the network game's settings, including its absence of offline starting-wall jobs.
 	if (m_netStarted || optBool(options, "network_replay", false)) walls.startingHubs.clear();
 
@@ -4767,6 +4810,7 @@ Dictionary GameWorld::net_host(int64_t port, const Dictionary &message, int64_t 
 		r["error"] = toGodot(error);
 		return r;
 	}
+	readLocalWallBalance(); // the host's rules go into the START (LANLobbyHost stamps WallBalanceSetup::local)
 	m_netHost = std::make_unique<LANLobbyHost>(*m_netSocket, m, hostSlot, (int)run_ahead, (int)crc_interval, net_profile());
 	m_netStarted = false;
 	r["ok"] = true;
@@ -4968,6 +5012,7 @@ Dictionary GameWorld::net_begin(const Dictionary &options)
 		so.desyncDirectory = options.has("desync_dir") ? std::string(String(options["desync_dir"]).utf8().get_data()) : std::string();
 		so.exeName = "openbfme";
 		so.playerName = loadScreenU16ToUtf8(m_netStart.game.game.slots[m_netStart.localSlot].name);
+		so.build = options.has("build") ? std::string(String(options["build"]).utf8().get_data()) : std::string();
 	}
 	if (options.has("record"))
 	{
@@ -5217,6 +5262,7 @@ Dictionary GameWorld::net_status() const
 			dumps.push_back(toGodot(p));
 		}
 		r["desync_dumps"] = dumps;
+		r["incident_report"] = toGodot(s.incidentReport()); // GameNetwork/NetIncidentReport.h ("" while nothing went wrong)
 		for (const std::string &st : DisconnectManager::stopLines())
 		{
 			stops.push_back(toGodot(st));
@@ -7428,6 +7474,41 @@ Dictionary GameWorld::lan_open(const Dictionary &options)
 	o.colorCount = (int)m_settings->multiplayerColors.size();
 	// lane HERO-2: the slots' Create-a-Heroes are checked against this world's CreateAHeroSystem.ini and command buttons
 	o.validateCreateAHero = [this](const CreateAHeroHero &h, std::string *why) { return m_world->createAHeroSystem().validateHero(h, m_world->commands(), why); };
+	// map transfer (GameNetwork/MapPackage.h): a map is this player's when the game start finds it (prepareNewGame's map cache, the installed maps
+	// included); the host sends an installed map's package; a received one is installed among the installed maps
+	o.hasMap = [this](const std::string &mapName) {
+		if (m_fs.is_valid())
+		{
+			m_fs->append_installed_maps(m_mapCache);
+		}
+		return std::any_of(m_mapCache.begin(), m_mapCache.end(), [&](const MapCacheEntry &m) { return m.name == mapName; });
+	};
+	o.mapPackage = [this](const std::string &mapName, std::vector<std::uint8_t> &out, std::string *error) {
+		return m_fs.is_valid() && m_fs->mapPackageBytes(mapName, out, error);
+	};
+	o.installMap = [this](const std::string &mapName, const std::vector<std::uint8_t> &bytes, std::string *error) {
+		if (m_fs.is_null())
+		{
+			return false;
+		}
+		PackedByteArray data;
+		data.resize((int64_t)bytes.size());
+		if (!bytes.empty())
+		{
+			std::memcpy(data.ptrw(), bytes.data(), bytes.size());
+		}
+		const Dictionary result = m_fs->install_map_package(data, toGodot(mapName));
+		if (!(bool)result.get("ok", false))
+		{
+			if (error)
+			{
+				*error = std::string(String(result.get("error", String())).utf8().get_data());
+			}
+			return false;
+		}
+		m_fs->append_installed_maps(m_mapCache);
+		return true;
+	};
 	const Array targets = options.get("targets", Array());
 	for (int64_t i = 0; i < targets.size(); ++i)
 	{
@@ -7447,6 +7528,7 @@ Dictionary GameWorld::lan_open(const Dictionary &options)
 	}
 	m_choice.lan = nullptr;
 	m_lan.reset();
+	readLocalWallBalance(); // a game this player hosts carries its rules (LANAPI::hostStartGame stamps WallBalanceSetup::local)
 	auto lan = std::make_unique<LANAPI>(net_profile(), wname, o);
 	std::string error;
 	if (!lan->open(&error))
@@ -7632,6 +7714,7 @@ Dictionary GameWorld::start_replay(const Dictionary &options)
 	std::unique_ptr<ReplayFile> file = std::move(m_pendingReplay);
 	// Network recordings store their human slot/player mapping; offline recordings leave every entry at -1.
 	o["network_replay"] = std::any_of(file->header.network.slotPlayerIndex.begin(), file->header.network.slotPlayerIndex.end(), [](int player) { return player >= 0; });
+	o["replay"] = true; // the recording's setup decides its wall rules (GameNetwork/WallBalanceSetup.h)
 	Dictionary report = start_new_game(o);
 	if (!(bool)report.get("ok", false))
 	{

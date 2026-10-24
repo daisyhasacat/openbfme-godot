@@ -342,7 +342,7 @@ export class LobbyObject {
     await this.readyPromise;
     const path = new URL(request.url).pathname;
     // INFRA-2: an admin import (POST /v1/admin/blobs/...) carries a log too: the same byte limit and upload places as the relay's uploads
-    const isLog = path.startsWith('/v1/relay/logs/') || path.startsWith('/v1/admin/blobs/');
+    const isLog = path.startsWith('/v1/relay/logs/') || path.startsWith('/v1/admin/blobs/') || path.startsWith('/v1/maps/'); // map transfer: a map is as big
     const refuse = (status, code, message, extra = {}) => new Response(JSON.stringify({ v: 1, error: code, message }),
       { status, headers: { 'content-type': 'application/json; charset=utf-8', connection: 'close', ...extra } });
     if (!this.ready) {

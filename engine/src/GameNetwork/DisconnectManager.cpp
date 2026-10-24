@@ -90,6 +90,7 @@ void DisconnectManager::note(const std::string &line)
 	if (m_log.size() < 200)
 	{
 		m_log.push_back(line);
+		m_logTimes.push_back(m_noteTime);
 	}
 }
 
@@ -384,6 +385,7 @@ void DisconnectManager::voteForPlayerDisconnect(Network &net, int slot, std::uin
 	{
 		return;
 	}
+	m_noteTime = LogTime{ logicFrame, net.now() };
 	m_playerVotes[slot][local].vote = true;
 	NetCommandMsg c;
 	c.type = NETCOMMANDTYPE_DISCONNECTVOTE;
@@ -450,6 +452,7 @@ std::string DisconnectManager::frameLine(Network &net, std::uint64_t now, std::u
 
 void DisconnectManager::update(Network &net, std::uint64_t now, std::uint32_t logicFrame)
 {
+	m_noteTime = LogTime{ logicFrame, now };
 	const int local = net.config().localSlot;
 	applyPendingDrops(net, logicFrame); // lane MP-2 (review): a held drop whose claimed leave / drop arrived since
 	if (m_announced && logicFrame > m_announcedFrame)
@@ -701,6 +704,7 @@ bool DisconnectManager::validateDrop(Network &net, const NetCommandMsg &c, int f
 
 void DisconnectManager::processDisconnectCommand(Network &net, const NetCommandMsg &c, std::uint64_t now, std::uint32_t logicFrame)
 {
+	m_noteTime = LogTime{ logicFrame, now };
 	const int local = net.config().localSlot;
 	const int from = c.slot;
 	switch (c.type)
@@ -938,6 +942,7 @@ void DisconnectManager::slotRejoined(Network &net, int slot)
 	{
 		return;
 	}
+	m_noteTime.ms = net.now();
 	for (int i = 0; i < MAX_SLOTS; ++i)
 	{
 		m_playerVotes[slot][i] = Vote();

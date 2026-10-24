@@ -251,6 +251,8 @@ public:
 	bool isGameSlot(int slot) const { return slot >= 0 && slot < MAX_SLOTS && m_slots[(size_t)slot].active; } ///< lane MP-DROP-1: a network player of the game
 	/// lane MP-DROP-1: the slot left or was dropped at some frame here (a rejoined slot keeps its departure: it is never router or decider again)
 	bool hasDeparted(int slot) const { return slot >= 0 && slot < MAX_SLOTS && m_departureFrame[(size_t)slot] != 0xFFFFFFFFu; }
+	/// the frame of that departure (0xFFFFFFFF: none), for the incident report
+	UnsignedInt departureFrame(int slot) const { return slot >= 0 && slot < MAX_SLOTS ? m_departureFrame[(size_t)slot] : 0xFFFFFFFFu; }
 	// "Network:PlayerLeftGame" notices (RW 0x8D57D8), one per dropped or departed player, for the UI
 	const std::vector<std::u16string> &leftGameNotices() const { return m_leftNotices; }
 	// the clock of the disconnect path (default NetMilliseconds); a test drives its own

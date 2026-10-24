@@ -268,6 +268,7 @@ public:
 	Array online_take_requests();
 	void online_deliver(int64_t id, int64_t status, const String &body, const String &error);
 	Dictionary online_status();
+	void online_map_note(const String &text); // map transfer: a system line in the staging room's chat
 	Dictionary online_apply(const Dictionary &spec);
 	// Sol r1: the host could not play the START OnlineShell.apt handed on (GameWorld.net_online refused it): the screens show a recoverable lobby error
 	// and go back to the game list (false: no online screens). online_redact: a text with its credentials masked (OnlineLobbyClient::redact: relay,

@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "GameLogic/WallBalance.h"
+#include <godot_cpp/classes/config_file.hpp>
 #include <array>
 
 #include "GameClient/VideoPlayer.h" // lane CAMP-1H: m_videos (complete for the unique_ptr)
@@ -603,6 +605,10 @@ public:
 	Dictionary recording_status() const;
 	Array list_replays(const String &directory) const;
 	ProfileIdentity net_profile() const;
+	// the BFME2Lua wall options (res://dev defaults under user://wall_balance.cfg) and this player's rules from them; readLocalWallBalance also sets
+	// WallBalanceSetup::local, the rules a game this player starts carries (GameNetwork/WallBalanceSetup.h)
+	static Ref<ConfigFile> loadWallConfig();
+	static WallBalance readLocalWallBalance();
 	// lane UBER-1: the simulation profile this player runs (the OpenBFME option "Uber performance mode", docs/UBER.md): "faithful" or "uber". It decides the
 	// profile identity (LAN, replays) and every game this world starts must carry it (prepare_new_game refuses another). { ok, error }: refused while a
 	// LAN game (not the lobby list) is joined or hosted

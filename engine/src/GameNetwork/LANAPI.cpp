@@ -3,6 +3,8 @@
 // See GameNetwork/LANAPI.h.
 
 #include "GameNetwork/LANAPI.h"
+#include "GameNetwork/WallBalanceSetup.h"
+#include "GameNetwork/MapPackage.h"
 
 #include "GameNetwork/NetPacket.h"
 
@@ -52,6 +54,16 @@ std::string toNarrow(const std::u16string &s)
 	for (char16_t c : s)
 	{
 		out.push_back(c < 0x80 ? (char)c : '?');
+	}
+	return out;
+}
+
+std::u16string toWide(const std::string &s) // an ASCII note for a system chat line (other bytes as '?')
+{
+	std::u16string out;
+	for (unsigned char c : s)
+	{
+		out.push_back(c < 0x80 ? (char16_t)c : u'?');
 	}
 	return out;
 }
@@ -378,6 +390,7 @@ void LANAPI::requestGameCreate(const SkirmishGameInfo &game)
 	m_current.info.simulationProfile = m_profile.simulationProfile(); // lane UBER-1: the host's game runs the host's profile (its identity's)
 	m_current.info.slots[0].state = SLOT_PLAYER;
 	m_current.info.slots[0].name = m_name;
+	m_current.info.slots[0].hasMap = true; // the host's own map (map transfer: the others tell theirs, MAP_AVAILABILITY)
 	m_current.info.inProgress = false;
 	m_current.lobby[0] = NetAddress{ 0, m_lobbyPort };
 	m_current.game[0] = NetAddress{ 0, m_gamePort };
@@ -616,6 +629,12 @@ bool LANAPI::hostSetOptions(const SkirmishGameInfo &info)
 			// lane HERO-2: a human slot's Create-a-Hero is its player's (requestSlotCreateAHero), like its name
 			next.slots[s].hasCreateAHero = m_current.info.slots[s].hasCreateAHero;
 			next.slots[s].createAHero = m_current.info.slots[s].createAHero;
+			// map transfer: what the player told of this map; another map is unknown until it tells again (the host has its own)
+			next.slots[s].hasMap = s == 0 || (next.mapName == m_current.info.mapName && m_current.info.slots[s].hasMap);
+			if (next.mapName != m_current.info.mapName)
+			{
+				m_mapPercent[(size_t)s] = 0;
+			}
 		}
 		else if (next.slots[s].isHuman())
 		{
@@ -683,12 +702,24 @@ bool LANAPI::hostStartGame(std::string *reason)
 			}
 			return false;
 		}
+		if (m_current.info.slots[s].isHuman() && !m_current.info.slots[s].hasMap)
+		{
+			if (reason)
+			{
+				*reason = "slot " + std::to_string(s) + " does not have the map yet (" + std::to_string(m_mapPercent[(size_t)s]) + " % received)";
+			}
+			return false;
+		}
 	}
 	// the start every peer begins from (GameNetwork/LANLobby.h LobbyStart)
 	m_start = LobbyStart();
 	m_start.game.mode = NewGameMode::Skirmish;
 	m_start.game.game = m_current.info;
 	m_start.game.game.inProgress = true;
+	if (m_start.game.game.wallBalance.empty())
+	{
+		m_start.game.game.wallBalance = WallBalanceSetup::toText(WallBalanceSetup::local()); // the host's wall rules, for every peer (WallBalanceSetup.h)
+	}
 	if (m_start.game.game.seed == 0)
 	{
 		m_start.game.game.seed = (std::uint32_t)(m_now * 2654435761u) | 1u; // the host's choice (retail: GetTickCount)
@@ -719,6 +750,17 @@ void LANAPI::leaveToLobby()
 	resetPlatforms();
 	m_pending = ACT_NONE;
 	m_starting = false;
+	// map transfer: a download, the host's package and the told progress belong to the game left
+	m_map = MapTransfer();
+	m_mapBytes.clear();
+	m_mapHave.clear();
+	m_mapInFlight.clear();
+	m_mapToldName.clear();
+	m_mapToldPercent = -1;
+	m_package.clear();
+	m_packageName.clear();
+	m_packageError.clear();
+	m_mapPercent.fill(0);
 }
 
 void LANAPI::resetPlatforms()
@@ -886,6 +928,7 @@ void LANAPI::update(std::uint64_t now)
 			}
 		}
 	}
+	mapTick(now); // map transfer
 	// the pending join / leave
 	if (m_pending != ACT_NONE && now > m_expiration)
 	{
@@ -1247,6 +1290,24 @@ void LANAPI::handle(const NetAddress &from, const std::vector<std::uint8_t> &byt
 		}
 		return;
 	}
+	case LANMessageType::MAP_AVAILABILITY:
+		if (handleMapAvailability(r, from))
+		{
+			heardInGame();
+		}
+		return;
+	case LANMessageType::MAP_REQUEST:
+		if (handleMapRequest(r, from))
+		{
+			heardInGame();
+		}
+		return;
+	case LANMessageType::MAP_DATA:
+		if (handleMapData(r, from))
+		{
+			heardInGame();
+		}
+		return;
 	default:
 		note("unhandled LAN message type " + std::to_string(type) + " from " + from.text());
 		return;
@@ -1346,6 +1407,8 @@ bool LANAPI::handleRequestJoin(NetByteReader &r, const std::u16string &sender, c
 	gs = SkirmishGameSlot();
 	gs.state = SLOT_PLAYER;
 	gs.name = sender;
+	gs.hasMap = false; // map transfer: until the player tells it has the map (MAP_AVAILABILITY)
+	m_mapPercent[(size_t)slot] = 0;
 	m_current.lobby[(size_t)slot] = from;
 	m_current.game[(size_t)slot] = NetAddress{ from.ip, gamePort };
 	m_current.lastHeard[(size_t)slot] = now;
@@ -1519,5 +1582,303 @@ bool LANAPI::handleGameStart(NetByteReader &r, const NetAddress &from)
 	m_current.inProgress = true;
 	note("the game starts");
 	event(Event{ Event::GameStart });
+	return true;
+}
+
+// ---- map transfer (GameNetwork/MapPackage.h) --------------------------------------------------------------------------------------------------------
+
+bool LANAPI::localHasMap(const std::string &mapName) const
+{
+	return !m_options.hasMap || m_options.hasMap(mapName);
+}
+
+void LANAPI::mapFailed(const std::string &why)
+{
+	m_map.active = false;
+	m_map.failed = true;
+	m_map.error = why;
+	m_mapBytes.clear();
+	m_mapHave.clear();
+	m_mapInFlight.clear();
+	note("map transfer failed: " + why);
+	event(Event{ Event::Chat, RET_OK, -1, true, u"", toWide("The map could not be received: " + why) });
+}
+
+void LANAPI::mapTick(std::uint64_t now)
+{
+	if (!m_inGame || m_host || m_current.inProgress || m_localSlot < 0)
+	{
+		return;
+	}
+	const std::string &name = m_current.info.mapName;
+	if (name != m_map.mapName)
+	{
+		// the host chose another map: what we have of it decides; a download of the last one stops
+		m_map = MapTransfer();
+		m_map.mapName = name;
+		m_map.present = localHasMap(name);
+		m_mapBytes.clear();
+		m_mapHave.clear();
+		m_mapInFlight.clear();
+		if (!m_map.present)
+		{
+			if (MapPackage::keyDigest(name).empty() || !m_options.installMap)
+			{
+				m_map.failed = true;
+				m_map.error = MapPackage::keyDigest(name).empty() ? "it is not a map OpenBFME can send (a map of the game or of a mod)" : "this lobby cannot install maps";
+			}
+			else
+			{
+				m_map.active = true;
+				m_mapAskedFirst = 0;
+				note("receiving the map " + name + " from the host");
+				event(Event{ Event::Chat, RET_OK, -1, true, u"", u"You do not have this map: receiving it from the host..." });
+			}
+		}
+	}
+	if (m_map.active)
+	{
+		std::vector<std::uint8_t> h0 = header(LANMessageType::MAP_REQUEST);
+		auto ask = [&](std::uint32_t chunk) {
+			NetByteWriter w;
+			w.str(name);
+			w.u32(chunk);
+			std::vector<std::uint8_t> h = h0;
+			const std::vector<std::uint8_t> b = w.take();
+			h.insert(h.end(), b.begin(), b.end());
+			sendTo(m_current.lobby[0], h);
+			m_mapInFlight[chunk] = now;
+		};
+		if (m_map.total == 0)
+		{
+			// the first chunk names the size
+			if (m_mapAskedFirst == 0 || now - m_mapAskedFirst >= m_options.mapRetryMs)
+			{
+				m_mapAskedFirst = now;
+				ask(0);
+			}
+		}
+		else
+		{
+			for (auto it = m_mapInFlight.begin(); it != m_mapInFlight.end();)
+			{
+				it = now - it->second >= m_options.mapRetryMs ? m_mapInFlight.erase(it) : std::next(it); // lost: asked for again below
+			}
+			for (std::uint32_t c = 0; c < (std::uint32_t)m_mapHave.size() && m_mapInFlight.size() < m_options.mapWindow; ++c)
+			{
+				if (!m_mapHave[c] && !m_mapInFlight.count(c))
+				{
+					ask(c);
+				}
+			}
+		}
+	}
+	sendMapAvailability(false);
+}
+
+void LANAPI::sendMapAvailability(bool force)
+{
+	if (!m_inGame || m_host || m_localSlot < 0)
+	{
+		return;
+	}
+	const int percent = m_map.present ? 100 : m_map.total ? (int)((std::uint64_t)m_map.received * 100 / m_map.total) : 0;
+	const bool changed = m_mapToldName != m_map.mapName || m_mapToldHas != m_map.present || (percent / 10 != m_mapToldPercent / 10);
+	if (!force && !changed && m_mapAvailabilitySent != 0 && m_now - m_mapAvailabilitySent < m_options.resendMs)
+	{
+		return;
+	}
+	std::vector<std::uint8_t> h = header(LANMessageType::MAP_AVAILABILITY);
+	NetByteWriter w;
+	w.str(m_map.mapName);
+	w.u8(m_map.present ? 1 : 0);
+	w.u8((std::uint8_t)percent);
+	const std::vector<std::uint8_t> b = w.take();
+	h.insert(h.end(), b.begin(), b.end());
+	sendTo(m_current.lobby[0], h);
+	m_mapToldName = m_map.mapName;
+	m_mapToldHas = m_map.present;
+	m_mapToldPercent = percent;
+	m_mapAvailabilitySent = m_now;
+}
+
+bool LANAPI::handleMapAvailability(NetByteReader &r, const NetAddress &from)
+{
+	const std::string name = r.str();
+	const bool has = r.flag();
+	const int percent = r.u8();
+	if (r.failed() || !r.atEnd() || percent > 100)
+	{
+		m_errors.push_back("a malformed map availability from " + from.text());
+		return false;
+	}
+	const int s = slotOf(from);
+	if (!amIHost() || s <= 0 || m_current.inProgress)
+	{
+		return s >= 0;
+	}
+	if (name != m_current.info.mapName)
+	{
+		return true; // about the map before the last change
+	}
+	m_mapPercent[(size_t)s] = percent;
+	if (m_current.info.slots[s].hasMap != has)
+	{
+		m_current.info.slots[s].hasMap = has;
+		note("slot " + std::to_string(s) + (has ? " has the map" : " does not have the map"));
+		event(Event{ Event::GameOptions });
+		broadcastOptions(); // every player's screen shows who still waits for the map
+	}
+	return true;
+}
+
+bool LANAPI::handleMapRequest(NetByteReader &r, const NetAddress &from)
+{
+	const std::string name = r.str();
+	const std::uint32_t chunk = r.u32();
+	if (r.failed() || !r.atEnd())
+	{
+		m_errors.push_back("a malformed map request from " + from.text());
+		return false;
+	}
+	const int s = slotOf(from);
+	if (!amIHost() || s <= 0 || m_current.inProgress || name != m_current.info.mapName)
+	{
+		return s >= 0; // only a player of our game, for the game's map
+	}
+	if (m_packageName != name)
+	{
+		m_packageName = name;
+		m_package.clear();
+		m_packageError.clear();
+		if (MapPackage::keyDigest(name).empty())
+		{
+			m_packageError = "the host's map is a map of the game or of a mod, which every player needs to have";
+		}
+		else if (!m_options.mapPackage || !m_options.mapPackage(name, m_package, &m_packageError))
+		{
+			m_packageError = m_packageError.empty() ? "the host cannot read the map" : m_packageError;
+			m_package.clear();
+		}
+		else if (!MapPackage::idMatchesKey(MapPackage::id(m_package), name))
+		{
+			m_packageError = "the host's map changed on disk";
+			m_package.clear();
+		}
+		note(m_packageError.empty() ? "sending the map " + name + " (" + std::to_string(m_package.size()) + " bytes)" : "cannot send the map: " + m_packageError);
+	}
+	std::vector<std::uint8_t> h = header(LANMessageType::MAP_DATA);
+	NetByteWriter w;
+	w.str(name);
+	const std::uint32_t size = m_options.mapChunkBytes;
+	const std::uint64_t at = (std::uint64_t)chunk * size;
+	if (!m_packageError.empty() || m_package.empty() || at >= m_package.size())
+	{
+		w.u8(1); // refused
+		w.str(m_packageError.empty() ? std::string("no such part of the map") : m_packageError);
+	}
+	else
+	{
+		w.u8(0);
+		w.u32((std::uint32_t)m_package.size());
+		w.u32(size);
+		w.u32(chunk);
+		const size_t n = (size_t)std::min<std::uint64_t>(size, m_package.size() - at);
+		w.bytes(std::vector<std::uint8_t>(m_package.begin() + (std::ptrdiff_t)at, m_package.begin() + (std::ptrdiff_t)(at + n)));
+	}
+	const std::vector<std::uint8_t> b = w.take();
+	h.insert(h.end(), b.begin(), b.end());
+	sendTo(from, h);
+	return true;
+}
+
+bool LANAPI::handleMapData(NetByteReader &r, const NetAddress &from)
+{
+	const std::string name = r.str();
+	const std::uint8_t status = r.u8();
+	std::string why;
+	std::uint32_t total = 0, size = 0, chunk = 0;
+	std::vector<std::uint8_t> data;
+	if (status == 0)
+	{
+		total = r.u32();
+		size = r.u32();
+		chunk = r.u32();
+		data = r.bytes();
+	}
+	else
+	{
+		why = r.str();
+	}
+	if (r.failed() || !r.atEnd() || status > 1)
+	{
+		m_errors.push_back("a malformed map part from " + from.text());
+		return false;
+	}
+	if (!m_inGame || m_host || !(from == m_current.lobby[0]))
+	{
+		return false;
+	}
+	if (!m_map.active || name != m_map.mapName)
+	{
+		return true; // late: another map, or already complete
+	}
+	if (status == 1)
+	{
+		mapFailed(why);
+		return true;
+	}
+	if (total == 0 || total > MapPackage::kMaxBytes + 64ull * MapPackage::kMaxFiles + 64 || size == 0 || size > 65536)
+	{
+		mapFailed("the host announced a map of " + std::to_string(total) + " bytes");
+		return true;
+	}
+	if (m_map.total == 0)
+	{
+		m_map.total = total;
+		m_mapBytes.assign(total, 0);
+		m_mapHave.assign((total + size - 1) / size, false);
+		m_mapInFlight.clear();
+	}
+	const std::uint64_t at = (std::uint64_t)chunk * size;
+	const std::uint64_t expect = at < total ? std::min<std::uint64_t>(size, total - at) : 0;
+	if (total != m_map.total || chunk >= m_mapHave.size() || data.size() != expect || (std::uint64_t)m_mapHave.size() != ((std::uint64_t)total + size - 1) / size)
+	{
+		mapFailed("the host sent a part that does not fit the map");
+		return true;
+	}
+	m_mapInFlight.erase(chunk);
+	if (m_mapHave[chunk])
+	{
+		return true;
+	}
+	std::copy(data.begin(), data.end(), m_mapBytes.begin() + (std::ptrdiff_t)at);
+	m_mapHave[chunk] = true;
+	m_map.received += (std::uint32_t)data.size();
+	if (m_map.received < m_map.total)
+	{
+		return true;
+	}
+	// complete: the bytes must be the map the game names, then they are installed
+	const std::string id = MapPackage::id(m_mapBytes);
+	if (!MapPackage::idMatchesKey(id, name))
+	{
+		mapFailed("the received map is not the game's map (it hashes to " + id.substr(0, 32) + ")");
+		return true;
+	}
+	std::string error;
+	if (!m_options.installMap(name, m_mapBytes, &error))
+	{
+		mapFailed(error.empty() ? std::string("it could not be installed") : error);
+		return true;
+	}
+	m_map.active = false;
+	m_map.present = true;
+	m_mapBytes.clear();
+	m_mapHave.clear();
+	note("received the map " + name + " (" + std::to_string(m_map.total) + " bytes)");
+	event(Event{ Event::Chat, RET_OK, -1, true, u"", u"The map was received and installed." });
+	event(Event{ Event::GameOptions });
+	sendMapAvailability(true);
 	return true;
 }
