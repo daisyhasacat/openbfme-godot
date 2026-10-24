@@ -11,7 +11,10 @@ var _error := ""
 var _jobs: Array = []
 var _busy := false
 
-func begin(game: String, token: String, hosting: bool) -> void:
+func begin(game: String, token: String, hosting: bool, reason: String = "") -> void:
+	if not reason.is_empty():
+		if not token.is_empty(): reason = reason.replace(token, "<redacted>")
+		report_ready.emit(AptMenuPlayer.online_redact(reason.left(8192)))
 	if not game.is_valid_hex_number() or game.length() != 16:
 		report_ready.emit("Per-file comparison unavailable: this lobby does not provide file diagnostics. Update the lobby and both clients, then recreate the room.")
 		return

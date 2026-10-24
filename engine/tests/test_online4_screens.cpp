@@ -3355,7 +3355,7 @@ TEST_CASE("onlineux1 retail: a refused join is said in the player's words, on li
 		}
 		return -1;
 	};
-	// Another version: the box keeps executable and archive differences from the lobby.
+	// Keep the fixed-size APT dialog concise; the transport sends details to the Lua console.
 	GadgetListBoxSetSelected(join.sh->gameList(), rowOf("Other"));
 	REQUIRE(join.clickWhenShown("Main.Controls.JoinGame"));
 	REQUIRE_MESSAGE(runUntil(all, [&] { return join.sh->messageBox() && join.sh->messageBox()->type() != AptMessageBox::TYPE_NONE; }, 300), join.notes());
@@ -3363,11 +3363,8 @@ TEST_CASE("onlineux1 retail: a refused join is said in the player's words, on li
 	std::u16string flat = said;
 	std::replace(flat.begin(), flat.end(), u'\n', u' ');
 	CHECK_MESSAGE(flat.find(u"different OpenBFME version or different game files") != std::u16string::npos, OnlineLobbyClient::utf16ToUtf8(said));
-	CHECK(said.find(u"fedcba98") != std::u16string::npos);
-	CHECK(flat.find(u"You: engine join-build") != std::u16string::npos);
-	CHECK(flat.find(u"Host: engine host-build") != std::u16string::npos);
-	CHECK(flat.find(u"rotwk:ini.big bbbb 20") != std::u16string::npos);
-	CHECK(flat.find(u"rotwk:ini.big aaaa 10") != std::u16string::npos);
+	CHECK(said == AptOnlineShell::wrapLines(u"You can't join this game: it was made with a different OpenBFME version or different game files.\n\nSee the Lua console for the detailed reason and per-file comparison.", 58));
+	CHECK(said.find(u"fedcba98") == std::u16string::npos);
 	CHECK(linesFit(said, 58));
 	join.dismissBox();
 	// a wrong password: RotWK's own text (GUI:JoinFailedBadPassword, the player's game text)

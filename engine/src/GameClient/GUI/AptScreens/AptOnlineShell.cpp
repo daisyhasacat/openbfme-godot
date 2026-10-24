@@ -716,7 +716,8 @@ std::u16string AptOnlineShell::playerMessage(const std::string &request, const s
 	}
 	if (code == "profile")
 	{
-		return u"You can't join this game: it was made with a different OpenBFME version or different game files.\n\n" + lobbyText + u"\nSee the Lua console for the per-file comparison.";
+		return u"You can't join this game: it was made with a different OpenBFME version or different game files.\n\n"
+			   u"See the Lua console for the detailed reason and per-file comparison.";
 	}
 	if (code == "password")
 	{

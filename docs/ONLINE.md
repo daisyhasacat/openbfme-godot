@@ -1377,9 +1377,10 @@ Create and join requests may include `profile_details`, the current canonical
 `ProfileIdentity` text (engine compatibility ID, feature/numeric/RNG settings,
 mods, and archives in mount order with MD5 and size). The server stores the
 host's details with the room and compares them when the profile digest refuses
-an ordinary or room-code join. The join dialog retains this reason, naming up
+an ordinary or room-code join. The Lua console retains this reason, naming up
 to three differing lines with separate “You” and “Host” values and a count of
-additional differences. Long engine identifiers are grouped for wrapping and
+additional differences. The fixed-size APT join dialog shows only a short summary
+and directs the player to the console, so long reports cannot overflow it. Long engine identifiers are grouped for wrapping and
 to avoid the client's credential redaction. These are compatibility IDs, not
 hashes of the platform executable or release version numbers.
 

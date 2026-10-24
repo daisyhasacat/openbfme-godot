@@ -9,7 +9,7 @@
 ## Lane ONLINEHUB-1: the same transport carries the OpenBFME platform API's requests (kind "platform": AptMenuPlayer.platform_take_requests /
 ## platform_deliver; GET / POST / DELETE, no token); `lobby_url` is then the platform's base URL (it names the version: .../v1).
 extends Node
-signal compatibility_scan(game: String, token: String, hosting: bool)
+signal compatibility_scan(game: String, token: String, hosting: bool, reason: String)
 
 var shell: Object = null
 var lobby_url := ""
@@ -110,7 +110,7 @@ func _on_done(result: int, code: int, _headers: PackedStringArray, body: PackedB
 			var decoded = JSON.parse_string(body.get_string_from_utf8())
 			if decoded is Dictionary:
 				if code == 200 and _ordinary_request.get("path", "") == "/v1/games" and _ordinary_request.get("method", "") == "POST":
-					compatibility_scan.emit(str(decoded.get("id", "")), str(_ordinary_request.get("token", "")), true)
+					compatibility_scan.emit(str(decoded.get("id", "")), str(_ordinary_request.get("token", "")), true, "")
 				elif code == 409 and decoded.get("error", "") == "profile":
-					compatibility_scan.emit(str(decoded.get("compatibility_game", "")), str(_ordinary_request.get("token", "")), false)
+					compatibility_scan.emit(str(decoded.get("compatibility_game", "")), str(_ordinary_request.get("token", "")), false, str(decoded.get("message", "")))
 		_deliver(id, code, body.get_string_from_utf8(), "")

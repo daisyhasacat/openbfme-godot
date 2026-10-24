@@ -13,7 +13,7 @@
 ## Lane ONLINE-3 (spectators): `spectate` asks for a spectator START for `join_id` (POST /v1/games/<id>/spectate: a version 3 ticket, a fresh index
 ## each time), once a second while the game has not started; the session is not kept (a spectator has no slot to rejoin: it asks again).
 extends Node
-signal compatibility_scan(game: String, session: String, hosting: bool)
+signal compatibility_scan(game: String, session: String, hosting: bool, reason: String)
 
 signal started(start_json: String)
 signal game_created(id: String)
@@ -189,11 +189,11 @@ func _on_response(result: int, code: int, _headers: PackedStringArray, body: Pac
 	if code != 200:
 		if code == 409 and data.get("error", "") == "profile":
 			profile_rejected = true
-			compatibility_scan.emit(str(data.get("compatibility_game", "")), token, false)
+			compatibility_scan.emit(str(data.get("compatibility_game", "")), token, false, str(data.get("message", "")))
 		_fail("%s (%s)" % [data.get("message", "HTTP %d" % code), data.get("error", "")])
 		return
 	if _step == "create":
-		compatibility_scan.emit(str(data.get("id", "")), token, true)
+		compatibility_scan.emit(str(data.get("id", "")), token, true, "")
 	if data.get("game") is Dictionary and data.game.get("slots") is Array:
 		var players: Array = []
 		for slot in data.game.slots:
