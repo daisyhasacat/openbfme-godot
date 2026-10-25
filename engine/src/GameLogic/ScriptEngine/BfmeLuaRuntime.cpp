@@ -144,6 +144,35 @@ local function numeric(v,lo,hi,integer)
 end
 local function count(kind) local n=0; for _ in pairs(view.collections[kind] or {}) do n=n+1 end; return n end
 local proxy
+local function playerKey(r,id)
+ if r.key then return r.key end
+ if tonumber(id)==0 then return 'NeutralFaction' end
+ if r.name=='PlyrCreeps' or r.name=='CreepFaction' or r.faction=='Creeps' then return 'CreepFaction' end
+ return r.name and r.name~='' and r.name or ('Player_'..id)
+end
+local function playerLabel(r,id)
+ if r.label then return r.label end
+ local key=playerKey(r,id)
+ if key=='NeutralFaction' or key=='CreepFaction' or not r.faction or r.faction=='' then return key end
+ return key..' ('..r.faction..')'
+end
+local function resolvePlayer(value)
+ if type(value)=='userdata' then
+  local _,h=record(value); if h.kind~='players' then error('expected a Player',3) end
+  return tonumber(h.id)
+ end
+ if type(value)=='number' then numeric(value,0,19,true); return value end
+ if type(value)~='string' then error('expected a player name or Player handle',3) end
+ local found
+ for id,r in pairs(view.collections.players or {}) do
+  if value==playerKey(r,id) or value==playerLabel(r,id) or (r.name and r.name~='' and value==r.name) or (value=='NeutrualFaction' and tonumber(id)==0) then
+   if found and found~=tonumber(id) then error('ambiguous player name: '..value,3) end
+   found=tonumber(id)
+  end
+ end
+ if found==nil then error('unknown player: '..value,3) end
+ return found
+end
 -- A template handle or INI name that must exist in collection `kind`; returns the name.
 local function templateName(value, kind, label)
  if type(value)=='userdata' and info[value] then value=(record(value)).id end
@@ -168,14 +197,13 @@ local function set(p, field, value)
   elseif field=='buildTime' or field=='trainTime' or field=='visionRange' or field=='shroudClearingRange' then numeric(value,0,1e30,false)
   else error('unsupported or read-only template field: '..tostring(field),2) end
  elseif field=='ownerPlayer' then
-  if type(value)=='userdata' then local _,owner=record(value); if owner.kind~='players' then error('expected Player',2) end; value=tonumber(owner.id) end
-  numeric(value,0,19,true)
+  value=resolvePlayer(value)
  elseif field=='level' then numeric(value,1,100,true)
  else error('unsupported or read-only instance field: '..tostring(field),2) end
  return queue(h.kind,h.id,field,value)
 end
 local function inspect(p)
- local r,h=record(p); return {label=kinds[h.kind]..'['..h.id..']',kind=kinds[h.kind],id=r.id,values=copy(r)}
+ local r,h=record(p); return {label=h.kind=='players' and playerLabel(r,h.id) or kinds[h.kind]..'['..h.id..']',kind=kinds[h.kind],id=r.id,values=copy(r)}
 end
 -- Map coordinates are SAGE x/y; terrain supplies z. builderId 0 = the building raises itself.
 local function construct(building, position, builderId, playerId, speed, onComplete)
@@ -183,7 +211,7 @@ local function construct(building, position, builderId, playerId, speed, onCompl
  if type(position)~='table' then error('expected position {x=..., y=...}',2) end
  numeric(position.x,-1e7,1e7,false); numeric(position.y,-1e7,1e7,false)
  local angle=position.rotation or 0; numeric(angle,-1e6,1e6,false)
- numeric(playerId,0,19,true)
+ playerId=resolvePlayer(playerId)
  if speed==nil then speed=1 end; numeric(speed,0.01,100,false)
  if onComplete~=nil and type(onComplete)~='function' then error('expected completion function',2) end
  local callback
@@ -227,10 +255,9 @@ local function instanceId(t,label)
  return tonumber(h.id)
 end
 local function playerId(p)
- local _,h=record(p)
- if h.kind~='players' then error('expected a Player',3) end
+ return resolvePlayer(p)
 )lua"
-R"lua( return tonumber(h.id)
+R"lua(
 end
 local function name(v,label) if type(v)~='string' or v=='' then error('expected '..label..' name',3) end; return v end
 local function target(t) if t==nil then return nil end; if type(t)=='userdata' then return instanceId(t,'target') end; return where(t) end
@@ -362,11 +389,13 @@ local mt={
   if method then return method end
   if key=='ownerPlayer' and r.playerId then return proxy('players',tostring(r.playerId)) end
   if (key=='type' or key=='template') and r.typeId then return proxy(h.kind=='buildingInstances' and 'buildingTypes' or 'unitTypes',r.typeId) end
+  if h.kind=='players' and key=='key' then return playerKey(r,h.id) end
+  if h.kind=='players' and key=='label' then return playerLabel(r,h.id) end
   return copy(r[key])
  end,
  __newindex=set,
  __pairs=function(p) local r=record(p); return next,copy(r),nil end,
- __tostring=function(p) local _,h=record(p); return kinds[h.kind]..'['..h.id..']' end,
+ __tostring=function(p) local r,h=record(p); return h.kind=='players' and playerLabel(r,h.id) or kinds[h.kind]..'['..h.id..']' end,
  __metatable='bfme proxy'
 }
 proxy=function(kind,id)
@@ -381,13 +410,33 @@ for kind in pairs(kinds) do
  root[kind]=newproxy({
   __index=function(_,key)
    if kind=='players' and key=='localPlayer' then return view.localPlayerId and proxy(kind,view.localPlayerId) end
-   if kind=='players' and key=='neutral' then key=0 end
+   if kind=='players' then
+    if key=='list' then return function()
+     local out={}; for id in pairs(view.collections.players or {}) do out[#out+1]=proxy(kind,id) end
+     table.sort(out,function(a,b) return a.id<b.id end); return out
+    end end
+    if key=='table' then return function()
+     local lines={string.format('%-28s | %-14s | %s','Player','Faction','Name')}
+     local ids={};for id in pairs(view.collections.players or {}) do ids[#ids+1]=id end
+     table.sort(ids,function(a,b)return tonumber(a)<tonumber(b) end)
+     for _,id in ipairs(ids) do local r=view.collections.players[id];lines[#lines+1]=string.format('%-28s | %-14s | %s',playerLabel(r,id),r.faction or '',r.displayName or '') end
+     return table.concat(lines,'\n')
+    end end
+    if key=='neutral' then key=0 end
+    if type(key)=='string' and not (view.collections.players or {})[key] then
+     local id=resolvePlayer(key); return proxy(kind,id)
+    end
+   end
    return proxy(kind,key)
   end,
   __newindex=function() error('collection entries cannot be replaced',2) end,
   __len=function() return count(kind) end,
   __pairs=function()
-   local entries={}; for id in pairs(view.collections[kind] or {}) do entries[tonumber(id) or id]=proxy(kind,id) end
+   local entries={}; for id in pairs(view.collections[kind] or {}) do
+    local key=kind=='players' and playerKey(view.collections[kind][id],id) or (tonumber(id) or id)
+    if entries[key] then error('ambiguous player name: '..key,2) end
+    entries[key]=proxy(kind,id)
+   end
    return next,entries,nil
   end,
   __metatable='bfme collection'
@@ -476,8 +525,8 @@ library('timing',{
 	clear=function() timingNative('build',nil); timingNative('train',nil); timingNative('upgrade',nil) end,
 })
 library('match',{
-	getUnitRoster=function(playerId) numeric(playerId,0,19,true); return query('unitRoster',playerId) end,
-	getCompletedBuildingRoster=function(playerId) numeric(playerId,0,19,true); return query('completedBuildingRoster',playerId) end,
+	getUnitRoster=function(player) return query('unitRoster',resolvePlayer(player)) end,
+	getCompletedBuildingRoster=function(player) return query('completedBuildingRoster',resolvePlayer(player)) end,
  getFrame=function() return view.frame or 0 end,
  getTimeMs=clock,
  isPaused=function() return view.paused or false end,
@@ -486,7 +535,7 @@ library('match',{
  -- 0 stops time, 1 normal, 100 one hundred times as fast; pause is independent.
  placePlanningMarker=function(template,position,player)
   if type(template)~='string' or type(position)~='table' then error('expected marker template and position',2) end
-  numeric(position.x,-1e7,1e7,false);numeric(position.y,-1e7,1e7,false);numeric(player,0,19,true)
+  numeric(position.x,-1e7,1e7,false);numeric(position.y,-1e7,1e7,false);player=resolvePlayer(player)
   return queue('match','',':planningMarker',template,position.x,position.y,player,position.rotation or 0)
  end,
  setClearNeutralDecorations=function(enabled)

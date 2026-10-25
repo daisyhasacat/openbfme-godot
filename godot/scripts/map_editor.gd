@@ -65,7 +65,7 @@ var terrain_loader: RefCounted
 var radius: SpinBox
 var strength: SpinBox
 var angle_control: SpinBox
-var owner_slot: SpinBox
+var owner_slot: VBoxContainer
 var save_name: LineEdit
 var preview: Node3D
 var preview_instance := -1
@@ -172,7 +172,7 @@ func _ready():
  radius=_number(box,'Brush radius / block half-width',10,500,40,10)
  strength=_number(box,'Height step / object spacing',1,200,20,1)
  angle_control=_number(box,'Object rotation (degrees)',-360,360,0,15)
- owner_slot=_number(box,'Owner player slot (0 = neutral)',0,19,0,1)
+ owner_slot=preload('res://scripts/player_table.gd').new();owner_slot.setup(box,'Owner player',world.get_player_table())
  apply_owner=Button.new();apply_owner.text='Set selected objects owner';apply_owner.pressed.connect(_apply_owner);box.add_child(apply_owner)
  search=LineEdit.new();search.placeholder_text='Search objects, rocks, cliffs, trees…';search.text_changed.connect(_filter);box.add_child(search)
  objects=ItemList.new();objects.custom_minimum_size=Vector2(480,250);objects.item_selected.connect(func(_i):_clear_preview());box.add_child(objects)
@@ -346,7 +346,9 @@ func _fit_object_image(name: String):
 
 func _number(parent: Node,title: String,minimum: float,maximum: float,value: float,step: float) -> SpinBox:
  var label=Label.new();label.text=title;parent.add_child(label)
- var input=SpinBox.new();input.min_value=minimum;input.max_value=maximum;input.value=value;input.step=step;input.set_meta('label',label);input.custom_minimum_size.y=52;parent.add_child(input);return input
+ var input=SpinBox.new();input.min_value=minimum;input.max_value=maximum;input.value=value;input.step=step;input.set_meta('label',label);input.custom_minimum_size.y=52;parent.add_child(input)
+ if 'Player_N_Start' in title:preload('res://scripts/player_table.gd').attach_start_picker(world,input)
+ return input
 
 func _load_texture_catalog():
  var entries={};var entry={}
@@ -408,7 +410,7 @@ func _texture_selected(index: int):
   texture_preview.texture=result.texture;texture_caption.text=str(result.get('file',''))
  else:texture_caption.text=str(result.get('error','Texture preview unavailable'))
 
-func _field_visible(field: SpinBox,enabled: bool):
+func _field_visible(field: Control,enabled: bool):
  field.visible=enabled;field.get_meta('label').visible=enabled
 
 func _update_controls():
@@ -441,6 +443,7 @@ func _update_controls():
 func set_active(enabled: bool):
  if active==enabled:return
  if not enabled and inspector!=null:inspector.hide()
+ if enabled:owner_slot.set_rows(world.get_player_table())
  active=enabled;active_changed.emit(enabled);panel.visible=enabled;toolbar.visible=enabled;lookup.visible=enabled and tool.selected in [1,2,6,7,8,10];set_process(enabled)
  if enabled:
   was_free_camera=hud.get_camera().get('free_camera',false);hud.set_free_camera(true)
@@ -1142,7 +1145,7 @@ func _object_details(data: Dictionary) -> String:
  var lines=PackedStringArray(['Template / name: '+name,'Object ID: '+str(data.get('id',''))])
  if not str(record.get('display_name','')).is_empty():lines.append('Display name / label: '+str(record.display_name))
  if not str(record.get('faction','')).is_empty():lines.append('Faction: '+str(record.faction))
- lines.append('Owner: %s (player %s) · Team: %s'%[data.get('owner',''),data.get('player_id',0),data.get('team','')])
+ lines.append('Owner: %s · Team: %s'%[owner_slot.label_for(int(data.get('player_id',0))),data.get('team','')])
  if data.has('health'):lines.append('Health: %s / %s'%[data.health,data.get('max_health','?')])
  lines.append('Position: %.1f, %.1f, %.1f · Rotation: %.1f°'%[data.get('x',0),data.get('y',0),data.get('z',0),rad_to_deg(float(data.get('angle',0)))])
  if data.get('under_construction',false):lines.append('Construction: %s%%'%data.get('construction_percent',0))

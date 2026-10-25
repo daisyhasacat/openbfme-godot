@@ -77,9 +77,12 @@ func _run() -> void:
 	console._tabs.current_tab = 1
 	console._clear_visible()
 	assert(console._log.text.is_empty() and not console._output.text.is_empty())
-	assert(console._tabs.get_tab_count() == 5)
-	assert(console._tabs.get_tab_title(3) == "Controller")
-	assert(console._tabs.get_tab_title(2) == "Cheats")
+	assert(console._tabs.get_tab_count() == 6)
+	assert(console._tabs.get_tab_title(4) == "Controller")
+	assert(console._tabs.get_tab_title(3) == "Cheats")
+	assert(console._tabs.get_tab_title(2) == "Players")
+	console._refresh_players()
+	assert(console._players_text.text.contains("Faction") and console._players_text.text.contains("Player"))
 	var commands: Array[String] = []
 	console.execute = func(code: String) -> Dictionary:
 		commands.append(code)
@@ -94,8 +97,8 @@ func _run() -> void:
 	for editor_button in console.find_children("*", "Button", true, false):
 		if editor_button.text == "Map editor": editor_button.pressed.emit()
 	assert(editor_requests[0] == 1)
-	console._tabs.current_tab = 2
-	var cheats = console._tabs.get_child(2)
+	console._tabs.current_tab = 3
+	var cheats = console._tabs.get_child(3)
 	var speed = cheats.find_child("GameSpeed", true, false)
 	assert(speed != null and speed.value == 1)
 	var history_before := ConfigFile.new()
@@ -118,13 +121,13 @@ func _run() -> void:
 	for cheat_button in cheats.find_children("*", "Button", true, false):
 		if cheat_button.text == "Disable protection": cheat_button.pressed.emit()
 	assert(commands[-1] == "bfme.match.setAIBaseExclusion(0)")
-	assert(console._tabs.current_tab == 2)
+	assert(console._tabs.current_tab == 3)
 	assert(console._entry.text == "-- preserve cheat draft")
 	var history_after := ConfigFile.new()
 	assert(history_after.load(console.history_path) == OK)
 	assert(history_after.get_value("console", "history") == entered_history)
 	console._entry.clear()
-	var options = console._tabs.get_child(3)
+	var options = console._tabs.get_child(4)
 	var radius = options.find_child("SelectionAssistRadius", true, false)
 	assert(radius.value == 48)
 	radius.value = 72

@@ -10,6 +10,7 @@
 #include "GameLogic/Module/DozerAIUpdate.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "Common/Player.h"
+#include "Common/PlayerPresentation.h"
 #include "Common/PlayerList.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/Module/BehaviorModule.h"
@@ -154,6 +155,8 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 		Table r{{"id", i},
 				{"startSlot", p->getMultiplayerStartIndex()},
 				{"name", p->getPlayerName()},
+                {"key", PlayerPresentation::key(i, p->getPlayerName(), p->getSide())},
+                {"label", PlayerPresentation::label(i, p->getPlayerName(), p->getSide())},
 				{"displayName", p->getPlayerDisplayName()},
 				{"username", p->getPlayerDisplayName()},
 				{"money", double(p->getMoney()->countMoney())},
@@ -566,3 +569,28 @@ std::string GameWorld::bfme_apply(const BfmeLuaRuntime::Mutation &m)
 	return "unknown collection";
 }
 } // namespace godot
+
+namespace godot
+{
+Array GameWorld::get_player_table() const
+{
+    Array rows;
+    if (!m_game) return rows;
+    const auto &players = m_game->logic().players();
+    for (int i = 0; i < players.getPlayerCount(); ++i) {
+        const auto *p = players.getNthPlayer(i);
+        if (!p) continue;
+        Dictionary row;
+        row["id"] = i;
+        row["key"] = String::utf8(PlayerPresentation::key(i, p->getPlayerName(), p->getSide()).c_str());
+        row["label"] = String::utf8(PlayerPresentation::label(i, p->getPlayerName(), p->getSide()).c_str());
+        row["name"] = String::utf8(p->getPlayerName().c_str());
+        row["faction"] = String::utf8(p->getSide().c_str());
+        row["displayName"] = String::utf8(p->getPlayerDisplayName().c_str());
+        row["startSlot"] = p->getMultiplayerStartIndex();
+        row["isAI"] = p->isSkirmishAI();
+        rows.push_back(row);
+    }
+    return rows;
+}
+}

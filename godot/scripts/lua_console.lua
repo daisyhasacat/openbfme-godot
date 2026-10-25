@@ -294,11 +294,13 @@ function LuaConsole:_ready()
 	log.name = "Log"
 	tabs:add_child(log)
 	self._log = log
+	self:_build_players()
 	self:_build_cheats()
 	self:_build_controller_options()
 	build_wall_rules(tabs)
 	tabs.tab_changed:connect(Callable(function(_index)
 		if tabs.current_tab == 0 then entry:grab_focus() end
+        if self._tabs.current_tab == 2 then self:_refresh_players() end
 	end))
 
 	local toolbar = HFlowContainer:new()
@@ -479,6 +481,25 @@ function LuaConsole:_input(event)
 	end
 end
 
+function LuaConsole:_build_players()
+ local page = VBoxContainer:new()
+ page.name = "Players"
+ self._tabs:add_child(page)
+ page:add_child(label("Player names are stable references; faction names show the current army."))
+ self._players_text = text_view()
+ self._players_text.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ page:add_child(self._players_text)
+ page:add_child(button("Refresh players", function() self:_refresh_players() end))
+ page:add_child(label('Use bfme.players.Player_4 or bfme.players["Player_4 (Men)"].'))
+ page:add_child(label('Special players: bfme.players.CreepFaction and bfme.players.NeutralFaction.'))
+end
+
+function LuaConsole:_refresh_players()
+ if not self._players_text or not self.execute:is_valid() then return end
+ local result = self.execute:call("return bfme.players.table()")
+ self._players_text.text = tostring(result:get("output", "Players are not available yet."))
+end
+
 function LuaConsole:is_open()
 	return self._root ~= nil and self._root.visible
 end
@@ -488,6 +509,7 @@ function LuaConsole:toggle()
 	root.visible = not root.visible
 	if root.visible then
 		self:_request_layout()
+        if self._tabs.current_tab == 2 then self:_refresh_players() end
 		if self._tabs.current_tab == 0 then self._entry:grab_focus() end
 	else
 		self._entry:release_focus()

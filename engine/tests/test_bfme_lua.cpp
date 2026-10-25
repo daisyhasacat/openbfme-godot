@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0. Contract tests against docs.secondage.dev API examples.
 #include "GameLogic/ScriptEngine/BfmeLuaRuntime.h"
 #include "LuaTestUtil.h"
+#include "Common/PlayerPresentation.h"
 #include "doctest.h"
 
 #include <chrono>
@@ -78,7 +79,7 @@ TEST_CASE("bfme Lua: module identity, modern syntax, proxies and collection cont
 	CHECK(f.run("return bit.band(12, 10), goto_ok") == "8\tnil\n");
 	CHECK(f.run("return #bfme.players, bfme.players.localPlayer==bfme.players[1], bfme.players.neutral.id") == "2\ttrue\t0\n");
 	CHECK(f.run("local n=0; for id,p in pairs(bfme.players) do n=n+1 end; return n") == "2\n");
-	CHECK(f.run("return tostring(bfme.players[1]), bfme.players[99]") == "Player[1]\tnil\n");
+	CHECK(f.run("return tostring(bfme.players[1]), bfme.players[99]") == "Player_1\tnil\n");
 	CHECK(f.run("return #bfme.players[1]:units(), #bfme.players.neutral:units(), bfme.unitInstances[1234].ownerPlayer.id") == "1\t0\t1\n");
 	CHECK(f.run("return bfme.unitInstances[1234].type==bfme.unitTypes.GondorSoldier") == "true\n");
 	CHECK(
@@ -876,4 +877,36 @@ TEST_CASE("bfme Lua: idle update callbacks avoid snapshots until their first sta
 	CHECK(f.run("return bfme.match.getFrame()") == "71\n");
 	CHECK_FALSE(f.vm->execute("bfme.match.getUnitRoster(-1)").ok);
 	CHECK_FALSE(f.vm->execute("bfme.match.getCompletedBuildingRoster(-1)").ok);
+}
+
+TEST_CASE("bfme: player names and faction labels resolve to the same live handles")
+{
+    BfmeFixture f;
+    f.snapshot.collections["players"]["1"]["faction"] = "Men";
+    f.snapshot.collections["players"]["2"] = {{"id",2},{"name","PlyrCreeps"},{"faction","Creeps"}};
+    CHECK(f.run("return bfme.players.Player_1==bfme.players[1], bfme.players['Player_1 (Men)']==bfme.players[1]") == "true\ttrue\n");
+    CHECK(f.run("return tostring(bfme.players.Player_1), bfme.players.NeutralFaction.id, bfme.players.CreepFaction.id") == "Player_1 (Men)\t0\t2\n");
+    CHECK(f.run("local out={};for key,p in pairs(bfme.players) do out[#out+1]=key end;table.sort(out);return table.concat(out,',')") == "CreepFaction,NeutralFaction,Player_1\n");
+    CHECK(f.run("return #bfme.players.list(), bfme.players.Player_1:inspect().label") == "3\tPlayer_1 (Men)\n");
+    CHECK(f.run("return bfme.players.table():find('Player_1 (Men)',1,true)~=nil") == "true\n");
+    f.run("bfme.unitInstances[1234].ownerPlayer='CreepFaction'");
+    f.vm->flush();
+    CHECK(std::get<double>(f.applied.back().value.data) == 2);
+    f.answers["unitRoster"] = BfmeLuaValue::List{};
+    f.run("bfme.match.getUnitRoster('Player_1')");
+    CHECK(f.queries.back().first == "unitRoster");
+    CHECK(std::get<double>(f.queries.back().second[0].data) == 1);
+    CHECK_FALSE(f.vm->execute("return bfme.players.DoesNotExist").ok);
+    f.snapshot.collections["players"]["3"] = {{"id",3},{"name","Player_1"},{"faction","Men"}};
+    CHECK_FALSE(f.vm->execute("return bfme.players.Player_1").ok);
+    CHECK_FALSE(f.vm->execute("for name,p in pairs(bfme.players) do end").ok);
+    CHECK(f.run("return #bfme.players.list()") == "4\n");
+}
+
+TEST_CASE("bfme: player presentation retains map names and uses actual factions")
+{
+    CHECK(PlayerPresentation::label(4, "Player_4", "Men") == "Player_4 (Men)");
+    CHECK(PlayerPresentation::key(0, "", "") == "NeutralFaction");
+    CHECK(PlayerPresentation::label(7, "PlyrCreeps", "Creeps") == "CreepFaction");
+    CHECK(PlayerPresentation::label(4, "ScenarioDefenders", "CustomFaction") == "ScenarioDefenders (CustomFaction)");
 }

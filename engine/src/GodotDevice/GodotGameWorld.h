@@ -200,6 +200,7 @@ public:
 	Dictionary debug_set_use_formations(bool on);
 	// read-only: the live objects of `player` [{ id, template, structure, commandcenter, x, y, z }] (between logic frames)
 	Array get_player_objects(const String &player);
+	Array get_player_table() const;
 	Array get_logic_trees(double x, double y, double radius) const; // lane SPELL-3: the logic's map trees within radius (2D): x, y, id, toppled, value
 	// the first object of a template name ("" never matches)
 	int64_t find_object_by_template(const String &template_name) const;
