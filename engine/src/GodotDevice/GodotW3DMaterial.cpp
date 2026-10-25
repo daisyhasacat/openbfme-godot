@@ -377,7 +377,14 @@ void W3DMaterialFactory::Set_Texture_Override(const std::string &name, const Ref
 				pixels.instantiate();
 				Error error =
 					decodeTexture(pixels, buffer, path.size() >= 4 && path.substr(path.size() - 4) == ".dds");
-				if (error != OK || pixels->is_empty())
+				if (path.size() >= 4 && path.substr(path.size() - 4) == ".jpg")
+				{
+					AptArchiveFileSource source(factory->Fs);
+					bool paired = false;
+					pixels = loadPackedTexture(source, path.substr(0, path.size() - 4), &paired);
+					error = pixels.is_valid() ? OK : ERR_FILE_CORRUPT;
+				}
+				if (error != OK || pixels.is_null() || pixels->is_empty())
 					continue;
 			}
 			if (!pixels->has_mipmaps() && !pixels->is_compressed())
@@ -393,10 +400,10 @@ void W3DMaterialFactory::Set_Texture_Override(const std::string &name, const Ref
 		}
 }
 
-Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing, int alphaCoverage)
+Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing, int alphaCoverage, std::vector<std::string> *notes)
 {
 	found = false;
-	TextureResolution res = Resolve_W3D_Texture(name, [&](const std::string &p) { return Fs.doesFileExist(p); }, isBfme1Data(Fs)); // community PR #36: the archives' layout
+	TextureResolution res = Resolve_Packed_W3D_Texture(name, [&](const std::string &p) { return Fs.doesFileExist(p); }, isBfme1Data(Fs)); // community PR #36: the archives' layout
 	if (!res.Found)
 	{
 		if (!quietWhenMissing)
@@ -414,6 +421,8 @@ Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::ve
 	if (it != Textures.end())
 	{
 		found = true;
+		const auto note = PackedTextureNotes.find(cacheKey);
+		if (notes && note != PackedTextureNotes.end()) notes->push_back(note->second);
 		return it->second;
 	}
 	std::vector<std::uint8_t> bytes;
@@ -433,17 +442,22 @@ Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::ve
 	auto override = g_textureOverrides.find(textureOverrideKey(name));
 	if (override != g_textureOverrides.end())
 		image = override->second->duplicate();
-	else
-		err = decodeTexture(image, buffer, res.IsDDS);
-	if (override == g_textureOverrides.end() && err == OK && res.Path.size() >= 4 && res.Path.substr(res.Path.size() - 4) == ".jpg")
+	else if (res.Path.size() >= 4 && res.Path.substr(res.Path.size() - 4) == ".jpg")
 	{
-		// BFME1 floor textures pack their alpha separately beside JPEG colour.
 		AptArchiveFileSource source(Fs);
 		bool paired = false;
-		Ref<Image> merged = loadPackedTexture(source, res.Path.substr(0, res.Path.size() - 4), &paired);
-		if (merged.is_valid()) image = merged;
+		image = loadPackedTexture(source, res.Path.substr(0, res.Path.size() - 4), &paired);
+		err = image.is_valid() ? OK : ERR_FILE_CORRUPT;
+		if (paired)
+		{
+			const std::string note = "[S-1482] model texture " + res.Path + ": packed PNG colour multiplication and alpha replacement are inferred; the loader merge was not read";
+			PackedTextureNotes[cacheKey] = note;
+			if (notes) notes->push_back(note);
+		}
 	}
-	if (err != OK || image->is_empty())
+	else
+		err = decodeTexture(image, buffer, res.IsDDS);
+	if (err != OK || image.is_null() || image->is_empty())
 	{
 		errors.push_back("could not decode texture " + res.Path);
 		TextureErrors.push_back(errors.back());
@@ -709,7 +723,7 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 	{
 		if (tex[s].empty()) continue;
 		key.Tex[s] = true;
-		textures[s] = loadTextures ? Load_Texture(tex[s], out.Errors, found[s], false, isBfme1Data(Fs) && key.AlphaTest && !key.AlphaTestLessEqual ? (int)std::ceil(alphaRef * 255.0f) : 0) : Placeholder_Texture(false);
+		textures[s] = loadTextures ? Load_Texture(tex[s], out.Errors, found[s], false, isBfme1Data(Fs) && key.AlphaTest && !key.AlphaTestLessEqual ? (int)std::ceil(alphaRef * 255.0f) : 0, &out.Notes) : Placeholder_Texture(false);
 		if (hasInfo[s])
 		{
 			key.ClampU[s] = (info[s].Attributes & 0x08) != 0; // W3DTEXTURE_CLAMP_U
@@ -730,7 +744,7 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 	if (!normalMapName.empty())
 	{
 		bool f;
-		normalTex = loadTextures ? Load_Texture(normalMapName, out.Errors, f) : Placeholder_Texture(true);
+		normalTex = loadTextures ? Load_Texture(normalMapName, out.Errors, f, false, 0, &out.Notes) : Placeholder_Texture(true);
 		key.NormalMap = normalTex.is_valid() && key.Tangents;
 		if (normalTex.is_valid() && !key.Tangents) out.Notes.push_back("normal map without tangents is not applied");
 	}

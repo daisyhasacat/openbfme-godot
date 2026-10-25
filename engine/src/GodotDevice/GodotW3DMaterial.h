@@ -120,7 +120,7 @@ public:
 	static bool Reduce_Image(Ref<Image> &image, int reduction);
 
 private:
-	Ref<Texture2D> Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing = false, int alphaCoverage = 0);
+	Ref<Texture2D> Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing = false, int alphaCoverage = 0, std::vector<std::string> *notes = nullptr);
 	static Ref<Texture2D> Placeholder_Texture(bool flatNormal);
 
 	ArchiveFileSystem &Fs;
@@ -132,6 +132,7 @@ private:
 	bool FloorSampling = false;
 	std::map<std::string, Ref<Texture2D>> Textures; // by virtual path
 	std::map<std::string, std::string> PackedHouseTextureNotes; // retain S-1482 on cache hits
+	std::map<std::string, std::string> PackedTextureNotes; // retain S-1482 on cache hits
 	std::vector<std::string> TextureErrors;
 };
 
