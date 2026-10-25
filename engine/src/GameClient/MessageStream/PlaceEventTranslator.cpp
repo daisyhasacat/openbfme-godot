@@ -3,6 +3,8 @@
 
 #include "GameClient/MessageStream/PlaceEventTranslator.h"
 #include <cmath>
+#include "GameClient/WallSymmetry.h"
+#include "GameLogic/Economy.h"
 
 #include "Common/BuildAssistant.h"
 #include "Common/Player.h"
@@ -212,19 +214,42 @@ MessageDisposition PlaceEventTranslator::releaseLineBuild(const ThingTemplate &t
 	}
 	// RW 0x83E932 .. 0x83E9B8
 	const CommandButton *command = m_ctx.ui.placeBuildCommand();
-	ClientMessage &m = m_ctx.stream.append(MSG_WALL_HUB_CONSTRUCT_SPAN);
-	m.appendInteger((int)tt.getFinalOverride()->getTemplateID());
-	m.appendLocation(*builder.getPosition());
 	Coord3D click;
 	if (!m_ctx.view.screenToTerrain(m_ctx.ui.placementStart(), m_ctx.logic, click)) // RW 0x83E745: the start pixel's terrain point now (TheTacticalView slot 0x168)
 	{
 		click = m_ctx.ui.placeLocation(); // INFERENCE: RotWK does not test the answer (RW 0x83E745); a pixel off the terrain keeps the ghost's point
 	}
 	if (m_ctx.ui.placementSnap) click = m_ctx.ui.placeLocation();
-	m.appendLocation(click);
-	m.appendInteger(command ? (int)command->m_options : 0xFFFFFE);
-	m.appendObjectID(builder.getID());
-	++m_stats.wallSpans;
+	const unsigned options = command ? command->m_options : 0xFFFFFE;
+	auto append = [&](Object &source, const Coord3D &destination) {
+		ClientMessage &m = m_ctx.stream.append(MSG_WALL_HUB_CONSTRUCT_SPAN);
+		m.appendInteger((int)tt.getFinalOverride()->getTemplateID());
+		m.appendLocation(*source.getPosition());
+		m.appendLocation(destination);
+		m.appendInteger((int)options);
+		m.appendObjectID(source.getID());
+		++m_stats.wallSpans;
+	};
+	// OpenBFME Shift aid: issue ordinary commands for both sources. The logic
+	// dispatcher retains ownership, payment and build legality authority.
+	Coord3D otherEnd;
+	Object *other = m_ctx.ui.isInPreferSelectionMode()
+		? WallSymmetry::partner(m_ctx.logic, builder, click, options, otherEnd) : nullptr;
+	if (other) {
+		WallSpan::Plan first, second;
+		const bool planned = WallSpan::plan(m_ctx.logic, builder, *builder.getPosition(), click, options, first)
+			&& WallSpan::plan(m_ctx.logic, *other, *other->getPosition(), otherEnd, options, second);
+		const bool money = planned && builder.getControllingPlayer()->getMoney()->countMoney() >= (std::uint64_t)first.cost + second.cost;
+		if (!planned || (first.worstCode != 0 && first.worstCode != 10) || (second.worstCode != 0 && second.worstCode != 10) || !money) {
+			++m_stats.refused;
+			m_ctx.ui.message(planned && !money ? "GUI:NotEnoughMoneyToBuild" : "GUI:CantBuildThere");
+			m_ctx.ui.requestMiscSound("BadBuildingPlacementSound");
+			m_ctx.ui.setPlacementStart(nullptr);
+			return MessageDisposition::Destroy;
+		}
+	}
+	append(builder, click);
+	if (other) append(*other, otherEnd);
 	m_ctx.ui.setLineBuildStarted(false);
 	endPlacement();
 	return MessageDisposition::Destroy;

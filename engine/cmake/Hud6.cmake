@@ -18,3 +18,9 @@ set(OPENBFME_HUD6_TESTS
 set(OPENBFME_HUD6_GODOT_SOURCES
     src/GodotDevice/GodotHud6Draw.cpp
 )
+
+list(APPEND OPENBFME_HUD6_TESTS tests/test_wall_symmetry.cpp)
+add_executable(openbfme_wall_symmetry_tests tests/test_wall_symmetry.cpp)
+target_compile_definitions(openbfme_wall_symmetry_tests PRIVATE DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN)
+target_include_directories(openbfme_wall_symmetry_tests PRIVATE tests thirdparty/doctest)
+target_link_libraries(openbfme_wall_symmetry_tests PRIVATE openbfme_core)
