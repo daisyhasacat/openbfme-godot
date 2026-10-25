@@ -830,9 +830,9 @@ Configured configured(const std::string &configPath)
 		c.source = "env";
 	}
 	std::string error;
-	bool r = ResolveInstallPath("ROTWK_INSTALL", configPath, c.rotwk, &error);
+	ResolveInstallPath("ROTWK_INSTALL", configPath, c.rotwk, &error);
 	bool b = ResolveInstallPath("BFME2_INSTALL", configPath, c.bfme2, &error);
-	if (c.source == "none" && r && b)
+	if (c.source == "none" && b)
 		c.source = "config";
 	return c;
 }
@@ -844,8 +844,8 @@ bool remember(const std::string &configPath, const std::string &rotwkRoot, const
 			*error = e;
 		return false;
 	};
-	if (rotwkRoot.empty() || bfme2Root.empty() || rotwkRoot.find('\n') != std::string::npos || bfme2Root.find('\n') != std::string::npos)
-		return fail("both folders are needed (one line each)");
+	if (bfme2Root.empty() || rotwkRoot.find('\n') != std::string::npos || bfme2Root.find('\n') != std::string::npos)
+		return fail("the BFME2 folder is needed (one line per folder); RotWK is optional");
 	const fs::path target = fs::u8path(configPath);
 	std::error_code ec;
 	if (target.has_parent_path())

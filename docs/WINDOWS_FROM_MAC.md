@@ -175,3 +175,9 @@ followed by confirmation or manual selection of BFME2 1.06 and RotWK 2.01 folder
 It does not require a `content` folder beside the executable. It excludes the
 optional local RotWK map/tower packs and contains only the EXE, PCK, DLL and
 instructions. ZIP integrity is checked before completing the output.
+
+First-run setup accepts BFME2 1.06 without RotWK. Leave the optional RotWK field
+empty to validate and mount BFME2 alone; setup remembers the BFME2 folder and
+selects `bfme2-106` for later launches. If a RotWK folder is selected, both game
+folders are validated and the RotWK mount remains unchanged. A bad explicitly
+selected RotWK installation is reported rather than silently ignored.

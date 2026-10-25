@@ -403,7 +403,11 @@ TEST_CASE("release1: remembering the pick")
 	const std::string cfg = (t.path / "user" / "install-paths.cfg").u8string();
 	CHECK(configured(cfg).source == "none");
 	std::string error;
-	CHECK_FALSE(remember(cfg, "", "x", &error));
+	CHECK_FALSE(remember(cfg, "", "", &error));
+	REQUIRE(remember(cfg, "", "/games/bfme2", &error));
+	CHECK(configured(cfg).source == "config");
+	CHECK(configured(cfg).rotwk.empty());
+	CHECK(configured(cfg).bfme2 == "/games/bfme2");
 	CHECK_FALSE(remember(cfg, "a\nROTWK_INSTALL=evil", "x", &error));
 	REQUIRE(remember(cfg, "/games/rotwk with space", "/games/bfme2", &error));
 	Configured c = configured(cfg);

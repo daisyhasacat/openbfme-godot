@@ -1,5 +1,5 @@
 ## Lane RELEASE-1: the first-run screen. OpenBFME runs on the player's own copies of The Rise of the Witch-king 2.01 and The Battle for
-## Middle-earth II 1.06; this screen finds them (InstallSetup.discover: the registry keys retail and the community installers write, Wine / Proton
+## Middle-earth II 1.06. RotWK is optional: an empty RotWK folder selects BFME2 alone. This screen finds them (InstallSetup.discover: the registry keys retail and the community installers write, Wine / Proton
 ## prefixes on Linux, the installers' default folders), lets the player confirm or choose the two folders, checks them (every 2.01 / 1.06 archive
 ## present with its size; a clear message naming what is wrong) and, once the full mount (every archive's md5) succeeded, remembers them in
 ## user://install-paths.cfg. Nothing found is never silently replaced by a guess: the player always confirms.
@@ -8,7 +8,7 @@
 ## (UI-2's menus start after it). run() returns the mount report; {ok: false, quit: true} when the player quits.
 ##
 ## Test hooks (the fresh-user test, godot/tests/first_run_test.gd), also headless: test_pick {accept: true} takes the first discovered folders
-## that pass the check; {rotwk, bfme2} picks those folders. Every step prints a FIRST RUN line; a rejected pick ends the run with ok false.
+## that pass the check (BFME2 alone is enough); {rotwk, bfme2} picks those folders. Every step prints a FIRST RUN line; a rejected pick ends the run with ok false.
 ## --first-run-shot=FILE (windowed): save the screen as it first appears to FILE and quit (the media, the layout check).
 extends CanvasLayer
 
@@ -61,10 +61,10 @@ func _run_test(pick: Dictionary) -> Dictionary:
 	if pick.get("accept", false):
 		rotwk = _first_ok("rotwk")
 		bfme2 = _first_ok("bfme2")
-		if rotwk.is_empty() or bfme2.is_empty():
+		if bfme2.is_empty():
 			print("FIRST RUN nothing to accept: rotwk '%s', bfme2 '%s'" % [Release.info.redact(rotwk), Release.info.redact(bfme2)])
 			return {"ok": false, "errors": ["the first-run test found no usable game folders to accept"]}
-	var checked: Dictionary = _setup.check(rotwk, bfme2)
+	var checked: Dictionary = _check_folders(rotwk, bfme2)
 	print("FIRST RUN check: ok %s" % str(checked.ok))
 	for e in checked.errors:
 		print("FIRST RUN rejected: ", e)
@@ -80,8 +80,17 @@ func _first_ok(game: String) -> String:
 	return ""
 
 
+func _check_folders(rotwk: String, bfme2: String) -> Dictionary:
+	var result: Dictionary = _setup.check(rotwk, bfme2)
+	if rotwk.is_empty():
+		result.ok = result.bfme2.ok
+		result.errors = result.bfme2.errors
+	return result
+
+
 func _mount_and_remember(rotwk: String, bfme2: String) -> Dictionary:
-	var mount: Dictionary = _fs.mount_retail_paths(rotwk, bfme2)
+	var bfme2_only := rotwk.is_empty()
+	var mount: Dictionary = _fs.mount_bfme2_path(bfme2) if bfme2_only else _fs.mount_retail_paths(rotwk, bfme2)
 	print("FIRST RUN mount: ok %s" % str(mount.ok))
 	if not mount.ok:
 		for e in mount.errors:
@@ -91,6 +100,12 @@ func _mount_and_remember(rotwk: String, bfme2: String) -> Dictionary:
 	print("FIRST RUN remembered: %s %s" % [str(saved.ok), saved.error])
 	if not saved.ok:
 		return {"ok": false, "errors": ["the game folders work but could not be saved: " + saved.error]}
+	var selection := ConfigFile.new()
+	selection.load("user://game-selection.cfg")
+	selection.set_value("game", "selected", "bfme2-106" if bfme2_only else "bfme2")
+	var error := selection.save("user://game-selection.cfg")
+	if error != OK:
+		return {"ok": false, "errors": ["Could not save selected game: " + error_string(error)]}
 	return mount
 
 
@@ -116,9 +131,7 @@ func _build_ui(problem: String) -> void:
 	box.add_child(title)
 	var intro := Label.new()
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	intro.text = ("OpenBFME plays on your own copy of the game: The Rise of the Witch-king patched to 2.01 and The Battle for Middle-earth II "
-		+ "patched to 1.06 (English). They stay where they are; OpenBFME only reads them and never changes them.\n"
-		+ "Choose the two folders that hold the games' .big files. Folders found on this computer are offered below.")
+	intro.text = "Choose your BFME2 1.06 installation. RotWK 2.01 is optional: leave its folder empty to play BFME2 alone. OpenBFME only reads these files. Discovered folders are offered below."
 	box.add_child(intro)
 	if not problem.is_empty():
 		var warn := Label.new()
@@ -127,7 +140,7 @@ func _build_ui(problem: String) -> void:
 		warn.text = problem
 		box.add_child(warn)
 
-	var rows := [["The Rise of the Witch-king 2.01", "rotwk"], ["The Battle for Middle-earth II 1.06", "bfme2"]]
+	var rows := [["The Rise of the Witch-king 2.01 (optional)", "rotwk"], ["The Battle for Middle-earth II 1.06", "bfme2"]]
 	for row in rows:
 		var label := Label.new()
 		label.text = row[0]
@@ -222,11 +235,14 @@ func _browse(edit: LineEdit, what: String) -> void:
 
 
 func _recheck() -> void:
-	var r: Dictionary = _setup.check(_rotwk_edit.text.strip_edges(), _bfme2_edit.text.strip_edges())
+	var r: Dictionary = _check_folders(_rotwk_edit.text.strip_edges(), _bfme2_edit.text.strip_edges())
 	_checked_ok = r.ok
 	_start.disabled = not r.ok
 	var t := ""
 	for game in [["rotwk", "The Rise of the Witch-king"], ["bfme2", "The Battle for Middle-earth II"]]:
+		if game[0] == "rotwk" and _rotwk_edit.text.strip_edges().is_empty():
+			t += "RotWK: not selected; starting BFME2 only.\n"
+			continue
 		var g: Dictionary = r[game[0]]
 		if g.ok:
 			t += "[color=#8f8]%s: found, %d of %d archives[/color]\n" % [game[1], g.present, g.expected]
