@@ -4452,37 +4452,8 @@ func _exit_to_score_screen() -> void:
 
 
 ## AptTimeLine::RenderGraph is a device-drawn component (S-1063): the lines of the graph the movie's _graphMode picks, drawn over the movie's graph area.
-class GraphOverlay extends Control:
-	var shell: Node2D
-	var graph := {}
-	var rect := Rect2()
-	func _draw() -> void:
-		if graph.is_empty() or rect.size.x <= 0.0:
-			return
-		var lines: Array = graph.get("lines", [])
-		for pass_i in 2:
-			for l in lines:
-				var c := Color.hex(0xFF000000 | int(l.color))
-				var pts: PackedVector2Array = l.points
-				if pts.size() < 2:
-					continue
-				var out := PackedVector2Array()
-				var stride := maxi(1, pts.size() / 600)
-				for i in range(0, pts.size(), stride):
-					var p: Vector2 = pts[i]
-					out.append(rect.position + Vector2(p.x * rect.size.x, (1.0 - clampf(p.y, 0.0, 1.0)) * rect.size.y))
-				var last: Vector2 = pts[pts.size() - 1]
-				out.append(rect.position + Vector2(last.x * rect.size.x, (1.0 - clampf(last.y, 0.0, 1.0)) * rect.size.y))
-				# RW 0x924DD1 twice: width 3 with alpha, then width 1 opaque
-				if pass_i == 0:
-					draw_polyline(out, Color(c, 0.35), 3.0, true)
-				else:
-					draw_polyline(out, c, 1.0, true)
-				if pass_i == 1:
-					var marks: PackedVector2Array = l.get("marks", PackedVector2Array())
-					for m in marks:
-						draw_rect(Rect2(rect.position + Vector2(m.x * rect.size.x, (1.0 - clampf(m.y, 0.0, 1.0)) * rect.size.y) - Vector2(4, 4), Vector2(8, 8)), c, false, 2.0)
-
+class GraphOverlay extends "res://scripts/timeline_graph.gd":
+	pass
 
 func _install_graph_overlay() -> void:
 	if _graph_layer == null:
