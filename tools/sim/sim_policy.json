@@ -180,6 +180,10 @@
    "reason": "lane CAMP-2: the movies' VP6 picture decoder and EA's movie container (client presentation on the render clock); no logic state"
   },
   {
+   "glob": "src/GameClient/LivingWorldCampaign.cpp",
+   "reason": "lane WOTR-1: TheLivingWorldCampaignManager's LivingWorldCampaign INI blocks (the War of the Ring scenarios the lobby lists); data only, no logic state"
+  },
+  {
    "glob": "src/GameClient/LinearCampaign.cpp",
    "reason": "lane CAMP-1: TheLinearCampaignManager's LinearCampaign INI blocks and the shell's campaign progress (which mission to load next); no logic state, the logic gets only the map name and the difficulty"
   },

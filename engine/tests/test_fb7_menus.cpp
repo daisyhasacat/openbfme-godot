@@ -370,7 +370,7 @@ TEST_CASE("fb7 main menu retail: the RenderImage clip `Image` shows the mapped i
 	CHECK(found == 1);
 }
 
-TEST_CASE("cah2 main menu retail: a request with no screen (War of the Ring) shows the Ok box and its Ok undims the nav buttons (no soft-lock, S-1914)")
+TEST_CASE("cah2 main menu retail: a request with no screen (Battle School) shows the Ok box and its Ok undims the nav buttons (no soft-lock, S-1914)")
 {
 	OPENBFME_REQUIRE_RETAIL(mount);
 	ShellFx fx(mount, "");
@@ -394,9 +394,10 @@ TEST_CASE("cah2 main menu retail: a request with no screen (War of the Ring) sho
 		return -1.0f;
 	};
 	REQUIRE(navTextAlpha() > 0.99f);
-	// MainMenu.apt WarOfTheRingButton: DisableAllButtons, then GameCode('WarOfTheRing') (a request the host opens no screen for)
+	// a menu button's DisableAllButtons, then a request the host opens no screen for (lane WOTR-1: War of the Ring opens its lobby now; Battle School
+	// stands in, invoked by its command name)
 	REQUIRE_MESSAGE(fx.wm->invokeAS(level, "DisableAllButtons", {}, nullptr, &error), error);
-	REQUIRE(fx.wm->invokeCallback("AptMainMenu::WarOfTheRing", ""));
+	REQUIRE(fx.wm->invokeCallback("AptMainMenu::BattleSchool", ""));
 	fx.tick(60);
 	CHECK(navTextAlpha() < 0.6f);
 	auto *menu = dynamic_cast<AptMainMenu *>(fx.shell->top());
@@ -409,8 +410,8 @@ TEST_CASE("cah2 main menu retail: a request with no screen (War of the Ring) sho
 	CHECK(AptMainMenu::unavailableText("BFME2GoodCampaign") == "The BFME2 Good campaign is not available yet: OpenBFME does not have it yet.");
 	CHECK(AptMainMenu::unavailableText("BFME2EvilCampaign") == "The BFME2 Evil campaign is not available yet: OpenBFME does not have it yet.");
 	CHECK(menu->screenUnavailable("StopGameMovie").empty());
-	const std::string line = menu->screenUnavailable("WarOfTheRing");
-	CHECK(line.rfind("[S-1914] War of the Ring", 0) == 0);
+	const std::string line = menu->screenUnavailable("BattleSchool");
+	CHECK(line.rfind("[S-1914] Battle School", 0) == 0);
 	REQUIRE(menu->unavailableBox());
 	const int boxLevel = menu->unavailableBox()->level();
 	REQUIRE(boxLevel >= 0);
@@ -419,7 +420,7 @@ TEST_CASE("cah2 main menu retail: a request with no screen (War of the Ring) sho
 	REQUIRE_FALSE(calls.empty());
 	CHECK(calls.front() == "Show Ok false");
 	// lane MENUWORK-1: the box says why, in the player's words
-	CHECK(menu->unavailableBox()->text() == u"War of the Ring is not available yet: its strategy map game is still being rebuilt.");
+	CHECK(menu->unavailableBox()->text() == u"Battle School is not available yet: OpenBFME does not have it yet.");
 	// the box's Ok (GuiFX.apt's button sends "_level<n>.MessageBox_OnButtonOk"): the box goes, the menu gets OnFocus("1") -> ShowMainMenu
 	REQUIRE(fx.wm->invokeCallback("_level" + std::to_string(boxLevel) + ".MessageBox_OnButtonOk", ""));
 	fx.tick(90);

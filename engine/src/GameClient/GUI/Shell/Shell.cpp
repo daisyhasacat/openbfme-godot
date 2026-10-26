@@ -100,6 +100,11 @@ AptScreen *Shell::findScreenByFilename(const std::string &filename) const
 
 void Shell::push(const std::string &filename, bool shutdownImmediate)
 {
+	push(filename, shutdownImmediate, 0);
+}
+
+void Shell::push(const std::string &filename, bool shutdownImmediate, int argument)
+{
 	if (filename.empty())
 	{
 		return;
@@ -111,6 +116,7 @@ void Shell::push(const std::string &filename, bool shutdownImmediate)
 	}
 	m_pendingPush = true;
 	m_pendingPushName = filename;
+	m_pendingPushArgument = argument;
 	AptScreen *currentTop = inputTop(); // lane OPTS-6: the overlay (the quit menu) when it is the top
 	if (currentTop && !currentTop->isHidden())
 	{
@@ -313,7 +319,9 @@ void Shell::shutdownComplete(AptScreen *, bool impendingPush)
 	if (m_pendingPush)
 	{
 		const std::string name = m_pendingPushName;
-		doPush(name);
+		const int argument = m_pendingPushArgument;
+		m_pendingPushArgument = 0;
+		doPush(name, argument);
 		m_pendingPush = false;
 		m_pendingPushName.clear();
 	}
@@ -324,9 +332,9 @@ void Shell::shutdownComplete(AptScreen *, bool impendingPush)
 	}
 }
 
-void Shell::doPush(const std::string &filename)
+void Shell::doPush(const std::string &filename, int argument)
 {
-	AptScreenContext context{ m_windows, *this, m_services, m_environment };
+	AptScreenContext context{ m_windows, *this, m_services, m_environment, argument };
 	std::unique_ptr<AptScreen> screen = m_factories.create(filename, context);
 	if (!screen)
 	{

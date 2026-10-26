@@ -63,6 +63,22 @@ struct SkirmishColor
 	bool availableInWotR = true;
 };
 
+// lane WOTR-1: one War of the Ring scenario (a LivingWorldCampaign with a Scenario, GameClient/LivingWorldCampaign.h), in the campaign manager's order.
+// The strategic lobby lists them in its StrategicScenarioType combo (BFME2 AptMapPreview::PopulateStrategicScenario 0x0057D4F3); campaignIndex is the
+// combo's item data and the game's campaign (the manager's index, BFME2 rva003B8BC8).
+struct StrategicScenario
+{
+	int campaignIndex = -1;
+	std::string campaignName;        // LivingWorldCampaign WOTRScenario018
+	std::string displayName;         // LWScenario:WOTRScenario018 (a game text label)
+	std::string displayDescription;  // LWScenario:WOTRScenario018Description
+	std::string displayGameType;
+	std::string displayObjectives;
+	std::string displayFiction;
+	int maxPlayers = 6, minPlayers = 2;
+	std::vector<std::string> defaultStartSpots;      // region names, one per slot
+	std::vector<std::string> disallowStartInRegions;
+};
 class SkirmishSetupSource
 {
 public:
@@ -82,6 +98,12 @@ public:
 	virtual bool fileExists(const std::string &path) const = 0;
 	virtual bool hasFileSystem() const = 0;
 	virtual bool bfme1Data() const { return false; }
+	// lane WOTR-1: the War of the Ring scenarios (TheLivingWorldCampaignManager); a source without the campaign manager has none
+	virtual const std::vector<StrategicScenario> &strategicScenarios() const
+	{
+		static const std::vector<StrategicScenario> none;
+		return none;
+	}
 };
 
 class NewGameSink

@@ -52,7 +52,12 @@ class AptMessageBox;
 class AptSkirmish : public AptScreen
 {
 public:
-	AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment);
+	// `mode` is AptSkirmish::OpenScreen's argument (BFME2 AptSkirmish::AptSkirmish(context, arg), retail 0x00522B0E -> AptMpGameSetup::rva004422B4):
+	// 0 the skirmish lobby (the main menu's Skirmish, AptMainMenuUpdate.cpp case 7), 1 the War of the Ring lobby (WarOfTheRing, case 8)
+	AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment, int mode = 0);
+	// lane WOTR-1: the strategic lobby's scenario (the selected StrategicScenarioType entry's campaign index, -1 none)
+	int strategicScenario() const { return m_strategicScenario; }
+	bool strategic() const { return m_strategic; }
 	~AptSkirmish() override;
 
 	// The AptSkirmish::* command names of the RotWK binary (0x0087E7C4..0x0087EB1C): InitGadgets is the screen reference, the other
@@ -99,6 +104,8 @@ public:
 	GameWindow *currentMapWindow() const { return m_currentMap; }
 	const std::vector<GameWindow *> &currentMapSpots() const { return m_currentMapChildren; }
 	GameWindow *mapInfoWindow() const { return m_mapInfo; }
+	GameWindow *strategicScenarioCombo() const { return m_strategicScenarioCombo; } // WOTR-1
+	GameWindow *strategicScenarioDescription() const { return m_strategicScenarioDesc; }
 	GameWindow *profileListWindow() const { return m_profileList; }
 	// lane END-1: dead gadgets are dropped first (a window the movie's popup already destroyed must not be handed out: the lobby hook wrote into one)
 	GameWindow *profileEntryWindow()
@@ -151,7 +158,7 @@ protected:
 	// ---- lane MP-2: the LAN lobby (AptLanLobby, LanLobby.apt) hosts the same MpGameSetup movie with a network model ----
 	// `lan`: only the lobby movie's names are registered (MpGameSetup, AptMpGameRules, AptMpChat, AptMpClans, AptMapPreview), not AptSkirmish's own
 	// commands, profiles and update; the model is a network game (SkirmishGameSetup::setNetwork)
-	AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment, const char *filename, const char *codePrefix, bool lan);
+	AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment, const char *filename, const char *codePrefix, bool lan, int mode = 0);
 	// after the local player changed a slot or the map through the gadgets (the LAN lobby sends it on)
 	virtual void lobbyChanged() {}
 	// may the local player change the slot's combos (-1: the map); a slot it may not is shown disabled
@@ -261,6 +268,12 @@ private:
 	bool m_platformNoted = false;
 	void refreshColors(int slot);
 	void updateMapPreview();
+	// lane WOTR-1: the strategic panel (BFME2 AptMapPreview: PopulateStrategicScenario 0x0057D4F3, UpdateStrategicScenarioDesc 0x0057C99E,
+	// SelectCampaign 0x0057CA2D)
+	void populateStrategicScenarios();
+	void updateStrategicScenarioDescription();
+	void selectStrategicScenario(int campaignIndex);
+	const StrategicScenario *findStrategicScenario(int campaignIndex) const;
 	void updateCurrentMapWindow(const MapCacheEntry *map); // lane UI-2: RW 0x9772E6 / 0x976F59
 	std::string mapPreviewImage(const MapCacheEntry &map);  // lane UI-2: RW 0x702689
 	void onComboSelected(GameWindow *combo);
@@ -302,7 +315,6 @@ private:
 	bool changeProfileFromList();
 	bool deleteProfileFromList();
 	void closePopupState();
-	void setGameMapType(const std::string &type);
 	// lane UI-6: RW 0x9288D0 at 0x9289AD: the profile's kept game of `mode` (0 skirmish, 1 War of the Ring) instead of the defaults
 	void restoreGame(int mode);
 	// lane UI-6 review: InitTheGame again for the profile now current (a new, changed or surviving profile): the defaults, then its kept game
@@ -344,6 +356,10 @@ private:
 	GameWindow *m_currentMap = nullptr;
 	std::vector<GameWindow *> m_currentMapChildren;
 	bool m_strategic = false; // AptMapPreview::GameMapType == "Strategic": MpGameSetup+0x7C == 1
+	GameWindow *m_strategicScenarioCombo = nullptr; // AptMapPreview + 0x50, "StrategicScenarioType"
+	GameWindow *m_strategicScenarioDesc = nullptr;  // + 0x54, "StrategicScenarioDescription"
+	GameWindow *m_strategicTerritoryDesc = nullptr; // + 0x58, "StrategicTerritoryDescription"
+	int m_strategicScenario = -1;                   // the selected campaign (BFME2 GameInfo + campaign)
 	// Skirmish profile gadgets
 	GameWindow *m_profileList = nullptr;
 	GameWindow *m_profileCombo = nullptr;

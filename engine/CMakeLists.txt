@@ -177,6 +177,7 @@ include(cmake/Online3.cmake)    # ONLINE-3: hold, rejoin, the multiplayer pause 
 include(cmake/MpDrop1.cmake)    # MP-DROP-1: a dropped player never freezes an online game (openbfme_mpdrop1_targets)
 include(cmake/Script1.cmake)    # SCRIPT-1: the map script engine (appends to OPENBFME_SIM_SOURCES; OPENBFME_SCRIPT1_TESTS)
 include(cmake/Camp1.cmake)      # CAMP-1: the campaigns (OPENBFME_CAMP1_SOURCES / OPENBFME_CAMP1_TESTS)
+include(cmake/Wotr1.cmake)      # WOTR-1: the War of the Ring scenarios and lobby (OPENBFME_WOTR1_SOURCES / OPENBFME_WOTR1_TESTS)
 include(cmake/Camp2.cmake)      # CAMP-2: the movies' VP6 picture (OPENBFME_CAMP2_SOURCES / _GODOT_SOURCES / _TESTS)
 include(cmake/CampSave1.cmake)  # CAMPSAVE-1: CampaignMenu.apt and the campaign's saves between missions (OPENBFME_CAMPSAVE1_SOURCES / _TESTS)
 include(cmake/Ui1.cmake)        # UI-1: interface gaps (client only; OPENBFME_UI1_CLIENT_SOURCES / OPENBFME_UI1_TESTS)
@@ -284,6 +285,7 @@ add_library(openbfme_core STATIC
     ${OPENBFME_ANTICHEAT_SOURCES}
     ${OPENBFME_SCRIPT1_SOURCES}
     ${OPENBFME_CAMP1_SOURCES}
+    ${OPENBFME_WOTR1_SOURCES}
     ${OPENBFME_HUD5_CLIENT_SOURCES}
     ${OPENBFME_HUD6_CLIENT_SOURCES}
     ${OPENBFME_HOVER1_CLIENT_SOURCES}
@@ -712,6 +714,7 @@ add_executable(openbfme_tests
     ${OPENBFME_MP3_TESTS}
     ${OPENBFME_SCRIPT1_TESTS}
     ${OPENBFME_CAMP1_TESTS}
+    ${OPENBFME_WOTR1_TESTS}
     ${OPENBFME_CAMP2_TESTS}
     ${OPENBFME_CAMPSAVE1_TESTS}
     ${OPENBFME_UI1_TESTS}

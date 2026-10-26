@@ -911,33 +911,3 @@ TEST_CASE("map corpus: Minas Morgul cliff cells straddle their texture class and
 	CHECK(withRect == 1460);
 	CHECK(leaks == 0);
 }
-
-TEST_CASE("DIAG standing wave areas")
-{
-	retailtest::Mount *mount = retailtest::pureMount();
-	if (!mount) return;
-	FilenameList list;
-	mount->fs->getFileListInDirectory("", "", "*.map", list, true);
-	std::vector<std::uint8_t> bytes;
-	std::string err;
-	int maps = 0, areas = 0;
-	for (const std::string &path : list)
-	{
-		if (!mount->fs->readFile(path, bytes, &err)) continue;
-		LoadedMap m;
-		MapReadOptions opt;
-		if (!MapReader::load(bytes, path, opt, m, &err)) continue;
-		if (m.chunks.standingWaveAreas.empty()) continue;
-		++maps;
-		for (const StandingWaveArea &a : m.chunks.standingWaveAreas)
-		{
-			++areas;
-			if (areas > 40) continue;
-			std::printf("WAVE %s v%d '%s' pts %zu uv %.3f add %d zero %d fw %d fh %d iwf %d ihf %d vel %d fade %d comp %d off2 %d dist %d tex %s pca %d p0 %.0f,%.0f\n", path.c_str(), a.version,
-				a.name.c_str(), a.points.size(), a.uvScrollSpeed, (int)a.additive, a.zero, a.finalWidth, a.finalHeight, a.initialWidthFraction, a.initialHeightFraction, a.initialVelocity,
-				a.timeToFadeMs, a.timeToCompressMs, a.timeOffset2ndWaveMs, a.distanceFromShore, a.texture.c_str(), a.enablePcaWave, a.points.empty() ? 0.0f : a.points[0].x,
-				a.points.empty() ? 0.0f : a.points[0].y);
-		}
-	}
-	std::printf("WAVE maps %d areas %d\n", maps, areas);
-}

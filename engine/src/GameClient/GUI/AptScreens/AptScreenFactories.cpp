@@ -22,7 +22,7 @@ void registerAptScreenFactories(AptScreenFactoryTable &table)
 		return std::make_unique<AptMainMenu>(c.windows, c.shell, c.services, &c.environment);
 	});
 	table.registerFactory("Skirmish.apt", [](AptScreenContext &c) -> std::unique_ptr<AptScreen> {
-		return std::make_unique<AptSkirmish>(c.windows, c.shell, c.environment);
+		return std::make_unique<AptSkirmish>(c.windows, c.shell, c.environment, c.argument); // WOTR-1: 1 the War of the Ring lobby
 	});
 	table.registerFactory("LoadScreen.apt", [](AptScreenContext &c) -> std::unique_ptr<AptScreen> {
 		return std::make_unique<AptLoadScreen>(c.windows, c.shell, c.environment);

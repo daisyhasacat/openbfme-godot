@@ -587,12 +587,20 @@ TEST_CASE("retail setup source: 122 cached maps, the factions in store order, th
 
 namespace
 {
+// lane WOTR-1: the interim source with the War of the Ring scenarios a test gives it (none by default: the skirmish lobby's tests see the same source)
+class ScenarioSetupSource : public IniSkirmishSetupSource
+{
+public:
+	std::vector<StrategicScenario> scenarios;
+	const std::vector<StrategicScenario> &strategicScenarios() const override { return scenarios; }
+};
+
 struct LobbyFx
 {
 	AptArchiveFileSource source;
 	RecordingShellServices services;
 	MapGameText text;
-	IniSkirmishSetupSource setup;
+	ScenarioSetupSource setup;
 	RecordingNewGameSink sink;
 	ShellEnvironment environment;
 	AptScreenFactoryTable factories;
@@ -1106,7 +1114,10 @@ TEST_CASE("retail lobby: a screen with no setup source or sink reports it and re
 	// every AptSkirmish and lobby name the screen owns is registered (commands, providers, screen references, the picture component)
 	for (const std::string &name : AptSkirmish::retailNames())
 	{
-		const bool known = name == "AptSkirmish::InitGadgets" ? fx.wm->hasScreenRef(name) : fx.wm->hasCommand(name);
+		// lane WOTR-1: SuppressStrategicPromo is an extern handler in RotWK (RW 0x9296A3), not a command
+		const bool known = name == "AptSkirmish::InitGadgets"             ? fx.wm->hasScreenRef(name)
+			: name == "AptSkirmish::SuppressStrategicPromo" ? fx.wm->hasProvider(name)
+			                                                   : fx.wm->hasCommand(name);
 		CHECK_MESSAGE(known, name);
 	}
 	for (const char *name : { "MpGameSetup::HostMode", "MpGameSetup::IsInitialized", "AptMpGameRules::ShowChat", "AptMpGameRules::ShowClans", "MpGameRules::NumCheckBoxes",
@@ -2639,4 +2650,90 @@ TEST_CASE("BFME1 profile display reads SkirmishStats and rank providers, isolate
 	REQUIRE(fx.wm->invokeCallback("AptSkirmish::SkirmishProfile", ""));
 	CHECK(*fx.wm->aptText("APT:OverallCareerWinsNum") == "0");
 	CHECK(std::string(SkirmishPreferences::unverified()).find("[S-3504]") == 0);
+}
+
+// ============================================================================================================================
+// Retail: the War of the Ring lobby (lane WOTR-1)
+// ============================================================================================================================
+
+TEST_CASE("wotr1 retail: the War of the Ring lobby is Skirmish.apt made with mode 1: GameMapType answers Strategic, the scenario combo and description")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	LobbyFx fx(mount, false);
+	for (const char *name : { "WOTRScenario044", "WOTRScenario045", "WOTRScenario001" })
+	{
+		StrategicScenario s;
+		s.campaignIndex = (int)fx.setup.scenarios.size() * 3 + 1; // the manager's index, not the list position
+		s.campaignName = name;
+		s.displayName = std::string("LWScenario:") + name;
+		s.displayDescription = s.displayName + "Description";
+		fx.text.set(s.displayName, std::string("Scenario ") + name);
+		fx.text.set(s.displayDescription, std::string("Description of ") + name);
+		fx.setup.scenarios.push_back(s);
+	}
+	// the promotion of the new War of the Ring features (SkirmishStrategic's _promo) waits for a click unless Options.ini's SuppressStrategicPromo is true
+	// (RW 0x9296A3); this player saw it before
+	OptionPreferences options;
+	options.set("SuppressStrategicPromo", "true");
+	fx.environment.options = &options;
+	// the main menu's WarOfTheRing: AptSkirmish::OpenScreen(1) (BFME2 AptMainMenuUpdate.cpp case 8)
+	fx.shell->push("Skirmish.apt", false, 1);
+	fx.screen = dynamic_cast<AptSkirmish *>(fx.shell->top());
+	REQUIRE(fx.screen);
+	CHECK(fx.screen->strategic());
+	REQUIRE(fx.screen->setup());
+	CHECK(fx.screen->setup()->strategicMode());
+	// RW 0x975750: a query answered from the mode; a set does nothing
+	std::string value;
+	REQUIRE(fx.wm->getExtern("AptMapPreview::GameMapType", value) == AptExternResult::Value);
+	CHECK(value == "Strategic");
+	fx.wm->setExtern("AptMapPreview::GameMapType", "OpenPlay");
+	REQUIRE(fx.wm->getExtern("AptMapPreview::GameMapType", value) == AptExternResult::Value);
+	CHECK(value == "Strategic");
+	// RW 0x9296A3: the promotion's switch is Options.ini's SuppressStrategicPromo ("true" -> "1"); the movie's "Do not show again" sets it
+	REQUIRE(fx.wm->getExtern("AptSkirmish::SuppressStrategicPromo", value) == AptExternResult::Value);
+	CHECK(value == "1");
+	options.set("SuppressStrategicPromo", "False");
+	REQUIRE(fx.wm->getExtern("AptSkirmish::SuppressStrategicPromo", value) == AptExternResult::Value);
+	CHECK(value == "0");
+	fx.wm->setExtern("AptSkirmish::SuppressStrategicPromo", "true");
+	CHECK(options.get("SuppressStrategicPromo") == "true");
+	GameWindow *combo = nullptr;
+	GameWindow *desc = nullptr;
+	for (int i = 0; i < 300 && (!combo || !desc); ++i)
+	{
+		fx.tick(1);
+		combo = fx.screen->strategicScenarioCombo();
+		desc = fx.screen->strategicScenarioDescription();
+	}
+	if (!combo || !desc)
+	{
+		fx.dumpNotes("wotr1");
+	}
+	REQUIRE_MESSAGE(combo, "the strategic movie gave no StrategicScenarioType gadget");
+	REQUIRE(desc);
+	// BFME2 PopulateStrategicScenario: the scenarios' names, the item data their campaign index, the first selected
+	REQUIRE(GadgetComboBoxGetLength(combo) == 3);
+	CHECK(fx.screen->strategicScenario() == 1);
+	REQUIRE(GadgetListBoxGetNumEntries(desc) == 1); // the test description is one line
+	CHECK(GadgetListBoxGetText(desc, 0, 0) == asciiToU16("Description of WOTRScenario044"));
+	// a selection: SelectCampaign of the entry's item data, the description follows
+	GadgetComboBoxSetSelectedPos(combo, 2, false);
+	combo->manager().winSendSystemMsg(combo->winGetOwner(), GCM_SELECTED, reinterpret_cast<WindowMsgData>(combo), 2); // ZH GadgetComboBox's selection
+	CHECK(fx.screen->strategicScenario() == 7);
+	CHECK(GadgetListBoxGetText(desc, 0, 0) == asciiToU16("Description of WOTRScenario001"));
+	for (const char *tag : { "[S-5300]", "[S-5301]", "[S-5302]" })
+	{
+		int count = 0;
+		for (const WindowManagerNote &n : fx.wm->notes())
+		{
+			count += n.kind == "unported" && n.detail.rfind(tag, 0) == 0 ? 1 : 0;
+		}
+		CHECK_MESSAGE(count == 1, tag);
+	}
+	// StartGame: RotWK's start check, then the strategic game, which is not ported [S-5302]: a refusal, never a battle in its place
+	fx.wm->invokeCallback("AptSkirmish::StartGame", "");
+	fx.tick(2);
+	CHECK(fx.sink.messages.empty());
+	CHECK_FALSE(fx.sink.refusals.empty());
 }
