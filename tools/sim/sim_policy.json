@@ -180,6 +180,10 @@
    "reason": "lane CAMP-2: the movies' VP6 picture decoder and EA's movie container (client presentation on the render clock); no logic state"
   },
   {
+   "glob": "src/GameClient/LivingWorldTerritorySelection.cpp",
+   "reason": "lane WOTR-1: lobby-only territory names, ownership groups and selection validation; does not serialize region IDs or change simulation state"
+  },
+  {
    "glob": "src/GameClient/LivingWorldMap.cpp",
    "reason": "lane WOTR-1: Living World map, territory and effect INI data for the strategic lobby; no logic state"
   },

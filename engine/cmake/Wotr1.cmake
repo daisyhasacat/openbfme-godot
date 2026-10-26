@@ -5,6 +5,7 @@
 set(OPENBFME_WOTR1_SOURCES
     src/GameClient/LivingWorldCampaign.cpp
     src/GameClient/LivingWorldMap.cpp
+    src/GameClient/LivingWorldTerritorySelection.cpp
 )
 set(OPENBFME_WOTR1_TESTS
     tests/test_wotr1_lobby.cpp

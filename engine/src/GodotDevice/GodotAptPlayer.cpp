@@ -3205,6 +3205,15 @@ Dictionary AptMenuPlayer::lobby_state()
 	}
 	const SkirmishGameInfo &g = screen->setup()->info();
 	out["found"] = true;
+ Array scenarios;
+ for(const auto &scenario:screen->setup()->source().strategicScenarios()) {
+  Dictionary d;d["index"]=scenario.campaignIndex;d["name"]=String(scenario.campaignName.c_str());d["description"]=String(scenario.displayDescription.c_str());scenarios.push_back(d);
+ }
+ out["strategic_scenarios"]=scenarios;out["strategic_scenario"]=screen->strategicScenario();
+ PackedStringArray territoryText;
+ if(auto *description=screen->strategicTerritoryDescription())for(int row=0;row<GadgetListBoxGetNumEntries(description);++row)territoryText.push_back(toGodot(u16ToUtf8(GadgetListBoxGetText(description,row,0))));
+ out["territory_description"]=territoryText;
+
 	out["map"] = toGodot(g.mapName);
 	out["map_search"] = toGodot(u16ToUtf8(screen->mapSearch()));
 	PackedStringArray mapKeys;
@@ -3477,6 +3486,12 @@ Dictionary AptMenuPlayer::lobby_apply(const Dictionary &spec)
   const Dictionary rule = browserRules[i];
   if (!screen->setBrowserRule(int(rule["id"]), int(rule["value"]))) errors.push_back("Invalid browser rule");
  }
+	if(spec.has("strategic_scenario")) {
+		GameWindow *combo=screen->strategicScenarioCombo();const int wanted=int(spec["strategic_scenario"]);
+		const int row=combo?itemRow(combo,wanted):-1;
+		if(row<0)errors.push_back("Unknown strategic scenario");
+		else {GadgetComboBoxSetSelectedPos(combo,row,false);combo->manager().winSendSystemMsg(combo->winGetOwner(),GCM_SELECTED,reinterpret_cast<WindowMsgData>(combo),row);}
+	}
 	const Array slots = spec.get("slots", Array());
  // Release the edited positions before assigning them, so swaps cannot collide with old occupants.
  for (int64_t i = 0; i < slots.size(); ++i) {
@@ -4177,10 +4192,6 @@ void AptMenuPlayer::redrawCallbackPlaceholders(size_t segment)
 
 void AptMenuPlayer::redrawNativePlaceholders(size_t segment)
 {
-	if (!m->nativeHook)
-	{
-		return;
-	}
 	RenderingServer *rs = RenderingServer::get_singleton();
 	const Impl::Segment &g = m->segments[segment];
 	for (const Impl::NativeSlot &slot : g.nativeSlots)
@@ -4189,7 +4200,17 @@ void AptMenuPlayer::redrawNativePlaceholders(size_t segment)
 		// a new item per slot every frame cost the selection's command bar (its button images, the portrait) about 0.1 ms a frame on the Deck
 		RID item = g.items[slot.item];
 		rs->canvas_item_clear(item);
-		m->nativeHook->drawPlaceholder(m->drawnList.ops[g.opBegin + slot.op], item);
+		const auto &op=m->drawnList.ops[g.opBegin+slot.op];
+        if(op.symbolName=="LivingWorldMap" && m->shell) {
+            auto *screen=dynamic_cast<AptSkirmish *>(m->shell->shell->top());
+            auto *world=Object::cast_to<GameWorld>(ObjectDB::get_instance(ObjectID(m->worldId)));
+            if(world && world->object_world() && slot.item>0) {
+                RID base=g.items[slot.item-1];rs->canvas_item_clear(base);
+                m->livingWorld.draw(this,m->fs,world->object_world()->livingWorldMap(),world->object_world()->livingWorldCampaigns(),base,m->livingWorld.rect(),op,screen);
+            }
+            m->livingWorld.drawOverlays(item,screen);
+        }
+        else if(m->nativeHook)m->nativeHook->drawPlaceholder(op,item);
 	}
 }
 
@@ -4617,9 +4638,12 @@ void AptMenuPlayer::drawSegment(const AptCanvasList &list, size_t segment, const
 						minx=std::min(minx,sx); miny=std::min(miny,sy); maxx=std::max(maxx,sx); maxy=std::max(maxy,sy);
 					}
 					auto *world = Object::cast_to<GameWorld>(ObjectDB::get_instance(ObjectID(m->worldId)));
-					if (world && world->object_world()) m->livingWorld.draw(this,m->fs,world->object_world()->livingWorldMap(),
-						newItem(parents.back()),Rect2(minx,miny,maxx-minx,maxy-miny),op);
-					current=RID(); break;
+					if (world && world->object_world()) m->livingWorld.draw(this,m->fs,world->object_world()->livingWorldMap(),world->object_world()->livingWorldCampaigns(),
+						newItem(parents.back()),Rect2(minx,miny,maxx-minx,maxy-miny),op,
+                         m->shell ? dynamic_cast<AptSkirmish *>(m->shell->shell->top()) : nullptr);
+					g.nativeSlots.push_back(Impl::NativeSlot{opIndex-g.opBegin,g.items.size(),parents.back()});
+                    m->livingWorld.drawOverlays(newItem(parents.back()),m->shell?dynamic_cast<AptSkirmish *>(m->shell->shell->top()):nullptr);
+                    current=RID(); break;
 				}
 				if (op.nativeTag && op.symbolName == "View3D" && !op.renderObject.empty())
 				{
@@ -5985,7 +6009,8 @@ void AptMenuPlayer::post_mouse_move_stage(const Vector2 &stage)
 		m->A()->setMousePosition(stage.x, stage.y);
 		if (m->shell)
 		{
-			m->shell->wm->postMouseMove(stage.x, stage.y); // the gadgets first, then the movies (WindowManager.h, input routing)
+			if (auto *screen=dynamic_cast<AptSkirmish *>(m->shell->shell->top())) {m->livingWorld.mouseMove(stage_to_window(stage),screen);m->dirty=true;}
+            m->shell->wm->postMouseMove(stage.x, stage.y); // the gadgets first, then the movies (WindowManager.h, input routing)
 		}
 		else
 		{
@@ -6000,7 +6025,8 @@ void AptMenuPlayer::post_mouse_button(bool down)
 	{
 		if (m->shell)
 		{
-			m->shell->wm->postMouseButton(down);
+			if (m->livingWorld.mouseButton(down,true,dynamic_cast<AptSkirmish *>(m->shell->shell->top()))) {m->dirty=true;return;}
+            m->shell->wm->postMouseButton(down);
 		}
 		else
 		{
@@ -6133,7 +6159,10 @@ void AptMenuPlayer::_input(const Ref<InputEvent> &event)
 			else post_mouse_button(mb->is_pressed());
 			if (touchDevice) m->touchPointerHeld = mb->is_pressed();
 		}
-		else if (mb->is_pressed() && mb->get_button_index() == MOUSE_BUTTON_WHEEL_UP)
+		else if (mb->get_button_index() == MOUSE_BUTTON_RIGHT && m->shell) {
+            m->livingWorld.mouseButton(mb->is_pressed(),false,dynamic_cast<AptSkirmish *>(m->shell->shell->top()));
+        }
+        else if (mb->is_pressed() && mb->get_button_index() == MOUSE_BUTTON_WHEEL_UP)
 		{
 			post_mouse_wheel(1);
 		}

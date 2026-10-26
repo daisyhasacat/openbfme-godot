@@ -41,19 +41,53 @@ reopening renders it again, and leaving the panel disables its viewport. Booting
 a new shell releases the previous view. Model failures reach
 `get_report().living_world.errors`.
 
-This is an initial map display, not retail presentation parity (S-5304). The
-camera fits the INI Center/Extent with AptPitch; exact AptCenter/AptZoom
-projection, map-specific lighting, animated clouds and region effects remain
-unverified. An explicitly authored FX `NormalMap=None` selects no bump mapping
-and records a material note; missing real texture names still produce errors.
+The lobby now includes terrain-shaped hover and player-colour ownership
+highlights. Picking tests the mounted RegionObject triangles under the exact
+render camera, so irregular borders and holes follow the mesh rather than a
+bounding rectangle. Boundary edges are derived from those triangles and drawn
+with antialiasing. The overlay is composited after the W3D scene, preserving
+visibility above transparent map effects, and clipped to the APT panel. The
+large world-label subobject named by TextLayerSubObject is hidden for this view.
 
-The remaining territory interaction is S-5301: register the native window's
-input/listener path, draw region highlights, connect hover to the territory
-description, and implement start region picks using scenario restrictions.
-Turns, armies and battles remain S-5302; the lobby still refuses strategic game
-start explicitly.
+Hover shows the localized region name and its authored description when supplied;
+otherwise the map-cache description is used if available. Leaving the map clears
+hover and description without clearing a chosen start. Left click claims an
+available region for the next eligible local/AI slot. Clicking a claim cycles it
+to the next eligible slot; right click releases a claim the player may edit.
+Remote human claims cannot be edited. OwnershipSet regions highlight and select
+as a group. Disabled/disallowed starts, faction/team restrictions, closed slots,
+observers and scenario changes are checked by LivingWorldTerritorySelection.
+Player-colour changes update existing claims; unresolved colours use a neutral
+tint without consuming simulation RNG. Scenario defaults populate occupied slots.
 
-`godot/tests/territory_map_view_test.gd` opens the actual strategic lobby, checks
-model loading, checks that the GPU image has textured content, verifies static
-texture reuse and verifies that leaving the lobby disables the viewport. Set
-`OPENBFME_TERRITORY_SCREENSHOT` to capture the lobby and its map texture.
+The ocean reuses the existing standing-water shader and the WaterShader.FX
+parameters/textures carried by the mounted map mesh. It no longer renders with
+the generic normalmapped approximation. The base map remains cached; hover and
+selection redraw only canvas overlays. The renderer's existing standing-water
+limitations (S-035) still apply.
+
+Evidence for the interaction comes from BFME2's recovered
+[AptMapPreview.cpp](https://github.com/Open-BFME/Open-BFME-2/blob/6243bfba4cc4a921892c2b545be75c6a475a6f68/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Apt/AptMapPreview.cpp),
+[Rva004FD6F9.cpp](https://github.com/Open-BFME/Open-BFME-2/blob/6243bfba4cc4a921892c2b545be75c6a475a6f68/Code/GameEngine/Source/Common/Rva004FD6F9.cpp)
+and [Rva004FD448.cpp](https://github.com/Open-BFME/Open-BFME-2/blob/6243bfba4cc4a921892c2b545be75c6a475a6f68/Code/GameEngine/Source/Common/Rva004FD448.cpp).
+The port uses their ownership grouping, disallowed-start lookup and hover text
+shape, together with the existing lobby's slot-cycling rules. Exact target
+eligibility flag and faction/team restriction semantics remain S-5301.
+
+This completes the local territory UI, not strategic game execution. Selections
+are stored as names in the lobby's client model; retail region-ID persistence
+and network serialization are not claimed (S-5301). Turns, armies and battles
+remain S-5302 and the lobby still refuses strategic game start explicitly.
+Native AptCenter/AptZoom projection, per-map light binding and effect timing are
+not yet verified (S-5304); the reference framing uses an orthographic crop of
+the authored Center/Extent with AptPitch. Explicit FX NormalMap=None selects no
+bump mapping and records a material note; missing real texture names still error.
+
+`test_wotr1_map.cpp` covers grouped picks, exclusions, defaults, slot cycling,
+permissions and faction/team restrictions. The GPU test
+`godot/tests/territory_map_view_test.gd` opens the actual strategic lobby, clicks
+rendered triangles, checks selection and visible highlight changes, verifies
+localized hover text/clearing, changes scenarios and checks static texture reuse
+and viewport shutdown. Set `OPENBFME_TERRITORY_SCREENSHOT` to capture the lobby
+and its base map texture. The test uses isolated preferences and a 4:3 viewport
+for comparison with the retail reference.

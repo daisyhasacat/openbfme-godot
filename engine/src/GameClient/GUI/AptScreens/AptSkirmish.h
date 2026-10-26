@@ -41,6 +41,7 @@ struct CreateAHeroHero;
 class AptMessageBox;
 
 #include "GameClient/OptionPreferences.h"
+#include "GameClient/LivingWorldTerritorySelection.h"
 
 #include <array>
 #include <map>
@@ -58,6 +59,11 @@ public:
 	// lane WOTR-1: the strategic lobby's scenario (the selected StrategicScenarioType entry's campaign index, -1 none)
 	int strategicScenario() const { return m_strategicScenario; }
 	bool strategic() const { return m_strategic; }
+	LivingWorldTerritorySelection &territorySelection() { return m_territorySelection; }
+	bool territoryHostEditable() const {return lobbyEditable(-1);}
+	bool territoryInputEnabled() const { return m_strategic && m_profileState == kStateMain && !m_ruleBox; }
+	void hoverStrategicTerritory(const LivingWorldRegion *region);
+
 	~AptSkirmish() override;
 
 	// The AptSkirmish::* command names of the RotWK binary (0x0087E7C4..0x0087EB1C): InitGadgets is the screen reference, the other
@@ -106,6 +112,7 @@ public:
 	GameWindow *mapInfoWindow() const { return m_mapInfo; }
 	GameWindow *strategicScenarioCombo() const { return m_strategicScenarioCombo; } // WOTR-1
 	GameWindow *strategicScenarioDescription() const { return m_strategicScenarioDesc; }
+	GameWindow *strategicTerritoryDescription() const {return m_strategicTerritoryDesc;}
 	GameWindow *profileListWindow() const { return m_profileList; }
 	// lane END-1: dead gadgets are dropped first (a window the movie's popup already destroyed must not be handed out: the lobby hook wrote into one)
 	GameWindow *profileEntryWindow()
@@ -359,6 +366,7 @@ private:
 	GameWindow *m_strategicScenarioCombo = nullptr; // AptMapPreview + 0x50, "StrategicScenarioType"
 	GameWindow *m_strategicScenarioDesc = nullptr;  // + 0x54, "StrategicScenarioDescription"
 	GameWindow *m_strategicTerritoryDesc = nullptr; // + 0x58, "StrategicTerritoryDescription"
+	LivingWorldTerritorySelection m_territorySelection;
 	int m_strategicScenario = -1;                   // the selected campaign (BFME2 GameInfo + campaign)
 	// Skirmish profile gadgets
 	GameWindow *m_profileList = nullptr;

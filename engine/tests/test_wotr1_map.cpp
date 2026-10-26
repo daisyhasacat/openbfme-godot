@@ -100,3 +100,33 @@ TEST_CASE("wotr1 retail map: mounted territory data and effect references resolv
   }
  }
 }
+
+#include "GameClient/LivingWorldTerritorySelection.h"
+TEST_CASE("wotr1 territory picks: ownership groups, exclusions, defaults, cycling and permissions")
+{
+ LivingWorldRegionCampaign regions;
+ for(const char *name:{"A","B","C","D"}) {LivingWorldRegion r;r.name=name;regions.regions.push_back(r);}
+ LivingWorldScenario::Scenario scenario;
+ LivingWorldScenario::OwnershipSet group;group.startRegion="A";group.regions={"A","B"};scenario.ownershipSets.push_back(group);
+ scenario.disallowStartInRegions={"D"};scenario.defaultStartSpots={"A","C"};
+ std::array<LivingWorldTerritoryPlayer,8> players{};
+ players[0].occupied=true;players[0].selectable=true;
+ players[1].occupied=true;players[1].selectable=true;
+ LivingWorldTerritorySelection selection;selection.configure(regions,scenario,"first",players);
+ CHECK(selection.starts()[0]=="A");CHECK(selection.starts()[1]=="C");
+ CHECK(selection.holder("B")==0);CHECK_FALSE(selection.allowed("D"));CHECK_FALSE(selection.allowed("missing"));
+ CHECK_FALSE(selection.pick("D",true));CHECK(selection.pick("B",false));CHECK(selection.starts()[0].empty());
+ CHECK(selection.pick("B",true));CHECK(selection.starts()[0]=="A");
+ players[0].selectable=false;selection.configure(regions,scenario,"first",players);
+ CHECK_FALSE(selection.pick("A",false));CHECK(selection.starts()[0]=="A");
+ players[0].selectable=true;players[1].occupied=false;selection.configure(regions,scenario,"first",players);
+ CHECK(selection.starts()[1].empty());
+ CHECK(selection.pick("A",true));CHECK(selection.starts()[0].empty());
+ CHECK(selection.pick("C",true));CHECK(selection.starts()[0]=="C");
+ scenario.defaultStartSpots={"B"};selection.configure(regions,scenario,"second",players);
+ CHECK(selection.starts()[0]=="A");
+ LivingWorldScenario::StartingRestriction restricted;restricted.regions={"C"};restricted.factions={"FactionA"};restricted.teams={1};scenario.startingRestrictions.push_back(restricted);
+ players[0].faction="FactionB";players[0].team=1;selection.configure(regions,scenario,"third",players);
+ CHECK_FALSE(selection.allowed("C",0));players[0].faction="FactionA";selection.configure(regions,scenario,"third",players);
+ CHECK(selection.allowed("C",0));players[0].team=0;selection.configure(regions,scenario,"third",players);CHECK_FALSE(selection.allowed("C",0));
+}

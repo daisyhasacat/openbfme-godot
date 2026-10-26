@@ -220,7 +220,7 @@ AptSkirmish::AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment 
 			windows.note("unported", line);
 		}
 		for (const std::string &line : LivingWorldMapStore::stopLines()) windows.note("unported", line);
-		windows.note("unported", "[S-5301] the War of the Ring lobby's LivingWorld region highlights, territory hover descriptions and start region picks are not ported; the device map view remains approximate (S-5304)");
+		windows.note("unported", "[S-5301] LivingWorld territory picks are lobby-local names; strategic region-ID persistence/network serialization, native hit-test and start-eligibility flag parity remain unverified; visual effects use S-5304 presentation");
 		windows.note("unported", "[S-5302] the War of the Ring lobby's StartGame: the strategic game it starts is not ported; the lobby refuses with a box");
 	}
 	m_profiles = environment.profiles;
@@ -1427,7 +1427,7 @@ void AptSkirmish::initMapPreviewGadget(const std::string &name, GameWindow *wind
 		// BFME2 0x0057E25D: the preview listens to the LivingWorld window (AptLivingWorldWindow: the strategic map's regions, the start region picks of
 		// rva0057D85D, the start sets UpdateStrategicStartSpots 0x0057DB97) and selects campaign 0 on it. That window is not ported [S-5301]
 		windows().note("unported-gadget-init", "[S-5301] AptMapPreview::MapGadgetInit(LivingWorld): the strategic map window is not ported; "
-			"the scenario's DefaultStartSpots are the start regions");
+			"the device viewer handles local hover and picking; native listener/region-ID parity remains S-5301");
 	}
 	else if (name == "CurrentMap")
 	{
@@ -2972,4 +2972,18 @@ void AptSkirmish::refreshBfme1Profile()
 		if (!windows().invokeAS(level(), "ShowSkirmishMovie", { selected ? std::to_string(faction) : "0" }, nullptr, &error)) windows().note("profile-movie", error);
 		if (!windows().invokeAS(level(), "SetProgressBar", { std::to_string(selected ? bfme1RankProgress(side) : 0) }, nullptr, &error)) windows().note("profile-progress", error);
 	}
+}
+
+void AptSkirmish::hoverStrategicTerritory(const LivingWorldRegion *region)
+{
+	// BFME2 AptMapPreview::OnMouseoverRegionChanged_internal (0x57D746):
+	// clear the list, then localized region name + newline + localized description.
+	if (!m_strategicTerritoryDesc) return;
+	GadgetListBoxReset(m_strategicTerritoryDesc);
+	if (!region) return;
+	auto text=fetchOrMissing(m_env.gameText,region->displayName);
+	if (!region->displayDescription.empty()) text+=u"\n"+fetchOrMissing(m_env.gameText,region->displayDescription);
+	else if (m_setup) { if (const auto *map=m_setup->findMap(region->mapName)) text+=u"\n"+m_setup->mapDescription(*map); }
+	listBoxAddLines(m_strategicTerritoryDesc,text,0xFFFFFFFFu,0,0,true);
+	GadgetListBoxSetTopVisibleEntry(m_strategicTerritoryDesc,0);
 }

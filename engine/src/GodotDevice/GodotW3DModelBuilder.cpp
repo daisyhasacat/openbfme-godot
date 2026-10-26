@@ -2,6 +2,7 @@
 
 #include "Common/BfmeGame.h"
 #include "GodotDevice/GodotW3DModelBuilder.h"
+#include "GameClient/WaterGeometry.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
 #include "GodotDevice/GodotPackedTexture.h"
 #include "Libraries/Source/Apt/AptLoad.h"
@@ -482,6 +483,21 @@ Node3D *W3DModelBuilder::build_model(const Ref<RetailFileSystem> &fsRef, const S
 		MeshInstance3D *instance = memnew(MeshInstance3D);
 		instance->set_name(toGodot(mesh->Get_Name())); // Godot turns '.' into '_' in node names
 		instance->set_meta("w3d_mesh", toGodot(mesh->Get_Name()));
+		// Preserve authored water parameters for presentation clients that supply
+		// the standing-water shader rather than the generic bind-pose material.
+		for (const auto &fx : mesh->ShaderMaterials) {
+			WaterGeometry::StandingMaterial water;
+			if (!WaterGeometry::readStandingMaterial(fx,water)) continue;
+			Dictionary data;
+			data["diffuse"]=Vector4(water.diffuse[0],water.diffuse[1],water.diffuse[2],water.diffuse[3]);
+			data["dimming"]=water.dimming;data["bump_scale"]=water.bumpScale;data["specular_exponent"]=water.specularExponent;
+			data["bump_uv_scale"]=Vector2(water.bumpUV[0],water.bumpUV[1]);data["env_uv_scale"]=Vector2(water.envUV[0],water.envUV[1]);
+			data["wave_uv_scale"]=Vector2(water.waveUV[0],water.waveUV[1]);data["wind_angle"]=water.windAngle;data["wind_speed"]=water.windSpeed;
+			data["wave_angle"]=water.waveAngle;data["wave_speed"]=water.waveSpeed;
+			data["bump_texture"]=toGodot(water.bumpTexture);data["env_texture"]=toGodot(water.envTexture);data["wave_texture"]=toGodot(water.waveTexture);
+			instance->set_meta("w3d_standing_water",data);
+		}
+
 		instance->set_mesh(arrayMesh);
 		// Rigid meshes ride their bone; skins are already deformed into model space.
 		if (!mesh->Is_Skin())
