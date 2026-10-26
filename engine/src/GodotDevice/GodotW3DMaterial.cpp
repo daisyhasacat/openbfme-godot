@@ -742,6 +742,12 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 			if (s == 0) out.Notes.push_back("[S-5017] BFME1 translucent floor markings use base-level linear sampling, a one-world-unit lift and render after the castle floor to retain visibility (OpenBFME policy)");
 		}
 	}
+	// Explicit exporter absence marker, not a missing named texture. Keep this
+	// presentation interpretation visible until the retail binding is verified.
+	if (AsciiStringUtil::compareNoCase(normalMapName, "None") == 0) {
+		normalMapName.clear();
+		out.Notes.push_back("[S-5304] FX NormalMap=None is presented without bump mapping; retail sentinel binding is unverified");
+	}
 	if (!normalMapName.empty())
 	{
 		bool f;

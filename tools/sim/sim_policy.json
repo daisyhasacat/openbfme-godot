@@ -588,6 +588,10 @@
    "reason": "lane MP-1: the UDP socket and the reliable per-peer delivery (resends, acks, the test harness's loss and delay): it decides WHEN a peer's bytes arrive, never what a logic frame contains (GameNetwork/Network.h decides that from the received data alone)"
   },
   {
+   "glob": "src/GodotDevice/GodotAptLivingWorld.cpp",
+   "reason": "lane WOTR-1: the mounted Living World map model in the APT menu viewport; client presentation and camera framing only, no simulation state"
+  },
+  {
    "glob": "src/GodotDevice/GodotAptView3D.cpp",
    "reason": "lane UI-2: the Godot viewer of an Apt View3D render object (a W3D model in a sub viewport composited into the menu); client presentation only"
   },

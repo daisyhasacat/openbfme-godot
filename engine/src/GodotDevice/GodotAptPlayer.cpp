@@ -11,6 +11,7 @@
 #include "GameNetwork/Transport.h"
 #include "GodotDevice/GodotPackedTexture.h"
 #include "GodotDevice/GodotAptView3D.h"
+#include "GodotDevice/GodotAptLivingWorld.h"
 #include "Common/INI.h"
 #include "Common/INI/INIBlockStubs.h"
 #include "Common/INIException.h"
@@ -758,6 +759,7 @@ struct AptMenuPlayer::Impl
 	std::u16string cahPictureName;  ///< lane CAHPIC-1: its file name (no extension)
 	Ref<RetailFileSystem> fs;
 	Ref<RetailFileSystem> presentationFs;
+	AptLivingWorldView livingWorld;
 	AptView3DViewers view3d; // lane UI-2: the View3D render objects (the end screen's rings, the menu frame)
 	std::unique_ptr<AptArchiveFileSource> source;
 	std::unique_ptr<AptArchiveFileSource> originalSource;
@@ -1750,6 +1752,7 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 	m->fs = fs;
 	m->presentationFs = presentationFs;
 	m->worldId = world->get_instance_id(); // lane CAMP-2: the BinkMovie component's movies
+	m->livingWorld.reset();
 	m->view3d.setOwner(this, presentationFs); // lane UI-2: shell decoration follows the presentation source; gameplay View3D stays on the world path
 	m->source = std::make_unique<AptArchiveFileSource>(*presentationFs->archive_fs(), presentationFs->is_shell_source() ? fs->archive_fs() : nullptr);
 	m->originalSource = std::make_unique<AptArchiveFileSource>(*fs->archive_fs());
@@ -4295,6 +4298,7 @@ void AptMenuPlayer::redrawSegments(const std::vector<AptCanvasSegment> &segments
 	const RID root = get_canvas_item();
 	const std::map<std::string, const GameWindow *> gadgetOfPath = gadgetPaths();
 	m->view3d.beginBuild(&oldPaths);
+	m->livingWorld.beginBuild(&oldPaths);
 	for (size_t j = 0; j < m->segments.size(); ++j)
 	{
 		Impl::Segment &g = m->segments[j];
@@ -4316,6 +4320,7 @@ void AptMenuPlayer::redrawSegments(const std::vector<AptCanvasSegment> &segments
 			drawSegment(m->drawnList, j, gadgetOfPath);
 		}
 	}
+	m->livingWorld.endBuild();
 	m->view3d.endBuild();
 	freeItemPool(); // the replaced segments' items their new drawing did not reuse
 }
@@ -4422,6 +4427,7 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 	m->gadgetAnchors.clear();
 	const std::map<std::string, const GameWindow *> gadgetOfPath = gadgetPaths();
 	m->view3d.beginBuild(); // lane UI-2
+	m->livingWorld.beginBuild();
 	// lane HUDREDRAW-1: each segment under an item of its own, in list order after the backdrop
 	int labelled = 0;
 	for (const AptCanvasSegment &r : AptCanvasSegments(list))
@@ -4443,6 +4449,7 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 		}
 		drawSegment(list, m->segments.size() - 1, gadgetOfPath);
 	}
+	m->livingWorld.endBuild();
 	m->view3d.endBuild(); // lane UI-2: viewers no op drew stop rendering
 }
 
@@ -4600,6 +4607,19 @@ void AptMenuPlayer::drawSegment(const AptCanvasList &list, size_t segment, const
 						m->gadgetAnchors[g->second] = newItem(parents.back());
 						current = RID();
 					}
+				}
+				if (op.nativeTag && op.symbolName == "LivingWorldMap") {
+					float minx=1e9f,miny=1e9f,maxx=-1e9f,maxy=-1e9f;
+					for (int i=0;i<4;++i) {
+						const float x=op.bounds[(i==1 || i==2)?2:0], y=op.bounds[i>=2?3:1];
+						const float sx=(op.matrix.a*x+op.matrix.c*y+op.matrix.tx)*op.scaleX+op.offsetX;
+						const float sy=(op.matrix.b*x+op.matrix.d*y+op.matrix.ty)*op.scaleY+op.offsetY;
+						minx=std::min(minx,sx); miny=std::min(miny,sy); maxx=std::max(maxx,sx); maxy=std::max(maxy,sy);
+					}
+					auto *world = Object::cast_to<GameWorld>(ObjectDB::get_instance(ObjectID(m->worldId)));
+					if (world && world->object_world()) m->livingWorld.draw(this,m->fs,world->object_world()->livingWorldMap(),
+						newItem(parents.back()),Rect2(minx,miny,maxx-minx,maxy-miny),op);
+					current=RID(); break;
 				}
 				if (op.nativeTag && op.symbolName == "View3D" && !op.renderObject.empty())
 				{
@@ -6759,6 +6779,7 @@ Dictionary AptMenuPlayer::get_report() const
 	r["font_substitutions"] = toArray(m->fontSubstitutions);
 	r["font_fallbacks"] = toArray(m->fontFallbacks);
 	r["placeholders"] = toArray(m->placeholders);
+	r["living_world"] = m->livingWorld.report();
 	r["view3d_errors"] = toArray(m->view3d.errors()); // lane UI-2
 	r["view3d_viewers"] = (int64_t)m->view3d.viewerCount();
 	r["view3d_render_updates"] = (int64_t)m->view3d.renderUpdates();

@@ -220,7 +220,7 @@ AptSkirmish::AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment 
 			windows.note("unported", line);
 		}
 		for (const std::string &line : LivingWorldMapStore::stopLines()) windows.note("unported", line);
-		windows.note("unported", "[S-5301] the War of the Ring lobby's LivingWorld window (the strategic map, its region highlights and start region picks) is not ported");
+		windows.note("unported", "[S-5301] the War of the Ring lobby's LivingWorld region highlights, territory hover descriptions and start region picks are not ported; the device map view remains approximate (S-5304)");
 		windows.note("unported", "[S-5302] the War of the Ring lobby's StartGame: the strategic game it starts is not ported; the lobby refuses with a box");
 	}
 	m_profiles = environment.profiles;

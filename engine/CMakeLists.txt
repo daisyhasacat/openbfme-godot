@@ -583,7 +583,8 @@ add_library(openbfme SHARED
     ${OPENBFME_UI6_GODOT_SOURCES}
     ${OPENBFME_HUD4_GODOT_SOURCES}
     ${OPENBFME_HUD6_GODOT_SOURCES}
-    ${OPENBFME_CAH1_GODOT_SOURCES})
+    ${OPENBFME_CAH1_GODOT_SOURCES}
+    ${OPENBFME_WOTR1_GODOT_SOURCES})
 target_sources(openbfme PRIVATE ${OPENBFME_SIM_SOURCES_GODOT}) # the simulation sources of the extension (listed in the manifest)
 target_link_libraries(openbfme PRIVATE openbfme_core godot-cpp openbfme_luagd)
 if(UNIX AND NOT APPLE)

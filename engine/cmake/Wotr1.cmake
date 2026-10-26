@@ -10,3 +10,7 @@ set(OPENBFME_WOTR1_TESTS
     tests/test_wotr1_lobby.cpp
     tests/test_wotr1_map.cpp
 )
+
+set(OPENBFME_WOTR1_GODOT_SOURCES
+    src/GodotDevice/GodotAptLivingWorld.cpp
+)
