@@ -750,7 +750,7 @@ TEST_CASE("water acceptance: remaining shader and geometry approximations stay e
 {
 	const auto *stop = MapStops::find("S-035");
 	REQUIRE(stop != nullptr);
-	CHECK(std::string(stop->gap) == "Standing water preserves authored FX techniques and reconstructs animated PCA/PCA_U normals on flat geometry alongside the bump/specular path; TIME, scene-light binding and bilinear terrain depth are inferred; Gerstner displacement, shoreline modulation, reflections, shadow filtering, other PCA LODs, depth-colour LUT and exact river/standing-wave geometry remain unported");
+	CHECK(std::string(stop->gap) == "Standing water preserves authored FX techniques, PCA/PCA_U normals and shoreline Gerstner displacement on a donor high-detail grid alongside the bump/specular path; TIME, LOD selection, scene-light binding and terrain depth are inferred; reflections, shadow filtering, other PCA LODs, depth-colour LUT and legacy shoreline texture tracks remain unported");
 }
 
 namespace
@@ -819,4 +819,50 @@ TEST_CASE("water effect techniques: names come from the effect table with checke
 	put(24, 0xfffffff0);
 	CHECK_FALSE(WaterGeometry::readEffectTechniques(bytes, names, &error));
 	CHECK(names.empty());
+}
+
+TEST_CASE("WaterGeometry::standing grid shares vertices and queries active shoreline segments")
+{
+	StandingWaterArea area; area.points={{0,0},{40,0},{40,40},{0,40}}; area.waterHeight=20;
+	StandingWaveArea wave; wave.points={{0,20},{40,20}}; wave.enablePcaWave=1;
+	WaterGeometry::StandingGrid grid;
+	REQUIRE(WaterGeometry::buildStandingGrid(area,{wave},[](float,float){return 0.0f;},grid));
+	CHECK(grid.spacing==20);
+	CHECK(grid.vertices.size()==9);
+	CHECK(grid.indices==std::vector<uint32_t>{0,3,2,0,1,3,1,5,3,1,4,5,2,7,6,2,3,7,3,8,7,3,5,8});
+	for(const auto &v:grid.vertices) {
+		CHECK(v.nearest.x==20); CHECK(v.nearest.y==20);
+		CHECK(v.direction.x==0); CHECK(v.direction.y==-1); CHECK(v.halfLength==20);
+	}
+	wave.enablePcaWave=0;
+	REQUIRE(WaterGeometry::buildStandingGrid(area,{wave},[](float,float){return 0.0f;},grid));
+	CHECK(grid.vertices[0].halfLength==0);
+	CHECK(grid.vertices[0].nearest.x==100000);
+	wave.enablePcaWave=1;
+	REQUIRE(WaterGeometry::buildStandingGrid(area,{wave},[](float,float){return -80.0f;},grid));
+	CHECK(grid.vertices[0].halfLength==0); // source strict depth < 100
+	wave.points={{20,20},{20,20}};
+	REQUIRE(WaterGeometry::buildStandingGrid(area,{wave},[](float,float){return 0.0f;},grid));
+	CHECK(grid.vertices[0].halfLength==0);
+	area.points={{0,0},{4000,0},{4000,6000},{0,6000}};
+	REQUIRE(WaterGeometry::buildStandingGrid(area,{},[](float,float){return 0.0f;},grid));
+	CHECK(grid.spacing==40);
+	CHECK(grid.vertices.size()==15251);
+	CHECK(grid.indices.size()==90000);
+	area.points={{-39,-39},{1,-39},{1,1},{-39,1}};
+	REQUIRE(WaterGeometry::buildStandingGrid(area,{},[](float,float){return 0.0f;},grid));
+	CHECK(grid.vertices[0].point.x==-20); // donor truncates grid origin toward zero
+	CHECK(grid.vertices[0].point.y==-20);
+}
+TEST_CASE("water material: authored Gerstner vectors remain distinct")
+{
+	MeshShaderMaterialDef source; source.TypeName="WaterShader.FX";
+	for(int i=0;i<3;++i) {
+		MeshShaderMaterialProperty prop; prop.Name="GWAmpFreqPhaseSteepness"+std::to_string(i+1);
+		for(int j=0;j<4;++j) prop.Float[j]=float(i*4+j+1);
+		source.Properties.push_back(prop);
+	}
+	WaterGeometry::StandingMaterial material;
+	REQUIRE(WaterGeometry::readStandingMaterial(source,material));
+	for(int i=0;i<3;++i) for(int j=0;j<4;++j) CHECK(material.gerstner[i][j]==float(i*4+j+1));
 }

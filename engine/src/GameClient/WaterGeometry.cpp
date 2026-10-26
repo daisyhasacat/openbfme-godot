@@ -189,6 +189,9 @@ bool WaterGeometry::readStandingMaterial(const MeshShaderMaterialDef &source, St
 	{
 		const std::string n = AsciiStringUtil::lowered(p.Name);
 		if (n == "materialcolordiffuse") std::copy(p.Float, p.Float + 4, out.diffuse);
+		else if (n == "gwampfreqphasesteepness1") std::copy(p.Float, p.Float + 4, out.gerstner[0]);
+		else if (n == "gwampfreqphasesteepness2") std::copy(p.Float, p.Float + 4, out.gerstner[1]);
+		else if (n == "gwampfreqphasesteepness3") std::copy(p.Float, p.Float + 4, out.gerstner[2]);
 		else if (n == "dimmingfactor") out.dimming = p.Float[0];
 		else if (n == "bumpscale") out.bumpScale = p.Float[0];
 		else if (n == "specularexponent") out.specularExponent = p.Float[0];
@@ -315,4 +318,55 @@ bool WaterGeometry::readEffectTechniques(const std::vector<std::uint8_t> &bytes,
 		return true;
 	}
 	catch (const std::runtime_error &e) { names.clear(); if (error) *error = e.what(); return false; }
+}
+
+// Donor BFME2 matched allocation/query; Godot's terrain sampler and high-detail
+// selection are presentation bridges, not verified RotWK LOD/height parity.
+bool WaterGeometry::buildStandingGrid(const StandingWaterArea &area, const std::vector<StandingWaveArea> &waves,
+	const std::function<float(float,float)> &ground, StandingGrid &out)
+{
+	out = StandingGrid{};
+	if (area.points.size() < 3) return false;
+	float lx=area.points[0].x, hx=lx, ly=area.points[0].y, hy=ly;
+	for (const auto &p:area.points) { lx=std::min(lx,p.x); hx=std::max(hx,p.x); ly=std::min(ly,p.y); hy=std::max(hy,p.y); }
+	if (!std::isfinite(lx+hx+ly+hy) || hx-lx > 1e8f || hy-ly > 1e8f) return false;
+	int nx,ny;
+	do {
+		nx=int(hx/out.spacing)-int(lx/out.spacing)+1;
+		ny=int(hy/out.spacing)-int(ly/out.spacing)+1;
+		if (int64_t(nx)*ny <= 60000) break;
+		out.spacing *= 2;
+	} while (true);
+	lx=int(lx/out.spacing)*out.spacing; ly=int(ly/out.spacing)*out.spacing;
+	std::vector<int> cache(size_t(nx+1)*(ny+1),-1);
+	auto vertex=[&](int x,int y) {
+		int &index=cache[size_t(y)*(nx+1)+x];
+		if(index>=0) return uint32_t(index);
+		StandingVertex v; v.point={lx+x*out.spacing,ly+y*out.spacing}; v.ground=ground(v.point.x,v.point.y);
+		float nearestDistance=100000;
+		if (std::max(float(area.waterHeight)-v.ground,0.0f)<100) {
+			for (const auto &w:waves) if(w.enablePcaWave) for(size_t i=1;i<w.points.size();++i) {
+				const auto &a=w.points[i-1], &b=w.points[i];
+				float dx=b.x-a.x,dy=b.y-a.y,len=std::sqrt(dx*dx+dy*dy);
+				if(len==0) continue;
+				Point2F mid={(a.x+b.x)*.5f,(a.y+b.y)*.5f};
+				float qx=v.point.x-mid.x,qy=v.point.y-mid.y,dist=std::sqrt(qx*qx+qy*qy);
+				if(dist<len*.5f+50 && dist<nearestDistance) {
+					nearestDistance=dist; v.nearest=mid; v.direction={dy/len,-dx/len}; v.halfLength=len*.5f;
+				}
+			}
+		}
+		index=int(out.vertices.size()); out.vertices.push_back(v); return uint32_t(index);
+	};
+	for(int y=0;y<ny;++y) for(int x=0;x<nx;++x) {
+		Point2F c={lx+(x+.5f)*out.spacing,ly+(y+.5f)*out.spacing}; bool inside=false;
+		for(size_t i=0,j=area.points.size()-1;i<area.points.size();j=i++) {
+			auto a=area.points[i],b=area.points[j];
+			if ((a.y>c.y)!=(b.y>c.y) && c.x<(b.x-a.x)*(c.y-a.y)/(b.y-a.y)+a.x) inside=!inside;
+		}
+		if(!inside) continue;
+		auto a=vertex(x,y),b=vertex(x+1,y),c0=vertex(x,y+1),d=vertex(x+1,y+1);
+		out.indices.insert(out.indices.end(),{a,d,c0,a,b,d});
+	}
+	return !out.indices.empty();
 }

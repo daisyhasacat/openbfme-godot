@@ -14,16 +14,18 @@
 #include <cstdint>
 #include <array>
 #include <vector>
+#include <functional>
 
 struct MeshShaderMaterialDef;
 
 namespace WaterGeometry
 {
 // Defaults from retail watershader.fxo. Authored technique indices select the
-// supported PCA normal or bump paths; displacement/reflections remain S-035.
+// supported PCA geometry/normal or bump paths; reflections remain S-035.
 struct StandingMaterial
 {
 	unsigned technique = 0;
+	float gerstner[3][4] = {{1, .1f, .1f, .5f}, { .00001f, .00001f, .00001f, .00001f}, { .00001f, .00001f, .00001f, .00001f}};
 	float pcaUV[2] = { 1.5f, 3.0f }, pcaWaveUV[2] = { 0.01f, 0.0075f };
 	float specular[3] = { 0.8f, 0.8f, 0.8f };
 	float reflectionPerturbation = 0.005f;
@@ -55,6 +57,22 @@ bool readEffectTechniques(const std::vector<std::uint8_t> &bytes, std::vector<st
 // Triangulates a simple polygon (either winding, non-convex allowed). Returns false for degenerate input
 // (fewer than 3 points, zero area, or a polygon the ear search cannot finish). indices are triangle triples.
 bool triangulate(const std::vector<Point2F> &polygon, std::vector<std::uint32_t> &indices);
+
+// BFME2 W3DWater.cpp AllocateAndFillBuffers (0x8304A), high-detail grid.
+// Wave query follows W3DWaterStandingWaveQuery.cpp (0x8026B).
+struct StandingVertex
+{
+	Point2F point, nearest = {100000,100000}, direction = {1,0};
+	float ground = 0, halfLength = 0;
+};
+struct StandingGrid
+{
+	std::vector<StandingVertex> vertices;
+	std::vector<std::uint32_t> indices;
+	float spacing = 20;
+};
+bool buildStandingGrid(const StandingWaterArea &area, const std::vector<StandingWaveArea> &waves,
+	const std::function<float(float,float)> &ground, StandingGrid &out);
 
 // Signed area (positive = counter-clockwise in a y-up frame).
 float signedArea(const std::vector<Point2F> &polygon);
