@@ -456,7 +456,7 @@ std::vector<std::string> Pathfinder::allStops()
 {
 	return { pathstops::kShore, pathstops::kSlopeAndConfig, pathstops::kRivers, pathstops::kLayers, pathstops::kZoneProfiles, pathstops::kHierarchical,
 		pathstops::kLargeRectGoal, pathstops::kPartialRebuild, pathstops::kGroupDestination, pathstops::kWallLayer, pathstops::kLargeRectFootprint,
-		pathstops::kLargeRectReservation, pathstops::kQueueFull, pathstops::kQueueTime, pathstops::kPath, pathstops::kNumerics };
+		pathstops::kLargeRectReservation, pathstops::kQueueFull, pathstops::kQueueTime, pathstops::kPath, pathstops::kNumerics, pathstops::kAttackView, pathstops::kAttackCorridor };
 }
 
 // ---- the state hash (MOVE-1) ----
@@ -504,6 +504,7 @@ void Pathfinder::crc(StateHasher &h) const
 		h.addI32(v);
 	}
 	h.addBool(m_config.hordesWaitForHordes); // lane PHYS-1 (review r3)
+	h.addBool(m_config.attackUsesLineOfSight); // RW 0x6F4557 (not in configHash: a save made before it was read still loads)
 	h.addBool(m_config.planningModeEnabled); // lane MOVE-3 (review r1): GameData + 0x11CA routes move orders through the group manager
 	h.addFloat(m_config.meleeApproachDist);
 	h.addFloat(m_config.meleeApproachTolerance);

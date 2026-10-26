@@ -62,6 +62,9 @@ func _init() -> void:
 	if logger != null and not logger.start_watchdog(FREEZE_SECONDS):
 		printerr("RELEASE freeze watchdog not started: ", logger.get_last_error())
 	print(info.version_line())
+	# the engine's own start (its renderer, the extension, the project's files) before any of the game's scripts: on iOS the first start after an
+	# install also pays the system's checks of the new app here
+	print("STARTUP engine and extension ready at %d ms" % Time.get_ticks_msec())
 	if not log_path.is_empty():
 		print("RELEASE session log: ", info.redact(ProjectSettings.globalize_path(log_path)))
 	if not previous_crash_log.is_empty():
@@ -321,10 +324,27 @@ func selected_game() -> String:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--game="):
 			return arg.trim_prefix("--game=") if arg.trim_prefix("--game=") in ["bfme1", "aotr", "bfme2-106"] else "bfme2"
+	# a standalone app that carries BFME2 and no RotWK (tools/release/package_macos_standalone.py --content bfme2) plays what it carries
+	var content := bundled_content()
+	if content.has("bfme2") and not content.has("rotwk"):
+		return "bfme2-106"
 	var cfg := ConfigFile.new()
 	cfg.load("user://game-selection.cfg")
 	var selected: String = cfg.get_value("game", "selected", "bfme2")
 	return selected if selected in ["bfme1", "aotr", "bfme2-106"] else "bfme2"
+
+
+## The games a standalone app carries in its bundle (Contents/Resources/retail/<game>: "rotwk", "bfme2"); empty for any other build
+func bundled_content() -> PackedStringArray:
+	var out := PackedStringArray()
+	if not OS.has_feature("standalone_game"):
+		return out
+	var root := OS.get_executable_path().get_base_dir()
+	var retail := root.path_join("retail") if OS.has_feature("ios") else root.path_join("../Resources/retail").simplify_path()
+	for game in ["rotwk", "bfme2"]:
+		if DirAccess.dir_exists_absolute(retail.path_join(game)):
+			out.append(game)
+	return out
 
 
 func bfme1_install() -> String:

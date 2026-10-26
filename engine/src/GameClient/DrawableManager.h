@@ -139,6 +139,7 @@ private:
 	bool m_parallelSync = true;
 	size_t m_parallelSyncMinimum = 512;
 	std::vector<Drawable::SyncPrep> m_syncScratch; ///< lane PERF-3: syncTransforms' per-slot results of the parallel part (kept: no allocation per frame)
+	std::vector<const ObjectSnapshot *> m_syncRecords; ///< syncTransforms: each slot's record, found once for both of its passes (kept: no allocation per frame)
 	AnimationSoundModuleManager m_animationSounds; ///< lane AUDIO-4 (before the drawables: their modules leave its lists when they go)
 	DrawServices m_services;
 	std::map<ObjectID, DrawableID> m_byObject;

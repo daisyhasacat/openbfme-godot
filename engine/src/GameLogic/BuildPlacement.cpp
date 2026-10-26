@@ -281,7 +281,7 @@ bool BuildPlacement::isLocationClearOfObjects(GameLogic &logic, const Coord3D &p
 
 LegalBuildCode BuildPlacement::isLocationLegalToBuild(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, unsigned options, Object *builder, Player *player, const std::vector<ObjectID> *ignored)
 {
-	if (!WallBalance::placementAllowed(logic,build,pos,builder,player)) return LBC_RESTRICTED_TERRAIN;
+	if (!WallBalance::placementAllowed(logic,build,pos,builder,player)) return LBC_OUTSIDE_WALLS;
 	AIWorld *ai = logic.aiWorld();
 	const PathfindTerrain *terrain = ai ? ai->pathfinder().terrainView() : nullptr;
 	// ZH: "You just can't never build off the map, regardless of options"
@@ -550,6 +550,7 @@ const char *BuildPlacement::codeName(LegalBuildCode code)
 		case LBC_NO_CLEAR_PATH: return "NO_CLEAR_PATH";
 		case LBC_SHROUD: return "SHROUD";
 		case LBC_TOO_CLOSE_TO_SUPPLIES: return "TOO_CLOSE_TO_SUPPLIES";
+		case LBC_OUTSIDE_WALLS: return "OUTSIDE_WALLS";
 	}
 	return "?";
 }

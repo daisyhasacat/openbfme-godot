@@ -164,6 +164,8 @@ public:
 
 private:
 	bool inRange() const;
+	// RW 0x749EE3 .. 0x749F49: in range, and for a ground mover against a victim on the ground a clear line of sight (RW 0x744AAA -> RW 0x6616AC)
+	bool inRangeWithView();
 	std::unique_ptr<class AIMoveToState> m_move;
 	AIAttackState *m_att;
 	bool m_follow;

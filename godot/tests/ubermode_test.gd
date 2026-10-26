@@ -59,6 +59,7 @@ func _run() -> void:
 		await create_timer(0.21).timeout
 		world.update_lua()
 	check_lua(world, "local count=0; for _,u in ipairs(bfme.players.localPlayer:units()) do if u.typeId=='GondorFighterHorde' then count=count+1; assert(u.level==u.maxLevel); for _,up in ipairs(u:getUpgrades()) do if up.kind=='object' then assert(up.status=='complete',up.upgrade) end end end end; assert(count==1)")
+	check_members(world, "first horde")
 	check_lua(world, "local p=bfme.players.localPlayer; local at=p:findBuildSite('GondorBarracks',b.position,2000); assert(at); build2=p:construct('GondorBarracks',at)")
 	world.update_lua()
 	for i in 8:
@@ -113,6 +114,7 @@ func _run() -> void:
 		await create_timer(0.21).timeout
 		world.update_lua()
 	check_lua(world, "assert(#ubermode.pending==0); local n=0; for _,u in ipairs(bfme.players.localPlayer:units()) do if u.typeId=='GondorFighterHorde' then n=n+1; assert(u.level==u.maxLevel) end end; assert(n==11,tostring(n))")
+	check_members(world, "mass-trained hordes")
 	check_lua(world, "ubermode.disable(); assert(not ubermode.enabled); assert(#ubermode.pending==0)")
 	world.update_lua()
 	check_lua(world, "local p=bfme.players.localPlayer; assert(p.commandPointsBase==oldCP[1]); assert(p.commandPointsCap==oldCP[2]); assert(p.commandPointsBonus==oldCP[3]); assert(not ubermode.massTrain('GondorFighterHorde',b))")
@@ -125,3 +127,25 @@ func check_lua(world: Node, code: String) -> void:
 	if not result.ok:
 		failed = true
 		printerr("UBERMODE LUA FAIL ", code, ": ", result)
+
+## every soldier of every uber-trained horde wears the equipment, not just the members the horde held when it was upgraded: a produced horde's
+## members join one by one after it (the banner carrier and the horde-only Upgrade_GondorBasicTraining are not the soldiers')
+func check_members(world: Node, label: String) -> void:
+	const EQUIPMENT := ["Upgrade_GondorHeavyArmor", "Upgrade_GondorForgedBlades"]
+	var result: Dictionary = world.execute_lua("local t={}; for _,u in ipairs(bfme.players.localPlayer:units()) do if u.typeId=='GondorFighterHorde' then t[#t+1]=u.id end end; return table.concat(t,',')")
+	var soldiers := 0
+	for raw in String(result.output).strip_edges().split(",", false):
+		var horde := int(raw)
+		for member in world.get_object(horde).get("members", []):
+			if world.get_object(int(member)).get("template", "") != "GondorFighter":
+				continue
+			soldiers += 1
+			var have: Array = world.get_upgrades(int(member)).get("object", [])
+			for name in EQUIPMENT:
+				if name not in have:
+					failed = true
+					printerr("UBERMODE MEMBERS FAIL %s: soldier %d of horde %d lacks %s (has %s)" % [label, int(member), horde, name, str(have)])
+	print("UBERMODE %s: %d soldiers checked" % [label, soldiers])
+	if soldiers == 0:
+		failed = true
+		printerr("UBERMODE MEMBERS FAIL %s: no soldiers" % label)

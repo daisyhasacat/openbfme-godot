@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
-"""Export a self-contained, ad-hoc signed OpenBFME.app using the installed Godot editor."""
+"""Export a self-contained, ad-hoc signed OpenBFME.app using the installed Godot editor.
+
+With --content the app also carries the game files it plays (Contents/Resources/retail/<game>, which the game's standalone build mounts
+first: godot/scripts/release/release.gd). For now the content is BFME2 1.06 alone (--content bfme2): the app then plays BFME2 1.06 without
+RotWK. The files are the player's own install, checked against the verified archive list before they are copied; the app is for that
+player's machine and is not to be shared (it holds the retail game).
+"""
 import argparse
 import copy
+import json
 import os
 from pathlib import Path
 import platform
@@ -44,6 +51,66 @@ def host_template(template, arch, build):
         return target
 
 
+# the games a bundle can carry and the verified archive lists they are checked against (engine/data/retail-archives)
+CONTENT = {
+    'bfme2': ROOT / 'engine/data/retail-archives/bfme2-106-english-archives.json',
+}
+# not game data: the install's programs and debugger files (the game reads archives and loose data, never these)
+SKIP_SUFFIXES = ('.exe', '.dll', '.dbgcmd', '.msi', '.pdb')
+SKIP_NAMES = ('.DS_Store',)
+
+
+def content_source(game, given):
+    """The install folder to copy: --<game>, else <GAME>_INSTALL, else the folder the game remembered (user data install-paths.cfg)."""
+    if given:
+        return given.expanduser().resolve()
+    env = os.environ.get(game.upper() + '_INSTALL', '')
+    if env:
+        return Path(env).expanduser().resolve()
+    remembered = Path.home() / 'Library/Application Support/Godot/app_userdata/OpenBFME/install-paths.cfg'
+    if remembered.is_file():
+        for line in remembered.read_text(errors='replace').splitlines():
+            if line.startswith(game.upper() + '_INSTALL='):
+                return Path(line.split('=', 1)[1].strip()).expanduser().resolve()
+    raise RuntimeError(f'No {game} install: pass --{game} <folder> or set {game.upper()}_INSTALL')
+
+
+def check_content(game, source):
+    """Every verified archive of the game is in `source` (case-insensitive, as the game finds them) with its pinned size."""
+    policy = json.loads(CONTENT[game].read_text())
+    files = {}
+    for path in source.rglob('*'):
+        if path.is_file():
+            files[str(path.relative_to(source)).replace('\\', '/').lower()] = path
+    missing, wrong = [], []
+    for entry in policy['archives']:
+        found = files.get(entry['path'].lower())
+        if found is None:
+            missing.append(entry['path'])
+        elif found.stat().st_size != entry['size']:
+            wrong.append(f"{entry['path']} ({found.stat().st_size} bytes, expected {entry['size']})")
+    if missing or wrong:
+        problems = [f'missing {m}' for m in missing[:10]] + [f'size of {w}' for w in wrong[:10]]
+        raise RuntimeError(f'{source} is not a complete {policy["game"]} {policy["patch"]} install: ' + '; '.join(problems))
+    return len(policy['archives']), sum(e['size'] for e in policy['archives'])
+
+
+def copy_content(source, target):
+    """The install without its programs, as APFS clones where the disk allows (instant, no extra space), else as copies."""
+    target.mkdir(parents=True)
+    copied = 0
+    for path in sorted(source.rglob('*')):
+        relative = path.relative_to(source)
+        if path.is_dir() or path.name in SKIP_NAMES or path.suffix.lower() in SKIP_SUFFIXES or path.is_symlink():
+            continue
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if subprocess.run(['/bin/cp', '-c', '-p', str(path), str(destination)], capture_output=True).returncode != 0:
+            shutil.copy2(path, destination)
+        copied += path.stat().st_size
+    return copied
+
+
 def ensure_bundle_stopped(output):
     """A running Godot pack still uses its file offsets; never replace it underneath it."""
     info_path = output / 'Contents/Info.plist'
@@ -63,6 +130,9 @@ def main():
     parser.add_argument('--godot', default=os.environ.get('GODOT', '/Applications/Godot.app/Contents/MacOS/Godot'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--template', type=Path, help='Optional existing macos.zip export template')
+    parser.add_argument('--content', action='append', choices=sorted(CONTENT), default=[],
+                        help='game files to carry in the app (for now: bfme2, BFME2 1.06 alone); repeatable')
+    parser.add_argument('--bfme2', type=Path, help='the BFME2 1.06 install to copy (default: BFME2_INSTALL or the remembered folder)')
     args = parser.parse_args()
     if platform.system() != 'Darwin':
         parser.error('macOS packaging must run on macOS')
@@ -71,6 +141,11 @@ def main():
     if output.suffix != '.app':
         parser.error('output must end in .app')
     ensure_bundle_stopped(output)
+    sources = {}
+    for game in dict.fromkeys(args.content):
+        sources[game] = content_source(game, getattr(args, game))
+        count, size = check_content(game, sources[game])
+        print(f'CONTENT {game}: {sources[game]} ({count} verified archives, {size / 1e9:.1f} GB)')
     godot = shutil.which(args.godot) or args.godot
     version = subprocess.check_output([godot, '--version'], text=True).strip().split('.')
     channel = next((i for i, part in enumerate(version) if not part.isdigit()), len(version))
@@ -116,6 +191,9 @@ def main():
         if not list(app.rglob('*.pck')) or not list(app.rglob(library.name)):
             raise RuntimeError('Exported app is missing its project pack or native extension')
         run('xcrun', 'lipo', '-verify_arch', arch, executable)
+        for game, source in sources.items():
+            size = copy_content(source, app / 'Contents/Resources/retail' / game)
+            print(f'CONTENT {game}: {size / 1e9:.1f} GB copied into the app')
         for dylib in app.rglob('*.dylib'):
             run('codesign', '--force', '--sign', '-', '--timestamp=none', dylib)
         run('codesign', '--force', '--deep', '--sign', '-', '--timestamp=none', app)
@@ -128,8 +206,10 @@ def main():
             ensure_bundle_stopped(output)
             shutil.rmtree(output)
         shutil.move(str(app), str(output))
-    print(f'BUILT APP: {output}')
+    print(f'BUILT APP: {output}' + (f' (carries {", ".join(sources)})' if sources else ''))
     print('Double-click the app in Finder to play.')
+    if sources:
+        print('It holds your retail game files: keep it on your own machine.')
 
 
 if __name__ == '__main__':

@@ -747,29 +747,33 @@ void NetGameSession::writeIncidentReport(bool ended)
 	{
 		return;
 	}
-	NetIncidentReport::Facts f;
-	NetIncidentReport::collect(*m_network, f);
-	if (!NetIncidentReport::worthReporting(f))
+	// service() runs every tick: what the report shows is compared by its counts first, read from the Network as they are (no copy), and the facts
+	// are collected only when one changed
+	const Network &net = *m_network;
+	size_t halves = 0;
+	for (const DesyncReport &d : net.desyncs())
 	{
-		return;
+		halves += d.halves.size();
 	}
-	// rewritten only when something it shows changed (service() runs every tick)
-	std::string signature = std::to_string(ended) + "|" + std::to_string(f.desyncs.size()) + "|" + std::to_string(f.disconnectLog.size()) + "|"
-		+ std::to_string(f.networkErrors.size()) + "|" + f.quitReason + "|" + std::to_string(m_desyncDumps.size());
-	for (const DesyncReport &d : f.desyncs)
+	std::string signature = std::to_string(ended) + "|" + std::to_string(net.desyncs().size()) + "|" + std::to_string(halves) + "|"
+		+ std::to_string(net.disconnectManager().log().size()) + "|" + std::to_string(net.errors().size()) + "|" + net.quitReason() + "|"
+		+ std::to_string(m_desyncDumps.size()) + "|" + std::to_string(net.rejoinLog().size());
+	for (int s = 0; s < MAX_SLOTS; ++s)
 	{
-		signature += "|" + std::to_string(d.halves.size());
-	}
-	for (const NetIncidentReport::Facts::Slot &x : f.slots)
-	{
-		signature += "|" + std::to_string(x.departureFrame) + "," + std::to_string(x.left) + std::to_string(x.disconnected) + std::to_string(x.held)
-			+ std::to_string(x.rejoinFrame);
+		signature += "|" + std::to_string(net.departureFrame(s)) + "," + std::to_string(net.hasLeft(s)) + std::to_string(net.isDisconnected(s))
+			+ std::to_string(net.isHeld(s)) + std::to_string(net.rejoinFrame(s));
 	}
 	if (signature == m_incidentSignature)
 	{
 		return;
 	}
 	m_incidentSignature = signature;
+	NetIncidentReport::Facts f;
+	NetIncidentReport::collect(net, f);
+	if (!NetIncidentReport::worthReporting(f))
+	{
+		return;
+	}
 	f.mapName = m_start.game.game.mapName;
 	f.build = m_options.build;
 	f.started = m_incidentStarted;

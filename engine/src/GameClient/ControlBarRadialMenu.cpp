@@ -28,6 +28,7 @@ const float kTwoPi = 6.28318548f;           // RW 0xBDD38C
 const float kMinRadius = 0.6666667f;        // RW 0xBDAD60
 const float kRadiusBias = 0.1f;             // RW 0xBD83D4
 const float kClockScale = 46.0f / 48.0f;    // W3DPushButton.cpp RADIAL_CLOCK_SCALE
+const int kRetailButtonSize = 48;            // the radial buttons' retail size (the overlays' / 48 above; ControlBar.wnd's command windows)
 const int kOffView = -999;                  // RW 0x9458FE (0xFFFFFC19)
 // INFERENCE (S-2701): the clock colours (the control bar's clock colour and GlobalData + 0x1160 / + 0x1164) are not identified
 const std::uint32_t kClockColor = 0x80000000u, kClockRimColor = 0xFFFFFFFFu;
@@ -402,6 +403,12 @@ void ControlBarRadialMenu::countOp(const Button &b, bool enabled)
 	t.kind = RadialDrawOp::TEXT;
 	t.text = std::to_string(b.source.productionCount); // L"%d" (RW 0xBDF1B0)
 	t.font = m_countLook.font;
+	// OpenBFME (S-2701): the font grows with the bubble beyond retail's 48 pixels (a high-resolution display's ring), so the count keeps retail's
+	// proportion: at the window's own point size it sat inside the RadialBorder rim drawn over it and could not be seen
+	if (b.rect.h > kRetailButtonSize)
+	{
+		t.font.pointSize = (int)std::lround((float)t.font.pointSize * (float)b.rect.h / (float)kRetailButtonSize);
+	}
 	// getButtonTextColors (RW 0x4A43A2; decomp W3DPushButton.cpp): WIN_STATUS_ENABLED clear -> the disabled pair, WIN_STATE_HILITED -> the hilite pair
 	if (!enabled)
 	{

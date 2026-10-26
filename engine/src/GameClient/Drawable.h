@@ -48,6 +48,7 @@ typedef std::uint32_t DrawableID;
 // The services every draw module of a game shares (one per DrawableManager).
 class ModuleFactory;
 class AnimationSoundModuleManager;
+class W3DTruckDrawModuleData;
 
 // lane FX-2: the client effect player the draw modules call (GameClient/LiveFX). Read at call time, so drawables made before the player was installed use it too.
 class DrawableFXHost
@@ -100,6 +101,10 @@ struct DrawEntry
 	float tireFront = 0.0f, tireRear = 0.0f;
 	std::vector<std::string> frontTireBones, rearTireBones;
 	unsigned tireChanges = 0; ///< bumped when an angle changed (the device layer re-poses the instance)
+	// `data` as a W3DTruckDraw's, and the data it was cast from (the cast ran every render frame for every entry)
+	const ModuleData *truckSource = nullptr;
+	const W3DTruckDrawModuleData *truck = nullptr;
+	bool truckKnown = false;
 };
 
 class Drawable : public Thing

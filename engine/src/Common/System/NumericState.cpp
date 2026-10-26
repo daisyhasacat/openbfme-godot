@@ -786,6 +786,12 @@ inline bool fastEnvironment()
 	return (OPENBFME_GETCSR() & 0xFFC0u) == kCanonicalControlRegister && (cw & kX87ControlWordMask) == (kCanonicalX87ControlWord & kX87ControlWordMask);
 #elif OPENBFME_HAS_MXCSR
 	return (OPENBFME_GETCSR() & 0xFFC0u) == kCanonicalControlRegister && x87ControlWordIsCanonical();
+#elif defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
+	// AArch64: FPCR read inline (fegetround is a library call, made twice per emulated operation): RMode (bits 22..23) round to nearest and FZ
+	// (bit 24) off; a flush-to-zero environment leaves the fast path too (its hardware results on subnormal operands differ, the emulation's do not)
+	std::uint64_t fpcr = 0;
+	__asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+	return (fpcr & 0x01C00000u) == 0;
 #else
 	return floatingPointEnvironmentIsCanonical();
 #endif

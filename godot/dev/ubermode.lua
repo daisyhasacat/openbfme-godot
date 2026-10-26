@@ -4,6 +4,9 @@ ubermode = ubermode or { enabled = false, seen = {}, pending = {} }
 local mode = ubermode
 mode.seenBuildings = mode.seenBuildings or {}
 mode.newUnits, mode.newBuildings = mode.newUnits or {}, mode.newBuildings or {}
+-- Hordes already given their upgrades: a produced horde's members join one by one after it, and only the
+-- members it holds when it is given an upgrade receive it, so each later member has the horde regranted.
+mode.upgradedHordes = mode.upgradedHordes or {}
 local update, watchCompletions
 local scheduled = false
 local function schedule()
@@ -25,7 +28,7 @@ function mode.enable()
         bonus = player.commandPointsBonus}
     mode.playerId = player.id
     mode.seen, mode.pending, mode.seenBuildings = {}, {}, {}
-    mode.newUnits, mode.newBuildings = {}, {}
+    mode.newUnits, mode.newBuildings, mode.upgradedHordes = {}, {}, {}
     mode.enabled = true
     watchCompletions()
     player.money = 1000000
@@ -102,9 +105,15 @@ update = function()
                 if object.underConstruction then return end
                 if object.maxLevel and object.maxLevel > object.level then object.level = object.maxLevel end
                 if equipment then
+                    -- A horde reports "complete" once any member has an upgrade, so a regrant gives
+                    -- every object upgrade again: the horde passes them all to its current members.
+                    local granted = false
                     for _, upgrade in ipairs(object:getUpgrades()) do
-                        if upgrade.kind == "object" and upgrade.status ~= "complete" then object:giveUpgrade(upgrade.upgrade) end
+                        if upgrade.kind == "object" and (upgrade.status ~= "complete" or mode.upgradedHordes[id]) then
+                            object:giveUpgrade(upgrade.upgrade); granted = true
+                        end
                     end
+                    if granted then mode.upgradedHordes[id] = true end
                 end
             end)
             if ok then pending[id] = nil
@@ -153,6 +162,8 @@ watchCompletions = function()
             if record.playerId == mode.playerId and not mode.seen[record.objectId] then
                 mode.newUnits[record.objectId] = true
                 mode.seen[record.objectId] = true
+                local unit = bfme.unitInstances[record.objectId]
+                if unit and unit.hordeId and mode.upgradedHordes[unit.hordeId] then mode.newUnits[unit.hordeId] = true end
             end
         end
         if next(mode.newUnits) then update() end
@@ -180,7 +191,7 @@ end
 
 bfme.events.onMatchStarted("ubermode-reset", function()
     mode.enabled, mode.seen, mode.pending, mode.previousCP, mode.seenBuildings = false, {}, {}, nil, {}
-    mode.newUnits, mode.newBuildings = {}, {}
+    mode.newUnits, mode.newBuildings, mode.upgradedHordes = {}, {}, {}
     bfme.events.remove("ubermode"); scheduled = false
     bfme.events.remove("ubermode-units")
     bfme.events.remove("ubermode-buildings")

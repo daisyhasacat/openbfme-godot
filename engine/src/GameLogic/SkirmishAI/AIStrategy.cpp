@@ -200,7 +200,7 @@ void AIStrategy::update(GameLogic &logic, AISkirmishPlayer &ai)
  for (Object *unit = logic.getFirstObject(); unit; unit = unit->getNextObject())
  {
   if (unit->getControllingPlayer() != player || !army(*unit) || !unit->getAIUpdateInterface() ||
-      ai.brain.siegeUnits.count(unit->getID()) || ai.brain.siegeEscorts.count(unit->getID())) continue;
+      ai.brain.siegeUnits.count(unit->getID()) || ai.brain.siegeEscorts.count(unit->getID()) || logic.aiReserved(*unit)) continue;
   Coord3D exclusionGoal;
   if (logic.aiBaseExclusion(*unit, exclusionGoal))
   {

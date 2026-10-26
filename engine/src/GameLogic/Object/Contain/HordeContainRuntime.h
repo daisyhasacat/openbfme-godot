@@ -413,6 +413,7 @@ private:
 	void forgetMemberOnTheWay(ObjectID id);
 	// the member pass pieces (HordeMemberPass.cpp)
 	void memberOrder(Object &member, const Coord3D &slotPos, float orientation, bool force);
+	bool onExitDoorLeg(const Object &member, AIUpdateInterface &a) const; ///< a member on its exit path's first leg (memberOrder leaves it alone)
 	void moveHub(Object &member, const Coord3D &dest, float orientation);
 	void reassignMembersToNearestSlots();
 	bool slotCellClear(Object &member) const;

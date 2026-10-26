@@ -51,6 +51,7 @@ struct PathfindConfig
 	int adjustHordeMeleeLimit = 0;     // GameData MaxCellsAdjustHordeMeleeDestination (+0x11F4)
 	int patchPathLimit = 0;            // GameData MaxCellsPatchPath
 	int findPathLimit = 0;             // GameData MaxCellsFindPathLimit (+0x1210)
+	bool attackUsesLineOfSight = false; // AIData AttackUsesLineOfSight (RW AIData +0x67, row RW 0xC1CCA0, parseBool): RW 0x6F4557's view test is on
 	bool hordesWaitForHordes = false;  // AIData HordesWaitForHordes (RW AIData +0xB9, row RW 0xC1CE40, parseBool): a HORDE clears allies from its path (lane PHYS-1)
 	float meleeApproachTolerance = 0.0f; // AIData MeleeApproachTolerance (RW AIData +0x90, row RW 0xC1CDB0): the horde melee approach's distance gate (lane PHYS-1)
 	float meleeApproachDist = 0.0f;    // AIData MeleeApproachDist (RW AIData +0x94, row RW 0xC1CDC0): requestMeleeApproachPath's offset limit (lane PHYS-1)
@@ -711,6 +712,9 @@ public:
 	// victim; `fallback` is set when the path only ends at the search's closest cell. Null when nothing is found.
 	Path *findAttackPath(const PathfindObject *obj, const PathfindLocomotorInfo &loco, const Coord3D *from, const PathfindObject *victim, const Coord3D *victimPos,
 		float victimRadius, const class PathfindAttackRange &range, bool pathThrough, bool *fallback);
+	// RW 0x6F4557 (ZH Pathfinder::isAttackViewBlockedByObstacle, AIPathfindAttack.cpp): an obstacle on the cell line from `attackerPos` to the victim blocks an
+	// ATTACK_NEEDS_LINE_OF_SIGHT / CAN_SHOOT_OVER_WALLS attacker's shot (AIData AttackUsesLineOfSight); false without a victim
+	bool isAttackViewBlockedByObstacle(const PathfindObject &attacker, const Coord3D &attackerPos, const PathfindObject *victim, const Coord3D &victimPos);
 	// lane PHYS-1: RW getMoveAwayFromPath 0x6FB231 (AIPathfindMoveAway.cpp): a path for `obj` to the nearest cell whose box keeps clear of `other`, of `obj` itself and
 	// of the two paths to avoid; null when none
 	Path *getMoveAwayFromPath(const PathfindObject *obj, const PathfindLocomotorInfo &loco, const PathfindObject *other, const Path *pathToAvoid,
@@ -800,7 +804,7 @@ public:
 	// lane PATHPERF-1 (AIPathfindHierarchical.cpp): RW FindClosestHierarchicalPath 0x6F9829 -> 0x6F8601, the A* over the 16 x 16 zone blocks. True when a
 	// corridor was built: its blocks are marked passable (RW 0x6F49BC) and `adjustedTo` is the goal, or the centre of the closest block cell reached when the
 	// goal's block cannot be. False: no corridor (the caller marks every block passable)
-	bool findClosestHierarchicalPath(PathfindObject *obj, const PathfindLocomotorInfo &loco, bool isHuman, const Coord3D *from, const Coord3D *to,
+	bool findClosestHierarchicalPath(const PathfindObject *obj, const PathfindLocomotorInfo &loco, bool isHuman, const Coord3D *from, const Coord3D *to,
 		Coord3D *adjustedTo);
 	// RW 0x6F937E .. 0x6F93B9: the block search's closest-cell key of a cell (dx, dy) from the goal, binary32 as RW computes it (lane PATHPERF-1)
 	static float hierarchicalClosestKey(int dx, int dy);

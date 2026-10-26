@@ -33,7 +33,7 @@ const char *const kZoneProfiles =
 const char *const kHierarchical =
 	"S-162 the hierarchical block search of findPath (RW 0x6F9829) runs on the ground layer only (RW 0x6F8601): its bridge links (RW 0x9389CE), block portals "
 	"(RW 0x937F2D / 0x937F7F) and the mineshaft network's intermediate goal (RW 0x77559F, type 8 waypoints) are not ported, and the block-edge passability "
-	"(RW 0x938240) is the port's zone pair test (INFERRED equal); findAttackPath's own corridor (RW 0x6FC4CB .. 0x6FC4F9) is not ported: it searches every block; "
+	"(RW 0x938240) is the port's zone pair test (INFERRED equal); findAttackPath builds the same corridor (RW 0x6FC4E4); "
 	"a goal inside the obstacle the unit ignores (a builder's own site) gets no corridor (INFERENCE: the port's builders aim inside the footprint)";
 // S-163 search
 const char *const kLargeRectGoal =
@@ -55,6 +55,12 @@ const char *const kLargeRectReservation =
 const char *const kQueueFull = "S-164 pathfind request queue full (512 entries): the request is refused";
 const char *const kQueueTime =
 	"S-164 processPathfindQueue ignores the wall-clock frame-time budget of RW 0x6F2364 (GameData +0x11C0, 0x6ED163 when exceeded): the cell budget alone decides, so the port stays deterministic";
+const char *const kAttackView =
+	"S-163 the attack view test (RW 0x6F4557) walks the obstacle cells only: the current weapon's terrain line (RW 0x6CC6DD) and the bridge layer pair test "
+	"(RW 0x680A75) are not ported (S-161), nor the obstacle ids RW 0x6E82C8 reads from the victim's and the attacker's modules";
+const char *const kAttackCorridor =
+	"S-163 findAttackPath takes findPath's corridor (RW 0x6FC4E4) for an attack on an object only: a position attack (a bombard) searches every block and falls "
+	"back to the cell nearest the point (OpenBFME correction: with the corridor a bombard inside its minimum range walked aside before firing)";
 // S-165 path
 const char *const kPath =
 	"S-165 path nodes carry no waypoint ids from the search (S-161), the backward optimiser's dot >= 0.9 rule is ported as read from RW 0x7661A3 without an independent oracle, and the path rebuild RW 0x767B0E is not ported";

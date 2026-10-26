@@ -372,10 +372,13 @@ void DrawableManager::syncTransforms(const LogicSnapshot &snapshot, double alpha
 	// lane COMBAT-4: RW 0x4BF2D8 (W3DModelDraw::replaceModelConditionState): a model draw with DependencySharedModelFlags hands the flags of that set to its dependent
 	// drawables (+ 0xA8, by drawable id; RW 0x67651E clearAndSet on each): Grond's MOVING / TURN_* / BACKING_UP reach its troll crew, whose pushing AnimationStates
 	// need them. INFERENCE (stop S-1791): the dependents are the drawables of the objects the container holds (its riders and crew); the writer of the list is not read
+	// each slot's record, found once here for this pass and the sync below (the snapshot does not change during the call)
+	m_syncRecords.assign(m_slots.size(), nullptr);
 	for (size_t i = 1; i < m_slots.size(); ++i)
 	{
 		Drawable *d = m_slots[i].get();
 		const ObjectSnapshot *rec = d ? snapshot.find(d->getObjectID()) : nullptr;
+		m_syncRecords[i] = rec;
 		if (!rec || rec->containedBy == INVALID_ID)
 		{
 			continue;
@@ -401,7 +404,7 @@ void DrawableManager::syncTransforms(const LogicSnapshot &snapshot, double alpha
 		{
 			if (Drawable *d = m_slots[i].get())
 			{
-				const ObjectSnapshot *rec = snapshot.find(d->getObjectID());
+				const ObjectSnapshot *rec = m_syncRecords[i];
 				d->setSyncedRecord(&snapshot, rec);
 				if (rec)
 				{
@@ -428,7 +431,7 @@ void DrawableManager::syncTransforms(const LogicSnapshot &snapshot, double alpha
 			{
 				continue;
 			}
-			const ObjectSnapshot *rec = snapshot.find(d->getObjectID());
+			const ObjectSnapshot *rec = m_syncRecords[i];
 			d->setSyncedRecord(&snapshot, rec); // lane PERF-3: the render side's lookup of the same record
 			if (rec)
 			{

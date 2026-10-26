@@ -175,6 +175,7 @@ bool PathfindConfigLoader::load(ArchiveFileSystem &fs, PathfindConfig &out, std:
 		c.deepWaterDepth = std::numeric_limits<float>::max(); // BFME1's AIData has no DeepWaterDepth row (Open-BFME-1 ai.cpp field table): no deep water class
 	else if (!getFloat(ai, "DeepWaterDepth", c.deepWaterDepth, "aidata.ini", error)) return false;
 	if (!getBool(ai, "HordesWaitForHordes", c.hordesWaitForHordes, "aidata.ini", error)) return false;
+	if (!getBool(ai, "AttackUsesLineOfSight", c.attackUsesLineOfSight, "aidata.ini", error)) return false; // AIData +0x67 (row RW 0xC1CCA0)
 	if (!getFloat(ai, "MeleeApproachTolerance", c.meleeApproachTolerance, "aidata.ini", error)) return false; // lane PHYS-1: AIData +0x90 (row RW 0xC1CDB0)
 	if (!getFloat(ai, "MeleeApproachDist", c.meleeApproachDist, "aidata.ini", error)) return false; // lane PHYS-1: AIData +0x94 (row RW 0xC1CDC0) // lane PHYS-1: AIData +0xB9 (row RW 0xC1CE40)
 	if (!getFloat(ai, "CastleSiegeStandBackDistance", c.castleSiegeStandBackDistance, "aidata.ini", error)) return false; // lane PHYS-1: AIData +0xD4 (row RW 0xC1CF00)

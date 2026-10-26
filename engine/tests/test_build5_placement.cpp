@@ -473,6 +473,10 @@ TEST_CASE("build5 placement: a refused site shows the code's label, plays BadBui
 	CHECK(std::string(PlaceEventTranslator::cantBuildLabel(LBC_OBJECTS_IN_THE_WAY)) == "GUI:CantBuildObjectsInTheWay");
 	CHECK(std::string(PlaceEventTranslator::cantBuildLabel(LBC_SHROUD)) == "GUI:CantBuildShroud");
 	CHECK(std::string(PlaceEventTranslator::cantBuildLabel(LBC_OK)) == "GUI:CantBuildThere");
+	// OpenBFME's wall rebalance refusal has its own label and built-in text
+	CHECK(std::string(PlaceEventTranslator::cantBuildLabel(LBC_OUTSIDE_WALLS)) == "OPENBFME:CantBuildOutsideWalls");
+	CHECK(PlaceEventTranslator::openBfmeText(PlaceEventTranslator::cantBuildLabel(LBC_OUTSIDE_WALLS)) != nullptr);
+	CHECK(PlaceEventTranslator::openBfmeText("GUI:CantBuildShroud") == nullptr);
 	// the bib of the barracks: a rectangle about the ghost
 	const ThingTemplate *tt = r.game->logic().things().findTemplate("GondorBarracks");
 	REQUIRE(tt != nullptr);

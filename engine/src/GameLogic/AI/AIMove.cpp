@@ -391,18 +391,20 @@ bool AIMover::computeAttackPath()
 {
 	// RW 0x6668CA (the ground branch; the flying / no-pathfind branch RW 0x666D4E .. 0x666E6C and the ship variant RW 0x6FDE38 are S-784)
 	static const std::string kStopAttackPath =
-		"[S-784] attack path: requestAttackPath (RW 0x663802), computeAttackPath (RW 0x6668CA, ground branch) and findAttackPath (RW 0x6FC18E) are ported; NOT ported: the view "
-		"test RW 0x6F4557 (never blocked, S-325), the flying branch and the ship search RW 0x6FDE38, the failure branch's RW 0x6F3C87 / 0x66831A retries (a melee "
-		"soldier attacks through the melee machine instead, S-787); INFERENCE: the closest-cell fallback ranks by distance only (RW 0x93AD93 zone value), the "
-		"expansion takes no range limit, the goal shift toward the attacker is always made (RW 0x441B59 not read)";
+		"[S-784] attack path: requestAttackPath (RW 0x663802), computeAttackPath (RW 0x6668CA, ground branch) and findAttackPath (RW 0x6FC18E) are ported with the "
+		"view test RW 0x6F4557 (its own gaps: S-163); NOT ported: the flying branch and the ship search RW 0x6FDE38, the failure branch's RW 0x6F3C87 / 0x66831A retries (a melee "
+		"soldier attacks through the melee machine instead, S-787); INFERENCE: the expansion takes no range limit, the goal shift toward the attacker is always made "
+		"(RW 0x441B59 not read)";
 	m_host.noteLogicStop(kStopAttackPath);
 	PathfindObject &obj = m_host.pathfindObject();
 	const PathfindLocomotorInfo info = m_host.locomotorInfo();
 	const Coord3D pos = obj.getPosition();
 	const PathfindObject *victim = m_attackVictim != PATHFIND_INVALID_ID ? m_host.findPathfindObject(m_attackVictim) : nullptr;
 	const Coord3D target = victim ? victim->getPosition() : m_attackPos;
-	// in reach already: no path (RW 0x6669C2)
-	if (m_host.attackRangeFrom(pos, victim ? m_attackVictim : PATHFIND_INVALID_ID, target, 0.0f))
+	// in reach already: no path (RW 0x6669C2); a ground mover (AI vslot 0x224) in reach of a victim on the ground whose view is blocked (RW 0x6F4557) searches
+	// instead (RW 0x666977 .. 0x6669C0)
+	if (m_host.attackRangeFrom(pos, victim ? m_attackVictim : PATHFIND_INVALID_ID, target, 0.0f) &&
+		!(victim && m_host.canFollowTeamPath() && !victim->isSignificantlyAboveTerrain() && m_pf.isAttackViewBlockedByObstacle(obj, pos, victim, target)))
 	{
 		destroyPath();
 		m_pathTimestamp = m_host.frame();

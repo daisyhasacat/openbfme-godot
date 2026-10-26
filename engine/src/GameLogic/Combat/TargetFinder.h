@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <map>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -65,5 +66,11 @@ private:
 	size_t m_count = 0;
 	float m_maxRadius = 0.0f;
 	std::uint64_t m_builtTeams = 0;
-	std::map<std::pair<int, int>, Cell> m_cells;
+	// the cells keep their vectors from build to build (a rebuild runs whenever the object count changed, i.e. after every projectile of a battle
+	// frame); a cell left empty stays in the table. No result depends on the table's order: queries visit cells by coordinate
+	struct CellHash
+	{
+		size_t operator()(const std::pair<int, int> &c) const { return (size_t)(std::uint32_t)c.first * 0x9E3779B97F4A7C15ull ^ (std::uint32_t)c.second; }
+	};
+	std::unordered_map<std::pair<int, int>, Cell, CellHash> m_cells;
 };

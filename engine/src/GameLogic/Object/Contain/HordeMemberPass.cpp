@@ -707,6 +707,32 @@ bool HordeContain::runMemberPass()
 	return m_workDone;
 }
 
+// the member following its exit-production path is still on the first leg (out of the door to the path's first point: BFME2's halfway point, BFME1's
+// natural rally point): not at that point yet, and no nearer the next point (BFME2: its formation slot) than the first point itself is
+bool HordeContain::onExitDoorLeg(const Object &member, AIUpdateInterface &a) const
+{
+	const AIStateMachine *machine = a.stateMachineOrNull();
+	const Coord3D *first = machine ? machine->goalPathPosition(0) : nullptr;
+	if (!first)
+	{
+		return false;
+	}
+	const Coord3D &p = *member.getPosition();
+	const float reached = 10.0f; // PATHFIND_CELL_SIZE_F: at the point
+	if (SimMath::length2d(SimMath::subf32(first->x, p.x), SimMath::subf32(first->y, p.y)) <= reached)
+	{
+		return false;
+	}
+	const Coord3D *next = machine->goalPathPosition(1);
+	if (!next)
+	{
+		return true;
+	}
+	const float memberToNext = SimMath::length2d(SimMath::subf32(next->x, p.x), SimMath::subf32(next->y, p.y));
+	const float firstToNext = SimMath::length2d(SimMath::subf32(next->x, first->x), SimMath::subf32(next->y, first->y));
+	return memberToNext >= firstToNext;
+}
+
 // B1 HordeMemberOrder00245420::apply (RW 0x877A7A); the frozen formation (H+0x1FC) and the engaged-target destination (H+0x204) are melee state (M2)
 void HordeContain::memberOrder(Object &member, const Coord3D &slotPos, float orientation, bool force)
 {
@@ -721,7 +747,9 @@ void HordeContain::memberOrder(Object &member, const Coord3D &slotPos, float ori
 	// before applying formation steering. Our production path uses AIGOAL_ON_PATH
 	// rather than that explicit-path goal, so preserve state 7 here as well.
 	// Otherwise moveHub makes the member busy and pulls it sideways before the door is clear.
-	if (a->currentStateId() == AI_FOLLOW_EXITPRODUCTION_PATH)
+	// Only for the path's first leg (out of the door, to the halfway point): the exit state does not end on its own at the member's slot here, so a
+	// member left to it for the whole path stood at its slot walking in place for good; past the first point the formation steering takes it over
+	if (a->currentStateId() == AI_FOLLOW_EXITPRODUCTION_PATH && onExitDoorLeg(member, *a))
 	{
 		m_workDone = true;
 		return;

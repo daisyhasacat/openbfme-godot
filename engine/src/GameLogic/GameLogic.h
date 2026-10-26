@@ -469,6 +469,10 @@ public:
 	// Local testing aid, reset with the match; never enabled for network/replay games.
 	void setAIBaseExclusion(int player, const Coord3D &center, float radius) { m_aiBasePlayer = player; m_aiBaseCenter = center; m_aiBaseRadius = radius; }
 	bool aiBaseExclusion(const Object &unit, Coord3D &goal) const;
+	// OpenBFME map editor wave spawners (not retail; local skirmishes only, reset with the match): objects their owner's skirmish AI never recruits,
+	// dispatches or steers; a horde's members follow their horde
+	void setAIReserved(ObjectID id) { m_aiReserved.insert(id); }
+	bool aiReserved(const Object &unit) const;
 	using BuildingCompletedHook = std::function<void(const Object &)>;
 	void setBuildingCompletedHook(BuildingCompletedHook hook) { m_buildingCompletedHook = std::move(hook); }
 	void notifyBuildingCompleted(const Object &building) const { if (m_buildingCompletedHook) m_buildingCompletedHook(building); }
@@ -511,6 +515,10 @@ public:
 	Object *newObject(const ThingTemplate *tt, Team *team, const ObjectStatusMaskType &status, ObjectID id = INVALID_ID);
 	Object *findObjectByID(ObjectID id) const;
 	Object *getFirstObject() const { return m_objectHead; }
+	// the objects WallBalance::wall accepts, in object-list order (for BezierProjectileBehavior's wall sweep, run by every flying arrow): rebuilt
+	// after a wall joined or left the list. An object's KindOf is fixed for its life (Object's constructor), and other objects joining or leaving
+	// keep the walls' relative order, so the list equals a walk of the whole list that keeps the walls
+	const std::vector<Object *> &wallObjects();
 	Object *getLastObject() const { return m_objectTail; }
 	size_t getObjectCount() const { return m_objectCount; }
 	ObjectID getNextObjectID() const { return m_nextObjectID; }
@@ -913,6 +921,7 @@ private:
 	int m_aiBasePlayer = -1;
 	Coord3D m_aiBaseCenter{};
 	float m_aiBaseRadius = 0;
+	std::set<ObjectID> m_aiReserved;
 	std::map<std::string, TimingHook> m_timingHooks;
 	bool m_fortressConstruction = false;
 	int m_peaceTimeMinutes = PeaceTime::kOff;
@@ -925,6 +934,8 @@ private:
 	int m_depth = 0;              ///< RW + 0x1B4 (the reentrancy counter)
 
 	Object *m_objectHead = nullptr, *m_objectTail = nullptr;
+	std::vector<Object *> m_wallObjects;
+	bool m_wallObjectsDirty = true;
 	size_t m_objectCount = 0;
 	unsigned m_containWorldTransitions = 0;
 	ObjectID m_nextObjectID = 1;

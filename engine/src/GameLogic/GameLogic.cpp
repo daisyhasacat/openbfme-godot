@@ -3,6 +3,7 @@
 
 #include "Common/PerformanceCounters.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/WallBalance.h"
 
 #include "Common/Player.h"
 #include "GameLogic/AI/AIWorld.h"
@@ -270,6 +271,23 @@ void GameLogic::reportError(const std::string &text)
 }
 
 // ---- the object list --------------------------------------------------------------------------------------------------
+const std::vector<Object *> &GameLogic::wallObjects()
+{
+	if (m_wallObjectsDirty)
+	{
+		m_wallObjects.clear();
+		for (Object *o = m_objectHead; o; o = o->getNextObject())
+		{
+			if (WallBalance::wall(*o))
+			{
+				m_wallObjects.push_back(o);
+			}
+		}
+		m_wallObjectsDirty = false;
+	}
+	return m_wallObjects;
+}
+
 void GameLogic::linkObject(Object *obj)
 {
 	// B1 GameLogicRegisterObject.cpp: bfmeInsertXN(&objList, &objTail): append at the tail
@@ -284,6 +302,7 @@ void GameLogic::linkObject(Object *obj)
 	}
 	m_objectTail = obj;
 	++m_objectCount;
+	if (WallBalance::wall(*obj)) m_wallObjectsDirty = true;
 	if (obj->isKindOfName("STRUCTURE") && obj->isKindOfName("DOZER_FACTORY")) m_peaceFortresses.push_back(obj->getID());
 }
 
@@ -308,6 +327,7 @@ void GameLogic::unlinkObject(Object *obj)
 	}
 	obj->friend_setListLinks(nullptr, nullptr);
 	--m_objectCount;
+	if (WallBalance::wall(*obj)) m_wallObjectsDirty = true;
 	m_peaceFortresses.erase(std::remove(m_peaceFortresses.begin(), m_peaceFortresses.end(), obj->getID()), m_peaceFortresses.end());
 }
 
@@ -905,6 +925,7 @@ void GameLogic::reset()
 	m_aiBasePlayer = -1;
 	m_aiBaseRadius = 0;
 	m_aiBaseCenter = {};
+	m_aiReserved.clear();
 	m_radarEventNotices.clear(); // lane BACKLOG3: a new game's radar starts empty (the sequence goes on: a client's cursor stays behind it)
 	// ZH GameLogic::reset: every object goes; the scheduler vectors are cleared with their modules' indices
 	m_current = nullptr;
@@ -1468,8 +1489,10 @@ void GameLogic::setPeaceTimeMinutes(int minutes)
 // OpenBFME extension, independent of the retail terrain classification and simulation RNG.
 bool GameLogic::hasPeaceExclusion(const Object &unit) const
 {
+ // the bits looked up once (isKindOfName hashes the name each call; this runs for every moving object)
+ static const int structure = ObjectTemplateInfoBuilder::kindOfIndex("STRUCTURE"), projectile = ObjectTemplateInfoBuilder::kindOfIndex("PROJECTILE");
  if (unit.isDestroyed() || unit.isEffectivelyDead() || !unit.getControllingPlayer() ||
-     unit.isKindOfName("STRUCTURE") || unit.isKindOfName("PROJECTILE")) return false;
+     (structure >= 0 && unit.isKindOf((unsigned)structure)) || (projectile >= 0 && unit.isKindOf((unsigned)projectile))) return false;
  const Player *protectedPlayer = m_aiBasePlayer >= 0 ? m_players.getNthPlayer(m_aiBasePlayer) : nullptr;
  if (m_aiBaseRadius > 0 && protectedPlayer && unit.getControllingPlayer()->getPlayerType() == PLAYER_COMPUTER &&
      unit.getControllingPlayer()->getRelationship(protectedPlayer->getDefaultTeam()) == ENEMIES) return true;
@@ -1548,6 +1571,20 @@ BfmeLuaActionState &GameLogic::luaActions()
 	return *m_luaActions;
 }
 int GameLogic::luaAuthorityPlayer() const { return m_luaActions ? m_luaActions->authorityPlayer : -1; }
+
+bool GameLogic::aiReserved(const Object &unit) const
+{
+	if (m_aiReserved.empty())
+	{
+		return false;
+	}
+	if (m_aiReserved.count(unit.getID()))
+	{
+		return true;
+	}
+	const Object *horde = unit.getHordeObject(false);
+	return horde && m_aiReserved.count(horde->getID());
+}
 
 // OpenBFME local testing policy: turn approaching enemy computer units back
 // before they reach the protected radius. Normal movement still resolves terrain.

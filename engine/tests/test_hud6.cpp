@@ -38,6 +38,7 @@
 #include "GameLogic/AI/AIEmotionStates.h"
 #include "GameLogic/Damage.h"
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
+#include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Object/Object.h"
 #include "Libraries/Source/Apt/AptRenderList.h"
 
@@ -1788,4 +1789,62 @@ TEST_CASE("ownerfix3 retail: ControlBar.wnd:ButtonCommand's font and text colour
 	std::string badSize = text;
 	badSize.replace(badSize.find("SIZE: 8", font), 7, "SIZE: x");
 	refused(badSize, "FONT is not");
+}
+
+TEST_CASE("exit retail: a horde trained at a barracks walks out, forms up and stops (no member left walking in place in its exit state)")
+{
+	if (!haveWorld("exit horde forms up"))
+	{
+		return;
+	}
+	SharedWorld &s = shared();
+	Hud6Rig h(s, "FactionMen");
+	FixedMetrics metrics;
+	h.hud->setFontMetrics(&metrics);
+	h.frames(10);
+	h.rig.local->getMoney()->deposit(20000, false);
+	const Coord3D c = h.rig.freeSpot(2400, 1400, 300.0f);
+	Object *barracks = h.rig.make("GondorBarracks", c.x, c.y);
+	h.rig.lookAt({ c.x, c.y, 0 });
+	h.frames(10);
+	h.clickSelect(barracks);
+	h.hud->mouseMove(5, 5, 0);
+	h.frames(10);
+	ControlBar &bar = h.hud->controlBar();
+	const ControlBarButton *sb = shownButton(bar.sideButtons(), "Command_ConstructGondorFighterHorde");
+	REQUIRE(sb != nullptr);
+	REQUIRE(bar.pressButton(sb->slot, false));
+	Object *horde = nullptr;
+	for (int f = 0; f < 3000 && !horde; ++f)
+	{
+		h.frames(1);
+		for (Object *o = h.rig.game->logic().getFirstObject(); o; o = o->getNextObject())
+		{
+			if (o->getTemplate()->getName() == "GondorFighterHorde" && o->getControllingPlayer() == h.rig.local)
+			{
+				horde = o;
+			}
+		}
+	}
+	REQUIRE(horde);
+	auto *contain = dynamic_cast<HordeContain *>(horde->getContain());
+	REQUIRE(contain);
+	h.frames(30 * 15); // 15 s: out of the door, along the exit path, into the formation
+	std::map<ObjectID, Coord3D> before;
+	for (Object *m : *contain->getContainedItemsList())
+	{
+		before[m->getID()] = *m->getPosition();
+	}
+	h.frames(30 * 3);
+	REQUIRE(contain->getContainedItemsList()->size() == 15);
+	for (Object *m : *contain->getContainedItemsList())
+	{
+		AIUpdateInterface *ai = m->getAIUpdateInterface();
+		REQUIRE(ai);
+		INFO("member " << m->getID() << " state " << ai->currentStateId());
+		CHECK(ai->currentStateId() != AI_FOLLOW_EXITPRODUCTION_PATH); // the formation steering took it over past the halfway point
+		CHECK_FALSE(ai->isMoving());                                   // standing, not walking in place
+		CHECK(m->getPosition()->x == before[m->getID()].x);
+		CHECK(m->getPosition()->y == before[m->getID()].y);
+	}
 }

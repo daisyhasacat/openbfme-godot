@@ -638,9 +638,9 @@ UpdateSleepTime BezierProjectileBehavior::update()
 		const Coord3D from = *obj->getPosition();
 		float fraction = 1.0f;
 		Object *blocker = nullptr;
-		for (Object *wall = logic.getFirstObject(); wall; wall = wall->getNextObject())
+		for (Object *wall : logic.wallObjects()) // the walls of the object list, in its order
 		{
-			if (wall->getID() == m_launcherID || !WallBalance::wall(*wall) || !wall->isInWorld()
+			if (wall->getID() == m_launcherID || !wall->isInWorld()
 				|| wall->isDestroyed() || wall->isEffectivelyDead() || wall->isUnderConstruction()) continue;
 			if (wallIntersection(*wall,from,step,fraction)) blocker = wall;
 		}

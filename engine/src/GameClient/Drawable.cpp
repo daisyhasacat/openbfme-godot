@@ -247,6 +247,17 @@ void Drawable::applyBuildingWindowVisibility()
 	}
 }
 
+namespace
+{
+// the condition bits of a word of ModelConditionFlags: all but the last word's padding past MODELCONDITION_COUNT (never a condition, so the word
+// operations below leave it as the bit loops they replace did; both run for every contained drawable each render frame)
+std::uint32_t conditionBits(int word)
+{
+	const int last = ModelConditionFlags::NUM_WORDS - 1;
+	return word < last || MODELCONDITION_COUNT % 32 == 0 ? 0xFFFFFFFFu : (1u << (MODELCONDITION_COUNT % 32)) - 1u;
+}
+} // namespace
+
 ModelConditionFlags Drawable::dependencySharedModelFlags() const
 {
 	ModelConditionFlags out;
@@ -255,12 +266,9 @@ ModelConditionFlags Drawable::dependencySharedModelFlags() const
 		if (e.draw)
 		{
 			const ModelConditionFlags &f = e.draw->dependencySharedModelFlags();
-			for (int b = 0; b < MODELCONDITION_COUNT; ++b)
+			for (int w = 0; w < ModelConditionFlags::NUM_WORDS; ++w)
 			{
-				if (f.test(b))
-				{
-					out.set(b);
-				}
+				out.words()[w] |= f.words()[w] & conditionBits(w);
 			}
 		}
 	}
@@ -269,18 +277,14 @@ ModelConditionFlags Drawable::dependencySharedModelFlags() const
 
 bool Drawable::applyDependencyFlags(const ModelConditionFlags &shared, const ModelConditionFlags &containerFlags)
 {
+	// each shared condition takes the container's value; the others (and the padding) keep the drawable's
 	ModelConditionFlags next = m_flags;
-	for (int b = 0; b < MODELCONDITION_COUNT; ++b)
-	{
-		if (shared.test(b))
-		{
-			next.set(b, containerFlags.test(b));
-		}
-	}
 	bool changed = false;
-	for (int b = 0; b < MODELCONDITION_COUNT && !changed; ++b)
+	for (int w = 0; w < ModelConditionFlags::NUM_WORDS; ++w)
 	{
-		changed = next.test(b) != m_flags.test(b);
+		const std::uint32_t s = shared.words()[w] & conditionBits(w);
+		next.words()[w] = (m_flags.words()[w] & ~s) | (containerFlags.words()[w] & s);
+		changed = changed || next.words()[w] != m_flags.words()[w];
 	}
 	if (changed)
 	{
@@ -414,7 +418,13 @@ void Drawable::advanceAnimation(double elapsedMs)
 // is not kept, so the tires only spin; the speed gate RW 0x46E918 is not read; the cab / trailer bones and the dust / dirt / powerslide effects are not run.
 void Drawable::advanceTires(DrawEntry &e, double elapsedMs)
 {
-	const W3DTruckDrawModuleData *truck = e.draw ? dynamic_cast<const W3DTruckDrawModuleData *>(e.data) : nullptr;
+	if (!e.truckKnown || e.truckSource != e.data)
+	{
+		e.truck = dynamic_cast<const W3DTruckDrawModuleData *>(e.data);
+		e.truckSource = e.data;
+		e.truckKnown = true;
+	}
+	const W3DTruckDrawModuleData *truck = e.draw ? e.truck : nullptr;
 	if (!truck)
 	{
 		return;

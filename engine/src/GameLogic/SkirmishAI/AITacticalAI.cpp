@@ -639,7 +639,7 @@ bool offensiveAllowed(GameLogic &logic, const AISkirmishPlayer &ai, const Player
 bool inAnyTeamOf(const AIBrainState &b, const Object &object)
 {
  Coord3D exclusionGoal;
- if (object.logic().aiBaseExclusion(object, exclusionGoal) || AIStrategy::capturing(object)) return true;
+ if (object.logic().aiBaseExclusion(object, exclusionGoal) || AIStrategy::capturing(object) || object.logic().aiReserved(object)) return true;
  const ObjectID id = object.getID();
 
 	if (b.siegeUnits.count(id) || b.siegeEscorts.count(id) || b.strategyRecovering.count(id)) return true;

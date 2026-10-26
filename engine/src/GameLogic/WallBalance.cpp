@@ -28,14 +28,24 @@ bool kind(const ThingTemplate &tt, const char *name) {
  const int bit = ObjectTemplateInfoBuilder::kindOfIndex(name);
  return bit >= 0 && MaskTest(ObjectTemplateInfoBuilder::build(tt).kindOf, (unsigned)bit);
 }
+// Object::isKindOfName with the bit looked up once: the name lookup hashes the name on every call, and the wall test runs for every object each
+// flying arrow passes (BezierProjectileBehavior's wall sweep)
+struct WallBits {
+ int segment = ObjectTemplateInfoBuilder::kindOfIndex("WALL_SEGMENT"), hub = ObjectTemplateInfoBuilder::kindOfIndex("WALL_HUB");
+ int upgrade = ObjectTemplateInfoBuilder::kindOfIndex("WALL_UPGRADE"), defensive = ObjectTemplateInfoBuilder::kindOfIndex("DEFENSIVE_WALL");
+ int gate = ObjectTemplateInfoBuilder::kindOfIndex("WALL_GATE");
+};
+const WallBits &wallBits() { static const WallBits bits; return bits; }
+bool has(const Object &o, int bit) { return bit >= 0 && o.isKindOf((unsigned)bit); }
 }
 bool WallBalance::wall(const Object &o) {
- return o.isKindOfName("WALL_SEGMENT") || o.isKindOfName("WALL_HUB") || o.isKindOfName("WALL_UPGRADE") || o.isKindOfName("DEFENSIVE_WALL") || o.isKindOfName("WALL_GATE");
+ const WallBits &b = wallBits();
+ return has(o, b.segment) || has(o, b.hub) || has(o, b.upgrade) || has(o, b.defensive) || has(o, b.gate);
 }
 int WallBalance::healthCategory(const Object &o) {
  if (!wall(o)) return -1;
- if (o.isKindOfName("WALL_GATE")) return 2;
- return o.isKindOfName("WALL_HUB") ? 1 : 0;
+ if (has(o, wallBits().gate)) return 2;
+ return has(o, wallBits().hub) ? 1 : 0;
 }
 int WallBalance::costCategory(const ThingTemplate &tt) {
  if (kind(tt,"WALL_HUB")) {

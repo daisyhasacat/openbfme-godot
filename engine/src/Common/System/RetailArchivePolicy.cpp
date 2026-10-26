@@ -51,7 +51,7 @@ std::uint32_t readBE32(const std::uint8_t *p)
 }
 
 // Threat model: the md5 check (and this cache) detects wrong or modified game files, such as a
-// mod, a patch or a damaged copy. A cache hit trusts "same absolute path + size + last-write time",
+// mod, a patch or a damaged copy. A cache hit trusts "same absolute path (without an iOS app container's id) + size + last-write time",
 // so it does not stop deliberate tampering by someone who edits a file and then restores its
 // timestamp (or who edits the cache). That is accepted: cross-play integrity comes from the
 // retail INI/logic CRCs exchanged between players, not from this cache.
@@ -63,7 +63,29 @@ struct Md5Cache
 
 	static std::string key(const std::string &file, std::uint64_t size, long long mtime)
 	{
-		return std::to_string(size) + "\t" + std::to_string(mtime) + "\t" + file;
+		return std::to_string(size) + "\t" + std::to_string(mtime) + "\t" + stablePath(file);
+	}
+
+	// iOS gives the app's data container a new folder on every install and update (".../Containers/Data/Application/<UUID>/Documents/..."), with
+	// the files inside kept as they were: the key names the container by its place, not its id, so a reinstalled app finds its own cache instead of
+	// hashing every archive again (about 5 GB). Applied to the keys read back too, so the entries an older build wrote under each container's id
+	// collapse into one. A path outside such a container is unchanged
+	static std::string stablePath(std::string p)
+	{
+		for (const char *marker : { "/Containers/Data/Application/", "/Containers/Shared/AppGroup/" })
+		{
+			const std::string m = marker;
+			for (size_t at = p.find(m); at != std::string::npos; at = p.find(m, at + 1))
+			{
+				const size_t id = at + m.size();
+				const size_t end = p.find('/', id);
+				if (end != std::string::npos && end - id == 36)
+				{
+					p.replace(id, 36, "<container>");
+				}
+			}
+		}
+		return p;
 	}
 
 	static bool isMd5Hex(const std::string &s)
@@ -103,7 +125,13 @@ struct Md5Cache
 			{
 				continue;
 			}
-			entries[line.substr(tab + 1)] = line.substr(0, tab);
+			std::string k = line.substr(tab + 1);
+			const size_t pathTab = k.find('\t', k.find('\t') + 1); // "size\tmtime\tpath"
+			if (pathTab != std::string::npos)
+			{
+				k = k.substr(0, pathTab + 1) + stablePath(k.substr(pathTab + 1));
+			}
+			entries[k] = line.substr(0, tab);
 		}
 	}
 
@@ -847,7 +875,7 @@ RetailMountReport MountRetailArchives(Win32BIGFileSystem &fileSystem, const std:
 					": a damaged, modified or other version of the file." + advice);
 				continue;
 			}
-			// md5 is always verified. The cache key is absolute path + size + last-write time, so any
+			// md5 is always verified. The cache key is absolute path (an app container's id left out, Md5Cache::stablePath) + size + last-write time, so any
 			// change to the file's identity rehashes it; a cached value that disagrees with the
 			// policy is rehashed too, so a stale or damaged cache can never refuse (or admit) a file.
 			fs::path absolute = fs::absolute(found->second, ec).lexically_normal();

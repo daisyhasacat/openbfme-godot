@@ -376,6 +376,11 @@ public:
 	// the pointer is over nothing (WindowManager::update 0x0046E850, with the path source inferred [S-173]).
 	std::string hoverPath() const;
 	const std::string &currentTooltipLabel() const { return m_tooltipLabel; }
+	// the text code composed for the current label, shown in place of the label's game text when not empty
+	const UnicodeString &currentTooltipText() const { return m_tooltipText; }
+	// a tooltip set by code for what is hovered now (a GameCode rollover's Mouse::setCursorTooltip, the Create-a-Hero powers page): a game-text label, or
+	// with `text` that text in place of the label's; it goes when the hover path changes
+	void setCursorTooltip(const std::string &label, const UnicodeString &text = UnicodeString());
 	// lane HOVER-1: AptButtonTooltipMap.ini's ButtonMap rows (hover path -> tooltip name; RW 0x6235E2 looks a name up before it makes the label)
 	void setTooltipNameMap(const std::map<std::string, std::string> &names) { m_tooltipNames = names; }
 
@@ -493,6 +498,7 @@ private:
 	std::vector<std::string> m_traces;
 	std::vector<MovieLoadNote> m_movieLoads;
 	std::string m_tooltipLabel;
+	UnicodeString m_tooltipText;
 	std::map<std::string, std::string> m_tooltipNames; // lane HOVER-1
 	std::string m_tooltipPath;
 	std::uint32_t m_randomState = 1u;

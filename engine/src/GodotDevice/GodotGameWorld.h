@@ -201,6 +201,13 @@ public:
 	// read-only: the live objects of `player` [{ id, template, structure, commandcenter, x, y, z }] (between logic frames)
 	Array get_player_objects(const String &player);
 	Array get_player_table() const;
+	// OpenBFME map editor wave spawners (not retail; scripts/wave_spawners.gd): { ok, local_player, local_name, playable: [loX, loY, hiX, hiY] (the pathfind extent),
+	// map: [loX, loY, hiX, hiY] (the height map with its border), starts: [{ start (N of Player_N_Start), x, y, player (index, -1 when no player has
+	// the start), name, ai, local }] }
+	Dictionary get_start_positions() const;
+	// the wave spawners' units: their owner's skirmish AI leaves them alone for the rest of the match (GameLogic::setAIReserved); local non-replay games
+	// only. Returns how many of the ids were live objects
+	int64_t reserve_from_ai(const Array &ids);
 	Array get_logic_trees(double x, double y, double radius) const; // lane SPELL-3: the logic's map trees within radius (2D): x, y, id, toppled, value
 	// the first object of a template name ("" never matches)
 	int64_t find_object_by_template(const String &template_name) const;
@@ -667,6 +674,9 @@ private:
 		const void *streakSource = nullptr;  ///< lane PERF-3: the entry's module data the streak cast below was made from
 		const W3DStreakDrawModuleData *streak = nullptr; ///< lane PERF-3: that data as a W3DStreakDraw's (refresh_streaks), null for other modules
 		bool streakKnown = false;
+		const void *modelDataSource = nullptr; ///< the entry's module data the cast below was made from (made once per data, not every frame)
+		const W3DModelDrawModuleData *modelData = nullptr; ///< that data as a W3DModelDraw's, null for other modules
+		bool modelDataKnown = false;
 		bool posed = false;
 		float offsetZ = 0.0f;           ///< RENDER-2: the construction offset the instance's transform carries (DrawEntry::constructionOffsetZ)
 		float opacity = 1.0f;           ///< PROJ-2: the drawable's fade the instance shows (Drawable::drawOpacity)
@@ -675,6 +685,11 @@ private:
 		bool fogLook = false;               ///< lane VISUAL-2: the instance is drawn with the fogged light (a last-seen object in the fog)
 		int64_t fogLookInstance = -1;       ///< the instance it was handed to
 		std::uint32_t colorsRevision = 0;   ///< lane CAH-2: Drawable::customColorRevision the model choice saw
+		// a dynamic entry's house-coloured model name ("#" + lowered + "#kind&c0&c1&c2") and the inputs it was made from, rebuilt only when one of
+		// them changes (it was formatted every render frame for every animated drawable)
+		std::string coloredName, coloredSource;
+		int coloredKind = 0;
+		std::uint32_t coloredColors[3] = { 0u, 0u, 0u };
 		// lane HCKEY-1: a static entry's model key (lowered name + floor swap suffix + palette) and the inputs it was made from, rebuilt only
 		// when one of them changes (community PR #60 made it every frame for every coloured static drawable)
 		bool staticKeyValid = false;
@@ -745,6 +760,10 @@ private:
 	std::unique_ptr<InGameSpellBookModel> m_spellBar;  // lane SPELL-2
 	// lane MP-1 (after m_game: the session goes first; every m_game.reset() drops it before)
 	std::unique_ptr<LANAPI> m_lan; // lane MP-2
+	// net_status's desync texts, built once per report and per number of breakdowns it holds (the session they are of)
+	mutable const NetGameSession *m_desyncTextSession = nullptr;
+	mutable std::vector<String> m_desyncTexts;
+	mutable std::vector<size_t> m_desyncTextHalves;
 	ProfileChoice m_choice; // lane UBER-1 / UBERJOIN-1: the player's profile (own), the one the next game runs (current) and a lobby's switch for one game
 	std::unique_ptr<UDP> m_netSocket;
 	std::unique_ptr<LANLobbyHost> m_netHost;

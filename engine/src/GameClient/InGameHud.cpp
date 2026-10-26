@@ -8,6 +8,7 @@
 
 #include "GameClient/GUI/GameTextSource.h"
 #include "GameClient/GUI/LoadScreenInfo.h"
+#include "GameClient/MessageStream/PlaceEventTranslator.h"
 #include "GameLogic/Economy.h"
 #include "GameLogic/ActionManager.h"
 #include "GameLogic/System/ShroudManager.h"
@@ -305,7 +306,16 @@ bool InGameHud::boot(std::string *error)
 		}
 	}
 	m_input->ui().setMessageHandler([this](const std::string &label) {
-		m_playerMessages.add(fetchOrMissing(m_config.gameText, label), m_config.game.logic().getFrame());
+		bool exists = false;
+		std::u16string text = fetchOrMissing(m_config.gameText, label, &exists);
+		if (!exists)
+		{
+			if (const char16_t *own = PlaceEventTranslator::openBfmeText(label))
+			{
+				text = own;
+			}
+		}
+		m_playerMessages.add(text, m_config.game.logic().getFrame());
 	});
 	bootHud6(); // lane HUD-6: the help box's settings and the Palantir's help box movie (InGameHudHud6.cpp)
 	m_radar->setupFromTerrain();

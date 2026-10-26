@@ -108,6 +108,24 @@ var road_anchor := Vector2(INF,INF)
 var road_before: Array = []
 var road_drag_origin := Vector2.ZERO
 var road_drag := false
+var spawners: Node                ## scripts/wave_spawners.gd: the markers and their waves (run while the game plays)
+var wave_controls: VBoxContainer
+var wave_list: ItemList
+var wave_units: ItemList
+var wave_info: Label
+var wave_start: SpinBox
+var wave_delay: SpinBox
+var wave_interval: SpinBox
+var wave_count: SpinBox
+var wave_add_count: SpinBox
+var wave_plus: Button             ## opens the horde / hero search under UNITS PER WAVE
+var wave_picker: VBoxContainer
+var wave_search: LineEdit
+var wave_results: ItemList        ## item metadata: the template name
+var wave_selected := -1
+var wave_drag := false
+var wave_before: Array = []
+var wave_syncing := false         ## the fields are being filled from the selected marker, not edited
 var outline: Control
 var scroll: ScrollContainer
 var content: VBoxContainer
@@ -123,6 +141,7 @@ class Outline extends Control:
      var a=center+Vector2(i*editor.placement_grid,-5*editor.placement_grid) if axis==0 else center+Vector2(-5*editor.placement_grid,i*editor.placement_grid)
      var b=a+Vector2(0,10*editor.placement_grid) if axis==0 else a+Vector2(10*editor.placement_grid,0)
      editor.outline.draw_line(editor.hud.world_to_pixel(a),editor.hud.world_to_pixel(b),Color(.3,1,.6,.45),1)
+  if editor.tool.selected==11:editor._draw_waves(self);return
   if editor.tool.selected==8:
    for i in editor.roads.size():
     var road=editor.roads[i];var a=editor.hud.world_to_pixel(editor._road_point(road.points[0]));var b=editor.hud.world_to_pixel(editor._road_point(road.points[1]))
@@ -157,6 +176,8 @@ class Outline extends Control:
 
 func _ready():
  layer=40
+ spawners=preload('res://scripts/wave_spawners.gd').new();spawners.world=world;add_child(spawners)
+ spawners.wave_spawned.connect(func(_id,_created,message):if active:status.text=message)
  panel=PanelContainer.new();panel.position=Vector2(20,80);panel.custom_minimum_size=Vector2(520,0);add_child(panel)
  var background=StyleBoxFlat.new();background.bg_color=Color('#10191e');background.border_color=Color('#c4a76a');background.set_border_width_all(1);background.set_corner_radius_all(8);background.content_margin_left=12;background.content_margin_right=12;background.content_margin_top=12;background.content_margin_bottom=12;panel.add_theme_stylebox_override('panel',background)
  var ui_theme=Theme.new();ui_theme.default_font_size=24;panel.theme=ui_theme
@@ -165,7 +186,7 @@ func _ready():
  var heading=Label.new();heading.text='MAP EDITOR · simulation paused';box.add_child(heading)
  var close=Button.new();close.text='Exit editor';close.pressed.connect(func():set_active(false));box.add_child(close)
  tool=OptionButton.new()
- for text in ['Delete objects','Place object','Object brush','Raise terrain','Lower terrain','Flatten terrain','Paint ground texture','Pick terrain texture','Edit roads / paths','Select objects / owner','Texture box with road border']: tool.add_item(text)
+ for text in ['Delete objects','Place object','Object brush','Raise terrain','Lower terrain','Flatten terrain','Paint ground texture','Pick terrain texture','Edit roads / paths','Select objects / owner','Texture box with road border','Wave spawners']: tool.add_item(text)
  tool.item_selected.connect(func(_i):hovered_texture='';_clear_preview();_update_controls());box.add_child(tool)
  shape=OptionButton.new();shape.add_item('Block / square');shape.add_item('Brush / circle');box.add_child(shape)
  grid_rotation=CheckButton.new();grid_rotation.text='Rotate brush grid 45°';box.add_child(grid_rotation)
@@ -194,6 +215,7 @@ func _ready():
  road_list.item_selected.connect(func(i):road_selected=i;road_endpoint=1;road_anchor=_road_point(roads[i].points[1]);_select_road_type())
  for pair in [['New path',_new_road],['Apply road type and width',_change_road_type],['Delete selected segment',_delete_road]]:
   var button=Button.new();button.text=pair[0];button.custom_minimum_size.y=52;button.pressed.connect(pair[1]);road_controls.add_child(button)
+ _build_wave_controls(box)
  var controls=HBoxContainer.new();box.add_child(controls);box.move_child(controls,3)
  var delete=Button.new();delete.text='Delete objects';delete.pressed.connect(func():tool.select(0);_clear_preview();_update_controls());controls.add_child(delete)
  var undo=Button.new();undo.text='Undo';undo.pressed.connect(_undo);controls.add_child(undo)
@@ -223,8 +245,8 @@ func _build_workspace(ui_theme: Theme,background: StyleBoxFlat):
  exit_button.add_theme_color_override('font_pressed_color',Color.WHITE)
  header.move_child(exit_button,0);header.add_theme_constant_override('separation',16)
  var modes=HFlowContainer.new();rows.add_child(modes)
- var names=['Delete','Object','Object brush','Raise','Lower','Flatten','Paint','Pick texture','Roads','Select','Border box']
- var icons=['⌫','⬡','▦','▲','▼','▬','▧','⌖','⌁','↖','▣']
+ var names=['Delete','Object','Object brush','Raise','Lower','Flatten','Paint','Pick texture','Roads','Select','Border box','Waves']
+ var icons=['⌫','⬡','▦','▲','▼','▬','▧','⌖','⌁','↖','▣','⚑']
  for i in names.size():
   var button=Button.new();button.text=icons[i]+'\n'+names[i];button.tooltip_text=tool.get_item_text(i);button.toggle_mode=true;button.custom_minimum_size=Vector2(96,78)
   var block=StyleBoxFlat.new();block.bg_color=Color('#24343f');block.set_corner_radius_all(6);block.set_content_margin_all(8);button.add_theme_stylebox_override('normal',block)
@@ -424,6 +446,8 @@ func _update_controls():
  for i in mode_buttons.size():mode_buttons[i].set_pressed_no_signal(i==tool.selected)
  lookup.visible=active and tool.selected in [1,2,6,7,8,10]
  lookup_title.text='OBJECT LIBRARY' if placing else ('PATH LIBRARY' if tool.selected==8 else 'TERRAIN LIBRARY')
+ wave_controls.visible=tool.selected==11
+ if tool.selected==11:_refresh_waves()
  path_library.visible=tool.selected in [8,10];path_library_title.visible=tool.selected==10
  _render_paths()
  if placing:texture_caption.text=_selected()
@@ -457,6 +481,7 @@ func set_active(enabled: bool):
   status.text='Editing live map. Save edits as a reusable JSON overlay.'
  else:
   if road_drag:roads=road_before.duplicate(true);road_drag=false
+  if wave_drag:_wave_release()
   if dragging and tool.selected in [3,4,5,6]:_paint_live();_finish_terrain_stroke()
   hud.set_free_camera(was_free_camera)
   dragging=false;touches.clear();_clear_preview();world.set_shroud_drawn(was_shroud);hud.set_process_input(hud_was_processing);world.set_paused(was_paused);outline.queue_redraw()
@@ -466,7 +491,7 @@ func _load_object_catalog():
  while true:
   # Lua console output is capped at 64 KiB. Page the catalog and require a
   # terminator, so a truncated response can never become a partial catalog.
-  var code="local names={}; for name in pairs(bfme.templates) do names[#names+1]=name end; table.sort(names); local rows={}; for i=%d,math.min(%d,#names) do local name=names[i]; local t=bfme.templates[name]; local c=bfme.buildMode.classify(t); local flags={}; for _,k in ipairs({'building','unit','scenery','trainable','builderBuildable','plotBuildable','enhancedPlotBuildable','plot','placeholder','unfinishedContent','unsupported','marker'}) do if c[k] then flags[#flags+1]=k end end; rows[#rows+1]=table.concat({name,tostring(t.cost or 0),table.concat(flags,','),table.concat(c.reasons or {},'; '),tostring(t.faction or ''),tostring(t.displayName or ''),table.concat(c.producers or {},','),table.concat(c.builders or {},','),table.concat(c.plots or {},',')},string.char(9)) end; rows[#rows+1]='__CATALOG_END__'; return table.concat(rows,string.char(10))"%[first,first+49]
+  var code="local names={}; for name in pairs(bfme.templates) do names[#names+1]=name end; table.sort(names); local rows={}; for i=%d,math.min(%d,#names) do local name=names[i]; local t=bfme.templates[name]; local c=bfme.buildMode.classify(t); local flags={}; for _,k in ipairs({'building','unit','scenery','trainable','builderBuildable','plotBuildable','enhancedPlotBuildable','plot','placeholder','unfinishedContent','unsupported','marker'}) do if c[k] then flags[#flags+1]=k end end; if t.isHorde then flags[#flags+1]='horde' end; if t.isHero then flags[#flags+1]='hero' end; rows[#rows+1]=table.concat({name,tostring(t.cost or 0),table.concat(flags,','),table.concat(c.reasons or {},'; '),tostring(t.faction or ''),tostring(t.displayName or ''),table.concat(c.producers or {},','),table.concat(c.builders or {},','),table.concat(c.plots or {},',')},string.char(9)) end; rows[#rows+1]='__CATALOG_END__'; return table.concat(rows,string.char(10))"%[first,first+49]
   var result:Dictionary=world.execute_lua(code)
   var output=str(result.output).strip_edges()
   if not result.ok or not output.ends_with('__CATALOG_END__'):
@@ -664,7 +689,7 @@ func handle_input(event: InputEvent) -> bool:
   if event.keycode==KEY_R:angle_control.value+=15;return true
  if event is InputEventMouse:
   cursor=event.position
-  if _over_editor(cursor) and not dragging and not road_drag:return false
+  if _over_editor(cursor) and not dragging and not road_drag and not wave_drag:return false
  # macOS trackpads and Magic Mouse report scrolling as pan gestures and pinch as magnify, not wheel buttons; gameplay's HUD
  # handles those but its input is off in the editor. Scrolling up / spreading the fingers zooms in, like the wheel.
  if event is InputEventPanGesture or event is InputEventMagnifyGesture:
@@ -679,14 +704,17 @@ func handle_input(event: InputEvent) -> bool:
   if event.button_index==MOUSE_BUTTON_LEFT:
    if event.pressed:
     if tool.selected==8:_road_press()
+    elif tool.selected==11:_wave_press()
     else:_begin_stroke()
    elif road_drag:_road_release()
+   elif wave_drag:_wave_release()
    elif dragging:
     _end_stroke()
    return true
  if event is InputEventMouseMotion:
   if event.button_mask & MOUSE_BUTTON_MASK_RIGHT:hud.camera_pan(-event.relative*2);return true
   if road_drag:_road_motion()
+  elif wave_drag:_wave_motion()
   elif dragging:_sample(cursor)
   return true
  if event is InputEventScreenTouch:
@@ -696,12 +724,15 @@ func handle_input(event: InputEvent) -> bool:
    touches[event.index]=cursor
    if touches.size()>1:
     if road_drag:roads=road_before.duplicate(true);road_drag=false
+    if wave_drag:spawners.markers=wave_before.duplicate(true);wave_drag=false
     dragging=false;_finish_terrain_stroke();points.clear();return true
    if tool.selected==8:_road_press()
+   elif tool.selected==11:_wave_press()
    else:_begin_stroke()
   else:
    touches.erase(event.index)
    if road_drag:_road_release()
+   elif wave_drag:_wave_release()
    elif dragging:_end_stroke()
   return true
  if event is InputEventScreenDrag:
@@ -710,9 +741,189 @@ func handle_input(event: InputEvent) -> bool:
   touches[event.index]=cursor
   if touches.size()>1:hud.camera_pan(-event.relative);return true
   if road_drag:_road_motion()
+  elif wave_drag:_wave_motion()
   elif dragging:_sample(cursor)
   return true
  return false
+
+## Wave spawners (scripts/wave_spawners.gd): the list of markers, the selected one's owner, timing and units
+func _build_wave_controls(box: VBoxContainer):
+ wave_controls=VBoxContainer.new();box.add_child(wave_controls)
+ var help=Label.new();help.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;help.custom_minimum_size.x=300
+ help.text='Click the map, or the border outside the playable area, to place a spawner; drag one to move it. Its waves belong to the player at its start position (set that slot to an AI in the lobby) and attack-move at you. Press + to add hordes and heroes.'
+ wave_controls.add_child(help)
+ wave_list=ItemList.new();wave_list.custom_minimum_size=Vector2(320,140);wave_list.item_selected.connect(func(i):wave_selected=i;_show_wave());wave_controls.add_child(wave_list)
+ wave_info=Label.new();wave_info.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;wave_info.custom_minimum_size.x=300;wave_controls.add_child(wave_info)
+ wave_start=_number(wave_controls,'Owner: start position (Player_N_Start)',1,16,1,1)
+ wave_delay=_number(wave_controls,'First wave after (seconds)',0,3600,30,5)
+ wave_interval=_number(wave_controls,'Seconds between waves',5,3600,60,5)
+ wave_count=_number(wave_controls,'Number of waves (0 = endless)',0,999,0,1)
+ for field in [wave_start,wave_delay,wave_interval,wave_count]:field.value_changed.connect(func(_v):_wave_settings_changed())
+ var heading=HBoxContainer.new();wave_controls.add_child(heading)
+ var title=Label.new();title.text='UNITS PER WAVE';title.size_flags_horizontal=Control.SIZE_EXPAND_FILL;heading.add_child(title)
+ wave_plus=Button.new();wave_plus.text='+';wave_plus.tooltip_text='Add a horde or hero to the wave';wave_plus.custom_minimum_size=Vector2(52,52);wave_plus.pressed.connect(_toggle_wave_picker);heading.add_child(wave_plus)
+ wave_picker=VBoxContainer.new();wave_picker.hide();wave_controls.add_child(wave_picker)
+ wave_search=LineEdit.new();wave_search.placeholder_text='Search hordes and heroes…';wave_search.text_changed.connect(func(_q):_filter_wave_units());wave_picker.add_child(wave_search)
+ wave_results=ItemList.new();wave_results.custom_minimum_size=Vector2(320,220);wave_results.item_activated.connect(func(_i):_wave_add_unit());wave_picker.add_child(wave_results)
+ wave_add_count=_number(wave_picker,'Quantity',1,100,1,1)
+ var add=Button.new();add.text='Add to wave';add.custom_minimum_size.y=52;add.pressed.connect(_wave_add_unit);wave_picker.add_child(add)
+ wave_units=ItemList.new();wave_units.custom_minimum_size=Vector2(320,140);wave_controls.add_child(wave_units)
+ for pair in [['Remove selected unit',_wave_remove_unit],['Spawn a wave now',_wave_test],['Delete spawner',_wave_delete]]:
+  var button=Button.new();button.text=pair[0];button.custom_minimum_size.y=52;button.pressed.connect(pair[1]);wave_controls.add_child(button)
+ for field in [wave_start,wave_delay,wave_interval,wave_count,wave_add_count]:
+  var caption:Label=field.get_meta('label');caption.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART;caption.custom_minimum_size.x=300
+
+func _toggle_wave_picker():
+ wave_picker.visible=not wave_picker.visible;wave_plus.text='−' if wave_picker.visible else '+'
+ if not wave_picker.visible:return
+ if catalog.is_empty():_load_object_catalog()
+ _filter_wave_units();wave_search.grab_focus()
+
+## the catalog's hordes and heroes (heroes marked ★) whose name, faction or display name holds the search text
+func _filter_wave_units():
+ wave_results.clear()
+ var query=wave_search.text.strip_edges().to_lower()
+ for name in catalog:
+  var record:Dictionary=object_records.get(name,{})
+  var flags:Array=record.get('flags',[])
+  # not the 'unsupported' flag: every horde carries an unported behavior module and still fights (BuildModeFilter's warning)
+  if not ('horde' in flags or 'hero' in flags) or 'placeholder' in flags or 'unfinishedContent' in flags:continue
+  if not query.is_empty() and query not in (name+' '+str(record.get('faction',''))+' '+str(record.get('display_name',''))).to_lower():continue
+  var faction=str(record.get('faction',''))
+  var row=wave_results.add_item('%s%s · %s · %s gold'%['★ ' if 'hero' in flags else '',name,faction if not faction.is_empty() else 'no faction',str(record.get('cost','0'))])
+  wave_results.set_item_metadata(row,name)
+ if wave_results.item_count>0:wave_results.select(0)
+
+func _refresh_waves():
+ wave_list.clear()
+ for marker in spawners.markers:
+  var total=0
+  for unit in marker.units:total+=int(unit.count)
+  wave_list.add_item('⚑ %d · start %d · %d units%s'%[int(marker.id),int(marker.start),total,' · outside' if spawners.is_outside(Vector2(marker.x,marker.y)) else ''])
+ wave_selected=clampi(wave_selected,-1,spawners.markers.size()-1)
+ if wave_selected>=0:wave_list.select(wave_selected)
+ _show_wave()
+
+func _show_wave():
+ wave_units.clear()
+ for field in [wave_start,wave_delay,wave_interval,wave_count]:field.editable=wave_selected>=0
+ if wave_selected<0:wave_info.text='No spawner selected. Click the map to place one.';return
+ var marker:Dictionary=spawners.markers[wave_selected]
+ wave_syncing=true
+ wave_start.value=int(marker.start);wave_delay.value=float(marker.delay);wave_interval.value=float(marker.interval);wave_count.value=int(marker.waves)
+ wave_syncing=false
+ for unit in marker.units:wave_units.add_item('%d × %s'%[int(unit.count),unit.template])
+ wave_info.text=spawners.describe(marker)+'\n'+('Outside the playable area: its waves march in.' if spawners.is_outside(Vector2(marker.x,marker.y)) else 'Inside the playable area.')
+
+## replaces the markers with `list` as one undoable edit
+func _commit_waves(list: Array,message: String):
+ undo_stack.append({'spawners':spawners.markers.duplicate(true)})
+ spawners.set_markers(list);overlay.append({'wave_spawners':list.duplicate(true)})
+ _refresh_waves();status.text=message
+
+func _wave_settings_changed():
+ if wave_syncing or wave_selected<0:return
+ var list:Array=spawners.markers.duplicate(true);var marker:Dictionary=list[wave_selected]
+ marker.start=int(wave_start.value);marker.delay=wave_delay.value;marker.interval=wave_interval.value;marker.waves=int(wave_count.value)
+ _commit_waves(list,'Spawner %d updated'%int(marker.id))
+
+## a point inside the height map (the playable area and its border)
+func _clamp_to_map(p: Vector2) -> Vector2:
+ var area:Array=spawners.context().get('map',[])
+ if area.size()!=4:return p
+ return Vector2(clampf(p.x,area[0]+20,area[2]-20),clampf(p.y,area[1]+20,area[3]-20))
+
+## the start position nearest `p` that is not the local player's
+func _wave_default_start(p: Vector2) -> int:
+ var best=0;var distance=INF
+ for entry in spawners.context().get('starts',[]):
+  if entry.get('local',false):continue
+  var d=p.distance_to(Vector2(entry.x,entry.y))
+  if d<distance:distance=d;best=int(entry.start)
+ return best if best>0 else maxi(1,spawners.nearest_start(p))
+
+func _wave_press():
+ var p:Vector2=hud.pixel_to_world(cursor)
+ if p.x < -1e8:return
+ var nearest=24.0;var hit=-1
+ for i in spawners.markers.size():
+  var marker:Dictionary=spawners.markers[i]
+  var distance=cursor.distance_to(hud.world_to_pixel(Vector2(marker.x,marker.y)))
+  if distance<nearest:nearest=distance;hit=i
+ if hit>=0:
+  wave_selected=hit;wave_before=spawners.markers.duplicate(true);wave_drag=true;_refresh_waves();return
+ p=_clamp_to_map(p)
+ var list:Array=spawners.markers.duplicate(true)
+ list.append({'id':spawners.next_id(),'x':p.x,'y':p.y,'start':_wave_default_start(p),'delay':wave_delay.value,'interval':wave_interval.value,'waves':int(wave_count.value),'units':[]})
+ wave_selected=list.size()-1
+ _commit_waves(list,'Placed spawner'+(' outside the playable area' if spawners.is_outside(p) else '')+'. Press + to add hordes and heroes.')
+ if not wave_picker.visible:_toggle_wave_picker()
+
+func _wave_motion():
+ var p:Vector2=hud.pixel_to_world(cursor)
+ if p.x < -1e8 or wave_selected<0:return
+ p=_clamp_to_map(p);spawners.markers[wave_selected].x=p.x;spawners.markers[wave_selected].y=p.y
+
+func _wave_release():
+ _wave_motion();wave_drag=false
+ var moved:Array=spawners.markers.duplicate(true)
+ if moved==wave_before:_refresh_waves();return
+ spawners.markers=wave_before.duplicate(true)
+ _commit_waves(moved,'Moved spawner')
+
+func _wave_add_unit():
+ if wave_selected<0:status.text='Select or place a spawner first.';return
+ var picked=wave_results.get_selected_items()
+ if picked.is_empty():status.text='Press + and pick a horde or hero.';return
+ var template=str(wave_results.get_item_metadata(picked[0]))
+ var list:Array=spawners.markers.duplicate(true);var units:Array=list[wave_selected].units
+ var added=false
+ for unit in units:
+  if unit.template==template:unit.count=int(unit.count)+int(wave_add_count.value);added=true
+ if not added:units.append({'template':template,'count':int(wave_add_count.value)})
+ _commit_waves(list,'Added %d × %s'%[int(wave_add_count.value),template])
+
+func _wave_remove_unit():
+ var picked=wave_units.get_selected_items()
+ if wave_selected<0 or picked.is_empty():status.text='Select a unit of the wave to remove.';return
+ var list:Array=spawners.markers.duplicate(true);list[wave_selected].units.remove_at(picked[0])
+ _commit_waves(list,'Removed a unit from the wave')
+
+func _wave_test():
+ if wave_selected<0:status.text='Select a spawner first.';return
+ status.text=spawners.spawn_wave(spawners.markers[wave_selected])+'. It moves once you exit the editor.'
+
+func _wave_delete():
+ if wave_selected<0:return
+ var list:Array=spawners.markers.duplicate(true);list.remove_at(wave_selected);wave_selected=-1
+ _commit_waves(list,'Deleted spawner')
+
+## the playable area's edge, the start positions and the markers with a line to their owner's start
+func _draw_waves(canvas: Control):
+ var font=ThemeDB.fallback_font
+ var context:Dictionary=spawners.context()
+ var area:Array=context.get('playable',[])
+ if area.size()==4:
+  var edge=PackedVector2Array()
+  for corner in [Vector2(area[0],area[1]),Vector2(area[2],area[1]),Vector2(area[2],area[3]),Vector2(area[0],area[3]),Vector2(area[0],area[1])]:
+   var pixel=hud.world_to_pixel(corner)
+   if pixel.x < -1e8:edge=PackedVector2Array();break
+   edge.append(pixel)
+  if edge.size()==5:canvas.draw_polyline(edge,Color(1,1,1,.5),2)
+ var starts={}
+ for entry in context.get('starts',[]):
+  var pixel=hud.world_to_pixel(Vector2(entry.x,entry.y));starts[int(entry.start)]=pixel
+  if pixel.x < -1e8:continue
+  var owner=('You' if entry.get('local',false) else (str(entry.name)+(' (AI)' if entry.get('ai',false) else ''))) if int(entry.player)>=0 else 'empty'
+  canvas.draw_circle(pixel,10,Color(.3,.85,1),false,3);canvas.draw_string(font,pixel+Vector2(14,6),'Start %d · %s'%[int(entry.start),owner],HORIZONTAL_ALIGNMENT_LEFT,-1,18,Color(.3,.85,1))
+ for i in spawners.markers.size():
+  var marker:Dictionary=spawners.markers[i]
+  var pixel=hud.world_to_pixel(Vector2(marker.x,marker.y))
+  if pixel.x < -1e8:continue
+  var color=Color(1,.8,.2) if i==wave_selected else Color(1,.45,.2)
+  var home:Vector2=starts.get(int(marker.start),Vector2(-1e9,-1e9))
+  if home.x > -1e8:canvas.draw_dashed_line(pixel,home,color*Color(1,1,1,.6),2,12)
+  canvas.draw_circle(pixel,14,color);canvas.draw_string(font,pixel+Vector2(18,6),'⚑ %d'%int(marker.id),HORIZONTAL_ALIGNMENT_LEFT,-1,20,color)
 
 func _road_point(p) -> Vector2:
  return Vector2(p[0],p[1])
@@ -1024,6 +1235,7 @@ func _undo():
   var restored:Dictionary=world.map_editor_terrain({'roads':action.roads})
   if restored.get('ok',false):roads=action.roads.duplicate(true);road_selected=-1;road_anchor=Vector2(INF,INF);_refresh_roads()
  if action.has('terrain'):world.map_editor_terrain({'patch':action.terrain});_refresh_camera()
+ if action.has('spawners'):spawners.set_markers(action.spawners);_refresh_waves()
  if not overlay.is_empty():overlay.pop_back()
  world.map_editor_terrain({'sync':true})
  status.text='Last edit undone.'
@@ -1086,6 +1298,8 @@ func _load():
    var result:Dictionary=world.map_editor_terrain({'roads':action.roads})
    if not result.get('ok',false):status.text=str(result.get('error'));return
    undo_stack.append({'roads':result.undo_roads});roads=action.roads.duplicate(true);_refresh_roads()
+  elif action.has('wave_spawners'):
+   undo_stack.append({'spawners':spawners.markers.duplicate(true)});spawners.set_markers(action.wave_spawners);_refresh_waves()
   elif action.has('place'):
    var ids=[]
    for b in action.place:

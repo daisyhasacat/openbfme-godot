@@ -159,6 +159,9 @@ Dictionary RetailFileSystem::mount_bfme2_path(const String &root)
 	// playable; the separate menu-only factory still marks its source read-only.
 	Dictionary result = mountBfme2Shell(toNative(root));
 	m_shellSource = false;
+	// the install whose gi.dat names the user data folder (saves, Create-a-Hero, game.gd's "rotwk_install"): BFME2's own here, so a BFME2-only game (and
+	// a packaged app that carries only BFME2) has its saves without a RotWK install
+	result["rotwk_install"] = root;
         // BFME2 gameplay accepts explicit directory mods too. Hash every loose
         // file and archive in mount order so custom gameplay changes the
         // content signature.

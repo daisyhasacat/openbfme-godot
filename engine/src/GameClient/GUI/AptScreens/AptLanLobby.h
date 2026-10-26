@@ -85,6 +85,7 @@ private:
 	void enterSetup(bool host);
 	void backToLobby();
 	void pruneLan();
+	void applyNameEntry(); ///< the name box's text as the player's LAN name (at Enter, Host and Join)
 	void requestJoinSelected();
 	void restoreMode(); // lane UBERJOIN-1
 	void refreshJoinButton();

@@ -333,6 +333,10 @@ struct KindBits
 			{ PK_SCALEABLE_WALL, "SCALEABLE_WALL" },
 			{ PK_BASE_SITE, "BASE_SITE" },
 			{ PK_WALL_UPGRADE, "WALL_UPGRADE" },
+			{ PK_ATTACK_NEEDS_LINE_OF_SIGHT, "ATTACK_NEEDS_LINE_OF_SIGHT" },
+			{ PK_CAN_SHOOT_OVER_WALLS, "CAN_SHOOT_OVER_WALLS" },
+			{ PK_WALL_SEGMENT, "WALL_SEGMENT" },
+			{ PK_WALL_GATE, "WALL_GATE" },
 		};
 		for (int &b : bit)
 		{
@@ -453,6 +457,19 @@ float ObjectPathfindAdapter::getHeightAboveTerrain() const
 {
 	const Coord3D &p = *m_object->getPosition();
 	return SimMath::subf32(p.z, m_object->logic().getGroundHeight(p.x, p.y));
+}
+
+bool ObjectPathfindAdapter::isSignificantlyAboveTerrain() const
+{
+	// RW 0x70C55D -> RW 0x70C50C(0.0): not for the KindOf CAN_CLIMB_WALLS / SHIP (template + 0x11F & 0x81); the height above the terrain (RW 0x70B8AE) + 0 over
+	// GlobalData Gravity (+ 0xC4) * -9 (RW 0xC1EBC0), x87 (as CombatModules' sink test)
+	static const int kClimb = ObjectTemplateInfoBuilder::kindOfIndex("CAN_CLIMB_WALLS");
+	static const int kShip = ObjectTemplateInfoBuilder::kindOfIndex("SHIP");
+	if (m_object->isKindOf((unsigned)kClimb) || m_object->isKindOf((unsigned)kShip))
+	{
+		return false;
+	}
+	return (double)getHeightAboveTerrain() > SimMath::pc24MulW((double)m_object->logic().settings().gravity, -9.0);
 }
 
 bool ObjectPathfindAdapter::isMobile() const
@@ -947,6 +964,8 @@ const ObjectMovementInfo &AIWorld::movementInfo(const ThingTemplate &tt)
 	{
 		std::unique_ptr<ObjectMovementInfo> info = std::make_unique<ObjectMovementInfo>();
 		buildInfo(*key, *m_env, *info);
+		info->boundingCircle = info->geometry.boundingCircleRadius();
+		info->boundingSphere = info->geometry.boundingSphereRadius();
 		for (const std::string &e : info->errors)
 		{
 			if (std::find(m_errors.begin(), m_errors.end(), e) == m_errors.end())

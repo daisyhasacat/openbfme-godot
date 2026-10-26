@@ -463,7 +463,9 @@ var _observe_key_down := false
 # lane MP-1
 var _net_host := -1
 var _net_join := ""
-var _net_name := "Joiner"
+var _net_name := "Joiner"        # --net-name (the scripted --net-join runs' default; the LAN lobby screen uses _lan_name())
+var _net_name_given := false
+var _lan_saved_name := ""          # the LAN name last written to Options.ini (OpenBFMELanName)
 var _net_slots := "human:FactionMen:0:0;human:FactionMordor:1:1"
 var _net_run_ahead := 1  # lane NETLAG-1: RotWK's command delay, the current frame + 1 (was 2)
 var _net_crc := 100
@@ -552,6 +554,7 @@ var _dc_left_seen := 0
 var _dc_log_seen := 0 # lane MP-DROP-1: the disconnect path's log lines already printed
 var _dc_quit_handled := false
 var _desync_shown := false
+var _desyncs_printed := 0 # the desync reports already in the log
 var _net_incident_report := "" # GameNetwork/NetIncidentReport.h: the network game's NETREPORT-*.txt once something went wrong
 var _net_shot_desync := ""
 var _replay_file := ""          # lane MP-2
@@ -961,6 +964,7 @@ func _ready() -> void:
 			_net_join = arg.substr(11)
 		elif arg.begins_with("--net-name="):
 			_net_name = arg.substr(11)
+			_net_name_given = true
 		elif arg.begins_with("--net-slots="):
 			_net_slots = arg.substr(12)
 		elif arg.begins_with("--net-run-ahead="):
@@ -1607,6 +1611,7 @@ func _process(delta: float) -> void:
 			_hover1_menus_run()
 		if _online_http != null:
 			_online_keep_name() # lane ONLINE-4
+		_lan_keep_name()
 		if _online_note != null:
 			_online_note.visible = _shell.shell_stack().has("OnlineShell.apt")
 		_restore_switched_profile() # lane UBERJOIN-1
@@ -4389,6 +4394,7 @@ func _exit_to_score_screen() -> void:
 	_dc_log_seen = 0
 	_dc_quit_handled = false
 	_desync_shown = false
+	_desyncs_printed = 0
 	_relay_lost_since = 0 # lane ONLINEUX-1: the relay notice goes with the game
 	if _relay_label != null:
 		_relay_label.text = ""
@@ -6359,8 +6365,10 @@ func _net_tick() -> void:
 	if not _net_players_shot.is_empty() and _net_players_wait < 0 and st.frame >= _net_players_frame:
 		_net_players_wait = 0
 		call_deferred("_net_players_open") # (a proof hook: the logic worker is held when a deferred call runs, not in this per-frame path)
-	for d in st.desyncs:
-		printerr(d)
+	# each desync once (the list holds every report of the game: printing it all every frame flooded the log)
+	while _desyncs_printed < st.desyncs.size():
+		printerr(st.desyncs[_desyncs_printed])
+		_desyncs_printed += 1
 	var incident := str(st.get("incident_report", ""))
 	if incident != _net_incident_report:
 		_net_incident_report = incident
@@ -6888,7 +6896,7 @@ func _open_lan_lobby() -> void:
 	_sync_simulation_profile() # lane UBER-1: the lobby announces the identity of the player's profile
 	var st: Dictionary = _world.lan_status()
 	if not st.get("open", false):
-		var opts := {"name": _net_name, "run_ahead": _net_run_ahead, "crc_interval": _net_crc}
+		var opts := {"name": _lan_name(), "run_ahead": _net_run_ahead, "crc_interval": _net_crc}
 		if not _lan_targets.is_empty():
 			opts["broadcast"] = false
 			opts["targets"] = Array(_lan_targets.split(","))
@@ -6903,6 +6911,34 @@ func _open_lan_lobby() -> void:
 	print("GAME LAN profile: %s, identity %s" % [_world.simulation_profile(), _world.net_profile_digest()])
 	if not _shell.shell_push("LanLobby.apt"):
 		_fail("the shell refused LanLobby.apt: " + str(_shell.get_shell_report().errors))
+
+
+## The player's LAN name: --net-name, else the one last used in the LAN lobby (Options.ini OpenBFMELanName), else the online name, else "Player"
+## (the lobby's name box changes it; _lan_keep_name saves it). 12 characters, as the box (RW 0x81606D)
+func _lan_name() -> String:
+	if _net_name_given:
+		return _net_name
+	var options: Dictionary = _shell.get_options()
+	for key in ["OpenBFMELanName", "OpenBFMEOnlineName"]:
+		var name := str(options.get(key, "")).strip_edges()
+		if not name.is_empty():
+			_lan_saved_name = name if key == "OpenBFMELanName" else _lan_saved_name
+			return name.left(12)
+	return "Player"
+
+
+## The name the player set in the LAN lobby's name box is kept for the next session (not in a scripted run)
+func _lan_keep_name() -> void:
+	var st: Dictionary = _world.lan_status()
+	var name := str(st.get("name", "")).strip_edges()
+	if not st.get("open", false) or name.is_empty() or name == _lan_saved_name or _net_name_given:
+		return
+	_lan_saved_name = name
+	if _scripted_run():
+		return
+	if _shell.set_option("OpenBFMELanName", name):
+		var saved: Dictionary = _shell.save_options()
+		print("GAME LAN name %s: %s" % [name, "saved" if saved.ok else str(saved.error)])
 
 
 ## Every player of the LAN game has the start: the game socket and the start go to the network game, which loads like a --net-host / --net-join one

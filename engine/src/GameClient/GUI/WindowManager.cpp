@@ -398,6 +398,7 @@ bool WindowManager::hideAptWindow(int index)
 	}
 	m_services.setCursorTooltip(std::string());
 	m_tooltipLabel.clear();
+	m_tooltipText.clear();
 	if (!(m_windows[index].flags & APTWIN_LOADED))
 	{
 		return false;
@@ -419,6 +420,7 @@ bool WindowManager::unloadAptMovie(int index)
 	}
 	m_services.setCursorTooltip(std::string());
 	m_tooltipLabel.clear();
+	m_tooltipText.clear();
 	if (m_windows[index].index == -1)
 	{
 		return false;
@@ -1214,6 +1216,7 @@ void WindowManager::updateTooltip()
 		{
 			m_tooltipPath.clear();
 			m_tooltipLabel.clear();
+			m_tooltipText.clear();
 			m_services.setCursorTooltip(std::string());
 		}
 		return;
@@ -1237,6 +1240,16 @@ void WindowManager::updateTooltip()
 		label = "TOOLTIP:" + (alias != m_tooltipNames.end() ? alias->second : name);
 	}
 	m_tooltipLabel = label;
+	m_tooltipText.clear();
+	m_services.setCursorTooltip(label);
+}
+
+void WindowManager::setCursorTooltip(const std::string &label, const UnicodeString &text)
+{
+	// the label holds for the current hover path: updateTooltip leaves it until the path changes
+	m_tooltipPath = hoverPath();
+	m_tooltipLabel = label;
+	m_tooltipText = text;
 	m_services.setCursorTooltip(label);
 }
 

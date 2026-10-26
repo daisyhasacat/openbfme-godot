@@ -41,7 +41,8 @@ enum LegalBuildCode
 	LBC_OBJECTS_IN_THE_WAY,
 	LBC_NO_CLEAR_PATH,
 	LBC_SHROUD,
-	LBC_TOO_CLOSE_TO_SUPPLIES
+	LBC_TOO_CLOSE_TO_SUPPLIES,
+	LBC_OUTSIDE_WALLS // OpenBFME, not retail: the wall rebalance's enclosure requirement (WallBalance::placementAllowed)
 };
 
 // ZH BuildAssistant.h LocationLegalFlags

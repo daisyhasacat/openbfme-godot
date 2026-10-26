@@ -316,6 +316,8 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("debug_set_use_formations", "on"), &GameWorld::debug_set_use_formations); // lane BACKLOG-8 r2                                // lane SPELL-3
 	ClassDB::bind_method(D_METHOD("get_player_table"), &GameWorld::get_player_table);
 	ClassDB::bind_method(D_METHOD("get_player_objects", "player"), &GameWorld::get_player_objects);
+	ClassDB::bind_method(D_METHOD("get_start_positions"), &GameWorld::get_start_positions);
+	ClassDB::bind_method(D_METHOD("reserve_from_ai", "ids"), &GameWorld::reserve_from_ai);
 	ClassDB::bind_method(D_METHOD("get_logic_trees", "x", "y", "radius"), &GameWorld::get_logic_trees); // lane SPELL-3
 	ClassDB::bind_method(D_METHOD("destroy_object", "id"), &GameWorld::destroy_object);
 	ClassDB::bind_method(D_METHOD("map_editor_terrain", "operation"), &GameWorld::map_editor_terrain);
@@ -1892,7 +1894,13 @@ void GameWorld::refresh_views(double deltaMs)
 		{
 			DrawEntry &e = entries[k];
 			EntryView &ev = v.entries[k];
-			const auto *modelData = dynamic_cast<const W3DModelDrawModuleData *>(e.data);
+			if (!ev.modelDataKnown || ev.modelDataSource != e.data)
+			{
+				ev.modelData = dynamic_cast<const W3DModelDrawModuleData *>(e.data);
+				ev.modelDataSource = e.data;
+				ev.modelDataKnown = true;
+			}
+			const W3DModelDrawModuleData *modelData = ev.modelData;
 			const bool affectedByStealth = !modelData || modelData->m_affectedByStealth;
 			const bool entryHidden = fogHidden || (affectedByStealth && stealthHidden);
 			const ObjectSnapshot *entryStealth = affectedByStealth ? stealthRec : nullptr;
@@ -2032,9 +2040,17 @@ void GameWorld::refresh_views(double deltaMs)
 				std::string coloredModel;
 				if (shown && m_houseColors && palette.kind > 0)
 				{
-					char opt[96];
-					std::snprintf(opt, sizeof(opt), "#%d&%d&%d&%d", palette.kind, (int)palette.colors[0], (int)palette.colors[1], (int)palette.colors[2]);
-					coloredModel = "#" + ev.rawLowered + opt;
+					if (ev.coloredName.empty() || ev.coloredSource != ev.rawLowered || ev.coloredKind != palette.kind || ev.coloredColors[0] != palette.colors[0] ||
+						ev.coloredColors[1] != palette.colors[1] || ev.coloredColors[2] != palette.colors[2])
+					{
+						char opt[96];
+						std::snprintf(opt, sizeof(opt), "#%d&%d&%d&%d", palette.kind, (int)palette.colors[0], (int)palette.colors[1], (int)palette.colors[2]);
+						ev.coloredName = "#" + ev.rawLowered + opt;
+						ev.coloredSource = ev.rawLowered;
+						ev.coloredKind = palette.kind;
+						std::copy(palette.colors, palette.colors + 3, ev.coloredColors);
+					}
+					coloredModel = ev.coloredName;
 				}
 				// stop S-5015: the state's `Texture = A B` swaps (a building's SNOW state on a snowy map) make another model variant, "<model>#tex&a=b"
 				std::string swappedModel;
@@ -5142,9 +5158,28 @@ Dictionary GameWorld::net_status() const
 	{
 		waiting.push_back(slot);
 	}
-	for (const DesyncReport &d : s.network().desyncs())
+	// a desynced game files a report at every CRC check from then on: each report's text is built once (again only when another player's breakdown
+	// arrives), not every status call, which ran every render frame and grew with the game
+	const std::vector<DesyncReport> &reports = s.network().desyncs();
+	if (m_desyncTextSession != &s || m_desyncTexts.size() > reports.size())
 	{
-		desyncs.push_back(toGodot(d.text()));
+		m_desyncTextSession = &s;
+		m_desyncTexts.clear();
+		m_desyncTextHalves.clear();
+	}
+	for (size_t i = 0; i < reports.size(); ++i)
+	{
+		if (i >= m_desyncTexts.size())
+		{
+			m_desyncTexts.push_back(String());
+			m_desyncTextHalves.push_back((size_t)-1);
+		}
+		if (m_desyncTextHalves[i] != reports[i].halves.size())
+		{
+			m_desyncTexts[i] = toGodot(reports[i].text());
+			m_desyncTextHalves[i] = reports[i].halves.size();
+		}
+		desyncs.push_back(m_desyncTexts[i]);
 	}
 	for (const std::string &e : s.network().errors())
 	{
@@ -7436,6 +7471,98 @@ Array GameWorld::get_player_objects(const String &player)
 	return out;
 }
 
+Dictionary GameWorld::get_start_positions() const
+{
+	Dictionary d;
+	d["ok"] = false;
+	if (!m_game || !m_game->logic().terrain())
+	{
+		d["error"] = "no map is loaded";
+		return d;
+	}
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	GameLogic &logic = m_game->logic();
+	const ::Player *local = logic.players().getLocalPlayer();
+	d["local_player"] = local ? (int64_t)local->getPlayerIndex() : (int64_t)-1;
+	d["local_name"] = local ? toGodot(local->getPlayerName()) : String();
+	const auto &hm = m_game->map().heightMap;
+	Array full;
+	full.push_back(-hm.m_borderSize * MAP_XY_FACTOR);
+	full.push_back(-hm.m_borderSize * MAP_XY_FACTOR);
+	full.push_back((hm.m_width - hm.m_borderSize) * MAP_XY_FACTOR);
+	full.push_back((hm.m_height - hm.m_borderSize) * MAP_XY_FACTOR);
+	d["map"] = full;
+	Array playable;
+	float loX = 0.0f, loY = 0.0f, hiX = 0.0f, hiY = 0.0f;
+	if (logic.aiWorld() && logic.aiWorld()->pathfinder().terrainView())
+	{
+		logic.aiWorld()->pathfinder().terrainView()->getMaximumPathfindExtent(loX, loY, hiX, hiY);
+	}
+	playable.push_back(loX);
+	playable.push_back(loY);
+	playable.push_back(hiX);
+	playable.push_back(hiY);
+	d["playable"] = playable;
+	Array starts;
+	for (int n = 1; n <= 16; ++n)
+	{
+		const Waypoint *w = logic.terrain()->findWaypointByName("Player_" + std::to_string(n) + "_Start");
+		if (!w)
+		{
+			continue;
+		}
+		Dictionary s;
+		s["start"] = n;
+		s["x"] = w->location.x;
+		s["y"] = w->location.y;
+		s["player"] = (int64_t)-1;
+		for (int i = 0; i < logic.players().getPlayerCount(); ++i)
+		{
+			const ::Player *p = logic.players().getNthPlayer(i);
+			// the lobby's slot players only (a human or a skirmish AI): the neutral player and the map's own sides keep start index 0
+			if (p && p != logic.players().getNeutralPlayer() && (p->isSkirmishAI() || p->getPlayerType() == PLAYER_HUMAN) && p->getMultiplayerStartIndex() == n - 1)
+			{
+				s["player"] = (int64_t)i;
+				s["name"] = toGodot(p->getPlayerName());
+				s["ai"] = p->isSkirmishAI();
+				s["local"] = p == local;
+				break;
+			}
+		}
+		starts.push_back(s);
+	}
+	d["starts"] = starts;
+	d["ok"] = true;
+	return d;
+}
+
+int64_t GameWorld::reserve_from_ai(const Array &ids)
+{
+	if (!m_game)
+	{
+		return 0;
+	}
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	const auto status = bfme_snapshot();
+	if (status.networkGame || status.replay)
+	{
+		m_commandErrors.push_back("reserve_from_ai: local non-replay games only");
+		return 0;
+	}
+	GameLogic &logic = m_game->logic();
+	int64_t reserved = 0;
+	for (int64_t i = 0; i < ids.size(); ++i)
+	{
+		const ::Object *o = logic.findObjectByID((::ObjectID)(int64_t)ids[i]);
+		if (o && !o->isDestroyed())
+		{
+			logic.setAIReserved(o->getID());
+			++reserved;
+		}
+	}
+	return reserved;
+}
+
 // ---- lane MP-2: replays -----------------------------------------------------------------------------------------------------------
 void GameWorld::releaseLocalDrivers()
 {
@@ -7631,6 +7758,7 @@ Dictionary GameWorld::lan_status() const
 	r["in_game"] = !m_lan->inLobby();
 	r["identity"] = toGodot(m_lan->profile().digest); // lane UBERJOIN-1: what the lobby announces and sends at a join
 	r["host"] = m_lan->amIHost();
+	r["name"] = toGodot(loadScreenU16ToUtf8(m_lan->name())); // the player's LAN name (game.gd keeps it for the next session)
 	r["slot"] = m_lan->localSlot();
 	r["started"] = m_lan->started();
 	r["games"] = (int64_t)m_lan->games().size();

@@ -23,6 +23,8 @@
 #include "GameLogic/SimMath.h"
 #include "GameLogic/Weapon.h"
 
+#include <utility>
+
 namespace
 {
 const float kRelativeAngleThreshold = 0.035f; // ZH AIAttackAimAtTargetState: about 2 degrees
@@ -424,6 +426,45 @@ bool AIAttackApproachState::inRange() const
 	return AttackVictimInRange(machine());
 }
 
+bool AIAttackApproachState::inRangeWithView()
+{
+	if (!inRange())
+	{
+		return false;
+	}
+	Object *victim = victimOf(machine());
+	if (!victim)
+	{
+		return true;
+	}
+	AIUpdateInterface &a = ai();
+	if (!a.canFollowTeamPath())
+	{
+		return true; // RW 0x749F31: AI vslot 0x224 refuses; INFERENCE: the port's approach keeps its plain range test for these (S-325)
+	}
+	// RW 0x744AAA: a ranged weapon (not a MeleeWeapon RW 0x441B59; RotWK's contact test RW 0x9188EB answers false) needs the line of sight RW 0x6616AC; the
+	// attacker's kinds are the view test's own first step
+	const ObjectWeapons *w = owner().getWeapons();
+	const Weapon *cur = w ? w->currentWeapon() : nullptr;
+	if (!cur || !cur->getTemplate() || cur->getTemplate()->m_meleeWeapon)
+	{
+		return true;
+	}
+	AIWorld *world = owner().logic().aiWorld();
+	if (!world)
+	{
+		return true;
+	}
+	// RW 0x6616AC with a current weapon goes straight to RW 0x6F4F9D: a victim significantly above the terrain is seen, else the view test RW 0x6F4557 from the
+	// attacker's position to the victim's
+	const ObjectPathfindAdapter &target = world->adapterFor(*victim);
+	if (target.isSignificantlyAboveTerrain())
+	{
+		return true;
+	}
+	return !world->pathfinder().isAttackViewBlockedByObstacle(a.pathfindObject(), *owner().getPosition(), &target, *victim->getPosition());
+}
+
 StateReturnType AIAttackApproachState::onEnter()
 {
 	Object &source = owner();
@@ -442,9 +483,9 @@ StateReturnType AIAttackApproachState::onEnter()
 	{
 		return STATE_FAILURE;
 	}
-	if (inRange())
+	if (inRangeWithView())
 	{
-		return STATE_SUCCESS; // the view-blocked test (the pathfinder's line of sight) is S-325
+		return STATE_SUCCESS;
 	}
 	if (source.isKindOf((unsigned)CombatNames::kinds().immobile) || a.isImmobile())
 	{
@@ -484,8 +525,8 @@ StateReturnType AIAttackApproachState::update()
 	{
 		a.setCurrentVictim(victim);
 	}
-	// stop as soon as the weapon reaches (ZH m_stopIfInRange)
-	if (inRange())
+	// stop as soon as the weapon reaches with a clear view (ZH m_stopIfInRange; RW 0x749F1A .. 0x749F49)
+	if (inRangeWithView())
 	{
 		return STATE_SUCCESS;
 	}
@@ -815,21 +856,25 @@ void AIWaitUntilFinishedFiringState::onExit(StateExitType)
 StateReturnType AIDeadState::onEnter()
 {
 	Object &obj = owner();
-	Object::ModelConditionBits clear{};
-	const char *const names[] = { "USING_WEAPON_A", "USING_WEAPON_B", "USING_WEAPON_C", "USING_WEAPON_D", "USING_WEAPON_E", "FIRING_A", "FIRING_B", "FIRING_C", "FIRING_D",
-		"FIRING_E", "BETWEEN_FIRING_SHOTS_A", "BETWEEN_FIRING_SHOTS_B", "BETWEEN_FIRING_SHOTS_C", "BETWEEN_FIRING_SHOTS_D", "BETWEEN_FIRING_SHOTS_E", "RELOADING_A",
-		"RELOADING_B", "RELOADING_C", "RELOADING_D", "RELOADING_E", "PREATTACK_A", "PREATTACK_B", "PREATTACK_C", "PREATTACK_D", "PREATTACK_E", "FIRING_OR_PREATTACK_A",
-		"FIRING_OR_PREATTACK_B", "FIRING_OR_PREATTACK_C", "FIRING_OR_PREATTACK_D", "FIRING_OR_PREATTACK_E", "FIRING_OR_RELOADING_A", "FIRING_OR_RELOADING_B",
-		"FIRING_OR_RELOADING_C", "FIRING_OR_RELOADING_D", "FIRING_OR_RELOADING_E", "ATTACKING", "MOVING" };
-	for (const char *n : names)
-	{
-		const int bit = CombatNames::modelCondition(n);
-		clear[(size_t)bit >> 5] |= 1u << (bit & 31);
-	}
-	Object::ModelConditionBits set{};
-	const int dying = CombatNames::modelCondition("DYING");
-	set[(size_t)dying >> 5] |= 1u << (dying & 31);
-	obj.clearAndSetModelConditionFlags(clear, set);
+	// the two masks are fixed: built once (each name is a scan of the registry, and every death runs this)
+	static const auto masks = [] {
+		Object::ModelConditionBits clear{};
+		const char *const names[] = { "USING_WEAPON_A", "USING_WEAPON_B", "USING_WEAPON_C", "USING_WEAPON_D", "USING_WEAPON_E", "FIRING_A", "FIRING_B", "FIRING_C", "FIRING_D",
+			"FIRING_E", "BETWEEN_FIRING_SHOTS_A", "BETWEEN_FIRING_SHOTS_B", "BETWEEN_FIRING_SHOTS_C", "BETWEEN_FIRING_SHOTS_D", "BETWEEN_FIRING_SHOTS_E", "RELOADING_A",
+			"RELOADING_B", "RELOADING_C", "RELOADING_D", "RELOADING_E", "PREATTACK_A", "PREATTACK_B", "PREATTACK_C", "PREATTACK_D", "PREATTACK_E", "FIRING_OR_PREATTACK_A",
+			"FIRING_OR_PREATTACK_B", "FIRING_OR_PREATTACK_C", "FIRING_OR_PREATTACK_D", "FIRING_OR_PREATTACK_E", "FIRING_OR_RELOADING_A", "FIRING_OR_RELOADING_B",
+			"FIRING_OR_RELOADING_C", "FIRING_OR_RELOADING_D", "FIRING_OR_RELOADING_E", "ATTACKING", "MOVING" };
+		for (const char *n : names)
+		{
+			const int bit = CombatNames::modelCondition(n);
+			clear[(size_t)bit >> 5] |= 1u << (bit & 31);
+		}
+		Object::ModelConditionBits set{};
+		const int dying = CombatNames::modelCondition("DYING");
+		set[(size_t)dying >> 5] |= 1u << (dying & 31);
+		return std::make_pair(clear, set);
+	}();
+	obj.clearAndSetModelConditionFlags(masks.first, masks.second);
 	const CombatNames::Status &st = CombatNames::statuses();
 	obj.setStatus((unsigned)st.isAttacking, false);
 	obj.setStatus((unsigned)st.isFiringWeapon, false);

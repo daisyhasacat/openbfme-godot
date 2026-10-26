@@ -33,6 +33,7 @@
 //     BFME2 decomp W3DPushButton.cpp, tier A): a count of 1 or more (+ 0x2C, set each update by RW 0x729D9A: ControlBar::productionCountOf) as L"%d" in the
 //     window's font, the colours of getButtonTextColors (disabled window: DISABLED / DISABLEDBORDER, else hilited: HILITE / HILITEBORDER, else ENABLED /
 //     ENABLEDBORDER), at x = (int)(w * 0.5f - textWidth * 0.5f + left), y = top + h - textHeight (bottom centre), drawn with a (1, 1) drop;
+//     OpenBFME: a bubble larger than retail's 48 pixels scales the count's point size by its height / 48 (retail's window font is drawn at 48 pixels);
 //   * the input: the command windows are ON_MOUSE_DOWN push buttons (ControlBar.wnd ButtonCommand): the left press is the button's command
 //     (ControlBar::processCommandUI).
 // INFERENCE (stop S-2701, InGameHud reports it): the clock's colours (GlobalData + 0x1160 / + 0x1164 and the control bar's clock colour) are not identified (a

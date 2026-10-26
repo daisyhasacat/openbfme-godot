@@ -133,6 +133,23 @@ const char *stateTooltip(int state) // RW 0xDB919C
 		"TOOLTIP:CAH_PALANTIR_FULL", "TOOLTIP:CAH_POWER_BOOK_FULL" };
 	return state >= 0 && state <= 6 ? names[state] : "";
 }
+
+// a power's cursor tooltip: its TextLabel's text (without the hot key '&') over its DescriptLabel's; INFERENCE (S-1404), the in-game help box's name and
+// description lines
+std::u16string powerTooltip(const GameTextSource *text, const CommandButton &b)
+{
+	std::u16string name, description;
+	if (!b.m_textLabel.empty())
+	{
+		name = fetchOrMissing(text, b.m_textLabel.front());
+		name.erase(std::remove(name.begin(), name.end(), u'&'), name.end());
+	}
+	if (!b.m_descriptLabel.empty())
+	{
+		description = fetchOrMissing(text, b.m_descriptLabel.front());
+	}
+	return name.empty() || description.empty() ? name + description : name + u"\n" + description;
+}
 } // namespace
 
 // ---- CahPowers ----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1119,17 +1136,43 @@ void AptCreateAHero::registerAll()
 	{
 		const std::string name = n;
 		registerCommand(name, [this, name](const std::string &a) {
-			// RW 0x9C1CD1 / 0x9C2484 / 0x9C1DD9: the tooltip of a cell (the state's TOOLTIP label for the matrix)
+			// RW 0x9C1CD1 / 0x9C2484 / 0x9C1DD9: the cursor tooltip of what the pointer rolled over. CahPowers.apt sends the matrix cell as "<row>,<col>"
+			// (its row clip's and cell clip's names), a PowersList entry's and a palantir button's clip name, all 1-based; nothing clears it on roll out.
+			// INFERENCE (S-1404): a slot holding a power describes it (powerTooltip); an empty current power or palantir slot shows the string file's
+			// TOOLTIP:CAH_NO_CURRENT_POWER / TOOLTIP:CAH_PALANTIR_EMPTY_SLOT
 			int row = 0, col = 0;
-			std::string label;
-			if (name == "AptCreateAHero::MatrixToolTip" && std::sscanf(a.c_str(), "%d,%d", &row, &col) == 2)
+			const CommandButton *b = nullptr;
+			std::string empty;
+			if (name == "AptCreateAHero::MatrixToolTip")
 			{
-				if (CahPowers::Cell *c = m_powers.cell(row - 1, col - 1))
+				if (std::sscanf(a.c_str(), "%d,%d", &row, &col) == 2)
 				{
-					label = stateTooltip(c->state);
+					if (CahPowers::Cell *c = m_powers.cell(row - 1, col - 1))
+					{
+						b = c->button;
+					}
 				}
 			}
-			windows().setAptText("APT:HeroPowersDescription", label.empty() ? std::string(" ") : loadScreenU16ToUtf8(fetchOrMissing(m_env.gameText, label)));
+			else if (name == "AptCreateAHero::MyPowerToolTip")
+			{
+				const int i = atoiArg(a) - 1;
+				b = i >= 0 && i < m_powers.chosenCount() ? m_powers.chosen()[(size_t)i]->button : nullptr;
+				empty = "TOOLTIP:CAH_NO_CURRENT_POWER";
+			}
+			else
+			{
+				const int i = atoiArg(a) - 1;
+				b = i >= 0 ? palantirButton(i) : nullptr;
+				empty = "TOOLTIP:CAH_PALANTIR_EMPTY_SLOT";
+			}
+			if (b)
+			{
+				windows().setCursorTooltip(b->m_descriptLabel.empty() ? b->m_name : b->m_descriptLabel.front(), powerTooltip(m_env.gameText, *b));
+			}
+			else
+			{
+				windows().setCursorTooltip(empty);
+			}
 		});
 	}
 	auto powersProvider = [this](int which) {
@@ -1627,6 +1670,25 @@ void AptCreateAHero::chooseNoPower()
 	m_pendingPower = &m_powers.noPower();
 }
 
+const CommandButton *AptCreateAHero::palantirButton(int slot) const
+{
+	// the palantir: the template's buttons, then the chosen rows' latest power by slot
+	if (slot < m_powers.templateButtons())
+	{
+		const CommandSet *t = TheCommandStore && m_env.createAHero && m_env.createAHero->system ? TheCommandStore->findCommandSet(m_env.createAHero->system->commandSetTemplate) : nullptr;
+		return t ? t->getCommandButton(slot) : nullptr;
+	}
+	const CommandButton *b = nullptr;
+	for (const CahPowers::Cell *c : m_powers.chosen())
+	{
+		if (c->selected && c->palantirSlot + m_powers.templateButtons() == slot)
+		{
+			b = c->button;
+		}
+	}
+	return b;
+}
+
 void AptCreateAHero::refreshPowersPage()
 {
 	// the matrix icons and frames, the chosen powers, the palantir (RW 0x9C188E / 0x9C2061 / 0x9C28CA). The movie names its clips from 1: the rows of mcRows,
@@ -1672,26 +1734,9 @@ void AptCreateAHero::refreshPowersPage()
 		// "APT:%s_%d" (RW 0xC8AA60): the power chosen for the rank, its TextLabel's text
 		windows().setAptText("APT:MyPowerLevel_" + std::to_string(i + 1), loadScreenU16ToUtf8(powerName(c ? c->button : nullptr)));
 	}
-	// the palantir: the template's buttons, then the chosen rows' latest power by slot
-	const CommandSet *t = TheCommandStore && m_env.createAHero && m_env.createAHero->system ? TheCommandStore->findCommandSet(m_env.createAHero->system->commandSetTemplate) : nullptr;
 	for (int i = 0; i < CahPowers::PALANTIR_BUTTONS; ++i)
 	{
-		const CommandButton *b = nullptr;
-		if (i < m_powers.templateButtons())
-		{
-			b = t ? t->getCommandButton(i) : nullptr;
-		}
-		else
-		{
-			for (const CahPowers::Cell *c : chosen)
-			{
-				if (c->selected && c->palantirSlot + m_powers.templateButtons() == i)
-				{
-					b = c->button;
-				}
-			}
-		}
-		setImage("PalantirBttn_" + std::to_string(i + 1), powerIcon(b)); // RW 0x9C1270(button, "PalantirBttn", i, -1)
+		setImage("PalantirBttn_" + std::to_string(i + 1), powerIcon(palantirButton(i))); // RW 0x9C1270(button, "PalantirBttn", i, -1)
 	}
 	setImage("CAHNoPower", powerIcon(m_powers.noPower().button)); // RW 0x9C2061
 	invoke("SetPowersSelectedNum", { std::to_string(m_powers.chosenCount()) });
