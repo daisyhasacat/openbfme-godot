@@ -8307,11 +8307,13 @@ int GameWorld::configure_snowfall(const MapWeather &weather, Array &errors)
 			snow->set_emission_shape(CPUParticles3D::EMISSION_SHAPE_BOX);
 			// Emit at the ceiling: volume emission spends half each lifetime below the snow box.
 			snow->set_emission_box_extents(Vector3(700, 0, 700));
-			snow->set_direction(Vector3(0, -1, 0));
+			// XY speed is drift, not acceleration: keep a constant falling velocity.
+			const Vector3 velocity(weather.snowXYSpeed[0], -speed, -weather.snowXYSpeed[1]);
+			snow->set_direction(velocity.normalized());
 			snow->set_spread(std::min(20.0f, std::abs(weather.snowAmplitude)));
-			snow->set_gravity(Vector3(weather.snowXYSpeed[0], 0, -weather.snowXYSpeed[1]));
-			snow->set_param_min(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, speed);
-			snow->set_param_max(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, speed);
+			snow->set_gravity(Vector3());
+			snow->set_param_min(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, velocity.length());
+			snow->set_param_max(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, velocity.length());
 			Ref<QuadMesh> quad; quad.instantiate();
 			const float size = bounded(weather.snowQuadSize, 10, 0.5f, 50);
 			quad->set_size(Vector2(size, size));
@@ -8356,13 +8358,22 @@ Dictionary GameWorld::set_snow_weather(bool enabled)
 {
 	Dictionary result; result["ok"] = false;
 	if (!m_game) { result["error"] = "Load a map before changing snow weather."; return result; }
+	MapWeather weather = m_loadedWeather;
+	if (enabled) {
+		// Enhanced presentation preset: do not inherit rain from a dry/rainy map.
+		Ref<FileAccess> preset = FileAccess::open("res://weather/console_snow.ini", FileAccess::READ);
+		if (preset.is_null()) { result["error"] = "Missing console snow weather preset."; return result; }
+		MapWeatherScan::applyText(toNative(preset->get_as_text()), weather);
+		Ref<W3DModelBuilder> textures; textures.instantiate();
+		if (textures->load_texture(m_fs, toGodot(weather.snowTexture)).is_null()) {
+			result["error"] = toGodot("Missing weather texture: " + weather.snowTexture); return result;
+		}
+	}
 	m_snowOverride = enabled;
 	m_game->drawables().setSnowPresentation(enabled);
 	m_streakWeather = enabled ? 1 : (m_game->logic().settings().snowy ? 1 : 0);
 	W3D_Ensure_Light_Globals();
 	RenderingServer::get_singleton()->global_shader_parameter_set("openbfme_snow_cover", enabled ? 1.0f : 0.0f);
-	MapWeather weather = m_loadedWeather;
-	if (enabled) { weather.snowEnabled = true; weather.isSnowing = true; }
 	Array errors;
 	result["particles"] = configure_snowfall(weather, errors);
 	update_static_snow(enabled, errors);

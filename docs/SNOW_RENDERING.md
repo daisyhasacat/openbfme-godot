@@ -27,10 +27,17 @@ It models exposure by surface slope, not roof occlusion or accumulated geometry.
 World positions are reconstructed from an existing varying to preserve the
 Metal/Forward+ varying budget.
 
-Precipitation uses the existing map snow renderer and the mounted Weather block's
-texture, size, spacing and speed; the override enables that renderer even when
-the map's IsSnowing flag is off. Restoring defaults retains precipitation on
-maps that originally had it. A missing snow texture is reported as an error.
+Precipitation uses the existing map snow renderer with the enhanced preset in
+`godot/weather/console_snow.ini`: Buckland Snow's mounted-texture reference,
+700-unit height, 10-unit spacing,
+60-unit fall speed, 4-unit quads and X:60/Y:35 drift,
+independent of the active map's rain settings. The texture comes from mounted
+assets. The values were checked against the user-installed CrossOver custom map.
+Particle count remains capped at 12,000; the renderer approximates amplitude with
+angular spread rather than the original frequency-driven sway, so this is not
+a claim of exact retail visual parity. Horizontal speed is constant drift,
+not gravity that accelerates flakes throughout their lifetime. Restoring defaults
+retains precipitation on maps that originally had it. A missing snow texture is reported as an error.
 
 Validation: `snow presentation:*` tests authored building state selection,
 new-object inheritance, restoration and unchanged logic hash. `snow shader:*`

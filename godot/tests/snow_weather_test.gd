@@ -72,7 +72,13 @@ func _run() -> void:
 	assert(world.snow_weather_enabled())
 	assert(enabled.particles > 0) # tolerance: force snow must create precipitation on this non-snow map.
 	assert(world.get_state_hash() == before)
-	assert(world.get_node("MapSnowfall").emitting)
+	var snow: CPUParticles3D = world.get_node("MapSnowfall")
+	assert(snow.emitting)
+	assert(snow.amount == 12000)
+	assert(is_equal_approx(snow.lifetime, 700.0/60.0))
+	assert(snow.direction.is_equal_approx(Vector3(60,-60,-35).normalized()))
+	assert(snow.gravity == Vector3.ZERO)
+	assert(snow.mesh.size == Vector2(4,4))
 	for frame in 8: await process_frame
 	if DisplayServer.get_name() != "headless":
 		await RenderingServer.frame_post_draw
