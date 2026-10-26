@@ -4,6 +4,42 @@ extends SceneTree
 func _initialize() -> void:
 	call_deferred("_run")
 
+func _check_pca_animation(source: ShaderMaterial) -> bool:
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(128, 128)
+	viewport.own_world_3d = true
+	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	root.add_child(viewport)
+	var material: ShaderMaterial = source.duplicate(false)
+	material.set_shader_parameter("blend_terrain_alpha", false)
+	material.set_shader_parameter("material_diffuse", Vector4(0.15, 0.3, 0.35, 1.0))
+	material.set_shader_parameter("output_gamma", 2.2)
+	material.set_shader_parameter("pca_frame_rate", 0.0)
+	var mesh := PlaneMesh.new()
+	mesh.size = Vector2(800, 800)
+	mesh.material = material
+	var instance := MeshInstance3D.new()
+	instance.mesh = mesh
+	viewport.add_child(instance)
+	var camera := Camera3D.new()
+	viewport.add_child(camera)
+	camera.position = Vector3(0, 800, 600)
+	camera.look_at(Vector3.ZERO)
+	camera.current = true
+	for frame in 5:
+		await process_frame
+	await RenderingServer.frame_post_draw
+	var frozen := viewport.get_texture().get_image().get_data()
+	await create_timer(0.15).timeout
+	await RenderingServer.frame_post_draw
+	var still_frozen := viewport.get_texture().get_image().get_data()
+	material.set_shader_parameter("pca_frame_rate", 21.0)
+	await create_timer(0.35).timeout
+	await RenderingServer.frame_post_draw
+	var animated := viewport.get_texture().get_image().get_data()
+	viewport.queue_free()
+	return frozen == still_frozen and frozen != animated
+
 func _run() -> void:
 	create_timer(90).timeout.connect(func(): push_error("Standing water test timed out"); quit(1))
 	var fs = ClassDB.instantiate("RetailFileSystem")
@@ -20,6 +56,11 @@ func _run() -> void:
 	assert(report.water.materials[0].bump_uv_scale == Vector2(15, 15))
 	assert(report.water.max_alpha_depth == 20.0)
 	assert(report.water.deep_water_alpha == 1.0)
+	assert(report.water.materials[0].technique_index == 5)
+	assert(report.water.materials[0].technique == "PCA_U")
+	assert(report.water.materials[0].pca_enabled)
+	assert(report.water.materials[0].pca_frames == 30)
+	assert(report.water.materials[0].pca_frame_rate == 21.0)
 	var checked := 0
 	var authored := 0
 	for info in report.water.materials:
@@ -29,6 +70,12 @@ func _run() -> void:
 		var material: ShaderMaterial = mesh.mesh.surface_get_material(0)
 		assert(material != null)
 		assert(material.get_shader_parameter("terrain_height_tex") != null)
+		assert(material.get_shader_parameter("pca_mode") == 2)
+		var coefficients: Texture2D = material.get_shader_parameter("pca_coefficients")
+		assert(coefficients != null and coefficients.get_width() == 30 and coefficients.get_height() == 10)
+		assert(material.get_shader_parameter("pca_tex0") != null)
+		assert(material.get_shader_parameter("pca_tex1") != null)
+		assert(material.get_shader_parameter("pca_tex2") != null)
 		assert(material.get_shader_parameter("material_diffuse") == report.water.materials[checked].color)
 		assert(material.get_shader_parameter("bump_uv_scale") == report.water.materials[checked].bump_uv_scale)
 		checked += 1
@@ -36,6 +83,8 @@ func _run() -> void:
 	assert(authored == checked)
 	assert(checked > 0) # tolerance: this retail map must exercise standing water.
 	if DisplayServer.get_name() != "headless":
+		var water_mesh = map.get_node("StandingWater").get_child(0)
+		assert(await _check_pca_animation(water_mesh.mesh.surface_get_material(0)), "PCA coefficients must animate the water while a zero-rate track remains stable")
 		root.size = Vector2i(1000, 700)
 		var camera := Camera3D.new()
 		root.add_child(camera)

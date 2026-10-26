@@ -12,16 +12,22 @@
 #include "GameClient/MapChunks.h"
 
 #include <cstdint>
+#include <array>
 #include <vector>
 
 struct MeshShaderMaterialDef;
 
 namespace WaterGeometry
 {
-// Defaults from retail watershader.fxo's parameter table. Only the no-reflection
-// bump/specular path is rendered; PCA/reflection/technique selection stay S-035.
+// Defaults from retail watershader.fxo. Authored technique indices select the
+// supported PCA normal or bump paths; displacement/reflections remain S-035.
 struct StandingMaterial
 {
+	unsigned technique = 0;
+	float pcaUV[2] = { 1.5f, 3.0f }, pcaWaveUV[2] = { 0.01f, 0.0075f };
+	float specular[3] = { 0.8f, 0.8f, 0.8f };
+	float reflectionPerturbation = 0.005f;
+	std::string pcaTexture[3], pcaNoiseTexture, pcaFrothTexture;
 	float diffuse[4] = { 0.15f, 0.3f, 0.35f, 0.5f };
 	float dimming = 0.8f, bumpScale = 0.2f, specularExponent = 50.0f;
 	float windAngle = 0.0f, windSpeed = 0.02f;
@@ -31,6 +37,20 @@ struct StandingMaterial
 	std::string bumpTexture, envTexture, waveTexture;
 };
 bool readStandingMaterial(const MeshShaderMaterialDef &source, StandingMaterial &out);
+
+// BFME2 donor StandingWaterAreaLoadPCA.cpp (0x3093F6) and
+// Rva003093F6BasesSamplers.cpp (0x30822F..0x308509). Presentation only.
+using PcaVector = std::array<float, 4>;
+using PcaFrame = std::array<PcaVector, 10>; // mean, then X/Y/Z for groups 0..2
+struct PcaBasis
+{
+	float speed = 0.0f;
+	std::vector<PcaFrame> frames;
+};
+bool readPcaBasis(const std::string &text, PcaBasis &out, std::string *error);
+PcaFrame samplePcaBasis(const PcaBasis &basis, float clientTime);
+// fx_2_0 technique names in file order. Bounds-checked; no baked content indices.
+bool readEffectTechniques(const std::vector<std::uint8_t> &bytes, std::vector<std::string> &names, std::string *error);
 
 // Triangulates a simple polygon (either winding, non-convex allowed). Returns false for degenerate input
 // (fewer than 3 points, zero area, or a polygon the ear search cannot finish). indices are triangle triples.

@@ -750,5 +750,73 @@ TEST_CASE("water acceptance: remaining shader and geometry approximations stay e
 {
 	const auto *stop = MapStops::find("S-035");
 	REQUIRE(stop != nullptr);
-	CHECK(std::string(stop->gap) == "Standing water uses authored WaterShader.FX parameters and the retail no-reflection bump/specular arithmetic; technique selection, TIME animation and bilinear terrain depth are inferred; planar reflection, PCA waves, depth-colour LUT, exact river boundary generation and standing waves remain unported");
+	CHECK(std::string(stop->gap) == "Standing water preserves authored FX techniques and reconstructs animated PCA/PCA_U normals on flat geometry alongside the bump/specular path; TIME, scene-light binding and bilinear terrain depth are inferred; Gerstner displacement, shoreline modulation, reflections, shadow filtering, other PCA LODs, depth-colour LUT and exact river/standing-wave geometry remain unported");
+}
+
+namespace
+{
+std::string syntheticPcaBasis()
+{
+	std::ostringstream text;
+	text << "NumFrames: 2\nSpeed: 0.5\n";
+	for (int row = 0; row < 13; ++row)
+	{
+		text << "Row:";
+		for (int value = 0; value < 6; ++value) text << " " << (row + value) * 255;
+		text << "\n";
+	}
+	return text.str();
+}
+}
+
+TEST_CASE("water PCA basis: donor XZY layout, normalization, interpolation and wrap")
+{
+	WaterGeometry::PcaBasis basis;
+	std::string error;
+	REQUIRE_MESSAGE(WaterGeometry::readPcaBasis(syntheticPcaBasis(), basis, &error), error);
+	REQUIRE(basis.frames.size() == 2);
+	CHECK(basis.speed == 0.5f);
+	CHECK(basis.frames[0][0] == WaterGeometry::PcaVector{0, 4, 2, 0});
+	CHECK(basis.frames[1][0] == WaterGeometry::PcaVector{1, 5, 3, 0});
+	CHECK(basis.frames[0][1] == WaterGeometry::PcaVector{1, 2, 3, 4});
+	CHECK(basis.frames[0][2] == WaterGeometry::PcaVector{5, 6, 7, 8});
+	CHECK(basis.frames[0][3] == WaterGeometry::PcaVector{3, 4, 5, 6});
+	CHECK(basis.frames[0][9] == WaterGeometry::PcaVector{11, 12, 13, 14});
+	CHECK(WaterGeometry::samplePcaBasis(basis, 1.0f)[0] == WaterGeometry::PcaVector{0.5f, 4.5f, 2.5f, 0});
+	CHECK(WaterGeometry::samplePcaBasis(basis, 3.0f)[0] == WaterGeometry::PcaVector{0.5f, 4.5f, 2.5f, 0});
+	CHECK(WaterGeometry::samplePcaBasis(basis, 4.0f) == basis.frames[0]);
+	CHECK(WaterGeometry::samplePcaBasis(WaterGeometry::PcaBasis{}, 0.0f)[0] == WaterGeometry::PcaVector{0, 0, 1, 0});
+}
+
+TEST_CASE("water PCA basis: malformed data fails without retaining a prior track")
+{
+	WaterGeometry::PcaBasis basis;
+	std::string error;
+	REQUIRE(WaterGeometry::readPcaBasis(syntheticPcaBasis(), basis, &error));
+	CHECK_FALSE(WaterGeometry::readPcaBasis("NumFrames: 2\nSpeed: 1\n", basis, &error));
+	CHECK(error == "PCA basis: missing coefficient row");
+	CHECK(basis.frames.empty());
+	CHECK_FALSE(WaterGeometry::readPcaBasis("NumFrames: 0\n", basis, &error));
+	CHECK(error == "PCA basis: invalid frame count");
+	CHECK_FALSE(WaterGeometry::readPcaBasis(syntheticPcaBasis() + "extra\n", basis, &error));
+	CHECK(error == "PCA basis: trailing data");
+}
+
+TEST_CASE("water effect techniques: names come from the effect table with checked offsets")
+{
+	std::vector<std::uint8_t> bytes(96, 0);
+	auto put = [&](size_t offset, std::uint32_t value) { for (unsigned i = 0; i < 4; ++i) bytes[offset + i] = (std::uint8_t)(value >> (8 * i)); };
+	put(0, 0xfeff0901); put(4, 0); put(12, 1); // no parameters, one technique
+	put(24, 56); put(32, 1); // name at 8+56, one pass
+	put(44, 1); // one pass state, occupying 48..63
+	const std::string name = "CustomPCA";
+	put(64, (std::uint32_t)name.size() + 1);
+	std::copy(name.begin(), name.end(), bytes.begin() + 68);
+	std::vector<std::string> names;
+	std::string error;
+	REQUIRE_MESSAGE(WaterGeometry::readEffectTechniques(bytes, names, &error), error);
+	CHECK(names == std::vector<std::string>{ "CustomPCA" });
+	put(24, 0xfffffff0);
+	CHECK_FALSE(WaterGeometry::readEffectTechniques(bytes, names, &error));
+	CHECK(names.empty());
 }

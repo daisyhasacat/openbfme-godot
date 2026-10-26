@@ -1,10 +1,10 @@
 // OpenBFME. GPL-3.0.
 //
-// Retail watershader.fxo no-reflection bump/specular arithmetic (ps blob 8,
-// vs blob 9, tools/render/d3d9_disasm.py). Material parameters come from the
-// map's W3D effect. S-035: TIME bridge, bilinear depth reconstruction and
-// effect-technique selection are inferred; reflection/PCA/standing waves
-// and the depth-colour LUT are not implemented.
+// Retail watershader.fxo: bump/specular blobs 8/9 and the PCA/PCA_U normal
+// reconstruction from pixel blobs 0/3. Coefficient layout/interpolation comes
+// from the matched BFME2 water loader/samplers (WaterGeometry.cpp).
+// S-035: flat geometry, omitted reflections/shadows/crest modulation, Godot
+// TIME and bilinear terrain depth prevent full target technique parity.
 shader_type spatial;
 render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
 
@@ -32,6 +32,30 @@ uniform float max_alpha_depth = 0.0;
 uniform float deep_water_alpha = 0.0;
 uniform bool blend_terrain_alpha = true;
 uniform float output_gamma = 2.2;
+
+// PCA coefficient tracks: mean then X/Y/Z for basis groups 0..2. Explicit
+// texel fetch and successor interpolation match the BFME2 CPU samplers.
+uniform int pca_mode = 0;
+uniform sampler2D pca_coefficients : filter_nearest, repeat_disable;
+uniform sampler2D pca_tex0 : filter_linear_mipmap, repeat_enable;
+uniform sampler2D pca_tex1 : filter_linear_mipmap, repeat_enable;
+uniform sampler2D pca_tex2 : filter_linear_mipmap, repeat_enable;
+uniform sampler2D pca_froth_tex : filter_linear_mipmap, repeat_enable;
+uniform vec2 pca_wave_uv_scale = vec2(0.01, 0.0075);
+uniform sampler2D pca_noise_tex : filter_linear_mipmap, repeat_enable;
+uniform vec2 pca_uv_scale = vec2(1.5, 3.0);
+uniform float pca_frame_rate = 0.0;
+uniform vec3 specular_color = vec3(0.8);
+uniform float reflection_perturbation = 0.005;
+
+vec4 pca_coefficient(int row) {
+	int count = textureSize(pca_coefficients, 0).x;
+	float scaled = TIME * pca_frame_rate;
+	int frame = int(mod(floor(scaled), float(count)));
+	float fraction = fract(scaled);
+	return texelFetch(pca_coefficients, ivec2(frame, row), 0) * (1.0 - fraction)
+		+ texelFetch(pca_coefficients, ivec2((frame + 1) % count, row), 0) * fraction;
+}
 
 varying vec2 v_world;
 varying vec3 v_world_position;
@@ -86,16 +110,50 @@ void fragment() {
 	b1 = vec2(dot(b1, d1), dot(b1, vec2(-d1.y, d1.x))) * bump_uv_scale;
 	w0 = vec2(dot(w0, d0), dot(w0, vec2(-d0.y, d0.x))) * wave_uv_scale;
 	w1 = vec2(dot(w1, d1), dot(w1, vec2(-d1.y, d1.x))) * wave_uv_scale;
-	vec3 n = 2.0 * (texture(bump_tex, b0).rgb + texture(bump_tex, b1).rgb) - vec3(2.0, 2.0, 1.0);
-	n.xy *= bump_scale;
-	n = normalize(n);
+	vec3 n;
+	vec3 col;
 	vec3 eye_g = normalize(CAMERA_POSITION_WORLD - v_world_position);
 	vec3 eye = vec3(eye_g.x, -eye_g.z, eye_g.y);
 	vec3 half_vector = normalize(eye + light_direction);
-	float lighting = max(dot(n, light_direction), 0.0) + pow(max(dot(n, half_vector), 0.0), specular_exponent);
-	vec3 env = texture(sky_tex, base * env_uv_scale).rgb;
-	vec3 waves = texture(wave_tex, w0).rgb * texture(wave_tex, w1).rgb;
-	vec3 col = env * material_diffuse.rgb * dimming * (2.0 * light_color) * lighting + waves;
+	if (pca_mode != 0) {
+		// Retail PCA / PCA_U pixel blobs 0 / 3. Geometry remains flat (S-035).
+		vec2 uv0 = vec2(dot(base, d0), dot(base, vec2(-d0.y, d0.x))) * pca_uv_scale.x;
+		vec2 uv1 = vec2(dot(base, d1), dot(base, vec2(-d1.y, d1.x))) * pca_uv_scale.y;
+		if (pca_mode == 1) uv1 = uv1.yx;
+		vec4 bases03 = texture(pca_tex0, uv0) + texture(pca_tex0, uv1) - vec4(1.0);
+		vec4 bases47 = texture(pca_tex1, uv0) + texture(pca_tex1, uv1) - vec4(1.0);
+		if (pca_mode == 2) {
+			bases03 += texture(pca_tex2, uv0) - vec4(0.5);
+			bases47 += texture(pca_tex2, uv1) - vec4(0.5);
+		}
+		vec3 reconstructed = pca_coefficient(0).xyz
+			+ vec3(dot(pca_coefficient(1), bases03), dot(pca_coefficient(2), bases03), dot(pca_coefficient(3), bases03))
+			+ vec3(dot(pca_coefficient(4), bases47), dot(pca_coefficient(5), bases47), dot(pca_coefficient(6), bases47));
+		vec3 combined = reconstructed * 4.0 + vec3(0.0, 0.0, 1.0) - vec3(2.0);
+		n = combined * inversesqrt(dot(combined, combined) + 0.00001 * 0.00001);
+		if (pca_mode == 2) {
+			vec4 noise = texture(pca_noise_tex, uv0 * 0.015 + vec2(0.3, 0.1));
+			n = mix(n, vec3(0.0, 0.0, 1.0), clamp(noise.r * noise.a * 0.25, 0.0, 1.0));
+		}
+		float ndotl = max(dot(n, light_direction), 0.0);
+		float ndoth = max(dot(n, half_vector), 0.0);
+		vec3 env = texture(sky_tex, base * env_uv_scale + reflection_perturbation * n.xy).rgb;
+		vec3 highlight = ndotl > 0.0 ? specular_color * pow(ndoth, specular_exponent) : vec3(0.0);
+		col = light_color * (env * material_diffuse.rgb * (2.0 * dimming) * ndotl + highlight);
+		// VS 13/14 contributes a 0.125 baseline; crest-dependent amplification
+		// remains S-035 with Gerstner displacement and shoreline modulation.
+		vec2 perturbation = reflection_perturbation * n.xy;
+		col += 0.125 * texture(pca_froth_tex, v_world * pca_wave_uv_scale.x + perturbation).rgb
+			* texture(pca_froth_tex, v_world * pca_wave_uv_scale.y + perturbation).rgb;
+	} else {
+		n = 2.0 * (texture(bump_tex, b0).rgb + texture(bump_tex, b1).rgb) - vec3(2.0, 2.0, 1.0);
+		n.xy *= bump_scale;
+		n = normalize(n);
+		float lighting = max(dot(n, light_direction), 0.0) + pow(max(dot(n, half_vector), 0.0), specular_exponent);
+		vec3 env = texture(sky_tex, base * env_uv_scale).rgb;
+		vec3 waves = texture(wave_tex, w0).rgb * texture(wave_tex, w1).rgb;
+		col = env * material_diffuse.rgb * dimming * (2.0 * light_color) * lighting + waves;
+	}
 	float alpha = material_diffuse.a;
 	if (blend_terrain_alpha && max_alpha_depth > 0.0 && deep_water_alpha > 0.0) {
 		vec2 grid = (v_world - terrain_origin) / 10.0;

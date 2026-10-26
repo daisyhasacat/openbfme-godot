@@ -337,6 +337,13 @@ Ref<Texture2D> MapTerrainBuilder::loadTexture(RetailFileSystem &fs, const std::s
 		}
 		used = dds;
 	}
+	else if (fs.existsNative(stem + ".tga"))
+	{
+		// RW 0x530D29: uncompressed compiled TGA precedes packed JPEG.
+		// PCA basis textures ship in this form instead of DDS.
+		if (!readImage(stem + ".tga", image)) return Ref<Texture2D>();
+		used = stem + ".tga";
+	}
 	else if (fs.existsNative(stem + ".jpg"))
 	{
 		if (!readImage(stem + ".jpg", image))
@@ -1036,6 +1043,8 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 			root->add_child(waterRoot);
 			ArchiveW3DFileSource waterSource(*rfs.archive_fs());
 			WW3DAssetManager waterAssets(waterSource);
+			std::vector<std::string> waterTechniques;
+			bool techniquesRead = false;
 			PackedByteArray heightBytes;
 			heightBytes.resize((int64_t)hm.m_width * hm.m_height * sizeof(float));
 			for (int y = 0; y < hm.m_height; ++y)
@@ -1072,6 +1081,38 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 							if (!authored) authored = WaterGeometry::readStandingMaterial(material, params);
 				}
 				if (!authored) materialStops.push_back(toGodot("[S-035] " + a.name + ": no WaterShader.FX material; effect defaults with map textures are an inferred legacy-water approximation"));
+				std::string technique;
+				int pcaMode = 0;
+				WaterGeometry::PcaBasis pcaBasis;
+				std::string pcaPath;
+				if (authored)
+				{
+					if (!techniquesRead)
+					{
+						techniquesRead = true;
+						std::vector<std::uint8_t> bytes;
+						std::string error;
+						if (!rfs.readBytes("shaders\\compiled\\watershader.fxo", bytes, &error) || !WaterGeometry::readEffectTechniques(bytes, waterTechniques, &error)) errors.push_back(toGodot("water techniques: " + error));
+					}
+					if (params.technique >= waterTechniques.size()) errors.push_back(toGodot("water material " + a.fxShader + ": technique index outside compiled effect"));
+					else technique = waterTechniques[params.technique];
+					if (technique == "PCA" || technique == "PCA_U")
+					{
+						pcaMode = technique == "PCA_U" ? 2 : 1;
+						if (params.pcaTexture[0].size() < 3 || AsciiStringUtil::compareNoCase(params.pcaTexture[0], "None") == 0)
+							errors.push_back(toGodot("water material " + a.fxShader + ": PCA technique lacks WaterPCATexture1"));
+						else
+						{
+							pcaPath = "art\\textures\\" + params.pcaTexture[0].substr(0, params.pcaTexture[0].size() - 3) + "basis";
+							std::vector<std::uint8_t> bytes;
+							std::string error;
+							if (!rfs.readBytes(pcaPath, bytes, &error) || !WaterGeometry::readPcaBasis(std::string(bytes.begin(), bytes.end()), pcaBasis, &error)) errors.push_back(toGodot(pcaPath + ": " + error));
+						}
+						materialStops.push_back(toGodot("[S-035] " + a.name + ": PCA normals follow the authored technique; Gerstner mesh displacement, shoreline-wave modulation, planar reflections and shadow-map filtering remain unported"));
+					}
+					else if (technique.compare(0, 3, "PCA") == 0) materialStops.push_back(toGodot("[S-035] " + a.name + ": unsupported PCA LOD technique " + technique + "; using reported bump approximation"));
+					else if (!technique.empty() && technique != "BumpSpecular_M") materialStops.push_back(toGodot("[S-035] " + a.name + ": technique " + technique + " uses the BumpSpecular_M approximation; its reflection/pass differences remain unported"));
+				}
 				Ref<ShaderMaterial> m;
 				if (sh.is_valid())
 				{
@@ -1085,6 +1126,31 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 					if (!bumpName.empty()) { auto tex = loadTexture(rfs, bumpName, texErrors); if (tex.is_valid()) m->set_shader_parameter("bump_tex", tex); }
 					if (!envName.empty()) { auto tex = loadTexture(rfs, envName, texErrors); if (tex.is_valid()) m->set_shader_parameter("sky_tex", tex); }
 					if (!params.waveTexture.empty()) { auto tex = loadTexture(rfs, params.waveTexture, texErrors); if (tex.is_valid()) m->set_shader_parameter("wave_tex", tex); }
+					if (pcaMode && !pcaBasis.frames.empty())
+					{
+						PackedByteArray coefficients;
+						coefficients.resize((int64_t)pcaBasis.frames.size() * 10 * 4 * sizeof(float));
+						for (size_t row = 0; row < 10; ++row)
+							for (size_t frame = 0; frame < pcaBasis.frames.size(); ++frame)
+								std::memcpy(coefficients.ptrw() + (row * pcaBasis.frames.size() + frame) * 4 * sizeof(float), pcaBasis.frames[frame][row].data(), 4 * sizeof(float));
+						Ref<Image> image = Image::create_from_data((int)pcaBasis.frames.size(), 10, false, Image::FORMAT_RGBAF, coefficients);
+						m->set_shader_parameter("pca_coefficients", ImageTexture::create_from_image(image));
+						m->set_shader_parameter("pca_frame_rate", pcaBasis.speed * 30.0f); // BFME2 callbacks: SyncTime/1000 * client FPS, then basis speed
+						m->set_shader_parameter("pca_mode", pcaMode);
+						m->set_shader_parameter("pca_uv_scale", Vector2(params.pcaUV[0], params.pcaUV[1]));
+						m->set_shader_parameter("pca_wave_uv_scale", Vector2(params.pcaWaveUV[0], params.pcaWaveUV[1]));
+						auto pcaTexture = [&](const std::string &name, const String &uniform) {
+							if (name.empty() || AsciiStringUtil::compareNoCase(name, "None") == 0)
+								texErrors.push_back(String("PCA required texture is unset: ") + uniform);
+							else { auto tex = loadTexture(rfs, name, texErrors); if (tex.is_valid()) m->set_shader_parameter(uniform, tex); }
+						};
+						pcaTexture(params.pcaFrothTexture, "pca_froth_tex");
+						for (int texIndex = 0; texIndex < (pcaMode == 2 ? 3 : 2); ++texIndex)
+							pcaTexture(params.pcaTexture[texIndex], String("pca_tex") + String::num_int64(texIndex));
+						if (pcaMode == 2) pcaTexture(params.pcaNoiseTexture, "pca_noise_tex");
+						m->set_shader_parameter("specular_color", Vector3(params.specular[0], params.specular[1], params.specular[2]));
+						m->set_shader_parameter("reflection_perturbation", params.reflectionPerturbation);
+					}
 					m->set_shader_parameter("material_diffuse", Vector4(params.diffuse[0], params.diffuse[1], params.diffuse[2], params.diffuse[3]));
 					m->set_shader_parameter("dimming", params.dimming);
 					m->set_shader_parameter("bump_scale", params.bumpScale);
@@ -1115,6 +1181,12 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 				materialInfo["area"] = toGodot(a.name);
 				materialInfo["effect"] = toGodot(a.fxShader);
 				materialInfo["authored"] = authored;
+				materialInfo["technique_index"] = (int64_t)params.technique;
+				materialInfo["technique"] = toGodot(technique);
+				materialInfo["pca_enabled"] = pcaMode != 0 && !pcaBasis.frames.empty();
+				materialInfo["pca_basis"] = toGodot(pcaPath);
+				materialInfo["pca_frames"] = (int64_t)pcaBasis.frames.size();
+				materialInfo["pca_frame_rate"] = pcaBasis.speed * 30.0f;
 				materialInfo["color"] = Vector4(params.diffuse[0], params.diffuse[1], params.diffuse[2], params.diffuse[3]);
 				materialInfo["bump_uv_scale"] = Vector2(params.bumpUV[0], params.bumpUV[1]);
 				waterMaterials.push_back(materialInfo);
