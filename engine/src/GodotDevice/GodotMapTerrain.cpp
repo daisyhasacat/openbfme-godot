@@ -892,6 +892,27 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 		};
 		Ref<ImageTexture> baseTex = makeTexture(images.base, images.width, images.height);
 		Ref<ImageTexture> normalTex = makeTexture(images.normal, images.width, images.height);
+		// Enhanced snow atlas reuses the dry layout, UVs and blend records.
+		const auto snowMapping = TerrainTypes::snowReplacements(types);
+		TerrainAtlasImages snowImages;
+		std::vector<std::string> snowApplied, snowErrors;
+		TerrainAtlas::buildSnow(hm, *arch, types, snowMapping, snowImages, snowApplied, snowErrors);
+		Ref<ImageTexture> snowTex;
+		if (!snowApplied.empty()) snowTex = makeTexture(snowImages.base, snowImages.width, snowImages.height);
+		Dictionary snowReport, mappingReport, textureMappingReport;
+		for (const auto &pair : snowMapping) {
+			mappingReport[toGodot(pair.first)] = toGodot(pair.second);
+			textureMappingReport[toGodot(*types.findTexture(pair.first))] = toGodot(*types.findTexture(pair.second));
+		}
+		snowReport["terrain_type_mapping"] = mappingReport;
+		snowReport["texture_mapping"] = textureMappingReport;
+		snowReport["applied"] = strArray(snowApplied);
+		snowReport["errors"] = strArray(snowErrors);
+		Array procedural;
+		for (const auto &c : hm.m_textureClasses) if (!snowMapping.count(lowerStr(c.name))) procedural.push_back(toGodot(c.name));
+		snowReport["procedural"] = procedural;
+		m_report["snow"] = snowReport;
+		for (const auto &e : snowErrors) errors.push_back(toGodot(e));
 		// the layers are composited per pixel in one opaque pass (TerrainComposite.h): a single shader, a single material
 		TerrainComposite::Stats cstats;
 		std::vector<TerrainComposite::Chunk> composite;
@@ -941,6 +962,8 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 			m->set_render_priority(priority);
 			m->set_shader_parameter("base_atlas", baseTex);
 			m->set_shader_parameter("normal_atlas", normalTex);
+			m->set_shader_parameter("snow_atlas_enabled", snowTex.is_valid());
+			if (snowTex.is_valid()) m->set_shader_parameter("snow_atlas", snowTex);
 			if (cloudTex.is_valid()) m->set_shader_parameter("cloud_tex", cloudTex);
 			if (macroTex.is_valid()) m->set_shader_parameter("macro_tex", macroTex);
 			m->set_shader_parameter("atlas_size", Vector2((float)images.width, (float)images.height));

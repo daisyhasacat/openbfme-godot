@@ -19,13 +19,30 @@ variant changes. Assets come from the mounted game or mod; missing variants use
 the template's normal state matching and the procedural coating.
 
 `snow_cover.gdshaderinc` adds world-space drift/grain and slope-dependent coverage
-to lit model surfaces and terrain, including paving. Roofs and ground receive
-more coverage than walls. Baked lighting/detail, material alpha, fog, shroud,
+to lit model surfaces. Ground uses a denser snow layer on the surface albedo
+before lighting, including terrain blend layers, roads and paving. Dark soil
+and asphalt no longer darken the snow itself. Shared world-space drift and grain
+keep the coating continuous across terrain chunks and road ribbons. Road alpha
+is preserved, so soft road edges still blend into the snowy ground.
+Roofs and ground receive more coverage than walls. Baked lighting/detail, material alpha, fog, shroud,
 selection decals and targeting cursors remain intact. Unshaded/additive effects,
 water, sky and UI are excluded. The coating can also dust authored snow variants.
 It models exposure by surface slope, not roof occlusion or accumulated geometry.
 World positions are reconstructed from an existing varying to preserve the
 Metal/Forward+ varying budget.
+
+The terrain builder also builds a map of authored snow replacements from the
+mounted `terrain.ini`: an exact terrain type name followed by `Snow` or `Snowy`
+(case insensitive; `Snow` takes priority). It does not guess between unrelated
+textures. Matching texture tiles use a separate snow atlas in the original dry
+atlas layout, preserving UVs, blend weights and cliff wrapping. This atlas only
+affects the enabled visual override; disabling it restores the dry material.
+Unmapped classes use procedural snow. Missing, corrupt or undersized explicit
+replacements are reported and receive procedural coverage. The builder's `snow`
+report lists `terrain_type_mapping`, `texture_mapping` (filenames), `applied`,
+`procedural` and `errors`, making
+the texture map inspectable for the current mounted game or mod. Additional
+semantic pairings without an exact name match remain future work.
 
 Precipitation uses the existing map snow renderer with the enhanced preset in
 `godot/weather/console_snow.ini`: Buckland Snow's mounted-texture reference,
@@ -43,5 +60,9 @@ Validation: `snow presentation:*` tests authored building state selection,
 new-object inheritance, restoration and unchanged logic hash. `snow shader:*`
 checks inclusion/exclusion of material families. `snow_weather_test.gd` exercises
 the public toggle, map changes, native snowfall restoration and (on a GPU) checks
-that roofs brighten, walls stay unchanged, and removing the coating reproduces
-the original image exactly. Set OPENBFME_SNOW_SCREENSHOT to save a map capture.
+that roofs brighten, walls stay unchanged, dark terrain/roads/paving become
+snowy, authored replacements are sampled, and removing the coating reproduces
+the original image exactly. `snow terrain:*` checks replacement discovery, atlas
+layout preservation and invalid asset reporting with generated textures.
+Set OPENBFME_SNOW_SCREENSHOT to save a map capture, or
+OPENBFME_SNOW_GROUND_SCREENSHOT for the ground/road/paving GPU test strip.

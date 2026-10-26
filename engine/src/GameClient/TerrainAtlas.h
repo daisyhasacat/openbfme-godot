@@ -75,6 +75,12 @@ namespace TerrainAtlas
 // both atlas images. Never throws; every problem lands in the report.
 bool build(WorldHeightMap &map, ArchiveFileSystem &fs, const TerrainTypeIndex &types, TerrainAtlasImages &images, TerrainAtlasReport &report, std::string *error);
 
+// Enhanced snow overlay in the EXISTING atlas layout; alpha zero means procedural snow.
+// Missing/invalid explicit replacements are reported; never repacks or mutates the map.
+bool buildSnow(const WorldHeightMap &map, ArchiveFileSystem &fs, const TerrainTypeIndex &types,
+ const std::map<std::string, std::string> &replacements, TerrainAtlasImages &images,
+ std::vector<std::string> &applied, std::vector<std::string> &errors);
+
 // The packing step alone (no files): tilesPresent[i] says whether source tile i has pixels.
 // Returns the used height (ZH return value of updateTileTexturePositions).
 int packTiles(WorldHeightMap &map, const std::vector<bool> &tilePresent);

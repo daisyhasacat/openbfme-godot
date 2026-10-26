@@ -35,6 +35,8 @@ varying vec3 v_snow_normal;
 // shadow-receiving variants and the shroud texture (shroud = 1).
 
 uniform sampler2D base_atlas : filter_linear_mipmap, repeat_disable, hint_default_white;
+uniform sampler2D snow_atlas : filter_linear_mipmap, repeat_disable, hint_default_transparent;
+uniform bool snow_atlas_enabled = false;
 uniform sampler2D normal_atlas : filter_linear_mipmap, repeat_disable, hint_default_black;
 uniform sampler2D cloud_tex : filter_linear_mipmap, repeat_enable, hint_default_white;
 uniform sampler2D macro_tex : filter_linear_mipmap, repeat_enable, hint_default_white;
@@ -165,11 +167,15 @@ vec4 record_texel(int rec, int k) {
 }
 
 // One layer's lit colour in retail (gamma) space, before cloud / macro / fog.
-vec3 shade_layer(vec2 uv_unwrapped, vec4 rect, vec4 vcol, float lod) {
+vec3 shade_layer(vec2 uv_unwrapped, vec4 rect, vec4 vcol, float lod, vec3 snow_world) {
 	vec2 uv = wrap_into_class(rect, uv_unwrapped);
 	vec3 albedo = textureLod(base_atlas, uv, lod).rgb;
 	if (debug_mode == 7) {
 		return albedo;
+	}
+	if (debug_mode == 0 && openbfme_snow_cover > 0.0) {
+		vec4 authored = snow_atlas_enabled ? textureLod(snow_atlas, uv, lod) : vec4(0.0);
+		albedo = snow_ground_cover(albedo, snow_world, v_snow_normal, authored);
 	}
 	vec4 nm = textureLod(normal_atlas, uv, lod);
 	vec2 nxy = 2.0 * nm.xy - 1.0;
@@ -223,17 +229,18 @@ vec3 terrain_output(vec2 uv0, vec4 vcol, vec2 sage_xy) {
 	float lod1 = atlas_lod(uv1);
 	float lod2 = atlas_lod(uv2);
 
-	vec3 comp = shade_layer(uv0, v_wrap, vcol, lod0);
+	vec3 comp = shade_layer(uv0, v_wrap, vcol, lod0, vec3(sage_xy.x,0.0,-sage_xy.y));
 	if (has1) {
-		comp = mix(comp, shade_layer(uv1, rect1, vcol, lod1), alpha1);
+		comp = mix(comp, shade_layer(uv1, rect1, vcol, lod1, vec3(sage_xy.x,0.0,-sage_xy.y)), alpha1);
 	}
 	if (has2) {
-		comp = mix(comp, shade_layer(uv2, rect2, vcol, lod2), alpha2);
+		comp = mix(comp, shade_layer(uv2, rect2, vcol, lod2, vec3(sage_xy.x,0.0,-sage_xy.y)), alpha2);
 	}
 	if (paving_enabled && all(greaterThanEqual(sage_xy, vec2(0.0))) && all(lessThan(sage_xy, paving_extent))) {
 		// The CPU supplies a Gaussian-smoothed mask; interpolate its contour across diagonal grid steps.
 		float mask = smoothstep(0.2, 0.8, texture(paving_mask, sage_xy / paving_extent).r);
 		vec3 albedo = texture(paving_texture, sage_xy / paving_tile_size).rgb;
+		if (debug_mode == 0 && openbfme_snow_cover > 0.0) albedo = snow_ground_cover(albedo, vec3(sage_xy.x,0.0,-sage_xy.y), v_snow_normal, vec4(0.0));
 		vec3 sun = overbright ? 0.5 * sun_color : sun_color;
 		vec3 lit = (vcol.rgb + 0.5 * lightning_color + sun * max(normalize(v_lts).z, 0.0)) * albedo;
 		if (overbright) { lit *= 2.0; }
@@ -247,7 +254,6 @@ vec3 terrain_output(vec2 uv0, vec4 vcol, vec2 sage_xy) {
 	vec3 cloud = texture(cloud_tex, v_cloud).rgb;
 	vec3 macro = texture(macro_tex, v_macro).rgb;
 	if (debug_mode == 6) { return retail_output(cloud * macro); }
-	comp = snow_cover(comp, vec3(sage_xy.x, 0.0, -sage_xy.y), v_snow_normal);
 	vec3 col = mix(fog_color, comp * cloud * macro, v_fog);
 	col = col * shroud;
 	if (shroud_enabled) {

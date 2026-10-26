@@ -20,3 +20,16 @@ vec3 snow_cover(vec3 color, vec3 world, vec3 normal) {
  vec3 snow=vec3(0.83,0.89,0.95)*illumination*(0.94+0.06*grain);
  return mix(color,snow,mask);
 }
+
+// Ground snow replaces surface colour before illumination. Dark soil/asphalt must
+// not determine snow brightness. The optional authored texel uses alpha as validity.
+vec3 snow_ground_cover(vec3 albedo, vec3 world, vec3 normal, vec4 authored) {
+ if (openbfme_snow_cover <= 0.0) return albedo;
+ float exposure=smoothstep(0.18,0.72,normalize(normal).y);
+ float drift=snow_noise(world.xz*0.018);
+ float grain=snow_noise(world.xz*0.48);
+ float coverage=clamp(openbfme_snow_cover,0.0,1.0)*exposure*mix(0.94,1.0,drift);
+ float detail=mix(0.92,1.0,dot(albedo,vec3(0.2126,0.7152,0.0722)));
+ vec3 powder=vec3(0.84,0.89,0.94)*detail*(0.96+0.04*grain);
+ return mix(albedo,mix(powder,authored.rgb,authored.a),coverage);
+}
