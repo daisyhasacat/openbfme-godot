@@ -328,7 +328,17 @@ bool WaterGeometry::buildStandingGrid(const StandingWaterArea &area, const std::
 	out = StandingGrid{};
 	if (area.points.size() < 3) return false;
 	float lx=area.points[0].x, hx=lx, ly=area.points[0].y, hy=ly;
-	for (const auto &p:area.points) { lx=std::min(lx,p.x); hx=std::max(hx,p.x); ly=std::min(ly,p.y); hy=std::max(hy,p.y); }
+	for (const auto &p : area.points)
+	{
+		// The donor converts coordinates / 20 to int before reducing detail.
+		// Reject unrepresentable mod data instead of invoking undefined C++ casts.
+		const double maxCell = std::numeric_limits<int>::max();
+		if (!std::isfinite(p.x) || !std::isfinite(p.y)
+			|| std::abs(double(p.x / out.spacing)) >= maxCell
+			|| std::abs(double(p.y / out.spacing)) >= maxCell) return false;
+		lx = std::min(lx, p.x); hx = std::max(hx, p.x);
+		ly = std::min(ly, p.y); hy = std::max(hy, p.y);
+	}
 	if (!std::isfinite(lx+hx+ly+hy) || hx-lx > 1e8f || hy-ly > 1e8f) return false;
 	int nx,ny;
 	do {

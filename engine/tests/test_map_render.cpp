@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -865,4 +866,26 @@ TEST_CASE("water material: authored Gerstner vectors remain distinct")
 	WaterGeometry::StandingMaterial material;
 	REQUIRE(WaterGeometry::readStandingMaterial(source,material));
 	for(int i=0;i<3;++i) for(int j=0;j<4;++j) CHECK(material.gerstner[i][j]==float(i*4+j+1));
+}
+
+TEST_CASE("WaterGeometry::standing grid rejects non-finite and overflowing coordinates")
+{
+	StandingWaterArea area;
+	WaterGeometry::StandingGrid grid;
+	auto ground = [](float, float) { return 0.0f; };
+	for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+		std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(),
+		1e12f, -1e12f})
+	{
+		for (int axis = 0; axis < 2; ++axis)
+		{
+			area.points = {{0,0},{40,0},{40,40},{0,40}};
+			// Place invalid data after a valid first point: min/max must not hide NaN.
+			if (axis == 0) area.points[1].x = invalid;
+			else area.points[1].y = invalid;
+			CHECK_FALSE(WaterGeometry::buildStandingGrid(area, {}, ground, grid));
+			CHECK(grid.vertices.empty());
+			CHECK(grid.indices.empty());
+		}
+	}
 }
