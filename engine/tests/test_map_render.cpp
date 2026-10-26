@@ -879,10 +879,11 @@ TEST_CASE("WaterGeometry::standing grid rejects non-finite and overflowing coord
 	{
 		for (int axis = 0; axis < 2; ++axis)
 		{
-			area.points = {{0,0},{40,0},{40,40},{0,40}};
-			// Place invalid data after a valid first point: min/max must not hide NaN.
-			if (axis == 0) area.points[1].x = invalid;
-			else area.points[1].y = invalid;
+			area.points = {{0,0},{40,0},{40,40},{0,40},{0,20}};
+			// A late NaN otherwise leaves the right edge selecting cells even though
+			// min/max silently omit the invalid coordinate.
+			if (axis == 0) area.points.back().x = invalid;
+			else area.points.back().y = invalid;
 			CHECK_FALSE(WaterGeometry::buildStandingGrid(area, {}, ground, grid));
 			CHECK(grid.vertices.empty());
 			CHECK(grid.indices.empty());
