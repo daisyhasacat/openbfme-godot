@@ -6211,6 +6211,24 @@ Array GameWorld::get_ai_build_report() const
 			const AIBuildState &s = ai.build;
 			Dictionary d;
 			d["player"] = ai.playerIndex;
+			d["group_active"] = g->active;
+			d["disabled"] = ai.disabled;
+			d["tactical_disabled"] = ai.store->data().disableTacticalAI;
+			d["chooser"] = ai.brain.chooser;
+			d["current_enemy"] = ai.brain.currentEnemy;
+			d["attacks_launched"] = (int64_t)ai.brain.attacksLaunched;
+			d["gate_rejects"] = (int64_t)ai.brain.gateRejects;
+			d["fortification_target"]=(int64_t)ai.brain.fortificationTarget;
+			d["siege_units"]=(int64_t)ai.brain.siegeUnits.size();
+			d["siege_escorts"]=(int64_t)ai.brain.siegeEscorts.size();
+			d["siege_launched"]=ai.brain.siegeLaunched;
+			d["siege_gather_frame"]=(int64_t)ai.brain.siegeGatherFrame;
+			Array targets;
+			for (const auto &target : ai.brain.targets) {
+				Dictionary t;t["type"]=target.type;t["object"]=(int64_t)target.object;t["inactive"]=target.inactive;t["dropped"]=target.dropped;
+				t["teams"]=target.teams;t["max_teams"]=target.maxTeams;targets.push_back(t);
+			}
+			d["targets"] = targets;
 			d["phase"] = s.phase;
 			d["money_reserve"] = (int64_t)s.moneyReserve;
 			d["reserve_saved"] = (int64_t)s.reserveSaved;
