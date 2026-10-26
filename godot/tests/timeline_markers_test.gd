@@ -1,6 +1,7 @@
 extends SceneTree
 class ShellStub extends Node2D:
  var calls := {}
+ var scale_factor := 2.0
  var texture: ImageTexture
  func _init():
   var image := Image.create(32,32,false,Image.FORMAT_RGBA8)
@@ -9,7 +10,7 @@ class ShellStub extends Node2D:
  func shell_mapped_image(name: String) -> Dictionary:
   calls[name]=int(calls.get(name,0))+1
   return {"ok":true,"texture":texture,"region":Rect2(4,6,16,12),"size":Vector2(16,12)}
- func stage_to_window(point: Vector2) -> Vector2: return point*2.0+Vector2(5,7)
+ func stage_to_window(point: Vector2) -> Vector2: return point*scale_factor+Vector2(5,7)
 func _initialize(): call_deferred("_run")
 func _run():
  var shell := ShellStub.new()
@@ -35,6 +36,9 @@ func _run():
  assert(markers[3].rect==Rect2(144,108,32,24))
  assert(markers[0].region==Rect2(4,6,16,12))
  graph.marker_commands()
+ shell.scale_factor=3.0
+ markers=graph.marker_commands()
+ assert(markers[0].rect==Rect2(186,52,48,36),"Cached atlas images must resize with the stage mapping")
  for count in shell.calls.values(): assert(count==1)
  graph.free()
  shell.free()
@@ -65,6 +69,10 @@ func _run():
   for frame in 5: await process_frame
   if DisplayServer.get_name()!="headless":
    await RenderingServer.frame_post_draw
+   var rendered:=root.get_texture().get_image()
+   var line_pixel:=rendered.get_pixel(265,177)
+   # tolerance: the antialiased blue line must remain blue rather than the former RGBA/ARGB magenta.
+   assert(line_pixel.b>line_pixel.r,"Timeline line colour must match the blue player")
    var capture:=OS.get_environment("OPENBFME_TIMELINE_SCREENSHOT")
    if not capture.is_empty(): assert(root.get_texture().get_image().save_png(capture)==OK)
   overlay.free()
