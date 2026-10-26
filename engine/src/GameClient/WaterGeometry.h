@@ -14,8 +14,24 @@
 #include <cstdint>
 #include <vector>
 
+struct MeshShaderMaterialDef;
+
 namespace WaterGeometry
 {
+// Defaults from retail watershader.fxo's parameter table. Only the no-reflection
+// bump/specular path is rendered; PCA/reflection/technique selection stay S-035.
+struct StandingMaterial
+{
+	float diffuse[4] = { 0.15f, 0.3f, 0.35f, 0.5f };
+	float dimming = 0.8f, bumpScale = 0.2f, specularExponent = 50.0f;
+	float windAngle = 0.0f, windSpeed = 0.02f;
+	float waveAngle = 0.2f, waveSpeed = 0.0f;
+	float bumpUV[2] = { 7.0f, 7.0f }, envUV[2] = { 0.2f, 0.2f }, waveUV[2] = { 7.0f, 7.0f };
+	bool blendTerrainAlpha = true;
+	std::string bumpTexture, envTexture, waveTexture;
+};
+bool readStandingMaterial(const MeshShaderMaterialDef &source, StandingMaterial &out);
+
 // Triangulates a simple polygon (either winding, non-convex allowed). Returns false for degenerate input
 // (fewer than 3 points, zero area, or a polygon the ear search cannot finish). indices are triangle triples.
 bool triangulate(const std::vector<Point2F> &polygon, std::vector<std::uint32_t> &indices);

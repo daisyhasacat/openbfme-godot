@@ -9,6 +9,7 @@
 #include "GameClient/TerrainRoads.h"
 #include "GameClient/WaterGeometry.h"
 #include "GameClient/MapUtil.h"
+#include "Libraries/WWVegas/WW3D2/meshmdl.h"
 
 #include <cmath>
 #include <filesystem>
@@ -714,4 +715,40 @@ TEST_CASE("TerrainRoads: endpoint index isolates coordinates and matches mixed-c
 	CHECK(report.teeJoins==64);
 	CHECK(report.specialJunctionsPending==0);
 	CHECK(strips.size()==256);
+}
+
+TEST_CASE("water material: retail effect defaults and authored scales replace the placeholder colour")
+{
+	MeshShaderMaterialDef source;
+	source.TypeName = "WaterShader.FX";
+	WaterGeometry::StandingMaterial material;
+	REQUIRE(WaterGeometry::readStandingMaterial(source, material));
+	CHECK(material.diffuse[0] == 0.15f);
+	CHECK(material.diffuse[3] == 0.5f);
+	CHECK(material.dimming == 0.8f);
+	CHECK(material.bumpUV[0] == 7.0f);
+	CHECK(material.envUV[0] == 0.2f);
+	CHECK(material.windSpeed == 0.02f);
+	// WaterPlaneFX's authored scale and texture, read from the mounted W3D.
+	MeshShaderMaterialProperty scale;
+	scale.Name = "BumpUVScale";
+	scale.Float[0] = scale.Float[1] = 60.0f;
+	source.Properties.push_back(scale);
+	MeshShaderMaterialProperty texture;
+	texture.Name = "WaterBumpTexture";
+	texture.StringValue = "WtrBump_01.tga";
+	source.Properties.push_back(texture);
+	REQUIRE(WaterGeometry::readStandingMaterial(source, material));
+	CHECK(material.bumpUV[0] == 60.0f);
+	CHECK(material.bumpUV[1] == 60.0f);
+	CHECK(material.bumpTexture == "WtrBump_01.tga");
+	source.TypeName = "normalmapped.fx";
+	CHECK_FALSE(WaterGeometry::readStandingMaterial(source, material));
+}
+
+TEST_CASE("water acceptance: remaining shader and geometry approximations stay explicit")
+{
+	const auto *stop = MapStops::find("S-035");
+	REQUIRE(stop != nullptr);
+	CHECK(std::string(stop->gap) == "Standing water uses authored WaterShader.FX parameters and the retail no-reflection bump/specular arithmetic; technique selection, TIME animation and bilinear terrain depth are inferred; planar reflection, PCA waves, depth-colour LUT, exact river boundary generation and standing waves remain unported");
 }
