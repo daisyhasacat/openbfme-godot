@@ -87,6 +87,11 @@ func _run() -> void:
 	console.execute = func(code: String) -> Dictionary:
 		commands.append(code)
 		return {"ok": true, "output": ""}
+	var snow_requests := [0]
+	console.snow_requested.connect(func(): snow_requests[0] += 1)
+	for snow_button in console.find_children("*", "Button", true, false):
+		if snow_button.text == "Snow weather": snow_button.pressed.emit()
+	assert(snow_requests[0] == 1)
 	var restart_requests := [0]
 	console.restart_requested.connect(func(): restart_requests[0] += 1)
 	for restart_button in console.find_children("*", "Button", true, false):

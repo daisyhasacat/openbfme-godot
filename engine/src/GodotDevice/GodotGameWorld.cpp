@@ -312,6 +312,8 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("debug_placement", "template_name", "x", "y", "angle", "options", "builder_id"), &GameWorld::debug_placement);
 	ClassDB::bind_method(D_METHOD("debug_damage_object", "id", "amount", "source_id"), &GameWorld::debug_damage_object);
 	ClassDB::bind_method(D_METHOD("debug_set_object_status", "id", "status", "on"), &GameWorld::debug_set_object_status); // lane SPELL-3
+	ClassDB::bind_method(D_METHOD("snow_weather_enabled"), &GameWorld::snow_weather_enabled);
+	ClassDB::bind_method(D_METHOD("set_snow_weather", "enabled"), &GameWorld::set_snow_weather);
 	ClassDB::bind_method(D_METHOD("debug_clear_weather"), &GameWorld::debug_clear_weather);
 	ClassDB::bind_method(D_METHOD("debug_set_use_formations", "on"), &GameWorld::debug_set_use_formations); // lane BACKLOG-8 r2                                // lane SPELL-3
 	ClassDB::bind_method(D_METHOD("get_player_table"), &GameWorld::get_player_table);
@@ -753,6 +755,10 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 
 void GameWorld::clear_scene()
 {
+ m_snowOverride = false;
+ m_loadedWeather = MapWeather{};
+ W3D_Ensure_Light_Globals();
+ if (auto *rs = RenderingServer::get_singleton()) rs->global_shader_parameter_set("openbfme_snow_cover", 0.0f);
 	m_sessionSaves.clear();
 	m_movementPendingCommands.reset();
 	m_mapWeatherId = 0;
@@ -787,6 +793,7 @@ void GameWorld::clear_scene()
 	m_views.clear();
 	m_dynamicModels.clear();
 	m_staticModels.clear();
+	m_staticSnowEntries.clear();
 	m_buffInstances.clear(); // lane SPELL-4: the buffs' instances went with the instancer
 	m_staticId = m_dynamicId = 0;
 	m_staticShroudInstances.clear();
@@ -830,6 +837,7 @@ static std::vector<TextureSwap> floorWeatherSwaps(const ModuleData *data, int we
 
 void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &report, Array &errors, Array &stops)
 {
+	m_staticSnowEntries.clear();
 	W3DInstancer *staticInst = memnew(W3DInstancer);
 	staticInst->set_name("StaticObjects");
 	add_child(staticInst);
@@ -897,6 +905,7 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 		}
 		++instances;
 		m_staticShroudInstances.push_back({instance, Vector2(d.position.x, d.position.y)});
+		m_staticSnowEntries.push_back({instance, (int64_t)p.drawable, (int64_t)p.module, model});
 		if(d.info && (d.info->tree || d.info->shrub || d.info->shrubbery || d.info->clearedByBuild || d.info->optimizedProp)
 			&& !d.info->kindOf_test(MapObjectCreation::kindOfIndex("STRUCTURE")))
 			m_pavingPlants.push_back({instance,Vector2(d.position.x,d.position.y)});
@@ -1343,12 +1352,11 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	MapWeather weather;
 	std::string weatherError;
 	std::string weatherDir = toNative(map_name);
-	std::replace(weatherDir.begin(), weatherDir.end(), '\\', '/');
-	if (weatherDir.size() > 4 && weatherDir.substr(weatherDir.size() - 4) == ".map")
-	{
-		weatherDir = weatherDir.substr(0, weatherDir.find_last_of('/'));
-		weatherDir = weatherDir.substr(weatherDir.find_last_of('/') + 1);
-	}
+	std::replace(weatherDir.begin(), weatherDir.end(), '/', '\\');
+	if (weatherDir.size() > 4 && AsciiStringUtil::lowered(weatherDir.substr(weatherDir.size() - 4)) == ".map")
+		weatherDir = weatherDir.substr(0, weatherDir.find_last_of('\\'));
+	else if (weatherDir.find('\\') == std::string::npos)
+		weatherDir = MapClassification::mapDirectory(weatherDir);
 	if (MapWeatherScan::load(*m_fs->archive_fs(), weatherDir, weather, &weatherError))
 	{
 		Dictionary state;
@@ -1356,66 +1364,8 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 		state["texture"] = toGodot(weather.snowTexture);
 		state["spacing"] = weather.snowSpacing;
 		state["speed"] = weather.snowSpeed;
-		if (weather.snowEnabled && weather.isSnowing)
-		{
-			auto bounded = [](float n, float fallback, float lo, float hi) { return std::isfinite(n) ? std::clamp(n, lo, hi) : fallback; };
-			const float height = bounded(weather.snowHeight, 500, 100, 3000);
-			const float spacing = bounded(weather.snowSpacing, 30, 5, 300);
-			const float speed = bounded(weather.snowSpeed, 50, 1, 1000);
-			CPUParticles3D *snow = memnew(CPUParticles3D);
-			snow->set_name("MapSnowfall");
-			snow->set_amount(std::clamp((int)(1400 * 1400 / (spacing * spacing)), 32, 12000));
-			snow->set_lifetime(height / speed);
-			// Fill the complete falling column before the first frame, including heavy snow.
-			snow->set_pre_process_time(std::min(30.0f, height / speed));
-			snow->set_use_local_coordinates(false);
-			snow->set_emission_shape(CPUParticles3D::EMISSION_SHAPE_BOX);
-			// Emit at the ceiling: volume emission spends half each lifetime below the snow box.
-			snow->set_emission_box_extents(Vector3(700, 0, 700));
-			snow->set_direction(Vector3(0, -1, 0));
-			snow->set_spread(std::min(20.0f, std::abs(weather.snowAmplitude)));
-			snow->set_gravity(Vector3(weather.snowXYSpeed[0], 0, -weather.snowXYSpeed[1]));
-			snow->set_param_min(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, speed);
-			snow->set_param_max(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, speed);
-			Ref<QuadMesh> quad; quad.instantiate();
-			const float size = bounded(weather.snowQuadSize, 10, 0.5f, 50);
-			quad->set_size(Vector2(size, size));
-			Ref<Shader> shader; shader.instantiate();
-			shader->set_code(R"(
-shader_type spatial;
-render_mode unshaded, cull_disabled, depth_draw_never;
-uniform sampler2D snow_texture : source_color;
-uniform vec3 snow_centre;
-uniform vec3 snow_bounds;
-void vertex() {
- // Recycle at the edges of the camera volume, without translating in-flight flakes.
- vec3 centre = MODEL_MATRIX[3].xyz;
- centre = snow_centre + mod(centre - snow_centre + snow_bounds * 0.5, snow_bounds) - snow_bounds * 0.5;
- vec4 eye = VIEW_MATRIX * vec4(centre, 1.0);
- eye.xy += VERTEX.xy;
- POSITION = PROJECTION_MATRIX * eye;
-}
-void fragment() {
- vec4 flake = texture(snow_texture, UV);
- ALBEDO = flake.rgb;
- ALPHA = flake.a;
-}
-)");
-			Ref<ShaderMaterial> mat; mat.instantiate();
-			mat->set_shader(shader);
-			mat->set_shader_parameter("snow_bounds", Vector3(1400, height, 1400));
-			Ref<W3DModelBuilder> textures; textures.instantiate();
-			Ref<Texture2D> texture = textures->load_texture(m_fs, toGodot(weather.snowTexture));
-			if (texture.is_valid()) mat->set_shader_parameter("snow_texture", texture);
-			else errors.push_back(toGodot("Missing weather texture: " + weather.snowTexture));
-			quad->set_material(mat);
-			snow->set_mesh(quad);
-			snow->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
-			add_child(snow);
-			m_mapWeatherId = snow->get_instance_id();
-			update_map_weather();
-			state["particles"] = snow->get_amount();
-		}
+		m_loadedWeather = weather;
+		state["particles"] = configure_snowfall(weather, errors);
 		report["weather"] = state;
 	}
 	else errors.push_back(toGodot("weather: " + weatherError));
@@ -8333,4 +8283,131 @@ Array GameWorld::list_replays(const String &directory) const
 	return out;
 }
 
+} // namespace godot
+
+namespace godot {
+int GameWorld::configure_snowfall(const MapWeather &weather, Array &errors)
+{
+	if (auto *old = m_mapWeatherId ? Object::cast_to<Node>(ObjectDB::get_instance(godot::ObjectID(m_mapWeatherId))) : nullptr) {
+		remove_child(old); old->queue_free();
+	}
+	m_mapWeatherId = 0;
+	if (!weather.snowEnabled || !weather.isSnowing) return 0;
+			auto bounded = [](float n, float fallback, float lo, float hi) { return std::isfinite(n) ? std::clamp(n, lo, hi) : fallback; };
+			const float height = bounded(weather.snowHeight, 500, 100, 3000);
+			const float spacing = bounded(weather.snowSpacing, 30, 5, 300);
+			const float speed = bounded(weather.snowSpeed, 50, 1, 1000);
+			CPUParticles3D *snow = memnew(CPUParticles3D);
+			snow->set_name("MapSnowfall");
+			snow->set_amount(std::clamp((int)(1400 * 1400 / (spacing * spacing)), 32, 12000));
+			snow->set_lifetime(height / speed);
+			// Fill the complete falling column before the first frame, including heavy snow.
+			snow->set_pre_process_time(std::min(30.0f, height / speed));
+			snow->set_use_local_coordinates(false);
+			snow->set_emission_shape(CPUParticles3D::EMISSION_SHAPE_BOX);
+			// Emit at the ceiling: volume emission spends half each lifetime below the snow box.
+			snow->set_emission_box_extents(Vector3(700, 0, 700));
+			snow->set_direction(Vector3(0, -1, 0));
+			snow->set_spread(std::min(20.0f, std::abs(weather.snowAmplitude)));
+			snow->set_gravity(Vector3(weather.snowXYSpeed[0], 0, -weather.snowXYSpeed[1]));
+			snow->set_param_min(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, speed);
+			snow->set_param_max(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, speed);
+			Ref<QuadMesh> quad; quad.instantiate();
+			const float size = bounded(weather.snowQuadSize, 10, 0.5f, 50);
+			quad->set_size(Vector2(size, size));
+			Ref<Shader> shader; shader.instantiate();
+			shader->set_code(R"(
+shader_type spatial;
+render_mode unshaded, cull_disabled, depth_draw_never;
+uniform sampler2D snow_texture : source_color;
+uniform vec3 snow_centre;
+uniform vec3 snow_bounds;
+void vertex() {
+	// Recycle at the edges of the camera volume, without translating in-flight flakes.
+	vec3 centre = MODEL_MATRIX[3].xyz;
+	centre = snow_centre + mod(centre - snow_centre + snow_bounds * 0.5, snow_bounds) - snow_bounds * 0.5;
+	vec4 eye = VIEW_MATRIX * vec4(centre, 1.0);
+	eye.xy += VERTEX.xy;
+	POSITION = PROJECTION_MATRIX * eye;
+}
+void fragment() {
+	vec4 flake = texture(snow_texture, UV);
+	ALBEDO = flake.rgb;
+	ALPHA = flake.a;
+}
+)");
+			Ref<ShaderMaterial> mat; mat.instantiate();
+			mat->set_shader(shader);
+			mat->set_shader_parameter("snow_bounds", Vector3(1400, height, 1400));
+			Ref<W3DModelBuilder> textures; textures.instantiate();
+			Ref<Texture2D> texture = textures->load_texture(m_fs, toGodot(weather.snowTexture));
+			if (texture.is_valid()) mat->set_shader_parameter("snow_texture", texture);
+			else errors.push_back(toGodot("Missing weather texture: " + weather.snowTexture));
+			quad->set_material(mat);
+			snow->set_mesh(quad);
+			snow->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+			add_child(snow);
+			m_mapWeatherId = snow->get_instance_id();
+			update_map_weather();
+			return snow->get_amount();
+}
+
+Dictionary GameWorld::set_snow_weather(bool enabled)
+{
+	Dictionary result; result["ok"] = false;
+	if (!m_game) { result["error"] = "Load a map before changing snow weather."; return result; }
+	m_snowOverride = enabled;
+	m_game->drawables().setSnowPresentation(enabled);
+	m_streakWeather = enabled ? 1 : (m_game->logic().settings().snowy ? 1 : 0);
+	W3D_Ensure_Light_Globals();
+	RenderingServer::get_singleton()->global_shader_parameter_set("openbfme_snow_cover", enabled ? 1.0f : 0.0f);
+	MapWeather weather = m_loadedWeather;
+	if (enabled) { weather.snowEnabled = true; weather.isSnowing = true; }
+	Array errors;
+	result["particles"] = configure_snowfall(weather, errors);
+	update_static_snow(enabled, errors);
+	result["enabled"] = enabled;
+	result["errors"] = errors;
+	result["ok"] = errors.is_empty();
+	return result;
+}
+
+} // namespace godot
+
+namespace godot {
+void GameWorld::update_static_snow(bool enabled, Array &errors)
+{
+	auto *inst = m_staticId ? Object::cast_to<W3DInstancer>(ObjectDB::get_instance(godot::ObjectID(m_staticId))) : nullptr;
+	if (!inst || !m_game) return;
+	for (const auto &entry : m_staticSnowEntries) {
+		int64_t model = entry[3];
+		if (enabled) {
+			const auto &d = m_game->clientOnly().drawables[(size_t)entry[1]];
+			const auto &module = d.draws[(size_t)entry[2]];
+			ModelConditionFlags flags = d.flags; flags.set(ModelCondition::indexOf("SNOW"));
+			MapDrawModule selected = module;
+			std::vector<std::string> problems;
+			MapObjectCreation::resolveDrawModel(selected, flags, d.info ? d.info->name : "", problems);
+			for (const auto &p : problems) errors.push_back(toGodot(p));
+			std::vector<TextureSwap> swaps;
+			if (const auto *data = dynamic_cast<const W3DModelDrawModuleData *>(module.data)) {
+				if (const auto *state = data->findBestInfo(flags)) swaps = state->textures;
+			} else swaps = floorWeatherSwaps(module.data, 1);
+			if (!selected.model.empty()) {
+				const std::string key = AsciiStringUtil::lowered(selected.model) + W3DInstancer::Texture_Swap_Suffix(swaps);
+				auto cached = m_staticModels.find(key);
+				if (cached == m_staticModels.end()) {
+					inst->Set_Build_Texture_Swaps(swaps);
+					model = inst->add_model(toGodot(selected.model));
+					m_staticModels[key] = model;
+				} else model = cached->second;
+			}
+		}
+		if (model < 0)
+			errors.push_back("Could not load snow variant for static drawable " + String::num_int64(entry[1]));
+		else if (!inst->replace_instance_model(entry[0], model))
+			errors.push_back("Could not switch snow variant for static instance " + String::num_int64(entry[0]));
+	}
+	inst->update_now();
+}
 } // namespace godot

@@ -135,6 +135,8 @@ public:
 	// drawable); the draw modules take the result at once when it changed. True when it changed
 	bool applyDependencyFlags(const ModelConditionFlags &shared, const ModelConditionFlags &containerFlags);
 	void setModelConditionFlags(const ModelConditionFlags &flags);
+	void setSnowPresentation(bool enabled);
+	bool snowPresentation() const { return m_snowPresentation; }
 	void setModelCondition(int bit, bool on);
 	// lane ANIM-1, RW 0x679512 / 0x67449C (see ClientEvents.h): a changed bit is stored and marks the drawable dirty; flushModelConditions hands the
 	// stored flags to the draw modules (setModelConditionFlags) when dirty, with the object's weapon cycle for UseWeaponTiming as the flush event carried it
@@ -288,6 +290,7 @@ private:
 	ObjectID m_objectId;
 	KindOfMaskType m_kindOf{};
 	ModelConditionFlags m_flags;
+	bool m_snowPresentation = false;
 	float m_scale = 1.0f;
 	std::uint32_t m_houseColor = 0;
 	int m_customKind = 0;                              // lane CAH-2

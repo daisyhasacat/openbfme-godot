@@ -1336,6 +1336,13 @@ func _boot() -> void:
 	get_tree().root.add_child.call_deferred(_quick_save_hotkey)
 	_lua_console.toggled.connect(_lua_console_toggled)
 	_lua_console.restart_requested.connect(func(): call_deferred("_console_restart"))
+	_lua_console.snow_requested.connect(func():
+		var result: Dictionary = _world.set_snow_weather(not _world.snow_weather_enabled())
+		if result.get("ok", false):
+			_lua_console._append("Snow weather " + ("enabled" if result.enabled else "restored to map defaults") + "\n")
+		else:
+			_lua_console._append("Snow weather: " + str(result.get("error", result.get("errors", []))) + "\n")
+	)
 	_lua_console.map_editor_requested.connect(func(): call_deferred("_open_map_editor"))
 	add_child(_lua_console)
 	var performance_tab := preload("res://scripts/console_performance.gd").new()

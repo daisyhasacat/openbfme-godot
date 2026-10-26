@@ -18,6 +18,7 @@
 #pragma once
 
 #include "GameLogic/WallBalance.h"
+#include "GameClient/MapWeather.h"
 #include <godot_cpp/classes/config_file.hpp>
 #include <array>
 
@@ -196,6 +197,8 @@ public:
 	// lane SPELL-3 (review r3): a test hook (start option test_hooks): the global weather back to none, its map attribute modifier removed from every object
 	// (GlobalWeatherSystem::clear, RW 0x71A04F) - the spell harness isolates the weather powers' casts with it
 	Dictionary debug_clear_weather();
+	Dictionary set_snow_weather(bool enabled);
+	bool snow_weather_enabled() const { return m_snowOverride; }
 	// lane BACKLOG-8 r2 (proof captures): AIData UseFormations for the running game (test hooks only, never in a network game)
 	Dictionary debug_set_use_formations(bool on);
 	// read-only: the live objects of `player` [{ id, template, structure, commandcenter, x, y, z }] (between logic frames)
@@ -715,7 +718,11 @@ private:
 
 	Array m_commandErrors;
 	uint64_t m_mapWeatherId = 0;
+	bool m_snowOverride = false;
+	MapWeather m_loadedWeather;
+	int configure_snowfall(const MapWeather &weather, Array &errors);
 	void update_map_weather();
+	void update_static_snow(bool enabled, Array &errors);
 	void clear_scene();
 	void build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &report, Array &errors, Array &stops);
 	void refresh_views(double deltaMs);
@@ -859,6 +866,7 @@ private:
 	std::vector<DrawableView> m_views;       ///< index = drawable id
 	std::map<std::string, int64_t> m_dynamicModels, m_staticModels;
 	std::vector<std::pair<int64_t, Vector2>> m_staticShroudInstances;
+	std::vector<std::array<int64_t, 4>> m_staticSnowEntries; // stable instance, drawable, module, native model
 	Dictionary m_report;
 	bool m_autoAdvance = false;
 	bool m_paused = false;

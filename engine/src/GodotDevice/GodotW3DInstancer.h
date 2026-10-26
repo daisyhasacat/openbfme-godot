@@ -78,6 +78,7 @@ public:
 	// Takes an instance out of the picture (it is no longer posed or written to any MultiMesh; its id is not reused). Idempotent; false for an
 	// unknown id. (Added by lane LOGIC-1: live objects die.)
 	bool remove_instance(int64_t instance);
+	bool replace_instance_model(int64_t instance, int64_t model);
 	void set_instance_shrouded(int64_t instance, bool hidden);
 	bool set_instance_clip(int64_t instance, const String &clip, double start_time, double speed);
 	// Poses an instance exactly, from the draw module runtime (W3DScriptedModelDraw::frame): clip0 at frame0, blended with clip1 at

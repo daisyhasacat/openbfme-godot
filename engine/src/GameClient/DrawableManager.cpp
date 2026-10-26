@@ -136,6 +136,7 @@ Drawable *DrawableManager::createClientDrawable(const ThingTemplate &tt)
 	{
 		m_sink.message(final->getName(), std::string(), p);
 	}
+	d->setSnowPresentation(m_snowPresentation);
 	m_slots.push_back(std::move(d));
 	++m_live;
 	++m_created;
@@ -175,6 +176,7 @@ void DrawableManager::created(const ClientEvent &ev)
 	{
 		d->setHouseColor(ev.houseColor);
 	}
+	d->setSnowPresentation(m_snowPresentation);
 	d->setOrientation(ev.angle);
 	d->setPosition(&ev.position);
 	d->setKindOf(ev.kindOf);
@@ -578,4 +580,10 @@ DrawableManager::Report DrawableManager::report(const LogicSnapshot *presented) 
 		}
 	}
 	return r;
+}
+
+void DrawableManager::setSnowPresentation(bool enabled)
+{
+	m_snowPresentation = enabled;
+	for (auto &d : m_slots) if (d) d->setSnowPresentation(enabled);
 }

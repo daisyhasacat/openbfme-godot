@@ -172,3 +172,18 @@ TEST_CASE("shader text: the normal-mapped building permutation fits Intel Arc's 
 	CHECK_FALSE(has(code, "varying vec3 v_wpos;"));
 	CHECK(has(code, "vec3 wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;"));
 }
+
+TEST_CASE("snow shader: coat lit geometry before fog and exclude additive or unshaded effects")
+{
+	W3DShaderKey key;
+	key.Blend = W3D_GODOT_BLEND_OPAQUE;
+	key.Unshaded = false;
+	const auto code = Generate_W3D_Shader_Code(key);
+	CHECK(has(code, "#include \"res://shaders/snow_cover.gdshaderinc\""));
+	CHECK(has(code, "cur.rgb = snow_cover(cur.rgb, (INV_VIEW_MATRIX * vec4(v_vpos, 1.0)).xyz, v_wnrm);"));
+	key.Blend = W3D_GODOT_BLEND_ADD;
+	CHECK_FALSE(has(Generate_W3D_Shader_Code(key), "snow_cover"));
+	key.Blend = W3D_GODOT_BLEND_OPAQUE;
+	key.Unshaded = true;
+	CHECK_FALSE(has(Generate_W3D_Shader_Code(key), "snow_cover"));
+}

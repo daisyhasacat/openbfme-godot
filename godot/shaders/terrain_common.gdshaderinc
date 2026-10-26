@@ -1,3 +1,5 @@
+#include "res://shaders/snow_cover.gdshaderinc"
+varying vec3 v_snow_normal;
 // OpenBFME. GPL-3.0.
 //
 // Port of the RotWK 2.01 terrain shader, technique "Default" (shaders/compiled/terrain.fxo, vs_1_1 +
@@ -245,6 +247,7 @@ vec3 terrain_output(vec2 uv0, vec4 vcol, vec2 sage_xy) {
 	vec3 cloud = texture(cloud_tex, v_cloud).rgb;
 	vec3 macro = texture(macro_tex, v_macro).rgb;
 	if (debug_mode == 6) { return retail_output(cloud * macro); }
+	comp = snow_cover(comp, vec3(sage_xy.x, 0.0, -sage_xy.y), v_snow_normal);
 	vec3 col = mix(fog_color, comp * cloud * macro, v_fog);
 	col = col * shroud;
 	if (shroud_enabled) {

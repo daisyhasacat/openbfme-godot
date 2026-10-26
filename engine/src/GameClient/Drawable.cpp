@@ -200,6 +200,8 @@ bool Drawable::hasAnimatedEntry() const
 void Drawable::setModelConditionFlags(const ModelConditionFlags &flags)
 {
 	m_flags = flags;
+	ModelConditionFlags rendered = flags;
+	if (m_snowPresentation) rendered.set(ModelCondition::indexOf("SNOW"));
 	++m_changeCount;
 	// RENDER-2: a W3DFloorDraw is not drawn while one of its HideIfModelConditions sets is all in the flags (the rule MapObjectCreation::resolveDrawModel applies
 	// at creation; e.g. the barracks' floor during AWAITING_CONSTRUCTION / PARTIALLY_CONSTRUCTED)
@@ -208,7 +210,7 @@ void Drawable::setModelConditionFlags(const ModelConditionFlags &flags)
 		bool hide = false;
 		for (const ModelConditionFlags &h : e.hideIf)
 		{
-			hide = hide || (h.any() && flags.testForAll(h));
+			hide = hide || (h.any() && rendered.testForAll(h));
 		}
 		e.conditionHidden = hide;
 	}
@@ -217,7 +219,7 @@ void Drawable::setModelConditionFlags(const ModelConditionFlags &flags)
 	{
 		if (e.draw)
 		{
-			e.draw->setModelConditionFlags(flags);
+			e.draw->setModelConditionFlags(rendered);
 			const W3DDrawFrame f = e.draw->frame();
 			e.animated = f.trackCount > 0 && f.tracks[0].anim && f.tracks[0].anim->Get_Num_Frames() > 1 && f.tracks[0].mode != W3D_ANIM_MODE_MANUAL;
 		}
@@ -610,4 +612,12 @@ Drawable::PresentedLook Drawable::presentedLook(const LogicSnapshot *presented, 
 	}
 	look.fogLook = look.fogLook && !look.hidden;
 	return look;
+}
+
+// Enhanced presentation override: neither the object's flags nor its CRC change.
+void Drawable::setSnowPresentation(bool enabled)
+{
+	if (m_snowPresentation == enabled) return;
+	m_snowPresentation = enabled;
+	setModelConditionFlags(m_flags);
 }
