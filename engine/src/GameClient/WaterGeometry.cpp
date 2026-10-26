@@ -7,6 +7,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
+#include <locale>
+#include <stdexcept>
+#include <limits>
 
 namespace
 {
@@ -180,6 +184,7 @@ bool WaterGeometry::readStandingMaterial(const MeshShaderMaterialDef &source, St
 {
 	if (AsciiStringUtil::compareNoCase(source.TypeName, "WaterShader.FX") != 0) return false;
 	out = StandingMaterial{};
+	out.technique = source.Technique;
 	for (const auto &p : source.Properties)
 	{
 		const std::string n = AsciiStringUtil::lowered(p.Name);
@@ -195,9 +200,119 @@ bool WaterGeometry::readStandingMaterial(const MeshShaderMaterialDef &source, St
 		else if (n == "envuvscale") std::copy(p.Float, p.Float + 2, out.envUV);
 		else if (n == "waveuvscale") std::copy(p.Float, p.Float + 2, out.waveUV);
 		else if (n == "blendusingterrainalpha") out.blendTerrainAlpha = p.Bool;
+		else if (n == "pcabumpuvscale") std::copy(p.Float, p.Float + 2, out.pcaUV);
+		else if (n == "pcawaveuvscale") std::copy(p.Float, p.Float + 2, out.pcaWaveUV);
+		else if (n == "specularcolor") std::copy(p.Float, p.Float + 3, out.specular);
+		else if (n == "reflectionperturbation") out.reflectionPerturbation = p.Float[0];
+		else if (n == "waterpcatexture1") out.pcaTexture[0] = p.StringValue;
+		else if (n == "waterpcatexture2") out.pcaTexture[1] = p.StringValue;
+		else if (n == "waterpcatexture3") out.pcaTexture[2] = p.StringValue;
+		else if (n == "pcanoisetexture") out.pcaNoiseTexture = p.StringValue;
+		else if (n == "pcafrothtexture") out.pcaFrothTexture = p.StringValue;
 		else if (n == "waterbumptexture") out.bumpTexture = p.StringValue;
 		else if (n == "waterenvtexture") out.envTexture = p.StringValue;
 		else if (n == "wavetexture") out.waveTexture = p.StringValue;
 	}
 	return true;
+}
+
+
+// BFME2 donor: GameEngine/Source/GameLogic/Map/StandingWaterAreaLoadPCA.cpp
+// RVA 0x3093F6. Samplers: GameEngineDevice/Source/W3DDevice/GameClient/
+// Rva003093F6BasesSamplers.cpp, RVAs 0x30822F/0x308325/0x308417/0x308509.
+// Target data validates the layout; RotWK caller/clock equivalence is S-035.
+// Malformed inputs are rejected explicitly; donor malformed-text parity is unverified.
+bool WaterGeometry::readPcaBasis(const std::string &text, PcaBasis &out, std::string *error)
+{
+	out = PcaBasis{};
+	auto fail = [&](const char *why) { if (error) *error = why; return false; };
+	std::istringstream input(text);
+	input.imbue(std::locale::classic());
+	std::string line, label;
+	unsigned count = 0;
+	if (!std::getline(input, line)) return fail("PCA basis: missing frame count");
+	std::istringstream header(line);
+	header.imbue(std::locale::classic());
+	if (!(header >> label >> count) || count == 0 || count > text.size()) return fail("PCA basis: invalid frame count");
+	if (!std::getline(input, line)) return fail("PCA basis: missing speed");
+	std::istringstream speed(line);
+	speed.imbue(std::locale::classic());
+	PcaBasis parsed;
+	if (!(speed >> label >> parsed.speed) || !std::isfinite(parsed.speed) || parsed.speed < 0.0f) return fail("PCA basis: invalid speed");
+	parsed.frames.resize(count);
+	for (unsigned row = 0; row < 13; ++row)
+	{
+		if (!std::getline(input, line)) return fail("PCA basis: missing coefficient row");
+		std::istringstream values(line);
+		values.imbue(std::locale::classic());
+		if (!(values >> label)) return fail("PCA basis: missing coefficient label");
+		// Disk axis order is X, Z, Y; each group of four rows packs four bases.
+		for (unsigned diskAxis = 0; diskAxis < 3; ++diskAxis)
+			for (unsigned frame = 0; frame < count; ++frame)
+			{
+				double value;
+				if (!(values >> value) || !std::isfinite(value) || std::abs(value / 255.0) > std::numeric_limits<float>::max()) return fail("PCA basis: invalid coefficient");
+				const unsigned axis = diskAxis == 1 ? 2 : diskAxis == 2 ? 1 : 0;
+				const float normalized = static_cast<float>(value / 255.0);
+				if (row == 0) parsed.frames[frame][0][axis] = normalized;
+				else parsed.frames[frame][1 + ((row - 1) / 4) * 3 + axis][(row - 1) % 4] = normalized;
+			}
+		std::string extra;
+		if (values >> extra) return fail("PCA basis: extra coefficient");
+	}
+	while (std::getline(input, line)) if (line.find_first_not_of(" \t\r") != std::string::npos) return fail("PCA basis: trailing data");
+	out = std::move(parsed);
+	return true;
+}
+
+WaterGeometry::PcaFrame WaterGeometry::samplePcaBasis(const PcaBasis &basis, float clientTime)
+{
+	PcaFrame result{};
+	result[0][2] = 1.0f;
+	if (basis.frames.empty() || !std::isfinite(clientTime) || clientTime < 0.0f) return result;
+	const float scaled = clientTime * basis.speed;
+	if (!std::isfinite(scaled)) return result;
+	const double whole = std::floor(static_cast<double>(scaled));
+	const size_t index = static_cast<size_t>(std::fmod(whole, static_cast<double>(basis.frames.size())));
+	const size_t next = (index + 1) % basis.frames.size();
+	const float fraction = static_cast<float>(scaled - whole);
+	for (size_t row = 0; row < result.size(); ++row)
+		for (size_t c = 0; c < 4; ++c)
+			result[row][c] = basis.frames[index][row][c] * (1.0f - fraction) + basis.frames[next][row][c] * fraction;
+	return result;
+}
+
+bool WaterGeometry::readEffectTechniques(const std::vector<std::uint8_t> &bytes, std::vector<std::string> &names, std::string *error)
+{
+	names.clear();
+	try
+	{
+		auto word = [&](size_t offset) -> std::uint32_t {
+			if (offset > bytes.size() || bytes.size() - offset < 4) throw std::runtime_error("effect table outside file");
+			return bytes[offset] | (std::uint32_t(bytes[offset + 1]) << 8) | (std::uint32_t(bytes[offset + 2]) << 16) | (std::uint32_t(bytes[offset + 3]) << 24);
+		};
+		if (word(0) != 0xfeff0901u) throw std::runtime_error("not an fx_2_0 effect");
+		const size_t table = size_t(word(4)) + 8;
+		const unsigned parameters = word(table), techniques = word(table + 4);
+		size_t cursor = table + 16;
+		if (cursor > bytes.size()) throw std::runtime_error("truncated effect header");
+		auto skip = [&](size_t size) { if (cursor > bytes.size() || size > bytes.size() - cursor) throw std::runtime_error("truncated effect table"); cursor += size; };
+		auto skipRecords = [&](size_t count, size_t stride) {
+			if (cursor > bytes.size() || count > (bytes.size() - cursor) / stride) throw std::runtime_error("truncated effect table");
+			skip(count * stride);
+		};
+		for (unsigned i = 0; i < parameters; ++i) { const size_t annotations = word(cursor + 12); skip(16); skipRecords(annotations, 8); }
+		for (unsigned i = 0; i < techniques; ++i)
+		{
+			const size_t stringOffset = size_t(word(cursor)) + 8;
+			const size_t annotations = word(cursor + 4), passes = word(cursor + 8);
+			const size_t length = word(stringOffset);
+			if (!length || stringOffset + 4 > bytes.size() || length > bytes.size() - stringOffset - 4 || bytes[stringOffset + 4 + length - 1] != 0) throw std::runtime_error("invalid effect technique name");
+			names.emplace_back(reinterpret_cast<const char *>(bytes.data() + stringOffset + 4), length - 1);
+			skip(12); skipRecords(annotations, 8);
+			for (size_t pass = 0; pass < passes; ++pass) { const size_t pa = word(cursor + 4), states = word(cursor + 8); skip(12); skipRecords(pa, 8); skipRecords(states, 16); }
+		}
+		return true;
+	}
+	catch (const std::runtime_error &e) { names.clear(); if (error) *error = e.what(); return false; }
 }
