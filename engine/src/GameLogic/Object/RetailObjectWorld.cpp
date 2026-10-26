@@ -106,6 +106,8 @@ RetailObjectWorld::State::State(ArchiveFileSystem &fs)
 		"CreateAHeroSystem", "AwardSystem", // HERO-2: TheCreateAHeroSystem (its own file, RW 0x61A10F)
 		"LinearCampaign", "MissionObjectiveList", // CAMP-1: TheLinearCampaignManager (RW 0x5ECCB9)
 		"LivingWorldCampaign" }; // WOTR-1: TheLivingWorldCampaignManager (the War of the Ring scenarios)
+	// WOTR-1: the Living World map, region effects and regions (GameClient/LivingWorldMap.h)
+	skip.insert(skip.end(), LivingWorldMapStore::blockKeywords().begin(), LivingWorldMapStore::blockKeywords().end());
 	// AUDIO-1: the audio blocks (AudioEvent, DialogEvent, MusicTrack, ..., EvaEvent, AudioSettings, MiscAudio) are parsed for real
 	skip.insert(skip.end(), AudioIniState::blockKeywords().begin(), AudioIniState::blockKeywords().end());
 	// AI-1: the skirmish AI blocks are parsed for real (GameLogic/SkirmishAI/SkirmishAIData.h)
@@ -139,6 +141,7 @@ RetailObjectWorld::State::State(ArchiveFileSystem &fs)
 	SpellStores::registerBlocks(m_env.blocks); // SPELL-1
 	m_linearCampaigns.registerBlock(m_env.blocks); // CAMP-1
 	m_livingWorldCampaigns.registerBlock(m_env.blocks); // WOTR-1
+	m_livingWorldMap.registerBlocks(m_env.blocks);       // WOTR-1
 	m_env.blocks.registerBlock("MissionObjectiveList", [this](INI *ini) {
 		using Objectives = std::vector<std::pair<std::string, bool>>;
 		static const FieldParse fields[] = {
@@ -210,6 +213,11 @@ GlobalOwnerChain<LivingWorldCampaignManager *> &livingWorldCampaignChain()
 	static thread_local ThreadOwnerChain<LivingWorldCampaignManager *> chain(TheLivingWorldCampaignManager); // WOTR-1: per thread, as the linear campaigns
 	return chain.get();
 }
+GlobalOwnerChain<LivingWorldMapStore *> &livingWorldMapChain()
+{
+	static thread_local ThreadOwnerChain<LivingWorldMapStore *> chain(TheLivingWorldMapStore); // WOTR-1: per thread, as the campaigns
+	return chain.get();
+}
 GlobalOwnerChain<CreateAHeroSystem *> &createAHeroChain()
 {
 	static thread_local ThreadOwnerChain<CreateAHeroSystem *> chain(TheCreateAHeroSystem); // HERO-2: per thread, as the stances
@@ -243,6 +251,7 @@ void RetailObjectWorld::registerContext()
 	emotionChain().install(this, &m_s->m_emotions);                     // MODULES-2
 	linearCampaignChain().install(this, &m_s->m_linearCampaigns);       // CAMP-1
 	livingWorldCampaignChain().install(this, &m_s->m_livingWorldCampaigns); // WOTR-1
+	livingWorldMapChain().install(this, &m_s->m_livingWorldMap);             // WOTR-1
 	createAHeroChain().install(this, &m_s->m_createAHero);              // HERO-2
 	fxListChain().install(this, m_s->m_recorder.fxLists.get());         // XP-1: the FXList blocks fill this world's store; LevelUpFx / ModifierList FX validate against it
 	// AUDIO-1: object parsing (OpenContain / HordeContain sound fields) asks whether an audio event exists. No AudioManager exists at INI time,
@@ -266,6 +275,7 @@ void RetailObjectWorld::unregisterContext()
 	emotionChain().remove(this);
 	linearCampaignChain().remove(this);
 	livingWorldCampaignChain().remove(this);
+	livingWorldMapChain().remove(this);
 	createAHeroChain().remove(this);
 	fxListChain().remove(this);
 	audioChain().remove(this);

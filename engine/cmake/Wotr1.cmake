@@ -4,7 +4,9 @@
 # client-only sources (excluded from the simulation audit in tools/sim/sim_policy.json)
 set(OPENBFME_WOTR1_SOURCES
     src/GameClient/LivingWorldCampaign.cpp
+    src/GameClient/LivingWorldMap.cpp
 )
 set(OPENBFME_WOTR1_TESTS
     tests/test_wotr1_lobby.cpp
+    tests/test_wotr1_map.cpp
 )

@@ -28,6 +28,7 @@
 #include "GameClient/ControlBarCommands.h"
 #include "GameClient/LinearCampaign.h"
 #include "GameClient/LivingWorldCampaign.h"
+#include "GameClient/LivingWorldMap.h"
 #include "GameLogic/AttributeModifiers.h"
 #include "GameLogic/CreateAHeroSystem.h"
 #include "GameLogic/ExperienceLevels.h"
@@ -94,6 +95,7 @@ public:
 	bool bfme1Data() const { return isBfme1Data(m_fs); } // community PR #36 (Common/BfmeGame.h)
 	const FormationAssistant &formations() const { return m_s->m_formations; }
 	const LivingWorldCampaignManager &livingWorldCampaigns() const { return m_s->m_livingWorldCampaigns; } // WOTR-1: TheLivingWorldCampaignManager (the War of the Ring scenarios)
+	const LivingWorldMapStore &livingWorldMap() const { return m_s->m_livingWorldMap; } // WOTR-1: the Living World map, region effects and regions
 	const LinearCampaignManager &linearCampaigns() const { return m_s->m_linearCampaigns; } // CAMP-1: TheLinearCampaignManager (the LinearCampaign blocks)
 	const CreateAHeroSystem &createAHeroSystem() const { return m_s->m_createAHero; } // HERO-2: TheCreateAHeroSystem (Data\INI\CreateAHeroSystem.ini)
 	// MOVE-1: the INI macro table the object templates were loaded with (a LocomotorSet block's Speed may be a macro: AIWorld parses those blocks at runtime)
@@ -198,6 +200,7 @@ private:
 		FormationAssistant m_formations;
 		LinearCampaignManager m_linearCampaigns;      // CAMP-1
 		LivingWorldCampaignManager m_livingWorldCampaigns; // WOTR-1
+		LivingWorldMapStore m_livingWorldMap;              // WOTR-1
 		CreateAHeroSystem m_createAHero;              // HERO-2
 		std::unique_ptr<AudioIniState> m_audio;
 		std::unique_ptr<SkirmishAIStore> m_skirmishAI;

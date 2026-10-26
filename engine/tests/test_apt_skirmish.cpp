@@ -2722,7 +2722,7 @@ TEST_CASE("wotr1 retail: the War of the Ring lobby is Skirmish.apt made with mod
 	combo->manager().winSendSystemMsg(combo->winGetOwner(), GCM_SELECTED, reinterpret_cast<WindowMsgData>(combo), 2); // ZH GadgetComboBox's selection
 	CHECK(fx.screen->strategicScenario() == 7);
 	CHECK(GadgetListBoxGetText(desc, 0, 0) == asciiToU16("Description of WOTRScenario001"));
-	for (const char *tag : { "[S-5300]", "[S-5301]", "[S-5302]" })
+	for (const char *tag : { "[S-5300]", "[S-5301]", "[S-5302]", "[S-5303]" })
 	{
 		int count = 0;
 		for (const WindowManagerNote &n : fx.wm->notes())

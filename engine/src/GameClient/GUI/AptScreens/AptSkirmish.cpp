@@ -12,6 +12,7 @@
 #include "GameClient/OptionPreferences.h"
 #include "Common/AsciiString.h"
 #include "GameClient/LivingWorldCampaign.h"
+#include "GameClient/LivingWorldMap.h"
 #include "GameLogic/CreateAHeroSystem.h"
 #include "GameClient/GUI/AptScreens/AptCreateAHero.h"
 #include "GameClient/CreateAHeroHeroList.h"
@@ -218,6 +219,7 @@ AptSkirmish::AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment 
 		{
 			windows.note("unported", line);
 		}
+		for (const std::string &line : LivingWorldMapStore::stopLines()) windows.note("unported", line);
 		windows.note("unported", "[S-5301] the War of the Ring lobby's LivingWorld window (the strategic map, its region highlights and start region picks) is not ported");
 		windows.note("unported", "[S-5302] the War of the Ring lobby's StartGame: the strategic game it starts is not ported; the lobby refuses with a box");
 	}
