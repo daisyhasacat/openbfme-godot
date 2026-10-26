@@ -92,6 +92,7 @@ public:
 	const InGameUI &ui() const { return m_ui; }
 	HudContext &context() { return m_ctx; }
 	CommandTranslator &commandTranslator() { return m_command; }
+	GUICommandTranslator &guiCommandTranslator() { return m_guiCommand; } // lane SPELLRC-1
 	const MetaEventTranslator &metaTranslator() const { return m_meta; }
 	MetaEventTranslator &metaTranslator() { return m_meta; }
 	PlaceEventTranslator &placeTranslator() { return m_place; }

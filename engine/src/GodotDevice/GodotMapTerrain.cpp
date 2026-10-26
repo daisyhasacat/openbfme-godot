@@ -6,6 +6,7 @@
 #include "GodotDevice/GodotMapTerrain.h"
 
 #include "Common/ArchiveFileSystem.h"
+#include "Common/AsciiString.h"
 #include "GameClient/MapClassification.h"
 #include "GameClient/MapStops.h"
 #include "GameClient/MapUtil.h"
@@ -335,6 +336,13 @@ Ref<Texture2D> MapTerrainBuilder::loadTexture(RetailFileSystem &fs, const std::s
 			return Ref<Texture2D>();
 		}
 		used = dds;
+	}
+	else if (fs.existsNative(stem + ".tga"))
+	{
+		// RW 0x530D29: uncompressed compiled TGA precedes packed JPEG.
+		// PCA basis textures ship in this form instead of DDS.
+		if (!readImage(stem + ".tga", image)) return Ref<Texture2D>();
+		used = stem + ".tga";
 	}
 	else if (fs.existsNative(stem + ".jpg"))
 	{
@@ -1026,13 +1034,31 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 	{
 		Dictionary w;
 		int64_t areas = 0, tris = 0, failed = 0;
+		Array waterMaterials, materialStops;
 		if (wantWater && !renderMap.chunks.standingWaterAreas.empty())
 		{
 			Ref<Shader> sh = loadShader("res://shaders/water_standing.gdshader", errors);
 			Node3D *waterRoot = memnew(Node3D);
 			waterRoot->set_name("StandingWater");
 			root->add_child(waterRoot);
-			std::map<std::string, Ref<ShaderMaterial>> matCache;
+			ArchiveW3DFileSource waterSource(*rfs.archive_fs());
+			WW3DAssetManager waterAssets(waterSource);
+			std::vector<std::string> waterTechniques;
+			bool techniquesRead = false;
+			PackedByteArray heightBytes;
+			heightBytes.resize((int64_t)hm.m_width * hm.m_height * sizeof(float));
+			for (int y = 0; y < hm.m_height; ++y)
+				for (int x = 0; x < hm.m_width; ++x)
+				{
+					const float z = hm.getHeight(x, y) * MAP_HEIGHT_SCALE;
+					std::memcpy(heightBytes.ptrw() + ((int64_t)y * hm.m_width + x) * sizeof(float), &z, sizeof(float));
+				}
+			Ref<Image> heights = Image::create_from_data(hm.m_width, hm.m_height, false, Image::FORMAT_RF, heightBytes);
+			Ref<ImageTexture> heightTexture = ImageTexture::create_from_image(heights);
+			W3DObjectLighting waterLights;
+			std::string lightError;
+			if (lighting && !W3DObjectLightingUtil::fromMap(*lighting, waterLights, &lightError))
+				errors.push_back(toGodot(lightError));
 			for (const StandingWaterArea &a : renderMap.chunks.standingWaterAreas)
 			{
 				std::vector<std::uint32_t> tri;
@@ -1041,55 +1067,183 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 					++failed;
 					continue;
 				}
-				const std::string key = a.bumpMapTexture + "|" + a.skyTexture + "|" + a.depthColors;
-				Ref<ShaderMaterial> m;
-				auto it = matCache.find(key);
-				if (it != matCache.end())
+				WaterGeometry::StandingMaterial params;
+				bool authored = false;
+				if (!a.fxShader.empty())
 				{
-					m = it->second;
+					std::string stem = a.fxShader;
+					if (stem.size() > 4 && AsciiStringUtil::compareNoCase(stem.substr(stem.size() - 4), ".w3d") == 0) stem.resize(stem.size() - 4);
+					std::string error;
+					const W3DFileContents *fx = waterAssets.Load_File(W3D_Asset_Path(stem, waterSource.FlatAssetLayout()), &error);
+					if (!fx) errors.push_back(toGodot("water material " + a.fxShader + ": " + error));
+					else for (const auto &mesh : fx->Meshes)
+						for (const auto &material : mesh.ShaderMaterials)
+							if (!authored) authored = WaterGeometry::readStandingMaterial(material, params);
 				}
-				else if (sh.is_valid())
+				if (!authored) materialStops.push_back(toGodot("[S-035] " + a.name + ": no WaterShader.FX material; effect defaults with map textures are an inferred legacy-water approximation"));
+				std::string technique;
+				int pcaMode = 0;
+				WaterGeometry::PcaBasis pcaBasis;
+				std::string pcaPath;
+				if (authored)
+				{
+					if (!techniquesRead)
+					{
+						techniquesRead = true;
+						std::vector<std::uint8_t> bytes;
+						std::string error;
+						if (!rfs.readBytes("shaders\\compiled\\watershader.fxo", bytes, &error) || !WaterGeometry::readEffectTechniques(bytes, waterTechniques, &error)) errors.push_back(toGodot("water techniques: " + error));
+					}
+					if (params.technique >= waterTechniques.size()) errors.push_back(toGodot("water material " + a.fxShader + ": technique index outside compiled effect"));
+					else technique = waterTechniques[params.technique];
+					if (technique == "PCA" || technique == "PCA_U")
+					{
+						pcaMode = technique == "PCA_U" ? 2 : 1;
+						if (params.pcaTexture[0].size() < 3 || AsciiStringUtil::compareNoCase(params.pcaTexture[0], "None") == 0)
+							errors.push_back(toGodot("water material " + a.fxShader + ": PCA technique lacks WaterPCATexture1"));
+						else
+						{
+							pcaPath = "art\\textures\\" + params.pcaTexture[0].substr(0, params.pcaTexture[0].size() - 3) + "basis";
+							std::vector<std::uint8_t> bytes;
+							std::string error;
+							if (!rfs.readBytes(pcaPath, bytes, &error) || !WaterGeometry::readPcaBasis(std::string(bytes.begin(), bytes.end()), pcaBasis, &error)) errors.push_back(toGodot(pcaPath + ": " + error));
+						}
+						materialStops.push_back(toGodot("[S-035] " + a.name + ": PCA normals and shoreline Gerstner geometry follow authored data; Godot clock, high-detail grid selection, planar reflections and shadow-map filtering remain unverified"));
+					}
+					else if (technique.compare(0, 3, "PCA") == 0) materialStops.push_back(toGodot("[S-035] " + a.name + ": unsupported PCA LOD technique " + technique + "; using reported bump approximation"));
+					else if (!technique.empty() && technique != "BumpSpecular_M") materialStops.push_back(toGodot("[S-035] " + a.name + ": technique " + technique + " uses the BumpSpecular_M approximation; its reflection/pass differences remain unported"));
+				}
+				Ref<ShaderMaterial> m;
+				if (sh.is_valid())
 				{
 					m.instantiate();
 					m->set_shader(sh);
 					m->set_render_priority(WATER_RENDER_PRIORITY);
-					// lane RENDER-3 (S-831): the standing water blends in the transparent pass, which the map root (a GammaCompositeHost) composites in retail's gamma
-					// space: the gamma-space colour is handed over unconverted
 					m->set_shader_parameter("output_gamma", 1.0f);
 					Array texErrors;
-					Ref<Texture2D> bump = loadTexture(rfs, a.bumpMapTexture, texErrors);
-					Ref<Texture2D> sky = loadTexture(rfs, a.skyTexture, texErrors);
-					Ref<Texture2D> lut = loadTexture(rfs, a.depthColors, texErrors, false);
-					if (bump.is_valid()) m->set_shader_parameter("bump_tex", bump);
-					if (sky.is_valid()) m->set_shader_parameter("sky_tex", sky);
-					if (lut.is_valid()) m->set_shader_parameter("tint_lut", lut);
-					m->set_shader_parameter("scroll_speed", a.uvScrollSpeed);
-					for (int64_t i = 0; i < texErrors.size(); ++i)
+					const std::string bumpName = params.bumpTexture.empty() ? a.bumpMapTexture : params.bumpTexture;
+					const std::string envName = params.envTexture.empty() ? a.skyTexture : params.envTexture;
+					if (!bumpName.empty()) { auto tex = loadTexture(rfs, bumpName, texErrors); if (tex.is_valid()) m->set_shader_parameter("bump_tex", tex); }
+					if (!envName.empty()) { auto tex = loadTexture(rfs, envName, texErrors); if (tex.is_valid()) m->set_shader_parameter("sky_tex", tex); }
+					if (!params.waveTexture.empty()) { auto tex = loadTexture(rfs, params.waveTexture, texErrors); if (tex.is_valid()) m->set_shader_parameter("wave_tex", tex); }
+					if (pcaMode && !pcaBasis.frames.empty())
 					{
-						errors.push_back(texErrors[i]);
+						PackedByteArray coefficients;
+						coefficients.resize((int64_t)pcaBasis.frames.size() * 10 * 4 * sizeof(float));
+						for (size_t row = 0; row < 10; ++row)
+							for (size_t frame = 0; frame < pcaBasis.frames.size(); ++frame)
+								std::memcpy(coefficients.ptrw() + (row * pcaBasis.frames.size() + frame) * 4 * sizeof(float), pcaBasis.frames[frame][row].data(), 4 * sizeof(float));
+						Ref<Image> image = Image::create_from_data((int)pcaBasis.frames.size(), 10, false, Image::FORMAT_RGBAF, coefficients);
+						m->set_shader_parameter("pca_coefficients", ImageTexture::create_from_image(image));
+						m->set_shader_parameter("pca_frame_rate", pcaBasis.speed * 30.0f); // BFME2 callbacks: SyncTime/1000 * client FPS, then basis speed
+						m->set_shader_parameter("pca_mode", pcaMode);
+						m->set_shader_parameter("wave_geometry_enabled", true);
+						for (int g = 0; g < 3; ++g)
+							m->set_shader_parameter(String("gerstner") + String::num_int64(g), Vector4(params.gerstner[g][0], params.gerstner[g][1], params.gerstner[g][2], params.gerstner[g][3]));
+						m->set_shader_parameter("pca_uv_scale", Vector2(params.pcaUV[0], params.pcaUV[1]));
+						m->set_shader_parameter("pca_wave_uv_scale", Vector2(params.pcaWaveUV[0], params.pcaWaveUV[1]));
+						auto pcaTexture = [&](const std::string &name, const String &uniform) {
+							if (name.empty() || AsciiStringUtil::compareNoCase(name, "None") == 0)
+								texErrors.push_back(String("PCA required texture is unset: ") + uniform);
+							else { auto tex = loadTexture(rfs, name, texErrors); if (tex.is_valid()) m->set_shader_parameter(uniform, tex); }
+						};
+						pcaTexture(params.pcaFrothTexture, "pca_froth_tex");
+						for (int texIndex = 0; texIndex < (pcaMode == 2 ? 3 : 2); ++texIndex)
+							pcaTexture(params.pcaTexture[texIndex], String("pca_tex") + String::num_int64(texIndex));
+						if (pcaMode == 2) pcaTexture(params.pcaNoiseTexture, "pca_noise_tex");
+						m->set_shader_parameter("specular_color", Vector3(params.specular[0], params.specular[1], params.specular[2]));
+						m->set_shader_parameter("reflection_perturbation", params.reflectionPerturbation);
 					}
-					matCache[key] = m;
+					m->set_shader_parameter("material_diffuse", Vector4(params.diffuse[0], params.diffuse[1], params.diffuse[2], params.diffuse[3]));
+					m->set_shader_parameter("dimming", params.dimming);
+					m->set_shader_parameter("bump_scale", params.bumpScale);
+					m->set_shader_parameter("specular_exponent", params.specularExponent);
+					m->set_shader_parameter("wind_angle", params.windAngle);
+					m->set_shader_parameter("wind_speed", params.windSpeed);
+					m->set_shader_parameter("wave_angle", params.waveAngle);
+					m->set_shader_parameter("wave_speed", params.waveSpeed);
+					m->set_shader_parameter("bump_uv_scale", Vector2(params.bumpUV[0], params.bumpUV[1]));
+					m->set_shader_parameter("env_uv_scale", Vector2(params.envUV[0], params.envUV[1]));
+					m->set_shader_parameter("wave_uv_scale", Vector2(params.waveUV[0], params.waveUV[1]));
+					if (waterLights.objects.count)
+					{
+						m->set_shader_parameter("light_direction", Vector3(waterLights.objects.toLight[0][0], waterLights.objects.toLight[0][1], waterLights.objects.toLight[0][2]));
+						m->set_shader_parameter("light_color", Vector3(waterLights.objects.color[0][0], waterLights.objects.color[0][1], waterLights.objects.color[0][2]));
+					}
+					else m->set_shader_parameter("light_color", Vector3());
+					m->set_shader_parameter("terrain_height_tex", heightTexture);
+					m->set_shader_parameter("terrain_origin", Vector2(-hm.m_borderSize * MAP_XY_FACTOR, -hm.m_borderSize * MAP_XY_FACTOR));
+					m->set_shader_parameter("terrain_size", Vector2(hm.m_width, hm.m_height));
+					m->set_shader_parameter("water_height", (float)a.waterHeight);
+					m->set_shader_parameter("max_alpha_depth", renderMap.chunks.environment.waterMaxAlphaDepth);
+					m->set_shader_parameter("deep_water_alpha", renderMap.chunks.environment.deepWaterAlpha);
+					m->set_shader_parameter("blend_terrain_alpha", params.blendTerrainAlpha);
+					for (int64_t j = 0; j < texErrors.size(); ++j) errors.push_back(texErrors[j]);
 				}
+				Dictionary materialInfo;
+				materialInfo["area"] = toGodot(a.name);
+				materialInfo["effect"] = toGodot(a.fxShader);
+				materialInfo["authored"] = authored;
+				materialInfo["technique_index"] = (int64_t)params.technique;
+				materialInfo["technique"] = toGodot(technique);
+				materialInfo["pca_enabled"] = pcaMode != 0 && !pcaBasis.frames.empty();
+				materialInfo["pca_basis"] = toGodot(pcaPath);
+				materialInfo["pca_frames"] = (int64_t)pcaBasis.frames.size();
+				materialInfo["pca_frame_rate"] = pcaBasis.speed * 30.0f;
+				materialInfo["color"] = Vector4(params.diffuse[0], params.diffuse[1], params.diffuse[2], params.diffuse[3]);
+				materialInfo["bump_uv_scale"] = Vector2(params.bumpUV[0], params.bumpUV[1]);
+				waterMaterials.push_back(materialInfo);
 				PackedVector3Array vtx;
 				PackedVector2Array uv;
 				PackedInt32Array idx;
-				vtx.resize((int64_t)a.points.size());
-				uv.resize((int64_t)a.points.size());
-				for (size_t i = 0; i < a.points.size(); ++i)
-				{
-					vtx.set((int64_t)i, toG(a.points[i].x, a.points[i].y, (float)a.waterHeight));
-					uv.set((int64_t)i, Vector2(a.points[i].x / 100.0f, a.points[i].y / 100.0f));
+
+				WaterGeometry::StandingGrid grid;
+				bool geometry = pcaMode && !pcaBasis.frames.empty();
+				PackedFloat32Array shore, direction;
+				if (geometry) {
+					if (!WaterGeometry::buildStandingGrid(a, renderMap.chunks.standingWaveAreas,
+						[&](float x,float y) { return terrain.getGroundHeight(x,y); }, grid)) {
+						errors.push_back(toGodot("water grid has no cells: " + a.name)); ++failed; continue;
+					}
+					tri = grid.indices;
+					vtx.resize(grid.vertices.size()); uv.resize(grid.vertices.size());
+					shore.resize(grid.vertices.size()*4); direction.resize(grid.vertices.size()*4);
+					int64_t active = 0;
+					for (size_t i=0;i<grid.vertices.size();++i) {
+						const auto &v=grid.vertices[i];
+						vtx.set(i,toG(v.point.x,v.point.y,float(a.waterHeight)));
+						uv.set(i,Vector2(v.point.x/100,v.point.y/100));
+						shore.set(i*4,v.nearest.x); shore.set(i*4+1,v.nearest.y);
+						shore.set(i*4+2,v.ground); shore.set(i*4+3,v.halfLength);
+						direction.set(i*4,v.direction.x); direction.set(i*4+1,v.direction.y);
+						direction.set(i*4+2,100); direction.set(i*4+3,0);
+						if (float(a.waterHeight)-v.ground<100 &&
+							std::hypot(v.point.x-v.nearest.x,v.point.y-v.nearest.y)<v.halfLength) ++active;
+					}
+					materialInfo["wave_vertices"] = active;
+					materialInfo["grid_spacing"] = grid.spacing;
+				} else {
+					vtx.resize(a.points.size()); uv.resize(a.points.size());
+					for (size_t i=0;i<a.points.size();++i) {
+						vtx.set(i,toG(a.points[i].x,a.points[i].y,float(a.waterHeight)));
+						uv.set(i,Vector2(a.points[i].x/100,a.points[i].y/100));
+					}
 				}
-				idx.resize((int64_t)tri.size());
-				memcpy(idx.ptrw(), tri.data(), tri.size() * sizeof(int32_t));
-				Array arrays;
-				arrays.resize(Mesh::ARRAY_MAX);
-				arrays[Mesh::ARRAY_VERTEX] = vtx;
-				arrays[Mesh::ARRAY_TEX_UV] = uv;
-				arrays[Mesh::ARRAY_INDEX] = idx;
+				materialInfo["vertices"] = vtx.size();
+				waterMaterials[waterMaterials.size()-1] = materialInfo;
+				idx.resize(tri.size());
+				memcpy(idx.ptrw(),tri.data(),tri.size()*sizeof(int32_t));
+				Array arrays; arrays.resize(Mesh::ARRAY_MAX);
+				arrays[Mesh::ARRAY_VERTEX]=vtx; arrays[Mesh::ARRAY_TEX_UV]=uv; arrays[Mesh::ARRAY_INDEX]=idx;
+				uint64_t format = 0;
+				if (geometry) {
+					arrays[Mesh::ARRAY_CUSTOM0]=shore; arrays[Mesh::ARRAY_CUSTOM1]=direction;
+					format = (uint64_t(Mesh::ARRAY_CUSTOM_RGBA_FLOAT)<<Mesh::ARRAY_FORMAT_CUSTOM0_SHIFT)
+						   | (uint64_t(Mesh::ARRAY_CUSTOM_RGBA_FLOAT)<<Mesh::ARRAY_FORMAT_CUSTOM1_SHIFT);
+				}
 				Ref<ArrayMesh> mesh;
 				mesh.instantiate();
-				mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+				mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, Array(), Dictionary(), format);
 				if (m.is_valid())
 				{
 					mesh->surface_set_material(0, m);
@@ -1097,17 +1251,30 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 				MeshInstance3D *mi = memnew(MeshInstance3D);
 				mi->set_name(toGodot(a.name.empty() ? "water" : a.name));
 				mi->set_mesh(mesh);
+				if (geometry) {
+					float margin=0;
+					for (auto &g:params.gerstner) {
+						margin += std::abs(g[0]*.075f);
+						if(g[1]!=0) margin += std::abs(g[3]*.33f/g[1]);
+					}
+					mi->set_extra_cull_margin(margin);
+				}
 				mi->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
 				waterRoot->add_child(mi);
 				++areas;
 				tris += (int64_t)tri.size() / 3;
 			}
 		}
+		w["max_alpha_depth"] = renderMap.chunks.environment.waterMaxAlphaDepth;
+		w["deep_water_alpha"] = renderMap.chunks.environment.deepWaterAlpha;
+		w["materials"] = waterMaterials;
+		w["material_stops"] = materialStops;
 		w["areas"] = areas;
 		w["triangles"] = tris;
 		w["triangulation_failed"] = failed;
 		w["areas_in_map"] = (int64_t)renderMap.chunks.standingWaterAreas.size();
-		w["wave_areas_not_rendered"] = (int64_t)renderMap.chunks.standingWaveAreas.size();
+		w["pca_wave_areas"] = (int64_t)std::count_if(renderMap.chunks.standingWaveAreas.begin(), renderMap.chunks.standingWaveAreas.end(), [](const StandingWaveArea &a) { return a.enablePcaWave != 0; });
+		w["wave_areas_not_rendered"] = (int64_t)std::count_if(renderMap.chunks.standingWaveAreas.begin(), renderMap.chunks.standingWaveAreas.end(), [](const StandingWaveArea &a) { return a.enablePcaWave == 0; });
 		m_report["water"] = w;
 	}
 
@@ -1118,6 +1285,30 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 		if (wantRivers && !renderMap.chunks.riverAreas.empty())
 		{
 			Ref<Shader> sh = loadShader("res://shaders/river.gdshader", errors);
+			// RiverWater.fx blends a river onto the frame with SRCALPHA / INVSRCALPHA, or SRCALPHA / ONE when the map marks it additive
+			// (RiverArea::additiveBlending). Godot fixes the blend in the shader's render mode, so additive rivers get a copy with blend_add.
+			Ref<Shader> additive;
+			if (sh.is_valid())
+			{
+				const String mixMode = "render_mode unshaded, blend_mix";
+				if (sh->get_code().contains(mixMode))
+				{
+					additive.instantiate();
+					additive->set_code(sh->get_code().replace(mixMode, "render_mode unshaded, blend_add"));
+				}
+				else
+				{
+					errors.push_back("river.gdshader: no \"" + mixMode + "\" render mode to make the additive copy from");
+				}
+			}
+			int64_t additiveRendered = 0;
+			float waterDiffuse[4];
+			std::string waterError;
+			if (!WaterSetScan::load(*arch, name, lighting ? lighting->timeOfDay : 2, waterDiffuse, &waterError))
+			{
+				errors.push_back(toGodot("water.ini: " + waterError));
+			}
+			float colour[4];
 			Node3D *riverRoot = memnew(Node3D);
 			riverRoot->set_name("Rivers");
 			root->add_child(riverRoot);
@@ -1137,12 +1328,13 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 				uv0.resize(n);
 				uv1.resize(n);
 				col.resize(n);
+				WaterGeometry::riverVertexColour(r, tod, waterDiffuse, colour);
 				for (int64_t i = 0; i < n; ++i)
 				{
 					vtx.set(i, toG(strip.position[(size_t)i * 3], strip.position[(size_t)i * 3 + 1], strip.position[(size_t)i * 3 + 2]));
 					uv0.set(i, Vector2(strip.uv0[(size_t)i * 2], strip.uv0[(size_t)i * 2 + 1]));
 					uv1.set(i, Vector2(strip.uv1[(size_t)i * 2], strip.uv1[(size_t)i * 2 + 1]));
-					col.set(i, Color(r.r / 255.0f, r.g / 255.0f, r.b / 255.0f, r.alpha));
+					col.set(i, Color(colour[0], colour[1], colour[2], colour[3]));
 				}
 				idx.resize((int64_t)strip.index.size());
 				memcpy(idx.ptrw(), strip.index.data(), strip.index.size() * sizeof(int32_t));
@@ -1158,7 +1350,7 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 				mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
 				Ref<ShaderMaterial> m;
 				m.instantiate();
-				m->set_shader(sh);
+				m->set_shader(r.additiveBlending ? additive : sh);
 				m->set_render_priority(RIVER_RENDER_PRIORITY);
 				// lane RENDER-3 (S-831): the river blends in the transparent pass, which the map root (a GammaCompositeHost) composites in retail's gamma
 				// space: the gamma-space colour is handed over unconverted
@@ -1176,6 +1368,7 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 				setTex("noise_tex", r.noiseTexture);
 				setTex("edge_tex", r.alphaEdgeTexture);
 				m->set_shader_parameter("uv_scroll_per_second", Vector2(r.uvScrollSpeed, r.uvScrollSpeed));
+				m->set_shader_parameter("opacity", r.alpha); // RiverWater.fx Opacity.w
 				for (int64_t i = 0; i < texErrors.size(); ++i)
 				{
 					errors.push_back(texErrors[i]);
@@ -1187,8 +1380,10 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 				mi->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
 				riverRoot->add_child(mi);
 				++rendered;
+				additiveRendered += r.additiveBlending ? 1 : 0;
 				tris += (int64_t)strip.index.size() / 3;
 			}
+			rv["additive"] = additiveRendered;
 		}
 		rv["rendered"] = rendered;
 		rv["triangles"] = tris;

@@ -31,6 +31,8 @@
 //   * MpGameSetup::OnTabSelect "RulesTab" refreshes the widgets.
 // OpenBFME: one more combo row after RotWK's in mode 0, "Legendary Heroes (OpenBFME rule)": Off / 2x / 3x / 4x (SkirmishGameSetup::setLegendaryHeroes);
 // Reset puts it back to Off.
+// OpenBFME (lane CHEAT-1): one more check row after RotWK's in mode 0, "Cheat Mode (OpenBFME rule)" (GameLogic/CheatMode.h: the host's open cheats, every
+// player sees the game marked), offered where cheatModeOffered() (never a Quick Match / tournament room); only the host changes it; Reset clears it.
 // INFERENCE (S-3600): the movie's generated rows read MpGameRules::NumComboBoxes: the extra row is a generated row like retail's (the movie is not
 // changed); the drop-down disable of a non-host (GadgetComboBoxHideDropDown) is the widget's disable here.
 
@@ -103,6 +105,16 @@ void selectComboValue(GameWindow *combo, int value)
 bool isCombo(GameWindow *w) { return (w->winGetStyle() & GWS_COMBO_BOX) != 0; }
 bool isCheck(GameWindow *w) { return (w->winGetStyle() & GWS_CHECK_BOX) != 0; }
 } // namespace
+
+int AptSkirmish::ruleCheckCount() const
+{
+	if (!m_setup)
+	{
+		return 0;
+	}
+	const int mode = m_setup->rulesMode();
+	return MpGameRules::numCheckBoxes(mode) + (mode == RULES_MODE_SKIRMISH && cheatModeOffered() ? 1 : 0);
+}
 
 int AptSkirmish::ruleComboCount() const
 {
@@ -177,7 +189,7 @@ bool AptSkirmish::tryPopulateRules()
 		return false;
 	}
 	const int mode = m_setup->rulesMode();
-	if ((int)m_ruleCombos.size() < ruleComboCount() || (int)m_ruleChecks.size() < MpGameRules::numCheckBoxes(mode))
+	if ((int)m_ruleCombos.size() < ruleComboCount() || (int)m_ruleChecks.size() < ruleCheckCount())
 	{
 		return false;
 	}
@@ -320,7 +332,21 @@ void AptSkirmish::populateRuleChecks()
 			window->winEnable(false);
 		}
 	}
-	while (row < count && (std::size_t)row < m_ruleChecks.size())
+	// OpenBFME (lane CHEAT-1): the Cheat Mode row follows RotWK's rows (mode 0, where offered)
+	if (mode == RULES_MODE_SKIRMISH && cheatModeOffered() && (std::size_t)row < m_ruleChecks.size() && m_ruleChecks[(std::size_t)row])
+	{
+		GameWindow *window = m_ruleChecks[(std::size_t)row];
+		m_cheatCheck = window;
+		windows().setAptText("APT:RuleCheckBox_" + std::to_string(row++), toUtf8(CheatModeRule::label()));
+		window->winHide(false);
+		updateCheatGadget();
+	}
+	else if (!cheatModeOffered() && m_setup->info().cheatModeOn())
+	{
+		m_setup->setCheatMode(false); // a screen that does not offer the row never keeps the rule
+	}
+	const int checkRows = ruleCheckCount();
+	while (row < checkRows && (std::size_t)row < m_ruleChecks.size())
 	{
 		GameWindow *window = m_ruleChecks[(std::size_t)row];
 		if (!window)
@@ -413,6 +439,7 @@ void AptSkirmish::refreshRuleGadgets()
 	}
 	updateLegendaryGadget();
 	updatePeaceGadget();
+	updateCheatGadget();
 }
 
 bool AptSkirmish::onRuleGadget(GameWindow *gadget)
@@ -421,6 +448,19 @@ bool AptSkirmish::onRuleGadget(GameWindow *gadget)
 	if (!gadget || !m_setup)
 	{
 		return false;
+	}
+	if (gadget == m_cheatCheck)
+	{
+		if (m_ruleInput && !m_refreshing)
+		{
+			if (!amIHost() || !m_setup->setCheatMode(GadgetCheckBoxIsChecked(gadget)))
+			{
+				updateCheatGadget(); // a client's change, or a setup that cannot take it, shows the model again
+				return true;
+			}
+			ruleChanged(-2, false);
+		}
+		return true;
 	}
 	if (gadget == m_fortressCombo)
 	{
@@ -621,4 +661,16 @@ bool AptSkirmish::setBrowserPeaceTime(int value)
  ruleChanged(-2, false);
  refreshRuleGadgets();
  return true;
+}
+
+void AptSkirmish::updateCheatGadget()
+{
+	if (!m_cheatCheck || !m_setup)
+	{
+		return;
+	}
+	m_ruleInput = false;
+	GadgetCheckBoxSetChecked(m_cheatCheck, m_setup->info().cheatModeOn());
+	m_cheatCheck->winEnable(amIHost());
+	m_ruleInput = true;
 }

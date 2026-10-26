@@ -4,6 +4,7 @@
 #include "Common/Thing/KindOfTokens.h"
 
 #include "Common/AsciiString.h"
+#include "Common/ModEngineFeatures.h"
 
 #include <algorithm>
 #include <string>
@@ -15,6 +16,22 @@ extern const char *const TheKindOfNames[];
 
 namespace
 {
+const char *const *extendedNames()
+{
+	static const std::vector<const char *> table = [] {
+		std::vector<const char *> t;
+		for (int i = 0; TheKindOfNames[i]; ++i)
+		{
+			t.push_back(TheKindOfNames[i]);
+		}
+		t.push_back("HEROBAR");       // bit 222 (Edain Unchained .hbar)
+		t.push_back("HEROBAR_GROUP"); // bit 223
+		t.push_back(nullptr);
+		return t;
+	}();
+	return table.data();
+}
+
 char lowerAscii(char c)
 {
 	return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c; // AsciiStringUtil::compareNoCase's folding
@@ -45,6 +62,11 @@ struct FoldedEqual
 };
 } // namespace
 
+const char *const *KindOfTokens::names()
+{
+	return ModEngineFeatures::has(ModEngineFeature::EdainUnchainedHerobarKindOf) ? extendedNames() : TheKindOfNames;
+}
+
 int KindOfTokens::indexOf(std::string_view name)
 {
  static const auto names = [] {
@@ -53,6 +75,10 @@ int KindOfTokens::indexOf(std::string_view name)
   for (int i = 0; TheKindOfNames[i]; ++i) table.emplace(TheKindOfNames[i], i);
   return table;
  }();
+ if (ModEngineFeatures::has(ModEngineFeature::EdainUnchainedHerobarKindOf)) {
+  if (FoldedEqual{}(name, "HEROBAR")) return 222;
+  if (FoldedEqual{}(name, "HEROBAR_GROUP")) return 223;
+ }
  const auto found = names.find(name);
  return found == names.end() ? -1 : found->second;
 }

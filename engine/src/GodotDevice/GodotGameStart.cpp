@@ -76,6 +76,12 @@ Dictionary newGameToDictionary(const NewGameMessage &m)
 	d["peace_time_minutes"] = m.game.peaceTimeMinutes;
 	d["lua_authority_slot"] = m.game.luaAuthoritySlot;
 	d["simulation_profile"] = (int)m.game.simulationProfile; // lane UBER-1: 0 Faithful, 1 Uber (Common/SimulationProfile.h)
+	// lane P16: the wire's extended GameInfo tag (NetPacket kExtendedGameInfoTag): a legacy game's dictionary stays exactly as it was
+	// (eight slots, no capacity key); an extended map's carries map_start_count (9..16) and all 16 slot entries
+	if (m.game.mapStartCount > LEGACY_MAX_SLOTS)
+	{
+		d["map_start_count"] = m.game.mapStartCount;
+	}
 	Array slots;
 	for (int i = 0; i < m.game.slotCount(); ++i)
 	{
@@ -169,6 +175,8 @@ bool newGameFromDictionary(const Dictionary &d, NewGameMessage &out, std::string
 	{
 		return fail("legendary_heroes " + std::to_string(m.game.legendaryHeroes) + " (1 .. 4)");
 	}
+	// lane CHEAT-1: "cheat_mode" (absent: -1, off); the seat must be a human slot (checked once the slots are read, below)
+	m.game.cheatMode = (int)(int64_t)d.get("cheat_mode", (int64_t)-1);
 	// lane UBER-1: the simulation profile (absent: Faithful, the setups before UBER-1); a value this build does not know is refused
 	const int64_t profile = (int64_t)d.get("simulation_profile", (int64_t)SimulationProfile::Faithful);
 	if (!simulationProfileValid((std::int32_t)profile))
@@ -196,6 +204,10 @@ bool newGameFromDictionary(const Dictionary &d, NewGameMessage &out, std::string
 		if (state < SLOT_OPEN || state > SLOT_PLAYER)
 		{
 			return fail("slot " + std::to_string(i) + " state " + std::to_string(state));
+		}
+		if (i >= m.game.mapStartCount && state != SLOT_CLOSED)
+		{
+			return fail("slot " + std::to_string(i) + " exceeds the map's start positions");
 		}
 		SkirmishGameSlot &s = m.game.slots[i];
 		s.state = (SlotState)state;
@@ -249,17 +261,43 @@ bool newGameFromDictionary(const Dictionary &d, NewGameMessage &out, std::string
 	return true;
 }
 
-void loadScreenFromDictionary(const Dictionary &d, LoadScreenInfo &out)
+bool loadScreenFromDictionary(const Dictionary &d, LoadScreenInfo &out, std::string *error)
 {
-	out = LoadScreenInfo();
-	out.gameLoadingType = (int)(int64_t)d.get("loading_type", (int64_t)0);
-	out.localCard = (int)(int64_t)d.get("local_card", (int64_t)0);
-	out.mapName = toNativeUtf8(d.get("map", String()));
-	const Array cards = d.get("cards", Array());
-	for (int64_t i = 0; i < cards.size() && i < MAX_LOAD_SLOTS; ++i)
+	auto fail = [&](const std::string &why) {
+		if (error) *error = why;
+		return false;
+	};
+	for (const char *key : { "map_start_count", "loading_type", "local_card" })
 	{
+		if (d.has(key) && d[key].get_type() != Variant::INT) return fail(std::string(key) + " must be an integer");
+	}
+	LoadScreenInfo info;
+	const int64_t capacity = d.get("map_start_count", (int64_t)LEGACY_MAX_SLOTS);
+	if (capacity < LEGACY_MAX_SLOTS || capacity > MAX_LOAD_SLOTS) return fail("loading map capacity must be 8 .. 16");
+	info.mapStartCount = (int)capacity;
+	info.gameLoadingType = (int)(int64_t)d.get("loading_type", (int64_t)0);
+	const int64_t local = d.get("local_card", (int64_t)0);
+	if (local < 0 || local >= capacity) return fail("local loading card outside map capacity");
+	info.localCard = (int)local;
+	if (d.has("map") && d["map"].get_type() != Variant::STRING) return fail("loading map must be a string");
+	info.mapName = toNativeUtf8(d.get("map", String()));
+	if (d.has("cards") && d["cards"].get_type() != Variant::ARRAY) return fail("loading cards must be an array");
+	const Array cards = d.get("cards", Array());
+	if (cards.size() > capacity) return fail("loading cards exceed map capacity");
+	for (int64_t i = 0; i < cards.size(); ++i)
+	{
+		if (cards[i].get_type() != Variant::DICTIONARY) return fail("loading card must be a dictionary");
 		const Dictionary cd = cards[i];
-		LoadScreenSlotInfo &s = out.cards[i];
+		for (const char *key : { "rank", "team", "color" })
+		{
+			if (cd.has(key) && cd[key].get_type() != Variant::INT) return fail(std::string("loading card ") + key + " must be an integer");
+		}
+		for (const char *key : { "name", "army", "load_music" })
+		{
+			if (cd.has(key) && cd[key].get_type() != Variant::STRING) return fail(std::string("loading card ") + key + " must be a string");
+		}
+		if (cd.has("occupied") && cd["occupied"].get_type() != Variant::BOOL) return fail("loading card occupied must be a boolean");
+		LoadScreenSlotInfo &s = info.cards[i];
 		s.occupied = (bool)cd.get("occupied", true);
 		s.playerName = godotToU16(cd.get("name", String()));
 		s.armyName = godotToU16(cd.get("army", String()));
@@ -268,5 +306,7 @@ void loadScreenFromDictionary(const Dictionary &d, LoadScreenInfo &out)
 		s.color = (std::uint32_t)(int64_t)cd.get("color", (int64_t)0);
 		s.loadMusic = toNativeUtf8(cd.get("load_music", String()));
 	}
+	out = std::move(info);
+	return true;
 }
 } // namespace godot

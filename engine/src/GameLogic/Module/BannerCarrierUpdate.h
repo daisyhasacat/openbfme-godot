@@ -62,6 +62,8 @@ public:
 	BannerCarrierUpdate(Thing *thing, const BannerCarrierUpdateModuleData *data);
 	static void registerClass(ModuleFactory &modules);
 	UpdateSleepTime update() override; // RW 0x89ACE4
+	// lane BANNER-1: the update interface vtable RW 0xC65ED4 slot 1 is RW 0x855830: the carrier also runs while DISABLED_HELD (3), e.g. inside a garrison
+	DisabledMaskType getDisabledTypesToProcess() const override { return (DisabledMaskType)(1u << 3); }
 	const BannerCarrierUpdateModuleData &data() const { return *m_data; }
 	unsigned long long membersSpawned() const { return m_spawned; }
 	void applyMorph(const std::string &unitType);
@@ -71,6 +73,7 @@ public:
 	friend struct Horde2HashAccess; // the HORDE-2 hash mutation tests (test_horde2_hash.cpp)
 
 private:
+	bool spawnMember(); // RW 0x89A392
 	const BannerCarrierUpdateModuleData *m_data;
 	unsigned long long m_spawned = 0;
 };

@@ -14,6 +14,8 @@
 #include "GodotDevice/GodotAptPlayer.h"
 
 #include <godot_cpp/classes/rendering_server.hpp>
+#include <godot_cpp/classes/control.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/classes/theme_db.hpp>
 #include <godot_cpp/variant/packed_color_array.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
@@ -414,6 +416,7 @@ Dictionary Hud6Draw::state() const
 		side["calls"] = sc;
 	}
 	out["side_bar"] = side;
+	out["message_top"] = m_messageTop;
 	return out;
 }
 

@@ -10,8 +10,10 @@
 //     through RW 0x7313B3: the list is walked from its END to its start; a library already loaded for this side is skipped (the set at arg 4);
 //     RW 0x730E1C reads the library map; its SECOND side (+ 0xA0, when the library has at least two sides) holds the scripts: that side's own
 //     LibraryMaps are loaded first (recursion), then its ScriptList is appended to the side's accumulated list (RW 0x7B937D), then the
-//     library's teams are added to the game when no team of that name exists (RW 0x72D943), owned by the side. RW 0x72FE23 merges the accumulated
-//     list into the side's list.
+//     library's teams are collected (RW 0x7314C2 ff): every team of the library (its team list, + 0xF44) whose teamOwner is not empty and that
+//     is not its owner's default team (teamName "team" + teamOwner, RW 0x72D943) is copied with teamOwner = the side's playerName (and the
+//     library's name under the key RW 0xDA2D24: not kept here, nothing reads it); there is no test for a team of that name already existing (RW 0x72F3FF appends). RW 0x72FE23
+//     merges the accumulated script list into the side's list and the collected teams in front of the game's teams (+ 0xF44, RW 0x72D05B).
 //   * SidesList::prepareForMP_or_Skirmish (RW 0x73193D) drops the map's Player_N sides with their scripts (RW 0x72F201 after RW 0x7B7315) and
 //     keeps the neutral side, "PlyrCivilian" and "PlyrCreeps"; it adds a temporary side "SkirmishHuman" whose playerAIType is "Multiplayer_Human"
 //     (RW 0x731C69) and loads every side's libraries (RW 0x7318A1).
@@ -23,6 +25,7 @@
 
 #pragma once
 
+#include "Common/Dict.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
 #include "Common/Dict.h"
 
@@ -50,8 +53,10 @@ public:
 		const std::set<std::string> &droppedMapSides, const std::vector<std::string> &aiTypes, std::string *error);
 
 	const std::vector<ScriptEngine::SideScripts> &sides() const { return m_sides; }
-	std::vector<std::string> notes() const { return m_notes; }
+	// the teams the slot sides' libraries add (RW 0x7313B3 / 0x6B07EF), owned by the side, in load order: added to the game's sides before
+	// PlayerList::newGame makes the team prototypes
 	const std::vector<Dict> &libraryTeams() const { return m_libraryTeams; }
+	std::vector<std::string> notes() const { return m_notes; }
 
 private:
 	bool loadLibrary(ArchiveFileSystem &fs, const std::string &path, ScriptEngine::SideScripts &side, std::set<std::string> &loaded, int depth,
@@ -61,6 +66,7 @@ private:
 
 	std::vector<std::unique_ptr<LoadedMap>> m_libraries;
 	std::vector<ScriptEngine::SideScripts> m_sides;
-	std::vector<std::string> m_notes;
 	std::vector<Dict> m_libraryTeams;
+	std::set<std::string> m_teamSides; ///< the sides whose libraries' teams are collected (a started game's slot sides)
+	std::vector<std::string> m_notes;
 };

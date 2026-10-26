@@ -190,7 +190,7 @@ struct AIBaseTemplate
 	std::vector<int> playerPositions;   ///< + 0x0C (RW 0x42EC7A appends)
 	bool allowsArbitraryRotation = true; ///< + 0x18 AllowsArbirtaryRotation (the INI's spelling); the ctor sets 1
 	std::vector<AIBaseStructure> structures; ///< + 0x1C the layout (RW 0x82F2E9 appends; loadBaseLayouts)
-	bool layoutLoaded = false;          ///< its .bse was read (a missing file is an error)
+	bool layoutLoaded = false;          ///< its .bse was read (lane MODS-2: a missing file leaves it false, as retail; a bad one is an error)
 };
 
 // PlayerAIType (0x10 bytes: name + 0, LibraryMap + 4; RW 0x615487 reads the name then the block)
@@ -205,6 +205,7 @@ class SkirmishAIStore
 {
 public:
 	explicit SkirmishAIStore(NameKeyGenerator &keys) : m_keys(keys) {}
+	const std::vector<std::string> &missingLayouts() const { return m_missingLayouts; }
 
 	// registers SkirmishAIData, ArmyDefinition, AIBase, AIDozerAssignment and PlayerAIType (each must not be registered yet)
 	void registerBlocks(INIBlockRegistry &blocks);
@@ -270,6 +271,7 @@ public:
 	void parsePlayerAIType(INI *ini);
 
 private:
+	std::vector<std::string> m_missingLayouts; // lane MODS-2
 	NameKeyGenerator &m_keys;
 	SkirmishAIData m_data;
 	unsigned m_dataBlocks = 0;

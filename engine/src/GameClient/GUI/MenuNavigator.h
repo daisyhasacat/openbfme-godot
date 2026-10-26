@@ -12,8 +12,8 @@
 //     Skirmish.apt's alpha 0 one behind its Profile pop-up, not a control);
 //   * the level's gadgets (WindowManager component windows: combo boxes, check boxes, sliders, text entries, list boxes, push buttons) shown and enabled;
 //   * a screen's own targets (MenuNavigationSource: the OpenBFME page's tabs and rows).
-// A click-away area that covers the stage (the main menu's nav clips put one behind an open sub-menu: SoloPlayNav's alpha 0 button over everything, which
-// closes the sub-menu when the pointer reaches it) is how a mouse leaves a sub-menu: when a key finds no target its way (an arrow at the edge, Tab past
+// A click-away area that covers the stage (Skirmish's Profile nav puts one behind its open sub-menu) closes the sub-menu when the pointer reaches it.
+// It is how a mouse leaves that sub-menu: when a key finds no target its way (an arrow at the edge, Tab past
 // the last) or Back is pressed while one is up, the pointer goes onto a point only that area takes, the movie closes the sub-menu, and the next key goes
 // on from where the focus was.
 // Focus: Tab / Shift+Tab walk them in reading order (top to bottom, then left to right), the arrows go to the nearest target that way; the focused

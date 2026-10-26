@@ -96,7 +96,7 @@ public:
 	// the lobby messages' version (a message of another version is refused by name): 2 (lane HERO-2): the GameInfo slots' Create-a-Hero records,
 	// OPT_SLOT_CREATE_A_HERO; 3 (lane OWNERFIX-2): the GameInfo slots' handicaps and the slot request's handicap
 	// Version 4 merges peace time, Lua authority and fortress construction with handicaps.
-	static constexpr std::uint8_t kProtocolVersion = 4;
+	static constexpr std::uint8_t kProtocolVersion = 5; // combined upstream Cheat Mode and fork setup extensions
 	enum ReturnType // ZH LANAPIInterface::ReturnType
 	{
 		RET_OK,
@@ -263,7 +263,7 @@ private:
 	void resetPlatforms();
 	static void applySlotRequest(SkirmishGameInfo &info, int slot, int playerTemplate, int color, int team, int startPos, int handicap);
 	// lane MP-2 (review): a field of a slot request is kKeep, -1 or within its range; a GameInfo's every slot field is -1 or within its range
-	bool slotRequestValid(int playerTemplate, int color, int team, int startPos, int handicap, std::string *why) const;
+	bool slotRequestValid(const SkirmishGameInfo &info, int playerTemplate, int color, int team, int startPos, int handicap, std::string *why) const;
 	bool gameInfoValid(const SkirmishGameInfo &info, std::string *why) const;
 	int slotOf(const NetAddress &lobbyAddress) const;
 	void event(Event e) { m_events.push_back(std::move(e)); }

@@ -2,6 +2,7 @@
 // See GameLogic/NewGame/NewGame.h.
 
 #include "GameLogic/NewGame/NewGame.h"
+#include "Common/ExtendedPlayerColors.h"
 #include "Common/NumericState.h"
 
 #include "GameLogic/NewGame/SkirmishRandom.h"
@@ -77,6 +78,30 @@ bool NewGame::prepareNewGame(const NewGameMessage &in, const PlayerTemplateStore
 	if (!mapNameOfKey(info.mapName, start.mapName))
 	{
 		return failWith(error, "the map cache key '" + info.mapName + "' is not maps/<name>/<name>.map");
+	}
+	if (!MapCache::validateStartPositions(*entry, error))
+	{
+		return false;
+	}
+	start.mapPlayerCount = entry->numPlayers;
+	info.mapStartCount = entry->numPlayers > LEGACY_MAX_SLOTS ? entry->numPlayers : LEGACY_MAX_SLOTS;
+	bool assigned[MAX_SLOTS]{};
+	for (int i = 0; i < MAX_SLOTS; ++i)
+	{
+		const SkirmishGameSlot &slot = info.slots[i];
+		if (!slot.isOccupied() || slot.playerTemplate == PLAYERTEMPLATE_OBSERVER) continue;
+		if (slot.startPos < -1 || slot.startPos >= entry->numPlayers)
+		{
+			return failWith(error, "slot " + std::to_string(i + 1) + ": invalid explicit start position " + std::to_string(slot.startPos));
+		}
+		if (slot.startPos >= 0)
+		{
+			if (assigned[slot.startPos])
+			{
+				return failWith(error, "slot " + std::to_string(i + 1) + ": duplicate explicit start position " + std::to_string(slot.startPos));
+			}
+			assigned[slot.startPos] = true;
+		}
 	}
 	start.localSlot = -1;
 	for (int i = 0; i < info.slotCount(); ++i)

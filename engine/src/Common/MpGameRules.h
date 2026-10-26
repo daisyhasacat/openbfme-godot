@@ -148,3 +148,5 @@ inline std::u16string choiceText(int minutes)
  return std::u16string(text.begin(), text.end()) + u" minutes";
 }
 }
+
+namespace CheatModeRule { std::u16string label(); }

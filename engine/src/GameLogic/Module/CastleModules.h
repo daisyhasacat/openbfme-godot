@@ -208,6 +208,11 @@ public:
 	const std::string &explicitTemplateName() const { return m_explicitTemplate; }
 	// RW 0x79AC19
 	void registerOwnedObject(Object &obj);
+	void rebindKeep(ObjectID replaced, Object &piece)
+	{
+		if (m_keepId == replaced) m_keepId = INVALID_ID;
+		if (m_keepId == INVALID_ID) { registerOwnedObject(piece); m_state = STATE_UNPACKED; }
+	}
 	// BFME1 Gen00371340StructureCompletionScan: available construction pad.
 	bool hasFreeBuildSlot(const ThingTemplate *tt) const;
 	Object *buildInSlot(const ThingTemplate &tt, int slot) { return preBuild(tt, slot, false); }

@@ -700,7 +700,7 @@ TEST_CASE("local sixteen: sixteen slots resolve unique starts among thirty-two w
  Store st;
  MapCacheEntry map=evendim();map.numPlayers=32;map.startPositions.clear();
  for(int i=0;i<32;++i) map.startPositions[i+1]=Coord3D{float(i%8)*1000,float(i/8)*1000,0};
- SkirmishGameInfo info;CHECK(info.slotCount()==8);info.slots.resize(MAX_LOCAL_SLOTS);
+ SkirmishGameInfo info;CHECK(info.slotCount()==16);CHECK(info.serializedSlotCount()==8);info.slots.resize(MAX_LOCAL_SLOTS);info.mapStartCount=MAX_LOCAL_SLOTS;
  for(int i=0;i<16;++i) {auto &s=info.slots[i];s.state=i==0?SLOT_PLAYER:SLOT_HARD_AI;s.startPos=-1;s.color=-1;s.playerTemplate=4;s.teamNumber=i/4;}
  SkirmishResolveInput input;input.templates=&st.store;input.numColors=16;input.map=&map;
  GameLogicRandom rng(RandomAlgorithm::ZH_CarryChain);rng.initGameLogicRandom(4811,-1);

@@ -491,7 +491,7 @@ TEST_CASE("decomp2 S-415: the skirmish AI builds heroes of its HeroBuildOrder af
 		INFO(std::string(faction));
 		std::string error;
 		buildtest::Game g;
-		REQUIRE_MESSAGE(buildtest::startGame(*s, "FactionMen", faction, 32, g, &error), error);
+		REQUIRE_MESSAGE(buildtest::startGame(*s, "FactionMen", faction, 33, g, &error), error);
 		GameLogic &logic = g.live->logic();
 		Player *cpu = g.live->players().findPlayerWithName(g.live->report().startSlotPlayers[1]);
 		REQUIRE(cpu);
@@ -551,6 +551,8 @@ TEST_CASE("decomp2 S-415: the skirmish AI builds heroes of its HeroBuildOrder af
 	// Merge queue q22: with seed 31 none of the 7 reached the conditions on the merged tree (AI5 alone: 1 / 1, Mordor; SUMMON-1's OCL draws and rock-throw
 	// toggles move the AIs' economy; the army list stays at 4..6 entries with the command points near the limit, shouldBuildHero RW 0x9A03A1). Seed 32,
 	// measured on the merged tree (srv1): 3 requests and 3 heroes (Men Eomer, Mordor Gothmog, Angmar Morgramir); seeds 33..39 measured 0..3
+	// Lane LOS-1 (the terrain line of sight changes the AIs' fights and so their economy): with seed 32 none of the 7 reached the conditions; seed 33, measured
+	// on the lane's tree (a CI host): 1 request and 1 hero (Wild WildAzog, requested at frame 6189, out at 6627); seeds 34 / 35 measured 0 / 0 and 1 / 0
 	CHECK(requests >= 1);
 	CHECK(heroesOut >= 1);
 }

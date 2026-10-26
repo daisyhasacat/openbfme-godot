@@ -1,6 +1,6 @@
 # OpenBFME changelog
 
-What changed in each release, newest first, in the shape of the release pages (Added, Changed, Bug fixes, Removed; bullets under an
+Selected historical release notes, newest first, in the shape of the release pages (Added, Changed, Bug fixes, Removed; bullets under an
 area). The release pages on [GitHub](https://github.com/Open-BFME/openbfme-godot/releases) are the source for every release, with
 the download table and the known issues of that build; this file keeps the history that used to sit in the README, and the first
 alpha builds' notes. The rules for writing the lines are in [RELEASE.md](RELEASE.md), "Notes".

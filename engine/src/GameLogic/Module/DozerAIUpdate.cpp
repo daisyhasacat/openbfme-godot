@@ -2,6 +2,9 @@
 // See GameLogic/Module/DozerAIUpdate.h for the sources of every rule.
 
 #include "GameLogic/Module/DozerAIUpdate.h"
+#include "GameLogic/Module/WorkerAIUpdate.h"
+#include "Common/ModEngineFeatures.h"
+#include "GameLogic/Economy.h"
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
 
 #include "Common/Audio/AudioRequests.h"
@@ -19,10 +22,12 @@
 #include "GameLogic/FindPositionAround.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Locomotor.h"
+#include "GameLogic/Map/TerrainTrees.h"
 #include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/Module/ConstructionModules.h"
 #include "GameLogic/Module/UnportedModule.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/ObjectGeometry.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/UnitSpecificSound.h"
@@ -31,6 +36,7 @@
 #include "Common/INI/HostRealText.h"
 
 #include <cstdlib>
+#include <stdexcept>
 
 namespace
 {
@@ -173,15 +179,7 @@ void DozerAIUpdate::registerClass(ModuleFactory &modules)
 
 void DozerAIUpdate::registerWorkerClass(ModuleFactory &modules)
 {
-	modules.bindModuleProc("WorkerAIUpdate", MODULETYPE_BEHAVIOR, [](Thing *thing, const ModuleData *data, const ModuleFactory::ModuleTemplate &info) -> std::unique_ptr<Module> {
-		if (!thing->asObject() || !thing->asObject()->logic().aiWorld())
-		{
-			return makeUnportedModule(thing, data, info.name, info.type, info.interfaceMask);
-		}
-		auto dozer = std::make_unique<DozerAIUpdate>(thing, data);
-		dozer->m_isWorker = true;
-		return dozer;
-	});
+	WorkerAIUpdate::registerClass(modules); // lane LUMBER1: the dozer half here, the supply half in WorkerAIUpdate
 }
 
 DozerAIUpdate::~DozerAIUpdate()
@@ -437,6 +435,20 @@ bool DozerAIUpdate::placeUnplacedStructure()
 	{
 		return true;
 	}
+	// lane TREES1: RW 0x88D4F4 .. 0x88D533: a structure that is neither NO_COLLIDE (template + 0x10B bit 6) nor DO_NOT_CLASSIFY (+ 0x11A bit 5) takes the site:
+	// clearRemovableForConstruction (RW 0x796576) and moveObjectsForConstruction (RW 0x797465) are not run here (S-304), then removeTreesForConstruction
+	// (RW 0x684BCA) with the structure's position, geometry and angle: the trees, shrubs and props under it go
+	static const int noCollide = ObjectTemplateInfoBuilder::kindOfIndex("NO_COLLIDE");
+	static const int doNotClassify = ObjectTemplateInfoBuilder::kindOfIndex("DO_NOT_CLASSIFY");
+	if (noCollide < 0 || doNotClassify < 0)
+	{
+		throw std::logic_error("dozer placement: the KindOf names NO_COLLIDE / DO_NOT_CLASSIFY are not known");
+	}
+	if (!obj->isKindOf((unsigned)noCollide) && !obj->isKindOf((unsigned)doNotClassify))
+	{
+		const ThingTemplate &tt = *static_cast<const ThingTemplate *>(obj->getTemplate())->getFinalOverride();
+		obj->logic().trees().removeTreesForConstruction(*obj->getPosition(), ObjectGeometry::shapesOf(tt), obj->getOrientation());
+	}
 	if (ActiveBody *body = dynamic_cast<ActiveBody *>(obj->getBodyModule()))
 	{
 		body->internalChangeHealth(SimMath::fstpDword(SimMath::pc24SubW(1.0, (double)body->getHealth())));
@@ -614,7 +626,7 @@ void DozerAIUpdate::commandAccepted(CommandSourceType source, int command, Objec
 	{
 		primarySetState(PRIMARY_IDLE);
 	}
-	if (source != CMD_FROM_PLAYER || command == 0x13 || command == 0x14 || command == 0x34)
+	if (source != CMD_FROM_PLAYER || command == 0x13 || command == 0x14 || (command == 0x34 && !m_isWorker)) // lane LUMBER1: RW 0x8AE798 has no 0x34 case
 	{
 		return;
 	}
@@ -1119,23 +1131,28 @@ UpdateSleepTime DozerAIUpdate::update()
 		primarySetState(PRIMARY_IDLE); // RW 0x88C1C1: the machine made and its default state entered
 	}
 	AIUpdateInterface::update(); // RW 0x66E58F
-	Object *self = getObject();
-	if (!self->isEffectivelyDead())
+	if (!getObject()->isEffectivelyDead())
 	{
-		if (m_currentTask == DOZER_TASK_REPAIR && !canRepair(*self, self->logic().findObjectByID(getTaskTarget(DOZER_TASK_REPAIR))))
-		{
-			cancelTaskInternal(DOZER_TASK_REPAIR); // RW 0x88CB6D (the ActionManager's test RW 0x82D7F2: S-1282)
-		}
-		// the primary machine (ZH StateMachine::updateStateMachine)
-		const int before = m_primaryState;
-		int status = before == PRIMARY_IDLE ? primaryUpdateIdle() : actionUpdate(before - PRIMARY_BUILD);
-		if (m_primaryState != before)
-		{
-			status = STATE_CONTINUE;
-		}
-		primaryCheckTransitions(status);
+		dozerMachineStep();
 	}
 	return UPDATE_SLEEP_NONE;
+}
+
+void DozerAIUpdate::dozerMachineStep()
+{
+	Object *self = getObject();
+	if (m_currentTask == DOZER_TASK_REPAIR && !canRepair(*self, self->logic().findObjectByID(getTaskTarget(DOZER_TASK_REPAIR))))
+	{
+		cancelTaskInternal(DOZER_TASK_REPAIR); // RW 0x88CB6D (the ActionManager's test RW 0x82D7F2: S-1282)
+	}
+	// the primary machine (ZH StateMachine::updateStateMachine)
+	const int before = m_primaryState;
+	int status = before == PRIMARY_IDLE ? primaryUpdateIdle() : actionUpdate(before - PRIMARY_BUILD);
+	if (m_primaryState != before)
+	{
+		status = STATE_CONTINUE;
+	}
+	primaryCheckTransitions(status);
 }
 
 void DozerAIUpdate::crc(StateHasher &h) const

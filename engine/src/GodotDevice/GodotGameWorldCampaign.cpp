@@ -4,6 +4,7 @@
 // campaign progress sidecar. Nothing here writes logic state beyond the load options.
 
 #include "GodotDevice/GodotGameWorld.h"
+#include "Common/PathIO.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
 
 #include "Common/Player.h"
@@ -512,8 +513,8 @@ Dictionary GameWorld::get_movie(const String &title)
 		d["error"] = g(m_videosError);
 		return d;
 	}
-	// the loose movies live in the RotWK install (RetailFileSystem::mount_retail's root); no mod directory (S-1710: TheGlobalData + 0xD38 is the mod
-	// lane's), the language of this install's archives (lang\English*.big)
+	// the loose movies live in the RotWK install (RetailFileSystem::mount_retail's root); the mounted -mod folder is RW 0x490D1C's "Mod Path" (lane MODS-1:
+	// TheGlobalData + 0xD38, RetailFileSystem::modFolder), the language of this install's archives (lang\English*.big)
 	std::string root, error;
 	const std::string config = n(ProjectSettings::get_singleton()->globalize_path("user://install-paths.cfg"));
 	if (m_fs.is_valid() && m_fs->is_bfme1()) root = m_fs->bfme1_root();
@@ -522,20 +523,11 @@ Dictionary GameWorld::get_movie(const String &title)
 		d["error"] = g(error);
 		return d;
 	}
-	// retail asks the registry for the language (RW 0x6416AC); here: the install's language archive lang\<Language>Audio.big (none: "", that directory
-	// is then not searched)
-	std::string language;
-	std::error_code ec;
-	for (std::filesystem::directory_iterator it(std::filesystem::path(root) / "lang", ec), end; !ec && it != end; it.increment(ec))
-	{
-		const std::string f = it->path().filename().string();
-		if (f.size() > 9 && AsciiStringUtil::compareNoCase(f.substr(f.size() - 9), "Audio.big") == 0)
-		{
-			language = f.substr(0, f.size() - 9);
-		}
-	}
+	// retail asks the registry for the language (RW 0x6416AC); here: the install's language archive lang\<Language>.big, as the mount detects it
+	// (RetailArchivePolicy.h "Languages"; none: "", that directory is then not searched)
+	const std::string language = DetectRetailLanguageOfInstall(root);
 	const AudioIniState &audio = m_world->audio();
-	const VideoStreamInfo info = m_videos->open(n(title), root, std::string(), language, [&audio](const std::string &e) { return audio.infos.find(e) != nullptr; });
+	const VideoStreamInfo info = m_videos->open(n(title), root, m_fs.is_valid() ? m_fs->modFolder() : std::string(), language, [&audio](const std::string &e) { return audio.infos.find(e) != nullptr; });
 	d["ok"] = info.ok;
 	d["error"] = g(info.error);
 	d["path"] = g(info.path);

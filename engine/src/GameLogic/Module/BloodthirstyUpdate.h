@@ -58,6 +58,7 @@ public:
 	void addSacrifice(Object *victim);
 	void cancelSacrifice();
 	const std::string &initiateVoice() const;
+	const std::string &initiateVoice2() const;
 
 	ObjectID bestTargetID() const { return m_bestTargetID; }
 	ObjectID sacrificerID() const { return m_sacrificerID; }

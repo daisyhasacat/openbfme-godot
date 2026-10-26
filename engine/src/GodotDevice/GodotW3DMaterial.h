@@ -18,8 +18,10 @@
 //  * mapper phase is per material, shared by every instance that uses it (WW3D keeps it per render object).
 
 #pragma once
+#include "GameClient/AssetPacks.h"
 #include "Common/TextureSwap.h"
 
+#include "GameClient/AssetPacks.h"
 #include "GameEngineDevice/W3DDevice/GameClient/HouseColor.h"
 #include "Libraries/WWVegas/WW3D2/mapper.h"
 #include "Libraries/WWVegas/WW3D2/meshrender.h"
@@ -73,6 +75,7 @@ struct W3DMaterialResult
 class W3DMaterialFactory
 {
 public:
+	void Set_Asset_Packs(const AssetPacks *packs) { Packs = packs; }
 	explicit W3DMaterialFactory(ArchiveFileSystem &fs);
 	~W3DMaterialFactory();
 	W3DMaterialFactory(const W3DMaterialFactory &) = delete;
@@ -125,6 +128,7 @@ private:
 
 	ArchiveFileSystem &Fs;
 	const HouseColorTable *HouseColors = nullptr;
+	const AssetPacks *Packs = nullptr; // lane SDK-0
 	HouseColorParams HouseParams;
 	std::vector<TextureSwap> TextureSwaps; // stop S-4832
 	bool AlphaOverride = false;

@@ -7,6 +7,8 @@
 //   edge   = texture(OpacitySampler, uv1)     (the "alpha edge" texture)
 //   rgb    = vtx.rgb*river.rgb + edge.rgb + sparkle.rgb*noise.rgb
 //   a      = river.a * vtx.a * edge.a * Opacity.w;  rgb *= shroud
+// blended SRCALPHA / INVSRCALPHA, or SRCALPHA / ONE for a river the map marks additive: GodotMapTerrain gives those a
+// copy of this shader with blend_add in place of blend_mix.
 // Space: mesh in Godot's frame (x, z, -y); world.xy = (G.x, -G.z).
 //
 // UV layout follows BFME2 W3DWaterDrawRiverWater.cpp RVA 0x100A0B:
@@ -41,12 +43,12 @@ varying vec2 v_clip_xy;
 varying vec2 v_shroud_uv;
 
 void vertex() {
-	float origin = TIME * uv_scroll_per_second.x;
-	float v = UV.y + sin(6.28318530718 * UV.y - 3.0 * origin) / 22.0 - origin;
-	v_river_uv = vec2(UV.x, v);
-	v_edge_uv = vec2(UV2.x, v);
 	vec2 world_xy = vec2(VERTEX.x, -VERTEX.z);
 	v_noise_uv = world_xy * 0.0625 + TIME * uv_scroll_per_second;
+	float origin = TIME * uv_scroll_per_second.y;
+	float v = UV.y + sin(6.28318531 * UV.y - 3.0 * origin) / 22.0 - origin;
+	v_river_uv = vec2(UV.x, v);
+	v_edge_uv = vec2(UV2.x, v);
 	vec3 shroud_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	v_shroud_uv = (vec2(shroud_world.x, -shroud_world.z) - shroud_origin) / shroud_extent;
 	v_clip_xy = vec2(shroud_world.x, -shroud_world.z);

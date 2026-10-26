@@ -56,9 +56,16 @@ void TargetFinder::rebuild()
 	refreshTeams();
 }
 
-void TargetFinder::collectInRadius(const Coord3D &center, float radius, std::vector<Object *> &out)
+void TargetFinder::collectInRadius(const Coord3D &center, float radius, std::vector<Object *> &out, std::uint32_t layers)
 {
 	collectInRadius(center, radius, out, nullptr);
+	out.erase(std::remove_if(out.begin(), out.end(), [layers](Object *o) {
+		const Team *team = o->getTeam();
+		const Player *player = o->getControllingPlayer();
+		if (!team || !player || team->hasRelationshipOverrides()) return false;
+		const int index = player->getPlayerIndex();
+		return index >= 0 && index < 32 && !(layers & (std::uint32_t(1) << index));
+	}), out.end());
 }
 
 void TargetFinder::refreshTeams()
