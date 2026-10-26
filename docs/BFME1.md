@@ -3,13 +3,20 @@
 BFME1 is an experimental, separate game mode. It uses a BFME1 installation for
 both menus and gameplay, without mixing in BFME2 or RotWK data.
 
-Build the extension normally, then launch:
+From the checkout root on **Linux or macOS (POSIX shell)**, with a matching
+Godot 4.7 editor binary on `PATH`, the GDExtension already built into
+`godot/bin/`, and BFME1 data in `games/BFME1`, launch:
 
 ```sh
-BFME1_INSTALL="/path/to/BFME1" godot --path godot -- --game=bfme1
+BFME1_INSTALL="$PWD/games/BFME1" godot --path godot -- --game=bfme1
 ```
 
-Alternatively pass `--bfme1-install=/path/to/BFME1` alongside `--game=bfme1`.
+Alternatively pass `--bfme1-install="$PWD/games/BFME1"` alongside `--game=bfme1`.
+Replace the folder relative to the checkout with your installation; `$PWD`
+resolves it before Godot changes its working directory. On **Windows cmd.exe**, use
+`build.bat` with MSVC/Ninja first, then run the Godot 4.7 console executable
+with `--path godot -- --game=bfme1 --bfme1-install="%CD%/games/BFME1"`; the POSIX
+environment-variable prefix above is not Windows command syntax.
 The installation must contain its BIG archives, including `apt` and `lang`.
 Installed patch archives are included in BFME1 archive order; launcher-generated
 `!!!` graphics overrides are excluded and named in the mount report (`excluded_archives`). This mode fingerprints the installed
@@ -18,7 +25,8 @@ manifest. The existing RotWK verification policy is unchanged.
 
 The launcher offers **Battle for Middle-earth I** in the Play screen's game selector
 and passes the asset folder when starting BFME1 (`BFME1_INSTALL`, a remembered
-`BFME1_INSTALL=` in the launcher's config, `<games folder>/BFME1`, or an existing
+`BFME1_INSTALL=` in the game's `install-paths.cfg`, `downloaded-installs.cfg`
+or `downloaded-bfme1.cfg`, the default games folder's `BFME1`, or an existing
 macOS AIO installation). The command-line equivalent is `--game=bfme1 --play` on
 the launcher; the selection persists. With **Battle for Middle-earth I** chosen,
 **Game files** offers an OPTIONAL download of BFME1 1.03 (the `original-BFME1`
@@ -44,7 +52,9 @@ Its archive fingerprint cache is `bfme1-archive-cache.cfg` in the user data fold
 
 ## Source and implementation
 
-The donor checkout is `../Open-BFME-1` (inspected at `77b050212e`). Relevant sources:
+The BFME1 donor was inspected at `77b050212e`. Keep a local reference checkout
+under `workspace/reference/open-bfme-1`; paths below are relative to that
+donor, not this checkout. Relevant sources:
 
 - `game/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem_loadBigFiles.cpp`:
   descending archive order, first archive wins.
@@ -79,7 +89,7 @@ BFME1 support never changes RotWK / BFME2 behaviour (community PR #36 review). `
   `flatLayout`), which the simulation's asset manager (launch bones) also reads.
 - **Client paths with nothing to ask** (the texture decoder's PNG / JPEG sniffing, the Apt VM's type-8 constants, floor picking) ask
   `bfme1Mounted()`, set by the BFME1 mount once its archives pass `isBfme1Data` and cleared otherwise. It never decides a game rule.
-- What BFME1 mode infers rather than ports is stop **S-5017** (docs/STOPS.md), in the BFME1 mount's report.
+- What BFME1 mode infers rather than ports is stop **S-5017** ([STOPS.md](STOPS.md)), in the BFME1 mount's report.
 
 ## How the BFME1 data differs
 
@@ -171,6 +181,18 @@ These are the places where BFME1's data or menus differ from RotWK's. Each one i
 - **Pause menu:** BFME1 uses type-8 `PushData` constants to reference the active constant pool. Resolving these initializes each button's own text and callback, including the Restart/Exit confirmations.
 - **Keys and voices:** only `Data\INI\CommandMap.ini` exists (there's no root `CommandMap.ini`), and there's no
   `CrowdResponse.ini`, because BFME1 has no crowd responses.
+- **Legacy behavior fields:** `DynamicPortalBehaviour` reads `AllowKindOf` and `RejectKindOf` only for BFME1 data.
+  A unit must match any allowed kind and no rejected kind; an explicitly empty allow mask admits nothing.
+  These become the shared waypoint filter with an ANY rule, not ordinary Object fields. Sources: Open-BFME-1
+  `DynamicPortalBehaviourRva001F96E0.cpp` and `Map/Waypoint_method001ABBB0.cpp`.
+  The default allows all defined kinds and rejects none. Rejecting `CAVALRY` also rejects units with the
+  `MOUNTED` model condition, even without the cavalry kind. This does not establish full BFME1 waypoint parity.
+  `BloodthirstyUpdate` also reads BFME1's `NumToSacrifice` (default 1) and `InitiateVoice2` without widening
+  BFME2/RotWK's field tables. The second initiation voice plays alongside the first, independently of crowd responses
+  (`MessageStream/CommandXlatVoice.cpp`, case `0x7E9` and its two-slot playback tail).
+  The recovered BFME1 `Update/Rva00287290Update.cpp` awards experience on every accepted sacrifice, as the shared
+  runtime does; it does not gate experience on `NumToSacrifice`. That field is retained, but any further purpose is
+  unverified, so no quota-based veterancy rule is invented.
 - **Main menu:** `MainMenu.apt` shows its menu bar only when `ShowMainMenu()` is called. INFERENCE: BFME1's
   `OnInitialized` makes that call (Open-BFME-1 declares `_bfme_onInitialized` without its body). Its button instance
   names don't match the buttons: the clip named `Skirmish` is the Campaign button, and `Tutorial` is Skirmish. Scripts
@@ -196,21 +218,39 @@ to start a BFME2 linear campaign. BFME1 currently uses the English language view
 
 ## Checks
 
-Synthetic CSF tests are included in `openbfme_tests --test-case='GameText:*'`.
+Synthetic CSF tests are included in `openbfme_tests --test-case="GameText:*"`.
+Legacy portal filtering, both bloodthirsty voice slots, per-sacrifice experience, and BFME2/RotWK rejection are
+covered by `openbfme_tests --test-case="bfme1 isolation:*"`. A core-only installed-data check can run without Godot:
+
+```sh
+BFME1_INSTALL="$PWD/games/BFME1" engine/build/openbfme_tests \
+  --test-case="bfme1 isolation retail: installed BFME1 object world*"
+```
+
+It mounts BIG archives in BFME1 order (excluding launcher-generated `!!!` overrides), checks every subsystem parse
+error, and verifies the castle-upgrade parent and child templates load. Without `BFME1_INSTALL` it prints SKIP;
+that is not a passed installed-data check. It does not launch gameplay or write player settings.
+
+Run `engine/build/openbfme_tests --test-case="GameText:*"` from the checkout
+root on Linux after building the core tests (Windows: `engine\build\openbfme_tests.exe`
+with the same argument). No retail data is needed for these synthetic tests.
+The following **Linux/macOS POSIX-shell** checks use the editor binary, not an
+export template, and require the built extension and BFME1 data described above.
 The installed-data smoke test is:
 
 ```sh
-BFME1_INSTALL="/path/to/BFME1" godot --headless --path godot \
+BFME1_INSTALL="$PWD/games/BFME1" godot --headless --path godot \
   --script res://tests/bfme1_test.gd
 ```
 
 It checks object loading, the real main menu and Skirmish shell, and a
-Gondor-versus-Mordor Fords of Isen game. It skips when `BFME1_INSTALL` is unset.
+Gondor-versus-Mordor Fords of Isen game. It prints `BFME1 SKIP` and exits 0
+when `BFME1_INSTALL` is unset; that exit is not a passed installed-data test.
 
 The whole launch, scripted with real mouse events (main menu → Solo Play → Skirmish → persona → Start → 10 s of play):
 
 ```sh
-BFME1_INSTALL="/path/to/BFME1" godot --headless --path godot -- --game=bfme1 --auto --check --advance=10 \
+BFME1_INSTALL="$PWD/games/BFME1" godot --headless --path godot -- --game=bfme1 --auto --check --advance=10 \
   "--map=maps/map mp fords of isen/map mp fords of isen.map" --faction=FactionGondor
 ```
 

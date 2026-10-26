@@ -695,3 +695,11 @@ std::vector<std::string> RetailObjectWorld::acceptanceStops() const
 	}
 	return out;
 }
+
+std::vector<std::string> RetailObjectWorld::loadNotes() const
+{
+	std::vector<std::string> out = m_s->m_upgrades.unknownSubUpgrades();
+	const std::vector<std::string> &bases = m_s->m_skirmishAI->missingLayouts();
+	out.insert(out.end(), bases.begin(), bases.end());
+	return out;
+}

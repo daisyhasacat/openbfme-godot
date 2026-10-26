@@ -76,8 +76,7 @@ struct ShellFx
 		REQUIRE(prefs.load(file));
 		std::vector<std::uint8_t> bytes;
 		std::string error;
-		REQUIRE_MESSAGE(mount.fs.readFile("data/lotr.str", bytes, &error), error);
-		REQUIRE_MESSAGE(text.table.parse(bytes, &error), error);
+		REQUIRE_MESSAGE(text.table.loadRetail(mount.fs, &error), error); // data/lotr.str, or a non-English install's lotr.csf
 		environment.options = &prefs;
 		environment.optionsFile = file;
 		environment.gameText = &text;
@@ -919,10 +918,15 @@ TEST_CASE("play2 options retail: GameLOD.ini's presets give the nine settings of
 	CHECK_FALSE(fx.wm->hasProvider("AdvancedOption9Num")); // the movie asks for ten, RotWK registers nine (RW 0x9213EE)
 	const std::string *model = fx.wm->aptText("APT:AdvancedOption0");
 	REQUIRE(model);
-	CHECK(*model == "Model Detail");
+	CHECK(model->find("MISSING") == std::string::npos);
 	const std::string *ultra = fx.wm->aptText("APT:AdvancedOption0_3");
 	REQUIRE(ultra);
-	CHECK(*ultra == "Ultra High");
+	CHECK(ultra->find("MISSING") == std::string::npos);
+	if (!retailtest::skipUnlessEnglish("play2 options: the English advanced labels"))
+	{
+		CHECK(*model == "Model Detail");
+		CHECK(*ultra == "Ultra High");
+	}
 	const std::string *custom = fx.wm->aptText("APT:MasterOption0_Custom");
 	REQUIRE(custom);
 	CHECK(custom->find("MISSING") == std::string::npos);
@@ -997,7 +1001,18 @@ TEST_CASE("play2 options retail: Advanced shows the nine option rows with their 
 		{ "AdvancedOption6", { "Texture Quality", "2 High" } }, { "AdvancedOption7", { "Shader Detail", "2 High" } },
 		{ "AdvancedOption8", { "Decal Detail", "2 High" } },
 	};
-	CHECK(rows == want);
+	// every language: nine rows, each with its option's name and a value, no placeholder left; the words in English
+	CHECK(rows.size() == want.size());
+	for (const auto &r : rows)
+	{
+		CHECK_MESSAGE(want.count(r.first) == 1, r.first);
+		CHECK_MESSAGE((!r.second.first.empty() && r.second.first != "Option Name" && r.second.first.find("MISSING") == std::string::npos), r.first);
+		CHECK_MESSAGE((!r.second.second.empty() && r.second.second != "Current Option" && r.second.second.find("MISSING") == std::string::npos), r.first);
+	}
+	if (!retailtest::skipUnlessEnglish("play2 options: the English advanced rows"))
+	{
+		CHECK(rows == want);
+	}
 	// VFX Detail's first choice (VeryLow): the movie's SetCustom writes the template and the level Custom through the externs (lane OPTS-2: Model
 	// Detail's row, which the device does not draw yet, is greyed and takes no click: S-3402)
 	AptCharacterInst *level = fx.wm->apt().level(fx.shell->top()->level());
@@ -1701,6 +1716,16 @@ TEST_CASE("opts4 gadget layer retail: an open drop-down list is drawn after ever
 
 	// clicked: the entry "Enhanced", at a point inside the row below, is the list's
 	const float clickX = 755.0f, clickY = 275.0f; // inside the list's second entry (268 .. 290) and inside the row below (254 .. 280)
+	SUBCASE("uninterrupted dropdown") {}
+	SUBCASE("destroying an unrelated combo during hover preserves the open list")
+	{
+		GameWindow *transient = fx.layer->createEngineGadget("window/apt/combobox.wnd", 0, 0, 200, 26, nullptr, &error);
+		REQUIRE_MESSAGE(transient, error);
+		fx.layer->mouseMove(clickX, clickY);
+		fx.layer->destroyEngineGadget(transient);
+		REQUIRE(fx.layer->openDropDown() == look);
+		REQUIRE_FALSE(lookList->winIsHidden());
+	}
 	clickStage(fx, clickX, clickY);
 	const std::vector<OpenBFMEPageEvent> events = options->takeExtensionEvents();
 	REQUIRE(events.size() == 1);
@@ -2453,9 +2478,17 @@ TEST_CASE("opts5 options retail: the original game's rows carry its names and he
 		CHECK_FALSE_MESSAGE(r->enabled, key);
 	}
 	// the string file's text, a full stop where it has none, then OpenBFME's reason
-	CHECK(gameText(fx, "ToolTip:Settings/EAX") == u"Enables EAX sound if you have an EAX compatible sound card");
-	CHECK(rowOf(rows, "Retail.EAX3").help == u"Enables EAX sound if you have an EAX compatible sound card. OpenBFME has no EAX3 sound.");
-	CHECK(rowOf(rows, "Retail.OnlineIp").help == gameText(fx, "TOOLTIP:OnlineIP") + u". Can be changed from the Options of the online screens.");
+	const std::u16string eax = gameText(fx, "ToolTip:Settings/EAX");
+	const bool stop = !eax.empty() && (eax.back() == u'.' || eax.back() == u'!' || eax.back() == u'?');
+	CHECK(rowOf(rows, "Retail.EAX3").help == eax + (stop ? u" " : u". ") + u"OpenBFME has no EAX3 sound.");
+	if (!retailtest::skipUnlessEnglish("opts5 options: the English EAX tooltip"))
+	{
+		CHECK(eax == u"Enables EAX sound if you have an EAX compatible sound card");
+		CHECK(rowOf(rows, "Retail.EAX3").help == u"Enables EAX sound if you have an EAX compatible sound card. OpenBFME has no EAX3 sound.");
+	}
+	const std::u16string ip = gameText(fx, "TOOLTIP:OnlineIP");
+	const bool ipStop = !ip.empty() && (ip.back() == u'.' || ip.back() == u'!' || ip.back() == u'?');
+	CHECK(rowOf(rows, "Retail.OnlineIp").help == ip + (ipStop ? u" " : u". ") + u"Can be changed from the Options of the online screens.");
 	CHECK(rowOf(rows, "Retail.OnlinePortNum").kind == OpenBFMEPageRow::Kind::Entry);
 	CHECK(rowOf(rows, "Retail.RefreshNat").kind == OpenBFMEPageRow::Kind::Text);
 }
@@ -2747,8 +2780,15 @@ TEST_CASE("opts5 options retail: Show All Health Bars greyed by the detail level
 	AptOptionsScreen *options = openMenu(fx, false);
 	std::vector<OpenBFMEPageRow> rows = options->retailRows();
 	const std::u16string own = gameText(fx, "TOOLTIP:Options/tooltipEnableHealthBars");
+	// English's tooltip has no full stop, so a ". " comes before OpenBFME's sentence; a language whose tooltip ends with one gets a space
+	const bool stop = !own.empty() && (own.back() == u'.' || own.back() == u'!' || own.back() == u'?');
+	const std::u16string reasoned = own + (stop ? u" " : u". ") + u"This detail level already shows every health bar.";
+	if (retailtest::installLanguage() == "English")
+	{
+		CHECK_FALSE(stop);
+	}
 	CHECK_FALSE(rowOf(rows, "Retail.HealthBars").enabled);
-	CHECK(rowOf(rows, "Retail.HealthBars").help == own + u". This detail level already shows every health bar.");
+	CHECK(rowOf(rows, "Retail.HealthBars").help == reasoned);
 	// a level that allows it: no reason; a custom Decal Detail Off: the reason again
 	std::string error;
 	REQUIRE(options->setRetailValue("Retail.Detail", 1, &error)); // GUI:High
@@ -2758,7 +2798,7 @@ TEST_CASE("opts5 options retail: Show All Health Bars greyed by the detail level
 	REQUIRE(options->setRetailValue("Retail.AdvancedOption8", 0, &error)); // Decal Detail Off, Custom
 	rows = options->retailRows();
 	CHECK_FALSE(rowOf(rows, "Retail.HealthBars").enabled);
-	CHECK(rowOf(rows, "Retail.HealthBars").help == own + u". This detail level already shows every health bar.");
+	CHECK(rowOf(rows, "Retail.HealthBars").help == reasoned);
 }
 
 // ---- lane OPTS-6: menus that are exact, modal and usable without a mouse ---------------------------------------------------------------------------
@@ -3195,17 +3235,19 @@ int menuAcceptUpdates(AptRetail &mount, const std::string &buttonName)
 
 // Before: the page took the bottom bar's clicks only from a button named "bttn" (RotWK 2.01's Options.apt). BFME2 1.06's movie leaves it unnamed,
 // so in the BFME2 style the click reached the movie, which played its closing animation before it sent AptOptions::Save: ACCEPT came back 0.55 s late
-// (measured in the game: 33 frames at 60 Hz) where the RotWK style took 2 frames.
-TEST_CASE("shellfix1 options retail: the OpenBFME menu's ACCEPT goes back to the main menu on the next update in both styles' Options.apt")
+// (measured in the game: 33 frames at 60 Hz) where the RotWK style took 2 frames. Lane MENUSND-1: the bar click is the page's only once the movie's
+// input has drained the press (the movie step that plays the button's click, test "menusnd1 options retail" above), so ACCEPT takes that step, then one
+// update: 2 in both styles.
+TEST_CASE("shellfix1 options retail: the OpenBFME menu's ACCEPT goes back to the main menu after the press's movie step in both styles' Options.apt")
 {
 	OPENBFME_REQUIRE_RETAIL(mount);
-	CHECK(menuAcceptUpdates(mount, "bttn") == 1);
+	CHECK(menuAcceptUpdates(mount, "bttn") == 2);
 	retailtest::Mount *bfme2 = retailtest::bfme2Mount();
 	REQUIRE(bfme2);
 	REQUIRE_MESSAGE(bfme2->fs, bfme2->error);
 	AptRetail bfme2Only{ *bfme2->fs };
 	REQUIRE(bfme2Only.fs.getArchiveFilenameForFile("Options.apt").find("options.big") != std::string::npos); // BFME2 1.06's own movie
-	CHECK(menuAcceptUpdates(bfme2Only, "") == 1); // an unnamed button (the player's list_buttons calls it "instance14")
+	CHECK(menuAcceptUpdates(bfme2Only, "") == 2); // an unnamed button (the player's list_buttons calls it "instance14")
 }
 
 // Retail's own ACCEPT (the reference for the menu's): RotWK 2.01's Options.apt plays its closing animation, then sends AptOptions::Save (RW 0x91FC9C),

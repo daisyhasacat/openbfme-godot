@@ -177,6 +177,22 @@ SkirmishGameSetup makeSetup(FakeSetup &source, MapGameText &text)
 	return SkirmishGameSetup(source, &text);
 }
 
+TEST_CASE("localized text: lobby starting cash uses a typed amount")
+{
+	FakeSetup source;
+	MapGameText text;
+	SkirmishGameSetup setup = makeSetup(source, text);
+	struct Case { const char16_t *pattern; const char16_t *expected; };
+	for (const Case &c : { Case{ u"$%d", u"$1000" }, Case{ u"%s", u"1000" }, Case{ u"%n", u"%n" }, Case{ u"%x", u"%x" },
+		Case{ u"%p", u"%p" }, Case{ u"%999999d", u"%999999d" }, Case{ u"%", u"%" }, Case{ u"%ls/%S/%d", u"1000//" }, Case{ u"plain", u"plain" } })
+	{
+		text.labels["GUI:StartingMoneyFormat"] = c.pattern;
+		const auto entries = setup.startingCashEntries();
+		REQUIRE(entries.size() == 3);
+		CHECK(entries[1].text == c.expected);
+	}
+}
+
 } // namespace
 
 // ============================================================================================================================
@@ -777,7 +793,7 @@ TEST_CASE("retail lobby: the gadgets are populated from the INI factions, colour
 	CHECK(fx.layer->errors().empty());
 	CHECK(fx.screen->initializedCount() == 1);
 	const SkirmishGameSetup &setup = *fx.screen->setup();
-	for (int slot = 0; slot < MAX_SLOTS; ++slot)
+	for (int slot = 0; slot < LEGACY_MAX_SLOTS; ++slot)
 	{
 		GameWindow *player = fx.screen->slotGadget(slot, "Player");
 		REQUIRE(player);
@@ -993,7 +1009,7 @@ TEST_CASE("retail lobby API: StartGame with more players than the map holds is r
 		}
 	}
 	REQUIRE(map);
-	for (int slot = 1; slot < MAX_SLOTS; ++slot)
+	for (int slot = 1; slot < LEGACY_MAX_SLOTS; ++slot)
 	{
 		GadgetComboBoxSetSelectedPos(fx.screen->slotGadget(slot, "Player"), 2, false); // every slot an easy AI
 	}
@@ -1005,7 +1021,7 @@ TEST_CASE("retail lobby API: StartGame with more players than the map holds is r
 	CHECK(fx.sink.refusals[0].first.empty()); // lane GAMEMODES-1: MessageBoxOk(L"", text), RW 0x928482
 	CHECK(fx.sink.refusals[0].second == asciiToU16("Too many players: the map has " + std::to_string(map->numPlayers)));
 	// slots over the map's size are closed again: the lobby starts
-	for (int slot = (int)map->numPlayers; slot < MAX_SLOTS; ++slot)
+	for (int slot = (int)map->numPlayers; slot < LEGACY_MAX_SLOTS; ++slot)
 	{
 		GadgetComboBoxSetSelectedPos(fx.screen->slotGadget(slot, "Player"), 1, false); // Closed
 	}
@@ -1162,10 +1178,11 @@ TEST_CASE("stops S-178 / S-179: the lobby reports its inferences, the profile ga
 	CHECK(fx.screen->setup()->info().slots[0].handicap == -25);
 	GadgetComboBoxSetSelectedPos(handicap, 0, false);
 	CHECK(fx.screen->setup()->info().slots[0].handicap == 0);
-	// lane RULES-1: the rule rows of mode 0 (RW 0x960A46 / 0x960A5D: 2 combos + OpenBFME's Legendary Heroes row, 3 check boxes); the clan tab answers 0
+	// lane RULES-1: the rule rows of mode 0 (RW 0x960A46 / 0x960A5D: 2 combos + OpenBFME's Legendary Heroes row, 3 check boxes + lane CHEAT-1's Cheat
+	// Mode row); the clan tab answers 0
 	std::string value;
 	REQUIRE(fx.wm->getExtern("MpGameRules::NumCheckBoxes", value) == AptExternResult::Value);
-	CHECK(value == "3");
+	CHECK(value == "4");
 	REQUIRE(fx.wm->getExtern("MpGameRules::NumComboBoxes", value) == AptExternResult::Value);
 	CHECK(value == "5");
 	REQUIRE(fx.wm->getExtern("AptMpGameRules::ShowClans", value) == AptExternResult::Value);
@@ -1544,7 +1561,7 @@ TEST_CASE("retail lobby input: StartGame with more players than the map holds is
 		}
 	}
 	REQUIRE(map);
-	for (int slot = 1; slot < MAX_SLOTS; ++slot)
+	for (int slot = 1; slot < LEGACY_MAX_SLOTS; ++slot)
 	{
 		chooseComboRow(fx, fx.screen->slotGadget(slot, "Player"), 2); // easy AI
 	}
@@ -1557,7 +1574,7 @@ TEST_CASE("retail lobby input: StartGame with more players than the map holds is
 	REQUIRE(fx.sink.refusals.size() == 1);
 	CHECK(fx.sink.refusals[0].first.empty()); // lane GAMEMODES-1: MessageBoxOk(L"", text), RW 0x928482
 	CHECK(fx.sink.refusals[0].second == asciiToU16("Too many players: the map has " + std::to_string(map->numPlayers)));
-	for (int slot = (int)map->numPlayers; slot < MAX_SLOTS; ++slot)
+	for (int slot = (int)map->numPlayers; slot < LEGACY_MAX_SLOTS; ++slot)
 	{
 		chooseComboRow(fx, fx.screen->slotGadget(slot, "Player"), 1); // closed
 	}
@@ -1628,7 +1645,7 @@ TEST_CASE("fb7 retail lobby input: a click on a start spot gives it to the playe
 	CHECK(spots[0]->winGetText().empty());
 	CHECK(spots[0]->winGetInstanceData()->getTooltipText() == u"Start position");
 	// lane ONLINE-5: the skirmish panel has no Ready column (no flag 0x20): every Ready box of the movie was told "_none" (RW 0x84211D)
-	for (int slot = 0; slot < MAX_SLOTS; ++slot)
+	for (int slot = 0; slot < LEGACY_MAX_SLOTS; ++slot)
 	{
 		CHECK_MESSAGE(fx.screen->readyIcon(slot) == "_none", "slot " << slot);
 	}
@@ -1854,7 +1871,10 @@ TEST_CASE("rules1 retail lobby: the Rules tab shows RotWK's rows (Initial Resour
 	CHECK(fx.screen->ruleWindow(RULE_CLAN_GAME) == nullptr);
 	CHECK(GadgetCheckBoxIsChecked(fx.screen->ruleCheckWindow(0)));
 	CHECK(GadgetCheckBoxIsChecked(fx.screen->ruleCheckWindow(1)));
-	CHECK(fx.screen->ruleCheckWindow(2)->winIsHidden());
+	// lane CHEAT-1: OpenBFME's Cheat Mode row follows RotWK's rows (off), the clan row's place stays hidden after it
+	CHECK(fx.screen->cheatModeWindow() == fx.screen->ruleCheckWindow(2));
+	CHECK_FALSE(fx.screen->ruleCheckWindow(2)->winIsHidden());
+	CHECK_FALSE(GadgetCheckBoxIsChecked(fx.screen->ruleCheckWindow(2)));
 	CHECK(fx.screen->ruleCheckWindow(3)->winIsHidden());
 	// the row texts (RW 0x986B1C / 0x986810)
 	const std::string *t0 = fx.wm->aptText("APT:RuleComboBox_0");
@@ -1881,6 +1901,9 @@ TEST_CASE("rules1 retail lobby: the Rules tab shows RotWK's rows (Initial Resour
 	CHECK_FALSE(fx.screen->slotGadget(0, "Hero")->winGetEnabled()); // RW 0x842A85
 	GadgetComboBoxSetSelectedPos(legendary, 3, false);
 	CHECK(fx.screen->setup()->info().legendaryHeroes == 4);
+	// lane CHEAT-1: the host's Cheat Mode box puts the cheat seat on the host's slot
+	GadgetCheckBoxToggle(fx.screen->cheatModeWindow());
+	CHECK(fx.screen->setup()->info().cheatMode == 0);
 
 	// Reset (RW 0x98674C): the defaults, the widgets follow
 	fx.wm->invokeCallback("AptMpGameRules::Reset", "");
@@ -1895,6 +1918,7 @@ TEST_CASE("rules1 retail lobby: the Rules tab shows RotWK's rows (Initial Resour
 	// the game starts with the rules of the tab
 	GadgetComboBoxSetSelectedPos(cash, 4, false);
 	GadgetComboBoxSetSelectedPos(legendary, 3, false);
+	GadgetCheckBoxToggle(fx.screen->cheatModeWindow()); // lane CHEAT-1
 	fx.wm->invokeCallback("AptSkirmish::StartGame", "");
 	fx.tick(2);
 	REQUIRE(fx.sink.messages.size() == 1);
@@ -1902,6 +1926,7 @@ TEST_CASE("rules1 retail lobby: the Rules tab shows RotWK's rows (Initial Resour
 	CHECK(msg.game.rules[RULE_INITIAL_RESOURCES] == 1400);
 	CHECK(msg.game.rules[RULE_COMMAND_POINT_FACTOR] == 100);
 	CHECK(msg.game.legendaryHeroes == 4);
+	CHECK(msg.game.cheatMode == 0); // lane CHEAT-1
 	CHECK(msg.game.startingCash == -1);
 }
 

@@ -2,7 +2,9 @@
 // Expected values are hand-computed from the cited ZH formulas (W3DRoadBuffer.cpp) and geometry.
 
 #include "doctest.h"
+#include "BigTestUtil.h"
 
+#include "Common/ArchiveFile.h"
 #include "Common/LooseFileScan.h"
 #include "GameClient/MapStops.h"
 #include "GameClient/MapWeather.h"

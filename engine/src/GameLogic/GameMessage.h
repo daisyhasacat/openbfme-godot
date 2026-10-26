@@ -174,8 +174,16 @@ enum GameMessageType : int
 	MSG_END_NETWORK_MESSAGES = 1148,
 	MSG_OPENBFME_OBJECTIVES_OPEN = 0x7002, // local single-player UI state, not a retail message number
 	MSG_OPENBFME_CAMERA_TRAVEL = 0x7001, // local single-player tutorial input, never a retail message number
+	MSG_OPENBFME_CHEAT = 32001,
 	MSG_OPENBFME_LUA_ACTION = 0x7000 // enhanced command; never a retail message number
 };
+
+// lane CHEAT-1: a type the network, the replay and the logic dispatcher carry: retail's logic range plus MSG_OPENBFME_CHEAT
+inline bool IsNetworkLogicMessageType(int type)
+{
+	return (type > MSG_BEGIN_NETWORK_MESSAGES && type < MSG_END_NETWORK_MESSAGES) || type == MSG_OPENBFME_CHEAT || type == MSG_OPENBFME_LUA_ACTION
+		|| type == MSG_OPENBFME_CAMERA_TRAVEL || type == MSG_OPENBFME_OBJECTIVES_OPEN;
+}
 
 // RW recorder readArgument order
 enum GameMessageArgumentDataType
@@ -203,7 +211,7 @@ struct GameMessageArgument
 	Coord3D location;
 };
 
-// the name of a logic message type ("MSG_QUEUE_UNIT_CREATE"), or "" for a number outside 1000 .. 1148
+// the name of a logic message type ("MSG_QUEUE_UNIT_CREATE"), or "" for a number outside 1000 .. 1148 and not MSG_OPENBFME_CHEAT
 const char *GameMessageTypeName(int type);
 
 class GameMessage

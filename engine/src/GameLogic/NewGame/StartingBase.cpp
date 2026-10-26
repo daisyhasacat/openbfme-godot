@@ -7,6 +7,7 @@
 #include "Common/Team.h"
 #include "Common/Thing/ThingFactory.h"
 #include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/Combat/CombatQueries.h"
 #include "GameLogic/Construction.h"
 #include "GameLogic/BitFlags.h"
 #include "GameLogic/ObjectTemplateInfo.h"

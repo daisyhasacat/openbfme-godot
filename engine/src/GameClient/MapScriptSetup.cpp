@@ -10,6 +10,8 @@
 #include "GameLogic/Map/SidesList.h"
 #include "GameLogic/SkirmishAI/SkirmishAIData.h"
 
+#include <algorithm>
+
 MapScriptSetup::MapScriptSetup() = default;
 MapScriptSetup::~MapScriptSetup() = default;
 
@@ -69,6 +71,17 @@ bool MapScriptSetup::loadLibrary(ArchiveFileSystem &fs, const std::string &path,
 	}
 	if (!lib)
 	{
+		if (!fs.doesFileExist(path))
+		{
+			// lane MODS-3: RW 0x730E1C opens the library's file (RW 0x70983C); a file that does not open answers NULL (RW 0x730E75) and the caller skips
+			// the library (RW 0x731433). Edain 4.8.5.3's maps name Libraries\Bauplatz\Bauplatz.map, which it does not ship
+			const std::string note = "script library " + path + " does not exist: skipped (retail: RW 0x730E1C answers NULL, RW 0x731433)";
+			if (std::find(m_notes.begin(), m_notes.end(), note) == m_notes.end())
+			{
+				m_notes.push_back(note);
+			}
+			return true;
+		}
 		std::vector<std::uint8_t> bytes;
 		if (!fs.readFile(path, bytes, error))
 		{

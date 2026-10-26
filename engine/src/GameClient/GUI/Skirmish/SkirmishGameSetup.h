@@ -48,7 +48,7 @@ public:
 	bool restoreSaved(const SkirmishGameInfo &saved, const std::string &preferredMap, std::uint32_t seed, std::string *error);
 
 	const SkirmishGameInfo &info() const { return m_info; }
-	bool setLocalSlotCount(int count) { if (m_network || (count != MAX_SLOTS && count != MAX_LOCAL_SLOTS)) return false; m_info.slots.resize(count); return true; }
+	bool setLocalSlotCount(int count) { if (m_network || (count != LEGACY_MAX_SLOTS && count != MAX_LOCAL_SLOTS)) return false; m_info.slots.resize(MAX_SLOTS); m_info.mapStartCount = count; return true; }
 	const SkirmishSetupSource &source() const { return m_source; }
 	const std::string &lastError() const { return m_error; }
 
@@ -138,6 +138,9 @@ public:
 		m_simulationProfile = profile;
 		m_info.simulationProfile = profile;
 	}
+	// lane CHEAT-1: OpenBFME's Cheat Mode (GameLogic/CheatMode.h): on puts the cheat seat on this setup's local slot (the host's: only the host's screen calls
+	// it); off clears it. False in strategic mode (the rule is mode 0's) or when the local slot is not a human slot
+	bool setCheatMode(bool on);
 	// the Legendary Heroes combo's entries: Off, 2x, 3x, 4x (item data = the factor; Off carries the " *" default mark like a retail row)
 	std::vector<SkirmishComboEntry> legendaryHeroesEntries() const;
 	std::vector<SkirmishComboEntry> peaceTimeEntries() const;

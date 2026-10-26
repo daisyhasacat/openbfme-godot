@@ -17,7 +17,7 @@ list(APPEND OPENBFME_SIM_SOURCES
     src/GameLogic/WallBalance.cpp # optional BFME2Lua wall rules
     src/GameLogic/FindPositionAround.cpp # lane BUILD-3
 )
-set(OPENBFME_BUILD_TESTS
+set(OPENBFME_BUILD_TEST_SOURCES
     tests/test_build_castle.cpp
     tests/test_build_core.cpp
     tests/test_wall_termination.cpp

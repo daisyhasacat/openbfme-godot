@@ -15,6 +15,7 @@
 #include "GameLogic/Object/Object.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace
 {
@@ -24,6 +25,11 @@ const GameMessageArgument *arg(const GameMessage &m, size_t i, GameMessageArgume
 {
 	const GameMessageArgument *a = m.getArgument(i);
 	return a && a->type == type ? a : nullptr;
+}
+
+bool finiteLocation(const Coord3D &p)
+{
+	return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
 }
 }
 

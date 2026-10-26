@@ -6,6 +6,7 @@
 #include "doctest.h"
 
 #include "Common/Recorder.h"
+#include "Common/RecordingBuild.h"
 #include "Common/Sha256.h"
 #include "Common/System/SaveGame/SaveGameFile.h"
 #include "GameClient/CommandLogLoad.h"
@@ -257,10 +258,10 @@ TEST_CASE("save2 T5: a damaged, truncated or foreign file is refused with its na
 		CHECK(parseError(sk.encode()) == "the save is a skirmish that names a campaign");
 		std::vector<std::uint8_t> v = good;
 		const size_t head = partOffset(good, 0);
-		v[head + 40] = 3; // the header version word (its digest recomputed below so only the version is wrong; lane CAMPSAVE-1: 1 and 2 load)
+		v[head + 40] = 4; // unknown header version, with a valid digest
 		const std::array<std::uint8_t, 32> d = Sha256::hash(v.data() + head + 40, (size_t)(partOffset(good, 1) - head - 40));
 		std::memcpy(v.data() + head + 8, d.data(), 32);
-		CHECK(parseError(v) == "save header version 3 (this build reads versions 1 and 2)");
+		CHECK(parseError(v) == "save header version 4 (this build reads versions 1, 2 and 3)");
 	}
 	SUBCASE("a missing file")
 	{
@@ -357,7 +358,7 @@ TEST_CASE("save2: single-player saves load across builds with matching data; mul
 		h.profile = identity("enhanced", "ffffffffffffffffffffffffffffffff");
 		const auto c = SaveGameCompatibility::check(h,running,ProfileIdentity::buildId(),"test",false);
 		CHECK_FALSE(c.loadable);
-		CHECK(c.refusal.rfind("this game was saved with other game data or rules: ",0) == 0);
+		CHECK(c.refusal == RecordingBuild::openWith(h.buildVersion, h.buildDate) + " The game data or rules differ from this build.");
 	}
 	SUBCASE("only the embedded build differs")
 	{
@@ -374,8 +375,7 @@ TEST_CASE("save2: single-player saves load across builds with matching data; mul
 		h.profile = identity("enhanced", "ffffffffffffffffffffffffffffffff");
 		const SaveGameCompatibility c = SaveGameCompatibility::check(h, running, ProfileIdentity::buildId(), "v0.3.0-test", false);
 		CHECK_FALSE(c.loadable);
-		CHECK(c.refusal.rfind("this game was saved with other game data or rules: ", 0) == 0);
-		CHECK(c.refusal.find("ffffffffffffffffffffffffffffffff") != std::string::npos);
+		CHECK(c.refusal == "Made with an unknown build. Open it with the build that made it from the launcher. The game data or rules differ from this build.");
 	}
 	SUBCASE("Uber save, Faithful build, and the reverse: single player only")
 	{
@@ -637,10 +637,29 @@ TEST_CASE("save2: the replay records an execution profile switch, refuses a bad 
 }
 
 
-TEST_CASE("local sixteen: recording refuses extended slots before opening a file")
+TEST_CASE("local sixteen: combined setup records extended slots and both branches' rules")
 {
- ReplayHeader header;header.game=smallGame();header.game.game.slots.resize(MAX_LOCAL_SLOTS);
- ReplayWriter writer;std::string error;
- CHECK_FALSE(writer.open("/this/path/must/not/be/opened/extended.rep",header,&error));
- CHECK(error=="16-player local games do not yet support recordings or saves");
+	ReplayHeader header; header.game = smallGame();
+	auto &game = header.game.game;
+	game.mapStartCount = 16;
+	game.slots[15].state = SLOT_PLAYER;
+	game.peaceTimeMinutes = 10;
+	game.fortressConstruction = true;
+	game.luaAuthoritySlot = 0;
+	game.cheatMode = 15;
+	ReplayWriter writer; writer.setKeepCopy(true);
+	std::string error;
+	REQUIRE_MESSAGE(writer.open("", header, &error), error);
+	writer.recordHash(0, 0);
+	std::vector<std::uint8_t> bytes;
+	REQUIRE_MESSAGE(writer.logUpTo(0, 0, bytes, &error), error);
+	ReplayFile parsed;
+	REQUIRE_MESSAGE(ReplayFile::parse(bytes, parsed, &error), error);
+	CHECK(parsed.header.game.game == game);
+	CHECK(parsed.header.game.game.mapStartCount == 16);
+	CHECK(parsed.header.game.game.slots[15].isHuman());
+	CHECK(parsed.header.game.game.cheatMode == 15);
+	CHECK(parsed.header.game.game.peaceTimeMinutes == 10);
+	CHECK(parsed.header.game.game.fortressConstruction);
+	CHECK(parsed.header.game.game.luaAuthoritySlot == 0);
 }

@@ -79,12 +79,13 @@ float signedArea(const std::vector<Point2F> &polygon);
 
 struct RiverStrip
 {
-	std::vector<float> position; // xyz SAGE, 2 vertices per cross-section line (left, right)
-	std::vector<float> uv0;
-	std::vector<float> uv1;
+	std::vector<float> position; // xyz SAGE, 2 vertices per cross-section line: its second end, then its first
+	std::vector<float> uv0;      // (u1, v): the river and sparkle textures, u1 0.5 at the second end and 0 at the first
+	std::vector<float> uv1;      // (u2, v): the alpha edge texture, u2 1 at the second end and 0 at the first
 	std::vector<std::uint32_t> index;
 };
 
 // z = river.waterHeight. BFME2 donor boundary-width repeat scale; shader applies the animated V wobble.
 bool buildRiverStrip(const RiverArea &river, RiverStrip &out);
+void riverVertexColour(const RiverArea &river, const TimeOfDayLights *tod, const float waterDiffuse[4], float out[4]);
 } // namespace WaterGeometry

@@ -171,8 +171,8 @@ bool WaterGeometry::buildRiverStrip(const RiverArea &river, RiverStrip &out)
 		out.uv1.insert(out.uv1.end(), { 0.0f, v, 1.0f, v });
 		if (i > 0)
 		{
-			const std::uint32_t a = (std::uint32_t)(2 * (i - 1)), b = a + 1, c = a + 2, d = a + 3;
-			out.index.insert(out.index.end(), { a, b, d, a, d, c });
+			const std::uint32_t a = (std::uint32_t)(2 * (i - 1));
+			out.index.insert(out.index.end(), { a, a + 1, a + 3, a, a + 3, a + 2 });
 		}
 	}
 	return true;
@@ -379,4 +379,41 @@ bool WaterGeometry::buildStandingGrid(const StandingWaterArea &area, const std::
 		out.indices.insert(out.indices.end(),{a,d,c0,a,b,d});
 	}
 	return !out.indices.empty();
+}
+
+void WaterGeometry::riverVertexColour(const RiverArea &river, const TimeOfDayLights *tod, const float waterDiffuse[4], float out[4])
+{
+	if (river.r == 255 && river.g == 255 && river.b == 255)
+	{
+		for (int c = 0; c < 3; ++c)
+		{
+			float v = tod ? tod->terrain[0].ambient[c] : 0.0f;
+			for (int i = 0; tod && i < 3; ++i)
+			{
+				const float down = -tod->terrain[i].lightPos[2];
+				if (down > 0.0f)
+				{
+					v += down * tod->terrain[i].diffuse[c];
+				}
+			}
+			out[c] = v * waterDiffuse[c];
+		}
+	}
+	else if (river.r == 0 && river.g == 0 && river.b == 0)
+	{
+		out[0] = out[1] = out[2] = 1.0f;
+	}
+	else
+	{
+		out[0] = river.r / 255.0f;
+		out[1] = river.g / 255.0f;
+		out[2] = river.b / 255.0f;
+	}
+	// the game packs these into colour bytes unclamped; past 255 a channel would spill into the next, which no retail
+	// lighting reaches
+	for (int c = 0; c < 3; ++c)
+	{
+		out[c] = std::min(std::max(out[c], 0.0f), 1.0f);
+	}
+	out[3] = waterDiffuse[3];
 }

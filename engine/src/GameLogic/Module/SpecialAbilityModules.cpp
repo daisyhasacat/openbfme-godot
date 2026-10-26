@@ -7,6 +7,7 @@
 #endif
 
 #include "GameLogic/Module/SpecialAbilityModules.h"
+#include "GameLogic/Combat/CombatLineOfSight.h"
 #include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/GiantBirdAIUpdate.h"
 #include "GameLogic/Module/EmotionModules.h"
@@ -715,7 +716,13 @@ bool SpecialAbilityUpdate::withinStartAbilityRange()
 	{
 		return false;
 	}
-	// RW 0x852244 .. 0x8522D7: NeedCollisionBeforeTrigger (no retail use) and ApproachRequiresLOS (the line of sight RW 0x6613D3 / 0x6616AC: clear, S-859)
+	// RW 0x852244 .. 0x8522D7: NeedCollisionBeforeTrigger (no retail use; its branch, a zero distance to a target object, is not ported) and ApproachRequiresLOS
+	// (+ 0xB1): the line of sight filter (vtable 0xC1D620, + 8 the owner) on the target object (RW 0x6616AC), else on the target position (RW 0x6613D3); lane LOS-1
+	if (m_data->m_approachRequiresLOS)
+	{
+		const Object *t = m_targetID != INVALID_ID ? target() : nullptr;
+		return t ? CombatLineOfSight::filterAllows(*obj, *t) : CombatLineOfSight::filterAllowsPosition(*obj, m_targetPos);
+	}
 	return true;
 }
 
@@ -1452,13 +1459,26 @@ Weapon *WeaponFireSpecialAbilityUpdate::specialWeapon()
 	{
 		m_weaponMade = true;
 		const WeaponTemplate *wt = TheWeaponStore ? TheWeaponStore->findWeaponTemplate(m_wf->m_specialWeapon) : nullptr;
-		ObjectWeapons *w = getObject()->getWeapons();
+		ObjectWeapons *w = wt ? weaponHost() : nullptr;
 		if (wt && w)
 		{
 			m_weapon = w->makeExtraWeapon(wt);
 		}
 	}
 	return m_weapon.get();
+}
+
+ObjectWeapons *WeaponFireSpecialAbilityUpdate::weaponHost()
+{
+	if (ObjectWeapons *w = getObject()->getWeapons())
+	{
+		return w;
+	}
+	if (!m_ownHost)
+	{
+		m_ownHost = std::make_unique<ObjectWeapons>(*getObject()); // lane WALL-1: an object without a weapon set (see m_ownHost)
+	}
+	return m_ownHost.get();
 }
 
 WeaponFireSpecialAbilityUpdate::~WeaponFireSpecialAbilityUpdate() = default;
@@ -1510,7 +1530,7 @@ void WeaponFireSpecialAbilityUpdate::startUnpacking()
 void WeaponFireSpecialAbilityUpdate::triggerAbilityEffect()
 {
 	Object *obj = getObject();
-	ObjectWeapons *weapons = obj->getWeapons();
+	ObjectWeapons *weapons = specialWeapon() ? weaponHost() : obj->getWeapons();
 	// RW 0x896210: the FiringTracker's RW 0x8E302A(1) (the object's + 0x248) is COMBAT-1's: not called here
 	if (!(isHorde(*obj) && m_data->m_suppressForHordes))
 	{
@@ -2379,7 +2399,7 @@ std::vector<std::string> SpecialAbilityModules::stopLines()
 {
 	return {
 		"[S-859] SpecialAbilityUpdate details not ported: the face command before the trigger (AI command RW 0x7C81B9 / 0x7C821E: the check passes the frame after the AI's idle, no turn) "
-		"only), the line of sight of ApproachRequiresLOS (RW 0x6613D3 / 0x6616AC: always clear), the approach point RW 0x851607 (the move goes to the object), "
+		"only), the approach point RW 0x851607 (the move goes to the object), "
 		"Object + 0xA0 bit 6 in the command source test, PreTriggerUnstealthTime (DisableWhenWearingTheRing and LoseStealthOnTrigger: lane STEALTH-2), the paralysis "
 		"commands, FlipOwnerAfterPacking / Unpacking, FleeRangeAfterCompletion, ChainedButton, a horde's SPECIAL_WEAPON condition to its members, the power "
 		"module's finish notice (vslot 0x4C), sounds and voices (client): each counted (unported())",

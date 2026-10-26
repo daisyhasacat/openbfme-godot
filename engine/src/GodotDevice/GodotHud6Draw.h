@@ -48,6 +48,7 @@ public:
 	Dictionary state() const;
 
 private:
+	float m_messageTop = 0;
 	bool region(const std::string &image, Ref<ImageTexture> &tex, Rect2 &src);
 	InGameHud &m_hud;
 	const MappedImageCollection &m_images;

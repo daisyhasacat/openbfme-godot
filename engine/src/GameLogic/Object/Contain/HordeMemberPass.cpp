@@ -25,6 +25,7 @@
 // BFME1's: turn first, snap only while the horde stands, no walk to a free cell (that walk is the BFME1 hub's block 22).
 
 #include "Common/Thing/ThingTemplate.h"
+#include "GameLogic/Combat/CombatLineOfSight.h"
 #include "GameLogic/Combat/CombatQueries.h"
 #include "GameLogic/AI/AIStateMachine.h"
 #include "GameLogic/AI/AIWorld.h"
@@ -200,10 +201,9 @@ static bool meleeHordeRefusesRelease(Object &horde)
 
 // RW 0x744AAA(attacker, candidate, weapon) (tier A: the BFME2 decomp's rva003430A3): a ranged weapon (not a MeleeWeapon RW 0x441B59, not a contact weapon: RotWK's
 // RW 0x9188EB answers false) of an ATTACK_NEEDS_LINE_OF_SIGHT (template + 0x10F bit 3) or CAN_SHOOT_OVER_WALLS (+ 0x122 bit 6) attacker needs the line of sight
-// filter RW 0x6616AC (the terrain line and the pathfinder's view block). INFERENCE (S-859, as ApproachRequiresLOS): the line of sight is taken as clear
-static bool weaponFilterAllows(Object &attacker, Object &candidate, Weapon *weapon, unsigned long long &losAssumedClear)
+// filter RW 0x6616AC (vtable 0xC1D620 on the stack, + 8 the attacker; lane LOS-1: CombatLineOfSight::filterAllows, the terrain line and the pathfinder's view block)
+static bool weaponFilterAllows(Object &attacker, Object &candidate, Weapon *weapon, HordeContain::AttackStats &stats)
 {
-	(void)candidate;
 	static const int kNeedsLos = ObjectTemplateInfoBuilder::kindOfIndex("ATTACK_NEEDS_LINE_OF_SIGHT");
 	static const int kOverWalls = ObjectTemplateInfoBuilder::kindOfIndex("CAN_SHOOT_OVER_WALLS");
 	if (!weapon || !weapon->getTemplate() || weapon->getTemplate()->m_meleeWeapon)
@@ -212,7 +212,12 @@ static bool weaponFilterAllows(Object &attacker, Object &candidate, Weapon *weap
 	}
 	if (hasKind(attacker, kNeedsLos) || hasKind(attacker, kOverWalls))
 	{
-		++losAssumedClear; // RW 0x6616AC (S-859)
+		++stats.losTests;
+		if (!CombatLineOfSight::filterAllows(attacker, candidate))
+		{
+			++stats.losRefused;
+			return false;
+		}
 	}
 	return true;
 }
@@ -360,7 +365,7 @@ Object *HordeContain::pickMemberNear(bool skipTagged, const Coord3D &pos, float 
 			{
 				continue;
 			}
-			if (d < bestD && (!attacker || !weapon || weaponFilterAllows(*attacker, *m, weapon, m_attackStats.losAssumedClear)))
+			if (d < bestD && (!attacker || !weapon || weaponFilterAllows(*attacker, *m, weapon, m_attackStats)))
 			{
 				best = m;
 				bestD = d;
@@ -384,6 +389,45 @@ Object *HordeContain::pickMemberNear(bool skipTagged, const Coord3D &pos, float 
 		}
 	}
 	return best;
+}
+
+// lane TARGET-1: RW 0x86FA87 with no position: over the contain list in its order the first entry (skipTagged: the first not TAGGED, status 0x3F), else over the
+// members on their way in (the map at interface + 0x54, by id) the first one found (skipTagged: the first found and not TAGGED); no member: null
+Object *HordeContain::pickMemberNoPosition(bool skipTagged) const
+{
+	static const int kTagged = ObjectTemplateInfoBuilder::objectStatusIndex("TAGGED"); // status 0x3F
+	if (!m_members.empty())
+	{
+		if (skipTagged)
+		{
+			for (Object *m : m_members)
+			{
+				if (m && !(kTagged >= 0 && m->testStatus((unsigned)kTagged)))
+				{
+					return m;
+				}
+			}
+		}
+		return m_members.front(); // RW returns the list head's object when no untagged member was found (piVar5 still the head)
+	}
+	GameLogic &logic = getObject()->logic();
+	if (m_garrisonEntering.empty())
+	{
+		return nullptr;
+	}
+	if (!skipTagged)
+	{
+		return logic.findObjectByID(*m_garrisonEntering.begin());
+	}
+	for (ObjectID id : m_garrisonEntering)
+	{
+		Object *m = logic.findObjectByID(id);
+		if (m && !(kTagged >= 0 && m->testStatus((unsigned)kTagged)))
+		{
+			return m;
+		}
+	}
+	return nullptr;
 }
 
 // HordeContainInterface slot 4 (RW 0x875221)
@@ -507,7 +551,7 @@ const char *HordeContain::attackStopLine()
 {
 	return "[S-2610] HordeAttackNugget fire (lane ARCHER-1): HordeContain::attackTargetNow is RotWK's RW 0x875221 and the member pick RW 0x86FA87 (a randomised nearest: "
 	       "every enemy member in reach has its distance times GameLogicRandomValueReal(0.66, 1.33), the smallest product wins), read in full; INFERENCE / not ported: the "
-	       "line of sight filter RW 0x6616AC of ATTACK_NEEDS_LINE_OF_SIGHT / CAN_SHOOT_OVER_WALLS attackers is taken as clear (as S-859), RW 0x6FF7FA's AI byte + 0x3CC is "
+	       "line of sight filter RW 0x6616AC of ATTACK_NEEDS_LINE_OF_SIGHT / CAN_SHOOT_OVER_WALLS attackers is ported (lane LOS-1), RW 0x6FF7FA's AI byte + 0x3CC is "
 	       "taken as unset and its layers as equal, the melee member's touch attack RW 0x69675C uses the Amoeba reach rule (S-588), a victim held by a container that is "
 	       "not a HordeContain stays the pick (that contain's slot 0x48 is not read), and the position fire RW 0x875550 orders nothing (aiAttackPosition, S-325)";
 }
@@ -626,6 +670,7 @@ float HordeContain::worstMemberSlotError() const
 	HordeContainCore::Placement owner;
 	owner.position = *horde->getPosition();
 	owner.angle = horde->getOrientation();
+	owner.computeTrig(); // lane UBER-2B: once for every member below
 	float worst = 0.0f;
 	for (const Object *m : m_members)
 	{
@@ -648,6 +693,7 @@ bool HordeContain::runMemberPass()
 	HordeContainCore::Placement owner;
 	owner.position = *horde->getPosition();
 	owner.angle = horde->getOrientation();
+	owner.computeTrig(); // lane UBER-2B: once for every member below
 	m_workDone = false;
 	++m_stats.passes;
 	// lane HORDE-2: the RotWK member pass (RW 0x873FE8, read with Ghidra) calls the member order (vslot 0x90 = RW 0x877A7A) with force = 1 - isMoving(horde)
@@ -770,7 +816,7 @@ void HordeContain::memberOrder(Object &member, const Coord3D &slotPos, float ori
 		}
 	}
 	// lane MOVE-2 r3, RW 0x877C37 .. 0x877C72 (H + 0x2A0, the melee target, set): no destination adjustment, no wait: unless the member follows a path whose current
-	// node is a waypoint (RW 0x5E2DF4, never in the port: S-161) the hub walks it to the destination it was given (its melee destination)
+	// node is a waypoint (RW 0x5E2DF4, a portal's: lane WALL-2) the hub walks it to the destination it was given (its melee destination)
 	if (m_meleeEngaged)
 	{
 		if (a->mover().goalType() == AIGOAL_EXPLICIT_WITH_PATH && a->mover().path() && a->mover().path()->hasExplicitZ())
@@ -912,7 +958,7 @@ void HordeContain::moveHub(Object &member, const Coord3D &destIn, float orientat
 			q.z = oldPosition.z;
 			if (world.mapReady() && pf.validMovementPosition(&a->adapter(), a->locomotorInfo(), a->adapter().getLayer(), &q))
 			{
-				q.z = horde->logic().getGroundHeight(q.x, q.y);
+				q.z = a->layerHeightAt(q.x, q.y); // TheTerrainLogic at the member's layer (lane WALL-1: a wall top's or a ramp's height; the terrain on the ground)
 			}
 		}
 		// the turn comes first (RW 0x874FA6 .. 0x8750E1): a member more than 10 degrees off the slot's facing turns where it stands; nothing moves it this frame
@@ -959,6 +1005,8 @@ void HordeContain::moveHub(Object &member, const Coord3D &destIn, float orientat
 		if (!ownerMoving)
 		{
 			member.setPosition(&q);
+			a->settleOnLayer(); // lane WALL-1: a member put on a wall top's slot stands on the wall
+			q = *member.getPosition();
 			host.setPendingPosition(q);
 			if (world.mapReady())
 			{

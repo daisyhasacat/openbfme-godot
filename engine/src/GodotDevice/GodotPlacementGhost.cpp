@@ -3,6 +3,12 @@
 
 #include "GodotDevice/GodotPlacementGhost.h"
 #include "GameClient/CommandButtonHelp.h"
+#include "GameClient/FormationAssistant.h"
+#include "GameLogic/Object/Contain/HordeContainRuntime.h"
+#include "GameLogic/Object/Object.h"
+#include "Common/Player.h"
+#include "Common/PlayerList.h"
+#include <godot_cpp/classes/immediate_mesh.hpp>
 #include "GameClient/GUI/Image.h"
 #include <godot_cpp/classes/viewport.hpp>
 #include <cmath>

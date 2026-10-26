@@ -142,6 +142,7 @@ struct Unit : AIMoveHost
 	bool movingBackwards() const override { return false; }
 	bool setModelCondition(const char *, bool) override { return true; }
 	float relativeAngleTo(const Coord3D &p) const override { return std::atan2(p.y - obj.pos.y, p.x - obj.pos.x) - angle; }
+	const PathfindObject *findPathfindObject(PathfindObjectID id) override; // lane ATTACKPATH-1: the attack path's victim lookup
 };
 
 struct Sim
@@ -306,6 +307,7 @@ Unit::Unit(Sim *s, const LocomotorTemplate *t, PathfindObjectID id, float x, flo
 	lh.sync();
 }
 unsigned Unit::frame() const { return sim->frame; }
+const PathfindObject *Unit::findPathfindObject(PathfindObjectID id) { return sim->world.findObjectByID(id); }
 AIMover *Unit::moverOf(PathfindObjectID id)
 {
 	auto it = sim->units.find(id);
@@ -971,10 +973,10 @@ TEST_CASE("backlog5: patchPath (RW 0x6FC9DA) joins the nearest node the unit can
 	}
 }
 
-TEST_CASE("backlog5: checkChangeLayers (RW 0x6F6286) is only its ground-connection case: a connection to the ground or to a bridge layer changes no search (S-161 / S-1830)")
+TEST_CASE("backlog5: checkChangeLayers (RW 0x6F6286): a connection to the ground or to a raised layer without cells changes no search (S-161 / S-1830)")
 {
-	// the case that runs opens the parent's own index on the ground, which is the closed parent: nothing; a connection to a bridge layer finds no cell (only the
-	// ground holds cells); the waypoint expansion is not implemented. The searches are therefore what they were: the same path with a connection marked
+	// a ground connection opens the parent's own index on the ground, which is the closed parent: nothing; a connection to raised layer 5 finds no cell (no
+	// RaisedWallMesh made one; lane WALL-2's expansion, S-4856). The searches are therefore what they were: the same path with a connection marked
 	Sim sim(40, 20);
 	sim.build();
 	Unit &u = sim.add(2, 55.0f, 105.0f);
@@ -1121,7 +1123,7 @@ TEST_CASE("backlog5: the two withdrawn rules are named at runtime with their mea
 			"150 lost and 2 members killed in an order that has none) and the goal overwrite alone sent an idle Battle-stance unit 826.975 from its guard spot (test_play4_stances_retail, "
 			"bound 365; without the overwrite it passes); INFERENCE, not verified: the port's exit state and guard keep the machine's goal for something RotWK does not") == (state == 7));
 	}
-	// S-1830: patchPath names what the layer step leaves out
+	// S-1830: patchPath names what its layer step leaves out (lane WALL-2: the bridge layers)
 	{
 		Sim sim(60, 40);
 		sim.build();
@@ -1130,9 +1132,8 @@ TEST_CASE("backlog5: the two withdrawn rules are named at runtime with their mea
 		std::unique_ptr<Path> patch(sim.pf->patchPath(&a.obj, groundLoco(), original.get(), true));
 		REQUIRE(patch != nullptr);
 		CHECK(hasLine(sim.pf->stops(),
-			"S-1830 the layer-change step of the cell searches (RW 0x6F6286) implements only its ground-connection case, which opens nothing (the cell's own index is the closed "
-			"parent): the bridge-layer cell lookup (RW 0x5E2E9C) and the waypoint link expansion (RW 0x68229C, 0x93443D) are not implemented, and the four-bit connection "
-			"field cannot hold a wall layer (16 and up); a patch or a search never crosses a layer or a portal (S-161)"));
+			"S-1830 patchPath (RW 0x6F7938) expands the layer links and portals of RW 0x6F6286 (lane WALL-2) over the ground grid and the raised walkways (S-4856); "
+			"the bridge layers do not exist (S-161)"));
 	}
 }
 

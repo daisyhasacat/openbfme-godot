@@ -7,6 +7,8 @@
 ##   sell        a barracks the builder buys and builds, selected by a click, its Sell button clicked: half the price back (income excluded), then it is gone
 ##   upgrade     the fortress's first affordable upgrade bubble clicked: the button shows the purchased state while it is researched (RW 0x943C40 availability 8)
 ##   herocancel  the fortress's hero ring, a hero recruited by a click, then a right click on the same bubble cancels it with the refund (RW 0x940C57)
+##   herobuy     (lane HEROBUY-1, --faction=FactionWild) three Goblin heroes recruited by clicks, the army past the command point cap, then the hero ring still
+##               shows Shelob as a can't-afford bubble (RW 0x942F47: availability 7 is never hidden) and a click on it queues nothing
 extends "res://scripts/scenario_player.gd"
 
 var game: Node

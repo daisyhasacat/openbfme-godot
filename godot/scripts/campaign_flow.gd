@@ -256,6 +256,9 @@ func enter_mission(rep: Dictionary) -> void:
 	_cine.objectives_hook = Callable(game, "_objectives_view")
 	_cine.objectives_close_hook = Callable(game, "_close_objectives")
 	_cine.input_hook = Callable(game, "_script_input") # lane OWNERFIX-1: no selection or orders during the cutscenes (RW 0x7BC586)
+	_cine.hud = game._hud     # lane CAMPUI-1: the script's camera moves drive the HUD's TacticalCamera (retail's single view)
+	_cine.shell = game._shell # lane CAMPUI-1: the caption's font (shell_font)
+	_cine.objectives_open = func() -> int: return 2 if game._shell.shell_stack().has("Objectives.apt") else 0 # lane CAMPUI-1 (RW 0x69BFAE)
 	game.add_child(_cine)
 	game._game_nodes.append(_cine)
 	_cine.camera_hud = game._hud

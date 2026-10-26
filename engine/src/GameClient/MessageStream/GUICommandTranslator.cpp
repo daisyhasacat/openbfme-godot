@@ -6,11 +6,39 @@
 
 #include "GameClient/ControlBarCommands.h"
 #include "GameClient/HudObjects.h"
+#include "GameLogic/ActionManager.h"
 #include "GameLogic/Object/Object.h"
 
 MessageDisposition GUICommandTranslator::translate(const ClientMessage &msg)
 {
 	MessageDisposition disp = MessageDisposition::Keep;
+	// lane SPELLRC-1: RotWK's GUI command translator (RW 0x83D7AD) follows the right button before it reads the GUI command: the press keeps its pixel and
+	// clears the dragged flag (case 0xE: + 0x20, + 0x30), a pointer move beyond the drag tolerance from it sets the flag (case 3: RW 0x5ED4B9 -> + 0x30)
+	switch (msg.type())
+	{
+		case CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN:
+			m_rightAnchor = msg.arg(0).pixel;
+			m_rightDragged = false;
+			break;
+		case CMSG_RAW_MOUSE_POSITION:
+			if (m_ctx.mouse.isDragging(m_rightAnchor, msg.arg(0).pixel))
+			{
+				m_rightDragged = true;
+			}
+			break;
+		case CMSG_MOUSE_RIGHT_CLICK:
+		case CMSG_MOUSE_RIGHT_DOUBLE_CLICK:
+			// RW 0x83D8C2 .. 0x83DB8D: a right click that was not dragged ends the waiting command (setGUICommand(0)) and is destroyed: no order, no
+			// deselection follows from it. The port's spell book power waits outside InGameUI (the hook); InGameUI's own GUI command keeps the port's
+			// SelectionTranslator cancel (ZH SelectionXlat.cpp:930)
+			if (!m_rightDragged && m_hudTargetCancel && m_hudTargetCancel())
+			{
+				return MessageDisposition::Destroy;
+			}
+			break;
+		default:
+			break;
+	}
 	const CommandButton *command = m_ctx.ui.getGUICommand();
 	if (!command)
 	{
@@ -177,10 +205,11 @@ MessageDisposition GUICommandTranslator::translate(const ClientMessage &msg)
 				{
 					// lane HERO-1 (S-850): a hero ability's target. An object of the relationship the options name: MSG_DO_SPECIAL_POWER_AT_OBJECT { int id, objectID
 					// target, int options, objectID source }; else with NEED_TARGET_POS the ground: MSG_DO_SPECIAL_POWER_AT_LOCATION { int id, location, objectID target,
-					// int options, objectID source }. The radius cursor and the target validity rules of the binary's translator are S-290's
+					// int options, objectID source }. The radius cursor and the target validity rules of the binary's translator are S-290's.
+					// lane HEROCAST-1: the options and the source are issueSpecialPowerCommand's (RW 0x81E147, which RW 0x83D7AD leaves the click to): the
+					// button's options and source NONE, so the logic casts with the selection (AIGroup's senior-hero rule, GameLogic/SpellCommands.h)
 					const SpecialPowerTemplate *t = TheSpecialPowerStore && !command->m_specialPowerName.empty() ? TheSpecialPowerStore->findSpecialPowerTemplate(command->m_specialPowerName) : nullptr;
-					const ObjectID source = m_ctx.ui.firstSelected();
-					if (!t || source == INVALID_ID)
+					if (!t || m_ctx.ui.firstSelected() == INVALID_ID)
 					{
 						break;
 					}
@@ -205,20 +234,41 @@ MessageDisposition GUICommandTranslator::translate(const ClientMessage &msg)
 						ClientMessage &m = m_ctx.stream.append(MSG_DO_SPECIAL_POWER_AT_OBJECT);
 						m.appendInteger((int)t->getID());
 						m.appendObjectID(target->getID());
-						m.appendInteger(0);
-						m.appendObjectID(source);
+						m.appendInteger((int)command->m_options);
+						m.appendObjectID(INVALID_ID);
 					}
 					else
 					{
 						Coord3D world;
 						if (command->hasOption(COMMAND_OPTION_NEED_TARGET_POS) && m_ctx.view.screenToTerrain(mouse, m_ctx.logic, world))
 						{
+							// lane SUMMONLOC-1: RotWK's CommandTranslator case 0x18 (RW 0x81E9C5) asks RW 0x6A4260(button, no object, the location, 0, options,
+							// no source) before it issues: some selected object passes RW 0x82DFB7(object, location, 0, power, 0, options, 1); else RW 0x81EBE9
+							// issues nothing (the invalid feedback 0xAF) and, as the spell book's SPELL-4 path, the targeting goes on. INFERENCE: the last
+							// argument 1's own module / readiness test is left to the logic handler (SpellCommands), which refuses an unready power; a type
+							// whose test is not ported (S-1874) casts, as its radius cursor shows it (S-4641)
+							bool canCast = false;
+							for (ObjectID id : m_ctx.ui.selected())
+							{
+								Object *o = m_ctx.logic.findObjectByID(id);
+								bool unported = false;
+								if (o && (ActionManager::canDoSpecialPowerAtLocation(*o, world, t, command->m_options, &unported) || unported))
+								{
+									canCast = true;
+									break;
+								}
+							}
+							if (!canCast)
+							{
+								complete = false;
+								break;
+							}
 							ClientMessage &m = m_ctx.stream.append(MSG_DO_SPECIAL_POWER_AT_LOCATION);
 							m.appendInteger((int)t->getID());
 							m.appendLocation(world);
 							m.appendObjectID(INVALID_ID);
-							m.appendInteger(0);
-							m.appendObjectID(source);
+							m.appendInteger((int)command->m_options);
+							m.appendObjectID(INVALID_ID);
 						}
 					}
 					break;

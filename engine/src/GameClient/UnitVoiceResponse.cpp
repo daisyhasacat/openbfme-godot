@@ -1,4 +1,5 @@
 // OpenBFME. GPL-3.0. See UnitVoiceResponse.h.
+// BFME1's two Bloodthirsty voice slots follow Open-BFME-1 MessageStream/CommandXlatVoice.cpp, case 0x7E9 and its playback tail.
 
 #include "GameClient/UnitVoiceResponse.h"
 
@@ -876,6 +877,10 @@ bool UnitVoiceResponse::pickAndPlay(const std::vector<ObjectID> &selection, int 
 				if (module)
 				{
 					c.voice = parseVoiceValue(module->initiateVoice(), std::string());
+					if (obj.getTemplate()->bfme1Data())
+					{
+						c.secondary = parseVoiceValue(module->initiateVoice2(), std::string());
+					}
 				}
 				break;
 			}
@@ -948,7 +953,7 @@ bool UnitVoiceResponse::pickAndPlay(const std::vector<ObjectID> &selection, int 
 				break;
 		}
 		// RW 0x8DFEA4: a choice with a voice competes
-		if (!c.voice.any())
+		if (!c.voice.any() && !c.secondary.any())
 		{
 			continue;
 		}
@@ -967,6 +972,7 @@ bool UnitVoiceResponse::pickAndPlay(const std::vector<ObjectID> &selection, int 
 			if (ins.second)
 			{
 				ins.first->second.voice = c.voice;
+				ins.first->second.secondary = c.secondary;
 				ins.first->second.crowd = c.crowd;
 				ins.first->second.object = &obj;
 				ins.first->second.charge = c.charge;
@@ -1040,6 +1046,25 @@ bool UnitVoiceResponse::pickAndPlay(const std::vector<ObjectID> &selection, int 
 		else
 		{
 			m_sink.playSound(pick.voice.sound, pick.object->getID(), ownerIndex);
+			++m_stats.soundsPlayed;
+			played = true;
+		}
+	}
+	if (!pick.secondary.eva.empty() && ((owner && ownerIndex == m_localPlayer) || enterState))
+	{
+		m_sink.reportEva(pick.secondary.eva, pick.object->getPosition());
+		++m_stats.evaReports;
+		played = true;
+	}
+	if (!pick.secondary.sound.empty())
+	{
+		if (!m_sink.soundExists(pick.secondary.sound))
+		{
+			++m_stats.unknownSounds;
+		}
+		else
+		{
+			m_sink.playSound(pick.secondary.sound, pick.object->getID(), ownerIndex);
 			++m_stats.soundsPlayed;
 			played = true;
 		}

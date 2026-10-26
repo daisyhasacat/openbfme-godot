@@ -1,7 +1,13 @@
 // OpenBFME retail tests of the HUD input (lane HUD-1): synthesised mouse and keyboard events through HudInput into the lockstep command list and the logic.
-// They SKIP when ROTWK_INSTALL / BFME2_INSTALL are unset. GPL-3.0.
+// Retail cases SKIP when ROTWK_INSTALL / BFME2_INSTALL are unset; synthetic HUD cases need no game files. GPL-3.0.
 
 #include "HudTestUtil.h"
+#include "SyntheticHudTestUtil.h"
+#include "AptPlayerTestUtil.h"
+#include "CombatTestUtil.h"
+#include "GameClient/FormationAssistant.h"
+#include "GameClient/TacticalCamera.h"
+#include "GameEngineDevice/W3DDevice/GameClient/WorldHeightMap.h"
 
 #include "GameClient/HudObjects.h"
 #include "GameLogic/GameLogicDispatch.h"
