@@ -56,21 +56,34 @@ so the effective rate is 21 keys per second.
 
 Normal reconstruction follows the shipped effect's pixel blobs 0 (PCA) and 3
 (PCA_U), including the latter's third basis-texture contribution and noise
-flattening. The supported flat-surface path includes authored environment
+flattening. The supported path includes authored environment
 perturbation, directional/specular lighting, and baseline froth. Required
 textures and malformed coefficient/effect tables produce builder errors;
 compiled TGA lookup now precedes packed JPEG so the shipped PCA basis
 textures resolve. Other technique families/LODs explicitly report their
 bump approximation in water.material_stops.
 
-S-035 remains open. Gerstner geometry displacement and its interpolated
-normals, shoreline-wave direction/length and crest modulation, planar
-reflection, shadow-map filtering, PCA LOD fallback/selection and complete
-fog parity are not implemented. The existing bilinear ground-depth and first
-scene-light bridges also remain inferred. Thus the new path is animated PCA
-normal reconstruction on flat water, not the entire original PCA technique.
-The baseline froth factor 0.125 comes from the vertex shader; its varying
-crest amplification waits for the geometry port. Legacy areas without a
+The mesh now follows BFME2's matched `W3DWater.cpp` allocation (RVA
+0x8304A): a shared 20-unit grid, doubled until at most 60000 cells, selected
+by polygon cell centres. Grid origins truncate toward zero. The matched
+`W3DWaterStandingWaveQuery.cpp` (0x8026B) selects enabled PCA shoreline
+segments by nearest midpoint, preserving source order and strict depth and
+radius gates. Degenerate segments are ignored. CUSTOM0/1 carry midpoint,
+ground height, half-length and wave direction without consuming simulation RNG.
+
+Compiled effect VS13/14 provides three authored GWAmpFreqPhaseSteepness
+vectors. The shader applies the source 0.075 amplitude scale, frequency
+jitter, rotated secondary directions, technique-specific steepness (0.15 or
+0.33), and PCA_U's 0.75 horizontal scale. Interpolated geometric normals,
+crest/shallow-water froth and displaced depth alpha now accompany moving
+vertices. Culling bounds include horizontal and vertical displacement.
+Zero amplitude/frequency contributes no wave, avoiding undefined division.
+
+S-035 remains open: the high-detail choice, Godot TIME/trigonometry and terrain
+height sampling are presentation bridges, not verified target numeric/LOD
+parity. Planar reflections, shadow filtering, other PCA LODs, legacy shoreline
+texture tracks and full fog parity remain unported.
+Legacy areas without a
 WaterShader.FX material retain their explicit reported approximation.
 Malformed `.basis` input is bounds-checked and rejected; reproducing the
 original loader's permissive atof/atoi behavior on malformed mods is not claimed.
@@ -86,3 +99,6 @@ changes the rendered water. Native cases cover channel order, normalization,
 interpolation/wraparound, malformed data and the stored technique byte.
 These are data and renderer checks, not a
 claim of retail pixel parity.
+
+The GPU test also freezes coefficient tracks and verifies that moving Gerstner
+vertices change the rendered silhouette while frozen wave time stays stable.

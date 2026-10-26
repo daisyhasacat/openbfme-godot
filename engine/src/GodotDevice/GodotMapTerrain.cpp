@@ -1108,7 +1108,7 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 							std::string error;
 							if (!rfs.readBytes(pcaPath, bytes, &error) || !WaterGeometry::readPcaBasis(std::string(bytes.begin(), bytes.end()), pcaBasis, &error)) errors.push_back(toGodot(pcaPath + ": " + error));
 						}
-						materialStops.push_back(toGodot("[S-035] " + a.name + ": PCA normals follow the authored technique; Gerstner mesh displacement, shoreline-wave modulation, planar reflections and shadow-map filtering remain unported"));
+						materialStops.push_back(toGodot("[S-035] " + a.name + ": PCA normals and shoreline Gerstner geometry follow authored data; Godot clock, high-detail grid selection, planar reflections and shadow-map filtering remain unverified"));
 					}
 					else if (technique.compare(0, 3, "PCA") == 0) materialStops.push_back(toGodot("[S-035] " + a.name + ": unsupported PCA LOD technique " + technique + "; using reported bump approximation"));
 					else if (!technique.empty() && technique != "BumpSpecular_M") materialStops.push_back(toGodot("[S-035] " + a.name + ": technique " + technique + " uses the BumpSpecular_M approximation; its reflection/pass differences remain unported"));
@@ -1137,6 +1137,9 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 						m->set_shader_parameter("pca_coefficients", ImageTexture::create_from_image(image));
 						m->set_shader_parameter("pca_frame_rate", pcaBasis.speed * 30.0f); // BFME2 callbacks: SyncTime/1000 * client FPS, then basis speed
 						m->set_shader_parameter("pca_mode", pcaMode);
+						m->set_shader_parameter("wave_geometry_enabled", true);
+						for (int g = 0; g < 3; ++g)
+							m->set_shader_parameter(String("gerstner") + String::num_int64(g), Vector4(params.gerstner[g][0], params.gerstner[g][1], params.gerstner[g][2], params.gerstner[g][3]));
 						m->set_shader_parameter("pca_uv_scale", Vector2(params.pcaUV[0], params.pcaUV[1]));
 						m->set_shader_parameter("pca_wave_uv_scale", Vector2(params.pcaWaveUV[0], params.pcaWaveUV[1]));
 						auto pcaTexture = [&](const std::string &name, const String &uniform) {
@@ -1193,23 +1196,54 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 				PackedVector3Array vtx;
 				PackedVector2Array uv;
 				PackedInt32Array idx;
-				vtx.resize((int64_t)a.points.size());
-				uv.resize((int64_t)a.points.size());
-				for (size_t i = 0; i < a.points.size(); ++i)
-				{
-					vtx.set((int64_t)i, toG(a.points[i].x, a.points[i].y, (float)a.waterHeight));
-					uv.set((int64_t)i, Vector2(a.points[i].x / 100.0f, a.points[i].y / 100.0f));
+
+				WaterGeometry::StandingGrid grid;
+				bool geometry = pcaMode && !pcaBasis.frames.empty();
+				PackedFloat32Array shore, direction;
+				if (geometry) {
+					if (!WaterGeometry::buildStandingGrid(a, renderMap.chunks.standingWaveAreas,
+						[&](float x,float y) { return terrain.getGroundHeight(x,y); }, grid)) {
+						errors.push_back(toGodot("water grid has no cells: " + a.name)); ++failed; continue;
+					}
+					tri = grid.indices;
+					vtx.resize(grid.vertices.size()); uv.resize(grid.vertices.size());
+					shore.resize(grid.vertices.size()*4); direction.resize(grid.vertices.size()*4);
+					int64_t active = 0;
+					for (size_t i=0;i<grid.vertices.size();++i) {
+						const auto &v=grid.vertices[i];
+						vtx.set(i,toG(v.point.x,v.point.y,float(a.waterHeight)));
+						uv.set(i,Vector2(v.point.x/100,v.point.y/100));
+						shore.set(i*4,v.nearest.x); shore.set(i*4+1,v.nearest.y);
+						shore.set(i*4+2,v.ground); shore.set(i*4+3,v.halfLength);
+						direction.set(i*4,v.direction.x); direction.set(i*4+1,v.direction.y);
+						direction.set(i*4+2,100); direction.set(i*4+3,0);
+						if (float(a.waterHeight)-v.ground<100 &&
+							std::hypot(v.point.x-v.nearest.x,v.point.y-v.nearest.y)<v.halfLength) ++active;
+					}
+					materialInfo["wave_vertices"] = active;
+					materialInfo["grid_spacing"] = grid.spacing;
+				} else {
+					vtx.resize(a.points.size()); uv.resize(a.points.size());
+					for (size_t i=0;i<a.points.size();++i) {
+						vtx.set(i,toG(a.points[i].x,a.points[i].y,float(a.waterHeight)));
+						uv.set(i,Vector2(a.points[i].x/100,a.points[i].y/100));
+					}
 				}
-				idx.resize((int64_t)tri.size());
-				memcpy(idx.ptrw(), tri.data(), tri.size() * sizeof(int32_t));
-				Array arrays;
-				arrays.resize(Mesh::ARRAY_MAX);
-				arrays[Mesh::ARRAY_VERTEX] = vtx;
-				arrays[Mesh::ARRAY_TEX_UV] = uv;
-				arrays[Mesh::ARRAY_INDEX] = idx;
+				materialInfo["vertices"] = vtx.size();
+				waterMaterials[waterMaterials.size()-1] = materialInfo;
+				idx.resize(tri.size());
+				memcpy(idx.ptrw(),tri.data(),tri.size()*sizeof(int32_t));
+				Array arrays; arrays.resize(Mesh::ARRAY_MAX);
+				arrays[Mesh::ARRAY_VERTEX]=vtx; arrays[Mesh::ARRAY_TEX_UV]=uv; arrays[Mesh::ARRAY_INDEX]=idx;
+				uint64_t format = 0;
+				if (geometry) {
+					arrays[Mesh::ARRAY_CUSTOM0]=shore; arrays[Mesh::ARRAY_CUSTOM1]=direction;
+					format = (uint64_t(Mesh::ARRAY_CUSTOM_RGBA_FLOAT)<<Mesh::ARRAY_FORMAT_CUSTOM0_SHIFT)
+						   | (uint64_t(Mesh::ARRAY_CUSTOM_RGBA_FLOAT)<<Mesh::ARRAY_FORMAT_CUSTOM1_SHIFT);
+				}
 				Ref<ArrayMesh> mesh;
 				mesh.instantiate();
-				mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+				mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, Array(), Dictionary(), format);
 				if (m.is_valid())
 				{
 					mesh->surface_set_material(0, m);
@@ -1217,6 +1251,14 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 				MeshInstance3D *mi = memnew(MeshInstance3D);
 				mi->set_name(toGodot(a.name.empty() ? "water" : a.name));
 				mi->set_mesh(mesh);
+				if (geometry) {
+					float margin=0;
+					for (auto &g:params.gerstner) {
+						margin += std::abs(g[0]*.075f);
+						if(g[1]!=0) margin += std::abs(g[3]*.33f/g[1]);
+					}
+					mi->set_extra_cull_margin(margin);
+				}
 				mi->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
 				waterRoot->add_child(mi);
 				++areas;
@@ -1231,7 +1273,8 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 		w["triangles"] = tris;
 		w["triangulation_failed"] = failed;
 		w["areas_in_map"] = (int64_t)renderMap.chunks.standingWaterAreas.size();
-		w["wave_areas_not_rendered"] = (int64_t)renderMap.chunks.standingWaveAreas.size();
+		w["pca_wave_areas"] = (int64_t)std::count_if(renderMap.chunks.standingWaveAreas.begin(), renderMap.chunks.standingWaveAreas.end(), [](const StandingWaveArea &a) { return a.enablePcaWave != 0; });
+		w["wave_areas_not_rendered"] = (int64_t)std::count_if(renderMap.chunks.standingWaveAreas.begin(), renderMap.chunks.standingWaveAreas.end(), [](const StandingWaveArea &a) { return a.enablePcaWave == 0; });
 		m_report["water"] = w;
 	}
 
