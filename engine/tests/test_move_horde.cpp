@@ -604,3 +604,70 @@ End
 		CHECK(worstSlotError(mw, horde) < 3.0f);
 	}
 }
+
+TEST_CASE("production exit: rotated factories use the door before routing to a rally behind them")
+{
+	for (float angle : {0.0f, -0.74967724f, 1.57079633f, 2.39191532f})
+	{
+		CAPTURE(angle);
+		MoveWorld mw(140, 140, R"(
+Object DoorFactory
+	KindOf = STRUCTURE IMMOBILE
+	Geometry = BOX
+	GeometryMajorRadius = 60
+	GeometryMinorRadius = 60
+	GeometryHeight = 40
+	GeometryIsSmall = No
+	Behavior = QueueProductionExitUpdate Exit
+		UnitCreatePoint = X:0 Y:0 Z:0
+		NaturalRallyPoint = X:100 Y:0 Z:0
+	End
+End
+)");
+		Object *factory = mw.spawn("DoorFactory", 605, 605, angle);
+		mw.buildMap();
+		Object *unit = mw.spawn("Walker", 605, 605, angle);
+		const float c = std::cos(angle), s = std::sin(angle);
+		Coord3D rally{605 - 220*c, 605 - 220*s, 0};
+		auto *exit = factory->getObjectExitInterface();
+		REQUIRE(exit);
+		exit->setRallyPoint(&rally);
+		exit->exitObjectViaDoor(unit, DOOR_1);
+		bool clearedDoor = false;
+		for (int frame = 0; frame < 240; ++frame)
+		{
+			mw.frames(1);
+			const float dx = unit->getPosition()->x - 605, dy = unit->getPosition()->y - 605;
+			const float forward = dx*c + dy*s, sideways = -dx*s + dy*c;
+			if (!clearedDoor)
+			{
+				// tolerance: one-cell grid rounding stays inside the 24-unit doorway lane; the old side-wall route deviates about 75 units.
+				CHECK(std::abs(sideways) <= 12.0f);
+				if (forward > 100) clearedDoor = true;
+			}
+			else
+			{
+				CHECK(mw.aiOf(unit)->mover().ignoredObstacleID() == PATHFIND_INVALID_ID);
+				const auto *cell = mw.ai->pathfinder().getCell(LAYER_GROUND, unit->getPosition());
+				REQUIRE(cell);
+				CHECK_FALSE(cell->isObstaclePresent(factory->getID()));
+			}
+		}
+		CHECK(clearedDoor);
+		// tolerance: the ordinary rally route ends within the locomotor's grid arrival tolerance.
+		CHECK(dist2d(*unit->getPosition(), rally) < 12.0f);
+		CHECK(mw.aiOf(unit)->mover().ignoredObstacleID() == PATHFIND_INVALID_ID);
+	}
+}
+
+TEST_CASE("production exit: cancelling the doorway walk restores factory collision")
+{
+	MoveWorld mw;
+	Object *factory = mw.spawn("Block", 405, 505);
+	mw.buildMap();
+	Object *unit = mw.spawn("Walker", 405, 505);
+	mw.aiOf(unit)->aiFollowPath({Coord3D{505,505,0}}, factory, CMD_FROM_AI, true);
+	CHECK(mw.aiOf(unit)->mover().ignoredObstacleID() == factory->getID());
+	mw.aiOf(unit)->aiIdle(CMD_FROM_PLAYER);
+	CHECK(mw.aiOf(unit)->mover().ignoredObstacleID() == PATHFIND_INVALID_ID);
+}
