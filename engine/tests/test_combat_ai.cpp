@@ -120,6 +120,8 @@ TEST_CASE("combat ai: attack-move marches to the goal, attacks the enemy it meet
 	CombatWorld w("ChildObject MarchBuilding Dummy\n KindOf = STRUCTURE IMMOBILE SELECTABLE SCORE\nEnd\n");
 	Object *a = w.unit("Slasher", 'A', 100, 300);
 	Object *v = w.unit(target, 'B', 300, 330);
+	// Match LiveGame placement: structures must enter the pathfinding obstacle map.
+	if (std::string(target) == "MarchBuilding") w.ai->addObjectToPathfindMap(*v);
 	w.frames(2);
 	const ObjectID vid = v->getID();
 	w.select(w.playerIndex("Alice"), { a });
