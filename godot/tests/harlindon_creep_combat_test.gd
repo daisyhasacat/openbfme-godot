@@ -57,5 +57,29 @@ func _run() -> void:
 		world.advance(0.2)
 	# tolerance: any health loss proves that camp defenders can retaliate during peace time.
 	assert(world.get_object(hero_id).health < initial_health, "Creeps did not retaliate")
-	print("PASS: Harlindon northern camp melee and creep retaliation during peace time")
+
+	# Destroy the lair completely, then explicitly finish its non-auto-acquirable rubble.
+	assert(world.order_attack([hero_id], int(cave.id)).ok)
+	for i in 200:
+		world.advance(0.2)
+		if world.get_object(int(cave.id)).get("health", 0.0) <= 0.0:
+			break
+	var rubble: Dictionary = {}
+	for id in world.get_object_ids():
+		var object: Dictionary = world.get_object(id)
+		if object.get("template", "") == "MoriarGoblinLairHole" and Vector2(object.x, object.y).distance_to(Vector2(cave.x, cave.y)) < 50:
+			rubble = object
+			break
+	assert(not rubble.is_empty(), "Destroyed camp left no rubble")
+	assert(world.order_attack([hero_id], int(rubble.id)).ok)
+	for i in 100:
+		world.advance(0.2)
+		if world.get_object(int(rubble.id)).get("health", 0.0) <= 0.0:
+			break
+	var rubble_health: float = world.get_object(int(rubble.id)).get("health", 0.0)
+	if rubble_health > 0.0:
+		printerr("FAIL: Aragorn cannot destroy cave rubble; health=", rubble_health)
+		quit(1)
+		return
+	print("PASS: Harlindon northern camp, creep retaliation and rubble destruction")
 	quit()

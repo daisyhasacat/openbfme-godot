@@ -255,6 +255,10 @@ void RebuildHoleExposeDie::onDie(const DieModuleInterface::Event &event)
 	}
 	if (AIWorld *ai = logic.aiWorld())
 	{
+		// Integration: release the dying parent's footprint before inserting its replacement.
+		// The death tail clears the parent later, but rubble cells cannot accept an obstacle
+		// (RW 0x93485A). Leaving them here makes the living hole unreachable to melee weapons.
+		ai->removeObjectFromPathfindMap(*obj);
 		ai->addObjectToPathfindMap(*hole);
 	}
 	if (m_data->m_fadeInTimeSeconds > 0.0f)
