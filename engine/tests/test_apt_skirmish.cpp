@@ -9,6 +9,7 @@
 #include "IniTestUtil.h"
 
 #include "GameClient/GUI/AptGadgetLayer.h"
+#include "GameClient/GUI/AptMessageBox.h"
 #include "GameClient/GUI/AptScreens/AptScreenFactories.h"
 #include "GameClient/GUI/AptScreens/AptSkirmish.h"
 #include "GameClient/GUI/Gadgets.h"
@@ -1001,17 +1002,26 @@ TEST_CASE("retail lobby API: StartGame with more players than the map holds is r
 		}
 	}
 	REQUIRE(map);
-	for (int slot = 1; slot < MAX_SLOTS; ++slot)
+	REQUIRE(map->numPlayers == 2);
+	for (int slot = 1; slot < 3; ++slot)
 	{
 		GadgetComboBoxSetSelectedPos(fx.screen->slotGadget(slot, "Player"), 2, false); // every slot an easy AI
 	}
-	CHECK(fx.screen->setup()->info().numPlayers() == 8);
+	CHECK(fx.screen->setup()->info().numPlayers() == 3);
 	fx.wm->invokeCallback("AptSkirmish::StartGame", "");
 	fx.tick(2); // the screen update validates and posts (RotWK state 10)
 	CHECK(fx.sink.messages.empty());
 	REQUIRE(fx.sink.refusals.size() == 1);
 	CHECK(fx.sink.refusals[0].first.empty()); // lane GAMEMODES-1: MessageBoxOk(L"", text), RW 0x928482
 	CHECK(fx.sink.refusals[0].second == asciiToU16("Too many players: the map has " + std::to_string(map->numPlayers)));
+	REQUIRE(fx.screen->ruleBox());
+	CHECK(fx.screen->ruleBox()->type() == AptMessageBox::TYPE_OK);
+	CHECK(fx.screen->ruleBox()->title().empty());
+	CHECK(fx.screen->ruleBox()->text() == fx.sink.refusals[0].second);
+	fx.screen->ruleBox()->hide(true); // the API harness also runs the movie button's hide action
+	fx.wm->invokeCallback("_level" + std::to_string(fx.screen->ruleBox()->level()) + ".MessageBox_OnButtonOk", "");
+	fx.tick(30);
+	CHECK(fx.screen->ruleBox()->type() == AptMessageBox::TYPE_NONE);
 	// slots over the map's size are closed again: the lobby starts
 	for (int slot = (int)map->numPlayers; slot < MAX_SLOTS; ++slot)
 	{
@@ -1568,6 +1578,15 @@ TEST_CASE("retail lobby input: StartGame with more players than the map holds is
 	REQUIRE(fx.sink.refusals.size() == 1);
 	CHECK(fx.sink.refusals[0].first.empty()); // lane GAMEMODES-1: MessageBoxOk(L"", text), RW 0x928482
 	CHECK(fx.sink.refusals[0].second == asciiToU16("Too many players: the map has " + std::to_string(map->numPlayers)));
+	REQUIRE(fx.screen->ruleBox());
+	CHECK(fx.screen->ruleBox()->type() == AptMessageBox::TYPE_OK);
+	CHECK(fx.screen->ruleBox()->title().empty());
+	CHECK(fx.screen->ruleBox()->text() == fx.sink.refusals[0].second);
+	AptButtonInst *ok = firstButtonIn(fx.wm->apt().resolvePath(fx.wm->apt().level(fx.screen->ruleBox()->level()), "MessageBox.ButtonsOk.MessageBoxOk"));
+	REQUIRE(ok);
+	clickButton(fx, *ok);
+	fx.tick(30);
+	CHECK(fx.screen->ruleBox()->type() == AptMessageBox::TYPE_NONE);
 	for (int slot = (int)map->numPlayers; slot < MAX_SLOTS; ++slot)
 	{
 		chooseComboRow(fx, fx.screen->slotGadget(slot, "Player"), 1); // closed
