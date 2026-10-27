@@ -278,6 +278,10 @@ void QueueProductionExitUpdate::exitObjectViaDoor(Object *newObj, ExitDoorType)
 			AICommand c;
 			c.type = AICMD_FOLLOW_EXIT_PRODUCTION_PATH;
 			c.path = std::move(path);
+			// OpenBFME doorway-routing fix: retail passes a null source here. Our grid
+			// escape otherwise tunnels to the nearest wall before approaching the door.
+			// Ignore only this producer for the first authored exit segment.
+			c.target = producer->getID();
 			logic.aiCommands().issue(*newObj, std::move(c)); // RW 0x8A4214
 			// lane MOVE-3 r2 / r4: RW 0x8A4219 .. 0x8A424F: after the exit command the AI's ignored obstacle (RW 0x662DA5) is saved, replaced by the horde the new
 			// object joins (when it joins one, RW 0x662D98 with the horde's id), the allies on the cell line from where the new object stands to [ebp-0x44] are
