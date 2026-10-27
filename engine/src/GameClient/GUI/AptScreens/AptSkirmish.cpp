@@ -2781,6 +2781,13 @@ bool AptSkirmish::startGame()
 		if (line.kind == 1)
 		{
 			m_env.newGame->startRefused(std::u16string(), line.text);
+			// RW 0x928482 -> MessageBoxOk: reporting to the sink alone does
+			// not put the refusal on screen in the Godot host.
+			if (!m_ruleBox)
+			{
+				m_ruleBox = std::make_unique<AptMessageBox>(windows(), shell());
+			}
+			m_ruleBox->show(AptMessageBox::TYPE_OK, std::u16string(), line.text);
 		}
 	}
 	if (!check.ok)
