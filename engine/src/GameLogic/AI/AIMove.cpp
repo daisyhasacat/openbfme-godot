@@ -1604,6 +1604,36 @@ void AIMoveToState::onExit()
 	m_turningToFinalAngle = false;
 }
 
+// Shared with state 26, whose retail update delegates to the internal move state.
+void AIMover::updateMoveConditions(float dist)
+{
+	Locomotor *loco = m_host.locomotor();
+	PathfindObject &obj = m_host.pathfindObject();
+	if (loco && dist < m_host.closeEnoughDist())
+	{
+		setMoveCondition("MOVING", false);
+	}
+	else
+	{
+		const Coord3D pos = obj.getPosition();
+		bool moving = true;
+		if (m_host.isCellTypeTwo(pos, obj.getLayer()))
+		{
+			const bool backing = loco && (loco->flags() & LOCOMOTOR_FLAG_BACKING_UP);
+			setMoveCondition(backing ? "RAPPELLING" : "CLIMBING", true);
+			setMoveCondition(backing ? "CLIMBING" : "RAPPELLING", false);
+		}
+		if (m_blockedFrames <= 0)
+		{
+			if (loco && loco->getMaxSpeedForCondition(m_host.locomotorHost()) == 0.0f)
+			{
+				moving = false;
+			}
+			setMoveCondition("MOVING", moving);
+		}
+	}
+}
+
 StateReturnType AIMoveToState::update()
 {
 	// RW 0x748E46
@@ -1665,30 +1695,7 @@ StateReturnType AIMoveToState::update()
 		m_ai.setGoalOnPath();
 	}
 	float dist = m_ai.locomotorDistanceToGoal();
-	// model conditions
-	if (loco && dist < host.closeEnoughDist())
-	{
-		m_ai.setMoveCondition("MOVING", false);
-	}
-	else
-	{
-		const Coord3D pos = obj.getPosition();
-		bool moving = true;
-		if (host.isCellTypeTwo(pos, obj.getLayer()))
-		{
-			const bool backing = loco && (loco->flags() & LOCOMOTOR_FLAG_BACKING_UP);
-			m_ai.setMoveCondition(backing ? "RAPPELLING" : "CLIMBING", true);
-			m_ai.setMoveCondition(backing ? "CLIMBING" : "RAPPELLING", false);
-		}
-		if (m_ai.m_blockedFrames <= 0)
-		{
-			if (loco && loco->getMaxSpeedForCondition(host.locomotorHost()) == 0.0f)
-			{
-				moving = false;
-			}
-			m_ai.setMoveCondition("MOVING", moving);
-		}
-	}
+	m_ai.updateMoveConditions(dist);
 	// the repath cadence: every 5 frames (50 in state 0x47 when far) while the goal moved by more than 10% of the distance to it
 	unsigned thr = 5;
 	const bool far47 = host.stateId() == 0x47;
