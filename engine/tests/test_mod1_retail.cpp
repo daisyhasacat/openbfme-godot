@@ -259,6 +259,7 @@ TEST_CASE("modules retail: a creep lair leaves its rubble hole (RebuildHoleExpos
 	RebuildHoleExposeDie *expose = moduleOf<RebuildHoleExposeDie>(lair);
 	REQUIRE(expose);
 	g.run(2);
+	g.ai->addObjectToPathfindMap(*lair);
 	lair->kill(DEATH_NORMAL);
 	Object *hole = g.logic->findObjectByID(expose->holeId());
 	REQUIRE(hole);
@@ -269,6 +270,12 @@ TEST_CASE("modules retail: a creep lair leaves its rubble hole (RebuildHoleExpos
 	REQUIRE(hole->getBodyModule());
 	CHECK(hole->getBodyModule()->getMaxHealth() == 500.0f); // HoleMaxHealth; the hole's own 9999999.9 clamped to it
 	CHECK(hole->getBodyModule()->getHealth() == 500.0f);
+	// Its live replacement footprint must survive both the death tail and corpse cleanup.
+	auto holeHasFootprint = [&] {
+		const PathfindCell *cell = g.ai->pathfinder().getCell(LAYER_GROUND, hole->getPosition());
+		return cell && cell->isObstaclePresent(hole->getID());
+	};
+	CHECK(holeHasFootprint());
 	auto treasure = [&] {
 		int n = 0;
 		for (Object *o = g.logic->getFirstObject(); o; o = o->getNextObject())
@@ -278,6 +285,7 @@ TEST_CASE("modules retail: a creep lair leaves its rubble hole (RebuildHoleExpos
 		return n;
 	};
 	g.run(5);
+	CHECK(holeHasFootprint());
 	CHECK(treasure() == 0);
 	hole->kill(DEATH_NORMAL);
 	CHECK(treasure() == 4); // OCL_SpawnLairTreasure: Count = 4
