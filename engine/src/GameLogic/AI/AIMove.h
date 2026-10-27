@@ -234,6 +234,7 @@ public:
 
 	// ---- the model-condition helper used by the move state ----
 	void setMoveCondition(const char *name, bool on);
+	void updateMoveConditions(float distanceToGoal);
 
 	// Acceptance-stop lines (docs/STOPS.md) raised so far; empty when none applied.
 	const std::vector<std::string> &stops() const { return m_stops; }
