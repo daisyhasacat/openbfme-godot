@@ -369,7 +369,13 @@ bool Pathfinder::isLinePassable(const PathfindObject *obj, unsigned acceptableSu
 		{
 			return true;
 		}
-		for (const PathfindOccupant *n = list; n; n = n->next)
+		// OpenBFME doorway routing: the exit state's producer exemption and
+		// can-path-through-units flag allow preceding recruits in this lane.
+		// Keep the full terrain / footprint checks below while allowing allied
+		// position reservations and unit-goal reservations in the exit lane.
+		const bool exitLane = obj && obj->canPathThroughUnits() && obj->getIgnoredObstacleID() != PATHFIND_INVALID_ID;
+		if (exitLane) li.move.flags &= ~2u; // allied recruits may still occupy the door; enemy / terrain checks remain
+		for (const PathfindOccupant *n = exitLane ? nullptr : list; n; n = n->next)
 		{
 			const PathfindObject *o = m_world ? m_world->findObjectByID(n->owner) : nullptr;
 			if (!o)

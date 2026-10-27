@@ -53,8 +53,11 @@ func _run() -> void:
 			if offset.dot(forward) >= 80.0:
 				cleared[template] = true
 			else:
-				# tolerance: a 24-unit centreline lane allows grid rounding inside the authored doorway, rejecting the old 75-unit side detour.
-				assert(abs(offset.cross(forward)) <= 12.0, "%s exited through a side wall: %s" % [template, offset])
+				# Follow the authored continuous doorway axis, including through the gate aperture.
+				if abs(offset.cross(forward)) > 0.05:
+					printerr("FAIL: %s deviated from the door centreline by %s" % [template, offset.cross(forward)])
+					quit(1)
+					return
 	assert(seen.size() == 2, "Both hero and builder must finish production")
 	assert(cleared.size() == 2, "Both hero and builder must clear the front door")
 	print("PASS: west Men fortress hero and builder front-door exits")

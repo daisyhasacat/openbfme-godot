@@ -628,6 +628,10 @@ End
 		mw.buildMap();
 		Object *unit = mw.spawn("Walker", 605, 605, angle);
 		const float c = std::cos(angle), s = std::sin(angle);
+		// A preceding recruit may still reserve the front lane. Exit movement is
+		// allowed through units, so that reservation must not introduce a grid detour.
+		Object *preceding = mw.spawn("Walker", 605 + 80*c, 605 + 80*s, angle);
+		mw.ai->pathfinder().updateGoal(mw.aiOf(preceding)->adapter(), preceding->getPosition(), LAYER_GROUND);
 		Coord3D rally{605 - 220*c, 605 - 220*s, 0};
 		auto *exit = factory->getObjectExitInterface();
 		REQUIRE(exit);
@@ -641,8 +645,8 @@ End
 			const float forward = dx*c + dy*s, sideways = -dx*s + dy*c;
 			if (!clearedDoor)
 			{
-				// tolerance: one-cell grid rounding stays inside the 24-unit doorway lane; the old side-wall route deviates about 75 units.
-				CHECK(std::abs(sideways) <= 12.0f);
+				// tolerance: continuous exit routing allows only binary32 integration error, not a grid-sized kink through the gate wall.
+				CHECK(std::abs(sideways) <= 0.05f);
 				if (forward > 100) clearedDoor = true;
 			}
 			else
@@ -670,4 +674,21 @@ TEST_CASE("production exit: cancelling the doorway walk restores factory collisi
 	CHECK(mw.aiOf(unit)->mover().ignoredObstacleID() == factory->getID());
 	mw.aiOf(unit)->aiIdle(CMD_FROM_PLAYER);
 	CHECK(mw.aiOf(unit)->mover().ignoredObstacleID() == PATHFIND_INVALID_ID);
+}
+
+TEST_CASE("production exit: the straight doorway leg still collides with other buildings")
+{
+	MoveWorld mw;
+	Object *factory = mw.spawn("Block", 405, 505);
+	Object *neighbor = mw.spawn("Block", 515, 505);
+	mw.buildMap();
+	Object *unit = mw.spawn("Walker", 405, 505);
+	mw.aiOf(unit)->aiFollowPath({Coord3D{605,505,0}}, factory, CMD_FROM_AI, true);
+	for (int frame = 0; frame < 60; ++frame)
+	{
+		mw.frames(1);
+		const auto *cell = mw.ai->pathfinder().getCell(LAYER_GROUND, unit->getPosition());
+		REQUIRE(cell);
+		CHECK_FALSE(cell->isObstaclePresent(neighbor->getID()));
+	}
 }
