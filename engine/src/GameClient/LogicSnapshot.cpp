@@ -13,6 +13,7 @@
 #include "Common/ModelState.h"
 #include "Common/Player.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Map/TaintManager.h"
 #include "GameClient/HudObjects.h"
 #include "GameClient/Radar.h"
 #include "GameLogic/Locomotor.h"
@@ -181,6 +182,31 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 		if (sm->displayed() && li >= 0)
 		{
 			shroudLocal = li;
+		}
+	}
+	{
+		// TheTaintManager's cells: a new copy when its revision moved
+		const TaintManager &tm = logic.taint();
+		const TaintView *tv = previous ? previous->taint.get() : nullptr;
+		if (tv && tv->revision == tm.revision())
+		{
+			snap->taint = previous->taint;
+		}
+		else
+		{
+			auto v = std::make_shared<TaintView>();
+			v->countX = tm.width();
+			v->countY = tm.height();
+			v->cellSize = tm.cellSize();
+			v->originX = tm.originX();
+			v->originY = tm.originY();
+			v->revision = tm.revision();
+			v->kinds.reserve(tm.cells().size());
+			for (const TaintManager::Cell &c : tm.cells())
+			{
+				v->kinds.push_back(c.kind);
+			}
+			snap->taint = v;
 		}
 	}
 	{

@@ -16,7 +16,8 @@ set(OPENBFME_SPELL_SOURCES
     src/GameLogic/Module/SpellBookPowers.cpp
     src/GameLogic/Module/SpellEffectModules.cpp
     # lane SPELL-3
-    src/GameLogic/Map/TerrainTrees.cpp)
+    src/GameLogic/Map/TerrainTrees.cpp
+    src/GameLogic/Map/TaintManager.cpp) # TheTaintManager (S-6110)
 
 # lane SPELL-2: the spell book screens' engine side (client: sim_policy.json excludes it)
 set(OPENBFME_SPELL_CLIENT_SOURCES
@@ -24,7 +25,8 @@ set(OPENBFME_SPELL_CLIENT_SOURCES
     src/GameClient/GUI/AptScreens/AptSpellStore.cpp
     src/GameClient/TreeTopple.cpp # lane SPELL-3: the falling trees (client)
     src/GameClient/RadiusCursor.cpp # lane SPELL-4: the aiming marker of a targeted power (client)
-    src/GameClient/BuffDraw.cpp) # lane SPELL-4: the BuffNugget buffs (client)
+    src/GameClient/BuffDraw.cpp # lane SPELL-4: the BuffNugget buffs (client)
+    src/GameClient/TaintMask.cpp) # the terrain's taint mask (client, S-6111)
 
 set(OPENBFME_SPELL_TESTS
     tests/test_spell_stores.cpp
@@ -37,4 +39,5 @@ set(OPENBFME_SPELL_TESTS
     tests/test_spell_book_hud.cpp
     tests/test_spell3_powers.cpp # lane SPELL-3
     tests/test_spell4_cursor.cpp # lane SPELL-4
-    tests/test_spell4_buffs.cpp) # lane SPELL-4
+    tests/test_spell4_buffs.cpp # lane SPELL-4
+    tests/test_taint_grid.cpp) # TheTaintManager and its client view (S-6110 / S-6111)

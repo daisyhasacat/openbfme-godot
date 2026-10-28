@@ -336,7 +336,12 @@ void DrawableIconUI::build(GameLogic &logic, const DrawableManager &drawables, c
 		}
 		if (s.snapshot && s.shroudDrawn)
 		{
-			const ObjectSnapshot *rec = s.snapshot->find(obj->getID());
+			bool synced = false;
+			const ObjectSnapshot *rec = d->syncedRecord(*s.snapshot, synced); // the record the transform sync found in this snapshot
+			if (!synced)
+			{
+				rec = s.snapshot->find(obj->getID());
+			}
 			if (!rec || rec->shroudedForLocal || rec->objectShroud > (int)OBJECTSHROUD_PARTIAL_CLEAR)
 			{
 				continue; // not presented yet, or out of the local player's sight

@@ -106,6 +106,7 @@
 #include "GodotDevice/GodotGameStart.h"
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GodotDevice/GodotMapTerrain.h"
+#include "GameClient/TaintMask.h"
 #include "GodotDevice/GodotTiming.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
 #include "GodotDevice/GodotW3DInstancer.h"
@@ -312,10 +313,14 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("debug_placement", "template_name", "x", "y", "angle", "options", "builder_id"), &GameWorld::debug_placement);
 	ClassDB::bind_method(D_METHOD("debug_damage_object", "id", "amount", "source_id"), &GameWorld::debug_damage_object);
 	ClassDB::bind_method(D_METHOD("debug_set_object_status", "id", "status", "on"), &GameWorld::debug_set_object_status); // lane SPELL-3
+	ClassDB::bind_method(D_METHOD("snow_weather_enabled"), &GameWorld::snow_weather_enabled);
+	ClassDB::bind_method(D_METHOD("set_snow_weather", "enabled"), &GameWorld::set_snow_weather);
 	ClassDB::bind_method(D_METHOD("debug_clear_weather"), &GameWorld::debug_clear_weather);
 	ClassDB::bind_method(D_METHOD("debug_set_use_formations", "on"), &GameWorld::debug_set_use_formations); // lane BACKLOG-8 r2                                // lane SPELL-3
 	ClassDB::bind_method(D_METHOD("get_player_table"), &GameWorld::get_player_table);
 	ClassDB::bind_method(D_METHOD("get_player_objects", "player"), &GameWorld::get_player_objects);
+	ClassDB::bind_method(D_METHOD("get_start_positions"), &GameWorld::get_start_positions);
+	ClassDB::bind_method(D_METHOD("reserve_from_ai", "ids"), &GameWorld::reserve_from_ai);
 	ClassDB::bind_method(D_METHOD("get_logic_trees", "x", "y", "radius"), &GameWorld::get_logic_trees); // lane SPELL-3
 	ClassDB::bind_method(D_METHOD("destroy_object", "id"), &GameWorld::destroy_object);
 	ClassDB::bind_method(D_METHOD("map_editor_terrain", "operation"), &GameWorld::map_editor_terrain);
@@ -399,6 +404,7 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("caster_status"), &GameWorld::caster_status);
 	ClassDB::bind_method(D_METHOD("caster_observe", "player", "team"), &GameWorld::caster_observe, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("lan_open", "options"), &GameWorld::lan_open); // lane MP-2
+	ClassDB::bind_method(D_METHOD("set_enhanced_ai", "enabled"), &GameWorld::set_enhanced_ai);
 	ClassDB::bind_method(D_METHOD("set_simulation_profile", "name"), &GameWorld::set_simulation_profile); // lane UBER-1
 	ClassDB::bind_method(D_METHOD("simulation_profile"), &GameWorld::simulation_profile);                 // lane UBER-1
 	ClassDB::bind_method(D_METHOD("restore_simulation_profile"), &GameWorld::restore_simulation_profile); // lane UBERJOIN-1
@@ -751,6 +757,10 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 
 void GameWorld::clear_scene()
 {
+ m_snowOverride = false;
+ m_loadedWeather = MapWeather{};
+ W3D_Ensure_Light_Globals();
+ if (auto *rs = RenderingServer::get_singleton()) rs->global_shader_parameter_set("openbfme_snow_cover", 0.0f);
 	m_sessionSaves.clear();
 	m_movementPendingCommands.reset();
 	m_mapWeatherId = 0;
@@ -785,6 +795,7 @@ void GameWorld::clear_scene()
 	m_views.clear();
 	m_dynamicModels.clear();
 	m_staticModels.clear();
+	m_staticSnowEntries.clear();
 	m_buffInstances.clear(); // lane SPELL-4: the buffs' instances went with the instancer
 	m_staticId = m_dynamicId = 0;
 	m_staticShroudInstances.clear();
@@ -828,6 +839,7 @@ static std::vector<TextureSwap> floorWeatherSwaps(const ModuleData *data, int we
 
 void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &report, Array &errors, Array &stops)
 {
+	m_staticSnowEntries.clear();
 	W3DInstancer *staticInst = memnew(W3DInstancer);
 	staticInst->set_name("StaticObjects");
 	add_child(staticInst);
@@ -895,6 +907,7 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 		}
 		++instances;
 		m_staticShroudInstances.push_back({instance, Vector2(d.position.x, d.position.y)});
+		m_staticSnowEntries.push_back({instance, (int64_t)p.drawable, (int64_t)p.module, model});
 		if(d.info && (d.info->tree || d.info->shrub || d.info->shrubbery || d.info->clearedByBuild || d.info->optimizedProp)
 			&& !d.info->kindOf_test(MapObjectCreation::kindOfIndex("STRUCTURE")))
 			m_pavingPlants.push_back({instance,Vector2(d.position.x,d.position.y)});
@@ -1033,6 +1046,7 @@ Dictionary GameWorld::prepare_new_game(const Dictionary &message)
 	}
 	if (!m_netStarted)
 	{
+		in.game.enhancedAI = m_enhancedAI;
 		in.game.wallBalance = WallBalanceSetup::toText(readLocalWallBalance()); // this player's own game: its rules go into the setup (and the replay)
 	}
 	auto start = std::make_unique<NewGameStart>(RandomAlgorithm::ZH_CarryChain);
@@ -1284,6 +1298,13 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	m_luaCatalog.reset(); // map command/module overrides also change build classifications
 	if (m_consoleRuntime) m_consoleRuntime->invalidate();
 	m_cahCameraOffsetValid = false;
+	m_taintDisplayed.clear();
+	m_taintLastMs = 0;
+	m_taintViewShown = nullptr;
+	m_taintRevisionShown = ~0ull;
+	m_taintTexturesTried = false;
+	m_taintLowTexture.unref();
+	m_taintHighTexture.unref();
 	m_game.reset(new LiveGame(*m_world, *m_fs->archive_fs(), *m_assets, *m_options));
 	m_timingRestoreLogicThread = false;
 	m_game->setRenderInterpolation(m_renderInterpolation);
@@ -1341,12 +1362,11 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 	MapWeather weather;
 	std::string weatherError;
 	std::string weatherDir = toNative(map_name);
-	std::replace(weatherDir.begin(), weatherDir.end(), '\\', '/');
-	if (weatherDir.size() > 4 && weatherDir.substr(weatherDir.size() - 4) == ".map")
-	{
-		weatherDir = weatherDir.substr(0, weatherDir.find_last_of('/'));
-		weatherDir = weatherDir.substr(weatherDir.find_last_of('/') + 1);
-	}
+	std::replace(weatherDir.begin(), weatherDir.end(), '/', '\\');
+	if (weatherDir.size() > 4 && AsciiStringUtil::lowered(weatherDir.substr(weatherDir.size() - 4)) == ".map")
+		weatherDir = weatherDir.substr(0, weatherDir.find_last_of('\\'));
+	else if (weatherDir.find('\\') == std::string::npos)
+		weatherDir = MapClassification::mapDirectory(weatherDir);
 	if (MapWeatherScan::load(*m_fs->archive_fs(), weatherDir, weather, &weatherError))
 	{
 		Dictionary state;
@@ -1354,66 +1374,8 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 		state["texture"] = toGodot(weather.snowTexture);
 		state["spacing"] = weather.snowSpacing;
 		state["speed"] = weather.snowSpeed;
-		if (weather.snowEnabled && weather.isSnowing)
-		{
-			auto bounded = [](float n, float fallback, float lo, float hi) { return std::isfinite(n) ? std::clamp(n, lo, hi) : fallback; };
-			const float height = bounded(weather.snowHeight, 500, 100, 3000);
-			const float spacing = bounded(weather.snowSpacing, 30, 5, 300);
-			const float speed = bounded(weather.snowSpeed, 50, 1, 1000);
-			CPUParticles3D *snow = memnew(CPUParticles3D);
-			snow->set_name("MapSnowfall");
-			snow->set_amount(std::clamp((int)(1400 * 1400 / (spacing * spacing)), 32, 12000));
-			snow->set_lifetime(height / speed);
-			// Fill the complete falling column before the first frame, including heavy snow.
-			snow->set_pre_process_time(std::min(30.0f, height / speed));
-			snow->set_use_local_coordinates(false);
-			snow->set_emission_shape(CPUParticles3D::EMISSION_SHAPE_BOX);
-			// Emit at the ceiling: volume emission spends half each lifetime below the snow box.
-			snow->set_emission_box_extents(Vector3(700, 0, 700));
-			snow->set_direction(Vector3(0, -1, 0));
-			snow->set_spread(std::min(20.0f, std::abs(weather.snowAmplitude)));
-			snow->set_gravity(Vector3(weather.snowXYSpeed[0], 0, -weather.snowXYSpeed[1]));
-			snow->set_param_min(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, speed);
-			snow->set_param_max(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, speed);
-			Ref<QuadMesh> quad; quad.instantiate();
-			const float size = bounded(weather.snowQuadSize, 10, 0.5f, 50);
-			quad->set_size(Vector2(size, size));
-			Ref<Shader> shader; shader.instantiate();
-			shader->set_code(R"(
-shader_type spatial;
-render_mode unshaded, cull_disabled, depth_draw_never;
-uniform sampler2D snow_texture : source_color;
-uniform vec3 snow_centre;
-uniform vec3 snow_bounds;
-void vertex() {
- // Recycle at the edges of the camera volume, without translating in-flight flakes.
- vec3 centre = MODEL_MATRIX[3].xyz;
- centre = snow_centre + mod(centre - snow_centre + snow_bounds * 0.5, snow_bounds) - snow_bounds * 0.5;
- vec4 eye = VIEW_MATRIX * vec4(centre, 1.0);
- eye.xy += VERTEX.xy;
- POSITION = PROJECTION_MATRIX * eye;
-}
-void fragment() {
- vec4 flake = texture(snow_texture, UV);
- ALBEDO = flake.rgb;
- ALPHA = flake.a;
-}
-)");
-			Ref<ShaderMaterial> mat; mat.instantiate();
-			mat->set_shader(shader);
-			mat->set_shader_parameter("snow_bounds", Vector3(1400, height, 1400));
-			Ref<W3DModelBuilder> textures; textures.instantiate();
-			Ref<Texture2D> texture = textures->load_texture(m_fs, toGodot(weather.snowTexture));
-			if (texture.is_valid()) mat->set_shader_parameter("snow_texture", texture);
-			else errors.push_back(toGodot("Missing weather texture: " + weather.snowTexture));
-			quad->set_material(mat);
-			snow->set_mesh(quad);
-			snow->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
-			add_child(snow);
-			m_mapWeatherId = snow->get_instance_id();
-			update_map_weather();
-			state["particles"] = snow->get_amount();
-		}
+		m_loadedWeather = weather;
+		state["particles"] = configure_snowfall(weather, errors);
 		report["weather"] = state;
 	}
 	else errors.push_back(toGodot("weather: " + weatherError));
@@ -1892,7 +1854,13 @@ void GameWorld::refresh_views(double deltaMs)
 		{
 			DrawEntry &e = entries[k];
 			EntryView &ev = v.entries[k];
-			const auto *modelData = dynamic_cast<const W3DModelDrawModuleData *>(e.data);
+			if (!ev.modelDataKnown || ev.modelDataSource != e.data)
+			{
+				ev.modelData = dynamic_cast<const W3DModelDrawModuleData *>(e.data);
+				ev.modelDataSource = e.data;
+				ev.modelDataKnown = true;
+			}
+			const W3DModelDrawModuleData *modelData = ev.modelData;
 			const bool affectedByStealth = !modelData || modelData->m_affectedByStealth;
 			const bool entryHidden = fogHidden || (affectedByStealth && stealthHidden);
 			const ObjectSnapshot *entryStealth = affectedByStealth ? stealthRec : nullptr;
@@ -2032,9 +2000,17 @@ void GameWorld::refresh_views(double deltaMs)
 				std::string coloredModel;
 				if (shown && m_houseColors && palette.kind > 0)
 				{
-					char opt[96];
-					std::snprintf(opt, sizeof(opt), "#%d&%d&%d&%d", palette.kind, (int)palette.colors[0], (int)palette.colors[1], (int)palette.colors[2]);
-					coloredModel = "#" + ev.rawLowered + opt;
+					if (ev.coloredName.empty() || ev.coloredSource != ev.rawLowered || ev.coloredKind != palette.kind || ev.coloredColors[0] != palette.colors[0] ||
+						ev.coloredColors[1] != palette.colors[1] || ev.coloredColors[2] != palette.colors[2])
+					{
+						char opt[96];
+						std::snprintf(opt, sizeof(opt), "#%d&%d&%d&%d", palette.kind, (int)palette.colors[0], (int)palette.colors[1], (int)palette.colors[2]);
+						ev.coloredName = "#" + ev.rawLowered + opt;
+						ev.coloredSource = ev.rawLowered;
+						ev.coloredKind = palette.kind;
+						std::copy(palette.colors, palette.colors + 3, ev.coloredColors);
+					}
+					coloredModel = ev.coloredName;
 				}
 				// stop S-5015: the state's `Texture = A B` swaps (a building's SNOW state on a snowy map) make another model variant, "<model>#tex&a=b"
 				std::string swappedModel;
@@ -5142,9 +5118,28 @@ Dictionary GameWorld::net_status() const
 	{
 		waiting.push_back(slot);
 	}
-	for (const DesyncReport &d : s.network().desyncs())
+	// a desynced game files a report at every CRC check from then on: each report's text is built once (again only when another player's breakdown
+	// arrives), not every status call, which ran every render frame and grew with the game
+	const std::vector<DesyncReport> &reports = s.network().desyncs();
+	if (m_desyncTextSession != &s || m_desyncTexts.size() > reports.size())
 	{
-		desyncs.push_back(toGodot(d.text()));
+		m_desyncTextSession = &s;
+		m_desyncTexts.clear();
+		m_desyncTextHalves.clear();
+	}
+	for (size_t i = 0; i < reports.size(); ++i)
+	{
+		if (i >= m_desyncTexts.size())
+		{
+			m_desyncTexts.push_back(String());
+			m_desyncTextHalves.push_back((size_t)-1);
+		}
+		if (m_desyncTextHalves[i] != reports[i].halves.size())
+		{
+			m_desyncTexts[i] = toGodot(reports[i].text());
+			m_desyncTextHalves[i] = reports[i].halves.size();
+		}
+		desyncs.push_back(m_desyncTexts[i]);
 	}
 	for (const std::string &e : s.network().errors())
 	{
@@ -5312,9 +5307,9 @@ void GameWorld::net_disconnect_quit()
 	}
 }
 
-ProfileIdentity GameWorld::profileIdentityFor(SimulationProfile profile) const
+ProfileIdentity GameWorld::profileIdentityFor(SimulationProfile profile, bool sourceAI) const
 {
-	return ProfileIdentity::compute(m_fs.is_valid() ? m_fs->mountedArchives() : std::vector<MountedArchive>(), RandomAlgorithm::ZH_CarryChain, {}, profile);
+	return ProfileIdentity::compute(m_fs.is_valid() ? m_fs->mountedArchives() : std::vector<MountedArchive>(), RandomAlgorithm::ZH_CarryChain, {}, profile, !sourceAI && m_enhancedAI);
 }
 
 Dictionary GameWorld::net_observe_next(bool forward)
@@ -5458,7 +5453,7 @@ ProfileIdentity GameWorld::net_profile() const
 {
 	// the profile identity of this peer: the mounted archives in mount order with their verified md5, the build, the RNG prepare_new_game uses
 	return ProfileIdentity::compute(m_fs.is_valid() ? m_fs->mountedArchives() : std::vector<MountedArchive>(), RandomAlgorithm::ZH_CarryChain, {},
-		m_choice.current); // lane UBER-1: "profile uber" in the Uber performance mode
+		m_choice.current, m_enhancedAI); // lane UBER-1: "profile uber" in the Uber performance mode
 }
 
 Dictionary GameWorld::set_simulation_profile(const String &name)
@@ -6055,12 +6050,146 @@ Dictionary GameWorld::get_spellbook(int64_t player) const
 // texture clamps. So everything outside the playable area fades to the border level (ShroudAlpha 0: black) over one cell and stays there: the map's border
 // region and the ground beyond it are dark, as the far camera (the Max zoom-out) shows them. The texture's power-of-two padding (Validate_Texture_Size)
 // holds the same border level, which the clamp already gives.
+namespace
+{
+// the ShaderMaterials under the map's "Terrain" root (the terrain chunks and the water / river / road surfaces that take the same parameters)
+std::vector<Ref<ShaderMaterial>> terrainMaterials(Node *terrain)
+{
+	std::vector<Ref<ShaderMaterial>> mats;
+	std::vector<Node *> stack{ terrain };
+	while (!stack.empty())
+	{
+		Node *n = stack.back();
+		stack.pop_back();
+		for (int64_t i = 0; i < n->get_child_count(); ++i)
+		{
+			stack.push_back(n->get_child((int)i));
+		}
+		GeometryInstance3D *g = Object::cast_to<GeometryInstance3D>(n);
+		if (!g)
+		{
+			continue;
+		}
+		if (Ref<ShaderMaterial> m = g->get_material_override(); m.is_valid())
+		{
+			mats.push_back(m);
+		}
+		if (MeshInstance3D *mi = Object::cast_to<MeshInstance3D>(n))
+		{
+			if (mi->get_mesh().is_valid())
+			{
+				for (int32_t k = 0; k < mi->get_mesh()->get_surface_count(); ++k)
+				{
+					Ref<ShaderMaterial> m = mi->get_active_material(k);
+					if (m.is_valid())
+					{
+						mats.push_back(m);
+					}
+				}
+			}
+		}
+	}
+	return mats;
+}
+} // namespace
+
+// TheTaintManager on the terrain (stop S-6111; GameClient/TaintMask.h): W3DTaint's per-cell texture from the presented snapshot's TaintView, the cells at
+// texel (1, 1) as the shroud's, and RotWK's TSTaintMed / TSElvenMed (RW 0x7DBCD4 / 0x7DBCE4) as the shader's TaintLow / TaintHigh. Without GameData TaintOn
+// (W3DTaint::init makes no texture) or while no cell is painted the terrain keeps its plain albedo (taint_enabled false).
+void GameWorld::refresh_taint(bool force)
+{
+	if (!m_game)
+	{
+		return;
+	}
+	const std::shared_ptr<const LogicSnapshot> presented = m_game->presentedSnapshot();
+	const TaintView *view = presented ? presented->taint.get() : nullptr;
+	if (!view) return;
+	const auto now = (std::uint64_t)nowMs();
+	const auto elapsed = m_taintLastMs == 0 ? 0u : (std::uint32_t)(now - m_taintLastMs);
+	// Presentation adaptation: retain sub-step elapsed time at high refresh rates.
+	// Donor 0x741C0 discards it each render, so at >64 Hz every byte step can be zero.
+	// S-6111: sample the donor byte interpolation only once a nonzero step is due.
+	if (m_taintLastMs == 0 || elapsed >= 16) m_taintLastMs = now;
+	const bool changed = TaintMask::interpolate(view->kinds, m_taintDisplayed, elapsed);
+	if (!force && !changed && view == m_taintViewShown && view->revision == m_taintRevisionShown) return;
+	m_taintViewShown = view;
+	m_taintRevisionShown = view->revision;
+	const VisionSettings &vs = m_game->visionSettings();
+	TaintColors colors;
+	colors.shaderTerrain = true; // W3DTaint mode > 0: texture shader supplies the ground colour
+	colors.on = vs.taintOn;
+	colors.low[0] = vs.taintRed;
+	colors.low[1] = vs.taintGreen;
+	colors.low[2] = vs.taintBlue;
+	colors.high[0] = vs.elvenWoodRed;
+	colors.high[1] = vs.elvenWoodGreen;
+	colors.high[2] = vs.elvenWoodBlue;
+	TaintView displayed = *view;
+	displayed.kinds = m_taintDisplayed;
+	const bool painted = colors.on && view->countX > 0 && view->countY > 0 &&
+		(TaintMask::anyPainted(*view) || TaintMask::anyPainted(displayed));
+	if (painted && !m_taintTexturesTried)
+	{
+		m_taintTexturesTried = true;
+		Ref<W3DModelBuilder> loader;
+		loader.instantiate();
+		m_taintLowTexture = loader->load_texture(m_fs, "TSTaintMed.tga");
+		m_taintHighTexture = loader->load_texture(m_fs, "TSElvenMed.tga");
+		if (m_taintLowTexture.is_null() || m_taintHighTexture.is_null())
+		{
+			UtilityFunctions::push_error(String("Taint textures TSTaintMed.tga / TSElvenMed.tga: ") + String(Variant(loader->get_report())));
+		}
+	}
+	const bool enabled = painted && m_taintLowTexture.is_valid() && m_taintHighTexture.is_valid();
+	Vector2 origin, extent;
+	if (enabled)
+	{
+		std::vector<std::uint8_t> rgba;
+		int tw = 0, th = 0;
+		TaintMask::build(displayed, colors, rgba, tw, th);
+		PackedByteArray bytes;
+		bytes.resize((int64_t)rgba.size());
+		std::memcpy(bytes.ptrw(), rgba.data(), rgba.size());
+		Ref<Image> img = Image::create_from_data(tw, th, false, Image::FORMAT_RGBA8, bytes);
+		if (m_taintTexture.is_null() || m_taintTexture->get_width() != tw || m_taintTexture->get_height() != th)
+		{
+			m_taintTexture = ImageTexture::create_from_image(img);
+		}
+		else
+		{
+			m_taintTexture->update(img);
+		}
+		// texel 0 is the border, one cell before the grid's origin (the shroud's mapping)
+		origin = Vector2(SimMath::subf32(view->originX, view->cellSize), SimMath::subf32(view->originY, view->cellSize));
+		extent = Vector2(SimMath::mulf32(view->cellSize, (float)tw), SimMath::mulf32(view->cellSize, (float)th));
+	}
+	Node *terrain = get_node_or_null(NodePath("Terrain"));
+	if (!terrain)
+	{
+		return;
+	}
+	for (Ref<ShaderMaterial> &m : terrainMaterials(terrain))
+	{
+		m->set_shader_parameter("taint_enabled", enabled);
+		if (enabled)
+		{
+			m->set_shader_parameter("taint_tex", m_taintTexture);
+			m->set_shader_parameter("taint_origin", origin);
+			m->set_shader_parameter("taint_extent", extent);
+			m->set_shader_parameter("taint_low_tex", m_taintLowTexture);
+			m->set_shader_parameter("taint_high_tex", m_taintHighTexture);
+		}
+	}
+}
+
 void GameWorld::refresh_shroud(bool force)
 {
 	if (!m_game)
 	{
 		return;
 	}
+	refresh_taint(force);
 	// SMOOTH-1 (merge with VIS-1): the local player's shroud from the presented snapshot's view, rebuilt when its version moved (the shroud manager is
 	// the logic worker's: it is never read here)
 	const std::shared_ptr<const LogicSnapshot> presented = m_game->presentedSnapshot();
@@ -6226,6 +6355,24 @@ Array GameWorld::get_ai_build_report() const
 			const AIBuildState &s = ai.build;
 			Dictionary d;
 			d["player"] = ai.playerIndex;
+			d["group_active"] = g->active;
+			d["disabled"] = ai.disabled;
+			d["tactical_disabled"] = ai.store->data().disableTacticalAI;
+			d["chooser"] = ai.brain.chooser;
+			d["current_enemy"] = ai.brain.currentEnemy;
+			d["attacks_launched"] = (int64_t)ai.brain.attacksLaunched;
+			d["gate_rejects"] = (int64_t)ai.brain.gateRejects;
+			d["fortification_target"]=(int64_t)ai.brain.fortificationTarget;
+			d["siege_units"]=(int64_t)ai.brain.siegeUnits.size();
+			d["siege_escorts"]=(int64_t)ai.brain.siegeEscorts.size();
+			d["siege_launched"]=ai.brain.siegeLaunched;
+			d["siege_gather_frame"]=(int64_t)ai.brain.siegeGatherFrame;
+			Array targets;
+			for (const auto &target : ai.brain.targets) {
+				Dictionary t;t["type"]=target.type;t["object"]=(int64_t)target.object;t["inactive"]=target.inactive;t["dropped"]=target.dropped;
+				t["teams"]=target.teams;t["max_teams"]=target.maxTeams;targets.push_back(t);
+			}
+			d["targets"] = targets;
 			d["phase"] = s.phase;
 			d["money_reserve"] = (int64_t)s.moneyReserve;
 			d["reserve_saved"] = (int64_t)s.reserveSaved;
@@ -7436,6 +7583,98 @@ Array GameWorld::get_player_objects(const String &player)
 	return out;
 }
 
+Dictionary GameWorld::get_start_positions() const
+{
+	Dictionary d;
+	d["ok"] = false;
+	if (!m_game || !m_game->logic().terrain())
+	{
+		d["error"] = "no map is loaded";
+		return d;
+	}
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	GameLogic &logic = m_game->logic();
+	const ::Player *local = logic.players().getLocalPlayer();
+	d["local_player"] = local ? (int64_t)local->getPlayerIndex() : (int64_t)-1;
+	d["local_name"] = local ? toGodot(local->getPlayerName()) : String();
+	const auto &hm = m_game->map().heightMap;
+	Array full;
+	full.push_back(-hm.m_borderSize * MAP_XY_FACTOR);
+	full.push_back(-hm.m_borderSize * MAP_XY_FACTOR);
+	full.push_back((hm.m_width - hm.m_borderSize) * MAP_XY_FACTOR);
+	full.push_back((hm.m_height - hm.m_borderSize) * MAP_XY_FACTOR);
+	d["map"] = full;
+	Array playable;
+	float loX = 0.0f, loY = 0.0f, hiX = 0.0f, hiY = 0.0f;
+	if (logic.aiWorld() && logic.aiWorld()->pathfinder().terrainView())
+	{
+		logic.aiWorld()->pathfinder().terrainView()->getMaximumPathfindExtent(loX, loY, hiX, hiY);
+	}
+	playable.push_back(loX);
+	playable.push_back(loY);
+	playable.push_back(hiX);
+	playable.push_back(hiY);
+	d["playable"] = playable;
+	Array starts;
+	for (int n = 1; n <= 16; ++n)
+	{
+		const Waypoint *w = logic.terrain()->findWaypointByName("Player_" + std::to_string(n) + "_Start");
+		if (!w)
+		{
+			continue;
+		}
+		Dictionary s;
+		s["start"] = n;
+		s["x"] = w->location.x;
+		s["y"] = w->location.y;
+		s["player"] = (int64_t)-1;
+		for (int i = 0; i < logic.players().getPlayerCount(); ++i)
+		{
+			const ::Player *p = logic.players().getNthPlayer(i);
+			// the lobby's slot players only (a human or a skirmish AI): the neutral player and the map's own sides keep start index 0
+			if (p && p != logic.players().getNeutralPlayer() && (p->isSkirmishAI() || p->getPlayerType() == PLAYER_HUMAN) && p->getMultiplayerStartIndex() == n - 1)
+			{
+				s["player"] = (int64_t)i;
+				s["name"] = toGodot(p->getPlayerName());
+				s["ai"] = p->isSkirmishAI();
+				s["local"] = p == local;
+				break;
+			}
+		}
+		starts.push_back(s);
+	}
+	d["starts"] = starts;
+	d["ok"] = true;
+	return d;
+}
+
+int64_t GameWorld::reserve_from_ai(const Array &ids)
+{
+	if (!m_game)
+	{
+		return 0;
+	}
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	const auto status = bfme_snapshot();
+	if (status.networkGame || status.replay)
+	{
+		m_commandErrors.push_back("reserve_from_ai: local non-replay games only");
+		return 0;
+	}
+	GameLogic &logic = m_game->logic();
+	int64_t reserved = 0;
+	for (int64_t i = 0; i < ids.size(); ++i)
+	{
+		const ::Object *o = logic.findObjectByID((::ObjectID)(int64_t)ids[i]);
+		if (o && !o->isDestroyed())
+		{
+			logic.setAIReserved(o->getID());
+			++reserved;
+		}
+	}
+	return reserved;
+}
+
 // ---- lane MP-2: replays -----------------------------------------------------------------------------------------------------------
 void GameWorld::releaseLocalDrivers()
 {
@@ -7631,6 +7870,7 @@ Dictionary GameWorld::lan_status() const
 	r["in_game"] = !m_lan->inLobby();
 	r["identity"] = toGodot(m_lan->profile().digest); // lane UBERJOIN-1: what the lobby announces and sends at a join
 	r["host"] = m_lan->amIHost();
+	r["name"] = toGodot(loadScreenU16ToUtf8(m_lan->name())); // the player's LAN name (game.gd keeps it for the next session)
 	r["slot"] = m_lan->localSlot();
 	r["started"] = m_lan->started();
 	r["games"] = (int64_t)m_lan->games().size();
@@ -8206,3 +8446,154 @@ Array GameWorld::list_replays(const String &directory) const
 }
 
 } // namespace godot
+
+namespace godot {
+int GameWorld::configure_snowfall(const MapWeather &weather, Array &errors)
+{
+	if (auto *old = m_mapWeatherId ? Object::cast_to<Node>(ObjectDB::get_instance(godot::ObjectID(m_mapWeatherId))) : nullptr) {
+		remove_child(old); old->queue_free();
+	}
+	m_mapWeatherId = 0;
+	if (!weather.snowEnabled || !weather.isSnowing) return 0;
+			auto bounded = [](float n, float fallback, float lo, float hi) { return std::isfinite(n) ? std::clamp(n, lo, hi) : fallback; };
+			const float height = bounded(weather.snowHeight, 500, 100, 3000);
+			const float spacing = bounded(weather.snowSpacing, 30, 5, 300);
+			const float speed = bounded(weather.snowSpeed, 50, 1, 1000);
+			CPUParticles3D *snow = memnew(CPUParticles3D);
+			snow->set_name("MapSnowfall");
+			snow->set_amount(std::clamp((int)(1400 * 1400 / (spacing * spacing)), 32, 12000));
+			snow->set_lifetime(height / speed);
+			// Fill the complete falling column before the first frame, including heavy snow.
+			snow->set_pre_process_time(std::min(30.0f, height / speed));
+			snow->set_use_local_coordinates(false);
+			snow->set_emission_shape(CPUParticles3D::EMISSION_SHAPE_BOX);
+			// Emit at the ceiling: volume emission spends half each lifetime below the snow box.
+			snow->set_emission_box_extents(Vector3(700, 0, 700));
+			// XY speed is drift, not acceleration: keep a constant falling velocity.
+			const Vector3 velocity(weather.snowXYSpeed[0], -speed, -weather.snowXYSpeed[1]);
+			snow->set_direction(velocity.normalized());
+			snow->set_spread(std::min(20.0f, std::abs(weather.snowAmplitude)));
+			snow->set_gravity(Vector3());
+			snow->set_param_min(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, velocity.length());
+			snow->set_param_max(CPUParticles3D::PARAM_INITIAL_LINEAR_VELOCITY, velocity.length());
+			Ref<QuadMesh> quad; quad.instantiate();
+			const float size = bounded(weather.snowQuadSize, 10, 0.5f, 50);
+			quad->set_size(Vector2(size, size));
+			Ref<Shader> shader; shader.instantiate();
+			shader->set_code(R"(
+shader_type spatial;
+render_mode unshaded, cull_disabled, depth_draw_never;
+uniform sampler2D snow_texture : source_color;
+uniform vec3 snow_centre;
+uniform vec3 snow_bounds;
+void vertex() {
+	// Recycle at the edges of the camera volume, without translating in-flight flakes.
+	vec3 centre = MODEL_MATRIX[3].xyz;
+	centre = snow_centre + mod(centre - snow_centre + snow_bounds * 0.5, snow_bounds) - snow_bounds * 0.5;
+	vec4 eye = VIEW_MATRIX * vec4(centre, 1.0);
+	eye.xy += VERTEX.xy;
+	POSITION = PROJECTION_MATRIX * eye;
+}
+void fragment() {
+	vec4 flake = texture(snow_texture, UV);
+	ALBEDO = flake.rgb;
+	ALPHA = flake.a;
+}
+)");
+			Ref<ShaderMaterial> mat; mat.instantiate();
+			mat->set_shader(shader);
+			mat->set_shader_parameter("snow_bounds", Vector3(1400, height, 1400));
+			Ref<W3DModelBuilder> textures; textures.instantiate();
+			Ref<Texture2D> texture = textures->load_texture(m_fs, toGodot(weather.snowTexture));
+			if (texture.is_valid()) mat->set_shader_parameter("snow_texture", texture);
+			else errors.push_back(toGodot("Missing weather texture: " + weather.snowTexture));
+			quad->set_material(mat);
+			snow->set_mesh(quad);
+			snow->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+			add_child(snow);
+			m_mapWeatherId = snow->get_instance_id();
+			update_map_weather();
+			return snow->get_amount();
+}
+
+Dictionary GameWorld::set_snow_weather(bool enabled)
+{
+	Dictionary result; result["ok"] = false;
+	if (!m_game) { result["error"] = "Load a map before changing snow weather."; return result; }
+	MapWeather weather = m_loadedWeather;
+	if (enabled) {
+		// Enhanced presentation preset: do not inherit rain from a dry/rainy map.
+		Ref<FileAccess> preset = FileAccess::open("res://weather/console_snow.ini", FileAccess::READ);
+		if (preset.is_null()) { result["error"] = "Missing console snow weather preset."; return result; }
+		MapWeatherScan::applyText(toNative(preset->get_as_text()), weather);
+		Ref<W3DModelBuilder> textures; textures.instantiate();
+		if (textures->load_texture(m_fs, toGodot(weather.snowTexture)).is_null()) {
+			result["error"] = toGodot("Missing weather texture: " + weather.snowTexture); return result;
+		}
+	}
+	m_snowOverride = enabled;
+	m_game->drawables().setSnowPresentation(enabled);
+	m_streakWeather = enabled ? 1 : (m_game->logic().settings().snowy ? 1 : 0);
+	W3D_Ensure_Light_Globals();
+	RenderingServer::get_singleton()->global_shader_parameter_set("openbfme_snow_cover", enabled ? 1.0f : 0.0f);
+	Array errors;
+	result["particles"] = configure_snowfall(weather, errors);
+	update_static_snow(enabled, errors);
+	result["enabled"] = enabled;
+	result["errors"] = errors;
+	result["ok"] = errors.is_empty();
+	return result;
+}
+
+} // namespace godot
+
+namespace godot {
+void GameWorld::update_static_snow(bool enabled, Array &errors)
+{
+	auto *inst = m_staticId ? Object::cast_to<W3DInstancer>(ObjectDB::get_instance(godot::ObjectID(m_staticId))) : nullptr;
+	if (!inst || !m_game) return;
+	for (const auto &entry : m_staticSnowEntries) {
+		int64_t model = entry[3];
+		if (enabled) {
+			const auto &d = m_game->clientOnly().drawables[(size_t)entry[1]];
+			const auto &module = d.draws[(size_t)entry[2]];
+			ModelConditionFlags flags = d.flags; flags.set(ModelCondition::indexOf("SNOW"));
+			MapDrawModule selected = module;
+			std::vector<std::string> problems;
+			MapObjectCreation::resolveDrawModel(selected, flags, d.info ? d.info->name : "", problems);
+			for (const auto &p : problems) errors.push_back(toGodot(p));
+			std::vector<TextureSwap> swaps;
+			if (const auto *data = dynamic_cast<const W3DModelDrawModuleData *>(module.data)) {
+				if (const auto *state = data->findBestInfo(flags)) swaps = state->textures;
+			} else swaps = floorWeatherSwaps(module.data, 1);
+			if (!selected.model.empty()) {
+				const std::string key = AsciiStringUtil::lowered(selected.model) + W3DInstancer::Texture_Swap_Suffix(swaps);
+				auto cached = m_staticModels.find(key);
+				if (cached == m_staticModels.end()) {
+					inst->Set_Build_Texture_Swaps(swaps);
+					model = inst->add_model(toGodot(selected.model));
+					m_staticModels[key] = model;
+				} else model = cached->second;
+			}
+		}
+		if (model < 0)
+			errors.push_back("Could not load snow variant for static drawable " + String::num_int64(entry[1]));
+		else if (!inst->replace_instance_model(entry[0], model))
+			errors.push_back("Could not switch snow variant for static instance " + String::num_int64(entry[0]));
+	}
+	inst->update_now();
+}
+} // namespace godot
+
+bool godot::GameWorld::set_enhanced_ai(bool enabled)
+{
+	if (enabled == m_enhancedAI) return true;
+	if (m_game || m_netStarted || m_choice.roomHeld())
+	{
+		UtilityFunctions::push_error("AI rules cannot change during a game or lobby");
+		return false;
+	}
+	m_enhancedAI = enabled;
+	if (m_choice.lan) m_choice.lan->setProfile(net_profile());
+	return true;
+}

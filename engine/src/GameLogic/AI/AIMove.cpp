@@ -391,18 +391,20 @@ bool AIMover::computeAttackPath()
 {
 	// RW 0x6668CA (the ground branch; the flying / no-pathfind branch RW 0x666D4E .. 0x666E6C and the ship variant RW 0x6FDE38 are S-784)
 	static const std::string kStopAttackPath =
-		"[S-784] attack path: requestAttackPath (RW 0x663802), computeAttackPath (RW 0x6668CA, ground branch) and findAttackPath (RW 0x6FC18E) are ported; NOT ported: the view "
-		"test RW 0x6F4557 (never blocked, S-325), the flying branch and the ship search RW 0x6FDE38, the failure branch's RW 0x6F3C87 / 0x66831A retries (a melee "
-		"soldier attacks through the melee machine instead, S-787); INFERENCE: the closest-cell fallback ranks by distance only (RW 0x93AD93 zone value), the "
-		"expansion takes no range limit, the goal shift toward the attacker is always made (RW 0x441B59 not read)";
+		"[S-784] attack path: requestAttackPath (RW 0x663802), computeAttackPath (RW 0x6668CA, ground branch) and findAttackPath (RW 0x6FC18E) are ported with the "
+		"view test RW 0x6F4557 (its own gaps: S-163); NOT ported: the flying branch and the ship search RW 0x6FDE38, the failure branch's RW 0x6F3C87 / 0x66831A retries (a melee "
+		"soldier attacks through the melee machine instead, S-787); INFERENCE: the expansion takes no range limit, the goal shift toward the attacker is always made "
+		"(RW 0x441B59 not read)";
 	m_host.noteLogicStop(kStopAttackPath);
 	PathfindObject &obj = m_host.pathfindObject();
 	const PathfindLocomotorInfo info = m_host.locomotorInfo();
 	const Coord3D pos = obj.getPosition();
 	const PathfindObject *victim = m_attackVictim != PATHFIND_INVALID_ID ? m_host.findPathfindObject(m_attackVictim) : nullptr;
 	const Coord3D target = victim ? victim->getPosition() : m_attackPos;
-	// in reach already: no path (RW 0x6669C2)
-	if (m_host.attackRangeFrom(pos, victim ? m_attackVictim : PATHFIND_INVALID_ID, target, 0.0f))
+	// in reach already: no path (RW 0x6669C2); a ground mover (AI vslot 0x224) in reach of a victim on the ground whose view is blocked (RW 0x6F4557) searches
+	// instead (RW 0x666977 .. 0x6669C0)
+	if (m_host.attackRangeFrom(pos, victim ? m_attackVictim : PATHFIND_INVALID_ID, target, 0.0f) &&
+		!(victim && m_host.canFollowTeamPath() && !victim->isSignificantlyAboveTerrain() && m_pf.isAttackViewBlockedByObstacle(obj, pos, victim, target)))
 	{
 		destroyPath();
 		m_pathTimestamp = m_host.frame();
@@ -595,14 +597,19 @@ bool AIMover::computePath(const Coord3D &destIn)
 		}
 	}
 	// lane BACKLOG5 (BFME2 decomp AIUpdateInterface_computePath.cpp as donor, tier B same-shape: the RotWK offsets are read from the RotWK disassembly).
-	// RW 0x666036 .. 0x66607C, the straight path of a unit following its exit-production path (state 7 with AI + 0x3BA), is read but not applied: S-166
+	// RW 0x666036 .. 0x66607C: straight exit path (state 7 with AI + 0x3BA).
+	// The unscoped standalone-unit / guard goal-overwrite behavior remains S-166.
 	if (m_host.stateId() == 7 && obj.canPathThroughUnits())
 	{
-		// BFME2 AIUpdateInterface_computePath.cpp (state 7): the building exit
-		// starts with a two-node quick path, so soldiers do not route around their producer.
-		// Limit this port to battalion members; other exit-state/guard semantics remain S-166.
+		// BFME2 AIUpdateInterface_computePath.cpp / RW 0x666036: leave the
+		// building on a two-node continuous path, without grid-centre kinks.
+		// The OpenBFME producer exemption scopes standalone units to their first
+		// doorway segment; later rally routing and unscoped guard semantics stay unchanged.
 		AIMover *container = m_host.containerMover();
 		if (container && container->m_host.pathfindObject().isKindOf(PK_HORDE))
+			return computeQuickPath(dest);
+		if (m_ignoreObstacleId != PATHFIND_INVALID_ID &&
+			m_pf.isLinePassable(&obj, info.validSurfaces, obj.getLayer(), obj.getPosition(), dest, false, true))
 			return computeQuickPath(dest);
 		note(kStopExitQuickPath);
 	}
@@ -1401,6 +1408,36 @@ void AIMoveToState::onExit()
 	m_turningToFinalAngle = false;
 }
 
+// Shared with state 26, whose retail update delegates to the internal move state.
+void AIMover::updateMoveConditions(float dist)
+{
+	Locomotor *loco = m_host.locomotor();
+	PathfindObject &obj = m_host.pathfindObject();
+	if (loco && dist < m_host.closeEnoughDist())
+	{
+		setMoveCondition("MOVING", false);
+	}
+	else
+	{
+		const Coord3D pos = obj.getPosition();
+		bool moving = true;
+		if (m_host.isCellTypeTwo(pos, obj.getLayer()))
+		{
+			const bool backing = loco && (loco->flags() & LOCOMOTOR_FLAG_BACKING_UP);
+			setMoveCondition(backing ? "RAPPELLING" : "CLIMBING", true);
+			setMoveCondition(backing ? "CLIMBING" : "RAPPELLING", false);
+		}
+		if (m_blockedFrames <= 0)
+		{
+			if (loco && loco->getMaxSpeedForCondition(m_host.locomotorHost()) == 0.0f)
+			{
+				moving = false;
+			}
+			setMoveCondition("MOVING", moving);
+		}
+	}
+}
+
 StateReturnType AIMoveToState::update()
 {
 	// RW 0x748E46
@@ -1462,30 +1499,7 @@ StateReturnType AIMoveToState::update()
 		m_ai.setGoalOnPath();
 	}
 	float dist = m_ai.locomotorDistanceToGoal();
-	// model conditions
-	if (loco && dist < host.closeEnoughDist())
-	{
-		m_ai.setMoveCondition("MOVING", false);
-	}
-	else
-	{
-		const Coord3D pos = obj.getPosition();
-		bool moving = true;
-		if (host.isCellTypeTwo(pos, obj.getLayer()))
-		{
-			const bool backing = loco && (loco->flags() & LOCOMOTOR_FLAG_BACKING_UP);
-			m_ai.setMoveCondition(backing ? "RAPPELLING" : "CLIMBING", true);
-			m_ai.setMoveCondition(backing ? "CLIMBING" : "RAPPELLING", false);
-		}
-		if (m_ai.m_blockedFrames <= 0)
-		{
-			if (loco && loco->getMaxSpeedForCondition(host.locomotorHost()) == 0.0f)
-			{
-				moving = false;
-			}
-			m_ai.setMoveCondition("MOVING", moving);
-		}
-	}
+	m_ai.updateMoveConditions(dist);
 	// the repath cadence: every 5 frames (50 in state 0x47 when far) while the goal moved by more than 10% of the distance to it
 	unsigned thr = 5;
 	const bool far47 = host.stateId() == 0x47;

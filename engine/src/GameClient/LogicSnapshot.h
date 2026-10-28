@@ -124,6 +124,16 @@ struct ShroudView
 	unsigned displayLevel(CellShroudStatus s) const { return levels[(int)s]; }
 };
 
+// TheTaintManager's cells as the client draws them (W3DTaint: the visitor 0x006C0DA0 / setTaintLevel BFME2 0x00073CC0 per cell): the kind bytes, copied only when the
+// grid's revision moved (otherwise the previous snapshot's is shared)
+struct TaintView
+{
+	int countX = 0, countY = 0;
+	float cellSize = 1.0f, originX = 0.0f, originY = 0.0f;
+	std::uint64_t revision = 0;
+	std::vector<std::uint8_t> kinds; ///< TaintManager::kindAt per cell, row y * countX + x (0x80 neutral)
+};
+
 // The players as the client's per-frame readers ask them (the audio manager's shouldPlayLocally queries)
 struct PlayerView
 {
@@ -144,6 +154,7 @@ struct LogicSnapshot
 	std::uint32_t stateHash = 0;    ///< the state hash of the frame (when hashed)
 	std::vector<ObjectSnapshot> objects; ///< ascending id
 	std::shared_ptr<const ShroudView> shroud;   ///< null without a shroud manager
+	std::shared_ptr<const TaintView> taint;     ///< TheTaintManager's cells
 	std::shared_ptr<const PlayerView> players;
 	std::shared_ptr<const EndGameView> endGame; ///< lane END-1: the victory state the end sequence reads (GameClient/EndGame.h)
 	std::vector<ObjectID> observedSelection; ///< CASTER-1: recorded command selection, never a new selection command

@@ -73,7 +73,7 @@ public:
 
 private:
 	void registerAll();
-	void showSkirmish();
+	void showSkirmish(int mode); // 0 the skirmish lobby, 1 the War of the Ring lobby
 	void request(ShellAction action, const std::string &argument);
 
 	void update();

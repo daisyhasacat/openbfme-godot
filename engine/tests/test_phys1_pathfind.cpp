@@ -361,3 +361,123 @@ TEST_CASE("pathfind donor movement: submarines ignore unit occupancy without ign
 	pf.removeGoal(occupant);
 	pf.removePos(occupant);
 }
+
+TEST_CASE("phys1 pathfind: findAttackPath follows the hierarchical corridor round a wall to its gate (RW 0x6FC4E4)")
+{
+	// a 128 x 128 cell map split by a cliff wall filling the block column x = 64..79 below y = 112, the top block row open (the gate). The attacker stands
+	// just before the wall, its victim just behind it: the pocket before the wall (7168 cells) is larger than MaxCellsFindAttackPath (2500), so a search that
+	// floods every block runs out there and falls back to the cell nearest the victim, against the wall
+	SyntheticTerrain terrain(128, 128);
+	for (int x = 64; x < 80; ++x)
+	{
+		for (int y = 0; y < 112; ++y)
+		{
+			terrain.cliff.insert({ x, y });
+		}
+	}
+	TestWorld world;
+	const PathfindConfig cfg = testConfig();
+	REQUIRE(cfg.findAttackPathLimit == 2500);
+	Pathfinder pf(cfg, &world);
+	pf.newMap(terrain);
+	TestObject unit;
+	unit.id = 3;
+	unit.pos = Coord3D{ 605.0f, 105.0f, 0.0f }; // cell (60, 10)
+	unit.mobile = true;
+	world.objects[unit.id] = &unit;
+	// the victim object (a position attack takes no corridor: kAttackCorridor)
+	TestObject victim;
+	victim.id = 4;
+	victim.pos = Coord3D{ 845.0f, 105.0f, 0.0f }; // cell (84, 10)
+	world.objects[victim.id] = &victim;
+	const Coord3D target = victim.pos;
+	const FixedRange range(target, 30.0f);
+	bool fallback = true;
+	std::unique_ptr<Path> p(pf.findAttackPath(&unit, groundLoco(), &unit.pos, &victim, &target, 0.0f, range, false, &fallback));
+	REQUIRE(p != nullptr);
+	CHECK_FALSE(fallback);
+	const Coord3D end = *p->getLastNode()->getPosition();
+	CHECK(range.inRangeFrom(end, 0.0f));
+	CHECK(end.x > 800.0f); // tolerance: x=800 is the far wall boundary; any reachable endpoint beyond it satisfies the visibility regression.
+}
+
+namespace
+{
+// a 64 x 64 cell map with a WALL_SEGMENT box at x = 300 (half-width 5) from y = 200 to 400, a building to shoot at behind it at (400, 300) and an
+// ATTACK_NEEDS_LINE_OF_SIGHT archer in front of it at (200, 300); the objects are the world's (`objects` owns them)
+struct WallScene
+{
+	SyntheticTerrain terrain{ 64, 64 };
+	TestWorld world;
+	TestObject wall, building, archer;
+	std::unique_ptr<Pathfinder> pf;
+	explicit WallScene(PathfindConfig cfg = testConfig())
+	{
+		wall.id = 10;
+		wall.pos = Coord3D{ 300.0f, 300.0f, 0.0f };
+		wall.structure = true;
+		wall.kinds.insert(PK_WALL_SEGMENT);
+		wall.geometry.type = PATHFIND_GEOMETRY_BOX;
+		wall.geometry.majorRadius = 5.0f;
+		wall.geometry.minorRadius = 100.0f;
+		building.id = 11;
+		building.pos = Coord3D{ 400.0f, 300.0f, 0.0f };
+		building.structure = true;
+		building.geometry.type = PATHFIND_GEOMETRY_BOX;
+		building.geometry.majorRadius = 20.0f;
+		building.geometry.minorRadius = 20.0f;
+		archer.id = 12;
+		archer.pos = Coord3D{ 200.0f, 300.0f, 0.0f };
+		archer.mobile = true;
+		archer.kinds.insert(PK_ATTACK_NEEDS_LINE_OF_SIGHT);
+		archer.geometry.type = PATHFIND_GEOMETRY_SPHERE;
+		archer.geometry.majorRadius = 5.0f;
+		for (TestObject *o : { &wall, &building, &archer })
+		{
+			world.objects[o->id] = o;
+		}
+		pf = std::make_unique<Pathfinder>(cfg, &world);
+		pf->newMap(terrain);
+		pf->addObjectToPathfindMap(wall);
+		pf->addObjectToPathfindMap(building);
+	}
+	bool blockedFrom(const Coord3D &from) { return pf->isAttackViewBlockedByObstacle(archer, from, &building, building.pos); }
+};
+} // namespace
+
+TEST_CASE("phys1 pathfind: the attack view test (RW 0x6F4557) is blocked by a wall between an archer and its target, not round the wall's end")
+{
+	WallScene s;
+	CHECK(s.blockedFrom(s.archer.pos));
+	CHECK_FALSE(s.blockedFrom(Coord3D{ 250.0f, 600.0f, 0.0f })); // the line passes the wall's end (x 300 at y 500)
+	CHECK_FALSE(s.blockedFrom(Coord3D{ 350.0f, 300.0f, 0.0f })); // behind the wall: only the building's own cells, which never block
+	CHECK_FALSE(s.pf->isAttackViewBlockedByObstacle(s.archer, s.archer.pos, nullptr, s.building.pos)); // no victim: never blocked
+	// an attacker without ATTACK_NEEDS_LINE_OF_SIGHT / CAN_SHOOT_OVER_WALLS is never blocked
+	s.archer.kinds.clear();
+	CHECK_FALSE(s.blockedFrom(s.archer.pos));
+	// CAN_SHOOT_OVER_WALLS alone: over a wall nearer the attacker than the victim (the objects' own positions), not one nearer the victim
+	s.archer.kinds.insert(PK_CAN_SHOOT_OVER_WALLS);
+	s.archer.pos = Coord3D{ 280.0f, 300.0f, 0.0f };
+	CHECK_FALSE(s.blockedFrom(s.archer.pos));
+	s.archer.pos = Coord3D{ 100.0f, 300.0f, 0.0f };
+	CHECK(s.blockedFrom(s.archer.pos));
+	// AIData AttackUsesLineOfSight No: off
+	PathfindConfig off = testConfig();
+	off.attackUsesLineOfSight = false;
+	WallScene o(off);
+	CHECK_FALSE(o.blockedFrom(o.archer.pos));
+}
+
+TEST_CASE("phys1 pathfind: findAttackPath from behind a wall ends where the view to the target is clear (RW 0x6FC3CB / 0x6FC82A)")
+{
+	WallScene s;
+	const FixedRange range(s.building.pos, 250.0f); // in reach from the archer's own position: only the wall stands in the way
+	REQUIRE(range.inRangeFrom(s.archer.pos, 0.0f));
+	bool fallback = true;
+	std::unique_ptr<Path> p(s.pf->findAttackPath(&s.archer, groundLoco(), &s.archer.pos, &s.building, &s.building.pos, 20.0f, range, false, &fallback));
+	REQUIRE(p != nullptr);
+	CHECK_FALSE(fallback);
+	const Coord3D end = *p->getLastNode()->getPosition();
+	CHECK(range.inRangeFrom(end, 0.0f));
+	CHECK_FALSE(s.blockedFrom(end));
+}

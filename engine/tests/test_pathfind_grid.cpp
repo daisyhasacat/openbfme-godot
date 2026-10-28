@@ -388,7 +388,7 @@ TEST_CASE("pathfind stops: what a build and a search report is registered, every
 	delete w.pf->findPath(nullptr, groundLoco(), &from, &inside, &partial);
 	delete w.pf->findPath(nullptr, groundLoco(), &from, &far, &partial);
 	const std::vector<std::string> all = Pathfinder::allStops();
-	REQUIRE(all.size() == 16);
+	REQUIRE(all.size() == 18);
 	std::set<std::string> registered(all.begin(), all.end());
 	CHECK(registered.size() == all.size());
 	std::set<int> rows;

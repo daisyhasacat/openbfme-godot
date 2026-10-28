@@ -261,6 +261,10 @@ TEST_CASE("AIPOW-1: the decision functions of RW 0x992724's classes and their co
 		{ 21, 0xC8E224, 0x9B501B }, // SPELLBOOK_ALWAYS_FIRE (`mov al, 1`)
 		{ 25, 0xC8E090, 0x9E86BE }, // SPELLBOOK_CAPTURE_CREEP
 		{ 34, 0xC8DFB4, 0x9E7CA3 }, // SPELLBOOK_SHROUD_REVEAL
+		{ 27, 0xC8DF88, 0x9E7A98 }, // STRUCTURE_BREAKER
+		{ 28, 0xC8DF60, 0x9E7942 }, // STRUCTURE_BREAKER_PREF_WALLS
+		{ 36, 0xC8DDFC, 0x9E6EF4 }, // STRUCTURE_BASEKILL
+		{ 37, 0xC8DD50, 0x9E6CCB }, // CITADEL
 	};
 	for (const Row &r : rows)
 	{
@@ -492,11 +496,10 @@ TEST_CASE("AIPOW-1: the ActionManager's stops [S-1871] .. [S-1874] and the compu
 	const std::vector<std::string> ai = AISpecialPowerUpdate::stopLines();
 	REQUIRE(ai.size() == 2);
 	CHECK(ai[0].rfind("[S-1421]", 0) == 0);
-	CHECK(ai[0].find("42 of the 53 decisions run") != std::string::npos);
+	CHECK(ai[0].find("46 of the 53 decisions run") != std::string::npos);
 	CHECK(ai[0].find("SOUL_FREEZE") != std::string::npos);
 	CHECK(ai[1].rfind("[S-1875]", 0) == 0);
-	// the decisions still unported: SOUL_FREEZE, ATTACK_HEAL_AOE and 9 spell book ones (ARMY_BREAKER, HEAL, STRUCTURE_BREAKER (+ _PREF_WALLS, BASEKILL),
-	// TREE_KILLER, CITADEL, DEBUFFECONOMYBUILDING, DEBUFFPRODUCTIONBUILDING)
+	// Still unported: SOUL_FREEZE, ATTACK_HEAL_AOE, ARMY_BREAKER, HEAL, TREE_KILLER, and the two building debuffs.
 	int unported = 0;
 	for (int t = 0; t < AI_SPECIAL_POWER_TYPE_COUNT; ++t)
 	{
@@ -507,7 +510,7 @@ TEST_CASE("AIPOW-1: the ActionManager's stops [S-1871] .. [S-1874] and the compu
 			CHECK_MESSAGE((spellBook || t == 44 || t == 49), TheAISpecialPowerTypeNames[t]);
 		}
 	}
-	CHECK(unported == 11);
+	CHECK(unported == 7);
 	CHECK(AISpecialPowerDecision::decisionPorted(21));
 	CHECK(AISpecialPowerDecision::decisionPorted(25));
 	CHECK(AISpecialPowerDecision::decisionPorted(34));
@@ -940,4 +943,96 @@ TEST_CASE("AIPOW-1 r2: the Elves' BUFFTERRAIN (Elven Wood, RW 0x9E77EE) and ENSH
 	CHECK(distance2D(mist->decidedLocation(), *mine->getPosition()) <= 150.0f);
 	MESSAGE("BUFFTERRAIN " << distance2D(terrain->decidedLocation(), *mine->getPosition()) << ", ENSHROUDINGMIST "
 	                       << distance2D(mist->decidedLocation(), *mine->getPosition()) << " from the unit");
+}
+
+TEST_CASE("source AI structure powers: dense human structure group and fortress-aware basekill")
+{
+	OPENBFME_REQUIRE_START(s);
+	Arena a;
+	std::string err;
+	REQUIRE_MESSAGE(a.start(*s, "FactionMen", 6101, &err), err);
+	auto *player = a.logic->players().getNthPlayer(a.ai->getPlayerIndex());
+	Object *book = SpecialPowerModules::getSpellBookObject(*a.logic, *player);
+	REQUIRE(book);
+	a.advance(2);
+	a.logic->shroud()->revealMapForPlayerPermanently(player->getPlayerIndex());
+	// Reuse a real location power/module for the shared A0229F acceptance test.
+	AISpecialPowerUpdateModuleData data;
+	data.m_commandButtonName = "Command_SpellBookArrowVolleyGood";
+	data.m_specialPowerAIType = 27;
+	AISpecialPowerUpdate breaker(book, &data);
+	breaker.initAsIfInCommandSetForTest();
+	REQUIRE(breaker.decision());
+	REQUIRE(breaker.decision()->button);
+	auto *ai = const_cast<AISkirmishPlayer *>(a.logic->skirmishAI().findAI(player->getPlayerIndex()));
+	REQUIRE(ai);
+	REQUIRE(ai->groupFirst);
+	ai->groupFirst->brain.currentEnemy = -1;
+	CHECK_FALSE(breaker.decideNow());
+	ai->groupFirst->brain.currentEnemy = a.human->getPlayerIndex();
+	for (int i = 0; i < 20; ++i)
+	{
+		Object *farm = a.make("GondorFarm", a.human, 0, 0);
+		// LiveGame's developer creation helper assigns position after construction.
+		// Exercise the native re-registration event at the final placement, as a command-set change does.
+		a.logic->skirmishAI().objectRemoved(*farm);
+		a.logic->skirmishAI().objectAdded(*farm);
+	}
+	CHECK(breaker.decideNow());
+	CHECK(breaker.decidedLocation().x == a.where.x);
+	CHECK(breaker.decidedLocation().y == a.where.y);
+	data.m_specialPowerAIType = 36;
+	AISpecialPowerUpdate basekill(book, &data);
+	basekill.initAsIfInCommandSetForTest();
+	CHECK_FALSE(basekill.decideNow()); // Enemy fortress exists, but no busy army unit near it.
+	Object *mine = a.make("GondorFighterHorde", a.ai, 0, 0);
+	Object *victim = a.make("GondorFighterHorde", a.human, 30, 0);
+	Object *fortress = a.make("MenFortressCitadel", a.human, 0, 200);
+	REQUIRE(mine->getAIUpdateInterface()->aiAttackObject(victim, CMD_FROM_PLAYER));
+	CHECK(basekill.decideNow());
+	CHECK(basekill.decidedLocation().x == fortress->getPosition()->x);
+	CHECK(basekill.decidedLocation().y == fortress->getPosition()->y);
+	data.m_specialPowerAIType = 28;
+	AISpecialPowerUpdate walls(book, &data);
+	walls.initAsIfInCommandSetForTest();
+	Object *farWall = a.make("MenWallSegmentSmall", a.human, 0, 120);
+	Object *nearWall = a.make("MenWallSegmentSmall", a.human, 0, 80);
+	(void)farWall;
+	CHECK(walls.decideNow());
+	CHECK(walls.decidedLocation().x == nearWall->getPosition()->x);
+	CHECK(walls.decidedLocation().y == nearWall->getPosition()->y);
+	// Citadel targets the first fortress in record order and consumes exactly two named draws.
+	Object *firstFortress = nullptr;
+	for (ObjectID id : AITacticalAI::recordOf(*a.logic, a.human->getPlayerIndex()).structures())
+	{
+		Object *o = a.logic->findObjectByID(id);
+		if (o && o->isKindOfName("DOZER_FACTORY"))
+		{
+			firstFortress = o;
+			break;
+		}
+	}
+	REQUIRE(firstFortress);
+	Coord3D enemy = a.where;
+	enemy.x += 200.0f;
+	firstFortress->setPosition(&enemy);
+	ai->build.startPosition = a.where;
+	ai->build.startPosition.x -= 200.0f;
+	data.m_specialPowerAIType = 37;
+	AISpecialPowerUpdate citadel(book, &data);
+	citadel.initAsIfInCommandSetForTest();
+	a.logic->random().seedRandom(1);
+	a.logic->random().enableCallLog(true);
+	a.logic->random().clearCallLog();
+	CHECK(citadel.decideNow());
+	const auto &calls = a.logic->random().callLog();
+	REQUIRE(calls.size() == 2);
+	CHECK(calls[0].file == "AISpellBookCitadel.cpp");
+	CHECK(calls[0].line == 73);
+	CHECK(calls[1].file == "AISpellBookCitadel.cpp");
+	CHECK(calls[1].line == 81);
+	const float x = SimMath::addf32(ai->build.startPosition.x, SimMath::mulf32(400.0f, calls[0].rresult));
+	const float y = SimMath::addf32(a.where.y, SimMath::subf32(0.0f, SimMath::mulf32(400.0f, calls[1].rresult)));
+	CHECK(citadel.decidedLocation().x == x);
+	CHECK(citadel.decidedLocation().y == y);
 }

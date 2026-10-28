@@ -136,6 +136,8 @@ protected:
 	void zeroBurnDecay();
 	// RW 0x8C8E67 / 0x8C7DBA: the terrain area, FX, OCL and the area object of Taint / ElvenWood; returns the object made (null: none)
 	Object *seedArea(const Coord3D &loc, const std::string &fx, const std::string &ocl, const std::string &objectName);
+	// the TaintManager paint of Taint / ElvenWood (BFME2 0x004C49AE / 0x004C3B17, RW 0xAD4C10): radius * 1.25 neutral, then the radius at `amount` owned by `made`
+	void paintArea(const Coord3D &loc, float radius, int amount, const Object *made);
 	// the FX at the centre of the terrain's extent (RW 0x8C931C / 0x8C9104 / 0x8C8ADA); castLoc: its z (null: the ground height there)
 	void emitCentreFX(const std::string &fx, const Coord3D *castLoc);
 };
@@ -286,6 +288,8 @@ private:
 namespace SpellBookPowers
 {
 void registerAll(ModuleFactory &modules);
-// the stop lines of the lane (S-920 .. S-923)
+// the stop lines of the lane (S-920 .. S-923), S-930 and the taint grid's (S-6110 .. S-6112)
 std::vector<std::string> stopLines();
 }
+const char *taintViewStopLine();       ///< S-6111: the client's taint mask (GameClient/LogicSnapshot TaintView, the terrain shader)
+const char *taintAreaVisualStopLine(); ///< S-6112: the trees, shrubs and props of a taint / elven wood area

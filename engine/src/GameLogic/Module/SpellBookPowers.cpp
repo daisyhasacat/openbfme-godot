@@ -20,6 +20,7 @@
 #include "GameLogic/AI/AIPathfindHost.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Economy.h"
+#include "GameLogic/Map/TaintManager.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/Map/TerrainTrees.h"
 #include "GameLogic/GlobalWeatherSystem.h"
@@ -264,7 +265,8 @@ Object *WeatherFamilySpecialPower::seedArea(const Coord3D &loc, const std::strin
 {
 	Object *obj = getObject();
 	GameLogic &logic = obj->logic();
-	++m_unported; // RW 0x67F6F0 / 0x67D4CE: the terrain's taint / elven wood area of the radius (S-921)
+	++m_unported; // RW 0x67F6F0 / 0x67D4CE: the trees' morph and the shrubs / props of the area, client only (S-6112)
+	logic.noteStop(taintAreaVisualStopLine());
 	emitPositionFX(logic, "SpecialPower area FX", fx, *obj, loc); // RW 0x494615
 	if (!ocl.empty())
 	{
@@ -284,9 +286,24 @@ Object *WeatherFamilySpecialPower::seedArea(const Coord3D &loc, const std::strin
 	if (made)
 	{
 		made->setPosition(&loc); // RW 0x70C201
-		++m_unported;            // RW 0x69954A (with the caster's + 0x31C) and the terrain decals (RW 0xAD4C10, client): S-921
+		made->setTeam(obj->getTeam()); // RW 0x69954A with the caster's team (+ 0x31C); BFME2 TaintSpecialPower::addObject 0x004C4940
 	}
 	return made;
+}
+
+// BFME2 TaintSpecialPower 0x004C49AE / ElvenWoodSpecialPower 0x004C3B17 (RotWK RW 0xAD4C10): the area of radius * 1.25 made neutral for everyone, then,
+// with the area object, the radius painted at `amount` owned by it
+void WeatherFamilySpecialPower::paintArea(const Coord3D &loc, float radius, int amount, const Object *made)
+{
+	GameLogic &logic = getObject()->logic();
+	logic.noteStop(TaintManager::stopLine());
+	logic.noteStop(taintViewStopLine()); // the client draws what is painted here
+	TaintManager &taint = logic.taint();
+	taint.applyCircleWorld(loc.x, loc.y, SimMath::mulf32(radius, 1.25f), TaintManager::kNeutral, true, -1);
+	if (made)
+	{
+		taint.applyCircleWorld(loc.x, loc.y, radius, amount, true, (int)made->getID());
+	}
 }
 
 void DarknessSpecialPower::doSpecialPowerAtLocation(const Coord3D &loc, unsigned options)
@@ -390,6 +407,7 @@ void TaintSpecialPower::doSpecialPowerAtLocation(const Coord3D &loc, unsigned op
 	baseDo(&loc, nullptr, options);
 	Object *made = seedArea(loc, m_data->m_taintFX, m_data->m_taintOCL, m_data->m_taintObject);
 	m_lastObject = made ? made->getID() : (ObjectID)INVALID_ID;
+	paintArea(loc, m_data->m_taintRadius, 0, made); // taint: below neutral (side 2)
 }
 
 void ElvenWoodSpecialPower::doSpecialPowerAtLocation(const Coord3D &loc, unsigned options)
@@ -405,6 +423,7 @@ void ElvenWoodSpecialPower::doSpecialPowerAtLocation(const Coord3D &loc, unsigne
 	{
 		made->setStatus(0x54, true); // RW 0x8C7E3A: status 0x54 on the grove
 	}
+	paintArea(loc, m_data->m_elvenWoodRadius, 0xFF, made); // elven wood: above neutral (side 1)
 }
 
 // ---- ProductionSpeedBonus ------------------------------------------------------------------------------------------------------------------
@@ -594,8 +613,7 @@ std::vector<std::string> SpellBookPowers::stopLines()
 		"active boundary taken as 0: only scripts change it) and CloudBreak's SunbeamObject grid (RW 0x8C8B57: every created sunbeam draws what its "
 		"constructor and sendObjectCreated draw, TWO logic random draws each for the retail CloudBreakSunbeam (LifetimeUpdate's lifetime and the seed), "
 		"2 * N per cast for N grid points); not ported (counted per cast): the fire grid burn rate (RW 0x687C4C), CloudBreak's fire put-out (RW 0x68F383) "
-		"and the sunbeams' Lua terror (their panic gameplay), the terrain taint / elven wood areas and decals (RW 0x67F6F0, 0x67D4CE, 0xAD4C10), RW "
-		"0x69954A on the area object, the production speed bonus consumer (RW 0x6AF3C8 is stored only), the defect side effects (RW 0x699368 / 0x6938BD), "
+		"and the sunbeams' Lua terror (their panic gameplay), the production speed bonus consumer (RW 0x6AF3C8 is stored only), the defect side effects (RW 0x699368 / 0x6938BD), "
 		"Devastate's FireWeapon (lane DECOMP-1) and its trees, FX and money (lane SPELL-3, S-930) run",
 	};
 	for (const std::string &s : GlobalWeatherSystem::stopLines())
@@ -614,7 +632,29 @@ std::vector<std::string> SpellBookPowers::stopLines()
 				  "states sent before the movie stepped after SetLayout were lost, retail's client frame is taken to step the movie at each update)");
 	out.push_back(SpellEffectModules::stopLine());
 	out.push_back(TerrainTrees::stopLine()); // lane SPELL-3: S-930
+	out.push_back(TaintManager::stopLine());  // S-6110
+	out.push_back(taintViewStopLine());       // S-6111
+	out.push_back(taintAreaVisualStopLine()); // S-6112
 	return out;
+}
+
+const char *taintViewStopLine()
+{
+	return "[S-6111] the taint mask on the client (W3DTaint::setTaintLevel BFME2 0x00073CC0, terrain.fxo ps_2_0 blob 35 / vs blob 60): white RGB of the "
+		   "shader terrain path (mode > 0), the level in the mask's alpha, TSTaintMed / TSElvenMed blended "
+		   "by 2 * |level - 0.5| at the 16-cell terrain patch UV (BFME2 W3DTerrainBackgroundDoTesselatedUpdate) and multiplied by the mask colour; INFERENCE: presentation retains elapsed intervals below 16 ms "
+		   "so integer byte steps do not stall above 64 Hz; the mask colour leaves out the shroud level (the port "
+		   "draws the shroud with its own texture), FireManager's scorch colour (BFME2 0x00DFF4B4 slot 15) is not ported (white), the texture's border is "
+		   "neutral (retail fills it with TaintAlpha), the mask's UV follows the shroud's (world (0, 0) at texel 1's corner) since the Taint matrix's values "
+		   "were not read";
+}
+
+const char *taintAreaVisualStopLine()
+{
+	return "[S-6112] the taint / elven wood area's client side (BFME2 TerrainLogic 0x0027F28E -> W3DTerrainVisual slot 29: each tree within the radius "
+		   "morphs, W3DShrubBuffer::startMorph; 0x0027D1A4 -> slot 16, BaseHeightMap 0x00068073: the shrubs within radius + 50 morph, W3DShrubBuffer "
+		   "0x000E912A, and the props there are removed, W3DPropBuffer 0x000EE04A) is not ported: the trees, shrubs and props stay as they are; a castle's "
+		   "area clear (TerrainLogic 0x00283262) does not repaint the taint grid either";
 }
 
 // ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------

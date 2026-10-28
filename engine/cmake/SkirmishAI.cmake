@@ -10,6 +10,7 @@ set(OPENBFME_SKIRMISH_AI_SOURCES
     src/GameLogic/SkirmishAI/AIFortification.cpp
     src/GameLogic/SkirmishAI/AIThreatFinder.cpp
     src/GameLogic/SkirmishAI/AIStatCollector.cpp
+    src/GameLogic/SkirmishAI/AIPositionSampler.cpp
     src/GameLogic/SkirmishAI/AIUpgrade.cpp)
 
 set(OPENBFME_SKIRMISH_AI_TESTS

@@ -292,7 +292,7 @@ public:
 	void aiFollowPathAsTeam(const std::vector<Coord3D> &path, Object *ignoreObject, float angle, CommandSourceType source);
 	// AI vslot 0x224 (RW 0x667144): a unit whose current locomotor set is not air-only, that has a locomotor not flying (template surfaces without AIR) and
 	// is not held (Object + 0x1C8 bit 3) marches along a path (command 0x24 / 0x25); any other takes a plain move
-	bool canFollowTeamPath() const;
+	bool canFollowTeamPath() const override;
 	float teamPathAngle() const { return m_teamPathAngle; }               ///< AI + 0x1A0
 	int currentGoalPathIndex() const { return m_currentGoalPathIndex; }   ///< AI + 0x194
 	void setCurrentGoalPathIndex(int i) { m_currentGoalPathIndex = i; }

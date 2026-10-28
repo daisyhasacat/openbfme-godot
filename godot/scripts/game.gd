@@ -463,7 +463,9 @@ var _observe_key_down := false
 # lane MP-1
 var _net_host := -1
 var _net_join := ""
-var _net_name := "Joiner"
+var _net_name := "Joiner"        # --net-name (the scripted --net-join runs' default; the LAN lobby screen uses _lan_name())
+var _net_name_given := false
+var _lan_saved_name := ""          # the LAN name last written to Options.ini (OpenBFMELanName)
 var _net_slots := "human:FactionMen:0:0;human:FactionMordor:1:1"
 var _net_run_ahead := 1  # lane NETLAG-1: RotWK's command delay, the current frame + 1 (was 2)
 var _net_crc := 100
@@ -552,6 +554,7 @@ var _dc_left_seen := 0
 var _dc_log_seen := 0 # lane MP-DROP-1: the disconnect path's log lines already printed
 var _dc_quit_handled := false
 var _desync_shown := false
+var _desyncs_printed := 0 # the desync reports already in the log
 var _net_incident_report := "" # GameNetwork/NetIncidentReport.h: the network game's NETREPORT-*.txt once something went wrong
 var _net_shot_desync := ""
 var _replay_file := ""          # lane MP-2
@@ -961,6 +964,7 @@ func _ready() -> void:
 			_net_join = arg.substr(11)
 		elif arg.begins_with("--net-name="):
 			_net_name = arg.substr(11)
+			_net_name_given = true
 		elif arg.begins_with("--net-slots="):
 			_net_slots = arg.substr(12)
 		elif arg.begins_with("--net-run-ahead="):
@@ -1332,6 +1336,15 @@ func _boot() -> void:
 	get_tree().root.add_child.call_deferred(_quick_save_hotkey)
 	_lua_console.toggled.connect(_lua_console_toggled)
 	_lua_console.restart_requested.connect(func(): call_deferred("_console_restart"))
+	# Console builds without the snow toolbar do not expose this optional signal.
+	if _lua_console.has_signal("snow_requested"):
+		_lua_console.connect("snow_requested", func():
+			var result: Dictionary = _world.set_snow_weather(not _world.snow_weather_enabled())
+			if result.get("ok", false):
+				_lua_console._append("Snow weather " + ("enabled" if result.enabled else "restored to map defaults") + "\n")
+			else:
+				_lua_console._append("Snow weather: " + str(result.get("error", result.get("errors", []))) + "\n")
+		)
 	_lua_console.map_editor_requested.connect(func(): call_deferred("_open_map_editor"))
 	add_child(_lua_console)
 	var performance_tab := preload("res://scripts/console_performance.gd").new()
@@ -1607,6 +1620,7 @@ func _process(delta: float) -> void:
 			_hover1_menus_run()
 		if _online_http != null:
 			_online_keep_name() # lane ONLINE-4
+		_lan_keep_name()
 		if _online_note != null:
 			_online_note.visible = _shell.shell_stack().has("OnlineShell.apt")
 		_restore_switched_profile() # lane UBERJOIN-1
@@ -2781,6 +2795,10 @@ func _alternate_mouse_setup() -> bool:
 ## The world's profile decides the profile identity (the LAN lobby, the replays) and must match every game it starts; set before a lobby opens and
 ## before each game. False (and a printed reason) when the world refuses the change (inside a LAN game).
 func _sync_simulation_profile() -> bool:
+	if _world != null and _world.has_method("set_enhanced_ai"):
+		var ai_option = _shell.get_option("OpenBFMEEnhancedAI") if _shell != null else null
+		if not _world.set_enhanced_ai(ai_option != null and str(ai_option).to_lower() == "yes"):
+			return false
 	var v = _shell.get_option("OpenBFMEUberPerformance") if _shell != null and _shell.has_method("get_option") else null
 	var name := "uber" if v != null and str(v).to_lower() == "yes" else "faithful"
 	if _world == null or not _world.has_method("set_simulation_profile"):
@@ -4389,6 +4407,7 @@ func _exit_to_score_screen() -> void:
 	_dc_log_seen = 0
 	_dc_quit_handled = false
 	_desync_shown = false
+	_desyncs_printed = 0
 	_relay_lost_since = 0 # lane ONLINEUX-1: the relay notice goes with the game
 	if _relay_label != null:
 		_relay_label.text = ""
@@ -4439,37 +4458,8 @@ func _exit_to_score_screen() -> void:
 
 
 ## AptTimeLine::RenderGraph is a device-drawn component (S-1063): the lines of the graph the movie's _graphMode picks, drawn over the movie's graph area.
-class GraphOverlay extends Control:
-	var shell: Node2D
-	var graph := {}
-	var rect := Rect2()
-	func _draw() -> void:
-		if graph.is_empty() or rect.size.x <= 0.0:
-			return
-		var lines: Array = graph.get("lines", [])
-		for pass_i in 2:
-			for l in lines:
-				var c := Color.hex(0xFF000000 | int(l.color))
-				var pts: PackedVector2Array = l.points
-				if pts.size() < 2:
-					continue
-				var out := PackedVector2Array()
-				var stride := maxi(1, pts.size() / 600)
-				for i in range(0, pts.size(), stride):
-					var p: Vector2 = pts[i]
-					out.append(rect.position + Vector2(p.x * rect.size.x, (1.0 - clampf(p.y, 0.0, 1.0)) * rect.size.y))
-				var last: Vector2 = pts[pts.size() - 1]
-				out.append(rect.position + Vector2(last.x * rect.size.x, (1.0 - clampf(last.y, 0.0, 1.0)) * rect.size.y))
-				# RW 0x924DD1 twice: width 3 with alpha, then width 1 opaque
-				if pass_i == 0:
-					draw_polyline(out, Color(c, 0.35), 3.0, true)
-				else:
-					draw_polyline(out, c, 1.0, true)
-				if pass_i == 1:
-					var marks: PackedVector2Array = l.get("marks", PackedVector2Array())
-					for m in marks:
-						draw_rect(Rect2(rect.position + Vector2(m.x * rect.size.x, (1.0 - clampf(m.y, 0.0, 1.0)) * rect.size.y) - Vector2(4, 4), Vector2(8, 8)), c, false, 2.0)
-
+class GraphOverlay extends "res://scripts/timeline_graph.gd":
+	pass
 
 func _install_graph_overlay() -> void:
 	if _graph_layer == null:
@@ -6359,8 +6349,10 @@ func _net_tick() -> void:
 	if not _net_players_shot.is_empty() and _net_players_wait < 0 and st.frame >= _net_players_frame:
 		_net_players_wait = 0
 		call_deferred("_net_players_open") # (a proof hook: the logic worker is held when a deferred call runs, not in this per-frame path)
-	for d in st.desyncs:
-		printerr(d)
+	# each desync once (the list holds every report of the game: printing it all every frame flooded the log)
+	while _desyncs_printed < st.desyncs.size():
+		printerr(st.desyncs[_desyncs_printed])
+		_desyncs_printed += 1
 	var incident := str(st.get("incident_report", ""))
 	if incident != _net_incident_report:
 		_net_incident_report = incident
@@ -6888,7 +6880,7 @@ func _open_lan_lobby() -> void:
 	_sync_simulation_profile() # lane UBER-1: the lobby announces the identity of the player's profile
 	var st: Dictionary = _world.lan_status()
 	if not st.get("open", false):
-		var opts := {"name": _net_name, "run_ahead": _net_run_ahead, "crc_interval": _net_crc}
+		var opts := {"name": _lan_name(), "run_ahead": _net_run_ahead, "crc_interval": _net_crc}
 		if not _lan_targets.is_empty():
 			opts["broadcast"] = false
 			opts["targets"] = Array(_lan_targets.split(","))
@@ -6903,6 +6895,34 @@ func _open_lan_lobby() -> void:
 	print("GAME LAN profile: %s, identity %s" % [_world.simulation_profile(), _world.net_profile_digest()])
 	if not _shell.shell_push("LanLobby.apt"):
 		_fail("the shell refused LanLobby.apt: " + str(_shell.get_shell_report().errors))
+
+
+## The player's LAN name: --net-name, else the one last used in the LAN lobby (Options.ini OpenBFMELanName), else the online name, else "Player"
+## (the lobby's name box changes it; _lan_keep_name saves it). 12 characters, as the box (RW 0x81606D)
+func _lan_name() -> String:
+	if _net_name_given:
+		return _net_name
+	var options: Dictionary = _shell.get_options()
+	for key in ["OpenBFMELanName", "OpenBFMEOnlineName"]:
+		var name := str(options.get(key, "")).strip_edges()
+		if not name.is_empty():
+			_lan_saved_name = name if key == "OpenBFMELanName" else _lan_saved_name
+			return name.left(12)
+	return "Player"
+
+
+## The name the player set in the LAN lobby's name box is kept for the next session (not in a scripted run)
+func _lan_keep_name() -> void:
+	var st: Dictionary = _world.lan_status()
+	var name := str(st.get("name", "")).strip_edges()
+	if not st.get("open", false) or name.is_empty() or name == _lan_saved_name or _net_name_given:
+		return
+	_lan_saved_name = name
+	if _scripted_run():
+		return
+	if _shell.set_option("OpenBFMELanName", name):
+		var saved: Dictionary = _shell.save_options()
+		print("GAME LAN name %s: %s" % [name, "saved" if saved.ok else str(saved.error)])
 
 
 ## Every player of the LAN game has the start: the game socket and the start go to the network game, which loads like a --net-host / --net-join one

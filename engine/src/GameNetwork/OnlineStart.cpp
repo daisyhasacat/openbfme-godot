@@ -231,6 +231,10 @@ bool parse(const std::string &json, const ProfileIdentity &ownProfile, const Lim
 		return fail(error, "\"setup\" must be an object");
 	}
 	SkirmishGameInfo &g = s.game.game;
+	g.enhancedAI = ownProfile.enhancedAI();
+	if (const auto flag = setup->get("enhancedAI")) {
+		if (flag->type != JsonValue::BOOL || flag->boolean != g.enhancedAI) return fail(error, "online AI rules differ from profile identity");
+	}
 	g.simulationProfile = ownProfile.simulationProfile(); // lane UBERJOIN-1: the game runs the profile its identity names (as the LAN start: LANLobby.cpp), never the default
 	s.game.mode = NewGameMode::Skirmish;
 	long long seed = 0, cash = 0, sw = 0, lh = 0;

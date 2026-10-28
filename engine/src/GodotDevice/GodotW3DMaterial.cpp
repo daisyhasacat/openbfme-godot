@@ -145,6 +145,7 @@ void W3D_Ensure_Light_Globals()
 	rs->global_shader_parameter_add(StringName("w3d_fog"), RenderingServer::GLOBAL_VAR_TYPE_VEC3, Vector3(0.0f, 0.0f, 1.0f));
 	rs->global_shader_parameter_add(StringName("w3d_fog_color"), RenderingServer::GLOBAL_VAR_TYPE_VEC3, Vector3(0.5f, 0.5f, 0.5f));
 	// lane PLAY-1: the free camera's fog shift (TacticalCamera::fogShift): the distance every fog range is measured from; 0 = retail
+	rs->global_shader_parameter_add(StringName("openbfme_snow_cover"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 0.0f);
 	rs->global_shader_parameter_add(StringName("w3d_shadow_strength"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 0.0f);
 	rs->global_shader_parameter_add(StringName("w3d_fog_shift"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 0.0f);
 	// lane VISUAL-2: the fogged light fraction (RW 0x46DFD0: GameData FogAlpha / ClearAlpha), set by the map's game
@@ -740,6 +741,12 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 			key.NoLod[s] = true;
 			if (s == 0) out.Notes.push_back("[S-5017] BFME1 translucent floor markings use base-level linear sampling, a one-world-unit lift and render after the castle floor to retain visibility (OpenBFME policy)");
 		}
+	}
+	// Explicit exporter absence marker, not a missing named texture. Keep this
+	// presentation interpretation visible until the retail binding is verified.
+	if (AsciiStringUtil::compareNoCase(normalMapName, "None") == 0) {
+		normalMapName.clear();
+		out.Notes.push_back("[S-5304] FX NormalMap=None is presented without bump mapping; retail sentinel binding is unverified");
 	}
 	if (!normalMapName.empty())
 	{

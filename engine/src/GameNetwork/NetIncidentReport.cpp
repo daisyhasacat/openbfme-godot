@@ -103,6 +103,7 @@ std::string sectionMeaning(const std::string &name)
 		{ "invisibility", "stealth and detection" },
 		{ "damage over time", "poison, fire and other damage over time" },
 		{ "terrain trees", "trees that were felled or harvested" },
+		{ "taint", "the taint and elven wood areas painted on the terrain" },
 		{ "large group audio", "the large-group audio gate" },
 		{ "script engine", "the map's scripts" },
 	};
@@ -616,10 +617,27 @@ std::string NetIncidentReport::text(const Facts &f)
 	}
 	o << "\n";
 
-	// ---- the desyncs ----
-	for (size_t i = 0; i < f.desyncs.size(); ++i)
+	// ---- the desyncs: the first ones in full; once the games are apart every later check differs too, so the rest are listed by frame ----
+	const size_t detailed = std::min<size_t>(f.desyncs.size(), 3);
+	for (size_t i = 0; i < detailed; ++i)
 	{
 		writeDesync(o, f, i);
+	}
+	if (f.desyncs.size() > detailed)
+	{
+		o << "LATER CHECKS\n";
+		o << "----------------------------------------------------------------------\n";
+		o << f.desyncs.size() - detailed << " later checksum checks differed as well (the games stay apart once they split), at frames:";
+		for (size_t i = detailed; i < f.desyncs.size(); ++i)
+		{
+			o << (i == detailed ? " " : ", ") << f.desyncs[i].frame;
+			if (i - detailed >= 40 && i + 1 < f.desyncs.size())
+			{
+				o << ", ... " << f.desyncs.back().frame;
+				break;
+			}
+		}
+		o << "\n\n";
 	}
 
 	// ---- the disconnect path ----

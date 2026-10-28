@@ -129,3 +129,16 @@ bool TerrainTypes::load(ArchiveFileSystem &fs, TerrainTypeIndex &out, std::strin
 	}
 	return true;
 }
+
+std::map<std::string, std::string> TerrainTypes::snowReplacements(const TerrainTypeIndex &types)
+{
+	std::map<std::string, std::string> result;
+	for (const auto &entry : types.textureByName) {
+		// Prefer Snow when both explicit suffixes exist. Source names are lower case.
+		for (const char *suffix : {"snow", "snowy"}) {
+			const std::string target = entry.first + suffix;
+			if (types.textureByName.count(target)) { result[entry.first] = target; break; }
+		}
+	}
+	return result;
+}

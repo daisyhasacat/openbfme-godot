@@ -5,6 +5,7 @@
 
 #include "Common/MiniJson.h"
 #include "GameNetwork/OnlineStart.h"
+#include "GameNetwork/ProfileIdentity.h"
 #include "GameNetwork/WallBalanceSetup.h"
 
 #include <algorithm>
@@ -416,10 +417,10 @@ std::string slotChoices(int faction, int color, int startPos, int team)
 	return out;
 }
 
-std::string setupFields(const SkirmishGameInfo &s)
+std::string setupFields(const SkirmishGameInfo &s, bool enhancedAI)
 {
 	std::string out = "\"map\":" + OnlineLobbyClient::jsonQuote(s.mapName) + ",\"startingCash\":" + std::to_string(s.startingCash) +
-		",\"superweaponRestriction\":" + std::to_string(s.superweaponRestriction) + ",\"legendaryHeroes\":" + std::to_string(s.legendaryHeroes) + ",\"peaceTimeMinutes\":" + std::to_string(s.peaceTimeMinutes) + ",\"fortressConstruction\":" + (s.fortressConstruction ? "true" : "false");
+		",\"superweaponRestriction\":" + std::to_string(s.superweaponRestriction) + ",\"legendaryHeroes\":" + std::to_string(s.legendaryHeroes) + ",\"peaceTimeMinutes\":" + std::to_string(s.peaceTimeMinutes) + ",\"fortressConstruction\":" + (s.fortressConstruction ? "true" : "false") + ",\"enhancedAI\":" + (enhancedAI ? "true" : "false");
 	// the creator's wall rules (GameNetwork/WallBalanceSetup.h), for every player of the online game; "" (off) is not sent
 	const std::string walls = s.wallBalance.empty() ? WallBalanceSetup::toText(WallBalanceSetup::local()) : s.wallBalance;
 	if (!walls.empty())
@@ -475,7 +476,7 @@ void OnlineLobbyClient::createGame(const std::u16string &name, const std::string
 	}
 	std::string body = "{\"name\":" + jsonQuote(utf16ToUtf8(name)) + ",\"profile\":" + jsonQuote(m_options.profileDigest) + ",\"mode\":\"" +
 		modeName(m_options.profile) + "\"" + compatibilityField() + platformField() + ",\"hostSlot\":" +
-		std::to_string(hostSlot) + ",\"setup\":{" + setupFields(setup) + ",\"slots\":[" + slots + "]}";
+		std::to_string(hostSlot) + ",\"setup\":{" + setupFields(setup, m_options.profileDetails ? ProfileIdentity::fromText(m_options.profileDetails()).enhancedAI() : setup.enhancedAI) + ",\"slots\":[" + slots + "]}";
 	if (!password.empty())
 	{
 		body += ",\"password\":" + jsonQuote(password);
@@ -609,7 +610,7 @@ void OnlineLobbyClient::setSetup(const SkirmishGameInfo &setup)
 	{
 		return;
 	}
-	queue("setup", "POST", "/v1/games/" + m_gameId + "/setup", "{" + setupFields(setup) + "}");
+	queue("setup", "POST", "/v1/games/" + m_gameId + "/setup", "{" + setupFields(setup, m_options.profileDetails ? ProfileIdentity::fromText(m_options.profileDetails()).enhancedAI() : setup.enhancedAI) + "}");
 }
 
 void OnlineLobbyClient::setReady(bool ready)
@@ -867,6 +868,11 @@ bool OnlineLobbyClient::readGameView(const JsonValue &g, std::string *error, boo
 	if (const JsonValue *value = setup->get("peaceTimeMinutes"))
 		if (!intOf(value, 0, 20, peace) || !PeaceTime::valid((int)peace)) return fail("invalid peaceTimeMinutes");
 	info.peaceTimeMinutes = (int)peace;
+	info.enhancedAI = false;
+	if (const auto flag = setup->get("enhancedAI")) {
+		if (flag->type != JsonValue::BOOL) return fail("enhancedAI must be boolean");
+		info.enhancedAI = flag->boolean;
+	}
 	info.wallBalance.clear();
 	if (const JsonValue *walls = setup->get("wallBalance"))
 	{

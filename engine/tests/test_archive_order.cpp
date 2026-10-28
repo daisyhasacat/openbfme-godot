@@ -309,6 +309,52 @@ TEST_CASE("pure-retail mount: RotWK over BFME2, patch over base, 2.02 excluded, 
 		CHECK(readVirtual(again, "data\\ini\\weapon.ini") == "rotwk-201");
 	}
 
+	SUBCASE("an iOS app container that moved to a new id keeps its cache: the entries of every old id are hits")
+	{
+		// iOS reinstalls give the data container a new UUID folder and keep the files (and their times): the cache key leaves the id out
+		const fs::path containers = tmp.path / "var" / "mobile" / "Containers" / "Data" / "Application";
+		const fs::path a = containers / "3CC003BF-4647-48A1-83A1-80DC5558DB32";
+		const fs::path b = containers / "8E07C31B-B5CB-4B07-8976-937D513B5060";
+		fs::create_directories(a / "Documents" / "games");
+		fs::rename(rotwkRoot, a / "Documents" / "games" / "rotwk"); // a rename keeps the modification times
+		fs::rename(bfme2Root, a / "Documents" / "games" / "bfme2");
+		RetailMountOptions opts;
+		opts.md5CachePath = (tmp.path / "cache" / "md5.tsv").u8string();
+		RetailInstall r = rotwk, b2 = bfme2;
+		r.root = (a / "Documents" / "games" / "rotwk").u8string();
+		b2.root = (a / "Documents" / "games" / "bfme2").u8string();
+		{
+			Win32BIGFileSystem fsys;
+			RetailMountReport first = MountRetailArchives(fsys, { r, b2 }, opts);
+			REQUIRE_MESSAGE(first.ok, (first.errors.empty() ? std::string() : first.errors[0]));
+			CHECK(first.archivesHashed == 5);
+		}
+		fs::rename(a, b);
+		r.root = (b / "Documents" / "games" / "rotwk").u8string();
+		b2.root = (b / "Documents" / "games" / "bfme2").u8string();
+		Win32BIGFileSystem fsys;
+		RetailMountReport moved = MountRetailArchives(fsys, { r, b2 }, opts);
+		REQUIRE_MESSAGE(moved.ok, (moved.errors.empty() ? std::string() : moved.errors[0]));
+		CHECK(moved.archivesHashed == 0);
+		CHECK(moved.md5CacheHits == 5);
+		// a cache an older build wrote (one line per container id) is read under the stable key too
+		std::ifstream in(fs::u8path(opts.md5CachePath));
+		std::string line, oldStyle;
+		while (std::getline(in, line))
+		{
+			const size_t at = line.find("<container>");
+			REQUIRE(at != std::string::npos);
+			oldStyle += line.substr(0, at) + "F72B375B-A391-4F6B-9C1E-470BB2AEEEF9" + line.substr(at + 11) + "\n";
+		}
+		in.close();
+		std::ofstream(fs::u8path(opts.md5CachePath), std::ios::trunc) << oldStyle;
+		Win32BIGFileSystem again;
+		RetailMountReport reread = MountRetailArchives(again, { r, b2 }, opts);
+		CHECK(reread.ok);
+		CHECK(reread.archivesHashed == 0);
+		CHECK(reread.md5CacheHits == 5);
+	}
+
 	SUBCASE("same size, one byte changed: refused with default options (md5 is always checked)")
 	{
 		auto tampered = rIni;

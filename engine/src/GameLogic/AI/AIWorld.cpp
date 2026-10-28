@@ -56,7 +56,7 @@ const char *const kStopAlliedStack =
 // lane PATH-2 (item 2): the incremental registration of placed objects
 const char *const kStopRegistration =
 	"S-610 a placed structure's footprint enters the pathfinder at the creation sites the port has (map objects RW 0x62E192, starting bases RW 0x629EC9, construction, "
-	"castle unpack, LiveGame::createObject as RW 0x62C98D); the other callers of RW addObjectToPathfindMap 0x6E85E9 (an OCL's object RW 0x5F1673, Object state changes "
+	"castle unpack, LiveGame::createObject as RW 0x62C98D, and OCL structures RW 0x5F1673); the other callers of RW addObjectToPathfindMap 0x6E85E9 (Object state changes "
 	"RW 0x68B2A1 / 0x68BCDB / 0x6923EB / 0x694838 / 0x698BDA, RW 0x67B43B, 0x6AA755 and 39 module sites RW 0x797949 .. 0x911DB9) are not traced";
 
 // ---- raw field readers (the object table's rows are kept as raw tokens, S-072) ------------------------------------------------
@@ -333,6 +333,10 @@ struct KindBits
 			{ PK_SCALEABLE_WALL, "SCALEABLE_WALL" },
 			{ PK_BASE_SITE, "BASE_SITE" },
 			{ PK_WALL_UPGRADE, "WALL_UPGRADE" },
+			{ PK_ATTACK_NEEDS_LINE_OF_SIGHT, "ATTACK_NEEDS_LINE_OF_SIGHT" },
+			{ PK_CAN_SHOOT_OVER_WALLS, "CAN_SHOOT_OVER_WALLS" },
+			{ PK_WALL_SEGMENT, "WALL_SEGMENT" },
+			{ PK_WALL_GATE, "WALL_GATE" },
 		};
 		for (int &b : bit)
 		{
@@ -453,6 +457,19 @@ float ObjectPathfindAdapter::getHeightAboveTerrain() const
 {
 	const Coord3D &p = *m_object->getPosition();
 	return SimMath::subf32(p.z, m_object->logic().getGroundHeight(p.x, p.y));
+}
+
+bool ObjectPathfindAdapter::isSignificantlyAboveTerrain() const
+{
+	// RW 0x70C55D -> RW 0x70C50C(0.0): not for the KindOf CAN_CLIMB_WALLS / SHIP (template + 0x11F & 0x81); the height above the terrain (RW 0x70B8AE) + 0 over
+	// GlobalData Gravity (+ 0xC4) * -9 (RW 0xC1EBC0), x87 (as CombatModules' sink test)
+	static const int kClimb = ObjectTemplateInfoBuilder::kindOfIndex("CAN_CLIMB_WALLS");
+	static const int kShip = ObjectTemplateInfoBuilder::kindOfIndex("SHIP");
+	if (m_object->isKindOf((unsigned)kClimb) || m_object->isKindOf((unsigned)kShip))
+	{
+		return false;
+	}
+	return (double)getHeightAboveTerrain() > SimMath::pc24MulW((double)m_object->logic().settings().gravity, -9.0);
 }
 
 bool ObjectPathfindAdapter::isMobile() const
@@ -947,6 +964,8 @@ const ObjectMovementInfo &AIWorld::movementInfo(const ThingTemplate &tt)
 	{
 		std::unique_ptr<ObjectMovementInfo> info = std::make_unique<ObjectMovementInfo>();
 		buildInfo(*key, *m_env, *info);
+		info->boundingCircle = info->geometry.boundingCircleRadius();
+		info->boundingSphere = info->geometry.boundingSphereRadius();
 		for (const std::string &e : info->errors)
 		{
 			if (std::find(m_errors.begin(), m_errors.end(), e) == m_errors.end())

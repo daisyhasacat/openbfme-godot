@@ -69,6 +69,7 @@ public:
 	// renamed
 	std::vector<std::string> migrateLegacyKeys();
 
+	bool enhancedAI() const { return getYesNo("OpenBFMEEnhancedAI", false); }
 	bool softParticles() const { return getYesNo(kSoftParticles, true); }
 	void setSoftParticles(bool soft) { setYesNo(kSoftParticles, soft); }
 	// lane UBER-1: the simulation profile the player's next game runs (the option off or absent: Faithful)

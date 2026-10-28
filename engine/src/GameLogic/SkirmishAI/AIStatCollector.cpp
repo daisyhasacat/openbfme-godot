@@ -7,6 +7,8 @@
 #include "Common/Thing/KindOfTokens.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/SkirmishAI/SkirmishAIManager.h"
+#include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "GameLogic/Module/DozerAIUpdate.h"
 #include "GameLogic/Object/Object.h"
 
@@ -127,7 +129,15 @@ unsigned AIStatCollector::registerObject(const Object &obj)
 		(is(obj, statKinds().expansionPad) ? m_pads : m_structures).push_back(id);
 		listeners |= LISTEN_STRUCTURES;
 	}
-	// RW 0x8E45DC .. 0x8E45F0: the position sampler (+ 0x10) is not ported
+	// TARGET RW 0x8E45DC / 0x8E3EF8: the AI army definition's OffensiveBuildings are excluded from the sampler.
+	if (listeners & (LISTEN_ECONOMY | LISTEN_STRUCTURES))
+	{
+		const AISkirmishPlayer *ai = obj.logic().skirmishAI().findAI(m_playerIndex);
+		if (!(ai && ai->army && obj.getTemplate() && std::find(ai->army->offensiveBuildings.begin(), ai->army->offensiveBuildings.end(), obj.getTemplate()->getName()) != ai->army->offensiveBuildings.end()))
+		{
+			m_positions.add(id, obj.logic().skirmishAI().store()->data().defenseTreeNodeRadius, [&](ObjectID key) { return *obj.logic().findObjectByID(key)->getPosition(); });
+		}
+	}
 	if (armyFilter(obj))
 	{
 		(armyMain(obj) ? m_army : m_dozers).push_back(id); // RW 0x99E6C9
@@ -167,7 +177,11 @@ unsigned AIStatCollector::unRegisterObject(const Object &obj)
 	{
 		listeners |= LISTEN_STRUCTURES; // RW 0x99E924
 	}
-	// RW 0x8E4871: a removed structure / economy entry leaves the position sampler (not ported)
+	// RW 0x8E4871 / 0x8E46A5: erase the first registration, then rebuild surviving groups.
+	if (listeners & (LISTEN_ECONOMY | LISTEN_STRUCTURES))
+	{
+		m_positions.remove(id, [&](ObjectID key) { return *obj.logic().findObjectByID(key)->getPosition(); });
+	}
 	if (armyFilter(obj) ? eraseFirst(armyMain(obj) ? m_army : m_dozers, id) : (shipFilter(obj) && eraseFirst(m_ships, id)))
 	{
 		listeners |= LISTEN_ARMY; // RW 0x99E523, else RW 0x99E4B2 (the filters exclude each other: RW tries the ship remove when the army remove fails)
@@ -222,6 +236,7 @@ void AIStatCollector::crc(StateHasher &h) const
 		h.addString(kv.first);
 		h.addI32(kv.second);
 	}
+	m_positions.crc(h);
 	h.addU32(m_reserve); // lane AI5 (S-413)
 	h.addU32(m_reserveTarget);
 }

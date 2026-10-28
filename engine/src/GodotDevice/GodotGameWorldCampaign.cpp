@@ -280,7 +280,7 @@ Dictionary GameWorld::start_campaign_mission(const Dictionary &options)
 		h.game.game.simulationProfile = lo.simulationProfile; // a mission runs Faithful whatever the player's option (UBER-1)
 		h.recordingSlot = 0;
 		h.algorithm = RandomAlgorithm::ZH_CarryChain;
-		h.profile = profileIdentityFor(lo.simulationProfile);
+		h.profile = profileIdentityFor(lo.simulationProfile, true);
 		std::string error;
 		if (!m_localWriter->open(std::string(), h, &error))
 		{

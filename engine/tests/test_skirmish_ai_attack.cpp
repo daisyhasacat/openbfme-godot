@@ -457,13 +457,14 @@ TEST_CASE("skirmish ai economy: each of the 7 factions as the Medium computer on
 	}
 }
 
-TEST_CASE("skirmish ai economy: the money reserve (RW 0x8F0502) fills, a hero is requested from it and every farm request is built (lane AI-4)")
+TEST_CASE("enhanced AI economy: the money reserve (RW 0x8F0502) fills, a hero is requested from it and every farm request is built (lane AI-4)")
 {
 	// Hard Men against Hard Mordor, 20 game minutes. Before lane AI-4 no reserve was kept (S-413), so a computer player never held a hero's cost and built
 	// none; the farm markers 70 apart made 82 requests for 7 farms in 20 minutes
 	OPENBFME_REQUIRE_START(s);
 	AttackRun run;
 	NewGameMessage m = attackMessage(*s, "FactionMen", "FactionMordor", true, 4242u);
+	m.game.enhancedAI = true; // this AI-4 scenario also verifies the enhanced farm-site precheck
 	m.game.slots[0].state = SLOT_HARD_AI;
 	m.game.slots[1].state = SLOT_HARD_AI; // Hard saves 3 % of the money every 2 seconds (Medium 1.5 %: a Medium AI that spends everything saves little)
 	runAttackGame(*s, m, 6000, run, false, true);
@@ -518,6 +519,7 @@ TEST_CASE("offensive AI retail: Dwarves on Tharbad with enlarged CP sustain atta
  auto message=attackMessage(*s,"FactionDwarves","FactionMen",false,4139u);
  message.game.mapName="maps/map mp tharbad/map mp tharbad.map";
  message.game.slots[1].state=SLOT_BRUTAL_AI;
+ message.game.enhancedAI=true;
  message.game.startingCash=100000;
  AttackRun run;
  runAttackGame(*s,message,4500,run,false,false,true,true);
@@ -538,6 +540,7 @@ TEST_CASE("offensive AI retail: Dwarves with enlarged CP launch attacks and prod
 {
  OPENBFME_REQUIRE_START(s);
  auto message=attackMessage(*s,"FactionDwarves","FactionMen",false);
+ message.game.enhancedAI=true;
  message.game.startingCash=50000;
  AttackRun run;
  runAttackGame(*s,message,4500,run,false,false,true);

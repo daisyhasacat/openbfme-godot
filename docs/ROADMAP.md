@@ -326,7 +326,7 @@ Windows run), not just at U5.
 State: the campaign plays mission by mission (SCRIPT-1..3, CAMP-1H, CAMP-2:
 scripts, narration, VP6 movies); missions save and load, but there is no campaign-progress saving as in the original and no campaign menu (S-1360).
 Create-a-Hero works (HERO-2, CAH-1: the builder screen, colours, saving).
-War of the Ring not started.
+War of the Ring: the lobby only (WOTR-1: the main menu opens Skirmish.apt in its strategic mode, the scenarios of RiskCampaign.ini, S-5300 .. S-5302); the strategic game is not started.
 
 Gate: every campaign mission and the tutorials complete as in retail; War of
 the Ring and Create-a-Hero work.

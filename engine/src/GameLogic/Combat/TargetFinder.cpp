@@ -36,7 +36,11 @@ void TargetFinder::reset()
 
 void TargetFinder::rebuild()
 {
-	m_cells.clear();
+	for (auto &entry : m_cells)
+	{
+		entry.second.objects.clear();
+		entry.second.teams.clear();
+	}
 	m_count = 0;
 	m_maxRadius = 0.0f;
 	for (Object *o = m_logic.getFirstObject(); o; o = o->getNextObject())
@@ -46,14 +50,25 @@ void TargetFinder::rebuild()
 			continue;
 		}
 		const Coord3D &p = *o->getPosition();
-		m_cells[{cellOf(p.x), cellOf(p.y)}].objects.push_back(o->getID());
+		Cell &cell = m_cells[{cellOf(p.x), cellOf(p.y)}];
+		cell.objects.push_back(o->getID());
+		// the team runs as refreshTeams makes them, from the same objects at the same moment
+		const Team *team = o->getTeam();
+		if (cell.teams.empty() || cell.teams.back().team != team)
+		{
+			cell.teams.push_back({team, cell.objects.size()});
+		}
+		else
+		{
+			cell.teams.back().end = cell.objects.size();
+		}
 		m_maxRadius = std::max(m_maxRadius, CombatQueries::boundingCircleRadius(*o));
 		++m_count;
 	}
 	m_builtFrame = m_logic.getFrame();
 	m_builtCount = m_logic.getObjectCount();
 	m_builtTransitions = m_logic.containWorldTransitions();
-	refreshTeams();
+	m_builtTeams = m_logic.combat().teamMembershipVersion();
 }
 
 void TargetFinder::collectInRadius(const Coord3D &center, float radius, std::vector<Object *> &out)

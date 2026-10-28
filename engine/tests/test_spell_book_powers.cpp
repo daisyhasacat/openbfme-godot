@@ -24,6 +24,7 @@
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/GameLogicDispatch.h"
 #include "GameLogic/GlobalWeatherSystem.h"
+#include "GameLogic/Map/TaintManager.h"
 #include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/Module/SpecialPowerModules.h"
 #include "GameLogic/Module/SpellBookPowers.h"
@@ -608,15 +609,69 @@ TEST_CASE("SPELL-2 retail: two identical cast sequences hash alike; another targ
 	CHECK(run(3500.0f, 3) != a);
 }
 
+TEST_CASE("taint retail: Tainted Land paints TheTaintManager under its own object (the caster's team); its aura buffs the caster's side there, not an enemy; "
+		  "Elven Wood paints the other side")
+{
+	OPENBFME_REQUIRE_START(shared);
+	auto ctx = shared->world->enterContext();
+	BookGame g(*shared);
+	g.logic->taint().setExtent(0.0f, 0.0f, 0.0f, 0.0f, 40.0f); // LiveGame's sizing (GameData PartitionCellSize, then the map)
+	g.logic->taint().setExtent(0.0f, 0.0f, 9000.0f, 9000.0f);
+	const SpecialPowerTemplate *taint = TheSpecialPowerStore->findSpecialPowerTemplate("SpellBookTaint");
+	const SpecialPowerTemplate *wood = TheSpecialPowerStore->findSpecialPowerTemplate("SpellBookElvenWood");
+	REQUIRE(taint);
+	REQUIRE(wood);
+	for (ScienceType st : taint->getRequiredSciences())
+	{
+		g.player(4)->science().grantScience(st);
+	}
+	for (ScienceType st : wood->getRequiredSciences())
+	{
+		g.player(1)->science().grantScience(st);
+	}
+	const Coord3D at{ 3000.0f, 3000.0f, 0.0f };
+	Object *own = g.place(kBook[4].soldier, 4, at.x + 20.0f, at.y);
+	Object *foe = g.place(kBook[0].soldier, 0, at.x - 20.0f, at.y);
+	Object *outside = g.place(kBook[4].soldier, 4, at.x + 600.0f, at.y);
+	g.castAt(4, taint, at);
+	int owner = -1;
+	REQUIRE(g.logic->taint().sideAt(at.x, at.y, &owner) == 2);
+	const Object *land = g.logic->findObjectByID((ObjectID)owner);
+	REQUIRE(land);
+	CHECK(land->getTemplate()->getName() == "TaintLand");
+	CHECK(land->getControllingPlayer() == g.player(4)); // RW 0x69954A: the caster's team
+	CHECK(g.logic->taint().sideAt(at.x + 600.0f, at.y, nullptr) == 0);
+	for (int f = 0; f < 90; ++f)
+	{
+		g.logic->runLogicFrame();
+	}
+	// taintland.ini: AttributeModifierAuraUpdate BonusName GenericBuff, RequiredConditions TAINT, Range SPELLBOOK_TAINT_RADIUS
+	CHECK(pool(*own)->hasList("GenericBuff"));
+	CHECK_FALSE(pool(*foe)->hasList("GenericBuff"));
+	CHECK_FALSE(pool(*outside)->hasList("GenericBuff"));
+	const Coord3D grove{ 6000.0f, 3000.0f, 0.0f };
+	g.castAt(1, wood, grove);
+	owner = -1;
+	CHECK(g.logic->taint().sideAt(grove.x, grove.y, &owner) == 1);
+	const Object *groveObject = g.logic->findObjectByID((ObjectID)owner);
+	REQUIRE(groveObject);
+	CHECK(groveObject->getControllingPlayer() == g.player(1));
+	CHECK(g.logic->taint().sideAt(at.x, at.y, nullptr) == 2); // the taint area stays
+	CHECK(g.logic->taint().anyPainted());
+}
+
 TEST_CASE("SPELL-2 stops: S-920 .. S-924 are reported once each by the lane and by the retail world")
 {
 	const std::vector<std::string> lines = SpellBookPowers::stopLines();
-	REQUIRE(lines.size() == 6); // lane SPELL-3: S-930 (the terrain trees) last
+	REQUIRE(lines.size() == 9); // lane SPELL-3: S-930 (the terrain trees), then the taint grid's S-6110 .. S-6112
 	for (int i = 0; i < 5; ++i)
 	{
 		CHECK(lines[(size_t)i].rfind("[S-92" + std::to_string(i) + "]", 0) == 0);
 	}
 	CHECK(lines[5].rfind("[S-930]", 0) == 0);
+	CHECK(lines[6].rfind("[S-6110]", 0) == 0);
+	CHECK(lines[7].rfind("[S-6111]", 0) == 0);
+	CHECK(lines[8].rfind("[S-6112]", 0) == 0);
 	OPENBFME_REQUIRE_START(shared);
 	const std::vector<std::string> all = shared->world->acceptanceStops();
 	for (const std::string &l : lines)

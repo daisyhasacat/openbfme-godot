@@ -54,7 +54,8 @@ struct Scenario
  AISkirmishPlayer bot;
  Scenario()
  {
-  w.combat().setAutoAcquireEnabled(false);
+  w.logic->settings().enhancedAI = true;
+		w.combat().setAutoAcquireEnabled(false);
   auto *player = w.players.findPlayerWithName("Alice");
   player->setPlayerType(PLAYER_COMPUTER, true);
   bot.playerIndex = player->getPlayerIndex();
@@ -376,4 +377,18 @@ TEST_CASE("strategy AI: local base exclusion turns enemy computers away and can 
  s.w.logic->setAIBaseExclusion(protectedPlayer->getPlayerIndex(), {100,500,0}, 0);
  Coord3D near{400,500,0};unit->setPosition(&near);
  CHECK_FALSE(s.w.logic->aiBaseExclusion(*unit, goal));
+}
+
+TEST_CASE("strategy AI: source rules issue no enhanced micro, opt-in enables it")
+{
+	Scenario s;
+	auto *archer = s.w.unit("CounterBow", 'A', 100, 500);
+	auto *enemy = s.w.unit("CounterHorse", 'B', 130, 500);
+	s.w.logic->settings().enhancedAI = false;
+	CHECK(archer->getAIUpdateInterface()->currentVictimId() == INVALID_ID);
+	s.decide();
+	CHECK(archer->getAIUpdateInterface()->currentVictimId() == INVALID_ID);
+	s.w.logic->settings().enhancedAI = true;
+	s.decide();
+	CHECK(archer->getAIUpdateInterface()->currentVictimId() == enemy->getID());
 }

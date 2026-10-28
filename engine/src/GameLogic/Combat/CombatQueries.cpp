@@ -16,25 +16,33 @@
 
 namespace CombatQueries
 {
-const PathfindGeometry &geometry(const Object &obj)
+namespace
+{
+const ObjectMovementInfo &movementInfo(const Object &obj)
 {
 	AIWorld *world = obj.logic().aiWorld();
 	if (!world)
 	{
 		throw std::logic_error("combat geometry: the game has no AIWorld (the geometry of an object is the pathfinder's)");
 	}
-	return world->movementInfo(*obj.getTemplate()).geometry;
+	return world->movementInfo(*obj.getTemplate());
+}
+} // namespace
+
+const PathfindGeometry &geometry(const Object &obj)
+{
+	return movementInfo(obj).geometry;
 }
 
 float boundingCircleRadius(const Object &obj)
 {
-	return geometry(obj).boundingCircleRadius();
+	return movementInfo(obj).boundingCircle; // geometry(obj).boundingCircleRadius(), computed once per template
 }
 
 float boundingSphereRadius(const Object &obj)
 {
 	// RW obj + 0xBC = GeometryInfo + 0x14, computed by RW 0xAD2860 over every active shape (RW 0xAD2770; lane PATH-2, S-341)
-	return geometry(obj).boundingSphereRadius();
+	return movementInfo(obj).boundingSphere;
 }
 
 bool isBox(const Object &obj)

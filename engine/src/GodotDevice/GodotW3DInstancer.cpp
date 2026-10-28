@@ -805,6 +805,34 @@ int64_t W3DInstancer::add_instance(int64_t model, const Transform3D &transform, 
 	return id;
 }
 
+// Enhanced weather changes mesh/texture variants without changing the stable
+// instance ID: shroud, tree toppling, transforms and paving references survive.
+bool W3DInstancer::replace_instance_model(int64_t id, int64_t model)
+{
+	if (id < 0 || id >= (int64_t)Instances.size() || model < 0 || model >= (int64_t)Models.size()) return false;
+	Instance &inst = Instances[(size_t)id];
+	if (inst.Removed) return false;
+	if (inst.Model == model) return true;
+	auto &old = *Models[(size_t)inst.Model];
+	old.InstanceIds.erase(std::remove(old.InstanceIds.begin(), old.InstanceIds.end(), (int)id), old.InstanceIds.end());
+	old.BuffersDirty = true;
+	if (inst.PaletteSize > 0) PaletteFree[inst.PaletteSize].push_back(inst.PaletteOffset);
+	inst.PaletteSize = 0;
+	inst.Model = (int)model;
+	inst.Pose.Resize(Models[(size_t)model]->Proto->Tree->Num_Pivots());
+	inst.Anim = nullptr; inst.Anim1 = nullptr; inst.Explicit = false;
+	inst.HiddenSubs.clear(); inst.BufferVisibility.clear(); inst.BufferFade.clear(); inst.BufferSortOrigins.clear(); inst.BoneSpins.clear();
+	inst.PoseStale = true;
+	for (auto &name : inst.MemoClip) name.clear();
+	inst.MemoAnim[0] = inst.MemoAnim[1] = nullptr;
+	inst.MemoKey[0] = inst.MemoKey[1] = nullptr;
+	inst.DrawStateChanged = true;
+	allocate_palette(inst);
+	auto &next = *Models[(size_t)model]; next.InstanceIds.push_back((int)id); next.BuffersDirty = true;
+	LayoutDirty = true; PoseDirty = true;
+	return true;
+}
+
 void W3DInstancer::set_instance_transform(int64_t instance, const Transform3D &transform)
 {
 	if (instance >= 0 && instance < (int64_t)Instances.size())

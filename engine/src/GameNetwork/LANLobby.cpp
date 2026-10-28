@@ -135,6 +135,7 @@ LANLobbyHost::LANLobbyHost(UDP &socket, const NewGameMessage &game, int hostSlot
 	m_start.profile = profile;
 	m_start.game = game;
 	m_start.game.game.luaAuthoritySlot = hostSlot;
+	m_start.game.game.enhancedAI = profile.enhancedAI();
 	m_start.game.game.simulationProfile = profile.simulationProfile(); // lane UBER-1: the host's game runs the host's profile (its identity's)
 	if (m_start.game.game.wallBalance.empty())
 	{
@@ -326,6 +327,7 @@ bool LANLobbyClient::poll()
 				m_error = "the host's START has another profile: " + ProfileIdentity::difference(m_profile, s.profile);
 				return false;
 			}
+			if (s.game.game.enhancedAI != m_profile.enhancedAI()) { m_error = "the host AI rules differ"; return false; }
 			if (s.game.game.simulationProfile != m_profile.simulationProfile())
 			{
 				// lane UBER-1: a START whose game runs another simulation profile than the identities say: refused

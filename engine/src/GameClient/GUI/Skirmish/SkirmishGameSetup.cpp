@@ -159,6 +159,7 @@ bool SkirmishGameSetup::init(const std::u16string &userName, std::uint32_t seed,
 	m_info.legendaryHeroes = LegendaryHeroes::kOff;
 	m_info.fortressConstruction = false;
 	m_info.peaceTimeMinutes = PeaceTime::kOff;
+	m_info.enhancedAI = m_enhancedAI;
 	m_info.simulationProfile = m_simulationProfile; // lane UBER-1: the player's option, not a rule: a reset keeps it
 	m_info.seed = seed;
 	setSlotStateInternal(m_info.slots[0], SLOT_PLAYER, userName);
@@ -269,6 +270,44 @@ bool SkirmishGameSetup::setMap(const std::string &mapName)
 		s.startPos = -1; // SkirmishMapSelectMenu.cpp:571
 	}
 	return true;
+}
+
+int SkirmishGameSetup::adjustSlotsForMap()
+{
+	const MapCacheEntry *md = findMap(m_info.mapName);
+	if (!md || md->numPlayers <= 0)
+	{
+		return 0;
+	}
+	int room = std::min((int)md->numPlayers, m_info.slotCount());
+	for (const SkirmishGameSlot &s : m_info.slots)
+	{
+		room -= s.isHuman() ? 1 : 0;
+	}
+	bool keep[MAX_SLOTS] = {};
+	for (int pass = 0; pass < 2; ++pass)
+	{
+		for (int i = 0; i < m_info.slotCount() && i < MAX_SLOTS; ++i)
+		{
+			const SkirmishGameSlot &s = m_info.slots[i];
+			if (room > 0 && (pass == 0 ? s.isAI() : s.state == SLOT_OPEN))
+			{
+				keep[i] = true;
+				--room;
+			}
+		}
+	}
+	int closed = 0;
+	for (int i = 0; i < m_info.slotCount() && i < MAX_SLOTS; ++i)
+	{
+		SkirmishGameSlot &s = m_info.slots[i];
+		if (!keep[i] && (s.isAI() || s.state == SLOT_OPEN))
+		{
+			setSlotStateInternal(s, SLOT_CLOSED, std::u16string());
+			++closed;
+		}
+	}
+	return closed;
 }
 
 void SkirmishGameSetup::setPlayerName(const std::u16string &name)

@@ -129,6 +129,7 @@ bool LANAPI::gameInfoValid(const SkirmishGameInfo &info, std::string *why) const
 {
 	// lane UBER-1: a game of another simulation profile is never played (the identity check at the join refuses it first; this holds the options and the
 	// start to it as well)
+	if (info.enhancedAI != m_profile.enhancedAI()) { if (why) *why = "AI rules differ"; return false; }
 	if (info.simulationProfile != m_profile.simulationProfile())
 	{
 		if (why)
@@ -387,6 +388,7 @@ void LANAPI::requestGameCreate(const SkirmishGameInfo &game)
 	resetPlatforms();
 	m_current.name = m_name;
 	m_current.info = game;
+	m_current.info.enhancedAI = m_profile.enhancedAI();
 	m_current.info.simulationProfile = m_profile.simulationProfile(); // lane UBER-1: the host's game runs the host's profile (its identity's)
 	m_current.info.slots[0].state = SLOT_PLAYER;
 	m_current.info.slots[0].name = m_name;

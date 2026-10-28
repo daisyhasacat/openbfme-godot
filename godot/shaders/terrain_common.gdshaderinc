@@ -1,3 +1,5 @@
+#include "res://shaders/snow_cover.gdshaderinc"
+varying vec3 v_snow_normal;
 // OpenBFME. GPL-3.0.
 //
 // Port of the RotWK 2.01 terrain shader, technique "Default" (shaders/compiled/terrain.fxo, vs_1_1 +
@@ -29,10 +31,13 @@
 // the class edge is interpolated unwrapped and wrapped PER PIXEL (wrap_into_class), so no texel of another
 // class is ever read; the mip level comes from the unwrapped UV (continuous derivatives).
 //
-// Not wired here (reported by the builder, stop S-031): the Taint mask path (albedo = base), the
-// shadow-receiving variants and the shroud texture (shroud = 1).
+// The Taint mask path (ps_2_0 blob 35 with vs blob 60; GameClient/TaintMask.h, stop S-6111), per layer as retail draws each layer's pass:
+//   w = mask.a; albedo = mask.rgb * lerp(base, w <= 0.5 ? TaintLow : TaintHigh, 2 * |w - 0.5|), the taint textures at the composed terrain patch's texcoord (16 cells), not this renderer's layer atlas UV.
+// Not wired here (reported by the builder, stop S-031): the shadow-receiving variants and the shroud texture (shroud = 1).
 
 uniform sampler2D base_atlas : filter_linear_mipmap, repeat_disable, hint_default_white;
+uniform sampler2D snow_atlas : filter_linear_mipmap, repeat_disable, hint_default_transparent;
+uniform bool snow_atlas_enabled = false;
 uniform sampler2D normal_atlas : filter_linear_mipmap, repeat_disable, hint_default_black;
 uniform sampler2D cloud_tex : filter_linear_mipmap, repeat_enable, hint_default_white;
 uniform sampler2D macro_tex : filter_linear_mipmap, repeat_enable, hint_default_white;
@@ -69,6 +74,13 @@ uniform vec2 shroud_origin = vec2(0.0);
 uniform vec2 shroud_extent = vec2(1.0);
 uniform vec3 shroud_color = vec3(1.0);
 uniform bool shroud_enabled = false;
+// TheTaintManager's mask (GodotGameWorld::refresh_taint): RGB the cell colour, A the level (0x80 neutral); taint_enabled is Taint[0].x != 0
+uniform bool taint_enabled = false;
+uniform sampler2D taint_tex : filter_linear, repeat_disable, hint_default_white;
+uniform vec2 taint_origin = vec2(0.0);
+uniform vec2 taint_extent = vec2(1.0);
+uniform sampler2D taint_low_tex : filter_linear_mipmap, repeat_enable, hint_default_white;  // TSTaintMed.tga
+uniform sampler2D taint_high_tex : filter_linear_mipmap, repeat_enable, hint_default_white; // TSElvenMed.tga
 // map browser: pixels outside this SAGE rect (min x, min y, max x, max y) are discarded; the default keeps everything
 uniform vec4 clip_rect = vec4(-1e20, -1e20, 1e20, 1e20);
 varying vec2 v_shroud_uv;
@@ -162,12 +174,31 @@ vec4 record_texel(int rec, int k) {
 	return texelFetch(records, ivec2(col * 9 + k, row), 0);
 }
 
+// BFME2 W3DTerrainBackgroundDoTesselatedUpdate.cpp: t0 spans the background patch,
+// u=(i-minX)/width, v=1-(j-minY)/width; HeightMapInitHeightDataRva000E1A39.cpp
+// builds 16-cell patches. The base/normal here use an atlas instead of retail's
+// composed patch textures, so taint must reconstruct the donor's patch UV.
+vec3 taint_ground(vec2 sage_xy, vec4 mask) {
+	vec2 uv = (sage_xy + vec2(map_border_width)) / (16.0 * map_cell_size);
+	uv.y = 1.0 - uv.y;
+	vec3 low = texture(taint_low_tex, uv).rgb;
+	vec3 high = texture(taint_high_tex, uv).rgb;
+	return mask.a <= 0.5 ? low : high;
+}
+
 // One layer's lit colour in retail (gamma) space, before cloud / macro / fog.
-vec3 shade_layer(vec2 uv_unwrapped, vec4 rect, vec4 vcol, float lod) {
+vec3 shade_layer(vec2 uv_unwrapped, vec4 rect, vec4 vcol, float lod, vec3 snow_world, vec4 taint_mask, vec3 taint_color) {
 	vec2 uv = wrap_into_class(rect, uv_unwrapped);
 	vec3 albedo = textureLod(base_atlas, uv, lod).rgb;
 	if (debug_mode == 7) {
 		return albedo;
+	}
+	if (taint_enabled) {
+		albedo = taint_mask.rgb * mix(albedo, taint_color, 2.0 * abs(taint_mask.a - 0.5));
+	}
+	if (debug_mode == 0 && openbfme_snow_cover > 0.0) {
+		vec4 authored = snow_atlas_enabled ? textureLod(snow_atlas, uv, lod) : vec4(0.0);
+		albedo = snow_ground_cover(albedo, snow_world, v_snow_normal, authored);
 	}
 	vec4 nm = textureLod(normal_atlas, uv, lod);
 	vec2 nxy = 2.0 * nm.xy - 1.0;
@@ -221,17 +252,22 @@ vec3 terrain_output(vec2 uv0, vec4 vcol, vec2 sage_xy) {
 	float lod1 = atlas_lod(uv1);
 	float lod2 = atlas_lod(uv2);
 
-	vec3 comp = shade_layer(uv0, v_wrap, vcol, lod0);
+	// vs blob 60's oT1: the mask at the world point (the shroud's mapping, S-6111); sampled in uniform control flow
+	vec4 taint_mask = taint_enabled ? texture(taint_tex, (sage_xy - taint_origin) / taint_extent) : vec4(1.0, 1.0, 1.0, 0.5);
+	// Sample once in uniform flow: implicit derivatives must precede the per-layer blend branches.
+	vec3 taint_color = taint_ground(sage_xy, taint_mask);
+	vec3 comp = shade_layer(uv0, v_wrap, vcol, lod0, vec3(sage_xy.x,0.0,-sage_xy.y), taint_mask, taint_color);
 	if (has1) {
-		comp = mix(comp, shade_layer(uv1, rect1, vcol, lod1), alpha1);
+		comp = mix(comp, shade_layer(uv1, rect1, vcol, lod1, vec3(sage_xy.x,0.0,-sage_xy.y), taint_mask, taint_color), alpha1);
 	}
 	if (has2) {
-		comp = mix(comp, shade_layer(uv2, rect2, vcol, lod2), alpha2);
+		comp = mix(comp, shade_layer(uv2, rect2, vcol, lod2, vec3(sage_xy.x,0.0,-sage_xy.y), taint_mask, taint_color), alpha2);
 	}
 	if (paving_enabled && all(greaterThanEqual(sage_xy, vec2(0.0))) && all(lessThan(sage_xy, paving_extent))) {
 		// The CPU supplies a Gaussian-smoothed mask; interpolate its contour across diagonal grid steps.
 		float mask = smoothstep(0.2, 0.8, texture(paving_mask, sage_xy / paving_extent).r);
 		vec3 albedo = texture(paving_texture, sage_xy / paving_tile_size).rgb;
+		if (debug_mode == 0 && openbfme_snow_cover > 0.0) albedo = snow_ground_cover(albedo, vec3(sage_xy.x,0.0,-sage_xy.y), v_snow_normal, vec4(0.0));
 		vec3 sun = overbright ? 0.5 * sun_color : sun_color;
 		vec3 lit = (vcol.rgb + 0.5 * lightning_color + sun * max(normalize(v_lts).z, 0.0)) * albedo;
 		if (overbright) { lit *= 2.0; }

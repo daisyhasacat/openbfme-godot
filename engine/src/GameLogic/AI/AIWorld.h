@@ -34,6 +34,7 @@
 #include "GameLogic/ObjectTypes.h"
 
 #include <map>
+#include <unordered_map>
 #include <memory>
 #include <set>
 #include <string>
@@ -52,6 +53,9 @@ class INIMacroTable;
 struct ObjectMovementInfo
 {
 	PathfindGeometry geometry;
+	// geometry.boundingCircleRadius() / boundingSphereRadius(), computed once by movementInfo (the info never changes after it is built; the combat
+	// queries read the radii for every attackable object at every rebuild of the target index)
+	float boundingCircle = 0.0f, boundingSphere = 0.0f;
 	bool hasGeometry = false;
 	float fenceWidth = 0.0f, fenceXOffset = 0.0f;
 	float pathfindDiameter = -1.0f;  // RW +0x53C: <= 0 when unset
@@ -81,6 +85,7 @@ public:
 	PathfindLayerEnum getLayer() const override { return m_layer; }
 	void setLayer(PathfindLayerEnum layer) { m_layer = layer; }
 	float getHeightAboveTerrain() const override;
+	bool isSignificantlyAboveTerrain() const override;
 	bool isMobile() const override;
 	bool isKindOf(PathfindKind kind) const override;
 	const PathfindGeometry &getGeometry() const override;
@@ -244,7 +249,7 @@ private:
 	std::unique_ptr<AIMoveWorld> m_moveWorld;
 	std::vector<std::unique_ptr<ObjectPathfindAdapter>> m_adapters; // index = object id
 	std::map<PathfindObjectID, AIUpdateInterface *> m_ais;
-	std::map<const ThingTemplate *, std::unique_ptr<ObjectMovementInfo>> m_info;
+	std::unordered_map<const ThingTemplate *, std::unique_ptr<ObjectMovementInfo>> m_info; // looked up, never walked
 	std::vector<std::string> m_errors;
 	std::set<std::string> m_noted;
 	std::map<std::string, unsigned> m_failures; // "template: text" -> count

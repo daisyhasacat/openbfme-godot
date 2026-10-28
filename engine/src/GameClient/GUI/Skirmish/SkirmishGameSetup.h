@@ -107,6 +107,10 @@ public:
 	bool setStartingCash(int cash);
 	// SkirmishMapSelectMenu OK: GameInfo::setMap + setMapCRC + setMapSize + the start positions reset.  False when the cache has no such map.
 	bool setMap(const std::string &mapName);
+	// After the lobby's map change: the slots that no longer fit the map's player count are closed. ZH GameInfo::adjustSlotsForMap
+	// (Core/GameEngine/Source/GameNetwork/GameInfo.cpp:761, BFME1 0x00620B00) closes only unoccupied slots; INFERENCE (requested, not retail): humans
+	// always keep their slots, then AI slots in slot order, then open slots fill what is left; every other open or AI slot is closed. Returns the number closed.
+	int adjustSlotsForMap();
 	// MpGameSetup+0x7C: strategic (War of the Ring) mode.  Filters the colours to AvailableInWotR; slots 6 and 7 are hidden by the screen.
 	// lane RULES-1: a change of mode resets the rules to the new mode's defaults (AptSkirmish::InitTheGame RW 0x9288D0 takes the mode's defaults)
 	void setStrategicMode(bool strategic);
@@ -133,6 +137,7 @@ public:
 	void setFortressConstruction(bool enabled) { m_info.fortressConstruction = enabled; }
 	bool setPeaceTimeMinutes(int minutes);
 	// lane UBER-1: the simulation profile of the games this setup starts (the player's OpenBFME option; kept through init / reset)
+	void setEnhancedAI(bool enabled) { m_enhancedAI = enabled; m_info.enhancedAI = enabled; }
 	void setSimulationProfile(SimulationProfile profile)
 	{
 		m_simulationProfile = profile;
@@ -206,6 +211,7 @@ private:
 	const GameTextSource *m_text;
 	bool m_aotrProfile = false;
 	SkirmishGameInfo m_info;
+	bool m_enhancedAI = false;
 	SimulationProfile m_simulationProfile = SimulationProfile::Faithful; ///< lane UBER-1
 	std::string m_error;
 	bool m_strategic = false;

@@ -83,8 +83,19 @@ const char *PlaceEventTranslator::cantBuildLabel(int code)
 		case LBC_NOT_FLAT_ENOUGH: return "GUI:CantBuildNotFlatEnough";
 		case LBC_RESTRICTED_TERRAIN: return "GUI:CantBuildRestrictedTerrain";
 		case LBC_OBJECTS_IN_THE_WAY: return "GUI:CantBuildObjectsInTheWay";
+		case LBC_OUTSIDE_WALLS: return "OPENBFME:CantBuildOutsideWalls";
 		default: return "GUI:CantBuildThere";
 	}
+}
+
+const char16_t *PlaceEventTranslator::openBfmeText(const std::string &label)
+{
+	// OpenBFME's own refusal (no retail string table has it)
+	if (label == "OPENBFME:CantBuildOutsideWalls")
+	{
+		return u"Wall rebalance: this building must be placed inside your walls.";
+	}
+	return nullptr;
 }
 
 std::vector<std::string> PlaceEventTranslator::stopLines()

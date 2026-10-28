@@ -163,7 +163,7 @@ private:
 const char *meleeReachStopLine()
 {
 	return "[S-3806] melee reach (RW 0x6ED843, lane PLAY-4): the footprint test of a unit target is ported; a SIEGE_TOWER target outside the boxes takes RW's ramp branch "
-		   "(RW 0x6EDB6F .. 0x6EDC74: the tower's ramp point and the unit's radius), not ported (false); a STRUCTURE target keeps the edge distance (S-320)";
+		   "(RW 0x6EDB6F .. 0x6EDC74: the tower's ramp point and the unit's radius), not ported (false); structure obstacle rings are ported, but wall-top / bridge-layer exceptions are not";
 }
 
 class ObjectWeapons::RangeHost : public WeaponRangeHost
@@ -201,14 +201,14 @@ public:
 	// RW 0x6ED843 (Pathfinder, the melee reach test of RW 0x6CC07C).
 	//   * the unit's current weapon (RW 0x68B58C(0)) must be a MeleeWeapon (RW 0x6ED86D), else false;
 	//   * its range in cells: floor(range * 0.1 + 0.1) (RW 0x6ED8AB .. 0x6ED8CF, x87; the range is RW 0x6CA935 called with the TARGET: its bonus and range scale);
-	//   * a STRUCTURE target (RW 0x6ED8D5): INFERENCE (S-320): the edge-to-edge distance within the weapon's reach (set by the caller) stands for the ring of cells
-	//     around the unit's footprint that RW walks for the structure's obstacle id (RW 0x6ED937 .. 0x6EDA52) and its WALK_ON_TOP_OF_WALL tail (RW 0x6EDA58);
+	//   * a STRUCTURE target (RW 0x6ED8D5): rings around the unit footprint find the target obstacle id (RW 0x6ED937 .. 0x6EDA52).
+	//     The WALK_ON_TOP_OF_WALL / bridge-layer tail remains unported (S-3806).
 	//   * any other target (lane PLAY-4 r1): the footprint boxes (Pathfinder::meleeReachCells, RW 0x6EDB0C .. 0x6EDB69); a CAN_CLIMB_WALLS target on a wall
 	//     (RW 0x6EDAD4 -> 0x696057) cannot occur (only the ground layer exists, S-161); a SIEGE_TOWER target outside the boxes takes the ramp branch
 	//     (RW 0x6EDB6F .. 0x6EDC74), not ported (stop S-3806: false).
 	bool meleeReach(const RangeSubject &source, const Coord3D &sourcePos, const RangeSubject &victim) override
 	{
-		if (victim.isStructure || !victim.object)
+		if (!victim.object)
 		{
 			return CircleDistanceSquared(sourcePos, source.boundingCircleRadius, victim.position, victim.boundingCircleRadius) <= SimMath::mulf32(m_meleeReach, m_meleeReach);
 		}
@@ -234,6 +234,10 @@ public:
 		}
 		const float range = WeaponGetAttackRangeNoTarget(*cur->getTemplate(), bonus, tw ? tw->rangeHost() : *this, victim);
 		const int cells = SimMath::fistp32(SimMath::fstpDword(SimMath::floorD(SimMath::pc24AddW(SimMath::pc24MulW((double)range, (double)0.1f), (double)0.1f))));
+		if (victim.isStructure)
+		{
+			return world->pathfinder().meleeStructureReach(*unit, sourcePos, *target, cells);
+		}
 		if (world->pathfinder().meleeReachCells(*unit, sourcePos, *target, cells))
 		{
 			return true;
@@ -1110,6 +1114,7 @@ bool ObjectWeapons::canAttackObject(const Object &victim, CommandSourceType sour
 	const Player *attackerPlayer = m_owner->getControllingPlayer();
 	const Player *victimPlayer = victim.getControllingPlayer();
 	if (m_owner->logic().peaceTimeActive() && attackerPlayer && attackerPlayer->getPlayerType() == PLAYER_COMPUTER &&
+		attackerPlayer->getPlayerTemplate() && attackerPlayer->getPlayerTemplate()->m_playableSide &&
 		victimPlayer && victimPlayer != attackerPlayer && victimPlayer->getPlayerTemplate() && victimPlayer->getPlayerTemplate()->m_playableSide)
 	{
 		return false;

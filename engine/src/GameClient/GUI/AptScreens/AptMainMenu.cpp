@@ -41,7 +41,6 @@ const CommandRow kRequestCommands[] = {
 	{ "AptMainMenu::ContinueCampaign", ShellAction::ContinueCampaign },
 	{ "AptMainMenu::Expansion1Campaign", ShellAction::Expansion1Campaign },
 	{ "AptMainMenu::BonusCampaign", ShellAction::BonusCampaign },
-	{ "AptMainMenu::WarOfTheRing", ShellAction::WarOfTheRing },
 	{ "AptMainMenu::OnTutorial", ShellAction::Tutorial },
 	{ "AptMainMenu::Tutorial", ShellAction::Tutorial },
 	{ "AptMainMenu::StopGameMovie", ShellAction::StopGameMovie },
@@ -103,7 +102,6 @@ const UnavailableScreen kUnavailableScreens[] = {
 	// MainMenu.apt's GoodCampaign / EvilCampaign) are refused by these names until their gameplay flow is implemented
 	{ "BFME2GoodCampaign", "The BFME2 Good campaign", "OpenBFME does not have it yet" },
 	{ "BFME2EvilCampaign", "The BFME2 Evil campaign", "OpenBFME does not have it yet" },
-	{ "WarOfTheRing", "War of the Ring", "its strategy map game is still being rebuilt" },
 	{ "Lan", "Network", "this build has no screen for it" },
 	{ "LoadReplay", "Replays", "this build has no screen for it" },
 };
@@ -273,12 +271,14 @@ void AptMainMenu::request(ShellAction action, const std::string &argument)
 	m_services.request(r);
 }
 
-void AptMainMenu::showSkirmish()
+void AptMainMenu::showSkirmish(int mode)
 {
-	// ShowSkirmish.cpp (0x00579440): push Skirmish.apt unless its singleton already exists
+	// ShowSkirmish.cpp (0x00579440): push Skirmish.apt unless its singleton already exists. lane WOTR-1: the mode is AptSkirmish::OpenScreen's argument
+	// (BFME2 AptMainMenuUpdate.cpp: case 7 Skirmish -> OpenScreen(0), case 8 WarOfTheRing -> OpenScreen(1); RotWK's handlers RW 0x91B096 / 0x91AFE4 store
+	// the same 7 / 8)
 	if (!shell().findScreenByFilename("Skirmish.apt"))
 	{
-		shell().push("Skirmish.apt", false);
+		shell().push("Skirmish.apt", false, mode);
 		windows().setBackground(1); // lane FB7-1: RotWK's opener shows the front-end background (RW 0x928324 .. 0x928326)
 	}
 }
@@ -305,7 +305,8 @@ void AptMainMenu::registerAll()
 				windows().note("bfme1-main-menu", "ShowMainMenu() could not be called: " + err);
 		}
 	});
-	registerCommand("AptMainMenu::Skirmish", [this](const std::string &) { showSkirmish(); });
+	registerCommand("AptMainMenu::Skirmish", [this](const std::string &) { showSkirmish(0); });
+	registerCommand("AptMainMenu::WarOfTheRing", [this](const std::string &) { showSkirmish(1); }); // lane WOTR-1: the War of the Ring lobby
 	registerCommand("AptMainMenu::GoodCampaign", [this](const std::string &argument) { request(ShellAction::LoadCampaign, "bfme2:good:" + argument); });
 	registerCommand("AptMainMenu::EvilCampaign", [this](const std::string &argument) { request(ShellAction::LoadCampaign, "bfme2:evil:" + argument); });
 	registerCommand("AptMainMenu::Options", [this](const std::string &argument) {

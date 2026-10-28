@@ -9,6 +9,7 @@
 //   obfme:CreateAHero      CreateAHeroGame::xfer (the records in retail's layout, RW 0x80B4F5)        "create-a-hero"
 //   obfme:TerrainTrees     TerrainTrees::xfer (the records in retail's layout, RW 0x680753)           "terrain trees"
 //   obfme:LargeGroupAudio  LargeGroupAudioLink::xfer                                                  "large group audio"
+//   obfme:Taint            TaintManager::xfer (retail's layout, 0x006C0F50, plus a painted flag)        "taint"
 // Their references are player indices, names and ids: the indices and names are resolved and checked while loading; obfme:ScriptEngine (the sequential
 // scripts' teams) and obfme:Economy (the resource claimants' objects) stage what they loaded and check those ids in their post-process, after every
 // block loaded, before they take the state (a refusal leaves them unchanged); the other ids (the named object cache, a hero's object, a unit's sequential
@@ -22,6 +23,7 @@
 #include "GameLogic/CreateAHeroSystem.h"
 #include "GameLogic/Economy.h"
 #include "GameLogic/GlobalWeatherSystem.h"
+#include "GameLogic/Map/TaintManager.h"
 #include "GameLogic/Map/TerrainTrees.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
 #include "GameLogic/VictoryConditions.h"
@@ -76,6 +78,7 @@ void GameLogic::registerSave4dBlocks(GameState &gs)
 	add("obfme:CreateAHero", saveLoad, [this](Xfer &x) { m_createAHeroes->xfer(x); }, nullptr, "create-a-hero");
 	add("obfme:TerrainTrees", saveLoad, [this](Xfer &x) { m_trees->xfer(x); }, nullptr, "terrain trees");
 	add("obfme:LargeGroupAudio", saveLoad, [this](Xfer &x) { m_largeGroupAudio.xfer(x); }, nullptr, "large group audio");
+	add("obfme:Taint", saveLoad, [this](Xfer &x) { m_taint->xfer(x); }, nullptr, "taint");
 }
 
 std::vector<std::string> GameLogic::save4dStopLines()

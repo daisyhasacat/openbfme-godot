@@ -565,7 +565,8 @@ match, use the console Cheats tab's **Enable ubermode** / **Disable ubermode**
 buttons, or `ubermode.enable()`, `ubermode.disable()`, `ubermode.toggle()`.
 This cheat is independent of the Uber simulation/performance profile.
 
-Enabling sets the local player's gold and CP capacity to 1,000,000. Subsequent
+Enabling sets the local player's gold and CP capacity to 1,000,000 and grants
+1,000 spell-book power points (kept on disable). Subsequent
 construction, recruitment and upgrade research take one simulation second
 (five logic frames); existing work keeps its captured duration. Newly created
 units receive their native maximum experience level and all purchasable object

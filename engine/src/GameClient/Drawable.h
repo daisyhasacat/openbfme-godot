@@ -48,6 +48,7 @@ typedef std::uint32_t DrawableID;
 // The services every draw module of a game shares (one per DrawableManager).
 class ModuleFactory;
 class AnimationSoundModuleManager;
+class W3DTruckDrawModuleData;
 
 // lane FX-2: the client effect player the draw modules call (GameClient/LiveFX). Read at call time, so drawables made before the player was installed use it too.
 class DrawableFXHost
@@ -100,6 +101,10 @@ struct DrawEntry
 	float tireFront = 0.0f, tireRear = 0.0f;
 	std::vector<std::string> frontTireBones, rearTireBones;
 	unsigned tireChanges = 0; ///< bumped when an angle changed (the device layer re-poses the instance)
+	// `data` as a W3DTruckDraw's, and the data it was cast from (the cast ran every render frame for every entry)
+	const ModuleData *truckSource = nullptr;
+	const W3DTruckDrawModuleData *truck = nullptr;
+	bool truckKnown = false;
 };
 
 class Drawable : public Thing
@@ -130,6 +135,8 @@ public:
 	// drawable); the draw modules take the result at once when it changed. True when it changed
 	bool applyDependencyFlags(const ModelConditionFlags &shared, const ModelConditionFlags &containerFlags);
 	void setModelConditionFlags(const ModelConditionFlags &flags);
+	void setSnowPresentation(bool enabled);
+	bool snowPresentation() const { return m_snowPresentation; }
 	void setModelCondition(int bit, bool on);
 	// lane ANIM-1, RW 0x679512 / 0x67449C (see ClientEvents.h): a changed bit is stored and marks the drawable dirty; flushModelConditions hands the
 	// stored flags to the draw modules (setModelConditionFlags) when dirty, with the object's weapon cycle for UseWeaponTiming as the flush event carried it
@@ -283,6 +290,7 @@ private:
 	ObjectID m_objectId;
 	KindOfMaskType m_kindOf{};
 	ModelConditionFlags m_flags;
+	bool m_snowPresentation = false;
 	float m_scale = 1.0f;
 	std::uint32_t m_houseColor = 0;
 	int m_customKind = 0;                              // lane CAH-2

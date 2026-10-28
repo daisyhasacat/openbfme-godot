@@ -6,9 +6,10 @@
 //   PartitionCellSize + 0xD4 (parseReal RW 0x42ED00; TheShroudManager's cell size, RW 0x62CFBB), UnlookPersistDuration + 0xBD0 (parseDurationUnsignedInt
 //   RW 0x73A429: milliseconds to logic frames; constructor 30, RW 0x6432A0), ShroudColor + 0xBDC (parseRGBColor RW 0x42EF99), ClearAlpha + 0xBE8, FogAlpha
 //   + 0xBE9, ShroudAlpha + 0xBEA (parseUnsignedByte RW 0x42EB75; constructor 255 / 127 / 0, RW 0x6432CC .. 0x6432E5), StealthFriendlyOpacity + 0xC8
-//   (parsePercentToReal RW 0x42EEFA). MultiplayerSettings (data\ini\multiplayer.ini, table RW 0xC2F708, object RW 0xDE7D3C): UseShroud + 0x1C (parseBool).
+//   (parsePercentToReal RW 0x42EEFA); the taint's look (W3DTaint, BFME2 GlobalData + 0xBEC .. + 0xC6A, RotWK's table names at RW 0x8024C0 .. 0x8024E8):
+//   TaintOn (parseBool), TaintColor (parseRGBColor: the low colour, below neutral), ElvenWoodColor (the high colour), TaintAlpha (parseUnsignedByte). MultiplayerSettings (data\ini\multiplayer.ini, table RW 0xC2F708, object RW 0xDE7D3C): UseShroud + 0x1C (parseBool).
 // The retail values: PartitionCellSize 40, UnlookPersistDuration 1 (1 frame), ShroudColor 255 255 255, FogAlpha 127, ShroudAlpha 0, ClearAlpha absent (255),
-// StealthFriendlyOpacity 50%, UseShroud No.
+// StealthFriendlyOpacity 50%, UseShroud No, TaintOn Yes, TaintColor 120 90 80, TaintAlpha 0, ElvenWoodColor 70 120 50.
 // A key the retail files carry is required (PLAN rule 10); ClearAlpha keeps the constructor's 255 when absent (retail does not set it).
 
 #pragma once
@@ -26,6 +27,10 @@ struct VisionSettings
 	unsigned clearAlpha = 255, fogAlpha = 127, shroudAlpha = 0;
 	float stealthFriendlyOpacity = 0.0f;
 	bool useShroud = false; ///< MultiplayerSettings UseShroud
+	bool taintOn = false;   ///< GameData TaintOn: the terrain draws the taint mask (W3DTaint::setTaintLevel returns without it)
+	float taintRed = 0.0f, taintGreen = 0.0f, taintBlue = 0.0f;          ///< GameData TaintColor (0 .. 1): a cell below neutral (taint)
+	float elvenWoodRed = 0.0f, elvenWoodGreen = 0.0f, elvenWoodBlue = 0.0f; ///< GameData ElvenWoodColor (0 .. 1): a cell above neutral (elven wood)
+	unsigned taintAlpha = 0; ///< GameData TaintAlpha: the mask's border level
 	// lane HUD-5: MultiplayerSettings ShowRandomPlayerTemplate / ShowRandomStartPos / ShowRandomColor (GameSlot::getApparent*: an enemy's random choice is shown
 	// as random). Default true: MultiplayerSettings' constructor (RW 0x7836C0, BFME2 decomp MultiplayerSettingsCtor.cpp, tier B same-shape); optional fields
 	bool showRandomPlayerTemplate = true, showRandomStartPos = true, showRandomColor = true;

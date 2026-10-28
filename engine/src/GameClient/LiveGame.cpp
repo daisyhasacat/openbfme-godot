@@ -3,6 +3,7 @@
 
 #include "GameClient/LiveGame.h"
 #include "GameLogic/FishingPlacement.h"
+#include "GameLogic/Map/TaintManager.h"
 #include "Common/BfmeGame.h"
 #include "GameLogic/ScriptEngine/BfmeLuaActions.h"
 
@@ -316,6 +317,7 @@ bool LiveGame::load(const Options &options, std::string *error)
 		m_logic->economy().context().sandbox = options.start->message.game.isSandbox(options.start->localSlot);
 	}
 	m_logic->setGameRules(gameRules);
+	m_logic->settings().enhancedAI = options.start && options.start->message.game.enhancedAI;
 	m_logic->setFortressConstruction(options.start && options.start->message.game.fortressConstruction);
 	m_logic->setLegendaryHeroes(options.start ? options.start->message.game.legendaryHeroes : LegendaryHeroes::kOff);
 	m_logic->setPeaceTimeMinutes(options.start ? options.start->message.game.peaceTimeMinutes : PeaceTime::kOff);
@@ -381,6 +383,10 @@ bool LiveGame::load(const Options &options, std::string *error)
 			return false;
 		}
 		m_shroud->setExtent(0.0f, 0.0f, maxX, maxY);
+		// TheTaintManager: GameData PartitionCellSize when the logic is made (GameLogicInit, 0x006C0810 with GlobalData + 0xD4), then the terrain's extent at
+		// size 0 (kept) when the map loads (0x006C0810 / 0x006C0820)
+		m_logic->taint().setExtent(0.0f, 0.0f, 0.0f, 0.0f, m_vision.partitionCellSize);
+		m_logic->taint().setExtent(0.0f, 0.0f, maxX, maxY);
 		// lane MODULES-2: RW 0x62FCC3 .. 0x62FCCD: ThePartitionManager gets the same extent (RW 0xA39030 -> 0xA3B450), before the map's objects exist
 		m_logic->partition().setRegion(0.0f, 0.0f, maxX, maxY);
 	}

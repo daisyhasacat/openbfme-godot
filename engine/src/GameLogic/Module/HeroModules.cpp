@@ -29,6 +29,7 @@
 #include "Common/PlayerTemplate.h"
 #include "GameLogic/FXEvents.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Map/TaintManager.h"
 #include "GameLogic/HeroSystem.h"
 #include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/Module/AIUpdate.h"
@@ -806,10 +807,22 @@ void AttributeModifierAuraUpdate::affect(Object &o, const Pulse &pulse)
 	}
 	if (d->m_requiredConditions & 6u)
 	{
-		// RW 0x89F1F8 .. 0x89F271: TAINT / ELVEN_WOOD need the terrain area at the object (RW 0xAD49B0) to be of that kind and owned by an ally; the areas are
-		// not ported, so no object is in one (S-856)
-		logic.noteStop("[S-856] AttributeModifierAuraUpdate: RequiredConditions TAINT / ELVEN_WOOD need the terrain areas (RW 0xAD49B0), not ported: no object is in one");
-		return;
+		// RW 0x89F1F8 .. 0x89F271 (BFME2 AttributeModifierAuraUpdateUpdate.cpp, TheTaintManager 0x006C0850): TAINT (bit 2) needs the cell under the object on
+		// the taint side (2), else ELVEN_WOOD (bit 4) on the elven wood side (1); a cell with an owner needs that object alive and not an enemy of this one
+		int owner = -1;
+		const int side = logic.taint().sideAt(o.getPosition()->x, o.getPosition()->y, &owner);
+		if (side != ((d->m_requiredConditions & 2u) ? 2 : 1))
+		{
+			return;
+		}
+		if (owner != -1)
+		{
+			const Object *area = logic.findObjectByID((ObjectID)owner);
+			if (!area || area->getRelationship(o) == ENEMIES)
+			{
+				return;
+			}
+		}
 	}
 	static const int kHorde = ObjectTemplateInfoBuilder::kindOfIndex("HORDE");
 	if (pulse.containedMode && kHorde >= 0 && o.isKindOf((unsigned)kHorde))

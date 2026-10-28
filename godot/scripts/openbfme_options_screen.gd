@@ -687,7 +687,11 @@ func _performance_rows() -> Array:
 	if not locked.is_empty():
 		row["enabled"] = false # lane UBERJOIN-1: greyed, with the reason in the help line
 		row["help"] = locked
-	return [row]
+	var ai_row := _extra_check("OpenBFMEEnhancedAI", "Enhanced computer AI", "Adds counter-production, combat micro, siege coordination and faster upgrade/attack policies. Off uses the source AI rules; some source systems are still incomplete. Applies to the next game; all players must use the same setting.")
+	if not locked.is_empty():
+		ai_row["enabled"] = false
+		ai_row["help"] = locked
+	return [row, ai_row]
 
 
 func _hotkey_list() -> Array:

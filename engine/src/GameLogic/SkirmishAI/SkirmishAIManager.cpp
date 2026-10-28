@@ -341,9 +341,6 @@ void SkirmishAIManager::updateAI(AISkirmishPlayer &ai, AISkirmishGroup &g)
 	// base builder and the request processor; the other sub systems are S-412), then the brain (S-412)
 	AIBaseBuilder::updatePhase(m_logic, ai);
 	AIBaseBuilder::update(m_logic, ai);
-	// the team builder (+ 0x90, RW 0x9A3366) runs inside AIPlayer::update after the unit builder; it draws no random value and touches only the tactic teams,
-	// so running it after the request processor keeps the retail order of every observable effect
-	AITacticalAI::updateTeamBuilder(m_logic, ai);
 	++m_counters.aiPlayerUpdates;
 	// the brain (+ 0x164, RW 0x6C74C2); the group's first AI owns the target chooser the others share (+ 0x18)
 	AITacticalAI::updateBrain(m_logic, ai, groupFirstAI(g));
@@ -698,7 +695,7 @@ std::vector<std::string> SkirmishAIManager::stopLines()
 		"unfinished structures as targets (lane DECOMP-2: RW's AI::findClosestEnemy RW 0x701443 -> 0x7006D7 and its attack test RW 0x68D6A6 / 0x6C9147 / "
 		"0x6C8652 never test UNDER_CONSTRUCTION); INFERENCE: the worker kill runs at the port's delete point, the defeat frames are engine pins",
 		"[S-418] skirmish ai tactical layer inference: (lane DECOMP-3: the player info record AIStatCollector RW 0x8E46D9 is ported and filled by the object "
-		"events RW 0x6A9D9C / 0x6A99CB, so its lists keep RW's event order; its position sampler and listeners are not ported; newGame's pass walks the port's "
+		"events RW 0x6A9D9C / 0x6A99CB, so its lists keep RW's event order; its position sampler is ported; the economy listener remains unported; newGame's pass walks the port's "
 		"default team backwards as RW's prepended member list); (lane DECOMP-2: the team builder's recruit test "
 		"RW 0x9A24FC, the SUPPORT rule, the hand-over at the minimum when DEFENSIVE, full or meeting the target's threat RW 0x9A26A1, the pooled defaults and the "
 		"idle dispatch RW 0x9A3040 are ported; its unit list is taken as the army list) a unit in another team is never taken (RW's priority and DEFENSIVE-target branches), a member counts until it is destroyed, the threat sum runs "

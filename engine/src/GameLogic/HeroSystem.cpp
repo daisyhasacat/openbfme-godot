@@ -173,10 +173,10 @@ std::vector<std::string> HeroSystem::stopLines()
 		"0x660AC1 == 16) is AIUpdateInterface::isIdle, a respawn health "
 		"above 100% (the max health growth of RW 0x8C47F6) is not ported",
 		"[S-855] hero production: a revive or purchase entry pays at queue time like a unit; a hero entry whose record cannot start (RW 0x7812B2 false) keeps the money "
-		"(retail's order: the withdrawal comes first); the Brutal AI discount of hero cost and time (AI data + 0x95C / + 0x960) is S-204's; a hero template with a BuildFadeInOnCreateTime holds its "
+		"(retail's order: the withdrawal comes first); the Brutal AI cost/time wrapper discounts are applied after the record helpers (RW 0x780AD3 / 0x780B72); a hero template with a BuildFadeInOnCreateTime holds its "
 		"producer's exit (retail's own order: the record is erased when the hero is made and the build-index gate RW 0x8A1F3D then never passes; no retail hero has one)",
 		"[S-856] AttributeModifierAuraUpdate: not ported: Object + 0x11C bit 1 (skips the pulse and the target), the WALK_ON_TOP_OF_WALL source (geometry radius, no "
-		"relationship filter), the TAINT / ELVEN_WOOD terrain areas (RW 0xAD49B0: no object is in one), the Object + 0x458 bit 3 filter RW 0xC0F374 (the bit is "
+		"relationship filter), the Object + 0x458 bit 3 filter RW 0xC0F374 (the bit is "
 		"never set), the pool's AntiCategory disable (XP-1's S-633: counted); the aura and AutoHeal scans run on ThePartitionManager (lane MODULES-2, S-1020: the "
 		"retail order of equal distances), the special power trigger and LevelGrant scans still sort the object list by distance (equal distances keep the "
 		"list's order: as an applied modifier can grant an upgrade at once (a CostModifierUpgrade appends to the player's ordered list), that order can change "

@@ -112,6 +112,9 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 			auto info = ObjectTemplateInfoBuilder::build(*tt);
 			auto r = definition(*tt);
 			const auto &c = buildClasses.at(tt->getName());
+			static const int horde = ObjectTemplateInfoBuilder::kindOfIndex("HORDE"), hero = ObjectTemplateInfoBuilder::kindOfIndex("HERO");
+			r["isHorde"] = horde >= 0 && kind(info, horde);
+			r["isHero"] = hero >= 0 && kind(info, hero);
 			auto list = [](const std::vector<std::string> &items) { Value::List out; for (const auto &item : items) out.emplace_back(item); return out; };
 			r["buildMode"] = Table{{"building",c.building},{"unit",c.unit},{"plot",c.plot},{"marker",c.marker},{"placeholder",c.placeholder},
 				{"scenery",c.scenery},{"trainable",c.trainable},{"producers",list(c.producers)},{"builderBuildable",c.builderBuildable},{"plotBuildable",c.plotBuildable},{"enhancedPlotBuildable",c.enhancedPlotBuildable},
@@ -214,6 +217,9 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 			const auto *last = TheExperienceLevelSystem ? TheExperienceLevelSystem->lastLevel(xp->levelTargetName(), obj->logic().economy().isMultiplayerGame()) : nullptr;
 			r["maxLevel"] = last ? last->m_rank : xp->getRank();
 		}
+		// a horde member: its horde (the horde's object upgrades reach the members it holds when it is given one, Object::giveUpgrade)
+		if (const ::Object *horde = obj->getHordeObject(false); horde && horde != obj)
+			r["hordeId"] = double(horde->getID());
 		if (building)
 		{
 			r["underConstruction"] = obj->isUnderConstruction();

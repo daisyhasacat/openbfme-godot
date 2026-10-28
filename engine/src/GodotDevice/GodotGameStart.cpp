@@ -77,6 +77,7 @@ Dictionary newGameToDictionary(const NewGameMessage &m)
 	d["peace_time_minutes"] = m.game.peaceTimeMinutes;
 	d["wall_balance"] = String::utf8(m.game.wallBalance.c_str()); // GameNetwork/WallBalanceSetup.h ("" = off)
 	d["lua_authority_slot"] = m.game.luaAuthoritySlot;
+	d["enhanced_ai"] = m.game.enhancedAI;
 	d["simulation_profile"] = (int)m.game.simulationProfile; // lane UBER-1: 0 Faithful, 1 Uber (Common/SimulationProfile.h)
 	Array slots;
 	for (int i = 0; i < m.game.slotCount(); ++i)
@@ -184,6 +185,7 @@ bool newGameFromDictionary(const Dictionary &d, NewGameMessage &out, std::string
 		return fail("simulation_profile " + std::to_string((long long)profile) + " (0 faithful, 1 uber)");
 	}
 	m.game.simulationProfile = (SimulationProfile)profile;
+	m.game.enhancedAI = (bool)d.get("enhanced_ai", false);
 	const Array slots = d["slots"];
 	if (slots.size() != MAX_SLOTS && slots.size() != MAX_LOCAL_SLOTS)
 	{

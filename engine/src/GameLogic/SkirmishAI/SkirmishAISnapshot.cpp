@@ -409,9 +409,33 @@ void xferBrain(Xfer &x, AIBrainState &b)
 }
 } // namespace
 
+void AIPositionSampler::xfer(Xfer &x)
+{
+	x.xferReal(&m_padding);
+	AIXfer::ids(x, m_members);
+	x.xferVectorSize(m_groups, 1);
+	for (Group &g : m_groups)
+	{
+		x.xferReal(&g.radius);
+		AIXfer::coord(x, g.center);
+		x.xferBool(&g.selected);
+		AIXfer::ids(x, g.members);
+		if (g.members.empty()) throw XferException("skirmish ai: empty spatial group");
+	}
+	if (x.isLoading())
+	{
+		std::vector<ObjectID> grouped;
+		for (const Group &g : m_groups) grouped.insert(grouped.end(), g.members.begin(), g.members.end());
+		auto members = m_members;
+		std::sort(members.begin(), members.end());
+		std::sort(grouped.begin(), grouped.end());
+		if (members != grouped) throw XferException("skirmish ai: spatial groups differ from registrations");
+	}
+}
+
 void AIStatCollector::xfer(Xfer &x)
 {
-	XferVersion v{ 2, 2 }; // version 2 (lane AI5): the money reserve and its target (the block's version 2 refuses older snapshots)
+	XferVersion v{ 3, 3 }; // version 3: preserve registration order and spatial groups
 	x.xferVersion(v);
 	for (std::vector<ObjectID> *l : { &m_army, &m_dozers, &m_ships, &m_structures, &m_pads, &m_economy, &m_heroes })
 	{
@@ -421,6 +445,7 @@ void AIStatCollector::xfer(Xfer &x)
 		x.xferAsciiString(&k);
 		x.xferInt(&n);
 	});
+	m_positions.xfer(x);
 	x.xferUnsignedInt(&m_reserve);
 	x.xferUnsignedInt(&m_reserveTarget);
 }

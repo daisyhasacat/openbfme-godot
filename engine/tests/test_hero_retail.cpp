@@ -2468,6 +2468,7 @@ TEST_CASE("strategy AI retail: captures neutral inns and outposts through the na
  {
   CAPTURE(buildingName);
   Game g(sh, "FactionMen", "FactionMordor", true);
+  g.logic->settings().enhancedAI = true;
   g.me->setPlayerType(PLAYER_COMPUTER, true);
   AISkirmishPlayer bot;
   bot.playerIndex = g.me->getPlayerIndex();

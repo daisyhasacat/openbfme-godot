@@ -212,6 +212,7 @@ private:
 	void selectAward(int index);
 	void refreshClassPage();
 	void refreshPowersPage();
+	const CommandButton *palantirButton(int slot) const; ///< the button the palantir shows at a 0-based slot, null for an empty one
 	void setImage(const std::string &name, const std::string &image);
 	void message(const std::string &titleLabel, const std::string &textLabel);
 	void notAvailable(const std::u16string &text);                                          // lane MENUWORK-1 (S-4755)

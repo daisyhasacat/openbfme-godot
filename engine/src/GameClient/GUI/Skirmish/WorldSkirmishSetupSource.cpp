@@ -17,6 +17,26 @@ bool WorldSkirmishSetupSource::load(RetailObjectWorld &world, const GameLogicSet
 	m_factions.clear();
 	m_colors.clear();
 	m_cashChoices.clear();
+	m_scenarios.clear();
+	// lane WOTR-1: the scenarios of TheLivingWorldCampaignManager (Data\INI\Campaigns\RiskCampaign.ini), the campaigns with a Scenario in its order
+	const LivingWorldCampaignManager &campaigns = world.livingWorldCampaigns();
+	for (int index : campaigns.scenarioCampaignIndexes())
+	{
+		const LivingWorldCampaign &c = campaigns.campaigns()[(std::size_t)index];
+		StrategicScenario s;
+		s.campaignIndex = index;
+		s.campaignName = c.name;
+		s.displayName = c.scenario->displayName;
+		s.displayDescription = c.scenario->displayDescription;
+		s.displayGameType = c.scenario->displayGameType;
+		s.displayObjectives = c.scenario->displayObjectives;
+		s.displayFiction = c.scenario->displayFiction;
+		s.maxPlayers = c.scenario->maxPlayers;
+		s.minPlayers = c.scenario->minPlayers;
+		s.defaultStartSpots = c.scenario->defaultStartSpots;
+		s.disallowStartInRegions = c.scenario->disallowStartInRegions;
+		m_scenarios.push_back(s);
+	}
 	const PlayerTemplateStore &store = world.setupPlayerTemplates(); // lane MAPRESET-1: the load's templates, never a live game's map.ini
 	for (int i = 0; i < store.getPlayerTemplateCount(); ++i)
 	{

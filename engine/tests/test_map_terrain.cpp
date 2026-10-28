@@ -2,6 +2,9 @@
 // on hand-built maps. GPL-3.0. Expected values are computed by hand from the cited formulas (ZH/BFME1).
 
 #include "doctest.h"
+#include "BigTestUtil.h"
+#include "Common/ArchiveFile.h"
+#include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 
 #include "GameClient/TGAFile.h"
 #include "GameClient/TerrainAtlas.h"
@@ -1028,4 +1031,50 @@ TEST_CASE("TGA radar: RLE raw and repeated packets preserve pixels and reject in
 	}
 	bytes[0] = 255;
 	CHECK_FALSE(TGAFile::decodeRadar(bytes.data(), bytes.size(), img, &error));
+}
+
+TEST_CASE("snow terrain: exact authored name pairs, no guesses for unmatched textures")
+{
+	TerrainTypeIndex types;
+	TerrainTypes::scanText("Terrain Grass\nTexture=a.tga\nEnd\nTerrain GrassSnow\nTexture=b.tga\nEnd\n"
+	 "Terrain RockSnowy\nTexture=c.tga\nEnd\nTerrain Rock\nTexture=d.tga\nEnd\n"
+	 "Terrain Mud\nTexture=e.tga\nEnd\nTerrain GrassSnowy\nTexture=f.tga\nEnd\n", types);
+	const auto pairs = TerrainTypes::snowReplacements(types);
+	CHECK(pairs == std::map<std::string,std::string>{{"grass","grasssnow"},{"rock","rocksnowy"}});
+}
+
+TEST_CASE("snow terrain: overlay preserves layout, leaves unmapped alpha empty and reports broken replacements")
+{
+	auto map = makeMap(2,2);
+	map.m_numBitmapTiles = 2;
+	map.m_textureClasses = {cls("Grass",0,1,1),cls("Mud",1,1,1)};
+	map.m_terrainTexHeight = TerrainAtlas::packTiles(map,{true,true});
+	const auto locations = map.m_tileLocations;
+	const auto positions = map.m_textureClasses;
+	const Bytes pixels(64*64*3,200);
+	const auto tga = makeTga(2,24,64,64,0,pixels);
+	Win32BIGFileSystem fs;
+	std::string error;
+	auto bytes = std::make_shared<const Bytes>(bigtest::makeBig("BIGF",{{"art/terrain/snow.tga",std::string(tga.begin(),tga.end())}}));
+	auto archive = fs.openArchiveFromMemory("snow.big",bytes,&error);
+	REQUIRE(archive);
+	fs.mountArchive(std::move(archive),"snow.big",false);
+	TerrainTypeIndex types; types.textureByName["grasssnow"] = "snow.tga";
+	TerrainAtlasImages image; std::vector<std::string> applied, errors;
+	REQUIRE(TerrainAtlas::buildSnow(map,fs,types,{{"grass","grasssnow"}},image,applied,errors));
+	CHECK(applied == std::vector<std::string>{"Grass -> grasssnow"});
+	CHECK(errors.empty());
+	const size_t mapped = ((size_t)locations[0].y*image.width+locations[0].x)*4;
+	const size_t unmapped = ((size_t)locations[1].y*image.width+locations[1].x)*4;
+	CHECK(image.base[mapped] == 200);
+	CHECK(image.base[mapped+3] == 255);
+	CHECK(image.base[unmapped+3] == 0);
+	CHECK(map.m_tileLocations[0].x == locations[0].x);
+	CHECK(map.m_textureClasses[1].positionInTexture.x == positions[1].positionInTexture.x);
+	CHECK_FALSE(TerrainAtlas::buildSnow(map,fs,types,{{"grass","missing"}},image,applied,errors));
+	CHECK(errors.size() == 1);
+	CHECK(applied.empty());
+	map.m_textureClasses[0].numTiles = 4;
+	CHECK_FALSE(TerrainAtlas::buildSnow(map,fs,types,{{"grass","grasssnow"}},image,applied,errors));
+	CHECK(errors == std::vector<std::string>{"Grass snow replacement is smaller than its terrain tile block"});
 }

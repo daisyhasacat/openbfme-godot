@@ -9,10 +9,13 @@
 #include "StartTestUtil.h"
 
 #include "Common/INI.h"
+#include "Common/BuildAssistant.h"
+#include "GameLogic/Economy.h"
 #include "Common/PlayerList.h"
 #include "Common/StateHash.h"
 #include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "GameLogic/SkirmishAI/AITacticalAI.h"
+#include "GameLogic/SkirmishAI/AIStatCollector.h"
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
 
 #include <string>
@@ -471,4 +474,70 @@ TEST_CASE("peace time: the AI economy and production update while its tactical b
  fx.logic->runLogicFrame();
  CHECK(manager.counters().aiPlayerUpdates == 1491);
  CHECK(ai->brain.chooserInitialised);
+}
+
+TEST_CASE("AI difficulty production: all four levels, registered AI gate, clamp and hero wrapper rounding")
+{
+	AIFixture fx({ { "H", "FactionA", true, 0, 0, 0 }, { "C", "FactionA", false, 1, 0, 1 } });
+	REQUIRE(fx.w.load("Object DiscountUnit\n BuildCost = 101\n BuildTime = 10.0\nEnd\n").empty());
+	const auto *unit = fx.w.things.findTemplate("DiscountUnit");
+	REQUIRE(unit);
+	auto *computer = fx.players.findPlayerWithName("C");
+	auto *human = fx.players.findPlayerWithName("H");
+	fx.store.data().brutalCheats.buildCostReduction = 0.15f;
+	fx.store.data().brutalCheats.buildTimeReduction = 0.15f;
+	fx.logic->productionSettings().loaded = true;
+	// A difficulty value alone must not activate a cheat before the AI exists.
+	computer->setSkirmishDifficulty(3);
+	CHECK(BuildAssistant::calcCostToBuild(*unit, computer, nullptr, -1) == 101);
+	CHECK(fx.logic->skirmishAI().newGame(true) == 1);
+	for (int difficulty = 0; difficulty != 4; ++difficulty)
+	{
+		computer->setSkirmishDifficulty(difficulty);
+		CHECK(BuildAssistant::calcCostToBuild(*unit, computer, nullptr, -1) == (difficulty == 3 ? 85 : 101));
+		CHECK(BuildAssistant::calcTimeToBuild(*unit, computer, nullptr, -1, fx.logic->productionSettings(), *fx.logic) == (difficulty == 3 ? 43 : 50));
+	}
+	human->setSkirmishDifficulty(3);
+	CHECK(BuildAssistant::calcCostToBuild(*unit, human, nullptr, -1) == 101);
+	HeroRecord hero;
+	hero.templateName = "DiscountUnit";
+	hero.cost = 101;
+	hero.seconds = 10;
+	const int index = computer->heroes().addRecord(hero);
+	// TARGET RW 0x780AD3/0x780B72: the wrapper applies the discount after recordCost/recordFrames.
+	CHECK(computer->heroes().costAt(*fx.logic, *computer, index, nullptr) == 72);
+	CHECK(computer->heroes().framesForProductionID(*fx.logic, *computer, hero.productionID, nullptr) == 36);
+	// Donor CappedDiscount has no lower clamp; mod data can raise cost/time with a negative reduction.
+	fx.store.data().brutalCheats.buildCostReduction = -0.5f;
+	fx.store.data().brutalCheats.buildTimeReduction = -0.5f;
+	CHECK(BuildAssistant::calcCostToBuild(*unit, computer, nullptr, -1) == 151);
+	CHECK(BuildAssistant::calcTimeToBuild(*unit, computer, nullptr, -1, fx.logic->productionSettings(), *fx.logic) == 75);
+	fx.store.data().brutalCheats.buildCostReduction = 1.5f;
+	fx.store.data().brutalCheats.buildTimeReduction = 1.5f;
+	CHECK(BuildAssistant::calcCostToBuild(*unit, computer, nullptr, -1) == 0);
+	CHECK(BuildAssistant::calcTimeToBuild(*unit, computer, nullptr, -1, fx.logic->productionSettings(), *fx.logic) == 0);
+}
+
+TEST_CASE("source AI spatial groups: registration filters OffensiveBuildings and human ownership")
+{
+	AIFixture fx({{"H", "FactionA", true, 0, 0, 0}, {"C", "FactionA", false, 1, 0, 1}});
+	REQUIRE(fx.w.load("Object AIBase\n KindOf = STRUCTURE\nEnd\nObject OtherBase\n KindOf = STRUCTURE\nEnd\n").empty());
+	auto *army = const_cast<ArmyDefinition *>(fx.store.findArmy("Alpha"));
+	REQUIRE(army);
+	army->offensiveBuildings = {"AIBase"};
+	fx.store.data().defenseTreeNodeRadius = 10.0f;
+	Object *human = fx.make("AIBase", fx.teamOf("H"));
+	fx.make("AIBase", fx.teamOf("C"));
+	Object *base = fx.make("OtherBase", fx.teamOf("C"));
+	auto &manager = fx.logic->skirmishAI();
+	REQUIRE(manager.newGame(true) == 1);
+	const auto *computerRecord = manager.record(fx.indexOf("C"));
+	REQUIRE(computerRecord);
+	REQUIRE(computerRecord->positions().groups().size() == 1);
+	CHECK((computerRecord->positions().members() == std::vector<ObjectID>{base->getID()}));
+	REQUIRE(manager.record(fx.indexOf("H")));
+	CHECK((manager.record(fx.indexOf("H"))->positions().members() == std::vector<ObjectID>{human->getID()})); // RW8E45EA groups humans too.
+	manager.objectRemoved(*base);
+	CHECK(computerRecord->positions().groups().empty());
+	CHECK(human->getControllingPlayer()->getPlayerIndex() == fx.indexOf("H"));
 }

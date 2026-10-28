@@ -200,6 +200,8 @@ bool Drawable::hasAnimatedEntry() const
 void Drawable::setModelConditionFlags(const ModelConditionFlags &flags)
 {
 	m_flags = flags;
+	ModelConditionFlags rendered = flags;
+	if (m_snowPresentation) rendered.set(ModelCondition::indexOf("SNOW"));
 	++m_changeCount;
 	// RENDER-2: a W3DFloorDraw is not drawn while one of its HideIfModelConditions sets is all in the flags (the rule MapObjectCreation::resolveDrawModel applies
 	// at creation; e.g. the barracks' floor during AWAITING_CONSTRUCTION / PARTIALLY_CONSTRUCTED)
@@ -208,7 +210,7 @@ void Drawable::setModelConditionFlags(const ModelConditionFlags &flags)
 		bool hide = false;
 		for (const ModelConditionFlags &h : e.hideIf)
 		{
-			hide = hide || (h.any() && flags.testForAll(h));
+			hide = hide || (h.any() && rendered.testForAll(h));
 		}
 		e.conditionHidden = hide;
 	}
@@ -217,7 +219,7 @@ void Drawable::setModelConditionFlags(const ModelConditionFlags &flags)
 	{
 		if (e.draw)
 		{
-			e.draw->setModelConditionFlags(flags);
+			e.draw->setModelConditionFlags(rendered);
 			const W3DDrawFrame f = e.draw->frame();
 			e.animated = f.trackCount > 0 && f.tracks[0].anim && f.tracks[0].anim->Get_Num_Frames() > 1 && f.tracks[0].mode != W3D_ANIM_MODE_MANUAL;
 		}
@@ -247,6 +249,17 @@ void Drawable::applyBuildingWindowVisibility()
 	}
 }
 
+namespace
+{
+// the condition bits of a word of ModelConditionFlags: all but the last word's padding past MODELCONDITION_COUNT (never a condition, so the word
+// operations below leave it as the bit loops they replace did; both run for every contained drawable each render frame)
+std::uint32_t conditionBits(int word)
+{
+	const int last = ModelConditionFlags::NUM_WORDS - 1;
+	return word < last || MODELCONDITION_COUNT % 32 == 0 ? 0xFFFFFFFFu : (1u << (MODELCONDITION_COUNT % 32)) - 1u;
+}
+} // namespace
+
 ModelConditionFlags Drawable::dependencySharedModelFlags() const
 {
 	ModelConditionFlags out;
@@ -255,12 +268,9 @@ ModelConditionFlags Drawable::dependencySharedModelFlags() const
 		if (e.draw)
 		{
 			const ModelConditionFlags &f = e.draw->dependencySharedModelFlags();
-			for (int b = 0; b < MODELCONDITION_COUNT; ++b)
+			for (int w = 0; w < ModelConditionFlags::NUM_WORDS; ++w)
 			{
-				if (f.test(b))
-				{
-					out.set(b);
-				}
+				out.words()[w] |= f.words()[w] & conditionBits(w);
 			}
 		}
 	}
@@ -269,18 +279,14 @@ ModelConditionFlags Drawable::dependencySharedModelFlags() const
 
 bool Drawable::applyDependencyFlags(const ModelConditionFlags &shared, const ModelConditionFlags &containerFlags)
 {
+	// each shared condition takes the container's value; the others (and the padding) keep the drawable's
 	ModelConditionFlags next = m_flags;
-	for (int b = 0; b < MODELCONDITION_COUNT; ++b)
-	{
-		if (shared.test(b))
-		{
-			next.set(b, containerFlags.test(b));
-		}
-	}
 	bool changed = false;
-	for (int b = 0; b < MODELCONDITION_COUNT && !changed; ++b)
+	for (int w = 0; w < ModelConditionFlags::NUM_WORDS; ++w)
 	{
-		changed = next.test(b) != m_flags.test(b);
+		const std::uint32_t s = shared.words()[w] & conditionBits(w);
+		next.words()[w] = (m_flags.words()[w] & ~s) | (containerFlags.words()[w] & s);
+		changed = changed || next.words()[w] != m_flags.words()[w];
 	}
 	if (changed)
 	{
@@ -414,7 +420,13 @@ void Drawable::advanceAnimation(double elapsedMs)
 // is not kept, so the tires only spin; the speed gate RW 0x46E918 is not read; the cab / trailer bones and the dust / dirt / powerslide effects are not run.
 void Drawable::advanceTires(DrawEntry &e, double elapsedMs)
 {
-	const W3DTruckDrawModuleData *truck = e.draw ? dynamic_cast<const W3DTruckDrawModuleData *>(e.data) : nullptr;
+	if (!e.truckKnown || e.truckSource != e.data)
+	{
+		e.truck = dynamic_cast<const W3DTruckDrawModuleData *>(e.data);
+		e.truckSource = e.data;
+		e.truckKnown = true;
+	}
+	const W3DTruckDrawModuleData *truck = e.draw ? e.truck : nullptr;
 	if (!truck)
 	{
 		return;
@@ -600,4 +612,12 @@ Drawable::PresentedLook Drawable::presentedLook(const LogicSnapshot *presented, 
 	}
 	look.fogLook = look.fogLook && !look.hidden;
 	return look;
+}
+
+// Enhanced presentation override: neither the object's flags nor its CRC change.
+void Drawable::setSnowPresentation(bool enabled)
+{
+	if (m_snowPresentation == enabled) return;
+	m_snowPresentation = enabled;
+	setModelConditionFlags(m_flags);
 }

@@ -3,6 +3,7 @@
 
 #include "Common/PerformanceCounters.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/WallBalance.h"
 
 #include "Common/Player.h"
 #include "GameLogic/AI/AIWorld.h"
@@ -27,6 +28,7 @@
 #include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/Map/TerrainLogic.h"
+#include "GameLogic/Map/TaintManager.h"
 #include "GameLogic/Map/TerrainTrees.h"
 #include "GameLogic/Module/ObjectHelper.h"
 #include "GameLogic/Module/SquishCollide.h"
@@ -70,6 +72,7 @@ GameLogic::GameLogic(ThingFactory &things, ModuleFactory &modules, PlayerList &p
 	, m_invisibility(std::make_unique<InvisibilityManager>(*this))
 	, m_dot(std::make_unique<DOTManager>(*this)) // lane DECOMP-1
 	, m_trees(std::make_unique<TerrainTrees>(*this)) // lane SPELL-3
+	, m_taint(std::make_unique<TaintManager>())
 	, m_scriptEngine(std::make_unique<ScriptEngine>(*this)) // lane SCRIPT-1
 {
 	buildPhaseWorkTable();
@@ -270,6 +273,23 @@ void GameLogic::reportError(const std::string &text)
 }
 
 // ---- the object list --------------------------------------------------------------------------------------------------
+const std::vector<Object *> &GameLogic::wallObjects()
+{
+	if (m_wallObjectsDirty)
+	{
+		m_wallObjects.clear();
+		for (Object *o = m_objectHead; o; o = o->getNextObject())
+		{
+			if (WallBalance::wall(*o))
+			{
+				m_wallObjects.push_back(o);
+			}
+		}
+		m_wallObjectsDirty = false;
+	}
+	return m_wallObjects;
+}
+
 void GameLogic::linkObject(Object *obj)
 {
 	// B1 GameLogicRegisterObject.cpp: bfmeInsertXN(&objList, &objTail): append at the tail
@@ -284,6 +304,7 @@ void GameLogic::linkObject(Object *obj)
 	}
 	m_objectTail = obj;
 	++m_objectCount;
+	if (WallBalance::wall(*obj)) m_wallObjectsDirty = true;
 	if (obj->isKindOfName("STRUCTURE") && obj->isKindOfName("DOZER_FACTORY")) m_peaceFortresses.push_back(obj->getID());
 }
 
@@ -308,6 +329,7 @@ void GameLogic::unlinkObject(Object *obj)
 	}
 	obj->friend_setListLinks(nullptr, nullptr);
 	--m_objectCount;
+	if (WallBalance::wall(*obj)) m_wallObjectsDirty = true;
 	m_peaceFortresses.erase(std::remove(m_peaceFortresses.begin(), m_peaceFortresses.end(), obj->getID()), m_peaceFortresses.end());
 }
 
@@ -905,6 +927,7 @@ void GameLogic::reset()
 	m_aiBasePlayer = -1;
 	m_aiBaseRadius = 0;
 	m_aiBaseCenter = {};
+	m_aiReserved.clear();
 	m_radarEventNotices.clear(); // lane BACKLOG3: a new game's radar starts empty (the sequence goes on: a client's cursor stays behind it)
 	// ZH GameLogic::reset: every object goes; the scheduler vectors are cleared with their modules' indices
 	m_current = nullptr;
@@ -956,6 +979,7 @@ void GameLogic::reset()
 	m_invisibility->reset();
 	m_dot->reset(); // lane DECOMP-1
 	m_trees->reset(); // lane SPELL-3
+	m_taint->reset(); // bfmeResetGrid
 	m_scriptEngine->reset(); // lane SCRIPT-1
 }
 
@@ -1160,6 +1184,10 @@ std::uint32_t GameLogic::hashState(std::vector<StateHashSection> *sections, std:
 	if (m_trees->anyChanged())
 	{
 		section("terrain trees", [&](StateHasher &x) { m_trees->crc(x); }); // lane SPELL-3: only once a tree toppled or was harvested (a game without keeps its hash)
+	}
+	if (m_taint->anyPainted())
+	{
+		section("taint", [&](StateHasher &x) { m_taint->crc(x); }); // TheTaintManager: only once a cell was painted (a game without keeps its hash)
 	}
 	section("large group audio", [&](StateHasher &x) { m_largeGroupAudio.crc(x); }); // lane AUDIO-4: TheLargeGroupAudio's gate (+ 0x38 / + 0x3C)
 	if (m_scriptEngine->loaded())
@@ -1468,8 +1496,10 @@ void GameLogic::setPeaceTimeMinutes(int minutes)
 // OpenBFME extension, independent of the retail terrain classification and simulation RNG.
 bool GameLogic::hasPeaceExclusion(const Object &unit) const
 {
+ // the bits looked up once (isKindOfName hashes the name each call; this runs for every moving object)
+ static const int structure = ObjectTemplateInfoBuilder::kindOfIndex("STRUCTURE"), projectile = ObjectTemplateInfoBuilder::kindOfIndex("PROJECTILE");
  if (unit.isDestroyed() || unit.isEffectivelyDead() || !unit.getControllingPlayer() ||
-     unit.isKindOfName("STRUCTURE") || unit.isKindOfName("PROJECTILE")) return false;
+     (structure >= 0 && unit.isKindOf((unsigned)structure)) || (projectile >= 0 && unit.isKindOf((unsigned)projectile))) return false;
  const Player *protectedPlayer = m_aiBasePlayer >= 0 ? m_players.getNthPlayer(m_aiBasePlayer) : nullptr;
  if (m_aiBaseRadius > 0 && protectedPlayer && unit.getControllingPlayer()->getPlayerType() == PLAYER_COMPUTER &&
      unit.getControllingPlayer()->getRelationship(protectedPlayer->getDefaultTeam()) == ENEMIES) return true;
@@ -1548,6 +1578,20 @@ BfmeLuaActionState &GameLogic::luaActions()
 	return *m_luaActions;
 }
 int GameLogic::luaAuthorityPlayer() const { return m_luaActions ? m_luaActions->authorityPlayer : -1; }
+
+bool GameLogic::aiReserved(const Object &unit) const
+{
+	if (m_aiReserved.empty())
+	{
+		return false;
+	}
+	if (m_aiReserved.count(unit.getID()))
+	{
+		return true;
+	}
+	const Object *horde = unit.getHordeObject(false);
+	return horde && m_aiReserved.count(horde->getID());
+}
 
 // OpenBFME local testing policy: turn approaching enemy computer units back
 // before they reach the protected radius. Normal movement still resolves terrain.

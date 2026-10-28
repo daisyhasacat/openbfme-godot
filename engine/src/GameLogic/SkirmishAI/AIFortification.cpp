@@ -172,6 +172,7 @@ bool AIFortification::passiveBarrier(const Object &o)
 
 bool AIFortification::allowAutoTarget(const Object &unit, const Object &target)
 {
+ if (!unit.logic().settings().enhancedAI) return true;
  const Player *owner=unit.getControllingPlayer();
  if(!owner || owner->getPlayerType()!=PLAYER_COMPUTER)return true;
  const auto *ai=unit.logic().skirmishAI().findAI(owner->getPlayerIndex());
@@ -200,8 +201,10 @@ BreachRoute breachRoute(GameLogic &logic,const Player &player,const Coord3D &bas
  }
  if(!route.objective)return route;
  for(Object *o=logic.getFirstObject();o;o=o->getNextObject()) {
+  // not a unit the AI leaves alone (GameLogic::aiReserved: a wave spawner's): it is no part of the army, and one already fighting at the walls
+  // makes every approach search below fail at full cost, twice a logic frame
   if(o->getControllingPlayer()!=&player || !o->isInWorld() || !CombatQueries::isAlive(*o) || !o->getAIUpdateInterface() ||
-   o->isKindOfName("STRUCTURE") || o->isKindOfName("AIRCRAFT") || o->isKindOfName("DOZER") || !o->isKindOfName("CAN_ATTACK"))continue;
+   o->isKindOfName("STRUCTURE") || o->isKindOfName("AIRCRAFT") || o->isKindOfName("DOZER") || !o->isKindOfName("CAN_ATTACK") || logic.aiReserved(*o))continue;
   float d=CombatQueries::centerDistanceSquared2D(*o->getPosition(),*route.objective->getPosition());
   if(!route.unit || d<best || (d==best && o->getID()<route.unit->getID())) {route.unit=o;best=d;}
  }
@@ -276,7 +279,7 @@ Object *AIFortification::findTarget(GameLogic &logic, const AISkirmishPlayer &ai
 
 void AIFortification::update(GameLogic &logic, AISkirmishPlayer &ai)
 {
- if (logic.peaceTimeActive()) return;
+ if (!logic.settings().enhancedAI || logic.peaceTimeActive()) return;
  Object *target = findTarget(logic, ai);
  auto &b = ai.brain;
  const auto previous = b.siegeUnits;

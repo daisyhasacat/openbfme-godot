@@ -591,7 +591,7 @@ TEST_CASE("save4d: the version windows of the retail record layouts: Script (1, 
 	CHECK(error == "Don't know how to load version 4 (most recent is 3)");
 }
 
-TEST_CASE("save4d T4: the registry gives the seven SAVE-4d blocks their xfer; with SAVE-4b and 4c merged (SAVE-4e) the snapshot is written")
+TEST_CASE("save4d T4: the registry gives the eight SAVE-4d blocks their xfer; with SAVE-4b and 4c merged (SAVE-4e) the snapshot is written")
 {
 	logictest::LogicWorld f;
 	std::vector<std::string> ours;
@@ -603,7 +603,7 @@ TEST_CASE("save4d T4: the registry gives the seven SAVE-4d blocks their xfer; wi
 		}
 	}
 	CHECK(ours == std::vector<std::string>{ "obfme:ScriptEngine xfer +deepcrc", "obfme:Victory xfer", "obfme:Weather xfer", "obfme:Economy xfer",
-					  "obfme:CreateAHero xfer", "obfme:TerrainTrees xfer", "obfme:LargeGroupAudio xfer" });
+					  "obfme:CreateAHero xfer", "obfme:TerrainTrees xfer", "obfme:LargeGroupAudio xfer", "obfme:Taint xfer" });
 	std::vector<std::uint8_t> out;
 	std::string error;
 	REQUIRE_MESSAGE(f.logic->saveSnapshot(out, &error), error);
@@ -613,7 +613,7 @@ TEST_CASE("save4d T4: the registry gives the seven SAVE-4d blocks their xfer; wi
 TEST_CASE("save4d T8 as far as the blocks allow: the SAVE-4d blocks of a game played under Uber are the same bytes at 1, 4 and 16 logic threads")
 {
 	const std::vector<std::string> kOurs = { "obfme:ScriptEngine", "obfme:Victory", "obfme:Weather", "obfme:Economy", "obfme:CreateAHero",
-		"obfme:TerrainTrees", "obfme:LargeGroupAudio" };
+		"obfme:TerrainTrees", "obfme:LargeGroupAudio", "obfme:Taint" };
 	const int before = JobSystem::logic().threadCount();
 	std::vector<std::uint8_t> first;
 	for (int threads : { 1, 4, 16 })

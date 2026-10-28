@@ -18,6 +18,7 @@
 #pragma once
 
 #include "GameLogic/WallBalance.h"
+#include "GameClient/MapWeather.h"
 #include <godot_cpp/classes/config_file.hpp>
 #include <array>
 
@@ -196,11 +197,20 @@ public:
 	// lane SPELL-3 (review r3): a test hook (start option test_hooks): the global weather back to none, its map attribute modifier removed from every object
 	// (GlobalWeatherSystem::clear, RW 0x71A04F) - the spell harness isolates the weather powers' casts with it
 	Dictionary debug_clear_weather();
+	Dictionary set_snow_weather(bool enabled);
+	bool snow_weather_enabled() const { return m_snowOverride; }
 	// lane BACKLOG-8 r2 (proof captures): AIData UseFormations for the running game (test hooks only, never in a network game)
 	Dictionary debug_set_use_formations(bool on);
 	// read-only: the live objects of `player` [{ id, template, structure, commandcenter, x, y, z }] (between logic frames)
 	Array get_player_objects(const String &player);
 	Array get_player_table() const;
+	// OpenBFME map editor wave spawners (not retail; scripts/wave_spawners.gd): { ok, local_player, local_name, playable: [loX, loY, hiX, hiY] (the pathfind extent),
+	// map: [loX, loY, hiX, hiY] (the height map with its border), starts: [{ start (N of Player_N_Start), x, y, player (index, -1 when no player has
+	// the start), name, ai, local }] }
+	Dictionary get_start_positions() const;
+	// the wave spawners' units: their owner's skirmish AI leaves them alone for the rest of the match (GameLogic::setAIReserved); local non-replay games
+	// only. Returns how many of the ids were live objects
+	int64_t reserve_from_ai(const Array &ids);
 	Array get_logic_trees(double x, double y, double radius) const; // lane SPELL-3: the logic's map trees within radius (2D): x, y, id, toppled, value
 	// the first object of a template name ("" never matches)
 	int64_t find_object_by_template(const String &template_name) const;
@@ -615,6 +625,8 @@ public:
 	// profile identity (LAN, replays) and every game this world starts must carry it (prepare_new_game refuses another). { ok, error }: refused while a
 	// LAN game (not the lobby list) is joined or hosted
 	Dictionary set_simulation_profile(const String &name);
+	bool set_enhanced_ai(bool enabled);
+	bool m_enhancedAI = false;
 	// lane UBER-1 (the game's Uber gate, scripts/uber1_player.gd): { troops, battalions, objects } of GameClient/FrameCensus.h (living INFANTRY / CAVALRY /
 	// MONSTER: horde members one by one; living hordes; every object) and the playable extent { extent_x, extent_y } (TerrainLogic::getExtent(0)); {} without
 	// a game. Diagnostics only: reads the logic between frames
@@ -667,6 +679,9 @@ private:
 		const void *streakSource = nullptr;  ///< lane PERF-3: the entry's module data the streak cast below was made from
 		const W3DStreakDrawModuleData *streak = nullptr; ///< lane PERF-3: that data as a W3DStreakDraw's (refresh_streaks), null for other modules
 		bool streakKnown = false;
+		const void *modelDataSource = nullptr; ///< the entry's module data the cast below was made from (made once per data, not every frame)
+		const W3DModelDrawModuleData *modelData = nullptr; ///< that data as a W3DModelDraw's, null for other modules
+		bool modelDataKnown = false;
 		bool posed = false;
 		float offsetZ = 0.0f;           ///< RENDER-2: the construction offset the instance's transform carries (DrawEntry::constructionOffsetZ)
 		float opacity = 1.0f;           ///< PROJ-2: the drawable's fade the instance shows (Drawable::drawOpacity)
@@ -675,6 +690,11 @@ private:
 		bool fogLook = false;               ///< lane VISUAL-2: the instance is drawn with the fogged light (a last-seen object in the fog)
 		int64_t fogLookInstance = -1;       ///< the instance it was handed to
 		std::uint32_t colorsRevision = 0;   ///< lane CAH-2: Drawable::customColorRevision the model choice saw
+		// a dynamic entry's house-coloured model name ("#" + lowered + "#kind&c0&c1&c2") and the inputs it was made from, rebuilt only when one of
+		// them changes (it was formatted every render frame for every animated drawable)
+		std::string coloredName, coloredSource;
+		int coloredKind = 0;
+		std::uint32_t coloredColors[3] = { 0u, 0u, 0u };
 		// lane HCKEY-1: a static entry's model key (lowered name + floor swap suffix + palette) and the inputs it was made from, rebuilt only
 		// when one of them changes (community PR #60 made it every frame for every coloured static drawable)
 		bool staticKeyValid = false;
@@ -700,7 +720,11 @@ private:
 
 	Array m_commandErrors;
 	uint64_t m_mapWeatherId = 0;
+	bool m_snowOverride = false;
+	MapWeather m_loadedWeather;
+	int configure_snowfall(const MapWeather &weather, Array &errors);
 	void update_map_weather();
+	void update_static_snow(bool enabled, Array &errors);
 	void clear_scene();
 	void build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &report, Array &errors, Array &stops);
 	void refresh_views(double deltaMs);
@@ -716,6 +740,15 @@ private:
 	// VIS-1: the local player's shroud as a cell texture on the terrain materials (S-567)
 	void refresh_shroud(bool force);
 	Ref<godot::ImageTexture> m_shroudTexture;
+	// TheTaintManager's mask on the terrain (GameClient/TaintMask.h, S-6111): rebuilt when the presented snapshot's TaintView changed
+	void refresh_taint(bool force);
+	Ref<godot::ImageTexture> m_taintTexture;
+	Ref<godot::Texture2D> m_taintLowTexture, m_taintHighTexture; ///< TSTaintMed.tga / TSElvenMed.tga
+	bool m_taintTexturesTried = false;
+	const void *m_taintViewShown = nullptr;
+	std::uint64_t m_taintRevisionShown = ~0ull;
+	std::vector<std::uint8_t> m_taintDisplayed;
+	std::uint64_t m_taintLastMs = 0;
 	bool m_shroudDrawn = true;
 	void refresh_streaks(bool record = true); ///< RENDER-1: W3DStreakDraw trails of the live drawables (S-391)
 	void remove_view(uint32_t drawableId);
@@ -745,6 +778,10 @@ private:
 	std::unique_ptr<InGameSpellBookModel> m_spellBar;  // lane SPELL-2
 	// lane MP-1 (after m_game: the session goes first; every m_game.reset() drops it before)
 	std::unique_ptr<LANAPI> m_lan; // lane MP-2
+	// net_status's desync texts, built once per report and per number of breakdowns it holds (the session they are of)
+	mutable const NetGameSession *m_desyncTextSession = nullptr;
+	mutable std::vector<String> m_desyncTexts;
+	mutable std::vector<size_t> m_desyncTextHalves;
 	ProfileChoice m_choice; // lane UBER-1 / UBERJOIN-1: the player's profile (own), the one the next game runs (current) and a lobby's switch for one game
 	std::unique_ptr<UDP> m_netSocket;
 	std::unique_ptr<LANLobbyHost> m_netHost;
@@ -780,7 +817,7 @@ private:
 	};
 	CampaignStart m_campaignStart, m_pendingCampaign;
 	// the identity a game of `profile` runs under (net_profile is the player's option's; a campaign mission always runs Faithful)
-	ProfileIdentity profileIdentityFor(SimulationProfile profile) const;
+	ProfileIdentity profileIdentityFor(SimulationProfile profile, bool sourceAI = false) const;
 	void releaseLocalDrivers();
 	bool m_netLoaded = false, m_netScript = false;
 	bool m_netRejoining = false; ///< lane ONLINE-3: the rejoin's catch-up runs (NetGameSession::rejoinStep)
@@ -840,6 +877,7 @@ private:
 	std::vector<DrawableView> m_views;       ///< index = drawable id
 	std::map<std::string, int64_t> m_dynamicModels, m_staticModels;
 	std::vector<std::pair<int64_t, Vector2>> m_staticShroudInstances;
+	std::vector<std::array<int64_t, 4>> m_staticSnowEntries; // stable instance, drawable, module, native model
 	Dictionary m_report;
 	bool m_autoAdvance = false;
 	bool m_paused = false;

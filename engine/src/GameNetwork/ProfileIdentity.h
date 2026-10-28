@@ -12,6 +12,7 @@
 //           release pipeline's -DOPENBFME_ENGINE_ID; the Git commit is provenance only (ProfileIdentity::gitProvenance), never part of the identity>
 //   features <the owned format and rule versions: net wire, GameMessage encoding, replay, lobby, state hash; plus any extra feature names, sorted>
 //   numeric <the numeric mode: IEEE binary32 / binary64 through the facade, canonical MXCSR 0x1F80, no FMA contraction (cmake/SimFp.cmake)>
+//   ai source-v1 | enhanced-v1             (source AI by default, opt-in enhanced decisions)
 //   rng <the logic RNG algorithm>
 //   mods none | mounted-overlays-v1          (actual mounted overlays, with their selected file hashes and order below)
 //   archive <n> <install>:<path> <md5> <size>   (every mounted archive, in mount order = precedence: the first one holding a file wins)
@@ -40,9 +41,10 @@ struct ProfileIdentity
 	// `extraFeatures`: names of enabled engine features beyond the built-in list (a test uses one to make two builds differ)
 	// `profile`: the simulation profile the peer runs (lane UBER-1; Faithful writes exactly the identity text of the builds before UBER-1)
 	static ProfileIdentity compute(const std::vector<MountedArchive> &archives, RandomAlgorithm rng, const std::vector<std::string> &extraFeatures = {},
-		SimulationProfile profile = SimulationProfile::Faithful);
+		SimulationProfile profile = SimulationProfile::Faithful, bool enhancedAI = false);
 	// lane UBER-1: the simulation profile the text names ("profile uber" -> Uber; "profile enhanced" -> Faithful)
 	SimulationProfile simulationProfile() const;
+	bool enhancedAI() const;
 	static ProfileIdentity fromText(const std::string &text);
 	bool operator==(const ProfileIdentity &o) const { return digest == o.digest && text == o.text; }
 	bool operator!=(const ProfileIdentity &o) const { return !(*this == o); }

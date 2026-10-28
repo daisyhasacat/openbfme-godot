@@ -64,6 +64,13 @@ func _run() -> int:
 	# ---- the setter really switches ----
 	_check(world.simulation_profile() == "faithful" and not world.profile_switched(), "a new world runs the player's setting: faithful, nothing switched")
 	var normal_digest: String = world.net_profile_digest()
+	# AI rules are independent of performance mode and immutable in the identity.
+	_check(world.set_enhanced_ai(true), "enhanced AI is an explicit opt-in")
+	var enhanced_digest: String = world.net_profile_digest()
+	_check(enhanced_digest != normal_digest, "AI rules change the identity")
+	_check(world.simulation_profile() == "faithful", "AI opt-in does not enable Uber execution")
+	_check(world.set_enhanced_ai(false), "source AI rules can be restored before a game")
+	_check(world.net_profile_digest() == normal_digest, "source AI is the original default identity")
 	var r: Dictionary = world.set_simulation_profile("uber")
 	_check(r.ok and world.simulation_profile() == "uber", "set_simulation_profile(uber) from faithful: ok AND uber (%s)" % str(r))
 	_check(not world.profile_switched(), "the setting is not a switch")

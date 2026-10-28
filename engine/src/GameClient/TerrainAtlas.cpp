@@ -7,6 +7,7 @@
 #include "GameClient/TGAFile.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 
 namespace
@@ -352,4 +353,37 @@ bool TerrainAtlas::build(WorldHeightMap &map, ArchiveFileSystem &fs, const Terra
 		report.tilesPlaced += map.m_tileLocations[i].present ? 1 : 0;
 	}
 	return true;
+}
+
+bool TerrainAtlas::buildSnow(const WorldHeightMap &map, ArchiveFileSystem &fs, const TerrainTypeIndex &types,
+ const std::map<std::string, std::string> &replacements, TerrainAtlasImages &images,
+ std::vector<std::string> &applied, std::vector<std::string> &errors)
+{
+	images = TerrainAtlasImages();
+	images.height = map.m_terrainTexHeight;
+	applied.clear(); errors.clear();
+	if (images.height <= 0) { errors.push_back("snow atlas requires packed terrain"); return false; }
+	images.base.assign((size_t)images.width * images.height * 4, 0);
+	for (const auto &c : map.m_textureClasses) {
+		std::string key = c.name;
+		for (char &ch : key) ch = (char)std::tolower((unsigned char)ch);
+		auto replacement = replacements.find(key);
+		if (replacement == replacements.end() || c.positionInTexture.x <= 0) continue;
+		const std::string *texture = types.findTexture(replacement->second);
+		TGAImage image; std::string error;
+		if (!texture || !readTga(fs, TerrainTypeIndex::textureArchivePath(*texture), image, &error)) {
+			errors.push_back(c.name + " snow replacement: " + (texture ? error : "unknown terrain type " + replacement->second));
+			continue;
+		}
+		if (countTiles(image.width, image.height) < c.numTiles) {
+			errors.push_back(c.name + " snow replacement is smaller than its terrain tile block"); continue;
+		}
+		// Authored terrain alpha is not coverage; this channel marks a valid replacement.
+		for (size_t i = 3; i < image.rgba.size(); i += 4) image.rgba[i] = 255;
+		const int width = derivedWidth(c.numTiles);
+		blitClass(images.base, images.width, map, c, width, image);
+		drawGutters(images.base, images.width, c.positionInTexture.x, c.positionInTexture.y, width * TILE_PIXEL_EXTENT);
+		applied.push_back(c.name + " -> " + replacement->second);
+	}
+	return errors.empty();
 }

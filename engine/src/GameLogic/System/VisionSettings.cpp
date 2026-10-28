@@ -23,7 +23,11 @@ enum : unsigned
 	SEEN_FOG = 1u << 3,
 	SEEN_SHROUD = 1u << 4,
 	SEEN_STEALTH = 1u << 5,
-	SEEN_USESHROUD = 1u << 6
+	SEEN_USESHROUD = 1u << 6,
+	SEEN_TAINTON = 1u << 7,
+	SEEN_TAINTCOLOR = 1u << 8,
+	SEEN_TAINTALPHA = 1u << 9,
+	SEEN_ELVENCOLOR = 1u << 10
 };
 
 struct State
@@ -34,6 +38,9 @@ struct State
 	std::uint8_t clearAlpha = 255, fogAlpha = 127, shroudAlpha = 0;
 	float stealth = 0.0f;
 	bool useShroud = false;
+	bool taintOn = false;
+	RGBColor taintColor{ 0.0f, 0.0f, 0.0f }, elvenWoodColor{ 0.0f, 0.0f, 0.0f };
+	std::uint8_t taintAlpha = 0;
 	bool showRandomPlayerTemplate = true, showRandomStartPos = true, showRandomColor = true; // lane HUD-5 (RW 0x7836C0 defaults)
 	unsigned seen = 0;
 	bool gameData = false, multiplayer = false;
@@ -113,6 +120,10 @@ FieldParse kGameData[] = {
 	{ "FogAlpha", parseNoting<INI::parseUnsignedByte>, SEEN_DATA(SEEN_FOG), VS_OFF(fogAlpha) },
 	{ "ShroudAlpha", parseNoting<INI::parseUnsignedByte>, SEEN_DATA(SEEN_SHROUD), VS_OFF(shroudAlpha) },
 	{ "StealthFriendlyOpacity", parseNoting<INI::parsePercentToReal>, SEEN_DATA(SEEN_STEALTH), VS_OFF(stealth) },
+	{ "TaintOn", parseNoting<INI::parseBool>, SEEN_DATA(SEEN_TAINTON), VS_OFF(taintOn) },
+	{ "TaintColor", parseNoting<INI::parseRGBColor>, SEEN_DATA(SEEN_TAINTCOLOR), VS_OFF(taintColor) },
+	{ "TaintAlpha", parseNoting<INI::parseUnsignedByte>, SEEN_DATA(SEEN_TAINTALPHA), VS_OFF(taintAlpha) },
+	{ "ElvenWoodColor", parseNoting<INI::parseRGBColor>, SEEN_DATA(SEEN_ELVENCOLOR), VS_OFF(elvenWoodColor) },
 	{ nullptr, skipField, nullptr, 0 }
 };
 
@@ -178,7 +189,8 @@ bool finish(const State &s, VisionSettings &out, std::string *error)
 	};
 	static const Need needs[] = { { SEEN_CELL, "GameData PartitionCellSize" }, { SEEN_UNLOOK, "GameData UnlookPersistDuration" }, { SEEN_COLOR, "GameData ShroudColor" },
 		{ SEEN_FOG, "GameData FogAlpha" }, { SEEN_SHROUD, "GameData ShroudAlpha" }, { SEEN_STEALTH, "GameData StealthFriendlyOpacity" },
-		{ SEEN_USESHROUD, "MultiplayerSettings UseShroud" } };
+		{ SEEN_USESHROUD, "MultiplayerSettings UseShroud" }, { SEEN_TAINTON, "GameData TaintOn" }, { SEEN_TAINTCOLOR, "GameData TaintColor" },
+		{ SEEN_TAINTALPHA, "GameData TaintAlpha" }, { SEEN_ELVENCOLOR, "GameData ElvenWoodColor" } };
 	if (!s.gameData || !s.multiplayer)
 	{
 		if (error)
@@ -209,6 +221,14 @@ bool finish(const State &s, VisionSettings &out, std::string *error)
 	out.shroudAlpha = s.shroudAlpha;
 	out.stealthFriendlyOpacity = s.stealth;
 	out.useShroud = s.useShroud;
+	out.taintOn = s.taintOn;
+	out.taintRed = s.taintColor.red;
+	out.taintGreen = s.taintColor.green;
+	out.taintBlue = s.taintColor.blue;
+	out.taintAlpha = s.taintAlpha;
+	out.elvenWoodRed = s.elvenWoodColor.red;
+	out.elvenWoodGreen = s.elvenWoodColor.green;
+	out.elvenWoodBlue = s.elvenWoodColor.blue;
 	out.showRandomPlayerTemplate = s.showRandomPlayerTemplate;
 	out.showRandomStartPos = s.showRandomStartPos;
 	out.showRandomColor = s.showRandomColor;

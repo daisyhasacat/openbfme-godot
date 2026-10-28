@@ -52,11 +52,12 @@ const char *ProfileIdentity::gitProvenance()
 }
 
 ProfileIdentity ProfileIdentity::compute(const std::vector<MountedArchive> &archives, RandomAlgorithm rng, const std::vector<std::string> &extraFeatures,
-	SimulationProfile profile)
+	SimulationProfile profile, bool enhancedAI)
 {
 	std::ostringstream o;
 	o << "openbfme-profile 1\n";
 	o << (profile == SimulationProfile::Uber ? "profile uber\n" : "profile enhanced\n"); // lane UBER-1
+	o << (enhancedAI ? "ai enhanced-v1\n" : "ai source-v1\n");
 	o << "engine " << OPENBFME_ENGINE_ID << "\n";
 	std::vector<std::string> extra = extraFeatures;
 	std::sort(extra.begin(), extra.end());
@@ -260,4 +261,10 @@ bool ProfileIdentity::captureMountedOverrides(const ArchiveFileSystem &fs, std::
     }
     identity.insert(identity.end(), overlays.begin(), overlays.end());
     return true;
+}
+
+bool ProfileIdentity::enhancedAI() const
+{
+	for (const auto &line : lines(text)) if (line == "ai enhanced-v1") return true;
+	return false;
 }

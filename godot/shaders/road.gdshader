@@ -7,6 +7,8 @@
 shader_type spatial;
 render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
 
+#include "res://shaders/snow_cover.gdshaderinc"
+
 uniform sampler2D road_tex : filter_linear_mipmap, repeat_enable, hint_default_white;
 uniform float output_gamma = 2.2;
 uniform float overbright = 1.0;
@@ -20,10 +22,12 @@ uniform bool shroud_enabled = false;
 // map browser: pixels outside this SAGE rect (min x, min y, max x, max y) are discarded; the default keeps everything
 uniform vec4 clip_rect = vec4(-1e20, -1e20, 1e20, 1e20);
 varying vec2 v_clip_xy;
+varying vec3 v_snow_world;
 varying vec2 v_shroud_uv;
 
 void vertex() {
 	vec3 shroud_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	v_snow_world = shroud_world;
 	v_shroud_uv = (vec2(shroud_world.x, -shroud_world.z) - shroud_origin) / shroud_extent;
 	v_clip_xy = vec2(shroud_world.x, -shroud_world.z);
 }
@@ -44,7 +48,12 @@ void fragment() {
 		discard;
 	}
 	vec4 t = texture(road_tex, UV);
-	vec3 col = t.rgb * COLOR.rgb * overbright;
+	// Roads have no vertex normals; derive the ribbon slope from world position.
+	vec3 world = v_snow_world;
+	vec3 normal = normalize(cross(dFdx(world), dFdy(world)));
+	if (normal.y < 0.0) normal = -normal;
+	vec3 albedo = snow_ground_cover(t.rgb, vec3(v_clip_xy.x,0.0,-v_clip_xy.y), normal, vec4(0.0));
+	vec3 col = albedo * COLOR.rgb * overbright;
 	if (shroud_enabled) {
 		col = col * shroud_color * texture(shroud_tex, v_shroud_uv).r; // lane ZOOM-1
 	}

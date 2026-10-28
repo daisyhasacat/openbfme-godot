@@ -76,6 +76,9 @@ public:
 	virtual bool attackRangeFrom(const Coord3D &from, PathfindObjectID victim, const Coord3D &victimPos, float extra) { (void)from; (void)victim; (void)victimPos; (void)extra; return false; }
 	// lane PHYS-1: the same test with the victim taken at `victimPos` (RW 0x6CC07C's explicit position argument)
 	virtual bool attackRangeFromTo(const Coord3D &from, PathfindObjectID victim, const Coord3D &victimPos, float extra) { (void)from; (void)victim; (void)victimPos; (void)extra; return false; }
+	// AI vslot 0x224 (RW 0x667144, AIUpdateInterface::canFollowTeamPath): a ground mover that is not held; the attack path's in-reach test asks the view test
+	// (RW 0x6F4557) only for one (RW 0x666992)
+	virtual bool canFollowTeamPath() const { return false; }
 	// the pathfinder's view of any object (null when gone)
 	virtual const PathfindObject *findPathfindObject(PathfindObjectID id) { (void)id; return nullptr; }
 	// the allied clearing of a new path: the gates of RW 0x666EEA .. 0x666F67 (and 0x66670F, 0x669459), then RW 0x6F503B; default nothing
@@ -231,6 +234,7 @@ public:
 
 	// ---- the model-condition helper used by the move state ----
 	void setMoveCondition(const char *name, bool on);
+	void updateMoveConditions(float distanceToGoal);
 
 	// Acceptance-stop lines (docs/STOPS.md) raised so far; empty when none applied.
 	const std::vector<std::string> &stops() const { return m_stops; }

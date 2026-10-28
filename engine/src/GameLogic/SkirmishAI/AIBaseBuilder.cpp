@@ -824,7 +824,7 @@ std::shared_ptr<AIBuildRequest> chooseUnit(GameLogic &logic, AISkirmishPlayer &a
 	}
 	// OpenBFME (not retail; lane AI-4): under a wall-balance profile only units of one KindOf damage a fortress (WallBalance::attackerAllowed). Past the Rush
 	// phase an AI that owns and has requested none of its army's units of that kind trains one, so its attacks can end a game the retail picks never could
-	if (const char *kind = WallBalance::fortressAttackerKind(logic); kind && ai.build.phase >= 1)
+	if (const char *kind = WallBalance::fortressAttackerKind(logic); logic.settings().enhancedAI && kind && ai.build.phase >= 1)
 	{
 		const int bit = KindOfTokens::indexOf(kind);
 		std::vector<std::string> attackers;
@@ -855,7 +855,7 @@ std::shared_ptr<AIBuildRequest> chooseUnit(GameLogic &logic, AISkirmishPlayer &a
 		}
 	}
  // User-requested offensive composition: maintain siege even without wall immunity.
- if (ai.build.phase >= 1)
+ if (logic.settings().enhancedAI && ai.build.phase >= 1)
  {
   int siegeCount = 0;
   std::vector<std::string> siegePool;
@@ -1004,7 +1004,7 @@ std::shared_ptr<AIBuildRequest> createBestHero(GameLogic &logic, AISkirmishPlaye
 // Their requests still pass the normal money, prerequisite, queue and command-point checks.
 std::shared_ptr<AIBuildRequest> chooseBreachUnit(GameLogic &logic, AISkirmishPlayer &ai, const Player &player)
 {
-	if (ai.store->data().disableTacticalAI) return nullptr;
+	if (!logic.settings().enhancedAI || ai.store->data().disableTacticalAI) return nullptr;
 	Object *target = AIFortification::findTarget(logic, ai);
 	if (!target) return nullptr;
  std::vector<const ThingTemplate *> candidates;
@@ -1069,6 +1069,7 @@ std::shared_ptr<AIBuildRequest> chooseBreachUnit(GameLogic &logic, AISkirmishPla
 // counters. Requests and living battalions both satisfy demand. No faction names.
 std::shared_ptr<AIBuildRequest> chooseStrategyCounter(GameLogic &logic, AISkirmishPlayer &ai, const Player &player)
 {
+ if (!logic.settings().enhancedAI) return nullptr;
  const auto situation = AIStrategy::assess(logic, ai);
  const ThingTemplate *choice = nullptr;
  int score = 0;
@@ -1143,7 +1144,7 @@ void updateUnitBuilder(GameLogic &logic, AISkirmishPlayer &ai, const Player &pla
 	// RW 0x9A1051: one new request per frame: a hero (RW 0x9A03A1 -> 0x9A0993, lane DECOMP-2), else a unit (RW 0x9A0F66)
 	std::shared_ptr<AIBuildRequest> req = chooseStrategyCounter(logic, ai, player);
  const auto saving = ai.brain.namedCounters.find("UpgradeSavingsTarget");
- if (!req && saving != ai.brain.namedCounters.end() && saving->second > 0 &&
+ if (!req && logic.settings().enhancedAI && saving != ai.brain.namedCounters.end() && saving->second > 0 &&
      economyStructureCount(logic, player) > 0 &&
      (std::uint32_t)AIBaseBuilder::moneyPlusReserve(logic, player) < (unsigned)saving->second) return;
  if (!req) req = chooseBreachUnit(logic, ai, player);
@@ -1436,7 +1437,7 @@ std::shared_ptr<AIBuildRequest> chooseFarmSite(GameLogic &logic, const AISkirmis
 		// OpenBFME (lane AI-4, INFERENCE): a marker the economy structure cannot stand on because something already stands there (two of Evendim's markers are
 		// 70 apart: a tree on one blocks the other) is passed over instead of sending a builder whose request then fails the overlap test (RW: code 10, the
 		// site skipped once, then requested again: 82 requests for 7 farms in a 20-minute game)
-		if (farmTemplate && BuildPlacement::isLocationLegalToBuild(logic, p, *farmTemplate->getFinalOverride(), c.second->siteAngle(), LLF_NO_OBJECT_OVERLAP, nullptr,
+		if (logic.settings().enhancedAI && farmTemplate && BuildPlacement::isLocationLegalToBuild(logic, p, *farmTemplate->getFinalOverride(), c.second->siteAngle(), LLF_NO_OBJECT_OVERLAP, nullptr,
 			const_cast<Player *>(&player)) != LBC_OK)
 		{
 			continue;
@@ -1993,14 +1994,17 @@ int checkWithReserve(GameLogic &logic, const AIBuildRequest &r, Player &player, 
 	return code;
 }
 
-// RW 0x96190B before vslot 0x3C: a request with + 0x21 whose cost (vslot 0x24, ftol) is above 0 and within the reserve draws it from the reserve (RW 0x99E79A)
+// DONOR Open-BFME-2 Common/AIBuildable_doBuild.cpp (0x55ADE2): withdraw only price minus cash,
+// and only when the reserve covers the entire shortfall. TARGET RW 0x96190B (S-001 provenance caveat).
 void drawExecutionCost(GameLogic &logic, const AIBuildRequest &r, Player &player)
 {
-	const int cost = requestCost(logic, r, player);
+	const float cost = (float)requestCost(logic, r, player);
+	const float cash = (float)player.getMoney()->countMoney();
+	const int shortfall = SimMath::truncToInt32(SimMath::subf32(cost, cash));
 	const AIStatCollector *rec = logic.skirmishAI().record(player.getPlayerIndex());
-	if (r.reserveMoney && rec && cost > 0 && (std::uint32_t)cost <= rec->reserve())
+	if (r.reserveMoney && rec && cost > cash && (std::uint32_t)shortfall <= rec->reserve())
 	{
-		AIBaseBuilder::withdrawFromReserve(logic, player, (std::uint32_t)cost);
+		AIBaseBuilder::withdrawFromReserve(logic, player, (std::uint32_t)shortfall);
 	}
 }
 
@@ -2183,7 +2187,7 @@ static void checkForNewUpgrades(GameLogic &logic, AISkirmishPlayer &ai, Player &
 // and ordinary paid queues. Keep an economy buffer; never grant upgrades for free.
 static void buyCombatUpgrade(GameLogic &logic, AISkirmishPlayer &ai, Player &player, bool homeThreat)
 {
- if (!TheCommandStore || !TheUpgradeCenter || ai.store->data().disableUnitUpgrading || ai.build.phase == 0)
+ if (!logic.settings().enhancedAI || !TheCommandStore || !TheUpgradeCenter || ai.store->data().disableUnitUpgrading || ai.build.phase == 0)
  { ai.brain.namedCounters.erase("UpgradeSavingsTarget");return; }
  if(logic.getFrame()%5!=(unsigned)player.getPlayerIndex()%5)return;
  if (homeThreat)
@@ -2344,7 +2348,9 @@ void AIBaseBuilder::update(GameLogic &logic, AISkirmishPlayer &ai)
 	{
 		updateUnitBuilder(logic, ai, *player);
 	}
-	// RW 0x8F0F23: the team builder (+ 0x90) runs here in RW (AITacticalAI::updateTeamBuilder, called after this function: it draws no random value), then the
+	// DONOR Open-BFME-2 AIBuilderUpdate.cpp: base, wall, units, teams, economy, upgrades, request processor.
+	// TARGET RW 0x8F0F23 (S-001): recruitment and command ownership precede the economy and upgrade/request work.
+	AITacticalAI::updateTeamBuilder(logic, ai);
 	// economy builder (+ 0xC0)
 	if (!s.economy.disabled && ai.army && ai.store)
 	{

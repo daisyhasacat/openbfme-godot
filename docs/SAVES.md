@@ -920,7 +920,7 @@ blocks). The three can run in parallel: their blocks do not overlap, and each bl
 | SAVE-4c | `obfme:Shroud` | "shroud" | the shroud cells per player |
 | SAVE-4c | `obfme:SkirmishAI` | "skirmish AI" | AIPlayer / AISkirmishPlayer (RW 0x8F5756 / 0x8F3F6C), the builders, tactics, target chooser, groups |
 | SAVE-4d | `obfme:ScriptEngine` | "script engine" | flags, counters, timers, completed and sequential scripts, the Lua state, the acquired-science queues' cursors (the players' notice history is saved by obfme:Players) |
-| SAVE-4d | `obfme:Victory`, `obfme:Weather`, `obfme:Economy`, `obfme:CreateAHero`, `obfme:TerrainTrees`, `obfme:LargeGroupAudio` | "victory", "weather", "economy", "create-a-hero", "terrain trees", "large group audio" | the weather changes every frame (seen by the core test); the economy's settings part is configuration (declare it rebuilt), its context and terrain resource cells are state |
+| SAVE-4d | `obfme:Victory`, `obfme:Weather`, `obfme:Economy`, `obfme:CreateAHero`, `obfme:TerrainTrees`, `obfme:LargeGroupAudio`, `obfme:Taint` | "victory", "weather", "economy", "create-a-hero", "terrain trees", "large group audio", "taint" | the weather changes every frame (seen by the core test); the economy's settings part is configuration (declare it rebuilt), its context and terrain resource cells are state |
 
 Every lane also checks the state its subsystems keep **outside** the hash that a later frame reads (SAVES.md
 section 6's rule), for example GameLogic's AI command sink and pending producer. Then a last, small step turns

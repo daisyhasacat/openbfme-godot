@@ -41,8 +41,9 @@
 // Verification (fail closed; nothing is mounted if any check fails):
 //  * every policy archive must exist (case-insensitive) with the pinned size
 //  * every archive's md5 must equal the pinned md5. There is no opt-out. A persistent cache
-//    (RetailMountOptions::md5CachePath, in the user data dir) keyed by absolute path + size +
-//    last-write time makes repeat mounts fast; any key change rehashes the file, and a cached
+//    (RetailMountOptions::md5CachePath, in the user data dir) keyed by absolute path (without the
+//    id of an iOS app container, which changes on every install) + size + last-write time makes
+//    repeat mounts fast; any key change rehashes the file, and a cached
 //    value that disagrees with the policy is rehashed before it can refuse or admit anything.
 //    Threat model: this detects wrong or modified files, not deliberate tampering that
 //    restores timestamps; cross-play integrity comes from the retail INI/logic CRCs

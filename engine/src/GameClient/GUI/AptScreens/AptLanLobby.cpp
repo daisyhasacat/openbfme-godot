@@ -622,11 +622,13 @@ void AptLanLobby::requestJoinSelected()
 				return;
 			}
 			m_state = 8;
+			applyNameEntry();
 			m_lan->requestGameJoin((int)(it - games.begin()));
 		});
 		return;
 	}
 	m_state = 8;
+	applyNameEntry();
 	m_lan->requestGameJoin((int)m_listedGames[(size_t)row]); // lane MENUWORK-1: the row's game in the sorted list
 }
 
@@ -748,6 +750,7 @@ void AptLanLobby::update()
 				info.slots[s] = SkirmishGameSlot();
 				info.slots[s].state = SLOT_OPEN;
 			}
+			applyNameEntry();
 			m_lan->requestGameCreate(info);
 		}
 		m_state = 3;
@@ -877,13 +880,25 @@ WindowMsgHandledType AptLanLobby::gadgetMessage(GameWindow *from, std::uint32_t 
 	}
 	if (gadget && gadget == m_nameEntry && msg == GEM_EDIT_DONE)
 	{
-		if (m_lan)
-		{
-			m_lan->requestSetName(GadgetTextEntryGetText(m_nameEntry));
-		}
+		applyNameEntry();
 		return MSG_HANDLED;
 	}
 	return AptSkirmish::gadgetMessage(from, msg, data1, data2);
+}
+
+void AptLanLobby::applyNameEntry()
+{
+	// the name box's text is the player's name (ZH RequestSetName); OpenBFME also takes it at Host / Join, so a name typed without Enter (a touch
+	// keyboard closed by tapping elsewhere) is the one the game gets. An empty box keeps the name
+	if (!m_lan || !m_nameEntry)
+	{
+		return;
+	}
+	const std::u16string text = GadgetTextEntryGetText(m_nameEntry);
+	if (!text.empty() && text != m_lan->name())
+	{
+		m_lan->requestSetName(text);
+	}
 }
 
 void AptLanLobby::lobbyChanged()

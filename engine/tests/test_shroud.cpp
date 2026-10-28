@@ -346,7 +346,8 @@ TEST_CASE("vision settings: the GameData and MultiplayerSettings keys parse with
 	VisionSettings v;
 	std::string error;
 	REQUIRE_MESSAGE(VisionSettings::scan("GameData\n  PartitionCellSize = 40.0\n  UnlookPersistDuration = 1\n  ShroudColor = R:255 G:255 B:255\n  FogAlpha = 127\n"
-										 "  ShroudAlpha = 0\n  StealthFriendlyOpacity = 50%\n  SomethingElse = 3\nEnd\n",
+										 "  ShroudAlpha = 0\n  StealthFriendlyOpacity = 50%\n  TaintOn = Yes\n  TaintColor = R:120 G:90 B:80\n  TaintAlpha = 0\n"
+										 "  ElvenWoodColor = R:70 G:120 B:50\n  SomethingElse = 3\nEnd\n",
 					   "MultiplayerSettings\n  UseShroud = No\n  StartCountdownTimer = 5\nEnd\n", v, &error),
 		error);
 	CHECK(v.partitionCellSize == 40.0f);
@@ -356,6 +357,11 @@ TEST_CASE("vision settings: the GameData and MultiplayerSettings keys parse with
 	CHECK(v.clearAlpha == 255u);        // the constructor's value (RW 0x6432CC)
 	CHECK(v.stealthFriendlyOpacity == doctest::Approx(0.5f));
 	CHECK_FALSE(v.useShroud);
+	CHECK(v.taintOn);
+	CHECK(v.taintRed == 0x1.e1e1e40000000p-2f); // parseRGBColor: 0 .. 1
+	CHECK(v.taintBlue == 0x1.4141420000000p-2f);
+	CHECK(v.elvenWoodGreen == 0x1.e1e1e40000000p-2f);
+	CHECK(v.taintAlpha == 0u);
 	CHECK_FALSE(VisionSettings::scan("GameData\n  PartitionCellSize = 40.0\nEnd\n", "MultiplayerSettings\n  UseShroud = No\nEnd\n", v, &error));
 	CHECK(error.find("UnlookPersistDuration") != std::string::npos);
 }

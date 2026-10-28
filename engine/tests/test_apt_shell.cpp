@@ -929,16 +929,16 @@ TEST_CASE("stops S-175: handlers with no decompiled body report 'unported-comman
 	fx.shell->push("MainMenu.apt");
 	fx.tick(1);
 	const char *requests[] = { "LoadGame", "LoadReplay", "LAN", "OnlineButtonPressed", "BattleSchool", "LevelSelect", "LoadCampaign",
-		"ContinueCampaign", "Expansion1Campaign", "BonusCampaign", "WarOfTheRing", "OnTutorial", "Credits",
-		"CreditsExit", "StopGameMovie", "ResetResolution" };
+		"ContinueCampaign", "Expansion1Campaign", "BonusCampaign", "OnTutorial", "Credits",
+		"CreditsExit", "StopGameMovie", "ResetResolution" }; // lane WOTR-1: WarOfTheRing opens Skirmish.apt in mode 1 (no request)
 	for (const char *r : requests)
 	{
 		CHECK_MESSAGE(fx.wm->invokeCallback(std::string("AptMainMenu::") + r, "arg"), r);
 	}
-	CHECK(fx.services.requests.size() == 16);
+	CHECK(fx.services.requests.size() == 15);
 	// lane UI-4: Credits and CreditsExit are ported (the credits roll, S-2520): still requests (the host's music), no longer unported commands; with no
 	// archives in this environment the roll reports that it cannot start
-	CHECK(fx.wm->noteCount("unported-command") == 14);
+	CHECK(fx.wm->noteCount("unported-command") == 13); // lane WOTR-1: WarOfTheRing is no longer an unported request
 	CHECK(fx.wm->noteCount("credits") == 1);
 	CHECK(fx.services.requests[0].action == ShellAction::LoadGame);
 	CHECK(fx.services.requests[0].argument == "arg");

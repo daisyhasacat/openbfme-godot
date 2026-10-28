@@ -94,6 +94,8 @@ public:
 	static unsigned placeOptions();
 	// RotWK InGameUI::displayCantBuildMessage (RW 0x69CCEC, BFME2 decomp InGameUIDisplayCantBuild.cpp, tier A): the label of a refused site's code
 	static const char *cantBuildLabel(int legalBuildCode);
+	// the text of an OpenBFME refusal label (cantBuildLabel's OPENBFME: labels, absent from the retail tables); nullptr for any other label
+	static const char16_t *openBfmeText(const std::string &label);
 
 	struct Stats
 	{

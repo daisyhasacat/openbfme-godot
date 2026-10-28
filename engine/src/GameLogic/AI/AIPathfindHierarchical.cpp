@@ -220,7 +220,7 @@ void Pathfinder::examineHierarchicalEdgeCell(const ICoord2D &cell, const ICoord2
 	m_open.push(across);
 }
 
-bool Pathfinder::findClosestHierarchicalPath(PathfindObject *obj, const PathfindLocomotorInfo &loco, bool isHuman, const Coord3D *from, const Coord3D *to,
+bool Pathfinder::findClosestHierarchicalPath(const PathfindObject *obj, const PathfindLocomotorInfo &loco, bool isHuman, const Coord3D *from, const Coord3D *to,
 	Coord3D *adjustedTo)
 {
 	perf::Scope performanceScope(perf::Pathing);

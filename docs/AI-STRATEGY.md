@@ -1,5 +1,7 @@
 # Strategy-driven native skirmish AI
 
+Source AI rules are now the default. Enable **Enhanced computer AI** in OpenBFME options (`OpenBFMEEnhancedAI = yes`) for the policies below. The choice is independent of Uber performance mode, is carried in game setup and replay headers, and participates in the peer identity and settings hash. Campaign saves keep source AI rules. Missing donor families remain explicitly reported; source mode is not a full retail parity claim.
+
 This branch implements an enhanced OpenBFME policy, explicitly requested by the
 user. It builds on the existing wall-balance, siege-production, breach-gathering
 and paid-upgrade changes. It does not claim to reproduce the retail AI or make

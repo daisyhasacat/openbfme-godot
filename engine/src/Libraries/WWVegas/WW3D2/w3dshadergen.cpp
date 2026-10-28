@@ -142,6 +142,9 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy sam
 	else { mode("unshaded"); mode("shadows_disabled"); }
 	line("render_mode " + modes + ";");
 
+	// Snow is an opt-in presentation effect; avoid particles, additive glows and UI.
+	const bool snowSurface = !k.Unshaded && (k.Blend == W3D_GODOT_BLEND_OPAQUE || k.Blend == W3D_GODOT_BLEND_MIX);
+	if (snowSurface) line("#include \"res://shaders/snow_cover.gdshaderinc\"");
 	// ---- uniforms ----
 	if (shadowReceiver) line("global uniform float w3d_shadow_strength;");
 	line("uniform sampler2D w3d_palette : filter_nearest, repeat_disable;");
@@ -552,6 +555,7 @@ std::string Generate_W3D_Shader_Code(const W3DShaderKey &k, W3DSamplerPolicy sam
 		line("\t\tif (v_fade <= ign) { discard; }");
 		line("\t}");
 	}
+	if (snowSurface) line("\tcur.rgb = snow_cover(cur.rgb, (INV_VIEW_MATRIX * vec4(v_vpos, 1.0)).xyz, v_wnrm);");
 	if (k.Fog != W3DHardwareFog::FOG_DISABLE)
 	{
 		// lane RENDER-4 (S-1651): the fog stage after the pixel shader (saturated output, D3D9), at the eye range of the fragment (the effects' vertex

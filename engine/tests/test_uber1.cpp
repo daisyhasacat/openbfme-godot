@@ -444,3 +444,33 @@ TEST_CASE("uber1 (review): a replay header whose identity and game name differen
 	mixed.header.game = faithfulGame;
 	CHECK(mixed.profileMismatch(identity(SimulationProfile::Faithful)).empty());
 }
+
+TEST_CASE("AI rules: source default, enhanced setup wire, identity and replay consistency")
+{
+	OptionPreferences options;
+	CHECK_FALSE(options.enhancedAI());
+	options.setYesNo("OpenBFMEEnhancedAI", true);
+	CHECK(options.enhancedAI());
+	const auto source = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain);
+	const auto enhanced = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain, {}, SimulationProfile::Faithful, true);
+	CHECK_FALSE(source.enhancedAI());
+	CHECK(enhanced.enhancedAI());
+	CHECK_FALSE(source == enhanced);
+	NewGameMessage message;
+	message.game.mapName = "maps/a/a.map";
+	message.game.enhancedAI = true;
+	NetByteWriter writer;
+	NetPacket::writeNewGameMessage(writer, message);
+	NetByteReader reader(writer.data());
+	NewGameMessage restored;
+	std::string error;
+	REQUIRE_MESSAGE(NetPacket::readNewGameMessage(reader, restored, &error), error);
+	CHECK(restored.game.enhancedAI);
+	CHECK(restored.game == message.game);
+	ReplayHeader header;
+	header.profile = source;
+	header.game = message;
+	CHECK(header.profileConflict() == "replay header: AI rules differ from profile identity");
+	header.profile = enhanced;
+	CHECK(header.profileConflict() == "");
+}

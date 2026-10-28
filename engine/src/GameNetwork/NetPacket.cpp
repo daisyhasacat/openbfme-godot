@@ -351,7 +351,7 @@ void NetPacket::writeGameInfo(NetByteWriter &w, const SkirmishGameInfo &g)
 	w.i32(g.luaAuthoritySlot);
 	// OpenBFME setup flags share the profile word. Off retains the existing wire/replay bytes;
 	// older readers reject the flagged profile rather than silently ignoring the rule.
-	w.i32((std::int32_t)g.simulationProfile | (g.fortressConstruction ? 0x100 : 0) | (g.wallBalance.empty() ? 0 : 0x200)); // lane UBER-1: the simulation profile (Common/SimulationProfile.h)
+	w.i32((std::int32_t)g.simulationProfile | (g.fortressConstruction ? 0x100 : 0) | (g.wallBalance.empty() ? 0 : 0x200) | (g.enhancedAI ? 0x400 : 0)); // lane UBER-1: the simulation profile (Common/SimulationProfile.h)
 	for (const SkirmishGameSlot &s : g.slots) w.i32(s.handicap);
 	if (!g.wallBalance.empty()) w.str(g.wallBalance); // flag 0x200: the shared wall rules (GameNetwork/WallBalanceSetup.h)
 }
@@ -417,7 +417,8 @@ bool NetPacket::readGameInfo(NetByteReader &r, SkirmishGameInfo &g, std::string 
 	const std::int32_t profileFlags = profileAbsent ? (std::int32_t)SimulationProfile::Faithful : r.i32();
 	g.fortressConstruction = (profileFlags & 0x100) != 0;
 	const bool withWalls = profileFlags >= 0 && (profileFlags & 0x200) != 0; // a negative word is no flag set (refused below as a profile)
-	const std::int32_t profile = profileFlags & ~0x300;
+	g.enhancedAI = profileFlags >= 0 && (profileFlags & 0x400) != 0;
+	const std::int32_t profile = profileFlags & ~0x700;
 	// lane OWNERFIX-2: the slots' handicaps (absent: an older replay / save format, or an announcement without the profile, UBERJOIN-1's case; the LAN
 	// messages that carry them are LANAPI protocol 4 / LANLobby version 5, so an announcement with the profile and without them is truncated)
 	const bool handicapsAbsent = !slotHandicaps || profileAbsent;

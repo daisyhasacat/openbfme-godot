@@ -21,3 +21,10 @@ Follow `docs/PLAN.md` for engineering rules and acceptance gates. Read
 - Report the commit hash and validation results in the final response. If a
   commit is blocked, explain the blocker instead of claiming completion.
 - Keep commits local unless the user requests a push.
+
+## Pull request destination
+
+- Submit contribution PRs to `Open-BFME/openbfme-godot` targeting its current `main`.
+- Push contribution branches to the personal fork only as the head repository; do not open PRs against the personal fork unless explicitly requested.
+- Start upstream contributions from upstream main and port only the requested feature. Exclude unrelated fork features and integration merges; adapt APIs and run relevant checks against the upstream-based branch.
+- Check for an existing upstream PR before opening another submission of the same work.

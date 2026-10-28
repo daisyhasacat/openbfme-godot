@@ -2068,18 +2068,21 @@ void Object::setStatusAcrossHorde(unsigned bit, bool set)
 
 Object *Object::getHordeObject(bool alsoProducer) const
 {
-	if (isKindOfName("HORDE"))
+	// the bit looked up once (isKindOfName hashes the name each call; the client asks this for every drawable each render frame)
+	static const int horde = ObjectTemplateInfoBuilder::kindOfIndex("HORDE");
+	const auto isHorde = [](const Object &o) { return horde >= 0 && o.isKindOf((unsigned)horde); };
+	if (isHorde(*this))
 	{
 		return const_cast<Object *>(this);
 	}
-	if (m_containedBy && m_containedBy->isKindOfName("HORDE"))
+	if (m_containedBy && isHorde(*m_containedBy))
 	{
 		return m_containedBy;
 	}
 	if (alsoProducer)
 	{
 		Object *producer = m_logic.findObjectByID(m_producerID);
-		if (producer && producer->isKindOfName("HORDE"))
+		if (producer && isHorde(*producer))
 		{
 			return producer;
 		}

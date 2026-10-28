@@ -639,7 +639,7 @@ bool offensiveAllowed(GameLogic &logic, const AISkirmishPlayer &ai, const Player
 bool inAnyTeamOf(const AIBrainState &b, const Object &object)
 {
  Coord3D exclusionGoal;
- if (object.logic().aiBaseExclusion(object, exclusionGoal) || AIStrategy::capturing(object)) return true;
+ if (object.logic().aiBaseExclusion(object, exclusionGoal) || AIStrategy::capturing(object) || object.logic().aiReserved(object)) return true;
  const ObjectID id = object.getID();
 
 	if (b.siegeUnits.count(id) || b.siegeEscorts.count(id) || b.strategyRecovering.count(id)) return true;
@@ -795,7 +795,7 @@ void setupTeam(GameLogic &logic, OffensiveKind kind, int index, const AITarget &
 	case FLANK_ATTACK:
 		if (t.type == kEnemyStructure)
 		{
-			team.minimum = 3; // Enhanced pressure: launch a small open-field attack promptly. // RW 0x8F121F
+			team.minimum = logic.settings().enhancedAI ? 3 : 1; // Enhanced pressure: launch a small open-field attack promptly. // RW 0x8F121F
 		}
 		break;
 	case FORMATION_ATTACK: // RW 0x9B49CE
@@ -2177,7 +2177,7 @@ bool recruitable(GameLogic &logic, const AIBrainState &b, const AITacticTeam &te
 	{
 		return false;
 	}
-	if (logic.getFrame() - o.getCreationFrame() < (std::uint32_t)(kLogicFramesPerSecond * 5))
+	if (logic.getFrame() - o.getCreationFrame() < (std::uint32_t)(kLogicFramesPerSecond * (logic.settings().enhancedAI ? 5 : 10)))
 	{
 		return false;
 	}
@@ -2316,7 +2316,7 @@ void dispatchIdleUnits(GameLogic &logic, AISkirmishPlayer &ai, const std::vector
 		{
 			continue;
 		}
-		if (logic.getFrame() - o->getCreationFrame() < (std::uint32_t)(kLogicFramesPerSecond * 5))
+		if (logic.getFrame() - o->getCreationFrame() < (std::uint32_t)(kLogicFramesPerSecond * (logic.settings().enhancedAI ? 5 : 10)))
 		{
 			continue;
 		}
@@ -2407,7 +2407,7 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 			}
 			// Unlimited prototype maxima must not require defeating the entire base's
    // threat before any attack launches, especially with edited CP limits.
-   if(team.type==kEnemyStructure && (team.maximum<0 || team.maximum>12)) team.maximum=12;
+   if(logic.settings().enhancedAI && team.type==kEnemyStructure && (team.maximum<0 || team.maximum>12)) team.maximum=12;
 			const std::uint32_t maximum = (std::uint32_t)team.maximum;
 			std::uint32_t count = teamUnitCount(logic, team); // RW 0x9A32C1 -> RW 0x9A24A6
 			// RW 0x9A2E06: the army list in order while count < maximum (unsigned; -1: no maximum): a CAN_ATTACK or SUPPORT unit that RW 0x9A24FC accepts joins
@@ -2466,7 +2466,7 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
     if (barrier && AIFortification::passiveBarrier(*barrier)) continue;
    }
 			if (count >= (std::uint32_t)team.minimum &&
-				(team.type == kDefensive || count >= 8u || count >= (std::uint32_t)team.maximum || teamMeetsThreat(logic, tac, team)))
+				(team.type == kDefensive || (logic.settings().enhancedAI && count >= 8u) || count >= (std::uint32_t)team.maximum || teamMeetsThreat(logic, tac, team)))
 			{
 				team.wantsMembers = false;
 				team.handedOver = true; // RW 0x6C779B
@@ -2478,7 +2478,7 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 	{
 		const auto *unit=logic.findObjectByID(*it);
   const auto *update=unit ? unit->getAIUpdateInterface() : nullptr;
-  it = unit && !(logic.getFrame()%50==0 && update && update->isIdle()) ? std::next(it) : b.dispatched.erase(it);
+  it = unit && !(logic.settings().enhancedAI && logic.getFrame()%50==0 && update && update->isIdle()) ? std::next(it) : b.dispatched.erase(it);
 	}
 	dispatchIdleUnits(logic, ai, army);
 }
@@ -2537,7 +2537,7 @@ void AITacticalAI::updateBrain(GameLogic &logic, AISkirmishPlayer &ai, AISkirmis
  // of newly trained units remain unassigned. Reserve another complete wave
  // rather than waiting for those existing attacks to die. Recruitment still
  // excludes the breach force and the normal hand-over keeps wall staging.
- if (owner->brain.bestTarget < 0 && !ai.store->data().disableTeamBuilding)
+ if (logic.settings().enhancedAI && owner->brain.bestTarget < 0 && !ai.store->data().disableTeamBuilding)
  {
   AITacticTeam wave;
   wave.type = kEnemyStructure;

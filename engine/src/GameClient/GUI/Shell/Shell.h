@@ -36,6 +36,7 @@ struct AptScreenContext
 	Shell &shell;
 	ShellServices &services;
 	ShellEnvironment &environment;
+	int argument = 0; ///< lane WOTR-1: the screen's creation argument (BFME2 AptSkirmish::OpenScreen(mode)); 0 for a plain push
 };
 
 using AptScreenFactory = std::function<std::unique_ptr<AptScreen>(AptScreenContext &context)>;
@@ -66,6 +67,9 @@ public:
 	Shell &operator=(const Shell &) = delete;
 
 	void push(const std::string &filename, bool shutdownImmediate = false);
+	// lane WOTR-1: a push whose screen is made with an argument (the factory's AptScreenContext::argument): BFME2 AptSkirmish::OpenScreen(1) for the War
+	// of the Ring lobby (AptMainMenuUpdate.cpp case 8)
+	void push(const std::string &filename, bool shutdownImmediate, int argument);
 	void pop();
 	void popImmediate();
 	// Pops until the stack is empty (reset).
@@ -125,7 +129,7 @@ public:
 	ShellEnvironment &environment() { return m_environment; }
 
 private:
-	void doPush(const std::string &filename);
+	void doPush(const std::string &filename, int argument = 0);
 	void doPop(bool impendingPush);
 	bool overlayIsTop() const { return m_overlay && (int)m_stack.size() == m_overlayDepth; }
 
@@ -143,5 +147,6 @@ private:
 	bool m_pendingPush = false;
 	bool m_pendingPop = false;
 	std::string m_pendingPushName;
+	int m_pendingPushArgument = 0;
 	std::vector<std::string> m_errors;
 };

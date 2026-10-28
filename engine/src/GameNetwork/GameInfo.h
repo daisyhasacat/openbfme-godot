@@ -167,6 +167,7 @@ struct SkirmishGameInfo
 	// OpenBFME: the optional wall rules of the player who started the game (GameNetwork/WallBalanceSetup.h: its canonical line, "" = off), shared with
 	// every peer and the replay so no peer plays its own user://wall_balance.cfg
 	std::string wallBalance;
+	bool enhancedAI = false; // shared AI rules, independent of the execution/performance profile
 	// lane UBER-1, OpenBFME (not retail): the simulation profile (Common/SimulationProfile.h): Faithful, or the opt-in Uber performance mode the host's
 	// OpenBFME option chose; every peer's profile identity must say the same (GameNetwork/ProfileIdentity.h), so a mismatch is refused at the lobby
 	SimulationProfile simulationProfile = SimulationProfile::Faithful;
@@ -297,7 +298,7 @@ struct SkirmishGameInfo
 			&& superweaponRestriction == o.superweaponRestriction && inProgress == o.inProgress && rules == o.rules && legendaryHeroes == o.legendaryHeroes
 			&& fortressConstruction == o.fortressConstruction
 			&& luaAuthoritySlot == o.luaAuthoritySlot && peaceTimeMinutes == o.peaceTimeMinutes && simulationProfile == o.simulationProfile
-			&& wallBalance == o.wallBalance;
+			&& wallBalance == o.wallBalance && enhancedAI == o.enhancedAI;
 	}
 };
 

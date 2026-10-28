@@ -383,7 +383,7 @@ Dictionary GameWorld::save_campaign_menu(const String &path, const Dictionary &o
 	h.buildVersion = BuildVersion::kVersion;
 	h.engineId = ProfileIdentity::buildId();
 	h.commit = BuildVersion::kCommit;
-	h.profile = profileIdentityFor(SimulationProfile::Faithful); // a campaign mission runs Faithful
+	h.profile = profileIdentityFor(SimulationProfile::Faithful, true); // a campaign mission runs Faithful
 	h.executionProfile = "enhanced";
 	h.gameKind = 1;
 	h.savePoint = 1;
@@ -425,7 +425,7 @@ SaveGameCompatibility GameWorld::menuSaveVerdict(const SaveGameHeader &h) const
 	p.ready = h.campaignReady;
 	p.advanced = h.campaignAdvanced;
 	const std::string refusal = m_world ? p.menuSaveRefusal(m_world->linearCampaigns()) : std::string("GameWorld.setup has not run");
-	return SaveGameCompatibility::checkMenuSave(h, profileIdentityFor(SimulationProfile::Faithful), refusal);
+	return SaveGameCompatibility::checkMenuSave(h, profileIdentityFor(SimulationProfile::Faithful, true), refusal);
 }
 
 Array GameWorld::list_saves(const String &directory) const
@@ -455,7 +455,7 @@ Array GameWorld::list_saves(const String &directory) const
 	dir->list_dir_end();
 	std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) { return a.modified != b.modified ? a.modified > b.modified : a.name < b.name; });
 	const ProfileIdentity running = net_profile();
-	const ProfileIdentity faithful = profileIdentityFor(SimulationProfile::Faithful); // a campaign mission runs Faithful whatever the player's option
+	const ProfileIdentity faithful = profileIdentityFor(SimulationProfile::Faithful, true); // a campaign mission runs Faithful whatever the player's option
 	for (const Entry &e : entries)
 	{
 		Dictionary d;
@@ -552,7 +552,7 @@ Dictionary GameWorld::check_save(const String &path) const
 		r["auto_save"] = file.header.autoSave;
 		return r;
 	}
-	const ProfileIdentity running = file.header.campaign.empty() ? net_profile() : profileIdentityFor(SimulationProfile::Faithful);
+	const ProfileIdentity running = file.header.campaign.empty() ? net_profile() : profileIdentityFor(SimulationProfile::Faithful, true);
 	const SaveGameCompatibility c = SaveGameCompatibility::check(file.header, running, ProfileIdentity::buildId(), BuildVersion::kVersion, false);
 	if (!c.loadable)
 	{
@@ -638,7 +638,7 @@ Dictionary GameWorld::prepareSaveLoad(std::unique_ptr<SaveGameFile> file)
 	r["ok"] = false;
 	r["errors"] = errors;
 	std::string error;
-	const ProfileIdentity running = file->header.campaign.empty() ? net_profile() : profileIdentityFor(SimulationProfile::Faithful);
+	const ProfileIdentity running = file->header.campaign.empty() ? net_profile() : profileIdentityFor(SimulationProfile::Faithful, true);
 	const SaveGameCompatibility c = SaveGameCompatibility::check(file->header, running, ProfileIdentity::buildId(), BuildVersion::kVersion, false);
 	if (!c.loadable)
 	{

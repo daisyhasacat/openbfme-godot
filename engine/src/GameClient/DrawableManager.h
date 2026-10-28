@@ -88,6 +88,7 @@ public:
 
 	// render side: animations by elapsed render milliseconds, then the interpolated poses (alpha in [0, 1))
 	void advance(double elapsedMs);
+	void setSnowPresentation(bool enabled);
 	void syncTransforms(const LogicSnapshot &snapshot, double alpha, bool interpolate);
 
 	struct Report
@@ -137,8 +138,10 @@ private:
 
 	std::uint32_t m_scriptFrame = 0; ///< the frame the drawable Lua state reports (before m_services: its options point here)
 	bool m_parallelSync = true;
+	bool m_snowPresentation = false;
 	size_t m_parallelSyncMinimum = 512;
 	std::vector<Drawable::SyncPrep> m_syncScratch; ///< lane PERF-3: syncTransforms' per-slot results of the parallel part (kept: no allocation per frame)
+	std::vector<const ObjectSnapshot *> m_syncRecords; ///< syncTransforms: each slot's record, found once for both of its passes (kept: no allocation per frame)
 	AnimationSoundModuleManager m_animationSounds; ///< lane AUDIO-4 (before the drawables: their modules leave its lists when they go)
 	DrawServices m_services;
 	std::map<ObjectID, DrawableID> m_byObject;

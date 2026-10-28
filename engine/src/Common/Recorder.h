@@ -52,6 +52,7 @@ struct ReplayHeader
 	// ReplayWriter::open refuses to write such a header and ReplayFile::parse refuses to read one
 	std::string profileConflict() const
 	{
+		if (profile.enhancedAI() != game.game.enhancedAI) return "replay header: AI rules differ from profile identity";
 		if (profile.simulationProfile() == game.game.simulationProfile)
 		{
 			return "";
@@ -81,6 +82,7 @@ struct ReplayFile
 		{
 			why.clear();
 		}
+		if (why.empty() && header.game.game.enhancedAI != running.enhancedAI()) why = "replay AI rules differ from running profile";
 		if (why.empty() && header.game.game.simulationProfile != running.simulationProfile())
 		{
 			why = std::string("the replay's game runs the simulation profile ") + simulationProfileName(header.game.game.simulationProfile) + ", this player runs " +

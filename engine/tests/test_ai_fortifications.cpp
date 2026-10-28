@@ -1,5 +1,7 @@
 // OpenBFME. GPL-3.0. Synthetic siege scenarios; no retail archives required.
 #include "doctest.h"
+#include "Common/XferSave.h"
+#include "Common/XferLoad.h"
 #include "CombatTestUtil.h"
 #include "Common/Thing/ThingFactory.h"
 #include "GameClient/ControlBarCommands.h"
@@ -10,6 +12,7 @@
 #include "GameLogic/SkirmishAI/AIBaseBuilder.h"
 #include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
+#include "GameLogic/SkirmishAI/AIStatCollector.h"
 #include "GameLogic/WallBalance.h"
 #include "GameLogic/UpgradeTypes.h"
 using namespace combattest;
@@ -130,6 +133,7 @@ struct Scenario
 	AISkirmishPlayer bot;
 	Scenario()
 	{
+		w.logic->settings().enhancedAI = true;
 		w.combat().setAutoAcquireEnabled(false);
 		Player *p = w.players.findPlayerWithName("Alice");
 		p->setPlayerType(PLAYER_COMPUTER, true);
@@ -536,11 +540,19 @@ End
  CHECK_FALSE(lab->getProductionUpdate()->isUpgradeInQueue(technology));
  CHECK_FALSE(archer->getProductionUpdate()->isUpgradeInQueue(arrows));
  player->getMoney()->withdraw(500,nullptr,false);
- s.bot.build.moneyReserve=1500;
+ // The reserve moved to AIStatCollector in AI5; use the same record the live upgrader reads.
+ auto &manager = s.w.logic->skirmishAI();
+ REQUIRE(s.w.w.load("SkirmishAIData TestData\nEnd\n").empty());
+ manager.setStore(&s.store);
+ manager.newGame(true);
+ manager.setScriptControlled(player->getPlayerIndex(), true); // the detached fixture bot is stepped explicitly below
+ auto *record = manager.record(player->getPlayerIndex());
+ REQUIRE(record);
+ record->setReserve(1500);
  s.store.data().disableUnitUpgrading=true;
  for(int i=0;i<5;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
  CHECK_FALSE(lab->getProductionUpdate()->isUpgradeInQueue(technology));
- CHECK(player->getMoney()->countMoney()+s.bot.build.moneyReserve==1600);
+ CHECK(player->getMoney()->countMoney()+record->reserve()==1600);
  s.store.data().disableUnitUpgrading=false;
  for(int i=0;i<5;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
  CHECK((player->hasUpgradeComplete(technology) || lab->getProductionUpdate()->isUpgradeInQueue(technology)));
@@ -548,9 +560,9 @@ End
  for(int i=0;i<5;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
  s.w.frames(10);
  CHECK(archer->hasUpgrade(arrows));
- CHECK(player->getMoney()->countMoney()+s.bot.build.moneyReserve==1300);
+ CHECK(player->getMoney()->countMoney()+record->reserve()==1300);
  for(int i=0;i<10;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
- CHECK(player->getMoney()->countMoney()+s.bot.build.moneyReserve==1300);
+ CHECK(player->getMoney()->countMoney()+record->reserve()==1300);
 }
 
 TEST_CASE("offensive AI: midgame maintains siege without a protected target or composition share")
@@ -705,4 +717,106 @@ TEST_CASE("offensive AI: saturated target slots still dispatch a new full attack
  AITacticalAI::updateBrain(*s.w.logic,s.bot,&s.bot);
  CHECK(s.bot.brain.attacksLaunched==1);
  CHECK(s.bot.brain.targets[0].teams==2);
+}
+
+TEST_CASE("source AI reserve: execution withdraws only the shortfall, never the full price")
+{
+	// DONOR AIBuildable_doBuild.cpp: a 100-cost unit, cash/reserve before and after execution.
+	struct Example { unsigned cash, reserve, cashAfter, reserveAfter; bool queued; };
+	for (const Example example : { Example{40, 70, 0, 10, true}, Example{140, 70, 40, 70, true}, Example{40, 50, 40, 50, false} })
+	{
+		CAPTURE(example.cash);
+		CAPTURE(example.reserve);
+		Scenario s;
+		s.w.logic->settings().enhancedAI = false;
+		s.factory("BreachWorkshop", 'A', 100, 500);
+		auto *player = s.w.players.findPlayerWithName("Alice");
+		REQUIRE(s.w.w.load("SkirmishAIData TestData\nEnd\n").empty());
+		auto &manager = s.w.logic->skirmishAI();
+		manager.setStore(&s.store);
+		manager.newGame(true);
+		manager.setScriptControlled(player->getPlayerIndex(), true);
+		auto *record = manager.record(player->getPlayerIndex());
+		REQUIRE(record);
+		player->getMoney()->withdraw(player->getMoney()->countMoney(), nullptr, false);
+		player->getMoney()->deposit(example.cash, nullptr, false);
+		record->setReserve(example.reserve);
+		s.bot.build.baseBuilderDisabled = true;
+		s.bot.build.economy.disabled = true;
+		s.bot.build.units.disabled = true;
+		auto request = std::make_shared<AIBuildRequest>();
+		request->unit = true;
+		request->reserveMoney = true;
+		request->templateName = "BreachEngine";
+		request->priority = 500;
+		s.bot.build.pending.push_back(request);
+		AIBaseBuilder::update(*s.w.logic, s.bot);
+		CHECK(request->state == (example.queued ? 1 : 0));
+		CHECK(player->getMoney()->countMoney() == example.cashAfter);
+		CHECK(record->reserve() == example.reserveAfter);
+		CHECK(s.bot.build.failed == 0);
+	}
+}
+
+TEST_CASE("source AI spatial groups: strict neighbor boundary, bridge merge, and removal rebuild")
+{
+	// DONOR Rva004DFA43Sphere / Rva00283114GroupMerge: squared distance < padding^2 * 2.
+	AIPositionSampler sampler;
+	std::map<ObjectID, Coord3D> points{{(ObjectID)1, {0, 0, 0}}, {(ObjectID)2, {24, 0, 0}}, {(ObjectID)3, {12, 0, 0}}, {(ObjectID)4, {10, 10, 0}}};
+	auto position = [&](ObjectID id) { return points.at(id); };
+	sampler.add((ObjectID)1, 10, position);
+	sampler.add((ObjectID)2, 10, position);
+	REQUIRE(sampler.groups().size() == 2);
+	CHECK(sampler.groups()[0].radius == 10.0f);
+	sampler.add((ObjectID)3, 10, position);
+	REQUIRE(sampler.groups().size() == 1);
+	CHECK((sampler.groups()[0].members == std::vector<ObjectID>{(ObjectID)1, (ObjectID)3, (ObjectID)2}));
+	CHECK(sampler.groups()[0].center.x == 12.0f);
+	CHECK(sampler.groups()[0].radius == 22.0f);
+	sampler.groups()[0].selected = true;
+	sampler.remove((ObjectID)3, position);
+	REQUIRE(sampler.groups().size() == 2);
+	CHECK(sampler.groups()[0].center.x == 0.0f);
+	CHECK(sampler.groups()[1].center.x == 24.0f);
+	CHECK_FALSE(sampler.groups()[0].selected);
+	AIPositionSampler boundary;
+	boundary.add((ObjectID)1, 10, position);
+	boundary.add((ObjectID)4, 10, position);
+	CHECK(boundary.groups().size() == 2);
+	// Native removal erases one registration, not every duplicate.
+	boundary.add((ObjectID)1, 10, position);
+	boundary.remove((ObjectID)1, position);
+	REQUIRE(boundary.groups().size() == 2);
+	CHECK((boundary.groups()[1].members == std::vector<ObjectID>{(ObjectID)1}));
+}
+
+TEST_CASE("source AI spatial groups: snapshot preserves selection and registration order")
+{
+	AIPositionSampler sampler;
+	std::map<ObjectID, Coord3D> points{{(ObjectID)1, {0, 0, 0}}, {(ObjectID)2, {24, 0, 0}}, {(ObjectID)3, {12, 0, 0}}};
+	auto position = [&](ObjectID id) { return points.at(id); };
+	for (ObjectID id : {(ObjectID)1, (ObjectID)2, (ObjectID)3})
+		sampler.add(id, 10, position);
+	sampler.groups()[0].selected = true;
+	XferSave save;
+	sampler.xfer(save);
+	AIPositionSampler restored;
+	XferLoad load(save.data());
+	restored.xfer(load);
+	REQUIRE(restored.groups().size() == 1);
+	CHECK(restored.groups()[0].selected);
+	CHECK(restored.members() == sampler.members());
+	CHECK(restored.groups()[0].members == sampler.groups()[0].members);
+	XferSave again;
+	restored.xfer(again);
+	CHECK(again.data() == save.data());
+	restored.remove((ObjectID)3, position);
+	CHECK(restored.groups().size() == 2);
+	// An internally inconsistent group cannot load and feed later position lookups.
+	restored.groups()[0].members.push_back((ObjectID)999);
+	XferSave corrupt;
+	restored.xfer(corrupt);
+	AIPositionSampler refused;
+	XferLoad bad(corrupt.data());
+	CHECK_THROWS_WITH(refused.xfer(bad), "skirmish ai: spatial groups differ from registrations");
 }

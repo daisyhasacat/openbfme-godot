@@ -94,6 +94,7 @@ class BuildAssistantSell;
 class InvisibilityManager;
 class DOTManager;
 class TerrainTrees;
+class TaintManager;
 class SkirmishAIManager;
 class ShroudManager;
 class PartitionManager;
@@ -163,6 +164,7 @@ struct GameLogicSettings
 {
 	TutorialDefinition basicTutorial, advancedTutorial;
 	WallBalance wallBalance;
+	bool enhancedAI = false; // OpenBFME strategy/micro policies; source-faithful AI is the default
 	bool clearNeutralDecorations = false; // local Lua construction option, reset with the match
 	bool enableRepulsors = true;                     ///< AIData EnableRepulsors (RW 0xDE4B40 + 0x18 + 0x64): the RepulsorHelper condition
 	float repulsedDistance = 0.0f;                   ///< AIData RepulsedDistance (+ 0x60, lane MODULES-3): the safe path radius beyond the vision range
@@ -377,6 +379,9 @@ public:
 	// lane SPELL-3: TheTerrainLogic + 0x578, the map's optimized trees (GameLogic/Map/TerrainTrees.h); filled by MapObjectLoop, hashed once a tree changed
 	TerrainTrees &trees() { return *m_trees; }
 	const TerrainTrees &trees() const { return *m_trees; }
+	// TheTaintManager (GameLogic/Map/TaintManager.h): the taint / elven wood areas of the terrain; hashed once a cell was painted
+	TaintManager &taint() { return *m_taint; }
+	const TaintManager &taint() const { return *m_taint; }
 	const CombatState &combat() const { return *m_combat; }
 	const GameLogicSettings &settings() const { return m_settings; }
 	void setClientHooks(ObjectClientHooks *hooks) { m_clientHooks = hooks; }
@@ -469,6 +474,10 @@ public:
 	// Local testing aid, reset with the match; never enabled for network/replay games.
 	void setAIBaseExclusion(int player, const Coord3D &center, float radius) { m_aiBasePlayer = player; m_aiBaseCenter = center; m_aiBaseRadius = radius; }
 	bool aiBaseExclusion(const Object &unit, Coord3D &goal) const;
+	// OpenBFME map editor wave spawners (not retail; local skirmishes only, reset with the match): objects their owner's skirmish AI never recruits,
+	// dispatches or steers; a horde's members follow their horde
+	void setAIReserved(ObjectID id) { m_aiReserved.insert(id); }
+	bool aiReserved(const Object &unit) const;
 	using BuildingCompletedHook = std::function<void(const Object &)>;
 	void setBuildingCompletedHook(BuildingCompletedHook hook) { m_buildingCompletedHook = std::move(hook); }
 	void notifyBuildingCompleted(const Object &building) const { if (m_buildingCompletedHook) m_buildingCompletedHook(building); }
@@ -511,6 +520,10 @@ public:
 	Object *newObject(const ThingTemplate *tt, Team *team, const ObjectStatusMaskType &status, ObjectID id = INVALID_ID);
 	Object *findObjectByID(ObjectID id) const;
 	Object *getFirstObject() const { return m_objectHead; }
+	// the objects WallBalance::wall accepts, in object-list order (for BezierProjectileBehavior's wall sweep, run by every flying arrow): rebuilt
+	// after a wall joined or left the list. An object's KindOf is fixed for its life (Object's constructor), and other objects joining or leaving
+	// keep the walls' relative order, so the list equals a walk of the whole list that keeps the walls
+	const std::vector<Object *> &wallObjects();
 	Object *getLastObject() const { return m_objectTail; }
 	size_t getObjectCount() const { return m_objectCount; }
 	ObjectID getNextObjectID() const { return m_nextObjectID; }
@@ -846,6 +859,7 @@ private:
 	std::unique_ptr<InvisibilityManager> m_invisibility; // lane STEALTH-1
 	std::unique_ptr<DOTManager> m_dot;                   // lane DECOMP-1
 	std::unique_ptr<TerrainTrees> m_trees;               // lane SPELL-3
+	std::unique_ptr<TaintManager> m_taint;
 	std::unique_ptr<BfmeLuaActionState> m_luaActions;
 	std::unique_ptr<ScriptEngine> m_scriptEngine;        // lane SCRIPT-1
 	CastleTemplateStore m_castleTemplates;
@@ -913,6 +927,7 @@ private:
 	int m_aiBasePlayer = -1;
 	Coord3D m_aiBaseCenter{};
 	float m_aiBaseRadius = 0;
+	std::set<ObjectID> m_aiReserved;
 	std::map<std::string, TimingHook> m_timingHooks;
 	bool m_fortressConstruction = false;
 	int m_peaceTimeMinutes = PeaceTime::kOff;
@@ -925,6 +940,8 @@ private:
 	int m_depth = 0;              ///< RW + 0x1B4 (the reentrancy counter)
 
 	Object *m_objectHead = nullptr, *m_objectTail = nullptr;
+	std::vector<Object *> m_wallObjects;
+	bool m_wallObjectsDirty = true;
 	size_t m_objectCount = 0;
 	unsigned m_containWorldTransitions = 0;
 	ObjectID m_nextObjectID = 1;

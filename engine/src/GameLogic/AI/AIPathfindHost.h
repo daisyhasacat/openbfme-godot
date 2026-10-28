@@ -116,6 +116,10 @@ enum PathfindKind
 	PK_BASE_SITE,                 // BASE_SITE (120)
 	PK_SUBMARINE,                 // SUBMARINE (187)
 	PK_WALL_UPGRADE,              // WALL_UPGRADE (150), lane PHYS-1: RW 0x6F37B3's wall branch
+	PK_ATTACK_NEEDS_LINE_OF_SIGHT, // ATTACK_NEEDS_LINE_OF_SIGHT (59): RW 0x6F4557's attackers (template + 0x10F bit 3)
+	PK_CAN_SHOOT_OVER_WALLS,      // CAN_SHOOT_OVER_WALLS (214): RW 0x6F4557's attackers (+ 0x122 bit 6) and RW 0x6F2D31's wall rule (+ 0x120 bit 22)
+	PK_WALL_SEGMENT,              // WALL_SEGMENT (189): a wall for RW 0x6F2D31 (+ 0x11F bit 5)
+	PK_WALL_GATE,                 // WALL_GATE (203): a wall for RW 0x6F2D31 (+ 0x121 bit 3)
 	PK_COUNT
 };
 
@@ -139,6 +143,8 @@ public:
 	virtual float getOrientation() const = 0;
 	virtual PathfindLayerEnum getLayer() const = 0;
 	virtual float getHeightAboveTerrain() const = 0;
+	// RW 0x70C55D (Object::isSignificantlyAboveTerrain): not CAN_CLIMB_WALLS / SHIP and higher above the terrain than GlobalData Gravity * -9; default false
+	virtual bool isSignificantlyAboveTerrain() const { return false; }
 	virtual bool isMobile() const = 0;
 	virtual bool isKindOf(PathfindKind kind) const = 0;
 	virtual const PathfindGeometry &getGeometry() const = 0;

@@ -583,6 +583,7 @@ bool GameLogicSettingsLoader::applyMapAIData(ArchiveFileSystem &fs, const std::s
 
 void GameLogicSettings::crc(StateHasher &h) const
 {
+	if (enhancedAI) { h.addU32(0x4149454Eu); } // explicit enhanced AI rules
 	// Native games keep their historical hash. Modified games identify every wall rule.
 	if (wallBalance.enabled) {
 		h.addU32(0x57414C4C); h.addU32(wallBalance.wallDamage); h.addU32(wallBalance.fortressDamage);

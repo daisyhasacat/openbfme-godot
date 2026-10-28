@@ -180,6 +180,18 @@
    "reason": "lane CAMP-2: the movies' VP6 picture decoder and EA's movie container (client presentation on the render clock); no logic state"
   },
   {
+   "glob": "src/GameClient/LivingWorldTerritorySelection.cpp",
+   "reason": "lane WOTR-1: lobby-only territory names, ownership groups and selection validation; does not serialize region IDs or change simulation state"
+  },
+  {
+   "glob": "src/GameClient/LivingWorldMap.cpp",
+   "reason": "lane WOTR-1: Living World map, territory and effect INI data for the strategic lobby; no logic state"
+  },
+  {
+   "glob": "src/GameClient/LivingWorldCampaign.cpp",
+   "reason": "lane WOTR-1: TheLivingWorldCampaignManager's LivingWorldCampaign INI blocks (the War of the Ring scenarios the lobby lists); data only, no logic state"
+  },
+  {
    "glob": "src/GameClient/LinearCampaign.cpp",
    "reason": "lane CAMP-1: TheLinearCampaignManager's LinearCampaign INI blocks and the shell's campaign progress (which mission to load next); no logic state, the logic gets only the map name and the difficulty"
   },
@@ -578,6 +590,10 @@
   {
    "glob": "src/GameNetwork/Transport.cpp",
    "reason": "lane MP-1: the UDP socket and the reliable per-peer delivery (resends, acks, the test harness's loss and delay): it decides WHEN a peer's bytes arrive, never what a logic frame contains (GameNetwork/Network.h decides that from the received data alone)"
+  },
+  {
+   "glob": "src/GodotDevice/GodotAptLivingWorld.cpp",
+   "reason": "lane WOTR-1: the mounted Living World map model in the APT menu viewport; client presentation and camera framing only, no simulation state"
   },
   {
    "glob": "src/GodotDevice/GodotAptView3D.cpp",

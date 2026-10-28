@@ -149,7 +149,7 @@ bool AIStrategy::capturing(const Object &unit)
 
 void AIStrategy::update(GameLogic &logic, AISkirmishPlayer &ai)
 {
- if (!ai.store || ai.disabled || ai.scriptControlled || ai.store->data().disableTacticalAI ||
+ if (!logic.settings().enhancedAI || !ai.store || ai.disabled || ai.scriptControlled || ai.store->data().disableTacticalAI ||
      ai.store->data().disableTeamBuilding || logic.peaceTimeActive()) return;
  if (logic.getFrame() % 5 != (unsigned)ai.playerIndex % 5) return;
  Player *player = logic.players().getNthPlayer(ai.playerIndex);
@@ -200,7 +200,7 @@ void AIStrategy::update(GameLogic &logic, AISkirmishPlayer &ai)
  for (Object *unit = logic.getFirstObject(); unit; unit = unit->getNextObject())
  {
   if (unit->getControllingPlayer() != player || !army(*unit) || !unit->getAIUpdateInterface() ||
-      ai.brain.siegeUnits.count(unit->getID()) || ai.brain.siegeEscorts.count(unit->getID())) continue;
+      ai.brain.siegeUnits.count(unit->getID()) || ai.brain.siegeEscorts.count(unit->getID()) || logic.aiReserved(*unit)) continue;
   Coord3D exclusionGoal;
   if (logic.aiBaseExclusion(*unit, exclusionGoal))
   {

@@ -11,6 +11,8 @@
 #include "GameClient/GUI/AptMessageBox.h"
 #include "GameClient/OptionPreferences.h"
 #include "Common/AsciiString.h"
+#include "GameClient/LivingWorldCampaign.h"
+#include "GameClient/LivingWorldMap.h"
 #include "GameLogic/CreateAHeroSystem.h"
 #include "GameClient/GUI/AptScreens/AptCreateAHero.h"
 #include "GameClient/CreateAHeroHeroList.h"
@@ -22,6 +24,7 @@
 #include "GameClient/GUI/PlatformIcons.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <iterator>
@@ -192,8 +195,8 @@ const std::vector<std::string> &AptSkirmish::lobbyNames()
 	return names;
 }
 
-AptSkirmish::AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment)
-	: AptSkirmish(windows, shell, environment, "Skirmish.apt", "AptSkirmish", false)
+AptSkirmish::AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment, int mode)
+	: AptSkirmish(windows, shell, environment, "Skirmish.apt", "AptSkirmish", false, mode)
 {
 }
 
@@ -203,9 +206,23 @@ AptSkirmish::~AptSkirmish()
 	windows().clearRenderPicture("AptMapPreview::Picture");
 }
 
-AptSkirmish::AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment, const char *filename, const char *codePrefix, bool lan)
+AptSkirmish::AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment, const char *filename, const char *codePrefix, bool lan, int mode)
 	: AptScreen(windows, shell, filename, codePrefix), m_env(environment), m_lan(lan)
 {
+	// lane WOTR-1: the mode is the screen's from its creation (BFME2 AptSkirmish ctor -> AptMpGameSetup::rva004422B4(arg): the map preview's mode at + 0x1C and
+	// the colour list); the movie asks it through AptMapPreview::GameMapType and loads Skirmish<OpenPlay|Strategic>.swf
+	m_strategic = mode == 1;
+	m_gameMapType = m_strategic ? "Strategic" : "OpenPlay";
+	if (m_strategic)
+	{
+		for (const std::string &line : LivingWorldCampaignManager::stopLines())
+		{
+			windows.note("unported", line);
+		}
+		for (const std::string &line : LivingWorldMapStore::stopLines()) windows.note("unported", line);
+		windows.note("unported", "[S-5301] LivingWorld territory picks are lobby-local names; strategic region-ID persistence/network serialization, native hit-test and start-eligibility flag parity remain unverified; visual effects use S-5304 presentation");
+		windows.note("unported", "[S-5302] the War of the Ring lobby's StartGame: the strategic game it starts is not ported; the lobby refuses with a box");
+	}
 	m_profiles = environment.profiles;
 	if (!m_profiles)
 	{
@@ -227,6 +244,7 @@ AptSkirmish::AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment 
 			environment.fileSystem && environment.fileSystem->aotrProfile());
 		if (environment.options)
 		{
+			m_setup->setEnhancedAI(environment.options->enhancedAI());
 			m_setup->setSimulationProfile(environment.options->simulationProfile()); // lane UBER-1: the OpenBFME option Uber performance mode
 		}
 		if (!m_setup->init(playerName(), environment.newGame->newGameSeed(), std::string(), &m_error))
@@ -234,9 +252,13 @@ AptSkirmish::AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment 
 			windows.note("skirmish-setup-failed", m_error);
 			m_setup.reset();
 		}
-		else if (!lan)
+		else
 		{
-			restoreGame(0); // lane UI-6: a skirmish lobby (mode 0) until the movie says Strategic (setGameMapType)
+			m_setup->setStrategicMode(m_strategic); // WOTR-1: the colours AvailableInWotR, the War of the Ring rule table
+			if (!lan)
+			{
+				restoreGame(m_strategic ? 1 : 0); // lane UI-6: the lobby's kept game of its mode (0 skirmish, 1 War of the Ring)
+			}
 		}
 	}
 	// lane UI-2: the map window's inferences (GadgetMapPreview.cpp, AptSkirmish::updateCurrentMapWindow)
@@ -290,9 +312,30 @@ void AptSkirmish::registerAll()
 void AptSkirmish::registerProfileCommands()
 {
 	// the commands below prune first (see pruneDeadGadgets)
-	registerCommand("AptSkirmish::SuppressStrategicPromo", [this](const std::string &) {
-		m_suppressStrategicPromo = true;
-		windows().note("unported-command", "AptSkirmish::SuppressStrategicPromo: remembered for this screen only, no preference is written [S-179]");
+	// lane WOTR-1: RW 0x9296A3 is an extern handler (query, value, set; ret 0xC), not a command: a read answers "1" when Options.ini's
+	// SuppressStrategicPromo is "true" (RW 0x6E63A0 -> 0x6E5E72: absent is false, the value compared without case), else "0"; a set stores the movie's
+	// value under that key and writes the file (RW 0x7B274C). The strategic lobby's movie asks it before it shows its War of the Ring promotion
+	registerProvider("AptSkirmish::SuppressStrategicPromo", [this](const std::string &, std::string &value, bool setting) {
+		OptionPreferences *options = m_env.options;
+		if (setting)
+		{
+			m_suppressStrategicPromo = AsciiStringUtil::compareNoCase(value, "true") == 0;
+			if (!options)
+			{
+				windows().note("options-missing", "AptSkirmish::SuppressStrategicPromo: no Options.ini is loaded; the value is kept for this screen only");
+				return true;
+			}
+			options->set("SuppressStrategicPromo", value);
+			std::string error;
+			if (m_env.optionsFile.empty() || !options->save(m_env.optionsFile, &error))
+			{
+				windows().note("options-save-failed", m_env.optionsFile.empty() ? std::string("Options.ini: no file name") : error);
+			}
+			return true;
+		}
+		const bool suppressed = options ? AsciiStringUtil::compareNoCase(options->get("SuppressStrategicPromo"), "true") == 0 : m_suppressStrategicPromo;
+		value = suppressed ? "1" : "0";
+		return true;
 	});
 	// lane MENU-1: RW 0x9280FD (state 8; the update makes it 9) and RW 0x9281C0 (8 or 9 -> 7). The profile page itself is Skirmish.apt's: its
 	// _open_profile loads Stats.swf into SkirmishStats once _close has closed the game setup (_root[vScreenName]); the page's contents (AptStats'
@@ -664,6 +707,11 @@ void AptSkirmish::keepGame()
 	m_profiles->setProfileValue(mode, kPeaceKey, std::to_string(m_setup->info().peaceTimeMinutes));
 	m_profiles->setProfileValue(mode, kLegendaryKey, std::to_string(m_setup->info().legendaryHeroes)); // lane UI-6 review: OpenBFME's own keys
 	m_profiles->setProfileValue(mode, kHeroesKey, extensionHeroes());
+	if (m_strategic && m_strategicScenario >= 0)
+	{
+		// lane WOTR-1: BFME2 GameModePreferences::setStrategicScenario (0x0044D5EE): "StrategicScenario" in the War of the Ring mode's preferences
+		m_profiles->setProfileValue(mode, "StrategicScenario", std::to_string(m_strategicScenario));
+	}
 	m_profiles->flush();
 }
 
@@ -803,13 +851,13 @@ void AptSkirmish::registerLobby()
 		windows().note("unported-gadget-init", "AptMpClans::InitGadgets(" + name + ") [S-178]");
 	});
 	// ---- providers ----
+	// lane WOTR-1: RW 0x975750 (BFME2 AptMapPreview::GameMapType 0x0057C549): a query answered from the preview's mode (+ 0x1C: 0 "OpenPlay", 1
+	// "Strategic"); a set does nothing. The mode is the screen's from its creation (AptSkirmish::OpenScreen's argument)
 	registerProvider("AptMapPreview::GameMapType", [this](const std::string &, std::string &value, bool setting) {
-		if (setting)
+		if (!setting)
 		{
-			setGameMapType(value);
-			return true;
+			value = m_gameMapType;
 		}
-		value = m_gameMapType;
 		return true;
 	});
 	registerProvider("MpGameSetup::HostMode", [this](const std::string &, std::string &value, bool setting) {
@@ -1171,32 +1219,6 @@ void AptSkirmish::refreshLobby()
 	updateMapPreview();
 }
 
-void AptSkirmish::setGameMapType(const std::string &type)
-{
-	m_gameMapType = type;
-	const bool wasStrategic = m_strategic;
-	m_strategic = type == "Strategic"; // MpGameSetup+0x7C == 1
-	if (m_setup)
-	{
-		m_setup->setStrategicMode(m_strategic);
-		if (m_strategic && !wasStrategic && !m_lan)
-		{
-			restoreGame(1); // lane UI-6: the War of the Ring lobby's kept game (mode 1)
-		}
-	}
-	for (int slot = 0; slot < MAX_SLOTS; ++slot)
-	{
-		for (GameWindow *w : m_slots[slot])
-		{
-			if (w && slot >= 6)
-			{
-				w->winHide(m_strategic);
-			}
-		}
-	}
-	refreshAll();
-}
-
 GameWindow *AptSkirmish::slotGadget(int slot, const std::string &leaf) const
 {
 	if (slot < 0 || slot >= MAX_SLOTS)
@@ -1386,6 +1408,28 @@ void AptSkirmish::initMapPreviewGadget(const std::string &name, GameWindow *wind
 	{
 		m_mapPicture = window;
 	}
+	else if (name == "StrategicScenarioType")
+	{
+		// lane WOTR-1: BFME2 AptMapPreview::MapGadgetInit (0x0057E25D): the combo (+ 0x50), then PopulateStrategicScenario
+		m_strategicScenarioCombo = window;
+		populateStrategicScenarios();
+	}
+	else if (name == "StrategicScenarioDescription")
+	{
+		m_strategicScenarioDesc = window; // + 0x54, then UpdateStrategicScenarioDesc
+		updateStrategicScenarioDescription();
+	}
+	else if (name == "StrategicTerritoryDescription")
+	{
+		m_strategicTerritoryDesc = window; // + 0x58: the region under the mouse on the LivingWorld window (OnMouseoverRegionChanged_internal 0x0057D746)
+	}
+	else if (name == "LivingWorld")
+	{
+		// BFME2 0x0057E25D: the preview listens to the LivingWorld window (AptLivingWorldWindow: the strategic map's regions, the start region picks of
+		// rva0057D85D, the start sets UpdateStrategicStartSpots 0x0057DB97) and selects campaign 0 on it. That window is not ported [S-5301]
+		windows().note("unported-gadget-init", "[S-5301] AptMapPreview::MapGadgetInit(LivingWorld): the strategic map window is not ported; "
+			"the device viewer handles local hover and picking; native listener/region-ID parity remains S-5301");
+	}
 	else if (name == "CurrentMap")
 	{
 		m_currentMap = window;
@@ -1398,6 +1442,120 @@ void AptSkirmish::initMapPreviewGadget(const std::string &name, GameWindow *wind
 		}
 	}
 	updateMapPreview();
+}
+
+// ---- the War of the Ring panel (lane WOTR-1) ------------------------------------------------------------------------------------------------------
+
+namespace
+{
+// BFME2 Rva00326CF0AddLines (GadgetListBoxAddEntryTextLines.cpp, retail 0x00326CF0): one entry per '\n'-separated line (an empty line is a space), the row
+// counting up from the given one
+int listBoxAddLines(GameWindow *listbox, const std::u16string &text, Color color, int row, int column, bool overwrite)
+{
+	std::u16string line;
+	int added = 0;
+	for (std::size_t i = 0; i <= text.size(); ++i)
+	{
+		const char16_t c = i < text.size() ? text[i] : u'\0';
+		if (c == u'\n' || c == u'\0')
+		{
+			if (line.empty())
+			{
+				line.push_back(u' ');
+			}
+			GadgetListBoxAddEntryText(listbox, line, color, row++, column, overwrite);
+			++added;
+			line.clear();
+		}
+		else
+		{
+			line.push_back(c);
+		}
+	}
+	return added;
+}
+} // namespace
+
+const StrategicScenario *AptSkirmish::findStrategicScenario(int campaignIndex) const
+{
+	if (!m_env.skirmish)
+	{
+		return nullptr;
+	}
+	for (const StrategicScenario &s : m_env.skirmish->strategicScenarios())
+	{
+		if (s.campaignIndex == campaignIndex)
+		{
+			return &s;
+		}
+	}
+	return nullptr;
+}
+
+void AptSkirmish::populateStrategicScenarios()
+{
+	// BFME2 AptMapPreview::PopulateStrategicScenario (0x0057D4F3): the combo refilled with the campaign manager's scenarios (their DisplayName through the
+	// game text), each entry's item data its campaign index; the first selected, then the description
+	if (!m_strategicScenarioCombo)
+	{
+		return;
+	}
+	m_refreshing = true;
+	GadgetComboBoxReset(m_strategicScenarioCombo);
+	const std::vector<StrategicScenario> none;
+	const std::vector<StrategicScenario> &scenarios = m_env.skirmish ? m_env.skirmish->strategicScenarios() : none;
+	for (const StrategicScenario &s : scenarios)
+	{
+		const int index = GadgetComboBoxAddEntry(m_strategicScenarioCombo, fetchOrMissing(m_env.gameText, s.displayName), 0xFFFFFFFFu);
+		GadgetComboBoxSetItemData(m_strategicScenarioCombo, index, (void *)(std::intptr_t)s.campaignIndex);
+	}
+	if (scenarios.empty())
+	{
+		windows().note("strategic-scenarios", "the setup source lists no War of the Ring scenario (TheLivingWorldCampaignManager has no LivingWorldCampaign with a Scenario)");
+	}
+	// the scenario this profile kept (BFME2 GameModePreferences::getStrategicScenario 0x0044D5A5, -1 when unset), else the first entry
+	int position = 0;
+	const std::string kept = m_profiles ? m_profiles->profileValue(1, "StrategicScenario") : std::string();
+	if (!kept.empty())
+	{
+		const int wanted = std::atoi(kept.c_str());
+		for (std::size_t i = 0; i < scenarios.size(); ++i)
+		{
+			if (scenarios[i].campaignIndex == wanted)
+			{
+				position = (int)i;
+				break;
+			}
+		}
+	}
+	GadgetComboBoxSetSelectedPos(m_strategicScenarioCombo, position, false);
+	m_refreshing = false;
+	m_strategicScenario = scenarios.empty() ? -1 : scenarios[(std::size_t)position].campaignIndex;
+	updateStrategicScenarioDescription();
+}
+
+void AptSkirmish::selectStrategicScenario(int campaignIndex)
+{
+	// BFME2 AptMapPreview::SelectCampaign (0x0057CA2D): the LivingWorld window's campaign (not ported, S-5301), then the description
+	m_strategicScenario = findStrategicScenario(campaignIndex) ? campaignIndex : -1;
+	updateStrategicScenarioDescription();
+}
+
+void AptSkirmish::updateStrategicScenarioDescription()
+{
+	// BFME2 AptMapPreview::UpdateStrategicScenarioDesc (0x0057C99E): the list reset, then the scenario's DisplayDescription through the game text as lines
+	if (!m_strategicScenarioDesc)
+	{
+		return;
+	}
+	GadgetListBoxReset(m_strategicScenarioDesc);
+	const StrategicScenario *s = findStrategicScenario(m_strategicScenario);
+	if (!s)
+	{
+		return;
+	}
+	listBoxAddLines(m_strategicScenarioDesc, fetchOrMissing(m_env.gameText, s->displayDescription), 0xFFFFFFFFu, -1, 0, true);
+	GadgetListBoxSetTopVisibleEntry(m_strategicScenarioDesc, 0);
 }
 
 // ---- lobby ----------------------------------------------------------------------------------------------------------------------------------------
@@ -1854,13 +2012,16 @@ void AptSkirmish::updateMapPreview()
 	// lane UI-2 (owner feedback F5, "no map name"): RotWK's map-info update RW 0x976497 (MapInfo present, not the strategic lobby) sets
 	// APT:CurrentMapName to the map's display name without the player count (RW 0x7022BF) and APT:LobbyGameType to the binary's own literal
 	// u"Free For All" (RW 0xC84F30); with no map both are the empty string (RW 0x976748 .. 0x9767C0)
-	if (m_mapInfo)
+	if (m_mapInfo && !m_strategic)
 	{
 		windows().setAptText("APT:CurrentMapName", map ? u16ToUtf8(m_setup->mapDisplayName(*map, false)) : std::string());
 		windows().setAptText("APT:LobbyGameType", map ? std::string("Free For All") : std::string());
 	}
 	updateCurrentMapWindow(map);
-	updateMapStartSpots(); // lane FB7-1: the spots' labels for the slots' positions (RW 0x7052BE)
+	if (!m_strategic) // lane WOTR-1: the strategic lobby's start positions are regions (BFME2 0x0057DDAE returns before UpdateMapStartSpots)
+	{
+		updateMapStartSpots(); // lane FB7-1: the spots' labels for the slots' positions (RW 0x7052BE)
+	}
 	if (m_mapInfo)
 	{
 		GadgetListBoxReset(m_mapInfo);
@@ -1946,6 +2107,14 @@ void AptSkirmish::updateCurrentMapWindow(const MapCacheEntry *map)
 	// RW 0x9772E6 (the lobby, not the strategic one: +0x1C != 1) on the CurrentMap window (+0x20)
 	if (!m_currentMap)
 	{
+		return;
+	}
+	if (m_strategic)
+	{
+		// lane WOTR-1: BFME2 rva0057DDAE (0x0057DDAE): the strategic lobby shows the mapped image "AptLWMap", the Middle-earth map, and no start spots
+		m_currentMap->winSetEnabledImage(1, std::string());
+		m_currentMap->winSetStatus(WIN_STATUS_IMAGE);
+		m_currentMap->winSetEnabledImage(0, "AptLWMap");
 		return;
 	}
 	GameWindow *window = m_currentMap;
@@ -2261,6 +2430,17 @@ void AptSkirmish::onComboSelected(GameWindow *combo)
 	{
 		return;
 	}
+	if (combo && combo == m_strategicScenarioCombo)
+	{
+		// lane WOTR-1: the scenario combo (BFME2 0x0057CDA1: a selection of the + 0x50 combo -> SelectCampaign of its item data)
+		int selected = -1;
+		GadgetComboBoxGetSelectedPos(combo, &selected);
+		if (selected >= 0)
+		{
+			selectStrategicScenario((int)(std::intptr_t)GadgetComboBoxGetItemData(combo, selected));
+		}
+		return;
+	}
 	if (combo == m_mapType)
 	{
 		int selected = -1;
@@ -2520,6 +2700,7 @@ void AptSkirmish::onMapListSelected(int row)
 		windows().note("map-unknown", key);
 		return;
 	}
+	m_setup->adjustSlotsForMap();
 	refreshAll();
 	updateMapPreview();
 	keepGame(); // persist the chosen map before leaving the lobby or starting a game
@@ -2553,6 +2734,13 @@ bool AptSkirmish::startGame()
 		if (line.kind == 1)
 		{
 			m_env.newGame->startRefused(std::u16string(), line.text);
+			// RW 0x928482 -> MessageBoxOk: reporting to the sink alone does
+			// not put the refusal on screen in the Godot host.
+			if (!m_ruleBox)
+			{
+				m_ruleBox = std::make_unique<AptMessageBox>(windows(), shell());
+			}
+			m_ruleBox->show(AptMessageBox::TYPE_OK, std::u16string(), line.text);
 		}
 	}
 	if (!check.ok)
@@ -2563,6 +2751,14 @@ bool AptSkirmish::startGame()
 	if (check.sandbox)
 	{
 		windows().note("sandbox", "AptSkirmish::StartGame: one team: a sandbox game (GUI:SandboxMode, RW 0x8436D8; the skirmish owner shows no kind 0 line)");
+	}
+	if (m_strategic)
+	{
+		// lane WOTR-1: the War of the Ring lobby passed RotWK's start check; the strategic game it starts (the Living World map, BFME2 AptSkirmish::
+		// StartGameAfterCDCheck 0x00521CFF) is not ported [S-5302]. The box says so (lane MENUWORK-1's style); no battle is started in its place
+		windows().note("unported", "[S-5302] AptSkirmish::StartGame: the War of the Ring strategic game is not ported");
+		m_env.newGame->startRefused(std::u16string(), u"The War of the Ring strategy map is not available yet: OpenBFME has its lobby, not the game.");
+		return false;
 	}
 	const NewGameMessage message = m_setup->makeNewGameMessage();
 	const std::vector<std::string> unresolved = message.game.unresolvedRandomChoices();
@@ -2785,4 +2981,18 @@ void AptSkirmish::refreshBfme1Profile()
 		if (!windows().invokeAS(level(), "ShowSkirmishMovie", { selected ? std::to_string(faction) : "0" }, nullptr, &error)) windows().note("profile-movie", error);
 		if (!windows().invokeAS(level(), "SetProgressBar", { std::to_string(selected ? bfme1RankProgress(side) : 0) }, nullptr, &error)) windows().note("profile-progress", error);
 	}
+}
+
+void AptSkirmish::hoverStrategicTerritory(const LivingWorldRegion *region)
+{
+	// BFME2 AptMapPreview::OnMouseoverRegionChanged_internal (0x57D746):
+	// clear the list, then localized region name + newline + localized description.
+	if (!m_strategicTerritoryDesc) return;
+	GadgetListBoxReset(m_strategicTerritoryDesc);
+	if (!region) return;
+	auto text=fetchOrMissing(m_env.gameText,region->displayName);
+	if (!region->displayDescription.empty()) text+=u"\n"+fetchOrMissing(m_env.gameText,region->displayDescription);
+	else if (m_setup) { if (const auto *map=m_setup->findMap(region->mapName)) text+=u"\n"+m_setup->mapDescription(*map); }
+	listBoxAddLines(m_strategicTerritoryDesc,text,0xFFFFFFFFu,0,0,true);
+	GadgetListBoxSetTopVisibleEntry(m_strategicTerritoryDesc,0);
 }
