@@ -194,7 +194,7 @@ void AIStrategy::update(GameLogic &logic, AISkirmishPlayer &ai)
      if (ability->isActive()) assigned.insert(ability->targetID());
  std::vector<Object *> enemies;
  for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
-  if (o->isInWorld() && !o->getContainedBy() && CombatQueries::isAttackable(*o) &&
+  if (o->isInWorld() && !o->getContainedBy() && CombatQueries::isAutoAttackTarget(*o) &&
       player->getRelationship(o->getTeam()) == ENEMIES && visible(logic, *o, ai.playerIndex) &&
       !AIFortification::passiveBarrier(*o)) enemies.push_back(o);
  for (Object *unit = logic.getFirstObject(); unit; unit = unit->getNextObject())

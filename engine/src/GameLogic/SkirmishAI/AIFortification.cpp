@@ -194,7 +194,7 @@ BreachRoute breachRoute(GameLogic &logic,const Player &player,const Coord3D &bas
  if(!barriers)return route;
  float best=0;
  for(Object *o=logic.getFirstObject();o;o=o->getNextObject()) {
-  if(!o->isInWorld() || !CombatQueries::isAttackable(*o) || player.getRelationship(o->getTeam())!=ENEMIES ||
+  if(!o->isInWorld() || !CombatQueries::isAutoAttackTarget(*o) || player.getRelationship(o->getTeam())!=ENEMIES ||
    !o->isKindOfName("STRUCTURE") || AIFortification::passiveBarrier(*o) || o->isKindOfName("IGNORE_FOR_VICTORY"))continue;
   float d=CombatQueries::centerDistanceSquared2D(base,*o->getPosition());
   if(!route.objective || d<best || (d==best && o->getID()<route.objective->getID())) {route.objective=o;best=d;}

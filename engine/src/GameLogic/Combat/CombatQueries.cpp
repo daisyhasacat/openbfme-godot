@@ -92,6 +92,12 @@ bool isAlive(const Object &obj)
 	return !obj.isDestroyed() && !obj.isEffectivelyDead();
 }
 
+bool isAutoAttackTarget(const Object &obj)
+{
+	return isAttackable(obj) && !(obj.isKindOfName("STRUCTURE") &&
+		(obj.isKindOfName("CAPTURABLE") || obj.isKindOfName("LINKED_TO_FLAG")));
+}
+
 bool isAttackable(const Object &obj)
 {
 	const CombatNames::Kind &k = CombatNames::kinds();

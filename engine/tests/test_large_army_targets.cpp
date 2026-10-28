@@ -206,3 +206,30 @@ TEST_CASE("large army targets: creation, death, containment and reset preserve p
 	w.logic->destroyObject(enemy);
 	CHECK(finder.findClosestEnemy(*seeker, 100, 0, CMD_FROM_AI) == nullptr);
 }
+
+TEST_CASE("automatic targeting	preserves enemy capture buildings for human and computer units")
+{
+	combattest::CombatWorld w(
+		"ChildObject CaptureBuilding Dummy\n KindOf = STRUCTURE CAPTURABLE\nEnd\n"
+		"ChildObject LinkedBuilding Dummy\n KindOf = STRUCTURE LINKED_TO_FLAG\nEnd\n"
+		"ChildObject OrdinaryBuilding Dummy\n KindOf = STRUCTURE\nEnd\n");
+	w.combat().setAutoAcquireEnabled(false);
+	auto *unit = w.unit("Slasher", 'A', 200, 200);
+	auto *capture = w.unit("CaptureBuilding", 'B', 220, 200);
+	auto *linked = w.unit("LinkedBuilding", 'B', 240, 200);
+	auto &finder = w.combat().targets();
+	for (auto owner : {PLAYER_HUMAN, PLAYER_COMPUTER})
+	{
+		w.playerOf('A')->setPlayerType(owner, true);
+		CHECK(finder.findClosestEnemy(*unit, 200, TargetFinder::ALLOW_STRUCTURES, CMD_FROM_AI) == nullptr);
+		CHECK(unit->getWeapons()->canAttackObject(*capture, CMD_FROM_PLAYER, false));
+		CHECK(unit->getWeapons()->canAttackObject(*linked, CMD_FROM_PLAYER, false));
+	}
+	auto *ordinary = w.unit("OrdinaryBuilding", 'B', 260, 200);
+	finder.reset();
+	for (auto owner : {PLAYER_HUMAN, PLAYER_COMPUTER})
+	{
+		w.playerOf('A')->setPlayerType(owner, true);
+		CHECK(finder.findClosestEnemy(*unit, 200, TargetFinder::ALLOW_STRUCTURES, CMD_FROM_AI) == ordinary);
+	}
+}

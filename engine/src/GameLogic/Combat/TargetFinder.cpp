@@ -188,7 +188,7 @@ Object *TargetFinder::findClosestEnemyNear(const Object &seeker, const Coord3D &
 	float bestD = 0.0f;
 	for (Object *o : near)
 	{
-		if (o == &seeker || seeker.getRelationship(*o) != ENEMIES)
+		if (o == &seeker || seeker.getRelationship(*o) != ENEMIES || !CombatQueries::isAutoAttackTarget(*o))
 		{
 			continue;
 		}
