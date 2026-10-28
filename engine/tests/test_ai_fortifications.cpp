@@ -6,6 +6,7 @@
 #include "Common/Thing/ThingFactory.h"
 #include "GameClient/ControlBarCommands.h"
 #include "GameLogic/Combat/TargetFinder.h"
+#include "GameLogic/Object/PartitionManager.h"
 #include "GameLogic/AI/AIStateMachine.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/SkirmishAI/AIFortification.h"
@@ -819,4 +820,128 @@ TEST_CASE("source AI spatial groups: snapshot preserves selection and registrati
 	AIPositionSampler refused;
 	XferLoad bad(corrupt.data());
 	CHECK_THROWS_WITH(refused.xfer(bad), "skirmish ai: spatial groups differ from registrations");
+}
+
+TEST_CASE("source AI defense: native target groups create and recruit SimpleDefense on every difficulty")
+{
+	for (int difficulty = 0; difficulty < 4; ++difficulty)
+	{
+		CAPTURE(difficulty);
+		Scenario s;
+		s.w.logic->settings().enhancedAI = false;
+		REQUIRE(s.w.w
+					.load("SkirmishAIData NativeDefense\nEnd\nArmyDefinition NativeAlpha\n Side = Alpha\n TacticalAITargets = DEFENSIVE\n "
+						  "MaxTeamsPerTarget = 1\nEnd\n")
+					.empty());
+		Object *base = s.w.unit("BreachWorkshop", 'A', 100, 500);
+		s.w.unit("BreachWall", 'A', 120, 500);
+		Object *enemy = s.w.unit("Swordsman", 'B', 150, 500);
+		std::vector<ObjectID> own;
+		for (int i = 0; i < 4; ++i)
+			own.push_back(s.w.unit("Swordsman", 'A', 80, (float)(i == 0 ? 490 : 440 + i * 10))->getID());
+		auto &manager = s.w.logic->skirmishAI();
+		manager.setStore(&s.store);
+		manager.newGame(true);
+		auto *player = s.w.players.findPlayerWithName("Alice");
+		player->setSkirmishDifficulty(difficulty);
+		for (const auto &group : manager.groups())
+			for (int index : group->members)
+				manager.setScriptControlled(index, true);
+		auto *ai = const_cast<AISkirmishPlayer *>(manager.findAI(player->getPlayerIndex()));
+		REQUIRE(ai);
+		REQUIRE(ai->army);
+		ai->brain.farmKillEarly = false;
+		s.w.frames(50);
+		s.w.logic->partition().update();
+		AITacticalAI::updateBrain(*s.w.logic, *ai, ai);
+		REQUIRE(ai->brain.targets.size() == 1);
+		CHECK(ai->brain.targets[0].object == enemy->getID());
+		CHECK(ai->brain.targets[0].defenseSize == 1);
+		CHECK(ai->brain.targets[0].radius == 200.0f);
+		REQUIRE(ai->brain.tactics.size() == 1);
+		auto &defense = ai->brain.tactics[0];
+		CHECK(defense.kind == "SimpleDefense");
+		REQUIRE(defense.teams.size() == 1);
+		CHECK(defense.teams[0].maximum == 3);
+		CHECK(defense.teams[0].type == 1);
+		AITacticalAI::updateTeamBuilder(*s.w.logic, *ai);
+		CHECK(defense.teams[0].members.size() == 3);
+		CHECK((defense.teams[0].members == std::vector<ObjectID>{own[0], own[3], own[2]}));
+		CHECK(defense.teams[0].hasRecruitOrigin);
+		CHECK(defense.teams[0].recruitOrigin.x == enemy->getPosition()->x);
+		CHECK(defense.teams[0].handedOver);
+		AITacticalAI::updateBrain(*s.w.logic, *ai, ai);
+		AITacticalAI::updateBrain(*s.w.logic, *ai, ai);
+		CHECK(ai->brain.attacksLaunched == 1);
+		CHECK(base->getControllingPlayer() == player);
+	}
+}
+
+TEST_CASE("source AI defense: small group chance and large group half-army sizing survive snapshots")
+{
+	for (int structures : {1, 3})
+	{
+		CAPTURE(structures);
+		Scenario s;
+		s.w.logic->settings().enhancedAI = false;
+		REQUIRE(s.w.w
+					.load("SkirmishAIData NativeDefense\nEnd\nArmyDefinition NativeAlpha\n Side = Alpha\n TacticalAITargets = DEFENSIVE\n "
+						  "MaxTeamsPerTarget = 1\nEnd\n")
+					.empty());
+		for (int i = 0; i < structures; ++i)
+			s.w.unit("BreachWorkshop", 'A', (float)(100 + i * 20), 500);
+		Object *enemy = s.w.unit("Swordsman", 'B', 150, 500);
+		for (int i = 0; i < 5; ++i)
+			s.w.unit("Swordsman", 'A', 80, (float)(450 + i * 10));
+		auto &manager = s.w.logic->skirmishAI();
+		manager.setStore(&s.store);
+		manager.newGame(true);
+		for (const auto &group : manager.groups())
+			for (int index : group->members)
+				manager.setScriptControlled(index, true);
+		const int player = s.w.players.findPlayerWithName("Alice")->getPlayerIndex();
+		auto *ai = const_cast<AISkirmishPlayer *>(manager.findAI(player));
+		REQUIRE(ai);
+		ai->brain.farmKillEarly = false;
+		auto &random = s.w.logic->random();
+		random.seedRandom(1);
+		GameLogicRandom oracle = random;
+		(void)oracle.getValue(0, 0, "AITargetChooser.cpp", 0xB8);
+		(void)oracle.getValue(0, 0, "AITargetHeuristicBaseDefense.cpp", 0x57);
+		const int roll = oracle.getValue(0, 100, "AITargetHeuristicBaseDefense.cpp", 0x60);
+		random.enableCallLog(true);
+		random.clearCallLog();
+		AITacticalAI::updateBrain(*s.w.logic, *ai, ai);
+		REQUIRE(ai->brain.targets.size() == 1);
+		const bool accepts = structures != 1 || roll < 30; // Native 30/101 small-base gate; larger groups do not make this draw.
+		CHECK(ai->brain.targets[0].inactive == !accepts);
+		CHECK(ai->brain.targets[0].defenseSize == (structures == 1 ? 0 : 2));
+		bool gateFound = false;
+		for (const auto &call : random.callLog())
+			if (call.file == "AITargetHeuristicBaseDefense.cpp" && call.line == 0x60)
+			{
+				gateFound = true;
+				CHECK(call.lo == 0);
+				CHECK(call.hi == 100);
+				CHECK(call.result == roll);
+			}
+		CHECK(gateFound == (structures == 1));
+		if (accepts)
+		{
+			CHECK(ai->brain.targets[0].object == enemy->getID());
+			REQUIRE(ai->brain.tactics.size() == 1);
+			CHECK(ai->brain.tactics[0].teams[0].maximum == (structures == 1 ? 1 : 2));
+			XferSave save;
+			manager.xfer(save);
+			ai->brain.targets[0].defenseSize = 1;
+			XferLoad load(save.data());
+			manager.xfer(load);
+			const auto *restored = manager.findAI(player);
+			REQUIRE(restored);
+			CHECK(restored->brain.targets[0].defenseSize == (structures == 1 ? 0 : 2));
+			CHECK(restored->brain.tactics[0].kind == "SimpleDefense");
+			CHECK(restored->brain.tactics[0].teams[0].hasRecruitOrigin);
+			CHECK(restored->brain.tactics[0].teams[0].recruitOrigin.x == enemy->getPosition()->x);
+		}
+	}
 }

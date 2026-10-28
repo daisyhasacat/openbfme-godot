@@ -62,11 +62,11 @@
 //     + 0x38 = the average of the team centres), the origin + 0x44 (the first position), vslot 0x20, RW 0x8F144C, vslot 0x2C (RW 0x8F2784: the retreat on a
 //     negative threat); SimpleAttack's started update RW 0x9B4DE7 ends the tactic with success when every team is idle for TeamTimeUntilConsideredIdle seconds
 //     (RW 0x8F175A / 0x8F1725) or the target is inactive.
-// What is not ported (stops S-417 / S-418, reported at runtime): the other 8 offensive tactics (the pick draws among the 2 SimpleAttack prototypes only), the
-// DEFENSIVE / OPPORTUNITY / EXPANSION heuristics and tactics, the targetless tactics (RW 0x90C5E2: FarmBuilder, StructureCreep, ...), the AIThreatFinder (threat
-// taken as 0: no draw at RW 0x90B2A0), RW 0x6C7344, RW 0x90CCCB, RW 0x8F144C (the teams' AIGroup step) and RW 0x8F2784's retreat (no threat finder), the other tactics'
-// launch / update bodies, the end's merge of the teams, the AI team objects (members stay in the player's team), the pathfinder check of RW 0x9EF9AF (taken as reachable), the filters
-// RW 0x97D425 / 0x97CC29 / 0x9A24FC in full (RW 0x88B897: lane DECOMP-3, AIStatCollector).
+// Current remaining stops S-417 / S-418: strategic expansion; native siege bodies and their path check (taken as reachable);
+// the capture-flag historical registry; ten targetless bodies and FarmKillSquad's full farm choice; native AI team objects;
+// formation layouts/attack march and group speed matching; team reassignment; and RW 0x90CCCB. The stat/threat collectors,
+// attacked-at records, threat gate, retreat, offensive bodies other than siege, and native DEFENSIVE/SimpleDefense are ported.
+// Their numeric, path and object-lifecycle inferences remain explicitly registered in the corresponding runtime stops.
 
 #pragma once
 
@@ -93,6 +93,7 @@ struct AISkirmishGroup;
 struct AITarget
 {
 	int type = 0;                    ///< + 0x04 (AITARGET index)
+	int defenseSize = 0;             ///< + 0x2C: 0 small / 1 medium / 2 large spatial base group
 	std::uint32_t frame = 0;         ///< + 0x08 (0 at creation, the frame it was set; -1 after a reset)
 	Coord3D position;                ///< + 0x0C
 	bool inactive = true;            ///< + 0x18
@@ -121,6 +122,8 @@ struct AITacticTeam
 	bool wantsMembers = true;        ///< + 0x31C
 	bool handedOver = false;         ///< + 0x31D
 	std::vector<ObjectID> members;   ///< S-418: the recruited units (RW: the team's members)
+	bool hasRecruitOrigin = false;   ///< native prototype +0x324
+	Coord3D recruitOrigin{};         ///< native prototype +0x328: sort recruits by distance from this point
 	Coord3D lastPosition;            ///< tactic team entry + 0x04: the team centre when it last moved (RW 0x8F135E)
 	int index = 0;                   ///< the pooled prototype's + 0x2DC: the team's index in its tactic (RW 0x8F128B / 0x8F12C3 look teams up by it)
 	int idleFrames = 0;              ///< entry + 0x10: frames without moving or fighting (RW 0x8F135E; done at TeamTimeUntilConsideredIdle seconds, RW 0x8F1725)

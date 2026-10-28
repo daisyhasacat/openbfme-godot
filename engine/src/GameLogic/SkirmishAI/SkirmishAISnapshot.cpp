@@ -295,6 +295,8 @@ void xferBrain(Xfer &x, AIBrainState &b)
 	for (AITarget &t : b.targets)
 	{
 		x.xferInt(&t.type);
+		x.xferInt(&t.defenseSize);
+		AIXfer::inRange(t.defenseSize, 0, 2, "skirmish ai: a defensive target size");
 		x.xferUnsignedInt(&t.frame);
 		AIXfer::coord(x, t.position);
 		x.xferBool(&t.inactive);
@@ -329,8 +331,8 @@ void xferBrain(Xfer &x, AIBrainState &b)
 		{
 			// an offensive prototype 0 .. 7 by its name, or a targetless one (100 + 0 .. 10, AITacticalAI.cpp)
 			static const char *const kOffensive[] = { "SimpleAttack", "FormationAttack", "FlankAttack", "PincerAttack", "FeintAttack",
-				"AIBasePenetrationTroopsTactic", "SimpleSiege", "SiegeGates" };
-			if (!(tac.kindIndex >= 0 && tac.kindIndex < 8 && tac.kind == kOffensive[tac.kindIndex]) && !(tac.kindIndex >= 100 && tac.kindIndex < 111))
+				"AIBasePenetrationTroopsTactic", "SimpleSiege", "SiegeGates", "SimpleDefense" };
+			if (!(tac.kindIndex >= 0 && tac.kindIndex < 9 && tac.kind == kOffensive[tac.kindIndex]) && !(tac.kindIndex >= 100 && tac.kindIndex < 111))
 			{
 				throw XferException("skirmish ai: a tactic '" + tac.kind + "' of the prototype " + std::to_string(tac.kindIndex));
 			}
@@ -348,6 +350,8 @@ void xferBrain(Xfer &x, AIBrainState &b)
 			x.xferBool(&team.wantsMembers);
 			x.xferBool(&team.handedOver);
 			AIXfer::ids(x, team.members);
+			x.xferBool(&team.hasRecruitOrigin);
+			AIXfer::coord(x, team.recruitOrigin);
 			AIXfer::coord(x, team.lastPosition);
 			x.xferInt(&team.index);
 			x.xferInt(&team.idleFrames);
@@ -454,7 +458,7 @@ void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 {
 	// version 2 (lane AI5): the upgrade / expansion requests and the unit upgrader / upgrade builder states. A version 1 snapshot has neither: loaded here its
 	// AIs would never buy an upgrade (their records are made when objects register), so it is refused rather than loaded with empty builders
-	XferVersion v{ 3, 3 }; // version 3 adds the independent ArmyBreaker timer list.
+	XferVersion v{ 4, 4 }; // version 4 adds native defensive target sizes and SimpleDefense.
 	x.xferVersion(v);
 	const bool loading = x.isLoading();
 	bool started = loading ? false : m_started;

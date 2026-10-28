@@ -36,10 +36,26 @@ constexpr int kLogicFramesPerSecond = 5;        // RW 0xD9F608
 // TheAITargetHeuristicLibrary's heuristic types in library order (RW 0x82EF7B)
 constexpr int kHeuristicTypes[] = { 1, 0, 3, 2, 2, 0 };
 constexpr int kEnemyStructure = 0, kDefensive = 1, kOpportunity = 2;
+enum OffensiveKind
+{
+	SIMPLE_ATTACK,      // RW 0x9B4E2B "SimpleAttack" (vtable RW 0xC89848)
+	FORMATION_ATTACK,   // RW 0x9B4B3F "FormationAttack" (RW 0xC89800)
+	FLANK_ATTACK,       // RW 0x9B4582 "FlankAttack" (RW 0xC89720)
+	PINCER_ATTACK,      // RW 0x9B3F8A "PincerAttack" (RW 0xC89634)
+	FEINT_ATTACK,       // RW 0x9B3884 "FeintAttack" (RW 0xC8954C)
+	BASE_PENETRATION,   // RW 0x9B36E5 "AIBasePenetrationTroopsTactic" (RW 0xC894F4)
+	SIMPLE_SIEGE,       // RW 0x9B33B2 "SimpleSiege" (RW 0xC894B0)
+	SIEGE_GATES,        // RW 0x9B3282 "SiegeGates" (RW 0xC89460)
+	SIMPLE_DEFENSE      // RW 0x9B4F8F "SimpleDefense" (RW 0xC89890)
+};
+int tacticFamily(const AITactic &tactic)
+{
+ return tactic.targetless?3:(tactic.kindIndex==SIMPLE_DEFENSE?1:0);
+}
 constexpr float kAttackedAtRadius = 300.0f;      // RW 0xC16764
 constexpr float kAttackedAtNearSq = 90000.0f;    // RW 0xC16768
 constexpr float kAttackedAtMergeSq = 360000.0f;  // RW 0xC16784
-// the offensive prototypes of the generator (RW 0x90BE31); only SimpleAttack is ported (S-417)
+// The offensive library order is RW 0x90BE31; the separate defensive library contains SimpleDefense.
 
 // the KindOf bits the AI reads (TheKindOfNames RW 0xDA0E68; the names are the binary's, looked up once)
 struct Kinds
@@ -324,6 +340,41 @@ void heuristicRing(GameLogic &logic, const AISkirmishPlayer &ai, AIBrainState &b
 	}
 }
 
+// DONOR AITargetHeuristicBaseDefense.cpp; TARGET RW 0x97D74F (S-001 caveat).
+void heuristicBaseDefense(GameLogic &logic, const AISkirmishPlayer &ai, AIBrainState &b, AITarget &target)
+{
+	const Player *player = playerOf(logic, ai.playerIndex);
+	if (!player)
+		return;
+	std::vector<std::pair<Object *, size_t>> found;
+	static const int excluded[] = {KindOfTokens::indexOf("UNATTACKABLE"), KindOfTokens::indexOf("SHIP"), KindOfTokens::indexOf("NEUTRALGOLLUM"),
+								   KindOfTokens::indexOf("PASS_EXPERIENCE_TO_CONTAINER")};
+	const auto *record = logic.skirmishAI().record(ai.playerIndex);
+	if (!record)
+		return;
+	for (const auto &group : record->positions().groups())
+	{
+		PartitionFilterFn enemy([&](Object &o) { return player->getRelationship(o.getTeam()) == ENEMIES; });
+		PartitionFilterFn eligible([&](Object &o) {
+			if (!(is(o, kinds().canAttack) || is(o, kinds().hero) || is(o, kinds().support)))
+				return false;
+			for (int bit : excluded)
+				if (is(o, bit))
+					return false;
+			return !o.isEffectivelyDead();
+		});
+		const auto hits = logic.partition().iterateObjectsInRange(group.center, group.radius, FROM_CENTER_2D, {&enemy, &eligible}, ITER_FASTEST);
+		if (!hits.empty())
+			found.push_back({(*hits.begin()).object, group.members.size()});
+	}
+	if (found.empty())
+		return;
+	const auto &pick = found[(size_t)logic.random().getValue(0, (int)found.size() - 1, "AITargetHeuristicBaseDefense.cpp", 0x57)];
+	target.defenseSize = pick.second == 1 ? 0 : (pick.second == 2 ? 1 : 2);
+	if (pick.second == 1 && logic.random().getValue(0, 100, "AITargetHeuristicBaseDefense.cpp", 0x60) >= 30)
+		return;
+	setTarget(logic, b, target, *pick.first, 200.0f, *player);
+}
 // RW 0x90B1F4
 bool needsChoice(GameLogic &logic, const AISkirmishPlayer &ai, AITarget &t)
 {
@@ -399,6 +450,10 @@ void updateChooser(GameLogic &logic, AISkirmishPlayer &ai, AIBrainState &b)
 		{
 			heuristicNearestStructure(logic, ai, b, t, b.currentEnemy);
 		}
+		else if (h == 0)
+		{
+			heuristicBaseDefense(logic, ai, b, t);
+		}
 		else if (h == 5)
 		{
 			heuristicDozers(logic, ai, b, t, b.currentEnemy);
@@ -413,7 +468,7 @@ void updateChooser(GameLogic &logic, AISkirmishPlayer &ai, AIBrainState &b)
 		}
 		else
 		{
-			++b.unportedTypes; // DEFENSIVE (RW 0x97D74F) / EXPANSION heuristics: S-417
+			++b.unportedTypes; // EXPANSION heuristic: S-417
 		}
 	}
 }
@@ -509,11 +564,11 @@ void updateAttackedAt(GameLogic &logic, AISkirmishPlayer &ai)
 		return;
 	}
 	const Kinds &k = kinds();
-	for (bool targetlessPass : { false, true })
+	for (int family : { 0, 1, 2, 3 })
 	{
 		for (size_t ti = 0; ti < b.tactics.size(); ++ti)
 		{
-			if (b.tactics[ti].targetless != targetlessPass)
+			if (tacticFamily(b.tactics[ti]) != family)
 			{
 				continue;
 			}
@@ -657,21 +712,10 @@ bool inAnyTeamOf(const AIBrainState &b, const Object &object)
 }
 
 // the offensive prototypes of the generator in RW 0x90BE31's order
-enum OffensiveKind
-{
-	SIMPLE_ATTACK,      // RW 0x9B4E2B "SimpleAttack" (vtable RW 0xC89848)
-	FORMATION_ATTACK,   // RW 0x9B4B3F "FormationAttack" (RW 0xC89800)
-	FLANK_ATTACK,       // RW 0x9B4582 "FlankAttack" (RW 0xC89720)
-	PINCER_ATTACK,      // RW 0x9B3F8A "PincerAttack" (RW 0xC89634)
-	FEINT_ATTACK,       // RW 0x9B3884 "FeintAttack" (RW 0xC8954C)
-	BASE_PENETRATION,   // RW 0x9B36E5 "AIBasePenetrationTroopsTactic" (RW 0xC894F4)
-	SIMPLE_SIEGE,       // RW 0x9B33B2 "SimpleSiege" (RW 0xC894B0)
-	SIEGE_GATES         // RW 0x9B3282 "SiegeGates" (RW 0xC89460)
-};
 constexpr OffensiveKind kOffensivePrototypes[] = { SIMPLE_ATTACK, SIMPLE_ATTACK, FORMATION_ATTACK, FORMATION_ATTACK, FLANK_ATTACK, PINCER_ATTACK, FEINT_ATTACK,
 	BASE_PENETRATION, SIMPLE_SIEGE, SIEGE_GATES };
 const char *const kOffensiveNames[] = { "SimpleAttack", "FormationAttack", "FlankAttack", "PincerAttack", "FeintAttack", "AIBasePenetrationTroopsTactic",
-	"SimpleSiege", "SiegeGates" };
+	"SimpleSiege", "SiegeGates", "SimpleDefense" };
 constexpr float kFlankMinDistanceSq = 2000000.0f; // RW 0xC89630
 
 // RW 0x9EF9AF (AITactic's common check): a unit of the AI's army list (CAN_ATTACK or SUPPORT, not IMMOBILE, not IGNORES_SELECT_ALL) that can path to the target
@@ -740,6 +784,8 @@ bool tacticApplies(GameLogic &logic, OffensiveKind kind, const AISkirmishPlayer 
 	const bool enemyKnown = ai.groupFirst ? ai.groupFirst->brain.currentEnemy >= 0 : b.currentEnemy >= 0; // RW 0x6C7807
 	switch (kind)
 	{
+	case SIMPLE_DEFENSE:
+		return true; // RW 0xC89890 slot 1 is the unconditional yes body.
 	case SIMPLE_ATTACK:
 	case FORMATION_ATTACK:
 		return commonApplies(logic, ai, b, t, player, false); // RW 0x9B49BD
@@ -791,6 +837,8 @@ void setupTeam(GameLogic &logic, OffensiveKind kind, int index, const AITarget &
 {
 	switch (kind)
 	{
+	case SIMPLE_DEFENSE:
+		break; // RW 0x9B4EF0 is applied by defensiveTactic after the pooled default reset.
 	case SIMPLE_ATTACK:
 	case FLANK_ATTACK:
 		if (t.type == kEnemyStructure)
@@ -935,6 +983,37 @@ void enemyStructureTactic(GameLogic &logic, AISkirmishPlayer &ai, AIBrainState &
 	++b.tacticsStarted;
 }
 
+// TARGET RW 0x90C436: the defensive library has one SimpleDefense prototype, whose canRun is true.
+void defensiveTactic(GameLogic &logic, AISkirmishPlayer &ai, AIBrainState &b, AIBrainState &owner, int targetIndex, int ownerIndex)
+{
+	(void)logic.random().getValue(0, 0, "AITacticsGenerator.cpp", 0x177);
+	AITactic tactic;
+	tactic.kindIndex = SIMPLE_DEFENSE;
+	tactic.kind = "SimpleDefense";
+	tactic.id = b.nextTacticId++;
+	tactic.targetOwner = ownerIndex;
+	startTactic(logic, tactic, owner, targetIndex);
+	// DONOR Rva005AA735Tactic.cpp; TARGET RW 0x9B4EF0. This override does not call the generic defensive setup.
+	const AITarget &target = owner.targets[(size_t)targetIndex];
+	for (auto &team : tactic.teams)
+	{
+		team.hasRecruitOrigin = true;
+		team.recruitOrigin = target.position;
+		if (target.defenseSize == 0)
+			team.maximum = 1;
+		else if (target.defenseSize == 1)
+			team.maximum = 3;
+		else
+		{
+			const auto count = AITacticalAI::recordOf(logic, ai.playerIndex).army().size();
+			if (count > 1)
+				team.maximum = SimMath::truncToInt32(SimMath::pc24MulW(SimMath::fildU32((std::uint32_t)count), 0.5));
+		}
+	}
+	++b.tacticsByKind[tactic.kind];
+	++b.tacticsStarted;
+	b.tactics.push_back(std::move(tactic));
+}
 // RW 0x8F17EE: the team attack-moves to the target (AIGroup::groupAttackMoveToPosition(pos, 0x7FFFFFFF, CMD_FROM_PLAYER), lane COMBAT-1's attack-move)
 void attackMove(GameLogic &logic, const std::vector<ObjectID> &members, const Coord3D &pos, CommandSourceType source = CMD_FROM_PLAYER)
 {
@@ -1447,11 +1526,11 @@ const Object *activeGoal(GameLogic &logic, const Object &o)
 // index from 0 while one exists, RW 0x8F128B), and that team
 AITactic *tacticHolding(AIBrainState &b, ObjectID id, AITacticTeam **teamOut)
 {
-	for (bool targetlessPass : { false, true })
+	for (int family : { 0, 1, 2, 3 })
 	{
 		for (AITactic &t : b.tactics)
 		{
-			if (t.targetless != targetlessPass)
+			if (tacticFamily(t) != family)
 			{
 				continue;
 			}
@@ -1704,6 +1783,7 @@ void launchOffensive(GameLogic &logic, AISkirmishPlayer &ai, AIBrainState &b, AI
 	const Player *player = playerOf(logic, ai.playerIndex);
 	switch ((OffensiveKind)tac.kindIndex)
 	{
+	case SIMPLE_DEFENSE: // RW 0xC89890 slot 6 shares RW 0x9B4DDA.
 	case SIMPLE_ATTACK: // RW 0x9B4DDA -> RW 0x8F19E9: every team attack-moves to the target position
 		if (t)
 		{
@@ -1899,6 +1979,10 @@ void updateOffensive(GameLogic &logic, AISkirmishPlayer &ai, AIBrainState &b, AI
 		{
 			endAnyTactic(logic, ai, b, tac, owner, false);
 		}
+		return;
+	case SIMPLE_DEFENSE: // RW 0x9B4EB7: a missing team 0 fails; idle or inactive target succeeds.
+		if (!teamByIndex(tac,0)) endAnyTactic(logic,ai,b,tac,owner,false);
+		else if (allTeamsDone(ai,tac) || targetGone) endAnyTactic(logic,ai,b,tac,owner,true);
 		return;
 	case SIMPLE_ATTACK:
 	case SIMPLE_SIEGE: // never started in the port (S-418)
@@ -2408,12 +2492,33 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 			// Unlimited prototype maxima must not require defeating the entire base's
    // threat before any attack launches, especially with edited CP limits.
    if(logic.settings().enhancedAI && team.type==kEnemyStructure && (team.maximum<0 || team.maximum>12)) team.maximum=12;
+			std::vector<ObjectID> recruits = army;
+			if (team.hasRecruitOrigin)
+			{
+				// TARGET RW 0x9A2E6A -> 0x9A2CA5 (DONOR AITeamBuilder::recruitUnDefined):
+				// ordered multimap, preserving registration order for equal squared 3D distances (z²+y²+x², SSE).
+				std::multimap<float, ObjectID> ordered;
+				for (ObjectID id : army)
+				{
+					const Object *unit = logic.findObjectByID(id);
+					if (!unit)
+						continue;
+					const Coord3D &p = *unit->getPosition();
+					const float dx = SimMath::subf32(team.recruitOrigin.x, p.x), dy = SimMath::subf32(team.recruitOrigin.y, p.y),
+								dz = SimMath::subf32(team.recruitOrigin.z, p.z);
+					const float distance = SimMath::addf32(SimMath::addf32(SimMath::mulf32(dz, dz), SimMath::mulf32(dy, dy)), SimMath::mulf32(dx, dx));
+					ordered.emplace(distance, id);
+				}
+				recruits.clear();
+				for (const auto &entry : ordered)
+					recruits.push_back(entry.second);
+			}
 			const std::uint32_t maximum = (std::uint32_t)team.maximum;
 			std::uint32_t count = teamUnitCount(logic, team); // RW 0x9A32C1 -> RW 0x9A24A6
 			// RW 0x9A2E06: the army list in order while count < maximum (unsigned; -1: no maximum): a CAN_ATTACK or SUPPORT unit that RW 0x9A24FC accepts joins
 			// (Object::setTeam RW 0x69954A); a SUPPORT unit only when the team holds a member that is neither SUPPORT nor HORDE, its maximum is above 1 and it holds
 			// no SUPPORT HORDE (RW 0x9A2F0A .. 0x9A2FA4, RW 0x7A0555 twice)
-			for (ObjectID id : army)
+			for (ObjectID id : recruits)
 			{
 				if (!(count < maximum))
 				{
@@ -2437,7 +2542,7 @@ void AITacticalAI::updateTeamBuilder(GameLogic &logic, AISkirmishPlayer &ai)
 			// RW 0x9A2FC0: an ENEMY_STRUCTURE or DEFENSIVE team (+ 0x2CC 0 / 1) takes every HERO (template + 0x113 bit 2) RW 0x9A24FC accepts, with no maximum
 			if (team.type == kEnemyStructure || team.type == kDefensive)
 			{
-				for (ObjectID id : army)
+				for (ObjectID id : recruits)
 				{
 					const Object *o = logic.findObjectByID(id);
 					if (o && is(*o, k.hero) && recruitable(logic, b, team, *o))
@@ -2504,15 +2609,15 @@ void AITacticalAI::updateBrain(GameLogic &logic, AISkirmishPlayer &ai, AISkirmis
 		updateEnemies(logic, ai, b);
 		updateChooser(logic, ai, b);
 	}
-	// RW 0x90CB85: RW 0x90BA94 (ended tactics leave), RW 0x90B8C7 (each tactic: the offensive list + 0x10 before the targetless list + 0x58; the defensive and
-	// expansion lists are empty, S-417), RW 0x90C5E2 (the targetless pick, lane AI-2 r3)
+	// RW 0x90CB85: drop ended tactics, then update offensive, defensive, expansion, targetless lists in order.
+	// The expansion list remains empty (S-417); RW 0x90C5E2 then picks targetless tactics.
 	b.tactics.erase(std::remove_if(b.tactics.begin(), b.tactics.end(), [](const AITactic &t) { return t.ended; }), b.tactics.end());
-	for (bool targetlessPass : { false, true })
+	for (int family : { 0, 1, 2, 3 })
 	{
 		for (size_t i = 0; i < b.tactics.size(); ++i)
 		{
 			AITactic &tac = b.tactics[i];
-			if (tac.targetless != targetlessPass)
+			if (tacticFamily(tac) != family)
 			{
 				continue;
 			}
@@ -2578,9 +2683,13 @@ void AITacticalAI::updateBrain(GameLogic &logic, AISkirmishPlayer &ai, AISkirmis
 	{
 		enemyStructureTactic(logic, ai, b, owner->brain, best, owner->playerIndex, *player);
 	}
+	else if (type == kDefensive)
+	{
+		defensiveTactic(logic, ai, b, owner->brain, best, owner->playerIndex);
+	}
 	else
 	{
-		++b.unportedTypes; // DEFENSIVE RW 0x90C436 / EXPANSION RW 0x90C50C: S-417
+		++b.unportedTypes; // EXPANSION RW 0x90C50C: S-417
 	}
 	// RW 0x90CCCB: not ported (S-417)
 }
@@ -2652,6 +2761,7 @@ void AITacticalAI::crc(const AIBrainState &b, StateHasher &h)
 	for (const AITarget &t : b.targets)
 	{
 		h.addI32(t.type);
+		h.addI32(t.defenseSize);
 		h.addU32(t.frame);
 		h.addFloat(t.position.x);
 		h.addFloat(t.position.y);
@@ -2727,6 +2837,8 @@ void AITacticalAI::crc(const AIBrainState &b, StateHasher &h)
 			h.addI32(team.priority);
 			h.addBool(team.wantsMembers);
 			h.addBool(team.handedOver);
+			h.addBool(team.hasRecruitOrigin);
+			if (team.hasRecruitOrigin) { h.addFloat(team.recruitOrigin.x); h.addFloat(team.recruitOrigin.y); h.addFloat(team.recruitOrigin.z); }
 			h.addFloat(team.lastPosition.x);
 			h.addFloat(team.lastPosition.y);
 			h.addFloat(team.lastPosition.z);

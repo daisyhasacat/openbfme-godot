@@ -452,8 +452,8 @@ TEST_CASE("save4c retail T5: each block's version window (RW 0xA1F5B9's two mess
 		late.logic().gameState().saveBlocks({ t }, one);
 		const size_t at = payloadOffset(t);
 		REQUIRE(one.size() > at); // tolerance: an index precondition (the version byte must exist before it is read)
-		// every SAVE-4c block starts with its version: 1, except obfme:SkirmishAI's (2, 2) since lane AI5 (the upgrade builders and the money reserve)
-		const std::uint8_t version = t == "obfme:SkirmishAI" ? 2 : 1;
+		// SkirmishAI version 4 includes source spatial groups, ArmyBreaker timers and defensive target sizes.
+		const std::uint8_t version = t == "obfme:SkirmishAI" ? 4 : 1;
 		REQUIRE(one[at] == version);
 		std::vector<std::uint8_t> above = one, below = one;
 		above[at] = (std::uint8_t)(version + 1);
@@ -716,7 +716,8 @@ TEST_CASE("save4c retail hostile inputs (SAVES.md section 8, rules 3 to 5): for 
 		std::vector<std::uint8_t> one;
 		logic.gameState().saveBlocks({ t }, one);
 		const size_t p = payloadOffset(t), assist = p + 6;
-		const size_t info = assist + 4 + 8 * (size_t)u32At(one, assist) + 5;
+		const size_t armyBreakerTimers = assist + 4 + 8 * (size_t)u32At(one, assist);
+		const size_t info = armyBreakerTimers + 4 + 8 * (size_t)u32At(one, armyBreakerTimers) + 5;
 		REQUIRE(u32At(one, info) >= 2u); // tolerance: a precondition (two info players to make one the other's twin)
 		const int players = logic.players().getPlayerCount();
 		refused(t, { "skirmish AI" }, withU32(one, assist, big), "block '" + t + "': " + countError(big, 8, payloadSize(one, t) - 10));
@@ -1363,7 +1364,8 @@ TEST_CASE("save4c hostile inputs, nested containers and caps (review r2): an ove
 		std::vector<std::uint8_t> one;
 		logic.gameState().saveBlocks({ t }, one);
 		const size_t p = payloadOffset(t), assist = p + 6;
-		const size_t info = assist + 4 + 8 * (size_t)u32At(one, assist) + 5;
+		const size_t armyBreakerTimers = assist + 4 + 8 * (size_t)u32At(one, assist);
+		const size_t info = armyBreakerTimers + 4 + 8 * (size_t)u32At(one, armyBreakerTimers) + 5;
 		const size_t records = info + 4 + 4 * (size_t)u32At(one, info);
 		REQUIRE(u32At(one, records) > 0u); // tolerance: a precondition (the game has player info records)
 		const size_t army = records + 4 + 4 + 1; // record 0: its player, the collector's version, its army list's count
