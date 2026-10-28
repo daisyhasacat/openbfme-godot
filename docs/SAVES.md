@@ -1066,3 +1066,5 @@ unsupported snapshots. This is a match save, not a checkpoint of menu state.
 On iOS, a separate [automatic quick-resume checkpoint](IOS.md#automatic-single-player-quick-resume)
 is saved every 30 seconds and when backgrounding. It is loaded automatically on
 normal cold launches; it never replaces `/save` or the player's named saves.
+
+Native source-AI follow-up: SkirmishAI block version 3 adds the independent per-player Army Breaker timer list; AIStatCollector version 3 includes the ordered spatial registrations and cached groups. TerrainTrees block version 2 saves complete AI tree groups and selection state. This preserves native snapshot hash/decision continuity after harvesting clears record positions without updating runtime group spheres. Retail TerrainLogic instead rebuilds derived groups on load; that distinction is reported under S-4252. Older block versions that omit these states are refused.

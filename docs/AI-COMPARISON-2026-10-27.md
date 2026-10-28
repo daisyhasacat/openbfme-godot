@@ -70,13 +70,13 @@ Local targetless pool has eleven RotWK prototypes, but `targetlessApplies` only 
 
 The donor generator has six targetless prototypes: farm kill, Ring hero, structure creep, return Ring, start WoTR, roaming defense. Corresponding bodies such as `AIStructureCreepTactic.cpp` and `AIRoamingDefenseTactic*.cpp` exist. Enhanced neutral capture is a substitute policy, not FlagCaptureSquad parity. Ring acquisition opportunity scoring is not the full return/recruit Ring hero lifecycle. Missing draws can also change downstream simulation RNG.
 
-### A6 — High: 7 of 53 special-power decisions return no
+### A6 — High: 5 of 53 special-power decisions return no
 
-`AISpecialPowerUpdate.cpp` implements 46 decision cases and records the rest under S-1421. Missing: SOUL_FREEZE, ATTACK_HEAL_AOE, spellbook HEAL, ARMY_BREAKER, DEBUFFECONOMYBUILDING, DEBUFFPRODUCTIONBUILDING and TREE_KILLER. Summoned-helper steering is also incomplete. Some depend on team registries, enemy selection or spatial cluster records rather than just an isolated cast function.
+`AISpecialPowerUpdate.cpp` implements 48 decision cases and records the rest under S-1421. Missing: SOUL_FREEZE, ATTACK_HEAL_AOE, spellbook HEAL, DEBUFFECONOMYBUILDING and DEBUFFPRODUCTIONBUILDING. Summoned-helper steering is also incomplete. Some depend on team registries, enemy selection or spatial cluster records rather than just an isolated cast function.
 
 The donor now has useful sources including `AISpellBookHeal.cpp`, `AISpellBookArmyBreaker.cpp`, `AISpellBookStructureBaseKill.cpp` and power framework/pickers; the local header's statement that no matching Open-BFME-2 source exists is stale. Available donor bodies need individual comparison: not every missing RotWK decision is thereby proven byte-identical to BFME2.
 
-Power readiness, range, random decision gate and difficulty chance are substantially wired. STANCEHOLDGROUND and CAPTURE_BUILDING returning false in the decision switch are explicitly target-derived no-op cases, not counted as the seven missing implementations.
+Power readiness, range, random decision gate and difficulty chance are substantially wired. STANCEHOLDGROUND and CAPTURE_BUILDING returning false in the decision switch are explicitly target-derived no-op cases, not counted as the five missing implementations.
 
 ### A7 — Medium/high: enhanced recruitment and waves change difficulty pacing
 
@@ -201,3 +201,5 @@ The player-info spatial sampler is now ported: strict per-member adjacency, firs
 The structure power family is now ported: STRUCTURE_BREAKER chooses the first largest visible enemy structure group; PREF_WALLS first checks near a busy army unit; BASEKILL first checks for a nearby fortress and avoids wasting a cast elsewhere while an enemy fortress remains; CITADEL preserves the source's two random draws, interpolation and perpendicular displacement. Target facts distinguish DOZER_FACTORY from COMMANDCENTER. The regression test exercises human grouping, near-wall ordering, fortress preference and exact Citadel coordinates/draw sites. This raises supported power decisions to 46 of 53.
 
 Structure-family validation: the focused scenario passes 54 assertions. The complete 16-case power suite passes 15 cases / 1,015 assertions and retains the previously recorded Athelas engine-pin failure (22 frames observed, 23 expected); this lane does not loosen that pin. The target binary fact checks for all four new decision vtables pass with the installed target, subject to S-001.
+
+ARMY_BREAKER and TREE_KILLER are now ported, bringing the supported decision count to 48 of 53. Army Breaker deliberately keeps RotWK's attacked-at threat thresholds instead of BFME2's unit-count test, and its per-player 75–150-frame timer is independent from Assist Battle. Tree Killer shares group selection globally and marks a group before location validation. Complete cached tree groups survive native snapshots, including cleared positions after harvesting; the retail-load difference is explicit in S-4252. Focused power/snapshot regressions pass, as do the 66-case builder/manager/save/spell integration selection (1,955 assertions). A fresh isolated full build is blocked by the existing synthetic MP3 fixture/golden mismatch; a separate focused AI target compiles the same core and requested tests without changing that check or its goldens.

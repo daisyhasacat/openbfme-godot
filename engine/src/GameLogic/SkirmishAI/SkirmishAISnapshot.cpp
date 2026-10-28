@@ -454,7 +454,7 @@ void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 {
 	// version 2 (lane AI5): the upgrade / expansion requests and the unit upgrader / upgrade builder states. A version 1 snapshot has neither: loaded here its
 	// AIs would never buy an upgrade (their records are made when objects register), so it is refused rather than loaded with empty builders
-	XferVersion v{ 2, 2 };
+	XferVersion v{ 3, 3 }; // version 3 adds the independent ArmyBreaker timer list.
 	x.xferVersion(v);
 	const bool loading = x.isLoading();
 	bool started = loading ? false : m_started;
@@ -473,6 +473,8 @@ void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 		x.xferInt(&t.first);
 		AIXfer::uns(x, t.second);
 	}
+	x.xferVectorSize(m_armyBreakerTimers, 8);
+	for (auto &t : m_armyBreakerTimers) { x.xferInt(&t.first); AIXfer::uns(x, t.second); }
 	// the data the AI decides from is the game's (the START's identity): its hash must be the saved one
 	bool hasStore = m_store != nullptr;
 	std::uint32_t storeHash = 0;
@@ -783,6 +785,12 @@ void SkirmishAIManager::checkLoaded() const
 			throw XferException("skirmish ai: player " + std::to_string(t.first) + " has two spell book assist timers");
 		}
 	}
+	std::set<int> broken;
+	for (const auto &t : m_armyBreakerTimers)
+	{
+		player(t.first, "skirmish ai: the player of an army breaker timer");
+		if (!broken.insert(t.first).second) throw XferException("skirmish ai: player " + std::to_string(t.first) + " has two army breaker timers");
+	}
 	// objects the AI keeps up to date with the object events (RW 0x6A9D9C / 0x6A99CB): a request's producer, the free dozers, the dozer and unit
 	// factories, the player info records' lists. They must be objects of the loaded game
 	auto object = [&](ObjectID id, const char *what) {
@@ -996,6 +1004,7 @@ void SkirmishAIManager::xfer(Xfer &x)
 	m_started = loaded.m_started;
 	m_attackedAtIds = loaded.m_attackedAtIds;
 	m_assistTimers = std::move(loaded.m_assistTimers);
+	m_armyBreakerTimers = std::move(loaded.m_armyBreakerTimers);
 	m_groups = std::move(loaded.m_groups);
 	m_infoPlayers = std::move(loaded.m_infoPlayers);
 	m_records = std::move(loaded.m_records);

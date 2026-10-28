@@ -182,10 +182,12 @@ public:
 	// lane AIPOW-1: the spell book ASSIST_BATTLE decisions' per-player timer (RW 0xDEC154, a std::vector of {player index, next frame} in the order the
 	// players first asked, RW 0x9E880B). Retail's is a static the process keeps across games; here it belongs to the game (cleared by reset), so the first
 	// game of a process is retail's and later ones start clean (INFERENCE, S-1421)
+	std::vector<std::pair<int, unsigned>> &spellBookArmyBreakerTimers() { return m_armyBreakerTimers; }
 	std::vector<std::pair<int, unsigned>> &spellBookAssistTimers() { return m_assistTimers; }
 
 private:
 	std::uint32_t m_attackedAtIds = 0;
+	std::vector<std::pair<int, unsigned>> m_armyBreakerTimers;
 	std::vector<std::pair<int, unsigned>> m_assistTimers;
 	AISkirmishPlayer *addAIPlayer(Player &player);
 	bool groupAccepts(const AISkirmishGroup &g, const Player &player) const;

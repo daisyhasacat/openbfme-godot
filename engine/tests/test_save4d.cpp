@@ -1177,3 +1177,10 @@ TEST_CASE("native objectives: open-state command satisfies the tutorial conditio
 	a.start();
 	CHECK_FALSE(a.engine().objectivesOpen());
 }
+
+TEST_CASE("source AI tree snapshots: native group preservation differs from retail load and is reported")
+{
+ const auto stops=GameLogic::save4dStopLines();
+ REQUIRE(stops.size()==7);
+ CHECK(stops[2].find("native block version 2 preserves cached AI tree groups and selection flags, whereas retail rebuilds the groups on load")!=std::string::npos);
+}

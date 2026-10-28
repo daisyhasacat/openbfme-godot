@@ -538,6 +538,7 @@ void SkirmishAIManager::reset()
 	m_counters = Counters();
 	m_attackedAtIds = 0; // RW 0x6A922D
 	m_assistTimers.clear();
+	m_armyBreakerTimers.clear();
 }
 
 const AISkirmishPlayer *SkirmishAIManager::findAI(int playerIndex) const
@@ -602,6 +603,12 @@ void SkirmishAIManager::crc(StateHasher &h) const
 	{
 		h.addI32(t.first);
 		h.addU32(t.second);
+	}
+	if (!m_armyBreakerTimers.empty())
+	{
+		h.addU32(0x4142524Bu); // ArmyBreaker timer state; empty games retain their existing hash.
+		h.addU32((std::uint32_t)m_armyBreakerTimers.size());
+		for (const auto &t : m_armyBreakerTimers) { h.addI32(t.first); h.addU32(t.second); }
 	}
 	// the data the AI decides from (SkirmishAIData, armies, bases and their layouts, dozers, PlayerAITypes): a peer with other data diverges here
 	h.addBool(m_store != nullptr);

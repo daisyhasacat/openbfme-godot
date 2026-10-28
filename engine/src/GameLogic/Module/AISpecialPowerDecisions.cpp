@@ -860,3 +860,35 @@ bool AISpecialPowerUpdate::decideCitadel(Object &obj)
 	location = {SimMath::addf32(location.x, offset.x), SimMath::addf32(location.y, offset.y), SimMath::addf32(location.z, offset.z)};
 	return setLocationIfValid(obj, location);
 }
+
+bool AISpecialPowerUpdate::decideArmyBreaker(Object &obj)
+{
+	// TARGET RW 0x9E92CA: RotWK uses attacked-at threat totals, unlike the BFME2 busy-unit/count test.
+	// DONOR AISpellBookArmyBreaker.cpp supplies the independent per-player timer shape. TARGET RW 0x9E9222
+	// and startup RW 0xBCA418 / 0xBCA42F: delay 15..30 seconds, line 0x53 (S-001 caveat).
+	GameLogic &logic = obj.logic();
+	const Player *player = obj.getControllingPlayer();
+	const auto *ai = player ? logic.skirmishAI().findAI(player->getPlayerIndex()) : nullptr;
+	if (!ai)
+		return false;
+	for (const AIAttackedAt &battle : ai->brain.attackedAt)
+	{
+		if (!(battle.enemies.v[0] >= m_decision->range) || !(SimMath::mulf32(battle.enemies.v[0], 0.5f) >= battle.others.v[0]))
+			continue;
+		if (!setLocationIfValid(obj, battle.position))
+			continue;
+		auto &timers = logic.skirmishAI().spellBookArmyBreakerTimers();
+		auto it = std::find_if(timers.begin(), timers.end(), [&](const auto &entry) { return entry.first == player->getPlayerIndex(); });
+		if (it == timers.end())
+		{
+			timers.push_back({player->getPlayerIndex(), logic.getFrame()});
+			it = timers.end() - 1;
+		}
+		if (it->second > logic.getFrame())
+			continue;
+		it->second = logic.getFrame() +
+					 (unsigned)logic.random().getValue(15 * LOGICFRAMES_PER_SECOND, 30 * LOGICFRAMES_PER_SECOND, "AISpellBookArmyBreaker.cpp", 0x53);
+		return true;
+	}
+	return false;
+}

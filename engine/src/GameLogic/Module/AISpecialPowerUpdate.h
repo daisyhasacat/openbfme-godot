@@ -193,6 +193,7 @@ private:
 	bool decideEnshroudingMist(Object &obj);                    // RW 0x9E7869
 	bool decideCallTheHorde(Object &obj);                       // RW 0x9E71B0
 	bool decideStructureBreaker(Object &obj);                 // RW 0x9E7A98 / 0x9E7942 / 0x9E6EF4
+	bool decideArmyBreaker(Object &obj);                       // RW 0x9E92CA
 	bool decideCitadel(Object &obj);                          // RW 0x9E6CCB
 	bool decideBuffEconomy(Object &obj);                        // RW 0x9E7671
 	// the location base (RW 0xA01C6B): RW 0xA021D8 (the ActionManager's test and SpellMakesAStructure), RW 0xA0229F (that test at the location, else with

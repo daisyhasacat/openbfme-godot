@@ -17,6 +17,7 @@
 #include "GameLogic/Construction.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Map/TerrainLogic.h"
+#include "GameLogic/Map/TerrainTrees.h"
 #include "GameLogic/Module/AISpecialPowerInternal.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/SpecialAbilityModules.h"
@@ -59,11 +60,11 @@ namespace
 {
 const char *const kStop =
 	"[S-1421] AISpecialPowerUpdate (lanes MOD-4, AIPOW-1): the module (RW 0x8B73B7 / 0x8B714F / 0x8B708B), the decision framework (RW 0x993055 / 0x993307 / "
-	"0x99302D), the location base (RW 0xA021D8 / 0xA0229F / 0xA01C9C with the ActionManager's test RW 0x75CF21) and 46 of the 53 decisions run; not ported "
+	"0x99302D), the location base (RW 0xA021D8 / 0xA0229F / 0xA01C9C with the ActionManager's test RW 0x75CF21) and 48 of the 53 decisions run; not ported "
 	"(they answer no, counted): SOUL_FREEZE (RW 0x9E9B37) and ATTACK_HEAL_AOE (RW 0x9E691D: the team's special power registry Team + 0x140 and its order "
 	"list Team + 0x13C, RW 0x7A3EF5 / 0x7A5582 / 0x7A1C5E, not ported); spell book HEAL (RW 0x9E85C6: the ZH AIPlayer's list, Player + 0x2FC -> + 0x4, "
-	"entries of type 0x1A); ARMY_BREAKER (RW 0x9E92CA: the brain's army trackers, AI + 0x164 -> + 0x20); DEBUFFECONOMYBUILDING / DEBUFFPRODUCTIONBUILDING (RW 0x9E74B7 / 0x9E726A: the ZH AISkirmishPlayer's enemy, Player + 0x2FC vslot 0x30 -> RW "
-	"0x8F47EB acquireEnemy); TREE_KILLER (RW 0x9E70B6: TheTerrainLogic + 0x584's list); the per-frame steering of a summoned helper (slot 1 of "
+	"entries of type 0x1A); DEBUFFECONOMYBUILDING / DEBUFFPRODUCTIONBUILDING (RW 0x9E74B7 / 0x9E726A: the ZH AISkirmishPlayer's enemy, Player + 0x2FC vslot 0x30 -> RW "
+	"0x8F47EB acquireEnemy); the per-frame steering of a summoned helper (slot 1 of "
 	"TARGETAOE_SUMMON RW 0x9EB961, ASSIST_BATTLE_* RW 0x9E8A42, SHROUD_REVEAL RW 0x9E7F0F: the helper is found through the record's army and hero lists, "
 	"RW 0x99316A, and steered by Object + 0xA4's goal position, RW 0x68B411; the counters run); INFERENCE: an unset SpecialPowerAIType is -1, the map "
 	"object re-init (behaviour slot 0xB4, RW 0x8B7554) is the first update's, the AI's goal object (AIUpdate + 0x40) is the AI's current victim (ZH donor), "
@@ -144,6 +145,7 @@ bool AISpecialPowerDecision::decisionPorted(int type)
 	case AISP_DOMINATE_TROLL: case AISP_DOMINATE_ENEMY: case AISP_TAME_THE_BEAST: case AISP_GANDALF_WIZARD_BLAST: case AISP_GIVEXP_AOE: case AISP_RANGED_AOE_ATTACK:
 	case AISP_LEGOLAS_ARROWWIND: case AISP_RANGED_AOE_ATTACK_UNITS: case AISP_AOE_AND_BUFF: case AISP_LEGOLAS_TRAINARCHERS: case AISP_GOBLINKING_BATTLEFRENZY:
 	case AISP_GOBLINKING_CALLOFTHEDEEP: case AISP_TARGETAOE_SUMMON: case AISP_HEAL_AOE: case AISP_SPELLBOOK_ALWAYS_FIRE: case AISP_SPELLBOOK_CAPTURE_CREEP:
+	case AISP_SPELLBOOK_TREE_KILLER: case AISP_SPELLBOOK_ARMY_BREAKER:
 	case AISP_SPELLBOOK_STRUCTURE_BREAKER: case AISP_SPELLBOOK_STRUCTURE_BREAKER_PREF_WALLS: case AISP_SPELLBOOK_STRUCTURE_BASEKILL: case AISP_SPELLBOOK_CITADEL:
 	case AISP_SPELLBOOK_SHROUD_REVEAL: case AISP_SPELLBOOK_ASSIST_BATTLE_BUFF: case AISP_SPELLBOOK_ASSIST_BATTLE_DEBUFF: case AISP_SPELLBOOK_BUFFTERRAIN:
 	case AISP_SPELLBOOK_REBUILD: case AISP_SPELLBOOK_ENSHROUDINGMIST: case AISP_SPELLBOOK_CALLTHEHORDE: case AISP_SPELLBOOK_BUFFECONOMYBUILDING:
@@ -552,6 +554,14 @@ bool AISpecialPowerUpdate::decide(Object &obj)
 		return decideStructureBreaker(obj);
 	case AISP_SPELLBOOK_CITADEL:
 		return decideCitadel(obj);
+	case AISP_SPELLBOOK_ARMY_BREAKER:
+		return decideArmyBreaker(obj);
+	case AISP_SPELLBOOK_TREE_KILLER:
+	{
+		Coord3D position{};
+		const Player *player = obj.getControllingPlayer();
+		return player && obj.logic().trees().selectUnselectedGroup(player->getPlayerIndex(), position) && setLocationIfValid(obj, position);
+	}
 	case AISP_HEAL_AOE:
 	{
 		// RW 0x9EA462: a goal and an ALLIES cluster (RW 0xA01F99(obj, 1)) of at least 10; then 0.0 / (the hits of the four points) <= 0.75 (RW 0xC1B594 /
