@@ -188,7 +188,7 @@ Object *TargetFinder::findClosestEnemyNear(const Object &seeker, const Coord3D &
 	float bestD = 0.0f;
 	for (Object *o : near)
 	{
-		if (o == &seeker || seeker.getRelationship(*o) != ENEMIES || !CombatQueries::isAutoAttackTarget(*o))
+		if (o == &seeker || seeker.getRelationship(*o) != ENEMIES)
 		{
 			continue;
 		}
@@ -202,7 +202,11 @@ Object *TargetFinder::findClosestEnemyNear(const Object &seeker, const Coord3D &
 		{
 			continue;
 		}
-		if (o->isKindOf((unsigned)k.structure) && !(flags & ALLOW_STRUCTURES))
+		if (!(flags & ALLOW_STRUCTURES) && !CombatQueries::allowsBuildingTarget(seeker, *o))
+		{
+			continue;
+		}
+		if ((flags & IGNORE_INSIGNIFICANT_BUILDINGS) && !CombatQueries::isSignificantBuildingTarget(*o))
 		{
 			continue;
 		}

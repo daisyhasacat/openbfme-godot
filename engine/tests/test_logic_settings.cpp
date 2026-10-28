@@ -131,3 +131,15 @@ TEST_CASE("logic settings: tutorial maps and loading fields come from GameData w
 	CHECK(settings.basicTutorial.fadeUpFrames == 7);
 	CHECK(settings.advancedTutorial.map == "Maps\\Advanced\\Advanced.map");
 }
+
+TEST_CASE("logic settings: insignificant building acquisition follows AIData")
+{
+	GameLogicSettings g;
+	std::string err;
+	CHECK_FALSE(g.attackIgnoreInsignificantBuildings);
+	REQUIRE(L::scanAIData("AIData\n EnableRepulsors = Yes\n RepulsedDistance = 120\n AttackIgnoreInsignificantBuildings = Yes\nEnd\n", g, &err));
+	CHECK(g.attackIgnoreInsignificantBuildings);
+	REQUIRE(L::scanAIData("AIData\n EnableRepulsors = Yes\n RepulsedDistance = 120\n AttackIgnoreInsignificantBuildings = No\nEnd\n", g, &err));
+	CHECK_FALSE(g.attackIgnoreInsignificantBuildings);
+	CHECK_FALSE(L::scanAIData("AIData\n EnableRepulsors = Yes\n RepulsedDistance = 120\n AttackIgnoreInsignificantBuildings = INVALID\nEnd\n", g, &err));
+}

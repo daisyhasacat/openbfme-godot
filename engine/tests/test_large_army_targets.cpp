@@ -38,7 +38,9 @@ Object *legacyClosest(TargetFinder &finder, const Object &seeker, const Coord3D 
 			continue;
 		if ((flags & TargetFinder::MEMBERS_ONLY) && o->isKindOf((unsigned)k.horde))
 			continue;
-		if (o->isKindOf((unsigned)k.structure) && !(flags & TargetFinder::ALLOW_STRUCTURES))
+		if (!(flags & TargetFinder::ALLOW_STRUCTURES) && !CombatQueries::allowsBuildingTarget(seeker, *o))
+			continue;
+		if ((flags & TargetFinder::IGNORE_INSIGNIFICANT_BUILDINGS) && !CombatQueries::isSignificantBuildingTarget(*o))
 			continue;
 		if (o->isKindOf((unsigned)k.projectile))
 			continue;
@@ -207,29 +209,68 @@ TEST_CASE("large army targets: creation, death, containment and reset preserve p
 	CHECK(finder.findClosestEnemy(*seeker, 100, 0, CMD_FROM_AI) == nullptr);
 }
 
-TEST_CASE("automatic targeting	preserves enemy capture buildings for human and computer units")
+TEST_CASE("BFME2 building filters use scan flags and player type, not capturable flags")
 {
 	combattest::CombatWorld w(
 		"ChildObject CaptureBuilding Dummy\n KindOf = STRUCTURE CAPTURABLE\nEnd\n"
 		"ChildObject LinkedBuilding Dummy\n KindOf = STRUCTURE LINKED_TO_FLAG\nEnd\n"
-		"ChildObject OrdinaryBuilding Dummy\n KindOf = STRUCTURE\nEnd\n");
+		"ChildObject DefenseBuilding Dummy\n KindOf = STRUCTURE FS_BASE_DEFENSE\nEnd\n"
+		"ChildObject ArmedContainer Slasher\n KindOf = STRUCTURE CAN_ATTACK\n"
+		" Behavior = GarrisonContain ModuleTag_Contain\n ContainMax = 4\n End\nEnd\n"
+		"ChildObject MineBuilding Dummy\n KindOf = STRUCTURE MINE\nEnd\n");
 	w.combat().setAutoAcquireEnabled(false);
 	auto *unit = w.unit("Slasher", 'A', 200, 200);
 	auto *capture = w.unit("CaptureBuilding", 'B', 220, 200);
 	auto *linked = w.unit("LinkedBuilding", 'B', 240, 200);
+	auto *defense = w.unit("DefenseBuilding", 'B', 260, 200);
 	auto &finder = w.combat().targets();
+	w.playerOf('A')->setPlayerType(PLAYER_HUMAN, true);
+	CHECK(finder.findClosestEnemy(*unit, 200, 0, CMD_FROM_AI) == defense);
+	CHECK(finder.findClosestEnemy(*unit, 200, TargetFinder::ALLOW_STRUCTURES, CMD_FROM_AI) == capture);
+	CHECK_FALSE(CombatQueries::allowsBuildingTarget(*unit, *linked));
+	auto *armed = w.unit("ArmedContainer", 'B', 280, 200);
+	auto *mine = w.unit("MineBuilding", 'B', 300, 200);
+	CHECK(CombatQueries::allowsBuildingTarget(*unit, *armed));
+	CHECK(CombatQueries::allowsBuildingTarget(*unit, *mine));
+	w.playerOf('A')->setPlayerType(PLAYER_COMPUTER, true);
+	CHECK(finder.findClosestEnemy(*unit, 200, 0, CMD_FROM_AI) == capture);
+	CHECK(CombatQueries::allowsBuildingTarget(*unit, *linked));
+	CHECK(unit->getWeapons()->canAttackObject(*capture, CMD_FROM_PLAYER, false));
+}
+
+TEST_CASE("BFME2 insignificant building filter keeps occupied garrisons and faction structures")
+{
+	combattest::CombatWorld w(
+		"ChildObject EmptyInn Dummy\n KindOf = STRUCTURE CAPTURABLE\n RemoveModule ModuleTag_AI\n"
+		" Behavior = GarrisonContain ModuleTag_Contain\n ContainMax = 4\n End\nEnd\n"
+		"ChildObject FactionInn EmptyInn\n KindOf = STRUCTURE CAPTURABLE FS_FACTORY\nEnd\n"
+		"ChildObject ActiveInn EmptyInn\n Behavior = AIUpdateInterface ModuleTag_AI\n End\nEnd\n"
+		"ChildObject BareBuilding Dummy\n KindOf = STRUCTURE LINKED_TO_FLAG\n RemoveModule ModuleTag_AI\nEnd\n");
+	w.combat().setAutoAcquireEnabled(false);
+	auto *unit = w.unit("Slasher", 'A', 200, 200);
+	auto *inn = w.unit("EmptyInn", 'B', 220, 200);
+	auto *faction = w.unit("FactionInn", 'B', 240, 200);
+	auto *active = w.unit("ActiveInn", 'B', 260, 200);
+	auto *bare = w.unit("BareBuilding", 'B', 280, 200);
+	REQUIRE(inn->getContain());
+	CHECK(inn->getAIUpdateInterface() == nullptr);
+	CHECK_FALSE(CombatQueries::isSignificantBuildingTarget(*inn));
+	CHECK(CombatQueries::isSignificantBuildingTarget(*faction));
+	CHECK(CombatQueries::isSignificantBuildingTarget(*active));
+	CHECK(CombatQueries::isSignificantBuildingTarget(*bare));
+	auto &finder = w.combat().targets();
+	CHECK(finder.findClosestEnemy(*unit, 200, TargetFinder::ALLOW_STRUCTURES, CMD_FROM_AI) == inn);
+	CHECK(unit->getAIUpdateInterface()->attackMoveTarget() == inn);
+	w.logic->settings().attackIgnoreInsignificantBuildings = true;
+	const unsigned filtered = TargetFinder::ALLOW_STRUCTURES | TargetFinder::IGNORE_INSIGNIFICANT_BUILDINGS;
 	for (auto owner : {PLAYER_HUMAN, PLAYER_COMPUTER})
 	{
 		w.playerOf('A')->setPlayerType(owner, true);
-		CHECK(finder.findClosestEnemy(*unit, 200, TargetFinder::ALLOW_STRUCTURES, CMD_FROM_AI) == nullptr);
-		CHECK(unit->getWeapons()->canAttackObject(*capture, CMD_FROM_PLAYER, false));
-		CHECK(unit->getWeapons()->canAttackObject(*linked, CMD_FROM_PLAYER, false));
+		CHECK(finder.findClosestEnemy(*unit, 200, filtered, CMD_FROM_AI) == faction);
+		CHECK(unit->getAIUpdateInterface()->attackMoveTarget() == faction);
 	}
-	auto *ordinary = w.unit("OrdinaryBuilding", 'B', 260, 200);
-	finder.reset();
-	for (auto owner : {PLAYER_HUMAN, PLAYER_COMPUTER})
-	{
-		w.playerOf('A')->setPlayerType(owner, true);
-		CHECK(finder.findClosestEnemy(*unit, 200, TargetFinder::ALLOW_STRUCTURES, CMD_FROM_AI) == ordinary);
-	}
+	auto *rider = w.unit("Slasher", 'B', 300, 200);
+	REQUIRE(inn->getContain()->addToContain(rider));
+	CHECK(CombatQueries::isSignificantBuildingTarget(*inn));
+	CHECK(finder.findClosestEnemy(*unit, 200, filtered, CMD_FROM_AI) == inn);
 }

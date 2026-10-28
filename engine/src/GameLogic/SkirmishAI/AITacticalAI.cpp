@@ -3,7 +3,6 @@
 
 #include "GameLogic/SkirmishAI/AITacticalAI.h"
 #include "GameLogic/SkirmishAI/AIFortification.h"
-#include "GameLogic/Combat/CombatQueries.h"
 #include "GameLogic/SkirmishAI/AIStrategy.h"
 
 #include "Common/Player.h"
@@ -626,8 +625,6 @@ AIThreatFinder::ThreatRecord enemyRecord(GameLogic &logic, const AISkirmishPlaye
 bool targetAcceptable(GameLogic &logic, AISkirmishPlayer &chooser, const AITarget &t)
 {
 	AIBrainState &b = chooser.brain;
-	const Object *objective = logic.findObjectByID(t.object);
-	if (objective && !CombatQueries::isAutoAttackTarget(*objective)) return false;
 	if (t.dropped || t.inactive)
 	{
 		return false;
@@ -1701,7 +1698,6 @@ void endAnyTactic(GameLogic &logic, AISkirmishPlayer &ai, AIBrainState &b, AITac
 // RW 0x8F1792(0, target): team 0 attacks the object (AIGroup RW 0x77208A(0, target, INT_MAX, 0)) and its idle counter restarts
 void teamAttackObject(GameLogic &logic, AITacticTeam &team, Object &target)
 {
-	if (!CombatQueries::isAutoAttackTarget(target)) return;
 	for (ObjectID id : team.members)
 	{
 		Object *o = logic.findObjectByID(id);

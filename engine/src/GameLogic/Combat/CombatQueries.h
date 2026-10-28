@@ -37,9 +37,10 @@ void sortByCenterDistance2D(std::vector<Object *> &objects, const Coord3D &cente
 bool isAlive(const Object &obj);
 // the object can be attacked at all (not UNATTACKABLE / INERT; a structure under construction can: lane AI-2 r6)
 bool isAttackable(const Object &obj);
-// OpenBFME targeting policy: capture objectives are excluded from automatic attacks,
-// including their linked buildings. Explicit attack orders still use isAttackable.
-bool isAutoAttackTarget(const Object &obj);
+// BFME2 PartitionFilterRejectBuildings (RVA 0x261B7E) and
+// PartitionFilterInsignificantBuildings (RVA 0x261246), respectively.
+bool allowsBuildingTarget(const Object &seeker, const Object &target);
+bool isSignificantBuildingTarget(const Object &target);
 // RW 0x691269 (Object::isAbleToAttack; BFME2 decomp Object_isAbleToAttack.cpp, tier B same-shape): lane DECOMP-3 ported it in full (Object::isAbleToAttack,
 // Object.cpp); this forwards to it
 bool isAbleToAttack(const Object &obj);

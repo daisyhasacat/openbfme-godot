@@ -632,6 +632,7 @@ Object *AIUpdateInterface::nextMoodTarget(bool duringIdle)
 		return nullptr;
 	}
 	unsigned flags = 0;
+	if (obj.logic().settings().attackIgnoreInsignificantBuildings) flags |= TargetFinder::IGNORE_INSIGNIFICANT_BUILDINGS;
 	if (!duringIdle || (m_combat.autoAcquire & 16u))
 	{
 		flags |= TargetFinder::ALLOW_STRUCTURES;

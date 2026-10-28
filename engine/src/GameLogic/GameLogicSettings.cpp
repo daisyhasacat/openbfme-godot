@@ -253,6 +253,7 @@ const FieldParse kAIDataFields[] = {
 	{ "FormationEnemyDistance", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.formationEnemyDistance) },
 	{ "NarrowPassageScale", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.narrowPassageScale) },
 	{ "WaitForOthers", parseNoting<INI::parseBool>, 0, (int)offsetof(BlockState, values.waitForOthers) },
+	{ "AttackIgnoreInsignificantBuildings", parseNoting<INI::parseBool>, 0, (int)offsetof(BlockState, values.attackIgnoreInsignificantBuildings) },
 	{ "UseFormations", parseNoting<INI::parseBool>, 0, (int)offsetof(BlockState, values.useFormations) },
 	// lane STEALTHFLY1: MinFlightHeight (row RW 0xC1CE60 parseReal RW 0x42ED00, AIData + 0xB0): the aerial path's ground floor (RW 0x777ED7)
 	{ "MinFlightHeight", parseNoting<INI::parseReal>, 0, (int)offsetof(BlockState, values.minFlightHeight) },
@@ -615,6 +616,7 @@ void GameLogicSettings::crc(StateHasher &h) const
 	h.addFloat(narrowPassageScale);
 	h.addBool(waitForOthers);
 	h.addBool(useFormations);
+	h.addBool(attackIgnoreInsignificantBuildings);
 	if (minFlightHeight != FLT_MAX)
 	{
 		h.addFloat(minFlightHeight); // lane STEALTHFLY1: only a map that sets it (the hash of every other game is unchanged)

@@ -56,6 +56,7 @@ float distSqr2D(const Coord3D &a, const Coord3D &b)
 unsigned scanFlags(const Object &obj, const AIUpdateInterface &ai)
 {
 	unsigned flags = 0;
+	if (obj.logic().settings().attackIgnoreInsignificantBuildings) flags |= TargetFinder::IGNORE_INSIGNIFICANT_BUILDINGS;
 	if (ai.autoAcquireFlags() & 16u)
 	{
 		flags |= TargetFinder::ALLOW_STRUCTURES;

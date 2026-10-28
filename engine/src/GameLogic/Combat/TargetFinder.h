@@ -30,8 +30,9 @@ public:
 	}
 	enum Flags
 	{
-		ALLOW_STRUCTURES = 1,       ///< AutoAcquireEnemiesWhenIdle ATTACK_BUILDINGS
+		ALLOW_STRUCTURES = 1,       ///< source ATTACK_BUILDINGS: bypass RejectBuildings (not the insignificant filter)
 		HORDES_ONLY = 2,            ///< the seeker is a horde: targets are horde objects and lone units, never members
+		IGNORE_INSIGNIFICANT_BUILDINGS = 8, ///< source qualifier 4, selected by mood/guard AIData
 		MEMBERS_ONLY = 4            ///< the seeker is a lone unit: targets are lone units and horde MEMBERS, never the horde object
 	};
 	// the nearest enemy of `seeker` within `range` (edge to the seeker's centre) that one of its weapons can attack, or null. Ties: the lower object id.

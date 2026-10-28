@@ -654,7 +654,7 @@ StateReturnType AIMeleeReAcquireState::onEnter()
 	if (victimGone(victim))
 	{
 		const float range = SimMath::mulf32(a.world().pathfinder().config().meleeApproachDist, 2.0f);
-		victim = self.logic().combat().targets().findClosestEnemy(self, range, TargetFinder::MEMBERS_ONLY, CMD_FROM_AI);
+		victim = self.logic().combat().targets().findClosestEnemy(self, range, TargetFinder::MEMBERS_ONLY | TargetFinder::IGNORE_INSIGNIFICANT_BUILDINGS, CMD_FROM_AI);
 	}
 	machine().setGoalObject(victim ? victim->getID() : (ObjectID)INVALID_ID);
 	a.setCurrentVictim(victim);

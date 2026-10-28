@@ -6,6 +6,8 @@
 #include "GameLogic/Combat/CombatQueries.h"
 
 #include "Common/Thing/ThingTemplate.h"
+#include "Common/Player.h"
+#include "GameLogic/Module/BehaviorModule.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/GameLogic.h"
@@ -92,10 +94,33 @@ bool isAlive(const Object &obj)
 	return !obj.isDestroyed() && !obj.isEffectivelyDead();
 }
 
-bool isAutoAttackTarget(const Object &obj)
+// DONOR: Open-BFME-2 Common/PartitionFilterRejectBuildings_allow.cpp,
+// RVA 0x261B7E, ctor PartitionFilterRejectBuildings.cpp. These are BFME2
+// rules; RotWK parity is not established by this donor implementation.
+bool allowsBuildingTarget(const Object &seeker, const Object &target)
 {
-	return isAttackable(obj) && !(obj.isKindOfName("STRUCTURE") &&
-		(obj.isKindOfName("CAPTURABLE") || obj.isKindOfName("LINKED_TO_FLAG")));
+	if (!target.isKindOfName("STRUCTURE") || target.isKindOfName("MINE")) return true;
+	const Player *owner = seeker.getControllingPlayer();
+	if (!owner) return false;
+	const auto *contain = target.getContain();
+	const Player *apparent = contain ? contain->getApparentControllingPlayer(owner) : nullptr;
+	if (!apparent && !target.getControllingPlayer()) return false;
+	if (owner->getPlayerType() == PLAYER_COMPUTER) return true;
+	if (target.isKindOfName("FS_BASE_DEFENSE")) return true;
+	return contain && target.isAbleToAttack();
+}
+
+// DONOR: AI/AIPlayerIsLocationSafe.cpp RVA 0x261246 (includes the AI
+// interface exception at Object +0x258); ObjectRva0028D491.cpp 0x28D491/4C4.
+// Flags CAPTURABLE and LINKED_TO_FLAG are not tested by either filter.
+bool isSignificantBuildingTarget(const Object &target)
+{
+	if (!target.isKindOfName("STRUCTURE")) return true;
+	for (const char *kind : {"FS_POWER", "FS_FACTORY", "FS_BASE_DEFENSE", "FS_TECHNOLOGY", "FS_CASH_PRODUCER"})
+		if (target.isKindOfName(kind)) return true;
+	if (target.getAIUpdateInterface()) return true;
+	const auto *contain = target.getContain();
+	return !contain || (contain->isGarrisonable() && contain->getContainCount() != 0);
 }
 
 bool isAttackable(const Object &obj)

@@ -21,6 +21,7 @@
 #include <vector>
 
 class Object;
+class Player;
 class Team;
 struct Coord3D;
 struct DamageInfo;
@@ -126,6 +127,8 @@ public:
 	// ---- lane GARRISON-1 (the contain interface at module + 0x20; RW slots of the OpenContain table RW 0xC59AF0, GarrisonContain RW 0xC5C698, HordeGarrisonContain
 	// RW 0xC5C9F0). The defaults are OpenContain's answers; a contain class that is not ported answers through UnportedBehaviorModule (no contain at all) ----
 	// slot 0x10 isGarrisonable: GarrisonContain RW 0x8BD372 true, OpenContain RW 0x9188EB false (TunnelContain RW 0xC5DCE0 + 0x10: RW 0x9188EB false, lane UI-1)
+	// BFME2 contain slot 0x4C; null means use the object owner (S-1100).
+	virtual const Player *getApparentControllingPlayer(const Player *viewer) const { (void)viewer; return nullptr; }
 	virtual bool isGarrisonable() const { return false; }
 	// lane UI-1: slot 0xC8 isDisplayedOnControlBar (the control bar's transport inventory RW 0x943D6F -> RW 0x94251F asks it): OpenContain RW 0x9188EB false;
 	// GarrisonContain / HordeGarrisonContain, TransportContain / HordeTransportContain, SiegeEngineContain / HordeSiegeEngineContain and TunnelContain RW 0x8BD372
