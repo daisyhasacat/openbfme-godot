@@ -358,6 +358,23 @@ TEST_CASE("bfme Lua: debug and selection libraries read the sampled client selec
 	CHECK(f.writes == 1);
 }
 
+TEST_CASE("bfme Lua: selected is a live unit or building handle")
+{
+ BfmeFixture f;
+ CHECK(f.run("return selected") == "nil\n");
+ f.snapshot.selection = {1234};
+ CHECK(f.run("return selected==bfme.unitInstances[1234], selected.id") == "true\t1234\n");
+ f.snapshot.collections["buildingInstances"]["99"] = {{"id", 99}, {"playerId", 1}, {"typeId", "TestBuilding"}};
+ f.snapshot.selection = {5555, 99, 1234};
+ CHECK(f.run("return selected==bfme.buildingInstances[99], selected.id") == "true\t99\n");
+ f.run("selected:trainUnit('GondorSoldier', 2)");
+ CHECK(f.writes == 1);
+ CHECK_FALSE(f.vm->execute("selected=nil").ok);
+ f.snapshot.selection.clear();
+ CHECK(f.run("return selected") == "nil\n");
+ CHECK(f.run("myGlobal=42; return myGlobal, unknownGlobal") == "42\tnil\n");
+}
+
 TEST_CASE("bfme Lua: orders go to the owner as one group with validated positions and targets")
 {
 	BfmeFixture f;

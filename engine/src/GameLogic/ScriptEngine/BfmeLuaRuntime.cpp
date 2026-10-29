@@ -655,6 +655,14 @@ module=newproxy({
  __metatable='bfme module'
 })
 bfme=module
+-- Resolve this convenience handle on every read so selection changes never leave a stale global.
+setmetatable(_G, {
+ __index=function(_,key) if key=='selected' then return selected(nil)[1] end end,
+ __newindex=function(t,key,value)
+  if key=='selected' then error('selected is read-only',2) end
+  rawset(t,key,value)
+ end,
+})
 function import(name)
  if name=='bfme' then return module end
  local lib=type(name)=='string' and libraries[name:match('^bfme%.(.+)$') or '']

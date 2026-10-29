@@ -44,7 +44,14 @@ if barracks then barracks:trainUnit("GondorFighterHorde", 3) end
 - **Libraries** (`bfme.match`, `bfme.input`, `bfme.selection`, `bfme.mutations`, `bfme.debug`, `bfme.graphics`, `bfme.console`)
   group functions that do not belong to a single handle.
 
-The only globals are `bfme`, `import`, `print` and the standard Lua libraries. Each library is also reachable with
+`selected` is a read-only global resolving to the first selected unit or building
+(in selection order), or `nil` when none is selected. It supports the same fields and
+methods as other handles: `selected.id`, `selected:kill()`, or, for a selected
+production building, `selected:trainUnit("GondorFighterHorde", 3)`. Each command
+reads the current selection. Assign `local target = selected` to retain that handle
+while changing selection.
+
+The globals are `bfme`, `selected`, `import`, `print` and the standard Lua libraries. Each library is also reachable with
 `import("bfme.<name>")` or `require("bfme.<name>")`, and its functions accept both `.` and `:` calls.
 `bfme.capabilities` is a detached `{luaVersion, libraries}` table.
 
