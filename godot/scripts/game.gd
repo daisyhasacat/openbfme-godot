@@ -728,7 +728,7 @@ func _ready() -> void:
 	# loader check before display setup or retail mounting, through a user flag.
 	if OS.get_cmdline_user_args().has("--appimage-boot-test"):
 		process_mode = Node.PROCESS_MODE_DISABLED
-		get_tree().quit(preload("res://tests/appimage_boot_test.gd").run())
+		get_tree().quit(load("res://tests/appimage_boot_test.gd").run())
 		return
 	if OS.has_feature("ios"):
 		var keyboard := preload("res://scripts/release/ios_keyboard.gd").new()
@@ -747,7 +747,7 @@ func _ready() -> void:
 			printerr("SMOKE FAIL: --smoke-test requires --headless")
 			get_tree().quit(1)
 			return
-		var code: int = await preload("res://tests/smoke_checks.gd").new().run(get_tree())
+		var code: int = await load("res://tests/smoke_checks.gd").new().run(get_tree())
 		get_tree().quit(code)
 		return
 	_touch_ui_scroll = preload("res://scripts/touch_ui_scroll.gd").new()
@@ -1265,14 +1265,14 @@ var _benchmark_tool: CanvasLayer
 func _open_benchmark() -> void:
 	if is_instance_valid(_benchmark_tool):
 		return
-	_benchmark_tool = preload("res://scripts/settings_benchmark.gd").new()
+	_benchmark_tool = load("res://scripts/settings_benchmark.gd").new()
 	_benchmark_tool.game = self
 	add_child(_benchmark_tool)
 
 
 func _open_appimage_update() -> void:
 	if has_node("AppImageUpdater"): return
-	var updater := preload("res://scripts/release/appimage_update.gd").new()
+	var updater = load("res://scripts/release/appimage_update.gd").new()
 	updater.name = "AppImageUpdater"
 	updater.can_update = _state == State.MENU and _lobby_room_name().is_empty()
 	for screen in _shell.shell_stack():
@@ -1499,7 +1499,9 @@ func _boot() -> void:
 	controller_ui.execute = func(code: String) -> Dictionary: return _world.execute_lua(code)
 	controller_ui.hud = func() -> Node: return _hud
 	add_child(controller_ui)
+	var setup_started := Time.get_ticks_msec()
 	var setup: Dictionary = _world.setup(_fs)
+	print("STARTUP object world ready at %d ms (%d ms)" % [Time.get_ticks_msec(), Time.get_ticks_msec() - setup_started])
 	print("GAME object world: ok=%s, %d templates, %d playable factions, %.1f s" % [setup.ok, setup.get("templates", 0), setup.get("factions", 0), setup.get("seconds", 0.0)])
 	if not setup.ok:
 		_fail("object world: " + "\n".join(setup.errors))
@@ -1584,6 +1586,7 @@ func _boot() -> void:
 		return
 	_audio.play_shell_music(false) # no shell map yet (View3D is a stop): the low-LOD shell music, as menu_viewer
 	_state = State.MENU
+	print("STARTUP main menu ready at %d ms" % Time.get_ticks_msec())
 	if _fs.is_bfme1():
 		var movie_audio := preload("res://scripts/shell_movie_audio.gd").new()
 		movie_audio.name = "ShellMovieAudio"
@@ -2373,6 +2376,7 @@ func _boot_audio() -> bool:
 		_fail("audio boot failed:\n" + "\n".join(booted.errors))
 		return false
 	print("GAME audio booted: %d events" % booted.events)
+	print("STARTUP audio ready at %d ms" % Time.get_ticks_msec())
 	return true
 
 
@@ -2953,13 +2957,13 @@ func _install_hud(rep: Dictionary) -> void:
 	_hud = hud
 	_hud_installed = true
 	if _debug_navigation:
-		var navigation := preload("res://scripts/navigation_debug.gd").new()
+		var navigation = load("res://scripts/navigation_debug.gd").new()
 		navigation.world = _world
 		navigation.hud = hud
 		add_child(navigation)
 		_game_nodes.append(navigation)
 	if not has_node("AdaptiveHUD"):
-		var adaptive := preload("res://scripts/adaptive_hud.gd").new()
+		var adaptive = load("res://scripts/adaptive_hud.gd").new()
 		adaptive.name = "AdaptiveHUD"
 		adaptive.hud = func() -> Node: return _hud
 		adaptive.gameplay = func() -> bool: return _state == State.PLAYING and not _control_bar_hidden and not _quit_open and (_lua_console == null or not _lua_console.is_open()) and (not is_instance_valid(_map_editor) or not _map_editor.active)
@@ -2970,7 +2974,7 @@ func _install_hud(rep: Dictionary) -> void:
 		adaptive.bridge = get_node_or_null("ControllerInput")
 		add_child(adaptive)
 	if not has_node("TouchToolbar") and (OS.has_feature("mobile") or DisplayServer.is_touchscreen_available()):
-		var touch_toolbar := preload("res://scripts/touch_toolbar.gd").new()
+		var touch_toolbar = load("res://scripts/touch_toolbar.gd").new()
 		touch_toolbar.name = "TouchToolbar"
 		touch_toolbar.hud = func() -> Node: return _hud
 		touch_toolbar.gameplay = func() -> bool:
@@ -4543,7 +4547,7 @@ func _open_map_editor() -> void:
 	if _lua_console.is_open():
 		_lua_console.toggle()
 	if not is_instance_valid(_map_editor):
-		_map_editor = preload("res://scripts/map_editor.gd").new()
+		_map_editor = load("res://scripts/map_editor.gd").new()
 		_map_editor.world = _world
 		_map_editor.hud = _hud
 		_map_editor.camera = _camera
@@ -5884,7 +5888,7 @@ func _share_results() -> bool:
 ## request goes out only when the player opens an online page or a LAN / online game ends (and shares results)
 func _platform_setup() -> void:
 	if OS.is_debug_build() and _local_control == null and OS.get_environment("OPENBFME_LOCAL_CONTROL") != "0":
-		_local_control = preload("res://scripts/local_diagnostic_control.gd").new()
+		_local_control = load("res://scripts/local_diagnostic_control.gd").new()
 		_local_control.name = "LocalDiagnosticControl"
 		_local_control.game = self
 		add_child(_local_control)

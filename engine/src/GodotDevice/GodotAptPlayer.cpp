@@ -701,6 +701,7 @@ struct ShellMode
 	ShellDeviceServices services;
 	std::unique_ptr<ShellGameText> text;
 	WorldSkirmishSetupSource setup;
+	size_t warmMapLabel = 0; // presentation-only idle work, never a prerequisite of the main menu
 	ShellNewGameSink sink;
 	LoadScreenInfo loadScreen;
 	ScoreScreenData scoreScreen; // lane END-1
@@ -1522,6 +1523,22 @@ void AptMenuPlayer::_process(double delta)
 	m->view3d.advance(); // lane UI-2
 	advanceMovies(delta * 1000.0); // lane CAMP-2
 	takeCreateAHeroPicture(); // lane CAHPIC-1
+	// Warm localized map names after drawing the main menu, a bounded batch per
+	// frame instead of scanning every map on the boot path. On-demand lookups
+	// remain available if the player opens Skirmish before warming finishes.
+	if (m->shell && m->shell->shell && m->shell->shell->top() &&
+		m->shell->shell->top()->filename() == "MainMenu.apt" &&
+		m->shell->warmMapLabel < m->shell->setup.maps().size())
+	{
+		ShellMode &sm = *m->shell;
+		const auto start = Time::get_singleton()->get_ticks_usec();
+		SkirmishGameSetup labels(sm.setup, sm.text.get());
+		for (int batch = 0; batch < 8 && sm.warmMapLabel < sm.setup.maps().size(); ++batch)
+		{
+			labels.mapBaseDisplayName(sm.setup.maps()[sm.warmMapLabel++]);
+			if (Time::get_singleton()->get_ticks_usec() - start >= 1000) break;
+		}
+	}
 }
 
 void AptMenuPlayer::takeCreateAHeroPicture()
@@ -1882,16 +1899,6 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 		errors.push_back(toGodot("the lobby's setup source: " + error));
 	}
 	addInstalledMaps(sm->setup,*fs.ptr());
-	// Resolve the mounted maps' labels while the shell is still booting. This
-	// fills ShellGameText's existing per-map string cache (including missing
-	// map.str files), so opening Skirmish does no first-use map-string I/O.
-	{
-		SkirmishGameSetup labels(sm->setup, sm->text.get());
-		for (const MapCacheEntry &map : sm->setup.maps())
-		{
-			labels.mapBaseDisplayName(map);
-		}
-	}
 	if (!loadGadgetSkinData(*fs->archive_fs(), sm->skins, &error))
 	{
 		errors.push_back(toGodot("gadget skins: " + error));
@@ -3965,6 +3972,8 @@ Dictionary AptMenuPlayer::get_shell_report() const
 		return r;
 	}
 	ShellMode &sm = *m->shell;
+	r["map_labels_warmed"] = (int64_t)sm.warmMapLabel;
+	r["map_labels_total"] = (int64_t)sm.setup.maps().size();
 	Dictionary notes;
 	std::map<std::string, int> counts;
 	PackedStringArray unported;
