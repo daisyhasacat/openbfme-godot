@@ -70,8 +70,9 @@ public:
 	// Presentation-only W3D models and materials follow the selected menu theme.
 	Dictionary setup_menu(const Ref<RetailFileSystem> &fs, bool shellScene = false);
 	Dictionary get_shell_scene_state() const;
-	float shell_fade_add() const { return ShellEffects.fadeAdd(); }
+	float shell_fade_add() const { return ShellEffects.renderFadeAdd(); }
 	void advance_shell_scene(double seconds);
+	void advance_shell_effects(double seconds) { ShellEffects.advance(seconds); }
 
 	// Builds the model (meshes, materials, MultiMeshes). Returns the model id, or -1; the report says why either way.
 	int64_t add_model(const String &model_name);

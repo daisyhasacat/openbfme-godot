@@ -17,6 +17,8 @@ public:
 	bool load(LoadedMap &&map, std::string *error);
 	void advance(double seconds);
 	float fadeAdd() const;
+	// Render-only interpolation; the script clock and tick values remain unchanged.
+	float renderFadeAdd() const;
 	unsigned fadeStarts() const;
 	unsigned ticks() const;
 private:

@@ -71,6 +71,7 @@ private:
 		ObjectID reflectionId;
 		Camera3D *camReflection = nullptr;
 		float reflectionPlane = 0;
+		float fadeAdd = -1;
 		Transform3D sceneTransform;
 		ObjectID blackId, whiteId;
 		Camera3D *camBlack = nullptr, *camWhite = nullptr;

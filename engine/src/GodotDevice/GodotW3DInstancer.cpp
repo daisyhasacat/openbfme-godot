@@ -436,6 +436,7 @@ Dictionary W3DInstancer::get_shell_scene_state() const
 	if (!result.is_empty())
 	{
 		result["fade_add"] = ShellEffects.fadeAdd();
+		result["fade_render_add"] = ShellEffects.renderFadeAdd();
 		result["fade_starts"] = ShellEffects.fadeStarts();
 		result["effect_ticks"] = ShellEffects.ticks();
 	}

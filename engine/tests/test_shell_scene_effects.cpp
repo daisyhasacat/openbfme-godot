@@ -98,3 +98,32 @@ TEST_CASE("shell effects: repeated timer fades are identical at fine and stalled
 	CHECK(stalled.ticks() == 51);
 	CHECK(stalled.fadeStarts() == 5);
 }
+
+TEST_CASE("shell effects: display samples interpolate without advancing script ticks or shortening the white hold")
+{
+	ShellSceneEffects effects; std::string error;
+	REQUIRE(effects.load(opening(2,2,2), &error));
+	effects.advance(0.0);
+	CHECK(effects.renderFadeAdd() == 0.0f);
+	effects.advance(0.05);
+	CHECK(effects.renderFadeAdd() == 0.125f);
+	effects.advance(0.10);
+	CHECK(effects.renderFadeAdd() == 0.25f);
+	effects.advance(0.15);
+	CHECK(effects.renderFadeAdd() == 0.375f);
+	CHECK(effects.fadeAdd() == 0.0f);
+	CHECK(effects.ticks() == 1);
+	CHECK(effects.fadeStarts() == 1);
+	effects.advance(0.2);
+	CHECK(effects.fadeAdd() == 0.5f);
+	CHECK(effects.renderFadeAdd() == 0.5f);
+	effects.advance(0.3);
+	CHECK(effects.renderFadeAdd() == 0.75f);
+	effects.advance(0.4);
+	CHECK(effects.renderFadeAdd() == 1.0f);
+	effects.advance(0.75);
+	CHECK(effects.renderFadeAdd() == 1.0f);
+	effects.advance(1.4);
+	CHECK(effects.renderFadeAdd() == 0.0f);
+	CHECK(effects.fadeStarts() == 1);
+}

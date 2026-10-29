@@ -351,6 +351,15 @@ void AptView3DViewers::pose(Slot &slot, double now)
 	{
 		return;
 	}
+	// Fade composition is inexpensive and runs at display cadence, even when
+	// the model, particles and reflection pass wait for their render deadline.
+	slot.inst->advance_shell_effects((now - slot.createdMs) * 0.001);
+	const float fade = slot.inst->shell_fade_add();
+	if (fade != slot.fadeAdd)
+	{
+		slot.material->set_shader_parameter("fade_add", fade);
+		slot.fadeAdd = fade;
+	}
 	// A decoration's cadence is independent of input and the Apt movie clock.
 	// Accumulated real time is used on the next update; animation does not slow down.
 	if (!slot.forceRender && slot.maxFps > 0 && now < slot.nextRenderMs) return;
@@ -371,7 +380,6 @@ void AptView3DViewers::pose(Slot &slot, double now)
 	}
 	slot.inst->set_global_time((now - slot.createdMs) * 0.001);
 	slot.inst->advance_shell_scene((now - slot.createdMs) * 0.001);
-	slot.material->set_shader_parameter("fade_add", slot.inst->shell_fade_add());
 	slot.black->set_update_mode(SubViewport::UPDATE_ONCE);
 	slot.white->set_update_mode(SubViewport::UPDATE_ONCE);
 	slot.anim.progress(now, slot.frameRate);

@@ -82,6 +82,7 @@ struct ShellSceneEffects::State
 	GameLogic logic{things, modules, players, RandomAlgorithm::ZH_CarryChain};
 	AddFade fade;
 	unsigned tick = 0, starts = 0;
+	float fraction = 0;
 };
 
 ShellSceneEffects::ShellSceneEffects() = default;
@@ -114,7 +115,9 @@ void ShellSceneEffects::advance(double seconds)
 	if (!m || !std::isfinite(seconds) || seconds < 0) return;
 	// Script timers and fades advance at the source's logic rate, independently
 	// of render cadence. Catch up every tick so ENABLE_SCRIPT and timer edges survive stalls.
-	const auto target = (unsigned long long)std::floor(seconds * LOGICFRAMES_PER_SECOND);
+	const double frame = seconds * LOGICFRAMES_PER_SECOND;
+	const auto target = (unsigned long long)std::floor(frame);
+	m->fraction = (float)(frame - std::floor(frame));
 	while (m->tick <= target)
 	{
 		m->fade.update();
@@ -126,5 +129,14 @@ void ShellSceneEffects::advance(double seconds)
 	}
 }
 float ShellSceneEffects::fadeAdd() const { return m ? m->fade.value : 0; }
+float ShellSceneEffects::renderFadeAdd() const
+{
+	if (!m) return 0;
+	// Sample only the current fade's next value. Never evaluate future scripts:
+	// timer edges and replacement fades still occur on their original ticks.
+	AddFade next = m->fade;
+	next.update();
+	return m->fade.value + m->fraction * (next.value - m->fade.value);
+}
 unsigned ShellSceneEffects::fadeStarts() const { return m ? m->starts : 0; }
 unsigned ShellSceneEffects::ticks() const { return m ? m->tick : 0; }

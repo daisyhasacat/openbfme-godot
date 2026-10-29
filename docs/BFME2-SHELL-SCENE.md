@@ -38,7 +38,11 @@ Open-BFME-2 `ScriptEngine.cpp` setFade (0x203777) / updateFades (0x2036CC):
 updates before script evaluation, an immediate update when increase is zero,
 inclusive phase boundaries, and decrease divided by `framesDecrease + 1`.
 The additive white amount is applied when composing the backdrop, before menu
-controls. Timing catches up all 5 Hz script ticks after a render stall. No cut
+controls. Render-only interpolation samples between adjacent fade values at
+display cadence, independently of the 3D decoration budget. The 5 Hz script
+values and timer edges remain unchanged. This is a presentation smoothing choice,
+not a claim that BFME2's exact render interpolation has been recovered.
+Timing catches up all 5 Hz script ticks after a render stall. No cut
 times, script names or fade durations are hard-coded. Unsupported effect script
 conditions/actions or scheduling fail with their names. This context supports
 the timing graph only; its recorded camera/UI/capture actions do not change the
@@ -57,5 +61,7 @@ scene-owned uniforms, animation and hide/restore), and
 `menu_viewport_budget_test.gd` (render scale, scheduling and cleanup).
 Native `shell effects:*` tests pin fade endpoints, timer edges, stalled-clock
 catch-up and explicit rejection. The graphical shell test also waits for the
-first camera transition, verifies a white backdrop pixel and fade recovery. A rendered
+first camera transition, verifies a white backdrop pixel and fade recovery.
+`shell_fade_smoothing_test.gd` checks that the rendered fade value changes between
+script ticks without spending a 3D update under a 1 Hz decoration budget. A rendered
 main-menu frame is inspected locally; capture and retail data stay outside Git.
