@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/ObjectCreationUpgrade.h"
+#include "GameLogic/Module/SlavedUpdate.h"
 #include "GameLogic/SnapshotXfer.h"
 
 #include "Common/INI.h"
@@ -169,6 +170,9 @@ UpdateSleepTime ObjectCreationUpgrade::update()
 			made->setPosition(&at);                                                  // RW 0x70C201
 			made->friend_onBuildComplete();                                          // RW 0x8B86DB .. 0x8B8708: its create modules
 			m_spawned = made->getID();
+			// BFME2 ObjectCreationUpgradeUpdate uses BuildAssistant::buildObjectNow(owner, ...).
+			// Our direct creation must retain that owner link for SlavedUpdate::DieOnMastersDeath.
+			if (SlavedUpdateInterface *slave = SlavedUpdateInterface::of(*made)) slave->onEnslave(obj);
 			if (d->m_fadeInTime > 0)
 			{
 				++m_unported; // the drawable's fade in (client)

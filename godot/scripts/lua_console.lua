@@ -8,7 +8,6 @@ local LuaConsole = {
 	toggled = signal("open"),
 	restart_requested = signal(),
 	map_editor_requested = signal(),
-	snow_requested = signal(),
 	execute = property { type = Callable },
 	save_game = property { type = Callable },
 	history_path = "user://console_history.cfg",
@@ -310,7 +309,6 @@ function LuaConsole:_ready()
 	self._status = label("READY · LuaJIT", MUTED, 12)
 	self._status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	toolbar:add_child(self._status)
-	toolbar:add_child(button("Snow weather", function() self.snow_requested:emit() end))
 	toolbar:add_child(button("Map editor", function() self.map_editor_requested:emit() end))
 	toolbar:add_child(button("Restart game", function() self.restart_requested:emit() end))
 	toolbar:add_child(button("Reload scripts", function() self:reload_scripts() end))

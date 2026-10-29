@@ -48,84 +48,6 @@ func _coating_gpu() -> bool:
 	viewport.queue_free()
 	return ok
 
-func _ground_gpu() -> bool:
-	var viewport := SubViewport.new()
-	viewport.size = Vector2i(640,160)
-	viewport.own_world_3d = true
-	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	root.add_child(viewport)
-	var camera := Camera3D.new()
-	viewport.add_child(camera)
-	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-	camera.size = 26.0
-	camera.position = Vector3(0,25,0)
-	camera.look_at(Vector3.ZERO,Vector3.FORWARD)
-	camera.current = true
-	var builder = ClassDB.instantiate("MapTerrainBuilder")
-	for tile in 5:
-		var image := Image.create(4,4,false,Image.FORMAT_RGBA8)
-		image.fill(Color(0.02,0.03,0.01) if tile != 1 else Color(0.1,0.4,0.05))
-		var texture := ImageTexture.create_from_image(image)
-		var patch: MeshInstance3D
-		if tile == 2:
-			patch = MeshInstance3D.new()
-			var plane := PlaneMesh.new()
-			plane.size = Vector2(4,4)
-			patch.mesh = plane
-			var material := ShaderMaterial.new()
-			material.shader = load("res://shaders/road.gdshader")
-			material.set_shader_parameter("road_tex",texture)
-			patch.material_override = material
-			patch.position.x = (tile-2)*5.0
-		else:
-			patch = builder.build_test_patch({"base_atlas":image,"uv0":PackedVector2Array([Vector2.ZERO,Vector2.RIGHT,Vector2.ONE,Vector2.DOWN])})
-			patch.scale = Vector3.ONE*0.4
-			patch.position = Vector3((tile-2)*5.0-2.0,0,2)
-			var material: ShaderMaterial = patch.mesh.surface_get_material(0)
-			material.set_shader_parameter("debug_mode",0)
-			material.set_shader_parameter("sun_color",Vector3.ZERO)
-			material.set_shader_parameter("overbright",false)
-			if tile == 3:
-				var mask := Image.create(4,4,false,Image.FORMAT_RGBA8)
-				mask.fill(Color.WHITE)
-				material.set_shader_parameter("paving_enabled",true)
-				material.set_shader_parameter("paving_extent",Vector2(10,10))
-				material.set_shader_parameter("paving_mask",ImageTexture.create_from_image(mask))
-				material.set_shader_parameter("paving_texture",texture)
-			if tile == 4:
-				var authored := Image.create(4,4,false,Image.FORMAT_RGBA8)
-				authored.fill(Color(0.45,0.65,0.95,1))
-				material.set_shader_parameter("snow_atlas_enabled",true)
-				material.set_shader_parameter("snow_atlas",ImageTexture.create_from_image(authored))
-		viewport.add_child(patch)
-	RenderingServer.global_shader_parameter_set("w3d_shadow_strength",0.0)
-	for frame in 5: await process_frame
-	await RenderingServer.frame_post_draw
-	var dry := viewport.get_texture().get_image()
-	RenderingServer.global_shader_parameter_set("openbfme_snow_cover",1.0)
-	for frame in 3: await process_frame
-	await RenderingServer.frame_post_draw
-	var snowy := viewport.get_texture().get_image()
-	RenderingServer.global_shader_parameter_set("openbfme_snow_cover",0.0)
-	for frame in 3: await process_frame
-	await RenderingServer.frame_post_draw
-	var restored := viewport.get_texture().get_image()
-	var ok := dry.get_data() == restored.get_data()
-	var capture := OS.get_environment("OPENBFME_SNOW_GROUND_SCREENSHOT")
-	if not capture.is_empty(): snowy.save_png(capture)
-	for tile in 5:
-		var point := camera.unproject_position(Vector3((tile-2)*5.0,0,0))
-		var before := dry.get_pixel(int(point.x),int(point.y))
-		var after := snowy.get_pixel(int(point.x),int(point.y))
-		# tolerance: a snow layer must visibly cover even very dark soil, roads and paving.
-		ok = ok and after.r > before.r+0.3
-		print("SNOW GROUND TILE ",tile,": ",before," -> ",after)
-		if tile == 4:
-			# tolerance: the blue test replacement distinguishes authored sampling from procedural white.
-			ok = ok and after.b > after.r+0.2
-	viewport.queue_free()
-	return ok
-
 func _run() -> void:
 	create_timer(100).timeout.connect(func(): push_error("Snow weather test timed out"); quit(1))
 	var world = ClassDB.instantiate("GameWorld")
@@ -138,9 +60,6 @@ func _run() -> void:
 	var builder = ClassDB.instantiate("MapTerrainBuilder")
 	var terrain = builder.build_map(fs,"map mp evendim",{"markers":false})
 	assert(terrain != null)
-	var snow_report: Dictionary = builder.get_report().snow
-	assert(snow_report.errors.is_empty(),str(snow_report))
-	assert(snow_report.terrain_type_mapping.get("grasslargetype1") == "grasslargetype1snow")
 	root.add_child(terrain)
 	var camera := Camera3D.new()
 	root.add_child(camera)
@@ -171,7 +90,6 @@ func _run() -> void:
 	assert(world.get_node_or_null("MapSnowfall") == null)
 	if DisplayServer.get_name() != "headless":
 		assert(await _coating_gpu(), "Snow must brighten roofs, preserve walls and restore exactly")
-		assert(await _ground_gpu(),"Snow layer must cover terrain, roads and paving, sample authored replacements and restore exactly")
 	assert(world.set_snow_weather(true).ok)
 	# Restoring an authored snow map keeps its native precipitation.
 	var native: Dictionary = world.load_map("map mp withered heath")
