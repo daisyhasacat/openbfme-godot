@@ -5,6 +5,7 @@
 #include "GameClient/TerrainAtlas.h"
 
 #include "GameClient/TGAFile.h"
+#include "Common/JobSystem.h"
 
 #include <algorithm>
 #include <cctype>
@@ -132,7 +133,7 @@ int TerrainAtlas::packTiles(WorldHeightMap &map, const std::vector<bool> &tilePr
 	// median pure-2.01 map has 832 source tiles and the largest 1804 (spec 1.7.2). The rows therefore grow
 	// downward, up to the 8192-px texture limit (113 rows). The retail BFME2 layout is UNKNOWN (stop S-030).
 	const int maxRows = TERRAIN_ATLAS_MAX_HEIGHT / (TILE_PIXEL_EXTENT + TERRAIN_TILE_OFFSET);
-	static bool availableGrid[TERRAIN_ATLAS_MAX_HEIGHT / (TILE_PIXEL_EXTENT + TERRAIN_TILE_OFFSET) + 1][64];
+	bool availableGrid[TERRAIN_ATLAS_MAX_HEIGHT / (TILE_PIXEL_EXTENT + TERRAIN_TILE_OFFSET) + 1][64];
 	for (int row = 0; row < maxRows; row++)
 	{
 		for (int column = 0; column < tilesPerRow; column++)
@@ -237,45 +238,92 @@ bool TerrainAtlas::build(WorldHeightMap &map, ArchiveFileSystem &fs, const Terra
 
 	std::vector<LoadedClass> loaded(map.m_textureClasses.size());
 	std::vector<bool> tilePresent((size_t)map.m_numBitmapTiles, false);
-	for (size_t ci = 0; ci < map.m_textureClasses.size(); ++ci)
+	std::vector<TerrainAtlasReport> classReports(loaded.size());
+	std::vector<std::exception_ptr> thrown(loaded.size());
+	// OpenBFME loading infrastructure, like INI read-ahead: the mounted filesystem is
+	// immutable, archive handles use positional reads, and each job owns its decoded pixels.
+	JobSystem::client().parallelFor(loaded.size(), 1, [&](size_t, size_t begin, size_t end) {
+		for (size_t ci = begin; ci < end; ++ci)
+		{
+			auto loadClass = [&] {
+				TerrainAtlasReport &local = classReports[ci];
+				const TXTextureClass &c = map.m_textureClasses[ci];
+				LoadedClass &lc = loaded[ci];
+				const std::string *tex = types.findTexture(c.name);
+				if (!tex)
+				{
+					local.unknownTerrainType.push_back(c.name);
+					return;
+				}
+				const std::string path = TerrainTypeIndex::textureArchivePath(*tex);
+				if (!fs.doesFileExist(path))
+				{
+					local.missingTextureFile.push_back(c.name + " -> " + path);
+					return;
+				}
+				std::string e;
+				if (!readTga(fs, path, lc.image, &e))
+				{
+					local.badTexture.push_back(c.name + ": " + e);
+					return;
+				}
+				if (lc.image.topDownFlag)
+				{
+					local.topDownTextures.push_back(*tex);
+				}
+				const int numTiles = countTiles(lc.image.width, lc.image.height);
+				if (numTiles < c.numTiles)
+				{
+					local.undersizedTexture.push_back(c.name + " (" + std::to_string(lc.image.width) + "x" + std::to_string(lc.image.height)
+						+ " holds " + std::to_string(numTiles) + " tiles, class needs " + std::to_string(c.numTiles) + ")");
+					return;
+				}
+				lc.widthTiles = derivedWidth(c.numTiles);
+				if (lc.widthTiles != c.width)
+				{
+					++local.classWidthMismatches;
+				}
+				lc.loaded = true;
+				// the BFME2 normal map
+				const std::string nrmPath = TerrainTypeIndex::textureArchivePath(TerrainTypeIndex::normalMapName(*tex));
+				if (!fs.doesFileExist(nrmPath))
+				{
+					local.missingNormalMap.push_back(c.name);
+				}
+				else if (!readTga(fs, nrmPath, lc.normal, &e))
+				{
+					local.badNormalMap.push_back(c.name + ": " + e);
+				}
+				else if (lc.normal.width < lc.widthTiles * TILE_PIXEL_EXTENT || lc.normal.height < lc.widthTiles * TILE_PIXEL_EXTENT)
+				{
+					local.badNormalMap.push_back(c.name + ": " + std::to_string(lc.normal.width) + "x" + std::to_string(lc.normal.height)
+						+ " is smaller than the base texture's tile block");
+				}
+				else
+				{
+					lc.hasNormal = true;
+				}
+			};
+			try { loadClass(); }
+			catch (...) { thrown[ci] = std::current_exception(); }
+		}
+	});
+	// Preserve class order in diagnostics and avoid concurrent writes to packed tile bits.
+	for (size_t ci = 0; ci < loaded.size(); ++ci)
 	{
+		const TerrainAtlasReport &local = classReports[ci];
+		report.classWidthMismatches += local.classWidthMismatches;
+		report.unknownTerrainType.insert(report.unknownTerrainType.end(), local.unknownTerrainType.begin(), local.unknownTerrainType.end());
+		report.missingTextureFile.insert(report.missingTextureFile.end(), local.missingTextureFile.begin(), local.missingTextureFile.end());
+		report.badTexture.insert(report.badTexture.end(), local.badTexture.begin(), local.badTexture.end());
+		report.topDownTextures.insert(report.topDownTextures.end(), local.topDownTextures.begin(), local.topDownTextures.end());
+		report.undersizedTexture.insert(report.undersizedTexture.end(), local.undersizedTexture.begin(), local.undersizedTexture.end());
+		report.missingNormalMap.insert(report.missingNormalMap.end(), local.missingNormalMap.begin(), local.missingNormalMap.end());
+		report.badNormalMap.insert(report.badNormalMap.end(), local.badNormalMap.begin(), local.badNormalMap.end());
+		if (thrown[ci]) std::rethrow_exception(thrown[ci]);
 		const TXTextureClass &c = map.m_textureClasses[ci];
-		LoadedClass &lc = loaded[ci];
-		const std::string *tex = types.findTexture(c.name);
-		if (!tex)
-		{
-			report.unknownTerrainType.push_back(c.name);
-			continue;
-		}
-		const std::string path = TerrainTypeIndex::textureArchivePath(*tex);
-		if (!fs.doesFileExist(path))
-		{
-			report.missingTextureFile.push_back(c.name + " -> " + path);
-			continue;
-		}
-		std::string e;
-		if (!readTga(fs, path, lc.image, &e))
-		{
-			report.badTexture.push_back(c.name + ": " + e);
-			continue;
-		}
-		if (lc.image.topDownFlag)
-		{
-			report.topDownTextures.push_back(*tex);
-		}
-		const int numTiles = countTiles(lc.image.width, lc.image.height);
-		if (numTiles < c.numTiles)
-		{
-			report.undersizedTexture.push_back(c.name + " (" + std::to_string(lc.image.width) + "x" + std::to_string(lc.image.height)
-				+ " holds " + std::to_string(numTiles) + " tiles, class needs " + std::to_string(c.numTiles) + ")");
-			continue;
-		}
-		lc.widthTiles = derivedWidth(c.numTiles);
-		if (lc.widthTiles != c.width)
-		{
-			++report.classWidthMismatches;
-		}
-		lc.loaded = true;
+		const LoadedClass &lc = loaded[ci];
+		if (!lc.loaded) continue;
 		for (int t = 0; t < lc.widthTiles * lc.widthTiles; ++t)
 		{
 			const int idx = c.firstTile + t;
@@ -283,25 +331,6 @@ bool TerrainAtlas::build(WorldHeightMap &map, ArchiveFileSystem &fs, const Terra
 			{
 				tilePresent[(size_t)idx] = true;
 			}
-		}
-		// the BFME2 normal map
-		const std::string nrmPath = TerrainTypeIndex::textureArchivePath(TerrainTypeIndex::normalMapName(*tex));
-		if (!fs.doesFileExist(nrmPath))
-		{
-			report.missingNormalMap.push_back(c.name);
-		}
-		else if (!readTga(fs, nrmPath, lc.normal, &e))
-		{
-			report.badNormalMap.push_back(c.name + ": " + e);
-		}
-		else if (lc.normal.width < lc.widthTiles * TILE_PIXEL_EXTENT || lc.normal.height < lc.widthTiles * TILE_PIXEL_EXTENT)
-		{
-			report.badNormalMap.push_back(c.name + ": " + std::to_string(lc.normal.width) + "x" + std::to_string(lc.normal.height)
-				+ " is smaller than the base texture's tile block");
-		}
-		else
-		{
-			lc.hasNormal = true;
 		}
 	}
 

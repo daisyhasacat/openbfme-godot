@@ -5,6 +5,7 @@
 #include "GameEngineDevice/W3DDevice/GameClient/HeightMapMesh.h"
 
 #include "Common/MapObject.h"
+#include "Common/JobSystem.h"
 
 #include <algorithm>
 #include <cmath>
@@ -132,13 +133,14 @@ bool HeightMapMesh::build(const WorldHeightMap &map, const GlobalLightingData *l
 
 	// ---- vertex normals: central differences with edge clamping (ZH updateVB), SAGE space
 	std::vector<float> normals((size_t)w * (size_t)h * 3);
-	for (int y = 0; y < h; ++y)
-	{
-		for (int x = 0; x < w; ++x)
+	// OpenBFME loading infrastructure: disjoint output ranges, immutable map input.
+	// Small maps stay inline; no Godot resources or authoritative state enter the pool.
+	JobSystem::client().parallelFor((size_t)w * h, 1024, [&](size_t, size_t begin, size_t end) {
+		for (size_t i = begin; i < end; ++i)
 		{
-			gridNormal(map, x, y, &normals[((size_t)y * w + x) * 3]);
+			gridNormal(map, (int)(i % w), (int)(i / w), &normals[i * 3]);
 		}
-	}
+	});
 
 	// ---- vertex colours (static diffuse), one per grid vertex
 	std::vector<std::uint8_t> colors((size_t)w * (size_t)h * 3, 255);
@@ -154,15 +156,17 @@ bool HeightMapMesh::build(const WorldHeightMap &map, const GlobalLightingData *l
 			return false;
 		}
 		stats.timeOfDayIndex = tod;
-		for (size_t i = 0; i < (size_t)w * (size_t)h; ++i)
-		{
-			float rgb[3];
-			vertexLight(lighting->tod[tod], options.colorMode, &normals[i * 3], rgb);
-			for (int c = 0; c < 3; ++c)
+		JobSystem::client().parallelFor((size_t)w * h, 1024, [&](size_t, size_t begin, size_t end) {
+			for (size_t i = begin; i < end; ++i)
 			{
-				colors[i * 3 + (size_t)c] = (std::uint8_t)(int)(rgb[c] * 255.0f); // ZH: (Int)shade*255
+				float rgb[3];
+				vertexLight(lighting->tod[tod], options.colorMode, &normals[i * 3], rgb);
+				for (int c = 0; c < 3; ++c)
+				{
+					colors[i * 3 + (size_t)c] = (std::uint8_t)(int)(rgb[c] * 255.0f); // ZH: (Int)shade*255
+				}
 			}
-		}
+		});
 	}
 	else
 	{
@@ -188,16 +192,33 @@ bool HeightMapMesh::build(const WorldHeightMap &map, const GlobalLightingData *l
 	const int cellsX = w - 1, cellsY = h - 1; // the last column/row of the grids is never drawn (spec 1.7.2)
 	stats.cells = (size_t)cellsX * (size_t)cellsY;
 	const int cc = std::max(1, options.chunkCells);
-	for (int cy0 = 0; cy0 < cellsY; cy0 += cc)
-	{
-		for (int cx0 = 0; cx0 < cellsX; cx0 += cc)
+	const int columns = cellsX > 0 ? (cellsX - 1) / cc + 1 : 0;
+	const int rows = cellsY > 0 ? (cellsY - 1) / cc + 1 : 0;
+	chunks.resize((size_t)columns * rows);
+	std::vector<TerrainMeshStats> chunkStats(chunks.size());
+	// Stable row-major slots preserve draw order. Each job owns one chunk and its counters;
+	// only the ordered reduction below writes the public statistics.
+	JobSystem::client().parallelFor(chunks.size(), 1, [&](size_t, size_t begin, size_t end) {
+		for (size_t ci = begin; ci < end; ++ci)
 		{
-			chunks.emplace_back();
-			TerrainChunk &ch = chunks.back();
+			const int cx0 = (int)(ci % columns) * cc;
+			const int cy0 = (int)(ci / columns) * cc;
+			TerrainChunk &ch = chunks[ci];
+			TerrainMeshStats &local = chunkStats[ci];
 			ch.cellX0 = cx0;
 			ch.cellY0 = cy0;
 			ch.cellX1 = std::min(cx0 + cc, cellsX);
 			ch.cellY1 = std::min(cy0 + cc, cellsY);
+			const size_t baseCells = (size_t)(ch.cellX1 - cx0) * (ch.cellY1 - cy0);
+			TerrainLayerMesh &base = ch.layer[0];
+			base.position.reserve(baseCells * 12);
+			base.normal.reserve(baseCells * 12);
+			base.color.reserve(baseCells * 16);
+			base.uv.reserve(baseCells * 8);
+			base.wrap.reserve(baseCells * 16);
+			base.index.reserve(baseCells * 6);
+			base.cellId.reserve(baseCells);
+			base.cellFlip.reserve(baseCells);
 			float bmin[3] = { 1e30f, 1e30f, 1e30f }, bmax[3] = { -1e30f, -1e30f, -1e30f };
 			for (int y = ch.cellY0; y < ch.cellY1; ++y)
 			{
@@ -237,15 +258,15 @@ bool HeightMapMesh::build(const WorldHeightMap &map, const GlobalLightingData *l
 
 					const std::uint8_t opaque[4] = { 255, 255, 255, 255 };
 					LayerBuilder::addCell(ch.layer[0], pos, nrm, rgb, opaque, U, V, flipBase, wrapBase, (std::uint32_t)(y * cellsX + x));
-					++stats.baseCells;
-					stats.flippedCells += flipBase ? 1 : 0;
+					++local.baseCells;
+					local.flippedCells += flipBase ? 1 : 0;
 					if (map.cliffUvApplies(ndx, map.m_tileNdxes[(size_t)ndx]))
 					{
-						++stats.cliffUvCells;
+						++local.cliffUvCells;
 					}
 					if (wrapBase.valid())
 					{
-						++stats.wrapCells;
+						++local.wrapCells;
 						// does any corner of this cell lie outside the class block? (it then needs the per-pixel wrap)
 						bool outside = false;
 						for (int k = 0; k < 4; ++k)
@@ -253,17 +274,17 @@ bool HeightMapMesh::build(const WorldHeightMap &map, const GlobalLightingData *l
 							outside = outside || U[k] < wrapBase.x0 || U[k] > wrapBase.x0 + wrapBase.w || V[k] < wrapBase.y0
 								|| V[k] > wrapBase.y0 + wrapBase.h;
 						}
-						stats.straddlingCells += outside ? 1 : 0;
+						local.straddlingCells += outside ? 1 : 0;
 					}
 					if (U[0] == 0.0f && U[1] == 0.0f && U[2] == 0.0f && U[3] == 0.0f)
 					{
-						++stats.missingTextureCells;
+						++local.missingTextureCells;
 					}
 
 					if (map.m_blendTileNdxes[(size_t)ndx] != 0)
 					{
 						LayerBuilder::addCell(ch.layer[1], pos, nrm, rgb, alpha, UA, VA, flipBase, wrapBlend, (std::uint32_t)(y * cellsX + x));
-						++stats.blendCells;
+						++local.blendCells;
 					}
 
 					float UE[4], VE[4];
@@ -279,11 +300,11 @@ bool HeightMapMesh::build(const WorldHeightMap &map, const GlobalLightingData *l
 						if (cliffE && std::fabs(p0 - p2) > std::fabs(p1 - p3))
 						{
 							flipE = true;
-							++stats.cliffForcedFlips;
+							++local.cliffForcedFlips;
 						}
 						LayerBuilder::addCell(ch.layer[2], pos, nrm, rgb, alphaE, UE, VE, flipE, wrapExtra, (std::uint32_t)(y * cellsX + x));
-						++stats.extraCells;
-						stats.extraFlippedCells += flipE ? 1 : 0;
+						++local.extraCells;
+						local.extraFlippedCells += flipE ? 1 : 0;
 					}
 				}
 			}
@@ -293,6 +314,19 @@ bool HeightMapMesh::build(const WorldHeightMap &map, const GlobalLightingData *l
 				ch.boundsMax[a] = bmax[a];
 			}
 		}
+	});
+	for (const TerrainMeshStats &local : chunkStats)
+	{
+		stats.baseCells += local.baseCells;
+		stats.blendCells += local.blendCells;
+		stats.extraCells += local.extraCells;
+		stats.flippedCells += local.flippedCells;
+		stats.extraFlippedCells += local.extraFlippedCells;
+		stats.cliffUvCells += local.cliffUvCells;
+		stats.wrapCells += local.wrapCells;
+		stats.straddlingCells += local.straddlingCells;
+		stats.cliffForcedFlips += local.cliffForcedFlips;
+		stats.missingTextureCells += local.missingTextureCells;
 	}
 	stats.chunks = chunks.size();
 	for (const TerrainChunk &c : chunks)

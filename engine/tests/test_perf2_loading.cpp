@@ -12,6 +12,7 @@
 #include "IniTestUtil.h"
 
 #include "Common/JobSystem.h"
+#include "GameClient/TerrainAtlas.h"
 #include "Common/MD5.h"
 #include "Common/RetailArchivePolicy.h"
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
@@ -145,4 +146,45 @@ TEST_CASE("perf2 loading: a duplicated install hashes its archive once and takes
 	}
 	std::error_code ec;
 	fsys::remove_all(root, ec);
+}
+
+
+TEST_CASE("perf2 loading: parallel terrain reads retain earlier diagnostics and throw in class order")
+{
+	ClientThreadsGuard guard;
+	class TextureArchive : public ArchiveFile {
+	public:
+		TextureArchive() {
+			for (const char *name : {"b.tga", "c.tga"}) {
+				ArchivedFileInfo file;
+				file.m_filename = name;
+				file.m_archiveFilename = "textures.big";
+				addFile("art\\terrain\\", &file);
+			}
+		}
+		bool readFile(const std::string &path, std::vector<std::uint8_t> &, std::string *) override {
+			throw std::runtime_error(path.find("b.tga") == std::string::npos ? "c texture read" : "b texture read");
+		}
+		std::string getName() const override { return "textures.big"; }
+		std::string getPath() const override { return "textures.big"; }
+	};
+	Win32BIGFileSystem fs;
+	fs.mountArchive(std::make_unique<TextureArchive>(), "textures.big", false);
+	TerrainTypeIndex types;
+	types.textureByName = {{"b", "b.tga"}, {"c", "c.tga"}};
+	for (int threads : {1, 4}) {
+		JobSystem::client().setThreadCount(threads);
+		WorldHeightMap map;
+		map.m_hasBlendTileData = true;
+		for (const char *name : {"unknown", "b", "c"}) {
+			TXTextureClass c;
+			c.name = name;
+			map.m_textureClasses.push_back(c);
+		}
+		TerrainAtlasImages images;
+		TerrainAtlasReport report;
+		const std::string error = errorOf([&] { TerrainAtlas::build(map, fs, types, images, report, nullptr); });
+		CHECK(error == "b texture read");
+		CHECK(report.unknownTerrainType == std::vector<std::string>{"unknown"});
+	}
 }
