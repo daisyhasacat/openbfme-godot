@@ -10,6 +10,31 @@ func _run() -> void:
 	assert(shell != null)
 	var first: Dictionary = shell.get_backdrop_state()
 	assert(first.backdrop_image == "Shell02_01", str(first))
+	var scene
+	for instance in shell.find_children("*", "W3DInstancer", true, false):
+		if not instance.get_shell_scene_state().is_empty():
+			scene = instance
+			break
+	assert(scene != null, "authored shell scene was not loaded")
+	var authored: Dictionary = scene.get_shell_scene_state()
+	assert(authored.shell_map.to_lower() == "maps\\shellmap1\\shellmap1.map")
+	assert(authored.fog_start == 200.0 and authored.fog_end == 3000.0)
+	assert(authored.water_areas == 1 and authored.reflection_on and authored.reflection_plane == 37.0)
+	assert(authored.particle_systems == 6)
+	assert(authored.unverified == ["[S-5050] shell scene emissive glow pass is not ported"])
+	var view: SubViewport = scene.get_parent()
+	assert(view.size == Vector2i(shell.get_viewport_rect().size), "shell scene was rendered with the menu's 4:3 stage aspect")
+	# tolerance: the authored camera must remain above the reflection plane; exact height changes with animation.
+	assert(view.get_camera_3d().global_position.y > authored.reflection_plane, "shell actor was not placed relative to terrain")
+	var particles = scene.get_node("ShellMapParticles")
+	assert(not particles.get_soft_particles())
+	# tolerance: particle counts vary with elapsed client time; the six authored systems must emit visible particles.
+	assert(particles.get_stats().particles > 0)
+	for mesh in scene.find_children("*", "MultiMeshInstance3D", true, false):
+		var material = mesh.material_override
+		if material is ShaderMaterial and material.shader.code.contains("w3d_amb_obj"):
+			assert(not material.shader.code.contains("global uniform vec3 w3d_amb_obj;"), "shell lighting leaked into gameplay globals")
+
 	await create_timer(0.5).timeout
 	var second: Dictionary = shell.get_backdrop_state()
 	# tolerance: elapsed render time determines the number of advanced animation frames.
@@ -26,6 +51,9 @@ func _run() -> void:
 	await create_timer(0.2).timeout
 	assert(shell.get_backdrop_state().backdrop_image == "", "shell backdrop survived game start")
 	assert(shell.get_backdrop_state().background_commands == 0, "front-end overlay survived game start")
+	for child in shell.get_children():
+		if child is SubViewport and child.name == "ShellMapReflection":
+			assert(child.render_target_update_mode == SubViewport.UPDATE_DISABLED)
 	shell.shell_fscommand("SetBackground", "fadein")
 	await create_timer(0.5).timeout
 	assert(shell.get_backdrop_state().background_mode == 1, "settings background did not restore")

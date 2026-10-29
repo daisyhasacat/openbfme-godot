@@ -117,7 +117,7 @@ void AptView3DViewers::release(Slot &slot)
 {
 	// the viewports own their children (cameras, the instancer). Godot frees a node's children when the node is deleted (NOTIFICATION_PREDELETE,
 	// before the player's destructor runs): a viewport that is gone already is skipped
-	for (ObjectID id : { slot.whiteId, slot.blackId })
+	for (ObjectID id : { slot.reflectionId, slot.whiteId, slot.blackId })
 	{
 		SubViewport *v = Object::cast_to<SubViewport>(ObjectDB::get_instance(id));
 		if (v)
@@ -129,7 +129,7 @@ void AptView3DViewers::release(Slot &slot)
 			memdelete(v);
 		}
 	}
-	slot.black = slot.white = nullptr;
+	slot.black = slot.white = slot.reflection = nullptr;
 	slot.inst = nullptr;
 }
 
@@ -174,15 +174,19 @@ bool AptView3DViewers::create(Slot &slot, const AptCanvasOp &op)
 	slot.inst->set_auto_update(false);
 	slot.inst->set_playing(false);
 	slot.black->add_child(slot.inst);
-	const Dictionary setup = slot.inst->setup_menu(m_fs);
+	const Dictionary setup = slot.inst->setup_menu(m_fs, op.path == "_openbfme_shell_scene");
 	if (!bool(setup.get("ok", false)))
 	{
 		m_errors.insert("View3D " + op.renderObject + ": the W3D instancer did not set up");
+		const Array errors = setup.get("errors", Array());
+		for (int64_t i = 0; i < errors.size(); ++i)
+			m_errors.insert(String(errors[i]).utf8().get_data());
 		return false;
 	}
-	// RW 0xB54D33: the render object by name, at the identity
-	slot.model = slot.inst->add_model(String(op.renderObject.c_str()));
-	slot.instance = slot.model >= 0 ? slot.inst->add_instance(slot.model, Transform3D(), String(), 0.0, 1.0) : -1;
+	slot.sceneTransform = setup.get("shell_transform", Transform3D());
+	// RW 0xB54D33: menu render objects use identity; shell actors retain map placement.
+	slot.model = slot.inst->add_model(setup.get("shell_model", String(op.renderObject.c_str())));
+	slot.instance = slot.model >= 0 ? slot.inst->add_instance(slot.model, slot.sceneTransform, String(), 0.0, 1.0) : -1;
 	if (slot.instance < 0)
 	{
 		m_errors.insert("View3D " + op.renderObject + ": the W3D model did not load");
@@ -195,12 +199,40 @@ bool AptView3DViewers::create(Slot &slot, const AptCanvasOp &op)
 		m_errors.insert("View3D " + op.renderObject + ": the model has no CAMERA bone (the viewer's default camera is not ported) [S-1483]");
 	}
 	// RW 0xB54C1A: the animation "<name>.<name>" (none: the bind pose)
-	slot.clip = op.renderObject + "." + op.renderObject;
+	slot.clip = String(setup.get("shell_clip", String((op.renderObject + "." + op.renderObject).c_str()))).utf8().get_data();
 	const Dictionary info = slot.inst->get_clip_info(slot.model, String(slot.clip.c_str()));
 	if (bool(info.get("ok", false)))
 	{
 		slot.numFrames = (int)(int64_t)info.get("frames", 0);
 		slot.frameRate = (float)(double)info.get("frame_rate", 30.0);
+	}
+	if (bool(setup.get("reflection_on", false)))
+	{
+		// BFME2 map.ini WaterTransparency: reflected scene at ReflectionPlaneZ.
+		// Keep the water out of its own reflection pass (dedicated visibility layer).
+		slot.reflectionPlane = (float)(double)setup.get("reflection_plane", 0.0);
+		slot.reflection = memnew(SubViewport);
+		slot.reflection->set_name("ShellMapReflection");
+		slot.reflection->set_size(Vector2i(4,4));
+		slot.reflection->set_update_mode(SubViewport::UPDATE_DISABLED);
+		slot.reflectionId = slot.reflection->get_instance_id();
+		m_owner->add_child(slot.reflection);
+		slot.reflection->set_world_3d(slot.black->find_world_3d());
+		slot.camReflection = makeCamera(slot.reflection, Color(0,0,0,1));
+		slot.camReflection->set_cull_mask(1);
+		const Array meshes = slot.inst->find_children("*", "MeshInstance3D", true, false);
+		for (int64_t i=0;i<meshes.size();++i)
+		{
+			auto *mesh = Object::cast_to<MeshInstance3D>(meshes[i]);
+			if (!mesh || !mesh->get_parent() || mesh->get_parent()->get_name() != StringName("StandingWater")) continue;
+			mesh->set_layer_mask(2);
+			Ref<ShaderMaterial> material = mesh->get_mesh()->surface_get_material(0);
+			if (material.is_valid())
+			{
+				material->set_shader_parameter("planar_reflection", slot.reflection->get_texture());
+				material->set_shader_parameter("planar_reflection_enabled", true);
+			}
+		}
 	}
 	slot.material.instantiate();
 	slot.material->set_shader(m_shader);
@@ -283,6 +315,7 @@ void AptView3DViewers::draw(RID item, const Rect2 &rect, const AptCanvasOp &op, 
 	{
 		slot.black->set_size(size);
 		slot.white->set_size(size);
+		if (slot.reflection) slot.reflection->set_size(size);
 		slot.forceRender = true;
 	}
 	RenderingServer *rs = RenderingServer::get_singleton();
@@ -305,6 +338,7 @@ void AptView3DViewers::endBuild()
 		{
 			slot.black->set_update_mode(SubViewport::UPDATE_DISABLED);
 			slot.white->set_update_mode(SubViewport::UPDATE_DISABLED);
+			if (slot.reflection) slot.reflection->set_update_mode(SubViewport::UPDATE_DISABLED);
 		}
 		slot.wasUsed = slot.used;
 	}
@@ -332,8 +366,10 @@ void AptView3DViewers::pose(Slot &slot, double now)
 		const float scale = m_owner->get_viewport()->get_scaling_3d_scale();
 		slot.black->set_scaling_3d_scale(scale);
 		slot.white->set_scaling_3d_scale(scale);
+		if (slot.reflection) slot.reflection->set_scaling_3d_scale(scale);
 	}
 	slot.inst->set_global_time((now - slot.createdMs) * 0.001);
+	slot.inst->advance_shell_scene((now - slot.createdMs) * 0.001);
 	slot.black->set_update_mode(SubViewport::UPDATE_ONCE);
 	slot.white->set_update_mode(SubViewport::UPDATE_ONCE);
 	slot.anim.progress(now, slot.frameRate);
@@ -348,9 +384,20 @@ void AptView3DViewers::pose(Slot &slot, double now)
 		// the bone's transform is the camera's (W3D cameras look down -Z with +Y up, as Godot's); Godot's frame is (x, z, -y) (HUD-2's globe camera)
 		auto toGodot3 = [](float x, float y, float z) { return Vector3(x, z, -y); };
 		const Basis basis(toGodot3(m.Row[0][0], m.Row[1][0], m.Row[2][0]), toGodot3(m.Row[0][1], m.Row[1][1], m.Row[2][1]), toGodot3(m.Row[0][2], m.Row[1][2], m.Row[2][2]));
-		const Transform3D xf(basis, toGodot3(m.Row[0][3], m.Row[1][3], m.Row[2][3]));
+		const Transform3D xf = slot.sceneTransform * Transform3D(basis, toGodot3(m.Row[0][3], m.Row[1][3], m.Row[2][3]));
 		slot.camBlack->set_transform(xf);
 		slot.camWhite->set_transform(xf);
+		if (slot.reflection)
+		{
+			Transform3D reflected = xf;
+			reflected.origin.y = 2.0f * slot.reflectionPlane - xf.origin.y;
+			for (int i=0;i<3;++i) { Vector3 axis=reflected.basis.get_column(i); axis.y=-axis.y; reflected.basis.set_column(i,axis); }
+			// Camera bases remain right-handed; the water shader reverses image X.
+			reflected.basis.set_column(0,-reflected.basis.get_column(0));
+			slot.camReflection->set_transform(reflected);
+			slot.reflection->set_update_mode(SubViewport::UPDATE_ONCE);
+			GammaComposite::ensure(slot.camReflection);
+		}
 	}
 	GammaComposite::ensure(slot.camBlack);
 	GammaComposite::ensure(slot.camWhite);

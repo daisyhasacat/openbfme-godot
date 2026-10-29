@@ -9,6 +9,8 @@ shader_type spatial;
 render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
 
 uniform sampler2D bump_tex : filter_linear_mipmap, repeat_enable, hint_default_white;
+uniform bool planar_reflection_enabled = false;
+uniform sampler2D planar_reflection : filter_linear, repeat_disable;
 uniform sampler2D sky_tex : filter_linear_mipmap, repeat_enable, hint_default_white;
 uniform sampler2D wave_tex : filter_linear_mipmap, repeat_enable, hint_default_black;
 uniform sampler2D terrain_height_tex : filter_linear, repeat_disable;
@@ -182,7 +184,7 @@ void fragment() {
 		}
 		float ndotl = max(dot(n, light_direction), 0.0);
 		float ndoth = max(dot(n, half_vector), 0.0);
-		vec3 env = texture(sky_tex, base * env_uv_scale + reflection_perturbation * n.xy).rgb;
+		vec3 env = planar_reflection_enabled ? texture(planar_reflection, vec2(1.0-SCREEN_UV.x,SCREEN_UV.y) + reflection_perturbation*n.xy).rgb : texture(sky_tex, base * env_uv_scale + reflection_perturbation * n.xy).rgb;
 		vec3 highlight = ndotl > 0.0 ? specular_color * pow(ndoth, specular_exponent) : vec3(0.0);
 		col = light_color * (env * material_diffuse.rgb * (2.0 * dimming) * ndotl + highlight);
 		// VS 13/14 baseline plus interpolated crest and shallow-water foam.
@@ -194,7 +196,7 @@ void fragment() {
 		n.xy *= bump_scale;
 		n = normalize(n);
 		float lighting = max(dot(n, light_direction), 0.0) + pow(max(dot(n, half_vector), 0.0), specular_exponent);
-		vec3 env = texture(sky_tex, base * env_uv_scale).rgb;
+		vec3 env = planar_reflection_enabled ? texture(planar_reflection, vec2(1.0-SCREEN_UV.x,SCREEN_UV.y)).rgb : texture(sky_tex, base * env_uv_scale).rgb;
 		vec3 waves = texture(wave_tex, w0).rgb * texture(wave_tex, w1).rgb;
 		col = env * material_diffuse.rgb * dimming * (2.0 * light_color) * lighting + waves;
 	}

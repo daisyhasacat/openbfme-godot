@@ -52,6 +52,7 @@
 
 namespace godot
 {
+class FXPlayer;
 
 class RetailFileSystem;
 
@@ -66,7 +67,9 @@ public:
 	// Mounts nothing itself: takes the mounted archives of a RetailFileSystem. { ok, errors }
 	Dictionary setup(const Ref<RetailFileSystem> &fs);
 	// Presentation-only W3D models and materials follow the selected menu theme.
-	Dictionary setup_menu(const Ref<RetailFileSystem> &fs);
+	Dictionary setup_menu(const Ref<RetailFileSystem> &fs, bool shellScene = false);
+	Dictionary get_shell_scene_state() const { return ShellSceneState; }
+	void advance_shell_scene(double seconds);
 
 	// Builds the model (meshes, materials, MultiMeshes). Returns the model id, or -1; the report says why either way.
 	int64_t add_model(const String &model_name);
@@ -355,6 +358,9 @@ private:
 	int PoseEvaluations = 0, BufferWrites = 0;   // stats of the last update: instances posed, models rewritten
 
 	double GlobalTime = 0.0;
+	FXPlayer *ShellFX = nullptr;
+	double ShellLastTime = 0;
+	Dictionary ShellSceneState;
 	double TimeScale = 1.0;
 	bool Playing = true;
 	bool AutoUpdate = true;

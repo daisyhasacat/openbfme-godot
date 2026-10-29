@@ -2,8 +2,16 @@
 
 #include "GodotDevice/GodotGammaComposite.h"
 #include "GodotDevice/GodotW3DInstancer.h"
+#include "GameClient/MapUtil.h"
+#include "GameClient/MapWeather.h"
+#include "GameLogic/Map/TerrainLogic.h"
+#include "GodotDevice/GodotMapTerrain.h"
+#include "GodotDevice/GodotFXPlayer.h"
+#include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <sstream>
 
 #include <cstdio>
+#include <cstdlib>
 
 #include "Common/JobSystem.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
@@ -142,6 +150,7 @@ void W3DInstancer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("get_instance_count"), &W3DInstancer::get_instance_count);
 	ClassDB::bind_method(D_METHOD("get_clip_info", "model", "clip"), &W3DInstancer::get_clip_info);
 	ClassDB::bind_method(D_METHOD("set_global_time", "seconds"), &W3DInstancer::set_global_time);
+	ClassDB::bind_method(D_METHOD("get_shell_scene_state"), &W3DInstancer::get_shell_scene_state);
 	ClassDB::bind_method(D_METHOD("get_global_time"), &W3DInstancer::get_global_time);
 	ClassDB::bind_method(D_METHOD("set_playing", "playing"), &W3DInstancer::set_playing);
 	ClassDB::bind_method(D_METHOD("is_playing"), &W3DInstancer::is_playing);
@@ -283,9 +292,143 @@ Dictionary W3DInstancer::setup(const Ref<RetailFileSystem> &fs)
 	return setup_source(fs, false);
 }
 
-Dictionary W3DInstancer::setup_menu(const Ref<RetailFileSystem> &fs)
+Dictionary W3DInstancer::setup_menu(const Ref<RetailFileSystem> &fs, bool shellScene)
 {
-	return setup_source(fs, true);
+	Dictionary result = setup_source(fs, true);
+	if (!shellScene || !bool(result.get("ok", false))) return result;
+	// BFME2 Shell.cpp showShellMap (0x35C194): load GameData ShellMapName.
+	// The presentation scene uses that map's authored light environment and map.ini
+	// Weather, through the existing map/light/fog readers, without a simulation RNG.
+	auto &archive = *fs->menu_archive_fs();
+	std::vector<std::uint8_t> bytes;
+	std::string error, mapName;
+	if (archive.readFile("data/ini/gamedata.ini", bytes, &error))
+	{
+		std::istringstream lines(std::string(bytes.begin(), bytes.end()));
+		std::string line; bool gameData = false;
+		while (std::getline(lines, line))
+		{
+			line.erase(line.find(';') == std::string::npos ? line.size() : line.find(';'));
+			for (char &c : line) if (c == '=') c = ' ';
+			std::istringstream tokens(line); std::string key; tokens >> key;
+			for (char &c : key) c = (char)std::tolower((unsigned char)c);
+			if (key == "gamedata") gameData = true;
+			else if (key == "end") gameData = false;
+			else if (gameData && key == "shellmapname") { std::getline(tokens >> std::ws, mapName); while (!mapName.empty() && std::isspace((unsigned char)mapName.back())) mapName.pop_back(); }
+		}
+		if (mapName.size() >= 2 && mapName.front() == '"' && mapName.back() == '"') mapName = mapName.substr(1, mapName.size()-2);
+		if (mapName.empty()) error = "GameData has no ShellMapName";
+	}
+	LoadedMap map; MapReadOptions options;
+	if (error.empty() && archive.readFile(mapName, bytes, &error) && !MapReader::load(bytes, mapName, options, map, &error) && error.empty())
+		error = "shell map failed to parse";
+	W3DObjectLighting lighting; MapWeather weather;
+	std::string directory = mapName.substr(0, mapName.find_last_of("/\\"));
+	if (error.empty() && !map.chunks.hasGlobalLighting) error = "shell map has no GlobalLighting";
+	if (error.empty()) W3DObjectLightingUtil::fromMap(map.chunks.lighting, lighting, &error);
+	if (error.empty()) MapWeatherScan::load(archive, directory, weather, &error);
+	if (!error.empty()) { result["ok"] = false; PackedStringArray errors; errors.push_back(toGodot(error)); result["errors"] = errors; }
+	else
+	{
+		Materials->Set_Scene_Environment(lighting, weather);
+		result["shell_map"] = toGodot(mapName); result["fog_start"] = weather.fogStart; result["fog_end"] = weather.fogEnd;
+		// Resolve the authored shell actor and its default model from system.ini.
+		// Map proxies use the map.ini DefaultModelConditionState ParticleSysBone data.
+		std::map<std::string,std::string> models, clips;
+		std::vector<std::uint8_t> system;
+		if (!archive.readFile("data/ini/object/system/system.ini", system, &error)) { result["ok"] = false; result["errors"] = Array::make(toGodot(error)); return result; }
+		std::string actor; bool defaults = false;
+		std::istringstream source(std::string(system.begin(), system.end())); std::string line;
+		while (std::getline(source,line)) {
+			line.erase(line.find(';') == std::string::npos ? line.size() : line.find(';'));
+			for(char &c:line) if(c=='=') c=' ';
+			std::istringstream tokens(line); std::string key,value; tokens>>key>>value;
+			key=AsciiStringUtil::lowered(key);
+			if(key=="object" || key=="childobject") {actor=AsciiStringUtil::lowered(value);defaults=false;}
+			else if(key=="defaultmodelconditionstate") defaults=true;
+			else if(key=="end" || key=="modelconditionstate") defaults=false;
+			else if(key=="model" && defaults && AsciiStringUtil::compareNoCase(value,"NONE")!=0) models[actor]=value;
+			else if(key=="animationname" && clips.find(actor)==clips.end()) clips[actor]=value;
+		}
+		TerrainLogic terrain; terrain.init(map.heightMap,map.chunks);
+		Coord3D origin{}; bool found=false;
+		for(const auto &object:map.chunks.objects) {
+			auto model=models.find(AsciiStringUtil::lowered(object.m_objectName));
+			if(model==models.end()) continue;
+			if(found) {result["ok"]=false; result["errors"]=Array::make("shell map has multiple system-model actors"); return result;}
+			found=true;origin=object.m_location;origin.z+=terrain.getGroundHeight(origin.x,origin.y);
+			result["shell_transform"]=Transform3D(Basis(Vector3(0,1,0), object.m_angle),Vector3(origin.x,origin.z,-origin.y));
+			result["shell_model"]=toGodot(model->second); result["shell_clip"]=toGodot(clips[AsciiStringUtil::lowered(object.m_objectName)]);
+		}
+		if(!found) { result["ok"]=false; result["errors"]=Array::make("shell map has no system-model actor");return result; }
+		Ref<MapTerrainBuilder> builder; builder.instantiate();
+		Dictionary options; options["terrain"]=false;options["markers"]=false;options["roads"]=false;options["water"]=true;options["rivers"]=true;
+		options["planar_reflections"]=true;
+		std::string shortName=directory.substr(directory.find_last_of("/\\")+1);
+		Node3D *water=builder->build_loaded_map(fs,toGodot(shortName),options,map);
+		const Array waterErrors = builder->get_report().get("errors", Array());
+		if (!water || !waterErrors.is_empty())
+		{
+			if (water) memdelete(water);
+			result["ok"] = false; result["errors"] = waterErrors; return result;
+		}
+		water->set_name("ShellMapWater");add_child(water);
+		result["water_areas"]=(int64_t)map.chunks.standingWaterAreas.size();
+		// Source map.ini overrides are loaded from the same presentation archive.
+		std::vector<std::uint8_t> ini; if (!archive.readFile(directory+"/map.ini",ini,&error) && archive.doesFileExist(directory+"/map.ini")) {result["ok"]=false;result["errors"]=Array::make(toGodot(error));return result;}
+		std::map<std::string,std::vector<std::string>> particles;
+		std::istringstream mapIni(std::string(ini.begin(),ini.end()));actor.clear();defaults=false;
+		bool waterBlock=false;float plane=0;bool reflection=false;
+		while(std::getline(mapIni,line)) {
+			line.erase(line.find(';')==std::string::npos?line.size():line.find(';'));
+			for(char &c:line) if(c=='=')c=' ';
+			std::istringstream tokens(line);std::string key,value;tokens>>key>>value;
+			key=AsciiStringUtil::lowered(key);
+			if(key=="watertransparency") waterBlock=true;
+			else if(key=="object") {actor=AsciiStringUtil::lowered(value);defaults=false;waterBlock=false;}
+			else if(key=="defaultmodelconditionstate") defaults=true;
+			else if(key=="modelconditionstate" || key=="end") {defaults=false;waterBlock=false;}
+			else if(waterBlock && key=="reflectionplanez") plane=(float)std::strtod(value.c_str(),nullptr);
+			else if(waterBlock && key=="reflectionon") reflection=AsciiStringUtil::compareNoCase(value,"Yes")==0;
+			else if (defaults && key == "particlesysbone")
+			{
+				std::string name; tokens >> name;
+				if (AsciiStringUtil::compareNoCase(value, "None") != 0 || name.empty())
+				{
+					result["ok"] = false;
+					result["errors"] = Array::make("shell ParticleSysBone requires an unbound (None) system");
+					return result;
+				}
+				particles[actor].push_back(name);
+			}
+		}
+		result["reflection_on"]=reflection;result["reflection_plane"]=plane;
+		ShellFX=memnew(FXPlayer);ShellFX->set_name("ShellMapParticles");add_child(ShellFX);
+		const Dictionary fxSetup=ShellFX->setup(fs);
+		if(!bool(fxSetup.get("ok",false))) {result["ok"]=false;result["errors"]=fxSetup.get("errors",Array());return result;}
+		ShellFX->set_soft_particles(false);ShellFX->set_scene_fog(weather);ShellFX->seed(0);
+		int count=0;
+		for(const auto &object:map.chunks.objects) for(const auto &name:particles[AsciiStringUtil::lowered(object.m_objectName)]) {
+			const auto &p=object.m_location;
+			if(ShellFX->play_particle_system(toGodot(name),Vector3(p.x,p.z+terrain.getGroundHeight(p.x,p.y),-p.y))<0) {result["ok"]=false;result["errors"]=Array::make(toGodot("missing shell particle system "+name));return result;}
+			++count;
+		}
+		result["particle_systems"]=count;
+		// BFME2 ScreenHilightFilterPostRender renders emissive-only geometry, then
+		// W3DShaderManagerPerformGlow blurs and adds that target. A whole-scene
+		// bloom would change non-emissive pixels and is not an equivalent port.
+		const std::string glowStop = "[S-5050] shell scene emissive glow pass is not ported";
+		result["unverified"] = Array::make(toGodot(glowStop));
+		warn(glowStop);
+		ShellSceneState=result;
+	}
+	return result;
+}
+
+void W3DInstancer::advance_shell_scene(double seconds)
+{
+	if (ShellFX && seconds >= ShellLastTime) ShellFX->advance(seconds-ShellLastTime);
+	ShellLastTime=seconds;
 }
 
 Dictionary W3DInstancer::setup_source(const Ref<RetailFileSystem> &fs, bool menu)

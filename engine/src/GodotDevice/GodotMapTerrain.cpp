@@ -1147,7 +1147,7 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 					const std::string bumpName = params.bumpTexture.empty() ? a.bumpMapTexture : params.bumpTexture;
 					const std::string envName = params.envTexture.empty() ? a.skyTexture : params.envTexture;
 					if (!bumpName.empty()) { auto tex = loadTexture(rfs, bumpName, texErrors); if (tex.is_valid()) m->set_shader_parameter("bump_tex", tex); }
-					if (!envName.empty()) { auto tex = loadTexture(rfs, envName, texErrors); if (tex.is_valid()) m->set_shader_parameter("sky_tex", tex); }
+					if (!envName.empty() && !optBool(options, "planar_reflections", false)) { auto tex = loadTexture(rfs, envName, texErrors); if (tex.is_valid()) m->set_shader_parameter("sky_tex", tex); }
 					if (!params.waveTexture.empty()) { auto tex = loadTexture(rfs, params.waveTexture, texErrors); if (tex.is_valid()) m->set_shader_parameter("wave_tex", tex); }
 					if (pcaMode && !pcaBasis.frames.empty())
 					{

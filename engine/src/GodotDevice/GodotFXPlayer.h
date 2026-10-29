@@ -10,6 +10,7 @@
 // are one dynamic mesh per system. Blend states follow RW ShaderClass::Apply (fx-draw.md 3). Everything is unlit and unshadowed.
 
 #pragma once
+#include "GameClient/MapWeather.h"
 
 #include "GameClient/FXPlayback.h"
 #include "GameClient/ParticleDraw.h"
@@ -62,6 +63,7 @@ public:
 	// reported does not change, only when the decoding happens (the load instead of the battle's first volley)
 	int64_t preload_textures(double budget_ms);
 	void seed(int64_t seed);
+	void set_scene_fog(const MapWeather &weather) { m_sceneFog = true; m_sceneWeather = weather; }
 
 	// Advances the simulation by `delta` seconds of client time (fixed 30 Hz steps, at most max_steps per call) and refreshes the
 	// batches. paused simulation still redraws.
@@ -129,6 +131,8 @@ private:
 	bool m_preloadQueued = false;
 	bool m_summaryEnabled = false; ///< lane RENDER-4
 	Array m_summary;
+	bool m_sceneFog = false;
+	MapWeather m_sceneWeather;
 	bool m_soft = true; ///< lane FX-3 round 2 (set from the project setting in the constructor)
 	Ref<Shader> shaderFor(const std::string &key, const std::string &code);
 	Batch &batchSlot(size_t index, const std::string &key, int kind);

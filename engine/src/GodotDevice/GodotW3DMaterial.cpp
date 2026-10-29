@@ -244,7 +244,21 @@ Ref<Shader> W3DMaterialFactory::Get_Shader(const W3DShaderKey &key)
 	W3D_Ensure_Light_Globals(); // the shader names the light globals: they must exist before it compiles
 	Ref<Shader> shader;
 	shader.instantiate();
-	shader->set_code(toGodot(Generate_W3D_Shader_Code(key, samplers)));
+	std::string code = Generate_W3D_Shader_Code(key, samplers);
+	if (SceneEnvironment)
+	{
+		// Same W3D shader math, with scene-owned uniforms instead of the map's globals.
+		for (const char *name : {"w3d_amb_obj", "w3d_lcol_obj", "w3d_ldir_obj", "w3d_amb_inf", "w3d_lcol_inf", "w3d_ldir_inf", "w3d_fogged_frac", "w3d_fog", "w3d_fog_color", "w3d_fog_shift"})
+		{
+			for (const char *type : {"vec3", "mat3", "float"})
+			{
+				const std::string declaration = std::string("global uniform ") + type + " " + name + ";";
+				const size_t at = code.find(declaration);
+				if (at != std::string::npos) code.erase(at, 7); // keep the uniform, drop "global "
+			}
+		}
+	}
+	shader->set_code(toGodot(code));
 	Shaders[id] = shader;
 	return shader;
 }
@@ -831,6 +845,20 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 	mat.instantiate();
 	key.AlphaOverride = AlphaOverride; // lane BUILD-5 r3
 	mat->set_shader(Get_Shader(key));
+	if (SceneEnvironment)
+	{
+		for (const char *suffix : {"obj", "inf"})
+		{
+			const auto &light = std::string(suffix) == "obj" ? SceneLighting.objects : SceneLighting.infantry;
+			mat->set_shader_parameter(String("w3d_amb_") + suffix, Vector3(light.ambient[0], light.ambient[1], light.ambient[2]));
+			mat->set_shader_parameter(String("w3d_lcol_") + suffix, columns(light.color, false));
+			mat->set_shader_parameter(String("w3d_ldir_") + suffix, columns(light.toLight, true));
+		}
+		mat->set_shader_parameter("w3d_fogged_frac", 1.0f);
+		mat->set_shader_parameter("w3d_fog", Vector3(SceneWeather.fogEnabled ? 1.0f : 0.0f, SceneWeather.fogStart, SceneWeather.fogEnd));
+		mat->set_shader_parameter("w3d_fog_color", Vector3(SceneWeather.fogColor[0], SceneWeather.fogColor[1], SceneWeather.fogColor[2]));
+		mat->set_shader_parameter("w3d_fog_shift", 0.0f);
+	}
 	mat->set_shader_parameter("w3d_diffuse", Vector4(diffuse.r, diffuse.g, diffuse.b, diffuse.a));
 	mat->set_shader_parameter("w3d_ambient_mat", Vector3(ambientMat.r, ambientMat.g, ambientMat.b));
 	mat->set_shader_parameter("w3d_emissive", Vector3(emissive.r, emissive.g, emissive.b));

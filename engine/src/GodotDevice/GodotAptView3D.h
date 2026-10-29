@@ -17,6 +17,7 @@
 #include "GameClient/AptView3D.h"
 
 #include <godot_cpp/classes/camera3d.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/core/object.hpp>
 #include <godot_cpp/classes/shader.hpp>
@@ -66,7 +67,11 @@ public:
 private:
 	struct Slot
 	{
-		SubViewport *black = nullptr, *white = nullptr;
+		SubViewport *black = nullptr, *white = nullptr, *reflection = nullptr;
+		ObjectID reflectionId;
+		Camera3D *camReflection = nullptr;
+		float reflectionPlane = 0;
+		Transform3D sceneTransform;
 		ObjectID blackId, whiteId;
 		Camera3D *camBlack = nullptr, *camWhite = nullptr;
 		W3DInstancer *inst = nullptr;

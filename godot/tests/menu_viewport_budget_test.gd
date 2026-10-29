@@ -27,16 +27,19 @@ func run() -> void:
 		if shell.get_report().view3d_render_updates > 0:
 			break
 	var views := 0
+	var reflections := 0
 	for node in shell.get_children():
 		if node is SubViewport:
 			views += 1
+			if node.name == "ShellMapReflection":
+				reflections += 1
 			assert(node.scaling_3d_scale == 0.75)
 			assert(node.render_target_update_mode != SubViewport.UPDATE_ALWAYS)
 			for model in node.get_children():
 				if model.is_class("W3DInstancer"):
 					assert(not model.get_auto_update())
 	print("VIEWPORTS ", views)
-	assert(views == 2 * int(shell.get_report().view3d_viewers), "each decoration uses paired blend viewports")
+	assert(views == 2 * int(shell.get_report().view3d_viewers) + reflections, "decorations use paired blend viewports; the shell has a separate reflection pass")
 	assert(not shell.get_report().view3d_viewers == 0, "the menu contains a 3D decoration")
 	var first: int = shell.get_report().view3d_render_updates
 	for i in 10:

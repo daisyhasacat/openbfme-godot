@@ -4369,7 +4369,8 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 	// OpenBFME presentation: the retail BFME2 ShellMapMD object (system.ini) uses
 	// Shell02_01.Shell02_01 in LOOP mode. This self-contained scene includes CAMERA.
 	// Reuse the View3D renderer for its model/camera animation; no gameplay world or RNG
-	// is created. This does not run the shell map's terrain, scripts or particle proxies.
+	// is created. The scene loader adds authored lighting, fog, water and particle proxies.
+	// Shell gameplay scripts and ambient audio are not started by this presentation path.
 	// Keep submenu/settings backgrounds and RotWK's static theme on their existing path.
 	m->view3d.beginBuild();
 	const bool animatedShell = m->shell && m->shell->shell && m->fs.is_valid() &&
@@ -4386,7 +4387,7 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 		float x0, y0, x1, y1;
 		m->mapping.stageToWindow(0, 0, x0, y0);
 		m->mapping.stageToWindow(m->mapping.stageW, m->mapping.stageH, x1, y1);
-		m->view3d.draw(newItem(root), Rect2(x0, y0, x1 - x0, y1 - y0), backdrop, true);
+		m->view3d.draw(newItem(root), Rect2(x0, y0, x1 - x0, y1 - y0), backdrop, false);
 		m->drawnBackdrop = "Shell02_01";
 	}
 	if (!animatedShell && m->shell && m->shell->shell && !m->shell->shell->backdropImage().empty())

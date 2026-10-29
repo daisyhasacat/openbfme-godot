@@ -865,7 +865,19 @@ Ref<Shader> FXPlayer::shaderFor(const std::string &key, const std::string &code)
 	W3D_Ensure_Light_Globals(); // lane RENDER-4: the particle shaders name the fog globals (w3d_fog / w3d_fog_color): they must exist before they compile
 	Ref<Shader> s;
 	s.instantiate();
-	s->set_code(toGodot(code));
+	std::string sceneCode = code;
+	if (m_sceneFog)
+	{
+		for (const auto &parameter : std::vector<std::pair<std::string,std::string>>{
+			{"global uniform vec3 w3d_fog;", "const vec3 w3d_fog = vec3(" + std::to_string(m_sceneWeather.fogEnabled ? 1 : 0) + "," + std::to_string(m_sceneWeather.fogStart) + "," + std::to_string(m_sceneWeather.fogEnd) + ");"},
+			{"global uniform vec3 w3d_fog_color;", "const vec3 w3d_fog_color = vec3(" + std::to_string(m_sceneWeather.fogColor[0]) + "," + std::to_string(m_sceneWeather.fogColor[1]) + "," + std::to_string(m_sceneWeather.fogColor[2]) + ");"},
+			{"global uniform float w3d_fog_shift;", "const float w3d_fog_shift = 0.0;"}})
+		{
+			const size_t at = sceneCode.find(parameter.first);
+			if (at != std::string::npos) sceneCode.replace(at, parameter.first.size(), parameter.second);
+		}
+	}
+	s->set_code(toGodot(sceneCode));
 	m_shaders[key] = s;
 	return s;
 }
