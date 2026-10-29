@@ -1,5 +1,48 @@
 # Loading performance
 
+## Background startup
+
+Before the main menu, archive mounting/verification and cosmetic-pack indexing
+run through `scripts/release/startup_worker.gd`. The main thread awaits frames
+while the worker has exclusive access to the filesystem being prepared. Folder
+selection, language warnings and error dialogs still run on the main thread.
+The task joins before its owner leaves the tree, including during shutdown.
+
+`GameWorld.begin_setup()` prepares the initial object world, map-object
+options, map cache, logic settings and particle/FX definitions on a native
+worker. `GameAudio.begin_boot()` parses audio, EVA and large-group audio data
+on a separate worker; normal game startup overlaps these two tasks. Each task
+owns its result and keeps its archive owner alive. `is_setup_ready()` and
+`is_boot_ready()` poll without waiting; the existing `setup()` and `boot()`
+methods publish completed results on the main thread. Calling them with a
+different filesystem, or before completion, reports an error without consuming
+the task. Repeated starts are refused. The original synchronous APIs remain
+available to viewers and tests.
+
+The object-world worker normalizes its floating-point environment and removes
+its thread-local parser context before publishing. The main thread activates
+that world only after joining. Both native task owners join pending work before
+destruction, so archives and parser stores cannot be freed underneath a worker.
+Load failures and exceptions are returned as startup errors.
+
+Godot nodes, fonts, materials, textures, meshes and audio devices are still
+created on the main thread. Lua-dependent scene loading also stays there:
+lua-gdextension's resource loader uses its main-thread language state. Map-name
+cache warming remains a small main-thread idle batch because menu lookups share
+that cache. Background work keeps startup frames responsive; it does not remove
+the need to finish validation before entering the menu.
+
+`godot/tests/background_startup_test.gd` checks advancing frames during archive
+mounting, synchronous/background setup report equality, audio event-name
+equality, exact game-state hashes over five logic frames, mismatched finish
+requests, overlapping-start refusal and destruction during pending loads.
+`first_run_optional_rotwk_test.gd` checks both first-run mount rejection routes.
+These checks passed on the local mounted data; a complete startup run reached
+the main menu with audio and object parsing overlapped. This is functional
+concurrency validation, not a whole-engine ThreadSanitizer result.
+
+## Multicore terrain preparation
+
 Terrain loading uses the existing client job pool (`JobSystem::client()`).
 Its default is the available hardware thread count; set
 `OPENBFME_CLIENT_THREADS=1` to compare with sequential execution or choose

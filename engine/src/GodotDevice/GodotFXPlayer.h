@@ -47,6 +47,7 @@ public:
 
 	// Loads the retail FX INI data from the mounted archives. { ok, errors, particle_systems, fx_lists }
 	Dictionary setup(const Ref<RetailFileSystem> &fs);
+	Dictionary setup_prepared(const Ref<RetailFileSystem> &fs, std::unique_ptr<FXPlayback> playback, const std::vector<std::string> &problems);
 	PackedStringArray list_particle_systems() const;
 	PackedStringArray list_fx_lists() const;
 

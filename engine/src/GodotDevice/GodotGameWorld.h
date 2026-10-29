@@ -23,6 +23,7 @@
 #include "GameLogic/Object/ObjectGeometry.h"
 
 #include <array>
+#include <future>
 
 #include "GameClient/VideoPlayer.h" // lane CAMP-1H: m_videos (complete for the unique_ptr)
 #include "GameClient/EndGame.h"
@@ -92,6 +93,9 @@ public:
 	// Loads the retail object world (the subsystem INI load with the real parsers, PlayerTemplates and the typed runtime modules: a few
 	// seconds), the GameData / AIData settings and the asset manager. Once per mounted file system. { ok, errors, seconds, templates, factions }
 	Dictionary setup(const Ref<RetailFileSystem> &fs);
+	// Initial startup only: prepare core data on a worker, then publish through setup().
+	Dictionary begin_setup(const Ref<RetailFileSystem> &fs);
+	bool is_setup_ready() const;
 
 	// C++ access for the other device classes (the shell's lobby lists the logic's PlayerTemplate store and colour list): null / empty until setup() succeeded
 	RetailObjectWorld *object_world() const { return m_world.get(); }
@@ -818,6 +822,9 @@ private:
 	void refresh_streaks(bool record = true); ///< RENDER-1: W3DStreakDraw trails of the live drawables (S-391)
 	void remove_view(uint32_t drawableId);
 
+	struct PreparedSetup;
+	std::future<std::unique_ptr<PreparedSetup>> m_setupTask;
+	Ref<RetailFileSystem> m_setupFs; // owns the immutable archives until the worker is joined
 	Ref<RetailFileSystem> m_fs;
 	std::unique_ptr<RetailObjectWorld> m_world;
 	// lane PLAY-3: the castle layouts the placement ghost reads (its own store over the archives: the client never touches the logic's)

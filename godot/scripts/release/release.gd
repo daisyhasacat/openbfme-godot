@@ -459,6 +459,15 @@ func language_warning(mount: Dictionary) -> bool:
 	return false
 
 
+## Native file mounting/parsing only; first-run UI remains on the main thread.
+func run_startup_task(work: Callable) -> Dictionary:
+	var task = preload("res://scripts/release/startup_worker.gd").new()
+	add_child(task)
+	var result: Dictionary = await task.run(work)
+	task.queue_free()
+	return result
+
+
 func _mount_retail_folders(fs: RefCounted) -> Dictionary:
 	if selected_game() == "bfme2-106":
 		var setup: RefCounted = ClassDB.instantiate("InstallSetup")
@@ -468,11 +477,11 @@ func _mount_retail_folders(fs: RefCounted) -> Dictionary:
 		if OS.has_feature("standalone_game") and DirAccess.dir_exists_absolute(bundled): folder = bundled
 		if folder.is_empty():
 			return {"ok": false, "errors": ["Choose the BFME2 installation in Game files before switching to BFME2, or set BFME2_INSTALL."]}
-		return fs.mount_bfme2_path(folder)
+		return await run_startup_task(fs.mount_bfme2_path.bind(folder))
 	if selected_game() == "aotr":
-		return fs.mount_aotr_path(aotr_install())
+		return await run_startup_task(fs.mount_aotr_path.bind(aotr_install()))
 	if selected_game()=="bfme1":
-		return fs.mount_bfme1_path(bfme1_install())
+		return await run_startup_task(fs.mount_bfme1_path.bind(bfme1_install()))
 	# Portable macOS packages carry installs beside the PCK. Resolve at launch so
 	# moving the .app never leaves absolute paths in the user's configuration.
 	var bundle_root := OS.get_executable_path().get_base_dir()
@@ -481,7 +490,7 @@ func _mount_retail_folders(fs: RefCounted) -> Dictionary:
 		print("RELEASE game folders: bundled assets")
 		var rotwk := bundled.path_join("rotwk")
 		var bfme2 := bundled.path_join("bfme2")
-		var mounted: Dictionary = fs.mount_retail_paths(rotwk, bfme2)
+		var mounted: Dictionary = await run_startup_task(fs.mount_retail_paths.bind(rotwk, bfme2))
 		if mounted.ok and OS.has_feature("ios"):
 			# Loose video/audio lookup also uses InstallSetup's configured roots.
 			# Refresh them each launch: iOS can relocate an app's sandbox on update.
@@ -496,7 +505,7 @@ func _mount_retail_folders(fs: RefCounted) -> Dictionary:
 		var problem := ""
 		var downloaded: Dictionary = ios_assets.downloaded_folders()
 		if not downloaded.is_empty():
-			var mounted: Dictionary = fs.mount_retail_paths(downloaded.rotwk, downloaded.bfme2)
+			var mounted: Dictionary = await run_startup_task(fs.mount_retail_paths.bind(downloaded.rotwk, downloaded.bfme2))
 			if mounted.ok:
 				# remembered at every launch, as the bundled folders above: loose movie/audio lookup uses them
 				var remembered: Dictionary = setup.remember(downloaded.rotwk, downloaded.bfme2)
@@ -522,7 +531,7 @@ func _mount_retail_folders(fs: RefCounted) -> Dictionary:
 	fs.set_mod_engines(engines)
 	# lane SDK-0: cosmetic asset packs (drawing only; engine GameClient/AssetPacks.h): every folder in user://asset-packs (name order), then
 	# each --asset-pack=FOLDER; a pack with a problem stops the start with its message rather than being skipped
-	var packs: Dictionary = fs.set_asset_packs(asset_pack_folders(args))
+	var packs: Dictionary = await run_startup_task(fs.set_asset_packs.bind(asset_pack_folders(args)))
 	if not packs.ok:
 		return {"ok": false, "errors": packs.errors}
 	if not packs.packs.is_empty():
@@ -532,10 +541,10 @@ func _mount_retail_folders(fs: RefCounted) -> Dictionary:
 	var test_pick := _first_run_test_args(args)
 	print("RELEASE game folders: ", conf.source)
 	if conf.source == "env" and test_pick.is_empty():
-		return fs.mount_retail()
+		return await run_startup_task(fs.mount_retail)
 	var problem := ""
 	if conf.source == "config" and test_pick.is_empty():
-		var mount: Dictionary = fs.mount_retail()
+		var mount: Dictionary = await run_startup_task(fs.mount_retail)
 		if mount.ok:
 			return mount
 		problem = "The game folders chosen before do not work any more:\n" + "\n".join(mount.errors)

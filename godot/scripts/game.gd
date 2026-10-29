@@ -1500,13 +1500,25 @@ func _boot() -> void:
 	controller_ui.hud = func() -> Node: return _hud
 	add_child(controller_ui)
 	var setup_started := Time.get_ticks_msec()
+	var started: Dictionary = _world.begin_setup(_fs)
+	if not started.ok:
+		_fail("object world: " + "\n".join(started.errors))
+		return
+	# Audio and object/FX parsing read the same immutable mount but own separate stores.
+	if not _begin_audio_boot():
+		return
+	var setup_frames := 0
+	while not _world.is_setup_ready():
+		await get_tree().process_frame
+		setup_frames += 1
+	print("STARTUP background data loading yielded %d frames" % setup_frames)
 	var setup: Dictionary = _world.setup(_fs)
 	print("STARTUP object world ready at %d ms (%d ms)" % [Time.get_ticks_msec(), Time.get_ticks_msec() - setup_started])
 	print("GAME object world: ok=%s, %d templates, %d playable factions, %.1f s" % [setup.ok, setup.get("templates", 0), setup.get("factions", 0), setup.get("seconds", 0.0)])
 	if not setup.ok:
 		_fail("object world: " + "\n".join(setup.errors))
 		return
-	if not _boot_audio():
+	if not await _boot_audio():
 		return
 	get_tree().call_group("ios_startup", "finished")
 	await _play_intro_movies() # lane CAMP-2
@@ -2364,13 +2376,23 @@ func _on_shell_screen(filename: String) -> void:
 
 
 # The retail audio manager (AUDIO-1): UI sounds, shell and load-screen music; the logic's and drawables' sounds go through AudioApi once it is booted.
-func _boot_audio() -> bool:
+func _begin_audio_boot() -> bool:
 	if not ClassDB.class_exists("GameAudio"):
 		_fail("the openbfme extension has no GameAudio class (too old); " + Release.extension_hint())
 		return false
 	_audio = ClassDB.instantiate("GameAudio")
 	_audio.name = "GameAudio"
 	add_child(_audio)
+	var started: Dictionary = _audio.begin_boot(_fs, false)
+	if not started.ok:
+		_fail("audio boot failed:\n" + "\n".join(started.errors))
+		return false
+	return true
+
+
+func _boot_audio() -> bool:
+	while not _audio.is_boot_ready():
+		await get_tree().process_frame
 	var booted: Dictionary = _audio.boot(_fs, {"seed": _seed})
 	if not booted.ok:
 		_fail("audio boot failed:\n" + "\n".join(booted.errors))

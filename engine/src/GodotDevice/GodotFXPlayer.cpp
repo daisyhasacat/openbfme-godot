@@ -553,6 +553,11 @@ void FXPlayer::_notification(int what)
 
 Dictionary FXPlayer::setup(const Ref<RetailFileSystem> &fs)
 {
+	return setup_prepared(fs, nullptr, {});
+}
+
+Dictionary FXPlayer::setup_prepared(const Ref<RetailFileSystem> &fs, std::unique_ptr<FXPlayback> playback, const std::vector<std::string> &problems)
+{
 	Dictionary result;
 	Array errors;
 	m_fs = fs;
@@ -567,8 +572,9 @@ Dictionary FXPlayer::setup(const Ref<RetailFileSystem> &fs)
 	m_preloadQueue.clear();
 	m_preloadNext = 0;
 	m_preloadQueued = false;
-	m_playback = std::make_unique<FXPlayback>(*fs->archive(), RandomAlgorithm::RotWK_GameDat_LCG);
-	for (const std::string &e : m_playback->loadRetailData())
+	const bool prepared = playback != nullptr;
+	m_playback = prepared ? std::move(playback) : std::make_unique<FXPlayback>(*fs->archive(), RandomAlgorithm::RotWK_GameDat_LCG);
+	for (const std::string &e : prepared ? problems : m_playback->loadRetailData())
 	{
 		errors.push_back(toGodot(e));
 	}

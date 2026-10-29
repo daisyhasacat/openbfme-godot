@@ -2,6 +2,7 @@
 // OpenBFME. GPL-3.0. See GodotGameAudio.h.
 
 #include "GodotDevice/GodotGameAudio.h"
+#include "Common/NumericState.h"
 #include "Common/PathIO.h"
 
 #include "GameClient/Eva.h"
@@ -390,10 +391,62 @@ size_t GodotAudioDevice::activeVoices() const
 // ---------------------------------------------------------------------------------------------------------------------------------
 // GameAudio
 // ---------------------------------------------------------------------------------------------------------------------------------
+struct GameAudio::PreparedAudio
+{
+	std::unique_ptr<INIEnvironment> environment;
+	std::unique_ptr<AudioIniState> ini;
+	std::string error;
+};
+
+Dictionary GameAudio::begin_boot(const Ref<RetailFileSystem> &fs, bool shellOnly)
+{
+	Dictionary result;
+	PackedStringArray errors;
+	if (m_bootTask.valid() || m_ini) errors.push_back("audio boot has already started");
+	else if (fs.is_null() || !fs->is_mounted()) errors.push_back("retail file system is not mounted");
+	else
+	{
+		m_bootFs = fs;
+		m_bootShellOnly = shellOnly;
+		ArchiveFileSystem *archives = fs->archive();
+		try
+		{
+			m_bootTask = std::async(std::launch::async, [archives, shellOnly] {
+				auto data = std::make_unique<PreparedAudio>();
+				try
+				{
+					NumericState::normalizeFloatingPointEnvironment();
+					data->environment = std::make_unique<INIEnvironment>();
+					data->environment->fileSystem = archives;
+					data->ini = std::make_unique<AudioIniState>();
+					data->ini->registerBlocks(data->environment->blocks);
+					INI ini(*data->environment);
+					data->ini->loadAll(ini);
+					if (!shellOnly) { data->ini->loadEva(ini); data->ini->loadLargeGroupAudio(ini); }
+				}
+				catch (const INIException &e) { data->error = "audio INI: " + e.message(); }
+				catch (const std::exception &e) { data->error = "menu music: " + std::string(e.what()); }
+				catch (...) { data->error = "unknown exception during background audio parsing"; }
+				return data;
+			});
+		}
+		catch (const std::exception &e) { m_bootFs.unref(); errors.push_back(toGodot(e.what())); }
+	}
+	result["ok"] = errors.is_empty(); result["errors"] = errors;
+	return result;
+}
+
+bool GameAudio::is_boot_ready() const
+{
+	return m_bootTask.valid() && m_bootTask.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+}
+
 GameAudio::GameAudio() = default;
 
 GameAudio::~GameAudio()
 {
+	if (m_bootTask.valid()) { m_bootTask.wait(); m_bootTask = {}; }
+	m_bootFs.unref();
 	tearDown();
 }
 
@@ -449,6 +502,8 @@ void GameAudio::_notification(int what)
 
 void GameAudio::_bind_methods()
 {
+	ClassDB::bind_method(D_METHOD("begin_boot", "fs", "shell_only"), &GameAudio::begin_boot);
+	ClassDB::bind_method(D_METHOD("is_boot_ready"), &GameAudio::is_boot_ready);
 	ClassDB::bind_method(D_METHOD("boot", "fs", "config"), &GameAudio::boot);
 	ClassDB::bind_method(D_METHOD("set_shell_source", "fs"), &GameAudio::set_shell_source);
 	ClassDB::bind_method(D_METHOD("is_booted"), &GameAudio::is_booted);
@@ -501,6 +556,18 @@ Dictionary GameAudio::boot(const Ref<RetailFileSystem> &fs, const Dictionary &co
 	Dictionary result;
 	PackedStringArray errors;
 	result["ok"] = false;
+	std::unique_ptr<PreparedAudio> prepared;
+	if (m_bootTask.valid())
+	{
+		if (fs != m_bootFs || !is_boot_ready() || (bool)config.get("shell_only", false) != m_bootShellOnly)
+		{
+			errors.push_back("background audio boot is running or belongs to different inputs");
+			result["errors"] = errors; return result;
+		}
+		prepared = m_bootTask.get();
+		m_bootFs.unref();
+		if (!prepared->error.empty()) { errors.push_back(toGodot(prepared->error)); result["errors"] = errors; return result; }
+	}
 	tearDown();
 	if (fs.is_null() || !fs->is_mounted())
 	{
@@ -511,33 +578,41 @@ Dictionary GameAudio::boot(const Ref<RetailFileSystem> &fs, const Dictionary &co
 	m_fs = fs;
 	m_shellOnly = (bool)config.get("shell_only", false);
 	ArchiveFileSystem *archive = fs->archive();
-	m_env = std::make_unique<INIEnvironment>();
-	m_env->fileSystem = archive;
-	m_ini = std::make_unique<AudioIniState>();
-	m_ini->registerBlocks(m_env->blocks);
-	try
+	if (prepared)
 	{
-		INI ini(*m_env);
-		m_ini->loadAll(ini);
-		if (!m_shellOnly)
+		m_env = std::move(prepared->environment);
+		m_ini = std::move(prepared->ini);
+	}
+	else
+	{
+		m_env = std::make_unique<INIEnvironment>();
+		m_env->fileSystem = archive;
+		m_ini = std::make_unique<AudioIniState>();
+		m_ini->registerBlocks(m_env->blocks);
+		try
 		{
-			m_ini->loadEva(ini); // AUDIO-2: TheEva's tables (Default\Eva.ini then Eva.ini, RW 0x5DE837) for the in-game announcer
-			m_ini->loadLargeGroupAudio(ini); // AUDIO-2: LargeGroupAudio.ini (RW 0x60D70E) for the group sounds of a live game
+			INI ini(*m_env);
+			m_ini->loadAll(ini);
+			if (!m_shellOnly)
+			{
+				m_ini->loadEva(ini); // AUDIO-2: TheEva's tables (Default\Eva.ini then Eva.ini, RW 0x5DE837) for the in-game announcer
+				m_ini->loadLargeGroupAudio(ini); // AUDIO-2: LargeGroupAudio.ini (RW 0x60D70E) for the group sounds of a live game
+			}
 		}
-	}
-	catch (const INIException &e)
-	{
-		errors.push_back(toGodot(std::string("audio INI: ") + e.message()));
-		result["errors"] = errors;
-		tearDown();
-		return result;
-	}
-	catch (const std::exception &e)
-	{
-		errors.push_back(toGodot(std::string("menu music: ") + e.what()));
-		result["errors"] = errors;
-		tearDown();
-		return result;
+		catch (const INIException &e)
+		{
+			errors.push_back(toGodot(std::string("audio INI: ") + e.message()));
+			result["errors"] = errors;
+			tearDown();
+			return result;
+		}
+		catch (const std::exception &e)
+		{
+			errors.push_back(toGodot(std::string("menu music: ") + e.what()));
+			result["errors"] = errors;
+			tearDown();
+			return result;
+		}
 	}
 	// the RotWK game.dat's own generator (RW 0x6D315D, audio array 0xDA1C8C) unless the config names the ZH one: audio draws never touch the logic RNG
 	RandomAlgorithm algorithm = RandomAlgorithm::RotWK_GameDat_LCG;

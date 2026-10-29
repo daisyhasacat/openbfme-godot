@@ -59,6 +59,7 @@
 #include "GodotDevice/GodotFXPlayer.h"
 #include "Common/Audio/AudioRequests.h"
 #include "Common/JobSystem.h"
+#include "Common/NumericState.h"
 #include "Common/WindowsCrashDump.h"
 #include "Common/Upgrade.h"
 #include "GameLogic/Combat/CombatState.h"
@@ -272,6 +273,8 @@ void GameWorld::_bind_methods()
 	bindSaveMethods();     // lane SAVE-2 (GodotGameWorldSave.cpp)
 	bindGarrisonMethods(); // lane GARRISON-1 (GodotGameWorldGarrison.cpp)
 	ClassDB::bind_method(D_METHOD("setup", "fs"), &GameWorld::setup);
+	ClassDB::bind_method(D_METHOD("begin_setup", "fs"), &GameWorld::begin_setup);
+	ClassDB::bind_method(D_METHOD("is_setup_ready"), &GameWorld::is_setup_ready);
 	ClassDB::bind_method(D_METHOD("load_map", "map_name", "options"), &GameWorld::load_map, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("prepare_new_game", "message"), &GameWorld::prepare_new_game);
 	ClassDB::bind_method(D_METHOD("start_new_game", "options"), &GameWorld::start_new_game, DEFVAL(Dictionary()));
@@ -548,6 +551,74 @@ Dictionary GameWorld::get_audio_report() const
 	return d;
 }
 
+// The worker owns this core-only result until future::get publishes it on the
+// main thread. No Godot objects, callbacks, nodes or graphics resources enter it.
+struct GameWorld::PreparedSetup
+{
+	std::unique_ptr<RetailObjectWorld> world;
+	std::unique_ptr<MapObjectOptions> options;
+	std::unique_ptr<GameLogicSettings> settings;
+	std::unique_ptr<FXPlayback> fx;
+	std::vector<std::string> fxErrors;
+	std::vector<MapCacheEntry> maps;
+	std::string error;
+	double seconds = 0.0;
+};
+
+Dictionary GameWorld::begin_setup(const Ref<RetailFileSystem> &fs)
+{
+	Dictionary result;
+	Array errors;
+	if (m_setupTask.valid() || m_world) errors.push_back("object world setup has already started");
+	else if (fs.is_null() || !fs->is_mounted() || !fs->archive_fs()) errors.push_back("retail file system is not mounted");
+	else
+	{
+		m_setupFs = fs;
+		ArchiveFileSystem *archives = fs->archive_fs();
+		try
+		{
+			m_setupTask = std::async(std::launch::async, [archives] {
+				auto data = std::make_unique<PreparedSetup>();
+				const auto started = std::chrono::steady_clock::now();
+				try
+				{
+					NumericState::normalizeFloatingPointEnvironment();
+					data->world = std::make_unique<RetailObjectWorld>(*archives);
+					// Remove ALL thread-local parser registrations before this worker exits.
+					const auto context = data->world->enterContext();
+					data->options = std::make_unique<MapObjectOptions>();
+					data->settings = std::make_unique<GameLogicSettings>();
+					const bool loaded = data->world->load(&data->error) &&
+						MapObjectGameData::load(*archives, *data->options, &data->error) &&
+						MapObjectGameData::loadPlayerTemplates(*archives, *data->options, &data->error) &&
+						MapCreationHooks::load(*archives, data->options->creationScripts, &data->error) &&
+						IniSkirmishSetupSource::loadMapCache(*archives, data->maps, &data->error) &&
+						GameLogicSettingsLoader::load(*archives, *data->settings, &data->error);
+					if (!loaded && data->error.empty()) data->error = "background object world preparation failed without a diagnostic";
+					if (loaded)
+					{
+						data->fx = std::make_unique<FXPlayback>(*archives, RandomAlgorithm::RotWK_GameDat_LCG);
+						data->fxErrors = data->fx->loadRetailData();
+					}
+				}
+				catch (const std::exception &e) { data->error = e.what(); }
+				catch (...) { data->error = "unknown exception during background object world setup"; }
+				data->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+				return data;
+			});
+		}
+		catch (const std::exception &e) { m_setupFs.unref(); errors.push_back(toGodot(e.what())); }
+	}
+	result["ok"] = errors.is_empty();
+	result["errors"] = errors;
+	return result;
+}
+
+bool GameWorld::is_setup_ready() const
+{
+	return m_setupTask.valid() && m_setupTask.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+}
+
 GameWorld::GameWorld()
 {
 	m_choice.identityFor = [this](SimulationProfile p) { return profileIdentityFor(p); }; // lane UBERJOIN-1
@@ -555,6 +626,8 @@ GameWorld::GameWorld()
 
 GameWorld::~GameWorld()
 {
+	if (m_setupTask.valid()) { m_setupTask.wait(); m_setupTask = {}; } // join before releasing the mounted archive owner
+	m_setupFs.unref();
 	// the game before the world and the assets it points into
 	m_netSession.reset(); // MP-1: the session points at the game
 	releaseLocalDrivers(); // lane MP-2: the recording / replay driver too
@@ -695,6 +768,22 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 {
 	Dictionary result;
 	Array errors;
+	std::unique_ptr<PreparedSetup> prepared;
+	if (m_setupTask.valid())
+	{
+		if (fs != m_setupFs || !is_setup_ready())
+		{
+			errors.push_back(fs != m_setupFs ? "background setup belongs to a different file system" : "background setup is still running");
+			result["ok"] = false; result["errors"] = errors; return result;
+		}
+		prepared = m_setupTask.get();
+		m_setupFs.unref();
+		if (!prepared->error.empty())
+		{
+			errors.push_back(toGodot(prepared->error));
+			result["ok"] = false; result["errors"] = errors; return result;
+		}
+	}
 	if (fs.is_null() || !fs->is_mounted() || fs->archive_fs() == nullptr)
 	{
 		errors.push_back("retail file system is not mounted");
@@ -713,17 +802,28 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 		reset_streaks(); // the streak texture factory references the previous archive file system
 		m_fs = fs;
 		m_luaCatalog.reset();
-		m_world.reset(new RetailObjectWorld(*fs->archive_fs()));
-		m_options.reset(new MapObjectOptions());
+		if (prepared)
+		{
+			m_world = std::move(prepared->world);
+			m_options = std::move(prepared->options);
+			m_mapCache = std::move(prepared->maps);
+			m_settings = std::move(prepared->settings);
+			m_world->activateContext();
+		}
+		else
+		{
+			m_world.reset(new RetailObjectWorld(*fs->archive_fs()));
+			m_options.reset(new MapObjectOptions());
+		}
 		std::string error;
 		const double t0 = nowMs();
-		if (!m_world->load(&error))
+		if (!prepared && !m_world->load(&error))
 		{
 			errors.push_back(toGodot(error));
 			m_world.reset();
 		}
-		else if (!MapObjectGameData::load(*fs->archive_fs(), *m_options, &error) || !MapObjectGameData::loadPlayerTemplates(*fs->archive_fs(), *m_options, &error) ||
-			!MapCreationHooks::load(*fs->archive_fs(), m_options->creationScripts, &error))
+		else if (!prepared && (!MapObjectGameData::load(*fs->archive_fs(), *m_options, &error) || !MapObjectGameData::loadPlayerTemplates(*fs->archive_fs(), *m_options, &error) ||
+			!MapCreationHooks::load(*fs->archive_fs(), m_options->creationScripts, &error)))
 		{
 			errors.push_back(toGodot(error));
 			m_world.reset();
@@ -756,16 +856,16 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 				}
 			}
 			result["mod_data_errors"] = modDataErrors;
-			result["seconds"] = timing::elapsedSeconds(t0);
+			result["seconds"] = timing::elapsedSeconds(t0) + (prepared ? prepared->seconds : 0.0);
 			result["templates"] = (int64_t)m_world->things().templateCount();
 			result["factions"] = (int64_t)m_world->setupPlayerTemplates().playableSideIndices().size();
-			if (!IniSkirmishSetupSource::loadMapCache(*fs->archive_fs(), m_mapCache, &error))
+			if (!prepared && !IniSkirmishSetupSource::loadMapCache(*fs->archive_fs(), m_mapCache, &error))
 			{
 				errors.push_back(toGodot("map cache: " + error));
 				m_world.reset();
 			}
-			m_settings.reset(new GameLogicSettings());
-			if (!GameLogicSettingsLoader::load(*fs->archive_fs(), *m_settings, &error))
+			if (!prepared) m_settings.reset(new GameLogicSettings());
+			if (!prepared && !GameLogicSettingsLoader::load(*fs->archive_fs(), *m_settings, &error))
 			{
 				errors.push_back(toGodot("settings: " + error));
 				m_world.reset();
@@ -782,7 +882,7 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 				m_fxPlayer->set_name("LiveFX");
 				add_child(m_fxPlayer);
 			}
-			const Dictionary fx = m_fxPlayer->setup(fs);
+			const Dictionary fx = prepared ? m_fxPlayer->setup_prepared(fs, std::move(prepared->fx), prepared->fxErrors) : m_fxPlayer->setup(fs);
 			m_fxSetupErrors = fx.get("errors", Array());
 			for (int64_t i = 0; i < m_fxSetupErrors.size(); ++i)
 			{

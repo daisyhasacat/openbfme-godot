@@ -29,6 +29,7 @@
 #include "Common/Audio/AudioDevice.h"
 
 #include <list>
+#include <future>
 #include <map>
 #include <memory>
 #include <string>
@@ -115,6 +116,8 @@ public:
 	// config: { seed: int, random_algorithm: "RotWK_LCG" (default) | "ZH_CarryChain", decoded_budget_mb: int (default 128) }.
 	// Loads the audio INI files from the mounted retail archives (retail order) and creates the manager. Returns { ok, errors: [...], events, ... }.
 	Dictionary boot(const Ref<RetailFileSystem> &fs, const Dictionary &config);
+	Dictionary begin_boot(const Ref<RetailFileSystem> &fs, bool shellOnly);
+	bool is_boot_ready() const;
 	// Install a private BFME2 music manager for shell presentation. Null restores
 	// the normal manager-only routing; AudioApi always remains on this node.
 	Dictionary set_shell_source(const Ref<RetailFileSystem> &fs);
@@ -191,6 +194,10 @@ private:
 	void tearDown();
 	void destroyShellAudio();
 
+	struct PreparedAudio;
+	std::future<std::unique_ptr<PreparedAudio>> m_bootTask;
+	Ref<RetailFileSystem> m_bootFs;
+	bool m_bootShellOnly = false;
 	std::unique_ptr<INIEnvironment> m_env;
 	std::unique_ptr<AudioIniState> m_ini;
 	std::map<std::string, std::string> m_menuMusic;

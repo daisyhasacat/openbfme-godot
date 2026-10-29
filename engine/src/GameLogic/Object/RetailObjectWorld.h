@@ -173,6 +173,8 @@ public:
 		bool m_wasRegistered;
 		const void *m_previous;
 	};
+	// Select a fully loaded world after transferring exclusive ownership between threads.
+	void activateContext() { registerContext(); }
 	std::unique_ptr<ContextScope> enterContext() { return std::unique_ptr<ContextScope>(new ContextScope(*this)); }
 
 private:

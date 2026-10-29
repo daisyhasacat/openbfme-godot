@@ -32,7 +32,10 @@ func run(fs: RefCounted, setup: RefCounted, problem: String, test_pick: Dictiona
 	_fs = fs
 	_setup = setup
 	layer = 90
-	_found = setup.discover()
+	var discovery: Dictionary = await get_node("/root/Release").run_startup_task(
+		func() -> Dictionary: return {"ok":true,"found":setup.discover()})
+	if not discovery.ok: return discovery
+	_found = discovery.found
 	# lane AIO-1: a launcher record of downloaded folders that cannot be read is said on the screen, not only in the log
 	var marker: String = setup.downloaded_problem()
 	if not marker.is_empty():
@@ -70,7 +73,7 @@ func _run_test(pick: Dictionary) -> Dictionary:
 		print("FIRST RUN rejected: ", e)
 	if not checked.ok:
 		return {"ok": false, "errors": Array(checked.errors)}
-	return _mount_and_remember(rotwk, bfme2)
+	return await _mount_and_remember(rotwk, bfme2)
 
 
 func _first_ok(game: String) -> String:
@@ -90,7 +93,8 @@ func _check_folders(rotwk: String, bfme2: String) -> Dictionary:
 
 func _mount_and_remember(rotwk: String, bfme2: String) -> Dictionary:
 	var bfme2_only := rotwk.is_empty()
-	var mount: Dictionary = _fs.mount_bfme2_path(bfme2) if bfme2_only else _fs.mount_retail_paths(rotwk, bfme2)
+	var work: Callable = _fs.mount_bfme2_path.bind(bfme2) if bfme2_only else _fs.mount_retail_paths.bind(rotwk, bfme2)
+	var mount: Dictionary = await get_node("/root/Release").run_startup_task(work)
 	print("FIRST RUN mount: ok %s" % str(mount.ok))
 	if not mount.ok:
 		for e in mount.errors:
@@ -268,7 +272,7 @@ func _on_start() -> void:
 	_status.text = "Checking every game file (the first time this can take a minute)..."
 	await get_tree().process_frame
 	await get_tree().process_frame
-	var mount := _mount_and_remember(_rotwk_edit.text, _bfme2_edit.text)
+	var mount: Dictionary = await _mount_and_remember(_rotwk_edit.text, _bfme2_edit.text)
 	if mount.ok:
 		finished.emit(mount)
 		return
