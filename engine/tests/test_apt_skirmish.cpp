@@ -2770,8 +2770,10 @@ TEST_CASE("BFME1 profile display reads SkirmishStats and rank providers, isolate
 	CHECK(std::string(SkirmishPreferences::unverified()).find("[S-3504]") == 0);
 }
 
-// =========================================================// Retail: the War of the Ring lobby (lane WOTR-1)
-// =====================================================================================================================
+// ============================================================================================================================
+// Retail: the War of the Ring lobby (lane WOTR-1)
+// ============================================================================================================================
+
 TEST_CASE("wotr1 retail: the War of the Ring lobby is Skirmish.apt made with mode 1: GameMapType answers Strategic, the scenario combo and description")
 {
 	OPENBFME_REQUIRE_RETAIL(mount);
