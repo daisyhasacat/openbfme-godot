@@ -15,6 +15,7 @@
 // set_instance_pose), no turrets / captured bones, no house colour, no shadows, no emitters. See GodotW3DMaterial.h for the shading divergences.
 
 #pragma once
+#include "GameClient/ShellSceneEffects.h"
 #include "Common/TextureSwap.h"
 
 #include "GodotDevice/GodotW3DMaterial.h"
@@ -68,7 +69,8 @@ public:
 	Dictionary setup(const Ref<RetailFileSystem> &fs);
 	// Presentation-only W3D models and materials follow the selected menu theme.
 	Dictionary setup_menu(const Ref<RetailFileSystem> &fs, bool shellScene = false);
-	Dictionary get_shell_scene_state() const { return ShellSceneState; }
+	Dictionary get_shell_scene_state() const;
+	float shell_fade_add() const { return ShellEffects.fadeAdd(); }
 	void advance_shell_scene(double seconds);
 
 	// Builds the model (meshes, materials, MultiMeshes). Returns the model id, or -1; the report says why either way.
@@ -358,6 +360,7 @@ private:
 	int PoseEvaluations = 0, BufferWrites = 0;   // stats of the last update: instances posed, models rewritten
 
 	double GlobalTime = 0.0;
+	ShellSceneEffects ShellEffects;
 	FXPlayer *ShellFX = nullptr;
 	double ShellLastTime = 0;
 	Dictionary ShellSceneState;

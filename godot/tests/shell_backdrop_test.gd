@@ -21,6 +21,7 @@ func _run() -> void:
 	assert(authored.fog_start == 200.0 and authored.fog_end == 3000.0)
 	assert(authored.water_areas == 1 and authored.reflection_on and authored.reflection_plane == 37.0)
 	assert(authored.particle_systems == 6)
+	assert(authored.fade_starts == 1, "authored opening fade did not run")
 	assert(authored.unverified == ["[S-5050] shell scene emissive glow pass is not ported"])
 	var view: SubViewport = scene.get_parent()
 	assert(view.size == Vector2i(shell.get_viewport_rect().size), "shell scene was rendered with the menu's 4:3 stage aspect")
@@ -43,6 +44,25 @@ func _run() -> void:
 	if DisplayServer.get_name() != "headless":
 		await RenderingServer.frame_post_draw
 		root.get_texture().get_image().save_png("/tmp/openbfme-shell-backdrop.png")
+	# Wait for the map's first transition: the fade must cover the camera cut.
+	var cut_deadline := Time.get_ticks_msec() + 25000
+	while Time.get_ticks_msec() < cut_deadline:
+		var effect: Dictionary = scene.get_shell_scene_state()
+		if effect.fade_starts == 2 and effect.fade_add == 1.0:
+			break
+		await process_frame
+	var white: Dictionary = scene.get_shell_scene_state()
+	assert(white.fade_starts == 2 and white.fade_add == 1.0, "camera transition never faded to white")
+	await RenderingServer.frame_post_draw
+	if DisplayServer.get_name() != "headless":
+		var picture: Image = root.get_texture().get_image()
+		assert(picture.get_pixel(picture.get_width() / 8, picture.get_height() / 2) == Color.WHITE, "fade was not composited into the backdrop")
+		picture.save_png("/tmp/openbfme-shell-white-fade.png")
+	var recover_deadline := Time.get_ticks_msec() + 6000
+	while scene.get_shell_scene_state().fade_add != 0.0 and Time.get_ticks_msec() < recover_deadline:
+		await process_frame
+	assert(scene.get_shell_scene_state().fade_add == 0.0, "camera transition stayed white")
+	assert(scene.get_shell_scene_state().fade_starts == 2)
 	shell.shell_push("Options.apt")
 	await create_timer(0.5).timeout
 	assert(shell.get_backdrop_state().backdrop_image == "ShellMapLowLOD", "settings backdrop changed")

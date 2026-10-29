@@ -30,11 +30,12 @@ render_mode blend_disabled;
 uniform sampler2D screen_tex : hint_screen_texture, filter_nearest;
 uniform sampler2D over_black : filter_linear;
 uniform sampler2D over_white : filter_linear;
+uniform float fade_add = 0.0;
 void fragment() {
 	vec3 d = texture(screen_tex, SCREEN_UV).rgb;
 	vec3 a = texture(over_black, UV).rgb;
 	vec3 m = texture(over_white, UV).rgb - a;
-	COLOR = vec4(clamp(a + d * m, vec3(0.0), vec3(1.0)), 1.0);
+	COLOR = vec4(clamp(a + d * m + vec3(fade_add), vec3(0.0), vec3(1.0)), 1.0);
 }
 )";
 
@@ -370,6 +371,7 @@ void AptView3DViewers::pose(Slot &slot, double now)
 	}
 	slot.inst->set_global_time((now - slot.createdMs) * 0.001);
 	slot.inst->advance_shell_scene((now - slot.createdMs) * 0.001);
+	slot.material->set_shader_parameter("fade_add", slot.inst->shell_fade_add());
 	slot.black->set_update_mode(SubViewport::UPDATE_ONCE);
 	slot.white->set_update_mode(SubViewport::UPDATE_ONCE);
 	slot.anim.progress(now, slot.frameRate);

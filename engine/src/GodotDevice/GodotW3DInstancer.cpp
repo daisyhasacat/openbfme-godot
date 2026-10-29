@@ -420,13 +420,31 @@ Dictionary W3DInstancer::setup_menu(const Ref<RetailFileSystem> &fs, bool shellS
 		const std::string glowStop = "[S-5050] shell scene emissive glow pass is not ported";
 		result["unverified"] = Array::make(toGodot(glowStop));
 		warn(glowStop);
+		if (!ShellEffects.load(std::move(map), &error))
+		{
+			result["ok"] = false; result["errors"] = Array::make(toGodot(error)); return result;
+		}
+		ShellEffects.advance(0);
 		ShellSceneState=result;
+	}
+	return result;
+}
+
+Dictionary W3DInstancer::get_shell_scene_state() const
+{
+	Dictionary result = ShellSceneState.duplicate();
+	if (!result.is_empty())
+	{
+		result["fade_add"] = ShellEffects.fadeAdd();
+		result["fade_starts"] = ShellEffects.fadeStarts();
+		result["effect_ticks"] = ShellEffects.ticks();
 	}
 	return result;
 }
 
 void W3DInstancer::advance_shell_scene(double seconds)
 {
+	ShellEffects.advance(seconds);
 	if (ShellFX && seconds >= ShellLastTime) ShellFX->advance(seconds-ShellLastTime);
 	ShellLastTime=seconds;
 }
