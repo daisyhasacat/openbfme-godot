@@ -205,7 +205,7 @@ TEST_CASE("rules1: the rules and the Legendary Heroes factor travel in the game 
 	CHECK(back.game.peaceTimeMinutes == 10);
 	// the factor is the last i32 of the GameInfo: 5 is refused (a peer of another rule set refuses the options instead of desyncing)
 	std::vector<std::uint8_t> bad = w.data();
-	bad[bad.size() - 16 - 4 * MAX_SLOTS] = 5; // peace time, Lua authority, profile and slot handicaps follow it
+	bad[bad.size() - 14 - 12 - 4 * LEGACY_MAX_SLOTS] = 5; // lane UBER-1: the simulation profile i32 follows it; lane OWNERFIX-2: then the eight slots' handicaps; lane CHEAT-1: then the Cheat Mode
 	NetByteReader r2(bad);
 	CHECK_FALSE(NetPacket::readNewGameMessage(r2, back, &error));
 	CHECK(error.find("Legendary Heroes") != std::string::npos);
@@ -556,13 +556,12 @@ TEST_CASE("peace time: pre-rule replay game headers default to Off")
  NetPacket::writeNewGameMessage(w, m);
  auto legacy = w.data();
  // The old layout has Legendary Heroes and simulation profile as the last two i32s.
- legacy.resize(legacy.size() - 4 * MAX_SLOTS);
- legacy.erase(legacy.end() - 12, legacy.end() - 4);
+ legacy.resize(legacy.size() - 4 * LEGACY_MAX_SLOTS - 4);
  NetByteReader r(legacy);
  NewGameMessage back;
  back.game.peaceTimeMinutes = 20;
  std::string error;
- REQUIRE_MESSAGE(NetPacket::readNewGameMessage(r, back, &error, false, false, false), error);
+ REQUIRE_MESSAGE(NetPacket::readNewGameMessage(r, back, &error, false, false), error);
  CHECK(back.game.peaceTimeMinutes == 0);
  CHECK(back.game.legendaryHeroes == 3);
  CHECK(r.atEnd());

@@ -55,7 +55,7 @@ TEST_CASE("combat ai: an attack order on an ally, on a dead object or by a unit 
 	CHECK(a->getAIUpdateInterface()->aiForceAttackObject(ally, CMD_FROM_PLAYER));       // unless the player forces it
 	a->getAIUpdateInterface()->aiIdle(CMD_FROM_PLAYER);
 	CHECK_FALSE(unarmed->getAIUpdateInterface()->aiAttackObject(enemy, CMD_FROM_PLAYER)); // no weapon
-	enemy->kill(DEATH_NORMAL);
+	enemy->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	CHECK_FALSE(a->getAIUpdateInterface()->aiAttackObject(enemy, CMD_FROM_PLAYER));       // already dead
 	CHECK(a->getAIUpdateInterface()->isIdle());
 }
@@ -81,18 +81,21 @@ TEST_CASE("combat ai: the idle scan - an enemy in the vision range is attacked o
 	CHECK(w.health(ally) == 100.0f);
 }
 
-TEST_CASE("combat ai: the nearest enemy is chosen, a tie goes to the lower object id")
+// merge queue q24: since OFFMAP-1 (RotWK's idle state RW 0x745A64 has no ZH frame <= 1 snap) the swordsman starts at exactly (300, 300), so the two dummies tie
+// for real; the snap had moved it nearer the eastern one. TARGET-1's AI::findClosestEnemy (RW 0x701443) keeps the first of equal scores (a strict '>')
+// in the partition's iteration order, which meets the western dummy (the higher id) first. "The lower id" was ZH's PartitionManager tie rule.
+TEST_CASE("combat ai: the nearest enemy is chosen, a tie goes to the first the partition's iteration meets")
 {
 	CombatWorld w;
 	Object *a = w.unit("Swordsman", 'A', 300, 300);
 	Object *first = w.unit("Dummy", 'B', 380, 300);   // 80 east
-	Object *second = w.unit("Dummy", 'B', 220, 300);  // 80 west: the same distance, the higher id
+	Object *second = w.unit("Dummy", 'B', 220, 300);  // 80 west: the same distance, the higher id, met first
 	Object *nearer = nullptr;
 	w.frames(4);
-	CHECK(a->getAIUpdateInterface()->currentVictimId() == first->getID());
+	CHECK(a->getAIUpdateInterface()->currentVictimId() == second->getID());
 	nearer = w.unit("Dummy", 'B', 300, 340);          // closer than both, but the current attack goes on
 	w.frames(3);
-	CHECK(a->getAIUpdateInterface()->currentVictimId() == first->getID());
+	CHECK(a->getAIUpdateInterface()->currentVictimId() == second->getID());
 	CHECK(nearer != nullptr);
 	CHECK(second != nullptr);
 }
@@ -117,8 +120,9 @@ TEST_CASE("combat ai: attack-move marches to the goal, attacks the enemy it meet
 	const char *target="Dummy";
 	SUBCASE("enemy unit") {}
 	SUBCASE("enemy building") { target="MarchBuilding"; }
-	CombatWorld w("ChildObject MarchBuilding Dummy\n KindOf = STRUCTURE IMMOBILE SELECTABLE SCORE\nEnd\n");
-	Object *a = w.unit("Slasher", 'A', 100, 300);
+	CombatWorld w("ChildObject MarchBuilding Dummy\n KindOf = STRUCTURE IMMOBILE SELECTABLE SCORE\nEnd\n"
+	 "ChildObject MarchSlasher Slasher\n Behavior = AIUpdateInterface ModuleTag_AI\n AutoAcquireEnemiesWhenIdle = YES ATTACK_BUILDINGS\n End\nEnd\n");
+	Object *a = w.unit("MarchSlasher", 'A', 100, 300);
 	Object *v = w.unit(target, 'B', 300, 330);
 	// Match LiveGame placement: structures must enter the pathfinding obstacle map.
 	if (std::string(target) == "MarchBuilding") w.ai->addObjectToPathfindMap(*v);
@@ -207,7 +211,7 @@ TEST_CASE("combat ai: when the victim is killed by somebody else the attacker go
 	w.frames(2);
 	a->getAIUpdateInterface()->aiAttackObject(v, CMD_FROM_PLAYER);
 	w.frames(3);
-	v->kill(DEATH_NORMAL);
+	v->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	w.frames(3);
 	CHECK(a->getAIUpdateInterface()->isIdle());
 	CHECK(a->getAIUpdateInterface()->currentVictimId() == INVALID_ID);
@@ -223,7 +227,7 @@ TEST_CASE("combat ai: a dead unit's AI stops, it takes no orders and its footpri
 	CHECK(w.inPathfinder(id));
 	a->getAIUpdateInterface()->aiMoveToPosition(Coord3D{ 500.0f, 300.0f, 0.0f }, CMD_FROM_PLAYER);
 	w.frames(3);
-	a->kill(DEATH_NORMAL);
+	a->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	REQUIRE(a->isEffectivelyDead());
 	CHECK(a->getAIUpdateInterface()->isAiInDeadState());
 	CHECK_FALSE(w.inPathfinder(id));
@@ -266,35 +270,36 @@ TEST_CASE("combat ai: idle and attack-move acquisition use runtime vision and co
 	w.playerOf('A')->setPlayerType(PLAYER_COMPUTER, true);
 	w.logic->settings().alertRangeModifier = 2.0f;
 	w.logic->settings().aggressiveRangeModifier = 3.0f;
-	CHECK(ai->nextMoodTarget() == nullptr);
-	CHECK(ai->attackMoveTarget() == nullptr);
+	CHECK(ai->getNextMoodTarget(false, true) == nullptr);
+	CHECK(ai->getNextMoodTarget(false, false) == nullptr);
 	ai->setAttitude(1);
-	CHECK(ai->nextMoodTarget() == enemy);
-	CHECK(ai->attackMoveTarget() == enemy);
+	CHECK(ai->getNextMoodTarget(false, true) == enemy);
+	CHECK(ai->getNextMoodTarget(false, false) == enemy);
 	ai->setAttitude(-2);
-	CHECK(ai->nextMoodTarget() == nullptr);
-	CHECK(ai->attackMoveTarget() == nullptr);
+	CHECK(ai->getNextMoodTarget(false, true) == nullptr);
+	CHECK(ai->getNextMoodTarget(false, false) == nullptr);
 	// Human control ignores AI attitude range scaling.
 	w.playerOf('A')->setPlayerType(PLAYER_HUMAN, true);
 	ai->setAttitude(2);
-	CHECK(ai->nextMoodTarget() == nullptr);
+	CHECK(ai->getNextMoodTarget(false, true) == nullptr);
 }
 
 TEST_CASE("combat ai: attack-move respects hold fire and ability busy acquisition gates")
 {
 	CombatWorld w;
+	w.playerOf('A')->setPlayerType(PLAYER_COMPUTER, true);
 	Object *a = w.unit("Swordsman", 'A', 300, 300);
 	Object *enemy = w.unit("Dummy", 'B', 380, 300);
 	AIUpdateInterface *ai = a->getAIUpdateInterface();
-	CHECK(ai->attackMoveTarget() == enemy);
+	CHECK(ai->getNextMoodTarget(false, false) == enemy);
 	for (const char *name : { "NO_AUTO_ACQUIRE", "SPECIAL_ABILITY_PACKING_UNPACKING_OR_USING", "IGNORE_AI_COMMAND" })
 	{
 		const unsigned status = (unsigned)CombatNames::status(name);
 		a->setStatus(status, true);
-		CHECK(ai->nextMoodTarget() == nullptr);
-		CHECK(ai->attackMoveTarget() == nullptr);
+		CHECK(ai->getNextMoodTarget(false, true) == nullptr);
+		CHECK(ai->getNextMoodTarget(false, false) == nullptr);
 		a->setStatus(status, false);
-		CHECK(ai->attackMoveTarget() == enemy);
+		CHECK(ai->getNextMoodTarget(false, false) == enemy);
 	}
 }
 
@@ -328,13 +333,16 @@ TEST_CASE("skirmish ai: pending tactic teams survive production delays; destroye
 	CHECK(ai.brain.tactics[0].ended);
 }
 
-TEST_CASE("combat ai: acquisition includes large targets whose edge is in vision range")
+TEST_CASE("combat ai: native mood acquisition measures target centres even for large structures")
 {
 	CombatWorld w("Object LargeTarget\n KindOf = STRUCTURE IMMOBILE\n Geometry = CYLINDER\n GeometryMajorRadius = 200\n GeometryHeight = 20\n Body = ActiveBody ModuleTag_Body\n MaxHealth = 1000\n End\nEnd\n");
+	w.playerOf('A')->setPlayerType(PLAYER_COMPUTER, true);
 	Object *a = w.unit("Swordsman", 'A', 300, 300);
 	Object *target = w.unit("LargeTarget", 'B', 630, 300);
-	// Centre is outside vision + 80; its edge is only 130 away (vision 150).
-	CHECK(a->getAIUpdateInterface()->attackMoveTarget() == target);
+	// The native partition scan uses FROM_CENTER_3D, so the edge alone is insufficient.
+	CHECK(a->getAIUpdateInterface()->getNextMoodTarget(false, false) == nullptr);
+	Coord3D inside{ 400, 300, 0 }; target->setPosition(&inside);
+	CHECK(a->getAIUpdateInterface()->getNextMoodTarget(false, false) == target);
 }
 
 TEST_CASE("combat ai: idle-only acquisition flags do not enable idle scanning without YES")
@@ -348,12 +356,13 @@ TEST_CASE("combat ai: idle-only acquisition flags do not enable idle scanning wi
 	REQUIRE(flag != std::string::npos);
 	objects.replace(flag, std::string("AutoAcquireEnemiesWhenIdle = Yes").size(), "AutoAcquireEnemiesWhenIdle = ATTACK_BUILDINGS");
 	CombatWorld w(objects.c_str());
+	w.playerOf('A')->setPlayerType(PLAYER_COMPUTER, true);
 	Object *a = w.unit("FlaggedSwordsman", 'A', 300, 300);
 	Object *enemy = w.unit("Dummy", 'B', 380, 300);
-	CHECK(a->getAIUpdateInterface()->moodCheckInterval() == 0);
-	CHECK(a->getAIUpdateInterface()->nextMoodTarget() == nullptr);
+	CHECK(a->getAIUpdateInterface()->combatSettings().autoAcquire == 16);
+	CHECK(a->getAIUpdateInterface()->getNextMoodTarget(false, true) == nullptr);
 	// An explicit attack-move still fights even if idle acquisition is disabled.
-	CHECK(a->getAIUpdateInterface()->attackMoveTarget() == enemy);
+	CHECK(a->getAIUpdateInterface()->getNextMoodTarget(false, false) == enemy);
 }
 
 TEST_CASE("combat ai: a runtime VISION buff expands nearby acquisition and removing it restores range")
@@ -370,15 +379,16 @@ TEST_CASE("combat ai: a runtime VISION buff expands nearby acquisition and remov
 	TheAttributeModifierStore = &modifiers;
 	REQUIRE(w.w.load("ModifierList FarSight\n Category = BUFF\n Duration = 0\n Modifier = VISION 100%\nEnd\n"
 		"ChildObject Scout Swordsman\n Behavior = AttributeModifierPoolUpdate ModuleTag_Pool\n End\nEnd\n").empty());
+	w.playerOf('A')->setPlayerType(PLAYER_COMPUTER, true);
 	Object *scout = w.unit("Scout", 'A', 300, 300);
 	Object *enemy = w.unit("Dummy", 'B', 540, 300);
 	AIUpdateInterface *ai = scout->getAIUpdateInterface();
-	CHECK(ai->nextMoodTarget() == nullptr);
+	CHECK(ai->getNextMoodTarget(false, true) == nullptr);
 	REQUIRE(scout->addAttributeModifier("FarSight", -1));
 	w.frames(1);
-	CHECK(ai->nextMoodTarget() == enemy);
-	CHECK(ai->attackMoveTarget() == enemy);
+	CHECK(ai->getNextMoodTarget(false, true) == enemy);
+	CHECK(ai->getNextMoodTarget(false, false) == enemy);
 	scout->removeAttributeModifier("FarSight");
-	CHECK(ai->nextMoodTarget() == nullptr);
-	CHECK(ai->attackMoveTarget() == nullptr);
+	CHECK(ai->getNextMoodTarget(false, true) == nullptr);
+	CHECK(ai->getNextMoodTarget(false, false) == nullptr);
 }

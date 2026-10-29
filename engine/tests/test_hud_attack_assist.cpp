@@ -71,7 +71,7 @@ TEST_CASE("hud attack assist: priority and eligibility keep unrelated actions pr
 	Object *expected = enemy;
 	SUBCASE("no selection") { ui.deselectAll(true); expected = nullptr; }
 	SUBCASE("noncombat selection") { ui.deselectAll(true); ui.selectObject(w.unit("Dummy", 'A', 100, 200)->getID()); expected = nullptr; }
-	SUBCASE("dead enemy") { enemy->kill(DEATH_NORMAL); expected = nullptr; }
+	SUBCASE("dead enemy") { enemy->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL); expected = nullptr; }
 	SUBCASE("friendly unit") { enemy->setTeam(w.teamA()); expected = nullptr; }
 	SUBCASE("horde member targets its horde")
 	{

@@ -47,9 +47,11 @@
 #include "GameLogic/Module/BehaviorModule.h"
 #include "GameLogic/Module/DieModule.h"
 #include "GameLogic/ObjectTypes.h"
+#include "GameLogic/AI/AICommandSink.h"
 
 #include "GameLogic/ArmorSet.h"
 #include "GameLogic/BitFlags.h"
+#include "GameLogic/Damage.h"
 #include "Common/Player.h"
 #include "Common/Upgrade.h"
 
@@ -74,6 +76,7 @@ class Player;
 class StateHasher;
 class Xfer;
 class ThingTemplate;
+class CommandButton;
 
 class Object : public Thing
 {
@@ -162,6 +165,10 @@ public:
 	// RW 0x68D252: every create module's onBuildComplete, in module order; run after an object that is complete at birth was made and placed (the map loop,
 	// production, a finished construction)
 	void friend_onBuildComplete();
+	// lane WALL-2: RW 0x694692's first part: every behaviour module's onMapPlacement (the +0xC interface's slot 45) in module order. The callers: the map
+	// object loop (the map object's properties) and Construction::constructOnPlot (null). Not ported here: the rest of RW 0x694692 (the drawable call RW
+	// 0x671DE4 and objectUpgradesList, which MapObjectLoop applies itself)
+	void friend_onMapPlacement(const Dict *properties);
 	// RW 0x698F06 (the part lane ECON-1 ports): every die module's onDie, then the object's command points leave the player's pool (RW 0x698FD9). The death pipeline
 	// of the combat lane calls this; GameLogic::destroyObject does not (retail's does not either)
 	void friend_onDie(const DieModuleInterface::Event &event);
@@ -205,8 +212,10 @@ public:
 	// RW 0x697EB6 Object::updatePendingDamage: the pending hits' delays count down one per frame, a hit whose delay went below 0 applies (list order)
 	void updatePendingDamage();
 	size_t pendingDamageCount() const;
-	// ZH Object::kill: UNRESISTABLE damage that kills (the body's health goes to 0 through the normal pipeline)
-	void kill(int deathType);
+	// RW 0x698EC3 Object::kill(damageType, deathType) (BFME2 decomp ObjectKill.cpp:61, tier B same-shape; ZH Object::kill): a killing hit through attemptDamage
+	// (RW 0x698E7D) with no source (+ 0x08 = 0), the caller's damage and death types and the body's maximum health (vslot 0x1C) as the amount. Every RotWK caller
+	// passes damage type 8 (UNRESISTABLE) except one module destructor (RW 0x887A18: DEFAULT, death 0xD) that is not ported
+	void kill(DamageType damageType, int deathType);
 	// RW 0x6955BC Object::scoreTheKill(victim, scoreType): the kill credit walks up PASS_EXPERIENCE_TO_PRODUCER producers, scores each victim once, pays the bounty
 	// (Economy::awardBounty), gives the victim's player its own-guys-die skill points and the killer (or its contained / container objects) the experience
 	void scoreTheKill(Object &victim, int scoreType = 1);
@@ -229,6 +238,9 @@ public:
 	bool hasBeenScored() const { return m_scored; }
 	// the death has begun (the die modules ran): the object is no longer a target, its AI is dead and it left the pathfinder (RW 0x698F06)
 	bool isEffectivelyDead() const { return m_effectivelyDead; }
+	// lane CAMPUI-1: RW 0x660AA3 (inlined in retail; ZH Object::isOffMap): the object stands outside the map's active boundary (set by the position change,
+	// RW 0x69355D). Not hashed and not saved: it follows from the position and the boundary
+	bool isOffMap() const { return m_offMap; }
 	// ZH Object::setEffectivelyDead (RW 0x68D950): InactiveBody's constructor marks its object dead from the start
 	void friend_setEffectivelyDead(bool dead) { m_effectivelyDead = dead; }
 	// ArmorSet conditions of the object (RW body + 0xF0): the armour the body uses is the best ArmorTemplateSet for them
@@ -297,6 +309,7 @@ public:
 	};
 	static constexpr int MAX_TRIGGERS_IN = 7;
 	void updateTriggerAreaFlags();
+	void updateOffMapStatus(); ///< lane CAMPUI-1: RW 0x69355D's extent test (RW 0x6936A9 / 0x6936B2)
 	// lane HUD-5: GeometryInfo::setActive(name, flag) on the object's own geometry (Object + 0xA8, RW 0xAD3520): every shape of the template's list whose name
 	// equals `name` exactly takes `on` as its active flag; the pathfinder's view of the object (ObjectPathfindAdapter::getGeometry) uses the object's flags from
 	// then on. geometryActive() is empty until the first call; geometryVersion() counts the calls that changed a flag.
@@ -365,14 +378,21 @@ public:
 	const std::vector<std::unique_ptr<BehaviorModule>> &modules() const { return m_modules; }
 	size_t helperCount() const { return m_helperCount; }
 	// Derived module-interface index: immutable after buildModules, never serialized/hashed.
-	const std::vector<CollideModuleInterface *> &collideModules() const { return m_collideModules; }
 	bool hasCrateCollide() const { return m_hasCrateCollide; }
 	BodyModuleInterface *getBodyModule() const { return m_body; }
 	ContainModuleInterface *getContain() const { return m_contain; }
 	AIUpdateInterface *getAIUpdateInterface() const { return m_ai; }
-	BehaviorModule *findModule(std::string_view className) const; // the first module of this class (helpers included), or null; literal lookups allocate nothing
+	// lane UBER-2B: the modules whose getCollide answers, in module order (ObjectCollide::onCollide walked every module per contact pair: 4% of a 10k battle)
+	const std::vector<CollideModuleInterface *> &collideModules() const { return m_collideModules; }
+	bool collideModulesKnown() const { return m_collideModulesKnown; } ///< every collide module answers pairFactsKnown (ObjectCollide::PairFacts)
+	BehaviorModule *findModule(std::string_view className) const; // the first module of this class (helpers included), or null (a view: callers pass literals)
+	// lane UBER-3W: findModule("AttributeModifierPoolUpdate") (RW 0x68C4A6), kept with the collide list once the modules are built (the attribute queries of
+	// crush levels, vision and armour searched the module list by name on every call: 2.6% of a 30,000-troop clash frame); the same module either way
+	BehaviorModule *attributeModifierPoolModule() const { return m_moduleCachesBuilt ? m_attributePool : findModule("AttributeModifierPoolUpdate"); }
 	// RW 0x68BB14: the first module with an exit interface (array order); lane PROD-1
 	ExitInterface *getObjectExitInterface() const;
+	// lane LUMBER1: RW 0x68C383, the first behavior module's dock interface (null for none)
+	class DockUpdateInterface *getDockUpdateInterface() const;
 	// RW 0x68C327: the ProductionUpdate's queue interface, or null
 	ProductionUpdateInterface *getProductionUpdate() const;
 	BehaviorModule *findModuleByTag(NameKeyType tagKey) const;
@@ -439,6 +459,14 @@ public:
 	// the same for every member of the object's horde (RW 0x68C866, its slot 0x10C list)
 	void abortAbilitiesInUse();
 
+	// ---- lane MODS-3: a command button pressed on the object (GameLogic/Object/ObjectDoCommandButton.cpp: the target facts, the ported cases, stop S-5305)
+	// RW 0x696FD2 Object::doCommandButton (ZH Object::doCommandButton): the AI's powers (CMD_FROM_SCRIPT), the auto
+	// ability (`fromAutoAbility`: its disabled types, options | 0x20000000)
+	void doCommandButton(const CommandButton *button, CommandSourceType cmdSource, bool fromAutoAbility);
+	// RW 0x697890 (ZH doCommandButtonAtObject) / RW 0x6979D9 (ZH doCommandButtonAtPosition)
+	void doCommandButtonAtObject(const CommandButton *button, Object *target, CommandSourceType cmdSource, bool fromAutoAbility);
+	void doCommandButtonAtPosition(const CommandButton *button, const Coord3D &pos, CommandSourceType cmdSource, bool fromAutoAbility);
+
 	// ---- the teleport forms (lane BACKLOG4, S-813) --------------------------------------------------------------------------
 	// TARGET RW 0x696E63 Object::teleportTo(pos, keepAI) (BFME2 decomp ObjectRva0029660C.cpp Object::teleportTo is the donor, tier B: RotWK adds the
 	// status test): Thing::setPosition (RW 0x70C201); recordTransform(TheGameLogic + 0x40) TWICE (RW 0x6260E1: the previous, the recorded and the current
@@ -457,6 +485,14 @@ public:
 
 	// ---- scheduler support ------------------------------------------------------------------------------------------------
 	UnsignedInt getCreationFrame() const { return m_creationFrame; }
+	// lane OCCLUDE-1: RW + 0x444, the safe occlusion frame: the renderer's occluded-object pass leaves the object out until the logic frame reaches it
+	// (RW 0x470E80, RTS3DScene::Visibility_Check). Set at construction (RW 0x69A687: frame + the template's OcclusionDelay, + 0x564) and when a garrison or
+	// tunnel lets it out (RW 0x87C0A8 / 0x88101C; RW 0x87C951 for a dead rider). Presentation only: never read by the logic, not hashed, not saved
+	UnsignedInt getSafeOcclusionFrame() const { return m_safeOcclusionFrame; }
+	void setSafeOcclusionFrame(UnsignedInt frame) { m_safeOcclusionFrame = frame; }
+	// the template's OcclusionDelay (+ 0x564, row RW 0xDA45E8, parseDurationUnsignedInt): the ThingTemplate constructor copies GameData DefaultOcclusionDelay
+	// into it (RW 0x740178) and the row overrides it; no retail 2.01 object sets the row
+	static UnsignedInt occlusionDelayOf(const ThingTemplate &tt, const GameLogic &logic);
 	// phase 1 end-of-frame checks (RW 0x690A42 checkDisabledStatus, 0x690AB9 checkIgnoreAICommandStatus, 0x690AE5 checkNoCollisionsStatus)
 	void checkDisabledStatus(UnsignedInt frame);
 	void checkIgnoreAICommandStatus(UnsignedInt frame);
@@ -516,6 +552,7 @@ private:
 	WeaponConditionFlags m_weaponlessSetFlags{}; ///< lane HUD-4: RW + 0x38C of an object without ObjectWeapons
 	UnsignedInt m_noCollisionsExpire = 0;
 	UnsignedInt m_creationFrame = 0;
+	UnsignedInt m_safeOcclusionFrame = 0; ///< lane OCCLUDE-1: RW + 0x444
 	int m_creationSeed = 0;
 	std::string m_name;
 	std::uint8_t m_scriptStatus = 0; ///< lane SCRIPT-2: RW + 0x457 (hashed when not zero)
@@ -527,9 +564,13 @@ private:
 	UnsignedInt m_enteredOrExitedFrame = 0;      ///< RW + 0x414
 	std::int32_t m_triggerCellX = 0, m_triggerCellY = 0; ///< RW + 0x418 / + 0x41C (the integer position of the last check)
 
-	std::vector<CollideModuleInterface *> m_collideModules;
 	bool m_hasCrateCollide = false;
 	std::vector<std::unique_ptr<BehaviorModule>> m_modules; ///< helpers first, then the template's behaviors
+	std::vector<CollideModuleInterface *> m_collideModules; ///< lane UBER-2B: m_modules' collide interfaces, in order (rebuilt by buildModules / friend_replaceModule)
+	bool m_collideModulesKnown = true;
+	BehaviorModule *m_attributePool = nullptr; ///< lane UBER-3W: findModule("AttributeModifierPoolUpdate"), valid once m_moduleCachesBuilt
+	bool m_moduleCachesBuilt = false;
+	void rebuildCollideModules();
 	size_t m_helperCount = 0;
 	BodyModuleInterface *m_body = nullptr;
 	ContainModuleInterface *m_contain = nullptr;
@@ -542,6 +583,7 @@ private:
 	struct PendingDamage;
 	std::vector<PendingDamage> m_pendingDamage;             ///< RW + 0x460
 	bool m_effectivelyDead = false;                         ///< RW + 0x458 bit 0
+	bool m_offMap = false; ///< lane CAMPUI-1: RW + 0x458 bit 3 (OFF_MAP; in the padding before m_armorSetFlags: sizeof(Object) unchanged)
 	ArmorSetFlags m_armorSetFlags = 0;
 	std::uint32_t m_weaponBonusMask = 0;
 	const TeamPrototype *m_originalTeamProto = nullptr; ///< lane BACKLOG4: + 0x320 (the team setTeam last recorded, RW 0x69959D: kept there as its name)

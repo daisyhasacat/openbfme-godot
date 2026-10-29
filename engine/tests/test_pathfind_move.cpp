@@ -134,7 +134,12 @@ struct Unit : AIMoveHost
 	float speedOf(const PathfindObject &o) const override;
 	Coord2D unitDirectionOf(const PathfindObject &o) const override;
 	int pathPriority() const override { return priority; }
-	PathfindObjectID attackTargetOf(const PathfindObject &) const override { return PATHFIND_INVALID_ID; }
+	PathfindObjectID attackTarget = PATHFIND_INVALID_ID, enterTarget = PATHFIND_INVALID_ID; // lane PATHPRIO-1: RW 0x68B36F / AI vslot 0x1FC of this unit
+	PathfindObjectID attackTargetOf(const PathfindObject &o) const override;
+	PathfindObjectID enterTargetOf(const PathfindObject &o) const override;
+	bool pathThroughUnits = false, deployedSiegeTower = false; // lane PATHPRIO-1: onCollide's exits (AI + 0x3BA, SIEGE_TOWER + DEPLOYED)
+	bool canPathThroughUnits() const override { return pathThroughUnits; }
+	bool isDeployedSiegeTower() const override { return deployedSiegeTower; }
 	bool crushOrSquishPolicy(const PathfindObject &other) const override { return obj.canCrushOrSquish(other); } // the mock's levels are its template's
 	float wanderFactor() const override { return 0.0f; }
 	float closeEnoughDist() const override { return 10.0f; }
@@ -142,6 +147,7 @@ struct Unit : AIMoveHost
 	bool movingBackwards() const override { return false; }
 	bool setModelCondition(const char *, bool) override { return true; }
 	float relativeAngleTo(const Coord3D &p) const override { return std::atan2(p.y - obj.pos.y, p.x - obj.pos.x) - angle; }
+	const PathfindObject *findPathfindObject(PathfindObjectID id) override; // lane ATTACKPATH-1: the attack path's victim lookup
 };
 
 struct Sim
@@ -306,6 +312,17 @@ Unit::Unit(Sim *s, const LocomotorTemplate *t, PathfindObjectID id, float x, flo
 	lh.sync();
 }
 unsigned Unit::frame() const { return sim->frame; }
+const PathfindObject *Unit::findPathfindObject(PathfindObjectID id) { return sim->world.findObjectByID(id); }
+PathfindObjectID Unit::attackTargetOf(const PathfindObject &o) const
+{
+	auto it = sim->units.find(o.getID());
+	return it == sim->units.end() ? PATHFIND_INVALID_ID : it->second->attackTarget;
+}
+PathfindObjectID Unit::enterTargetOf(const PathfindObject &o) const
+{
+	auto it = sim->units.find(o.getID());
+	return it == sim->units.end() ? PATHFIND_INVALID_ID : it->second->enterTarget;
+}
 AIMover *Unit::moverOf(PathfindObjectID id)
 {
 	auto it = sim->units.find(id);
@@ -433,7 +450,7 @@ TEST_CASE("ai move: two enemy units crossing head on both arrive (nobody deadloc
 	}
 	CHECK(bothDone);
 	// the lower id (1) is blocked by the priority rule (equal priority, both moving, not the same way) and patches its path (lane MOVE-3: RotWK's blocked repath
-	// RW 0x6631BF / 0x6F7938): the first free point is next to it (a moving unit holds no position, RW 0x8E26B7), the patch leads straight on and clears the
+	// RW 0x6631BF / 0x6F7938): the first free point is next to it (this harness registers no position cells; RotWK's moving ground units hold theirs, RW 0x8E26B7), the patch leads straight on and clears the
 	// blocked frames, so the unit no longer stops to give up after 11 frames (the old whole-path repath found no other way and waited for the give-up); with the
 	// harness's physical blocking stand-in the two would hold each other forever, RotWK lets them pass
 	CHECK(maxBlocked >= 1);
@@ -512,6 +529,81 @@ TEST_CASE("ai move: onCollide goes on only for enemies (getRelationship 0 = ENEM
 	{
 		CHECK(s.find("allied units never block") == std::string::npos);
 	}
+}
+
+TEST_CASE("pathprio1: onCollide ends for a unit that may path through units or is a deployed siege tower (RW 0x66E233)")
+{
+	Sim sim(40, 20);
+	sim.build();
+	Unit &a = sim.add(1, 55.0f, 105.0f);
+	Unit &e = sim.add(3, 60.0f, 105.0f, 1);
+	sim.order(a, 355.0f, 105.0f);
+	sim.step(false);
+	++sim.frame;
+	a.pathThroughUnits = true; // RW 0x66E253: AI + 0x3BA
+	a.ai->onCollide(e.obj);
+	CHECK(!a.ai->isBlocked());
+	CHECK(a.ai->colliderCount() == 0);
+	a.pathThroughUnits = false;
+	a.deployedSiegeTower = true; // RW 0x66E2A4: SIEGE_TOWER with status DEPLOYED
+	a.ai->onCollide(e.obj);
+	CHECK(!a.ai->isBlocked());
+	CHECK(a.ai->colliderCount() == 0);
+	a.deployedSiegeTower = false; // the same enemy blocks once the exits are off (equal priority, the lower id)
+	a.ai->onCollide(e.obj);
+	CHECK(a.ai->isBlocked());
+	CHECK(a.ai->blockedFrames() == 1);
+}
+
+TEST_CASE("pathprio1: onCollide ends when either unit attacks the other; blockedBy lets a unit that enters this one pass (RW 0x66E2D1, RW 0x66D20A)")
+{
+	Sim sim(40, 20);
+	sim.build();
+	Unit &a = sim.add(1, 55.0f, 105.0f);
+	Unit &e = sim.add(3, 60.0f, 105.0f, 1);
+	sim.order(a, 355.0f, 105.0f);
+	sim.step(false);
+	++sim.frame;
+	a.attackTarget = 3; // my victim is the other (RW 0x68B36F(self))
+	a.ai->onCollide(e.obj);
+	CHECK(a.ai->colliderCount() == 0);
+	a.attackTarget = PATHFIND_INVALID_ID;
+	e.attackTarget = 1; // I am the other's victim
+	a.ai->onCollide(e.obj);
+	CHECK(a.ai->colliderCount() == 0);
+	e.attackTarget = PATHFIND_INVALID_ID;
+	e.enterTarget = 1; // the other enters me: onCollide goes on, blockedBy answers no block
+	a.ai->onCollide(e.obj);
+	CHECK(!a.ai->isBlocked());
+	CHECK(a.ai->colliderCount() == 0);
+	e.enterTarget = PATHFIND_INVALID_ID;
+	a.ai->onCollide(e.obj);
+	CHECK(a.ai->isBlocked());
+	CHECK(a.ai->blockedFrames() == 1);
+}
+
+TEST_CASE("pathprio1: two moving units meeting head-on compare their path priorities signed (RW 0x66D553), a negative priority gives way")
+{
+	Sim sim(40, 20);
+	sim.build();
+	sim.physicalBlocking = false;
+	Unit &a = sim.add(1, 55.0f, 105.0f);
+	Unit &e = sim.add(3, 155.0f, 105.0f, 1);
+	e.priority = -10; // a crushable level of -1 (an attribute modifier): unsigned it would be the highest priority
+	sim.order(a, 355.0f, 105.0f);
+	sim.order(e, 25.0f, 105.0f);
+	for (int f = 0; f < 4; ++f)
+	{
+		sim.step(false);
+	}
+	REQUIRE(a.ai->isMoving());
+	REQUIRE(e.ai->isMoving());
+	++sim.frame;
+	sim.world.frame = sim.frame;
+	a.ai->onCollide(e.obj); // a (0) against e (-10): 0 > -10, a walks on
+	CHECK(a.ai->blockedFrames() == 0);
+	e.ai->onCollide(a.obj); // e (-10) against a (0): e is blocked
+	CHECK(e.ai->blockedFrames() == 1);
 }
 
 TEST_CASE("ai move: the repath cadence: a path found from the queue is not asked for again while the goal stands (isSame) and the timestamp throttles")
@@ -971,10 +1063,10 @@ TEST_CASE("backlog5: patchPath (RW 0x6FC9DA) joins the nearest node the unit can
 	}
 }
 
-TEST_CASE("backlog5: checkChangeLayers (RW 0x6F6286) is only its ground-connection case: a connection to the ground or to a bridge layer changes no search (S-161 / S-1830)")
+TEST_CASE("backlog5: checkChangeLayers (RW 0x6F6286): a connection to the ground or to a raised layer without cells changes no search (S-161 / S-1830)")
 {
-	// the case that runs opens the parent's own index on the ground, which is the closed parent: nothing; a connection to a bridge layer finds no cell (only the
-	// ground holds cells); the waypoint expansion is not implemented. The searches are therefore what they were: the same path with a connection marked
+	// a ground connection opens the parent's own index on the ground, which is the closed parent: nothing; a connection to raised layer 5 finds no cell (no
+	// RaisedWallMesh made one; lane WALL-2's expansion, S-4856). The searches are therefore what they were: the same path with a connection marked
 	Sim sim(40, 20);
 	sim.build();
 	Unit &u = sim.add(2, 55.0f, 105.0f);
@@ -1121,7 +1213,7 @@ TEST_CASE("backlog5: the two withdrawn rules are named at runtime with their mea
 			"150 lost and 2 members killed in an order that has none) and the goal overwrite alone sent an idle Battle-stance unit 826.975 from its guard spot (test_play4_stances_retail, "
 			"bound 365; without the overwrite it passes); INFERENCE, not verified: the port's exit state and guard keep the machine's goal for something RotWK does not") == (state == 7));
 	}
-	// S-1830: patchPath names what the layer step leaves out
+	// S-1830: patchPath names what its layer step leaves out (lane WALL-2: the bridge layers)
 	{
 		Sim sim(60, 40);
 		sim.build();
@@ -1130,9 +1222,8 @@ TEST_CASE("backlog5: the two withdrawn rules are named at runtime with their mea
 		std::unique_ptr<Path> patch(sim.pf->patchPath(&a.obj, groundLoco(), original.get(), true));
 		REQUIRE(patch != nullptr);
 		CHECK(hasLine(sim.pf->stops(),
-			"S-1830 the layer-change step of the cell searches (RW 0x6F6286) implements only its ground-connection case, which opens nothing (the cell's own index is the closed "
-			"parent): the bridge-layer cell lookup (RW 0x5E2E9C) and the waypoint link expansion (RW 0x68229C, 0x93443D) are not implemented, and the four-bit connection "
-			"field cannot hold a wall layer (16 and up); a patch or a search never crosses a layer or a portal (S-161)"));
+			"S-1830 patchPath (RW 0x6F7938) expands the layer links and portals of RW 0x6F6286 (lane WALL-2) over the ground grid and the raised walkways (S-4856); "
+			"the bridge layers do not exist (S-161)"));
 	}
 }
 
@@ -1183,4 +1274,35 @@ TEST_CASE("ai move queues: stopping an overflowed move cancels its retry")
 	CHECK(unit.ai->queueForPathFrame() == 0);
 	CHECK_FALSE(unit.ai->isWaitingForPath());
 	CHECK(unit.ai->path() == nullptr);
+}
+
+// lane ATTACKPATH-1, RW 0x6691C3 .. 0x669287: when the attack path fails (here: the attacker is walled in by cliffs, so there is no corridor and no fallback, and the
+// mock weapon never reaches), the kept position becomes the victim's current position, adjustToPossibleDestination (RW 0x6F3C87) may move it, and the AI ignores
+// the victim's footprint from then on (RW 0x66831A: AI + 0x164 = the victim's id). Before the lane the stale request position was used and nothing was ignored
+TEST_CASE("attackpath1: a failed attack path re-aims at the victim's position and ignores the victim's footprint")
+{
+	Sim sim(40, 40);
+	for (int i = 2; i <= 8; ++i)
+	{
+		for (int j : { 2, 8 })
+		{
+			sim.terrain.cliff.insert({ i, j });
+			sim.terrain.cliff.insert({ j, i });
+		}
+	}
+	sim.build();
+	Unit &a = sim.add(2, 55.0f, 55.0f);
+	Unit &v = sim.add(3, 305.0f, 305.0f, 1);
+	REQUIRE(a.ai->ignoredObstacleID() == PATHFIND_INVALID_ID);
+	const Coord3D stale{ 205.0f, 105.0f, 0.0f };
+	a.ai->requestAttackPath(v.obj.id, stale);
+	sim.frame += 10;
+	sim.world.frame = sim.frame;
+	sim.mw->processQueues();
+	CHECK_FALSE(a.ai->attackRequestPending());
+	CHECK(a.ai->ignoredObstacleID() == v.obj.id);
+	const Coord3D d = a.ai->requestedDestination();
+	// tolerance: adjustToPossibleDestination may move the point off the victim's own cell, but only to a cell beside it, never back to the stale position
+	CHECK(std::fabs(d.x - v.obj.pos.x) <= 20.0f); // tolerance: a cell beside the victim's
+	CHECK(std::fabs(d.y - v.obj.pos.y) <= 20.0f); // tolerance: a cell beside the victim's
 }

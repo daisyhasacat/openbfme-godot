@@ -4,6 +4,12 @@
 #include "GameLogic/NewGame/SkirmishSides.h"
 
 #include "Common/PlayerTemplate.h"
+#include "Common/ExtendedPlayerColors.h"
+#include "Common/ScoreKeeper.h"
+#include "GameLogic/System/ShroudManager.h"
+#include "GameLogic/VictoryConditions.h"
+
+#include <set>
 
 namespace
 {
@@ -34,7 +40,7 @@ std::int32_t colorInt(std::uint32_t rgb)
 std::vector<GameLogicSettings::MultiplayerColorDef> SkirmishSides::localColors(const std::vector<GameLogicSettings::MultiplayerColorDef> &base, int slots)
 {
  auto result = base;
- if (slots <= MAX_SLOTS) return result;
+ if (slots <= LEGACY_MAX_SLOTS) return result;
  // Additional UI colours for local sixteen-player matches only; retail palettes stay untouched.
  for (std::uint32_t rgb : {0xF28EBCu,0x8CD17Du,0xB6992Du,0x499894u,0xD37295u,0xA0CBE8u,0xFFBE7Du,0xD4A6C8u,0x86BCB6u,0xFABFD2u,0xBAB0ACu,0x9D7660u,0x59A14Fu,0xE15759u,0x4E79A7u,0xEDC948u}) {
   if (result.size() >= MAX_LOCAL_SLOTS) break;
@@ -79,8 +85,10 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		}
 	}
 	// the side names
-	out.slotPlayerNames.assign(info.slotCount(), std::string());
-	for (int i = 0; i < info.slotCount(); ++i)
+	// lane P16: one side name per slot of the game's wire layout (8 legacy / 16 extended): a slot past the map's starts does not exist
+	const int slotCount = info.serializedSlotCount();
+	out.slotPlayerNames.assign(slotCount, std::string());
+	for (int i = 0; i < slotCount; ++i)
 	{
 		const SkirmishGameSlot &slot = info.slots[i];
 		if (!slot.isOccupied())
@@ -102,7 +110,7 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		anyAI = anyAI || slot.isAI();
 	}
 	std::string allNames;
-	for (int i = 0; i < info.slotCount(); ++i)
+	for (int i = 0; i < slotCount; ++i)
 	{
 		if (info.slots[i].isOccupied())
 		{
@@ -110,9 +118,9 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		}
 	}
 	// two slots must not share a side name (a start position held twice)
-	for (int i = 0; i < info.slotCount(); ++i)
+	for (int i = 0; i < slotCount; ++i)
 	{
-		for (int j = i + 1; j < info.slotCount(); ++j)
+		for (int j = i + 1; j < slotCount; ++j)
 		{
 			if (info.slots[i].isOccupied() && info.slots[j].isOccupied() && out.slotPlayerNames[(size_t)i] == out.slotPlayerNames[(size_t)j])
 			{
@@ -121,7 +129,7 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		}
 	}
 	// addSidesForSlots
-	for (int i = 0; i < info.slotCount(); ++i)
+	for (int i = 0; i < slotCount; ++i)
 	{
 		const SkirmishGameSlot &slot = info.slots[i];
 		if (!slot.isOccupied())
@@ -129,9 +137,10 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 			continue;
 		}
 		const std::string &name = out.slotPlayerNames[(size_t)i];
-		if (slot.color < 0 || slot.color >= (int)colors.size())
+		const int colorCount = ExtendedPlayerColors::count((int)colors.size(), info.mapStartCount);
+		if (slot.color < 0 || slot.color >= colorCount)
 		{
-			return failWith(error, "slot " + std::to_string(i) + " has the colour " + std::to_string(slot.color) + ": not resolved or outside the " + std::to_string(colors.size()) + " colours");
+			return failWith(error, "slot " + std::to_string(i) + " has the colour " + std::to_string(slot.color) + ": not resolved or outside the " + std::to_string(colorCount) + " colours");
 		}
 		const PlayerTemplate *pt = nullptr;
 		if (slot.playerTemplate >= 0)
@@ -157,7 +166,7 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		d.setUnicodeString("playerDisplayName", slot.name);
 		d.setAsciiString("playerFaction", pt->getName());
 		std::string allies, enemies;
-		for (int j = 0; j < info.slotCount(); ++j)
+		for (int j = 0; j < slotCount; ++j)
 		{
 			if (j == i || !info.slots[j].isOccupied())
 			{
@@ -178,9 +187,9 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 		}
 		d.setAsciiString("playerAllies", allies);
 		d.setAsciiString("playerEnemies", enemies);
-		const GameLogicSettings::MultiplayerColorDef &col = colors[(size_t)slot.color];
-		d.setInt("playerColor", colorInt(col.rgb));
-		d.setInt("playerNightColor", colorInt(col.nightRgb));
+		const auto *extra = ExtendedPlayerColors::find(slot.color, (int)colors.size(), info.mapStartCount);
+		d.setInt("playerColor", colorInt(extra ? extra->rgb : colors[(size_t)slot.color].rgb));
+		d.setInt("playerNightColor", colorInt(extra ? extra->rgb : colors[(size_t)slot.color].nightRgb));
 		d.setInt("multiplayerStartIndex", slot.startPos);
 		d.setInt("playerHandicap", slot.handicap); // lane OWNERFIX-2: RW 0x627F8F .. 0x627FA0 (CreateMPPlayers): every occupied slot's + 0x20
 		bool isLocal = false;
@@ -246,6 +255,21 @@ bool SkirmishSides::build(const SidesList &mapSides, const SkirmishGameInfo &inf
 	rteam.setAsciiString("teamOwner", "ReplayObserver");
 	rteam.setBool("teamIsSingleton", true);
 	sides.teams.push_back(rteam);
+	// RW keeps only neutral/civilian/creeps, adds slot sides and ReplayObserver (see header).
+	// Count exactly what PlayerList::newGame will allocate, including implicit neutral player 0.
+	std::set<std::string> playerNames{ "" };
+	for (const SidesInfo &side : sides.sides)
+	{
+		const std::string name = side.dict.getAsciiString("playerName");
+		if (!name.empty() && !playerNames.insert(name).second)
+		{
+			return failWith(error, "duplicate player side '" + name + "'");
+		}
+	}
+	if (playerNames.size() > ShroudManager::kMaxPlayers || playerNames.size() > ScoreKeeper::MAX_PLAYERS || playerNames.size() > VictoryConditions::MAX_PLAYER_COUNT)
+	{
+		return failWith(error, "skirmish players exceed the shroud, score or victory capacity");
+	}
 	return true;
 }
 

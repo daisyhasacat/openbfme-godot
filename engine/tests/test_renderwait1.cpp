@@ -358,6 +358,7 @@ TEST_CASE("renderwait1 retail: a window no advance ended is ended at the next re
 
 TEST_CASE("renderwait1 retail: accelerated offline advances cannot accumulate unbounded worker debt")
 {
+ if (!hudtest::haveWorld("renderwait1 bounded worker debt")) return;
  hudtest::Rig rig(hudtest::shared());
  rig.game->setWorkerFrameDelayMs(20);
  rig.game->setLogicThread(true);

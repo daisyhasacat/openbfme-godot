@@ -260,14 +260,14 @@ TEST_CASE("BFME2 insignificant building filter keeps occupied garrisons and fact
 	CHECK(CombatQueries::isSignificantBuildingTarget(*bare));
 	auto &finder = w.combat().targets();
 	CHECK(finder.findClosestEnemy(*unit, 200, TargetFinder::ALLOW_STRUCTURES, CMD_FROM_AI) == inn);
-	CHECK(unit->getAIUpdateInterface()->attackMoveTarget() == inn);
+	CHECK(unit->getAIUpdateInterface()->getNextMoodTarget(false, false) == nullptr); // Acquisition is disabled in this fixture.
 	w.logic->settings().attackIgnoreInsignificantBuildings = true;
 	const unsigned filtered = TargetFinder::ALLOW_STRUCTURES | TargetFinder::IGNORE_INSIGNIFICANT_BUILDINGS;
 	for (auto owner : {PLAYER_HUMAN, PLAYER_COMPUTER})
 	{
 		w.playerOf('A')->setPlayerType(owner, true);
 		CHECK(finder.findClosestEnemy(*unit, 200, filtered, CMD_FROM_AI) == faction);
-		CHECK(unit->getAIUpdateInterface()->attackMoveTarget() == faction);
+		CHECK(unit->getAIUpdateInterface()->getNextMoodTarget(false, false) == nullptr);
 	}
 	auto *rider = w.unit("Slasher", 'B', 300, 200);
 	REQUIRE(inn->getContain()->addToContain(rider));

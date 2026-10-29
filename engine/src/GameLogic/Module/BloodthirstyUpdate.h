@@ -20,10 +20,8 @@ public:
 	std::shared_ptr<ObjectFilter> m_sacrificeFilter;
 	float m_experienceModifier = 1.0f;
 	std::string m_initiateVoice;
-	// BFME1-only data; consuming these fields is unported (S-5017).
-	// Donor: BloodthirstyUpdateModuleDataConstructor.cpp, integer +0x0C = 1.
-	int m_bfme1NumToSacrifice = 1;
-	std::string m_bfme1InitiateVoice2;
+	unsigned m_numToSacrifice = 1;
+	std::string m_initiateVoice2;
 
 	static void buildFieldParse(MultiIniFieldParse &p);
 };
@@ -58,6 +56,7 @@ public:
 	void addSacrifice(Object *victim);
 	void cancelSacrifice();
 	const std::string &initiateVoice() const;
+	const std::string &initiateVoice2() const;
 
 	ObjectID bestTargetID() const { return m_bestTargetID; }
 	ObjectID sacrificerID() const { return m_sacrificerID; }

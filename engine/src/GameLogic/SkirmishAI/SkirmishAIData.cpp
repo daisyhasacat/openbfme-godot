@@ -568,6 +568,7 @@ const std::vector<NameKeyType> *SkirmishAIStore::basesOfSide(const std::string &
 
 bool SkirmishAIStore::loadBaseLayouts(ArchiveFileSystem &fs, std::vector<std::string> *errors, std::vector<std::string> *warnings)
 {
+	m_missingLayouts.clear();
 	bool ok = true;
 	// lane PERF-2: the layouts are read in key order on this thread (the archives' file handles are shared), decompressed and parsed on the client job
 	// pool (MapReader::load is a function of its bytes; each job writes only its own layout), then applied in key order exactly as before
@@ -582,6 +583,7 @@ bool SkirmishAIStore::loadBaseLayouts(ArchiveFileSystem &fs, std::vector<std::st
 		std::string path, error;
 		std::vector<std::uint8_t> bytes;
 		LoadedMap map;
+		bool missing = false; // lane MODS-2: no such file (skipped, as retail)
 		bool read = false, parsed = false;
 	};
 	std::vector<Layout> layouts;
@@ -592,6 +594,14 @@ bool SkirmishAIStore::loadBaseLayouts(ArchiveFileSystem &fs, std::vector<std::st
 		Layout l;
 		l.base = &kv.second;
 		l.path = "Bases\\" + kv.second.map + "\\" + kv.second.map + ".bse";
+		// lane MODS-2: a layout file that does not exist is skipped (RW 0x82FB53 opens it; a failed open jumps to the clean-up, RW 0x82FB5A ->
+		// 0x82FBEF): the base keeps no structures. Only a file that exists and does not parse throws 0xDEAD0005 (RW 0x82FBBC -> 0x82FC54)
+		if (!fs.doesFileExist(l.path))
+		{
+			l.missing = true;
+			layouts.push_back(std::move(l));
+			continue;
+		}
 		l.read = fs.readFile(l.path, l.bytes, &l.error);
 		layouts.push_back(std::move(l));
 	}
@@ -609,12 +619,9 @@ bool SkirmishAIStore::loadBaseLayouts(ArchiveFileSystem &fs, std::vector<std::st
 	for (Layout &l : layouts)
 	{
 		AIBaseTemplate &base = *l.base;
-		if (!l.read && warnings)
+		if (l.missing)
 		{
-			// lane MODS-1: a .bse that is not there (RJ RotWK names Bases\mordor_bfme1_dunharrow_2 but ships mordor_bfme1_dunharrow_1.bse in that
-			// folder). The mod runs on retail, so retail does not stop for it; the base stays without a layout and is never chosen
-			// (AIBaseBuilder::candidates). A file that is there but does not parse is still an error
-			warnings->push_back("[S-413] AIBase '" + base.map + "' has no layout: " + l.path + ": " + l.error + " (the base is not used)");
+			m_missingLayouts.push_back("AIBase '" + base.map + "': " + l.path + " does not exist: the base has no layout (retail skips it, RW 0x82FB5A)");
 			continue;
 		}
 		if (!l.parsed)

@@ -164,6 +164,8 @@ void fragment() {
 	vec3 half_vector = normalize(eye + light_direction);
 	if (pca_mode != 0) {
 		// Retail PCA / PCA_U pixel blobs 0 / 3, with interpolated geometric normal.
+		// c0..c6 consume only two basis groups; texture 3 augments both in PCA_U.
+		// See docs/WATER_PCA_NORMALS.md and tests/water_normal_test.gd.
 		vec2 uv0 = vec2(dot(base, d0), dot(base, vec2(-d0.y, d0.x))) * pca_uv_scale.x;
 		vec2 uv1 = vec2(dot(base, d1), dot(base, vec2(-d1.y, d1.x))) * pca_uv_scale.y;
 		if (pca_mode == 1) uv1 = uv1.yx;

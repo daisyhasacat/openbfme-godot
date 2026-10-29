@@ -209,3 +209,13 @@ def test_scrub_dll_macos_hosted_toolchain_paths_preserve_image_layout():
     assert pdb_tools.check(out, pdb()) == []
     assert audit_package.developer_path_problem(out) == ""
     assert pdb_tools.scrub_dll(out) == out
+def test_same_build_ignores_only_the_codeview_guid():
+    """MACACT-1: the build host's and GitHub Actions' DLL of one commit differ in the CodeView GUID only (lld hashes the PDB, which holds
+    the build folder's absolute path); any other byte, the size, the age or the PDB name is a different build"""
+    a = pe(guid=b"\x01" * 16, extra=b"code")
+    assert pdb_tools.same_build(a, pe(guid=b"\x02" * 16, extra=b"code")) == []
+    assert pdb_tools.same_build(a, a) == []
+    assert "differ outside the CodeView GUID" in pdb_tools.same_build(a, pe(guid=b"\x02" * 16, extra=b"cod3"))[0]
+    assert "differ outside the CodeView GUID" in pdb_tools.same_build(a, pe(guid=b"\x01" * 16, age=2, extra=b"code"))[0]
+    assert "the sizes differ" in pdb_tools.same_build(a, a + b"\0")[0]
+    assert "not a PE image" in pdb_tools.same_build(a, b"MZ not a pe")[0]

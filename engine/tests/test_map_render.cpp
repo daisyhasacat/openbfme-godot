@@ -2,13 +2,16 @@
 // Expected values are hand-computed from the cited ZH formulas (W3DRoadBuffer.cpp) and geometry.
 
 #include "doctest.h"
+#include "BigTestUtil.h"
 
+#include "Common/ArchiveFile.h"
 #include "Common/LooseFileScan.h"
 #include "GameClient/MapStops.h"
 #include "GameClient/MapWeather.h"
 #include "GameClient/TerrainRoads.h"
 #include "GameClient/WaterGeometry.h"
 #include "GameClient/MapUtil.h"
+#include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 #include "Libraries/WWVegas/WW3D2/meshmdl.h"
 
 #include <cmath>
@@ -229,30 +232,102 @@ TEST_CASE("WaterGeometry::triangulate: convex, non-convex and either winding giv
 	CHECK_FALSE(WaterGeometry::triangulate({ { 0, 0 }, { 1, 1 } }, tri));
 }
 
-TEST_CASE("WaterGeometry::buildRiverStrip: donor width-scaled UVs")
+TEST_CASE("WaterGeometry::buildRiverStrip: drawRiverWater's strip, the second end of each line first, v the same per line")
 {
 	RiverArea r;
-	r.waterHeight = 290;
-	r.lines = { {0,0,0,10}, {30,0,30,10}, {100,0,100,10} };
+	r.waterHeight = 151;
+	r.lines = { { 0, 50, 0, -50 }, { 100, 50, 100, -50 }, { 200, 50, 200, -50 } };
 	WaterGeometry::RiverStrip s;
 	REQUIRE(WaterGeometry::buildRiverStrip(r, s));
-	CHECK(s.position.size() == 18);
-	CHECK(s.position[2] == 290.0f);
-	CHECK(s.index.size() == 12);
-	// Rectangle perimeter 220, width 10 => ten repeats over two sections.
-	const std::vector<float> main = {0,0,0.5f,0,0,5,0.5f,5,0,10,0.5f,10};
-	const std::vector<float> edge = {0,0,1,0,0,5,1,5,0,10,1,10};
-	CHECK(s.uv0 == main);
-	CHECK(s.uv1 == edge);
-	for (auto &l : r.lines) { l.x0 *= 2; l.y0 *= 2; l.x1 *= 2; l.y1 *= 2; }
-	WaterGeometry::RiverStrip scaled;
-	REQUIRE(WaterGeometry::buildRiverStrip(r, scaled));
-	CHECK(scaled.uv0 == main);
-	CHECK(scaled.uv1 == edge);
-	r.lines.front().y1 = r.lines.front().y0;
-	CHECK_FALSE(WaterGeometry::buildRiverStrip(r, s));
-	r.lines.resize(1);
-	CHECK_FALSE(WaterGeometry::buildRiverStrip(r, s));
+	REQUIRE(s.position.size() == 6 * 3);
+	CHECK(s.position[0] == 0.0f);  CHECK(s.position[1] == -50.0f);  CHECK(s.position[2] == 151.0f);   // the second end
+	CHECK(s.position[3] == 0.0f);  CHECK(s.position[4] == 50.0f);
+	for (int i = 0; i < 3; ++i)
+	{
+		CHECK(s.uv0[i * 4] == 0.5f);  CHECK(s.uv0[i * 4 + 2] == 0.0f);   // u1: 0.5 across
+		CHECK(s.uv1[i * 4] == 1.0f);  CHECK(s.uv1[i * 4 + 2] == 0.0f);   // u2: 1 across
+	}
+	// the outline less its closing edge is 500, the first line 100 wide: (250 - 100) / 100 over two quads
+	CHECK(s.uv0[1] == 0.0f);
+	CHECK(s.uv0[5] == 0.75f);
+	CHECK(s.uv0[9] == 1.5f);
+	CHECK(s.uv1[9] == s.uv0[9]);
+	CHECK(s.index == std::vector<std::uint32_t>{ 0, 1, 3, 0, 3, 2, 2, 3, 5, 2, 5, 4 });
+	// one line is not a river
+	RiverArea one;
+	one.lines = { { 0, 0, 1, 1 } };
+	CHECK_FALSE(WaterGeometry::buildRiverStrip(one, s));
+}
+
+TEST_CASE("WaterGeometry::riverVertexColour: a white river lit by the terrain lights and the WaterSet, black as white, others as they are")
+{
+	TimeOfDayLights tod;
+	for (int c = 0; c < 3; ++c)
+	{
+		tod.terrain[0].ambient[c] = 0.2f;
+		tod.terrain[1].diffuse[c] = 1.0f;
+	}
+	const float down[3] = { 0.0f, 0.5f, -0.8f }, sunColour[3] = { 1.0f, 0.9f, 0.8f };
+	for (int c = 0; c < 3; ++c)
+	{
+		tod.terrain[0].lightPos[c] = down[c];
+		tod.terrain[0].diffuse[c] = sunColour[c];
+	}
+	tod.terrain[1].lightPos[2] = 0.5f;   // points up: no light
+	const float water[4] = { 185 / 255.0f, 185 / 255.0f, 185 / 255.0f, 1.0f };
+	RiverArea r;
+	r.r = r.g = r.b = 255;
+	float out[4];
+	WaterGeometry::riverVertexColour(r, &tod, water, out);
+	CHECK(out[0] == doctest::Approx((0.2f + 0.8f) * 185 / 255.0f));   // tolerance: lit colour sums float dot products (ambient + N.L diffuse) in another order than the literal
+	CHECK(out[2] == doctest::Approx((0.2f + 0.8f * 0.8f) * 185 / 255.0f));   // tolerance: lit colour sums float dot products (ambient + N.L diffuse) in another order than the literal
+	CHECK(out[3] == 1.0f);
+	r.r = r.g = r.b = 0;
+	WaterGeometry::riverVertexColour(r, &tod, water, out);
+	CHECK((out[0] == 1.0f && out[1] == 1.0f && out[2] == 1.0f));
+	r.r = 51;
+	r.g = 102;
+	r.b = 255;
+	WaterGeometry::riverVertexColour(r, nullptr, water, out);
+	CHECK(out[0] == 51 / 255.0f);
+	CHECK(out[1] == 102 / 255.0f);
+	CHECK(out[2] == 1.0f);
+}
+
+TEST_CASE("WaterSetScan::applyText: the DiffuseColor of the time of day's WaterSet, the last block winning")
+{
+	float diffuse[4] = { 0, 0, 0, 0 };
+	WaterSetScan::applyText("WaterSet MORNING\n  DiffuseColor = R:1 G:2 B:3 A:4\nEnd\n"
+	                        "WaterSet AFTERNOON\n  DiffuseColor   = R:185 G:180 B:175 A:128 ; a comment\nEnd\n", 2, diffuse);
+	CHECK(diffuse[0] == 185 / 255.0f);
+	CHECK(diffuse[1] == 180 / 255.0f);
+	CHECK(diffuse[2] == 175 / 255.0f);
+	CHECK(diffuse[3] == 128 / 255.0f);
+	WaterSetScan::applyText("WaterSet Afternoon\n  DiffuseColor = R:10 G:20 B:30\nEnd\n", 2, diffuse);   // A defaults to 255
+	CHECK(diffuse[0] == 10 / 255.0f);
+	CHECK(diffuse[3] == 1.0f);
+	WaterSetScan::applyText("WaterSet NIGHT\n  DiffuseColor = R:100 G:100 B:100 A:255\nEnd\n", 2, diffuse);
+	CHECK(diffuse[0] == 10 / 255.0f);   // another time of day changes nothing
+}
+
+TEST_CASE("WaterSetScan::load: water.ini, then the map's maps\\<map>\\map.ini WaterSet overriding it")
+{
+	const std::string waterIni = "WaterSet AFTERNOON\n  DiffuseColor = R:185 G:185 B:185 A:255\nEnd\n";
+	const std::string mapIni = "WaterSet AFTERNOON\n  DiffuseColor = R:51 G:102 B:153 A:255\nEnd\n";
+	Win32BIGFileSystem fsys;
+	std::string error;
+	auto big = fsys.openArchiveFromMemory("w.big", std::make_shared<const std::vector<std::uint8_t>>(bigtest::makeBig("BIGF", {
+		{ "data\\ini\\water.ini", waterIni }, { "maps\\map wor rhun\\map.ini", mapIni } })), &error);
+	REQUIRE(big);
+	fsys.mountArchive(std::move(big), "w.big", false);
+	float diffuse[4];
+	REQUIRE(WaterSetScan::load(fsys, "map wor rhun", 2, diffuse, &error));
+	CHECK(diffuse[0] == 51 / 255.0f);
+	CHECK(diffuse[1] == 102 / 255.0f);
+	CHECK(diffuse[2] == 153 / 255.0f);
+	REQUIRE(WaterSetScan::load(fsys, "map wor other", 2, diffuse, &error));   // no map.ini: water.ini's value
+	CHECK(diffuse[0] == 185 / 255.0f);
+	CHECK(diffuse[3] == 1.0f);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -733,10 +808,12 @@ TEST_CASE("water material: retail effect defaults and authored scales replace th
 	// WaterPlaneFX's authored scale and texture, read from the mounted W3D.
 	MeshShaderMaterialProperty scale;
 	scale.Name = "BumpUVScale";
+	scale.Type = W3DSHADERMATERIAL_PROPERTY_VECTOR2;
 	scale.Float[0] = scale.Float[1] = 60.0f;
 	source.Properties.push_back(scale);
 	MeshShaderMaterialProperty texture;
 	texture.Name = "WaterBumpTexture";
+	texture.Type = W3DSHADERMATERIAL_PROPERTY_TEXTURE;
 	texture.StringValue = "WtrBump_01.tga";
 	source.Properties.push_back(texture);
 	REQUIRE(WaterGeometry::readStandingMaterial(source, material));
@@ -751,7 +828,7 @@ TEST_CASE("water acceptance: remaining shader and geometry approximations stay e
 {
 	const auto *stop = MapStops::find("S-035");
 	REQUIRE(stop != nullptr);
-	CHECK(std::string(stop->gap) == "Standing water preserves authored FX techniques, PCA/PCA_U normals and shoreline Gerstner displacement on a donor high-detail grid alongside the bump/specular path; TIME, LOD selection, scene-light binding and terrain depth are inferred; reflections, shadow filtering, other PCA LODs, depth-colour LUT and legacy shoreline texture tracks remain unported");
+	CHECK(std::string(stop->gap) == "Standing water preserves authored FX techniques, PCA/PCA_U normals and shoreline Gerstner displacement on a donor high-detail grid alongside the bump/specular path; TIME, LOD selection, scene-light binding and terrain depth are inferred; reflections, shadow filtering, other PCA LODs, river outline cross-section start and minimum water LOD, depth-colour LUT and legacy shoreline texture tracks remain unported");
 }
 
 namespace
@@ -795,7 +872,7 @@ TEST_CASE("water PCA basis: malformed data fails without retaining a prior track
 	std::string error;
 	REQUIRE(WaterGeometry::readPcaBasis(syntheticPcaBasis(), basis, &error));
 	CHECK_FALSE(WaterGeometry::readPcaBasis("NumFrames: 2\nSpeed: 1\n", basis, &error));
-	CHECK(error == "PCA basis: missing coefficient row");
+	CHECK(error == "PCA basis: frame count exceeds coefficient payload");
 	CHECK(basis.frames.empty());
 	CHECK_FALSE(WaterGeometry::readPcaBasis("NumFrames: 0\n", basis, &error));
 	CHECK(error == "PCA basis: invalid frame count");
@@ -832,13 +909,13 @@ TEST_CASE("WaterGeometry::standing grid shares vertices and queries active shore
 	CHECK(grid.vertices.size()==9);
 	CHECK(grid.indices==std::vector<uint32_t>{0,3,2,0,1,3,1,5,3,1,4,5,2,7,6,2,3,7,3,8,7,3,5,8});
 	for(const auto &v:grid.vertices) {
-		CHECK(v.nearest.x==20); CHECK(v.nearest.y==20);
+		CHECK(v.nearest.x==20); CHECK(v.nearest.y==20); CHECK(v.waveArea==0);
 		CHECK(v.direction.x==0); CHECK(v.direction.y==-1); CHECK(v.halfLength==20);
 	}
 	wave.enablePcaWave=0;
 	REQUIRE(WaterGeometry::buildStandingGrid(area,{wave},[](float,float){return 0.0f;},grid));
 	CHECK(grid.vertices[0].halfLength==0);
-	CHECK(grid.vertices[0].nearest.x==100000);
+	CHECK(grid.vertices[0].nearest.x==100000); CHECK(grid.vertices[0].waveArea==-1);
 	wave.enablePcaWave=1;
 	REQUIRE(WaterGeometry::buildStandingGrid(area,{wave},[](float,float){return -80.0f;},grid));
 	CHECK(grid.vertices[0].halfLength==0); // source strict depth < 100
@@ -859,7 +936,7 @@ TEST_CASE("water material: authored Gerstner vectors remain distinct")
 {
 	MeshShaderMaterialDef source; source.TypeName="WaterShader.FX";
 	for(int i=0;i<3;++i) {
-		MeshShaderMaterialProperty prop; prop.Name="GWAmpFreqPhaseSteepness"+std::to_string(i+1);
+		MeshShaderMaterialProperty prop; prop.Type=W3DSHADERMATERIAL_PROPERTY_VECTOR4; prop.Name="GWAmpFreqPhaseSteepness"+std::to_string(i+1);
 		for(int j=0;j<4;++j) prop.Float[j]=float(i*4+j+1);
 		source.Properties.push_back(prop);
 	}
@@ -889,4 +966,83 @@ TEST_CASE("WaterGeometry::standing grid rejects non-finite and overflowing coord
 			CHECK(grid.indices.empty());
 		}
 	}
+}
+
+TEST_CASE("water material: every recognized property rejects wrong W3D value types")
+{
+	const std::pair<const char *, unsigned> fields[] = {
+		{"MaterialColorDiffuse", 5},
+		{"GWAmpFreqPhaseSteepness1", 5},
+		{"GWAmpFreqPhaseSteepness2", 5},
+		{"GWAmpFreqPhaseSteepness3", 5},
+		{"SpecularColor", 4},
+		{"BumpUVScale", 3},
+		{"EnvUVScale", 3},
+		{"WaveUVScale", 3},
+		{"PCABumpUVScale", 3},
+		{"PCAWaveUVScale", 3},
+		{"BlendUsingTerrainAlpha", 7},
+		{"DimmingFactor", 2},
+		{"BumpScale", 2},
+		{"SpecularExponent", 2},
+		{"WindAngle", 2},
+		{"WindSpeed", 2},
+		{"WaveAngle", 2},
+		{"WaveSpeed", 2},
+		{"ReflectionPerturbation", 2},
+		{"WaterPCATexture1", 1},
+		{"WaterPCATexture2", 1},
+		{"WaterPCATexture3", 1},
+		{"PCANoiseTexture", 1},
+		{"PCAFrothTexture", 1},
+		{"WaterBumpTexture", 1},
+		{"WaterEnvTexture", 1},
+		{"WaveTexture", 1},
+	};
+	for (const auto &field : fields)
+		for (unsigned type = 1; type <= 7; ++type)
+		{
+			CAPTURE(field.first);
+			CAPTURE(type);
+			MeshShaderMaterialDef source; source.TypeName = "WaterShader.FX";
+			MeshShaderMaterialProperty property; property.Name = field.first; property.Type = type;
+			source.Properties.push_back(property);
+			WaterGeometry::StandingMaterial material;
+			std::string error;
+			const bool compatible = type == field.second || (field.second >= 3 && field.second <= 5 && type > field.second && type <= 5);
+			CHECK(WaterGeometry::readStandingMaterial(source, material, &error) == compatible);
+			if (!compatible)
+			{
+				CHECK(error.find(field.first) != std::string::npos);
+				CHECK(error.find("expected type " + std::to_string(field.second)) != std::string::npos);
+				CHECK(material.diffuse[3] == 0.5f);
+			}
+			else CHECK(error.empty());
+		}
+}
+
+TEST_CASE("water material: retail Vector4 specular and UV properties retain their leading components")
+{
+	MeshShaderMaterialDef source; source.TypeName = "WaterShader.FX";
+	for (const char *name : {"SpecularColor", "BumpUVScale", "EnvUVScale", "WaveUVScale", "PCABumpUVScale", "PCAWaveUVScale"})
+	{
+		MeshShaderMaterialProperty p; p.Name = name; p.Type = W3DSHADERMATERIAL_PROPERTY_VECTOR4;
+		p.Float[0] = 2; p.Float[1] = 3; p.Float[2] = 4; p.Float[3] = 5;
+		source.Properties.push_back(p);
+	}
+	WaterGeometry::StandingMaterial material; std::string error;
+	REQUIRE(WaterGeometry::readStandingMaterial(source, material, &error));
+	CHECK(error.empty());
+	CHECK(material.specular[0] == 2); CHECK(material.specular[1] == 3); CHECK(material.specular[2] == 4);
+	for (const float *uv : {material.bumpUV, material.envUV, material.waveUV, material.pcaUV, material.pcaWaveUV})
+	{ CHECK(uv[0] == 2); CHECK(uv[1] == 3); }
+}
+
+TEST_CASE("water PCA basis: oversized declared tracks fail before allocation")
+{
+	WaterGeometry::PcaBasis basis; std::string error;
+	const std::string text = "NumFrames: 1000000\nSpeed: 1\n" + std::string(1000000, ' ');
+	CHECK_FALSE(WaterGeometry::readPcaBasis(text, basis, &error));
+	CHECK(error == "PCA basis: frame count exceeds coefficient payload");
+	CHECK(basis.frames.empty());
 }

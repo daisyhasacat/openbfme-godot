@@ -66,6 +66,14 @@ struct W3DShaderKey
 	bool AlphaOverride = false;
 	// S-5017: OpenBFME BFME1 floor-overlay lift; not a retail shader setting.
 	bool FloorOverlay = false;
+	// lane OCCLUDE-1: one of the behind-building marker passes chained after an opaque surface (W3DInstancer::set_instance_occlusion; RotWK
+	// RTS3DScene::flushOccludedObjectsIntoStencil RW 0x470176, GameClient/RTS3DSceneOcclusion.h). The vertex code is the surface's own; an instance whose
+	// INSTANCE_CUSTOM.w occlusion bits (W3D_OCCLUSION_*) do not ask for the pass collapses to a point. Both passes keep the surface's alpha test and dither.
+	//  * W3D_OCCLUSION_PASS_MARK: an occluder's pixels in front (depth test as usual) write W3D_OCCLUSION_STENCIL_MARK into the stencil, nothing visible;
+	//  * W3D_OCCLUSION_PASS_COLOR: an occludee's pixels BEHIND what is drawn (depth_test_inverted) where the stencil holds the mark get the player's colour
+	//    (global w3d_occl_colors[slot], gamma space, blended SRC_ALPHA / ONE_MINUS_SRC_ALPHA as retail's quad) once: the pixel's stencil becomes
+	//    W3D_OCCLUSION_STENCIL_DONE, which no longer passes the compare. Off while the global w3d_occl_on is 0
+	int OcclusionPass = 0;
 
 	std::string Id() const;
 };
@@ -76,6 +84,20 @@ inline float W3D_Pack_House_Color(int r, int g, int b)
 {
 	return 1.0f + (float)(((r & 255) << 16) | ((g & 255) << 8) | (b & 255));
 }
+
+// lane OCCLUDE-1: the occlusion passes and their INSTANCE_CUSTOM.w bits (above the rigid bone, the sway type and the fogged bit; every value stays below
+// 2^24, exact in a float): bits 15 .. 19 the occludee's colour slot (0 = not an occludee), bit 20 the occluder
+constexpr int W3D_OCCLUSION_PASS_MARK = 1;
+constexpr int W3D_OCCLUSION_PASS_COLOR = 2;
+constexpr int W3D_OCCLUSION_SLOT_SHIFT = 15;
+constexpr int W3D_OCCLUSION_SLOTS = 32;
+constexpr int W3D_OCCLUSION_OCCLUDER_BIT = 1 << 20;
+constexpr int W3D_OCCLUSION_STENCIL_MARK = 255;
+constexpr int W3D_OCCLUSION_STENCIL_DONE = 1;
+// the render priorities of the passes: after the opaque scene, before the other blended surfaces (retail draws the quads before its translucent list);
+// the marks before the colours
+constexpr int W3D_OCCLUSION_PRIORITY_MARK = -128;
+constexpr int W3D_OCCLUSION_PRIORITY_COLOR = -127;
 
 enum class W3DSamplerPolicy { Anisotropic, Metal16 };
 

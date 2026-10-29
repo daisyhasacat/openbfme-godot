@@ -135,59 +135,102 @@ bool WaterGeometry::triangulate(const std::vector<Point2F> &polygon, std::vector
 bool WaterGeometry::buildRiverStrip(const RiverArea &river, RiverStrip &out)
 {
 	out = RiverStrip();
-	if (river.lines.size() < 2) return false;
-	auto distance = [](float x0, float y0, float x1, float y1) {
-		return std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
-	};
-	const auto &first = river.lines.front();
-	const auto &last = river.lines.back();
-	const float endLen = distance(first.x0, first.y0, first.x1, first.y1);
-	if (endLen == 0.0f) return false;
-	// BFME2 W3DWaterDrawRiverWater.cpp, RVA 0x100A0B: walk the boundary
-	// perimeter, divide by two, subtract the first end, then divide by its
-	// width and the rectangle count. No hardcoded world-space tile length.
-	float perimeter = endLen;
-	for (size_t i = 1; i < river.lines.size(); ++i)
+	const size_t n = river.lines.size();
+	if (n < 2) return false;
+	const std::vector<RiverArea::Line> &l = river.lines;
+	auto dist = [](float x0, float y0, float x1, float y1) { return std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0)); };
+	// the outline: first[0], second[0..n-1], first[n-1..1] (the closing edge first[1] -> first[0] left out)
+	const float end = dist(l[0].x0, l[0].y0, l[0].x1, l[0].y1);
+	float total = end + dist(l[n - 1].x1, l[n - 1].y1, l[n - 1].x0, l[n - 1].y0);
+	for (size_t i = 1; i < n; ++i)
 	{
-		const auto &a = river.lines[i - 1];
-		const auto &b = river.lines[i];
-		perimeter += distance(a.x1, a.y1, b.x1, b.y1);
+		total += dist(l[i - 1].x1, l[i - 1].y1, l[i].x1, l[i].y1);
+		if (i > 1)
+		{
+			total += dist(l[i - 1].x0, l[i - 1].y0, l[i].x0, l[i].y0);
+		}
 	}
-	perimeter += distance(last.x0, last.y0, last.x1, last.y1);
-	for (size_t i = river.lines.size() - 1; i > 0; --i)
+	const float vScale = end > 0.0f ? ((total / 2.0f - end) / end) / (float)(n - 1) : 0.0f;
+	const float z = (float)river.waterHeight;
+	for (size_t i = 0; i < n; ++i)
 	{
-		const auto &a = river.lines[i];
-		const auto &b = river.lines[i - 1];
-		perimeter += distance(a.x0, a.y0, b.x0, b.y0);
-	}
-	const float vScale = ((perimeter / 2.0f - endLen) / endLen) / float(river.lines.size() - 1);
-	for (size_t i = 0; i < river.lines.size(); ++i)
-	{
-		const auto &l = river.lines[i];
-		const float z = (float)river.waterHeight;
-		const float v = vScale * float(i);
-		out.position.insert(out.position.end(), { l.x0, l.y0, z, l.x1, l.y1, z });
-		out.uv0.insert(out.uv0.end(), { 0.0f, v, 0.5f, v });
-		out.uv1.insert(out.uv1.end(), { 0.0f, v, 1.0f, v });
+		const float v = vScale * (float)i;
+		out.position.insert(out.position.end(), { l[i].x1, l[i].y1, z, l[i].x0, l[i].y0, z });
+		out.uv0.insert(out.uv0.end(), { 0.5f, v, 0.0f, v });
+		out.uv1.insert(out.uv1.end(), { 1.0f, v, 0.0f, v });
 		if (i > 0)
 		{
-			const std::uint32_t a = (std::uint32_t)(2 * (i - 1)), b = a + 1, c = a + 2, d = a + 3;
-			out.index.insert(out.index.end(), { a, b, d, a, d, c });
+			const std::uint32_t a = (std::uint32_t)(2 * (i - 1));
+			out.index.insert(out.index.end(), { a, a + 1, a + 3, a, a + 3, a + 2 });
 		}
 	}
 	return true;
 }
 
+void WaterGeometry::riverVertexColour(const RiverArea &river, const TimeOfDayLights *tod, const float waterDiffuse[4], float out[4])
+{
+	if (river.r == 255 && river.g == 255 && river.b == 255)
+	{
+		for (int c = 0; c < 3; ++c)
+		{
+			float v = tod ? tod->terrain[0].ambient[c] : 0.0f;
+			for (int i = 0; tod && i < 3; ++i)
+			{
+				const float down = -tod->terrain[i].lightPos[2];
+				if (down > 0.0f)
+				{
+					v += down * tod->terrain[i].diffuse[c];
+				}
+			}
+			out[c] = v * waterDiffuse[c];
+		}
+	}
+	else if (river.r == 0 && river.g == 0 && river.b == 0)
+	{
+		out[0] = out[1] = out[2] = 1.0f;
+	}
+	else
+	{
+		out[0] = river.r / 255.0f;
+		out[1] = river.g / 255.0f;
+		out[2] = river.b / 255.0f;
+	}
+	// the game packs these into colour bytes unclamped; past 255 a channel would spill into the next, which no retail
+	// lighting reaches
+	for (int c = 0; c < 3; ++c)
+	{
+		out[c] = std::min(std::max(out[c], 0.0f), 1.0f);
+	}
+	out[3] = waterDiffuse[3];
+}
+
 // Target data: watershader.fxo parameters and ps blob 8 / vs blob 9, decoded
 // with tools/render/{fx_params,d3d9_disasm}. No executable provenance claim.
-bool WaterGeometry::readStandingMaterial(const MeshShaderMaterialDef &source, StandingMaterial &out)
+bool WaterGeometry::readStandingMaterial(const MeshShaderMaterialDef &source, StandingMaterial &out, std::string *error)
 {
+	if (error) error->clear();
 	if (AsciiStringUtil::compareNoCase(source.TypeName, "WaterShader.FX") != 0) return false;
 	out = StandingMaterial{};
 	out.technique = source.Technique;
 	for (const auto &p : source.Properties)
 	{
 		const std::string n = AsciiStringUtil::lowered(p.Name);
+		unsigned expected = 0;
+		if (n == "materialcolordiffuse" || n == "gwampfreqphasesteepness1" || n == "gwampfreqphasesteepness2" || n == "gwampfreqphasesteepness3") expected = W3DSHADERMATERIAL_PROPERTY_VECTOR4;
+		else if (n == "specularcolor") expected = W3DSHADERMATERIAL_PROPERTY_VECTOR3;
+		else if (n == "bumpuvscale" || n == "envuvscale" || n == "waveuvscale" || n == "pcabumpuvscale" || n == "pcawaveuvscale") expected = W3DSHADERMATERIAL_PROPERTY_VECTOR2;
+		else if (n == "blendusingterrainalpha") expected = W3DSHADERMATERIAL_PROPERTY_BOOL;
+		else if (n == "dimmingfactor" || n == "bumpscale" || n == "specularexponent" || n == "windangle" || n == "windspeed" || n == "waveangle" || n == "wavespeed" || n == "reflectionperturbation") expected = W3DSHADERMATERIAL_PROPERTY_FLOAT;
+		else if (n == "waterpcatexture1" || n == "waterpcatexture2" || n == "waterpcatexture3" || n == "pcanoisetexture" || n == "pcafrothtexture" || n == "waterbumptexture" || n == "waterenvtexture" || n == "wavetexture") expected = W3DSHADERMATERIAL_PROPERTY_TEXTURE;
+		const bool wider = expected >= W3DSHADERMATERIAL_PROPERTY_VECTOR2 && expected <= W3DSHADERMATERIAL_PROPERTY_VECTOR4
+			&& p.Type > expected && p.Type <= W3DSHADERMATERIAL_PROPERTY_VECTOR4;
+		if (expected && p.Type != expected && !wider)
+		{
+			if (error) *error = "WaterShader.FX property " + p.Name + ": expected type " + std::to_string(expected) + ", got " + std::to_string(p.Type);
+			out = StandingMaterial{};
+			return false;
+		}
+
 		if (n == "materialcolordiffuse") std::copy(p.Float, p.Float + 4, out.diffuse);
 		else if (n == "gwampfreqphasesteepness1") std::copy(p.Float, p.Float + 4, out.gerstner[0]);
 		else if (n == "gwampfreqphasesteepness2") std::copy(p.Float, p.Float + 4, out.gerstner[1]);
@@ -242,6 +285,11 @@ bool WaterGeometry::readPcaBasis(const std::string &text, PcaBasis &out, std::st
 	speed.imbue(std::locale::classic());
 	PcaBasis parsed;
 	if (!(speed >> label >> parsed.speed) || !std::isfinite(parsed.speed) || parsed.speed < 0.0f) return fail("PCA basis: invalid speed");
+	// 13 rows * 3 axes per frame, each requiring at least a digit and a delimiter.
+	// Bound from the remaining payload before allocating any frame storage.
+	const auto payload = input.tellg();
+	if (payload < 0 || count > (text.size() - static_cast<size_t>(payload)) / (13u * 3u * 2u))
+		return fail("PCA basis: frame count exceeds coefficient payload");
 	parsed.frames.resize(count);
 	for (unsigned row = 0; row < 13; ++row)
 	{
@@ -362,7 +410,7 @@ bool WaterGeometry::buildStandingGrid(const StandingWaterArea &area, const std::
 				Point2F mid={(a.x+b.x)*.5f,(a.y+b.y)*.5f};
 				float qx=v.point.x-mid.x,qy=v.point.y-mid.y,dist=std::sqrt(qx*qx+qy*qy);
 				if(dist<len*.5f+50 && dist<nearestDistance) {
-					nearestDistance=dist; v.nearest=mid; v.direction={dy/len,-dx/len}; v.halfLength=len*.5f;
+					nearestDistance=dist; v.waveArea=int(&w-waves.data()); v.nearest=mid; v.direction={dy/len,-dx/len}; v.halfLength=len*.5f;
 				}
 			}
 		}

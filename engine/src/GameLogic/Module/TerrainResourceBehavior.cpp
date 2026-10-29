@@ -85,6 +85,13 @@ void TerrainResourceBehavior::onDie(const DieModuleInterface::Event &)
 	obj->logic().economy().resources().unclaim(*obj, m_data->m_radius);
 }
 
+void TerrainResourceBehavior::onDelete()
+{
+	// RW 0x885362: TerrainResourceManager::unclaim (RW 0x75BE1C) of this object with the module's radius; nothing when it holds no claim (onDie took it)
+	Object *obj = getObject();
+	obj->logic().economy().resources().unclaim(*obj, m_data->m_radius);
+}
+
 UpdateSleepTime TerrainResourceBehavior::update()
 {
 	Object *obj = getObject();
@@ -116,7 +123,7 @@ UpdateSleepTime TerrainResourceBehavior::update()
 		}
 	}
 	// RW 0x885591 .. 0x88559E: the PRODUCTION attribute modifier product (out = 1.0 first, RW 0x805007)
-	const float modifier = economy.attributeModifierProduct(*obj, Economy::ATTRIBUTE_MODIFIER_PRODUCTION);
+	const float modifier = economy.productionMoneyProduct(*obj); // lane MODS-3: with PRODUCTION_MONEY under edain-unchained.production-split
 	// RW 0x8855A3 .. 0x885650: the resource factor of the owner's template (the diminishing returns of many resource buildings)
 	float resourceFactor = 1.0f;
 	const PlayerTemplate *pt = owner->getPlayerTemplate();

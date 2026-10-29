@@ -145,10 +145,17 @@ func _input(event: InputEvent) -> void:
 		return
 	if _suspended or _disconnected_devices.has(event.device):
 		return
-	if _device < 0:
-		_device = event.device
+	# Ignore drift and releases from unclaimed pads. A button press can hand
+	# menus to another player after releasing the previous pad's held input.
+	var deliberate: bool = (event is InputEventJoypadButton and event.pressed) or (event is InputEventJoypadMotion and absf(event.axis_value) > DEADZONE)
 	if event.device != _device:
-		return
+		if not deliberate or (not _active() and not (event is InputEventJoypadButton and event.button_index == JOY_BUTTON_START and event.pressed)):
+			return
+		if _device >= 0 and not (event is InputEventJoypadButton and event.pressed):
+			return
+		_reset()
+		_captured_buttons.clear()
+		_device = event.device
 	if not _active():
 		_reset()
 		if event is InputEventJoypadButton:

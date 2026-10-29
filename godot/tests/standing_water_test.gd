@@ -109,26 +109,71 @@ func _check_wave_geometry(source: ShaderMaterial) -> bool:
 func _run() -> void:
 	create_timer(90).timeout.connect(func(): push_error("Standing water test timed out"); quit(1))
 	var fs = ClassDB.instantiate("RetailFileSystem")
-	assert(fs.mount_retail().ok)
+	if not (fs.mount_retail().ok):
+		push_error('fs.mount_retail().ok')
+		quit(1)
+		return
 	var builder = ClassDB.instantiate("MapTerrainBuilder")
 	var map = builder.build_map(fs, "map mp harlindon", {"markers":false})
-	assert(map != null)
+	if not (map != null):
+		push_error('map != null')
+		quit(1)
+		return
 	root.add_child(map)
 	var report: Dictionary = builder.get_report()
 	print("WATER MATERIALS ", report.water)
-	assert(report.errors.is_empty(), str(report.errors))
-	assert(report.water.materials.size() == 1)
-	assert(report.water.materials[0].color == Vector4(0.15, 0.3, 0.35, 0.9))
-	assert(report.water.materials[0].bump_uv_scale == Vector2(15, 15))
-	assert(report.water.max_alpha_depth == 20.0)
-	assert(report.water.deep_water_alpha == 1.0)
-	assert(report.water.materials[0].technique_index == 5)
-	assert(report.water.materials[0].technique == "PCA_U")
-	assert(report.water.materials[0].pca_enabled)
-	assert(report.water.materials[0].pca_frames == 30)
-	assert(report.water.materials[0].grid_spacing == 40.0)
-	assert(report.water.materials[0].wave_vertices > 0) # tolerance: authored shoreline must activate geometric waves.
-	assert(report.water.materials[0].pca_frame_rate == 21.0)
+	if not (report.errors.is_empty()):
+		push_error(str(report.errors))
+		quit(1)
+		return
+	if not (report.water.materials.size() == 1):
+		push_error('report.water.materials.size() == 1')
+		quit(1)
+		return
+	if not (report.water.materials[0].color == Vector4(0.15, 0.3, 0.35, 0.9)):
+		push_error('report.water.materials[0].color == Vector4(0.15, 0.3, 0.35, 0.9)')
+		quit(1)
+		return
+	if not (report.water.materials[0].bump_uv_scale == Vector2(15, 15)):
+		push_error('report.water.materials[0].bump_uv_scale == Vector2(15, 15)')
+		quit(1)
+		return
+	if not (report.water.max_alpha_depth == 20.0):
+		push_error('report.water.max_alpha_depth == 20.0')
+		quit(1)
+		return
+	if not (report.water.deep_water_alpha == 1.0):
+		push_error('report.water.deep_water_alpha == 1.0')
+		quit(1)
+		return
+	if not (report.water.materials[0].technique_index == 5):
+		push_error('report.water.materials[0].technique_index == 5')
+		quit(1)
+		return
+	if not (report.water.materials[0].technique == "PCA_U"):
+		push_error('report.water.materials[0].technique == "PCA_U"')
+		quit(1)
+		return
+	if not (report.water.materials[0].pca_enabled):
+		push_error('report.water.materials[0].pca_enabled')
+		quit(1)
+		return
+	if not (report.water.materials[0].pca_frames == 30):
+		push_error('report.water.materials[0].pca_frames == 30')
+		quit(1)
+		return
+	if not (report.water.materials[0].grid_spacing == 40.0):
+		push_error('report.water.materials[0].grid_spacing == 40.0')
+		quit(1)
+		return
+	if not (report.water.materials[0].wave_vertices > 0):
+		push_error('report.water.materials[0].wave_vertices > 0')
+		quit(1)
+		return
+	if not (report.water.materials[0].pca_frame_rate == 21.0):
+		push_error('report.water.materials[0].pca_frame_rate == 21.0')
+		quit(1)
+		return
 	var checked := 0
 	var authored := 0
 	for info in report.water.materials:
@@ -136,27 +181,78 @@ func _run() -> void:
 			authored += 1
 	for mesh in map.get_node("StandingWater").get_children():
 		var material: ShaderMaterial = mesh.mesh.surface_get_material(0)
-		assert(material != null)
-		assert(material.get_shader_parameter("terrain_height_tex") != null)
-		assert(material.get_shader_parameter("pca_mode") == 2)
-		assert(material.get_shader_parameter("gerstner0") == Vector4(50,0.033,0.45,1))
-		assert(material.get_shader_parameter("gerstner1") == Vector4(40,0.031,0.5,1))
-		assert(material.get_shader_parameter("gerstner2") == Vector4(30,0.029,0.54,1))
+		if not (material != null):
+			push_error('material != null')
+			quit(1)
+			return
+		if not (material.get_shader_parameter("terrain_height_tex") != null):
+			push_error('material.get_shader_parameter("terrain_height_tex") != null')
+			quit(1)
+			return
+		if not (material.get_shader_parameter("pca_mode") == 2):
+			push_error('material.get_shader_parameter("pca_mode") == 2')
+			quit(1)
+			return
+		if not (material.get_shader_parameter("gerstner0") == Vector4(50,0.033,0.45,1)):
+			push_error('material.get_shader_parameter("gerstner0") == Vector4(50,0.033,0.45,1)')
+			quit(1)
+			return
+		if not (material.get_shader_parameter("gerstner1") == Vector4(40,0.031,0.5,1)):
+			push_error('material.get_shader_parameter("gerstner1") == Vector4(40,0.031,0.5,1)')
+			quit(1)
+			return
+		if not (material.get_shader_parameter("gerstner2") == Vector4(30,0.029,0.54,1)):
+			push_error('material.get_shader_parameter("gerstner2") == Vector4(30,0.029,0.54,1)')
+			quit(1)
+			return
 		var coefficients: Texture2D = material.get_shader_parameter("pca_coefficients")
-		assert(coefficients != null and coefficients.get_width() == 30 and coefficients.get_height() == 10)
-		assert(material.get_shader_parameter("pca_tex0") != null)
-		assert(material.get_shader_parameter("pca_tex1") != null)
-		assert(material.get_shader_parameter("pca_tex2") != null)
-		assert(material.get_shader_parameter("material_diffuse") == report.water.materials[checked].color)
-		assert(material.get_shader_parameter("bump_uv_scale") == report.water.materials[checked].bump_uv_scale)
+		if not (coefficients != null and coefficients.get_width() == 30 and coefficients.get_height() == 10):
+			push_error('coefficients != null and coefficients.get_width() == 30 and coefficients.get_height() == 10')
+			quit(1)
+			return
+		if not (material.get_shader_parameter("pca_tex0") != null):
+			push_error('material.get_shader_parameter("pca_tex0") != null')
+			quit(1)
+			return
+		if not (material.get_shader_parameter("pca_tex1") != null):
+			push_error('material.get_shader_parameter("pca_tex1") != null')
+			quit(1)
+			return
+		if not (material.get_shader_parameter("pca_tex2") != null):
+			push_error('material.get_shader_parameter("pca_tex2") != null')
+			quit(1)
+			return
+		if not (material.get_shader_parameter("material_diffuse") == report.water.materials[checked].color):
+			push_error('material.get_shader_parameter("material_diffuse") == report.water.materials[checked].color')
+			quit(1)
+			return
+		if not (material.get_shader_parameter("bump_uv_scale") == report.water.materials[checked].bump_uv_scale):
+			push_error('material.get_shader_parameter("bump_uv_scale") == report.water.materials[checked].bump_uv_scale')
+			quit(1)
+			return
 		checked += 1
-	assert(checked == report.water.areas)
-	assert(authored == checked)
-	assert(checked > 0) # tolerance: this retail map must exercise standing water.
+	if not (checked == report.water.areas):
+		push_error('checked == report.water.areas')
+		quit(1)
+		return
+	if not (authored == checked):
+		push_error('authored == checked')
+		quit(1)
+		return
+	if not (checked > 0):
+		push_error('checked > 0')
+		quit(1)
+		return
 	if DisplayServer.get_name() != "headless":
 		var water_mesh = map.get_node("StandingWater").get_child(0)
-		assert(await _check_wave_geometry(water_mesh.mesh.surface_get_material(0)), "Gerstner waves must change the mesh silhouette while frozen time stays stable")
-		assert(await _check_pca_animation(water_mesh.mesh.surface_get_material(0)), "PCA coefficients must animate the water while a zero-rate track remains stable")
+		if not (await _check_wave_geometry(water_mesh.mesh.surface_get_material(0))):
+			push_error("Gerstner waves must change the mesh silhouette while frozen time stays stable")
+			quit(1)
+			return
+		if not (await _check_pca_animation(water_mesh.mesh.surface_get_material(0))):
+			push_error("PCA coefficients must animate the water while a zero-rate track remains stable")
+			quit(1)
+			return
 		root.size = Vector2i(1000, 700)
 		var camera := Camera3D.new()
 		root.add_child(camera)
@@ -168,10 +264,16 @@ func _run() -> void:
 			await process_frame
 		await RenderingServer.frame_post_draw
 		var image := root.get_texture().get_image()
-		assert(image != null and not image.is_empty())
+		if not (image != null and not image.is_empty()):
+			push_error('image != null and not image.is_empty()')
+			quit(1)
+			return
 		var capture := OS.get_environment("OPENBFME_WATER_SCREENSHOT")
 		if not capture.is_empty():
-			assert(image.save_png(capture) == OK)
+			if not (image.save_png(capture) == OK):
+				push_error('image.save_png(capture) == OK')
+				quit(1)
+				return
 	map.queue_free()
 	print("STANDING WATER PASS: ", checked, " materials")
 	quit()

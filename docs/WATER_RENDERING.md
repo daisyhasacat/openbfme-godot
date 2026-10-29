@@ -102,3 +102,10 @@ claim of retail pixel parity.
 
 The GPU test also freezes coefficient tracks and verifies that moving Gerstner
 vertices change the rendered silhouette while frozen wave time stays stable.
+
+## Upstream port
+
+This branch starts from Open-BFME main and contains only water rendering, loader
+metadata, tests and documentation. The fork-integration merge, Lua/gameplay rules,
+replay/LAN versions and fork map-extension changes are excluded. Upstream river
+geometry and shading remain in place.

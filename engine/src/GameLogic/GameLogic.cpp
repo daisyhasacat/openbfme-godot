@@ -4,6 +4,7 @@
 #include "Common/PerformanceCounters.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/WallBalance.h"
+#include "Common/ModEngineFeatures.h"
 
 #include "Common/Player.h"
 #include "GameLogic/AI/AIWorld.h"
@@ -12,6 +13,7 @@
 #include "Common/PlayerList.h"
 #include "Common/GameState.h" // lane SAVE-4a
 #include "Common/Snapshot.h"
+#include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/NotifyCrushModules.h"
 #include "GameLogic/Module/UpgradeModuleClasses.h"
@@ -227,14 +229,28 @@ void GameLogic::invalidateTemplateInfo()
 {
 	m_templateInfo.clear();
 	m_crushInfo.clear();
+	m_crushById.clear();
 }
 
 const CrushTemplateInfo &GameLogic::crushInfo(const ThingTemplate *finalOverride)
 {
+	const size_t id = finalOverride->getTemplateID();
+	if (id < m_crushById.size() && m_crushById[id].first == finalOverride)
+	{
+		return *m_crushById[id].second;
+	}
 	auto it = m_crushInfo.find(finalOverride);
 	if (it == m_crushInfo.end())
 	{
 		it = m_crushInfo.emplace(finalOverride, std::make_unique<CrushTemplateInfo>(CrushTemplateInfo::of(*finalOverride))).first;
+	}
+	if (id >= m_crushById.size())
+	{
+		m_crushById.resize(id + 1, { nullptr, nullptr });
+	}
+	if (!m_crushById[id].first)
+	{
+		m_crushById[id] = { finalOverride, it->second.get() }; // the first template of the id keeps the slot
 	}
 	return *it->second;
 }
@@ -262,6 +278,26 @@ Object *GameLogic::newObject(const ThingTemplate *tt, Team *team, const ObjectSt
 float GameLogic::getGroundHeight(float x, float y) const
 {
 	return m_terrain ? m_terrain->getGroundHeight(x, y, nullptr) : 0.0f;
+}
+
+float GameLogic::getLayerHeightForDestination(float x, float y, float z) const
+{
+	// lane WALL-2: TheTerrainLogic vslot 0x1C (getLayerHeight) with the layer of RW 0x680A75 (getLayerForDestination) at (x, y, z)
+	if (m_aiWorld && m_aiWorld->mapReady())
+	{
+		const Pathfinder &pf = m_aiWorld->pathfinder();
+		return pf.getLayerHeight(x, y, pf.getLayerAt(x, y, z));
+	}
+	return getGroundHeight(x, y);
+}
+
+float GameLogic::getHighestLayerHeight(float x, float y) const
+{
+	if (m_aiWorld && m_aiWorld->mapReady())
+	{
+		return m_aiWorld->pathfinder().getHighestLayerHeight(x, y);
+	}
+	return getGroundHeight(x, y);
 }
 
 void GameLogic::reportError(const std::string &text)
@@ -632,6 +668,7 @@ void GameLogic::update(int phase)
 	{
 		m_partition->update(); // RW 0x62E93B: ThePartitionManager vslot 0x28 (RW 0xA39020 -> 0xA3B4E0), then the row's collision manager (lane MODULES-2)
 		runRow(ROW_PARTITION_COLLISION);
+		combat().processProjectileContacts(); // lane FLANK-1: the flying projectiles' contacts, the same collision manager row (S-780 inference: after the AI units' pass)
 		// RW 0x62E951 .. 0x62E97E
 		for (Object *o = m_objectHead; o; o = o->getNextObject())
 		{
@@ -691,6 +728,15 @@ void GameLogic::update(int phase)
 				m_scriptEngine->updateGenericScripts(*p);
 			}
 			p->getScoreKeeper().recordPerFrameStats(*this, *p, m_frame);
+		}
+		// lane SDK-2: the OpenBFME end-of-frame listeners (mod scripts); a copy, as a listener may remove itself
+		if (!m_endOfFrameHooks.empty())
+		{
+			const std::vector<EndOfFrameEntry> hooks = m_endOfFrameHooks;
+			for (const EndOfFrameEntry &h : hooks)
+			{
+				h.hook(m_frame);
+			}
 		}
 	}
 	m_inUpdate = wasInUpdate;
@@ -906,6 +952,22 @@ void GameLogic::processDestroyList()
 }
 
 // lane BACKLOG3 (S-2452): see GameLogic.h
+void GameLogic::noteBeacon(BeaconNotice::Kind kind, int playerIndex, ObjectID object, const Coord3D &position)
+{
+	if (m_beaconNotices.size() >= kBeaconNotices)
+	{
+		m_beaconNotices.erase(m_beaconNotices.begin());
+	}
+	BeaconNotice n;
+	n.seq = ++m_beaconSeq;
+	n.frame = m_frame;
+	n.kind = kind;
+	n.playerIndex = playerIndex;
+	n.object = object;
+	n.position = position;
+	m_beaconNotices.push_back(n);
+}
+
 void GameLogic::noteRadarEvent(int type, const Coord3D &position, RadarEventNotice::Source source, int playerIndex)
 {
 	if (m_radarEventNotices.size() >= kRadarEventNotices)
@@ -928,6 +990,7 @@ void GameLogic::reset()
 	m_aiBaseRadius = 0;
 	m_aiBaseCenter = {};
 	m_aiReserved.clear();
+	m_missionObjectives.reset(); // lane CAMPUI-1: TheMissionObjectiveTracker's reset (RW 0x835E03): a new game has no list until its map.ini's
 	m_radarEventNotices.clear(); // lane BACKLOG3: a new game's radar starts empty (the sequence goes on: a client's cursor stays behind it)
 	// ZH GameLogic::reset: every object goes; the scheduler vectors are cleared with their modules' indices
 	m_current = nullptr;
@@ -957,9 +1020,12 @@ void GameLogic::reset()
 	m_objectsById.clear();
 	m_templateInfo.clear();
 	m_crushInfo.clear();
+	m_crushById.clear();
 	m_frame = 0;
 	m_gameDifficulty = 1; // lane CAMP-1H: GameLogic::reset RW 0x62D3EB (+ 0xA4 = 1)
+	m_showBehindBuildingMarkers = true; // lane OCCLUDE-1: GameLogic::reset RW 0x62D3D6 (+ 0x99 = 1)
 	m_nextObjectID = 1;
+	m_sharedProductionID = 0;
 	m_objectCount = 0;
 	m_lastPhase = 0;
 	m_depth = 0;
@@ -1096,12 +1162,17 @@ std::uint32_t GameLogic::hashState(std::vector<StateHashSection> *sections, std:
 		{
 			x.addI32(m_legendaryHeroes);
 		}
+		m_cheatMode.crc(x); // lane CHEAT-1: only a Cheat Mode game hashes it (every other game keeps its hash)
 		// lane UBER-1: an Uber game hashes its profile (a Faithful game hashes nothing more: its hashes stay the ones before UBER-1)
 		if (m_simulationProfile != SimulationProfile::Faithful)
 		{
 			x.addI32((std::int32_t)m_simulationProfile);
 		}
 		x.addU32(m_nextObjectID);
+		if (ModEngineFeatures::has(ModEngineFeature::EdainUnchainedUniqueProductionId))
+		{
+			x.addU32(m_sharedProductionID); // lane MODS-3 (a retail game hashes nothing more)
+		}
 		x.addU32((std::uint32_t)m_objectCount);
 		for (std::uint32_t w : m_random.seedArray())
 		{
@@ -1357,10 +1428,10 @@ GameLogic::Report GameLogic::report() const
 		helpers += kv.second;
 	}
 	r.stops.push_back("[S-141] helper modules: " + std::to_string(helpers) + " live helper modules (SMC, Recovery, Repulsor, Defection, Guarding, WeaponStatus, FiringTracker) created in the retail order; the Recovery, Repulsor, Defection, Guarding and FiringTracker shells do nothing (the SMCHelper and the WeaponStatusHelper act: lanes PROD-1, PROJ-2)");
-	r.stops.push_back("[S-142] objects: creation steps not ported: the construction-time stamp (RW 0x69A684: + 0x444 = frame + template + 0x564, no reader found), the special power mask and "
+	r.stops.push_back("[S-142] objects: creation steps not ported: the special power mask and "
 		"what else initObject (RW 0x693D0C, tier B edited, no decomp source) does beyond Object::friend_initObject; ported since (lane BACKLOG2 audit): the experience tracker (XP-1, RW 0x69A606), "
 		"partition registration (MODULES-2, the world entry RW 0x69A6C6), the radar step (RW 0x69A66D -> Radar::addObject RW 0x6D9042: RADAR-1 applies its rules to the live objects at "
-		"every draw; the radar lists are client state), initObject's upgrade refresh and command points (RW 0x693D38 / 0x693D51)");
+		"every draw; the radar lists are client state), initObject's upgrade refresh and command points (RW 0x693D38 / 0x693D51), the safe occlusion frame (OCCLUDE-1: RW 0x69A687)");
 	r.stops.push_back("[S-146] players: a Player carries the index, name, faction template, type, colour, money, default team and relationships only; energy, sciences, upgrades, build list, AI, command points and the spell book belong to the lanes that port them");
 	r.stops.push_back("[S-149] ActiveBody / HordeContain: the payload creation site (here: onCreate; RW 0x871B9B, HordeContain vslot 0x70, has no located caller), the members' team and facing are inference; ActiveBody's FX / OCL names are stored unresolved (lane DECOMP-1: GlobalData + 0xB4 / + 0xB8 are UnitDamagedThreshold / UnitReallyDamagedThreshold, GameData table RW 0xBFF580 rows RW 0xBFF980 / 0xBFF990; the DamagePercentToUnits trimming never runs in retail)");
 	for (const std::string &u : unportedPhaseWork())

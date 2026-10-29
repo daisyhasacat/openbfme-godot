@@ -140,22 +140,9 @@ RetailObjectWorld::State::State(ArchiveFileSystem &fs)
 	m_createAHero.registerBlock(m_env.blocks); // HERO-2: TheCreateAHeroSystem (RW 0xDE3D84)
 	SpellStores::registerBlocks(m_env.blocks); // SPELL-1
 	m_linearCampaigns.registerBlock(m_env.blocks); // CAMP-1
-	m_livingWorldCampaigns.registerBlock(m_env.blocks); // WOTR-1
-	m_livingWorldMap.registerBlocks(m_env.blocks);       // WOTR-1
-	m_env.blocks.registerBlock("MissionObjectiveList", [this](INI *ini) {
-		using Objectives = std::vector<std::pair<std::string, bool>>;
-		static const FieldParse fields[] = {
-			{ "MissionObjectiveTag", [](INI *i, void *, void *store, const void *) {
-				static_cast<Objectives *>(store)->emplace_back(i->getNextToken(), false);
-			}, nullptr, 0 },
-			{ "BonusMissionObjectiveTag", [](INI *i, void *, void *store, const void *) {
-				static_cast<Objectives *>(store)->emplace_back(i->getNextToken(), true);
-			}, nullptr, 0 },
-			{ nullptr, nullptr, nullptr, 0 }
-		};
-		m_missionObjectives.clear();
-		ini->initFromINI(&m_missionObjectives, fields);
-	});
+	m_livingWorldCampaigns.registerBlock(m_env.blocks);
+	m_livingWorldMap.registerBlocks(m_env.blocks);
+	m_env.blocks.registerBlock("MissionObjectiveList", [this](INI *ini) { MissionObjectiveTracker::parseList(ini, m_mapObjectives, m_mapObjectivesParsed); });
 }
 
 const AudioIniState &RetailObjectWorld::audio() const
@@ -457,7 +444,7 @@ bool RetailObjectWorld::loadState(std::string *error)
 			m_s->m_report.errors.push_back(fe);
 		}
 	}
-	if (m_fs.doesFileExist("data/ini/formationassistant.ini"))
+	if (!options.bfme1 || m_fs.doesFileExist("data/ini/formationassistant.ini"))
 	{
 		std::string error;
 		if (!m_s->m_formations.load(m_fs, &error))
@@ -730,5 +717,13 @@ std::vector<std::string> RetailObjectWorld::acceptanceStops() const
 	{
 		out.push_back(l);
 	}
+	return out;
+}
+
+std::vector<std::string> RetailObjectWorld::loadNotes() const
+{
+	std::vector<std::string> out = m_s->m_upgrades.unknownSubUpgrades();
+	const std::vector<std::string> &bases = m_s->m_skirmishAI->missingLayouts();
+	out.insert(out.end(), bases.begin(), bases.end());
 	return out;
 }

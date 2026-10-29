@@ -40,4 +40,5 @@ set(OPENBFME_SPELL_TESTS
     tests/test_spell3_powers.cpp # lane SPELL-3
     tests/test_spell4_cursor.cpp # lane SPELL-4
     tests/test_spell4_buffs.cpp # lane SPELL-4
-    tests/test_taint_grid.cpp) # TheTaintManager and its client view (S-6110 / S-6111)
+    tests/test_taint_grid.cpp
+    tests/test_spellrc1_hud.cpp)

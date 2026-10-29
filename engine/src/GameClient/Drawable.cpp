@@ -262,6 +262,8 @@ std::uint32_t conditionBits(int word)
 
 ModelConditionFlags Drawable::dependencySharedModelFlags() const
 {
+	// the union of the draws' sets, a word at a time (lane BIGBATTLE-1: the bit loop ran for every contained drawable every render frame;
+	// MODELCONDITION_COUNT is the type's width and its unused high bits are zero, so the words give the same set)
 	ModelConditionFlags out;
 	for (const DrawEntry &e : m_entries)
 	{
@@ -514,6 +516,7 @@ void Drawable::syncFromSnapshot(const ObjectSnapshot &rec, UnsignedInt snapshotF
 	}
 	m_zBasisCached = false; // the next prepareSync recomputes its trigonometry
 	updateConstruction(rec, snapshotFrame, alpha); // RENDER-2 (DrawableConstruction.cpp)
+	updatePhantomLook(rec);                        // lane FBSIM-1
 	m_moveSpeed = rec.moveSpeed;                   // lane SMOOTH-3: the walk / run cycle's speed source (RW 0x4B67D4)
 	m_scriptTarget = rec.scriptTarget;             // lane FX-3
 }
@@ -551,8 +554,19 @@ void Drawable::prepareSync(const ObjectSnapshot &rec, UnsignedInt snapshotFrame,
 	}
 	// the transform does not enter these (the construction look reads the record and the flags): done here, before commitSync sets it
 	updateConstruction(rec, snapshotFrame, alpha); // RENDER-2 (DrawableConstruction.cpp)
+	updatePhantomLook(rec);                        // lane FBSIM-1
 	m_moveSpeed = rec.moveSpeed;                   // lane SMOOTH-3: the walk / run cycle's speed source (RW 0x4B67D4)
 	m_scriptTarget = rec.scriptTarget;             // lane FX-3
+}
+
+void Drawable::updatePhantomLook(const ObjectSnapshot &rec)
+{
+	// lane FBSIM-1: a dozer's phantom structure is drawn at 0.4 opacity (RW 0x88D3E5: Drawable + 0xB0 = RW 0xBE0DE4) until the placement sets 1.0 (RW 0x88D683, RW 0xBD1908)
+	if (rec.phantomStructure != m_phantomLook)
+	{
+		m_phantomLook = rec.phantomStructure;
+		setDrawableOpacity(m_phantomLook ? 0.4f : 1.0f);
+	}
 }
 
 void Drawable::commitSync(const SyncPrep &prep)
@@ -609,6 +623,10 @@ Drawable::PresentedLook Drawable::presentedLook(const LogicSnapshot *presented, 
 	if (rec && (StealthLook::hidden(*rec) || rec->drawableHidden))
 	{
 		look.hidden = true;
+	}
+	if (m_clientHidden)
+	{
+		look.hidden = true; // lane CHAT-1: BeaconClientUpdate::hideBeacon on an enemy's screen
 	}
 	look.fogLook = look.fogLook && !look.hidden;
 	return look;

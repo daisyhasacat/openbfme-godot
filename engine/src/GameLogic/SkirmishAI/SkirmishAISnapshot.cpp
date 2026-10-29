@@ -55,7 +55,7 @@ struct RequestTable
 	}
 };
 
-void xferRequest(Xfer &x, AIBuildRequest &r)
+void xferRequest(Xfer &x, AIBuildRequest &r, int version)
 {
 	x.xferAsciiString(&r.templateName);
 	x.xferAsciiString(&r.name);
@@ -96,6 +96,10 @@ void xferRequest(Xfer &x, AIBuildRequest &r)
 	x.xferUnsignedInt(&r.heuristicNextFrame);
 	x.xferInt(&r.heuristicFortressResult);
 	AIXfer::strings(x, r.heuristicUnlocks);
+	if (version >= 4)
+	{
+		x.xferBool(&r.plain); // version 4 (lane AIEXPAND-1): SimpleExpansion's plain structure request
+	}
 	if (x.isLoading())
 	{
 		AIXfer::inRange(r.state, 0, 3, "skirmish ai: a build request's state"); // waiting, in progress, complete, failed
@@ -105,6 +109,10 @@ void xferRequest(Xfer &x, AIBuildRequest &r)
 		if (r.upgrade && r.expansion)
 		{
 			throw XferException("skirmish ai: a request that is both an upgrade and an expansion");
+		}
+		if (r.plain && (r.upgrade || r.expansion || r.unit || r.farm))
+		{
+			throw XferException("skirmish ai: a plain structure request that is also another kind");
 		}
 	}
 }
@@ -280,7 +288,7 @@ void xferBuild(Xfer &x, AIBuildState &s, RequestTable &t, const SkirmishAIStore 
 	AIXfer::u64(x, s.fortressRebuilds);
 }
 
-void xferBrain(Xfer &x, AIBrainState &b)
+void xferBrain(Xfer &x, AIBrainState &b, RequestTable &table, int version)
 {
 	x.xferBool(&b.chooser);
 	x.xferBool(&b.chooserInitialised);
@@ -329,10 +337,11 @@ void xferBrain(Xfer &x, AIBrainState &b)
 		x.xferInt(&tac.targetOwner);
 		if (x.isLoading())
 		{
-			// an offensive prototype 0 .. 7 by its name, or a targetless one (100 + 0 .. 10, AITacticalAI.cpp)
+			// an offensive prototype 0 .. 7 or the expansion prototype 8 (version 4) by its name, or a targetless one (100 + 0 .. 10, AITacticalAI.cpp)
 			static const char *const kOffensive[] = { "SimpleAttack", "FormationAttack", "FlankAttack", "PincerAttack", "FeintAttack",
-				"AIBasePenetrationTroopsTactic", "SimpleSiege", "SiegeGates", "SimpleDefense" };
-			if (!(tac.kindIndex >= 0 && tac.kindIndex < 9 && tac.kind == kOffensive[tac.kindIndex]) && !(tac.kindIndex >= 100 && tac.kindIndex < 111))
+				"AIBasePenetrationTroopsTactic", "SimpleSiege", "SiegeGates", "SimpleDefense", "SimpleExpansion" };
+			const int prototypes = version >= 5 ? 10 : 8;
+			if (!(tac.kindIndex >= 0 && tac.kindIndex < prototypes && tac.kind == kOffensive[tac.kindIndex]) && !(tac.kindIndex >= 100 && tac.kindIndex < 111))
 			{
 				throw XferException("skirmish ai: a tactic '" + tac.kind + "' of the prototype " + std::to_string(tac.kindIndex));
 			}
@@ -377,6 +386,14 @@ void xferBrain(Xfer &x, AIBrainState &b)
 		AIXfer::coord(x, tac.aimPos);
 		x.xferBool(&tac.mainLaunched);
 		x.xferUnsignedInt(&tac.launchFrame);
+		if (version >= 4)
+		{
+			xferRef(x, tac.request, table); // version 4 (lane AIEXPAND-1): SimpleExpansion's request (+ 0x58)
+			if (x.isLoading() && tac.request && tac.kindIndex != 8)
+			{
+				throw XferException("skirmish ai: a tactic '" + tac.kind + "' with a build request (only SimpleExpansion has one)");
+			}
+		}
 	}
 	x.xferUnsignedInt(&b.nextTacticId);
 	AIXfer::map(x, b.tacticsByKind, 5, [&](std::string &k, int &v) {
@@ -456,9 +473,9 @@ void AIStatCollector::xfer(Xfer &x)
 
 void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 {
-	// version 2 (lane AI5): the upgrade / expansion requests and the unit upgrader / upgrade builder states. A version 1 snapshot has neither: loaded here its
-	// AIs would never buy an upgrade (their records are made when objects register), so it is refused rather than loaded with empty builders
-	XferVersion v{ 4, 4 }; // version 4 adds native defensive target sizes and SimpleDefense.
+	// Version 5 combines source defensive and expansion tactics with local extension state.
+	// The two branches used incompatible version 4 layouts.
+	XferVersion v{ 5, 5 };
 	x.xferVersion(v);
 	const bool loading = x.isLoading();
 	bool started = loading ? false : m_started;
@@ -471,6 +488,10 @@ void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 	}
 	m_started = started;
 	x.xferUnsignedInt(&m_attackedAtIds);
+	if (v.current >= 4)
+	{
+		x.xferUnsignedInt(&m_expansionHeuristicFrames);
+	}
 	x.xferVectorSize(m_assistTimers, 8);
 	for (auto &t : m_assistTimers)
 	{
@@ -553,6 +574,13 @@ void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 				table.noteAll(s.unitUpgrader.upgrading);
 				table.noteAll(s.scienceBuilder.upgrades);
 				table.noteAll(s.scienceBuilder.expansions);
+				for (const AITactic &tac : kv.second->brain.tactics)
+				{
+					if (tac.request)
+					{
+						table.note(tac.request); // lane AIEXPAND-1: SimpleExpansion's request (also queued while unfinished)
+					}
+				}
 			}
 		}
 	}
@@ -567,7 +595,7 @@ void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 	}
 	for (const std::shared_ptr<AIBuildRequest> &r : table.list)
 	{
-		xferRequest(x, *r);
+		xferRequest(x, *r, v.current);
 	}
 	xferRefs(x, m_farmSites, table);
 	// the groups
@@ -650,7 +678,7 @@ void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 				throw XferException("skirmish ai: an AI to save and no SkirmishAIData");
 			}
 			xferBuild(x, ai->build, table, *m_store, player->getSide());
-			xferBrain(x, ai->brain);
+			xferBrain(x, ai->brain, table, v.current);
 			// Version 1 omitted this authoritative OpenBFME extension state.
 			if (v.current >= 2)
 			{
@@ -686,6 +714,7 @@ void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 	{
 		AIXfer::u64(x, *c);
 	}
+	AIXfer::ids(x, m_captureFlags);
 }
 
 // rule 4 (validate before linking): every player index and every reference between the loaded AIs (the info records, the groups' members, the enemies,
@@ -694,6 +723,13 @@ void SkirmishAIManager::checkLoaded() const
 {
 	const int players = m_logic.players().getPlayerCount();
 	AIXfer::IssuedIdScope issuedIds(m_logic.getNextObjectID());
+	std::set<ObjectID> flags;
+	for (ObjectID id : m_captureFlags)
+	{
+		if (id == INVALID_ID) { throw XferException("skirmish ai: an invalid registered capture flag"); }
+		AIXfer::issued(id, "skirmish ai: a registered capture flag");
+		if (!flags.insert(id).second) { throw XferException("skirmish ai: repeated registered capture flag"); }
+	}
 	auto player = [&](int i, const char *what) { AIXfer::inRange(i, 0, players - 1, what); };
 	std::set<int> info(m_infoPlayers.begin(), m_infoPlayers.end());
 	if (info.size() != m_infoPlayers.size())
@@ -866,6 +902,13 @@ void SkirmishAIManager::checkLoaded() const
 				request(r);
 			}
 		}
+		for (const AITactic &tac : ai.brain.tactics)
+		{
+			if (tac.request)
+			{
+				request(tac.request);
+			}
+		}
 		// a shut-down AI (disabled: its player defeated, RW 0x6C7981, or without an army) gets no more object events (RW 0x6C7779 / 0x6C778A) and never
 		// runs its builders again (RW 0x6C79A1: the brain only), so its builder lists keep the ids of objects that died or changed owner since, as
 		// retail's do: ids the game issued. A running AI's are kept up to date by the events: live objects of its player
@@ -957,6 +1000,21 @@ void SkirmishAIManager::checkLoaded() const
 					throw XferException(what + "s " + std::to_string(tac.step) + " / " + std::to_string(tac.step2) + " are not PincerAttack's codes");
 				}
 				break;
+			case 8:
+				// lane AIEXPAND-1: SimpleExpansion's stages 0 .. 4 (RW 0x9B52BD); a running one has its request from stage 1 on (made with the move to 1, RW 0x9B51E9);
+				// an ended one has none (its end ran the cleanup RW 0x9B5042; it is dropped at the next update, RW 0x90BA94) whatever its stage; the request is plain
+				AIXfer::inRange(tac.step, 0, 4, what.c_str());
+				AIXfer::inRange(tac.step2, 0, 0, what.c_str());
+				if ((!tac.ended && tac.step > 0) != (tac.request != nullptr))
+				{
+					throw XferException("skirmish ai: a" + std::string(tac.ended ? "n ended" : "") + " SimpleExpansion at stage " + std::to_string(tac.step) +
+						(tac.request ? " with a request" : " without its request"));
+				}
+				if (tac.request && !tac.request->plain)
+				{
+					throw XferException("skirmish ai: a SimpleExpansion whose request is not a plain structure request");
+				}
+				break;
 			default:
 				AIXfer::inRange(tac.step, 0, 0, what.c_str());
 				AIXfer::inRange(tac.step2, 0, 0, what.c_str());
@@ -1007,10 +1065,12 @@ void SkirmishAIManager::xfer(Xfer &x)
 	// valid: this manager takes the loaded state (its hooks, its store and its diagnostic sink stay)
 	m_started = loaded.m_started;
 	m_attackedAtIds = loaded.m_attackedAtIds;
+	m_expansionHeuristicFrames = loaded.m_expansionHeuristicFrames;
 	m_assistTimers = std::move(loaded.m_assistTimers);
 	m_armyBreakerTimers = std::move(loaded.m_armyBreakerTimers);
 	m_groups = std::move(loaded.m_groups);
 	m_infoPlayers = std::move(loaded.m_infoPlayers);
+	m_captureFlags = std::move(loaded.m_captureFlags);
 	m_records = std::move(loaded.m_records);
 	m_farmSites = std::move(loaded.m_farmSites);
 	m_errors = std::move(loaded.m_errors);

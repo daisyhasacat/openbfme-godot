@@ -121,7 +121,7 @@ class ClientMessage
 public:
 	explicit ClientMessage(int type) : m_type(type) {}
 	int type() const { return m_type; }
-	bool isLogic() const { return m_type > MSG_BEGIN_NETWORK_MESSAGES && m_type < MSG_END_NETWORK_MESSAGES; }
+	bool isLogic() const { return IsNetworkLogicMessageType(m_type); } // lane CHEAT-1: + MSG_OPENBFME_CHEAT
 
 	void appendInteger(int v) { ClientArg a; a.kind = ClientArgKind::Integer; a.integer = v; m_args.push_back(a); }
 	void appendReal(float v) { ClientArg a; a.kind = ClientArgKind::Real; a.real = v; m_args.push_back(a); }

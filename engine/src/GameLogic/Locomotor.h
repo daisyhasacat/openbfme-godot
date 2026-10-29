@@ -532,8 +532,10 @@ public:
 	void moveTowardsPositionHover(LocomotorHost &host, const Coord3D &goal, float onPathDistToGoal, float desiredSpeed);  // RW 0x5E742E (lane SHIP-1)
 	void moveTowardsPositionShip(LocomotorHost &host, const Coord3D &goal, float onPathDistToGoal, float desiredSpeed);   // RW 0x5E613F (lane SHIP-1)
 	void moveForward(LocomotorHost &host, const Coord3D &goal, float onPathDistToGoal, float desiredSpeed);              // RW 0x5E586F
-	// RW 0x5E4F44 (ground branch): turns the working matrix by at most `maxTurnRate` radians towards `goal`.
+	// RW 0x5E4F44: turns the working matrix by at most `maxTurnRate` radians towards `goal`.
 	void rotateTowardsPosition(LocomotorHost &host, const Coord3D &goal, float maxTurnRate, float *outRelAngle);
+	// RW 0x5E4FD0 .. 0x5E5413 (lane TAKEOVER-1): its GIANT_BIRD branch (the transform turned about the pivot); false: nothing to turn
+	bool rotateGiantBird(LocomotorHost &host, const Coord3D &goal, float maxTurnRate, float *outRelAngle);
 	// RW 0x5E60C7: copy the object's transform into the working matrix, then rotateTowardsPosition with this
 	// locomotor's turn rate.
 	void rotateTowardsWrapper(LocomotorHost &host, const Coord3D &goal, float *outRelAngle);
@@ -587,10 +589,12 @@ public:
 	// Acceptance-stop lines raised by the moves made so far (S-081, S-084); empty when none applied.
 	const std::vector<std::string> &unverified() const { return m_unverified; }
 	// The stops this component can raise at all (tests pin the exact text).
-	static std::vector<std::string> allStops();
+	static const std::vector<std::string> &allStops();
 
 private:
 	void noteStop(const char *line);
+	// allStops()[index], noted once: the movers raise these on every move, so the text is compared only the first time (a bit per index)
+	void noteStopOf(unsigned index);
 
 	const LocomotorTemplate *m_template;
 	float m_lookAheadMult = 1.0f;       // +0x20
@@ -622,4 +626,5 @@ private:
 	float m_preferredHeightDamping = 1.0f;
 	int m_attackHeightState = 0;
 	std::vector<std::string> m_unverified;
+	unsigned m_notedStopBits = 0; // noteStopOf: the allStops() indices already in m_unverified
 };

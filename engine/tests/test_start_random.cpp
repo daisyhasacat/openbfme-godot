@@ -1,3 +1,4 @@
+#include "GameLogic/Combat/CombatQueries.h"
 // OpenBFME tests: the start of a skirmish in the logic (lane START-1): the resolution of the lobby's random choices in retail's order, the sides and players built from
 // a resolved GameInfo, and the starting units' placement arithmetic.  Synthetic data written here; the golden vectors of the resolution come from an INDEPENDENT model
 // (tools/start/model.py, the generator and the algorithm written separately from the C++ out of the RotWK disassembly notes), the unit offsets likewise.  The retail
@@ -613,10 +614,11 @@ TEST_CASE("starting base: zero-offset units search around the base or rally inst
 		REQUIRE(result.placed.size() == (building ? 2 : 1));
 		const auto &placed = result.placed.back();
 		CHECK(placed.templateName == "StartMarker");
-		const float x = explicitRally ? 600.0f : 300.0f;
-		const float y = explicitRally ? 600.0f : (building ? 287.5f : 300.0f);
+		// Native starting units search around the base, independently of its rally waypoint.
+		const float x = 300.0f;
+		const float y = 300.0f;
 		const double distance = std::hypot(placed.position.x - x, placed.position.y - y);
-		const double radius = castle ? 80.0 : (building ? 20.0 : 50.0);
+		const double radius = castle ? 80.0 : (building ? CombatQueries::boundingCircleRadius(*w.byId(result.placed.front().id)) : 50.0);
 		CHECK(distance >= radius - 0.001); // tolerance: float32 trig and stored coordinates on the search ring
 		CHECK(distance <= radius * 1.4 + 0.001); // tolerance: float32 ring placement within the retail search bounds
 		return std::array<float,3>{placed.position.x, placed.position.y, placed.position.z};
@@ -700,7 +702,7 @@ TEST_CASE("local sixteen: sixteen slots resolve unique starts among thirty-two w
  Store st;
  MapCacheEntry map=evendim();map.numPlayers=32;map.startPositions.clear();
  for(int i=0;i<32;++i) map.startPositions[i+1]=Coord3D{float(i%8)*1000,float(i/8)*1000,0};
- SkirmishGameInfo info;CHECK(info.slotCount()==8);info.slots.resize(MAX_LOCAL_SLOTS);
+ SkirmishGameInfo info;CHECK(info.slotCount()==8);info.slots.resize(MAX_LOCAL_SLOTS);info.mapStartCount=MAX_LOCAL_SLOTS;
  for(int i=0;i<16;++i) {auto &s=info.slots[i];s.state=i==0?SLOT_PLAYER:SLOT_HARD_AI;s.startPos=-1;s.color=-1;s.playerTemplate=4;s.teamNumber=i/4;}
  SkirmishResolveInput input;input.templates=&st.store;input.numColors=16;input.map=&map;
  GameLogicRandom rng(RandomAlgorithm::ZH_CarryChain);rng.initGameLogicRandom(4811,-1);

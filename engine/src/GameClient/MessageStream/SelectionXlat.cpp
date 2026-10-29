@@ -557,9 +557,11 @@ MessageDisposition SelectionTranslator::translate(const ClientMessage &msg)
 			}
 			if (isClick)
 			{
-				const CommandButton *pending = m_ctx.ui.getGUICommand();
-                const bool attackMoveOrder = pending && pending->m_command == GUI_COMMAND_ATTACK_MOVE && m_commands.useAlternateMouse();
-				if (pending && !attackMoveOrder)
+				// BFME2 SelectionTranslator::translateGameMessage (0x0043003C, SelectionXlatTranslateGameMessage.cpp, matched), the right button up:
+				// a waiting ATTACK_MOVE (type 10) is not cancelled here (GUICommandTranslator's click roles own it, 0x004314B1) and takes the
+				// no-command branch: the standard mouse setup deselects
+				const CommandButton *command = m_ctx.ui.getGUICommand();
+				if (command && command->m_command != GUI_COMMAND_ATTACK_MOVE)
 				{
 					// cancel the GUI command mode without deselecting
 					m_ctx.ui.setGUICommand(nullptr);

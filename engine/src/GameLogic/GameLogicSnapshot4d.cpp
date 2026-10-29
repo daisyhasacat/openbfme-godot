@@ -79,6 +79,11 @@ void GameLogic::registerSave4dBlocks(GameState &gs)
 	add("obfme:TerrainTrees", saveLoad, [this](Xfer &x) { m_trees->xfer(x); }, nullptr, "terrain trees");
 	add("obfme:LargeGroupAudio", saveLoad, [this](Xfer &x) { m_largeGroupAudio.xfer(x); }, nullptr, "large group audio");
 	add("obfme:Taint", saveLoad, [this](Xfer &x) { m_taint->xfer(x); }, nullptr, "taint");
+	// lane CAMPUI-1: retail's own blocks and layouts (MissionObjectiveTracker.h), list 0 only: retail's CRC xfer skips both and no hash section holds them
+	gs.addOwnedSnapshotBlock("CHUNK_ObjectivesMenu", std::make_unique<Save4dSnapshot>(gs, [this](Xfer &x) { m_missionObjectives.xferMenu(x); }, nullptr),
+		saveLoad, "CAMPUI-1", {});
+	gs.addOwnedSnapshotBlock("CHUNK_MissionObjectives", std::make_unique<Save4dSnapshot>(gs, [this](Xfer &x) { m_missionObjectives.xfer(x); }, nullptr),
+		saveLoad, "CAMPUI-1", {});
 }
 
 std::vector<std::string> GameLogic::save4dStopLines()

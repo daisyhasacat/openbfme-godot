@@ -250,17 +250,18 @@ func enter_mission(rep: Dictionary) -> void:
 	_cine.hud_mode = true
 	_cine.dev_overlay = game._dev_overlay # lane CAMP-2: no developer text in the real game
 	_cine.control_bar_hook = Callable(game, "_set_control_bar_hidden") # lane CAMP-2: the letterbox hides the Palantir as retail's (RW 0x7BC8B7)
-	_cine.notification_hook = func(request: Dictionary):
-		var result: Dictionary = game._shell.script_notification(request.params[0].string, request.params[1].string, request.params[2].int)
-		if not result.ok: game._fail("Native notification: " + str(result.get("error", result)))
 	_cine.objectives_hook = Callable(game, "_objectives_view")
 	_cine.objectives_close_hook = Callable(game, "_close_objectives")
 	_cine.input_hook = Callable(game, "_script_input") # lane OWNERFIX-1: no selection or orders during the cutscenes (RW 0x7BC586)
+	_cine.hud = game._hud     # lane CAMPUI-1: the script's camera moves drive the HUD's TacticalCamera (retail's single view)
+	_cine.shell = game._shell # lane CAMPUI-1: the caption's font (shell_font)
+	_cine.objectives_open = func() -> int: return 2 if game._shell.shell_stack().has("Objectives.apt") else 0 # lane CAMPUI-1 (RW 0x69BFAE)
 	game.add_child(_cine)
 	game._game_nodes.append(_cine)
-	_cine.camera_hud = game._hud
-	var camera_start: Vector3 = rep.start.camera_start # Godot axes -> SAGE axes expected by campaign_cine
-	_cine.setup(world, game._camera, Vector3(camera_start.x, -camera_start.z, camera_start.y), _cine, null) # its overlay goes with it
+	# lane CAMPUI-1: rep.start.camera_start is in Godot axes (GodotGameWorldCampaign: (x, z, -y)); the presentation's target is SAGE (x, y, z): the start
+	# handed over unconverted aimed the intro 179 units off its InitialCameraPosition (MAP ANG Angmar: at the rocks, not the Witch-king and Morgomir)
+	var c: Vector3 = rep.start.camera_start
+	_cine.setup(world, game._camera, Vector3(c.x, -c.z, c.y), _cine, game._audio) # its overlay goes with it; the audio: the caption's typing click
 	_cine.movie_hook = Callable(self, "_on_movie_request") # lane CAMP-1H: PLAY_MOVIE_IN_GAME
 
 

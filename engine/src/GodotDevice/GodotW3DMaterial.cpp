@@ -57,6 +57,25 @@ Error decodeTexture(const Ref<Image> &image, const PackedByteArray &buffer, bool
 	return dds ? image->load_dds_from_buffer(buffer) : image->load_tga_from_buffer(buffer);
 }
 
+// lane SDK-0: an asset pack's texture is decoded by its bytes (a modder may save a PNG for a retail .tga name)
+Error decodePackTexture(const Ref<Image> &image, const PackedByteArray &buffer)
+{
+	static const unsigned char png[] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+	if (buffer.size() >= 4 && std::memcmp(buffer.ptr(), "DDS ", 4) == 0)
+	{
+		return image->load_dds_from_buffer(buffer);
+	}
+	if (buffer.size() >= 8 && std::memcmp(buffer.ptr(), png, sizeof(png)) == 0)
+	{
+		return image->load_png_from_buffer(buffer);
+	}
+	if (buffer.size() >= 3 && buffer[0] == 0xff && buffer[1] == 0xd8 && buffer[2] == 0xff)
+	{
+		return image->load_jpg_from_buffer(buffer);
+	}
+	return image->load_tga_from_buffer(buffer);
+}
+
 String toGodot(const std::string &s)
 {
 	return String::utf8(s.c_str(), (int64_t)s.size());
@@ -69,6 +88,35 @@ W3DSamplerPolicy samplerPolicy()
 }
 
 } // namespace
+
+Ref<Image> Load_Asset_Pack_Image(const AssetPacks *packs, const std::string &name, std::string &error)
+{
+	const AssetPackFile *pf = packs ? packs->texture(name) : nullptr;
+	if (!pf)
+	{
+		return Ref<Image>();
+	}
+	std::vector<std::uint8_t> bytes;
+	if (!AssetPacks::read(*pf, bytes, &error))
+	{
+		return Ref<Image>();
+	}
+	PackedByteArray buffer;
+	buffer.resize((int64_t)bytes.size());
+	if (!bytes.empty())
+	{
+		std::memcpy(buffer.ptrw(), bytes.data(), bytes.size());
+	}
+	Ref<Image> image;
+	image.instantiate();
+	if (decodePackTexture(image, buffer) != OK || image->is_empty())
+	{
+		error = "asset pack " + pf->pack + ": could not decode " + pf->relative + " (the replacement of texture " + name + ")";
+		return Ref<Image>();
+	}
+	image->set_meta("retail_path", toGodot("asset pack " + pf->pack + ": " + pf->relative));
+	return image;
+}
 
 namespace
 {
@@ -150,6 +198,9 @@ void W3D_Ensure_Light_Globals()
 	rs->global_shader_parameter_add(StringName("w3d_fog_shift"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 0.0f);
 	// lane VISUAL-2: the fogged light fraction (RW 0x46DFD0: GameData FogAlpha / ClearAlpha), set by the map's game
 	rs->global_shader_parameter_add(StringName("w3d_fogged_frac"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 1.0f);
+	// lane OCCLUDE-1: the behind-building colours and their switch (W3D_Set_Occlusion), off until a game sets them
+	rs->global_shader_parameter_add(StringName("w3d_occl_on"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 0.0f);
+	rs->global_shader_parameter_add(StringName("w3d_occl_colors"), RenderingServer::GLOBAL_VAR_TYPE_SAMPLER2D, Variant());
 	// lane VISUAL-2: the vegetation SwayOffsets 1 .. 10 (W3DVegetationSway, RW 0x4E61EE; W3D axes), zero until a map's trees sway
 	for (int i = 1; i <= 10; ++i)
 	{
@@ -182,6 +233,16 @@ void W3D_Set_Fogged_Light_Frac(float frac)
 	if (RenderingServer *rs = RenderingServer::get_singleton())
 	{
 		rs->global_shader_parameter_set(StringName("w3d_fogged_frac"), frac);
+	}
+}
+
+void W3D_Set_Occlusion(bool on, const Ref<Texture2D> &colors)
+{
+	W3D_Ensure_Light_Globals();
+	if (RenderingServer *rs = RenderingServer::get_singleton())
+	{
+		rs->global_shader_parameter_set(StringName("w3d_occl_on"), on ? 1.0f : 0.0f);
+		rs->global_shader_parameter_set(StringName("w3d_occl_colors"), colors);
 	}
 }
 
@@ -418,6 +479,38 @@ void W3DMaterialFactory::Set_Texture_Override(const std::string &name, const Ref
 Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing, int alphaCoverage, std::vector<std::string> *notes)
 {
 	found = false;
+	if (Packs)
+	{
+		if (const AssetPackFile *pf = Packs->texture(name))
+		{
+			const int reduction = g_textureReduction;
+			const std::string cacheKey = "pack:" + pf->diskPath + "#coverage" + std::to_string(alphaCoverage) + (reduction > 0 ? "#reduction" + std::to_string(reduction) : std::string());
+			auto cached = Textures.find(cacheKey);
+			if (cached != Textures.end())
+			{
+				found = true;
+				return cached->second;
+			}
+			std::string error;
+			Ref<Image> image = Load_Asset_Pack_Image(Packs, name, error);
+			if (image.is_null())
+			{
+				errors.push_back("texture " + name + ": " + error);
+				TextureErrors.push_back(errors.back());
+				return Ref<Texture2D>();
+			}
+			if (!image->has_mipmaps() && !image->is_compressed())
+			{
+				image->generate_mipmaps();
+			}
+			preserveAlphaCoverage(image, alphaCoverage);
+			Reduce_Image(image, reduction);
+			Ref<ImageTexture> tex = ImageTexture::create_from_image(image);
+			Textures[cacheKey] = tex;
+			found = true;
+			return tex;
+		}
+	}
 	TextureResolution res = Resolve_Packed_W3D_Texture(name, [&](const std::string &p) { return Fs.doesFileExist(p); }, isBfme1Data(Fs)); // community PR #36: the archives' layout
 	if (!res.Found)
 	{

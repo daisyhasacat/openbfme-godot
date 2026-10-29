@@ -15,6 +15,7 @@
 #include "GameLogic/Object/Object.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace
 {
@@ -24,6 +25,11 @@ const GameMessageArgument *arg(const GameMessage &m, size_t i, GameMessageArgume
 {
 	const GameMessageArgument *a = m.getArgument(i);
 	return a && a->type == type ? a : nullptr;
+}
+
+bool finiteLocation(const Coord3D &p)
+{
+	return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
 }
 }
 
@@ -41,7 +47,8 @@ void AICommands::registerHandlers(GameLogicDispatch &d)
 	d.registerHandler(MSG_DO_STOP, kLane, [this](GameLogic &l, const GameMessage &m) { return stop(l, m); });
 	d.registerHandler(MSG_DO_ROTATE_FIRINGARC, kLane, [this](GameLogic &logic, const GameMessage &m) {
 		const auto *target=arg(m,0,ARGUMENTDATATYPE_LOCATION);
-		if(!target || !validPlayer(logic,m)) {++m_stats.rejected;return false;}
+		// PR #88 review fix 5: a non-finite target from a malformed peer message is rejected (a NaN facing breaks the locomotor goal)
+		if(!target || !validPlayer(logic,m) || !finiteLocation(target->location)) {++m_stats.rejected;return false;}
 		for(auto id:selection(logic,m.getPlayerIndex()))if(auto *object=logic.findObjectByID(id)) {
 			const float dx=SimMath::subf32(target->location.x,object->getPosition()->x),dy=SimMath::subf32(target->location.y,object->getPosition()->y);
 			if(SimMath::addf32(SimMath::mulf32(dx,dx),SimMath::mulf32(dy,dy))<1)continue;
@@ -217,9 +224,15 @@ bool AICommands::formationMove(GameLogic &logic, const GameMessage &m)
 	const auto *type=arg(m,2,ARGUMENTDATATYPE_INTEGER);
 	const auto *attack=arg(m,3,ARGUMENTDATATYPE_BOOLEAN);
 	const auto *world=RetailObjectWorld::currentContext();
-	if (!type || !attack || (!world && !m_formations)) { ++m_stats.rejected; return false; }
+	// PR #88 review fix 5: a NaN / infinite angle or location from a malformed peer message is rejected; it reached the per-slot moves and
+	// crashed (or, on the old whole-group path, hung) the simulation. The angle must also lie in [-2 pi, 2 pi] (the client sends an atan2
+	// result): a huge finite facing (1e20) never leaves the final-turn wrap loop (AIMove, RW 0x748E46), whose 2 pi steps vanish at that magnitude
+	const float twoPi = 6.2831855f;
+	if (!type || !attack || (!world && !m_formations) || !finiteLocation(dest->location) || !(angle->real >= -twoPi && angle->real <= twoPi)) { ++m_stats.rejected; return false; }
 	const auto ids=selection(logic,m.getPlayerIndex());
-	const auto &assistant=world?world->formations():*m_formations;
+	// An assistant set explicitly (setFormationAssistant: the unit tests' synthetic worlds) wins over the registered world's, so a retail
+	// world left registered by another test cannot replace it; the game sets none and uses the world's FormationAssistant.ini
+	const auto &assistant=m_formations?*m_formations:world->formations();
 	const auto slots=assistant.layout(logic,ids,type->integer,dest->location);
 	if(slots.empty()){++m_stats.rejected;return false;}
 	const float c=SimMath::cosDet(SimMath::addf32(angle->real,1.5707964f)),s=SimMath::sinDet(SimMath::addf32(angle->real,1.5707964f));
@@ -233,6 +246,8 @@ bool AICommands::formationMove(GameLogic &logic, const GameMessage &m)
 		 position.y=SimMath::subf32(position.y,SimMath::addf32(SimMath::mulf32(center.x,facingSin),SimMath::mulf32(center.y,facingCos)));
 		}
 		position.z=logic.getGroundHeight(position.x,position.y);
+		// PR #88 review fix 4, issue #100: with the attack flag set, groupMoveToPosition arms each member's attack-move toward the slot goal its oriented
+		// move installed (RW 0x94E72B -> RW 0x770CA5), and only when that move was accepted; a refused member keeps its earlier intent
 		AIGroup group(logic,{slot.object});group.groupMoveToPosition(position,false,CMD_FROM_PLAYER,true,angle->real,attack->boolean);
 	}
 	++m_stats.formationMoves;

@@ -7,9 +7,12 @@
 #include "Common/Team.h"
 #include "Common/Thing/ThingFactory.h"
 #include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/Combat/CombatQueries.h"
 #include "GameLogic/Construction.h"
 #include "GameLogic/BitFlags.h"
 #include "GameLogic/ObjectTemplateInfo.h"
+#include "GameLogic/FindPositionAround.h"
+#include "GameLogic/Module/CastleModules.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Combat/CombatQueries.h"
 #include "GameLogic/FindPositionAround.h"
@@ -226,19 +229,37 @@ void StartingBase::placeForPlayer(GameLogic &logic, int slotNum, const SkirmishG
 				continue;
 		}
 		const Coord3D &off = pt.m_startingUnitOffset[i];
+		const Coord3D base = conYard ? *conYard->getPosition() : wp->location;
 		Coord3D unitPos;
-		if (off.x == 0.0f && off.y == 0.0f && off.z == 0.0f)
+		if (off.x == 0.0f && off.y == 0.0f && off.z == 0.0f) // RW 0x62B0F9: Coord3D::operator== against (0, 0, 0)
 		{
-			// RW 0x62B074..0x62B11F: flags/pointers zero, random angle,
-			// min radius R, max radius R*1.4, max Z delta 1e10. No spot: skip this unit.
+			// lane MODS-3 (Edain's StartingUnit5 FreeBuildPorterEgg): RW 0x62B074 .. 0x62B111: findPositionAround(the base point (the zero offset adds
+			// nothing), flags 0, minRadius r, maxRadius r * 1.4 (RW 0xBDBC98, mulss), the random start angle (RW 0xBFD290), maxZDelta RW 0xBF7328,
+			// no objects); r is 50 (RW 0xBD88C4), the structure's bounding circle radius (Object + 0xB8, RW 0x62AD57) when one was placed, its
+			// CastleBehavior's MaxCastleRadius (RW 0x797ED7) when it has one. No position found: the unit is not made (RW 0x62B11F)
+			float r = 50.0f;
+			if (conYard)
+			{
+				r = CombatQueries::boundingCircleRadius(*conYard); // Object + 0xB8
+				if (const CastleBehavior *castle = dynamic_cast<const CastleBehavior *>(conYard->findModule("CastleBehavior")))
+				{
+					r = castle->data()->m_maxCastleRadius;
+				}
+			}
 			FindPositionOptions options;
-			options.minRadius = spawnRadius;
-			options.maxRadius = SimMath::mulf32(spawnRadius, 1.4f);
-			if (!FindPosition::findPositionAround(logic, rally, options, unitPos)) continue;
+			options.flags = FPF_NONE;
+			options.minRadius = r;
+			options.maxRadius = SimMath::mulf32(r, 1.4f);
+			options.startAngle = RANDOM_START_ANGLE;
+			Coord3D found = base;
+			if (!FindPosition::findPositionAround(logic, base, options, found))
+			{
+				continue;
+			}
+			unitPos = found;
 		}
 		else
 		{
-			const Coord3D base = conYard ? *conYard->getPosition() : wp->location;
 			unitPos = unitPositionFromOffset(base, off);
 		}
 		if (Object *unit = placeObjectAtPosition(logic, player, name, unitPos, result))

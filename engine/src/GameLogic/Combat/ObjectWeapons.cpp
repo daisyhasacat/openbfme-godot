@@ -29,6 +29,7 @@
 #include "GameLogic/Weapon.h"
 #include "GameLogic/WeaponNugget.h"
 #include "GameLogic/WeaponSet.h"
+#include "GameLogic/Module/SiegeModules.h"
 
 #include <cstring>
 #include <stdexcept>
@@ -162,8 +163,9 @@ private:
 
 const char *meleeReachStopLine()
 {
-	return "[S-3806] melee reach (RW 0x6ED843, lane PLAY-4): the footprint test of a unit target is ported; a SIEGE_TOWER target outside the boxes takes RW's ramp branch "
-		   "(RW 0x6EDB6F .. 0x6EDC74: the tower's ramp point and the unit's radius), not ported (false); structure obstacle rings are ported, but wall-top / bridge-layer exceptions are not";
+	return "[S-3806] melee reach (RW 0x6ED843, lane PLAY-4): the footprint test of a unit target is ported; a SIEGE_TOWER target outside the boxes takes RW's top branch "
+		   "(RW 0x6EDB6F .. 0x6EDC74, lane SIEGE-1: a deployed tower's portal top attack point within 20 in height and the radii in x and y; the portal is WALL-2's, "
+		   "S-4940; INFERENCE: the attacker's Object + 0xB8 is its bounding circle radius); a STRUCTURE target keeps the edge distance (S-320)";
 }
 
 class ObjectWeapons::RangeHost : public WeaponRangeHost
@@ -204,8 +206,8 @@ public:
 	//   * a STRUCTURE target (RW 0x6ED8D5): rings around the unit footprint find the target obstacle id (RW 0x6ED937 .. 0x6EDA52).
 	//     The WALK_ON_TOP_OF_WALL / bridge-layer tail remains unported (S-3806).
 	//   * any other target (lane PLAY-4 r1): the footprint boxes (Pathfinder::meleeReachCells, RW 0x6EDB0C .. 0x6EDB69); a CAN_CLIMB_WALLS target on a wall
-	//     (RW 0x6EDAD4 -> 0x696057) cannot occur (only the ground layer exists, S-161); a SIEGE_TOWER target outside the boxes takes the ramp branch
-	//     (RW 0x6EDB6F .. 0x6EDC74), not ported (stop S-3806: false).
+	//     (RW 0x6EDAD4 -> 0x696057) is not ported (wall climbing is S-084: no unit climbs); a SIEGE_TOWER target outside the boxes takes the top branch
+	//     (RW 0x6EDB6F .. 0x6EDC74, lane SIEGE-1: siegeTowerTopReach; stop S-3806 for its inference).
 	bool meleeReach(const RangeSubject &source, const Coord3D &sourcePos, const RangeSubject &victim) override
 	{
 		if (!victim.object)
@@ -245,11 +247,15 @@ public:
 		static const int siegeTower = CombatNames::kindOf("SIEGE_TOWER");
 		if (victim.object->isKindOf((unsigned)siegeTower))
 		{
+			// lane SIEGE-1: RW 0x6EDB6F .. 0x6EDC74, a deployed ladder / tower is reached at its portal's top attack point (GameLogic/Module/SiegeModules.h).
+			// INFERENCE (S-3806): the attacker's Object + 0xB8 is its bounding circle radius
 			self.logic().noteStop(meleeReachStopLine());
+			return siegeTowerTopReach(*const_cast<Object *>(victim.object), sourcePos, source.boundingCircleRadius);
 		}
 		return false;
 	}
-	float meleeRunDownLimit() override { return 0.0f; }
+	// lane AIDATA-1: RW 0x6CC07C reads [TheAI + 0x18] + 0xD0, AIData ChaseFromBehindLimit (retail aidata.ini 50.0; the constructor's 50.0 RW 0xBD88C4)
+	float meleeRunDownLimit() override { return m_w.owner().logic().settings().chaseFromBehindLimit; }
 	bool victimFlag11A_40() override { return false; }
 	int layerOf(bool) override { return 0; }
 	bool victimLayerException() override { return false; }
@@ -320,6 +326,23 @@ void ObjectWeapons::fireExtraWeapon(Weapon &w, Object &victim)
 	args.target.hasVictim = true;
 	args.target.victimID = victim.getID();
 	args.target.victimPosition = *victim.getPosition();
+	ObjectWeaponDelivery delivery(*m_owner, *this, *w.getTemplate(), w);
+	w.privateFireWeapon(host(), delivery, args);
+}
+
+// lane MODS-3: RW 0x6CF3AE -> privateFireWeapon RW 0x6CEF6D (source, source position, victim, victim id, no position, 1, 1, 0, 0)
+void ObjectWeapons::fireExtraWeaponDetonationAt(Weapon &w, Object &victim)
+{
+	if (!w.getTemplate())
+	{
+		return;
+	}
+	Weapon::FireArgs args;
+	args.target.hasVictim = true;
+	args.target.victimID = victim.getID();
+	args.target.victimPosition = *victim.getPosition();
+	args.ignoreRanges = true;           // argument 6
+	args.isProjectileDetonation = true; // argument 7
 	ObjectWeaponDelivery delivery(*m_owner, *this, *w.getTemplate(), w);
 	w.privateFireWeapon(host(), delivery, args);
 }
@@ -1353,6 +1376,25 @@ float ObjectWeapons::attackDistance(const Object &victim) const
 	const RangeSubject src = subjectOf(*m_owner);
 	const RangeSubject vic = subjectOf(victim);
 	return WeaponGetAttackDistance(*w->getTemplate(), bonus, *self->m_rangeHost, src, &vic, nullptr);
+}
+
+float ObjectWeapons::attackDistanceTo(const Object *victim, const Coord3D *position) const
+{
+	const Weapon *w = weaponInSlot(m_curSlot);
+	if (!w || !w->getTemplate())
+	{
+		return 0.0f;
+	}
+	ObjectWeapons *self = const_cast<ObjectWeapons *>(this);
+	WeaponBonus bonus;
+	w->computeBonus(*self->m_host, 0, bonus);
+	const RangeSubject src = subjectOf(*m_owner);
+	if (victim)
+	{
+		const RangeSubject vic = subjectOf(*victim);
+		return WeaponGetAttackDistance(*w->getTemplate(), bonus, *self->m_rangeHost, src, &vic, nullptr);
+	}
+	return WeaponGetAttackDistance(*w->getTemplate(), bonus, *self->m_rangeHost, src, nullptr, position);
 }
 
 float ObjectWeapons::currentAttackRange() const

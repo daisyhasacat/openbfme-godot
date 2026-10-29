@@ -16,6 +16,7 @@
 #include "GameClient/ClientEvents.h"
 #include "GameClient/AnimationSoundClientBehavior.h"
 #include "GameClient/Drawable.h"
+#include "GameClient/EvaDamage.h"
 #include "GameClient/LogicSnapshot.h"
 #include "GameClient/MapObjectDrawables.h"
 #include "GameLogic/GameLogic.h"
@@ -51,6 +52,7 @@ public:
 		if (handler) m_heroFlashHandlers[owner] = std::move(handler);
 		else m_heroFlashHandlers.erase(owner);
 	}
+	const EvaDamage::Stats &evaDamageStats() const { return m_evaDamage; }
 	size_t eventsApplied() const { return m_eventsApplied; }
 
 	Drawable *find(DrawableID id) const { return id >= 1 && id < m_slots.size() ? m_slots[id].get() : nullptr; }
@@ -147,6 +149,7 @@ private:
 	std::map<ObjectID, DrawableID> m_byObject;
 	std::map<const void *, std::function<void(ObjectID)>> m_heroAttackedHandlers;
 	std::map<const void *, std::function<void(const std::string &, int)>> m_heroFlashHandlers;
+	EvaDamage::Stats m_evaDamage;
 	size_t m_dependencyUpdates = 0; ///< lane COMBAT-4: dependent drawables whose shared flags changed (RW 0x4BF2D8)
 	std::uint32_t m_nextSeq = 0;
 	size_t m_eventsApplied = 0;

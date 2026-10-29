@@ -318,26 +318,41 @@ TEST_CASE("save4b retail T4: a real 4-player skirmish's snapshot is written (SAV
 	// Lane AI5 (the AIs buy their structures' and units' upgrades and fortress expansions, and save money for heroes): those three classes are back
 	// Merge queue q22 (SUMMON-1 + FX-4 + AI5 + NUGGET-1, measured on the merged tree on srv1): SUMMON-1's OCL draws and AI5's purchases together move the
 	// AIs' game again: at frame 1,500 it has no AutoHealBehavior object
+	// AIs' play changed since 0a18ec56, so this game at frame 1,500 had no CommandButtonHuntUpdate, AutoHealBehavior or RepairSpecialPower object; lane
+	// TARGET-1 (retail's target search and mood-scan cadence) changes the fights, and the game at frame 1,500 holds those three again
+	// Lane ATTACKPATH-1 (the AIs' fights move with RotWK's attack paths and the towards-goal corridor term): at frame 1,500 the game now has AutoHealBehavior
+	// and CommandButtonHuntUpdate objects and no cavalry horde (HorseHordeContain) or horde crush warning (HordeNotifyTargetsOfImminentProbableCrushingUpdate)
+	// Merge queue q23 (TARGET-1 + ATTACKPATH-1 + FLANK-1 + PRODUCTION1 + LUMBER1 on q22's tree, measured once): the inventory is q22's again (no AutoHealBehavior)
+	// Lane OFFMAP-1 (RotWK's idle state RW 0x745A64 does not snap the start units onto cell centres as ZH's did at frame <= 1): the AIs' play moved
+	// again, and AutoHealBehavior and RepairSpecialPower are back (112 classes, measured)
+	// Merge queue q26 (community #73 / #74, BANNER-1, SIEGE-1 and the rest, measured once on the merged tree): a CommandButtonHuntUpdate object again (113)
+	// Merge queue q27 (LOS-1's terrain line of sight, measured at each merge point): no CommandButtonHuntUpdate object; a crush warning
+	// (NotifyTargetsOfImminentProbableCrushingUpdate), a respawning hero (RespawnBody / RespawnUpdate) and a mount toggle (ToggleMountedSpecialAbilityUpdate)
+	// instead (116)
+	// Merge queue q28 (#117's fortress module in the update schedule, #124 and the archive's plain batch; measured once on the merged tree and at each merge
+	// point): now also CommandButtonHuntUpdate; no HordeDispatchSpecialPower, NotifyTargetsOfImminentProbableCrushingUpdate, RespawnBody, RespawnUpdate, ToggleMountedSpecialAbilityUpdate object (112)
+	// Merge queue q29 (measured once on the merged tree and at each merge point; the frame-3000 census follows the AIs' play, which every simulation item of the
+	// batch moves: DEVPORT-SIM 111, PATHPRIO-1 110, community #113 113, IDLEMOTION-1 113, FBSIM-1 112): a HordeDispatchSpecialPower and a PillageModule
+	// object; no AutoHealBehavior or RepairSpecialPower object (112)
 	CHECK(classes == std::set<std::string>{
 		"AISpecialPowerUpdate", "ActiveBody", "ArmorUpgrade", "ArrowStormUpdate", "AttributeModifierAuraUpdate", "AttributeModifierPoolUpdate",
-		"AttributeModifierUpgrade", "AudioLoopUpgrade", "AutoAbilityBehavior", "AutoDepositUpdate", "AutoHealBehavior", "AutoPickUpUpdate",
-		"BannerCarrierUpdate", "BezierProjectileBehavior", "BloodthirstyUpdate", "BoredUpdate", "BuildableHeroListUpgrade", "BuildingBehavior",
-		"CastleBehavior", "CastleMemberBehavior", "CastleUpgrade", "CitadelSlaughterHordeContain", "ClickReactionBehavior", "CloudBreakSpecialPower",
-		"CommandButtonHuntUpdate", "CommandPointsUpgrade", "CommandSetUpgrade", "CostModifierUpgrade", "CreateObjectDie", "CritterEmitterUpdate",
-		"DamageFilteredCreateObjectDie", "DarknessSpecialPower", "DefectionHelper", "DelayedDeathBody", "DestroyDie", "DevastateSpecialPower",
-		"DoCommandUpgrade", "DualWeaponBehavior", "ElvenWoodSpecialPower", "EmotionTrackerUpdate", "FXListDie", "FiringTrackerHelper",
-		"FoundationAIUpdate", "FreezingRainSpecialPower", "GeometryUpgrade", "GettingBuiltBehavior", "GiveUpgradeUpdate", "GrabPassengerSpecialPower",
-		"GrantUpgradeCreate", "GuardingHelper", "HighlanderBody", "HitReactionBehavior", "HordeContain", "HordeDispatchSpecialPower", "HordeMemberCollide",
-		"HordeNotifyTargetsOfImminentProbableCrushingUpdate", "HorseHordeContain", "ImmortalBody", "InactiveBody", "InvisibilityUpdate", "KeepObjectDie",
-		"LargeGroupAudioUpdate", "LargeGroupBonusUpdate", "LevelUpUpgrade", "LifetimeUpdate", "ModelConditionUpgrade", "MonitorConditionUpdate",
-		"OCLSpecialPower", "ObjectCreationUpgrade", "PassiveAreaEffectBehavior", "PhysicsBehavior", "PickupStuffUpdate", "PlayerHealSpecialPower",
-		"PlayerUpgradeSpecialPower", "PorcupineFormationBodyModule", "ProductionSpeedBonus", "ProductionUpdate", "QueueProductionExitUpdate",
-		"RebuildHoleExposeDie", "RecoveryHelper", "RefundDie", "RepairSpecialPower", "SMCHelper", "ScavengerSpecialPower", "ShareExperienceBehavior",
-		"SiegeDeployHordeSpecialPower", "SlaughterHordeContain", "SlaveWatcherBehavior", "SlavedUpdate", "SlowDeathBehavior", "SpawnBehavior",
-		"SpawnPointProductionExitUpdate", "SpawnUnitBehavior", "SpecialAbilityUpdate", "SpecialPowerModule", "SpellRechargeModifierUpgrade",
-		"SquishCollide", "StancesBehavior", "StatusBitsUpgrade", "StealthDetectorUpdate", "StructureBody", "StructureCollapseUpdate", "SubObjectsUpgrade",
-		"TaintSpecialPower", "TemporarilyDefectUpdate", "TerrainResourceBehavior", "TransitionDamageFX", "TransportContain", "UnpauseSpecialPowerUpgrade",
-		"UntamedAllegianceSpecialPower", "WeaponFireSpecialAbilityUpdate", "WeaponSetUpgrade", "WeaponStatusHelper" });
+		"AttributeModifierUpgrade", "AudioLoopUpgrade", "AutoAbilityBehavior", "AutoDepositUpdate", "AutoPickUpUpdate", "BannerCarrierUpdate",
+		"BezierProjectileBehavior", "BloodthirstyUpdate", "BoredUpdate", "BuildableHeroListUpgrade", "BuildingBehavior", "CastleBehavior", "CastleMemberBehavior",
+		"CastleUpgrade", "CitadelSlaughterHordeContain", "ClickReactionBehavior", "CloudBreakSpecialPower", "CommandButtonHuntUpdate", "CommandPointsUpgrade",
+		"CommandSetUpgrade", "CostModifierUpgrade", "CreateObjectDie", "CritterEmitterUpdate", "DamageFilteredCreateObjectDie", "DarknessSpecialPower",
+		"DefectionHelper", "DelayedDeathBody", "DestroyDie", "DevastateSpecialPower", "DoCommandUpgrade", "DualWeaponBehavior", "ElvenWoodSpecialPower",
+		"EmotionTrackerUpdate", "FXListDie", "FiringTrackerHelper", "FoundationAIUpdate", "FreezingRainSpecialPower", "GeometryUpgrade", "GettingBuiltBehavior",
+		"GiveUpgradeUpdate", "GrabPassengerSpecialPower", "GrantUpgradeCreate", "GuardingHelper", "HighlanderBody", "HitReactionBehavior", "HordeContain",
+		"HordeDispatchSpecialPower", "HordeMemberCollide", "HordeNotifyTargetsOfImminentProbableCrushingUpdate", "HorseHordeContain", "ImmortalBody", "InactiveBody", "InvisibilityUpdate",
+		"KeepObjectDie", "LargeGroupAudioUpdate", "LargeGroupBonusUpdate", "LevelUpUpgrade", "LifetimeUpdate", "ModelConditionUpgrade", "MonitorConditionUpdate",
+		"OCLSpecialPower", "ObjectCreationUpgrade", "PassiveAreaEffectBehavior", "PhysicsBehavior", "PickupStuffUpdate", "PillageModule", "PlayerHealSpecialPower",
+		"PlayerUpgradeSpecialPower", "PorcupineFormationBodyModule", "ProductionSpeedBonus", "ProductionUpdate", "QueueProductionExitUpdate", "RebuildHoleExposeDie",
+		"RecoveryHelper", "RefundDie", "SMCHelper", "ScavengerSpecialPower", "ShareExperienceBehavior", "SiegeDeployHordeSpecialPower",
+		"SlaughterHordeContain", "SlaveWatcherBehavior", "SlavedUpdate", "SlowDeathBehavior", "SpawnBehavior", "SpawnPointProductionExitUpdate", "SpawnUnitBehavior",
+		"SpecialAbilityUpdate", "SpecialPowerModule", "SpellRechargeModifierUpgrade", "SquishCollide", "StancesBehavior", "StatusBitsUpgrade",
+		"StealthDetectorUpdate", "StructureBody", "StructureCollapseUpdate", "SubObjectsUpgrade", "TaintSpecialPower", "TemporarilyDefectUpdate",
+		"TerrainResourceBehavior", "TransitionDamageFX", "TransportContain", "UnpauseSpecialPowerUpgrade", "UntamedAllegianceSpecialPower",
+		"WeaponFireSpecialAbilityUpdate", "WeaponSetUpgrade", "WeaponStatusHelper" });
 	MESSAGE("AI update family classes left to SAVE-4c: " << aiList);
 	CHECK(aiClasses == std::set<std::string>{ "AIUpdateInterface", "AnimalAIUpdate", "DozerAIUpdate", "HordeAIUpdate" });
 }

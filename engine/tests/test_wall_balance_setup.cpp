@@ -116,7 +116,7 @@ TEST_CASE("wall balance setup: the game setup carries the rules (flag 0x200) and
 	NetByteWriter walled;
 	NetPacket::writeGameInfo(walled, g);
 	// without the rules: the bytes of the builds before (the rules only append, behind the flag)
-	REQUIRE(walled.data().size() == plain.data().size() + 4 + g.wallBalance.size()); // the u32 length and the line
+	REQUIRE(walled.data().size() == plain.data().size() + 18 + g.wallBalance.size()); // local tag, rule fields, string length and the line
 	{
 		SkirmishGameInfo back;
 		NetByteReader r(plain.data());

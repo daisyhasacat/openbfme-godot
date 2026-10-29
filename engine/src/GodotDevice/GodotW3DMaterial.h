@@ -22,6 +22,7 @@
 #include "GameClient/MapWeather.h"
 #include "GameEngineDevice/W3DDevice/GameClient/W3DObjectLighting.h"
 
+#include "GameClient/AssetPacks.h"
 #include "GameEngineDevice/W3DDevice/GameClient/HouseColor.h"
 #include "Libraries/WWVegas/WW3D2/mapper.h"
 #include "Libraries/WWVegas/WW3D2/meshrender.h"
@@ -71,6 +72,11 @@ struct W3DMaterialResult
 	std::vector<std::string> Errors;  // textures that did not load, etc.
 };
 
+// lane SDK-1 (GameClient/AssetPacks.h): the asset pack replacement of the texture `name` decoded by its own bytes (DDS, PNG, JPEG, else TGA),
+// or a null image when no pack replaces it. A pack file that cannot be read or decoded is a null image with `error` set ("asset pack P: F ...").
+// Shared by every texture loader of the render side (model surfaces, particles, decals, roads / rivers / water / sky): one precedence.
+Ref<Image> Load_Asset_Pack_Image(const AssetPacks *packs, const std::string &name, std::string &error);
+
 // Builds materials and caches shaders and textures. Textures are read through the mounted archives.
 class W3DMaterialFactory
 {
@@ -93,6 +99,9 @@ public:
 	void Set_Texture_Swaps(const std::vector<TextureSwap> &swaps) { TextureSwaps = swaps; }
 	// S-5017: keep BFME1 translucent floor markings visible under minification.
 	void Set_Floor_Sampling(bool enabled) { FloorSampling = enabled; }
+	// lane SDK-0 (GameClient/AssetPacks.h): cosmetic asset packs in front of the texture lookup; their files decode by their own bytes (DDS, PNG,
+	// JPEG, else TGA). nullptr (the default) = retail textures only. The packs must outlive the factory.
+	void Set_Asset_Packs(const AssetPacks *packs) { Packs = packs; }
 	// lane BUILD-5 r3: the surfaces this factory builds belong to a translucent drawable (W3DShaderKey::AlphaOverride); off by default
 	void Set_Alpha_Override(bool on) { AlphaOverride = on; }
 	// Separate shell world: do not overwrite the live game's global light/fog state.
@@ -130,6 +139,7 @@ private:
 
 	ArchiveFileSystem &Fs;
 	const HouseColorTable *HouseColors = nullptr;
+	const AssetPacks *Packs = nullptr; // lane SDK-0
 	HouseColorParams HouseParams;
 	std::vector<TextureSwap> TextureSwaps; // stop S-4832
 	bool AlphaOverride = false;
@@ -157,6 +167,9 @@ void W3D_Apply_Fog(bool enabled, const float color[3], float start, float end);
 void W3D_Set_Sway_Offsets(const float offsets[10][3]);
 // lane VISUAL-2: the fogged light fraction (RW 0x46DFD0: FogAlpha / ClearAlpha) a fogged instance's lights and ambient are scaled by
 void W3D_Set_Fogged_Light_Frac(float frac);
+// lane OCCLUDE-1: the behind-building colours (global w3d_occl_colors: a W3D_OCCLUSION_SLOTS x 1 RGBA8 texture, slot -> the colour, slot 0 unused) and
+// their switch (w3d_occl_on: GameData UseBehindBuildingMarker and TheGameLogic + 0x99); the caller owns the texture (GameWorld)
+void W3D_Set_Occlusion(bool on, const Ref<Texture2D> &colors);
 void W3D_Set_Fog_Shift(float shift);
 // The light of the model viewers that show no map (not retail data): ambient 0.3 (defaultw3d.fxo's own AmbientLightColor default),
 // one white light toward (-0.5, -0.5, 0.7) SAGE, for both sets.

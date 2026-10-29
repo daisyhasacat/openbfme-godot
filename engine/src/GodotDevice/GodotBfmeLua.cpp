@@ -543,7 +543,7 @@ std::string GameWorld::bfme_apply(const BfmeLuaRuntime::Mutation &m)
 		}
 		if (m.field == ":kill")
 		{
-			obj->kill(DEATH_NORMAL);
+			obj->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 			return {};
 		}
 		if (m.field == ":destroy")

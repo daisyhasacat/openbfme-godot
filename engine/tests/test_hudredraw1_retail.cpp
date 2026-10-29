@@ -135,7 +135,9 @@ TEST_CASE("hudredraw1 retail: 300 frames closed and open, the Palantir draws aga
 	MESSAGE("closed: Palantir level " << pal << ", " << closed.segments[pal] << " segments, " << closed.redrawn[pal] << " drawn again; levels " << closed.segments.size());
 	CHECK(closed.full == 0);
 	CHECK(closed.segments.size() == 1);
-	CHECK(closed.segments[pal] == 52);
+	// 29 (was 52 before lane DEVPORT-UI): the six empty arc slots hold no content (RW 0x92FF5C creates no controller for a slot without a
+	// command button), so their inert disabled contents are no longer drawn
+	CHECK(closed.segments[pal] == 29);
 	CHECK(closed.redrawn[pal] == 302);
 	CHECK(closed.paths[pal] == std::map<std::string, int>{ { button, 300 }, { resources, 2 } });
 	// open: as the Palantir's PlayerMagic button does (play1 drives the click: test_spell_book_hud.cpp), then the fade-in
@@ -148,7 +150,7 @@ TEST_CASE("hudredraw1 retail: 300 frames closed and open, the Palantir draws aga
 	std::map<std::string, int> activeArt; // the art of each `_active` power: its loop steps 293 of the 300 frames (the movie's 30 fps against 33 ms frames)
 	for (int i = 0; i < 12; ++i)
 	{
-		if (AptSpellStore::stateName(st->buttonState(i)) == "_active")
+		if (std::string(AptSpellStore::stateName(st->buttonState(i))) == "_active")
 		{
 			activeArt["_level" + std::to_string(store) + ".SpellStore.Buttons.Spell" + std::to_string(i + 1) + ".instance3.instance1.instance1"] = 293;
 		}
@@ -167,7 +169,7 @@ TEST_CASE("hudredraw1 retail: 300 frames closed and open, the Palantir draws aga
 	}
 	CHECK(open.full == 0);
 	CHECK(open.segments.size() == 2);
-	CHECK(open.segments[pal] == 52);
+	CHECK(open.segments[pal] == 29);
 	CHECK(open.redrawn[pal] == 302);
 	CHECK(open.paths[pal] == std::map<std::string, int>{ { button, 300 }, { resources, 2 } });
 	CHECK(open.segments[store] == 55);

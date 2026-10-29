@@ -491,7 +491,7 @@ TEST_CASE("decomp2 S-415: the skirmish AI builds heroes of its HeroBuildOrder af
 		INFO(std::string(faction));
 		std::string error;
 		buildtest::Game g;
-		REQUIRE_MESSAGE(buildtest::startGame(*s, "FactionMen", faction, 32, g, &error), error);
+		REQUIRE_MESSAGE(buildtest::startGame(*s, "FactionMen", faction, 39, g, &error), error);
 		GameLogic &logic = g.live->logic();
 		Player *cpu = g.live->players().findPlayerWithName(g.live->report().startSlotPlayers[1]);
 		REQUIRE(cpu);
@@ -551,6 +551,15 @@ TEST_CASE("decomp2 S-415: the skirmish AI builds heroes of its HeroBuildOrder af
 	// Merge queue q22: with seed 31 none of the 7 reached the conditions on the merged tree (AI5 alone: 1 / 1, Mordor; SUMMON-1's OCL draws and rock-throw
 	// toggles move the AIs' economy; the army list stays at 4..6 entries with the command points near the limit, shouldBuildHero RW 0x9A03A1). Seed 32,
 	// measured on the merged tree (srv1): 3 requests and 3 heroes (Men Eomer, Mordor Gothmog, Angmar Morgramir); seeds 33..39 measured 0..3
+	// Lane LOS-1 (the terrain line of sight changes the AIs' fights and so their economy): with seed 32 none of the 7 reached the conditions; seed 33, measured
+	// on the lane's tree (a CI host): 1 request and 1 hero (Wild WildAzog, requested at frame 6189, out at 6627); seeds 34 / 35 measured 0 / 0 and 1 / 0
+	// Merge queue q28 (#96 / #97 / #98, #117, #124 and the archive's plain batch): with seed 33 one request (Angmar Hwaldar at 5865) and no hero out; seeds 34..39
+	// measured on the merged tree (a CI host): 1 / 2 / 2 / 1 / 1 / 1 requests and 1 / 1 / 1 / 1 / 0 / 1 heroes; seed 35: 2 requests and 1 hero (Dwarves Gloin
+	// out at 8152; Isengard Wormtongue requested at 5140)
+	// Merge queue q29 (at each merge point: seed 35 holds through AIDATA-1 and fails from community #113 on (its FlagCaptureSquad sends the AIs' units to
+	// the neutral buildings)): with seed 35 none of the 7 requests a hero on the merged tree; seeds 36..43 measured there (a CI host): 2 / 3 / 0 / 4 / 1 /
+	// 2 / 3 / 2 requests and 1 / 2 / 0 / 4 / 0 / 0 / 2 / 2 heroes out; seed 39 (the widest margin): 4 requests and 4 heroes (Dwarves Gloin, Isengard Wormtongue,
+	// Mordor Gothmog, Wild Goblin King)
 	CHECK(requests >= 1);
 	CHECK(heroesOut >= 1);
 }

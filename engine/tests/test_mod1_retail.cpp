@@ -12,6 +12,7 @@
 #include "GameLogic/AI/AIWorld.h"
 #include "PathfindTestUtil.h"
 
+#include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/StateHash.h"
 #include "Common/Team.h"
@@ -29,6 +30,7 @@
 #include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/Damage.h"
 #include "GameLogic/ObjectCreationList.h"
+#include "GameLogic/ScriptEngine/ScriptEngine.h"
 #include "GameLogic/Object/AttributeModifierPool.h"
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/Object/Object.h"
@@ -260,7 +262,7 @@ TEST_CASE("modules retail: a creep lair leaves its rubble hole (RebuildHoleExpos
 	REQUIRE(expose);
 	g.run(2);
 	g.ai->addObjectToPathfindMap(*lair);
-	lair->kill(DEATH_NORMAL);
+	lair->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	Object *hole = g.logic->findObjectByID(expose->holeId());
 	REQUIRE(hole);
 	CHECK(hole->getTemplate()->getName() == "HillTrollLairHole");
@@ -287,13 +289,13 @@ TEST_CASE("modules retail: a creep lair leaves its rubble hole (RebuildHoleExpos
 	g.run(5);
 	CHECK(holeHasFootprint());
 	CHECK(treasure() == 0);
-	hole->kill(DEATH_NORMAL);
+	hole->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	CHECK(treasure() == 4); // OCL_SpawnLairTreasure: Count = 4
 	// the neutral player's lair leaves nothing
 	Object *neutralLair = g.make(lairTmpl, g.players.getNeutralPlayer(), 900.0f, 900.0f);
 	RebuildHoleExposeDie *neutralExpose = moduleOf<RebuildHoleExposeDie>(neutralLair);
 	REQUIRE(neutralExpose);
-	neutralLair->kill(DEATH_NORMAL);
+	neutralLair->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	CHECK(neutralExpose->holeId() == INVALID_ID);
 }
 
@@ -336,7 +338,7 @@ TEST_CASE("modules retail: CreateObjectDie runs its ObjectCreationList when the 
 		const size_t before = g.logic->getObjectCount();
 		CHECK(cod->createdCount() == 0);
 		const std::uint32_t h0 = g.hash();
-		o->kill(DEATH_NORMAL);
+		o->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 		CHECK(cod->createdCount() > 0);
 		CHECK(g.logic->getObjectCount() >= before + cod->createdCount());
 		CHECK(g.hash() != h0);
@@ -345,6 +347,40 @@ TEST_CASE("modules retail: CreateObjectDie runs its ObjectCreationList when the 
 		hashes[run] = g.hash();
 	}
 	CHECK(hashes[0] == hashes[1]);
+}
+
+TEST_CASE("modules retail: an ObjectCreationList nugget's RequiredUpgrades / ForbiddenUpgrades and InheritScriptingName (RW 0x5F0DC5, 0x5F14F8)")
+{
+	// lane MODS-3: OCL_HatchSummonedDragon makes SummonedDragonJH1 (ForbiddenUpgrades = Upgrade_AllFactionUpgrade) or SummonedDragon (RequiredUpgrades = the
+	// same); the source's player decides. OCL_CreateGondorFighter (Count 1, InheritScriptingName) gives the source's script name to the fighter
+	REQUIRE_RETAIL_WORLD(sh);
+	REQUIRE(TheObjectCreationListStore);
+	const ObjectCreationList *dragon = TheObjectCreationListStore->findObjectCreationList("OCL_HatchSummonedDragon");
+	const ObjectCreationList *fighter = TheObjectCreationListStore->findObjectCreationList("OCL_CreateGondorFighter");
+	REQUIRE(dragon);
+	REQUIRE(fighter);
+	const UpgradeTemplate *all = Player::resolveUpgrade("Upgrade_AllFactionUpgrade", true);
+	REQUIRE(all);
+	auto names = [](const std::vector<Object *> &made) {
+		std::vector<std::string> out;
+		for (const Object *o : made)
+		{
+			out.push_back(o->getTemplate()->getName());
+		}
+		return out;
+	};
+	Game g(*sh.world, *sh.mount);
+	Object *src = g.make(sh.world->things().findTemplate("GondorFighter"));
+	const Coord3D at{ 600.0f, 600.0f, 0.0f };
+	CHECK(names(dragon->create(*g.logic, src, at)) == std::vector<std::string>{ "SummonedDragonJH1" });
+	g.player->addUpgrade(all, Player::UPGRADE_STATUS_COMPLETE, true);
+	CHECK(names(dragon->create(*g.logic, src, at)) == std::vector<std::string>{ "SummonedDragon" });
+
+	src->setName("MODS3Source");
+	const std::vector<Object *> made = fighter->create(*g.logic, src, at);
+	REQUIRE(made.size() == 1);
+	CHECK(made[0]->getName() == "MODS3Source");
+	CHECK(g.logic->scriptEngine().getUnitNamed("MODS3Source") != nullptr);
 }
 
 TEST_CASE("modules retail: FireWeaponWhenDeadBehavior fires its DeathWeapon at the death (after DelayTime when it has one); deterministic")
@@ -372,7 +408,7 @@ TEST_CASE("modules retail: FireWeaponWhenDeadBehavior fires its DeathWeapon at t
 			CHECK(fw->isAlreadyUpgraded()); // StartsActive gives the module its own upgrade (RW 0x855388)
 			g.run(2);
 			const ObjectID id = o->getID();
-			o->kill(DEATH_NORMAL);
+			o->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 			if (!delayed)
 			{
 				CHECK(fw->shots() == 1);
@@ -684,7 +720,7 @@ TEST_CASE("modules retail: UpgradeDie takes its upgrade back from the producer (
 		REQUIRE(producer->hasUpgrade(u));
 	}
 	const std::uint32_t h0 = g.hash();
-	o->kill(DEATH_NORMAL);
+	o->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	if (u->getUpgradeType() == UPGRADE_TYPE_PLAYER)
 	{
 		CHECK_FALSE(g.player->hasUpgradeComplete(u));
@@ -727,7 +763,7 @@ TEST_CASE("modules retail: HeroDie makes its special power ready at once on the 
 	REQUIRE(sp);
 	sp->setReadyFrame(g.logic->getFrame() + 1000);
 	const std::uint32_t h0 = g.hash();
-	hero->kill(DEATH_NORMAL);
+	hero->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	CHECK(sp->getReadyFrame() == g.logic->getFrame());
 	CHECK(g.hash() != h0);
 	CHECK_FALSE(reportHas(g, "[S-980] HeroDie")); // lane MODULES-2: the walk order is unobservable (RW 0x8C642D only sets the ready frame)
@@ -862,10 +898,10 @@ TEST_CASE("crate pickups retail: destroyed lair treasure can be collected throug
 	Object *lair = g.make(sh.world->things().findTemplate("HillTrollLair"));
 	auto *expose = moduleOf<RebuildHoleExposeDie>(lair);
 	REQUIRE(expose);
-	lair->kill(DEATH_NORMAL);
+	lair->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	Object *hole = g.logic->findObjectByID(expose->holeId());
 	REQUIRE(hole);
-	hole->kill(DEATH_NORMAL);
+	hole->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	std::vector<Object *> treasure;
 	for (Object *obj = g.logic->getFirstObject(); obj; obj = obj->getNextObject())
 		if (obj->getTemplate()->getName() == "TreasureChest1") treasure.push_back(obj);

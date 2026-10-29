@@ -91,30 +91,45 @@ TEST_CASE("Lua network: recorded action plays without Lua and retains START auth
 	CHECK(replay.header.game.game.peaceTimeMinutes == 5);
 	CHECK(replay.header.game.game.fortressConstruction);
 	CHECK(replay.header.game.game.slots[0].handicap == -50);
-	// Old replay versions omit authority; v5/v6 also omit peace time.
-	NetByteReader header(bytes); for (int i=0;i<12;++i) header.u8(); header.str();
-	NewGameMessage setup; REQUIRE(NetPacket::readNewGameMessage(header, setup, &error));
+	// Build legacy headers independently: the upstream and fork used versions 7..9 for different layouts.
+	NetByteReader header(bytes);
+	for (int i = 0; i < 12; ++i) header.u8();
+	header.str(); header.str(); header.str(); header.str(); // identity and recording build
+	NewGameMessage setup;
+	REQUIRE_MESSAGE(NetPacket::readNewGameMessage(header, setup, &error), error);
 	const auto setupEnd = bytes.size() - header.remaining();
-	for (int version : {5,6,7,8}) {
-		auto legacy=bytes; legacy[8]=(std::uint8_t)version;
-		const size_t tail = setupEnd - 4 * MAX_SLOTS - 12; // peace, authority, profile, handicaps
-		legacy.erase(legacy.begin()+setupEnd-4*MAX_SLOTS, legacy.begin()+setupEnd);
-		if (version < 8) legacy.erase(legacy.begin()+tail+4, legacy.begin()+tail+8);
-		if (version < 7) legacy.erase(legacy.begin()+tail, legacy.begin()+tail+4);
-		ReplayFile old; REQUIRE_MESSAGE(ReplayFile::parse(legacy,old,&error),error);
-		const int expectedAuthority = version == 8 ? 0 : -1;
+	auto legacyReplay = [&](int version, bool local) {
+		NewGameMessage legacySetup = setup;
+		legacySetup.game.peaceTimeMinutes = 0;
+		legacySetup.game.luaAuthoritySlot = -1;
+		legacySetup.game.fortressConstruction = false;
+		NetByteWriter base; NetPacket::writeNewGameMessage(base, legacySetup);
+		auto body = base.data(); body.resize(body.size() - 4); // no Cheat Mode
+		const auto profileAt = body.size() - 4 * LEGACY_MAX_SLOTS - 4;
+		if (version < 7 || (local && version < 9)) body.resize(body.size() - 4 * LEGACY_MAX_SLOTS);
+		if (local && version >= 7) {
+			NetByteWriter fields; fields.i32(5); if (version >= 8) fields.i32(0);
+			body.insert(body.begin() + profileAt, fields.data().begin(), fields.data().end());
+		}
+		NetByteWriter prefix;
+		for (int i = 0; i < 8; ++i) prefix.u8(bytes[i]);
+		prefix.u32(version); prefix.str(replay.header.profile.text);
+		auto oldBytes = prefix.data(); oldBytes.insert(oldBytes.end(), body.begin(), body.end());
+		oldBytes.insert(oldBytes.end(), bytes.begin() + setupEnd, bytes.end());
+		return oldBytes;
+	};
+	for (int version : { 5, 6, 7, 8, 9 }) {
+		ReplayFile old;
+		REQUIRE_MESSAGE(ReplayFile::parse(legacyReplay(version, true), old, &error), error);
+		const int expectedAuthority = version >= 8 ? 0 : -1;
 		CHECK(old.header.game.game.luaAuthoritySlot == expectedAuthority);
-		const int expectedPeace = version == 5 || version == 6 ? 0 : 5;
+		const int expectedPeace = version >= 7 ? 5 : 0;
 		CHECK(old.header.game.game.peaceTimeMinutes == expectedPeace);
 	}
-	// Upstream's version 7 kept handicaps but had neither enhanced setting.
-	{
-		auto legacy=bytes; legacy[8]=7;
-		legacy.erase(legacy.begin()+setupEnd-4*MAX_SLOTS-12, legacy.begin()+setupEnd-4*MAX_SLOTS-4);
-		ReplayFile old; REQUIRE_MESSAGE(ReplayFile::parse(legacy,old,&error),error);
-		CHECK(old.header.game.game.luaAuthoritySlot==-1);
-		CHECK(old.header.game.game.slots[0].handicap==-50);
-	}
+	ReplayFile upstreamSeven;
+	REQUIRE_MESSAGE(ReplayFile::parse(legacyReplay(7, false), upstreamSeven, &error), error);
+	CHECK(upstreamSeven.header.game.game.luaAuthoritySlot == -1);
+	CHECK(upstreamSeven.header.game.game.slots[0].handicap == -50);
 	combattest::CombatWorld w; w.logic->luaActions().authorityPlayer = host;
 	REQUIRE(replay.frames.at(0).size() == 1);
 	w.dispatcher.dispatch(replay.frames.at(0).front());

@@ -4,9 +4,12 @@
 #include "CombatTestUtil.h"
 #include "MoveTestUtil.h"
 #include "GameLogic/SimMath.h"
+#include "GameClient/ControlBarCommands.h"
 #include "GameClient/FormationAssistant.h"
 #include "GameClient/FormationPlacement.h"
+#include "GameLogic/Object/Contain/HordeContainCore.h"
 #include "GameClient/HudInput.h"
+#include <cmath>
 #include <limits>
 
 namespace
@@ -136,14 +139,17 @@ TEST_CASE("formation chord: failed chord replays the original press before the e
 TEST_CASE("formation chord: failed placement replays both buttons; reset discards a pending first press")
 {
 	Rig r;
-	r.ui.deselectAll(false);
+	const ObjectID unit = r.ui.selected()[0];
 	REQUIRE(r.send(button(CMSG_RAW_MOUSE_LEFT_BUTTON_DOWN, 200, 200, 1000)).empty());
+	// the selection empties between the presses: placement cannot start, both presses go on in their order
+	r.ui.deselectAll(false);
 	auto out = r.send(button(CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN, 200, 200, 1020));
 	REQUIRE(out.size() == 2);
 	CHECK(out[0].type() == CMSG_RAW_MOUSE_LEFT_BUTTON_DOWN);
 	CHECK(out[1].type() == CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN);
 	CHECK_FALSE(r.ui.formationActive);
 	r.placement.cancel();
+	r.ui.selectObject(unit);
 	REQUIRE(r.send(button(CMSG_RAW_MOUSE_LEFT_BUTTON_DOWN, 200, 200, 2000)).empty());
 	r.placement.cancel();
 	out = r.send(button(CMSG_RAW_MOUSE_LEFT_BUTTON_UP, 200, 200, 2020));
@@ -270,16 +276,17 @@ TEST_CASE("formation assistant: execution excludes the same dead and filtered se
  CHECK(mixed[0].offset.y==eligible[0].offset.y);
 }
 
-TEST_CASE("formation assistant: occupied rank centre differs from the horde "
-		  "object origin")
+TEST_CASE("formation assistant: the occupied rank centre is the horde object's "
+		  "origin until a casualty moves it")
 {
 	movetest::MoveWorld world;
 	auto *horde = world.spawn("Horde", 305, 305);
 	auto *walker = world.spawn("Walker", 505, 305);
 	const auto offsets = FormationAssistant::rankOffsets(*horde);
 	REQUIRE(offsets.size() == 15);
+	// community #73: RotWK centres the slot table on the horde (RW 0x86C4EA), so the full ranks' centroid is the object's origin
 	const auto center = FormationAssistant::rankCenter(*horde);
-	CHECK(center.x == 30);
+	CHECK(std::fabs(center.x) < 1e-4f); // tolerance: the float residue of the centring's sum, not a retail value
 	CHECK(center.y == 0);
 	CHECK(FormationAssistant::rankOffsets(*walker).empty());
 	CHECK(FormationAssistant::rankCenter(*walker).x == 0);
@@ -289,10 +296,14 @@ TEST_CASE("formation assistant: occupied rank centre differs from the horde "
 	auto *contain = world.hordeOf(horde);
 	const auto *members = contain->getContainedItemsList();
 	REQUIRE_FALSE(members->empty());
+	const int deadSlot = contain->getMemberSlot(members->front());
+	REQUIRE(deadSlot >= 0); // tolerance: any slot of the table (-1 = no slot)
+	const float deadX = contain->core().slots()[deadSlot].x;
+	CHECK(deadX != 0); // tolerance: the claim is only that the casualty stood off the centre line, its slot is the table's
 	members->front()->friend_setEffectivelyDead(true);
 	const auto reduced = FormationAssistant::rankOffsets(*horde);
 	CHECK(reduced.size() == 14);
-	CHECK(FormationAssistant::rankCenter(*horde).x == SimMath::divf32(400, 14));
+	CHECK(FormationAssistant::rankCenter(*horde).x == doctest::Approx((15.0f * center.x - deadX) / 14.0f)); // tolerance: the float sums run in member order
 }
 
 TEST_CASE("formation assistant: hero sprite footprint and unequal row depths "
@@ -358,4 +369,83 @@ TEST_CASE("formation assistant: movement targets the occupied rank centre at "
 		// tolerance: 10-unit grid snapping plus 1-unit locomotor stopping distance.
 		CHECK(dx * dx + dy * dy < 225);
 	}
+}
+
+// PR #88 review fix 2: the first press is held back only when a formation could start; otherwise selection and the LookAt translator see it
+// in the same frame (test_camera's right-press arming, test_build5_placement's scroll while placing)
+TEST_CASE("formation chord: a first press that cannot start a formation is not held back")
+{
+	for (int reason : { 0, 1, 2, 3, 4, 5 })
+	{
+		Rig r;
+		CommandButton other;
+		other.m_command = GUI_COMMAND_SPECIAL_POWER;
+		if (reason == 0)
+			r.ui.deselectAll(false); // no eligible selection
+		else if (reason == 1)
+			r.ui.placeBuildAvailable("Slasher", r.ui.selected()[0]); // placing a building
+		else if (reason == 2)
+			r.ui.setGUICommand(&other); // a GUI command other than attack-move waits for its target
+		else if (reason == 3)
+			r.ctx.formations = nullptr; // no formation data
+		else if (reason == 4)
+			r.formations.templates.clear(); // formation data without templates (BFME1-style data)
+		else
+			r.ui.setInputEnabled(false);
+		for (int type : { CMSG_RAW_MOUSE_LEFT_BUTTON_DOWN, CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN })
+		{
+			auto out = r.send(button(type, 200, 200, 1000));
+			REQUIRE(out.size() == 1);
+			CHECK(out[0].type() == type);
+		}
+		CHECK_FALSE(r.ui.formationActive);
+	}
+	// an eligible selection with formation data: the press waits for the second button
+	Rig r;
+	CHECK(r.placement.canStart({ 200, 200 }));
+	CHECK(r.send(button(CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN, 200, 200, 1000)).empty());
+}
+
+// PR #88 review fix 1: after the order the gesture is over once both buttons are up; only the trailing release and clicks are swallowed, the
+// HUD no longer cancels the LookAt pointer (camera scrolling works again)
+TEST_CASE("formation chord: the gesture stays live until both buttons are released, then only the trailing clicks are eaten")
+{
+	Rig r;
+	CHECK_FALSE(r.placement.gestureLive());
+	REQUIRE(r.send(button(CMSG_RAW_MOUSE_LEFT_BUTTON_DOWN, 200, 200, 1000)).empty());
+	REQUIRE(r.send(button(CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN, 200, 200, 1020)).empty());
+	CHECK(r.placement.gestureLive());
+	auto out = r.send(button(CMSG_RAW_MOUSE_LEFT_BUTTON_UP, 250, 200, 1040));
+	REQUIRE(out.size() == 1);
+	CHECK(out[0].type() == MSG_DO_MOVETO_FORMATION);
+	CHECK_FALSE(r.ui.formationActive);
+	CHECK(r.placement.gestureLive()); // the right button is still down
+	CHECK(r.send(button(CMSG_RAW_MOUSE_RIGHT_BUTTON_UP, 250, 200, 1060)).empty());
+	CHECK_FALSE(r.placement.gestureLive());
+	CHECK(r.placement.consumed());
+	CHECK(r.send(ClientMessage(CMSG_MOUSE_RIGHT_CLICK)).empty());
+	// pointer motion and keys pass (the camera's edge and key scrolling read them)
+	out = r.send(button(CMSG_RAW_MOUSE_POSITION, 900, 600, 1080));
+	REQUIRE(out.size() == 1);
+	CHECK(out[0].type() == CMSG_RAW_MOUSE_POSITION);
+	CHECK_FALSE(r.placement.gestureLive());
+}
+
+// PR #88 review fix 3: an order that took the pending attack-move button leaves the GUI command mode, so the next left click is a plain click
+TEST_CASE("formation chord: a formation order made with the attack-move button clears the GUI command")
+{
+	Rig r;
+	CommandButton attackMove;
+	attackMove.m_command = GUI_COMMAND_ATTACK_MOVE;
+	r.ui.setGUICommand(&attackMove);
+	REQUIRE(r.placement.canStart({ 200, 200 }));
+	REQUIRE(r.send(button(CMSG_RAW_MOUSE_LEFT_BUTTON_DOWN, 200, 200, 1000)).empty());
+	REQUIRE(r.send(button(CMSG_RAW_MOUSE_RIGHT_BUTTON_DOWN, 200, 200, 1020)).empty());
+	REQUIRE(r.ui.formationActive);
+	const auto out = r.send(button(CMSG_RAW_MOUSE_RIGHT_BUTTON_UP, 250, 200, 1040));
+	REQUIRE(out.size() == 1);
+	CHECK(out[0].type() == MSG_DO_MOVETO_FORMATION);
+	CHECK(out[0].arg(3).boolean);
+	CHECK(r.ui.getGUICommand() == nullptr);
+	CHECK_FALSE(r.ui.isInAttackMoveToMode());
 }

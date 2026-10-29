@@ -5,12 +5,15 @@
 
 #include "FactcSweepUtil.h"
 #include "FactbRig.h"
+#include "ProductionRateTestUtil.h"
 
 #include "Common/BuildAssistant.h"
 #include "Common/PlayerHeroList.h"
+#include "GameLogic/ActionManager.h"
 #include "GameLogic/Damage.h"
 #include "GameLogic/CaptureLinks.h"
 #include "GameClient/GUI/Skirmish/IniSkirmishSetupSource.h"
+#include "GameClient/HudObjects.h"
 #include "GameClient/MapCache.h"
 #include "GameLogic/Module/HordeDispatchSpecialPower.h"
 #include "GameLogic/Module/ObjectCreationUpgrade.h"
@@ -143,6 +146,15 @@ const std::map<std::string, std::string> &knownUpgradeGaps()
 		{ "WildGiantSentryExpansion Command_GoblinPurchaseNewWallGiantSentry", "S-1995 (SlaveWatcherBehavior: the free giant is made, its death does not show the buy button)|button not shown" },
 	};
 	return gaps;
+}
+
+// buttons retail buys by itself before the player can: the Hall of Twilight's DoCommandUpgrade modules press its technologies as it levels
+// (retail angmarhalloftwilight.ini, RW 0x8B8E2E -> RW 0x696FD2's upgrade case): the bar shows them purchased (lane MODS-3)
+const std::set<std::string> &retailAutoPurchased()
+{
+	static const std::set<std::string> s = { "AngmarHallofTwilight Command_PurchaseTechnologyAngmarSoulFreeze",
+		"AngmarHallofTwilight Command_PurchaseTechnologyAngmarWellOfSouls", "AngmarHallofTwilight Command_PurchaseTechnologyAngmarCorpseRain" };
+	return s;
 }
 
 bool isStructure(const ThingTemplate &tt)
@@ -338,6 +350,24 @@ AbilityResult runAbility(HudRig &h, const Offer &offer, const Coord3D &spot)
 		else if ((opt & COMMAND_OPTION_NEED_TARGET_ALLY_OBJECT) && ally)
 		{
 			at = *withMembers(ally).back()->getPosition();
+		}
+		else if ((opt & COMMAND_OPTION_NEED_TARGET_POS) && TheSpecialPowerStore)
+		{
+			// lane SUMMONLOC-1: the hero power click issues nothing where the location test refuses (RW 0x81E9C5 -> RW 0x6A4260 -> RW 0x82DFB7), as
+			// retail's red cursor: a player clicks where it is valid. The spot 108 from the caster serves a LIMIT_DISTANCE 150 power (Hwaldar's
+			// Hillmen); a NEEDS_OBJECT_FILTER power (Azog's Crack the Whip: allied infantry within its radius) gets a soldier of the caster's there
+			const SpecialPowerTemplate *pw = TheSpecialPowerStore->findSpecialPowerTemplate(mode->m_specialPowerName);
+			const Coord3D near{ spot.x + 60.0f, spot.y - 90.0f, logic.getGroundHeight(spot.x + 60.0f, spot.y - 90.0f) };
+			if (pw && !ActionManager::canDoSpecialPowerAtLocation(*o, at, pw, opt))
+			{
+				if ((pw->getFinalOverride()->getFlags() & SPF_NEEDS_OBJECT_FILTER) && !ActionManager::canDoSpecialPowerAtLocation(*o, near, pw, opt))
+				{
+					Object *soldier = h.rig.make("GondorFighter", near.x, near.y);
+					made.push_back(soldier->getID());
+					h.frames(2);
+				}
+				at = near;
+			}
 		}
 		at.z += 8.0f;
 		h.rig.lookAt(*o->getPosition());
@@ -796,6 +826,11 @@ TEST_CASE("factc upgrades: every OBJECT / PLAYER upgrade button of the Goblins' 
 		MESSAGE(faction << ": " << ok << " of " << results.size() << " upgrade buttons work");
 		for (const UpgradeResult &r : results)
 		{
+			if (retailAutoPurchased().count(r.object + " " + r.button))
+			{
+				CHECK_MESSAGE(r.outcome == "button purchased", r.object << " " << r.button << ": DoCommandUpgrade should have bought it: " << r.outcome);
+				continue;
+			}
 			const auto known = knownUpgradeGaps().find(r.object + " " + r.button);
 			if (known != knownUpgradeGaps().end())
 			{
@@ -885,6 +920,8 @@ ProductionResult runProduction(HudRig &h, const Offer &offer)
 		r.outcome = "press refused";
 		return r;
 	}
+	const ObjectID producerId = b->getID();
+	std::vector<float> rates{ prodrate::rateNow(*b) }; // lane PRODUCTION1: the producer's PRODUCTION rate of every frame (RW 0x8A1EBC)
 	h.frames(1);
 	r.cost = h.paidSince(money0);
 	std::ostringstream out;
@@ -895,6 +932,10 @@ ProductionResult runProduction(HudRig &h, const Offer &offer)
 	Object *made = nullptr;
 	for (; r.frames < expectFrames + 60 && !made; ++r.frames)
 	{
+		if (Object *p = logic.findObjectByID(producerId))
+		{
+			rates.push_back(prodrate::rateNow(*p));
+		}
 		h.frames(1);
 		for (Object *o = logic.getFirstObject(); o && !made; o = o->getNextObject())
 		{
@@ -914,9 +955,10 @@ ProductionResult runProduction(HudRig &h, const Offer &offer)
 	}
 	else
 	{
-		if (r.frames < expectFrames - 1)
+		const int rated = prodrate::expectedFrames(rates, expectFrames); // a level 2 / 3 building is faster (its BuildSpeedModLvl<n>)
+		if (r.frames < rated - 1)
 		{
-			out << "came after " << r.frames << " frames, calcTimeToBuild " << expectFrames << "; ";
+			out << "came after " << r.frames << " frames, calcTimeToBuild " << expectFrames << " (" << rated << " at the producer's PRODUCTION rate); ";
 		}
 		const float dx = made->getPosition()->x - b->getPosition()->x, dy = made->getPosition()->y - b->getPosition()->y;
 		if (dx * dx + dy * dy > 600.0f * 600.0f)
@@ -1092,7 +1134,7 @@ HeroResult runHero(HudRig &h, Object *keep, int index)
 		return r;
 	}
 	h.frames(20);
-	hero->kill(DEATH_NORMAL);
+	hero->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	h.frames(60);
 	if (liveHero(logic, h.rig.local, r.hero))
 	{
@@ -1582,6 +1624,81 @@ TEST_CASE("factc neutral: Goblin and Angmar parties capture the flags of an inn,
 		std::printf("factc neutral %s inn unit %s (command set %s): %s\n", faction.c_str(), tt->getName().c_str(), h.hud->controlBar().commandSetName().c_str(), made ? "ok" : "never came");
 	}
 	}
+}
+
+TEST_CASE("factc recapture: an outpost flag an enemy holds shows the capture cursor, not the attack cursor, and a right click takes it back (UNATTACKABLE, RW 0x6C91FA)")
+{
+	if (!haveWorld("factc recapture"))
+	{
+		return;
+	}
+	SharedWorld &s = shared();
+	std::string map, outpost;
+	REQUIRE_MESSAGE(findInnMap(s, "Outpost", map, outpost), "no multiplayer map has an Outpost by a capture flag");
+	MESSAGE("map " << map);
+	HudRig h(s, "FactionWild", map.c_str());
+	const auto ctx = h.hud->enterContext();
+	GameLogic &logic = h.logic();
+	creeptest::removeCreeps(logic);
+	Object *flag = nullptr, *building = nullptr;
+	for (Object *f = logic.getFirstObject(); f && !building; f = f->getNextObject())
+	{
+		if (!f->isKindOfName("CAPTURABLE") || f->getControllingPlayer() == h.rig.local)
+		{
+			continue;
+		}
+		for (Object *b = logic.getFirstObject(); b; b = b->getNextObject())
+		{
+			const float dx = b->getPosition()->x - f->getPosition()->x, dy = b->getPosition()->y - f->getPosition()->y;
+			if (b->getTemplate()->getName() == outpost && dx * dx + dy * dy <= 150.0f * 150.0f)
+			{
+				flag = f;
+				building = b;
+			}
+		}
+	}
+	REQUIRE(flag != nullptr);
+	CHECK(flag->isKindOfName("UNATTACKABLE")); // retail data: CaptureFlag's KindOf
+	// the enemy took them: the flag and its outpost on the enemy's default team, as SpecialAbilityUpdate's capture leaves them (RW 0x8546F6 / 0x854719)
+	Player *enemy = h.rig.game->players().findPlayerWithName("Player_2");
+	REQUIRE(enemy != nullptr);
+	flag->setCapturedTeam(enemy->getDefaultTeam());
+	building->setCapturedTeam(enemy->getDefaultTeam());
+	REQUIRE(h.rig.local->getRelationship(flag->getTeam()) == ENEMIES);
+	const Coord3D c = h.rig.freeSpot(flag->getPosition()->x, flag->getPosition()->y - 220.0f, 80.0f);
+	Object *horde = h.rig.make("GoblinFighterHorde", c.x, c.y);
+	h.frames(10);
+	REQUIRE(h.select(horde));
+	const Coord3D aim{ flag->getPosition()->x, flag->getPosition()->y, flag->getPosition()->z + 8.0f };
+	h.rig.lookAt(*flag->getPosition());
+	const ICoord2D px = h.rig.screenOf(aim);
+	REQUIRE(HudObjects::pickObject(h.hud->input().context(), px) == flag);
+	// the hover: the attack test refuses the UNATTACKABLE flag, the capture test answers (RW 0x81E60B)
+	h.hud->mouseMove(px.x, px.y, 0);
+	h.hud->update(0.034);
+	CHECK(h.hud->input().ui().cursor() == "CaptureBuilding");
+	// the order: a right click sends the capture power at the flag, no attack
+	const size_t log0 = h.hud->input().messageLog().size();
+	h.clickAt(aim, true);
+	h.frames(2);
+	int captures = 0, attacks = 0;
+	for (size_t i = log0; i < h.hud->input().messageLog().size(); ++i)
+	{
+		captures += h.hud->input().messageLog()[i].find("MSG_DO_SPECIAL_POWER_AT_OBJECT") != std::string::npos ? 1 : 0;
+		attacks += h.hud->input().messageLog()[i].find("MSG_DO_ATTACK_OBJECT") != std::string::npos ? 1 : 0;
+	}
+	CHECK(captures == 1);
+	CHECK(attacks == 0);
+	int frames = 0;
+	for (; frames < 600 && flag->getControllingPlayer() != h.rig.local; ++frames)
+	{
+		h.frames(1);
+	}
+	CHECK_MESSAGE(flag->getControllingPlayer() == h.rig.local, "the flag was not recaptured in 600 frames");
+	h.frames(20);
+	CHECK_MESSAGE(building->getControllingPlayer() == h.rig.local, "the " << outpost << " did not follow its flag");
+	std::printf("factc recapture %s: the enemy's flag recaptured after %d frames, %s owned by the player: %d\n", map.c_str(), frames, outpost.c_str(),
+	            building->getControllingPlayer() == h.rig.local ? 1 : 0);
 }
 
 TEST_CASE("factc neutral lairs: every creep lair of the skirmish maps spawns its creeps, and they fight a Goblin party that comes near")

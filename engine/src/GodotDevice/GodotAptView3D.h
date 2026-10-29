@@ -24,6 +24,7 @@
 #include <godot_cpp/classes/shader_material.hpp>
 #include <godot_cpp/classes/sub_viewport.hpp>
 #include <godot_cpp/variant/rect2.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/string.hpp>
 
@@ -63,6 +64,8 @@ public:
 	float animationFrame(const std::string &path) const;
 	std::uint64_t renderUpdates() const;
 	String sourceStyle() const;
+	// Active viewers only; read the animation clock without advancing it.
+	Dictionary animationFrames() const;
 
 private:
 	struct Slot

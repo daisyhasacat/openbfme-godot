@@ -76,8 +76,7 @@ struct ShellFx
 		REQUIRE(prefs.load(file));
 		std::vector<std::uint8_t> bytes;
 		std::string error;
-		REQUIRE_MESSAGE(mount.fs.readFile("data/lotr.str", bytes, &error), error);
-		REQUIRE_MESSAGE(text.table.parse(bytes, &error), error);
+		REQUIRE_MESSAGE(text.table.loadRetail(mount.fs, &error), error); // data/lotr.str, or a non-English install's lotr.csf
 		environment.options = &prefs;
 		environment.optionsFile = file;
 		environment.gameText = &text;
@@ -920,10 +919,15 @@ TEST_CASE("play2 options retail: GameLOD.ini's presets give the nine settings of
 	CHECK_FALSE(fx.wm->hasProvider("AdvancedOption9Num")); // the movie asks for ten, RotWK registers nine (RW 0x9213EE)
 	const std::string *model = fx.wm->aptText("APT:AdvancedOption0");
 	REQUIRE(model);
-	CHECK(*model == "Model Detail");
+	CHECK(model->find("MISSING") == std::string::npos);
 	const std::string *ultra = fx.wm->aptText("APT:AdvancedOption0_3");
 	REQUIRE(ultra);
-	CHECK(*ultra == "Ultra High");
+	CHECK(ultra->find("MISSING") == std::string::npos);
+	if (!retailtest::skipUnlessEnglish("play2 options: the English advanced labels"))
+	{
+		CHECK(*model == "Model Detail");
+		CHECK(*ultra == "Ultra High");
+	}
 	const std::string *custom = fx.wm->aptText("APT:MasterOption0_Custom");
 	REQUIRE(custom);
 	CHECK(custom->find("MISSING") == std::string::npos);
@@ -998,7 +1002,18 @@ TEST_CASE("play2 options retail: Advanced shows the nine option rows with their 
 		{ "AdvancedOption6", { "Texture Quality", "2 High" } }, { "AdvancedOption7", { "Shader Detail", "2 High" } },
 		{ "AdvancedOption8", { "Decal Detail", "2 High" } },
 	};
-	CHECK(rows == want);
+	// every language: nine rows, each with its option's name and a value, no placeholder left; the words in English
+	CHECK(rows.size() == want.size());
+	for (const auto &r : rows)
+	{
+		CHECK_MESSAGE(want.count(r.first) == 1, r.first);
+		CHECK_MESSAGE((!r.second.first.empty() && r.second.first != "Option Name" && r.second.first.find("MISSING") == std::string::npos), r.first);
+		CHECK_MESSAGE((!r.second.second.empty() && r.second.second != "Current Option" && r.second.second.find("MISSING") == std::string::npos), r.first);
+	}
+	if (!retailtest::skipUnlessEnglish("play2 options: the English advanced rows"))
+	{
+		CHECK(rows == want);
+	}
 	// VFX Detail's first choice (VeryLow): the movie's SetCustom writes the template and the level Custom through the externs (lane OPTS-2: Model
 	// Detail's row, which the device does not draw yet, is greyed and takes no click: S-3402)
 	AptCharacterInst *level = fx.wm->apt().level(fx.shell->top()->level());
@@ -1702,6 +1717,16 @@ TEST_CASE("opts4 gadget layer retail: an open drop-down list is drawn after ever
 
 	// clicked: the entry "Enhanced", at a point inside the row below, is the list's
 	const float clickX = 755.0f, clickY = 275.0f; // inside the list's second entry (268 .. 290) and inside the row below (254 .. 280)
+	SUBCASE("uninterrupted dropdown") {}
+	SUBCASE("destroying an unrelated combo during hover preserves the open list")
+	{
+		GameWindow *transient = fx.layer->createEngineGadget("window/apt/combobox.wnd", 0, 0, 200, 26, nullptr, &error);
+		REQUIRE_MESSAGE(transient, error);
+		fx.layer->mouseMove(clickX, clickY);
+		fx.layer->destroyEngineGadget(transient);
+		REQUIRE(fx.layer->openDropDown() == look);
+		REQUIRE_FALSE(lookList->winIsHidden());
+	}
 	clickStage(fx, clickX, clickY);
 	const std::vector<OpenBFMEPageEvent> events = options->takeExtensionEvents();
 	REQUIRE(events.size() == 1);
@@ -2454,9 +2479,17 @@ TEST_CASE("opts5 options retail: the original game's rows carry its names and he
 		CHECK_FALSE_MESSAGE(r->enabled, key);
 	}
 	// the string file's text, a full stop where it has none, then OpenBFME's reason
-	CHECK(gameText(fx, "ToolTip:Settings/EAX") == u"Enables EAX sound if you have an EAX compatible sound card");
-	CHECK(rowOf(rows, "Retail.EAX3").help == u"Enables EAX sound if you have an EAX compatible sound card. OpenBFME has no EAX3 sound.");
-	CHECK(rowOf(rows, "Retail.OnlineIp").help == gameText(fx, "TOOLTIP:OnlineIP") + u". Can be changed from the Options of the online screens.");
+	const std::u16string eax = gameText(fx, "ToolTip:Settings/EAX");
+	const bool stop = !eax.empty() && (eax.back() == u'.' || eax.back() == u'!' || eax.back() == u'?');
+	CHECK(rowOf(rows, "Retail.EAX3").help == eax + (stop ? u" " : u". ") + u"OpenBFME has no EAX3 sound.");
+	if (!retailtest::skipUnlessEnglish("opts5 options: the English EAX tooltip"))
+	{
+		CHECK(eax == u"Enables EAX sound if you have an EAX compatible sound card");
+		CHECK(rowOf(rows, "Retail.EAX3").help == u"Enables EAX sound if you have an EAX compatible sound card. OpenBFME has no EAX3 sound.");
+	}
+	const std::u16string ip = gameText(fx, "TOOLTIP:OnlineIP");
+	const bool ipStop = !ip.empty() && (ip.back() == u'.' || ip.back() == u'!' || ip.back() == u'?');
+	CHECK(rowOf(rows, "Retail.OnlineIp").help == ip + (ipStop ? u" " : u". ") + u"Can be changed from the Options of the online screens.");
 	CHECK(rowOf(rows, "Retail.OnlinePortNum").kind == OpenBFMEPageRow::Kind::Entry);
 	CHECK(rowOf(rows, "Retail.RefreshNat").kind == OpenBFMEPageRow::Kind::Text);
 }
@@ -2748,8 +2781,15 @@ TEST_CASE("opts5 options retail: Show All Health Bars greyed by the detail level
 	AptOptionsScreen *options = openMenu(fx, false);
 	std::vector<OpenBFMEPageRow> rows = options->retailRows();
 	const std::u16string own = gameText(fx, "TOOLTIP:Options/tooltipEnableHealthBars");
+	// English's tooltip has no full stop, so a ". " comes before OpenBFME's sentence; a language whose tooltip ends with one gets a space
+	const bool stop = !own.empty() && (own.back() == u'.' || own.back() == u'!' || own.back() == u'?');
+	const std::u16string reasoned = own + (stop ? u" " : u". ") + u"This detail level already shows every health bar.";
+	if (retailtest::installLanguage() == "English")
+	{
+		CHECK_FALSE(stop);
+	}
 	CHECK_FALSE(rowOf(rows, "Retail.HealthBars").enabled);
-	CHECK(rowOf(rows, "Retail.HealthBars").help == own + u". This detail level already shows every health bar.");
+	CHECK(rowOf(rows, "Retail.HealthBars").help == reasoned);
 	// a level that allows it: no reason; a custom Decal Detail Off: the reason again
 	std::string error;
 	REQUIRE(options->setRetailValue("Retail.Detail", 1, &error)); // GUI:High
@@ -2759,7 +2799,7 @@ TEST_CASE("opts5 options retail: Show All Health Bars greyed by the detail level
 	REQUIRE(options->setRetailValue("Retail.AdvancedOption8", 0, &error)); // Decal Detail Off, Custom
 	rows = options->retailRows();
 	CHECK_FALSE(rowOf(rows, "Retail.HealthBars").enabled);
-	CHECK(rowOf(rows, "Retail.HealthBars").help == own + u". This detail level already shows every health bar.");
+	CHECK(rowOf(rows, "Retail.HealthBars").help == reasoned);
 }
 
 // ---- lane OPTS-6: menus that are exact, modal and usable without a mouse ---------------------------------------------------------------------------
@@ -3196,17 +3236,19 @@ int menuAcceptUpdates(AptRetail &mount, const std::string &buttonName)
 
 // Before: the page took the bottom bar's clicks only from a button named "bttn" (RotWK 2.01's Options.apt). BFME2 1.06's movie leaves it unnamed,
 // so in the BFME2 style the click reached the movie, which played its closing animation before it sent AptOptions::Save: ACCEPT came back 0.55 s late
-// (measured in the game: 33 frames at 60 Hz) where the RotWK style took 2 frames.
-TEST_CASE("shellfix1 options retail: the OpenBFME menu's ACCEPT goes back to the main menu on the next update in both styles' Options.apt")
+// (measured in the game: 33 frames at 60 Hz) where the RotWK style took 2 frames. Lane MENUSND-1: the bar click is the page's only once the movie's
+// input has drained the press (the movie step that plays the button's click, test "menusnd1 options retail" above), so ACCEPT takes that step, then one
+// update: 2 in both styles.
+TEST_CASE("shellfix1 options retail: the OpenBFME menu's ACCEPT goes back to the main menu after the press's movie step in both styles' Options.apt")
 {
 	OPENBFME_REQUIRE_RETAIL(mount);
-	CHECK(menuAcceptUpdates(mount, "bttn") == 1);
+	CHECK(menuAcceptUpdates(mount, "bttn") == 2);
 	retailtest::Mount *bfme2 = retailtest::bfme2Mount();
 	REQUIRE(bfme2);
 	REQUIRE_MESSAGE(bfme2->fs, bfme2->error);
 	AptRetail bfme2Only{ *bfme2->fs };
 	REQUIRE(bfme2Only.fs.getArchiveFilenameForFile("Options.apt").find("options.big") != std::string::npos); // BFME2 1.06's own movie
-	CHECK(menuAcceptUpdates(bfme2Only, "") == 1); // an unnamed button (the player's list_buttons calls it "instance14")
+	CHECK(menuAcceptUpdates(bfme2Only, "") == 2); // an unnamed button (the player's list_buttons calls it "instance14")
 }
 
 // Retail's own ACCEPT (the reference for the menu's): RotWK 2.01's Options.apt plays its closing animation, then sends AptOptions::Save (RW 0x91FC9C),
@@ -3286,4 +3328,133 @@ TEST_CASE("opts3 options retail: twelve settings tabs fit the frame and the last
 	REQUIRE(events.size() == 1);
 	CHECK(events[0].kind == OpenBFMEPageEvent::Kind::Tab);
 	CHECK(events[0].value == 11);
+}
+
+// lane MENUSND-1: the bottom bar of the OpenBFME menu (the Options screen as the game opens it) is the movie's own CANCEL / RESET TO DEFAULTS / ACCEPT, whose
+// click the page takes (AptOptionsScreen::mouseFilter). RotWK plays the button's click on the press: MenuExport.apt's GenericButton goes to its `_down`
+// frame (button action 4), which calls _root.PlaySound("Gui_ShellMapSelect") (FSCommand PlaySound, RW 0x815772); its own click (OnButtonClick) is the
+// `_release end` frame. Before the fix the press never reached the movie and the bar was silent. Each press here: exactly one Gui_ShellMapSelect, on the
+// press, nothing more on the release (the movie's release and its click do not run), the page's event, and the movie's input free again (a hover after it
+// plays the next button's Gui_ShellMapMouseOver)
+TEST_CASE("menusnd1 options retail: a press on the OpenBFME menu's bottom bar plays the button's click sound once, on the press; the release stays the page's")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	struct Case
+	{
+		const char *button;
+		OpenBFMEPageEvent::Kind kind;
+		bool fast; // press and release posted between two updates
+	};
+	for (const Case &c : { Case{ "Cancel", OpenBFMEPageEvent::Kind::Cancel, false }, Case{ "Default", OpenBFMEPageEvent::Kind::Reset, false },
+			 Case{ "Accept", OpenBFMEPageEvent::Kind::Accept, false }, Case{ "Default", OpenBFMEPageEvent::Kind::Reset, true },
+			 Case{ "Accept", OpenBFMEPageEvent::Kind::Accept, true } })
+	{
+		INFO(c.button << (c.fast ? " (fast click)" : ""));
+		ShellFx fx(mount, "");
+		AptOptionsScreen *options = openMenu(fx, false);
+		AptSpriteInst *root = fx.wm->apt().level(options->level());
+		auto centre = [&](const char *name, float &x, float &y) {
+			AptButtonInst *b = firstButtonUnder(findClip(root, name));
+			REQUIRE_MESSAGE(b, name);
+			float x0, y0, x1, y1;
+			REQUIRE(b->contentBounds(x0, y0, x1, y1));
+			b->globalMatrix().apply((x0 + x1) / 2, (y0 + y1) / 2, x, y);
+		};
+		float x, y;
+		centre(c.button, x, y);
+		fx.wm->postMouseMove(x, y);
+		fx.tick(20);
+		REQUIRE(fx.services.sounds == std::vector<std::string>{ "Gui_ShellMapMouseOver" }); // the hover, as before
+		fx.services.sounds.clear();
+		options->takeExtensionEvents();
+		fx.wm->postMouseButton(true);
+		if (!c.fast)
+		{
+			fx.tick(2);
+			CHECK(fx.services.sounds == std::vector<std::string>{ "Gui_ShellMapSelect" }); // on the press
+			CHECK(options->takeExtensionEvents().empty());                                // the press alone does nothing
+			REQUIRE(fx.shell->top() == options);
+		}
+		fx.wm->postMouseButton(false);
+		if (c.fast)
+		{
+			// the movie has not stepped since the press: the click is not the page's yet (the device takes the page's events every frame; a CANCEL or
+			// ACCEPT taken now would close the menu before the movie played the press)
+			CHECK(options->takeExtensionEvents().empty());
+			CHECK(fx.services.sounds.empty());
+		}
+		fx.tick(1);
+		CHECK(fx.services.sounds == std::vector<std::string>{ "Gui_ShellMapSelect" }); // asked for by the time the click is the page's
+		const std::vector<OpenBFMEPageEvent> events = options->takeExtensionEvents();
+		REQUIRE(events.size() == 1);
+		CHECK(events[0].kind == c.kind);
+		CHECK_FALSE(fx.wm->apt().input().mouseDown());
+		fx.tick(60);
+		CHECK(fx.services.sounds == std::vector<std::string>{ "Gui_ShellMapSelect" }); // once: the movie's release (and its click) did not run
+		REQUIRE(fx.shell->top() == options); // the device acts on the page's events (AptMenuPlayer); none is taken here
+		{
+			// the movie's input is free: the pointer on the next button plays its hover
+			fx.services.sounds.clear();
+			centre(std::string(c.button) == "Cancel" ? "Accept" : "Cancel", x, y);
+			fx.wm->postMouseMove(x, y);
+			fx.tick(20);
+			// (the button left plays its rollOut's Gui_ShellMapMouseOut too, as on any move between two buttons)
+			CHECK(std::count(fx.services.sounds.begin(), fx.services.sounds.end(), std::string("Gui_ShellMapMouseOver")) == 1);
+			CHECK(std::count(fx.services.sounds.begin(), fx.services.sounds.end(), std::string("Gui_ShellMapSelect")) == 0);
+		}
+		if (c.kind != OpenBFMEPageEvent::Kind::Reset)
+		{
+			// the device's answer to the page's CANCEL / ACCEPT (openbfme_options_screen.gd: the shell's Cancel / Save, AptOptionsScreen::finishMenu)
+			fx.services.sounds.clear();
+			options->finishMenu(c.kind == OpenBFMEPageEvent::Kind::Accept);
+			fx.tick(60);
+			CHECK((fx.shell->top() == nullptr || fx.shell->top()->filename() != "Options.apt"));
+			CHECK(std::count(fx.services.sounds.begin(), fx.services.sounds.end(), std::string("Gui_ShellMapSelect")) == 0);
+		}
+	}
+}
+
+// lane MENUSND-1 (review): bar clicks wait for the movie's input (see above); several within one movie step (a slow frame delivers them together) keep
+// their order, and a page event made in between (Esc: the page's CANCEL) waits behind the click before it
+TEST_CASE("menusnd1 options retail: clicks within one movie step keep their order; each bar press plays its click")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	ShellFx fx(mount, "");
+	AptOptionsScreen *options = openMenu(fx, false);
+	AptSpriteInst *root = fx.wm->apt().level(options->level());
+	auto centre = [&](const char *name, float &x, float &y) {
+		AptButtonInst *b = firstButtonUnder(findClip(root, name));
+		REQUIRE_MESSAGE(b, name);
+		float x0, y0, x1, y1;
+		REQUIRE(b->contentBounds(x0, y0, x1, y1));
+		b->globalMatrix().apply((x0 + x1) / 2, (y0 + y1) / 2, x, y);
+	};
+	float rx, ry, ax, ay;
+	centre("Default", rx, ry);
+	centre("Accept", ax, ay);
+	fx.wm->postMouseMove(rx, ry);
+	fx.tick(20);
+	options->takeExtensionEvents();
+	fx.services.sounds.clear();
+	// one batch: RESET TO DEFAULTS clicked, Esc, the pointer to ACCEPT, ACCEPT clicked
+	fx.wm->postMouseButton(true);
+	fx.wm->postMouseButton(false);
+	options->extensionCancel();
+	fx.wm->postMouseMove(ax, ay);
+	fx.wm->postMouseButton(true);
+	fx.wm->postMouseButton(false);
+	CHECK(options->takeExtensionEvents().empty()); // nothing before the movie has the presses
+	fx.tick(1);
+	const std::vector<OpenBFMEPageEvent> events = options->takeExtensionEvents();
+	REQUIRE(events.size() == 3);
+	CHECK(events[0].kind == OpenBFMEPageEvent::Kind::Reset);
+	CHECK(events[1].kind == OpenBFMEPageEvent::Kind::Cancel);
+	CHECK(events[2].kind == OpenBFMEPageEvent::Kind::Accept);
+	CHECK(std::count(fx.services.sounds.begin(), fx.services.sounds.end(), std::string("Gui_ShellMapSelect")) == 2);
+	CHECK_FALSE(fx.wm->apt().input().mouseDown());
+	// and a later page event no longer waits
+	options->extensionCancel();
+	const std::vector<OpenBFMEPageEvent> later = options->takeExtensionEvents();
+	REQUIRE(later.size() == 1);
+	CHECK(later[0].kind == OpenBFMEPageEvent::Kind::Cancel);
 }

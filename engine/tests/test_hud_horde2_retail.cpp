@@ -470,6 +470,66 @@ TEST_CASE("horde2 retail: the formation swap gives the horde object the alternat
 	}
 }
 
+// lane FBSIM-1 (FB-0041): GondorFighterHordeBlock's contain applies ModifierList GondorFighterBlock (Category FORMATION, SPEED 60%, retail attributemodifier.ini):
+// the same march in shield wall covers 60 % of the line formation's distance once both are at speed
+TEST_CASE("fbsim1 retail: a Gondor soldier horde in shield wall marches at the GondorFighterBlock SPEED 60% of its line formation's speed (FB-0041)")
+{
+	if (!haveWorld())
+	{
+		return;
+	}
+	auto march = [](bool block) {
+		Arena a(shared(), "FactionMen", "FactionMordor");
+		Object *h = a.place("GondorFighterHorde", 0, 400.0f, 600.0f, 0.0f);
+		for (int i = 0; i < 20; ++i)
+		{
+			a.logic.runLogicFrame();
+		}
+		const ObjectID id = h->getID();
+		if (block)
+		{
+			GameLogicDispatch dispatch(a.logic);
+			HordeCommands::registerHandlers(dispatch);
+			GameMessage msg(MSG_HORDE_TOGGLE_FORMATION, a.player(0)->getPlayerIndex());
+			msg.appendObjectIDArgument(id);
+			dispatch.dispatch(msg);
+			HordeContain *alt = dynamic_cast<HordeContain *>(h->getContain());
+			REQUIRE(alt != nullptr);
+			for (const Object *m : *alt->getContainedItemsList())
+			{
+				REQUIRE(m->testModelCondition(CombatNames::modelCondition("ALTERNATE_FORMATION"))); // GondorFighterHordeBlock's contain
+			}
+			for (int i = 0; i < 120; ++i)
+			{
+				a.logic.runLogicFrame(); // the members reach their block slots
+			}
+		}
+		const Coord3D goal{ 2400.0f, 600.0f, 0.0f };
+		AIUpdateInterface *ai = h->getAIUpdateInterface();
+		REQUIRE(ai != nullptr);
+		ai->aiMoveToPosition(goal, CMD_FROM_PLAYER);
+		for (int i = 0; i < 20; ++i)
+		{
+			a.logic.runLogicFrame(); // up to speed (both are by frame 20; the line horde reaches the arena's edge after frame 70)
+		}
+		const float x0 = h->getPosition()->x;
+		for (int i = 0; i < 40; ++i)
+		{
+			a.logic.runLogicFrame();
+		}
+		float product = 1.0f;
+		const bool modified = h->attributeModifierProduct(ATTRIBUTE_SPEED, nullptr, true, product);
+		CHECK(modified == block);
+		CHECK(product == doctest::Approx(block ? 0.6f : 1.0f)); // tolerance: the pool's float product of SPEED 60%; Locomotor::getMaxSpeedForCondition multiplies by it (RW 0x5E401E)
+		return h->getPosition()->x - x0;
+	};
+	const float line = march(false);
+	const float block = march(true);
+	MESSAGE("line formation " << line << ", shield wall " << block << " (ratio " << block / line << ")");
+	REQUIRE(line > 50.0f); // tolerance: the horde marched at all
+	CHECK(block / line == doctest::Approx(0.6f).epsilon(0.001)); // tolerance: SPEED 60% over 40 frames at full speed (measured 400.0 and 240.0 on a CI host)
+}
+
 // review DEVPORT-7e (Sol #1): a formation command names its horde in argument 0, and the network stamps only the sender's player (Network.cpp: the slot's
 // player index). A message of player 1 naming player 0's horde, through the packet codec, leaves that horde, its contain, its stance and the state hash
 // untouched, for both message types; the owner's identical message then swaps it (the control case: the message itself is valid)
@@ -888,9 +948,12 @@ TEST_CASE("backlog8 retail: a goblin horde that keeps a wall to scale (RW 0x86C6
 	CHECK(scaled.hordeCondition);
 	CHECK(scaled.stop);
 	CHECK(scaled.highest == 40.0f); // the wall's top: its base (0) + GeometryHeight 40, never above (RW 0x86E214's clamp)
-	CHECK(scaled.climbers == 5); // the five of the twenty whose way to their slots crosses the wall's cells; the others walk past it on the ground
-	CHECK(scaled.marked == 5);   // every member that climbed got SCALING_WALL_HORDE with CLIMBING
-	CHECK(scaled.rappellers == 5); // and came down the far side with RAPPELLING
+	// the six of the twenty whose way to their slots crosses the wall's cells; the others walk past it on the ground. lane OFFMAP-1: five while the
+	// port's idle state snapped every unit onto its goal cell centre at frame <= 1 (ZH's cheat move, not in RotWK's RW 0x745A64): from the positions
+	// the horde made them at, one more member's way crosses the wall (re-measured; the old snap put back alone gives five again)
+	CHECK(scaled.climbers == 6);
+	CHECK(scaled.marked == 6);     // every member that climbed got SCALING_WALL_HORDE with CLIMBING
+	CHECK(scaled.rappellers == 6); // and came down the far side with RAPPELLING
 	CHECK(scaled.endHighest == 0.0f); // everybody is back on the ground at the end
 	CHECK(scaled.reach == 90.0f); // H + 0x2EC: the largest distance to a slot, capped (RW 0x86BC41)
 }

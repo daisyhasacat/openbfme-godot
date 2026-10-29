@@ -13,6 +13,8 @@ extends RefCounted
 const EXIT_PASS := 0
 const EXIT_FAIL := 1
 const EXIT_SKIP := 77
+## issue #49: the install's languages (mount_retail's "languages"); the English captions and counts are checked on an English install only
+var _english := true
 
 const UNIT_INI := "data\\ini\\object\\goodfaction\\units\\men\\gondorfighter.ini"
 const UNIT_OBJECT := "GondorFighter"
@@ -59,6 +61,9 @@ func _run() -> int:
 	if not mount.ok:
 		print("FAIL: mount_retail: ", "\n  ".join(mount.errors))
 		return EXIT_FAIL
+	var languages: PackedStringArray = mount.get("languages", PackedStringArray())
+	_english = Array(languages).all(func(l): return String(l).ends_with(":English"))
+	print("  info the install's languages: %s" % [", ".join(languages)])
 	print("  info mount_retail %d ms: %d archives hashed, %d md5 cache hits" % [mount_ms, mount.archives_hashed, mount.md5_cache_hits])
 	_check(mount.archives_hashed + mount.md5_cache_hits == mount.mounted.size(), "every mounted archive was md5-verified (%d hashed + %d cached = %d)" % [mount.archives_hashed, mount.md5_cache_hits, mount.mounted.size()])
 	var mounted: Array = mount.mounted
@@ -191,6 +196,7 @@ func _run() -> int:
 	_map_objects(fs)
 	await _menu_player(fs)
 	_game_world(fs)
+	_asset_packs_switch(fs) # lane SDK-1b (a), SDK-1c
 	await _fx_player(fs)
 	_game_world_orders(fs)
 
@@ -599,7 +605,9 @@ func _map_terrain(fs: RefCounted) -> void:
 		for mi in node.find_children("*", "MeshInstance3D", true, false):
 			var m: ShaderMaterial = (mi as MeshInstance3D).mesh.surface_get_material(0)
 			if m != null:
-				_check(m.render_priority > terrain_priority and m.shader.code.contains("blend_mix"), "%s/%s draws after the opaque terrain (priority %d > %d, blended)" % [group, mi.name, m.render_priority, terrain_priority])
+				# RiverArea::additiveBlending rivers get the blend_add copy of river.gdshader (Fords of Isen II has only those)
+				var blend := "blend_add" if m.shader.code.contains("render_mode unshaded, blend_add") else "blend_mix"
+				_check(m.render_priority > terrain_priority and m.shader.code.contains(blend), "%s/%s draws after the opaque terrain (priority %d > %d, %s)" % [group, mi.name, m.render_priority, terrain_priority, blend])
 	var meshes := root.find_children("*", "MeshInstance3D", true, false)
 
 	# present a frame (the dummy renderer in headless mode: the scene is entered and drawn, not rasterised)
@@ -772,7 +780,10 @@ func _menu_player(fs: RefCounted) -> void:
 	if not boot.ok:
 		player.free()
 		return
-	_check(boot.strings > 10000 and boot.duplicate_labels == 36, "the string table has %d strings, 36 repeated labels (S-131): %d" % [boot.strings, boot.duplicate_labels])
+	if _english:
+		_check(boot.strings > 10000 and boot.duplicate_labels == 36, "the string table has %d strings, 36 repeated labels (S-131): %d" % [boot.strings, boot.duplicate_labels])
+	else:
+		_check(boot.strings > 10000, "the string table has %d strings (%d repeated labels; English's 36 are not checked in another language)" % [boot.strings, boot.duplicate_labels])
 	var font_names := " ".join(boot.fonts)
 	_check(font_names.contains("= Albertus MT") and font_names.contains("= Omnia LT Std"), "the corpus fonts loaded: %s" % [boot.fonts])
 	# lane UI-4 (Sol r1): a bold GameFont (language.ini's CreditsMinorTitleFont "Albertus MT" 16 Yes) is measured and drawn bold: RotWK's GDI synthesises
@@ -801,7 +812,11 @@ func _menu_player(fs: RefCounted) -> void:
 		if line.begins_with("text "):
 			texts.append(line.get_slice("'", 1))
 	texts.sort()
-	_check(texts == PackedStringArray(["MULTIPLAYER", "MY HEROES", "OPTIONS", "QUIT", "SOLO PLAY"]), "the five main menu captions come from the string table: %s" % [texts])
+	if _english:
+		_check(texts == PackedStringArray(["MULTIPLAYER", "MY HEROES", "OPTIONS", "QUIT", "SOLO PLAY"]), "the five main menu captions come from the string table: %s" % [texts])
+	else:
+		# another language: five captions from its string table, none a missing label
+		_check(texts.size() == 5 and not Array(texts).any(func(t): return String(t).contains("MISSING") or String(t).begins_with("$")), "the five main menu captions come from the string table: %s" % [texts])
 	var report: Dictionary = player.get_report()
 	_check(report.placeholders == PackedStringArray(["_type=RenderImage @ _level1.Image"]), "the main menu's Image clip is reported as a native placeholder (S-136): %s" % [report.placeholders])
 	_check(report.errors.is_empty() and report.missing_labels.is_empty() and report.font_fallbacks.is_empty(), "no render errors, missing labels or font fallbacks %s %s %s" % [report.errors, report.missing_labels, report.font_fallbacks])
@@ -1297,3 +1312,30 @@ func _game_world_orders(fs: RefCounted) -> void:
 			break
 	a.queue_free()
 	b.queue_free()
+
+
+## lane SDK-1b (a): GameWorld.set_asset_packs_used switches a loaded pack off and rebuilds what drew with it; switching back on (game.gd does
+## before every game, lane SDK-1c: LAN and online too) uses it again; a world loads a map either way
+func _asset_packs_switch(fs: RefCounted) -> void:
+	var dir := ProjectSettings.globalize_path("user://smoke-asset-pack/SmokePack")
+	DirAccess.make_dir_recursive_absolute(dir)
+	var f := FileAccess.open(dir.path_join("gumaarms.png"), FileAccess.WRITE)
+	f.store_buffer(PackedByteArray([137, 80, 78, 71, 13, 10, 26, 10])) # never decoded here: only its name matters
+	f.close()
+	var packs: Dictionary = fs.set_asset_packs(PackedStringArray([dir]))
+	_check(packs.ok and packs.textures == 1, "a synthetic asset pack loads (%s)" % str(packs.errors))
+	var world: Node3D = ClassDB.instantiate("GameWorld")
+	world.setup(fs)
+	var off: Dictionary = world.set_asset_packs_used(false)
+	_check(off.loaded and not off.used and off.changed, "the packs switch off: %s" % str(off))
+	var again: Dictionary = world.set_asset_packs_used(false)
+	_check(again.loaded and not again.used and not again.changed, "switching them off again changes nothing: %s" % str(again))
+	_check(world.load_map("map good celduin", {"seed": 5}).ok, "a map loads with the packs off")
+	var on: Dictionary = world.set_asset_packs_used(true)
+	_check(on.loaded and on.used and on.changed, "and back on (every game, LAN and online too, lane SDK-1c): %s" % str(on))
+	_check(world.load_map("map good celduin", {"seed": 5}).ok, "a map loads with the packs on")
+	var rep: Dictionary = fs.get_asset_pack_report()
+	_check(rep.packs.size() == 1 and rep.packs[0].name == "SmokePack" and rep.packs[0].misfits.is_empty(), "the pack report: %s" % str(rep))
+	world.free()
+	fs.set_asset_packs(PackedStringArray()) # the rest of the smoke run draws without packs
+	DirAccess.remove_absolute(dir.path_join("gumaarms.png"))

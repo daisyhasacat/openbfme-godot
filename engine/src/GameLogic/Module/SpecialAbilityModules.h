@@ -26,7 +26,7 @@
 //     RW 0xC05AF8: Aragorn's Elendil).
 // Not ported (stops S-859 .. S-863, see stopLines): the special objects (no retail ability names SpecialObject), the capture / garrison /
 // disguise / grab ability enums of the trigger switch, the face command before triggering (no AI face state: the facing check is the AI idle
-// test), the line of sight test of ApproachRequiresLOS, the approach point of RW 0x851607 (the move goes to the target), sounds and voices
+// test), the approach point of RW 0x851607 (the move goes to the target), sounds and voices
 // (client), FleeRangeAfterCompletion, the emotion system (Elendil's terror pulse is counted). MountedTemplate's replacement runs since lane HERO-2 (S-861).
 
 #pragma once
@@ -39,6 +39,8 @@
 
 #include <cstdint>
 #include <memory>
+
+class ObjectWeapons;
 #include <string>
 #include <vector>
 
@@ -319,10 +321,15 @@ protected:
 private:
 	int specialWeaponCondition() const;
 	Weapon *specialWeapon();
+	ObjectWeapons *weaponHost(); // the object's ObjectWeapons, else m_ownHost
 	const WeaponFireSpecialAbilityUpdateModuleData *m_wf;
 	std::unique_ptr<Weapon> m_weapon; // + 0x88
 	bool m_weaponMade = false;
 	unsigned m_shots = 0;
+	// lane WALL-1: the weapon host of an object without a weapon set (the deployed mine's Detonate): retail's Object embeds its WeaponSet and the special
+	// weapon's status and fire (RW 0x6CDCE7, RW 0x6CF3D2) are the Weapon's own, so the shot needs no set; the port's shot needs an ObjectWeapons host, made
+	// here once as ObjectWeapons::fireTempWeapon makes one (kept with the module: a delayed delivery refers to it)
+	std::unique_ptr<ObjectWeapons> m_ownHost;
 };
 
 class ToggleMountedSpecialAbilityUpdate : public SpecialAbilityUpdate, public CreateModuleInterface

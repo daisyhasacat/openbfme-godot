@@ -8,22 +8,25 @@ func _run() -> void:
 	var world = ClassDB.instantiate("GameWorld")
 	root.add_child(world)
 	assert(world.setup(fs).ok)
-	assert(world.load_map("map mp fall back 4p",{"slots":[{"player":"Player_1","faction":"FactionMen","human":true}]}).ok)
-	var player = world.execute_lua("for id,p in pairs(bfme.players) do if p.name=='Player_1' then return id end end")
-	assert(player.ok)
+	var loaded: Dictionary = world.load_map("map mp fall back 4p",{"slots":[{"player":"Player_1","faction":"FactionMen","human":true}]})
+	assert(loaded.ok)
+	var player := -1
+	for candidate in world.get_economy().players:
+		if candidate.name == "Player_1": player = int(candidate.index)
+	assert(player != -1)
 	var unit_template := OS.get_environment("FORMATION_UNIT")
 	if unit_template.is_empty(): unit_template = "MenPorter"
 	# Keep map creeps from killing porters while arrival and final facing are measured.
 	for id in world.get_object_ids(): world.destroy_object(id)
 	world.advance(0.2)
 	var units := PackedInt64Array()
-	for i in 4: units.append(world.create_object(unit_template,int(player.output),1800+i*40,1800,0))
+	for i in 4: units.append(world.create_object(unit_template,player,1800+i*40,1800,0))
 	var camera = Camera3D.new()
 	root.add_child(camera)
 	var hud = ClassDB.instantiate("InGameHudNode")
 	root.add_child(hud)
-	assert(hud.setup(fs,world,camera,"Player_1",{"camera_start":Vector3(2100,0,-2000),"alternate_mouse":not ("--standard" in OS.get_cmdline_user_args())}).ok)
-	hud.select_controller_group(units)
+	assert(hud.setup(fs,world,camera,"Player_1",{"test_hooks":true,"camera_start":Vector3(2100,0,-2000),"alternate_mouse":not ("--standard" in OS.get_cmdline_user_args())}).ok)
+	assert(hud.select_objects_with_message(units)==units.size())
 	world.advance(0.2)
 	for i in 4: await process_frame
 	var start: Vector2 = hud.world_to_pixel(Vector2(2100,2100))
@@ -55,6 +58,7 @@ func _run() -> void:
 	var slots: Array = preview.formation_slots
 	for i in 4:
 		var unit: Dictionary = world.get_object(units[i])
+		# tolerance: the preview must leave the initial position within locomotor stopping precision.
 		assert(abs(unit.x-(1800+i*40))<2,"Preview issued an early order")
 	hud.inject_mouse_button(MOUSE_BUTTON_LEFT,false,end)
 	hud.inject_mouse_button(MOUSE_BUTTON_RIGHT,false,end)
@@ -68,7 +72,9 @@ func _run() -> void:
 	for slot in slots:
 		var unit: Dictionary = world.get_object(slot.id)
 		assert(unit.ok,str([unit,slot]))
+		# tolerance: cell snapping and original pathfinder arrival clearance.
 		assert(Vector2(unit.x,unit.y).distance_to(Vector2(slot.x,slot.y))<45,str([unit,slot]))
+		# tolerance: final-facing completion uses a 0.31415927-radian threshold.
 		assert(abs(angle_difference(unit.angle,slot.angle))<0.2,str([unit,slot]))
 	# Reverse press order also previews; Escape cancels without deploying.
 	hud.inject_mouse_button(MOUSE_BUTTON_RIGHT,true,start)

@@ -12,6 +12,7 @@
 #include "GameClient/GUI/AptScreen.h"
 #include "GameClient/GUI/AptScreens/AptMainMenu.h"
 #include "GameClient/GUI/AptScreens/AptScreenFactories.h"
+#include "GameClient/GUI/AptScreens/AptObjectivesMenu.h"
 #include "GameClient/GUI/AptScreens/AptSkirmish.h"
 #include "GameClient/GUI/Shell/Shell.h"
 #include "GameClient/GUI/ShellEnvironment.h"
@@ -533,7 +534,9 @@ TEST_CASE("Shell: the A4 factory table holds MainMenu, Skirmish, LoadScreen, Opt
 		"Objectives.apt", "PlayerTribute.apt", // lane PLAY-1: the Palantir flag's screen
 		"CreateAHero.apt", // lane CAH-1: the Create-a-Hero builder
 		"OnlineShell.apt", // lane ONLINE-4: the online screens
-		"CampaignMenu.apt" }); // lane CAMPSAVE-1: the campaign between missions
+		"CampaignMenu.apt", // lane CAMPSAVE-1: the campaign between missions
+		"Messenger.apt", // SOCIAL-1 (landed by lane ONLINEMENU-1): RotWK's Messenger
+		"Objectives.apt" }); // lane CAMPUI-1: the objectives screen (RW 0x8E8843)
 	CHECK(fx.factories.has("mainmenu.APT"));
 	fx.wm->init();
 	fx.shell->push("AptLevel0.apt");
@@ -1015,18 +1018,17 @@ TEST_CASE("native objectives: twelve retail row providers, live status, input ga
 	fx.addMovie("Objectives", {});
 	fx.wm->init();
 	fx.environment.services = &fx.services;
-	fx.environment.missionObjectives = {{"Mission:First", false, false}, {"Mission:Bonus", true, true}};
+	ObjectivesScreenInfo objectives;
+	objectives.gameMode = 6; objectives.tutorialInput = true;
+	objectives.objectives = {{"Mission:First", false, true, false}, {"Mission:Bonus", true, true, true}};
+	fx.environment.objectivesScreen = &objectives;
 	fx.shell->push("Objectives.apt");
 	REQUIRE(fx.shell->top() != nullptr);
 	CHECK(fx.shell->top()->filename() == "Objectives.apt");
 	CHECK(fx.wm->backgroundMode() == 2);
-	bool reported = false;
-	for (const auto &note : fx.wm->notes())
-		reported = reported || note.detail == "[S-1922] native Objectives.apt: opening transition/script-hold guards and close animation are unverified";
-	CHECK(reported);
 	std::string value;
 	auto read = [&](const std::string &name) {
-		CHECK(fx.wm->getExtern(name, value) == (name == "AptObjectivesMenu::InputEnabled" ? AptExternResult::Number : AptExternResult::Value));
+		CHECK(fx.wm->getExtern(name, value) == AptExternResult::Value);
 		return value;
 	};
 	CHECK(read("Objective1") == "$Mission:First");
@@ -1036,16 +1038,16 @@ TEST_CASE("native objectives: twelve retail row providers, live status, input ga
 	CHECK(read("Objective12").empty());
 	CHECK(read("Objective12Status") == "00");
 	CHECK(fx.wm->getExtern("Objective13", value) == AptExternResult::NoProvider);
-	fx.environment.missionObjectives[0].completed = true;
+	objectives.objectives[0].completed = true;
 	CHECK(read("Objective1Status") == "10");
-	fx.environment.missionObjectives.erase(fx.environment.missionObjectives.begin());
+	objectives.objectives.erase(objectives.objectives.begin());
 	CHECK(read("Objective1") == "$Mission:Bonus");
 	CHECK(read("Objective2").empty());
-	fx.environment.objectivesInputEnabled = false;
+	objectives.tutorialInput = false;
 	CHECK(read("AptObjectivesMenu::InputEnabled") == "0");
 	CHECK(fx.wm->invokeCallback("AptObjectivesMenu::ReturnToGame", ""));
 	CHECK(fx.services.requests.empty());
-	fx.environment.objectivesInputEnabled = true;
+	objectives.tutorialInput = true;
 	CHECK(read("AptObjectivesMenu::InputEnabled") == "1");
 	CHECK(fx.wm->invokeCallback("AptObjectivesMenu::ReturnToGame", ""));
 	REQUIRE(fx.services.requests.size() == 1);

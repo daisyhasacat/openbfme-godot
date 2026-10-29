@@ -7,8 +7,8 @@ func _draw() -> void:
 	if graph.is_empty() or rect.size.x <= 0.0:
 		return
 	var lines: Array = graph.get("lines", [])
-	for pass_i in 2:
-		for l in lines:
+	for l in lines:
+		for pass_i in 2:
 			var c := Color.hex(((int(l.color) & 0xFFFFFF) << 8) | 0xFF)
 			var pts: PackedVector2Array = l.points
 			if pts.size() < 2:
@@ -25,15 +25,17 @@ func _draw() -> void:
 				draw_polyline(out, Color(c, 0.35), 3.0, true)
 			else:
 				draw_polyline(out, c, 1.0, true)
-	for marker in marker_commands():
-		draw_texture_rect_region(marker.texture, marker.rect, marker.region)
+		# RW 0x9257F2: finish this player before drawing the next player.
+		for marker in marker_commands([l]):
+			draw_texture_rect_region(marker.texture, marker.rect, marker.region)
 
 # RotWK RenderGraph RW 0x9257F2: result at the final sample, fortress marks
 # at their recorded sample. Results 3/4 have no outcome image.
 var _images := {}
-func marker_commands() -> Array:
+func marker_commands(lines: Array = []) -> Array:
 	var commands: Array = []
-	for line in graph.get("lines", []):
+	if lines.is_empty(): lines = graph.get("lines", [])
+	for line in lines:
 		var points: PackedVector2Array = line.get("points", PackedVector2Array())
 		if points.is_empty(): continue
 		var result := int(line.get("result", 3))

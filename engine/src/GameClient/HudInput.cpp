@@ -20,6 +20,7 @@
 #include "GameLogic/Locomotor.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/Combat/CombatQueries.h"
+#include "GameLogic/SimMath.h"
 #include <algorithm>
 #include <cmath>
 
@@ -30,7 +31,7 @@ HudInput::HudInput(GameLogic &logic, AIWorld *ai, TacticalView &view, CommandLis
 	, m_meta(m_ctx, metaMap)
 	, m_formation(m_ctx)
 	, m_place(m_ctx)
-	, m_guiCommand(m_ctx)
+	, m_guiCommand(m_ctx, m_command)
 	, m_command(m_ctx)
 	, m_selection(m_ctx, m_command)
 	, m_hotKey(m_ctx)
@@ -239,7 +240,9 @@ size_t HudInput::flush()
 {
 	const int local = m_ctx.localPlayer() ? m_ctx.localPlayer()->getPlayerIndex() : 0;
 	std::vector<ClientMessage> out = m_stream.propagate();
-	if (m_formation.consumed()) {
+	// PR #88 review fix 1: only while the gesture is live (placement active or a chord button still held). m_consumed outlives the order until
+	// the next press (it swallows the trailing release and clicks); cancelling the LookAt pointer on it left the camera dead after every order.
+	if (m_formation.gestureLive()) {
 		m_selection.setLeftMouseButton(false);
 		m_ui.setSelecting(false);
 		m_ui.endAreaSelectHint();
@@ -388,11 +391,14 @@ std::vector<std::string> HudInput::stops() const
 	// lane FACT-C (S-286 keeps the other context commands)
 	out.push_back("[S-2000] special power targets: a SPECIAL_POWER button waiting for its target sends RotWK's messages on the click (evaluateContextCommand RW 0x81E60B -> "
 				  "issueSpecialPowerCommand RW 0x81E147: AT_OBJECT for an object of a relationship the options allow, AT_LOCATION with the chained CommandTrigger buttons, "
-				  "source NONE); the action check RW 0x6A4260 (range, KindOf and the power's own target rules) and the kind-of / option 0x10 / 0x200000 target drops "
-				  "before it are not ported: the option's target kind alone makes a click valid");
+				  "source NONE); location targets use ActionManager's ported rules; object action checks (KindOf / module filters), unported per-type location rules "
+				  "and the kind-of / option 0x10 / 0x200000 target drops are not ported");
 	out.push_back("[S-2002] capture context command: a click on a building the selection can capture issues the first selected object's capture button (power type 0x1A / 0x1D) "
 				  "at it (RW 0x81E60B, canCaptureBuilding RW 0x82D0A1); not ported: a capture power's ObjectFilter (none in retail data; counted), the status pair + 0x438 / "
 				  "+ 0x110, the + 0x80 word, the shroud test, CAPTURE_FORBIDDEN, the per-player refusal RW 0x6943B2, stealth riders and the vision test");
+	out.push_back("[S-4944] siege deploy click (lane SIEGE-1): a right click on a wall a selected ladder / tower can dock at is the deploy (RW 0x81E60B's siege branch, "
+				  "InGameUI RW 0x69D674; MSG_DO_SPECIAL_POWER_AT_OBJECT with Command_SpecialAbilitySiegeDeploy's power, the attack hint); not identified: the InGameUI "
+				  "byte + 0x8B0 the branch requires clear (taken as clear); the button's unit voice is not played");
 	out.push_back("[S-1673] hotkeys (HUD-4): Ctrl+H walks the local player's objects for the next HERO after the selected one and selects it (RW 0x81FDA2 / 0x81DABC; "
 				  "INFERENCE: the player's team list is its prototypes in creation order, the gate RW 0x81FDA8 is a local player, no drawable test); D / F / G send "
 				  "MSG_CHANGE_STANCE 2 / 1 / 3 (RW 0x8201F5 .. 0x820247); Shift+Up / Shift+Down (and the unit cycle keys) have no handler in RotWK 2.01 and pass "
@@ -458,64 +464,126 @@ void FormationPlacement::replayFirstPress(const ClientMessage &before)
 	m_firstPress.reset();
 }
 
+// The checks begin() makes before it reads the terrain: the input gates, formation data with templates, the firing-arc pick at the pixel
+// and at least one eligible selected object. PR #88 review fix 2: translate() buffers a first press only when these pass, so a press that
+// cannot start a formation (placing a building, no eligible selection, BFME1 data without FormationAssistant.ini) reaches selection and
+// the LookAt translator in the same frame, as before.
+bool FormationPlacement::eligible(const ICoord2D &pixel, bool &rotatingArc, std::vector<ObjectID> &ids) const
+{
+	const auto &ui = m_ctx.ui;
+	ids.clear();
+	rotatingArc = false;
+	if (!ui.getInputEnabled() || ui.isPlacing() || (ui.getGUICommand() && ui.getGUICommand()->m_command != GUI_COMMAND_ATTACK_MOVE) || !m_ctx.localPlayer() ||
+		!m_ctx.formations || m_ctx.formations->templates.empty())
+		return false;
+	if (const Object *picked = HudObjects::pickForHover(m_ctx, pixel))
+	{
+		if (const auto *field = picked->getTemplate()->findField("FiringArc"))
+		{
+			if (const auto *arc = std::get_if<float>(field))
+				rotatingArc = *arc < 360.f;
+		}
+	}
+	for (ObjectID id : ui.selected())
+	{
+		Object *o = m_ctx.logic.findObjectByID(id);
+		if (!o || o->isDestroyed() || o->isEffectivelyDead() || o->getControllingPlayer() != m_ctx.localPlayer())
+			continue;
+		auto *ai = o->getAIUpdateInterface();
+		if (ai && (rotatingArc || !ai->isImmobile()) && !o->isKindOfName("HORDE_MEMBER") && ObjectFilterMatch::allows(m_ctx.logic, m_ctx.formations->valid, *o, nullptr))
+			ids.push_back(id);
+	}
+	return !ids.empty();
+}
+
+bool FormationPlacement::canStart(const ICoord2D &pixel) const
+{
+	bool rotatingArc = false;
+	std::vector<ObjectID> ids;
+	return eligible(pixel, rotatingArc, ids);
+}
+
 // Two-button placement takes priority over selection and right-drag scrolling.
-bool FormationPlacement::begin(const ICoord2D &pixel, bool controller) {
- auto &ui=m_ctx.ui;
- if(!ui.getInputEnabled() || ui.isPlacing() || (ui.getGUICommand() && ui.getGUICommand()->m_command != GUI_COMMAND_ATTACK_MOVE) || !m_ctx.localPlayer() || !m_ctx.formations) return false;
- m_rotatingArc=false;
- if(auto *picked=HudObjects::pickForHover(m_ctx,pixel)) {
-  if(const auto *field=picked->getTemplate()->findField("FiringArc")) {
-   if(const auto *arc=std::get_if<float>(field))m_rotatingArc=*arc<360.f;
-  }
- }
- m_selection.clear();
- for(ObjectID id:ui.selected()) {
-  Object *o=m_ctx.logic.findObjectByID(id);
-  if(!o || o->isDestroyed() || o->isEffectivelyDead() || o->getControllingPlayer()!=m_ctx.localPlayer()) continue;
-  auto *ai=o->getAIUpdateInterface();
-  if(ai && (m_rotatingArc || !ai->isImmobile()) && !o->isKindOfName("HORDE_MEMBER") && ObjectFilterMatch::allows(m_ctx.logic,m_ctx.formations->valid,*o,nullptr)) m_selection.push_back(id);
- }
- if(m_selection.empty() || !m_ctx.view.screenToTerrain(pixel,m_ctx.logic,m_anchor)) return false;
- m_controller=controller;
- m_originalSelection=ui.selected();
- ui.formationActive=true; m_consumed=true; aim(pixel); return true;
+bool FormationPlacement::begin(const ICoord2D &pixel, bool controller)
+{
+	bool rotatingArc = false;
+	std::vector<ObjectID> ids;
+	Coord3D anchor;
+	if (!eligible(pixel, rotatingArc, ids) || !m_ctx.view.screenToTerrain(pixel, m_ctx.logic, anchor))
+		return false;
+	m_rotatingArc = rotatingArc;
+	m_selection = std::move(ids);
+	m_anchor = anchor;
+	m_controller = controller;
+	m_originalSelection = m_ctx.ui.selected();
+	m_ctx.ui.formationActive = true;
+	m_consumed = true;
+	aim(pixel);
+	return true;
 }
-void FormationPlacement::aim(const ICoord2D &pixel) {
- auto &ui=m_ctx.ui;
- Coord3D end;
- if(!m_ctx.view.screenToTerrain(pixel,m_ctx.logic,end)) return;
- if(!std::isfinite(end.x)||!std::isfinite(end.y))return;
- float mx=0,my=0;
- if(auto *terrain=m_ctx.logic.terrain();terrain && terrain->getLargestExtent(mx,my)) {
-  if(end.x<0||end.y<0||end.x>mx||end.y>my)return;
- }
- m_end=end;
- const float dx=end.x-m_anchor.x,dy=end.y-m_anchor.y;
- const float length=std::sqrt(dx*dx+dy*dy);
- float angle=length>1 ? std::atan2(dy,dx) : 0;
- ui.formationType=m_ctx.formations->choose(length,m_selection.size());
- ui.formationAnchor=m_anchor;ui.formationAngle=angle;ui.formationDragLength=length;ui.formationData=m_ctx.formations;
- const auto slots=m_ctx.formations->layout(m_ctx.logic,m_selection,ui.formationType,m_anchor);
- const float c=std::cos(angle+1.5707964f),s=std::sin(angle+1.5707964f);
- ui.formationSlots.clear();
- for(const auto &slot:slots) {
-  Coord3D p{m_anchor.x+slot.offset.x*c-slot.offset.y*s,m_anchor.y+slot.offset.x*s+slot.offset.y*c,0};
-  p.z=m_ctx.logic.getGroundHeight(p.x,p.y);
-  ui.formationSlots.push_back({slot.object,p,angle,0,slot.preview});
- }
+
+// PR #88 review fix 6: the drag angle and the template index go into MSG_DO_MOVETO_FORMATION, so they are computed with SimMath (one SSE
+// rounding per operation, the CRT-identical atan2, the deterministic sin / cos of the sim handler AICommands::formationMove), never libm.
+void FormationPlacement::aim(const ICoord2D &pixel)
+{
+	auto &ui = m_ctx.ui;
+	Coord3D end;
+	if (!m_ctx.view.screenToTerrain(pixel, m_ctx.logic, end))
+		return;
+	if (!std::isfinite(end.x) || !std::isfinite(end.y))
+		return;
+	float mx = 0, my = 0;
+	if (auto *terrain = m_ctx.logic.terrain(); terrain && terrain->getLargestExtent(mx, my))
+	{
+		if (end.x < 0 || end.y < 0 || end.x > mx || end.y > my)
+			return;
+	}
+	m_end = end;
+	const float dx = SimMath::subf32(end.x, m_anchor.x), dy = SimMath::subf32(end.y, m_anchor.y);
+	const float length = SimMath::length2d(dx, dy);
+	const float angle = length > 1 ? SimMath::fstpDword(SimMath::atan2d(dy, dx)) : 0.0f;
+	ui.formationType = m_ctx.formations->choose(length, m_selection.size());
+	ui.formationAnchor = m_anchor;
+	ui.formationAngle = angle;
+	ui.formationDragLength = length;
+	ui.formationData = m_ctx.formations;
+	const auto slots = m_ctx.formations->layout(m_ctx.logic, m_selection, ui.formationType, m_anchor);
+	const float rotated = SimMath::addf32(angle, 1.5707964f);
+	const float c = SimMath::cosDet(rotated), s = SimMath::sinDet(rotated);
+	ui.formationSlots.clear();
+	for (const auto &slot : slots)
+	{
+		Coord3D p{ SimMath::subf32(SimMath::addf32(m_anchor.x, SimMath::mulf32(slot.offset.x, c)), SimMath::mulf32(slot.offset.y, s)),
+				   SimMath::addf32(SimMath::addf32(m_anchor.y, SimMath::mulf32(slot.offset.x, s)), SimMath::mulf32(slot.offset.y, c)), 0 };
+		p.z = m_ctx.logic.getGroundHeight(p.x, p.y);
+		ui.formationSlots.push_back({ slot.object, p, angle, 0, slot.preview });
+	}
 }
-void FormationPlacement::commit() {
- if(m_rotatingArc || !m_ctx.ui.formationSlots.empty()) {
-  ClientMessage &order=m_ctx.stream.append(m_rotatingArc?MSG_DO_ROTATE_FIRINGARC:MSG_DO_MOVETO_FORMATION);
-  if(m_rotatingArc)order.appendLocation(m_end);
-  else {
-  order.appendLocation(m_ctx.ui.formationAnchor);order.appendReal(m_ctx.ui.formationAngle);
-  order.appendInteger(m_ctx.ui.formationType);
-  order.appendBoolean((m_ctx.ui.getGUICommand() && m_ctx.ui.getGUICommand()->m_command==GUI_COMMAND_ATTACK_MOVE) || m_ctx.ui.isInAttackMoveToMode());
-  }
- }
- m_ctx.ui.formationActive=false;m_ctx.ui.formationExpires=m_ctx.ui.clientFrame()+45;
- m_ctx.ui.clearAttackMoveToMode();
+
+void FormationPlacement::commit()
+{
+	auto &ui = m_ctx.ui;
+	const bool guiAttackMove = ui.getGUICommand() && ui.getGUICommand()->m_command == GUI_COMMAND_ATTACK_MOVE;
+	if (m_rotatingArc || !ui.formationSlots.empty())
+	{
+		ClientMessage &order = m_ctx.stream.append(m_rotatingArc ? MSG_DO_ROTATE_FIRINGARC : MSG_DO_MOVETO_FORMATION);
+		if (m_rotatingArc)
+			order.appendLocation(m_end);
+		else
+		{
+			order.appendLocation(ui.formationAnchor);
+			order.appendReal(ui.formationAngle);
+			order.appendInteger(ui.formationType);
+			order.appendBoolean(guiAttackMove || ui.isInAttackMoveToMode());
+		}
+	}
+	ui.formationActive = false;
+	ui.formationExpires = ui.clientFrame() + 45;
+	ui.clearAttackMoveToMode();
+	// PR #88 review fix 3: the order used the pending attack-move button; leave the GUI command mode too (GUICommandTranslator clears it
+	// after its own attack-move order), or the next left click would send MSG_DO_ATTACKMOVETO
+	if (guiAttackMove)
+		ui.setGUICommand(nullptr);
 }
 
 void FormationPlacement::frame() {
@@ -555,7 +623,7 @@ MessageDisposition FormationPlacement::translate(const ClientMessage &msg)
 			}
 			replayFirstPress(msg);
 		}
-		else if (!m_consumed && !m_ctx.ui.formationActive)
+		else if (!m_consumed && !m_ctx.ui.formationActive && canStart(msg.arg(0).pixel))
 		{
 			// BFME2 RVA 0x431AEC: neither selection nor right-drag scrolling sees a
 			// speculative first press. A failed chord replays it with its original modifiers/time.

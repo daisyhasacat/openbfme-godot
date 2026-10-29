@@ -5,6 +5,8 @@
 // the objects of a cell in list order, and breaks ties by object id, so the answer never depends on pointer values or hash order.
 //
 // WHAT IS INFERENCE (stop S-326): the retail partition manager's filters and cell order are not read; the grid answers "the nearest enemy within the vision range".
+// Lane TARGET-1: the mood scan, attack-move, guard and hunt ask RotWK's search (GameLogic/AI/AIClosestEnemy.h); only the melee re-acquire (AIAttackMelee 0xE5,
+// RW 0x74D46D, S-787) still asks this grid.
 
 #pragma once
 
@@ -12,9 +14,7 @@
 #include "GameLogic/ObjectTypes.h"
 
 #include <cstdint>
-#include <map>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 class GameLogic;
@@ -32,46 +32,40 @@ public:
 	{
 		ALLOW_STRUCTURES = 1,       ///< source ATTACK_BUILDINGS: bypass RejectBuildings (not the insignificant filter)
 		HORDES_ONLY = 2,            ///< the seeker is a horde: targets are horde objects and lone units, never members
-		IGNORE_INSIGNIFICANT_BUILDINGS = 8, ///< source qualifier 4, selected by mood/guard AIData
-		MEMBERS_ONLY = 4            ///< the seeker is a lone unit: targets are lone units and horde MEMBERS, never the horde object
+		MEMBERS_ONLY = 4,           ///< the seeker is a lone unit: targets are lone units and horde MEMBERS, never the horde object
+		IGNORE_INSIGNIFICANT_BUILDINGS = 16,
+		CENTER_3D = 8               ///< review of #73: the range and the order by the 3D centre distance (RW 0x7006D7's partition queries, distance type 1)
 	};
-	// the nearest enemy of `seeker` within `range` (edge to the seeker's centre) that one of its weapons can attack, or null. Ties: the lower object id.
+	// the nearest enemy of `seeker` within `range` (edge to the seeker's centre; CENTER_3D: centre to centre) that one of its weapons can attack, or null.
+	// Ties: the lower object id.
 	Object *findClosestEnemy(const Object &seeker, float range, unsigned flags, CommandSourceType source);
 	// lane PLAY-4: the same scan measured from `center` instead of the seeker (the guard machine's scan around the guarded spot, RW 0x70146A)
 	Object *findClosestEnemyNear(const Object &seeker, const Coord3D &center, float range, unsigned flags, CommandSourceType source);
-	// every attackable object whose centre is within `radius` of `center`, in (cell, list) order
-	void collectInRadius(const Coord3D &center, float radius, std::vector<Object *> &out);
+	// every attackable object whose centre is within `radius` of `center`, in (cell, list) order. lane UBER-2A: `layers` (bit k: player k's objects, as
+	// PartitionFilter::playerLayerMask) skips the other players' objects unread; an object of a team with relationship overrides (layer -1) is always taken
+	void collectInRadius(const Coord3D &center, float radius, std::vector<Object *> &out, std::uint32_t layers = 0xFFFFFFFFu);
 	void reset();
 	size_t indexedObjects() const { return m_count; }
 
 private:
-	// Adjacent objects with the same team keep their original cell/list positions.
-	// Enemy scans can reject a whole run without computing distances for friendly troops.
-	struct TeamRun
+	struct Indexed
 	{
-		const Team *team = nullptr;
-		size_t end = 0;
+		ObjectID id;
+		int layer; ///< layerOf at the build
 	};
-	struct Cell
-	{
-		std::vector<ObjectID> objects;
-		std::vector<TeamRun> teams;
-	};
+	static int layerOf(const Object &o);
 	void rebuild();
-	void refreshTeams();
-	void collectInRadius(const Coord3D &center, float radius, std::vector<Object *> &out, const Object *enemyOf);
+	void append(Object *from); // every attackable object from `from` to the list's tail, in list order
+	bool appendCreated();      // lane UBER-2A (Uber): the objects made since the build appended; false: the last one indexed left the list (rebuild instead)
 	GameLogic &m_logic;
 	unsigned m_builtFrame = 0xFFFFFFFFu;
 	size_t m_builtCount = 0;
+	ObjectID m_builtTail = INVALID_ID; // the last object of the list the index looked at
 	unsigned m_builtTransitions = 0; // GameLogic::containWorldTransitions at the build: a contain's rider leaving or entering the world (lane GARRISON-1) rebuilds
 	size_t m_count = 0;
-	float m_maxRadius = 0.0f;
-	std::uint64_t m_builtTeams = 0;
-	// the cells keep their vectors from build to build (a rebuild runs whenever the object count changed, i.e. after every projectile of a battle
-	// frame); a cell left empty stays in the table. No result depends on the table's order: queries visit cells by coordinate
-	struct CellHash
-	{
-		size_t operator()(const std::pair<int, int> &c) const { return (size_t)(std::uint32_t)c.first * 0x9E3779B97F4A7C15ull ^ (std::uint32_t)c.second; }
-	};
-	std::unordered_map<std::pair<int, int>, Cell, CellHash> m_cells;
+	// cell (x, y) packed into a key -> its objects in list order. A rebuild empties the cells and keeps them with their storage (no allocation once the grid
+	// is warm; an empty cell answers like an absent one); queries visit cells by their own (x, y) loop, never in the map's order
+	std::unordered_map<std::uint64_t, std::vector<Indexed>> m_cells;
+	std::vector<Object *> m_near; // findClosestEnemyNear's candidates, kept between calls for their storage
+	static std::uint64_t cellKey(int cx, int cy) { return ((std::uint64_t)(std::uint32_t)cx << 32) | (std::uint32_t)cy; }
 };

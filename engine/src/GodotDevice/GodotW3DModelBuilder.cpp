@@ -4,6 +4,7 @@
 #include "GodotDevice/GodotW3DModelBuilder.h"
 #include "GameClient/WaterGeometry.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
+#include "GodotDevice/GodotW3DMaterial.h"
 #include "GodotDevice/GodotPackedTexture.h"
 #include "Libraries/Source/Apt/AptLoad.h"
 
@@ -101,6 +102,23 @@ Ref<Texture2D> W3DModelBuilder::loadTexture(RetailFileSystem &fs, const std::str
 		meshInfo["texture_path"] = cached->second->get_meta("retail_path");
 		if (cached->second->has_meta("packed_texture_stop")) meshInfo["packed_texture_stop"] = cached->second->get_meta("packed_texture_stop");
 		return cached->second;
+	}
+
+	// lane SDK-1: an asset pack's replacement first (the bibs and the placement shadow decals load here; GameClient/AssetPacks.h)
+	std::string packError;
+	Ref<Image> packImage = Load_Asset_Pack_Image(fs.assetPacks().empty() ? nullptr : &fs.assetPacks(), name, packError);
+	if (!packError.empty())
+	{
+		((Array)m_report["errors"]).push_back(toGodot("texture " + name + ": " + packError));
+		return Ref<Texture2D>();
+	}
+	if (packImage.is_valid())
+	{
+		Ref<ImageTexture> packed = ImageTexture::create_from_image(packImage);
+		packed->set_meta("retail_path", packImage->get_meta("retail_path"));
+		meshInfo["texture_path"] = packImage->get_meta("retail_path");
+		m_textureCache[key] = packed;
+		return packed;
 	}
 
 	// Use the mounted game's texture layout, as the material factory does.

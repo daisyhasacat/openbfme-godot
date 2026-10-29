@@ -635,6 +635,7 @@ std::vector<std::string> SpellBookPowers::stopLines()
 	out.push_back(TaintManager::stopLine());  // S-6110
 	out.push_back(taintViewStopLine());       // S-6111
 	out.push_back(taintAreaVisualStopLine()); // S-6112
+	out.push_back(TerrainTrees::trees1StopLine()); // lane TREES1: S-5260
 	return out;
 }
 

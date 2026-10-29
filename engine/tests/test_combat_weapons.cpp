@@ -537,7 +537,7 @@ TEST_CASE("projectile walls: arrows sweep walls instead of damaging the stored v
 	}
 	SUBCASE("inactive gate geometry") { wall->setGeometryActive("Closed", false); blocked = false; }
 	SUBCASE("above wall") { Coord3D p = *wall->getPosition(); p.z = -200; wall->setPosition(&p); blocked = false; }
-	SUBCASE("dead wall") { wall->kill(DEATH_NORMAL); blocked = false; }
+	SUBCASE("dead wall") { wall->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL); blocked = false; }
 	SUBCASE("wall rebalance enabled also blocks") { w.logic->settings().wallBalance.enabled = true; }
 	SUBCASE("nearest wall wins")
 	{

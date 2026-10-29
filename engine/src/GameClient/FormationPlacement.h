@@ -20,11 +20,18 @@ class FormationPlacement : public MessageTranslator
 	void cancel();
 	void frame();
 	bool begin(const ICoord2D &pixel, bool controller = false);
+	// begin()'s checks without the terrain pick: could a chord pressed at `pixel` start placement now
+	bool canStart(const ICoord2D &pixel) const;
 	void aim(const ICoord2D &pixel);
 	void commit();
 	bool consumed() const
 	{
 		return m_consumed;
+	}
+	// The gesture is live: placement is active, or a button of a chord that started placement is still held.
+	bool gestureLive() const
+	{
+		return m_ctx.ui.formationActive || (m_consumed && (m_left || m_right));
 	}
 	static bool withinChordDistance(const ICoord2D &first, const ICoord2D &next);
 	static bool isStartOfDrag(const ClientMessage &first, const ClientMessage &next);
@@ -32,6 +39,7 @@ class FormationPlacement : public MessageTranslator
 
   private:
 	void replayFirstPress(const ClientMessage &before);
+	bool eligible(const ICoord2D &pixel, bool &rotatingArc, std::vector<ObjectID> &ids) const;
 	HudContext &m_ctx;
 	std::unique_ptr<ClientMessage> m_firstPress;
 	bool m_left = false, m_right = false, m_consumed = false, m_controller = false;

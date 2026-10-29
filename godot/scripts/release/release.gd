@@ -4,7 +4,8 @@
 ##    Windows %APPDATA%\Godot\app_userdata\OpenBFME). Written by the SessionLogger class (GodotDevice/GodotRelease.h): every print, warning and error of
 ##    the session, the version line first, each line without the home folder or the user name (Common/LogPrivacy.h), flushed at once. Godot's own
 ##    file log is off in project.godot (it would hold the same text unfiltered). The console (stdout / stderr) goes through the same filter
-##    (SessionLogger.filter_console, POSIX). The 20 newest logs are kept.
+##    (SessionLogger.filter_console, POSIX). Fields are capped at 16 KiB; at 1 MiB each file retains its initial context (up to 64 KiB)
+##    and a rolling tail of recent records. The 20 newest logs are kept.
 ##  * the version: "OpenBFME <git describe> (<build date>)" printed first, written first into the log, and shown in a corner of the menus
 ##    (game.gd calls set_in_game(true) while a game is on screen).
 ##  * a crash: a marker user://logs/<log name>.running (with the process id) exists while the game runs and is removed when it ends normally; a
@@ -27,12 +28,14 @@
 extends Node
 
 const UpdateHandover := preload("res://scripts/release/update_handover.gd")
+const LanguageWarning := preload("res://scripts/release/language_warning.gd")
 const UPDATE_POLL_SECONDS := 1.0
 const UPDATE_NOTE_SECONDS := 15.0   # how long "Up to date" stays in the corner
 const UPDATE_WATCH_SECONDS := 3 * 3600.0
 const LOG_DIR := "user://logs"
 const KEEP_LOGS := 20
-const REPORT_HINT := "Please attach this file to your report in the OpenBFME Discord, channel #feedback, together with the version above."
+const REPORT_HINT := "Please attach this file and the version above to the OpenBFME Discord #bug-reports forum or a GitHub issue."
+const NO_LOG_REPORT_HINT := "No session log was created. Report this error in the OpenBFME Discord #bug-reports forum or GitHub issues. Include your OpenBFME version."
 const OPEN_LOGS_ACTION := "open_logs"
 const FREEZE_SECONDS := 5.0
 
@@ -93,8 +96,7 @@ func _ready() -> void:
 		# Autoload ready runs after Godot's native initialization.
 		var crash_error: String = info.install_crash_handler()
 		if not crash_error.is_empty():
-			fatal("Windows crash diagnostics: " + crash_error)
-			return
+			printerr("RELEASE Windows crash diagnostics unavailable: ", info.redact(crash_error))
 		print("RELEASE local minidumps: user://logs/minidumps (private process data; never uploaded)")
 		# stop S-1923 (what is left of it since win-crash-1's minidumps; DEVPORT-6 keeps it reported): the dump names the extension's frames
 		# by offset only, mapped later with the build's private symbols
@@ -154,13 +156,21 @@ func fatal(message: String) -> void:
 		return
 	if info == null:
 		# lane GLIBC-1: without the extension there is no session log and no message panel; the system's own dialog, then quit
-		OS.alert("%s\n\nOpenBFME cannot continue.\n\n%s" % [message, REPORT_HINT], "OpenBFME error")
+		OS.alert(fatal_text(message, "", ""), "OpenBFME error")
 		get_tree().quit(1)
 		return
-	var where: String = _folder_and_file(log_path_for_user(log_path)) if not log_path.is_empty() else "(no log file)"
+	var where: String = _folder_and_file(log_path_for_user(log_path)) if not log_path.is_empty() else ""
 	get_tree().paused = true
-	_message("%s\n\nOpenBFME cannot continue.\n\nVersion: %s\nLog file: %s\n\n%s" % [message, version_line(), where, REPORT_HINT], "OpenBFME error", log_path,
-		true)
+	_message(fatal_text(message, version_line(), where), "OpenBFME error", log_path, true)
+
+
+static func fatal_text(message: String, version: String, log_file: String) -> String:
+	var text := "%s\n\nOpenBFME cannot continue.\n\n" % message
+	if not version.is_empty():
+		text += "Version: %s\n" % version
+	if log_file.is_empty():
+		return text + NO_LOG_REPORT_HINT
+	return text + "Log file: %s\n\n%s" % [log_file, REPORT_HINT]
 
 
 ## lane GLIBC-1: what to do when the openbfme extension did not load. A package (Godot's export template): update it with the launcher or
@@ -168,9 +178,9 @@ func fatal(message: String) -> void:
 ## not found"). A developer's tree: build the extension (build.bat is Windows only).
 static func extension_hint() -> String:
 	if OS.has_feature("template"):
-		var hint := "update OpenBFME with the OpenBFME Launcher, or report it in the OpenBFME Discord, channel #feedback"
+		var hint := "Update OpenBFME with the launcher. If it still will not start, report this error in the OpenBFME Discord #bug-reports forum or GitHub issues."
 		if OS.get_name() == "Linux":
-			return "on Linux this usually means the system's GLIBC is older than this build needs (the console names the missing version); " + hint
+			return "This Linux system may be too old for this build. Update Linux and try again. " + hint
 		return hint
 	if OS.get_name() == "Windows":
 		return "run build.bat"
@@ -224,15 +234,15 @@ func open_log_file(name: String) -> Error:
 	return _show_in_file_manager(ProjectSettings.globalize_path("user://logs/" + name))
 
 
-## The game's only call of the file manager (tools/release/net_guard.py allows OS.shell_show_in_file_manager / OS.shell_open in this function
-## and nowhere else): `path` must lie inside the user data folder after normalising (no URL, no UNC path, no ".." escape).
+## The game's file-manager policy (the external-open helper owns the OS effect).
+## `path` must lie inside the user data folder after normalising (no URL, no UNC path, no ".." escape).
 func _show_in_file_manager(path: String) -> Error:
 	var root := OS.get_user_data_dir().replace("\\", "/").simplify_path()
 	var target := path.replace("\\", "/").simplify_path()
 	if root.is_empty() or target.contains("..") or target.contains("://") or not (target == root or target.begins_with(root + "/")):
 		printerr("RELEASE refused to show a path outside the user data folder in the file manager")
 		return ERR_INVALID_PARAMETER
-	return OS.shell_show_in_file_manager(target, true)
+	return preload("res://scripts/external_open.gd").show_in_file_manager(target)
 
 
 ## Lane ONEZIP-1: asks the launcher beside the game which version this start plays (at most UpdateHandover.WAIT_MS). true when the
@@ -388,7 +398,68 @@ static func aotr_folder(path: String) -> String:
 	return ""
 
 
+## mount report ({ok, errors, ...}); with ok false the caller fails with the errors. PR #77: when the mount took language archives no pin covers,
+## the details are logged and the language warning (scripts/release/language_warning.gd) is shown before the game goes on.
 func mount_retail(fs: RefCounted) -> Dictionary:
+	var mount: Dictionary = await _mount_retail_folders(fs)
+	# lane SDK-1: the asset pack models that replace nothing or do not fit the model they replace (left out; the game's model is drawn)
+	for note in mount.get("asset_pack_notes", PackedStringArray()):
+		print("RELEASE asset packs: ", note)
+	if mount.get("ok", false) and mount.has("asset_pack_notes"):
+		_write_asset_pack_report(fs) # lane SDK-1b (b)
+	if mount.get("ok", false) and await language_warning(mount):
+		mount["quit"] = true # --language-warning-shot: the capture is saved, the game quits (game.gd)
+	return mount
+
+
+## PR #77: the warning for an install in a language OpenBFME has not checked: logged always; shown in a window once per install (until the player
+## ticks "Don't show this again"), not in a headless or scripted (--auto) run. --language-warning-shot=<png> (a proof capture): the box is shown even
+## in a scripted run, the window is saved to that file, and the game quits (returns true).
+func language_warning(mount: Dictionary) -> bool:
+	var w := LanguageWarning.warning_of(mount)
+	if w.is_empty():
+		return false
+	for line in LanguageWarning.log_lines(mount):
+		print(line)
+	var shot := ""
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--language-warning-shot="):
+			shot = a.trim_prefix("--language-warning-shot=")
+	if _headless() or (OS.get_cmdline_user_args().has("--auto") and shot.is_empty()):
+		print("LANGUAGE the warning box is not shown in a headless or scripted run")
+		return false
+	if shot.is_empty() and LanguageWarning.dismissed(mount):
+		print("LANGUAGE the player chose not to see the warning again for this install")
+		return false
+	var box: AcceptDialog = LanguageWarning.make_dialog(mount)
+	if not shot.is_empty():
+		# the capture renders the box at the menus' size in a viewport of its own (the window may not have its size yet this early)
+		var stage := SubViewport.new()
+		stage.size = Vector2i(1280, 720)
+		stage.gui_embed_subwindows = true
+		stage.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		var backdrop := ColorRect.new()
+		backdrop.color = Color(0.05, 0.05, 0.06)
+		backdrop.size = Vector2(1280, 720)
+		stage.add_child(backdrop)
+		add_child(stage)
+		stage.add_child(box)
+		box.popup_centered()
+		for i in 30:
+			await get_tree().process_frame
+		await RenderingServer.frame_post_draw
+		var image := stage.get_texture().get_image()
+		var err := image.save_png(shot)
+		print("LANGUAGE --language-warning-shot: ", shot.get_file(), " ", image.get_width(), "x", image.get_height(), " ", error_string(err))
+		stage.queue_free()
+		return true
+	add_child(box)
+	box.popup_centered()
+	await box.tree_exiting
+	return false
+
+
+func _mount_retail_folders(fs: RefCounted) -> Dictionary:
 	if selected_game() == "bfme2-106":
 		var setup: RefCounted = ClassDB.instantiate("InstallSetup")
 		var conf: Dictionary = setup.configured()
@@ -442,6 +513,22 @@ func mount_retail(fs: RefCounted) -> Dictionary:
 		return result
 	var conf: Dictionary = setup.configured()
 	var args := OS.get_cmdline_user_args()
+	fs.set_mods(mod_args(args, OS.get_environment("OPENBFME_MOD"))) # lane MODS-1: RotWK's -mod, mounted over the verified game files
+	fs.set_install_mods(install_mod_args(args, OS.get_environment("OPENBFME_MOD_INSTALL"))) # lane MODS-2: mods installed into the game folder
+	var engines := PackedStringArray() # lane MODS-3: the modified game binaries of the mod (Common/ModEngineFeatures.h): their features turn on
+	for a in args:
+		if a.begins_with("--mod-engine="):
+			engines.push_back(a.trim_prefix("--mod-engine="))
+	fs.set_mod_engines(engines)
+	# lane SDK-0: cosmetic asset packs (drawing only; engine GameClient/AssetPacks.h): every folder in user://asset-packs (name order), then
+	# each --asset-pack=FOLDER; a pack with a problem stops the start with its message rather than being skipped
+	var packs: Dictionary = fs.set_asset_packs(asset_pack_folders(args))
+	if not packs.ok:
+		return {"ok": false, "errors": packs.errors}
+	if not packs.packs.is_empty():
+		print("RELEASE asset packs: ", ", ".join(packs.packs), " (", packs.textures, " textures, ", packs.models, " models)")
+		for note in packs.notes:
+			print("RELEASE asset packs: ", note)
 	var test_pick := _first_run_test_args(args)
 	print("RELEASE game folders: ", conf.source)
 	if conf.source == "env" and test_pick.is_empty():
@@ -463,6 +550,86 @@ func mount_retail(fs: RefCounted) -> Dictionary:
 	return result
 
 
+# lane MODS-1: the -mod operands in command-line order: "-mod PATH" (retail's spelling), "--mod=PATH", and OPENBFME_MOD before them. A relative
+# path is taken below the user data folder, as RotWK does (engine Common/ModMount.h).
+static func mod_args(args: PackedStringArray, env: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	if not env.is_empty():
+		out.push_back(env)
+	var i := 0
+	while i < args.size():
+		var a := args[i]
+		if a == "-mod" and i + 1 < args.size():
+			out.push_back(args[i + 1])
+			i += 1
+		elif a.begins_with("--mod="):
+			out.push_back(a.trim_prefix("--mod="))
+		i += 1
+	return out
+
+
+# lane MODS-2: the install-folder mod folders, highest priority first (an All In One package: its enhancements, then the package, then the
+# patches it depends on): each --mod-install=FOLDER in command-line order, else OPENBFME_MOD_INSTALL; empty = none
+static func install_mod_args(args: PackedStringArray, env: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	for a in args:
+		if a.begins_with("--mod-install="):
+			out.push_back(a.trim_prefix("--mod-install="))
+	if out.is_empty() and not env.is_empty():
+		out.push_back(env)
+	return out
+
+
+# lane SDK-0: the asset pack folders: user://asset-packs/<pack>/ in name order (drag and drop), then --asset-pack=FOLDER in command-line order.
+# Lane SDK-1: a pack named in user://asset-packs/disabled.txt (one folder name per line; the launcher's Mods page writes it) is left out.
+static func asset_pack_folders(args: PackedStringArray) -> PackedStringArray:
+	var out := PackedStringArray()
+	var root := ProjectSettings.globalize_path("user://asset-packs")
+	var names := DirAccess.get_directories_at(root) if DirAccess.dir_exists_absolute(root) else PackedStringArray()
+	names.sort()
+	var off := disabled_asset_packs(root)
+	for n in names:
+		if off.has(n.to_lower()):
+			print("RELEASE asset packs: ", n, " is turned off (asset-packs/disabled.txt)")
+			continue
+		out.push_back(root.path_join(n))
+	for a in args:
+		if a.begins_with("--asset-pack="):
+			out.push_back(a.trim_prefix("--asset-pack="))
+	return out
+
+
+# lane SDK-1b (b): user://asset-packs/report.json, what the launcher's Asset packs card shows: per pack, the models left out (they do not fit
+# the game's), each with its reason; written at every start that mounted packs
+static func _write_asset_pack_report(fs: RefCounted) -> void:
+	var report: Dictionary = fs.get_asset_pack_report()
+	report["format"] = "openbfme.asset-pack-report 1"
+	report["checked"] = Time.get_datetime_string_from_system(true)
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://asset-packs"))
+	var f := FileAccess.open("user://asset-packs/report.json", FileAccess.WRITE)
+	if f == null:
+		printerr("RELEASE asset packs: cannot write user://asset-packs/report.json: ", error_string(FileAccess.get_open_error()))
+		return
+	f.store_string(JSON.stringify(report, "\t"))
+	var counts := PackedStringArray()
+	for p in report.packs:
+		counts.push_back("%s: %d models not used" % [p.name, p.misfits.size()])
+	print("RELEASE asset packs: report written (", "; ".join(counts), ")")
+
+
+# lane SDK-1: the pack folder names (lower case) listed in <root>/disabled.txt; blank lines and lines starting with # are skipped
+static func disabled_asset_packs(root: String) -> Dictionary:
+	var off := {}
+	var path := root.path_join("disabled.txt")
+	if not FileAccess.file_exists(path):
+		return off
+	for line in FileAccess.get_file_as_string(path).split("\n"):
+		var n := line.strip_edges()
+		if not n.is_empty() and not n.begins_with("#"):
+			off[n.to_lower()] = true
+	return off
+
+
 # --first-run=accept                 take the first discovered folders that pass the check (the "found" case of the fresh-user test)
 # --first-run-rotwk=DIR --first-run-bfme2=DIR   pick these folders (the "picked" / "rejected" cases)
 func _first_run_test_args(args: PackedStringArray) -> Dictionary:
@@ -479,6 +646,37 @@ func _first_run_test_args(args: PackedStringArray) -> Dictionary:
 
 func _headless() -> bool:
 	return DisplayServer.get_name() == "headless"
+
+
+## lane JOINVER-1: a join refused for a different build: the plain words, OK (the game closes, as after any failed online start) and "Copy details",
+## which puts both builds' tags and profile ids on the clipboard for a bug report (the box stays)
+func join_refused(message: String, details: String) -> void:
+	printerr("GAME JOIN refused: ", details.replace("\n", "; "))
+	if _headless():
+		get_tree().quit(1)
+		return
+	get_tree().paused = true
+	var box := AcceptDialog.new()
+	box.name = "JoinRefused"
+	box.title = "Can't join this game"
+	box.dialog_text = message
+	box.dialog_autowrap = true
+	box.min_size = Vector2i(720, 0)
+	box.exclusive = true
+	box.process_mode = Node.PROCESS_MODE_ALWAYS
+	box.ok_button_text = "OK"
+	box.add_button("Copy details", false, &"copy_details")
+	box.custom_action.connect(func(action: StringName) -> void:
+		if action == &"copy_details":
+			DisplayServer.clipboard_set(details)
+			box.dialog_text = message + "\n\nCopied to the clipboard:\n" + details)
+	var done := func() -> void:
+		box.queue_free()
+		get_tree().quit(1)
+	box.confirmed.connect(done)
+	box.canceled.connect(done)
+	add_child(box)
+	box.popup_centered()
 
 
 ## A message box with "Open log folder" (opens the folder with `log_file` selected, the box stays) and OK. `quit_after`: OK / closing quits with
@@ -572,7 +770,7 @@ func _open_log() -> void:
 	_marker = path + ".running"
 	var f := FileAccess.open(_marker, FileAccess.WRITE)
 	if f != null:
-		f.store_string(JSON.stringify({"pid": OS.get_process_id(), "log": path, "version": info.version()}))
+		f.store_string(JSON.stringify({"pid": OS.get_process_id()}))
 		f.close()
 	_prune_logs()
 
@@ -583,16 +781,26 @@ func _find_previous_crash() -> void:
 		return
 	var newest := ""
 	for file in dir.get_files():
-		if not file.ends_with(".log.running"):
+		if not file.ends_with(".log.running") or not _is_session_log_name(file.trim_suffix(".running")):
 			continue
 		var marker := LOG_DIR + "/" + file
-		var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(marker))
-		var pid := int(data.get("pid", -1)) if data is Dictionary else -1
+		var f := FileAccess.open(marker, FileAccess.READ)
+		var data: Variant = null
+		var parser := JSON.new()
+		if f != null and f.get_length() <= 4096 and parser.parse(f.get_as_text()) == OK:
+			data = parser.data
+		var pid := -1
+		if data is Dictionary and typeof(data.get("pid")) in [TYPE_INT, TYPE_FLOAT]:
+			var value: float = data.pid
+			if is_finite(value) and value >= 1 and value <= 2147483647 and value == floor(value):
+				pid = int(value)
+		if f != null:
+			f.close()
 		if pid > 0 and pid != OS.get_process_id() and info.process_alive(pid):
 			continue # another OpenBFME that is still running (two windows of a LAN test)
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(marker))
 		var crashed_log := marker.trim_suffix(".running")
-		if crashed_log > newest:
+		if FileAccess.file_exists(crashed_log) and crashed_log > newest:
 			newest = crashed_log
 	previous_crash_log = newest
 
@@ -635,6 +843,7 @@ func _add_watermark() -> void:
 	label.name = "Version"
 	label.set_meta("game_text", true) # lane CAMP-2: the release's own corner text, not a developer overlay (game.gd _dev_text_on_screen)
 	_watermark.add_child(label)
+	label.add_to_group("player_message_obstacles")
 	# lane WINCRASH-1: the log folder one click away, a small link under the version (the retail menus keep that corner free)
 	var logs := LinkButton.new()
 	logs.text = "Logs"
@@ -668,6 +877,7 @@ func _add_watermark() -> void:
 	mods.pressed.connect(open_mod_manager)
 	_watermark.add_child(mods)
 	_mods_link = mods
+	logs.add_to_group("player_message_obstacles")
 	# lane ONEZIP-1: the update check's state (a game started directly), under the Logs link
 	_update_note = Label.new()
 	# a dark plate behind it: the line is longer than the version text and lies over the menu's art
@@ -693,6 +903,7 @@ func _add_watermark() -> void:
 	_update_note.set_meta("game_text", true)
 	_update_note.visible = false
 	_watermark.add_child(_update_note)
+	_update_note.add_to_group("player_message_obstacles")
 	_watermark.name = "ReleaseWatermark"
 	add_child(_watermark)
 
