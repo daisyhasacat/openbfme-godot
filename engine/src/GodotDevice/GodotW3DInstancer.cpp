@@ -4,6 +4,8 @@
 #include "GodotDevice/GodotW3DInstancer.h"
 #include "GameClient/MapUtil.h"
 #include "GameClient/MapWeather.h"
+#include "GameClient/CameraSettings.h"
+#include "GameClient/TacticalCamera.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GodotDevice/GodotMapTerrain.h"
 #include "GodotDevice/GodotFXPlayer.h"
@@ -420,6 +422,14 @@ Dictionary W3DInstancer::setup_menu(const Ref<RetailFileSystem> &fs, bool shellS
 		const std::string glowStop = "[S-5050] shell scene emissive glow pass is not ported";
 		result["unverified"] = Array::make(toGodot(glowStop));
 		warn(glowStop);
+		CameraSettings cameraSettings;
+		if (!CameraSettings::load(archive, cameraSettings, &error))
+		{
+			result["ok"] = false; result["errors"] = Array::make(toGodot(error)); return result;
+		}
+		float initialAngle; bool legacy;
+		TacticalCamera::computeCameraOffset(MapCameraValues::resolve(cameraSettings, map.chunks.hasWorldInfo ? &map.chunks.worldInfo : nullptr), ShellCameraOffset, initialAngle, legacy);
+		result["named_cameras"] = (int64_t)map.chunks.namedCameras.size();
 		if (!ShellEffects.load(std::move(map), &error))
 		{
 			result["ok"] = false; result["errors"] = Array::make(toGodot(error)); return result;
@@ -439,8 +449,23 @@ Dictionary W3DInstancer::get_shell_scene_state() const
 		result["fade_render_add"] = ShellEffects.renderFadeAdd();
 		result["fade_starts"] = ShellEffects.fadeStarts();
 		result["effect_ticks"] = ShellEffects.ticks();
+		result["camera_moves"] = ShellEffects.cameraMoves();
+		result["camera_name"] = toGodot(ShellEffects.cameraName());
 	}
 	return result;
+}
+
+bool W3DInstancer::shell_camera(Transform3D &transform, float &fov) const
+{
+	NamedCamera camera;
+	if (!ShellEffects.camera(camera)) return false;
+	Coord3D eye, target;
+	ShellSceneEffects::cameraPose(camera, ShellCameraOffset, eye, target);
+	transform = Transform3D(Basis(), Vector3(eye.x, eye.z, -eye.y));
+	transform = transform.looking_at(Vector3(target.x, target.z, -target.y));
+	transform.basis = transform.basis * Basis(Vector3(0,0,1), camera.values[1]);
+	fov = camera.values[4] * (180.0f / 3.14159265359f);
+	return true;
 }
 
 void W3DInstancer::advance_shell_scene(double seconds)

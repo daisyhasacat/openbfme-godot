@@ -194,7 +194,8 @@ bool AptView3DViewers::create(Slot &slot, const AptCanvasOp &op)
 		return false;
 	}
 	slot.cameraBone = slot.inst->get_bone_index_native(slot.model, "CAMERA");
-	if (slot.cameraBone < 0)
+	Transform3D authoredCamera; float authoredFov;
+	if (slot.cameraBone < 0 && !slot.inst->shell_camera(authoredCamera, authoredFov))
 	{
 		// retail keeps the camera of RW 0xB5442B (turned about two axes by -pi and pi) when the model has no CAMERA bone; not ported
 		m_errors.insert("View3D " + op.renderObject + ": the model has no CAMERA bone (the viewer's default camera is not ported) [S-1483]");
@@ -389,12 +390,20 @@ void AptView3DViewers::pose(Slot &slot, double now)
 	}
 	slot.inst->update_now();
 	::Matrix3D m;
-	if (slot.cameraBone >= 0 && slot.inst->get_bone_transform_native(slot.instance, slot.cameraBone, m))
+	Transform3D authoredCamera; float authoredFov;
+	const bool namedCamera = slot.inst->shell_camera(authoredCamera, authoredFov);
+	if (namedCamera || (slot.cameraBone >= 0 && slot.inst->get_bone_transform_native(slot.instance, slot.cameraBone, m)))
 	{
 		// the bone's transform is the camera's (W3D cameras look down -Z with +Y up, as Godot's); Godot's frame is (x, z, -y) (HUD-2's globe camera)
 		auto toGodot3 = [](float x, float y, float z) { return Vector3(x, z, -y); };
 		const Basis basis(toGodot3(m.Row[0][0], m.Row[1][0], m.Row[2][0]), toGodot3(m.Row[0][1], m.Row[1][1], m.Row[2][1]), toGodot3(m.Row[0][2], m.Row[1][2], m.Row[2][2]));
-		const Transform3D xf = slot.sceneTransform * Transform3D(basis, toGodot3(m.Row[0][3], m.Row[1][3], m.Row[2][3]));
+		Transform3D xf = namedCamera ? authoredCamera : slot.sceneTransform * Transform3D(basis, toGodot3(m.Row[0][3], m.Row[1][3], m.Row[2][3]));
+		if (namedCamera)
+		{
+			slot.camBlack->set_fov(authoredFov);
+			slot.camWhite->set_fov(authoredFov);
+			if (slot.camReflection) slot.camReflection->set_fov(authoredFov);
+		}
 		slot.camBlack->set_transform(xf);
 		slot.camWhite->set_transform(xf);
 		if (slot.reflection)

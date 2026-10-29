@@ -5,6 +5,8 @@
 #include <string>
 
 struct LoadedMap;
+struct NamedCamera;
+struct Coord3D;
 
 // Presentation-owned script context: never steps or shares the active game.
 // Uses the existing script engine for timer/counter/enable ordering. Only the
@@ -21,6 +23,10 @@ public:
 	float renderFadeAdd() const;
 	unsigned fadeStarts() const;
 	unsigned ticks() const;
+	bool camera(NamedCamera &out) const;
+	static void cameraPose(const NamedCamera &camera, const Coord3D &offset, Coord3D &eye, Coord3D &target);
+	unsigned cameraMoves() const;
+	std::string cameraName() const;
 private:
 	struct State;
 	std::unique_ptr<State> m;

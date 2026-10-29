@@ -16,6 +16,7 @@
 
 #pragma once
 #include "GameClient/ShellSceneEffects.h"
+#include "Common/INIDataTypes.h"
 #include "Common/TextureSwap.h"
 
 #include "GodotDevice/GodotW3DMaterial.h"
@@ -72,6 +73,7 @@ public:
 	Dictionary get_shell_scene_state() const;
 	float shell_fade_add() const { return ShellEffects.renderFadeAdd(); }
 	void advance_shell_scene(double seconds);
+	bool shell_camera(Transform3D &transform, float &fov) const;
 	void advance_shell_effects(double seconds) { ShellEffects.advance(seconds); }
 
 	// Builds the model (meshes, materials, MultiMeshes). Returns the model id, or -1; the report says why either way.
@@ -362,6 +364,7 @@ private:
 
 	double GlobalTime = 0.0;
 	ShellSceneEffects ShellEffects;
+	Coord3D ShellCameraOffset{};
 	FXPlayer *ShellFX = nullptr;
 	double ShellLastTime = 0;
 	Dictionary ShellSceneState;

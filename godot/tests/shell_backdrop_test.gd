@@ -21,6 +21,8 @@ func _run() -> void:
 	assert(authored.fog_start == 200.0 and authored.fog_end == 3000.0)
 	assert(authored.water_areas == 1 and authored.reflection_on and authored.reflection_plane == 37.0)
 	assert(authored.particle_systems == 6)
+	assert(authored.named_cameras == 8)
+	assert(authored.camera_name == "CameraEnd" and authored.camera_moves == 2)
 	assert(authored.fade_starts == 1, "authored opening fade did not run")
 	assert(authored.unverified == ["[S-5050] shell scene emissive glow pass is not ported"])
 	var view: SubViewport = scene.get_parent()
@@ -63,6 +65,8 @@ func _run() -> void:
 		await process_frame
 	assert(scene.get_shell_scene_state().fade_add == 0.0, "camera transition stayed white")
 	assert(scene.get_shell_scene_state().fade_starts == 2)
+	assert(scene.get_shell_scene_state().camera_name == "CameraEndB")
+	assert(scene.get_shell_scene_state().camera_moves == 4)
 	shell.shell_push("Options.apt")
 	await create_timer(0.5).timeout
 	assert(shell.get_backdrop_state().backdrop_image == "ShellMapLowLOD", "settings backdrop changed")

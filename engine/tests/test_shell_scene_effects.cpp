@@ -127,3 +127,78 @@ TEST_CASE("shell effects: display samples interpolate without advancing script t
 	CHECK(effects.renderFadeAdd() == 0.0f);
 	CHECK(effects.fadeStarts() == 1);
 }
+
+TEST_CASE("shell cameras: named move interpolates all authored fields and rejects a missing marker")
+{
+	auto map = opening(0,0,0);
+	NamedCamera a; a.name = "start"; a.position = {10,20,0};
+	a.values[0] = -0.25f; a.values[3] = 0.25f; a.values[4] = 0.8f; a.values[5] = 16;
+	NamedCamera b = a; b.name = "end"; b.position = {110,220,0}; b.values[0] = -0.75f; b.values[3] = 0.75f;
+	map.chunks.namedCameras = {a,b};
+	map.playerScripts.lists[0].items[0].script->actions = {
+		act("MOVE_CAMERA_TO", {sp(51,"start"),rp(0),rp(0),rp(0),rp(0)}),
+		act("MOVE_CAMERA_TO", {sp(51,"end"),rp(20),rp(0),rp(0),rp(0)})};
+	ShellSceneEffects effects; std::string error;
+	REQUIRE(effects.load(std::move(map), &error));
+	effects.advance(10);
+	NamedCamera camera;
+	REQUIRE(effects.camera(camera));
+	CHECK(camera.position.x == 60);
+	CHECK(camera.position.y == 120);
+	CHECK(camera.values[0] == -0.5f);
+	CHECK(camera.values[3] == 0.5f);
+	CHECK(camera.values[4] == 0.8f);
+	CHECK(camera.values[5] == 16);
+	CHECK(effects.cameraName() == "end");
+	CHECK(effects.cameraMoves() == 2);
+	effects.advance(20);
+	REQUIRE(effects.camera(camera));
+	CHECK(camera.position.x == 110);
+	CHECK(camera.position.y == 220);
+	CHECK(camera.values[0] == -0.75f);
+	auto missing = opening(0,0,0);
+	missing.playerScripts.lists[0].items[0].script->actions = {act("MOVE_CAMERA_TO", {sp(51,"missing"),rp(0),rp(0),rp(0),rp(0)})};
+	CHECK_FALSE(effects.load(std::move(missing), &error));
+	CHECK(error == "shell MOVE_CAMERA_TO has no named camera: missing");
+}
+TEST_CASE("shell cameras: BFME2 named Pitch adjusts look-at height, not the ordinary pitch rotation")
+{
+	NamedCamera camera; camera.position = {100,200,0};
+	camera.values[0] = -0.5f; camera.values[3] = 0.5f; camera.values[5] = 10;
+	Coord3D eye, target;
+	ShellSceneEffects::cameraPose(camera, {0,-100,100}, eye, target);
+	CHECK(eye.x == 100);
+	CHECK(eye.y == 160);
+	CHECK(eye.z == 50);
+	CHECK(target.x == 100);
+	CHECK(target.y == 200);
+	CHECK(target.z == 70); // source Z - (source Z - ground) * fxPitch
+}
+
+#include "RetailTestMount.h"
+#include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
+TEST_CASE("shell cameras retail: the four authored camera segments and white fades repeat")
+{
+	auto *mount = retailtest::bfme2Mount();
+	if (!mount) { retailtest::printSkip("BFME2 shell camera script cycle"); return; }
+	REQUIRE(mount->error.empty());
+	std::vector<std::uint8_t> bytes; std::string error;
+	REQUIRE(mount->fs->readFile("maps/shellmap1/shellmap1.map", bytes, &error));
+	LoadedMap map;
+	REQUIRE(MapReader::load(bytes, "maps/shellmap1/shellmap1.map", {}, map, &error));
+	CHECK(map.chunks.namedCameras.size() == 8);
+	ShellSceneEffects effects;
+	REQUIRE(effects.load(std::move(map), &error));
+	// Expected from the map's four 20-second moves, the CameraMove* == 1
+	// countdown conditions and file-order ENABLE_SCRIPT Reset actions.
+	const std::vector<std::pair<double,std::string>> stops = {{0,"CameraStart"}, {1,"CameraEnd"},
+		{21,"CameraStartB"}, {22,"CameraEndB"}, {41.4,"CameraStartC"}, {42.2,"CameraEndC"},
+		{62.0,"CameraStartD"}, {63,"CameraEndD"}, {84,"CameraEnd"}};
+	for (const auto &stop : stops)
+	{
+		effects.advance(stop.first);
+		CHECK(effects.cameraName() == stop.second);
+	}
+	CHECK(effects.cameraMoves() == 10);
+	CHECK(effects.fadeStarts() == 5);
+}
