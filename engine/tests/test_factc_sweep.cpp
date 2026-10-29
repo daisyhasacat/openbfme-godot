@@ -9,6 +9,7 @@
 #include "Common/BuildAssistant.h"
 #include "Common/PlayerHeroList.h"
 #include "GameLogic/Damage.h"
+#include "GameLogic/CaptureLinks.h"
 #include "GameClient/GUI/Skirmish/IniSkirmishSetupSource.h"
 #include "GameClient/MapCache.h"
 #include "GameLogic/Module/HordeDispatchSpecialPower.h"
@@ -1802,4 +1803,37 @@ TEST_CASE("Forlindon docks: the pinned misplaced-flag correction makes all three
 	}
 	CHECK(captured == 3);
 	CHECK(outsideRange == 0);
+}
+
+TEST_CASE("Buckland outpost capture: Boromir and a battalion raise the flag from eight approach directions")
+{
+	if (!haveWorld("Buckland outpost capture")) return;
+	for (const char *name : {"GondorBoromir", "GondorFighterHorde"})
+	for (int direction = 0; direction < 8; ++direction)
+	{
+		HudRig h(shared(), "FactionMen", "map wor buckland");
+		const auto context = h.hud->enterContext();
+		Object *outpost = nullptr;
+		for (Object *o = h.logic().getFirstObject(); o; o = o->getNextObject())
+			if (o->getTemplate()->getName() == "Outpost") outpost = o;
+		REQUIRE(outpost);
+		Object *flag = CaptureLinks::flagForBuilding(*outpost);
+		REQUIRE(flag);
+		const auto p = *outpost->getPosition();
+		const float angle = direction * 0.785398163f;
+		Object *unit = h.rig.make(name, p.x + 350*std::cos(angle), p.y + 350*std::sin(angle));
+		h.frames(10);
+		REQUIRE(h.select(unit));
+		CHECK(h.hud->input().commandTranslator().evaluateContextCommand(outpost, outpost->getPosition(), EvaluateType::DoCommand) == MSG_DO_SPECIAL_POWER_AT_OBJECT);
+		bool raised = false;
+		for (int frame = 0; frame < 450 && outpost->getControllingPlayer() != h.rig.local; ++frame)
+		{
+			h.frames(1);
+			raised = raised || flag->testModelCondition(0x6E); // START_CAPTURE
+		}
+		INFO(name << " approach direction " << direction);
+		CHECK(raised);
+		CHECK(outpost->getControllingPlayer() == h.rig.local);
+		CHECK(flag->getControllingPlayer() == h.rig.local);
+	}
 }

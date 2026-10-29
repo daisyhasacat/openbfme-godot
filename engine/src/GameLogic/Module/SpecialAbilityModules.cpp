@@ -942,6 +942,10 @@ void SpecialAbilityUpdate::approachTarget()
 		bird->aiAbilityMoveTo(*t->getPosition(), CMD_FROM_AI); // RW 0x852DC5(target, 2): AI command 0x48 -> RW 0x76A04A with the object's position
 		return;
 	}
+	// BFME2 SpecialAbilityUpdate::rva00450AE9 (0x450AE9) ignores the
+	// target obstacle before issuing its ability approach. AIMoveToState then
+	// keeps the object goal instead of adjusting it outside the capture range.
+	ai->mover().ignoreObstacle(t->getID());
 	// RW 0x853AEE: a structure target, a target on another layer or StartAbilityRange <= 50 (RW 0xBD88C4) moves to the object (AI command 0x48);
 	// otherwise the approach point at StartAbilityRange (RW 0x851607, a pathfinder cell walk: S-859) is also the object here
 	ai->aiMoveToObject(t, CMD_FROM_AI);
