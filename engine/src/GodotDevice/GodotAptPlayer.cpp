@@ -6833,7 +6833,11 @@ bool AptMenuPlayer::menuKey(const InputEventKey *key)
 			// Esc on the OpenBFME page stays the page's CANCEL below (OPTS-3's path); the page's Back does the same
 			const bool listOpen = m->shell->layer && m->shell->layer->openDropDown();
 			const bool pageEsc = nk == MenuNavKey::Back && !listOpen && m->shell->shell && optionsTop(m->shell->shell.get()) && optionsTop(m->shell->shell.get())->extensionOpen();
-			if (!pageEsc && m->shell->nav->key(nk))
+			const AptScreen *top = m->shell->shell ? m->shell->shell->inputTop() : nullptr;
+			const bool resultsEnter = (key->get_keycode() == Key::KEY_ENTER || key->get_keycode() == Key::KEY_KP_ENTER) &&
+				!key->is_ctrl_pressed() && !key->is_alt_pressed() && !key->is_meta_pressed() && top && top->filename() == "TimeLine.apt" &&
+				m->shell->nav->activateResultsPrimary();
+			if (resultsEnter || (!pageEsc && m->shell->nav->key(nk)))
 			{
 				m->shell->navSwallowed.insert(code);
 				return true;

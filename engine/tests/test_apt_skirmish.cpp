@@ -2654,6 +2654,40 @@ TEST_CASE("results controller: A skips preview, More and Continue default, B ret
 }
 
 
+TEST_CASE("results Enter activates Skip, More and Continue independently of focus")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	LobbyFx fx(mount, false);
+	ScoreScreenData score;
+	score.valid = true;
+	score.type = 2;
+	fx.environment.scoreScreen = &score;
+	fx.shell->push("TimeLine.apt");
+	fx.tick(30);
+	MenuNavigator nav(*fx.wm);
+	nav.setMenu(fx.shell->top()->level(), fx.shell->top());
+	nav.setControllerResults(true);
+	CHECK(nav.focusId().find(".MainButtons.Skip") != std::string::npos);
+	REQUIRE(nav.key(MenuNavKey::Previous));
+	const std::string previewFocus = nav.focusId();
+	nav.setControllerResults(true);
+	CHECK(nav.focusId() == previewFocus);
+	REQUIRE(nav.activateResultsPrimary());
+	fx.tick(60);
+	nav.setControllerResults(true);
+	CHECK(nav.focusId().find(".MainButtons.More") != std::string::npos);
+	REQUIRE(nav.activateResultsPrimary());
+	fx.tick(60);
+	nav.setControllerResults(true);
+	CHECK(nav.focusId().find(".MainButtons.Continue") != std::string::npos);
+	REQUIRE(nav.key(MenuNavKey::Previous));
+	REQUIRE(nav.key(MenuNavKey::Back));
+	fx.tick(60);
+	nav.setControllerResults(true);
+	CHECK(nav.focusId().find(".MainButtons.More") != std::string::npos);
+}
+
+
 TEST_CASE("BFME1 profile display reads SkirmishStats and rank providers, isolated from RotWK stats")
 {
 	OPENBFME_REQUIRE_RETAIL(mount);

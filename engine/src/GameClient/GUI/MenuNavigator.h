@@ -95,6 +95,7 @@ public:
 	bool supportsControllerSections() const;
 	// OpenBFME result-screen defaults, refreshed as the authored movie changes pages.
 	void setControllerResults(bool enabled);
+	bool activateResultsPrimary(); // Enter: the visible Skip / Continue / More action.
 	void switchControllerSection(int delta);
 	int controllerSection() const { return m_controllerSections ? m_section : -1; }
 	// The real pointer moved (or pressed): the focus frame goes until the next key; the focus itself stays.
