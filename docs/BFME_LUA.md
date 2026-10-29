@@ -1,5 +1,17 @@
 # bfme Lua library
 
+To browse this reference as a local web page:
+
+```sh
+python3 -m venv workspace/lua-docs-venv
+workspace/lua-docs-venv/bin/pip install -r tools/requirements-lua-docs.txt
+workspace/lua-docs-venv/bin/python tools/serve_lua_docs.py --open
+```
+
+The server listens on localhost at <http://127.0.0.1:8765/docs/BFME_LUA.md>.
+Use `--port` to choose another port. Refresh the page after editing the Markdown.
+
+
 OpenBFME's console runs an object-based `bfme` API on **LuaJIT 2.1**, the VM of
 [lua-gdextension](https://github.com/gilzoide/lua-gdextension) (see [Lua in Godot](#lua-in-godot-lua-gdextension) below). Its collections and player/template fields
 follow the [BFME2Lua / Second Age API](https://docs.secondage.dev/#templates); functions are grouped into libraries
