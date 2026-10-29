@@ -4447,7 +4447,8 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 	}
 	m->gadgetAnchors.clear();
 	const std::map<std::string, const GameWindow *> gadgetOfPath = gadgetPaths();
-	m->view3d.beginBuild(); // lane UI-2
+	// View3D build began before the animated backdrop: restarting it here
+	// would mark that freshly drawn shell scene unused and disable its viewports.
 	m->livingWorld.beginBuild();
 	// lane HUDREDRAW-1: each segment under an item of its own, in list order after the backdrop
 	int labelled = 0;
