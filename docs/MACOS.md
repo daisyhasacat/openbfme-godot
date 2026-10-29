@@ -1,5 +1,26 @@
 # macOS build and package
 
+## Fullscreen startup
+
+On macOS, the extension reads the saved `openbfme-display.cfg` window mode
+during Godot's CORE initialization, before the native window is created or
+shown. A saved fullscreen mode therefore starts in a fullscreen Space instead
+of showing a small window first and moving it later. Saved windowed mode and
+the first-run default remain windowed. Editor startup and isolated display
+checks do not inherit this override; invalid settings are still reported by
+the normal display setup. This does not disable macOS's native Space animation.
+
+The startup regression check uses temporary preferences and a project with no
+startup scene, so scene scripts cannot mask a late window-mode change:
+
+```sh
+GODOT=/path/to/Godot.app/Contents/MacOS/Godot python3 -m unittest discover \
+  -s tools/release -p test_macos_initial_window.py
+```
+
+Set `OPENBFME_TEST_NATIVE_WINDOW=1` to also briefly open a native test window
+and check its actual fullscreen mode before scene setup.
+
 ## Current: any-commit Apple Silicon package
 
 The macOS package is arm64-only for Apple Silicon on macOS 13 or later. One
