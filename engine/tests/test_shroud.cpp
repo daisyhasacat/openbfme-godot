@@ -798,13 +798,15 @@ TEST_CASE("shroud stops: S-560 .. S-567 are the exact stop lines and reach GameL
 	}
 }
 
-TEST_CASE("shroud objects: an omitted clearing range defaults to VisionRange in BFME1 data only (community PR #36); RotWK keeps 0, an explicit 0 stays blind")
+TEST_CASE("shroud objects: an omitted clearing range defaults to VisionRange; an explicit 0 stays blind")
 {
 	const char *objects = "Object Keep\n KindOf = STRUCTURE IMMOBILE\n VisionRange = 100\n Geometry = CYLINDER\n GeometryMajorRadius = 9\nEnd\n"
-		"Object BlindKeep\n KindOf = STRUCTURE IMMOBILE\n VisionRange = 100\n ShroudClearingRange = 0\n Geometry = CYLINDER\n GeometryMajorRadius = 9\nEnd\n";
+		"Object BlindKeep\n KindOf = STRUCTURE IMMOBILE\n VisionRange = 100\n ShroudClearingRange = 0\n Geometry = CYLINDER\n GeometryMajorRadius = 9\nEnd\n"
+		"Object DefaultKeep\n VisionRange = 150\n ShroudClearingRange = -1\nEnd\n";
 	objtest::World rotwk;
 	REQUIRE(rotwk.load(objects).empty());
-	CHECK(ShroudManager::templateVision(*rotwk.get("Keep")).shroudClearingRange == 0.0f);
+	CHECK(ShroudManager::templateVision(*rotwk.get("Keep")).shroudClearingRange == 100.0f);
+	CHECK(ShroudManager::templateVision(*rotwk.get("DefaultKeep")).shroudClearingRange == 150.0f);
 	CHECK(ShroudManager::templateVision(*rotwk.get("BlindKeep")).shroudClearingRange == 0.0f);
 	objtest::World bfme1(true);
 	REQUIRE(bfme1.load(objects).empty());

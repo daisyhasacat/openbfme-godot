@@ -60,3 +60,19 @@ Lair treasure now applies its configured SpreadFormation radii, and ordinary
 context clicks on crates move to their position even when the crate belongs
 to an enemy lair. See [treasure placement and input](TREASURE-PICKUP.md) for
 sources, tests, and the remaining ground-layer limitation.
+
+## Pickup cache regression and Ivory Tower vision
+
+Object::rebuildCollideModules must recompute hasCrateCollide alongside its
+collision interface list, including after module replacement. Leaving the flag
+false excludes every pickup from contact discovery even when its module accepts
+the collector. The retail collision tests cover soldiers, battalions and lair
+loot; the module-cache test compares the flag with the actual module list.
+
+IvoryTowerVisionPing supplies VisionRange without ShroudClearingRange.
+BFME2's ThingTemplateConstructor.cpp defaults the latter to -1, and
+ObjectConstructor.cpp substitutes VisionRange for that sentinel. This donor
+behavior applies to BFME2 as well as BFME1; the previous BFME1-only restriction
+incorrectly blinded the Ivory Tower ping. Explicit zero still suppresses sight.
+The retail shroud test checks its configured 99999 range, both map corners and
+enemy visibility. Target-binary provenance remains subject to S-001.

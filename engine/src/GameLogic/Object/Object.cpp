@@ -288,12 +288,14 @@ std::unique_ptr<BehaviorModule> Object::friend_replaceModule(BehaviorModule *old
 void Object::rebuildCollideModules()
 {
 	m_collideModules.clear();
+	m_hasCrateCollide = false;
 	m_collideModulesKnown = true;
 	for (const std::unique_ptr<BehaviorModule> &m : m_modules)
 	{
 		if (CollideModuleInterface *c = m ? m->getCollide() : nullptr)
 		{
 			m_collideModules.push_back(c);
+			m_hasCrateCollide = m_hasCrateCollide || dynamic_cast<CrateCollide *>(m.get()) != nullptr;
 			m_collideModulesKnown = m_collideModulesKnown && c->pairFactsKnown();
 		}
 	}

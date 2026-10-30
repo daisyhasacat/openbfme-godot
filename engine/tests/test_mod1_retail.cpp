@@ -6,6 +6,7 @@
 
 #include "doctest.h"
 #include "GameLogic/Module/CrateCollide.h"
+#include "GameLogic/System/ShroudManager.h"
 #include "Common/Money.h"
 #include "Common/XferSave.h"
 #include "Common/XferLoad.h"
@@ -950,4 +951,42 @@ TEST_CASE("crate pickups retail: cached collision interfaces preserve the module
 			CHECK(object->hasCrateCollide() == crate);
 		}
 	}
+}
+
+TEST_CASE("crate pickups retail: a battalion collects gold and shields")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	CrateGame g(*sh.world, *sh.mount);
+	Object *unit = g.make(sh.world->things().findTemplate("GondorFighterHorde"));
+	Object *chest = g.make(sh.world->things().findTemplate("TreasureChest100"), g.players.getNeutralPlayer());
+	Object *shield = g.make(sh.world->things().findTemplate("TreasureChestLevelUpMedium"), g.players.getNeutralPlayer());
+	REQUIRE(chest->hasCrateCollide());
+	REQUIRE(shield->hasCrateCollide());
+	const auto before = g.player->getMoney()->countMoney();
+	g.logic->partition().update();
+	g.ai->processCollisions();
+	CHECK(chest->isDestroyed() == true);
+	CHECK(shield->isDestroyed() == true);
+	CHECK(g.player->getMoney()->countMoney() == before + 100);
+	REQUIRE(unit->getExperienceTracker());
+	CHECK(unit->getExperienceTracker()->getRank() == 2);
+}
+
+TEST_CASE("shroud retail: Ivory Tower vision ping clears the map for its owner")
+{
+	REQUIRE_RETAIL_WORLD(sh);
+	Game g(*sh.world, *sh.mount);
+	ShroudManager shroud(*g.logic);
+	shroud.init(40.0f, 1);
+	shroud.setExtent(0.0f, 0.0f, 2000.0f, 2000.0f);
+	shroud.attach();
+	const int owner = g.player->getPlayerIndex();
+	const int enemy = g.enemy->getPlayerIndex();
+	CHECK(shroud.getCellStatus(owner, 49, 49) == CELLSHROUD_SHROUDED);
+	Object *ping = g.make(sh.world->things().findTemplate("IvoryTowerVisionPing"));
+	CHECK(ShroudManager::templateVision(*ping->getTemplate()).shroudClearingRange == 99999.0f);
+	shroud.update();
+	CHECK(shroud.getCellStatus(owner, 0, 0) == CELLSHROUD_CLEAR);
+	CHECK(shroud.getCellStatus(owner, 49, 49) == CELLSHROUD_CLEAR);
+	CHECK(shroud.getCellStatus(enemy, 49, 49) == CELLSHROUD_SHROUDED);
 }

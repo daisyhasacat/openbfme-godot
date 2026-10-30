@@ -1002,13 +1002,11 @@ ShroudManager::TemplateVision ShroudManager::templateVision(const ThingTemplate 
 		}
 		return fallback;
 	};
-	v.shroudClearingRange = real(F_RANGE, 0.0f);
-	// community PR #36, BFME1 data only: Object::initObject in Open-BFME-1 (as ZH's) gives an object whose ShroudClearingRange is the template default -1
-	// (no row) its VisionRange; Gondor's castle keep relies on it. RotWK / BFME2 keep the port's 0 for an unset row
-	if (tt.bfme1Data() && real(F_RANGE, -1.0f) == -1.0f)
-	{
-		v.shroudClearingRange = real(F_VISION, 0.0f);
-	}
+	// DONOR: BFME2 ThingTemplateConstructor.cpp defaults to -1; ObjectConstructor.cpp
+	// substitutes VisionRange for that sentinel (also BFME1 Object::initObject).
+	// Ivory Tower's vision ping supplies VisionRange alone. Explicit zero stays blind.
+	v.shroudClearingRange = real(F_RANGE, -1.0f);
+	if (v.shroudClearingRange == -1.0f) v.shroudClearingRange = real(F_VISION, 0.0f);
 	v.visionSide = real(F_SIDE, 1.0f);
 	v.visionRear = real(F_REAR, 1.0f);
 	// the ThingTemplate constructor's defaults for the rows a template leaves out (Open-BFME-2 ThingTemplateConstructor.cpp: MaxVisionBonusPercent 0.5,
