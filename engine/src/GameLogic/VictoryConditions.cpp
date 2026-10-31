@@ -378,6 +378,9 @@ void VictoryConditions::killPlayer(Player *p)
 			victims.push_back(o);
 		}
 	}
+	// RW 0x6ABEFD: Player + 0x754 = 1 BEFORE the kill pass (RW 0x7A4B93 / 0x7A4CAE; lane BFME2CAMP1 review): the dying objects' die modules see a
+	// defeated player (RebuildHoleExposeDie's live-player test RW 0x889AF6 leaves no hole; a RequiresLivePlayer death OCL makes nothing, RW 0x5F0F94)
+	p->setDefeated(true);
 	for (Object *o : victims)
 	{
 		if (!o->isEffectivelyDead() && !o->isDestroyed())
@@ -386,7 +389,6 @@ void VictoryConditions::killPlayer(Player *p)
 			++m_objectsKilled;
 		}
 	}
-	p->setDefeated(true); // RW 0x6ABEFD: Player + 0x754
 	// lane END-1: RW 0x6ABF3C .. 0x6ABF57: ThePlayerList vslot 0x40 (the team relationship refresh, not ported: S-1062), then every coin the player holds is
 	// withdrawn (Money::withdraw(Player + 0x94, no score keeper, playSound 1), RW 0x7B17EF)
 	p->getMoney()->withdraw(p->getMoney()->countMoney(), nullptr, true);

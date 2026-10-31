@@ -1,5 +1,5 @@
 // OpenBFME retail tests for lane RADIUSHEIGHT-1: radius damage honours DamageNugget's DamageMaxHeight (+0x160) and DamageMaxHeightAboveTerrain (+0x164), RW 0x90DEF0
-// (BFME2 decomp Made002CC5E1Ctor.cpp DamageNugget::doEffectPosition, the m_140 / m_144 blocks). They share the HUD tests' retail world (see
+// (BFME2 decomp DamageNugget.cpp DamageNugget::doEffectPosition, the m_140 / m_144 blocks). They share the HUD tests' retail world (see
 // test_hud_combat_retail.cpp) and SKIP when ROTWK_INSTALL / BFME2_INSTALL are unset.
 
 #include "doctest.h"

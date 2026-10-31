@@ -13,11 +13,7 @@
 
 #include "Common/AsciiString.h"
 #include "Common/Player.h"
-#include "Common/PlayerList.h"
-#include "Common/Team.h"
-#include "GameLogic/AI/AIWorld.h"
 #include "Common/StateHash.h"
-#include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "Common/Upgrade.h"
 #include "GameLogic/BitFlags.h"
@@ -55,7 +51,6 @@ const FieldParse kCreateObjectDieMux[] = { DM_ROWS(CreateObjectDieModuleData) };
 const FieldParse kFireWeaponWhenDeadMux[] = { DM_ROWS(FireWeaponWhenDeadBehaviorModuleData) };
 const FieldParse kUpgradeDieMux[] = { DM_ROWS(UpgradeDieModuleData) };
 const FieldParse kHeroDieMux[] = { DM_ROWS(HeroDieModuleData) };
-const FieldParse kRebuildHoleExposeDieMux[] = { DM_ROWS(RebuildHoleExposeDieModuleData) };
 #undef DM_ROWS
 
 // RW 0xC61120
@@ -63,15 +58,6 @@ const FieldParse kCreateObjectDie[] = {
 	{ "CreationList", parseNoneableName, nullptr, (int)offsetof(CreateObjectDieModuleData, m_creationList) },
 	{ "DebrisPortionOfSelf", INI::parseAsciiString, nullptr, (int)offsetof(CreateObjectDieModuleData, m_debrisPortionOfSelf) },
 	{ "UpgradeRequired", INI::parseAsciiStringVector, nullptr, (int)offsetof(CreateObjectDieModuleData, m_upgradeRequired) },
-	{ nullptr, nullptr, nullptr, 0 }
-};
-
-// RW 0xC616B8
-const FieldParse kRebuildHoleExposeDie[] = {
-	{ "HoleName", INI::parseAsciiString, nullptr, (int)offsetof(RebuildHoleExposeDieModuleData, m_holeName) },
-	{ "HoleMaxHealth", INI::parseReal, nullptr, (int)offsetof(RebuildHoleExposeDieModuleData, m_holeMaxHealth) },
-	{ "FadeInTimeSeconds", INI::parseReal, nullptr, (int)offsetof(RebuildHoleExposeDieModuleData, m_fadeInTimeSeconds) },
-	{ "TransferAttackers", INI::parseBool, nullptr, (int)offsetof(RebuildHoleExposeDieModuleData, m_transferAttackers) },
 	{ nullptr, nullptr, nullptr, 0 }
 };
 
@@ -127,12 +113,6 @@ void CreateObjectDieModuleData::buildFieldParse(MultiIniFieldParse &p)
 {
 	p.add(kCreateObjectDieMux); // RW 0xC76BD8
 	p.add(kCreateObjectDie);
-}
-
-void RebuildHoleExposeDieModuleData::buildFieldParse(MultiIniFieldParse &p)
-{
-	p.add(kRebuildHoleExposeDieMux); // RW 0xC76BD8
-	p.add(kRebuildHoleExposeDie);    // RW 0xC616B8
 }
 
 void UpgradeDieModuleData::buildFieldParse(MultiIniFieldParse &p)
@@ -209,74 +189,6 @@ void CreateObjectDie::onDie(const DieModuleInterface::Event &event)
 void CreateObjectDie::crc(StateHasher &hasher) const
 {
 	hasher.addU32(m_created);
-}
-
-// ---- RebuildHoleExposeDie ----------------------------------------------------------------------------------------------------------
-// RW 0x889AAF (see the header for what is not ported)
-void RebuildHoleExposeDie::onDie(const DieModuleInterface::Event &event)
-{
-	Object *obj = getObject();
-	bool angle = false;
-	if (!m_data->m_dieMux.isDieApplicable(*obj, event, &angle))
-	{
-		return;
-	}
-	if (angle)
-	{
-		reportAngle(*obj, "RebuildHoleExposeDie");
-	}
-	GameLogic &logic = obj->logic();
-	Player *owner = obj->getControllingPlayer();
-	if (!owner || owner->isDefeated() || owner == logic.players().getNeutralPlayer())
-	{
-		return; // only a live, non-neutral player's structure leaves a hole
-	}
-	const ThingTemplate *tt = m_data->m_holeName.empty() ? nullptr : logic.things().findTemplate(m_data->m_holeName);
-	if (!tt)
-	{
-		logic.reportError("RebuildHoleExposeDie: " + obj->getTemplate()->getName() + " has no hole template " + m_data->m_holeName);
-		return;
-	}
-	Object *hole = logic.newObject(tt, owner->getDefaultTeam(), ObjectStatusMaskType{});
-	if (!hole)
-	{
-		logic.reportError("RebuildHoleExposeDie: newObject made nothing for " + tt->getName());
-		return;
-	}
-	hole->setOrientation(obj->getOrientation());
-	hole->setPosition(obj->getPosition());
-	if (!obj->getName().empty())
-	{
-		hole->setName(obj->getName());
-	}
-	if (BodyModuleInterface *body = hole->getBodyModule())
-	{
-		body->setMaxHealth(m_data->m_holeMaxHealth, 0); // the hole's own health clamps to it
-	}
-	if (AIWorld *ai = logic.aiWorld())
-	{
-		// Integration: release the dying parent's footprint before inserting its replacement.
-		// The death tail clears the parent later, but rubble cells cannot accept an obstacle
-		// (RW 0x93485A). Leaving them here makes the living hole unreachable to melee weapons.
-		ai->removeObjectFromPathfindMap(*obj);
-		ai->addObjectToPathfindMap(*hole);
-	}
-	if (m_data->m_fadeInTimeSeconds > 0.0f)
-	{
-		if (ObjectClientHooks *client = logic.clientHooks())
-		{
-			client->fadeIn(*hole, SimMath::ftol2Low32(SimMath::pc24MulW((double)m_data->m_fadeInTimeSeconds, 30.0)));
-		}
-	}
-	m_hole = hole->getID();
-	logic.noteStop(std::string("[S-1427] RebuildHoleExposeDie of ") + obj->getTemplate()->getName() + ": the hole " + tt->getName() +
-		" keeps its own geometry, gets no rebuild (RebuildHoleBehavior is not ported: it stays until destroyed)" +
-		(m_data->m_transferAttackers ? " and the attackers are not transferred" : ""));
-}
-
-void RebuildHoleExposeDie::crc(StateHasher &hasher) const
-{
-	hasher.addU32((std::uint32_t)m_hole);
 }
 
 // ---- FireWeaponWhenDeadBehavior -----------------------------------------------------------------------------------------------------
@@ -448,15 +360,6 @@ void HeroDie::onDie(const DieModuleInterface::Event &)
 }
 
 // ---- lane SAVE-4b: the snapshots (OpenBFME native, S-4190) ------------------------------------------------------------------------------------------------
-// Enhanced snapshot layout for the local rubble-hole module, following SAVE-4b's
-// versioned module/base records. The hole ID is the sole mutable CRC field.
-void RebuildHoleExposeDie::xfer(Xfer &x)
-{
-	SnapshotXfer::version(x, 1, 1);
-	xferBehaviorModule(x);
-	x.xferObjectID(&m_hole);
-}
-
 void CreateObjectDie::xfer(Xfer &x)
 {
 	SnapshotXfer::version(x, 1, 1);

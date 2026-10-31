@@ -165,7 +165,7 @@ public:
 	bool slotShowsName(int slot) const { return slot == m_localSlot || (m_network && slot >= 0 && slot < MAX_SLOTS && m_info.slots[slot].isHuman()); }
 
 	// ---- start (startPressed, reallyDoStart) -----------------------------------------------------------------------------------------------
-	// lane GAMEMODES-1: RotWK's start check, AptMpGameSetup RW 0x8431B8 (BFME2 0x840BDF, decomp attempt reverse/attempts/0x00440bdf.cpp and
+	// lane GAMEMODES-1: RotWK's start check, AptMpGameSetup RW 0x8431B8 (BFME2 0x840BDF, decomp AptMpGameSetupRva00440BDF.cpp and
 	// GUI/AptMpGameSetupRva00440BDF.cpp: recovered, not byte-matching; RotWK added LAN:TooFewPlayers and GUI:DisabledFaction). The owner's lines go out through
 	// its vslot 0x44 with a kind (0 / 1 / 2); a refusal is RW 0x8406DB's (vslot 0x44 kind 1). In order:
 	//   no map in the cache -> LAN:NoMapSelected; the map's player limits (RW 0x9758E3: MapCache + 0x20 clamped to 8 (RW 0xC53F2C); RW 0x97597F: 0 outside the

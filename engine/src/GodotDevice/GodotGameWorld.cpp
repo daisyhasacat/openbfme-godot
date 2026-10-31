@@ -17,6 +17,7 @@
 #include "GodotDevice/LuaGDExtensionRegister.h"
 #include <godot_cpp/classes/config_file.hpp>
 #include "Common/MD5.h"
+#include "GameClient/ObjectShadow.h"
 #include "GameClient/InGameChat.h"
 
 #include "GameClient/FrameCensus.h"
@@ -57,6 +58,9 @@
 #include "GameClient/LiveFX.h"
 #include "GameClient/Visual2Stops.h"
 #include "GodotDevice/GodotFXPlayer.h"
+#include "GodotDevice/GodotWeather.h" // lane WEATHER-1
+#include "GodotDevice/GodotGlowEffect.h"
+#include "GodotDevice/GodotPostEffects.h"
 #include "Common/Audio/AudioRequests.h"
 #include "Common/JobSystem.h"
 #include "Common/NumericState.h"
@@ -80,6 +84,7 @@
 #include "GameClient/DrawableManager.h"
 #include "GameClient/GameRecords.h"
 #include "GameClient/LiveGame.h"
+#include "GameClient/LinearCampaign.h"
 #include "GameNetwork/OnlineLobbyClient.h"
 #include "GameClient/MapObjectRuntime.h"
 #include "GameClient/TreeTopple.h"
@@ -97,6 +102,7 @@
 #include "GameLogic/Module/DozerAIUpdate.h"
 #include "GameLogic/Economy.h"
 #include "GameLogic/Construction.h"
+#include "GameClient/ShroudTexel.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/Damage.h"
 #include "GameClient/LogicSnapshot.h"
@@ -330,8 +336,9 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("debug_set_object_status", "id", "status", "on"), &GameWorld::debug_set_object_status); // lane SPELL-3
 	ClassDB::bind_method(D_METHOD("snow_weather_enabled"), &GameWorld::snow_weather_enabled);
 	ClassDB::bind_method(D_METHOD("set_snow_weather", "enabled"), &GameWorld::set_snow_weather);
-	ClassDB::bind_method(D_METHOD("debug_clear_weather"), &GameWorld::debug_clear_weather);
-	ClassDB::bind_method(D_METHOD("debug_set_use_formations", "on"), &GameWorld::debug_set_use_formations); // lane BACKLOG-8 r2                                // lane SPELL-3
+	ClassDB::bind_method(D_METHOD("debug_clear_weather"), &GameWorld::debug_clear_weather);                                // lane SPELL-3
+	ClassDB::bind_method(D_METHOD("debug_set_weather", "weather", "frames"), &GameWorld::debug_set_weather);                // lane WEATHER-1
+	ClassDB::bind_method(D_METHOD("debug_set_use_formations", "on"), &GameWorld::debug_set_use_formations);                // lane BACKLOG-8 r2
 	ClassDB::bind_method(D_METHOD("get_player_table"), &GameWorld::get_player_table);
 	ClassDB::bind_method(D_METHOD("get_player_objects", "player"), &GameWorld::get_player_objects);
 	ClassDB::bind_method(D_METHOD("get_start_positions"), &GameWorld::get_start_positions);
@@ -448,7 +455,13 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("attach_audio"), &GameWorld::attach_audio);
 	ClassDB::bind_method(D_METHOD("get_audio_report"), &GameWorld::get_audio_report);
 	ClassDB::bind_method(D_METHOD("get_fx_report"), &GameWorld::get_fx_report);
+	ClassDB::bind_method(D_METHOD("get_weather_report"), &GameWorld::get_weather_report); // lane WEATHER-1
+	ClassDB::bind_method(D_METHOD("get_weather_fx_state"), &GameWorld::get_weather_fx_state); // lane WEATHERFX-1
+	ClassDB::bind_method(D_METHOD("set_weather_fx_sway", "scale"), &GameWorld::set_weather_fx_sway);
+	ClassDB::bind_method(D_METHOD("get_weather_fx_ground", "x", "y"), &GameWorld::get_weather_fx_ground);
 	ClassDB::bind_method(D_METHOD("get_fx_player"), &GameWorld::get_fx_player);
+	ClassDB::bind_method(D_METHOD("set_effects_lod", "lod"), &GameWorld::set_effects_lod); // lane GLOW-1
+	ClassDB::bind_method(D_METHOD("get_glow_host"), &GameWorld::get_glow_host);
 	ClassDB::bind_static_method("GameWorld", D_METHOD("set_texture_reduction", "reduction"), &GameWorld::set_texture_reduction); // lane OPTS-2
 	ClassDB::bind_static_method("GameWorld", D_METHOD("get_texture_reduction"), &GameWorld::get_texture_reduction);
 	ClassDB::bind_method(D_METHOD("order_attack", "ids", "target"), &GameWorld::order_attack);
@@ -633,6 +646,7 @@ GameWorld::~GameWorld()
 	releaseLocalDrivers(); // lane MP-2: the recording / replay driver too
 	m_audio.reset(); // AUDIO-2: the audio side reads the game
 	// the game before the world and the assets it points into; the effect player before the game
+	m_weather.reset(); // lane WEATHER-1: before the effect player and the game
 	m_liveFX.reset();
 	m_spellStore.reset(); // lane SPELL-2 (review r1): the spell book screens hold the game's player and templates: they go before it
 	m_spellBar.reset();
@@ -875,6 +889,7 @@ Dictionary GameWorld::setup(const Ref<RetailFileSystem> &fs)
 			m_source = fs->renderW3DSource(); // lane SDK-0: the drawables' (render) assets, asset packs in front; LiveGame's launch bones read m_fs
 			m_assets.reset(new WW3DAssetManager(*m_source));
 			// lane FX-2: the effect player of the live games (FXParticleSystem.ini / FXList.ini through FX-1's FXPlayer), a child kept across loads
+			m_weather.reset(); // lane WEATHER-1
 			m_liveFX.reset();
 			if (!m_fxPlayer)
 			{
@@ -920,6 +935,7 @@ void GameWorld::clear_scene()
 	m_netSession.reset(); // MP-1: the session points at the game
 	releaseLocalDrivers(); // lane MP-2: the recording / replay driver too
 	m_audio.reset(); // AUDIO-2: the audio side reads the game
+	m_weather.reset(); // lane WEATHER-1: the weather (its sound, its terrain uniforms) before the effect player and the game
 	m_liveFX.reset(); // lane FX-2: the effect player leaves the logic and the drawables before they go
 	if (m_fxPlayer)
 	{
@@ -957,7 +973,14 @@ void GameWorld::clear_scene()
 	}
 }
 
-// stops S-115 / S-4832: a W3DFloorDraw's WeatherTexture of the map's weather (the first entry, as RW 0x4CFA9A picks a streak's) replaces the floor model's
+// lane GLOW-1 (S-5231): a model draw module's GlowEnabled / GlowEmissive (module data + 0x128 / + 0x129, RW 0x4C518B): 0 none, 1 glows, 2 glows emissive only
+static int staticGlowOf(const ModuleData *data)
+{
+	const W3DModelDrawModuleData *md = dynamic_cast<const W3DModelDrawModuleData *>(data);
+	return md && md->m_glowEnabled ? (md->m_glowEmissive ? 2 : 1) : 0;
+}
+
+// stops S-115 / S-5015: a W3DFloorDraw's WeatherTexture of the map's weather (the first entry, as RW 0x4CFA9A picks a streak's) replaces the floor model's
 // texture: every texture of the model ("*"; 92 of the 96 retail floor models that set one have a single texture, the other four none or one name the
 // extractor split). INFERENCE: the floor draw's own routine was not read. Empty for any other draw module or when no entry has the weather.
 static std::vector<TextureSwap> floorWeatherSwaps(const ModuleData *data, int weather)
@@ -981,6 +1004,7 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 {
 	m_staticSnowEntries.clear();
 	W3DInstancer *staticInst = memnew(W3DInstancer);
+	staticInst->set_shadow_receiving(true);
 	staticInst->set_name("StaticObjects");
 	add_child(staticInst);
 	m_staticId = staticInst->get_instance_id();
@@ -1015,7 +1039,7 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 		}
 		const MapObjectDrawable &d = m_game->clientOnly().drawables[p.drawable];
 		const Transform3D xf = toTransform(d.basis, d.position, d.scale);
-		// stop S-4832: a model draw's state swaps textures (a rock's or a civilian building's SNOW state on a snowy map): its own model variant
+		// stop S-5015: a model draw's state swaps textures (a rock's or a civilian building's SNOW state on a snowy map): its own model variant
 		std::vector<TextureSwap> swaps;
 		if (p.draw)
 		{
@@ -1053,6 +1077,12 @@ void GameWorld::build_static_layer(const Ref<RetailFileSystem> &fs, Dictionary &
 			&& !d.info->kindOf_test(MapObjectCreation::kindOfIndex("STRUCTURE")))
 			m_pavingPlants.push_back({instance,Vector2(d.position.x,d.position.y)});
 		// lane TREES1: a shrub or prop a construction or a felled tree may remove
+		if (p.kind != W3D_DRAWKIND_FLOOR)
+		{
+			const auto *module = p.module < d.draws.size() ? dynamic_cast<const W3DModelDrawModuleData *>(d.draws[p.module].data) : nullptr;
+			staticInst->set_instance_cast_shadow(instance, ObjectShadow::castsMap(d.info ? d.info->tmpl : nullptr, module,
+				p.draw ? p.draw->currentModelState() : nullptr));
+		}
 		if (d.fate == MAPOBJ_CLIENT_SHRUB || d.fate == MAPOBJ_CLIENT_PROP)
 		{
 			FootprintView f;
@@ -1118,6 +1148,20 @@ Dictionary GameWorld::load_map(const String &map_name, const Dictionary &options
 	lo.presentationDelaySeconds = options.has("presentation_delay") ? (double)options["presentation_delay"] : (lo.logicThread ? 0.03 : 0.0);
 	lo.hashEveryFrame = optBool(options, "hash_every_frame", false);
 	lo.campaign = optBool(options, "campaign", false);         // lane SCRIPT-1: a campaign mission (single player game, the map's sides and scripts)
+	// lane BFME2CAMP1: "carryover_campaign": the named campaign's first-mission carry-over (its fresh records and its first mission's
+	// DelayCarryoverSpawningOf), as GameWorld.start_campaign_mission gives mission 0 (viewers' captures of a campaign's first mission)
+	if (options.has("carryover_campaign") && m_world)
+	{
+		if (const LinearCampaign *c = m_world->linearCampaigns().find(toNative(String(options["carryover_campaign"]))))
+		{
+			if (!c->missions.empty())
+			{
+				lo.campaignCarryover = true;
+				lo.carryover = CampaignCarryover::beginCampaign(c->carryoverUnits);
+				lo.carryoverDelayed = c->missions[0].delayCarryover;
+			}
+		}
+	}
 	m_testHooks = optBool(options, "test_hooks", false);       // lane SCRIPT-2: the viewer's scripted captures (map_viewer --cine-drive)
 	lo.mapScripts = (int)optInt(options, "map_scripts", -1);  // lane SCRIPT-1: -1 auto, 0 off, 1 on
 	if (options.has("starting_money"))
@@ -1526,7 +1570,8 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 		state["spacing"] = weather.snowSpacing;
 		state["speed"] = weather.snowSpeed;
 		m_loadedWeather = weather;
-		state["particles"] = configure_snowfall(weather, errors);
+		// the map's own snowfall is GodotWeather's (lane WEATHER-1, loadWeather); this particle layer is only the snow override (set_snow_weather)
+		state["particles"] = 0;
 		report["weather"] = state;
 	}
 	else errors.push_back(toGodot("weather: " + weatherError));
@@ -1562,7 +1607,7 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 		}
 		if (!terrainOptions.has("fog"))
 		{
-			terrainOptions["fog"] = false;
+			terrainOptions["fog"] = true; // lane WEATHER-1: the map's hardware fog as retail draws it (the free camera's extra distance is w3d_fog_shift, PLAY-1); {"fog": false} turns it off
 		}
 		Node3D *terrain = terrainBuilder->build_loaded_map(m_fs, map_name, terrainOptions, m_game->map());
 		const Dictionary trep = terrainBuilder->get_report();
@@ -1579,10 +1624,32 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 		timings["terrain_ms"] = timing::elapsedMs(t0);
 	}
 	emit(97);
+	loadWeather(map_name, report); // lane WEATHER-1
+
+	{
+		// lane GLOW-1 (S-5231): retail's glow pass and the effects-LOD gate on the post chain. The active GlowEffect is the world's after the map.ini was read
+		// (LiveGame::load above); the colour grade host is the terrain's.
+		GlowPostEffectHost *glow = memnew(GlowPostEffectHost);
+		glow->set_name("GlowPass");
+		MapPostEffectsHost *grade = nullptr;
+		if (Node *terrainRoot = get_node_or_null(NodePath("Terrain")))
+		{
+			grade = Object::cast_to<MapPostEffectsHost>(terrainRoot->get_node_or_null(NodePath("PostEffects")));
+		}
+		glow->configure(m_world->glowEffect().active(), grade);
+		glow->set_effects_lod(m_effectsLod);
+		add_child(glow);
+		m_glowHost = glow->get_instance_id();
+		if (m_world->glowEffect().active().glowEnabled)
+		{
+			stops.push_back("S-5231");
+		}
+	}
 
 	t0 = nowMs();
 	build_static_layer(m_fs, report, errors, stops);
 	W3DInstancer *dyn = memnew(W3DInstancer);
+	dyn->set_shadow_receiving(true);
 	dyn->set_name("LiveObjects");
 	add_child(dyn);
 	m_dynamicId = dyn->get_instance_id();
@@ -1770,6 +1837,7 @@ Dictionary GameWorld::load_internal(const LiveGame::Options &loIn, const String 
 		const GlobalLight &L = tod.objects[0];
 		Dictionary lit;
 		lit["time_of_day"] = gl.timeOfDay;
+		lit["shadow_color"] = (int64_t)gl.shadowColor;
 		lit["ambient"] = Color(L.ambient[0], L.ambient[1], L.ambient[2]);
 		lit["diffuse"] = Color(L.diffuse[0], L.diffuse[1], L.diffuse[2]);
 		lit["direction"] = Vector3(L.lightPos[0], L.lightPos[2], -L.lightPos[1]);
@@ -2188,17 +2256,25 @@ void GameWorld::refresh_views(double deltaMs)
 				W3DDrawPoseView &f = m_viewPose; // lane PERF-3: the frame's pose request and model by reference (frame() copied every name of the module)
 				e.draw->poseView(f);
 				const bool shown = f.model && !e.moduleHidden && !entryHidden;
+				// Donor W3DModelDrawRva000B8FA1.cpp (BFME2 0x4B8FA1): ordinary
+				// owners use kind 1; hero custom palettes keep precedence. Bake before
+				// filtering, using the existing RW 0x531C77 texture recolour routine.
+				const auto palette = Render_House_Color_Params(d->getHouseColor(), d->customColorKind(), d->customColors());
+				ev.colorsRevision = d->customColorRevision();
+				// lane PERF-HD: the model key below (the lowered name, the house colour's "#..." suffix, the swap suffix) depends only on these inputs;
+				// while they hold the key is `ev.model` already, so the strings are not made and compared again (every animated troop, every frame)
+				const bool keySame = ev.animKeyValid && ev.animKeyShown == shown && ev.animKeyHouse == m_houseColors && ev.animKeyName == f.modelName
+					&& ev.animKeySwaps == (const void *)f.textureSwaps && ev.animKeyKind == palette.kind && ev.animKeyGlow == f.glow
+					&& ev.animKeyColors[0] == (std::uint32_t)palette.colors[0] && ev.animKeyColors[1] == (std::uint32_t)palette.colors[1]
+					&& ev.animKeyColors[2] == (std::uint32_t)palette.colors[2];
+				if (!keySame)
+				{
 				if (shown && *f.modelName != ev.rawModel)
 				{
 					ev.rawModel = *f.modelName;
 					ev.rawLowered = AsciiStringUtil::lowered(*f.modelName);
 				}
 				static const std::string kNoModel;
-				// Donor W3DModelDrawRva000B8FA1.cpp (BFME2 0x4B8FA1): ordinary
-				// owners use kind 1; hero custom palettes keep precedence. Bake before
-				// filtering, using the existing RW 0x531C77 texture recolour routine.
-				const auto palette = Render_House_Color_Params(d->getHouseColor(), d->customColorKind(), d->customColors());
-				ev.colorsRevision = d->customColorRevision();
 				std::string coloredModel;
 				if (shown && m_houseColors && palette.kind > 0)
 				{
@@ -2225,7 +2301,15 @@ void GameWorld::refresh_views(double deltaMs)
 					}
 					swappedModel = (!coloredModel.empty() ? coloredModel : ev.rawLowered) + ev.swapSuffix;
 				}
-				const std::string &model = !swappedModel.empty() ? swappedModel : !coloredModel.empty() ? coloredModel : shown ? ev.rawLowered : kNoModel;
+				const std::string &plainModel = !swappedModel.empty() ? swappedModel : !coloredModel.empty() ? coloredModel : shown ? ev.rawLowered : kNoModel;
+				// lane GLOW-1 (S-5231): a draw module with GlowEnabled gets a model of its own (the glow layer is a property of the model's draws), so another
+				// drawable that shows the same W3D model without the flag does not glow
+				std::string glowModel;
+				if (shown && f.glow != 0)
+				{
+					glowModel = plainModel + (f.glow == 2 ? "|glow-emissive" : "|glow");
+				}
+				const std::string &model = glowModel.empty() ? plainModel : glowModel;
 				if (model != ev.model)
 				{
 					if (ev.instance >= 0)
@@ -2262,6 +2346,10 @@ void GameWorld::refresh_views(double deltaMs)
 							{
 								mid = dyn->add_model(toGodot(*f.modelName));
 							}
+							if (mid >= 0 && f.glow != 0)
+							{
+								dyn->set_model_glow(mid, f.glow == 2);
+							}
 							m_dynamicModels[model] = mid;
 							m_lastNewModelMs = timing::sumMs(m_lastNewModelMs, timing::elapsedMs(tm));
 							++m_lastNewModels;
@@ -2284,16 +2372,38 @@ void GameWorld::refresh_views(double deltaMs)
 						}
 					}
 				}
+				ev.animKeyValid = true;
+				ev.animKeyShown = shown;
+				ev.animKeyHouse = m_houseColors;
+				ev.animKeyName = f.modelName;
+				ev.animKeySwaps = f.textureSwaps;
+				ev.animKeyKind = palette.kind;
+				ev.animKeyGlow = f.glow;
+				for (int i = 0; i < 3; ++i)
+				{
+					ev.animKeyColors[i] = (std::uint32_t)palette.colors[i];
+				}
+				}
 				if (ev.instance >= 0)
 				{
 					if (entryXfChanged && ev.posed)
 					{
 						dyn->set_instance_transform(ev.instance, entryXf);
 					}
+					const ModelConditionInfo *shadowState = e.draw->currentModelState();
+					if (ev.shadowInstance != ev.instance || ev.shadowState != shadowState || ev.shadowData != e.data) // S-3304: not every frame
+					{
+						dyn->set_instance_cast_shadow(ev.instance, e.kind != W3D_DRAWKIND_FLOOR &&
+							ObjectShadow::castsMap(d->getTemplate(), dynamic_cast<const W3DModelDrawModuleData *>(e.data), shadowState));
+						ev.shadowState = shadowState;
+						ev.shadowData = e.data;
+						ev.shadowInstance = ev.instance;
+					}
 					if (!ev.posed || animatedNow || flagsChanged) // RENDER-2: a MANUAL track (the build-up) changes its frame without being "animated"
 					{
 						// SMOOTH-1: the native call (no Godot String round trip per animated drawable per frame; the instancer caches the clip lookups)
 						dyn->set_instance_pose_keyed(ev.instance, *f.clip0, f.clipKey0, f.frame0, *f.clip1, f.clipKey1, f.frame1, f.blendPercentage); // lane PERF-3: keyed
+						dyn->set_instance_pose_share(ev.instance, e.draw->poseShareDelta()); // lane PERF-HD: retail's horde pose sharing (the draw's frame delta)
 						ev.posed = true;
 					}
 					// the names frame() gives (the model's sub objects at the hidden indices, in index order), made when the draw's hidden set or the model changed
@@ -2343,9 +2453,11 @@ void GameWorld::refresh_views(double deltaMs)
 				}
 				ev.posed = false;
 				ev.model.clear();
+				ev.animKeyValid = false; // lane PERF-HD: the posed branch's key no longer describes `model`
 			}
 			else if (!e.staticModel.empty() && !e.moduleHidden)
 			{
+				ev.animKeyValid = false; // lane PERF-HD: this branch sets `model` itself
 				// lane HCKEY-1: the key and its palette / swaps are made again only when an input changed (not every frame)
 				const std::uint32_t owner = d->getHouseColor();
 				const int customKind = d->customColorKind();
@@ -2359,6 +2471,11 @@ void GameWorld::refresh_views(double deltaMs)
 					ev.staticKeySwaps = e.kind == W3D_DRAWKIND_FLOOR ? floorWeatherSwaps(e.data, m_streakWeather) : std::vector<TextureSwap>();
 					ev.staticKey = AsciiStringUtil::lowered(e.staticModel) + W3DInstancer::Texture_Swap_Suffix(ev.staticKeySwaps);
 					if (m_fs->is_bfme1() && e.kind == W3D_DRAWKIND_FLOOR) ev.staticKey += "#floor-sampling";
+					ev.staticGlow = staticGlowOf(e.data); // lane GLOW-1 (S-5231): a glowing module's model is a copy of its own, as on the animated path
+					if (ev.staticGlow != 0)
+					{
+						ev.staticKey += ev.staticGlow == 2 ? "|glow-emissive" : "|glow";
+					}
 					if (ev.staticKeyColored)
 					{
 						const HouseColorParams &pp = ev.staticKeyPalette;
@@ -2393,6 +2510,10 @@ void GameWorld::refresh_views(double deltaMs)
 						 PackedInt64Array colors;for(auto color:palette.colors) colors.push_back((int64_t)color);
 						 mid=dyn->add_model_colored(toGodot(e.staticModel),palette.kind,colors);
 						} else mid = dyn->add_model(toGodot(e.staticModel));
+						if (mid >= 0 && ev.staticGlow != 0)
+						{
+							dyn->set_model_glow(mid, ev.staticGlow == 2);
+						}
 						m_dynamicModels[model] = mid;
 						m_lastNewModelMs = timing::sumMs(m_lastNewModelMs, timing::elapsedMs(tm));
 						++m_lastNewModels;
@@ -2406,6 +2527,8 @@ void GameWorld::refresh_views(double deltaMs)
 						ev.instance = dyn->add_instance(mid, entryXf, String(), 0.0, 1.0);
 						ev.model = model;
 						ev.opacity = 1.0f; // a new instance starts opaque
+						dyn->set_instance_cast_shadow(ev.instance, e.kind != W3D_DRAWKIND_FLOOR &&
+							ObjectShadow::castsMap(d->getTemplate(), dynamic_cast<const W3DModelDrawModuleData *>(e.data), nullptr));
 					}
 				}
 				else if (entryXfChanged && ev.instance >= 0)
@@ -2603,6 +2726,12 @@ void GameWorld::advance(double delta)
 	m_lastShroudMs = timing::spanMs(tv, t1);
 	refresh_views(dt * 1000.0);
 	if (W3DInstancer *st = instancerOf(m_staticId)) st->update_now();
+	if (m_weather)
+	{
+		// lane WEATHER-1: the weather follows the presented frame's TheGlobalWeatherSystem (never the live logic)
+		const std::shared_ptr<const LogicSnapshot> shown = m_game->presentedSnapshot();
+		m_weather->advance(dt, shown ? shown->globalWeather : 0);
+	}
 	const double tf = nowMs();
 	m_lastViewsMs = timing::spanMs(tf, tv);
 	updateTreeTopple(dt); // lane SPELL-3
@@ -3207,7 +3336,15 @@ void GameWorld::refresh_streaks(bool record)
 			}
 			// lane VISUAL-2 r2: a W3DStreakDraw is a draw module: a drawable that is not drawn (in the shroud, invisible to the local player, hidden by its
 			// container) neither records its trail nor shows it (its points stay for when it is drawn again)
-			const bool hidden = d->presentedLook(presented.get(), m_shroudDrawn).hidden;
+			// lane PERF-CLIENT: the look is asked only of a drawable with a streak entry (one in thousands), once
+			int hiddenState = -1;
+			auto hiddenNow = [&]() {
+				if (hiddenState < 0)
+				{
+					hiddenState = d->presentedLook(presented.get(), m_shroudDrawn).hidden ? 1 : 0;
+				}
+				return hiddenState == 1;
+			};
 			const std::vector<DrawEntry> &entries = d->entries();
 			DrawableView *view = id < m_views.size() && m_views[id].valid ? &m_views[id] : nullptr;
 			for (size_t k = 0; k < entries.size() && k < 256; ++k)
@@ -3233,6 +3370,7 @@ void GameWorld::refresh_streaks(bool record)
 				{
 					continue;
 				}
+				const bool hidden = hiddenNow();
 				StreakView &sv = m_streaks[((uint64_t)id << 8) | k];
 				sv.data = data;
 				sv.seen = true;
@@ -3468,6 +3606,8 @@ Dictionary GameWorld::get_object(int64_t id) const
 	d["drawable_hidden"] = o->isDrawableHidden();
 	d["construction_percent"] = o->getConstructionPercent(); // lane BUILD-1: -1 for a finished object, 0 .. 100 while it rises
 	d["under_construction"] = o->isUnderConstruction();
+	static const int insideCastle = ObjectTemplateInfoBuilder::objectStatusIndex("INSIDE_CASTLE");
+	d["inside_castle"] = insideCastle >= 0 && o->testStatus((unsigned)insideCastle); // lane CASTLEAREA-1: the status the castle areas set (viewers' proof captions)
 	if (const BodyModuleInterface *b = o->getBodyModule())
 	{
 		d["health"] = b->getHealth();
@@ -5841,7 +5981,7 @@ ProfileIdentity GameWorld::profileIdentityFor(SimulationProfile profile, bool so
 	return ProfileIdentity::compute(m_fs.is_valid() ? m_fs->mountedArchives() : std::vector<MountedArchive>(), RandomAlgorithm::ZH_CarryChain,
 		ModEngineFeatures::identityFeatures(), profile, // lane MODS-3: the mod's engine features
 		m_fs.is_valid() ? m_fs->modIdentity() : std::vector<std::string>(), // lane MODS-1
-		profileSimulationData(), !sourceAI && m_enhancedAI);
+		profileSimulationData(), m_fs.is_valid() ? m_fs->packIdentity() : std::vector<std::string>(), !sourceAI && m_enhancedAI); // lane PROFILE-3: the packs, never counted
 }
 
 std::string GameWorld::profileSimulationData() const
@@ -6013,7 +6153,7 @@ ProfileIdentity GameWorld::net_profile() const
 	// the profile identity of this peer: the mounted archives in mount order with their verified md5, the build, the RNG prepare_new_game uses
 	return ProfileIdentity::compute(m_fs.is_valid() ? m_fs->mountedArchives() : std::vector<MountedArchive>(), RandomAlgorithm::ZH_CarryChain,
 		ModEngineFeatures::identityFeatures(), m_choice.current, m_fs.is_valid() ? m_fs->modIdentity() : std::vector<std::string>(), // lane UBER-1: "profile uber" in the Uber mode; MODS-1: the mod
-		profileSimulationData(), m_enhancedAI); // lane PROFILE-2
+		profileSimulationData(), m_fs.is_valid() ? m_fs->packIdentity() : std::vector<std::string>(), m_enhancedAI); // lane PROFILE-2; PROFILE-3: the packs
 }
 
 Dictionary GameWorld::set_simulation_profile(const String &name)
@@ -6601,8 +6741,10 @@ Dictionary GameWorld::get_spellbook(int64_t player) const
 // ---- VIS-1: the shroud on the client ----------------------------------------------------------------------------------------------
 // TARGET FACTS: the local player's cell edges reach the display and the radar through the shroud manager's callback (RW + 0x6C, RW 0xB52E10); GameData ClearAlpha
 // (255, the constructor), FogAlpha 127 and ShroudAlpha 0 are the cell's level ("0 is opaque, 255 is clear", gamedata.ini) and ShroudColor 255 255 255.
-// INFERENCE (stop S-567): one texel per cell, bilinear filtering, the terrain colour multiplied by level / 255 (maps-and-terrain spec 3.9: `out.rgb = col * shroud.r`);
-// retail's W3DShroud filtering was not read; a fogged object that is drawn is lit by the fogged light (lane VISUAL-2, S-4970).
+// lane TERRAIN-SAMPLING (stop S-567), TARGET FACTS: one texel per cell, bilinear (terrain.fxo ShroudSampler: Min/Mag/Mip LINEAR, clamp); the texel is W3DShroud's A4R4G4B4
+// pixel (RW 0x47266B, GameClient/ShroudTexel.h) and the effect multiplies the colour by its red channel only (`mul r0.xyz, r0.x, r1`): a 4-bit value, so the fog level 127
+// reads 7/15 = 0.467, not 127 / 255. The texture holds that nibble times 17 (the byte Direct3D expands a nibble to) and the shaders' multiplier stays white, ShroudColor being
+// inside the nibble. INFERENCE: the water, river and road shaders read the same red byte; a fogged object that is drawn is lit by the fogged light (lane VISUAL-2, S-4970).
 // lane ZOOM-1, the border. TARGET FACTS (tier A, identical to BFME2 1.06 per tools/re/rw2decomp.py): the shroud's render body RW 0x472EF4 (BFME2 0x473628)
 // fills the whole texture once with the border level (W3DShroud + 0x36, the constructor's GlobalData ShroudAlpha) through RW 0x472792 (BFME2 0x472E84, ZH
 // fillBorderShroudData: the level raised to at least ShroudAlpha, the texel of RW 0x47266B / BFME2 0x472D5D) and copies the cells at texel (1, 1); W3DShroud::init
@@ -6835,14 +6977,21 @@ void GameWorld::refresh_shroud(bool force, double dtMs)
 	}
 	// lane ZOOM-1: the texture is the cells plus a one-texel border at the border level (see above)
 	const int tw = nx + 2, th = ny + 2;
+	// RW 0x47266B: the texel is the level packed into an A4R4G4B4 pixel (ShroudTexel.h), so the byte is the red nibble times 17 (the border and every cell)
+	const ShroudTexel::Colour texelColour{ vs.shroudRed, vs.shroudGreen, vs.shroudBlue };
+	const auto texelOf = [&texelColour](uint8_t level) { return ShroudTexel::redByte(level, texelColour); };
 	PackedByteArray bytes;
 	bytes.resize((int64_t)tw * th);
 	uint8_t *w = bytes.ptrw();
-	std::memset(w, border, (size_t)tw * (size_t)th);
+	std::memset(w, texelOf(border), (size_t)tw * (size_t)th);
 	const uint8_t *cur = m_shroudFade.currentLevels().data();
 	for (int y = 0; y < ny; ++y)
 	{
-		std::memcpy(w + (size_t)(y + 1) * (size_t)tw + 1, cur + (size_t)y * (size_t)nx, (size_t)nx);
+		uint8_t *row = w + (size_t)(y + 1) * (size_t)tw + 1;
+		for (int x = 0; x < nx; ++x)
+		{
+			row[x] = texelOf(cur[(size_t)y * (size_t)nx + (size_t)x]);
+		}
 	}
 	Ref<Image> img = Image::create_from_data(tw, th, false, Image::FORMAT_L8, bytes);
 	bool newTexture = false;
@@ -6864,7 +7013,8 @@ void GameWorld::refresh_shroud(bool force, double dtMs)
 	// lane ZOOM-1: texel 0 is the border, one cell before the grid's origin
 	const Vector2 origin(SimMath::subf32(sm.originX, sm.cellSize), SimMath::subf32(sm.originY, sm.cellSize));
 	const Vector2 extent(SimMath::mulf32(sm.cellSize, (float)tw), SimMath::mulf32(sm.cellSize, (float)th)); // the audited file's float rule (client values)
-	const Color color(vs.shroudRed, vs.shroudGreen, vs.shroudBlue);
+	// the colour is inside the texel's red channel (RW 0x47266B; the terrain effect reads only .r), so the shaders' multiplier stays white
+	const Color color(1.0f, 1.0f, 1.0f);
 	// lane VISUAL-2: the fogged light fraction, RW 0x46DFD0 / 0x46F533: (float) GlobalData + 0xBE9 (FogAlpha) / (float) + 0xBE8 (ClearAlpha); a ClearAlpha of 0
 	// divides by zero as retail's divss does
 	W3D_Set_Fogged_Light_Frac(SimMath::divf32((float)vs.fogAlpha, (float)vs.clearAlpha));
@@ -7255,6 +7405,71 @@ int64_t GameWorld::get_texture_reduction()
 Node3D *GameWorld::get_fx_player() const
 {
 	return m_fxPlayer;
+}
+
+// lane WEATHER-1: the map's weather (GodotWeather) once the terrain and the effect player are in place. A failure leaves the game without weather and
+// is reported under weather_errors (never a silent default), not counted as a failure of the start, as the terrain's errors are: a map plays without
+// its weather (a game whose data the weather port does not read, BFME1's, still starts)
+void GameWorld::loadWeather(const String &map_name, Dictionary &report)
+{
+	m_weather.reset();
+	W3D_Set_Sway_Scale(1.0); // lane WEATHERFX-1: a new game starts with the retail sway
+	if (!m_game || !m_fs.is_valid() || !m_fs->archive_fs())
+	{
+		return;
+	}
+	const LoadedMap &map = m_game->map();
+	if (!map.hasHeightMap)
+	{
+		report["weather_errors"] = Array::make("weather: the map has no height map");
+		return;
+	}
+	Node3D *terrainRoot = Object::cast_to<Node3D>(find_child("Terrain", false, false));
+	std::unique_ptr<GodotWeather> w(new GodotWeather());
+	std::string error;
+	if (!w->load(this, *m_fs->archive_fs(), toNative(map_name), map.heightMap, map.chunks.hasGlobalLighting ? &map.chunks.lighting : nullptr,
+			m_fxPlayer, terrainRoot, RandomAlgorithm::RotWK_GameDat_LCG,
+			[world = m_world.get()](const std::string &n) { return world && world->audioEventExists(n); }, &error))
+	{
+		report["weather_errors"] = Array::make(toGodot("weather: " + error));
+		return;
+	}
+	m_weather = std::move(w);
+	report["weather"] = m_weather->report();
+}
+
+Dictionary GameWorld::get_weather_report() const
+{
+	return m_weather ? m_weather->report() : Dictionary();
+}
+
+Dictionary GameWorld::get_weather_fx_state() const
+{
+	return m_weather ? m_weather->fxState() : Dictionary();
+}
+
+void GameWorld::set_weather_fx_sway(double scale)
+{
+	W3D_Set_Sway_Scale(scale); // the drawn offsets (GodotW3DMaterial: rendering)
+}
+
+double GameWorld::get_weather_fx_ground(double x, double y) const
+{
+	return m_weather ? m_weather->groundHeight(x, y) : 0.0;
+}
+
+void GameWorld::set_effects_lod(int64_t lod)
+{
+	m_effectsLod = lod;
+	if (GlowPostEffectHost *host = Object::cast_to<GlowPostEffectHost>(ObjectDB::get_instance(m_glowHost)))
+	{
+		host->set_effects_lod(lod);
+	}
+}
+
+Node3D *GameWorld::get_glow_host() const
+{
+	return Object::cast_to<GlowPostEffectHost>(ObjectDB::get_instance(m_glowHost));
 }
 
 Dictionary GameWorld::get_fx_report() const
@@ -8177,6 +8392,24 @@ Dictionary GameWorld::debug_clear_weather()
 	out["modifier_before"] = toGodot(w.modifierName());
 	w.clear();
 	w.setWeather(GlobalWeatherSystem::WEATHER_NONE, 0, 0);
+	out["ok"] = true;
+	return out;
+}
+
+Dictionary GameWorld::debug_set_weather(int64_t weather, int64_t frames)
+{
+	Dictionary out;
+	out["ok"] = false;
+	if (!m_game || !m_testHooks || m_netHost || m_netClient || m_netStarted || m_netSession || weather < 0 || weather > 4 || frames < 0)
+	{
+		out["error"] = "refused (no game, test_hooks off, a network game or a weather outside 0 .. 4)";
+		return out;
+	}
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	GlobalWeatherSystem &w = m_game->logic().weather();
+	out["weather_before"] = (int64_t)w.weather();
+	w.setWeather((int)weather, 0, (unsigned)frames);
+	UtilityFunctions::print("WEATHER-1 TEST HOOK: the logic weather set to ", weather, " for ", frames, " frames");
 	out["ok"] = true;
 	return out;
 }
@@ -9226,7 +9459,8 @@ Dictionary GameWorld::set_snow_weather(bool enabled)
 		// Enhanced presentation preset: do not inherit rain from a dry/rainy map.
 		Ref<FileAccess> preset = FileAccess::open("res://weather/console_snow.ini", FileAccess::READ);
 		if (preset.is_null()) { result["error"] = "Missing console snow weather preset."; return result; }
-		MapWeatherScan::applyText(toNative(preset->get_as_text()), weather);
+		std::string presetError;
+		if (!MapWeatherScan::applyText(toNative(preset->get_as_text()), weather, &presetError, true)) { result["error"] = toGodot("console snow preset: " + presetError); return result; }
 		Ref<W3DModelBuilder> textures; textures.instantiate();
 		if (textures->load_texture(m_fs, toGodot(weather.snowTexture)).is_null()) {
 			result["error"] = toGodot("Missing weather texture: " + weather.snowTexture); return result;

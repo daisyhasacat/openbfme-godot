@@ -13,6 +13,7 @@ signal compatibility_scan(game: String, token: String, hosting: bool, reason: St
 
 const OnlineList := preload("res://scripts/online_list.gd")
 const SocialList := preload("res://scripts/online_social_list.gd")
+const HttpTimed := preload("res://scripts/http_timed.gd") ## a time limit in running frames (a blocking load does not use it up)
 
 var shell: Object = null
 var lobby_url := ""
@@ -34,7 +35,7 @@ var _list_requests := {}
 
 func _make() -> HTTPRequest:
 	var h := HTTPRequest.new()
-	h.timeout = 20.0
+	HttpTimed.set_budget(h, 20.0)
 	h.max_redirects = 0
 	h.body_size_limit = BODY_LIMIT # Sol r1: a hostile lobby's answer is not read beyond the bound (the client refuses a larger one too)
 	add_child(h)
@@ -89,13 +90,13 @@ func _send(q: Dictionary) -> void:
 		if _inbox_id != 0:
 			_list_requests.erase(_inbox_id)
 			node.cancel_request()
-		node.timeout = float(int(q.get("hold_seconds", 0))) + HELD_SLACK
+		HttpTimed.set_budget(node, float(int(q.get("hold_seconds", 0))) + HELD_SLACK)
 		_inbox_id = q.id
 	elif held:
 		if _held_id != 0:
 			_list_requests.erase(_held_id)
 			node.cancel_request() # the poll of a game the player left: its answer is nobody's
-		node.timeout = float(int(q.get("hold_seconds", 0))) + HELD_SLACK
+		HttpTimed.set_budget(node, float(int(q.get("hold_seconds", 0))) + HELD_SLACK)
 		_held_id = q.id
 	else:
 		_id = q.id

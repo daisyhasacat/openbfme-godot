@@ -6,6 +6,7 @@
 
 #include "Common/RecordingBuild.h"
 #include "Common/Sha256.h"
+#include "GameLogic/CampaignCarryover.h"
 #include "GameNetwork/NetPacket.h"
 
 #include <array>
@@ -116,6 +117,7 @@ std::vector<std::uint8_t> SaveGameFile::encode() const
 	h.u8(header.campaignAdvanced ? 1 : 0);
 	h.u8(header.autoSave ? 1 : 0);
 	h.str(header.buildDate);
+	h.str(header.campaignCarryover); // header version 4 (lane BFME2CAMP1)
 	std::vector<std::uint8_t> out(kMagic, kMagic + sizeof(kMagic));
 	NetByteWriter v;
 	v.u32(kContainerVersion);
@@ -264,9 +266,9 @@ bool SaveGameFile::parseFrom(Source &src, SaveGameFile &out, std::string *error,
 	}
 	NetByteReader r(parts[0]);
 	const std::uint32_t headerVersion = r.u32();
-	if (!r.failed() && headerVersion != kHeaderVersion && headerVersion != 1 && headerVersion != 2)
+	if (!r.failed() && (headerVersion < 1 || headerVersion > kHeaderVersion))
 	{
-		return failWith(error, "save header version " + std::to_string(headerVersion) + " (this build reads versions 1, 2 and 3)");
+		return failWith(error, "save header version " + std::to_string(headerVersion) + " (this build reads versions 1 to " + std::to_string(kHeaderVersion) + ")");
 	}
 	SaveGameHeader &h = out.header;
 	h.buildVersion = r.str();
@@ -320,6 +322,10 @@ bool SaveGameFile::parseFrom(Source &src, SaveGameFile &out, std::string *error,
 	h.campaignReady = flags[1] == 1;
 	h.campaignAdvanced = flags[2] == 1;
 	h.autoSave = flags[3] == 1;
+	if (headerVersion >= 4)
+	{
+		h.campaignCarryover = r.str(); // lane BFME2CAMP1: checked below
+	}
 	if (r.failed())
 	{
 		return failWith(error, "the save is damaged (its header part ends early)");
@@ -356,6 +362,19 @@ bool SaveGameFile::parseFrom(Source &src, SaveGameFile &out, std::string *error,
 	else if (h.campaignVictorious || h.campaignReady || h.campaignAdvanced || h.autoSave)
 	{
 		return failWith(error, "the save is a game at its frame with the campaign menu's flags");
+	}
+	if (!h.campaignCarryover.empty())
+	{
+		CampaignCarryover::State st;
+		std::string why;
+		if (h.gameKind != 1)
+		{
+			return failWith(error, "the save is a skirmish with a campaign carry-over");
+		}
+		if (!CampaignCarryover::State::parse(h.campaignCarryover, st, &why))
+		{
+			return failWith(error, "the save's " + why);
+		}
 	}
 	out.log = std::move(parts[1]);
 	out.snapshot = std::move(parts[2]); // lane SAVE-4a

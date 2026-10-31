@@ -50,11 +50,13 @@ const char *const kBaseSiteWindow =
 	"S-164 the BASE_SITE bit-17 window of the footprint routine is not modelled";
 // S-4840 wall tops and ramps (lane WALL-1, AIPathfindWalls.cpp)
 const char *const kWallLayer =
-	"S-4840 wall tops and ramps come from the draw module's WallBoundsMesh / RampMesh1 / RampMesh2 of the default model state, tested as the meshes' "
-	"triangles (retail: the outline polygon and a Bridge built from the ramp mesh); a ramp's foot joins the ground and its top a wall within 15 of their "
-	"heights (INFERENCE), wall-top and ramp cells drop bits 17 and 18, and ClassifyWall's pinch pass is not applied";
+	"S-4840 wall tops and ramps come from the draw module's WallBoundsMesh / RampMesh1 / RampMesh2 of the default model state: a wall top is tested as "
+	"its mesh's triangles (retail: the outline polygon), a ramp's cells follow RotWK's ramp cell rule (RW 0x93527F) on the Bridge getRamp builds from its "
+	"mesh; a removed walkway sends its ramp joints back to the ground (INFERENCE), and ClassifyWall's pinch pass is not applied";
 const char *const kWallLayerCount =
 	"S-4840 more than 48 wall-top heights: the wall surface is left out of the pathfinder's map (RW allows 0x11 .. 0x40)";
+const char *const kRampNoHeight =
+	"S-4840 a ramp's Bridge plane is vertical (a RampMesh of no width): the ramp is left out of the pathfinder's map (RW 0x68044E has no height for it)";
 // S-4857 .. portals (lane WALL-2, AIPathfindPortals.cpp)
 const char *const kPortals =
 	"S-4857 portal waypoints live in the pathfinder (RW: TheTerrainLogic's waypoint list with the map's waypoints; the id counter restarts at each map), a map "

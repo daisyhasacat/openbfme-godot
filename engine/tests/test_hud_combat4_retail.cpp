@@ -662,6 +662,15 @@ TEST_CASE("combat4 retail: S-1791 (DependencySharedModelFlags) and S-1792 (W3DTr
 // KILLSRC-1 and PATHPRIO-1 already in: the path priority's crushable level and onCollide's attack-target exits change how the riders close in; measured at
 // AIDATA-1's merge point and on the merged tree): the run-down hit lands at frame 40 (still while the riders run the troll down, before 60 with a limit of 0),
 // the standing troll is hit at 30 either way
+// Lane MODCOMPAT-MOD1 (measured at AutoPickUpUpdate's commit, a CI host): AutoPickUpUpdate (the mountain troll's scan countdown starts at a logic random
+// value, RW 0x8994BF, and its update, RW 0x89958F, joins the sleepy update vectors: the riders close in on other frames; the run-down still hits first, the
+// standing troll is still hit at the same frame either way): retail 40 -> 28, none 60 -> 64, standRetail 30 -> 32. Engine pins, not retail values.
+// Lane MODCOMPAT-MOD1 (measured at BoredUpdate's commit, a CI host): BoredUpdate (the idle mountain troll's scan countdown, a logic random value at its
+// creation, RW 0x899F1F, and its scans every ScanDelayTime while not ATTACKING or MOVING, RW 0x899F9D: the standing troll is hit later; the run-down still
+// hits first, the standing troll still at the same frame either way): none 64 -> 62, standRetail 32 -> 50. Engine pins, not retail values.
+// Lane MODCOMPAT-MOD1 (measured at the run-down aim fix's commit, a CI host): the run-down's aim state ends at once (AIAttackAimAtTargetState RW 0x753426 /
+// 0x7524B5), so the first rider strikes a frame earlier; with a limit of 0 and against the standing troll nothing changes: retail 28 -> 27. Engine pins, not
+// retail values.
 TEST_CASE("aidata1 retail: knights running down a fleeing troll hit within ChaseFromBehindLimit; a troll standing still is hit at the same frame either way")
 {
 	if (!haveWorld())
@@ -711,14 +720,14 @@ TEST_CASE("aidata1 retail: knights running down a fleeing troll hit within Chase
 		return h;
 	};
 	const Hit retail = firstHit(true, 50.0f);
-	CHECK(retail.frame == 40);
+	CHECK(retail.frame == 27);
 	CHECK(retail.runningDown);
 	const Hit none = firstHit(true, 0.0f);
-	CHECK(none.frame == 60);
+	CHECK(none.frame == 62);
 	CHECK_FALSE(none.runningDown);
 	const Hit standRetail = firstHit(false, 50.0f);
 	const Hit standNone = firstHit(false, 0.0f);
-	CHECK(standRetail.frame == 30);
+	CHECK(standRetail.frame == 50);
 	CHECK_FALSE(standRetail.runningDown);
 	CHECK(standNone.frame == standRetail.frame);
 }

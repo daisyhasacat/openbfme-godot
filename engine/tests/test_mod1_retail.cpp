@@ -5,7 +5,9 @@
 // The templates are found by module class in the loaded data (no template name is hard-coded where a search can find one); the test prints which one it used.
 
 #include "doctest.h"
-#include "GameLogic/Module/CrateCollide.h"
+#include "GameLogic/Module/RebuildHoleModules.h"
+#include "GameLogic/Module/SalvageCrateCollide.h"
+#include "GameLogic/Module/VeterancyCrateCollide.h"
 #include "GameLogic/System/ShroudManager.h"
 #include "Common/Money.h"
 #include "Common/XferSave.h"
@@ -264,7 +266,11 @@ TEST_CASE("modules retail: a creep lair leaves its rubble hole (RebuildHoleExpos
 	g.run(2);
 	g.ai->addObjectToPathfindMap(*lair);
 	lair->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
-	Object *hole = g.logic->findObjectByID(expose->holeId());
+	Object *hole = nullptr;
+	for (Object *o = g.logic->getFirstObject(); o; o = o->getNextObject())
+	{
+		if (o->getTemplate()->getName() == "HillTrollLairHole") hole = o;
+	}
 	REQUIRE(hole);
 	CHECK(hole->getTemplate()->getName() == "HillTrollLairHole");
 	CHECK(hole->getPosition()->x == lair->getPosition()->x);
@@ -297,7 +303,7 @@ TEST_CASE("modules retail: a creep lair leaves its rubble hole (RebuildHoleExpos
 	RebuildHoleExposeDie *neutralExpose = moduleOf<RebuildHoleExposeDie>(neutralLair);
 	REQUIRE(neutralExpose);
 	neutralLair->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
-	CHECK(neutralExpose->holeId() == INVALID_ID);
+	CHECK(neutralExpose->holesMade() == 0);
 }
 
 TEST_CASE("modules retail: CreateObjectDie runs its ObjectCreationList when the object dies (and not before); deterministic")
@@ -782,8 +788,9 @@ TEST_CASE("crate pickups retail: walking over a fixed-value gold chest pays once
 	g.logic->random().enableCallLog(true);
 	g.logic->partition().update();
 	g.ai->processCollisions();
+	g.ai->processCrateContacts();
 	REQUIRE_MESSAGE(chest->isDestroyed(), "pickup valid=", crate->wouldLikeToCollideWith(*unit), " AI=", unit->getAIUpdateInterface(), " world=", unit->isInWorld(), " dead=", unit->isEffectivelyDead(), " immobile=", unit->isKindOfName("IMMOBILE"));
-	CHECK(crate->executed() == true);
+	CHECK(crate->everExecuted() == true);
 	CHECK(g.player->getMoney()->countMoney() == before + 100);
 	CHECK(g.logic->random().callLog().size() == 1);
 	crate->onCollide(unit, nullptr, nullptr);
@@ -800,7 +807,7 @@ TEST_CASE("crate pickups retail: walking over a fixed-value gold chest pays once
 	XferLoad reader(saved.data());
 	loaded->xfer(reader);
 	REQUIRE(reader.atEnd());
-	CHECK(loaded->executed() == true);
+	CHECK(loaded->everExecuted() == true);
 	loaded->onCollide(unit, nullptr, nullptr);
 	CHECK(replacement->isDestroyed() == false);
 	CHECK(g.player->getMoney()->countMoney() == before + 100);
@@ -826,6 +833,7 @@ TEST_CASE("crate pickups retail: shield promotes its collector once; ground cont
 	unit->setPosition(&ground);
 	g.logic->partition().update();
 	g.ai->processCollisions();
+	g.ai->processCrateContacts();
 	CHECK(shield->isDestroyed() == true);
 	CHECK(unit->getExperienceTracker()->getRank() == 2);
 	crate->onCollide(unit, nullptr, nullptr);
@@ -852,14 +860,9 @@ TEST_CASE("crate pickups retail: disallowed AI and immobile collectors leave gol
 	CHECK(chest->isDestroyed() == false);
 }
 
-TEST_CASE("crate pickups: contact inference is explicitly reported")
+TEST_CASE("crate pickups: veterancy crate limitations are explicitly reported")
 {
-	CHECK(std::string(CrateCollide::contactStop()) == "[S-5900] crate pickups use ground bounding-circle overlaps in the partition/collision phase, in crate and picker ID order; retail's full contact geometry and pair order are not reproduced (S-581, S-780)");
-}
-
-TEST_CASE("crate pickups: specialized limitations are explicitly reported")
-{
-	CHECK(std::string(CrateCollide::limitationsStop()) == "[S-5901] crate pickups do not reproduce the CREEP-controller and undetected-defector gates, significant-height tolerance, GUI rank label, ExecuteAnimation or pilot script-name transfer; CREEP collectors and pilot crates are refused");
+	CHECK(std::string(VeterancyCrateCollide::limitationsStop()) == "[S-5901] veterancy crates do not reproduce the significant-height tolerance, GUI rank label, ExecuteAnimation or pilot script-name transfer; pilot crates are refused");
 }
 
 TEST_CASE("crate pickups retail: lair treasure allows AI collection and capped shields stay available")
@@ -900,7 +903,11 @@ TEST_CASE("crate pickups retail: destroyed lair treasure can be collected throug
 	auto *expose = moduleOf<RebuildHoleExposeDie>(lair);
 	REQUIRE(expose);
 	lair->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
-	Object *hole = g.logic->findObjectByID(expose->holeId());
+	Object *hole = nullptr;
+	for (Object *o = g.logic->getFirstObject(); o; o = o->getNextObject())
+	{
+		if (o->getTemplate()->getName() == "HillTrollLairHole") hole = o;
+	}
 	REQUIRE(hole);
 	hole->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	std::vector<Object *> treasure;
@@ -914,6 +921,7 @@ TEST_CASE("crate pickups retail: destroyed lair treasure can be collected throug
 		unit->setPosition(chest->getPosition());
 		g.logic->partition().update();
 		g.ai->processCollisions();
+		g.ai->processCrateContacts();
 	}
 	for (Object *chest : treasure) CHECK(chest->isDestroyed() == true);
 	// tolerance: each of the four lair chests pays a random inclusive 50..100.
@@ -965,11 +973,17 @@ TEST_CASE("crate pickups retail: a battalion collects gold and shields")
 	const auto before = g.player->getMoney()->countMoney();
 	g.logic->partition().update();
 	g.ai->processCollisions();
+	g.ai->processCrateContacts();
 	CHECK(chest->isDestroyed() == true);
 	CHECK(shield->isDestroyed() == true);
 	CHECK(g.player->getMoney()->countMoney() == before + 100);
-	REQUIRE(unit->getExperienceTracker());
-	CHECK(unit->getExperienceTracker()->getRank() == 2);
+	// RW 0x68E31F: a HORDE has no collision record, so the shield promotes the member that touched it
+	int promoted = 0;
+	for (Object *o = g.logic->getFirstObject(); o; o = o->getNextObject())
+	{
+		promoted += o != unit && o->getExperienceTracker() && o->getExperienceTracker()->getRank() == 2 ? 1 : 0;
+	}
+	CHECK(promoted == 1);
 }
 
 TEST_CASE("shroud retail: Ivory Tower vision ping clears the map for its owner")

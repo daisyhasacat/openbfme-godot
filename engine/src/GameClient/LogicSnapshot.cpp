@@ -14,6 +14,7 @@
 #include "Common/Player.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Map/TaintManager.h"
+#include "GameLogic/GlobalWeatherSystem.h"
 #include "GameClient/HudObjects.h"
 #include "GameClient/Radar.h"
 #include "GameClient/RTS3DSceneOcclusion.h"
@@ -120,6 +121,7 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 	snap->occludedColorLuminanceScale = logic.settings().occludedColorLuminanceScale;
 	const UnsignedInt occlusionFrame = RTS3DSceneOcclusion::occlusionFrame(snap->frame, logic.settings().defaultOcclusionDelay); // RW 0x470C15 .. 0x470C38
 	snap->nextObjectId = logic.getNextObjectID();
+	snap->globalWeather = logic.weather().weather(); // lane WEATHER-1: TheGlobalWeatherSystem + 0x10, what the client weather reads (WeatherClient)
 	snap->hashed = hashed;
 	snap->stateHash = stateHash;
 	snap->objects.reserve(previous ? previous->objects.size() + 16 : 256);
@@ -378,7 +380,26 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 			}
 		}
 	}
-	std::stable_sort(snap->objects.begin(), snap->objects.end(), [](const ObjectSnapshot &a, const ObjectSnapshot &b) { return a.id < b.id; });
+	// lane PERF-HD: the records by id. stable_sort copied every record (about 300 bytes; 11,700 of them in a big battle) through its buffer on every merge
+	// pass, every frame; ids are unique, so sorting (id, index) pairs and moving each record once gives the same order. Nothing moves when it is sorted.
+	const auto byId = [](const ObjectSnapshot &a, const ObjectSnapshot &b) { return a.id < b.id; };
+	if (!std::is_sorted(snap->objects.begin(), snap->objects.end(), byId))
+	{
+		std::vector<std::pair<ObjectID, std::uint32_t>> order;
+		order.reserve(snap->objects.size());
+		for (size_t i = 0; i < snap->objects.size(); ++i)
+		{
+			order.emplace_back(snap->objects[i].id, (std::uint32_t)i);
+		}
+		std::sort(order.begin(), order.end());
+		std::vector<ObjectSnapshot> sorted;
+		sorted.reserve(snap->objects.size());
+		for (const auto &e : order)
+		{
+			sorted.push_back(std::move(snap->objects[e.second]));
+		}
+		snap->objects.swap(sorted);
+	}
 	// Direct id lookup for the render frame (syncTransforms calls find twice per drawable). The index dies with this snapshot.
 	{
 		ObjectID hi = snap->nextObjectId;

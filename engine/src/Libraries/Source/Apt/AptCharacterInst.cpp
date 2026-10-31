@@ -475,7 +475,7 @@ bool AptCharacterInst::setProperty(const std::string &n, const AptValue &value)
 		return false;
 	}
 	// lane BUGS-1: the transform and alpha setters go through factorySetProperty(index, value, true), which sets the AS changed flag (inference: the
-	// script property setter's flag argument is true; BFME2 decomp AptFactoryConstructors.cpp factorySetProperty, Rva006F9EF0Cluster.cpp passes true)
+	// script property setter's flag argument is true; BFME2 decomp AptFactoryConstructors.cpp factorySetProperty, AptInput.cpp passes true)
 	// (_width / _height set it below, only once the value is applied: an ignored assignment leaves the flag as it was)
 	if (n == "_x" || n == "_y" || n == "_xscale" || n == "_yscale" || n == "_rotation" || n == "_alpha")
 	{

@@ -15,7 +15,7 @@
 //   recolours; else setRadiusCursorNone (vslot 0x144, RW 0x69B0E1 -> RadiusDecal::clear RW 0x7327E5), the template by name (none: nothing), the object the
 //   radius belongs to (for a SPELL_BOOK command, type 0x20, the local player's spell book object RW 0x6AD0D9; else the first selected drawable's), its
 //   controlling player (RW 0x68B678); the radius is the SpecialPower's RadiusCursorRadius (+ 0x54, through RW 0x688D3C's final override), nothing when it is
-//   not above 0; RadiusDecalTemplate::createRadiusDecal (RW 0x732DE7, tier B same-shape: BFME2 decomp RadiusDecalTemplateCreate.cpp:60): nothing without a
+//   not above 0; RadiusDecalTemplate::createRadiusDecal (RW 0x732DE7, tier B same-shape: BFME2 decomp RadiusDecal.cpp:668): nothing without a
 //   player or a Texture or radius <= 0; with OnlyVisibleToOwningPlayer and a player other than the local one the decal exists but is never made (empty);
 //   else Texture / Texture2 in the Style, 2 * radius on both axes, angle 0, the template's Color or (Color 0) the player's colour; then the hint colour:
 //   Shadow::setColor (RW 0x73232B, BFME2 decomp Shadow_setOpacity.cpp) with 0xFFFFFFFF when the hint was valid, 0xFFFF1414 when not

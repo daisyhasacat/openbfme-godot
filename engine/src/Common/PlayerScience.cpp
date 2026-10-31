@@ -338,6 +338,17 @@ bool PlayerScience::attemptToPurchaseScience(ScienceType st)
 	return true;
 }
 
+// RW 0x6AE3CC
+bool PlayerScience::grantAndPayScience(ScienceType st)
+{
+	if (!TheScienceStore || !TheScienceStore->isScienceGrantable(st) || !addScience(st)) // RW 0x5FECBA, RW 0x6AE186
+	{
+		return false;
+	}
+	addSciencePurchasePoints(wrapNeg(TheScienceStore->getSciencePurchaseCost(st, m_mode.skirmishOrMultiplayer))); // RW 0x5FEC64, neg, vslot 2
+	return true;
+}
+
 // RW 0x6AD26F
 unsigned PlayerScience::getSharedReadyFrame(unsigned powerId, unsigned now)
 {

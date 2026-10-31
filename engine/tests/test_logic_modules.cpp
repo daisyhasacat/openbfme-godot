@@ -236,7 +236,7 @@ TEST_CASE("HordeContain: a horde creates its InitialPayload members, each in its
 	CHECK(hc->friend_getNextCallFrame() == (UnsignedInt)UPDATE_SLEEP_FOREVER);
 }
 
-// lane DECOMP-1 (S-149 narrowed): RW 0x871B9B (BFME2 decomp HordeContainRva0046E8EE.cpp, tier B) destroys (int)((100 - H) * 0.01 * count) members of an unproduced
+// lane DECOMP-1 (S-149 narrowed): RW 0x871B9B (BFME2 decomp HordeContain_createPayload.cpp, tier B) destroys (int)((100 - H) * 0.01 * count) members of an unproduced
 // horde, H the int at HordeContain + 0x2A8; its only writer is the constructor (RW 0x872972: 100), so nothing is ever destroyed: DamagePercentToUnits (an OpenContain
 // data field) does not reach it. The port reported a template that sets it as an error
 TEST_CASE("HordeContain: DamagePercentToUnits does not trim the payload (the runtime percentage of RW 0x871B9B is always 100) and is no error")

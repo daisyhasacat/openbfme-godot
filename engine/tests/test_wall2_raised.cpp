@@ -1,9 +1,11 @@
 // OpenBFME unit tests, lane WALL-2: the raised layers (RaisedWallMesh walkways, AIPathfindRaised.cpp). GPL-3.0.
 //
 // A synthetic gatehouse on 60 x 20 cells of flat terrain at z 0: the left gatehouse (piece 50) has a wall top x 100 .. 190, y 90 .. 110 at z 60, a ramp up
-// from the ground x 40 .. 100 (z 0 .. 60) and a flat ramp x 185 .. 215 at z 60 toward the walkway; the centre (piece 51) is the walkway x 200 .. 400, y 90 ..
-// 110 at z 60 (RaisedWallMesh only: the ground under it, the gate's passage, stays the ground); the right gatehouse (piece 52) mirrors the left (flat ramp x
-// 385 .. 415, wall top x 410 .. 500, ramp down x 500 .. 560). The expected cells come from the rules of AIPathfindRaised.cpp, derived by hand.
+// from the ground x 40 .. 100 (z 0 .. 60) and a near-flat ramp x 185 .. 215 rising from z 59.5 to 60 toward the walkway; the centre (piece 51) is the walkway
+// x 200 .. 400, y 90 .. 110 at z 60 (RaisedWallMesh only: the ground under it, the gate's passage, stays the ground); the right gatehouse (piece 52) mirrors the
+// left (near-flat ramp x 385 .. 415, wall top x 410 .. 500, ramp down x 500 .. 560). A RampMesh with no height difference is no ramp in retail (getRamp,
+// BFME2 W3DScriptedModelDrawGetRamp.cpp: no vertex in its bottom or top band); Helm's Deep's flat-looking connectors rise about 0.5 (183.73 .. 184.28). The
+// expected cells come from the rules of AIPathfindRaised.cpp and the ramp cell RW 0x93527F, derived by hand.
 
 #include "doctest.h"
 
@@ -81,11 +83,11 @@ struct GatehouseWorld
 		left = piece(50, 145.0f);
 		left->walls.walls.push_back(quad(100.0f, 90.0f, 190.0f, 110.0f, 60.0f, 60.0f));
 		left->walls.ramps.push_back(quad(40.0f, 90.0f, 100.0f, 110.0f, 0.0f, 60.0f));
-		left->walls.ramps.push_back(quad(185.0f, 90.0f, 215.0f, 110.0f, 60.0f, 60.0f));
+		left->walls.ramps.push_back(quad(185.0f, 90.0f, 215.0f, 110.0f, 59.5f, 60.0f));
 		right = piece(52, 455.0f);
 		right->walls.walls.push_back(quad(410.0f, 90.0f, 500.0f, 110.0f, 60.0f, 60.0f));
 		right->walls.ramps.push_back(quad(500.0f, 90.0f, 560.0f, 110.0f, 60.0f, 0.0f));
-		right->walls.ramps.push_back(quad(385.0f, 90.0f, 415.0f, 110.0f, 60.0f, 60.0f));
+		right->walls.ramps.push_back(quad(385.0f, 90.0f, 415.0f, 110.0f, 60.0f, 59.5f));
 		if (withWalkway)
 		{
 			centre = piece(51, 300.0f);
@@ -159,15 +161,22 @@ TEST_CASE("wall2 raised: a RaisedWallMesh takes raised layer 2 at its height; it
 	CHECK(w.pf->getCell(LAYER_TOP, 30, 12) == w.pf->cellAt(30, 12));
 	CHECK(w.cell(30, 10).getLayer() == LAYER_GROUND);
 	CHECK(w.cell(30, 10).getType() == PathfindCell::CELL_CLEAR);
-	// the joints: the flat ramp x 185 .. 215 covers cell 21 (x 210 .. 220) in part (corners at 210 on it, 220 off) under a CLEAR walkway cell at the ramp's
-	// height: a ramp cell connecting to layer 2, the walkway cell connecting to the ramp; cell 20 is covered whole: a ramp cell without a walkway joint (lane
-	// WALL-1's second pass joins it to the wall top beside it, cell 19)
+	// the joints (RW 0x93527F on the Bridge from (215, 100, 60) to (185, 100, 59.5), width 20: each end edge shortened by 10 at both ends is its point at
+	// y 100): cell 21 (x 210 .. 220) has its corners at 210 on the ramp and the start edge's point (215, 100) under a CLEAR walkway cell at the ramp's
+	// height: a ramp cell connecting to layer 2, the walkway cell connecting to the ramp. Cells 19 and 20 are covered whole: ramp cells without a connect
+	// layer. Cell 18 (x 180 .. 190) has its corners at 190 on the ramp and the end edge's point (185, 100): it keeps the wall's layer (60, the ramp 59.5)
+	// and connects to the ramp
 	CHECK(w.cell(21, 10).getLayer() == LAYER_RAMP);
 	CHECK(w.cell(21, 10).getConnectLayer() == LAYER_TOP);
 	CHECK(w.pf->raisedCellAt(LAYER_TOP, 21, 10)->getConnectLayer() == LAYER_RAMP);
-	CHECK(w.cell(20, 10).getLayer() == LAYER_RAMP);
-	CHECK(w.cell(20, 10).getConnectLayer() == LAYER_WALL_FIRST);
-	CHECK(w.cell(19, 10).getLayer() == LAYER_WALL_FIRST);
+	for (int x = 19; x <= 20; ++x)
+	{
+		INFO("cell " << x);
+		CHECK(w.cell(x, 10).getLayer() == LAYER_RAMP);
+		CHECK(w.cell(x, 10).getConnectLayer() == LAYER_INVALID);
+	}
+	CHECK(w.cell(18, 10).getLayer() == LAYER_WALL_FIRST);
+	CHECK(w.cell(18, 10).getConnectLayer() == LAYER_RAMP);
 	// the heights and the layer at a point: on the walkway at its height layer 2; under it on the ground (60 above: not within 25) the ground
 	CHECK(w.pf->getLayerHeight(300.0f, 100.0f, LAYER_TOP) == 60.0f);
 	CHECK(w.pf->getLayerAt(300.0f, 100.0f, 60.0f) == LAYER_TOP);

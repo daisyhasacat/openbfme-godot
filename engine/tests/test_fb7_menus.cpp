@@ -403,7 +403,7 @@ TEST_CASE("cah2 main menu retail: a request with no screen (Battle School) shows
 	REQUIRE(menu);
 	CHECK(AptMainMenu::unavailableScreenName("StopGameMovie").empty());
 	// lane CAMPMENU-1: retail's Solo Play campaign buttons start the campaigns (the host's campaign flow), they never get the box; the BFME2 campaigns
-	// (switched off) are refused by name
+	// are refused by name when game.gd's switch is off or the data has no such campaign (lane BFME2CAMP1)
 	CHECK(AptMainMenu::unavailableScreenName("Expansion1Campaign").empty());
 	CHECK(AptMainMenu::unavailableScreenName("BonusCampaign").empty());
 	CHECK(AptMainMenu::unavailableText("BFME2GoodCampaign") == "The BFME2 Good campaign is not available yet: OpenBFME does not have it yet.");
@@ -1134,7 +1134,7 @@ TEST_CASE("opts2 options retail: the advanced rows the device cannot show are gr
 	std::string error;
 	REQUIRE_MESSAGE(fx.wm->invokeAS(options->level(), "ShowAdvancedSettings", {}, nullptr, &error), error);
 	fx.tick(150);
-	const std::set<int> want = { 0, 1, 3, 4, 5, 7 };
+	const std::set<int> want = { 0, 1, 4, 5, 7 }; // ShadowLOD now controls the Godot shadow-map substitute.
 	CHECK(options->greyedRows() == want);
 	// a greyed row takes no click: its buttons are disabled; an EffectsLOD button still is enabled
 	int disabled = 0;
@@ -3330,6 +3330,190 @@ TEST_CASE("opts3 options retail: twelve settings tabs fit the frame and the last
 	CHECK(events[0].value == 11);
 }
 
+// lane BFME2CAMP1 (an OpenBFME addition, AptMainMenu.h ExtraRows; owner 2026-10-20): in the BFME2 style, BFME2 1.06's Solo Play list gets RotWK's
+// Angmar campaign and epilogue rows. MOVIE FACTS (BFME2 MainMenu.apt): the rows sit 35.5 apart upward from LoadGame (y -73.8, GoodCampaign -109.3);
+// a row's button calls OnMenuClick -> _root[<name> + "Button"](); the difficulty buttons call GameCode(LevelOfDifficulty.side, level)
+namespace
+{
+struct SoloPlay
+{
+	AptCharacterInst *nav = nullptr;
+	std::map<std::string, AptCharacterInst *> rows;
+};
+
+SoloPlay openSoloPlay(ShellFx &fx)
+{
+	fx.tick(2);
+	fx.shell->push("MainMenu.apt");
+	fx.tick(200);
+	SoloPlay out;
+	AptSpriteInst *root = fx.wm->apt().level(fx.shell->top()->level());
+	out.nav = root ? root->childByName("SoloPlayNav") : nullptr;
+	REQUIRE(out.nav);
+	AptButtonInst *open = nullptr;
+	for (AptCharacterInst *k : out.nav->asSprite()->children())
+	{
+		open = open ? open : k->asButton();
+	}
+	clickButton(fx, open);
+	fx.tick(40);
+	for (const char *n : { "Skirmish", "WarOfTheRing", "EvilCampaign", "GoodCampaign", "Expansion1Campaign", "BonusCampaign", "LoadGame" })
+	{
+		out.rows[n] = out.nav->asSprite()->childByName(n);
+	}
+	return out;
+}
+
+const ShellRequest *lastRequest(ShellFx &fx, ShellAction a)
+{
+	const ShellRequest *r = nullptr;
+	for (const ShellRequest &q : fx.services.requests)
+	{
+		r = q.action == a ? &q : r;
+	}
+	return r;
+}
+
+// a row's click (its bttn), then the movie's difficulty choice `difficulty` (LevelOfDifficulty.<difficulty>)
+void pickCampaign(ShellFx &fx, AptCharacterInst *row, const char *difficulty)
+{
+	REQUIRE(row);
+	clickButton(fx, firstButtonUnder(row->asSprite()->childByName("bttn")));
+	fx.tick(60);
+	AptCharacterInst *choice = findClip(fx.wm->apt().level(fx.shell->top()->level()), std::string("LevelOfDifficulty.") + difficulty);
+	REQUIRE_MESSAGE(choice, difficulty);
+	clickButton(fx, firstButtonUnder(choice));
+	fx.tick(60);
+}
+} // namespace
+
+TEST_CASE("bfme2camp1 menu retail: BFME2's Solo Play list gets RotWK's Angmar Campaign and Epilogue rows between Good Campaign and Load Game; Angmar "
+		  "Campaign + Easy sends AptMainMenu::Expansion1Campaign; the epilogue is disabled until the bonus unlock")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	retailtest::Mount *bfme2 = retailtest::bfme2Mount();
+	REQUIRE(bfme2);
+	REQUIRE_MESSAGE(bfme2->fs, bfme2->error);
+	AptRetail bfme2Only{ *bfme2->fs };
+	ShellFx fx(bfme2Only, "");
+	SoloPlay sp = openSoloPlay(fx);
+	for (const auto &kv : sp.rows)
+	{
+		REQUIRE_MESSAGE(kv.second, kv.first);
+	}
+	// the movie's rows from LoadGame upward, two places added after it
+	const float load = -73.8f, step = -109.3f - (-73.8f);
+	CHECK(sp.rows["LoadGame"]->matrix.ty == load);
+	CHECK(sp.rows["BonusCampaign"]->matrix.ty == load + 1.0f * step);
+	CHECK(sp.rows["Expansion1Campaign"]->matrix.ty == load + 2.0f * step);
+	CHECK(sp.rows["GoodCampaign"]->matrix.ty == -109.3f + 2.0f * step);
+	CHECK(sp.rows["EvilCampaign"]->matrix.ty == -144.8f + 2.0f * step);
+	CHECK(sp.rows["Skirmish"]->matrix.ty == -215.8f + 2.0f * step);
+	CHECK(sp.rows["Expansion1Campaign"]->matrix.tx == sp.rows["GoodCampaign"]->matrix.tx);
+	// the list's frame (NavFrameFive: stage y 362.6 .. 694.95 in BFME2's open list) keeps its bottom edge and reaches two rows higher
+	{
+		AptCharacterInst *frame = sp.nav->asSprite()->childByName("NavFrameFive");
+		REQUIRE(frame);
+		float b[4];
+		REQUIRE(WindowManager::stageBounds(*frame, b));
+		CHECK(b[3] == doctest::Approx(694.95f).epsilon(0.0001)); // tolerance: the stretch's float rounding
+		CHECK(b[1] <= 362.6f + 2.0f * step); // tolerance: the frame's top border moves up at least the two rows the rows moved (more above the top row)
+	}
+	// their captions are RotWK's labels (lotr.str APT:Expansion1Campaign "ANGMAR CAMPAIGN", APT:BonusCampaign "EPILOGUE")
+	std::set<std::string> captions;
+	AptRenderList rl;
+	fx.wm->apt().buildRenderList(rl);
+	for (const AptRenderCommand &c : rl.commands)
+	{
+		if (c.kind == AptRenderCommand::Kind::Text && (c.path.find("SoloPlayNav.Expansion1Campaign") != std::string::npos ||
+														  c.path.find("SoloPlayNav.BonusCampaign") != std::string::npos))
+		{
+			captions.insert(c.text);
+		}
+	}
+	CHECK(captions.count("$Expansion1Campaign") == 1);
+	CHECK(captions.count("$BonusCampaign") == 1);
+	// locked: the epilogue row plays its own "_disable" state
+	AptSpriteInst *bonus = sp.rows["BonusCampaign"]->asSprite();
+	CHECK(bonus->frame >= bonus->labelFrame("_disable")); // tolerance: the row plays on from its "_disable" label (the state section, not one frame)
+	// Angmar Campaign, then Easy: RotWK's own command with the difficulty (AptMainMenu::Expansion1Campaign, RW 0x91AF8C)
+	pickCampaign(fx, sp.rows["Expansion1Campaign"], "Easy");
+	const ShellRequest *r = lastRequest(fx, ShellAction::Expansion1Campaign);
+	REQUIRE(r);
+	CHECK(r->argument.rfind("E", 0) == 0);
+	CHECK(lastRequest(fx, ShellAction::LoadCampaign) == nullptr); // not BFME2's Good / Evil command
+	// the list closed: the copies went with its rows
+	CHECK(sp.nav->asSprite()->childByName("Expansion1Campaign") == nullptr);
+	CHECK(fx.shell->top()->filename() == "MainMenu.apt");
+}
+
+TEST_CASE("bfme2camp1 menu retail: after the bonus unlock BFME2's Solo Play Epilogue row + Hard sends AptMainMenu::BonusCampaign")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	retailtest::Mount *bfme2 = retailtest::bfme2Mount();
+	REQUIRE(bfme2);
+	REQUIRE_MESSAGE(bfme2->fs, bfme2->error);
+	AptRetail bfme2Only{ *bfme2->fs };
+	ShellFx fx(bfme2Only, "");
+	fx.environment.bonusCampaignUnlocked = true;
+	SoloPlay sp = openSoloPlay(fx);
+	REQUIRE(sp.rows["BonusCampaign"]);
+	AptSpriteInst *bonus = sp.rows["BonusCampaign"]->asSprite();
+	CHECK(bonus->frame < bonus->labelFrame("_disable")); // tolerance: any frame of the enabled states, before the "_disable" section
+	pickCampaign(fx, sp.rows["BonusCampaign"], "Hard");
+	const ShellRequest *r = lastRequest(fx, ShellAction::BonusCampaign);
+	REQUIRE(r);
+	CHECK(r->argument.rfind("H", 0) == 0);
+}
+
+TEST_CASE("bfme2camp1 menu retail: RotWK's Solo Play list gets BFME2's Evil Campaign and Good Campaign rows between War of the Ring and Angmar Campaign; "
+		  "Good Campaign + Easy and Evil Campaign + Hard send AptMainMenu::GoodCampaign / EvilCampaign")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	for (const char *pick : { "good", "evil" })
+	{
+		ShellFx fx(mount, "");
+		SoloPlay sp = openSoloPlay(fx);
+		auto *menu = dynamic_cast<AptMainMenu *>(fx.shell->top());
+		REQUIRE(menu);
+		CHECK(menu->extraRows().installed);
+		CHECK(menu->extraRows().movie == "rotwk");
+		for (const auto &kv : sp.rows)
+		{
+			REQUIRE_MESSAGE(kv.second, kv.first);
+		}
+		// RotWK MainMenu.apt's rows from LoadGame upward (-73.8, BonusCampaign -109.3, Expansion1Campaign -144.8, WarOfTheRing -180.3, Skirmish -215.8),
+		// the two copies right above Expansion1Campaign
+		const float step = -109.3f - (-73.8f);
+		CHECK(sp.rows["LoadGame"]->matrix.ty == -73.8f);
+		CHECK(sp.rows["BonusCampaign"]->matrix.ty == -109.3f);
+		CHECK(sp.rows["Expansion1Campaign"]->matrix.ty == -144.8f);
+		CHECK(sp.rows["GoodCampaign"]->matrix.ty == -144.8f + 1.0f * step);
+		CHECK(sp.rows["EvilCampaign"]->matrix.ty == -144.8f + 2.0f * step);
+		CHECK(sp.rows["WarOfTheRing"]->matrix.ty == -180.3f + 2.0f * step);
+		CHECK(sp.rows["Skirmish"]->matrix.ty == -215.8f + 2.0f * step);
+		std::set<std::string> captions;
+		AptRenderList rl;
+		fx.wm->apt().buildRenderList(rl);
+		for (const AptRenderCommand &c : rl.commands)
+		{
+			if (c.kind == AptRenderCommand::Kind::Text &&
+				(c.path.find("SoloPlayNav.GoodCampaign") != std::string::npos || c.path.find("SoloPlayNav.EvilCampaign") != std::string::npos))
+			{
+				captions.insert(c.text);
+			}
+		}
+		CHECK(captions.count("$GoodCampaign") == 1);
+		CHECK(captions.count("$EvilCampaign") == 1);
+		const bool good = std::string(pick) == "good";
+		pickCampaign(fx, sp.rows[good ? "GoodCampaign" : "EvilCampaign"], good ? "Easy" : "Hard");
+		const ShellRequest *r = lastRequest(fx, ShellAction::LoadCampaign); // AptMainMenu::GoodCampaign / EvilCampaign -> "bfme2:<side>:<difficulty>"
+		REQUIRE(r);
+		CHECK(r->argument.rfind(good ? "bfme2:good:E" : "bfme2:evil:H", 0) == 0);
+		CHECK(lastRequest(fx, ShellAction::Expansion1Campaign) == nullptr);
+		CHECK(sp.nav->asSprite()->childByName(good ? "GoodCampaign" : "EvilCampaign") == nullptr); // the list closed with its rows
+	}
+}
 // lane MENUSND-1: the bottom bar of the OpenBFME menu (the Options screen as the game opens it) is the movie's own CANCEL / RESET TO DEFAULTS / ACCEPT, whose
 // click the page takes (AptOptionsScreen::mouseFilter). RotWK plays the button's click on the press: MenuExport.apt's GenericButton goes to its `_down`
 // frame (button action 4), which calls _root.PlaySound("Gui_ShellMapSelect") (FSCommand PlaySound, RW 0x815772); its own click (OnButtonClick) is the

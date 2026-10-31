@@ -1168,7 +1168,8 @@ void W3DScriptedModelDraw::poseView(W3DDrawPoseView &v) const
 	{
 		m_effectiveTextures.insert(m_effectiveTextures.end(), m_curModelInfo->textures.begin(), m_curModelInfo->textures.end());
 	}
-	v.textureSwaps = &m_effectiveTextures; // stop S-4832: a SNOW state's look is often its texture swap alone
+	v.textureSwaps = &m_effectiveTextures; // stop S-5015: a SNOW state's look is often its texture swap alone
+	v.glow = m_data.m_glowEnabled ? (m_data.m_glowEmissive ? 2 : 1) : 0; // RW 0x4C518B / 0x47A94F (BFME2 W3DHordeModelDrawSetModelState): the module data's GlowEnabled (+ 0x128) calls the render object's vslot 0x1CC(1) and GlowEmissive (+ 0x129) its vslot 0x1D4; GlowEmissive only counts with GlowEnabled
 }
 
 bool W3DScriptedModelDraw::modelCondition(const std::string &name)

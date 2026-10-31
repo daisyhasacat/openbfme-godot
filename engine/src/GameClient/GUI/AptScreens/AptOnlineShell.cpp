@@ -2743,7 +2743,7 @@ void AptOnlineShell::drawConnectionGrid()
 	{
 		return; // the grid is drawn once the movie asked for it (Connection::RedrawGrid names its clip), then whenever a cell changes
 	}
-	// BFME2 0x005DB647 RedrawGrid (decomp GUICallbacks/Apt/AptConnectionGridCallbacks.cpp) draws rows and columns 0..7 and 0x005DB630 the eight
+	// BFME2 0x005DB647 RedrawGrid (decomp GUICallbacks/Apt/AptConnectionScreen.cpp) draws rows and columns 0..7 and 0x005DB630 the eight
 	// players' names: the movie's grid is eight by eight (Main.Grid.<row>.<column>, no cell 8). OpenBFME's 16-player rooms (MAX_SLOTS) keep that
 	// grid; the players of slots 9 to 16 are on the page in words only (S-4550). Before: the loops ran to MAX_SLOTS, and the first missing cell
 	// (0, 8) stopped the draw, so every row after the first stayed undrawn and the screen noted a missing movie function

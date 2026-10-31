@@ -10,6 +10,7 @@
 #include "Common/Team.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Combat/CombatNames.h"
+#include "GameLogic/Combat/CombatQueries.h"
 #include "GameLogic/Combat/CombatState.h"
 #include "GameLogic/Combat/ObjectWeapons.h"
 #include "GameLogic/Damage.h"
@@ -139,6 +140,7 @@ struct ArcherRun
 	std::map<ObjectID, std::vector<std::pair<int, float>>> victimHealth; // frame -> health, per victim member
 	int impactsChecked = 0;
 	int impactsDamaging = 0;
+	int scatteredHits = 0; // checked impacts whose member also took a missed (scattered) shot's warhead in the same frame
 	bool damageMatches = true;
 	std::string damageWhy;
 	unsigned long long launched = 0, detonated = 0;
@@ -147,7 +149,7 @@ struct ArcherRun
 };
 
 // the warhead's first damage nugget: the amount and the damage type the victim's armour is asked about
-bool warheadDamage(const WeaponTemplate &w, float &amount, int &type)
+bool warheadDamage(const WeaponTemplate &w, float &amount, int &type, float *radius = nullptr)
 {
 	for (const std::shared_ptr<WeaponNugget> &n : w.m_nuggets)
 	{
@@ -156,6 +158,10 @@ bool warheadDamage(const WeaponTemplate &w, float &amount, int &type)
 			const DamageNugget &dn = static_cast<const DamageNugget &>(*n);
 			amount = dn.m_damage;
 			type = dn.m_damageType;
+			if (radius)
+			{
+				*radius = dn.m_radius;
+			}
 			return true;
 		}
 	}
@@ -205,6 +211,15 @@ ArcherRun runArchers(const char *factionA, const char *archers, const char *fact
 			float expected;
 		};
 		std::vector<Pending> pending;
+		// a missed shot (HitPercentage, RW 0x6CCCA7: the scatter RW 0x6CC399 clears the victim) flies to its scattered point with no stored victim; its warhead's
+		// position path (RW 0x90DEF0: radius max(Radius, 1.0) plus the member's bounding circle) hurts the first member there it takes health from (a radius up to
+		// DamageRadiusMinimumForSplash, 4.0, hurts one object): the members within its reach and what each would lose
+		struct Scattered
+		{
+			std::map<ObjectID, float> expected;
+			bool used = false;
+		};
+		std::vector<Scattered> scattered;
 		for (Object *o = a.logic.getFirstObject(); o; o = o->getNextObject())
 		{
 			BezierProjectileBehavior *b = bezierOf(o);
@@ -214,6 +229,31 @@ ArcherRun runArchers(const char *factionA, const char *archers, const char *fact
 			}
 			float amount;
 			int type;
+			float radius = 0.0f;
+			if (b->victimID() == INVALID_ID && warheadDamage(*b->warhead(), amount, type, &radius) && radius <= 4.0f)
+			{
+				Scattered sc;
+				for (ObjectID id : members)
+				{
+					Object *m = a.logic.findObjectByID(id);
+					if (!m || m->isEffectivelyDead())
+					{
+						continue;
+					}
+					const float dx = m->getPosition()->x - o->getPosition()->x, dy = m->getPosition()->y - o->getPosition()->y;
+					const float reach = std::max(radius, 1.0f) + CombatQueries::boundingCircleRadius(*m) + 0.01f;
+					if (dx * dx + dy * dy <= reach * reach)
+					{
+						DamageInfoInput in;
+						in.m_amount = amount;
+						in.m_damageType = type;
+						in.m_sourceID = b->projectileGetLauncherID();
+						sc.expected[id] = m->getBodyModule()->estimateDamage(in);
+					}
+				}
+				scattered.push_back(sc);
+				continue;
+			}
 			Object *victim = a.logic.findObjectByID(b->victimID());
 			if (!victim || !b->warhead()->m_hitStoredTarget || victim->isEffectivelyDead() || !warheadDamage(*b->warhead(), amount, type))
 			{
@@ -298,8 +338,25 @@ ArcherRun runArchers(const char *factionA, const char *archers, const char *fact
 			{
 				++out.impactsDamaging;
 			}
-			// other sources can hit the same member in the same frame only through the pending list of this volley: the member lost at least this volley's share
-			const bool off = closeRangeSwitch ? lost + 0.01f + 0.001f * want < want : std::fabs(lost - want) > 0.01f + 0.001f * want;
+			// other sources can hit the same member in the same frame only through the pending list of this volley (or a scattered shot, below): the member lost at
+			// least this volley's share
+			bool off = closeRangeSwitch ? lost + 0.01f + 0.001f * want < want : std::fabs(lost - want) > 0.01f + 0.001f * want;
+			// the rest is one scattered shot's share when the member stood within its reach (each scattered shot hurts one member)
+			for (Scattered &sc : scattered)
+			{
+				const auto e = sc.expected.find(kv.first);
+				if (!off || sc.used || e == sc.expected.end())
+				{
+					continue;
+				}
+				const float both = std::min(kv.second + e->second, before[kv.first]);
+				if (std::fabs(lost - both) <= 0.01f + 0.001f * both)
+				{
+					sc.used = true;
+					off = false;
+					++out.scatteredHits;
+				}
+			}
 			if (off)
 			{
 				out.damageMatches = false;
@@ -496,8 +553,9 @@ TEST_CASE("proj retail: every faction's archer horde fires real projectile objec
 		CHECK_MESSAGE(r.damageMatches, r.damageWhy);
 		CHECK(r.impactsChecked >= 4);
 		CHECK(r.impactsDamaging >= 4);
-		std::printf("  info: %s: %llu projectiles (%d flights followed to the impact), first flight %d segments at %.2f per frame (%s), %d impacts checked\n", label.c_str(), r.launched, fullFlights,
-			r.flights.empty() ? 0 : r.flights[0].segments, r.flights.empty() ? 0.0f : r.flights[0].speed, r.flights.empty() ? "" : r.flights[0].projectile.c_str(), r.impactsChecked);
+		std::printf("  info: %s: %llu projectiles (%d flights followed to the impact), first flight %d segments at %.2f per frame (%s), %d impacts checked (%d with a scattered shot)\n", label.c_str(), r.launched, fullFlights,
+			r.flights.empty() ? 0 : r.flights[0].segments, r.flights.empty() ? 0.0f : r.flights[0].speed, r.flights.empty() ? "" : r.flights[0].projectile.c_str(), r.impactsChecked,
+			r.scatteredHits);
 	}
 }
 

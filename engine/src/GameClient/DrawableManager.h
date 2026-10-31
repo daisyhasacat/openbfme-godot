@@ -26,6 +26,7 @@
 #include <set>
 #include <string>
 #include <functional>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -143,13 +144,19 @@ private:
 	bool m_snowPresentation = false;
 	size_t m_parallelSyncMinimum = 512;
 	std::vector<Drawable::SyncPrep> m_syncScratch; ///< lane PERF-3: syncTransforms' per-slot results of the parallel part (kept: no allocation per frame)
-	std::vector<const ObjectSnapshot *> m_syncRecords; ///< syncTransforms: each slot's record, found once for both of its passes (kept: no allocation per frame)
+	std::vector<std::uint8_t> m_advancedScratch;   ///< lane PERF-HD: per slot, its animations advanced on the job pool (advance)
+	std::vector<std::uint8_t> m_containedScratch;  ///< lane PERF-HD: per slot, its record has a container (found on the job pool before the dependency flags)
 	AnimationSoundModuleManager m_animationSounds; ///< lane AUDIO-4 (before the drawables: their modules leave its lists when they go)
 	DrawServices m_services;
-	std::map<ObjectID, DrawableID> m_byObject;
+	// lane PERF-CLIENT: object id -> drawable id (0: none), indexed by the object id (ids are small and dense: GameLogic hands them out in order); was a
+	// std::map searched per lookup (the audio, the HUD's horde anchors, the dependency flags: tens of thousands a frame in a battle)
+	std::vector<DrawableID> m_byObject;
+	std::unordered_map<ObjectID, DrawableID> m_byObjectFar; ///< ids at or beyond kDenseObjectIds (a saved game's ids are kept: never expected so far)
+	static constexpr ObjectID kDenseObjectIds = 1u << 22;
+	void bindObject(ObjectID object, DrawableID id); ///< id 0 unbinds
 	std::map<const void *, std::function<void(ObjectID)>> m_heroAttackedHandlers;
 	std::map<const void *, std::function<void(const std::string &, int)>> m_heroFlashHandlers;
-	EvaDamage::Stats m_evaDamage;
+	EvaDamage::Stats m_evaDamage; ///< lane EVADAMAGE-1
 	size_t m_dependencyUpdates = 0; ///< lane COMBAT-4: dependent drawables whose shared flags changed (RW 0x4BF2D8)
 	std::uint32_t m_nextSeq = 0;
 	size_t m_eventsApplied = 0;

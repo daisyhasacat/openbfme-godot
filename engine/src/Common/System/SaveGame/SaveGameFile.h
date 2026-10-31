@@ -26,6 +26,9 @@
 //                 GameClient/LinearCampaign.h), u8 auto-save (retail's IsAutoSaveOrNot, RW 0x6DE8F1: the Load page's AutoSaveList); each 0 or 1 and
 //                 0 for a game; version 1 headers still load (a game, no flags)
 //                 header version 3 adds: str UTC build date (YYYY-MM-DD, BuildVersion::kBuildDate); absent in versions 1 and 2
+//                 header version 4 (lane BFME2CAMP1) adds: str campaign carry-over (GameLogic/CampaignCarryover.h State::serialize: a mission save's
+//                 carry-over at its mission's start, a campaign menu save's between the missions; "" none; checked by State::parse); versions 1 to 3
+//                 still load (no carry-over)
 //   LOG payload:  an OpenBFME replay (format 4) whose end record is (F, hash at F)
 //   SNAP payload: empty, or the snapshot at F (Common/GameState.h's stream, SAVE-4a); read and digest-checked like the other parts (at most
 //                 kMaxSnapshotBytes); loading a save that carries one is refused by CommandLogLoad until the snapshot loads (SAVE-4b..d)
@@ -65,12 +68,13 @@ struct SaveGameHeader
 	int savePoint = 0;             ///< 0 a game at frame F, 1 CampaignMenu.apt between missions (the auto-save, the menu's Save)
 	bool campaignVictorious = false, campaignReady = false, campaignAdvanced = false;
 	bool autoSave = false;         ///< the auto-save after a won mission (RW 0x6DE8F1: SaveGameInfo IsAutoSaveOrNot = 1)
+	std::string campaignCarryover; ///< lane BFME2CAMP1 (header version 4): the campaign's carry-over text ("" none)
 };
 
 struct SaveGameFile
 {
 	static constexpr std::uint32_t kContainerVersion = 1;
-	static constexpr std::uint32_t kHeaderVersion = 3; // 3 adds build date; 1 and 2 still read
+	static constexpr std::uint32_t kHeaderVersion = 4; // 3 adds the build date, 4 the campaign carry-over (lane BFME2CAMP1); 1 to 3 still read
 	static constexpr const char *kExtension = ".obfmesave";
 	// the most a part may declare (checked before it is read: a larger one is a named refusal, never an allocation)
 	static constexpr std::uint64_t kMaxHeaderBytes = 1u << 20;  // 1 MiB (an identity text and a few names)

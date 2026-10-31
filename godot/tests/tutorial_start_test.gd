@@ -39,7 +39,6 @@ func _run() -> void:
 	assert(game._hud_installed)
 	_assert_unexplored_shroud(game._world)
 	if lesson == "Basic": _assert_opening_reveal(game._world)
-	assert(game._report.stops.has("[S-175] tutorial entry: Objective and loading voice presentation are not ported; tutorial saves are not recorded"))
 	assert(game._report.map.to_lower() == String(def.map).to_lower())
 	_assert_camera_start(game)
 	if lesson == "Basic":

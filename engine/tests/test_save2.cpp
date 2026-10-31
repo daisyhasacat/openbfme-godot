@@ -258,10 +258,10 @@ TEST_CASE("save2 T5: a damaged, truncated or foreign file is refused with its na
 		CHECK(parseError(sk.encode()) == "the save is a skirmish that names a campaign");
 		std::vector<std::uint8_t> v = good;
 		const size_t head = partOffset(good, 0);
-		v[head + 40] = 4; // unknown header version, with a valid digest
+		v[head + 40] = 5; // the header version word (its digest recomputed below so only the version is wrong; lane CAMPSAVE-1: 1 and 2 load; build date: 3; lane BFME2CAMP1: 4)
 		const std::array<std::uint8_t, 32> d = Sha256::hash(v.data() + head + 40, (size_t)(partOffset(good, 1) - head - 40));
 		std::memcpy(v.data() + head + 8, d.data(), 32);
-		CHECK(parseError(v) == "save header version 4 (this build reads versions 1, 2 and 3)");
+		CHECK(parseError(v) == "save header version 5 (this build reads versions 1 to 4)");
 	}
 	SUBCASE("a missing file")
 	{

@@ -29,6 +29,7 @@
 #include "GameClient/LinearCampaign.h"
 #include "GameClient/LivingWorldCampaign.h"
 #include "GameClient/LivingWorldMap.h"
+#include "GameEngineDevice/W3DDevice/GameClient/GlowEffect.h"
 #include "GameLogic/AttributeModifiers.h"
 #include "GameLogic/CreateAHeroSystem.h"
 #include "GameLogic/ExperienceLevels.h"
@@ -67,6 +68,9 @@ public:
 
 	ThingFactory &things() { return *m_s->m_things; }
 	WeaponStores &weaponStores() { return m_s->m_weaponStores; } // WEAPON-1
+	// lane GLOW-1: the GlowEffect block (environment.ini, and a map.ini's override while its map is the loaded one) - the device's glow pass reads active()
+	GlowEffectStore &glowEffect() { return m_s->m_glow; }
+	const GlowEffectStore &glowEffect() const { return m_s->m_glow; }
 	// SPELL-1: the Science, Rank and SpecialPower blocks are parsed for real into these stores
 	SpellStores &spellStores() { return *m_s->m_spellStores; }
 	const SpellStores &spellStores() const { return *m_s->m_spellStores; }
@@ -149,6 +153,9 @@ public:
 	std::vector<std::string> loadNotes() const;
 	// AUDIO-1: the audio / EVA blocks the INI load parsed (TheAudio / TheEva files, retail order)
 	const AudioIniState &audio() const;
+	// lane WEATHER-1: an audio event of that name exists in TheAudio's parsed event table (the "Invalid Sound" check, RW 0x73AA94), for INI loaders
+	// outside the world (the client's WeatherSettingStore)
+	bool audioEventExists(const std::string &name) const;
 
 	// The process-wide parsing context this world owns: TheLocomotorStore, TheCommandStore, the weapon / armor / damage-FX stores and the audio
 	// validator of the contain parse hooks. They are registered, selected and removed TOGETHER as removable owner registrations
@@ -217,6 +224,7 @@ private:
 		std::unique_ptr<SkirmishAIStore> m_skirmishAI;
 		WeaponStores m_weaponStores; // WEAPON-1: the Weapon, Armor and DamageFX blocks have real parsers
 		std::unique_ptr<SpellStores> m_spellStores; // SPELL-1
+		GlowEffectStore m_glow;                     // GLOW-1: RW 0xDA28C0 / 0xDA28E4
 		SubsystemLoadReport m_report;
 		double m_seconds = 0.0;
 		~State();

@@ -221,6 +221,8 @@ public:
 	// lane CAMPUI-1: what Objectives.apt lists (GUI/AptScreens/AptObjectivesMenu.h): { game_mode, tutorial_input, objectives: [{ label, bonus, shown, completed }] }
 	// from GameWorld.get_mission_objectives(); answers { ok, rows } (the rows as the providers answer them)
 	Dictionary set_objectives_screen(const Dictionary &state);
+	// lane BFME2CAMP1: the open screen's tutorial input flag (InGameUI + 0x16), which the Return button reads when pressed (AptObjectivesMenu::returnAllowed)
+	void set_objectives_tutorial_input(bool on);
 	// lane CAMPUI-1: the in-game notification box (begin / end / show / update / enable / close; see GodotAptPlayer.cpp)
 	Dictionary notification_box(const Dictionary &request);
 	// lane MP-2: a movie -> engine command as the movie's fscommand runs it (WindowManager::invokeCallback: "AptLanLobby::OnCreateGameBttn",
@@ -355,8 +357,8 @@ public:
 	// a member of a movie instance as a string (`found` false when the instance or member does not exist)
 	Dictionary get_member(int level, const String &path, const String &name);
 	// lane DEVPORT-8 (MENUSTYLE-1): a property of the clip at `path` on `level` set as ActionScript's `clip.<name> = value` does (AptCharacterInst::setProperty:
-	// _visible, _x, _y, _alpha ...); false when there is no such clip or property. game.gd hides BFME2's own MainMenu.apt campaign buttons with it while the
-	// BFME2 campaigns are switched off (game.gd BFME2_CAMPAIGNS)
+	// _visible, _x, _y, _alpha ...); false when there is no such clip or property. game.gd hides BFME2's own MainMenu.apt campaign buttons with it when the
+	// BFME2 campaigns are switched off (game.gd BFME2_CAMPAIGNS, on since lane BFME2CAMP1)
 	bool set_clip_property(int level, const String &path, const String &name, double value);
 	// the game text of `label` ({ found, text }; a missing label is the retail "MISSING: 'label'" text and found false)
 	Dictionary fetch_text(const String &label);

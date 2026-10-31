@@ -99,8 +99,9 @@ MAX_ITEM = 140
 # workflow, .github/workflows/pr.yml); every file in them passes the same audit as the rest of the tree
 GHPR_TOP = frozenset({".github", "CONTRIBUTING.md"})
 # the public main's top level (the sync recipe: the archive sha's tree without archive/, plus the README line; a PRIVACY.md is not carried any more, PR #34); anything else is refused. ONLINE-2: services/
-# (the online relay and lobby service source) is public by the owner's decision of 2026-10-11; its secrets come from the environment at deploy time
-PUBLIC_TOP = frozenset({".gitattributes", ".gitignore", ".gitmodules", "CLAUDE.md", "LICENSE", "NOTICE", "README.md",
+# (the online relay and lobby service source) is public by the owner's decision of 2026-10-11; its secrets come from the environment at deploy time.
+# BFME2MODE-0: AGENTS.md (the game-editions contributor rules) is public by the owner's decision of 2026-10-29
+PUBLIC_TOP = frozenset({".gitattributes", ".gitignore", ".gitmodules", "AGENTS.md", "CLAUDE.md", "LICENSE", "NOTICE", "README.md",
                         "build.bat", "docs", "engine", "godot", "launcher", "pytest.ini", "run_tests.bat", "services", "tools"} | GHPR_TOP)
 PRIVATE_DIRS = frozenset({"workspace", "archive", "reference", "references"})
 URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S*|\bwww\.\S+|\bmailto:\S+")
@@ -1319,8 +1320,9 @@ BUILTIN_RULES = [
                 # r3: a file name after the '@' is no address (the game's library holds "...o@multiplayer.ini")
                 r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?!(?:ini|cfg|txt|json|big|str|dat|map|wnd|apt|w3d|tga|dds|png|gd|tscn|tres)\b)"
                 r"[A-Za-z]{2,}\b"},
-    # operational files by name: deploy notes, the deploy folder (the sync drops it), logs, agent and orchestration files, CI config
-    {"id": "operational-file", "kind": "regex", "paths": True,
+    # operational files by name: deploy notes, the deploy folder (the sync drops it), logs, agent and orchestration files, CI config.
+    # BFME2MODE-0: the root AGENTS.md is the public contributor rules for game editions (owner, 2026-10-29); any other AGENTS.md stays refused
+    {"id": "operational-file", "kind": "regex", "paths": True, "allow": ["AGENTS.md"],
      "pattern": r"(?:^|/)DEPLOY[^/]*\.md$|^services/online/deploy/|\.log$|(?:^|/)\.codex|(?:^|/)\.lane-|(?:^|/)orchestration/|"
                 r"(?:^|/)briefs/|(?:^|/)AGENTS\.md$|^\.gitea/|"
                 r"^(?:services|tools/net)/(?:.*/)?[^/]*(?<![a-z0-9])(?:backup|monitor|watch|infra|ops)(?![a-z0-9])[^/]*$"},

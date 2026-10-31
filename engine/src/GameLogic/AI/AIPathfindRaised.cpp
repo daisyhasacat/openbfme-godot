@@ -262,13 +262,13 @@ void Pathfinder::rebuildRaisedCells(PathfindLayerEnum layer)
 	m_zoneManager.markDirty(PathfindRegion{ ICoord2D{ x0, y0 }, ICoord2D{ x1, y1 } });
 }
 
-void Pathfinder::connectRampToRaised(int i, int j, PathfindCell *c, float rampHeight, int corners)
+bool Pathfinder::connectRampToRaised(int i, int j, PathfindCell *c, float rampHeight, int corners)
 {
 	// BFME2 WB gd_0052E914, the partly covered cell with a raised layer cell: the cell is a ramp cell connecting to the raised layer, the raised cell connects
 	// to the ramp (INFERENCE S-4856: every raised layer with a passable cell there, the first in layer order)
 	if (!m_anyRaised || corners >= 4)
 	{
-		return;
+		return false;
 	}
 	for (int l = (int)LAYER_TOP; l <= (int)LAYER_RAISED_LAST; ++l)
 	{
@@ -286,12 +286,18 @@ void Pathfinder::connectRampToRaised(int i, int j, PathfindCell *c, float rampHe
 		{
 			continue;
 		}
-		c->setLayer(LAYER_RAMP);
+		// RW 0x9354AB .. 0x9354F4 (the ramp cell RW 0x93527F with a raised cell): the cell's connect layer the raised one's, bit 18 off, layer 0x10, CLEAR;
+		// the raised cell's connect layer the ramp, CLEAR
 		c->setConnectLayer((PathfindLayerEnum)l);
+		c->setImpassableToPlayers(false);
+		c->setLayer(LAYER_RAMP);
+		c->setType(PathfindCell::CELL_CLEAR);
 		rc->setConnectLayer(LAYER_RAMP);
+		rc->setType(PathfindCell::CELL_CLEAR);
 		note(pathstops::kRaisedLayers);
-		return;
+		return true;
 	}
+	return false;
 }
 
 void Pathfinder::crcRaised(StateHasher &h) const

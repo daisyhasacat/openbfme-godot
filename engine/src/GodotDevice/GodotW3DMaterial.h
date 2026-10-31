@@ -94,7 +94,7 @@ public:
 	// lane CAH-2 (S-1408): the colour set of the model being built (W3DInstancer::add_model_colored; kind 0 = none): its house colour textures are
 	// recoloured texel by texel as RW 0x531C77 before any filtering, the mipmaps made from the recoloured level (Recolored_House_Texture)
 	void Set_House_Params(const HouseColorParams &params) { HouseParams = params; }
-	// stop S-4832: the texture swaps of the model being built (W3DInstancer::Set_Build_Texture_Swaps, a ModelConditionState's `Texture = A B` pairs):
+	// stop S-5015: the texture swaps of the model being built (W3DInstancer::Set_Build_Texture_Swaps, a ModelConditionState's `Texture = A B` pairs):
 	// a surface texture named A (any case; A = "*": every texture) is loaded as B. Empty by default.
 	void Set_Texture_Swaps(const std::vector<TextureSwap> &swaps) { TextureSwaps = swaps; }
 	// S-5017: keep BFME1 translucent floor markings visible under minification.
@@ -133,6 +133,13 @@ public:
 	// the reduction applied to one decoded image (true when it lost levels)
 	static bool Reduce_Image(Ref<Image> &image, int reduction);
 
+	// The static level's ShaderMaterialReplacement (gamelod.ini; RW 0xDD1E50, RW 0x516A30): on, every classic surface W3D_Fx_Conversion_Refusal accepts is
+	// lit as retail's DefaultW3D.fx replacement (W3DShaderKey::ConvertedFx); off, none is (the fixed-function stage ops). One setting for every factory,
+	// as retail's. Default on: the level the port draws (GameLODManager::kDetectedLevel, UltraHigh). INFERENCE / stop S-6021: the Options screen's
+	// ShaderLOD does not reach it yet.
+	static void Set_Shader_Material_Replacement(bool on);
+	static bool Get_Shader_Material_Replacement();
+
 private:
 	Ref<Texture2D> Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing = false, int alphaCoverage = 0, std::vector<std::string> *notes = nullptr);
 	static Ref<Texture2D> Placeholder_Texture(bool flatNormal);
@@ -141,7 +148,7 @@ private:
 	const HouseColorTable *HouseColors = nullptr;
 	const AssetPacks *Packs = nullptr; // lane SDK-0
 	HouseColorParams HouseParams;
-	std::vector<TextureSwap> TextureSwaps; // stop S-4832
+	std::vector<TextureSwap> TextureSwaps; // stop S-5015
 	bool AlphaOverride = false;
 	bool SceneEnvironment = false;
 	W3DObjectLighting SceneLighting;
@@ -165,6 +172,8 @@ void W3D_Apply_Fog(bool enabled, const float color[3], float start, float end);
 // lane PLAY-1: the free camera moves every fog range out by `shift` world units (the global w3d_fog_shift; 0 = retail)
 // lane VISUAL-2: the vegetation SwayOffsets 1 .. 10 (W3D axes) the rigid W3D shaders read (w3dshadergen.cpp)
 void W3D_Set_Sway_Offsets(const float offsets[10][3]);
+// lane WEATHERFX-1: the Enhanced look's wind: the SwayOffsets drawn from now on times `scale` (1 = retail, the default; the sway's own state is untouched)
+void W3D_Set_Sway_Scale(double scale);
 // lane VISUAL-2: the fogged light fraction (RW 0x46DFD0: FogAlpha / ClearAlpha) a fogged instance's lights and ambient are scaled by
 void W3D_Set_Fogged_Light_Frac(float frac);
 // lane OCCLUDE-1: the behind-building colours (global w3d_occl_colors: a W3D_OCCLUSION_SLOTS x 1 RGBA8 texture, slot -> the colour, slot 0 unused) and

@@ -201,14 +201,16 @@ TEST_CASE("idlemotion1 retail: a lancer left behind while its horde runs a fleei
 	// point and on the merged tree): with AIDATA-1's run-down (the goal's speed in the gap, RW 0x74AA69; the status across the horde, RW 0x748650) the run-down
 	// runs the whole 40-frame window and the leash reaches the member on 8 of them; it stands busy with MOVING on 3 (frames 2, 3, 8) and catches up between
 	// them (its first step at frame 0)
-	CHECK(heldFrames == 3);
-	CHECK(leashFrames == 8);
+	// lane MODCOMPAT-MOD1 (the run-down's aim state ends at once, AIAttackAimAtTargetState RW 0x753426 / 0x7524B5; measured at that commit, a CI host): the
+	// member stands busy with MOVING on 4 frames (was 3), the leash reaches it on 9 (was 8), every lancer 4 held frames (was 3)
+	CHECK(heldFrames == 4);
+	CHECK(leashFrames == 9);
 	CHECK(runDownFrames == 40);
 	CHECK(firstWalk == 0);
 	// the idle1 probe (test_exit1_motion.cpp) counts those frames apart (the other lancers stand on leash frames as well) and finds no member standing with
 	// MOVING otherwise
 	CHECK(probe.framesHeldByRunDown == heldAll);
-	CHECK(heldAll == 3);
+	CHECK(heldAll == 4);
 	CHECK(probe.stillMovingStreaks == 0);
 }
 
@@ -251,4 +253,59 @@ TEST_CASE("idlemotion1 retail: the run-down orders a member whose attack has no 
 	CHECK_FALSE(orc->isEffectivelyDead());
 	a.logic.update(5);
 	a.logic.update(6);
+}
+
+// lane MODCOMPAT-MOD1 (a pre-existing gap the lane's games met: three Mithlond Sentries of a running-down horde stood 6 frames with MOVING in AI_ATTACK_OBJECT):
+// AIAttackAimAtTargetState is done at once for an owner with RUNNING_DOWN_FROM_BEHIND (status 0x4B): its onEnter returns STATE_SUCCESS before IS_AIMING_WEAPON
+// and the first turn (RW 0x753426), its update before the turn (RW 0x7524B5). The port turned the member to its victim every frame: the angle goal replaced
+// the walk its horde's pass gave it, so it stood beside its marching horde
+TEST_CASE("idlemotion1 retail: a member running a fleeing horde down is done aiming at once: no turn, no IS_AIMING_WEAPON (RW 0x753426, RW 0x7524B5)")
+{
+	if (!haveWorld())
+	{
+		return;
+	}
+	Arena a(shared(), "FactionElves", "FactionMordor");
+	Object *lancers = nullptr, *orcs = nullptr;
+	REQUIRE(startRunDown(a, lancers, orcs) == 59); // the run-down of the tests above
+	const unsigned runDown = (unsigned)CombatNames::statuses().runningDownFromBehind;
+	const unsigned aiming = (unsigned)CombatNames::statuses().isAimingWeapon;
+	Object *m = membersOf(lancers).back();
+	Object *orc = membersOf(orcs).front();
+	AIUpdateInterface *ai = m->getAIUpdateInterface();
+	REQUIRE(m->testStatus(runDown)); // set across the horde (RW 0x748650)
+	REQUIRE(ai->aiAttackObject(orc, CMD_FROM_AI));
+	AIAttackState *attack = dynamic_cast<AIAttackState *>(ai->stateMachineOrNull()->currentState());
+	REQUIRE(attack != nullptr);
+	AIStateMachine *machine = attack->attackMachine();
+	REQUIRE(machine != nullptr);
+	const unsigned aim = attack->usesMeleeMachine() ? (unsigned)MELEE_AIM : (unsigned)ATTACK_AIM;
+	ai->setLocomotorGoalNone();
+	// onEnter: running down, the aim answers success at once: the machine leaves it in the same call, no status, no angle goal
+	machine->setState(aim);
+	CHECK(machine->currentStateId() != aim);
+	CHECK_FALSE(m->testStatus(aiming));
+	CHECK(ai->mover().goalType() != AIGOAL_ANGLE);
+	// without the status the aim holds and marks the owner aiming
+	m->setStatus(runDown, false);
+	machine->setState(aim);
+	REQUIRE(machine->currentStateId() == aim);
+	CHECK(m->testStatus(aiming));
+	// update, beside the orc (in reach) and facing away from it: without the status the aim turns the lancer (a locomotor goal) and holds; with it the aim
+	// succeeds before the turn
+	const Coord3D op = *orc->getPosition();
+	const Coord3D beside{ SimMath::subf32(op.x, 6.0f), op.y, op.z };
+	m->setPosition(&beside);
+	m->setOrientation(3.14159274f);
+	ai->setLocomotorGoalNone();
+	machine->updateStateMachine();
+	REQUIRE(machine->currentStateId() == aim);
+	CHECK(ai->mover().goalType() != AIGOAL_NONE);
+	ai->setLocomotorGoalNone();
+	m->setPosition(&beside);
+	m->setOrientation(3.14159274f);
+	m->setStatus(runDown, true);
+	machine->updateStateMachine();
+	CHECK(machine->currentStateId() != aim);
+	CHECK(ai->mover().goalType() == AIGOAL_NONE);
 }

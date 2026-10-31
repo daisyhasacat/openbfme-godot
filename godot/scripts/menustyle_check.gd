@@ -116,9 +116,14 @@ func run(owner: Node) -> void:
 	game.get_tree().quit(0 if failures == 0 else 1)
 
 
-## Each presentation movie retains its authored campaigns and dropdown layout.
-const ROTWK_SOLO_ENTRIES := ["BonusCampaign", "Expansion1Campaign", "LoadGame", "Skirmish", "WarOfTheRing"]
+## lane DEVPORT-8 / BFME2CAMP1: game.gd BFME2_CAMPAIGNS is on: BFME2's own MainMenu.apt GoodCampaign / EvilCampaign show and take the pointer in the
+## BFME2 style (they start GOOD_CAMPAIGN / EVIL_CAMPAIGN: tests/bfme2camp1_test.gd plays that start); RotWK's MainMenu.apt has no such buttons. Lane CAMPMENU-1: the campaigns are retail's own Solo Play entries (no OpenBFME panel):
+## RotWK's list holds Expansion1Campaign and BonusCampaign (MainMenu.apt; tools/menus/retail_controls.json), clicked as the player would
+## lane BFME2CAMP1 (an OpenBFME addition, AptMainMenu.h ExtraRows): RotWK's list also holds BFME2's EvilCampaign / GoodCampaign rows, BFME2's list RotWK's
+## Expansion1Campaign / BonusCampaign rows
+const ROTWK_SOLO_ENTRIES := ["BonusCampaign", "EvilCampaign", "Expansion1Campaign", "GoodCampaign", "LoadGame", "Skirmish", "WarOfTheRing"]
 func _check_campaign_buttons(style: String) -> void:
+	check(game.BFME2_CAMPAIGNS, "the BFME2 campaign switch is on in this tree (lane BFME2CAMP1)")
 	var overlay := _visible_godot_buttons(game)
 	check(overlay.is_empty(), "%s: no Godot button over the main menu (every button is the movie's): %s" % [style, overlay])
 	var top: int = game._shell.shell_top_level()
@@ -148,10 +153,12 @@ func _check_campaign_buttons(style: String) -> void:
 			if bool(b.hittable) and str(b.path).begins_with("_level%d.SoloPlayNav." % top):
 				shown.append(str(b.path).split(".")[2])
 		check(shown.has("Skirmish") and shown.has("WarOfTheRing") and shown.has("LoadGame"), "bfme2: the list's other entries can be clicked: %s" % [shown])
-		check(native.visible == native.found and not native.hittable.is_empty(), "bfme2: Good/Evil campaign entries remain visible and clickable: %s" % [native])
-		check(shown.has("GoodCampaign") and shown.has("EvilCampaign"), "bfme2: both campaigns take pointer input")
-	else:
-		check(native.get("visible", []).is_empty() and native.get("hittable", []).is_empty(), "%s: no BFME2 campaigns mixed into this menu" % style)
+		check(shown.has("GoodCampaign") and shown.has("EvilCampaign"), "bfme2: BFME2's GoodCampaign / EvilCampaign can be clicked: %s" % [shown])
+		check(native.get("visible", []) == ["SoloPlayNav.GoodCampaign", "SoloPlayNav.EvilCampaign"], "bfme2: both campaign clips are visible: %s" % JSON.stringify(native))
+	if style == "rotwk":
+		check(not game.campaign_entry("GoodCampaign").is_empty() and not game.campaign_entry("EvilCampaign").is_empty(), "rotwk: the added GoodCampaign / EvilCampaign rows can be clicked: %s" % [game.solo_play_entries()])
+	if style == "bfme2":
+		check(not game.campaign_entry("Expansion1Campaign").is_empty(), "bfme2: the added Expansion1Campaign (Angmar Campaign) row can be clicked: %s" % [game.solo_play_entries()])
 	if opened:
 		await _close_list(nav)
 

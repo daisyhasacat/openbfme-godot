@@ -825,8 +825,10 @@ TEST_CASE("wall2 raised retail: Minas Tirith: MinisGate1's RaisedWallMesh P1 is 
 	CHECK(overPassage == 0);
 	CHECK(pf.raisedLayerCount() == 0);
 	CHECK(g.game->report().wallMeshProblems.size() == 7);
-	CHECK(wallCells == 8291);
-	CHECK(rampCells == 1874);
+	// fix/ramp-bridge-cells (RotWK's ramp cell RW 0x93527F on getRamp's Bridge: joints only at a ramp's two end edges, a covered cell the ramp's even over
+	// a wall top): 8291 / 1874 -> 8143 / 1785
+	CHECK(wallCells == 8143);
+	CHECK(rampCells == 1785);
 	// a hero beside the fortress's command centre walks onto the nearest wall top it reaches and stands at its height
 	Object *keep = nullptr;
 	for (Object *o = g.game->logic().getFirstObject(); o && !keep; o = o->getNextObject())

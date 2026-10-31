@@ -70,6 +70,7 @@ int HeroSystem::addDeadHero(Player &player, Object &obj, const RespawnUpdate &re
 	r.upgradeMask = obj.getUpgradeMask();  // RW 0x780E2B: Object + 0x28C
 	r.startFrame = -1;
 	r.dead = true;
+	r.objectFlag = obj.isCampaignCarryover(); // RW 0x780E3F: + 0xB1 = Object + 0x458 bit 4 (lane BFME2CAMP1: the campaign carry-over flag)
 	r.productionID = 0;                    // RW 0x780E4F: + 0xB4 = 0
 	r.objectName = obj.getName();          // + 0xE0 from Object + 0x88
 	r.cost = respawn.ruleCost();           // RW 0x780E99
@@ -121,7 +122,12 @@ Object *HeroSystem::produce(GameLogic &logic, Player &player, std::uint32_t prod
 	{
 		obj->setName(r.objectName); // RW 0x759467 (TheScriptEngine names the object)
 	}
-	// RW 0x781506: the record's + 0xB1 sets Object + 0x458 bit 4 (not identified, S-852); RW 0x781514: RW 0x68C7E9 (not identified, S-852)
+	// RW 0x781506: the record's + 0xB1 sets Object + 0x458 bit 4 (lane BFME2CAMP1: the campaign carry-over flag, so a revived carried hero is kept by
+	// the won mission, RW 0x5EBAEE); RW 0x781514: RW 0x68C7E9 (not identified, S-852)
+	if (r.objectFlag)
+	{
+		obj->setCampaignCarryover(true);
+	}
 	if (r.dead || r.experience > 1.0f)
 	{
 		if (ExperienceTracker *t = obj->getExperienceTracker())

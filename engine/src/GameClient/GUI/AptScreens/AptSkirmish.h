@@ -36,6 +36,7 @@
 #include "GameClient/GUI/AptScreen.h"
 #include "GameClient/GUI/ShellEnvironment.h"
 #include "GameClient/GUI/Skirmish/SkirmishGameSetup.h"
+#include "GameClient/OptionPreferences.h"
 
 struct CreateAHeroHero;
 class AptMessageBox;
@@ -118,6 +119,10 @@ public:
 	GameWindow *strategicScenarioDescription() const { return m_strategicScenarioDesc; }
 	GameWindow *strategicTerritoryDescription() const {return m_strategicTerritoryDesc;}
 	GameWindow *profileListWindow() const { return m_profileList; }
+	GameWindow *profileComboWindow() const { return m_bfme1ProfileCombo; }
+	GameWindow *mapTypeWindow() const { return m_bfme1MapType; }
+	bool bfme1OfficialMaps() const { return m_bfme1OfficialMaps; }
+	void recordsChanged();
 	// lane END-1: dead gadgets are dropped first (a window the movie's popup already destroyed must not be handed out: the lobby hook wrote into one)
 	GameWindow *profileEntryWindow()
 	{
@@ -192,7 +197,7 @@ protected:
 	// lane ONLINE-5: the setup panel's flags (AptMpGameSetup + 0x3A4, the constructor's second argument): the online custom match screen passes
 	// 0x200001F0 (RW 0x9AF464), the LAN lobby 0x400001A0 (RW 0x848C6B). Bit 0x20 is the Ready column (RW 0x84214C) and the host's start notice (RW
 	// 0x8431B8: GUI:NotifiedStartIntent). The skirmish screen's own value: 0x10000007 (lane OWNERFIX-3: RotWK's AptSkirmish constructor pushes it, RW
-	// 0x929773; BFME2 decomp AptSkirmishConstructor.cpp the same): no 0x20 / 0x40; bit 0 (1) reads the profile's battle honors into the map list (RW 0x8460B5)
+	// 0x929773; BFME2 decomp AptSkirmish.cpp the same): no 0x20 / 0x40; bit 0 (1) reads the profile's battle honors into the map list (RW 0x8460B5)
 	virtual int setupFlags() const { return 0x10000007; }
 	// the slot's accepted flag (GameSlot + 8, RW 0x842185): the model's; the LAN lobby's are LANAPI's
 	virtual bool slotAccepted(int slot) const;
@@ -334,8 +339,11 @@ private:
 	void update();      // the screen's per-update state machine (RotWK 0x928CDB), run by the WindowManager while the screen exists
 	// ---- profiles ----
 	void refreshProfileList();
-	void refreshBfme1Profile();
+	void refreshBfme1ProfileDisplay();
+	void refreshBfme1Profile(); ///< the expanded Skirmish Profile page (per-side honours), after refreshBfme1ProfileDisplay
 	int bfme1RankProgress(const std::string &side) const;
+	void refreshBfme1ProfileCombo();
+	bool selectProfile(const std::u16string &name);
 	std::u16string playerName() const;
 	void applyProfileName();
 	// RotWK 0x9294B3 (the Enter key of the persona entry, a double click in the profile list): close the popup through the movie's CloseProfilePopup,
@@ -401,11 +409,13 @@ private:
 	int m_strategicScenario = -1;                   // the selected campaign (BFME2 GameInfo + campaign)
 	// Skirmish profile gadgets
 	GameWindow *m_profileList = nullptr;
-	GameWindow *m_profileCombo = nullptr;
-	GameWindow *m_mapType = nullptr;
-	bool m_officialMaps = true;
-	OptionPreferences m_bfme1Stats;
 	GameWindow *m_profileEntry = nullptr;
+	GameWindow *m_bfme1ProfileCombo = nullptr;
+	GameWindow *m_bfme1MapType = nullptr;
+	bool m_bfme1OfficialMaps = true;
+	OptionPreferences m_bfme1Honors;
+	int m_bfme1ProfileMovie = -1;
+	int m_bfme1ProfileProgress = -1;
 	bool m_suppressStrategicPromo = false;
 	// The profile state of RotWK's AptSkirmish (field +0x6B8): 1 set by OnInitialized (0x9280DB), 10 by StartGame (0x9280F0), 8 by the stats commands
 	// (0x9280FD); the update (0x928CDB) takes 1 -> ShowMain -> 5; the popup states 2 (new profile), 4 (change profile) and 3 (delete) close to 7 / 5

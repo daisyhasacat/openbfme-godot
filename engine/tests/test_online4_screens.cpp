@@ -43,6 +43,7 @@
 #include <memory>
 #include <random>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <atomic>
@@ -3370,6 +3371,254 @@ TEST_CASE("online5 retail: the staging room's rows and buttons: the chat's Playe
 	REQUIRE(runUntil(all, [&] { return !a.client.inGame(); }));
 	REQUIRE(host.clickWhenShown("TabButtons.ChatTab"));
 	REQUIRE_MESSAGE(runUntil(all, [&] { return players(host) == "Host;"; }), players(host));
+}
+#endif
+
+#ifdef ONLINE4_POSIX
+namespace
+{
+// a window and every parent shown
+bool shownOnScreen(GameWindow *w)
+{
+	for (; w; w = w->winGetParent())
+	{
+		if (w->winIsHidden())
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+// the RULES tab as the player sees it: every shown rule row (the movie's "RuleComboBox" / "RuleCheckBox" placeholders) is a row the screen filed
+// and lies above the player list (the panel's rectangle ends where the slot rows begin), and every filed row shows the game's value; the
+// problems in words (empty: none)
+std::string rulesTabProblems(OnlinePlayer &p)
+{
+	std::ostringstream out;
+	AptOnlineShell &sh = *p.sh;
+	std::set<const GameWindow *> filed;
+	for (int i = 0; i < 16; ++i)
+	{
+		for (GameWindow *w : { sh.ruleComboWindow(i), sh.ruleCheckWindow(i) })
+		{
+			if (w)
+			{
+				filed.insert(w);
+			}
+		}
+	}
+	GameWindow *firstRow = sh.slotGadget(0, "Player");
+	if (!firstRow)
+	{
+		return "no player list";
+	}
+	int listX = 0, listTop = 0;
+	firstRow->winGetScreenPosition(&listX, &listTop);
+	int shown = 0;
+	for (GameWindow *w : p.fx.wm->gadgetLayer()->gadgets().allWindows())
+	{
+		const std::string &n = w->aptInstanceName();
+		if ((n.rfind("RuleComboBox", 0) != 0 && n.rfind("RuleCheckBox", 0) != 0) || !shownOnScreen(w))
+		{
+			continue;
+		}
+		++shown;
+		int x = 0, y = 0, ww = 0, hh = 0;
+		w->winGetScreenPosition(&x, &y);
+		w->winGetSize(&ww, &hh);
+		if (!filed.count(w))
+		{
+			out << "an unfiled " << n << " is shown at (" << x << "," << y << "); ";
+		}
+		if (y + hh > listTop)
+		{
+			out << n << " at (" << x << "," << y << ") is over the player list (its top " << listTop << "); ";
+		}
+	}
+	if (shown == 0)
+	{
+		out << "no rule row is shown; the rule windows:";
+		for (GameWindow *w : p.fx.wm->gadgetLayer()->gadgets().allWindows())
+		{
+			const std::string &n = w->aptInstanceName();
+			if (n.rfind("RuleComboBox", 0) == 0 || n.rfind("RuleCheckBox", 0) == 0)
+			{
+				int x = 0, y = 0;
+				w->winGetScreenPosition(&x, &y);
+				out << " " << n << "(" << x << "," << y << (filed.count(w) ? " filed" : "") << (w->winIsHidden() ? " hidden" : "")
+					<< (w->winClipRemoved() ? " clip-removed" : "") << (shownOnScreen(w) ? "" : " parent-hidden") << ")";
+			}
+		}
+		std::vector<AptButtonInst *> bs;
+		p.buttons(p.fx.wm->apt().level(sh.level()), bs);
+		out << "; the buttons:";
+		for (AptButtonInst *b : bs)
+		{
+			out << " " << b->targetPath();
+		}
+		return out.str();
+	}
+	const SkirmishGameInfo &g = sh.setup()->info();
+	for (int rule = 0; rule < NUM_GAME_RULES; ++rule)
+	{
+		GameWindow *w = sh.ruleWindow(rule);
+		if (!w)
+		{
+			continue;
+		}
+		int value = -9999;
+		if ((w->winGetStyle() & GWS_CHECK_BOX) != 0)
+		{
+			value = GadgetCheckBoxIsChecked(w) ? 1 : 0;
+			if ((g.rules[(size_t)rule] != 0 ? 1 : 0) != value)
+			{
+				out << "rule " << rule << " shows " << value << ", the game has " << g.rules[(size_t)rule] << "; ";
+			}
+			continue;
+		}
+		int pos = -1;
+		GadgetComboBoxGetSelectedPos(w, &pos);
+		value = pos < 0 ? -9999 : (int)reinterpret_cast<std::intptr_t>(GadgetComboBoxGetItemData(w, pos));
+		if (value != g.rules[(size_t)rule])
+		{
+			out << "rule " << rule << " shows " << value << ", the game has " << g.rules[(size_t)rule] << "; ";
+		}
+	}
+	if (GameWindow *w = sh.legendaryHeroesWindow())
+	{
+		int pos = -1;
+		GadgetComboBoxGetSelectedPos(w, &pos);
+		const int value = pos < 0 ? -9999 : (int)reinterpret_cast<std::intptr_t>(GadgetComboBoxGetItemData(w, pos));
+		if (value != g.legendaryHeroes)
+		{
+			out << "Legendary Heroes shows " << value << ", the game has " << g.legendaryHeroes << "; ";
+		}
+	}
+	return out.str();
+}
+} // namespace
+
+// selects a tab of the staging room (TabButtons.<tab>): the selected tab has no button; pressed again while the movie drops a press as it plays in
+bool selectTab(OnlinePlayer &p, const std::vector<OnlinePlayer *> &all, const std::string &tab)
+{
+	int frame = 0;
+	std::string seen;
+	const bool ok = runUntil(all, [&] {
+		std::vector<AptButtonInst *> bs;
+		p.buttons(p.fx.wm->apt().level(p.sh->level()), bs);
+		bool listed = false, other = false;
+		for (AptButtonInst *b : bs)
+		{
+			listed = listed || b->targetPath().find("TabButtons." + tab) != std::string::npos;
+			other = other || b->targetPath().find("TabButtons.") != std::string::npos;
+		}
+		if (other && !listed)
+		{
+			return true;
+		}
+		if (frame++ % 60 == 0) // a press, then the tab's clip plays in
+		{
+			std::string why;
+			p.pressReachable("TabButtons." + tab, &why);
+			seen = why;
+			for (AptButtonInst *b : bs)
+			{
+				seen += " " + b->targetPath();
+			}
+		}
+		return false;
+	});
+	if (!ok)
+	{
+		MESSAGE("the tab " << tab << " was not selected: " << seen);
+	}
+	return ok;
+}
+
+TEST_CASE("rulesov1 retail: the online staging room's RULES tab shows one set of rule rows, inside the panel, with the game's values, on the host and "
+		  "the joiner, across tab changes (the owner's 2026-10-29 screenshot: a second set over the player list showed 1X / Off while the panel said 8X / 2x)")
+{
+	ONLINE4_REQUIRE_NODE();
+	OPENBFME_REQUIRE_START(s);
+	NodeLobby lobby("", "");
+	OnlinePlayer host(*s, lobby.port, 81, u""), a(*s, lobby.port, 82, u"");
+	const std::vector<OnlinePlayer *> all{ &host, &a };
+	signInAndOpenPlay(host, u"Host");
+	// the server browser's own MAP / RULES panel first (MpGameSetup's, read only outside a room)
+	REQUIRE(selectTab(host, { &host }, "RulesTab"));
+	host.tick(120);
+	REQUIRE(host.clickWhenShown("Controls.CreateGame"));
+	REQUIRE(runUntil({ &host }, [&] { return host.sh->gameNameWindow() != nullptr && host.sh->openPlayState() == 3; }));
+	REQUIRE(host.clickWhenShown("CreateGamePopup.Accept"));
+	REQUIRE_MESSAGE(runUntil({ &host }, [&] { return host.client.inGame() && host.sh->openPlayState() == 6; }), host.notes());
+	joinListed(a, all, u"JoinerA");
+	REQUIRE(selectTab(host, all, "RulesTab"));
+	REQUIRE_MESSAGE(runUntil(all, [&] { return host.sh->rulesPopulated() && host.sh->ruleWindow(RULE_COMMAND_POINT_FACTOR) != nullptr; }), host.notes());
+	host.tick(60); // the tab's clip has played in
+	CHECK_MESSAGE(rulesTabProblems(host).empty(), rulesTabProblems(host));
+	// the owner's values: Command Point Factor 8X, Legendary Heroes 2x; the host's tab and the joiner's model follow
+	GameWindow *cp = host.sh->ruleWindow(RULE_COMMAND_POINT_FACTOR);
+	for (int i = 0; i < GadgetComboBoxGetLength(cp); ++i)
+	{
+		if ((int)reinterpret_cast<std::intptr_t>(GadgetComboBoxGetItemData(cp, i)) == 800)
+		{
+			GadgetComboBoxSetSelectedPos(cp, i, false);
+		}
+	}
+	REQUIRE(host.sh->legendaryHeroesWindow());
+	GadgetComboBoxSetSelectedPos(host.sh->legendaryHeroesWindow(), 1, false);
+	REQUIRE(host.sh->setup()->info().rules[RULE_COMMAND_POINT_FACTOR] == 800);
+	// above 1X the game warns in a box (RW 0x8421E0 kind 3's notice, the Rules tab's own box): its OK closes it
+	host.tick(30);
+	REQUIRE(host.sh->messageBox());
+	host.dismissBox();
+	host.tick(30);
+	REQUIRE(host.sh->setup()->info().legendaryHeroes == 2);
+	REQUIRE_MESSAGE(runUntil(all, [&] { return a.sh->setup()->info().rules == host.sh->setup()->info().rules &&
+		a.sh->setup()->info().legendaryHeroes == 2; }), "the joiner's rules did not follow the host's");
+	// tab changes on both screens: MAP, CHAT, back to RULES
+	for (OnlinePlayer *p : all)
+	{
+		for (const char *tab : { "MapTab", "ChatTab", "RulesTab" })
+		{
+			REQUIRE_MESSAGE(selectTab(*p, all, tab), tab);
+			for (OnlinePlayer *q : all)
+			{
+				q->tick(30);
+			}
+		}
+		REQUIRE_MESSAGE(runUntil(all, [&] { return p->sh->rulesPopulated(); }), p->notes());
+		p->tick(60);
+		CHECK_MESSAGE(rulesTabProblems(*p).empty(), (p == &host ? "host: " : "joiner: ") << rulesTabProblems(*p));
+	}
+	CHECK(a.sh->setup()->info().rules == host.sh->setup()->info().rules);
+	CHECK(a.sh->setup()->info().legendaryHeroes == host.sh->setup()->info().legendaryHeroes);
+	// the joiner leaves: the server browser's own RULES tab shows its rows again (filed anew), each one filed, none left over from the room
+	REQUIRE(a.clickWhenShown("LowerButtons_Join.CancelJoin"));
+	REQUIRE(runUntil(all, [&] { return !a.client.inGame(); }));
+	REQUIRE(selectTab(a, all, "RulesTab"));
+	for (OnlinePlayer *q : all)
+	{
+		q->tick(120);
+	}
+	std::set<const GameWindow *> filed;
+	for (int i = 0; i < 16; ++i)
+	{
+		filed.insert(a.sh->ruleComboWindow(i));
+		filed.insert(a.sh->ruleCheckWindow(i));
+	}
+	int shownRows = 0;
+	for (GameWindow *w : a.fx.wm->gadgetLayer()->gadgets().allWindows())
+	{
+		const std::string &n = w->aptInstanceName();
+		if ((n.rfind("RuleComboBox", 0) == 0 || n.rfind("RuleCheckBox", 0) == 0) && shownOnScreen(w))
+		{
+			++shownRows;
+			CHECK_MESSAGE(filed.count(w), "an unfiled " << n << " is shown in the browser");
+		}
+	}
+	CHECK(shownRows == 7); // Initial Resources, Command Point Factor, Legendary Heroes; Allow Custom Heroes, Allow Ring Heroes, Clan Game, Cheat Mode
 }
 #endif
 

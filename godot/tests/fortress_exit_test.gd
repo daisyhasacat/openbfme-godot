@@ -17,10 +17,10 @@ func _run() -> void:
 			"start_pos": 1 - i if i < 2 else -1, "player_template": 3 if i < 2 else -1, "team": i})
 	assert(world.prepare_new_game({"mode": "skirmish", "difficulty": 1,
 		"map": "maps/map mp harlindon/map mp harlindon.map", "map_crc": 0,
-		"map_size": 0, "map_mask": 0, "seed": 2723, "peace_time_minutes": 5,
+		"map_size": 0, "map_mask": 0, "seed": 2723,
 		"starting_cash": 4000, "slots": slots}).ok)
-	assert(world.start_new_game({"logic_thread": false, "wall_rebalance": false,
-		"starting_walls": false}).ok)
+	var started: Dictionary = world.start_new_game({"logic_thread": false})
+	assert(started.ok)
 	for i in 10:
 		world.advance(0.2)
 	var before: Dictionary = {}
@@ -28,7 +28,7 @@ func _run() -> void:
 	for id in world.get_object_ids():
 		before[int(id)] = true
 		var object: Dictionary = world.get_object(id)
-		if object.get("template", "") == "MenFortressCitadel" and object.get("player_id", -1) == 3:
+		if object.get("template", "") == "MenFortressCitadel" and object.get("owner", "") == started.start.local_player:
 			fortress = object
 	assert(not fortress.is_empty())
 	var hero_index := -1

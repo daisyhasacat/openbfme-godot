@@ -278,6 +278,10 @@ TEST_CASE("banner1 retail: a rank-two Gondor horde refills after a real fight, m
 	const size_t left = g.payload(*horde).size();
 	MESSAGE("after the fight: " << g.probe(*horde));
 	REQUIRE(left < full); // tolerance: the fight must cost members (how many is the fight's); the claim needs losses to refill
+	// lane MODCOMPAT-MOD1 (PickupStuffUpdate: every horde's update in the sleepy update vectors, RW 0x62E982, changes this fight's course): the carrier may
+	// fall in the fight (f275: 3 members left, no carrier); retail makes a new one after the dead carrier's DiedRespawnTime (RW 0x8719BC .. 0x8719CE sets the
+	// countdown, then the banner check RW 0x870204 makes it: f291), so the refill below waits for it
+	REQUIRE(g.until([&] { return c.bannerCarrier() != 0; }, 600)); // tolerance: object ids are allocated per run; the claim is that a new carrier comes
 	REQUIRE(c.bannerCarrier() != 0); // tolerance: object ids are allocated per run; the claim is that a carrier exists
 	// the survivors' rank: the horde may have gained a rank in the fight; its experience pool is what a new member takes (RW 0x873BD3 .. 0x873C35)
 	const int survivorRank = g.payload(*horde).front()->getExperienceTracker()->getRank();

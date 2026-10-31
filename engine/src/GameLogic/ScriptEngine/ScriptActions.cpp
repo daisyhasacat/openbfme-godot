@@ -3,6 +3,7 @@
 // See GameLogic/ScriptEngine/ScriptActions.h.
 
 #include "GameLogic/ScriptEngine/ScriptActions.h"
+#include "GameLogic/SelfDestruct.h"
 
 #include "Common/Player.h"
 #include "Common/BuildAssistant.h"
@@ -66,6 +67,7 @@ const std::set<int> &clientActions()
 			"SHOW_MISSION_OBJECTIVE", "HIDE_MISSION_OBJECTIVE", "MARK_MISSION_OBJECTIVE_COMPLETED", "MARK_MISSION_OBJECTIVE_NOT_COMPLETED",
 			"PLAY_SOUND_EFFECT", "PLAY_SOUND_EFFECT_AT", "PLAY_SOUND_EFFECT_AT_TEAM", "SOUND_PLAY_NAMED", "SPEECH_PLAY", "MUSIC_SET_TRACK",
 			"MUSIC_SET_VOLUME", "SOUND_SET_VOLUME", "SPEECH_SET_VOLUME", // lane SCRIPT-3: RW 0x7BCAAE (TheAudio's script volume, client)
+			"REFRESH_RADAR", // lane BFME2CAMP1: RW 0x7BCC53: TheRadar (RW 0xDE4AB8) vslot 0x10(TheTerrainLogic), the client's radar redraw
 			"MUSIC_PLAY_TRACK_FINITE_TIMES", "MOVIE_PLAY_FULLSCREEN", "MOVIE_PLAY_RADAR", "PLAY_MOVIE_IN_GAME", "DISABLE_INPUT", "ENABLE_INPUT",
 			"HIDE_UI", "SHOW_UI", "DESELECT", "SELECT_OBJECT", "EVA_SET_ENABLED_DISABLED", "AUDIO_MAKE_SOUND_IMMUNE_TO_FADE", "AUDIO_FADE_VOLUME",
 			"AUDIO_RESTORE_VOLUME_ALL_TYPE", "AUDIO_OVERRIDE_VOLUME_TYPE", "AUDIO_RESTORE_VOLUME_TYPE", "AUDIO_SET_VOLUME_TYPE", "CAMEO_FLASH",
@@ -79,6 +81,12 @@ const std::set<int> &clientActions()
 			// lane SCRIPT-4: RW 0x7BC604 doSetBorderShroud (BFME2 ScriptActions.cpp, tier A): TheDisplay vslot 0x138 with GlobalData ClearAlpha (+ 0xBE8) / ShroudAlpha
 			// (+ 0xBEA): the shroud border's fill (client, not saved)
 			"DISABLE_BORDER_SHROUD", "ENABLE_BORDER_SHROUD",
+			// lane CAMANIM-1: case 0x226 (RW 0x7CB8F4) -> RW 0x7BBB9D: TheCameraAnimationList's animation of that name (RW 0x7320BA) to TheTacticalView's
+			// slot 0x68 (RW 0x4864F9); client state only (GameClient/CameraAnimation.h)
+			"MOVE_CAMERA_BY_ANIMATION",
+			// lane MODCOMPAT-AI: RW 0x7CAFA5 case 0x14E: GlobalData + 0x950 = the real parameter (movss), the camera's far clip multiplier that
+			// setCameraTransform reads (RW 0x48B7B1: far = + 0x950 * 1800); nothing else in the logic (client, not saved)
+			"SET_CAMERA_CLIP_DEPTH_MULTIPLIER",
 		};
 		std::set<int> out;
 		for (const char *n : names)
@@ -123,7 +131,7 @@ bool positionOf(ScriptEngine &engine, const std::string &name, Coord3D &out, boo
 }
 
 // Lane BACKLOG3 (S-2452): the scripts' radar events. TARGET FACTS (RotWK game.dat, caveat S-001; BFME2 decomp ScriptActionsRva003BB76E.cpp /
-// ScriptActionsRva003BB79D.cpp / ScriptGlueRva003C00CE.cpp, tier A for these addresses):
+// ScriptActions_doObjectRadarCreateEvent.cpp / ScriptActions_doTeamRadarCreateEvent.cpp, tier A for these addresses):
 //   RADAR_CREATE_EVENT (RW 0x7BC221): TheRadar->createEvent(the Coord3D parameter, the type parameter, 4.0f (RW 0xBD88C0)), then TheEva's event position (RW 0x5DD1F3);
 //   OBJECT_CREATE_RADAR_EVENT (RW 0x7BC250): the same at the named unit's position (Object + 0x38); nothing without the unit;
 //   TEAM_CREATE_RADAR_EVENT (RW 0x7C0B61): the team by name (getTeamNamed), only when it has a unit (RW 0x7A07D8: a member that is not dead, not Object + 0x94
@@ -417,7 +425,9 @@ void ScriptActions::execute(ScriptEngine &engine, const ScriptActionRec &a)
 		}
 		return;
 	}
-	if (name == "BUILD_BASE_BUILDING" || name == "BUILD_BASE_BUILDING_IN_SLOT" ||
+	// RotWK's BUILD_BASE_BUILDING is the plot build of ScriptActionsUnits.cpp (RW 0x79A5EC, nothing withdrawn).
+	const Object *buildBase = name == "BUILD_BASE_BUILDING" ? engine.getUnitNamed(param(a, 1).stringValue) : nullptr;
+	if ((name == "BUILD_BASE_BUILDING" && buildBase && buildBase->getTemplate()->bfme1Data()) || name == "BUILD_BASE_BUILDING_IN_SLOT" ||
 		name == "BUILD_BASE_BUILDING_PER_TACTICAL_MARKER" || name == "BUILD_BUILDING_ON_FOUNDATION")
 	{
 		// DONOR BFME1 ScriptActionsBuildBase.cpp: current owner, affordability,
@@ -460,6 +470,12 @@ void ScriptActions::execute(ScriptEngine &engine, const ScriptActionRec &a)
 	if (name == "VICTORY" || name == "QUICKVICTORY")
 	{
 		engine.addEndRequest(true, name); // RW 0x7C45E0 / 0x7BE0A2 (the client's end screen)
+		// lane BFME2CAMP1: RW 0x7C45F8 / 0x7BE0C6: TheLinearCampaignManager RW 0x5EC0BA -> a current campaign's onCurrentMissionWon RW 0x5EBAEE (every
+		// call: a second VICTORY records the survivors again)
+		if (CampaignCarryover::State *carry = logic.campaignCarryover())
+		{
+			CampaignCarryover::onCurrentMissionWon(logic, logic.players(), *carry);
+		}
 		return;
 	}
 	if (name == "DEFEAT")
@@ -572,6 +588,18 @@ void ScriptActions::execute(ScriptEngine &engine, const ScriptActionRec &a)
 		if (o && tm)
 		{
 			o->setTeam(tm);
+		}
+		return;
+	}
+	if (name == "PLAYER_TRANSFER_OWNERSHIP_PLAYER")
+	{
+		// lane BFME2CAMP1: RW 0x7BC0C3 (from, to): each parameter's player by its exact mask (RW 0x758F7C -> RW 0x6A85B6); both: the second takes the
+		// first's assets, transferAssetsFromThat(this = to, that = from, inherited 0) (RW 0x6AF598, GameLogic/SelfDestruct.h)
+		Player *to = ScriptConditions::playerOfMask(engine, param(a, 1).stringValue);
+		Player *from = ScriptConditions::playerOfMask(engine, param(a, 0).stringValue);
+		if (to && from)
+		{
+			SelfDestruct::transferAssetsFromThat(logic, *to, *from, false);
 		}
 		return;
 	}

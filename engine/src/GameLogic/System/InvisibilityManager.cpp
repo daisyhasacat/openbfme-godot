@@ -704,7 +704,12 @@ bool InvisibilityManager::allowed(Object *obj, const InvisibilityNugget &n, cons
 	{
 		return false;
 	}
-	// RW 0x81BAC3: a STEALTH copy and the script's stealth switch (Object + 0x457 bit 8, RW 0x7BC7EC) -- not ported, never set (S-1040)
+	// RW 0x81BAB9 .. 0x81BACA: a STEALTH copy (+ 0x18 == 0) is refused while the script's stealth switch is off (Object + 0x457 bit 8,
+	// SCRIPT_UNSTEALTHED: NAMED_SET_STEALTH_ENABLED false, RW 0x7BC7EC; lane BFME2CAMP1)
+	if (n.invisibilityType == InvisibilityNugget::STEALTH && (obj->scriptStatus() & 8u) != 0)
+	{
+		return false;
+	}
 	if (n.invisibilityType == InvisibilityNugget::CAMOUFLAGE && camouflageDetected(*obj, n, found))
 	{
 		return false;

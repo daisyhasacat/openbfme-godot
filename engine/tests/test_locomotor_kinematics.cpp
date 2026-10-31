@@ -11,6 +11,7 @@
 #include "GameLogic/Locomotor.h"
 #include "GameLogic/WeaponState.h"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <set>

@@ -415,7 +415,11 @@ public:
 	void addOccupant(PathfindCellInfoPool &pool, PathfindOccupantKind kind, PathfindObjectID owner, const ICoord2D &pos);
 	// unlink the node of `owner` in the kind's list; the info is released when no list holds a node (RW 0x8E1CC4)
 	bool removeOccupant(PathfindCellInfoPool &pool, PathfindOccupantKind kind, PathfindObjectID owner);
-	const PathfindOccupant *occupants(PathfindOccupantKind kind) const { return m_info ? m_info->m_occupants[(int)kind] : nullptr; }
+	// lane UBER-PATH: m_occMask's bit clear proves the kind's list empty without reading the pooled record (the search's per-cell checks)
+	const PathfindOccupant *occupants(PathfindOccupantKind kind) const
+	{
+		return (m_occMask >> (unsigned)kind & 1u) && m_info ? m_info->m_occupants[(int)kind] : nullptr;
+	}
 	bool hasOccupants(PathfindOccupantKind kind) const { return occupants(kind) != nullptr; }
 	bool hasAnyOccupant() const;
 	bool isOccupiedBy(PathfindOccupantKind kind, PathfindObjectID owner) const;
@@ -474,6 +478,9 @@ private:
 	std::uint32_t m_bit21 : 1;
 	std::uint32_t m_bit22 : 1;
 	std::uint32_t m_bit23 : 1;
+	// lane UBER-PATH: bit k set while occupant list k may be non-empty: set by addOccupant (the only link), cleared when removeOccupant empties the
+	// list and by reset. A set bit over an empty list only costs the record read; a clear bit is always an empty list
+	std::uint32_t m_occMask : OCC_KIND_COUNT;
 };
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1099,7 +1106,13 @@ public:
 	// kUberBurstQueue requests wait (a mass order), the budget is kUberBudgetScale times retail's, so the burst is served in a few frames. A sustained
 	// battle's repaths keep 60-90 waiting (10,000 troops): they get retail's budget, which a larger one would only spend on the same steady trickle
 	// (+34 ms a frame at 4x). A Faithful game never turns the limits on
-	enum { kUberQueueLength = 16384, kUberBudgetScale = 4, kUberBurstQueue = 120, kUberBurstEnd = 40 };
+	enum { kUberQueueLength = 16384, kUberBudgetScale = 2, kUberBurstQueue = 120, kUberBurstEnd = 40 };
+	// lane PERF-HD (Uber only): a search the queue serves may count at most the budget the call has left, and at least this many cells (Helm's Deep: one
+	// search of 130,000 cells took 1.2 s of one logic frame; retail's budget is checked only between requests)
+	enum { kUberSearchFloor = 2000 };
+	// lane PERF-HD (Uber only): a second search of the request being served counts against the cap afresh (AIMover::computeAttackPath's fallback after
+	// findAttackPath), so the first search's cells do not end it at its first cell
+	void restartUberSearchCount() { m_uberSearchAllocs = 0; }
 	void setUberLimits(bool on);
 	bool uberLimits() const { return m_uberLimits; }
 	bool uberBurst() const { return m_uberBurst; } // lane PATHPERF-4: the request queue is draining a burst (the snapshot keeps it)
@@ -1219,7 +1232,7 @@ private:
 	PathfindLayerEnum raisedLayerFor(const PathfindWallSurface &s, PathfindObjectID owner);
 	void rebuildRaisedLayer(PathfindLayerEnum layer); // the cells (rebuildRaisedCells), then the units' slots on the layer registered again
 	void rebuildRaisedCells(PathfindLayerEnum layer);
-	void connectRampToRaised(int i, int j, PathfindCell *c, float rampHeight, int corners);
+	bool connectRampToRaised(int i, int j, PathfindCell *c, float rampHeight, int corners); // true when the cell joined a raised layer
 	void crcRaised(StateHasher &h) const;
 	PathfindLayerEnum wallLayerFor(float height);
 	void stampWallSurface(const PathfindWallSurface &s, PathfindLayerEnum layer);
@@ -1246,6 +1259,46 @@ private:
 	bool blockerCallback(const PathfindObject *obj, const PathfindCell *cell, int *count, bool countAllies, PathfindObjectID ignoreId, bool ignoreUnits,
 		const PathfindMovement *rectMovement, bool isHuman);
 	int occupantCost(const PathfindObject *obj, const PathfindCell *parent, int x, int y, int r, int n, bool skipEnemies);
+	// lane PERF-LOGIC: checkForMovement / occupantCost for the neighbour expansion and the shortcut walk of a search (the same answers). A footprint cell lies in
+	// up to nine neighbours' footprints, and while the search memo is on for `obj` nothing a cell's part of the answer reads changes (the cell's type and
+	// occupant lists, the memo's facts): each cell's part is worked out once per search and parameter set and kept in stamped dense arrays. The parts combine
+	// in the original cell order (AIPathfindUnits.cpp); the calls outside the memo take the original functions
+	bool checkForMovementCached(const PathfindObject *obj, PathfindCheckMovement &info, const ICoord2D *prev);
+	int occupantCostCached(const PathfindObject *obj, const PathfindCell *parent, int x, int y, int r, int n);
+	struct CellMoveFacts
+	{
+		std::uint32_t first = PATHFIND_INVALID_ID, last = PATHFIND_INVALID_ID; // the walk's first and last unit
+		std::uint16_t f = 0;
+	};
+	CellMoveFacts cellMoveFacts(const PathfindObject *obj, const PathfindCheckMovement &info, const PathfindCell *c);
+	void cellCostFacts(const PathfindObject *obj, const PathfindCell *c, int i, int j, std::uint16_t &fixed8, std::vector<float> &reach);
+	struct CellFactsSlot
+	{
+		std::vector<std::uint32_t> stamp;
+		std::vector<CellMoveFacts> facts;
+		std::uint32_t gen = 0;
+		unsigned memoGen = 0;
+		unsigned flags = 0;
+		bool transient = false;
+		bool bound = false;
+		PathfindObjectID ignoreId = PATHFIND_INVALID_ID;
+		PathfindLayerEnum layer = LAYER_GROUND;
+		PathfindMovement mv;
+	};
+	CellFactsSlot m_cellFacts[2];
+	struct CellCostRecord
+	{
+		std::uint32_t stamp = 0;
+		std::uint32_t start = 0;
+		std::uint16_t fixed8 = 0;
+		std::uint16_t count = 0;
+	};
+	std::vector<CellCostRecord> m_cellCost;
+	std::vector<float> m_cellCostReach;
+	std::vector<float> m_cellCostScratch;
+	std::uint32_t m_cellCostGen = 0;
+	unsigned m_cellCostMemoGen = 0;
+	bool m_cellCostBound = false;
 	// lane PATHPERF-1: what checkForMovement and occupantCost ask of an occupant `id` and of the searching unit `obj` (only side-effect-free getters, all
 	// asked at once). While internalFindPath runs for `obj` nothing they read can change, so the answers are kept per search (generation counted) and an
 	// occupant met in many cells is resolved once; elsewhere they are asked afresh. Null when the occupant's object is gone
@@ -1273,7 +1326,52 @@ private:
 	};
 	const OccupantFacts *occupantFacts(const PathfindObject *obj, PathfindObjectID id);
 	SearcherFacts searcherFacts(const PathfindObject *obj) const;
-	struct SearchMemoScope; // internalFindPath's activation of the memo
+	// lane PATHPERF-1: the search memo is on for `obj` while the scope lives (a fresh generation each time; an object id's facts are asked once). Every
+	// search kind opens one (internalFindPath, the attack, move-away, patch and safe searches): the facts are reads no search changes. A nested scope
+	// gives back the outer one's searcher with a fresh generation (the inner entries hold the inner searcher's relationships)
+	struct SearchMemoScope
+	{
+		Pathfinder &pf;
+		bool wasActive;
+		const PathfindObject *outerObj;
+		SearcherFacts outerSelf;
+		ReachMemo outerReach;
+		SearchMemoScope(Pathfinder &p, const PathfindObject *obj)
+			: pf(p), wasActive(p.m_memoActive), outerObj(p.m_memoObj), outerSelf(p.m_memoSelf), outerReach(p.m_memoSelfReach)
+		{
+			begin(obj);
+			if (obj)
+			{
+				pf.m_memoSelf = pf.searcherFacts(obj);
+			}
+		}
+		~SearchMemoScope()
+		{
+			if (wasActive)
+			{
+				begin(outerObj);
+				pf.m_memoSelf = outerSelf;
+				pf.m_memoSelfReach = outerReach;
+				return;
+			}
+			pf.m_memoActive = false;
+			pf.m_memoObj = nullptr;
+		}
+		void begin(const PathfindObject *obj)
+		{
+			pf.m_memoActive = obj != nullptr;
+			pf.m_memoObj = obj;
+			if (++pf.m_memoGen == 0)
+			{
+				for (OccupantFacts &f : pf.m_memo)
+				{
+					f.gen = 0;
+				}
+				pf.m_memoGen = 1;
+			}
+			pf.m_memoSelfReach = ReachMemo();
+		}
+	};
 	// lane MOVE-3: RW 0x6ED46C, the footprint cost of a patch step (-1: blocked); `parent` null counts every footprint cell
 	int patchCellCost(const PathfindObject &obj, const ICoord2D *parent, const ICoord2D &cell, PathfindLayerEnum layer, int r, int n, bool skipHordePositions);
 	// RW 0x6ECFC5: the footprint of RW 0x6ED071 is centred on a cell (its size is odd)
@@ -1323,6 +1421,8 @@ private:
 	bool m_memoActive = false;
 	bool m_searchShortcuts = true;
 	bool m_uberLimits = false; // lane PATHPERF-4
+	int m_uberSearchCap = 0x7fffffff; // lane PERF-HD: the cap of the search being served (kUberSearchFloor .. the budget left); no cap outside the queue
+	int m_uberSearchAllocs = 0;       // lane PERF-HD: the cells the search being served closed (markClosed) or walked (examineShortcutCell), against the cap
 	bool m_uberBurst = false;  // lane PATHPERF-4: the queue is draining a burst (hashed in an Uber game)
 	// lane PATHPERF-2: the line memo (LineMemoScope): an open-addressed table of (cell index * 10 + entry code + 1) -> blocked, entries valid in generation
 	// m_lineMemoGen; the parameters are bound by the scope's first isLinePassable call

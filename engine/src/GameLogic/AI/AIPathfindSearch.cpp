@@ -152,6 +152,7 @@ bool clipLine2D(const ICoord2D *p1, const ICoord2D *p2, ICoord2D *c1, ICoord2D *
 // ---------------------------------------------------------------------------------------------------------
 void Pathfinder::markClosed(PathfindCell *cell)
 {
+	++m_uberSearchAllocs; // lane PERF-HD: every cell a search closes counts against the Uber queue's cap (cleanOpenAndClosedLists counts the same cells)
 	m_closedList = cell->putOnClosedList(m_closedList);
 }
 
@@ -621,7 +622,7 @@ struct ShortcutState
 bool Pathfinder::examineShortcutCell(PathfindCell *from, PathfindCell *to, int x, int y, ShortcutState &d)
 {
 	// RW 0x6F6D57: returns true to abort the walk
-	if (*d.counter > m_config.examineTowardsGoalLimit)
+	if (*d.counter > m_config.examineTowardsGoalLimit || m_uberSearchAllocs > m_uberSearchCap) // lane PERF-HD: the Uber queue's cap ends the walk too
 	{
 		return true;
 	}
@@ -687,7 +688,7 @@ bool Pathfinder::examineShortcutCell(PathfindCell *from, PathfindCell *to, int x
 		info.flags = d.mode;
 		info.ignoreId = d.ignoreId;
 		info.mv = d.mv;
-		if (!checkForMovement(d.obj, info, d.haveLast ? &d.last : nullptr))
+		if (!checkForMovementCached(d.obj, info, d.haveLast ? &d.last : nullptr))
 		{
 			return true;
 		}
@@ -699,8 +700,8 @@ bool Pathfinder::examineShortcutCell(PathfindCell *from, PathfindCell *to, int x
 		pos.x = x;
 		pos.y = y;
 		unsigned c = (unsigned)SimMath::truncToInt32(SimMath::addf32((float)from->getCostSoFar(), (to->getExtraPass() ? 2.5f : 5.0f)));
-		c += (unsigned)occupantCost(d.obj, from, x, y, d.radius, d.radius + (d.center ? 1 : 0), true);
-		if (!to->allocateInfo(m_pool, pos))
+		c += (unsigned)occupantCostCached(d.obj, from, x, y, d.radius, d.radius + (d.center ? 1 : 0));
+		if (++m_uberSearchAllocs, !to->allocateInfo(m_pool, pos))
 		{
 			return true;
 		}
@@ -918,7 +919,7 @@ int Pathfinder::examineNeighboringCells(PathfindCell *parentCell, PathfindCell *
 		info.flags = mode;
 		info.ignoreId = ignoreId;
 		info.mv = mv;
-		const bool ok = checkForMovement(obj, info, &parentNdx);
+		const bool ok = checkForMovementCached(obj, info, &parentNdx);
 		if (ok)
 		{
 			if (mvOK)
@@ -1010,7 +1011,7 @@ int Pathfinder::examineNeighboringCells(PathfindCell *parentCell, PathfindCell *
 			X >>= 1;
 		}
 		X += n->costSoFar(parentCell);
-		X += (unsigned)occupantCost(obj, parentCell, nc.x, nc.y, radius, radius + (centerInCell ? 1 : 0), true);
+		X += (unsigned)occupantCostCached(obj, parentCell, nc.x, nc.y, radius, radius + (centerInCell ? 1 : 0));
 		n->setCostSoFar(X);
 		n->setParentCell(parentCell);
 		if (m_isTunneling)
@@ -1083,6 +1084,13 @@ Path *Pathfinder::findPath(PathfindObject *obj, const PathfindLocomotorInfo &loc
 	{
 		*p = true;
 	}
+	if (hierarchical)
+	{
+		// lane PERF-HD (Uber only): the cell search gets the queue's cap of its own; the block search may have spent it (an unreachable goal zone scans
+		// the whole block map), and a spent cap ends the cell search at its first cell, before it chose a closest cell: no path instead of the partial
+		// path to the closest block. The horde retry below keeps what is left after the cell search
+		m_uberSearchAllocs = 0;
+	}
 	Path *result = internalFindPath(obj, loco, from, &adjustedTo, hierarchical, p);
 	// OpenBFME pathfinding correction (inference, Uber profile only: RW 0x6FE7CB returns internalFindPath's result with no second search, so a Faithful
 	// game keeps it): a castle's coarse corridor can exhaust the cell search at the rear wall even though its gate connects the destination. Retry an
@@ -1105,35 +1113,6 @@ Path *Pathfinder::findPath(PathfindObject *obj, const PathfindLocomotorInfo &loc
 	}
 	return result;
 }
-
-// lane PATHPERF-1: the search memo is on for `obj` while the scope lives (a fresh generation each time; an object id's facts are asked once)
-struct Pathfinder::SearchMemoScope
-{
-	Pathfinder &pf;
-	SearchMemoScope(Pathfinder &p, const PathfindObject *obj) : pf(p)
-	{
-		pf.m_memoActive = obj != nullptr;
-		pf.m_memoObj = obj;
-		if (++pf.m_memoGen == 0)
-		{
-			for (OccupantFacts &f : pf.m_memo)
-			{
-				f.gen = 0;
-			}
-			pf.m_memoGen = 1;
-		}
-		if (obj)
-		{
-			pf.m_memoSelf = pf.searcherFacts(obj);
-		}
-		pf.m_memoSelfReach = ReachMemo();
-	}
-	~SearchMemoScope()
-	{
-		pf.m_memoActive = false;
-		pf.m_memoObj = nullptr;
-	}
-};
 
 Path *Pathfinder::findPathWithoutCorridor(PathfindObject *obj, const PathfindLocomotorInfo &loco, const Coord3D *from, const Coord3D *to, bool *partial)
 {
@@ -1307,7 +1286,9 @@ Path *Pathfinder::internalFindPath(PathfindObject *obj, const PathfindLocomotorI
 			return path;
 		}
 		markClosed(c);
-		if (cellCount > m_config.findPathLimit)
+		// lane PERF-HD (Uber only): the queue's cap counts every cell the search allocated; retail's limit counts only the cells that passed the
+		// movement checks, so a search in a press (most neighbours occupied, closed at once) allocated 200,000 cells against a limit of 15,000
+		if (cellCount > m_config.findPathLimit || m_uberSearchAllocs > m_uberSearchCap)
 		{
 			break;
 		}

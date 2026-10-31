@@ -93,5 +93,11 @@ struct Arena
 		PathfindCell *c = ai->pathfinder().getCell(LAYER_GROUND, (int)(x / 10.0f), (int)(y / 10.0f));
 		return c && c->getType() == PathfindCell::CELL_OBSTACLE;
 	}
+	// the object whose footprint holds the pathfinder cell at world (x, y) (0: none)
+	ObjectID obstacleIdAt(float x, float y)
+	{
+		PathfindCell *c = ai->pathfinder().getCell(LAYER_GROUND, (int)(x / 10.0f), (int)(y / 10.0f));
+		return c ? (ObjectID)c->getObstacleID() : (ObjectID)0;
+	}
 };
 } // namespace structtest

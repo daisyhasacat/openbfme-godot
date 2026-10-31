@@ -62,6 +62,8 @@
 ##                           rank-3 self heal and refill, hero heal), rally (the rally banner of a right click), formation (a mixed group's formation)
 ##     --banner1=<a,...>     (lane BANNER-1, with --auto) scripts/banner1_player.gd: refill (a rank-2 Gondor horde fights orcs, then its banner carrier
 ##                           refills it), losses (the same with five soldiers struck down instead of the fight)
+##     --weatherfx1=<a,b,...> (lane WEATHERFX-1, with --auto) scripts/weatherfx1_player.gd: the weather of the game (snow / rain / darkness), --weatherfx-look=
+##                           original|enhanced; --weatherfx-effects=a,b,... only those Enhanced weather effects (scripts/weather_fx.gd)
 ##     --spell3=<a,b,...>    (lane SPELL-3, with --auto) scripts/spell3_player.gd: spellbook (buy every power in the store, cast every slot by input);
 ##                           "SPELL3 <name>: ok / FAIL", spell3-<faction>-*.png in --screens
 ##     --play1=<a,b,...>     (lane PLAY-1, with --auto) the input-driven scenarios of scripts/play1_player.gd (orders, palantir, powers, camera, explore, dragbox, ghosts, phantom,
@@ -360,6 +362,7 @@ var _env: WorldEnvironment
 var _sun: DirectionalLight3D
 var _quit_q_time := -1
 const DOUBLE_Q_MS := 450
+var _shadow_lighting: Dictionary = {}
 var _state := State.BOOT
 var _frames := 0
 var _menu_revealed := false
@@ -382,6 +385,8 @@ var _mouse_override := ""
 var _move_hints: Node3D
 var _pings: Node3D      # the ping wheel (not retail): scripts/ping_board.gd, the pings shown
 var _cheats: Node       # lane CHEAT-1: the open Cheat Mode (scripts/cheat_panel.gd): the lines, the marker and the host's panel
+var _weather_fx: Node3D # lane WEATHERFX-1: scripts/weather_fx.gd, the Enhanced look's weather of the game being played
+var _weather_fx_effects := PackedStringArray() # lane WEATHERFX-1: --weatherfx-effects=a,b,... (only these; default all)
 var _cheat_script := ""  # lane CHEAT-1: --cheat-script=FRAME:STEP;... (scripts/cheat_panel.gd)
 var _cheat_lobby := false # lane CHEAT-1: --cheat-lobby (the --auto lobby ticks the Rules tab's Cheat Mode box)
 var _cheat_game := false  # lane CHEAT-1: the game being played / just ended had Cheat Mode (the score screen says so)
@@ -678,6 +683,8 @@ func _exit_tree() -> void:
 		_touch_ui_scroll.queue_free()
 	if is_instance_valid(_second_view):
 		_second_view.close_view()
+	if _sun != null:
+		load("res://scripts/object_shadows.gd").disable()
 	if not _scripted_skirmish_ini.is_empty():
 		# lane MENU-1: the scripted run's own Skirmish.ini; lane OWNERFIX-3: its folder and the profiles' stats files in it
 		var dir := _scripted_skirmish_ini.get_base_dir()
@@ -777,6 +784,8 @@ func _ready() -> void:
 			_cah_real_profile = true
 		elif arg.begins_with("--seed="):
 			_seed = int(arg.substr(7))
+		elif arg.begins_with("--weatherfx-effects="):
+			_weather_fx_effects = arg.substr(20).split(",", false) # lane WEATHERFX-1
 		elif arg.begins_with("--cheat-script="):
 			_cheat_script = arg.substr(15) # lane CHEAT-1
 		elif arg == "--cheat-lobby":
@@ -879,6 +888,9 @@ func _ready() -> void:
 			_play_script = "res://scripts/aidata1_player.gd"
 		elif arg.begins_with("--gamemodes="):
 			_gamemodes = arg.substr(12)
+		elif arg.begins_with("--weatherfx1="):
+			_play1 = arg.substr(13).split(",", false)
+			_play_script = "res://scripts/weatherfx1_player.gd" # lane WEATHERFX-1: the weather of a real skirmish (power points by a logged test hook)
 		elif arg.begins_with("--spell3="):
 			_play1 = arg.substr(9).split(",", false)
 			_play_script = "res://scripts/spell3_player.gd"
@@ -1213,7 +1225,9 @@ func _ready() -> void:
 		get_tree().quit(2)
 		return
 	if _res != Vector2i(0, 0):
-		get_window().size = _res
+		var previous = _display.copy()
+		_display.resolution = _res
+		_display.apply(get_window(), previous)
 	RenderingServer.set_default_clear_color(Color(0, 0, 0))
 	_build_stage()
 	await get_tree().process_frame
@@ -1769,6 +1783,12 @@ func _process(delta: float) -> void:
 	_campaign_check_tick() # lane CAMP-1
 	if _state == State.PLAYING and _world != null:
 		_sdk_tick() # lane SDK-2
+	if _objectives_tutorial_input >= 0 and _hud != null:
+		# lane BFME2CAMP1: the scripts may disable / enable input while the screen is open (the Palantir lesson); Return reads the flag when pressed
+		var on: int = 1 if _hud.input_enabled() else 0
+		if on != _objectives_tutorial_input:
+			_objectives_tutorial_input = on
+			_shell.set_objectives_tutorial_input(on == 1)
 	if _stance_at >= 0 and _state == State.PLAYING and _world != null and _world.get_presented_frame() >= _stance_at:
 		_stance_at = -1
 		_stance_proof()
@@ -1782,6 +1802,8 @@ func _process(delta: float) -> void:
 			_online_reports.set_context(_shell.online_status())
 		_online_reports.set_available((_state == State.SCORE and _last_game_online) or (_state == State.MENU and _shell.shell_stack().has("OnlineShell.apt")))
 	if _state == State.MENU:
+		if _menu_style == "bfme2" and _frames % 5 == 0 and _shell.shell_stack().size() > 0 and _shell.shell_stack()[-1] == "MainMenu.apt":
+			_hide_bfme2_campaign_buttons() # lane DEVPORT-8: only while BFME2_CAMPAIGNS is off (lane BFME2CAMP1 turned it on)
 		if _pending_menu_style != _menu_style and not _switching_menu_style and _clean_main_menu():
 			_switching_menu_style = true
 			call_deferred("_apply_pending_menu_style")
@@ -1975,10 +1997,12 @@ func _on_shell_request(action: String, argument: String) -> void:
 		_campaign_flow.start("ANGMAR_CAMPAIGN", _campaign_flow.difficulty_from_command(argument))
 	elif action == "BonusCampaign": # RW 0x91BEFA
 		_campaign_flow.start("ANGMAR_BONUS_CAMPAIGN", _campaign_flow.difficulty_from_command(argument))
-	elif action == "LoadCampaign" and argument.begins_with("bfme2:good:"):
+	elif action == "LoadCampaign" and argument.begins_with("bfme2:good:"): # lane BFME2CAMP1: RW 0x91AF46 -> RW 0x91BE05 (GOOD_CAMPAIGN)
 		start_bfme2_campaign("good", argument.trim_prefix("bfme2:good:"))
-	elif action == "LoadCampaign" and argument.begins_with("bfme2:evil:"):
+	elif action == "LoadCampaign" and argument.begins_with("bfme2:evil:"): # RW 0x91AF69 -> RW 0x91BDA6 (EVIL_CAMPAIGN)
 		start_bfme2_campaign("evil", argument.trim_prefix("bfme2:evil:"))
+	elif action == "Tutorial" and argument in ["Basic", "Advanced"]: # lane BFME2CAMP1: AptMainMenu::OnTutorial RW 0x91B825 (mode 6)
+		_campaign_flow.start_tutorial(argument)
 	elif action == "ContinueCampaign":
 		_campaign_flow.continue_saved() # lane CAMPSAVE-1: RW 0x91B50D, nothing without 00000000.sav (RotWK's MainMenu.apt has no button for it)
 
@@ -2175,9 +2199,16 @@ func _apply_pending_menu_style() -> void:
 	print("GAME main menu style: ", _menu_style)
 
 
-## Campaign entries belong to each presentation movie's Solo Play dropdown.
-## Keep BFME2's Good/Evil entries visible even while their gameplay entry point
-## reports unsupported; RotWK retains its authored Angmar/bonus entries.
+## lane DEVPORT-8: THE switch of the BFME2 Good / Evil campaigns. Lane BFME2CAMP1 turned it on with their entry point (start_bfme2_campaign): BFME2's own
+## MainMenu.apt GoodCampaign / EvilCampaign buttons show in the BFME2 menu style and start GOOD_CAMPAIGN / EVIL_CAMPAIGN (BFME2's legend's
+## LinearCampaign.ini, loaded after RotWK's campaigns: Common/SubsystemLegend.h LoadBfme2CampaignsFromLegend, an OpenBFME addition). Off, the buttons
+## are hidden (below) and a request is refused by name. Lane CAMPMENU-1 moved it here from the OpenBFME campaign panel (scripts/menu_campaigns.gd,
+## removed: the campaigns start from retail's own Solo Play buttons)
+const BFME2_CAMPAIGNS := true
+
+## lane DEVPORT-8: BFME2's own MainMenu.apt has GoodCampaign / EvilCampaign buttons (its Solo Play list: Skirmish, WarOfTheRing, EvilCampaign,
+## GoodCampaign, LoadGame). While BFME2_CAMPAIGNS is off they are hidden (their clip's _visible); { found: [clip paths], visible: [the
+## clips still visible], hittable: [their buttons the pointer would take] }
 const BFME2_CAMPAIGN_CLIPS := ["GoodCampaign", "EvilCampaign"]
 func bfme2_campaign_buttons() -> Dictionary:
 	var out := {"found": [], "visible": [], "hittable": []}
@@ -2207,15 +2238,44 @@ func bfme2_campaign_buttons() -> Dictionary:
 	return out
 
 
-## BFME2's menu sends LoadCampaign with an alignment and difficulty suffix.
-## Use the existing data-driven linear campaign loader for both alignments.
-func start_bfme2_campaign(alignment: String, difficulty_argument := "") -> String:
+func _hide_bfme2_campaign_buttons() -> void:
+	if BFME2_CAMPAIGNS:
+		return
+	var top: int = _shell.shell_top_level()
+	var buttons := bfme2_campaign_buttons()
+	for clip in buttons.visible:
+		if not _shell.set_clip_property(top, clip, "_visible", 0.0):
+			print("GAME stop: the BFME2 campaign button ", clip, " could not be hidden")
+	# the list without its two rows: Load Game moves up into the first hidden row (EvilCampaign's), so the list has no hole
+	# (Skirmish, War of the Ring, Load Game; the nav's frame keeps its five-row size)
+	if "SoloPlayNav.EvilCampaign" in buttons.found:
+		var evil_y: Dictionary = _shell.get_member(top, "SoloPlayNav.EvilCampaign", "_y")
+		var load_y: Dictionary = _shell.get_member(top, "SoloPlayNav.LoadGame", "_y")
+		if evil_y.get("found", false) and load_y.get("found", false) and str(load_y.value) != str(evil_y.value):
+			_shell.set_clip_property(top, "SoloPlayNav.LoadGame", "_y", float(evil_y.value))
+
+
+## lane BFME2CAMP1: BFME2 MainMenu.apt's GoodCampaign / EvilCampaign (AptMainMenu.cpp: the request "bfme2:good:<difficulty>"). TARGET FACTS (RotWK
+## game.dat, which keeps BFME2's starters without registering their handlers): AptMainMenu::GoodCampaign RW 0x91AF46 / EvilCampaign RW 0x91AF69 store the
+## command's first character (+ 0x2A8) and the menu states 9 -> 0xB / 0xC; the menu update (RW 0x91C349, table RW 0x91C70B: 0xB -> RW 0x91C3A3, 0xC
+## -> RW 0x91C3B4) calls RW 0x91C1C8 / 0x91C215, which run RW 0x91C108 (the difficulty 'E' / 'H' / else normal, the transition) with the starter
+## RW 0x91BE05 ("GOOD_CAMPAIGN", RW 0xC7CEB4) / RW 0x91BDA6 ("EVIL_CAMPAIGN", RW 0xC7CEA4) -> RW 0x91B1D2, the campaign start ANGMAR_CAMPAIGN's starter
+## RW 0x91BE64 uses too. The menu skips its music stop for 0xB / 0xC as for 0xD / 0xE (RW 0x91B432 .. 0x91B444). So the start is the Angmar
+## campaign's (campaign_flow.start) with the other name. Donor: BFME2 1.06 registers the two buttons (decomp AptMainMenuCallbacks.cpp 0x00514AE0 /
+## 0x00514B03, AptMainMenu.cpp). Off (BFME2_CAMPAIGNS), or without the campaign in TheLinearCampaignManager (a mod's legend), the request is
+## refused by name with the main menu's "not available" box (AptMainMenu::screenUnavailable: GuiFX.apt's message box) and that line is returned;
+## else "" once the campaign has started
+func start_bfme2_campaign(alignment: String, argument: String = "") -> String:
 	if alignment not in ["good", "evil"]:
-		var error := "unknown BFME2 campaign alignment: " + alignment
-		_fail(error)
-		return error
-	_campaign_flow.start(alignment.to_upper() + "_CAMPAIGN", _campaign_flow.difficulty_from_command(difficulty_argument))
-	return ""
+		_fail("unknown BFME2 campaign alignment: " + alignment)
+		return ""
+	var campaign_name := "%s_CAMPAIGN" % alignment.to_upper()
+	if BFME2_CAMPAIGNS and not _campaign_flow.missions_of(campaign_name).is_empty():
+		_campaign_flow.start(campaign_name, _campaign_flow.difficulty_from_command(argument))
+		return ""
+	var line: String = _shell.shell_screen_unavailable("BFME2%sCampaign" % alignment.capitalize())
+	print("GAME stop: ", line)
+	return line
 
 
 ## lane CAMPMENU-1: the player's way into a campaign, with real clicks: the main menu's Solo Play nav, retail's SoloPlayNav.<button> (RotWK MainMenu.apt's
@@ -2467,7 +2527,7 @@ func _begin_game(message: Dictionary) -> void:
 	var world_was_visible: bool = _world.visible
 	_world.hide() # keep partially constructed terrain behind the loading screen
 	_on_load_progress(0) # present the initial bar before synchronous loading
-	var opts := {"progress": Callable(self, "_on_load_progress"), "test_hooks": _end or not _zoom1.is_empty() or _rules_shot > 0 or not _gamemodes.is_empty() or _uber1 > 0 or _play_script.ends_with("spell3_player.gd") or _play_script.ends_with("ownerfix1_player.gd") or _play_script.ends_with("devport7_player.gd") or _play_script.ends_with("banner1_player.gd") or _play_script.ends_with("ownerfix2_player.gd") or not _trees1.is_empty() or _play_script.ends_with("aidata1_player.gd")} # lane ZOOM-1: the bars scenario hurts some units (logged)
+	var opts := {"progress": Callable(self, "_on_load_progress"), "test_hooks": _end or not _zoom1.is_empty() or _rules_shot > 0 or not _gamemodes.is_empty() or _uber1 > 0 or _play_script.ends_with("spell3_player.gd") or _play_script.ends_with("weatherfx1_player.gd") or _play_script.ends_with("ownerfix1_player.gd") or _play_script.ends_with("devport7_player.gd") or _play_script.ends_with("banner1_player.gd") or _play_script.ends_with("ownerfix2_player.gd") or not _trees1.is_empty() or _play_script.ends_with("aidata1_player.gd")} # lane ZOOM-1: the bars scenario hurts some units (logged)
 	if _record and _net_state.is_empty() and not is_instance_valid(_load_metrics):
 		opts["record"] = _last_replay_path() # lane MP-2: every skirmish is recorded
 	if _pingwheel.has("hash"):
@@ -2716,6 +2776,7 @@ func _on_load_progress(percent: int) -> void:
 
 func _enter_game(rep: Dictionary) -> void:
 	_load_mark("enter_game_started")
+	Release.set_crash_context(_crash_context(), _crash_settings()) # lane CRASHACT-1: what a crash report says about the game
 	_shell_leave_for_game() # Remove the loading ring before exposing gameplay.
 	_world.set_auto_advance(false)
 	_hide_rules_summary() # lane RULES-1
@@ -2731,6 +2792,7 @@ func _enter_game(rep: Dictionary) -> void:
 	_control_bar_hidden = false # lane CAMP-2: a new HUD movie is shown
 	_apply_lighting(rep)
 	_camera.current = true
+	_install_weather_fx() # lane WEATHERFX-1
 	# AUDIO-2 (review r1 fix 2): the live game's audio side before the game advances: sound owners, the player filter, ambient / group / move sounds, TheEva's
 	# side and the in-game music scripts (which replace the load screen music)
 	_audio.stop_music(true)
@@ -2789,6 +2851,23 @@ func _enter_game(rep: Dictionary) -> void:
 		_caster.go_live_requested.connect(_caster_go_live, CONNECT_DEFERRED)
 		_game_nodes.append(_caster)
 	if is_instance_valid(_ios_quick_resume): _ios_quick_resume.entered_game()
+
+
+## lane CRASHACT-1: the game on screen for a crash report (the crash service's context: map, mode, factions)
+func _crash_context() -> Dictionary:
+	var mode := "unknown"
+	if _campaign_flow != null and _campaign_flow.active:
+		mode = "campaign"
+	else:
+		mode = {"lan": "multiplayer", "network": "multiplayer", "skirmish": "skirmish", "restart": "skirmish", "replay": "replay"}.get(_game_kind, "unknown")
+	var faction := _faction.trim_prefix("Faction") if mode != "replay" else ""
+	return {"map": _map_key if not _map_key.is_empty() else "unknown", "mode": mode, "factions": [faction] if not faction.is_empty() else []}
+
+
+## lane CRASHACT-1: the report's graphics settings (the window's size and vsync; the rest is "unknown")
+func _crash_settings() -> Dictionary:
+	var size := DisplayServer.window_get_size()
+	return {"resolution_width": size.x, "resolution_height": size.y, "vsync": DisplayServer.window_get_vsync_mode() != DisplayServer.VSYNC_DISABLED}
 
 
 var _caster_seeking := false
@@ -3181,25 +3260,56 @@ func _zoom_out_setting() -> float:
 	return v.to_float()
 
 
+## lane WEATHERFX-2: the game's Enhanced weather goes with the game (the score screen, Restart, a load, a failed online game): freed at once, its
+## _exit_tree turns the weather's shader globals, the snow grade of the tone mapping and the sun's flash off before the next frame is drawn
+func _remove_weather_fx() -> void:
+	if _weather_fx != null and is_instance_valid(_weather_fx):
+		if _weather_fx.get_parent() != null:
+			_weather_fx.get_parent().remove_child(_weather_fx)
+		_weather_fx.free()
+	_weather_fx = null
+
+
+## lane WEATHERFX-1: a new game's Enhanced weather (it draws only under Options "Look: Enhanced", scripts/weather_fx.gd)
+func _install_weather_fx() -> void:
+	_remove_weather_fx()
+	_weather_fx = load("res://scripts/weather_fx.gd").new()
+	_weather_fx.setup(_world, _camera, _audio, _weather_fx_effects, _env.environment if _env != null else null, _sun)
+	if _game_options != null and _game_options.has_method("weather_fx_detail"):
+		_weather_fx.detail = _game_options.weather_fx_detail()
+	add_child(_weather_fx)
+
+
 func _apply_lighting(rep: Dictionary) -> void:
 	if not rep.has("lighting"):
+		if _sun != null:
+			_sun.visible = false
+			load("res://scripts/object_shadows.gd").disable()
 		return
 	var lit: Dictionary = rep.lighting
 	_env.environment.ambient_light_color = lit.ambient
 	_env.environment.ambient_light_energy = 1.0
 	if _sun != null:
+		_sun.visible = false
 		_sun.queue_free()
 	_sun = DirectionalLight3D.new()
 	_sun.name = "ObjectSun"
 	_sun.light_color = lit.diffuse
-	var shadow_lod := int(_shell.get_detail_state().get("shadow_lod", 3)) if _shell != null else 3
-	var profile: String = _game_options.current().OpenBFMEShadowProfile if _game_options != null else "auto"
-	preload("res://scripts/shadow_profile.gd").apply(_sun, profile, shadow_lod)
-	RenderingServer.global_shader_parameter_set("w3d_shadow_strength", 0.65 if _sun.shadow_enabled else 0.0)
+	_shadow_lighting = lit
+	# the detail level's ShadowLOD; without a level (GameOptions.apply_detail reports why) no shadow map is drawn
+	var detail: Dictionary = _shell.get_detail_state() if _shell != null else {}
+	set_shadow_lod(int(detail.shadow_lod) if detail.get("ok", false) else 0)
 	var dir: Vector3 = lit.direction
 	if dir.length() > 0.0001:
 		_sun.transform = Transform3D(Basis.looking_at(dir.normalized(), Vector3.UP if absf(dir.normalized().y) < 0.99 else Vector3.RIGHT), Vector3.ZERO)
 	add_child(_sun)
+
+
+func set_shadow_lod(lod: int) -> void:
+	if _sun != null:
+		load("res://scripts/object_shadows.gd").configure(_sun, _shadow_lighting, lod)
+		if _game_options != null:
+			preload("res://scripts/shadow_profile.gd").apply_cascades(_sun, _game_options.current().OpenBFMEShadowProfile)
 
 
 # ---- the scripted run (--auto) --------------------------------------------------------------------------------------------------------------
@@ -3212,12 +3322,12 @@ func _mouse_event(stage_position: Vector2, pressed: bool, with_button: bool) -> 
 		button.pressed = pressed
 		button.position = window_position
 		button.global_position = window_position
-		get_viewport().push_input(button)
+		get_viewport().push_input(button, true)
 	else:
 		var motion := InputEventMouseMotion.new()
 		motion.position = window_position
 		motion.global_position = window_position
-		get_viewport().push_input(motion)
+		get_viewport().push_input(motion, true)
 
 
 func _step(frames: int) -> void:
@@ -4306,6 +4416,7 @@ func _palantir_objectives() -> void:
 
 
 var _objectives_paused := false # lane CAMPUI-1: the objectives screen paused the game (RW 0x8E8843 -> RW 0x625AF1(1, 0, 1))
+var _objectives_tutorial_input := -1 # lane BFME2CAMP1: the tutorial input flag the open objectives screen was given (-1: not open)
 var _stance_at := -1 ## --stance-at=F (lane CAMPUI-1, proof captures; the start option test_hooks): at logic frame F the Witch King is selected, the Palantir's stance button clicked and its Battle item hovered
 var _objectives_at := -1 ## --objectives-at=F (lane CAMPUI-1, proof captures): the Palantir flag's objectives screen opens at logic frame F, closes 6 s later
 
@@ -4320,7 +4431,10 @@ func _open_objectives(mode: int = 0) -> void:
 	if not bool(obj.get("screen_enabled", true)):
 		print("GAME objectives screen: disabled by the map's script (DISABLE_OBJECTIVES_SCREEN)")
 		return
-	var screen: Dictionary = _shell.set_objectives_screen({"game_mode": 0 if mode == 0 else mode, "objectives": obj.get("objectives", [])})
+	# lane BFME2CAMP1: in the tutorial (mode 6) the Return button needs InGameUI + 0x16, the input flag the scripts' DISABLE_INPUT / ENABLE_INPUT set
+	# (RW 0x8E873E; AptObjectivesMenu::InputEnabled)
+	var tutorial_input: bool = _hud != null and _hud.input_enabled()
+	var screen: Dictionary = _shell.set_objectives_screen({"game_mode": 0 if mode == 0 else mode, "tutorial_input": tutorial_input, "objectives": obj.get("objectives", [])})
 	if not screen.get("ok", false):
 		printerr("GAME objectives screen: ", screen.get("error", "?"))
 		return
@@ -4337,6 +4451,7 @@ func _open_objectives(mode: int = 0) -> void:
 		_hud.set_objectives_screen_open(true)
 	_objectives_open = true
 	_world.set_objectives_open(true)
+	_objectives_tutorial_input = 1 if tutorial_input else 0
 	print("GAME objectives screen open (Objectives.apt, RW 0x8E8843): ", JSON.stringify(screen.get("rows", [])))
 
 
@@ -4347,6 +4462,7 @@ func _close_objectives() -> void:
 		return
 	_shell.shell_pop()
 	_close_objectives_unpause()
+	_objectives_tutorial_input = -1
 	if _hud != null:
 		_hud.set_objectives_screen_open(false)
 	_objectives_open = false
@@ -4778,6 +4894,7 @@ func _tear_down_game(why: String, clear_world: bool = true) -> void:
 		_hud.free()
 		_hud = null
 	_hud_installed = false
+	_remove_weather_fx() # lane WEATHERFX-2
 	_shell.set_tribute_world(null)
 	while _shell.shell_stack().size() > 0:
 		_shell.shell_pop()
@@ -4846,6 +4963,7 @@ func _exit_to_score_screen() -> void:
 		_hud.free()
 		_hud = null
 	_hud_installed = false
+	_remove_weather_fx() # lane WEATHERFX-2: no weather over the score screen and the menus after it
 	_shell.set_tribute_world(null)
 	while _shell.shell_stack().size() > 0:
 		_shell.shell_pop()
@@ -6316,6 +6434,25 @@ func _online_spot(n: int) -> void:
 	await get_tree().process_frame
 
 
+## lane RULESOV1: the RULES tab of the staging room as drawn: every rule row (the movie's RuleComboBox / RuleCheckBox placeholders) lies above the
+## player list's first row (the owner's 2026-10-29 screenshot: the server browser's rule rows drawn over the player list with their old values).
+## Prints the rows and returns false when one is over the list
+func _online_rules_check(tag: String) -> bool:
+	var list_top := INF
+	var rows := []
+	for e in _shell.gadget_draw_list():
+		var root := str(e.get("root_name", ""))
+		var rect: Rect2 = e.get("root_rect", Rect2())
+		if root == "0/Player":
+			list_top = minf(list_top, rect.position.y)
+		elif root.begins_with("RuleComboBox") or root.begins_with("RuleCheckBox"):
+			if not rows.has(rect):
+				rows.append(rect)
+	var over := rows.filter(func(r: Rect2) -> bool: return r.end.y > list_top)
+	print("GAME RULES CHECK %s: %d rule rows drawn, the player list from y %s, %d over it %s" % [tag, rows.size(), str(list_top), over.size(), str(over)])
+	return not rows.is_empty() and list_top != INF and over.is_empty()
+
+
 func _online_apply(spec: Dictionary) -> void:
 	var r: Dictionary = _shell.online_apply(spec)
 	print("GAME ONLINE WALK %s -> %s" % [JSON.stringify(spec), "ok" if r.ok else str(r.errors)])
@@ -6375,6 +6512,10 @@ func _online_walk_run() -> void:
 	await _wait_seconds(2.0)
 	if _online_walk == "host":
 		_online_shot("openplay-empty")
+		# lane RULESOV1: the server browser's own RULES tab first (its rule rows are the staging room's until the room files its own)
+		await _online_click("*TabButtons.RulesTab")
+		await _wait_seconds(2.0)
+		_online_shot("openplay-rules")
 		await _online_click("*Controls.CreateGame") # the page's Create Game (the movie opens its pop-up: AptOnline::OnOpenCreateDialog)
 		await _wait_seconds(10.0)
 		_online_apply({"game_name": "%s's test game" % str(_shell.online_status().get("name", "Host")), "game_password": _online_password})
@@ -6420,6 +6561,8 @@ func _online_walk_run() -> void:
 			await _online_click("*TabButtons.RulesTab")
 			await _wait_seconds(1.5)
 			_online_shot("staging-rules-host")
+			if not _online_rules_check("host"):
+				return _online_walk_end(false)
 			# lane ONLINEMENU-1: the CONNECTIONS screen (each player's link to the relay in RotWK's grid), then its own Done back to the room
 			await _online_click("*LowerButtons_Host.Connections")
 			await _wait_seconds(4.0)

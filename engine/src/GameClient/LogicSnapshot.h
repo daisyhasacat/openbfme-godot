@@ -159,6 +159,7 @@ struct LogicSnapshot
 	bool useBehindBuildingMarker = true;
 	float occludedColorLuminanceScale = 0.5f;
 	ObjectID nextObjectId = 1;      ///< the logic's next object id at that frame: an id below it that the snapshot lacks is gone, one at or above it is not published yet
+	int globalWeather = 0;          ///< lane WEATHER-1: TheGlobalWeatherSystem + 0x10 at that frame (0 NONE .. 4 SUNNY), read by the client weather
 	bool hashed = false;
 	std::uint32_t stateHash = 0;    ///< the state hash of the frame (when hashed)
 	std::vector<ObjectSnapshot> objects; ///< ascending id

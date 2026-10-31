@@ -948,7 +948,10 @@ TEST_CASE("save4c coverage (review r2): units attacking, moving, guarding, hunti
 	// sites move the AIs' game): seed 4133 has no frame of 1500 .. 3000 holding the actors on the merged tree, so the scene moves to seed 4136 (scene at 3000);
 	// seeds 4134 .. 4141 measured on the merged tree: 4136 / 4137 / 4138 / 4140 hold the actors (3000 / 1800 / 2700 / 1800); 4134, 4135, 4139 and 4141 fail
 	// later in the scene (the attacker's order refused, the garrison rider not entering, an actor's order no longer in flight in the saved game)
-	const NewGameMessage m = fourPlayerMessage(*s, 4136);
+	// merge queue q33 (measured on the merged tree: MODCOMPAT-MOD1 refuses the attacker's order at 4136's scene, and #133 leaves FactionMen no unit beside
+	// the actors): seed 4136 fails; seeds 4136 .. 4145 measured there: 4137 / 4138 / 4143 / 4144 hold the actors (scene 3000 each); 4136, 4139 .. 4142 and 4145
+	// fail (no unit beside the actors, no scene, the attacker's order refused, an actor's order no longer in flight), so the scene moves to seed 4137
+	const NewGameMessage m = fourPlayerMessage(*s, 4137);
 	// lane DEVPORT-7: the scene frame is found, not assumed. The test pinned 2700 / 3000, but which units of this 4-AI game live then is the AI's play,
 	// not a retail fact: with BloodthirstyUpdate ported (an update module on every Mordor / Isengard horde, woken at creation and every 2 s + 1 frame as
 	// retail's, RW 0x85123F / BFME2 0x44E0AA; it changes nothing in this game, but its update slots reorder the others', RW 0x62B921) the same seed has

@@ -22,11 +22,6 @@ const char *const kStopPortalNormal = kStopSpecialLayer;
 const char *const kStopPortalMineshaft = kStopSpecialLayer;
 const char *const kStopUpdate =
 	"S-166 the movement-complete block of AIUpdateInterface::update (RW 0x6695EF) skips the object goal refresh (0x68B411, 0x6EF225, 0x68B3BD), the status bit clears and the turret update; the state machine's sleep comes from the host";
-const char *const kStopExitQuickPath =
-	"S-166 computePath's straight path for a non-battalion unit following its exit-production path (RW 0x666036 .. 0x66607C: state 7 with AI + 0x3BA; the flag is dropped and the machine's "
-	"goal becomes the destination, RW 0x6654AD) is read but not applied: applied, production exits moved (test_aipow1: a frame 22 for 23; test_play4_heroes_retail: 2 shots, "
-	"150 lost and 2 members killed in an order that has none) and the goal overwrite alone sent an idle Battle-stance unit 826.975 from its guard spot (test_play4_stances_retail, "
-	"bound 365; without the overwrite it passes); INFERENCE, not verified: the port's exit state and guard keep the machine's goal for something RotWK does not";
 const char *const kStopExplicit =
 	"S-166 doLocomotor goal types 2 and 4 (RW 0x669A01-0x669B95): the validation of a straight move (RW 0x6F1B3E) is approximated by the PATH-1 line test or a passable "
 	"target cell, and the fallback path of a blocked straight move (RW 0x6F74D0) by a pathfinder search (the two bodies were not fully read)";
@@ -49,13 +44,13 @@ inline float hypot2(float x, float y)
 
 std::vector<std::string> AIMover::allStops()
 {
-	return { kStopSpecialLayer, kStopUpdate, kStopExitQuickPath, kStopExplicit, kStopDistance, kStopRequests, kStopGroup };
+	return { kStopSpecialLayer, kStopUpdate, kStopExplicit, kStopDistance, kStopRequests, kStopGroup };
 }
 
 void AIMover::note(const char *stop)
 {
 	// the movers note these on every frame of a move: a known stop is compared by its text only the first time (a bit per stop)
-	static const char *const kKnown[] = { kStopSpecialLayer, kStopUpdate, kStopExitQuickPath, kStopExplicit, kStopDistance, kStopRequests, kStopGroup };
+	static const char *const kKnown[] = { kStopSpecialLayer, kStopUpdate, kStopExplicit, kStopDistance, kStopRequests, kStopGroup };
 	for (unsigned i = 0; i < sizeof(kKnown) / sizeof(kKnown[0]); ++i)
 	{
 		if (kKnown[i] == stop)
@@ -465,6 +460,7 @@ bool AIMover::computeAttackPath()
 				m_pf.adjustDestination(obj, info, &adjusted, nullptr);
 				// lane PATHPERF-1: RW calls pathfinder slot +4 here (RW 0x666E51 -> FindClosestPath RW 0x6FB869, not ported: S-166), not findPath (slot 0, RW 0x6FE7CB):
 				// the stand-in is the search without findPath's hierarchical corridor and goal step-back
+				m_pf.restartUberSearchCount(); // lane PERF-HD (Uber only): its own cap, not what findAttackPath left
 				m_path = m_pf.findPathWithoutCorridor(&obj, info, &pos, &adjusted, nullptr);
 				if (m_path == nullptr)
 				{
@@ -651,21 +647,15 @@ bool AIMover::computePath(const Coord3D &destIn)
 		}
 	}
 	// lane BACKLOG5 (BFME2 decomp AIUpdateInterface_computePath.cpp as donor, tier B same-shape: the RotWK offsets are read from the RotWK disassembly).
-	// RW 0x666036 .. 0x66607C: straight exit path (state 7 with AI + 0x3BA).
-	// The unscoped standalone-unit / guard goal-overwrite behavior remains S-166.
+	// RW 0x666036..0x66607C, BFME2 AIUpdateInterface_computePath.cpp:
+	// first exit path is unconditional, with no ignored producer or line test.
 	if (m_host.stateId() == 7 && obj.canPathThroughUnits())
 	{
-		// BFME2 AIUpdateInterface_computePath.cpp / RW 0x666036: leave the
-		// building on a two-node continuous path, without grid-centre kinks.
-		// The OpenBFME producer exemption scopes standalone units to their first
-		// doorway segment; later rally routing and unscoped guard semantics stay unchanged.
-		AIMover *container = m_host.containerMover();
-		if (container && container->m_host.pathfindObject().isKindOf(PK_HORDE))
-			return computeQuickPath(dest);
-		if (m_ignoreObstacleId != PATHFIND_INVALID_ID &&
-			m_pf.isLinePassable(&obj, info.validSurfaces, obj.getLayer(), obj.getPosition(), dest, false, true))
-			return computeQuickPath(dest);
-		note(kStopExitQuickPath);
+		if (computeQuickPath(dest))
+		{
+			m_host.finishExitQuickPath(dest);
+			return true;
+		}
 	}
 	const Coord3D orig = dest;
 	{

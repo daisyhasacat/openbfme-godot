@@ -2,7 +2,7 @@
 // Derived from Command & Conquer Generals Zero Hour, (c) 2001-2003 Electronic Arts Inc., GPL-3.0.
 //
 // SaveLoad.apt (CodePrefix AptSaveLoad, lane MP-2; lane SAVE-2: the saved-game pages): the screen of saved games and replays. AptSaveLoad::OpenScreen
-// (RW 0x816655, BFME2 decomp Rva00434160Init.cpp, tier A) pushes SaveLoad.apt and sets + 0x294 the mode (2 load, 3 save), + 0x298 the game types, + 0x2A0
+// (RW 0x816655, BFME2 decomp AptSaveLoad_OpenScreen.cpp, tier A) pushes SaveLoad.apt and sets + 0x294 the mode (2 load, 3 save), + 0x298 the game types, + 0x2A0
 // the first type of the mask (1, 2 or 4) and + 0x29C the third argument (opened over a game). Callers: the main menu's LoadReplay (RW 0x91C36C: 2, 4, 0)
 // and, INFERENCE, its LoadGame (RW 0x91C360: 2, 0xB, 0, the pending-action switch RW 0x91C359), the quit menu's SaveMenu / LoadMenu (RW 0x92179F /
 // 0x9217F0: 3 / 2, the game's type, 1), the campaign menu (RW 0x927A93 / 0x927AA4: 3 / 2, 1, 0), the LAN lobby (RW 0x84929F: 2, 0x10, 0).

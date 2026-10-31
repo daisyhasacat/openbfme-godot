@@ -482,7 +482,7 @@ void Pathfinder::xferWalls(Xfer &x, WallState &w)
 		}
 		for (const WallState::Info &in : r.infos)
 		{
-			object(in.obstacle, "the obstacle of a raised cell");
+			AIXfer::issued(in.obstacle, "pathfinder: the obstacle of a raised cell"); // an orphaned footprint cell (AIPathfindSnapshot.cpp, the ground cells)
 			for (const std::vector<std::uint32_t> &chain : in.owners)
 			{
 				for (std::uint32_t owner : chain)

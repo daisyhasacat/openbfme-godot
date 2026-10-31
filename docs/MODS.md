@@ -210,3 +210,20 @@ navigation from Options’ Mods entry returns to the options tabs.
 
 Player saves, profiles and heroes use the separate [player sync service](SYNC.md),
 configured under **Options → Sync**.
+
+## What has to match to play together
+
+- **What has to match to play together (profile 3, lane PROFILE-3).** Lobbies, replays and saves compare what the simulation reads: every
+  file under `data\ini\`, `data\scripts\`, `bases\` (the AI's base layouts) and `libraries\` (the AI's script libraries), every
+  file in a map's folder except its pictures and strings (the map, `map.ini`, `scripts.lua` ...), and every model under `art\w3d\`, as
+  the game resolves them with the mod loaded. A test traces every file a retail game and a mod game read and fails on any file outside
+  that list. On top of that they compare the mod's sim scripts (`sdk sim`, below) and its engine
+  features. The mod's name, its folder and its other files (textures, sounds, music, videos, strings, the menus' and HUD's art: Apt
+  files) don't count. Command buttons and command sets are in `data\ini\` and do count.
+  - Two players with differently named copies of the same mod play together.
+  - A player with a mod that changes only textures, sounds, music, videos, strings or the menus' and HUD's art plays with a player without it.
+  - A mod that changes a model (`art\w3d\*.w3d`) has to match, even if it only changes how the model looks: the simulation reads models
+    (a projectile's launch bone, a wall's footprint). Such a player plays only with players who have the same model files. Asset packs
+    (below) are the way to change how a model looks without this.
+  When the game data differ, the refusal names both players' mods and the archives that differ. The mod's name and fingerprint still travel in the LAN
+  START, the replay and the checker's report.

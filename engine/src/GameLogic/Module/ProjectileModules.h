@@ -32,6 +32,7 @@
 #pragma once
 
 #include "Common/INI.h"
+#include "Common/GameEdition.h"
 #include "GameLogic/BitFlags.h"
 #include "GameLogic/Module/BehaviorModule.h"
 #include "GameLogic/Module/UpdateModule.h"
@@ -113,13 +114,16 @@ public:
 	std::string m_groundHitWeapon;            // +0xA4 (a weapon template name; "None" or unknown: none)
 	std::string m_groundBounceWeapon;         // +0xA8
 	int m_preLandingEmotion = -1;             // +0xAC
-	bool m_preLandingEmotionAffectsAllies = false; // BFME2 0x841B58 +0xB4; emotion dispatch remains S-363.
 	float m_preLandingEmotionRadius = 0.0f;   // +0xB0
 	unsigned m_postLandingStateTime = 0;      // +0xB4
 	int m_postLandingEmotion = -1;            // +0xB8
 	float m_postLandingEmotionRadius = 0.0f;  // +0xBC
+	// lane BFME2MODE-0: BFME2 1.06 only (RotWK 2.01 dropped the row): PreLandingEmotionAffectsAllies, BFME2 + 0xB4 (table 0xC41B58, row 0xC41D58, parseBool; the
+	// data ctor BFME2 0x85B4F1 (Rva 0x45B4F1) writes 1). Read by the pre-landing scare in the BFME2 edition only (preLandingRelationshipMask)
+	bool m_preLandingEmotionAffectsAllies = true;
 
 	static void buildFieldParse(MultiIniFieldParse &p);
+	int preLandingRelationshipMask(GameEdition edition) const;
 };
 
 class BezierProjectileBehavior : public UpdateModule, public ProjectileUpdateInterface

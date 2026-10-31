@@ -784,10 +784,12 @@ TEST_CASE("shroud stops: S-560 .. S-567 are the exact stop lines and reach GameL
 		"0x82C167, the action helper: human and not script, as ZH ActionManager isObjectShroudedForAction); its other callers and the other action types were not read",
 		"[S-566] stealth and detection: RotWK's invisibility (InvisibilityUpdate, StealthDetectorUpdate, the InvisibilityManager, the INVISIBLE_STEALTH / CAMOUFLAGE "
 		"conditions and the INVISIBLE_DETECTED statuses) is lane STEALTH-1's (S-1040 .. S-1042); the shroud does not change for a stealthed object",
-		"[S-567] shroud drawing: one texel per cell with bilinear filtering multiplies the terrain, the water, rivers and roads by ShroudColor * level / 255 "
-		"(ClearAlpha / FogAlpha / ShroudAlpha) inside W3DShroud's one-texel border at ShroudAlpha (RW 0x472480 / 0x472EF4 / 0x472792, lane ZOOM-1); objects the "
-		"local player cannot see are not drawn, fogged ones are lit by the fogged light (S-4970); the roads' shroud is inferred (ZH's road buffer has no shroud pass); the radar "
-		"picture is multiplied per pixel; W3DShroud's filter and 4444 texel and W3DRadar's own texture were not read",
+		"[S-567] shroud drawing: one texel per cell with bilinear filtering (terrain.fxo's ShroudSampler: linear, clamp) multiplies the terrain, the water, rivers and roads by the "
+		"4-bit red nibble of W3DShroud's A4R4G4B4 texel of the cell's level (ClearAlpha / FogAlpha / ShroudAlpha) times ShroudColor (RW 0x47266B: FogAlpha 127 reads 7/15, not 127 / 255; "
+		"lane TERRAIN-SAMPLING) inside W3DShroud's one-texel border at ShroudAlpha (RW 0x472480 / 0x472EF4 / 0x472792, lane ZOOM-1); objects the "
+		"local player cannot see are not drawn, fogged ones are lit by the fogged light (S-4970); the water, rivers' and roads' shroud passes are inferred (ZH's road buffer has no shroud "
+		"pass; they read the red nibble like the terrain, where ZH's fixed-function passes would use the texel's green and blue too); the radar "
+		"picture is multiplied per pixel by level / 255; W3DRadar's own texture and W3DShroud's filter switch (the fogged ShroudSampler is plain linear) were not read",
 	};
 	CHECK(ShroudManager::stopLines() == expected);
 	Fx f;

@@ -195,8 +195,7 @@ bool ReplaceSelfUpgrade::wouldUpgrade(const UpgradeMaskType &mask) const
 			{
 				return false;
 			}
-			const ThingTemplate *ot = static_cast<const ThingTemplate *>(o.getTemplate())->getFinalOverride();
-			return NotifyCrushModules::geometriesOverlap(shapes, pos, angle, ObjectGeometry::shapesOf(*ot), *o.getPosition(), o.getOrientation());
+			return NotifyCrushModules::geometriesOverlap(shapes, pos, angle, o.geometryShapes(), *o.getPosition(), o.getOrientation());
 		});
 		const float radius = SimMath::mulf32(boundingCircle(*tt), 3.0f); // RW 0xBDD42C
 		for (const PartitionHit &h : logic.partition().iterateObjectsInRange(pos, radius, FROM_BOUNDINGSPHERE_3D, { &inTheWay }, ITER_FASTEST))

@@ -3,6 +3,7 @@
 // See GameLogic/Combat/TargetFinder.h.
 
 #include "GameLogic/Combat/TargetFinder.h"
+#include "GameLogic/AI/AIClosestEnemy.h"
 
 #include "Common/Player.h"
 #include "Common/Team.h"
@@ -197,6 +198,12 @@ Object *TargetFinder::findClosestEnemyNear(const Object &seeker, const Coord3D &
 			continue;
 		}
 		if ((flags & MEMBERS_ONLY) && isHorde)
+		{
+			continue;
+		}
+		// RW 0x74D46D links the kind filter built at 0x74D5BB (allow 0x445139):
+		// NOT_AUTOACQUIRABLE is refused for units as well as buildings (S-001 caveat).
+		if (o->isKindOf((unsigned)k.notAutoAcquirable))
 		{
 			continue;
 		}

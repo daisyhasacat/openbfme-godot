@@ -6,6 +6,7 @@
 #include "GodotDevice/GodotAptPlayer.h"
 #include "GodotDevice/GodotIOSTouch.h"
 #include "Common/PathIO.h"
+#include "Common/GameEdition.h"
 #include <godot_cpp/classes/input.hpp>
 #include "GodotDevice/GodotVideoStream.h"
 #include "GameClient/GUI/PlatformIcons.h"
@@ -946,13 +947,8 @@ struct AptMenuPlayer::Impl
 			{
 				// lane UI-2: a mapped image naming a .tga that the install packs as DDS (ScrollShroud.tga -> art\compiledtextures\sc\scrollshroud.dds),
 				// as the HUD device loads it (GodotInGameHud.cpp textureFor): the W3D loader takes the packed file for the requested name
-				std::string stem = img->filename.substr(0, img->filename.find_last_of('.'));
-				for (char &ch : stem)
-				{
-					ch = (char)std::tolower((unsigned char)ch);
-				}
 				bool paired = false;
-				Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*textureSource, fs.is_valid() && fs->is_bfme1() ? "art/textures/" + stem : "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
+				Ref<godot::Image> packed = loadPackedTexture(*textureSource, store->packedTextureStem(img->filename), &paired);
 				if (paired)
 				{
 					sm.deviceUnverified.insert("[S-1482] texture " + img->filename + ": the packed .jpg's colour with its .png as the alpha (the loader's merge of the two streams was not read)");
@@ -1343,6 +1339,7 @@ void AptMenuPlayer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("clear_script_notification"), &AptMenuPlayer::clear_script_notification);
 	ClassDB::bind_method(D_METHOD("set_player_status", "state"), &AptMenuPlayer::set_player_status); // lane HUD-5
 	ClassDB::bind_method(D_METHOD("set_objectives_screen", "state"), &AptMenuPlayer::set_objectives_screen); // lane CAMPUI-1
+	ClassDB::bind_method(D_METHOD("set_objectives_tutorial_input", "on"), &AptMenuPlayer::set_objectives_tutorial_input); // lane BFME2CAMP1
 	ClassDB::bind_method(D_METHOD("notification_box", "request"), &AptMenuPlayer::notification_box); // lane CAMPUI-1
 	ClassDB::bind_method(D_METHOD("shell_top_level"), &AptMenuPlayer::shell_top_level);
 	ClassDB::bind_method(D_METHOD("shell_invoke", "level", "function", "args"), &AptMenuPlayer::shell_invoke, DEFVAL(PackedStringArray()));
@@ -1980,7 +1977,7 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 		INIEnvironment env;
 		env.fileSystem = fs->archive_fs();
 		INIBlockRecorder recorder;
-		RegisterRecordingBlockStubs(env.blocks, recorder, { "StaticGameLOD" }, StubExtent::Lenient);
+		RegisterRecordingBlockStubs(env.blocks, recorder, { "StaticGameLOD" }, StubExtent::LenientAfterEnd);
 		sm->gameLOD.registerBlocks(env.blocks);
 		try
 		{
@@ -2092,15 +2089,7 @@ Dictionary AptMenuPlayer::boot_shell(const Ref<RetailFileSystem> &fs, Object *wo
 			{
 				errors.push_back(toGodot("boot_shell: data\\ini\\gamedata.ini: " + readError));
 			}
-			else if (!fs->is_bfme1() && !fs->archive_fs()->doesFileExist("Data\\INI\\Default\\SubsystemLegendExpansion1.ini"))
-			{
-				// BFME2 GlobalData.cpp constructor: m_shellMapOn(1), field table +0xAF0.
-				on = true;
-				bool found = false;
-				if (!Shell::readGameDataBool(std::string(bytes.begin(), bytes.end()), "ShellMapOn", on, found, &parseError))
-					errors.push_back(toGodot("boot_shell: " + parseError));
-			}
-			else if (!fs->is_bfme1() && !Shell::readShellMapOn(std::string(bytes.begin(), bytes.end()), on, &parseError))
+			else if (!fs->is_bfme1() && !Shell::readShellMapOnForData(std::string(bytes.begin(), bytes.end()), isBfme2Data(*fs->archive_fs()), on, &parseError))
 			{
 				errors.push_back(toGodot("boot_shell: " + parseError));
 			}
@@ -3163,6 +3152,14 @@ Dictionary AptMenuPlayer::notification_box(const Dictionary &request)
 	}
 	out["call_errors"] = errors;
 	return out;
+}
+
+void AptMenuPlayer::set_objectives_tutorial_input(bool on)
+{
+	if (m->shell)
+	{
+		m->shell->objectivesScreen.tutorialInput = on;
+	}
 }
 
 Dictionary AptMenuPlayer::set_objectives_screen(const Dictionary &state)
@@ -4703,49 +4700,60 @@ void AptMenuPlayer::drawCanvas(const AptCanvasList &list)
 		}
 		else
 		{
-			auto it = m->godotTextures.find(img->filename);
-			if (it == m->godotTextures.end())
-			{
-				const AptTextureStore::Entry &entry = m->textures->get(img->filename);
-				if (entry.ok && !entry.rgba.empty())
-				{
-					PackedByteArray px;
-					px.resize((int64_t)entry.rgba.size());
-					memcpy(px.ptrw(), entry.rgba.data(), entry.rgba.size());
-					Ref<godot::Image> image = godot::Image::create_from_data(entry.width, entry.height, false, godot::Image::FORMAT_RGBA8, px);
-					it = m->godotTextures.emplace(img->filename, ImageTexture::create_from_image(image)).first;
-					m->textures->releasePixels(img->filename);
-					m->textureLoads += 1;
-				}
-				else
-				{
-					// the W3D loader's packed file for the requested name (as the gadget images, drawGadgets)
-					std::string stem = img->filename.substr(0, img->filename.find_last_of('.'));
-					for (char &ch : stem)
-					{
-						ch = (char)std::tolower((unsigned char)ch);
-					}
-					bool paired = false;
-					Ref<godot::Image> packed = stem.size() > 2 ? loadPackedTexture(*m->source, m->fs.is_valid() && m->fs->is_bfme1() ? "art/textures/" + stem : "art/compiledtextures/" + stem.substr(0, 2) + "/" + stem, &paired) : Ref<godot::Image>();
-					if (packed.is_valid())
-					{
-						it = m->godotTextures.emplace(img->filename, ImageTexture::create_from_image(packed)).first;
-						m->textureLoads += 1;
-					}
-					else
-					{
-						sm.gadgetErrors.insert("backdrop texture '" + img->filename + "': " + entry.error);
-					}
-				}
-			}
-			if (it != m->godotTextures.end())
+			const Ref<ImageTexture> texture = m->imageTexture(sm, img, name);
+			if (texture.is_valid())
 			{
 				const AptStageMapping backdrop = m->mapping.fitImage((float)img->imageSize.x, (float)img->imageSize.y);
 				float x0, y0, x1, y1;
 				backdrop.stageToWindow(0.0f, 0.0f, x0, y0);
 				backdrop.stageToWindow(backdrop.stageW, backdrop.stageH, x1, y1);
-				addTextureUV(rs, newItem(root), Rect2(Vector2(x0, y0), Vector2(x1 - x0, y1 - y0)), it->second, img->uvLo, img->uvHi, Color(1, 1, 1, 1));
+				const RID backdropItem = newItem(root);
+				addTextureUV(rs, backdropItem, Rect2(Vector2(x0, y0), Vector2(x1 - x0, y1 - y0)), texture, img->uvLo, img->uvHi, Color(1, 1, 1, 1));
 				m->drawnBackdrop = name; // lane CAMP-2
+				if (m->fs.is_valid() && m->fs->is_bfme1())
+				{
+					Impl::MovieSlot &movie = m->movies["backdrop:FrontEnd"];
+					movie.drawn = true;
+					if (movie.stream.is_null() && movie.error.empty())
+					{
+						movie.title = "FrontEnd";
+						movie.loop = true;
+						GameWorld *world = Object::cast_to<GameWorld>(ObjectDB::get_instance(m->worldId));
+						const Dictionary info = world ? world->get_movie("FrontEnd") : Dictionary();
+						if (!(bool)info.get("ok", false))
+						{
+							movie.error = toNative(String(info.get("error", "no GameWorld")));
+						}
+						else
+						{
+							movie.stream.instantiate();
+							const Dictionary opened = movie.stream->open(String(info.get("full_path", "")));
+							if (!(bool)opened.get("ok", false))
+							{
+								movie.error = toNative(String(opened.get("error", "?")));
+								movie.stream.unref();
+							}
+							else
+							{
+								movie.durationMs = (double)opened.get("duration_ms", 0.0);
+								movie.fps = (double)opened.get("fps", 30.0);
+								if (!movie.stream->advance_to(0))
+								{
+									movie.error = toNative(movie.stream->get_error());
+								}
+							}
+						}
+						if (!movie.error.empty())
+						{
+							m->movieErrors.insert("FrontEnd: " + movie.error);
+							UtilityFunctions::printerr(toGodot("MOVIE ERROR FrontEnd: " + movie.error));
+						}
+					}
+					if (movie.stream.is_valid() && movie.error.empty())
+					{
+						rs->canvas_item_add_texture_rect(backdropItem, Rect2(Vector2(x0, y0), Vector2(x1 - x0, y1 - y0)), movie.stream->get_texture()->get_rid());
+					}
+				}
 			}
 		}
 	}
@@ -5033,8 +5041,10 @@ void AptMenuPlayer::drawSegment(const AptCanvasList &list, size_t segment, const
 						Dictionary info;
 						if (m->presentationFs.is_valid() && m->presentationFs->is_shell_source() && m->presentationVideos && !title.empty())
 						{
-							const VideoStreamInfo opened = m->presentationVideos->locate(title, toNative(m->presentationFs->install_root()), "",
-								DetectRetailLanguageOfInstall(toNative(m->presentationFs->install_root()))); // the install's lang\<Language>*.big ("English")
+							// lane MODCOMPAT-1: the mod's Data\Movies (RW 0x490D1C's Mod Path) and the install-folder mods' movies too: a mod's own intro and menu movies
+							const VideoStreamInfo opened = m->presentationVideos->locate(title, toNative(m->presentationFs->install_root()),
+								m->presentationFs->modFolder(), DetectRetailLanguageOfInstall(toNative(m->presentationFs->install_root())), // the install's lang\<Language>*.big ("English")
+								m->presentationFs->installOverlayFolders());
 							info["ok"] = opened.ok;
 							info["full_path"] = toGodot(opened.fullPath);
 							info["error"] = toGodot(opened.error);
@@ -5200,14 +5210,8 @@ void AptMenuPlayer::drawSegment(const AptCanvasList &list, size_t segment, const
 						m->shell->gadgetErrors.insert("image record '" + *record + "' names no mapped image");
 					}
 					Ref<ImageTexture> tex;
-					if (img && m->presentationFs.is_valid() && m->presentationFs->is_shell_source())
+					if (img)
 					{
-						tex = m->imageTexture(*m->shell, img, *record);
-					}
-					else if (img)
-					{
-						// Mapped-image movie ops use the same archive layout and format
-						// decoding as native gadgets (BFME1 keeps flat art/textures).
 						tex = m->imageTexture(*m->shell, img, *record);
 					}
 					if (tex.is_valid())
@@ -7156,6 +7160,7 @@ Array AptMenuPlayer::get_movies() const
 		d["title"] = toGodot(kv.second.title);
 		d["frame"] = kv.second.stream.is_valid() ? kv.second.stream->get_frame() : (int64_t)-1;
 		d["frames"] = kv.second.stream.is_valid() ? kv.second.stream->get_frame_count() : (int64_t)0;
+		d["frames_decoded"] = kv.second.stream.is_valid() ? kv.second.stream->get_stats().get("frames_decoded", (int64_t)0) : Variant((int64_t)0);
 		d["loop"] = kv.second.loop;
 		d["completion"] = toGodot(kv.second.completion);
 		d["completed"] = kv.second.completed;
@@ -9610,6 +9615,12 @@ Dictionary AptMenuPlayer::record_game(const String &json)
 		}
 	}
 	sm.records.push_back(rec);
+	if (sm.environment.fileSystem && isBfme1Data(*sm.environment.fileSystem) && sm.environment.profiles && sm.environment.skirmish)
+	{
+		std::string error;
+		if (!Bfme1SkirmishProfiles::recordGame(*sm.environment.profiles, *sm.environment.skirmish, rec, &error, sm.environment.skirmishHonors))
+			sm.wm->note("skirmish-profile-stats", error);
+	}
 	if (sm.records.size() > GameRecords::kMaxRecords)
 	{
 		sm.records.erase(sm.records.begin());
@@ -9641,6 +9652,8 @@ Dictionary AptMenuPlayer::record_game(const String &json)
 	r["not_reported"] = String::utf8(why.c_str());
 	if (sm.shell)
 	{
+		if (AptSkirmish *screen = dynamic_cast<AptSkirmish *>(sm.shell->findScreenByFilename("Skirmish.apt")))
+			screen->recordsChanged();
 		if (AptOnlineShell *screen = dynamic_cast<AptOnlineShell *>(sm.shell->findScreenByFilename("OnlineShell.apt")))
 		{
 			if (screen->hub())

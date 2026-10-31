@@ -984,8 +984,10 @@ and T3 (Linux and Windows bytes equal) cover it.
   drawables as before, the game still running; a header whose hash its log does not end with; the verify mode naming the first differing byte);
   the legal but unusual events (a capture, a temporary defection, a death, a player's every object killed, saved right after them and 30 frames
   later, loaded into another world and played 300 frames equal, saved again byte for byte); T3 with a Windows peer (OPENBFME_WINDOWS_PEER).
+  Lane SAVE2SPLIT-1: the fresh-process T1 runs are a test case per save and load mode (`save2 retail T1 (SAVES.md) 4-AI skirmish <save>
+  ...`, `save2 retail T1 (SAVES.md) a script waiting on a timer <mode> ...`), each its own gate job; a process records each game once.
   `godot --path godot -- --auto --save-test` loads a snapshot save and a log-only save through the screens (prerequisites and isolated folder below).
-- **Measured** (Deck, Release, `openbfme_peer --load-save` in a fresh process, the 4-AI Fall Back game of `save2 retail T1 (SAVES.md)`): the
+- **Measured** (Deck, Release, `openbfme_peer --load-save` in a fresh process, the 4-AI Fall Back game of the `save2 retail T1 (SAVES.md) 4-AI skirmish ...` cases): the
   11-minute save (frame 3,301, a 4,240,033-byte snapshot) loads from its snapshot in 100 ms; the same save caught up from its log (the earlier
   alphas' path, `--verify-log`) takes 27.8 s. The Angmar mission at frame 151: 385 ms from the snapshot, 4.5 s caught up. The in-process load of a
   1.8 MB snapshot (frame 601): 114 ms. Through the screens (`--save-test`, a CI host): 32 ms for a skirmish at frame 150, 141 ms for the mission.
@@ -1098,6 +1100,26 @@ normal cold launches; it never replaces `/save` or the player's named saves.
 Native source-AI follow-up: SkirmishAI block version 3 adds the independent per-player Army Breaker timer list; AIStatCollector version 3 includes the ordered spatial registrations and cached groups. TerrainTrees block version 2 saves complete AI tree groups and selection state. This preserves native snapshot hash/decision continuity after harvesting clears record positions without updating runtime group spheres. Retail TerrainLogic instead rebuilds derived groups on load; that distinction is reported under S-4252. Older block versions that omit these states are refused.
 
 Native SkirmishAI block version 4 adds DEFENSIVE target size (small/medium/large), separate recruit-origin state and the SimpleDefense tactic. Version-window and malformed-input fixtures account for the independent Army Breaker timer list ahead of the player records.
+### BFME2CAMP1: the campaign, tutorial and rebuild-hole state (lane BFME2CAMP1, PR #137)
+
+Every new field is versioned, and a block writes its new version only when the state it adds exists: games without that state keep their old bytes and hashes. Every older version loads, with the new field at its default.
+
+| Where | Block / class | Version | Field (type) | An older save loads with |
+|---|---|---|---|---|
+| Save header (`SaveGameFile`) | header | 4 | `campaignCarryover` (string: `CampaignCarryover::State::serialize`, "" for none); refused in a skirmish save or when it does not parse | versions 1 to 3: "" (no carry-over step at the mission's start) |
+| `GameLogicSnapshot.cpp` | obfme:GameLogic | 3 (written with a buildability override or a carry-over state) | the script buildability overrides (count; each: template name string, status int 0..3); the campaign carry-over state (bool present; the serialized state string) | versions 1 and 2: no overrides, no carry-over state |
+| `Object.cpp` | Object | 2 | the campaign carry-over bit (bool, Object + 0x458 bit 4) | version 1: false |
+| `Team.cpp` | the team prototypes | 2 (written when a prototype names an attack priority set) | each prototype's attack priority set name (string) | version 1: no name |
+| `ScriptEngineXfer.cpp` | the script engine | 5 (always: CASTLEAREA-1's run-time trigger list extent at 4, MODCOMPAT-AI's completed upgrades at 5), 6 (written once a script edited the attack priorities) | the attack priority sets (bool; count; each: name string, default int, the template priorities as name / int pairs) | versions 2 and 3: the table as the map's INI made it |
+| `AIUpdateSnapshot.cpp` | AIUpdateInterface | 3 (an area guard or an attack info override), 4 (a team guard) | v3: the area to guard (int, checked against the map's areas), the attack info override (bool + name string); v4: the team to guard (team id) | versions 1 and 2: no area, no override; version 3: no team |
+| `AIUpdateSnapshot.cpp` | DozerAIUpdate | 3 | the rebuild flag (bool, + 0x4D0) | versions 1 and 2: false |
+| `AIStateMachineSnapshot.cpp` | the AI state machine | 2 (written with a goal squad) | the goal squad (bool; the member ids) | version 1: no squad |
+| `AIGuard.cpp` | the guard machine | 2 (an area guard), 3 (a team guard) | v2: the area (int, checked), its centre (coord) and centre flag (bool), the last area scan frame (uint); v3: the guarded team (team id) | version 1: no area; version 2: no team |
+| `RebuildHoleModules.cpp` | RebuildHoleExposeDie | 1 | the die module's part only | new class: an older save has none |
+| `RebuildHoleModules.cpp` | RebuildHoleBehavior | 1 (retail version 3's field order, RW 0x886669) | the update module's part; the worker, rebuilt structure and spawner ids (object ids); the frames to wait (uint); the worker and rebuild templates (name strings, a missing one refuses the load); the spawner's active flag (bool); its paid cost (real) | new class: an older save has none |
+
+The headless check (`openbfme_peer --load-save`) starts a campaign mission's save the way a real load does: the header's carry-over (or, for a first mission without one, the campaign's fresh records) and the mission's delayed list.
+
 ### Developer commands (current implementation)
 
 Linux / POSIX shell, from the repository root: the screen test needs a built

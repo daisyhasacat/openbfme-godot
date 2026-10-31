@@ -31,6 +31,7 @@
 #include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/Combat/CombatState.h"
 #include "GameLogic/Module/GiantBirdAIUpdate.h"
+#include "GameLogic/Module/SpawnBehavior.h"
 #include "GameLogic/NewGame/NewGame.h"
 #include "GameLogic/Object/Object.h"
 #include "Libraries/WWVegas/WW3D2/assetmgr.h"
@@ -637,6 +638,15 @@ TEST_CASE("fly1 retail: a hunting fell beast (AI command 0x12: the hunt state wi
 	OPENBFME_REQUIRE_START(s);
 	FlyArena arena(*s, "FactionMordor", "FactionMen");
 	GameLogic &logic = arena.logic();
+	// Control the hunt candidates: both the first-leg quick path and per-tick goal
+	// publication move the Moria lair's QueueProductionExitUpdate spawns
+	// (RW 0x8A3DD5 -> 0x87C9B8 -> state 7). The fell beast never enters state 7.
+	// Those goblins cannot be an implicit fixture.
+	arena.clearCreeps();
+	Object *lair = arena.make("MoriarGoblinLair", arena.b, 1500.0f, 800.0f);
+	auto *spawner = SpawnBehaviorInterface::of(*lair);
+	REQUIRE(spawner);
+	spawner->stopSpawning();
 	Object *beast = arena.make("KhamulFellBeast", arena.a, 1300.0f, 800.0f);
 	arena.make("GondorBarracks", arena.b, 1800.0f, 820.0f);
 	GiantBirdAIUpdate *ai = birdAI(beast);
@@ -666,7 +676,8 @@ TEST_CASE("fly1 retail: a hunting fell beast (AI command 0x12: the hunt state wi
 							   << (v ? health(v) : 0.0f));
 	REQUIRE(victim != INVALID_ID);
 	REQUIRE(v != nullptr);
-	// the closest enemy is the map's MoriarGoblinLair beside the course (a creep structure, enemy of both players), nearer than the barracks
+	// The controlled lair is nearer than the second eligible target, the barracks.
+	CHECK(victim == lair->getID());
 	CHECK(v->getTemplate()->getName() == "MoriarGoblinLair");
 	CHECK(ai->strikes() == 1);
 	// NazgulPlowAttack on MonsterLair: 500 inner + 250 outer SIEGE x 70 % STRUCTURE x SIEGE 150 % = 525 + 262.5, 100 FLY_INTO x DEFAULT 50 % = 50: 837.5

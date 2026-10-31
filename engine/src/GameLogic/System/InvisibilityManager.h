@@ -64,7 +64,7 @@
 //     client's; the FX play through the logic's FX events;
 //   * the reveal's waking of idle enemy AIs uses the AI's VisionRange (2D centre distance) for RW 0x68FA3D's vision test;
 //   * TAKING_DAMAGE reads the body's last damaging hit frame (the engine body does not keep the last hit's amount and type);
-//   * the script's stealth switch (Object + 0x457 bit 8) is not ported: never set (StealthUpdate's disguise, RW 0x81B995 / 0x694C86: lane STEALTH-2);
+//   * the script's stealth switch (Object + 0x457 bit 8, NAMED_SET_STEALTH_ENABLED RW 0x7BC7EC) refuses a STEALTH copy (RW 0x81BAC3, lane BFME2CAMP1);
 //   * RW 0x694C0D's draw module slot 0xF0 is read as the model draw data's AffectedByStealth (RW +0x15E; the slot's body is not identified).
 
 #pragma once

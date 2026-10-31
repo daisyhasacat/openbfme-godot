@@ -264,7 +264,7 @@ TEST_CASE("script actions: PLAYER_SET_MONEY / GIVE_MONEY, PLAYER_RELATES_PLAYER,
 		{ act("PLAYER_SET_MONEY", { sp(11, "<This Player>"), ip(0, 1000) }), act("PLAYER_GIVE_MONEY", { sp(11, "<This Player>"), ip(0, -300) }),
 			act("PLAYER_RELATES_PLAYER", { sp(11, "Alice"), sp(11, "Bob"), ip(19, 2) }), act("SHOW_MILITARY_CAPTION", { sp(25, "SCRIPT:X"), rp(3.0f) }),
 			act("VICTORY", {}), act("GATE_OPEN", { sp(14, "nobody") }), act("SET_PLAYER_KILLS_OF_TYPE_TO_COUNTER", { sp(11, "<This Player>"), sp(15, "GondorFighter"), sp(4, "kills") }),
-			act("TEAM_ATTACK_TEAM", { sp(3, "nobody"), sp(3, "nobody") }) },
+			act("CHANGE_BURN_RATE_AT_WAYPOINT", { sp(7, "nowhere"), rp(10.0f), ip(0, 300) }) },
 		{}, true)));
 	g.start();
 	g.frame();
@@ -281,11 +281,12 @@ TEST_CASE("script actions: PLAYER_SET_MONEY / GIVE_MONEY, PLAYER_RELATES_PLAYER,
 	CHECK(g.engine().endRequests()[0].victory);
 	CHECK(g.engine().stats().unportedActions.count("GATE_OPEN") == 0);
 	CHECK(g.engine().stats().unportedActions.count("SET_PLAYER_KILLS_OF_TYPE_TO_COUNTER") == 0); // lane SCRIPT-4 ported it (RW 0x7C38F6)
-	CHECK(g.engine().stats().unportedActions.count("TEAM_ATTACK_TEAM") == 1); // AIAttackSquadState is not ported (S-1186)
+	// lane BFME2CAMP1 ported TEAM_ATTACK_TEAM, this test's former example; CHANGE_BURN_RATE_AT_WAYPOINT (RW 0x7BDED5: the fire grid, S-921) is still not
+	CHECK(g.engine().stats().unportedActions.count("CHANGE_BURN_RATE_AT_WAYPOINT") == 1);
 	bool found = false;
 	for (const std::string &s : g.lw.logic->report().stops)
 	{
-		found = found || s.find("[S-1180] script action not ported (did nothing): TEAM_ATTACK_TEAM x1") != std::string::npos;
+		found = found || s.find("[S-1180] script action not ported (did nothing): CHANGE_BURN_RATE_AT_WAYPOINT x1") != std::string::npos;
 	}
 	CHECK(found);
 }

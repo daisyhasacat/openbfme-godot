@@ -76,6 +76,10 @@ bool Drawable::isKindOfName(const char *name) const
 
 void Drawable::reactToTransformChange(const Coord3D *oldPos, float oldAngle)
 {
+	if (m_reactionMuted)
+	{
+		return;
+	}
 	for (std::unique_ptr<DrawableModule> &m : m_clientModules)
 	{
 		m->reactToTransformChange(oldPos, oldAngle); // lane AUDIO-4
@@ -400,6 +404,33 @@ void Drawable::flushModelConditions(bool hasWeaponTiming, int weaponTimingFrames
 	setModelConditionFlags(m_flags);
 }
 
+bool Drawable::advanceIsLocal() const
+{
+	for (const DrawEntry &e : m_entries)
+	{
+		if (e.draw && e.animated && !e.draw->advanceIsLocal())
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+void Drawable::advanceAnimationLocal(double elapsedMs)
+{
+	for (DrawEntry &e : m_entries)
+	{
+		if (e.draw && e.animated)
+		{
+			e.draw->advance(elapsedMs);
+		}
+		if (e.isTruck || !e.truckChecked || e.truckData != e.data)
+		{
+			advanceTires(e, elapsedMs);
+		}
+	}
+}
+
 void Drawable::advanceAnimation(double elapsedMs)
 {
 	m_services.host.setChunkName(m_template->getName());
@@ -409,7 +440,10 @@ void Drawable::advanceAnimation(double elapsedMs)
 		{
 			e.draw->advance(elapsedMs);
 		}
-		advanceTires(e, elapsedMs);
+		if (e.isTruck || !e.truckChecked || e.truckData != e.data) // lane PERF-HD: the call only for a truck (or an entry not looked at yet)
+		{
+			advanceTires(e, elapsedMs);
+		}
 	}
 }
 
@@ -422,17 +456,17 @@ void Drawable::advanceAnimation(double elapsedMs)
 // is not kept, so the tires only spin; the speed gate RW 0x46E918 is not read; the cab / trailer bones and the dust / dirt / powerslide effects are not run.
 void Drawable::advanceTires(DrawEntry &e, double elapsedMs)
 {
-	if (!e.truckKnown || e.truckSource != e.data)
+	if (e.truckData != e.data || !e.truckChecked)
 	{
-		e.truck = dynamic_cast<const W3DTruckDrawModuleData *>(e.data);
-		e.truckSource = e.data;
-		e.truckKnown = true;
+		e.truckData = e.data;
+		e.truckChecked = true;
+		e.isTruck = e.draw && dynamic_cast<const W3DTruckDrawModuleData *>(e.data) != nullptr;
 	}
-	const W3DTruckDrawModuleData *truck = e.draw ? e.truck : nullptr;
-	if (!truck)
+	if (!e.isTruck)
 	{
 		return;
 	}
+	const W3DTruckDrawModuleData *truck = static_cast<const W3DTruckDrawModuleData *>(e.data);
 	if (e.frontTireBones.empty() && e.rearTireBones.empty())
 	{
 		for (const std::string *b : { &truck->m_leftFrontTireBone, &truck->m_rightFrontTireBone, &truck->m_leftFrontTireBone2, &truck->m_rightFrontTireBone2,

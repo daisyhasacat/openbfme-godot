@@ -33,6 +33,7 @@ public:
 	// `environment` (lane UI-4): the archives and language.ini's fonts the credits roll reads; null: Credits reports that it cannot roll
 	AptMainMenu(WindowManager &windows, Shell &shell, ShellServices &services, const ShellEnvironment *environment = nullptr);
 	~AptMainMenu() override;
+	void runInit() override;
 
 	// The RotWK names in binary order, for the registry test (commands and the render component).
 	static const std::vector<std::string> &retailNames();
@@ -71,6 +72,32 @@ public:
 	// one roll step per call, as the menu's update in state 4 runs it (tests)
 	void stepCredits();
 
+	// lane BFME2CAMP1 (an OPENBFME ADDITION, owner 2026-10-20: "a new button in the solo play for the RotWK campaign + epilogue in that skin", then
+	// "the RotWK menu also has the menu options for the BFME2 campaigns"): both menu styles' Solo Play lists offer all four campaigns.
+	//   * BFME2 1.06's MainMenu.apt lists Skirmish, War of the Ring, Evil Campaign, Good Campaign, Load Game: it gets Angmar Campaign
+	//     (Expansion1Campaign, "$Expansion1Campaign") and Epilogue (BonusCampaign, "$BonusCampaign", disabled until the bonus unlock
+	//     MainMenuUnlockBonusCampaign RW 0x91BB6B, as in RotWK) after Good Campaign;
+	//   * RotWK 2.01's MainMenu.apt lists Skirmish, War of the Ring, Angmar Campaign, Epilogue, Load Game: it gets Evil Campaign (EvilCampaign,
+	//     "$EvilCampaign") and Good Campaign (GoodCampaign, "$GoodCampaign") after War of the Ring.
+	// MOVIE FACTS (both movies, read with the decoder): a row is a clip of SoloPlayNav whose text shows its `buttonName` ("$X": the label APT:X); its
+	// button makes the movie call _root[<the row's name> + "Button"]() (BFME2: OnMenuClick; RotWK: OnButtonClick, which first closes the list when the
+	// row's closeParent is true and prefers the row's own DoButtonCallBack); <X>Button() is OpenDifficulty("<X>") for a campaign: LevelOfDifficulty.side
+	// = X, then its "_open"; the difficulty buttons call _root.GameCode(side, level), the command AptMainMenu::<side> with the difficulty
+	// (Expansion1Campaign / BonusCampaign RW 0x91AF8C / 0x91AFAF; GoodCampaign / EvilCampaign: start_bfme2_campaign). The rows exist while the list is
+	// open (placed on the nav's frame 9), 35.5 apart upward from Load Game, inside a 5-row frame (BFME2: the clip NavFrameFive; RotWK: unnamed clips).
+	// WHAT THIS DOES: while the list is open, two copies (duplicateMovieClip) of the movie's own campaign row (BFME2: GoodCampaign; RotWK:
+	// Expansion1Campaign) with the other game's names and labels sit right above the insertion row (BFME2: LoadGame; RotWK: Expansion1Campaign); the rows
+	// above move up two places; each frame piece is stretched about its bottom edge so its part above the top row moves up by the same (a piece lying
+	// mostly above the rows is moved instead); _root.<name>Button opens the movie's own difficulty choice with the copied row's name. The copies follow
+	// their source row's visibility, colour and timeline matrix, and go when it goes (the list closes).
+	struct ExtraRows
+	{
+		bool installed = false;  ///< the movie's list was recognised and its two functions are installed
+		std::string movie;       ///< "bfme2" or "rotwk": which list it is
+		int rowsAdded = 0;       ///< copies made over the menu's life
+	};
+	const ExtraRows &extraRows() const { return m_extraRows; }
+
 private:
 	void registerAll();
 	void showSkirmish(int mode); // 0 the skirmish lobby, 1 the War of the Ring lobby
@@ -90,4 +117,16 @@ private:
 	int m_state = 0;                           // + 0x288 (4: the credits roll)
 	int m_creditsClockMs = 0;                  // the roll's 10 ms steps not yet run
 	bool m_hideCreditsAsked = false;
+	ExtraRows m_extraRows;     // lane BFME2CAMP1 (OpenBFME addition)
+	// the OpenDifficulty sides a row's click asked for (run on the next update, outside the script call). The movie's native functions hold only a weak
+	// reference: a script may keep a function after this menu is gone (the movie's VM outlives the screen), and its call then does nothing
+	std::shared_ptr<std::vector<std::string>> m_extraPending = std::make_shared<std::vector<std::string>>();
+	// the clips the addition moves, with the timeline's matrix under what it wrote (cleared when the list closes)
+	struct MovedClip
+	{
+		const void *inst = nullptr;
+		float base[6] = {}, written[6] = {};
+	};
+	std::vector<MovedClip> m_extraMoved;
+	void updateExtraRows();
 };

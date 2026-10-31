@@ -33,18 +33,23 @@ const ObjectMovementInfo &movementInfo(const Object &obj)
 
 const PathfindGeometry &geometry(const Object &obj)
 {
-	return movementInfo(obj).geometry;
+	// lane MODCOMPAT-MOD1: the object's own GeometryInfo (Object + 0xA8; + 0xB8 / + 0xBC its radii), the template's while the object changed no shape flag
+	return obj.ownPathfindGeometry(movementInfo(obj).geometry);
 }
 
 float boundingCircleRadius(const Object &obj)
 {
-	return movementInfo(obj).boundingCircle; // geometry(obj).boundingCircleRadius(), computed once per template
+	const ObjectMovementInfo &info = movementInfo(obj);
+	const PathfindGeometry &own = obj.ownPathfindGeometry(info.geometry);
+	return &own == &info.geometry ? info.boundingCircle : own.boundingCircleRadius(); // the template's radius is computed once per template
 }
 
 float boundingSphereRadius(const Object &obj)
 {
 	// RW obj + 0xBC = GeometryInfo + 0x14, computed by RW 0xAD2860 over every active shape (RW 0xAD2770; lane PATH-2, S-341)
-	return movementInfo(obj).boundingSphere;
+	const ObjectMovementInfo &info = movementInfo(obj);
+	const PathfindGeometry &own = obj.ownPathfindGeometry(info.geometry);
+	return &own == &info.geometry ? info.boundingSphere : own.boundingSphereRadius();
 }
 
 bool isBox(const Object &obj)

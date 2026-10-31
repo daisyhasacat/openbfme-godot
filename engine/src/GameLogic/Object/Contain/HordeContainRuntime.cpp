@@ -330,7 +330,7 @@ void HordeContain::createPayload()
 			}
 		}
 	}
-	// RW 0x871C10 .. 0x871CB4 (lane DECOMP-1; BFME2 decomp HordeContainRva0046E8EE.cpp, tier B same-shape): an unproduced horde destroys (int)((100 - H) * 0.01 *
+	// RW 0x871C10 .. 0x871CB4 (lane DECOMP-1; BFME2 decomp HordeContain_createPayload.cpp, tier B same-shape): an unproduced horde destroys (int)((100 - H) * 0.01 *
 	// count) of its members that have a body, H being HordeContain + 0x2A8. Its only writer is the constructor (RW 0x872972: 100; a scan of every
 	// `mov [reg + 0x2A8]` in RotWK's .text finds no other HordeContain one), so the count is 0 and nothing is destroyed whatever DamagePercentToUnits says
 	applyFormationModifiers(); // lane COMBAT-3: RW 0x871D2C, the end of the payload (an unproduced horde only): interface slot 0x1E4

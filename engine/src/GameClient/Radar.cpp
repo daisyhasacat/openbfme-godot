@@ -587,7 +587,7 @@ void drawMasked(Surface &s, int x, int y, std::uint32_t color, const std::uint8_
 	}
 }
 
-// ZH / BFME2 DiscreteCircle (RW 0x6E0AE4; BFME2 decomp discrete_circle.cpp): Bresenham edge rows, the later of two rows with the same y kept
+// ZH / BFME2 DiscreteCircle (RW 0x6E0AE4; BFME2 decomp DiscreteCircle.cpp): Bresenham edge rows, the later of two rows with the same y kept
 struct HorzLine
 {
 	int yPos, xStart, xEnd; // BFME's layout (RW 0x44FCB3 reads y at + 0, the ends at + 4 / + 8)
@@ -808,7 +808,7 @@ std::uint32_t Radar::modulateColor(std::uint32_t c1, std::uint32_t c2)
 
 std::uint32_t Radar::blendColor(std::uint32_t dst, std::uint32_t src, std::uint8_t factor)
 {
-	// RW 0x44D717 (BFME2 reverse/attempts/0x0004de72.cpp, checked against the disassembly)
+	// RW 0x44D717 (BFME2 W3DRadarColorBlend.cpp, checked against the disassembly)
 	unsigned a1, r1, g1, b1, a2, r2, g2, b2;
 	components(dst, a1, r1, g1, b1);
 	components(src, a2, r2, g2, b2);

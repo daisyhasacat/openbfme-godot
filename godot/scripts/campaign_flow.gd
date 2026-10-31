@@ -35,11 +35,10 @@ const END_GAME_TIMER_FRAMES := 25 # RW 0x602FFE: ScriptEngine + 0x1A204 (the end
 
 var game: Node            # scripts/game.gd
 var world: Node3D         # GameWorld
-var tutorial := "" # standalone tutorial, with no campaign progress or unlocks
-var _tutorial_definition := {}
 var tutorial_error := ""
 var campaign := ""
 var mission := 0
+var tutorial := ""       # lane BFME2CAMP1: the running tutorial (AptMainMenu::OnTutorial's Basic / Advanced), empty in a campaign
 var difficulty := 1
 var active := false
 var hooks := false        # the start option test_hooks (scripted runs)
@@ -56,6 +55,9 @@ var movie: Node            # lane CAMP-1H: scripts/movie_player.gd
 var victorious := false
 var campaign_ready := false  # + 0xD2 (Node has its own "ready")
 var advanced := false
+## lane BFME2CAMP1: the campaign's carry-over (the engine's CampaignCarryover::State text; "" none): the units and the player's data the next mission gets
+var carryover := ""
+var score_pending := false  # the score screen of a campaign game is up: its Continue runs RW 0x927EC6
 var menu_open := false      # CampaignMenu.apt is up (between missions)
 var menu_log: Array = []    # [ "<event> ..." ] for the scripted checks: "menu <campaign> <index> won|lost", "auto_save <path>", "bonus_unlock ..."
 var last_auto_save := ""    # the auto-save written last
@@ -75,7 +77,6 @@ static func difficulty_from_command(argument: String) -> int:
 
 
 func missions_of(name: String) -> Array:
-	if not tutorial.is_empty(): return [_tutorial_definition]
 	for c in world.get_campaigns():
 		if String(c.name).to_upper() == name.to_upper():
 			return c.missions
@@ -84,13 +85,14 @@ func missions_of(name: String) -> Array:
 
 ## a main menu command: start a campaign at its first mission
 func start(name: String, diff: int) -> void:
-	tutorial = ""
+	tutorial = "" # lane BFME2CAMP1 (review): entering a campaign leaves any tutorial
 	campaign = name
 	mission = 0
 	difficulty = diff
 	victorious = false
 	campaign_ready = false
 	advanced = false
+	carryover = "" # lane BFME2CAMP1: the first mission begins the campaign's carry-over (beginCampaign RW 0x5EC4EC)
 	print("CAMPAIGN start %s (difficulty %d): %d missions" % [name, diff, missions_of(name).size()])
 	# lane PLAY-3 (owner: the menu music played on through the campaign's opening movie). TARGET FACTS: the main menu's campaign start (RW 0x91C262 ->
 	# RW 0x91C108) queues RW 0x91BCD2 first: the transition PreParchmentMapFade_StartNew and TheShell's music stop (RW 0x75D9B1: TheAudio RW 0xDE42FC
@@ -109,26 +111,6 @@ func start(name: String, diff: int) -> void:
 	await begin_mission()
 
 
-## Menu tutorials use the mounted GameData map and the existing single-player script/HUD path.
-func start_tutorial(name: String) -> void:
-	var definition: Dictionary = world.get_tutorial(name)
-	tutorial_error = String(definition.get("error", ""))
-	if not definition.get("ok", false):
-		printerr("TUTORIAL: ", tutorial_error)
-		game._shell.call_deferred("shell_invoke", game._shell.shell_top_level(), "OnFocus", PackedStringArray(["1"]))
-		return
-	tutorial = name
-	_tutorial_definition = definition
-	campaign = ""
-	mission = 0
-	difficulty = 1
-	victorious = false
-	campaign_ready = false
-	advanced = false
-	game._audio.stop_music(false)
-	await begin_mission()
-
-
 ## lane CAMP-1H: a campaign movie (awaited; nothing when --movies=off or the title is empty)
 func play_movie(title: String) -> void:
 	if not movies or title.is_empty():
@@ -142,6 +124,44 @@ func play_movie(title: String) -> void:
 	await movie.play(world, game._audio, title)
 	if not movie.last.is_empty():
 		print("CAMPAIGN movie: ", JSON.stringify(movie.last)) # lane CAMP-2
+
+
+## lane BFME2CAMP1: AptMainMenu::OnTutorial (RW 0x91B825): "Basic" / "Advanced" start GameData's tutorial record's map as a new game of mode 6 behind its
+## LoadScreenStillImage with its LoadScreenMusicTrack; the scripts' presentation is the campaign's (campaign_cine.gd). Retail's "Strategic" (the War of
+## the Ring tutorial) is not here: false
+func start_tutorial(which: String) -> bool:
+	var definition: Dictionary = world.get_tutorial(which)
+	tutorial_error = String(definition.get("error", ""))
+	if not definition.get("ok", false):
+		printerr("TUTORIAL: ", tutorial_error)
+		game._shell.call_deferred("shell_invoke", game._shell.shell_top_level(), "OnFocus", PackedStringArray(["1"]))
+		return false
+	var info: Dictionary = world.start_tutorial({"tutorial": which, "describe_only": true})
+	if not info.get("ok", false):
+		printerr("CAMPAIGN tutorial %s: %s" % [which, str(info.get("errors", []))])
+		return false
+	tutorial = which
+	campaign = ""
+	mission = 0
+	menu_open = false
+	score_pending = false
+	_end_timer_ran = false
+	_end_frame = -1
+	active = true
+	begun += 1
+	var t: Dictionary = info.tutorial
+	print("CAMPAIGN tutorial %s: %s" % [which, t.map])
+	if not await show_load_screen({"load_screen_music": t.load_screen_music, "load_screen_image": t.load_screen_image}):
+		return false
+	var rep: Dictionary = world.start_tutorial({"tutorial": which, "progress": Callable(game, "_on_load_progress"), "test_hooks": hooks})
+	game._report = rep
+	print("CAMPAIGN tutorial load ok=%s errors=%s" % [rep.ok, str(rep.get("errors", []).slice(0, 5))])
+	if not rep.ok:
+		game._fail("start_tutorial failed")
+		return false
+	enter_mission(rep)
+	game._game_kind = "tutorial %s" % which
+	return true
 
 
 ## AptMainMenu::ContinueCampaign (RW 0x91B50D): with "00000000.sav" in the Save folder (TheGameState RW 0x6DDE0F) the menu's update loads it (state 1);
@@ -159,7 +179,8 @@ func continue_saved() -> bool:
 
 ## the campaign's state as GameWorld.campaign_progress_step takes it
 func progress() -> Dictionary:
-	return {"campaign": campaign, "mission": mission, "difficulty": difficulty, "victorious": victorious, "ready": campaign_ready, "advanced": advanced}
+	return {"campaign": campaign, "mission": mission, "difficulty": difficulty, "victorious": victorious, "ready": campaign_ready, "advanced": advanced,
+		"carryover": carryover}
 
 
 ## one step of the campaign's state (the RW functions of GameClient/LinearCampaign.h); the state takes the answer's progress
@@ -175,11 +196,13 @@ func step(what: String) -> Dictionary:
 	victorious = bool(p.victorious)
 	campaign_ready = bool(p.ready)
 	advanced = bool(p.advanced)
+	carryover = String(p.get("carryover", ""))
 	return r
 
 
 ## a mission started (RW 0x5EAB8F); `intro`: its IntroMovie plays (the start's second argument: a mission begun or the next one, not a replay after a defeat)
 func begin_mission(intro := true) -> void:
+	tutorial = "" # lane BFME2CAMP1 (review): a campaign mission is never the tutorial (start_tutorial does not come through here)
 	var missions := missions_of(campaign)
 	if mission >= missions.size():
 		game._fail("CAMPAIGN no mission %d in %s" % [mission, campaign])
@@ -196,10 +219,8 @@ func begin_mission(intro := true) -> void:
 	begun += 1
 	if not await show_load_screen(m):
 		return
-	var options := {"campaign": campaign, "mission": mission, "difficulty": difficulty,
-		"progress": Callable(game, "_on_load_progress"), "test_hooks": hooks, "record_memory": tutorial.is_empty()}
-	if not tutorial.is_empty(): options["tutorial"] = tutorial
-	var rep: Dictionary = world.start_campaign_mission(options) # lane SAVE-2: recorded so it can be saved
+	var rep: Dictionary = world.start_campaign_mission({"campaign": campaign, "mission": mission, "difficulty": difficulty, "carryover": carryover,
+		"progress": Callable(game, "_on_load_progress"), "test_hooks": hooks, "record_memory": true}) # lane SAVE-2: recorded so it can be saved
 	game._report = rep
 	print("CAMPAIGN load ok=%s errors=%s" % [rep.ok, str(rep.get("errors", []).slice(0, 5))])
 	if not rep.ok:
@@ -284,8 +305,12 @@ func tick() -> void:
 	if _ended_at < 0:
 		_ended_at = Time.get_ticks_msec()
 		_end_frame = int(st.frame)
-		var missions := missions_of(campaign)
-		var line := "%s %d %s %s %d" % [campaign, mission, missions[mission].map, "victory" if st.victory else "defeat", st.frame]
+		var line := ""
+		if not tutorial.is_empty():
+			line = "tutorial %s %s %d" % [tutorial, "victory" if st.victory else "defeat", st.frame] # lane BFME2CAMP1: no campaign to step
+		else:
+			var missions := missions_of(campaign)
+			line = "%s %d %s %s %d" % [campaign, mission, missions[mission].map, "victory" if st.victory else "defeat", st.frame]
 		ended_log.append(line)
 		print("CAMPAIGN end: ", line, " (", st.action, ")")
 		if st.victory and tutorial.is_empty():
@@ -331,10 +356,16 @@ func restart_mission() -> void:
 	game._close_quit_menu()
 	active = false
 	_cine = null
-	game._tear_down_game("restart")
 	if not tutorial.is_empty():
-		await begin_mission(false)
+		# lane BFME2CAMP1 (Sol review m4): no campaign: RW 0x9220DE's other branch starts a new game of the same map (GlobalData + 0xC) in the same
+		# mode (GameLogic + 0x110: the tutorial's 6)
+		var which := tutorial
+		game._tear_down_game("restart")
+		print("CAMPAIGN tutorial %s restarted from the quit menu (RW 0x9220DE: the same map, mode 6)" % which)
+		await start_tutorial(which)
 		return
+	step("menu") # lane BFME2CAMP1: the running mission's carry-over (its start's and the delayed spawns' changes) before the game goes
+	game._tear_down_game("restart")
 	var r := step("last_mission")
 	print("CAMPAIGN restart from the quit menu (RW 0x9220DE -> RW 0x5EC5D1): mission %d" % mission)
 	await begin_mission(bool(r.get("intro_movie", false)))
@@ -343,6 +374,8 @@ func restart_mission() -> void:
 ## Post-mission progression from RW 0x927EC6, now run directly after teardown.
 func after_mission() -> void:
 	if not tutorial.is_empty():
+		# lane BFME2CAMP1: a tutorial (mode 6) has no campaign: the menu comes back
+		print("CAMPAIGN tutorial %s over: back to the main menu" % tutorial)
 		tutorial = ""
 		_to_main_menu()
 		return
@@ -361,6 +394,12 @@ func after_mission() -> void:
 	if after == "auto_save_menu":
 		write_auto_save()
 	await open_menu()
+
+
+## the score screen's Continue in a campaign game: RW 0x926E0A (TimeLine's destructor, type 1) -> RW 0x927EC6
+func after_score() -> void:
+	score_pending = false
+	await after_mission()
 
 
 ## RW 0x6DE8F1: the auto-save: GUI:AutoSaveName ("Auto Save for %ls") with the map's display name (the mission the menu names, RW 0x5EAB0A), the
@@ -414,12 +453,14 @@ func open_menu() -> void:
 
 ## a campaign menu save loaded (scripts/save_flow.gd: check_save's save_point 1): the menu with its state
 func open_from_save(check: Dictionary) -> void:
+	tutorial = "" # lane BFME2CAMP1 (review): a campaign-menu save loaded from a tutorial's quit menu is a campaign, not the tutorial
 	campaign = String(check.campaign)
 	mission = int(check.mission)
 	difficulty = int(check.difficulty)
 	victorious = bool(check.victorious)
 	campaign_ready = bool(check.ready)
 	advanced = bool(check.advanced)
+	carryover = String(check.get("carryover", ""))
 	active = false
 	print("CAMPAIGN loaded the campaign menu: %s mission %d %s" % [campaign, mission, JSON.stringify(progress())])
 	await open_menu()
@@ -489,6 +530,7 @@ func migrate_sidecar() -> void:
 	victorious = mission > 0
 	campaign_ready = true
 	advanced = mission > 0
+	carryover = "" # lane BFME2CAMP1: the old sidecar kept no carry-over
 	var r := write_auto_save()
 	if r.get("ok", false):
 		var err := DirAccess.rename_absolute(ProjectSettings.globalize_path(PROGRESS_PATH), ProjectSettings.globalize_path(PROGRESS_PATH + ".migrated"))

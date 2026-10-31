@@ -145,6 +145,7 @@ bool GameWorld::buildSave(const Dictionary &options, SaveGameFile &f, UnsignedIn
 	h.campaign = m_campaignStart.campaign;
 	h.campaignMission = m_campaignStart.mission;
 	h.campaignDifficulty = m_campaignStart.difficulty;
+	h.campaignCarryover = m_campaignStart.carryover; // lane BFME2CAMP1: the mission start's carry-over (the log replays the rest)
 	h.mapDisplay = n(String(options.get("map_display", String())));
 	for (const MapCacheEntry &e : m_mapCache)
 	{
@@ -406,6 +407,7 @@ Dictionary GameWorld::save_campaign_menu(const String &path, const Dictionary &o
 	h.campaignReady = p.ready;
 	h.campaignAdvanced = p.advanced;
 	h.autoSave = (bool)options.get("auto_save", false);
+	h.campaignCarryover = n(String(options.get("carryover", String()))); // lane BFME2CAMP1: the campaign's carry-over between the missions
 	std::string error;
 	if (!f.write(n(path), &error))
 	{
@@ -556,6 +558,7 @@ Dictionary GameWorld::check_save(const String &path) const
 		r["ready"] = file.header.campaignReady;
 		r["advanced"] = file.header.campaignAdvanced;
 		r["auto_save"] = file.header.autoSave;
+		r["carryover"] = g(file.header.campaignCarryover); // lane BFME2CAMP1
 		return r;
 	}
 	const ProfileIdentity running = file.header.campaign.empty() ? net_profile() : profileIdentityFor(SimulationProfile::Faithful, true);
@@ -670,6 +673,7 @@ Dictionary GameWorld::prepareSaveLoad(std::unique_ptr<SaveGameFile> file)
 		m_pendingCampaign.map = file->header.mapPath;
 		m_pendingCampaign.mission = file->header.campaignMission;
 		m_pendingCampaign.difficulty = file->header.campaignDifficulty;
+		m_pendingCampaign.carryover = file->header.campaignCarryover; // lane BFME2CAMP1
 		r["campaign"] = g(file->header.campaign);
 		r["mission"] = (int64_t)file->header.campaignMission;
 		r["difficulty"] = (int64_t)file->header.campaignDifficulty;
@@ -726,6 +730,7 @@ Dictionary GameWorld::start_save_load(const Dictionary &options)
 		o["campaign"] = g(campaign.campaign);
 		o["mission"] = (int64_t)campaign.mission;
 		o["difficulty"] = (int64_t)campaign.difficulty;
+		o["carryover"] = g(campaign.carryover); // lane BFME2CAMP1: the same start as the saved mission's
 		o.erase("record_memory"); // the recording starts at the saved frame (save_load_step)
 		report = start_campaign_mission(o);
 	}

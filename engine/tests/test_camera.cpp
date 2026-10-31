@@ -1434,3 +1434,15 @@ TEST_CASE("camera: mountain view keeps valley terrain inside the far clip plane"
  CHECK(camera.farPlane()==depth+16.0f);
  world.logic->setTerrain(nullptr);
 }
+
+// a GameData block that starts indented after a skipped block's End is read: retail's tokenizer skips leading whitespace (StubExtent::LenientAfterEnd, INIBlockStubs.h)
+TEST_CASE("camera: a GameData block indented after a skipped block's End is read")
+{
+	const std::string text = std::string("Weather\n  HardwareFogEnable = Yes\nEnd\n  ") + kGameData;
+	CameraSettings s;
+	std::string err;
+	REQUIRE_MESSAGE(CameraSettings::scan(text, s, &err), err); // before: the Weather stub swallowed GameData
+	CHECK(s.defaultMinHeight == 120.0f);
+	CHECK(s.defaultMaxHeight == 300.0f);
+	CHECK(s.cameraAdjustSpeed == 0.3f);
+}
