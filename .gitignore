@@ -257,3 +257,6 @@ godot/tests/windows_crash_test.gd.uid
 # lane CRASHACT-1: the crash service key script tools/release/crash_key.py writes into a package stage (never committed)
 godot/scripts/crash_client_key.gd
 launcher/scripts/crash_client_key.gd
+
+# Godot-generated resource ids
+*.uid
