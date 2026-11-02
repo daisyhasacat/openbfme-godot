@@ -4,6 +4,7 @@
 #include "Common/PerformanceCounters.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/WallBalance.h"
+#include "GameLogic/NewGame/StartingBase.h"
 #include "Common/ModEngineFeatures.h"
 
 #include "Common/Player.h"
@@ -78,6 +79,10 @@ GameLogic::GameLogic(ThingFactory &things, ModuleFactory &modules, PlayerList &p
 	, m_scriptEngine(std::make_unique<ScriptEngine>(*this)) // lane SCRIPT-1
 {
 	buildPhaseWorkTable();
+	// lane SPELLFIX-1: the economy's attribute modifier product is the object's own pool query, RW 0x68C82D(type, &out, name 0, innate 1) as the income
+	// sites call it (TerrainResourceBehavior RW 0x88558D, SupplyCenterDockUpdate RW 0x8A4614): Industry, Dwarven Riches, Blight and the levelled farms'
+	// PRODUCTION lists now scale income. BFME2 1.06 the same. The sum seam (COMMAND_POINT_BONUS, BOUNTY_PERCENTAGE) stays uninstalled: S-253
+	m_economy->setAttributeModifierProvider([](const Object &obj, int type, float &product) { return obj.attributeModifierProduct(type, nullptr, true, product); });
 	m_partition = std::make_unique<PartitionManager>(*this);
 	m_emotions = std::make_unique<EmotionWorld>(*this);
 	m_inertBit = ObjectTemplateInfoBuilder::kindOfIndex("INERT");
@@ -697,6 +702,10 @@ void GameLogic::update(int phase)
 		// experience system (lane COMBAT-2 had it in the phase 1 row; RW 0x62E6AF .. 0x62E6DD updates four other subsystems)
 		m_victory->update();
 		m_experience->update(); // RW 0x62EBD9: TheDelayedExperienceLevelGrantSystem vslot 0x28, one of that row's subsystems (lane XP-1)
+		if (m_livingWorldTags.active)
+		{
+			StartingBase::updateLivingWorldReinforcements(*this); // WOTR2 milestone 7: ArmySummarySystem::update RW 0x80F4D3 (from RW 0x62EBEA)
+		}
 		m_skirmishAI->update(); // RW 0x62EBEF: TheSkirmishAIManager vslot 0x28, one of that row's subsystems (after the victory conditions; lane AI-1)
 	}
 	if (phase == 1)
@@ -1172,6 +1181,66 @@ std::uint32_t GameLogic::hashState(std::vector<StateHashSection> *sections, std:
 		if (luaAuthorityPlayer() >= 0) { x.addU32(0x4c554141u); x.addI32(luaAuthorityPlayer()); x.addU64(m_luaActions->lastRequest); }
 		x.addBool(m_frameAdvance); // RW GameLogic + 0x44: when false the frame counter does not advance
 		x.addI32(m_gameDifficulty); // lane CAMP-1H: RW GameLogic + 0xA4
+		// WOTR2 milestone 7: the War of the Ring battle's army tags, only while they are in use (every other game hashes as before)
+		if (m_livingWorldTags.inUse())
+		{
+			x.addBool(m_livingWorldTags.active);
+			x.addU32((std::uint32_t)m_livingWorldTags.objects.size());
+			for (const auto &kv : m_livingWorldTags.objects)
+			{
+				x.addU32(kv.first);
+				x.addI32(kv.second.armyId);
+				x.addString(kv.second.spawnId);
+				x.addI32(kv.second.buildingId);
+			}
+			x.addU32((std::uint32_t)m_livingWorldTags.heroes.size());
+			for (const auto &kv : m_livingWorldTags.heroes)
+			{
+				x.addI32(kv.first.first);
+				x.addString(kv.first.second);
+				x.addI32(kv.second.armyId);
+				x.addString(kv.second.spawnId);
+				x.addI32(kv.second.buildingId); // review wotr2m7: the same fields as the xfer
+			}
+			x.addU32((std::uint32_t)m_livingWorldTags.destroyedBuildings.size());
+			for (int id : m_livingWorldTags.destroyedBuildings)
+			{
+				x.addI32(id);
+			}
+			x.addU32((std::uint32_t)m_livingWorldTags.reinforcements.size());
+			for (const LivingWorldBattleTags::Reinforcement &r : m_livingWorldTags.reinforcements)
+			{
+				x.addI32(r.armyId);
+				x.addI32(r.playerIndex);
+				x.addI32(r.state);
+				x.addU32(r.arrivalFrame);
+				x.addU32((std::uint32_t)r.members.size());
+				for (const LivingWorldBattleTags::Member &m : r.members)
+				{
+					x.addString(m.thingTemplate);
+					x.addI32(m.memberIndex);
+					x.addI32(m.quantity);
+					x.addFloat(m.experience);
+					x.addU32((std::uint32_t)m.upgrades.size());
+					for (const std::string &u : m.upgrades)
+					{
+						x.addString(u);
+					}
+					x.addString(m.spawnId);
+				}
+				x.addU32((std::uint32_t)r.spawnPoints.size());
+				for (const auto &p : r.spawnPoints)
+				{
+					x.addString(p.first);
+					x.addString(p.second);
+				}
+			}
+			x.addU32((std::uint32_t)m_livingWorldTags.arrivals.size());
+			for (int id : m_livingWorldTags.arrivals)
+			{
+				x.addI32(id);
+			}
+		}
 		// lane RULES-1: the game rules and the Legendary Heroes factor, only when the game has them (a game without keeps its hash)
 		if (!MpGameRules::isNone(m_gameRules))
 		{

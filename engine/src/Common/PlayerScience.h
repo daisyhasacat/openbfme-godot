@@ -81,6 +81,12 @@ public:
 
 	// vslot 3 (RW 0x6AEE11): the rank reset and the sciences reset
 	void reset();
+	// WOTR2 milestone 7: ArmySummarySystem's initial load RW 0x8125FC for a War of the Ring battle player: reset (vslot 3), resetSciences (RW 0x6AED4B),
+	// addSkillPoints(the war's skill points, no scalar) (RW 0x782AA4), purchase points = earnedSpellPoints + the war's bonus (RW 0x80F49C + RW 0x441BBD),
+	// then the war's science list replaces the list when it is not empty (RW 0x6ACEF4: a vector assignment, nobody told)
+	void loadFromLivingWorld(float skillPoints, int bonusPoints, const ScienceVec &sciences);
+	// RW 0x80F49C ComputePlayerEarnedSpellPoints: the SciencePurchasePointsGranted of every rank 1 .. the current rank
+	int earnedSpellPoints() const;
 	void resetSciences();                         // RW 0x6AED4B (lane BFME2CAMP1: the campaign's carry-over step calls it on its own too, RW 0x5EBE13)
 	// + 0x18, the rank the skill point scalar table starts at (RW 0x71C311; lane BFME2CAMP1: the carry-over step sets it to the rank, RW 0x5EBE2D)
 	void setScalarBaseRank(int rank) { m_scalarBaseRank = rank; }

@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0. Lane BANNER-1: a rank-two horde's banner carrier refills the horde after a real fight (owner, nightly 2026-10-22: "banner
 // carriers don't auto replace units if they are lvl 2"). Retail: BannerCarrierUpdate::update RW 0x89ACE4, the horde's combat test RW 0x86EE52,
 // the member spawn RW 0x89A392 / 0x873AE3.
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 #include "CampaignTestUtil.h"
 #include "GameClient/GUI/Skirmish/IniSkirmishSetupSource.h"
@@ -81,7 +82,7 @@ struct BannerGame : campaigntest::Mission
 		Object *o = logic().newObject(tt, player->getDefaultTeam(), ObjectStatusMaskType{});
 		REQUIRE(o);
 		place(*o, at);
-		return o;
+		return testutil::completeHorde(o);
 	}
 
 	static HordeContain &contain(Object &horde)
@@ -255,9 +256,10 @@ TEST_CASE("banner1 retail: a rank-two Gondor horde refills after a real fight, m
 		REQUIRE(m->getExperienceTracker()->getRank() == 2);
 	}
 	MESSAGE("full " << full << " " << g.probe(*horde));
-	// three orc hordes: one alone dies without costing a rank-two Gondor horde a man
+	// two orc hordes: one alone dies without costing a rank-two Gondor horde a man; three beat it (all fifteen dead by frame 155) now that its members
+	// stay where they fight instead of being put back on their slots at every transform change (RW 0x871536 moves no member); two cost it five men
 	std::vector<ObjectID> foes;
-	for (int i = 0; i < 3; ++i)
+	for (int i = 0; i < 2; ++i)
 	{
 		Coord3D foeAt = g.position;
 		foeAt.x += 120.0f;

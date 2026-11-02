@@ -35,7 +35,8 @@
 // SaveGameFile, DeleteGameFile); the host saves and answers saveFinished(), which shows the result in the message box (APT:SaveGameProgress with
 // GUI:GameSaved or the error) instead of retail's two boxes; a save the running build cannot load is drawn grey (0xFF808080) and Load shows why
 // (GUI:ErrorLoadingGame's title, the refusal as text); lane CAMPSAVE-1: the campaign's auto-saves are listed in the AutoSaveList; retail saves are listed grey as import entries that do not load yet (SAVE-7); the disk space
-// check (RW 0x6DD795) is the host's write failure; the War of the Ring page lists nothing and the multiplayer type is not offered. The gadget
+// check (RW 0x6DD795) is the host's write failure; the War of the Ring page (type 8, WOTR2 milestone 3) lists the War of the Ring map's saves with
+// RW 0x6E04AD's filter-8 columns (file name, blank, time, date; a map save gold); the multiplayer type is not offered. The gadget
 // handler is retail's (RW 0x8180A8): a selection clears the other list's, refreshes the buttons (RW 0x816927 -> 0x8165A1: the movie's
 // LoadButtonEnable / DeleteButtonEnable) and on the save page takes the file's name into the entry (RW 0x816FA3) and SaveButtonEnable (RW 0x816F24); a
 // double click saves or loads, Enter in the entry saves, a change of the entry's text refreshes SaveButtonEnable; nothing while a confirmation or

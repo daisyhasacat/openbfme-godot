@@ -305,7 +305,9 @@ TEST_CASE("attackpath1 findAttackPath, Uber queue: a block search that spends th
 		const Coord3D end = *h.path->getLastNode()->getPosition();
 		CHECK(end.x == 1785.0f);
 		CHECK(end.y == 1685.0f);
-		CHECK(pf.cumulativeCellsAllocated() == (uber ? 2633 : 7004));
+		// merge queue q34 (measured once on the merged tree and at each merge point): 7004 -> 6785 (Faithful) and 2633 -> 2594 (Uber) from #161's merge point on: the block search's block zones (RW 0x9389A6) and raised branch
+		// (RW 0x9389CE) open fewer blocks
+		CHECK(pf.cumulativeCellsAllocated() == (uber ? 2594 : 6785));
 		delete h.path;
 	}
 }

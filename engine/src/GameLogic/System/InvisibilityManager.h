@@ -179,8 +179,9 @@ public:
 	// (RW 0x6AAC52 false: everything is seen as a friend)
 	static int clientLook(const Object &obj, const Player *local);
 	// the friend's opacity pulse of the object: GameData InvisibilityOpacityMin / Max / CycleFrames for an invisible object, its StealthUpdate's FriendlyOpacityMin /
-	// Max / PulseFrequency for a STEALTHED one (both RW 0x6760F9 inputs)
-	void clientOpacityRange(const Object &obj, float *lo, float *hi, unsigned *cycleFrames) const;
+	// Max / PulseFrequency for a STEALTHED one (both RW 0x6760F9 inputs); `cycleSeconds` is the setter's cycle argument (RW 0x81AA85: frames / 5;
+	// RW 0x777AF7: frequency * 0.2f)
+	void clientOpacityRange(const Object &obj, float *lo, float *hi, float *cycleSeconds) const;
 
 	// ---- reports / tests ----
 	void crc(StateHasher &hasher) const;

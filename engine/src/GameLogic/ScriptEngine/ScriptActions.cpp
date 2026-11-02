@@ -231,6 +231,10 @@ void createOnTeamAtPosition(ScriptEngine &engine, const std::string &name, const
 		return;
 	}
 	Object *obj = engine.host()->createObject(*tt, *team, pos, angle);
+	if (obj)
+	{
+		obj->friend_onBuildComplete(); // RW 0x7C595A: onBuildComplete (RW 0x68D252) after the position (a horde makes its members there)
+	}
 	if (obj && !name.empty())
 	{
 		obj->setName(name);
@@ -275,6 +279,10 @@ void createOnTeamAtWaypoint(ScriptEngine &engine, const std::string &name, const
 	// the name goes on before the object enters the cache (RW 0x7C5D30: + 0x88, then RW 0x60A1D5); the host makes the full object (ZH
 	// ScriptActions::doCreateObject: newObject, position, pathfinder registration)
 	Object *obj = engine.host()->createObject(*tt, *team, wp->location, 0.0f);
+	if (obj)
+	{
+		obj->friend_onBuildComplete(); // RW 0x7C5B3B: onBuildComplete (RW 0x68D252) after the position
+	}
 	if (obj && !name.empty())
 	{
 		obj->setName(name); // the cache entry (Object::setName -> ScriptEngine::objectNamed)

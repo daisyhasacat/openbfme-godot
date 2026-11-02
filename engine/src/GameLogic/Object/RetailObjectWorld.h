@@ -27,12 +27,11 @@
 #include "Common/Upgrade.h"
 #include "GameClient/ControlBarCommands.h"
 #include "GameClient/LinearCampaign.h"
-#include "GameClient/LivingWorldCampaign.h"
-#include "GameClient/LivingWorldMap.h"
 #include "GameEngineDevice/W3DDevice/GameClient/GlowEffect.h"
 #include "GameLogic/AttributeModifiers.h"
 #include "GameLogic/CreateAHeroSystem.h"
 #include "GameLogic/ExperienceLevels.h"
+#include "GameLogic/LivingWorld/LivingWorldData.h" // WOTR-1
 #include "GameLogic/Locomotor.h"
 #include "GameLogic/ProductionSettings.h"
 #include "GameLogic/ScriptEngine/MissionObjectiveTracker.h"
@@ -66,7 +65,9 @@ public:
 	const SubsystemLoadReport &report() const { return m_s->m_report; }
 	double loadSeconds() const { return m_s->m_seconds; }
 
+	ArchiveFileSystem &fileSystem() const { return m_fs; } // lane WOTR-2: the War of the Ring setup reads GameData's economy (EconomySettings::load)
 	ThingFactory &things() { return *m_s->m_things; }
+	const ThingFactory &things() const { return *m_s->m_things; } // lane WOTR-2
 	WeaponStores &weaponStores() { return m_s->m_weaponStores; } // WEAPON-1
 	// lane GLOW-1: the GlowEffect block (environment.ini, and a map.ini's override while its map is the loaded one) - the device's glow pass reads active()
 	GlowEffectStore &glowEffect() { return m_s->m_glow; }
@@ -99,8 +100,6 @@ public:
 	const std::vector<std::pair<std::string, bool>> &missionObjectives() const { return m_s->m_missionObjectives; }
 	bool bfme1Data() const { return isBfme1Data(m_fs); } // community PR #36 (Common/BfmeGame.h)
 	const FormationAssistant &formations() const { return m_s->m_formations; }
-	const LivingWorldCampaignManager &livingWorldCampaigns() const { return m_s->m_livingWorldCampaigns; } // WOTR-1: TheLivingWorldCampaignManager (the War of the Ring scenarios)
-	const LivingWorldMapStore &livingWorldMap() const { return m_s->m_livingWorldMap; } // WOTR-1: the Living World map, region effects and regions
 	const LinearCampaignManager &linearCampaigns() const { return m_s->m_linearCampaigns; } // CAMP-1: TheLinearCampaignManager (the LinearCampaign blocks)
 	const CreateAHeroSystem &createAHeroSystem() const { return m_s->m_createAHero; } // HERO-2: TheCreateAHeroSystem (Data\INI\CreateAHeroSystem.ini)
 	// lane CAMPUI-1: the MissionObjectiveList of the last applyMapIni's map.ini / solo.ini (MissionObjectiveTracker::parseList, RW 0x836497); `parsed` false
@@ -109,6 +108,13 @@ public:
 	bool hasMapObjectives() const { return m_s->m_mapObjectivesParsed; }
 	// MOVE-1: the INI macro table the object templates were loaded with (a LocomotorSet block's Speed may be a macro: AIWorld parses those blocks at runtime)
 	const INIMacroTable &iniMacros() const { return m_s->m_env.macros; }
+	// WOTR-1: the War of the Ring stores (LivingWorldPlayerTemplate, LivingWorldBuilding, LivingWorldPlayerArmy, LivingWorldRegionCampaign,
+	// LivingWorldCampaign, LivingWorldMapInfo, LivingWorldAITemplate, LivingWorldRegionEffects), filled by the subsystem load
+	LivingWorld::LivingWorldStores &livingWorld() { return *m_s->m_livingWorld; }
+	const LivingWorld::LivingWorldStores &livingWorld() const { return *m_s->m_livingWorld; }
+	// lane WOTR-2: the stores of this load, shared: every game reloads the state (reload(), MAPRESET-1), and a War of the Ring campaign plays across
+	// many games (its battles), so the strategic game holds the stores it started with rather than a reference into a state a reload frees
+	std::shared_ptr<const LivingWorld::LivingWorldStores> livingWorldShared() const { return m_s->m_livingWorld; }
 
 	struct MapIniResult
 	{
@@ -215,8 +221,6 @@ private:
 		std::vector<std::pair<std::string, bool>> m_missionObjectives; // label, bonus; map.ini order, one-based IDs
 		FormationAssistant m_formations;
 		LinearCampaignManager m_linearCampaigns;      // CAMP-1
-		LivingWorldCampaignManager m_livingWorldCampaigns; // WOTR-1
-		LivingWorldMapStore m_livingWorldMap;              // WOTR-1
 		CreateAHeroSystem m_createAHero;              // HERO-2
 		std::vector<MissionObjective> m_mapObjectives; // lane CAMPUI-1: map.ini's MissionObjectiveList
 		bool m_mapObjectivesParsed = false;
@@ -224,6 +228,7 @@ private:
 		std::unique_ptr<SkirmishAIStore> m_skirmishAI;
 		WeaponStores m_weaponStores; // WEAPON-1: the Weapon, Armor and DamageFX blocks have real parsers
 		std::unique_ptr<SpellStores> m_spellStores; // SPELL-1
+		std::shared_ptr<LivingWorld::LivingWorldStores> m_livingWorld; // WOTR-1 (shared: livingWorldShared)
 		GlowEffectStore m_glow;                     // GLOW-1: RW 0xDA28C0 / 0xDA28E4
 		SubsystemLoadReport m_report;
 		double m_seconds = 0.0;

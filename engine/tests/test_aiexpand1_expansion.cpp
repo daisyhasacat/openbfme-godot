@@ -4,6 +4,7 @@
 // start 0, a Medium computer at start 1, starts 3 and 4 empty. The expectations follow the RW functions (the gate's order, the one draw at line 0x3F, the
 // waypoint walk and the occupied test), recomputed here from the map's waypoints and objects, never read back from the port.
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 
 #include "StartTestUtil.h"
@@ -148,6 +149,7 @@ Object *placeAt(GameLogic &logic, const char *name, Team *team, const Coord3D &a
 	REQUIRE_MESSAGE(o != nullptr, name);
 	Coord3D pos{ at.x, at.y, logic.getGroundHeight(at.x, at.y) };
 	o->setPosition(&pos);
+	testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 	return o;
 }
 
@@ -621,10 +623,11 @@ TEST_CASE("aiexpand1 expansion in a game: the Medium Men computer kept above 300
 	// second base at 2937 (2611)
 	CHECK(chosenFrame == 1519);
 	CHECK(tacticFrame == 1519);
-	CHECK(requestFrame == 2196);
-	CHECK(inProgressFrame == 2197);
-	CHECK(doneFrame == 2937);
-	CHECK(baseFrame == 2937);
+	// merge queue q35 (#132's ground-structure melee reach, measured once on the merged tree and at each merge point; SIMSMALL-1, #178 and #179 keep the archive's values): the same start is chosen at 1519, its request at 1894 (2196), in progress at 1895 (2197), complete with the second base at 2635 (2937)
+	CHECK(requestFrame == 1894);
+	CHECK(inProgressFrame == 1895);
+	CHECK(doneFrame == 2635);
+	CHECK(baseFrame == 2635);
 	MESSAGE("EXPANSION target on frame " << chosenFrame << " at (" << chosenAt.x << ", " << chosenAt.y << "); SimpleExpansion on frame " << tacticFrame
 		<< ", its request on " << requestFrame << " (last state " << lastState << ", in progress on " << inProgressFrame << ", complete on " << doneFrame
 		<< "), the second base on " << baseFrame << "; bases " << aiPtr->build.bases.size() << ", tactics started " << aiPtr->brain.tacticsStarted

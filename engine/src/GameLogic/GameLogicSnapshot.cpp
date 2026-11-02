@@ -210,10 +210,11 @@ bool GameLogic::loadSnapshot(const std::vector<std::uint8_t> &bytes, std::string
 void GameLogic::xferCore(Xfer &x)
 {
 	// lane CHEAT-1: version 2 adds the Cheat Mode block at the end; lane BFME2CAMP1: version 3 adds the buildability overrides (GameLogic.h, RW GameLogic
-	// + 0x10) and the campaign's carry-over after it. Each version is written only when its state is there, so every other game's snapshot is
-	// byte-identical to version 1's (a version 1 or 2 snapshot loads with none of the later state)
+	// + 0x10) and the campaign's carry-over after it; WOTR2 milestone 7: version 4 adds the War of the Ring battle's army tags after those (it was
+	// version 3 on feature/wotr before the archive merge: never released). Each version is written only when its state is there, so every other game's
+	// snapshot is byte-identical to version 1's (an older snapshot loads with none of the later state)
 	const bool campaignState = !m_buildableOverrides.empty() || m_campaignCarryover.has_value();
-	XferVersion v{ 1, (std::uint8_t)(x.isLoading() || campaignState ? 3 : m_cheatMode.enabled() ? 2 : 1) };
+	XferVersion v{ 1, (std::uint8_t)(x.isLoading() || m_livingWorldTags.inUse() ? 4 : campaignState ? 3 : m_cheatMode.enabled() ? 2 : 1) };
 	x.xferVersion(v);
 	x.xferUnsignedInt(&m_frame);
 	x.xferBool(&m_frameAdvance);
@@ -309,5 +310,146 @@ void GameLogic::xferCore(Xfer &x)
 	else if (x.isLoading())
 	{
 		m_campaignCarryover.reset();
+	}
+	if (v.current >= 4)
+	{
+		xferLivingWorldTags(x);
+	}
+	else if (x.isLoading())
+	{
+		m_livingWorldTags.clear();
+	}
+}
+
+// WOTR2 milestone 7: LivingWorldBattleTags (GameLogic/LivingWorld/LivingWorldBattleTags.h)
+void GameLogic::xferLivingWorldTags(Xfer &x)
+{
+	LivingWorldBattleTags &t = m_livingWorldTags;
+	x.xferBool(&t.active);
+	auto xferTag = [&](LivingWorldBattleTags::Tag &tag) {
+		x.xferInt(&tag.armyId);
+		if (x.isLoading() && tag.armyId < 0)
+		{
+			throw XferException("the snapshot's War of the Ring armyId " + std::to_string(tag.armyId));
+		}
+		x.xferAsciiString(&tag.spawnId);
+		x.xferInt(&tag.buildingId);
+		if (x.isLoading() && tag.buildingId < 0)
+		{
+			throw XferException("the snapshot's War of the Ring buildingId " + std::to_string(tag.buildingId));
+		}
+	};
+	std::uint32_t count = (std::uint32_t)t.objects.size();
+	x.xferCount(&count, 16, sizeof(LivingWorldBattleTags::Tag) + 48);
+	if (x.isLoading())
+	{
+		t.objects.clear();
+		for (std::uint32_t i = 0; i < count; ++i)
+		{
+			ObjectID id = INVALID_ID;
+			x.xferObjectID(&id);
+			LivingWorldBattleTags::Tag tag;
+			xferTag(tag);
+			t.objects[(std::uint32_t)id] = tag;
+		}
+	}
+	else
+	{
+		for (auto &kv : t.objects)
+		{
+			ObjectID id = (ObjectID)kv.first;
+			x.xferObjectID(&id);
+			xferTag(kv.second);
+		}
+	}
+	count = (std::uint32_t)t.heroes.size();
+	x.xferCount(&count, 20, sizeof(LivingWorldBattleTags::Tag) + 96);
+	if (x.isLoading())
+	{
+		t.heroes.clear();
+		for (std::uint32_t i = 0; i < count; ++i)
+		{
+			std::int32_t player = 0;
+			std::string name;
+			x.xferInt(&player);
+			SnapshotXfer::checkRange(player, 0, 19, "a War of the Ring hero tag's player");
+			x.xferAsciiString(&name);
+			LivingWorldBattleTags::Tag tag;
+			xferTag(tag);
+			t.heroes[{ player, name }] = tag;
+		}
+	}
+	else
+	{
+		for (auto &kv : t.heroes)
+		{
+			std::int32_t player = kv.first.first;
+			std::string name = kv.first.second;
+			x.xferInt(&player);
+			SnapshotXfer::checkRange(player, 0, 19, "a War of the Ring hero tag's player");
+			x.xferAsciiString(&name);
+			xferTag(kv.second);
+		}
+	}
+	x.xferVectorSize(t.destroyedBuildings, 4);
+	for (int &buildingId : t.destroyedBuildings)
+	{
+		x.xferInt(&buildingId);
+		if (x.isLoading() && buildingId <= 0)
+		{
+			throw XferException("the snapshot's destroyed War of the Ring buildingId " + std::to_string(buildingId));
+		}
+	}
+	// milestone 7 (step 5): the reinforcement armies and the call-ins so far
+	x.xferVectorSize(t.reinforcements, 24);
+	for (LivingWorldBattleTags::Reinforcement &r : t.reinforcements)
+	{
+		x.xferInt(&r.armyId);
+		if (x.isLoading() && r.armyId <= 0)
+		{
+			throw XferException("the snapshot's War of the Ring reinforcement armyId " + std::to_string(r.armyId));
+		}
+		x.xferInt(&r.playerIndex);
+		SnapshotXfer::checkRange(r.playerIndex, 0, 19, "a War of the Ring reinforcement's player");
+		x.xferInt(&r.state);
+		SnapshotXfer::checkRange(r.state, 2, 4, "a War of the Ring reinforcement's state");
+		x.xferUnsignedInt(&r.arrivalFrame);
+		x.xferVectorSize(r.members, 24);
+		for (LivingWorldBattleTags::Member &m : r.members)
+		{
+			x.xferAsciiString(&m.thingTemplate);
+			x.xferInt(&m.memberIndex);
+			if (x.isLoading() && m.memberIndex < 0)
+			{
+				throw XferException("the snapshot's War of the Ring reinforcement memberIndex " + std::to_string(m.memberIndex));
+			}
+			x.xferInt(&m.quantity);
+			if (x.isLoading() && (m.quantity < 0 || m.quantity > 1000))
+			{
+				throw XferException("the snapshot's War of the Ring reinforcement quantity " + std::to_string(m.quantity));
+			}
+			x.xferReal(&m.experience);
+			x.xferVectorSize(m.upgrades, 4);
+			for (std::string &u : m.upgrades)
+			{
+				x.xferAsciiString(&u);
+			}
+			x.xferAsciiString(&m.spawnId);
+		}
+		x.xferVectorSize(r.spawnPoints, 8);
+		for (auto &p : r.spawnPoints)
+		{
+			x.xferAsciiString(&p.first);
+			x.xferAsciiString(&p.second);
+		}
+	}
+	x.xferVectorSize(t.arrivals, 4);
+	for (int &armyId : t.arrivals)
+	{
+		x.xferInt(&armyId);
+		if (x.isLoading() && armyId <= 0)
+		{
+			throw XferException("the snapshot's War of the Ring arrival armyId " + std::to_string(armyId));
+		}
 	}
 }

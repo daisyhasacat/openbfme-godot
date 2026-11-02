@@ -216,8 +216,8 @@ Path *Pathfinder::findAttackPath(const PathfindObject *obj, const PathfindLocomo
 	}
 	const bool checkView = victim == nullptr || !victim->isSignificantlyAboveTerrain();
 	// lane WALL-2 with ATTACKPATH-1 (S-4858, OpenBFME's own): RotWK keeps the closest-cell fallback only with a corridor (the RW 0x93AD93 ranking below runs
-	// only when RW 0x6F9829 found one). The port's corridor runs on the ground grid only (S-162; its raised branch RW 0x9389CE is S-4856), so a unit on a wall
-	// top, a raised walkway or a ramp often gets none, and the search would then end with no path at all: the unit would wait in its approach for good (Grond
+	// only when RW 0x6F9829 found one). A unit off the ground layer whose start the block search cannot leave gets none, and the search would then end with
+	// no path at all: the unit would wait in its approach for good (Grond
 	// put on a Minas Tirith wall top, every wall cell blocking it: CanPathThroughGates = No). Such a search keeps the cell closest to the goal cell by its
 	// squared cell distance instead, as the attack search did before the corridor was ported
 	const bool rankByDistance = !hierarchical && obj->getLayer() != LAYER_GROUND;

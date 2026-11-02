@@ -96,6 +96,87 @@ const FieldParse kFields[] = {
 	{ nullptr, nullptr, nullptr, 0 }
 };
 
+// BFME1 VA 0x010BB9D0: PickUpKindOf is a mask, not an ObjectFilter expression.
+// Preserve +/- edits and empty lines just as ParseKindOfMask does. An ANY filter
+// with only this include mask has the same kind intersection test at runtime.
+void parseLegacyPickUpMask(INI *ini, void *instance, void *store, const void *)
+{
+	auto &filter = *static_cast<ObjectFilter *>(store);
+	ParseKindOfMask(ini, instance, &filter.includeKindOf, nullptr);
+	filter = ObjectFilter::none(filter.includeKindOf, {});
+	filter.rule = ObjectFilter::RULE_ANY;
+}
+
+using Bfme1Data = Bfme1AutoPickUpUpdateModuleData;
+const FieldParse kBfme1Fields[] = {
+	{ "ScanDelayTime", INI::parseDurationUnsignedInt, nullptr, (int)offsetof(Bfme1Data, m_scanDelayTime) },
+	{ "PickUpKindOf", parseLegacyPickUpMask, nullptr, (int)offsetof(Bfme1Data, m_pickUpFilter) },
+	{ "ScanDistance", INI::parseReal, nullptr, (int)offsetof(Bfme1Data, m_scanDistance) },
+	{ "Bored", INI::parseBool, nullptr, (int)offsetof(Bfme1Data, m_bored) },
+	{ "BoredFilter", parseFilter, nullptr, (int)offsetof(Bfme1Data, m_boredFilter) },
+	{ "EatObjectEntry", parseEatObjectEntry, nullptr, (int)offsetof(Bfme1Data, m_eatObjectEntries) },
+	{ "AutoThrowObject", INI::parseBool, nullptr, (int)offsetof(Bfme1Data, m_autoThrowObject) },
+	{ "RunFromButton", INI::parseBool, nullptr, (int)offsetof(Bfme1Data, m_runFromButton) },
+	{ "RunFromButtonNumber", INI::parseInt, nullptr, (int)offsetof(Bfme1Data, m_runFromButtonNumber) },
+	{ "CanScanWhileAttackingOrMoving", INI::parseBool, nullptr, (int)offsetof(Bfme1Data, m_canScanWhileAttackingOrMoving) },
+	{ nullptr, nullptr, nullptr, 0 }
+};
+
+class Bfme1AutoPickUpUpdate : public AutoPickUpUpdate
+{
+public:
+	OBFME_MODULE_XFER(Bfme1AutoPickUpUpdate)
+	Bfme1AutoPickUpUpdate(Thing *thing, const Bfme1Data *data)
+		: AutoPickUpUpdate(thing, data), m_legacyData(data) {}
+
+protected:
+	bool tryBoredAction() override
+	{
+		// BFME1 RVA 0x00281F40: after eating, before pickup; the caller has
+		// already established an empty contain. This scan has no readiness gate.
+		if (!m_legacyData->m_bored) return false;
+		Object *obj = getObject();
+		GameLogic &logic = obj->logic();
+		const Player *owner = obj->getControllingPlayer();
+		PartitionFilterFn bored([&](Object &o) { return ObjectFilterMatch::allows(logic, m_legacyData->m_boredFilter, o, owner); });
+		PartitionFilterFn allies([&](Object &o) { return obj->getRelationship(o) == ALLIES; });
+		PartitionFilterFn notSelf([&](Object &o) { return &o != obj; });
+		Object *target = logic.partition().getClosestObject(*obj->getPosition(), m_legacyData->m_scanDistance, FROM_CENTER_2D, { &bored, &allies, &notSelf });
+		if (!target) return false;
+		for (const auto &m : obj->modules())
+		{
+			if (m->isUnported())
+			{
+				if (unportedInterfaceMask(*m) & MODULEINTERFACE_SPECIAL_POWER)
+				{
+					logic.noteStop(kStop);
+					return true;
+				}
+				continue;
+			}
+			SpecialPowerModuleInterface *power = m->getSpecialPower();
+			const SpecialPowerTemplate *tmpl = power ? power->getSpecialPowerTemplate() : nullptr;
+			// BFME1's SPECIAL_MTTROLL_BORED is 0x41 in the donor. The port's
+			// SpecialPower parser stores the shared RotWK name ordinal, 0x40.
+			if (tmpl && tmpl->getSpecialPowerType() == 0x40)
+			{
+				SpecialPowerModules::doSpecialPowerAtObject(*obj, tmpl, target, 2u, false);
+				break;
+			}
+		}
+		return true; // a target ends this scan even when there is no matching power
+	}
+
+private:
+	const Bfme1Data *m_legacyData;
+};
+
+void Bfme1AutoPickUpUpdate::xfer(Xfer &x)
+{
+	// This variant adds template data only, so its runtime snapshot is unchanged.
+	AutoPickUpUpdate::xfer(x);
+}
+
 // body slot 0x14: health / max health in the FPU (HeroAbilityModules' form of RW 0x8C1D75)
 double healthRatio(const Object &o)
 {
@@ -114,11 +195,30 @@ void AutoPickUpUpdateModuleData::buildFieldParse(MultiIniFieldParse &p)
 	p.add(kFields);
 }
 
+void Bfme1AutoPickUpUpdateModuleData::buildFieldParse(MultiIniFieldParse &p)
+{
+	p.add(kBfme1Fields);
+}
+
 void AutoPickUpUpdate::registerModule(ModuleFactory &modules)
 {
 	static const char kName[] = "AutoPickUpUpdate";
-	modules.bindTypedData<Data>(kName, MODULETYPE_BEHAVIOR);
+	modules.bindDataProc(kName, MODULETYPE_BEHAVIOR, [](INI *ini) -> std::shared_ptr<ModuleData> {
+		if (ini && ini->bfme1Data())
+		{
+			auto data = std::make_shared<Bfme1Data>();
+			ini->initFromINIMultiProc(data.get(), &Bfme1Data::buildFieldParse);
+			return data;
+		}
+		auto data = std::make_shared<Data>();
+		if (ini) ini->initFromINIMultiProc(data.get(), &Data::buildFieldParse);
+		return data;
+	});
 	modules.bindModuleProc(kName, MODULETYPE_BEHAVIOR, [](Thing *thing, const ModuleData *data, const ModuleFactory::ModuleTemplate &) -> std::unique_ptr<Module> {
+		if (const auto *legacy = dynamic_cast<const Bfme1Data *>(data))
+		{
+			return std::make_unique<Bfme1AutoPickUpUpdate>(thing, legacy);
+		}
 		const Data *typed = dynamic_cast<const Data *>(data);
 		if (!typed)
 		{
@@ -272,6 +372,7 @@ UpdateSleepTime AutoPickUpUpdate::update()
 	{
 		return UPDATE_SLEEP_NONE;
 	}
+	if (tryBoredAction()) return UPDATE_SLEEP_NONE;
 	KindOfMaskType tree{};
 	MaskSet(tree, kKindOfTree, true); // RW 0x444D39(0, 0x5E)
 	if (ObjectFilterMatch::allowsKindOf(m_data->m_pickUpFilter, tree)) // RW 0x76379C

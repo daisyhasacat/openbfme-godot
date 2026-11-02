@@ -520,7 +520,7 @@ void W3DInstancer::set_instance_house_color(int64_t instance, const Color &color
 	const float packed = color.a < 0.5f ? 0.0f : W3D_Pack_House_Color((int)std::lround(color.r * 255.0f), (int)std::lround(color.g * 255.0f), (int)std::lround(color.b * 255.0f));
 	if (inst.HcPacked == packed) return;
 	inst.HcPacked = packed;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 }
 
@@ -558,7 +558,7 @@ void W3DInstancer::set_instance_infantry_light(int64_t instance, bool infantry)
 	if (instance < 0 || instance >= (int64_t)Instances.size()) return;
 	if (Instances[(size_t)instance].InfantryLight == infantry) return;
 	Instances[(size_t)instance].InfantryLight = infantry;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 }
 
@@ -567,7 +567,7 @@ void W3DInstancer::set_instance_sway(int64_t instance, int type)
 	if (instance < 0 || instance >= (int64_t)Instances.size() || type < 0 || type > 10) return;
 	if (Instances[(size_t)instance].Sway == type) return;
 	Instances[(size_t)instance].Sway = type;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 }
 
@@ -575,7 +575,7 @@ void W3DInstancer::set_instance_fogged(int64_t instance, bool fogged)
 {
 	if (instance < 0 || instance >= (int64_t)Instances.size() || Instances[(size_t)instance].Fogged == fogged) return;
 	Instances[(size_t)instance].Fogged = fogged;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 }
 
@@ -583,7 +583,7 @@ void W3DInstancer::set_instance_scene_fog(int64_t instance, bool fog)
 {
 	if (instance < 0 || instance >= (int64_t)Instances.size() || Instances[(size_t)instance].NoSceneFog == !fog) return;
 	Instances[(size_t)instance].NoSceneFog = !fog;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 }
 
@@ -606,7 +606,7 @@ void W3DInstancer::set_instance_occlusion(int64_t instance, bool occluder, int s
 			ensure_occlusion_passes(*d.Mesh, occluder, slot != 0);
 		}
 	}
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 }
 
@@ -616,7 +616,7 @@ void W3DInstancer::set_instance_cast_shadow(int64_t instance, bool enabled)
 	Instance &inst = Instances[(size_t)instance];
 	if (inst.Removed || inst.CastShadow == enabled) return;
 	inst.CastShadow = enabled;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 }
 
@@ -702,7 +702,7 @@ void W3DInstancer::set_instance_opacity(int64_t instance, double opacity)
 	const float o = opacity < 0.0 ? 0.0f : (opacity > 1.0 ? 1.0f : (float)opacity);
 	if (Instances[(size_t)instance].Opacity == o) return;
 	Instances[(size_t)instance].Opacity = o;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 }
 
@@ -1477,7 +1477,7 @@ void W3DInstancer::set_instance_transform(int64_t instance, const Transform3D &t
 	{
 		if (Instances[(size_t)instance].Xf == transform) return;
 		Instances[(size_t)instance].Xf = transform;
-		PoseDirty = true;
+		note_pose_dirty();
 		mark_model(instance);
 	}
 }
@@ -1517,7 +1517,7 @@ bool W3DInstancer::remove_instance(int64_t instance)
 		for (auto &name : inst.MemoClip) std::string().swap(name);
 		decltype(inst.DrawPoseState)().swap(inst.DrawPoseState);
 	}
-	PoseDirty = true;
+	note_pose_dirty();
 	return true;
 }
 
@@ -1532,7 +1532,30 @@ void W3DInstancer::set_instance_shrouded(int64_t instance, bool hidden)
 
 void W3DInstancer::mark_model(int64_t instance)
 {
-	Models[(size_t)Instances[(size_t)instance].Model]->BuffersDirty = true;
+	std::atomic<bool> &dirty = Models[(size_t)Instances[(size_t)instance].Model]->BuffersDirty;
+	if (!dirty.load(std::memory_order_relaxed))
+	{
+		dirty.store(true, std::memory_order_relaxed); // lane PERF-CLIENT: stored once (the per-instance setters may run on several threads)
+	}
+}
+
+bool W3DInstancer::pose_request_is_local(int64_t instance, const std::string &clip0, const void *key0, const std::string &clip1, const void *key1) const
+{
+	if (instance < 0 || instance >= (int64_t)Instances.size() || !Assets)
+	{
+		return true; // set_instance_pose_keyed returns at once
+	}
+	const Instance &inst = Instances[(size_t)instance];
+	// set_instance_pose_keyed's resolve: a key or name the memo answers is local; anything else reaches the model's clip cache (shared)
+	auto memo = [&](int k, const std::string &clip, const void *key) {
+		return clip.empty() || (inst.MemoAnim[k] && ((key != nullptr && key == inst.MemoKey[k]) || clip == inst.MemoClip[k]));
+	};
+	if (!memo(0, clip0, key0) || !memo(1, clip1, key1))
+	{
+		return false;
+	}
+	// adopt_animated_palette moves a static block into the animated pool (shared free lists); local when there is no move to make
+	return inst.PaletteAnimated || inst.Removed || inst.PaletteSize == 0;
 }
 
 void W3DInstancer::note_palette_rows(int offset, int texels)
@@ -1892,7 +1915,7 @@ bool W3DInstancer::set_instance_clip(int64_t instance, const String &clip, doubl
 	inst.Explicit = false;
 	inst.Anim1 = nullptr;
 	inst.PoseStale = true;
-	PoseDirty = true;
+	note_pose_dirty();
 	if (clip.is_empty())
 	{
 		inst.Anim = nullptr;
@@ -1981,7 +2004,7 @@ bool W3DInstancer::set_instance_pose_keyed(int64_t instance, const std::string &
 	inst.Frame1 = f1;
 	inst.Percentage = pct;
 	inst.PoseStale = true;
-	PoseDirty = true;
+	note_pose_dirty();
 	adopt_animated_palette(inst);
 	return true;
 }
@@ -2004,7 +2027,7 @@ bool W3DInstancer::set_instance_bone_spins_native(int64_t instance, const std::v
 	if (spins == inst.BoneSpins) return true;
 	inst.BoneSpins = std::move(spins);
 	inst.PoseStale = true;
-	PoseDirty = true;
+	note_pose_dirty();
 	if (!inst.BoneSpins.empty())
 	{
 		adopt_animated_palette(inst);
@@ -2099,7 +2122,7 @@ bool W3DInstancer::set_instance_hidden_subobjects(int64_t instance, const Packed
 		}
 	}
 	inst.HiddenSubs.swap(hidden);
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 	return true;
 }
@@ -2144,7 +2167,7 @@ void W3DInstancer::rebuild_layout()
 		}
 	}
 	LayoutDirty = false;
-	PoseDirty = true;
+	note_pose_dirty();
 }
 
 void W3DInstancer::evaluate_pose(Instance &inst) const
@@ -3160,7 +3183,7 @@ void W3DInstancer::set_sort_camera(const Transform3D &transform)
 {
 	SortCamera = transform;
 	SortCameraSet = true;
-	PoseDirty = true;
+	note_pose_dirty();
 }
 
 PackedInt32Array W3DInstancer::get_draw_order(int64_t model, int64_t draw) const

@@ -6,6 +6,7 @@
 // The objects themselves are obfme:Objects' (SAVE-4b, not merged): both games keep their own, identical objects. SKIP loudly without ROTWK_INSTALL /
 // BFME2_INSTALL.
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 
 #include "StartTestUtil.h"
@@ -36,6 +37,7 @@
 #include "GameLogic/AI/AIHunt.h"
 #include "GameLogic/Module/GiantBirdAIUpdate.h"
 #include "GameLogic/AI/AIStateMachine.h"
+#include "GameLogic/Combat/ObjectWeapons.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/Module/HeroAbilityModules.h"
 #include "GameLogic/VictoryConditions.h"
@@ -1183,13 +1185,14 @@ TEST_CASE("save4c coverage (review r2): units attacking, moving, guarding, hunti
 	REQUIRE(mover != nullptr);
 	REQUIRE(guard != nullptr);
 	REQUIRE(hunter != nullptr);
+	// the victim: the second player's first living structure the attacker's weapons may attack (aiAttackObject's own test, ObjectWeapons::canAttackObject;
+	// review of #161: the AIs' game at frame 3,000 moves with every simulation change, and its first structure was one the attacker could not attack)
 	Object *victim = nullptr;
 	for (Object *o = la.getFirstObject(); o && !victim; o = o->getNextObject())
 	{
-		victim = o->getControllingPlayer() && o->getControllingPlayer()->getPlayerIndex() == playerIds[1] && o->isKindOf((unsigned)structureKind) &&
-		                 !o->isEffectivelyDead()
-		             ? o
-		             : nullptr;
+		const bool candidate = o->getControllingPlayer() && o->getControllingPlayer()->getPlayerIndex() == playerIds[1] && o->isKindOf((unsigned)structureKind) &&
+			!o->isEffectivelyDead();
+		victim = candidate && attacker->getWeapons() && attacker->getWeapons()->canAttackObject(*o, CMD_FROM_SCRIPT, false) ? o : nullptr;
 	}
 	REQUIRE(victim != nullptr);
 	// a garrison: Fall Back's skirmish has no garrisonable building, so both games get the same GondorKeep (the garrison tests' keep) for the Men player,
@@ -1204,12 +1207,33 @@ TEST_CASE("save4c coverage (review r2): units attacking, moving, guarding, hunti
 		men = p && p->getPlayerTemplate() && p->getPlayerTemplate()->getName() == "FactionMen" ? kv.first : men;
 	}
 	REQUIRE(men != -1);
+	// merge queue q35 (#132's melee reach moves the AIs' game): the Men player can have no unit left besides the actors at frame 2700; the garrison then
+	// goes to the first skirmish player that has one (the keep is made for that player)
 	std::vector<Object *> menUnits;
-	for (Object *u : byPlayer[men])
+	std::vector<int> garrisonOrder{ men };
+	for (int p : playerIds)
 	{
-		if (u != attacker && u != mover && u != guard && u != hunter)
+		if (p != men)
 		{
-			menUnits.push_back(u);
+			garrisonOrder.push_back(p);
+		}
+	}
+	for (int p : garrisonOrder)
+	{
+		for (Object *u : byPlayer[p])
+		{
+			if (menUnits.empty() && u != attacker && u != mover && u != guard && u != hunter)
+			{
+				men = p;
+			}
+			if (p == men && u != attacker && u != mover && u != guard && u != hunter)
+			{
+				menUnits.push_back(u);
+			}
+		}
+		if (!menUnits.empty())
+		{
+			break;
 		}
 	}
 	REQUIRE(!menUnits.empty());
@@ -1254,6 +1278,7 @@ TEST_CASE("save4c coverage (review r2): units attacking, moving, guarding, hunti
 		REQUIRE(k != nullptr);
 		Coord3D p = keepSpot;
 		k->setPosition(&p);
+		testutil::completeHorde(k); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		REQUIRE((keepId == INVALID_ID || keepId == k->getID()));
 		keepId = k->getID();
 	}
@@ -1636,6 +1661,7 @@ TEST_CASE("save4c review r3: a live factory of another player in an AI's unit bu
 		REQUIRE(f != nullptr);
 		Coord3D pos{ x, 800.0f, l.getGroundHeight(x, 800.0f) };
 		f->setPosition(&pos);
+		testutil::completeHorde(f); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		return f;
 	};
 	SUBCASE("a rival's factory in the snapshot")
@@ -1712,6 +1738,7 @@ TEST_CASE("save4c review r3: a giant bird saved mid-flight: its module (the flig
 		REQUIRE(o != nullptr);
 		Coord3D pos{ 1500.0f, 800.0f, l.getGroundHeight(1500.0f, 800.0f) };
 		o->setPosition(&pos);
+		testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		REQUIRE((id == INVALID_ID || id == o->getID()));
 		id = o->getID();
 	}
@@ -1800,6 +1827,7 @@ TEST_CASE("stealthfly1: a giant bird saved on its queued waypoints (follow path 
 		REQUIRE(o != nullptr);
 		Coord3D pos{ 1500.0f, 800.0f, l.getGroundHeight(1500.0f, 800.0f) };
 		o->setPosition(&pos);
+		testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		REQUIRE((id == INVALID_ID || id == o->getID()));
 		id = o->getID();
 	}
@@ -1933,6 +1961,7 @@ TEST_CASE("save4c review r4: a capture's snapshot loads and the game goes on as 
 		REQUIRE(f != nullptr);
 		Coord3D pos{ 1500.0f, 800.0f, l.getGroundHeight(1500.0f, 800.0f) };
 		f->setPosition(&pos);
+		testutil::completeHorde(f); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		return f;
 	};
 	auto listed = [](const AISkirmishPlayer &ai, ObjectID id) {
@@ -2003,6 +2032,7 @@ TEST_CASE("save4c review r4: a capture's snapshot loads and the game goes on as 
 			REQUIRE(u != nullptr);
 			Coord3D pos{ 1500.0f, 800.0f, l.getGroundHeight(1500.0f, 800.0f) };
 			u->setPosition(&pos);
+			testutil::completeHorde(u); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 			// lane TARGET-1: held by NO_AUTO_ACQUIRE: a computer player's idle unit takes what it sees (RotWK's mood scan, RW 0x66844A), and from this spot the
 			// horde charged what it saw 460 to the east and died there before frame 351; the dispatch (RW 0x9A3040) does not read the status
 			u->setStatusAcrossHorde((unsigned)ObjectTemplateInfoBuilder::objectStatusIndex("NO_AUTO_ACQUIRE"), true);
@@ -2121,6 +2151,7 @@ TEST_CASE("save4c reviewer round5: round4 factory cleanup and legal dispatched c
 		REQUIRE(o);
 		Coord3D pos{1500.0f, 800.0f, l.getGroundHeight(1500.0f, 800.0f)};
 		o->setPosition(&pos);
+		testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		return o;
 	};
 	SUBCASE("captured factory recomputes and cannot spend the rival's money")
@@ -2191,6 +2222,7 @@ TEST_CASE("save4c reviewer round5: recapture registration is synchronous as RW 0
 	REQUIRE(f);
 	Coord3D pos{1500.0f, 800.0f, l.getGroundHeight(1500.0f, 800.0f)};
 	f->setPosition(&pos);
+	testutil::completeHorde(f); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 	AIBaseBuilder::update(l, *men);
 	f->getProductionUpdate()->cancelAllProduction();
 	men->build.pending.clear();
@@ -2277,6 +2309,7 @@ TEST_CASE("save4c reviewer round5: audit live dozer factories and owned tactic m
 		REQUIRE(u);
 		Coord3D pos{1500.0f, 800.0f, l.getGroundHeight(1500.0f, 800.0f)};
 		u->setPosition(&pos);
+		testutil::completeHorde(u); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		// lane TARGET-1: held by NO_AUTO_ACQUIRE: a computer player's idle unit takes what it sees (RotWK's mood scan, RW 0x66844A), and from this spot the
 		// horde charged what it saw 460 to the east and died there before frame 351; the dispatch (RW 0x9A3040) does not read the status
 		u->setStatusAcrossHorde((unsigned)ObjectTemplateInfoBuilder::objectStatusIndex("NO_AUTO_ACQUIRE"), true);
@@ -2303,6 +2336,7 @@ TEST_CASE("save4c reviewer round5: audit live dozer factories and owned tactic m
 		REQUIRE(hero);
 		pos.x = 1540.0f;
 		hero->setPosition(&pos);
+		testutil::completeHorde(hero); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		auto *power = dynamic_cast<DominateEnemySpecialPower *>(hero->findModule("DominateEnemySpecialPower"));
 		REQUIRE(power);
 		power->initiateIntentToDoSpecialPower(power->abilityData()->m_specialPowerTemplate, u, nullptr, 0, 0);
@@ -2345,6 +2379,7 @@ TEST_CASE("save4c review r7 (archive 593e83cd): the state machine kept across a 
 			REQUIRE(o != nullptr);
 			Coord3D pos{ 1500.0f, 800.0f, l.getGroundHeight(1500.0f, 800.0f) };
 			o->setPosition(&pos);
+			testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 			REQUIRE((id == INVALID_ID || id == o->getID()));
 			id = o->getID();
 			// the order the AI keeps while the object defects, then a new machine's order

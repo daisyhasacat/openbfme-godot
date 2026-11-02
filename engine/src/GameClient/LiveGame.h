@@ -377,6 +377,7 @@ public:
 		int carryoverObjects = 0;                            ///< lane BFME2CAMP1: the campaign's carry-over objects the mission start made
 		size_t spellBooks = 0;                               ///< SPELL-1: the players' spell book objects made at the game start (RW 0x6B183D)
 		std::vector<std::string> startErrors;                ///< problems of the start (a slot without waypoint, a template that does not exist ...)
+		std::vector<std::string> startNotes;                 ///< lane WOTR-1: what the start skipped as retail does (reported, not an error)
 		std::vector<int> progressCalls;                      ///< the percentages reported
 		GameLogic::Report logic;
 		DrawableManager::Report drawables;

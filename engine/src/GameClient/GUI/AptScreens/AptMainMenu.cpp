@@ -21,6 +21,8 @@
 #include "Libraries/Source/Apt/AptCharacterInst.h"
 #include "Libraries/Source/Apt/AptObject.h"
 
+#include "GameClient/GUI/Skirmish/LivingWorldShellInfo.h" // lane WOTR-1
+
 #include <algorithm>
 #include <filesystem>
 
@@ -133,6 +135,9 @@ const UnavailableScreen *unavailableRow(const std::string &action)
 }
 } // namespace
 
+const char *const AptMainMenu::kWarOfTheRingStable =
+	"War of the Ring is not in the Stable version yet: it is being tested in the Nightly version (OpenBFME Launcher: Settings, Channel).";
+
 std::string AptMainMenu::unavailableScreenName(const std::string &action)
 {
 	const UnavailableScreen *row = unavailableRow(action);
@@ -155,19 +160,23 @@ std::string AptMainMenu::screenUnavailable(const std::string &action)
 	const std::string line = "[S-1914] " + screen + " (AptMainMenu " + action + ") is not available in this build yet: the menu's request has no screen; the "
 		"player is told and the main menu is usable again";
 	windows().note("unported-screen", line);
+	showUnavailableBox(unavailableText(action)); // lane MENUWORK-1: the box says why
+	return line;
+}
+
+void AptMainMenu::showUnavailableBox(const std::string &text)
+{
 	if (!m_box)
 	{
 		m_box = std::make_unique<AptMessageBox>(windows(), shell());
 	}
 	m_boxClosed = false;
-	const std::string text = unavailableText(action); // lane MENUWORK-1: the box says why
 	m_box->show(AptMessageBox::TYPE_OK, u"OpenBFME", std::u16string(text.begin(), text.end()), [this](int) { m_boxClosed = true; });
 	if (m_box->level() < 0)
 	{
 		// GuiFX.apt did not load (noted by the box): the menu comes back at once so it is never left disabled
 		m_boxClosed = true;
 	}
-	return line;
 }
 
 // ---- lane BFME2CAMP1: the other game's two campaign rows in the Solo Play list (an OpenBFME addition, see AptMainMenu.h) ----------------------------
@@ -419,12 +428,22 @@ void AptMainMenu::updateExtraRows()
 		}
 		++m_extraRows.rowsAdded;
 	}
+	// lane STABLEQA-1: a Stable build hides War of the Ring's row (both movies list it above the insertion row); the rows above it move up one place
+	// fewer, so they close its gap, and the list grows by one row instead of two
+	AptCharacterInst *hidden = warOfTheRingHidden() ? nav->childByName("WarOfTheRing") : nullptr;
+	hidden = isRow(hidden) && baseOf(moved, *hidden).ty < belowBase.ty ? hidden : nullptr;
+	const float hiddenTy = hidden ? baseOf(moved, *hidden).ty : 0.0f;
+	const float grow = (hidden ? 1.0f : 2.0f) * step;
+	if (hidden)
+	{
+		hidden->visible = false;
+	}
 	// the rows above the insertion row move up two places
 	float rowsTop = 0;
 	bool haveRowsTop = false;
 	for (AptCharacterInst *c : nav->children())
 	{
-		if (c == added[0] || c == added[1] || !isRow(c))
+		if (c == added[0] || c == added[1] || c == hidden || !isRow(c))
 		{
 			continue;
 		}
@@ -438,7 +457,7 @@ void AptMainMenu::updateExtraRows()
 		if (base.ty < belowBase.ty)
 		{
 			AptMatrix to = base;
-			to.ty = base.ty + 2.0f * step;
+			to.ty = base.ty + ((hidden && base.ty < hiddenTy) ? 1.0f : 2.0f) * step;
 			write(moved, *c, base, to);
 		}
 	}
@@ -468,7 +487,7 @@ void AptMainMenu::updateExtraRows()
 		}
 	}
 	// the frame pieces (every other clip with art, not a button and not the list's OpenButton): each stretched about its bottom edge so its part
-	// above the rows' top moves up by the two rows; a piece lying mostly above the rows' top moves up instead
+	// above the rows' top moves up by the two rows (one with War of the Ring hidden); a piece lying mostly above the rows' top moves up instead
 	if (!haveRowsTop)
 	{
 		return;
@@ -488,12 +507,12 @@ void AptMainMenu::updateExtraRows()
 		AptMatrix to = base;
 		if (y1 - rowsTop < (y1 - y0) * 0.5f)
 		{
-			to.ty = base.ty + 2.0f * step;
+			to.ty = base.ty + grow;
 		}
 		else
 		{
 			const float anchor = std::max(rowsTop, y0);
-			const float k = (y1 - (anchor + 2.0f * step)) / (y1 - anchor);
+			const float k = (y1 - (anchor + grow)) / (y1 - anchor);
 			to.b = base.b * k;
 			to.d = base.d * k;
 			to.ty = y1 + (base.ty - y1) * k;
@@ -618,15 +637,45 @@ void AptMainMenu::request(ShellAction action, const std::string &argument)
 	m_services.request(r);
 }
 
-void AptMainMenu::showSkirmish(int mode)
+void AptMainMenu::showSkirmish()
 {
-	// ShowSkirmish.cpp (0x00579440): push Skirmish.apt unless its singleton already exists. lane WOTR-1: the mode is AptSkirmish::OpenScreen's argument
-	// (BFME2 AptMainMenuUpdate.cpp: case 7 Skirmish -> OpenScreen(0), case 8 WarOfTheRing -> OpenScreen(1); RotWK's handlers RW 0x91B096 / 0x91AFE4 store
-	// the same 7 / 8)
+	// ShowSkirmish.cpp (0x00579440): push Skirmish.apt unless its singleton already exists
 	if (!shell().findScreenByFilename("Skirmish.apt"))
 	{
-		shell().push("Skirmish.apt", false, mode);
+		shell().push("Skirmish.apt", false);
 		windows().setBackground(1); // lane FB7-1: RotWK's opener shows the front-end background (RW 0x928324 .. 0x928326)
+	}
+}
+
+bool AptMainMenu::warOfTheRingHidden() const
+{
+	const ShellEnvironment *environment = m_environment ? m_environment : m_env;
+	return environment && !environment->warOfTheRingOffered;
+}
+
+void AptMainMenu::showWarOfTheRing()
+{
+	// lane WOTR-1.  AptMainMenu::WarOfTheRing (RW 0x91AFE4) sets the transition state 9 / action 8; the menu update (RW 0x91C2FC case 8) runs the shell clean-up
+	// RW 0x7792BC (not ported: the clean-up of a game that is not running here) and RW 0x9282E3(1): the strategic flag RW 0xDB6BF0, then Skirmish.apt unless
+	// it exists.  The menu's fade-out before the action (state 9) is not modelled: the push waits for the shell's own transition.
+	if (warOfTheRingHidden())
+	{
+		// lane STABLEQA-1: a Stable build hides the row (updateExtraRows); a click that still arrives (a script, a mod's menu) is refused with the box,
+		// whose Ok gives the menu back (no request: the host would open the war)
+		windows().note("war-of-the-ring-stable", "AptMainMenu::WarOfTheRing: refused, a Stable channel build offers no War of the Ring");
+		showUnavailableBox(kWarOfTheRingStable);
+		return;
+	}
+	request(ShellAction::WarOfTheRing, std::string()); // the engine still sees the action (as every main-menu action)
+	if (!m_environment || !m_environment->livingWorld)
+	{
+		windows().note("skirmish-environment-missing", "AptMainMenu::WarOfTheRing: no LivingWorldShellInfo, the strategic setup cannot open");
+		return;
+	}
+	m_environment->livingWorld->strategicRequested = true;
+	if (!shell().findScreenByFilename("Skirmish.apt"))
+	{
+		shell().push("Skirmish.apt", false);
 	}
 }
 
@@ -652,8 +701,14 @@ void AptMainMenu::registerAll()
 				windows().note("bfme1-main-menu", "ShowMainMenu() could not be called: " + err);
 		}
 	});
-	registerCommand("AptMainMenu::Skirmish", [this](const std::string &) { showSkirmish(0); });
-	registerCommand("AptMainMenu::WarOfTheRing", [this](const std::string &) { showSkirmish(1); }); // lane WOTR-1: the War of the Ring lobby
+	registerCommand("AptMainMenu::Skirmish", [this](const std::string &) {
+		if (m_environment && m_environment->livingWorld)
+		{
+			m_environment->livingWorld->strategicRequested = false; // RW 0x9282E3(0)
+		}
+		showSkirmish();
+	});
+	registerCommand("AptMainMenu::WarOfTheRing", [this](const std::string &) { showWarOfTheRing(); }); // lane WOTR-1
 	registerCommand("AptMainMenu::GoodCampaign", [this](const std::string &argument) { request(ShellAction::LoadCampaign, "bfme2:good:" + argument); });
 	registerCommand("AptMainMenu::EvilCampaign", [this](const std::string &argument) { request(ShellAction::LoadCampaign, "bfme2:evil:" + argument); });
 	registerCommand("AptMainMenu::Options", [this](const std::string &argument) {

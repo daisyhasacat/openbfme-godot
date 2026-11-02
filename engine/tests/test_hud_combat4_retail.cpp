@@ -2,6 +2,7 @@
 // shockwave handler (RW 0x6968BC), a troll's club swing throws the soldiers in its arc, and the measurements of a cavalry charge. They share the HUD tests' retail
 // world (the file name sorts with the test_hud_* files, see test_hud_combat_retail.cpp) and SKIP when ROTWK_INSTALL / BFME2_INSTALL are unset.
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 #include "HudTestUtil.h"
 
@@ -100,7 +101,7 @@ struct Arena
 		Coord3D p{ x, y, 0.0f };
 		o->setPosition(&p);
 		o->setOrientation(angle);
-		return o;
+		return testutil::completeHorde(o);
 	}
 	std::vector<ObjectID> memberIds(Object *horde)
 	{
@@ -723,11 +724,14 @@ TEST_CASE("aidata1 retail: knights running down a fleeing troll hit within Chase
 	CHECK(retail.frame == 27);
 	CHECK(retail.runningDown);
 	const Hit none = firstHit(true, 0.0f);
+	// #160 (a horde's move or turn no longer carries its members, they walk to their slots, RW 0x871536) measured 60 -> 74 on its own base; on the archive's
+	// tree with #160 it stays 62 (merge queue q34)
 	CHECK(none.frame == 62);
 	CHECK_FALSE(none.runningDown);
 	const Hit standRetail = firstHit(false, 50.0f);
 	const Hit standNone = firstHit(false, 0.0f);
-	CHECK(standRetail.frame == 50);
+	// merge queue q34 (measured once on the merged tree and at each merge point): 50 -> 52 from #160's merge point on (the members walk to their slots, RW 0x871536)
+	CHECK(standRetail.frame == 52);
 	CHECK_FALSE(standRetail.runningDown);
 	CHECK(standNone.frame == standRetail.frame);
 }

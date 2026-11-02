@@ -411,7 +411,9 @@ The settings test checks a separate-process read and keeps the choice out
 of `Options.ini`. The runtime check covers Cancel, deferred Accept,
 repeated switches, world-state and gameplay provenance preservation.
 `--menu1-walk=DIR` drives real viewport mouse/key events in the selected
-style and saves screenshots in windowed runs. Use isolated options/menu
+style and saves screenshots in windowed runs. A step fails when the shell
+reported an error since the previous step (a movie that did not load) or
+the Skirmish lobby lists no map or no player slot (lane MODUI-1). Use isolated options/menu
 config files for each style and resolution; do not change the player's
 saved choice to run the walk.
 

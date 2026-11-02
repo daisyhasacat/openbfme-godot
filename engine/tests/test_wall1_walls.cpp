@@ -921,7 +921,29 @@ TEST_CASE("wall1 walls retail: on Helm's Deep a horde ordered onto a wall top ge
 	// the members walk: no member moves more than a stride in a frame (a member put on its goal, RW 0x70C201, would jump; the steep stairs make big height steps)
 	std::map<ObjectID, Coord3D> last;
 	float maxStep = 0.0f;
-	for (int f = 0; f < 1200; ++f)
+	// up there: above the terrain on the wall top, or at the top of the stair on its joint cells (the ramp's layer at the wall's height)
+	int members = 0, up = 0;
+	auto countUp = [&] {
+		members = up = 0;
+		for (Object *o = g.game->logic().getFirstObject(); o; o = o->getNextObject())
+		{
+			if (o->getContainedBy() == horde && o->getAIUpdateInterface())
+			{
+				++members;
+				const Coord3D p = *o->getPosition();
+				const PathfindLayerEnum l = o->getAIUpdateInterface()->adapter().getLayer();
+				if ((isWallLayer(l) || l == LAYER_RAMP) && p.z == pf.getLayerHeight(p.x, p.y, l) && p.z > g.game->logic().getGroundHeight(p.x, p.y))
+				{
+					++up;
+				}
+			}
+		}
+	};
+	// the walk ends when the move is over (the horde and every member stopped) with every member up, not at a fixed frame: the idle horde then guards its
+	// spot (state 16), and the Easy AI's first wave, whose route moves with the game's random draws and the pathfinder, can pass within its guard range
+	// and draw it off the wall. A member still on the stair is not stopped, so the strides of the whole walk are watched
+	int arrived = -1;
+	for (int f = 0; f < 1200 && arrived < 0; ++f)
 	{
 		g.frames(1);
 		for (Object *o = g.game->logic().getFirstObject(); o; o = o->getNextObject())
@@ -939,24 +961,23 @@ TEST_CASE("wall1 walls retail: on Helm's Deep a horde ordered onto a wall top ge
 			}
 			last[o->getID()] = p;
 		}
-	}
-	// up there: above the terrain on the wall top, or at the top of the stair on its joint cells (the ramp's layer at the wall's height)
-	int members = 0, up = 0;
-	for (Object *o = g.game->logic().getFirstObject(); o; o = o->getNextObject())
-	{
-		if (o->getContainedBy() == horde && o->getAIUpdateInterface())
+		countUp();
+		bool stopped = !ai->isMoving();
+		for (Object *o = g.game->logic().getFirstObject(); o && stopped; o = o->getNextObject())
 		{
-			++members;
-			const Coord3D p = *o->getPosition();
-			const PathfindLayerEnum l = o->getAIUpdateInterface()->adapter().getLayer();
-			if ((isWallLayer(l) || l == LAYER_RAMP) && p.z == pf.getLayerHeight(p.x, p.y, l) && p.z > g.game->logic().getGroundHeight(p.x, p.y))
+			if (o->getContainedBy() == horde && o->getAIUpdateInterface() && o->getAIUpdateInterface()->isMoving())
 			{
-				++up;
+				stopped = false;
 			}
+		}
+		if (stopped && members > 0 && up == members)
+		{
+			arrived = f;
 		}
 	}
 	const Coord3D hp = *horde->getPosition();
-	MESSAGE("horde at " << hp.x << ", " << hp.y << " (goal " << goal.x << ", " << goal.y << "): " << up << " of " << members << " members up, largest step " << maxStep);
+	MESSAGE("horde at " << hp.x << ", " << hp.y << " (goal " << goal.x << ", " << goal.y << "): " << up << " of " << members << " members up at frame " << arrived << ", largest step " << maxStep);
+	CHECK(arrived >= 0); // tolerance: the frame the move ended varies with the walk; -1 is a move that never ended with every member up
 	CHECK(members == 15); // GondorFighterHorde's 15 soldiers
 	CHECK(up == members);
 	CHECK(maxStep < 20.0f); // tolerance: a walking member's stride in one logic frame (its speed / 5) stays below 20; a member put on its goal would jump much farther

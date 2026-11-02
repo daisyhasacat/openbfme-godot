@@ -357,6 +357,50 @@ TEST_CASE("wall2 raised review of #63: a snapshot whose ground and raised cell i
 	CHECK(after.value() == before.value());
 }
 
+// review of #161 (Greptile P1): the walkway's wall connect cells (PathfindLayer + 0x18 / + 0x20) come back with a load: RW's layer xfer (RW 0x7683B8)
+// saves them, as the walls snapshot does from version 2. Without them the block search's raised branch (RW 0x9389CE) skips the walkway
+TEST_CASE("wall2 raised: a snapshot's load brings the walkway's wall connect cells back, and the walk over the walkway is the same")
+{
+	GatehouseWorld saved, loaded;
+	const ICoord2D c0 = saved.pf->raisedConnectCell(LAYER_TOP, 0), c1 = saved.pf->raisedConnectCell(LAYER_TOP, 1);
+	REQUIRE(c0.x >= 0); // tolerance: a precondition, both ramps' top ends on the walkway (any cell)
+	REQUIRE(c1.x >= 0); // tolerance: as above
+	std::vector<std::uint8_t> bytes;
+	{
+		AIXfer::StringTableScope strings;
+		XferSave save;
+		saved.pf->xfer(save);
+		bytes = save.data();
+	}
+	{
+		AIXfer::StringTableScope strings;
+		XferLoad load(bytes);
+		loaded.pf->xfer(load);
+	}
+	CHECK(loaded.pf->raisedConnectCell(LAYER_TOP, 0).x == c0.x);
+	CHECK(loaded.pf->raisedConnectCell(LAYER_TOP, 0).y == c0.y);
+	CHECK(loaded.pf->raisedConnectCell(LAYER_TOP, 1).x == c1.x);
+	CHECK(loaded.pf->raisedConnectCell(LAYER_TOP, 1).y == c1.y);
+	// the first test's walk from the left wall top to the right one, on both
+	for (GatehouseWorld *w : { &saved, &loaded })
+	{
+		LayeredUnit *u = w->unit(1, 150.0f, 100.0f, 60.0f, LAYER_WALL_FIRST);
+		Coord3D from = u->pos, to{ 455.0f, 105.0f, 60.0f };
+		bool partial = true;
+		Path *p = w->pf->findPath(u, groundLoco(), &from, &to, &partial);
+		REQUIRE(p != nullptr);
+		CHECK_FALSE(partial);
+		bool sawRaised = false;
+		for (const PathNode *n = p->getFirstNode(); n; n = n->getNext())
+		{
+			sawRaised = sawRaised || n->getLayer() == LAYER_TOP;
+		}
+		CHECK(sawRaised);
+		CHECK(p->getLastNode()->getLayer() == LAYER_WALL_FIRST);
+		delete p;
+	}
+}
+
 TEST_CASE("wall2 raised: wall tops and ramps carry bit 17 (RW 0x935051 / 0x93527F): a unit with CanPathThroughGates = No cannot path up the ramp onto the wall")
 {
 	GatehouseWorld w;
@@ -572,6 +616,89 @@ TEST_CASE("wall2 raised: a piece added at the walkway's left end (its layer rebu
 	delete p;
 }
 
+// review of #161: a walkway piece removed where no other raised piece is near rebuilds its layer, which resets the wall connect cells, and re-stamps
+// only the ramps it meets (none): the live layer has no connect cells left, though the ramps on the map would make them. The snapshot (walls version 2)
+// saves them as they are, as RW's layer xfer (RW 0x7683B8) does, so the loaded game searches as the saved one
+TEST_CASE("wall2 raised: a walkway's connect cells lost to destroyed pieces stay lost through a save and load; the next search is the same")
+{
+	GatehouseWorld saved, loaded;
+	// two pieces on the walkway's layer (60, each within 10 of the last), going off its side: 53 at y 115 .. 155, 54 at y 160 .. 195, whose cells (y 14 ..
+	// 22, grown by 2) meet no other raised piece's (the centre's y 7 .. 13)
+	auto side = [&](PathfindObjectID id, float y0, float y1) {
+		WallPieceObject *p = new WallPieceObject();
+		p->id = id;
+		p->pos = { 550.0f, y0, 0.0f };
+		p->structure = true;
+		p->kinds.insert(PK_WALK_ON_TOP_OF_WALL);
+		p->geometry.type = PATHFIND_GEOMETRY_BOX;
+		p->geometry.majorRadius = 1.0f;
+		p->geometry.minorRadius = 1.0f;
+		p->walls.raised.push_back(quad(280.0f, y0, 320.0f, y1, 60.0f, 60.0f));
+		saved.world.objects[id] = p;
+		saved.pf->addObjectToPathfindMap(*p);
+		saved.zones();
+		return p;
+	};
+	WallPieceObject *a = side(53, 115.0f, 155.0f);
+	WallPieceObject *b = side(54, 160.0f, 195.0f);
+	REQUIRE(saved.pf->raisedLayerCount() == 1);
+	for (WallPieceObject *p : { a, b }) // 53 first: its region meets the centre and 54 (every ramp re-stamped); then 54 alone
+	{
+		saved.pf->removeObjectFromPathfindMap(*p);
+		saved.zones();
+	}
+	REQUIRE(saved.pf->raisedLayerInUse(LAYER_TOP));
+	for (int k = 0; k < 2; ++k)
+	{
+		REQUIRE(saved.pf->raisedConnectCell(LAYER_TOP, k).x == -1); // the case
+	}
+	std::vector<std::uint8_t> bytes;
+	{
+		AIXfer::StringTableScope strings;
+		XferSave save;
+		saved.pf->xfer(save);
+		bytes = save.data();
+	}
+	{
+		AIXfer::StringTableScope strings;
+		XferLoad load(bytes);
+		loaded.pf->xfer(load);
+	}
+	for (int k = 0; k < 2; ++k)
+	{
+		INFO("connect cell " << k);
+		CHECK(loaded.pf->raisedConnectCell(LAYER_TOP, k).x == -1); // made again from the ramps (version 1), they were the joints' cells
+		CHECK(loaded.pf->raisedConnectCell(LAYER_TOP, k).y == -1);
+	}
+	// the next search, from the left wall top to the right one, node for node
+	std::vector<std::pair<Coord3D, PathfindLayerEnum>> nodes[2];
+	bool partial[2] = { true, true };
+	int i = 0;
+	for (GatehouseWorld *w : { &saved, &loaded })
+	{
+		LayeredUnit *u = w->unit(1, 150.0f, 100.0f, 60.0f, LAYER_WALL_FIRST);
+		Coord3D from = u->pos, to{ 455.0f, 105.0f, 60.0f };
+		Path *p = w->pf->findPath(u, groundLoco(), &from, &to, &partial[i]);
+		REQUIRE(p != nullptr);
+		for (const PathNode *n = p->getFirstNode(); n; n = n->getNext())
+		{
+			nodes[i].emplace_back(*n->getPosition(), n->getLayer());
+		}
+		delete p;
+		++i;
+	}
+	CHECK(partial[0] == partial[1]);
+	REQUIRE(nodes[0].size() == nodes[1].size());
+	for (size_t k = 0; k < nodes[0].size(); ++k)
+	{
+		INFO("node " << k);
+		CHECK(nodes[0][k].first.x == nodes[1][k].first.x);
+		CHECK(nodes[0][k].first.y == nodes[1][k].first.y);
+		CHECK(nodes[0][k].first.z == nodes[1][k].first.z);
+		CHECK(nodes[0][k].second == nodes[1][k].second);
+	}
+}
+
 // review (#63): the highest layer for a click is the highest surface, not the first raised layer in index order
 TEST_CASE("wall2 raised: under a second walkway at 90 over the first (60) the highest surface is 90; beside it 60")
 {
@@ -704,11 +831,10 @@ TEST_CASE("wall2 raised: a group's formation search to a walkway point does not 
 
 TEST_CASE("wall2 raised: S-4858, the attack search's closest-cell fallback for a unit off the ground layer without a corridor, is in Pathfinder::allStops()")
 {
-	// lane WALL-2 with ATTACKPATH-1 (AIPathfindAttack.cpp): RotWK ranks the fallback cell only through its corridor, which the port builds on the ground grid
-	// only; the distance-ranked fallback off the ground is OpenBFME's own (Grond put on a Minas Tirith wall top reaches the gate through it)
+	// lane WALL-2 with ATTACKPATH-1 (AIPathfindAttack.cpp): RotWK ranks the fallback cell only through its corridor; the distance-ranked fallback off the ground
+	// is OpenBFME's own (Grond put on a Minas Tirith wall top reaches the gate through it)
 	const std::vector<std::string> all = Pathfinder::allStops();
 	CHECK(std::find(all.begin(), all.end(), std::string("S-4858 findAttackPath (RW 0x6FC18E) keeps its closest-cell fallback only with the corridor of RW 0x6F9829 (its RW 0x93AD93 ranking runs only"
-			  " when the corridor was found); the port's corridor runs on the ground grid only (S-162, S-4856), so a unit on a wall top, a raised walkway o"
-			  "r a ramp often has none and would get no path at all: such a search keeps the cell closest to the goal cell by its squared cell distance ins"
-			  "tead (OpenBFME's own, pending the corridor's raised branch)")) != all.end());
+			  " when the corridor was found); a unit off the ground layer whose start the block search cannot leave (Grond on a Minas Tirith wall top, whose wall cells it may n"
+			  "ot use) would get no path at all: such a search keeps the cell closest to the goal cell by its squared cell distance instead (OpenBFME's own)")) != all.end());
 }

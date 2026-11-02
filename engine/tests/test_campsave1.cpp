@@ -280,8 +280,9 @@ TEST_CASE("campsave1 save file: the campaign menu save point (header version 2) 
 	const size_t point = head.size() - 16; // u32 save point, four flags, the empty build-date string (version 3), then (version 4, lane BFME2CAMP1) the carry-over string's u32 length
 	{
 		std::vector<std::uint8_t> h = head;
-		h[point] = 2;
-		CHECK(parseError(withHead(bytes, h)) == "the save's save point 2 is not one this build saves (0 a game, 1 the campaign menu)");
+		h[point] = 4; // lane WOTR2 milestone 3: 2 is the War of the Ring map; milestone 6: 3 a War of the Ring battle
+		CHECK(parseError(withHead(bytes, h)) == "the save's save point 4 is not one this build saves (0 a game, 1 the campaign menu, 2 the War of the Ring map, "
+			"3 a War of the Ring battle)");
 	}
 	for (int i = 0; i < 4; ++i)
 	{

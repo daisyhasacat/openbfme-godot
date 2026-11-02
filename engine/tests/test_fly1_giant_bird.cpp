@@ -2,6 +2,7 @@
 // Lane FLY-1: the GIANT_BIRD flyers (GameLogic/AI/AerialPathfinder.h, GameLogic/Module/GiantBirdAIUpdate.h, the GIANT_BIRD movers of
 // GameLogic/Object/LocomotorGiantBird.cpp). The retail cases SKIP without the games (ROTWK_INSTALL / BFME2_INSTALL).
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 
 #include "CampaignTestUtil.h"
@@ -203,6 +204,7 @@ struct FlyArena
 		REQUIRE(o != nullptr);
 		Coord3D p{ x, y, logic().getGroundHeight(x, y) + zAbove };
 		o->setPosition(&p);
+		testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		return o;
 	}
 	void step(int n = 1)
@@ -902,6 +904,7 @@ TEST_CASE("stealthfly1 retail: a script's waypoint path order (AI commands 6 / 0
 	REQUIRE(beast != nullptr);
 	Coord3D at{ chain[0].x, chain[0].y, logic.getGroundHeight(chain[0].x, chain[0].y) };
 	beast->setPosition(&at);
+	testutil::completeHorde(beast); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 	GiantBirdAIUpdate *ai = birdAI(beast);
 	REQUIRE(ai != nullptr);
 	const ObjectID id = beast->getID();

@@ -1661,6 +1661,14 @@ void AptSpriteInst::unloadContent()
 	playing = false;
 	eventFlags = 0;
 	clipEvents.clear();
+	// lane WOTR-2 [inference, Flash's MovieClip.unloadMovie, S-105]: the unloaded movie's variables go with it, so its init code runs again on the next load
+	// (StrategicHUD.apt's dialog frame unloads its "content" clip and loads the battle prompt into it again for every prompt)
+	std::vector<std::string> names;
+	ownNames(names);
+	for (const std::string &n : names)
+	{
+		deleteOwn(n);
+	}
 }
 
 bool AptSpriteInst::contentBounds(float &x0, float &y0, float &x1, float &y1) const

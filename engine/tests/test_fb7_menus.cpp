@@ -369,7 +369,7 @@ TEST_CASE("fb7 main menu retail: the RenderImage clip `Image` shows the mapped i
 	CHECK(found == 1);
 }
 
-TEST_CASE("cah2 main menu retail: a request with no screen (Battle School) shows the Ok box and its Ok undims the nav buttons (no soft-lock, S-1914)")
+TEST_CASE("cah2 main menu retail: a request with no screen (Level Select) shows the Ok box and its Ok undims the nav buttons (no soft-lock, S-1914)")
 {
 	OPENBFME_REQUIRE_RETAIL(mount);
 	ShellFx fx(mount, "");
@@ -393,10 +393,10 @@ TEST_CASE("cah2 main menu retail: a request with no screen (Battle School) shows
 		return -1.0f;
 	};
 	REQUIRE(navTextAlpha() > 0.99f);
-	// a menu button's DisableAllButtons, then a request the host opens no screen for (lane WOTR-1: War of the Ring opens its lobby now; Battle School
-	// stands in, invoked by its command name)
+	// a main-menu button: DisableAllButtons, then GameCode('LevelSelect') (a request the host opens no screen for; lane WOTR-1: War of the Ring, the
+	// example before, opens the strategic setup now)
 	REQUIRE_MESSAGE(fx.wm->invokeAS(level, "DisableAllButtons", {}, nullptr, &error), error);
-	REQUIRE(fx.wm->invokeCallback("AptMainMenu::BattleSchool", ""));
+	REQUIRE(fx.wm->invokeCallback("AptMainMenu::LevelSelect", ""));
 	fx.tick(60);
 	CHECK(navTextAlpha() < 0.6f);
 	auto *menu = dynamic_cast<AptMainMenu *>(fx.shell->top());
@@ -409,8 +409,9 @@ TEST_CASE("cah2 main menu retail: a request with no screen (Battle School) shows
 	CHECK(AptMainMenu::unavailableText("BFME2GoodCampaign") == "The BFME2 Good campaign is not available yet: OpenBFME does not have it yet.");
 	CHECK(AptMainMenu::unavailableText("BFME2EvilCampaign") == "The BFME2 Evil campaign is not available yet: OpenBFME does not have it yet.");
 	CHECK(menu->screenUnavailable("StopGameMovie").empty());
-	const std::string line = menu->screenUnavailable("BattleSchool");
-	CHECK(line.rfind("[S-1914] Battle School", 0) == 0);
+	CHECK(AptMainMenu::unavailableScreenName("WarOfTheRing").empty()); // lane WOTR-1: the strategic setup
+	const std::string line = menu->screenUnavailable("LevelSelect");
+	CHECK(line.rfind("[S-1914] Level Select", 0) == 0);
 	REQUIRE(menu->unavailableBox());
 	const int boxLevel = menu->unavailableBox()->level();
 	REQUIRE(boxLevel >= 0);
@@ -419,7 +420,7 @@ TEST_CASE("cah2 main menu retail: a request with no screen (Battle School) shows
 	REQUIRE_FALSE(calls.empty());
 	CHECK(calls.front() == "Show Ok false");
 	// lane MENUWORK-1: the box says why, in the player's words
-	CHECK(menu->unavailableBox()->text() == u"Battle School is not available yet: OpenBFME does not have it yet.");
+	CHECK(menu->unavailableBox()->text() == u"Level Select is not available yet: OpenBFME does not have it yet.");
 	// the box's Ok (GuiFX.apt's button sends "_level<n>.MessageBox_OnButtonOk"): the box goes, the menu gets OnFocus("1") -> ShowMainMenu
 	REQUIRE(fx.wm->invokeCallback("_level" + std::to_string(boxLevel) + ".MessageBox_OnButtonOk", ""));
 	fx.tick(90);
@@ -3514,6 +3515,44 @@ TEST_CASE("bfme2camp1 menu retail: RotWK's Solo Play list gets BFME2's Evil Camp
 		CHECK(sp.nav->asSprite()->childByName(good ? "GoodCampaign" : "EvilCampaign") == nullptr); // the list closed with its rows
 	}
 }
+// lane STABLEQA-1 (owner, 2026-10-30): a Stable build (ShellEnvironment::warOfTheRingOffered false) hides War of the Ring's Solo Play row in both menu
+// styles: the row is not drawn and takes no click, Skirmish moves down into its place (where War of the Ring sits in a Nightly build), the other rows
+// stay where a Nightly build has them; a WarOfTheRing command that still arrives sends no request and shows the Stable box
+TEST_CASE("stableqa1 menu retail: a Stable build hides War of the Ring's Solo Play row (both menu styles) and refuses its command")
+{
+	OPENBFME_REQUIRE_RETAIL(mount);
+	retailtest::Mount *bfme2 = retailtest::bfme2Mount();
+	REQUIRE(bfme2);
+	REQUIRE_MESSAGE(bfme2->fs, bfme2->error);
+	AptRetail bfme2Only{ *bfme2->fs };
+	for (AptRetail *movie : { &mount, &bfme2Only })
+	{
+		ShellFx nightly(*movie, "");
+		SoloPlay np = openSoloPlay(nightly);
+		ShellFx stable(*movie, "");
+		stable.environment.warOfTheRingOffered = false;
+		SoloPlay sp = openSoloPlay(stable);
+		for (const auto &kv : sp.rows)
+		{
+			REQUIRE_MESSAGE(kv.second, kv.first);
+			REQUIRE_MESSAGE(np.rows[kv.first], kv.first);
+		}
+		CHECK(np.rows["WarOfTheRing"]->globallyVisible());
+		CHECK_FALSE(sp.rows["WarOfTheRing"]->globallyVisible());
+		CHECK(sp.rows["Skirmish"]->globallyVisible());
+		CHECK(sp.rows["Skirmish"]->matrix.ty == np.rows["WarOfTheRing"]->matrix.ty);
+		for (const char *same : { "EvilCampaign", "GoodCampaign", "Expansion1Campaign", "BonusCampaign", "LoadGame" })
+			CHECK_MESSAGE(sp.rows[same]->matrix.ty == np.rows[same]->matrix.ty, same);
+		stable.wm->fscommand("AptMainMenu::WarOfTheRing", "");
+		stable.tick(5);
+		CHECK(lastRequest(stable, ShellAction::WarOfTheRing) == nullptr);
+		auto *menu = dynamic_cast<AptMainMenu *>(stable.shell->top());
+		REQUIRE(menu);
+		CHECK(menu->unavailableBox() != nullptr);
+		CHECK(stable.shell->findScreenByFilename("Skirmish.apt") == nullptr);
+	}
+}
+
 // lane MENUSND-1: the bottom bar of the OpenBFME menu (the Options screen as the game opens it) is the movie's own CANCEL / RESET TO DEFAULTS / ACCEPT, whose
 // click the page takes (AptOptionsScreen::mouseFilter). RotWK plays the button's click on the press: MenuExport.apt's GenericButton goes to its `_down`
 // frame (button action 4), which calls _root.PlaySound("Gui_ShellMapSelect") (FSCommand PlaySound, RW 0x815772); its own click (OnButtonClick) is the

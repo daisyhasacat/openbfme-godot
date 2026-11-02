@@ -48,6 +48,7 @@ var _letterbox_on := false   # lane CAMPUI-1: W3DDisplay::enableLetterBox (RW 0x
 var _letterbox_since := 0
 var _was_moving := false     # lane CAMPUI-1: the script camera's last state handed to the HUD camera
 var _pending_reset := false  # a RESET_CAMERA whose move has not ended yet
+var _fade_bad_type := -1     # lane FADETIME-1: an unknown TFade the draw complained about (an error is reported, never black)
 var _zoom_pitch_noted := false
 var _box_ready := false      # lane CAMPUI-1: the game's InGameNotificationBox.apt (AptMenuPlayer.notification_box) is up
 var objectives_open := Callable() # lane CAMPUI-1: () -> int: 2 the objectives screen is open, 1 the powers screen, 0 none (the box's location, RW 0x69BFAE)
@@ -81,6 +82,36 @@ func setup(w: Node3D, cam: Camera3D, start: Vector3, ui_parent: Node, audio: Nod
 	_fade = ColorRect.new()
 	_fade.color = Color(0, 0, 0, 0)
 	_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# lane FADETIME-1: the script fade quad (the tail of retail W3DStatusCircle::Render, RW 0x48E0EE ~ BFME2 0x8E7A4): a full-screen quad of
+	# the step intensity as a grey (255 * intensity per channel, alpha 255), blended by the fade's TFade. The modes are the shader's
+	# own arithmetic on the framebuffer behind it: ADD adds the grey (SC_ADD), SUBTRACT draws dst - src (D3DBLENDOP_REVSUBTRACT),
+	# MULTIPLY multiplies (srcblend ZERO, destblend SRCCOLOR) and SATURATE draws src*dst + dst*src twice (4 * i * i * dst); FADE_NONE
+	# draws nothing and an unknown mode is an error, never black
+	var fade_shader := Shader.new()
+	fade_shader.code = """shader_type canvas_item;
+uniform sampler2D screen_tex : hint_screen_texture, filter_nearest;
+uniform int mode = 0;      // retail TFade: 1 SUBTRACT, 2 ADD, 3 SATURATE, 4 MULTIPLY (0 FADE_NONE is never drawn)
+uniform float intensity = 0.0;
+void fragment() {
+	vec3 dst = texture(screen_tex, SCREEN_UV).rgb;
+	float i = floor(intensity * 255.0) / 255.0; // retail: clr = (Int)(255 * intensity) of the lerped value
+	if (mode == 1) {
+		COLOR = vec4(dst - vec3(i), 1.0);      // FADE_SUBTRACT: BLENDOP_REVSUBTRACT over the add shader
+	} else if (mode == 2) {
+		COLOR = vec4(dst + vec3(i), 1.0);      // FADE_ADD: SC_ADD
+	} else if (mode == 3) {
+		COLOR = vec4(dst * (4.0 * i * i), 1.0); // FADE_SATURATE: src*dst + dst*src, drawn twice
+	} else if (mode == 4) {
+		COLOR = vec4(dst * i, 1.0);            // FADE_MULTIPLY: srcblend ZERO, destblend SRCCOLOR
+	} else {
+		COLOR = vec4(1.0, 0.0, 1.0, 1.0);      // an unknown TFade is an error, never black
+	}
+}
+"""
+	var fade_mat := ShaderMaterial.new()
+	fade_mat.shader = fade_shader
+	_fade.material = fade_mat
+	_fade.visible = false
 	_caption = Label.new() # lane CAMPUI-1: kept (empty, hidden) for the readers of the caption's text (game.gd _dev_text_on_screen reads _caption_text())
 	_caption.set_meta("game_text", true) # lane CAMP-2: SHOW_MILITARY_CAPTION's game text (game.gd _dev_text_on_screen)
 	_caption.visible = false
@@ -243,7 +274,17 @@ func _process(delta: float) -> void:
 	_bottom.visible = bar > 0.0 and level > 0.0 and _letterbox_on
 	_fade.position = Vector2.ZERO
 	_fade.size = size
-	_fade.color = Color(0, 0, 0, st.fade)
+	# lane FADETIME-1: the type gates the quad — FADE_NONE (0) draws nothing (RW 0x48E0EE); an unknown type is an error, not black
+	var fade_type := int(st.get("fade_type", 0))
+	if fade_type == 0:
+		_fade.visible = false
+	elif fade_type >= 1 and fade_type <= 4:
+		_fade.visible = true
+		(_fade.material as ShaderMaterial).set_shader_parameter("mode", fade_type)
+		(_fade.material as ShaderMaterial).set_shader_parameter("intensity", float(st.fade))
+	elif fade_type != _fade_bad_type:
+		_fade_bad_type = fade_type
+		printerr("CINE: unknown CAMERA_FADE type %d (retail TFade is 0 .. 4); not drawn" % fade_type)
 	_caption.text = ""
 	_update_caption(st, size)
 	_status.visible = dev_overlay # lane CAMP-2: developer text never shows in the real game (the owner saw "frame 90   input disabled")

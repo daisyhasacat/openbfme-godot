@@ -1206,6 +1206,18 @@ void Object::friend_onDie(const DieModuleInterface::Event &event)
 {
 	// RW 0x698F06 (the dead flag RW + 0x458 bit 0 first: from now on the object is no target and takes no more damage)
 	m_effectivelyDead = true;
+	// WOTR2 milestone 7: RW 0x6991F3: an object with a Living World building id (+ 0x484) destroys that building of the strategic region (RW 0x6B3095 ->
+	// RW 0x60EC74 -> LivingWorldRegion::DestroyBuilding RW 0x7F32F4); the war applies it with the battle's result
+	if (m_logic.livingWorldTags().active)
+	{
+		if (const LivingWorldBattleTags::Tag *t = m_logic.livingWorldTags().object(m_id))
+		{
+			if (t->buildingId != 0)
+			{
+				m_logic.livingWorldTags().destroyedBuildings.push_back(t->buildingId);
+			}
+		}
+	}
 	if (m_client)
 	{
 		m_client->observerEvent(*this, ObserverEvent::Death);

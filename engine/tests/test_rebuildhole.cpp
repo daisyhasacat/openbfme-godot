@@ -453,18 +453,25 @@ TEST_CASE("rebuild hole live: a dead Goblin cave's Wild hole makes a worker that
 	CHECK(site->getPosition()->y == cavePos.y);
 	CHECK(owner->getMoney()->countMoney() >= moneyBefore); // tolerance: the player's income keeps coming in meanwhile; the rebuild itself pays nothing (RW 0x8AD77E)
 	CHECK(hole->isMasked());
-	// the worker builds it; when it is done the hole dies and the worker goes
+	// the worker builds it; when it is done the hole dies and the worker goes. The ids are taken now: a dead object can be deleted within the loop's last
+	// frame and its pointer then dangles (merge queue q34: with #161's block search the worker is; reading it after the loop was a use after free)
+	const ObjectID workerID = worker->getID();
+	const ObjectID holeID = hole->getID();
+	const auto holeDead = [&] {
+		const Object *h = logic.findObjectByID(holeID);
+		return h == nullptr || h->isEffectivelyDead();
+	};
 	frames = 0;
-	while (!hole->isEffectivelyDead() && frames < 3000)
+	while (!holeDead() && frames < 3000)
 	{
 		g.live->advance(0.2);
 		++frames;
 	}
 	MESSAGE("the worker rebuilt the cave in " << frames << " frames");
-	CHECK(hole->isEffectivelyDead());
+	CHECK(holeDead());
 	CHECK_FALSE(site->isUnderConstruction());
-	CHECK(worker->isDestroyed()); // RW 0x886C35 (then the hole's onDie, RW 0x886878)
-	const ObjectID workerID = worker->getID();
+	const Object *workerNow = logic.findObjectByID(workerID);
+	CHECK((workerNow == nullptr || workerNow->isDestroyed())); // RW 0x886C35 (then the hole's onDie, RW 0x886878)
 	g.live->advance(0.2);
 	CHECK(logic.findObjectByID(workerID) == nullptr);
 }

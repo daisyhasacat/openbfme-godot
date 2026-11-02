@@ -2,6 +2,7 @@
 // Lane DECOMP-2: the stops closed or narrowed with the RotWK -> BFME2 -> Open-BFME-2 map (tools/re/rw2decomp.py). Binary facts SKIP when RW_GAME_DAT is unset;
 // the retail scenarios SKIP when ROTWK_INSTALL / BFME2_INSTALL are unset.
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 
 #include "BuildTestUtil.h"
@@ -141,6 +142,7 @@ TEST_CASE("decomp2 S-483: a horde has an upgrade one of its members has (RW 0x68
 	REQUIRE(tt);
 	Object *horde = logic.newObject(tt, men->getDefaultTeam(), ObjectStatusMaskType{});
 	REQUIRE(horde);
+	testutil::completeHorde(horde); // a horde makes its members (onBuildComplete, RW 0x8718ED)
 	REQUIRE(horde->getContain());
 	REQUIRE(horde->getContain()->getHordeContainInterface());
 	REQUIRE(horde->getContain()->getContainedItemsList());

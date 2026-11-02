@@ -41,4 +41,5 @@ set(OPENBFME_SPELL_TESTS
     tests/test_spell4_cursor.cpp # lane SPELL-4
     tests/test_spell4_buffs.cpp # lane SPELL-4
     tests/test_taint_grid.cpp
-    tests/test_spellrc1_hud.cpp)
+    tests/test_spellrc1_hud.cpp # lane SPELLRC-1
+    tests/test_spellaudit1.cpp) # lane SPELLAUDIT-1

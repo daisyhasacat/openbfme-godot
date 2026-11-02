@@ -31,6 +31,7 @@
 #include "GameClient/DrawableShroud.h"
 #include "GameClient/LogicSnapshot.h"
 #include "GameClient/RenderInterpolation.h"
+#include "GameClient/StealthLook.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DDrawModules.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DDrawServices.h"
 #include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DLuaDrawScriptHost.h"
@@ -246,7 +247,6 @@ public:
 	struct PresentedLook
 	{
 		bool hidden = false;
-		bool nonStealthHidden = false; ///< shroud/garrison only; model modules may opt out of stealth
 		bool fogLook = false;
 	};
 	PresentedLook presentedLook(const LogicSnapshot *presented, bool shroudDrawn) const;
@@ -297,6 +297,19 @@ public:
 	// lane FBSIM-1: the phantom structure's opacity (ObjectSnapshot::phantomStructure)
 	void updatePhantomLook(const ObjectSnapshot &rec);
 
+	// ---- lane STEALTHLOOK-1: the drawable's stealth look (GameClient/StealthLook.h; RW 0x6760F9 setter and the per-client-frame step RW 0x673114) ----
+	// the snapshot's look drives the setter (retail's callers hand it (look, min, max, cycle) unconditionally); the object's HORDE parent
+	// (ObjectSnapshot::stealthParent, RW 0x693A1A) makes the drawable imitate instead. `mgr` resolves the parent drawable
+	void syncStealthLook(const ObjectSnapshot &rec);
+	// RW 0x673114, once per client frame: imitate the stealth parent or step the pulse / blend. `parent` is the drawable of stealthParent (null: none / early out)
+	void updateStealthLook(const Drawable *parent);
+	ObjectID stealthParentId() const { return m_stealthParentId; }
+	const StealthLook::State &stealth() const { return m_stealth; }
+	float stealthOpacity() const { return m_stealth.opacity; }
+	bool stealthHidden() const { return m_stealth.hidden; }
+	// RW +0x3AB: a draw module's data is not affected by stealth (the drawable cannot hide for look 5)
+	bool cannotHideByStealth() const { return m_cannotHideByStealth; }
+
 private:
 	void applyBuildingWindowVisibility();
 	void addEntry(DrawServices &services, const ThingTemplate::Nugget &nugget, std::vector<std::string> &problems);
@@ -321,6 +334,9 @@ private:
 	bool m_clientHidden = false; ///< lane CHAT-1
 	bool m_phantomLook = false;  ///< lane FBSIM-1: drawn as a dozer's phantom structure (0.4 opacity)
 	Fade m_fade; ///< lane PROJ-2
+	StealthLook::State m_stealth;            ///< lane STEALTHLOOK-1: RW Drawable +0xB4 .. +0xD4, +0x164, +0x358, +0x43E
+	bool m_cannotHideByStealth = false;      ///< lane STEALTHLOOK-1: RW +0x3AB, set at construction (GameClient/StealthLook.cpp)
+	ObjectID m_stealthParentId = INVALID_ID; ///< lane STEALTHLOOK-1: the imitated parent's object (ObjectSnapshot::stealthParent)
 	bool m_buildingEntries = false;                                     ///< lane BUILD-4: the constructor is making the draw modules
 	std::vector<std::pair<std::string, bool>> m_pendingModuleRequests; ///< lane BUILD-4: script module requests made meanwhile
 	float m_moveSpeed = 0.0f; ///< lane SMOOTH-3: the presented record's moveSpeed (the Distance animations' speed sync)

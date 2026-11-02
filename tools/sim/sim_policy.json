@@ -202,18 +202,6 @@
    "reason": "lane CAMP-2: the movies' VP6 picture decoder and EA's movie container (client presentation on the render clock); no logic state"
   },
   {
-   "glob": "src/GameClient/LivingWorldTerritorySelection.cpp",
-   "reason": "lane WOTR-1: lobby-only territory names, ownership groups and selection validation; does not serialize region IDs or change simulation state"
-  },
-  {
-   "glob": "src/GameClient/LivingWorldMap.cpp",
-   "reason": "lane WOTR-1: Living World map, territory and effect INI data for the strategic lobby; no logic state"
-  },
-  {
-   "glob": "src/GameClient/LivingWorldCampaign.cpp",
-   "reason": "lane WOTR-1: TheLivingWorldCampaignManager's LivingWorldCampaign INI blocks (the War of the Ring scenarios the lobby lists); data only, no logic state"
-  },
-  {
    "glob": "src/GameClient/LinearCampaign.cpp",
    "reason": "lane CAMP-1: TheLinearCampaignManager's LinearCampaign INI blocks and the shell's campaign progress (which mission to load next); no logic state, the logic gets only the map name and the difficulty"
   },
@@ -228,6 +216,10 @@
   {
    "glob": "src/GameClient/EndGame.cpp",
    "reason": "lane END-1: the client half of the end of a game (the local player's end screen, messages and Eva, the human player's win / loss script library run over the logic snapshot, the score screen data copied when the game is left): reads the logic, never writes simulation state"
+  },
+  {
+   "glob": "src/GameClient/LivingWorldScoreScreen.cpp",
+   "reason": "WOTR2 milestone 5: the War of the Ring score screen's data (TimeLine type 6) copied from the strategic logic's score keepers when the war is left: reads the logic, never writes simulation state"
   },
   {
    "glob": "src/GameClient/RTS3DSceneOcclusion.cpp",
@@ -412,6 +404,10 @@
   {
    "glob": "src/GameClient/GUI/Skirmish/SkirmishPreferences.cpp",
    "reason": "MENU-1 Skirmish.ini: the player's profile names read and written by the Skirmish screen, client-side user interface; nothing reaches the logic"
+  },
+  {
+   "glob": "src/GameClient/GUI/Skirmish/LivingWorldSetupText.cpp",
+   "reason": "lane WOTR-2: the War of the Ring setup's territory and scenario description texts (game text labels formatted for the screen): client-side user interface, nothing reaches the logic"
   },
   {
    "glob": "src/GameClient/GUI/Skirmish/SkirmishGameRecord.cpp",
@@ -668,10 +664,6 @@
   {
    "glob": "src/GameNetwork/Transport.cpp",
    "reason": "lane MP-1: the UDP socket and the reliable per-peer delivery (resends, acks, the test harness's loss and delay): it decides WHEN a peer's bytes arrive, never what a logic frame contains (GameNetwork/Network.h decides that from the received data alone)"
-  },
-  {
-   "glob": "src/GodotDevice/GodotAptLivingWorld.cpp",
-   "reason": "lane WOTR-1: the mounted Living World map model in the APT menu viewport; client presentation and camera framing only, no simulation state"
   },
   {
    "glob": "src/GodotDevice/GodotAptView3D.cpp",

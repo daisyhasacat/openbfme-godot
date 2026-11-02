@@ -105,10 +105,14 @@ void storeUberHashes(const char *name, const std::vector<std::uint32_t> &hashes)
 // on their hordes, RW 0x86C4EA, and the destination adjustment spiralling around the cell, RW 0x6FA2A4, #73 alone differs from it from frame 0; lane AIDATA-1: the horde run-down, RW 0x748650 /
 // 0x74AA69 / 0x6CC07C; lane AIEXPAND-1 re-measured it: the skirmish AI's state hash holds the EXPANSION heuristic's frame counter, RW 0x97D035; merge queue q29
 // re-measured it once on the merged tree: AIEXPAND-1's counter, before it AIDATA-1's run-down, compared at each merge point; merge queue q30 re-measured it
-// once on the merged tree: #130's allied clearing with the move state's update and exit, RW 0x749497 / 0x74949C, from frame 12; PORTERFOG-1 keeps it; merge queue q32
+// once on the merged tree: #130's allied clearing with the move state's update and exit, RW 0x749497 / 0x74949C, from frame 12; PORTERFOG-1 keeps it; lane SPELLFIX-1 re-measured it: an omitted ShroudClearingRange clears the VisionRange, RW 0x73FB7A /
+// 0x69990F, from frame 0, its other changes alone keep it; the horde contain fix (#160) re-measured it: members made where their
+// horde stands, RW 0x8718ED, and left where they are by a move, RW 0x871536; the hierarchical block zones (#161)
+// re-measured it: the block search's block zones, RW 0x9389A6, and raised branch, RW 0x9389CE, change its corridors, from frame 12; merge queue q32
 // re-measured it once on the merged tree: MODCOMPAT-AI's script references and completed upgrades, compared at each merge point; the other items keep it; merge queue q33
 // re-measured it once on the merged tree, compared at each merge point: #164 keeps it; MODCOMPAT-MOD1 (its modules), #133 (the straight production exits) and #166
-// (the Uber path-search cap) each move it). The state hash's own dispatches are counted
+// (the Uber path-search cap) each move it; merge queue q34 re-measured it once on the merged tree, compared at each merge point: SPELLFIX-1, #160
+// and #161 each move it). The state hash's own dispatches are counted
 // apart from the frame's (PERF-2's collision jobs): with more than one
 // thread the hash itself ran chunks on workers. The Uber hash is not the Faithful one, and a Faithful hash dispatches nothing.
 // Lane MODCOMPAT-MOD1 re-measured the pin vector at GeometryUpgrade's commit (OPENBFME_UBER1_REGEN=1, a CI host): GeometryUpgrade's per-object GeometryInfo

@@ -22,6 +22,7 @@
 #include "GodotDevice/GodotVideoStream.h"
 #include "GodotDevice/GodotW3DModelBuilder.h"
 #include "GodotDevice/LuaGDExtensionRegister.h"
+#include "GodotDevice/GodotLivingWorld.h" // WOTR-1
 
 #include <gdextension_interface.h>
 #include <godot_cpp/core/class_db.hpp>
@@ -103,6 +104,7 @@ static void initialize_openbfme(ModuleInitializationLevel p_level)
 #if defined(__APPLE__) && TARGET_OS_IOS
 	OpenBFMEIOSTouch::install();
 #endif
+	GDREGISTER_CLASS(LivingWorldGame); // WOTR-1
 }
 
 static void uninitialize_openbfme(ModuleInitializationLevel p_level)

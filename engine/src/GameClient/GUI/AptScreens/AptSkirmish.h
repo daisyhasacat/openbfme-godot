@@ -36,13 +36,13 @@
 #include "GameClient/GUI/AptScreen.h"
 #include "GameClient/GUI/ShellEnvironment.h"
 #include "GameClient/GUI/Skirmish/SkirmishGameSetup.h"
+#include "GameClient/GUI/Skirmish/LivingWorldShellInfo.h" // lane WOTR-1
 #include "GameClient/OptionPreferences.h"
 
 struct CreateAHeroHero;
 class AptMessageBox;
 
 #include "GameClient/OptionPreferences.h"
-#include "GameClient/LivingWorldTerritorySelection.h"
 
 #include <array>
 #include <map>
@@ -54,16 +54,7 @@ class AptMessageBox;
 class AptSkirmish : public AptScreen
 {
 public:
-	// `mode` is AptSkirmish::OpenScreen's argument (BFME2 AptSkirmish::AptSkirmish(context, arg), retail 0x00522B0E -> AptMpGameSetup::rva004422B4):
-	// 0 the skirmish lobby (the main menu's Skirmish, AptMainMenuUpdate.cpp case 7), 1 the War of the Ring lobby (WarOfTheRing, case 8)
-	AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment, int mode = 0);
-	// lane WOTR-1: the strategic lobby's scenario (the selected StrategicScenarioType entry's campaign index, -1 none)
-	int strategicScenario() const { return m_strategicScenario; }
-	bool strategic() const { return m_strategic; }
-	LivingWorldTerritorySelection &territorySelection() { return m_territorySelection; }
-	bool territoryHostEditable() const {return lobbyEditable(-1);}
-	bool territoryInputEnabled() const { return m_strategic && m_profileState == kStateMain && !m_ruleBox; }
-	void hoverStrategicTerritory(const LivingWorldRegion *region);
+	AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment);
 
 	~AptSkirmish() override;
 
@@ -115,9 +106,6 @@ public:
 	GameWindow *currentMapWindow() const { return m_currentMap; }
 	const std::vector<GameWindow *> &currentMapSpots() const { return m_currentMapChildren; }
 	GameWindow *mapInfoWindow() const { return m_mapInfo; }
-	GameWindow *strategicScenarioCombo() const { return m_strategicScenarioCombo; } // WOTR-1
-	GameWindow *strategicScenarioDescription() const { return m_strategicScenarioDesc; }
-	GameWindow *strategicTerritoryDescription() const {return m_strategicTerritoryDesc;}
 	GameWindow *profileListWindow() const { return m_profileList; }
 	GameWindow *profileComboWindow() const { return m_bfme1ProfileCombo; }
 	GameWindow *mapTypeWindow() const { return m_bfme1MapType; }
@@ -147,11 +135,12 @@ public:
 	}
 	// lane CAH-1: the hero combo's choice of a slot (GameSlot + 0x5C: -1 none, -2 random, else the index into the hero list)
 	int slotHero(int slot) const { return slot >= 0 && slot < MAX_SLOTS ? m_slotHero[(size_t)slot] : -1; }
-	// The map cache keys in the order of the MapList rows.
+	// The map cache keys in the order of the MapList rows (strategic mode: the scenario names).
 	const std::vector<std::string> &mapListKeys() const { return m_mapKeys; }
 	void setMapSearch(const std::u16string &query);
  void refreshMapCatalog() { populateMapList(); }
 	const std::u16string &mapSearch() const { return m_mapSearch; }
+	const std::vector<int> &mapListPlayers() const { return m_mapPlayers; } // lane MODUI-1: each row's player count, in row order
 	// lane OWNERFIX-3: the conquest state (RW 0x8460B5's + 0xF4) and the image of each MapList row, in row order
 	const std::vector<int> &mapListStates() const { return m_mapStates; }
 	const std::vector<std::string> &mapListImages() const { return m_mapImages; }
@@ -171,14 +160,56 @@ public:
 	bool startAvailable() const { return m_profileState == kStateMain || m_profileState == kStateClosed; }
 	int profileState() const { return m_profileState; } // lane MENUWORK-1: the menu inventory's evidence
 
+	// ---- lane WOTR-1: the War of the Ring setup (RW 0x929745 with the strategic flag RW 0xDB6BF0) ----
+	// AptMapPreview::GameMapType answers "Strategic" (the movie loads SkirmishStrategic.swf), the colours drop AvailableInWotR = No, slots 6 / 7 are hidden,
+	// the StrategicScenarioType combo holds the scenarios (RW 0x976B49) and StartGame posts the message with NewGameMessage::livingWorldCampaign
+	void enterStrategicMode(const LivingWorldShellInfo &info);
+	void leaveStrategicMode(); // WOTR2 milestone 8: the LAN lobby's Open Play page after its War of the Ring page (mode 0 again)
+	bool strategicMode() const { return m_strategic; }
+	const std::string &selectedScenario() const { return m_scenario; }
+	// the StrategicScenarioType combo's row of that scenario (false: no such scenario); `notify` false: a LAN joiner mirrors the host's choice (nothing sent)
+	bool selectScenario(const std::string &name, bool notify = true);
+	// WOTR2 milestone 8 (tests): `slot`'s start region set directly (the scripted LAN war: each player its own slot; retail's preview click goes to the
+	// next slot without a start, clickRegion); the change goes to the host / the players as any slot change. False when the region is not selectable
+	bool pickStartRegion(int slot, int region);
+	GameWindow *scenarioCombo() const { return m_scenarioCombo; }
+	// lane WOTR-2: the strategic setup's map preview (AptMapPreview's LivingWorld gadget, + 0x68). A strategic slot's start position is a region index of
+	// the selected scenario's region campaign (RW 0x60E8DB(startPos)). The device draws the map in the gadget's rectangle and reports the region under
+	// the mouse (hoverRegion, RW 0x976D64) and clicks (clickRegion: RW 0x845830's start position branch with RW 0x975C3A)
+	GameWindow *livingWorldWindow()
+	{
+		pruneDeadGadgets();
+		return m_livingWorldWindow;
+	}
+	GameWindow *territoryDescriptionWindow()
+	{
+		pruneDeadGadgets();
+		return m_territoryDescription;
+	}
+	GameWindow *scenarioDescriptionWindow()
+	{
+		pruneDeadGadgets();
+		return m_scenarioDescription;
+	}
+	const LivingWorldSetupCampaign *strategicCampaign() const;
+	bool regionSelectable(int region) const;  // RW 0x975D3F / 0x97572C: an enabled region outside DisallowStartInRegions, not a historical scenario
+	void hoverRegion(int region);             // RW 0x976D64 (-1: the mouse left every region)
+	bool clickRegion(int region, bool left);  // true when the click was taken
+	// the start regions the preview tints (RW 0x9770CF): region index -> the holder's slot; a slot's colour is its MultiplayerColor
+	std::vector<std::pair<int, int>> regionHolders() const;
+	int nextStartSlot() const { return nextSelectableStartSlot(0); } // RW 0x975C3A(0): whose colour a free region under the mouse shows (RW 0x975E04)
+	int hoveredRegion() const { return m_hoverRegion; }
+	void showTerritoryDescription(int region); // RW 0x976C4D into StrategicTerritoryDescription
+
 protected:
+	void applyScenarioLimits(); // lane WOTR-2: the chosen scenario's limits, factions and historical starts for the start check (single player and LAN)
 	void updateExtendedRows();
 	WindowMsgHandledType gadgetMessage(GameWindow *from, std::uint32_t msg, WindowMsgData data1, WindowMsgData data2) override;
 
 	// ---- lane MP-2: the LAN lobby (AptLanLobby, LanLobby.apt) hosts the same MpGameSetup movie with a network model ----
 	// `lan`: only the lobby movie's names are registered (MpGameSetup, AptMpGameRules, AptMpChat, AptMpClans, AptMapPreview), not AptSkirmish's own
 	// commands, profiles and update; the model is a network game (SkirmishGameSetup::setNetwork)
-	AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment, const char *filename, const char *codePrefix, bool lan, int mode = 0);
+	AptSkirmish(WindowManager &windows, Shell &shell, ShellEnvironment &environment, const char *filename, const char *codePrefix, bool lan);
 	// after the local player changed a slot or the map through the gadgets (the LAN lobby sends it on)
 	virtual void lobbyChanged() {}
 	// may the local player change the slot's combos (-1: the map); a slot it may not is shown disabled
@@ -301,12 +332,7 @@ private:
 	bool m_platformNoted = false;
 	void refreshColors(int slot);
 	void updateMapPreview();
-	// lane WOTR-1: the strategic panel (BFME2 AptMapPreview: PopulateStrategicScenario 0x0057D4F3, UpdateStrategicScenarioDesc 0x0057C99E,
-	// SelectCampaign 0x0057CA2D)
-	void populateStrategicScenarios();
-	void updateStrategicScenarioDescription();
-	void selectStrategicScenario(int campaignIndex);
-	const StrategicScenario *findStrategicScenario(int campaignIndex) const;
+	void setGameMapType(const std::string &type);
 	void updateCurrentMapWindow(const MapCacheEntry *map); // lane UI-2: RW 0x9772E6 / 0x976F59
 	std::string mapPreviewImage(const MapCacheEntry &map);  // lane UI-2: RW 0x702689
 	void onComboSelected(GameWindow *combo);
@@ -331,6 +357,8 @@ private:
 	// lane FB7-1: a click on a start spot of the map window (RW 0x845830, messages 0x4008 / 0x4009 = GBM_SELECTED / GBM_SELECTED_RIGHT); true when
 	// `button` is one of the spots
 	bool onStartSpotSelected(GameWindow *button, bool left);
+	// RW 0x845830's start position branch for a position index (a map spot, or a War of the Ring region index: lane WOTR-2)
+	bool startPositionClicked(int position, bool left);
 	int nextSelectableStartSlot(int from) const; // RW 0x975C3A
 	// lane FB7-1: updateMapStartSpots (RW 0x7052BE with onLoadScreen 0, run by the screen update when a start position changed, RW 0x846BB9)
 	void updateMapStartSpots();
@@ -386,6 +414,7 @@ private:
 	GameWindow *m_mapCapacityFilter = nullptr;
 	bool m_largeMapsOnly = false;
 	std::vector<std::string> m_mapKeys;     // the map key of each MapList row (MpGameSetup +0x398)
+	std::vector<int> m_mapPlayers; // lane MODUI-1
 	std::vector<int> m_mapStates;           // lane OWNERFIX-3: each row's conquest state
 	std::vector<std::string> m_mapImages;   // lane OWNERFIX-3: each row's column 0 image
 	int m_sortPrimary = 2;                  // MpGameSetup +0x3AC (RW 0x8451A9): 0/1 name, 2/3 players, 4/5 conquest state (ascending / descending)
@@ -402,11 +431,15 @@ private:
 	GameWindow *m_currentMap = nullptr;
 	std::vector<GameWindow *> m_currentMapChildren;
 	bool m_strategic = false; // AptMapPreview::GameMapType == "Strategic": MpGameSetup+0x7C == 1
-	GameWindow *m_strategicScenarioCombo = nullptr; // AptMapPreview + 0x50, "StrategicScenarioType"
-	GameWindow *m_strategicScenarioDesc = nullptr;  // + 0x54, "StrategicScenarioDescription"
-	GameWindow *m_strategicTerritoryDesc = nullptr; // + 0x58, "StrategicTerritoryDescription"
-	LivingWorldTerritorySelection m_territorySelection;
-	int m_strategicScenario = -1;                   // the selected campaign (BFME2 GameInfo + campaign)
+	const LivingWorldShellInfo *m_livingWorld = nullptr; // lane WOTR-1: the scenarios of the strategic setup
+	std::string m_scenario;                              // lane WOTR-1: the selected scenario (LivingWorldCampaign name)
+	const LivingWorldScenarioEntry *selectedScenarioEntry() const;
+	void populateScenarioCombo();
+	GameWindow *m_scenarioCombo = nullptr;        // lane WOTR-1: AptMapPreview StrategicScenarioType (+0x50)
+	GameWindow *m_scenarioDescription = nullptr;  // StrategicScenarioDescription (+0x54)
+	GameWindow *m_territoryDescription = nullptr; // StrategicTerritoryDescription (+0x58)
+	GameWindow *m_livingWorldWindow = nullptr;    // lane WOTR-2: LivingWorld (+0x68)
+	int m_hoverRegion = -1;
 	// Skirmish profile gadgets
 	GameWindow *m_profileList = nullptr;
 	GameWindow *m_profileEntry = nullptr;

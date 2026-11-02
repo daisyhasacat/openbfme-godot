@@ -221,7 +221,6 @@ include(cmake/Online3.cmake)    # ONLINE-3: hold, rejoin, the multiplayer pause 
 include(cmake/MpDrop1.cmake)    # MP-DROP-1: a dropped player never freezes an online game (openbfme_mpdrop1_targets)
 include(cmake/Script1.cmake)    # SCRIPT-1: the map script engine (appends to OPENBFME_SIM_SOURCES; OPENBFME_SCRIPT1_TESTS)
 include(cmake/Camp1.cmake)      # CAMP-1: the campaigns (OPENBFME_CAMP1_SOURCES / OPENBFME_CAMP1_TESTS)
-include(cmake/Wotr1.cmake)      # WOTR-1: the War of the Ring scenarios and lobby (OPENBFME_WOTR1_SOURCES / OPENBFME_WOTR1_TESTS)
 include(cmake/Camp2.cmake)      # CAMP-2: the movies' VP6 picture (OPENBFME_CAMP2_SOURCES / _GODOT_SOURCES / _TESTS)
 include(cmake/CampSave1.cmake)  # CAMPSAVE-1: CampaignMenu.apt and the campaign's saves between missions (OPENBFME_CAMPSAVE1_SOURCES / _TESTS)
 include(cmake/Bfme2Camp1.cmake) # BFME2CAMP1: the BFME2 campaigns and tutorials (OPENBFME_BFME2CAMP1_TESTS)
@@ -291,11 +290,13 @@ include(cmake/Save4d.cmake)     # SAVE-4d: the script engine, victory, weather a
 include(cmake/Save4e.cmake)     # SAVE-4e: the snapshot load's test probe (appends to OPENBFME_SIM_SOURCES; OPENBFME_SAVE4E_TESTS)
 include(cmake/Platformicon1.cmake) # PLATFORMICON-1: each player's system beside the name (OPENBFME_PLATFORMICON1_TESTS)
 include(cmake/Ownerfix1.cmake)  # OWNERFIX-1: problems the owner hit playing (OPENBFME_OWNERFIX1_TESTS)
+include(cmake/B2spell1.cmake)  # B2SPELL-1: the BFME2 campaign spell book (OPENBFME_B2SPELL1_TESTS)
 include(cmake/Visual2.cmake)    # VISUAL-2: the owner's fog leak, tree sway and colouring (OPENBFME_VISUAL2_SOURCES / _TESTS)
 include(cmake/Ownerfix2.cmake)  # OWNERFIX-2: the owner's playtest of 2026-10-17 (OPENBFME_OWNERFIX2_CLIENT_SOURCES / _TESTS)
 include(cmake/Lumber1.cmake)    # LUMBER1: the evil lumber mills' harvesting workers (appends to OPENBFME_SIM_SOURCES; OPENBFME_LUMBER1_TESTS)
 include(cmake/Trees1.cmake)     # TREES1: units crush trees, construction clears them (OPENBFME_TREES1_TESTS)
 include(cmake/Backlog8.cmake)   # BACKLOG-8: formations, horde wall scaling, auto ability melee position (appends to OPENBFME_SIM_SOURCES)
+include(cmake/Wotr1.cmake)      # WOTR-1: War of the Ring (appends to OPENBFME_SIM_SOURCES; OPENBFME_WOTR1_TESTS)
 include(cmake/Menufix1.cmake)   # MENUFIX-1: the menus, consistent and retail-looking (OPENBFME_MENUFIX1_TESTS)
 include(cmake/Hudredraw1.cmake) # HUDREDRAW-1: the HUD redraws only the changed Apt levels (OPENBFME_HUDREDRAW1_TESTS)
 include(cmake/Chat1.cmake)      # CHAT-1: in-game chat and beacons (OPENBFME_CHAT1_CLIENT_SOURCES / _TESTS)
@@ -338,6 +339,7 @@ add_library(openbfme_core STATIC
     ${OPENBFME_STEALTH_SOURCES}
     ${OPENBFME_END1_SOURCES}
     ${OPENBFME_PLAY1_SOURCES}
+    ${OPENBFME_WOTR1_SOURCES}
     ${OPENBFME_MP2_CLIENT_SOURCES}
     ${OPENBFME_SAVE2_CLIENT_SOURCES}
     ${OPENBFME_MP3_CLIENT_SOURCES}
@@ -587,7 +589,7 @@ target_sources(openbfme_core PRIVATE ${OPENBFME_WEATHER1_CLIENT_SOURCES}) # lane
 # game start (GameLogic/NewGame, a thin caller since START-1), creates the logic objects and queues the player's commands (HUD-1 moves the commands into core);
 # GodotGameStart.cpp marshals the lobby's NewGameMessage between Godot Dictionaries and the logic's struct (the values the logic consumes), so it is audited too.
 if(OPENBFME_BUILD_GODOT)
-    set(OPENBFME_SIM_SOURCES_GODOT src/GodotDevice/GodotGameWorld.cpp src/GodotDevice/GodotGameStart.cpp src/GodotDevice/GodotGameWorldHeroes.cpp src/GodotDevice/GodotGameWorldStealth.cpp src/GodotDevice/GodotGameWorldGarrison.cpp src/GodotDevice/GodotGameWorldCah.cpp) # CAH-1: the builder's map mode; HERO-1: the hero commands; STEALTH-1: the stealth viewer helpers; GARRISON-1: the garrison commands
+    set(OPENBFME_SIM_SOURCES_GODOT src/GodotDevice/GodotGameWorld.cpp src/GodotDevice/GodotGameStart.cpp src/GodotDevice/GodotGameWorldHeroes.cpp src/GodotDevice/GodotGameWorldStealth.cpp src/GodotDevice/GodotGameWorldGarrison.cpp src/GodotDevice/GodotGameWorldCah.cpp src/GodotDevice/GodotLivingWorld.cpp) # WOTR-1: the strategic game's orders; CAH-1: the builder's map mode; HERO-1: the hero commands; STEALTH-1: the stealth viewer helpers; GARRISON-1: the garrison commands
     list(APPEND OPENBFME_SIM_SOURCES_GODOT src/GodotDevice/GodotBfmeLua.cpp src/GodotDevice/GodotBfmeLuaAI.cpp) # validated native Lua mutations; LUAAI-1: orders, queries, the AI switch
 endif()
 openbfme_sim_write_manifest(${CMAKE_CURRENT_BINARY_DIR}/sim_manifest.json)
@@ -663,7 +665,6 @@ add_library(openbfme SHARED
     ${OPENBFME_HUD4_GODOT_SOURCES}
     ${OPENBFME_HUD6_GODOT_SOURCES}
     ${OPENBFME_CAH1_GODOT_SOURCES}
-    ${OPENBFME_WOTR1_GODOT_SOURCES}
     ${OPENBFME_WEATHER1_GODOT_SOURCES})
 target_sources(openbfme PRIVATE ${OPENBFME_SIM_SOURCES_GODOT}) # the simulation sources of the extension (listed in the manifest)
 target_link_libraries(openbfme PRIVATE openbfme_core godot-cpp openbfme_luagd)
@@ -864,8 +865,10 @@ add_executable(openbfme_tests
     ${OPENBFME_NETLAG1_TESTS}
     ${OPENBFME_PLATFORMICON1_TESTS}
     ${OPENBFME_OWNERFIX1_TESTS}
+    ${OPENBFME_B2SPELL1_TESTS}
     ${OPENBFME_VISUAL2_TESTS}
     ${OPENBFME_OWNERFIX2_TESTS}
+    ${OPENBFME_WOTR1_TESTS}
     ${OPENBFME_MENUFIX1_TESTS}
     ${OPENBFME_HUDREDRAW1_TESTS}
     ${OPENBFME_CHAT1_TESTS}

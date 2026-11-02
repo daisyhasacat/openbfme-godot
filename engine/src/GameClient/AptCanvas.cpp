@@ -172,11 +172,9 @@ void AptTextureStore::decodeEntry(const std::string &path, const std::vector<std
 	std::string error;
 	{
 		TGAImage image;
-		// the atlases are up to 1024 wide and 2048 high in the corpus; 4096 is far above any of them. BFME1's patch 2.22 button art
-		// (uiGondorSoldier.tga, ...) is RLE (type 10), which BFME1's D3DX texture loader reads: decoded there as the radar art is
-		const bool decoded = isBfme1() ? TGAFile::decodeRadar(bytes.data(), bytes.size(), image, &error)
-		                               : TGAFile::decode(bytes.data(), bytes.size(), image, &error, 4096);
-		if (!decoded)
+		// the atlases are up to 1024 wide and 2048 high in the corpus; 4096 is far above any of them. RLE images are read (lane MODUI-1: retail's
+		// texture loader decodes them, TGAFile.h; Edain's map previews are RLE)
+		if (!TGAFile::decode(bytes.data(), bytes.size(), image, &error, 4096, true))
 		{
 			entry.error = path + ": " + error;
 		}

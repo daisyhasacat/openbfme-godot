@@ -37,7 +37,6 @@ public:
 	bool hasFileSystem() const override { return m_fs != nullptr; }
 
 	bool bfme1Data() const override { return m_bfme1; }
-	const std::vector<StrategicScenario> &strategicScenarios() const override { return m_scenarios; } // WOTR-1
 
 private:
 	bool m_bfme1 = false;
@@ -46,6 +45,5 @@ private:
 	std::vector<SkirmishColor> m_colors;
 	std::vector<MapCacheEntry> m_maps;
 	std::vector<int> m_cashChoices;
-	std::vector<StrategicScenario> m_scenarios;
 	int m_defaultStartingCash = 0;
 };

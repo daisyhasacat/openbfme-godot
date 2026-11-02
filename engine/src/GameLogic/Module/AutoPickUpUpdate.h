@@ -80,6 +80,18 @@ public:
 	static void buildFieldParse(MultiIniFieldParse &p);
 };
 
+// BFME1 only: field table VA 0x010BB9D0 and update RVA 0x00281F40 (Open-BFME-1
+// GameLogic/Object/Update/AutoPickUpUpdateUpdate.cpp). Its KindOf mask is an ANY
+// filter, and boredom is part of this update, before the ordinary pickup scan.
+// BFME2/RotWK keep the table RW 0xC65B60 and their separate BoredUpdate.
+class Bfme1AutoPickUpUpdateModuleData : public AutoPickUpUpdateModuleData
+{
+public:
+	bool m_bored = false;
+	ObjectFilter m_boredFilter = ObjectFilter::none({}, {});
+	static void buildFieldParse(MultiIniFieldParse &p);
+};
+
 class AutoPickUpUpdate : public UpdateModule
 {
 public:
@@ -105,6 +117,10 @@ public:
 
 	static void registerModule(ModuleFactory &modules);
 	static std::vector<std::string> stopLines();
+
+protected:
+	// BFME1's integrated boredom step; RotWK's update has no such step.
+	virtual bool tryBoredAction() { return false; }
 
 private:
 	bool gate();                                     ///< RW 0x899562

@@ -1,6 +1,7 @@
 // OpenBFME unit tests (lane BACKLOG2) on a retail skirmish (Evendim, Men against Mordor): what retail does to the ground before a structure appears there
 // (GameLogic/ConstructionSite.h). SKIP loudly when ROTWK_INSTALL / BFME2_INSTALL are unset.
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 
 #include "BuildTestUtil.h"
@@ -46,6 +47,7 @@ Object *spawn(GameLogic &logic, const char *name, Player &owner, const Coord3D &
 	REQUIRE_MESSAGE(o != nullptr, name);
 	Coord3D p = at;
 	o->setPosition(&p);
+	testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 	return o;
 }
 
@@ -715,7 +717,13 @@ TEST_CASE("BACKLOG2 r1 determinism: three units on a build site: the draw assign
 	// merge queue q33 (measured once on the merged tree and at each merge point; goals and positions unchanged): 0xB19675C2 (the archive's) -> 0x767A9CCB at
 	// MODCOMPAT-MOD1's merge point (its modules' state in the object hash, its lane's 0x4DAD6087 was measured on its older base) -> 0x445ADD14 at #133's (the
 	// straight production exits move the scene's units); #164 and #166 keep it
-	CHECK(a.hashes.back() == 0x445ADD14U);   // q19: BACKLOG-8 hashes the formation and march rows of AIData / GameData in GameLogicSettings::crc (unconditionally) and moves the march;
+	// lane SPELLFIX-1 (measured on the lane's tree, a CI host; goals and positions unchanged): 0x3B3C3468 -> 0x08C39084: an omitted ShroudClearingRange
+	// clears the template's VisionRange in RotWK too (RW 0x73FB7A / 0x69990F), so objects on the map without the row now look and their hashed shroud state
+	// differs (switching that one change off restores 0x3B3C3468)
+	// merge queue q34 (measured once on the merged tree and at each merge point; goals and positions unchanged): 0x445ADD14 -> 0x1D2B9A1D at SPELLFIX-1's merge
+	// point (an omitted ShroudClearingRange clears the VisionRange, RW 0x73FB7A / 0x69990F: the hashed shroud state), #160 keeps it, -> 0x24ADB575 at #161's
+	// (the block search's block flags, RW 0x6F49BC, and the corridors)
+	CHECK(a.hashes.back() == 0x24ADB575U);   // q19: BACKLOG-8 hashes the formation and march rows of AIData / GameData in GameLogicSettings::crc (unconditionally) and moves the march;
 	                                         // re-measured on the merged tree (a CI host); was 0x78A9CB12 (q18: DEVPORT-3C castle keep gate / Horde removal record, before 0x2BD4804B); goals and positions unchanged
 	// every unit left the spot it stood on
 	CHECK(a.positions[0] != a.goals[0]);

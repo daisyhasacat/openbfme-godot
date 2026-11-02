@@ -366,9 +366,10 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 				}
 			}
 		}
-		if (s.stealthLook == 1 || s.stealthLook == 4)
+		logic.invisibility().clientOpacityRange(*o, &s.stealthOpacityMin, &s.stealthOpacityMax, &s.stealthCycleSeconds); // lane STEALTHLOOK-1: every look
+		if (const Object *horde = o->getHordeObject(false); horde && horde != o) // lane STEALTHLOOK-1: the drawable imitates (RW 0x673114)
 		{
-			logic.invisibility().clientOpacityRange(*o, &s.stealthOpacityMin, &s.stealthOpacityMax, &s.stealthCycleFrames);
+			s.stealthParent = horde->getID();
 		}
 		s.constructionPercent = o->getConstructionPercent();
 		const bool building = s.constructionPercent >= 0.0f || (kActivelyBeingConstructed >= 0 && o->testModelCondition(kActivelyBeingConstructed));

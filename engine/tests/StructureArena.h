@@ -2,6 +2,7 @@
 // object world's context (the same fixture as test_hud_combat_retail.cpp's Arena, which lives in that file's anonymous namespace).
 #pragma once
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 #include "HudTestUtil.h"
 
@@ -84,7 +85,7 @@ struct Arena
 		{
 			ai->addObjectToPathfindMap(*o);
 		}
-		return o;
+		return testutil::completeHorde(o);
 	}
 	size_t members(Object *horde) { return horde->getContain() ? horde->getContain()->getContainCount() : 0; }
 	// the pathfinder holds an obstacle at world (x, y)

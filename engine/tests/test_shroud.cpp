@@ -3,6 +3,7 @@
 // 0xB50100 (hand-traced below), the looker counts of RW 0xB52E10 / 0xB52EC0, the unlook queue of RW 0xB526A0 / 0xB51690 and the retail data (PartitionCellSize
 // 40, UnlookPersistDuration 1 frame, UseShroud No), never this engine's own output.
 
+#include "HordeCompleteTestUtil.h"
 #include "CreepTestUtil.h"
 #include "doctest.h"
 
@@ -586,10 +587,12 @@ void runRetail(starttest::Shared &s, RetailRun &out, bool checks)
 	REQUIRE(et != nullptr);
 	Object *fighter = logic.newObject(ft, human->getDefaultTeam(), ObjectStatusMaskType{});
 	fighter->setPosition(walker->getPosition());
+	testutil::completeHorde(fighter); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 	target = logic.newObject(et, enemy->getDefaultTeam(), ObjectStatusMaskType{});
 	Coord3D fog{ walker->getPosition()->x, walker->getPosition()->y, 0.0f };
 	fog.y = fog.y > maxY * 0.5f ? fog.y - 900.0f : fog.y + 900.0f;
 	target->setPosition(&fog);
+	testutil::completeHorde(target); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 	game.advance(0.2);
 	walker = fighter;
 	if (target)
@@ -800,7 +803,9 @@ TEST_CASE("shroud stops: S-560 .. S-567 are the exact stop lines and reach GameL
 	}
 }
 
-TEST_CASE("shroud objects: an omitted clearing range defaults to VisionRange; an explicit 0 stays blind")
+// lane SPELLFIX-1: the rule is every edition's: the ThingTemplate ctor's ShroudClearingRange -1 (RW 0x73FB7A, the constant RW 0xBD19DC) and the Object ctor's
+// fallback to VisionRange (RW 0x69990F: RW 0x699DE2 .. 0x699DF9); BFME2 decomp ObjectConstructor.cpp:549-551; BFME1 Object::initObject (community PR #36)
+TEST_CASE("shroud objects: an omitted clearing range defaults to VisionRange in every edition (RW 0x73FB7A / 0x69990F); an explicit 0 stays blind")
 {
 	const char *objects = "Object Keep\n KindOf = STRUCTURE IMMOBILE\n VisionRange = 100\n Geometry = CYLINDER\n GeometryMajorRadius = 9\nEnd\n"
 		"Object BlindKeep\n KindOf = STRUCTURE IMMOBILE\n VisionRange = 100\n ShroudClearingRange = 0\n Geometry = CYLINDER\n GeometryMajorRadius = 9\nEnd\n"

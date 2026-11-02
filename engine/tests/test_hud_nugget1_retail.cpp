@@ -2,6 +2,7 @@
 // RotWK 2.01's weapon.ini). They share the HUD tests' retail world (the file name sorts with the test_hud_* files) and SKIP when ROTWK_INSTALL / BFME2_INSTALL
 // are unset. Every expected value comes from the retail data (the INI numbers quoted at each check) or the binary (the RW address quoted), not from a run.
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 #include "HudTestUtil.h"
 
@@ -116,6 +117,7 @@ struct Arena
 		Coord3D p{ x, y, 0.0f };
 		o->setPosition(&p);
 		o->setOrientation(angle);
+		testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		return o;
 	}
 	void frames(int n)

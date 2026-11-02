@@ -36,7 +36,11 @@
 //   * the raised zones are numbered after the ground zones (RW numbers them first): the zone ids differ, the partition does not;
 //   * a unit's layer on a walkway (UpdateLayer / AdjustLayer): it takes the raised layer at a node on it once off the ramp's surface, and leaves it where
 //     the layer has no cell (Pathfinder::settleLayer, AIPathfindWalls.cpp);
-//   * the hierarchical search's raised branch (RW 0x9389CE) is not ported: a corridor that needs the walkway is not found and the search runs without one.
+//   * the wall connect cells (+ 0x18 / + 0x20): ClassifyWallCells (RW 0x768832) resets them; the ramp classification (RW 0x9356DF, add) makes the cell of a
+//     ramp end (getRamp's from, then its to) on a raised layer (RW 0x6EE600) a connect cell of that layer (AddWallConnectCell RW 0x76879E: a cell that is
+//     neither yet takes the first free one). The port classifies the ramps again after a layer's cells are made (restampWalls), so a walkway gets its
+//     connect cells whatever order its pieces came in; the hierarchical search's raised branch (RW 0x9389CE, AIPathfindHierarchical.cpp) walks between them;
+//   * not ported: RW 0x9356DF's last pass (a ramp whose two ends are on no ground layer makes the ground cells beside its cells type 2).
 
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/AI/AIPathfindStops.h"
@@ -111,6 +115,38 @@ bool Pathfinder::raisedLayerInUse(PathfindLayerEnum layer) const
 float Pathfinder::raisedLayerHeight(PathfindLayerEnum layer) const
 {
 	return raisedLayerInUse(layer) ? SimMath::sseFromInt32(m_raised[(size_t)layer].height) : 0.0f;
+}
+
+PathfindLayerEnum Pathfinder::raisedLayerAtPoint(float x, float y, float z) const
+{
+	if (!m_anyRaised)
+	{
+		return LAYER_INVALID;
+	}
+	const int cx = SimMath::floorToInt(SimMath::mulf32(x, 0.1f)), cy = SimMath::floorToInt(SimMath::mulf32(y, 0.1f));
+	for (int l = (int)LAYER_TOP; l <= (int)LAYER_RAISED_LAST; ++l)
+	{
+		const PathfindCell *rc = raisedCellAt((PathfindLayerEnum)l, cx, cy);
+		if (rc && rc->getType() != PathfindCell::CELL_BRIDGE_IMPASSABLE && SimMath::subf32(raisedLayerHeight((PathfindLayerEnum)l), z) < 25.0f)
+		{
+			return (PathfindLayerEnum)l;
+		}
+	}
+	return LAYER_INVALID;
+}
+
+ICoord2D Pathfinder::raisedConnectCell(PathfindLayerEnum layer, int k) const
+{
+	return isRaisedLayer(layer) && (k == 0 || k == 1) ? m_raised[(size_t)layer].connect[k] : ICoord2D{ -1, -1 };
+}
+
+zoneStorageType Pathfinder::raisedLayerZone(PathfindLayerEnum layer) const
+{
+	if (!isRaisedLayer(layer) || m_raised[(size_t)layer].cells.empty())
+	{
+		return 0;
+	}
+	return m_raised[(size_t)layer].cells.front().getZone();
 }
 
 size_t Pathfinder::raisedLayerCount() const
@@ -191,6 +227,8 @@ void Pathfinder::rebuildRaisedLayer(PathfindLayerEnum layer)
 void Pathfinder::rebuildRaisedCells(PathfindLayerEnum layer)
 {
 	RaisedLayer &r = m_raised[(size_t)layer];
+	// ClassifyWallCells RW 0x768832 first resets the wall connect cells; the ramps' classification adds them again (RW 0x9356DF -> 0x76879E)
+	r.connect[0] = r.connect[1] = ICoord2D{ -1, -1 };
 	// RW 0x76848F: the cells go (their records released)
 	for (PathfindCell &c : r.cells)
 	{

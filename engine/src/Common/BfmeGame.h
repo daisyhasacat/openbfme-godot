@@ -57,5 +57,6 @@ inline std::vector<std::string> bfme1StopLines()
 			 "the pathfinder budgets without a located BFME1 constant (RotWK's), a TerrainResourceCellSize of 1.0, build plots hidden under their occupant, "
 			 "AI tactical-marker builds use first free pads, keep references follow CastleMember links, empty-team recruitment uses default-team object order, rank eligibility is inferred; external expansion threat and army helpers remain unported, "
 			 "particle priorities mapped to RotWK's tiers, BuildingBehavior windows follow mirrored NIGHT/AFLAME model flags, MainMenu.apt's ShowMainMenu called from "
-			 "OnInitialized, BloodthirstyUpdate NumToSacrifice and InitiateVoice2 are stored but their runtime semantics are unported, no select-nearest-builder cycle timeout (InGameUI has no SelectNearestBuilderCycleTimeOut: 0); Living World campaigns and saves are not available" };
+			 "OnInitialized, BloodthirstyUpdate NumToSacrifice and InitiateVoice2 are stored but their runtime semantics are unported, no select-nearest-builder cycle timeout (InGameUI has no SelectNearestBuilderCycleTimeOut: 0); Living World campaigns and saves are not available; "
+			 "their blocks use recording stubs, with field validation and exact nested block boundaries unverified" };
 }

@@ -93,6 +93,7 @@ int cellCoverage(const PathfindWallSurface &s, int i, int j, float &height)
 struct RampBridge
 {
 	bool valid = false;
+	Coord3D from, to; // the middles of the high and the low band (getRamp's info->from / info->to)
 	Coord3D fromLeft, fromRight, toLeft, toRight;
 	float loX = 0.0f, loY = 0.0f, hiX = 0.0f, hiY = 0.0f;
 };
@@ -204,6 +205,8 @@ RampBridge makeRampBridge(const PathfindWallSurface &s)
 			}
 		}
 	}
+	b.from = midpoint(highA, highB);
+	b.to = midpoint(lowA, lowB);
 	if (s.triangles.size() > 2)
 	{
 		b.toLeft = truncated(lowA);
@@ -563,6 +566,7 @@ void Pathfinder::stampRampSurface(const PathfindWallSurface &s)
 		return;
 	}
 	const PathfindRegion r = surfaceCells(s);
+	addRampConnectCells(b.from, b.to);
 	for (int i = r.lo.x; i <= r.hi.x; ++i)
 	{
 		for (int j = r.lo.y; j <= r.hi.y; ++j)
@@ -635,6 +639,43 @@ void Pathfinder::stampRampSurface(const PathfindWallSurface &s)
 			}
 			c->setZone(PathfindZoneManager::UNINITIALIZED_ZONE);
 			if (!m_buildingMap) m_zoneManager.markCellDirty(i, j);
+		}
+	}
+}
+
+void Pathfinder::addRampConnectCells(const Coord3D &from, const Coord3D &to)
+{
+	// RW 0x9356DF (the add branch) before its cells: an end of the ramp on a raised layer (RW 0x6EE600 at the Bridge's from, then its to; RW 0x5E2F24)
+	// makes the end's cell (RW 0x6E8CE6, centred) a wall connect cell of that layer (AddWallConnectCell RW 0x76879E): the hierarchical search's raised
+	// branch walks between a layer's two connect cells
+	for (const Coord3D &end : { from, to })
+	{
+		const PathfindLayerEnum l = raisedLayerAtPoint(end.x, end.y, end.z);
+		if (l != LAYER_INVALID)
+		{
+			Coord3D p = end;
+			ICoord2D cell;
+			worldToCell(&p, true, &cell);
+			m_raised[(size_t)l].addWallConnectCell(cell);
+		}
+	}
+}
+
+void Pathfinder::rebuildWallConnectCells()
+{
+	for (RaisedLayer &r : m_raised)
+	{
+		r.connect[0] = r.connect[1] = ICoord2D{ -1, -1 };
+	}
+	for (const WallPiece &p : m_wallPieces)
+	{
+		for (const PathfindWallSurface &s : p.ramps)
+		{
+			const RampBridge b = makeRampBridge(s);
+			if (b.valid && bridgeNormal(b).z != 0.0f) // the ramps stampRampSurface stamps
+			{
+				addRampConnectCells(b.from, b.to);
+			}
 		}
 	}
 }
@@ -900,17 +941,11 @@ PathfindLayerEnum Pathfinder::getLayerAt(float x, float y, float z) const
 	{
 		return LAYER_RAMP; // TerrainLogic::getLayerForDestination RW 0x680A75 (BFME2 0x6802FE): a ramp first (RW 0x6E89EE)
 	}
-	if (m_anyRaised)
+	// lane WALL-2, RW 0x6EE600: the first raised layer in use whose cell there is passable and whose height is less than 25 (RW 0xC69574) above z
+	const PathfindLayerEnum raised = raisedLayerAtPoint(x, y, z);
+	if (raised != LAYER_INVALID)
 	{
-		// lane WALL-2, RW 0x6EE600: the first raised layer in use whose cell there is passable and whose height is less than 25 (RW 0xC69574) above z
-		for (int l = (int)LAYER_TOP; l <= (int)LAYER_RAISED_LAST; ++l)
-		{
-			const PathfindCell *rc = raisedCellAt((PathfindLayerEnum)l, cx, cy);
-			if (rc && rc->getType() != PathfindCell::CELL_BRIDGE_IMPASSABLE && SimMath::subf32(raisedLayerHeight((PathfindLayerEnum)l), z) < 25.0f)
-			{
-				return (PathfindLayerEnum)l;
-			}
-		}
+		return raised;
 	}
 	return c && (isWallLayer(c->getLayer()) || c->getLayer() == LAYER_RAMP) ? c->getLayer() : LAYER_GROUND;
 }

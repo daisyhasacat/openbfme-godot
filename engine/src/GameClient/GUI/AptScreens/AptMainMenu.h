@@ -16,6 +16,7 @@
 
 #pragma once
 
+
 #include "GameClient/GUI/AptScreen.h"
 #include "GameClient/GUI/ShellServices.h"
 
@@ -40,6 +41,8 @@ public:
 
 	// The provider state (what the retail providers answer from preferences and campaign progress; not wired: reported).
 	bool optionsAdvanced() const { return m_optionsAdvanced; }
+	// lane WOTR-1: War of the Ring sets the strategic flag of the environment's LivingWorldShellInfo before it pushes Skirmish.apt (RW 0x9282E3)
+	void setEnvironment(ShellEnvironment *environment) { m_environment = environment; }
 
 	// lane CAH-2 (stop S-1914): the host has no screen for the request `action` (a ShellAction name, e.g. "CreateAHero"). Not retail: retail always
 	// has the screen. The movie already ran DisableAllButtons, so the player would be left with a dead menu; instead the gap reaches the player as an
@@ -54,6 +57,8 @@ public:
 	// lane MENUWORK-1: the box's text, "<screen> is not available yet: <why>." (empty for a request that opens no screen)
 	static std::string unavailableText(const std::string &action);
 	AptMessageBox *unavailableBox() { return m_box.get(); }
+	// lane STABLEQA-1: the box's text when a Stable build refuses War of the Ring (ShellEnvironment::warOfTheRingOffered)
+	static const char *const kWarOfTheRingStable;
 
 	// lane UI-4: the credits page (TARGET FACTS, RotWK game.dat, caveat S-001; BFME2 decomp AptMainMenuCallbacks.cpp, tier A for both):
 	// - AptMainMenu::Credits (RW 0x91B5E9): the old roll deleted, a new CreditsManager (GameClient/Credits.h) loaded (vslot 2) and started (vslot 1)
@@ -100,14 +105,18 @@ public:
 
 private:
 	void registerAll();
-	void showSkirmish(int mode); // 0 the skirmish lobby, 1 the War of the Ring lobby
+	void showSkirmish();
 	void request(ShellAction action, const std::string &argument);
 
 	void update();
 	void startCredits();
 	void exitCredits();
+	void showWarOfTheRing();
+	bool warOfTheRingHidden() const; // lane STABLEQA-1: the environment does not offer War of the Ring (a Stable build)
+	void showUnavailableBox(const std::string &text); // the Ok box whose Ok gives the menu OnFocus("1") (screenUnavailable)
 
 	ShellServices &m_services;
+	ShellEnvironment *m_environment = nullptr; // lane WOTR-1
 	std::string m_mainMenuLevel; // BFME1 provider selector 0
 	bool m_optionsAdvanced = false;
 	std::unique_ptr<AptMessageBox> m_box; // lane CAH-2: made on demand, released after its Ok (GuiFX.apt can be loaded once: the lobbies own their own)

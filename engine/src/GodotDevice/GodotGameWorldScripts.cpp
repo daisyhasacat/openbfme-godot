@@ -315,7 +315,9 @@ Dictionary GameWorld::update_script_view(double delta_ms, const Dictionary &came
 		m_scriptView->apply(r, cur, angle);
 	}
 	m_pendingScriptRequests.clear();
-	m_scriptView->update(delta_ms);
+	// lane FADETIME-1: the fade steps per published logic frame (RW 0x60CC67) and lerps by the frame fraction (GameEngine + 0x3C,
+	// LiveGame::alpha); no game: no frames and no fade
+	m_scriptView->update(delta_ms, m_game ? m_game->frame() : 0u, m_game ? m_game->alpha() : 0.0);
 	const ScriptCameraDirector &v = *m_scriptView;
 	Dictionary d;
 	d["moving"] = v.moving();
@@ -392,6 +394,7 @@ Dictionary GameWorld::update_script_view(double delta_ms, const Dictionary &came
 	d["caption_text"] = g(text);
 	d["caption_ms"] = v.captionMsLeft();
 	d["fade"] = v.fade();
+	d["fade_type"] = (int64_t)v.fadeType(); // lane FADETIME-1: retail TFade (0 none, 1 subtract, 2 add, 3 saturate, 4 multiply)
 	return d;
 }
 

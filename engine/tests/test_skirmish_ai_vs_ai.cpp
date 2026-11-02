@@ -2,6 +2,7 @@
 // Lane AI-2: whole skirmish games between computer players on Evendim (GameLogic/SkirmishAI). The games run the retail data through LiveGame; the
 // expectations are outcomes retail's AI reaches (a victory within 30 game-minutes), never this engine's own frame-exact output.
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 
 #include "GameLogic/Module/AISpecialPowerUpdate.h"
@@ -897,7 +898,17 @@ TEST_CASE("skirmish ai vs ai: Evendim, 30 game-minutes: every pairing ends - Mor
 	// position 1) at 6748 (from #133's merge point on; MODCOMPAT-MOD1 alone keeps it open with a new table), seed 7 stays open at 9000 (from MODCOMPAT-MOD1's
 	// merge point on: the archive's 7103 was measured without its modules, its lane's 6823 on its older base), seed 1234 stays open at 9000. Engine pins, not
 	// retail values.
-	for (const Game &g : { Game{ "FactionMordor", "FactionMen", 2u, 1, 6748 }, Game{ "FactionMen", "FactionMordor", 7u, -1, -1 }, Game{ "FactionMordor", "FactionMen", 1234u, -1, -1 } })
+	// Lane SPELLFIX-1 (the economy's PRODUCTION product from the object's pool, so the levelled farms / furnaces / mines pay their level lists; an omitted
+	// ShroudClearingRange clearing the VisionRange, RW 0x73FB7A / 0x69990F; the banner carrier's first update at once, RW 0x89A258; OCL StartingBusyTime /
+	// ClearRemovables), measured once on the lane's tree (a CI host, the test file's run): seed 2 stays open at 9000 with the table changed from the 3000
+	// window on, seed 7 ends with the Men's defeat (start position 0) at 7095 (open before), seed 1234 stays open at 9000. Engine pins, not retail values.
+	// Merge queue q34 (SPELLFIX-1, #160, #161; measured once on the merged tree and at each merge point): at SPELLFIX-1's and #160's merge points seed 2 ends
+	// with the Men's defeat (start position 1) at 7162 and seed 7 with the Men's defeat (start position 0) at 8109; #161's block search opens both again: all
+	// three games stay open at 9000, seed 2 with a new table. Engine pins, not retail values.
+	// Merge queue q35 (SIMSMALL-1, #178, #179, #132; measured once on the merged tree and at each merge point; #179's merge point keeps the archive's pins):
+	// #132's ground-structure melee reach ends seed 2 with Mordor's defeat (start position 0) at 7060; seeds 7 and 1234 stay open at 9000. Engine pins, not
+	// retail values.
+	for (const Game &g : { Game{ "FactionMordor", "FactionMen", 2u, 0, 7060 }, Game{ "FactionMen", "FactionMordor", 7u, -1, -1 }, Game{ "FactionMordor", "FactionMen", 1234u, -1, -1 } })
 	{
 		INFO(g.a << " vs " << g.b << " seed " << g.seed);
 		VersusRun run;
@@ -936,13 +947,17 @@ TEST_CASE("skirmish ai vs ai: Evendim, 30 game-minutes: every pairing ends - Mor
 			// 2's table; the game stays open at 9000
 			// merge queue q33 (measured once on the merged tree and at each merge point): MODCOMPAT-MOD1 moves seed 2's table (still open at 9000 at its merge
 			// point); #133's straight production exits end it with the Men's defeat at 6748
+			// merge queue q34 (measured once on the merged tree and at each merge point): SPELLFIX-1 and #160 end it at 7162; #161's block search keeps it open
+			// at 9000 with this table
+			// merge queue q35 (measured once on the merged tree and at each merge point): #132's melee reach ends it with Mordor's defeat at 7060
 			CHECK(run.progress ==
-		"frame 1000: [0 attacks 0 built 70u/8s destroyed 13u/1s] [1 attacks 0 built 76u/7s destroyed 22u/2s]\n"
-		"frame 2000: [0 attacks 3 built 244u/10s destroyed 123u/5s] [1 attacks 1 built 169u/11s destroyed 158u/4s]\n"
-		"frame 3000: [0 attacks 4 built 387u/12s destroyed 192u/6s] [1 attacks 2 built 244u/12s destroyed 300u/4s]\n"
-		"frame 4000: [0 attacks 5 built 592u/14s destroyed 226u/7s] [1 attacks 2 built 293u/15s destroyed 447u/5s]\n"
-		"frame 5000: [0 attacks 6 built 753u/17s destroyed 229u/9s] [1 attacks 2 built 309u/17s destroyed 610u/5s]\n"
-		"frame 6000: [0 attacks 7 built 909u/18s destroyed 280u/13s] [1 attacks 2 built 312u/17s destroyed 766u/5s]\n");
+		"frame 1000: [0 attacks 0 built 70u/8s destroyed 7u/1s] [1 attacks 1 built 91u/8s destroyed 23u/2s]\n"
+		"frame 2000: [0 attacks 1 built 207u/9s destroyed 118u/1s] [1 attacks 2 built 156u/10s destroyed 149u/6s]\n"
+		"frame 3000: [0 attacks 1 built 218u/11s destroyed 186u/1s] [1 attacks 3 built 257u/13s destroyed 203u/7s]\n"
+		"frame 4000: [0 attacks 2 built 326u/13s destroyed 261u/3s] [1 attacks 4 built 361u/16s destroyed 294u/10s]\n"
+		"frame 5000: [0 attacks 2 built 327u/13s destroyed 308u/3s] [1 attacks 4 built 404u/21s destroyed 320u/15s]\n"
+		"frame 6000: [0 attacks 2 built 328u/15s destroyed 312u/3s] [1 attacks 4 built 430u/23s destroyed 321u/16s]\n"
+		"frame 7000: [0 attacks 2 built 328u/16s destroyed 346u/3s] [1 attacks 4 built 463u/24s destroyed 332u/20s]\n");
 		}
 	}
 }
@@ -1337,6 +1352,7 @@ Object *placeAt(GameLogic &logic, const char *name, Player *p, float x, float y)
 	REQUIRE_MESSAGE(o != nullptr, name);
 	Coord3D pos{ x, y, logic.getGroundHeight(x, y) };
 	o->setPosition(&pos);
+	testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 	return o;
 }
 } // namespace

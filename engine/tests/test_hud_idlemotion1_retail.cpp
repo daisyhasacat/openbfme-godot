@@ -11,6 +11,7 @@
 // member test (the port asked "not in an attack state") and the crush state's request (the port adjusted the point and reserved it as a final goal; RW clears
 // the adjust byte + 0x48 at RW 0x74F28D and requests the point as not final, RW 0x742425). SKIP when ROTWK_INSTALL / BFME2_INSTALL are unset.
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 #include "HudTestUtil.h"
 #include "Idle1TurnProbe.h"
@@ -96,6 +97,7 @@ struct Arena
 		Coord3D p{ x, y, 0.0f };
 		o->setPosition(&p);
 		o->setOrientation(angle);
+		testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		return o;
 	}
 };
@@ -143,7 +145,8 @@ TEST_CASE("idlemotion1 retail: a lancer left behind while its horde runs a fleei
 	MESSAGE("run-down from frame " << start);
 	// merge queue q29 (measured at IDLEMOTION-1's merge point and on the merged tree): the run-down starts at 59, not 65 (the lane's tree had neither
 	// AIDATA-1's run-down rules, RW 0x748650 / 0x74AA69, nor PATHPRIO-1 and the other items merged before it; not split per item)
-	REQUIRE(start == 59);
+	// merge queue q34 (measured once on the merged tree and at each merge point): 59 -> 58 from #160's merge point on (the lancers walk to their slots, RW 0x871536, instead of being put on them)
+	REQUIRE(start == 58);
 	const unsigned runDown = (unsigned)CombatNames::statuses().runningDownFromBehind;
 	// the last member is put 120 units behind its horde: beyond the leash of the marching horde and of its slot
 	Object *m = membersOf(lancers).back();
@@ -203,14 +206,16 @@ TEST_CASE("idlemotion1 retail: a lancer left behind while its horde runs a fleei
 	// them (its first step at frame 0)
 	// lane MODCOMPAT-MOD1 (the run-down's aim state ends at once, AIAttackAimAtTargetState RW 0x753426 / 0x7524B5; measured at that commit, a CI host): the
 	// member stands busy with MOVING on 4 frames (was 3), the leash reaches it on 9 (was 8), every lancer 4 held frames (was 3)
-	CHECK(heldFrames == 4);
-	CHECK(leashFrames == 9);
+	// merge queue q34 (measured at each merge point; #160's members walk to their slots, RW 0x871536, from its merge point on): the member stands busy with
+	// MOVING on 2 frames (was 4), the leash reaches it on 7 (was 9), every lancer 2 held frames (was 4)
+	CHECK(heldFrames == 2);
+	CHECK(leashFrames == 7);
 	CHECK(runDownFrames == 40);
 	CHECK(firstWalk == 0);
 	// the idle1 probe (test_exit1_motion.cpp) counts those frames apart (the other lancers stand on leash frames as well) and finds no member standing with
 	// MOVING otherwise
 	CHECK(probe.framesHeldByRunDown == heldAll);
-	CHECK(heldAll == 4);
+	CHECK(heldAll == 2);
 	CHECK(probe.stillMovingStreaks == 0);
 }
 
@@ -222,7 +227,7 @@ TEST_CASE("idlemotion1 retail: the run-down orders a member whose attack has no 
 	}
 	Arena a(shared(), "FactionElves", "FactionMordor");
 	Object *lancers = nullptr, *orcs = nullptr;
-	REQUIRE(startRunDown(a, lancers, orcs) == 59); // the run-down of the test above
+	REQUIRE(startRunDown(a, lancers, orcs) == 58); // the run-down of the test above
 	// a lancer attacks one orc; its attack's own machine is then cleared (no current state): RW 0x740ECD answers "not active" (RW 0x742DD0: the machine's
 	// current state, none: idle), while the state is still AI_ATTACK_OBJECT
 	Object *m = membersOf(lancers).back();
@@ -267,7 +272,7 @@ TEST_CASE("idlemotion1 retail: a member running a fleeing horde down is done aim
 	}
 	Arena a(shared(), "FactionElves", "FactionMordor");
 	Object *lancers = nullptr, *orcs = nullptr;
-	REQUIRE(startRunDown(a, lancers, orcs) == 59); // the run-down of the tests above
+	REQUIRE(startRunDown(a, lancers, orcs) == 58); // the run-down of the tests above
 	const unsigned runDown = (unsigned)CombatNames::statuses().runningDownFromBehind;
 	const unsigned aiming = (unsigned)CombatNames::statuses().isAimingWeapon;
 	Object *m = membersOf(lancers).back();

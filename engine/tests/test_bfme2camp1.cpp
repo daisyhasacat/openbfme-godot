@@ -19,6 +19,8 @@
 #include "GameLogic/BuildPlacement.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/AI/AIGuard.h"
+#include "GameLogic/AI/AIStateMachine.h"
+#include "GameLogic/AI/AIWaypointPath.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Object/ObjectGeometry.h"
 #include "GameLogic/Module/GateModules.h"
@@ -134,6 +136,87 @@ TEST_CASE("bfme2camp1 the buildability overrides travel in obfme:GameLogic (vers
 	std::vector<std::uint8_t> again;
 	fresh.logic->gameState().saveBlocks(core, again);
 	CHECK(again == stream);
+}
+
+namespace
+{
+// the version byte of obfme:GameLogic in a saveBlocks stream: the token (length byte + text), "BLOK" and the block end's offset, then the block's
+// XferVersion (GameLogic::xfer's first byte)
+int gameLogicVersion(const std::vector<std::uint8_t> &stream)
+{
+	const std::string token = "obfme:GameLogic";
+	auto at = std::search(stream.begin(), stream.end(), token.begin(), token.end());
+	REQUIRE(at != stream.end());
+	const size_t i = (size_t)(at - stream.begin()) + token.size() + 8;
+	REQUIRE(i < stream.size()); // tolerance: an index guard (the byte read next), not a result
+	return stream[i];
+}
+} // namespace
+
+// The archive merge into lane/wotr2 (coordinator 10-30, binding): obfme:GameLogic version 3 is BFME2CAMP1's campaign state (the buildability overrides,
+// the carry-over), as the archive writes it; version 4 adds the War of the Ring battle's army tags after it (it was 3 on feature/wotr, never released)
+TEST_CASE("archive x wotr: obfme:GameLogic version 3 is the campaign state and loads with no War of the Ring tags; version 4 adds the tags after it")
+{
+	const std::vector<std::string> core = { "obfme:TeamFactory", "obfme:Players", "obfme:GameLogic", "obfme:Random" };
+	auto world = [] {
+		auto w = std::make_unique<logictest::LogicWorld>();
+		LogicModules::registerAll(w->w.modules);
+		REQUIRE(w->w.load(kBuildIni, INI_LOAD_OVERWRITE, "units.ini").empty());
+		w->activateUpgrades();
+		return w;
+	};
+	auto tag = [](int army) {
+		LivingWorldBattleTags::Tag t;
+		t.armyId = army;
+		t.spawnId = "Spawn" + std::to_string(army);
+		t.buildingId = 0;
+		return t;
+	};
+	// nothing of either: version 1 (the bytes of a game before both)
+	{
+		auto plain = world();
+		std::vector<std::uint8_t> stream;
+		plain->logic->gameState().saveBlocks(core, stream);
+		CHECK(gameLogicVersion(stream) == 1);
+	}
+	// a campaign save: version 3, as the archive writes it; a game that held War of the Ring tags loads it with none (a version 3 has no tags)
+	auto campaign = world();
+	campaign->logic->setBuildableStatusOverride(campaign->logic->things().findTemplate("Tower"), 2);
+	std::vector<std::uint8_t> v3;
+	campaign->logic->gameState().saveBlocks(core, v3);
+	CHECK(gameLogicVersion(v3) == 3);
+	auto loader = world();
+	loader->logic->livingWorldTags().active = true;
+	loader->logic->livingWorldTags().objects[7] = tag(11);
+	loader->logic->gameState().loadBlocks(core, v3);
+	CHECK_FALSE(loader->logic->livingWorldTags().inUse());
+	CHECK(loader->logic->buildableStatusOverrides() == std::map<std::string, std::int32_t>{ { "Tower", 2 } });
+	CHECK(loader->logic->computeStateHash() == campaign->logic->computeStateHash());
+	// a War of the Ring battle save: version 4, the campaign state and the tags both come back, and it saves to the same bytes
+	auto battle = world();
+	battle->logic->setBuildableStatusOverride(battle->logic->things().findTemplate("Wall"), 3);
+	battle->logic->livingWorldTags().active = true;
+	battle->logic->livingWorldTags().objects[5] = tag(21);
+	std::vector<std::uint8_t> v4;
+	battle->logic->gameState().saveBlocks(core, v4);
+	CHECK(gameLogicVersion(v4) == 4);
+	auto back = world();
+	back->logic->gameState().loadBlocks(core, v4);
+	CHECK(back->logic->livingWorldTags().active);
+	REQUIRE(back->logic->livingWorldTags().object(5));
+	CHECK(back->logic->livingWorldTags().object(5)->armyId == 21);
+	CHECK(back->logic->livingWorldTags().object(5)->spawnId == "Spawn21");
+	CHECK(back->logic->buildableStatusOverrides() == std::map<std::string, std::int32_t>{ { "Wall", 3 } });
+	CHECK(back->logic->computeStateHash() == battle->logic->computeStateHash());
+	std::vector<std::uint8_t> again;
+	back->logic->gameState().saveBlocks(core, again);
+	CHECK(again == v4);
+	// War of the Ring tags without campaign state: still version 4 (the campaign part is written empty)
+	auto tagsOnly = world();
+	tagsOnly->logic->livingWorldTags().active = true;
+	std::vector<std::uint8_t> v4b;
+	tagsOnly->logic->gameState().saveBlocks(core, v4b);
+	CHECK(gameLogicVersion(v4b) == 4);
 }
 
 TEST_CASE("bfme2camp1 CampaignCarryover: beginCampaign (RW 0x5EC4EC) makes one record of quantity 1 per CarryoverUnit in INI order; the mission's "
@@ -2176,4 +2259,32 @@ TEST_CASE("bfme2camp1 retail: MAP BEGINNER TUTORIAL's setup: CREATE_UNIT_REVIVAL
 	CHECK(marked == inside); // every ground cell whose centre is in the area
 	CHECK(m.engine().stats().unportedActions.count("HUMAN_IMPASSABLE_AREA") == 0);
 	CHECK(m.engine().stats().unportedActions.count("CREATE_UNIT_REVIVAL_ENTRY_AT_LEVEL") == 0);
+}
+
+// lane STABLEQA-1 (the stable candidate's campaign sweep): BFME2's Evil Erebor (EVIL_CAMPAIGN mission 7) marches its Dwarven porters along a team waypoint
+// path in formation, so each keeps its formation offset as the path's group offset (+ 0x4C / + 0x50, RW 0x750790 .. 0x7507A2) and adds it to every later
+// waypoint's goal. The offset was hashed but not saved: a save taken during the march loaded with no offset, and the save's own hash check refused it.
+// The snapshot round trip must give the saved game back exactly (AIFollowWaypointPathState xfer version 2)
+TEST_CASE("stableqa1: Evil Erebor's porters marching on a team path in formation keep their group offset through a save and load")
+{
+	OPENBFME_REQUIRE_START(s);
+	campaigntest::Mission m;
+	m.loadCampaignMission(*s, "EVIL_CAMPAIGN", 6);
+	m.step(900);
+	int marching = 0;
+	for (Object *o = m.logic().getFirstObject(); o; o = o->getNextObject())
+	{
+		const AIUpdateInterface *ai = o->getAIUpdateInterface();
+		const AIStateMachine *sm = ai ? ai->stateMachineOrNull() : nullptr;
+		marching += sm && dynamic_cast<const AIFollowWaypointPathState *>(sm->currentState()) && ai->formationId() != 0 ? 1 : 0;
+	}
+	REQUIRE(marching > 0); // tolerance: a precondition (the scene: units on a team path in formation at frame 900)
+	std::vector<std::uint8_t> bytes;
+	std::string error;
+	REQUIRE_MESSAGE(m.logic().saveSnapshot(bytes, &error), error);
+	const std::uint32_t saved = m.logic().computeStateHash();
+	m.step(30);
+	REQUIRE(m.logic().computeStateHash() != saved); // tolerance: a precondition (the game moved on)
+	REQUIRE_MESSAGE(m.game->loadSnapshot(bytes, &error), error);
+	CHECK(m.logic().computeStateHash() == saved);
 }

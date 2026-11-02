@@ -135,6 +135,12 @@ func _check_campaign_buttons(style: String) -> void:
 		await game._wait_seconds(1.5)
 		opened = not game._clean_main_menu()
 	var native: Dictionary = game.bfme2_campaign_buttons()
+	# lane STABLEQA-1: a Stable build (or --stable-channel) hides War of the Ring's row: it is not drawn and takes no click
+	var offered: bool = game._shell.is_war_of_the_ring_offered()
+	check(offered != game._stable_channel, "%s: War of the Ring offered: %s (--stable-channel %s)" % [style, offered, game._stable_channel])
+	if opened:
+		var wotr: Dictionary = game._shell.get_member(top, "SoloPlayNav.WarOfTheRing", "_visible")
+		check(wotr.get("found", false) and (str(wotr.value) in ["true", "1"]) == offered, "%s: War of the Ring's row visible: %s" % [style, wotr])
 	if style == "rotwk":
 		check(opened, "rotwk: the Solo Play list opened")
 		var names := []
@@ -143,7 +149,10 @@ func _check_campaign_buttons(style: String) -> void:
 			if not names.has(name):
 				names.append(name)
 		names.sort()
-		check(names == ROTWK_SOLO_ENTRIES, "rotwk: retail's Solo Play entries take the pointer: %s" % [game.solo_play_entries()])
+		var expected := ROTWK_SOLO_ENTRIES.duplicate()
+		if not offered:
+			expected.erase("WarOfTheRing")
+		check(names == expected, "rotwk: retail's Solo Play entries take the pointer: %s" % [game.solo_play_entries()])
 		check(not game.campaign_entry("Expansion1Campaign").is_empty(), "rotwk: SoloPlayNav.Expansion1Campaign can be clicked")
 	if style == "bfme2":
 		check(opened, "bfme2: the Solo Play list opened")
@@ -152,7 +161,7 @@ func _check_campaign_buttons(style: String) -> void:
 		for b in game._shell.list_buttons(top):
 			if bool(b.hittable) and str(b.path).begins_with("_level%d.SoloPlayNav." % top):
 				shown.append(str(b.path).split(".")[2])
-		check(shown.has("Skirmish") and shown.has("WarOfTheRing") and shown.has("LoadGame"), "bfme2: the list's other entries can be clicked: %s" % [shown])
+		check(shown.has("Skirmish") and shown.has("WarOfTheRing") == offered and shown.has("LoadGame"), "bfme2: the list's other entries can be clicked: %s" % [shown])
 		check(shown.has("GoodCampaign") and shown.has("EvilCampaign"), "bfme2: BFME2's GoodCampaign / EvilCampaign can be clicked: %s" % [shown])
 		check(native.get("visible", []) == ["SoloPlayNav.GoodCampaign", "SoloPlayNav.EvilCampaign"], "bfme2: both campaign clips are visible: %s" % JSON.stringify(native))
 	if style == "rotwk":

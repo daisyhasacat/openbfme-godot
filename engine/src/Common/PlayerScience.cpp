@@ -603,3 +603,28 @@ void PlayerScience::xfer(Xfer &x)
 		SnapshotXfer::checkRange(m_rankCap, 0, ranks, "a player's rank cap");
 	}
 }
+
+// WOTR2 milestone 7: RW 0x80F49C
+int PlayerScience::earnedSpellPoints() const
+{
+	int sum = 0;
+	for (int r = 1; r <= m_rankLevel; ++r)
+	{
+		const PlayerRankInfo *ri = TheRankInfoStore ? TheRankInfoStore->getRankInfo(r) : nullptr; // RW 0x5FF99F
+		sum += ri ? (int)ri->m_sciencePurchasePointsGranted : 0;
+	}
+	return sum;
+}
+
+// WOTR2 milestone 7: RW 0x8125FC's player part (the scoring switch is the caller's)
+void PlayerScience::loadFromLivingWorld(float skillPoints, int bonusPoints, const ScienceVec &sciences)
+{
+	reset();         // Player vslot 0xC on + 8 (Player RW 0x6AEE11: the base reset, then resetSciences)
+	resetSciences(); // RW 0x6AED4B
+	addSkillPoints(skillPoints, false); // RW 0x782AA4(LivingWorldPlayer + 0x1F4, 0)
+	m_sciencePurchasePoints = earnedSpellPoints() + bonusPoints; // Player + 0x24 = RW 0x80F49C(player) + RW 0x441BBD (LivingWorldPlayer + 0x2A0)
+	if (!sciences.empty())
+	{
+		m_sciences = sciences; // RW 0x6ACEF4 -> RW 0x71D7C4 (LivingWorldPlayer + 0x1F8 into Player + 0x310)
+	}
+}

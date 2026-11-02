@@ -419,6 +419,10 @@ TEST_CASE("play4 heroes retail: every faction's heroes, recruited from the fortr
 				// mood checks back (RW 0x662DD9), so the scene's world plays differently; the damage and kills are unchanged
 				// lane OFFMAP-1: 3 strikes (2 before): RotWK's idle state (RW 0x745A64) no longer snaps the scene's units onto cell centres at frame <= 1
 				// (ZH's cheat move), so the fight starts from the positions they were made at; the damage and the kills are the same
+				// horde contain (RW 0x871536 / 0x8718ED): 3 strikes (4 before): the scene's horde makes its members where it stands and a move no longer
+				// puts them on their slots, so they stand elsewhere when the bird arrives; the damage and the kills are the same
+				// merge queue q34 (measured at each merge point): 4 strikes (3 before) from #160's merge point on (the scene's horde members walk to their slots,
+				// RW 0x871536); the damage and the kills are the same
 				CHECK(ord.shots == (drogoth ? 4u : 0u));
 				CHECK(ord.lost == (drogoth ? 1500.0f : 450.0f));
 				CHECK(ord.membersKilled == (drogoth ? 20u : 5u));
@@ -440,9 +444,11 @@ TEST_CASE("play4 heroes retail: every faction's heroes, recruited from the fortr
 			// fortress drops IS_LEAVING_FACTORY, RW 0x74B77D, and takes its Battle stance's guard), all 20 killed (1500 health) on the merged tree
 			// Merge queue q33 (measured at each merge point): #133's straight production exits move the scene's creeps and computer opponent: Haldir still
 			// fights the horde, 13 of 20 killed (975 health)
+			// Merge queue q34 (measured at each merge point): Haldir still fights the horde: 2 of 20 killed (150 health) with #160 (the members walk to their
+			// slots, RW 0x871536), 7 of 20 (525 health) with #161 (the block search's block zones move the scene's creeps and computer opponent)
 			if (hero == "ElvenHaldir")
 			{
-				CHECK(own.lost == 975.0f);
+				CHECK(own.lost == 525.0f);
 			}
 			else
 			{
@@ -591,8 +597,13 @@ TEST_CASE("attack1 heroes retail: the mounted Witch-king and Mouth of Sauron, or
 	// Witch-king 4 shots, all swings of his mace (the first took 525, 1350 outside the run, nothing in a crush run), 18 killed, nearest 16.2647, with
 	// CRUSHER_LEVEL -1 4 swings taking 1350 from 15.5158; the Mouth of Sauron 7 shots, 7 killed (75 in the crush run), 5 swings (75 / 375), nearest 5.0722,
 	// with CRUSHER_LEVEL -1 4 swings taking 300 from 55.722. The duels and the blocking are unchanged. Engine pins, not retail values.
-	for (const Case &c : { Case{ "FactionAngmar", "AngmarWitchking", 4u, 18u, 0.0f, { 800.0f, 112.0f }, 4u, 525.0f, 1350.0f, { { 1500.0f, 800.0f }, { 700.0f, 700.0f } }, 0, -1, 4u, 1350.0f, 15.5158f, 16.2647f },
-			 Case{ "FactionMordor", "MordorMouthOfSauron", 7u, 7u, 75.0f, { 640.0f, 320.0f }, 5u, 75.0f, 375.0f, { { 1500.0f, 640.0f }, { 860.0f, 640.0f }, { 220.0f, 220.0f } }, 0, -1, 4u, 300.0f, 55.722f, 5.0722f } })
+	// Merge queue q34 (measured once on the merged tree and at each merge point): #161's block search (block zones RW 0x9389A6, raised branch RW 0x9389CE)
+	// moves the scene's computer opponent; #160 alone keeps q33's values. The Witch-king 4 shots, all swings of his mace (the first took 525, 1350 outside the
+	// run, nothing in a crush run), 18 killed, nearest 14.5005, with CRUSHER_LEVEL -1 4 swings taking 1350 from 14.5279; the Mouth of Sauron 5 shots, 5 killed
+	// (150 in the crush run), 3 swings (75 / 225), nearest 0.825811, with CRUSHER_LEVEL -1 4 swings taking 300 from 60.3109. The duels and the blocking are
+	// unchanged. Engine pins, not retail values.
+	for (const Case &c : { Case{ "FactionAngmar", "AngmarWitchking", 4u, 18u, 0.0f, { 800.0f, 112.0f }, 4u, 525.0f, 1350.0f, { { 1500.0f, 800.0f }, { 700.0f, 700.0f } }, 0, -1, 4u, 1350.0f, 14.5279f, 14.5005f },
+			 Case{ "FactionMordor", "MordorMouthOfSauron", 5u, 5u, 150.0f, { 640.0f, 320.0f }, 3u, 75.0f, 225.0f, { { 1500.0f, 640.0f }, { 860.0f, 640.0f }, { 220.0f, 220.0f } }, 0, -1, 4u, 300.0f, 60.3109f, 0.825811f } })
 	{
 		INFO(std::string(c.hero));
 		const ThingTemplate *tt = s->world->things().findTemplate(c.hero);

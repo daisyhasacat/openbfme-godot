@@ -6,6 +6,7 @@
 // recorded hash or header was changed is refused naming the frame. The game files are read in this process (the "fresh process" of T1 is a fresh LiveGame
 // here). SKIP loudly without ROTWK_INSTALL / BFME2_INSTALL.
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 
 #include "StartTestUtil.h"
@@ -415,6 +416,7 @@ TEST_CASE("CASTER-4 metrics: retail battalions count once, support units count, 
 		expectedValue += BuildAssistant::buildCost(*tt);
 		Object *object = logic.newObject(tt, player->getDefaultTeam(), {});
 		REQUIRE(object != nullptr);
+		testutil::completeHorde(object); // a horde makes its members (onBuildComplete, RW 0x8718ED)
 		if (object->isKindOfName("HORDE"))
 		{
 			horde = object;

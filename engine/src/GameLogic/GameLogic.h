@@ -47,6 +47,7 @@
 #pragma once
 #include "Common/TextureSwap.h"
 
+#include "GameLogic/LivingWorld/LivingWorldBattleTags.h"
 #include "Common/ObserverEvent.h"
 
 #include "Common/MpGameRules.h"
@@ -427,6 +428,9 @@ public:
 	CombatState &combat() { return *m_combat; }
 	// lane COMBAT-2: the skirmish win / lose rules (init() after the players and their bases exist; update() runs in the logic frame's first phase)
 	VictoryConditions &victory() { return *m_victory; }
+	// WOTR2 milestone 7: a War of the Ring battle's army tags (GameLogic/LivingWorld/LivingWorldBattleTags.h; hashed while in use, obfme:GameLogic version 4)
+	LivingWorldBattleTags &livingWorldTags() { return m_livingWorldTags; }
+	const LivingWorldBattleTags &livingWorldTags() const { return m_livingWorldTags; }
 	BuildAssistantSell &sellList() { return *m_sell; } // lane FACT-A: TheBuildAssistant's sell list (RW 0x7966BB / 0x79468B)
 	const VictoryConditions &victory() const { return *m_victory; }
 	// lane AI-1: TheSkirmishAIManager (newGame after the starting bases; update() runs in phase 5 after the destroy list)
@@ -509,6 +513,15 @@ public:
 	// (a view: the hot callers pass literals, and a noted text is found without building a std::string)
 	void noteStop(std::string_view text)
 	{
+		// performance (diagnostics only): hot callers note the same literal every frame (eight times per stepping amoeba member); a text seen before is
+		// found by its address and its content confirmed, instead of two ordered-tree walks over keys of ~250 characters. The ordered maps are never
+		// cleared, so the kept iterator stays valid
+		const auto fast = m_notedStopFast.find(text.data());
+		if (fast != m_notedStopFast.end() && fast->second->first.size() == text.size() && fast->second->first == text)
+		{
+			++fast->second->second;
+			return;
+		}
 		if (m_notedStops.find(text) == m_notedStops.end())
 		{
 			m_notedStops.emplace(text);
@@ -523,6 +536,11 @@ public:
 		{
 			m_notedStopHits.emplace(std::string(text), 1u);
 		}
+		if (m_notedStopFast.size() >= kNotedStopFastMax)
+		{
+			m_notedStopFast.clear(); // a caller that notes a temporary string brings a new address each time
+		}
+		m_notedStopFast[text.data()] = m_notedStopHits.find(text);
 	}
 	const std::map<std::string, unsigned, std::less<>> &notedStopHits() const { return m_notedStopHits; }
 
@@ -1022,6 +1040,8 @@ private:
 	LargeGroupAudioLink m_largeGroupAudio; // lane AUDIO-4
 	MissionObjectiveTracker m_missionObjectives; // lane CAMPUI-1
 	std::unique_ptr<VictoryConditions> m_victory;
+	LivingWorldBattleTags m_livingWorldTags;
+	void xferLivingWorldTags(Xfer &x); // WOTR2 milestone 7 (GameLogicSnapshot.cpp)
 	std::unique_ptr<BuildAssistantSell> m_sell; // lane FACT-A
 	std::unique_ptr<SkirmishAIManager> m_skirmishAI;
 	std::unique_ptr<ExperienceWorld> m_experience; // lane XP-1
@@ -1036,6 +1056,8 @@ private:
 	CastleTemplateStore m_castleTemplates;
 	std::set<std::string, std::less<>> m_notedStops;
 	std::map<std::string, unsigned, std::less<>> m_notedStopHits;
+	std::unordered_map<const char *, std::map<std::string, unsigned, std::less<>>::iterator> m_notedStopFast; // noteStop's fast path (by text address)
+	static constexpr size_t kNotedStopFastMax = 4096;                                                         // the fast path's size bound
 	std::vector<RadarEventNotice> m_radarEventNotices; ///< lane BACKLOG3: oldest first, at most kRadarEventNotices
 	std::vector<BeaconNotice> m_beaconNotices; ///< lane CHAT-1: oldest first, at most kBeaconNotices
 	std::uint32_t m_beaconSeq = 0;

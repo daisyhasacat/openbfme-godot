@@ -163,6 +163,11 @@ struct Mission
 	void place(Object &o, Coord3D p)
 	{
 		p.z = logic().getGroundHeight(p.x, p.y);
+		if (o.getContain() && o.getContain()->getHordeContainInterface())
+		{
+			o.teleportTo(&p, true); // a horde's move leaves its members (RW 0x871536); the teleport brings them (RW 0x86D881)
+			return;
+		}
 		o.setPosition(&p);
 	}
 	// kills an object (a horde through its members: its ImmortalBody does not die, the horde goes with its last member)

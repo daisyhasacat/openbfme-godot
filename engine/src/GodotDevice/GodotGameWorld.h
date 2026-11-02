@@ -55,6 +55,7 @@
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
 
+#include <cstdlib>
 #include <map>
 #include <set>
 #include <memory>
@@ -392,7 +393,8 @@ public:
 	bool set_objectives_open(bool open);
 	Array take_script_requests();
 	// steps the script camera director by `delta_ms` of render time: { moving, has_target, x, y, z (SAGE), has_angle, angle, reset_view, letterbox,
-	// input_disabled, caption (label), caption_text (the game text), caption_ms, fade }; `camera` gives the current look-at { x, y, z, angle } (the start of a move)
+	// input_disabled, caption (label), caption_text (the game text), caption_ms, fade (the presented intensity), fade_type (retail TFade) };
+	// `camera` gives the current look-at { x, y, z, angle } (the start of a move)
 	Dictionary update_script_view(double delta_ms, const Dictionary &camera);
 	// lane CAMPUI-1: InGameUI.ini's MilitaryCaption* rows with language.ini's caption fonts (MilitaryCaptionSettings): { ok, error, color (Color),
 	// position (Vector2 fractions), centered, font, point_size, bold, title_font, title_point_size, title_bold, delay_ms }
@@ -475,6 +477,17 @@ public:
 	// victorious, ready, advanced, description, auto_save -> {ok, path, map, menu_mission} or {ok false, error}
 	Dictionary save_campaign_menu(const String &path, const Dictionary &options);
 	SaveGameCompatibility menuSaveVerdict(const SaveGameHeader &header) const; // lane CAMPSAVE-1: one verdict for the listing and check_save
+	// lane WOTR2 milestone 3: the War of the Ring map's save (save point 2, game kind 8; LivingWorldGame::save_state's bytes in the LWLD part): options
+	// description, scenario (the LivingWorldCampaign), state (PackedByteArray), state_hash, session (the host's, PackedByteArray) -> { ok, error, path,
+	// bytes }; read_wotr_save(path) reads one back after the verdict -> { ok, error, scenario, description, state, state_hash, session }
+	Dictionary save_wotr_map(const String &path, const Dictionary &options);
+	// WOTR2 milestone 6: a save inside a War of the Ring battle (save point 3): the battle's game at F plus the strategic game and session (options)
+	Dictionary save_wotr_battle(const String &path, const Dictionary &options);
+	Dictionary read_wotr_save(const String &path) const;
+	// like a campaign menu save it holds no log: the data identity must match and the scenario must exist (the build need not be the same; the block's
+	// own version is checked by the load)
+	SaveGameCompatibility wotrSaveVerdict(const SaveGameHeader &header) const;
+	SaveGameCompatibility wotrBattleSaveVerdict(const SaveGameHeader &header) const; // WOTR2 milestone 6
 	static std::string campaignMapPath(const std::string &map);   // lane CAMPSAVE-1: "MAP ANG Angmar" -> "maps/map ang angmar/map ang angmar.map"
 	std::string campaignMapDisplay(const std::string &map) const; // its map cache display name (the map itself when the cache lacks it)
 	// list_saves(dir): the saved games of a folder, newest first: the .obfmesave files read by their header (path, name, map, date, time, kind, frame,
@@ -525,6 +538,8 @@ public:
 	Dictionary get_frame_timings() const;
 	void set_performance_enabled(bool enabled);
 	Dictionary get_performance_counters() const;
+	// lane PERF-CLIENT: refresh_views' job pool pass on or off at run time (OPENBFME_SERIAL_VIEWS sets it at start); a test compares the two passes' results
+	void set_parallel_views(bool enabled) { m_parallelViews = enabled; }
 	// lane RENDERWAIT-1: the wait log of this game (LiveGame::logicWaitSites): [{site, count, total_ms, worst_ms}], worst total first; and its reset
 	Array get_logic_wait_sites() const;
 	void reset_logic_wait_sites();
@@ -618,9 +633,31 @@ public:
 	// lane ONLINE-2: an online game: the START JSON the lobby service sent (GameNetwork/OnlineStart.h); {ok, slot, relay | error}; then net_poll / net_begin as
 	// for a LAN game. net_profile_digest: this install's profile identity MD5 (the lobby compares the players')
 	Dictionary net_online(const String &start_json);
+	Dictionary online_war_phase(const String &start_json, int64_t phase); // validate the new relay ticket before parking the current phase
+	Dictionary online_war_map_begin(); // return from a battle only with a validated, fresh map ticket
+	bool net_is_online() const { return m_netStarted && m_netStart.online; }
 	String net_profile_digest() const;
 	String net_profile_details() const;
 	Dictionary net_begin(const Dictionary &options);
+	// WOTR2 milestone 8 (step 2b): a LAN War of the Ring (lan_begin's start of a game mode 1): the strategic map's lockstep on the game socket, attached
+	// to `living_world` (a LivingWorldGame whose war started from the START's GameInfo); `slot_of_player`: the war's player i plays from lobby slot
+	// slot_of_player[i]. options: { disconnect_ms, player_timeout_ms } (tests). { ok | error }
+	Dictionary lan_strategic_begin(Object *living_world, const Array &slot_of_player, const Dictionary &options);
+	// WOTR2 milestone 8 (Sol wotr2m8s2b): the LAN war is over for this client (after LivingWorldGame.net_leave): the game socket, the start and the lobby
+	// objects go as clear_game_data's teardown of a LAN game, so the next skirmish starts as a skirmish
+	void lan_strategic_end();
+	// WOTR2 milestone 8 (step 3): a LAN war's real-time battle (RW 0x6497EC on every peer: no host message): the battle's start built from the war's START
+	// (`message`: the battle NewGameMessage wotr.gd built from the war state; `lobby_slot_of_battle_slot`: the war lobby slot of each battle slot, -1 none):
+	// the battle slots' human addresses, the local battle slot. The next start_new_game + net_begin plays it on the war's socket; clear_game_data keeps the
+	// socket and the war's START; lan_war_battle_end puts the war's START back for the strategic session. { ok, local_slot | error }
+	Dictionary lan_war_battle(const Dictionary &message, const Array &lobby_slot_of_battle_slot);
+	void lan_war_battle_end();
+	// (Sol review wotr2m8s3) a human of the war battle's network game left or was dropped: retail ends the war for everyone (0x6B8 during a battle ->
+	// QuitWar RW 0x6B94C6); every peer sees the departure at one frame of the lockstep
+	bool lan_war_battle_departed() const;
+	// WOTR2 milestone 8 (step 3): T_end of the battle from the logic's victory events (EndGameController::victoryTimerEndFrame), -1 before the victory;
+	// waits for the logic (an Exit's one-off check, not a per-frame read)
+	int64_t lan_war_battle_end_frame() const;
 	Dictionary net_status() const;
 	// lane ANTICHEAT-1 (C++ only, from the HUD): the local player's view for the relay's log of an online game it plays (not a spectator, not LAN):
 	// Network::submitView with the logic frame shown; ignored otherwise
@@ -686,6 +723,9 @@ public:
 	// answering late starts while the game runs; lan_close drops it. lan_status: { open, in_game, host, slot, started, games, players, humans, accepted (the
 	// joiners'), accepted_me, map, errors, log }
 	Dictionary lan_open(const Dictionary &options);
+	// WOTR2 milestone 8 (step 4): the host's game becomes the saved war resumed: `lobby` the save's lobby (its START dictionary: the scenario, the rules,
+	// every slot), `seats` the saved humans' seats other than the host's ([slot, name]); the seats are reopened for their players
+	Dictionary lan_host_set_resume(const String &save, int64_t state_hash, const Array &seats, const Dictionary &lobby);
 	void lan_close();
 	Dictionary lan_begin();
 	// lane HERO-2: the local player's Create-a-Hero for its slot (get_create_a_hero_record's record; empty: none), sent to the host with the whole record
@@ -695,6 +735,8 @@ public:
 	LANAPI *lan() const { return m_lan.get(); }
 	// lane ONLINE-4: the faction and colour counts the online lobby client checks the lobby's game views against (false before setup())
 	bool onlineLimits(int &factions, int &colors) const;
+	// WOTR2 milestone 8: the regions of a War of the Ring scenario's region campaign (a LAN war's start positions), -1 when the stores have no such scenario
+	int warRegionCount(const std::string &scenario) const;
 	Dictionary prepare_replay(const String &path);
 	Dictionary start_replay(const Dictionary &options);
 	Dictionary replay_status() const;
@@ -816,6 +858,10 @@ private:
 		bool haveXf = false;
 		bool fogHidden = false; ///< VIS-1: the local player cannot see the object (RW 0xB4E890 SHROUDED)
 		std::vector<EntryView> entries;
+		// lane OCCLUDE-1: this frame's entries for the occlusion lists, noted by refresh_view and listed by refresh_views in drawable order
+		std::vector<std::uint32_t> occlusionCalls;
+		const ObjectSnapshot *occlusionRec = nullptr;
+		std::uint8_t occlusionEligible = 0;
 	};
 
 	Array m_commandErrors;
@@ -837,6 +883,13 @@ private:
 	std::vector<std::pair<int64_t, Vector2>> m_pavingPlants;
 	std::uint64_t m_pavingSignature = 0;
 	unsigned m_pavingFrame = ~0u;
+	// lane PERF-CLIENT: refresh_views' parts (one drawable's view; whether it may run on the job pool; the prefetch of the drawables ahead)
+	void refresh_view(size_t id, W3DInstancer *dyn, const LogicSnapshot *presented, W3DDrawPoseView &f, size_t &animated);
+	bool view_is_local(size_t id, const W3DInstancer &dyn, const LogicSnapshot *presented, W3DDrawPoseView &f) const;
+	void prefetch_view(size_t id, size_t viewSlots) const;
+	std::vector<std::uint8_t> m_viewSerial; ///< per slot: refreshed by the serial pass (view_is_local said no)
+	bool m_parallelViews = std::getenv("OPENBFME_SERIAL_VIEWS") == nullptr; ///< OPENBFME_SERIAL_VIEWS set (any value): the job pool pass is off (A/B)
+	size_t m_lastViewsLocal = 0, m_lastViewsSerial = 0; ///< the last refresh_views' drawables refreshed by the job pool pass and by the serial pass
 	// VIS-1: the local player's shroud as a cell texture on the terrain materials (S-567)
 	void refresh_shroud(bool force, double dtMs = 0.0);
 	void loadWeather(const String &map_name, Dictionary &report); // lane WEATHER-1: errors under report["weather_errors"]
@@ -899,6 +952,14 @@ private:
 	std::unique_ptr<LANLobbyHost> m_netHost;
 	std::unique_ptr<LANLobbyClient> m_netClient;
 	LobbyStart m_netStart;
+	LobbyStart m_warStart;  ///< WOTR2 milestone 8: the war's START while one of its battles runs (m_netStart is the battle's)
+	LobbyStart m_onlineNextPhase;
+	std::uint64_t m_onlineWarRootId = 0;
+	int m_onlineWarPhase = 0;
+	bool m_onlineNextReady = false;
+	bool m_warBattle = false; ///< a LAN war's battle runs: clear_game_data keeps the socket and the war's START
+	bool m_warLeftBeforeEnd = false; ///< net_finish of a war battle: the local leave came before T_end (clear_game_data's war_left_before_end)
+	bool m_warOtherDepartedBeforeEnd = false; ///< net_finish of a war battle: another player's departure came before T_end (war_other_departed_before_end)
 	bool m_netStarted = false;
 	std::unique_ptr<NetGameSession> m_netSession;
 	// lane MP-2: the recording of a local game (start_new_game option "record") and the playback of a replay (start_replay)
@@ -1013,7 +1074,6 @@ private:
 	bool m_textureAnimation = true;
 	double m_timeScale = 1.0;
 	double m_textureClock = 0.0;
-	double m_stealthClockMs = 0.0; ///< lane STEALTH-1: the client clock of the friend's invisibility opacity pulse
 	double m_lastAdvanceMs = 0.0, m_lastLogicMs = 0.0, m_lastSyncMs = 0.0, m_lastStreakMs = 0.0;
 	// lane PERF-1: what the last advance spent where, for the hitch report of the benchmarks (get_frame_timings): the shroud texture, the views, the effect
 	// player, and the first-use work (models the dynamic instancer built, streak materials created) with its time

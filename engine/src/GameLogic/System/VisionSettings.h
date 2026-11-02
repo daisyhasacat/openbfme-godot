@@ -32,7 +32,7 @@ struct VisionSettings
 	float elvenWoodRed = 0.0f, elvenWoodGreen = 0.0f, elvenWoodBlue = 0.0f; ///< GameData ElvenWoodColor (0 .. 1): a cell above neutral (elven wood)
 	unsigned taintAlpha = 0; ///< GameData TaintAlpha: the mask's border level
 	// lane HUD-5: MultiplayerSettings ShowRandomPlayerTemplate / ShowRandomStartPos / ShowRandomColor (GameSlot::getApparent*: an enemy's random choice is shown
-	// as random). Default true: MultiplayerSettings' constructor (RW 0x7836C0, BFME2 decomp MultiplayerSettingsCtor.cpp, tier B same-shape); optional fields
+	// as random). Default true: MultiplayerSettings' constructor (RW 0x7836C0, BFME2 decomp MultiplayerSettings.cpp, tier B same-shape); optional fields
 	bool showRandomPlayerTemplate = true, showRandomStartPos = true, showRandomColor = true;
 
 	static bool load(ArchiveFileSystem &fs, VisionSettings &out, std::string *error);

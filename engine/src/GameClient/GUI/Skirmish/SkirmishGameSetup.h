@@ -115,6 +115,28 @@ public:
 	// lane RULES-1: a change of mode resets the rules to the new mode's defaults (AptSkirmish::InitTheGame RW 0x9288D0 takes the mode's defaults)
 	void setStrategicMode(bool strategic);
 	bool strategicMode() const { return m_strategic; }
+	// WOTR2 milestone 8: the GameInfo's game mode (+ 0x5C: 1 in strategic mode) and scenario (+ 0x58, the LivingWorldCampaign's name; "" in open play), so a
+	// LAN game's options carry them to every player
+	void setWarScenario(const std::string &name)
+	{
+		m_info.gameMode = m_strategic ? 1 : 0;
+		m_info.scenario = m_strategic ? name : std::string();
+	}
+	// lane WOTR-2: the War of the Ring scenario the start check reads (the setup's + 0x68 -> + 0x29C -> + 0x1C, a LivingWorldCampaign's Scenario record):
+	// MaxPlayers (+ 0x10, RW 0x9758E3), MinPlayers (+ 0x14, RW 0x97597F) and DisabledFactions (+ 0x40, RW 0x9012D7 / 0x90182D). Cleared: no scenario
+	// (retail's maximum is then 0: the start silently does not happen)
+	struct StrategicScenario
+	{
+		int maxPlayers = 0;
+		int minPlayers = 0;
+		std::vector<std::string> disabledFactions; ///< PlayerTemplate names
+	};
+	void setStrategicScenario(const StrategicScenario &scenario)
+	{
+		m_scenario = scenario;
+		m_haveScenario = true;
+	}
+	void clearStrategicScenario() { m_haveScenario = false; }
 	// Slot 0's name (the profile name).
 	void setPlayerName(const std::u16string &name);
 
@@ -190,7 +212,7 @@ public:
 		std::vector<Line> lines; ///< every vslot 0x44 call in order: GUI:PlayerNoMap (2), GUI:SandboxMode (0), the refusal's (1 and / or 2, or 0)
 		bool sandbox = false;                ///< GUI:SandboxMode was shown: one team (GameInfo::isSandbox decides in the game)
 		int numHumans = 0;                   ///< + 0x3A8 for the countdown
-		std::vector<std::string> stops;      ///< "[S-3610] ..." when the check met what it does not port (a War of the Ring setup)
+		std::vector<std::string> stops;      ///< "[S-3610] ..." when the check met what it does not port
 	};
 	// `flags` is the setup's + 0x3A4 (0x10 needs two humans, 0x20 notifies the start intent, 0x100 the War of the Ring needs an enemy: none of them in a
 	// skirmish); `willTransfer` RW 0x702617 (the map can be sent to a player without it)
@@ -218,6 +240,8 @@ private:
 	SimulationProfile m_simulationProfile = SimulationProfile::Faithful; ///< lane UBER-1
 	std::string m_error;
 	bool m_strategic = false;
+	StrategicScenario m_scenario; // lane WOTR-2
+	bool m_haveScenario = false;
 	bool m_network = false; // lane MP-2
 	int m_localSlot = 0;
 };

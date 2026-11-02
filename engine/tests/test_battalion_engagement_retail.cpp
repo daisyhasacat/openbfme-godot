@@ -5,6 +5,7 @@
 // RW 0x86D75E), when, and how many of its men attack an enemy (their AI's goal while attacking); the table is printed and every horde must engage.
 // SKIPs without the games (ROTWK_INSTALL / BFME2_INSTALL).
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 
 #include "StartTestUtil.h"
@@ -140,6 +141,7 @@ TEST_CASE("battalions retail: four Gondor and four Mordor fighter hordes ordered
 			Coord3D p{ x, y, logic.getGroundHeight(x, y) };
 			b.horde->setPosition(&p);
 			b.horde->setOrientation(side == 0 ? 0.0f : 3.14159265f);
+			testutil::completeHorde(b.horde); // placed, then completed
 			battalions.push_back(b);
 		}
 	}

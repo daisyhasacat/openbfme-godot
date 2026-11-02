@@ -330,7 +330,8 @@ bool MapObjectGameData::load(ArchiveFileSystem &fs, MapObjectOptions &out, std::
 namespace
 {
 // Per-template information (the retail code reads these fields of the ThingTemplate at +0x108, +0x4B0, +0x4F0, +0x5F5, +0xA8).
-MapTemplateInfo buildTemplateInfo(const ThingTemplate *tmpl, const CreationScriptData &scripts, std::vector<std::string> &errors)
+MapTemplateInfo buildTemplateInfo(const ThingTemplate *tmpl, const CreationScriptData &scripts, std::vector<std::string> &errors,
+	std::vector<std::string> &stops)
 {
 	MapTemplateInfo info;
 	info.tmpl = tmpl;
@@ -421,7 +422,7 @@ MapTemplateInfo buildTemplateInfo(const ThingTemplate *tmpl, const CreationScrip
 	info.aiEventLists = MapCreationHooks::templateEventLists(*tmpl);
 	if (scripts.loaded)
 	{
-		info.creationHooks = MapCreationHooks::templateHooks(*tmpl, scripts, &errors);
+		info.creationHooks = MapCreationHooks::templateHooks(*tmpl, scripts, &errors, &stops);
 	}
 	return info;
 }
@@ -812,7 +813,7 @@ void MapObjectCreation::build(const LoadedMap &map, const std::string &mapName, 
 		auto ti = out.templates.find(finalTmpl);
 		if (ti == out.templates.end())
 		{
-			ti = out.templates.emplace(finalTmpl, buildTemplateInfo(finalTmpl, options.creationScripts, rep.errors)).first;
+			ti = out.templates.emplace(finalTmpl, buildTemplateInfo(finalTmpl, options.creationScripts, rep.errors, rep.stops)).first;
 		}
 		const MapTemplateInfo &info = ti->second;
 
@@ -1089,7 +1090,7 @@ void MapObjectCreation::build(const LoadedMap &map, const std::string &mapName, 
 					auto mi = out.templates.find(mFinal);
 					if (mi == out.templates.end())
 					{
-						mi = out.templates.emplace(mFinal, buildTemplateInfo(mFinal, options.creationScripts, rep.errors)).first;
+						mi = out.templates.emplace(mFinal, buildTemplateInfo(mFinal, options.creationScripts, rep.errors, rep.stops)).first;
 					}
 					const MapTemplateInfo &minfo = mi->second;
 					MapObjectDrawable md;

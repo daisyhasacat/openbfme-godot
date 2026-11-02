@@ -761,12 +761,12 @@ int Pathfinder::occupantCost(const PathfindObject *obj, const PathfindCell *pare
 				{
 					continue;
 				}
-				if (self.aiPriority > f->aiPriority)
+				if (self.aiPriority > f->aiPriority())
 				{
 					continue;
 				}
 				int add;
-				if (f->parked)
+				if (f->parked())
 				{
 					add = 8;
 				}
@@ -855,7 +855,8 @@ int Pathfinder::examineNeighboringCells(PathfindCell *parentCell, PathfindCell *
 		}
 		// lane PATHPERF-1: RW 0x6F9850 reads the block flags once, for the +1000 below (RW 0x6F9DE7); ZH's rejection of a cell whose block is not passable
 		// unless a block 3 cells away diagonally is was not RotWK's and is removed (it never applied while findPath marked every block passable). A cell
-		// outside the hierarchical corridor is dear, not forbidden: the corridor's block search does not see walls inside a block
+		// outside the hierarchical corridor is dear, not forbidden (the block search compares block zones, so it sees a wall that splits a block; the
+		// cell search may still step off the corridor where the corridor's cells are blocked by units or a narrow pass)
 		if (n->hasInfo() && (n->getOpen() || n->getClosed()))
 		{
 			continue;
@@ -1073,9 +1074,9 @@ Path *Pathfinder::findPath(PathfindObject *obj, const PathfindLocomotorInfo &loc
 	m_portalHops.clear(); // RW 0x6FE7CB (see above): the waypoint vector (+ 0x1C1CC) emptied before the block search (lane WALL-2)
 	m_zoneManager.clearPassableFlags();
 	Coord3D adjustedTo = to;
-	// the block search runs on the ground layer only (S-162: its bridge links, RW 0x9389CE, are not ported), so a goal on a raised walkway (lane WALL-2)
-	// gets no corridor and the full search runs on every block (review #63: the corridor moved such a goal to the ground beside it, a partial path)
-	const bool hierarchical = !isRaisedLayer(searchDestinationLayer(to)) && findClosestHierarchicalPath(obj, loco, isHuman, from, &to, &adjustedTo);
+	// a goal on a raised walkway (lane WALL-2) is found through its layer's wall connect cells (the block search's raised branch, RW 0x9389CE); review #63's
+	// exception (no corridor for such a goal: without that branch the corridor moved it to the ground beside it) is gone
+	const bool hierarchical = findClosestHierarchicalPath(obj, loco, isHuman, from, &to, &adjustedTo);
 	if (!hierarchical)
 	{
 		m_zoneManager.setAllPassable();

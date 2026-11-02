@@ -549,6 +549,28 @@ TEST_CASE("perf1 bench: 4-player skirmish (medium computer players, 20 game minu
 // Lane MODCOMPAT-MOD1 re-measured them at the run-down aim fix's commit (OPENBFME_PERF1_REGEN=1, a CI host): the aim state of a unit running a target down
 // ends at once (AIAttackAimAtTargetState RW 0x753426 / 0x7524B5: the riders strike on other frames) moves the battle from frame 129 and the skirmish from
 // frame 598.
+// Lane SPELLFIX-1 re-measured both (OPENBFME_PERF1_REGEN=1, a CI host), each change switched off alone to name its cause: an omitted ShroudClearingRange
+// clearing the VisionRange (RW 0x73FB7A / 0x69990F) moves both from frame 0; the economy's PRODUCTION product from the object's pool (levelled resource
+// buildings pay their level lists) moves the skirmish again from frame 2910; StartingBusyTime, ClearRemovables and the banner carrier's first update
+// (RW 0x89A258) move neither.
+// The horde contain fix re-measured both (OPENBFME_PERF1_REGEN=1, Windows llvm-mingw): a horde makes its members where it stands at build complete
+// (RW 0x8718ED) and a move no longer puts them on their slots (RW 0x871536); it moves the battle from frame 0 and the skirmish from frame 2510.
+// The hierarchical block zones re-measured both (OPENBFME_PERF1_REGEN=1, Windows llvm-mingw): the block search compares block zones (RW 0x9389A6) and
+// walks the walkways' connect cells (RW 0x9389CE), so its corridors and the cell searches held to them change; it moves the battle from frame 11 and the
+// skirmish from frame 13.
+// Merge queue q34 re-measured them once on the merged tree (OPENBFME_PERF1_REGEN=1, a CI host), compared at each merge point: SPELLFIX-1 (an omitted
+// ShroudClearingRange clears the VisionRange, RW 0x73FB7A / 0x69990F; the economy's PRODUCTION product) moves the battle, the skirmish and the allied blob;
+// #160 (members made where their horde stands, RW 0x8718ED, and left where they are by a move, RW 0x871536) moves the battle and the allied blob, not the
+// skirmish; #161 (the block search's block zones RW 0x9389A6 and raised branch RW 0x9389CE) moves all three.
+// Lane SIMSMALL-1 re-measured the skirmish (OPENBFME_PERF1_REGEN=1, a CI host): the rubble ExperienceTracker reset (RW 0x8C1BB7), the dead-but-kept heals
+// (RW 0x8C2FC1) and the PreferredTargetBone aim (RW 0x6CB85A) move the skirmish from frame 795; the battle does not move.
+// Merge queue q35 re-measured the skirmish once on the merged tree (OPENBFME_PERF1_REGEN=1, a CI host), compared at each merge point: SIMSMALL-1 moves it
+// from frame 766 on the archive's tree; #178 and #179 keep all four vectors byte-identical (and pass with the logic job pool at 1, 4 and 16 threads); #132
+// (ground-structure melee reach from the footprint's obstacle ring, OCL structures in the pathfinder map) moves it from frame 588. The battle, the allied
+// blob and the Uber battle do not move.
+// PR #184 re-measured the skirmish (OPENBFME_PERF1_REGEN=1, macOS arm64): the dozer's completion-time body visual refresh (RW 0x88DF6B;
+// clean BFME2 1.06 0x88AC76) clears the stale REALLYDAMAGED model condition left by 1-hit-point placement once the building is healthy.
+// The skirmish moves from frame 167; the big battle is unchanged.
 TEST_CASE("perf1: the big battle (400 frames) and a 4-player AI skirmish after another AI game (6000 frames) hash as the build before PERF-1 did in every frame")
 {
 	// Ambient movement: target idle wandering adds RNG draws and origin state,

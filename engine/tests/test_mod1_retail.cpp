@@ -4,6 +4,7 @@
 //
 // The templates are found by module class in the loaded data (no template name is hard-coded where a search can find one); the test prints which one it used.
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 #include "GameLogic/Module/RebuildHoleModules.h"
 #include "GameLogic/Module/SalvageCrateCollide.h"
@@ -125,6 +126,7 @@ struct Game
 		REQUIRE(o);
 		const Coord3D pos{ x, y, 0.0f };
 		o->setPosition(&pos);
+		testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		return o;
 	}
 	void run(int frames)

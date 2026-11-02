@@ -31,8 +31,8 @@ const char *const kPatchLayers =
 const char *const kZoneProfiles =
 	"S-162 the zone tables are built lazily per locomotor profile with the terrain variant read as obstacles-count-as-ground (INFERRED from the RW call sites); RW updates them incrementally and in a budgeted order";
 const char *const kHierarchical =
-	"S-162 the hierarchical block search of findPath (RW 0x6F9829) runs on the ground layer only (RW 0x6F8601): its bridge links (RW 0x9389CE) and the "
-	"mineshaft network's intermediate goal (RW 0x77559F, type 8 waypoints) are not ported (its block portals, RW 0x937F2D / 0x937F7F, are: lane WALL-2), and the block-edge passability "
+	"S-162 the hierarchical block search of findPath (RW 0x6F9829) compares block zones (RW 0x9389A6) with its raised links (RW 0x9389CE) and block "
+	"portals (RW 0x937F2D / 0x937F7F); the mineshaft network's intermediate goal (RW 0x77559F, type 8 waypoints) is not ported, and the block-edge passability "
 	"(RW 0x938240) is the port's zone pair test (INFERRED equal); "
 	"a goal inside the obstacle the unit ignores (a builder's own site) gets no corridor (INFERENCE: the port's builders aim inside the footprint)";
 // S-163 search
@@ -69,16 +69,16 @@ const char *const kPortalLostHorde =
 // lane WALL-2 with ATTACKPATH-1: the attack search of a unit off the ground layer without a corridor (AIPathfindAttack.cpp)
 const char *const kAttackRaisedFallback =
 	"S-4858 findAttackPath (RW 0x6FC18E) keeps its closest-cell fallback only with the corridor of RW 0x6F9829 (its RW 0x93AD93 ranking runs only when the "
-	"corridor was found); the port's corridor runs on the ground grid only (S-162, S-4856), so a unit on a wall top, a raised walkway or a ramp often has n"
-	"one and would get no path at all: such a search keeps the cell closest to the goal cell by its squared cell distance instead (OpenBFME's own, pending the corridor's raised branch)";
+	"corridor was found); a unit off the ground layer whose start the block search cannot leave (Grond on a Minas Tirith wall top, whose wall cells it may n"
+	"ot use) would get no path at all: such a search keeps the cell closest to the goal cell by its squared cell distance instead (OpenBFME's own)";
 const char *const kPortalLayerQuirk =
 	"S-4857 the hierarchical portal branch met a portal whose start cell is outside the block that lists it: RW then reads the raised layer of the portal's index "
-	"(RW 0x6F9156), not ported";
+	"(RW 0x6F9156), its wall connect cells and zone (ported as read; AddPortal lists the cell's own block, so it should not happen)";
 // S-4856 the raised layers (lane WALL-2, AIPathfindRaised.cpp)
 const char *const kRaisedLayers =
 	"S-4856 raised layers (RaisedWallMesh walkways): the walkway is the mesh's triangles at its highest z truncated (RW: the outline polygon and its int height), a "
 	"ramp's edge cell joins a walkway by BFME2's rule (RotWK's not compared), the walkway zones are numbered after the ground zones, a unit's layer on a walkway "
-	"follows the walkway's cells (UpdateLayer / AdjustLayer inferred) and the hierarchical search's raised branch (RW 0x9389CE) is not ported";
+	"follows the walkway's cells (UpdateLayer / AdjustLayer inferred) and the ground cells beside a ramp between two raised levels are not made type 2 (RW 0x9356DF's last pass)";
 const char *const kRaisedLayerCount = "S-4856 more than 14 raised walkway heights: the walkway is left out (RW: layers 2 .. 15)";
 const char *const kLargeRectFootprint =
 	"S-164 LARGE_RECTANGLE_PATHFIND footprints are axis-aligned boxes: the rotated polygon fill (RW 0x6ECC06 / 0x8E1E64) is not decoded";

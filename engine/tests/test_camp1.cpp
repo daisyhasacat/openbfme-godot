@@ -229,11 +229,12 @@ TEST_CASE("camp1 stops: the lane's stops are reported with their ids (S-1360 .. 
 	CHECK(VideoPlayer::stopLines()[0].rfind("[S-1710]", 0) == 0);
 }
 
-TEST_CASE("camp1 fade: a finished CAMERA_FADE_* applies no fade any more (ZH ScriptEngine::updateFades -> FADE_NONE), even when its minimum is 1")
+TEST_CASE("camp1 fade: a finished CAMERA_FADE_* applies no fade any more (ScriptEngine::updateFades -> FADE_NONE, RW 0x603016), even when its minimum is 1")
 {
 	ScriptCameraDirector d;
 	ScriptClientRequest r;
 	r.action = "CAMERA_FADE_SUBTRACT";
+	r.frame = 100;
 	for (int i = 0; i < 5; ++i)
 	{
 		ScriptParameter p;
@@ -241,18 +242,22 @@ TEST_CASE("camp1 fade: a finished CAMERA_FADE_* applies no fade any more (ZH Scr
 		p.realValue = i == 0 ? 1.0f : 0.0f;
 		r.params.push_back(p);
 	}
-	d.apply(r, Coord3D{ 0.0f, 0.0f, 0.0f }, 0.0f); // MAP ANG Amon Sul's intro: (1, 0, 0, 0, 0)
-	d.update(200.0);
+	// MAP ANG Amon Sul's intro: (1, 0, 0, 0, 0); an increase of 0 runs the first updateFades step inside setFade (RW 0x6030C1): FADE_NONE at once
+	d.apply(r, Coord3D{ 0.0f, 0.0f, 0.0f }, 0.0f);
+	CHECK(d.fadeType() == ScriptCameraDirector::FADE_NONE);
+	d.update(200.0, 100, 1.0);
 	CHECK(d.fade() == 0.0f);
-	// a fade in progress: (0, 1, 5 frames up, 5 held, 5 down; 30 Hz client frames) is full while held, gone at the end
+	// a fade in progress: (0, 1, 5 frames up, 5 held, 5 down; LOGIC frames, RW 0x603016) is full while held, gone at the end
 	r.params[0].realValue = 0.0f;
 	r.params[1].realValue = 1.0f;
 	r.params[2].intValue = 5;
 	r.params[3].intValue = 5;
 	r.params[4].intValue = 5;
 	d.apply(r, Coord3D{ 0.0f, 0.0f, 0.0f }, 0.0f);
-	d.update(250.0); // 7.5 frames: held
+	d.update(0.0, 108, 1.0); // fade frame 8 of 15: held
+	CHECK(d.fadeValue() == 1.0f);
 	CHECK(d.fade() == 1.0f);
-	d.update(400.0);
+	d.update(0.0, 116, 1.0); // 5 up + 5 held + 5 down done: FADE_NONE
+	CHECK(d.fadeType() == ScriptCameraDirector::FADE_NONE);
 	CHECK(d.fade() == 0.0f);
 }

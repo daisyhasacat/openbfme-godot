@@ -115,7 +115,7 @@ TEST_CASE("TGA: RLE, colour-mapped, other depths, oversize and truncated files a
 	Bytes px(12, 0);
 	Bytes rle = makeTga(10, 24, 2, 2, 0, px);
 	CHECK_FALSE(TGAFile::decode(rle.data(), rle.size(), img, &err));
-	CHECK(err.find("RLE is rejected") != std::string::npos);
+	CHECK(err.find("rejects RLE") != std::string::npos);
 	Bytes cm = makeTga(2, 24, 2, 2, 0, px);
 	cm[1] = 1;
 	CHECK_FALSE(TGAFile::decode(cm.data(), cm.size(), img, &err));
@@ -131,6 +131,24 @@ TEST_CASE("TGA: RLE, colour-mapped, other depths, oversize and truncated files a
 	CHECK(err.find("truncated") != std::string::npos);
 	CHECK_FALSE(TGAFile::decode(trunc.data(), 10, img, &err));
 	CHECK(err.find("18-byte header") != std::string::npos);
+}
+
+TEST_CASE("TGA: the texture path reads RLE true-colour (type 10) as ZH TARGA.CPP DecodeImage does: runs and literal packets (MODUI-1)")
+{
+	// 3x1 24-bit: a run of 2 red pixels (0x81 + one BGR), then 1 literal green (0x00 + one BGR)
+	Bytes packets = { 0x81, 0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF, 0x00 };
+	Bytes rle = makeTga(10, 24, 3, 1, 0, packets);
+	TGAImage img;
+	std::string err;
+	CHECK_FALSE(TGAFile::decode(rle.data(), rle.size(), img, &err)); // the terrain reader: refused
+	REQUIRE_MESSAGE(TGAFile::decode(rle.data(), rle.size(), img, &err, 1024, true), err);
+	CHECK(img.rgba == (Bytes{ 255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255 }));
+	Bytes over = makeTga(10, 24, 3, 1, 0, Bytes{ 0x83, 1, 2, 3 }); // a run of 4 in a 3-pixel image
+	CHECK_FALSE(TGAFile::decode(over.data(), over.size(), img, &err, 1024, true));
+	CHECK(err.find("runs past") != std::string::npos);
+	Bytes cut = makeTga(10, 24, 3, 1, 0, Bytes{ 0x81, 0, 0 });
+	CHECK_FALSE(TGAFile::decode(cut.data(), cut.size(), img, &err, 1024, true));
+	CHECK(err.find("truncated") != std::string::npos);
 }
 
 TEST_CASE("TerrainTypes: Terrain blocks give name -> texture, case-insensitive; _nrm and archive path names")
@@ -1021,20 +1039,20 @@ TEST_CASE("TGA radar: RLE raw and repeated packets preserve pixels and reject in
 	// Two red pixels followed by one green and one blue pixel, spanning rows.
 	const Bytes packets = {0x81, 0, 0, 255, 0x01, 0, 255, 0, 255, 0, 0};
 	auto bytes = makeTga(10, 24, 2, 2, 0x20, packets, 3);
-	REQUIRE_MESSAGE(TGAFile::decodeRadar(bytes.data(), bytes.size(), img, &error), error);
+	REQUIRE_MESSAGE(TGAFile::decode(bytes.data(), bytes.size(), img, &error, 4096, true), error);
 	CHECK(img.topDownFlag);
 	CHECK(img.rgba == Bytes{255,0,0,255, 255,0,0,255, 0,255,0,255, 0,0,255,255});
 	CHECK_FALSE(TGAFile::decode(bytes.data(), bytes.size(), img, &error)); // terrain remains strict
 	auto rgba = makeTga(10, 32, 2, 1, 0, {0x81, 3, 2, 1, 77});
-	REQUIRE(TGAFile::decodeRadar(rgba.data(), rgba.size(), img, &error));
+	REQUIRE(TGAFile::decode(rgba.data(), rgba.size(), img, &error, 4096, true));
 	CHECK(img.rgba == Bytes{1,2,3,77, 1,2,3,77});
 	for (const auto &payload : {Bytes{}, Bytes{0x80}, Bytes{0x00, 0, 0}, Bytes{0x84, 0, 0, 0}})
 	{
 		auto broken = makeTga(10, 24, 2, 2, 0, payload);
-		CHECK_FALSE(TGAFile::decodeRadar(broken.data(), broken.size(), img, &error));
+		CHECK_FALSE(TGAFile::decode(broken.data(), broken.size(), img, &error, 4096, true));
 	}
 	bytes[0] = 255;
-	CHECK_FALSE(TGAFile::decodeRadar(bytes.data(), bytes.size(), img, &error));
+	CHECK_FALSE(TGAFile::decode(bytes.data(), bytes.size(), img, &error, 4096, true));
 }
 
 TEST_CASE("snow terrain: exact authored name pairs, no guesses for unmatched textures")

@@ -123,9 +123,11 @@ EBLK (like the name) is written only in tagged files.
   order: reset the engine, xfer the blocks of the mode's list, run every
   queued `loadPostProcess` (RW 0x6DD65C: pointers are saved as IDs and
   resolved here), refresh the shroud, then restart the AI. After a War of the
-  Ring load (modes 4 and 6) it calls `InitRandom(0)` and suspends the logic
-  **(meaning to verify)**. A failure shows "GUI:ErrorLoadingGame" and returns
-  to the shell.
+  Ring map save's load (types 4 and 6) it calls `InitRandom(0)` and suspends
+  the logic (GameState::doLoadGame, the BFME2 decomp's byte-matched
+  0x6DD91A; RotWK's is the same shape; WOTR2 milestone 3 does the reseed, see
+  section 8). The mode 4 load reads list 0, the mode 6 one list 3, mode 1
+  list 4. A failure shows "GUI:ErrorLoadingGame" and returns to the shell.
 - **Screens.** SaveLoad.apt (`AptSaveLoad::*`) is shared with the replay
   list, which MP-2 already ported (`SaveLoadInfo`). Its game-type flags are 1
   Campaign, 2 Skirmish, 4 Replay, 8 War of the Ring single player, 0x10
@@ -265,7 +267,10 @@ functions map to a decomp `::xfer`: 316 tier A (the decomp code is RotWK's),
   per-module list of what was dropped;
 - **the embedded map and the object IDs** taken as saved. Pointers are
   resolved in `loadPostProcess`, as retail does;
-- **WotR saves** need War of the Ring, which isn't built (ROADMAP).
+- **WotR saves**: OpenBFME's War of the Ring map saves exist (section 8,
+  WOTR2 milestone 3); reading retail's `.BfME2WotR` would need retail's
+  CHUNK_LivingWorldLogic object graph (RW 0x6BC653), which the strategic model
+  does not keep in that shape.
 
 **Writing (export) is harder, and only partly testable here.** Retail loads a
 file only if every block it reads is byte-correct for its version, so export
@@ -650,6 +655,44 @@ and review counts describe those runs, not fixed counts for every build.
   a saved log needs only the relay log assembled into a `ReplayFile`; its
   `rejoinStep` loop (`advance(0.2)` within a time budget) is the same shape as
   `CommandLogLoad::step`.
+
+### WOTR2 milestone 3: the War of the Ring map's save
+
+- **The file:** container version 2 adds a fourth part, `LWLD`, after `SNAP`
+  (version 1 files, three parts, still load). A War of the Ring map save is
+  game kind 8 at save point 2: retail's mode 4 (RW 0x6DCFDF: the strategic
+  map up, single player). Its `campaign` field names the scenario
+  (LivingWorldCampaign), its state hash is the strategic game's, and it has
+  no frame, no log and no snapshot. `LWLD` holds two length-prefixed blobs:
+  the strategic game (`LivingWorldLogic::saveState`, GameState's stream of
+  the block `obfme:LivingWorld`), then the host's session (the lobby game
+  the battles start from, each player's lobby slot, the battle count:
+  Godot's `var_to_bytes`, read back with `bytes_to_var`, which refuses
+  objects).
+- **The block:** retail's CHUNK_LivingWorldLogic (RW 0x6BC653, the shared
+  state RW 0x6BBD55, version 7) xfers its object graph (LivingWorldPlayer,
+  ArmySummary, the regions, the beacons). OpenBFME's model keeps the same
+  state as players, regions (buildings, queues), armies (members) and
+  battles by index, so the block is native (`obfme:`). It follows retail's
+  order where the model has the field. It holds everything the state hash
+  covers, plus the event log. The data the world rebuilds (ranks, the RTS
+  templates' rank fields, ResourceMultiplierLimit) comes from the running
+  world at load. Every name and index is checked against the data, and a
+  mismatch is a named refusal.
+- **Loading:** like a campaign menu save, no log is replayed, so another build
+  may load it when the data identity matches and the scenario exists
+  (`GameWorld::wotrSaveVerdict`). The loaded state must hash as the header
+  says. Then the generator starts again from 0 (retail's `InitRandom(0)`
+  above): two loads of one save play the same war; the unsaved game's dice
+  are not repeated, as in retail.
+- **Screens:** Esc on the map opens QuitMenu.apt with retail's War of the Ring
+  branch (+ 0x114 == 0): Save / Load open SaveLoad.apt's War of the Ring page
+  (type 8, RW 0x92179F), whose rows are RW 0x6E04AD's for filter 8 (file
+  name, blank, time, date; a map save gold). The main menu's Load Game
+  offers the same page (flags 0xB).
+- **Not built:** saving inside a War of the Ring battle (retail's mode 3:
+  the battle's own save is refused by name), reading retail `.BfME2WotR`,
+  the multiplayer War of the Ring save (mode 6). Stop S-1332.
 
 ### SAVE-4a: the Xfer framework, GameState and the core blocks (lane SAVE-4a)
 

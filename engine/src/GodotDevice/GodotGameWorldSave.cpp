@@ -75,6 +75,9 @@ void GameWorld::bindSaveMethods()
 	ClassDB::bind_method(D_METHOD("start_save_load", "options"), &GameWorld::start_save_load);
 	ClassDB::bind_method(D_METHOD("save_load_step", "budget_ms"), &GameWorld::save_load_step);
 	ClassDB::bind_method(D_METHOD("save_campaign_menu", "path", "options"), &GameWorld::save_campaign_menu); // lane CAMPSAVE-1
+	ClassDB::bind_method(D_METHOD("save_wotr_map", "path", "options"), &GameWorld::save_wotr_map); // lane WOTR2 milestone 3
+	ClassDB::bind_method(D_METHOD("save_wotr_battle", "path", "options"), &GameWorld::save_wotr_battle); // WOTR2 milestone 6
+	ClassDB::bind_method(D_METHOD("read_wotr_save", "path"), &GameWorld::read_wotr_save);
 	ClassDB::bind_method(D_METHOD("keep_running_game"), &GameWorld::keep_running_game); // lane SAVE-4e review r1
 	ClassDB::bind_method(D_METHOD("prepare_kept_load"), &GameWorld::prepare_kept_load);
 	ClassDB::bind_method(D_METHOD("drop_kept_game"), &GameWorld::drop_kept_game);
@@ -98,6 +101,11 @@ bool GameWorld::buildSave(const Dictionary &options, SaveGameFile &f, UnsignedIn
 	if (m_replayPlayback)
 	{
 		return failed("a replay cannot be saved");
+	}
+	if (m_startMessage.livingWorldBattle.active && !(bool)options.get("wotr_battle", false))
+	{
+		// WOTR2 milestone 6: a War of the Ring battle is saved with its war (save_wotr_battle: retail's mode 3 holds CHUNK_LivingWorldLogic first)
+		return failed("a War of the Ring battle is saved with its war (the War of the Ring save)");
 	}
 	if (m_saveLoad && m_saveLoad->state() != CommandLogLoad::State::Ready)
 	{
@@ -130,7 +138,7 @@ bool GameWorld::buildSave(const Dictionary &options, SaveGameFile &f, UnsignedIn
 	h.commit = BuildVersion::kCommit;
 	h.profile = check.header.profile; // the identity the recording was made under
 	h.executionProfile = m_game->logic().simulationProfile() == SimulationProfile::Uber ? "uber" : "enhanced"; // the profile at F (UBER-1)
-	h.gameKind = m_campaignStart.campaign.empty() ? 2 : 1; // a campaign mission (start_campaign_mission) or a skirmish
+	h.gameKind = m_campaignStart.campaign.empty() ? 2 : 1; // a campaign mission (start_campaign_mission) or a skirmish (save_wotr_battle: 8)
 	h.frame = frame;
 	h.stateHash = hash;
 	h.description = n(String(options.get("description", String())));
@@ -436,6 +444,189 @@ SaveGameCompatibility GameWorld::menuSaveVerdict(const SaveGameHeader &h) const
 	return SaveGameCompatibility::checkMenuSave(h, profileIdentityFor(SimulationProfile::Faithful, true), refusal);
 }
 
+// lane WOTR2 milestone 3: the War of the Ring map (GameState::determineCurrentGameSaveFileMode RW 0x6DCFDF: mode 4 while TheLivingWorldLogic's selection
+// is locked in a single player game; RW 0x6DCDE9 gives it .BfME2WotR; our own file is the .obfmesave container, SaveGameFile.h)
+Dictionary GameWorld::save_wotr_map(const String &path, const Dictionary &options)
+{
+	Dictionary r;
+	r["ok"] = false;
+	auto fail = [&](const std::string &why) {
+		r["error"] = g(why);
+		return r;
+	};
+	if (!m_world)
+	{
+		return fail("GameWorld.setup has not run");
+	}
+	const std::string scenario = n(String(options.get("scenario", String())));
+	if (!m_world->livingWorld().findCampaign(scenario))
+	{
+		return fail("no War of the Ring scenario '" + scenario + "' to save");
+	}
+	const PackedByteArray state = options.get("state", PackedByteArray());
+	if (state.is_empty())
+	{
+		return fail("the War of the Ring save has no strategic game");
+	}
+	SaveGameFile f;
+	SaveGameHeader &h = f.header;
+	h.buildVersion = BuildVersion::kVersion;
+	h.engineId = ProfileIdentity::buildId();
+	h.commit = BuildVersion::kCommit;
+	h.profile = net_profile();
+	h.executionProfile = SaveGameFile::executionProfileOf(h.profile.text);
+	h.gameKind = (bool)options.get("lan", false) ? 16 : 8; // WOTR2 milestone 8 (step 4, Sol wotr2m8s4 #1): a LAN war's copy is the WOTRMP page's (16)
+	h.savePoint = 2;
+	h.frame = 0;
+	h.stateHash = (std::uint32_t)(int64_t)options.get("state_hash", (int64_t)0);
+	h.description = n(String(options.get("description", String())));
+	h.mapDisplay = scenario;
+	dateTime((int64_t)Time::get_singleton()->get_unix_time_from_system(), h.date, h.time);
+	h.campaign = scenario;
+	f.livingWorld.assign(state.ptr(), state.ptr() + state.size());
+	const PackedByteArray session = options.get("session", PackedByteArray());
+	f.livingWorldSession.assign(session.ptr(), session.ptr() + session.size());
+	std::string error;
+	if (!f.write(n(path), &error))
+	{
+		return fail(error);
+	}
+	r["ok"] = true;
+	r["path"] = path;
+	r["bytes"] = (int64_t)f.encode().size();
+	return r;
+}
+
+// WOTR2 milestone 6 (spec Q): a save inside a War of the Ring battle (GameState::determineCurrentGameSaveFileMode RW 0x6DCFDF: mode 3, game kind 0 with the
+// strategic map left; GameState::saveGame RW 0x6DE498 writes CHUNK_LivingWorldLogic first, then the whole tactical game). Here save point 3: the battle's
+// RTS game as a game save (log and snapshot at F) plus the strategic game and the host's session (options "scenario", "state", "session")
+Dictionary GameWorld::save_wotr_battle(const String &path, const Dictionary &options)
+{
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	Dictionary r;
+	r["ok"] = false;
+	auto fail = [&](const std::string &why) {
+		r["error"] = g(why);
+		return r;
+	};
+	if (!m_world)
+	{
+		return fail("GameWorld.setup has not run");
+	}
+	if (!m_game || !m_startMessage.livingWorldBattle.active)
+	{
+		return fail("no War of the Ring battle is being fought");
+	}
+	const std::string scenario = n(String(options.get("scenario", String())));
+	if (!m_world->livingWorld().findCampaign(scenario))
+	{
+		return fail("no War of the Ring scenario '" + scenario + "' to save");
+	}
+	const PackedByteArray state = options.get("state", PackedByteArray());
+	const PackedByteArray session = options.get("session", PackedByteArray());
+	if (state.is_empty() || session.is_empty())
+	{
+		return fail("the War of the Ring battle save has no strategic game");
+	}
+	Dictionary rtsOptions = options.duplicate();
+	rtsOptions["wotr_battle"] = true;
+	SaveGameFile f;
+	UnsignedInt frame = 0;
+	std::uint32_t hash = 0;
+	std::string error;
+	if (!buildSave(rtsOptions, f, frame, hash, error))
+	{
+		return fail(error);
+	}
+	SaveGameHeader &h = f.header;
+	h.gameKind = 8;
+	h.savePoint = 3;
+	h.campaign = scenario;
+	h.campaignMission = 0;
+	h.campaignDifficulty = 0;
+	f.livingWorld.assign(state.ptr(), state.ptr() + state.size());
+	f.livingWorldSession.assign(session.ptr(), session.ptr() + session.size());
+	if (!f.write(n(path), &error))
+	{
+		return fail(error);
+	}
+	r["ok"] = true;
+	r["path"] = path;
+	r["frame"] = (int64_t)frame;
+	r["hash"] = (int64_t)hash;
+	r["bytes"] = (int64_t)f.encode().size();
+	r["commands"] = (int64_t)h.commands;
+	r["snapshot_bytes"] = (int64_t)f.snapshot.size();
+	return r;
+}
+
+SaveGameCompatibility GameWorld::wotrSaveVerdict(const SaveGameHeader &h) const
+{
+	std::string refusal;
+	if (!m_world)
+	{
+		refusal = "GameWorld.setup has not run";
+	}
+	else if (!m_world->livingWorld().findCampaign(h.campaign))
+	{
+		refusal = "this game's data has no War of the Ring scenario '" + h.campaign + "'";
+	}
+	return SaveGameCompatibility::checkMenuSave(h, net_profile(), refusal);
+}
+
+// WOTR2 milestone 6: a War of the Ring battle's save: its game part as a game save's (SaveGameCompatibility::check under the running profile), then the
+// scenario as the map save's
+SaveGameCompatibility GameWorld::wotrBattleSaveVerdict(const SaveGameHeader &h) const
+{
+	const SaveGameCompatibility c = SaveGameCompatibility::check(h, net_profile(), ProfileIdentity::buildId(), BuildVersion::kVersion, false);
+	if (!c.loadable)
+	{
+		return c;
+	}
+	const SaveGameCompatibility w = wotrSaveVerdict(h);
+	return w.loadable ? c : w;
+}
+
+Dictionary GameWorld::read_wotr_save(const String &path) const
+{
+	Dictionary r;
+	r["ok"] = false;
+	SaveGameFile file;
+	std::string error;
+	if (!SaveGameFile::load(n(path), file, &error))
+	{
+		r["error"] = g(error);
+		return r;
+	}
+	if (file.header.savePoint != 2 && file.header.savePoint != 3)
+	{
+		r["error"] = "the save is not a War of the Ring save";
+		return r;
+	}
+	// a battle's save (point 3) is a game's save as well: the build and profile rule of a game's (its log replays), then the scenario
+	const SaveGameCompatibility verdict = file.header.savePoint == 3 ? wotrBattleSaveVerdict(file.header) : wotrSaveVerdict(file.header);
+	if (!verdict.loadable)
+	{
+		r["error"] = g(verdict.refusal);
+		return r;
+	}
+	r["save_point"] = (int64_t)file.header.savePoint;
+	r["frame"] = (int64_t)file.header.frame;
+	PackedByteArray state;
+	state.resize((int64_t)file.livingWorld.size());
+	std::copy(file.livingWorld.begin(), file.livingWorld.end(), state.ptrw());
+	PackedByteArray session;
+	session.resize((int64_t)file.livingWorldSession.size());
+	std::copy(file.livingWorldSession.begin(), file.livingWorldSession.end(), session.ptrw());
+	r["session"] = session;
+	r["ok"] = true;
+	r["scenario"] = g(file.header.campaign);
+	r["description"] = g(file.header.description);
+	r["state"] = state;
+	r["state_hash"] = (int64_t)file.header.stateHash;
+	return r;
+}
+
 Array GameWorld::list_saves(const String &directory) const
 {
 	// the Save folder (retail: the user data folder's Save\, GameState RW 0x6DE38D) newest first (GameState's available list, addGameToAvailableList)
@@ -504,10 +695,12 @@ Array GameWorld::list_saves(const String &directory) const
 			out.push_back(d);
 			continue;
 		}
-		const SaveGameCompatibility c = SaveGameCompatibility::check(f.header, f.header.campaign.empty() ? running : faithful, ProfileIdentity::buildId(),
-			BuildVersion::kVersion, false);
-		const bool menuSave = f.header.savePoint == 1; // lane CAMPSAVE-1: no log; the same verdict as check_save's (menuSaveVerdict)
-		const SaveGameCompatibility menuVerdict = menuSave ? menuSaveVerdict(f.header) : SaveGameCompatibility();
+		const SaveGameCompatibility c = f.header.savePoint == 3 ? wotrBattleSaveVerdict(f.header)
+			: SaveGameCompatibility::check(f.header, f.header.campaign.empty() ? running : faithful, ProfileIdentity::buildId(), BuildVersion::kVersion, false);
+		// lane CAMPSAVE-1: no log; the same verdict as check_save's (menuSaveVerdict); lane WOTR2 milestone 3: the War of the Ring map's the same way
+		const bool menuSave = f.header.savePoint == 1 || f.header.savePoint == 2;
+		const SaveGameCompatibility menuVerdict = f.header.savePoint == 1 ? menuSaveVerdict(f.header)
+			: f.header.savePoint == 2 ? wotrSaveVerdict(f.header) : SaveGameCompatibility();
 		d["kind"] = f.header.gameKind;
 		d["map"] = g(f.header.mapDisplay);
 		d["map_path"] = g(f.header.mapPath);
@@ -539,6 +732,44 @@ Dictionary GameWorld::check_save(const String &path) const
 		return r;
 	}
 	r["save_point"] = (int64_t)file.header.savePoint;
+	if (file.header.savePoint == 2)
+	{
+		// lane WOTR2 milestone 3: the War of the Ring map: no log; the host loads it with read_wotr_save into its LivingWorldGame
+		const SaveGameCompatibility verdict = wotrSaveVerdict(file.header);
+		if (!verdict.loadable)
+		{
+			r["error"] = g(verdict.refusal);
+			return r;
+		}
+		r["ok"] = true;
+		r["scenario"] = g(file.header.campaign);
+		return r;
+	}
+	if (file.header.savePoint == 3)
+	{
+		// WOTR2 milestone 6: a War of the Ring battle: its game (the log's start, the snapshot's framing) as a game save's, the strategic part by the host
+		// (read_wotr_save, then LivingWorldGame.check_state)
+		const SaveGameCompatibility verdict = wotrBattleSaveVerdict(file.header);
+		if (!verdict.loadable)
+		{
+			r["error"] = g(verdict.refusal);
+			return r;
+		}
+		CommandLogLoad load;
+		if (!load.prepare(file, &error))
+		{
+			r["error"] = g(error);
+			return r;
+		}
+		if (!load.log().header.game.livingWorldBattle.active)
+		{
+			r["error"] = "the War of the Ring battle save's log is not a War of the Ring battle";
+			return r;
+		}
+		r["ok"] = true;
+		r["scenario"] = g(file.header.campaign);
+		return r;
+	}
 	if (file.header.savePoint == 1)
 	{
 		// lane CAMPSAVE-1: a campaign menu save holds no game (no log to replay), so the build rule of a game's save does not apply: another build loads
@@ -616,6 +847,11 @@ Dictionary GameWorld::prepare_save_load(const String &path)
 		errors.push_back("the save is the campaign menu between missions, not a game to load");
 		return r;
 	}
+	if (file->header.savePoint == 2)
+	{
+		errors.push_back("the save is the War of the Ring map, not a game to load"); // lane WOTR2 milestone 3: read_wotr_save
+		return r;
+	}
 	return prepareSaveLoad(std::move(file));
 }
 
@@ -647,7 +883,8 @@ Dictionary GameWorld::prepareSaveLoad(std::unique_ptr<SaveGameFile> file)
 	r["ok"] = false;
 	r["errors"] = errors;
 	std::string error;
-	const ProfileIdentity running = file->header.campaign.empty() ? net_profile() : profileIdentityFor(SimulationProfile::Faithful, true);
+	const bool battle = file->header.savePoint == 3; // WOTR2 milestone 6: a War of the Ring battle's game starts from its log's NewGameMessage, as a skirmish's
+	const ProfileIdentity running = file->header.campaign.empty() || battle ? net_profile() : profileIdentityFor(SimulationProfile::Faithful, true);
 	const SaveGameCompatibility c = SaveGameCompatibility::check(file->header, running, ProfileIdentity::buildId(), BuildVersion::kVersion, false);
 	if (!c.loadable)
 	{
@@ -666,7 +903,7 @@ Dictionary GameWorld::prepareSaveLoad(std::unique_ptr<SaveGameFile> file)
 	r["description"] = g(file->header.description);
 	r["cross_profile"] = c.crossProfile;
 	r["note"] = g(c.note);
-	if (!file->header.campaign.empty())
+	if (!file->header.campaign.empty() && !battle)
 	{
 		// a campaign mission: started again from its campaign, mission and difficulty (start_campaign_mission), not from a NewGameMessage
 		m_pendingCampaign.campaign = file->header.campaign;

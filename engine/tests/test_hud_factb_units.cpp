@@ -3917,6 +3917,8 @@ TEST_CASE("factc upgrade effects: every Goblin and Angmar weapon and armour upgr
 	// two-hit frame again, so the line passes as in q23; the armour still does not change Boromir's HERO hit (S-2008 keeps the explanation)
 	// merge queue q33 (measured at each merge point): with MODCOMPAT-MOD1 on the archive's tree the scene without the armour keeps its two-hit frame
 	// (600 -> 300), so the line passes as in q31 (MODCOMPAT-MOD1's last expectation was measured on its older base)
+	// fix/horde-contain-no-follow (members walk to their slots, RW 0x871536): a two-hit frame without the armour again (600 -> 300), so the line passes and
+	// its pin goes; the armour still does not change Boromir's HERO hit (S-2008 keeps the explanation)
 	factcCase("upgrade effects", "FactionAngmar", upgradeEffectsOf, {});
 }
 

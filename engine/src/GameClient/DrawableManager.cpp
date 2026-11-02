@@ -437,6 +437,8 @@ void DrawableManager::advance(double elapsedMs)
 				d->advanceAnimation(elapsedMs);
 			}
 			d->updateFade(elapsedMs); // lane PROJ-2: RW 0x675AB7 (DrawableFade.cpp)
+			// lane STEALTHLOOK-1: RW 0x673114 (GameClient/StealthLook.cpp, updateDrawable RW 0x675996): the horde parent's drawable or the step
+			d->updateStealthLook(d->stealthParentId() != INVALID_ID ? findByObject(d->stealthParentId()) : nullptr);
 		}
 	}
 }
@@ -530,6 +532,7 @@ void DrawableManager::syncTransforms(const LogicSnapshot &snapshot, double alpha
 				if (rec)
 				{
 					d->startProjectileFade(*rec, snapshot);
+					d->syncStealthLook(*rec); // lane STEALTHLOOK-1: RW 0x6760F9 when the snapshot's look changed
 					d->syncFromSnapshot(*rec, snapshot.frame, alpha, interpolate);
 				}
 			}
@@ -578,6 +581,8 @@ void DrawableManager::syncTransforms(const LogicSnapshot &snapshot, double alpha
 		const Drawable::SyncPrep &prep = m_syncScratch[i];
 		if (d && prep.rec)
 		{
+			// lane STEALTHLOOK-1: RW 0x6760F9 when the snapshot's look changed; the ordered pass because the setter draws the phase from the shared client random
+			d->syncStealthLook(*prep.rec);
 			if (prep.committed)
 			{
 				if (!d->clientModules().empty())

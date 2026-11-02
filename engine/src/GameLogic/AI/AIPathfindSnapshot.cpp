@@ -138,6 +138,8 @@ void PathfindZoneManager::xfer(Xfer &x)
 		return;
 	}
 	m_tables.clear();
+	m_zoneBlock.clear(); // derived from the cells, which load after the zones: Pathfinder::ensureZoneBlocks rebuilds it
+	m_blockTables.clear();
 	// the closed sets: a block per block of the extent, a zone's class (a cell type 0 .. 7, layers 0 .. LAYER_LAST, lanes WALL-1 / WALL-2), the adjacency sorted, unique, a < b, of zones
 	if (m_blockSize <= 0 || m_zoneBlockExtent.x < 0 || m_zoneBlockExtent.y < 0 ||
 		(std::uint64_t)m_zoneBlockExtent.x * (std::uint64_t)m_zoneBlockExtent.y != m_blocks.size())
