@@ -28,6 +28,7 @@
 #include "GameLogic/AI/AIStateMachine.h"
 #include "GameLogic/Combat/CombatLineOfSight.h"
 #include "GameLogic/Combat/ObjectWeapons.h"
+#include "GameLogic/AI/AIStateMachine.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/SlavedUpdate.h"
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
@@ -462,6 +463,13 @@ bool ObjectPathfindAdapter::canEnterPosition(const Coord3D &position) const
 }
 float ObjectPathfindAdapter::getOrientation() const { return m_object->getOrientation(); }
 
+// lane PATH-REBUILD: RW 0x70B9E0's vector is the object's facing; the port's transform basis holds the same cosine and sine (AIUpdateInterface::unitDirectionOf)
+Coord2D ObjectPathfindAdapter::getUnitDirection2D() const
+{
+	// RW 0x70B9E0: the cosine and sine of the orientation (a unit vector); the transform's basis is the same for a yaw-only unit up to its rounding
+	return PathfindObject::getUnitDirection2D();
+}
+
 float ObjectPathfindAdapter::getHeightAboveTerrain() const
 {
 	const Coord3D &p = *m_object->getPosition();
@@ -751,23 +759,29 @@ bool ObjectPathfindAdapter::cannotWalkOn() const
 	return cannot >= 0 && m_object->testStatus((unsigned)cannot);
 }
 
+// RW checkForMovement (0x6EBAA0), the enemy branch (BFME2 decomp PathfinderCheckForMovement.cpp): an enemy does not refuse the cell when it is the unit's
+// target: the AI state machine's goal object (RW 0x8DBACE) or the current victim (RW 0x668303), or contained in one (a horde's member), or the target's own
+// container (and its members). A unit without an AI, or with neither target, is refused
 bool ObjectPathfindAdapter::ignoresAsTarget(const PathfindObject &other) const
 {
-	// BFME2 PathfinderCheckForMovement.cpp checkCellUnits; target counterpart
-	// RW 0x6EBA09..0x6EBA5E (S-001): the machine goal, then current victim,
-	// each compared with the occupant and their immediate containers.
-	const auto *occupant = dynamic_cast<const ObjectPathfindAdapter *>(&other);
-	const AIUpdateInterface *update = ai();
-	if (!occupant || !update) return false;
-	const Object *unit = &occupant->object();
-	const Object *container = unit->getContainedBy();
-	auto matches = [&](const Object *target) {
-		if (!target) return false;
-		if (unit == target || container == target) return true;
-		const Object *parent = target->getContainedBy();
-		return parent && (unit == parent || container == parent);
-	};
-	return matches(ai()->stateMachine().goalObject()) || matches(update->currentVictim());
+	const ObjectPathfindAdapter *o = dynamic_cast<const ObjectPathfindAdapter *>(&other);
+	AIUpdateInterface *ai = m_object->getAIUpdateInterface();
+	if (!o || !ai)
+	{
+		return false;
+	}
+	const Object *unit = &o->object();
+	const auto targets = [unit](const Object *t) { return t && (unit == t || unit->getContainedBy() == t); };
+	const AIStateMachine *machine = ai->stateMachineOrNull(); // null before onObjectCreated or for a machineless loaded AI: no goal object
+	if (const Object *goal = machine ? machine->goalObject() : nullptr)
+	{
+		if (targets(goal) || targets(goal->getContainedBy()))
+		{
+			return true;
+		}
+	}
+	const Object *victim = ai->currentVictim();
+	return victim && (targets(victim) || targets(victim->getContainedBy()));
 }
 
 bool ObjectPathfindAdapter::pathsThroughEachOther() const

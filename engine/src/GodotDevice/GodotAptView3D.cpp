@@ -19,6 +19,8 @@
 #include <cmath>
 #include <cstdio>
 
+static constexpr int kView3DPixelBudget = 1920 * 1080; // lane PERF-2: see AptView3DViewers::draw
+
 namespace godot
 {
 
@@ -306,6 +308,10 @@ void AptView3DViewers::draw(RID item, const Rect2 &rect, const AptCanvasOp &op, 
 	// stays around its panels; any other View3D (GuiFX's end-screen rings) keeps retail's aspect
 	int imageW = 1, imageH = 1;
 	AptView3DImageSize(rect.size.x, rect.size.y, op.scaleX, op.scaleY, slot.keepAspect, stretchWithStage, imageW, imageH);
+	// lane PERF-2 (not retail): each viewer renders its scene twice (black and white clears) into images the clip's size, every frame; a menu frame
+	// covering a 2880x1800 window was four 5-6 megapixel 3D renders a frame and held an integrated GPU at 16 fps. The images are drawn stretched over
+	// the clip anyway, so they render at most kView3DPixelBudget pixels (1920x1080's count) with the clip's aspect kept
+	AptView3DPixelBudget(imageW, imageH, kView3DPixelBudget);
 	// Diagnostic simulator exports use CPU rasterization. Bound the embedded
 	// scene independently of the canvas; preserve its aspect and camera framing.
 	const int maxDimension = std::max(0, (int)ProjectSettings::get_singleton()->get_setting("openbfme/rendering/menu_3d_max_dimension", 0));

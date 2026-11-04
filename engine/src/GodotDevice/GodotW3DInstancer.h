@@ -42,6 +42,7 @@
 #include <godot_cpp/variant/transform3d.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -53,6 +54,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
 
 namespace godot
 {
@@ -147,6 +149,10 @@ public:
 	void Set_Build_Texture_Swaps(const std::vector<TextureSwap> &swaps) { PendingSwaps = swaps; }
 	// S-5017: BFME1 blended floor markings; consumed by the next add, with a separate mesh cache key.
 	void Set_Build_Floor_Sampling(bool enabled) { PendingFloorSampling = enabled; }
+	// lane SELWALL-1 (C++ only): the next add_model / add_model_colored builds a wall top or bridge model (KINDOF_WALK_ON_TOP_OF_WALL): its meshes are built
+	// again under a name with "#sel", their opaque surfaces draw the selection decals (W3DShaderKey::SelectionDecals: the merge decals and, lane HERORING-1,
+	// the alpha decals). The add clears it
+	void Set_Build_Selection_Decals(bool on) { PendingSelectionDecals = on; }
 	// "#tex&a=b&c=d" (lower case, in the state's order): the part of a model's cache name that its texture swaps make; empty without swaps
 	static std::string Texture_Swap_Suffix(const std::vector<TextureSwap> &swaps);
 	// RENDER-1 (stop S-390): the instance is lit by the map's infantry light set (KINDOF_INFANTRY drawables) instead of the objects set;
@@ -390,6 +396,7 @@ private:
 	std::string BuildSuffix; // lane CAH-2: the colour set of the model being built (add_model_colored), part of the mesh cache key
 	bool PendingFloorSampling = false;
 	std::vector<TextureSwap> PendingSwaps; // stop S-5015: Set_Build_Texture_Swaps, taken by the next add_model
+	bool PendingSelectionDecals = false; // lane SELWALL-1
 	std::vector<std::unique_ptr<Model>> Models;
 	std::vector<Instance> Instances;
 	struct MovementClip;

@@ -636,6 +636,7 @@ void W3DInstancer::ensure_occlusion_passes(MeshGpu &gpu, bool mark, bool color)
 		auto make = [&](int pass, int priority) {
 			W3DShaderKey k = base;
 			k.OcclusionPass = pass;
+			k.SelectionDecals = false; // lane SELWALL-1: a marker pass draws no decal
 			Ref<ShaderMaterial> m = gpu.Materials[i]->duplicate(); // the surface's textures and colours: the passes keep its alpha test
 			m->set_shader(Materials->Get_Shader(k));
 			m->set_render_priority(priority);
@@ -1193,7 +1194,28 @@ std::string W3DInstancer::Texture_Swap_Suffix(const std::vector<TextureSwap> &sw
 
 int64_t W3DInstancer::add_model(const String &model_name)
 {
-
+	if (PendingSelectionDecals)
+	{
+		// lane SELWALL-1: the wall model's meshes under their own name (after a colour set's suffix, before the texture swaps'), their factory flag on
+		PendingSelectionDecals = false;
+		const std::string savedSuffix = BuildSuffix;
+		BuildSuffix += "#sel";
+		if (Materials)
+		{
+			Materials->Set_Selection_Decals(true);
+		}
+		const int64_t id = add_model(model_name);
+		if (Materials)
+		{
+			Materials->Set_Selection_Decals(false);
+		}
+		BuildSuffix = savedSuffix;
+		return id;
+	}
+	if (PendingSwaps.empty() && !PendingFloorSampling)
+	{
+		return build_model(model_name);
+	}
 	// stop S-5015: the swapped model's meshes are cached under their own name (after a colour set's suffix: add_model_colored sets that first)
 	std::vector<TextureSwap> swaps;
 	swaps.swap(PendingSwaps);

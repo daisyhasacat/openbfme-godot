@@ -42,12 +42,14 @@ bool VeterancyCrateCollide::isValidToExecute(const Object *other) const
 	{
 		return false;
 	}
+	getObject()->logic().noteStop(limitationsStop());
 	const ExperienceTracker *xp = other->getExperienceTracker();
 	if (m_veterancy->m_isPilot)
 	{
 		getObject()->logic().noteStop(limitationsStop());
 		return false;
 	}
+	// RW 0x8C1076: getLevelsToGain returns zero for AddsOwnerVeterancy, so native validity refuses it.
 	return !GarrisonRules::isAboveTerrain(*other) && !m_veterancy->m_addsOwnerVeterancy && xp && xp->isTrainable() && xp->isAcceptingExperiencePoints() &&
 		xp->getRank() <= m_veterancy->m_affectsUpToLevel;
 }

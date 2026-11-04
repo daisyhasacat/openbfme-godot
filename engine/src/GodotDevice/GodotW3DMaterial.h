@@ -107,6 +107,9 @@ public:
 	// Separate shell world: do not overwrite the live game's global light/fog state.
 	// Set before building models; each factory owns its shader permutations.
 	void Set_Scene_Environment(const W3DObjectLighting &lighting, const MapWeather &weather) { SceneEnvironment = true; SceneLighting = lighting; SceneWeather = weather; }
+	// lane SELWALL-1: the surfaces this factory builds belong to a wall top or bridge model (W3DShaderKey::SelectionDecals: its opaque surfaces draw the
+	// selection's merge decals); off by default
+	void Set_Selection_Decals(bool on) { SelectionDecals = on; }
 	// RW 0x531C77 applied to the texture `name` (its A8R8G8B8 texels; another format stays as it is, as retail's switch leaves it), then mipmaps; cached
 	// by "#<path>#<kind>&<c0>&<c1>&<c2>" (retail names the new texture "#<texture>#<options>", RW 0x54BDE0). Invalid when the texture is missing.
 	Ref<Texture2D> Recolored_House_Texture(const std::string &name, const HouseColorParams &params, std::vector<std::string> &errors, std::vector<std::string> &notes);
@@ -153,6 +156,7 @@ private:
 	bool SceneEnvironment = false;
 	W3DObjectLighting SceneLighting;
 	MapWeather SceneWeather;
+	bool SelectionDecals = false; // lane SELWALL-1
 	std::map<std::string, Ref<Shader>> Shaders;
 	bool FloorSampling = false;
 	std::map<std::string, Ref<Texture2D>> Textures; // by virtual path
