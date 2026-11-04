@@ -10,6 +10,7 @@
 #include "ProdTestUtil.h"
 #include "PathfindTestUtil.h"
 #include "GameClient/ControlBar.h"
+#include "GameClient/HudObjects.h"
 #include "GameClient/PlacementIcons.h"
 #include "GameClient/MessageStream/PlaceEventTranslator.h"
 #include "GameClient/MessageStream/MetaEvent.h"
@@ -1185,4 +1186,87 @@ TEST_CASE("placement exit preview: production coordinates come from the exit mod
 	CHECK(rally.x == 40.0f);
 	CHECK(rally.y == 50.0f);
 	CHECK(rally.z == 0.0f);
+}
+
+TEST_CASE("self rebuild command: a destroyed outpost's HUD button queues a paid rebuild and the same object completes")
+{
+	// Both editions: RW 0x940AF0 / 0x77C3CF / 0x942D83; BFME2 ControlBarCommandProcessing.cpp,
+	// GameLogicDispatch.cpp case 1117 and ControlBarRappellerCount.cpp case 0x33. Synthetic Outpost-style data, no retail bytes.
+	BuildFx f;
+	f.load("CommandButton Rebuild\n Command = START_SELF_REPAIR\n Radial = Yes\nEnd\nCommandSet RepairSet\n 1 = Rebuild\nEnd\n"
+		"Object Repairable\n KindOf = STRUCTURE SELECTABLE IMMOBILE\n KeepSelectableWhenDead = Yes\n CommandSet = RepairSet\n BuildCost = 100\n BuildTime = 10\n"
+		" Behavior = GettingBuiltBehavior Build\n SpawnTimer = -1\n RebuildTimeSeconds = 2\n End\n"
+		" Body = ActiveBody Body\n MaxHealth = 500\n MaxHealthDamaged = 250\n MaxHealthReallyDamaged = 100\n End\n"
+		" Behavior = KeepObjectDie Keep\n End\nEnd\n");
+	f.logic->settings().repairDamageDelayLoaded = true;
+	f.logic->settings().timeAfterDamageUntilRepairAllowed = 0;
+	Object *object = f.make("Repairable", f.teamOf("Alice"));
+	REQUIRE(object);
+	const ObjectID id = object->getID();
+	auto *building = dynamic_cast<GettingBuiltBehavior *>(object->findModule("GettingBuiltBehavior"));
+	REQUIRE(building);
+	f.players.setLocalPlayer(f.alice());
+	f.select(object);
+	PinholeView view;
+	InGameUI ui;
+	MessageStream stream;
+	HudContext ctx{ *f.logic, nullptr, view, ui, stream, &f.ProdWorld::commands, {} };
+	ui.selectObject(id);
+	ControlBar bar(ctx);
+	bar.update();
+	REQUIRE(bar.sideButtons().size() == 1);
+	CHECK(bar.sideButtons()[0].state == ButtonState::Restricted); // full health
+	hit(*object, 1000.0f);
+	REQUIRE(object->isEffectivelyDead());
+	REQUIRE_FALSE(object->isDestroyed());
+	f.logic->runLogicFrame(); // attackedWithin(0) includes the damage frame itself (RW 0x68C933)
+	CHECK(HudObjects::canSelect(ctx, *object, false));
+	CHECK_FALSE(HudObjects::canSelect(ctx, *object, true)); // structures still require an individual click
+	f.load("Object OrdinaryRubble\n KindOf = STRUCTURE SELECTABLE IMMOBILE\n"
+		" Body = ActiveBody Body\n MaxHealth = 500\n MaxHealthDamaged = 250\n MaxHealthReallyDamaged = 100\n End\n Behavior = KeepObjectDie Keep\n End\nEnd\n");
+	Object *ordinary = f.make("OrdinaryRubble", f.teamOf("Alice"));
+	REQUIRE(ordinary);
+	hit(*ordinary, 1000.0f);
+	REQUIRE(ordinary->isEffectivelyDead());
+	CHECK_FALSE(HudObjects::canSelect(ctx, *ordinary, false));
+	bar.update();
+	REQUIRE(bar.sideButtons().size() == 1);
+	CHECK(bar.sideButtons()[0].state == ButtonState::Active);
+	const auto money = f.alice()->getMoney()->countMoney();
+	REQUIRE(bar.pressButton(bar.sideButtons()[0].slot, false));
+	const auto messages = stream.propagate();
+	REQUIRE(messages.size() == 1);
+	const auto order = toGameMessage(messages[0], f.alice()->getPlayerIndex());
+	CHECK(order.getType() == MSG_START_SELF_REPAIR);
+	CHECK(order.getArgumentCount() == 0);
+	CHECK_FALSE(building->isConstructing()); // the render-side button cannot change simulation state
+	f.dispatch.dispatch(order);
+	CHECK(building->isConstructing());
+	CHECK(building->rebuilding());
+	CHECK(f.alice()->getMoney()->countMoney() == money - 100u);
+	f.dispatch.dispatch(order); // duplicate input cannot charge twice
+	CHECK(f.alice()->getMoney()->countMoney() == money - 100u);
+	for (int i = 0; i < 100; ++i) f.logic->runLogicFrame();
+	CHECK(f.logic->findObjectByID(id) == object);
+	CHECK_FALSE(object->isEffectivelyDead());
+	CHECK(object->getBodyModule()->getHealth() == 500.0f);
+	CHECK_FALSE(building->isConstructing());
+
+	// Affordability is checked again by the simulation, including a stale enabled HUD button.
+	hit(*object, 1000.0f);
+	f.logic->runLogicFrame();
+	f.alice()->withdrawMoney(f.alice()->getMoney()->countMoney(), true);
+	bar.update();
+	REQUIRE(bar.sideButtons().size() == 1);
+	CHECK(bar.sideButtons()[0].state == ButtonState::CantAfford);
+	CHECK_FALSE(bar.pressButton(bar.sideButtons()[0].slot, false));
+	CHECK(stream.pending() == 0);
+	f.dispatch.dispatch(order);
+	CHECK_FALSE(building->isConstructing());
+	CHECK(f.alice()->getMoney()->countMoney() == 0u);
+	f.alice()->depositMoney(100);
+	object->setTeam(f.teamOf("Bob"));
+	f.dispatch.dispatch(order); // foreign selection cannot spend money or rebuild
+	CHECK_FALSE(building->isConstructing());
+	CHECK(f.alice()->getMoney()->countMoney() == 100u);
 }

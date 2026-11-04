@@ -340,3 +340,17 @@ TEST_CASE("logic settings: an AIData block indented after a skipped block's End 
 	std::error_code ec;
 	stdfs::remove_all(dir, ec);
 }
+
+TEST_CASE("logic settings: self repair uses the native ten second default and preserves explicit INI overrides")
+{
+	// Both editions: RW 0x642F8D; BFME2 GlobalData.cpp ctor RVA 0x23631C.
+	GameLogicSettings settings;
+	std::string error;
+	REQUIRE_MESSAGE(L::scanGameData(kGameData, settings, &error), error);
+	CHECK(settings.repairDamageDelayLoaded);
+	CHECK(settings.timeAfterDamageUntilRepairAllowed == 10u);
+	REQUIRE_MESSAGE(L::scanGameData(std::string(kGameData) + "GameData\n TimeAfterDamageUntilRepairAllowed = 0\nEnd\n", settings, &error), error);
+	CHECK(settings.timeAfterDamageUntilRepairAllowed == 0u);
+	REQUIRE_MESSAGE(L::scanGameData(kGameData, settings, &error), error);
+	CHECK(settings.timeAfterDamageUntilRepairAllowed == 0u); // a later block omitting the field preserves the explicit value
+}

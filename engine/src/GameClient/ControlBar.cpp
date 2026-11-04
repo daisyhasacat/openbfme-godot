@@ -180,6 +180,15 @@ ButtonState ControlBar::evaluate(const CommandButton &b, Object &obj, bool &comm
 	}
 	switch (b.m_command)
 	{
+		case GUI_COMMAND_START_SELF_REPAIR:
+		{
+			// Both editions: RW 0x942D83; BFME2 ControlBarRappellerCount.cpp case 0x33.
+			const auto *building = dynamic_cast<const GettingBuiltBehavior *>(obj.findModule("GettingBuiltBehavior"));
+			if (!building) return ButtonState::Hidden;
+			if (building->canRebuild()) return building->canAffordRebuild(*player) ? ButtonState::Active : ButtonState::CantAfford;
+			if (obj.isUnderConstruction()) return ButtonState::Hidden;
+			return building->isConstructing() ? ButtonState::Purchased : ButtonState::Restricted;
+		}
 		case GUI_COMMAND_REVIVE:
 			return ButtonState::Enabled; // record-specific rules follow in reviveButton; these common gates run first
 		case GUI_COMMAND_UNIT_BUILD:

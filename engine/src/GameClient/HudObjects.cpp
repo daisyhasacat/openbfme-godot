@@ -190,8 +190,9 @@ Object *selectionRepresentative(Object &obj)
 
 bool canSelect(const HudContext &ctx, const Object &obj, bool dragSelecting)
 {
-	// ZH CanSelectDrawableZeroHourReference, in its order
-	if (isEffectivelyDead(obj) && !obj.isKindOfName("ALWAYS_SELECTABLE"))
+	// BFME's KeepSelectableWhenDead (RW 0x68DE58; BFME2 Object::isSelectable), also used by pickType below.
+	// Outpost rubble must reach the same selection rules as the living structure.
+	if (isEffectivelyDead(obj) && !obj.isKindOfName("ALWAYS_SELECTABLE") && !keepsSelectableWhenDead(obj))
 	{
 		return false;
 	}

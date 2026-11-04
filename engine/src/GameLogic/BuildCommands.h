@@ -55,6 +55,7 @@ private:
 	bool dozerCancel(GameLogic &logic, const GameMessage &m);
 	bool resumeConstruction(GameLogic &logic, const GameMessage &m);
 	bool repair(GameLogic &logic, const GameMessage &m);
+	bool selfRepair(GameLogic &logic, const GameMessage &m);
 	void refuse(const GameMessage &m, const std::string &why);
 
 	Stats m_stats;

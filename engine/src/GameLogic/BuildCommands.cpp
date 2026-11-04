@@ -63,7 +63,29 @@ void BuildCommands::registerHandlers(GameLogicDispatch &dispatcher)
 	dispatcher.registerHandler(MSG_DOZER_CANCEL_CONSTRUCT, "BUILD-1", [this](GameLogic &l, const GameMessage &m) { return dozerCancel(l, m); });
 	dispatcher.registerHandler(MSG_RESUME_CONSTRUCTION, "BUILD-1", [this](GameLogic &l, const GameMessage &m) { return resumeConstruction(l, m); });
 	dispatcher.registerHandler(MSG_DO_REPAIR, "BUILD-1", [this](GameLogic &l, const GameMessage &m) { return repair(l, m); });
+	dispatcher.registerHandler(MSG_START_SELF_REPAIR, "BUILD-1", [this](GameLogic &l, const GameMessage &m) { return selfRepair(l, m); });
 	dispatcher.registerHandler(MSG_WALL_HUB_CONSTRUCT_SPAN, "BUILD-2", [this](GameLogic &l, const GameMessage &m) { return wallSpan(l, m); });
+}
+
+bool BuildCommands::selfRepair(GameLogic &logic, const GameMessage &m)
+{
+	// Both editions: RW 0x77C3CF..0x77C423; BFME2 GameLogicDispatch.cpp case 1117.
+	// The owned selection's first object supplies interface slot 8 (eligibility), 7 (price), then 4 (start, not forced).
+	if (m.getArgumentCount() != 0 || !logic.players().getNthPlayer(m.getPlayerIndex()))
+	{
+		++m_stats.rejected;
+		return false;
+	}
+	const auto selection = AICommands::selection(logic, m.getPlayerIndex());
+	Object *object = selection.empty() ? nullptr : logic.findObjectByID(selection.front());
+	auto *building = object ? dynamic_cast<GettingBuiltBehavior *>(object->findModule("GettingBuiltBehavior")) : nullptr;
+	if (!building || !building->canRebuild() || !building->canAffordRebuild(*object->getControllingPlayer()))
+	{
+		refuse(m, "selected structure cannot rebuild or cannot afford its rebuild cost");
+		return true;
+	}
+	building->startConstruction(false); // RW 0x8566DF: charge once and rebuild through the existing update
+	return true;
 }
 
 bool BuildCommands::foundationConstruct(GameLogic &logic, const GameMessage &m)

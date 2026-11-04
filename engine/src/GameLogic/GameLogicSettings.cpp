@@ -407,6 +407,14 @@ public:
 	{
 		m_env.fileSystem = fs;
 		m_state.values = start;
+		if (!m_state.values.repairDamageDelayLoaded)
+		{
+			// Native constructor default, both editions: RW 0x642F8D writes GlobalData +0xA88 = 10;
+			// BFME2 GlobalData.cpp ctor RVA 0x23631C initializes m_timeAfterDamageUntilRepairAllowed(0xa).
+			// Retail GameData omits this optional field. Explicit INI values still override it below.
+			m_state.values.timeAfterDamageUntilRepairAllowed = 10;
+			m_state.values.repairDamageDelayLoaded = true;
+		}
 		if (aiDataOnly)
 		{
 			// recording stubs only: the world's own map.ini pass parses the Weapon / Locomotor / Armor / DamageFX / FX blocks into their stores, a second
@@ -538,7 +546,6 @@ bool finish(Load &l, unsigned blockBit, const char *blockName, const std::vector
 	}
 	out.builderMoveLoaded = (l.state().seen & SEEN_BUILDERMOVE) != 0; // lane BUILD-3
 	out.builderFadeLoaded = (l.state().seen & (SEEN_BUILDERFADE_OUT | SEEN_BUILDERFADE_IN)) == (SEEN_BUILDERFADE_OUT | SEEN_BUILDERFADE_IN); // lane PORTERFOG-1
-	out.repairDamageDelayLoaded = (l.state().seen & SEEN_REPAIR_DELAY) != 0;
 	out.guardRulesLoaded = (l.state().seen & (SEEN_GUARD_CHASE | SEEN_GUARD_SCAN | SEEN_GUARD_RETURN)) == (SEEN_GUARD_CHASE | SEEN_GUARD_SCAN | SEEN_GUARD_RETURN); // lane PLAY-4
 	out.sellPercentageLoaded = (l.state().seen & SEEN_SELL) != 0; // lane FACT-A
 	if ((l.state().seen & (SEEN_VSTRUCT | SEEN_VUNIT)) == (SEEN_VSTRUCT | SEEN_VUNIT))

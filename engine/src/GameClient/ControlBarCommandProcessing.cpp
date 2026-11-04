@@ -87,6 +87,10 @@ bool ControlBar::pressButton(int slot, bool inPalantir)
 	}
 	switch (b.m_command)
 	{
+		case GUI_COMMAND_START_SELF_REPAIR:
+			// Both editions: RW 0x940AF0; BFME2 ControlBarCommandProcessing.cpp case 0x33.
+			m_ctx.stream.append(MSG_START_SELF_REPAIR); // no arguments; the logic uses the selection
+			return true;
 		case GUI_COMMAND_UNIT_BUILD:
 		{
 			const ThingTemplate *tt = b.getThingTemplate();

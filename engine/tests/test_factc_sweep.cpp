@@ -2057,3 +2057,33 @@ TEST_CASE("Buckland outpost capture: Boromir and a battalion raise the flag from
 		CHECK(flag->getControllingPlayer() == h.rig.local);
 	}
 }
+
+TEST_CASE("outpost rebuild retail: selecting rubble and pressing self repair rebuilds the captured structure")
+{
+	if (!haveWorld("outpost rebuild retail")) return;
+	HudRig h(shared(), "FactionMen");
+	const auto context = h.hud->enterContext();
+	creeptest::removeCreeps(h.logic());
+	Object *outpost = h.makeBuilt("Outpost", 1800.0f, 1200.0f);
+	REQUIRE(outpost);
+	const ObjectID id = outpost->getID();
+	outpost->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
+	h.frames(55); // native default repair delay is 10 seconds (RW 0x642F8D), inclusive of the damage frame
+	REQUIRE(h.logic().findObjectByID(id) == outpost);
+	REQUIRE(outpost->isEffectivelyDead());
+	REQUIRE_FALSE(outpost->isDestroyed());
+	REQUIRE(h.select(outpost));
+	ControlBarButton button;
+	REQUIRE(h.findButton("Command_StartSelfRepair", button));
+	CHECK(button.state == ButtonState::Active);
+	const auto purse = h.purse();
+	const int cost = (int)BuildAssistant::calcCostToBuild(*outpost->getTemplate(), h.rig.local, nullptr, -1);
+	REQUIRE(h.hud->controlBar().pressButton(button.slot, button.inPalantir));
+	h.frames(1);
+	CHECK(h.paidSince(purse) == cost);
+	h.frames(300); // retail RebuildTimeSeconds = 40; allow the completion update as well
+	CHECK(h.logic().findObjectByID(id) == outpost);
+	CHECK_FALSE(outpost->isEffectivelyDead());
+	CHECK_FALSE(outpost->isUnderConstruction());
+	CHECK(outpost->getBodyModule()->getHealth() == outpost->getBodyModule()->getMaxHealth());
+}
