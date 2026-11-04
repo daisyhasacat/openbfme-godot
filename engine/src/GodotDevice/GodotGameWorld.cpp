@@ -2941,7 +2941,7 @@ void GameWorld::advance(double delta)
 	{
 		heldClientWork();
 	}
-	m_lastLogicFrames = m_netRejoining || spectatorCatchingUp || spectatorFailed ? 0 : m_game->advance(dt);
+	m_lastLogicFrames = m_netRejoining || spectatorCatchingUp || spectatorFailed ? 0 : m_game->advance(dt, delta);
 	if (m_replayPlayback && m_replayPlayback->hasMismatch())
 	{
 		m_paused = true;

@@ -1058,8 +1058,9 @@ bool LiveGame::campaignCarryoverOptions(const LinearCampaign &campaign, int miss
 	return true;
 }
 
-int LiveGame::advance(double seconds)
+int LiveGame::advance(double seconds, double wallSeconds)
 {
+	updatePresentationRate(seconds, wallSeconds);
 	publishScriptLocalView(); // lane BFME2CAMP1 (review): the HUD's view for the frames this call requests (main thread)
 	const auto worldContext = m_world.enterContext(); // this world's stores and hooks are the live ones for the whole call (this thread's context)
 	NumericState::normalizeFloatingPointEnvironment(); // simulation thread entry (the host may have changed the environment since the last call)
@@ -1412,6 +1413,8 @@ bool LiveGame::loadSnapshot(const std::vector<std::uint8_t> &bytes, std::string 
 		std::lock_guard<std::mutex> lock(m_pubMutex);
 		m_published.reset();
 		m_publishedPrev.reset();
+		m_presentationHistory.clear();
+		m_presentationRate = 1.0;
 		m_publishedScriptRequests.clear();
 		m_frameHashes.clear();
 	}
@@ -1552,6 +1555,7 @@ void LiveGame::publish(std::shared_ptr<const FrameCompletion> completion)
 	}
 	m_publishedPrev = m_published;
 	m_published = snap;
+	keepPresentationSnapshotLocked(snap);
 	for (ScriptClientRequest &r : scriptRequests)
 	{
 		m_publishedScriptRequests.push_back(std::move(r));

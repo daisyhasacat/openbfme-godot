@@ -228,7 +228,8 @@ public:
 	// refreshes their interpolated poses. Returns the logic frames run.
 	// the milestones of Options::progress with what runs before each, for reports and tests
 	static std::vector<std::pair<int, std::string>> progressMilestones();
-	int advance(double seconds);
+	// wallSeconds supplies the unscaled render delta at accelerated speed; omitted callers run at normal speed.
+	int advance(double seconds, double wallSeconds = -1.0);
 	// lane MP-1: installs (or with null removes) the frame driver; the driver must outlive its installation. SMOOTH-1 (review r4): called by the protocol
 	// owner (the thread that calls advance); it first drains the previous driver (every batch already queued runs, its completions are consumed by that
 	// driver: complete batches only, so this never waits for the network), then takes the new driver's capture spec and starts its cursors at the logic's
@@ -502,6 +503,8 @@ private:
 	// ---- lane SMOOTH-1: the simulation owner, the publication and the presentation ----
 	void runFrameOwned(const WorkItem &item); ///< one logic frame, its hash, its snapshot and events published (on the owner's thread)
 	void publish(std::shared_ptr<const FrameCompletion> completion = nullptr); ///< the completed state as a snapshot plus the events since the last one
+	void updatePresentationRate(double seconds, double wallSeconds);
+	void keepPresentationSnapshotLocked(const std::shared_ptr<const LogicSnapshot> &snapshot);
 	void present(double seconds);         ///< the render side: events, animations, poses from the presented snapshot
 	void endWindowForPresent();           ///< RENDERWAIT-1: the render thread's events made in its client window are taken, then the window ends
 	// RENDERWAIT-1 r2 (Sol r1 #1): pending input apart from the simulation's command list. What the render thread appended to commands() while it held
@@ -521,6 +524,8 @@ private:
 	mutable std::mutex m_pubMutex;
 	mutable std::condition_variable m_pubCv;
 	std::shared_ptr<const LogicSnapshot> m_published, m_publishedPrev; ///< guarded by m_pubMutex
+	std::deque<std::shared_ptr<const LogicSnapshot>> m_presentationHistory; ///< guarded; bounded delayed-presentation snapshots
+	double m_presentationRate = 1.0; ///< guarded for publication; simulation seconds per wall second, presentation only
 	std::vector<ClientEvent> m_publishedEvents;                         ///< guarded: published, not yet taken by the render side
 	std::vector<CheatMode::LogEntry> m_publishedCheatLines;               ///< guarded: lane CHEAT-1, published, not yet taken
 	std::vector<ScriptClientRequest> m_publishedScriptRequests;         ///< guarded: lane SCRIPT-1, published, not yet taken

@@ -91,14 +91,41 @@ std::uint32_t LiveGame::msUntilNextFrame() const
 	return ms > 0.0 ? (std::uint32_t)ms : 0u;
 }
 
+// Host presentation only (both editions): no authoritative clocks, frames, RNG or rules change.
+void LiveGame::updatePresentationRate(double seconds, double wallSeconds)
+{
+	if (seconds <= 0.0) return; // a presentation-only advance retains the current speed
+	const double rate = wallSeconds > 0.0 ? seconds / wallSeconds : 1.0;
+	const std::unique_lock<std::mutex> lock = lockPublication("presentationRate");
+	m_presentationRate = std::isfinite(rate) && rate > 0.0 ? rate : 1.0;
+}
+
+void LiveGame::keepPresentationSnapshotLocked(const std::shared_ptr<const LogicSnapshot> &snapshot)
+{
+	// A view switch, rewind or replacement of the same frame must not leave snapshots of the old view/state in the buffer.
+	if (!m_presentationHistory.empty() && snapshot->frame <= m_presentationHistory.back()->frame)
+		m_presentationHistory.clear();
+	m_presentationHistory.push_back(snapshot);
+	// At 30x the normal 30 ms wall-clock delay spans 4.5 logic frames. Retain the adaptive margin too, bounded by the queued-frame budget.
+	const double delayFrames = m_options.presentationDelaySeconds > 0.0 ? std::min((double)kMaxQueuedBatches,
+		(m_options.presentationDelaySeconds * LOGICFRAMES_PER_SECOND + kMaxExtraDelayFrames) * m_presentationRate) : 0.0;
+	const size_t limit = std::max(size_t(2), (size_t)std::ceil(delayFrames) + 1);
+	while (m_presentationHistory.size() > limit) m_presentationHistory.pop_front();
+}
+
 void LiveGame::present(double seconds)
 {
 	// the render side (the caller's thread): take what was published, apply the events of the presented frames in order, pose from one snapshot
 	std::shared_ptr<const LogicSnapshot> latest, prev;
+	std::vector<std::shared_ptr<const LogicSnapshot>> history;
+	double rate;
 	{
 		const std::unique_lock<std::mutex> lock = lockPublication("present");
 		latest = m_published;
 		prev = m_publishedPrev;
+		if (m_options.presentationDelaySeconds > 0.0)
+			history.assign(m_presentationHistory.begin(), m_presentationHistory.end());
+		rate = m_presentationRate;
 		for (ClientEvent &e : m_publishedEvents)
 		{
 			m_heldEvents.push_back(std::move(e));
@@ -123,7 +150,9 @@ void LiveGame::present(double seconds)
 	const bool delayed = !m_options.sixTickPacing && m_options.presentationDelaySeconds > 0.0;
 	if (delayed)
 	{
-		a -= m_options.presentationDelaySeconds * (double)LOGICFRAMES_PER_SECOND + m_extraDelayFrames;
+		// The configured delay and adaptive margin are wall time, even when a skirmish runs at 30x.
+		a -= std::min((double)kMaxQueuedBatches,
+			(m_options.presentationDelaySeconds * (double)LOGICFRAMES_PER_SECOND + m_extraDelayFrames) * rate);
 		while (a < 0.0 && target > 0)
 		{
 			a += 1.0;
@@ -166,7 +195,7 @@ void LiveGame::present(double seconds)
 		}
 		else
 		{
-			m_extraDelayFrames = std::max(0.0, m_extraDelayFrames - step * kDelayDecayPerFrame);
+			m_extraDelayFrames = std::max(0.0, m_extraDelayFrames - (step / rate) * kDelayDecayPerFrame);
 		}
 		double whole = std::floor(m_presentTime);
 		target = (UnsignedInt)whole;
@@ -176,7 +205,12 @@ void LiveGame::present(double seconds)
 			target = latest->frame; // exactly the end of the latest frame
 			a = 1.0;
 		}
-		if (latest->frame == target)
+		const auto found = std::find_if(history.rbegin(), history.rend(), [target](const auto &snapshot) { return snapshot->frame == target; });
+		if (found != history.rend())
+		{
+			shown = *found;
+		}
+		else if (latest->frame == target)
 		{
 			shown = latest;
 		}
@@ -184,9 +218,9 @@ void LiveGame::present(double seconds)
 		{
 			shown = prev;
 		}
-		else if (prev && target < prev->frame)
+		else if (!history.empty() && target < history.front()->frame)
 		{
-			shown = prev; // older than what is kept: the start of the oldest kept frame
+			shown = history.front(); // startup or an increased speed: the start of the oldest kept frame
 			a = 0.0;
 		}
 		else
