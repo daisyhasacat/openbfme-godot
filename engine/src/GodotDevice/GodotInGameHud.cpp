@@ -937,6 +937,7 @@ void HudDevice::drawPlaceholder(const AptCanvasOp &op, RID item)
 			storeImage.image = hud->storeImageForClip(op.path);
 			img = storeImage.image.empty() ? img : &storeImage;
 		}
+		if (hud->spellStore() && op.path.find("SpellStore") != std::string::npos) fprintf(stderr, "DBGIMG %s %s -> %s a=%.2f\n", op.symbolName.c_str(), op.path.c_str(), img ? img->image.c_str() : "(none)", op.placeholderColor[3]);
 		AptPalantir::NativeImage greyed;
 		if (img && op.symbolName == "RenderImageDisabled")
 		{
