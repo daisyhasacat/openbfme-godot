@@ -99,6 +99,8 @@ workspace/agents/
 
 # Rebuild: engine build tree, Godot import cache, built GDExtension binaries
 /engine/build/
+# Per-platform CMake/Xcode output trees, including iOS device and simulator builds.
+/engine/build-*/
 /godot/.godot/
 /godot/bin/
 /launcher/.godot/
@@ -260,3 +262,6 @@ launcher/scripts/crash_client_key.gd
 
 # Godot-generated resource ids
 *.uid
+# Online service compiler output and local runtime state.
+/services/online/.build/
+/services/online/.state/

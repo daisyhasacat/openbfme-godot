@@ -24,6 +24,7 @@
 #include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "GameLogic/SnapshotXfer.h"
 
+#include <cmath>
 #include <map>
 #include <set>
 
@@ -303,8 +304,6 @@ void xferBrain(Xfer &x, AIBrainState &b, RequestTable &table, int version)
 	for (AITarget &t : b.targets)
 	{
 		x.xferInt(&t.type);
-		x.xferInt(&t.defenseSize);
-		AIXfer::inRange(t.defenseSize, 0, 2, "skirmish ai: a defensive target size");
 		x.xferUnsignedInt(&t.frame);
 		AIXfer::coord(x, t.position);
 		x.xferBool(&t.inactive);
@@ -314,11 +313,20 @@ void xferBrain(Xfer &x, AIBrainState &b, RequestTable &table, int version)
 		x.xferReal(&t.radius);
 		AIXfer::coord(x, t.finderPosition);
 		x.xferReal(&t.threat);
+		if (version >= 5)
+		{
+			x.xferInt(&t.defenseSize); // lane RAI-DEF: + 0x2C
+		}
+		else if (x.isLoading())
+		{
+			t.defenseSize = 0;
+		}
 		x.xferObjectID(&t.object);
 		x.xferUnsignedInt(&t.id);
 		if (x.isLoading())
 		{
 			AIXfer::inRange(t.type, 0, 4, "skirmish ai: a target's AITARGET"); // RW 0xDA1208: 5 names
+			AIXfer::inRange(t.defenseSize, 0, 2, "skirmish ai: a defensive target size");
 		}
 	}
 	x.xferUnsignedInt(&b.nextTargetId);
@@ -339,8 +347,9 @@ void xferBrain(Xfer &x, AIBrainState &b, RequestTable &table, int version)
 		{
 			// an offensive prototype 0 .. 7 or the expansion prototype 8 (version 4) by its name, or a targetless one (100 + 0 .. 10, AITacticalAI.cpp)
 			static const char *const kOffensive[] = { "SimpleAttack", "FormationAttack", "FlankAttack", "PincerAttack", "FeintAttack",
-				"AIBasePenetrationTroopsTactic", "SimpleSiege", "SiegeGates", "SimpleDefense", "SimpleExpansion" };
-			const int prototypes = version >= 5 ? 10 : 8;
+				"AIBasePenetrationTroopsTactic", "SimpleSiege", "SiegeGates", "SimpleExpansion", "SimpleDefense" };
+			const int prototypes = version >= 5 ? 10 : version >= 4 ? 9 : 8;
+
 			if (!(tac.kindIndex >= 0 && tac.kindIndex < prototypes && tac.kind == kOffensive[tac.kindIndex]) && !(tac.kindIndex >= 100 && tac.kindIndex < 111))
 			{
 				throw XferException("skirmish ai: a tactic '" + tac.kind + "' of the prototype " + std::to_string(tac.kindIndex));
@@ -359,11 +368,23 @@ void xferBrain(Xfer &x, AIBrainState &b, RequestTable &table, int version)
 			x.xferBool(&team.wantsMembers);
 			x.xferBool(&team.handedOver);
 			AIXfer::ids(x, team.members);
-			x.xferBool(&team.hasRecruitOrigin);
-			AIXfer::coord(x, team.recruitOrigin);
 			AIXfer::coord(x, team.lastPosition);
 			x.xferInt(&team.index);
 			x.xferInt(&team.idleFrames);
+			if (version >= 5)
+			{
+				x.xferBool(&team.hasRecruitOrigin); // lane RAI-DEF: + 0x324 / + 0x328
+				AIXfer::coord(x, team.recruitOrigin);
+				if (x.isLoading() && team.hasRecruitOrigin &&
+					(!std::isfinite(team.recruitOrigin.x) || !std::isfinite(team.recruitOrigin.y) || !std::isfinite(team.recruitOrigin.z)))
+				{
+					throw XferException("skirmish ai: a tactic team's recruit origin is not finite");
+				}
+			}
+			else if (x.isLoading())
+			{
+				team.hasRecruitOrigin = false;
+			}
 			if (x.isLoading())
 			{
 				AIXfer::inRange(team.type, 0, 4, "skirmish ai: a tactic team's AITARGET");
@@ -430,33 +451,10 @@ void xferBrain(Xfer &x, AIBrainState &b, RequestTable &table, int version)
 }
 } // namespace
 
-void AIPositionSampler::xfer(Xfer &x)
-{
-	x.xferReal(&m_padding);
-	AIXfer::ids(x, m_members);
-	x.xferVectorSize(m_groups, 1);
-	for (Group &g : m_groups)
-	{
-		x.xferReal(&g.radius);
-		AIXfer::coord(x, g.center);
-		x.xferBool(&g.selected);
-		AIXfer::ids(x, g.members);
-		if (g.members.empty()) throw XferException("skirmish ai: empty spatial group");
-	}
-	if (x.isLoading())
-	{
-		std::vector<ObjectID> grouped;
-		for (const Group &g : m_groups) grouped.insert(grouped.end(), g.members.begin(), g.members.end());
-		auto members = m_members;
-		std::sort(members.begin(), members.end());
-		std::sort(grouped.begin(), grouped.end());
-		if (members != grouped) throw XferException("skirmish ai: spatial groups differ from registrations");
-	}
-}
-
 void AIStatCollector::xfer(Xfer &x)
 {
-	XferVersion v{ 3, 3 }; // version 3: preserve registration order and spatial groups
+	XferVersion v{ 4, 4 }; // merged sampler layout includes pending registrations
+
 	x.xferVersion(v);
 	for (std::vector<ObjectID> *l : { &m_army, &m_dozers, &m_ships, &m_structures, &m_pads, &m_economy, &m_heroes })
 	{
@@ -466,16 +464,27 @@ void AIStatCollector::xfer(Xfer &x)
 		x.xferAsciiString(&k);
 		x.xferInt(&n);
 	});
-	m_positions.xfer(x);
+	if (v.current >= 3)
+	{
+		AIXfer::ids(x, m_pendingPositions); // the sampler adds waiting for their object's position (the header's inference)
+		m_positions.xfer(x);
+	}
+	else if (x.isLoading())
+	{
+		m_pendingPositions.clear();
+		m_positions = AIPositionSampler{};
+	}
+
 	x.xferUnsignedInt(&m_reserve);
 	x.xferUnsignedInt(&m_reserveTarget);
 }
 
 void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 {
-	// Version 5 combines source defensive and expansion tactics with local extension state.
-	// The two branches used incompatible version 4 layouts.
-	XferVersion v{ 5, 5 };
+	// Version 7 combines upstream enemy-cache state with fork extension state.
+	// Older fork and upstream layouts share version numbers but differ in bytes.
+	XferVersion v{ 7, 7 };
+
 	x.xferVersion(v);
 	const bool loading = x.isLoading();
 	bool started = loading ? false : m_started;
@@ -667,6 +676,15 @@ void SkirmishAIManager::xferState(Xfer &x, bool hooksInstalled)
 			x.xferAsciiString(&ai->dozerTemplate);
 			x.xferUnsignedInt(&ai->shutdownFrame);
 			x.xferUnsignedInt(&ai->retryTimer);
+			if (v.current >= 6)
+			{
+				x.xferInt(&ai->enemyIndex);        // lane RAI-POW-2: the AIPlayer's enemy cache (RW 0x8F47EB)
+				x.xferUnsignedInt(&ai->enemyRefreshFrame);
+				if (x.isLoading())
+				{
+					AIXfer::inRange(ai->enemyIndex, -1, m_logic.players().getPlayerCount() - 1, "skirmish ai: the cached enemy player of an AI");
+				}
+			}
 			AIXfer::inRange(ai->playerIndex, 0, m_logic.players().getPlayerCount() - 1, "skirmish ai: the player of an AI");
 			const Player *player = m_logic.players().getNthPlayer(ai->playerIndex);
 			if (!player)
@@ -793,6 +811,11 @@ void SkirmishAIManager::checkLoaded() const
 			AIXfer::issued(id, "skirmish ai: siege escort id");
 		for (ObjectID id : b.siegeUnits)
 			AIXfer::issued(id, "skirmish ai: siege unit id");
+		if (kv.second->enemyIndex != -1)
+		{
+			player(kv.second->enemyIndex, "skirmish ai: an AI's cached enemy player");
+		}
+
 		if (b.currentEnemy != -1)
 		{
 			player(b.currentEnemy, "skirmish ai: the current enemy");
@@ -949,7 +972,8 @@ void SkirmishAIManager::checkLoaded() const
 			AIXfer::inRange(i, 0, (long long)s.units.heroNames.size() - 1, "skirmish ai: a built hero");
 		}
 		// a tactic's progress (AITacticalAI.cpp): FormationAttack's state 0 .. 3, FlankAttack's next waypoint 0 .. its waypoint count, PincerAttack's two
-		// teams' waypoint codes ({ 0, 1, 3, 4 } and { 0, 2, 3, 4 }, RW 0x9B3EAB); the other prototypes keep both at 0
+		// teams' waypoint codes ({ 0, 1, 3, 4 } and { 0, 2, 3, 4 }, RW 0x9B3EAB), SimpleSiege's 0 .. 3 and SiegeGates' 0 .. 1 (lane RAI-SIEGE); the other
+		// prototypes keep both at 0
 		// lane SAVE-4e (closed sets): the targets', tactics' and attack records' ids are unique and below their counters (the next id each issues)
 		std::set<std::uint32_t> targetIds, tacticIds;
 		for (const AITarget &tg : ai.brain.targets)
@@ -999,6 +1023,16 @@ void SkirmishAIManager::checkLoaded() const
 				{
 					throw XferException(what + "s " + std::to_string(tac.step) + " / " + std::to_string(tac.step2) + " are not PincerAttack's codes");
 				}
+				break;
+			case 6:
+				// lane RAI-SIEGE: SimpleSiege's stages 0 (the wall target) .. 3 (team 1 idle, RW 0x9B3548); step2 is unused
+				AIXfer::inRange(tac.step, 0, 3, what.c_str());
+				AIXfer::inRange(tac.step2, 0, 0, what.c_str());
+				break;
+			case 7:
+				// lane RAI-SIEGE: SiegeGates' 0 (the wall target, RW 0x9B31E6) or 1 (every team sent at the target); step2 is unused
+				AIXfer::inRange(tac.step, 0, 1, what.c_str());
+				AIXfer::inRange(tac.step2, 0, 0, what.c_str());
 				break;
 			case 8:
 				// lane AIEXPAND-1: SimpleExpansion's stages 0 .. 4 (RW 0x9B52BD); a running one has its request from stage 1 on (made with the move to 1, RW 0x9B51E9);

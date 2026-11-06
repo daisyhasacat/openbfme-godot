@@ -4,6 +4,7 @@
 #include "Common/BfmeGame.h"
 #include "GodotDevice/GodotGammaComposite.h"
 #include "GodotDevice/GodotMapTerrain.h"
+#include "GodotDevice/GodotShaderBudget.h"
 
 #include "Common/ArchiveFileSystem.h"
 #include "Common/AsciiString.h"
@@ -1391,7 +1392,7 @@ Node3D *MapTerrainBuilder::build_internal(const Ref<RetailFileSystem> &fsRef, co
 				if (sh->get_code().contains(mixMode))
 				{
 					additive.instantiate();
-					additive->set_code(sh->get_code().replace(mixMode, "render_mode unshaded, blend_add"));
+					SetShaderCode(additive.ptr(), sh->get_code().replace(mixMode, "render_mode unshaded, blend_add"), "Additive river shader");
 				}
 				else
 				{

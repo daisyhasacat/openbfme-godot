@@ -31,6 +31,7 @@ set(OPENBFME_SCRIPT1_TESTS
     tests/test_shell_scene_effects.cpp
     tests/test_script1_live.cpp
     tests/test_script2.cpp
+    tests/test_teamunits1.cpp
     tests/test_script2_angmar.cpp
     tests/test_script2_client.cpp
     tests/test_script3.cpp

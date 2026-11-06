@@ -3,6 +3,7 @@
 // TerrainTrees. See GameLogic/Map/TerrainTrees.h for the target facts. Lane SPELL-3.
 
 #include "GameLogic/Map/TerrainTrees.h"
+#include "GameLogic/System/ShroudManager.h"
 
 #include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
@@ -15,7 +16,6 @@
 #include "GameLogic/Module/NotifyCrushModules.h"
 #include "GameLogic/Module/SquishCollide.h"
 #include "GameLogic/SimMath.h"
-#include "GameLogic/System/ShroudManager.h"
 
 #include <stdexcept>
 #include <variant>
@@ -66,8 +66,7 @@ TerrainTrees::TerrainTrees(GameLogic &logic) : m_logic(logic)
 void TerrainTrees::reset()
 {
 	m_records.clear();
-	m_groups = AIPositionSampler{};
-	m_groupStateChanged = false;
+	m_clusters.clear();
 	m_events.clear();
 	m_heads.assign((size_t)BUCKETS * BUCKETS, (std::int16_t)-1);
 	m_hasExtent = false;
@@ -94,6 +93,38 @@ void TerrainTrees::setExtent(float loX, float loY, float hiX, float hiY)
 	m_hi[0] = hiX;
 	m_hi[1] = hiY;
 	m_hasExtent = true;
+}
+
+// ---- lane RAI-POW-3: the AI's tree-cluster index (see the header) -------------------------------------------------------------------------
+
+bool TerrainTrees::anyClusterUsed() const
+{
+	for (const Cluster &c : m_clusters.groups())
+	{
+		if (c.used)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+// RW 0x683C2D: register the record (+ 0x04) and insert it (RW 0x683807 / 0x683055 / 0x6831BE, the record copies of RW 0x8E42C8 / 0x8E4082 / 0x8E41EB);
+// the sampler's id is the record's index in `from`
+void TerrainTrees::insertCluster(int recordIndex, const std::vector<Record> &from)
+{
+	m_clusters.add((ObjectID)recordIndex, kClusterPadding, [&from](ObjectID id) { return from[(size_t)id].position; });
+}
+
+// RW 0x683D53: the index over the map's tree list, rebuilt from the records as the map made them (a cleared record keeps its place: RW 0x67D3C2)
+void TerrainTrees::rebuildClusters(const std::vector<Record> &from)
+{
+	// the caller has already put the map's records back into m_records (TerrainTrees::xfer); `from` names them
+	m_clusters.clear(); // RW 0x682F3D
+	for (size_t i = 0; i < from.size(); ++i)
+	{
+		insertCluster((int)i, from);
+	}
 }
 
 // RW 0x67D400
@@ -132,9 +163,7 @@ bool TerrainTrees::addTree(const ThingTemplate &tmpl, const Coord3D &position, s
 	r.grabbable = boolField(tmpl, "IsGrabbable");     // + 0x5FB
 	r.harvestable = boolField(tmpl, "IsHarvestable"); // + 0x5FC
 	m_records.push_back(r);
-	// DONOR TerrainLogicCtor.cpp / TerrainLogicXfer.cpp:addTree: group every tree record with padding 100.
-	m_groups.add((ObjectID)(m_records.size() - 1), 100.0f, [&](ObjectID key) { return m_records.at(key).position; });
-	if (m_logic.getFrame() != 0) m_groupStateChanged = true;
+	insertCluster((int)m_records.size() - 1, m_records); // RW 0x683F17 .. 0x683F20: the record joins the tree cluster index
 	return true;
 }
 
@@ -308,29 +337,6 @@ int TerrainTrees::harvestTree(Record &tree, int amount)
 	return taken;
 }
 
-bool TerrainTrees::selectUnselectedGroup(int player, Coord3D &position)
-{
-	// DONOR Common/AISpellBookTreeKiller_shouldActivate.cpp (5D7766), TARGET RW9E70B6, S-001 caveat.
-	if (!m_logic.shroud())
-		return false;
-	AIPositionSampler::Group *best = nullptr;
-	size_t count = 0;
-	for (auto &group : m_groups.groups())
-	{
-		if (group.selected || group.members.size() <= count)
-			continue;
-		if (m_logic.shroud()->getStatusAt(player, group.center.x, group.center.y) == CELLSHROUD_SHROUDED)
-			continue;
-		best = &group;
-		count = group.members.size();
-	}
-	if (!best)
-		return false;
-	best->selected = true;
-	m_groupStateChanged = true;
-	position = best->center;
-	return true;
-}
 // RW 0x6858BE (lane TREES1)
 int TerrainTrees::unitMoved(const Object &obj)
 {
@@ -475,10 +481,22 @@ void TerrainTrees::crc(StateHasher &h) const
 		h.addFloat(r.toppleDirection.y);
 		h.addI32(r.value);
 	}
-	if (m_changed || m_groupStateChanged)
+	if (anyClusterUsed()) // lane RAI-POW-3: + 0x584's used bytes, hashed once a tree killer marked a cluster (games that never cast it keep their hash)
 	{
-		h.addU32(0x54524750u);
-		m_groups.crc(h);
+		h.addU32(0x584u);
+		std::uint32_t used = 0;
+		for (const Cluster &c : m_clusters.groups())
+		{
+			used += c.used ? 1u : 0u;
+		}
+		h.addU32(used);
+		for (size_t i = 0; i < m_clusters.groups().size(); ++i)
+		{
+			if (m_clusters.groups()[i].used)
+			{
+				h.addU32((std::uint32_t)i);
+			}
+		}
 	}
 }
 
@@ -495,8 +513,10 @@ void TerrainTrees::crc(StateHasher &h) const
 void TerrainTrees::xfer(Xfer &x)
 {
 	const bool loading = x.isLoading();
-	XferVersion v{ 2, 2 }; // version 2 preserves AI tree-group selection state.
+	// version 3 (merged RAI-POW-3; version 2 overlaps the fork layout): the tree-cluster index's used bytes, written only once a tree killer marked one (every other snapshot is version 1's)
+	XferVersion v{ 1, (std::uint8_t)(x.isLoading() || anyClusterUsed() ? 3 : 1) };
 	x.xferVersion(v);
+	if (v.current == 2) throw XferException("terrain trees: ambiguous pre-merge version 2 snapshot; start a new game");
 	std::uint32_t records = loading ? 0 : (std::uint32_t)m_records.size();
 	x.xferUnsignedInt(&records);
 	std::int32_t nextIndex = loading ? 0 : m_nextIndex;
@@ -588,25 +608,25 @@ void TerrainTrees::xfer(Xfer &x)
 		r.changed = true;
 		loaded.emplace_back(index, r);
 	}
-	AIPositionSampler loadedGroups;
-	AIPositionSampler &groups = loading ? loadedGroups : m_groups;
-	groups.xfer(x);
-	bool groupStateChanged = m_groupStateChanged;
-	x.xferBool(&groupStateChanged);
-	if (loading)
-	{
-		if (groups.members().size() != m_records.size()) throw XferException("terrain trees: spatial registrations differ from tree count");
-		std::vector<bool> seen(m_records.size(), false);
-		for (ObjectID id : groups.members())
-		{
-			if (id >= seen.size() || seen[id]) throw XferException("terrain trees: invalid spatial tree registration");
-			seen[id] = true;
-		}
-		for (const auto &group : groups.groups())
-			if (group.selected && !groupStateChanged) throw XferException("terrain trees: selected group without changed state");
-	}
 	if (!loading)
 	{
+		if (v.current >= 2)
+		{
+			std::uint32_t used = 0;
+			for (const Cluster &c : m_clusters.groups())
+			{
+				used += c.used ? 1u : 0u;
+			}
+			x.xferCount(&used, 1, 4);
+			for (size_t i = 0; i < m_clusters.groups().size(); ++i)
+			{
+				if (m_clusters.groups()[i].used)
+				{
+					std::uint32_t index = (std::uint32_t)i;
+					x.xferUnsignedInt(&index);
+				}
+			}
+		}
 		return;
 	}
 	// lane SAVE-4e: the game's records go back to the map's (kept before the first change), then take the snapshot's changes: a game whose trees changed
@@ -617,13 +637,36 @@ void TerrainTrees::xfer(Xfer &x)
 	{
 		m_records[e.first] = e.second;
 	}
+	// lane RAI-POW-3: the index is the map's (RW 0x683D53 rebuilds it from the records); the snapshot's used bytes go on top
+	rebuildClusters(m_start);
 	m_changed = (int)changed;
 	m_changedFrame = changedFrame;
 	m_toppleSpeed = toppleSpeed;
-	// This native snapshot preserves runtime group geometry as well as flags: harvesting clears a
-	// tree record's position without changing its group's cached sphere (the retail save rebuild differs).
-	m_groups = std::move(loadedGroups);
-	m_groupStateChanged = groupStateChanged;
+	if (v.current >= 2)
+	{
+		std::uint32_t used = 0;
+		x.xferCount(&used, 1, 4);
+		if (used > m_clusters.groups().size())
+		{
+			throw XferException("terrain trees: " + std::to_string(used) + " used cluster(s) of " + std::to_string(m_clusters.groups().size()));
+		}
+		std::vector<char> seen(m_clusters.groups().size(), 0);
+		for (std::uint32_t n = 0; n < used; ++n)
+		{
+			std::uint32_t index = 0;
+			x.xferUnsignedInt(&index);
+			if (index >= m_clusters.groups().size())
+			{
+				throw XferException("terrain trees: used cluster " + std::to_string(index) + " of " + std::to_string(m_clusters.groups().size()));
+			}
+			if (seen[index])
+			{
+				throw XferException("terrain trees: used cluster " + std::to_string(index) + " twice");
+			}
+			seen[index] = 1;
+			m_clusters.groups()[index].used = true;
+		}
+	}
 }
 
 std::string TerrainTrees::stopLine()
@@ -643,4 +686,27 @@ std::string TerrainTrees::trees1StopLine()
 		   "(RW 0x68449B: attacked, grabbed, set alight by FireSpreadUpdate), the grab powers, Taint / ElvenWood's tree morph (RW 0x67F6F0 -> 0x4EC40E), "
 		   "ClearRemovables (RW 0x5F0EE6), the radius clear (RW 0x683393) and trees an ObjectCreationList adds; INFERENCE: TheTerrainVisual's "
 		   "harvest check (slot 0x80, RW 0x4EA005: the tree toppled, not sinking, not morphing) is answered by the logic";
+}
+
+bool TerrainTrees::selectUnselectedGroup(int player, Coord3D &position)
+{
+	// DONOR Common/AISpellBookTreeKiller_shouldActivate.cpp (5D7766), TARGET RW9E70B6, S-001 caveat.
+	if (!m_logic.shroud())
+		return false;
+	AIPositionSampler::Group *best = nullptr;
+	size_t count = 0;
+	for (auto &group : m_clusters.groups())
+	{
+		if (group.used || group.members.size() <= count)
+			continue;
+		if (m_logic.shroud()->getStatusAt(player, group.center.x, group.center.y) == CELLSHROUD_SHROUDED)
+			continue;
+		best = &group;
+		count = group.members.size();
+	}
+	if (!best)
+		return false;
+	best->used = true;
+	position = best->center;
+	return true;
 }

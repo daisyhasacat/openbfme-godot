@@ -17,6 +17,8 @@
 #include "GameLogic/SimMath.h"
 #include "Common/Xfer.h"
 
+#include <optional>
+
 const HeroRecord *PlayerHeroList::at(int index) const
 {
 	if (index < 0 || (size_t)index >= m_records.size())
@@ -124,24 +126,39 @@ int PlayerHeroList::recordFrames(GameLogic &logic, const Player &owner, const He
 	return SimMath::truncToInt32(NumericState::pc24Mul((float)frames, m));
 }
 
-// TARGET RW 0x780AD3 (S-001): the Brutal discount is applied again after recordCost.
+namespace
+{
+// lane BRUTALAI-1, RW 0x780AF2 .. 0x780B5A / 0x780B91 .. 0x780BF9: the difficulty gate reads the PRODUCER's controlling player (RW 0x68B678 on the second
+// argument, not the record's owner); the record's value (whose calcCostToBuild / calcTimeToBuild already took the discount once: retail discounts a Brutal
+// AI's revival twice) becomes trunc((1.0 - m) * value) (subss; cvtsi2ss; mulss; cvttss2si). RW reads the producer unchecked; a null producer (only the
+// port's UI callers pass one) gets no discount
+int brutalHeroValue(const Object *producer, bool time, int value)
+{
+	const Player *p = producer ? producer->getControllingPlayer() : nullptr;
+	if (p)
+	{
+		if (const std::optional<float> m = p->getBrutalBuildReduction(time))
+		{
+			return SimMath::cvttss2si(SimMath::sseMul(SimMath::sseFromInt32(value), SimMath::sseSub(1.0f, *m)));
+		}
+	}
+	return value;
+}
+} // namespace
+
+// RW 0x780AD3 (BFME2 decomp Common/RTS/UnitRevivalEntry.cpp:511)
 int PlayerHeroList::costAt(GameLogic &logic, const Player &owner, int index, const Object *producer) const
 {
 	const HeroRecord *r = at(index);
-	if (!r) return 0;
-	const int cost = recordCost(logic, owner, *r, producer);
-	const float reduction = logic.economy().aiProductionReduction(owner, false);
-	return SimMath::truncToInt32(SimMath::mulf32((float)cost, SimMath::subf32(1.0f, reduction)));
+	return r ? brutalHeroValue(producer, false, recordCost(logic, owner, *r, producer)) : 0;
 }
 
-// TARGET RW 0x780B72 (S-001): wrapper discount truncates the already rounded record frames.
+// RW 0x780B72 (BFME2 decomp Common/RTS/UnitRevivalEntry.cpp:551)
 int PlayerHeroList::framesForProductionID(GameLogic &logic, const Player &owner, std::uint32_t id, const Object *producer) const
 {
 	const HeroRecord *r = findByProductionID(id);
-	if (!r) return 0;
-	const int frames = recordFrames(logic, owner, *r, producer);
-	const float reduction = logic.economy().aiProductionReduction(owner, true);
-	return SimMath::truncToInt32(SimMath::mulf32((float)frames, SimMath::subf32(1.0f, reduction)));
+	return r ? brutalHeroValue(producer, true, recordFrames(logic, owner, *r, producer)) : 0;
+
 }
 
 // RW 0x780C11

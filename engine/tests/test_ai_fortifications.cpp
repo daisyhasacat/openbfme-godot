@@ -819,7 +819,7 @@ TEST_CASE("source AI spatial groups: snapshot preserves selection and registrati
 	restored.xfer(corrupt);
 	AIPositionSampler refused;
 	XferLoad bad(corrupt.data());
-	CHECK_THROWS_WITH(refused.xfer(bad), "skirmish ai: spatial groups differ from registrations");
+	CHECK_THROWS_WITH(refused.xfer(bad), "skirmish ai: the position sampler's groups differ from its registrations");
 }
 
 TEST_CASE("source AI defense: native target groups create and recruit SimpleDefense on every difficulty")
@@ -851,6 +851,7 @@ TEST_CASE("source AI defense: native target groups create and recruit SimpleDefe
 		REQUIRE(ai);
 		REQUIRE(ai->army);
 		ai->brain.farmKillEarly = false;
+		manager.record(ai->playerIndex)->update(*s.w.logic); // upstream defers sampler insertion until positions are final
 		s.w.frames(50);
 		s.w.logic->partition().update();
 		AITacticalAI::updateBrain(*s.w.logic, *ai, ai);
@@ -903,6 +904,7 @@ TEST_CASE("source AI defense: small group chance and large group half-army sizin
 		auto *ai = const_cast<AISkirmishPlayer *>(manager.findAI(player));
 		REQUIRE(ai);
 		ai->brain.farmKillEarly = false;
+		manager.record(ai->playerIndex)->update(*s.w.logic); // upstream defers sampler insertion until positions are final
 		auto &random = s.w.logic->random();
 		random.seedRandom(1);
 		GameLogicRandom oracle = random;

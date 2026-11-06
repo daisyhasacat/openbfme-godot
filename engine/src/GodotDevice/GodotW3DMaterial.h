@@ -157,6 +157,9 @@ private:
 	W3DObjectLighting SceneLighting;
 	MapWeather SceneWeather;
 	bool SelectionDecals = false; // lane SELWALL-1
+	// Shared entries live while a requesting factory owns them; the process lookup
+	// holds weak pointers and cannot keep GPU resources alive at shutdown.
+	std::vector<std::shared_ptr<const Ref<Shader>>> ShaderOwners;
 	std::map<std::string, Ref<Shader>> Shaders;
 	bool FloorSampling = false;
 	std::map<std::string, Ref<Texture2D>> Textures; // by virtual path

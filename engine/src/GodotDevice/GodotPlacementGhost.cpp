@@ -50,6 +50,7 @@
 #include <godot_cpp/classes/viewport.hpp>
 #include <cmath>
 #include <godot_cpp/classes/decal.hpp>
+
 #include <godot_cpp/classes/geometry_instance3d.hpp>
 #include <godot_cpp/classes/multi_mesh_instance3d.hpp>
 #include <godot_cpp/core/object.hpp>
@@ -152,10 +153,8 @@ void PlacementGhostRenderer::clearTransient()
 	m_exitDirectionCount = 0;
 	freeNode(m_formationId); m_formationId=0; m_formation=nullptr;
 	m_formationSlots.clear(); m_formationTextures.clear();
-	freeNode(m_resourceDecalId);
 	freeNode(m_resourceLabelId);
-	m_resourceDecalId = m_resourceLabelId = 0;
-	m_resourceDecal = nullptr;
+	m_resourceLabelId = 0;
 	m_resourceLabel = nullptr;
 }
 
@@ -166,9 +165,9 @@ void PlacementGhostRenderer::clear()
 	{
 		freeNode(v.instId);
 		freeNode(v.bibId);
-		freeNode(v.shadowDecalId); // lane OWNERFIX-2
 	}
 	m_views.clear();
+	m_shown = false;
 	freeNode(m_footprintId);
 	m_footprintId = 0;
 	m_footprint = nullptr;
@@ -188,11 +187,8 @@ void PlacementGhostRenderer::clear()
 	for (auto &ring : m_existingResourceRings) freeNode(ring.nodeId);
 	m_existingResourceRings.clear();
 	m_existingResourceState.clear();
-	freeNode(m_resourceDecalId);
-	freeNode(m_resourceLabelId);
-	m_resourceDecalId = m_resourceLabelId = 0;
-	m_resourceDecal = nullptr;
-	m_resourceLabel = nullptr;	for (auto &kv : m_parked)
+	for (auto &kv : m_parked)
+
 	{
 		for (IconView &v : kv.second)
 		{
@@ -234,9 +230,7 @@ void PlacementGhostRenderer::parkViews(const std::string &templateName)
 		{
 			v.bib->set_visible(false); // kept with its template's quad (updateBib shows it again)
 		}
-		freeNode(v.shadowDecalId); // rebuilt on demand
-		v.shadowDecalId = 0;
-		v.shadowTexture.clear();
+		v.shadowTexture.clear(); // drawn again by updateShadowDecal
 	}
 	if (!templateName.empty() && !m_views.empty())
 	{
@@ -434,60 +428,62 @@ void PlacementGhostRenderer::updateShadowDecal(PlacementIcons::Icon &icon, IconV
 	// lane OWNERFIX-2: a model state's decal shadow (W3DModelDraw's Shadow = SHADOW_ALPHA_DECAL 0x20 / SHADOW_ADDITIVE_DECAL 0x40 / their _DYNAMIC forms 0x400 /
 	// 0x800, bits of RW 0xD99EB0; ShadowTexture, ShadowSizeX / Y, ShadowOffsetX / Y; RW 0x4B92D3 parses them) is a projected decal under the drawable: the
 	// retail data gives the well's / statue's BUILD_PLACEMENT_CURSOR state its area of effect (decal_hero_good, GONDOR_WELL_AOE_RADIUS_DECAL = 440).
-	// INFERENCE (stop S-5032): drawn as the selection decals are (a Godot Decal on the terrain layer, S-2522) at the texture's own alpha, not faded by the
-	// drawable's 0.45 opacity (the shadow's ShadowOpacity* fade is not run); only the placement ghost draws them (every other drawable's shadow is S-3304)
+	// Lane PLACEDECAL-1: a drawable's decal shadow is on renderShadows' list + 4, drawn before the addDecal list (+ 8: the selection's and the resource
+	// claims' decals; RW 0x50D92C), with flushDecals' shaders (RW 0x509A1F); it turns with the drawable and is not terrain only (+ 0x64 stays 0). The HUD
+	// draws it in the selection decals' grid (appendShadowDecals; lane ECOCIRCLE-2: an additive type is added to the surface, RotWK's 0x10000 is refused there with its error), white at ShadowOpacityPeak whatever
+	// the drawable's 0.45 opacity (DecalShadowColor). INFERENCE (stop S-5032): the _DYNAMIC types' fade is not run; addShadow's gate (RW 0x50BF7B:
+	// UseShadowDecals or ShadowOverrideLODVisibility) is not applied; only the placement ghost draws them (every other drawable's shadow is S-3304)
 	const ModelShadowInfo *sh = nullptr;
+	unsigned peak = 0xFF;
 	for (DrawEntry &e : icon.drawable->entries())
 	{
 		if (e.kind == W3D_DRAWKIND_MODEL && e.draw && !e.moduleHidden)
 		{
 			const ModelConditionInfo *info = e.draw->currentModelState();
-			if (info && info->hasShadow && (info->shadow.type & 0xC60) && !info->shadow.texture.empty())
+			if (info && info->hasShadow && (info->shadow.type & 0x10C60) && !info->shadow.texture.empty())
 			{
 				sh = &info->shadow;
+				peak = info->shadowOpacityPeak;
 				break;
 			}
 		}
 	}
-	Decal *decal = view.shadowDecalId ? Object::cast_to<Decal>(ObjectDB::get_instance(godot::ObjectID(view.shadowDecalId))) : nullptr;
 	if (!sh)
 	{
-		if (decal)
-		{
-			decal->set_visible(false);
-		}
 		view.shadowTexture.clear();
 		return;
 	}
 	const std::string file = sh->texture.find('.') == std::string::npos ? sh->texture + ".tga" : sh->texture;
-	Ref<Texture2D> tex = texture(file);
-	if (tex.is_null())
-	{
-		return; // texture() reported it
-	}
-	if (!decal)
-	{
-		decal = memnew(Decal);
-		decal->set_name("PlacementShadowDecal");
-		m_parent->add_child(decal);
-		view.shadowDecalId = decal->get_instance_id();
-	}
-	if (view.shadowTexture != file)
-	{
-		decal->set_texture(Decal::TEXTURE_ALBEDO, tex);
-		view.shadowTexture = file;
-	}
 	const Coord3D &p = *icon.drawable->getPosition();
-	// SAGE (x, y, z up) -> Godot (x, z, -y); projected down over a box 200 units deep
-	decal->set_position(Vector3(p.x + sh->offsetX, p.z, -(p.y + sh->offsetY)));
-	decal->set_size(Vector3(sh->sizeX, 200.0f, sh->sizeY));
-	decal->set_albedo_mix(1.0f);
-	decal->set_cull_mask(1u << 19); // the terrain's layer (GodotMapTerrain)
-	decal->set_upper_fade(0.0f);
-	decal->set_lower_fade(0.0f);
-	decal->set_visible(true);
+	const float angle = icon.drawable->getOrientation(); // the shadow turns with its drawable (+ 0x30 = 1, RW 0x4C4F53)
+	SelectionDecal &d = view.shadowDecal;
+	d = SelectionDecal();
+	d.texture = file;
+	d.style = (std::uint32_t)sh->type & 0x10C60u;
+	d.color = DecalShadowColor(peak);
+	d.size = sh->sizeX;
+	d.sizeY = sh->sizeY;
+	d.angle = angle;
+	d.position = DecalShadowCentre(p, sh->offsetX, sh->offsetY, angle);
+	d.drawZ = p.z;
+	view.shadowTexture = file;
 	view.shadowSizeX = sh->sizeX;
 	view.shadowSizeY = sh->sizeY;
+}
+
+void PlacementGhostRenderer::appendShadowDecals(std::vector<SelectionDecal> &out) const
+{
+	if (!m_shown)
+	{
+		return;
+	}
+	for (size_t i = 0; i < m_views.size() && i < m_icons->icons().size(); ++i)
+	{
+		if (!m_views[i].shadowTexture.empty())
+		{
+			out.push_back(m_views[i].shadowDecal);
+		}
+	}
 }
 
 void PlacementGhostRenderer::applyTint(IconView &view, const Color &tint)
@@ -719,7 +715,8 @@ void PlacementGhostRenderer::sync(LiveGame &game, const InGameUI &ui, double del
 	const unsigned loadsBefore = m_modelLoads;
 	if ((&game != m_game || !m_icons) && !judge)
 	{
-		return; // the drawables are made on an idle frame
+		m_shown = false; // lane PLACEDECAL-1: no shadow of another game's ghost
+		return;          // the drawables are made on an idle frame
 	}
 	if (&game != m_game || !m_icons)
 	{
@@ -798,6 +795,7 @@ void PlacementGhostRenderer::sync(LiveGame &game, const InGameUI &ui, double del
 			}
 		}
 	}
+	m_shown = ui.isPlacing() && ui.placeHasGhost();
 	for (size_t i = 0; i < m_views.size(); ++i)
 	{
 		IconView &v = m_views[i];
@@ -809,6 +807,7 @@ void PlacementGhostRenderer::sync(LiveGame &game, const InGameUI &ui, double del
 		if (!visible && v.bib)
 		{
 			v.bib->set_visible(false);
+
 		}
 	}
 	m_lastDrawMs = (double)(Time::get_singleton()->get_ticks_usec() - t1) / 1000.0; // the icons' instancers, tints, bibs
@@ -1168,7 +1167,6 @@ void PlacementGhostRenderer::updateResources(const InGameUI &ui, bool idle)
 	{
 		for (auto &ring : m_existingResourceRings) ring.decal->hide();
 		m_existingResourceState.clear();
-		if (m_resourceDecal) m_resourceDecal->hide();
 		if (m_resourceLabel) m_resourceLabel->hide();
 		return;
 	}

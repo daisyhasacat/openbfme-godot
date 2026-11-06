@@ -1187,5 +1187,5 @@ TEST_CASE("source AI tree snapshots: native group preservation differs from reta
 {
  const auto stops=GameLogic::save4dStopLines();
  REQUIRE(stops.size()==7);
- CHECK(stops[2].find("native block version 2 preserves cached AI tree groups and selection flags, whereas retail rebuilds the groups on load")!=std::string::npos);
+ CHECK(stops[2].find("the port keeps the used clusters (version 3; ambiguous pre-merge version 2 is refused)")!=std::string::npos);
 }
