@@ -7,12 +7,13 @@
 //   edge   = texture(OpacitySampler, uv1)     (the "alpha edge" texture)
 //   rgb    = vtx.rgb*river.rgb + edge.rgb + sparkle.rgb*noise.rgb
 //   a      = river.a * vtx.a * edge.a * Opacity.w;  rgb *= shroud
+// blended SRCALPHA / INVSRCALPHA, or SRCALPHA / ONE for a river the map marks additive: GodotMapTerrain gives those a
+// copy of this shader with blend_add in place of blend_mix.
 // Space: mesh in Godot's frame (x, z, -y); world.xy = (G.x, -G.z).
 //
-// UV layout follows BFME2 W3DWaterDrawRiverWater.cpp RVA 0x100A0B:
-// primary U 0..0.5, opacity U 0..1, shared width-scaled V plus sine wobble.
-// Animation uses presentation TIME * map scroll speed for the V origin;
-// the retail origin clock and full boundary generation remain S-035.
+// The strip and its UVs are drawRiverWater's (WaterGeometry::buildRiverStrip): UV = (u1, v), UV2 = (u2, v), the vertex
+// colour WaterGeometry::riverVertexColour. v scrolls by VOrigin = Time * the river's UV speed, so the texture moves from the
+// first cross-section towards the last, and wobbles by sin(2 pi v - 3 VOrigin) / 22.
 shader_type spatial;
 render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
 
@@ -26,8 +27,8 @@ uniform float shroud = 1.0;
 uniform float output_gamma = 2.2;
 
 varying vec2 v_noise_uv;
-varying vec2 v_river_uv;
-varying vec2 v_edge_uv;
+varying vec2 v_river_uv;     // (u1, v) scrolled and wobbled
+varying vec2 v_edge_uv;      // (u2, v)
 // lane ZOOM-1: the local player's shroud (GameWorld::refresh_shroud sets these on the terrain and on this layer): ZH WaterRenderObjClass modulates its
 // water with the shroud texture in a second pass / stage (W3DWater.cpp, the ST_SHROUD_TEXTURE passes); the border level outside the map is black
 uniform sampler2D shroud_tex : filter_linear, repeat_disable, hint_default_white;
@@ -47,6 +48,10 @@ void vertex() {
 	v_edge_uv = vec2(UV2.x, v);
 	vec2 world_xy = vec2(VERTEX.x, -VERTEX.z);
 	v_noise_uv = world_xy * 0.0625 + TIME * uv_scroll_per_second;
+	float origin = TIME * uv_scroll_per_second.y;
+	float v = UV.y + sin(6.28318531 * UV.y - 3.0 * origin) / 22.0 - origin;
+	v_river_uv = vec2(UV.x, v);
+	v_edge_uv = vec2(UV2.x, v);
 	vec3 shroud_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	v_shroud_uv = (vec2(shroud_world.x, -shroud_world.z) - shroud_origin) / shroud_extent;
 	v_clip_xy = vec2(shroud_world.x, -shroud_world.z);

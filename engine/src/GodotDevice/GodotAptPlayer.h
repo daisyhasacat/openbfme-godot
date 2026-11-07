@@ -42,6 +42,7 @@
 class Apt;
 class AptFileSource;
 class WindowManager;
+class GameWindow;
 class Shell;
 class AptGodotHost;
 class AptTextureStore;
@@ -50,10 +51,13 @@ class FontSubstitution;
 struct AptCanvasList;
 class GadgetDrawList;
 struct AptCanvasOp;
+struct AptCanvasSegment;
+struct AptCanvasRedrawPlan;
 
 namespace godot
 {
 
+class GodotMouse;
 class RetailFileSystem;
 
 // lane HUD-1: the owner of the native render components of a movie (clips tagged `_type`: AptPalantir::RenderRadar, RenderImage, TimerOverlay ...). The player calls it for
@@ -63,6 +67,10 @@ class AptNativeHook
 public:
 	virtual ~AptNativeHook() = default;
 	virtual void drawPlaceholder(const AptCanvasOp &op, RID canvasItem) = 0;
+	// Retained-canvas lifecycle, including cached/partial redraws and an empty canvas. Native offscreen
+	// scenes can stop rendering when no current placeholder uses them; no simulation/animation state changes.
+	virtual void beginCanvas() {}
+	virtual void endCanvas() {}
 	// lane CAH-1: whether the hook draws this placeholder; a placeholder it leaves goes the player's own way (a RenderImage's mapped image)
 	virtual bool handlesPlaceholder(const AptCanvasOp &op) const
 	{
@@ -108,7 +116,7 @@ public:
 	String dump_tree(int level, int max_depth);
 	// { found, x, y, path } stage centre of the first button at or under `path` ("SoloPlayNav" resolves under the level root).
 	Dictionary find_button(int level, const String &path);
-	// { found, type, depth, x, y (stage, of the instance origin), visible, frame, total_frames }
+	// { found, type, depth, x, y (stage, of the instance origin), stage_transform, local_bounds, visible, frame, total_frames }
 	Dictionary instance_info(int level, const String &path);
 	Rect2 component_rect(const String &instance_path) const; // lane PLAY-1: a gadget's window in stage space (empty: none)
 
@@ -146,6 +154,7 @@ public:
 	// seed; 0 = from the clock), profile: String (optional: the Skirmish profile name to start with), options_file: String (optional, lane OPTS-2: the
 	// Options.ini to use instead of the user data folder's; the checks), presentation_fs: optional verified BFME2 shell source }. Returns { ok, errors, load_ms, strings, fonts }.
 	Dictionary boot_shell(const Ref<RetailFileSystem> &fs, Object *world, const Dictionary &config);
+	std::shared_ptr<GodotMouse> godot_mouse() const;
 	void shell_show_shell_map(bool use); // lane FB7-1: Shell::showShellMap
 	void shell_hide_background();        // lane FB7-1: WindowManager hide of the front-end background (RW 0x622C88(0))
 	// lane CAH-2 (S-1914): the host has no screen for the main menu's request `action`: AptMainMenu::screenUnavailable (a message box tells the player,
@@ -208,7 +217,18 @@ public:
 	void set_tribute_world(Object *world);
 	// lane HUD-5: the players screen's Status rows (GUI/PlayerStatusInfo.h) from GameWorld.get_player_status_state(), built with the shell's factions, colours
 	// and game text; PlayerTribute.apt reads them when it loads its Status page. Returns { ok, rows: [[name, army, team, status, colour]], error }
+	void set_mission_objectives(const Array &rows, bool input_enabled);
 	Dictionary set_player_status(const Dictionary &state);
+	Dictionary script_notification(const String &type, const String &label, double seconds);
+	void clear_script_notification();
+	Dictionary get_notification_report() const;
+	// lane CAMPUI-1: what Objectives.apt lists (GUI/AptScreens/AptObjectivesMenu.h): { game_mode, tutorial_input, objectives: [{ label, bonus, shown, completed }] }
+	// from GameWorld.get_mission_objectives(); answers { ok, rows } (the rows as the providers answer them)
+	Dictionary set_objectives_screen(const Dictionary &state);
+	// lane BFME2CAMP1: the open screen's tutorial input flag (InGameUI + 0x16), which the Return button reads when pressed (AptObjectivesMenu::returnAllowed)
+	void set_objectives_tutorial_input(bool on);
+	// lane CAMPUI-1: the in-game notification box (begin / end / show / update / enable / close; see GodotAptPlayer.cpp)
+	Dictionary notification_box(const Dictionary &request);
 	// lane MP-2: a movie -> engine command as the movie's fscommand runs it (WindowManager::invokeCallback: "AptLanLobby::OnCreateGameBttn",
 	// "MpGameSetup::OnReadyPress" ...): scripted lobbies. false: no screen registered the name
 	bool shell_fscommand(const String &command, const String &argument);
@@ -218,8 +238,9 @@ public:
 	// empty Dictionary when there is none.  Taking it clears it.
 	Dictionary take_new_game();
 	// The load screen's data (the Apt text records LoadingScreen::PlayerName%d ... and the providers of LoadScreen.apt read it): { cards: [{ name, army, rank, team,
-	// color, load_music }...], local_card, loading_type: int, map }.  Must be set before the load screen is pushed.
-	void set_load_screen(const Dictionary &info);
+	// color, load_music }...], local_card, loading_type: int, map, map_start_count (extended maps only) }. Must be set before the screen is pushed.
+	// Returns { ok, error }; malformed cards are refused without replacing the previous loading state.
+	Dictionary set_load_screen(const Dictionary &info);
 	// The same from a RESOLVED new-game message (take_new_game's Dictionary after GameWorld.prepare_new_game): the cards are the occupied slots, the faction names
 	// come from the logic's store through the lobby's setup source.  Returns the card data as set_load_screen's Dictionary (for reports).
 	Dictionary set_load_screen_from_game(const Dictionary &resolved_game);
@@ -231,6 +252,23 @@ public:
 	// { ok, level, loaded, error }. take_disconnect_actions: the buttons pressed since the last call, [{ kind: "kick", row } | { kind: "quit" }]
 	Dictionary disconnect_screen(const Dictionary &state);
 	Array take_disconnect_actions();
+	// ---- lane CHAT-1: InGameChat.apt over the game (GameClient/GUI/AptScreens/AptInGameChat.h), in the game's window manager like the disconnect screen ----
+	// ingame_chat_open: the window in `mode` (InGameChatMode: 0 allies, 1 everyone, 4 observers) with the receivers label text; false when one is open
+	// (RW 0x8EC97D) or no shell runs. ingame_chat_update (every frame): the window's update (RW 0x8ECD3E; a closed window goes) and its state
+	// { open, state, mode, entry, sends: [{ text, mode }] } (the lines Send took since the last call). ingame_chat_close: closes it (RW 0x8ECC7A's
+	// other callers). ingame_chat_has_keys: the keyboard is the window's (the HUD sends its keys here; the pointer stays the world's, as in retail).
+	// ingame_chat_type / ingame_chat_command (tests and the scripted runs): the entry's text set, a movie command run ("Send", "Close")
+	Dictionary banner_ui(const Dictionary &request); // WOTR2 milestone 7: BannerUI.apt
+	bool ingame_chat_open(int64_t mode, const String &receivers);
+	Dictionary ingame_chat_update();
+	void ingame_chat_close();
+	bool ingame_chat_has_keys() const;
+	bool ingame_chat_type(const String &text);
+	bool ingame_chat_command(const String &command);
+	// lane CHAT-1: the disconnect screen's chat: a received line ("[Name] text") into its ChatBox (false while the screen or the box is not there yet), and
+	// (tests / scripted runs) a line typed into its ChatEntry and sent
+	bool disconnect_screen_chat(const String &line);
+	bool disconnect_screen_type(const String &text);
 	// lane MP-2: what SaveLoad.apt's replay page lists, set before it is pushed: { mode: 2 load, flags: 4 replay, last_replay: the GUI:LastReplay name,
 	// replays: [{ path, name, map, date, time, compatible }] }; its Load comes back as the shell request "LoadReplayFile" with the path. Lane SAVE-2, the
 	// saved-game pages: mode 3 save / 2 load, flags 1 Campaign | 2 Skirmish, in_game (opened over a game), saves: [{ path, name, map, date, time, kind (1 / 2),
@@ -242,6 +280,8 @@ public:
 	void set_campaign_menu(const Dictionary &content);
 	Dictionary unlock_bonus_campaign();
 	bool is_bonus_campaign_unlocked() const;
+	// lane STABLEQA-1: ShellEnvironment::warOfTheRingOffered (false in a Stable channel build, or with the shell config's "stable_channel")
+	bool is_war_of_the_ring_offered() const;
 	void set_save_folder(const String &folder);
 	// lane SAVE-2: the host's answer to "SaveGameFile": the screen's message box shows GUI:GameSaved (ok) or `error`; false when SaveLoad.apt is not the top
 	bool save_load_saved(bool ok, const String &error);
@@ -261,7 +301,16 @@ public:
 	Array online_take_requests();
 	void online_deliver(int64_t id, int64_t status, const String &body, const String &error);
 	Dictionary online_status();
+	void online_map_note(const String &text); // map transfer: a system line in the staging room's chat
+	Dictionary online_phase_request(int64_t phase, const Array &slots);
+	Dictionary online_phase_status() const;
+	Dictionary online_stage_saved_war(const Dictionary &lobby, const String &save, int64_t hash, const Array &seats);
+	Dictionary online_resume_check(const String &save, const String &why);
 	Dictionary online_apply(const Dictionary &spec);
+	Dictionary online_social_status() const;
+	Array online_social_events();
+	Dictionary online_social_apply(const Dictionary &spec);
+	Dictionary online_messenger_sync(const Dictionary &spec);
 	// Sol r1: the host could not play the START OnlineShell.apt handed on (GameWorld.net_online refused it): the screens show a recoverable lobby error
 	// and go back to the game list (false: no online screens). online_redact: a text with its credentials masked (OnlineLobbyClient::redact: relay,
 	// rejoin and spectator tickets, session tokens), for anything the game prints of the lobby's
@@ -303,6 +352,7 @@ public:
 	Dictionary get_create_a_hero_view() const;
 	Array get_create_a_hero_heroes() const;
 	void set_create_a_hero_portrait(const String &image);
+	void takeCreateAHeroPicture(); // lane CAHPIC-1: Create-a-Hero's TAKE PICTURE (the guard's frames, the armed picture saved), from _process
 	void set_create_a_hero_view_texture(const Ref<Texture2D> &texture);
 	// lane CAH-2: retail's Create-a-Hero save folder (GameClient/UserDataFolder.h): the application data folder (OS::get_data_dir: %APPDATA% on Windows,
 	// CSIDL_APPDATA) + the install's gi.dat UserDataLeafName + "Save" (RW 0x644148 / 0x6DD398). { ok, folder, user_data, leaf, error }
@@ -311,6 +361,8 @@ public:
 	bool create_a_hero_type_name(const String &name);
 	// copies the score screen data of the world's last clear_game_data into TimeLine.apt's environment
 	bool set_score_screen_from_world(Object *world);
+	// WOTR2 milestone 5: the War of the Ring score screen (TimeLine.apt type 6) from a LivingWorldGame and the GameWorld that loaded it
+	bool set_score_screen_from_living_world(Object *livingWorld, Object *world, int64_t localPlayer, int64_t strategicSeconds);
 	// the graph of the TimeLine.apt on the shell stack for the graph mode `mode` ("Units", "Structures", "Resources", "FinalScore"; "" reads the movie's _graphMode
 	// at `path`): { ok, mode, axis: { step, top, samples, y_labels, x_labels, total_time }, lines: [{ color, result, local, points: PackedVector2Array (x 0..1
 	// over the samples, y 0..1 over the top), marks: PackedVector2Array }] }
@@ -318,8 +370,8 @@ public:
 	// a member of a movie instance as a string (`found` false when the instance or member does not exist)
 	Dictionary get_member(int level, const String &path, const String &name);
 	// lane DEVPORT-8 (MENUSTYLE-1): a property of the clip at `path` on `level` set as ActionScript's `clip.<name> = value` does (AptCharacterInst::setProperty:
-	// _visible, _x, _y, _alpha ...); false when there is no such clip or property. game.gd hides BFME2's own MainMenu.apt campaign buttons with it while the
-	// BFME2 campaigns are switched off (game.gd BFME2_CAMPAIGNS)
+	// _visible, _x, _y, _alpha ...); false when there is no such clip or property. game.gd hides BFME2's own MainMenu.apt campaign buttons with it when the
+	// BFME2 campaigns are switched off (game.gd BFME2_CAMPAIGNS, on since lane BFME2CAMP1)
 	bool set_clip_property(int level, const String &path, const String &name, double value);
 	// the game text of `label` ({ found, text }; a missing label is the retail "MISSING: 'label'" text and found false)
 	Dictionary fetch_text(const String &label);
@@ -344,6 +396,17 @@ public:
 	Array openbfme_page_events();
 	Dictionary openbfme_page_state() const;
 	Dictionary openbfme_page_choose(const String &key, int value);
+	bool online_ask(const String &key, const String &title, const String &text); // lane ONLINEMENU-1: AptOnlineShell::askYesNo
+	PackedStringArray online_answers();
+	bool online_asking(const String &key);
+	// lane CHEAT-1: the in-game menu's Cheat Mode button (label; empty: none) and page (a page spec as openbfme_page_show's, rows may be "button"; events as
+	// openbfme_page_events' with "press" for a button row and "entry" key "cheat_button" for the menu's button; state: open, button rect, tabs, rows, help)
+	bool quit_menu_cheat_button(const String &label);
+	Dictionary quit_menu_cheat_page_show(const Dictionary &spec);
+	void quit_menu_cheat_page_close();
+	Array quit_menu_cheat_events();
+	Dictionary quit_menu_cheat_state() const;
+	void online_cancel_ask(const String &key);
 	// lane OPTS-5: the one Options menu (AptOptionsScreen::kOpenBFMEMenu). openbfme_page_show's rows take "entry" (a text entry: value_text, max) and
 	// "column" (0 / 1); its events take "release" (a slider let go), and "entry" is the menu's opening (value 1: show the detail settings first).
 	// options_retail_rows: { key: row } of the original game's settings as the page shows them ("Retail.<gadget>": kind, label, help, help_label,
@@ -356,6 +419,8 @@ public:
 	Dictionary quit_menu(const Dictionary &request);
 	// lane HOVER-1: the menus' tool tip (CursorTooltip.h): the label, the text GuiFX shows, the GuiFX calls made, the pointer, the errors
 	Dictionary get_cursor_tooltip() const;
+	Dictionary strategic_hud(const Dictionary &request); // lane WOTR-2: StrategicHUD.apt over the strategic map
+	Dictionary strategic_setup(const Dictionary &request); // lane WOTR-2: the strategic setup's map preview (regions picked, territory text)
 	Array list_buttons(int level);
 	Array list_gadgets();         // lane MENUWORK-1: every live gadget window (name, kind, stage rect, enabled, hidden, text, checked)
 	PackedStringArray take_commands(); // lane MENUWORK-1: WindowManager::takeInvokedCommands
@@ -412,6 +477,7 @@ public:
 	//   texture_loads, texture_load_ms, ... }
 	Dictionary get_stats() const;
 	void reset_timing();
+	Dictionary get_cursor_image() const;
 	// { unverified: [...], errors: [...], missing_labels: [...], font_substitutions: [...], font_fallbacks: [...], placeholders: [...],
 	//   notes: { kind: count }, script_errors: [...] }
 	Dictionary get_report() const;
@@ -441,12 +507,16 @@ private:
 	RID takeItem(RID parent, int drawIndex); // a pooled (reset) or new canvas item
 	void freeItemPool();
 	void advanceMovies(double deltaMs); // lane CAMP-2: the BinkMovie components' frames
-	// lane PERF-1 r2: whether two canvas lists draw the same (every op field drawCanvas reads); the native components of the drawn list redrawn alone
-	static bool sameCanvas(const AptCanvasList &a, const AptCanvasList &b);
-	void redrawNativePlaceholders();
-	void redrawCallbackPlaceholders();                                  // lane UI-4
+	// lane PERF-1 r2: the native components of one drawn segment (lane HUDREDRAW-1) redrawn alone
+	void redrawNativePlaceholders(size_t segment);
+	void redrawCallbackPlaceholders(size_t segment);                      // lane UI-4
 	void drawRenderCallback(const AptCanvasOp &op, const RID &item);   // lane UI-4
 	void drawCanvas(const AptCanvasList &list);
+	// lane HUDREDRAW-1: the list's segments (AptCanvasSegments) on screen as `plan` says (AptCanvasPlanRedraw: kept, drawn again, drawn anew)
+	void redrawSegments(const std::vector<AptCanvasSegment> &segments, const AptCanvasRedrawPlan &plan);
+	void drawSegment(const AptCanvasList &list, size_t segment, const std::map<std::string, const GameWindow *> &gadgetOfPath);
+	void countLevels(const AptCanvasRedrawPlan &plan); // get_stats "levels"
+	std::map<std::string, const GameWindow *> gadgetPaths() const; // lane MENU-1
 	// lane PERF-1 r2: the gadget layer's commands (false: not in shell mode), whether two lists draw the same, and the drawing
 	bool buildGadgets(GadgetDrawList &commands);
 	static bool sameGadgets(const GadgetDrawList &a, const GadgetDrawList &b);

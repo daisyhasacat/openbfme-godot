@@ -29,7 +29,7 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
 	var playing: bool = game._state == game.State.PLAYING and is_instance_valid(game._hud)
-	button.visible = playing and DisplayServer.get_name() != "headless" and not OS.has_feature("mobile")
+	button.visible = playing and not game._control_bar_hidden and DisplayServer.get_name() != "headless" and not OS.has_feature("mobile")
 	# AdaptiveHUD publishes its rectangles earlier each frame. Include this
 	# button in the native HUD's input exclusion list before the next input pass.
 	if button.visible:

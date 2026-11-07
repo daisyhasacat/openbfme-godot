@@ -130,6 +130,10 @@ public:
 	bool isWithinAttackRange(const Coord3D &pos) const;
 	// lane GARRISON-2: RW 0x6CC653 for the weapon in `slot` (TurretAI::isAnyWeaponInRangeOf, RW 0x8DC626)
 	bool isSlotWithinAttackRange(int slot, const Object &victim, float extra = 0.0f, bool checkMin = true) const;
+	// isWithinAttackRange with the current weapon's bonus computed by the caller (currentWeaponBonus): the bonus is the attacker's alone, so a loop over many
+	// victims computes it once (performance, the same answers and the same melee reach left in the range host). False without a current weapon
+	bool currentWeaponBonus(WeaponBonus &out) const;
+	bool isWithinAttackRangeWithBonus(const Object &victim, const WeaponBonus &bonus) const;
 	// lane PHYS-1: RW 0x6CC07C(source, sourcePos, victim, victimPos, extra, checkMin) for the current weapon with the source standing at `sourcePos` (findAttackPath's
 	// candidate cells); `victim` may be null (a position target)
 	bool isWithinAttackRangeFrom(const Coord3D &sourcePos, const Object *victim, const Coord3D &victimPos, float extra, bool checkMin) const;
@@ -139,6 +143,9 @@ public:
 	bool deliveryRangeAllows(const WeaponTemplate &t, const WeaponBonus &bonus, const Object *victim, const Coord3D &victimPos) const;
 	// RW 0x6CA974: getAttackDistance(source, victim): the reach of the current weapon plus both bounding spheres (the approach asks it)
 	float attackDistance(const Object &victim) const;
+	// lane ATTACKPATH-1: RW 0x6CA974 with all three branches: a victim object (the reach plus both bounding spheres), else a position (the reach at its height),
+	// else neither; 0 without a current weapon
+	float attackDistanceTo(const Object *victim, const Coord3D *position) const;
 	// lane PHYS-1: RW 0x6CA8BD(source, 0): the current weapon's attack range (0 without a weapon)
 	float currentAttackRange() const;
 	// lane ARCHER-1: RW 0x6CA935(source): the current weapon's attack range with no target (the scale applied twice, WeaponGetAttackRangeNoTarget); 0 without one
@@ -179,12 +186,19 @@ public:
 	int extraWeaponStatus(Weapon &w);
 	// lane SPELL-2: an extra weapon's immediate load (RW 0x6CEE0F)
 	void loadExtraWeapon(Weapon &w) { w.loadAmmoNow(host()); }
+	// lane MODS-3: an extra weapon's reload (RW 0x6CEE4C Weapon::reloadAmmo; FireWeaponWhenDamagedBehavior's constructor RW 0x885A6F)
+	void reloadExtraWeapon(Weapon &w) { w.reloadAmmo(host()); }
+	// lane MODS-3: RW 0x6CF3AE (source, victim): privateFireWeapon RW 0x6CEF6D at the victim with argument 6 (ignore the ranges) = 1 and argument 7 (a projectile
+	// detonation, RW 0x6CB7BD: the nuggets delivered at the victim at once) = 1; no lock, no tracker (Edain Unchained's FireAtAttacker shot)
+	void fireExtraWeaponDetonationAt(Weapon &w, Object &victim);
 	// lane HERO-1: RW 0x691014 Object::hasWeaponSetFor(bit): the template has a weapon set naming the condition (RW 0x73F6B9; INFERENCE: any set with the bit)
 	bool hasWeaponSetFor(int bit) const;
 	// the status of the current weapon (RW 0x6CD142), WEAPON_OUT_OF_AMMO when there is none
 	int currentStatus() const;
 	// lane PLAY-2: RW 0x6CD142 (Weapon::computeStatus, no write-back) of one weapon of this set
 	int weaponStatus(const Weapon &w) { return w.getStatus(host()); }
+	// lane ATKRESET-1: RW 0x6CDCE7 (Weapon::getStatus with the write-back to + 0x10) of one weapon of this set
+	int weaponStatusWriteBack(Weapon &w) { return w.getStatusWriteBack(host()); }
 	// lane FACT-A: the status of the weapon in `slot` (RW 0x6CD142; the control bar's FIRE_WEAPON availability, RW 0x942733 case 0x17), WEAPON_OUT_OF_AMMO when none
 	int slotStatus(int slot) const;
 	// lane ANIM-1, RW 0x4BEE31 .. 0x4BEE91 (the draw's UseWeaponTiming, W3DScriptedModelDraw::apply): the current weapon's cycle in logic frames, the number
@@ -196,6 +210,11 @@ public:
 	// ---- every frame ---------------------------------------------------------------------------------------------------------------
 	// RW 0x68E197: the per slot weapon status model conditions (the WeaponStatusHelper calls it every frame, PHASE_FINAL; lane PROJ-2); and the FiringTracker (RW 0x8E30DD)
 	void updateWeaponStatusConditions();
+	// lane PERF-WS: its two halves. compute reads the object alone (its statuses, its weapons' timers and ammo) into `cond`, one per slot (-1: no
+	// weapon); the scheduler runs it on the logic job pool for every WeaponStatusHelper of the final list before the pass. apply writes the
+	// slots whose condition changed (the model conditions: ordered client events), in the pass, in list order. update is compute then apply
+	void computeWeaponStatusConditions(std::array<int, WEAPONSLOT_COUNT> &cond);
+	void applyWeaponStatusConditions(const std::array<int, WEAPONSLOT_COUNT> &cond);
 	// RW 0x69036C Object::setFiringConditionForCurrentWeapon (lane PROJ-2): the current slot's FIRING conditions (RW 0x6C83FD(slot, 1), the slot's other weapon
 	// conditions cleared, RW 0x6C84C9) set at once, without touching the cached condition of RW 0x68E197; the fire state calls it right before the shot
 	void setFiringConditionForCurrentWeapon();

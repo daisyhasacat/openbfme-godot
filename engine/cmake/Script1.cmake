@@ -9,6 +9,9 @@ list(APPEND OPENBFME_SIM_SOURCES
     src/GameLogic/ScriptEngine/ScriptConditions.cpp
     src/GameLogic/ScriptEngine/ScriptActions.cpp
     src/GameLogic/ScriptEngine/ScriptActionsUnits.cpp
+    src/GameLogic/ScriptEngine/ScriptActionsOrders.cpp
+    src/GameLogic/AI/AIGuardCommands.cpp
+    src/GameLogic/Object/ObjectCommandButton.cpp
     src/GameLogic/AI/AIHunt.cpp
     src/GameLogic/AI/AIWaypointPath.cpp
     src/GameClient/MapScriptSetup.cpp
@@ -16,6 +19,7 @@ list(APPEND OPENBFME_SIM_SOURCES
 # client-only sources (excluded from the simulation audit in tools/sim/sim_policy.json)
 set(OPENBFME_SCRIPT1_SOURCES
     src/GameClient/ScriptCameraDirector.cpp
+    src/GameClient/ShellSceneEffects.cpp
     src/GameClient/ScriptAudioLength.cpp
 )
 # the GDExtension's view of the script engine (client: requests, the script camera, the report)
@@ -24,10 +28,14 @@ set(OPENBFME_SCRIPT1_GODOT_SOURCES
 )
 set(OPENBFME_SCRIPT1_TESTS
     tests/test_script1.cpp
+    tests/test_shell_scene_effects.cpp
     tests/test_script1_live.cpp
     tests/test_script2.cpp
+    tests/test_teamunits1.cpp
     tests/test_script2_angmar.cpp
     tests/test_script2_client.cpp
     tests/test_script3.cpp
     tests/test_script3_mission.cpp
+    tests/test_script4.cpp
+    tests/test_teamevents1.cpp
 )

@@ -3,7 +3,11 @@
 
 #include "GameLogic/Economy.h"
 
+#include "GameLogic/SimMath.h"
+#include "Common/ModEngineFeatures.h"
 #include "Common/NumericState.h"
+#include "GameLogic/SkirmishAI/SkirmishAIManager.h"
+#include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "Common/Audio/AudioRequests.h"
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
@@ -17,9 +21,13 @@
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/ObjectTemplateInfo.h"
+#include "GameLogic/SkirmishAI/SkirmishAIData.h"
+#include "GameLogic/SkirmishAI/SkirmishAIManager.h"
 
 #include <stdexcept>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace
 {
@@ -425,10 +433,69 @@ void Economy::reportUpgradeEva(const Player &player, const UpgradeTemplate &upgr
 	AudioApi::reportEva(event, nullptr);
 }
 
+// lane BRUTALAI-1. The gate of the six sites (RW 0x73C344 .. 0x73C383 the thing cost, 0x73C569 .. 0x73C59A the thing time, 0x66F1AF .. 0x66F1E7 the upgrade
+// time, 0x66F3AC .. 0x66F3E5 the upgrade cost, 0x780AF9 .. 0x780B31 the hero revival cost, 0x780B98 .. 0x780BD0 the hero revival time):
+//   * RW 0x6AA61B Player::getDifficulty: Player + 0x2FC (its AI) -> RW 0x9A5E0C (the AI's + 0x30), else the game's ([0xDE3BAC] + 0x1A5C4); `cmp eax, 3`;
+//   * RW 0x6A950B: TheSkirmishAIManager ([0xDE4938]) runs an AI for the player (a null player: none).
+// A player the manager runs always has its AI, whose difficulty is the skirmish level (the port's Player::getSkirmishDifficulty, as RW 0x6AA61B is read
+// at AIBaseBuilder / AIUpgrade), so the game's difficulty never reaches a passing gate. Then m = 1.0 > r ? r : 1.0 (`comiss [0xBD1908]; jbe`: an
+// unordered r takes 1.0) with r the manager's + 0x95C (BuildCostReduction) or + 0x960 (BuildTimeReduction), the AIData BrutalDifficultyCheats at data
+// + 0x94C / + 0x950 (manager + 0x10). Retail data (RotWK 2.01 and BFME2 1.06): 15% and 15%. BFME2 1.06 has the same gate on its own manager (+ 0x850 cost, decomp
+// UpgradeTemplateCalcCostToBuild.cpp; + 0x854 time, decomp UpgradeRva0026EE30.cpp at BFME2 0x66EE30): both editions.
+std::optional<float> Economy::brutalReduction(const Player &player, bool time) const
+{
+	if (player.getSkirmishDifficulty() != 3) // GameDifficulty BRUTAL (RW 0x64501B)
+	{
+		return std::nullopt;
+	}
+	const SkirmishAIManager &manager = m_logic.skirmishAI();
+	if (!manager.findAI(player.getPlayerIndex()))
+	{
+		return std::nullopt;
+	}
+	if (!manager.store())
+	{
+		throw std::logic_error("Economy::brutalReduction: the skirmish AI runs without its AIData (SkirmishAIManager::setStore)");
+	}
+	const AIBrutalCheats &cheats = manager.store()->data().brutalCheats;
+	const float r = time ? cheats.buildTimeReduction : cheats.buildCostReduction;
+	return 1.0f > r ? r : 1.0f;
+}
+
+namespace
+{
+// lane BIGBATTLE-1: ObjectFilterMatch::allows(filter, object, no other player) of the objects one player controls depends only on the object's
+// template (the side is the player's; with no other player a relationship rule refuses; the names, the equivalence and the KindOf are the template's), so a
+// scan over the player's objects asks the filter once per template. The filter resolves its names and equivalences through string lookups (findTemplate,
+// EquivalentTo, BuildVariations): the AI's special power checks made that a large part of a big battle's logic frame. Same answers, once each per scan
+struct FilterByTemplate
+{
+	GameLogic &logic;
+	const ObjectFilter &filter;
+	const Player &player;
+	std::vector<std::pair<const ThingTemplate *, bool>> seen;
+	bool allows(const Object &o)
+	{
+		const ThingTemplate *t = o.getTemplate();
+		for (const auto &s : seen)
+		{
+			if (s.first == t)
+			{
+				return s.second;
+			}
+		}
+		const bool r = ObjectFilterMatch::allows(logic, filter, t, &player, nullptr);
+		seen.emplace_back(t, r);
+		return r;
+	}
+};
+}
+
 bool Economy::hasObjectMatching(const Player &player, const ObjectFilter &filter, bool completedOnly) const
 {
 	// RW 0x6ABD0B -> 0x7A19AB -> 0x7A075A over the player's teams' members
 	const Bits &b = bits();
+	FilterByTemplate byTemplate{ m_logic, filter, player, {} };
 	for (const Object *o = m_logic.getFirstObject(); o; o = o->getNextObject())
 	{
 		if (o->getControllingPlayer() != &player)
@@ -443,7 +510,7 @@ bool Economy::hasObjectMatching(const Player &player, const ObjectFilter &filter
 		{
 			continue; // retail tests the AWAITING_CONSTRUCTION / PARTIALLY_CONSTRUCTED model conditions: approximated by the construction statuses (S-253)
 		}
-		if (ObjectFilterMatch::allows(m_logic, filter, *o, nullptr))
+		if (byTemplate.allows(*o))
 		{
 			return true;
 		}
@@ -454,6 +521,7 @@ bool Economy::hasObjectMatching(const Player &player, const ObjectFilter &filter
 int Economy::countOwnedObjectsAllowedBy(const Player &player, const ObjectFilter &filter) const
 {
 	const Bits &b = bits();
+	FilterByTemplate byTemplate{ m_logic, filter, player, {} };
 	int n = 0;
 	for (const Object *o = m_logic.getFirstObject(); o; o = o->getNextObject())
 	{
@@ -461,7 +529,7 @@ int Economy::countOwnedObjectsAllowedBy(const Player &player, const ObjectFilter
 		{
 			continue;
 		}
-		if (ObjectFilterMatch::allows(m_logic, filter, *o, nullptr))
+		if (byTemplate.allows(*o))
 		{
 			++n;
 		}
@@ -516,6 +584,16 @@ float Economy::attributeModifierProduct(const Object &obj, int type) const
 		m_attributeModifiers(obj, type, product);
 	}
 	return product;
+}
+
+float Economy::productionMoneyProduct(const Object &obj) const
+{
+	const float production = attributeModifierProduct(obj, ATTRIBUTE_MODIFIER_PRODUCTION);
+	if (!ModEngineFeatures::has(ModEngineFeature::EdainUnchainedProductionSplit))
+	{
+		return production;
+	}
+	return SimMath::mulf32(production, attributeModifierProduct(obj, 28)); // PRODUCTION_MONEY (AttributeModifiers.h ATTRIBUTE_PRODUCTION_MONEY)
 }
 
 bool Economy::objectHasModelCondition(const Object &obj, const char *modelCondition) const
@@ -648,9 +726,26 @@ std::vector<std::string> Economy::report() const
 	{
 		lines.push_back("[S-253] no AttributeModifier provider is installed: no PRODUCTION / COMMAND_POINT_BONUS / BOUNTY_PERCENTAGE modifier can be active");
 	}
+	if (!m_attributeSums)
+	{
+		lines.push_back("[S-253] no AttributeModifier sum provider is installed: no COMMAND_POINT_BONUS / BOUNTY_PERCENTAGE modifier can be active");
+	}
 	if (m_droppedExperience != 0)
 	{
 		lines.push_back("[S-256] " + std::to_string(m_droppedExperience) + " experience grants of resource buildings were dropped (no ExperienceTracker hook installed)");
 	}
 	return lines;
+}
+
+float Economy::aiProductionReduction(const Player &player, bool time) const
+{
+	// TARGET (S-001 provenance caveat): RW 0x73C344..0x73C38C / 0x73C567..0x73C5B8.
+	// The registered AI gate matters: a human or campaign player with difficulty 3 gets no cheat here.
+	const auto &manager = m_logic.skirmishAI();
+	if (player.getSkirmishDifficulty() != 3 || !manager.findAI(player.getPlayerIndex())) return 0.0f;
+	const auto *store = manager.store();
+	if (!store) throw std::logic_error("Brutal AI production requires SkirmishAIData");
+	const auto &cheats = store->data().brutalCheats;
+	const float reduction = time ? cheats.buildTimeReduction : cheats.buildCostReduction;
+	return reduction < 1.0f ? reduction : 1.0f; // upper clamp only, as the target's comiss
 }

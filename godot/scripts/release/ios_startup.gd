@@ -22,15 +22,11 @@ func _ready() -> void:
 		await get_tree().process_frame
 	else:
 		await RenderingServer.frame_post_draw
-	ResourceLoader.load_threaded_request("res://scenes/game.tscn")
-	var loading: Array = []
-	while ResourceLoader.load_threaded_get_status("res://scenes/game.tscn", loading) == ResourceLoader.THREAD_LOAD_IN_PROGRESS:
-		progress.indeterminate = false
-		progress.value = float(loading[0]) if not loading.is_empty() else 0.0
-		await get_tree().process_frame
+	# lua-gdextension's script loader uses the language state on the main thread.
+	# Draw the startup screen first, then load the game and its Lua dependencies here.
+	var scene = load("res://scenes/game.tscn")
 	progress.indeterminate = false
 	progress.value = 1.0
-	var scene = ResourceLoader.load_threaded_get("res://scenes/game.tscn")
 	if scene == null:
 		status.text = "Could not load OpenBFME."
 		progress.hide()

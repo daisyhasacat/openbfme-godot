@@ -31,6 +31,7 @@
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/WallSpan.h"
+#include "GameClient/WallSymmetry.h"
 
 #include <algorithm>
 #include <cmath>
@@ -232,6 +233,19 @@ void PlacementIcons::updateWall(const InGameUI &ui)
 	{
 		m_icons.clear();
 		return;
+	}
+	// Shift mirrors through the same planner, so both previews use their own
+	// terrain, existing pieces and legality rather than reflecting drawables.
+	if (ui.isInPreferSelectionMode()) {
+		Coord3D otherEnd;
+		if (Object *other = WallSymmetry::partner(m_logic, *hub, end, command ? command->m_options : 0, otherEnd)) {
+			WallSpan::Plan mirrored;
+			if (WallSpan::plan(m_logic, *other, *other->getPosition(), otherEnd, command ? command->m_options : 0, mirrored)) {
+				plan.tiles.insert(plan.tiles.end(), mirrored.tiles.begin(), mirrored.tiles.end());
+				if (hub->getControllingPlayer()->getMoney()->countMoney() < (std::uint64_t)plan.cost + mirrored.cost)
+					for (auto &tile : plan.tiles) tile.code = 7;
+			}
+		}
 	}
 	// Keep unchanged segments alive as the end cap moves between slots.
 	m_icons.resize(plan.tiles.size());

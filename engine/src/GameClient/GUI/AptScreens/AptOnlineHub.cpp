@@ -106,6 +106,17 @@ AptOnlineHub::~AptOnlineHub()
 	if (AptGadgetLayer *layer = m_shell.windows().gadgetLayer())
 	{
 		layer->clearDecorator(this);
+		// lane MENUFIX-2: the tournaments panel's two list boxes (engine gadgets, not Apt components: nothing else frees them) went only with
+		// showPanel(false); leaving the online menu otherwise left them alive and drawn over every later menu (the menu inventory saw
+		// "No tournaments are planned." and two scroll bars over Create-a-Hero), owned by the shell's freed owner window
+		for (GameWindow *w : { m_list, m_details })
+		{
+			if (w)
+			{
+				layer->destroyEngineGadget(w);
+			}
+		}
+		m_list = m_details = nullptr;
 	}
 }
 
@@ -339,7 +350,7 @@ std::string AptOnlineHub::choices() const
 
 void AptOnlineHub::callChild(const std::string &function)
 {
-	// the page's own entry point HandleGameCall (BFME2 AptOnlineQuickMatchOptions.cpp: CallChild("DoOpenFound") / "CloseFoundAndReset")
+	// the page's own entry point HandleGameCall (BFME2 AptOnlineQuickMatch.cpp: CallChild("DoOpenFound") / "CloseFoundAndReset")
 	std::string err;
 	if (m_shell.level() < 0 || !m_shell.windows().invokeASAt(m_shell.level(), "OnlineQuickMatch", "HandleGameCall", { function }, nullptr, &err))
 	{
@@ -511,6 +522,7 @@ void AptOnlineHub::startRoom(const std::string &code, const std::string &matchId
 		info.slots[0].playerTemplate = m_room.faction;
 		info.slots[0].color = m_room.color;
 		info.slots[0].teamNumber = team;
+		info.cheatMode = -1; // lane CHEAT-1: a Quick Match / tournament room never has Cheat Mode (the lobby refuses it with a room code)
 		m_room.phase = Room::Phase::Creating;
 		m_status = "Opponent found: opening the game ...";
 		client->createGame(tournamentId.empty() ? u"Quick Match" : u"Tournament match", "", info, 0, code);
@@ -784,7 +796,7 @@ void AptOnlineHub::update()
 		AptGadgetLayer *layer = m_shell.windows().gadgetLayer();
 		if (layer && m_shell.shell().top() == &m_shell)
 		{
-			layer->setDecorator([this](GadgetDrawList &out) { decorate(out); }, this);
+			m_shell.takeDecorator(); // lane ONLINEMENU-1: the shell's decorator draws this panel, then the friends button and page
 		}
 		// the movie's Searching / found pop-up covers the page's middle while a search or a match's room is under way: the panel steps aside
 		// (its status line stays, below the pop-up)
@@ -926,6 +938,23 @@ void AptOnlineHub::fillTournaments()
 	{
 		GadgetListBoxAddEntryText(m_list, u"Asking the online services ...", 0xFFFFFFFFu, 0, 0);
 		return;
+	}
+	// A committed refresh may have removed the selected tournament. Do not leave
+	// its old row index and bracket displayed beside a different tournament.
+	if (!m_selectedId.empty())
+	{
+		const auto &listed = p->tournaments();
+		auto it = std::find_if(listed.begin(), listed.end(), [this](const PlatformApiClient::Tournament &t) { return t.id == m_selectedId; });
+		if (it == listed.end())
+		{
+			m_selected = -1;
+			m_selectedId.clear();
+			m_detailRows.clear();
+			if (m_details)
+			{
+				GadgetListBoxReset(m_details);
+			}
+		}
 	}
 	if (p->tournaments().empty())
 	{

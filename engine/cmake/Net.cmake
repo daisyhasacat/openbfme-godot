@@ -17,7 +17,11 @@ set(OPENBFME_NET_HOST_SOURCES
 set(OPENBFME_NET_TESTS
     tests/test_process.cpp
     tests/test_net_core.cpp
-    tests/test_net_retail.cpp)
+    tests/test_p16_net_soak.cpp
+    tests/test_net_retail.cpp
+    tests/test_profile2.cpp
+    tests/test_profile3.cpp
+    tests/test_profile3_retail.cpp)
 
 # called once openbfme_core and openbfme_tests exist: the host sources, the headless peer and the tests' path to it
 # The engine line of the profile identity (GameNetwork/ProfileIdentity.h): cmake/EngineId.cmake hashes the simulation sources and configuration (or honours
@@ -39,6 +43,21 @@ else()
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
     endforeach()
 endif()
+# Embed individual source hashes for diagnostics, including builds using a release ID override.
+openbfme_compute_engine_id("${CMAKE_CURRENT_SOURCE_DIR}" "${OPENBFME_SIM_X86_32}" "${OPENBFME_ENGINE_ID_OPTIONS}" _diagnostic_id _diagnostic_files _diagnostic_manifest)
+foreach(_f IN LISTS _diagnostic_files)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
+endforeach()
+string(REPLACE "\n" ";" _diagnostic_lines "${_diagnostic_manifest}")
+set(_diagnostic_cpp "// Generated build-time checksums, never read source files at runtime.\n#include \"GameNetwork/ProfileIdentity.h\"\nstd::vector<std::string> ProfileIdentity::buildFiles() { return {\n")
+foreach(_line IN LISTS _diagnostic_lines)
+    if(NOT _line STREQUAL "")
+        string(APPEND _diagnostic_cpp "R\"OBFM(${_line})OBFM\",\n")
+    endif()
+endforeach()
+string(APPEND _diagnostic_cpp "}; }\n")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/BuildFiles.gen.cpp" "${_diagnostic_cpp}")
+
 # provenance (never part of the id): the commit the build was configured from, "none" without Git
 set(OPENBFME_GIT_PROVENANCE "none")
 find_package(Git QUIET)
@@ -54,20 +73,23 @@ set_source_files_properties(src/GameNetwork/ProfileIdentity.cpp PROPERTIES
     COMPILE_DEFINITIONS "OPENBFME_ENGINE_ID=\"${OPENBFME_ENGINE_ID_VALUE}\";OPENBFME_GIT_PROVENANCE=\"${OPENBFME_GIT_PROVENANCE}\"")
 
 macro(openbfme_net_targets)
-    target_sources(openbfme_core PRIVATE ${OPENBFME_NET_HOST_SOURCES})
+    target_sources(openbfme_core PRIVATE ${OPENBFME_NET_HOST_SOURCES} ${CMAKE_CURRENT_BINARY_DIR}/generated/BuildFiles.gen.cpp)
     if(WIN32)
-        target_link_libraries(openbfme_core PUBLIC ws2_32)
+        target_link_libraries(openbfme_core PUBLIC ws2_32 shell32)
     endif()
     add_executable(openbfme_peer src/Main/openbfme_peer.cpp)
     target_link_libraries(openbfme_peer PRIVATE openbfme_core)
     if(MSVC)
         target_compile_options(openbfme_peer PRIVATE /utf-8)
     endif()
-    add_dependencies(openbfme_tests openbfme_peer)
-    target_compile_definitions(openbfme_tests PRIVATE OPENBFME_PEER_EXE="$<TARGET_FILE:openbfme_peer>")
-    add_executable(openbfme_process_probe tests/process_probe.cpp)
-    target_compile_features(openbfme_process_probe PRIVATE cxx_std_17)
-    openbfme_sim_register_target(openbfme_process_probe) # the flag audit covers every target's translation units
-    add_dependencies(openbfme_tests openbfme_process_probe)
-    target_compile_definitions(openbfme_tests PRIVATE OPENBFME_PROCESS_PROBE_EXE="$<TARGET_FILE:openbfme_process_probe>")
+    if(TARGET openbfme_tests)
+        add_dependencies(openbfme_tests openbfme_peer)
+        target_compile_definitions(openbfme_tests PRIVATE OPENBFME_PEER_EXE="$<TARGET_FILE:openbfme_peer>")
+        add_executable(openbfme_process_probe tests/process_probe.cpp)
+        target_link_libraries(openbfme_process_probe PRIVATE openbfme_core)
+        target_compile_features(openbfme_process_probe PRIVATE cxx_std_17)
+        openbfme_sim_register_target(openbfme_process_probe) # the flag audit covers every target's translation units
+        add_dependencies(openbfme_tests openbfme_process_probe)
+        target_compile_definitions(openbfme_tests PRIVATE OPENBFME_PROCESS_PROBE_EXE="$<TARGET_FILE:openbfme_process_probe>")
+    endif()
 endmacro()

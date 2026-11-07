@@ -11,8 +11,14 @@
 ##   rohirrim  G8: Rohirrim shoot standing, then while riding past (missing fire animations, arrows out of the bodies)
 ##   charge    G4: Knights of Dol Amroth charge an orc horde (knock-back, slow-down)
 ##   garrison  G6: a Gondor archer horde garrisons a keep through a click and leaves through the Evacuate button (the common exit)
+##   garrison4 GARRISON-4 (the owner's 2026-10-22 report): a Gondor archer horde garrisons a NEUTRAL ruined tower through a click; the tower becomes
+##             the player's (RW 0x87C6CE), its exit button is enabled and lets them out, and the tower turns neutral again
 ##   grond     G7 / FB-0002: Grond moves once its crew is drawn (the trolls push, the wheels turn)
 ##   wall      F7: a wall hub's Begin Wall Span button and a click (the span rises along its length)
+##   wavefight the frame cost of a wave fight: an enemy marker's waves meet the local army between the bases; the logic frame, the waits on the logic
+##             and the spawners' own per-frame work are timed (WAVEFIGHT_STEER=0: the spawners never re-order their waves)
+##   waves     the map editor's wave spawners (scripts/wave_spawners.gd, not retail): one marker in the map border, one inside, both owned by the enemy's
+##             start; their waves appear, come in from the border and close on the local base, the second wave follows the interval
 ##   produce   QA-2's treadmill finding: a barracks trains three soldier hordes through its buttons; every member's AI state is counted for 60 s
 ##             (members left in AI_FOLLOW_EXITPRODUCTION_PATH standing still with MOVING set)
 extends "res://scripts/qa_player.gd"
@@ -160,12 +166,18 @@ func scene(name: String) -> Dictionary:
 			await _scene_charge()
 		"garrison":
 			await _scene_garrison()
+		"garrison4":
+			await _scene_garrison4()
 		"grond":
 			await _scene_grond()
 		"wall":
 			await _scene_wall()
 		"produce":
 			await _scene_produce()
+		"waves":
+			await _scene_waves()
+		"wavefight":
+			await _scene_wavefight()
 		_:
 			issue("scene_setup", name, "unknown scene")
 	_rec_stop()
@@ -436,6 +448,84 @@ func _scene_garrison() -> void:
 	_shot("garrison-end")
 
 
+## lane GARRISON-4: the neutral player is index 0 of the player list (PlayerList::getNeutralPlayer)
+func _scene_garrison4() -> void:
+	var ang := _dir.angle()
+	# 160 apart, as the C++ input test: the archers' vision lifts the shroud over the tower (canEnterObject refuses a shrouded container, RW 0x82CBD5)
+	var tower := _hook_create("RuinedTower_Open", 0, _spot + _dir * 40.0, 0.0)
+	var archers := _hook_create("GondorArcherHorde", _local_index(), _spot - _dir * 120.0, ang)
+	await _wait_game(3.0)
+	await _zoom_in(_spot)
+	_shot("garrison4-start")
+	await _record("garrison4", 1.0)
+	print("QA scene garrison4 movie frame start %d" % Engine.get_frames_drawn()) # where a --write-movie capture of the run is cut
+	if not await _select_id(archers):
+		issue("scene_select_failed", "garrison4", "the archers could not be selected")
+		return
+	await _wait_game(1.0) # a second click soon after the selecting one would be a double click
+	var before: int = _hud.get_message_log().size()
+	var tp: Dictionary = _world.get_object(tower)
+	_hud.inject_mouse_move(_hud.world_to_pixel(Vector2(tp.get("x", 0.0), tp.get("y", 0.0))))
+	await _frames(4)
+	print("QA scene garrison4 before the click: selection %s, tower shroud status %d, cursor %s" % [str(_hud.get_selection()),
+		_world.get_object_shroud_status(tower), JSON.stringify(_hud.get_state().get("cursor"))])
+	await _click_object(tower)
+	await _frames(3)
+	var sent := _order_log_since(before)
+	if not str(sent).contains("MSG_ENTER"):
+		# RotWK's default mouse is the alternate setup (GlobalData m_useAlternateMouse, RW 0x642A4B): the left click selected the tower, the right click orders
+		await _deselect()
+		if not await _select_id(archers):
+			issue("scene_select_failed", "garrison4", "the archers could not be selected again")
+			return
+		await _wait_game(1.0)
+		before = _hud.get_message_log().size()
+		var tq: Dictionary = _world.get_object(tower)
+		await _click_world(Vector2(tq.get("x", 0.0), tq.get("y", 0.0)), 2)
+		await _frames(3)
+		sent = _order_log_since(before)
+	print("QA scene garrison4 order: %s" % str(sent))
+	var inside := false
+	for i in 60:
+		await _wait_game(0.5)
+		var g: Dictionary = _world.get_garrison(tower)
+		# the ruined tower shows its archers on its points (members_hidden stays 0): the horde is in once it is garrisoned and nobody is on the way
+		if g.get("count", 0) >= 1 and g.get("entering", 1) == 0 and g.get("horde_garrisoned", false):
+			inside = true
+			break
+	print("QA scene garrison4: inside %s, %s" % [str(inside), JSON.stringify(_world.get_garrison(tower))])
+	if not inside:
+		issue("scene_order", "garrison4", "a click on the neutral tower with the archers selected did not garrison them in 30 s")
+		return
+	await _deselect()
+	if not await _select_id(tower):
+		issue("scene_select_failed", "garrison4", "the tower could not be selected")
+		return
+	await _wait_game(1.5)
+	var exit := {}
+	var buttons: Array = _hud.get_command_buttons()
+	print("QA scene garrison4 tower buttons: %s" % str(buttons.map(func(x): return "%s %s state %d" % [x.name, x.command, x.state])))
+	for b in buttons:
+		if (b.command == "EVACUATE" or b.command == "EXIT_CONTAINER") and exit.is_empty():
+			exit = b
+	if exit.is_empty():
+		issue("scene_order", "garrison4", "the selected tower shows no exit button")
+		return
+	if exit.state != 1: # ButtonState::Enabled
+		issue("scene_order", "garrison4", "the tower's exit button is not enabled (state %d): the owner's report" % exit.state)
+	_shot("garrison4-selected")
+	before = _hud.get_message_log().size()
+	await _press(exit)
+	await _frames(3)
+	print("QA scene garrison4 exit: %s" % str(_order_log_since(before)))
+	for i in 6:
+		await _wait_game(1.5)
+		print("QA scene garrison4 exit t+%.1f s: %s; tower %s" % [1.5 * (i + 1), _state_line(archers), JSON.stringify(_world.get_garrison(tower))])
+	_rec_stop()
+	print("QA scene garrison4 movie frame end %d" % Engine.get_frames_drawn())
+	_shot("garrison4-end")
+
+
 func _scene_grond() -> void:
 	var ang := _dir.angle()
 	var grond := _hook_create("MordorGrond", _local_index(), _spot, ang)
@@ -559,3 +649,222 @@ func _scene_produce() -> void:
 			_rec_stop()
 	_rec_stop()
 	_shot("produce-end")
+
+
+func _scene_waves() -> void:
+	var spawners: Node = preload("res://scripts/wave_spawners.gd").new()
+	spawners.world = _world
+	add_child(spawners)
+	var ctx: Dictionary = spawners.context()
+	print("QA scene waves context: %s" % JSON.stringify(ctx))
+	var start := 0
+	for entry in ctx.get("starts", []):
+		if int(entry.player) == _enemy_index:
+			start = int(entry.start)
+	if start == 0:
+		issue("scene_setup", "waves", "the enemy has no start position")
+		return
+	var at: Dictionary = spawners.start_entry(start)
+	var home := Vector2(at.x, at.y)
+	var area: Array = ctx.playable
+	var full: Array = ctx.map
+	# the border point beyond the playable edge nearest the enemy's start
+	var edges := [[home.x - area[0], Vector2(area[0] - 120.0, home.y)], [area[2] - home.x, Vector2(area[2] + 120.0, home.y)],
+		[home.y - area[1], Vector2(home.x, area[1] - 120.0)], [area[3] - home.y, Vector2(home.x, area[3] + 120.0)]]
+	edges.sort_custom(func(a, b): return a[0] < b[0])
+	var outside: Vector2 = edges[0][1]
+	if not Rect2(full[0], full[1], full[2] - full[0], full[3] - full[1]).has_point(outside):
+		issue("scene_setup", "waves", "the map has no border at %s (map %s, playable %s)" % [str(outside), str(full), str(area)])
+		return
+	var inside := home + (_base - home).normalized() * 250.0
+	var units := [{"template": "MordorFighterHorde", "count": 2}]
+	spawners.set_markers([
+		{"id": 1, "x": outside.x, "y": outside.y, "start": start, "delay": 1.0, "interval": 40.0, "waves": 2, "units": units},
+		{"id": 2, "x": inside.x, "y": inside.y, "start": start, "delay": 1.0, "interval": 40.0, "waves": 1, "units": units}])
+	for marker in spawners.markers:
+		print("QA scene waves marker %d at (%.0f, %.0f) outside %s: %s" % [marker.id, marker.x, marker.y, str(spawners.is_outside(Vector2(marker.x, marker.y))), spawners.describe(marker)])
+	var log: Array = []
+	spawners.wave_spawned.connect(func(id, created, message): log.append([id, created, message]); print("QA scene waves spawned: marker %d, %d objects: %s" % [id, created, message]))
+	await _wait_game(3.0)
+	if log.size() != 2 or log[0][1] != 2 or log[1][1] != 2:
+		issue("scene_waves", "first", "expected two waves of two hordes, got %s" % str(log))
+		return
+	var first := {}
+	for group in spawners._groups:
+		var p := _group_centre(group.ids)
+		first[group.marker] = p
+		print("QA scene waves group of marker %d: %s at (%.0f, %.0f), %.0f from the base" % [group.marker, str(group.ids), p.x, p.y, p.distance_to(_base)])
+	for t in 8:
+		await _wait_game(5.0)
+		for group in spawners._groups:
+			var p := _group_centre(group.ids)
+			print("QA scene waves t+%d s marker %d: (%.0f, %.0f), %.0f from the base, outside %s, target %d" % [(t + 1) * 5, group.marker, p.x, p.y, p.distance_to(_base),
+				str(spawners.is_outside(p)), group.target])
+	for group in spawners._groups.slice(0, 2):
+		var p := _group_centre(group.ids)
+		if spawners.is_outside(p):
+			issue("scene_waves", "entry", "marker %d's wave is still outside the playable area at (%.0f, %.0f)" % [group.marker, p.x, p.y])
+		elif p.distance_to(_base) > Vector2(first[group.marker]).distance_to(_base) - 300.0:
+			issue("scene_waves", "march", "marker %d's wave did not close on the base: %.0f -> %.0f" % [group.marker, Vector2(first[group.marker]).distance_to(_base), p.distance_to(_base)])
+	await _wait_game(5.0)
+	if log.size() != 3 or log[2][0] != 1:
+		issue("scene_waves", "interval", "expected the border marker's second wave after 40 s: %s" % str(log))
+	print("QA scene waves log: %s" % str(log))
+	await _waves_editor(home)
+	for t in 8:
+		await _wait_game(5.0)
+		for group in spawners._groups:
+			var p := _group_centre(group.ids)
+			var o: Dictionary = _world.get_object(int(group.ids[0]))
+			print("QA scene waves t+%d s marker %d: (%.0f, %.0f), %.0f from the base, state %s goal %s victim %s" % [45 + t * 5, group.marker, p.x, p.y, p.distance_to(_base),
+				str(o.get("ai_state", "")), str(o.get("ai_goal", "")), str(o.get("ai_victim", o.get("ai_goal_object", "")))])
+
+
+## the editor's Waves tool: a click places a spawner owned by the nearest other start, units are added from the library, the edit file keeps it
+func _waves_editor(home: Vector2) -> void:
+	_game._open_map_editor()
+	await _frames(3)
+	var editor: CanvasLayer = _game._map_editor
+	if not is_instance_valid(editor) or not editor.active:
+		issue("scene_waves", "editor", "the map editor did not open")
+		return
+	editor.tool.select(11)
+	editor._update_controls()
+	await _look(home)
+	editor.cursor = _hud.world_to_pixel(home + Vector2(0, 150))
+	editor._wave_press()
+	var markers: Array = editor.spawners.markers
+	if markers.size() != 1 or int(markers[0].start) != int(editor.spawners.nearest_start(home)):
+		issue("scene_waves", "editor", "a click did not place a spawner owned by the nearest start: %s" % str(markers))
+		return
+	# the + search: hordes and heroes only (a horde's soldier and a building never), the quantity is the count added
+	if not editor.wave_picker.visible:
+		issue("scene_waves", "editor", "placing a spawner did not open the + search")
+		editor._toggle_wave_picker()
+	var found := {}
+	for query in ["fighter", "aragorn", "barracks"]:
+		editor.wave_search.text = query
+		editor._filter_wave_units()
+		var names: Array = []
+		for i in editor.wave_results.item_count:
+			names.append(str(editor.wave_results.get_item_metadata(i)))
+		found[query] = names
+		print("QA scene waves search '%s': %d results %s" % [query, names.size(), str(names.slice(0, 8))])
+	if "MordorFighterHorde" not in found.fighter or "MordorFighter" in found.fighter or "GondorFighter" in found.fighter:
+		issue("scene_waves", "search", "'fighter' should list the fighter hordes, not their soldiers: %s" % str(found.fighter))
+	if found.aragorn.is_empty() or not found.barracks.is_empty():
+		issue("scene_waves", "search", "heroes should be listed and buildings not: aragorn %s, barracks %s" % [str(found.aragorn), str(found.barracks)])
+	editor.wave_search.text = "MordorFighterHorde"
+	editor._filter_wave_units()
+	for i in editor.wave_results.item_count:
+		if str(editor.wave_results.get_item_metadata(i)) == "MordorFighterHorde":
+			editor.wave_results.select(i)
+	editor.wave_add_count.value = 3
+	editor._wave_add_unit()
+	if editor.spawners.markers[0].units != [{"template": "MordorFighterHorde", "count": 3}]:
+		issue("scene_waves", "search", "the quantity did not reach the wave: %s" % str(editor.spawners.markers[0].units))
+	print("QA scene waves editor: %s (%s); status %s" % [str(editor.spawners.markers), editor.spawners.describe(editor.spawners.markers[0]), editor.status.text])
+	editor.save_name.text = "qa-waves"
+	editor._save()
+	editor.overlay.clear()
+	editor.spawners.set_markers([])
+	editor._load()
+	var loaded: Array = editor.spawners.markers
+	if loaded.size() != 1 or loaded[0].units.is_empty() or str(loaded[0].units[0].template) != "MordorFighterHorde":
+		issue("scene_waves", "editor", "the saved spawner did not load back: %s (%s)" % [str(loaded), editor.status.text])
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://map_edits/qa-waves.json"))
+	editor.set_active(false)
+
+
+func _group_centre(ids: Array) -> Vector2:
+	var sum := Vector2.ZERO
+	var n := 0
+	for id in ids:
+		var o: Dictionary = _world.get_object(int(id))
+		if o.get("ok", false):
+			sum += Vector2(o.x, o.y)
+			n += 1
+	return sum / maxf(1.0, float(n))
+
+
+func _scene_wavefight() -> void:
+	var steer := OS.get_environment("WAVEFIGHT_STEER") != "0"
+	var spawners: Node = preload("res://scripts/wave_spawners.gd").new()
+	spawners.world = _world
+	add_child(spawners)
+	spawners.set_process(false) # driven and timed below
+	var start := 0
+	for entry in spawners.context().get("starts", []):
+		if int(entry.player) == _enemy_index:
+			start = int(entry.start)
+	var at: Dictionary = spawners.start_entry(start)
+	if at.is_empty():
+		issue("scene_setup", "wavefight", "the enemy has no start position")
+		return
+	var home := Vector2(at.x, at.y)
+	var toward := (_base - home).normalized()
+	var mid := (home + _base) * 0.5
+	spawners.set_markers([{"id": 1, "x": home.x + toward.x * 300.0, "y": home.y + toward.y * 300.0, "start": start, "delay": 1.0, "interval": 25.0, "waves": 3,
+		"units": [{"template": "MordorFighterHorde", "count": 6}, {"template": "MordorArcherHorde", "count": 2}]}])
+	var side := toward.orthogonal()
+	var army: Array = []
+	for i in 12:
+		var p := _base + toward * 300.0 + side * (float(i) - 5.5) * 70.0
+		army.append(_hook_create("GondorFighterHorde", _local_index(), p, toward.angle()))
+	await _wait_game(2.0)
+	_world.order_move(army, mid.x, mid.y, {"type": "attack"})
+	var end: int = _world.get_presented_frame() + 90 * 5 # not get_frame: it waits for the worker, a wait the scene would cause itself
+	var spawner_us: Array[float] = []
+	var worker_ms: Array[float] = []
+	var frame_ms: Array[float] = []
+	var waits0: float = float(_world.get_frame_timings().get("logic_wait_ms", 0.0))
+	var last := Time.get_ticks_usec()
+	var last_logic := -1
+	var slow: Array = []
+	_world.set_performance_enabled(true)
+	var counters: Dictionary = _world.get_performance_counters()
+	var slow_parts := {}
+	while _world.get_presented_frame() < end:
+		await get_tree().process_frame
+		var now := Time.get_ticks_usec()
+		frame_ms.append((now - last) / 1000.0)
+		last = now
+		if not steer:
+			spawners._next_steer = 1 << 30
+		var t0 := Time.get_ticks_usec()
+		spawners._process(0.0)
+		spawner_us.append(float(Time.get_ticks_usec() - t0))
+		var timings: Dictionary = _world.get_frame_timings()
+		var frame: int = _world.get_presented_frame()
+		if frame != last_logic:
+			last_logic = frame
+			var ms := float(timings.get("worker_frame_ms", 0.0))
+			worker_ms.append(ms)
+			var now_counters: Dictionary = _world.get_performance_counters()
+			if ms > 60.0:
+				for part in now_counters:
+					slow_parts[part] = float(slow_parts.get(part, 0.0)) + float(now_counters[part].ms) - float(counters[part].ms)
+			counters = now_counters
+			if ms > 60.0 and slow.size() < 40:
+				slow.append("f%d %.0f ms (%d objects)" % [frame, ms, int(timings.get("presented_objects", 0))])
+	var waits: float = float(_world.get_frame_timings().get("logic_wait_ms", 0.0)) - waits0
+	var alive := 0
+	for group in spawners._groups:
+		alive += group.ids.size()
+	print("QA scene wavefight steer %s: %d render frames, frame ms %s; logic frame ms %s; spawner us %s; render waits on the logic %.0f ms; %d wave objects alive" % [
+		str(steer), frame_ms.size(), _spread(frame_ms), _spread(worker_ms), _spread(spawner_us), waits, alive])
+	print("QA scene wavefight slow logic frames: %s" % ", ".join(slow))
+	print("QA scene wavefight time in the slow frames by part (ms): %s" % JSON.stringify(slow_parts))
+	_world.set_performance_enabled(false)
+
+
+## avg / p99 / max of a sample
+func _spread(values: Array[float]) -> String:
+	if values.is_empty():
+		return "-"
+	var sorted := values.duplicate()
+	sorted.sort()
+	var sum := 0.0
+	for v in values:
+		sum += v
+	return "avg %.1f p99 %.1f max %.1f" % [sum / values.size(), sorted[int(values.size() * 0.99)], sorted[-1]]

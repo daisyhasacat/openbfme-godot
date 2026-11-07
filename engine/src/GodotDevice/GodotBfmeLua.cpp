@@ -10,6 +10,7 @@
 #include "GameLogic/Module/DozerAIUpdate.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "Common/Player.h"
+#include "Common/PlayerPresentation.h"
 #include "Common/PlayerList.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/Module/BehaviorModule.h"
@@ -111,6 +112,9 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 			auto info = ObjectTemplateInfoBuilder::build(*tt);
 			auto r = definition(*tt);
 			const auto &c = buildClasses.at(tt->getName());
+			static const int horde = ObjectTemplateInfoBuilder::kindOfIndex("HORDE"), hero = ObjectTemplateInfoBuilder::kindOfIndex("HERO");
+			r["isHorde"] = horde >= 0 && kind(info, horde);
+			r["isHero"] = hero >= 0 && kind(info, hero);
 			auto list = [](const std::vector<std::string> &items) { Value::List out; for (const auto &item : items) out.emplace_back(item); return out; };
 			r["buildMode"] = Table{{"building",c.building},{"unit",c.unit},{"plot",c.plot},{"marker",c.marker},{"placeholder",c.placeholder},
 				{"scenery",c.scenery},{"trainable",c.trainable},{"producers",list(c.producers)},{"builderBuildable",c.builderBuildable},{"plotBuildable",c.plotBuildable},{"enhancedPlotBuildable",c.enhancedPlotBuildable},
@@ -154,6 +158,8 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 		Table r{{"id", i},
 				{"startSlot", p->getMultiplayerStartIndex()},
 				{"name", p->getPlayerName()},
+                {"key", PlayerPresentation::key(i, p->getPlayerName(), p->getSide())},
+                {"label", PlayerPresentation::label(i, p->getPlayerName(), p->getSide())},
 				{"displayName", p->getPlayerDisplayName()},
 				{"username", p->getPlayerDisplayName()},
 				{"money", double(p->getMoney()->countMoney())},
@@ -211,6 +217,9 @@ BfmeLuaRuntime::Snapshot GameWorld::bfme_snapshot()
 			const auto *last = TheExperienceLevelSystem ? TheExperienceLevelSystem->lastLevel(xp->levelTargetName(), obj->logic().economy().isMultiplayerGame()) : nullptr;
 			r["maxLevel"] = last ? last->m_rank : xp->getRank();
 		}
+		// a horde member: its horde (the horde's object upgrades reach the members it holds when it is given one, Object::giveUpgrade)
+		if (const ::Object *horde = obj->getHordeObject(false); horde && horde != obj)
+			r["hordeId"] = double(horde->getID());
 		if (building)
 		{
 			r["underConstruction"] = obj->isUnderConstruction();
@@ -372,6 +381,23 @@ std::string GameWorld::bfme_apply(const BfmeLuaRuntime::Mutation &m)
 			logic.settings().clearNeutralDecorations = *enabled;
 			return {};
 		}
+		if (m.field == ":setAIBaseExclusion")
+		{
+			const auto status = bfme_snapshot();
+			if (status.networkGame || status.replay) return "base protection requires a local live match";
+			const float radius = (float)numeric(m.value, 0, 10000, false);
+			const Player *player = logic.players().getLocalPlayer();
+			if (!player) return "no local player";
+			Coord3D center{};
+			const ::Object *base = nullptr;
+			for (::Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+				if (o->getControllingPlayer() == player && !o->isEffectivelyDead() && o->isKindOfName("STRUCTURE") &&
+					(!base || (o->isKindOfName("COMMANDCENTER") && !base->isKindOfName("COMMANDCENTER")))) base = o;
+			if (radius > 0 && !base) return "local player has no base building";
+			if (base) center = *base->getPosition();
+			logic.setAIBaseExclusion(player->getPlayerIndex(), center, radius);
+			return {};
+		}
 		if (m.field == ":setGameSpeed")
 		{
 			set_time_scale(numeric(m.value, 0, 100, false));
@@ -517,7 +543,7 @@ std::string GameWorld::bfme_apply(const BfmeLuaRuntime::Mutation &m)
 		}
 		if (m.field == ":kill")
 		{
-			obj->kill(DEATH_NORMAL);
+			obj->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 			return {};
 		}
 		if (m.field == ":destroy")
@@ -549,3 +575,28 @@ std::string GameWorld::bfme_apply(const BfmeLuaRuntime::Mutation &m)
 	return "unknown collection";
 }
 } // namespace godot
+
+namespace godot
+{
+Array GameWorld::get_player_table() const
+{
+    Array rows;
+    if (!m_game) return rows;
+    const auto &players = m_game->logic().players();
+    for (int i = 0; i < players.getPlayerCount(); ++i) {
+        const auto *p = players.getNthPlayer(i);
+        if (!p) continue;
+        Dictionary row;
+        row["id"] = i;
+        row["key"] = String::utf8(PlayerPresentation::key(i, p->getPlayerName(), p->getSide()).c_str());
+        row["label"] = String::utf8(PlayerPresentation::label(i, p->getPlayerName(), p->getSide()).c_str());
+        row["name"] = String::utf8(p->getPlayerName().c_str());
+        row["faction"] = String::utf8(p->getSide().c_str());
+        row["displayName"] = String::utf8(p->getPlayerDisplayName().c_str());
+        row["startSlot"] = p->getMultiplayerStartIndex();
+        row["isAI"] = p->isSkirmishAI();
+        rows.push_back(row);
+    }
+    return rows;
+}
+}

@@ -1,3 +1,4 @@
+import {identityStorage} from './identity-storage.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
@@ -31,7 +32,7 @@ test('larger reports use the bounded HTTP allowance and chunked Worker metadata 
 test('Worker accepts detailed reports and restores chunked metadata across object restarts',async()=>{
  const {LobbyObject}=await import('../src/worker.mjs'),stored=new Map();
  const store={saveMeta:async(k,v)=>stored.set(k,structuredClone(v)),saveGame:async g=>stored.set('game:'+g.id,structuredClone(g)),putBlob:async()=>{}};
- const f=await fixture(store);let ready;const state={storage:{put:async(k,v)=>stored.set(k,structuredClone(v)),delete:async k=>stored.delete(k),list:async({prefix})=>new Map([...stored].filter(([k])=>k.startsWith(prefix)))},blockConcurrencyWhile:fn=>{ready=fn();}};
+ const f=await fixture(store);let ready;const state={storage:{...identityStorage(),get:async k=>stored.get(k),put:async(k,v)=>stored.set(k,structuredClone(v)),delete:async k=>stored.delete(k),list:async({prefix})=>new Map([...stored].filter(([k])=>k.startsWith(prefix)))},blockConcurrencyWhile:fn=>{ready=fn();}};
  let worker=new LobbyObject(state,config);await ready;const body=report();body.players[0].templates=Array.from({length:250},(_,i)=>({name:'ModBuilding'+i+'X'.repeat(80),kind:'structure',built:2,lost:0,destroyed:1,hordes_built:0}));
  const response=await worker.fetch(new Request('https://lobby/v1/games/'+f.id+'/statistics',{method:'POST',headers:{authorization:'Bearer '+f.a.token,'Content-Type':'application/json'},body:JSON.stringify(body)}));assert.equal(response.status,200);
  const diagnostic={v:1,platform:'iOS',commit:'worker-test',dump:'DESYNC: frame 100'};

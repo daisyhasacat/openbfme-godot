@@ -2,6 +2,13 @@
 // on hand-built maps. GPL-3.0. Expected values are computed by hand from the cited formulas (ZH/BFME1).
 
 #include "doctest.h"
+#include "BigTestUtil.h"
+#include "Common/ArchiveFile.h"
+#include "Common/JobSystem.h"
+#include <tuple>
+#include <chrono>
+#include <iostream>
+#include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 
 #include "GameClient/TGAFile.h"
 #include "GameClient/TerrainAtlas.h"
@@ -108,7 +115,7 @@ TEST_CASE("TGA: RLE, colour-mapped, other depths, oversize and truncated files a
 	Bytes px(12, 0);
 	Bytes rle = makeTga(10, 24, 2, 2, 0, px);
 	CHECK_FALSE(TGAFile::decode(rle.data(), rle.size(), img, &err));
-	CHECK(err.find("RLE is rejected") != std::string::npos);
+	CHECK(err.find("rejects RLE") != std::string::npos);
 	Bytes cm = makeTga(2, 24, 2, 2, 0, px);
 	cm[1] = 1;
 	CHECK_FALSE(TGAFile::decode(cm.data(), cm.size(), img, &err));
@@ -124,6 +131,24 @@ TEST_CASE("TGA: RLE, colour-mapped, other depths, oversize and truncated files a
 	CHECK(err.find("truncated") != std::string::npos);
 	CHECK_FALSE(TGAFile::decode(trunc.data(), 10, img, &err));
 	CHECK(err.find("18-byte header") != std::string::npos);
+}
+
+TEST_CASE("TGA: the texture path reads RLE true-colour (type 10) as ZH TARGA.CPP DecodeImage does: runs and literal packets (MODUI-1)")
+{
+	// 3x1 24-bit: a run of 2 red pixels (0x81 + one BGR), then 1 literal green (0x00 + one BGR)
+	Bytes packets = { 0x81, 0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF, 0x00 };
+	Bytes rle = makeTga(10, 24, 3, 1, 0, packets);
+	TGAImage img;
+	std::string err;
+	CHECK_FALSE(TGAFile::decode(rle.data(), rle.size(), img, &err)); // the terrain reader: refused
+	REQUIRE_MESSAGE(TGAFile::decode(rle.data(), rle.size(), img, &err, 1024, true), err);
+	CHECK(img.rgba == (Bytes{ 255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255 }));
+	Bytes over = makeTga(10, 24, 3, 1, 0, Bytes{ 0x83, 1, 2, 3 }); // a run of 4 in a 3-pixel image
+	CHECK_FALSE(TGAFile::decode(over.data(), over.size(), img, &err, 1024, true));
+	CHECK(err.find("runs past") != std::string::npos);
+	Bytes cut = makeTga(10, 24, 3, 1, 0, Bytes{ 0x81, 0, 0 });
+	CHECK_FALSE(TGAFile::decode(cut.data(), cut.size(), img, &err, 1024, true));
+	CHECK(err.find("truncated") != std::string::npos);
 }
 
 TEST_CASE("TerrainTypes: Terrain blocks give name -> texture, case-insensitive; _nrm and archive path names")
@@ -1014,18 +1039,253 @@ TEST_CASE("TGA radar: RLE raw and repeated packets preserve pixels and reject in
 	// Two red pixels followed by one green and one blue pixel, spanning rows.
 	const Bytes packets = {0x81, 0, 0, 255, 0x01, 0, 255, 0, 255, 0, 0};
 	auto bytes = makeTga(10, 24, 2, 2, 0x20, packets, 3);
-	REQUIRE_MESSAGE(TGAFile::decodeRadar(bytes.data(), bytes.size(), img, &error), error);
+	REQUIRE_MESSAGE(TGAFile::decode(bytes.data(), bytes.size(), img, &error, 4096, true), error);
 	CHECK(img.topDownFlag);
 	CHECK(img.rgba == Bytes{255,0,0,255, 255,0,0,255, 0,255,0,255, 0,0,255,255});
 	CHECK_FALSE(TGAFile::decode(bytes.data(), bytes.size(), img, &error)); // terrain remains strict
 	auto rgba = makeTga(10, 32, 2, 1, 0, {0x81, 3, 2, 1, 77});
-	REQUIRE(TGAFile::decodeRadar(rgba.data(), rgba.size(), img, &error));
+	REQUIRE(TGAFile::decode(rgba.data(), rgba.size(), img, &error, 4096, true));
 	CHECK(img.rgba == Bytes{1,2,3,77, 1,2,3,77});
 	for (const auto &payload : {Bytes{}, Bytes{0x80}, Bytes{0x00, 0, 0}, Bytes{0x84, 0, 0, 0}})
 	{
 		auto broken = makeTga(10, 24, 2, 2, 0, payload);
-		CHECK_FALSE(TGAFile::decodeRadar(broken.data(), broken.size(), img, &error));
+		CHECK_FALSE(TGAFile::decode(broken.data(), broken.size(), img, &error, 4096, true));
 	}
 	bytes[0] = 255;
-	CHECK_FALSE(TGAFile::decodeRadar(bytes.data(), bytes.size(), img, &error));
+	CHECK_FALSE(TGAFile::decode(bytes.data(), bytes.size(), img, &error, 4096, true));
+}
+
+TEST_CASE("snow terrain: exact authored name pairs, no guesses for unmatched textures")
+{
+	TerrainTypeIndex types;
+	TerrainTypes::scanText("Terrain Grass\nTexture=a.tga\nEnd\nTerrain GrassSnow\nTexture=b.tga\nEnd\n"
+	 "Terrain RockSnowy\nTexture=c.tga\nEnd\nTerrain Rock\nTexture=d.tga\nEnd\n"
+	 "Terrain Mud\nTexture=e.tga\nEnd\nTerrain GrassSnowy\nTexture=f.tga\nEnd\n", types);
+	const auto pairs = TerrainTypes::snowReplacements(types);
+	CHECK(pairs == std::map<std::string,std::string>{{"grass","grasssnow"},{"rock","rocksnowy"}});
+}
+
+TEST_CASE("snow terrain: overlay preserves layout, leaves unmapped alpha empty and reports broken replacements")
+{
+	auto map = makeMap(2,2);
+	map.m_numBitmapTiles = 2;
+	map.m_textureClasses = {cls("Grass",0,1,1),cls("Mud",1,1,1)};
+	map.m_terrainTexHeight = TerrainAtlas::packTiles(map,{true,true});
+	const auto locations = map.m_tileLocations;
+	const auto positions = map.m_textureClasses;
+	const Bytes pixels(64*64*3,200);
+	const auto tga = makeTga(2,24,64,64,0,pixels);
+	Win32BIGFileSystem fs;
+	std::string error;
+	auto bytes = std::make_shared<const Bytes>(bigtest::makeBig("BIGF",{{"art/terrain/snow.tga",std::string(tga.begin(),tga.end())}}));
+	auto archive = fs.openArchiveFromMemory("snow.big",bytes,&error);
+	REQUIRE(archive);
+	fs.mountArchive(std::move(archive),"snow.big",false);
+	TerrainTypeIndex types; types.textureByName["grasssnow"] = "snow.tga";
+	TerrainAtlasImages image; std::vector<std::string> applied, errors;
+	REQUIRE(TerrainAtlas::buildSnow(map,fs,types,{{"grass","grasssnow"}},image,applied,errors));
+	CHECK(applied == std::vector<std::string>{"Grass -> grasssnow"});
+	CHECK(errors.empty());
+	const size_t mapped = ((size_t)locations[0].y*image.width+locations[0].x)*4;
+	const size_t unmapped = ((size_t)locations[1].y*image.width+locations[1].x)*4;
+	CHECK(image.base[mapped] == 200);
+	CHECK(image.base[mapped+3] == 255);
+	CHECK(image.base[unmapped+3] == 0);
+	CHECK(map.m_tileLocations[0].x == locations[0].x);
+	CHECK(map.m_textureClasses[1].positionInTexture.x == positions[1].positionInTexture.x);
+	CHECK_FALSE(TerrainAtlas::buildSnow(map,fs,types,{{"grass","missing"}},image,applied,errors));
+	CHECK(errors.size() == 1);
+	CHECK(applied.empty());
+	map.m_textureClasses[0].numTiles = 4;
+	CHECK_FALSE(TerrainAtlas::buildSnow(map,fs,types,{{"grass","grasssnow"}},image,applied,errors));
+	CHECK(errors == std::vector<std::string>{"Grass snow replacement is smaller than its terrain tile block"});
+}
+
+
+TEST_CASE("terrain loading: worker counts preserve every mesh array, bounds and diagnostic counter")
+{
+	struct Guard {
+		int before = JobSystem::client().threadCount();
+		~Guard() { JobSystem::client().setThreadCount(before); }
+	} guard;
+	WorldHeightMap m = makeMap(70, 40, 1);
+	const WorldHeightMap small = compositeTestMap();
+	m.m_terrainTexHeight = small.m_terrainTexHeight;
+	m.m_textureClasses = small.m_textureClasses;
+	m.m_tileLocations = small.m_tileLocations;
+	m.m_blendedTiles = small.m_blendedTiles;
+	m.m_numBlendedTiles = small.m_numBlendedTiles;
+	for (size_t i = 0; i < m.m_data.size(); ++i) {
+		m.m_data[i] = (std::uint16_t)((i * 137) % 4096);
+		m.m_tileNdxes[i] = (std::int16_t)((i % 16) << 2);
+		m.m_blendTileNdxes[i] = (std::int16_t)(i % 4);
+		m.m_extraBlendTileNdxes[i] = (std::int16_t)((i / 4) % 4);
+	}
+	GlobalLightingData lighting;
+	lighting.timeOfDay = 2;
+	lighting.tod[1].terrain[0].ambient[0] = 0.25f;
+	lighting.tod[1].terrain[1].diffuse[1] = 0.5f;
+	lighting.tod[1].terrain[1].lightPos[2] = -1.0f;
+	auto counters = [](const TerrainMeshStats &s) {
+		return std::make_tuple(s.cells, s.baseCells, s.blendCells, s.extraCells, s.flippedCells,
+			s.extraFlippedCells, s.cliffUvCells, s.wrapCells, s.straddlingCells, s.cliffForcedFlips,
+			s.missingTextureCells, s.triangles, s.vertices, s.chunks, s.timeOfDayIndex, s.assumptions);
+	};
+	for (bool lit : { false, true }) {
+		HeightMapMeshOptions options;
+		std::vector<TerrainChunk> reference;
+		TerrainMeshStats expected;
+		std::string error;
+		JobSystem::client().setThreadCount(1);
+		REQUIRE(HeightMapMesh::build(m, lit ? &lighting : nullptr, options, reference, expected, &error));
+		CHECK(expected.cells == 2691u);
+		CHECK(expected.chunks == 6u);
+		for (int threads : { 2, 4 }) {
+			JobSystem::client().setThreadCount(threads);
+			std::vector<TerrainChunk> actual;
+			TerrainMeshStats stats;
+			REQUIRE(HeightMapMesh::build(m, lit ? &lighting : nullptr, options, actual, stats, &error));
+			CHECK(counters(stats) == counters(expected));
+			REQUIRE(actual.size() == reference.size());
+			for (size_t ci = 0; ci < actual.size(); ++ci) {
+				const auto &a = actual[ci]; const auto &b = reference[ci];
+				CHECK(std::tie(a.cellX0,a.cellY0,a.cellX1,a.cellY1) == std::tie(b.cellX0,b.cellY0,b.cellX1,b.cellY1));
+				for (int axis = 0; axis < 3; ++axis) {
+					CHECK(a.boundsMin[axis] == b.boundsMin[axis]);
+					CHECK(a.boundsMax[axis] == b.boundsMax[axis]);
+				}
+				for (int l = 0; l < 3; ++l) {
+					const auto &x = a.layer[l]; const auto &y = b.layer[l];
+					CHECK(x.position == y.position); CHECK(x.normal == y.normal);
+					CHECK(x.color == y.color); CHECK(x.uv == y.uv); CHECK(x.wrap == y.wrap);
+					CHECK(x.index == y.index); CHECK(x.cellId == y.cellId); CHECK(x.cellFlip == y.cellFlip);
+				}
+			}
+		}
+	}
+}
+
+TEST_CASE("terrain loading: parallel atlas decoding preserves pixels, tile locations and ordered errors")
+{
+	struct Guard {
+		int before = JobSystem::client().threadCount();
+		~Guard() { JobSystem::client().setThreadCount(before); }
+	} guard;
+	Win32BIGFileSystem fs;
+	const Bytes pixels = makeTga(2, 24, 64, 64, 0x20, Bytes(64 * 64 * 3, 77));
+	const Bytes archive = bigtest::makeBig("BIGF", {
+		{"art/terrain/good.tga", bigtest::asString(pixels)},
+		{"art/terrain/good_nrm.tga", bigtest::asString(pixels)},
+		{"art/terrain/bad.tga", "broken texture"}
+	});
+	std::string error;
+	auto mounted = fs.openArchiveFromMemory("terrain.big", std::make_shared<const Bytes>(archive), &error);
+	REQUIRE(mounted != nullptr);
+	fs.mountArchive(std::move(mounted), "terrain.big", false);
+	TerrainTypeIndex types;
+	types.textureByName = {{"good", "good.tga"}, {"bad", "bad.tga"}, {"missing", "absent.tga"}};
+	WorldHeightMap source = makeMap(2, 2);
+	source.m_numBitmapTiles = 16;
+	for (int i = 0; i < 16; ++i) {
+		const char *names[] = {"good", "bad", "missing", "unknown"};
+		const std::string name = std::string(names[i % 4]) + std::to_string(i);
+		source.m_textureClasses.push_back(cls(name.c_str(), i, 1, 1));
+		if (i % 4 != 3) types.textureByName[name] = types.textureByName[names[i % 4]];
+	}
+	TerrainAtlasImages reference;
+	TerrainAtlasReport expected;
+	auto original = source;
+	JobSystem::client().setThreadCount(1);
+	REQUIRE(TerrainAtlas::build(original, fs, types, reference, expected, &error));
+	CHECK(expected.classesPlaced == 4);
+	CHECK(expected.badTexture.size() == 4u);
+	CHECK(expected.missingTextureFile.size() == 4u);
+	CHECK(expected.unknownTerrainType.size() == 4u);
+	CHECK(expected.tilesPlaced == 4);
+	CHECK(expected.unknownTerrainType == (std::vector<std::string>{"unknown3", "unknown7", "unknown11", "unknown15"}));
+	const size_t firstPixel = ((size_t)4 * reference.width + 4) * 4;
+	CHECK(reference.base[firstPixel] == 77);
+	CHECK(reference.base[firstPixel + 3] == 255);
+	CHECK(reference.normal[firstPixel] == 77);
+	CHECK(reference.normal[firstPixel + 3] == 255);
+	for (int threads : {2, 4}) {
+		JobSystem::client().setThreadCount(threads);
+		auto map = source;
+		TerrainAtlasImages images;
+		TerrainAtlasReport report;
+		REQUIRE(TerrainAtlas::build(map, fs, types, images, report, &error));
+		CHECK(images.base == reference.base); CHECK(images.normal == reference.normal);
+		CHECK(images.width == reference.width); CHECK(images.height == reference.height);
+		CHECK(report.badTexture == expected.badTexture);
+		CHECK(report.missingTextureFile == expected.missingTextureFile);
+		CHECK(report.unknownTerrainType == expected.unknownTerrainType);
+		CHECK(report.topDownTextures == expected.topDownTextures);
+		CHECK(report.tilesPlaced == expected.tilesPlaced);
+		CHECK(report.classesPlaced == expected.classesPlaced);
+		REQUIRE(map.m_tileLocations.size() == original.m_tileLocations.size());
+		for (size_t i = 0; i < map.m_tileLocations.size(); ++i) {
+			const auto &a = map.m_tileLocations[i]; const auto &b = original.m_tileLocations[i];
+			CHECK(std::tie(a.x,a.y,a.present) == std::tie(b.x,b.y,b.present));
+		}
+	}
+}
+
+
+// Opt-in, synthetic input only: --no-skip --test-case="terrain loading benchmark*".
+// Medians exclude pool creation. No machine-dependent timing assertions.
+TEST_CASE("terrain loading benchmark: mesh and texture preparation" * doctest::skip())
+{
+	struct Guard {
+		int before = JobSystem::client().threadCount();
+		~Guard() { JobSystem::client().setThreadCount(before); }
+	} guard;
+	WorldHeightMap source = makeMap(257, 257);
+	for (size_t i = 0; i < source.m_data.size(); ++i)
+		source.m_data[i] = (std::uint16_t)((i * 137) % 4096);
+	TerrainTypeIndex types;
+	std::vector<std::pair<std::string, std::string>> files;
+	const auto tga = bigtest::asString(makeTga(2, 24, 256, 256, 0, Bytes(256 * 256 * 3, 77)));
+	for (int i = 0; i < 48; ++i) {
+		const auto name = "class" + std::to_string(i);
+		const auto texture = name + ".tga";
+		source.m_textureClasses.push_back(cls(name.c_str(), i * 16, 16, 4));
+		types.textureByName[name] = texture;
+		files.emplace_back("art/terrain/" + texture, tga);
+		files.emplace_back("art/terrain/" + name + "_nrm.tga", tga);
+	}
+	source.m_numBitmapTiles = 48 * 16;
+	Win32BIGFileSystem fs;
+	std::string error;
+	auto archive = fs.openArchiveFromMemory("benchmark.big", std::make_shared<const Bytes>(bigtest::makeBig("BIGF", files)), &error);
+	REQUIRE(archive != nullptr);
+	fs.mountArchive(std::move(archive), "benchmark.big", false);
+	GlobalLightingData lighting;
+	lighting.timeOfDay = 1;
+	lighting.tod[0].terrain[0].ambient[0] = 0.25f;
+	lighting.tod[0].terrain[1].diffuse[1] = 0.5f;
+	lighting.tod[0].terrain[1].lightPos[2] = -1.0f;
+	for (int threads : {1, 4, JobSystem::defaultThreadCount()}) {
+		JobSystem::client().setThreadCount(threads);
+		std::vector<double> atlasMs, meshMs;
+		for (int pass = 0; pass < 8; ++pass) {
+			auto map = source;
+			TerrainAtlasImages images;
+			TerrainAtlasReport report;
+			std::vector<TerrainChunk> chunks;
+			TerrainMeshStats stats;
+			const auto start = std::chrono::steady_clock::now();
+			REQUIRE(TerrainAtlas::build(map, fs, types, images, report, &error));
+			const auto packed = std::chrono::steady_clock::now();
+			REQUIRE(HeightMapMesh::build(map, &lighting, {}, chunks, stats, &error));
+			const auto done = std::chrono::steady_clock::now();
+			CHECK(stats.baseCells == 65536u);
+			CHECK(report.classesPlaced == 48);
+			if (pass != 0) {
+				atlasMs.push_back(std::chrono::duration<double, std::milli>(packed-start).count());
+				meshMs.push_back(std::chrono::duration<double, std::milli>(done-packed).count());
+			}
+		}
+		std::sort(atlasMs.begin(), atlasMs.end()); std::sort(meshMs.begin(), meshMs.end());
+		std::cout << "TERRAIN LOAD BENCH threads=" << threads << " atlas_ms=" << atlasMs[3] << " mesh_ms=" << meshMs[3] << std::endl;
+	}
 }

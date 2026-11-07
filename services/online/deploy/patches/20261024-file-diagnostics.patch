@@ -1,0 +1,343 @@
+--- /dev/null
++++ b/services/online/lobby/src/compatibility-store.mjs
+@@ -0,0 +1,48 @@
++// Ephemeral diagnostic hashes only, never game data. Explicit bounds and expiry.
++export class CompatibilityStore {
++  constructor(now) { this.now = now; this.games = new Map(); this.bytes = 0; }
++  sweep() {
++    for (const [id, state] of this.games) if (state.expires < this.now()) {
++      this.bytes -= state.bytes; this.games.delete(id);
++    }
++  }
++  state(id) {
++    this.sweep();
++    if (!this.games.has(id)) {
++      if (this.games.size === 64) throw new Error('diagnostic capacity reached; retry after old reports expire');
++      this.games.set(id, { pages: new Map(), readers: new Map(), total: null, bytes: 0, expires: this.now() + 900000 });
++    }
++    return this.games.get(id);
++  }
++  authorize(id, account) {
++    const s = this.state(id);
++    if (s.readers.size === 256 && !s.readers.has(account)) throw new Error('too many diagnostic readers');
++    s.readers.set(account, this.now() + 900000);
++  }
++  put(id, body) {
++    const s = this.state(id);
++    if (!Number.isInteger(body.page) || !Number.isInteger(body.total) || body.total < 1 || body.total > 2048 || body.page < 0 || body.page >= body.total ||
++        !Array.isArray(body.rows) || body.rows.length > 256 || JSON.stringify(body).length > 65000) throw new Error('invalid diagnostic page');
++    for (const row of body.rows) if (!Array.isArray(row) || row.length !== 3 || typeof row[0] !== 'string' || !row[0].length || row[0].length > 1024 ||
++        /[\u0000-\u001f\u007f]/.test(row[0]) || typeof row[1] !== 'string' || !/^(?:[0-9a-f]{32}|[0-9a-f]{64})$/.test(row[1]) ||
++        !Number.isSafeInteger(row[2]) || row[2] < 0) throw new Error('invalid file checksum row');
++    if (s.total !== null && s.total !== body.total) throw new Error('diagnostic page count changed; recreate the room');
++    const encoded = JSON.stringify(body.rows), previous = s.pages.get(body.page);
++    if (previous) {
++      if (previous.encoded !== encoded) throw new Error('diagnostic snapshot changed; recreate the room');
++      return;
++    }
++    const bytes = new TextEncoder().encode(encoded).length;
++    if (s.bytes + bytes > 32 * 1024 * 1024 || this.bytes + bytes > 64 * 1024 * 1024) throw new Error('diagnostic byte limit reached');
++    s.total = body.total; s.pages.set(body.page, { encoded });
++    s.bytes += bytes; this.bytes += bytes;
++  }
++  get(id, account, page, host = false) {
++    this.sweep();
++    const s = this.games.get(id);
++    if (!s) return host ? { ready: false, total: null, rows: [] } : null;
++    if (!host && (s.readers.get(account) ?? 0) < this.now()) return null;
++    if (!Number.isInteger(page) || page < 0 || page >= 2048) throw new Error('invalid diagnostic page index');
++    return { ready: s.total !== null && s.pages.size === s.total, total: s.total, rows: s.pages.has(page) ? JSON.parse(s.pages.get(page).encoded) : [] };
++  }
++}
+--- /dev/null
++++ b/services/online/lobby/src/compatibility.mjs
+@@ -0,0 +1,29 @@
++// Diagnostic metadata only. The lobby still gates joins on the profile digest.
++// Canonical fields are defined by engine/src/GameNetwork/ProfileIdentity.h.
++export function profileMismatch(ours, theirs, ownDigest, hostDigest) {
++  const heading = `Compatibility mismatch (you ${ownDigest}; host ${hostDigest}).`;
++  if (!ours || !theirs) {
++    return `${heading}\nDetailed comparison unavailable: ${!theirs ? 'the host' : 'your client'} did not send compatibility details. Update both players to the same OpenBFME build, then recreate the room. Both need matching game installs and mods.`;
++  }
++  const a = ours.trimEnd().split('\n'), b = theirs.trimEnd().split('\n');
++  const details = [];
++  let count = 0;
++  // Group long IDs so they wrap in the game dialog and survive credential
++  // redaction (which intentionally masks token-like runs of 40+ characters).
++  const value = (line) => (line.length > 180 ? line.slice(0, 177) + '...' : line)
++    .replace(/[A-Za-z0-9_-]{40,}/g, (id) => id.match(/.{1,32}/g).join(' '));
++  for (let i = 0; i < Math.max(a.length, b.length); ++i) {
++    const x = a[i] ?? '(missing)', y = b[i] ?? '(missing)';
++    if (x === y) continue;
++    count++;
++    if (details.length === 3) continue;
++    const kind = x.startsWith('engine ') || y.startsWith('engine ') ? 'Executable/build compatibility'
++      : x.startsWith('archive ') || y.startsWith('archive ') ? 'Game archive (mount order, file, MD5, bytes)'
++      : x.startsWith('mods ') || y.startsWith('mods ') ? 'Mods' : 'Simulation settings';
++    details.push(`${kind}:\nYou: ${value(x)}\nHost: ${value(y)}`);
++  }
++  if (!count) details.push('The supplied details match, but the profile hashes differ. Some compatibility details are missing or inconsistent.');
++  if (count > details.length) details.push(`${count - details.length} more differing profile lines.`);
++  if (ours.includes('details truncated') || theirs.includes('details truncated')) details.push('Archive details were limited in size; this comparison may be incomplete.');
++  return `${heading}\n${details.join('\n')}\nUse the same OpenBFME build, game install, mods and mount order, then recreate the room.`;
++}
+--- a/services/online/lobby/src/lobby.mjs
++++ b/services/online/lobby/src/lobby.mjs
+@@ -19,6 +19,9 @@
+ //
+ // Platform hooks (`env`): hmac(keyBytes, dataBytes) -> Promise<Uint8Array> (HMAC-SHA256), randomBytes(n) -> Uint8Array, now() -> ms, store (games and
+ // blobs: saveGame / deleteGame / putBlob / getBlob), config (below). No secret is in this file: keys come from the environment / files.
++
++import { profileMismatch } from './compatibility.mjs';
++import { CompatibilityStore } from './compatibility-store.mjs';
+ 
+ export const VERSION = 1;
+ // UBERJOIN-1: the simulation profile a room runs (docs/ONLINE.md): "normal" (Faithful) or "uber" (the Uber performance mode). A room made by a client that
+@@ -183,10 +186,11 @@
+ 
+ // ---- errors ----------------------------------------------------------------------------------------------------------------------------------------------
+ export class LobbyError extends Error {
+-  constructor(status, code, message) {
++  constructor(status, code, message, details = {}) {
+     super(message);
+     this.status = status;
+     this.code = code;
++    this.details = details;
+   }
+ }
+ const bad = (code, msg) => new LobbyError(400, code, msg);
+@@ -199,6 +203,13 @@
+   if (v === undefined || v === null) return undefined;
+   if (typeof v !== 'string' || !PLATFORMS.includes(v)) throw bad('bad_field', `platform must be one of ${PLATFORMS.join(', ')} or absent`);
+   return v;
++}
++function boundedText(value, maxBytes, what, { empty = false } = {}) {
++  if (typeof value !== 'string' || (!empty && !value.length) || enc.encode(value).length > maxBytes) {
++    throw bad('bad_field', `${what} must be a string of ${empty ? 0 : 1} .. ${maxBytes} bytes`);
++  }
++  if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(value)) throw bad('bad_field', `${what} has control characters`);
++  return value;
+ }
+ function str(v, maxLen, what, { empty = false } = {}) {
+   if (typeof v !== 'string' || (!empty && !v.length) || enc.encode(v).length > maxLen) throw bad('bad_field', `${what} must be a string of ${empty ? 0 : 1} .. ${maxLen} bytes`);
+@@ -223,6 +234,7 @@
+ export class Lobby {
+   constructor(env, config) {
+     this.env = env;
++    this.compatibility = new CompatibilityStore(() => this.env.now());
+     this.config = {
+       runAhead: 1, // lane NETLAG-1: RotWK's command delay, the current frame + 1 (was 2); the peers raise it on a slow link
+       crcInterval: 100,
+@@ -682,6 +694,7 @@
+     const name = str(body?.name, 48, 'name');
+     const profile = str(body?.profile, 32, 'profile');
+     if (!/^[0-9a-f]{32}$/.test(profile)) throw bad('bad_field', 'profile must be the profile identity\'s MD5 (32 hex digits)');
++    const profileDetails = body.profile_details === undefined ? null : boundedText(body.profile_details, 10000, 'profile_details');
+     const mode = modeOf(body.mode, 'mode');
+     const password = body.password === undefined || body.password === '' ? null : str(body.password, 32, 'password');
+     // ONLINEHUB-1: a private room named by a code (a Quick Match or a tournament match: the platform hands every player the same code); not listed,
+@@ -716,7 +729,7 @@
+     slots[hostSlot].name = account.name;
+     slots[hostSlot].platform = platform;
+     const id = bytesToHex(this.env.randomBytes(8));
+-    const g = { id, name, password, profile, mode, setup, slots, hostSlot, state: 'open', chat: [], seq: 0, created: this.env.now(), touched: this.env.now(), ip };
++    const g = { id, name, password, profile, profileDetails, mode, setup, slots, hostSlot, state: 'open', chat: [], seq: 0, created: this.env.now(), touched: this.env.now(), ip };
+     if (roomCode !== null) g.roomCode = roomCode;
+     this.event(g, `${account.name} created the game`);
+     this.games.set(id, g);
+@@ -751,7 +764,13 @@
+     if (g.password && body?.password !== g.password) throw new LobbyError(403, 'password', 'wrong password');
+     const platform = checkPlatform(body?.platform);
+     if (body?.profile !== g.profile) {
+-      throw new LobbyError(409, 'profile', `your game files or build differ from the host's (profile ${body?.profile} vs ${g.profile}): both need the same OpenBFME version and RotWK 2.01 files`);
++      const ownDetails = body?.profile_details === undefined ? null : boundedText(body.profile_details, 10000, 'profile_details');
++      const ownDigest = str(body?.profile, 32, 'profile');
++      let diagnostic = {};
++      try { this.compatibility.authorize(g.id, account.id); diagnostic = { compatibility_game: g.id }; } catch (error) { diagnostic = { compatibility_error: error.message }; }
++      const reason = profileMismatch(ownDetails, g.profileDetails, ownDigest, g.profile)
++        + (diagnostic.compatibility_error ? `\nPer-file diagnostic access unavailable: ${diagnostic.compatibility_error}` : '');
++      throw new LobbyError(409, 'profile', reason, diagnostic);
+     }
+     for (const other of this.games.values()) {
+       if (other !== g && other.state === 'open' && this.slotOf(other, account) >= 0) throw bad('in_game', `you are in game ${other.id} already: leave it first`);
+@@ -773,7 +792,7 @@
+     if (!ROOM_CODE.test(code ?? '')) throw bad('bad_field', 'a room code is 6 .. 32 characters of A-Z a-z 0-9 _ -');
+     this.sweep();
+     for (const g of this.games.values()) {
+-      if (g.roomCode === code && g.state === 'open') return this.join(account, g.id, { profile: body?.profile, mode: body?.mode, platform: body?.platform }, true);
++      if (g.roomCode === code && g.state === 'open') return this.join(account, g.id, { profile: body?.profile, profile_details: body?.profile_details, mode: body?.mode, platform: body?.platform }, true);
+     }
+     throw new LobbyError(404, 'no_room', 'no open room has this code (the host has not made it yet, or it has started)');
+   }
+@@ -1384,7 +1403,7 @@
+           const out = lobby.poll(account, id, since === null ? 0 : Number(since));
+           return json(200, backoff ? { ...out, backoff } : out);
+         } catch (e) {
+-          if (e instanceof LobbyError) return json(e.status, { v: VERSION, error: e.code, message: e.message });
++          if (e instanceof LobbyError) return json(e.status, { v: VERSION, error: e.code, message: e.message, ...e.details });
+           return json(500, { v: VERSION, error: 'internal', message: 'internal error' });
+         }
+       };
+@@ -1394,6 +1413,25 @@
+       return answer(hold?.backoff); // Sol r1: not held for a bound: the client is told how long to wait
+ 
+     }
++    if (p.length === 4 && p[3] === 'compatibility' && (m === 'GET' || m === 'POST')) {
++      const g = lobby.game(id);
++      const host = g.slots[g.hostSlot].account === account.id;
++      if (m === 'POST' && !host) throw new LobbyError(403, 'host_only', 'only the host uploads compatibility hashes');
++      try {
++        if (m === 'POST') {
++          lobby.limit(`compatibility-upload:${account.id}`, 4096, 4096);
++          lobby.compatibility.put(id, await body(65536));
++          return json(200, { v: VERSION, ok: true });
++        }
++        lobby.limit(`compatibility-read:${account.id}`, 8192, 8192);
++        const data = lobby.compatibility.get(id, account.id, Number(req.query.get('page') ?? 0), host);
++        if (!data) throw new LobbyError(403, 'compatibility_private', 'diagnostic access is unavailable or expired: try joining the room again');
++        return json(200, { v: VERSION, ...data });
++      } catch (error) {
++        if (error instanceof LobbyError) throw error;
++        throw new LobbyError(400, 'compatibility', error.message);
++      }
++    }
+     if (m === 'POST' && p.length === 4 && p[3] === 'desync') return json(200, await lobby.reportDesync(account, id, await body(48000)));
+     if (m === 'POST' && p.length === 4 && p[3] === 'statistics') return json(200, await lobby.reportStatistics(account, id, await body(MAX_REPORT_BYTES)));
+     const actions = { join: 'join', leave: 'leave', slot: 'setSlot', setup: 'setSetup', ready: 'ready', chat: 'chat', kick: 'kick', start: 'start', rejoin: 'rejoin', spectate: 'spectate' };
+@@ -1403,7 +1441,7 @@
+     }
+     return json(404, { v: VERSION, error: 'not_found', message: 'unknown path' });
+   } catch (e) {
+-    if (e instanceof LobbyError) return json(e.status, { v: VERSION, error: e.code, message: e.message });
++    if (e instanceof LobbyError) return json(e.status, { v: VERSION, error: e.code, message: e.message, ...e.details });
+     return json(500, { v: VERSION, error: 'internal', message: 'internal error' });
+   }
+ }
+--- a/services/online/lobby/src/server.mjs
++++ b/services/online/lobby/src/server.mjs
+@@ -89,7 +89,7 @@
+     }
+     // ONLINE-2 r2 (Sol: a chunked 20 KB JSON body passed the 16 KiB check): the bytes are counted as they arrive; beyond the route's limit the
+     // request is answered 413 at once and the rest is not read
+-    const limit = /^\/v1\/games\/[0-9a-f]{16}\/(?:statistics|desync)(?:\?|$)/.test(req.url) ? MAX_REPORT_BYTES : req.url.startsWith('/v1/relay/logs/') || req.url.startsWith('/v1/admin/blobs/') ? MAX_LOG_BYTES : MAX_JSON_BYTES;
++    const limit = /^\/v1\/games\/[0-9a-f]{16}\/(?:statistics|desync)(?:\?|$)/.test(req.url) ? MAX_REPORT_BYTES : /^\/v1\/games\/[0-9a-f]{16}\/compatibility(?:\?|$)/.test(req.url) ? 65536 : req.url.startsWith('/v1/relay/logs/') || req.url.startsWith('/v1/admin/blobs/') ? MAX_LOG_BYTES : MAX_JSON_BYTES;
+     // ONLINE-2 r4 (Sol r3): a body-only TOTAL deadline (not an inactivity timer: a dripping body must not outlast it), started with the request
+     // and cleared once the body is complete or refused, so a complete request is never cut while the lobby handles it
+     let refused = false;
+--- a/services/online/lobby/src/worker.mjs
++++ b/services/online/lobby/src/worker.mjs
+@@ -220,7 +220,7 @@
+     if (isLog) this.reading.logs += 1;
+     let out;
+     try {
+-      const body = await readBodyLimited(request, isLog ? this.lobby.maxLogBytes() : /^\/v1\/games\/[0-9a-f]{16}\/(?:statistics|desync)$/.test(path) ? MAX_REPORT_BYTES : MAX_JSON_BYTES, this.bodyTimeoutMs);
++      const body = await readBodyLimited(request, isLog ? this.lobby.maxLogBytes() : /^\/v1\/games\/[0-9a-f]{16}\/(?:statistics|desync)$/.test(path) ? MAX_REPORT_BYTES : /^\/v1\/games\/[0-9a-f]{16}\/compatibility$/.test(path) ? 65536 : MAX_JSON_BYTES, this.bodyTimeoutMs);
+       if (body.status) return refuse(body.status, body.code, body.error);
+       const run = this.queue.then(() => this.handle(request, body.bytes));
+       this.queue = run.catch(() => {});
+--- /dev/null
++++ b/services/online/lobby/test/compatibility-store.test.mjs
+@@ -0,0 +1,24 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { CompatibilityStore } from '../src/compatibility-store.mjs';
++
++test('file diagnostic pages are private, complete, immutable and expire', () => {
++  let now = 1;
++  const store = new CompatibilityStore(() => now);
++  const first = { page: 0, total: 2, rows: [['engine/src/a.cpp', 'a'.repeat(64), 0]] };
++  store.put('room', first);
++  assert.equal(store.get('room', 'stranger', 0), null);
++  store.authorize('room', 'joiner');
++  assert.equal(store.get('room', 'joiner', 0).ready, false);
++  store.put('room', { page: 1, total: 2, rows: [['entry/rotwk:ini.big/data/ini/a.ini', 'b'.repeat(32), 10]] });
++  assert.deepEqual(store.get('room', 'joiner', 1), { ready: true, total: 2, rows: [['entry/rotwk:ini.big/data/ini/a.ini', 'b'.repeat(32), 10]] });
++  store.put('room', first); // retries are idempotent
++  assert.throws(() => store.put('room', { ...first, rows: [] }), /snapshot changed/);
++  assert.throws(() => store.put('room', { ...first, total: 3 }), /page count changed/);
++  assert.throws(() => store.put('room', { page: -1, total: 1, rows: [] }), /invalid diagnostic page/);
++  assert.throws(() => store.put('bad', { page: 0, total: 1, rows: [['x', 'not-a-hash', 0]] }), /invalid file checksum/);
++  assert.throws(() => store.put('bad', { page: 0, total: 1, rows: [['x\nsecret', 'a'.repeat(32), 0]] }), /invalid file checksum/);
++  now += 900001;
++  assert.equal(store.get('room', 'joiner', 0), null);
++  assert.equal(store.bytes, 0);
++});
+--- /dev/null
++++ b/services/online/lobby/test/compatibility.test.mjs
+@@ -0,0 +1,25 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { profileMismatch } from '../src/compatibility.mjs';
++
++test('mismatch names builds, archives, missing mounts and numeric settings', () => {
++  const ours = 'engine build-a\nnumeric mode-a\narchive 0 rotwk:ini.big aaaa 10\narchive 1 bfme2:base.big cccc 30\n';
++  const host = 'engine build-b\nnumeric mode-b\narchive 0 rotwk:ini.big bbbb 20\n';
++  assert.equal(profileMismatch(ours, host, 'a', 'b'),
++    'Compatibility mismatch (you a; host b).\nExecutable/build compatibility:\nYou: engine build-a\nHost: engine build-b\nSimulation settings:\nYou: numeric mode-a\nHost: numeric mode-b\nGame archive (mount order, file, MD5, bytes):\nYou: archive 0 rotwk:ini.big aaaa 10\nHost: archive 0 rotwk:ini.big bbbb 20\n1 more differing profile lines.\nUse the same OpenBFME build, game install, mods and mount order, then recreate the room.');
++  assert.match(profileMismatch('archive 0 rotwk:ini.big aaaa 10\n', 'mods none\n', 'a', 'b'), /Host: mods none/);
++  assert.match(profileMismatch('engine a\narchive 0 bfme2:base.big cccc 30\n', 'engine a\n', 'a', 'b'), /Host: \(missing\)/);
++});
++
++test('legacy and limited details explicitly state what cannot be compared', () => {
++  assert.match(profileMismatch('engine a\n', null, 'a', 'b'), /the host did not send compatibility details/);
++  assert.match(profileMismatch(null, 'engine a\n', 'a', 'b'), /your client did not send compatibility details/);
++  assert.match(profileMismatch('engine a\ndetails truncated\n', 'engine b\n', 'a', 'b'), /comparison may be incomplete/);
++  assert.match(profileMismatch('engine a\n', 'engine a\n', 'a', 'b'), /details match, but the profile hashes differ/);
++});
++
++test('long executable IDs remain readable through client credential redaction', () => {
++  const result = profileMismatch(`engine ${'a'.repeat(64)}\n`, `engine ${'b'.repeat(64)}\n`, 'a', 'b');
++  assert.match(result, new RegExp(`You: engine ${'a'.repeat(32)} ${'a'.repeat(32)}`));
++  assert.match(result, new RegExp(`Host: engine ${'b'.repeat(32)} ${'b'.repeat(32)}`));
++});
+--- a/services/online/lobby/test/lobby.test.mjs
++++ b/services/online/lobby/test/lobby.test.mjs
+@@ -1653,3 +1653,48 @@
+   assert.equal((await call(reloaded, 'GET', '/v1/mine', { token: b.token })).body.games.length, 0);
+   assert.deepEqual((await call(reloaded, 'GET', '/v1/mine', { token: b.token })).body.left, [id]);
+ });
++
++test('profile refusals compare compatibility details on direct and room-code joins', async () => {
++  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
++  const a = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Host' } })).body;
++  const b = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'Joiner' } })).body;
++  const created = await call(lobby, 'POST', '/v1/games', { token: a.token, body: {
++    name: 'Detailed', profile: PROFILE, profile_details: 'engine host-build\narchive 0 rotwk:ini.big aaaa 10\n', setup, room_code: 'details-room',
++  } });
++  assert.equal(created.status, 200);
++  const body = { profile: 'f'.repeat(32), profile_details: 'engine join-build\narchive 0 rotwk:ini.big bbbb 20\n', room_code: 'details-room' };
++  for (const path of [`/v1/games/${created.body.id}/join`, '/v1/rooms/details-room/join']) {
++    const refused = await call(lobby, 'POST', path, { token: b.token, body });
++    assert.equal(refused.status, 409);
++    assert.equal(refused.body.error, 'profile');
++    assert.match(refused.body.message, /You: engine join-build\nHost: engine host-build/);
++    assert.match(refused.body.message, /You: archive 0 rotwk:ini.big bbbb 20\nHost: archive 0 rotwk:ini.big aaaa 10/);
++  }
++  const legacy = await call(lobby, 'POST', '/v1/rooms/details-room/join', { token: b.token, body: { profile: 'f'.repeat(32) } });
++  assert.match(legacy.body.message, /your client did not send compatibility details/);
++  const invalid = await call(lobby, 'POST', '/v1/rooms/details-room/join', { token: b.token, body: { ...body, profile_details: 'x'.repeat(10001) } });
++  assert.equal(invalid.status, 400);
++  // Diagnostics never override compatibility or make a mismatched client join.
++  const joined = await call(lobby, 'POST', '/v1/rooms/details-room/join', { token: b.token, body: { profile: PROFILE } });
++  assert.equal(joined.status, 200);
++});
++
++test('per-file diagnostic endpoints grant access only after the normal private-room join checks', async () => {
++  const lobby = new Lobby(fakeEnv(), configFromEnv(ENV));
++  const host = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'HostFiles' } })).body;
++  const join = (await call(lobby, 'POST', '/v1/auth/guest', { body: { name: 'JoinFiles' } })).body;
++  const created = await call(lobby, 'POST', '/v1/games', { token: host.token, body: { name: 'Files', profile: PROFILE, setup, password: 'secret' } });
++  const path = `/v1/games/${created.body.id}/compatibility`;
++  const page = { page: 0, total: 1, rows: [['entry/rotwk:ini.big/data/ini/a.ini', 'a'.repeat(32), 10]] };
++  assert.equal((await call(lobby, 'POST', path, { token: join.token, body: page })).status, 403);
++  assert.equal((await call(lobby, 'GET', path, { token: join.token })).status, 403);
++  assert.equal((await call(lobby, 'POST', `/v1/games/${created.body.id}/join`, { token: join.token, body: { profile: 'f'.repeat(32) } })).status, 403);
++  assert.equal((await call(lobby, 'GET', path, { token: join.token })).status, 403);
++  const refusal = await call(lobby, 'POST', `/v1/games/${created.body.id}/join`, { token: join.token, body: { profile: 'f'.repeat(32), password: 'secret' } });
++  assert.equal(refusal.body.compatibility_game, created.body.id);
++  assert.equal((await call(lobby, 'GET', path, { token: join.token })).body.ready, false);
++  assert.equal((await call(lobby, 'POST', path, { token: host.token, body: page })).status, 200);
++  const read = await call(lobby, 'GET', path, { token: join.token });
++  assert.equal(read.body.ready, true);
++  assert.deepEqual(read.body.rows, page.rows);
++});

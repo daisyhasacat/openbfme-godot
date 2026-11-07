@@ -524,7 +524,7 @@ function replayBuildings(name, options)
                 .. job.failed .. ' errors'
             )
         end
-    end, 50)
+    end, 200)
 
     return #layout
 end

@@ -54,7 +54,8 @@ struct Scenario
  AISkirmishPlayer bot;
  Scenario()
  {
-  w.combat().setAutoAcquireEnabled(false);
+  w.logic->settings().enhancedAI = true;
+		w.combat().setAutoAcquireEnabled(false);
   auto *player = w.players.findPlayerWithName("Alice");
   player->setPlayerType(PLAYER_COMPUTER, true);
   bot.playerIndex = player->getPlayerIndex();
@@ -325,14 +326,69 @@ End
  REQUIRE(s.commands.findCommandSet(lab->getCommandSetName())->getCommandButton(0));
  REQUIRE_FALSE(lab->hasUpgrade(upgrade));
  REQUIRE(upgrade->getUpgradeType() == UPGRADE_TYPE_PLAYER);
- const auto before = payer->getMoney()->countMoney() + s.bot.build.moneyReserve;
+ // Start the manager's record store, then stop native decisions: this scenario owns its detached policy.
+ REQUIRE(s.w.w.load("SkirmishAIData TheSkirmishAIData\nEnd\n").empty());
+ s.w.logic->skirmishAI().setStore(&s.store);
+ s.w.logic->skirmishAI().newGame(true);
+ s.w.logic->skirmishAI().setScriptControlled(payer->getPlayerIndex(), true);
+ auto *record = s.w.logic->skirmishAI().record(payer->getPlayerIndex());
+ REQUIRE(record != nullptr);
+ payer->getMoney()->withdraw(payer->getMoney()->countMoney(), nullptr, false);
+ record->setReserve(1000);
+ REQUIRE(s.bot.build.moneyReserve == 0);
+ const auto before = (std::uint32_t)AIBaseBuilder::moneyPlusReserve(*s.w.logic, *payer);
  for (int i = 0; i < 5; ++i) { AIBaseBuilder::update(*s.w.logic, s.bot); s.w.frames(1); }
  CHECK_FALSE(payer->hasUpgradeComplete(upgrade));
  CHECK_FALSE(lab->getProductionUpdate()->isUpgradeInQueue(upgrade));
- CHECK(payer->getMoney()->countMoney() + s.bot.build.moneyReserve == before);
+ CHECK((std::uint32_t)AIBaseBuilder::moneyPlusReserve(*s.w.logic, *payer) == before);
  s.w.logic->destroyObject(enemy);
  s.w.frames(1); // Destruction unlinks the enemy on the next simulation frame.
  for (int i = 0; i < 5; ++i) { AIBaseBuilder::update(*s.w.logic, s.bot); s.w.frames(1); }
  CHECK((payer->hasUpgradeComplete(upgrade) || lab->getProductionUpdate()->isUpgradeInQueue(upgrade)));
- CHECK(payer->getMoney()->countMoney() + s.bot.build.moneyReserve == before - 200);
+ CHECK(record->reserve() == 800);
+ CHECK((std::uint32_t)AIBaseBuilder::moneyPlusReserve(*s.w.logic, *payer) == before - 200);
+ s.w.logic->skirmishAI().reset();
+}
+
+TEST_CASE("strategy AI: local base exclusion turns enemy computers away and can be disabled")
+{
+ Scenario s;
+ auto *unit = s.w.unit("CounterPike", 'A', 400, 500);
+ auto *protectedPlayer = s.w.players.findPlayerWithName("Bob");
+ REQUIRE(protectedPlayer);
+ s.w.logic->setAIBaseExclusion(protectedPlayer->getPlayerIndex(), {100,500,0}, 500);
+ Coord3D goal;
+ REQUIRE(s.w.logic->aiBaseExclusion(*unit, goal));
+ CHECK(s.w.logic->hasPeaceExclusion(*unit));
+ CHECK_FALSE(s.w.logic->peaceExclusionAllows(*unit, {300,500,0}, true));
+ CHECK(s.w.logic->peaceExclusionAllows(*unit, {900,500,0}, true));
+ CHECK(goal.x == 1200);
+ CHECK(goal.y == 500);
+ s.decide();
+ CHECK(unit->getAIUpdateInterface()->isMoving());
+ s.w.frames(20);
+ // tolerance: movement must increase distance from the protected center; exact path steps depend on the synthetic locomotor.
+ CHECK(unit->getPosition()->x > 400);
+ auto *friendly = s.w.unit("CounterPike", 'B', 400, 500);
+ CHECK_FALSE(s.w.logic->aiBaseExclusion(*friendly, goal));
+ CHECK_FALSE(s.w.logic->hasPeaceExclusion(*friendly));
+ Coord3D far{1500,500,0}; unit->setPosition(&far);
+ CHECK_FALSE(s.w.logic->aiBaseExclusion(*unit, goal));
+ s.w.logic->setAIBaseExclusion(protectedPlayer->getPlayerIndex(), {100,500,0}, 0);
+ Coord3D near{400,500,0};unit->setPosition(&near);
+ CHECK_FALSE(s.w.logic->aiBaseExclusion(*unit, goal));
+}
+
+TEST_CASE("strategy AI: source rules issue no enhanced micro, opt-in enables it")
+{
+	Scenario s;
+	auto *archer = s.w.unit("CounterBow", 'A', 100, 500);
+	auto *enemy = s.w.unit("CounterHorse", 'B', 130, 500);
+	s.w.logic->settings().enhancedAI = false;
+	CHECK(archer->getAIUpdateInterface()->currentVictimId() == INVALID_ID);
+	s.decide();
+	CHECK(archer->getAIUpdateInterface()->currentVictimId() == INVALID_ID);
+	s.w.logic->settings().enhancedAI = true;
+	s.decide();
+	CHECK(archer->getAIUpdateInterface()->currentVictimId() == enemy->getID());
 }

@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/ActiveBody.h"
+#include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/Object/Contain/HordeFlank.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/ExperienceWorld.h"
@@ -25,6 +26,7 @@
 #include "Common/PlayerList.h"
 #include "GameLogic/Module/BloodthirstyUpdate.h"
 #include "GameLogic/Module/HeroModules.h"
+#include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Object/Object.h"
@@ -157,6 +159,21 @@ void ActiveBody::setInitialHealth(int initialPercent)
 	updateDamageState();
 }
 
+// lane SUMMON-1: RW 0x8C47DE (vt[0x58]) with its second argument 0. A percent above 100.0 (RW 0xBD88D8, comiss) first scales the max health (interface + 0x10)
+// by percent * 0.01 (RW 0xBE5600; SSE: (max * percent) * 0.01); then the health moves to percent * 0.01 of the revive reference (interface + 0x1C) through
+// internalChangeHealth (vt[0x84], RW 0x8C31A5) by (percent * 0.01) * reference - health. The second argument's branch (RW 0x8C481D: the health set with three
+// random draws and RW 0x8C3CB8) is not a caller's here
+void ActiveBody::setInitialHealthPercent(float percent)
+{
+	const float scale = 0.01f; // RW 0xBE5600
+	if (percent > 100.0f)
+	{
+		m_maxHealth = SimMath::mulf32(SimMath::mulf32(m_maxHealth, percent), scale);
+	}
+	const float fraction = SimMath::mulf32(percent, scale);
+	internalChangeHealth(SimMath::subf32(SimMath::mulf32(fraction, m_reviveReference), m_currentHealth));
+}
+
 void ActiveBody::crc(StateHasher &h) const
 {
 	h.addFloat(m_currentHealth);
@@ -182,20 +199,45 @@ void ActiveBody::crc(StateHasher &h) const
 		h.addU32(m_lastDamagerPlayerMask ^ 0xCA391u); // lane CAMP-1: hashed only when set (a game without player damage keeps its hash)
 	}
 	h.addU32((std::uint32_t)m_curDamageState);
+	if (m_lastDamageType != DAMAGE_UNDEFINED)
+	{
+		h.addU32((std::uint32_t)m_lastDamageType ^ 0xFA40u); // lane FX-4: hashed only when a hit set it (a game without hits keeps its hash)
+	}
+}
+
+void ActiveBody::evaluateVisualCondition()
+{
+	// RW 0x8C1D53 -> Object RW 0x6903B6: the damage flags follow the stored body state, without the construction suppression of internalChangeHealth.
+	// The ambient-sound / damage-stage tail remains S-653; this is the existing damage-flag mapping.
+	Object &obj = *getObject();
+	Object::ModelConditionBits clear{}, set{};
+	const int damaged = CombatNames::modelCondition("DAMAGED"), really = CombatNames::modelCondition("REALLYDAMAGED"), rubble = CombatNames::modelCondition("RUBBLE");
+	for (int bit : { damaged, really, rubble })
+	{
+		clear[(size_t)bit >> 5] |= 1u << (bit & 31);
+	}
+	const int on = m_curDamageState == BODY_DAMAGED ? damaged : m_curDamageState == BODY_REALLYDAMAGED ? really : m_curDamageState == BODY_RUBBLE ? rubble : -1;
+	if (on >= 0)
+	{
+		set[(size_t)on >> 5] |= 1u << (on & 31);
+	}
+	obj.clearAndSetModelConditionFlags(clear, set);
 }
 
 // RW 0x8C2A5D (setCorrectDamageState). TARGET FACTS read from the binary: the damage state field (+0x30) is rewritten from calcDamageState (RW 0x8C1B79); when it changed vslot 0x34 runs
 // (RW 0x8C283C: the Damaged / ReallyDamaged attribute modifiers, UPGRADE-1's). For a template that is KindOf STRUCTURE (tt KindOf mask byte 0x108 bit 0x80 = bit 7) the state RUBBLE does:
 //   entering (new > old, new == 3): the structure's footprint leaves the pathfinder and is entered again (RW 0x6E85FB remove, 0x6E85E9 add: the add sees the RUBBLE state), the object
 //   gets the status NO_COLLISIONS (RW 0x8C2E3B: 0x62684D(4, 1)), the geometry height becomes the template's StructureRubbleHeight (RW tt + 0x607, a byte; <= 0 takes GlobalData
-//   DefaultStructureRubbleHeight, RW + 0xAE4) through RW 0x68B2CB, and RW 0x8C1BB7 runs: production is reset (RW 0x79DA66 on object + 0x26C), the upgrades go when RemoveUpgradesOnDeath
-//   (data + 0x50) and the command points are released (0x68E114 = removeFromPlayerCommandPoints);
+//   DefaultStructureRubbleHeight, RW + 0xAE4) through RW 0x68B2CB, and RW 0x8C1BB7 runs (BFME2 0x4BDA67, decomp ActiveBodyDamageState.cpp:54-59,
+//   tier B offsets-only): the object's ExperienceTracker (+ 0x26C) is reset (RW 0x79DA66), the upgrades go when RemoveUpgradesOnDeath
+//   (data + 0x50 -> rva0028DA28), the command points are released (0x68E114 = removeFromPlayerCommandPoints) and the attribute modifier pool's
+//   entries are cleared (rva00298E6A);
 //   leaving it (new < 3, old == 3): the template geometry returns, the footprint is re-entered, NO_COLLISIONS is cleared (RW 0x8C2D87..0x8C2DCC).
 // A WALK_ON_TOP_OF_WALL template (KindOf 60, byte 0x10F bit 0x10) runs a "Bookend" variant (BOOKENDING status 0x53, CAN_NOT_WALK_ON 0x4D) that is a wall's (S-342).
-// NOT PORTED (S-342): the geometry height (the geometry is the template's, an Object has none of its own), the production reset, the upgrade removal, the attribute modifiers, the damage FX
-// transitions of the tail (RW 0x8C2C64..0x8C2EF1) and the Bookend of walls.
+// NOT PORTED (S-342): the geometry height (the geometry is the template's, an Object has none of its own), the upgrade removal, the attribute modifier
+// pool clear and the Damaged / ReallyDamaged attribute modifiers, the damage FX transitions of the tail (RW 0x8C2C64..0x8C2EF1) and the Bookend of walls.
 // The model conditions DAMAGED / REALLYDAMAGED / RUBBLE: internalChangeHealth calls the visual update (vslot 0x94, RW 0x8C32A8) after the state changed, not while the
-// object is UNDER_CONSTRUCTION (unless dead); INFERENCE: what vslot 0x94 sets is ZH Drawable::reactToBodyDamageStateChange's (the state's flag, the other two cleared).
+// object is UNDER_CONSTRUCTION (unless dead). RW 0x8C1D53 -> Object RW 0x6903B6 sets the state's flag and clears the other two.
 void ActiveBody::updateDamageState(bool initial)
 {
 	const BodyDamageType old = m_curDamageState;
@@ -206,31 +248,14 @@ void ActiveBody::updateDamageState(bool initial)
 		return;
 	}
 	Object &obj = *getObject();
-	Object::ModelConditionBits clear{}, set{};
-	const int damaged = CombatNames::modelCondition("DAMAGED"), really = CombatNames::modelCondition("REALLYDAMAGED"), rubble = CombatNames::modelCondition("RUBBLE");
-	for (int bit : { damaged, really, rubble })
-	{
-		clear[(size_t)bit >> 5] |= 1u << (bit & 31);
-	}
-	const int on = now == BODY_DAMAGED ? damaged : now == BODY_REALLYDAMAGED ? really : now == BODY_RUBBLE ? rubble : -1;
-	if (on >= 0)
-	{
-		set[(size_t)on >> 5] |= 1u << (on & 31);
-	}
 	// lane PLAY-4, RW 0x8C3290 .. 0x8C32A8 (internalChangeHealth after vslot 0x54; BFME2 decomp ActiveBody.cpp, ZH "we just don't have all the art states for
 	// that during buildup animation"): the visual change (vslot 0x94) is skipped while the object is UNDER_CONSTRUCTION, unless the health reached 0. A rising
 	// structure (1 hit point at the start, RW 0x85895D) keeps its construction states instead of REALLYDAMAGED / DAMAGED.
 	if (m_currentHealth <= 0.0f || !obj.testStatus((unsigned)CombatNames::statuses().underConstruction))
 	{
-		obj.clearAndSetModelConditionFlags(clear, set);
+		evaluateVisualCondition();
 	}
-	for (const std::unique_ptr<BehaviorModule> &m : obj.modules())
-	{
-		if (DamageModuleInterface *d = m->getDamage())
-		{
-			d->onBodyDamageStateChange(old, now); // ZH setCorrectDamageState tells the damage modules (RW CastleMemberBehavior RW 0x79A0ED)
-		}
-	}
+	// lane FX-4: RotWK's setCorrectDamageState does not tell the damage modules (ZH's does); attemptDamage / attemptHealing do (notifyDamageStateChange)
 	if (!obj.isKindOf((unsigned)CombatNames::kinds().structure))
 	{
 		return;
@@ -244,8 +269,13 @@ void ActiveBody::updateDamageState(bool initial)
 			world->removeObjectFromPathfindMap(obj);
 			world->addObjectToPathfindMap(obj);
 		}
-		obj.setStatus((unsigned)CombatNames::statuses().noCollisions, true);
+		// RW 0x8C1BB7: the experience reset, then the command points; RemoveUpgradesOnDeath and the attribute pool clear are S-342's
+		if (ExperienceTracker *xp = obj.getExperienceTracker())
+		{
+			xp->reset(); // RW 0x79DA66 on object + 0x26C (BFME2 decomp ActiveBodyDamageState.cpp:54-59, B2 0x4BDA67)
+		}
 		obj.removeFromPlayerCommandPoints(); // RW 0x8C1BB7 -> 0x68E114
+		obj.setStatus((unsigned)CombatNames::statuses().noCollisions, true); // RW 0x8C2E3B: after the rubble reset
 		++obj.logic().combat().counters().rubbleEntered;
 	}
 	else if (old == BODY_RUBBLE && now != BODY_RUBBLE)
@@ -387,6 +417,15 @@ void ActiveBody::attemptDamage(DamageInfo &info)
 				info.m_output.m_actualDamageDealt = info.m_output.m_actualDamageClipped = 0;
 				return;
 			}
+	// INVUL-1: RW 0x8C3FE7 `push 0x14A; call 0x46E918` (Object::testModelCondition): model condition INVULNERABLE takes nothing, of any
+	// damage type (ProductionUpdate's UnitInvulnerableTime, the castle unpack). Donor: Open-BFME-2 ActiveBody.cpp:2189 (BFME2 0x8BFE07, same
+	// shape); both editions. The function's other retail differences stay open (S-322, ATTEMPTDMG-2)
+	static const int kInvulnerable = CombatNames::modelCondition("INVULNERABLE"); // 0x14A
+	if (obj.testModelCondition(kInvulnerable))
+	{
+		return;
+	}
+
 	// (3) UNATTACKABLE only takes UNRESISTABLE
 	if (obj.testStatus((unsigned)st.unattackable) && type != DAMAGE_UNRESISTABLE)
 	{
@@ -438,6 +477,7 @@ void ActiveBody::attemptDamage(DamageInfo &info)
 			amount = m_currentHealth;
 		}
 		// (13) internalChangeHealth(-amount) (the info goes down with it in RW: DelayedDeathBody's override reads and clears its kill flag)
+		const BodyDamageType stateBefore = m_curDamageState; // lane FX-4: RW 0x8C3FA3 keeps + 0x30 (EBP - 0x1C) before the health change (vslot 0x84, RW 0x8C4257)
 		m_currentInfo = &info;
 		internalChangeHealth(SimMath::subf32(0.0f, amount));
 		m_currentInfo = nullptr;
@@ -448,6 +488,7 @@ void ActiveBody::attemptDamage(DamageInfo &info)
 		m_lastDamageFrame = logic.getFrame();
 		m_lastDamager = info.m_input.m_sourceID;
 		m_lastDamagerPlayerMask = info.m_input.m_sourcePlayerMask; // lane CAMP-1
+		m_lastDamageType = info.m_input.m_damageType;               // lane FX-4: the record's + 0x10 (RW 0x7441E0 copies the whole input)
 		m_lastAttackerTaken = false; // lane PLAY-4: RW 0x8C42FA (+ 0xB6 cleared with the record)
 		// lane CAMP-1, RW 0x8C430F .. 0x8C4341: the last damage record's source object, when it exists, marks its controlling player as an attacker of the
 		// victim's controlling player (RW 0x6AAC05). INFERENCE: retail runs this after the record block whether or not the record changed this hit; here only
@@ -476,6 +517,12 @@ void ActiveBody::attemptDamage(DamageInfo &info)
 					d->onDamage(info);
 				}
 			}
+		}
+		// lane FX-4, RW 0x8C4389 .. 0x8C43C1: the damage state changed by this hit: every damage module's slot 2 (info, old, new), after the record copy and the
+		// onDamage loop, before the death
+		if (m_curDamageState != stateBefore)
+		{
+			notifyDamageStateChange(&info, stateBefore, m_curDamageState);
 		}
 		// (18) death: health <= 0 and the hit took health
 		if (m_currentHealth <= 0.0f && previous > 0.0f)
@@ -582,18 +629,77 @@ void ActiveBody::setMaxHealth(float newMax, int changeType)
 	}
 }
 
-// RW 0x8C2FC1 attemptHealing
+// lane FX-4: the loops RW 0x8C4395 (attemptDamage) / RW 0x8C3139 (attemptHealing) run over the object's modules in list order: each module's DAMAGE
+// interface (module slot 0x10) slot 2, onBodyDamageStateChange(info, old, new). setCorrectDamageState (RW 0x8C2A5D) makes no such call: a health change by
+// any other path (construction, repair, scripts, the maximum health) tells no damage module
+void ActiveBody::notifyDamageStateChange(const DamageInfo *info, BodyDamageType oldState, BodyDamageType newState)
+{
+	for (const std::unique_ptr<BehaviorModule> &m : getObject()->modules())
+	{
+		if (DamageModuleInterface *d = m->getDamage())
+		{
+			d->onBodyDamageStateChange(info, oldState, newState);
+		}
+	}
+}
+
+namespace
+{
+// the dead-but-kept test of RW 0x8C2FC1 (BFME2 0x4BEE21, decomp ActiveBody.cpp attemptHealing, tier B same-shape): the template's
+// KeepSelectableWhenDead (+ 0x642, read as PlayerCommands does) or its KindOf WALL_UPGRADE (150, tt + 0x11A bit 6), BRIDGE (22) or
+// BRIDGE_TOWER (24) (tt + 0x10A & 0x140)
+bool healableWhenDead(const Object &obj)
+{
+	static const int kWallUpgrade = ObjectTemplateInfoBuilder::kindOfIndex("WALL_UPGRADE");
+	static const int kBridge = ObjectTemplateInfoBuilder::kindOfIndex("BRIDGE");
+	static const int kBridgeTower = ObjectTemplateInfoBuilder::kindOfIndex("BRIDGE_TOWER");
+	if ((kWallUpgrade >= 0 && obj.isKindOf((unsigned)kWallUpgrade)) || (kBridge >= 0 && obj.isKindOf((unsigned)kBridge)) ||
+		(kBridgeTower >= 0 && obj.isKindOf((unsigned)kBridgeTower)))
+	{
+		return true;
+	}
+	if (const ThingTemplate *tt = static_cast<const ThingTemplate *>(obj.getTemplate()))
+	{
+		if (const FieldValue *v = tt->getFinalOverride()->findField("KeepSelectableWhenDead"))
+		{
+			if (const bool *b = std::get_if<bool>(v))
+			{
+				return *b;
+			}
+		}
+	}
+	return false;
+}
+} // namespace
+
+// RW 0x8C2FC1 attemptHealing (BFME2 0x4BEE21, decomp ActiveBody.cpp, tier B same-shape). RotWK order: validateArmorAndDamageFX (the armour
+// validation is S-322's); a body whose module data +0x51 (BurningDeathBehavior) is set while the object is in the model condition
+// BURNINGDEATH (index 0x220, the reading SpawnBehavior shares) returns at once; a null DamageInfo returns (ours is a reference); a
+// non-HEALING hit goes to attemptDamage; an effectively dead object (Object + 0x458 bit 0) is refused unless healableWhenDead answers
+// (KeepSelectableWhenDead / WALL_UPGRADE / BRIDGE / BRIDGE_TOWER). Only then are the outputs zeroed and the amount applied
 void ActiveBody::attemptHealing(DamageInfo &info)
 {
-	info.m_output.m_actualDamageDealt = 0.0f;
-	info.m_output.m_actualDamageClipped = 0.0f;
-	if (getObject()->isEffectivelyDead())
+	Object *obj = getObject();
+	static const int kBurningDeath = CombatNames::modelCondition("BURNINGDEATH"); // model condition 0x220
+	if (m_data->m_burningDeathBehavior && obj->testModelCondition(kBurningDeath))
 	{
 		return;
 	}
+	if (info.m_input.m_damageType != DAMAGE_HEALING)
+	{
+		attemptDamage(info);
+		return;
+	}
+	if (obj->isEffectivelyDead() && !healableWhenDead(*obj))
+	{
+		return;
+	}
+	info.m_output.m_actualDamageDealt = 0.0f;
+	info.m_output.m_actualDamageClipped = 0.0f;
 	const float amount = info.m_input.m_amount; // adjustDamage returns the amount for HEALING
 	if (amount > 0.0f)
 	{
+		const BodyDamageType stateBefore = m_curDamageState; // lane FX-4: RW 0x8C3080 keeps + 0x30 before the health change (vslot 0x84, RW 0x8C308A)
 		internalChangeHealth(amount);
 		info.m_output.m_actualDamageDealt = amount;
 		info.m_output.m_actualDamageClipped = SimMath::subf32(m_previousHealth, m_currentHealth);
@@ -613,6 +719,11 @@ void ActiveBody::attemptHealing(DamageInfo &info)
 				logic.fxEvents().emit(FXEventLog::objectEvent(FXEvent::OBJECT_FX, "HealingBuffFx", logic.getFrame(), fx, obj));
 			}
 		}
+		// lane FX-4, RW 0x8C3131 .. : the damage state changed by the healing: every damage module's slot 2 (info, old, new)
+		if (m_curDamageState != stateBefore)
+		{
+			notifyDamageStateChange(&info, stateBefore, m_curDamageState);
+		}
 	}
 }
 
@@ -622,7 +733,8 @@ void ActiveBody::attemptHealing(DamageInfo &info)
 // current DamageInfo pointer is null outside a hit (a snapshot is taken between frames); the armour report flag is the report's.
 void ActiveBody::xfer(Xfer &x)
 {
-	SnapshotXfer::version(x, 1, 1);
+	XferVersion v{ 1, 2 }; // 2: lane FX-4's last damage type
+	x.xferVersion(v);
 	xferBehaviorModule(x);
 	x.xferReal(&m_currentHealth);
 	x.xferReal(&m_previousHealth);
@@ -641,6 +753,10 @@ void ActiveBody::xfer(Xfer &x)
 	SnapshotXfer::enumIn(x, m_curDamageState, BODY_PRISTINE, BODY_RUBBLE, "a body's damage state");
 	SnapshotXfer::enumIn(x, m_lastDamageFXType, 0, SnapshotXfer::nameCount(TheDamageFXTypeNames) - 1, "a body's last damage FX type");
 	x.xferUnsignedInt(&m_damageFXThrottleUntil);
+	if (v.current >= 2)
+	{
+		SnapshotXfer::enumIn(x, m_lastDamageType, 0, SnapshotXfer::nameCount(TheDamageNames) - 1, "a body's last damage type");
+	}
 }
 
 void ImmortalBody::xfer(Xfer &x)

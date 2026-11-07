@@ -1,6 +1,7 @@
 // OpenBFME. GPL-3.0. Contract tests against docs.secondage.dev API examples.
 #include "GameLogic/ScriptEngine/BfmeLuaRuntime.h"
 #include "LuaTestUtil.h"
+#include "Common/PlayerPresentation.h"
 #include "doctest.h"
 
 #include <chrono>
@@ -78,7 +79,7 @@ TEST_CASE("bfme Lua: module identity, modern syntax, proxies and collection cont
 	CHECK(f.run("return bit.band(12, 10), goto_ok") == "8\tnil\n");
 	CHECK(f.run("return #bfme.players, bfme.players.localPlayer==bfme.players[1], bfme.players.neutral.id") == "2\ttrue\t0\n");
 	CHECK(f.run("local n=0; for id,p in pairs(bfme.players) do n=n+1 end; return n") == "2\n");
-	CHECK(f.run("return tostring(bfme.players[1]), bfme.players[99]") == "Player[1]\tnil\n");
+	CHECK(f.run("return tostring(bfme.players[1]), bfme.players[99]") == "Player_1\tnil\n");
 	CHECK(f.run("return #bfme.players[1]:units(), #bfme.players.neutral:units(), bfme.unitInstances[1234].ownerPlayer.id") == "1\t0\t1\n");
 	CHECK(f.run("return bfme.unitInstances[1234].type==bfme.unitTypes.GondorSoldier") == "true\n");
 	CHECK(
@@ -187,6 +188,21 @@ TEST_CASE("bfme Lua: reload rereads scripts, replaces functions and preserves co
 	f.scripts[0].second = "error('reload failure')";
 	CHECK_FALSE(f.vm->execute("bfme.console.reload()").ok);
 	CHECK(f.run("keep") == "99\n");
+}
+
+TEST_CASE("bfme Lua: base protection radius validates and queues local match actions")
+{
+ BfmeFixture f;
+ CHECK(f.vm->execute("bfme.match.setAIBaseExclusion(1500)").ok);
+ CHECK(f.vm->execute("bfme.match.setAIBaseExclusion(0)").ok);
+ for (const char *value : {"-1", "10001", "0/0", "math.huge", "'1500'", "nil"})
+  CHECK_FALSE(f.vm->execute(std::string("bfme.match.setAIBaseExclusion(") + value + ")").ok);
+ CHECK(f.applied.empty());
+ f.vm->flush();
+ REQUIRE(f.applied.size() == 2);
+ CHECK(f.applied[0].field == ":setAIBaseExclusion");
+ CHECK(std::get<double>(f.applied[0].value.data) == 1500);
+ CHECK(std::get<double>(f.applied[1].value.data) == 0);
 }
 
 TEST_CASE("bfme Lua: game speed validates multipliers before queuing")
@@ -340,6 +356,23 @@ TEST_CASE("bfme Lua: debug and selection libraries read the sampled client selec
 	f.snapshot.selection.clear();
 	CHECK(f.run("return bfme.debug.getSelectedBuilding()") == "nil\n");
 	CHECK(f.writes == 1);
+}
+
+TEST_CASE("bfme Lua: selected is a live unit or building handle")
+{
+ BfmeFixture f;
+ CHECK(f.run("return selected") == "nil\n");
+ f.snapshot.selection = {1234};
+ CHECK(f.run("return selected==bfme.unitInstances[1234], selected.id") == "true\t1234\n");
+ f.snapshot.collections["buildingInstances"]["99"] = {{"id", 99}, {"playerId", 1}, {"typeId", "TestBuilding"}};
+ f.snapshot.selection = {5555, 99, 1234};
+ CHECK(f.run("return selected==bfme.buildingInstances[99], selected.id") == "true\t99\n");
+ f.run("selected:trainUnit('GondorSoldier', 2)");
+ CHECK(f.writes == 1);
+ CHECK_FALSE(f.vm->execute("selected=nil").ok);
+ f.snapshot.selection.clear();
+ CHECK(f.run("return selected") == "nil\n");
+ CHECK(f.run("myGlobal=42; return myGlobal, unknownGlobal") == "42\tnil\n");
 }
 
 TEST_CASE("bfme Lua: orders go to the owner as one group with validated positions and targets")
@@ -662,6 +695,52 @@ TEST_CASE("bfme Lua: shared catalogs refresh independently from live state witho
 	CHECK(f.run("return bfme.unitTypes.Other.cost") == "10\n");
 }
 
+TEST_CASE("bfme Lua: unobserved engine events do not request a simulation safe point")
+{
+	BfmeFixture f;
+	auto sink = f.vm->eventSink();
+	std::thread producer([sink] { for (int i = 0; i < 100; ++i) sink("buildingPlaced", {{"objectId", i}}); });
+	producer.join();
+	CHECK_FALSE(f.vm->hasPending());
+	f.run("placed=0; bfme.events.onBuildingPlaced('place', function(e) placed=placed+1 end)");
+	f.vm->flush();
+	CHECK(f.run("return placed") == "0\n");
+	sink("buildingPlaced", {{"objectId", 1234}});
+	CHECK(f.vm->hasPending());
+	f.vm->flush();
+	CHECK(f.run("return placed") == "1\n");
+	f.run("bfme.events.remove('place')");
+	sink("buildingPlaced", {});
+	CHECK_FALSE(f.vm->hasPending());
+}
+
+TEST_CASE("bfme Lua: completion events batch and defer bursts without losing notifications")
+{
+ BfmeFixture f;
+ auto sink = f.vm->eventSink();
+ f.run("count=0; bfme.events.onBuildingsCompleted('done',function(e) count=count+#e.objects end)");
+ sink("buildingsCompleted", {{"objectId", 1}});
+ sink("buildingsCompleted", {{"objectId", 2}});
+ f.snapshotReads = 0;
+ CHECK(f.vm->hasPending());
+ f.vm->flush();
+ CHECK(f.snapshotReads == 0);
+ CHECK(f.run("return count") == "2\n");
+ sink("buildingsCompleted", {{"objectId", 3}});
+ CHECK_FALSE(f.vm->hasPending());
+ f.vm->flush();
+ CHECK(f.run("return count") == "2\n");
+ std::this_thread::sleep_for(std::chrono::milliseconds(260));
+ CHECK(f.vm->hasPending());
+ f.vm->flush();
+ CHECK(f.run("return count") == "3\n");
+ f.vm->invalidate();
+ sink("buildingsCompleted", {{"objectId", 4}});
+ CHECK(f.vm->hasPending());
+ f.vm->flush();
+ CHECK(f.run("return count") == "4\n");
+}
+
 TEST_CASE("bfme Lua: engine events queue across threads and dispatch once at safe points")
 {
 	BfmeFixture f;
@@ -793,6 +872,13 @@ TEST_CASE("bfme Lua: idle update callbacks avoid snapshots until their first sta
 	f.vm->flush();
 	CHECK(f.snapshotReads == 0);
 	CHECK(f.queries.back().first == "unitRoster");
+	f.answers["completedBuildingRoster"] = BfmeLuaValue::Table{{"ready",true},{"ids",BfmeLuaValue::List{77}}};
+	f.run("bfme.events.onUpdate('buildings',function() local r=bfme.match.getCompletedBuildingRoster(1); assert(r.ready and r.ids[1]==77); r.ids[1]=-1 end,50)");
+	f.snapshotReads = 0;
+	f.vm->flush();
+	CHECK(f.snapshotReads == 0);
+	CHECK(f.queries.back().first == "completedBuildingRoster");
+	f.run("bfme.events.remove('buildings')");
 	f.run("bfme.events.remove('idle'); saved=bfme.unitInstances[1234]; bfme.events.onUpdate('live',function() seen=saved.position.x; seenFrame=bfme.match.getFrame() end,50)");
 	f.snapshot.frame = 71;
 	f.snapshot.collections["unitInstances"]["1234"]["position"] = BfmeLuaValue::Table{{"x", 456}};
@@ -807,4 +893,37 @@ TEST_CASE("bfme Lua: idle update callbacks avoid snapshots until their first sta
 	CHECK(f.asyncOutput.find("idle failure") != std::string::npos);
 	CHECK(f.run("return bfme.match.getFrame()") == "71\n");
 	CHECK_FALSE(f.vm->execute("bfme.match.getUnitRoster(-1)").ok);
+	CHECK_FALSE(f.vm->execute("bfme.match.getCompletedBuildingRoster(-1)").ok);
+}
+
+TEST_CASE("bfme: player names and faction labels resolve to the same live handles")
+{
+    BfmeFixture f;
+    f.snapshot.collections["players"]["1"]["faction"] = "Men";
+    f.snapshot.collections["players"]["2"] = {{"id",2},{"name","PlyrCreeps"},{"faction","Creeps"}};
+    CHECK(f.run("return bfme.players.Player_1==bfme.players[1], bfme.players['Player_1 (Men)']==bfme.players[1]") == "true\ttrue\n");
+    CHECK(f.run("return tostring(bfme.players.Player_1), bfme.players.NeutralFaction.id, bfme.players.CreepFaction.id") == "Player_1 (Men)\t0\t2\n");
+    CHECK(f.run("local out={};for key,p in pairs(bfme.players) do out[#out+1]=key end;table.sort(out);return table.concat(out,',')") == "CreepFaction,NeutralFaction,Player_1\n");
+    CHECK(f.run("return #bfme.players.list(), bfme.players.Player_1:inspect().label") == "3\tPlayer_1 (Men)\n");
+    CHECK(f.run("return bfme.players.table():find('Player_1 (Men)',1,true)~=nil") == "true\n");
+    f.run("bfme.unitInstances[1234].ownerPlayer='CreepFaction'");
+    f.vm->flush();
+    CHECK(std::get<double>(f.applied.back().value.data) == 2);
+    f.answers["unitRoster"] = BfmeLuaValue::List{};
+    f.run("bfme.match.getUnitRoster('Player_1')");
+    CHECK(f.queries.back().first == "unitRoster");
+    CHECK(std::get<double>(f.queries.back().second[0].data) == 1);
+    CHECK_FALSE(f.vm->execute("return bfme.players.DoesNotExist").ok);
+    f.snapshot.collections["players"]["3"] = {{"id",3},{"name","Player_1"},{"faction","Men"}};
+    CHECK_FALSE(f.vm->execute("return bfme.players.Player_1").ok);
+    CHECK_FALSE(f.vm->execute("for name,p in pairs(bfme.players) do end").ok);
+    CHECK(f.run("return #bfme.players.list()") == "4\n");
+}
+
+TEST_CASE("bfme: player presentation retains map names and uses actual factions")
+{
+    CHECK(PlayerPresentation::label(4, "Player_4", "Men") == "Player_4 (Men)");
+    CHECK(PlayerPresentation::key(0, "", "") == "NeutralFaction");
+    CHECK(PlayerPresentation::label(7, "PlyrCreeps", "Creeps") == "CreepFaction");
+    CHECK(PlayerPresentation::label(4, "ScenarioDefenders", "CustomFaction") == "ScenarioDefenders (CustomFaction)");
 }

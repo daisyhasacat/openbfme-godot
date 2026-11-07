@@ -160,7 +160,7 @@ bool CursorTooltipSettings::scan(const std::string &mouseIni, const std::string 
 		INIEnvironment env;
 		INIBlockRecorder recorder;
 		GlobalLanguage language;
-		RegisterRecordingBlockStubs(env.blocks, recorder, { "Language" }, StubExtent::Lenient);
+		RegisterRecordingBlockStubs(env.blocks, recorder, { "Language" }, StubExtent::LenientAfterEnd);
 		language.registerBlocks(env.blocks);
 		INI ini(env);
 		try
@@ -416,7 +416,12 @@ void ShellCursorTooltip::update(std::uint32_t nowMs, float windowW, float window
 	const std::string label = m_windows.currentTooltipLabel();
 	UnicodeString text;
 	bool exists = false;
-	if (!label.empty())
+	if (!m_windows.currentTooltipText().empty())
+	{
+		text = m_windows.currentTooltipText(); // composed by code (WindowManager::setCursorTooltip)
+		exists = true;
+	}
+	else if (!label.empty())
 	{
 		const UnicodeString fetched = fetchOrMissing(m_text, label, &exists);
 		if (exists)

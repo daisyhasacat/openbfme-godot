@@ -8,10 +8,12 @@
 #include "doctest.h"
 #include "AptPlayerTestUtil.h"
 #include "AptRetail.h"
+#include "IniTestUtil.h"
 
 #include "GameClient/GUI/AptScreen.h"
 #include "GameClient/GUI/AptScreens/AptMainMenu.h"
 #include "GameClient/GUI/AptScreens/AptScreenFactories.h"
+#include "GameClient/GUI/AptScreens/AptObjectivesMenu.h"
 #include "GameClient/GUI/AptScreens/AptSkirmish.h"
 #include "GameClient/GUI/Shell/Shell.h"
 #include "GameClient/GUI/ShellEnvironment.h"
@@ -530,10 +532,12 @@ TEST_CASE("Shell: the A4 factory table holds MainMenu, Skirmish, LoadScreen, Opt
 	CHECK(have == std::set<std::string>{ "MainMenu.apt", "Skirmish.apt", "LoadScreen.apt", "Options.apt", "GuiFX.apt", "Background.apt", "AptLevel0.apt", "Palantir.apt",
 		"TimeLine.apt", "ScoreScreen.apt", "QuitMenu.apt", // lane END-1: the score screen; lane END-2: the quit menu
 		"SaveLoad.apt", "LanLobby.apt", // lane MP-2: the replay page, the LAN lobby
-		"PlayerTribute.apt", // lane PLAY-1: the Palantir flag's screen
+		"Objectives.apt", "PlayerTribute.apt", // lane PLAY-1: the Palantir flag's screen
 		"CreateAHero.apt", // lane CAH-1: the Create-a-Hero builder
 		"OnlineShell.apt", // lane ONLINE-4: the online screens
-		"CampaignMenu.apt" }); // lane CAMPSAVE-1: the campaign between missions
+		"CampaignMenu.apt", // lane CAMPSAVE-1: the campaign between missions
+		"Messenger.apt", // SOCIAL-1 (landed by lane ONLINEMENU-1): RotWK's Messenger
+		"Objectives.apt" }); // lane CAMPUI-1: the objectives screen (RW 0x8E8843)
 	CHECK(fx.factories.has("mainmenu.APT"));
 	fx.wm->init();
 	fx.shell->push("AptLevel0.apt");
@@ -920,6 +924,48 @@ TEST_CASE("menustyle: BFME2 campaign commands preserve alignment and difficulty 
 	}
 }
 
+TEST_CASE("bfme1 main menu: returning hides the submenu background without changing BFME2 or RotWK")
+{
+	for (const std::string style : { "bfme1", "bfme2", "rotwk", "no-filesystem" })
+	{
+		CAPTURE(style);
+		initest::FileList files = { { "Data\\INI\\Default\\SubsystemLegend.ini", "; legend" } };
+		if (style == "bfme2")
+		{
+			files.emplace_back("Data\\INI\\AwardSystem.ini", "; awards");
+		}
+		if (style == "rotwk")
+		{
+			files.emplace_back("Data\\INI\\Default\\SubsystemLegendExpansion1.ini", "; expansion");
+		}
+		initest::Fixture data(files);
+		std::vector<std::string> log;
+		ShellFx fx;
+		fx.environment.fileSystem = style == "no-filesystem" ? nullptr : &data.fsys;
+		fx.addMovie("MainMenu", {});
+		fx.addMovie("Background", {});
+		fx.addMovie("Covered", {});
+		registerAptScreenFactories(fx.factories);
+		registerTestScreen(fx.factories, "Covered.apt", &log);
+		fx.wm->init();
+		REQUIRE(fx.wm->loadBackground());
+		fx.shell->push("MainMenu.apt");
+		fx.tick();
+		for (int visit = 0; visit < 2; ++visit)
+		{
+			fx.shell->push("Covered.apt");
+			fx.tick();
+			fx.wm->setBackground(1);
+			CHECK(fx.wm->backgroundMode() == 1);
+			fx.shell->pop();
+			fx.tick();
+			REQUIRE(fx.shell->top() != nullptr);
+			CHECK(fx.shell->top()->filename() == "MainMenu.apt");
+			CHECK(fx.wm->backgroundMode() == (style == "bfme1" ? 0 : 1));
+		}
+	}
+}
+
 TEST_CASE("stops S-175: handlers with no decompiled body report 'unported-command'; every main-menu action is still a request the engine can see")
 {
 	ShellFx fx;
@@ -938,7 +984,8 @@ TEST_CASE("stops S-175: handlers with no decompiled body report 'unported-comman
 	CHECK(fx.services.requests.size() == 16);
 	// lane UI-4: Credits and CreditsExit are ported (the credits roll, S-2520): still requests (the host's music), no longer unported commands; with no
 	// archives in this environment the roll reports that it cannot start
-	CHECK(fx.wm->noteCount("unported-command") == 14);
+	CHECK(fx.wm->noteCount("unported-command") == 13); // lane WOTR-1: War of the Ring is ported (the strategic Skirmish.apt) ...
+	CHECK(fx.wm->noteCount("skirmish-environment-missing") == 1); // ... and says so when the environment has no LivingWorldShellInfo
 	CHECK(fx.wm->noteCount("credits") == 1);
 	CHECK(fx.services.requests[0].action == ShellAction::LoadGame);
 	CHECK(fx.services.requests[0].argument == "arg");
@@ -1006,4 +1053,52 @@ TEST_CASE("BFME2 main menu: Good and Evil campaign callbacks retain difficulty")
  CHECK(fx.services.requests[0].argument == "bfme2:good:E");
  CHECK(fx.services.requests[1].action == ShellAction::LoadCampaign);
  CHECK(fx.services.requests[1].argument == "bfme2:evil:H");
+}
+
+TEST_CASE("native objectives: twelve retail row providers, live status, input gate and return callback")
+{
+	ShellFx fx;
+	registerAptScreenFactories(fx.factories);
+	fx.addMovie("Objectives", {});
+	fx.wm->init();
+	fx.environment.services = &fx.services;
+	ObjectivesScreenInfo objectives;
+	objectives.gameMode = 6; objectives.tutorialInput = true;
+	objectives.objectives = {{"Mission:First", false, true, false}, {"Mission:Bonus", true, true, true}};
+	fx.environment.objectivesScreen = &objectives;
+	fx.shell->push("Objectives.apt");
+	REQUIRE(fx.shell->top() != nullptr);
+	CHECK(fx.shell->top()->filename() == "Objectives.apt");
+	CHECK(fx.wm->backgroundMode() == 2);
+	std::string value;
+	auto read = [&](const std::string &name) {
+		CHECK(fx.wm->getExtern(name, value) == AptExternResult::Value);
+		return value;
+	};
+	CHECK(read("Objective1") == "$Mission:First");
+	CHECK(read("Objective1Status") == "00");
+	CHECK(read("Objective2") == "$Mission:Bonus");
+	CHECK(read("Objective2Status") == "11");
+	CHECK(read("Objective12").empty());
+	CHECK(read("Objective12Status") == "00");
+	CHECK(fx.wm->getExtern("Objective13", value) == AptExternResult::NoProvider);
+	objectives.objectives[0].completed = true;
+	CHECK(read("Objective1Status") == "10");
+	objectives.objectives.erase(objectives.objectives.begin());
+	CHECK(read("Objective1") == "$Mission:Bonus");
+	CHECK(read("Objective2").empty());
+	objectives.tutorialInput = false;
+	CHECK(read("AptObjectivesMenu::InputEnabled") == "0");
+	CHECK(fx.wm->invokeCallback("AptObjectivesMenu::ReturnToGame", ""));
+	CHECK(fx.services.requests.empty());
+	objectives.tutorialInput = true;
+	CHECK(read("AptObjectivesMenu::InputEnabled") == "1");
+	CHECK(fx.wm->invokeCallback("AptObjectivesMenu::ReturnToGame", ""));
+	REQUIRE(fx.services.requests.size() == 1);
+	CHECK(fx.services.requests.front().action == ShellAction::ObjectivesReturnToGame);
+	fx.shell->popImmediate();
+	CHECK_FALSE(fx.wm->hasCommand("AptObjectivesMenu::ReturnToGame"));
+	CHECK(fx.wm->backgroundMode() == 0);
+	fx.shell->push("Objectives.apt");
+	CHECK(read("Objective1Status") == "11");
 }

@@ -141,6 +141,8 @@ TEST_CASE("input1 groups: RotWK's SelectionTranslator: Ctrl+n / n / Shift+n thro
 	}
 	SharedWorld &s = shared();
 	Rig r(s);
+	// RotWK's default right-click orders: with the standard setup a left click on a second own unit is a move to it (RW 0x83C4F6 -> 0x71047C)
+	r.input->commandTranslator().setUseAlternateMouse(true);
 	const Coord3D c0 = r.freeSpot(mapCenter(r).x, mapCenter(r).y, 260.0f);
 	Object *a = r.make(templates(s).infantry.front(), c0.x, c0.y);
 	Object *b = r.make(templates(s).infantry.front(), c0.x + 120.0f, c0.y);
@@ -219,6 +221,8 @@ TEST_CASE("input1 groups: ADD_TO_TEAMn (RotWK only, no retail binding): MSG_ADD_
 	}
 	SharedWorld &s = shared();
 	Rig r(s);
+	// RotWK's default right-click orders: with the standard setup a left click on a second own unit is a move to it (RW 0x83C4F6 -> 0x71047C)
+	r.input->commandTranslator().setUseAlternateMouse(true);
 	const Coord3D c0 = r.freeSpot(mapCenter(r).x, mapCenter(r).y, 260.0f);
 	Object *a = r.make(templates(s).infantry.front(), c0.x, c0.y);
 	Object *b = r.make(templates(s).infantry.front(), c0.x + 120.0f, c0.y);
@@ -717,4 +721,23 @@ TEST_CASE("backlog3 binary facts: no code sets InGameUI's force-attack mode (+ 0
 	// + 0x8C4 (S-454): the constructor's clear only; the LookAt tick's clamp tests it (RW 0x83B75E: cmp byte ptr [eax + 0x8C4], 0)
 	CHECK(stores(0x8C4) == Stores{ { 0x6A7234, 0x88 } });
 	CHECK(pe->hex(0x83B75E, 7) == "80b8c408000000");
+}
+
+TEST_CASE("BFME1 Q selects the army by default and preserves an explicit binding")
+{
+	MetaMap map;
+	map.addBfme1SelectionBinding();
+	const MetaMapRec *select = map.find(CMSG_META_SELECT_ALL);
+	REQUIRE(select);
+	CHECK(select->key == MetaMap::keyByName("KEY_Q"));
+	CHECK(select->transition == TRANSITION_DOWN);
+	CHECK(select->usableIn == COMMANDUSABLE_GAME);
+	CHECK(select->modState == MOD_NONE);
+	map.addBfme1SelectionBinding();
+	CHECK(map.records().size() == 1);
+	MetaMap custom;
+	auto &record = custom.getMetaMapRec(CMSG_META_SELECT_ALL);
+	record.key = MetaMap::keyByName("KEY_X");
+	custom.addBfme1SelectionBinding();
+	CHECK(custom.find(CMSG_META_SELECT_ALL)->key == MetaMap::keyByName("KEY_X"));
 }

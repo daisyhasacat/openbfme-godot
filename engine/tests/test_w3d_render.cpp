@@ -6,6 +6,7 @@
 #include "doctest.h"
 #include "W3dSynth.h"
 
+#include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DModelDrawBones.h"
 #include "GameEngineDevice/W3DDevice/GameClient/HouseColor.h"
 #include "Libraries/WWVegas/WW3D2/assetmgr.h"
 #include "Libraries/WWVegas/WW3D2/hanim.h"
@@ -511,6 +512,21 @@ TEST_CASE("asset manager: an HLOD prototype resolves sub objects by global name,
 	CHECK(am.Create_Render_Obj("abunit_skn", &error) == proto);
 }
 
+TEST_CASE("sub object hide walk: a sub object on a bone outside the hierarchy is not a child and is never looked up (RW 0x4B2964)")
+{
+	MemoryFileSource fs;
+	buildGame(fs);
+	WW3DAssetManager am(fs);
+	std::string error;
+	const RenderObjPrototype *proto = am.Create_Render_Obj("ABUNIT_SKN", &error);
+	REQUIRE_MESSAGE(proto, error);
+	REQUIRE(proto->SubObjects.size() == 5);
+	REQUIRE(proto->SubObjects[4].BoneIndex == 99); // 3 pivots: retail's walk stops at a bone >= the pivot count before its parent lookup
+	// BODY is on HIP (1): PART on HAND (2, parent HIP) is under it; the box on the root, E_NOSUCH on HIP itself and bone 99 are not
+	CHECK(W3DSubObjectsUnderSubObject(*proto, 0) == std::vector<int>{ 0, 2 });
+	CHECK(W3DSubObjectsUnderSubObject(*proto, 4) == std::vector<int>{ 4 }); // the bone-99 sub object hides itself alone
+}
+
 TEST_CASE("asset manager: a bare mesh is a one-pivot render object and an HLOD without its hierarchy gets the default tree, flagged")
 {
 	MemoryFileSource fs;
@@ -705,4 +721,21 @@ TEST_CASE("housecolor.ini: blocks map a base texture to its house colour texture
 	CHECK_FALSE(t.Parse("HouseColor\n BaseTexture = A.tga\n HouseTexture = B.tga\n", &error)); // not closed
 	CHECK(error.find("not closed") != std::string::npos);
 	CHECK_FALSE(t.Parse("Colour\nEnd\n", &error));
+}
+
+TEST_CASE("texture resolution: packed model colours use JPEG after DDS and TGA, never the PNG mask alone")
+{
+	const std::string stem = "art\\compiledtextures\\gu\\gushadowfaxh";
+	std::set<std::string> files = { stem + ".jpg", stem + ".png" };
+	auto exists = [&](const std::string &path) { return files.count(path) != 0; };
+	auto resolved = Resolve_Packed_W3D_Texture("GUShadowFaxH.tga", exists);
+	REQUIRE(resolved.Found);
+	CHECK(resolved.Path == stem + ".jpg");
+	CHECK_FALSE(resolved.IsDDS);
+	files.insert(stem + ".tga");
+	CHECK(Resolve_Packed_W3D_Texture("GUShadowFaxH.tga", exists).Path == stem + ".tga");
+	files.insert(stem + ".dds");
+	CHECK(Resolve_Packed_W3D_Texture("GUShadowFaxH.tga", exists).Path == stem + ".dds");
+	files = { stem + ".png" };
+	CHECK_FALSE(Resolve_Packed_W3D_Texture("GUShadowFaxH.tga", exists).Found);
 }

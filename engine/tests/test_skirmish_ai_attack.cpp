@@ -423,7 +423,14 @@ TEST_CASE("skirmish ai attack: the tactical layer's stops are reported (S-417 no
 	CHECK(s1300 == 1);
 	CHECK(s1301 == 1);
 	CHECK(s1302 == 1);
-	CHECK(SkirmishAIManager::stopLines().size() == 21); // S-410 (with S-411), S-412, S-415, S-416, S-413, S-414, S-417, S-419, S-420, S-418, S-890, S-892, S-1500, S-1501, S-1502 (lane MOVE-2), S-893, S-894, S-895, S-1300, S-1301, S-1302
+	// lane AI5: + S-1876 (the upgrade builders and their heuristics)
+	int s1876 = 0;
+	for (const std::string &l : SkirmishAIManager::stopLines())
+	{
+		s1876 += l.rfind("[S-1876]", 0) == 0 ? 1 : 0;
+	}
+	CHECK(s1876 == 1);
+	CHECK(SkirmishAIManager::stopLines().size() == 22); // S-410 (with S-411), S-412, S-415, S-416, S-413, S-414, S-417, S-419, S-1876, S-420, S-418, S-890, S-892, S-1500, S-1501, S-1502 (lane MOVE-2), S-893, S-894, S-895, S-1300, S-1301, S-1302
 }
 
 TEST_CASE("skirmish ai economy: each of the 7 factions as the Medium computer on Evendim builds its farms from the map's FarmTemplate sites (RW 0x8EEF8F)")
@@ -450,13 +457,14 @@ TEST_CASE("skirmish ai economy: each of the 7 factions as the Medium computer on
 	}
 }
 
-TEST_CASE("skirmish ai economy: the money reserve (RW 0x8F0502) fills, a hero is requested from it and every farm request is built (lane AI-4)")
+TEST_CASE("enhanced AI economy: the money reserve (RW 0x8F0502) fills, a hero is requested from it and every farm request is built (lane AI-4)")
 {
 	// Hard Men against Hard Mordor, 20 game minutes. Before lane AI-4 no reserve was kept (S-413), so a computer player never held a hero's cost and built
 	// none; the farm markers 70 apart made 82 requests for 7 farms in 20 minutes
 	OPENBFME_REQUIRE_START(s);
 	AttackRun run;
 	NewGameMessage m = attackMessage(*s, "FactionMen", "FactionMordor", true, 4242u);
+	m.game.enhancedAI = true; // this AI-4 scenario also verifies the enhanced farm-site precheck
 	m.game.slots[0].state = SLOT_HARD_AI;
 	m.game.slots[1].state = SLOT_HARD_AI; // Hard saves 3 % of the money every 2 seconds (Medium 1.5 %: a Medium AI that spends everything saves little)
 	runAttackGame(*s, m, 6000, run, false, true);
@@ -485,11 +493,13 @@ TEST_CASE("skirmish ai attack: AI vs AI on Evendim (Medium Mordor against Medium
 	}
 	{
 		AttackRun run;
-		runAttackGame(*s, attackMessage(*s, "FactionMordor", "FactionMen", true, 1234u), 1600, run, false, true);
+		runAttackGame(*s, attackMessage(*s, "FactionMordor", "FactionMen", true, 1234u), 2400, run, false, true);
 		MESSAGE("AI vs AI (seed 1234): Mordor farms " << run.farmsBuilt << " in flight " << run.farmsInFlight << ", attacks " << run.attacksLaunched);
 		// before PATH-2 the two dozers were killed at their 0 % foundations and the base stalled; with PATH-2's multi-shape footprints and the
 		// cylinder bounding sphere (RW 0xAD2770) the defenders' reach and the build sites change, the dozers survive and Mordor develops
 		// (engine pin, not a retail value: S-420)
+		// lane DECOMPFIX-1104B: the first attack's frame is chaotic (each retail rule of AIMAIM-1's aim, RW 0x75232F, alone moves it between 958 and 2119;
+		// 1197 before it, 2082 with all of them): the run takes the 8 minutes (2400 frames) of the per-faction bound above instead of 1600
 		CHECK(run.farmsBuilt >= 1);
 		CHECK(run.attacksLaunched >= 1);
 	}
@@ -511,6 +521,7 @@ TEST_CASE("offensive AI retail: Dwarves on Tharbad with enlarged CP sustain atta
  auto message=attackMessage(*s,"FactionDwarves","FactionMen",false,4139u);
  message.game.mapName="maps/map mp tharbad/map mp tharbad.map";
  message.game.slots[1].state=SLOT_BRUTAL_AI;
+ message.game.enhancedAI=true;
  message.game.startingCash=100000;
  AttackRun run;
  runAttackGame(*s,message,4500,run,false,false,true,true);
@@ -531,6 +542,7 @@ TEST_CASE("offensive AI retail: Dwarves with enlarged CP launch attacks and prod
 {
  OPENBFME_REQUIRE_START(s);
  auto message=attackMessage(*s,"FactionDwarves","FactionMen",false);
+ message.game.enhancedAI=true;
  message.game.startingCash=50000;
  AttackRun run;
  runAttackGame(*s,message,4500,run,false,false,true);

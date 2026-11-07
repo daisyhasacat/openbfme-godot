@@ -46,6 +46,18 @@ func _run() -> void:
 	await process_frame
 	await process_frame
 	assert(id in hud.get_selection(), str(hud.get_selection()))
+	# Matching units are selected across the map; enemies and other types stay out.
+	var distant = world.create_object("MenPorter", int(player.output), 4000, 4000, 0)
+	var enemy_player = world.execute_lua("for id,p in pairs(bfme.players) do if p.name=='Player_2' then return id end end")
+	var enemy_porter = world.create_object("MenPorter", int(enemy_player.output), 4200, 4000, 0)
+	world.advance(0.2)
+	assert(hud.controller_select_type())
+	assert(id in hud.get_selection() and distant in hud.get_selection())
+	assert(not enemy_porter in hud.get_selection())
+	hud.set_input_enabled(false)
+	assert(not hud.controller_select_type())
+	hud.set_input_enabled(true)
+	hud.select_controller_group(PackedInt64Array([id]))
 	world.advance(0.2)
 	position.x += 200
 	hud.camera_look_at(position)

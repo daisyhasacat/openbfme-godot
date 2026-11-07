@@ -12,6 +12,7 @@ extern "C"
 #include <luajit/lualib.h>
 }
 #include <algorithm>
+#include <set>
 #include <chrono>
 #include <mutex>
 #include <cmath>
@@ -143,6 +144,35 @@ local function numeric(v,lo,hi,integer)
 end
 local function count(kind) local n=0; for _ in pairs(view.collections[kind] or {}) do n=n+1 end; return n end
 local proxy
+local function playerKey(r,id)
+ if r.key then return r.key end
+ if tonumber(id)==0 then return 'NeutralFaction' end
+ if r.name=='PlyrCreeps' or r.name=='CreepFaction' or r.faction=='Creeps' then return 'CreepFaction' end
+ return r.name and r.name~='' and r.name or ('Player_'..id)
+end
+local function playerLabel(r,id)
+ if r.label then return r.label end
+ local key=playerKey(r,id)
+ if key=='NeutralFaction' or key=='CreepFaction' or not r.faction or r.faction=='' then return key end
+ return key..' ('..r.faction..')'
+end
+local function resolvePlayer(value)
+ if type(value)=='userdata' then
+  local _,h=record(value); if h.kind~='players' then error('expected a Player',3) end
+  return tonumber(h.id)
+ end
+ if type(value)=='number' then numeric(value,0,19,true); return value end
+ if type(value)~='string' then error('expected a player name or Player handle',3) end
+ local found
+ for id,r in pairs(view.collections.players or {}) do
+  if value==playerKey(r,id) or value==playerLabel(r,id) or (r.name and r.name~='' and value==r.name) or (value=='NeutrualFaction' and tonumber(id)==0) then
+   if found and found~=tonumber(id) then error('ambiguous player name: '..value,3) end
+   found=tonumber(id)
+  end
+ end
+ if found==nil then error('unknown player: '..value,3) end
+ return found
+end
 -- A template handle or INI name that must exist in collection `kind`; returns the name.
 local function templateName(value, kind, label)
  if type(value)=='userdata' and info[value] then value=(record(value)).id end
@@ -167,14 +197,13 @@ local function set(p, field, value)
   elseif field=='buildTime' or field=='trainTime' or field=='visionRange' or field=='shroudClearingRange' then numeric(value,0,1e30,false)
   else error('unsupported or read-only template field: '..tostring(field),2) end
  elseif field=='ownerPlayer' then
-  if type(value)=='userdata' then local _,owner=record(value); if owner.kind~='players' then error('expected Player',2) end; value=tonumber(owner.id) end
-  numeric(value,0,19,true)
+  value=resolvePlayer(value)
  elseif field=='level' then numeric(value,1,100,true)
  else error('unsupported or read-only instance field: '..tostring(field),2) end
  return queue(h.kind,h.id,field,value)
 end
 local function inspect(p)
- local r,h=record(p); return {label=kinds[h.kind]..'['..h.id..']',kind=kinds[h.kind],id=r.id,values=copy(r)}
+ local r,h=record(p); return {label=h.kind=='players' and playerLabel(r,h.id) or kinds[h.kind]..'['..h.id..']',kind=kinds[h.kind],id=r.id,values=copy(r)}
 end
 -- Map coordinates are SAGE x/y; terrain supplies z. builderId 0 = the building raises itself.
 local function construct(building, position, builderId, playerId, speed, onComplete)
@@ -182,7 +211,7 @@ local function construct(building, position, builderId, playerId, speed, onCompl
  if type(position)~='table' then error('expected position {x=..., y=...}',2) end
  numeric(position.x,-1e7,1e7,false); numeric(position.y,-1e7,1e7,false)
  local angle=position.rotation or 0; numeric(angle,-1e6,1e6,false)
- numeric(playerId,0,19,true)
+ playerId=resolvePlayer(playerId)
  if speed==nil then speed=1 end; numeric(speed,0.01,100,false)
  if onComplete~=nil and type(onComplete)~='function' then error('expected completion function',2) end
  local callback
@@ -226,10 +255,9 @@ local function instanceId(t,label)
  return tonumber(h.id)
 end
 local function playerId(p)
- local _,h=record(p)
- if h.kind~='players' then error('expected a Player',3) end
+ return resolvePlayer(p)
 )lua"
-R"lua( return tonumber(h.id)
+R"lua(
 end
 local function name(v,label) if type(v)~='string' or v=='' then error('expected '..label..' name',3) end; return v end
 local function target(t) if t==nil then return nil end; if type(t)=='userdata' then return instanceId(t,'target') end; return where(t) end
@@ -361,11 +389,13 @@ local mt={
   if method then return method end
   if key=='ownerPlayer' and r.playerId then return proxy('players',tostring(r.playerId)) end
   if (key=='type' or key=='template') and r.typeId then return proxy(h.kind=='buildingInstances' and 'buildingTypes' or 'unitTypes',r.typeId) end
+  if h.kind=='players' and key=='key' then return playerKey(r,h.id) end
+  if h.kind=='players' and key=='label' then return playerLabel(r,h.id) end
   return copy(r[key])
  end,
  __newindex=set,
  __pairs=function(p) local r=record(p); return next,copy(r),nil end,
- __tostring=function(p) local _,h=record(p); return kinds[h.kind]..'['..h.id..']' end,
+ __tostring=function(p) local r,h=record(p); return h.kind=='players' and playerLabel(r,h.id) or kinds[h.kind]..'['..h.id..']' end,
  __metatable='bfme proxy'
 }
 proxy=function(kind,id)
@@ -380,13 +410,33 @@ for kind in pairs(kinds) do
  root[kind]=newproxy({
   __index=function(_,key)
    if kind=='players' and key=='localPlayer' then return view.localPlayerId and proxy(kind,view.localPlayerId) end
-   if kind=='players' and key=='neutral' then key=0 end
+   if kind=='players' then
+    if key=='list' then return function()
+     local out={}; for id in pairs(view.collections.players or {}) do out[#out+1]=proxy(kind,id) end
+     table.sort(out,function(a,b) return a.id<b.id end); return out
+    end end
+    if key=='table' then return function()
+     local lines={string.format('%-28s | %-14s | %s','Player','Faction','Name')}
+     local ids={};for id in pairs(view.collections.players or {}) do ids[#ids+1]=id end
+     table.sort(ids,function(a,b)return tonumber(a)<tonumber(b) end)
+     for _,id in ipairs(ids) do local r=view.collections.players[id];lines[#lines+1]=string.format('%-28s | %-14s | %s',playerLabel(r,id),r.faction or '',r.displayName or '') end
+     return table.concat(lines,'\n')
+    end end
+    if key=='neutral' then key=0 end
+    if type(key)=='string' and not (view.collections.players or {})[key] then
+     local id=resolvePlayer(key); return proxy(kind,id)
+    end
+   end
    return proxy(kind,key)
   end,
   __newindex=function() error('collection entries cannot be replaced',2) end,
   __len=function() return count(kind) end,
   __pairs=function()
-   local entries={}; for id in pairs(view.collections[kind] or {}) do entries[tonumber(id) or id]=proxy(kind,id) end
+   local entries={}; for id in pairs(view.collections[kind] or {}) do
+    local key=kind=='players' and playerKey(view.collections[kind][id],id) or (tonumber(id) or id)
+    if entries[key] then error('ambiguous player name: '..key,2) end
+    entries[key]=proxy(kind,id)
+   end
    return next,entries,nil
   end,
   __metatable='bfme collection'
@@ -475,7 +525,8 @@ library('timing',{
 	clear=function() timingNative('build',nil); timingNative('train',nil); timingNative('upgrade',nil) end,
 })
 library('match',{
-	getUnitRoster=function(playerId) numeric(playerId,0,19,true); return query('unitRoster',playerId) end,
+	getUnitRoster=function(player) return query('unitRoster',resolvePlayer(player)) end,
+	getCompletedBuildingRoster=function(player) return query('completedBuildingRoster',resolvePlayer(player)) end,
  getFrame=function() return view.frame or 0 end,
  getTimeMs=clock,
  isPaused=function() return view.paused or false end,
@@ -484,13 +535,14 @@ library('match',{
  -- 0 stops time, 1 normal, 100 one hundred times as fast; pause is independent.
  placePlanningMarker=function(template,position,player)
   if type(template)~='string' or type(position)~='table' then error('expected marker template and position',2) end
-  numeric(position.x,-1e7,1e7,false);numeric(position.y,-1e7,1e7,false);numeric(player,0,19,true)
+  numeric(position.x,-1e7,1e7,false);numeric(position.y,-1e7,1e7,false);player=resolvePlayer(player)
   return queue('match','',':planningMarker',template,position.x,position.y,player,position.rotation or 0)
  end,
  setClearNeutralDecorations=function(enabled)
   if type(enabled)~='boolean' then error('expected enabled boolean',2) end
   return queue('match','',':clearNeutralDecorations',enabled)
  end,
+ setAIBaseExclusion=function(radius) numeric(radius,0,10000,false); return queue('match','',':setAIBaseExclusion',radius) end,
  setGameSpeed=function(value) numeric(value,0,100,false); return queue('match','',':setGameSpeed',value) end,
  getStatus=function()
   return {ready=view.ready or false,generation=generation,frame=view.frame or 0,paused=view.paused or false,localPlayerId=view.localPlayerId,
@@ -560,8 +612,10 @@ library('events',{
   onUpdateNative(n,fn,intervalMs)
  end,
  onMatchStarted=function(n,fn) name(n,'an event'); if type(fn)~='function' then error('expected a function',2) end; onEventNative('matchStarted',n,fn) end,
+ onUnitsCreated=function(n,fn) name(n,'an event'); if type(fn)~='function' then error('expected a function',2) end; onEventNative('unitsCreated',n,fn) end,
+ onBuildingsCompleted=function(n,fn) name(n,'an event'); if type(fn)~='function' then error('expected a function',2) end; onEventNative('buildingsCompleted',n,fn) end,
  onBuildingPlaced=function(n,fn) name(n,'an event'); if type(fn)~='function' then error('expected a function',2) end; onEventNative('buildingPlaced',n,fn) end,
- remove=function(n) name(n,'an event'); onUpdateNative(n,nil); onEventNative('matchStarted',n,nil); onEventNative('buildingPlaced',n,nil) end,
+ remove=function(n) name(n,'an event'); onUpdateNative(n,nil); onEventNative('matchStarted',n,nil); onEventNative('buildingPlaced',n,nil); onEventNative('unitsCreated',n,nil); onEventNative('buildingsCompleted',n,nil) end,
  list=updateList,
 })
 library('map',{
@@ -601,6 +655,14 @@ module=newproxy({
  __metatable='bfme module'
 })
 bfme=module
+-- Resolve this convenience handle on every read so selection changes never leave a stale global.
+setmetatable(_G, {
+ __index=function(_,key) if key=='selected' then return selected(nil)[1] end end,
+ __newindex=function(t,key,value)
+  if key=='selected' then error('selected is read-only',2) end
+  rawset(t,key,value)
+ end,
+})
 function import(name)
  if name=='bfme' then return module end
  local lib=type(name)=='string' and libraries[name:match('^bfme%.(.+)$') or '']
@@ -686,14 +748,18 @@ struct BfmeLuaRuntime::Impl
 	};
 	std::map<std::string, UpdateCallback> updates;
 	struct Event { std::string kind; V::Table payload; };
-	struct EventQueue { std::mutex mutex; std::deque<Event> pending; };
+	struct EventQueue {
+		std::mutex mutex;
+		std::deque<Event> pending;
+		std::map<std::string, std::chrono::steady_clock::time_point> next;
+	};
 	std::shared_ptr<EventQueue> events = std::make_shared<EventQueue>();
 	std::map<std::string, std::map<std::string, UpdateCallback>> eventCallbacks;
 	static int onEvent(lua_State *L)
 	{
 		auto &s = self(L);
 		const std::string kind = luaL_checkstring(L, 1), name = luaL_checkstring(L, 2);
-		if (kind != "matchStarted" && kind != "buildingPlaced") return luaL_error(L, "unknown engine event");
+		if (kind != "matchStarted" && kind != "buildingPlaced" && kind != "unitsCreated" && kind != "buildingsCompleted") return luaL_error(L, "unknown engine event");
 		auto &callbacks = s.eventCallbacks[kind];
 		auto old = callbacks.find(name);
 		if (old != callbacks.end()) { luaL_unref(L, LUA_REGISTRYINDEX, old->second.ref); callbacks.erase(old); }
@@ -1134,7 +1200,19 @@ BfmeLuaRuntime::EventSink BfmeLuaRuntime::eventSink() const
 }
 bool BfmeLuaRuntime::hasPending() const
 {
-	{ std::lock_guard<std::mutex> lock(m->events->mutex); if (!m->events->pending.empty()) return true; }
+	{
+		std::lock_guard<std::mutex> lock(m->events->mutex);
+		// Notifications without listeners need no simulation safe point. In particular,
+		// placing AI buildings must not drain the high-speed worker just to discard an event.
+		auto &events = m->events->pending;
+		events.erase(std::remove_if(events.begin(), events.end(), [this](const Impl::Event &event) {
+			const auto callbacks = m->eventCallbacks.find(event.kind);
+			return callbacks == m->eventCallbacks.end() || callbacks->second.empty();
+		}), events.end());
+		const auto now = std::chrono::steady_clock::now();
+		for (const auto &event : events)
+			if ((event.kind != "unitsCreated" && event.kind != "buildingsCompleted") || now >= m->events->next[event.kind]) return true;
+	}
 	if (!m->pending.empty() || !m->constructions.empty() || !m->deferred.empty())
 		return true;
 	const auto now = std::chrono::steady_clock::now();
@@ -1150,7 +1228,30 @@ void BfmeLuaRuntime::flush()
 	// another request, which runs on the next safe point rather than recursively.
 	m->output.clear(); // what Lua prints during this flush goes to Host::output at its end
 	std::deque<Impl::Event> events;
-	{ std::lock_guard<std::mutex> lock(m->events->mutex); events.swap(m->events->pending); }
+	{
+		std::lock_guard<std::mutex> lock(m->events->mutex);
+		const auto now = std::chrono::steady_clock::now();
+		std::set<std::string> ready;
+		for (const auto &event : m->events->pending)
+			if ((event.kind != "unitsCreated" && event.kind != "buildingsCompleted") || now >= m->events->next[event.kind]) ready.insert(event.kind);
+		for (auto it = m->events->pending.begin(); it != m->events->pending.end();)
+		{
+			if (!ready.count(it->kind)) { ++it; continue; }
+			events.push_back(std::move(*it));
+			it = m->events->pending.erase(it);
+		}
+		for (const auto &kind : ready)
+			if (kind == "unitsCreated" || kind == "buildingsCompleted") m->events->next[kind] = now + std::chrono::milliseconds(250);
+	}
+	// Births and completions may arrive by the hundreds: one value-only batch per kind.
+	std::map<std::string, Value::List> batches;
+	for (auto it = events.begin(); it != events.end();)
+	{
+		if (it->kind != "unitsCreated" && it->kind != "buildingsCompleted") { ++it; continue; }
+		batches[it->kind].emplace_back(std::move(it->payload));
+		it = events.erase(it);
+	}
+	for (auto &batch : batches) events.push_back({batch.first, {{"objects", std::move(batch.second)}}});
 	auto count = m->pending.size();
 	while (count--)
 	{
@@ -1234,7 +1335,7 @@ void BfmeLuaRuntime::flush()
 		std::vector<std::string> names;
 		for (const auto &entry : m->eventCallbacks[event.kind]) names.push_back(entry.first);
 		if (names.empty()) continue;
-		try { if (!eventSnapshot) { m->call(m->refreshRef); eventSnapshot = true; } }
+		try { if (!eventSnapshot) { m->call(m->deferRefreshRef); eventSnapshot = true; } }
 		catch (const std::exception &e) { m->output += std::string("bfme event snapshot failed: ") + e.what() + "\n"; break; }
 		for (const auto &name : names)
 		{
@@ -1350,7 +1451,7 @@ int BfmeLuaRuntime::adjustTiming(const std::string &kind, Value::Table context, 
 
 void BfmeLuaRuntime::invalidate()
 {
-	{ std::lock_guard<std::mutex> lock(m->events->mutex); m->events->pending.clear(); }
+	{ std::lock_guard<std::mutex> lock(m->events->mutex); m->events->pending.clear(); m->events->next.clear(); }
 	for (const auto &hook : m->timingHooks) luaL_unref(m->L, LUA_REGISTRYINDEX, hook.second);
 	m->timingHooks.clear();
 	if (m->host.onTimingChanged) m->host.onTimingChanged();

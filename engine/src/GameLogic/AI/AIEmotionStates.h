@@ -33,7 +33,7 @@
 //     0.035 (RW 0xC2A1BC) -> SUCCESS; a unit that cannot turn walks at the goal (AI vslot 0x210, explicit goal); one that can: its horde (mode 2) faces the point
 //     (slot 0x210 RW 0x86C1C6), else the locomotor goal angle (vslot 0x21C); mode 2 then runs AIIdleState::update (RW 0x7553AB). onExit RW 0x743DA9: the horde's face
 //     point is dropped (slot 0x214).
-//   * relAngle (RW 0x4B3D8D): the unit vector to the point (float32, the root of the float32 sum of squares) against the object's facing (RW 0x70B9E0), the acos of the
+//   * relAngle (RW 0x4B3D8D): the unit vector to the point (float32, the root of the float32 sum of squares) against the object's facing (RW 0x70B9E0: fcos / fsin of the orientation, not the transform's X axis), the acos of the
 //     dot clamped to [-1, 1], negative when the cross product is.
 // INFERENCE (S-1027): the acos is the deterministic double arc cosine (SimMath::acosDet; RW calls the CRT acos through its float wrapper); state 42 for IDLE is the port's
 // AIBusyState; the horde of RW 0x694BF8 is the object's own horde contain (the emotions run on the horde object).
@@ -51,6 +51,7 @@ enum AIEmotionStateType
 {
 	AI_PANIC = 20,
 	AI_PANIC_COWER = 21,
+	AI_FACE_OBJECT = 36, // its position mode 37 is SiegeModules.h AI_FACE_POSITION (lane SIEGE-1)
 	AI_BACK_AWAY = 48,
 	AI_QUARREL = 58,
 	AI_FACE_OBJECT_IDLE = 59
@@ -58,6 +59,23 @@ enum AIEmotionStateType
 
 // RW 0x4B3D8D: the signed angle from the object's facing to `p`, 0 when `p` is the object's position
 float emotionRelAngle(const Object &obj, const Coord3D &p);
+
+// The same retail face state as mode 2 below, with modes 1 (object) and 0
+// (position): RW constructor 0x753755 registers ids 36 / 37 at 0x7542E8.
+// These modes are not idle and return CONTINUE until the locomotor has turned.
+class AIFaceState : public AIState
+{
+public:
+	AIFaceState(AIStateMachine &m, bool objectTarget) : AIState(m, "AIFaceState"), m_objectTarget(objectTarget) {}
+	StateReturnType onEnter() override;
+	StateReturnType update() override;
+	void crc(class StateHasher &h) const override;
+	void xfer(class Xfer &x) override;
+
+private:
+	const bool m_objectTarget;
+	bool m_canTurn = false;
+};
 
 // state 20 (`cower` false) and state 21 (`cower` true)
 class AIPanicState : public AIState
@@ -70,6 +88,7 @@ public:
 	void crc(class StateHasher &hasher) const override;
 	void crcPersistent(class StateHasher &hasher) const override;
 	void xfer(class Xfer &x) override; // lane SAVE-4c (AIEmotionStates.cpp)
+	bool hasPersistentCrc() const override { return true; } // lane UBER-2C
 	void onTemporaryStateEnded() override; // RW 0x740C97 (vtables 0xC28BE0 / 0xC28C28 slot 0x1C)
 
 private:

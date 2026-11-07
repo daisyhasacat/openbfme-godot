@@ -5,6 +5,12 @@ static func resolved(profile: String, platform: String = "") -> String:
 	if platform.is_empty(): platform = OS.get_name()
 	return ("balanced" if platform == "iOS" else "high") if profile == "auto" else profile
 
+## After object_shadows.configure (the map's sun): the profile's cascade split only; coverage, bias and the ShadowLOD switch stay configure's.
+static func apply_cascades(sun: DirectionalLight3D, profile: String, platform: String = "") -> void:
+	var balanced := resolved(profile, platform) == "balanced"
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS if balanced else DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	sun.directional_shadow_blend_splits = not balanced
+
 static func apply(sun: DirectionalLight3D, profile: String, lod: int, platform: String = "") -> Dictionary:
 	var effective := resolved(profile, platform)
 	assert(effective in ["balanced", "high"])

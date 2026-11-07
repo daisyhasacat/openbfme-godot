@@ -7,10 +7,16 @@
 #include "Common/Thing/KindOfTokens.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/SkirmishAI/SkirmishAIManager.h"
+#include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "GameLogic/Module/DozerAIUpdate.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/SkirmishAI/AIPositionSampler.h"
+#include "GameLogic/SkirmishAI/SkirmishAIData.h"
+#include "GameLogic/SkirmishAI/SkirmishAIManager.h"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace
 {
@@ -109,35 +115,66 @@ void hashList(StateHasher &h, const std::vector<ObjectID> &v)
 		h.addU32(id);
 	}
 }
+
+// RW 0x8E3EF8: true when the object's template is one of the AI army definition's OffensiveBuildings (+ 0x160 -> + 0x98); those stay out of the
+// position sampler. No AI: false (RW reads through a null AI as "not a name of its list" and adds the object).
+bool offensiveBuilding(const Object &obj, int playerIndex)
+{
+	const AISkirmishPlayer *ai = obj.logic().skirmishAI().findAI(playerIndex);
+	const ThingTemplate *t = obj.getTemplate();
+	if (!ai || !ai->army || !t)
+	{
+		return false;
+	}
+	return std::find(ai->army->offensiveBuildings.begin(), ai->army->offensiveBuildings.end(), t->getName()) != ai->army->offensiveBuildings.end();
+}
+
+// RW 0x8E3DD6 / 0x8E4082: the object's position at the time the sampler asks (retail reads Object + 0x38 through TheGameLogic's lookup)
+Coord3D positionOf(GameLogic &logic, ObjectID id)
+{
+	const Object *o = logic.findObjectByID(id);
+	if (!o)
+	{
+		throw std::logic_error("AIStatCollector: the position sampler holds an object the game does not have");
+	}
+	return *o->getPosition();
+}
 } // namespace
 
-void AIStatCollector::registerObject(const Object &obj)
+unsigned AIStatCollector::registerObject(const Object &obj)
 {
-	// RW 0x8E4591
+	// RW 0x8E4591; each add that took the object calls the listeners of its mask (RW 0x8E3D4C): the caller does (lane AI5, SkirmishAIManager::objectAdded)
 	const ObjectID id = obj.getID();
-	bool any = false;
+	unsigned listeners = 0;
 	if (economyFilter(obj))
 	{
-		m_economy.push_back(id); // RW 0x99E84E -> RW 0x65BD58 (listeners mask 2: none ported)
-		any = true;
+		m_economy.push_back(id); // RW 0x99E84E -> RW 0x65BD58
+		listeners |= LISTEN_ECONOMY;
 	}
 	if (structureFilter(obj))
 	{
-		// RW 0x99EA19: EXPANSION_PAD (template + 0x123 bit 0) -> + 0x10, else + 4 (listeners mask 1: none ported)
+		// RW 0x99EA19: EXPANSION_PAD (template + 0x123 bit 0) -> + 0x10, else + 4
 		(is(obj, statKinds().expansionPad) ? m_pads : m_structures).push_back(id);
-		any = true;
+		listeners |= LISTEN_STRUCTURES;
 	}
-	// RW 0x8E45DC .. 0x8E45F0: the position sampler (+ 0x10) is not ported
+	// RW 0x8E45DC .. 0x8E45F0: when a structure or economy list took the object and RW 0x8E3EF8 is false, the position sampler takes it. The port
+	// defers the add to update(): its object is placed after the world entry (see the header's inference), so only then is its position final
+	if ((listeners & (LISTEN_ECONOMY | LISTEN_STRUCTURES)) != 0 && !offensiveBuilding(obj, m_playerIndex))
+	{
+		m_pendingPositions.push_back(id);
+
+	}
 	if (armyFilter(obj))
 	{
-		(armyMain(obj) ? m_army : m_dozers).push_back(id); // RW 0x99E6C9 (listeners mask 4: none ported)
-		any = true;
+		(armyMain(obj) ? m_army : m_dozers).push_back(id); // RW 0x99E6C9
+		listeners |= LISTEN_ARMY;
 	}
 	else if (shipFilter(obj))
 	{
 		m_ships.push_back(id); // RW 0x99E493
-		any = true;
+		listeners |= LISTEN_ARMY;
 	}
+	const bool any = listeners != 0;
 	const ThingTemplate *t = obj.getTemplate();
 	if (any)
 	{
@@ -150,26 +187,43 @@ void AIStatCollector::registerObject(const Object &obj)
 	{
 		m_heroes.push_back(id); // RW 0x8E4661 .. 0x8E467A
 	}
+	return listeners;
 }
 
-void AIStatCollector::unRegisterObject(const Object &obj)
+unsigned AIStatCollector::unRegisterObject(const Object &obj)
 {
-	// RW 0x8E480C
+	// RW 0x8E480C; each remove that found the object calls the listeners of its mask (RW 0x8E3D77): the caller does (lane AI5)
 	const ObjectID id = obj.getID();
-	bool any = false;
+	unsigned listeners = 0;
 	if (economyFilter(obj) && eraseFirst(m_economy, id))
 	{
-		any = true; // RW 0x99E871
+		listeners |= LISTEN_ECONOMY; // RW 0x99E871
 	}
 	if (structureFilter(obj) && eraseFirst(is(obj, statKinds().expansionPad) ? m_pads : m_structures, id))
 	{
-		any = true; // RW 0x99E924
+		listeners |= LISTEN_STRUCTURES; // RW 0x99E924
 	}
-	// RW 0x8E4871: a removed structure / economy entry leaves the position sampler (not ported)
+	// RW 0x8E4871 / 0x8E46A5: a removed structure / economy entry leaves the position sampler; its groups are rebuilt from the survivors. A
+	// registration still waiting for update() is simply cancelled
+	if ((listeners & (LISTEN_ECONOMY | LISTEN_STRUCTURES)) != 0)
+	{
+		auto pending = std::find(m_pendingPositions.begin(), m_pendingPositions.end(), id);
+		if (pending != m_pendingPositions.end())
+		{
+			m_pendingPositions.erase(pending);
+		}
+		else
+		{
+			GameLogic &logic = obj.logic();
+			m_positions.remove(id, [&logic](ObjectID key) { return positionOf(logic, key); });
+		}
+
+	}
 	if (armyFilter(obj) ? eraseFirst(armyMain(obj) ? m_army : m_dozers, id) : (shipFilter(obj) && eraseFirst(m_ships, id)))
 	{
-		any = true; // RW 0x99E523, else RW 0x99E4B2
+		listeners |= LISTEN_ARMY; // RW 0x99E523, else RW 0x99E4B2 (the filters exclude each other: RW tries the ship remove when the army remove fails)
 	}
+	const bool any = listeners != 0;
 	const ThingTemplate *t = obj.getTemplate();
 	if (any)
 	{
@@ -186,10 +240,29 @@ void AIStatCollector::unRegisterObject(const Object &obj)
 	{
 		eraseFirst(m_heroes, id); // RW 0x8E48B3 .. 0x8E48D6
 	}
+	return listeners;
 }
 
 void AIStatCollector::update(GameLogic &logic)
 {
+	// the deferred sampler registrations (header inference): every object created since the last update has been placed by now
+	if (!m_pendingPositions.empty())
+	{
+		const SkirmishAIStore *store = logic.skirmishAI().store();
+		if (!store)
+		{
+			throw std::logic_error("AIStatCollector: the position sampler requires SkirmishAIData");
+		}
+		const float padding = store->data().defenseTreeNodeRadius;
+		for (ObjectID id : m_pendingPositions)
+		{
+			if (logic.findObjectByID(id))
+			{
+				m_positions.add(id, padding, [&logic](ObjectID key) { return positionOf(logic, key); });
+			}
+		}
+		m_pendingPositions.clear();
+	}
 	// RW 0x8E3CF3: the army list (+ 4; RW 0x99E6B9, the idle army record follows in AITacticalAI::updateIdleArmy), the ships (RW 0x99E446), the structures (+ 4)
 	// and the economy list
 	dropGone(logic, m_army);
@@ -218,4 +291,13 @@ void AIStatCollector::crc(StateHasher &h) const
 		h.addString(kv.first);
 		h.addI32(kv.second);
 	}
+	h.addU32((std::uint32_t)m_pendingPositions.size());
+	for (ObjectID id : m_pendingPositions)
+	{
+		h.addU32(id);
+	}
+	m_positions.crc(h); // record + 0x10 (RW 0x8E4042)
+
+	h.addU32(m_reserve); // lane AI5 (S-413)
+	h.addU32(m_reserveTarget);
 }

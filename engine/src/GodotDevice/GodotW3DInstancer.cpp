@@ -1,9 +1,20 @@
 // OpenBFME. GPL-3.0.
 
 #include "GodotDevice/GodotGammaComposite.h"
+#include "GodotDevice/GodotGlowEffect.h"
 #include "GodotDevice/GodotW3DInstancer.h"
+#include "GameClient/MapUtil.h"
+#include "GameClient/MapWeather.h"
+#include "GameClient/CameraSettings.h"
+#include "GameClient/TacticalCamera.h"
+#include "GameLogic/Map/TerrainLogic.h"
+#include "GodotDevice/GodotMapTerrain.h"
+#include "GodotDevice/GodotFXPlayer.h"
+#include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <sstream>
 
 #include <cstdio>
+#include <cstdlib>
 
 #include "Common/JobSystem.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
@@ -16,6 +27,10 @@
 
 #include <cmath>
 
+#include <godot_cpp/classes/rd_texture_format.hpp>
+#include <godot_cpp/classes/rd_texture_view.hpp>
+#include <godot_cpp/classes/rendering_device.hpp>
+#include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/camera3d.hpp>
 #include <godot_cpp/classes/geometry_instance3d.hpp>
@@ -38,7 +53,10 @@
 #include <cctype>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 namespace godot
 {
@@ -61,6 +79,11 @@ Ref<Image> paletteUploadImage(const Ref<Image> &image)
 	}
 	return image;
 }
+
+// lane PERF-HD: every MultiMesh's custom AABB, a box beyond any map. Without one Godot recomputes the AABB over every instance at each set_buffer,
+// and an animated model's buffers are rewritten every frame; one MultiMesh holds a model's instances across the whole battlefield, so its own
+// box culled nothing anyway
+const AABB kMultiMeshBounds(Vector3(-200000.0f, -50000.0f, -200000.0f), Vector3(400000.0f, 100000.0f, 400000.0f));
 
 String toGodot(const std::string &s)
 {
@@ -119,6 +142,287 @@ struct W3DInstancer::MovementClip
 	String stopReason;
 };
 
+// RenderingDevice texture calls are only valid on the render thread. The node thread copies texel bytes into a
+// PackedByteArray and appends work here; call_on_render_thread runs that work in order. The callable is a static
+// function bound to this queue (not to W3DInstancer), so NOTIFICATION_PREDELETE can drop the node first.
+struct PaletteRdQueue
+{
+	struct Op
+	{
+		enum Kind
+		{
+			Create,
+			Upload,
+			Release
+		} kind = Upload;
+		int height = 0;
+		int row0 = 0;
+		int rows = 0;
+		bool full = false;
+		PackedByteArray bytes;
+		// lane PERF-HD: a partial upload of several runs: `bytes` holds them one after another (padded to the stage's rows), each run (palette row,
+		// rows) copied to its place; empty: the one run row0 .. row0 + rows
+		std::vector<std::pair<int, int>> runs;
+		PackedByteArray fallback; // whole palette, used only if a partial copy is rejected
+		Ref<Texture2DRD> sampler;
+	};
+
+	std::mutex mu;
+	std::vector<Op> ops;
+	bool scheduled = false;
+	bool retired = false;
+	RID palette;
+	RID stage;
+	int stage_rows = 0;
+	Ref<Texture2DRD> sampler;
+	std::atomic<bool> force_full{ false };
+	std::atomic<bool> create_failed{ false };
+	// lane PERF-CLIENT: the staging byte arrays the render thread is done with, handed out again by take(): an upload of several megabytes a frame
+	// allocated (and the system zeroed) a new array every frame
+	std::vector<PackedByteArray> spare;
+
+	void enqueue(Op op, bool retire);
+	PackedByteArray take(int64_t bytes);
+	void give(PackedByteArray &bytes);
+};
+
+PackedByteArray PaletteRdQueue::take(int64_t bytes)
+{
+	PackedByteArray out;
+	{
+		std::lock_guard<std::mutex> lock(mu);
+		size_t best = spare.size();
+		for (size_t i = 0; i < spare.size(); ++i)
+		{
+			if (spare[i].size() == bytes)
+			{
+				best = i;
+				break;
+			}
+			if (best == spare.size() || spare[i].size() > spare[best].size())
+			{
+				best = i;
+			}
+		}
+		if (best < spare.size())
+		{
+			out = std::move(spare[best]);
+			spare.erase(spare.begin() + (std::ptrdiff_t)best);
+		}
+	}
+	if (out.size() != bytes)
+	{
+		out.resize(bytes);
+	}
+	return out;
+}
+
+void PaletteRdQueue::give(PackedByteArray &bytes)
+{
+	if (bytes.is_empty())
+	{
+		return;
+	}
+	std::lock_guard<std::mutex> lock(mu);
+	if (spare.size() < 4)
+	{
+		spare.push_back(std::move(bytes));
+	}
+	bytes = PackedByteArray();
+}
+
+static void palette_rd_apply(int64_t raw)
+{
+	auto *queue = reinterpret_cast<PaletteRdQueue *>(static_cast<std::intptr_t>(raw));
+	if (!queue)
+	{
+		return;
+	}
+	std::vector<PaletteRdQueue::Op> batch;
+	bool dropping = false;
+	Ref<Texture2DRD> held;
+	{
+		std::lock_guard<std::mutex> lock(queue->mu);
+		batch.swap(queue->ops);
+		queue->scheduled = false;
+		dropping = queue->retired;
+		held = queue->sampler;
+	}
+	RenderingServer *rs = RenderingServer::get_singleton();
+	RenderingDevice *rd = rs ? rs->get_rendering_device() : nullptr;
+	auto free_rid = [&](RID &rid) {
+		if (rd && rid.is_valid())
+		{
+			rd->free_rid(rid);
+		}
+		rid = RID();
+	};
+	for (PaletteRdQueue::Op &op : batch)
+	{
+		if (op.kind == PaletteRdQueue::Op::Create)
+		{
+			if (!rd || op.height <= 0)
+			{
+				queue->create_failed.store(true, std::memory_order_release);
+				continue;
+			}
+			Ref<RDTextureFormat> fmt;
+			fmt.instantiate();
+			fmt->set_width(W3D_PALETTE_WIDTH);
+			fmt->set_height(op.height);
+			fmt->set_format(RenderingDevice::DATA_FORMAT_R32G32B32A32_SFLOAT);
+			fmt->set_usage_bits(RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice::TEXTURE_USAGE_CAN_UPDATE_BIT |
+				RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT | RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT);
+			Ref<RDTextureView> view;
+			view.instantiate();
+			const RID created = rd->texture_create(fmt, view);
+			const RID previous = queue->palette;
+			if (!created.is_valid())
+			{
+				queue->create_failed.store(true, std::memory_order_release);
+				continue;
+			}
+			queue->palette = created;
+			queue->create_failed.store(false, std::memory_order_release);
+			// Skip the sampler when the node is already going away. A later Release in this batch (or the next) frees the RID.
+			if (!dropping && op.sampler.is_valid())
+			{
+				op.sampler->set_texture_rd_rid(created);
+			}
+			if (previous.is_valid())
+			{
+				rd->free_rid(previous);
+			}
+			free_rid(queue->stage);
+			queue->stage_rows = 0;
+		}
+		else if (op.kind == PaletteRdQueue::Op::Upload)
+		{
+			if (!rd || !queue->palette.is_valid() || op.bytes.is_empty())
+			{
+				continue;
+			}
+			if (op.full)
+			{
+				rd->texture_update(queue->palette, 0, op.bytes);
+				continue;
+			}
+			// lane PERF-HD: a runs upload's bytes are padded to its stage's rows (one of a few fixed sizes), so the stage is seldom made again
+			const int stageRows = op.runs.empty() ? op.rows : (int)(op.bytes.size() / ((int64_t)W3D_PALETTE_WIDTH * 16));
+			if (queue->stage_rows != stageRows || !queue->stage.is_valid())
+			{
+				free_rid(queue->stage);
+				Ref<RDTextureFormat> fmt;
+				fmt.instantiate();
+				fmt->set_width(W3D_PALETTE_WIDTH);
+				fmt->set_height(stageRows);
+				fmt->set_format(RenderingDevice::DATA_FORMAT_R32G32B32A32_SFLOAT);
+				fmt->set_usage_bits(RenderingDevice::TEXTURE_USAGE_CAN_UPDATE_BIT | RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT);
+				Ref<RDTextureView> view;
+				view.instantiate();
+				queue->stage = rd->texture_create(fmt, view);
+				queue->stage_rows = queue->stage.is_valid() ? stageRows : 0;
+			}
+			bool copied = false;
+			if (queue->stage.is_valid())
+			{
+				rd->texture_update(queue->stage, 0, op.bytes);
+				if (op.runs.empty())
+				{
+					const Error err = rd->texture_copy(queue->stage, queue->palette, Vector3(0, 0, 0), Vector3(0, (real_t)op.row0, 0),
+						Vector3(W3D_PALETTE_WIDTH, (real_t)op.rows, 1), 0, 0, 0, 0);
+					copied = err == OK;
+				}
+				else
+				{
+					copied = true;
+					int packed = 0;
+					for (const std::pair<int, int> &run : op.runs)
+					{
+						const Error err = rd->texture_copy(queue->stage, queue->palette, Vector3(0, (real_t)packed, 0), Vector3(0, (real_t)run.first, 0),
+							Vector3(W3D_PALETTE_WIDTH, (real_t)run.second, 1), 0, 0, 0, 0);
+						copied = copied && err == OK;
+						packed += run.second;
+					}
+				}
+			}
+			if (!copied)
+			{
+				// fallback is empty unless the caller already copied the whole image. Do not read PaletteImage here.
+				if (!op.fallback.is_empty())
+				{
+					rd->texture_update(queue->palette, 0, op.fallback);
+				}
+				queue->force_full.store(true, std::memory_order_release);
+			}
+		}
+		else if (op.kind == PaletteRdQueue::Op::Release)
+		{
+			if (held.is_valid())
+			{
+				held->set_texture_rd_rid(RID());
+				held.unref();
+			}
+			free_rid(queue->palette);
+			free_rid(queue->stage);
+			queue->stage_rows = 0;
+			std::lock_guard<std::mutex> lock(queue->mu);
+			queue->sampler.unref();
+		}
+	}
+	if (!dropping)
+	{
+		for (PaletteRdQueue::Op &op : batch)
+		{
+			if (op.kind == PaletteRdQueue::Op::Upload)
+			{
+				queue->give(op.bytes); // the device copied them (texture_update stages its own copy)
+			}
+		}
+	}
+	bool destroy = false;
+	{
+		std::lock_guard<std::mutex> lock(queue->mu);
+		if (queue->retired && queue->ops.empty() && !queue->scheduled)
+		{
+			destroy = true;
+		}
+	}
+	if (destroy)
+	{
+		delete queue;
+	}
+}
+
+void PaletteRdQueue::enqueue(Op op, bool retire)
+{
+	RenderingServer *rs = RenderingServer::get_singleton();
+	bool schedule = false;
+	{
+		std::lock_guard<std::mutex> lock(mu);
+		if (retire)
+		{
+			retired = true;
+		}
+		if (op.kind == Op::Create && op.sampler.is_valid())
+		{
+			sampler = op.sampler;
+		}
+		ops.push_back(std::move(op));
+		// call_on_render_thread can run the callable before it returns (the render thread is this thread). Do not hold mu across it:
+		// the callable locks mu, and a retired queue deletes itself before the call returns.
+		if (!scheduled && rs)
+		{
+			scheduled = true;
+			schedule = true;
+		}
+	}
+	if (schedule)
+	{
+		rs->call_on_render_thread(callable_mp_static(palette_rd_apply).bind((int64_t)(std::intptr_t)this));
+	}
+}
+
 W3DInstancer::W3DInstancer()
 {
 	Epoch = std::chrono::steady_clock::now();
@@ -126,7 +430,10 @@ W3DInstancer::W3DInstancer()
 	Workers = hw >= 8 ? 4 : (hw >= 4 ? 2 : 1);
 }
 
-W3DInstancer::~W3DInstancer() = default;
+W3DInstancer::~W3DInstancer()
+{
+	release_palette_rd();
+}
 
 void W3DInstancer::_bind_methods()
 {
@@ -134,6 +441,9 @@ void W3DInstancer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("add_model", "model_name"), &W3DInstancer::add_model);
 	ClassDB::bind_method(D_METHOD("get_model_report", "model"), &W3DInstancer::get_model_report);
 	ClassDB::bind_method(D_METHOD("add_instance", "model", "transform", "clip", "start_time", "speed"), &W3DInstancer::add_instance, DEFVAL(String()), DEFVAL(0.0), DEFVAL(1.0));
+	ClassDB::bind_method(D_METHOD("set_instance_cast_shadow", "instance", "enabled"), &W3DInstancer::set_instance_cast_shadow);
+	ClassDB::bind_method(D_METHOD("set_shadow_receiving", "enabled"), &W3DInstancer::set_shadow_receiving);
+	ClassDB::bind_static_method("W3DInstancer", D_METHOD("set_shadow_maps_enabled", "enabled"), &W3DInstancer::set_shadow_maps_enabled);
 	ClassDB::bind_method(D_METHOD("set_instance_transform", "instance", "transform"), &W3DInstancer::set_instance_transform);
 	ClassDB::bind_method(D_METHOD("remove_instance", "instance"), &W3DInstancer::remove_instance);
 	ClassDB::bind_method(D_METHOD("set_instance_shrouded", "instance", "hidden"), &W3DInstancer::set_instance_shrouded);
@@ -142,6 +452,7 @@ void W3DInstancer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("get_instance_count"), &W3DInstancer::get_instance_count);
 	ClassDB::bind_method(D_METHOD("get_clip_info", "model", "clip"), &W3DInstancer::get_clip_info);
 	ClassDB::bind_method(D_METHOD("set_global_time", "seconds"), &W3DInstancer::set_global_time);
+	ClassDB::bind_method(D_METHOD("get_shell_scene_state"), &W3DInstancer::get_shell_scene_state);
 	ClassDB::bind_method(D_METHOD("get_global_time"), &W3DInstancer::get_global_time);
 	ClassDB::bind_method(D_METHOD("set_playing", "playing"), &W3DInstancer::set_playing);
 	ClassDB::bind_method(D_METHOD("is_playing"), &W3DInstancer::is_playing);
@@ -151,6 +462,8 @@ void W3DInstancer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("set_pose_culling", "enabled"), &W3DInstancer::set_pose_culling); // lane PERF-3
 	ClassDB::bind_method(D_METHOD("set_extra_pose_frustum", "planes"), &W3DInstancer::set_extra_pose_frustum);
 	ClassDB::bind_method(D_METHOD("get_pose_culling"), &W3DInstancer::get_pose_culling);
+	ClassDB::bind_method(D_METHOD("set_draw_culling", "enabled"), &W3DInstancer::set_draw_culling); // lane GPUPERF-2
+	ClassDB::bind_method(D_METHOD("get_draw_culling"), &W3DInstancer::get_draw_culling);
 	ClassDB::bind_method(D_METHOD("get_instance_palette", "instance"), &W3DInstancer::get_instance_palette);
 	ClassDB::bind_method(D_METHOD("get_model_radius", "model"), &W3DInstancer::get_model_radius);
 	ClassDB::bind_method(D_METHOD("update_now"), &W3DInstancer::update_now);
@@ -170,7 +483,10 @@ void W3DInstancer::_bind_methods()
 	ClassDB::bind_method(D_METHOD("add_model_colored", "model", "kind", "colors"), &W3DInstancer::add_model_colored); // lane CAH-2
 	ClassDB::bind_method(D_METHOD("set_instance_infantry_light", "instance", "infantry"), &W3DInstancer::set_instance_infantry_light);
 	ClassDB::bind_method(D_METHOD("set_alpha_override", "enabled"), &W3DInstancer::set_alpha_override);
+	ClassDB::bind_method(D_METHOD("set_model_glow", "model", "emissive_only"), &W3DInstancer::set_model_glow);
 	ClassDB::bind_method(D_METHOD("set_instance_opacity", "instance", "opacity"), &W3DInstancer::set_instance_opacity);
+	ClassDB::bind_method(D_METHOD("set_instance_occlusion", "instance", "occluder", "slot"), &W3DInstancer::set_instance_occlusion); // lane OCCLUDE-1
+	ClassDB::bind_method(D_METHOD("get_occlusion_pass_counts"), &W3DInstancer::get_occlusion_pass_counts);
 	ClassDB::bind_method(D_METHOD("get_auto_update"), &W3DInstancer::get_auto_update);
 	ClassDB::bind_method(D_METHOD("probe_shaders", "origin"), &W3DInstancer::probe_shaders);
 }
@@ -206,8 +522,37 @@ void W3DInstancer::set_instance_house_color(int64_t instance, const Color &color
 	const float packed = color.a < 0.5f ? 0.0f : W3D_Pack_House_Color((int)std::lround(color.r * 255.0f), (int)std::lround(color.g * 255.0f), (int)std::lround(color.b * 255.0f));
 	if (inst.HcPacked == packed) return;
 	inst.HcPacked = packed;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
+}
+
+void W3DInstancer::set_model_glow(int64_t model, bool emissive_only)
+{
+	if (model < 0 || (size_t)model >= Models.size())
+	{
+		warn("set_model_glow: unknown model " + std::to_string(model));
+		return;
+	}
+	for (DrawItem &d : Models[(size_t)model]->Draws)
+	{
+		bool glow = true;
+		if (emissive_only)
+		{
+			// MeshClass::Render: the mesh's first vertex material, emissive above 0.01 in any channel
+			glow = false;
+			for (const MeshDrawSurface &surface : d.Mesh->Data.Surfaces)
+			{
+				if (surface.HasVertexMaterial)
+				{
+					const W3dRGBStruct &e = surface.VertexMaterial.Emissive;
+					glow = e.R / 255.0f > 0.01f || e.G / 255.0f > 0.01f || e.B / 255.0f > 0.01f;
+					break;
+				}
+			}
+		}
+		const uint32_t layers = d.Node->get_layer_mask();
+		d.Node->set_layer_mask(glow ? (layers | GlowPass::kGlowLayer) : (layers & ~GlowPass::kGlowLayer));
+	}
 }
 
 void W3DInstancer::set_instance_infantry_light(int64_t instance, bool infantry)
@@ -215,7 +560,7 @@ void W3DInstancer::set_instance_infantry_light(int64_t instance, bool infantry)
 	if (instance < 0 || instance >= (int64_t)Instances.size()) return;
 	if (Instances[(size_t)instance].InfantryLight == infantry) return;
 	Instances[(size_t)instance].InfantryLight = infantry;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 }
 
@@ -224,7 +569,7 @@ void W3DInstancer::set_instance_sway(int64_t instance, int type)
 	if (instance < 0 || instance >= (int64_t)Instances.size() || type < 0 || type > 10) return;
 	if (Instances[(size_t)instance].Sway == type) return;
 	Instances[(size_t)instance].Sway = type;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 }
 
@@ -232,8 +577,126 @@ void W3DInstancer::set_instance_fogged(int64_t instance, bool fogged)
 {
 	if (instance < 0 || instance >= (int64_t)Instances.size() || Instances[(size_t)instance].Fogged == fogged) return;
 	Instances[(size_t)instance].Fogged = fogged;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
+}
+
+void W3DInstancer::set_instance_scene_fog(int64_t instance, bool fog)
+{
+	if (instance < 0 || instance >= (int64_t)Instances.size() || Instances[(size_t)instance].NoSceneFog == !fog) return;
+	Instances[(size_t)instance].NoSceneFog = !fog;
+	note_pose_dirty();
+	mark_model(instance);
+}
+
+void W3DInstancer::set_instance_occlusion(int64_t instance, bool occluder, int slot)
+{
+	if (instance < 0 || instance >= (int64_t)Instances.size()) return;
+	if (slot < 0 || slot >= W3D_OCCLUSION_SLOTS)
+	{
+		warn("set_instance_occlusion: slot " + std::to_string(slot) + " is out of 0 .. " + std::to_string(W3D_OCCLUSION_SLOTS - 1) + ": not an occludee");
+		slot = 0;
+	}
+	Instance &inst = Instances[(size_t)instance];
+	if (inst.Occluder == occluder && inst.OcclusionSlot == slot) return;
+	inst.Occluder = occluder;
+	inst.OcclusionSlot = slot;
+	if (occluder || slot != 0)
+	{
+		for (DrawItem &d : Models[(size_t)inst.Model]->Draws)
+		{
+			ensure_occlusion_passes(*d.Mesh, occluder, slot != 0);
+		}
+	}
+	note_pose_dirty();
+	mark_model(instance);
+}
+
+void W3DInstancer::set_instance_cast_shadow(int64_t instance, bool enabled)
+{
+	if (instance < 0 || instance >= (int64_t)Instances.size()) return;
+	Instance &inst = Instances[(size_t)instance];
+	if (inst.Removed || inst.CastShadow == enabled) return;
+	inst.CastShadow = enabled;
+	note_pose_dirty();
+	mark_model(instance);
+}
+
+void W3DInstancer::ensure_occlusion_passes(MeshGpu &gpu, bool mark, bool color)
+{
+	if ((!mark || gpu.HasMark) && (!color || gpu.HasColor)) return;
+	gpu.HasMark = gpu.HasMark || mark;
+	gpu.HasColor = gpu.HasColor || color;
+	gpu.MarkPasses.resize(gpu.Materials.size());
+	gpu.ColorPasses.resize(gpu.Materials.size());
+	for (size_t i = 0; i < gpu.Materials.size() && i < gpu.Keys.size(); ++i)
+	{
+		const W3DShaderKey &base = gpu.Keys[i];
+		// retail renders the whole object into the stencil; here the opaque surfaces (the blended ones draw in the transparent pass, sorted with
+		// the passes, and their alpha mostly leaves no shape)
+		if (base.Blend != W3D_GODOT_BLEND_OPAQUE || base.AlphaOverride || !base.DepthWrite || base.DepthTestDisabled) continue;
+		auto make = [&](int pass, int priority) {
+			W3DShaderKey k = base;
+			k.OcclusionPass = pass;
+			k.SelectionDecals = false; // lane SELWALL-1: a marker pass draws no decal
+			Ref<ShaderMaterial> m = gpu.Materials[i]->duplicate(); // the surface's textures and colours: the passes keep its alpha test
+			m->set_shader(Materials->Get_Shader(k));
+			m->set_render_priority(priority);
+			m->set_next_pass(Ref<Material>());
+			AllMaterials.push_back(m); // the palette binding follows (rebuild_layout)
+			m->set_shader_parameter("w3d_palette", palette_sampler());
+			return m;
+		};
+		if (gpu.HasMark && gpu.MarkPasses[i].is_null()) gpu.MarkPasses[i] = make(W3D_OCCLUSION_PASS_MARK, W3D_OCCLUSION_PRIORITY_MARK);
+		if (gpu.HasColor && gpu.ColorPasses[i].is_null()) gpu.ColorPasses[i] = make(W3D_OCCLUSION_PASS_COLOR, W3D_OCCLUSION_PRIORITY_COLOR);
+		// the chain: surface -> mark -> colour (either may be absent)
+		const Ref<ShaderMaterial> &mk = gpu.MarkPasses[i];
+		const Ref<ShaderMaterial> &co = gpu.ColorPasses[i];
+		if (mk.is_valid())
+		{
+			mk->set_next_pass(co);
+			gpu.Materials[i]->set_next_pass(mk);
+		}
+		else
+		{
+			gpu.Materials[i]->set_next_pass(co);
+		}
+	}
+}
+
+bool W3DInstancer::instance_outside(int64_t instance, const std::vector<Plane> &frustum)
+{
+	if (frustum.empty() || instance < 0 || instance >= (int64_t)Instances.size() || Instances[(size_t)instance].Removed) return false;
+	const Instance &inst = Instances[(size_t)instance];
+	const Transform3D nodeXf = is_inside_tree() ? get_global_transform() : get_transform();
+	const Vector3 centre = nodeXf.xform(inst.Xf.origin);
+	const Vector3 sc = inst.Xf.basis.get_scale_abs();
+	const Vector3 ns = nodeXf.basis.get_scale_abs();
+	const real_t r = cull_radius(*Models[(size_t)inst.Model]) * std::max(sc.x, std::max(sc.y, sc.z)) * std::max(ns.x, std::max(ns.y, ns.z));
+	for (const Plane &pl : frustum)
+	{
+		if (pl.distance_to(centre) > r) return true;
+	}
+	return false;
+}
+
+Dictionary W3DInstancer::get_occlusion_pass_counts() const
+{
+	int marks = 0, colors = 0;
+	std::set<const MeshGpu *> seen;
+	for (const std::unique_ptr<Model> &mp : Models)
+	{
+		for (const DrawItem &d : mp->Draws)
+		{
+			if (!d.Mesh || !seen.insert(d.Mesh.get()).second) continue;
+			for (const Ref<ShaderMaterial> &m : d.Mesh->MarkPasses) marks += m.is_valid() ? 1 : 0;
+			for (const Ref<ShaderMaterial> &m : d.Mesh->ColorPasses) colors += m.is_valid() ? 1 : 0;
+		}
+	}
+	Dictionary r;
+	r["marks"] = marks;
+	r["colors"] = colors;
+	return r;
 }
 
 void W3DInstancer::set_instance_opacity(int64_t instance, double opacity)
@@ -242,7 +705,7 @@ void W3DInstancer::set_instance_opacity(int64_t instance, double opacity)
 	const float o = opacity < 0.0 ? 0.0f : (opacity > 1.0 ? 1.0f : (float)opacity);
 	if (Instances[(size_t)instance].Opacity == o) return;
 	Instances[(size_t)instance].Opacity = o;
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 }
 
@@ -283,9 +746,185 @@ Dictionary W3DInstancer::setup(const Ref<RetailFileSystem> &fs)
 	return setup_source(fs, false);
 }
 
-Dictionary W3DInstancer::setup_menu(const Ref<RetailFileSystem> &fs)
+Dictionary W3DInstancer::setup_menu(const Ref<RetailFileSystem> &fs, bool shellScene)
 {
-	return setup_source(fs, true);
+	Dictionary result = setup_source(fs, true);
+	if (!shellScene || !bool(result.get("ok", false))) return result;
+	// BFME2 Shell.cpp showShellMap (0x35C194): load GameData ShellMapName.
+	// The presentation scene uses that map's authored light environment and map.ini
+	// Weather, through the existing map/light/fog readers, without a simulation RNG.
+	auto &archive = *fs->menu_archive_fs();
+	std::vector<std::uint8_t> bytes;
+	std::string error, mapName;
+	if (archive.readFile("data/ini/gamedata.ini", bytes, &error))
+	{
+		std::istringstream lines(std::string(bytes.begin(), bytes.end()));
+		std::string line; bool gameData = false;
+		while (std::getline(lines, line))
+		{
+			line.erase(line.find(';') == std::string::npos ? line.size() : line.find(';'));
+			for (char &c : line) if (c == '=') c = ' ';
+			std::istringstream tokens(line); std::string key; tokens >> key;
+			for (char &c : key) c = (char)std::tolower((unsigned char)c);
+			if (key == "gamedata") gameData = true;
+			else if (key == "end") gameData = false;
+			else if (gameData && key == "shellmapname") { std::getline(tokens >> std::ws, mapName); while (!mapName.empty() && std::isspace((unsigned char)mapName.back())) mapName.pop_back(); }
+		}
+		if (mapName.size() >= 2 && mapName.front() == '"' && mapName.back() == '"') mapName = mapName.substr(1, mapName.size()-2);
+		if (mapName.empty()) error = "GameData has no ShellMapName";
+	}
+	LoadedMap map; MapReadOptions options;
+	if (error.empty() && archive.readFile(mapName, bytes, &error) && !MapReader::load(bytes, mapName, options, map, &error) && error.empty())
+		error = "shell map failed to parse";
+	W3DObjectLighting lighting; MapWeather weather;
+	std::string directory = mapName.substr(0, mapName.find_last_of("/\\"));
+	if (error.empty() && !map.chunks.hasGlobalLighting) error = "shell map has no GlobalLighting";
+	if (error.empty()) W3DObjectLightingUtil::fromMap(map.chunks.lighting, lighting, &error);
+	if (error.empty()) MapWeatherScan::load(archive, directory, weather, &error);
+	if (!error.empty()) { result["ok"] = false; PackedStringArray errors; errors.push_back(toGodot(error)); result["errors"] = errors; }
+	else
+	{
+		Materials->Set_Scene_Environment(lighting, weather);
+		result["shell_map"] = toGodot(mapName); result["fog_start"] = weather.fogStart; result["fog_end"] = weather.fogEnd;
+		// Resolve the authored shell actor and its default model from system.ini.
+		// Map proxies use the map.ini DefaultModelConditionState ParticleSysBone data.
+		std::map<std::string,std::string> models, clips;
+		std::vector<std::uint8_t> system;
+		if (!archive.readFile("data/ini/object/system/system.ini", system, &error)) { result["ok"] = false; result["errors"] = Array::make(toGodot(error)); return result; }
+		std::string actor; bool defaults = false;
+		std::istringstream source(std::string(system.begin(), system.end())); std::string line;
+		while (std::getline(source,line)) {
+			line.erase(line.find(';') == std::string::npos ? line.size() : line.find(';'));
+			for(char &c:line) if(c=='=') c=' ';
+			std::istringstream tokens(line); std::string key,value; tokens>>key>>value;
+			key=AsciiStringUtil::lowered(key);
+			if(key=="object" || key=="childobject") {actor=AsciiStringUtil::lowered(value);defaults=false;}
+			else if(key=="defaultmodelconditionstate") defaults=true;
+			else if(key=="end" || key=="modelconditionstate") defaults=false;
+			else if(key=="model" && defaults && AsciiStringUtil::compareNoCase(value,"NONE")!=0) models[actor]=value;
+			else if(key=="animationname" && clips.find(actor)==clips.end()) clips[actor]=value;
+		}
+		TerrainLogic terrain; terrain.init(map.heightMap,map.chunks);
+		Coord3D origin{}; bool found=false;
+		for(const auto &object:map.chunks.objects) {
+			auto model=models.find(AsciiStringUtil::lowered(object.m_objectName));
+			if(model==models.end()) continue;
+			if(found) {result["ok"]=false; result["errors"]=Array::make("shell map has multiple system-model actors"); return result;}
+			found=true;origin=object.m_location;origin.z+=terrain.getGroundHeight(origin.x,origin.y);
+			result["shell_transform"]=Transform3D(Basis(Vector3(0,1,0), object.m_angle),Vector3(origin.x,origin.z,-origin.y));
+			result["shell_model"]=toGodot(model->second); result["shell_clip"]=toGodot(clips[AsciiStringUtil::lowered(object.m_objectName)]);
+		}
+		if(!found) { result["ok"]=false; result["errors"]=Array::make("shell map has no system-model actor");return result; }
+		Ref<MapTerrainBuilder> builder; builder.instantiate();
+		Dictionary options; options["terrain"]=false;options["markers"]=false;options["roads"]=false;options["water"]=true;options["rivers"]=true;
+		options["planar_reflections"]=true;
+		std::string shortName=directory.substr(directory.find_last_of("/\\")+1);
+		Node3D *water=builder->build_loaded_map(fs,toGodot(shortName),options,map);
+		const Array waterErrors = builder->get_report().get("errors", Array());
+		if (!water || !waterErrors.is_empty())
+		{
+			if (water) memdelete(water);
+			result["ok"] = false; result["errors"] = waterErrors; return result;
+		}
+		water->set_name("ShellMapWater");add_child(water);
+		result["water_areas"]=(int64_t)map.chunks.standingWaterAreas.size();
+		// Source map.ini overrides are loaded from the same presentation archive.
+		std::vector<std::uint8_t> ini; if (!archive.readFile(directory+"/map.ini",ini,&error) && archive.doesFileExist(directory+"/map.ini")) {result["ok"]=false;result["errors"]=Array::make(toGodot(error));return result;}
+		std::map<std::string,std::vector<std::string>> particles;
+		std::istringstream mapIni(std::string(ini.begin(),ini.end()));actor.clear();defaults=false;
+		bool waterBlock=false;float plane=0;bool reflection=false;
+		while(std::getline(mapIni,line)) {
+			line.erase(line.find(';')==std::string::npos?line.size():line.find(';'));
+			for(char &c:line) if(c=='=')c=' ';
+			std::istringstream tokens(line);std::string key,value;tokens>>key>>value;
+			key=AsciiStringUtil::lowered(key);
+			if(key=="watertransparency") waterBlock=true;
+			else if(key=="object") {actor=AsciiStringUtil::lowered(value);defaults=false;waterBlock=false;}
+			else if(key=="defaultmodelconditionstate") defaults=true;
+			else if(key=="modelconditionstate" || key=="end") {defaults=false;waterBlock=false;}
+			else if(waterBlock && key=="reflectionplanez") plane=(float)std::strtod(value.c_str(),nullptr);
+			else if(waterBlock && key=="reflectionon") reflection=AsciiStringUtil::compareNoCase(value,"Yes")==0;
+			else if (defaults && key == "particlesysbone")
+			{
+				std::string name; tokens >> name;
+				if (AsciiStringUtil::compareNoCase(value, "None") != 0 || name.empty())
+				{
+					result["ok"] = false;
+					result["errors"] = Array::make("shell ParticleSysBone requires an unbound (None) system");
+					return result;
+				}
+				particles[actor].push_back(name);
+			}
+		}
+		result["reflection_on"]=reflection;result["reflection_plane"]=plane;
+		ShellFX=memnew(FXPlayer);ShellFX->set_name("ShellMapParticles");add_child(ShellFX);
+		const Dictionary fxSetup=ShellFX->setup(fs);
+		if(!bool(fxSetup.get("ok",false))) {result["ok"]=false;result["errors"]=fxSetup.get("errors",Array());return result;}
+		ShellFX->set_soft_particles(false);ShellFX->set_scene_fog(weather);ShellFX->seed(0);
+		int count=0;
+		for(const auto &object:map.chunks.objects) for(const auto &name:particles[AsciiStringUtil::lowered(object.m_objectName)]) {
+			const auto &p=object.m_location;
+			if(ShellFX->play_particle_system(toGodot(name),Vector3(p.x,p.z+terrain.getGroundHeight(p.x,p.y),-p.y))<0) {result["ok"]=false;result["errors"]=Array::make(toGodot("missing shell particle system "+name));return result;}
+			++count;
+		}
+		result["particle_systems"]=count;
+		// BFME2 ScreenHilightFilterPostRender renders emissive-only geometry, then
+		// W3DShaderManagerPerformGlow blurs and adds that target. A whole-scene
+		// bloom would change non-emissive pixels and is not an equivalent port.
+		const std::string glowStop = "[S-5050] shell scene emissive glow pass is not ported";
+		result["unverified"] = Array::make(toGodot(glowStop));
+		warn(glowStop);
+		CameraSettings cameraSettings;
+		if (!CameraSettings::load(archive, cameraSettings, &error))
+		{
+			result["ok"] = false; result["errors"] = Array::make(toGodot(error)); return result;
+		}
+		float initialAngle; bool legacy;
+		TacticalCamera::computeCameraOffset(MapCameraValues::resolve(cameraSettings, map.chunks.hasWorldInfo ? &map.chunks.worldInfo : nullptr), ShellCameraOffset, initialAngle, legacy);
+		result["named_cameras"] = (int64_t)map.chunks.namedCameras.size();
+		if (!ShellEffects.load(std::move(map), &error))
+		{
+			result["ok"] = false; result["errors"] = Array::make(toGodot(error)); return result;
+		}
+		ShellEffects.advance(0);
+		ShellSceneState=result;
+	}
+	return result;
+}
+
+Dictionary W3DInstancer::get_shell_scene_state() const
+{
+	Dictionary result = ShellSceneState.duplicate();
+	if (!result.is_empty())
+	{
+		result["fade_add"] = ShellEffects.fadeAdd();
+		result["fade_render_add"] = ShellEffects.renderFadeAdd();
+		result["fade_starts"] = ShellEffects.fadeStarts();
+		result["effect_ticks"] = ShellEffects.ticks();
+		result["camera_moves"] = ShellEffects.cameraMoves();
+		result["camera_name"] = toGodot(ShellEffects.cameraName());
+	}
+	return result;
+}
+
+bool W3DInstancer::shell_camera(Transform3D &transform, float &fov) const
+{
+	NamedCamera camera;
+	if (!ShellEffects.camera(camera)) return false;
+	Coord3D eye, target;
+	ShellSceneEffects::cameraPose(camera, ShellCameraOffset, eye, target);
+	transform = Transform3D(Basis(), Vector3(eye.x, eye.z, -eye.y));
+	transform = transform.looking_at(Vector3(target.x, target.z, -target.y));
+	transform.basis = transform.basis * Basis(Vector3(0,0,1), camera.values[1]);
+	fov = camera.values[4] * (180.0f / 3.14159265359f);
+	return true;
+}
+
+void W3DInstancer::advance_shell_scene(double seconds)
+{
+	ShellEffects.advance(seconds);
+	if (ShellFX && seconds >= ShellLastTime) ShellFX->advance(seconds-ShellLastTime);
+	ShellLastTime=seconds;
 }
 
 Dictionary W3DInstancer::setup_source(const Ref<RetailFileSystem> &fs, bool menu)
@@ -299,12 +938,12 @@ Dictionary W3DInstancer::setup_source(const Ref<RetailFileSystem> &fs, bool menu
 	else
 	{
 		FsRef = fs;
-		// Use one archive view for geometry, animation and textures: BFME2 menu clips
-		// must not animate the similarly named RotWK model. Gameplay still uses setup().
 		ArchiveFileSystem &source = *(menu ? fs->menu_archive_fs() : fs->archive_fs());
-		Source.reset(new ArchiveW3DFileSource(source));
+		if (menu) Source.reset(new ArchiveW3DFileSource(source));
+		else Source = fs->renderW3DSource();
 		Assets.reset(new WW3DAssetManager(*Source));
 		Materials.reset(new W3DMaterialFactory(source));
+		if (!menu) Materials->Set_Asset_Packs(fs->assetPacks().empty() ? nullptr : &fs->assetPacks());
 		Materials->Set_Alpha_Override(AlphaOverride); // lane BUILD-5 r3
 		// housecolor.ini: the table only names which textures have a house texture; applying it is stop S-022 (reported per surface).
 		// A missing or malformed file is an error, not an empty table.
@@ -368,15 +1007,12 @@ std::shared_ptr<W3DInstancer::MeshGpu> W3DInstancer::build_mesh(const MeshModelC
 		float *tangentData = tangents.ptrw();
 		for (int64_t v = 0; v < nv; ++v)
 		{
-			Vector3 n(d.Normal[v * 3], d.Normal[v * 3 + 1], d.Normal[v * 3 + 2]);
-			Vector3 t(d.Tangent[v * 3], d.Tangent[v * 3 + 1], d.Tangent[v * 3 + 2]);
-			Vector3 b(d.Bitangent[v * 3], d.Bitangent[v * 3 + 1], d.Bitangent[v * 3 + 2]);
-			// V is flipped on load (u, 1 - v), so +v' runs along -bitangent; Godot's binormal = cross(normal, tangent) * w
-			float w = n.cross(t).dot(-b) < 0.0f ? -1.0f : 1.0f;
-			tangentData[v * 4 + 0] = t.x;
-			tangentData[v * 4 + 1] = t.y;
-			tangentData[v * 4 + 2] = t.z;
-			tangentData[v * 4 + 3] = w;
+			// Godot's BINORMAL = cross(NORMAL, TANGENT.xyz) * w is made the file's bitangent: retail's vertex buffer holds it raw and
+			// normalmapped.fxo blob 22 negates it (the generated shader's fx = -BINORMAL); S-023
+			tangentData[v * 4 + 0] = d.Tangent[v * 3];
+			tangentData[v * 4 + 1] = d.Tangent[v * 3 + 1];
+			tangentData[v * 4 + 2] = d.Tangent[v * 3 + 2];
+			tangentData[v * 4 + 3] = Godot_Tangent_Sign(&d.Normal[v * 3], &d.Tangent[v * 3], &d.Bitangent[v * 3]);
 		}
 	}
 	PackedFloat32Array custom0, custom1, custom2;
@@ -422,7 +1058,6 @@ std::shared_ptr<W3DInstancer::MeshGpu> W3DInstancer::build_mesh(const MeshModelC
 		if (blends && surf.Sorted)
 		{
 			gpu->HasSorted = true;
-			gpu->SortPriorities.insert(std::clamp(surf.Pass - std::min(surf.SortLevel, 31) * 4, -128, 127)); // the render_priority the material gets
 		}
 		if (surf.Kind == MATERIAL_FX || (surf.Kind == MATERIAL_CLASSIC && surf.State.Blend == W3D_GODOT_BLEND_OPAQUE)) gpu->HasOpaque = true;
 		Array arrays;
@@ -490,8 +1125,10 @@ std::shared_ptr<W3DInstancer::MeshGpu> W3DInstancer::build_mesh(const MeshModelC
 		const int surfaceIndex = gpu->Mesh->get_surface_count() - 1;
 
 		W3DMaterialResult mat = Materials->Create(d, surf, mesh, hasUv2);
+		if (blends && surf.Sorted) gpu->SortPriorities.insert(mat.Material->get_render_priority());
 		gpu->Mesh->surface_set_material(surfaceIndex, mat.Material);
 		gpu->Materials.push_back(mat.Material);
+		gpu->Keys.push_back(mat.Key);
 		for (const W3DMapperBinding &b : mat.Mappers) gpu->Mappers.push_back(b);
 		for (const std::string &n : mat.Notes) gpu->Notes.push_back(n);
 		for (const std::string &e : mat.Errors) gpu->Errors.push_back(e);
@@ -502,8 +1139,8 @@ std::shared_ptr<W3DInstancer::MeshGpu> W3DInstancer::build_mesh(const MeshModelC
 			W3DStopHit h;
 			h.Id = "S-119";
 			h.Message = W3D_Stop_Message("S-119", mesh.Get_Name() + (mat.Key.HouseColorBaked
-			 ? ": house texels recoloured before filtering; alpha replacement combine remains inferred (S-022)"
-			 : ": instance colour uses the approximate base * team mask path (S-022)"));
+			 ? ": house texels recoloured before filtering, combined after the light as retail's DefaultW3D.fx / fixed-function rules do; the owner's colour source is inferred (S-119)"
+			 : ": instance colour recolours the filtered house texel as RW 0x531C77 kind 1 (retail recolours before filtering), combined after the light; the owner's colour source is inferred (S-119)"));
 			gpu->Stops.push_back(h);
 		}
 	}
@@ -559,23 +1196,46 @@ std::string W3DInstancer::Texture_Swap_Suffix(const std::vector<TextureSwap> &sw
 
 int64_t W3DInstancer::add_model(const String &model_name)
 {
-	if (PendingSwaps.empty())
+	if (PendingSelectionDecals)
+	{
+		// lane SELWALL-1: the wall model's meshes under their own name (after a colour set's suffix, before the texture swaps'), their factory flag on
+		PendingSelectionDecals = false;
+		const std::string savedSuffix = BuildSuffix;
+		BuildSuffix += "#sel";
+		if (Materials)
+		{
+			Materials->Set_Selection_Decals(true);
+		}
+		const int64_t id = add_model(model_name);
+		if (Materials)
+		{
+			Materials->Set_Selection_Decals(false);
+		}
+		BuildSuffix = savedSuffix;
+		return id;
+	}
+	if (PendingSwaps.empty() && !PendingFloorSampling)
 	{
 		return build_model(model_name);
 	}
-	// stop S-4832: the swapped model's meshes are cached under their own name (after a colour set's suffix: add_model_colored sets that first)
+	// stop S-5015: the swapped model's meshes are cached under their own name (after a colour set's suffix: add_model_colored sets that first)
 	std::vector<TextureSwap> swaps;
 	swaps.swap(PendingSwaps);
 	const std::string savedSuffix = BuildSuffix;
+	const bool floorSampling = PendingFloorSampling;
+	PendingFloorSampling = false;
 	BuildSuffix += Texture_Swap_Suffix(swaps);
+	if (floorSampling) BuildSuffix += "#floor-sampling";
 	if (Materials)
 	{
 		Materials->Set_Texture_Swaps(swaps);
+		Materials->Set_Floor_Sampling(floorSampling);
 	}
 	const int64_t id = build_model(model_name);
 	if (Materials)
 	{
 		Materials->Set_Texture_Swaps({});
+		Materials->Set_Floor_Sampling(false);
 	}
 	BuildSuffix = savedSuffix;
 	return id;
@@ -661,8 +1321,10 @@ int64_t W3DInstancer::build_model(const String &model_name)
 			item.Sub = &sub;
 			item.SubIndex = (int)(&sub - proto->SubObjects.data());
 			item.Mesh = gpu;
+			item.Rigid = !gpu->Data.Skin;
 			item.MM.instantiate();
 			item.MM->set_transform_format(MultiMesh::TRANSFORM_3D);
+			item.MM->set_custom_aabb(kMultiMeshBounds); // lane PERF-HD: see kMultiMeshBounds
 			item.MM->set_use_custom_data(true);
 			item.MM->set_mesh(gpu->Mesh);
 			item.MM->set_instance_count(0);
@@ -670,6 +1332,7 @@ int64_t W3DInstancer::build_model(const String &model_name)
 			item.Node->set_name(toGodot(name + "_" + sub.Name));
 			item.Node->set_multimesh(item.MM);
 			item.Node->set_cast_shadows_setting(AlphaOverride ? GeometryInstance3D::SHADOW_CASTING_SETTING_OFF : GeometryInstance3D::SHADOW_CASTING_SETTING_ON);
+			item.Node->set_instance_shader_parameter("w3d_receive_shadows", ShadowReceiving);
 			add_child(item.Node);
 			model->Draws.push_back(std::move(item));
 		}
@@ -787,6 +1450,8 @@ int64_t W3DInstancer::add_instance(int64_t model, const Transform3D &transform, 
 	// lane SMOOTH-1: the pose and the palette block are made here; the layout pass only grows the MultiMesh capacities (it no longer relays out
 	// every instance and recreates the palette texture on each add, a frame-time spike whenever an object was created or changed its model)
 	inst.Pose.Resize(Models[(size_t)model]->Proto->Tree->Num_Pivots());
+	inst.PaletteAnimated = !clip.is_empty();
+	inst.DrawPoseState.resize(Models[(size_t)model]->Draws.size());
 	allocate_palette(inst);
 	Instances.push_back(std::move(inst));
 	const int id = (int)Instances.size() - 1;
@@ -803,13 +1468,41 @@ int64_t W3DInstancer::add_instance(int64_t model, const Transform3D &transform, 
 	return id;
 }
 
+// Enhanced weather changes mesh/texture variants without changing the stable
+// instance ID: shroud, tree toppling, transforms and paving references survive.
+bool W3DInstancer::replace_instance_model(int64_t id, int64_t model)
+{
+	if (id < 0 || id >= (int64_t)Instances.size() || model < 0 || model >= (int64_t)Models.size()) return false;
+	Instance &inst = Instances[(size_t)id];
+	if (inst.Removed) return false;
+	if (inst.Model == model) return true;
+	auto &old = *Models[(size_t)inst.Model];
+	old.InstanceIds.erase(std::remove(old.InstanceIds.begin(), old.InstanceIds.end(), (int)id), old.InstanceIds.end());
+	old.BuffersDirty = true;
+	if (inst.PaletteSize > 0) PaletteFree[inst.PaletteSize].push_back(inst.PaletteOffset);
+	inst.PaletteSize = 0;
+	inst.Model = (int)model;
+	inst.Pose.Resize(Models[(size_t)model]->Proto->Tree->Num_Pivots());
+	inst.Anim = nullptr; inst.Anim1 = nullptr; inst.Explicit = false;
+	inst.HiddenSubs.clear(); inst.BufferVisibility.clear(); inst.BufferFade.clear(); inst.BufferSortOrigins.clear(); inst.BoneSpins.clear();
+	inst.PoseStale = true;
+	for (auto &name : inst.MemoClip) name.clear();
+	inst.MemoAnim[0] = inst.MemoAnim[1] = nullptr;
+	inst.MemoKey[0] = inst.MemoKey[1] = nullptr;
+	inst.DrawStateChanged = true;
+	allocate_palette(inst);
+	auto &next = *Models[(size_t)model]; next.InstanceIds.push_back((int)id); next.BuffersDirty = true;
+	LayoutDirty = true; PoseDirty = true;
+	return true;
+}
+
 void W3DInstancer::set_instance_transform(int64_t instance, const Transform3D &transform)
 {
 	if (instance >= 0 && instance < (int64_t)Instances.size())
 	{
 		if (Instances[(size_t)instance].Xf == transform) return;
 		Instances[(size_t)instance].Xf = transform;
-		PoseDirty = true;
+		note_pose_dirty();
 		mark_model(instance);
 	}
 }
@@ -834,10 +1527,11 @@ bool W3DInstancer::remove_instance(int64_t instance)
 		m.BuffersDirty = true;
 		if (inst.PaletteSize > 0)
 		{
-			PaletteFree[inst.PaletteSize].push_back(inst.PaletteOffset);
+			(inst.PaletteAnimated ? PaletteAnimFree : PaletteFree)[inst.PaletteSize].push_back(inst.PaletteOffset);
 		}
 
 		inst.PaletteSize = 0;
+		inst.PaletteAnimated = false;
 		inst.Pose = HTreePose();
 		// Keep the stable id tombstone, but release per-instance heap storage on death.
 		std::vector<std::uint8_t>().swap(inst.HiddenSubs);
@@ -846,8 +1540,9 @@ bool W3DInstancer::remove_instance(int64_t instance)
 		std::vector<Vector3>().swap(inst.BufferSortOrigins);
 		std::vector<std::pair<int, float>>().swap(inst.BoneSpins);
 		for (auto &name : inst.MemoClip) std::string().swap(name);
+		decltype(inst.DrawPoseState)().swap(inst.DrawPoseState);
 	}
-	PoseDirty = true;
+	note_pose_dirty();
 	return true;
 }
 
@@ -862,15 +1557,69 @@ void W3DInstancer::set_instance_shrouded(int64_t instance, bool hidden)
 
 void W3DInstancer::mark_model(int64_t instance)
 {
-	Models[(size_t)Instances[(size_t)instance].Model]->BuffersDirty = true;
+	std::atomic<bool> &dirty = Models[(size_t)Instances[(size_t)instance].Model]->BuffersDirty;
+	if (!dirty.load(std::memory_order_relaxed))
+	{
+		dirty.store(true, std::memory_order_relaxed); // lane PERF-CLIENT: stored once (the per-instance setters may run on several threads)
+	}
+}
+
+bool W3DInstancer::pose_request_is_local(int64_t instance, const std::string &clip0, const void *key0, const std::string &clip1, const void *key1) const
+{
+	if (instance < 0 || instance >= (int64_t)Instances.size() || !Assets)
+	{
+		return true; // set_instance_pose_keyed returns at once
+	}
+	const Instance &inst = Instances[(size_t)instance];
+	// set_instance_pose_keyed's resolve: a key or name the memo answers is local; anything else reaches the model's clip cache (shared)
+	auto memo = [&](int k, const std::string &clip, const void *key) {
+		return clip.empty() || (inst.MemoAnim[k] && ((key != nullptr && key == inst.MemoKey[k]) || clip == inst.MemoClip[k]));
+	};
+	if (!memo(0, clip0, key0) || !memo(1, clip1, key1))
+	{
+		return false;
+	}
+	// adopt_animated_palette moves a static block into the animated pool (shared free lists); local when there is no move to make
+	return inst.PaletteAnimated || inst.Removed || inst.PaletteSize == 0;
+}
+
+void W3DInstancer::note_palette_rows(int offset, int texels)
+{
+	if (texels <= 0 || PaletteHeight <= 0)
+	{
+		return;
+	}
+	const int r0 = offset / W3D_PALETTE_WIDTH;
+	const int r1 = (offset + texels - 1) / W3D_PALETTE_WIDTH;
+	// lane PERF-HD: the rows themselves, for an upload of the dirty runs only (culled poses leave most of the span between them unchanged)
+	if (PaletteDirtyMap.size() != (size_t)PaletteHeight)
+	{
+		PaletteDirtyMap.assign((size_t)PaletteHeight, 0);
+	}
+	for (int r = std::max(0, r0); r <= std::min(PaletteHeight - 1, r1); ++r)
+	{
+		PaletteDirtyMap[(size_t)r] = 1;
+	}
+	if (PaletteDirtyRow1 < PaletteDirtyRow0)
+	{
+		PaletteDirtyRow0 = r0;
+		PaletteDirtyRow1 = r1;
+	}
+	else
+	{
+		PaletteDirtyRow0 = std::min(PaletteDirtyRow0, r0);
+		PaletteDirtyRow1 = std::max(PaletteDirtyRow1, r1);
+	}
+	PaletteChanged = true;
 }
 
 void W3DInstancer::allocate_palette(Instance &inst)
 {
 	const int size = inst.Pose.Num_Pivots() * W3D_PALETTE_TEXELS_PER_PIVOT;
 	inst.PaletteSize = size;
-	auto it = PaletteFree.find(size);
-	if (it != PaletteFree.end() && !it->second.empty())
+	std::map<int, std::vector<int>> &freeList = inst.PaletteAnimated ? PaletteAnimFree : PaletteFree;
+	auto it = freeList.find(size);
+	if (it != freeList.end() && !it->second.empty())
 	{
 		inst.PaletteOffset = it->second.back();
 		it->second.pop_back();
@@ -881,6 +1630,49 @@ void W3DInstancer::allocate_palette(Instance &inst)
 	if (PaletteUsed > PaletteHeight * W3D_PALETTE_WIDTH)
 	{
 		grow_palette(PaletteUsed);
+	}
+}
+
+void W3DInstancer::adopt_animated_palette(Instance &inst)
+{
+	if (inst.PaletteAnimated || inst.Removed)
+	{
+		return;
+	}
+	inst.PaletteAnimated = true;
+	if (inst.PaletteSize == 0)
+	{
+		return;
+	}
+	const int size = inst.PaletteSize;
+	const int old = inst.PaletteOffset;
+	PaletteFree[size].push_back(old);
+	int neu = -1;
+	auto it = PaletteAnimFree.find(size);
+	if (it != PaletteAnimFree.end() && !it->second.empty())
+	{
+		neu = it->second.back();
+		it->second.pop_back();
+	}
+	else
+	{
+		neu = PaletteUsed;
+		PaletteUsed += size;
+		if (PaletteUsed > PaletteHeight * W3D_PALETTE_WIDTH)
+		{
+			grow_palette(PaletteUsed);
+		}
+	}
+	inst.PaletteOffset = neu;
+	if (PaletteImage.is_valid() && old != neu)
+	{
+		std::uint8_t *bytes = PaletteImage->ptrw();
+		std::memmove(bytes + (size_t)neu * 16, bytes + (size_t)old * 16, (size_t)size * 16);
+	}
+	note_palette_rows(neu, size);
+	if (inst.Model >= 0 && (size_t)inst.Model < Models.size())
+	{
+		Models[(size_t)inst.Model]->BuffersDirty = true;
 	}
 }
 
@@ -902,10 +1694,217 @@ void W3DInstancer::grow_palette(int texels)
 		}
 		std::memset(dst + oldBytes, 0, bytes - oldBytes);
 	}
-	PaletteTexture = ImageTexture::create_from_image(paletteUploadImage(PaletteImage));
+	bind_palette_gpu();
 	PaletteGrown = true;
+	PaletteFullUpload = true;
 	PaletteChanged = true;
 	LayoutDirty = true; // the materials take the new texture in rebuild_layout
+}
+
+void W3DInstancer::release_palette_rd()
+{
+	// The node may be freed before the render thread runs. RIDs live in PaletteQueue, and the queued callable does not touch this.
+	PaletteOnRd = false;
+	PaletteRdQueue *queue = PaletteQueue;
+	PaletteQueue = nullptr;
+	if (queue)
+	{
+		PaletteRdQueue::Op op;
+		op.kind = PaletteRdQueue::Op::Release;
+		queue->enqueue(std::move(op), true);
+	}
+	PaletteRD.unref();
+}
+
+Ref<Texture2D> W3DInstancer::palette_sampler() const
+{
+	if (PaletteRD.is_valid())
+	{
+		return PaletteRD;
+	}
+	return PaletteTexture;
+}
+
+void W3DInstancer::bind_palette_gpu()
+{
+	RenderingServer *rs = RenderingServer::get_singleton();
+	RenderingDevice *rd = rs ? rs->get_rendering_device() : nullptr;
+	if (rd && PaletteImage.is_valid() && PaletteHeight > 0)
+	{
+		if (PaletteRD.is_null())
+		{
+			PaletteRD.instantiate();
+		}
+		if (!PaletteQueue)
+		{
+			PaletteQueue = new PaletteRdQueue();
+		}
+		PaletteRdQueue::Op op;
+		op.kind = PaletteRdQueue::Op::Create;
+		op.height = PaletteHeight;
+		op.sampler = PaletteRD;
+		PaletteQueue->enqueue(std::move(op), false);
+		PaletteOnRd = true;
+		PaletteTexture.unref();
+		PaletteFullUpload = true;
+		return;
+	}
+	// Compatibility has no RenderingDevice. ImageTexture::update stays on this thread.
+	release_palette_rd();
+	PaletteRD.unref();
+	PaletteTexture = ImageTexture::create_from_image(PaletteImage);
+	PaletteFullUpload = true;
+}
+
+void W3DInstancer::upload_palette()
+{
+	PaletteRowsUploaded = 0;
+	PaletteUploadFull = false;
+	// Check a failed texture create before any no-change return. A static frame has no dirty rows, and
+	// update_now rebuilds materials before this call, so LayoutDirty is what makes them drop PaletteRD.
+	if (PaletteOnRd && PaletteQueue && PaletteQueue->create_failed.load(std::memory_order_acquire))
+	{
+		release_palette_rd();
+		PaletteRD.unref();
+		if (PaletteImage.is_valid())
+		{
+			PaletteTexture = ImageTexture::create_from_image(PaletteImage);
+		}
+		LayoutDirty = true;
+	}
+	// A rejected partial copy is completed here, on the caller thread, even when this frame wrote no new rows.
+	const bool copyRejected = PaletteOnRd && PaletteQueue && PaletteQueue->force_full.load(std::memory_order_acquire);
+	if ((!PaletteChanged && !PaletteFullUpload && !copyRejected) || PaletteImage.is_null() || PaletteHeight <= 0)
+	{
+		PaletteChanged = false;
+		return;
+	}
+	const bool full = PaletteFullUpload || copyRejected || PaletteDirtyRow1 < PaletteDirtyRow0;
+	const int row0 = full ? 0 : std::max(0, PaletteDirtyRow0);
+	const int row1 = full ? PaletteHeight - 1 : std::min(PaletteHeight - 1, PaletteDirtyRow1);
+	const int rows = row1 >= row0 ? row1 - row0 + 1 : 0;
+	PaletteRowsUploaded = rows;
+	PaletteUploadFull = full || rows == PaletteHeight;
+	auto clear = [&]() {
+		PaletteChanged = false;
+		PaletteFullUpload = false;
+		PaletteDirtyRow0 = 0;
+		PaletteDirtyRow1 = -1;
+		std::fill(PaletteDirtyMap.begin(), PaletteDirtyMap.end(), (std::uint8_t)0);
+	};
+	if (rows <= 0)
+	{
+		clear();
+		return;
+	}
+	if (PaletteOnRd && PaletteQueue)
+	{
+		const bool uploadFull = full || (row0 == 0 && rows == PaletteHeight);
+		PaletteRdQueue::Op op;
+		op.kind = PaletteRdQueue::Op::Upload;
+		op.full = uploadFull;
+		op.row0 = row0;
+		op.rows = rows;
+		// lane PERF-HD: a partial upload sends the dirty runs (gaps of up to kRunGap clean rows bridged) packed into a stage of a few fixed sizes
+		constexpr int kRunGap = 4;
+		constexpr int kStageRowStep = 64;
+		const size_t rowBytes = (size_t)W3D_PALETTE_WIDTH * 16;
+		if (!uploadFull && PaletteDirtyMap.size() == (size_t)PaletteHeight)
+		{
+			int total = 0;
+			for (int r = row0; r <= row1;)
+			{
+				if (!PaletteDirtyMap[(size_t)r])
+				{
+					++r;
+					continue;
+				}
+				int last = r, gap = 0;
+				for (int k = r + 1; k <= row1; ++k)
+				{
+					if (PaletteDirtyMap[(size_t)k])
+					{
+						last = k;
+						gap = 0;
+					}
+					else if (++gap > kRunGap)
+					{
+						break;
+					}
+				}
+				op.runs.emplace_back(r, last - r + 1);
+				total += last - r + 1;
+				r = last + 1;
+			}
+			if (!op.runs.empty())
+			{
+				// the stage is sized in steps of a quarter of the next power of two (at least kStageRowStep), so it is seldom made again
+				int pow2 = kStageRowStep;
+				while (pow2 < total)
+				{
+					pow2 *= 2;
+				}
+				const int step = std::max(kStageRowStep, pow2 / 4);
+				const int stageRows = std::min(((total + step - 1) / step) * step, std::max(PaletteHeight, total));
+				op.bytes = PaletteQueue->take((int64_t)stageRows * (int64_t)rowBytes);
+				std::uint8_t *dst = op.bytes.ptrw();
+				for (const std::pair<int, int> &run : op.runs)
+				{
+					std::memcpy(dst, PaletteImage->ptr() + (size_t)run.first * rowBytes, (size_t)run.second * rowBytes);
+					dst += (size_t)run.second * rowBytes;
+				}
+				op.row0 = op.runs.front().first;
+				op.rows = total;
+				PaletteRowsUploaded = total;
+			}
+			else
+			{
+				op.runs.clear();
+			}
+		}
+		if (op.runs.empty())
+		{
+			const int64_t nbytes = uploadFull ? (int64_t)PaletteHeight * W3D_PALETTE_WIDTH * 16 : (int64_t)rows * W3D_PALETTE_WIDTH * 16;
+			const std::uint8_t *src = PaletteImage->ptr() + (uploadFull ? 0 : (size_t)row0 * W3D_PALETTE_WIDTH * 16);
+			op.bytes = PaletteQueue->take(nbytes);
+			std::memcpy(op.bytes.ptrw(), src, (size_t)nbytes);
+		}
+		// A partial copy that can still succeed copies only the dirty rows. The whole image is copied
+		// above when uploadFull is set (the copy will not be attempted, or an earlier copy failed).
+		if (uploadFull)
+		{
+			PaletteQueue->force_full.store(false, std::memory_order_release);
+			PaletteUploadFull = true;
+			PaletteRowsUploaded = PaletteHeight;
+		}
+		PaletteQueue->enqueue(std::move(op), false);
+		if (!uploadFull && PaletteQueue->force_full.load(std::memory_order_acquire))
+		{
+			// This thread ran the copy and it failed. Copy the whole palette now, still off the render thread.
+			PaletteRdQueue::Op fullOp;
+			fullOp.kind = PaletteRdQueue::Op::Upload;
+			fullOp.full = true;
+			fullOp.row0 = 0;
+			fullOp.rows = PaletteHeight;
+			const int64_t all = (int64_t)PaletteHeight * W3D_PALETTE_WIDTH * 16;
+			fullOp.bytes = PaletteQueue->take(all);
+			std::memcpy(fullOp.bytes.ptrw(), PaletteImage->ptr(), (size_t)all);
+			PaletteQueue->force_full.store(false, std::memory_order_release);
+			PaletteQueue->enqueue(std::move(fullOp), false);
+			PaletteUploadFull = true;
+			PaletteRowsUploaded = PaletteHeight;
+		}
+		clear();
+		return;
+	}
+	if (PaletteTexture.is_valid())
+	{
+		// Compatibility has no partial texture update. The image still holds every pose; this copies all of it.
+		PaletteTexture->update(PaletteImage);
+		PaletteUploadFull = true;
+		PaletteRowsUploaded = PaletteHeight;
+	}
+	clear();
 }
 
 const HAnimClass *W3DInstancer::resolve_clip(const Model &m, const std::string &name)
@@ -941,7 +1940,7 @@ bool W3DInstancer::set_instance_clip(int64_t instance, const String &clip, doubl
 	inst.Explicit = false;
 	inst.Anim1 = nullptr;
 	inst.PoseStale = true;
-	PoseDirty = true;
+	note_pose_dirty();
 	if (clip.is_empty())
 	{
 		inst.Anim = nullptr;
@@ -950,6 +1949,7 @@ bool W3DInstancer::set_instance_clip(int64_t instance, const String &clip, doubl
 	const HAnimClass *anim = resolve_clip_cached(*Models[(size_t)inst.Model], toNative(clip));
 	if (!anim) return false;
 	inst.Anim = anim;
+	adopt_animated_palette(inst);
 	return true;
 }
 
@@ -1029,7 +2029,8 @@ bool W3DInstancer::set_instance_pose_keyed(int64_t instance, const std::string &
 	inst.Frame1 = f1;
 	inst.Percentage = pct;
 	inst.PoseStale = true;
-	PoseDirty = true;
+	note_pose_dirty();
+	adopt_animated_palette(inst);
 	return true;
 }
 
@@ -1051,8 +2052,21 @@ bool W3DInstancer::set_instance_bone_spins_native(int64_t instance, const std::v
 	if (spins == inst.BoneSpins) return true;
 	inst.BoneSpins = std::move(spins);
 	inst.PoseStale = true;
-	PoseDirty = true;
+	note_pose_dirty();
+	if (!inst.BoneSpins.empty())
+	{
+		adopt_animated_palette(inst);
+	}
 	return true;
+}
+
+void W3DInstancer::set_instance_pose_share(int64_t instance, float maxFrameDelta)
+{
+	if (instance < 0 || instance >= (int64_t)Instances.size())
+	{
+		return;
+	}
+	Instances[(size_t)instance].ShareDelta = maxFrameDelta;
 }
 
 namespace
@@ -1133,7 +2147,7 @@ bool W3DInstancer::set_instance_hidden_subobjects(int64_t instance, const Packed
 		}
 	}
 	inst.HiddenSubs.swap(hidden);
-	PoseDirty = true;
+	note_pose_dirty();
 	mark_model(instance);
 	return true;
 }
@@ -1145,7 +2159,7 @@ void W3DInstancer::rebuild_layout()
 	// lane SMOOTH-1: the palette blocks are allocated per instance (allocate_palette); this pass makes sure a palette texture exists for the
 	// materials of new models and grows each draw item's MultiMesh capacity by half when its live instances outgrow it (the visible instance
 	// count draws only the written ones), so a creation does not reallocate every buffer
-	if (PaletteTexture.is_null())
+	if (PaletteImage.is_null() || (PaletteTexture.is_null() && PaletteRD.is_null()))
 	{
 		grow_palette(std::max(PaletteUsed, 1));
 	}
@@ -1154,7 +2168,7 @@ void W3DInstancer::rebuild_layout()
 	const size_t firstMaterial = PaletteGrown ? 0 : PaletteBoundMaterials;
 	for (size_t i = firstMaterial; i < AllMaterials.size(); ++i)
 	{
-		AllMaterials[i]->set_shader_parameter("w3d_palette", PaletteTexture);
+		AllMaterials[i]->set_shader_parameter("w3d_palette", palette_sampler());
 	}
 	PaletteBoundMaterials = AllMaterials.size();
 	PaletteGrown = false;
@@ -1178,7 +2192,7 @@ void W3DInstancer::rebuild_layout()
 		}
 	}
 	LayoutDirty = false;
-	PoseDirty = true;
+	note_pose_dirty();
 }
 
 void W3DInstancer::evaluate_pose(Instance &inst) const
@@ -1276,12 +2290,18 @@ PackedFloat32Array W3DInstancer::get_instance_palette(int64_t instance) const
 	return out;
 }
 
-void W3DInstancer::ensure_pose(const Instance &inst) const
+void W3DInstancer::ensure_pose(int64_t instance) const
 {
+	const Instance &inst = Instances[(size_t)instance];
 	if (PoseCulling && inst.PoseStale && !inst.Removed)
 	{
 		Instance &mut = const_cast<Instance &>(inst); // the pose is a cache of the instance's inputs: evaluating it does not change what the instance is
 		evaluate_pose(mut);
+		if (!mut.QueryPosePending)
+		{
+			Models[(size_t)inst.Model]->QueriedPoseIds.push_back((int)instance);
+			mut.QueryPosePending = true;
+		}
 	}
 }
 
@@ -1332,8 +2352,8 @@ void W3DInstancer::write_buffers()
 		}
 	}
 	const Transform3D nodeXf = is_inside_tree() ? get_global_transform() : Transform3D();
-	// lane SMOOTH-1: a model is rewritten only when one of its instances changed (moved, posed, added, removed, re-tinted, hid a sub object), or,
-	// for a model with back-to-front sorted items, when the camera moved; the others keep last frame's buffers and counts
+	// Instance record changes still rewrite the model. A pose alone only rewrites affected draw items: bone matrices live in the palette,
+	// while visibility/fade enter these records. Sorted draws keep the conservative pose/camera invalidation for animated pivot depths.
 	const bool cameraMoved = !haveCamera || !HaveLastCamera || !(cam == LastCamera) || !(nodeXf == LastNodeXf); // the node's transform enters the depths too
 	LastCamera = cam;
 	LastNodeXf = nodeXf;
@@ -1343,33 +2363,80 @@ void W3DInstancer::write_buffers()
 	BufferUploads = 0;
 	bool missedCamera = false;
 	bool sortRewritten = false;
+	// lane GPUPERF-2: the instances in view of the cameras of this moment (the draws written below leave the others out; cull_draws redoes it at
+	// frame_pre_draw with the cameras the frame is drawn with)
+	if (DrawCulling)
+	{
+		std::vector<Plane> planes;
+		Transform3D cullXf;
+		if (cull_frustum(planes, cullXf))
+		{
+			compute_in_view(planes, cullXf);
+		}
+		else
+		{
+			InViewValid = false;
+		}
+	}
 	for (std::unique_ptr<Model> &mp : Models)
 	{
 		Model &m = *mp;
-		if (!m.BuffersDirty && !(m.HasSorted && cameraMoved))
+		const bool consumeQueries = !m.QueriedPoseIds.empty() && (m.BuffersDirty || m.PoseEvaluated || (m.HasSorted && cameraMoved));
+		if (consumeQueries && !m.BuffersDirty)
 		{
-			dithered += m.Dithered;
-			sortedItems += m.SortedItems;
-			for (const DrawItem &d : m.Draws) visible += (int)d.Order.size();
-			continue;
+			// A query can update a culled Pose outside StaleScratch. The baseline would consume it when ANY pose in this model
+			// evaluates, or its sorted camera changes. Compare only these queued candidates, never all historical instances.
+			for (int id : m.QueriedPoseIds)
+			{
+				const Instance &inst = Instances[(size_t)id];
+				if (inst.Removed) continue;
+				const HTreePose &pose = pose_source(inst).Pose; // lane PERF-HD
+				for (size_t k = 0; k < m.Draws.size(); ++k)
+				{
+					DrawItem &d = m.Draws[k];
+					if (d.PoseDirty || d.Mesh->HasSorted) continue;
+					const size_t bone = (size_t)d.Sub->BoneIndex;
+					if (inst.DrawPoseState[k] != std::make_pair(pose.IsVisible[bone], pose.PivotFade[bone]))
+					{
+						d.PoseDirty = true;
+					}
+				}
+			}
 		}
-		++writes;
-		m.BuffersDirty = false;
+		bool wrote = false;
 		m.Dithered = 0;
 		m.SortedItems = 0;
 		for (DrawItem &d : m.Draws)
 		{
+			if (!m.BuffersDirty && !d.PoseDirty && !(d.Mesh->HasSorted && cameraMoved))
+			{
+				m.Dithered += d.Dithered;
+				m.SortedItems += d.HasBatch ? 1 : 0;
+				visible += (int)d.Packed.size(); // lane GPUPERF-2: the drawn set may be smaller than Order (empty when every member is off screen)
+				continue;
+			}
+			wrote = true;
+			d.PoseDirty = false;
+			d.Dithered = 0;
 			const int bone = d.Sub->BoneIndex;
-			const bool rigid = !d.Mesh->Data.Skin;
+			const size_t drawIndex = (size_t)(&d - m.Draws.data());
 			std::vector<int> &ids = d.Order;
 			ids.clear();
 			for (int id : m.InstanceIds)
 			{
-				const Instance &inst = Instances[(size_t)id];
-				if (inst.Removed || inst.RenderCulled || inst.ShroudHidden) continue;
+				Instance &inst = Instances[(size_t)id];
+				if (inst.Removed) continue;
+				const HTreePose &pose = pose_source(inst).Pose; // lane PERF-HD: a shared member is drawn with its group's pose
+				inst.DrawnOffset = pose_source(inst).PaletteOffset;
+				// Cache every consumed pose before membership filters, including queried culled/hidden/zero-fade instances.
+				if (!d.Mesh->HasSorted)
+				{
+					inst.DrawPoseState[drawIndex] = std::make_pair(pose.IsVisible[(size_t)bone], pose.PivotFade[(size_t)bone]);
+				}
+				if (inst.RenderCulled || inst.ShroudHidden) continue;
 				if (!inst.HiddenSubs.empty() && inst.HiddenSubs[(size_t)d.SubIndex]) continue;
-				if (!inst.Pose.IsVisible[(size_t)bone]) continue;
-				if (inst.Pose.PivotFade[(size_t)bone] * inst.Opacity <= 0.0f) continue;
+				if (!pose.IsVisible[(size_t)bone]) continue;
+				if (pose.PivotFade[(size_t)bone] * inst.Opacity <= 0.0f) continue;
 				ids.push_back(id);
 			}
 			// a batch that existed and is now gone (its last sorted instance removed or hidden) changes the S-029 count too (review r1)
@@ -1385,7 +2452,7 @@ void W3DInstancer::write_buffers()
 					for (size_t k = 0; k < ids.size(); ++k)
 					{
 						const Instance &inst = Instances[(size_t)ids[k]];
-						const ::Vector3 t = inst.Pose.Transform[(size_t)bone].Get_Translation();
+						const ::Vector3 t = pose_source(inst).Pose.Transform[(size_t)bone].Get_Translation();
 						const Vector3 world = nodeXf.xform(inst.Xf.xform(Vector3(t.X, t.Z, -t.Y))); // W3D (x, y, z) -> Godot (x, z, -y)
 						depth[k] = (world.x - camPos.X) * camForward.X + (world.y - camPos.Y) * camForward.Y + (world.z - camPos.Z) * camForward.Z;
 					}
@@ -1404,45 +2471,34 @@ void W3DInstancer::write_buffers()
 					missedCamera = true;
 				}
 			}
-			float *buf = d.Buffer.ptrw();
-			int count = 0;
-			bool changed = d.BufferUploadRequired;
 			for (int id : ids)
 			{
 				const Instance &inst = Instances[(size_t)id];
-				const float fade = inst.Pose.PivotFade[(size_t)bone] * inst.Opacity; // PROJ-2: the drawable's opacity
-				if (d.Mesh->HasOpaque && fade < 0.999f) ++m.Dithered;
-				float packed[16];
-				float *o = packed;
-				const Basis &b = inst.Xf.basis;
-				o[0] = b.rows[0][0]; o[1] = b.rows[0][1]; o[2] = b.rows[0][2]; o[3] = inst.Xf.origin.x;
-				o[4] = b.rows[1][0]; o[5] = b.rows[1][1]; o[6] = b.rows[1][2]; o[7] = inst.Xf.origin.y;
-				o[8] = b.rows[2][0]; o[9] = b.rows[2][1]; o[10] = b.rows[2][2]; o[11] = inst.Xf.origin.z;
-				o[12] = inst.InfantryLight ? -(float)(inst.PaletteOffset + 1) : (float)inst.PaletteOffset;
-				o[13] = fade;
-				o[14] = inst.HcPacked;
-				o[15] = (float)((rigid ? (int)bone : 0) + 1024 * inst.Sway + (inst.Fogged ? 16384 : 0)); // lane VISUAL-2: the sway type, the fogged light
-				float *dst = buf + (size_t)count * 16;
-				if (std::memcmp(dst, packed, sizeof(packed)) != 0)
-				{
-					std::memcpy(dst, packed, sizeof(packed));
-					changed = true;
-				}
-				++count;
+				if (d.Mesh->HasOpaque && pose_source(inst).Pose.PivotFade[(size_t)bone] * inst.Opacity < 0.999f) ++d.Dithered; // S-029 counts the members, drawn or culled
 			}
-			// Bone matrices live in the palette. Re-evaluating a pose or sorting
-			// does not require a GPU upload when the packed instance data is identical.
-			if (changed)
-			{
-				d.MM->set_buffer(d.Buffer);
-				++BufferUploads;
-				d.BufferUploadRequired = false;
-			}
-			d.MM->set_visible_instance_count(count);
-			visible += count;
+			pack_draw(m, d); // lane GPUPERF-2: the buffer, the MultiMeshes' boxes and the shadow batch
+			visible += (int)d.Packed.size();
+
+			m.Dithered += d.Dithered;
 		}
+		if (wrote) ++writes;
+		if (consumeQueries)
+		{
+			for (int id : m.QueriedPoseIds) Instances[(size_t)id].QueryPosePending = false;
+			m.QueriedPoseIds.clear();
+		}
+		m.PoseEvaluated = false;
+		m.BuffersDirty = false;
 		dithered += m.Dithered;
 		sortedItems += m.SortedItems;
+	}
+	if (DrawCulling)
+	{
+		int culled = 0;
+		for (const std::unique_ptr<Model> &mp : Models)
+			for (const DrawItem &d : mp->Draws)
+				culled += (int)d.Order.size() - (int)d.Packed.size();
+		DrawCulled = culled;
 	}
 	DitheredFadeInstances = dithered;
 	SortedDrawItems = sortedItems;
@@ -1459,12 +2515,294 @@ void W3DInstancer::write_buffers()
 				if (d.HasBatch) SortBatchScratch.push_back(d.Batch);
 		InterleavedBatchPairs = (int)W3D_Count_Interleaved_Batches(SortBatchScratch);
 	}
-	if (InterleavedBatchPairs > 0) warn(W3D_Batch_Order_Stop((size_t)InterleavedBatchPairs).Message);
-	if (dithered > 0) warn(W3D_Fade_Dither_Stop((size_t)dithered).Message);
+	if (InterleavedBatchPairs > 0) warn_stop(W3D_Batch_Order_Stop((size_t)InterleavedBatchPairs));
+	if (dithered > 0) warn_stop(W3D_Fade_Dither_Stop((size_t)dithered));
 	if (missedCamera)
 	{
 		warn("blended draw items are drawn in insertion order: no sort camera (set_sort_camera) and no current Camera3D");
 	}
+}
+
+void W3DInstancer::set_draw_culling(bool enabled)
+{
+	if (DrawCulling == enabled)
+	{
+		return;
+	}
+	DrawCulling = enabled;
+	InViewValid = false;
+	for (std::unique_ptr<Model> &m : Models)
+	{
+		m->BuffersDirty = true; // every draw list is written again (all instances, or the ones in view) by the next update
+		if (!enabled)
+		{
+			for (DrawItem &d : m->Draws)
+			{
+				d.MM->set_custom_aabb(kMultiMeshBounds); // the large box again (lane PERF-HD: Godot need not walk the slots)
+				if (d.ShadowMM.is_valid())
+				{
+					d.ShadowMM->set_custom_aabb(AABB());
+				}
+			}
+		}
+	}
+	PoseDirty = true;
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (enabled && !PreDrawConnected && rs)
+	{
+		rs->connect("frame_pre_draw", callable_mp(this, &W3DInstancer::cull_draws));
+		PreDrawConnected = true;
+	}
+	// lane GPUPERF-2 review: a scene that updates itself by hand (GameWorld's static layer, set_auto_update(false)) will not apply the dirty buffers
+	// while culling is off (cull_draws returns at once), so the instances the last compaction left out would stay missing. Repack now: the toggle is rare
+	// and this is only the manual-update scene the caller owns.
+	if (!AutoUpdate && Assets)
+	{
+		update_now();
+	}
+}
+
+bool W3DInstancer::cull_frustum(std::vector<Plane> &planes, Transform3D &nodeXf) const
+{
+	planes.clear();
+	if (!is_inside_tree() || get_viewport() == nullptr || get_viewport()->get_camera_3d() == nullptr)
+	{
+		return false;
+	}
+	const TypedArray<Plane> main = get_viewport()->get_camera_3d()->get_frustum();
+	if (main.size() != 6)
+	{
+		return false;
+	}
+	for (int64_t k = 0; k < main.size(); ++k)
+	{
+		planes.push_back(main[k]);
+	}
+	for (const Plane &pl : ExtraPoseFrustum)
+	{
+		planes.push_back(pl); // planes 6..11: the PiP camera's (an instance is drawn when it meets either frustum)
+	}
+	nodeXf = get_global_transform();
+	return true;
+}
+
+void W3DInstancer::compute_in_view(const std::vector<Plane> &planes, const Transform3D &nodeXf)
+{
+	InView.assign(Instances.size(), 0);
+	const Vector3 ns = nodeXf.basis.get_scale_abs();
+	const real_t nodeScale = std::max(ns.x, std::max(ns.y, ns.z));
+	auto inside = [&](const Vector3 &c, real_t r, size_t first, size_t last) {
+		for (size_t k = first; k < last; ++k)
+		{
+			if (planes[k].distance_to(c) > r)
+			{
+				return false;
+			}
+		}
+		return true;
+	};
+	for (std::unique_ptr<Model> &mp : Models)
+	{
+		const float radius = cull_radius(*mp); // S-1730: the sphere the pose culling uses
+		for (int id : mp->InstanceIds)
+		{
+			const Instance &inst = Instances[(size_t)id];
+			if (inst.Removed) continue;
+			const Vector3 centre = nodeXf.xform(inst.Xf.origin);
+			const Vector3 sc = inst.Xf.basis.get_scale_abs();
+			const real_t r = radius * std::max(sc.x, std::max(sc.y, sc.z)) * nodeScale;
+			InView[(size_t)id] = (inside(centre, r, 0, 6) || (planes.size() == 12 && inside(centre, r, 6, 12))) ? 1 : 0;
+		}
+	}
+	CullPlanes = planes;
+	CullNodeXf = nodeXf;
+	InViewValid = true;
+	++InViewEpoch;
+}
+
+void W3DInstancer::pack_draw(Model &m, DrawItem &d)
+{
+	const int bone = d.Sub->BoneIndex;
+	const bool culling = DrawCulling && InViewValid;
+	const float radius = culling ? cull_radius(m) : 0.0f;
+	d.Packed.clear();
+	float *buf = d.Buffer.ptrw();
+	int count = 0;
+	bool changed = d.BufferUploadRequired;
+	AABB box;
+	// the instance matrix (transform, palette, fade, house colour, shading flags): shared by the colour and the shadow batches, so a shadow batch can
+	// be built from instances the camera culling left out
+	auto fill = [&](const Instance &inst, float *o) {
+		const Instance &src = pose_source(inst); // lane PERF-HD
+		const float fade = src.Pose.PivotFade[(size_t)bone] * inst.Opacity; // PROJ-2: the drawable's opacity
+		const Basis &b = inst.Xf.basis;
+		o[0] = b.rows[0][0]; o[1] = b.rows[0][1]; o[2] = b.rows[0][2]; o[3] = inst.Xf.origin.x;
+		o[4] = b.rows[1][0]; o[5] = b.rows[1][1]; o[6] = b.rows[1][2]; o[7] = inst.Xf.origin.y;
+		o[8] = b.rows[2][0]; o[9] = b.rows[2][1]; o[10] = b.rows[2][2]; o[11] = inst.Xf.origin.z;
+		o[12] = inst.InfantryLight ? -(float)(src.PaletteOffset + 1) : (float)src.PaletteOffset;
+		o[13] = fade;
+		o[14] = inst.HcPacked;
+		o[15] = (float)((d.Rigid ? (int)bone : 0) + 1024 * inst.Sway + (inst.Fogged ? 16384 : 0) // lane VISUAL-2: the sway type, the fogged light
+			+ (inst.OcclusionSlot << W3D_OCCLUSION_SLOT_SHIFT) + (inst.Occluder ? W3D_OCCLUSION_OCCLUDER_BIT : 0) // lane OCCLUDE-1
+			+ (inst.NoSceneFog ? W3D_NO_SCENE_FOG_BIT : 0)); // lane INGAMEBG-1
+	};
+	auto sphereBoxOf = [&](const Instance &inst) {
+		const Vector3 sc = inst.Xf.basis.get_scale_abs();
+		const real_t r = radius * std::max(sc.x, std::max(sc.y, sc.z));
+		return AABB(inst.Xf.origin - Vector3(r, r, r), Vector3(2 * r, 2 * r, 2 * r));
+	};
+	for (int id : d.Order)
+	{
+		if (culling && (size_t)id < InView.size() && !InView[(size_t)id])
+		{
+			continue; // lane GPUPERF-2: outside every camera's frustum
+		}
+		const Instance &inst = Instances[(size_t)id];
+		float packed[16];
+		fill(inst, packed);
+		float *destination = buf + (size_t)count * 16;
+		if (std::memcmp(destination, packed, sizeof(packed)) != 0)
+		{
+			std::memcpy(destination, packed, sizeof(packed));
+			changed = true;
+		}
+		if (culling)
+		{
+			const AABB sphereBox = sphereBoxOf(inst);
+			box = count == 0 ? sphereBox : box.merge(sphereBox);
+		}
+		d.Packed.push_back(id);
+		++count;
+	}
+	if (changed)
+	{
+		d.MM->set_buffer(d.Buffer);
+		++BufferUploads;
+		d.BufferUploadRequired = false;
+	}
+	d.MM->set_visible_instance_count(count);
+	if (culling)
+	{
+		// the drawn instances' spheres in the instancer's space (the draw item nodes sit at its origin); a box for an empty list too (a large one would
+		// make Godot walk the slots again)
+		d.Box = count > 0 ? box : AABB(Vector3(), Vector3(1, 1, 1));
+		d.MM->set_custom_aabb(d.Box);
+	}
+	d.PackedEpoch = culling ? InViewEpoch : 0;
+	// Share the actual surface shaders: skinning, vegetation sway and alpha cutouts must match the visible mesh.
+	// Separate batches are necessary because casting is a GeometryInstance property, while eligibility is per drawable.
+	// lane GPUPERF-2 review: the shadow batch is built from every caster of the draw item, not from the camera-visible Packed list: an instance behind the
+	// camera or outside its frustum still throws a shadow onto the visible ground (update_now keeps such a caster posed for exactly this case), and a
+	// shadow-only batch culled with the colour batch would lose it. Its box is the casters' spheres, so the shadow pass has the casters it needs.
+	int shadowCount = 0;
+	AABB shadowBox;
+	for (int id : d.Order)
+	{
+		const Instance &inst = Instances[(size_t)id];
+		if (!inst.CastShadow)
+		{
+			continue;
+		}
+		if (culling)
+		{
+			const AABB sphereBox = sphereBoxOf(inst);
+			shadowBox = shadowCount == 0 ? sphereBox : shadowBox.merge(sphereBox);
+		}
+		++shadowCount;
+	}
+	if (shadowCount != 0 && d.ShadowMM.is_null())
+	{
+		d.ShadowMM.instantiate();
+		d.ShadowMM->set_transform_format(MultiMesh::TRANSFORM_3D);
+		d.ShadowMM->set_use_custom_data(true);
+		d.ShadowMM->set_mesh(d.Mesh->Mesh);
+		MultiMeshInstance3D *shadow = memnew(MultiMeshInstance3D);
+		shadow->set_name(String(d.Node->get_name()) + "_shadow");
+		shadow->set_multimesh(d.ShadowMM);
+		shadow->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_SHADOWS_ONLY);
+		add_child(shadow);
+	}
+	if (d.ShadowMM.is_valid())
+	{
+		if (d.ShadowMM->get_instance_count() != d.Allocated)
+		{
+			d.ShadowMM->set_instance_count(d.Allocated);
+			d.ShadowBuffer.resize((int64_t)d.Allocated * 16);
+		}
+		float *shadowBuffer = d.ShadowBuffer.ptrw();
+		int out = 0;
+		for (int id : d.Order)
+		{
+			const Instance &inst = Instances[(size_t)id];
+			if (!inst.CastShadow)
+			{
+				continue;
+			}
+			fill(inst, shadowBuffer + (size_t)out * 16);
+			++out;
+		}
+		d.ShadowMM->set_buffer(d.ShadowBuffer);
+		d.ShadowMM->set_visible_instance_count(shadowCount);
+		if (culling)
+		{
+			d.ShadowMM->set_custom_aabb(shadowCount > 0 ? shadowBox : AABB(Vector3(), Vector3(1, 1, 1)));
+		}
+	}
+}
+
+void W3DInstancer::cull_draws()
+{
+	if (!DrawCulling || !Materials || !is_inside_tree())
+	{
+		return;
+	}
+	const auto t0 = std::chrono::steady_clock::now();
+	std::vector<Plane> planes;
+	Transform3D nodeXf;
+	if (!cull_frustum(planes, nodeXf))
+	{
+		return; // no camera: the lists stay as written
+	}
+	bool same = InViewValid && nodeXf == CullNodeXf && planes.size() == CullPlanes.size();
+	for (size_t k = 0; same && k < planes.size(); ++k)
+	{
+		same = planes[k] == CullPlanes[k];
+	}
+	if (!same)
+	{
+		compute_in_view(planes, nodeXf); // the cameras moved: every list is checked against them
+	}
+	// a list packed with this InView is current; the others (packed before the cameras moved, or before write_buffers recomputed InView for moved
+	// instances) are checked and packed again where their drawn set changed
+	int culled = 0;
+	int visible = 0;
+	for (std::unique_ptr<Model> &mp : Models)
+	{
+		for (DrawItem &d : mp->Draws)
+		{
+			if (d.PackedEpoch != InViewEpoch)
+			{
+				PackScratch.clear();
+				for (int id : d.Order)
+				{
+					if ((size_t)id < InView.size() && InView[(size_t)id])
+					{
+						PackScratch.push_back(id);
+					}
+				}
+				if (PackScratch != d.Packed || d.MM->get_visible_instance_count() != (int)d.Packed.size())
+				{
+					pack_draw(*mp, d);
+				}
+				d.PackedEpoch = InViewEpoch;
+			}
+			culled += (int)d.Order.size() - (int)d.Packed.size();
+			visible += (int)d.Packed.size();
+		}
+	}
+	DrawCulled = culled;
+	VisibleInstances = visible; // lane GPUPERF-2 review: this compaction changes what is drawn, so the reported count follows it
+	CullMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
 void W3DInstancer::update_mappers()
@@ -1571,7 +2909,7 @@ void W3DInstancer::update_now()
 		if (inst.Removed) continue;
 		bool outside = false;
 		{
-			if (cull)
+			if (cull && !(inst.CastShadow && ShadowMapsEnabled)) // an off-screen caster still throws an on-screen shadow
 			{
 				// the bounding sphere of the model around the instance's origin, scaled by the larger of the node's and the instance's scale
 				const Vector3 centre = nodeXf.xform(inst.Xf.origin);
@@ -1611,12 +2949,85 @@ void W3DInstancer::update_now()
 		{
 			if (timeMoved && inst.Anim != nullptr && !inst.Explicit) inst.PoseStale = true;
 			if (outside) ++PoseCulled;
+			if (inst.ShareLeader >= 0)
+			{
+				inst.ShareLeader = -1; // lane PERF-HD: off screen it is drawn with its own (pending) block again
+				Models[(size_t)inst.Model]->BuffersDirty = true;
+			}
 			continue;
 		}
-		if (inst.PoseStale || (timeMoved && inst.Anim != nullptr && !inst.Explicit))
+		if (inst.PoseStale || (timeMoved && inst.Anim != nullptr && !inst.Explicit) || inst.ShareLeader >= 0)
 		{
 			StaleScratch.push_back(i);
 		}
+	}
+	// lane PERF-HD: retail's horde pose sharing (W3DHordeModelDrawManager::ProcessGroup, PartOfSameGroup: the same model, clip and mode, frames within the
+	// draw's MaxAnimFrameDelta of the group's first). The candidates are sorted by (model, clip, frame), so a group is a run whose frames stay within the delta
+	// of its first; its first is posed and written, the others are drawn with that block and keep their own pose pending (the bone queries evaluate it).
+	// INFERENCE: retail groups the handles in its own list order; sorting by frame makes the groups as large as the delta allows
+	PoseShared = 0;
+	ShareScratch.clear();
+	const bool share = PoseSharing && PoseCulling;
+	for (size_t k = 0; k < StaleScratch.size(); ++k)
+	{
+		Instance &inst = Instances[StaleScratch[k]];
+		const int before = inst.ShareLeader;
+		inst.ShareLeader = -1;
+		if (share && inst.ShareDelta >= 0.0f && inst.Explicit && inst.Anim != nullptr && inst.Anim1 == nullptr && inst.BoneSpins.empty() && inst.PaletteSize > 0)
+		{
+			ShareScratch.push_back(StaleScratch[k]);
+		}
+		if (before >= 0)
+		{
+			inst.PoseStale = true; // it was drawn with another's pose: its own is still pending
+		}
+	}
+	if (ShareScratch.size() > 1)
+	{
+		std::sort(ShareScratch.begin(), ShareScratch.end(), [&](size_t a, size_t b) {
+			const Instance &x = Instances[a], &y = Instances[b];
+			if (x.Model != y.Model) return x.Model < y.Model;
+			if (x.Anim != y.Anim) return std::less<const HAnimClass *>()(x.Anim, y.Anim);
+			if (x.Frame0 != y.Frame0) return x.Frame0 < y.Frame0;
+			return a < b;
+		});
+		for (size_t g = 0; g < ShareScratch.size();)
+		{
+			const Instance &first = Instances[ShareScratch[g]];
+			size_t e = g + 1;
+			while (e < ShareScratch.size())
+			{
+				Instance &x = Instances[ShareScratch[e]];
+				if (x.Model != first.Model || x.Anim != first.Anim || x.Frame0 - first.Frame0 > std::min(first.ShareDelta, x.ShareDelta))
+				{
+					break;
+				}
+				x.ShareLeader = (int)ShareScratch[g];
+				++e;
+			}
+			g = e;
+		}
+	}
+	// the members leave the evaluation list; an instance whose records point at another block than they were written with rewrites its model's records
+	MemberScratch.clear();
+	{
+		size_t kept = 0;
+		for (size_t k = 0; k < StaleScratch.size(); ++k)
+		{
+			Instance &inst = Instances[StaleScratch[k]];
+			if (pose_source(inst).PaletteOffset != inst.DrawnOffset)
+			{
+				Models[(size_t)inst.Model]->BuffersDirty = true;
+			}
+			if (inst.ShareLeader >= 0)
+			{
+				MemberScratch.push_back(StaleScratch[k]);
+				++PoseShared;
+				continue;
+			}
+			StaleScratch[kept++] = StaleScratch[k];
+		}
+		StaleScratch.resize(kept);
 	}
 	PaletteWrite = StaleScratch.empty() || PaletteImage.is_null() ? nullptr : reinterpret_cast<float *>(PaletteImage->ptrw()); // the image's buffer (not shared: no copy)
 	run_parallel(StaleScratch.size(), [&](size_t begin, size_t end) {
@@ -1663,23 +3074,42 @@ void W3DInstancer::update_now()
 			inst.PoseStale = false;
 		}
 	});
+	for (size_t i : MemberScratch)
+	{
+		StaleScratch.push_back(i); // lane PERF-HD: the members' visibility and fades (their group's) are checked below too; their rows are not written
+	}
 	for (size_t i : StaleScratch)
 	{
 		const Instance &inst = Instances[i];
-		Model &model = *Models[(size_t)inst.Model];
-		// Opaque instance data does not contain bone matrices. Keep its packed
-		// buffers when only bones moved; sorted meshes invalidate when their
-		// sorting pivots move (camera and instance movement invalidate separately).
-		if (inst.DrawStateChanged) model.BuffersDirty = true;
+		const Instance &src = pose_source(inst);
+		if (inst.ShareLeader < 0)
+		{
+			note_palette_rows(inst.PaletteOffset, inst.PaletteSize);
+		}
+		Model &m = *Models[(size_t)inst.Model];
+		m.PoseEvaluated = true;
+		if (m.BuffersDirty) continue; // the full rewrite will consume and cache all poses, including queried culled ones
+		for (size_t k = 0; k < m.Draws.size(); ++k)
+		{
+			DrawItem &d = m.Draws[k];
+			if (d.PoseDirty) continue; // one changed instance already guarantees this draw's full rewrite
+			if (d.Mesh->HasSorted)
+			{
+				d.PoseDirty = true;
+				continue;
+			}
+			const size_t bone = (size_t)d.Sub->BoneIndex;
+			const auto state = std::make_pair(src.Pose.IsVisible[bone], src.Pose.PivotFade[bone]);
+			if (inst.DrawPoseState[k] != state)
+			{
+				d.PoseDirty = true;
+			}
+		}
 	}
-	PoseEvaluations = (int)StaleScratch.size();
+	PoseEvaluations = (int)(StaleScratch.size() - MemberScratch.size());
 	if (PoseCulled > 0)
 	{
 		warn(W3D_Pose_Cull_Stop().Message); // S-1730 (once: warn keeps each message once)
-	}
-	if (paletteWritten.load(std::memory_order_relaxed))
-	{
-		PaletteChanged = true;
 	}
 	if (poseErrors.load() > 0)
 	{
@@ -1696,7 +3126,7 @@ void W3DInstancer::update_now()
 	if (inexact > 0)
 	{
 		InexactPoseTotal = inexact;
-		warn(W3D_Pose_Order_Stop((size_t)inexact).Message);
+		warn_stop(W3D_Pose_Order_Stop((size_t)inexact));
 	}
 	else
 	{
@@ -1705,14 +3135,9 @@ void W3DInstancer::update_now()
 
 	t0 = std::chrono::steady_clock::now();
 	write_buffers();
-	PaletteUploads = 0;
-	if (PaletteChanged)
-	{
-		// lane PERF-3: the poses were written into the image's own buffer: no byte array allocated and copied per frame
-		PaletteTexture->update(paletteUploadImage(PaletteImage));
-		++PaletteUploads;
-		PaletteChanged = false;
-	}
+	// Changed rows only. A static prop stays where it was uploaded; a prop that starts animating has been moved into the animated pool
+	// so its row is inside this span. A missed row would keep the previous pose on the GPU.
+	upload_palette();
 	UploadMs = msSince(t0);
 	PoseDirty = false;
 }
@@ -1721,6 +3146,20 @@ void W3DInstancer::_notification(int what)
 {
 	// lane RENDER-3 (S-831): this node's transparent shaders output gamma-space values; the camera that shows them composites the transparent pass in
 	// gamma space (GodotGammaComposite.h)
+	if (what == NOTIFICATION_PREDELETE)
+	{
+		release_palette_rd();
+		RenderingServer *rs = RenderingServer::get_singleton();
+		if (PreDrawConnected && rs)
+		{
+			const Callable c = callable_mp(this, &W3DInstancer::cull_draws);
+			if (rs->is_connected("frame_pre_draw", c))
+			{
+				rs->disconnect("frame_pre_draw", c);
+			}
+			PreDrawConnected = false;
+		}
+	}
 	if (what == NOTIFICATION_READY)
 	{
 		set_process_internal(true);
@@ -1734,14 +3173,14 @@ void W3DInstancer::_notification(int what)
 void W3DInstancer::_process(double delta)
 {
 	if (Playing) GlobalTime += delta * TimeScale;
-	update_now();
+	if (PresentationUpdates) update_now();
 }
 
 Vector3 W3DInstancer::get_bone_position(int64_t instance, int bone) const
 {
 	if (instance < 0 || instance >= (int64_t)Instances.size()) return Vector3();
 	const Instance &inst = Instances[(size_t)instance];
-	ensure_pose(inst);
+	ensure_pose(instance);
 	if (bone < 0 || bone >= inst.Pose.Num_Pivots()) return Vector3();
 	::Vector3 t = inst.Pose.Transform[(size_t)bone].Get_Translation();
 	return Vector3(t.X, t.Y, t.Z);
@@ -1773,7 +3212,7 @@ bool W3DInstancer::get_bone_transform_native(int64_t instance, int bone, ::Matri
 		return false;
 	}
 	const Instance &inst = Instances[(size_t)instance];
-	ensure_pose(inst);
+	ensure_pose(instance);
 	if (bone < 0 || bone >= inst.Pose.Num_Pivots())
 	{
 		return false;
@@ -1792,11 +3231,14 @@ Dictionary W3DInstancer::get_stats() const
 	s["draw_items"] = draws;
 	s["palette_texels"] = PaletteTexels;
 	s["palette_rows"] = PaletteHeight;
+	s["palette_rows_uploaded"] = PaletteRowsUploaded;
+	s["palette_upload_full"] = PaletteUploadFull;
 	s["shaders"] = Materials ? (int64_t)Materials->Shader_Count() : 0;
 	s["textures"] = Materials ? (int64_t)Materials->Texture_Count() : 0;
 	s["pose_ms"] = PoseMs;
 	s["upload_ms"] = UploadMs;
 	s["pose_evaluations"] = PoseEvaluations; // SMOOTH-1: instances posed in the last update (only the changed ones)
+	s["pose_shared"] = PoseShared;           // lane PERF-HD: instances drawn with their horde group's pose in the last update
 	s["pose_culled"] = PoseCulled;           // lane PERF-3: instances whose pose the last update left pending (outside the frustum, set_pose_culling)
 	s["palette_uploads"] = PaletteUploads;
 	s["buffer_uploads"] = BufferUploads;
@@ -1810,6 +3252,9 @@ Dictionary W3DInstancer::get_stats() const
 	s["dithered_fade_instances"] = DitheredFadeInstances; // S-029 in the last update
 	s["sorted_draw_items"] = SortedDrawItems;
 	s["interleaved_batch_pairs"] = InterleavedBatchPairs; // S-029 (second condition) in the last update
+	s["draw_culling"] = DrawCulling;         // lane GPUPERF-2: set_draw_culling, the slots the last compaction left out of the draw lists, its time
+	s["draw_culled"] = DrawCulled;
+	s["draw_cull_ms"] = CullMs;
 	return s;
 }
 
@@ -1989,6 +3434,16 @@ PackedStringArray W3DInstancer::get_warnings() const
 	return out;
 }
 
+// lane PERF-HD: a stop whose message carries this frame's count is reported once per instancer (its first count); the counts stay in get_stats. Keyed by
+// the message, every new count printed a line and was kept: about 13 lines a second in a big battle (S-028), each a print on the main thread
+void W3DInstancer::warn_stop(const W3DStopHit &hit)
+{
+	if (WarnedMessages.insert("#stop " + hit.Id).second)
+	{
+		warn(hit.Message);
+	}
+}
+
 void W3DInstancer::warn(const std::string &message)
 {
 	if (WarnedMessages.insert(message).second)
@@ -2002,7 +3457,7 @@ void W3DInstancer::set_sort_camera(const Transform3D &transform)
 {
 	SortCamera = transform;
 	SortCameraSet = true;
-	PoseDirty = true;
+	note_pose_dirty();
 }
 
 PackedInt32Array W3DInstancer::get_draw_order(int64_t model, int64_t draw) const

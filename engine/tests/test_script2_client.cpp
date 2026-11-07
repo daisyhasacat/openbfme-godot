@@ -174,3 +174,26 @@ TEST_CASE("campaign objectives initialize visible, hide and reset completion")
  CHECK_FALSE(d.objectives()[0].second);
  CHECK(d.objectives().size() == 2);
 }
+
+TEST_CASE("native objectives: script gating and visible rows retain mission definition order")
+{
+	ScriptCameraDirector d;
+	const Coord3D origin{0, 0, 0};
+	d.initializeObjectives(3);
+	d.apply(request("DISABLE_OBJECTIVES_SCREEN", {}), origin, 0);
+	CHECK_FALSE(d.objectivesEnabled());
+	d.apply(request("ENABLE_OBJECTIVES_SCREEN", {}), origin, 0);
+	CHECK(d.objectivesEnabled());
+	d.apply(request("HIDE_MISSION_OBJECTIVE", {num(0, 1)}), origin, 0);
+	d.apply(request("SHOW_MISSION_OBJECTIVE", {num(0, 1)}), origin, 0);
+	CHECK(d.objectives() == std::vector<std::pair<int, bool>>{{1, false}, {2, false}, {3, false}});
+	d.apply(request("MARK_MISSION_OBJECTIVE_COMPLETED", {num(0, 2)}), origin, 0);
+	CHECK(d.objectives()[1].second);
+	d.apply(request("HIDE_MISSION_OBJECTIVE", {num(0, 2)}), origin, 0);
+	d.apply(request("MARK_MISSION_OBJECTIVE_NOT_COMPLETED", {num(0, 2)}), origin, 0);
+	CHECK(d.objectives().size() == 2);
+	d.apply(request("MARK_MISSION_OBJECTIVE_COMPLETED", {num(0, 2)}), origin, 0);
+	CHECK(d.objectives().size() == 2); // completing a hidden objective does not reveal it
+	d.apply(request("SHOW_MISSION_OBJECTIVE", {num(0, 2)}), origin, 0);
+	CHECK(d.objectives() == std::vector<std::pair<int, bool>>{{1, false}, {2, true}, {3, false}});
+}

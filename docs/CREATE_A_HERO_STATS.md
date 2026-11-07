@@ -17,7 +17,9 @@ The client records the locally controlled hero's kills, once per scored victim,
 before the normal relationship and score-type gates. Replays and observers
 do not write progress. Ordered client events carry owned statistic names and
 the hero ID across the worker boundary; presentation consumes each event once.
-Pending events are flushed on shutdown. Started skirmish/LAN/Internet sessions
+Pending events are flushed on shutdown. Failed writes keep the counters dirty;
+presentation and shutdown retry the save without recounting consumed events or
+completed results. The dirty flag clears only after a successful write. Started skirmish/LAN/Internet sessions
 also count their completed result once through the system's named result
 statistics. A hero need not be recruited to receive the match result.
 

@@ -50,7 +50,7 @@ TEST_CASE("uber1: the simulation profile travels in the game setup (LAN options,
 	CHECK_FALSE(faithful.game == m.game);
 	// the profile is the GameInfo's i32 before the eight slots' handicaps (lane OWNERFIX-2): 2 is no profile this build knows
 	std::vector<std::uint8_t> bad = w.data();
-	bad[bad.size() - 4 - 4 * MAX_SLOTS] = 2;
+	bad[bad.size() - 8 - 4 * LEGACY_MAX_SLOTS] = 2; // lane CHEAT-1: the Cheat Mode i32 ends the GameInfo
 	NetByteReader r2(bad);
 	CHECK_FALSE(NetPacket::readNewGameMessage(r2, back, &error));
 	CHECK(error.find("simulation profile 2") != std::string::npos);
@@ -101,8 +101,50 @@ void storeUberHashes(const char *name, const std::vector<std::uint32_t> &hashes)
 // The Uber profile must give every peer the same state whatever its core count: the bench battle (at least 3,000 living troops, 8 players) for 40
 // frames with 1, 4 and 16 logic threads and 4 again, every frame's hash equal to the stored Uber pin vector (tests/data/uber1/battle3000_40.hashes,
 // measured with 1 thread by the build that introduced it; OPENBFME_UBER1_REGEN=1 rewrites it, only for a change MEANT to alter the Uber simulation or
-// its hash, said in the commit). The state hash's own dispatches are counted apart from the frame's (PERF-2's collision jobs): with more than one
+// its hash, said in the commit; lane TARGET-1 re-measured it: RotWK's target choice and mood-check timing; community #73 + #74 re-measured it on the merged tree: the formations centred
+// on their hordes, RW 0x86C4EA, and the destination adjustment spiralling around the cell, RW 0x6FA2A4, #73 alone differs from it from frame 0; lane AIDATA-1: the horde run-down, RW 0x748650 /
+// 0x74AA69 / 0x6CC07C; lane AIEXPAND-1 re-measured it: the skirmish AI's state hash holds the EXPANSION heuristic's frame counter, RW 0x97D035; merge queue q29
+// re-measured it once on the merged tree: AIEXPAND-1's counter, before it AIDATA-1's run-down, compared at each merge point; merge queue q30 re-measured it
+// once on the merged tree: #130's allied clearing with the move state's update and exit, RW 0x749497 / 0x74949C, from frame 12; PORTERFOG-1 keeps it; lane SPELLFIX-1 re-measured it: an omitted ShroudClearingRange clears the VisionRange, RW 0x73FB7A /
+// 0x69990F, from frame 0, its other changes alone keep it; the horde contain fix (#160) re-measured it: members made where their
+// horde stands, RW 0x8718ED, and left where they are by a move, RW 0x871536; the hierarchical block zones (#161)
+// re-measured it: the block search's block zones, RW 0x9389A6, and raised branch, RW 0x9389CE, change its corridors, from frame 12; merge queue q32
+// re-measured it once on the merged tree: MODCOMPAT-AI's script references and completed upgrades, compared at each merge point; the other items keep it; merge queue q33
+// re-measured it once on the merged tree, compared at each merge point: #164 keeps it; MODCOMPAT-MOD1 (its modules), #133 (the straight production exits) and #166
+// (the Uber path-search cap) each move it; merge queue q34 re-measured it once on the merged tree, compared at each merge point: SPELLFIX-1, #160
+// and #161 each move it; the path search's target rule re-measured it: an attacker's goal object or victim, and its members, no longer refuse the
+// attacker's cells, RW checkForMovement 0x6EBAA0, from frame 0; merge queue q36 re-measured it once on the merged tree, compared at each merge
+// point: WARG-1 moves it (its own vector, which the archive's newer commits keep) and PR #182 moves it again). The state hash's own dispatches are counted
+// apart from the frame's (PERF-2's collision jobs): with more than one
 // thread the hash itself ran chunks on workers. The Uber hash is not the Faithful one, and a Faithful hash dispatches nothing.
+// Lane MODCOMPAT-MOD1 re-measured the pin vector at GeometryUpgrade's commit (OPENBFME_UBER1_REGEN=1, a CI host): GeometryUpgrade's per-object GeometryInfo
+// (RW Object + 0xA8: the object's shapes enter its hash) moves it, from frame 0.
+// Lane MODCOMPAT-MOD1 re-measured the pin vector at RebuildHoleExposeDie's commit (OPENBFME_UBER1_REGEN=1, a CI host): RebuildHoleExposeDie /
+// RebuildHoleBehavior (the objects' mask bit Object + 0x459 and the dozers' rebuild byte AI + 0x4D0 in the hash), from frame 0.
+// Lane MODCOMPAT-MOD1 re-measured the pin vector at CommandButtonHuntUpdate's commit (OPENBFME_UBER1_REGEN=1, a CI host): CommandButtonHuntUpdate's state (RW
+// 0x898A5D: the module sleeps forever until a hunt) in the object hash, from frame 0.
+// Lane MODCOMPAT-MOD1 re-measured the pin vector at GrabPassengerSpecialPower's commit (OPENBFME_UBER1_REGEN=1, a CI host): GrabPassengerSpecialPower's
+// module state (RW 0x8C942D) in the object hash, from frame 0.
+// Lane MODCOMPAT-MOD1 re-measured the pin vector at CritterEmitterUpdate's commit (OPENBFME_UBER1_REGEN=1, a CI host): CritterEmitterUpdate's module state
+// (xfer RW 0x8CD256) in the object hash, from frame 0.
+// Lane MODCOMPAT-MOD1 re-measured the pin vector at AudioLoopUpgrade's commit (OPENBFME_UBER1_REGEN=1, a CI host): AudioLoopUpgrade's update module and
+// upgrade mux in the object hash, from frame 0.
+// Lane MODCOMPAT-MOD1 re-measured the pin vector at ClickReactionBehavior's commit (OPENBFME_UBER1_REGEN=1, a CI host): ClickReactionBehavior's click meter
+// and countdown (RW 0x85C5DE) in the object hash, from frame 0.
+// Lane MODCOMPAT-MOD1 re-measured the pin vector at PickupStuffUpdate's commit (OPENBFME_UBER1_REGEN=1, a CI host): PickupStuffUpdate (every horde's update
+// joins and leaves the sleepy update vectors, RW 0x62E982, and its scan state is in the hash), from frame 0.
+// Lane MODCOMPAT-MOD1 re-measured the pin vector at AutoPickUpUpdate's commit (OPENBFME_UBER1_REGEN=1, a CI host): AutoPickUpUpdate (its constructor's logic
+// random draw, RW 0x8994BF, and its scan state in the object hash), from frame 0.
+// Lane MODCOMPAT-MOD1 re-measured the pin vector at BoredUpdate's commit (OPENBFME_UBER1_REGEN=1, a CI host): BoredUpdate (its constructor's logic random
+// draw, RW 0x899F1F, and its countdown in the object hash), from frame 0.
+// Lane WARG-1 re-measured the pin vector once on the lane's tree after the archive merge (OPENBFME_UBER1_REGEN=1, a CI host): FindClosestPath (RW
+// 0x6FB869) at computePath's fallback and the attack and melee approach paths, and the unclamped cells of RW 0x6E8CE6.
+// Lane PATH-REBUILD re-measured the pin vector (OPENBFME_UBER1_REGEN=1 on its tree): every found path is rebuilt from its optimised nodes (RW 0x767B0E)
+// and the mover hash covers the path's node chain, from frame 0.
+// Merge queue q37 re-measured it once on the merged tree (OPENBFME_UBER1_REGEN=1), compared at each merge point: #187 on top of WARG-1 and #182 moves it,
+// and ATKRESET-1 (attack orders end the FiringDuration lock) moves it again.
+// pin: merge queue q44 re-measured it once on the merged tree (OPENBFME_UBER1_REGEN=1), compared at each merge point: AIRBORNE-1 alone (AIRBORNE_TARGET
+// from the locomotor height, RW 0x66A472) moves it from frame 0.
 TEST_CASE("uber1: the Uber battle hashes as its pin vector in every frame with 1, 4 and 16 logic threads and in a repeated run; the hash's own jobs run on "
 		  "workers; Faithful hashes differently and serially")
 {
@@ -111,6 +153,8 @@ TEST_CASE("uber1: the Uber battle hashes as its pin vector in every frame with 1
 	const int units = 3000, frames = 40;
 	const char *regenEnv = std::getenv("OPENBFME_UBER1_REGEN");
 	const bool regen = regenEnv && *regenEnv == '1';
+	// Ambient movement: target idle wandering adds RNG draws and origin state,
+	// so these engine references are measured again for this simulation change.
 	const std::vector<std::uint32_t> pin = readUberHashes("battle3000_40.hashes");
 	if (!regen)
 	{
@@ -128,15 +172,20 @@ TEST_CASE("uber1: the Uber battle hashes as its pin vector in every frame with 1
 		REQUIRE(run.hashes.size() == (size_t)frames);
 		CHECK(run.troopsStart >= units);
 		CHECK(run.troopsEnd < run.troopsStart); // the armies fought: troops died
-		CHECK(run.hashDispatches >= (std::uint64_t)(2 * frames)); // every hash dispatched the objects and the other sections
+		CHECK(run.hashDispatches == (std::uint64_t)frames); // every hash dispatched the objects and the other sections once (lane UBER-HASH: in one dispatch)
 		CHECK(after.dispatches - before.dispatches > run.hashDispatches); // the frames' own jobs are counted apart
 		if (threads > 1)
 		{
 			CHECK(run.hashWorkerChunks > 0); // the hash itself ran on several threads
+			// lane PERF-WS: every measured frame's final list (the WeaponStatusHelpers) was computed on the pool and applied in list order, none
+			// fell back to the serial pass; the pin above proves the applied conditions are the serial pass's
+			CHECK(run.weaponStatusPooledFrames == (std::uint64_t)frames);
+			CHECK(run.weaponStatusSerialFrames == 0);
 		}
 		else
 		{
 			CHECK(run.hashWorkerChunks == 0);
+			CHECK(run.weaponStatusPooledFrames == 0); // lane PERF-WS: with one logic thread the pass computes in update
 		}
 		if (reference.empty())
 		{
@@ -168,7 +217,10 @@ TEST_CASE("uber1: the Uber battle hashes as its pin vector in every frame with 1
 	uberbench::runBattle(*s->mount->fs, *s->world, s->options, s->settings, units, 1, SimulationProfile::Faithful, true, faithful);
 	REQUIRE(faithful.hashes.size() == 1u);
 	CHECK(faithful.hashes[0] != reference[0]);
-	CHECK(faithful.hashDispatches == 0u); // the Faithful hash is the one serial walk
+	// lane PERF-HD: the Faithful hash records its sections' words on the logic pool (lane UBER-HASH: the objects and the other sections in one
+	// dispatch) and chains them in the list order on the calling thread: the one serial walk's value (the Faithful pins and the PERF-1 vectors prove
+	// it), found faster
+	CHECK(faithful.hashDispatches == 1u);
 }
 
 namespace
@@ -383,12 +435,16 @@ std::vector<std::uint8_t> forgedReplay(const ProfileIdentity &identity, const Ne
 {
 	std::vector<std::uint8_t> bytes = { 'O', 'B', 'F', 'M', 'E', 'R', 'E', 'P' };
 	NetByteWriter w;
-	w.u32(9); // merged enhanced format written by NetPacket::writeNewGameMessage
+	w.u32(8); // format 8 (lane OWNERFIX-2: 7 adds the slots' handicaps; 8 ANTICHEAT-1's VIEW record): the GameInfo without CHEAT-1's Cheat Mode (format 11)
 	w.str(identity.text);
-	NetPacket::writeNewGameMessage(w, game);
+	bytes.insert(bytes.end(), w.data().begin(), w.data().end());
+	NetByteWriter g;
+	NetPacket::writeNewGameMessage(g, game);
+	bytes.insert(bytes.end(), g.data().begin(), g.data().end() - 4); // the Cheat Mode i32 ends the GameInfo
+	w = NetByteWriter();
 	w.i32(0);
 	w.u32((std::uint32_t)RandomAlgorithm::ZH_CarryChain);
-	for (int i = 0; i < MAX_SLOTS; ++i)
+	for (int i = 0; i < game.game.serializedSlotCount(); ++i)
 	{
 		w.i32(-1);
 	}
@@ -443,4 +499,34 @@ TEST_CASE("uber1 (review): a replay header whose identity and game name differen
 	CHECK(mixed.profileMismatch(identity(SimulationProfile::Faithful)).find("the replay's game runs the simulation profile uber") != std::string::npos);
 	mixed.header.game = faithfulGame;
 	CHECK(mixed.profileMismatch(identity(SimulationProfile::Faithful)).empty());
+}
+
+TEST_CASE("AI rules: source default, enhanced setup wire, identity and replay consistency")
+{
+	OptionPreferences options;
+	CHECK_FALSE(options.enhancedAI());
+	options.setYesNo("OpenBFMEEnhancedAI", true);
+	CHECK(options.enhancedAI());
+	const auto source = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain);
+	const auto enhanced = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain, {}, SimulationProfile::Faithful, true);
+	CHECK_FALSE(source.enhancedAI());
+	CHECK(enhanced.enhancedAI());
+	CHECK_FALSE(source == enhanced);
+	NewGameMessage message;
+	message.game.mapName = "maps/a/a.map";
+	message.game.enhancedAI = true;
+	NetByteWriter writer;
+	NetPacket::writeNewGameMessage(writer, message);
+	NetByteReader reader(writer.data());
+	NewGameMessage restored;
+	std::string error;
+	REQUIRE_MESSAGE(NetPacket::readNewGameMessage(reader, restored, &error), error);
+	CHECK(restored.game.enhancedAI);
+	CHECK(restored.game == message.game);
+	ReplayHeader header;
+	header.profile = source;
+	header.game = message;
+	CHECK(header.profileConflict() == "replay header: AI rules differ from profile identity");
+	header.profile = enhanced;
+	CHECK(header.profileConflict() == "");
 }

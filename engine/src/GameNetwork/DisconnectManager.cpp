@@ -90,6 +90,7 @@ void DisconnectManager::note(const std::string &line)
 	if (m_log.size() < 200)
 	{
 		m_log.push_back(line);
+		m_logTimes.push_back(m_noteTime);
 	}
 }
 
@@ -299,7 +300,7 @@ void DisconnectManager::turnOffScreen(Network &net, std::uint32_t logicFrame)
 	{
 		if (m_disconnectFramesReceived[(size_t)i])
 		{
-			c.releasedMask |= (std::uint8_t)(1u << i);
+			c.releasedMask |= (std::uint16_t)(1u << i);
 			c.releasedFrames[(size_t)i] = m_disconnectFrames[(size_t)i];
 		}
 		m_disconnectFramesReceived[(size_t)i] = false;
@@ -384,6 +385,7 @@ void DisconnectManager::voteForPlayerDisconnect(Network &net, int slot, std::uin
 	{
 		return;
 	}
+	m_noteTime = LogTime{ logicFrame, net.now() };
 	m_playerVotes[slot][local].vote = true;
 	NetCommandMsg c;
 	c.type = NETCOMMANDTYPE_DISCONNECTVOTE;
@@ -448,10 +450,81 @@ std::string DisconnectManager::frameLine(Network &net, std::uint64_t now, std::u
 	return line;
 }
 
+void DisconnectManager::checkOwnHang(Network &net, std::uint64_t now, std::uint32_t logicFrame)
+{
+	// OpenBFME (S-1127): see m_hangEndMs. Only once the load screen is gone: a long map load is the load barrier's (the slow loader rule)
+	const std::uint64_t span = (std::uint64_t)m_settings.disconnectTime + m_settings.playerTimeoutTime;
+	if (m_lastUpdateMs != 0 && now - m_lastUpdateMs > span && net.gameRunning() && !m_loadScreenUp)
+	{
+		m_hangEndMs = now;
+		m_hangMs = now - m_lastUpdateMs;
+		note("this player hung " + std::to_string(m_hangMs) + " ms (the others drop a silent player after " + std::to_string(span)
+			+ " ms): it drops nobody for that long again");
+	}
+	m_lastUpdateMs = now;
+	if (m_hangEndMs == 0)
+	{
+		return;
+	}
+	const int local = net.config().localSlot;
+	bool other = false, fresh = false, votedOut = true, live = false;
+	for (int i = 0; i < MAX_SLOTS; ++i)
+	{
+		if (i == local || !net.isPlayerConnected(i) || net.isLeftState(i))
+		{
+			continue;
+		}
+		other = true;
+		if (net.lastHeard(i, now) > m_hangEndMs) // read in a later update than the one that drained the socket
+		{
+			fresh = true;
+			votedOut = votedOut && m_playerVotes[local][i].vote; // its vote to drop this player stands
+		}
+		live = live || heardWithin(net, i, m_settings.disconnectTime, now);
+	}
+	if (!other)
+	{
+		m_hangEndMs = 0;
+		return;
+	}
+	if (now - m_hangEndMs < span)
+	{
+		return; // a drop of this player that comes meanwhile ends the game here (the decider's resend, MPDROP-3)
+	}
+	// WOTR2 (Sol r1 of wotr2-r1, three players): the decider may have left too while another survivor plays on; that survivor answers this player's
+	// traffic with what it kept for it (MPDROP-3), its DISCONNECTVOTE for this player among it, but the drop itself was the decider's. RotWK's own
+	// test of a voted-out player (RW 0x8D826F: every voter still heard voted, RW 0x8D8233) applied to this player, a voter being a player heard since
+	// the hang (a survivor's kept traffic comes in rounds, not within NetworkDisconnectTime): a voter that hears it again turns its screen off, which
+	// withdraws its votes here (RW 0x8D7FD2), so a vote that stands a whole span after the hang is the others' decision
+	votedOut = votedOut && fresh;
+	// WOTR2 (Sol r2 of wotr2-r2): a survivor may apply the decider's drop before its own timeout votes (its bar runs a little behind), so it kept no
+	// vote for this player either. What it kept is finite (S-1127: nothing new is sent to a dropped slot) and ends once acknowledged, while a survivor
+	// that still counts this player keeps it in the game: keepalives within NetworkDisconnectTime (RW 0x8D7C78's spell), its frames. So at the span's
+	// end no frame ran here within NetworkDisconnectTime (the backlog's own frames ran first), nobody paused, and nobody was heard within it: what was
+	// heard was a dropped slot's backlog
+	const bool stranded = fresh && !votedOut && !net.isPaused() && !live && m_lastFrame == logicFrame && m_lastFrameTime >= 0
+		&& now - (std::uint64_t)m_lastFrameTime >= m_settings.disconnectTime;
+	if ((!fresh || votedOut || stranded) && m_quitReason.empty())
+	{
+		m_quitReason = std::string("dropped by the other players: ") + (!fresh ? "none was heard" : votedOut ? "every player heard" : "no frame came from the players heard")
+			+ " in the " + std::to_string(span / 1000) + " s after this player's own " + std::to_string(m_hangMs / 1000) + " s hang"
+			+ (fresh && votedOut ? " voted it out" : "") + " (its drop was lost)";
+		note("quit: " + m_quitReason);
+		return;
+	}
+	if (fresh && !votedOut)
+	{
+		note("players are heard again after this player's hang: the usual rules");
+		m_hangEndMs = 0;
+	}
+}
+
 void DisconnectManager::update(Network &net, std::uint64_t now, std::uint32_t logicFrame)
 {
+	m_noteTime = LogTime{ logicFrame, now };
 	const int local = net.config().localSlot;
 	applyPendingDrops(net, logicFrame); // lane MP-2 (review): a held drop whose claimed leave / drop arrived since
+	checkOwnHang(net, now, logicFrame);
 	if (m_announced && logicFrame > m_announcedFrame)
 	{
 		m_announced = false; // the announced frame ran
@@ -535,7 +608,7 @@ void DisconnectManager::update(Network &net, std::uint64_t now, std::uint32_t lo
 		m_lastFrame = logicFrame;
 		m_lastFrameTime = (long long)now;
 	}
-	if (m_state != SCREENOFF)
+	if (m_state != SCREENOFF && m_hangEndMs == 0) // OpenBFME (S-1127): after this player's own hang, no drop or vote until a player is heard again
 	{
 		updateDisconnectStatus(net, now, logicFrame);
 	}
@@ -578,7 +651,7 @@ void DisconnectManager::updateDisconnectStatus(Network &net, std::uint64_t now, 
 		if ((std::int32_t)remaining < 0 || votedOut || m_silentEpisodes[(size_t)i] > kMaxSilentEpisodes - 1 || net.slotRestarted(i))
 		{
 			remaining = 0;
-			std::uint8_t gone = 0;
+			std::uint16_t gone = 0;
 			const bool sameFrame = allOnSameFrame(net, now, logicFrame);
 			const int router = nextPacketRouter(net, now, logicFrame);
 			const bool claims = sameFrame && router == local && net.dropClaims(local, i, gone);
@@ -665,7 +738,7 @@ bool DisconnectManager::validateDrop(Network &net, const NetCommandMsg &c, int f
 		why = target == from ? "the sender drops itself" : "slot " + std::to_string(target) + " is not a player of the game";
 		return false;
 	}
-	for (int s = 0; s < 8; ++s)
+	for (int s = 0; s < MAX_SLOTS; ++s)
 	{
 		if (!(c.releasedMask & (1u << s)))
 		{
@@ -701,6 +774,7 @@ bool DisconnectManager::validateDrop(Network &net, const NetCommandMsg &c, int f
 
 void DisconnectManager::processDisconnectCommand(Network &net, const NetCommandMsg &c, std::uint64_t now, std::uint32_t logicFrame)
 {
+	m_noteTime = LogTime{ logicFrame, now };
 	const int local = net.config().localSlot;
 	const int from = c.slot;
 	switch (c.type)
@@ -828,7 +902,7 @@ void DisconnectManager::processDisconnectCommand(Network &net, const NetCommandM
 				r.slot = (std::uint8_t)local;
 				r.frame = logicFrame;
 				r.releasedFrames.assign(MAX_SLOTS, 0u);
-				r.releasedMask = (std::uint8_t)(1u << from);
+				r.releasedMask = (std::uint16_t)(1u << from);
 				r.releasedFrames[(size_t)from] = c.frame;
 				m_disconnectFramesReceived[(size_t)from] = false;
 				net.sendDirect(r);
@@ -938,6 +1012,7 @@ void DisconnectManager::slotRejoined(Network &net, int slot)
 	{
 		return;
 	}
+	m_noteTime.ms = net.now();
 	for (int i = 0; i < MAX_SLOTS; ++i)
 	{
 		m_playerVotes[slot][i] = Vote();
@@ -994,12 +1069,12 @@ std::vector<std::string> DisconnectManager::stopLines()
 		"[S-1121] disconnect path: RotWK's DisconnectManager is ported (RW 0x8D7C78 .. 0x8D8DDC); not located or not ported: the sender of "
 		"DISCONNECTSCREENOFF (type 29 inferred, ZH's notifyOthersOfNewFrame kept), the GameSpy ping test (no pinger in a LAN game), TheGameLogic + 0x2A4, "
 		"the left state 1 (ConnectionManager + 0x12080), the router fallback order's filler (here the network slots in slot order), RotWK's frame gate "
-		"(none here but OpenBFME's announced-frame rule), the disconnect chat",
+		"(none here but OpenBFME's announced-frame rule)",
 		"[S-1122] self destruct: MSG_SELF_DESTRUCT (RW 0x77CA3D) and transferAssetsFromThat (RW 0x6AF598) are ported without the contain interface's "
 		"occupant hand-over (vslot 0x54), the RW 0xDE4AB8 lists, the end of a defection (RW 0x69ABA7) and the Living World branch; the objects change "
-		"owner in object list order (RotWK: team, then member order); a horde member follows its container (inferred)",
+		"owner in object list order (RotWK: team, then member order); a horde member follows its container (Object::setTeam RW 0x69954A -> RW 0x870667)",
 		"[S-1123] disconnect screen: DisconnectScreen.apt gets RotWK's texts, colour providers, SetBarPercent / Show / HideKickButton and its Kick / Quit "
-		"commands (RW 0x91988F); not ported: the chat (InitGadgets, Chat::OnBttnEnterText, Quit's disconnect chat), the in-game UI calls of show "
+		"commands (RW 0x91988F) and its chat (lane CHAT-1: DISCONNECTCHAT 13); not ported: the in-game UI calls of show "
 		"(RW 0x9190F0), the level (the first free one)",
 		"[S-1124] desync dump: RW 0x6290C7's DESYNC-Frame<n>-<exe>-<player>.txt holds OpenBFME's per-subsystem breakdown and object hashes (not "
 		"retail's CRC text lines), the replay is copied next to it (retail embeds it), no BIN_DESYNC; the message box (GUI:DesyncTitle / "

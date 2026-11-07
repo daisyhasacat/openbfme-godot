@@ -172,7 +172,7 @@ LiveFXObject eventPrimary(GameLogic &logic, Object *obj, const FXEvent &e)
 }
 } // namespace
 
-LiveFX::LiveFX(LiveGame &game, FXPlayback &playback) : m_game(game), m_playback(playback)
+LiveFX::LiveFX(LiveGame &game, FXPlayback &playback) : m_game(game), m_mapWeather(game.logic().settings().snowy ? 1 : 0), m_playback(playback)
 {
 	m_playback.setWorld(this);
 	m_game.logic().fxEvents().setSink(this);
@@ -198,9 +198,10 @@ std::vector<std::string> LiveFX::stops()
 	out.push_back("[S-682] live FX: bone positions of ParticleSysBone systems and fire FX come from the model's bind pose (FollowBone systems do not follow the "
 			 "animation); ParticleSysBone FXTrigger / Persist / PersistID / HouseColor are ignored and OnlyIfOnWater systems are not created; the shooter's "
 			 "stealth (RW 0x694C0D, NULL viewer) is read when the effect plays, not at the shot (lane STEALTH-1); muzzle flashes and recoil are not drawn; isWater is false (the shroud: S-4971)");
-	out.push_back("[S-686] TransitionDamageFX: the module class (RW data table 0xC08D10, 117 rows: Damaged / ReallyDamaged / Rubble FXList, OCL and "
-				  "ParticleSystem 1..12 with Loc / Bone + RandomBone, the Damage*Types flags, RubbleNeighbor, the sub object show / hide lists; 150 retail uses) "
-				  "is raw (S-070) and has no runtime: its damage state transition effects are not played (the draw states' EnteringStateFX and ParticleSysBone are)");
+	out.push_back("[S-686] TransitionDamageFX: runs in the logic since lane FX-4 (RW 0x8BE077: the FXLists, OCLs and attached particle systems of a worse damage "
+				  "state, the sub objects of every state); not ported: the rubble neighbours (RW 0x8BDF08, S-342), the OCL's secondary position (S-530), an OCL "
+				  "call without a damage source (retail reads an invalid pointer); the drawable of RW 0x8BDDAC is taken as present; FXList and particle system "
+				  "names are not checked at parse time (TransitionDamageFX::stops() counts the calls)");
 	// lane SPELL-4
 	out.push_back("[S-4642] BuffNugget buffs (GameClient/BuffDraw.h): BuffManager / BuffInstance / TBuff are ported (RW 0x671E56, 0x764483, 0x7641A2, 0x707FFF, "
 				  "0x4D3376, 0x4D12FA, 0x4D1417); INFERENCE: the expiry test and the TBuff following its drawable every frame come from the fields, the updater was "
@@ -289,6 +290,18 @@ std::uint32_t LiveFX::logicFrame() const
 float LiveFX::groundHeight(float x, float y)
 {
 	return m_game.logic().getGroundHeight(x, y);
+}
+
+bool LiveFX::viewShake(const Coord3D &epicenter, int type, float angle)
+{
+	if (m_viewShakes.size() >= 64)
+	{
+		m_viewShakes.erase(m_viewShakes.begin());
+		++m_stats.viewShakesDropped;
+	}
+	m_viewShakes.push_back(ViewShake{ epicenter, type, angle });
+	++m_stats.viewShakes;
+	return true;
 }
 
 bool LiveFX::playSound(const std::string &eventName, const Coord3D *pos, int playerIndex)
@@ -385,7 +398,7 @@ int LiveFX::shroudStatusAt(const Coord3D &pos)
 }
 
 // RW 0x5E2282 (FXList::doFXObj's test): the object's status for the local player (RW 0x68D8F7) above PARTIAL_CLEAR; an object without partition data
-// (Object + 0x4E4 == 0: a contained object) asks its position's cell, not CLEAR: skipped (RW 0x5E22C4 .. 0x5E22F9). INFERENCE (S-4971): the status is the
+// (Object + 0x4E4 == 0) asks its position's cell, not CLEAR: skipped (RW 0x5E22C4 .. 0x5E22F9). INFERENCE (S-4971): the status is the
 // presented record's (ObjectSnapshot::shroudRecord stands for the partition data); an object the presented snapshot does not hold yet (created this
 // frame) asks its position's cell
 bool LiveFX::objectShroudedForLocalPlayer(const FXObject &obj)
@@ -595,7 +608,7 @@ void LiveFX::onFXEvent(const FXEvent &e)
 			lists.push_back(fx);
 		}
 	};
-	if (e.kind != FXEvent::OBJECT_SOUND)
+	if (e.kind != FXEvent::OBJECT_SOUND && e.kind != FXEvent::ATTACH_PARTICLE_SYSTEM && e.kind != FXEvent::DESTROY_PARTICLE_SYSTEM)
 	{
 		if (e.choices)
 		{
@@ -697,6 +710,11 @@ void LiveFX::play(const Pending &pending)
 		}
 		return;
 	}
+	if (e.kind == FXEvent::ATTACH_PARTICLE_SYSTEM || e.kind == FXEvent::DESTROY_PARTICLE_SYSTEM)
+	{
+		playTransitionSystem(e);
+		return;
+	}
 	const FXList *fx = m_playback.fxLists().findFXList(*name);
 	if (!fx)
 	{
@@ -790,6 +808,48 @@ void LiveFX::play(const Pending &pending)
 		break;
 	}
 	}
+	++m_stats.played[e.site];
+}
+
+// lane FX-4, TransitionDamageFX (RW 0x8BE077): the systems the logic module keeps per slot. ATTACH: createParticleSystem (RW 0x5F526A; RW 0x73AECB stored
+// NULL for a name the FXParticleSystem store lacks: nothing is made), setPosition with the model-space position (RW 0x5F2F2D), attachToObject (RW 0x5F32D7),
+// the ID kept in the slot (an earlier ID there is overwritten, as retail's slot is). DESTROY: the slot's system, if it still exists, is destroyed
+// (RW 0x5F5379: it stops emitting, its particles live out) and the slot cleared
+void LiveFX::playTransitionSystem(const FXEvent &e)
+{
+	const std::pair<ObjectID, std::uint32_t> key(e.primary, e.slot);
+	if (e.kind == FXEvent::DESTROY_PARTICLE_SYSTEM)
+	{
+		auto it = m_transitionSystems.find(key);
+		if (it == m_transitionSystems.end())
+		{
+			return;
+		}
+		if (FXParticleSystem::ParticleSystem *s = m_playback.particles().findParticleSystemByID(it->second))
+		{
+			s->destroy();
+			++m_stats.transitionSystemsDestroyed;
+		}
+		m_transitionSystems.erase(it);
+		++m_stats.played[e.site];
+		return;
+	}
+	const FXParticleSystem::ParticleSystemTemplate *t = m_playback.particleTemplates().findTemplate(*e.fxList);
+	if (!t)
+	{
+		m_stats.unresolvedParticleSystems.insert(*e.fxList);
+		return;
+	}
+	const FXParticleSystem::ParticleSystemID id = m_playback.particles().createParticleSystem(t, true);
+	FXParticleSystem::ParticleSystem *sys = m_playback.particles().findParticleSystemByID(id);
+	if (!sys)
+	{
+		return; // refused (cap / LOD)
+	}
+	sys->setPosition(e.position);
+	sys->attachToObject(e.primary);
+	m_transitionSystems[key] = id;
+	++m_stats.transitionSystemsCreated;
 	++m_stats.played[e.site];
 }
 
@@ -1091,9 +1151,16 @@ void LiveFX::updateAttachedSystems()
 	{
 		it = dm.find(it->first.first) ? std::next(it) : m_frameEvents.erase(it);
 	}
+	// lane FX-4: the transition systems that are gone (their object died, or they ran out)
+	for (auto it = m_transitionSystems.begin(); it != m_transitionSystems.end();)
+	{
+		it = m_playback.particles().findParticleSystemByID(it->second) ? std::next(it) : m_transitionSystems.erase(it);
+	}
 	// lane PERF-3: the drawables are visited in id order and both maps are in key order: their entries are found by walking them along (no search per
 	// drawable and entry); the calls and their order are those of the lookups by key
 	std::vector<const void *> &states = m_states;
+	const std::shared_ptr<const LogicSnapshot> presented = m_game.presentedSnapshot();
+	const bool shroudShown = displayedShroud(presented.get()) != nullptr;
 	FrameEventMap::iterator events = m_frameEvents.begin();
 	auto attached = m_attached.begin();
 	for (DrawableID id = 1; id < (DrawableID)dm.slotCount(); ++id)
@@ -1113,11 +1180,17 @@ void LiveFX::updateAttachedSystems()
 				states.push_back(e.draw->currentAnimationState());
 			}
 		}
-		for (size_t k = 0; k < d->entries().size(); ++k)
+		// lane FOGFX-1 (FB-0056): the animation's FXEvents fire from W3DModelDraw::doDrawModule (RW 0x4C72BE -> 0x4BCE68), which a drawable that is
+		// not drawn never reaches: BFME2's RTS3DScene::Visibility_Check (retail 0x00071245) drops a drawable with the fully obscured byte (+0x440) from
+		// the render list (donor ZH Drawable::draw: return when hidden or fully obscured by the shroud). Their keys stay (the walk below passes them).
+		if (!d->shroudLook().fullyObscured && !d->presentedLook(presented.get(), shroudShown).hidden)
 		{
-			if (d->entries()[k].draw)
+			for (size_t k = 0; k < d->entries().size(); ++k)
 			{
-				frameEvents(*d, k, d->entries()[k], events);
+				if (d->entries()[k].draw)
+				{
+					frameEvents(*d, k, d->entries()[k], events);
+				}
 			}
 		}
 		while (attached != m_attached.end() && attached->first < id)

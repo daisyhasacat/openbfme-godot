@@ -108,6 +108,12 @@ public:
 private:
 	EmotionNugget *selectNugget(int enemyThreat, unsigned friendThreat); ///< RW 0x8B54DD
 	void threats(int &enemyThreat, unsigned &friendThreat) const;        ///< RW 0x8B54FF .. 0x8B553E
+	// performance (the same values): update() asks the threats up to three times (the taunt scan, the hero / fear scan, the choice); nothing between them moves
+	// the object, changes a relationship or the shroud, so they are computed once per update (valid only inside update())
+	mutable bool m_threatsKnown = false;
+	mutable int m_threatsEnemy = 0;
+	mutable unsigned m_threatsFriend = 0;
+	void threatsComputed(int &enemyThreat, unsigned &friendThreat) const;
 	void tauntScan(Object *&taunt, float &closest);                       ///< RW 0x8B58B1 .. 0x8B59D1 (lane MODULES-3)
 
 	const EmotionTrackerUpdateModuleData *m_data;
@@ -122,6 +128,7 @@ private:
 	ObjectID m_forcedSource = INVALID_ID;                       ///< + 0xB8
 	UnsignedInt m_nextHeroCheer = 0;                            ///< + 0xBC
 	bool m_heroFlag = false;                                    ///< + 0xC0
+	std::vector<ObjectID> m_scanIds; ///< update's copy of the scary / hero list, kept for its storage (not state: refilled before each scan)
 };
 
 class RadiateFearUpdateModuleData : public UpgradeModuleData

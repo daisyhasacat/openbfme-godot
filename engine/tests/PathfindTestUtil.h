@@ -77,6 +77,7 @@ public:
 	float height = 0.0f;
 	std::set<PathfindObjectID> crushable;
 	bool stationary = true;
+	bool moveAwaySearch = false; // lane WALL-2: RW AI + 0x3CF
 
 	PathfindObjectID getID() const override { return id; }
 	const Coord3D &getPosition() const override { return pos; }
@@ -104,6 +105,7 @@ public:
 	bool isDoingGroundMovement() const override { return !kinds.count(PK_AIRCRAFT); }
 	bool hasAI() const override { return mobile; }
 	bool isStationary() const override { return stationary; }
+	bool inMoveAwaySearch() const override { return moveAwaySearch; }
 };
 
 class TestWorld : public PathfindWorld
@@ -139,6 +141,7 @@ inline PathfindConfig testConfig()
 	c.castleSiegeStandBackDistance = 500.0f; // default/aidata.ini CastleSiegeStandBackDistance (lane PHYS-1 round 6)
 	c.meleeApproachTolerance = 20.0f;  // default/aidata.ini MeleeApproachTolerance (lane PHYS-1)
 	c.hordesWaitForHordes = true; // default/aidata.ini HordesWaitForHordes Yes (lane PHYS-1)
+	c.attackUsesLineOfSight = true; // default/aidata.ini AttackUsesLineOfSight Yes
 	c.adjustToPossibleLimit = 400;
 	c.examineTowardsGoalLimit = 25000;
 	c.cellInfoPoolSize = 30000;

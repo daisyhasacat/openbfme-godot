@@ -3,6 +3,7 @@
 // set and the build surcharge). Independent expectations: the record layout and the CRC-32 checksum were decoded from RW 0x80B4F5 and checked against the
 // 8 retail files with a separate Python reader (every stored checksum matches); the bling lists and the costs are recomputed here from the INI data.
 
+#include "HordeCompleteTestUtil.h"
 #include "doctest.h"
 
 #include "GameNetwork/GameInfo.h"
@@ -28,6 +29,11 @@
 #include "GameLogic/GameLogicDispatch.h"
 #include "GameLogic/HeroSystem.h"
 #include "GameLogic/Module/ProductionUpdate.h"
+#include "GameLogic/Module/UpgradeModuleClasses.h"
+#include "GameLogic/Combat/ObjectWeapons.h"
+#include "GameLogic/Weapon.h"
+#include "GameLogic/WeaponSetToggle.h"
+#include "GameLogic/WeaponState.h"
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
@@ -62,6 +68,35 @@ CreateAHeroHero sampleHero()
 	return h;
 }
 } // namespace
+
+TEST_CASE("cahcam1: ViewInfo constructor uses the retail camera defaults (RW 0x6193B4)")
+{
+	const CreateAHeroViewInfo v;
+	CHECK(v.nearPitch == 0.3f);
+	CHECK(v.nearZoom == 0.2f);
+	CHECK(v.nearFloor == 50.0f);
+	CHECK(v.nearDist == 30.0f);
+	CHECK(v.nearShift == 0.0f);
+	CHECK(v.farPitch == 0.4f);
+	CHECK(v.farZoom == 0.3f);
+	CHECK(v.farFloor == 70.0f);
+	CHECK(v.farDist == 50.0f);
+	CHECK(v.farShift == 0.0f);
+	CHECK(v.closeUpPitch == v.nearPitch);
+	CHECK(v.closeUpZoom == v.nearZoom);
+	CHECK(v.closeUpFloor == v.nearFloor);
+	CHECK(v.closeUpDist == v.nearDist);
+	CHECK(v.closeUpShift == v.nearShift);
+	CHECK(v.portraitPitch == v.nearPitch);
+	CHECK(v.portraitZoom == v.nearZoom);
+	CHECK(v.portraitFloor == v.nearFloor);
+	CHECK(v.portraitDist == v.nearDist);
+	CHECK(v.portraitShift == v.nearShift);
+	CHECK(v.normalCam == 0.5f);
+	CHECK(v.cameraAngle == 0.0f);
+	CHECK(v.mapLocation == 0);
+	CHECK_FALSE(v.loaded);
+}
 
 TEST_CASE("create-a-hero: CRC-32 is the reflected 0xEDB88320 polynomial (RW 0xA2D770, the table RW 0xDBBB70)")
 {
@@ -329,6 +364,7 @@ struct Game
 		REQUIRE(o);
 		const Coord3D at = { x, y, 0.0f };
 		o->setPosition(&at);
+		testutil::completeHorde(o); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		return o;
 	}
 };
@@ -710,4 +746,80 @@ TEST_CASE("cah2 retail: a Create-a-Hero's creation hands its three record colour
 	const CreateAHeroHero *rec = g.logic->createAHeroes().heroOf(*g.me);
 	REQUIRE(rec);
 	CHECK((rec->flags & 8u) == 0u); // consumed
+}
+
+// lane CAHBOW-1: DoCommandUpgrade (lane SUMMON-1's port: RW 0x8B8E2E / 0x8B8DFC -> Object::doCommandButton RW 0x696FD2(button, 0, false)). The owner's playtest: a Create-a-Hero
+// archer fought melee only. Retail's createahero.ini:173-177 (ModuleTag_CreateAHeroMakeSureArcherUsesBowInitially) does Command_CreateAHero_A_ToggleWeapon
+// (TOGGLE_WEAPONSET, FlagsUsedForToggle WEAPONSET_TOGGLE_1) when Upgrade_CreateAHero_ClassArcher arrives and again when it goes; the bow weapon set of
+// createaheroweaponupgrades.inc is WEAPONSET_CREATE_A_HERO_WS_08 + WEAPONSET_TOGGLE_1, the melee one WS_08 alone.
+namespace
+{
+bool toggle1(const Object &o)
+{
+	const int bit = WeaponSetToggle::WEAPONSET_TOGGLE_1;
+	return ((o.getWeaponSetFlags()[(size_t)bit >> 5] >> (bit & 31)) & 1u) != 0;
+}
+
+const WeaponTemplate *currentWeapon(const Object &o)
+{
+	const ObjectWeapons *w = o.getWeapons();
+	REQUIRE(w);
+	const Weapon *cur = w->currentWeapon();
+	REQUIRE(cur);
+	return cur->getTemplate();
+}
+} // namespace
+
+TEST_CASE("cahbow1 retail: a Create-a-Hero archer (Idrial) starts with WEAPONSET_TOGGLE_1 and its bow (DoCommandUpgrade, RW 0x8B8E2E -> RW 0x696FD2 case "
+	"0x2D); removing the class upgrade toggles back (RW 0x8B8DFC); a Hero of the West (Berethor) keeps its melee weapon")
+{
+	REQUIRE_RETAIL(sh);
+	std::vector<std::string> errors;
+	const std::vector<CreateAHeroHero> heroes = CreateAHeroLibrary::systemHeroes(*sh.mount->fs, &errors);
+	const CreateAHeroHero *idrial = heroNamed(heroes, u"Idrial");
+	const CreateAHeroHero *berethor = heroNamed(heroes, u"Berethor");
+	REQUIRE(idrial);
+	REQUIRE(berethor);
+	const CreateAHeroSystem &sys = sh.world->createAHeroSystem();
+	CHECK(sys.classes().at(idrial->classIndex).upgradeName == "Upgrade_CreateAHero_ClassArcher");
+	const ThingTemplate *cah = sh.world->things().findTemplate("CreateAHero");
+	REQUIRE(cah);
+	const unsigned notPorted = UpgradeModuleClasses::stats().doCommandsNotPorted;
+
+	{
+		Game g(sh, "FactionElves");
+		g.logic->createAHeroes().assign(*g.me, *idrial);
+		g.logic->createAHeroes().startGame();
+		Object *hero = g.make(cah, g.me, 500.0f, 500.0f);
+		CHECK(hero->hasUpgrade("Upgrade_CreateAHero_ClassArcher"));
+		CHECK(toggle1(*hero)); // the module ran at the class upgrade's grant
+		g.logic->runLogicFrame();
+		const WeaponTemplate *bow = currentWeapon(*hero);
+		MESSAGE("Idrial's weapon: " << bow->getName());
+		CHECK_FALSE(bow->m_meleeWeapon);
+		CHECK(bow->getName() == "CreateAHeroBasicRangedWeapon");
+		// the same object without the toggle holds the melee weapon of the weapon set: the flag is what picks the bow
+		const UpgradeTemplate *archer = TheUpgradeCenter->findUpgrade("Upgrade_CreateAHero_ClassArcher");
+		REQUIRE(archer);
+		hero->removeUpgrade(archer); // RW 0x691438 -> the mux removal -> RW 0x8B8DFC: RemoveUpgradeCommandButtonName, the same toggle
+		CHECK_FALSE(toggle1(*hero));
+		g.logic->runLogicFrame();
+		const WeaponTemplate *melee = currentWeapon(*hero);
+		MESSAGE("without the toggle: " << melee->getName());
+		CHECK(melee->m_meleeWeapon);
+		CHECK(melee->getName() == "CreateAHeroBasicMeleeWeapon");
+	}
+	{
+		Game g(sh, "FactionMen");
+		g.logic->createAHeroes().assign(*g.me, *berethor);
+		g.logic->createAHeroes().startGame();
+		Object *hero = g.make(cah, g.me, 500.0f, 500.0f);
+		CHECK_FALSE(hero->hasUpgrade("Upgrade_CreateAHero_ClassArcher"));
+		CHECK_FALSE(toggle1(*hero));
+		g.logic->runLogicFrame();
+		const WeaponTemplate *w = currentWeapon(*hero);
+		MESSAGE("Berethor's weapon: " << w->getName());
+		CHECK(w->m_meleeWeapon);
+	}
+	CHECK(UpgradeModuleClasses::stats().doCommandsNotPorted == notPorted); // TOGGLE_WEAPONSET is ported: no S-5145 stop
 }

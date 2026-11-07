@@ -100,6 +100,17 @@ bool LiveScripting::start(const std::string &mapFolder, std::string *error)
 			m_engine->dispatchInternal((LuaInternalEvent)slot, info, args);
 		}
 	});
+	// lane NUGGET-1: LuaEventNugget's events by name (RW 0x911EDC: FindEvent RW 0x735388, then RW 0x735F53 per receiver)
+	m_logic.setNamedScriptEventProcs([this](const std::string &name) { return m_engine->findEvent(name).valid(); },
+		[this](const std::string &name, Object &obj, const LuaEventArgs &args) {
+			LuaObjectInfo info;
+			const LuaEventRef ref = m_engine->findEvent(name);
+			if (ref.valid() && describe(obj, &info, false))
+			{
+				++m_stats.engineEvents;
+				m_engine->dispatch(ref, info, args);
+			}
+		});
 	// lane HERO-2: the ModelCondition events of the AI update (RW 0x663E32 -> 0x7378DA)
 	m_logic.setModelConditionEventProc([this](Object &obj, const std::array<std::uint32_t, 19> &before) {
 		LuaObjectInfo info;
@@ -166,6 +177,7 @@ void LiveScripting::detach()
 		m_logic.setObjectCreatedProc(GameLogic::ObjectCreatedProc());
 		m_logic.setWorldHooks(GameLogic::WorldHook(), GameLogic::WorldHook());
 		m_logic.setScriptEventProc(GameLogic::ScriptEventProc());
+		m_logic.setNamedScriptEventProcs(GameLogic::NamedScriptEventFindProc(), GameLogic::NamedScriptEventProc());
 		m_logic.setModelConditionEventProc(GameLogic::ModelConditionEventProc());
 		m_logic.setAnimationConditionEventProc(GameLogic::ModelConditionEventProc());
 		m_attached = false;
@@ -191,7 +203,8 @@ bool LiveScripting::describe(Object &obj, LuaObjectInfo *out, bool count)
 	{
 		if (count && !t.listName.empty() && AsciiStringUtil::compareNoCase(t.listName, "None") != 0)
 		{
-			m_stats.errors.push_back(tt->getName() + ": AILuaEventsList " + t.listName + " is not an EventList of ScriptEvents.xml");
+			m_stats.stops.push_back("[S-127] " + tt->getName() + ": AILuaEventsList " + t.listName +
+				" is not an EventList of ScriptEvents.xml; retail binds a null event list (RW 0x7396E8, AIUpdateInterface RW 0x662597)");
 		}
 		return false;
 	}

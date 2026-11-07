@@ -1,0 +1,15 @@
+extends SceneTree
+const Updater = preload("res://scripts/core/updater.gd")
+const BuildInfo = preload("res://scripts/core/build_info.gd")
+func _initialize() -> void:
+	var updater = Updater.new(BuildInfo.load_info())
+	updater.data_dir = "/tmp/openbfme-bfme2-selection-%s" % OS.get_process_id()
+	updater.set_state("launcher", "game", "bfme2-106")
+	var launch: Dictionary = updater.game_arguments()
+	assert(launch.ok)
+	assert(launch.args == PackedStringArray(["--", "--game=bfme2-106"]))
+	assert(not updater.game_arguments(PackedStringArray(["--online-join=test"])).ok)
+	updater.set_state("launcher", "game", "bfme2")
+	assert(updater.game_arguments().args.is_empty())
+	print("BFME2 LAUNCHER SELECTION PASS")
+	quit()

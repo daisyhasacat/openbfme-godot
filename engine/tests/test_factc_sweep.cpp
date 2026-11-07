@@ -5,11 +5,16 @@
 
 #include "FactcSweepUtil.h"
 #include "FactbRig.h"
+#include "ProductionRateTestUtil.h"
 
 #include "Common/BuildAssistant.h"
 #include "Common/PlayerHeroList.h"
+#include "GameLogic/ActionManager.h"
+#include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/Damage.h"
+#include "GameLogic/CaptureLinks.h"
 #include "GameClient/GUI/Skirmish/IniSkirmishSetupSource.h"
+#include "GameClient/HudObjects.h"
 #include "GameClient/MapCache.h"
 #include "GameLogic/Module/HordeDispatchSpecialPower.h"
 #include "GameLogic/Module/ObjectCreationUpgrade.h"
@@ -21,6 +26,7 @@
 #include "GameLogic/Module/SpecialAbilityModules.h"
 #include "GameLogic/System/ShroudManager.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -126,8 +132,9 @@ void buildStructures(HudRig &h, const Inventory &inv)
 const std::map<std::string, std::string> &knownAbilityGaps()
 {
 	static const std::map<std::string, std::string> gaps = {
-		{ "GoblinCaveTroll Command_SpecialAbilityTrollGrabTree", "S-140: GrabPassengerSpecialPower is an unported module (the trolls' tree / goblin grab)|no module of the power" },
+		// (lane MODCOMPAT-MOD1: GrabPassengerSpecialPower is ported, the cave troll's tree grab reaches its ability: the S-140 pin went)
 		// (lane FLY-1: Drogoth flies, his WingBlast and Incinerate reach their point: the S-084 pins went)
+		// (lane NECRODIE-1: the sweep aims the Necromancer's enemy-only powers at its enemy, both fire and the horde lives: the two Necromancer entries went)
 	};
 	return gaps;
 }
@@ -135,13 +142,23 @@ const std::map<std::string, std::string> &knownAbilityGaps()
 // the upgrade buttons whose gap is registered
 const std::map<std::string, std::string> &knownUpgradeGaps()
 {
-	// the spike moat works now (ObjectCreationUpgrade, S-2007); the buy-new-catapult / giant buttons show only after the free one dies, which the unported
-	// SlaveWatcherBehavior reports (S-1995): "S-xxxx|text": the outcome must say the text
+	// the spike moat works now (ObjectCreationUpgrade, S-2007); the buy-new-catapult / giant buttons show only after the free one dies: the sweep's free
+	// catapult / giant lives, so retail shows no button here (lane MODCOMPAT-MOD1 ported SlaveWatcherBehavior, whose GrantUpgrade brings the button back
+	// when the slave dies: test_slavewatcher.cpp). "S-xxxx|text": the outcome must say the text
 	static const std::map<std::string, std::string> gaps = {
-		{ "AngmarCatapultExpansion Command_AngmarPurchaseNewWallCatapult", "S-1995 (SlaveWatcherBehavior: the free catapult is made, its death does not show the buy button)|button not shown" },
-		{ "WildGiantSentryExpansion Command_GoblinPurchaseNewWallGiantSentry", "S-1995 (SlaveWatcherBehavior: the free giant is made, its death does not show the buy button)|button not shown" },
+		{ "AngmarCatapultExpansion Command_AngmarPurchaseNewWallCatapult", "S-2007 (retail: the buy button shows once the free catapult dies, SlaveWatcherBehavior)|button not shown" },
+		{ "WildGiantSentryExpansion Command_GoblinPurchaseNewWallGiantSentry", "S-2007 (retail: the buy button shows once the free giant dies, SlaveWatcherBehavior)|button not shown" },
 	};
 	return gaps;
+}
+
+// buttons retail buys by itself before the player can: the Hall of Twilight's DoCommandUpgrade modules press its technologies as it levels
+// (retail angmarhalloftwilight.ini, RW 0x8B8E2E -> RW 0x696FD2's upgrade case): the bar shows them purchased (lane MODS-3)
+const std::set<std::string> &retailAutoPurchased()
+{
+	static const std::set<std::string> s = { "AngmarHallofTwilight Command_PurchaseTechnologyAngmarSoulFreeze",
+		"AngmarHallofTwilight Command_PurchaseTechnologyAngmarWellOfSouls", "AngmarHallofTwilight Command_PurchaseTechnologyAngmarCorpseRain" };
+	return s;
 }
 
 bool isStructure(const ThingTemplate &tt)
@@ -233,6 +250,26 @@ AbilityResult runAbility(HudRig &h, const Offer &offer, const Coord3D &spot)
 			return r;
 		}
 	}
+	// lane SUMMON-1: a button the unit's current model condition disables (DisableOnModelCondition: the Mountain Giant's Stomp in WEAPONSET_TOGGLE_1; the giant
+	// starts throwing rocks, scripts.lua's OnMountainGiantCreated grants Upgrade_SwitchToRockThrowing and DoCommandUpgrade toggles the set) is used the way a
+	// player does: the unit's TOGGLE_WEAPONSET button first
+	bool disabledNow = false;
+	for (size_t w = 0; w < offer.cb->m_disableOnModelCondition.size(); ++w)
+	{
+		disabledNow = disabledNow || (o->getModelConditionBits()[w] & offer.cb->m_disableOnModelCondition[w]) != 0;
+	}
+	if (disabledNow)
+	{
+		ControlBarButton toggle;
+		if (!h.findButtonIf([](const ControlBarButton &x) { return x.button->m_command == GUI_COMMAND_TOGGLE_WEAPONSET; }, toggle) ||
+		    !h.hud->controlBar().pressButton(toggle.slot, toggle.inPalantir))
+		{
+			r.outcome = "disabled by its model condition: no usable TOGGLE_WEAPONSET button";
+			destroyAll(logic, made);
+			return r;
+		}
+		h.frames(5);
+	}
 	// the level that unlocks it: one level at a time (a hero's later level may swap the button for another, as Hwaldar's summons)
 	ControlBarButton b;
 	bool shown = false;
@@ -318,6 +355,34 @@ AbilityResult runAbility(HudRig &h, const Offer &offer, const Coord3D &spot)
 		{
 			at = *withMembers(ally).back()->getPosition();
 		}
+		else if ((opt & COMMAND_OPTION_NEED_TARGET_POS) && TheSpecialPowerStore)
+		{
+			// lane SUMMONLOC-1: the hero power click issues nothing where the location test refuses (RW 0x81E9C5 -> RW 0x6A4260 -> RW 0x82DFB7), as
+			// retail's red cursor: a player clicks where it is valid. The spot 108 from the caster serves a LIMIT_DISTANCE 150 power (Hwaldar's
+			// Hillmen); a NEEDS_OBJECT_FILTER power (Azog's Crack the Whip: allied infantry within its radius) gets a soldier of the caster's there
+			const SpecialPowerTemplate *pw = TheSpecialPowerStore->findSpecialPowerTemplate(mode->m_specialPowerName);
+			const Coord3D near{ spot.x + 60.0f, spot.y - 90.0f, logic.getGroundHeight(spot.x + 60.0f, spot.y - 90.0f) };
+			if (pw && !ActionManager::canDoSpecialPowerAtLocation(*o, at, pw, opt))
+			{
+				// lane NECRODIE-1: a NEEDS_OBJECT_FILTER power whose filter takes enemies (the Necromancer's Fell Strength and Well of Souls) is aimed at the
+				// enemy, as a player aims it; a soldier of the caster's serves the others
+				const Coord3D foe{ enemy->getPosition()->x, enemy->getPosition()->y, logic.getGroundHeight(enemy->getPosition()->x, enemy->getPosition()->y) };
+				if ((pw->getFinalOverride()->getFlags() & SPF_NEEDS_OBJECT_FILTER) && ActionManager::canDoSpecialPowerAtLocation(*o, foe, pw, opt))
+				{
+					at = foe;
+				}
+				else
+				{
+					if ((pw->getFinalOverride()->getFlags() & SPF_NEEDS_OBJECT_FILTER) && !ActionManager::canDoSpecialPowerAtLocation(*o, near, pw, opt))
+					{
+						Object *soldier = h.rig.make("GondorFighter", near.x, near.y);
+						made.push_back(soldier->getID());
+						h.frames(2);
+					}
+					at = near;
+				}
+			}
+		}
 		at.z += 8.0f;
 		h.rig.lookAt(*o->getPosition());
 		h.frames(1);
@@ -335,14 +400,34 @@ AbilityResult runAbility(HudRig &h, const Offer &offer, const Coord3D &spot)
 	}
 	const bool modeLeft = h.hud->input().ui().getGUICommand() != nullptr;
 	h.hud->input().ui().setGUICommand(nullptr); // a player's Escape
+	const ObjectID casterId = o->getID();
 	bool fired = false;
+	bool casterGone = false;
 	for (int i = 0; i < 300 && !fired; ++i)
 	{
 		h.frames(1);
+		// a caster may die while its power is awaited: the modules read below belong to objects, and a
+		// destroyed object's modules are freed, so only the live caster's modules are compared
+		Object *caster = logic.findObjectByID(casterId);
+		if (!caster || caster->isDestroyed())
+		{
+			casterGone = true;
+			break;
+		}
+		const std::vector<SpecialPowerModuleInterface *> live = powerModules(caster, r.power);
 		for (size_t k = 0; k < mods.size(); ++k)
 		{
-			fired = fired || mods[k]->getReadyFrame() > std::max(ready0[k], now0);
+			if (std::find(live.begin(), live.end(), mods[k]) != live.end())
+			{
+				fired = fired || mods[k]->getReadyFrame() > std::max(ready0[k], now0);
+			}
 		}
+	}
+	if (casterGone)
+	{
+		r.outcome = "the caster was destroyed while the power was awaited";
+		destroyAll(logic, made);
+		return r;
 	}
 	std::ostringstream why;
 	for (Object *x : withMembers(o))
@@ -775,6 +860,11 @@ TEST_CASE("factc upgrades: every OBJECT / PLAYER upgrade button of the Goblins' 
 		MESSAGE(faction << ": " << ok << " of " << results.size() << " upgrade buttons work");
 		for (const UpgradeResult &r : results)
 		{
+			if (retailAutoPurchased().count(r.object + " " + r.button))
+			{
+				CHECK_MESSAGE(r.outcome == "button purchased", r.object << " " << r.button << ": DoCommandUpgrade should have bought it: " << r.outcome);
+				continue;
+			}
 			const auto known = knownUpgradeGaps().find(r.object + " " + r.button);
 			if (known != knownUpgradeGaps().end())
 			{
@@ -864,6 +954,8 @@ ProductionResult runProduction(HudRig &h, const Offer &offer)
 		r.outcome = "press refused";
 		return r;
 	}
+	const ObjectID producerId = b->getID();
+	std::vector<float> rates{ prodrate::rateNow(*b) }; // lane PRODUCTION1: the producer's PRODUCTION rate of every frame (RW 0x8A1EBC)
 	h.frames(1);
 	r.cost = h.paidSince(money0);
 	std::ostringstream out;
@@ -874,6 +966,10 @@ ProductionResult runProduction(HudRig &h, const Offer &offer)
 	Object *made = nullptr;
 	for (; r.frames < expectFrames + 60 && !made; ++r.frames)
 	{
+		if (Object *p = logic.findObjectByID(producerId))
+		{
+			rates.push_back(prodrate::rateNow(*p));
+		}
 		h.frames(1);
 		for (Object *o = logic.getFirstObject(); o && !made; o = o->getNextObject())
 		{
@@ -893,9 +989,10 @@ ProductionResult runProduction(HudRig &h, const Offer &offer)
 	}
 	else
 	{
-		if (r.frames < expectFrames - 1)
+		const int rated = prodrate::expectedFrames(rates, expectFrames); // a level 2 / 3 building is faster (its BuildSpeedModLvl<n>)
+		if (r.frames < rated - 1)
 		{
-			out << "came after " << r.frames << " frames, calcTimeToBuild " << expectFrames << "; ";
+			out << "came after " << r.frames << " frames, calcTimeToBuild " << expectFrames << " (" << rated << " at the producer's PRODUCTION rate); ";
 		}
 		const float dx = made->getPosition()->x - b->getPosition()->x, dy = made->getPosition()->y - b->getPosition()->y;
 		if (dx * dx + dy * dy > 600.0f * 600.0f)
@@ -1071,7 +1168,7 @@ HeroResult runHero(HudRig &h, Object *keep, int index)
 		return r;
 	}
 	h.frames(20);
-	hero->kill(DEATH_NORMAL);
+	hero->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 	h.frames(60);
 	if (liveHero(logic, h.rig.local, r.hero))
 	{
@@ -1563,6 +1660,182 @@ TEST_CASE("factc neutral: Goblin and Angmar parties capture the flags of an inn,
 	}
 }
 
+TEST_CASE("factc recapture: an outpost flag an enemy holds shows the capture cursor, not the attack cursor, and a right click takes it back (UNATTACKABLE, RW 0x6C91FA)")
+{
+	if (!haveWorld("factc recapture"))
+	{
+		return;
+	}
+	SharedWorld &s = shared();
+	std::string map, outpost;
+	REQUIRE_MESSAGE(findInnMap(s, "Outpost", map, outpost), "no multiplayer map has an Outpost by a capture flag");
+	MESSAGE("map " << map);
+	HudRig h(s, "FactionWild", map.c_str());
+	const auto ctx = h.hud->enterContext();
+	GameLogic &logic = h.logic();
+	creeptest::removeCreeps(logic);
+	Object *flag = nullptr, *building = nullptr;
+	for (Object *f = logic.getFirstObject(); f && !building; f = f->getNextObject())
+	{
+		if (!f->isKindOfName("CAPTURABLE") || f->getControllingPlayer() == h.rig.local)
+		{
+			continue;
+		}
+		for (Object *b = logic.getFirstObject(); b; b = b->getNextObject())
+		{
+			const float dx = b->getPosition()->x - f->getPosition()->x, dy = b->getPosition()->y - f->getPosition()->y;
+			if (b->getTemplate()->getName() == outpost && dx * dx + dy * dy <= 150.0f * 150.0f)
+			{
+				flag = f;
+				building = b;
+			}
+		}
+	}
+	REQUIRE(flag != nullptr);
+	CHECK(flag->isKindOfName("UNATTACKABLE")); // retail data: CaptureFlag's KindOf
+	// the enemy took them: the flag and its outpost on the enemy's default team, as SpecialAbilityUpdate's capture leaves them (RW 0x8546F6 / 0x854719)
+	Player *enemy = h.rig.game->players().findPlayerWithName("Player_2");
+	REQUIRE(enemy != nullptr);
+	flag->setCapturedTeam(enemy->getDefaultTeam());
+	building->setCapturedTeam(enemy->getDefaultTeam());
+	REQUIRE(h.rig.local->getRelationship(flag->getTeam()) == ENEMIES);
+	const Coord3D c = h.rig.freeSpot(flag->getPosition()->x, flag->getPosition()->y - 220.0f, 80.0f);
+	Object *horde = h.rig.make("GoblinFighterHorde", c.x, c.y);
+	h.frames(10);
+	REQUIRE(h.select(horde));
+	const Coord3D aim{ flag->getPosition()->x, flag->getPosition()->y, flag->getPosition()->z + 8.0f };
+	h.rig.lookAt(*flag->getPosition());
+	const ICoord2D px = h.rig.screenOf(aim);
+	REQUIRE(HudObjects::pickObject(h.hud->input().context(), px) == flag);
+	// the hover: the attack test refuses the UNATTACKABLE flag, the capture test answers (RW 0x81E60B)
+	h.hud->mouseMove(px.x, px.y, 0);
+	h.hud->update(0.034);
+	CHECK(h.hud->input().ui().cursor() == "CaptureBuilding");
+	// the order: a right click sends the capture power at the flag, no attack
+	const size_t log0 = h.hud->input().messageLog().size();
+	h.clickAt(aim, true);
+	h.frames(2);
+	int captures = 0, attacks = 0;
+	for (size_t i = log0; i < h.hud->input().messageLog().size(); ++i)
+	{
+		captures += h.hud->input().messageLog()[i].find("MSG_DO_SPECIAL_POWER_AT_OBJECT") != std::string::npos ? 1 : 0;
+		attacks += h.hud->input().messageLog()[i].find("MSG_DO_ATTACK_OBJECT") != std::string::npos ? 1 : 0;
+	}
+	CHECK(captures == 1);
+	CHECK(attacks == 0);
+	int frames = 0;
+	for (; frames < 600 && flag->getControllingPlayer() != h.rig.local; ++frames)
+	{
+		h.frames(1);
+	}
+	CHECK_MESSAGE(flag->getControllingPlayer() == h.rig.local, "the flag was not recaptured in 600 frames");
+	h.frames(20);
+	CHECK_MESSAGE(building->getControllingPlayer() == h.rig.local, "the " << outpost << " did not follow its flag");
+	std::printf("factc recapture %s: the enemy's flag recaptured after %d frames, %s owned by the player: %d\n", map.c_str(), frames, outpost.c_str(),
+	            building->getControllingPlayer() == h.rig.local ? 1 : 0);
+}
+
+// RW 0x85266D: the sleep calculation of an idle capture ability releases the capture: the capturer loses CAPTURING, the flag START_CAPTURE and its capturer
+// (CAPTURED when it is the capturer's now, CANCEL_CAPTURE for a second when the capture was cut off). The skirmish AI's capture squad waits for its team to
+// show no CAPTURING (AITacticalAI.cpp updateIdleCounters, RW 0x8F135E): before the release a horde kept it after its first capture and stood at the flag.
+TEST_CASE("factc capture release: an interrupted capture and a finished one leave no CAPTURING on the capturer and no START_CAPTURE on the flag (RW 0x85266D)")
+{
+	if (!haveWorld("factc capture release"))
+	{
+		return;
+	}
+	SharedWorld &s = shared();
+	std::string map, outpost;
+	REQUIRE_MESSAGE(findInnMap(s, "Outpost", map, outpost), "no multiplayer map has an Outpost by a capture flag");
+	MESSAGE("map " << map);
+	HudRig h(s, "FactionWild", map.c_str());
+	const auto ctx = h.hud->enterContext();
+	GameLogic &logic = h.logic();
+	creeptest::removeCreeps(logic);
+	Object *flag = nullptr, *building = nullptr;
+	for (Object *f = logic.getFirstObject(); f && !building; f = f->getNextObject())
+	{
+		if (!f->isKindOfName("CAPTURABLE") || f->getControllingPlayer() == h.rig.local)
+		{
+			continue;
+		}
+		for (Object *b = logic.getFirstObject(); b; b = b->getNextObject())
+		{
+			const float dx = b->getPosition()->x - f->getPosition()->x, dy = b->getPosition()->y - f->getPosition()->y;
+			if (b->getTemplate()->getName() == outpost && dx * dx + dy * dy <= 150.0f * 150.0f)
+			{
+				flag = f;
+				building = b;
+			}
+		}
+	}
+	REQUIRE(flag != nullptr);
+	Player *enemy = h.rig.game->players().findPlayerWithName("Player_2");
+	REQUIRE(enemy != nullptr);
+	flag->setCapturedTeam(enemy->getDefaultTeam());
+	building->setCapturedTeam(enemy->getDefaultTeam());
+	const int capturing = CombatNames::modelCondition("CAPTURING"), startCapture = CombatNames::modelCondition("START_CAPTURE");
+	const int cancelCapture = CombatNames::modelCondition("CANCEL_CAPTURE"), captured = CombatNames::modelCondition("CAPTURED");
+	const Coord3D c = h.rig.freeSpot(flag->getPosition()->x, flag->getPosition()->y - 220.0f, 80.0f);
+	Object *horde = h.rig.make("GoblinFighterHorde", c.x, c.y);
+	h.frames(10);
+	// the horde and its members: whichever object runs the capture ability carries CAPTURING
+	auto squadCapturing = [&]() {
+		bool any = horde->testModelCondition(capturing);
+		if (const ContainModuleInterface::ContainedItemsList *l = horde->getContain() ? horde->getContain()->getContainedItemsList() : nullptr)
+		{
+			for (const Object *m : *l)
+			{
+				any = any || m->testModelCondition(capturing);
+			}
+		}
+		return any;
+	};
+	auto orderCapture = [&]() {
+		REQUIRE(h.select(horde));
+		const Coord3D aim{ flag->getPosition()->x, flag->getPosition()->y, flag->getPosition()->z + 8.0f };
+		h.rig.lookAt(*flag->getPosition());
+		h.clickAt(aim, true); // the capture cursor's right click (the recapture test above)
+		h.frames(2);
+	};
+	// 1. interrupted: the capture runs (CAPTURING on the capturer, START_CAPTURE on the flag), then a move order away cuts it off
+	orderCapture();
+	int frames = 0;
+	for (; frames < 600 && !squadCapturing(); ++frames)
+	{
+		h.frames(1);
+	}
+	REQUIRE_MESSAGE(squadCapturing(), "the capture did not start in 600 frames");
+	CHECK(flag->testModelCondition(startCapture));
+	CHECK(flag->getCapturerID() != INVALID_ID);
+	MESSAGE("the capture started after " << frames << " frames");
+	horde->getAIUpdateInterface()->aiMoveToPosition(Coord3D{ c.x, c.y - 200.0f, 0.0f }, CMD_FROM_PLAYER);
+	bool cancelShown = false;
+	for (int i = 0; i < 30; ++i)
+	{
+		h.frames(1);
+		cancelShown = cancelShown || flag->testModelCondition(cancelCapture);
+	}
+	CHECK_FALSE(squadCapturing());
+	CHECK_FALSE(flag->testModelCondition(startCapture));
+	CHECK(flag->getCapturerID() == INVALID_ID);
+	CHECK(cancelShown);
+	CHECK(flag->getControllingPlayer() == enemy); // still the enemy's
+	// 2. finished: the capture runs to its end; the flag is the player's and CAPTURED, the capturer shows no CAPTURING
+	orderCapture();
+	for (frames = 0; frames < 900 && flag->getControllingPlayer() != h.rig.local; ++frames)
+	{
+		h.frames(1);
+	}
+	REQUIRE_MESSAGE(flag->getControllingPlayer() == h.rig.local, "the flag was not captured in 900 frames");
+	h.frames(10);
+	CHECK_FALSE(squadCapturing());
+	CHECK(flag->testModelCondition(captured));
+	CHECK_FALSE(flag->testModelCondition(startCapture));
+	CHECK(flag->getCapturerID() == INVALID_ID);
+	std::printf("factc capture release %s: captured after %d frames, the horde capturing %d\n", map.c_str(), frames, squadCapturing() ? 1 : 0);
+}
+
 TEST_CASE("factc neutral lairs: every creep lair of the skirmish maps spawns its creeps, and they fight a Goblin party that comes near")
 {
 	if (!haveWorld("factc neutral lairs"))
@@ -1782,4 +2055,67 @@ TEST_CASE("Forlindon docks: the pinned misplaced-flag correction makes all three
 	}
 	CHECK(captured == 3);
 	CHECK(outsideRange == 0);
+}
+
+TEST_CASE("Buckland outpost capture: Boromir and a battalion raise the flag from eight approach directions")
+{
+	if (!haveWorld("Buckland outpost capture")) return;
+	for (const char *name : {"GondorBoromir", "GondorFighterHorde"})
+	for (int direction = 0; direction < 8; ++direction)
+	{
+		HudRig h(shared(), "FactionMen", "map wor buckland");
+		const auto context = h.hud->enterContext();
+		Object *outpost = nullptr;
+		for (Object *o = h.logic().getFirstObject(); o; o = o->getNextObject())
+			if (o->getTemplate()->getName() == "Outpost") outpost = o;
+		REQUIRE(outpost);
+		Object *flag = CaptureLinks::flagForBuilding(*outpost);
+		REQUIRE(flag);
+		const auto p = *outpost->getPosition();
+		const float angle = direction * 0.785398163f;
+		Object *unit = h.rig.make(name, p.x + 350*std::cos(angle), p.y + 350*std::sin(angle));
+		h.frames(10);
+		REQUIRE(h.select(unit));
+		CHECK(h.hud->input().commandTranslator().evaluateContextCommand(outpost, outpost->getPosition(), EvaluateType::DoCommand) == MSG_DO_SPECIAL_POWER_AT_OBJECT);
+		bool raised = false;
+		for (int frame = 0; frame < 450 && outpost->getControllingPlayer() != h.rig.local; ++frame)
+		{
+			h.frames(1);
+			raised = raised || flag->testModelCondition(0x6E); // START_CAPTURE
+		}
+		INFO(name << " approach direction " << direction);
+		CHECK(raised);
+		CHECK(outpost->getControllingPlayer() == h.rig.local);
+		CHECK(flag->getControllingPlayer() == h.rig.local);
+	}
+}
+
+TEST_CASE("outpost rebuild retail: selecting rubble and pressing self repair rebuilds the captured structure")
+{
+	if (!haveWorld("outpost rebuild retail")) return;
+	HudRig h(shared(), "FactionMen");
+	const auto context = h.hud->enterContext();
+	creeptest::removeCreeps(h.logic());
+	Object *outpost = h.makeBuilt("Outpost", 1800.0f, 1200.0f);
+	REQUIRE(outpost);
+	const ObjectID id = outpost->getID();
+	outpost->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
+	h.frames(55); // native default repair delay is 10 seconds (RW 0x642F8D), inclusive of the damage frame
+	REQUIRE(h.logic().findObjectByID(id) == outpost);
+	REQUIRE(outpost->isEffectivelyDead());
+	REQUIRE_FALSE(outpost->isDestroyed());
+	REQUIRE(h.select(outpost));
+	ControlBarButton button;
+	REQUIRE(h.findButton("Command_StartSelfRepair", button));
+	CHECK(button.state == ButtonState::Active);
+	const auto purse = h.purse();
+	const int cost = (int)BuildAssistant::calcCostToBuild(*outpost->getTemplate(), h.rig.local, nullptr, -1);
+	REQUIRE(h.hud->controlBar().pressButton(button.slot, button.inPalantir));
+	h.frames(1);
+	CHECK(h.paidSince(purse) == cost);
+	h.frames(300); // retail RebuildTimeSeconds = 40; allow the completion update as well
+	CHECK(h.logic().findObjectByID(id) == outpost);
+	CHECK_FALSE(outpost->isEffectivelyDead());
+	CHECK_FALSE(outpost->isUnderConstruction());
+	CHECK(outpost->getBodyModule()->getHealth() == outpost->getBodyModule()->getMaxHealth());
 }

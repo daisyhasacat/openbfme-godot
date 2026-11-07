@@ -55,5 +55,5 @@ function replayRestartBuildings(name)
             restartBuildingReplay.failed=restartBuildingReplay.failed+1
             print('Restart buildings failed: '..tostring(err)); index=index+1
         end
-    end, 100)
+    end, 250)
 end

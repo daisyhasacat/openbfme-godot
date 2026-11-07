@@ -67,8 +67,10 @@ float emotionRelAngle(const Object &obj, const Coord3D &p)
 	}
 	const float inv = SimMath::divf32(1.0f, len);
 	const float ux = SimMath::mulf32(inv, dx), uy = SimMath::mulf32(inv, dy);
-	const float *b = obj.getBasis(); // RW 0x70B9E0: the facing (cos, sin)
-	float c = SimMath::addf32(SimMath::mulf32(b[0], ux), SimMath::mulf32(b[3], uy));
+	// RW 0x70B9E0: the facing is the cached (fcos, fsin) of the orientation (Object + 0x44, RW 0x42F4E0 / 0x42F4D0, fstp dword at + 0x48 / + 0x4C), not the
+	// transform's X axis: for a unit tilted on a slope that axis is shorter in the plane (lane DECOMPFIX-1104B)
+	const float fx = SimMath::cosDet(obj.getOrientation()), fy = SimMath::sinDet(obj.getOrientation());
+	float c = SimMath::addf32(SimMath::mulf32(fx, ux), SimMath::mulf32(fy, uy));
 	if (c < -1.0f)
 	{
 		c = -1.0f;
@@ -78,7 +80,7 @@ float emotionRelAngle(const Object &obj, const Coord3D &p)
 		c = 1.0f;
 	}
 	float a = (float)SimMath::acosDet((double)c);
-	if (SimMath::subf32(SimMath::mulf32(b[0], uy), SimMath::mulf32(b[3], ux)) < 0.0f)
+	if (SimMath::subf32(SimMath::mulf32(fx, uy), SimMath::mulf32(fy, ux)) < 0.0f)
 	{
 		a = SimMath::subf32(0.0f, a);
 	}
@@ -129,9 +131,8 @@ StateReturnType AIPanicState::onEnter()
 	if (m_cower)
 	{
 		// the object's height above the source at most the source's geometry height (RW 0xAD1920)
-		const ThingTemplate *tt = static_cast<const ThingTemplate *>(src->getTemplate())->getFinalOverride();
 		const float above = SimMath::subf32(obj.getPosition()->z, src->getPosition()->z);
-		if (!(above <= ObjectGeometry::maxHeightAbovePosition(ObjectGeometry::shapesOf(*tt))))
+		if (!(above <= ObjectGeometry::maxHeightAbovePosition(src->geometryShapes())))
 		{
 			return STATE_FAILURE;
 		}
@@ -367,8 +368,55 @@ void AIQuarrelState::onExit(StateExitType)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
-// 59
+// 36 / 37 / 59: the face states
 // ---------------------------------------------------------------------------------------------------------------------------------
+StateReturnType AIFaceState::onEnter()
+{
+	// TARGET RW 0x74D68C: modes 0 / 1 skip AIIdleState::onEnter. Donor:
+	// Open-BFME-2 AIFaceStateUpdate.cpp (same mode switch, BFME2 RVA 0x35487E).
+	AIUpdateInterface &a = ai();
+	m_canTurn = a.curLocomotor() && a.curLocomotor()->getMinSpeed(a.locomotorHost()) == 0.0f; // RW 0x5E3796
+	return m_objectTarget && !machine().goalObject() ? STATE_FAILURE : STATE_CONTINUE;
+}
+
+StateReturnType AIFaceState::update()
+{
+	// TARGET RW 0x75638B: an object target is resolved every frame, so a moving
+	// target keeps changing the turn's goal. 0.035 radians is the retail threshold.
+	const Object *target = m_objectTarget ? machine().goalObject() : nullptr;
+	if (m_objectTarget && !target)
+	{
+		return STATE_FAILURE;
+	}
+	const Coord3D &position = target ? *target->getPosition() : machine().goalPosition();
+	const float relative = emotionRelAngle(owner(), position);
+	if (SimMath::absD(relative) < kFacedEnough)
+	{
+		return STATE_SUCCESS;
+	}
+	if (m_canTurn)
+	{
+		ai().setLocomotorGoalOrientation(SimMath::addf32(owner().getOrientation(), relative));
+	}
+	else
+	{
+		ai().setLocomotorGoalPositionExplicit(position);
+	}
+	return STATE_CONTINUE;
+}
+
+void AIFaceState::crc(StateHasher &h) const
+{
+	h.addBool(m_canTurn);
+}
+
+void AIFaceState::xfer(Xfer &x)
+{
+	XferVersion version{ 1, 1 };
+	x.xferVersion(version);
+	x.xferBool(&m_canTurn);
+}
+
 AIFaceObjectIdleState::AIFaceObjectIdleState(AIStateMachine &m)
 	: AIIdleState(m)
 {

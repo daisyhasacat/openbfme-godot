@@ -207,6 +207,24 @@ void MenuNavigator::setControllerResults(bool enabled)
 	}
 }
 
+bool MenuNavigator::activateResultsPrimary()
+{
+ if (m_level < 0 || m_windows.componentInputBlocked() || textEntryFocused()) return false;
+ const auto list = targets();
+ for (const char *name : { "Skip", "Continue", "More" })
+ {
+  const std::string path = std::string(".MainButtons.") + name;
+  for (const auto &target : list)
+   if (target.id.find(path) != std::string::npos)
+   {
+    focus(target);
+    press(target);
+    return true;
+   }
+ }
+ return false;
+}
+
 void MenuNavigator::switchControllerSection(int delta)
 {
 	if (!m_controllerSections || m_windows.componentInputBlocked()) return;

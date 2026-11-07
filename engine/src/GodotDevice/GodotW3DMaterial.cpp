@@ -2,6 +2,8 @@
 
 #include "GodotDevice/GodotW3DMaterial.h"
 #include "GodotDevice/GodotTextureOverrides.h"
+#include "GodotDevice/GodotShaderBudget.h"
+
 #include "Common/BfmeGame.h"
 #include "GodotDevice/GodotPackedTexture.h"
 #include "Libraries/Source/Apt/AptLoad.h"
@@ -12,7 +14,9 @@
 #include "Common/AsciiString.h"
 #include "GameEngineDevice/W3DDevice/GameClient/W3DObjectLighting.h"
 #include "GameEngineDevice/W3DDevice/GameClient/W3DHardwareFog.h"
+#include "Libraries/WWVegas/WW3D2/assetmgr.h"
 #include "Libraries/WWVegas/WW3D2/shader.h"
+#include "Libraries/WWVegas/WW3D2/w3dfxconvert.h"
 #include "Libraries/WWVegas/WW3D2/textureloader.h"
 
 #include <godot_cpp/classes/image.hpp>
@@ -29,6 +33,8 @@
 #include <cmath>
 #include <cstring>
 #include <set>
+#include <mutex>
+
 
 namespace godot
 {
@@ -57,6 +63,25 @@ Error decodeTexture(const Ref<Image> &image, const PackedByteArray &buffer, bool
 	return dds ? image->load_dds_from_buffer(buffer) : image->load_tga_from_buffer(buffer);
 }
 
+// lane SDK-0: an asset pack's texture is decoded by its bytes (a modder may save a PNG for a retail .tga name)
+Error decodePackTexture(const Ref<Image> &image, const PackedByteArray &buffer)
+{
+	static const unsigned char png[] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+	if (buffer.size() >= 4 && std::memcmp(buffer.ptr(), "DDS ", 4) == 0)
+	{
+		return image->load_dds_from_buffer(buffer);
+	}
+	if (buffer.size() >= 8 && std::memcmp(buffer.ptr(), png, sizeof(png)) == 0)
+	{
+		return image->load_png_from_buffer(buffer);
+	}
+	if (buffer.size() >= 3 && buffer[0] == 0xff && buffer[1] == 0xd8 && buffer[2] == 0xff)
+	{
+		return image->load_jpg_from_buffer(buffer);
+	}
+	return image->load_tga_from_buffer(buffer);
+}
+
 String toGodot(const std::string &s)
 {
 	return String::utf8(s.c_str(), (int64_t)s.size());
@@ -69,6 +94,35 @@ W3DSamplerPolicy samplerPolicy()
 }
 
 } // namespace
+
+Ref<Image> Load_Asset_Pack_Image(const AssetPacks *packs, const std::string &name, std::string &error)
+{
+	const AssetPackFile *pf = packs ? packs->texture(name) : nullptr;
+	if (!pf)
+	{
+		return Ref<Image>();
+	}
+	std::vector<std::uint8_t> bytes;
+	if (!AssetPacks::read(*pf, bytes, &error))
+	{
+		return Ref<Image>();
+	}
+	PackedByteArray buffer;
+	buffer.resize((int64_t)bytes.size());
+	if (!bytes.empty())
+	{
+		std::memcpy(buffer.ptrw(), bytes.data(), bytes.size());
+	}
+	Ref<Image> image;
+	image.instantiate();
+	if (decodePackTexture(image, buffer) != OK || image->is_empty())
+	{
+		error = "asset pack " + pf->pack + ": could not decode " + pf->relative + " (the replacement of texture " + name + ")";
+		return Ref<Image>();
+	}
+	image->set_meta("retail_path", toGodot("asset pack " + pf->pack + ": " + pf->relative));
+	return image;
+}
 
 namespace
 {
@@ -130,6 +184,7 @@ void W3D_Ensure_Light_Globals()
 		return;
 	}
 	registered = true;
+	rs->global_shader_parameter_add(StringName("w3d_shadow"), RenderingServer::GLOBAL_VAR_TYPE_VEC4, Vector4(1.0f, 1.0f, 1.0f, 0.0f));
 	if (samplerPolicy() == W3DSamplerPolicy::Metal16)
 	{
 		UtilityFunctions::print("W3D [MAC-10 Metal16 limitation]: repeating mipmapped textures use linear-mipmap filtering instead of anisotropy (Godot 4.7.2 binds anisotropic-repeat at Metal slot 17; limit 15). Clamped textures retain anisotropy; simulation unchanged.");
@@ -145,16 +200,20 @@ void W3D_Ensure_Light_Globals()
 	rs->global_shader_parameter_add(StringName("w3d_fog"), RenderingServer::GLOBAL_VAR_TYPE_VEC3, Vector3(0.0f, 0.0f, 1.0f));
 	rs->global_shader_parameter_add(StringName("w3d_fog_color"), RenderingServer::GLOBAL_VAR_TYPE_VEC3, Vector3(0.5f, 0.5f, 0.5f));
 	// lane PLAY-1: the free camera's fog shift (TacticalCamera::fogShift): the distance every fog range is measured from; 0 = retail
-	rs->global_shader_parameter_add(StringName("w3d_shadow_strength"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 0.0f);
+	rs->global_shader_parameter_add(StringName("openbfme_snow_cover"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 0.0f);
 	rs->global_shader_parameter_add(StringName("w3d_fog_shift"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 0.0f);
 	// lane VISUAL-2: the fogged light fraction (RW 0x46DFD0: GameData FogAlpha / ClearAlpha), set by the map's game
 	rs->global_shader_parameter_add(StringName("w3d_fogged_frac"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 1.0f);
+	// lane OCCLUDE-1: the behind-building colours and their switch (W3D_Set_Occlusion), off until a game sets them
+	rs->global_shader_parameter_add(StringName("w3d_occl_on"), RenderingServer::GLOBAL_VAR_TYPE_FLOAT, 0.0f);
+	rs->global_shader_parameter_add(StringName("w3d_occl_colors"), RenderingServer::GLOBAL_VAR_TYPE_SAMPLER2D, Variant());
 	// lane VISUAL-2: the vegetation SwayOffsets 1 .. 10 (W3DVegetationSway, RW 0x4E61EE; W3D axes), zero until a map's trees sway
 	for (int i = 1; i <= 10; ++i)
 	{
 		rs->global_shader_parameter_add(StringName(String("w3d_sway") + String::num_int64(i)), RenderingServer::GLOBAL_VAR_TYPE_VEC4, Vector4());
 	}
-	// lane SELPERF-1: the selection's merge decals the terrain shader draws (godot/shaders/selection_decals.gdshaderinc; the HUD sets them, mode 0 = none)
+	// lane SELPERF-1: the selection's merge decals the terrain shader draws (godot/shaders/selection_decals.gdshaderinc; the HUD sets them, mode 0 = none;
+	// lane SELWALL-1 / HERORING-1: the wall models' shaders too, and the alpha decals)
 	rs->global_shader_parameter_add(StringName("sel_data"), RenderingServer::GLOBAL_VAR_TYPE_SAMPLER2D, Variant());
 	rs->global_shader_parameter_add(StringName("sel_atlas"), RenderingServer::GLOBAL_VAR_TYPE_SAMPLER2D, Variant());
 	rs->global_shader_parameter_add(StringName("sel_grid"), RenderingServer::GLOBAL_VAR_TYPE_VEC4, Vector4(0.0f, 0.0f, 1.0f, 0.0f));
@@ -184,14 +243,36 @@ void W3D_Set_Fogged_Light_Frac(float frac)
 	}
 }
 
+void W3D_Set_Occlusion(bool on, const Ref<Texture2D> &colors)
+{
+	W3D_Ensure_Light_Globals();
+	if (RenderingServer *rs = RenderingServer::get_singleton())
+	{
+		rs->global_shader_parameter_set(StringName("w3d_occl_on"), on ? 1.0f : 0.0f);
+		rs->global_shader_parameter_set(StringName("w3d_occl_colors"), colors);
+	}
+}
+
+namespace
+{
+float s_swayScale = 1.0f; // lane WEATHERFX-1: W3D_Set_Sway_Scale
+}
+
+void W3D_Set_Sway_Scale(double scale)
+{
+	s_swayScale = (float)scale;
+}
+
 void W3D_Set_Sway_Offsets(const float offsets[10][3])
 {
 	W3D_Ensure_Light_Globals();
 	if (RenderingServer *rs = RenderingServer::get_singleton())
 	{
+		const float k = s_swayScale;
 		for (int i = 0; i < 10; ++i)
 		{
-			rs->global_shader_parameter_set(StringName(String("w3d_sway") + String::num_int64(i + 1)), Vector4(offsets[i][0], offsets[i][1], offsets[i][2], 0.0f));
+			rs->global_shader_parameter_set(StringName(String("w3d_sway") + String::num_int64(i + 1)),
+				k == 1.0f ? Vector4(offsets[i][0], offsets[i][1], offsets[i][2], 0.0f) : Vector4(offsets[i][0] * k, offsets[i][1] * k, offsets[i][2] * k, 0.0f));
 		}
 	}
 }
@@ -231,6 +312,40 @@ void W3D_Apply_Viewer_Lighting()
 	setSet("inf", v);
 }
 
+namespace
+{
+// Both editions' presentation: separate instancers use the same generated shader
+// for the same permutation, while materials, textures and palette uniforms remain
+// factory-local. Weak entries avoid retaining shaders from destroyed previews or
+// keeping Godot resources alive after RenderingServer shutdown. The shared_ptr
+// acquisition also keeps the resource alive without a raw ObjectID/refcount race.
+std::shared_ptr<const Ref<Shader>> sharedShader(const std::string &id, const W3DShaderKey &key, W3DSamplerPolicy samplers)
+{
+	static std::mutex mutex;
+	static std::map<std::string, std::weak_ptr<const Ref<Shader>>> entries;
+	std::lock_guard<std::mutex> lock(mutex);
+	const auto found = entries.find(id);
+	if (found != entries.end())
+	{
+		if (auto shader = found->second.lock()) return shader;
+	}
+	// A cache miss is already a shader-creation path. Remove dead metadata here,
+	// rather than letting one-off model permutations accumulate for the session.
+	for (auto it = entries.begin(); it != entries.end();)
+	{
+		if (it->second.expired()) it = entries.erase(it);
+		else ++it;
+	}
+	W3D_Ensure_Light_Globals(); // globals must exist before the first shader compiles
+	Ref<Shader> shader;
+	shader.instantiate();
+	SetShaderCode(shader.ptr(), toGodot(Generate_W3D_Shader_Code(key, samplers)), String("W3D material ") + String(id.c_str()));
+	auto owner = std::make_shared<const Ref<Shader>>(shader);
+	entries[id] = owner;
+	return owner;
+}
+} // namespace
+
 Ref<Shader> W3DMaterialFactory::Get_Shader(const W3DShaderKey &key)
 {
 	const W3DSamplerPolicy samplers = samplerPolicy();
@@ -240,12 +355,34 @@ Ref<Shader> W3DMaterialFactory::Get_Shader(const W3DShaderKey &key)
 	{
 		return it->second;
 	}
+	if (!SceneEnvironment)
+	{
+	const auto owner = sharedShader(id, key, samplers);
+	ShaderOwners.push_back(owner);
+	Shaders[id] = *owner;
+	return *owner;
+	}
 	W3D_Ensure_Light_Globals(); // the shader names the light globals: they must exist before it compiles
 	Ref<Shader> shader;
 	shader.instantiate();
-	shader->set_code(toGodot(Generate_W3D_Shader_Code(key, samplers)));
+	std::string code = Generate_W3D_Shader_Code(key, samplers);
+	if (SceneEnvironment)
+	{
+		// Same W3D shader math, with scene-owned uniforms instead of the map's globals.
+		for (const char *name : {"w3d_amb_obj", "w3d_lcol_obj", "w3d_ldir_obj", "w3d_amb_inf", "w3d_lcol_inf", "w3d_ldir_inf", "w3d_fogged_frac", "w3d_fog", "w3d_fog_color", "w3d_fog_shift"})
+		{
+			for (const char *type : {"vec3", "mat3", "float"})
+			{
+				const std::string declaration = std::string("global uniform ") + type + " " + name + ";";
+				const size_t at = code.find(declaration);
+				if (at != std::string::npos) code.erase(at, 7); // keep the uniform, drop "global "
+			}
+		}
+	}
+	SetShaderCode(shader.ptr(), toGodot(code), "W3D scene material");
 	Shaders[id] = shader;
 	return shader;
+
 }
 
 Ref<Texture2D> W3DMaterialFactory::Placeholder_Texture(bool flatNormal)
@@ -268,6 +405,21 @@ void W3DMaterialFactory::Set_Texture_Reduction(int reduction)
 int W3DMaterialFactory::Get_Texture_Reduction()
 {
 	return g_textureReduction;
+}
+
+namespace
+{
+bool g_shaderMaterialReplacement = true; // see Set_Shader_Material_Replacement
+}
+
+void W3DMaterialFactory::Set_Shader_Material_Replacement(bool on)
+{
+	g_shaderMaterialReplacement = on;
+}
+
+bool W3DMaterialFactory::Get_Shader_Material_Replacement()
+{
+	return g_shaderMaterialReplacement;
 }
 
 bool W3DMaterialFactory::Reduce_Image(Ref<Image> &image, int reduction)
@@ -307,6 +459,22 @@ bool W3DMaterialFactory::Reduce_Image(Ref<Image> &image, int reduction)
 
 namespace
 {
+void preserveAlphaCoverage(Ref<Image> &image, int alphaCoverage)
+{
+	if (alphaCoverage <= 0) return;
+
+	// User-requested BFME1 plot visibility fix: its foundation DDS mips
+	// eventually have no alpha above the material's cutoff. Preserve coverage
+	// before texture reduction so zoom/detail changes cannot erase the plot.
+	if (image->is_compressed()) image->decompress();
+	image->convert(Image::FORMAT_RGBA8);
+	PackedByteArray data = image->get_data();
+	std::vector<unsigned char> rgba(data.ptr(), data.ptr() + data.size());
+	W3D_Preserve_Mip_Alpha_Coverage(rgba, image->get_width(), image->get_height(), alphaCoverage);
+	if (!rgba.empty()) std::memcpy(data.ptrw(), rgba.data(), rgba.size());
+	image = Image::create_from_data(image->get_width(), image->get_height(), image->has_mipmaps(), Image::FORMAT_RGBA8, data);
+
+}
 std::map<std::string, Ref<Image>> g_textureOverrides;
 std::set<W3DMaterialFactory *> g_materialFactories;
 std::string textureOverrideKey(std::string name)
@@ -361,11 +529,20 @@ void W3DMaterialFactory::Set_Texture_Override(const std::string &name, const Ref
 				pixels.instantiate();
 				Error error =
 					decodeTexture(pixels, buffer, path.size() >= 4 && path.substr(path.size() - 4) == ".dds");
-				if (error != OK || pixels->is_empty())
+				if (path.size() >= 4 && path.substr(path.size() - 4) == ".jpg")
+				{
+					AptArchiveFileSource source(factory->Fs);
+					bool paired = false;
+					pixels = loadPackedTexture(source, path.substr(0, path.size() - 4), &paired);
+					error = pixels.is_valid() ? OK : ERR_FILE_CORRUPT;
+				}
+				if (error != OK || pixels.is_null() || pixels->is_empty())
 					continue;
 			}
 			if (!pixels->has_mipmaps() && !pixels->is_compressed())
 				pixels->generate_mipmaps();
+			const auto coverageAt = cached.first.find("#coverage");
+			if (coverageAt != std::string::npos) preserveAlphaCoverage(pixels, std::stoi(cached.first.substr(coverageAt + 9)));
 			auto reductionAt = cached.first.find("#reduction");
 			if (reductionAt != std::string::npos)
 				Reduce_Image(pixels, std::stoi(cached.first.substr(reductionAt + 10)));
@@ -375,10 +552,58 @@ void W3DMaterialFactory::Set_Texture_Override(const std::string &name, const Ref
 		}
 }
 
-Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing)
+Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::vector<std::string> &errors, bool &found, bool quietWhenMissing, int alphaCoverage, std::vector<std::string> *notes)
 {
 	found = false;
-	TextureResolution res = Resolve_W3D_Texture(name, [&](const std::string &p) { return Fs.doesFileExist(p); }, isBfme1Data(Fs)); // community PR #36: the archives' layout
+	if (Packs)
+	{
+		if (const AssetPackFile *pf = Packs->texture(name))
+		{
+			const int reduction = g_textureReduction;
+			const std::string cacheKey = "pack:" + pf->diskPath + "#coverage" + std::to_string(alphaCoverage) + (reduction > 0 ? "#reduction" + std::to_string(reduction) : std::string());
+			auto cached = Textures.find(cacheKey);
+			if (cached != Textures.end())
+			{
+				found = true;
+				return cached->second;
+			}
+			std::string error;
+			Ref<Image> image = Load_Asset_Pack_Image(Packs, name, error);
+			if (image.is_null())
+			{
+				errors.push_back("texture " + name + ": " + error);
+				TextureErrors.push_back(errors.back());
+				return Ref<Texture2D>();
+			}
+			if (!image->has_mipmaps() && !image->is_compressed())
+			{
+				image->generate_mipmaps();
+			}
+			preserveAlphaCoverage(image, alphaCoverage);
+			Reduce_Image(image, reduction);
+			Ref<ImageTexture> tex = ImageTexture::create_from_image(image);
+			Textures[cacheKey] = tex;
+			found = true;
+			return tex;
+		}
+	}
+	TextureResolution res = Resolve_Packed_W3D_Texture(name, [&](const std::string &p) { return Fs.doesFileExist(p); }, isBfme1Data(Fs)); // community PR #36: the archives' layout
+	bool isPng = false;
+	if (!res.Found && !isBfme1Data(Fs) && name.size() > 4)
+	{
+		// lane WOTR-2 [inference, as the W3DModelBuilder's WOTR-1 fallback]: a few retail textures exist only as .png in the compiled folder
+		// (LivingMap's LM_MinasTirith); the compiled-only .jpg ones (LM_Smoke, EXLavaSeq) resolve through Resolve_Packed_W3D_Texture above
+		const std::string dds = W3D_Compiled_Texture_Path(name);
+		const std::string png = dds.size() > 4 ? dds.substr(0, dds.size() - 4) + ".png" : std::string();
+		res.Tried.push_back(png);
+		if (!png.empty() && Fs.doesFileExist(png))
+		{
+			res.Found = true;
+			res.Path = png;
+			res.IsDDS = false;
+			isPng = true;
+		}
+	}
 	if (!res.Found)
 	{
 		if (!quietWhenMissing)
@@ -390,11 +615,14 @@ Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::ve
 		return Ref<Texture2D>();
 	}
 	const int reduction = g_textureReduction;
-	const std::string cacheKey = reduction > 0 ? res.Path + "#reduction" + std::to_string(reduction) : res.Path;
+	const std::string coverageKey = alphaCoverage > 0 ? res.Path + "#coverage" + std::to_string(alphaCoverage) : res.Path;
+	const std::string cacheKey = reduction > 0 ? coverageKey + "#reduction" + std::to_string(reduction) : coverageKey;
 	auto it = Textures.find(cacheKey);
 	if (it != Textures.end())
 	{
 		found = true;
+		const auto note = PackedTextureNotes.find(cacheKey);
+		if (notes && note != PackedTextureNotes.end()) notes->push_back(note->second);
 		return it->second;
 	}
 	std::vector<std::uint8_t> bytes;
@@ -414,17 +642,24 @@ Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::ve
 	auto override = g_textureOverrides.find(textureOverrideKey(name));
 	if (override != g_textureOverrides.end())
 		image = override->second->duplicate();
-	else
-		err = decodeTexture(image, buffer, res.IsDDS);
-	if (override == g_textureOverrides.end() && err == OK && res.Path.size() >= 4 && res.Path.substr(res.Path.size() - 4) == ".jpg")
+	else if (isPng)
+		err = image->load_png_from_buffer(buffer);
+	else if (res.Path.size() >= 4 && res.Path.substr(res.Path.size() - 4) == ".jpg")
 	{
-		// BFME1 floor textures pack their alpha separately beside JPEG colour.
 		AptArchiveFileSource source(Fs);
 		bool paired = false;
-		Ref<Image> merged = loadPackedTexture(source, res.Path.substr(0, res.Path.size() - 4), &paired);
-		if (merged.is_valid()) image = merged;
+		image = loadPackedTexture(source, res.Path.substr(0, res.Path.size() - 4), &paired, &buffer);
+		err = image.is_valid() ? OK : ERR_FILE_CORRUPT;
+		if (paired)
+		{
+			const std::string note = "[S-1482] model texture " + res.Path + ": packed PNG colour multiplication and alpha replacement are inferred; the loader merge was not read";
+			PackedTextureNotes[cacheKey] = note;
+			if (notes) notes->push_back(note);
+		}
 	}
-	if (err != OK || image->is_empty())
+	else
+		err = decodeTexture(image, buffer, res.IsDDS);
+	if (err != OK || image.is_null() || image->is_empty())
 	{
 		errors.push_back("could not decode texture " + res.Path);
 		TextureErrors.push_back(errors.back());
@@ -434,6 +669,7 @@ Ref<Texture2D> W3DMaterialFactory::Load_Texture(const std::string &name, std::ve
 	{
 		image->generate_mipmaps();
 	}
+	preserveAlphaCoverage(image, alphaCoverage);
 	Reduce_Image(image, reduction); // lane OPTS-2
 	Ref<ImageTexture> tex = ImageTexture::create_from_image(image);
 	Textures[cacheKey] = tex;
@@ -475,7 +711,7 @@ Ref<Texture2D> W3DMaterialFactory::Recolored_House_Texture(const std::string &na
 	Error err;
 	if (res.Path.size()>=4 && res.Path.substr(res.Path.size()-4)==".jpg") {
 	 AptArchiveFileSource source(Fs);bool paired=false;
-	 image=loadPackedTexture(source,res.Path.substr(0,res.Path.size()-4),&paired);
+	 image=loadPackedTexture(source,res.Path.substr(0,res.Path.size()-4),&paired,&buffer);
 	 err=image.is_valid() ? OK : ERR_FILE_CORRUPT;
 	 if (paired) {
 	  const std::string note = "[S-1482] house texture " + res.Path + ": packed PNG colour multiplication and alpha replacement are inferred; the loader merge was not read";
@@ -563,6 +799,7 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 	bool hasInfo[2] = { false, false };
 	std::string normalMapName;
 	std::shared_ptr<TextureMapperClass> simpleUv; // RENDER-2: simple.fxo's TexCoordTransform_0 as the stage 0 matrix
+	W3DFxConversionSurface conv; // classic surfaces: how retail's conversion and house colour recolour see the mesh
 
 	if (surf.Kind == MATERIAL_CLASSIC)
 	{
@@ -579,6 +816,34 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 		key.DetailColor = st.DetailColorFunc;
 		key.DetailAlpha = st.DetailAlphaFunc;
 		key.Unshaded = st.PriGradient == W3D_GRADIENT_DISABLE;
+		key.SecGradient = st.SecGradient;
+		// the mesh's pass-0 surface as retail's conversion and its house colour recolour judge it (w3dfxconvert.h)
+		conv.Shader = &surf.Shader;
+		conv.HasVertexMaterial = surf.HasVertexMaterial;
+		conv.PassCount = 0;
+		conv.Pass0Surfaces = 0; // one draw surface per (pass, shader, vertex material, textures): a second one in pass 0 is a material / shader / texture array
+		const MeshDrawSurface *first = nullptr;
+		for (const MeshDrawSurface &other : mesh.Surfaces)
+		{
+			conv.PassCount = std::max(conv.PassCount, other.Pass + 1);
+			if (other.Pass != 0) continue;
+			++conv.Pass0Surfaces;
+			if (!first) first = &other;
+			else if (other.Stage[0].TextureName != first->Stage[0].TextureName) conv.Pass0TexturesDiffer = true;
+		}
+		for (int s = 0; s < 2; ++s)
+		{
+			conv.StageTexture[s] = surf.Stage[s].HasTexture;
+			conv.MapperType[s] = surf.Stage[s].MapperType;
+			conv.MapperArgs[s] = surf.Stage[s].MapperArgs;
+		}
+		if (g_shaderMaterialReplacement)
+		{
+			// RW 0x516A30 / MeshModelClass::Register_For_Rendering: the conversion to DefaultW3D.fx
+			key.ConvertedFx = W3D_Fx_Conversion_Refusal(conv).empty();
+			const std::string stop = W3D_Fx_Conversion_Stop(conv); // S-6020
+			if (!stop.empty()) out.Notes.push_back(stop);
+		}
 		alphaRef = st.AlphaRef / 255.0f - 0.5f / 255.0f; // GREATEREQUAL on an 8 bit value
 		if (st.PriGradient == W3D_GRADIENT_ADD) out.Notes.push_back("primary gradient ADD drawn as a modulated colour");
 		if (st.NeverDraws) out.Notes.push_back("depth function NEVER: nothing passes the depth test");
@@ -590,6 +855,17 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 			emissive = Color(vm.Emissive.R / 255.0f, vm.Emissive.G / 255.0f, vm.Emissive.B / 255.0f, 1.0f);
 			specColor = Color(vm.Specular.R / 255.0f, vm.Specular.G / 255.0f, vm.Specular.B / 255.0f, 1.0f);
 			shininess = vm.Shininess;
+		}
+		if (key.ConvertedFx && st.PriGradient == W3D_GRADIENT_DISABLE)
+		{
+			// MeshMatDescFXShaderConversion.cpp:286-327 / RW 0x599865-0x599a62: useMaterialColors = Get_Lighting() && primary gradient != 0, so an unlit surface
+			// hands DefaultW3D.fx ColorAmbient / ColorDiffuse / ColorSpecular as the record's zero vector (the record constructor RW 0x550B8C clears it), ColorEmissive
+			// 1, 1, 1 and Opacity 1.0; the vertex shader then outputs v0 = 0.5 * vertex colour (alpha: vertex colour alpha) and v1 = 0 (W3DShaderKey: the secondary
+			// texture code reads v_lit0 / v_lit1)
+			diffuse = Color(0, 0, 0, 1);
+			ambientMat = Color(0, 0, 0, 1);
+			emissive = Color(1, 1, 1, 1);
+			specColor = Color(0, 0, 0, 1);
 		}
 		for (int s = 0; s < 2; ++s)
 		{
@@ -636,6 +912,26 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 				simpleUv.reset(new SimpleFxUvMapper(uvTransform));
 			}
 		}
+		else if (AsciiStringUtil::lowered(fx.TypeName) == "watershader.fx")
+		{
+			// WOTR-2 [S-035 approximation]: a WaterShader.FX mesh (LivingMap's WATER) draws its MaterialColorDiffuse (rgb, alpha) lit like an untextured
+			// classic material and alpha blended without depth writes; the bump, environment, wave and PCA textures and the specular are not drawn.
+			// Before this the effect fell to the normalmapped path with no texture: a white (on the strategic map, pink-lit) sheet.
+			key.Fx = false;
+			key.Texturing = false;
+			key.PriGradient = W3D_GRADIENT_MODULATE;
+			key.Blend = W3D_GODOT_BLEND_MIX;
+			key.DepthWrite = false;
+			for (const MeshShaderMaterialProperty &p : fx.Properties)
+			{
+				if (AsciiStringUtil::lowered(p.Name) == "materialcolordiffuse")
+				{
+					diffuse = Color(p.Float[0], p.Float[1], p.Float[2], p.Float[3]);
+					ambientMat = Color(p.Float[0], p.Float[1], p.Float[2], 1.0f);
+				}
+			}
+			out.Notes.push_back("WaterShader.FX drawn as its MaterialColorDiffuse (S-035)");
+		}
 		else
 		{
 		ambientMat = Color(0.4f, 0.4f, 0.4f, 1.0f);
@@ -666,7 +962,7 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 		}
 	}
 
-	// stop S-4832: the ModelConditionState's `Texture = A B` pairs of the model being built (the SNOW state's KBHall.tga -> KBHall_snow.tga of 159 faction
+	// stop S-5015: the ModelConditionState's `Texture = A B` pairs of the model being built (the SNOW state's KBHall.tga -> KBHall_snow.tga of 159 faction
 	// buildings): every texture this surface names A is loaded as B, before the house colour lookup reads it. INFERENCE: retail's swap routine was not read
 	for (std::string *name : { &tex[0], &tex[1], &normalMapName })
 	{
@@ -674,7 +970,7 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 		{
 			if (!swap.excludes(mesh.Name) && !name->empty() && (swap.first == "*" || AsciiStringUtil::compareNoCase(*name, swap.first) == 0)) // "*": every texture (a floor's WeatherTexture)
 			{
-				out.Notes.push_back("texture " + *name + " drawn as " + swap.second + " (the model state's Texture swap, S-4832)");
+				out.Notes.push_back("texture " + *name + " drawn as " + swap.second + " (the model state's Texture swap, S-5015)");
 				*name = swap.second;
 				break;
 			}
@@ -689,18 +985,34 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 	{
 		if (tex[s].empty()) continue;
 		key.Tex[s] = true;
-		textures[s] = loadTextures ? Load_Texture(tex[s], out.Errors, found[s]) : Placeholder_Texture(false);
+		textures[s] = loadTextures ? Load_Texture(tex[s], out.Errors, found[s], false, isBfme1Data(Fs) && key.AlphaTest && !key.AlphaTestLessEqual ? (int)std::ceil(alphaRef * 255.0f) : 0, &out.Notes) : Placeholder_Texture(false);
 		if (hasInfo[s])
 		{
 			key.ClampU[s] = (info[s].Attributes & 0x08) != 0; // W3DTEXTURE_CLAMP_U
 			key.ClampV[s] = (info[s].Attributes & 0x10) != 0; // W3DTEXTURE_CLAMP_V
 			key.NoLod[s] = (info[s].Attributes & 0x04) != 0;  // W3DTEXTURE_NO_LOD
 		}
+		// BFME1 plot floors are alpha blended, not alpha tested. Their authored
+		// mips average the sparse marking into near-transparent pixels. Keep the
+		// original marking when shrinking. OpenBFME presentation policy (S-5017),
+		// not a retail sampler claim; opaque castle floors keep their mipmaps.
+		if (FloorSampling && key.Blend == W3D_GODOT_BLEND_MIX && !key.DepthWrite)
+		{
+			key.FloorOverlay = true;
+			key.NoLod[s] = true;
+			if (s == 0) out.Notes.push_back("[S-5017] BFME1 translucent floor markings use base-level linear sampling, a one-world-unit lift and render after the castle floor to retain visibility (OpenBFME policy)");
+		}
+	}
+	// Explicit exporter absence marker, not a missing named texture. Keep this
+	// presentation interpretation visible until the retail binding is verified.
+	if (AsciiStringUtil::compareNoCase(normalMapName, "None") == 0) {
+		normalMapName.clear();
+		out.Notes.push_back("[S-5304] FX NormalMap=None is presented without bump mapping; retail sentinel binding is unverified");
 	}
 	if (!normalMapName.empty())
 	{
 		bool f;
-		normalTex = loadTextures ? Load_Texture(normalMapName, out.Errors, f) : Placeholder_Texture(true);
+		normalTex = loadTextures ? Load_Texture(normalMapName, out.Errors, f, false, 0, &out.Notes) : Placeholder_Texture(true);
 		key.NormalMap = normalTex.is_valid() && key.Tangents;
 		if (normalTex.is_valid() && !key.Tangents) out.Notes.push_back("normal map without tangents is not applied");
 	}
@@ -725,8 +1037,12 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 			out.Errors.insert(out.Errors.end(), hcErrors.begin(), hcErrors.end());
 			if (hcTex.is_valid())
 			{
+				const std::string houseStop = W3D_House_Color_Stop(conv, key.ConvertedFx); // S-6022
+				if (!houseStop.empty()) out.Notes.push_back(houseStop);
+				const std::string specStop = W3D_FixedFunction_House_Color_Stop(key.ConvertedFx, key.PriGradient != W3D_GRADIENT_DISABLE, key.SecGradient); // S-6023
+				if (!specStop.empty()) out.Notes.push_back(specStop);
 				key.HouseColor = true;
-				out.Notes.push_back("house colour texture " + *hc + " masks the team colour (hypothesis S-119)");
+				out.Notes.push_back("house colour texture " + *hc + ": the recoloured texel is combined with the lit base by its alpha (" + std::string(key.ConvertedFx ? "DefaultW3D.fx HouseColorEnable" : "fixed-function BLENDTEXTUREALPHA") + ", S-022)");
 			}
 			else
 			{
@@ -779,7 +1095,22 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 	Ref<ShaderMaterial> mat;
 	mat.instantiate();
 	key.AlphaOverride = AlphaOverride; // lane BUILD-5 r3
+	key.SelectionDecals = SelectionDecals && key.Blend == W3D_GODOT_BLEND_OPAQUE && !AlphaOverride; // lane SELWALL-1: the generator's opaque surfaces only
 	mat->set_shader(Get_Shader(key));
+	if (SceneEnvironment)
+	{
+		for (const char *suffix : {"obj", "inf"})
+		{
+			const auto &light = std::string(suffix) == "obj" ? SceneLighting.objects : SceneLighting.infantry;
+			mat->set_shader_parameter(String("w3d_amb_") + suffix, Vector3(light.ambient[0], light.ambient[1], light.ambient[2]));
+			mat->set_shader_parameter(String("w3d_lcol_") + suffix, columns(light.color, false));
+			mat->set_shader_parameter(String("w3d_ldir_") + suffix, columns(light.toLight, true));
+		}
+		mat->set_shader_parameter("w3d_fogged_frac", 1.0f);
+		mat->set_shader_parameter("w3d_fog", Vector3(SceneWeather.fogEnabled ? 1.0f : 0.0f, SceneWeather.fogStart, SceneWeather.fogEnd));
+		mat->set_shader_parameter("w3d_fog_color", Vector3(SceneWeather.fogColor[0], SceneWeather.fogColor[1], SceneWeather.fogColor[2]));
+		mat->set_shader_parameter("w3d_fog_shift", 0.0f);
+	}
 	mat->set_shader_parameter("w3d_diffuse", Vector4(diffuse.r, diffuse.g, diffuse.b, diffuse.a));
 	mat->set_shader_parameter("w3d_ambient_mat", Vector3(ambientMat.r, ambientMat.g, ambientMat.b));
 	mat->set_shader_parameter("w3d_emissive", Vector3(emissive.r, emissive.g, emissive.b));
@@ -805,7 +1136,10 @@ W3DMaterialResult W3DMaterialFactory::Create(const MeshRenderData &mesh, const M
 	if (key.NormalMap) mat->set_shader_parameter("w3d_normal", normalTex);
 	if (key.HouseColor) mat->set_shader_parameter("w3d_hc_tex", hcTex);
 	const int priority = std::clamp(surf.Pass - std::min(surf.SortLevel, 31) * 4, -128, 127);
-	mat->set_render_priority(priority);
+	// S-5017: blended floor overlays must follow the depth-writing castle floor,
+	// whose batch order otherwise changes with camera position. Keep depth testing
+	// so buildings and units still occlude them. OpenBFME presentation policy.
+	mat->set_render_priority(FloorSampling && key.Blend == W3D_GODOT_BLEND_MIX && !key.DepthWrite ? 32 : priority);
 
 	for (int s = 0; s < 2; ++s)
 	{

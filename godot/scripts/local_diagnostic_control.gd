@@ -176,7 +176,7 @@ func _restore_overrides() -> void:
 		game._shell.set_option("OpenBFMEShadowProfile", "" if _profile_before == null else str(_profile_before))
 		_profile_changed = false
 		if is_instance_valid(game._sun):
-			preload("res://scripts/shadow_profile.gd").apply(game._sun, game._game_options.current().OpenBFMEShadowProfile, int(game._shell.get_detail_state().get("shadow_lod", 3)))
+			game.set_shadow_lod(int(game._shell.get_detail_state().get("shadow_lod", 3)))
 	if _scale_changed and is_inside_tree():
 		get_viewport().scaling_3d_scale = _scale_before
 		_scale_changed = false

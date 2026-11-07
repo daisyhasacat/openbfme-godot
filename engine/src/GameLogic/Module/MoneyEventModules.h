@@ -1,16 +1,18 @@
 // OpenBFME. GPL-3.0.
 //
 // The money-moving modules that act on deaths and hits (lane ECON-1): RefundDie (RW create proc 0x64C502, data 0x6536A3, die interface mask 2), PillageModule (RW create
-// 0x64C492, data 0x6535ED, interface mask 0x2000: "damage dealt"), and the data of SalvageCrateCollide (RW create 0x651052, data 0x655980, collide interface mask 0x10).
+// 0x64C492, data 0x6535ED, interface mask 0x2000: "damage dealt"), and the data of SalvageCrateCollide (RW create 0x651052, data 0x655980, collide interface mask 0x10;
+// its runtime: GameLogic/Module/SalvageCrateCollide.h, lane MODCOMPAT-MOD1).
 // What calls them (the death pipeline, the damage pipeline, the collision system) belongs to other lanes (stop S-257): RefundDie answers Object::friend_onDie,
-// PillageModule::onDamageDealt is the function the damage pipeline calls for each hit its object lands, SalvageCrateCollide runtime is in CrateCollide.cpp (see docs/CRATE_PICKUPS.md).
+// PillageModule::onDamageDealt is the function the damage pipeline calls for each hit its object lands; SalvageCrateCollide's contacts come from AIWorld's crate pass.
 //
 // TARGET FACTS (RotWK game.dat, caveat S-001):
 //   * DieMuxData (the start of every die module's table, RW 0xC76BD8 extra 8; defaults RW 0x8D2970): DeathTypes (RW 0x73A68A, default ALL), ExemptStatus (+4) and
 //     RequiredStatus (+0x14) object status masks (default empty), DamageAmountRequired (+0x24, default -1.0), MinKillerAngle (+0x28, default 1.0) and MaxKillerAngle (+0x2C,
 //     default -1.0), both in radians (RW 0x42EE15). isDieApplicable (RW 0x8D29A9, args the object and the damage info): false unless bit (deathType - 1) of DeathTypes is set (the
 //     shift count is the x86's, modulo 32); false unless the object's status has every RequiredStatus bit and none of ExemptStatus; with DamageAmountRequired >= 0 false when
-//     it is larger than the damage amount; when MaxKillerAngle > MinKillerAngle the killer's bearing must fall inside the window (not ported: reported, S-257).
+//     it is larger than the damage amount; when MaxKillerAngle > MinKillerAngle the killer
+//     (the source) must exist and its bearing must fall inside the window (RW 0x8D2A0F .. 0x8D2AAC; lane SIEGEFALL-1, see the definition).
 //   * RefundDie (module size 0x1C, data 0x44): table RW 0xC06998: UpgradeRequired (+0x38, none), RefundPercent (+0x3C, parsePercentToReal, 0.0), BuildingRequired (+0x40,
 //     ObjectFilter, unset). onDie (RW 0x888519): the die mux test; the object is neither under construction (status 2) nor sold (status 19); its owner exists, has completed
 //     UpgradeRequired (when set) and owns an object satisfying BuildingRequired (when valid, completedOnly = false); refund = ceil(object + 0x33C * RefundPercent) (x87 at
@@ -41,8 +43,8 @@ struct DieMuxData
 	float m_damageAmountRequired = -1.0f;
 	float m_minKillerAngle = 1.0f;
 	float m_maxKillerAngle = -1.0f;
-	// RW 0x8D29A9 (see above); false + `*angleNotPorted` set when the angle window would have been consulted
-	bool isDieApplicable(const Object &obj, const DieModuleInterface::Event &event, bool *angleNotPorted = nullptr) const;
+	// RW 0x8D29A9 (see above), the killer window included
+	bool isDieApplicable(const Object &obj, const DieModuleInterface::Event &event) const;
 };
 
 class RefundDieModuleData : public ModuleData
@@ -95,7 +97,8 @@ private:
 	unsigned m_counter = 0; // RW module + 0x18
 };
 
-// Shared CrateCollide fields, also used by the veterancy shields.
+// CrateCollideModuleData (constructor RW 0x8C07A0), shared by SalvageCrateCollide's data (constructor RW 0x65592C) and the veterancy shields'; the runtime is
+// GameLogic/Module/SalvageCrateCollide.h (lane MODCOMPAT-MOD1)
 class CrateCollideModuleData : public ModuleData
 {
 public:
@@ -104,12 +107,12 @@ public:
 	bool m_forbidOwnerPlayer = false;    // +0x40
 	bool m_buildingPickup = false;       // +0x41
 	bool m_humanOnly = false;            // +0x42
-	std::string m_pickupScience;         // +0x44
+	int m_pickupScience = -1;            // +0x44 (parseScience RW 0x73AFE3; -1 = none)
 	std::string m_executeFX;             // +0x48
 	std::string m_executeAnimation;      // +0x4C
 	float m_executeAnimationTime = 0.0f; // +0x50
 	float m_executeAnimationZRise = 0.0f; // +0x54
-	bool m_executeAnimationFades = true; // +0x58 (BFME2 constructor)
+	bool m_executeAnimationFades = true; // +0x58 (RW 0x8C07FA)
 	static void buildFieldParse(MultiIniFieldParse &p);
 };
 
@@ -118,11 +121,11 @@ class SalvageCrateCollideModuleData : public CrateCollideModuleData
 public:
 	float m_porterChance = 0.0f;         // +0x5C
 	float m_bannerChance = 0.0f;         // +0x60
-	float m_levelUpChance = 0.0f;        // +0x64
-	float m_levelUpRadius = 0.0f;        // +0x68
-	float m_resourceChance = 0.0f;       // +0x6C
-	int m_minResource = 0;               // +0x70
-	int m_maxResource = 0;               // +0x74
+	float m_levelUpChance = 0.5f;        // +0x64 (RW 0xBD869C)
+	float m_levelUpRadius = 100.0f;      // +0x68 (RW 0xBD88D8; parsed as a percent)
+	float m_resourceChance = 0.5f;       // +0x6C
+	int m_minResource = 100;             // +0x70
+	int m_maxResource = 5000;            // +0x74
 	std::string m_upgrade;               // +0x78
 	bool m_allowAIPickup = false;        // +0x7C
 	static void buildFieldParse(MultiIniFieldParse &p);

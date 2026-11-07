@@ -9,6 +9,7 @@
 // Each test drives the real HUD (mouse events, key events, the movies' buttons, the control bar), counts the messages that reach the command list and checks
 // the effect in the world. They SKIP when ROTWK_INSTALL / BFME2_INSTALL are unset. GPL-3.0.
 
+#include "HordeCompleteTestUtil.h"
 #include "HudTestUtil.h"
 
 #include "Common/Player.h"
@@ -27,6 +28,7 @@
 #include "GameClient/MessageStream/LookAtXlat.h"
 #include "GameClient/TacticalCamera.h"
 #include "GameClient/CameraSettings.h"
+#include "GameClient/LinearCampaign.h"
 #include "GameClient/LiveGame.h"
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFileSystem.h"
 #include "GameLogic/GameLogicDispatch.h"
@@ -38,11 +40,14 @@
 #include "Libraries/WWVegas/WW3D2/assetmgr.h"
 #include "GameLogic/GameMessage.h"
 #include "GameEngineDevice/W3DDevice/GameClient/WorldHeightMap.h"
+#include "GameLogic/AI/AIGuard.h"
 #include "GameLogic/Map/TerrainLogic.h"
+#include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/Module/BehaviorModule.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/System/ShroudManager.h"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <utility>
@@ -88,8 +93,7 @@ struct HudFix
 	{
 		std::vector<std::uint8_t> bytes;
 		std::string textError;
-		REQUIRE_MESSAGE(s.mount->fs->readFile("data/lotr.str", bytes, &textError), textError);
-		REQUIRE_MESSAGE(text.table.parse(bytes, &textError), textError);
+		REQUIRE_MESSAGE(text.table.loadRetail(*s.mount->fs, &textError), textError); // data/lotr.str, or a non-English install's lotr.csf
 		InGameHud::Config cfg{ *rig.game, *s.world, *s.mount->fs, services, rig.view, s.mouse, s.meta, &text };
 		hud = std::make_unique<InGameHud>(cfg);
 		std::string error;
@@ -169,6 +173,7 @@ struct HudFix
 		REQUIRE(c);
 		Coord3D at{ 600.0f, 600.0f, 0.0f };
 		c->setPosition(&at);
+		testutil::completeHorde(c); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 		c->friend_onBuildComplete();
 		rig.local->science().grantScience(TheScienceStore->getScienceFromInternalName(science));
 		rig.game->shroud().revealMapForPlayerPermanently(rig.index());
@@ -439,6 +444,7 @@ TEST_CASE("ownerfix1 cutscene input: a double click, a drag box and the hero bar
 	at.x += 120.0f;
 	at.z = f.logic().getGroundHeight(at.x, at.y);
 	hero->setPosition(&at);
+	testutil::completeHorde(hero); // a horde makes its members where it stands (onBuildComplete, RW 0x8718ED)
 	hero->friend_onBuildComplete();
 	f.frames(40);
 	InGameHeroSelect *bar = f.hud->heroSelect();
@@ -688,8 +694,7 @@ TEST_CASE("ownerfix1 cutscene input: InGameHud's DISABLE_INPUT drops the help pr
 	RecordingShellServices services;
 	GameTextTableSource text;
 	std::vector<std::uint8_t> bytes;
-	REQUIRE_MESSAGE(s.mount->fs->readFile("data/lotr.str", bytes, &err), err);
-	REQUIRE_MESSAGE(text.table.parse(bytes, &err), err);
+	REQUIRE_MESSAGE(text.table.loadRetail(*s.mount->fs, &err), err); // data/lotr.str, or a non-English install's lotr.csf
 	InGameHud::Config cfg{ game, *s.world, *s.mount->fs, services, cam, s.mouse, s.meta, &text };
 	InGameHud hud(cfg);
 	REQUIRE_MESSAGE(hud.boot(&err), err);
@@ -899,18 +904,32 @@ struct CampaignHud
 	int disables = 0, enables = 0;
 	unsigned firstEnableFrame = 0;
 
-	explicit CampaignHud(SharedWorld &s) : sh(s), source(*s.mount->fs), assets(source)
+	// lane B2SPELL-1: `campaign` / `mission` load a LinearCampaign mission as the shell starts one (its map, the carry-over of a first mission:
+	// CampaignTestUtil.h's loadCampaignMission); without them MAP ANG Angmar as a bare campaign map
+	explicit CampaignHud(SharedWorld &s, const char *campaign = nullptr, int mission = 0) : sh(s), source(*s.mount->fs), assets(source)
 	{
 		game = std::make_unique<LiveGame>(*s.world, *s.mount->fs, assets, s.options);
 		LiveGame::Options o;
 		o.mapName = "map ang angmar";
 		o.campaign = true;
+		if (campaign)
+		{
+			const LinearCampaign *c = s.world->linearCampaigns().find(campaign);
+			REQUIRE_MESSAGE(c != nullptr, campaign);
+			REQUIRE((size_t)mission < c->missions.size()); // tolerance: a precondition (the mission exists), not a measured value
+			o.mapName = c->missions[(size_t)mission].map;
+			if (mission == 0)
+			{
+				o.campaignCarryover = true;
+				o.carryover = CampaignCarryover::beginCampaign(c->carryoverUnits);
+				o.carryoverDelayed = c->missions[0].delayCarryover;
+			}
+		}
 		std::string err;
 		REQUIRE_MESSAGE(game->load(o, &err), err);
 		view = PinholeView({ 0, -400, 500 }, { 0, 0, 0 }, 1024, 768, 0.7f);
 		std::vector<std::uint8_t> bytes;
-		REQUIRE_MESSAGE(s.mount->fs->readFile("data/lotr.str", bytes, &err), err);
-		REQUIRE_MESSAGE(text.table.parse(bytes, &err), err);
+		REQUIRE_MESSAGE(text.table.loadRetail(*s.mount->fs, &err), err); // data/lotr.str, or a non-English install's lotr.csf
 		InGameHud::Config cfg{ *game, *s.world, *s.mount->fs, services, view, s.mouse, s.meta, &text };
 		hud = std::make_unique<InGameHud>(cfg);
 		REQUIRE_MESSAGE(hud->boot(&err), err);
@@ -961,8 +980,14 @@ struct CampaignHud
 //   * merge queue q18: the intro's fights earn 265.38 skill points on the merged tree (rank 3, 7 power points), measured; the lane's own tree (base b5c2095d) ended the
 //     intro between 100 and 200 (rank 2, 6 points). The movement is already in the tree before DEVPORT-3C (measured on the OWNERFIX-1 merge alone) and is
 //     not DEVPORT-3C's Horde provider (reverting it left 265.38): a simulation change of merge queues q16 / q17 moved the intro's fight, not attributed further;
+//   * lane SUMMON-1: the intro's GoblinCaveTroll now starts throwing rocks as retail's does (scripts.lua OnTrollCreated grants Upgrade_SwitchToRockThrowing, its
+//     DoCommandUpgrade runs Command_ToggleMountainTrollRockThrow at frame 0: measured by logging DoCommandUpgrade, and the intro reaches rank 3 again with
+//     DoCommandUpgrade switched off), so the intro's fights earn 160 skill points: rank 2, 6 power points; merge queue q23 (TARGET-1, ATTACKPATH-1, FLANK-1): 214, rank 3;
+//   * lane OFFMAP-1: that fight was the Black Numenorean counterattack the map places below its edge (y -78 .. -375), pulled onto the grid at frame 1 by
+//     the port's idle state (ZH's cheat move, not in RotWK's RW 0x745A64). Kept off the map (OFF_MAP, as retail: the Witch-king ends the intro at level 1)
+//     nobody fights in the intro: 0 skill points, rank 1, the 5 starting power points (measured), enough for Chill Wind;
 //   * the store sells Chill Wind (AngmarSpellStoreCommandSet slot 2) for EVIL_RANK_1_COST 5; a cast of it makes a SpellBookChillWind (OCL_SpellBookChillWind).
-TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights earn rank 3, Powers opens by the Palantir's button, Chill Wind is bought by clicks, aimed and cast, and its object stands")
+TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's intro ends at rank 1 (its counterattack stays off the map), Powers opens by the Palantir's button, Chill Wind is bought by clicks, aimed and cast, and its object stands")
 {
 	if (!haveWorld("ownerfix1 campaign powers played"))
 	{
@@ -986,10 +1011,10 @@ TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights e
 	REQUIRE(c.enables == 1);
 	CHECK(c.disables == 1);
 	c.frames(20);
-	CHECK(sc.getRankLevel() == 3);
-	CHECK(SimMath::floorToInt(sc.getSkillPoints()) >= 200); // tolerance: the rank 3 threshold (200) is the property; the intro's kills decide how far past it (q18: 265.38, rank 4 is 300)
+	CHECK(sc.getRankLevel() == 1);
+	CHECK(sc.getSkillPoints() == 0.0f); // no kill in the intro
 	const int points0 = sc.getSciencePurchasePoints();
-	CHECK(points0 == 7); // 5 at the start + 1 for each of the two ranks
+	CHECK(points0 == 5); // the 5 at the start
 	// three more kills by the Witch King: each exactly the data's award
 	Object *wk = c.game->logic().scriptEngine().getUnitNamed("Witch King");
 	REQUIRE(wk);
@@ -1011,8 +1036,31 @@ TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights e
 		++killed;
 	}
 	REQUIRE(killed == 3);
-	CHECK(sc.getRankLevel() == 3);
+	CHECK(sc.getRankLevel() == 1); // 3 skill points: rank 2 needs 100
 	CHECK(sc.getSciencePurchasePoints() == points0);
+	// a campaign rank crossed (review of #73: the intro alone no longer reaches one): the Witch King kills the mission's enemy troops, each award the data's,
+	// until the skill points pass the next rank's threshold (100 * the rank); the rank rises and grants its power point (PLAYER_PURCHASE_POINTS_GRANTED 1)
+	static const int kInfantry = ObjectTemplateInfoBuilder::kindOfIndex("INFANTRY"), kCavalry = ObjectTemplateInfoBuilder::kindOfIndex("CAVALRY");
+	const int rankBefore = sc.getRankLevel();
+	const float threshold = 100.0f * (float)rankBefore;
+	for (Object *o = c.game->logic().getFirstObject(); o && sc.getSkillPoints() < threshold; o = o->getNextObject())
+	{
+		if (o->isEffectivelyDead() || !o->getControllingPlayer() || me->getRelationship(o->getTeam()) != ENEMIES || !o->getBodyModule() ||
+			!(o->isKindOf((unsigned)kInfantry) || o->isKindOf((unsigned)kCavalry)))
+		{
+			continue;
+		}
+		DamageInfo info;
+		info.m_input.m_damageType = DAMAGE_UNRESISTABLE;
+		info.m_input.m_sourceID = wk->getID();
+		info.m_input.m_sourcePlayerMask = 1u << me->getPlayerIndex();
+		info.m_input.m_amount = 100000.0f;
+		o->getBodyModule()->attemptDamage(info);
+	}
+	REQUIRE(sc.getSkillPoints() >= threshold); // tolerance: the kill that crosses the threshold passes it by the rest of its award
+	CHECK(sc.getRankLevel() == rankBefore + 1);
+	const int points = sc.getSciencePurchasePoints();
+	CHECK(points == points0 + 1);
 	// Powers: the Palantir's button, by the mouse
 	const int pal = c.hud->palantir()->level();
 	int x = 0, y = 0;
@@ -1023,7 +1071,7 @@ TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights e
 	REQUIRE_MESSAGE(st, c.hud->spellStoreError());
 	const int lvl = st->level();
 	REQUIRE(c.hud->windows().aptText("APT:SpellStoreSpellPoints") != nullptr);
-	CHECK(*c.hud->windows().aptText("APT:SpellStoreSpellPoints") == "7"); // the points the screen shows are the ones the player earned
+	CHECK(*c.hud->windows().aptText("APT:SpellStoreSpellPoints") == std::to_string(points)); // the points the screen shows are the ones the player earned (the rank crossed above: 6)
 	REQUIRE(st->model().buttons().size() == 12u); // AngmarSpellStoreCommandSet: 12 powers
 	CHECK(st->model().buttons()[1].scienceName == "SCIENCE_ChillWind");
 	CHECK(st->model().buttons()[1].cost == 5);
@@ -1033,13 +1081,13 @@ TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights e
 	c.clickAt(x, y);
 	c.frames(3);
 	CHECK(AptSpellStore::stateName(st->buttonState(1)) == std::string("_already_purchased"));
-	CHECK(*c.hud->windows().aptText("APT:SpellStoreSpellPoints") == "2");
+	CHECK(*c.hud->windows().aptText("APT:SpellStoreSpellPoints") == std::to_string(points - 5));
 	REQUIRE(hitPoint(*c.hud, lvl, "SpellStore.Buttons.ButtonsMain.Accept", x, y));
 	c.clickAt(x, y);
 	c.frames(40);
 	CHECK(c.hud->spellStore() == nullptr);
 	CHECK(sc.hasScience(TheScienceStore->getScienceFromInternalName("SCIENCE_ChillWind")));
-	CHECK(sc.getSciencePurchasePoints() == 2);
+	CHECK(sc.getSciencePurchasePoints() == points - 5);
 	// the spell book shows it; the press aims; the click on the ground in front of the Witch King casts
 	AptPalantir *p = c.hud->palantir();
 	CHECK(std::string(AptPalantir::spellStateName(p->spellSlotState(0))) == "_up");
@@ -1074,4 +1122,106 @@ TEST_CASE("ownerfix1 campaign powers played: the first Angmar mission's fights e
 	CHECK_FALSE(c.hud->spellBar().targeting());
 	CHECK(countTemplate(c.game->logic(), "SpellBookChillWind") == winds0 + 1);
 	CHECK(std::string(AptPalantir::spellStateName(p->spellSlotState(0))) == "_notReady");
+}
+
+// lane B2SPELL-1 (the owner, 10-30: "in the first mission for good campaign you cannot select the spellbook powers, they are blank"): the same flow in
+// BFME2's Good campaign. Retail facts, independent of the code under test: MAP GOOD Rivendell's human player PlyrElves is FactionElves, whose campaign
+// SpellBook is GoodSpellBook and PurchaseScienceCommandSet GoodSpellStoreCommandSet (data\ini\playertemplate.ini, RotWK and BFME2 alike): 16 powers,
+// the first four (Enshrouding Mist, Elven Gifts, Heal, Elven Wood) GOOD_RANK_1_COST 5 each (science.ini); rank 1 grants 5 points (Rank.ini). The store's
+// layout for a good campaign player is "_campaignGood" (RW 0x822DDE .. 0x822E1A: 0); each button's picture is its command button's ButtonImage
+// (SpellStore/Buttons/Spell%d, RW 0x822B23), e.g. Command_PurchaseSpellHeal's SBGood_Heal (data\ini\mappedimages\aptimages\spellbook.ini)
+TEST_CASE("b2spell1 campaign powers played: MAP GOOD Rivendell's Powers screen shows the Good campaign store's powers with their pictures, Heal is bought by clicks and the spell book shows it")
+{
+	if (!haveWorld("b2spell1 good campaign powers"))
+	{
+		return;
+	}
+	SharedWorld &s = shared();
+	CampaignHud c(s, "GOOD_CAMPAIGN", 0);
+	auto ctx = c.hud->enterContext();
+	Player *me = c.local();
+	REQUIRE(me);
+	CHECK(me->getPlayerName() == "PlyrElves");
+	PlayerScience &sc = me->science();
+	CHECK(sc.getRankLevel() == 1);
+	CHECK(sc.getSciencePurchasePoints() == 5);
+	for (int i = 0; i < 600 && c.disables > c.enables; ++i) // an intro that took the input gives it back first
+	{
+		c.frames(1);
+	}
+	c.frames(20);
+	MESSAGE("input taken " << c.disables << ", given back " << c.enables << " by frame " << c.game->logic().getFrame());
+	const int pal = c.hud->palantir()->level();
+	int x = 0, y = 0;
+	REQUIRE(hitPoint(*c.hud, pal, "PalantirButtons.Buttons.PlayerMagic", x, y));
+	c.clickAt(x, y);
+	c.frames(40);
+	AptSpellStore *st = c.hud->spellStore();
+	REQUIRE_MESSAGE(st, c.hud->spellStoreError());
+	const int lvl = st->level();
+	CHECK(st->layout() == 0); // "_campaignGood"
+	REQUIRE(c.hud->windows().aptText("APT:SpellStoreSpellPoints") != nullptr);
+	CHECK(*c.hud->windows().aptText("APT:SpellStoreSpellPoints") == "5");
+	REQUIRE(st->model().buttons().size() == 16u); // GoodSpellStoreCommandSet: 16 powers
+	for (int i = 0; i < 16; ++i)
+	{
+		const std::string clip = "SpellStore.Buttons.Spell" + std::to_string(i + 1);
+		const std::string state = AptSpellStore::stateName(st->buttonState(i));
+		MESSAGE(clip << " " << st->model().buttons()[(size_t)i].scienceName << " image '" << st->imageForClip(clip) << "' state " << state);
+		CHECK_FALSE(st->imageForClip(clip).empty());
+		CHECK(state == (i < 4 ? "_active" : "_disabled")); // tolerance: exact per slot; the < only picks the expected state (the first four powers are for sale)
+	}
+	CHECK(st->model().buttons()[2].scienceName == "SCIENCE_Heal");
+	CHECK(st->imageForClip("SpellStore.Buttons.Spell3") == "SBGood_Heal");
+	REQUIRE(hitPoint(*c.hud, lvl, "SpellStore.Buttons.Spell3", x, y));
+	c.clickAt(x, y);
+	c.frames(3);
+	CHECK(AptSpellStore::stateName(st->buttonState(2)) == std::string("_already_purchased"));
+	CHECK(*c.hud->windows().aptText("APT:SpellStoreSpellPoints") == "0");
+	REQUIRE(hitPoint(*c.hud, lvl, "SpellStore.Buttons.ButtonsMain.Accept", x, y));
+	c.clickAt(x, y);
+	c.frames(40);
+	CHECK(c.hud->spellStore() == nullptr);
+	CHECK(sc.hasScience(TheScienceStore->getScienceFromInternalName("SCIENCE_Heal")));
+	CHECK(sc.getSciencePurchasePoints() == 0);
+	AptPalantir *p = c.hud->palantir();
+	CHECK(std::string(AptPalantir::spellStateName(p->spellSlotState(0))) == "_up");
+	REQUIRE(c.hud->spellBar().buttons().size() > 0u); // tolerance: a precondition (the bar has its bought power), its exact contents are checked below
+}
+
+// lane B2SPELL-1: the Evil campaign's first mission (Darkness Rising) shows its store too. Its player's side is evil, so the layout is 1 and the store
+// sends SetLayout("_campaignEvil") (RW 0x822E43); EvilSpellStoreCommandSet's first power (Command_PurchaseSpellCaveBats) costs the rank 1 points
+TEST_CASE("b2spell1 campaign powers played: the Evil campaign's first mission's Powers screen shows its powers, and the first one is bought by a click")
+{
+	if (!haveWorld("b2spell1 evil campaign powers"))
+	{
+		return;
+	}
+	SharedWorld &s = shared();
+	CampaignHud c(s, "EVIL_CAMPAIGN", 0);
+	auto ctx = c.hud->enterContext();
+	Player *me = c.local();
+	REQUIRE(me);
+	for (int i = 0; i < 600 && c.disables > c.enables; ++i)
+	{
+		c.frames(1);
+	}
+	c.frames(20);
+	const int pal = c.hud->palantir()->level();
+	int x = 0, y = 0;
+	REQUIRE(hitPoint(*c.hud, pal, "PalantirButtons.Buttons.PlayerMagic", x, y));
+	c.clickAt(x, y);
+	c.frames(40);
+	AptSpellStore *st = c.hud->spellStore();
+	REQUIRE_MESSAGE(st, c.hud->spellStoreError());
+	CHECK(st->layout() == 1); // "_campaignEvil"
+	REQUIRE_FALSE(st->model().buttons().empty());
+	MESSAGE(me->getPlayerName() << ": " << st->model().buttons().size() << " powers, the first " << st->model().buttons()[0].scienceName << " for "
+								<< st->model().buttons()[0].cost << ", " << me->science().getSciencePurchasePoints() << " points");
+	CHECK_FALSE(st->imageForClip("SpellStore.Buttons.Spell1").empty());
+	REQUIRE(AptSpellStore::stateName(st->buttonState(0)) == std::string("_active"));
+	REQUIRE(hitPoint(*c.hud, st->level(), "SpellStore.Buttons.Spell1", x, y));
+	c.clickAt(x, y);
+	c.frames(3);
+	CHECK(AptSpellStore::stateName(st->buttonState(0)) == std::string("_already_purchased"));
 }

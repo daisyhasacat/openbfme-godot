@@ -10,18 +10,18 @@
 // w3d_tint, set on the icon's own instancer's nodes); INFERENCE (stop S-3302): RotWK's scene lighting of the tint was not read; the bib is ZH's W3DBibBuffer
 // quad (alpha blended, the corners at the drawable's height). Every problem (a model, a texture, a layout) is an error reported once (push_error) and listed
 // in state().errors, never a silent stand-in. r3: the instancers draw in the alpha-blended pass (W3DInstancer::set_alpha_override, DONOR ZH dx8renderer.cpp:1884-1916);
-// the ghost casts no shadow (no drawable does yet, stop S-3304).
+// the ghost casts no shadow (translucent drawables are not shadow-map casters, stop S-3304).
 
 #pragma once
 
 #include "GameClient/PlacementIcons.h"
 #include "GameClient/InGameUI.h"
+#include "GameClient/SelectionDecals.h"
 
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/decal.hpp>
 #include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/node3d.hpp>
-#include <godot_cpp/classes/decal.hpp>
 #include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
@@ -64,8 +64,16 @@ public:
 	//   instances, piece, base_site } ], errors: [...] }
 	Dictionary state() const;
 	const std::vector<std::string> &errors() const { return m_errors; }
+	double lastIconsMs() const { return m_lastIconsMs; } // lane FOGFX-1: the last sync's PlacementIcons::update and its icons' draw
+	double lastDrawMs() const { return m_lastDrawMs; }
+	const double *lastDrawParts() const { return m_partMs; } // the instances, update_now, the tint, the bib, the shadow decal
+	// lane PLACEDECAL-1: the shown icons' decal shadows, for the HUD's selection decal grid (GodotInGameHud.cpp drawSelectionDecals)
+	void appendShadowDecals(std::vector<SelectionDecal> &out) const;
 
 private:
+	double m_lastIconsMs = 0.0, m_lastDrawMs = 0.0;
+	double m_partMs[5] = {};
+	unsigned long long m_modelsBuilt = 0, m_instancersMade = 0;
 	struct EntryView
 	{
 		int64_t model = -1, instance = -1;
@@ -85,8 +93,8 @@ private:
 		std::string bibTexture;
 		const ThingTemplate *bibTemplate = nullptr; ///< the template the bib quad was built for (a reused wall slot can change template)
 		// lane OWNERFIX-2: the decal shadow of the drawable's current model state (Shadow = SHADOW_ALPHA_DECAL ...: e.g. a well's or a statue's area
-		// of effect on its BUILD_PLACEMENT_CURSOR state)
-		uint64_t shadowDecalId = 0;
+		// of effect on its BUILD_PLACEMENT_CURSOR state); lane PLACEDECAL-1: drawn by the terrain and wall shaders with the selection decals
+		SelectionDecal shadowDecal; ///< valid while shadowTexture is not empty
 		std::string shadowTexture;
 		float shadowSizeX = 0.0f, shadowSizeY = 0.0f;
 		Color tint = Color(0, 0, 0, 0);
@@ -94,10 +102,15 @@ private:
 		int instances = 0;
 	};
 	void error(const std::string &e);
+	void clearTransient(); // the formation preview, the resource decal and label
+	void parkViews(const std::string &templateName); // lane FOGFX-1: m_views hidden and kept under the template's name
+	static constexpr size_t kMaxParked = 48;         ///< lane FOGFX-1: more parked templates than this and the parked ones are freed
+	std::map<std::string, std::vector<IconView>> m_parked;
 	W3DInstancer *newInstancer(const char *name);
 	void drawIcon(size_t i, PlacementIcons::Icon &icon, IconView &view);
 	void applyTint(IconView &view, const Color &tint);
 	void updateBib(PlacementIcons::Icon &icon, IconView &view);
+	Ref<StandardMaterial3D> bibMaterial(const std::string &tex, const Ref<Texture2D> &t); // lane FOGFX-1: shared per texture
 	void updateShadowDecal(PlacementIcons::Icon &icon, IconView &view); // lane OWNERFIX-2
 	void updateArrow(const InGameUI &ui);
 	void updateExitDirections();
@@ -138,9 +151,9 @@ private:
 	Array m_existingResourceState;
 	const MappedImageCollection *m_images = nullptr;
 	const GameTextSource *m_text = nullptr;
-	Decal *m_resourceDecal = nullptr;
 	Label *m_resourceLabel = nullptr;
-	uint64_t m_resourceDecalId = 0, m_resourceLabelId = 0;
+	uint64_t m_resourceLabelId = 0;
+	bool m_shown = false; ///< lane PLACEDECAL-1: the icons are shown (placing with a ghost)
 	Node3D *m_parent = nullptr;
 	Ref<RetailFileSystem> m_fs;
 	std::unique_ptr<CastleTemplateStore> m_castles;
@@ -149,6 +162,7 @@ private:
 	std::vector<IconView> m_views;
 	unsigned m_modelLoads = 0;
 	std::map<std::string, Ref<Texture2D>> m_textures;
+	std::map<std::string, Ref<StandardMaterial3D>> m_bibMaterials; ///< lane FOGFX-1: the bib's material per texture, shared by every bib
 	Ref<W3DModelBuilder> m_textureLoader;
 	MeshInstance3D *m_exitDirections = nullptr;
 	uint64_t m_exitDirectionsId = 0;

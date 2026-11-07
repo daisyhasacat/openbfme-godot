@@ -2,12 +2,19 @@
 // See CommandXlat.h.
 
 #include "GameClient/MessageStream/CommandXlat.h"
+#include "GameLogic/CaptureLinks.h"
+#include "GameLogic/Module/FishingUpdate.h"
+#include "GameLogic/Module/StancesBehavior.h"
 
 #include "Common/Team.h"
 #include "GameClient/Radar.h"
 #include "GameLogic/AI/AIGarrisonStates.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/ActionManager.h"
+#include "GameLogic/Combat/CombatNames.h"
+#include "GameLogic/Combat/ObjectWeapons.h"
+#include "GameLogic/Object/Contain/GarrisonContainRuntime.h"
 
 #include "Common/BuildAssistant.h"
 #include "Common/SpecialPower.h"
@@ -16,10 +23,16 @@
 #include "Common/Thing/ThingTemplate.h"
 #include "GameClient/HudObjects.h"
 #include "GameLogic/GameMessage.h"
+#include "GameLogic/BeaconCommands.h"
+#include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/Module/SpecialPowerModules.h"
 #include "GameLogic/Module/BehaviorModule.h"
 #include "GameLogic/Module/BloodthirstyUpdate.h"
+#include "GameLogic/Module/SiegeModules.h"
+#include "GameLogic/AI/AIPathfind.h"
+#include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
 
@@ -92,6 +105,14 @@ const char *metaNameOf(int type)
 {
 	return ClientMessageMetaName(type);
 }
+
+// TARGET FACTS: every attacker path of Object::getAbleToAttackSpecificObject (RW 0x68D6A6, the object itself or a rider) ends in
+// WeaponSet::getAbleToAttackSpecificObject (RW 0x6C9147), which answers ATTACKRESULT_NOT_POSSIBLE (RW 0x6C9496) for a victim with KindOf UNATTACKABLE
+// (template + 0x10E & 0x40, KindOf 54, RW 0x6C91FA) or the status UNATTACKABLE (0x3C, RW 0x6C9207), whoever attacks
+bool isUnattackableTarget(const Object &obj)
+{
+	return obj.isKindOf((unsigned)CombatNames::kinds().unattackable) || obj.testStatus((unsigned)CombatNames::statuses().unattackable);
+}
 } // namespace
 
 bool CommandTranslator::areSelectedObjectsControllable() const
@@ -125,6 +146,67 @@ bool CommandTranslator::objectCanAttack(Object &obj)
 				{
 					return true;
 				}
+			}
+		}
+	}
+	return false;
+}
+
+bool CommandTranslator::objectCanDamage(Object &obj, Object &victim)
+{
+	// RW 0x6C8652 WeaponSet::getAbleToUseWeaponAgainstTarget, its victim loop (RW 0x6C891B .. 0x6C8993): the locked slot only (+ 0x24, + 0x20), else slots 5 .. 0;
+	// a weapon that canDamage the victim (RW 0x6CDBF3, its damage estimate after the victim's armour) and whose slot's OnlyAgainst (+ 0xEC, RW 0x6C824C) is empty
+	// or names a KindOf of the victim (RW 0x70C548) makes the attack possible. INFERENCE (S-286): ObjectWeapons::canAttackObject stands for the eligibility
+	// tests before the loop, and the members of a horde are asked as objectCanAttack asks them
+	if (ObjectWeapons *weapons = obj.getWeapons(); weapons && weapons->canAttackObject(victim, CMD_FROM_PLAYER, false))
+	{
+		const int first = weapons->isCurWeaponLocked() ? weapons->curSlot() : WEAPONSLOT_COUNT - 1;
+		const int last = weapons->isCurWeaponLocked() ? weapons->curSlot() : PRIMARY_WEAPON;
+		const WeaponTemplateSet *set = weapons->templateSet();
+		for (int slot = first; slot >= last; --slot)
+		{
+			const Weapon *weapon = weapons->weaponInSlot(slot);
+			if (!weapon || !weapons->canDamage(*weapon, victim))
+			{
+				continue;
+			}
+			bool onlyAgainst = false, matches = false;
+			for (size_t word = 0; set && word < set->m_onlyAgainst[slot].size(); ++word)
+			{
+				onlyAgainst = onlyAgainst || set->m_onlyAgainst[slot][word] != 0;
+				matches = matches || (set->m_onlyAgainst[slot][word] & victim.getKindOf()[word]) != 0;
+			}
+			if (!onlyAgainst || matches)
+			{
+				return true;
+			}
+		}
+	}
+	if (ContainModuleInterface *contain = obj.getContain())
+	{
+		if (const ContainModuleInterface::ContainedItemsList *items = contain->getContainedItemsList())
+		{
+			for (Object *member : *items)
+			{
+				if (member && member != &obj && objectCanDamage(*member, victim))
+				{
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+bool CommandTranslator::selectionCanDamage(Object &victim)
+{
+	for (ObjectID id : m_ctx.ui.selected())
+	{
+		if (Object *o = m_ctx.logic.findObjectByID(id))
+		{
+			if (objectCanDamage(*o, victim))
+			{
+				return true;
 			}
 		}
 	}
@@ -182,6 +264,23 @@ void CommandTranslator::hint(const char *cursor)
 			m_ctx.ui.hintCursor(MouseCursorName::InvalidBuild);
 		}
 		return;
+	}
+	// BFME2 InGameUI::createCommandHint (0x002A3273, InGameUICreateCommandHint.cpp, matched), the GUI command mode (case 2): a waiting command that is no
+	// context command, SPECIAL_POWER (0x18), SPELL_BOOK (0x26), SPECIAL_POWER_FROM_COMMAND_CENTER (0x20) or PLACE_BEACON (0x1F) and has no RadiusCursorType
+	// shows its CursorName whatever the hint (Mouse::getCursorIndex; an empty name has no index: cursor 4, Target), e.g. ATTACK_MOVE's AttackMove. The context
+	// branch keeps the cursor its evaluation chose (the port names it at the hint). Not ported here (S-283): a non-context command's radius cursor
+	// (BFME2: cursor None plus the radius decal)
+	if (m_ctx.ui.mouseMode() == 2)
+	{
+		const CommandButton *pending = m_ctx.ui.getGUICommand();
+		const int type = pending->m_command;
+		const bool contextBranch = pending->hasOption(COMMAND_OPTION_CONTEXTMODE_COMMAND) || type == GUI_COMMAND_SPECIAL_POWER || type == GUI_COMMAND_SPELL_BOOK
+			|| type == GUI_COMMAND_SPECIAL_POWER_FROM_COMMAND_CENTER || type == GUI_COMMAND_PLACE_BEACON;
+		if (!contextBranch && pending->m_radiusCursor.empty())
+		{
+			m_ctx.ui.hintCursor(pending->m_cursorName.empty() ? std::string(MouseCursorName::Target) : pending->m_cursorName);
+			return;
+		}
 	}
 	m_ctx.ui.hintCursor(c);
 }
@@ -396,6 +495,35 @@ int CommandTranslator::evaluateContextCommand(Object *obj, const Coord3D *pos, E
    return MSG_DO_ATTACKMOVETO;
   }
 	}
+        // Optional fishing mod: a separate contextual action using the existing
+        // enter cursor/message envelope, never actual containment. The
+        // dispatcher revalidates it.
+        if (obj && !m_ctx.ui.isInForceAttackMode()) {
+          for (ObjectID id : m_ctx.ui.selected()) {
+            Object *boat = m_ctx.logic.findObjectByID(id);
+            auto *fishing = boat ? FishingUpdate::find(*boat) : nullptr;
+            if (!fishing ||
+                boat->getControllingPlayer() != m_ctx.localPlayer() ||
+                !fishing->canFish(obj))
+              continue;
+            if (type == EvaluateType::DoHint)
+              hint(MouseCursorName::EnterFriendly);
+            if (type == EvaluateType::DoCommand) {
+              ClientMessage &m = m_ctx.stream.append(MSG_ENTER);
+              m.appendObjectID(id);
+              m.appendObjectID(obj->getID());
+            }
+            return MSG_ENTER;
+          }
+        }
+	// lane SIEGE-1: RotWK's siege branch comes before the enter, attack and capture tests (RW 0x81E7A5 after the GUI command and the force-move tests)
+	if (obj)
+	{
+		if (const int siegeType = evaluateSiegeDeploy(obj, type))
+		{
+			return siegeType;
+		}
+	}
 	// lane GARRISON-1 (ZH evaluateContextCommand's ACTIONTYPE_ENTER_OBJECT): a click on a container some selected object may enter (ActionManager::canEnterObject,
 	// RW 0x82CBD5, mode 0) is MSG_ENTER (argument 0 the first selected object, argument 1 the container: the logic case RW 0x77AC26 reads argument 1); the cursor
 	// is EnterFriendly. INFERENCE (S-286): RotWK's order of the context checks is not read; the enter check comes before the attack check here (an enemy
@@ -423,12 +551,42 @@ int CommandTranslator::evaluateContextCommand(Object *obj, const Coord3D *pos, E
 			}
 			else if (type == EvaluateType::DoHint)
 			{
-				hint(MouseCursorName::EnterFriendly);
+				// Retail Mouse.ini supplies the animated OneRing asset for this action.
+				hint(dynamic_cast<CitadelSlaughterHordeContain *>(obj->getContain()) &&
+					enterer->testStatus((unsigned)CombatNames::status("HOLDING_THE_RING"))
+					? MouseCursorName::DeliverRing : MouseCursorName::EnterFriendly);
 			}
 			return msgType;
 		}
 	}
-	if (obj && !m_ctx.ui.isInForceAttackMode() && HudObjects::relationshipToLocal(m_ctx, *obj) == ENEMIES && selectionCanAttack())
+	// Crates are pickup destinations, even when owned by an enemy lair.
+	// Use their location rather than treating their owner as an attack target.
+	if (obj && obj->isKindOf((unsigned)CombatNames::kindOf("CRATE")) && !m_ctx.ui.isInForceAttackMode())
+	{
+		const Coord3D destination = *obj->getPosition();
+		if (!selectionCanReach(destination))
+		{
+			hint(MouseCursorName::GenericInvalid);
+			return 0;
+		}
+		if (type == EvaluateType::DoHint) hint(MouseCursorName::Move);
+		else return issueMove(nullptr, &destination, type);
+		return m_teamExists ? MSG_DO_MOVETO : 0;
+	}
+	// OpenBFME input improvement: prefer an eligible capture over an ordinary attack, including enemy-owned buildings.
+	// Explicit force attack still bypasses capture. Eligibility remains the FACT-C (S-2002) check below.
+	if (obj && !m_ctx.ui.isInForceAttackMode())
+	{
+		if (const int captureType = evaluateCapture(obj, pos, type))
+		{
+			return captureType;
+		}
+	}
+	// an UNATTACKABLE enemy fails the attack test and reaches the capture test below: a capture flag an enemy took is recaptured, not attacked.
+	// lane WALL-3 (CommandXlat.h): an enemy's walkable wall that no selected weapon damages is no attack (RW 0x81F618 .. 0x81F63A): the click falls through to the move
+	const bool walkableWall = obj && obj->isKindOfName("WALK_ON_TOP_OF_WALL") && !obj->isKindOfName("WALL_UPGRADE");
+	if (obj && !m_ctx.ui.isInForceAttackMode() && HudObjects::relationshipToLocal(m_ctx, *obj) == ENEMIES && !isUnattackableTarget(*obj) && selectionCanAttack() &&
+		(!walkableWall || selectionCanDamage(*obj)))
 	{
 		msgType = MSG_DO_ATTACK_OBJECT;
 		if (type == EvaluateType::DoCommand)
@@ -440,14 +598,6 @@ int CommandTranslator::evaluateContextCommand(Object *obj, const Coord3D *pos, E
 			hint(MouseCursorName::AttackObj);
 		}
 		return msgType;
-	}
-	// lane FACT-C (S-2002): a building the selection can capture (an inn, an outpost, a signal fire): its capture button's power at the building
-	if (obj && !m_ctx.ui.isInForceAttackMode())
-	{
-		if (const int captureType = evaluateCapture(obj, pos, type))
-		{
-			return captureType;
-		}
 	}
 	// lane QA-1 (stop S-1201): ZH evaluateContextCommand's ACTIONTYPE_RESUME_CONSTRUCTION and ACTIONTYPE_REPAIR_OBJECT (CommandXlat.cpp:1712 / 1785, SELECTION_ANY): a
 	// click with a builder selected on our structure that is still rising resumes it (MSG_RESUME_CONSTRUCTION, the logic case RW 0x77AEB6: every selected dozer of
@@ -501,8 +651,7 @@ int CommandTranslator::evaluateContextCommand(Object *obj, const Coord3D *pos, E
 		}
 		return msgType;
 	}
-	// everything else: move to the location (ZH's final else branch, CommandXlat.cpp:2252). A click on an object of ours that has nothing more specific to do is
-	// no command (it is a selection): only a location click moves.
+	// No more specific context action: move to the clicked location, including when scenery was picked.
 	if (pos)
 	{
 		if (type == EvaluateType::DoHint)
@@ -518,9 +667,11 @@ int CommandTranslator::evaluateContextCommand(Object *obj, const Coord3D *pos, E
 				hint(msgType == MSG_DO_ATTACKMOVETO ? MouseCursorName::AttackMove : MouseCursorName::Move);
 			}
 		}
-		else if (!obj)
+		else
 		{
-			msgType = issueMove(obj, pos, type);
+			// RW 0x81E60B -> 0x81DB0C: a drawable does not veto the final location order. Only BASE_FOUNDATION drops the drawable.
+			// BFME2 CommandXlat.cpp, RVA 0x429E11 (tier B, operand-only differences); issueMove RVA 0x4292F6 (tier A).
+			msgType = issueMove(obj && obj->isKindOfName("BASE_FOUNDATION") ? nullptr : obj, pos, type);
 		}
 	}
 	return msgType;
@@ -658,6 +809,14 @@ void CommandTranslator::selectHero()
 
 void CommandTranslator::changeStance(int stance)
 {
+	for (ObjectID id : m_ctx.ui.selected())
+	{
+		Object *obj = m_ctx.logic.findObjectByID(id);
+		if (StancesBehavior *sb = obj ? StancesBehavior::of(*obj) : nullptr)
+		{
+			sb->traceQueuedStance(stance, "CommandTranslator:stance-hotkey");
+		}
+	}
 	ClientMessage &m = m_ctx.stream.append(MSG_CHANGE_STANCE); // the logic case RW 0x77BC59 (StancesBehavior::registerHandlers)
 	m.appendInteger(stance);
 }
@@ -803,16 +962,42 @@ MessageDisposition CommandTranslator::translate(const ClientMessage &msg)
 				viewHomeBase();
 				return MessageDisposition::Destroy;
 			// lane INPUT-1: cases RotWK's handler executes whose effect is not ported (stop S-287): counted, never dropped silently. CHAT_BUDDIES
-			// RW 0x81FF84, CHAT_ALLIES / CHAT_EVERYONE RW 0x81FEE0 / 0x81FF34 (the chat box), TOGGLE_CONTROL_BAR
-			// RW 0x82001B (hides the Palantir), ALL_CHEER RW 0x820128 (MSG_DO_CHEER 1080 and its text), PLACE_BEACON RW 0x820298, ORDER_SYNCHRONIZE RW
+			// RW 0x81FF84 (the online Messenger overlay), TOGGLE_CONTROL_BAR
+			// RW 0x82001B (hides the Palantir), ALL_CHEER RW 0x820128 (MSG_DO_CHEER 1080 and its text), ORDER_SYNCHRONIZE RW
 			// 0x82028E (MSG_ORDER_SYNCHRONIZE 1136), TOGGLE_PLANNING_MODE RW 0x82065C (the War of the Ring planning), TOGGLE_FAST_FORWARD_MODE RW 0x820542
 			// (replays only), the camera key flags BEGIN_ / END_CAMERA_* RW 0x8200C0 .. 0x820455 (InGameUI + 0x8BB .. 0x8C2; no retail binding)
-			case CMSG_META_CHAT_BUDDIES:
+			// lane CHAT-1: CHAT_ALLIES / CHAT_EVERYONE (RW 0x81FEE0 / 0x81FF34): the chat window opens (mode 0, or 1 / 4 for EVERYONE); the gates (a network
+			// game, not a replay, the local player active) and the window are the HUD's (GameClient/InGameChat.h); the meta is destroyed either way
 			case CMSG_META_CHAT_ALLIES:
+				m_ctx.ui.requestChat(false);
+				return MessageDisposition::Destroy;
 			case CMSG_META_CHAT_EVERYONE:
+				m_ctx.ui.requestChat(true);
+				return MessageDisposition::Destroy;
+			// lane CHAT-1: PLACE_BEACON (Ctrl+B, RW 0x81F8D8 case 0x90): in a network game (RW 0x441B7C) that is not a replay, for an active local player
+			// (RW 0x6AAC52) with fewer beacons than MaxBeaconsPerPlayer (RW 0x6ABAF7 against MultiplayerSettings + 0x18), the GUI command becomes
+			// Command_PlaceBeacon (TheControlBar->findCommandButton RW 0x71D6EA, InGameUI vslot 0xBC): the next left click on the ground sends MSG_PLACE_BEACON
+			// (GUICommandTranslator). At the limit the key does nothing. The meta is destroyed either way (it falls into DELETE_BEACON's case)
+			case CMSG_META_PLACE_BEACON:
+			{
+				Player *local = m_ctx.localPlayer();
+				if (m_ctx.ui.networkGame() && local && !local->isObserver() && !local->isDefeated() && m_ctx.commands)
+				{
+					const ThingTemplate *beacon = BeaconCommands::beaconTemplate(m_ctx.logic, *local);
+					const int count = beacon ? BeaconCommands::countBeacons(m_ctx.logic, *local, *beacon) : 0;
+					if (count < m_ctx.logic.settings().maxBeaconsPerPlayer)
+					{
+						if (const CommandButton *b = m_ctx.commands->findCommandButton("Command_PlaceBeacon"))
+						{
+							m_ctx.ui.setGUICommand(b);
+						}
+					}
+				}
+				return MessageDisposition::Destroy;
+			}
+			case CMSG_META_CHAT_BUDDIES:
 			case CMSG_META_TOGGLE_CONTROL_BAR:
 			case CMSG_META_ALL_CHEER:
-			case CMSG_META_PLACE_BEACON:
 			case CMSG_META_ORDER_SYNCHRONIZE:
 			case CMSG_META_TOGGLE_PLANNING_MODE:
 			case CMSG_META_TOGGLE_FAST_FORWARD_MODE:
@@ -911,13 +1096,17 @@ MessageDisposition CommandTranslator::translate(const ClientMessage &msg)
 			m_rightUp = msg.arg(2).integer;
 			break;
 		case CMSG_MOUSE_LEFT_DOUBLE_CLICK:
-			doubleClick(msg); // RW 0x81FBE4: independent of the order-click / alternate-mouse path
-			break;
+			if (!m_ctx.ui.getGUICommand() || m_ctx.ui.getGUICommand()->m_command != GUI_COMMAND_SPECIAL_POWER)
+			{
+				doubleClick(msg); // RW 0x81FBE4: selection expansion outside special-power targeting
+				break;
+			}
+			[[fallthrough]]; // the pending power owns the target, including a double click
 		case CMSG_MOUSE_RIGHT_DOUBLE_CLICK:
 		case CMSG_MOUSE_RIGHT_CLICK:
 		case CMSG_MOUSE_LEFT_CLICK:
 		{
-			const bool left = t == CMSG_MOUSE_LEFT_CLICK;
+			const bool left = t == CMSG_MOUSE_LEFT_CLICK || t == CMSG_MOUSE_LEFT_DOUBLE_CLICK;
 			// the standard setup orders with the left click, the alternate setup with the right one (CommandXlat.cpp:3678, 3741). lane FACT-C: RotWK's two
 			// cases read TheInGameUI's GUI command first (RW 0x81FAE2 / 0x81FC57): while one other than ATTACK_MOVE (0xA) waits for its target, the right click
 			// orders nothing (RW 0x81FAFE) and the left click carries it out in either setup (RW 0x81FC73 skips the alternate-mouse test); a special power's target
@@ -953,7 +1142,8 @@ MessageDisposition CommandTranslator::translate(const ClientMessage &msg)
 			}
 			if (isPoint && areSelectedObjectsControllable())
 			{
-				Object *draw = HudObjects::pickObject(m_ctx, region.lo);
+				Object *draw = pending && pending->m_command == GUI_COMMAND_SPECIAL_POWER
+					? HudObjects::pickForGuiCommand(m_ctx, region.lo, *pending) : HudObjects::pickObject(m_ctx, region.lo);
 				int issued = 0;
 				if (m_ctx.ui.isInForceAttackMode())
 				{
@@ -984,9 +1174,9 @@ MessageDisposition CommandTranslator::translate(const ClientMessage &msg)
 // MSG_DO_SPECIAL_POWER_AT_LOCATION (0x411) { id, location, target or NONE, options, source NONE } and one more 0x411 for every button the command's chained
 // list names (CommandTrigger, +0x188) that is a SPECIAL_POWER with a template; else MSG_DO_SPECIAL_POWER (0x410) { id, options, NONE, NONE }. Source NONE: the
 // logic casts with the issuer's selection.
-// NOT PORTED (stop S-2000): the action check RW 0x6A4260 (ActionManager's special power target rules: range, KindOf, the module's own target filter) and the
-// kind-of / option 0x10 / 0x200000 target drops before it; here a click is valid when the option's target kind is there (an object of an allowed
-// relationship, or a ground point for NEED_TARGET_POS). The radius cursor, the unit voice and the selection flash are client presentation, not ported.
+// Location action checks use ActionManager's ported rules, matching the radius cursor; explicitly unported type tests retain its reported pass.
+// NOT PORTED (stop S-2000): object action checks (KindOf / module target filters) and the kind-of / option 0x10 / 0x200000 target drops before them.
+// An object of an allowed relationship passes those unported checks. The unit voice and selection flash are not ported here.
 int CommandTranslator::issueSpecialPower(const CommandButton &command, Object *target, const Coord3D *pos, EvaluateType type)
 {
 	const SpecialPowerTemplate *t = TheSpecialPowerStore && !command.m_specialPowerName.empty() ? TheSpecialPowerStore->findSpecialPowerTemplate(command.m_specialPowerName) : nullptr;
@@ -1061,7 +1251,32 @@ int CommandTranslator::evaluateGUISpecialPower(const CommandButton &command, Obj
 			obj = nullptr;
 		}
 	}
-	const bool valid = ((command.m_options & 7) && obj) || ((command.m_options & COMMAND_OPTION_NEED_TARGET_POS) && pos);
+	bool valid = (command.m_options & 7) && obj;
+	const bool locationTarget = command.hasOption(COMMAND_OPTION_NEED_TARGET_POS);
+	const bool contextOnly = command.hasOption(COMMAND_OPTION_CONTEXTMODE_COMMAND) && !(command.m_options & (7u | COMMAND_OPTION_NEED_TARGET_POS));
+	// RW 0x81E147's final branch issues a targetless power for context-only
+	// commands. Context mode chooses when to issue, not a missing target kind.
+	if (!valid && (locationTarget || contextOnly) && pos)
+	{
+		// RW 0x81E60B's action check precedes the issue and mode clear. Use the
+		// same ported location rules as the radius cursor: red means no cast,
+		// while an explicitly unported per-type test retains its existing pass.
+		// In particular, do not impose the weapon's firing range here: Leap's
+		// PATHABLE_ONLY allows its update module to approach a distant target.
+		const SpecialPowerTemplate *power = TheSpecialPowerStore ? TheSpecialPowerStore->findSpecialPowerTemplate(command.m_specialPowerName) : nullptr;
+		for (ObjectID id : m_ctx.ui.selected())
+		{
+			Object *source = m_ctx.logic.findObjectByID(id);
+			bool unported = false;
+			const bool allowed = source && (contextOnly ? ActionManager::canDoSpecialPower(*source, power)
+				: ActionManager::canDoSpecialPowerAtLocation(*source, *pos, power, command.m_options, &unported));
+			if (allowed || unported)
+			{
+				valid = true;
+				break;
+			}
+		}
+	}
 	if (!valid)
 	{
 		if (type == EvaluateType::DoHint)
@@ -1075,7 +1290,7 @@ int CommandTranslator::evaluateGUISpecialPower(const CommandButton &command, Obj
 	{
 		hint(command.m_cursorName.c_str());
 	}
-	if (type == EvaluateType::DoCommand)
+	if (msgType && type == EvaluateType::DoCommand)
 	{
 		m_ctx.ui.setGUICommand(nullptr);
 	}
@@ -1121,20 +1336,8 @@ bool CommandTranslator::canCaptureBuilding(const Object &capturer, const Object 
 	{
 		return false;
 	}
-	bool flag = false;
-	for (Object *o = m_ctx.logic.getFirstObject(); o && !flag; o = o->getNextObject())
-	{
-		if (o->isKindOfName("LINKED_TO_FLAG"))
-		{
-			const float dx = SimMath::subf32(o->getPosition()->x, target.getPosition()->x), dy = SimMath::subf32(o->getPosition()->y, target.getPosition()->y),
-			            dz = SimMath::subf32(o->getPosition()->z, target.getPosition()->z);
-			flag = SimMath::addf32(SimMath::addf32(SimMath::mulf32(dx, dx), SimMath::mulf32(dy, dy)), SimMath::mulf32(dz, dz)) <= 22500.0f; // 150^2
-		}
-	}
-	if (!flag)
-	{
+	if (!CaptureLinks::buildingForFlag(const_cast<Object &>(target)))
 		return false;
-	}
 	static const int kSold = ObjectTemplateInfoBuilder::objectStatusIndex("SOLD");
 	if (target.isUnderConstruction() || (kSold >= 0 && target.testStatus((unsigned)kSold)))
 	{
@@ -1156,6 +1359,15 @@ bool CommandTranslator::canCaptureBuilding(const Object &capturer, const Object 
 
 int CommandTranslator::evaluateCapture(Object *obj, const Coord3D *pos, EvaluateType type)
 {
+    if (!obj) return 0;
+    // Clicking a dock's hull directs infantry to its land-side capture flag.
+    if (obj->isKindOfName("LINKED_TO_FLAG") && !obj->isKindOfName("CAPTURABLE"))
+    {
+      obj = CaptureLinks::flagForBuilding(*obj);
+      if (!obj) return 0;
+      pos = obj->getPosition();
+    }
+
 	bool any = false;
 	for (ObjectID id : m_ctx.ui.selected())
 	{
@@ -1187,4 +1399,108 @@ int CommandTranslator::evaluateCapture(Object *obj, const Coord3D *pos, Evaluate
 		}
 	}
 	return 0;
+}
+
+// Lane SIEGE-1. TARGET FACTS (RotWK game.dat, caveat S-001): InGameUI's siege test RW 0x69D674 (BFME2 0x69CC19, decomp InGameUISiegeDeployTarget.cpp): a target
+// that is WALK_ON_TOP_OF_WALL (template + 0x10F bit 4, KindOf 60) with a selection; for every selected drawable's object that is not contained (+ 0x27C): the
+// button Command_SpecialAbilitySiegeLadderDeploy for a SIEGE_LADDER (+ 0x119 bit 3), else Command_SpecialAbilitySiegeDeploy (RW 0x71D6EA); the object must be
+// a SIEGE_TOWER (+ 0x113 bit 5) without status DEPLOYED (0x3B, RW 0x44DDEC), able to use the button (RW 0x692A75: its power's module, the button in its
+// command set) and the button ready for it (RW 0x75CC3E: the power's module fully ready); then an object without an AI answers yes, and so does one whose
+// target has a SiegeDockingBehavior that gives it no approach point (dock interface slot 1, RW 0x85CA8A) or an approach point its AI reaches by a quick path
+// (RW 0x66403D -> RW 0x6F5BB0 quickDoesPathExist from the object's position with its locomotor set). evaluateContextCommand (RW 0x81E60B, after the
+// GUI command and the force-move tests, before the enter and attack tests): a hint is the attack hint (0xB1, the AttackObj cursor); a command is
+// MSG_DO_SPECIAL_POWER_AT_OBJECT (0x412) with Command_SpecialAbilitySiegeDeploy's power { the template id, the target, the button's options, no source, the
+// target's position } (the unit voice of the button, RW 0x8DD5FF, is the client's audio: not played).
+// INFERENCE (S-4944): the TheInGameUI byte + 0x8B0 the branch requires clear is not identified (taken as clear); the selection is the port's selected object ids.
+bool CommandTranslator::canSiegeDeploy(const Object &target)
+{
+	if (!target.isKindOfName("WALK_ON_TOP_OF_WALL") || m_ctx.ui.selected().empty())
+	{
+		return false;
+	}
+	static const int kDeployed = ObjectTemplateInfoBuilder::objectStatusIndex("DEPLOYED");
+	for (ObjectID id : m_ctx.ui.selected())
+	{
+		Object *o = m_ctx.logic.findObjectByID(id);
+		if (!o || o->getContainedBy())
+		{
+			continue;
+		}
+		const CommandButton *button = TheCommandStore ? TheCommandStore->findCommandButton(o->isKindOfName("SIEGE_LADDER") ? "Command_SpecialAbilitySiegeLadderDeploy"
+		                                                                                                                  : "Command_SpecialAbilitySiegeDeploy")
+		                                              : nullptr;
+		if (!button || !o->isKindOfName("SIEGE_TOWER") || (kDeployed >= 0 && o->testStatus((unsigned)kDeployed)))
+		{
+			continue;
+		}
+		const SpecialPowerTemplate *t = TheSpecialPowerStore && !button->m_specialPowerName.empty() ? TheSpecialPowerStore->findSpecialPowerTemplate(button->m_specialPowerName) : nullptr;
+		SpecialPowerModuleInterface *sp = t ? SpecialPowerModules::findModule(*o, t) : nullptr;
+		const CommandSet *set = TheCommandStore->findCommandSet(o->getCommandSetName());
+		bool inSet = false;
+		for (int i = 0; set && i < CommandSet::MAX_BUTTONS; ++i)
+		{
+			inSet = inSet || set->getCommandButton(i) == button;
+		}
+		if ((t && !sp) || !inSet) // RW 0x692A75
+		{
+			continue;
+		}
+		if (!sp || sp->getPercentReadyForDisplay() != 1.0f) // RW 0x75CC3E
+		{
+			continue;
+		}
+		AIUpdateInterface *ai = o->getAIUpdateInterface();
+		if (!ai)
+		{
+			return true;
+		}
+		SiegeDockingBehavior *dock = SiegeDockingBehavior::of(target);
+		if (dock)
+		{
+			Coord3D approach{};
+			if (!dock->approachPointFor(o->getID(), approach))
+			{
+				return true;
+			}
+			AIWorld *world = m_ctx.logic.aiWorld();
+			if (world && world->mapReady())
+			{
+				const PathfindLocomotorInfo loco = ai->locomotorInfo();
+				if (world->pathfinder().quickDoesPathExist(ai->adapter(), o->getPosition(), &approach, &loco)) // RW 0x66403D -> RW 0x6F5BB0 (lane QPATH-1)
+				{
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+int CommandTranslator::evaluateSiegeDeploy(Object *obj, EvaluateType type)
+{
+	if (!canSiegeDeploy(*obj))
+	{
+		return 0;
+	}
+	if (type == EvaluateType::DoHint)
+	{
+		hint(MouseCursorName::AttackObj); // hint 0xB1
+		return MSG_DO_SPECIAL_POWER_AT_OBJECT;
+	}
+	const CommandButton *button = TheCommandStore ? TheCommandStore->findCommandButton("Command_SpecialAbilitySiegeDeploy") : nullptr;
+	if (!button)
+	{
+		return MSG_DO_SPECIAL_POWER_AT_OBJECT; // RW 0x81E80A: no button, the type alone
+	}
+	const SpecialPowerTemplate *t = TheSpecialPowerStore && !button->m_specialPowerName.empty() ? TheSpecialPowerStore->findSpecialPowerTemplate(button->m_specialPowerName) : nullptr;
+	if (type == EvaluateType::DoCommand && t)
+	{
+		ClientMessage &m = m_ctx.stream.append(MSG_DO_SPECIAL_POWER_AT_OBJECT);
+		m.appendInteger((int)t->getID());
+		m.appendObjectID(obj->getID());
+		m.appendInteger((int)button->m_options);
+		m.appendObjectID(INVALID_ID);
+		m.appendLocation(*obj->getPosition());
+	}
+	return MSG_DO_SPECIAL_POWER_AT_OBJECT;
 }

@@ -27,6 +27,8 @@
 #include "Common/NameKeyGenerator.h"
 #include "Common/ProductionPrerequisite.h"
 
+#include <atomic>
+#include <climits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -197,6 +199,21 @@ public:
 	}
 	std::vector<std::string> fieldNames() const; ///< names of the fields that were set
 	const std::vector<RawBlock> &rawBlocks() const { return m_rawBlocks; }
+	// performance: an answer worked out from the raw blocks on first use (on any thread: every thread works out the same value); unset again when a block
+	// is added or removed, and in a copy
+	struct RawBlockAnswer
+	{
+		static constexpr int kUnset = INT_MIN;
+		mutable std::atomic<int> value{ kUnset };
+		RawBlockAnswer() = default;
+		RawBlockAnswer(const RawBlockAnswer &) {}
+		RawBlockAnswer &operator=(const RawBlockAnswer &)
+		{
+			value.store(kUnset, std::memory_order_relaxed);
+			return *this;
+		}
+	};
+	const RawBlockAnswer &threatCategoryCache() const { return m_threatCategory; } ///< AIThreatFinder::threatCategory's
 	const std::vector<ProductionPrerequisite> &productionPrerequisites() const { return m_productionPrerequisites; }
 	// AUDIO-2: a voice row's value (the audio table rows parsed by RW 0x73ACEF -> 0x73AB45 store {Eva event id, audio event}). Each line changes the
 	// slot the template already has (from an earlier line or the template it was copied from): "NoSound" clears both halves; `EVA:<event>` sets only the
@@ -222,7 +239,14 @@ public:
 	// edits its parent's set, RW 0x65621C). KindOfTokens::parseTemplate applies them; the "KindOf" field keeps only the last row
 	const std::vector<RawTokens> &kindOfRows() const { return m_kindOfRows; }
 	void friend_noteKindOfRow(const RawTokens &raw) { m_kindOfRows.push_back(raw); }
-	void friend_noteGeometryRow(const std::string &row, std::vector<std::string> tokens) { m_geometryEvents.push_back(GeometryEvent{ row, std::move(tokens) }); }
+	void friend_noteGeometryRow(const std::string &row, std::vector<std::string> tokens)
+	{
+		m_geometryEvents.push_back(GeometryEvent{ row, std::move(tokens) });
+		m_geometryCache.reset();
+	}
+	// lane FLANK-1: a cache of what ObjectGeometry::cachedShapesOf builds from the rows above (opaque here: GameLogic owns the type). Filled on first use on the logic
+	// thread, dropped when a geometry row is added; a copied template shares it (its rows are the same until it adds one)
+	std::shared_ptr<const void> &friend_geometryCache() const { return m_geometryCache; }
 	// WEAPON-1: the typed WeaponSet / ArmorSet blocks in parse order (the same blocks as rawBlocks() "WeaponSet" / "ArmorSet"; RW +0x358 /
 	// +0x370). The best match for an object's flags is FindWeaponTemplateSet / FindArmorTemplateSet.
 	const std::vector<WeaponTemplateSet> &weaponTemplateSets() const;
@@ -260,8 +284,10 @@ private:
 	bool m_bfme1 = false; // community PR #36: made by a ThingFactory for BFME1 data
 	const std::unordered_map<std::string, size_t> *m_fieldIndex = nullptr; ///< the factory's name -> slot index of m_fieldNames (unique names)
 	std::vector<RawBlock> m_rawBlocks;
+	RawBlockAnswer m_threatCategory;
 	std::vector<ProductionPrerequisite> m_productionPrerequisites;
 	std::vector<GeometryEvent> m_geometryEvents;
+	mutable std::shared_ptr<const void> m_geometryCache;
 	std::vector<RawTokens> m_kindOfRows;
 	std::vector<std::pair<std::string, VoiceRowValue>> m_voiceRows; ///< AUDIO-2: row name -> both halves (see voiceRow); copied with the template
 	std::shared_ptr<ThingCombatSets> m_combatSets; ///< copy-on-write (a copy of the template shares it until a set is added)

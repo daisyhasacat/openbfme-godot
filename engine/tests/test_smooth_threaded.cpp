@@ -142,6 +142,8 @@ Played play(bool threaded, const std::vector<double> &deltas, UnsignedInt frames
 			dt = deltas[step % deltas.size()];
 		}
 		++step;
+		// This test compares the same accepted frames, not overload dropping: make room for a multi-frame catch-up batch.
+		if (threaded && dt > 0.2) game.waitIdle();
 		game.advance(dt);
 		const std::shared_ptr<const LogicSnapshot> shown = game.presentedSnapshot();
 		REQUIRE(shown.get() != nullptr);
@@ -285,6 +287,7 @@ TEST_CASE("smooth1 retail: a published snapshot is immutable, the worker can be 
 		REQUIRE(game.createObject("GondorFighterHorde", p1->getPlayerIndex(), Coord3D{ 1300.0f, 1400.0f, 0.0f }, 0.0f, &e2));
 		for (int i = 0; i < 20; ++i)
 		{
+			if (i == (int)LiveGame::kMaxQueuedBatches) game.waitIdle(); // retain every requested frame within the bounded offline queue
 			game.advance(0.2);
 		}
 		game.waitIdle();
@@ -294,6 +297,7 @@ TEST_CASE("smooth1 retail: a published snapshot is immutable, the worker can be 
 		const UnsignedInt keptFrame = kept->frame;
 		for (int i = 0; i < 20; ++i)
 		{
+			if (i == (int)LiveGame::kMaxQueuedBatches) game.waitIdle(); // retain every requested frame within the bounded offline queue
 			game.advance(0.2);
 		}
 		game.waitIdle();
@@ -325,4 +329,51 @@ TEST_CASE("smooth1 retail: a published snapshot is immutable, the worker can be 
 	}
 	// the snapshot outlives its game (the reader owns it)
 	CHECK(kept->objects.size() == copy.size());
+}
+
+TEST_CASE("smooth high speed retail: 30x keeps a wall-clock presentation buffer across multiple published frames without changing simulation")
+{
+	if (!hudtest::haveWorld("smooth high speed")) return;
+	SharedWorld &s = shared();
+	ArchiveW3DFileSource source(*s.mount->fs);
+	WW3DAssetManager assets(source);
+	LiveGame::Options options;
+	options.mapName = "map mp fall back 4p";
+	options.seed = 4711;
+	options.slots.players.push_back({ "Player_1", "FactionMen", true, 0, 0, 0 });
+	options.slots.players.push_back({ "Player_2", "FactionMordor", false, 1, 0, 1 });
+	options.logicThread = false;
+	bool threaded = false;
+	SUBCASE("logic on the calling thread") {}
+	SUBCASE("published by the logic worker") { threaded = true; }
+	options.hashEveryFrame = true;
+	options.presentationDelaySeconds = 0.03;
+	std::vector<std::pair<UnsignedInt, std::uint32_t>> reference;
+	for (bool accelerated : { false, true })
+	{
+		LiveGame game(*s.world, *s.mount->fs, assets, s.options);
+		std::string error;
+		REQUIRE_MESSAGE(game.load(options, &error), error);
+		for (int render = 0; render < 16; ++render)
+		{
+			if (threaded && render == 8) game.setLogicThread(true); // establish the delay buffer before measuring worker publication
+			game.advance(0.5, accelerated ? 1.0 / 60.0 : 0.5); // identical 2/3-frame batches; only presentation's wall time differs
+			if (threaded && render >= 8)
+			{
+				game.waitIdle();
+				game.advance(0.0); // show the completed batch without changing the requested speed
+			}
+			if (accelerated && render >= 8)
+			{
+				const auto shown = game.presentedSnapshot();
+				REQUIRE(shown);
+				const double time = (double)shown->frame + game.presentedAlpha();
+				// 30 ms wall time at 30x is 0.9 simulation seconds, exactly 4.5 logic frames.
+				CHECK(time == (double)game.dueFrame() + game.alpha() - 4.5);
+			}
+		}
+		REQUIRE(game.frameHashes().size() == 41); // the loaded initial frame plus forty advanced frames
+		if (!accelerated) reference = game.frameHashes();
+		else CHECK(game.frameHashes() == reference); // both editions: presentation buffering cannot alter a single logic frame
+	}
 }

@@ -36,6 +36,7 @@ struct AptScreenContext
 	Shell &shell;
 	ShellServices &services;
 	ShellEnvironment &environment;
+	int argument = 0; ///< lane WOTR-1: the screen's creation argument (BFME2 AptSkirmish::OpenScreen(mode)); 0 for a plain push
 };
 
 using AptScreenFactory = std::function<std::unique_ptr<AptScreen>(AptScreenContext &context)>;
@@ -66,6 +67,9 @@ public:
 	Shell &operator=(const Shell &) = delete;
 
 	void push(const std::string &filename, bool shutdownImmediate = false);
+	// lane WOTR-1: a push whose screen is made with an argument (the factory's AptScreenContext::argument): BFME2 AptSkirmish::OpenScreen(1) for the War
+	// of the Ring lobby (AptMainMenuUpdate.cpp case 8)
+	void push(const std::string &filename, bool shutdownImmediate, int argument);
 	void pop();
 	void popImmediate();
 	// Pops until the stack is empty (reset).
@@ -88,6 +92,9 @@ public:
 	const std::string &backdropImage() const { return m_backdropImage; }
 	// GameData's ShellMapOn of `gameDataText` (data\ini\gamedata.ini); false + *error when the GameData block has no such key or a bad value
 	static bool readShellMapOn(const std::string &gameDataText, bool &on, std::string *error);
+	// lane BFME2MODE-0: the same in BFME2 1.06 data (bfme2Data), whose gamedata.ini has no ShellMapOn: an absent key is GlobalData's constructor default, 1
+	// (BFME2 0x6369FD in GlobalData::GlobalData 0x63631C; RW 0x64308E writes 1 too, but RotWK's data sets the key, and RotWK data without it stays an error)
+	static bool readShellMapOnForData(const std::string &gameDataText, bool bfme2Data, bool &on, std::string *error);
 	// lane CAMP-2: any Bool field of the GameData block (the last one wins); false + *error when it is there but not Yes / No; `found` false when absent
 	static bool readGameDataBool(const std::string &gameDataText, const std::string &field, bool &value, bool &found, std::string *error);
 
@@ -125,7 +132,7 @@ public:
 	ShellEnvironment &environment() { return m_environment; }
 
 private:
-	void doPush(const std::string &filename);
+	void doPush(const std::string &filename, int argument = 0);
 	void doPop(bool impendingPush);
 	bool overlayIsTop() const { return m_overlay && (int)m_stack.size() == m_overlayDepth; }
 
@@ -143,5 +150,6 @@ private:
 	bool m_pendingPush = false;
 	bool m_pendingPop = false;
 	std::string m_pendingPushName;
+	int m_pendingPushArgument = 0;
 	std::vector<std::string> m_errors;
 };

@@ -34,6 +34,12 @@
 #include "GameLogic/Module/LogicModules.h"
 #include "GameLogic/ObjectFilter.h"
 #include "GameLogic/System/TerrainResourceManager.h"
+#include "GameLogic/System/ShroudManager.h"
+#include "GameLogic/ScriptEngine/ScriptActions.h"
+#include "GameLogic/ScriptEngine/ScriptConditions.h"
+#include "GameLogic/GameMessage.h"
+#include "GameLogic/GameLogicDispatch.h"
+#include "GameNetwork/NetPacket.h"
 #include "GameLogic/SpellStores.h"
 #include "GameLogic/VictoryConditions.h"
 
@@ -585,7 +591,7 @@ TEST_CASE("save4d: the version windows of the retail record layouts: Script (1, 
 	CHECK(error == "Don't know how to load version 4 (most recent is 3)");
 }
 
-TEST_CASE("save4d T4: the registry gives the seven SAVE-4d blocks their xfer; with SAVE-4b and 4c merged (SAVE-4e) the snapshot is written")
+TEST_CASE("save4d T4: the registry gives the eight SAVE-4d blocks their xfer; with SAVE-4b and 4c merged (SAVE-4e) the snapshot is written")
 {
 	logictest::LogicWorld f;
 	std::vector<std::string> ours;
@@ -597,7 +603,7 @@ TEST_CASE("save4d T4: the registry gives the seven SAVE-4d blocks their xfer; wi
 		}
 	}
 	CHECK(ours == std::vector<std::string>{ "obfme:ScriptEngine xfer +deepcrc", "obfme:Victory xfer", "obfme:Weather xfer", "obfme:Economy xfer",
-					  "obfme:CreateAHero xfer", "obfme:TerrainTrees xfer", "obfme:LargeGroupAudio xfer" });
+					  "obfme:CreateAHero xfer", "obfme:TerrainTrees xfer", "obfme:LargeGroupAudio xfer", "obfme:Taint xfer" });
 	std::vector<std::uint8_t> out;
 	std::string error;
 	REQUIRE_MESSAGE(f.logic->saveSnapshot(out, &error), error);
@@ -607,7 +613,7 @@ TEST_CASE("save4d T4: the registry gives the seven SAVE-4d blocks their xfer; wi
 TEST_CASE("save4d T8 as far as the blocks allow: the SAVE-4d blocks of a game played under Uber are the same bytes at 1, 4 and 16 logic threads")
 {
 	const std::vector<std::string> kOurs = { "obfme:ScriptEngine", "obfme:Victory", "obfme:Weather", "obfme:Economy", "obfme:CreateAHero",
-		"obfme:TerrainTrees", "obfme:LargeGroupAudio" };
+		"obfme:TerrainTrees", "obfme:LargeGroupAudio", "obfme:Taint" };
 	const int before = JobSystem::logic().threadCount();
 	std::vector<std::uint8_t> first;
 	for (int threads : { 1, 4, 16 })
@@ -954,7 +960,8 @@ struct FullScriptGame
 		Team *t = g.lw.teams.createTeam(proto, true);
 		t->scriptState().ready = true;
 		g.engine().updateGenericScripts(*t);
-		g.engine().nameInCache("HeroN1", *dummy);
+		dummy->setName("HeroN1");                  // the named cache (Object::setName)
+		g.engine().setReference("RefN2", *dummy); // lane CASTLE-UNPACK: an object reference (RW 0x608397), the side "" outside the update
 		CHECK(g.engine().didPlayerAcquireScience(*g.lw.players.findPlayerWithName("Alice"), s.sci("SCIENCE_B"), true)); // B consumed, A pending
 		CHECK_FALSE(g.engine().hasFinishedAudio("Horn", false));
 		ScriptEngine::SequentialScript seq;
@@ -1024,6 +1031,8 @@ TEST_CASE("save4d script engine: a non-default acquired-science queue and generi
 		"block 'obfme:ScriptEngine': an acquired-science queue holds the science 12345, which this game's data lacks");
 	const size_t horn = find(good, { 4, 'H', 'o', 'r', 'n' });
 	refusedBeyond(horn - 4, 5); // the audio timers
+	const size_t reference = find(good, { 0, 5, 'R', 'e', 'f', 'N', '2' }); // lane CASTLE-UNPACK: the side "", the name
+	refusedBeyond(reference - 4, 6);                                       // the object references
 	CHECK(section(*b.g.lw.logic, "script engine") == before);
 
 	// the round trip
@@ -1037,5 +1046,146 @@ TEST_CASE("save4d script engine: a non-default acquired-science queue and generi
 	// the prototype's copies (private to the engine) are in the section compared above: per hook its script and its own active flag
 	CHECK(b.g.engine().audioTimers().size() == 1u);
 	CHECK(b.g.engine().getUnitNamed("HeroN1") == b.dummy);
+	CHECK(b.g.engine().getUnitNamed("RefN2") == b.dummy); // lane CASTLE-UNPACK
+	CHECK(b.g.engine().references().size() == 1u);
 	CHECK(b.g.engine().sequentialScripts().size() == 1u);
+}
+
+TEST_CASE("save4d regional reveals: named polygon reveals survive snapshots and undo without revealing the bounding box")
+{
+	ScriptGame a, b;
+	TriggerArea area;
+	area.name = "Opening";
+	area.points = {{80,80}, {240,80}, {240,160}, {160,160}, {160,240}, {80,240}};
+	a.triggers.push_back(area); b.triggers.push_back(area);
+	a.start(); b.start();
+	ShroudManager sa(*a.lw.logic), sb(*b.lw.logic);
+	for (ShroudManager *shroud : {&sa, &sb})
+	{
+		shroud->init(40, 1); shroud->setExtent(0, 0, 400, 400); shroud->attach();
+	}
+	const int alice = a.lw.players.findPlayerWithName("Alice")->getPlayerIndex();
+	const int bob = a.lw.players.findPlayerWithName("Bob")->getPlayerIndex();
+	ScriptActions::execute(a.engine(), act("MAP_REVEAL_PERMANENTLY_IN_TRIGGER", {sp(9,"Opening"), sp(11,"Alice"), sp(49,"OpeningReveal")}));
+	CHECK(sa.getCellStatus(alice, 2, 2) == CELLSHROUD_CLEAR);
+	CHECK(sa.getCellStatus(alice, 5, 5) == CELLSHROUD_SHROUDED); // inside bounds but outside the concave polygon
+	CHECK(sa.getCellStatus(bob, 2, 2) == CELLSHROUD_SHROUDED);
+	CHECK(a.engine().stats().notes.at("[S-6102] regional script reveals use BFME2 wrappers; trigger cell-edge parity remains unverified") == 1u);
+	CHECK(a.engine().takeClientRequests().empty()); // authoritative shroud changes run in the logic
+	const std::vector<std::string> tokens = {"obfme:ScriptEngine", "obfme:Shroud"};
+	std::vector<std::uint8_t> saved, again;
+	a.lw.logic->gameState().saveBlocks(tokens, saved);
+	b.lw.logic->gameState().loadBlocks(tokens, saved);
+	b.lw.logic->gameState().saveBlocks(tokens, again);
+	CHECK(saved == again);
+	CHECK(section(*a.lw.logic, "script engine") == section(*b.lw.logic, "script engine"));
+	CHECK(sb.getCellStatus(alice, 2, 2) == CELLSHROUD_CLEAR);
+	for (ScriptGame *game : {&a, &b})
+		ScriptActions::execute(game->engine(), act("MAP_UNDO_REVEAL_PERMANENTLY_IN_TRIGGER", {sp(49,"OpeningReveal")}));
+	CHECK(sa.getCellStatus(alice, 2, 2) == CELLSHROUD_FOGGED);
+	CHECK(sb.getCellStatus(alice, 2, 2) == CELLSHROUD_FOGGED);
+	CHECK(sb.getCellStatus(alice, 5, 5) == CELLSHROUD_SHROUDED);
+	// A one-time reveal explores but does not keep a looker.
+	ScriptActions::execute(b.engine(), act("MAP_REVEAL_IN_TRIGGER", {sp(9,"Opening"), sp(11,"Bob")}));
+	CHECK(sb.getCellStatus(bob, 2, 2) == CELLSHROUD_FOGGED);
+}
+
+TEST_CASE("tutorial controls: camera travel commands complete strict scroll thresholds and survive snapshots")
+{
+	ScriptGame a, b;
+	a.start(); b.start();
+	a.lw.logic->economy().context().gameMode = EconomyContext::MODE_SINGLE_PLAYER;
+	a.lw.players.setLocalPlayer(a.lw.players.findPlayerWithName("Alice"));
+	GameLogicDispatch dispatch(*a.lw.logic);
+	auto submit = [&](float distance) {
+		GameMessage message(MSG_OPENBFME_CAMERA_TRAVEL, a.lw.players.getLocalPlayer()->getPlayerIndex());
+		message.appendRealArgument(distance);
+		dispatch.dispatch(message);
+	};
+	const auto first = cond("CAMERA_SCROLL_DISTANCE", {rp(250.0f)});
+	CHECK_FALSE(ScriptConditions::evaluate(a.engine(), first));
+	submit(250.0f);
+	CHECK_FALSE(ScriptConditions::evaluate(a.engine(), first)); // BFME2's getter comparison is strictly greater
+	submit(251.0f);
+	CHECK(ScriptConditions::evaluate(a.engine(), first));
+	CHECK_FALSE(ScriptConditions::evaluate(a.engine(), cond("CAMERA_SCROLL_DISTANCE", {rp(750.0f)})));
+	submit(751.0f);
+	CHECK(ScriptConditions::evaluate(a.engine(), cond("CAMERA_SCROLL_DISTANCE", {rp(750.0f)})));
+	CHECK(a.engine().stats().notes.at("[S-6103] camera travel accumulates actual player scroll distance; BFME2 getter accumulation parity remains unverified") == 3u);
+	GameMessage encoded(MSG_OPENBFME_CAMERA_TRAVEL, a.lw.players.getLocalPlayer()->getPlayerIndex());
+	encoded.appendRealArgument(751.0f);
+	NetByteWriter writer;
+	std::string error;
+	REQUIRE_MESSAGE(NetPacket::writeGameMessage(writer, encoded, &error), error);
+	NetByteReader reader(writer.data());
+	auto decoded = NetPacket::readGameMessage(reader, &error);
+	REQUIRE_MESSAGE(decoded != nullptr, error);
+	CHECK(decoded->getType() == MSG_OPENBFME_CAMERA_TRAVEL);
+	CHECK(decoded->getArgument(0)->real == 751.0f);
+	submit(100.0f); // reject a backwards cumulative measurement
+	CHECK(a.engine().cameraTravel() == 751.0f);
+	a.lw.logic->economy().context().gameMode = EconomyContext::MODE_SKIRMISH;
+	submit(900.0f);
+	CHECK(a.engine().cameraTravel() == 751.0f);
+
+	const auto saved = blockBytes(*a.lw.logic, "obfme:ScriptEngine");
+	b.lw.logic->gameState().loadBlocks({"obfme:ScriptEngine"}, saved);
+	CHECK(b.engine().cameraTravel() == 751.0f);
+	CHECK(blockBytes(*b.lw.logic, "obfme:ScriptEngine") == saved);
+}
+
+TEST_CASE("native objectives: open-state command satisfies the tutorial condition and resets on snapshot load")
+{
+	ScriptGame a, b;
+	a.start(); b.start();
+	a.lw.logic->economy().context().gameMode = EconomyContext::MODE_SINGLE_PLAYER;
+	Player *local = a.lw.players.findPlayerWithName("Alice");
+	a.lw.players.setLocalPlayer(local);
+	GameLogicDispatch dispatch(*a.lw.logic);
+	const auto condition = cond("OBJECTIVES_SCREEN_IS_OPEN", {});
+	CHECK_FALSE(ScriptConditions::evaluate(a.engine(), condition));
+	GameMessage open(MSG_OPENBFME_OBJECTIVES_OPEN, local->getPlayerIndex());
+	open.appendBooleanArgument(true);
+	NetByteWriter writer;
+	std::string error;
+	REQUIRE_MESSAGE(NetPacket::writeGameMessage(writer, open, &error), error);
+	NetByteReader reader(writer.data());
+	auto decoded = NetPacket::readGameMessage(reader, &error);
+	REQUIRE_MESSAGE(decoded != nullptr, error);
+	dispatch.dispatch(*decoded);
+	CHECK(ScriptConditions::evaluate(a.engine(), condition));
+	const auto saved = blockBytes(*a.lw.logic, "obfme:ScriptEngine");
+	b.engine().setObjectivesOpen(true);
+	b.lw.logic->gameState().loadBlocks({"obfme:ScriptEngine"}, saved);
+	CHECK_FALSE(ScriptConditions::evaluate(b.engine(), condition)); // menus are closed on load
+	CHECK(blockBytes(*b.lw.logic, "obfme:ScriptEngine") == saved);
+	GameMessage close(MSG_OPENBFME_OBJECTIVES_OPEN, local->getPlayerIndex());
+	close.appendBooleanArgument(false);
+	for (int mode : {EconomyContext::MODE_LAN, EconomyContext::MODE_INTERNET, EconomyContext::MODE_SKIRMISH})
+	{
+		a.lw.logic->economy().context().gameMode = mode;
+		dispatch.dispatch(close);
+		CHECK(a.engine().objectivesOpen());
+	}
+	a.lw.logic->economy().context().gameMode = EconomyContext::MODE_SINGLE_PLAYER;
+	GameMessage wrongPlayer(MSG_OPENBFME_OBJECTIVES_OPEN, a.lw.players.findPlayerWithName("Bob")->getPlayerIndex());
+	wrongPlayer.appendBooleanArgument(false);
+	dispatch.dispatch(wrongPlayer);
+	CHECK(a.engine().objectivesOpen());
+	GameMessage wrongType(MSG_OPENBFME_OBJECTIVES_OPEN, local->getPlayerIndex());
+	wrongType.appendIntegerArgument(0);
+	dispatch.dispatch(wrongType);
+	CHECK(a.engine().objectivesOpen());
+	dispatch.dispatch(close);
+	CHECK_FALSE(ScriptConditions::evaluate(a.engine(), condition));
+	a.engine().setObjectivesOpen(true);
+	a.start();
+	CHECK_FALSE(a.engine().objectivesOpen());
+}
+
+TEST_CASE("source AI tree snapshots: native group preservation differs from retail load and is reported")
+{
+ const auto stops=GameLogic::save4dStopLines();
+ REQUIRE(stops.size()==7);
+ CHECK(stops[2].find("the port keeps the used clusters (version 3; ambiguous pre-merge version 2 is refused)")!=std::string::npos);
 }

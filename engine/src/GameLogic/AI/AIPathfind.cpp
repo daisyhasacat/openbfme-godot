@@ -107,7 +107,7 @@ float shapeSphere(const PathfindShape &s)
 }
 } // namespace
 
-float PathfindGeometry::boundingCircleRadius() const
+float PathfindGeometry::computeBoundingCircleRadius() const
 {
 	// RW 0xAD2860: start at 0.01f (0x3C23D70A), keep the larger (fcomp: an equal value is taken from the shape, the same value)
 	float best = 0.01f;
@@ -127,7 +127,7 @@ float PathfindGeometry::boundingCircleRadius() const
 	return best;
 }
 
-float PathfindGeometry::boundingSphereRadius() const
+float PathfindGeometry::computeBoundingSphereRadius() const
 {
 	float best = 0.0f; // RW 0xAD287A
 	for (size_t i = 0; i < shapeCount(); ++i)
@@ -214,6 +214,17 @@ inline int realToIntFloor(float f)
 }
 } // namespace
 
+// lane PATH-REBUILD: the default facing of a PathfindObject, its orientation's cosine and sine (RW 0x70B9E0 for an Object: the cached unit direction
+// vector; ObjectPathfindAdapter answers from the transform's basis)
+Coord2D PathfindObject::getUnitDirection2D() const
+{
+	const float o = getOrientation();
+	Coord2D d;
+	d.x = SimMath::cosDet(o);
+	d.y = SimMath::sinDet(o);
+	return d;
+}
+
 Pathfinder::Pathfinder(const PathfindConfig &config, const PathfindWorld *world)
 	: m_config(config), m_world(world)
 {
@@ -224,6 +235,7 @@ Pathfinder::Pathfinder(const PathfindConfig &config, const PathfindWorld *world)
 	m_zoneManager.setBlockSize(config.zoneBlockSize);
 	m_queue1.reset();
 	m_queue2.reset();
+	m_uberBurst = false;
 }
 
 Pathfinder::~Pathfinder() {}
@@ -250,8 +262,17 @@ void Pathfinder::reset()
 	m_zoneManager.reset();
 	m_queue1.reset();
 	m_queue2.reset();
+	m_uberBurst = false;
 	m_units.clear();
 	m_unitIndex.clear();
+	m_wallHeights.clear();
+	m_wallPieces.clear();
+	m_raised = {};           // lane WALL-2
+	m_anyRaised = false;
+	m_waypointSlots.clear(); // lane WALL-2
+	m_waypointIds.clear();
+	m_waypointCounter = 0x40000000;
+	m_portalHops.clear();
 }
 
 void Pathfinder::note(const char *stop)
@@ -326,9 +347,18 @@ void Pathfinder::newMap(const PathfindTerrain &terrain, const std::vector<Pathfi
 	m_blockOfMapCells.assign((size_t)(bounds.hi.x + 1) * (size_t)(bounds.hi.y + 1), PathfindCell());
 	m_queue1.reset();
 	m_queue2.reset();
+	m_uberBurst = false;
 	m_units.clear();
 	m_unitIndex.clear();
 	m_stops.clear();
+	m_wallHeights.clear();
+	m_wallPieces.clear();
+	m_raised = {}; // lane WALL-2: the raised layers come back with their wall pieces
+	m_anyRaised = false;
+	m_waypointSlots.clear(); // lane WALL-2: the objects' portals are registered again as they enter the new map
+	m_waypointIds.clear();
+	m_waypointCounter = 0x40000000;
+	m_portalHops.clear();
 	note(pathstops::kSlopeAndConfig);
 	note(pathstops::kLayers);
 	note(pathstops::kZoneProfiles);
@@ -444,7 +474,7 @@ PathfindGridStats Pathfinder::gridStats() const
 	s.height = m_extent.hi.y + 1;
 	for (const PathfindCell &c : m_blockOfMapCells)
 	{
-		s.types[(int)c.getType() & 7]++;
+		s.types[std::min((int)c.getType(), 8)]++;
 		if (c.getPinched()) s.pinched++;
 		if (c.getImpassableToPlayers()) s.impassableToPlayers++;
 		if (c.getExtraPass()) s.extraPass++;
@@ -455,8 +485,11 @@ PathfindGridStats Pathfinder::gridStats() const
 std::vector<std::string> Pathfinder::allStops()
 {
 	return { pathstops::kShore, pathstops::kSlopeAndConfig, pathstops::kRivers, pathstops::kLayers, pathstops::kZoneProfiles, pathstops::kHierarchical,
-		pathstops::kLargeRectGoal, pathstops::kPartialRebuild, pathstops::kGroupDestination, pathstops::kWallLayer, pathstops::kLargeRectFootprint,
-		pathstops::kLargeRectReservation, pathstops::kQueueFull, pathstops::kQueueTime, pathstops::kPath, pathstops::kNumerics };
+		pathstops::kLargeRectGoal, pathstops::kClosestCellThirdTest, pathstops::kGroupDestination, pathstops::kBaseSiteWindow, pathstops::kGroundTypeFilter, pathstops::kWallFlagDrawable, pathstops::kWallLayer,
+		pathstops::kWallLayerCount, pathstops::kRampNoHeight, pathstops::kLargeRectFootprint,
+		pathstops::kLargeRectReservation, pathstops::kQueueFull, pathstops::kQueueTime, pathstops::kPath, pathstops::kNumerics, pathstops::kPortals,
+		pathstops::kPortalTable, pathstops::kRaisedLayers, pathstops::kRaisedLayerCount, pathstops::kPortalLayerQuirk, pathstops::kPortalLostHorde,
+		pathstops::kAttackRaisedFallback };
 }
 
 // ---- the state hash (MOVE-1) ----
@@ -471,6 +504,14 @@ void PathfindZoneManager::crc(StateHasher &h) const
 	{
 		h.addBool(b.passable);
 		h.addBool(b.dirty);
+		if (m_anyPortal)
+		{
+			h.addU32((std::uint32_t)b.portals.size()); // lane WALL-2: only once a block listed a portal (a map without portals hashes as before)
+			for (std::uint16_t p : b.portals)
+			{
+				h.addU32(p);
+			}
+		}
 	}
 	h.addU32((std::uint32_t)m_zones.size());
 	for (const ZoneInfo &z : m_zones)
@@ -504,10 +545,12 @@ void Pathfinder::crc(StateHasher &h) const
 		h.addI32(v);
 	}
 	h.addBool(m_config.hordesWaitForHordes); // lane PHYS-1 (review r3)
+	h.addBool(m_config.attackUsesLineOfSight); // RW 0x6F4557 (not in configHash: a save made before it was read still loads)
 	h.addBool(m_config.planningModeEnabled); // lane MOVE-3 (review r1): GameData + 0x11CA routes move orders through the group manager
 	h.addFloat(m_config.meleeApproachDist);
 	h.addFloat(m_config.meleeApproachTolerance);
 	h.addFloat(m_config.castleSiegeStandBackDistance);
+	h.addBool(m_config.attackUsesLineOfSight); // lane ATTACKPATH-1
 	for (int v : { m_extent.lo.x, m_extent.lo.y, m_extent.hi.x, m_extent.hi.y, m_logicalExtent.lo.x, m_logicalExtent.lo.y, m_logicalExtent.hi.x, m_logicalExtent.hi.y, m_stride })
 	{
 		h.addI32(v);
@@ -543,6 +586,21 @@ void Pathfinder::crc(StateHasher &h) const
 		}
 	}
 	m_zoneManager.crc(h);
+	crcPortals(h); // lane WALL-2: nothing unless portals exist
+	crcRaised(h);  // lane WALL-2: nothing unless a raised layer is in use
+	if (!m_wallHeights.empty()) // lane WALL-1 (review of #63): the wall tops' heights place the units on them (getLayerHeight); a map without walls hashes as before
+	{
+		h.addU32(0x57414C4Cu); // "WALL"
+		h.addU32((std::uint32_t)m_wallHeights.size());
+		for (float z : m_wallHeights)
+		{
+			h.addFloat(z);
+		}
+	}
+	if (m_uberLimits)
+	{
+		h.addU32(m_uberBurst ? 1u : 0u); // lane PATHPERF-4: Uber only, a Faithful game hashes as before
+	}
 	h.addU32((std::uint32_t)m_queue1.size());
 	for (size_t i = 0; i < m_queue1.size(); ++i)
 	{

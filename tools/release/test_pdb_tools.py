@@ -196,3 +196,26 @@ def test_the_session_log_names_stop_s1923_on_windows():
     # DEVPORT-6: since win-crash-1 (WindowsCrashDump: a local minidump of a crash on any thread) the stop is the offset-only naming
     assert 'print("RELEASE [S-1923]' in message and "dll+<offset>" in message and "minidump" in message and "every thread" in message
     assert "| S-1923 | code |" in (REPO / "docs/STOPS.md").read_text()
+
+
+def test_scrub_dll_macos_hosted_toolchain_paths_preserve_image_layout():
+    toolchain = b"/Users" b"/runner/work/llvm-mingw/llvm-mingw/llvm-project/libcxxabi/src/cxa_demangle.cpp\0"
+    raw = pe(extra=b"\0" + toolchain)
+    out = pdb_tools.scrub_dll(raw)
+    assert len(out) == len(raw)
+    assert b"/Users" b"/runner" not in out
+    assert b"llvm-mingw/llvm-mingw/llvm-project/libcxxabi/src/cxa_demangle.cpp\0" in out
+    assert pdb_tools.pe_codeview(out) == pdb_tools.pe_codeview(raw)
+    assert pdb_tools.check(out, pdb()) == []
+    assert audit_package.developer_path_problem(out) == ""
+    assert pdb_tools.scrub_dll(out) == out
+def test_same_build_ignores_only_the_codeview_guid():
+    """MACACT-1: the build host's and GitHub Actions' DLL of one commit differ in the CodeView GUID only (lld hashes the PDB, which holds
+    the build folder's absolute path); any other byte, the size, the age or the PDB name is a different build"""
+    a = pe(guid=b"\x01" * 16, extra=b"code")
+    assert pdb_tools.same_build(a, pe(guid=b"\x02" * 16, extra=b"code")) == []
+    assert pdb_tools.same_build(a, a) == []
+    assert "differ outside the CodeView GUID" in pdb_tools.same_build(a, pe(guid=b"\x02" * 16, extra=b"cod3"))[0]
+    assert "differ outside the CodeView GUID" in pdb_tools.same_build(a, pe(guid=b"\x01" * 16, age=2, extra=b"code"))[0]
+    assert "the sizes differ" in pdb_tools.same_build(a, a + b"\0")[0]
+    assert "not a PE image" in pdb_tools.same_build(a, b"MZ not a pe")[0]

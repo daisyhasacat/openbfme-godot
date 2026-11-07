@@ -9,6 +9,7 @@
 #include "Common/NumericState.h"
 #include "GameLogic/AI/AIPathfind.h"
 #include "Common/Player.h"
+#include "Common/Upgrade.h"
 #include "Common/StateHash.h"
 #include "Common/Team.h"
 #include "Common/Thing/ModuleFactory.h"
@@ -27,6 +28,8 @@
 #include "GameLogic/Module/GarrisonContain.h"
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/PartitionManager.h"
+#include "GameLogic/FXEvents.h"
 #include "GameLogic/ObjectFilter.h"
 #include "GameLogic/ObjectFilterMatch.h"
 #include "GameLogic/SimMath.h"
@@ -38,70 +41,15 @@
 
 namespace
 {
-// RW 0x6F5F65 (lane GARRISON-2): the path test to a container whose entry point lies in its footprint. The container's cell is not an obstacle: the quick path
-// test to its position (RW's second probe at the position plus the template's first offset, RW 0xAD1AE0(0), is not read: S-1107). An obstacle: from the centre
-// cell (RW 0x6E8CE6, centred) a line (RW 0x6E94B2) of d = 2 - (int)(bounding circle radius x -0.1) cells in each of the four directions (+x, -x, +y, -y, RW
-// 0x6F5EF3) finds the first cell of another obstacle id (RW 0x6E86D2); its zone (the terrain variant RW 0x938D89 of the locomotor) must be the unit's zone (the
-// portal search RW 0x6F5547 between two zones is not ported, S-161: different zones fail)
-bool quickPathToContainer(Pathfinder &pf, const PathfindLocomotorInfo &loco, const Coord3D &from, const Object &container)
-{
-	Coord3D to = *container.getPosition();
-	ICoord2D centre;
-	pf.worldToCell(&to, true, &centre);
-	const PathfindCell *goal = pf.getCell(LAYER_GROUND, centre.x, centre.y);
-	if (!goal)
-	{
-		return false;
-	}
-	if (goal->getType() != PathfindCell::CELL_OBSTACLE)
-	{
-		return pf.clientSafeQuickDoesPathExist(loco, &from, &to);
-	}
-	const PathfindMovement mv = Pathfinder::makeMovement(nullptr, loco);
-	const PathfindCell *fromCell = pf.getClippedCell(LAYER_GROUND, &from);
-	if (!fromCell)
-	{
-		return false;
-	}
-	const zoneStorageType fromZone = pf.zoneManager().getEffectiveZone(mv, true, fromCell->getZone());
-	const PathfindObjectID obstacle = goal->getObstacleID();
-	const int d = 2 - SimMath::truncToInt32(NumericState::pc24Mul(CombatQueries::boundingCircleRadius(container), -0.1f));
-	const int dirs[4][2] = { { d, 0 }, { -d, 0 }, { 0, d }, { 0, -d } };
-	for (const auto &dir : dirs)
-	{
-		// RW 0x6E94B2: Bresenham from the centre to the end cell, both included
-		const int x0 = centre.x, y0 = centre.y, x1 = centre.x + dir[0], y1 = centre.y + dir[1];
-		const int steps = std::max(std::abs(x1 - x0), std::abs(y1 - y0));
-		for (int k = 0; k <= steps; ++k)
-		{
-			const int x = steps == 0 ? x0 : x0 + (x1 - x0) * k / steps;
-			const int y = steps == 0 ? y0 : y0 + (y1 - y0) * k / steps;
-			const PathfindCell *c = pf.getCell(LAYER_GROUND, x, y);
-			if (!c)
-			{
-				break; // off the grid: this direction finds nothing
-			}
-			if (c->getObstacleID() != obstacle)
-			{
-				if (pf.zoneManager().getEffectiveZone(mv, true, c->getZone()) == fromZone)
-				{
-					return true;
-				}
-				break;
-			}
-		}
-	}
-	return false;
-}
-
 const char *const kStopRuntime =
 	"[S-1100] GarrisonContain / HordeGarrisonContain (lane GARRISON-1): ported from RW 0x86603B / 0x87B8C5 / 0x87D0E0 (who may enter; the CHUNK_VENDOR / ROCK_VENDOR "
 	"entry as the body's GrabObject, RW 0x8660F0, lane BACKLOG-1), 0x8674C2 / 0x87CFEB / 0x990DEA (enter: a horde and then its members), 0x87BEC8 / 0x87BFA6 (on "
 	"containing / removing), 0x87C2B7 .. 0x87BD77 (the garrison points: the PassengerBonePrefix bones of the three damage states, the point nearest to a rider's "
 	"victim, a current MeleeWeapon takes none and leaves one, RW 0x441B59), 0x87C8DF (update), 0x867120 (death: EjectPassengersOnDeath ejects through "
 	"removeAllContained and its exit position search RW 0x87B3EC, else the riders are destroyed) and 0x87D3CA / 0x87CA2B (exit: ExitDelay between members, the "
-	"EntryPosition with the exit cell test RW 0x6E8707 (lane GARRISON-3), the exit path to the ExitOffset). Not ported: the door model conditions, the enter / exit "
-	"sounds, ModifierToGiveOnExit, the apparent controlling player and the radar, DamagePercentToUnits' passenger damage, HealObjects, MobileGarrison, "
+	"EntryPosition with the exit cell test RW 0x6E8707 (lane GARRISON-3), the exit path to the ExitOffset), 0x87C6CE (lane GARRISON-4: the container takes its "
+	"first rider's player's default team and its original team back when empty). Not ported: the door model conditions, the enter / exit "
+	"sounds, ModifierToGiveOnExit, the apparent controlling player's hidden byte and indicator colour, the radar, DamagePercentToUnits' passenger damage, HealObjects, MobileGarrison, "
 	"KillPassengersOnDeath's fling, the rally point (S-1620)";
 
 const char *const kStopNotPorted =
@@ -201,6 +149,12 @@ GarrisonContain::~GarrisonContain() = default;
 
 void GarrisonContain::registerClasses(ModuleFactory &modules)
 {
+	modules.bindTypedData<CitadelSlaughterHordeContainBehaviorData>("CitadelSlaughterHordeContain", MODULETYPE_BEHAVIOR);
+	modules.bindModuleProc("CitadelSlaughterHordeContain", MODULETYPE_BEHAVIOR, [](Thing *thing, const ModuleData *data, const ModuleFactory::ModuleTemplate &) -> std::unique_ptr<Module> {
+		const auto *typed = dynamic_cast<const CitadelSlaughterHordeContainBehaviorData *>(data);
+		if (!typed) throw std::logic_error("CitadelSlaughterHordeContain: module data is not typed");
+		return std::make_unique<CitadelSlaughterHordeContain>(thing, typed);
+	});
 	modules.bindTypedData<GarrisonContainBehaviorData>("GarrisonContain", MODULETYPE_BEHAVIOR);
 	modules.bindTypedData<HordeGarrisonContainBehaviorData>("HordeGarrisonContain", MODULETYPE_BEHAVIOR);
 	modules.bindModuleProc("GarrisonContain", MODULETYPE_BEHAVIOR, [](Thing *thing, const ModuleData *data, const ModuleFactory::ModuleTemplate &) -> std::unique_ptr<Module> {
@@ -353,7 +307,7 @@ bool GarrisonContain::isValidContainerFor(const Object &obj, bool checkCapacity,
 	// ---- HordeGarrisonContain RW 0x87D0E0 ----
 	if (checkPath)
 	{
-		// RW 0x87D114 .. 0x87D153: a path from the object to the EntryOffset (RW 0x6F5BB0), else to the container itself (RW 0x6F5F65, lane GARRISON-2)
+		// RW 0x87D114 .. 0x87D153: a path from the object to the EntryOffset (RW 0x87D134 -> 0x6F5BB0, no set given: the AI's; lane QPATH-1), else to the container itself (RW 0x6F5F65, lane GARRISON-2)
 		const AIUpdateInterface *ai = obj.getAIUpdateInterface();
 		if (ai)
 		{
@@ -361,7 +315,8 @@ bool GarrisonContain::isValidContainerFor(const Object &obj, bool checkCapacity,
 			getEntryOffset(to);
 			Coord3D from = *obj.getPosition();
 			Pathfinder &pf = ai->world().pathfinder();
-			if (!pf.clientSafeQuickDoesPathExist(ai->locomotorInfo(), &from, &to) && !quickPathToContainer(pf, ai->locomotorInfo(), from, *getObject()))
+			if (!pf.quickDoesPathExist(ai->adapter(), &from, &to, nullptr) &&
+				!pf.pathToObject(ai->adapter(), ai->locomotorInfo(), from, ai->world().adapterFor(*getObject())))
 			{
 				return false;
 			}
@@ -480,7 +435,42 @@ void GarrisonContain::onContaining(Object *obj, bool wasSelected)
 		obj->setDrawableHidden(true); // RW 0x87BF38
 	}
 	recalcApparentControllingPlayer(); // RW 0x87BF41: slot 0x50
-	// RW 0x87BF44 .. 0x87BF9F: the rider's DISABLED type 0x14 (none in the port's 11 types) is cleared on it and its members: no type 0x14 exists (S-148)
+	// lane GARRISONWEAPON-1, RW 0x87BF44 .. 0x87BF9D: a rider whose template has a CONTAINED weapon set (RW 0x691014(20)) takes the weapon set flag CONTAINED
+	// (RW 0x691059(20): Object + 0x38C bit 20, the weapon set update, the mapped model condition), then so does every member of its horde that has one
+	if (hasContainedWeaponSet(*obj))
+	{
+		obj->setWeaponSetFlag(kWeaponSetContained, true);
+		setContainedOnHordeMembers(*obj);
+	}
+}
+
+// RW 0x691014(20): the object's template has a weapon set for WeaponSetType CONTAINED
+bool GarrisonContain::hasContainedWeaponSet(const Object &obj)
+{
+	const ObjectWeapons *w = obj.getWeapons();
+	return w && w->hasWeaponSetFor(kWeaponSetContained);
+}
+
+// RW 0x87BF5D .. 0x87BF9D / 0x87C225 .. 0x87C267: the rider's horde interface (RW 0x68C866: Object + 0x258 slot 0x7C), its member list (horde slot 0x108)
+// in order; each member with a CONTAINED weapon set takes the flag (RW 0x691059(20)). Both the entry and the exit SET it on the members (retail's own
+// bytes); a member's own exit through onRemoving clears its flag
+void GarrisonContain::setContainedOnHordeMembers(Object &rider)
+{
+	ContainModuleInterface *contain = rider.getContain();
+	if (!contain || !contain->getHordeContainInterface())
+	{
+		return;
+	}
+	if (const ContainModuleInterface::ContainedItemsList *members = contain->getContainedItemsList())
+	{
+		for (Object *m : *members)
+		{
+			if (m && hasContainedWeaponSet(*m))
+			{
+				m->setWeaponSetFlag(kWeaponSetContained, true);
+			}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -558,6 +548,8 @@ void GarrisonContain::onRemoving(Object *obj)
 	{
 		m_hiddenFlag = false;
 	}
+	// RW 0x87C094 .. 0x87C0A8 (lane OCCLUDE-1): the rider's safe occlusion frame (+ 0x444) = the frame + its template's OcclusionDelay (presentation only)
+	obj->setSafeOcclusionFrame(obj->logic().getFrame() + Object::occlusionDelayOf(*obj->getTemplate(), obj->logic()));
 	recalcApparentControllingPlayer(); // RW 0x87C06B: slot 0x50
 	// RW 0x87C073: the killing branch (KillPassengersOnDeath with the dying byte and no health left): the rider is flung and killed, an ENCLOSED one destroyed
 	if (m_killingRiders && openData().m_killPassengersOnDeath && container->getBodyModule() && !(container->getBodyModule()->getHealth() > 0.0f))
@@ -565,18 +557,60 @@ void GarrisonContain::onRemoving(Object *obj)
 		++m_openStats.ridersDestroyedOnDeath;
 		container->logic().reportError("GarrisonContain of " + container->getTemplate()->getName() + ": the KillPassengersOnDeath branch of RW 0x87BFA6 is not ported (S-1100)");
 	}
+	// lane GARRISONWEAPON-1, RW 0x87C20E .. 0x87C267 (both branches end here, RW 0x87C0BD / 0x87C202): a rider with a CONTAINED weapon set loses the flag
+	// (RW 0x691106(20)), then its horde's members with one take it (RW 0x691059(20), as on the entry)
+	if (hasContainedWeaponSet(*obj))
+	{
+		obj->setWeaponSetFlag(kWeaponSetContained, false);
+		setContainedOnHordeMembers(*obj);
+	}
 }
 
 
-// RW 0x87C6CE GarrisonContain::recalcApparentControllingPlayer, the ported part: with riders the container shows GARRISONED (RW 0x87C86E, for the
-// local player's own or a not-stealthed garrison: the logic sets it whatever the viewer, S-1100), then the points are loaded once (RW 0x87C895)
+// RW 0x87C6CE GarrisonContain::recalcApparentControllingPlayer (BFME2 0x00479432, GarrisonContainRecalcApparentControllingPlayer.cpp, tier B same shape),
+// the ported part. Lane GARRISON-4 (the owner's 2026-10-22 report: a neutral stone tower's exit button stayed greyed after his units went in):
+// RW 0x87C6D7 .. 0x87C71C: the original team's id (contain + 0xDC) is taken from the object's team (+ 0x31C, the team's id + 0x34) when it is 0 or
+// TeamFactory::findTeamByID (RW 0x7A1EEE) no longer finds it, and cleared when the object has no team. With riders, the first one in the list (RW 0x865598)
+// gives the container its controlling player's (RW 0x68B678) default team (Player + 0x30C) through Object::setTeam (RW 0x87C7B8 -> RW 0x69954A):
+// a neutral tower becomes the garrisoning player's, so its command set is no foreign view on his control bar (RW 0x94397F). Empty, the original team
+// comes back (RW 0x87C7BF .. 0x87C7D8), or its id is dropped when that team is gone. Then GARRISONED is shown (RW 0x87C86E, for the local player's own or a
+// not-stealthed garrison: the logic sets it whatever the viewer, S-1100) and the points are loaded once (RW 0x87C895).
+// Not ported: the hidden byte + 0x9BD's set (RW 0x87C75B .. 0x87C797: the first rider neither RW 0x693BF2 nor status 0x11 and every rider stealthed,
+// slot 0x124; the port only clears it), the indicator colour of the apparent controller (RW 0x87C881 .. 0x87C8B4, client side)
 void GarrisonContain::recalcApparentControllingPlayer()
 {
 	Object *container = getObject();
+	TeamFactory &teams = container->logic().players().teams();
+	if (container->getTeam() && (m_originalTeam == 0 || !teams.findTeamByID(m_originalTeam)))
+	{
+		m_originalTeam = container->getTeam()->getID(); // RW 0x87C6FF .. 0x87C70B
+	}
+	if (!container->getTeam())
+	{
+		m_originalTeam = 0; // RW 0x87C71C
+	}
 	if (getContainCount() == 0)
 	{
-		m_hiddenFlag = false;
+		if (Team *original = teams.findTeamByID(m_originalTeam))
+		{
+			container->setTeam(original); // RW 0x87C7D8
+		}
+		else
+		{
+			m_originalTeam = 0; // RW 0x87C7DF
+		}
+		m_hiddenFlag = false; // RW 0x87C7E5
 		return;
+	}
+	const ContainModuleInterface::ContainedItemsList *riders = getContainedItemsList();
+	const Object *first = riders && !riders->empty() ? riders->front() : nullptr;
+	if (first)
+	{
+		const Player *owner = first->getControllingPlayer();
+		if (Team *team = owner ? owner->getDefaultTeam() : nullptr)
+		{
+			container->setTeam(team); // RW 0x87C7B8
+		}
 	}
 	static const int garrisoned = CombatNames::modelCondition("GARRISONED");
 	if (!container->testModelCondition(garrisoned))
@@ -1010,7 +1044,9 @@ UpdateSleepTime GarrisonContain::update()
 	{
 		if (obj->isEffectivelyDead())
 		{
-			removeFromContain(obj); // RW 0x87C928: interface slot 0xA4(obj, false); + 0x444 (the safe occlusion frame) is client side
+			removeFromContain(obj); // RW 0x87C928: interface slot 0xA4(obj, false)
+			// RW 0x87C93C .. 0x87C951 (lane OCCLUDE-1): + 0x444 = the frame + LOGICFRAMES_PER_SECOND (RW 0xD9F608 = 5) * 1000 (presentation only)
+			obj->setSafeOcclusionFrame(obj->logic().getFrame() + 5u * 1000u);
 		}
 	}
 	removeInvalidObjectsFromGarrisonPoints();
@@ -1024,7 +1060,7 @@ UpdateSleepTime GarrisonContain::update()
 }
 
 
-// RW 0x87B3EC GarrisonContain::validateRallyPoint (BFME2 decomp GarrisonContainValidateRallyPoint.cpp, tier A): a valid rally point (+ 0x9DE == 1) is kept when
+// RW 0x87B3EC GarrisonContain::validateRallyPoint (BFME2 decomp GarrisonContain.cpp, tier A): a valid rally point (+ 0x9DE == 1) is kept when
 // findPositionAround finds a spot at it (radius 0, FPF_IGNORE_ALLY_OR_NEUTRAL_UNITS, the container ignored and the relationship object; the spot found is not
 // kept), else it is no longer valid; an invalid one is searched around the container from its bounding circle radius (+ 0xB8) to 1.8 times it (RW 0xBE9B44,
 // SSE) straight into + 0x9D0, valid when found. Both searches take the random start angle (the FindPositionOptions constructor's -99999.9: a logic random draw
@@ -1314,6 +1350,7 @@ void GarrisonContain::crc(StateHasher &h) const
 	OpenContain::crc(h);
 	h.addBool(m_rosterCreated);
 	h.addBool(m_hiddenFlag);
+	h.addU32(m_originalTeam); // lane GARRISON-4: RW + 0xDC
 	for (const GarrisonPoint &p : m_points)
 	{
 		h.addU32(p.object);
@@ -1342,10 +1379,19 @@ void GarrisonContain::crc(StateHasher &h) const
 // ---- lane SAVE-4b: the snapshot (OpenBFME native, S-4190): OpenContain's, then the crc's fields (every point position slot), then the statistics ----------
 void GarrisonContain::xfer(Xfer &x)
 {
-	SnapshotXfer::version(x, 1, 1);
+	XferVersion v{ 1, 2 }; // 2: lane GARRISON-4's original team
+	x.xferVersion(v);
 	OpenContain::xfer(x);
 	x.xferBool(&m_rosterCreated);
 	x.xferBool(&m_hiddenFlag);
+	if (v.current >= 2)
+	{
+		x.xferUnsignedInt(&m_originalTeam);
+	}
+	else if (x.isLoading())
+	{
+		m_originalTeam = 0; // a version 1 snapshot has none: the next recalc takes the container's team (RW 0x87C6FF)
+	}
 	for (GarrisonPoint &p : m_points)
 	{
 		x.xferObjectID(&p.object);
@@ -1371,4 +1417,131 @@ void GarrisonContain::xfer(Xfer &x)
 	{
 		SnapshotXfer::u64(x, *s);
 	}
+}
+
+const char *CitadelSlaughterHordeContain::stopLine()
+{
+	return "[S-6010] CitadelSlaughterHordeContain: ring delivery uses the BFME2 donor entry/upgrade/exit path with RotWK's INI fields; ordinary troop slaughter and CanAlwaysEnter "
+		   "are not ported; RotWK binary equivalence is not established";
+}
+
+CitadelSlaughterHordeContain::CitadelSlaughterHordeContain(Thing *thing, const CitadelSlaughterHordeContainBehaviorData *data)
+	: GarrisonContain(thing, data, data->horde.m_garrison, data->m_dieMux, &data->horde), m_citadel(data)
+{
+	getObject()->logic().noteStop(stopLine());
+}
+
+bool CitadelSlaughterHordeContain::hasRingStatus(const Object &obj) const
+{
+	// BFME2 0x4807C7: any overlap, also testing the producer of a horde member.
+	for (size_t i = 0; i < m_citadel->ringStatus.size(); ++i)
+		if (m_citadel->ringStatus[i] & obj.getStatusBits()[i])
+			return true;
+	return false;
+}
+
+bool CitadelSlaughterHordeContain::isValidContainerFor(const Object &obj, bool, bool checkPath) const
+{
+	if (obj.getControllingPlayer() != getObject()->getControllingPlayer())
+		return false;
+	bool ring = hasRingStatus(obj);
+	if (!ring && obj.testStatus((unsigned)CombatNames::statuses().hordeMember))
+		if (const Object *producer = obj.logic().findObjectByID(obj.getProducerID()))
+			ring = hasRingStatus(*producer);
+	if (!ring)
+		return false;
+	if (checkPath)
+		if (const AIUpdateInterface *ai = obj.getAIUpdateInterface())
+		{
+			Coord3D entry;
+			getEntryOffset(entry);
+			const Coord3D from = *obj.getPosition();
+			Pathfinder &pf = ai->world().pathfinder();
+			// RotWK's citadel test RW 0x88397F asks RW 0x6F5BB0 (RW 0x8839FF) with no set (the AI's), then RW 0x6F5F65 (lane QPATH-1)
+			if (!pf.quickDoesPathExist(ai->adapter(), &from, &entry, nullptr) &&
+				!pf.pathToObject(ai->adapter(), ai->locomotorInfo(), from, ai->world().adapterFor(*getObject())))
+				return false;
+		}
+	return true;
+}
+
+bool CitadelSlaughterHordeContain::addToContain(Object *obj)
+{
+	if (!obj || !isValidContainerFor(*obj, true, false))
+		return false;
+	if (!GarrisonContain::addToContain(obj))
+		return false;
+	if (hordeOf(*obj))
+		return true; // the horde enters first; its members must actually reach the entry
+	Object *parent = obj->getContainedBy();
+	if (parent && parent != getObject())
+	{
+		// BFME2 SlaughterHordeContain::AddHordeMember: a HORDE_MEMBER rejoins;
+		// only the final member invokes the citadel callback on its parent.
+		// RotWK checks the delivery only here, when an object enters (RW 0x883FC3..0x88403F in RW 0x883B4A: the horde's slot 0xF4, no member
+		// on the way); nothing else calls the callback RW 0x8840FC, so a last approaching member that dies leaves the delivery undone, as in retail.
+		if (auto *horde = hordeOf(*parent); horde && horde->allMembersEntered())
+			deliverRing(*parent);
+	}
+	else
+		deliverRing(*obj);
+	return true;
+}
+
+void CitadelSlaughterHordeContain::deliverRing(Object &rider)
+{
+	Object *obj = &rider;
+	// BFME2 CitadelSlaughterHordeContain 0x480E9A: idle, clear the configured
+	// status, destroy (not kill) the closest filtered object, apply upgrades by
+	// type, emit FX, and remember the carrier for next update's exit.
+	if (auto *ai = obj->getAIUpdateInterface())
+		ai->aiIdle(ai->lastCommandSource());
+	for (unsigned bit = 0; bit < 128; ++bit)
+		if (m_citadel->ringStatus[bit / 32] & (1u << (bit % 32)))
+			obj->setStatus(bit, false);
+	GameLogic &logic = getObject()->logic();
+	PartitionFilterFn filter([&](Object &candidate) { return ObjectFilterMatch::allows(logic, m_citadel->objectToDestroy, candidate, obj->getControllingPlayer()); });
+	if (Object *ring = logic.partition().getClosestObject(*getObject()->getPosition(), 9999.0f, FROM_BOUNDINGSPHERE_3D, {&filter}))
+		logic.destroyObject(ring);
+	for (const std::string &name : m_citadel->ringUpgrades)
+	{
+		const UpgradeTemplate *upgrade = Player::resolveUpgrade(name, true);
+		if (upgrade->getUpgradeType() == UPGRADE_TYPE_PLAYER)
+			getObject()->getControllingPlayer()->addUpgrade(upgrade, Player::UPGRADE_STATUS_COMPLETE);
+		else
+			getObject()->giveUpgrade(upgrade);
+	}
+	if (!m_citadel->ringFX.empty())
+		logic.fxEvents().emit(FXEventLog::objectEvent(FXEvent::OBJECT_FX, "CitadelSlaughterHordeContain", logic.getFrame(), m_citadel->ringFX, *getObject()));
+	m_ringExit = obj->getID();
+}
+
+UpdateSleepTime CitadelSlaughterHordeContain::update()
+{
+	// BFME2 0x480FE2: the ring carrier exits on the following update.
+	if (Object *obj = getObject()->logic().findObjectByID(m_ringExit))
+		if (auto *ai = obj->getAIUpdateInterface())
+		{
+			if (hordeOf(*obj))
+				ai->aiHordeExit(getObject(), ai->lastCommandSource());
+			else
+				ai->aiExit(getObject(), ai->lastCommandSource());
+		}
+	m_ringExit = INVALID_ID;
+	// RotWK's update (RW 0x884244 -> 0x8840D4) never checks for a delivery: a battalion whose last approaching member dies after the others
+	// entered keeps the ring inside until it is evacuated and enters again (see addToContain)
+	return GarrisonContain::update();
+}
+
+void CitadelSlaughterHordeContain::crc(StateHasher &h) const
+{
+	GarrisonContain::crc(h);
+	h.addU32(m_ringExit);
+}
+
+void CitadelSlaughterHordeContain::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1);
+	GarrisonContain::xfer(x);
+	x.xferObjectID(&m_ringExit);
 }

@@ -2,7 +2,11 @@
 
 #include "Common/BfmeGame.h"
 #include "GodotDevice/GodotW3DModelBuilder.h"
+#include "GameClient/WaterGeometry.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
+#include "GodotDevice/GodotW3DMaterial.h"
+#include "GodotDevice/GodotPackedTexture.h"
+#include "Libraries/Source/Apt/AptLoad.h"
 
 #include "Common/AsciiString.h"
 #include "Libraries/WWVegas/WW3D2/assetmgr.h"
@@ -79,6 +83,7 @@ Ref<Texture2D> W3DModelBuilder::load_texture(const Ref<RetailFileSystem> &fs, co
 	}
 	Dictionary info;
 	Ref<Texture2D> t = loadTexture(*fs.ptr(), toNative(texture_name), info);
+	m_report["texture"] = info;
 	if (t.is_null() && ((Array)m_report["errors"]).is_empty())
 	{
 		((Array)m_report["errors"]).push_back(toGodot("load_texture: no texture " + toNative(texture_name)));
@@ -95,13 +100,38 @@ Ref<Texture2D> W3DModelBuilder::loadTexture(RetailFileSystem &fs, const std::str
 	if (cached != m_textureCache.end())
 	{
 		meshInfo["texture_path"] = cached->second->get_meta("retail_path");
+		if (cached->second->has_meta("packed_texture_stop")) meshInfo["packed_texture_stop"] = cached->second->get_meta("packed_texture_stop");
 		return cached->second;
+	}
+
+	// lane SDK-1: an asset pack's replacement first (the bibs and the placement shadow decals load here; GameClient/AssetPacks.h)
+	std::string packError;
+	Ref<Image> packImage = Load_Asset_Pack_Image(fs.assetPacks().empty() ? nullptr : &fs.assetPacks(), name, packError);
+	if (!packError.empty())
+	{
+		((Array)m_report["errors"]).push_back(toGodot("texture " + name + ": " + packError));
+		return Ref<Texture2D>();
+	}
+	if (packImage.is_valid())
+	{
+		Ref<ImageTexture> packed = ImageTexture::create_from_image(packImage);
+		packed->set_meta("retail_path", packImage->get_meta("retail_path"));
+		meshInfo["texture_path"] = packImage->get_meta("retail_path");
+		m_textureCache[key] = packed;
+		return packed;
 	}
 
 	// Use the mounted game's texture layout, as the material factory does.
 	const bool flatLayout = fs.archive_fs() && isBfme1Data(*fs.archive_fs());
-	const TextureResolution resolved = Resolve_W3D_Texture(name, [&](const std::string &path) { return fs.existsNative(path); }, flatLayout);
-	const std::vector<std::string> &candidates = resolved.Tried;
+	const TextureResolution resolved = Resolve_Packed_W3D_Texture(name, [&](const std::string &path) { return fs.existsNative(path); }, flatLayout);
+	std::vector<std::string> candidates = resolved.Tried;
+	// lane WOTR-1 [inference]: a few retail textures exist only as .png in the compiled folder (LivingMap's LM_MinasTirith; the compiled-only .jpg
+	// ones, LM_Smoke and EXLavaSeq, are Resolve_Packed_W3D_Texture's); the retail loader's order for them was not read
+	if (!flatLayout)
+	{
+		const std::string dds = W3D_Compiled_Texture_Path(name);
+		candidates.push_back(dds.substr(0, dds.size() - 4) + ".png");
+	}
 	Ref<Texture2D> texture;
 	for (const std::string &path : candidates)
 	{
@@ -125,15 +155,23 @@ Ref<Texture2D> W3DModelBuilder::loadTexture(RetailFileSystem &fs, const std::str
 		Error err = ERR_FILE_UNRECOGNIZED;
 		if (ext == ".dds") err = image->load_dds_from_buffer(buffer);
 		else if (ext == ".png") err = image->load_png_from_buffer(buffer);
-		else if (ext == ".jpg") err = image->load_jpg_from_buffer(buffer);
+		else if (ext == ".jpg" && fs.archive_fs())
+		{
+			AptArchiveFileSource source(*fs.archive_fs());
+			bool paired = false;
+			image = loadPackedTexture(source, path.substr(0, path.size() - 4), &paired, &buffer);
+			err = image.is_valid() ? OK : ERR_FILE_CORRUPT;
+			if (paired) meshInfo["packed_texture_stop"] = "[S-1482] packed PNG colour multiplication and alpha replacement are inferred; the loader merge was not read";
+		}
 		else err = image->load_tga_from_buffer(buffer);
-		if (err != OK || image->is_empty())
+		if (err != OK || image.is_null() || image->is_empty())
 		{
 			((Array)m_report["errors"]).push_back(toGodot("could not decode texture " + path));
 			break;
 		}
 		texture = ImageTexture::create_from_image(image);
 		texture->set_meta("retail_path", toGodot(path));
+		if (meshInfo.has("packed_texture_stop")) texture->set_meta("packed_texture_stop", meshInfo["packed_texture_stop"]);
 		meshInfo["texture_path"] = toGodot(path);
 		break;
 	}
@@ -470,6 +508,21 @@ Node3D *W3DModelBuilder::build_model(const Ref<RetailFileSystem> &fsRef, const S
 		MeshInstance3D *instance = memnew(MeshInstance3D);
 		instance->set_name(toGodot(mesh->Get_Name())); // Godot turns '.' into '_' in node names
 		instance->set_meta("w3d_mesh", toGodot(mesh->Get_Name()));
+		// Preserve authored water parameters for presentation clients that supply
+		// the standing-water shader rather than the generic bind-pose material.
+		for (const auto &fx : mesh->ShaderMaterials) {
+			WaterGeometry::StandingMaterial water;
+			if (!WaterGeometry::readStandingMaterial(fx,water)) continue;
+			Dictionary data;
+			data["diffuse"]=Vector4(water.diffuse[0],water.diffuse[1],water.diffuse[2],water.diffuse[3]);
+			data["dimming"]=water.dimming;data["bump_scale"]=water.bumpScale;data["specular_exponent"]=water.specularExponent;
+			data["bump_uv_scale"]=Vector2(water.bumpUV[0],water.bumpUV[1]);data["env_uv_scale"]=Vector2(water.envUV[0],water.envUV[1]);
+			data["wave_uv_scale"]=Vector2(water.waveUV[0],water.waveUV[1]);data["wind_angle"]=water.windAngle;data["wind_speed"]=water.windSpeed;
+			data["wave_angle"]=water.waveAngle;data["wave_speed"]=water.waveSpeed;
+			data["bump_texture"]=toGodot(water.bumpTexture);data["env_texture"]=toGodot(water.envTexture);data["wave_texture"]=toGodot(water.waveTexture);
+			instance->set_meta("w3d_standing_water",data);
+		}
+
 		instance->set_mesh(arrayMesh);
 		// Rigid meshes ride their bone; skins are already deformed into model space.
 		if (!mesh->Is_Skin())

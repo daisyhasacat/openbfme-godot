@@ -398,6 +398,7 @@ bool WindowManager::hideAptWindow(int index)
 	}
 	m_services.setCursorTooltip(std::string());
 	m_tooltipLabel.clear();
+	m_tooltipText.clear();
 	if (!(m_windows[index].flags & APTWIN_LOADED))
 	{
 		return false;
@@ -419,6 +420,7 @@ bool WindowManager::unloadAptMovie(int index)
 	}
 	m_services.setCursorTooltip(std::string());
 	m_tooltipLabel.clear();
+	m_tooltipText.clear();
 	if (m_windows[index].index == -1)
 	{
 		return false;
@@ -626,7 +628,7 @@ bool WindowManager::invokeCallback(const std::string &name, const std::string &a
 	}
 	if (it == m_commands.end())
 	{
-		note("command-unhandled", line);
+		noteOnce("command-unhandled", line);
 		return false;
 	}
 	// copy: the handler may unregister itself (a screen closing from its own command)
@@ -665,10 +667,7 @@ std::uint32_t WindowManager::random()
 {
 	// ActionRandom reads the client RNG (bfmeNext1221).  The client random stream is not wired into the shell: a deterministic
 	// LCG stands in and the first use is reported [S-174].
-	if (noteCount("apt-random-unwired") == 0)
-	{
-		note("apt-random-unwired", "ActionRandom uses the shell's own deterministic generator, not the client RNG");
-	}
+	noteOnce("apt-random-unwired", "ActionRandom uses the shell's own deterministic generator, not the client RNG"); // lane HUDREDRAW-1: no scan per call
 	m_randomState = m_randomState * 1664525u + 1013904223u;
 	return m_randomState >> 8;
 }
@@ -683,7 +682,7 @@ AptExternResult WindowManager::getExtern(const std::string &name, std::string &v
 	}
 	if (it == m_providers.end())
 	{
-		note("extern-read-unhandled", name);
+		noteOnce("extern-read-unhandled", name);
 		return AptExternResult::NoProvider;
 	}
 	ProviderFn fn = it->second;
@@ -717,7 +716,7 @@ bool WindowManager::setExtern(const std::string &name, const std::string &value)
 	}
 	if (it == m_providers.end())
 	{
-		note("extern-write-unhandled", name);
+		noteOnce("extern-write-unhandled", name);
 		return false;
 	}
 	ProviderFn fn = it->second;
@@ -1116,6 +1115,7 @@ void WindowManager::componentInstanceDestroyed(AptCharacterInst &inst)
 			if (r.window)
 			{
 				r.window->winHide(true);
+				r.window->winSetClipRemoved();
 			}
 			return;
 		}
@@ -1217,6 +1217,7 @@ void WindowManager::updateTooltip()
 		{
 			m_tooltipPath.clear();
 			m_tooltipLabel.clear();
+			m_tooltipText.clear();
 			m_services.setCursorTooltip(std::string());
 		}
 		return;
@@ -1240,6 +1241,16 @@ void WindowManager::updateTooltip()
 		label = "TOOLTIP:" + (alias != m_tooltipNames.end() ? alias->second : name);
 	}
 	m_tooltipLabel = label;
+	m_tooltipText.clear();
+	m_services.setCursorTooltip(label);
+}
+
+void WindowManager::setCursorTooltip(const std::string &label, const UnicodeString &text)
+{
+	// the label holds for the current hover path: updateTooltip leaves it until the path changes
+	m_tooltipPath = hoverPath();
+	m_tooltipLabel = label;
+	m_tooltipText = text;
 	m_services.setCursorTooltip(label);
 }
 
@@ -1403,7 +1414,7 @@ bool WindowManager::postMouseMove(float x, float y)
 {
 	m_mouseX = x;
 	m_mouseY = y;
-	if (m_mouseFilter && !componentInputBlocked())
+	if (m_mouseFilter && (!componentInputBlocked() || m_mouseFilterOverBox))
 	{
 		m_mouseFilter(0, x, y); // lane OPTS-3; lane OPTS-5: not while a message box has taken the input (DisableComponents())
 	}
@@ -1417,7 +1428,7 @@ bool WindowManager::postMouseButton(bool down)
 {
 	// lane OPTS-3: the engine screen's press; lane OPTS-5: a modal (a message box, whose movie calls DisableComponents()) takes the input first, so the
 	// screen under it hears nothing
-	if (m_mouseFilter && !componentInputBlocked() && m_mouseFilter(down ? 1 : 2, m_mouseX, m_mouseY))
+	if (m_mouseFilter && (!componentInputBlocked() || m_mouseFilterOverBox) && m_mouseFilter(down ? 1 : 2, m_mouseX, m_mouseY))
 	{
 		return true;
 	}

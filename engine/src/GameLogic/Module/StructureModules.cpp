@@ -6,6 +6,7 @@
 #endif
 
 #include "GameLogic/Module/StructureModules.h"
+#include "GameLogic/Module/StructureToppleUpdate.h"
 #include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/HeroModules.h"
 
@@ -181,6 +182,9 @@ void StructureModules::registerAll(ModuleFactory &modules)
 	bindRuntime<LifetimeUpdate, LifetimeUpdateModuleData>(modules, "LifetimeUpdate");
 	modules.bindTypedData<StructureCollapseUpdateModuleData>("StructureCollapseUpdate", MODULETYPE_BEHAVIOR);
 	bindRuntime<StructureCollapseUpdate, StructureCollapseUpdateModuleData>(modules, "StructureCollapseUpdate");
+	// lane TOPPLE-1: RW 0xC69680 table, runtime RW 0x8A8BB4 (GameLogic/Module/StructureToppleUpdate.h)
+	modules.bindTypedData<StructureToppleUpdateModuleData>("StructureToppleUpdate", MODULETYPE_BEHAVIOR);
+	bindRuntime<StructureToppleUpdate, StructureToppleUpdateModuleData>(modules, "StructureToppleUpdate");
 }
 
 // ---- StructureBody ------------------------------------------------------------------------------------------------------------------
@@ -275,7 +279,7 @@ float StructureCollapseUpdate::getCollapseHeight() const
 	{
 		return m_data->m_collapseHeight;
 	}
-	const float geometryHeight = ObjectGeometry::maxHeightAbovePosition(ObjectGeometry::shapesOf(*getObject()->getTemplate()));
+	const float geometryHeight = ObjectGeometry::maxHeightAbovePosition(getObject()->geometryShapes()); // the object's own GeometryInfo (lane MODCOMPAT-MOD1)
 	return m_data->m_collapseHeight <= geometryHeight ? geometryHeight : m_data->m_collapseHeight;
 }
 
@@ -283,8 +287,7 @@ float StructureCollapseUpdate::getCollapseHeight() const
 void StructureCollapseUpdate::onDie(const DieModuleInterface::Event &event)
 {
 	Object *obj = getObject();
-	bool angle = false;
-	if (!m_data->m_dieMux.isDieApplicable(*obj, event, &angle))
+	if (!m_data->m_dieMux.isDieApplicable(*obj, event))
 	{
 		return;
 	}
@@ -736,7 +739,7 @@ UpdateSleepTime LifetimeUpdate::update()
 		score.addObjectBuilt(obj->logic(), *obj, -1);
 		score.setCounting(was);
 	}
-	obj->kill(m_data->m_deathType);
+	obj->kill(DAMAGE_UNRESISTABLE, m_data->m_deathType); // RW 0x7A802D: kill(8, DeathType)
 	return UPDATE_SLEEP_FOREVER;
 }
 

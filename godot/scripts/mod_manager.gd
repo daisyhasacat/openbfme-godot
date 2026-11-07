@@ -182,13 +182,14 @@ func _build() -> void:
 	game_row.add_child(game_label)
 	_game_picker = OptionButton.new()
 	_game_picker.name = "GamePicker"
-	_game_picker.add_item("The Rise of the Witch-king / BFME II")
+	_game_picker.add_item("The Rise of the Witch-king 2.01")
 	_game_picker.add_item("Battle for Middle-earth I")
 	_game_picker.add_item("Age of the Ring")
-	_game_picker.select(["bfme2", "bfme1", "aotr"].find(_game))
+	_game_picker.add_item("Battle for Middle-earth II 1.06")
+	_game_picker.select(["bfme2", "bfme1", "aotr", "bfme2-106"].find(_game))
 	_game_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_game_picker.item_selected.connect(func(index: int):
-		_game = ["bfme2", "bfme1", "aotr"][index]
+		_game = ["bfme2", "bfme1", "aotr", "bfme2-106"][index]
 		if _game == "aotr" and _aotr_path.is_empty():
 			_status.text = "Choose the AOTR installation folder below before restarting."
 		else:

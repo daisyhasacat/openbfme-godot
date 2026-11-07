@@ -449,6 +449,26 @@ TEST_CASE("player: attachMovie, createEmptyMovieClip and removeMovieClip use dep
 	CHECK(fx.errorsText().empty());
 }
 
+// lane WOTR-2: attachMovie's symbol lookup (RW 0xB016D0) compares the names with _strcmpi (RW 0xAE76B0) and finds nothing it was not given
+TEST_CASE("player: attachMovie finds an export whatever the case of its name; an unknown name attaches nothing")
+{
+	TestMovie m;
+	std::uint32_t sprite = m.addSprite({ {} });
+	m.addCharacter(0);
+	std::uint32_t sid = m.addCharacter(sprite);
+	m.addExport("Gizmo", sid);
+	std::uint32_t go = program(m, [&](Asm &a) {
+		a.pushByte(5).pushString("g").pushString("GIZMO").pushByte(3).getStringVar("this").pushString("attachMovie").op(APT_OP_EA_CALLMETHODPOP);
+		a.pushByte(6).pushString("h").pushString("Gadget").pushByte(3).getStringVar("this").pushString("attachMovie").op(APT_OP_EA_CALLMETHODPOP);
+	});
+	m.setRootFrames({ { m.addActionItem(go) } });
+	PlayerFx fx;
+	REQUIRE(fx.load(0, "A", m));
+	CHECK(fx.at("g"));
+	CHECK(fx.at("h") == nullptr);
+	CHECK(fx.errorsText().find("no export named 'Gadget'") != std::string::npos);
+}
+
 // ---- stops: behaviours the binary reading did not settle are reported at run time and pinned (docs/STOPS.md S-100..S-109) ----
 
 TEST_CASE("stops S-100: a character the parser has no layout for is placed as an inert instance and reported")
@@ -737,6 +757,58 @@ TEST_CASE("render list: a clip layer emits MaskBegin, the mask shape, MaskConten
 	CHECK(rl.unverified == std::vector<std::string>{ "clip-layer" });
 }
 
+TEST_CASE("player: stored clip depth defines a mask without the SWF flag and survives moves and seeks")
+{
+	// RW 0xB0D0C0: clip depth is a placement argument, not a flag-gated move field.
+	for (bool seek : { false, true })
+	{
+		TestMovie m;
+		m.addCharacter(0);
+		const auto shape = m.addCharacter(m.addShape(0, 0, 10, 10, 1));
+		auto mask = placeChar(shape, 1, "mask");
+		mask.clipDepth = 2;
+		REQUIRE((mask.flags & APT_PLACE_HASCLIPDEPTH) == 0);
+		TestMovie::Place move;
+		move.flags = APT_PLACE_MOVE | APT_PLACE_HASMATRIX | APT_PLACE_HASCLIPDEPTH;
+		move.depth = 1;
+		move.translation[0] = 5;
+		move.clipDepth = 99; // even a flagged move cannot replace the placement's clip depth
+		m.setRootFrames({ { m.addPlaceItem(mask), m.addPlaceItem(placeChar(shape, 2, "inside")),
+			m.addPlaceItem(placeChar(shape, 3, "outside")) }, {}, { m.addPlaceItem(move) } });
+		PlayerFx fx;
+		addShapeFile(fx, "A", 1);
+		REQUIRE(fx.load(0, "A", m));
+		auto check = [&]() {
+			AptRenderList rl;
+			fx.apt->buildRenderList(rl);
+			using K = AptRenderCommand::Kind;
+			std::vector<K> kinds;
+			for (const auto &command : rl.commands)
+			{
+				kinds.push_back(command.kind);
+			}
+			REQUIRE(kinds == std::vector<K>{ K::MaskBegin, K::Shape, K::MaskContentBegin, K::Shape, K::MaskEnd, K::Shape });
+			CHECK(rl.commands[0].clipDepth == 2);
+			CHECK(rl.commands.back().path == "_level0.outside");
+		};
+		check();
+		if (seek)
+		{
+			fx.apt->level(0)->gotoFrame(2);
+		}
+		else
+		{
+			fx.apt->stepFrame(fx.apt->msPerFrame());
+			fx.apt->stepFrame(fx.apt->msPerFrame());
+		}
+		check();
+		CHECK(fx.apt->level(0)->childAtDepth(1)->matrix.tx == 5.0f);
+		fx.apt->level(0)->gotoFrame(0);
+		check();
+		CHECK(fx.host.errors.empty());
+	}
+}
+
 namespace
 {
 class ComponentHost : public AptStubHost
@@ -885,4 +957,27 @@ TEST_CASE("player: createEmptyMovieClip puts the clip at depth + 0x4000; removeM
 	CHECK(fx.at("e") == nullptr);
 	CHECK(fx.root()->childAtDepth(7 + 0x4000) == nullptr);
 	CHECK(fx.errorsText().empty());
+}
+
+TEST_CASE("render list: BFME1 movie completion callback reaches the device")
+{
+	// BFME1 MainMenu.apt OpenBook's Initialize event names this callback;
+	// Rva00465770MovieProperties (0x465770) forwards _CallOnLastFrame.
+	TestMovie movie;
+	movie.addCharacter(0);
+	const auto sprite = movie.addCharacter(movie.addSprite({ {} }));
+	movie.setRootFrames({ { movie.addPlaceItem(placeChar(sprite, 1, "book")) } });
+	PlayerFx fx;
+	REQUIRE(fx.load(0, "MainMenu", movie));
+	AptCharacterInst *book = fx.at("book");
+	REQUIRE(book);
+	book->setMember("_type", AptValue::string("BinkMovie"));
+	book->setMember("_MovieName", AptValue::string("TutorialOpenBook"));
+	book->setMember("_CallOnLastFrame", AptValue::string("TutortialOpenBookDone"));
+	AptRenderList list;
+	fx.apt->buildRenderList(list);
+	REQUIRE(list.commands.size() == 1);
+	CHECK(list.commands[0].nativeTag);
+	CHECK(list.commands[0].nativeVars == std::vector<std::pair<std::string, std::string>>{
+		{ "_MovieName", "TutorialOpenBook" }, { "_CallOnLastFrame", "TutortialOpenBookDone" } });
 }

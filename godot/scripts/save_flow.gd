@@ -36,6 +36,9 @@ func _init(g: Node) -> void:
 
 func save_dir() -> String:
 	var dir: String = game._save_dir_arg
+	# BFME1 has no CAH folder. Keep its OpenBFME saves in a separate namespace.
+	if dir.is_empty() and game._fs != null and game._fs.is_bfme1():
+		dir = OS.get_user_data_dir().path_join("bfme1/Save")
 	if dir.is_empty():
 		# retail: <application data>\<gi.dat UserDataLeafName>\Save\ (RW 0x6DE38D's folder; lane CAH-2's UserDataFolder)
 		var r: Dictionary = game._shell.create_a_hero_save_folder(game._rotwk_install)
@@ -113,6 +116,29 @@ func _save(name: String) -> void:
 		game._shell.save_load_saved(false, "there is no Save folder (the install's gi.dat names it)")
 		return
 	var kind := 1 if _flags == 1 else 2
+	if game._wotr != null and game._wotr.is_active() and game._wotr.net:
+		# WOTR2 milestone 8 (step 4): the WOTRMP page (flags 0x10): the request goes to the other players (RW 0x81682C: kind 1 with the name); every peer
+		# writes its copy once one of them says Yes (wotr.gd _write_lan_save)
+		last_save = game._wotr.ask_lan_save(name)
+		print("GAME SAVE asked the other players to save the LAN war as '%s': %s" % [name, JSON.stringify(last_save)])
+		game._shell.save_load_saved(last_save.get("ok", false), str(last_save.get("error", "")))
+		return
+	if game._wotr != null and game._wotr.is_active():
+		# WOTR2 milestone 3: the Save page over the War of the Ring map (the quit menu's type 8, RW 0x92179F): the strategic game (save point 2)
+		last_save = game._wotr.save_map(dir.path_join(name + ".obfmesave"), name)
+		print("GAME SAVE saved the War of the Ring map '%s': %s" % [name, JSON.stringify(last_save)])
+		game._shell.save_load_saved(last_save.get("ok", false), str(last_save.get("error", "")))
+		if last_save.get("ok", false):
+			game._shell.set_save_load(_info()) # the page lists the new file
+		return
+	if game._wotr != null and game._wotr.in_battle():
+		# WOTR2 milestone 6: the Save page inside a War of the Ring battle (the quit menu's type 8, RW 0x92179F; retail's mode 3): the battle with its war
+		last_save = game._wotr.save_battle(dir.path_join(name + ".obfmesave"), name)
+		print("GAME SAVE saved the War of the Ring battle '%s': %s" % [name, JSON.stringify(last_save)])
+		game._shell.save_load_saved(last_save.get("ok", false), str(last_save.get("error", "")))
+		if last_save.get("ok", false):
+			game._shell.set_save_load(_info())
+		return
 	var flow = game._campaign_flow
 	if flow != null and flow.menu_open and not _in_game:
 		# lane CAMPSAVE-1: the Save page over CampaignMenu.apt (RW 0x927A93): the campaign's state between missions (the campaign menu save point)
@@ -141,13 +167,17 @@ func _delete(path: String) -> void:
 ## snapshot), the kept game is loaded back (prepare_kept_load) and the refusal is shown over it on the load page: the player keeps the game they had
 
 
-func load_save(path: String, quick := false) -> void:
+func load_save(path: String, quick := false) -> String:
 	var name := path.get_file().get_basename()
+	if _mode == 2 and _flags == 16:
+		if game._shell.online_status().get("page", "") == "OnlineStrategic":
+			return await game._online_load_war(path)
+		return await game._lan_load_war(path) # WOTR2 milestone 8 (step 4): the LAN lobby's Load Game: the save is hosted, resumed (not loaded here)
 	var check: Dictionary = game._world.check_save(path)
 	if not check.get("ok", false):
 		print("GAME SAVE refused '%s': %s" % [name, str(check.get("error", ""))])
 		game._shell.save_load_refused(name, str(check.get("error", "")))
-		return
+		return str(check.get("error", "the save was refused"))
 	if not str(check.get("note", "")).is_empty():
 		print("GAME SAVE note: ", check.note) # a save of the other execution profile (single player): it replays under this one's rules
 	print("GAME SAVE loading '%s'" % name)
@@ -160,7 +190,18 @@ func load_save(path: String, quick := false) -> void:
 			game._tear_down_game("load")
 		last_load = {"state": "campaign_menu", "campaign": check.campaign, "mission": check.mission}
 		await game._campaign_flow.open_from_save(check)
-		return
+		return ""
+	if int(check.get("save_point", 0)) in [2, 3] and not game._shell.is_war_of_the_ring_offered():
+		# lane STABLEQA-1: a Stable build offers no War of the Ring yet (AptMenuPlayer.is_war_of_the_ring_offered): its saves are refused by name
+		var why := "a War of the Ring save: War of the Ring is not in the Stable version yet (the Nightly version has it)"
+		print("GAME SAVE refused '%s': %s" % [name, why])
+		game._shell.save_load_refused(name, why)
+		return why
+	if int(check.get("save_point", 0)) == 2:
+		await _load_wotr_map(path, name)
+		return ""
+	if int(check.get("save_point", 0)) == 3:
+		return await _load_wotr_battle(path, name)
 	if game._campaign_flow != null:
 		game._campaign_flow.menu_open = false # lane CAMPSAVE-1: a game loaded from the campaign menu's Load page leaves the menu
 	var kept := false
@@ -173,7 +214,7 @@ func load_save(path: String, quick := false) -> void:
 			var why := "the game you are playing could not be kept, so the save was not loaded: " + str(keep.get("error", ""))
 			print("GAME SAVE load of '%s' stopped: %s" % [name, why])
 			game._shell.save_load_refused(name, why)
-			return
+			return why
 		print("GAME SAVE the running game kept: frame %d" % int(keep.frame))
 		game._close_quit_menu()
 		if game._campaign_flow != null:
@@ -184,7 +225,7 @@ func load_save(path: String, quick := false) -> void:
 	var error: String = await _load_prepared(game._world.prepare_save_load(path), name, quick)
 	if error.is_empty():
 		game._world.drop_kept_game()
-		return
+		return ""
 	if kept:
 		var back: String = await _load_prepared(game._world.prepare_kept_load(), name, quick)
 		if back.is_empty():
@@ -195,9 +236,76 @@ func load_save(path: String, quick := false) -> void:
 			await game._wait_seconds(0.5)
 			open_menu(2, _flags, true)
 			game._shell.save_load_refused(name, error)
-			return
+			return error
 		error += "; the game you were playing could not be loaded back: " + back
 	_back_to_menu(name, error)
+	return error
+
+
+## WOTR2 milestone 3: a War of the Ring map save: no RTS game to load (no log), the strategic game and its session in place of whatever runs (the main
+## menu, the War of the Ring map, a game); a refusal before anything is left keeps the player where they are, on the load page
+func _load_wotr_map(path: String, name: String) -> void:
+	var save: Dictionary = game._world.read_wotr_save(path)
+	if not save.get("ok", false):
+		print("GAME SAVE refused '%s': %s" % [name, str(save.get("error", ""))])
+		game._shell.save_load_refused(name, str(save.get("error", "")))
+		return
+	var on_map: bool = game._state == game.State.STRATEGIC
+	# review r2 (Sol wotr2m3): a refused save leaves whatever runs alone: it is checked before a running RTS game goes
+	var why: String = game._wotr.check_save(save)
+	if not why.is_empty():
+		print("GAME SAVE refused '%s': %s" % [name, why])
+		game._shell.save_load_refused(name, why)
+		return
+	if not on_map:
+		# a running RTS game (a skirmish, a War of the Ring battle) goes first; the main menu has nothing to leave
+		game._close_quit_menu()
+		if game._state == game.State.PLAYING:
+			if game._campaign_flow != null:
+				game._campaign_flow.active = false
+			game._tear_down_game("load")
+	# over the map the running campaign stays until the save has loaded (LivingWorldGame.load_state swaps only on success)
+	var error: String = game._wotr.begin_from_save(save)
+	last_load = {"state": "wotr_map" if error.is_empty() else "failed", "error": error, "hash": int(game._wotr.lw.get_state_hash()) if error.is_empty() else 0}
+	print("GAME SAVE loaded the War of the Ring map '%s': %s" % [name, JSON.stringify(last_load)])
+	if error.is_empty():
+		game._close_quit_menu()
+	elif on_map and game._wotr.is_active():
+		game._shell.save_load_refused(name, error) # the load page stays over the map, with the reason
+	else:
+		_back_to_menu(name, error)
+
+
+## WOTR2 milestone 6 (spec Q 4): a War of the Ring battle save: everything is checked first (the save, its session, its strategic game: a refusal leaves
+## whatever runs alone), then what runs goes, the strategic game loads (retail's order: CHUNK_LivingWorldLogic first), then the battle's RTS game through
+## the game-save path; a failure after the running game went returns to the main menu with the reason
+func _load_wotr_battle(path: String, name: String) -> String:
+	var save: Dictionary = game._world.read_wotr_save(path)
+	var why: String = str(save.get("error", "")) if not save.get("ok", false) else game._wotr.check_save(save)
+	if not why.is_empty():
+		print("GAME SAVE refused '%s': %s" % [name, why])
+		game._shell.save_load_refused(name, why)
+		return why
+	game._close_quit_menu()
+	if game._state == game.State.PLAYING:
+		if game._campaign_flow != null:
+			game._campaign_flow.active = false
+		game._tear_down_game("load")
+	if game._campaign_flow != null:
+		game._campaign_flow.menu_open = false
+	game._start_stack = PackedStringArray(["MainMenu.apt"])
+	var error: String = game._wotr.begin_battle_from_save(save)
+	var ready := {}
+	if error.is_empty():
+		error = await _load_prepared(game._world.prepare_save_load(path), name)
+		ready = last_load # the battle's game when the load was ready (its frame and hash: the saved ones)
+	last_load = {"state": "wotr_battle" if error.is_empty() else "failed", "error": error, "strategic_hash": int(game._wotr.lw.get_state_hash()) if error.is_empty() else 0,
+		"hash": int(ready.get("hash", 0)), "frame": int(ready.get("frame", 0))}
+	print("GAME SAVE loaded the War of the Ring battle '%s': %s" % [name, JSON.stringify(last_load)])
+	if not error.is_empty():
+		game._wotr.abandon_battle()
+		_back_to_menu(name, error)
+	return error
 
 
 ## the prepared load (prepare_save_load / prepare_kept_load) started and caught up: "" when the game is the player's, else the error (the started game
@@ -211,6 +319,8 @@ func _load_prepared(prep: Dictionary, name: String, quick := false) -> String:
 	var flow = game._campaign_flow
 	var campaign := str(prep.get("campaign", ""))
 	var opts := {} if quick else {"progress": Callable(game, "_on_load_progress")}
+	if game._wotr_flow or game._end:
+		opts["test_hooks"] = true # WOTR2 milestone 6: the scripted run's battle end hook works in a loaded battle too (the start option test_hooks)
 	if not campaign.is_empty():
 		# a campaign mission: its own loading screen (the mission's picture) and, after the catch-up, the campaign flow takes over (its next mission)
 		var missions: Array = flow.missions_of(campaign)
@@ -222,7 +332,6 @@ func _load_prepared(prep: Dictionary, name: String, quick := false) -> String:
 		flow.victorious = false # lane CAMPSAVE-1: a mission being played (RW 0x5EAB8F's flags)
 		flow.campaign_ready = false
 		flow.advanced = false
-		flow.score_pending = false
 		game._last_new_game = {}
 		if quick:
 			game._state = game.State.LOADING
@@ -278,6 +387,8 @@ func _load_prepared(prep: Dictionary, name: String, quick := false) -> String:
 			break
 		await game.get_tree().process_frame
 	_hide_overlay()
+	if st.get("state", "") == "ready":
+		st["hash"] = game._world.get_state_hash()
 	last_load = st
 	print("GAME SAVE catch-up: ", JSON.stringify(st))
 	if st.get("state", "") != "ready":
@@ -295,6 +406,11 @@ func _load_prepared(prep: Dictionary, name: String, quick := false) -> String:
 ## shell, RW 0x6DF55E)
 func _back_to_menu(name: String, error: String) -> void:
 	printerr("GAME SAVE load of '%s' failed: %s" % [name, error])
+	# Loading pauses the native shell. Clearing the still-screen flag only dirties
+	# its retained canvas: resume processing so the refusal page replaces it.
+	_hide_overlay()
+	game._shell.hide_still_load_screen()
+	game._shell.auto_process = true
 	if not game._save_test.is_empty():
 		game._fail("the saved game could not be loaded: " + error)
 		return
@@ -506,6 +622,16 @@ func run_test() -> bool:
 	ok = ok and last_load.get("state", "") == "ready" and int(last_load.get("frame", -1)) == saved_frame
 	ok = ok and last_load.get("mode", "") == "snapshot" and int(last_load.get("hashes_compared", -1)) == 0 # lane SAVE-4e: no frame of the log ran
 	ok = ok and int(last_save.get("snapshot_bytes", 0)) > 0
+	var menu_load := last_load.duplicate()
+	last_load = {}
+	var recording_error: String = game._set_recording_args(["--load", str(last_save.path)])
+	ok = ok and recording_error.is_empty()
+	await game._open_recording()
+	game._set_recording_args([])
+	print("GAME SAVE test: --load/menu parity: frame %d/%d, hash %d/%d" % [int(last_load.get("frame", -1)), int(menu_load.get("frame", -2)),
+		int(last_load.get("hash", -1)), int(menu_load.get("hash", -2))])
+	ok = ok and last_load.get("state", "") == "ready" and int(last_load.get("frame", -1)) == saved_frame and int(last_load.get("hash", -1)) == saved_hash
+	ok = ok and last_load.get("frame") == menu_load.get("frame") and last_load.get("hash") == menu_load.get("hash")
 	await game._wait_seconds(3.0)
 	game._save_named("save2-loaded-game")
 	ok = ok and game._world.get_frame() > saved_frame # the loaded game runs on

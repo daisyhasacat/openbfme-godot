@@ -24,10 +24,10 @@
 //   * ToggleMountedSpecialAbilityUpdate (vtable RW 0xC6BDA0, table RW 0xC05A18), HeroModeSpecialAbilityUpdate (vtable RW 0xC64680, table RW
 //     0xC052F0), LevelGrantSpecialPower (vtable RW 0xC735A0, table RW 0xC73550), ModelConditionSpecialAbilityUpdate (vtable RW 0xC63F38, table
 //     RW 0xC05AF8: Aragorn's Elendil).
-// Not ported (stops S-859 .. S-863, see stopLines): the special objects (no retail ability names SpecialObject), the capture / garrison /
-// disguise / grab ability enums of the trigger switch, the face command before triggering (no AI face state: the facing check is the AI idle
-// test), the line of sight test of ApproachRequiresLOS, the approach point of RW 0x851607 (the move goes to the target), sounds and voices
-// (client), FleeRangeAfterCompletion, MountedTemplate (the object replacement RW 0x8B140D), the emotion system (Elendil's terror pulse is counted).
+// Not ported (stops S-859 .. S-863, see stopLines): the special objects (no retail ability names SpecialObject), the laser / charge enums and the
+// tree / vendor grabs of the trigger switch (the object grab runs since lane MODCOMPAT-MOD1), the face command before triggering (no AI face state: the facing check is the AI idle
+// test), the approach point of RW 0x851607 (the move goes to the target), sounds and voices
+// (client), FleeRangeAfterCompletion, the emotion system (Elendil's terror pulse is counted). MountedTemplate's replacement runs since lane HERO-2 (S-861).
 
 #pragma once
 
@@ -39,6 +39,8 @@
 
 #include <cstdint>
 #include <memory>
+
+class ObjectWeapons;
 #include <string>
 #include <vector>
 
@@ -98,7 +100,7 @@ public:
 	int m_customAnimCondition = -1;
 	unsigned m_customAnimFrames = 0;
 	unsigned m_customAnimTriggerFrames = 0;
-	int m_grabAnimCondition = -1;                               // + 0x24 GrabPassengerAnimAndDuration (the grab enum: S-860)
+	int m_grabAnimCondition = -1;                               // + 0x24 GrabPassengerAnimAndDuration (+ 0x28 AnimTime, + 0x2C TriggerTime: the grab's eat, lane MODCOMPAT-MOD1)
 	unsigned m_grabAnimFrames = 0;
 	unsigned m_grabTriggerFrames = 0;
 	float m_grabPassengerHealGainPercent = 100.0f;              // + 0x30
@@ -171,6 +173,20 @@ public:
 	static void buildFieldParse(MultiIniFieldParse &p);
 };
 
+// lane SUMMON-1: SummonReplacementSpecialAbilityUpdate (the Thrall Master's summons; data constructor RW 0x8B21DA, 0xF8 bytes, from the data factory
+// RW 0x64F5AF). ModelConditionSpecialAbilityUpdate's data (+ 0xD0 .. + 0xDC, the same defaults) with ToggleMounted's five rows moved to + 0xE0 .. + 0xEC;
+// the field table RW 0xC05AF8 lists all ten in that order.
+class SummonReplacementSpecialAbilityUpdateModuleData : public ModelConditionSpecialAbilityUpdateModuleData
+{
+public:
+	float m_opacityTarget = 0.0f;                              // + 0xE0 (client)
+	bool m_triggerInstantlyOnCreate = false;                   // + 0xE4
+	bool m_cancelDisguiseWhenDismounting = false;              // + 0xE5
+	std::string m_mountedTemplate;                             // + 0xE8
+	std::vector<std::string> m_synchronizeTimerOnSpecialPower; // + 0xEC
+	static void buildFieldParse(MultiIniFieldParse &p);
+};
+
 // lane HERO-2: SpecialDisguiseUpdate (Eowyn's disguise; data table RW 0xC05C10 after the SpecialAbilityUpdate table)
 class SpecialDisguiseUpdateModuleData : public SpecialAbilityUpdateModuleData
 {
@@ -220,11 +236,15 @@ public:
 
 	const SpecialAbilityUpdateModuleData *abilityData() const { return m_data; }
 	int packingState() const { return m_packingState; }
+	ObjectID targetID() const { return m_targetID; }
 	unsigned prepFrames() const { return m_prepFrames; }
 	int triggerCount() const { return m_triggerCount; }
 	unsigned abilitiesTriggered() const { return m_abilitiesTriggered; } // effects run (a test counter, hashed)
 	unsigned long long unported() const { return m_unported; }
 	unsigned captures() const { return m_captures; } // lane HERO-2: buildings captured (hashed)
+	// lane STARTRANGE-1: tests only
+	bool withinStartAbilityRangeForTest() { return withinStartAbilityRange(); }
+	bool withinAbortRangeForTest() const { return withinAbortRange(); }
 
 	// RW 0x8530BA (slot 0x34): the ability ends (aborted: the abort paralysis; ownerDying: the special objects die with the owner)
 	virtual void finishAbility(bool ownerDying, bool aborted);
@@ -242,14 +262,21 @@ protected:
 
 	Object *target() const;
 	SpecialPowerModule *mySpecialPowerModule() const; // RW 0x851362
+	// lane NECRODIE-1: RW 0x85521F .. 0x855321 (and its copy RW 0x85507A .. 0x85513F): the power's UnitCost (+ 0x80) is paid by the horde before the trigger;
+	// false when the horde has fewer members than the cost (the caller ends the ability)
+	bool payUnitCost();
 	bool withinStartAbilityRange();                // RW 0x85207A
 	bool withinAbortRange() const;                 // RW 0x8522E3
 	bool captureTarget(SpecialPowerModule *spm);   // RW 0x8544F2 (lane HERO-2)
+	void grabTrigger(int type);                    // RW 0x8540A1 .. 0x8544C8 (lane MODCOMPAT-MOD1)
+	void grabFinish();                             // RW 0x85321E .. 0x853367 (lane MODCOMPAT-MOD1)
+	unsigned preparationFrames() const;            // RW 0x85241F (lane MODCOMPAT-MOD1)
 	bool conditionsAllow() const;                  // RW 0x851551
 	void endPreparation();                         // RW 0x85260A
 	void setUnpackingVariation();                  // the UnpackingVariation model condition (RW 0x853C64 .. 0x853CDE)
 	void applyCustomAnim();                        // RW 0x851C48
-	UpdateSleepTime calcSleep() const;             // RW 0x85266D
+	UpdateSleepTime calcSleep();                   // RW 0x85266D (an idle capture ability also releases its capture: releaseCapture)
+	void releaseCapture();                         // the capture branch of RW 0x85266D
 	bool needToUnpack() const;                     // RW 0x85133C
 	bool needToPack() const;                       // RW 0x851316
 	bool persistentTrigger() const;                // RW 0x852465
@@ -304,10 +331,15 @@ protected:
 private:
 	int specialWeaponCondition() const;
 	Weapon *specialWeapon();
+	ObjectWeapons *weaponHost(); // the object's ObjectWeapons, else m_ownHost
 	const WeaponFireSpecialAbilityUpdateModuleData *m_wf;
 	std::unique_ptr<Weapon> m_weapon; // + 0x88
 	bool m_weaponMade = false;
 	unsigned m_shots = 0;
+	// lane WALL-1: the weapon host of an object without a weapon set (the deployed mine's Detonate): retail's Object embeds its WeaponSet and the special
+	// weapon's status and fire (RW 0x6CDCE7, RW 0x6CF3D2) are the Weapon's own, so the shot needs no set; the port's shot needs an ObjectWeapons host, made
+	// here once as ObjectWeapons::fireTempWeapon makes one (kept with the module: a delayed delivery refers to it)
+	std::unique_ptr<ObjectWeapons> m_ownHost;
 };
 
 class ToggleMountedSpecialAbilityUpdate : public SpecialAbilityUpdate, public CreateModuleInterface
@@ -318,6 +350,8 @@ public:
 	CreateModuleInterface *getCreate() override { return this; }
 	void onCreate() override {}
 	void onBuildComplete() override; // RW 0x8B11FE (create interface slot 1): TriggerInstantlyOnCreate triggers at once
+	// RW 0x8B1FDA (slot 0 of the special power update interface RW 0xC6BCB8, shared with SummonReplacement; lane SUMMON-1)
+	void initiateIntentToDoSpecialPower(const SpecialPowerTemplate *t, Object *target, const Coord3D *loc, unsigned options, int extra) override;
 	void finishAbility(bool ownerDying, bool aborted) override; // RW 0x8B1219
 	unsigned toggles() const { return m_toggles; }
 	ObjectID replacement() const { return m_replacement; }
@@ -385,6 +419,39 @@ protected:
 private:
 	int specialPowerCondition() const;
 	const ModelConditionSpecialAbilityUpdateModuleData *m_mc;
+	unsigned m_emotions = 0;
+};
+
+// lane SUMMON-1: SummonReplacementSpecialAbilityUpdate (vtable RW 0xC6C028, constructor RW 0x8B1F59, 0x90 bytes: + 0x8C the replace-after-packing flag;
+// the create interface RW 0xC6C014 at + 0x88, the special power update interface RW 0xC6BCB8 shared with ToggleMounted). Its slots mix the two classes
+// it merges: ToggleMounted's trigger with the replacement RW 0x8B228C (RW 0x8B140D's twin over the + 0xE8 / + 0xEC fields) and ModelCondition's emotion
+// pulse (RW 0x8B2584), ToggleMounted's finishAfterPacking (RW 0x8B202A) and initiate (RW 0x8B1FDA), ModelCondition's startUnpacking (RW 0x89455B), a
+// finishAbility of both (RW 0x8B208A), and the base continuePreparation (RW 0x852A3E: no early out at the second trigger).
+class SummonReplacementSpecialAbilityUpdate : public SpecialAbilityUpdate, public CreateModuleInterface
+{
+public:
+	OBFME_MODULE_XFER(SummonReplacementSpecialAbilityUpdate)
+	SummonReplacementSpecialAbilityUpdate(Thing *thing, const SummonReplacementSpecialAbilityUpdateModuleData *data); // RW 0x8B1F59
+	CreateModuleInterface *getCreate() override { return this; }
+	void onCreate() override {}
+	void onBuildComplete() override; // RW 0x8B1FBF: TriggerInstantlyOnCreate triggers at once
+	void initiateIntentToDoSpecialPower(const SpecialPowerTemplate *t, Object *target, const Coord3D *loc, unsigned options, int extra) override; // RW 0x8B1FDA
+	void finishAbility(bool ownerDying, bool aborted) override; // RW 0x8B208A
+	unsigned summons() const { return m_summons; }
+	ObjectID replacement() const { return m_replacement; }
+	unsigned emotionRequests() const { return m_emotions; }
+	void crc(StateHasher &h) const override;
+
+protected:
+	void triggerAbilityEffect() override; // RW 0x8B2584
+	void finishAfterPacking() override;   // RW 0x8B202A
+	void startUnpacking() override;       // RW 0x89455B
+
+private:
+	const SummonReplacementSpecialAbilityUpdateModuleData *m_sr;
+	bool m_replaceAfterPacking = false;  // + 0x8C
+	unsigned m_summons = 0;              // the replacements and mount toggles made (hashed)
+	ObjectID m_replacement = INVALID_ID; // the MountedTemplate object of the last replacement (tests; hashed)
 	unsigned m_emotions = 0;
 };
 

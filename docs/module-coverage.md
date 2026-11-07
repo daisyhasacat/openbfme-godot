@@ -86,7 +86,6 @@ The live report's `unported_modules` (objects alive at the end of the run) of ei
 | SupplyCenterCreate | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 1 / 1 | 0 / 0 | 1 / 1 | 1 / 1 | 3 | 3 |
 | SupplyCenterDockUpdate | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 1 / 1 | 0 / 0 | 1 / 1 | 1 / 1 | 3 | 3 |
 | SlaughterHordeContain | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 2 / 3 | 0 / 0 | 2 | 3 |
-| StructureToppleUpdate | 0 / 0 | 0 / 0 | 0 / 0 | 1 / 1 | 0 / 0 | 0 / 0 | 1 / 1 | 0 / 0 | 2 | 2 |
 | DamageFieldUpdate | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 1 / 1 | 1 | 1 |
 | AutoPickUpUpdate | 0 / 0 | 0 / 2 | 0 / 0 | 0 / 0 | 0 / 2 | 0 / 2 | 0 / 0 | 0 / 0 | 0 | 6 |
 | BoredUpdate | 0 / 0 | 0 / 2 | 0 / 0 | 0 / 0 | 0 / 2 | 0 / 2 | 0 / 0 | 0 / 0 | 0 | 6 |
@@ -136,7 +135,7 @@ The live report's `unported_modules` (objects alive at the end of the run) of ei
 | 36 | FlammableUpdate | Behavior | 179 | 21 | ported |
 | 37 | TerrainResourceBehavior | Behavior | 175 | 152 | ported |
 | 38 | StatusBitsUpgrade | Behavior | 170 | 159 | ported |
-| 39 | TransitionDamageFX | Behavior | 170 | 150 | missing |
+| 39 | TransitionDamageFX | Behavior | 170 | 150 | ported |
 | 40 | HordeAIUpdate | Behavior | 163 | 84 | ported |
 | 41 | FireSpreadUpdate | Behavior | 150 | 10 | ported |
 | 42 | HordeMemberCollide | Behavior | 147 | 91 | ported |
@@ -199,7 +198,7 @@ The live report's `unported_modules` (objects alive at the end of the run) of ei
 | 99 | CostModifierUpgrade | Behavior | 22 | 19 | ported |
 | 100 | W3DBuffDraw | Draw | 22 | 22 | missing |
 | 101 | AIGateUpdate | Behavior | 21 | 18 | missing |
-| 102 | DoCommandUpgrade | Behavior | 21 | 13 | missing |
+| 102 | DoCommandUpgrade | Behavior | 21 | 13 | ported |
 | 103 | DynamicPortalBehaviour | Behavior | 21 | 17 | missing |
 | 104 | FakePathfindPortalBehaviour | Behavior | 21 | 18 | missing |
 | 105 | GiveUpgradeUpdate | Behavior | 21 | 39 | missing |
@@ -267,12 +266,12 @@ The live report's `unported_modules` (objects alive at the end of the run) of ei
 | 167 | ProductionSpeedBonus | Behavior | 5 | 2 | ported |
 | 168 | ScavengerSpecialPower | Behavior | 5 | 1 | ported |
 | 169 | SpawnPointProductionExitUpdate | Behavior | 5 | 4 | ported |
-| 170 | StructureToppleUpdate | Behavior | 5 | 5 | missing |
+| 170 | StructureToppleUpdate | Behavior | 5 | 5 | ported |
 | 171 | TaintSpecialPower | Behavior | 5 | 2 | ported |
 | 172 | UpgradeDie | Behavior | 5 | 5 | ported |
 | 173 | AODCrushCollide | Behavior | 4 | 2 | missing |
 | 174 | AnnounceBirthAndDeathBehavior | Behavior | 4 | 2 | missing |
-| 175 | ClearanceTestingSlowDeathBehavior | Behavior | 4 | 12 | missing |
+| 175 | ClearanceTestingSlowDeathBehavior | Behavior | 4 | 12 | ported |
 | 176 | LockWeaponCreate | Behavior | 4 | 2 | ported |
 | 177 | RandomSoundSelectorClientBehavior | ClientBehavior | 4 | 2 | ported |
 | 178 | RemoveUpgradeUpgrade | Behavior | 4 | 365 | ported |
@@ -280,8 +279,8 @@ The live report's `unported_modules` (objects alive at the end of the run) of ei
 | 180 | SiegeEngineContain | Behavior | 4 | 4 | ported |
 | 181 | SpawnUnitBehavior | Behavior | 4 | 3 | missing |
 | 182 | SpecialEnemySenseUpdate | Behavior | 4 | 2 | missing |
-| 183 | SupplyCenterCreate | Behavior | 4 | 1 | missing |
-| 184 | SupplyCenterDockUpdate | Behavior | 4 | 1 | missing |
+| 183 | SupplyCenterCreate | Behavior | 4 | 1 | ported |
+| 184 | SupplyCenterDockUpdate | Behavior | 4 | 1 | ported |
 | 185 | SupplyCenterProductionExitUpdate | Behavior | 4 | 1 | ported |
 | 186 | SymbioticStructuresBody | Body | 4 | 4 | ported |
 | 187 | TooltipUpgrade | Behavior | 4 | 6 | missing |
@@ -319,7 +318,7 @@ The live report's `unported_modules` (objects alive at the end of the run) of ei
 | 219 | ToggleDeploySpecialAbilityUpdate | Behavior | 2 | 1 | missing |
 | 220 | AttributeModifierPoolUpdate | Behavior | 1 | 1 | ported |
 | 221 | BaseUpgrade | Behavior | 1 | 2 | missing |
-| 222 | BeaconClientUpdate | ClientUpdate | 1 | 1 | missing |
+| 222 | BeaconClientUpdate | ClientUpdate | 1 | 1 | ported |
 | 223 | BridgeBehavior | Behavior | 1 | 1 | missing |
 | 224 | CivilianSpawnUpdate | Behavior | 1 | 1 | missing |
 | 225 | CritterEmitterUpdate | Behavior | 1 | 1 | missing |

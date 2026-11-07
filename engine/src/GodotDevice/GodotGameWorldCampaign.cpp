@@ -4,6 +4,7 @@
 // campaign progress sidecar. Nothing here writes logic state beyond the load options.
 
 #include "GodotDevice/GodotGameWorld.h"
+#include "Common/PathIO.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
 
 #include "Common/Player.h"
@@ -17,7 +18,9 @@
 #include "GameClient/VideoPlayer.h"
 #include "GameClient/GUI/Shell/Shell.h"
 #include "GameClient/LiveGame.h"
+#include "GameClient/TutorialSettings.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/NewGame/NewGame.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
 #include "GameLogic/Module/AttachUpdate.h"
@@ -81,7 +84,9 @@ Dictionary missionDict(const LinearCampaignMission &m)
 void GameWorld::bindCampaignMethods()
 {
 	ClassDB::bind_method(D_METHOD("get_campaigns"), &GameWorld::get_campaigns);
+	ClassDB::bind_method(D_METHOD("get_tutorial", "name"), &GameWorld::get_tutorial);
 	ClassDB::bind_method(D_METHOD("start_campaign_mission", "options"), &GameWorld::start_campaign_mission);
+	ClassDB::bind_method(D_METHOD("start_tutorial", "options"), &GameWorld::start_tutorial); // lane BFME2CAMP1
 	ClassDB::bind_method(D_METHOD("campaign_status"), &GameWorld::campaign_status);
 	ClassDB::bind_method(D_METHOD("campaign_progress_load", "path"), &GameWorld::campaign_progress_load);
 	ClassDB::bind_method(D_METHOD("campaign_progress_step", "progress", "step"), &GameWorld::campaign_progress_step); // lane CAMPSAVE-1
@@ -114,51 +119,52 @@ Array GameWorld::get_campaigns() const
 	return out;
 }
 
-Dictionary GameWorld::start_campaign_mission(const Dictionary &options)
+Dictionary GameWorld::get_tutorial(const String &name) const
 {
-	Dictionary report;
-	Array errors;
-	report["ok"] = false;
-	report["errors"] = errors;
-	if (!m_world)
+	Dictionary d;
+	d["ok"] = false;
+	if (!m_world || !m_settings)
 	{
-		errors.push_back("GameWorld.setup has not run");
-		return report;
+		d["error"] = "GameWorld.setup has not run";
+		return d;
 	}
-	CampaignProgress progress;
-	progress.campaign = n(String(options.get("campaign", String())));
-	progress.mission = (int)intOpt(options, "mission", 0);
-	progress.difficulty = (int)intOpt(options, "difficulty", 1);
-	const LinearCampaignMission *mission = progress.current(m_world->linearCampaigns());
-	if (!mission)
+	const TutorialDefinition *t = name.nocasecmp_to("Basic") == 0 ? &m_settings->basicTutorial
+		: name.nocasecmp_to("Advanced") == 0 ? &m_settings->advancedTutorial : nullptr;
+	if (!t)
 	{
-		errors.push_back(g("no mission " + std::to_string(progress.mission) + " in the campaign '" + progress.campaign + "'"));
-		return report;
+		d["error"] = name.nocasecmp_to("Strategic") == 0
+			? "[S-175] Strategic Tutorial requires the unported War of the Ring tutorial flow"
+			: "Unknown tutorial: " + name;
+		return d;
 	}
-	m_start.reset(); // not a skirmish start (prepare_new_game's state is not used)
-	LiveGame::Options lo;
-	lo.mapName = mission->map;
-	lo.campaign = true; // a single player game with the map's own sides and scripts
-	lo.difficulty = progress.difficulty;
-	lo.maxFramesPerAdvance = (int)intOpt(options, "max_frames_per_advance", 10);
-	lo.logicThread = boolOpt(options, "logic_thread", m_logicThreadDefault);
-	lo.presentationDelaySeconds = options.has("presentation_delay") ? (double)options["presentation_delay"] : (lo.logicThread ? 0.03 : 0.0);
-	lo.hashEveryFrame = boolOpt(options, "hash_every_frame", false);
-	Callable cb;
-	if (options.has("progress"))
+	if (t->map.empty())
 	{
-		cb = options["progress"];
+		d["error"] = "GameData has no map for tutorial " + name;
+		return d;
 	}
-	m_testHooks = boolOpt(options, "test_hooks", false);
-	report = load_internal(lo, g(mission->map), options, cb, true);
-	report["mission"] = missionDict(*mission);
-	report["campaign"] = g(progress.campaign);
-	report["mission_index"] = (int64_t)progress.mission;
-	report["difficulty"] = (int64_t)progress.difficulty;
-	if (!(bool)report.get("ok", false) || !m_game)
+	LinearCampaignMission mission;
+	mission.name = n(name);
+	std::string key = AsciiStringUtil::lowered(t->map);
+	for (char &c : key) if (c == '\\') c = '/';
+	if (!NewGame::mapNameOfKey(key, mission.map))
 	{
-		return report;
+		d["error"] = "Tutorial map path must use Maps/<name>/<name>.map: " + g(t->map);
+		return d;
 	}
+	mission.introMovie = t->loadMovie;
+	mission.loadScreenImage = t->loadScreenImage;
+	mission.loadScreenMusicTrack = t->loadScreenMusicTrack == "NoSound" ? "" : t->loadScreenMusicTrack;
+	mission.fadeUpFrames = t->fadeUpFrames;
+	d = missionDict(mission);
+	d["ok"] = true;
+	d["map_path"] = g(t->map);
+	d["load_screen_voice"] = g(t->loadScreenVoiceTrack);
+	d["objective"] = g(t->objective);
+	return d;
+}
+
+Dictionary GameWorld::campaignHudStart() const
+{
 	// the HUD's start: the local player and where the camera looks first (the campaign maps' InitialCameraPosition waypoint, which their "Camera Setup"
 	// scripts also use; else the first player start)
 	Dictionary start;
@@ -183,8 +189,95 @@ Dictionary GameWorld::start_campaign_mission(const Dictionary &options)
 	}
 	start["camera_start"] = cam;
 	start["camera_start_is_waypoint"] = haveWaypoint;
-	report["start"] = start;
+	return start;
+}
+
+Dictionary GameWorld::start_campaign_mission(const Dictionary &options)
+{
+	Dictionary report;
+	Array errors;
+	report["ok"] = false;
+	report["errors"] = errors;
+	if (!m_world)
+	{
+		errors.push_back("GameWorld.setup has not run");
+		return report;
+	}
+	CampaignProgress progress;
+	progress.campaign = n(String(options.get("campaign", String())));
+	progress.mission = (int)intOpt(options, "mission", 0);
+	progress.difficulty = (int)intOpt(options, "difficulty", 1);
+	LinearCampaignMission tutorialMission;
+	const bool tutorial = options.has("tutorial");
+	if (tutorial)
+	{
+		progress.campaign.clear();
+		progress.mission = 0;
+		if (boolOpt(options, "record_memory", false))
+		{
+			errors.push_back("Tutorial save recording is not implemented (S-175)");
+			return report;
+		}
+		const Dictionary def = get_tutorial(String(options["tutorial"]));
+		if (!(bool)def.get("ok", false))
+		{
+			errors.push_back(def["error"]);
+			return report;
+		}
+		tutorialMission.name = n(String(options["tutorial"]));
+		tutorialMission.map = n(String(def["map"]));
+		tutorialMission.loadScreenImage = n(String(def["load_screen_image"]));
+		tutorialMission.loadScreenMusicTrack = n(String(def["load_screen_music"]));
+		tutorialMission.introMovie = n(String(def["intro_movie"]));
+		tutorialMission.fadeUpFrames = (unsigned)(int64_t)def["fade_up_frames"];
+	}
+	const LinearCampaignMission *mission = tutorial ? &tutorialMission : progress.current(m_world->linearCampaigns());
+	if (!mission)
+	{
+		errors.push_back(g("no mission " + std::to_string(progress.mission) + " in the campaign '" + progress.campaign + "'"));
+		return report;
+	}
+	m_start.reset(); // not a skirmish start (prepare_new_game's state is not used)
+	LiveGame::Options lo;
+	lo.mapName = mission->map;
+	lo.campaign = true; // a single player game with the map's own sides and scripts
+	lo.difficulty = progress.difficulty;
+	// lane BFME2CAMP1: the campaign's carry-over at the mission's start (addCarryoverStuffToMap RW 0x5EBD76): "carryover" is the campaign's state text
+	// (campaign_progress_step's "carryover": the previous mission's won state, or a replayed one's restored records); without one the first mission
+	// begins the campaign (beginCampaign RW 0x5EC4EC). A later mission started without one (a direct start: no game reaches it) has no carry-over step
+	const std::string carryText = n(String(options.get("carryover", String())));
+	std::string carryStop;
+	if (const LinearCampaign *campaign = m_world->linearCampaigns().find(progress.campaign))
+	{
+		std::string why;
+		if (!LiveGame::campaignCarryoverOptions(*campaign, progress.mission, carryText, lo, carryStop, why)) // the rule openbfme_peer shares
+		{
+			errors.push_back(g(why));
+			return report;
+		}
+	}
+	lo.maxFramesPerAdvance = (int)intOpt(options, "max_frames_per_advance", 10);
+	lo.logicThread = boolOpt(options, "logic_thread", m_logicThreadDefault);
+	lo.presentationDelaySeconds = options.has("presentation_delay") ? (double)options["presentation_delay"] : (lo.logicThread ? 0.03 : 0.0);
+	lo.hashEveryFrame = boolOpt(options, "hash_every_frame", false);
+	Callable cb;
+	if (options.has("progress"))
+	{
+		cb = options["progress"];
+	}
+	m_testHooks = boolOpt(options, "test_hooks", false);
+	report = load_internal(lo, g(mission->map), options, cb, true);
+	report["mission"] = missionDict(*mission);
+	report["campaign"] = g(progress.campaign);
+	report["mission_index"] = (int64_t)progress.mission;
+	report["difficulty"] = (int64_t)progress.difficulty;
+	if (!(bool)report.get("ok", false) || !m_game)
+	{
+		return report;
+	}
+	report["start"] = campaignHudStart();
 	Array stops = report.get("stops", Array()); // the lane's stops reach the load report
+	if (tutorial) stops.push_back("[S-175] tutorial entry: Objective and loading voice presentation are not ported; tutorial saves are not recorded");
 	for (const std::vector<std::string> &lines : { LinearCampaignManager::stopLines(), AttachUpdate::stopLines(), ScriptActions::campaignStopLines() })
 	{
 		for (const std::string &l : lines)
@@ -192,12 +285,18 @@ Dictionary GameWorld::start_campaign_mission(const Dictionary &options)
 			stops.push_back(g(l));
 		}
 	}
+	if (!carryStop.empty())
+	{
+		stops.push_back(g(carryStop));
+	}
 	report["stops"] = stops;
+	report["carryover"] = lo.campaignCarryover;
 	m_campaignStart.campaign = progress.campaign; // lane SAVE-2: what a save of this mission starts again
+	m_campaignStart.carryover = lo.campaignCarryover ? lo.carryover.serialize() : std::string(); // lane BFME2CAMP1
 	m_campaignStart.map = mission->map;
 	m_campaignStart.mission = progress.mission;
 	m_campaignStart.difficulty = progress.difficulty;
-	if (boolOpt(options, "record_memory", false))
+	if (!tutorial && boolOpt(options, "record_memory", false))
 	{
 		// lane SAVE-2: the mission is recorded in memory (not as a replay: a replay starts from a NewGameMessage, S-4002's former gap) so it can be saved;
 		// the recording driver is the one every skirmish runs behind (MP-1's LockstepDriver without a network: the local commands run on the next frame)
@@ -209,7 +308,7 @@ Dictionary GameWorld::start_campaign_mission(const Dictionary &options)
 		h.game.game.simulationProfile = lo.simulationProfile; // a mission runs Faithful whatever the player's option (UBER-1)
 		h.recordingSlot = 0;
 		h.algorithm = RandomAlgorithm::ZH_CarryChain;
-		h.profile = profileIdentityFor(lo.simulationProfile);
+		h.profile = profileIdentityFor(lo.simulationProfile, true);
 		std::string error;
 		if (!m_localWriter->open(std::string(), h, &error))
 		{
@@ -226,6 +325,82 @@ Dictionary GameWorld::start_campaign_mission(const Dictionary &options)
 		}
 	}
 	startEndGame(); // lane END-1: the end sequence (its script side takes the map scripts' VICTORY / DEFEAT, EndGameView)
+	return report;
+}
+
+
+// lane BFME2CAMP1: AptMainMenu::OnTutorial (RW 0x91B825): "Basic" / "Advanced" pick GameData's tutorial record (GameClient/TutorialSettings.h); its Map
+// starts as a new single player game of mode 6 with the map's own sides and scripts. "Strategic" (the War of the Ring tutorial) and an empty Map: refused
+Dictionary GameWorld::start_tutorial(const Dictionary &options)
+{
+	Dictionary report;
+	Array errors;
+	report["ok"] = false;
+	report["errors"] = errors;
+	if (!m_world || !m_fs.is_valid() || !m_fs->archive_fs())
+	{
+		errors.push_back("GameWorld.setup has not run");
+		return report;
+	}
+	TutorialSettings settings;
+	std::string error;
+	if (!TutorialSettings::load(*m_fs->archive_fs(), settings, &error))
+	{
+		errors.push_back(g(error));
+		return report;
+	}
+	const std::string which = n(String(options.get("tutorial", String())));
+	const TutorialRecord *record = settings.record(which);
+	if (!record || record->map.empty())
+	{
+		errors.push_back(g("no tutorial '" + which + "' in GameData (OnTutorial takes Basic or Advanced)"));
+		return report;
+	}
+	// the record's Map is a path (Maps\MAP Beginner Tutorial\MAP Beginner Tutorial.map); the game takes the map's name (its file's stem)
+	std::string map = record->map;
+	const size_t slash = map.find_last_of("\\/");
+	if (slash != std::string::npos)
+	{
+		map = map.substr(slash + 1);
+	}
+	if (map.size() > 4 && AsciiStringUtil::compareNoCase(map.substr(map.size() - 4), ".map") == 0)
+	{
+		map = map.substr(0, map.size() - 4);
+	}
+	Dictionary rec;
+	rec["map"] = g(map);
+	rec["load_screen_image"] = g(record->loadScreenStillImage);
+	rec["load_screen_music"] = g(record->loadScreenMusicTrack);
+	rec["load_movie"] = g(record->loadMovie);
+	rec["fade_up_frames"] = (int64_t)record->fadeUpFrames;
+	if (boolOpt(options, "describe_only", false))
+	{
+		report["ok"] = true; // the record only (the load screen comes up before the load)
+		report["tutorial"] = rec;
+		return report;
+	}
+	m_start.reset();
+	LiveGame::Options lo;
+	lo.mapName = map;
+	lo.campaign = true; // the map's own sides and scripts
+	lo.tutorial = true; // mode 6
+	lo.maxFramesPerAdvance = (int)intOpt(options, "max_frames_per_advance", 10);
+	lo.logicThread = boolOpt(options, "logic_thread", m_logicThreadDefault);
+	lo.presentationDelaySeconds = options.has("presentation_delay") ? (double)options["presentation_delay"] : (lo.logicThread ? 0.03 : 0.0);
+	lo.hashEveryFrame = boolOpt(options, "hash_every_frame", false);
+	Callable cb;
+	if (options.has("progress"))
+	{
+		cb = options["progress"];
+	}
+	m_testHooks = boolOpt(options, "test_hooks", false);
+	report = load_internal(lo, g(map), options, cb, true);
+	report["tutorial"] = rec;
+	if (!(bool)report.get("ok", false) || !m_game)
+	{
+		return report;
+	}
+	report["start"] = campaignHudStart();
 	return report;
 }
 
@@ -314,6 +489,32 @@ Dictionary GameWorld::campaign_progress_step(const Dictionary &progress, const S
 		d["error"] = g("no campaign '" + p.campaign + "'");
 		return d;
 	}
+	// lane BFME2CAMP1: the campaign's carry-over (CampaignCarryover::State text, "" none). While this campaign's mission is the running game its state is
+	// the game's (GameLogic::campaignCarryover: the mission start's and the VICTORY actions' changes, RW 0x5EBD76 / 0x5EBAEE), so every step takes it
+	std::string carryText = n(String(progress.get("carryover", String())));
+	if (m_game && m_campaignStart.campaign == p.campaign)
+	{
+		// lane RENDERWAIT-1: campaign_flow.gd's tick reaches a step, so the live logic is read only where it is held. Not held: the progress's own text,
+		// which the flow keeps from its last step: "won" follows campaign_status's held end, the quit menu's restart runs in a paused (idle) game, and
+		// nothing changes the carry-over between the won mission's end and its "game_over"
+		if (m_game->logicHeld())
+		{
+			if (const CampaignCarryover::State *live = m_game->logic().campaignCarryover())
+			{
+				carryText = live->serialize();
+			}
+		}
+	}
+	CampaignCarryover::State carry;
+	if (!carryText.empty())
+	{
+		std::string why;
+		if (!CampaignCarryover::State::parse(carryText, carry, &why))
+		{
+			d["error"] = g(why);
+			return d;
+		}
+	}
 	const std::string what = n(step);
 	if (what == "started")
 	{
@@ -341,7 +542,13 @@ Dictionary GameWorld::campaign_progress_step(const Dictionary &progress, const S
 	else if (what == "last_mission")
 	{
 		bool intro = false;
+		const bool replay = !(p.victorious || p.advanced);
 		p.lastMission(&intro);
+		if (replay && !carryText.empty())
+		{
+			CampaignCarryover::restartMission(carry); // RW 0x5EC5D1: the used records back after the left ones
+			carryText = carry.serialize();
+		}
 		d["start"] = true;
 		d["intro_movie"] = intro;
 	}
@@ -366,6 +573,7 @@ Dictionary GameWorld::campaign_progress_step(const Dictionary &progress, const S
 	out["victorious"] = p.victorious;
 	out["ready"] = p.ready;
 	out["advanced"] = p.advanced;
+	out["carryover"] = g(carryText);
 	d["progress"] = out;
 	d["mission_exists"] = p.current(m) != nullptr;
 	d["ok"] = true;
@@ -441,8 +649,8 @@ Dictionary GameWorld::get_movie(const String &title)
 		d["error"] = g(m_videosError);
 		return d;
 	}
-	// the loose movies live in the RotWK install (RetailFileSystem::mount_retail's root); no mod directory (S-1710: TheGlobalData + 0xD38 is the mod
-	// lane's), the language of this install's archives (lang\English*.big)
+	// the loose movies live in the RotWK install (RetailFileSystem::mount_retail's root); the mounted -mod folder is RW 0x490D1C's "Mod Path" (lane MODS-1:
+	// TheGlobalData + 0xD38, RetailFileSystem::modFolder), the language of this install's archives (lang\English*.big)
 	std::string root, error;
 	const std::string config = n(ProjectSettings::get_singleton()->globalize_path("user://install-paths.cfg"));
 	if (m_fs.is_valid() && m_fs->is_bfme1()) root = m_fs->bfme1_root();
@@ -451,20 +659,13 @@ Dictionary GameWorld::get_movie(const String &title)
 		d["error"] = g(error);
 		return d;
 	}
-	// retail asks the registry for the language (RW 0x6416AC); here: the install's language archive lang\<Language>Audio.big (none: "", that directory
-	// is then not searched)
-	std::string language;
-	std::error_code ec;
-	for (std::filesystem::directory_iterator it(std::filesystem::path(root) / "lang", ec), end; !ec && it != end; it.increment(ec))
-	{
-		const std::string f = it->path().filename().string();
-		if (f.size() > 9 && AsciiStringUtil::compareNoCase(f.substr(f.size() - 9), "Audio.big") == 0)
-		{
-			language = f.substr(0, f.size() - 9);
-		}
-	}
+	// retail asks the registry for the language (RW 0x6416AC); here: the install's language archive lang\<Language>.big, as the mount detects it
+	// (RetailArchivePolicy.h "Languages"; none: "", that directory is then not searched)
+	const std::string language = DetectRetailLanguageOfInstall(root);
 	const AudioIniState &audio = m_world->audio();
-	const VideoStreamInfo info = m_videos->open(n(title), root, std::string(), language, [&audio](const std::string &e) { return audio.infos.find(e) != nullptr; });
+	const VideoStreamInfo info = m_videos->open(n(title), root, m_fs.is_valid() ? m_fs->modFolder() : std::string(), language,
+		[&audio](const std::string &e) { return audio.infos.find(e) != nullptr; },
+		m_fs.is_valid() ? m_fs->installOverlayFolders() : std::vector<std::string>()); // lane MODCOMPAT-1: install-folder mods' movies
 	d["ok"] = info.ok;
 	d["error"] = g(info.error);
 	d["path"] = g(info.path);

@@ -1,0 +1,32 @@
+extends SceneTree
+func _initialize(): call_deferred("_run")
+func _run():
+ var fs=RetailFileSystem.new()
+ assert(fs.mount_retail().ok)
+ var world=GameWorld.new()
+ root.add_child(world)
+ assert(world.setup(fs).ok)
+ var path="/Users/hailey/Library/Application Support/My The Lord of the Rings, The Rise of the Witch-king Files/Save/Saved Game 6.obfmesave"
+ world.set_logic_thread(false)
+ var prep=world.prepare_save_load(path)
+ assert(prep.ok,str(prep))
+ print("RESOLVED ",JSON.stringify(prep.resolved))
+ print("SAVED START ",world.start_save_load({"logic_thread":false,"record":"/private/tmp/ai-stall-probe.obfme2replay"}))
+ print("SAVED STEP ",world.save_load_step(1000))
+ print("AI BUILD ",JSON.stringify(world.get_ai_build_report()))
+ print("AI TACTICS ",JSON.stringify(world.get_ai_report()))
+ print("TARGET202 ",world.get_object(202))
+ print("TARGET191 ",world.get_object(191))
+ print("ARMY ",world.execute_lua("local o={} for _,p in ipairs(bfme.ai.list()) do for _,u in ipairs(p:units()) do o[u.typeId]=(o[u.typeId] or 0)+1 end end local t={} for k,v in pairs(o) do t[#t+1]=k..':'..v end return table.concat(t,',')"))
+ print("PLAYERS ",world.execute_lua("local o={} for _,p in ipairs(bfme.ai.list()) do local s=p:getAIStatus() o[#o+1]=p.id..' '..p.name..' '..p.money..' units='..#p:units()..' buildings='..#p:buildings() end return table.concat(o,'\\n')"))
+ for id in world.get_object_ids():
+  var object=world.get_object(id)
+  if object.get("player_id",-1)==4 and (object.get("template","")=="DwarvenCatapult" or str(object.get("template","")).ends_with("Horde")):
+   print("STALLED UNIT ",JSON.stringify(object))
+ print("BEFORE FRAME ",world.get_frame()," paused=",world.is_paused()," thread=",world.get_logic_thread())
+ world.set_paused(false)
+ for i in 300: world.advance(0.2)
+ print("AFTER FRAME ",world.get_frame())
+ print("AI BUILD AFTER ",JSON.stringify(world.get_ai_build_report()))
+ print("AI TACTICS AFTER ",JSON.stringify(world.get_ai_report()))
+ quit()

@@ -1,14 +1,19 @@
 // OpenBFME. GPL-3.0. Synthetic siege scenarios; no retail archives required.
 #include "doctest.h"
+#include "Common/XferSave.h"
+#include "Common/XferLoad.h"
 #include "CombatTestUtil.h"
 #include "Common/Thing/ThingFactory.h"
 #include "GameClient/ControlBarCommands.h"
 #include "GameLogic/Combat/TargetFinder.h"
+#include "GameLogic/Object/PartitionManager.h"
+#include "GameLogic/AI/AIStateMachine.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/SkirmishAI/AIFortification.h"
 #include "GameLogic/SkirmishAI/AIBaseBuilder.h"
 #include "GameLogic/SkirmishAI/SkirmishAIData.h"
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
+#include "GameLogic/SkirmishAI/AIStatCollector.h"
 #include "GameLogic/WallBalance.h"
 #include "GameLogic/UpgradeTypes.h"
 using namespace combattest;
@@ -129,6 +134,7 @@ struct Scenario
 	AISkirmishPlayer bot;
 	Scenario()
 	{
+		w.logic->settings().enhancedAI = true;
 		w.combat().setAutoAcquireEnabled(false);
 		Player *p = w.players.findPlayerWithName("Alice");
 		p->setPlayerType(PLAYER_COMPUTER, true);
@@ -405,6 +411,40 @@ TEST_CASE("fortification AI: a hub is a last-resort blocker, never a cleanup obj
  CHECK(s.w.health(hub)==500);
 }
 
+TEST_CASE("fortification AI: an infantry-only army holds outside intact walls beyond the launch timeout")
+{
+ Scenario s; s.restrict();
+ auto *gate=s.w.unit("BlockingGate",'B',600,500);
+ s.w.unit("BreachFortress",'B',850,500);
+ for(int y=0;y<100;++y)s.w.terrain.cliff.insert({60,y});s.w.buildMap();
+ AITactic tactic; tactic.teams.emplace_back();
+ tactic.teams.front().handedOver=true;
+ for(int i=0;i<10;++i)
+ {
+  auto *unit=s.w.unit("Swordsman",'A',150+i*10,550);
+  tactic.teams.front().members.push_back(unit->getID());
+  unit->getAIUpdateInterface()->aiMoveToPosition(*gate->getPosition(),CMD_FROM_AI);
+  unit->getAIUpdateInterface()->armAttackMove(*gate->getPosition(),CMD_FROM_AI);
+ }
+ s.bot.brain.tactics.push_back(tactic);
+ for(int i=0;i<240;++i) { AIFortification::update(*s.w.logic,s.bot); s.w.frames(1); }
+ CHECK(s.bot.brain.siegeUnits.empty());
+ CHECK(s.bot.brain.siegeEscorts.size()==10);
+ CHECK_FALSE(s.bot.brain.siegeLaunched);
+ // Losing the last engine after an earlier launch must also cancel the assault.
+ s.bot.brain.siegeLaunched=true;
+ AIFortification::update(*s.w.logic,s.bot);
+ CHECK_FALSE(s.bot.brain.siegeLaunched);
+ CHECK(s.bot.brain.tactics.front().teams.front().members.empty());
+ for(auto id:s.bot.brain.siegeEscorts)
+ {
+  auto *unit=s.w.logic->findObjectByID(id);
+  CHECK(unit->getAIUpdateInterface()->currentVictimId()==INVALID_ID);
+  // tolerance: all held infantry remain on the home side of the wall.
+  CHECK(unit->getPosition()->x < 400);
+ }
+}
+
 TEST_CASE("fortification AI: a walled base gathers three engines and six escorts before launching")
 {
  Scenario s; s.restrict();
@@ -424,6 +464,22 @@ TEST_CASE("fortification AI: a walled base gathers three engines and six escorts
  CHECK(s.bot.brain.siegeLaunched);
  CHECK(s.bot.brain.siegeEscorts.size()==6);
  for(auto id:s.bot.brain.siegeUnits)CHECK(s.w.logic->findObjectByID(id)->getAIUpdateInterface()->currentVictimId()==gate->getID());
+ for (auto id : s.bot.brain.siegeEscorts)
+ {
+  auto *escort = s.w.logic->findObjectByID(id);
+  auto *a = escort->getAIUpdateInterface();
+  CHECK(a->currentVictimId()==INVALID_ID);
+  // Hold on the home side, never at the gate's x=600 attack-move destination.
+  CHECK((a->isIdle() || a->stateMachine().goalPosition().x == 150));
+ }
+ // A straggler already at the wall must retreat without its path restarting each update.
+ auto *straggler = s.w.logic->findObjectByID(*s.bot.brain.siegeEscorts.begin());
+ Coord3D exposed{500,500,0}; straggler->setPosition(&exposed);
+ straggler->getAIUpdateInterface()->aiIdle(CMD_FROM_AI);
+ for (int i=0; i<25; ++i) { AIFortification::update(*s.w.logic,s.bot); s.w.frames(1); }
+ // tolerance: proves actual retreat progress; locomotor steps are not the policy's contract.
+ CHECK(straggler->getPosition()->x < 500);
+ CHECK(straggler->getAIUpdateInterface()->currentVictimId() == INVALID_ID);
  gate->setTeam(s.w.teamA());s.w.terrain.cliff.clear();s.w.buildMap();
  AIFortification::update(*s.w.logic,s.bot);
  CHECK(s.bot.brain.fortificationTarget!=gate->getID());
@@ -485,11 +541,19 @@ End
  CHECK_FALSE(lab->getProductionUpdate()->isUpgradeInQueue(technology));
  CHECK_FALSE(archer->getProductionUpdate()->isUpgradeInQueue(arrows));
  player->getMoney()->withdraw(500,nullptr,false);
- s.bot.build.moneyReserve=1500;
+ // The reserve moved to AIStatCollector in AI5; use the same record the live upgrader reads.
+ auto &manager = s.w.logic->skirmishAI();
+ REQUIRE(s.w.w.load("SkirmishAIData TestData\nEnd\n").empty());
+ manager.setStore(&s.store);
+ manager.newGame(true);
+ manager.setScriptControlled(player->getPlayerIndex(), true); // the detached fixture bot is stepped explicitly below
+ auto *record = manager.record(player->getPlayerIndex());
+ REQUIRE(record);
+ record->setReserve(1500);
  s.store.data().disableUnitUpgrading=true;
  for(int i=0;i<5;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
  CHECK_FALSE(lab->getProductionUpdate()->isUpgradeInQueue(technology));
- CHECK(player->getMoney()->countMoney()+s.bot.build.moneyReserve==1600);
+ CHECK(player->getMoney()->countMoney()+record->reserve()==1600);
  s.store.data().disableUnitUpgrading=false;
  for(int i=0;i<5;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
  CHECK((player->hasUpgradeComplete(technology) || lab->getProductionUpdate()->isUpgradeInQueue(technology)));
@@ -497,9 +561,9 @@ End
  for(int i=0;i<5;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
  s.w.frames(10);
  CHECK(archer->hasUpgrade(arrows));
- CHECK(player->getMoney()->countMoney()+s.bot.build.moneyReserve==1300);
+ CHECK(player->getMoney()->countMoney()+record->reserve()==1300);
  for(int i=0;i<10;++i){AIBaseBuilder::update(*s.w.logic,s.bot);s.w.frames(1);}
- CHECK(player->getMoney()->countMoney()+s.bot.build.moneyReserve==1300);
+ CHECK(player->getMoney()->countMoney()+record->reserve()==1300);
 }
 
 TEST_CASE("offensive AI: midgame maintains siege without a protected target or composition share")
@@ -654,4 +718,232 @@ TEST_CASE("offensive AI: saturated target slots still dispatch a new full attack
  AITacticalAI::updateBrain(*s.w.logic,s.bot,&s.bot);
  CHECK(s.bot.brain.attacksLaunched==1);
  CHECK(s.bot.brain.targets[0].teams==2);
+}
+
+TEST_CASE("source AI reserve: execution withdraws only the shortfall, never the full price")
+{
+	// DONOR AIBuildable_doBuild.cpp: a 100-cost unit, cash/reserve before and after execution.
+	struct Example { unsigned cash, reserve, cashAfter, reserveAfter; bool queued; };
+	for (const Example example : { Example{40, 70, 0, 10, true}, Example{140, 70, 40, 70, true}, Example{40, 50, 40, 50, false} })
+	{
+		CAPTURE(example.cash);
+		CAPTURE(example.reserve);
+		Scenario s;
+		s.w.logic->settings().enhancedAI = false;
+		s.factory("BreachWorkshop", 'A', 100, 500);
+		auto *player = s.w.players.findPlayerWithName("Alice");
+		REQUIRE(s.w.w.load("SkirmishAIData TestData\nEnd\n").empty());
+		auto &manager = s.w.logic->skirmishAI();
+		manager.setStore(&s.store);
+		manager.newGame(true);
+		manager.setScriptControlled(player->getPlayerIndex(), true);
+		auto *record = manager.record(player->getPlayerIndex());
+		REQUIRE(record);
+		player->getMoney()->withdraw(player->getMoney()->countMoney(), nullptr, false);
+		player->getMoney()->deposit(example.cash, nullptr, false);
+		record->setReserve(example.reserve);
+		s.bot.build.baseBuilderDisabled = true;
+		s.bot.build.economy.disabled = true;
+		s.bot.build.units.disabled = true;
+		auto request = std::make_shared<AIBuildRequest>();
+		request->unit = true;
+		request->reserveMoney = true;
+		request->templateName = "BreachEngine";
+		request->priority = 500;
+		s.bot.build.pending.push_back(request);
+		AIBaseBuilder::update(*s.w.logic, s.bot);
+		CHECK(request->state == (example.queued ? 1 : 0));
+		CHECK(player->getMoney()->countMoney() == example.cashAfter);
+		CHECK(record->reserve() == example.reserveAfter);
+		CHECK(s.bot.build.failed == 0);
+	}
+}
+
+TEST_CASE("source AI spatial groups: strict neighbor boundary, bridge merge, and removal rebuild")
+{
+	// DONOR Rva004DFA43Sphere / Rva00283114GroupMerge: squared distance < padding^2 * 2.
+	AIPositionSampler sampler;
+	std::map<ObjectID, Coord3D> points{{(ObjectID)1, {0, 0, 0}}, {(ObjectID)2, {24, 0, 0}}, {(ObjectID)3, {12, 0, 0}}, {(ObjectID)4, {10, 10, 0}}};
+	auto position = [&](ObjectID id) { return points.at(id); };
+	sampler.add((ObjectID)1, 10, position);
+	sampler.add((ObjectID)2, 10, position);
+	REQUIRE(sampler.groups().size() == 2);
+	CHECK(sampler.groups()[0].radius == 10.0f);
+	sampler.add((ObjectID)3, 10, position);
+	REQUIRE(sampler.groups().size() == 1);
+	CHECK((sampler.groups()[0].members == std::vector<ObjectID>{(ObjectID)1, (ObjectID)3, (ObjectID)2}));
+	CHECK(sampler.groups()[0].center.x == 12.0f);
+	CHECK(sampler.groups()[0].radius == 22.0f);
+	sampler.groups()[0].selected = true;
+	sampler.remove((ObjectID)3, position);
+	REQUIRE(sampler.groups().size() == 2);
+	CHECK(sampler.groups()[0].center.x == 0.0f);
+	CHECK(sampler.groups()[1].center.x == 24.0f);
+	CHECK_FALSE(sampler.groups()[0].selected);
+	AIPositionSampler boundary;
+	boundary.add((ObjectID)1, 10, position);
+	boundary.add((ObjectID)4, 10, position);
+	CHECK(boundary.groups().size() == 2);
+	// Native removal erases one registration, not every duplicate.
+	boundary.add((ObjectID)1, 10, position);
+	boundary.remove((ObjectID)1, position);
+	REQUIRE(boundary.groups().size() == 2);
+	CHECK((boundary.groups()[1].members == std::vector<ObjectID>{(ObjectID)1}));
+}
+
+TEST_CASE("source AI spatial groups: snapshot preserves selection and registration order")
+{
+	AIPositionSampler sampler;
+	std::map<ObjectID, Coord3D> points{{(ObjectID)1, {0, 0, 0}}, {(ObjectID)2, {24, 0, 0}}, {(ObjectID)3, {12, 0, 0}}};
+	auto position = [&](ObjectID id) { return points.at(id); };
+	for (ObjectID id : {(ObjectID)1, (ObjectID)2, (ObjectID)3})
+		sampler.add(id, 10, position);
+	sampler.groups()[0].selected = true;
+	XferSave save;
+	sampler.xfer(save);
+	AIPositionSampler restored;
+	XferLoad load(save.data());
+	restored.xfer(load);
+	REQUIRE(restored.groups().size() == 1);
+	CHECK(restored.groups()[0].selected);
+	CHECK(restored.members() == sampler.members());
+	CHECK(restored.groups()[0].members == sampler.groups()[0].members);
+	XferSave again;
+	restored.xfer(again);
+	CHECK(again.data() == save.data());
+	restored.remove((ObjectID)3, position);
+	CHECK(restored.groups().size() == 2);
+	// An internally inconsistent group cannot load and feed later position lookups.
+	restored.groups()[0].members.push_back((ObjectID)999);
+	XferSave corrupt;
+	restored.xfer(corrupt);
+	AIPositionSampler refused;
+	XferLoad bad(corrupt.data());
+	CHECK_THROWS_WITH(refused.xfer(bad), "skirmish ai: the position sampler's groups differ from its registrations");
+}
+
+TEST_CASE("source AI defense: native target groups create and recruit SimpleDefense on every difficulty")
+{
+	for (int difficulty = 0; difficulty < 4; ++difficulty)
+	{
+		CAPTURE(difficulty);
+		Scenario s;
+		s.w.logic->settings().enhancedAI = false;
+		REQUIRE(s.w.w
+					.load("SkirmishAIData NativeDefense\nEnd\nArmyDefinition NativeAlpha\n Side = Alpha\n TacticalAITargets = DEFENSIVE\n "
+						  "MaxTeamsPerTarget = 1\nEnd\n")
+					.empty());
+		Object *base = s.w.unit("BreachWorkshop", 'A', 100, 500);
+		s.w.unit("BreachWall", 'A', 120, 500);
+		Object *enemy = s.w.unit("Swordsman", 'B', 150, 500);
+		std::vector<ObjectID> own;
+		for (int i = 0; i < 4; ++i)
+			own.push_back(s.w.unit("Swordsman", 'A', 80, (float)(i == 0 ? 490 : 440 + i * 10))->getID());
+		auto &manager = s.w.logic->skirmishAI();
+		manager.setStore(&s.store);
+		manager.newGame(true);
+		auto *player = s.w.players.findPlayerWithName("Alice");
+		player->setSkirmishDifficulty(difficulty);
+		for (const auto &group : manager.groups())
+			for (int index : group->members)
+				manager.setScriptControlled(index, true);
+		auto *ai = const_cast<AISkirmishPlayer *>(manager.findAI(player->getPlayerIndex()));
+		REQUIRE(ai);
+		REQUIRE(ai->army);
+		ai->brain.farmKillEarly = false;
+		manager.record(ai->playerIndex)->update(*s.w.logic); // upstream defers sampler insertion until positions are final
+		s.w.frames(50);
+		s.w.logic->partition().update();
+		AITacticalAI::updateBrain(*s.w.logic, *ai, ai);
+		REQUIRE(ai->brain.targets.size() == 1);
+		CHECK(ai->brain.targets[0].object == enemy->getID());
+		CHECK(ai->brain.targets[0].defenseSize == 1);
+		CHECK(ai->brain.targets[0].radius == 200.0f);
+		REQUIRE(ai->brain.tactics.size() == 1);
+		auto &defense = ai->brain.tactics[0];
+		CHECK(defense.kind == "SimpleDefense");
+		REQUIRE(defense.teams.size() == 1);
+		CHECK(defense.teams[0].maximum == 3);
+		CHECK(defense.teams[0].type == 1);
+		AITacticalAI::updateTeamBuilder(*s.w.logic, *ai);
+		CHECK(defense.teams[0].members.size() == 3);
+		CHECK((defense.teams[0].members == std::vector<ObjectID>{own[0], own[3], own[2]}));
+		CHECK(defense.teams[0].hasRecruitOrigin);
+		CHECK(defense.teams[0].recruitOrigin.x == enemy->getPosition()->x);
+		CHECK(defense.teams[0].handedOver);
+		AITacticalAI::updateBrain(*s.w.logic, *ai, ai);
+		AITacticalAI::updateBrain(*s.w.logic, *ai, ai);
+		CHECK(ai->brain.attacksLaunched == 1);
+		CHECK(base->getControllingPlayer() == player);
+	}
+}
+
+TEST_CASE("source AI defense: small group chance and large group half-army sizing survive snapshots")
+{
+	for (int structures : {1, 3})
+	{
+		CAPTURE(structures);
+		Scenario s;
+		s.w.logic->settings().enhancedAI = false;
+		REQUIRE(s.w.w
+					.load("SkirmishAIData NativeDefense\nEnd\nArmyDefinition NativeAlpha\n Side = Alpha\n TacticalAITargets = DEFENSIVE\n "
+						  "MaxTeamsPerTarget = 1\nEnd\n")
+					.empty());
+		for (int i = 0; i < structures; ++i)
+			s.w.unit("BreachWorkshop", 'A', (float)(100 + i * 20), 500);
+		Object *enemy = s.w.unit("Swordsman", 'B', 150, 500);
+		for (int i = 0; i < 5; ++i)
+			s.w.unit("Swordsman", 'A', 80, (float)(450 + i * 10));
+		auto &manager = s.w.logic->skirmishAI();
+		manager.setStore(&s.store);
+		manager.newGame(true);
+		for (const auto &group : manager.groups())
+			for (int index : group->members)
+				manager.setScriptControlled(index, true);
+		const int player = s.w.players.findPlayerWithName("Alice")->getPlayerIndex();
+		auto *ai = const_cast<AISkirmishPlayer *>(manager.findAI(player));
+		REQUIRE(ai);
+		ai->brain.farmKillEarly = false;
+		manager.record(ai->playerIndex)->update(*s.w.logic); // upstream defers sampler insertion until positions are final
+		auto &random = s.w.logic->random();
+		random.seedRandom(1);
+		GameLogicRandom oracle = random;
+		(void)oracle.getValue(0, 0, "AITargetChooser.cpp", 0xB8);
+		(void)oracle.getValue(0, 0, "AITargetHeuristicBaseDefense.cpp", 0x57);
+		const int roll = oracle.getValue(0, 100, "AITargetHeuristicBaseDefense.cpp", 0x60);
+		random.enableCallLog(true);
+		random.clearCallLog();
+		AITacticalAI::updateBrain(*s.w.logic, *ai, ai);
+		REQUIRE(ai->brain.targets.size() == 1);
+		const bool accepts = structures != 1 || roll < 30; // Native 30/101 small-base gate; larger groups do not make this draw.
+		CHECK(ai->brain.targets[0].inactive == !accepts);
+		CHECK(ai->brain.targets[0].defenseSize == (structures == 1 ? 0 : 2));
+		bool gateFound = false;
+		for (const auto &call : random.callLog())
+			if (call.file == "AITargetHeuristicBaseDefense.cpp" && call.line == 0x60)
+			{
+				gateFound = true;
+				CHECK(call.lo == 0);
+				CHECK(call.hi == 100);
+				CHECK(call.result == roll);
+			}
+		CHECK(gateFound == (structures == 1));
+		if (accepts)
+		{
+			CHECK(ai->brain.targets[0].object == enemy->getID());
+			REQUIRE(ai->brain.tactics.size() == 1);
+			CHECK(ai->brain.tactics[0].teams[0].maximum == (structures == 1 ? 1 : 2));
+			XferSave save;
+			manager.xfer(save);
+			ai->brain.targets[0].defenseSize = 1;
+			XferLoad load(save.data());
+			manager.xfer(load);
+			const auto *restored = manager.findAI(player);
+			REQUIRE(restored);
+			CHECK(restored->brain.targets[0].defenseSize == (structures == 1 ? 0 : 2));
+			CHECK(restored->brain.tactics[0].kind == "SimpleDefense");
+			CHECK(restored->brain.tactics[0].teams[0].hasRecruitOrigin);
+			CHECK(restored->brain.tactics[0].teams[0].recruitOrigin.x == enemy->getPosition()->x);
+		}
+	}
 }

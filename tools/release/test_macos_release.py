@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import selectors
+import shutil
 import hashlib
 import struct
 import subprocess
@@ -237,7 +240,7 @@ def test_arm64_build_arguments_include_reproducibility_inputs(tmp_path: Path):
     extension = tmp_path / "extension path"
     args = package_macos.cmake_configure_args(build, extension, "v1.2.3-preview.1 Mac Unstable Preview (Apple Silicon)")
     assert "-DCMAKE_BUILD_TYPE=Release" in args
-    assert "-DOPENBFME_LAME=OFF" in args
+    assert "-DOPENBFME_BUILD_TESTS=OFF" in args
     assert "-DOPENBFME_BUILD_GODOT=ON" in args
     assert "-DCMAKE_OSX_ARCHITECTURES=arm64" in args
     assert "-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0" in args
@@ -326,3 +329,13 @@ def test_generic_audit_rejects_extras_wrong_architecture_and_embedded_paths(tmp_
         "macos-arm64", exact_prefix, "pkg", forbidden_prefixes=(prefix,),
     ))
     assert audit_package.developer_path_problem(b"literal /Users/") == ""
+
+
+# ---- RELCAND-1 / RELGH-2: the Mac clone tests went with build_macos_release.sh (the Mac host is in no release's path) -------------------
+def test_no_release_script_clones_a_repository_locally():
+    """every clone in the release's shell scripts goes over git's transport or is a mirror reference, never a hardlinking local clone"""
+    import re  # noqa: PLC0415
+    for f in sorted(HERE.glob("*.sh")):
+        for n, line in enumerate(f.read_text().splitlines(), 1):
+            if re.search(r"\bgit(\s+-\S+(\s+[^-\s]\S*)?)*\s+clone\b", line) and "--no-local" not in line and "--no-hardlinks" not in line:
+                assert "file://" in line or "https://" in line, f"{f.name}:{n}: {line.strip()}"

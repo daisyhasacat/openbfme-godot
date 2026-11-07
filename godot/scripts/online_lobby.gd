@@ -13,18 +13,31 @@
 ## Lane ONLINE-3 (spectators): `spectate` asks for a spectator START for `join_id` (POST /v1/games/<id>/spectate: a version 3 ticket, a fresh index
 ## each time), once a second while the game has not started; the session is not kept (a spectator has no slot to rejoin: it asks again).
 extends Node
+signal compatibility_scan(game: String, session: String, hosting: bool, reason: String)
+
+const OnlineList := preload("res://scripts/online_list.gd")
+const HttpTimed := preload("res://scripts/http_timed.gd") ## a time limit in running frames (a blocking load does not use it up)
 
 signal started(start_json: String)
 signal game_created(id: String)
 signal failed(message: String)
+## lane JOINVER-1: a join refused for a different build: the plain words and the DETAILS text (both builds' tags and profile ids)
+signal build_refused(message: String, details: String)
+signal notice(message: String)
+signal report_context(context: Dictionary)
+signal oneshot_done(result: int, code: int, body: PackedByteArray) ## NETGUARD-1: the answer of a post_oneshot request
 
 const BODY_LIMIT := 262144 ## Sol r1 (ONLINE-4): the largest lobby answer read (OnlineLobbyClient::kMaxBodyBytes)
 
 var lobby_url := ""
 var player_name := "Player"
 var profile := ""
+var profile_details := ""
+var profile_rejected := false
 var mode := "normal"        ## lane UBERJOIN-1: the performance mode of this player's games ("normal" or "uber": the lobby refuses a join in the other)
+var platform := OS.get_name().to_lower() ## SOCIAL-1: told with a join (lobby.mjs checkPlatform)
 var join_id := ""          ## join this game; empty: host one with host_setup
+var invite_id := ""        ## accept with this game's locally computed profile and inherited lobby token
 var host_setup := {}        ## {name, setup: {map, startingCash, slots: [...]}, players: N}
 var token := ""
 var rejoin := false          ## lane ONLINE-3: rejoin a running game instead of joining / hosting
@@ -47,13 +60,35 @@ static func lobby_url_problem(url: String) -> String:
 	return "" if m != null and m.get_string() == url else "the lobby URL must be http(s)://host[:port][/path], got %s" % url
 
 
-func begin() -> void:
+## NETGUARD-1: one authenticated POST of an already serialized body to the lobby (the player reports of online_reports.gd), through this
+## client's one HTTP path: same lobby_url check, no redirect, same body bound, the session `token` as the bearer. The answer arrives as
+## oneshot_done (a refused URL or a failed start arrives the same way, result -1 / code 0). No sign-in, no state machine.
+func post_oneshot(path: String, body_text: String, extra_headers: PackedStringArray) -> void:
+	_step = "oneshot"
+	var problem := lobby_url_problem(lobby_url)
+	if not problem.is_empty() or token.is_empty():
+		oneshot_done.emit(-1, 0, PackedByteArray())
+		return
+	_make_http()
+	_busy = true
+	if not _send(HTTPClient.METHOD_POST, path, null, extra_headers, body_text):
+		_busy = false
+		oneshot_done.emit(-1, 0, PackedByteArray())
+
+
+func _make_http() -> void:
+	if _http != null:
+		return
 	_http = HTTPRequest.new()
-	_http.timeout = 20.0
+	HttpTimed.set_budget(_http, 20.0)
 	_http.max_redirects = 0 # ONLINE-2 r2: never follow a redirect (Godot would send the bearer token to the new origin)
 	_http.body_size_limit = BODY_LIMIT # Sol r1 (ONLINE-4): a hostile lobby's answer is not read beyond the bound
 	add_child(_http)
 	_http.request_completed.connect(_on_response)
+
+
+func begin() -> void:
+	_make_http()
 	if lobby_url.is_empty():
 		_fail("no lobby: --online-lobby=URL (or OPENBFME_LOBBY)")
 		return
@@ -61,6 +96,19 @@ func begin() -> void:
 	if not problem.is_empty():
 		_fail(problem)
 		return
+	if mode not in ["normal", "uber"]:
+		_fail("the local performance mode is invalid")
+		return
+	if not invite_id.is_empty():
+		if RegEx.create_from_string("^[0-9a-f]{16}$").search(invite_id) == null:
+			_fail("the invitation id is invalid")
+			return
+		if token.is_empty():
+			_fail("accepting an invitation requires the original lobby session")
+			return
+		if not join_id.is_empty() or not host_setup.is_empty() or rejoin or spectate or RegEx.create_from_string("^[0-9a-f]{32}$").search(profile) == null:
+			_fail("accepting an invitation requires a local profile and no other join mode")
+			return
 	if token.is_empty() and rejoin:
 		# lane ONLINE-3: the session of the game that restarted (the slot belongs to that guest)
 		var f := FileAccess.open(SESSION_FILE, FileAccess.READ)
@@ -70,8 +118,13 @@ func begin() -> void:
 			_fail("no saved lobby session to rejoin with (%s): the game that restarted never signed in on this computer" % SESSION_FILE)
 			return
 	if token.is_empty():
+		var identity: Dictionary = load("res://scripts/online_identity.gd").identity()
+		if identity.has("error"):
+			_fail(str(identity.error))
+			return
+		identity["name"] = player_name
 		_step = "signin"
-		_send(HTTPClient.METHOD_POST, "/v1/auth/guest", {"name": player_name})
+		_send(HTTPClient.METHOD_POST, "/v1/auth/guest", identity)
 	else:
 		_after_signin()
 
@@ -84,14 +137,17 @@ func _process(_delta: float) -> void:
 		_send(HTTPClient.METHOD_POST, "/v1/games/%s/spectate" % join_id)
 
 
-func _send(method: int, path: String, body: Variant = null) -> void:
+func _send(method: int, path: String, body: Variant = null, extra_headers := PackedStringArray(), body_text := "") -> bool:
 	var headers := PackedStringArray(["content-type: application/json", "accept: application/json"])
 	if not token.is_empty():
 		headers.append("authorization: Bearer " + token)
+	headers.append_array(extra_headers)
 	_busy = true
-	var err := _http.request(lobby_url.trim_suffix("/") + path, headers, method, "" if body == null else JSON.stringify(body))
-	if err != OK:
+	var text := body_text if body == null else JSON.stringify(body)
+	var err := _http.request(lobby_url.trim_suffix("/") + path, headers, method, text)
+	if err != OK and _step != "oneshot":
 		_fail("cannot reach the lobby %s: %s" % [lobby_url, error_string(err)])
+	return err == OK
 
 
 func _fail(message: String) -> void:
@@ -101,7 +157,35 @@ func _fail(message: String) -> void:
 	failed.emit(message)
 
 
+func _join_identity() -> Dictionary:
+	var identity := {"profile": profile, "mode": mode}
+	if platform in ["windows", "linux", "macos"]:
+		identity["platform"] = platform
+	var build := own_build()
+	if RegEx.create_from_string("^[0-9A-Za-z._+-]{1,64}$").search(str(build.get("version", ""))) != null:
+		identity["build"] = build # lane JOINVER-1: lobby.mjs checkBuild (an odd version is not told: the join never fails on it)
+	return identity
+
+
+## lane JOINVER-1: this build as the lobby is told it (online_identity.gd build_info: the build day, an official release or not)
+func own_build() -> Dictionary:
+	if not ClassDB.class_exists("ReleaseInfo"):
+		return {}
+	var build: Dictionary = {"version": str(ClassDB.instantiate("ReleaseInfo").version())}
+	build.merge(load("res://scripts/online_identity.gd").build_info())
+	if platform in ["windows", "linux", "macos"]:
+		build["platform"] = platform
+	return build
+
+
 func _after_signin() -> void:
+	if not invite_id.is_empty():
+		_step = "invite"
+		var identity := _join_identity()
+		identity.erase("build") # lane JOINVER-1 (Sol): an invite's accept is checked field by field (social.mjs exact): an older lobby refuses it
+		identity["v"] = 1
+		_send(HTTPClient.METHOD_POST, "/v1/invites/%s/accept" % invite_id, identity)
+		return
 	if spectate:
 		if join_id.is_empty():
 			_fail("spectating needs the game's id")
@@ -116,17 +200,20 @@ func _after_signin() -> void:
 	if join_id.is_empty():
 		_step = "create"
 		var body: Dictionary = host_setup.duplicate(true)
-		body["profile"] = profile
-		body["mode"] = mode
+		body.merge(_join_identity(), true)
+		body.merge(_compatibility_details())
 		body.erase("players")
 		_send(HTTPClient.METHOD_POST, "/v1/games", body)
 	else:
 		_step = "join"
-		_send(HTTPClient.METHOD_POST, "/v1/games/%s/join" % join_id, {"profile": profile, "mode": mode})
+		_send(HTTPClient.METHOD_POST, "/v1/games/%s/join" % join_id, _join_identity().merged(_compatibility_details()))
 
 
 func _on_response(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	_busy = false
+	if _step == "oneshot":
+		oneshot_done.emit(result, code, body)
+		return
 	if result == HTTPRequest.RESULT_REDIRECT_LIMIT_REACHED or (code >= 300 and code < 400):
 		_fail("the lobby %s answered with a redirect: not followed (the session stays with the lobby you named)" % lobby_url)
 		return
@@ -136,7 +223,15 @@ func _on_response(result: int, code: int, _headers: PackedStringArray, body: Pac
 	if result != HTTPRequest.RESULT_SUCCESS:
 		_fail("the lobby %s did not answer (%d)" % [lobby_url, result])
 		return
-	var data: Variant = JSON.parse_string(body.get_string_from_utf8())
+	var data: Variant
+	if _step == "mine" and code == 200:
+		var parsed := OnlineList.parse(body, true)
+		if not parsed.ok:
+			_fail(parsed.error)
+			return
+		data = parsed.data
+	else:
+		data = JSON.parse_string(body.get_string_from_utf8())
 	if typeof(data) != TYPE_DICTIONARY or int(data.get("v", 0)) != 1:
 		_fail("the lobby answered HTTP %d with something that is not lobby version 1" % code)
 		return
@@ -146,17 +241,53 @@ func _on_response(result: int, code: int, _headers: PackedStringArray, body: Pac
 		_step = "spectate_wait" # lane ONLINE-3: asked again once a second until the host starts it
 		_poll_at = Time.get_ticks_msec() + 1000
 		return
+	if code == 409 and data.get("error", "") == "profile" and ClassDB.class_exists("ReleaseInfo"):
+		# lane JOINVER-1 (the owner, 2026-10-23: "it says the build is different and gives me a hash"): both builds in plain words; the profile ids
+		# only in the DETAILS (an older lobby names no host build: its side is unknown)
+		var info: RefCounted = ClassDB.instantiate("ReleaseInfo")
+		var host: Variant = data.get("host_build")
+		var host_build: Dictionary = host if host is Dictionary else {}
+		var words: String = info.join_refusal_text(own_build(), host_build)
+		var details: String = info.join_details_text(own_build(), profile, host_build, str(data.get("host_profile", "")) if data.get("host_profile") is String else "")
+		_step = "failed"
+		printerr("GAME ONLINE join refused for a different build: ", details.replace("\n", "; "))
+		build_refused.emit(words, details)
+		return
 	if code != 200:
+		if code == 409 and data.get("error", "") == "profile":
+			profile_rejected = true
+			compatibility_scan.emit(str(data.get("compatibility_game", "")), token, false, str(data.get("message", "")))
 		_fail("%s (%s)" % [data.get("message", "HTTP %d" % code), data.get("error", "")])
 		return
+	if _step == "create":
+		compatibility_scan.emit(str(data.get("id", "")), token, true, "")
+	if data.get("game") is Dictionary and data.game.get("slots") is Array:
+		var players: Array = []
+		for slot in data.game.slots:
+			if slot is Dictionary and slot.get("state") == "player" and slot.get("player_id") is String:
+				players.append({"id": slot.player_id, "name": slot.get("name", ""), "you": slot.get("you", false)})
+		report_context.emit({"game_id": data.game.get("id", _game_id), "session_token": token, "report_players": players})
 	match _step:
 		"signin":
+			if data.get("notice") != null:
+				var pending: Variant = data.notice
+				if not pending is Dictionary or not pending.get("id") is String or not pending.get("text") is String or pending.id.is_empty() or pending.id.to_utf8_buffer().size() > 128 or pending.text.is_empty() or pending.text.to_utf8_buffer().size() > 4000:
+					_fail("the sign-in notice is malformed")
+					return
+				notice.emit(AptMenuPlayer.online_redact(pending.text))
 			token = data.token
 			print("GAME ONLINE signed in as %s (%s)" % [data.account.name, data.account.kind])
 			var f: FileAccess = null if spectate else FileAccess.open(SESSION_FILE, FileAccess.WRITE) # lane ONLINE-3: kept for a rejoin after a restart
 			if f != null:
 				f.store_string(token + "\n")
 			_after_signin()
+		"invite":
+			if not data.get("id") is String or RegEx.create_from_string("^[0-9a-f]{16}$").search(data.id) == null or not data.get("game") is Dictionary or data.game.get("id") != data.id or not data.get("slot") is float or data.slot != floor(data.slot) or data.slot < 0 or data.slot >= 8:
+				_fail("the lobby returned an invalid invitation acceptance")
+				return
+			join_id = data.id
+			invite_id = ""
+			_after_signin() # same token, ordinary idempotent join of the slot just reserved
 		"mine":
 			var games: Array = data.get("games", [])
 			for g in games:
@@ -213,3 +344,16 @@ func _on_response(result: int, code: int, _headers: PackedStringArray, body: Pac
 			elif not me.is_empty() and not me[0].ready:
 				_step = "ready" # an options change unreadies everyone: ready again
 				_send(HTTPClient.METHOD_POST, "/v1/games/%s/ready" % _game_id, {"ready": true})
+
+
+func _compatibility_details() -> Dictionary:
+	if profile_details.is_empty():
+		return {}
+	var bytes := profile_details.to_utf8_buffer()
+	if bytes.size() > 10000:
+		bytes.resize(9900)
+		# Cut before the final newline; never decode a split UTF-8 character.
+		var end := bytes.rfind(10)
+		bytes.resize(end + 1)
+		return {"profile_details": bytes.get_string_from_utf8() + "details truncated\n"}
+	return {"profile_details": profile_details}

@@ -13,8 +13,11 @@
 #include "Common/ModelState.h"
 #include "Common/Player.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Map/TaintManager.h"
+#include "GameLogic/GlobalWeatherSystem.h"
 #include "GameClient/HudObjects.h"
 #include "GameClient/Radar.h"
+#include "GameClient/RTS3DSceneOcclusion.h"
 #include "GameLogic/Locomotor.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/DozerAIUpdate.h"
@@ -23,10 +26,16 @@
 #include "GameLogic/System/InvisibilityManager.h"
 
 #include "Common/PlayerList.h"
+#include "Common/JobSystem.h"           // lane PERF-SNAP: the records on the logic job pool
+#include "Common/Thing/ThingTemplate.h" // lane PERF-SNAP: the templates' final overrides, warmed in the caches before the pool reads them
+#include "GameLogic/AI/AIWorld.h"       // lane PERF-SNAP: the AIWorld whose movement info the radar's bounding radii read
+#include "GameLogic/Combat/CombatQueries.h" // lane PERF-SNAP: the bounding radii warmed before the pool reads them
+#include "GameLogic/Object/PristinePose.h"  // lane PERF-SNAP: the canonical floating-point environment for the pool's build
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 CellShroudStatus ShroudView::cellStatus(int cx, int cy) const
 {
@@ -50,12 +59,28 @@ CellShroudStatus ShroudView::statusAt(float x, float y) const
 
 const ObjectSnapshot *LogicSnapshot::find(ObjectID id) const
 {
+	if (!idToIndex.empty())
+	{
+		if (id >= idToIndex.size())
+		{
+			return nullptr;
+		}
+		const int ix = idToIndex[id];
+		if (ix < 0 || (size_t)ix >= objects.size() || objects[(size_t)ix].id != id)
+		{
+			return nullptr;
+		}
+		return &objects[(size_t)ix];
+	}
 	auto it = std::lower_bound(objects.begin(), objects.end(), id, [](const ObjectSnapshot &o, ObjectID v) { return o.id < v; });
 	return (it != objects.end() && it->id == id) ? &*it : nullptr;
 }
 
 namespace
 {
+// lane PERF-SNAP: the record pass's grain, 256 records a chunk (a record is about 300 bytes of reads; 30,000 records make about 120 chunks)
+constexpr size_t kRecordGrain = 256;
+
 // RW 0x68B34C: the current locomotor's speed per logic frame (AI +0x260, its current locomotor +0x1F0, +0x40), 0 (RW 0xC1B594) when there is none or it is not
 // positive. Client read of the completed state (the snapshot is built between frames)
 float locomotorSpeedOf(const Object &o)
@@ -97,13 +122,20 @@ bool sameTransform(const ObjectSnapshot &a, const ObjectSnapshot &b)
 std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, const LogicSnapshot *previous, bool hashed, std::uint32_t stateHash, int viewPlayer,
 	bool teamVision)
 {
+	// lane PERF-SNAP: the records are filled on the logic job pool, which checks the dispatching thread's floating-point environment; the canonical
+	// one for this build, the caller's restored after it (the client's view switch and the tests call from the main thread)
+	const PristinePose::CanonicalEnvironment fp;
 	static const int kActivelyBeingConstructed = ModelCondition::indexOf("ACTIVELY_BEING_CONSTRUCTED");
 	auto snap = std::make_shared<LogicSnapshot>();
 	snap->frame = logic.getFrame();
+	snap->showBehindBuildingMarkers = logic.getShowBehindBuildingMarkers(); // lane OCCLUDE-1
+	snap->useBehindBuildingMarker = logic.settings().useBehindBuildingMarker;
+	snap->occludedColorLuminanceScale = logic.settings().occludedColorLuminanceScale;
+	const UnsignedInt occlusionFrame = RTS3DSceneOcclusion::occlusionFrame(snap->frame, logic.settings().defaultOcclusionDelay); // RW 0x470C15 .. 0x470C38
 	snap->nextObjectId = logic.getNextObjectID();
+	snap->globalWeather = logic.weather().weather(); // lane WEATHER-1: TheGlobalWeatherSystem + 0x10, what the client weather reads (WeatherClient)
 	snap->hashed = hashed;
 	snap->stateHash = stateHash;
-	snap->objects.reserve(previous ? previous->objects.size() + 16 : 256);
 	// the local player's shroud (merge with VIS-1): a new copy when its version moved
 	ShroudManager *sm = logic.shroud();
 	const Player *local = logic.players().getLocalPlayer();
@@ -184,6 +216,31 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 		}
 	}
 	{
+		// TheTaintManager's cells: a new copy when its revision moved
+		const TaintManager &tm = logic.taint();
+		const TaintView *tv = previous ? previous->taint.get() : nullptr;
+		if (tv && tv->revision == tm.revision())
+		{
+			snap->taint = previous->taint;
+		}
+		else
+		{
+			auto v = std::make_shared<TaintView>();
+			v->countX = tm.width();
+			v->countY = tm.height();
+			v->cellSize = tm.cellSize();
+			v->originX = tm.originX();
+			v->originY = tm.originY();
+			v->revision = tm.revision();
+			v->kinds.reserve(tm.cells().size());
+			for (const TaintManager::Cell &c : tm.cells())
+			{
+				v->kinds.push_back(c.kind);
+			}
+			snap->taint = v;
+		}
+	}
+	{
 		auto pv = std::make_shared<PlayerView>();
 		PlayerList &players = logic.players();
 		pv->localIndex = local ? local->getPlayerIndex() : -1;
@@ -215,10 +272,42 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 		snap->breeze.breezeVersion = b.breezeVersion;
 	}
 	snap->endGame = EndGameView::build(logic, previous ? previous->endGame : std::shared_ptr<const EndGameView>());
+	// lane PERF-SNAP: the records are filled on the logic job pool, one object per slot in list order (the sort below sees the order the serial
+	// loop made). Every per-object read is a read of the frame's state except the caches a first read fills, which are filled here, on this
+	// thread, so the pool only finds: the template's info (GameLogic::templateInfo, through Radar::captureObject) for every object, and for the
+	// radar's WALL_SEGMENT and COMMANDCENTER shapes, exactly where captureObject reads a bounding radius, CombatQueries::boundingCircleRadius
+	// (the template's movement info, its geometry source's, and the object's own geometry copy), as ShroudManager::update warms its lookers
+	// (review of #62). Nothing else is made: the movement info of a template the simulation never asked for would add its errors to the
+	// AIWorld's. The pool's workers run the simulation's floating-point environment, as this thread does
+	static const int kInsideBuilder = ObjectTemplateInfoBuilder::objectStatusIndex("WONT_RIDE_WITH_YOU");
+	static const int kStructure = ObjectTemplateInfoBuilder::kindOfIndex("STRUCTURE");
+	static const int kPhantom = ObjectTemplateInfoBuilder::objectStatusIndex("PHANTOM_STRUCTURE");
+	static const int kWallSegment = ObjectTemplateInfoBuilder::kindOfIndex("WALL_SEGMENT");
+	static const int kCommandCenter = ObjectTemplateInfoBuilder::kindOfIndex("COMMANDCENTER");
+	std::vector<Object *> list;
+	list.reserve(previous ? previous->objects.size() + 16 : 256);
+	AIWorld *aiWorld = logic.aiWorld();
 	for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
 	{
-		snap->objects.emplace_back();
-		ObjectSnapshot &s = snap->objects.back();
+		list.push_back(o);
+		const ThingTemplate *tt = o->getTemplate();
+		if (!tt)
+		{
+			continue;
+		}
+		const KindOfMaskType &kind = logic.templateInfo(tt->getFinalOverride()).kindOf;
+		const bool radarShape = (kWallSegment >= 0 && MaskTest(kind, (unsigned)kWallSegment)) || (kCommandCenter >= 0 && MaskTest(kind, (unsigned)kCommandCenter));
+		if (aiWorld && radarShape)
+		{
+			// every object captureObject might read a radius for (it skips some of them: dead, NOT_ON_RADAR, a neutral structure, a HERO; the superset is
+			// harmless, the movement info is the template's); the object's own geometry copy is per object (Object::ownPathfindGeometry)
+			CombatQueries::boundingCircleRadius(*o);
+		}
+	}
+	snap->objects.resize(list.size());
+	const auto fill = [&](size_t index) {
+		Object *o = list[index];
+		ObjectSnapshot &s = snap->objects[index];
 		s.id = o->getID();
 		s.tmpl = o->getTemplate();
 		std::memcpy(s.basis, o->getBasis(), sizeof(s.basis));
@@ -275,7 +364,6 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 			s.ownerColor = owner->getPlayerColor();
 			s.radarBlip = !o->isDestroyed() && !o->getContainedBy() && owner->hasTeamColor() && HudObjects::isSelectable(*o);
 		}
-		static const int kStructure = ObjectTemplateInfoBuilder::kindOfIndex("STRUCTURE");
 		s.structure = kStructure >= 0 && o->isKindOf((unsigned)kStructure);
 		Radar::captureObject(logic, *o, local, s.radar); // lane RADAR-1
 		if (shroudLocal >= 0)
@@ -295,10 +383,15 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 		// PRESENTATION ADAPTER: represent that existing target state as drawable-hidden in the immutable snapshot. Do not add
 		// a simulation status/CRC field or hide builders merely because they have a pending construction/repair order.
 		const DozerAIUpdate *builder = dynamic_cast<const DozerAIUpdate *>(o->getAIUpdateInterface());
-		static const int kInsideBuilder = ObjectTemplateInfoBuilder::objectStatusIndex("WONT_RIDE_WITH_YOU");
 		const bool insideStructure = builder && !builder->isWorker() && !o->isInWorld() && o->testStatus((unsigned)kInsideBuilder);
 		s.drawableHidden = o->isDrawableHidden() || insideStructure; // also hides selection rings, bars, shadows and picking via the normal drawable path
+		s.phantomStructure = kPhantom >= 0 && o->testStatus((unsigned)kPhantom); // lane FBSIM-1
+		if (s.phantomStructure && o->getControllingPlayer() != logic.players().getLocalPlayer())
+		{
+			s.drawableHidden = true; // RW 0x88D3B2 .. 0x88D3DB: not the local player's phantom (RW 0x6AA7B2; the owner's + 0x35A byte, RW 0x6AAC44, is not ported)
+		}
 		s.effectivelyDead = o->isEffectivelyDead(); // lane VISUAL-2
+		s.occlusion = RTS3DSceneOcclusion::eligibility(RTS3DSceneOcclusion::factsOf(*o), occlusionFrame); // lane OCCLUDE-1 (RW 0x470DD2 .. 0x470EC5)
 		s.containedBy = o->getContainedBy() ? o->getContainedBy()->getID() : (ObjectID)INVALID_ID; // lane COMBAT-4
 		s.stealthLook = InvisibilityManager::clientLook(*o, local); // lane STEALTH-1
 		if (teamVision && s.stealthLook == 5)
@@ -313,9 +406,10 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 				}
 			}
 		}
-		if (s.stealthLook == 1 || s.stealthLook == 4)
+		logic.invisibility().clientOpacityRange(*o, &s.stealthOpacityMin, &s.stealthOpacityMax, &s.stealthCycleSeconds); // lane STEALTHLOOK-1: every look
+		if (const Object *horde = o->getHordeObject(false); horde && horde != o) // lane STEALTHLOOK-1: the drawable imitates (RW 0x673114)
 		{
-			logic.invisibility().clientOpacityRange(*o, &s.stealthOpacityMin, &s.stealthOpacityMax, &s.stealthCycleFrames);
+			s.stealthParent = horde->getID();
 		}
 		s.constructionPercent = o->getConstructionPercent();
 		const bool building = s.constructionPercent >= 0.0f || (kActivelyBeingConstructed >= 0 && o->testModelCondition(kActivelyBeingConstructed));
@@ -326,13 +420,61 @@ std::shared_ptr<const LogicSnapshot> LogicSnapshot::build(GameLogic &logic, cons
 				s.buildFrames = BuildAssistant::calcTimeToBuild(*o->getTemplate(), owner, nullptr, -1, logic.productionSettings(), logic); // RW 0x68BD71
 			}
 		}
-	}
-	std::stable_sort(snap->objects.begin(), snap->objects.end(), [](const ObjectSnapshot &a, const ObjectSnapshot &b) { return a.id < b.id; });
-	// RW 0x69355D: the frame of the last transform change (a new object counts as changed now)
-	for (ObjectSnapshot &s : snap->objects)
+	};
+	JobSystem::logic().parallelFor(list.size(), kRecordGrain, [&fill](size_t, size_t begin, size_t end) {
+		for (size_t i = begin; i < end; ++i)
+		{
+			fill(i);
+		}
+	});
+	// lane PERF-HD: the records by id. stable_sort copied every record (about 300 bytes; 11,700 of them in a big battle) through its buffer on every merge
+	// pass, every frame; ids are unique, so sorting (id, index) pairs and moving each record once gives the same order. Nothing moves when it is sorted.
+	const auto byId = [](const ObjectSnapshot &a, const ObjectSnapshot &b) { return a.id < b.id; };
+	if (!std::is_sorted(snap->objects.begin(), snap->objects.end(), byId))
 	{
-		const ObjectSnapshot *before = previous ? previous->find(s.id) : nullptr;
-		s.lastMovedFrame = (before && sameTransform(*before, s)) ? before->lastMovedFrame : snap->frame;
+		std::vector<std::pair<ObjectID, std::uint32_t>> order;
+		order.reserve(snap->objects.size());
+		for (size_t i = 0; i < snap->objects.size(); ++i)
+		{
+			order.emplace_back(snap->objects[i].id, (std::uint32_t)i);
+		}
+		std::sort(order.begin(), order.end());
+		std::vector<ObjectSnapshot> sorted;
+		sorted.reserve(snap->objects.size());
+		for (const auto &e : order)
+		{
+			sorted.push_back(std::move(snap->objects[e.second]));
+		}
+		snap->objects.swap(sorted);
 	}
+	// Direct id lookup for the render frame (syncTransforms calls find twice per drawable). The index dies with this snapshot.
+	{
+		ObjectID hi = snap->nextObjectId;
+		for (const ObjectSnapshot &o : snap->objects)
+		{
+			if (o.id >= hi)
+			{
+				hi = o.id + 1;
+			}
+		}
+		// A runaway id would make the table enormous; those snapshots keep the binary search.
+		if (hi > 0 && hi <= 4000000u)
+		{
+			snap->idToIndex.assign((size_t)hi, -1);
+			for (size_t i = 0; i < snap->objects.size(); ++i)
+			{
+				snap->idToIndex[snap->objects[i].id] = (int)i;
+			}
+		}
+	}
+	// RW 0x69355D: the frame of the last transform change (a new object counts as changed now)
+	JobSystem::logic().parallelFor(snap->objects.size(), kRecordGrain, [&snap, previous](size_t, size_t begin, size_t end) {
+		for (size_t i = begin; i < end; ++i) // lane PERF-SNAP: each record reads the previous snapshot (immutable) and writes its own frame
+		{
+			ObjectSnapshot &s = snap->objects[i];
+			const ObjectSnapshot *before = previous ? previous->find(s.id) : nullptr;
+			s.lastMovedFrame = (before && sameTransform(*before, s)) ? before->lastMovedFrame : snap->frame;
+		}
+	});
 	return snap;
 }

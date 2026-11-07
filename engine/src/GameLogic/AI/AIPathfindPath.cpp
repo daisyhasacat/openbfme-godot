@@ -109,7 +109,8 @@ const Coord3D *PathNode::computeDirectionVector()
 // ---------------------------------------------------------------------------------------------------------
 // Path
 // ---------------------------------------------------------------------------------------------------------
-Path::Path() : m_path(nullptr), m_pathTail(nullptr), m_isOptimized(false), m_blockedByAlly(false), m_closest(nullptr), m_t(0.0f), m_lastAhead()
+Path::Path(bool laterLegOnTie)
+	: m_path(nullptr), m_pathTail(nullptr), m_isOptimized(false), m_laterLegOnTie(laterLegOnTie), m_blockedByAlly(false), m_closest(nullptr), m_t(0.0f), m_lastAhead()
 {
 }
 
@@ -182,12 +183,6 @@ void Path::updateLastNode(const Coord3D *pos)
 
 namespace
 {
-// RW 0x76550F
-inline bool isGroundLayer(PathfindLayerEnum l)
-{
-	return l == LAYER_GROUND || (int)l >= 16;
-}
-
 // RW aligned(c, a, step): the candidate is exactly `step` units away from the anchor on a straight or a diagonal line
 inline bool aligned(const PathNode *c, const PathNode *a, int step)
 {
@@ -210,13 +205,14 @@ inline bool cliffOK(Pathfinder &pf, const Coord3D *pos, PathfindLayerEnum layer)
 void Path::optimize(Pathfinder &pathfinder, const PathfindObject *obj, unsigned acceptableSurfaces, bool blocked, const float *dir)
 {
 	// TARGET RW Path::optimize 0x7661A3 (S-001 caveat). It is NOT ZH's backward search: with `dir` null (every call of the
-	// normal search) it is a greedy forward scan from the head; with `dir` (only the fallback of findPath, RW 0x6FE409) a
-	// backward scan from the tail. Both set isOptimized and never write the tail's nextOpti.
+	// normal search) it is a greedy forward scan from the head; with `dir` (only the ship's sideways attack search, RW 0x6FDE38,
+	// not ported: every caller here passes null) a backward scan from the tail. Both set isOptimized and never write the tail's nextOpti.
 	if (!m_path)
 	{
 		m_isOptimized = true;
 		return;
 	}
+	Pathfinder::LineMemoScope lineMemo(pathfinder); // lane PATHPERF-2: the line cells' verdicts are asked once per optimize
 	if (dir == nullptr)
 	{
 		const bool tflag = obj && obj->isKindOf(PK_MACHINE); // template KindOf bit 11 (MACHINE): RW tmpl+0x108 >> 11 & 1
@@ -274,7 +270,14 @@ void Path::optimize(Pathfinder &pathfinder, const PathfindObject *obj, unsigned 
 				{
 					if (cand->m_layer != lastLayer)
 					{
-						prevLayer = cand->m_layer; // (the step > 30 test of this branch changes nothing, RW 0x76xxxx)
+						prevLayer = cand->m_layer;
+						// RW 0x766532 .. 0x76653B (lane PATH-REBUILD; BFME2 decomp Path_optimizeGroundPath.cpp's ALLOWED_STEPS): a leg may cross a layer
+						// change only within its first three nodes; later the leg ends at the last node of the old layer, so a path up a ramp keeps an
+						// anchor at the ramp's foot and at its top (the port skipped this and cut a chord across the ramp, which the raw chain hid)
+						if (step > 30)
+						{
+							ok = false;
+						}
 					}
 					if (tflag && !ok && std::abs(SimMath::truncToInt32(SimMath::subf32(cand->m_pos.y, m_pathTail->m_pos.y))) + std::abs(SimMath::truncToInt32(SimMath::subf32(cand->m_pos.x, m_pathTail->m_pos.x))) < 40)
 					{
@@ -426,7 +429,7 @@ inline float length2D(float dx, float dy)
 
 LocomotorPathPoint Path::computePointAhead(float distance)
 {
-	// RW 0x765F31 (waypoint types 1 and 3 of the nodes ahead are not modelled: no node carries a waypoint, S-165)
+	// RW 0x765F31 (lane WALL-2: with the waypoint types 1 and 3 of the nodes ahead)
 	LocomotorPathPoint out;
 	float rem = distance > 0.1f ? distance : 0.1f;
 	if (!m_path)
@@ -446,7 +449,35 @@ LocomotorPathPoint Path::computePointAhead(float distance)
 		{
 			seg = 0.01f; // RW 0x765819: PathNode::getNextOptimized reports max(length, 0.01)
 		}
-		const float sf = 1.0f;
+		float sf = 1.0f;
+		// lane WALL-2, RW 0x765FBC .. 0x766082: the next node's waypoint (TheTerrainLogic vslot 0x8C): type 1 never stops inside the segment (its length becomes
+		// rem / (1 - t) - 0.1); type 3 (Climb) slows the walk by seg / (|dz| + 1), at most 1, times 0.85 below 0.5
+		if (nx->m_waypointID != PathNode::NO_WAYPOINT && m_waypoints)
+		{
+			if (const PathfindWaypoint *w = m_waypoints->findWaypoint(nx->m_waypointID))
+			{
+				if (w->type == PWAYPOINT_TYPE1)
+				{
+					const float left = SimMath::subf32(1.0f, t);
+					if (SimMath::mulf32(left, seg) >= rem)
+					{
+						seg = SimMath::subf32(SimMath::divf32(rem, left), 0.1f);
+					}
+				}
+				else if (w->type == PWAYPOINT_CLIMB)
+				{
+					sf = SimMath::divf32(seg, SimMath::addf32((float)SimMath::absD(SimMath::subf32(nx->m_pos.z, cur->m_pos.z)), 1.0f));
+					if (sf > 1.0f)
+					{
+						sf = 1.0f;
+					}
+					else if (0.5f > sf)
+					{
+						sf = SimMath::mulf32(sf, 0.85f);
+					}
+				}
+			}
+		}
 		if (SimMath::mulf32((SimMath::subf32(1.0f, t)), seg) >= SimMath::mulf32(sf, rem))
 		{
 			const float f = SimMath::addf32(t, SimMath::divf32(SimMath::mulf32(sf, rem), seg));
@@ -473,7 +504,15 @@ LocomotorPathPoint Path::computePointAhead(float distance)
 
 void Path::updateClosestSegment(const Coord3D &pos)
 {
-	// RW 0x765598 with `opt` = 1 (every locomotor / AI caller): the segments walked are the optimised chain
+	// RW 0x765598 with `opt` = 1 (every locomotor / AI caller): the segments walked are the optimised chain. RW keeps the earlier segment on a tie
+	// (shown on the captured Rivendell legs by tools/retail_oracle/test_path_follower_oracle.py: retail's follower choice on the port's path).
+	// Uber rule (UBER-PATH, docs/UBER.md; `m_laterLegOnTie`, the Uber pathfinder's paths): a later segment the unit stands exactly on (distance 0)
+	// is taken over an earlier one it stands exactly on with t < 1 (anywhere but its end). A blocked unit's patch spliced into its path
+	// (RW 0x767A66) can double back along one line (down to the patch's end and back up to the raw next node); on that line both legs are at
+	// distance 0, and the earlier leg's point ahead runs down to the tip and back, so a HORDE reformed 180 degrees every frame and never left (the
+	// Rivendell campaign's starting horde, with the Uber target rule). The later leg leads on past the tip. A unit on a node two consecutive
+	// segments share (the earlier one's end) keeps the earlier segment, as RW does. Faithful paths keep RW's tie in every case: the doubled-back
+	// patch is likely the port's own (RW 0x767B0E frees a finished path's raw node chain, which the port keeps; upstream's review of PR #182)
 	if (!m_path)
 	{
 		return;
@@ -495,7 +534,8 @@ void Path::updateClosestSegment(const Coord3D &pos)
 		const float px = SimMath::subf32(SimMath::addf32(cur->m_pos.x, SimMath::mulf32(t, sx)), pos.x);
 		const float py = SimMath::subf32(SimMath::addf32(cur->m_pos.y, SimMath::mulf32(t, sy)), pos.y);
 		const float d2 = SimMath::addf32(SimMath::mulf32(px, px), SimMath::mulf32(py, py));
-		if (d2 < best)
+		const bool doubledBack = m_laterLegOnTie && d2 == 0.0f && best == 0.0f && bestT < 1.0f;
+		if (d2 < best || doubledBack)
 		{
 			best = d2;
 			bestN = cur;
@@ -660,10 +700,144 @@ float Path::remainingFrom(const PathNode *node, const Coord3D &pos) const
 	return total;
 }
 
+float Path::remainingFromPointAhead(float speed)
+{
+	const PathNode *keep = m_lastAheadNode;
+	const LocomotorPathPoint p = computePointAhead(speed); // RW 0x766173 -> 0x765F31
+	const float d = remainingFrom(m_lastAheadNode, p.position); // RW 0x765972 on {node, point}
+	m_lastAheadNode = keep;
+	return d;
+}
+
+float Path::computeFlightDistToGoal(const Coord3D &pos, Coord3D &goal) const
+{
+	// RW 0x765B12
+	if (!m_path)
+	{
+		goal = Coord3D();
+		return 0.0f;
+	}
+	const PathNode *cur = m_path;
+	goal = cur->m_pos;
+	float distance = 0.0f;
+	bool useNext = true;
+	for (const PathNode *nx = cur->m_nextOpti; nx; cur = nx, nx = nx->m_nextOpti)
+	{
+		if (useNext)
+		{
+			goal = nx->m_pos;
+		}
+		const float tx = SimMath::subf32(nx->m_pos.x, pos.x), ty = SimMath::subf32(nx->m_pos.y, pos.y);
+		float vx = SimMath::subf32(nx->m_pos.x, cur->m_pos.x), vy = SimMath::subf32(nx->m_pos.y, cur->m_pos.y);
+		// RW 0x403312 Coord2D::normalize: the length (RW 0x4032DD) stored as float, then times its SSE inverse when it is not 0
+		const float len = SimMath::fstpDword(SimMath::sqrtPC24((double)SimMath::sumSquares2(vx, vy)));
+		if (len != 0.0f)
+		{
+			const float inv = SimMath::divf32(1.0f, len);
+			vx = SimMath::mulf32(vx, inv);
+			vy = SimMath::mulf32(vy, inv);
+		}
+		const float dot = SimMath::addf32(SimMath::mulf32(vy, ty), SimMath::mulf32(vx, tx));
+		if (dot >= 0.0f) // comiss / jc: a NaN adds nothing
+		{
+			distance = SimMath::addf32(dot, distance);
+			useNext = false;
+		}
+	}
+	return distance;
+}
+
 float Path::remainingDistanceFrom(const LocomotorPathPoint &point) const
 {
 	// the locomotor passes the point computePointAhead returned: its node is the one stored with it
 	return remainingFrom(m_lastAheadNode, point.position);
+}
+
+int Path::nextPortalID() const
+{
+	// RW 0x765710: no head or no current node -> none; else the first node from the current one along the optimised chain (+ 8) with an id
+	if (!m_path || !m_closest)
+	{
+		return PathNode::NO_WAYPOINT;
+	}
+	const PathNode *n = m_closest;
+	while (n && n->m_waypointID == PathNode::NO_WAYPOINT)
+	{
+		n = n->m_nextOpti;
+	}
+	return n ? n->m_waypointID : PathNode::NO_WAYPOINT;
+}
+
+void Path::advancePastPortal(int portal)
+{
+	// BFME2 WB 0xf1d2b0 Path::AdvancePastPortal (the asserts !m_pathHead, !m_curNode, portal != INVALID_WAYPOINT_ID return early)
+	if (!m_path || !m_closest || portal == PathNode::NO_WAYPOINT)
+	{
+		return;
+	}
+	while (m_closest && m_closest->m_waypointID != portal)
+	{
+		m_closest = m_closest->m_nextOpti;
+	}
+	while (m_closest && m_closest->m_waypointID != PathNode::NO_WAYPOINT &&
+		(m_closest->m_nextOpti == nullptr || m_closest->m_nextOpti->m_waypointID != PathNode::NO_WAYPOINT))
+	{
+		m_closest = m_closest->m_nextOpti; // (WB FUN_00f26240 on the passed node: a debug draw, no state)
+	}
+	if (!m_closest)
+	{
+		m_closest = m_pathTail;
+	}
+	m_t = 0.0f;
+}
+
+bool Path::hasWaypointNodes() const
+{
+	// RW 0x765522: a path with a current node (+ 0x10); the optimised chain (+ 8) from the head: a node whose + 0x20 is not 0x7FFFFFFF
+	if (!m_path || !m_closest)
+	{
+		return false;
+	}
+	for (const PathNode *n = m_path; n; n = n->m_nextOpti)
+	{
+		if (n->m_waypointID != PathNode::NO_WAYPOINT)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool Path::hasInvalidPortals() const
+{
+	// RW 0x76573F: no node with an id (RW 0x765522, cached at + 0x24) -> false; else from the current node (or the head) along the raw chain (+ 0): a node
+	// whose id names no portal waypoint (TheTerrainLogic vslot 0x8C, RW 0x6E82FD) -> true
+	if (!m_path || !m_closest)
+	{
+		return false;
+	}
+	bool any = false;
+	for (const PathNode *n = m_path; n && !any; n = n->m_nextOpti) // RW 0x765543: the optimised chain (+ 8) from the head
+	{
+		any = n->m_waypointID != PathNode::NO_WAYPOINT;
+	}
+	if (!any)
+	{
+		return false;
+	}
+	for (const PathNode *n = m_closest; n; n = n->m_next)
+	{
+		if (n->m_waypointID == PathNode::NO_WAYPOINT)
+		{
+			continue;
+		}
+		const PathfindWaypoint *w = m_waypoints ? m_waypoints->findWaypoint(n->m_waypointID) : nullptr;
+		if (!w || !Pathfinder::isPortalWaypoint(*w))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 int Path::currentSpecialNodeType() const

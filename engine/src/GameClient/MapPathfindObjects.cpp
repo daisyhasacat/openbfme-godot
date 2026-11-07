@@ -114,6 +114,7 @@ void MapPathfindObjects::kindsOf(const MapTemplateInfo &info, bool (&kinds)[PK_C
 		{ PK_CAVALRY, "CAVALRY" },
 		{ PK_HERO, "HERO" },
 		{ PK_SHIP, "SHIP" },
+		{ PK_SUBMARINE, "SUBMARINE" },
 		{ PK_PATH_THROUGH_INFANTRY, "PATH_THROUGH_INFANTRY" },
 		{ PK_HEAVY_MELEE_HITTER, "HEAVY_MELEE_HITTER" },
 		{ PK_DO_NOT_CLASSIFY, "DO_NOT_CLASSIFY" },
@@ -122,6 +123,10 @@ void MapPathfindObjects::kindsOf(const MapTemplateInfo &info, bool (&kinds)[PK_C
 		{ PK_SCALEABLE_WALL, "SCALEABLE_WALL" },
 		{ PK_BASE_SITE, "BASE_SITE" },
 		{ PK_WALL_UPGRADE, "WALL_UPGRADE" },
+		{ PK_ATTACK_NEEDS_LINE_OF_SIGHT, "ATTACK_NEEDS_LINE_OF_SIGHT" },
+		{ PK_CAN_SHOOT_OVER_WALLS, "CAN_SHOOT_OVER_WALLS" },
+		{ PK_WALL_SEGMENT, "WALL_SEGMENT" },
+		{ PK_WALL_GATE, "WALL_GATE" },
 	};
 	for (const Map &m : table)
 	{

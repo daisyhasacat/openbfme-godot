@@ -6,9 +6,11 @@
 
 #include "Common/ArchiveFileSystem.h"
 #include "Common/AsciiString.h"
+#include "GameClient/MapClassification.h"
 #include "GameClient/MapObjectDrawables.h"
 #include "GameClient/MapPathfindObjects.h"
 #include "GameClient/MapUtil.h"
+#include "GameClient/UserDataFolder.h"
 #include "GameLogic/AI/AIPathfind.h"
 #include "GameLogic/AI/AIPathfindConfig.h"
 #include "GameLogic/Map/TerrainLogic.h"
@@ -188,11 +190,21 @@ Dictionary PathfindView::build(const Ref<RetailFileSystem> &fsRef, const String 
 
 	RetailFileSystem &rfs = *fsRef.ptr();
 	const std::string lowerName = AsciiStringUtil::lowered(toNative(map_name));
-	const std::string mapDir = "maps\\" + lowerName;
-	const std::string path = mapDir + "\\" + lowerName + ".map";
+	// lane MOD-5: a user map is <user maps folder>\<name>\<name>.map (RW 0x70254F), read from disk; any other map is the archives' maps\<name>
+	const bool userMap = optBool(options, "user_map", false);
+	std::string mapsFolder, error;
+	if (!rfs.mapsFolder(userMap, mapsFolder, &error))
+	{
+		return fail(error);
+	}
+	if (userMap)
+	{
+		stops.push_back(UserDataFolder::kUserMapStop);
+	}
+	const std::string mapDir = MapClassification::mapDirectory(lowerName, mapsFolder);
+	const std::string path = MapClassification::mapPath(lowerName, mapsFolder);
 	double t0 = nowMs();
 	std::vector<uint8_t> bytes;
-	std::string error;
 	if (!rfs.readBytes(path, bytes, &error))
 	{
 		return fail(error);
@@ -245,8 +257,8 @@ Dictionary PathfindView::build(const Ref<RetailFileSystem> &fsRef, const String 
 	report["width"] = s.width;
 	report["height"] = s.height;
 	Dictionary cells;
-	static const char *names[8] = { "clear", "water", "cliff", "rubble", "obstacle", "bridge_impassable", "impassable", "deep_water" };
-	for (int i = 0; i < 8; ++i) cells[names[i]] = s.types[i];
+	static const char *names[9] = { "clear", "water", "cliff", "rubble", "obstacle", "bridge_impassable", "impassable", "deep_water", "wall_edge" };
+	for (int i = 0; i < 9; ++i) cells[names[i]] = s.types[i];
 	cells["pinched"] = s.pinched;
 	cells["impassable_to_players"] = s.impassableToPlayers;
 	cells["extra_pass"] = s.extraPass;
@@ -305,6 +317,7 @@ Dictionary PathfindView::get_overlay(const Dictionary &options)
 			case PathfindCell::CELL_OBSTACLE: col = Color(1.0f, 0.95f, 0.1f, a); break;
 			case PathfindCell::CELL_IMPASSABLE:
 			case PathfindCell::CELL_BRIDGE_IMPASSABLE: col = Color(0.2f, 1.0f, 0.2f, a); break;
+			case PathfindCell::CELL_WALL_EDGE: col = Color(0.75f, 0.2f, 1.0f, a); break; // lane WALL-5: a wall top's rim
 			default:
 				draw = false;
 				if (showPinched && c->getPinched())

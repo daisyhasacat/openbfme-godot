@@ -31,6 +31,7 @@ struct FrameCompletion
 	UnsignedInt frame = 0;        ///< N + 1: the logic frame after it (what the hash describes; ZH's frameNow of the CRC step)
 	bool hashed = false;
 	std::uint32_t hash = 0;       ///< GameLogic::computeStateHash of that state (when hashed)
+	bool hashSkipped = false;     ///< lane UBER-2C: Capture::hashEveryFrame asked for it, but the Uber profile hashes only every kUberRecordedHashEvery-th frame
 	bool breakdown = false;       ///< the per-subsystem breakdown was captured (a CRC frame of the driver's interval)
 	std::vector<GameLogic::StateHashSection> sections;
 	std::vector<GameLogic::ObjectStateHash> objects;
@@ -52,6 +53,11 @@ class LiveGameFrameDriver
 public:
 	virtual ~LiveGameFrameDriver() = default;
 
+	// lane UBER-2C: an Uber game's recording keeps the state hash of every 5th frame (once a game second) instead of every frame. Playback compares the
+	// frames a replay holds, saving records the saved frame's hash itself, and the network's CRC frames (breakdownInterval) are hashed whatever the
+	// cadence, so only the hashing of the frames between goes (8-13% of an Uber battle's tick at 10k-40k troops, docs/UBER.md). Faithful keeps every frame
+	enum { kUberRecordedHashEvery = 5 };
+
 	// What the simulation owner captures after every batch; fixed for the driver's installation (read when it is installed)
 	struct Capture
 	{
@@ -60,12 +66,26 @@ public:
 		bool census = false;         ///< lane MP-3: the frame's wall time and FrameCensus counts in every completion (measurements)
 	};
 	virtual Capture capture() const = 0;
+	// lane UBER-2C (simulation owner): with Capture::hashEveryFrame, a frame the Uber cadence would skip is hashed anyway when this says the driver needs
+	// it (a replay player: every frame its recording holds a hash of). Read-only state of the driver only
+	virtual bool hashWanted(UnsignedInt frame) const
+	{
+		(void)frame;
+		return false;
+	}
 
 	// ---- protocol owner ----
 	// Every advance (also advance(0) and while the worker runs or the lockstep stalls): `pending` holds what the local player issued since the last call
 	// (taken by the driver: assigned ONCE to an execution frame derived from `protocolFrame`, the logic frame of the last completion consumed); the
 	// transport is serviced and what arrived is filed.
 	virtual void pump(UnsignedInt protocolFrame, CommandList &pending) = 0;
+	// lane NETLAG-2: just before pump, the protocol owner's 5 Hz clock: logic frame `frame` (the next one to run) is due in `msFromNow` ms (0: due now or
+	// overdue). Timing only (a network driver may let an order execute a frame sooner); never part of a batch
+	virtual void frameDue(UnsignedInt frame, std::uint32_t msFromNow)
+	{
+		(void)frame;
+		(void)msFromNow;
+	}
 	// The complete batch of logic frame `frame` (the next one not acquired yet: frames are asked in order, each acquired exactly once): true and `out`
 	// filled, or false when its input is not complete yet (nothing consumed; asked again later).
 	virtual bool acquire(UnsignedInt frame, FrameBatch &out) = 0;

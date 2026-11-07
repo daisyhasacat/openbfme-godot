@@ -186,3 +186,18 @@ TEST_CASE("commands retail: the real CommandButton.ini and CommandSet.ini load c
 	CHECK(unitBuild == 136);
 	CHECK(revive == 15);
 }
+
+TEST_CASE("commands: command-set lookup exposes appended mod buttons through an override")
+{
+ CmdFixture f;
+ REQUIRE(f.load("CommandButton A\n Command = STOP\nEnd\nCommandButton B\n Command = SELL\nEnd\nCommandSet S\n 1 = A\nEnd\n").empty());
+ const CommandSet *base = f.store.findCommandSet("S");
+ REQUIRE(f.load("CommandSet S\n 6 = B\nEnd\n", INI_LOAD_CREATE_OVERRIDES).empty());
+ const CommandSet *first = f.store.findCommandSet("S");
+ REQUIRE(first != nullptr);
+ CHECK(first != base);
+ CHECK(first->getCommandButton(0) == f.store.findCommandButton("A"));
+ CHECK(first->getCommandButton(5) == f.store.findCommandButton("B"));
+ CHECK(base->getCommandButton(5) == nullptr);
+ CHECK(f.store.findNonConstCommandSet("S") == base);
+}

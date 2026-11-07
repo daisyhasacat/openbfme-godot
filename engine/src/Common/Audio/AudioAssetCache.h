@@ -25,7 +25,7 @@
 class AudioAssetCache
 {
 public:
-	AudioAssetCache(ArchiveFileSystem *files, std::uint64_t decodedBudgetBytes);
+	AudioAssetCache(ArchiveFileSystem *files, std::uint64_t decodedBudgetBytes, const std::string &language = "");
 	static constexpr const char *menuPathMarker = "__openbfme_menu__/";
 	void setMenuFiles(ArchiveFileSystem *files) { clear(); m_menuFiles = files; }
 
@@ -61,6 +61,7 @@ private:
 		std::uint64_t bytes = 0;
 	};
 
+	std::string m_language; // BFME1 localized audio prefix; empty for existing RotWK behavior.
 	ArchiveFileSystem *m_files;
 	ArchiveFileSystem *m_menuFiles = nullptr;
 	ArchiveFileSystem *sourceFor(const std::string &path, std::string &resolved) const;

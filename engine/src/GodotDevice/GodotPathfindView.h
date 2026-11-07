@@ -41,7 +41,8 @@ public:
 	// Loads the retail object templates (a few seconds); called once, build() calls it when it has not run.
 	Dictionary setup(const Ref<RetailFileSystem> &fs);
 
-	// Builds the grid of `map_name` ("map mp evendim"). options: objects (bool, default true: the structures become footprints).
+	// Builds the grid of `map_name` ("map mp evendim"). options: objects (bool, default true: the structures become footprints), user_map (bool,
+	// default false; lane MOD-5: the map is in the user maps folder, RetailFileSystem::get_user_map_folder, not the archives).
 	// Returns { ok, errors, stops, map, width, height, cells: {clear, water, ...}, structures, fences, timings_ms }.
 	Dictionary build(const Ref<RetailFileSystem> &fs, const String &map_name, const Dictionary &options);
 

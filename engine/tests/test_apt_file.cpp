@@ -3,12 +3,62 @@
 
 #include "doctest.h"
 #include "AptTestUtil.h"
+#include "IniTestUtil.h"
 
 #include <algorithm>
 #include <array>
 #include <set>
 
 using namespace apttest;
+
+TEST_CASE("Apt presentation keeps the gameplay hero builder asset family together")
+{
+	initest::Fixture menus({{"MainMenu.apt", "bfme2 menu"}, {"MenuExport.apt", "bfme2 shared"}, {"CahPowers.apt", "bfme2 powers"}, {"CahPowers.const", "bfme2 constants"},
+		{"CahPowers_geometry/1.ru", "bfme2 geometry"}, {"art/textures/apt_CahPowers_1.tga", "bfme2 texture"}, {"CreateAHero.dat", "bfme2 atlas"}, {"CahManager.apt", "bfme2 manager"}});
+	initest::Fixture gameplay({{"MenuExport.apt", "rotwk shared"}, {"CahPowers.apt", "rotwk powers"}, {"CahPowers.const", "rotwk constants"},
+		{"CahPowers_geometry/1.ru", "rotwk geometry"}, {"art/textures/apt_CahPowers_1.tga", "rotwk texture"},
+		{"art/compiledtextures/ap/apt_CahPowers_2.tga", "rotwk compiled texture"}, {"CreateAHero.dat", "rotwk atlas"}, {"CahBonus.apt", "rotwk bonus"}});
+	AptArchiveFileSource source(menus.fsys, &gameplay.fsys);
+	for (const std::string &path : {"cah_gameplay_CahPowers.apt", "cah_gameplay_CahPowers.const", "cah_gameplay_CahPowers_geometry/1.ru", "art/textures/apt_cah_gameplay_CahPowers_1.tga", "ART\\COMPILEDTEXTURES\\AP\\APT_CAH_GAMEPLAY_CAHPOWERS_2.TGA"})
+	{
+		std::vector<std::uint8_t> actual, expected;
+		REQUIRE(source.fileExists(path));
+		REQUIRE(source.readFile(path, actual, nullptr));
+		std::string physical = path;
+		const auto prefix = physical.find("cah_gameplay_");
+		const auto upperPrefix = physical.find("CAH_GAMEPLAY_");
+		physical.erase(prefix == std::string::npos ? upperPrefix : prefix, 13);
+		REQUIRE(gameplay.fsys.readFile(physical, expected, nullptr));
+		CHECK(actual == expected);
+	}
+	std::vector<std::uint8_t> bytes;
+	REQUIRE(source.readFile("MainMenu.apt", bytes, nullptr));
+	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 menu");
+	CHECK(source.listMovies().size() == 4);
+	CHECK_FALSE(source.fileExists("CahBonus.apt"));
+	CHECK(source.movieKey("CreateAHero") == "CreateAHero");
+	CHECK(source.movieKey("CahManager") == "CahManager");
+	CHECK(source.movieKey("CahAppearance") == "CahAppearance");
+	REQUIRE(source.readFile("CreateAHero.dat", bytes, nullptr));
+	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 atlas");
+	REQUIRE(source.readFile("CahManager.apt", bytes, nullptr));
+	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 manager");
+	AptFile heroMovie;
+	heroMovie.name = "cah_gameplay_CahPowers";
+	CHECK(source.movieKey("CahPowers") == "CahPowers");
+	const std::string dependency = source.importMovieName(heroMovie, "MenuExport");
+	REQUIRE(source.readFile(dependency + ".apt", bytes, nullptr));
+	CHECK(std::string(bytes.begin(), bytes.end()) == "rotwk shared");
+	REQUIRE(source.readFile("MenuExport.apt", bytes, nullptr));
+	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 shared");
+	REQUIRE(source.readFile("art/textures/apt_" + heroMovie.name + "_1.tga", bytes, nullptr));
+	CHECK(std::string(bytes.begin(), bytes.end()) == "rotwk texture");
+	REQUIRE(source.readFile("CahPowers.apt", bytes, nullptr));
+	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 powers");
+	AptArchiveFileSource standalone(menus.fsys);
+	REQUIRE(standalone.readFile("CahPowers.apt", bytes, nullptr));
+	CHECK(std::string(bytes.begin(), bytes.end()) == "bfme2 powers");
+}
 
 namespace
 {
@@ -247,15 +297,23 @@ TEST_CASE("apt file: structural errors are reported")
 	};
 	REQUIRE(parseBytes(a));
 
+	// lane MODUI-1: retail reads only bytes 8 and 9 of the header (AptGetSwfVersion, RW 0xAF8110): the rest of the text is not checked
 	std::vector<std::uint8_t> bad = a;
 	bad[0] = 'B';
-	CHECK_FALSE(parseBytes(bad));
-	CHECK(err.find("magic") != std::string::npos);
+	bad[10] = '4'; // "Bpt Data:74": Edain's InGameHeroSelect.apt and Ennorath's MainMenu.apt carry "Apt Data:74" 1A 00
+	REQUIRE_MESSAGE(parseBytes(bad), err);
+	CHECK(f.version == 7);
+	bad[8] = '-'; // no ':' -> version 6
+	REQUIRE_MESSAGE(parseBytes(bad), err);
+	CHECK(f.version == 6);
 
 	bad = a;
 	bad[9] = '5';
 	CHECK_FALSE(parseBytes(bad));
-	CHECK(err.find("version") != std::string::npos);
+	CHECK(err.find("version 5") != std::string::npos);
+
+	bad.assign(a.begin(), a.begin() + 9);
+	CHECK_FALSE(parseBytes(bad));
 
 	bad = a;
 	std::uint32_t entry = cf.aptDataEntryOffset;
@@ -396,7 +454,7 @@ TEST_CASE("decoder: branches resolve to instruction indices; a branch into the m
 	CHECK(b->instructions[0].branchTarget == 2);   // the End instruction
 	TestMovie m2;
 	Asm a2 = m2.program();
-	a2.rawBranch(APT_OP_BRANCHALWAYS, 5).op(APT_OP_END).op(APT_OP_END); // lands past every instruction boundary
+	a2.rawBranch(APT_OP_BRANCHALWAYS, 2).pushLong(0).op(APT_OP_END); // zero inside the PushLong operand, not an End
 	std::string err;
 	CHECK_FALSE(decodeOne(m2, a2, &err));
 	CHECK(err.find("targets non-instruction") != std::string::npos);
@@ -407,6 +465,44 @@ TEST_CASE("decoder: branches resolve to instruction indices; a branch into the m
 	std::shared_ptr<const AptCodeBlock> b3 = decodeOne(m3, a3);
 	REQUIRE(b3);
 	CHECK(b3->instructions[1].branchTarget == 0);
+}
+
+TEST_CASE("decoder: branches to End beyond the linear stream do not decode intervening data")
+{
+	// RW 0x00B193B0 / 0x00B18F00, then runStream RW 0x00B14470: read the target opcode, not the skipped bytes.
+	for (std::uint8_t opcode : { APT_OP_BRANCHALWAYS, APT_OP_BRANCHIFTRUE })
+	{
+		TestMovie m;
+		Asm a = m.program();
+		a.rawBranch(opcode, 4).op(APT_OP_END).op(0xFE).op(0x7F).op(0xFF).op(APT_OP_END);
+		std::string err;
+		auto b = decodeOne(m, a, &err);
+		REQUIRE_MESSAGE(b, err);
+		CHECK(b->instructions.size() == 2);
+		CHECK(b->instructions[0].branchTarget == 1);
+		CHECK(b->instructions[1].opcode == APT_OP_END);
+		CHECK(b->endOffset == a.startOffset() + 9);
+	}
+}
+
+TEST_CASE("decoder: terminal branches still reject out-of-range and non-End targets")
+{
+	for (std::int32_t delta : { INT32_MIN, INT32_MAX, 1 })
+	{
+		TestMovie m;
+		Asm a = m.program();
+		a.rawBranch(APT_OP_BRANCHALWAYS, delta).op(APT_OP_END).op(0xFF);
+		std::string err;
+		CHECK_FALSE(decodeOne(m, a, &err));
+		CHECK(err.find("targets non-instruction") != std::string::npos);
+	}
+	TestMovie m;
+	Asm a = m.program();
+	a.defineFunction("bounded", {}, [](Asm &f) { f.rawBranch(APT_OP_BRANCHALWAYS, 4).op(APT_OP_END); });
+	a.op(APT_OP_END);
+	std::string err;
+	CHECK_FALSE(decodeOne(m, a, &err));
+	CHECK(err.find("targets non-instruction") != std::string::npos);
 }
 
 TEST_CASE("decoder: DefineFunction and DefineFunction2 nest, report their parameters and count flat instructions")
@@ -876,22 +972,30 @@ TEST_CASE("loader: .swf urls name movies (EA DispatchLiteral008C5840: suffix tes
 	CHECK_FALSE(AptLoader::movieNameFromSwf("FSCommand:Foo", name));
 }
 
-TEST_CASE("AOTR profile: exported text flags use nonzero truth while retail stays canonical")
+TEST_CASE("apt file: an edit text's multiline and word-wrap dwords are on when non-zero, as retail reads them (MODUI-1)")
 {
-	TestMovie movie;
-	const auto record = movie.addEditText("Title", "");
-	const auto id = movie.addCharacter(record);
-	movie.setRootFrames({{}});
-	std::vector<std::uint8_t> apt, constants;
-	movie.build(apt, constants);
-	apt[record + 48] = 111; // observed non-canonical word-wrap flag in AOTRMenuExport
-	AptConstFile cf;
-	std::string error;
-	REQUIRE(AptConstFile::parse(constants, cf, &error));
-	auto bytes = std::make_shared<const std::vector<std::uint8_t>>(apt);
-	AptFile parsed;
-	CHECK_FALSE(AptFile::parse("Test", bytes, cf, parsed, &error));
-	REQUIRE(AptFile::parse("Test", bytes, cf, parsed, &error, true));
-	REQUIRE(parsed.characters[id].text);
-	CHECK(parsed.characters[id].text->wordWrap);
+	// RW 0x4AA3D2 / 0x4AA3DB compare the whole dwords with 0; mod tools leave values like 161 (Edain's MpGameSetup.apt) and 0x001E4000 there
+	const std::pair<std::uint32_t, bool> cases[] = { { 0u, false }, { 1u, true }, { 161u, true }, { 0x001E4000u, true }, { 0x74616C73u, true } };
+	for (const auto &[value, on] : cases)
+	{
+		CAPTURE(value);
+		TestMovie m;
+		const std::uint32_t textRec = m.addEditText("", "");
+		m.addCharacter(0);
+		m.addCharacter(textRec);
+		m.setRootFrames({});
+		std::vector<std::uint8_t> a, c;
+		m.build(a, c);
+		patch32(a, textRec + 44, value);
+		patch32(a, textRec + 48, value);
+		AptConstFile cf;
+		std::string err;
+		REQUIRE(AptConstFile::parse(c, cf, &err));
+		AptFile f;
+		REQUIRE_MESSAGE(AptFile::parse("T", std::make_shared<const std::vector<std::uint8_t>>(a), cf, f, &err), err);
+		REQUIRE(f.characters.size() == 2);
+		REQUIRE(f.characters[1].text);
+		CHECK(f.characters[1].text->multiline == on);
+		CHECK(f.characters[1].text->wordWrap == on);
+	}
 }

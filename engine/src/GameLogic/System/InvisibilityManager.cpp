@@ -1,7 +1,9 @@
 // OpenBFME. GPL-3.0.
 // See GameLogic/System/InvisibilityManager.h for the target facts, the call sites and what is inference.
 
+#include "Common/Upgrade.h"
 #include "GameLogic/System/InvisibilityManager.h"
+#include "GameLogic/System/ShroudManager.h"
 
 #include "GameLogic/Map/TerrainTrees.h"
 
@@ -22,6 +24,7 @@
 #include "GameLogic/Module/InvisibilityModules.h"
 #include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/Module/EmotionModules.h"
 #include "GameLogic/Module/StealthAbilityModules.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Object/PartitionManager.h"
@@ -155,18 +158,6 @@ float camouflageMultiplier(const Object &o, bool *known)
 	}
 	return 0.0f;
 }
-
-float visionRange(const Object &o)
-{
-	if (const FieldValue *v = o.getTemplate()->getFinalOverride()->findField("VisionRange"))
-	{
-		if (const float *f = std::get_if<float>(v))
-		{
-			return *f;
-		}
-	}
-	return 0.0f;
-}
 } // namespace
 
 // ---- InvisibilityNugget -------------------------------------------------------------------------------------------------------------
@@ -205,8 +196,9 @@ void InvisibilityNugget::crc(StateHasher &h) const
 	}
 	h.addFloat(detectionRange);
 	h.addI32(invisibilityType);
-	for (std::uint32_t w : ignoreTreeCheckUpgrades.words)
+	for (unsigned i = 0; i < UpgradeMaskType::activeWords(); ++i) // lane MODS-3: retail's 0x24 words unless the data has more upgrades
 	{
+		const std::uint32_t w = ignoreTreeCheckUpgrades.words[i];
 		h.addU32(w);
 	}
 	h.addU32(options);
@@ -267,6 +259,18 @@ bool InvisibilityManager::isFiring(const Object &obj)
 	return last > 2u && last + 2u * kLogicFramesPerSecond > obj.logic().getFrame();
 }
 
+namespace
+{
+// OpenBFME sandbox extension: Uber Mode's fog cheat also exposes Gollum to
+// that viewer. Keep his actual stealth untouched so disabling restores it.
+bool cheatRevealsGollum(const Object &obj, const Player *viewer)
+{
+	static const int gollum = CombatNames::kindOf("NEUTRALGOLLUM");
+	const ShroudManager *shroud = obj.logic().shroud();
+	return viewer && shroud && obj.isKindOf((unsigned)gollum) && shroud->isCheatFogDisabled(viewer->getPlayerIndex());
+}
+}
+
 // RW 0x694C0D. Every test is a pure read, so the cheap status tests come first here (RW tests the draw modules first; the answer is the same)
 bool InvisibilityManager::isStealthedAndUndetected(const Object &obj, const Player *viewer)
 {
@@ -321,6 +325,7 @@ bool InvisibilityManager::isStealthedAndUndetected(const Object &obj, const Play
 // RW 0x81AA03
 int InvisibilityManager::clientLook(const Object &obj, const Player *local)
 {
+	if (cheatRevealsGollum(obj, local)) return 0;
 	bool friendView = true; // RW 0x81AA2B / 0x81AA39: no team: 1 (not a friend); an inactive local player: 2 (a friend)
 	if (local)
 	{
@@ -362,24 +367,6 @@ int InvisibilityManager::clientLook(const Object &obj, const Player *local)
 		return friendView ? 4 : 3;
 	}
 	return friendView ? 1 : 5;
-}
-
-void InvisibilityManager::clientOpacityRange(const Object &obj, float *lo, float *hi, unsigned *cycleFrames) const
-{
-	if (!isInvisible(obj))
-	{
-		if (const StealthUpdate *st = StealthUpdate::of(obj)) // RW 0x777AAF .. 0x777AF7: FriendlyOpacityMin / Max, PulseFrequency * 0.2f
-		{
-			*lo = st->data()->m_friendlyOpacityMin;
-			*hi = st->data()->m_friendlyOpacityMax;
-			*cycleFrames = st->data()->m_pulseFrequency;
-			return;
-		}
-	}
-	const GameLogicSettings &s = m_logic.settings(); // RW 0x81AAC0 .. 0x81AAFF
-	*lo = s.invisibilityOpacityMin;
-	*hi = s.invisibilityOpacityMax;
-	*cycleFrames = s.invisibilityOpacityCycleFrames;
 }
 
 // ---- the manager --------------------------------------------------------------------------------------------------------------------
@@ -699,7 +686,12 @@ bool InvisibilityManager::allowed(Object *obj, const InvisibilityNugget &n, cons
 	{
 		return false;
 	}
-	// RW 0x81BAC3: a STEALTH copy and the script's stealth switch (Object + 0x457 bit 8, RW 0x7BC7EC) -- not ported, never set (S-1040)
+	// RW 0x81BAB9 .. 0x81BACA: a STEALTH copy (+ 0x18 == 0) is refused while the script's stealth switch is off (Object + 0x457 bit 8,
+	// SCRIPT_UNSTEALTHED: NAMED_SET_STEALTH_ENABLED false, RW 0x7BC7EC; lane BFME2CAMP1)
+	if (n.invisibilityType == InvisibilityNugget::STEALTH && (obj->scriptStatus() & 8u) != 0)
+	{
+		return false;
+	}
 	if (n.invisibilityType == InvisibilityNugget::CAMOUFLAGE && camouflageDetected(*obj, n, found))
 	{
 		return false;
@@ -897,8 +889,9 @@ void InvisibilityManager::reveal(Object *obj, Entry &e, unsigned delay, bool byF
 	++m_reveals;
 }
 
-// RW 0x81A6E7: every player that is ENEMIES to the object's player wakes its idle AIs that see the object (RW 0x81A6B5 -> 0x68FA3D(obj, -1) vision test, RW 0x662DB3:
-// an idle AI's next mood check becomes now); INFERENCE (S-1040): the vision test is the AI object's VisionRange, 2D centre distance
+// RW 0x81A6E7: every player that is ENEMIES to the object's player wakes its idle AIs that see the object (RW 0x81A6B5: an object with an AI whose
+// Object::canSee(obj, -1) RW 0x68FA3D is true, -1 its vision range RW 0x68E43B; lane STEALTHFLY1: the range + both bounding circles along its facing, was
+// the bare 2D centre distance to the template's VisionRange; then RW 0x662DB3: an idle AI's next mood check becomes now)
 void InvisibilityManager::wakeEnemiesThatSee(Object *obj)
 {
 	const Player *op = obj->getControllingPlayer();
@@ -914,9 +907,7 @@ void InvisibilityManager::wakeEnemiesThatSee(Object *obj)
 		{
 			continue;
 		}
-		const float range = visionRange(*o);
-		const float dx = SimMath::subf32(obj->getPosition()->x, o->getPosition()->x), dy = SimMath::subf32(obj->getPosition()->y, o->getPosition()->y);
-		if (range > 0.0f && SimMath::sumSquares2(dx, dy) <= SimMath::mulf32(range, range))
+		if (EmotionModules::canSeeObject(*o, *obj, AIUpdateInterface::objectVisionRangeOf(*o)))
 		{
 			ai->wakeUpNow();
 		}
@@ -967,11 +958,13 @@ std::vector<std::string> InvisibilityManager::stopLines()
 	return { "[S-1040] invisibility (lane STEALTH-1): the InvisibilityManager (TheGameLogic + 0x178) runs as RW 0x81BE85 / 0x81C217 / 0x81C32C do; not ported: the camouflage "
 		"detector (RW 0x81B758, with the +0x10 multiplier) and TREE (RW 0x81AC56) queries run on ThePartitionManager (lanes MODULES-2 / STEALTH-2) with the same-map "
 		"filter always passing, the terrain tree list holds the map's TREE map objects (no toppling), the client notification of a reveal (RW 0x81ACD7) and the "
-		"opacity pulse (RW 0x81AA85) are the client's, the reveal wakes idle enemy AIs by VisionRange (RW 0x68FA3D's vision test is not read), TAKING_DAMAGE reads the "
+		"opacity pulse (RW 0x81AA85) are the client's, TAKING_DAMAGE reads the "
 		"last damaging hit frame only, the script's stealth switch (Object + 0x457 bit 8) is absent, and RW "
 		"0x694C0D's draw module slot 0xF0 is read as AffectedByStealth",
-		"[S-1042] stealth look (lane STEALTH-1, client): an enemy's invisible object is not drawn or picked; a friend's pulses between GameData InvisibilityOpacityMin "
-		"and Max in client time with an id-based phase (RW 0x6760F9's client random phase and per-frame step are not read); the detected look is drawn as normal" };
+		"[S-1042] stealth look (lanes STEALTH-1 / STEALTHLOOK-1, client): the drawable's look runs RW 0x6760F9 / 0x673114 (the pulse, the blend, the horde "
+		"imitation and the +0x3AB hidden gate) on the presented snapshot; not ported: the heat-vision second material pass of looks 3 / 4 (renderOneObject "
+		"RW 0x46F48E draws a detected enemy as silhouette / a friend with a heat pass - our renderer has no material passes) and the +0x43E / +0x358 change "
+		"report to the draw modules (RW 0x671841)" };
 }
 
 std::vector<std::string> InvisibilityManager::report() const
@@ -999,7 +992,7 @@ void InvisibilityNugget::xfer(Xfer &x)
 	SnapshotXfer::maskWords(x, forbiddenWeaponConditions, SnapshotXfer::weaponConditionCount(), "an invisibility nugget's forbidden weapon conditions", "the weapon set conditions");
 	x.xferReal(&detectionRange);
 	SnapshotXfer::enumIn(x, invisibilityType, STEALTH, NONE, "an invisibility nugget's type");
-	SnapshotXfer::words(x, ignoreTreeCheckUpgrades.words);
+	xferUpgradeMask(x, ignoreTreeCheckUpgrades, "an invisibility entry's IgnoreTreeCheckUpgrades"); // lane MODS-3
 	if (x.isLoading())
 	{
 		checkLoadedUpgradeMask(ignoreTreeCheckUpgrades, "an invisibility nugget's tree check upgrades");

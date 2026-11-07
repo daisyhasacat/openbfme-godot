@@ -16,7 +16,8 @@
 //       - the first spot TryPosition accepts is the result (true); none: false and the result is left as it is.
 //   * RW 0x6851F1 tryPosition(center, dist, angle, options, result):
 //       - x = fcos(angle) * dist + center.x, y = fsin(angle) * dist + center.y (RW 0x42F4E0 / 0x42F4D0, x87 PC24, one store each);
-//       - z: TheTerrainLogic getGroundHeight (vslot 0x18) on the ground layer; FPF_USE_HIGHEST_LAYER (0x80) asks the layer (RW 0x680B70): not ported, refused;
+//       - z: TheTerrainLogic getGroundHeight (vslot 0x18) on the ground layer; FPF_USE_HIGHEST_LAYER (0x80) asks the layer (RW 0x680B70) and its height (vslot
+//         0x1C), + 1.0 off the ground: the ground and its height here (lane SUMMON-1; layers are S-161);
 //       - fabs(z - center.z) (PC24 subtraction, MSVCR71 fabs) > maxZDelta fails;
 //       - without FPF_CLEAR_CELLS_ONLY (0x100) on the ground layer: TheTerrainLogic vslot 0x50 (isCliffCell, RW 0x4624A4) fails;
 //       - the pathfinder cell (RW 0x6EAD90 -> getCell RW 0x5E2EF2): no cell, or a cell of type 5, fails;
@@ -30,8 +31,8 @@
 //       - the spot (x, y, z) is the result.
 // DONOR: ZH PartitionManager.h FindPositionFlags / FindPositionOptions (the names of the flags and fields; RotWK's layout is the same: flags + 0, minRadius + 4,
 // maxRadius + 8, startAngle + 0xC, maxZDelta + 0x10, ignoreObject + 0x14, sourceToPathToDest + 0x18, relationshipObject + 0x1C).
-// INFERENCE (stop S-1280): the object's geometry in the overlap test is its template's shape list (retail keeps a per-object GeometryInfo, S-1020); the path test
-// is the port's clientSafeQuickDoesPathExist with the source's locomotor (as GarrisonContain reads RW 0x6F5BB0).
+// INFERENCE (stop S-1280): the object's geometry in the overlap test is its template's shape list (retail keeps a per-object GeometryInfo, S-1020). The path test
+// is QuickDoesPathExist RW 0x6F5BB0 with the source (lane QPATH-1: Pathfinder::quickDoesPathExist).
 //
 // Simulation maths goes through SimMath.
 
@@ -75,7 +76,7 @@ struct FindPositionOptions
 
 namespace FindPosition
 {
-// RW 0x68592D; throws std::logic_error when the game has no AI world or terrain (nothing to search) or for FPF_USE_HIGHEST_LAYER (not ported)
+// RW 0x68592D; throws std::logic_error when the game has no AI world or terrain (nothing to search)
 bool findPositionAround(GameLogic &logic, const Coord3D &center, const FindPositionOptions &options, Coord3D &result);
 // RW 0x6851F1
 bool tryPosition(GameLogic &logic, const Coord3D &center, float dist, float angle, const FindPositionOptions &options, Coord3D &result);

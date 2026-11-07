@@ -12,7 +12,7 @@
 
 void AIMover::xfer(Xfer &x)
 {
-	XferVersion v{ 1, 1 };
+	XferVersion v{ 1, 2 }; // 2: the portal flag (lane WALL-2)
 	x.xferVersion(v);
 	bool hasPath = m_path != nullptr;
 	x.xferBool(&hasPath);
@@ -22,8 +22,9 @@ void AIMover::xfer(Xfer &x)
 		std::unique_ptr<Path> loaded;
 		if (hasPath)
 		{
-			loaded = std::make_unique<Path>();
+			loaded = std::make_unique<Path>(m_pf.uberLimits()); // lane UBER-PATH: the snapshot's profile set the pathfinder's limits before the movers load
 			loaded->xfer(x);
+			loaded->setWaypointSource(&m_pf); // lane WALL-2: its portal nodes name the pathfinder's waypoints (the source a search gives a path)
 		}
 		destroyPath();
 		m_path = loaded.release();
@@ -77,6 +78,10 @@ void AIMover::xfer(Xfer &x)
 		AIXfer::inRange(m_colliderCount, 0, 4, "ai mover: the collider count");
 	}
 	AIXfer::reportStrings(x, m_stops);
+	if (v.current >= 2)
+	{
+		x.xferBool(&m_onPortal); // lane WALL-2: RW AI + 0x3BB, the walk through a portal (doLocomotor's portal branch)
+	}
 }
 
 void AIMoveToState::xfer(Xfer &x, int *budget)
@@ -172,10 +177,13 @@ void Locomotor::xfer(Xfer &x)
 	if (x.isLoading())
 	{
 		AIXfer::inRange(m_turnDirection, -1, 1, "locomotor: the turn direction");
-		if (m_flags & ~(unsigned)(LOCOMOTOR_FLAG_BRAKING | LOCOMOTOR_FLAG_BIT2 | LOCOMOTOR_FLAG_NO_BRAKE | LOCOMOTOR_FLAG_BACKING_UP))
+		if (m_flags & ~(unsigned)(LOCOMOTOR_FLAG_BRAKING | LOCOMOTOR_FLAG_BIT2 | LOCOMOTOR_FLAG_NO_BRAKE | LOCOMOTOR_FLAG_BACKING_UP | LOCOMOTOR_FLAG_CLOSE_ENOUGH_DIST_3D))
 		{
 			throw XferException("locomotor: the flags 0x" + std::to_string(m_flags) + " hold bits no mover sets");
 		}
+		// bit 10 is the template's CloseEnoughDist3D, written only by the constructor (RW 0x5E3E6A, lane LOCODIST-1): a load takes it from the template
+		// (snapshots written before the bit was ported lack it)
+		m_flags = (m_flags & ~(unsigned)LOCOMOTOR_FLAG_CLOSE_ENOUGH_DIST_3D) | (m_template->m_closeEnoughDist3D ? (unsigned)LOCOMOTOR_FLAG_CLOSE_ENOUGH_DIST_3D : 0u);
 	}
 	AIXfer::coord(x, m_preferredPoint);
 	AIXfer::coord(x, m_maintainPosition);

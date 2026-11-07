@@ -55,6 +55,27 @@ func run() -> void:
 	assert(hud.setup(fs, world, camera, "Player_1", {"camera_start": Vector3(1800, 0, -1800)}).ok)
 	await process_frame
 	var before: Vector2 = hud.get_camera().position
+	# Indirect trackpad events use ordinary desktop mouse semantics, not finger panning.
+	var click := InputEventMouseButton.new()
+	click.position = Vector2(500, 200)
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.button_mask = MOUSE_BUTTON_MASK_LEFT
+	click.pressed = true
+	root.push_input(click.duplicate(), true)
+	var pointer := InputEventMouseMotion.new()
+	pointer.position = Vector2(600, 260)
+	pointer.relative = Vector2(100, 60)
+	pointer.button_mask = MOUSE_BUTTON_MASK_LEFT
+	root.push_input(pointer, true)
+	for i in 3: await process_frame
+	assert(hud.get_state().drag_box.selecting)
+	assert(hud.get_camera().position == before)
+	click.position = pointer.position
+	click.pressed = false
+	click.button_mask = 0
+	root.push_input(click, true)
+	for i in 3: await process_frame
+	assert(not hud.get_state().drag_box.selecting)
 	touch(0, true, Vector2(500, 200))
 	drag(0, Vector2(505, 200))
 	assert(hud.get_camera().position == before)

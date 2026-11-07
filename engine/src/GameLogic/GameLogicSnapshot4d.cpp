@@ -9,6 +9,7 @@
 //   obfme:CreateAHero      CreateAHeroGame::xfer (the records in retail's layout, RW 0x80B4F5)        "create-a-hero"
 //   obfme:TerrainTrees     TerrainTrees::xfer (the records in retail's layout, RW 0x680753)           "terrain trees"
 //   obfme:LargeGroupAudio  LargeGroupAudioLink::xfer                                                  "large group audio"
+//   obfme:Taint            TaintManager::xfer (retail's layout, 0x006C0F50, plus a painted flag)        "taint"
 // Their references are player indices, names and ids: the indices and names are resolved and checked while loading; obfme:ScriptEngine (the sequential
 // scripts' teams) and obfme:Economy (the resource claimants' objects) stage what they loaded and check those ids in their post-process, after every
 // block loaded, before they take the state (a refusal leaves them unchanged); the other ids (the named object cache, a hero's object, a unit's sequential
@@ -22,6 +23,7 @@
 #include "GameLogic/CreateAHeroSystem.h"
 #include "GameLogic/Economy.h"
 #include "GameLogic/GlobalWeatherSystem.h"
+#include "GameLogic/Map/TaintManager.h"
 #include "GameLogic/Map/TerrainTrees.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
 #include "GameLogic/VictoryConditions.h"
@@ -73,9 +75,17 @@ void GameLogic::registerSave4dBlocks(GameState &gs)
 	add("obfme:Victory", saveLoad, [this](Xfer &x) { m_victory->xfer(x); }, nullptr, "victory");
 	add("obfme:Weather", saveLoad, [this](Xfer &x) { m_weather->xfer(x); }, nullptr, "weather");
 	add("obfme:Economy", saveLoad, [this](Xfer &x) { m_economy->xfer(x); }, [this]() { m_economy->finishLoad(); }, "economy");
-	add("obfme:CreateAHero", saveLoad, [this](Xfer &x) { m_createAHeroes->xfer(x); }, nullptr, "create-a-hero");
+	add("obfme:CreateAHero", saveLoad, [this](Xfer &x) { m_createAHeroes->xfer(x); }, [this]() { m_createAHeroes->finishLoad(); }, "create-a-hero");
+	gs.setLoadPreparation("obfme:CreateAHero", [this](Xfer &x) { m_createAHeroes->prepareLoad(x); },
+		[this]() { m_createAHeroes->clearLoadPreparation(); });
 	add("obfme:TerrainTrees", saveLoad, [this](Xfer &x) { m_trees->xfer(x); }, nullptr, "terrain trees");
 	add("obfme:LargeGroupAudio", saveLoad, [this](Xfer &x) { m_largeGroupAudio.xfer(x); }, nullptr, "large group audio");
+	add("obfme:Taint", saveLoad, [this](Xfer &x) { m_taint->xfer(x); }, nullptr, "taint");
+	// lane CAMPUI-1: retail's own blocks and layouts (MissionObjectiveTracker.h), list 0 only: retail's CRC xfer skips both and no hash section holds them
+	gs.addOwnedSnapshotBlock("CHUNK_ObjectivesMenu", std::make_unique<Save4dSnapshot>(gs, [this](Xfer &x) { m_missionObjectives.xferMenu(x); }, nullptr),
+		saveLoad, "CAMPUI-1", {});
+	gs.addOwnedSnapshotBlock("CHUNK_MissionObjectives", std::make_unique<Save4dSnapshot>(gs, [this](Xfer &x) { m_missionObjectives.xfer(x); }, nullptr),
+		saveLoad, "CAMPUI-1", {});
 }
 
 std::vector<std::string> GameLogic::save4dStopLines()
@@ -88,7 +98,9 @@ std::vector<std::string> GameLogic::save4dStopLines()
 		"S-4121); the burn decay (RW 0xDE46A8 + 0x98, another subsystem's field in retail) follows in an OpenBFME trailer",
 		"[S-4252] snapshot obfme:TerrainTrees (SAVE-4d): OpenBFME's own layout (retail saves the trees inside TerrainLogic::xfer, RW 0x683F8C (1, 2)): only "
 		"the records changed since the map start, each by index in retail's record layout (RW 0x680753, (1, 2)); a load needs a game at its START; the "
-		"client's tree events (topple, removal) are not saved, so a loaded game's tree buffer does not show the trees that fell before the save",
+		"client's tree events (topple, removal) are not saved, so a loaded game's tree buffer does not show the trees that fell before the save; RETAIL QUIRK NOT "
+		"KEPT: retail rebuilds the tree-cluster index (+ 0x584) on a load with every used byte clear (RW 0x683D53), the port keeps the used clusters (version 3; ambiguous pre-merge version 2 is refused)",
+
 		"[S-4253] snapshot obfme:Economy (SAVE-4d): the GameData settings are configuration (their hash is checked, not saved), the game context is "
 		"OpenBFME's layout, the TerrainResourceManager follows retail's DoXfer (RW 0x75C7AE, (1, 3)); RETAIL QUIRK NOT KEPT: retail does not save a "
 		"claimant's complete flag (node + 0x11, left uninitialised by a load), the port saves it in a trailer",

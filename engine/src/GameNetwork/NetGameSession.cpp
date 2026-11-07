@@ -5,6 +5,10 @@
 
 #include "Common/Player.h"
 #include "GameNetwork/DesyncDump.h"
+#include "GameNetwork/NetIncidentReport.h"
+#include "GameNetwork/WallBalanceSetup.h"
+
+#include <ctime>
 
 std::vector<int> NetGameSession::disconnectedPlayerIndices() const
 {
@@ -13,12 +17,12 @@ std::vector<int> NetGameSession::disconnectedPlayerIndices() const
 	{
 		return players;
 	}
-	const std::uint8_t playbackDrops = !m_network ? m_assembled->disconnectedSlotsAt(m_catchUp->reached()) : 0;
+	const std::uint16_t playbackDrops = !m_network ? m_assembled->disconnectedSlotsAt(m_catchUp->reached()) : 0; // ONLINE16-FIX: 16 wide
 	for (int slot = 0; slot < MAX_SLOTS; ++slot)
 	{
 		const int player = m_config.slotPlayerIndex[(size_t)slot];
 		const bool dropped = m_network ? m_network->isDisconnected(slot) : (playbackDrops & (1u << slot)) != 0;
-		if (player >= 0 && m_start.game.game.slots[slot].disconnected(dropped))
+		if (player >= 0 && m_start.game.game.slots[m_start.gameSlot(slot)].disconnected(dropped))
 		{
 			players.push_back(player);
 		}
@@ -35,6 +39,7 @@ NetGameSession::NetGameSession(UDP &socket, const LobbyStart &start, const Optio
 
 NetGameSession::~NetGameSession()
 {
+	writeIncidentReport(true);
 	if (m_game)
 	{
 		m_game->drainFrames(); // SMOOTH-1: the queued batches run and their completions reach the replay before its end record
@@ -65,11 +70,12 @@ bool NetGameSession::setUp(LiveGame &game, std::string *error)
 	m_config.crcInterval = m_start.crcInterval;
 	m_config.settings = m_options.network; // lane MP-2
 	m_config.adaptiveRunAhead = m_options.adaptiveRunAhead; // the lobby's run-ahead is the minimum
-	m_config.holdForRejoin = m_start.online;                // lane ONLINE-3: an online drop holds the player for a rejoin (LAN: retail's hand-over)
+	m_config.earlyOrders = m_options.earlyOrders;           // lane NETLAG-2
+	m_config.holdForRejoin = m_start.holdsForRejoin();      // lane ONLINE-3: an online drop holds the player for a rejoin (LAN, a war: retail's hand-over)
 	m_config.rejoinWindowMs = m_options.rejoinWindowMs;
 	for (int s = 0; s < MAX_SLOTS; ++s)
 	{
-		m_config.slotNames[(size_t)s] = m_start.game.game.slots[s].name;
+		m_config.slotNames[(size_t)s] = m_start.game.game.slots[m_start.gameSlot(s)].name;
 	}
 	for (int s = 0; s < MAX_SLOTS; ++s)
 	{
@@ -77,7 +83,8 @@ bool NetGameSession::setUp(LiveGame &game, std::string *error)
 		{
 			continue;
 		}
-		const Player *p = (size_t)s < r.startSlotPlayers.size() ? game.players().findPlayerWithName(r.startSlotPlayers[(size_t)s]) : nullptr;
+		const int gameSlot = m_start.gameSlot(s);
+		const Player *p = (size_t)gameSlot < r.startSlotPlayers.size() ? game.players().findPlayerWithName(r.startSlotPlayers[(size_t)gameSlot]) : nullptr;
 		if (!p)
 		{
 			if (error)
@@ -95,6 +102,7 @@ bool NetGameSession::setUp(LiveGame &game, std::string *error)
 		transportOptions.relay.enabled = true;
 		transportOptions.relay.address = m_start.relay;
 		transportOptions.relay.ticket = m_start.ticket;
+		transportOptions.relay.macKey = m_start.macKey; // lane AUTH-1: empty for an old lobby's START
 	}
 	m_transport = std::make_unique<Transport>(m_socket, m_start.localSlot, transportOptions);
 	for (int s = 0; s < MAX_SLOTS; ++s)
@@ -105,6 +113,7 @@ bool NetGameSession::setUp(LiveGame &game, std::string *error)
 		}
 	}
 	m_network = std::make_unique<Network>(m_config, *m_transport);
+	m_network->setChatLobbyMuted(m_start.chatMutedMask); // lane CHAT-1: the lobby moderators' mute (the START's chatMuted)
 	if (!m_options.replayPath.empty())
 	{
 		m_writer = std::make_unique<ReplayWriter>();
@@ -121,8 +130,20 @@ bool NetGameSession::setUp(LiveGame &game, std::string *error)
 	}
 	m_driver = std::make_unique<LockstepDriver>(m_network.get(), m_writer.get());
 	m_driver->setCensus(m_options.census); // lane MP-3: before the driver is installed (its capture is read then)
+	m_driver->setHashEveryFrame(m_options.hashEveryFrame); // ONLINE16-FIX: likewise
 	RegisterLogicCRCHandler(game.dispatch());
 	m_game = &game;
+	// the incident report's times: the wall clock for the reader and the file name, the Network's clock for the timeline
+	const std::time_t now = std::time(nullptr);
+	if (const std::tm *t = std::localtime(&now))
+	{
+		char b[32];
+		std::strftime(b, sizeof(b), "%Y%m%d-%H%M%S", t);
+		m_incidentStamp = b;
+		std::strftime(b, sizeof(b), "%Y-%m-%d %H:%M:%S", t);
+		m_incidentStarted = b;
+	}
+	m_incidentStartMs = m_network->now();
 	return true;
 }
 
@@ -134,6 +155,14 @@ bool NetGameSession::beginRejoin(LiveGame &game, std::string *error)
 		if (error)
 		{
 			*error = "a rejoin needs an online START with a rejoin ticket";
+		}
+		return false;
+	}
+	if (!m_start.holdsForRejoin())
+	{
+		if (error)
+		{
+			*error = "a War of the Ring cannot be rejoined: RotWK has no reconnect and the war's state cannot be caught up [S-4075]";
 		}
 		return false;
 	}
@@ -256,6 +285,7 @@ bool NetGameSession::beginSpectate(LiveGame &game, std::string *error)
 	o.relay.enabled = true;
 	o.relay.address = m_start.relay;
 	o.relay.ticket = m_start.ticket;
+	o.relay.macKey = m_start.macKey; // lane AUTH-1: the spectator's own k (relay->spectator only)
 	o.relay.spectatorIndex = m_start.spectatorIndex;
 	m_transport = std::make_unique<Transport>(m_socket, 0, o); // no peer: it never sends a transport packet
 	m_fetch = std::make_unique<RelayLogFetch>();
@@ -614,6 +644,7 @@ void NetGameSession::service()
 		return;
 	}
 	writeDesyncDumps();
+	writeIncidentReport(false);
 	m_transport->service();
 	if (m_rejoinState == RejoinState::Live && m_fetch && m_driver && m_driver->waitingMs() > 250)
 	{
@@ -671,13 +702,19 @@ void NetGameSession::finish(LiveGame &game)
 			m_network->update(game.protocolFrame(), game.commands());
 			game.commands().reset();
 		}
-		m_network->leave(game.protocolFrame());
-		m_network->update(game.protocolFrame(), m_empty);
+		const UnsignedInt protocolFrame = game.protocolFrame();
+		m_network->leave(protocolFrame);
+		// WOTR2 milestone 8: the leave's execution frame, Network::leave's PLAYERLEAVE (the frame after executionFrame of the same protocol frame: asking
+		// again returns the frame the leave used and moves nothing)
+		m_leaveFrame = m_network->executionFrame(protocolFrame) + 1;
+		m_network->update(protocolFrame, m_empty);
 	}
 	if (m_writer && m_writer->isOpen())
 	{
 		m_writer->close(game.protocolFrame(), game.logic().computeStateHash());
 	}
+	writeDesyncDumps();
+	writeIncidentReport(true);
 }
 
 bool NetGameSession::allAcked() const
@@ -719,4 +756,66 @@ void NetGameSession::writeDesyncDumps()
 		}
 		m_dumpedHalves[i] = reports[i].halves.size() + 1;
 	}
+}
+
+void NetGameSession::writeIncidentReport(bool ended)
+{
+	if (!m_network || !m_options.incidentReport || spectating() || m_incidentEnded)
+	{
+		return;
+	}
+	// service() runs every tick: what the report shows is compared by its counts first, read from the Network as they are (no copy), and the facts
+	// are collected only when one changed
+	const Network &net = *m_network;
+	size_t halves = 0;
+	for (const DesyncReport &d : net.desyncs())
+	{
+		halves += d.halves.size();
+	}
+	std::string signature = std::to_string(ended) + "|" + std::to_string(net.desyncs().size()) + "|" + std::to_string(halves) + "|"
+		+ std::to_string(net.disconnectManager().log().size()) + "|" + std::to_string(net.errors().size()) + "|" + net.quitReason() + "|"
+		+ std::to_string(m_desyncDumps.size()) + "|" + std::to_string(net.rejoinLog().size());
+	for (int s = 0; s < MAX_SLOTS; ++s)
+	{
+		signature += "|" + std::to_string(net.departureFrame(s)) + "," + std::to_string(net.hasLeft(s)) + std::to_string(net.isDisconnected(s))
+			+ std::to_string(net.isHeld(s)) + std::to_string(net.rejoinFrame(s));
+	}
+	if (signature == m_incidentSignature)
+	{
+		return;
+	}
+	m_incidentSignature = signature;
+	NetIncidentReport::Facts f;
+	NetIncidentReport::collect(net, f);
+	if (!NetIncidentReport::worthReporting(f))
+	{
+		return;
+	}
+	f.mapName = m_start.game.game.mapName;
+	f.build = m_options.build;
+	f.started = m_incidentStarted;
+	f.online = m_start.online;
+	f.onlineGameId = m_start.onlineGameId;
+	f.frame = m_game ? m_game->protocolFrame() : 0;
+	f.startMs = m_incidentStartMs;
+	f.nowMs = m_network->now();
+	f.ended = ended;
+	f.desyncDumps = m_desyncDumps;
+	f.replayPath = m_options.replayPath;
+	{
+		WallBalance walls;
+		f.wallRules = WallBalanceSetup::fromText(m_start.game.game.wallBalance, walls, nullptr) ? WallBalanceSetup::describe(walls) : "unreadable";
+	}
+	f.recordingErrors = recordingErrors();
+	if (m_incidentPath.empty())
+	{
+		m_incidentPath = NetIncidentReport::fileName(m_options.desyncDirectory, m_incidentStamp.empty() ? "game" : m_incidentStamp,
+			m_options.playerName.empty() ? "slot" + std::to_string(m_start.localSlot) : m_options.playerName);
+	}
+	std::string error;
+	if (!NetIncidentReport::write(m_incidentPath, NetIncidentReport::text(f), &error) && m_incidentErrors.size() < 20)
+	{
+		m_incidentErrors.push_back(error);
+	}
+	m_incidentEnded = ended;
 }

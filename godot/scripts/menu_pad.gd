@@ -73,7 +73,7 @@ func _mouse(pressed: bool) -> void:
 	var event := InputEventMouseButton.new()
 	event.button_index = MOUSE_BUTTON_LEFT
 	event.pressed = pressed
-	event.position = get_viewport().get_mouse_position()
+	event.position = get_viewport().get_screen_transform() * get_viewport().get_mouse_position()
 	event.global_position = event.position
 	_mouse_down = pressed
 	input_generated.emit(event)
@@ -109,11 +109,12 @@ func _move_pointer(stick: Vector2, delta: float) -> void:
 	if position == old:
 		return
 	mouse_mode = true
-	Input.warp_mouse(position)
+	get_viewport().warp_mouse(position)
+	var screen_transform := get_viewport().get_screen_transform()
 	var motion := InputEventMouseMotion.new()
-	motion.position = position
-	motion.global_position = position
-	motion.relative = position - old
+	motion.position = screen_transform * position
+	motion.global_position = motion.position
+	motion.relative = screen_transform.basis_xform(position - old)
 	motion.button_mask = MOUSE_BUTTON_MASK_LEFT if _mouse_down else 0
 	input_generated.emit(motion)
 
@@ -145,10 +146,17 @@ func _input(event: InputEvent) -> void:
 		return
 	if _suspended or _disconnected_devices.has(event.device):
 		return
-	if _device < 0:
-		_device = event.device
+	# Ignore drift and releases from unclaimed pads. A button press can hand
+	# menus to another player after releasing the previous pad's held input.
+	var deliberate: bool = (event is InputEventJoypadButton and event.pressed) or (event is InputEventJoypadMotion and absf(event.axis_value) > DEADZONE)
 	if event.device != _device:
-		return
+		if not deliberate or (not _active() and not (event is InputEventJoypadButton and event.button_index == JOY_BUTTON_START and event.pressed)):
+			return
+		if _device >= 0 and not (event is InputEventJoypadButton and event.pressed):
+			return
+		_reset()
+		_captured_buttons.clear()
+		_device = event.device
 	if not _active():
 		_reset()
 		if event is InputEventJoypadButton:

@@ -1,3 +1,4 @@
+import {identityStorage} from './identity-storage.mjs';
 // OpenBFME. GPL-3.0. Public dashboard, signed account administration and durable moderation.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -128,7 +129,7 @@ test('HTTP server serves browser assets and dashboard without enabling unsigned 
 
 test('Worker loads account moderation from its own user metadata without leaking it into relay status',async()=>{
  const {LobbyObject}=await import('../src/worker.mjs'); const stored=new Map(); let ready;
- const state={storage:{put:async(k,v)=>stored.set(k,structuredClone(v)),delete:async(k)=>stored.delete(k),
+ const state={storage:{...identityStorage(),get:async k=>stored.get(k),put:async(k,v)=>stored.set(k,structuredClone(v)),delete:async(k)=>stored.delete(k),
   list:async({prefix})=>new Map([...stored].filter(([key])=>key.startsWith(prefix)))},blockConcurrencyWhile:(fn)=>{ready=fn();}};
  let object=new LobbyObject(state,config); await ready;
  const user=await guest(object.lobby,'Worker user');
@@ -197,7 +198,7 @@ test('nickname history and account status search are retained; completion persis
 
 test('Worker retains completed history through reload; legacy migration reports failed storage',async()=>{
  const {LobbyObject}=await import('../src/worker.mjs');const stored=new Map();let ready;
- const state={storage:{put:async(k,v)=>stored.set(k,structuredClone(v)),delete:async k=>stored.delete(k),list:async({prefix})=>new Map([...stored].filter(([k])=>k.startsWith(prefix)))},blockConcurrencyWhile:fn=>{ready=fn();}};
+ const state={storage:{...identityStorage(),get:async k=>stored.get(k),put:async(k,v)=>stored.set(k,structuredClone(v)),delete:async k=>stored.delete(k),list:async({prefix})=>new Map([...stored].filter(([k])=>k.startsWith(prefix)))},blockConcurrencyWhile:fn=>{ready=fn();}};
  let object=new LobbyObject(state,config);await ready;const a=await guest(object.lobby,'Worker archive');
  const made=await call(object.lobby,'POST','/v1/games',{token:a.token,body:{name:'Worker game',profile,setup}});const g=object.lobby.games.get(made.body.id);g.state='started';
  assert.equal((await call(object.lobby,'POST','/v1/admin/games/'+g.id,{admin:true,body:{action:'close',revision:g.seq}})).status,409);

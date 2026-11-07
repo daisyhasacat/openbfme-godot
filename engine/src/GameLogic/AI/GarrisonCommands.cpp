@@ -2,6 +2,7 @@
 // See GameLogic/AI/GarrisonCommands.h.
 
 #include "GameLogic/AI/GarrisonCommands.h"
+#include "GameLogic/Module/FishingUpdate.h"
 
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
@@ -14,6 +15,8 @@
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Object/Contain/GarrisonContainRuntime.h"
 #include "GameLogic/Object/Object.h"
+
+#include <algorithm>
 
 namespace
 {
@@ -51,7 +54,19 @@ bool enter(GameLogic &logic, const GameMessage &m)
 	}
 	AIGroup group(logic, AICommands::selection(logic, m.getPlayerIndex()));
 	group.releaseWeaponLockForGroup(LOCKED_TEMPORARILY); // RW 0x77AC55
-	if (!container->getContain())
+        // OpenBFME fishing is explicit and only exists on mod-defined boats.
+        // Ordinary units retain the retail enter path. Selection is owned by
+        // the issuing player.
+        bool fishingTarget = false;
+        for (Object *o : group.members())
+          if (auto *f = FishingUpdate::find(*o))
+            if (f->canFish(container)) {
+              f->order(container);
+              fishingTarget = true;
+            }
+        if (fishingTarget)
+          return true;
+        if (!container->getContain())
 	{
 		return true; // RW 0x774EEC: no contain, no order
 	}
@@ -119,9 +134,29 @@ bool exitOne(GameLogic &logic, const GameMessage &m)
 		}
 		return true;
 	}
-	if (rider->getControllingPlayer() != player || rider->getContainedBy() != container || !rider->getAIUpdateInterface())
+	// RW 0x77ACF3: the container's contain answers slot 0xE8 for the rider. A tunnel answers for its player's whole network (TunnelContain RW 0x8811DD), so a
+	// horde that entered by one tunnel comes out of the tunnel whose button was pressed (TUNNEL-1). The other contain class, HordeContain, has OpenContain's
+	// RW 0x8662D0 in that slot too (its table RW 0xC5B480 + 0xE8): the rider is in the contain's own list
+	bool here = false;
+	if (const OpenContain *open = dynamic_cast<const OpenContain *>(contain))
+	{
+		here = open->isContainedHere(*rider);
+	}
+	else if (const ContainModuleInterface::ContainedItemsList *items = contain->getContainedItemsList())
+	{
+		here = std::find(items->begin(), items->end(), rider) != items->end();
+	}
+	if (rider->getControllingPlayer() != player || !here)
 	{
 		return true;
+	}
+	if (ObjectWeapons *w = rider->getWeapons())
+	{
+		w->releaseWeaponLock(LOCKED_TEMPORARILY); // RW 0x77AD05: RW 0x68DF11(1) (its AI hook, AI slot 0x16C, is AIGroup's S-line: not ported)
+	}
+	if (!rider->getAIUpdateInterface())
+	{
+		return true; // RW 0x77AD10: rider + 0x260
 	}
 	static const int horde = CombatNames::kindOf("HORDE");
 	if (rider->isKindOf((unsigned)horde))

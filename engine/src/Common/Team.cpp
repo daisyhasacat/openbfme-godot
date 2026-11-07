@@ -6,8 +6,10 @@
 #include <algorithm>
 
 #include "Common/Player.h"
+#include "Common/SpecialPower.h"
 #include "Common/StateHash.h"
 #include "Common/Xfer.h"
+#include "GameLogic/GameLogic.h"
 #include "GameLogic/Object/Object.h"
 
 #include <stdexcept>
@@ -20,6 +22,27 @@ const std::string &Team::getName() const
 Player *Team::getControllingPlayer() const
 {
 	return m_proto->getControllingPlayer();
+}
+
+std::uint32_t Team::enemyLayerMask() const
+{
+	const Player *owner = getControllingPlayer();
+	if (!owner || !m_teamRelations.empty() || owner->hasTeamRelationships())
+	{
+		return 0xFFFFFFFFu;
+	}
+	// getRelationship below with that team's overrides absent: this team's override for player k, else the controlling player's view of player k
+	std::uint32_t mask = 0;
+	for (int k = 0; k < 32; ++k)
+	{
+		auto it = m_playerRelations.find(k);
+		const Relationship r = it != m_playerRelations.end() ? it->second : owner->relationshipToPlayerIndex(k);
+		if (r == ENEMIES)
+		{
+			mask |= 1u << k;
+		}
+	}
+	return mask;
 }
 
 // ZH Team.cpp:1471-1499
@@ -102,6 +125,34 @@ void Team::friend_removeMember(Object *obj)
 	--m_count;
 }
 
+// RW 0x7A3EF5
+Object *Team::findSpecialPowerRecord(int powerType, const Object *caster, GameLogic &logic) const
+{
+	for (const SpecialPowerRecord &r : m_specialPowers)
+	{
+		if (r.powerType != powerType)
+		{
+			continue;
+		}
+		if (!caster)
+		{
+			return logic.findObjectByID(r.caster); // the first matching record only, even when its caster is gone
+		}
+		if (r.caster == caster->getID())
+		{
+			return const_cast<Object *>(caster);
+		}
+		// retail loops forever on this path (RW 0x7A3F1B skips its only advance); both retail callers pass null
+	}
+	return nullptr;
+}
+
+// RW 0x7A5582: the record joins the end of the team's list
+void Team::addSpecialPowerRecord(int powerType, std::uint32_t frame, ObjectID caster)
+{
+	m_specialPowers.push_back(SpecialPowerRecord{ powerType, frame, caster });
+}
+
 void Team::crc(StateHasher &h) const
 {
 	h.addU32(m_id);
@@ -162,6 +213,17 @@ void Team::crc(StateHasher &h) const
 		h.addU32(0x6Cu);
 		h.addI32(m_currentWaypoint);
 	}
+	if (!m_specialPowers.empty()) // lane RAI-POW: + 0x140, hashed once a power registered (games that never cast it keep their hash)
+	{
+		h.addU32(0x140u);
+		h.addU32((std::uint32_t)m_specialPowers.size());
+		for (const SpecialPowerRecord &r : m_specialPowers)
+		{
+			h.addI32(r.powerType);
+			h.addU32(r.frame);
+			h.addU32(r.caster);
+		}
+	}
 }
 
 // ---- TeamFactory ------------------------------------------------------------------------------------------------------
@@ -172,6 +234,7 @@ void TeamFactory::clear()
 	m_byName.clear();
 	m_nextTeamID = 1;
 	m_nextPrototypeID = 1;
+	m_pendingCreateActions.clear();
 }
 
 TeamPrototype *TeamFactory::initTeam(const std::string &name, Player *owner, bool singleton, const Dict *dict)
@@ -195,6 +258,7 @@ Team *TeamFactory::createTeam(TeamPrototype *proto, bool activate)
 	if (proto->getIsSingleton() && !proto->m_teams.empty())
 	{
 		Team *t = proto->m_teams.front(); // a singleton prototype has exactly one team
+		runCreateActions(proto); // lane TEAMEVENTS-1: RW 0x7A6ED8 .. 0x7A6F21
 		if (activate)
 		{
 			t->setActive();
@@ -207,11 +271,32 @@ Team *TeamFactory::createTeam(TeamPrototype *proto, bool activate)
 	// lane CAMP-1H: the constructor (RW 0x7A6C91 -> RW 0x7A6E0D): + 0x60 when the prototype has an EnemySighted (+ 0x1FC) or AllClear (+ 0x200) script
 	const TeamTemplateScripts &ts = proto->templateScripts();
 	t->scriptState().checkEnemySighted = !ts.enemySighted.empty() || !ts.allClear.empty();
+	runCreateActions(proto); // lane TEAMEVENTS-1: RW 0x7A6F65 .. 0x7A6FB2
 	if (activate)
 	{
 		t->setActive();
 	}
 	return t;
+}
+
+// lane TEAMEVENTS-1: RW 0x7A6E8E's "if (prototype + 0x240) { script = RW 0x758ECB(owner, + 0x23C); if (script) RW 0x60D053(...) }"
+void TeamFactory::runCreateActions(TeamPrototype *proto)
+{
+	if (!proto->templateScripts().executeActionsOnCreate)
+	{
+		return;
+	}
+	if (!m_createActionsHook || !m_createActionsHook(*proto))
+	{
+		m_pendingCreateActions.push_back(proto);
+	}
+}
+
+std::vector<TeamPrototype *> TeamFactory::takePendingCreateActions()
+{
+	std::vector<TeamPrototype *> out;
+	out.swap(m_pendingCreateActions);
+	return out;
 }
 
 const TeamTemplateScripts &TeamPrototype::templateScripts() const
@@ -233,6 +318,8 @@ const TeamTemplateScripts &TeamPrototype::templateScripts() const
 		{
 			ts->generic[i] = m_dict.getAsciiString("teamGenericScriptHook" + std::to_string(i)); // "%s%d" (RW 0xC1222C)
 		}
+		ts->productionCondition = m_dict.getAsciiString("teamProductionCondition"); // lane TEAMEVENTS-1: RW 0x7A389E
+		ts->executeActionsOnCreate = m_dict.getBool("teamExecutesActionsOnCreate"); // RW 0x7A38D0
 		m_scripts = std::move(ts);
 	}
 	return *m_scripts;
@@ -312,6 +399,10 @@ void TeamFactory::crc(StateHasher &h) const
 		h.addString(p->getName());
 		h.addI32(p->getControllingPlayer() ? p->getControllingPlayer()->getPlayerIndex() : -1);
 		h.addBool(p->getIsSingleton());
+		if (!p->attackPriorityName().empty()) // lane BFME2CAMP1: hashed once set
+		{
+			h.addString(p->attackPriorityName());
+		}
 		h.addU32((std::uint32_t)p->teams().size()); // the prototype's teams, in creation order
 		for (const Team *t : p->teams())
 		{
@@ -331,7 +422,8 @@ void TeamFactory::crc(StateHasher &h) const
 // relation maps are retail's sub-records (xferRelationMaps). Members are ids (ZH Team::xfer saves the member ids and Team::loadPostProcess finds them).
 void Team::xfer(Xfer &x)
 {
-	XferVersion v{ 1, 1 };
+	// version 2 (lane RAI-POW): the special-power registry (+ 0x140), written only when a power registered (every other snapshot is version 1's)
+	XferVersion v{ 1, (std::uint8_t)(x.isLoading() || !m_specialPowers.empty() ? 2 : 1) };
 	x.xferVersion(v);
 	xferRelationMaps(x, m_teamRelations, m_playerRelations);
 	x.xferAsciiString(&m_state);
@@ -389,11 +481,41 @@ void Team::xfer(Xfer &x)
 	{
 		m_loadedMembers = members;
 	}
+	if (v.current < 2)
+	{
+		if (x.isLoading())
+		{
+			m_specialPowers.clear(); // a version 1 snapshot has no registry
+		}
+	}
+	else
+	{
+		std::uint32_t count = (std::uint32_t)m_specialPowers.size();
+		x.xferCount(&count, 12, sizeof(SpecialPowerRecord));
+		if (x.isLoading())
+		{
+			m_specialPowers.clear();
+		}
+		for (std::uint32_t i = 0; i < count; ++i)
+		{
+			SpecialPowerRecord r = x.isLoading() ? SpecialPowerRecord{} : m_specialPowers[i];
+			x.xferInt(&r.powerType); // retail RW 0x7A5C06 saves the type word as an int
+			x.xferUnsignedInt(&r.frame);
+			x.xferObjectID(&r.caster);
+			if (x.isLoading())
+			{
+				m_specialPowers.push_back(r);
+			}
+		}
+	}
 }
 
 void TeamFactory::xfer(Xfer &x)
 {
-	XferVersion v{ 1, 1 };
+	// version 2 (lane BFME2CAMP1): each prototype's attack priority set name (+ 0x318), written only when a prototype has one (every other snapshot is
+	// version 1's)
+	const bool names = std::any_of(m_prototypes.begin(), m_prototypes.end(), [](const std::unique_ptr<TeamPrototype> &p) { return !p->attackPriorityName().empty(); });
+	XferVersion v{ 1, (std::uint8_t)(x.isLoading() || names ? 2 : 1) };
 	x.xferVersion(v);
 	x.xferUnsignedInt(&m_nextTeamID);
 	x.xferInt(&m_nextPrototypeID);
@@ -419,6 +541,15 @@ void TeamFactory::xfer(Xfer &x)
 		{
 			throw XferException("the snapshot's team prototype " + std::to_string(id) + " '" + owner + "/" + name + "' is not this game's "
 				+ std::to_string(tp->getID()) + " '" + ownNow + "/" + tp->getName() + "'");
+		}
+		std::string priorityName = tp->attackPriorityName();
+		if (v.current >= 2)
+		{
+			x.xferAsciiString(&priorityName);
+		}
+		if (x.isLoading())
+		{
+			tp->setAttackPriorityName(v.current >= 2 ? priorityName : std::string());
 		}
 	}
 	// every team in creation order: (id, prototype id); a team past the game's own is created with its saved id (ZH TeamPrototype::xfer creates a team

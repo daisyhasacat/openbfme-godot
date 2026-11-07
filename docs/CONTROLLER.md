@@ -28,6 +28,8 @@ The palette uses native circular RadialBorder/RadialOver/RadialPush artwork and 
 
 Held input releases on context changes, focus loss and disconnect. The palette closes when RT is released or gameplay ends. Controller state does not affect saved games.
 
+Double-press **A / Cross** within 300 ms with a friendly unit under the cursor to select your selectable units of that type across the map, subject to the normal selection limit. Enemy units and structures are excluded. Double A over ground retains attack-move. Placement, targeted abilities and disabled gameplay input keep their existing behavior.
+
 ## Lua adaptation and interfaces
 
 `godot/dev/00_controller_config.lua` through `04_controller.lua` adapt the local BFME2Lua repository's `controller.lua`, `lib/keybinds.lua`, and `lib/controller/{config,controls,palantir}.lua`. These modules use `package.preload` because the companion VM has no filesystem module loader. Numeric filename prefixes define reload order. The game loads them at startup; **Ctrl+Shift+F5** or `bfme.console.reload()` reloads them during play.
@@ -110,3 +112,19 @@ an earlier menu press are retained across a menu-to-game transition. The real
 scene-dispatch regression in `godot/tests/controller_routing_test.gd` checks RT
 palette open/close, A selection completion, resumed camera panning and release
 ownership. The Lua binding table remains the gameplay action source.
+D-pad/right-stick navigation stays within it; triggers cancel an unconfirmed
+dropdown before changing area. Mouse movement and real keyboard input leave
+section mode, retaining their existing navigation. Modal profile dialogs remain
+fully navigable. LB/RB still changes Maps/Rules.
+
+A controller is claimed by a button press or axis input beyond the dead zone.
+Drift and releases from unused controllers cannot claim it. A button press on
+another controller safely releases the old controller's held menu input before
+handoff.
+
+Menu input leaves gameplay events available when no menu is active. Releases
+belonging to an earlier menu press stay consumed across a menu-to-game transition.
+
+Network and online staging lobbies use the same LT/RT section cycle. LB/RB
+cycles Maps, Rules and Chat within the shared panel. Native Escape-menu
+navigation uses the same D-pad/right-stick, A and B mapping.

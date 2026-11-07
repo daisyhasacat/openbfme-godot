@@ -492,6 +492,12 @@ TEST_CASE("peace time: computer units cannot target players until expiry, humans
  d.b->setTeam(d.w.players.getNeutralPlayer()->getDefaultTeam());
  CHECK(d.ow->canAttackObject(*d.b, CMD_FROM_AI, true));
  d.b->setTeam(victim->getDefaultTeam());
+ // Neutral creep players are computer controlled too, but are outside the peace rule.
+ Player *neutral = d.w.players.getNeutralPlayer();
+ neutral->setPlayerType(PLAYER_COMPUTER, false);
+ d.a->setTeam(neutral->getDefaultTeam());
+ CHECK(d.ow->canAttackObject(*d.b, CMD_FROM_AI, true));
+ d.a->setTeam(attacker->getDefaultTeam());
  while (d.w.logic->getFrame() != 1499) d.w.frames(1);
  CHECK_FALSE(d.ow->canAttackObject(*d.b, CMD_FROM_AI, false));
  d.w.frames(1);
@@ -531,7 +537,7 @@ TEST_CASE("projectile walls: arrows sweep walls instead of damaging the stored v
 	}
 	SUBCASE("inactive gate geometry") { wall->setGeometryActive("Closed", false); blocked = false; }
 	SUBCASE("above wall") { Coord3D p = *wall->getPosition(); p.z = -200; wall->setPosition(&p); blocked = false; }
-	SUBCASE("dead wall") { wall->kill(DEATH_NORMAL); blocked = false; }
+	SUBCASE("dead wall") { wall->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL); blocked = false; }
 	SUBCASE("wall rebalance enabled also blocks") { w.logic->settings().wallBalance.enabled = true; }
 	SUBCASE("nearest wall wins")
 	{

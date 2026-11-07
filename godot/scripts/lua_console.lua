@@ -294,11 +294,13 @@ function LuaConsole:_ready()
 	log.name = "Log"
 	tabs:add_child(log)
 	self._log = log
+	self:_build_players()
 	self:_build_cheats()
 	self:_build_controller_options()
 	build_wall_rules(tabs)
 	tabs.tab_changed:connect(Callable(function(_index)
 		if tabs.current_tab == 0 then entry:grab_focus() end
+        if self._tabs.current_tab == 2 then self:_refresh_players() end
 	end))
 
 	local toolbar = HFlowContainer:new()
@@ -376,13 +378,15 @@ function LuaConsole:_build_cheats()
 		speed.value = 1
 		self:_execute_command("bfme.match.setGameSpeed(1)")
 	end))
+	local protection = flow(rows)
+	protection:add_child(label("Keep enemy AI away from base"))
+	local radius = spin_box("AIBaseRadius", 0, 10000, 100, 1500, 110)
+	protection:add_child(radius)
+	protection:add_child(button("Protect base", function() self:_execute_command("bfme.match.setAIBaseExclusion(" .. tostring(radius.value) .. ")") end))
+	protection:add_child(button("Disable protection", function() self:_execute_command("bfme.match.setAIBaseExclusion(0)") end))
 	actions:add_child(button("Pause", function() self:_execute_command("bfme.match.pause()") end))
 	actions:add_child(button("Resume", function() self:_execute_command("bfme.match.unpause()") end))
-	-- lane LUAAI-1: the computer players to the Lua skirmish AI (godot/dev/05_skirmish_ai.lua) and back
-	local ai_row = flow(rows)
-	ai_row:add_child(button("Computers: Lua AI", function() self:_execute_command("assert(luaai,'Reload scripts first'); return luaai.enableAll()") end))
-	ai_row:add_child(button("Computers: native AI", function() self:_execute_command("assert(luaai,'Reload scripts first'); luaai.disableAll()") end))
-	ai_row:add_child(button("Lua AI status", function() self:_execute_command("assert(luaai,'Reload scripts first'); return luaai.status()") end))
+
 end
 
 function LuaConsole:_build_controller_options()
@@ -477,6 +481,25 @@ function LuaConsole:_input(event)
 	end
 end
 
+function LuaConsole:_build_players()
+ local page = VBoxContainer:new()
+ page.name = "Players"
+ self._tabs:add_child(page)
+ page:add_child(label("Player names are stable references; faction names show the current army."))
+ self._players_text = text_view()
+ self._players_text.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ page:add_child(self._players_text)
+ page:add_child(button("Refresh players", function() self:_refresh_players() end))
+ page:add_child(label('Use bfme.players.Player_4 or bfme.players["Player_4 (Men)"].'))
+ page:add_child(label('Special players: bfme.players.CreepFaction and bfme.players.NeutralFaction.'))
+end
+
+function LuaConsole:_refresh_players()
+ if not self._players_text or not self.execute:is_valid() then return end
+ local result = self.execute:call("return bfme.players.table()")
+ self._players_text.text = tostring(result:get("output", "Players are not available yet."))
+end
+
 function LuaConsole:is_open()
 	return self._root ~= nil and self._root.visible
 end
@@ -486,6 +509,7 @@ function LuaConsole:toggle()
 	root.visible = not root.visible
 	if root.visible then
 		self:_request_layout()
+        if self._tabs.current_tab == 2 then self:_refresh_players() end
 		if self._tabs.current_tab == 0 then self._entry:grab_focus() end
 	else
 		self._entry:release_focus()

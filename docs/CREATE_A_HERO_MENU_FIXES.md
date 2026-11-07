@@ -1,5 +1,17 @@
 # Create-a-Hero menu corrections
 
+With BFME2 presentation and RotWK gameplay, every builder page, including
+`CahPowers`, uses BFME2 assets. Only the empty-power button and icon are
+placed from the RotWK power movie into the BFME2 power menu. Their dependencies have
+separate cache identities, so RotWK's `MenuExport` symbols and textures do not
+replace the BFME2 menu exports. This includes movies, constants,
+atlas mappings, geometry and movie textures. BFME2's shipped `CahPowers`
+movie lacks RotWK's `NoPowerButton` and `OnNoPowerSelect` callback. The added
+button queues the existing empty-power selection handler. Other menus retain
+the selected presentation, including the hero manager, class, appearance and
+statistics pages. This routing is OpenBFME presentation policy;
+standalone BFME2 continues using its own hero builder and gameplay data.
+
 Donor references are relative to Open-BFME-2:
 
 - `Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Apt/AptMyHero.cpp`

@@ -38,6 +38,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -69,7 +70,11 @@ enum : std::uint8_t
 	// lane PLATFORMICON-1 (OpenBFME): a player of the game tells the others its system (one byte, PlatformKind 0 .. 3). A NEW message type, not a field of
 	// an existing one: a build without it answers with its "unhandled LAN message type" note and nothing else changes; the display data never enters the
 	// game options, the start or the profile identity
-	PLATFORM_INFO = 0x81
+	PLATFORM_INFO = 0x81,
+	// map transfer (OpenBFME, GameNetwork/MapPackage.h; retail's MAP_AVAILABILITY name, OpenBFME's fields): a player tells the host whether it has the
+	// game's map (and how much of it arrived); a player without it asks the host for the map package chunk by chunk, the host answers each request
+	MAP_REQUEST = 0x82,
+	MAP_DATA = 0x83
 };
 }
 
@@ -94,9 +99,12 @@ class LANAPI
 {
 public:
 	// the lobby messages' version (a message of another version is refused by name): 2 (lane HERO-2): the GameInfo slots' Create-a-Hero records,
-	// OPT_SLOT_CREATE_A_HERO; 3 (lane OWNERFIX-2): the GameInfo slots' handicaps and the slot request's handicap
-	// Version 4 merges peace time, Lua authority and fortress construction with handicaps.
-	static constexpr std::uint8_t kProtocolVersion = 4;
+	// OPT_SLOT_CREATE_A_HERO; 3 (lane OWNERFIX-2): the GameInfo slots' handicaps and the slot request's handicap; 4 (lane CHEAT-1): the GameInfo's Cheat Mode;
+	// 5 (WOTR2 milestone 8): the GameInfo's game mode and scenario (a War of the Ring's LanStrategic game; RotWK sends it as type 14, MSG_GAME_START + 1);
+	// 6 (step 4): a resumed war's save identity and state hash (the list's resume icon, Continue); 7 (Sol wotr2m8s4 follow-up 1): a LAN war's save answer
+	// and leave vote name their save request (MSG_LW_OPENBFME_SAVE / MSG_LW_REQUEST_ENDGAME): a build without it is kept out of the lobby
+	// Peace time, Lua authority and fortress construction travel in the GameInfo too.
+	static constexpr std::uint8_t kProtocolVersion = 7;
 	enum ReturnType // ZH LANAPIInterface::ReturnType
 	{
 		RET_OK,
@@ -131,6 +139,21 @@ public:
 		// lane HERO-2: a slot's Create-a-Hero record is checked with this before it is applied (a request, the host's options, a player's copy of them):
 		// CreateAHeroSystem::validateHero of the world. A lobby without one refuses every record
 		std::function<bool(const CreateAHeroHero &, std::string *)> validateCreateAHero;
+		// map transfer (GameNetwork/MapPackage.h): the local player has the map (none: every map counts as present, a tool's lobby); the package of a map
+		// this player hosts; a received package installed (after LANAPI checked that its bytes hash to the map's key)
+		std::function<bool(const std::string &mapName)> hasMap;
+		std::function<bool(const std::string &mapName, std::vector<std::uint8_t> &package, std::string *error)> mapPackage;
+		std::function<bool(const std::string &mapName, const std::vector<std::uint8_t> &package, std::string *error)> installMap;
+		std::uint32_t mapChunkBytes = 1024; ///< a MAP_DATA's payload (one datagram under a 1500-byte MTU)
+		std::uint32_t mapWindow = 192;      ///< chunks asked for and not received yet (192 KiB in flight: a 24 MB map in seconds on a LAN)
+		std::uint32_t mapRetryMs = 400;     ///< a chunk not received in this time is asked for again
+		// WOTR2 milestone 8: a War of the Ring's start positions are region indices (RW 0x9759BB): the scenario's region count (-1: no such scenario).
+		// A lobby without it refuses every War of the Ring game
+		std::function<int(const std::string &scenario)> warRegionCount;
+		// WOTR2 milestone 8 (step 4): a resumed LAN war (GameInfo::resumeSave): "" when this player has the save of that identity and it loads with that
+		// state hash (RotWK's joiners look their copy up by the MD5, RW 0x81869B), else why not (without the player's name: the host adds it). A lobby
+		// without it answers every resumed war "this game cannot look for saved wars"
+		std::function<std::string(const std::string &save, std::uint32_t stateHash)> resumeCheck;
 	};
 	// what happened, for the screens (ZH LANAPI's On* callbacks)
 	struct Event
@@ -197,6 +220,20 @@ public:
 	bool hostKick(int slot);
 	// host only: every human slot accepted: GAME_START to everyone (repeated until answered); false + reason otherwise
 	bool hostStartGame(std::string *reason);
+	// WOTR2 milestone 8 (step 4): host only: the saved war's human seats other than the host's (slot, the saved player's name), reopened for the joiners
+	// (RotWK RW 0x840F3F); the start is refused while one is open or a joiner's copy of the save is missing or differs (every PC sees the line)
+	// (Sol wotr2m8s4 #4) each saved human's seat: its slot, its name and its saved slot (the START gives the seat its saved faction, colour, team, start and
+	// handicap back; the seat's player must be the saved one)
+	struct ResumeSeat
+	{
+		int slot = -1;
+		std::u16string name;
+		SkirmishGameSlot saved;
+	};
+	// `rules` the saved war's rules: the start is refused while the setup's differ (the joiners checked their copies under them)
+	void hostSetResumeSeats(const std::vector<ResumeSeat> &seats, const GameRules &rules);
+	// the check this player sent for the resumed war ("" ok, else the reason; for the screens and the tests)
+	const std::string &resumeCheckResult() const { return m_checkedWhy; }
 
 	// ---- state ----
 	const std::vector<LANGame> &games() const { return m_games; }
@@ -232,6 +269,18 @@ public:
 		std::uint32_t nonce = 0;
 	};
 	const std::vector<LobbyPlayer> &lobbyPlayers() const { return m_lobbyPlayers; }
+	// map transfer: this player's download of the current game's map (a joiner without it), and what each player of our game told the host
+	struct MapTransfer
+	{
+		std::string mapName;
+		bool present = true;  ///< the local player has the map
+		bool active = false;  ///< receiving it
+		bool failed = false;  ///< it cannot be received (error says why)
+		std::uint32_t total = 0, received = 0; ///< bytes
+		std::string error;
+	};
+	const MapTransfer &mapTransfer() const { return m_map; }
+	int mapPercent(int slot) const { return slot >= 0 && slot < MAX_SLOTS ? m_mapPercent[(size_t)slot] : 0; }
 
 private:
 	enum PendingAction
@@ -263,9 +312,17 @@ private:
 	void resetPlatforms();
 	static void applySlotRequest(SkirmishGameInfo &info, int slot, int playerTemplate, int color, int team, int startPos, int handicap);
 	// lane MP-2 (review): a field of a slot request is kKeep, -1 or within its range; a GameInfo's every slot field is -1 or within its range
-	bool slotRequestValid(int playerTemplate, int color, int team, int startPos, int handicap, std::string *why) const;
+	bool slotRequestValid(const SkirmishGameInfo &info, int playerTemplate, int color, int team, int startPos, int handicap, std::string *why) const;
 	bool gameInfoValid(const SkirmishGameInfo &info, std::string *why) const;
 	int slotOf(const NetAddress &lobbyAddress) const;
+	// map transfer
+	void mapTick(std::uint64_t now);
+	bool localHasMap(const std::string &mapName) const;
+	void sendMapAvailability(bool force);
+	bool handleMapAvailability(NetByteReader &r, const NetAddress &from);
+	bool handleMapRequest(NetByteReader &r, const NetAddress &from);
+	bool handleMapData(NetByteReader &r, const NetAddress &from);
+	void mapFailed(const std::string &why);
 	void event(Event e) { m_events.push_back(std::move(e)); }
 	void note(const std::string &s);
 
@@ -286,10 +343,40 @@ private:
 	bool m_started = false;
 	LobbyStart m_start;
 	std::array<bool, MAX_SLOTS> m_startAcked{};
+	// WOTR2 milestone 8 (step 4): the joiners' answers to the resumed war's save (host) and this player's own check (joiner)
+	struct SaveCheck
+	{
+		bool heard = false;
+		bool ok = false;
+		std::string save;
+		std::string why;
+		std::u16string player;
+	};
+	std::array<SaveCheck, MAX_SLOTS> m_saveChecks{};
+	std::vector<ResumeSeat> m_resumeSeats;
+	GameRules m_resumeRules = MpGameRules::none();
+	std::string m_checkedSave;
+	std::uint32_t m_checkedHash = 0;
+	bool m_checkedDone = false;
+	std::string m_checkedWhy;
+	void sendSaveAvailability();
+	bool handleSaveAvailability(NetByteReader &r, const NetAddress &from);
 	bool m_starting = false;
 	std::vector<Event> m_events;
 	std::vector<std::string> m_errors, m_log;
 	std::array<PlatformKind, MAX_SLOTS> m_peerPlatform{};       // lane PLATFORMICON-1: what each slot's player told
 	std::array<NetAddress, MAX_SLOTS> m_peerPlatformAddr{};     // ... and from which lobby address
 	std::array<NetAddress, MAX_SLOTS> m_platformSentTo{};       // the address each slot's player was last sent ours at
+	// map transfer: the joiner's download, the host's package and every slot's told progress
+	MapTransfer m_map;
+	std::vector<std::uint8_t> m_mapBytes;
+	std::vector<bool> m_mapHave;
+	std::map<std::uint32_t, std::uint64_t> m_mapInFlight; ///< chunk -> when it was asked for
+	std::uint64_t m_mapAskedFirst = 0, m_mapAvailabilitySent = 0;
+	int m_mapToldPercent = -1;
+	bool m_mapToldHas = false;
+	std::string m_mapToldName;
+	std::string m_packageName, m_packageError;
+	std::vector<std::uint8_t> m_package;
+	std::array<int, MAX_SLOTS> m_mapPercent{};
 };

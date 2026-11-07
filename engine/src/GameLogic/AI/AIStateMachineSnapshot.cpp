@@ -22,7 +22,9 @@ void AIState::xferNoFields(Xfer &x)
 
 void AIStateMachine::xfer(Xfer &x)
 {
-	XferVersion v{ 1, 1 };
+	// version 2 (lane BFME2CAMP1): the goal squad (RW AIStateMachine::xfer RW 0x755174 saves it as a "has squad" bool, then the squad); written only by a
+	// machine that has one, so other saves keep version 1
+	XferVersion v{ 1, (std::uint8_t)(x.isLoading() || m_goalSquad ? 2 : 1) };
 	x.xferVersion(v);
 	const bool loading = x.isLoading();
 	auto xferStatePtr = [&](AIState *&state, const char *what) {
@@ -55,21 +57,61 @@ void AIStateMachine::xfer(Xfer &x)
 	AIXfer::coords(x, m_goalPath);
 	AIXfer::coord(x, m_savedGoalPosition);
 	AIXfer::objectId(x, m_savedGoalObjectID, "ai machine: the object id savedGoalObjectID");
+	if (v.current >= 2)
+	{
+		bool has = m_goalSquad != nullptr;
+		x.xferBool(&has);
+		if (loading)
+		{
+			m_goalSquad = has ? std::make_unique<AISquad>() : nullptr;
+		}
+		if (has)
+		{
+			x.xferVectorSize(m_goalSquad->objectIDs, 4);
+			for (ObjectID &id : m_goalSquad->objectIDs)
+			{
+				AIXfer::objectId(x, id, "ai machine: a goal squad member id");
+			}
+		}
+	}
+	else if (loading)
+	{
+		m_goalSquad.reset();
+	}
 	std::uint32_t n = (std::uint32_t)m_states.size();
 	x.xferUnsignedInt(&n);
-	if (n != (std::uint32_t)m_states.size())
+	if (!loading)
+	{
+		for (auto &kv : m_states)
+		{
+			std::uint32_t id = kv.first;
+			x.xferUnsignedInt(&id);
+			kv.second->xfer(x);
+		}
+		return;
+	}
+	// lane STEALTHFLY1 (SAVES.md section 5, mechanism 1): a save made before a build added states to this machine (GiantBirdAIUpdate's follow states) lists
+	// fewer: each saved state loads into the machine's state of its id, in id order, and a state the save does not list keeps its constructor's fields (it
+	// was never entered). A saved state the machine does not have, or more saved states than it has, is refused
+	if (n > (std::uint32_t)m_states.size())
 	{
 		throw XferException("ai machine " + m_name + ": " + std::to_string(n) + " saved states, the machine has " + std::to_string(m_states.size()));
 	}
-	for (auto &kv : m_states)
+	auto it = m_states.begin();
+	for (std::uint32_t i = 0; i < n; ++i)
 	{
-		std::uint32_t id = kv.first;
+		std::uint32_t id = 0;
 		x.xferUnsignedInt(&id);
-		if (id != kv.first)
+		while (it != m_states.end() && it->first < id)
 		{
-			throw XferException("ai machine " + m_name + ": the saved state " + std::to_string(id) + " where the machine has " + std::to_string(kv.first));
+			++it;
 		}
-		kv.second->xfer(x);
+		if (it == m_states.end() || it->first != id)
+		{
+			throw XferException("ai machine " + m_name + ": the saved state " + std::to_string(id) + " is not one of its states");
+		}
+		it->second->xfer(x);
+		++it;
 	}
 }
 

@@ -6,7 +6,8 @@
 
 #include <chrono>
 
-AudioAssetCache::AudioAssetCache(ArchiveFileSystem *files, std::uint64_t decodedBudgetBytes) : m_files(files), m_budget(decodedBudgetBytes) {}
+AudioAssetCache::AudioAssetCache(ArchiveFileSystem *files, std::uint64_t decodedBudgetBytes, const std::string &language)
+	: m_language(language), m_files(files), m_budget(decodedBudgetBytes) {}
 
 ArchiveFileSystem *AudioAssetCache::sourceFor(const std::string &path, std::string &resolved) const
 {
@@ -19,6 +20,11 @@ ArchiveFileSystem *AudioAssetCache::sourceFor(const std::string &path, std::stri
 		resolved = canonical.substr(marker + std::string(menuPathMarker).size());
 		return m_menuFiles;
 	}
+	// BFME1 AudioEventRTSAdjustForLocalization.cpp: keep a present direct
+	// filename; otherwise use lang/<selected language>/<audio path>.
+	// AudioEventRTSGenerateFilenamePrefix.cpp supplies that localized prefix.
+	if (m_files && !m_language.empty() && canonical.rfind("data/audio/", 0) == 0 && !m_files->doesFileExist(path))
+		resolved = "lang/" + m_language + "/" + path;
 	return m_files;
 }
 

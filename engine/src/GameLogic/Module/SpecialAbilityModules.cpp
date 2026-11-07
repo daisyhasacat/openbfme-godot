@@ -1,3 +1,4 @@
+#include "GameLogic/CaptureLinks.h"
 // OpenBFME. GPL-3.0.
 // See GameLogic/Module/SpecialAbilityModules.h. DONOR: ZH GameLogic/Object/Update/SpecialAbilityUpdate.cpp (the state machine: update :192,
 // initiateIntentToDoSpecialPower, startPreparation, triggerAbilityEffect, onExit); every step below is RotWK's, from the addresses named.
@@ -7,10 +8,13 @@
 #endif
 
 #include "GameLogic/Module/SpecialAbilityModules.h"
+#include "GameLogic/Combat/CombatLineOfSight.h"
 #include "GameLogic/SnapshotXfer.h"
 #include "GameLogic/Module/GiantBirdAIUpdate.h"
 #include "GameLogic/Module/EmotionModules.h"
 #include "GameLogic/Object/PartitionManager.h"
+#include "GameLogic/Object/Contain/HordeContainRuntime.h"
+#include "GameLogic/Object/Contain/OpenContainRuntime.h"
 
 #include "Common/GameCommon.h"
 #include "Common/INIException.h"
@@ -302,6 +306,23 @@ const FieldParse kModelCondition[] = { // RW 0xC05230
 };
 #undef MC_OFF
 
+#define SR_OFF(m) (int)offsetof(SummonReplacementSpecialAbilityUpdateModuleData, m)
+// lane SUMMON-1: RW 0xC05AF8 (SummonReplacementSpecialAbilityUpdate's ten rows: ModelCondition's five at + 0xD0 .. + 0xDC, ToggleMounted's five at + 0xE0 ..)
+const FieldParse kSummonReplacement[] = {
+	{ "WhichSpecialPower", INI::parseInt, nullptr, SR_OFF(m_whichSpecialPower) },
+	{ "GenerateTerror", INI::parseBool, nullptr, SR_OFF(m_generateTerror) },
+	{ "GenerateUncontrollableFear", INI::parseBool, nullptr, SR_OFF(m_generateUncontrollableFear) },
+	{ "EmotionPulseRadius", INI::parseReal, nullptr, SR_OFF(m_emotionPulseRadius) },
+	{ "ObjectFilter", parseFilter, nullptr, SR_OFF(m_objectFilter) },
+	{ "OpacityTarget", INI::parseReal, nullptr, SR_OFF(m_opacityTarget) },
+	{ "TriggerInstantlyOnCreate", INI::parseBool, nullptr, SR_OFF(m_triggerInstantlyOnCreate) },
+	{ "CancelDisguiseWhenDismounting", INI::parseBool, nullptr, SR_OFF(m_cancelDisguiseWhenDismounting) },
+	{ "MountedTemplate", INI::parseAsciiString, nullptr, SR_OFF(m_mountedTemplate) },
+	{ "SynchronizeTimerOnSpecialPower", INI::parseAsciiStringVector, nullptr, SR_OFF(m_synchronizeTimerOnSpecialPower) },
+	{ nullptr, nullptr, nullptr, 0 },
+};
+#undef SR_OFF
+
 #define SD_OFF(m) (int)offsetof(SpecialDisguiseUpdateModuleData, m)
 const FieldParse kSpecialDisguise[] = { // RW 0xC05C10 (lane HERO-2)
 	{ "OpacityTarget", INI::parseReal, nullptr, SD_OFF(m_opacityTarget) },
@@ -417,6 +438,12 @@ void ModelConditionSpecialAbilityUpdateModuleData::buildFieldParse(MultiIniField
 {
 	SpecialAbilityUpdateModuleData::buildFieldParse(p);
 	p.add(kModelCondition);
+}
+
+void SummonReplacementSpecialAbilityUpdateModuleData::buildFieldParse(MultiIniFieldParse &p)
+{
+	SpecialAbilityUpdateModuleData::buildFieldParse(p);
+	p.add(kSummonReplacement); // RW 0xC05AF8
 }
 
 void SpecialDisguiseUpdateModuleData::buildFieldParse(MultiIniFieldParse &p)
@@ -548,9 +575,21 @@ bool SpecialAbilityUpdate::allowsSpecialPowerUse() const
 	{
 		return true;
 	}
-	// RW 0x851BA2: the object's contain (+ 0x258) slot 0x114(0) below its slot 0x70 (the room test: not ported, S-1043, as in ToggleHidden's canHide)
-	getObject()->logic().noteStop("[S-1043] SpecialAbilityUpdate: the garrison enum's room test (RW 0x851BA2) is not ported; the power is refused");
-	return false;
+	// RW 0x851BA2 (lane MODCOMPAT-MOD1): the grab enums need room: the object's contain (+ 0x258) holds fewer (slot 0x114(0)) than its maximum (slot 0x70);
+	// no contain answers no. Slot 0x70 is OpenContain's getContainMax (RW 0x86584C, TransportContain RW 0x869F86): another contain class is a stop (no retail
+	// grab object has one), refused
+	ContainModuleInterface *c = getObject()->getContain();
+	if (!c)
+	{
+		return false;
+	}
+	const OpenContain *open = dynamic_cast<const OpenContain *>(c);
+	if (!open)
+	{
+		getObject()->logic().noteStop("[S-1043] SpecialAbilityUpdate: the grab enums' room test (RW 0x851BA2) of a contain that is not an OpenContain is not ported; the power is refused");
+		return false;
+	}
+	return (int)c->getContainCount() < open->getContainMax();
 }
 
 // RW 0x851551
@@ -590,17 +629,57 @@ bool SpecialAbilityUpdate::conditionsAllow() const
 }
 
 // RW 0x85266D
-UpdateSleepTime SpecialAbilityUpdate::calcSleep() const
+UpdateSleepTime SpecialAbilityUpdate::calcSleep()
 {
 	if (m_active || m_data->m_alwaysValidateSpecialObjects || m_effectExpiry != 0) // RW 0x85266D tests the effect expiry (+ 0x2C)
 	{
 		return (UpdateSleepTime)1;
 	}
+	releaseCapture();
 	if (m_data->m_requiredConditions == 0 && m_data->m_rejectedConditions == 0)
 	{
 		return UPDATE_SLEEP_FOREVER;
 	}
 	return (UpdateSleepTime)1;
+}
+
+// RW 0x85266D, the sleep calculation: in an ability that is no longer active (no effect running, not AlwaysValidateSpecialObjects): a
+// capture ability (special power type 0x1D) whose capturer and target (+ 0x40, kept after finishAbility) both exist releases the capture. The target on
+// the capturer's controlling player (RW 0x68B678 on both) takes CAPTURED (RW 0x5E3BA5(0x77)); else a target still recording this capturer (+ 0x80) shows
+// CANCEL_CAPTURE for LOGICFRAMES_PER_SECOND frames (RW 0x68B581(0x6F, RW 0xDE8E0C)). The capturer loses CAPTURING (RW 0x5E3B79(0x70)) either way, and in
+// both cases the target loses START_CAPTURE (RW 0x5E3B79(0x6E)) and its capturer (+ 0x80 = 0). The port set CAPTURING when the capture began (RW 0x851F39 .. 0x851FE7)
+// and never cleared it: the skirmish AI's capture squad (AITacticalAI.cpp updateIdleCounters, RW 0x8F135E) saw a capturing member for ever, its team never
+// idle, and gave it no further order after its first capture, completed or interrupted.
+void SpecialAbilityUpdate::releaseCapture()
+{
+	const SpecialPowerTemplate *spt = m_data->m_specialPowerTemplate; // RW 0x688D3C(module data + 0x38), the template's type at + 0x1C
+	if (!spt || spt->m_type != 0x1D)
+	{
+		return;
+	}
+	Object *obj = getObject();
+	Object *t = target(); // RW 0x449681(+ 0x40)
+	if (!t)
+	{
+		return;
+	}
+	bool release = false;
+	if (t->getControllingPlayer() == obj->getControllingPlayer())
+	{
+		setCondition(*t, kMcCaptured, true);
+		release = true;
+	}
+	else if (t->getCapturerID() == obj->getID())
+	{
+		t->setSpecialModelConditionState(kMcCancelCapture, 5); // LOGICFRAMES_PER_SECOND frames (RW 0xDE8E0C = RW 0xD9F608)
+		release = true;
+	}
+	setCondition(*obj, kMcCapturing, false);
+	if (release)
+	{
+		setCondition(*t, kMcStartCapture, false);
+		t->setCapturerID(INVALID_ID);
+	}
 }
 
 bool SpecialAbilityUpdate::needToUnpack() const // RW 0x85133C
@@ -613,9 +692,24 @@ bool SpecialAbilityUpdate::needToPack() const // RW 0x851316
 	return m_packingState == 4 && (!m_data->m_skipPackingWithNoTarget || !m_noTarget) && m_data->m_packFrames != 0;
 }
 
-bool SpecialAbilityUpdate::persistentTrigger() const // RW 0x852465 (the garrison enum 0x27 branch: S-860)
+// RW 0x852465: none left; SPECIAL_GRAB_PASSENGER (0x27) with a target that is not SHRUBBERY (template + 0x108 bit 6), or after the first trigger, stops
+// (lane MODCOMPAT-MOD1: a tree is whacked once more, PersistentPrepTime later); else PersistentPrepTime is set
+bool SpecialAbilityUpdate::persistentTrigger() const
 {
-	return m_persistentLeft != 0 && m_data->m_persistentPrepFrames != 0;
+	if (m_persistentLeft == 0)
+	{
+		return false;
+	}
+	if (m_data->m_specialPowerTemplate && m_data->m_specialPowerTemplate->m_type == 0x27)
+	{
+		static const int kShrubbery = ObjectTemplateInfoBuilder::kindOfIndex("SHRUBBERY");
+		const Object *t = target();
+		if ((t && !(kShrubbery >= 0 && t->isKindOf((unsigned)kShrubbery))) || m_triggerCount > 1)
+		{
+			return false;
+		}
+	}
+	return m_data->m_persistentPrepFrames != 0;
 }
 
 void SpecialAbilityUpdate::restartPersistent() // RW 0x8524BC
@@ -675,6 +769,12 @@ bool SpecialAbilityUpdate::withinStartAbilityRange()
 		}
 		// RW 0x6CA525: max(0, dist2D - own radius)^2 (the enum 0x5B / 0x38 branches use the AI's distance: S-860)
 		dist2 = CircleDistanceSquaredToPoint(*obj->getPosition(), CombatQueries::boundingCircleRadius(*obj), m_targetPos);
+		// lane STARTRANGE-1: RW 0x85221D .. 0x852233: SPECIAL_GRAB_PASSENGER (0x27) takes 400.0 (RW 0xC55874) off the squared distance (subss) whichever
+		// distance was taken. BFME2 1.06: the same rule (decomp SpecialAbilityUpdateIsWithinStartAbilityRange.cpp, retail 0x44F28E)
+		if (m_data->m_specialPowerTemplate && m_data->m_specialPowerTemplate->m_type == 0x27)
+		{
+			dist2 = SimMath::sseSub(dist2, 400.0f);
+		}
 	}
 	else
 	{
@@ -685,14 +785,31 @@ bool SpecialAbilityUpdate::withinStartAbilityRange()
 			return false;
 		}
 		// RW 0x852127: ContactPointOverride (RW 0x690BD2, the bone position: S-860) falls back to the edge distance; a source HORDE with
-		// ApproachUntilMembersInRange uses its formation radius (S-860); a structure target the box distance RW 0x68F430 (its bounding circle, S-183)
-		dist2 = CombatQueries::edgeDistanceSquared2D(*obj, *obj->getPosition(), *t, *t->getPosition());
+		// ApproachUntilMembersInRange uses its formation radius (S-860).
+		// lane STARTRANGE-1: RW 0x85212D tests the TARGET's template + 0x118 bit 4, KindOf CHUNK_VENDOR (132; not a structure test): that target answers
+		// with its box distance to the source (RW 0x852137 -> RW 0x8513FD -> RW 0x68F430, thiscall on the target). BFME2 1.06: the same (m_kindof[4] bit 4,
+		// retail 0x44F28E)
+		static const int kChunkVendor = ObjectTemplateInfoBuilder::kindOfIndex("CHUNK_VENDOR");
+		if (kChunkVendor >= 0 && t->isKindOf((unsigned)kChunkVendor))
+		{
+			dist2 = CombatQueries::boxDistanceSquared2D(*t, *obj);
+		}
+		else
+		{
+			dist2 = CombatQueries::edgeDistanceSquared2D(*obj, *obj->getPosition(), *t, *t->getPosition());
+		}
 	}
 	if (dist2 > SimMath::mulf32(m_data->m_startAbilityRange, m_data->m_startAbilityRange))
 	{
 		return false;
 	}
-	// RW 0x852244 .. 0x8522D7: NeedCollisionBeforeTrigger (no retail use) and ApproachRequiresLOS (the line of sight RW 0x6613D3 / 0x6616AC: clear, S-859)
+	// RW 0x852244 .. 0x8522D7: NeedCollisionBeforeTrigger (no retail use; its branch, a zero distance to a target object, is not ported) and ApproachRequiresLOS
+	// (+ 0xB1): the line of sight filter (vtable 0xC1D620, + 8 the owner) on the target object (RW 0x6616AC), else on the target position (RW 0x6613D3); lane LOS-1
+	if (m_data->m_approachRequiresLOS)
+	{
+		const Object *t = m_targetID != INVALID_ID ? target() : nullptr;
+		return t ? CombatLineOfSight::filterAllows(*obj, *t) : CombatLineOfSight::filterAllowsPosition(*obj, m_targetPos);
+	}
 	return true;
 }
 
@@ -788,13 +905,25 @@ UpdateSleepTime SpecialAbilityUpdate::update()
 		m_withinRange = true;
 		if (!m_data->m_ignoreFacingCheck)
 		{
-			// RW 0x851384 / 0x8513B8 / 0x854D01: the facing. The binary idles the AI, issues the face command (AI command RW 0x7C81B9 / 0x7C821E) and waits for
-			// the AI's idle (vslot 0x1B8) once the turn ends. The face command is not ported (S-859): the turn takes no time here, so the check passes on the
-			// frame after the idle (waiting for the AI's idle instead never ends for a hero pushed around by the target it touches)
+			// TARGET RW 0x851384 / 0x8513B8 / 0x854D01: idle, issue the face
+			// command, then wait for its non-idle face state to finish. The turn
+			// uses the locomotor's rate; an object target is followed while turning.
 			if (!m_facingIssued)
 			{
 				ai->aiIdle(CMD_FROM_AI);
 				m_facingIssued = true;
+				if (Object *victim = target())
+				{
+					ai->aiFaceObject(victim, CMD_FROM_AI);
+				}
+				else if (!isZero(m_targetPos))
+				{
+					ai->aiFacePosition(m_targetPos, CMD_FROM_AI);
+				}
+				return calcSleep();
+			}
+			if (!m_facingDone && !ai->isIdle())
+			{
 				return calcSleep();
 			}
 			m_facingDone = true;
@@ -813,7 +942,11 @@ UpdateSleepTime SpecialAbilityUpdate::update()
 		{
 			return calcSleep();
 		}
-		// RW 0x8551F7 .. 0x855275: the template's + 0x80 (a unit cost of the summoning enums) is S-860
+		if (!payUnitCost()) // RW 0x85521F .. 0x855321
+		{
+			finishAbility(true, true); // RW 0x85527D: slot 0x34(1, 1)
+			return calcSleep();
+		}
 		triggerAbilityEffect();
 		endPreparation();
 		if (needToPack())
@@ -843,6 +976,11 @@ UpdateSleepTime SpecialAbilityUpdate::update()
 		}
 		return calcSleep();
 	}
+	if (!payUnitCost()) // RW 0x85507A .. 0x85513F
+	{
+		finishAbility(true, true); // RW 0x85527D: slot 0x34(1, 1)
+		return calcSleep();
+	}
 	triggerAbilityEffect();
 	if (persistentTrigger())
 	{
@@ -859,6 +997,58 @@ UpdateSleepTime SpecialAbilityUpdate::update()
 		finishAfterPacking();
 	}
 	return calcSleep();
+}
+
+// RW 0x85521F .. 0x855321 (lane NECRODIE-1; RotWK only: BFME2's SpecialPowerTemplate has no UnitCost, the field + 0x80 is RotWK's). A power with a UnitCost
+// (+ 0x80: the Necromancer's Black Ice 1, Fell Strength 2, Soul Freeze 3, Well of Souls and Corpse Rain 4) on an object with a horde interface (contain + 0x258
+// slot 0x7C): fewer members than the cost (slot 0x188, the members without the banner carrier) refuse it; else the cost is paid one member at a time: slot
+// 0x114(BANNER) picks the member, which is skipped (the count still drops) when it is the banner carrier (slot 0x118, interface + 0x150) or none; the member
+// leaves the horde (slot 0x38, RW 0x87393E), gets status UPDATING_AI (0x48), model condition BURNINGDEATH (+ 0x150 bit 0, RW 0x68B53C), is killed with
+// UNRESISTABLE damage and the power's UnitCostDeathType (+ 0x84, RW 0x698EC3(8, type)), then gets the statuses UNSELECTABLE (3) and IGNORE_PARALYZE_NUGGET
+// (0x65) (RW 0x62684D)
+bool SpecialAbilityUpdate::payUnitCost()
+{
+	const SpecialPowerTemplate *power = m_data->m_specialPowerTemplate ? m_data->m_specialPowerTemplate->getFinalOverride() : nullptr; // RW 0x688D3C
+	if (!power || power->m_unitCost == 0)
+	{
+		return true;
+	}
+	Object *obj = getObject();
+	ContainModuleInterface *c = obj->getContain();
+	HordeContain *horde = c && c->getHordeContainInterface() ? dynamic_cast<HordeContain *>(c) : nullptr;
+	if (!horde)
+	{
+		return true;
+	}
+	if (horde->payloadCount() < (unsigned)power->m_unitCost) // RW 0x855273 .. 0x85527B
+	{
+		return false;
+	}
+	static const unsigned kBanner = (unsigned)ObjectTemplateInfoBuilder::kindOfIndex("BANNER");                       // 0xA4
+	static const unsigned kUpdatingAI = (unsigned)CombatNames::status("UPDATING_AI");                                   // 0x48
+	static const unsigned kUnselectable = (unsigned)CombatNames::status("UNSELECTABLE");                                // 3
+	static const unsigned kIgnoreParalyze = (unsigned)CombatNames::status("IGNORE_PARALYZE_NUGGET");                    // 0x65
+	static const int kBurningDeath = CombatNames::modelCondition("BURNINGDEATH");                                        // 544
+	GameLogic &logic = obj->logic();
+	const ObjectID banner = horde->bannerCarrier(); // RW 0x855298: slot 0x118, read once
+	for (int n = power->m_unitCost; n != 0; --n)
+	{
+		Object *member = horde->firstMemberNotKindOf(kBanner); // RW 0x8552B4
+		if (!member || (banner != INVALID_ID && member == logic.findObjectByID(banner)))
+		{
+			continue;
+		}
+		horde->removeFromContain(member);         // RW 0x8552CC
+		member->setStatus(kUpdatingAI, true);     // RW 0x8552D5
+		if (!member->testModelCondition(kBurningDeath))
+		{
+			member->setModelConditionState(kBurningDeath, true); // RW 0x8552E3 .. 0x8552EC
+		}
+		member->kill(DAMAGE_UNRESISTABLE, power->m_unitCostDeathType); // RW 0x855302
+		member->setStatus(kUnselectable, true);   // RW 0x85530D
+		member->setStatus(kIgnoreParalyze, true); // RW 0x855318
+	}
+	return true;
 }
 
 // RW 0x85393B
@@ -918,16 +1108,37 @@ void SpecialAbilityUpdate::approachTarget()
 		bird->aiAbilityMoveTo(*t->getPosition(), CMD_FROM_AI); // RW 0x852DC5(target, 2): AI command 0x48 -> RW 0x76A04A with the object's position
 		return;
 	}
+	// BFME2 SpecialAbilityUpdate::rva00450AE9 (0x450AE9) ignores the
+	// target obstacle before issuing its ability approach. AIMoveToState then
+	// keeps the object goal instead of adjusting it outside the capture range.
+	ai->mover().ignoreObstacle(t->getID());
 	// RW 0x853AEE: a structure target, a target on another layer or StartAbilityRange <= 50 (RW 0xBD88C4) moves to the object (AI command 0x48);
 	// otherwise the approach point at StartAbilityRange (RW 0x851607, a pathfinder cell walk: S-859) is also the object here
 	ai->aiMoveToObject(t, CMD_FROM_AI);
+}
+
+// RW 0x85241F (lane MODCOMPAT-MOD1): SPECIAL_GRAB_PASSENGER (0x27) with a target that is neither SHRUBBERY (template + 0x108 bit 6) nor GRAB_AND_KILL
+// (+ 0x114 bit 3) prepares 0 frames (it triggers at once); else PreparationTime
+unsigned SpecialAbilityUpdate::preparationFrames() const
+{
+	if (m_data->m_specialPowerTemplate && m_data->m_specialPowerTemplate->m_type == 0x27)
+	{
+		static const int kShrubbery = ObjectTemplateInfoBuilder::kindOfIndex("SHRUBBERY");
+		static const int kGrabAndKill = ObjectTemplateInfoBuilder::kindOfIndex("GRAB_AND_KILL");
+		const Object *t = target();
+		if (t && !(kShrubbery >= 0 && t->isKindOf((unsigned)kShrubbery)) && !(kGrabAndKill >= 0 && t->isKindOf((unsigned)kGrabAndKill)))
+		{
+			return 0;
+		}
+	}
+	return m_data->m_preparationFrames;
 }
 
 // RW 0x853BEC
 void SpecialAbilityUpdate::startPreparation()
 {
 	Object *obj = getObject();
-	m_prepFrames = m_data->m_preparationFrames; // RW 0x85241F (the garrison enum 0x27 answers 0: S-860)
+	m_prepFrames = preparationFrames(); // RW 0x85241F
 	if (m_prepFrames != 0)
 	{
 		// RW 0x853C1B: the AI faces the target (vslot 0xEC: S-859); PREPARING on, UNPACKING / RAISING_FLAG off, the unpacking variation
@@ -974,6 +1185,11 @@ bool SpecialAbilityUpdate::withinAbortRange() const
 			return true;
 		}
 		dist2 = CircleDistanceSquaredToPoint(*obj->getPosition(), CombatQueries::boundingCircleRadius(*obj), m_targetPos);
+		// lane STARTRANGE-1: RW 0x8523FC .. 0x85240B: SPECIAL_GRAB_PASSENGER (0x27) takes 400.0 (RW 0xC55874) off it here too (subss)
+		if (m_data->m_specialPowerTemplate && m_data->m_specialPowerTemplate->m_type == 0x27)
+		{
+			dist2 = SimMath::sseSub(dist2, 400.0f);
+		}
 	}
 	else if (const Object *t = target())
 	{
@@ -1082,9 +1298,13 @@ void SpecialAbilityUpdate::triggerAbilityEffect()
 			return; // RW 0x854901: a capture that does not happen skips the common end (stealth, freeze, modifier)
 		}
 	}
-	else if (type == 0x15 || type == 0x27 || type == 0x28 || type == 0x2A)
+	else if (type == 0x27 || type == 0x28)
 	{
-		++m_unported; // the capture / garrison / charge / SpecialDisguiseUpdate cancel (0x85) / weather enums of the switch: S-860
+		grabTrigger(type);
+	}
+	else if (type == 0x15 || type == 0x2A)
+	{
+		++m_unported; // the laser-guided missiles / charge enums of the switch: S-860
 	}
 	if (m_data->m_loseStealthOnTrigger)
 	{
@@ -1105,6 +1325,86 @@ void SpecialAbilityUpdate::triggerAbilityEffect()
 		obj->addAttributeModifier(m_data->m_triggerAttributeModifier, (int)m_data->m_attributeModifierDuration); // RW 0x68F1A8
 	}
 	(void)logic;
+}
+
+// lane MODCOMPAT-MOD1: RW 0x8540A1 .. 0x8544C8, the grab enums of the trigger (SPECIAL_GRAB_PASSENGER 0x27, SPECIAL_GRAB_CHUNK 0x28; the trigger count was
+// raised before). The first trigger, with the object's contain (+ 0x258; none: nothing): without a target object the tree at the target location within
+// 5.0 (RW 0xBDAE58, TheTerrainLogic RW 0x67F52B(loc, 5, 1, 1)) becomes a tree object (RW 0x68449B) that is the target: not ported (S-860, counted). A
+// CHUNK_VENDOR target of 0x28 or a ROCK_VENDOR target of 0x27 hands out its GrabObject (the body's slot 0x74, made by RW 0x6D165E, produced by the object
+// and contained) and is hurt (RW 0x697E50): not ported (S-860, counted). Any other target the contain accepts (slot 0x98(target, 1, 0)) leaves the horde
+// that holds it (the holder's horde interface slot 0x38) and is contained (slot 0x9C); a GRAB_AND_KILL target (template + 0x114 bit 3) shows PREPARING
+// (Object + 0x114 bit 31). The second trigger with a target: a SHRUBBERY target shows CLUB (+ 0x114 bit 27); a GRAB_AND_KILL one is let go (slot 0xA4(target,
+// 0)), PREPARING clears on the object and the target, the object shows the UnpackingVariation's PACKING_TYPE and the ability has no target (+ 0x7D)
+void SpecialAbilityUpdate::grabTrigger(int type)
+{
+	Object *obj = getObject();
+	Object *t = target();
+	static const int kShrubbery = ObjectTemplateInfoBuilder::kindOfIndex("SHRUBBERY");
+	static const int kGrabAndKill = ObjectTemplateInfoBuilder::kindOfIndex("GRAB_AND_KILL");
+	static const int kChunkVendor = ObjectTemplateInfoBuilder::kindOfIndex("CHUNK_VENDOR");
+	static const int kRockVendor = ObjectTemplateInfoBuilder::kindOfIndex("ROCK_VENDOR");
+	static const int kClub = CombatNames::modelCondition("CLUB"); // 91
+	auto kind = [](const Object &o, int bit) { return bit >= 0 && o.isKindOf((unsigned)bit); };
+	if (m_triggerCount == 1)
+	{
+		ContainModuleInterface *contain = obj->getContain();
+		if (!contain)
+		{
+			return;
+		}
+		if (!t)
+		{
+			++m_unported; // RW 0x8540D4 .. 0x854112: the tree object at the location (S-860)
+			obj->logic().noteStop("[S-860] SpecialAbilityUpdate: the grab of a tree (RW 0x68449B makes the tree an object) is not ported");
+			return;
+		}
+		const bool vendor = (kind(*t, kChunkVendor) && type == 0x28) || (kind(*t, kRockVendor) && type == 0x27);
+		if (vendor)
+		{
+			++m_unported; // RW 0x85415C .. 0x854348: the vendor's GrabObject (S-860)
+			obj->logic().noteStop("[S-860] SpecialAbilityUpdate: the grab of a ROCK_VENDOR / CHUNK_VENDOR (its GrabObject made and held, the vendor hurt, RW 0x85415C) is not ported");
+			return;
+		}
+		if (!contain->isValidContainerFor(*t, true, false)) // slot 0x98(target, 1, 0)
+		{
+			return;
+		}
+		if (Object *holder = t->getContainedBy()) // + 0x27C
+		{
+			ContainModuleInterface *hc = holder->getContain();
+			if (hc && hc->getHordeContainInterface())
+			{
+				hc->removeFromContain(t); // the horde interface's slot 0x38 (RW 0x87393E removeMemberFromHorde), as GiantBirdAIUpdate's grab
+			}
+		}
+		contain->addToContain(t); // slot 0x9C
+		if (kind(*t, kGrabAndKill))
+		{
+			setCondition(*t, kMcPreparing, true); // + 0x114 |= 0x80000000
+		}
+		return;
+	}
+	if (m_triggerCount != 2 || !t)
+	{
+		return;
+	}
+	if (kind(*t, kShrubbery))
+	{
+		setCondition(*t, kClub, true); // + 0x114 |= 0x8000000
+		return;
+	}
+	if (!kind(*t, kGrabAndKill))
+	{
+		return;
+	}
+	if (ContainModuleInterface *contain = obj->getContain())
+	{
+		contain->removeFromContain(t); // slot 0xA4(target, 0)
+	}
+	setCondition(*obj, kMcPreparing, false);
+	setCondition(*t, kMcPreparing, false);
+	setUnpackingVariation(); // RW 0x85444A .. 0x8544BD: the data's UnpackingVariation (+ 0x6C) as at RW 0x853C64
+	m_noTarget = true;       // + 0x7D
 }
 
 // lane HERO-2: RW 0x8544F2 .. 0x854772, the capture of SpecialAbilityUpdate's trigger (SPECIAL_INFANTRY_CAPTURE_BUILDING 0x1D, SPECIAL_BLACKLOTUS 0x1A). The
@@ -1136,9 +1436,7 @@ bool SpecialAbilityUpdate::captureTarget(SpecialPowerModule *spm)
 	}
 	else
 	{
-		static const int kLinked = ObjectTemplateInfoBuilder::kindOfIndex("LINKED_TO_FLAG"); // KindOf 0x32
-		PartitionFilterFn linked([](Object &o) { return kLinked >= 0 && o.isKindOf((unsigned)kLinked); });
-		building = logic.partition().getClosestObject(*t->getPosition(), 150.0f, FROM_CENTER_3D, { &linked });
+		building = CaptureLinks::buildingForFlag(*t);
 		if (!building)
 		{
 			return false;
@@ -1324,6 +1622,81 @@ void SpecialAbilityUpdate::startUnpacking()
 }
 
 // RW 0x8530BA
+// lane MODCOMPAT-MOD1: RW 0x85321E .. 0x853367, finishAbility's grab enums. Object + 0x4A4 is cleared (a field this engine does not read: unidentified). The
+// target loses TAGGED (status 0x3F). After exactly one trigger: a SHRUBBERY target shows CLUB; else a CHUNK_VENDOR target clears the object's model condition
+// 176 (+ 0x122 bit 0). Then, when the command options (+ 0x6C) have 0x4000 (the eat), the object's contain eats the target after the grab's TriggerTime
+// (contain slot 0xAC, RW 0x865853: GrabPassengerAnimAndDuration + 8), the body's health becomes min(100, health / max * 100 + GrabPassengerHealGainPercent)
+// percent (body slots 0x14 / 0x58(percent, 0)), the object and the target show the grab's AnimState for its AnimTime (RW 0x68B581) and the object's AI is
+// busy for AnimTime (RW 0x852E2A(frames, 2))
+void SpecialAbilityUpdate::grabFinish()
+{
+	Object *obj = getObject();
+	Object *t = target();
+	if (!t)
+	{
+		return;
+	}
+	static const int kTagged = ObjectTemplateInfoBuilder::objectStatusIndex("TAGGED"); // 0x3F
+	if (kTagged < 0)
+	{
+		throw std::logic_error("SpecialAbilityUpdate RW 0x85324A: no TAGGED object status");
+	}
+	t->setStatus((unsigned)kTagged, false);
+	if (m_triggerCount != 1)
+	{
+		return;
+	}
+	static const int kShrubbery = ObjectTemplateInfoBuilder::kindOfIndex("SHRUBBERY");
+	static const int kChunkVendor = ObjectTemplateInfoBuilder::kindOfIndex("CHUNK_VENDOR");
+	static const int kClub = CombatNames::modelCondition("CLUB"); // 91: + 0x114 bit 27
+	if (kShrubbery >= 0 && t->isKindOf((unsigned)kShrubbery))
+	{
+		setCondition(*t, kClub, true);
+	}
+	else if (kChunkVendor >= 0 && t->isKindOf((unsigned)kChunkVendor))
+	{
+		setCondition(*obj, 176, false); // + 0x122 bit 0
+	}
+	if ((m_options & 0x4000u) == 0) // byte + 0x6D bit 6
+	{
+		return;
+	}
+	ContainModuleInterface *contain = obj->getContain();
+	if (!contain)
+	{
+		return;
+	}
+	OpenContain *open = dynamic_cast<OpenContain *>(contain);
+	if (!open)
+	{
+		throw std::logic_error("SpecialAbilityUpdate RW 0x8532EF: the grab's eat on a contain that is not an OpenContain (contain slot 0xAC is OpenContain's RW 0x865853)");
+	}
+	open->eatPassengerAfter(*t, (int)m_data->m_grabTriggerFrames, *obj);
+	if (BodyModuleInterface *body = obj->getBodyModule())
+	{
+		// RW 0x8532F9 .. 0x853324: body slot 0x14 (ActiveBody RW 0x8C1D75: health / max in the FPU, 0 without a positive max), fmul 100.0f (RW 0xBD88D8),
+		// fadd the heal gain (data + 0x30), fstp float [EBP - 0x14]; fcomip against 100.0f: above it, 100 (Sol review: the x87 24-bit precision control the
+		// game runs at, as ConstructionModules' percentOfHealth)
+		const float maxHealth = body->getMaxHealth();
+		const double fraction = maxHealth > 0.0f ? SimMath::pc24DivW((double)body->getHealth(), (double)maxHealth) : 0.0;
+		float percent = SimMath::fstpDword(SimMath::pc24AddW(SimMath::pc24MulW(fraction, 100.0), (double)m_data->m_grabPassengerHealGainPercent));
+		if (100.0f < percent)
+		{
+			percent = 100.0f;
+		}
+		body->setInitialHealthPercent(percent); // slot 0x58(percent, 0)
+	}
+	if (m_data->m_grabAnimCondition >= 0)
+	{
+		obj->setSpecialModelConditionState(m_data->m_grabAnimCondition, m_data->m_grabAnimFrames); // RW 0x68B581(+ 0x24, + 0x28)
+		t->setSpecialModelConditionState(m_data->m_grabAnimCondition, m_data->m_grabAnimFrames);
+	}
+	if (AIUpdateInterface *ai = obj->getAIUpdateInterface())
+	{
+		ai->aiBusyFor(m_data->m_grabAnimFrames, CMD_FROM_AI); // RW 0x852E2A(+ 0x28, 2)
+	}
+}
+
 void SpecialAbilityUpdate::finishAbility(bool ownerDying, bool aborted)
 {
 	Object *obj = getObject();
@@ -1349,6 +1722,10 @@ void SpecialAbilityUpdate::finishAbility(bool ownerDying, bool aborted)
 		{
 			heal->waitForButton();
 		}
+	}
+	if (type == 0x27 || type == 0x28)
+	{
+		grabFinish();
 	}
 	if (type == 0x1D || type == 0x1A)
 	{
@@ -1429,13 +1806,26 @@ Weapon *WeaponFireSpecialAbilityUpdate::specialWeapon()
 	{
 		m_weaponMade = true;
 		const WeaponTemplate *wt = TheWeaponStore ? TheWeaponStore->findWeaponTemplate(m_wf->m_specialWeapon) : nullptr;
-		ObjectWeapons *w = getObject()->getWeapons();
+		ObjectWeapons *w = wt ? weaponHost() : nullptr;
 		if (wt && w)
 		{
 			m_weapon = w->makeExtraWeapon(wt);
 		}
 	}
 	return m_weapon.get();
+}
+
+ObjectWeapons *WeaponFireSpecialAbilityUpdate::weaponHost()
+{
+	if (ObjectWeapons *w = getObject()->getWeapons())
+	{
+		return w;
+	}
+	if (!m_ownHost)
+	{
+		m_ownHost = std::make_unique<ObjectWeapons>(*getObject()); // lane WALL-1: an object without a weapon set (see m_ownHost)
+	}
+	return m_ownHost.get();
 }
 
 WeaponFireSpecialAbilityUpdate::~WeaponFireSpecialAbilityUpdate() = default;
@@ -1487,7 +1877,7 @@ void WeaponFireSpecialAbilityUpdate::startUnpacking()
 void WeaponFireSpecialAbilityUpdate::triggerAbilityEffect()
 {
 	Object *obj = getObject();
-	ObjectWeapons *weapons = obj->getWeapons();
+	ObjectWeapons *weapons = specialWeapon() ? weaponHost() : obj->getWeapons();
 	// RW 0x896210: the FiringTracker's RW 0x8E302A(1) (the object's + 0x248) is COMBAT-1's: not called here
 	if (!(isHorde(*obj) && m_data->m_suppressForHordes))
 	{
@@ -1548,6 +1938,169 @@ void WeaponFireSpecialAbilityUpdate::crc(StateHasher &h) const
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
+// the mount toggle, the replacement and the emotion pulse (ToggleMounted, ModelCondition and SummonReplacement share them; lane SUMMON-1 split them out)
+// ---------------------------------------------------------------------------------------------------------------------------------
+namespace
+{
+// RW 0x8B1690 / RW 0x8B2584, the branch with no MountedTemplate: MOUNTED on (locomotor set 7, weapon set MOUNTED, armor set MOUNTED) or off
+void toggleMount(Object &obj, AIUpdateInterface &ai, bool cancelDisguiseWhenDismounting, unsigned long long &unported)
+{
+	ObjectWeapons *weapons = obj.getWeapons();
+	if (!obj.testModelCondition(kMcMounted))
+	{
+		setCondition(obj, kMcMounted, true);           // Object + 0x124 bit 22
+		ai.chooseLocomotorSet(kLocomotorSetMounted);   // AI vslot 0x238(7)
+		if (weapons)
+		{
+			weapons->setWeaponSetFlag(kWeaponSetMounted, true); // RW 0x691059(0x15)
+		}
+		obj.setArmorSetFlag(kArmorSetMounted, true);   // RW 0x68BE59(6)
+		return;
+	}
+	if (ContainModuleInterface *c = obj.getContain())
+	{
+		if (c->getContainCount() != 0)
+		{
+			++unported; // RW 0x8B1722: the contain ejects its riders (vslot 0xA8: S-861)
+		}
+	}
+	setCondition(obj, kMcMounted, false);
+	ai.chooseLocomotorSet(0);
+	if (weapons)
+	{
+		weapons->setWeaponSetFlag(kWeaponSetMounted, false); // RW 0x691106(0x15)
+	}
+	obj.setArmorSetFlag(kArmorSetMounted, false);  // RW 0x68BE6B(6)
+	if (cancelDisguiseWhenDismounting && obj.testModelCondition(300))
+	{
+		// RW 0x8B175F .. 0x8B17C2 (lane HERO-2): a DISGUISED object's SpecialDisguiseUpdate ends the disguise, keeping the look (RW 0x8B4702(1))
+		if (SpecialDisguiseUpdate *sd = SpecialDisguiseUpdate::of(obj))
+		{
+			sd->cancelDisguise(true);
+		}
+	}
+}
+
+// lane HERO-2: RW 0x8B140D (ToggleMounted) and lane SUMMON-1: RW 0x8B228C (SummonReplacement), the same instructions over each data's MountedTemplate /
+// SynchronizeTimerOnSpecialPower. MountedTemplate (RW 0x6D1305) is built now by the build assistant (vslot 0x38, RW 0x7978A1: Construction::buildObjectNow)
+// at the object's position and angle for its controlling player; the old object's score count goes (RW 0x79F0E1(old, -1)); the new one takes the name
+// (+ 0x88), the experience (setExperienceAndLevel with the tracker's +0x3C cleared around it, RW 0x8B14C2 .. 0x8B14EC), the health (body vslot 0xAC with
+// the old body's vslot 0x10), the team (RW 0x69954A) and the synchronised power timers (SynchronizeTimerOnSpecialPower, RW 0x8B12BF / 0x8B2135 ->
+// 0x897368); the old one is removed after its packing (RW 0x8B1E9A). Not ported (S-861): + 0x488 (RW 0x5EA74E), the AI's group (RW 0x68B36F ->
+// 0x6682B1), the script engine's name record (RW 0x60A1D5), the last AI command given again (RW 0x66D7C9 / 0x66B4DF); the selection, the hotkey group and
+// the drawable are the client's. The new object, null when none was made.
+Object *replaceWithTemplate(Object &old, const std::string &mountedTemplate, const std::vector<std::string> &synchronize, const char *module)
+{
+	GameLogic &logic = old.logic();
+	const ThingTemplate *tmpl = logic.things().findTemplate(mountedTemplate);
+	Player *owner = old.getControllingPlayer();
+	if (!tmpl || !owner)
+	{
+		if (!tmpl)
+		{
+			logic.reportError(std::string(module) + ": MountedTemplate '" + mountedTemplate + "' is not a template (RW 0x6D1305)");
+		}
+		return nullptr;
+	}
+	Object *n = Construction::buildObjectNow(logic, &old, *tmpl, *old.getPosition(), old.getOrientation(), *owner);
+	if (!n)
+	{
+		return nullptr;
+	}
+	owner->getScoreKeeper().addObjectBuilt(logic, old, -1); // RW 0x8B1499
+	n->setName(old.getName());                              // RW 0x8B14AB
+	if (ExperienceTracker *nt = n->getExperienceTracker())
+	{
+		if (const ExperienceTracker *ot = old.getExperienceTracker())
+		{
+			nt->setDefaultFeedback(false);
+			nt->setExperienceAndLevel(ot->getExperience(), true); // RW 0x79D8EF(experience, 1)
+			nt->setDefaultFeedback(true);
+		}
+	}
+	ActiveBody *nb = dynamic_cast<ActiveBody *>(n->getBodyModule());
+	if (nb && old.getBodyModule())
+	{
+		nb->friend_setHealthRaw(old.getBodyModule()->getHealth()); // body vslot 0xAC (vslot 0x10 of the old body)
+	}
+	if (n->getAIUpdateInterface())
+	{
+		n->setTeam(old.getTeam()); // RW 0x8B156D
+	}
+	n->setName(old.getName());     // RW 0x8B157F
+	// RW 0x8B12BF / 0x8B2135: SynchronizeTimerOnSpecialPower
+	for (const std::string &name : synchronize)
+	{
+		const SpecialPowerTemplate *t = TheSpecialPowerStore ? TheSpecialPowerStore->findSpecialPowerTemplate(name) : nullptr; // RW 0x69C146
+		SpecialPowerModule *src = t ? dynamic_cast<SpecialPowerModule *>(SpecialPowerModules::findModule(old, t)) : nullptr; // RW 0x68C26D
+		SpecialPowerModule *dst = t ? dynamic_cast<SpecialPowerModule *>(SpecialPowerModules::findModule(*n, t)) : nullptr;
+		if (src && dst)
+		{
+			dst->copyTimerFrom(*src); // RW 0x897368
+		}
+	}
+	return n;
+}
+
+// RW 0x8B1FDA (lane SUMMON-1): an object whose current locomotor (AI + 0x1F0, RW 0x68B31D) has a max speed of 0 for its condition (RW 0x5E3F49) refuses the
+// initiate (no IGNORE_AI_COMMAND either); an object without AI or locomotor does not
+bool mountInitiateRefused(const Object &obj)
+{
+	const AIUpdateInterface *ai = obj.getAIUpdateInterface();
+	return ai && ai->curLocomotor() && ai->curLocomotorSpeed() == 0.0f;
+}
+
+// WhichSpecialPower (RW 0x89455B / 0x8945C1 / 0x8B208A: 0 USER_... at Object + 0x134 bit 10, 1 .. 3 SPECIAL_POWER_1 .. 3 at + 0x124 bits 19 .. 21)
+int whichSpecialPowerCondition(int which)
+{
+	switch (which)
+	{
+	case 0: return (0x134 - 0x10C) * 8 + 10;
+	case 1: return (0x124 - 0x10C) * 8 + 19;
+	case 2: return (0x124 - 0x10C) * 8 + 20;
+	case 3: return (0x124 - 0x10C) * 8 + 21;
+	default: return -1;
+	}
+}
+
+// RW 0x894701 (ModelCondition) / RW 0x8B2614 .. (SummonReplacement): ThePartitionManager within EmotionPulseRadius, distance type 0, unsorted, with the
+// filters RW 0xC1676C (the owner's ENEMIES: mask 4, flag 1; RW 0x66110A), RW 0xC0F374 (the same Object + 0x458 bit 3: never set) and the ObjectFilter for
+// the owner (RW 0xBE4CC8); every hit gets TERROR then UNCONTROLLABLE_FEAR from the object with delay 1 (RW 0x68F37F / 0x68F383; lane MODULES-2:
+// EmotionTrackerUpdate::requestEmotion). The emotion requests made.
+unsigned emotionPulse(Object &obj, const ModelConditionSpecialAbilityUpdateModuleData &d)
+{
+	if (!d.m_generateTerror && !d.m_generateUncontrollableFear)
+	{
+		return 0;
+	}
+	GameLogic &logic = obj.logic();
+	const Player *owner = obj.getControllingPlayer();
+	PartitionFilterFn victims([&](Object &o) {
+		if (!owner || owner->getRelationship(o.getTeam()) != ENEMIES)
+		{
+			return false;
+		}
+		return !d.m_objectFilter || ObjectFilterMatch::allows(logic, *d.m_objectFilter, o, owner);
+	});
+	unsigned made = 0;
+	for (const PartitionHit &hit : logic.partition().iterateObjectsInRange(*obj.getPosition(), d.m_emotionPulseRadius, FROM_CENTER_2D, { &victims }, ITER_FASTEST))
+	{
+		if (d.m_generateTerror)
+		{
+			EmotionTrackerUpdate::requestEmotion(*hit.object, EMOTION_TERROR, &obj, 1);
+			++made;
+		}
+		if (d.m_generateUncontrollableFear)
+		{
+			EmotionTrackerUpdate::requestEmotion(*hit.object, EMOTION_UNCONTROLLABLE_FEAR, &obj, 1);
+			++made;
+		}
+	}
+	return made;
+}
+} // namespace
+
+// ---------------------------------------------------------------------------------------------------------------------------------
 // ToggleMountedSpecialAbilityUpdate
 // ---------------------------------------------------------------------------------------------------------------------------------
 ToggleMountedSpecialAbilityUpdate::ToggleMountedSpecialAbilityUpdate(Thing *thing, const ToggleMountedSpecialAbilityUpdateModuleData *data)
@@ -1591,107 +2144,34 @@ void ToggleMountedSpecialAbilityUpdate::triggerAbilityEffect()
 		replaceWithMounted(); // RW 0x8B16D1 .. : the object is replaced by MountedTemplate (lane HERO-2)
 		return;
 	}
-	ObjectWeapons *weapons = obj->getWeapons();
-	if (!obj->testModelCondition(kMcMounted))
-	{
-		setCondition(*obj, kMcMounted, true);           // Object + 0x124 bit 22
-		ai->chooseLocomotorSet(kLocomotorSetMounted);   // AI vslot 0x238(7)
-		if (weapons)
-		{
-			weapons->setWeaponSetFlag(kWeaponSetMounted, true); // RW 0x691059(0x15)
-		}
-		obj->setArmorSetFlag(kArmorSetMounted, true);   // RW 0x68BE59(6)
-	}
-	else
-	{
-		if (ContainModuleInterface *c = obj->getContain())
-		{
-			if (c->getContainCount() != 0)
-			{
-				++m_unported; // RW 0x8B1722: the contain ejects its riders (vslot 0xA8: S-861)
-			}
-		}
-		setCondition(*obj, kMcMounted, false);
-		ai->chooseLocomotorSet(0);
-		if (weapons)
-		{
-			weapons->setWeaponSetFlag(kWeaponSetMounted, false); // RW 0x691106(0x15)
-		}
-		obj->setArmorSetFlag(kArmorSetMounted, false);  // RW 0x68BE6B(6)
-		if (m_tm->m_cancelDisguiseWhenDismounting && obj->testModelCondition(300))
-		{
-			// RW 0x8B175F .. 0x8B17C2 (lane HERO-2): a DISGUISED object's SpecialDisguiseUpdate ends the disguise, keeping the look (RW 0x8B4702(1))
-			if (SpecialDisguiseUpdate *sd = SpecialDisguiseUpdate::of(*obj))
-			{
-				sd->cancelDisguise(true);
-			}
-		}
-	}
+	toggleMount(*obj, *ai, m_tm->m_cancelDisguiseWhenDismounting, m_unported);
 	++m_toggles;
 	// RW 0x8B1803: the control bar of the selected object is marked dirty (client)
 }
 
-// lane HERO-2: RW 0x8B140D. MountedTemplate (RW 0x6D1305) is built now by the build assistant (vslot 0x38, RW 0x7978A1: Construction::buildObjectNow) at the
-// object's position and angle for its controlling player; the old object's score count goes (RW 0x79F0E1(old, -1)); the new one takes the name (+ 0x88),
-// the experience (setExperienceAndLevel with the tracker's +0x3C cleared around it, RW 0x8B14C2 .. 0x8B14EC), the health (body vslot 0xAC with the old
-// body's vslot 0x10), the team (RW 0x69954A) and the synchronised power timers (SynchronizeTimerOnSpecialPower, RW 0x8B12BF -> 0x897368); the old one is
-// removed after its packing (RW 0x8B1E9A). Not ported (S-861): + 0x488 (RW 0x5EA74E), the AI's group (RW 0x68B36F -> 0x6682B1), the script engine's name
-// record (RW 0x60A1D5), the last AI command given again (RW 0x66D7C9 / 0x66B4DF); the selection, the hotkey group and the drawable are the client's
+// RW 0x8B140D (see replaceWithTemplate)
 void ToggleMountedSpecialAbilityUpdate::replaceWithMounted()
 {
-	Object *old = getObject();
-	GameLogic &logic = old->logic();
-	const ThingTemplate *tmpl = logic.things().findTemplate(m_tm->m_mountedTemplate);
-	Player *owner = old->getControllingPlayer();
-	if (!tmpl || !owner)
-	{
-		if (!tmpl)
-		{
-			logic.reportError("ToggleMountedSpecialAbilityUpdate: MountedTemplate '" + m_tm->m_mountedTemplate + "' is not a template (RW 0x6D1305)");
-		}
-		return;
-	}
-	Object *n = Construction::buildObjectNow(logic, old, *tmpl, *old->getPosition(), old->getOrientation(), *owner);
+	Object *n = replaceWithTemplate(*getObject(), m_tm->m_mountedTemplate, m_tm->m_synchronizeTimerOnSpecialPower, "ToggleMountedSpecialAbilityUpdate");
 	if (!n)
 	{
 		return;
-	}
-	owner->getScoreKeeper().addObjectBuilt(logic, *old, -1); // RW 0x8B1499
-	n->setName(old->getName());                              // RW 0x8B14AB
-	if (ExperienceTracker *nt = n->getExperienceTracker())
-	{
-		if (const ExperienceTracker *ot = old->getExperienceTracker())
-		{
-			nt->setDefaultFeedback(false);
-			nt->setExperienceAndLevel(ot->getExperience(), true); // RW 0x79D8EF(experience, 1)
-			nt->setDefaultFeedback(true);
-		}
-	}
-	ActiveBody *nb = dynamic_cast<ActiveBody *>(n->getBodyModule());
-	if (nb && old->getBodyModule())
-	{
-		nb->friend_setHealthRaw(old->getBodyModule()->getHealth()); // body vslot 0xAC (vslot 0x10 of the old body)
-	}
-	if (n->getAIUpdateInterface())
-	{
-		n->setTeam(old->getTeam()); // RW 0x8B156D
-	}
-	n->setName(old->getName());     // RW 0x8B157F
-	// RW 0x8B12BF: SynchronizeTimerOnSpecialPower
-	for (const std::string &name : m_tm->m_synchronizeTimerOnSpecialPower)
-	{
-		const SpecialPowerTemplate *t = TheSpecialPowerStore ? TheSpecialPowerStore->findSpecialPowerTemplate(name) : nullptr; // RW 0x69C146
-		SpecialPowerModule *src = t ? dynamic_cast<SpecialPowerModule *>(SpecialPowerModules::findModule(*old, t)) : nullptr; // RW 0x68C26D
-		SpecialPowerModule *dst = t ? dynamic_cast<SpecialPowerModule *>(SpecialPowerModules::findModule(*n, t)) : nullptr;
-		if (src && dst)
-		{
-			dst->copyTimerFrom(*src); // RW 0x897368
-		}
 	}
 	++m_unported; // + 0x488, the AI group, the script name record and the last command (S-861)
 	m_replaceAfterPacking = true; // + 0x8C
 	m_replacement = n->getID();
 	++m_toggles;
+}
+
+// RW 0x8B1FDA (lane SUMMON-1)
+void ToggleMountedSpecialAbilityUpdate::initiateIntentToDoSpecialPower(const SpecialPowerTemplate *t, Object *targetObj, const Coord3D *loc, unsigned options, int extra)
+{
+	if (mountInitiateRefused(*getObject()))
+	{
+		return;
+	}
+	SpecialAbilityUpdate::initiateIntentToDoSpecialPower(t, targetObj, loc, options, extra);
+	getObject()->setStatus(kStatusIgnoreAI, true); // RW 0x8B201F: RW 0x62684D(0x4A, 1)
 }
 
 // RW 0x8B125F
@@ -1902,17 +2382,9 @@ ModelConditionSpecialAbilityUpdate::ModelConditionSpecialAbilityUpdate(Thing *th
 {
 }
 
-// WhichSpecialPower (RW 0x89455B: 0 USER_... at Object + 0x134 bit 10, 1 .. 3 SPECIAL_POWER_1 .. 3 at + 0x124 bits 19 .. 21)
 int ModelConditionSpecialAbilityUpdate::specialPowerCondition() const
 {
-	switch (m_mc->m_whichSpecialPower)
-	{
-	case 0: return (0x134 - 0x10C) * 8 + 10;
-	case 1: return (0x124 - 0x10C) * 8 + 19;
-	case 2: return (0x124 - 0x10C) * 8 + 20;
-	case 3: return (0x124 - 0x10C) * 8 + 21;
-	default: return -1;
-	}
+	return whichSpecialPowerCondition(m_mc->m_whichSpecialPower);
 }
 
 bool ModelConditionSpecialAbilityUpdate::continuePreparation()
@@ -1946,41 +2418,114 @@ void ModelConditionSpecialAbilityUpdate::finishAbility(bool ownerDying, bool abo
 void ModelConditionSpecialAbilityUpdate::triggerAbilityEffect()
 {
 	SpecialAbilityUpdate::triggerAbilityEffect();
-	if (!m_mc->m_generateTerror && !m_mc->m_generateUncontrollableFear)
-	{
-		return;
-	}
-	Object *obj = getObject();
-	GameLogic &logic = obj->logic();
-	const Player *owner = obj->getControllingPlayer();
-	// RW 0x894701: ThePartitionManager within EmotionPulseRadius, distance type 0, unsorted, with the filters RW 0xC1676C (the owner's ENEMIES: mask 4, flag 1;
-	// RW 0x66110A), RW 0xC0F374 (the same Object + 0x458 bit 3: never set) and the ObjectFilter for the owner (RW 0xBE4CC8); every hit gets TERROR then
-	// UNCONTROLLABLE_FEAR from the object with delay 1 (RW 0x89472D / 0x894745 -> RW 0x68F37F; lane MODULES-2: EmotionTrackerUpdate::requestEmotion)
-	PartitionFilterFn victims([&](Object &o) {
-		if (!owner || owner->getRelationship(o.getTeam()) != ENEMIES)
-		{
-			return false;
-		}
-		return !m_mc->m_objectFilter || ObjectFilterMatch::allows(logic, *m_mc->m_objectFilter, o, owner);
-	});
-	for (const PartitionHit &hit : logic.partition().iterateObjectsInRange(*obj->getPosition(), m_mc->m_emotionPulseRadius, FROM_CENTER_2D, { &victims }, ITER_FASTEST))
-	{
-		if (m_mc->m_generateTerror)
-		{
-			EmotionTrackerUpdate::requestEmotion(*hit.object, EMOTION_TERROR, obj, 1);
-			++m_emotions;
-		}
-		if (m_mc->m_generateUncontrollableFear)
-		{
-			EmotionTrackerUpdate::requestEmotion(*hit.object, EMOTION_UNCONTROLLABLE_FEAR, obj, 1);
-			++m_emotions;
-		}
-	}
+	m_emotions += emotionPulse(*getObject(), *m_mc); // RW 0x894701 (see emotionPulse)
 }
 
 void ModelConditionSpecialAbilityUpdate::crc(StateHasher &h) const
 {
 	SpecialAbilityUpdate::crc(h);
+	h.addU32(m_emotions);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// SummonReplacementSpecialAbilityUpdate (lane SUMMON-1)
+// ---------------------------------------------------------------------------------------------------------------------------------
+SummonReplacementSpecialAbilityUpdate::SummonReplacementSpecialAbilityUpdate(Thing *thing, const SummonReplacementSpecialAbilityUpdateModuleData *data)
+	: SpecialAbilityUpdate(thing, data)
+	, m_sr(data)
+{
+}
+
+// RW 0x8B1FBF: TriggerInstantlyOnCreate (+ 0xE4) jumps to the trigger (vslot 0x44)
+void SummonReplacementSpecialAbilityUpdate::onBuildComplete()
+{
+	if (m_sr->m_triggerInstantlyOnCreate)
+	{
+		triggerAbilityEffect();
+	}
+}
+
+// RW 0x8B1FDA (the slot ToggleMounted shares)
+void SummonReplacementSpecialAbilityUpdate::initiateIntentToDoSpecialPower(const SpecialPowerTemplate *t, Object *targetObj, const Coord3D *loc, unsigned options, int extra)
+{
+	if (mountInitiateRefused(*getObject()))
+	{
+		return;
+	}
+	SpecialAbilityUpdate::initiateIntentToDoSpecialPower(t, targetObj, loc, options, extra);
+	getObject()->setStatus(kStatusIgnoreAI, true); // RW 0x8B201F: RW 0x62684D(0x4A, 1)
+}
+
+// RW 0x89455B (ModelCondition's slot): the WhichSpecialPower condition on at the first unpack
+void SummonReplacementSpecialAbilityUpdate::startUnpacking()
+{
+	SpecialAbilityUpdate::startUnpacking();
+	if (m_triggerCount != 0)
+	{
+		return;
+	}
+	setCondition(*getObject(), whichSpecialPowerCondition(m_sr->m_whichSpecialPower), true);
+}
+
+// RW 0x8B2584: ToggleMounted's trigger (RW 0x8B1690) over + 0xE5 / + 0xE8 with the replacement RW 0x8B228C, then, still inside the AI's idle test,
+// ModelCondition's emotion pulse (RW 0x89463A's) for GenerateTerror / GenerateUncontrollableFear at any trigger count
+void SummonReplacementSpecialAbilityUpdate::triggerAbilityEffect()
+{
+	SpecialAbilityUpdate::triggerAbilityEffect();
+	Object *obj = getObject();
+	AIUpdateInterface *ai = obj->getAIUpdateInterface();
+	m_replaceAfterPacking = false; // RW 0x8B259D
+	if (!ai || !ai->isIdle()) // AI vslot 0x1B8 (retail reads the AI without a null test: an object with this module has one)
+	{
+		return;
+	}
+	if (m_triggerCount == 1)
+	{
+		if (m_sr->m_mountedTemplate.empty())
+		{
+			toggleMount(*obj, *ai, m_sr->m_cancelDisguiseWhenDismounting, m_unported);
+			++m_summons;
+		}
+		else if (Object *n = replaceWithTemplate(*obj, m_sr->m_mountedTemplate, m_sr->m_synchronizeTimerOnSpecialPower, "SummonReplacementSpecialAbilityUpdate"))
+		{
+			++m_unported; // + 0x488, the AI group, the script name record and the last command (S-861)
+			m_replaceAfterPacking = true; // RW 0x8B2502: + 0x8C
+			m_replacement = n->getID();
+			++m_summons;
+		}
+		// RW 0x8B25FB: the control bar of the selected object is marked dirty (client)
+	}
+	m_emotions += emotionPulse(*obj, *m_sr);
+}
+
+// RW 0x8B202A (ToggleMounted's RW 0x8B125F over + 0xE8)
+void SummonReplacementSpecialAbilityUpdate::finishAfterPacking()
+{
+	SpecialAbilityUpdate::finishAfterPacking();
+	// RW 0x8B2036: the drawable's opacity back to 1.0 (client)
+	getObject()->setStatus(kStatusIgnoreAI, false); // RW 0x62684D(0x4A, 0)
+	if (m_replaceAfterPacking && !m_sr->m_mountedTemplate.empty())
+	{
+		Object *obj = getObject();
+		obj->logic().destroyObject(obj); // RW 0x8B1E9A (see ToggleMountedSpecialAbilityUpdate::finishAfterPacking)
+	}
+}
+
+// RW 0x8B208A: ToggleMounted's (RW 0x8B1219) then ModelCondition's WhichSpecialPower condition off (RW 0x8945C1's)
+void SummonReplacementSpecialAbilityUpdate::finishAbility(bool ownerDying, bool aborted)
+{
+	// RW 0x8B208D: the drawable's opacity back to 1.0 (client)
+	getObject()->setStatus(kStatusIgnoreAI, false);
+	SpecialAbilityUpdate::finishAbility(ownerDying, aborted);
+	setCondition(*getObject(), whichSpecialPowerCondition(m_sr->m_whichSpecialPower), false);
+}
+
+void SummonReplacementSpecialAbilityUpdate::crc(StateHasher &h) const
+{
+	SpecialAbilityUpdate::crc(h);
+	h.addBool(m_replaceAfterPacking);
+	h.addU32(m_summons);
+	h.addU32(m_replacement);
 	h.addU32(m_emotions);
 }
 
@@ -2193,26 +2738,30 @@ void SpecialAbilityModules::registerAll(ModuleFactory &modules)
 	bindRuntime<LevelGrantSpecialPower, LevelGrantSpecialPowerModuleData>(modules, "LevelGrantSpecialPower");
 	bindRuntime<ModelConditionSpecialAbilityUpdate, ModelConditionSpecialAbilityUpdateModuleData>(modules, "ModelConditionSpecialAbilityUpdate");
 	bindRuntime<SpecialDisguiseUpdate, SpecialDisguiseUpdateModuleData>(modules, "SpecialDisguiseUpdate"); // lane HERO-2
+	bindRuntime<SummonReplacementSpecialAbilityUpdate, SummonReplacementSpecialAbilityUpdateModuleData>(modules, "SummonReplacementSpecialAbilityUpdate"); // lane SUMMON-1: RW 0x659991
 	HeroAbilityModules::registerAll(modules);                                                              // lane HERO-2
 }
 
 std::vector<std::string> SpecialAbilityModules::stopLines()
 {
 	return {
-		"[S-859] SpecialAbilityUpdate details not ported: the face command before the trigger (AI command RW 0x7C81B9 / 0x7C821E: the check passes the frame after the AI's idle, no turn) "
-		"only), the line of sight of ApproachRequiresLOS (RW 0x6613D3 / 0x6616AC: always clear), the approach point RW 0x851607 (the move goes to the object), "
+		"[S-859] SpecialAbilityUpdate details not ported: the approach point RW 0x851607 (the move goes to the object), "
 		"Object + 0xA0 bit 6 in the command source test, PreTriggerUnstealthTime (DisableWhenWearingTheRing and LoseStealthOnTrigger: lane STEALTH-2), the paralysis "
 		"commands, FlipOwnerAfterPacking / Unpacking, FleeRangeAfterCompletion, ChainedButton, a horde's SPECIAL_WEAPON condition to its members, the power "
 		"module's finish notice (vslot 0x4C), sounds and voices (client): each counted (unported())",
 		"[S-860] SpecialAbilityUpdate ability enums not ported: SPECIAL_MISSILE_DEFENDER_LASER_GUIDED_MISSILES (0x15), the black lotus capture's special objects "
 		"(0x1A; SPECIAL_INFANTRY_CAPTURE_BUILDING 0x1D runs: lane HERO-2, S-1225), "
-		"SPECIAL_GRAB_PASSENGER / SPECIAL_GRAB_CHUNK (0x27 / 0x28) and SPECIAL_CHARGE_ATTACK (0x2A) in the trigger / preparation / packing (the 0x20 disguise trigger "
-		"RW 0x8544CD runs: lane STEALTH-2; SPECIAL_SCREECH 0x89, the disguise cancels 0x84 / 0x85: lane HERO-2), the special objects (SpecialObject: no retail use), "
-		"GrabPassengerAnimAndDuration, ContactPointOverride, the unit cost of the summoning templates (+ 0x80): counted",
+		"SPECIAL_CHARGE_ATTACK (0x2A) in the trigger / preparation / packing (the 0x20 disguise trigger RW 0x8544CD runs: lane STEALTH-2; SPECIAL_SCREECH 0x89, the "
+		"disguise cancels 0x84 / 0x85: lane HERO-2; the grab enums SPECIAL_GRAB_PASSENGER / SPECIAL_GRAB_CHUNK 0x27 / 0x28 run since lane MODCOMPAT-MOD1: the "
+		"object grab, its hold, release and eat), the grab of a tree (RW 0x68449B makes it an object) and of a ROCK_VENDOR / CHUNK_VENDOR (its GrabObject, RW "
+		"0x85415C), the 0x28 unpack model condition (RW 0x85384C), the special objects (SpecialObject: no retail use), ContactPointOverride: counted (the "
+		"unit cost + 0x80 is paid since lane NECRODIE-1, RW 0x85521F)",
 		"[S-861] ToggleMountedSpecialAbilityUpdate: the toggle, CancelDisguiseWhenDismounting and MountedTemplate (the replacement RW 0x8B140D: Construction::"
 		"buildObjectNow, name, experience, health, team, SynchronizeTimerOnSpecialPower; the old object destroyed after its packing, RW 0x8B1E9A) run (lane "
-		"HERO-2); not ported: the replacement's + 0x488 (RW 0x5EA74E), the AI group (RW 0x68B36F -> 0x6682B1), the script engine's name record (RW 0x60A1D5) "
-		"and the last AI command given again (RW 0x66D7C9), the riders' eject on dismount, the opacity fade (client): counted",
+		"HERO-2); lane SUMMON-1: the initiate RW 0x8B1FDA (a current locomotor of speed 0 refuses, else IGNORE_AI_COMMAND) and SummonReplacementSpecialAbilityUpdate "
+		"(the Thrall Master: RW 0x8B228C, the same replacement over its own data) run; not ported: the replacement's + 0x488 (RW 0x5EA74E), the AI group (RW "
+		"0x68B36F -> 0x6682B1), the script engine's name record (RW 0x60A1D5) and the last AI command given again (RW 0x66D7C9), the riders' eject on dismount, the "
+		"opacity fade (client): counted",
 		"[S-863] the retail ability run (test_hero_retail.cpp checkAbilities) reports, per faction, the abilities whose effect it cannot see; Screech, the fell beasts' landing and the Horn of Gondor are measured since lane HERO-2. Explained by the run's conditions: Train Archers (LevelGrantSpecialPower: none of its AcceptanceFilter's archers is near), Glorfindel's Wind Rider and the Goblin King's Poisoned Stinger (RequiredConditions MOUNTED: cast unmounted, refused as retail refuses them), Thranduil's Move Unseen (no ally in its radius), Gandalf's Part the Heavens (OCLSpecialPower: the OCL's objects are not measured), the passive / fake leadership buttons, the level attack (S-1223), ActivateModuleSpecialPower's dummy power, Sharku's Man-Eater Drop (FlingPassengerSpecialAbilityUpdate with TransportContain: lane GARRISON-2). Explained too: Faramir's mount toggle in the faction run (he is attacking at both triggers and the retail idle gate, RW 0x8B1690, the AI's isIdle, refuses the mount; alone and idle he mounts)",
 	};
 }
@@ -2339,6 +2888,16 @@ void ModelConditionSpecialAbilityUpdate::xfer(Xfer &x)
 {
 	SnapshotXfer::version(x, 1, 1);
 	SpecialAbilityUpdate::xfer(x);
+	x.xferUnsignedInt(&m_emotions);
+}
+
+void SummonReplacementSpecialAbilityUpdate::xfer(Xfer &x)
+{
+	SnapshotXfer::version(x, 1, 1); // lane SUMMON-1
+	SpecialAbilityUpdate::xfer(x);
+	x.xferBool(&m_replaceAfterPacking);
+	x.xferUnsignedInt(&m_summons);
+	x.xferObjectID(&m_replacement);
 	x.xferUnsignedInt(&m_emotions);
 }
 

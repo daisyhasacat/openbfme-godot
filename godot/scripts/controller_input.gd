@@ -27,6 +27,7 @@ var _pan_resume_remaining := 0.0
 var _wait_stick_neutral := false
 var primary_button: Callable
 var attack_move: Callable
+var select_type: Callable
 var _last_primary_at := -1000
 var _last_primary_order := false
 var selection_assist_radius := 48.0
@@ -113,6 +114,7 @@ func _release_all(preserve_snap := false) -> void:
 	if not preserve_snap:
 		_left_trigger = false
 	_last_primary_order = false
+	_last_primary_at = -1000
 	if _construction_held:
 		_finish_construction_hold()
 	_rotation_keys.clear()
@@ -278,8 +280,13 @@ func _input(event: InputEvent) -> void:
 			_construction_held = _is_placing()
 			if center_cursor:
 				_pin_cursor()
-			_primary_mouse = int(primary_button.call()) if primary_button.is_valid() else MOUSE_BUTTON_LEFT
 			var now := Time.get_ticks_msec()
+			if not _construction_held and now - _last_primary_at <= 300 and select_type.is_valid() and select_type.call():
+				_primary_mouse = 0
+				_last_primary_at = -1000
+				_last_primary_order = false
+				return
+			_primary_mouse = int(primary_button.call()) if primary_button.is_valid() else MOUSE_BUTTON_LEFT
 			var double_order := not _construction_held and _last_primary_order and now - _last_primary_at <= 300
 			_last_primary_at = now
 			_last_primary_order = not _construction_held and _primary_mouse == MOUSE_BUTTON_RIGHT

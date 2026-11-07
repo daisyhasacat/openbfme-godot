@@ -3,6 +3,9 @@
 
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/AmbientAIUpdate.h"
+#include "GameLogic/AI/AIDock.h"
+#include "GameLogic/AI/AIHarvest.h"
+#include "GameLogic/Module/AmbientAIUpdate.h"
 #include "GameLogic/Module/PhysicsBehavior.h"
 #include "GameLogic/AI/AIFollowPathAsTeam.h"
 #include "GameLogic/AI/AIGarrisonStates.h"
@@ -17,13 +20,17 @@
 #include "Common/Thing/ModuleFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/AI/AIEmotionStates.h"
+#include "GameLogic/Module/SiegeModules.h"
+#include "GameLogic/Module/SquishCollide.h"
 #include "GameLogic/AI/AIAttackMelee.h"
 #include "GameLogic/AI/AIGuard.h"
 #include "GameLogic/AI/AIHunt.h"
 #include "GameLogic/AI/AIWaypointPath.h"
 #include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/AttributeModifiers.h"
 #include "GameLogic/BitFlags.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Module/GiantBirdAIUpdate.h"
 #include "GameLogic/Module/HordeAIUpdate.h"
 #include "GameLogic/Module/InvisibilityModules.h"
 #include "GameLogic/Module/UnportedModule.h"
@@ -43,49 +50,39 @@ namespace
 {
 const char *const kStopCommands =
 	"S-222 AIUpdateInterface executes the move / idle / follow-path / busy commands; every other AICommandType (attack, guard, hunt, enter, exit, dock, repair, wander, "
-	"face, waypoint paths, ...) is counted by AIUpdateInterface::unportedCommands() and does nothing (the combat and construction milestones port them)";
+	"waypoint paths, ...) is counted by AIUpdateInterface::unportedCommands() and does nothing (the combat and construction milestones port them)";
 const char *const kStopUpdate =
 	"S-222 AIUpdateInterface::update skips the turrets, the mood / auto-acquire scan, the dead-state machine and the surrender / demoralize timers (RW 0x6695EF blocks "
 	"that need weapons, bodies and emotions); the movement-complete refresh of the pathfinder goal is the B1 body (AIUpdate.cpp:2574-2594), RW forces m_doFinalPosition off";
 const char *const kStopLocomotor =
-	"S-222 chooseGoodLocomotorFromCurrentSet picks the first locomotor of the set whose surfaces fit the cell under the unit and otherwise the previous one or the "
-	"ground one (B1 AIUpdate.cpp:2385); the retail Pathfinder::chooseBestLocomotorForPosition was not read. The locomotor 'crusher' flag of the path searches (RW loco+0x15) is "
-	"ScalesWalls (inference)";
+	"S-222 chooseGoodLocomotorFromCurrentSet (RW 0x663D70; its fallback, SHIP surface 0x80 / slot 0x184 AIR / GROUND, and the flag clears are ported: lane LOCOPICK-1) "
+	"takes the first locomotor of the set whose surfaces fit the cell under the unit as the best one: the retail Pathfinder::chooseBestLocomotorForPosition (RW 0x6E8937) "
+	"was not read. The locomotor 'crusher' flag of the path searches (RW loco+0x15) is ScalesWalls (inference)";
 const char *const kStopStates =
 	"S-221 the AI state ids are BFME1's (Idle 0, MoveTo 1, FollowPath 6, FollowExitProductionPath 7, Wait 8, Busy 42; RotWK's own numbering is not read: RW tests 0x2A = Busy and "
 	"0x47 = a state RotWK added); AIIdleState::onEnter draws its random sleep offset as ZH does (GetGameLogicRandomValue(0, 10, \"AIStates.cpp\", 0x520)): the RW draw was not read, "
 	"so a retail replay's RNG sequence can differ at the first idle of every unit";
 const char *const kStopHost =
-	"S-222 the movement host reports no river (RiverModifier), no crew power, no speed attribute modifier, no charge order, no physics suppression and no turn limiting "
-	"(the modules behind RW 0x68BF11, 0x68C82D, 0x5E3A1B and the terrain river query are other lanes'); the pending position of the movers lives in the AI";
+	"S-222 the movement host reports no river (RiverModifier), no crew power, no charge order, no physics suppression and no turn limiting "
+	"(the modules behind RW 0x68BF11, 0x5E3A1B and the terrain river query are other lanes'); the pending position of the movers lives in the AI";
 
 // the registry bits, resolved once by name (a mod's own order cannot break them)
 int modelConditionIndex(const char *name)
 {
-	for (int i = 0; TheModelConditionNames[i]; ++i)
-	{
-		if (std::strcmp(TheModelConditionNames[i], name) == 0)
-		{
-			return i;
-		}
-	}
-	throw std::logic_error(std::string("model condition registry has no ") + name);
+	return CombatNames::modelCondition(name); // hashed (several callers ask per update)
 }
 
 int objectStatusBit(const char *name)
 {
-	const int bit = ObjectTemplateInfoBuilder::objectStatusIndex(name);
-	if (bit < 0)
-	{
-		throw std::logic_error(std::string("object status registry has no ") + name);
-	}
-	return bit;
+	return CombatNames::status(name);
 }
 
 struct StatusBits
 {
 	int hordeMember = objectStatusBit("HORDE_MEMBER");
 	int immobile = objectStatusBit("IMMOBILE");
+	int deployed = objectStatusBit("DEPLOYED");
+	int packingUsing = objectStatusBit("SPECIAL_ABILITY_PACKING_UNPACKING_OR_USING"); // 0x46 (lane BUMP-1)
 };
 const StatusBits &statusBits()
 {
@@ -100,6 +97,11 @@ struct KindBits
 	int dozer = ObjectTemplateInfoBuilder::kindOfIndex("DOZER");
 	int cavalry = ObjectTemplateInfoBuilder::kindOfIndex("CAVALRY");
 	int horde = ObjectTemplateInfoBuilder::kindOfIndex("HORDE");
+	int siegeTower = ObjectTemplateInfoBuilder::kindOfIndex("SIEGE_TOWER");
+	int projectile = ObjectTemplateInfoBuilder::kindOfIndex("PROJECTILE"); // RW template + 0x10B bit 1 (lane LOCODIST-1)
+	int ship = ObjectTemplateInfoBuilder::kindOfIndex("SHIP"); // RW template + 0x11F bit 7 (191; lane LOCOPICK-1)
+	int infantry = ObjectTemplateInfoBuilder::kindOfIndex("INFANTRY"); // RW template + 0x109 bit 0 (8; lane BUMP-1)
+	int largeRectangle = ObjectTemplateInfoBuilder::kindOfIndex("LARGE_RECTANGLE_PATHFIND"); // RW template + 0x11F bit 2 (186; lane BUMP-1)
 };
 const KindBits &kindBits()
 {
@@ -223,26 +225,30 @@ public:
 		const ContainModuleInterface *c = m_ai.getObject()->getContain();
 		return c ? c->getCrewPowerMultiplier() : 1.0f;
 	}
-	bool speedAttributeModifier(float &) const override { return false; }
+	bool speedAttributeModifier(float &out) const override
+	{
+		// TARGET: RW 0x5E4015 -> Object product 0x68C82D (type 8, no name, innate=true); Locomotor applies it at 0x5E401E.
+		// Query this object's pool only: HordeContain already propagates additions to the members (RW 0x870E50).
+		return obj().attributeModifierProduct(ATTRIBUTE_SPEED, nullptr, true, out);
+	}
 	bool isInRiver(float, float) const override { return false; }
 	bool isTurnLimited() const override { return !stationary(); }
 	bool isChargeOrdered() const override { return false; }
 	// RW 0x5E3A1B: Object + 0x264 (the PhysicsBehavior) byte + 0x5C, the shock stun (lane COMBAT-3)
 	bool physicsMotionDisabled() const override
 	{
-		if (!m_physicsLooked)
-		{
-			m_physics = PhysicsBehavior::find(obj()); // the modules never change after the object is made
-			m_physicsLooked = true;
-		}
-		return m_physics != nullptr && m_physics->isStunned();
+		const PhysicsBehavior *p = physics();
+		return p != nullptr && p->isStunned();
 	}
-	// lane EXIT-1: obj+0x264, the PhysicsBehavior RW caches at creation (RW 0x69A420); the port finds the module
-	bool hasPhysicsModule() const override { return PhysicsBehavior::find(obj()) != nullptr; }
+	// lane EXIT-1: obj+0x264, the PhysicsBehavior RW caches at creation (RW 0x69A420); the port's Object keeps it with its collide list (PhysicsBehavior::find)
+	bool hasPhysicsModule() const override { return physics() != nullptr; }
+	PhysicsBehavior *physics() const { return PhysicsBehavior::find(obj()); }
 	bool zMotionSuppressed() const override { return false; }
 	unsigned logicFrame() const override { return obj().logic().getFrame(); }
 	bool containerAllowsBackingUp() const override { return false; }
-	float groundHeightAt(float x, float y) const override { return obj().logic().getGroundHeight(x, y); }
+	// RW 0x5E774A: TheTerrainLogic vslot 0x1C at the object's layer (lane WALL-1: a wall top's or a ramp's height, Pathfinder::getLayerHeight)
+	float groundHeightAt(float x, float y) const override { return m_ai.layerHeightAt(x, y); }
+	bool isOnRampOrRaisedLayer() const override { return m_ai.isOnRampOrRaisedLayer(); }
 	LocomotorPath *getPath() override { return m_ai.m_mover->path(); }
 	bool testObjectStatus(int bit) const override { return bit >= 0 && obj().testStatus((unsigned)bit); }
 	bool testModelCondition(int bit) const override { return obj().testModelCondition(bit); }
@@ -349,8 +355,6 @@ private:
 	bool stationary() const { return m_ai.adapter().isStationary(); }
 
 	AIUpdateInterface &m_ai;
-	mutable PhysicsBehavior *m_physics = nullptr;
-	mutable bool m_physicsLooked = false;
 };
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -413,6 +417,11 @@ AIUpdateInterface::~AIUpdateInterface()
 		m_defectedMachine->halt();
 		m_defectedMachine.reset();
 	}
+	if (m_temporaryKeptMachine) // lane MODCOMPAT-MOD1: an object deleted while a temporary machine runs
+	{
+		m_temporaryKeptMachine->halt();
+		m_temporaryKeptMachine.reset();
+	}
 	m_turret.reset(); // after the machine: the attack state's exit clears the turret's target
 	if (m_world)
 	{
@@ -451,7 +460,11 @@ std::unique_ptr<AIStateMachine> AIUpdateInterface::makeStateMachine()
 	m->defineState(AI_BACK_AWAY, std::make_unique<AIBackAwayState>(*m), AI_IDLE, AI_IDLE);
 	m->defineState(AI_QUARREL, std::make_unique<AIQuarrelState>(*m), AI_IDLE, AI_IDLE);
 	m->defineState(AI_FACE_OBJECT_IDLE, std::make_unique<AIFaceObjectIdleState>(*m), AI_IDLE, AI_IDLE);
+	m->defineState(AI_FACE_POSITION, std::make_unique<AIFacePositionState>(*m), AI_IDLE, AI_IDLE); // lane SIEGE-1: RW 0x753755 state 0x25 (RW 0x7449D4 mode 0)
+	m->defineState(AI_FACE_OBJECT, std::make_unique<AIFaceState>(*m, true), AI_IDLE, AI_IDLE);
 	m->defineState(AI_HUNT, std::make_unique<AIHuntState>(*m), AI_IDLE, AI_IDLE); // lane SCRIPT-3: RW 0x741133 (AIHunt.cpp)
+	m->defineState(AI_ATTACK_AREA, std::make_unique<AIAttackAreaState>(*m), AI_IDLE, AI_IDLE); // lane BFME2CAMP1: RW 0x74115E (AIHunt.h)
+	m->defineState(AI_ATTACK_SQUAD, std::make_unique<AIAttackSquadState>(*m), AI_IDLE, AI_IDLE); // lane BFME2CAMP1: RW 0x740E95 (AIHunt.h)
 	// lane PLAY-4 (RW 0x753755): AIGuardState 16 (RW 0x74109B) and AIGoingIdleState 0x4E (RW 0x7410C2), both ending in idle (AIGuard.cpp)
 	m->defineState(AI_GUARD, std::make_unique<AIGuardState>(*m), AI_IDLE, AI_IDLE);
 	m->defineState(AI_GOING_IDLE, std::make_unique<AIGoingIdleState>(*m), AI_IDLE, AI_IDLE);
@@ -460,6 +473,12 @@ std::unique_ptr<AIStateMachine> AIUpdateInterface::makeStateMachine()
 	m->defineState(AI_FOLLOW_WAYPOINT_PATH_AS_INDIVIDUALS, std::make_unique<AIFollowWaypointPathState>(*m, false, false), AI_IDLE, AI_IDLE);
 	m->defineState(AI_FOLLOW_WAYPOINT_PATH_EXACT_AS_TEAM, std::make_unique<AIFollowWaypointPathState>(*m, true, true), AI_IDLE, AI_IDLE);
 	m->defineState(AI_FOLLOW_WAYPOINT_PATH_EXACT_AS_INDIVIDUALS, std::make_unique<AIFollowWaypointPathState>(*m, false, true), AI_IDLE, AI_IDLE);
+	// lane WARG-1 (RW 0x753755): the attack-follow states, 0x23 (RW 0x750AE7(machine, 1)) then 0x22 (asTeam 0), both ending in idle
+	m->defineState(AI_ATTACK_FOLLOW_WAYPOINT_PATH_AS_TEAM, std::make_unique<AIAttackFollowWaypointPathState>(*m, true), AI_IDLE, AI_IDLE);
+	m->defineState(AI_ATTACK_FOLLOW_WAYPOINT_PATH_AS_INDIVIDUALS, std::make_unique<AIAttackFollowWaypointPathState>(*m, false), AI_IDLE, AI_IDLE);
+	// lane LUMBER1 (RW 0x753755): AIDockState 14 (RW 0x740F01) and AIHarvestState 47 (RW 0x740F2C), both ending in idle
+	m->defineState(AI_DOCK, std::make_unique<AIDockState>(*m), AI_IDLE, AI_IDLE);
+	m->defineState(AI_HARVEST, std::make_unique<AIHarvestState>(*m), AI_IDLE, AI_IDLE);
 	return m;
 }
 
@@ -511,6 +530,50 @@ void AIUpdateInterface::endDefectedStateMachine()
 	wakeUpNow();
 }
 
+// lane MODCOMPAT-MOD1 (S-1422): RW 0x6630A9
+void AIUpdateInterface::beginTemporaryStateMachine()
+{
+	if (m_temporaryKeptMachine)
+	{
+		return; // RW 0x6630AC: AI + 0x34 holds a machine already
+	}
+	if (!m_machine)
+	{
+		// RW 0x6630BA reads the machine (AI + 0x30) without a test: an AI before onObjectCreated has none
+		throw std::logic_error("AIUpdateInterface of " + getObject()->getTemplate()->getName() + ": beginTemporaryStateMachine before the AI has a machine (RW 0x6630BA)");
+	}
+	// RW 0x6630B4: AI vslot 0x160 (RW 0x63F3BF in every AI class: nothing)
+	m_temporaryKeptMachine = std::move(m_machine); // RW 0x6630BA: + 0x34 = + 0x30
+	m_machine = makeStateMachine();                // RW 0x6630C4: vslot 0x258
+	m_machine->initDefaultState();                 // RW 0x6630D2: machine slot 0x1C
+}
+
+// lane MODCOMPAT-MOD1 (S-1422): RW 0x6630D7. Machine slot 0x3C is RotWK's halt (RW 0x8DB758), which drops the current state without its exit; the port's
+// halt lets the state exit, as endDefectedStateMachine does (INFERENCE, S-1222 item 3: what the state holds, its path and turret target, is released)
+void AIUpdateInterface::endTemporaryStateMachine()
+{
+	if (!m_temporaryKeptMachine)
+	{
+		return; // RW 0x6630DD
+	}
+	if (m_machine)
+	{
+		if (!m_updatingWithTemporaryMachine)
+		{
+			m_machine->halt(); // RW 0x6630F3: machine slot 0x3C, then the machine's deleting destructor (slot 0) and operator delete (RW 0x42F6A0)
+			m_machine.reset();
+		}
+		else
+		{
+			// RW 0x6630E9: AI + 0x3E0 is set, so the machine whose update runs now is neither halted nor deleted (retail drops the pointer). The port keeps it,
+			// state and all, until AIUpdateInterface::update's machine update returns, then frees it without its exits
+			m_retiredMachine = std::move(m_machine);
+		}
+	}
+	m_machine = std::move(m_temporaryKeptMachine); // RW 0x663110 .. 0x663118: + 0x30 = + 0x34, + 0x34 = 0
+	onTemporaryStateMachineEnded();                // RW 0x66311F: AI vslot 0x164
+}
+
 void AIUpdateInterface::onDelete()
 {
 	// the object leaves the pathfinder before its modules are deleted (AIWorld::objectLeftWorld also runs from ~Object)
@@ -521,6 +584,10 @@ void AIUpdateInterface::onDelete()
 	if (m_defectedMachine)
 	{
 		m_defectedMachine->halt();
+	}
+	if (m_temporaryKeptMachine)
+	{
+		m_temporaryKeptMachine->halt();
 	}
 	m_mover->destroyPath();
 }
@@ -535,6 +602,11 @@ int AIUpdateInterface::modelConditionBit(const char *name)
 // ---------------------------------------------------------------------------------------------------------------------------------
 UpdateSleepTime AIUpdateInterface::update()
 {
+	Coord3D exclusionGoal;
+	if (getObject()->logic().getFrame() % 5 == getObject()->getID() % 5 &&
+		!getObject()->getContainedBy() && getObject()->logic().aiBaseExclusion(*getObject(), exclusionGoal))
+		aiMoveToPosition(exclusionGoal, CMD_FROM_AI);
+
 	m_isInUpdate = true;
 	getObject()->setStatus((unsigned)CombatNames::statuses().updatingAI, true); // RW: damage dealt to this object during its own update waits a frame
 	// lane EXIT-1: RW 0x66E6E1 .. 0x66E70C: a horde member that is busy or has an explicit / angle goal runs the member update RW 0x66C748 instead of RW 0x6695EF
@@ -551,10 +623,10 @@ UpdateSleepTime AIUpdateInterface::update()
 		w->updateFiringTracker(); // RW 0x8E30DD
 	}
 	updateBeforeBase();
-	if (m_attackMoveActive && !m_mover->isAiDead() && frame() >= m_nextMoodCheck)
+	if (m_attackMoveActive && !m_mover->isAiDead())
 	{
-		// ZH AIAttackMoveToState::update: look around while marching; a target interrupts the march (the idle state resumes it)
-		m_nextMoodCheck = frame() + 3u;
+		// ZH AIAttackMoveToState::update: look around while marching; a target interrupts the march (the idle state resumes it). Lane TARGET-1: the scan is
+		// RotWK's mood scan (RW 0x755798 -> RW 0x66844A(1, 0)); its cadence is the mood check's (AI + 0x21C)
 		const unsigned id = currentStateId();
 		if (id == (unsigned)AI_MOVE_TO || id == (unsigned)AI_FOLLOW_PATH)
 		{
@@ -572,7 +644,15 @@ UpdateSleepTime AIUpdateInterface::update()
 		return (UpdateSleepTime)(memberSleep < 1u ? 1u : memberSleep);
 	}
 	unsigned sleep = (unsigned)UPDATE_SLEEP_FOREVER;
+	// lane MODCOMPAT-MOD1: RW 0x669725 .. 0x66974E: AI + 0x3E0 = a machine is kept (AI + 0x34) around the machine's update (endTemporaryStateMachine reads it)
+	m_updatingWithTemporaryMachine = m_temporaryKeptMachine != nullptr;
 	const StateReturnType st = m_machine->updateStateMachine();
+	m_updatingWithTemporaryMachine = false;
+	if (m_retiredMachine)
+	{
+		AIStateMachine::LoadGuard noExits; // the machine endTemporaryStateMachine dropped during its update: retail never deletes it, so no state exits
+		m_retiredMachine.reset();
+	}
 	if (IS_STATE_SLEEP(st))
 	{
 		const unsigned frames = GET_STATE_SLEEP_FRAMES(st);
@@ -806,30 +886,45 @@ void AIUpdateInterface::privateMoveToPosition(const Coord3D &pos, CommandSourceT
 	}
 }
 
-void AIUpdateInterface::aiMoveToPositionAndOrientate(const Coord3D &pos, float angle, CommandSourceType source)
+bool AIUpdateInterface::aiMoveToPositionAndOrientate(const Coord3D &pos, float angle, CommandSourceType source, Coord3D *takenGoal)
 {
 	if (!acceptCommand(source, kCommandUnidentifiedMove))
 	{
-		return; // lane MODULES-3: RW 0x667174
+		return false; // lane MODULES-3: RW 0x667174
 	}
 	{
 		RoutedCommand c; // lane FLY-1
 		c.type = kCommandUnidentifiedMove;
+		c.angle = angle;
 		c.position = pos;
 		c.source = source;
 		if (routeCommand(c))
 		{
-			return;
+			if (takenGoal)
+			{
+				*takenGoal = pos; // the subclass owns the command; the base goal and attack-move stay untouched, as in aiMoveToPosition
+			}
+			return true;
 		}
 	}
 	m_world->noteStop(kStopCommands);
 	Object *obj = getObject();
-	if (hasKind(*obj, kindBits().immobile))
+	// Object::isMobile (RW 0x690E97), as privateMoveToPosition (RW 0x66B3FD) and BFME2's privateAttackMoveToPositionAndOrientation (BFME2 RVA 0x26C04E, the
+	// attack formation's command) refuse an immobile, disabled (but type 8 alone) or stoned unit or a deployed siege tower: nothing of it changes
+	if (!GarrisonRules::isMobile(*obj))
 	{
-		return;
+		return false;
+	}
+	if (source != CMD_FROM_AI)
+	{
+		m_attackMoveActive = false; // an accepted player / script move order ends an attack-move, as aiMoveToPosition (COMBAT-1)
 	}
 	Coord3D goal;
 	goalPositionClipped(pos, source, goal);
+	if (takenGoal)
+	{
+		*takenGoal = goal;
+	}
 	m_machine->clear();
 	m_machine->setGoalPosition(goal);
 	m_machine->setGoalObject(INVALID_ID);
@@ -837,6 +932,7 @@ void AIUpdateInterface::aiMoveToPositionAndOrientate(const Coord3D &pos, float a
 	setLastCommandSource(source);
 	m_machine->setState(AI_MOVE_TO);
 	wakeUpNow();
+	return true;
 }
 
 void AIUpdateInterface::aiMoveToObject(Object *target, CommandSourceType source)
@@ -877,6 +973,31 @@ void AIUpdateInterface::aiIdle(CommandSourceType source)
 	wakeUpNow();
 }
 
+void AIUpdateInterface::aiFaceObject(Object *target, CommandSourceType source)
+{
+	// TARGET RW 0x6643B6; Open-BFME-2 AIUpdateInterfacePrivateCommands.cpp
+	// privateFaceObject (RVA 0x2645B9) is the same body with different offsets.
+	if (!acceptCommand(source, 0x26))
+	{
+		return;
+	}
+	privateFaceObject(target, source);
+}
+
+void AIUpdateInterface::privateFaceObject(Object *target, CommandSourceType source)
+{
+	if (!GarrisonRules::isMobile(*getObject()))
+	{
+		return;
+	}
+	m_machine->clear();
+	m_machine->setGoalObject(target ? target->getID() : INVALID_ID);
+	m_mover->clearBlocked();
+	setLastCommandSource(source);
+	m_machine->setState(AI_FACE_OBJECT);
+	wakeUpNow();
+}
+
 void AIUpdateInterface::aiBusy(CommandSourceType source)
 {
 	if (!acceptCommand(source, -1))
@@ -889,6 +1010,21 @@ void AIUpdateInterface::aiBusy(CommandSourceType source)
 	wakeUpNow();
 }
 
+void AIUpdateInterface::aiBusyFor(unsigned frames, CommandSourceType source)
+{
+	if (frames == 0)
+	{
+		aiBusy(source); // RW 0x664997 .. 0x6649AD: clear, the source (+ 0x48), setState(0x2A)
+		return;
+	}
+	if (!acceptCommand(source, -1))
+	{
+		return; // RW 0x667174
+	}
+	m_machine->saveGoalForTemporaryState();             // RW 0x6649AF: RW 0x741675
+	m_machine->setTemporaryStateRW(AI_BUSY, (int)frames); // RW 0x6649BD: RW 0x74168E(0x2A, frames), as the emotion AI's temporary states (no wake of its own)
+}
+
 // B1 AIUpdate.cpp:5039
 void AIUpdateInterface::aiFollowPath(const std::vector<Coord3D> &path, Object *ignoreObject, CommandSourceType source, bool exitProduction)
 {
@@ -896,6 +1032,11 @@ void AIUpdateInterface::aiFollowPath(const std::vector<Coord3D> &path, Object *i
 	{
 		return; // lane MODULES-3: RW 0x667174
 	}
+	privateFollowPath(path, ignoreObject, source, exitProduction);
+}
+
+void AIUpdateInterface::privateFollowPath(const std::vector<Coord3D> &path, Object *ignoreObject, CommandSourceType source, bool exitProduction)
+{
 	m_world->noteStop(kStopCommands);
 	if (path.empty())
 	{
@@ -959,6 +1100,11 @@ void AIUpdateInterface::aiFollowPathAppend(const Coord3D &pos, CommandSourceType
 	{
 		return; // lane MODULES-3: RW 0x667174
 	}
+	privateFollowPathAppend(pos, source);
+}
+
+void AIUpdateInterface::privateFollowPathAppend(const Coord3D &pos, CommandSourceType source)
+{
 	m_world->noteStop(kStopCommands);
 	const unsigned st = m_machine->currentStateId();
 	if (st != (unsigned)AI_FOLLOW_PATH)
@@ -1164,6 +1310,38 @@ bool AIUpdateInterface::isAircraftThatAdjustsDestination() const
 	return a == LOCO_HOVER || a == LOCO_WINGS;
 }
 
+// AI vslot 0x25C getTreatAsAircraftForLocoDistToGoal, RW 0x6629D3 (lane LOCODIST-1; every RotWK AI vtable holds it, GiantBirdAIUpdate through the thunk
+// RW 0x769F9F): not doing ground movement (vslot 0x224), or a path extra distance (AI + 0x168) above 1.0 (RW 0xBD1908, comiss), or a HOVER locomotor
+// (template + 0x74 == 2)
+bool AIUpdateInterface::treatAsAircraftForLocoDistToGoal() const
+{
+	bool r = !isDoingGroundMovement();
+	if (m_mover->pathExtraDistance() > 1.0f)
+	{
+		r = true;
+	}
+	if (m_curLocomotor && m_curLocomotor->getTemplate().m_appearance == LOCO_HOVER)
+	{
+		r = true;
+	}
+	return r;
+}
+
+bool AIUpdateInterface::isProjectile() const
+{
+	return hasKind(*getObject(), kindBits().projectile);
+}
+
+Coord3D AIUpdateInterface::machineGoalPosition() const
+{
+	// RW 0x6642CB: AI + 0x30, machine + 0x24 (RW dereferences the machine unchecked)
+	if (!m_machine)
+	{
+		throw std::logic_error("AIUpdateInterface::machineGoalPosition: no state machine");
+	}
+	return m_machine->goalPosition();
+}
+
 // ---------------------------------------------------------------------------------------------------------------------------------
 // locomotors (B1 AIUpdate.cpp:2326-2430)
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -1229,26 +1407,42 @@ void AIUpdateInterface::chooseGoodLocomotorFromCurrentSet()
 			}
 		}
 	}
+	// lane LOCOPICK-1: RW 0x663DA6 .. 0x663DE5 (BFME2 1.06: the same order, decomp AIUpdateInterfaceRva00263FA7.cpp:154-166): no best locomotor and no previous
+	// one: a SHIP takes the set's first locomotor with the surface 0x80 (DEEP_WATER), else an object whose AI answers its slot 0x184 (only GiantBirdAIUpdate,
+	// RW 0x8CEF91; the others RW 0x851E97 answer null) the first with AIR (8), else the first with GROUND (1); RW 0x5E4150 walks the set in order and may
+	// find none (null: no fallback to the set's first locomotor)
 	if (!chosen)
 	{
 		chosen = prev;
 		if (!chosen)
 		{
+			const Object &obj = *getObject();
+			unsigned surface = (unsigned)LOCOMOTORSURFACE_GROUND;
+			if (hasKind(obj, kindBits().ship))
+			{
+				surface = (unsigned)LOCOMOTORSURFACE_DEEP_WATER;
+			}
+			else if (dynamic_cast<const GiantBirdAIUpdate *>(obj.getAIUpdateInterface()))
+			{
+				surface = (unsigned)LOCOMOTORSURFACE_AIR;
+			}
 			for (const std::unique_ptr<Locomotor> &l : m_locomotors)
 			{
-				if (l->getTemplate().m_surfaces & (unsigned)LOCOMOTORSURFACE_GROUND)
+				if (l->getTemplate().m_surfaces & surface)
 				{
 					chosen = l.get();
 					break;
 				}
 			}
-			if (!chosen && !m_locomotors.empty())
-			{
-				chosen = m_locomotors.front().get();
-			}
 		}
 	}
 	m_curLocomotor = chosen;
+	// RW 0x663DEA .. 0x663E28: on a change the object's radar data is marked dirty (Object + 0x1A8 -> + 0xC = 1: the client's radar, no logic state here)
+	// and the new locomotor's flags 0x08, 0x10 and 0x40 are cleared
+	if (prev != m_curLocomotor && m_curLocomotor)
+	{
+		m_curLocomotor->setFlags(m_curLocomotor->flags() & ~0x58u);
+	}
 	m_world->noteStop(kStopLocomotor);
 }
 
@@ -1314,6 +1508,15 @@ PathfindLocomotorInfo AIUpdateInterface::locomotorInfo() const
 		}
 		info.downhillOnly = t.m_downhillOnly;
 		info.crusher = t.m_scalesWalls; // S-222 inference (RW loco+0x15)
+		// lane PATH-REBUILD: Path::rebuild's reads of the current locomotor (RW 0x767B0E)
+		info.present = true;
+		info.fastTurnRadius = t.m_fastTurnRadius;
+		info.slowTurnRadius = t.m_slowTurnRadius;
+		info.fasterThanQuarterSpeed = m_curLocomotor->isFasterThanQuarterSpeed(*m_locoHost); // the host is made with the module (the constructor)
+		info.canReverse = t.m_appearance == LOCO_WHEELS_FOUR && t.m_canMoveBackwards != 0;
+		info.maxTurnWithoutReform = t.m_maxTurnWithoutReform;
+		info.turnThresholdHS = t.m_turnThresholdHighSpeed;
+		info.floatingZ = t.m_zAxisBehavior == Z_FLOATING_Z;
 	}
 	return info;
 }
@@ -1341,6 +1544,50 @@ void AIUpdateInterface::setOrientation(float angle)
 float AIUpdateInterface::groundHeightAt(float x, float y) const
 {
 	return getObject()->logic().getGroundHeight(x, y);
+}
+
+float AIUpdateInterface::layerHeightAt(float x, float y) const
+{
+	if (m_world && m_adapter && m_adapter->getLayer() != LAYER_GROUND && m_world->mapReady())
+	{
+		return m_world->pathfinder().getLayerHeight(x, y, m_adapter->getLayer());
+	}
+	return getObject()->logic().getGroundHeight(x, y);
+}
+
+bool AIUpdateInterface::isOnRampOrRaisedLayer() const
+{
+	if (!m_adapter)
+	{
+		return false;
+	}
+	const PathfindLayerEnum l = m_adapter->getLayer();
+	return l == LAYER_RAMP || isRaisedLayer(l);
+}
+
+void AIUpdateInterface::settleOnLayer()
+{
+	if (!m_world || !m_adapter || !m_world->mapReady())
+	{
+		return;
+	}
+	const PathfindLayerEnum before = m_adapter->getLayer();
+	const PathfindLayerEnum layer = m_world->pathfinder().adjustLayer(*m_adapter, before);
+	if (layer != before)
+	{
+		m_adapter->setLayer(layer);
+	}
+	if (layer == before && layer == LAYER_GROUND)
+	{
+		return;
+	}
+	Coord3D p = *getObject()->getPosition();
+	const float z = layerHeightAt(p.x, p.y);
+	if (p.z != z)
+	{
+		p.z = z;
+		getObject()->setPosition(&p);
+	}
 }
 
 void AIUpdateInterface::setLayer(PathfindLayerEnum layer)
@@ -1417,7 +1664,8 @@ Coord2D AIUpdateInterface::unitDirectionOf(const PathfindObject &o) const
 	return d;
 }
 
-// RW 0x663F48: (DOZER ? 100 : 0) + 10 * veterancy level (0 until the experience tracker, S-142) + (CAVALRY ? 5 : 0)
+// RW 0x663F48: (DOZER ? 100 : 0) + 10 * the crushable level (RW 0x68D4D0, its byte sign-extended: movsx) + (CAVALRY ? 5 : 0) (lane PATHPRIO-1;
+// the port had no middle term). BFME2: AIUpdateInterfaceRva0026417F.cpp:68
 int AIUpdateInterface::pathPriority() const
 {
 	int p = 0;
@@ -1425,6 +1673,7 @@ int AIUpdateInterface::pathPriority() const
 	{
 		p += 100;
 	}
+	p += 10 * ObjectCrush::crushableLevel(*getObject());
 	if (hasKind(*getObject(), kindBits().cavalry))
 	{
 		p += 5;
@@ -1432,9 +1681,42 @@ int AIUpdateInterface::pathPriority() const
 	return p;
 }
 
-PathfindObjectID AIUpdateInterface::attackTargetOf(const PathfindObject &) const
+// RW 0x66E2A4 .. 0x66E2BB: KindOf SIEGE_TOWER (template + 0x113 bit 0x20) with status DEPLOYED (0x3B, RW 0x44DDEC)
+bool AIUpdateInterface::isDeployedSiegeTower() const
 {
-	return PATHFIND_INVALID_ID; // the attack machine is the combat milestone's
+	return hasKind(*getObject(), kindBits().siegeTower) && getObject()->testStatus((unsigned)statusBits().deployed);
+}
+
+// RW 0x68B36F: the object's AI (+ 0x260) whose vslot 0x1BC answers true (RW 0x662B3C: the current state's isActive, true with none) -> its current victim
+// (RW 0x668303: AI + 0x40 -> findObjectByID RW 0x449681), else none (lane PATHPRIO-1; the port answered none for every object)
+PathfindObjectID AIUpdateInterface::attackTargetOf(const PathfindObject &o) const
+{
+	Object *obj = getObject()->logic().findObjectByID((ObjectID)o.getID());
+	const AIUpdateInterface *ai = obj ? obj->getAIUpdateInterface() : nullptr;
+	if (ai == nullptr || !ai->isStateActive())
+	{
+		return PATHFIND_INVALID_ID;
+	}
+	const Object *victim = ai->currentVictim();
+	return victim ? (PathfindObjectID)victim->getID() : PATHFIND_INVALID_ID;
+}
+
+// AI vslot 0x1FC (RW 0x664D12, ZH getEnterTarget AIUpdate.cpp:4292): the machine's goal object (RW 0x8DBACE) while the state type (RW 0x662D70) is 15 (AI_ENTER),
+// 0x18, 0x19, 0x2B, 0x31 or 52 (AI_HORDE_ENTER), or 56 (AI_MOVE_TO_POSITION_AND_ENTER) with a SHIP goal (its template + 0x11F bit 0x80); else none
+PathfindObjectID AIUpdateInterface::enterTargetOf(const PathfindObject &o) const
+{
+	Object *obj = getObject()->logic().findObjectByID((ObjectID)o.getID());
+	const AIUpdateInterface *ai = obj ? obj->getAIUpdateInterface() : nullptr;
+	const AIStateMachine *m = ai ? ai->stateMachineOrNull() : nullptr;
+	const Object *goal = m ? m->goalObject() : nullptr;
+	if (goal == nullptr)
+	{
+		return PATHFIND_INVALID_ID;
+	}
+	static const int kShip = ObjectTemplateInfoBuilder::kindOfIndex("SHIP");
+	const unsigned t = ai->aiStateType();
+	const bool entering = t == 15 || t == 0x31 || t == 0x18 || t == 0x2B || t == 0x19 || t == 52 || (t == 56 && hasKind(*goal, kShip));
+	return entering ? (PathfindObjectID)goal->getID() : PATHFIND_INVALID_ID;
 }
 
 bool AIUpdateInterface::crushOrSquishPolicy(const PathfindObject &other) const
@@ -1458,6 +1740,27 @@ float AIUpdateInterface::closeEnoughDist() const
 float AIUpdateInterface::locomotorSpeed() const
 {
 	return m_curLocomotor ? m_curLocomotor->speed() : 0.0f;
+}
+
+bool AIUpdateInterface::isInfantryKind() const
+{
+	return hasKind(*getObject(), kindBits().infantry);
+}
+
+bool AIUpdateInterface::isUsingSpecialAbility() const
+{
+	const int bit = statusBits().packingUsing;
+	return bit >= 0 && getObject()->testStatus((unsigned)bit);
+}
+
+bool AIUpdateInterface::isOffMapObject() const
+{
+	return getObject()->isOffMap();
+}
+
+bool AIUpdateInterface::isLargeRectanglePathfind() const
+{
+	return hasKind(*getObject(), kindBits().largeRectangle);
 }
 
 bool AIUpdateInterface::movingBackwards() const
@@ -1543,6 +1846,23 @@ void AIUpdateInterface::stopMoveSound()
 	}
 }
 
+// lane WALL-2, RW 0x66A143 .. 0x66A166: the object's StealthUpdate (RW 0x68FBD3) with a disguise (+ 0x3C) marks it detected (RW 0x7767A9(0, 1, null, 1))
+void AIUpdateInterface::revealDisguiseOnClimb()
+{
+	StealthUpdate *st = StealthUpdate::of(*getObject());
+	if (st && st->disguiseTemplate())
+	{
+		st->markAsDetected(0, 1, nullptr, true);
+	}
+}
+
+// lane WALL-2, RW 0x662A0E: AI vslot 0x60 (RW 0x66D8F5) with CMD_FROM_AI; RW 0x66D8F5 is read as the AI's private idle (the riders of its contain idle too, the
+// machine goes to AI_IDLE): INFERENCE S-4857, the port's aiIdle(CMD_FROM_AI)
+void AIUpdateInterface::idleFromAI()
+{
+	aiIdle(CMD_FROM_AI);
+}
+
 bool AIUpdateInterface::setModelCondition(const char *name, bool on)
 {
 	if (m_destroying)
@@ -1551,6 +1871,54 @@ bool AIUpdateInterface::setModelCondition(const char *name, bool on)
 	}
 	getObject()->setModelConditionState(modelConditionIndex(name), on);
 	return true;
+}
+
+// lane AIRBORNE-1: the AIRBORNE_TARGET status write of doLocomotor (RW 0x66A49E: push 6; call 0x62684D Object::setStatus)
+void AIUpdateInterface::setAirborneTarget(bool on)
+{
+	static const int kAirborneTarget = CombatNames::status("AIRBORNE_TARGET");
+	getObject()->setStatus((unsigned)kAirborneTarget, on);
+}
+
+// lane SAILS-1: RW 0x666FA3 (BFME2 0x66717B), the sails of a SHIP from its facing. The decomp misnames the body: its row sits in
+// AIUpdateInterface_computeAttackPath.cpp (lines 251-264) as rva0026717B, it is not computeAttackPath. Called from doLocomotor (RW 0x66A4B7).
+// The wind is a function static (0.5, 0.5, 0) that the retail Vector3::Normalize (BFME2 0x405A70, length BFME2 0x405A26) scales IN PLACE on every
+// call, with no zero test: the first call of the process leaves (0x3F3504F3, 0x3F3504F3, 0), every later one (0x3F3504F4, 0x3F3504F4, 0), as retail.
+void AIUpdateInterface::updateSailModelConditions()
+{
+	static const int kShip = ObjectTemplateInfoBuilder::kindOfIndex("SHIP"); // KindOf 191 (BFME2 0x667185: template byte 0x17, mask 0x80)
+	Object &obj = *getObject();
+	if (!hasKind(obj, kShip))
+	{
+		return;
+	}
+	static Coord3D wind{ 0.5f, 0.5f, 0.0f };
+	// the length: fld x, y, z; z*z + y*y, + x*x under PC24, fstp qword, the CRT sqrt, fst dword; then 1 / len (divss) and the three mulss
+	const double sq = SimMath::pc24AddW(SimMath::pc24AddW(SimMath::pc24MulW((double)wind.z, (double)wind.z), SimMath::pc24MulW((double)wind.y, (double)wind.y)),
+		SimMath::pc24MulW((double)wind.x, (double)wind.x));
+	const float len = SimMath::fstpDword(SimMath::sqrtPC24(sq));
+	const float inv = SimMath::divf32(1.0f, len);
+	wind.x = SimMath::mulf32(wind.x, inv);
+	wind.y = SimMath::mulf32(inv, wind.y);
+	wind.z = SimMath::mulf32(inv, wind.z);
+	// the clear (BFME2 0x665254 builds the flags, 0x5E42F2 clears them) of SAIL_FLAPPING / SAIL_BLOWN_RIGHT / SAIL_BLOWN_LEFT (0x151 .. 0x153)
+	static const int kFlapping = modelConditionIndex("SAIL_FLAPPING");
+	static const int kRight = modelConditionIndex("SAIL_BLOWN_RIGHT");
+	static const int kLeft = modelConditionIndex("SAIL_BLOWN_LEFT");
+	Object::ModelConditionBits clear{};
+	for (const int bit : { kFlapping, kRight, kLeft })
+	{
+		clear[(size_t)bit >> 5] |= 1u << (bit & 31);
+	}
+	obj.clearAndSetModelConditionFlags(clear, Object::ModelConditionBits{});
+	// the X axis of the transform (Object +0x0C, +0x1C, +0x2C: the basis's first column) dotted with the wind: z, then y, then x (mulss / addss)
+	const float *b = obj.getBasis();
+	const float dot = SimMath::addf32(SimMath::addf32(SimMath::mulf32(wind.z, b[6]), SimMath::mulf32(wind.y, b[3])), SimMath::mulf32(wind.x, b[0]));
+	const int bit = dot > 0.0f ? kLeft : kRight;
+	if (!obj.testModelCondition(bit))
+	{
+		obj.setModelConditionState(bit, true);
+	}
 }
 
 // RW relAngle2D(obj, p): the angle to the point relative to the object's facing, in [-pi, pi]
@@ -1618,6 +1986,11 @@ void AIUpdateInterface::crc(StateHasher &h) const
 		h.addU32(0x663128u);
 		m_defectedMachine->crc(h);
 	}
+	if (m_temporaryKeptMachine) // lane MODCOMPAT-MOD1: hashed while a machine is kept (RW AI + 0x34): the whole machine
+	{
+		h.addU32(0x6630A9u);
+		m_temporaryKeptMachine->crc(h);
+	}
 	h.addI32(m_curLocomotorSet);
 	h.addU32((std::uint32_t)m_lastCommandSource);
 	h.addU32(m_currentVictim);
@@ -1641,6 +2014,20 @@ void AIUpdateInterface::crc(StateHasher &h) const
 		h.addFloat(m_guardLocation.z);
 		h.addFloat(m_guardAngle);
 	}
+	if (m_areaToGuard != -1) // lane BFME2CAMP1: hashed once an area was set (AI + 0x6C)
+	{
+		h.addI32(m_areaToGuard);
+	}
+	if (m_guardTeam != 0) // lane BFME2CAMP1: hashed once a team guard set it (AI + 0x68)
+	{
+		h.addU32(0x68u);
+		h.addU32(m_guardTeam);
+	}
+	if (m_attackInfoOverride) // lane BFME2CAMP1: hashed once a script or the team set AI + 0x70
+	{
+		h.addU32(0x70u);
+		h.addString(m_attackInfoName);
+	}
 	h.addU32(m_targetHorde);
 	h.addU32(m_moveAwayRequesters[0]); // lane PHYS-1
 	h.addU32(m_moveAwayRequesters[1]);
@@ -1658,6 +2045,8 @@ void AIUpdateInterface::crc(StateHasher &h) const
 	h.addFloat(m_attackMoveGoal.y);
 	h.addFloat(m_attackMoveGoal.z);
 	h.addU32(m_nextMoodCheck);
+	h.addBool(m_randomlyOffsetMoodCheck); // lane TARGET-1: AI + 0x3BC / + 0x1A4
+	h.addU32(m_orderedMeleeTarget);
 	h.addBool(m_isInUpdate);
 	h.addBool(m_pendingValid);
 	h.addFloat(m_pendingPosition.x);
@@ -1725,5 +2114,17 @@ void AIUpdateInterface::registerClasses(ModuleFactory &modules)
 			}
 			return std::make_unique<AIUpdateInterface>(thing, data);
 		});
+	}
+}
+
+void AIUpdateInterface::finishExitQuickPath(const Coord3D &destination)
+{
+	// RW 0x666079 clears +0x3BA; 0x6654AD -> 0x6636D9 -> 0x8DB810 sets
+	// the machine goal with CMD_FROM_AI (no player clipping).
+	m_canPathThroughUnits = false;
+	if (m_machine && !m_machine->isLocked()) // RW 0x8DB810
+	{
+		m_machine->setGoalPosition(destination);
+		m_machine->clearGoalAngle();
 	}
 }

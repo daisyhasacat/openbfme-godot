@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <stdexcept>
 
 namespace
 {
@@ -83,14 +84,48 @@ void LiveGame::resetLogicWaitSites()
 	m_windowStats.maxWindowMs = 0.0; // the longest client window is per measurement window too
 }
 
+std::uint32_t LiveGame::msUntilNextFrame() const
+{
+	// lane NETLAG-2: timing only (the frame driver's early orders, Network::setFrameDue); never part of a frame's computation
+	const double ms = (1.0 - m_clock.getAlpha()) * 1000.0 / LOGICFRAMES_PER_SECOND;
+	return ms > 0.0 ? (std::uint32_t)ms : 0u;
+}
+
+// Host presentation only (both editions): no authoritative clocks, frames, RNG or rules change.
+void LiveGame::updatePresentationRate(double seconds, double wallSeconds)
+{
+	if (seconds <= 0.0) return; // a presentation-only advance retains the current speed
+	const double rate = wallSeconds > 0.0 ? seconds / wallSeconds : 1.0;
+	const std::unique_lock<std::mutex> lock = lockPublication("presentationRate");
+	m_presentationRate = std::isfinite(rate) && rate > 0.0 ? rate : 1.0;
+}
+
+void LiveGame::keepPresentationSnapshotLocked(const std::shared_ptr<const LogicSnapshot> &snapshot)
+{
+	// A view switch, rewind or replacement of the same frame must not leave snapshots of the old view/state in the buffer.
+	if (!m_presentationHistory.empty() && snapshot->frame <= m_presentationHistory.back()->frame)
+		m_presentationHistory.clear();
+	m_presentationHistory.push_back(snapshot);
+	// At 30x the normal 30 ms wall-clock delay spans 4.5 logic frames. Retain the adaptive margin too, bounded by the queued-frame budget.
+	const double delayFrames = m_options.presentationDelaySeconds > 0.0 ? std::min((double)kMaxQueuedBatches,
+		(m_options.presentationDelaySeconds * LOGICFRAMES_PER_SECOND + kMaxExtraDelayFrames) * m_presentationRate) : 0.0;
+	const size_t limit = std::max(size_t(2), (size_t)std::ceil(delayFrames) + 1);
+	while (m_presentationHistory.size() > limit) m_presentationHistory.pop_front();
+}
+
 void LiveGame::present(double seconds)
 {
 	// the render side (the caller's thread): take what was published, apply the events of the presented frames in order, pose from one snapshot
 	std::shared_ptr<const LogicSnapshot> latest, prev;
+	std::vector<std::shared_ptr<const LogicSnapshot>> history;
+	double rate;
 	{
 		const std::unique_lock<std::mutex> lock = lockPublication("present");
 		latest = m_published;
 		prev = m_publishedPrev;
+		if (m_options.presentationDelaySeconds > 0.0)
+			history.assign(m_presentationHistory.begin(), m_presentationHistory.end());
+		rate = m_presentationRate;
 		for (ClientEvent &e : m_publishedEvents)
 		{
 			m_heldEvents.push_back(std::move(e));
@@ -115,7 +150,9 @@ void LiveGame::present(double seconds)
 	const bool delayed = !m_options.sixTickPacing && m_options.presentationDelaySeconds > 0.0;
 	if (delayed)
 	{
-		a -= m_options.presentationDelaySeconds * (double)LOGICFRAMES_PER_SECOND + m_extraDelayFrames;
+		// The configured delay and adaptive margin are wall time, even when a skirmish runs at 30x.
+		a -= std::min((double)kMaxQueuedBatches,
+			(m_options.presentationDelaySeconds * (double)LOGICFRAMES_PER_SECOND + m_extraDelayFrames) * rate);
 		while (a < 0.0 && target > 0)
 		{
 			a += 1.0;
@@ -158,7 +195,7 @@ void LiveGame::present(double seconds)
 		}
 		else
 		{
-			m_extraDelayFrames = std::max(0.0, m_extraDelayFrames - step * kDelayDecayPerFrame);
+			m_extraDelayFrames = std::max(0.0, m_extraDelayFrames - (step / rate) * kDelayDecayPerFrame);
 		}
 		double whole = std::floor(m_presentTime);
 		target = (UnsignedInt)whole;
@@ -168,7 +205,12 @@ void LiveGame::present(double seconds)
 			target = latest->frame; // exactly the end of the latest frame
 			a = 1.0;
 		}
-		if (latest->frame == target)
+		const auto found = std::find_if(history.rbegin(), history.rend(), [target](const auto &snapshot) { return snapshot->frame == target; });
+		if (found != history.rend())
+		{
+			shown = *found;
+		}
+		else if (latest->frame == target)
 		{
 			shown = latest;
 		}
@@ -176,9 +218,9 @@ void LiveGame::present(double seconds)
 		{
 			shown = prev;
 		}
-		else if (prev && target < prev->frame)
+		else if (!history.empty() && target < history.front()->frame)
 		{
-			shown = prev; // older than what is kept: the start of the oldest kept frame
+			shown = history.front(); // startup or an increased speed: the start of the oldest kept frame
 			a = 0.0;
 		}
 		else
@@ -355,9 +397,43 @@ void LiveGame::waitIdle(const char *file, int line) const
 	{
 		m_windowOpen = true; // the worker is idle: nothing runs until the window ends
 	}
-	if (m_workerError)
+	if (m_workerError && !m_logicFailureHandler)
 	{
 		std::rethrow_exception(m_workerError);
+	}
+}
+
+void LiveGame::setLogicFailureHandler(std::function<void(const std::string &)> handler)
+{
+	std::lock_guard<std::mutex> lock(m_pubMutex);
+	m_logicFailureHandler = std::move(handler);
+}
+
+void LiveGame::setWorkerFrameFailure(const std::string &text)
+{
+	std::lock_guard<std::mutex> lock(m_pubMutex);
+	m_workerFrameFailure = text;
+}
+
+std::string LiveGame::logicFailure() const
+{
+	std::lock_guard<std::mutex> lock(m_pubMutex);
+	return m_logicFailure;
+}
+
+std::string LiveGame::describeWorkerFailure(std::exception_ptr failure)
+{
+	try
+	{
+		std::rethrow_exception(failure);
+	}
+	catch (const std::exception &e)
+	{
+		return e.what();
+	}
+	catch (...)
+	{
+		return "an exception that is no std::exception";
 	}
 }
 
@@ -507,6 +583,7 @@ void LiveGame::setLogicThread(bool enabled)
 			m_stop = false;
 			m_work.clear();
 			m_running = false;
+			m_clientPoolPolicy.reset(); // lane PERF-CLIENT: the counts from the worker's start
 		}
 		m_threaded = true;
 		m_worker = std::thread([this] { workerLoop(); });
@@ -521,6 +598,8 @@ void LiveGame::stopWorker()
 	if (!m_worker.joinable())
 	{
 		m_threaded = false;
+		std::lock_guard<std::mutex> lock(m_pubMutex);
+		m_clientPoolPolicy.reset(); // lane PERF-CLIENT: no worker, so the logic is not behind one
 		return;
 	}
 	{
@@ -533,6 +612,10 @@ void LiveGame::stopWorker()
 	m_worker.join();
 	m_workerId.store(std::thread::id());
 	m_threaded = false;
+	{
+		std::lock_guard<std::mutex> lock(m_pubMutex);
+		m_clientPoolPolicy.reset(); // lane PERF-CLIENT: the worker is gone (the #194 review: its last streak must not outlive it); a restart counts afresh
+	}
 	// r2: single-threaded from here: the command list is the next frame's again (the pending input first, it is the older)
 	for (const GameMessage &m : m_commands.messages())
 	{
@@ -615,17 +698,40 @@ void LiveGame::workerLoop()
 			{
 				std::this_thread::sleep_for(std::chrono::milliseconds(m_options.workerFrameDelayMs)); // SMOOTH-2 diagnostic: a slow frame
 			}
+			std::string diagnosticFailure;
+			{
+				std::lock_guard<std::mutex> lock(m_pubMutex);
+				diagnosticFailure = m_workerFrameFailure;
+			}
+			if (!diagnosticFailure.empty())
+			{
+				throw std::runtime_error(diagnosticFailure); // lane WORKERFAIL-1 diagnostic: a frame that throws
+			}
 			runFrameOwned(item);
 		}
 		catch (...)
 		{
+			// lane WORKERFAIL-1: named before anything waits on it: whatever the failed frame left behind may still bring the process down
+			const std::exception_ptr failure = std::current_exception();
+			const std::string text = "after logic frame " + std::to_string(frame()) + ": " + describeWorkerFailure(failure);
+			std::function<void(const std::string &)> handler;
+			{
+				std::lock_guard<std::mutex> lock(m_pubMutex);
+				handler = m_logicFailureHandler;
+			}
+			if (handler)
+			{
+				handler(text);
+			}
 			std::lock_guard<std::mutex> lock(m_pubMutex);
-			m_workerError = std::current_exception();
+			m_workerError = failure;
+			m_logicFailure = text;
 		}
 		{
 			std::lock_guard<std::mutex> lock(m_pubMutex);
 			m_running = false;
 			m_lastWorkerFrameMs = secondsSince(t0) * 1000.0;
+			m_clientPoolPolicy.frame(m_lastWorkerFrameMs); // lane PERF-CLIENT: every completed worker frame counts, whatever the render rate
 		}
 		m_pubCv.notify_all();
 	}
@@ -635,10 +741,9 @@ void LiveGame::workerLoop()
 void LiveGame::consumeHeroStatistics(const std::vector<ClientEvent> &events, const LogicSnapshot *snapshot)
 {
 	if (m_cahHeroID.empty() || m_replayObserver) return;
-	bool changed = false;
 	for (const auto &event : events)
 		if (event.kind == ClientEvent::CAH_STATISTICS && event.heroUniqueID == m_cahHeroID)
-			for (const auto &name : event.heroStatistics) { m_heroStatistics.add(name); changed = true; }
+			for (const auto &name : event.heroStatistics) { m_heroStatistics.add(name); m_cahStatisticsDirty = true; }
 	const auto &system = m_world.createAHeroSystem();
 	if (!m_cahResultRecorded && snapshot && snapshot->endGame && !snapshot->endGame->observer)
 	{
@@ -652,19 +757,26 @@ void LiveGame::consumeHeroStatistics(const std::vector<ClientEvent> &events, con
 			if (base != -1 && !system.statNames[(size_t)(base + (won ? 1 : 0))].empty())
 			{
 				m_heroStatistics.add(system.statNames[(size_t)(base + (won ? 1 : 0))]);
-				changed = true;
+				m_cahStatisticsDirty = true;
 			}
 			m_cahResultRecorded = true;
 		}
 	}
-	if (!changed) return;
+	// Events and match results are consumed once; failed saves remain pending.
+	if (!m_cahStatisticsDirty) return;
 	std::string error;
 	if (!m_heroStatistics.save(m_options.heroStatsProfile, m_cahHeroID, &error))
 	{
-		m_report.errors.push_back(error);
-		if (m_options.heroStatsMessage) m_options.heroStatsMessage(error);
+		if (error != m_cahSaveError)
+		{
+			m_cahSaveError = error;
+			m_report.errors.push_back(error);
+			if (m_options.heroStatsMessage) m_options.heroStatsMessage(error);
+		}
 		return;
 	}
+	m_cahStatisticsDirty = false;
+	m_cahSaveError.clear();
 	for (const auto &award : system.awardSystem.awards)
 		if (std::find(m_cahEarned.begin(), m_cahEarned.end(), award.name) == m_cahEarned.end() && award.earned(m_heroStatistics.counters))
 		{

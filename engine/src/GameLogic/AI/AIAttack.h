@@ -130,12 +130,14 @@ private:
 	std::unique_ptr<AIStateMachine> makeGenericAttackMachine();
 	int m_machineMade = MADE_NONE;
 	std::unique_ptr<AIStateMachine> m_attackMachine;
+	KeptSubMachines<AIStateMachine> m_keptMachines; // review of #64: the attack machine dropped during its own update (see KeptSubMachines)
 	bool m_follow, m_isAttackingObject, m_isForceAttacking;
 	Coord3D m_originalVictimPos{ 0.0f, 0.0f, 0.0f };
 	ObjectID m_victimTeam = 0;
 	int m_lockedSlotOnEnter = -1;
 	unsigned m_shotsFired = 0;
 	bool m_meleeMachine = false;
+	bool m_victimWasEnemyOnEnter = false; ///< ATKSTATE-1a: BFME2 + 0x49, the victim was an enemy at onEnter (BFME2 0x74B692 / 0x74B6E5)
 	const AttackExitConditions *m_exitConditions = nullptr; ///< ZH m_attackParameters
 };
 
@@ -164,6 +166,8 @@ public:
 
 private:
 	bool inRange() const;
+	// RW 0x749EE3 .. 0x749F49: in range, and for a ground mover against a victim on the ground a clear line of sight (RW 0x744AAA -> RW 0x6616AC)
+	bool inRangeWithView();
 	std::unique_ptr<class AIMoveToState> m_move;
 	AIAttackState *m_att;
 	bool m_follow;
@@ -189,6 +193,8 @@ public:
 	void xfer(class Xfer &x) override;
 
 private:
+	StateReturnType aim(bool firstCall); // RW 0x75232F (lane AIMAIM-1)
+
 	AIAttackState *m_att;
 	unsigned m_approachId;
 	bool m_setLocomotor = false;

@@ -11,10 +11,13 @@
 #include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Economy.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/SimMath.h"
 #include "Common/Xfer.h"
+
+#include <optional>
 
 const HeroRecord *PlayerHeroList::at(int index) const
 {
@@ -49,7 +52,7 @@ HeroRecord *PlayerHeroList::findByProductionID(std::uint32_t id)
 
 // RW 0x781801 -> RW 0x780713: a purchase record of the template (+ 0x0C from RW 0x73CE2A, see the header; INFERENCE: 1, because no create module class
 // that answers RW 0x73CE2A's vslot 0x24 is ported (S-852))
-void PlayerHeroList::addPurchase(const ThingTemplate &tt)
+HeroRecord PlayerHeroList::recordFromTemplate(const ThingTemplate &tt)
 {
 	HeroRecord r;
 	r.cost = BuildAssistant::buildCost(tt);                                // RW 0x780742: (u16) template + 0x5EA
@@ -57,7 +60,12 @@ void PlayerHeroList::addPurchase(const ThingTemplate &tt)
 	r.rank = 1;
 	r.productionID = 0;                                                    // RW 0x780780: + 0xB4 = 0
 	r.templateName = tt.getName();
-	m_records.push_back(r);
+	return r;
+}
+
+void PlayerHeroList::addPurchase(const ThingTemplate &tt)
+{
+	m_records.push_back(recordFromTemplate(tt));
 }
 
 int PlayerHeroList::addRecord(const HeroRecord &r)
@@ -118,18 +126,39 @@ int PlayerHeroList::recordFrames(GameLogic &logic, const Player &owner, const He
 	return SimMath::truncToInt32(NumericState::pc24Mul((float)frames, m));
 }
 
-// RW 0x780AD3 (the Brutal AI discount of RW 0x780AF1 .. 0x780B5C is stop S-204)
+namespace
+{
+// lane BRUTALAI-1, RW 0x780AF2 .. 0x780B5A / 0x780B91 .. 0x780BF9: the difficulty gate reads the PRODUCER's controlling player (RW 0x68B678 on the second
+// argument, not the record's owner); the record's value (whose calcCostToBuild / calcTimeToBuild already took the discount once: retail discounts a Brutal
+// AI's revival twice) becomes trunc((1.0 - m) * value) (subss; cvtsi2ss; mulss; cvttss2si). RW reads the producer unchecked; a null producer (only the
+// port's UI callers pass one) gets no discount
+int brutalHeroValue(const Object *producer, bool time, int value)
+{
+	const Player *p = producer ? producer->getControllingPlayer() : nullptr;
+	if (p)
+	{
+		if (const std::optional<float> m = p->getBrutalBuildReduction(time))
+		{
+			return SimMath::cvttss2si(SimMath::sseMul(SimMath::sseFromInt32(value), SimMath::sseSub(1.0f, *m)));
+		}
+	}
+	return value;
+}
+} // namespace
+
+// RW 0x780AD3 (BFME2 decomp Common/RTS/UnitRevivalEntry.cpp:511)
 int PlayerHeroList::costAt(GameLogic &logic, const Player &owner, int index, const Object *producer) const
 {
 	const HeroRecord *r = at(index);
-	return r ? recordCost(logic, owner, *r, producer) : 0;
+	return r ? brutalHeroValue(producer, false, recordCost(logic, owner, *r, producer)) : 0;
 }
 
-// RW 0x780B72 (Brutal AI: S-204)
+// RW 0x780B72 (BFME2 decomp Common/RTS/UnitRevivalEntry.cpp:551)
 int PlayerHeroList::framesForProductionID(GameLogic &logic, const Player &owner, std::uint32_t id, const Object *producer) const
 {
 	const HeroRecord *r = findByProductionID(id);
-	return r ? recordFrames(logic, owner, *r, producer) : 0;
+	return r ? brutalHeroValue(producer, true, recordFrames(logic, owner, *r, producer)) : 0;
+
 }
 
 // RW 0x780C11
@@ -247,8 +276,9 @@ void PlayerHeroList::crc(StateHasher &h) const
 		h.addFloat(r.experience);
 		h.addI32(r.rank);
 		h.addI32(r.baseRank);
-		for (std::uint32_t w : r.upgradeMask.words)
+		for (unsigned i = 0; i < UpgradeMaskType::activeWords(); ++i) // lane MODS-3: retail's 0x24 words unless the data has more upgrades
 		{
+			const std::uint32_t w = r.upgradeMask.words[i];
 			h.addU32(w);
 		}
 		h.addU32(r.cost);
@@ -272,15 +302,15 @@ void PlayerHeroList::xfer(Xfer &x)
 	x.xferVersion(v);
 	// a record's fixed bytes: experience, rank, base rank, the upgrade mask (0x24 words), cost, start frame, seconds, two flags, production id, level
 	// cap, UI factor, two empty names
-	x.xferVectorSize(m_records, 4 + 4 + 4 + 4 * UpgradeMaskType::WORDS + 4 + 4 + 4 + 1 + 1 + 4 + 4 + 4 + 1 + 1);
+	x.xferVectorSize(m_records, 4 + 4 + 4 + 4 * UpgradeMaskType::activeWords() + 4 + 4 + 4 + 1 + 1 + 4 + 4 + 4 + 1 + 1); // lane MODS-3: activeWords
 	for (HeroRecord &r : m_records)
 	{
 		x.xferReal(&r.experience);
 		x.xferInt(&r.rank);
 		x.xferInt(&r.baseRank);
-		for (std::uint32_t &w : r.upgradeMask.words)
+		for (unsigned i = 0; i < UpgradeMaskType::activeWords(); ++i)
 		{
-			x.xferUnsignedInt(&w);
+			x.xferUnsignedInt(&r.upgradeMask.words[i]);
 		}
 		if (x.isLoading())
 		{

@@ -6,6 +6,9 @@
 #include "GameEngineDevice/Win32Device/Common/Win32BIGFile.h"
 
 #include <filesystem>
+#include "Common/MD5.h"
+#include <array>
+#include <algorithm>
 
 Win32BIGFile::Win32BIGFile() = default;
 Win32BIGFile::~Win32BIGFile() = default;
@@ -87,4 +90,29 @@ bool Win32BIGFile::readFile(const std::string &filename, std::vector<std::uint8_
 		return false;
 	}
 	return true;
+}
+
+// Diagnostic hashing is streamed so a movie entry cannot allocate hundreds of MB.
+std::string Win32BIGFile::fileChecksum(const std::string &filename, std::string *error)
+{
+    const auto *info = getArchivedFileInfo(filename);
+    if (!info) { if (error) *error = "missing archive entry: " + filename; return {}; }
+    const auto length = m_memory ? m_memory->size() : (m_handle ? m_handle->length() : 0);
+    if (std::uint64_t(info->m_offset) + info->m_size > length) {
+        if (error) *error = "archive entry range is invalid: " + filename;
+        return {};
+    }
+    MD5 hash;
+    std::array<std::uint8_t, 65536> buffer;
+    for (std::uint64_t offset = 0; offset < info->m_size;) {
+        const auto count = std::min<std::uint64_t>(buffer.size(), info->m_size - offset);
+        if (m_memory) std::copy_n(m_memory->data() + info->m_offset + offset, count, buffer.data());
+        else if (!m_handle || !m_handle->readAt(info->m_offset + offset, buffer.data(), count)) {
+            if (error) *error = "could not read archive entry: " + filename;
+            return {};
+        }
+        hash.update(buffer.data(), count);
+        offset += count;
+    }
+    return hash.finalHex();
 }

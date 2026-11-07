@@ -6,6 +6,7 @@
 #include "GameLogic/SkirmishAI/AIFortification.h"
 #include "Common/Player.h"
 #include "GameLogic/AI/AIWorld.h"
+#include "GameLogic/AI/AIStateMachine.h"
 #include "Common/PlayerList.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "Common/Thing/ThingFactory.h"
@@ -20,6 +21,7 @@
 #include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
+#include "GameLogic/SkirmishAI/AIStrategy.h"
 #include "GameLogic/WallBalance.h"
 #include "GameLogic/Weapon.h"
 #include "GameLogic/WeaponNugget.h"
@@ -170,9 +172,14 @@ bool AIFortification::passiveBarrier(const Object &o)
 
 bool AIFortification::allowAutoTarget(const Object &unit, const Object &target)
 {
+ if (!unit.logic().settings().enhancedAI) return true;
  const Player *owner=unit.getControllingPlayer();
- if(!owner || owner->getPlayerType()!=PLAYER_COMPUTER || !passiveBarrier(target))return true;
+ if(!owner || owner->getPlayerType()!=PLAYER_COMPUTER)return true;
  const auto *ai=unit.logic().skirmishAI().findAI(owner->getPlayerIndex());
+ // Escorts defend the siege line; acquiring an armed wall tower would walk them
+ // back into the wall even after the tactic's attack-move was removed.
+ if (ai && ai->brain.siegeEscorts.count(unit.getID()) && WallBalance::wall(target)) return false;
+ if (!passiveBarrier(target)) return true;
  return ai && ai->brain.siegeLaunched && ai->brain.fortificationTarget==target.getID() && ai->brain.siegeUnits.count(unit.getID());
 }
 
@@ -194,8 +201,10 @@ BreachRoute breachRoute(GameLogic &logic,const Player &player,const Coord3D &bas
  }
  if(!route.objective)return route;
  for(Object *o=logic.getFirstObject();o;o=o->getNextObject()) {
+  // not a unit the AI leaves alone (GameLogic::aiReserved: a wave spawner's): it is no part of the army, and one already fighting at the walls
+  // makes every approach search below fail at full cost, twice a logic frame
   if(o->getControllingPlayer()!=&player || !o->isInWorld() || !CombatQueries::isAlive(*o) || !o->getAIUpdateInterface() ||
-   o->isKindOfName("STRUCTURE") || o->isKindOfName("AIRCRAFT") || o->isKindOfName("DOZER") || !o->isKindOfName("CAN_ATTACK"))continue;
+   o->isKindOfName("STRUCTURE") || o->isKindOfName("AIRCRAFT") || o->isKindOfName("DOZER") || !o->isKindOfName("CAN_ATTACK") || logic.aiReserved(*o))continue;
   float d=CombatQueries::centerDistanceSquared2D(*o->getPosition(),*route.objective->getPosition());
   if(!route.unit || d<best || (d==best && o->getID()<route.unit->getID())) {route.unit=o;best=d;}
  }
@@ -270,7 +279,7 @@ Object *AIFortification::findTarget(GameLogic &logic, const AISkirmishPlayer &ai
 
 void AIFortification::update(GameLogic &logic, AISkirmishPlayer &ai)
 {
- if (logic.peaceTimeActive()) return;
+ if (!logic.settings().enhancedAI || logic.peaceTimeActive()) return;
  Object *target = findTarget(logic, ai);
  auto &b = ai.brain;
  const auto previous = b.siegeUnits;
@@ -308,21 +317,24 @@ void AIFortification::update(GameLogic &logic, AISkirmishPlayer &ai)
   b.siegeUnits.insert(unit->getID());
  }
  const bool staging = target && passiveBarrier(*target);
+ if (staging && b.siegeUnits.empty()) b.siegeLaunched = false;
  if (staging || (target && !previousEscorts.empty()))
  {
   for (Object *unit = logic.getFirstObject(); unit; unit = unit->getNextObject())
   {
-   if (b.siegeEscorts.size() == 6) break;
+   // An intact breach blocks the whole army, not just six escorts. Surplus
+   // infantry and previously dispatched squads must not march in without siege.
+   if (!staging && b.siegeEscorts.size() == 6) break;
    auto *a = unit->getAIUpdateInterface();
    if (unit->getControllingPlayer() != player || !unit->isInWorld() || !CombatQueries::isAlive(*unit) || !a ||
-       unit->getContainedBy() || b.strategyRecovering.count(unit->getID()) || unit->isUnderConstruction() || !unit->isKindOfName("CAN_ATTACK") ||
+       unit->getContainedBy() || AIStrategy::capturing(*unit) || b.strategyRecovering.count(unit->getID()) || unit->isUnderConstruction() || !unit->isKindOfName("CAN_ATTACK") ||
        unit->isKindOfName("STRUCTURE") || unit->isKindOfName("DOZER") || unit->isKindOfName("IGNORES_SELECT_ALL") ||
        unit->isKindOfName("SIEGEENGINE") || b.siegeUnits.count(unit->getID())) continue;
    bool assigned = false;
    for (const auto &tactic : b.tactics) for (const auto &team : tactic.teams)
     assigned = assigned || (std::find(team.members.begin(), team.members.end(), unit->getID()) != team.members.end() &&
                             !(team.type == 0 && team.wantsMembers && !team.handedOver));
-   if (!previousEscorts.count(unit->getID()) && (assigned || a->currentVictim())) continue;
+   if (!staging && !previousEscorts.count(unit->getID()) && (assigned || a->currentVictim())) continue;
    b.siegeEscorts.insert(unit->getID());
   }
  }
@@ -341,12 +353,38 @@ void AIFortification::update(GameLogic &logic, AISkirmishPlayer &ai)
   if (!a || !target) return;
   if (!b.siegeLaunched)
   {
-   if (!(siege ? previous : previousEscorts).count(id)) a->aiIdle(CMD_FROM_AI);
+   // A policy takeover must cancel the previous attack-move. CMD_FROM_AI
+   // idle intentionally preserves it (temporary combat diversion semantics).
+   if (!(siege ? previous : previousEscorts).count(id)) a->aiIdle(CMD_FROM_PLAYER);
    if (CombatQueries::centerDistanceSquared2D(*unit->getPosition(), rally) > 40000.0f && a->isIdle()) a->aiMoveToPosition(rally, CMD_FROM_AI);
   }
   else if (siege)
   {
    if (a->currentVictimId() != target->getID() || a->isIdle() || (logic.getFrame()%50==id%50 && a->mover().isBlocked())) a->aiAttackObject(target, CMD_FROM_AI);
+  }
+  else if (staging)
+  {
+   // Ordinary troops must not attack-move into an intact wall. Hold on the
+   // home side behind the siege firing line until findTarget sees an open route.
+   float standOff = 450.0f;
+   for (ObjectID engine : b.siegeUnits)
+    if (const Object *artillery = logic.findObjectByID(engine))
+     standOff = std::max(standOff, SimMath::addf32(siegeRange(*artillery->getTemplate()), 200.0f));
+   Coord3D hold = rally;
+   const Coord3D &wall = *target->getPosition();
+   const float dx = SimMath::subf32(rally.x, wall.x), dy = SimMath::subf32(rally.y, wall.y);
+   const float length = (float)SimMath::sqrtd(SimMath::addf32(SimMath::mulf32(dx,dx),SimMath::mulf32(dy,dy)));
+   if (length > standOff)
+   {
+    hold.x = SimMath::addf32(wall.x,SimMath::mulf32(SimMath::divf32(dx,length),standOff));
+    hold.y = SimMath::addf32(wall.y,SimMath::mulf32(SimMath::divf32(dy,length),standOff));
+    hold.z = logic.getGroundHeight(hold.x,hold.y);
+   }
+   const bool tooClose = CombatQueries::centerDistanceSquared2D(*unit->getPosition(),wall) < SimMath::mulf32(standOff,standOff);
+   const bool wrongGoal = CombatQueries::centerDistanceSquared2D(a->stateMachine().goalPosition(),hold) > 2500.0f;
+   if (!previousEscorts.count(id) || (tooClose && wrongGoal) || a->currentVictim()) a->aiIdle(CMD_FROM_PLAYER);
+   if (a->isIdle() && CombatQueries::centerDistanceSquared2D(*unit->getPosition(),hold) > 2500.0f)
+    a->aiMoveToPosition(hold,CMD_FROM_AI);
   }
   else if (a->isIdle())
   {

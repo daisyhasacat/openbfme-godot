@@ -20,6 +20,11 @@ else()
     set(args -C ${WORK}/src -j${jobs} libluajit.a BUILDMODE=static
              "TARGET_SYS=${TARGET_SYS}" "CC=${CC}" "TARGET_FLAGS=${TARGET_FLAGS}"
              "XCFLAGS=-DLUAJIT_ENABLE_LUA52COMPAT -include ${PREFIX}")
+    if(TARGET_SYS STREQUAL "Windows")
+        # Cross-build host generators natively; only the VM/library uses the Windows compiler.
+        find_program(host_cc NAMES cc clang REQUIRED)
+        list(APPEND args "HOST_CC=${host_cc}" "TARGET_AR=${TARGET_AR} rcus")
+    endif()
     if(TARGET_SYS STREQUAL "iOS")
         # the host tools (minilua, buildvm) run on this Mac: the host compiler with the macOS SDK (HOST_SYSROOT); the target compiles
         # name their iOS sysroot in TARGET_FLAGS, so SDKROOT (build_ios.sh exports the iOS one) is not needed and would mislead the host's

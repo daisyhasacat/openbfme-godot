@@ -33,6 +33,8 @@ struct TerrainTypeIndex
 
 namespace TerrainTypes
 {
+// Enhanced presentation: only exact name + Snow/Snowy pairs, never guessed substitutes.
+std::map<std::string, std::string> snowReplacements(const TerrainTypeIndex &types);
 void scanText(const std::string &text, TerrainTypeIndex &out);
 // Reads data\ini\terrain.ini from the mounted archives. False + *error if it is missing.
 bool load(ArchiveFileSystem &fs, TerrainTypeIndex &out, std::string *error);

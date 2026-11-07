@@ -17,6 +17,7 @@
 #include "GameLogic/Construction.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Map/TerrainLogic.h"
+#include "GameLogic/Map/TerrainTrees.h"
 #include "GameLogic/Module/AISpecialPowerInternal.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/SpecialAbilityModules.h"
@@ -58,26 +59,25 @@ using namespace AISpecialPowerDetail;
 namespace
 {
 const char *const kStop =
-	"[S-1421] AISpecialPowerUpdate (lanes MOD-4, AIPOW-1): the module (RW 0x8B73B7 / 0x8B714F / 0x8B708B), the decision framework (RW 0x993055 / 0x993307 / "
-	"0x99302D), the location base (RW 0xA021D8 / 0xA0229F / 0xA01C9C with the ActionManager's test RW 0x75CF21) and 42 of the 53 decisions run; not ported "
-	"(they answer no, counted): SOUL_FREEZE (RW 0x9E9B37) and ATTACK_HEAL_AOE (RW 0x9E691D: the team's special power registry Team + 0x140 and its order "
-	"list Team + 0x13C, RW 0x7A3EF5 / 0x7A5582 / 0x7A1C5E, not ported); spell book HEAL (RW 0x9E85C6: the ZH AIPlayer's list, Player + 0x2FC -> + 0x4, "
-	"entries of type 0x1A); ARMY_BREAKER (RW 0x9E92CA: the brain's army trackers, AI + 0x164 -> + 0x20); STRUCTURE_BREAKER, its _PREF_WALLS and "
-	"_BASEKILL, CITADEL (RW 0x9E7A98 / 0x9E7942 / 0x9E6EF4 / 0x9E6CCB: the enemy record's structure cluster table, record + 0x10, RW 0x8E4042 / 0xA024DA); "
-	"DEBUFFECONOMYBUILDING / DEBUFFPRODUCTIONBUILDING (RW 0x9E74B7 / 0x9E726A: the ZH AISkirmishPlayer's enemy, Player + 0x2FC vslot 0x30 -> RW "
-	"0x8F47EB acquireEnemy); TREE_KILLER (RW 0x9E70B6: TheTerrainLogic + 0x584's list); the per-frame steering of a summoned helper (slot 1 of "
-	"TARGETAOE_SUMMON RW 0x9EB961, ASSIST_BATTLE_* RW 0x9E8A42, SHROUD_REVEAL RW 0x9E7F0F: the helper is found through the record's army and hero lists, "
-	"RW 0x99316A, and steered by Object + 0xA4's goal position, RW 0x68B411; the counters run); INFERENCE: an unset SpecialPowerAIType is -1, the map "
-	"object re-init (behaviour slot 0xB4, RW 0x8B7554) is the first update's, the AI's goal object (AIUpdate + 0x40) is the AI's current victim (ZH donor), "
-	"only SpecialAbilityUpdate answers RW 0x68C461's vslot 4, Object + 0xA0 bit 6 (the disabled exception of RW 0x696FD2) is clear, the player info "
-	"record lists are the live objects in id order (S-418), ASSIST_BATTLE's timer list (RW 0xDEC154) belongs to the game, the battle stats sum in the "
-	"partition's unsorted order";
+	"[S-1421] AISpecialPowerUpdate (lanes MOD-4, AIPOW-1, RAI-POW, RAI-POW-3b, RAI-POW-2, RAI-POW-3): the module (RW 0x8B73B7 / 0x8B714F / 0x8B708B), the decision framework (RW 0x993055 / "
+	"0x993307 / 0x99302D), the location base (RW 0xA021D8 / 0xA0229F / 0xA01C9C with the ActionManager's test RW 0x75CF21) and 51 of the 53 decisions run; not ported "
+	"(they answer no, counted): ATTACK_HEAL_AOE (RW 0x9E691D: the team's order list Team + 0x13C, RW 0x7A1C5E, not ported; its registry gate is); spell book "
+	"HEAL (RW 0x9E85C6: the ZH AIPlayer's list, Player + 0x2FC -> + 0x4, entries of type 0x1A); the per-frame "
+	"steering of a summoned helper (slot 1 of TARGETAOE_SUMMON RW 0x9EB961, ASSIST_BATTLE_* RW 0x9E8A42, SHROUD_REVEAL RW 0x9E7F0F: the helper is found through "
+	"the record's army and hero lists, RW 0x99316A, and steered by Object + 0xA4's goal position, RW 0x68B411; the counters run); INFERENCE: an unset "
+	"SpecialPowerAIType is -1, the map object re-init (behaviour slot 0xB4, RW 0x8B7554) is the first update's, the AI's goal object (AIUpdate + 0x40) is the "
+	"AI's current victim (ZH donor), only SpecialAbilityUpdate answers RW 0x68C461's vslot 4, Object + 0xA0 bit 6 (the disabled exception of RW 0x696FD2) is "
+	"clear, the player info record lists are the live objects in id order (S-418), ASSIST_BATTLE's timer list (RW 0xDEC154) belongs to the game, the battle "
+	"stats sum in the partition's unsorted order";
+
 
 const char *const kStopSpellBook =
-	"[S-1875] AIPlayer's science upgrade builder (AIPlayer + 0x12C -> + 0xC, class RW 0x99FB84, vtables RW 0xC88208 / 0xC881FC, update RW 0x9A0023 -> RW "
-	"0x99FCC4 / 0x99FD0E / 0x99FE74 / 0x99FAEF / 0x99FA40, run by AIPlayer::update RW 0x8F0F39, S-412) is not ported: a computer player's sciences come "
-	"only from its AI scripts (PURCHASE_SCIENCE / GRANT_SCIENCE), so a spell book power whose science retail's builder buys may never become ready (the "
-	"science gates readiness, RW 0x8B708B; the command set's button activates the decision module, RW 0x8B714F)";
+	"[S-1875] computer players' science purchases (lane AI5): retail RotWK has no skirmish AI science buyer. Player::attemptToPurchaseScience RW 0x6AE36F is "
+	"called only by the script action PLAYER_PURCHASE_SCIENCE (RW 0x7BD210), MSG_PURCHASE_SCIENCE (RW 0x779A3D) and ZH's AIPlayer::doUpgradesAndSkills "
+	"(RW 0x8F7B3B, AIData SideInfo SkillSet1..5), which RW 0x8F9705 runs only for a computer player without a skirmish AI; the AIPlayer + 0x12C class "
+	"(RW 0x99FB84, AIUpgradeScienceBuilder) buys structure upgrades and expansions (ported, AIUpgrade.h). So a skirmish AI's sciences come from its "
+	"scripts as in retail. Not ported: doUpgradesAndSkills for a computer player without a skirmish AI (retail AIData defines no SkillSet: it buys and "
+	"draws nothing; a mod's SkillSets would make such players buy sciences)";
 
 const unsigned kExecuteFrames = 5u * LOGICFRAMES_PER_SECOND; // RW 0x993024: [0xD9F608] * 5
 
@@ -144,8 +144,14 @@ bool AISpecialPowerDecision::decisionPorted(int type)
 	case AISP_DOMINATE_TROLL: case AISP_DOMINATE_ENEMY: case AISP_TAME_THE_BEAST: case AISP_GANDALF_WIZARD_BLAST: case AISP_GIVEXP_AOE: case AISP_RANGED_AOE_ATTACK:
 	case AISP_LEGOLAS_ARROWWIND: case AISP_RANGED_AOE_ATTACK_UNITS: case AISP_AOE_AND_BUFF: case AISP_LEGOLAS_TRAINARCHERS: case AISP_GOBLINKING_BATTLEFRENZY:
 	case AISP_GOBLINKING_CALLOFTHEDEEP: case AISP_TARGETAOE_SUMMON: case AISP_HEAL_AOE: case AISP_SPELLBOOK_ALWAYS_FIRE: case AISP_SPELLBOOK_CAPTURE_CREEP:
+	case AISP_SPELLBOOK_TREE_KILLER: case AISP_SPELLBOOK_ARMY_BREAKER:
+	case AISP_SPELLBOOK_STRUCTURE_BREAKER: case AISP_SPELLBOOK_STRUCTURE_BREAKER_PREF_WALLS: case AISP_SPELLBOOK_STRUCTURE_BASEKILL: case AISP_SPELLBOOK_CITADEL:
 	case AISP_SPELLBOOK_SHROUD_REVEAL: case AISP_SPELLBOOK_ASSIST_BATTLE_BUFF: case AISP_SPELLBOOK_ASSIST_BATTLE_DEBUFF: case AISP_SPELLBOOK_BUFFTERRAIN:
 	case AISP_SPELLBOOK_REBUILD: case AISP_SPELLBOOK_ENSHROUDINGMIST: case AISP_SPELLBOOK_CALLTHEHORDE: case AISP_SPELLBOOK_BUFFECONOMYBUILDING:
+	case AISP_SOUL_FREEZE:
+
+	case AISP_SPELLBOOK_DEBUFFECONOMYBUILDING: case AISP_SPELLBOOK_DEBUFFPRODUCTIONBUILDING:
+
 	case AISP_BASIC_SELF_BUFF: case AISP_CAPTURE_BUILDING: case AISP_ENEMY_TYPE_KILLER: case AISP_ENEMY_TYPE_KILLER_RANGED: case AISP_ENEMY_TYPE_KILLER_STRUCTURES: case AISP_TOGGLE_MOUNTED:
 	case AISP_STANCEBATTLE: case AISP_STANCEAGGRESSIVE: case AISP_STANCEHOLDGROUND: case AISP_BASIC_SELF_DEBUFF: case AISP_MORGUL_BLADE: case AISP_GOBLIN_POISON:
 		return true;
@@ -211,12 +217,14 @@ void AISpecialPowerUpdate::init()
 	}
 	int powerType = 0;
 	float range = 0.0f;
+	const SpecialPowerTemplate *powerTemplate = nullptr;
 	if (found)
 	{
 		m_active = true;
 		const SpecialPowerTemplate *t = TheSpecialPowerStore && !found->m_specialPowerName.empty() ? TheSpecialPowerStore->findSpecialPowerTemplate(found->m_specialPowerName) : nullptr;
 		if (t)
 		{
+			powerTemplate = t;
 			powerType = t->getSpecialPowerType(); // RW 0x688D3C -> + 0x1C
 			for (const std::unique_ptr<BehaviorModule> &m : obj->modules()) // RW 0x68C461: behaviour slot 0x64, its vslot 4, the power's type (RW 0x851D10)
 			{
@@ -279,6 +287,7 @@ void AISpecialPowerUpdate::init()
 				m_decision->range = m_data->m_specialPowerRange;
 			}
 			m_decision->powerType = powerType;
+			m_decision->powerTemplate = powerTemplate;
 		}
 	}
 	m_initialized = true;
@@ -545,6 +554,25 @@ bool AISpecialPowerUpdate::decide(Object &obj)
 		return decideCallTheHorde(obj);
 	case AISP_SPELLBOOK_BUFFECONOMYBUILDING:
 		return decideBuffEconomy(obj);
+	case AISP_SPELLBOOK_CITADEL:
+		return decideCitadel(obj);
+	case AISP_SOUL_FREEZE:
+		return decideSoulFreeze(obj);
+	case AISP_SPELLBOOK_STRUCTURE_BREAKER:
+		return decideStructureBreaker(obj);
+	case AISP_SPELLBOOK_STRUCTURE_BREAKER_PREF_WALLS:
+		return decideStructureBreakerWalls(obj);
+	case AISP_SPELLBOOK_STRUCTURE_BASEKILL:
+		return decideStructureBaseKill(obj);
+	case AISP_SPELLBOOK_DEBUFFECONOMYBUILDING:
+		return decideDebuffEconomy(obj);
+	case AISP_SPELLBOOK_DEBUFFPRODUCTIONBUILDING:
+		return decideDebuffProduction(obj);
+	case AISP_SPELLBOOK_TREE_KILLER:
+		return decideTreeKiller(obj);
+	case AISP_SPELLBOOK_ARMY_BREAKER:
+		return decideArmyBreaker(obj);
+
 	case AISP_HEAL_AOE:
 	{
 		// RW 0x9EA462: a goal and an ALLIES cluster (RW 0xA01F99(obj, 1)) of at least 10; then 0.0 / (the hits of the four points) <= 0.75 (RW 0xC1B594 /
@@ -747,53 +775,23 @@ void AISpecialPowerUpdate::execute(Object &obj)
 
 void AISpecialPowerUpdate::runButton(Object &obj, Object *target, const Coord3D *loc)
 {
-	// RW 0x696FD2 / 0x697890 / 0x6979D9 with source 1 (CMD_FROM_SCRIPT) and no auto flag
+	// RW 0x696FD2 / 0x697890 / 0x6979D9 with source 1 (CMD_FROM_SCRIPT) and no auto flag (lane MODS-3: Object::doCommandButton and its target forms; their
+	// disabled gates and every command type are theirs)
 	const CommandButton *b = m_decision->button;
-	if (!b || obj.getDisabledMask() != 0)
-	{
-		return; // RW 0x9325B4: a disabled object does nothing (Object + 0xA0 bit 6 taken as clear)
-	}
-	if (b->m_command == GUI_COMMAND_SET_STANCE && !target && !loc)
-	{
-		// RW 0x696FD2 case 0x3A: the object's StancesBehavior (RW 0x861E6E / 0x68BDA5) takes the button's first stance (RW 0x75D324(0)); the debug checks aside
-		if (StancesBehavior *s = StancesBehavior::of(obj))
-		{
-			if (!b->m_stances.empty() && b->m_stances[0] >= 0 && b->m_stances[0] < STANCE_COUNT)
-			{
-				s->setStance((StanceType)b->m_stances[0]);
-			}
-		}
-		return;
-	}
-	if (b->m_command == GUI_COMMAND_TOGGLE_WEAPONSET && !target && !loc)
-	{
-		WeaponSetToggle::toggleFromCommandButton(obj); // RW 0x696FD2 case 0x2D (lane AIPOW-1)
-		return;
-	}
-	if (b->m_command != GUI_COMMAND_SPECIAL_POWER && b->m_command != GUI_COMMAND_SPELL_BOOK)
-	{
-		++stats().unportedCommands;
-		obj.logic().noteStop(kStop);
-		return;
-	}
-	const SpecialPowerTemplate *t = TheSpecialPowerStore && !b->m_specialPowerName.empty() ? TheSpecialPowerStore->findSpecialPowerTemplate(b->m_specialPowerName) : nullptr;
-	if (!t)
-	{
-		return; // a button without a power (+ 0x44 null) does nothing
-	}
-	const unsigned options = b->m_options | 0x40000u;
 	if (loc)
 	{
-		SpecialPowerModules::doSpecialPowerAtLocation(obj, t, *loc, options, true); // force: source == 1
+		obj.doCommandButtonAtPosition(b, *loc, CMD_FROM_SCRIPT, false); // RW 0xA01C54
 	}
 	else if (target)
 	{
-		SpecialPowerModules::doSpecialPowerAtObject(obj, t, target, options, true);
+		obj.doCommandButtonAtObject(b, target, CMD_FROM_SCRIPT, false); // RW 0xA02806
 	}
 	else if (m_decision->kind != AISpecialPowerDecision::KIND_OBJECT)
 	{
-		SpecialPowerModules::doSpecialPower(obj, t, options, true);
+		obj.doCommandButton(b, CMD_FROM_SCRIPT, false); // RW 0x993006
 	}
+	// INFERENCE (S-1421, as before): an object decision whose target is gone reaches RW 0x697890 with a null target; the port's power modules are not
+	// handed a null target, so nothing happens
 }
 
 void AISpecialPowerUpdate::crc(StateHasher &h) const

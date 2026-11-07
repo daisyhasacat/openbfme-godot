@@ -12,9 +12,10 @@
 //     producer's ProductionModifier cost multiplier (ProductionUpdate slot 26); the result is truncated to int (Brutal AI: times 1 - BuildCostReduction).
 //   calcTimeToBuild(player, producer, override) RW 0x73C39E: SECONDS are truncated to whole numbers at several steps: t = (int)BuildTime; t = ftol(handicap *
 //     t); t = ftol((1.0 + ProductionTimeChange) * t); t = ftol(P * t) (slot 27); sec = (int)((float)t / lowEnergyRate); the multi-factory and multiplayer
-//     speed factors (GameData MultipleFactory, MultiPlayUnitSpeedMult / MultiPlayBuildingSpeedMult MPn) scale sec; frames = 5 * sec.
+//     speed factors (GameData MultipleFactory, MultiPlayUnitSpeedMult / MultiPlayBuildingSpeedMult MPn) scale sec; frames = 5 * sec; a Brutal skirmish AI:
+//     floor(frames * (1.0 - BuildTimeReduction)) in x87 PC24 (RW 0x73C569 .. 0x73C5CB, lane BRUTALAI-1).
 //   A vanilla unit with BuildTime 20.0 therefore takes 100 frames; BuildTime 7.5 takes 35, not 37.5.
-// Not ported (stop S-204): the handicap table (lobby handicap, 1.0), the energy ratio (no energy system: 1.0), the Brutal AI reductions, the MultipleFactory count for BuildCompletion APPEARS_AT_RALLY_POINT templates
+// Not ported (stop S-204): the handicap table (lobby handicap, 1.0), the energy ratio (no energy system: 1.0), the MultipleFactory count for BuildCompletion APPEARS_AT_RALLY_POINT templates
 // (reported when GameData's MultipleFactory is not 1.0), the Create-A-Hero surcharge.
 
 #pragma once
@@ -47,7 +48,10 @@ namespace BuildAssistant
 unsigned buildCost(const ThingTemplate &tt);        ///< BuildCost (u16)
 float buildTime(const ThingTemplate &tt);           ///< BuildTime (seconds)
 int commandPoints(const ThingTemplate &tt);         ///< CommandPoints
-int buildable(const ThingTemplate &tt);             ///< Buildable: 0 Yes, 1 Ignore_Prerequisites, 2 No (RW +0x602)
+int buildable(const ThingTemplate &tt);             ///< the INI's Buildable: 0 Yes, 1 Ignore_Prerequisites, 2 No, 3 Only_By_AI (RW +0x602)
+// ThingTemplate::getBuildable RW 0x73BFE8: the game's script override (GameLogic::findBuildableStatusOverride, RW 0x62EE6D) when there is one, else
+// buildable(tt) (lane BFME2CAMP1)
+int buildable(const ThingTemplate &tt, const GameLogic &logic);
 int buildCompletion(const ThingTemplate &tt);       ///< BuildCompletion: 0 INVALID, 1 APPEARS_AT_RALLY_POINT, 2 PLACED_BY_PLAYER
 int maxSimultaneousOfType(const ThingTemplate &tt); ///< MaxSimultaneousOfType (u16)
 
@@ -81,8 +85,10 @@ bool isInProducersCommandSet(Object &builder, const ThingTemplate *what, int bui
 // template both carry KindOf WALL_HUB (template + 0x118 & 0x10000000, i.e. + 0x11B bit 4); a null `what` or builder is no line build
 bool isLineBuildTemplate(GameLogic &logic, const ThingTemplate *what, const Object *builder);
 
-// ZH BuildAssistant::canMakeUnit, RW vtable + 0x64 (RW 0x793ECB)
-CanMakeType canMakeUnit(Object &builder, const ThingTemplate *what, int buildIndex);
+// ZH BuildAssistant::canMakeUnit, RW vtable + 0x64 (RW 0x793ECB). `ignoreCommandPoints` (lane MODS-3, mod engine feature edain-unchained.queue-ignore-cp:
+// Edain Unchained's hook at RW 0x79402B continues at RW 0x794033 when its global is set) skips only the command point refusal (CANMAKE_UNKNOWN_7 at RW
+// 0x794026); retail never sets it. Only ProductionUpdate::queueCreateUnit's doCommandButton path passes true (Object::doCommandButton, QueueIgnoreCP)
+CanMakeType canMakeUnit(Object &builder, const ThingTemplate *what, int buildIndex, bool ignoreCommandPoints = false);
 } // namespace BuildAssistant
 
 // the name the dispatcher and the tests use for ZH's `ThingTemplate::isEquivalentTo`

@@ -28,3 +28,15 @@ viewports, scale inheritance, disabled automatic updates and no continuous
 viewport rendering. The existing menu_timing_test.gd covers menu transitions.
 Physical iPhone frame times and thermals remain unmeasured; CoreDevice service
 timed out during device discovery on this host.
+
+Desktop shell-backdrop regression: a full canvas build must mark View3D slots
+unused only once, before drawing the animated backdrop. A second beginBuild
+between the backdrop and menu segments discarded the backdrop's used flag and
+disabled its paired viewports, leaving a black main menu. The full build now
+shares one View3D lifecycle across backdrop and menu segments; incremental
+segment rebuilds retain their path-scoped lifecycle.
+
+Verified with a rebuilt macOS extension and the graphical
+`godot/tests/shell_backdrop_test.gd`: the prior build failed its animation-advance
+assertion, while the fix passes animation, settings backdrop, hide and restore
+checks. The rendered main-menu frame was visually checked. No simulation change.

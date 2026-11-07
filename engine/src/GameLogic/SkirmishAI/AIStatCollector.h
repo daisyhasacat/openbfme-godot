@@ -3,7 +3,7 @@
 // AIStatCollector (lane DECOMP-3): the player info record of TheSkirmishAIManager (0x44 bytes, ctor RW 0x8E46D9; one per playable player, the map at manager
 // + 0xA3C keyed by Player + 0x54). It holds the player's objects the skirmish AI reads, filled by the manager's object events rather than rebuilt: the lists
 // keep the order in which objects were registered. Donor: BFME2 decomp AIStatCollector.cpp:AIStatCollector (tier B for RW 0x8E46D9) and
-// Rva004E0425Dispatch.cpp:AIStatCollector::Register (tier B for RW 0x8E4591); its UnRegister counterpart has no tier in RotWK (RotWK's own RW 0x8E480C is read
+// AIStatCollector.cpp:AIStatCollector::Register (tier B for RW 0x8E4591); its UnRegister counterpart has no tier in RotWK (RotWK's own RW 0x8E480C is read
 // from the disassembly). The decomp names the sub objects by address only.
 //
 // TARGET FACTS (RotWK game.dat, caveat S-001; static disassembly, spot-checked in Ghidra):
@@ -13,7 +13,9 @@
 //   * Register RW 0x8E4591 (called only from the manager's object event RW 0x6A9D9C): the economy add RW 0x99E84E (filter RW 0x99E818: not LINKED_TO_FLAG, not
 //     UNATTACKABLE, STRUCTURE, ECONOMY_STRUCTURE or SUPPLY_GATHERING_CENTER -> push_back to + 0xC -> + 4); the structure add RW 0x99EA19 (filter RW 0x99E8C8:
 //     not UNATTACKABLE unless EXPANSION_PAD, not NOT_AUTOACQUIRABLE unless REBUILD_HOLE, STRUCTURE, not ECONOMY_STRUCTURE, not LINKED_TO_FLAG, not BASE_SITE;
-//     EXPANSION_PAD (template + 0x123 bit 0) -> + 8 -> + 0x10, else + 8 -> + 4); when either took it, the position sampler (RW 0x8E3EF8 / 0x8E4456, not ported);
+//     EXPANSION_PAD (template + 0x123 bit 0) -> + 8 -> + 0x10, else + 8 -> + 4); when either took it, the position sampler (RW 0x8E3EF8 /
+//     0x8E4456, AIPositionSampler) takes the object unless its template is one of the army definition's OffensiveBuildings (+ 0x98);
+
 //     the army add RW 0x99E6C9 (filter RW 0x99E4C9: not UNATTACKABLE, not IMMOBILE, not STRUCTURE, not SHIP, and CAN_ATTACK, HERO, SUPPORT or a DOZER that is not
 //     a worker (RW 0x88B897: the AI's vslot 0x174 and 0x190, the supply interface); CAN_ATTACK / HERO / SUPPORT -> + 0 -> + 4, else the dozer -> + 0 -> + 0x58),
 //     else the ship add RW 0x99E493 (filter RW 0x99E467: not UNATTACKABLE, not STRUCTURE, SHIP -> + 4 -> + 4). An add that took the object calls the listeners
@@ -27,13 +29,21 @@
 //     the dozers + 0x58 are not pruned) and then makes its idle army record (RW 0x99E63B, AITacticalAI::updateIdleArmy); the ship, structure (+ 4 only) and
 //     economy lists drop unresolved ids (RW 0x65BD07).
 //   * the count RW 0x8E3FD6(name): the + 0x20 entry of the name, 0 when absent.
-// NOT PORTED (stop S-416 / S-418): the position sampler (+ 0x10) and its test RW 0x8E3EF8 against the AI's + 0x160 -> + 0x98 names, the listener vector (+ 0x38;
-// no listener is ported). TheNameKeyGenerator's key is the template name here (the map is only looked up, never walked, so its order is not observable).
+// The position sampler (+ 0x10) is ported: AIPositionSampler groups the structures and economy structures of the lists above by
+// DefenseTreeNodeRadius (RW 0x8E3EF8 skips the army definition's OffensiveBuildings, + 0x160 -> + 0x98). INFERENCE: retail's Object
+// constructor takes the position, so RW 0x8E4456 sees the final one; this port sets it after the world entry (Object::setPosition), so the
+// sampler add is deferred to update RW 0x8E3CF3, the first point at which every object created since the last update has its position. The
+// registration order and the set of objects are retail's; only the moment of the position read moves. The listener vector (+ 0x38)
+
+// is the AI's: lane AI5 ports the unit upgrader (mask 4) and the upgrade builder (mask 1), called by SkirmishAIManager with the masks these functions return; the
+// economy builder's listener (+ 0xB4) is not ported (the port's economy builder counts its farms through the request states). TheNameKeyGenerator's key is the template name here (the map is only looked up, never walked, so its order is not observable).
 
 #pragma once
 
 #include "GameLogic/ObjectTypes.h"
+#include "GameLogic/SkirmishAI/AIPositionSampler.h"
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -49,9 +59,16 @@ public:
 
 	int playerIndex() const { return m_playerIndex; }
 
-	// RW 0x8E4591 / RW 0x8E480C
-	void registerObject(const Object &obj);
-	void unRegisterObject(const Object &obj);
+	// the listener masks (RW 0x8E3D4C / 0x8E3D77 test listener + 4 against them): 1 structures, 2 economy, 4 army and ships
+	enum : unsigned
+	{
+		LISTEN_STRUCTURES = 1,
+		LISTEN_ECONOMY = 2,
+		LISTEN_ARMY = 4
+	};
+	// RW 0x8E4591 / RW 0x8E480C; the masks of the lists that took / lost the object (lane AI5: the caller calls the listeners)
+	unsigned registerObject(const Object &obj);
+	unsigned unRegisterObject(const Object &obj);
 	// RW 0x8E3CF3 without the idle army record (AITacticalAI::updateIdleArmy reads army() right after)
 	void update(GameLogic &logic);
 	// RW 0x8E3FD6
@@ -64,11 +81,25 @@ public:
 	const std::vector<ObjectID> &expansionPads() const { return m_pads; }      ///< + 8 -> + 0x10
 	const std::vector<ObjectID> &economy() const { return m_economy; }         ///< + 0xC -> + 4
 	const std::vector<ObjectID> &heroes() const { return m_heroes; }           ///< + 0x14
+	const AIPositionSampler &positions() const { return m_positions; }         ///< + 0x10
+
+
+	// record + 0xC (the economy stats, ctor RW 0x99E738): + 0x14 the money reserve (0), + 0x18 its target (-1); written by the AIPlayer's money saver
+
+	// RW 0x8F0502, read by RW 0x99E766 (money + reserve) and drawn by RW 0x99E79A (lane AI5, S-413)
+	std::uint32_t reserve() const { return m_reserve; }
+	std::uint32_t reserveTarget() const { return m_reserveTarget; }
+	void setReserve(std::uint32_t v) { m_reserve = v; }
+	void setReserveTarget(std::uint32_t v) { m_reserveTarget = v; }
 
 	void crc(StateHasher &h) const;
 	void xfer(class Xfer &x); ///< lane SAVE-4c (SkirmishAISnapshot.cpp)
-	// lane SAVE-4c: the seven lists (a load's references, checked before the manager takes them)
-	std::vector<const std::vector<ObjectID> *> lists() const { return { &m_army, &m_dozers, &m_ships, &m_structures, &m_pads, &m_economy, &m_heroes }; }
+	// lane SAVE-4c: the seven lists and the pending sampler registrations (a load's references, checked before the manager takes them)
+	std::vector<const std::vector<ObjectID> *> lists() const
+	{
+		return { &m_army, &m_dozers, &m_ships, &m_structures, &m_pads, &m_economy, &m_heroes, &m_pendingPositions };
+	}
+
 
 private:
 	int m_playerIndex;
@@ -78,6 +109,11 @@ private:
 	std::vector<ObjectID> m_structures;
 	std::vector<ObjectID> m_pads;
 	std::vector<ObjectID> m_economy;
+	std::uint32_t m_reserve = 0;              ///< + 0xC -> + 0x14
+	std::uint32_t m_reserveTarget = 0xFFFFFFFFu; ///< + 0xC -> + 0x18
 	std::vector<ObjectID> m_heroes;
 	std::map<std::string, int> m_counts;
+	AIPositionSampler m_positions;              ///< + 0x10
+	std::vector<ObjectID> m_pendingPositions;   ///< the sampler adds waiting for the object's position (see the header's inference)
+
 };

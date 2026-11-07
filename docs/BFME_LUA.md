@@ -1,5 +1,17 @@
 # bfme Lua library
 
+To browse this reference as a local web page:
+
+```sh
+python3 -m venv workspace/lua-docs-venv
+workspace/lua-docs-venv/bin/pip install -r tools/requirements-lua-docs.txt
+workspace/lua-docs-venv/bin/python tools/serve_lua_docs.py --open
+```
+
+The server listens on localhost at <http://127.0.0.1:8765/docs/BFME_LUA.md>.
+Use `--port` to choose another port. Refresh the page after editing the Markdown.
+
+
 OpenBFME's console runs an object-based `bfme` API on **LuaJIT 2.1**, the VM of
 [lua-gdextension](https://github.com/gilzoide/lua-gdextension) (see [Lua in Godot](#lua-in-godot-lua-gdextension) below). Its collections and player/template fields
 follow the [BFME2Lua / Second Age API](https://docs.secondage.dev/#templates); functions are grouped into libraries
@@ -32,7 +44,14 @@ if barracks then barracks:trainUnit("GondorFighterHorde", 3) end
 - **Libraries** (`bfme.match`, `bfme.input`, `bfme.selection`, `bfme.mutations`, `bfme.debug`, `bfme.graphics`, `bfme.console`)
   group functions that do not belong to a single handle.
 
-The only globals are `bfme`, `import`, `print` and the standard Lua libraries. Each library is also reachable with
+`selected` is a read-only global resolving to the first selected unit or building
+(in selection order), or `nil` when none is selected. It supports the same fields and
+methods as other handles: `selected.id`, `selected:kill()`, or, for a selected
+production building, `selected:trainUnit("GondorFighterHorde", 3)`. Each command
+reads the current selection. Assign `local target = selected` to retain that handle
+while changing selection.
+
+The globals are `bfme`, `selected`, `import`, `print` and the standard Lua libraries. Each library is also reachable with
 `import("bfme.<name>")` or `require("bfme.<name>")`, and its functions accept both `.` and `:` calls.
 `bfme.capabilities` is a detached `{luaVersion, libraries}` table.
 
@@ -245,54 +264,19 @@ a construction ticket created while it exists in the current snapshot.
 
 `reload()` rereads the entry scripts and returns how many ran. `log(text)` writes one console line; `print(...)` also writes there.
 
-## Lua AI
+## Native AI control
 
-A computer player's skirmish AI can be switched off so a Lua script plays that player instead.
-Nothing is removed: the native AI keeps its state while it is off and resumes from it when it is handed back.
-
-```lua
-local ai = bfme.ai.list()[1]          -- a computer player
-ai:setAIEnabled(false)                -- the native AI stops deciding (a ticket, applied at the next update)
-bfme.events.onUpdate("myAI", function()
-    for _, b in ipairs(ai:buildings()) do
-        if b.isFactory and b.productionCount == 0 then
-            for _, t in ipairs(b:getTrainableUnits()) do
-                if t.ok and not t.isBuilder then b:trainUnit(t.unit) break end
-            end
-        end
-    end
-end, 1000)
-```
-
-While a script controls a player, its native base builder, team builder, brain (targets and attacks) and automatic
-unit ability casting do not run. Bookkeeping still runs: structures and builders are recorded, and a defeated AI shuts
-down. `ai:setAIEnabled(true)` hands the player back. `player.hasAI`, `player.aiEnabled` and `player.scriptControlled`
-show the state.
-
-[`godot/dev/05_skirmish_ai.lua`](../godot/dev/05_skirmish_ai.lua) is a complete Lua skirmish AI built only on this API.
-It covers economy, production buildings, training, upgrades, sciences, defense and attack waves, for every faction.
-Resource buildings (farms, Mallorn trees, furnaces, ...) go on the map's markers for them (`FarmTemplate` objects, as the
-native economy builder uses them). It takes the nearest free marker to the fortress, at the marker's position and angle,
-and skips markers within 900 of an enemy fortress or with enemies near. Only on a map without a usable marker does it
-use a widely spaced grid behind the fortress (`economySpacing`).
-Production buildings go in a block on a grid just in front of the fortress, aligned with its front, which faces the
-nearest enemy start.
-Each block fills from its middle outward (1 slot, then 3×2, then 5×3, up to `blockHalfWidth` and `blockDepth`), with
-walking room between buildings, and blocked slots are skipped. Each site is checked the way its builder's construction
-checks it, including a path to it. Sites already ordered are reserved until their foundations stand. A site the engine
-refuses is avoided for two minutes, and the next think picks another. A foundation that stops progressing gets an idle
-builder sent to finish it. `luaai.stats` counts placed and refused constructions.
-It is off by default, so computer players use the native AI. Set `luaai.config.autoEnable = true` to take over every
-computer player at the start of each skirmish, on the host in multiplayer. Guests cannot submit gameplay changes; replay playback consumes recorded actions. During peace time the example continues economy and production and suppresses combat orders.
-`luaai.disableAll()` (or **Computers: native AI** in the console's Cheats tab) hands them back until the next match, and
-`luaai.enableAll()` takes them again.
-`luaai.status()` reports each player. It sees the whole map, ignoring the shroud.
-Its numbers are in `luaai.config`.
+Computer players use the native skirmish AI. The bundled Lua AI helper and its
+console takeover controls have been removed. The generic scripting API remains:
+`player:setAIEnabled(false)` suspends native decisions, and `true` resumes them;
+`player.hasAI`, `player.aiEnabled`, and `player.scriptControlled` report the state.
 
 `bfme.match.getUnitRoster(playerId)` returns `{ready, ids}` with sorted live unit IDs
 for player 0–19, using the same membership as `player:units()`. The returned list
 is detached. This lightweight query avoids a full snapshot and is suitable for
 checking whether an idle army has gained units. Without a match, `ready` is false.
+`bfme.match.getCompletedBuildingRoster(playerId)` has the same detached ID-list
+format, restricted to that player's living structures whose construction is complete.
 
 ### Update callbacks
 
@@ -532,8 +516,7 @@ Planned: `bfme.camera` (read/move the view), selection writes, and event callbac
 `engine/build/openbfme_tests --test-case='bfme Lua*'` checks module identity, the LuaJIT sandbox, library and handle structure, Lua syntax alongside the retail VM,
 handle identity, enumeration, detached copies, money tickets, validation, expired handles, queue limits, construction, training, selection, orders, queries,
 the AI switch, update callbacks and error recovery. `--test-case='skirmish ai script control*'` (retail files) checks that a script-controlled computer
-builds and trains nothing and builds again once handed back. `godot --headless --path godot --script res://tests/lua_ai_test.gd` plays the
-Lua skirmish AI on Evendim for five game minutes.
+builds and trains nothing and builds again once handed back.
 `godot --headless --path godot --script res://tests/lua_snapshot_test.gd` (installed retail data) reports repeated snapshot median/p95/max times and checks that runtime template edits invalidate the catalog.
 `godot --headless --path godot --script res://tests/lua_events_test.gd` (installed retail data) checks native match-start and accepted-placement notifications, safe-point dispatch, and the timer-free scenery script.
 `godot --headless --path godot --script res://tests/lua_console_test.gd` exercises the console and native extension together.
@@ -601,12 +584,16 @@ match, use the console Cheats tab's **Enable ubermode** / **Disable ubermode**
 buttons, or `ubermode.enable()`, `ubermode.disable()`, `ubermode.toggle()`.
 This cheat is independent of the Uber simulation/performance profile.
 
-Enabling sets the local player's gold and CP capacity to 1,000,000. Subsequent
+Enabling sets the local player's gold and CP capacity to 1,000,000 and grants
+1,000 spell-book power points (kept on disable). Subsequent
 construction, recruitment and upgrade research take one simulation second
 (five logic frames); existing work keeps its captured duration. Newly created
 units receive their native maximum experience level and all purchasable object
 upgrades in their command set, including battalion propagation through the
-native upgrade path. Internal mode-switch/ability flags are not equipment.
+native upgrade path. Buildings completed while the cheat is enabled receive their
+native maximum experience level through batched native completion notifications (250 ms cooldown). Unfinished
+buildings retain their level until construction completes. Internal
+mode-switch/ability flags are not equipment.
 `unit.maxLevel`, `unit:getUpgrades()` and `unit:giveUpgrade(name)` are also
 available independently of the cheat.
 
@@ -627,7 +614,7 @@ match; it refuses network games and replay playback. It owns the three local
 
 Ubermode validation: the installed-data test `godot/tests/ubermode_test.gd`
 checks the million gold/CP grant, construction incomplete after four frames and
-complete after five, maximum-level fully equipped recruits, five recruits from
+complete after five, maximum building level after completion, maximum-level fully equipped recruits, five recruits from
 each of two matching producers through viewport key and mouse events on the
 classic circular recruitment button, and restoring CP on disable. Circular
 buttons use the native radial hit test before the Palantir movie hit test. The research
@@ -652,3 +639,55 @@ benchmarks while the console is closed. It includes Lua, simulation, unit
 physics/collision, pathfinding and rendering stages with average/p95/worst
 milliseconds, plus JSON export. Scopes overlap and worker costs appear when
 completed. See [the timing definitions and benchmark workflow](LARGE_ARMY_PERFORMANCE.md#console-performance-tab).
+
+## Lua callback audit
+
+| Script / handler | Scheduling |
+| --- | --- |
+| Uber unit births / building completion | Native `onUnitsCreated` / `onBuildingsCompleted` notifications; no roster polling |
+| Uber mass recruitment / overflow retry | 250 ms, only while work remains |
+| Building layout replay | 200 ms while replay is active; bounded queue/status checks |
+| Restart replay handoff | 250 ms while restoration is active |
+| Controller | Input-driven, existing 300 ms initial / 150 ms repeat delay; configuration refreshed on transitions |
+| Neutral decoration placement | Once per match-start event |
+| Production timing hooks | Synchronous native request callbacks; deliberately not throttled because each request needs its own duration |
+
+`bfme.events.onUnitsCreated(name, fn)` and `onBuildingsCompleted(name, fn)`
+receive `{objects={...}}`, each record containing `objectId`, `playerId`, and
+`frame`. Notifications are queued as values by the simulation and dispatched in
+Lua at a safe point. Bursts are batched per kind with a 250 ms wall-clock cooldown;
+notifications during the cooldown remain queued. Unobserved notifications do not
+request a simulation pause. Match changes discard queued events and cooldowns.
+Completion uses the native build-complete callback; unit creation uses world entry
+without containment re-entry. Records may refer to objects destroyed before dispatch;
+listeners must check the live handle. Existing `onBuildingPlaced` remains per-object.
+
+Replay scheduling still needs timers: cancellation, placement retry, mutation and
+wall-link results can progress without a building-completion event. Replacing these
+with construction-only events would strand those jobs. Their timers unregister on
+completion/cancellation.
+
+## Base protection for local AI testing
+
+Console → Cheats has **Keep enemy AI away from base**, a radius field (default
+1,500 world units), **Protect base**, and **Disable protection**. Protection is
+centered on the local player's fortress/command center when enabled, with another
+owned structure as fallback. Reapply to recenter. The Lua equivalent is
+`bfme.match.setAIBaseExclusion(1500)`; pass `0` to disable it.
+
+Enemy computer-controlled mobile units approaching within the radius plus a
+300-unit warning margin receive native movement orders away, toward radius + 600.
+The AI strategy releases them from squads and excludes them from recruitment while
+inside that margin. Movement steering checks are staggered once per simulation second,
+without Lua polling. The existing peace-time movement restriction also rejects
+pathfinding cells and swept movement crossing the radius (including unit footprint).
+Existing nearby enemies may escape but cannot move deeper. Long-range attacks
+and projectiles are not blocked; this is not invulnerability. Increase the radius to
+keep siege weapons farther away.
+
+The option is local-match-only and refuses multiplayer and replay playback. It
+is temporary, not written into saves, and resets with the game logic. Human and
+allied units are unaffected. Disabling resumes normal AI decisions.
+
+Replays recorded while this testing policy is enabled are not supported for
+determinism comparisons: the temporary AI override is not saved in replay metadata.

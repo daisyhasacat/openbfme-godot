@@ -236,6 +236,17 @@ MapObjectLoopResult MapObjectLoop::create(GameLogic &logic, const LoadedMap &map
 			}
 			if (AIWorld *ai = logic.aiWorld())
 			{
+				// lane WALL-4, RW 0x62E14C .. 0x62E15F (BFME2 decomp GameLogicInit.cpp:5574): once its properties are applied the object takes the layer
+				// TheTerrainLogic->getLayerForDestination (RW 0x680A75) names at its position (Object::setLayer RW 0x68BB9D): a map's unit on a wall top, a ramp or
+				// a walkway placed earlier in the list starts on it. The port keeps a layer for an object with an AI only (the pathfinder's view of a unit)
+				if (AIUpdateInterface *oai = obj->getAIUpdateInterface())
+				{
+					if (ai->mapReady())
+					{
+						const Coord3D &at = *obj->getPosition();
+						oai->setLayer(ai->pathfinder().getLayerAt(oai->adapter(), at));
+					}
+				}
 				ai->addObjectToPathfindMap(*obj); // RW 0x62E192 -> 0x6E85E9: the footprint of a placed structure enters the pathfinder's map at once (lane BUILD-1)
 			}
 			++result.created;
@@ -248,6 +259,15 @@ MapObjectLoopResult MapObjectLoop::create(GameLogic &logic, const LoadedMap &map
 				afterCreate(*obj, d);
 			}
 			applyContained(*obj, d, afterCreate, result.contained, result.hordes);
+		}
+	}
+	// lane WALL-2: RW 0x62F1A4 (after the properties pass RW 0x695A06) collects the placed objects (RW 0x62DCE4) and broadcasts Object RW 0x694692 with each
+	// one's map properties (RW 0x62F36B): the behaviour modules' slot 45 (DynamicPortalBehaviour's portals). INFERENCE (S-4853): in the creation order
+	for (size_t i = 0; i < result.ids.size(); ++i)
+	{
+		if (Object *obj = logic.findObjectByID(result.ids[i]))
+		{
+			obj->friend_onMapPlacement(&map.chunks.objects.at(result.objectIndices[i]).m_properties);
 		}
 	}
 	// lane STEALTH-1: the terrain tree list (RW TheTerrainLogic + 0x578): the loop's KindOf TREE map objects that go to the tree buffer (RW 0x62E44F -> 0x683D89, the

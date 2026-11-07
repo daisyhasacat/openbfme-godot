@@ -45,7 +45,15 @@ public:
 		}
 	}
 	void playEva(const std::string &name) override { note("eva", name, nullptr); }
-	void viewShake(const Coord3D &pos, int type) override { note("viewShake", std::to_string(type), &pos); }
+	void viewShake(const Coord3D &pos, int type) override
+	{
+		// lane FX-4, RW 0x486D86: W3DView::shake draws GameClientRandomValueReal(0, 2 pi = 6.2831855f, RW 0xBDD38C) first, whatever it does next
+		const float angle = m_owner.m_random.real(0.0f, 6.2831855f);
+		if (!m_owner.m_world || !m_owner.m_world->viewShake(pos, type, angle))
+		{
+			note("viewShake", std::to_string(type), &pos);
+		}
+	}
 	void cameraShaker(const Coord3D &pos, float radius, float seconds, float amplitude) override
 	{
 		note("cameraShaker", "r=" + std::to_string(radius) + " s=" + std::to_string(seconds) + " a=" + std::to_string(amplitude), &pos);
@@ -92,7 +100,8 @@ public:
 	void cursorParticles(const std::string &name, unsigned, const GameClientRandomVariable &, const GameClientRandomVariable &, const GameClientRandomVariable &,
 		const GameClientRandomVariable &) override { note("cursorParticles", name, nullptr); }
 	void laser(const std::string &name, const Coord3D *a, const Coord3D *, bool, const FXObject *, const FXObject *) override { note("laser", name, a); }
-	int weather() const override { return 0; }
+	// lane WEATHER-1: the live world's map weather; the flat test world of FX-1 is NORMAL
+	int weather() const override { return m_owner.m_world ? m_owner.m_world->mapWeather() : 0; }
 
 private:
 	void note(const char *kind, const std::string &detail, const Coord3D *pos)

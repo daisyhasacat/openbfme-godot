@@ -2,15 +2,30 @@
 // See GodotInGameHud.h.
 
 #include "Common/BfmeGame.h"
+#include "GameLogic/Economy.h"
+#include "GameLogic/ScriptEngine/ScriptEngine.h"
+#include "GameLogic/GameMessage.h"
 #include "Common/AsciiString.h"
+#include "Common/Audio/AudioEntryPoints.h"
+#include "Common/Audio/AudioLog.h"
 #include "GodotDevice/GodotInGameHud.h"
 #include "GodotDevice/GodotIOSTouch.h"
+#include "GodotDevice/GodotShaderBudget.h"
+#include "GodotDevice/MacOSTrackpad.h"
+#include <godot_cpp/classes/input_event_pan_gesture.hpp>
+#include <godot_cpp/classes/input_event_magnify_gesture.hpp>
+#include <godot_cpp/classes/window.hpp>
+#include <limits>
+
 #include "GameClient/GUI/AptScreens/AptImageMode.h"
 #include "GodotDevice/GodotPackedTexture.h"
 #include "GameLogic/Module/HeroAbilityModules.h"
 #include "Common/SpecialPower.h"
 #include "GameClient/GameText.h"
 #include "GameClient/GUI/GameTextSource.h"
+#include "GameClient/GUI/PlacementTextStyle.h"
+#include "GameClient/GlobalLanguage.h"
+#include "GameLogic/BeaconCommands.h"
 #include "GameClient/GameTextTableSource.h"
 
 #include "Common/INI.h"
@@ -29,8 +44,14 @@
 #include "GameClient/OptionPreferences.h"
 #include "GameClient/GameLODManager.h"
 #include "GameClient/LiveGame.h"
+#include "GameClient/Drawable.h"
+#include "GameClient/DrawableManager.h"
+#include "GameEngineDevice/W3DDevice/GameClient/Drawable/Draw/W3DScriptedModelDraw.h"
+#include "Libraries/WWVegas/WW3D2/assetmgr.h"
 #include "GameClient/MessageStream/MetaEvent.h"
 #include "GameClient/TacticalCamera.h"
+#include "GameClient/CameraAnimation.h"
+#include "GameClient/LiveFX.h"
 #include "GameClient/TacticalView.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
@@ -40,6 +61,7 @@
 #include "GodotDevice/GodotRetailFileSystem.h"
 #include "GodotDevice/GodotW3DInstancer.h"
 #include "GodotDevice/GodotW3DMaterial.h"
+#include "GodotDevice/GodotMouse.h"
 
 #include <godot_cpp/classes/camera3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
@@ -186,6 +208,8 @@ struct HudDevice : public AptNativeHook
 	bool overlayMouseHeld = false;
 	std::map<std::string, bool> controllerHidden;
 	std::map<int, Ref<ShaderMaterial>> imageModes;
+	void *trackpadMonitor = nullptr;
+
 	Ref<RetailFileSystem> fs;
 	GameWorld *world = nullptr;
 	Camera3D *camera = nullptr;
@@ -196,13 +220,22 @@ struct HudDevice : public AptNativeHook
 	std::unique_ptr<INIEnvironment> metaEnv;
 	MetaMap meta;
 	MouseSettings mouse;
+	std::shared_ptr<GodotMouse> godotMouse;
 	RecordingShellServices services;
 	// lane CAM-1: the retail tactical camera; the Godot camera is set from it every frame (applyCamera)
 	std::unique_ptr<TacticalCamera> cam;
 	DisplayedCameraView shown; // picking and projection follow the displayed (interpolated) pose (TacticalCamera.h, lane BUILD-5 r3)
+	// lane CAMANIM-1: the view's camera animation (W3DView mode 4) over the map's CameraAnimationList (built at the first request; the map is immutable)
+	CameraAnimationList camAnimList;
+	bool camAnimListBuilt = false;
+	CameraAnimationPlayback camAnim;
 	double clientClock = 0.0;
+	float cameraTravelSent = 0.0f, cameraTravelTotal = 0.0f;
+	bool cameraTravelInitialized = false;
 	double updateMs = 0.0, cameraMs = 0.0, cursorMs = 0.0; ///< SMOOTH-1: the parts of the last _process
+	double viewClock = 0.0; ///< lane ANTICHEAT-1: seconds since the last view sample (GameWorld::net_submit_view, 2 a second)
 	double hudMs = 0.0, iconsMs = 0.0, decalsMs = 0.0, radialMs = 0.0; ///< SELPERF-1: updateMs's parts (InGameHud::update, the icon ops, the selection decals, HUD-6)
+	double placeMs = 0.0, ghostMs = 0.0; ///< lane FOGFX-1: the placement update and the ghost sync of the last frame
 	bool edgeScroll = false;
 	int edgeScrollMode = 0;   // lane OPTS-2: 0 retail (full screen only, or edge_scroll), 1 always, 2 never
 	float uiScale = 1.0f;     // lane OPTS-2: the decorations' scale (health bars, veterancy marks, texts) about each object's ops
@@ -268,6 +301,7 @@ struct HudDevice : public AptNativeHook
 	struct GlobeLayer
 	{
 		SubViewport *view = nullptr;
+		std::uint64_t viewId = 0; // child viewports may be freed before the owned movie player's canvas teardown
 		W3DInstancer *inst = nullptr;
 	};
 	GlobeLayer globeAdd, globeMul; ///< SPHERE01 alone over black (A), SPHERE02 alone over white (M)
@@ -276,32 +310,18 @@ struct HudDevice : public AptNativeHook
 	Ref<ShaderMaterial> globeMaterial;
 	// lane QA-1: the probe's own canvas items (globeProbe): freed with this node, before the globe material
 	std::vector<RID> probeItems;
+	// the globe's backbuffer copy: an empty child of the globe's item drawn behind it, with the clip's rectangle (see drawPlaceholder); freed with this node
+	RID globeCopyItem;
 	bool globeTried = false;
+	bool globeInCanvas = false;
+	void beginCanvas() override { globeInCanvas = false; }
+	void endCanvas() override { syncGlobeVisibility(); }
+	void syncGlobeVisibility();
 	unsigned globeDraws = 0;
 	bool ensureGlobe();
 	bool makeGlobeLayer(GlobeLayer &layer, const char *name, const Color &clear, const char *hidden);
 	void globeProbe();
-	// the mouse cursors (Mouse.ini names, the install's loose Data\Cursors files)
-	std::map<std::string, MouseCursorEntry> cursorTable;
-	struct CursorSet
-	{
-		bool loaded = false;
-		CursorImage image;
-		// Native cursors need CPU pixels. A Texture2D forces GPU readback and is retained past renderer teardown by macOS's cursor cache.
-		std::vector<Ref<Image>> frames;
-	};
-	std::map<std::string, CursorSet> cursors; ///< by "<name>#<direction>"
-	std::string cursorDir, cursorName;
-	int cursorStep = 0, cursorDirection = 0;
-	double cursorClock = 0.0;
-	bool cursorHidden = false;
-	Ref<Image> blankCursor; ///< lane BUILD-5: the pointer of a cursor without a Mouse.ini block (retail SetCursor(null): none)
-	Ref<Image> cursorShown; ///< lane BUILD-5: the image the pointer shows now (null: none), for proof screenshots (a capture omits the OS pointer)
-	Vector2 cursorHot;
-	std::vector<std::string> cursorErrors;
 	std::unique_ptr<PlacementGhostRenderer> ghost; ///< lane BUILD-5 r2: the placement ghost, drawn after the displayed camera (GodotPlacementGhost.h)
-	void updateCursor(double delta, const std::string &wanted, float scrollX = 0.0f, float scrollY = 0.0f, bool scrolling = false);
-	void loadCursorTable(ArchiveFileSystem &fs);
 
 	void drawPlaceholder(const AptCanvasOp &op, RID item) override;
 	Ref<Image> imageFor(const std::string &file);
@@ -338,11 +358,11 @@ struct HudDevice : public AptNativeHook
 	IconUIOp dragBox;
 	unsigned long long dragBoxFrames = 0;
 	void drawIconOps(RID parent);
-	// lane UI-4: the selection markers (GameClient/SelectionDecals.h) as Godot Decal nodes under a Node3D beside the camera, one per decal, reused
+	// lane UI-4: the Node3D beside the camera the HUD's own Decal nodes live under (lane HERORING-1: the selection decals are in the shaders' grid)
 	uint64_t mapSiteMarkersId = 0;
 	void setMapSiteMarkers(bool enabled);
 	uint64_t decalRootId = 0;
-	std::vector<uint64_t> decalIds;
+
 	unsigned decalsDrawn = 0;
 	// lane SELPERF-1: the SHADOW_MERGE_DECAL decals drawn by the terrain shader (godot/shaders/selection_decals.gdshaderinc) from the grid of this frame
 	// (BuildMergeDecalGrid) in the global sel_data and their textures in the global sel_atlas; the atlas grows when a texture is new to it
@@ -377,17 +397,25 @@ struct HudDevice : public AptNativeHook
 	std::string radiusDecalError; ///< the texture of the cursor that could not be read (also in the HUD's draw errors)
 	void drawRadiusCursor();
 	// lane OWNERFIX-2: the resource claim feedback (InGameHud::resourceFeedback, GameClient/TerrainResourceFeedback.h): the selected resource building's
-	// claim decals, the placement decal (its texture masked by the claimable vertices) and the placement's percentage text
-	std::vector<uint64_t> claimDecalIds;
-	uint64_t placeDecalId = 0;
-	Ref<ImageTexture> placeDecalTexture;
-	unsigned placeDecalVersion = ~0u;
+	// claim decals, the placement decal (its texture masked by the claimable vertices), the placement's claim arcs (lane ECOCIRCLE-2) and the placement's
+	// percentage text; lane PLACEDECAL-1: the decals are in the selection decals' grid (drawSelectionDecals), these count what went in
 	int claimDecalsDrawn = 0;
+	int claimArcsDrawn = 0;
 	bool placeDecalDrawn = false;
+	std::vector<SelectionDecal> selExtras; ///< lane PLACEDECAL-1: this frame's other decals: the ghost's shadows, then the resource claims'
+	std::vector<SelectionDecal> selList;   ///< lane PLACEDECAL-1: the grid's decals when there are others: the shadows, the resource decals, the selection's
+	uint64_t selExtrasKey = 0;             ///< lane PLACEDECAL-1: what the last grid's other decals were (0: none)
+	unsigned extraDecalsDrawn = 0;         ///< lane PLACEDECAL-1: the ghost's decal shadows in the grid
+	unsigned shadowCount = 0;              ///< lane PLACEDECAL-1: the last build's counts (the grid it built stays until the next)
+	int claimCount = 0, arcCount = 0, placeCount = 0;
+	double decalsLateMs = 0.0;             ///< lane PLACEDECAL-1: drawSelectionDecals' time (it runs after the ghost, inside the camera part)
 	bool placeTextDrawn = false;
+	bool chatHistoryShown = false; ///< lane CHAT-1: the scroll-back replaces the message lines while the chat window is open
+	int messageLinesDrawn = 0;     ///< lane CHAT-1: the lines the last draw put on screen
+	Rect2 messageLinesRect;        ///< lane CHAT-1: their extent (window pixels)
+	void drawMessageLines();
 	Rect2 placeTextRect;
 	std::string resourceDecalError;
-	void drawResourceFeedback();
 	void drawPlacementText(const Ref<Font> &font, float k);
 	void applyCamera(const Vector2 &window, double alpha);
 };
@@ -405,11 +433,13 @@ Ref<ImageTexture> HudDevice::grayTextureFor(const std::string &file)
 	{
 		return it->second;
 	}
-	Ref<ImageTexture> colour = textureFor(file);
+	// Use the retained decoded image: ImageTexture::get_image() reads back from
+	// the GPU on the first disabled draw (shared presentation, both editions).
+	Ref<godot::Image> colour = imageFor(file);
 	Ref<ImageTexture> out;
 	if (colour.is_valid())
 	{
-		Ref<godot::Image> img = colour->get_image();
+		Ref<godot::Image> img = colour;
 		if (img.is_valid() && !img->is_empty())
 		{
 			img = img->duplicate();
@@ -556,14 +586,33 @@ void fragment() {
 }
 )";
 
+// Presentation for both editions: hidden movies/HUD owners retain their globe resources, but draw no scenes.
+// Keep animation clocks and mapper state intact so showing the same canvas resumes normally.
+void HudDevice::syncGlobeVisibility()
+{
+	const Node2D *hudOwner = Object::cast_to<Node2D>(owner);
+	const auto *movie = playerId ? Object::cast_to<AptMenuPlayer>(ObjectDB::get_instance(ObjectID(playerId))) : nullptr;
+	const bool shown = globeInCanvas && hudOwner && hudOwner->is_visible_in_tree() && movie && movie->is_visible_in_tree();
+	const SubViewport::UpdateMode mode = shown ? SubViewport::UPDATE_ALWAYS : SubViewport::UPDATE_DISABLED;
+	for (GlobeLayer *layer : { &globeAdd, &globeMul })
+	{
+		SubViewport *view = layer->viewId ? Object::cast_to<SubViewport>(ObjectDB::get_instance(ObjectID(layer->viewId))) : nullptr;
+		if (view && view->get_update_mode() != mode)
+		{
+			view->set_update_mode(mode);
+		}
+	}
+}
+
 bool HudDevice::makeGlobeLayer(GlobeLayer &layer, const char *name, const Color &clear, const char *hidden)
 {
 	layer.view = memnew(SubViewport);
+	layer.viewId = layer.view->get_instance_id();
 	layer.view->set_name(name);
 	layer.view->set_use_own_world_3d(true);
 	layer.view->set_transparent_background(false);
 	layer.view->set_size(Vector2i(256, 256));
-	layer.view->set_update_mode(SubViewport::UPDATE_ALWAYS);
+	layer.view->set_update_mode(SubViewport::UPDATE_DISABLED); // enabled only while RenderGlobe is in the visible retained canvas
 	owner->add_child(layer.view);
 	Ref<Environment> env;
 	env.instantiate();
@@ -619,7 +668,7 @@ bool HudDevice::ensureGlobe()
 		return false;
 	}
 	globeShader.instantiate();
-	globeShader->set_code(kGlobeShader);
+	SetShaderCode(globeShader.ptr(), kGlobeShader, "Palantir globe composite");
 	globeMaterial.instantiate();
 	globeMaterial->set_shader(globeShader);
 	globeMaterial->set_shader_parameter("add_tex", globeAdd.view->get_texture());
@@ -681,9 +730,27 @@ void HudDevice::drawPlaceholder(const AptCanvasOp &op, RID item)
 		// lane HUD-2 (see ensureGlobe): the clip's rectangle, the colour transform of the clip is not applied (retail draws the scene directly)
 		if (r.size.x < 1.0f || r.size.y < 1.0f || !ensureGlobe())
 		{
+			if (globeCopyItem.is_valid())
+			{
+				rs->canvas_item_set_copy_to_backbuffer(globeCopyItem, false, Rect2()); // no globe, no copy
+			}
 			return;
 		}
-		rs->canvas_item_set_copy_to_backbuffer(item, true, r); // D: the frame buffer behind the clip
+		globeInCanvas = true; // #210: the globe was drawn this canvas (endCanvas -> syncGlobeVisibility)
+		// D: the frame buffer behind the clip. Godot 4.7's canvas renderer copies the WHOLE frame for the first screen-texture material of a canvas,
+		// whatever rect its own item asks for (RendererCanvasRenderRD::_render_items replaces the item's rect with Rect2()); a rect copy made by an
+		// item drawn before it marks the screen texture as copied. So the copy is an empty child drawn behind the globe's item, with the clip's
+		// rectangle rounded out to whole pixels: the shader reads D only inside it (SCREEN_UV, nearest), so the picture is the same and the copy
+		// shrinks from the full window (2.1 ms of GPU time at 2880x1800 on the UHD 770) to the globe.
+		if (!globeCopyItem.is_valid())
+		{
+			globeCopyItem = rs->canvas_item_create();
+			rs->canvas_item_set_draw_behind_parent(globeCopyItem, true);
+		}
+		rs->canvas_item_set_parent(globeCopyItem, item); // the item may be a new one (AptMenuPlayer remakes a slot's item)
+		const Vector2 lo = (r.position - Vector2(1.0f, 1.0f)).floor();
+		const Vector2 hi = (r.position + r.size + Vector2(1.0f, 1.0f)).ceil();
+		rs->canvas_item_set_copy_to_backbuffer(globeCopyItem, true, Rect2(lo, hi - lo));
 		rs->canvas_item_set_material(item, globeMaterial->get_rid());
 		rs->canvas_item_add_texture_rect(item, r, globeAdd.view->get_texture()->get_rid());
 		++globeDraws;
@@ -890,6 +957,18 @@ void HudDevice::drawPlaceholder(const AptCanvasOp &op, RID item)
 			staticImage.image = imageMap;
 			img = &staticImage;
 		}
+		// lane CAMPUI-1: an image record of the window manager (setAptImage: InGameNotificationBox's "_level<n>_Icon", RW 0x8EB81E -> RW 0x92B1F9), as the
+		// player's own RenderImage path reads them outside a game (GodotAptPlayer: the score screen's icons)
+		AptPalantir::NativeImage recordImage;
+		if ((!img || img->image.empty()) && !imageMap.empty() && hud->palantir())
+		{
+			const std::string *record = hud->palantir()->windows().aptImage(imageMap);
+			if (record && !record->empty())
+			{
+				recordImage.image = *record;
+				img = &recordImage;
+			}
+		}
 		// lane SPELL-2: the spell store's buttons ("SpellStore/Buttons/Spell%d", RW 0x822B23); RenderImageDisabled draws the same image grey
 		AptPalantir::NativeImage storeImage;
 		if ((!img || img->image.empty()) && hud->spellStore())
@@ -897,6 +976,7 @@ void HudDevice::drawPlaceholder(const AptCanvasOp &op, RID item)
 			storeImage.image = hud->storeImageForClip(op.path);
 			img = storeImage.image.empty() ? img : &storeImage;
 		}
+		if (hud->spellStore() && op.path.find("SpellStore") != std::string::npos) fprintf(stderr, "DBGIMG %s %s -> %s a=%.2f\n", op.symbolName.c_str(), op.path.c_str(), img ? img->image.c_str() : "(none)", op.placeholderColor[3]);
 		AptPalantir::NativeImage greyed;
 		if (img && op.symbolName == "RenderImageDisabled")
 		{
@@ -947,7 +1027,7 @@ void HudDevice::drawPlaceholder(const AptCanvasOp &op, RID item)
 			{
 				Ref<Shader> shader;
 				shader.instantiate();
-				shader->set_code(String(aptImageModeShader(mode).c_str()));
+				SetShaderCode(shader.ptr(), String(aptImageModeShader(mode).c_str()), "apt image mode " + String(varOf(op, "_mode").c_str()));
 				material.instantiate();
 				material->set_shader(shader);
 			}
@@ -1142,149 +1222,6 @@ void HudDevice::drawIconOps(RID parent)
 	drawPlacementText(font, k); // lane OWNERFIX-2
 }
 
-void HudDevice::loadCursorTable(ArchiveFileSystem &fs)
-{
-	std::string dir;
-	if (OS *os = OS::get_singleton())
-	{
-		const String env = os->get_environment("ROTWK_INSTALL");
-		if (!env.is_empty())
-		{
-			dir = env.utf8().get_data();
-		}
-	}
-	if (dir.empty() && FileAccess::file_exists("user://install-paths.cfg"))
-	{
-		const String cfg = FileAccess::get_file_as_string("user://install-paths.cfg");
-		for (const String &line : cfg.split("\n"))
-		{
-			if (line.begins_with("ROTWK_INSTALL="))
-			{
-				dir = line.substr(14).strip_edges().utf8().get_data();
-			}
-		}
-	}
-	cursorDir = dir.empty() ? std::string() : dir + "/data/cursors";
-	std::vector<std::uint8_t> ini;
-	std::string error;
-	if (!fs.readFile("data/ini/mouse.ini", ini, &error) || !ParseMouseCursors(std::string(ini.begin(), ini.end()), cursorTable, &error))
-	{
-		cursorErrors.push_back("mouse.ini: " + error);
-	}
-}
-
-void HudDevice::updateCursor(double delta, const std::string &wanted, float scrollX, float scrollY, bool scrolling)
-{
-	if (cursorDir.empty())
-	{
-		return;
-	}
-	auto it = cursorTable.find(wanted);
-	if (it == cursorTable.end() || it->second.image.empty())
-	{
-		// lane BUILD-5: a cursor without a Mouse.ini block (retail: Build / InvalidBuild while placing) has no resource; Win32Mouse::setCursor (BFME2 decomp
-		// Win32Mouse.cpp:352, RW 0x441A83 row) then calls SetCursor(null): no pointer at all
-		if (!cursorHidden)
-		{
-			if (blankCursor.is_null())
-			{
-				blankCursor = Image::create_empty(1, 1, false, Image::FORMAT_RGBA8);
-				blankCursor->fill(Color(0, 0, 0, 0));
-			}
-			Input::get_singleton()->set_custom_mouse_cursor(blankCursor, Input::CURSOR_ARROW, Vector2());
-			cursorHidden = true;
-			cursorShown.unref();
-		}
-		cursorName = wanted;
-		return;
-	}
-	// lane BUILD-5: the frame of a directional cursor (W3DMouse::setCursorDirection RW 0x498B1A, refreshed every drawn frame)
-	const int dirs = it->second.directions > 1 ? it->second.directions : 1;
-	const int direction = ScrollCursorDirection(scrollX, scrollY, dirs, scrolling);
-	CursorSet &set = cursors[wanted + "#" + std::to_string(direction)];
-	if (!set.loaded)
-	{
-		set.loaded = true;
-		// Win32Mouse::initCursorResources (RW 0x441506): "<stem>.cur" for an image ending in .cur, else "<image>.ani"; "<stem><direction>.<ext>" per direction
-		const std::string file = CursorFileName(it->second.image, dirs, direction);
-		const std::string path = FindFileNoCase(cursorDir, file);
-		std::string error;
-		std::vector<std::uint8_t> bytes;
-		if (path.empty())
-		{
-			cursorErrors.push_back("cursor " + wanted + ": no file " + file);
-			UtilityFunctions::push_error(toGodot(cursorErrors.back()));
-		}
-		else
-		{
-			Ref<FileAccess> f = FileAccess::open(String::utf8(path.c_str()), FileAccess::READ);
-			if (f.is_null())
-			{
-				cursorErrors.push_back("cursor " + wanted + ": cannot read " + path);
-			UtilityFunctions::push_error(toGodot(cursorErrors.back()));
-			}
-			else
-			{
-				const PackedByteArray all = f->get_buffer((int64_t)f->get_length());
-				bytes.assign(all.ptr(), all.ptr() + all.size());
-				if (!DecodeCursorFile(bytes, set.image, &error))
-				{
-					cursorErrors.push_back("cursor " + wanted + ": " + error);
-			UtilityFunctions::push_error(toGodot(cursorErrors.back()));
-				}
-				else
-				{
-					for (const std::vector<std::uint8_t> &frame : set.image.frames)
-					{
-						PackedByteArray px;
-						px.resize((int64_t)frame.size());
-						memcpy(px.ptrw(), frame.data(), frame.size());
-						set.frames.push_back(Image::create_from_data(set.image.width, set.image.height, false, Image::FORMAT_RGBA8, px));
-					}
-				}
-			}
-		}
-	}
-	if (set.frames.empty())
-	{
-		// lane BUILD-5 r2 (S-295): a cursor whose file is missing or does not decode shows the engine's own pointer (reported once in cursorErrors and
-		// push_error), never the previous cursor
-		if (wanted != cursorName || direction != cursorDirection || cursorHidden || cursorShown.is_valid())
-		{
-			Input::get_singleton()->set_custom_mouse_cursor(Ref<Resource>(), Input::CURSOR_ARROW, Vector2());
-			cursorName = wanted;
-			cursorDirection = direction;
-			cursorHidden = false;
-			cursorShown.unref();
-		}
-		return;
-	}
-	if (wanted != cursorName || direction != cursorDirection || cursorHidden)
-	{
-		cursorName = wanted;
-		cursorDirection = direction;
-		cursorHidden = false;
-		cursorStep = 0;
-		cursorClock = 0.0;
-	}
-	else
-	{
-		cursorClock += delta;
-		const double step = (double)set.image.jiffies[(size_t)cursorStep % set.image.jiffies.size()] / 60.0;
-		if (set.image.sequence.size() <= 1 || cursorClock < step)
-		{
-			return;
-		}
-		cursorClock = 0.0;
-		cursorStep = (cursorStep + 1) % (int)set.image.sequence.size();
-	}
-	const int frame = set.image.sequence[(size_t)cursorStep % set.image.sequence.size()];
-	const int hx = it->second.hotX >= 0 ? it->second.hotX : set.image.hotX, hy = it->second.hotY >= 0 ? it->second.hotY : set.image.hotY;
-	Input::get_singleton()->set_custom_mouse_cursor(set.frames[(size_t)frame], Input::CURSOR_ARROW, Vector2((float)hx, (float)hy));
-	cursorShown = set.frames[(size_t)frame];
-	cursorHot = Vector2((float)hx, (float)hy);
-}
-
 // SAGE (x east, y north, z up) -> Godot (x, z, -y)
 static Vector3 toGodotAxes(const Coord3D &c)
 {
@@ -1320,6 +1257,17 @@ void HudDevice::applyCamera(const Vector2 &window, double alpha)
 	Transform3D t;
 	t.origin = eye;
 	t.basis = Basis::looking_at((target - eye).normalized(), Vector3(0, 1, 0));
+	// lane CAMANIM-1: in mode 4 the camera build (RW 0x502858) takes the animation's transform and the view plane its FOV as the horizontal angle
+	// (RW 0x48B919); the W3D camera looks down its -Z with Y up as Godot's does, so the matrix's columns map axis by axis (SAGE -> Godot)
+	Matrix3D tm;
+	float animFov = 0.0f;
+	if (camAnim.transform(alpha, tm, animFov))
+	{
+		auto col = [&](int c) { return toGodotAxes(Coord3D{ tm.Row[0][c], tm.Row[1][c], tm.Row[2][c] }); };
+		t.basis = Basis(col(0), col(1), col(2));
+		t.origin = col(3);
+		camera->set_fov((real_t)(animFov * 180.0f / 3.14159265f));
+	}
 	camera->set_global_transform(t);
 }
 
@@ -1350,6 +1298,14 @@ void InGameHudNode::_bind_methods()
 	ClassDB::bind_method(D_METHOD("get_command_map"), &InGameHudNode::get_command_map);
 	ClassDB::bind_method(D_METHOD("get_report"), &InGameHudNode::get_report);
 	ClassDB::bind_method(D_METHOD("get_hud6_state"), &InGameHudNode::get_hud6_state); // lane HUD-6
+	ClassDB::bind_method(D_METHOD("take_chat_requests"), &InGameHudNode::take_chat_requests); // lane CHAT-1
+	ClassDB::bind_method(D_METHOD("chat_text", "label"), &InGameHudNode::chat_text);
+	ClassDB::bind_method(D_METHOD("chat_format", "mode", "text"), &InGameHudNode::chat_format);
+	ClassDB::bind_method(D_METHOD("add_chat_line", "text", "rgb"), &InGameHudNode::add_chat_line);
+	ClassDB::bind_method(D_METHOD("set_chat_history_shown", "shown"), &InGameHudNode::set_chat_history_shown);
+	ClassDB::bind_method(D_METHOD("message_lines_state"), &InGameHudNode::message_lines_state);
+	ClassDB::bind_method(D_METHOD("set_network_game", "on"), &InGameHudNode::set_network_game);
+	ClassDB::bind_method(D_METHOD("beacon_state"), &InGameHudNode::beacon_state);
 	ClassDB::bind_method(D_METHOD("get_mapped_image", "name"), &InGameHudNode::get_mapped_image);
 	ClassDB::bind_method(D_METHOD("get_spellbook_state"), &InGameHudNode::get_spellbook_state);
 	ClassDB::bind_method(D_METHOD("get_icon_ui"), &InGameHudNode::get_icon_ui); // lane HUD-5
@@ -1357,8 +1313,10 @@ void InGameHudNode::_bind_methods()
 	ClassDB::bind_method(D_METHOD("select_object", "id"), &InGameHudNode::select_object); // lane HUD-5
 	ClassDB::bind_method(D_METHOD("select_object_with_message", "id"), &InGameHudNode::select_object_with_message); // lane BACKLOG2
 	ClassDB::bind_method(D_METHOD("select_objects", "ids"), &InGameHudNode::select_objects); // lane SELPERF-1
+	ClassDB::bind_method(D_METHOD("select_objects_with_message", "ids"), &InGameHudNode::select_objects_with_message);
 	ClassDB::bind_method(D_METHOD("open_spell_store"), &InGameHudNode::open_spell_store);
 	ClassDB::bind_method(D_METHOD("close_spell_store"), &InGameHudNode::close_spell_store);
+	ClassDB::bind_method(D_METHOD("cancel_spell_store"), &InGameHudNode::cancel_spell_store);
 	ClassDB::bind_method(D_METHOD("spell_store_click", "index"), &InGameHudNode::spell_store_click);
 	ClassDB::bind_method(D_METHOD("press_spell_slot", "slot"), &InGameHudNode::press_spell_slot);
 	ClassDB::bind_method(D_METHOD("get_frame_timings"), &InGameHudNode::get_frame_timings);
@@ -1370,6 +1328,7 @@ void InGameHudNode::_bind_methods()
 	ClassDB::bind_method(D_METHOD("controller_formation", "action", "direction"), &InGameHudNode::controller_formation);
 	ClassDB::bind_method(D_METHOD("controller_select_area", "radius", "commit"), &InGameHudNode::controller_select_area);
 	ClassDB::bind_method(D_METHOD("controller_attack_move"), &InGameHudNode::controller_attack_move);
+	ClassDB::bind_method(D_METHOD("controller_select_type"), &InGameHudNode::controller_select_type);
 	ClassDB::bind_method(D_METHOD("get_controller_primary_button", "selection_assist_radius"), &InGameHudNode::get_controller_primary_button, DEFVAL(0.0f));
 	ClassDB::bind_method(D_METHOD("get_controller_target", "selection_assist_radius"), &InGameHudNode::get_controller_target);
 	ClassDB::bind_method(D_METHOD("controller_deselect"), &InGameHudNode::controller_deselect);
@@ -1400,6 +1359,7 @@ void InGameHudNode::_bind_methods()
 	ClassDB::bind_method(D_METHOD("hold_input", "on"), &InGameHudNode::hold_input);                 // lane BACKLOG3 (QA)
 	ClassDB::bind_method(D_METHOD("get_startup_probe_usec"), &InGameHudNode::get_startup_probe_usec);
 	ClassDB::bind_method(D_METHOD("set_input_enabled", "on"), &InGameHudNode::set_input_enabled); // lane BACKLOG3 (QA)
+	ClassDB::bind_method(D_METHOD("input_enabled"), &InGameHudNode::input_enabled); // lane BFME2CAMP1
 	ClassDB::bind_method(D_METHOD("script_input", "enable"), &InGameHudNode::script_input); // lane OWNERFIX-1
 	ClassDB::bind_method(D_METHOD("set_broadcast_clean", "on"), &InGameHudNode::set_broadcast_clean);
 	ClassDB::bind_method(D_METHOD("inject_mouse_wheel", "notches", "position"), &InGameHudNode::inject_mouse_wheel);
@@ -1408,19 +1368,34 @@ void InGameHudNode::_bind_methods()
 	ClassDB::bind_method(D_METHOD("set_free_camera", "on"), &InGameHudNode::set_free_camera);
 	ClassDB::bind_method(D_METHOD("set_view_options", "options"), &InGameHudNode::set_view_options); // lane OPTS-2
 	ClassDB::bind_method(D_METHOD("camera_look_at", "sage_xy"), &InGameHudNode::camera_look_at);
+	ClassDB::bind_method(D_METHOD("add_player_message", "text"), &InGameHudNode::add_player_message); // lane CHEAT-1
+	ClassDB::bind_method(D_METHOD("get_player_message_layout"), &InGameHudNode::get_player_message_layout);
 	ClassDB::bind_method(D_METHOD("camera_set_height", "height_above_ground"), &InGameHudNode::camera_set_height);
 	ClassDB::bind_method(D_METHOD("camera_refresh_terrain"), &InGameHudNode::camera_refresh_terrain);
 	ClassDB::bind_method(D_METHOD("camera_pan", "amount"), &InGameHudNode::camera_pan);
+	ClassDB::bind_method(D_METHOD("camera_reset", "sage_xy"), &InGameHudNode::camera_reset);                 // lane CAMPUI-1
+	ClassDB::bind_method(D_METHOD("camera_set_zoom_limited", "on"), &InGameHudNode::camera_set_zoom_limited); // lane CAMPUI-1
+	ClassDB::bind_method(D_METHOD("camera_animation_request", "action", "name"), &InGameHudNode::camera_animation_request); // lane CAMANIM-1
+	ClassDB::bind_method(D_METHOD("camera_animation_state"), &InGameHudNode::camera_animation_state);                  // lane CAMANIM-1
+	ClassDB::bind_method(D_METHOD("camera_set_clip_depth_multiplier", "m"), &InGameHudNode::camera_set_clip_depth_multiplier); // lane MODCOMPAT-AI
+	ClassDB::bind_method(D_METHOD("set_objectives_screen_open", "open"), &InGameHudNode::set_objectives_screen_open); // lane CAMPUI-1
+	ClassDB::bind_method(D_METHOD("flash_palantir_button", "slot", "seconds"), &InGameHudNode::flash_palantir_button); // lane CAMPUI-1
+	ClassDB::bind_method(D_METHOD("is_objectives_flag_flashing"), &InGameHudNode::is_objectives_flag_flashing); // lane CAMPUI-1
 	ClassDB::bind_method(D_METHOD("pixel_to_world", "pixel"), &InGameHudNode::pixel_to_world);
+	ClassDB::bind_method(D_METHOD("ping_point", "pixel"), &InGameHudNode::ping_point); // the ping wheel
 	ClassDB::bind_method(D_METHOD("world_to_pixel", "world_xy"), &InGameHudNode::world_to_pixel);
 	ClassDB::bind_method(D_METHOD("pick_probe", "pixel", "id"), &InGameHudNode::pick_probe);
 	ClassDB::bind_method(D_METHOD("editor_pick", "pixel"), &InGameHudNode::editor_pick);
+	ClassDB::bind_method(D_METHOD("pick_box_pixels", "id"), &InGameHudNode::pick_box_pixels);
 	ClassDB::bind_method(D_METHOD("find_button_window", "path"), &InGameHudNode::find_button_window);
 	ClassDB::bind_method(D_METHOD("get_radar_square"), &InGameHudNode::get_radar_square);
 	ClassDB::bind_method(D_METHOD("world_to_radar_pixel", "world_xy"), &InGameHudNode::world_to_radar_pixel);
-	ClassDB::bind_method(D_METHOD("create_radar_event", "world_xy", "type"), &InGameHudNode::create_radar_event);
+	ClassDB::bind_method(D_METHOD("create_radar_event", "world_xy", "type", "jump_to"), &InGameHudNode::create_radar_event, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("get_radar_state"), &InGameHudNode::get_radar_state); // lane HUD-7
 	ClassDB::bind_method(D_METHOD("radar_probe", "world_xy"), &InGameHudNode::radar_probe); // lane HUD-7
+	ClassDB::bind_method(D_METHOD("trackpad_pan", "delta", "position"), &InGameHudNode::trackpad_pan);
+	ClassDB::bind_method(D_METHOD("trackpad_zoom", "factor", "position"), &InGameHudNode::trackpad_zoom);
+	ClassDB::bind_method(D_METHOD("trackpad_rotate", "degrees", "position"), &InGameHudNode::trackpad_rotate);
 	ClassDB::bind_method(D_METHOD("camera_set_angle_pitch", "angle", "pitch"), &InGameHudNode::camera_set_angle_pitch); // lane HUD-7 (a test hook)
 	ClassDB::bind_method(D_METHOD("dump_tree", "max_depth"), &InGameHudNode::dump_tree, DEFVAL(4));
 	ClassDB::bind_method(D_METHOD("invoke_at", "path", "function", "args"), &InGameHudNode::invoke_at, DEFVAL(PackedStringArray()));
@@ -1454,133 +1429,129 @@ void HudDevice::drawRadiusCursor()
 	radiusDecalDrawn = true;
 }
 
-void HudDevice::drawResourceFeedback()
+namespace
 {
-	// lane OWNERFIX-2 (GameClient/TerrainResourceFeedback.h): drawn as the selection decals are (S-2522): a Godot Decal over the terrain layer. The claim
-	// decals: TerrainResourceClaimDecal tinted 0x6464C8 at opacity 0x80 (type 0x20, SHADOW_ALPHA_DECAL); the placement decal: PlaceTerrainResourceClaimantDecal
-	// tinted the band colour, its alpha the texture's times the claimable vertices' alpha (RW 0x75C1A9 with the opacity 0x80; INFERENCE S-5030: bilinear across
-	// a terrain quad)
-	Node3D *root = decalRootId ? Object::cast_to<Node3D>(ObjectDB::get_instance(godot::ObjectID(decalRootId))) : nullptr;
-	claimDecalsDrawn = 0;
-	placeDecalDrawn = false;
-	if (!root)
+// UTF-16 (the engine's UnicodeString) to a Godot String: surrogate pairs joined, a lone surrogate shown as U+FFFD
+String chatU16ToGodot(const std::u16string &u)
+{
+	String s;
+	for (std::size_t i = 0; i < u.size(); ++i)
+	{
+		char32_t c = u[i];
+		if (c >= 0xD800 && c <= 0xDBFF && i + 1 < u.size() && u[i + 1] >= 0xDC00 && u[i + 1] <= 0xDFFF)
+		{
+			c = 0x10000 + ((c - 0xD800) << 10) + (u[i + 1] - 0xDC00);
+			++i;
+		}
+		else if (c >= 0xD800 && c <= 0xDFFF)
+		{
+			c = 0xFFFD;
+		}
+		else if (c < 32)
+		{
+			c = 0xFFFD; // a control character is not drawn as one (no line breaks, escapes or bells from another player's text)
+		}
+		s += String::chr(c);
+	}
+	return s;
+}
+std::u16string chatGodotToU16(const String &t)
+{
+	std::u16string u;
+	for (int i = 0; i < t.length(); ++i)
+	{
+		const char32_t c = t[i];
+		if (c > 0xFFFF)
+		{
+			u.push_back((char16_t)(0xD800 + ((c - 0x10000) >> 10)));
+			u.push_back((char16_t)(0xDC00 + ((c - 0x10000) & 0x3FF)));
+		}
+		else
+		{
+			u.push_back((char16_t)c);
+		}
+	}
+	return u;
+}
+} // namespace
+
+void HudDevice::drawMessageLines()
+{
+	// lane CHAT-1: InGameUI's message draw (RW 0x6A0BC0; GameClient/InGameUIMessages.h): MessagePosition scaled from 1024 x 768, the lines oldest first,
+	// a negative x from the right edge, each line's own colour over a black drop of the same alpha (ZH drawUIMessages); the font is MessageFont at
+	// adjustFontSize(MessagePointSize) (RW 0x69C4B3 -> RW 0x5E9BEF)
+	messageLinesDrawn = 0;
+	messageLinesRect = Rect2();
+	if (!hud || !iconItem.is_valid())
 	{
 		return;
 	}
-	const TerrainResourceUiSettings &ui = hud->radiusCursorTemplates().resourceUi();
-	const TerrainResourceFeedback &fb = hud->resourceFeedback();
-	auto place = [](Decal *decal, const Coord3D &p, float size) {
-		// SAGE (x, y, z up) -> Godot (x, z, -y); projected down over a box `size` wide and 200 units deep around the point
-		decal->set_position(Vector3(p.x, p.z, -p.y));
-		decal->set_rotation(Vector3(0.0f, 0.0f, 0.0f));
-		decal->set_size(Vector3(size, 200.0f, size));
-		decal->set_albedo_mix(1.0f);
-		decal->set_cull_mask(1u << 19); // the terrain's layer (GodotMapTerrain)
-		decal->set_upper_fade(0.0f);
-		decal->set_lower_fade(0.0f);
+	const InGameUIMessageSettings &ms = hud->messageLines().settings();
+	const int width = hud->windowWidth(), height = hud->windowHeight();
+	if (width <= 0 || height <= 0)
+	{
+		return;
+	}
+	const int px = std::max(1, GlobalLanguage::adjustFontSize(ms.pointSize, width));
+	float drawSize = (float)px;
+	Ref<Font> font = player ? player->font_for(ms.font, (float)px, &drawSize) : Ref<Font>();
+	if (font.is_valid() && player)
+	{
+		font = player->font_cell(font, (int)std::lround(drawSize));
+	}
+	if (font.is_null())
+	{
+		font = ThemeDB::get_singleton() ? ThemeDB::get_singleton()->get_fallback_font() : Ref<Font>();
+	}
+	if (font.is_null())
+	{
+		return;
+	}
+	const int size = std::max(1, (int)std::lround(drawSize));
+	// the lines to draw, oldest first: the six message lines, or (the chat window open) the scroll-back's last lines in full colour
+	struct L
+	{
+		String text;
+		std::uint32_t argb;
 	};
-	const std::vector<ResourceClaimDecal> &claimed = fb.claimedDecals();
-	const DecalTextures *claimTex = claimed.empty() ? nullptr : unlitDecalFor(ui.claimDecal, 0x6464C8u);
-	if (!claimed.empty() && !claimTex)
+	std::vector<L> lines;
+	if (chatHistoryShown)
 	{
-		resourceDecalError = "TerrainResourceClaimDecal: no texture '" + ui.claimDecal + "'";
-	}
-	for (size_t i = 0; claimTex && i < claimed.size(); ++i)
-	{
-		Decal *decal = i < claimDecalIds.size() ? Object::cast_to<Decal>(ObjectDB::get_instance(godot::ObjectID(claimDecalIds[i]))) : nullptr;
-		if (!decal)
+		const auto &h = hud->chat().history();
+		const std::size_t kShown = 10;
+		for (std::size_t i = h.size() > kShown ? h.size() - kShown : 0; i < h.size(); ++i)
 		{
-			decal = memnew(Decal);
-			root->add_child(decal);
-			if (i < claimDecalIds.size())
+			lines.push_back({ chatU16ToGodot(h[i].text), h[i].argb | 0xFF000000u });
+		}
+	}
+	else
+	{
+		const auto &ml = hud->messageLines().lines();
+		for (int i = InGameUIMessages::kMaxLines - 1; i >= 0; --i)
+		{
+			if (ml[(size_t)i].used)
 			{
-				claimDecalIds[i] = decal->get_instance_id();
-			}
-			else
-			{
-				claimDecalIds.push_back(decal->get_instance_id());
+				lines.push_back({ chatU16ToGodot(ml[(size_t)i].text), ml[(size_t)i].argb });
 			}
 		}
-		place(decal, claimed[i].position, claimed[i].size);
-		decal->set_texture(Decal::TEXTURE_ALBEDO, claimTex->albedo);
-		decal->set_modulate(Color(1, 1, 1, claimed[i].opacity / 255.0f));
-		decal->set_visible(true);
-		++claimDecalsDrawn;
 	}
-	for (size_t i = (size_t)claimDecalsDrawn; i < claimDecalIds.size(); ++i)
+	const int x0 = InGameUIMessages::screenX(width, ms.positionX);
+	int y = InGameUIMessages::screenY(height, ms.positionY);
+	const float ascent = font->get_ascent(size);
+	const int lineH = std::max(1, (int)std::ceil(font->get_height(size)));
+	for (const L &l : lines)
 	{
-		if (Decal *decal = Object::cast_to<Decal>(ObjectDB::get_instance(godot::ObjectID(claimDecalIds[i]))))
-		{
-			decal->set_visible(false);
-		}
+		const int w = (int)std::ceil(font->get_string_size(l.text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x);
+		const int x = x0 < 0 ? width + x0 - w : x0;
+		const float a = (float)((l.argb >> 24) & 0xFF) / 255.0f;
+		const Color c(((l.argb >> 16) & 0xFF) / 255.0f, ((l.argb >> 8) & 0xFF) / 255.0f, (l.argb & 0xFF) / 255.0f, a);
+		const Vector2 at((float)x, (float)y + ascent);
+		font->draw_string(iconItem, at + Vector2(1, 1), l.text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(0, 0, 0, a));
+		font->draw_string(iconItem, at, l.text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, c);
+		messageLinesRect = messageLinesDrawn ? messageLinesRect.merge(Rect2((float)x, (float)y, (float)w, (float)lineH)) : Rect2((float)x, (float)y, (float)w, (float)lineH);
+		++messageLinesDrawn;
+		y += lineH;
 	}
-	const ResourcePlacementFeedback &rp = fb.placement();
-	Decal *pd = placeDecalId ? Object::cast_to<Decal>(ObjectDB::get_instance(godot::ObjectID(placeDecalId))) : nullptr;
-	if (!rp.active || rp.maskW <= 0 || rp.maskH <= 0 || !(rp.decalSize > 0.0f))
-	{
-		if (pd)
-		{
-			pd->set_visible(false);
-		}
-		return;
-	}
-	if (rp.version != placeDecalVersion || placeDecalTexture.is_null())
-	{
-		const DecalImage img = decalImageFor(ui.placeDecal);
-		if (img.width <= 0 || !img.rgba)
-		{
-			resourceDecalError = "PlaceTerrainResourceClaimantDecal: no texture '" + ui.placeDecal + "'";
-			if (pd)
-			{
-				pd->set_visible(false);
-			}
-			return;
-		}
-		const int w = img.width, h = img.height;
-		PackedByteArray px;
-		px.resize((int64_t)w * h * 4);
-		uint8_t *out = px.ptrw();
-		const unsigned col[3] = { (rp.color >> 16) & 0xFFu, (rp.color >> 8) & 0xFFu, rp.color & 0xFFu };
-		const float half = rp.decalSize * 0.5f;
-		auto maskAt = [&](float vx, float vy) {
-			// bilinear between the four vertices around (vx, vy), in vertex units relative to the mask's first vertex
-			const float fx = std::clamp(vx, 0.0f, (float)(rp.maskW - 1)), fy = std::clamp(vy, 0.0f, (float)(rp.maskH - 1));
-			const int x0 = std::min((int)fx, rp.maskW - 1), y0 = std::min((int)fy, rp.maskH - 1);
-			const int x1 = std::min(x0 + 1, rp.maskW - 1), y1 = std::min(y0 + 1, rp.maskH - 1);
-			const float tx = fx - (float)x0, ty = fy - (float)y0;
-			auto a = [&](int x, int y) { return (float)rp.maskAlpha[(size_t)y * (size_t)rp.maskW + (size_t)x]; };
-			return (a(x0, y0) * (1 - tx) + a(x1, y0) * tx) * (1 - ty) + (a(x0, y1) * (1 - tx) + a(x1, y1) * tx) * ty;
-		};
-		for (int j = 0; j < h; ++j)
-		{
-			// the texture's v runs along Godot +z = SAGE -y
-			const float wy = rp.decalCenter.y + half - ((float)j + 0.5f) / (float)h * rp.decalSize;
-			for (int i = 0; i < w; ++i)
-			{
-				const float wx = rp.decalCenter.x - half + ((float)i + 0.5f) / (float)w * rp.decalSize;
-				const float m = maskAt(wx / TerrainResourceFeedback::kVertexSpacing - (float)rp.maskVx0, wy / TerrainResourceFeedback::kVertexSpacing - (float)rp.maskVy0);
-				const size_t o = ((size_t)j * (size_t)w + (size_t)i) * 4;
-				for (int c = 0; c < 3; ++c)
-				{
-					out[o + c] = (uint8_t)((img.rgba[o + c] * col[c] + 127) / 255u);
-				}
-				out[o + 3] = (uint8_t)std::lround(img.rgba[o + 3] * m / 255.0f);
-			}
-		}
-		placeDecalTexture = ImageTexture::create_from_image(Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, px));
-		placeDecalVersion = rp.version;
-	}
-	if (!pd)
-	{
-		pd = memnew(Decal);
-		root->add_child(pd);
-		placeDecalId = pd->get_instance_id();
-	}
-	place(pd, rp.decalCenter, rp.decalSize);
-	pd->set_texture(Decal::TEXTURE_ALBEDO, placeDecalTexture);
-	pd->set_modulate(Color(1, 1, 1, 1));
-	pd->set_visible(true);
-	placeDecalDrawn = true;
 }
 
 void HudDevice::drawPlacementText(const Ref<Font> &font, float k)
@@ -1595,7 +1566,8 @@ void HudDevice::drawPlacementText(const Ref<Font> &font, float k)
 		return;
 	}
 	const TerrainResourceUiSettings &ui = hud->radiusCursorTemplates().resourceUi();
-	const int size = std::max(1, (int)std::lround((float)(ui.fontSize > 0 ? ui.fontSize : 14) * k));
+	const PlacementTextStyle style = PlacementTextStyle::forViewport(ui.fontSize, hud->windowHeight(), k);
+	const int size = style.fontSize;
 	String text;
 	for (char16_t c : rp.text)
 	{
@@ -1604,12 +1576,12 @@ void HudDevice::drawPlacementText(const Ref<Font> &font, float k)
 	const Vector2 sz = font->get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size);
 	const int w = (int)sz.x, h = (int)std::ceil(sz.y);
 	int x = rp.pointerX + w / -2;
-	int y = rp.pointerY - 20 - h;
+	int y = rp.pointerY - style.pointerGap - h;
 	x = std::max(0, std::min(x, hud->windowWidth() - w));
 	y = std::max(0, std::min(y, hud->windowHeight() - h));
 	auto col = [](std::uint32_t argb) { return Color(((argb >> 16) & 0xFF) / 255.0f, ((argb >> 8) & 0xFF) / 255.0f, (argb & 0xFF) / 255.0f, ((argb >> 24) & 0xFF) / 255.0f); };
 	const Vector2 at((float)x, (float)y + font->get_ascent(size));
-	font->draw_string(iconItem, at + Vector2(1, 1), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(0, 0, 0, 1));
+	font->draw_string(iconItem, at + Vector2(style.shadowOffset, style.shadowOffset), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(0, 0, 0, 1));
 	font->draw_string(iconItem, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col(rp.color));
 	placeTextRect = Rect2((float)x, (float)y, (float)w, (float)h);
 	placeTextDrawn = true;
@@ -1617,74 +1589,50 @@ void HudDevice::drawPlacementText(const Ref<Font> &font, float k)
 
 void HudDevice::drawSelectionDecals()
 {
-	Node3D *root = decalRootId ? Object::cast_to<Node3D>(ObjectDB::get_instance(godot::ObjectID(decalRootId))) : nullptr;
-	if (!root)
-	{
-		Node *parent = camera ? camera->get_parent() : nullptr;
-		if (!parent)
-		{
-			return;
-		}
-		root = memnew(Node3D);
-		root->set_name("SelectionDecals");
-		parent->add_child(root);
-		decalRootId = root->get_instance_id();
-		decalIds.clear();
-	}
-	const std::vector<SelectionDecal> &list = hud->selectionDecals();
 	decalsDrawn = 0;
-	for (size_t i = 0; i < list.size(); ++i)
+	// lane HERORING-1: a non-merge decal (a hero's ring, SHADOW_ALPHA_DECAL) is no Godot Decal node any more: a Decal blends into ALBEDO, which the terrain
+	// and the W3D receivers use as the shadow weight since their colour went to EMISSION, so it barely showed; it is in the shaders' grid below with the
+	// merge decals (sel_alpha_at).
+	// Lane PLACEDECAL-1: so are the other decals of RotWK's alpha lists: the placement ghost's decal shadow (a drawable's, list + 4, drawn first: RW
+	// 0x50D92C), then the addDecal list (+ 8) newest first (the shadow factory, BFME2 0x10BB11): the placement claim decal (PlaceTerrainResourceClaimantDecal,
+	// its alpha weighted per vertex; made as the placement starts), the selected resource building's claims (TerrainResourceClaimDecal), the selection's
+	// (INFERENCE S-2522: the claims made after the selection's markers)
+	const std::vector<SelectionDecal> &selection = hud->selectionDecals();
+	const TerrainResourceUiSettings &resourceUi = hud->radiusCursorTemplates().resourceUi();
+	const TerrainResourceFeedback &resources = hud->resourceFeedback();
+	extraDecalsDrawn = 0;
+	selExtras.clear();
+	if (ghost && world && world->hud_game())
 	{
-		const SelectionDecal &sd = list[i];
-		if (sd.style & 0x1000u)
-		{
-			continue; // composed below
-		}
-		const DecalTextures *dt = unlitDecalFor(sd.texture, sd.color & 0xFFFFFFu);
-		if (!dt)
-		{
-			continue; // the texture's error is in drawErrors (textureFor)
-		}
-		Decal *decal = nullptr;
-		if (decalsDrawn < decalIds.size())
-		{
-			decal = Object::cast_to<Decal>(ObjectDB::get_instance(godot::ObjectID(decalIds[decalsDrawn])));
-		}
-		if (!decal)
-		{
-			decal = memnew(Decal);
-			root->add_child(decal);
-			if (decalsDrawn < decalIds.size())
-			{
-				decalIds[decalsDrawn] = decal->get_instance_id();
-			}
-			else
-			{
-				decalIds.push_back(decal->get_instance_id());
-			}
-		}
-		++decalsDrawn;
-		// SAGE (x, y, z up) -> Godot (x, z, -y); the decal projects down its -Y over a box as wide as the decal and 60 units deep around the drawable
-		decal->set_position(Vector3(sd.position.x, sd.position.z, -sd.position.y));
-		decal->set_rotation(Vector3(0.0f, sd.angle, 0.0f));
-		decal->set_size(Vector3(sd.size, 60.0f, sd.size));
-		// RotWK's alpha shader (terrain * (1 - a) + texel * colour * a, a = texel alpha * the colour's alpha); the terrain is unshaded (terrain.gdshader), so the
-		// decal's albedo reaches the screen as it is
-		decal->set_texture(Decal::TEXTURE_ALBEDO, dt->albedo);
-		decal->set_modulate(Color(1, 1, 1, ((sd.color >> 24) & 0xFF) / 255.0f));
-		decal->set_albedo_mix(1.0f);
-		decal->set_cull_mask(1u << 19); // the terrain's layer (GodotMapTerrain): the units stand on the marker, it is not painted on them
-		decal->set_upper_fade(0.0f);
-		decal->set_lower_fade(0.0f);
-		decal->set_visible(true);
+		ghost->appendShadowDecals(selExtras);
 	}
-	for (size_t i = decalsDrawn; i < decalIds.size(); ++i)
+	const size_t shadows = selExtras.size();
+	const TerrainResourceDecalCounts appended = resources.appendDecals(resourceUi.claimDecal, resourceUi.placeDecal, selExtras);
+	// what the other decals are (the grid is built again when it changes: the ghost moves, a claim comes or goes, the mask changes)
+	uint64_t key = 0;
+	if (!selExtras.empty())
 	{
-		if (Decal *decal = Object::cast_to<Decal>(ObjectDB::get_instance(godot::ObjectID(decalIds[i]))))
+		key = 1469598103934665603ull;
+		auto mix = [&key](const void *p, size_t n) {
+			for (size_t i = 0; i < n; ++i)
+			{
+				key = (key ^ ((const unsigned char *)p)[i]) * 1099511628211ull;
+			}
+		};
+		for (const SelectionDecal &d : selExtras)
 		{
-			decal->set_visible(false);
+			const float f[7] = { d.position.x, d.position.y, d.position.z, d.size, d.sizeY, d.angle, d.drawZ };
+			const int v[9] = { (int)d.style, (int)d.color, d.terrainOnly ? 1 : 0, d.maskVx0, d.maskVy0, d.maskW, d.maskH, (int)d.texture.size(), (int)d.maskAlpha.size() };
+			mix(f, sizeof f);
+			mix(v, sizeof v);
+			mix(d.texture.data(), d.texture.size());
+			mix(d.maskAlpha.data(), d.maskAlpha.size());
 		}
+		key = key == 0 ? 1 : key;
 	}
+	const bool extras = key != 0;
+	const bool extrasChanged = key != selExtrasKey;
+	selExtrasKey = key;
 
 	// lane SELPERF-1: the merge decals: this frame's grid to the terrain shader (RotWK's two stencil passes per pixel there); the composed image is only the
 	// state report's (composeMergeReport)
@@ -1692,20 +1640,87 @@ void HudDevice::drawSelectionDecals()
 	RenderingServer *rs = RenderingServer::get_singleton();
 	std::string error;
 	// the grid follows the markers: built and uploaded when they changed (hud->selectionDecalsVersion), else the shader keeps the last one
-	const bool fresh = hud->selectionDecalsVersion() != selVersion || selMode < 0;
+	// lane PLACEDECAL-1: also when the other decals change (the ghost moves, a claim comes or goes, the mask changes) or go
+	const bool fresh = hud->selectionDecalsVersion() != selVersion || selMode < 0 || extrasChanged;
 	selVersion = hud->selectionDecalsVersion();
-	if (fresh && (!selAtlasFor(list) || !BuildMergeDecalGrid(list, [this](const std::string &f, MergeDecalAtlasRect &r) {
-			// a missing texture is not in the atlas: BuildMergeDecalGrid fails with its name (no outline this frame)
-			return selAtlasPack.rect(f, r);
-		}, ds, selGrid, &error)))
+	if (fresh)
 	{
-		if (!error.empty() && drawErrors.size() < 100)
+		// the selection copied only with other decals
+		selList.clear();
+		if (extras)
 		{
-			drawErrors.push_back(error);
+			selList.reserve(selExtras.size() + selection.size());
+			selList.insert(selList.end(), selExtras.begin(), selExtras.end());
+			selList.insert(selList.end(), selection.begin(), selection.end());
 		}
-		selGrid = MergeDecalGrid();
+		const std::vector<SelectionDecal> &list = extras ? selList : selection;
+		const bool built = selAtlasFor(list) && BuildSelectionDecalGrid(list, [this](const std::string &f, MergeDecalAtlasRect &r) {
+			// a missing texture is not in the atlas: the merge list fails with its name (no outline this frame), the alpha decals are still drawn
+			// (BuildSelectionDecalGrid); lane HERORING-1: an alpha decal's is left out with its error
+			return selAtlasPack.rect(f, r);
+		}, ds, selGrid, &error);
+		// once each: the grid is built again every client frame a selected decal throbs (lane HERORING-1: a skipped alpha decal's note would fill the list);
+		// lane PLACEDECAL-1: note by note (the joined list changes with the decals in it)
+		for (size_t at = 0; !error.empty() && at <= error.size();)
+		{
+			const size_t end = std::min(error.find("; ", at), error.size());
+			const std::string one = error.substr(at, end - at);
+			if (drawErrors.size() < 100 && std::find(drawErrors.begin(), drawErrors.end(), one) == drawErrors.end())
+			{
+				drawErrors.push_back(one);
+			}
+			at = end + 2;
+		}
+		if (!built)
+		{
+			selGrid = MergeDecalGrid();
+		}
+		// lane OWNERFIX-2's state report: the resource decals that went into the grid (a missing texture or a refused decal is also in drawErrors). A
+		// grid that is not built (a merge decal's texture missing) draws none of them
+		resourceDecalError.clear();
+		claimCount = arcCount = placeCount = 0;
+		shadowCount = 0;
+		for (size_t i = 0; extras && i < selList.size(); ++i)
+		{
+			const bool in = built && i < selGrid.drawn.size() && selGrid.drawn[i] != 0;
+			if (i < shadows)
+			{
+				shadowCount += in ? 1u : 0u;
+				continue;
+			}
+			if (i >= selExtras.size())
+			{
+				break; // the selection's
+			}
+			// lane ECOCIRCLE-2: appendDecals' order (the arcs, the placement decal, the claims) gives the kind of each entry
+			const size_t at = i - shadows;
+			const char *name = nullptr;
+			if (at < appended.arcs)
+			{
+				arcCount += in ? 1 : 0;
+				name = "TerrainClaimSegment";
+			}
+			else if (at < appended.arcs + appended.place)
+			{
+				placeCount += in ? 1 : 0;
+				name = "PlaceTerrainResourceClaimantDecal";
+			}
+			else
+			{
+				claimCount += in ? 1 : 0;
+				name = "TerrainResourceClaimDecal";
+			}
+			if (!in)
+			{
+				resourceDecalError = !built ? "the selection decal grid was not built: " + error : std::string(name) + " '" + selList[i].texture + "' not drawn: " + error;
+			}
+		}
 	}
-	const int mode = selGrid.decals == 0 ? 0 : (selGrid.simple ? 2 : 1);
+	claimDecalsDrawn = claimCount;
+	claimArcsDrawn = arcCount;
+	placeDecalDrawn = placeCount > 0;
+	extraDecalsDrawn = shadowCount;
+	const int mode = SelectionDecalShaderMode(selGrid); // lane HERORING-1: + 4 when there are alpha decals (sel_alpha_at)
 	if (mode != 0 && rs)
 	{
 		if (fresh)
@@ -1758,7 +1773,7 @@ void HudDevice::drawSelectionDecals()
 			rs->global_shader_parameter_set("sel_alpha_ref", (float)selGrid.alphaRef);
 			selAlphaSet = selGrid.alphaRef;
 		}
-		decalsDrawn += (unsigned)selGrid.decals;
+		decalsDrawn += (unsigned)(selGrid.decals + selGrid.alphaDecals) - extraDecalsDrawn - (unsigned)claimDecalsDrawn - (unsigned)claimArcsDrawn - (placeDecalDrawn ? 1u : 0u);
 	}
 	else if (mode != selMode && rs)
 	{
@@ -1973,8 +1988,8 @@ void HudDevice::freeSelectionDecals()
 		root->queue_free();
 	}
 	decalRootId = 0;
-	decalIds.clear();
 	if (radiusCursorBound && clearGlobals)
+
 	{
 		if (RenderingServer *rs = RenderingServer::get_singleton())
 		{
@@ -2006,6 +2021,7 @@ InGameHudNode::InGameHudNode() : d(std::make_unique<HudDevice>()) {}
 
 InGameHudNode::~InGameHudNode()
 {
+	MacOSTrackpad::uninstall(d->trackpadMonitor);
 	d->freeSelectionDecals(); // lane UI-4
 	if (d->viewActive && d->fogShift != 0.0f)
 	{
@@ -2018,6 +2034,11 @@ InGameHudNode::~InGameHudNode()
 		for (const RID &item : d->probeItems)
 		{
 			rs->free_rid(item); // lane QA-1: the globe probe's items go before the globe material
+		}
+		if (d->globeCopyItem.is_valid())
+		{
+			rs->free_rid(d->globeCopyItem);
+			d->globeCopyItem = RID();
 		}
 		if (d->iconItem.is_valid())
 		{
@@ -2053,6 +2074,8 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 {
 	Dictionary result;
 	Array errors;
+	MacOSTrackpad::uninstall(d->trackpadMonitor);
+	d->trackpadMonitor = nullptr;
 	d->ready = false;
 	if (fs.is_null() || !fs->is_mounted())
 	{
@@ -2112,6 +2135,7 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 		result["errors"] = errors;
 		return result;
 	}
+	if (bfme1Keys) d->meta.addBfme1SelectionBinding();
 	bool showObjectHealth = false; // lane HUD-5
 	SelectionDecalSettings decalSettings; // lane UI-4
 	// lane CAM-1: the retail tactical camera over the map's terrain, looking at the start position (options.camera_start, Godot axes)
@@ -2135,6 +2159,8 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 		{
 			const Vector3 s = options["camera_start"];
 			d->cam = std::make_unique<TacticalCamera>(gd);
+			d->camAnim.stop(); // lane CAMANIM-1: a new map: its own animation list (built at the first request)
+			d->camAnimListBuilt = false;
 			d->cam->setViewport((int)window.x, (int)window.y);
 			const LoadedMap &lm = game.map();
 			d->cam->startMap(game.logic(), lm.heightMap, lm.chunks.hasWorldInfo ? &lm.chunks.worldInfo : nullptr, Coord3D{ s.x, -s.z, 0.0f });
@@ -2185,6 +2211,11 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 		}
 	}
 	d->applyCamera(window, 1.0);
+	// RW 0x48CEA3 updates the view immediately, even when an Apt command runs after this node's camera frame.
+	d->cam->setJumpHandler([this]() {
+		const Vector2 size = get_viewport()->get_visible_rect().get_size();
+		d->applyCamera(size, 1.0);
+	});
 	// lane SPELL-2 (review r2): the game text the HUD's screens read (the spell store's help): the shell's when attached, else data/lotr.str
 	GameTextSource *gameText = nullptr;
 	if (shellPlayer && shellPlayer->shell_object())
@@ -2243,7 +2274,19 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 	// the mapped images (button images, portraits) and the textures they name
 	d->source = std::make_unique<AptArchiveFileSource>(afs);
 	d->textures = std::make_unique<AptTextureStore>(*d->source);
-	d->loadCursorTable(afs);
+	if (shellPlayer)
+	{
+		d->godotMouse = shellPlayer->godot_mouse();
+		if (!d->godotMouse)
+		{
+			errors.push_back("shell player has no native cursor adapter");
+		}
+	}
+	else
+	{
+		d->godotMouse = std::make_shared<GodotMouse>();
+		d->godotMouse->loadCursorTable(afs, fs->install_root());
+	}
 	d->imageEnv = std::make_unique<INIEnvironment>();
 	d->imageEnv->fileSystem = &afs;
 	d->images.registerBlocks(d->imageEnv->blocks);
@@ -2322,6 +2365,9 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 			if (object->getControllingPlayer() && object->getControllingPlayer()->getPlayerIndex() == d->localPlayerIndex && object->isKindOfName("DOZER")) { source = object->getID(); break; }
 		d->ghost->prewarm(game, std::vector<std::string>(names.begin(), names.end()), source);
 	}
+	MacOSTrackpad::uninstall(d->trackpadMonitor);
+	d->trackpadMonitor = d->ready ? MacOSTrackpad::install(get_instance_id(), get_window()->get_window_id()) : nullptr;
+
 	set_process(true);
 	// the camera is set before the world's own _process (the streak ribbons face the camera transform of the same frame)
 	set_process_priority(-100);
@@ -2475,10 +2521,13 @@ Dictionary InGameHudNode::get_state() const
 			e["color"] = (int64_t)sd.color;
 			e["x"] = sd.position.x;
 			e["y"] = sd.position.y;
+			e["z"] = sd.position.z;   // lane SELWALL-1
+			e["raised"] = sd.raised; // lane SELWALL-1: no terrain part (a wall top under it)
 			decals.push_back(e);
 		}
 		s["selection_decals"] = decals;
 		s["selection_decals_drawn"] = (int64_t)d->decalsDrawn;
+		s["ghost_shadow_decals_drawn"] = (int64_t)d->extraDecalsDrawn; // lane PLACEDECAL-1: the placement ghost's decal shadows in the same grid
 		d->composeMergeReport(); // lane SELPERF-1: composed here only (the terrain shader draws the merge decals)
 		Dictionary m;
 		m["decals"] = (int64_t)d->merged.decals;
@@ -2487,6 +2536,9 @@ Dictionary InGameHudNode::get_state() const
 		m["simple"] = d->hud->selectionDecalSettings().useSimpleMergeDecals;
 		m["composes"] = d->mergeComposes; // lane SELPERF-1
 		m["gpu_decals"] = (int64_t)d->selGrid.decals;
+		m["gpu_alpha_decals"] = (int64_t)d->selGrid.alphaDecals; // lane HERORING-1 (lane PLACEDECAL-1: with the extra decals below)
+		m["gpu_extra_decals"] = (int64_t)(d->extraDecalsDrawn + (unsigned)d->claimDecalsDrawn + (unsigned)d->claimArcsDrawn + (d->placeDecalDrawn ? 1u : 0u)); // the ghost's and the resource decals
+		m["gpu_max_alpha_per_cell"] = (int64_t)d->selGrid.maxAlphaPerCell;
 		m["gpu_cells"] = (int64_t)d->selGrid.cellsX * d->selGrid.cellsY;
 		m["gpu_max_per_cell"] = (int64_t)d->selGrid.maxPerCell;
 		m["gpu_uploads"] = d->selUploads;
@@ -2707,6 +2759,17 @@ bool InGameHudNode::select_object_with_message(int64_t id)
 	return true;
 }
 
+// Formation integration test hook: keep presentation and authoritative selection together.
+int64_t InGameHudNode::select_objects_with_message(const PackedInt64Array &ids)
+{
+ const auto count=select_objects(ids);
+ if(!d->hud)return count;
+ ClientMessage &message=d->hud->input().stream().append(MSG_CREATE_SELECTED_GROUP_NO_SOUND);
+ message.appendBoolean(true);
+ for(auto id: d->hud->input().ui().selected())message.appendObjectID(id);
+ return count;
+}
+
 // lane SELPERF-1: the selection benchmark (play1_player.gd selperf) selects exactly N objects; how many ended up selected
 int64_t InGameHudNode::select_objects(const PackedInt64Array &ids)
 {
@@ -2796,6 +2859,7 @@ Dictionary InGameHudNode::get_spellbook_state()
 	AptPalantir *p = d->hud->palantir();
 	r["ok"] = true;
 	r["path"] = String(p->spellBookPath().c_str());
+	r["palantir_level"] = p->level(); // lane HUDREDRAW-1: the Palantir's Apt level (the shell player's get_stats levels)
 	r["shown"] = p->spellBookShown();
 	Array slots;
 	for (int i = 0; i < AptPalantir::kSpellSlots; ++i)
@@ -2888,6 +2952,22 @@ Dictionary InGameHudNode::get_spellbook_state()
 		}
 		f["claim_decals"] = claims;
 		f["claim_decals_drawn"] = (int64_t)d->claimDecalsDrawn;
+		// lane ECOCIRCLE-2: the placement's claim circles (RW 0xDE483C's collector) and the arcs the grid drew (RW 0x8E9744)
+		Array circles;
+		for (const ResourceClaimCircle &cc : fb.claimCircles())
+		{
+			Dictionary e;
+			e["id"] = (int64_t)cc.id;
+			e["x"] = cc.position.x;
+			e["y"] = cc.position.y;
+			e["radius"] = cc.radius;
+			e["color"] = (int64_t)cc.color;
+			e["uncovered"] = (int64_t)cc.uncovered.size();
+			circles.push_back(e);
+		}
+		f["claim_circles"] = circles;
+		f["claim_arcs"] = (int64_t)fb.claimArcs().size();
+		f["claim_arcs_drawn"] = (int64_t)d->claimArcsDrawn;
 		f["error"] = toGodot(d->resourceDecalError);
 		r["resource_feedback"] = f;
 	}
@@ -2958,6 +3038,15 @@ void InGameHudNode::close_spell_store()
 	}
 }
 
+void InGameHudNode::cancel_spell_store()
+{
+	if (d->hud)
+	{
+		const auto worldContext = d->hud->enterContext();
+		d->hud->cancelSpellStore();
+	}
+}
+
 bool InGameHudNode::spell_store_click(int64_t index)
 {
 	if (!d->hud || !d->hud->spellStore())
@@ -2998,6 +3087,161 @@ Dictionary InGameHudNode::get_mapped_image(const String &name)
 	r["found"] = true;
 	r["texture"] = tex;
 	r["region"] = Rect2(mapped->uvLo[0] * tw, mapped->uvLo[1] * th, (mapped->uvHi[0] - mapped->uvLo[0]) * tw, (mapped->uvHi[1] - mapped->uvLo[1]) * th);
+	return r;
+}
+
+Array InGameHudNode::take_chat_requests()
+{
+	Array out;
+	if (d->hud)
+	{
+		for (bool everyone : d->hud->takeChatRequests())
+		{
+			out.push_back(everyone);
+		}
+	}
+	return out;
+}
+
+String InGameHudNode::chat_text(const String &label) const
+{
+	std::u16string text;
+	if (d->hud && d->hud->gameText() && d->hud->gameText()->fetch(std::string(label.utf8().get_data()), text))
+	{
+		return chatU16ToGodot(text);
+	}
+	return String();
+}
+
+String InGameHudNode::chat_format(int64_t mode, const String &text) const
+{
+	// RW 0x8ECF3E: UnicodeString::format(TheGameText->fetch(label), text); a missing label leaves the text as it is (reported by the caller's chat_text)
+	std::u16string format;
+	const char *label = InGameChat::formatLabel((InGameChatMode)std::max<int64_t>(0, std::min<int64_t>(4, mode)));
+	if (!d->hud || !d->hud->gameText() || !d->hud->gameText()->fetch(label, format))
+	{
+		return text;
+	}
+	return chatU16ToGodot(InGameChat::formatLine(format, chatGodotToU16(text)));
+}
+
+void InGameHudNode::add_chat_line(const String &text, int64_t rgb)
+{
+	if (!d->hud)
+	{
+		return;
+	}
+	const std::u16string u = chatGodotToU16(text);
+	if (rgb >= 0)
+	{
+		const std::uint32_t c = (std::uint32_t)rgb & 0xFFFFFFu;
+		d->hud->addMessageText(u, &c);
+		d->hud->chat().addHistory(u, c | 0xFF000000u, d->hud->messageLines().lines()[0].timestamp);
+	}
+	else
+	{
+		d->hud->addMessageText(u, nullptr);
+		d->hud->chat().addHistory(u, d->hud->messageLines().lines()[0].argb, d->hud->messageLines().lines()[0].timestamp);
+	}
+}
+
+void InGameHudNode::set_chat_history_shown(bool shown)
+{
+	d->chatHistoryShown = shown;
+}
+
+void InGameHudNode::set_network_game(bool on)
+{
+	if (d->hud)
+	{
+		d->hud->input().ui().setNetworkGame(on);
+	}
+}
+
+Dictionary InGameHudNode::beacon_state() const
+{
+	Dictionary r;
+	if (!d->hud)
+	{
+		return r;
+	}
+	const InGameHud::BeaconStats &b = d->hud->beaconStats();
+	r["placed"] = (int64_t)b.placed;
+	r["too_many"] = (int64_t)b.tooMany;
+	r["failed"] = (int64_t)b.failed;
+	r["hidden"] = (int64_t)b.hidden;
+	r["pulses"] = (int64_t)b.pulses;
+	Array ids, hidden;
+	for (::ObjectID id : d->hud->beacons())
+	{
+		ids.push_back((int64_t)id);
+	}
+	for (::ObjectID id : d->hud->input().ui().clientHidden())
+	{
+		hidden.push_back((int64_t)id);
+	}
+	r["beacons"] = ids;
+	r["client_hidden"] = hidden;
+	const CommandButton *gc = d->hud->input().ui().getGUICommand();
+	r["gui_command"] = gc ? toGodot(gc->m_name) : String();
+	r["network_game"] = d->hud->input().ui().networkGame();
+	PackedStringArray stops;
+	for (const std::string &l : BeaconCommands::stopLines())
+	{
+		stops.push_back(toGodot(l));
+	}
+	r["stops"] = stops;
+	return r;
+}
+
+Dictionary InGameHudNode::message_lines_state() const
+{
+	Dictionary r;
+	r["ok"] = d->hud != nullptr;
+	if (!d->hud)
+	{
+		return r;
+	}
+	Array lines;
+	for (int i = InGameUIMessages::kMaxLines - 1; i >= 0; --i)
+	{
+		const InGameUIMessages::Line &l = d->hud->messageLines().lines()[(size_t)i];
+		if (l.used)
+		{
+			Dictionary x;
+			x["text"] = chatU16ToGodot(l.text);
+			x["argb"] = (int64_t)l.argb;
+			x["frame"] = (int64_t)l.timestamp;
+			lines.push_back(x);
+		}
+	}
+	r["lines"] = lines; // oldest first, as drawn
+	Array history;
+	for (const InGameChat::HistoryLine &h : d->hud->chat().history())
+	{
+		history.push_back(chatU16ToGodot(h.text));
+	}
+	r["history"] = history;
+	r["history_shown"] = d->chatHistoryShown;
+	r["drawn"] = d->messageLinesDrawn;
+	r["rect"] = d->messageLinesRect;
+	r["gui_messages_shown"] = (int64_t)d->hud->guiMessagesShown();
+	PackedStringArray missing;
+	for (const std::string &m : d->hud->missingMessageLabels())
+	{
+		missing.push_back(toGodot(m));
+	}
+	r["missing_labels"] = missing;
+	const InGameUIMessageSettings &ms = d->hud->messageLines().settings();
+	r["font"] = toGodot(ms.font);
+	r["point_size"] = ms.pointSize;
+	r["settings_loaded"] = ms.loaded;
+	PackedStringArray stops;
+	for (const std::string &l : InGameChat::stopLines())
+	{
+		stops.push_back(toGodot(l));
+	}
+	r["stops"] = stops;
 	return r;
 }
 
@@ -3054,14 +3298,18 @@ Dictionary InGameHudNode::get_report() const
 	}
 	{
 		Array ce;
-		for (const std::string &e : d->cursorErrors)
+		if (d->godotMouse)
 		{
-			ce.push_back(toGodot(e));
+			for (const std::string &e : d->godotMouse->cursorErrors())
+			{
+				ce.push_back(toGodot(e));
+			}
 		}
 		r["cursor_errors"] = ce;
-		r["cursor"] = toGodot(d->cursorName);
-		r["cursor_direction"] = d->cursorDirection; // lane BUILD-5
-		r["cursor_hidden"] = d->cursorHidden;
+		const Dictionary cursor = d->godotMouse ? d->godotMouse->getCursorImage(false) : Dictionary();
+		r["cursor"] = cursor.get("name", String());
+		r["cursor_direction"] = cursor.get("direction", 0);
+		r["cursor_hidden"] = cursor.get("hidden", false);
 	}
 	r["draw_counts"] = toGodot("images " + std::to_string(d->drawnImages) + " skipped " + std::to_string(d->skippedImages));
 	if (d->hud)
@@ -3121,6 +3369,8 @@ void InGameHudNode::_process(double delta)
 			d->cam->setPitch(peer->d->cam->getPitch());
 		}
 	}
+	d->syncGlobeVisibility(); // a parent hide/reveal also applies when the retained movie list did not change
+
 	Viewport *vp = get_viewport();
 	const Vector2 window = vp ? vp->get_visible_rect().get_size() : Vector2(1024, 768);
 	d->hud->setWindowSize((int)window.x, (int)window.y);
@@ -3222,6 +3472,14 @@ void InGameHudNode::_process(double delta)
 				if (heroes->slot(slot).builder) hide(palantir->heroSelectPath() + ".Hero" + std::to_string(slot + 1));
 	}
 
+	// A HUD without the shell owns this service queue; a shared shell drains its own. RW 0x815772: PlaySound queues a 2D UI event.
+	std::vector<std::string> sounds;
+	sounds.swap(d->services.sounds);
+	for (const std::string &name : sounds)
+	{
+		AudioLog::Scope sound("HUD movie");
+		AudioApi::playUiSound(name);
+	}
 	const uint64_t ta = Time::get_singleton()->get_ticks_usec();
 	d->drawIconOps(get_canvas_item()); // lane HUD-5
 	const uint64_t tb = Time::get_singleton()->get_ticks_usec();
@@ -3231,10 +3489,10 @@ void InGameHudNode::_process(double delta)
 		root->set_visible(d->viewActive);
 	if (d->viewActive)
 	{
-		d->drawSelectionDecals();          // lane UI-4
 		d->drawRadiusCursor();             // lane SPELL-4
-		d->drawResourceFeedback();         // lane OWNERFIX-2
 	}
+	d->drawMessageLines();
+
 	const uint64_t tc = Time::get_singleton()->get_ticks_usec();
 	if (d->hud6 && d->nativeHudVisible)
 	{
@@ -3273,12 +3531,24 @@ void InGameHudNode::_process(double delta)
 		if (la && la->scrollType() == LookAtTranslator::SCROLL_SCREENEDGE)
 			inject_mouse_move(vp->get_mouse_position());
 	}
+	// lane FX-4: the effects' ViewShake calls shake the camera (W3DView::shake RW 0x486D86); the next client frame's update moves the view (RW 0x48C0E8)
+	if (d->cam && d->world)
+	{
+		if (LiveFX *fx = d->world->live_fx())
+		{
+			for (const LiveFX::ViewShake &v : fx->takeViewShakes())
+			{
+				d->cam->shake(v.epicenter, v.type, v.angle);
+			}
+		}
+	}
 	const double step = 1.0 / 30.0;
 	d->clientClock += delta;
 	int guard = 0;
 	while (d->clientClock >= step && guard < 8)
 	{
 		d->hud->input().cameraFrame((unsigned)Time::get_singleton()->get_ticks_msec(), d->world && d->world->is_paused());
+		d->camAnim.clientFrame(); // lane CAMANIM-1: the view update's mode-4 step (RW 0x48AA25), one client frame
 		d->clientClock -= step;
 		++guard;
 	}
@@ -3287,6 +3557,33 @@ void InGameHudNode::_process(double delta)
 		d->clientClock = 0.0; // a stall: no catching up
 	}
 	d->applyCamera(window, d->clientClock / step);
+	// Local mission input is sampled as a command, never written into simulation state by the renderer.
+	if (d->cam && d->world && d->world->hud_game() && d->world->hud_game()->logicHeld() && !d->world->bfme_network_game())
+	{
+		LiveGame *game = d->world->hud_game();
+		if (game->logic().economy().context().gameMode == EconomyContext::MODE_SINGLE_PLAYER)
+		{
+			const float travel = d->cam->userScrollDistance();
+			if (!d->cameraTravelInitialized)
+			{
+				d->cameraTravelTotal = game->logic().scriptEngine().cameraTravel();
+				d->cameraTravelInitialized = true;
+			}
+			if (travel > d->cameraTravelSent)
+			{
+				d->cameraTravelTotal += travel - d->cameraTravelSent;
+				d->cameraTravelSent = travel;
+				const Player *local = game->logic().players().getLocalPlayer();
+				if (local)
+				{
+					GameMessage message(MSG_OPENBFME_CAMERA_TRAVEL, local->getPlayerIndex());
+					message.appendRealArgument(d->cameraTravelTotal);
+					game->commands().append(message);
+				}
+			}
+		}
+	}
+
 	// lane BUILD-5 r2: the placement update (RW 0x6A2AE5) projects the pointer through the camera of the frame drawn, then the ghost's drawables are drawn
 	// (behind the same logic gate as the HUD's update: a frame the logic still runs keeps last frame's ghost)
 	// lane BUILD-5 r3: every render frame (review r2 #2): the pose follows the live pointer through the displayed camera also while the logic worker runs; the
@@ -3298,10 +3595,26 @@ void InGameHudNode::_process(double delta)
 		{
 			d->hud->input().placeTranslator().setLivePointer({ (int)d->livePointer.x, (int)d->livePointer.y });
 		}
+		const uint64_t tp = Time::get_singleton()->get_ticks_usec();
 		d->hud->input().placementUpdate(idle);
+		const uint64_t tg = Time::get_singleton()->get_ticks_usec();
 		d->ghost->sync(*d->world->hud_game(), d->hud->input().ui(), delta, PlaceEventTranslator::ghostOptions(), idle);
+		d->placeMs = (double)(tg - tp) / 1000.0; // lane FOGFX-1 (FB-0055): the placement's legality and the ghost, apart
+		d->ghostMs = (double)(Time::get_singleton()->get_ticks_usec() - tg) / 1000.0;
+	}
+	{
+		// lane UI-4; lane PLACEDECAL-1: after the ghost's sync, so the ghost's decal shadow is this frame's (the placement claim decal is the placement
+		// update's of the frame before, InGameHud::updateResourceFeedback in hud->update: S-5030). Its time is hud_decals_ms, a part of hud_update_ms
+		const uint64_t td = Time::get_singleton()->get_ticks_usec();
+		if (d->viewActive) d->drawSelectionDecals();
+		d->decalsLateMs = (double)(Time::get_singleton()->get_ticks_usec() - td) / 1000.0;
+		d->decalsMs += d->decalsLateMs;
 	}
 	const uint64_t t2 = Time::get_singleton()->get_ticks_usec();
+	if (d->player && !d->ownsPlayer)
+	{
+		d->godotMouse = d->player->godot_mouse();
+	}
 	if (d->viewActive)
 	{
 		// lane BUILD-5: while scrolling the cursor is InGameUI's Scroll whatever is under the pointer (createMouseoverHint's window test RW 0x69F637 is skipped
@@ -3311,11 +3624,27 @@ void InGameHudNode::_process(double delta)
 		// lane OWNERFIX-1: DISABLE_INPUT's Mouse::setVisibility(false) (RW 0x5EDD0F): no pointer over the world; a menu over the game (Esc's quit menu, which
 		// still opens: CMSG_META_OPTIONS) shows the arrow. INFERENCE (S-4964): retail's pointer over a menu opened during a cutscene was not read
 		const bool hidden = d->hud->scriptMouseHidden() && !overGui;
-		d->updateCursor(delta, (hidden || (ui.isPlacing() && ui.placeHasGhost() && !overGui)) ? std::string() : (overGui ? std::string(MouseCursorName::Arrow) : ui.cursor()), ui.scrollAmountX(), ui.scrollAmountY(), ui.isScrolling());
+		if (d->godotMouse)
+		{
+			d->godotMouse->updateCursor(delta, (hidden || (ui.isPlacing() && ui.placeHasGhost() && !overGui)) ? std::string() : (overGui ? std::string(MouseCursorName::Arrow) : ui.cursor()), ui.scrollAmountX(), ui.scrollAmountY(), ui.isScrolling());
+		}
+	}
+	// lane ANTICHEAT-1 (owner 2026-10-21): twice a second, the player's view (the camera's look-at point, the ground under the pointer) for the relay's
+	// log of an online game (never sent to another player, never simulation input; GameWorld::net_submit_view decides whether a game takes it). The
+	// pointer's ground point is read like every pick, only while the logic is held (else this sample is skipped)
+	d->viewClock += delta;
+	if (d->viewClock >= 0.5 && d->cam && d->world && d->world->hud_game())
+	{
+		d->viewClock = 0.0;
+		LiveGame *game = d->world->hud_game();
+		Coord3D ground{ 0.0f, 0.0f, 0.0f };
+		const bool overWorld = game->logicHeld() && !d->hud->isOverGui((int)d->lastPointer.x, (int)d->lastPointer.y) &&
+			d->shown.screenToTerrain({ (int)d->lastPointer.x, (int)d->lastPointer.y }, game->logic(), ground);
+		d->world->net_submit_view(d->cam->position().x, d->cam->position().y, ground.x, ground.y, overWorld);
 	}
 	const uint64_t t3 = Time::get_singleton()->get_ticks_usec();
-	d->updateMs = (double)(t1 - t0) / 1000.0;
-	d->cameraMs = (double)(t2 - t1) / 1000.0;
+	d->updateMs = (double)(t1 - t0) / 1000.0 + d->decalsLateMs; // lane PLACEDECAL-1: the selection decals counted in the update, not the camera
+	d->cameraMs = (double)(t2 - t1) / 1000.0 - d->decalsLateMs;
 	d->cursorMs = (double)(t3 - t2) / 1000.0;
 }
 
@@ -3329,6 +3658,18 @@ Dictionary InGameHudNode::get_frame_timings() const
 	t["hud_icons_ms"] = d->iconsMs;
 	t["hud_decals_ms"] = d->decalsMs;
 	t["hud_radial_ms"] = d->radialMs;
+	t["hud_place_ms"] = d->placeMs; // lane FOGFX-1: hud_camera_ms's parts: the placement update and the ghost's sync
+	t["hud_ghost_ms"] = d->ghostMs;
+	t["hud_ghost_icons_ms"] = d->ghost ? d->ghost->lastIconsMs() : 0.0;
+	t["hud_ghost_draw_ms"] = d->ghost ? d->ghost->lastDrawMs() : 0.0;
+	if (d->ghost)
+	{
+		const char *names[5] = { "hud_ghost_inst_ms", "hud_ghost_update_ms", "hud_ghost_tint_ms", "hud_ghost_bib_ms", "hud_ghost_shadow_ms" };
+		for (int k = 0; k < 5; ++k)
+		{
+			t[names[k]] = d->ghost->lastDrawParts()[k];
+		}
+	}
 	if (d->hud)
 	{
 		// lane SELPERF-1: InGameHud::update's parts
@@ -3427,14 +3768,7 @@ Dictionary InGameHudNode::get_placement_ghost_state() const
 
 Dictionary InGameHudNode::get_cursor_image() const
 {
-	Dictionary c;
-	c["name"] = toGodot(d->cursorName);
-	c["direction"] = d->cursorDirection;
-	c["hidden"] = d->cursorHidden;
-	// Only the diagnostic overlay needs a GPU texture; the native cursor keeps the CPU image.
-	c["texture"] = d->cursorShown.is_valid() ? ImageTexture::create_from_image(d->cursorShown) : Ref<ImageTexture>();
-	c["hot"] = d->cursorHot;
-	return c;
+	return d->godotMouse ? d->godotMouse->getCursorImage() : Dictionary();
 }
 
 PackedStringArray InGameHudNode::take_misc_sounds()
@@ -3697,6 +4031,29 @@ Dictionary InGameHudNode::get_controller_target(float selection_assist_radius)
 	result["can_select"] = selectable && !order;
 	if (selectable || order) d->hud->setControllerSelectionHover(target->getID());
 	return result;
+}
+
+// Enhanced controller shortcut: double A selects this local unit's type across the map.
+bool InGameHudNode::controller_select_type()
+{
+	waitLogic(d.get());
+	if (!d->ready || !d->hud) return false;
+	const auto context = d->hud->enterContext();
+	auto &input = d->hud->input();
+	input.update();
+	auto &ctx = input.context();
+	auto &ui = ctx.ui;
+	if (!ui.getInputEnabled() || ui.isPlacing() || ui.getGUICommand() || d->hud->spellBar().targeting() ||
+		d->hud->isOverGui((int)d->lastPointer.x, (int)d->lastPointer.y)) return false;
+	::Object *target = HudObjects::pickForSelection(ctx, {(int)d->lastPointer.x, (int)d->lastPointer.y});
+	if (!target || target->isKindOfName("STRUCTURE") || !HudObjects::isLocallyControlled(ctx, *target) || !HudObjects::canSelect(ctx, *target, false)) return false;
+	ui.deselectAll(true);
+	ui.selectObject(target->getID());
+	ClientMessage &message = ctx.stream.append(MSG_CREATE_SELECTED_GROUP);
+	message.appendBoolean(true);
+	message.appendObjectID(target->getID());
+	ui.selectMatching(ctx, true);
+	return true;
 }
 
 int InGameHudNode::get_controller_primary_button(float selection_assist_radius) const
@@ -4217,6 +4574,14 @@ void InGameHudNode::_notification(int what)
 {
 	if (d && what == NOTIFICATION_WM_MOUSE_EXIT) d->pointerOutsideWindow = true;
 	if (d && what == NOTIFICATION_WM_MOUSE_ENTER) d->pointerOutsideWindow = false;
+	if (what == NOTIFICATION_EXIT_TREE && d)
+	{
+		MacOSTrackpad::uninstall(d->trackpadMonitor);
+		d->trackpadMonitor = nullptr;
+	}
+	if (what == NOTIFICATION_ENTER_TREE && d && d->ready && !d->trackpadMonitor)
+		d->trackpadMonitor = MacOSTrackpad::install(get_instance_id(), get_window()->get_window_id());
+
 	if ((what == NOTIFICATION_WM_WINDOW_FOCUS_OUT || what == NOTIFICATION_APPLICATION_FOCUS_OUT) && d && d->ready && d->hud)
 	{
 		d->touchPoints.clear();
@@ -4283,6 +4648,11 @@ void InGameHudNode::set_broadcast_clean(bool on)
 	{
 		d->hud->setBroadcastClean(on);
 	}
+}
+
+bool InGameHudNode::input_enabled() const
+{
+	return d->ready && d->hud && d->hud->input().ui().getInputEnabled();
 }
 
 void InGameHudNode::set_input_enabled(bool on)
@@ -4394,6 +4764,18 @@ void InGameHudNode::_input(const Ref<InputEvent> &event)
 			if (Viewport *vp = get_viewport()) vp->set_input_as_handled();
 			return;
 		}
+	}
+	// These gestures only move the client camera: do not defer them behind a busy logic worker.
+	if (const auto *pan = Object::cast_to<InputEventPanGesture>(event.ptr()))
+	{
+		if (trackpad_pan(pan->get_delta(), pan->get_position())) get_viewport()->set_input_as_handled();
+		return;
+	}
+	if (const auto *pinch = Object::cast_to<InputEventMagnifyGesture>(event.ptr()))
+	{
+		if (trackpad_zoom(pinch->get_factor(), pinch->get_position())) get_viewport()->set_input_as_handled();
+		return;
+
 	}
 	// SMOOTH-1 (S-810): the HUD's input reads the live game (picking, selection, the control bar). While the logic worker runs a frame the event waits,
 	// in order, for the next render frame the worker is idle in (InGameHudNode::_process replays it), instead of blocking the render on the frame
@@ -4729,6 +5111,15 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 		// lane OPTS-6: while a menu has the input over the game (the quit menu, Options, the save / load screen, the tribute screen) its keys are the
 		// menu's (the navigation, the movie, its gadgets: AptMenuPlayer::menu_input), never the game's hot keys or camera keys. Esc stays the game
 		// scene's (game.gd closes the menu on top)
+		// lane CHAT-1: while the chat window is open its keys are the window's and its entry's (AptMenuPlayer::menu_input), Esc included; the pointer
+		// stays the world's (the window takes no mouse in retail)
+		if (!d->modal && d->player && !d->ownsPlayer && d->player->ingame_chat_has_keys())
+		{
+			++d->menuKeyEvents;
+			d->player->menu_input(event);
+			get_viewport()->set_input_as_handled();
+			return;
+		}
 		if (d->modal)
 		{
 			if (k->get_keycode() == Key::KEY_ESCAPE)
@@ -4802,6 +5193,45 @@ void InGameHudNode::camera_pan(const Vector2 &amount)
 	}
 }
 
+// Enhanced camera presentation, both editions (and BFME1's existing compatibility mode).
+// Pan/pinch use Godot's incremental gesture deltas; rotation is AppKit NSEvent.rotation in degrees.
+bool InGameHudNode::trackpad_allowed(const Vector2 &position) const
+{
+	return d->ready && d->viewActive && d->cam && d->hud && !d->modal &&
+		!(d->player && !d->ownsPlayer && d->player->modal_menu()) && d->hud->input().ui().getInputEnabled() &&
+		std::isfinite(position.x) && std::isfinite(position.y) && get_viewport_rect().has_point(position) &&
+		!d->hud->isOverGui((int)position.x, (int)position.y);
+}
+
+bool InGameHudNode::trackpad_pan(const Vector2 &delta, const Vector2 &position)
+{
+	const Vector2 pixels = delta * 40.0f; // native scroll units to the existing camera drag scale
+	if (!trackpad_allowed(position) || !std::isfinite(pixels.x) || !std::isfinite(pixels.y)) return false;
+	d->cam->scrollBy(pixels.x, pixels.y);
+	d->cam->snapInterpolation();
+	return true;
+}
+
+bool InGameHudNode::trackpad_zoom(double factor, const Vector2 &position)
+{
+	if (!trackpad_allowed(position) || !std::isfinite(factor) || factor <= 0.0) return false;
+	const double height = d->cam->getHeightAboveGround() / factor;
+	if (!std::isfinite(height) || height > std::numeric_limits<float>::max()) return false;
+	d->cam->setHeightAboveGround((float)height); // spread zooms in; the camera retains its configured height limits
+	d->cam->snapInterpolation();
+	return true;
+}
+
+bool InGameHudNode::trackpad_rotate(double degrees, const Vector2 &position)
+{
+	if (!trackpad_allowed(position) || !std::isfinite(degrees)) return false;
+	const double radians = std::remainder(degrees, 360.0) * 0.017453292519943295;
+	d->cam->setAngle(d->cam->getAngle() + (float)radians);
+	d->cam->snapInterpolation();
+	return true;
+
+}
+
 void InGameHudNode::camera_set_height(float height_above_ground)
 {
 	// lane PERF-3: client state, no wait for the logic worker (camera_look_at)
@@ -4809,6 +5239,111 @@ void InGameHudNode::camera_set_height(float height_above_ground)
 	{
 		d->cam->setHeightAboveGround(height_above_ground);
 		d->cam->snapInterpolation(); // lane MOVE-2 r2
+	}
+}
+
+void InGameHudNode::camera_reset(const Vector2 &sage_xy)
+{
+	// lane CAMPUI-1: client state, no wait for the logic worker (camera_look_at). RESET_CAMERA's TacticalCamera::resetCamera at the point: the map's
+	// heights and the default zoom / pitch (RW 0x48D26B)
+	if (d->cam)
+	{
+		const Coord3D at{ sage_xy.x, sage_xy.y, 0.0f };
+		d->cam->resetCamera(&at);
+		d->cam->snapInterpolation();
+	}
+}
+
+bool InGameHudNode::camera_animation_request(const String &action, const String &name)
+{
+	// lane CAMANIM-1: client state (the map's records are immutable after the load), no wait for the logic worker
+	const std::string a = action.utf8().get_data();
+	if (a != "MOVE_CAMERA_BY_ANIMATION" && !CameraAnimationPlayback::cancelsAnimation(a))
+	{
+		return false;
+	}
+	if (!d->camAnimListBuilt)
+	{
+		LiveGame *game = d->world ? d->world->hud_game() : nullptr;
+		if (!game)
+		{
+			UtilityFunctions::printerr("CAMANIM ", action, ": no game (the map's camera animations are unknown)");
+			return false;
+		}
+		std::vector<std::string> errors;
+		d->camAnimList.build(game->map().chunks.cameraAnimations, errors);
+		d->camAnimListBuilt = true;
+		for (const std::string &e : errors)
+		{
+			UtilityFunctions::printerr("CAMANIM ", String::utf8(e.c_str()));
+			d->drawNotes.insert("[CAMANIM-1] " + e);
+		}
+	}
+	const std::string n = name.utf8().get_data();
+	const bool changed = d->camAnim.applyRequest(d->camAnimList, a, n);
+	if (a == "MOVE_CAMERA_BY_ANIMATION")
+	{
+		if (changed)
+		{
+			UtilityFunctions::print("CAMANIM start '", name, "' (", (int64_t)d->camAnimList.find(n)->numFrames(), " frames)");
+		}
+		else
+		{
+			// RW 0x7BBB9D: no animation of that name, the view is not called
+			UtilityFunctions::print("CAMANIM '", name, "' is not in the map's CameraAnimationList (", (int64_t)d->camAnimList.size(), " animations): no camera change");
+		}
+	}
+	else if (changed)
+	{
+		UtilityFunctions::print("CAMANIM ", action, " ends the camera animation");
+	}
+	return changed;
+}
+
+Dictionary InGameHudNode::camera_animation_state() const
+{
+	Dictionary r;
+	r["active"] = d->camAnim.active();
+	r["name"] = String::utf8(d->camAnim.name().c_str());
+	r["time"] = d->camAnim.time();
+	r["animations"] = (int64_t)d->camAnimList.size();
+	return r;
+}
+
+void InGameHudNode::set_objectives_screen_open(bool open)
+{
+	if (d->ready && d->hud)
+	{
+		d->hud->setObjectivesScreenOpen(open);
+	}
+}
+
+void InGameHudNode::flash_palantir_button(int slot, int seconds)
+{
+	if (d->ready && d->hud)
+	{
+		d->hud->flashPalantirButton(slot, seconds);
+	}
+}
+
+bool InGameHudNode::is_objectives_flag_flashing() const
+{
+	return d->ready && d->hud && d->hud->palantirObjectivesFlashing();
+}
+
+void InGameHudNode::camera_set_zoom_limited(bool on)
+{
+	if (d->cam)
+	{
+		d->cam->setZoomLimited(on); // lane CAMPUI-1: RW 0x443C81 (the letterbox lifts the zoom limit while it is on)
+	}
+}
+
+void InGameHudNode::camera_set_clip_depth_multiplier(double m)
+{
+	if (d->cam)
+	{
+		d->cam->setClipDepthMultiplier((float)m); // RW 0x7CAFA5 case 0x14E: GlobalData + 0x950, read by setCameraTransform (RW 0x48B7B1)
 	}
 }
 
@@ -4912,6 +5447,7 @@ Dictionary InGameHudNode::get_camera() const
 	}
 	const TacticalCamera &c = *d->cam;
 	out["position"] = Vector2(c.position().x, c.position().y);
+	out["user_scroll_distance"] = c.userScrollDistance();
 	out["angle"] = c.getAngle();
 	out["pitch"] = c.getPitch();
 	out["zoom"] = c.getZoom();
@@ -4920,6 +5456,7 @@ Dictionary InGameHudNode::get_camera() const
 	out["terrain_height"] = c.terrainHeightUnderCamera();
 	out["min_height"] = c.minHeight();
 	out["max_height"] = c.maxHeight();
+	out["native_trackpad_rotation"] = d->trackpadMonitor != nullptr;
 	out["free_camera"] = c.freeCamera(); // lane PLAY-1
 	out["free_camera_toggles"] = d->freeCameraToggles; // lane INPUT-1: Ctrl+Z
 	out["zoom_out_limit"] = c.zoomOutLimit();
@@ -4931,6 +5468,8 @@ Dictionary InGameHudNode::get_camera() const
 	out["far"] = c.farPlane();
 	out["eye"] = toGodotAxes(c.eye());
 	out["target"] = toGodotAxes(c.target());
+	out["displayed_target"] = toGodotAxes(d->shown.PinholeView::position());
+	out["displayed_eye"] = toGodotAxes(d->shown.eye());
 	out["offset"] = Vector3(c.cameraOffset().x, c.cameraOffset().y, c.cameraOffset().z);
 	out["constraint_valid"] = c.constraintValid();
 	float lim[4];
@@ -4990,6 +5529,29 @@ Vector2 InGameHudNode::pixel_to_world(const Vector2 &pixel) const
 		return Vector2(out.x, out.y);
 	}
 	return Vector2(-1e9f, -1e9f);
+}
+
+Vector2 InGameHudNode::ping_point(const Vector2 &pixel) const
+{
+	// the ping wheel (not retail): the map point a ping placed at this window pixel marks. Over the minimap: the point the radar shows there (the mapping of
+	// a radar click, InGameHud::radarClick); over any other part of the HUD (the Palantir, the control bar, the radial bubbles: InGameHud::isOverGui): none,
+	// as the terrain behind the HUD is not what the player points at; elsewhere the terrain under the pixel (pixel_to_world). (-1e9, -1e9) for none
+	waitLogic(d.get());
+	if (!d->hud)
+	{
+		return Vector2(-1e9f, -1e9f);
+	}
+	bool hasPoint = false;
+	float wx = 0.0f, wy = 0.0f;
+	if (d->hud->radarPoint((int)pixel.x, (int)pixel.y, hasPoint, wx, wy))
+	{
+		return hasPoint ? Vector2(wx, wy) : Vector2(-1e9f, -1e9f);
+	}
+	if (d->hud->isOverGui((int)pixel.x, (int)pixel.y))
+	{
+		return Vector2(-1e9f, -1e9f);
+	}
+	return pixel_to_world(pixel);
 }
 
 Vector2 InGameHudNode::world_to_pixel(const Vector2 &w) const
@@ -5067,6 +5629,69 @@ Dictionary InGameHudNode::pick_probe(const Vector2 &pixel, int64_t id) const
 	return r;
 }
 
+// lane SELECT-1: the scripted player's click targets (scripts/select1_player.gd). Client state only: nothing reaches the simulation.
+PackedVector2Array InGameHudNode::pick_box_pixels(int64_t id) const
+{
+	waitLogic(d.get());
+	PackedVector2Array out;
+	if (!d->hud || !d->world || !d->world->hud_game())
+	{
+		return out;
+	}
+	const HudContext &ctx = d->hud->input().context();
+	const Drawable *drawable = d->world->hud_game()->drawables().findByObject((::ObjectID)id);
+	if (!drawable)
+	{
+		return out;
+	}
+	for (const DrawEntry &e : drawable->entries())
+	{
+		const RenderObjPrototype *proto = e.kind == W3D_DRAWKIND_MODEL && e.draw && !e.moduleHidden && !e.conditionHidden ? e.draw->currentModel() : nullptr;
+		if (!proto)
+		{
+			continue;
+		}
+		for (const RenderSubObject &sub : proto->SubObjects)
+		{
+			if (sub.Type != RenderSubObject::SUB_BOX || !sub.Box || sub.Aggregate || (sub.Box->Attributes & 1u) == 0)
+			{
+				continue;
+			}
+			const HTreeClass *tree = proto->Tree ? proto->Tree : &proto->DefaultTree;
+			HTreePose pose;
+			tree->Base_Pose(Matrix3D(), pose);
+			const Matrix3D pivot = sub.BoneIndex >= 0 && sub.BoneIndex < (int)pose.Transform.size() ? pose.Transform[(size_t)sub.BoneIndex] : Matrix3D();
+			const float c[3] = { sub.Box->Center.X, sub.Box->Center.Y, sub.Box->Center.Z };
+			const float ex[3] = { sub.Box->Extent.X, sub.Box->Extent.Y, sub.Box->Extent.Z };
+			const float *basis = drawable->getBasis();
+			const float scale = drawable->getInstanceScale();
+			const Coord3D at = drawable->entryPosition(e);
+			for (int k = 0; k < 7; ++k)
+			{
+				float p[3] = { c[0], c[1], c[2] };
+				if (k > 0)
+				{
+					p[(k - 1) / 2] += ((k - 1) % 2 == 0 ? -0.8f : 0.8f) * ex[(k - 1) / 2];
+				}
+				float m[3];
+				for (int r = 0; r < 3; ++r)
+				{
+					m[r] = (pivot.Row[r][0] * p[0] + pivot.Row[r][1] * p[1] + pivot.Row[r][2] * p[2] + pivot.Row[r][3]) * scale;
+				}
+				const Coord3D w{ at.x + basis[0] * m[0] + basis[1] * m[1] + basis[2] * m[2], at.y + basis[3] * m[0] + basis[4] * m[1] + basis[5] * m[2],
+					at.z + basis[6] * m[0] + basis[7] * m[1] + basis[8] * m[2] };
+				ICoord2D px;
+				if (ctx.view.worldToScreen(w, px))
+				{
+					out.push_back(Vector2((float)px.x, (float)px.y));
+				}
+			}
+			return out; // RW 0x59C680: the first one answers
+		}
+	}
+	return out;
+}
+
 Dictionary InGameHudNode::invoke_at(const String &path, const String &function, const PackedStringArray &args)
 {
 	waitLogic(d.get());
@@ -5104,14 +5729,21 @@ Vector2 InGameHudNode::world_to_radar_pixel(const Vector2 &world) const
 	return Vector2(sq[0] + rx * (sq[2] - sq[0]) / 128.0f, sq[1] + ry * (sq[3] - sq[1]) / 128.0f);
 }
 
-bool InGameHudNode::create_radar_event(const Vector2 &world_xy, int type)
+bool InGameHudNode::create_radar_event(const Vector2 &world_xy, int type, bool jump_to)
 {
-	// lane RADAR-1 (QA): an event the way a script's radar event action makes one (createEvent, 4 s); false without a radar
+	// lane RADAR-1 (QA): an event the way a script's radar event action makes one (createEvent, 4 s); false without a radar. `jump_to` (the ping wheel):
+	// also TheEva's event position, as the script action adds it after createEvent (RW 0x7BC221 -> RW 0x5DD1F3, Radar::noteEvaPosition), so Space
+	// (VIEW_LAST_RADAR_EVENT) looks at it. Client state only (the radar), as the script's event is
 	if (!d->hud || !d->hud->radar().ready())
 	{
 		return false;
 	}
-	d->hud->radar().createEvent(Coord3D{ (float)world_xy.x, (float)world_xy.y, 0.0f }, type, 4.0f);
+	const Coord3D at{ (float)world_xy.x, (float)world_xy.y, 0.0f };
+	d->hud->radar().createEvent(at, type, 4.0f);
+	if (jump_to)
+	{
+		d->hud->radar().noteEvaPosition(at);
+	}
 	return true;
 }
 
@@ -5245,6 +5877,30 @@ Dictionary InGameHudNode::find_button_window(const String &path) const
 	r["x"] = (double)w.x;
 	r["y"] = (double)w.y;
 	return r;
+}
+
+// lane CHEAT-1 ------------------------------------------------------------------------------------------------------------------------------------------
+
+void InGameHudNode::add_player_message(const String &text)
+{
+	if (d->hud)
+	{
+		const Char16String u = text.utf16();
+		d->hud->addPlayerMessageText(std::u16string(reinterpret_cast<const char16_t *>(u.get_data()), (std::size_t)u.length()));
+	}
+}
+
+Dictionary InGameHudNode::get_player_message_layout() const
+{
+	Dictionary out;
+	if (d->hud)
+	{
+		const PlayerMessageSettings &s = d->hud->playerMessages().settings;
+		out["x"] = s.position.x;
+		out["y"] = s.position.y;
+		out["point_size"] = s.pointSize;
+	}
+	return out;
 }
 
 } // namespace godot

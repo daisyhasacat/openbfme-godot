@@ -16,11 +16,14 @@
 #include "Common/Module.h"
 #include "GameLogic/ObjectTypes.h"
 
+#include <cstdint>
 #include <list>
 #include <string>
 #include <vector>
 
 class Object;
+class Player;
+class Team;
 struct Coord3D;
 struct DamageInfo;
 struct DamageInfoInput;
@@ -35,6 +38,7 @@ class HordeContainInterface;
 class ExitInterface;                 // GameLogic/Module/ExitInterface.h (lane PROD-1)
 class ProductionUpdateInterface;     // GameLogic/Module/ProductionUpdate.h (lane PROD-1)
 class FoundationAIUpdate;            // GameLogic/Module/ConstructionModules.h (lane BUILD-1)
+class Dict;                          // Common/Dict.h
 
 // ZH Include/GameLogic/Module/BodyModule.h BodyDamageType
 enum BodyDamageType
@@ -73,6 +77,12 @@ public:
 	virtual bool isIndestructible() const { return false; }
 	// RW vt[0x90]: the body's DodgePercent (a fraction)
 	virtual float getDodgePercent() const { return 0.0f; }
+	// lane FX-4: RW vt[0x40], the last damage record (ActiveBody RW 0x715914: + 0x40); false = null (a body without one). `type` = the record's damage type
+	virtual bool lastDamageRecordType(int &type) const
+	{
+		(void)type;
+		return false;
+	}
 	// lane BACKLOG-1: RW vt[0x74], the body's GrabObject template name (ActiveBody RW 0x8C281E: the data's + 0x2C; InactiveBody RW 0x8C1B14: the empty string
 	// RW 0xBD0C3F). OpenContain's CHUNK_VENDOR / ROCK_VENDOR entry test reads it (RW 0x8660FC)
 	virtual std::string getGrabObjectName() const { return std::string(); }
@@ -89,6 +99,9 @@ public:
 		static unsigned long long n = 0;
 		return n;
 	}
+	// lane SUMMON-1: RW vt[0x58] with its second argument 0 (ActiveBody RW 0x8C47DE; InactiveBody's slot is the empty RW 0x8851E4), the ObjectCreationList's
+	// initial health (RW 0x5F1E98): `percent` of the revive reference, a percent above 100 scaling the max health first
+	virtual void setInitialHealthPercent(float percent) { (void)percent; }
 };
 
 // ZH ContainModuleInterface (the membership part). The members are Objects; the list keeps insertion order.
@@ -99,6 +112,8 @@ public:
 	typedef std::list<Object *> ContainedItemsList;
 	virtual const ContainedItemsList *getContainedItemsList() const = 0;
 	virtual unsigned getContainCount() const = 0;
+	// DONOR BFME2 contain slot 92: HordeContain propagates Object::setTeam; other containers keep their passengers' teams.
+	virtual void onTeamChanged(Team *team) { (void)team; }
 	// true when the object was added
 	virtual bool addToContain(Object *obj) = 0;
 	virtual void removeFromContain(Object *obj) = 0;
@@ -114,6 +129,8 @@ public:
 	// ---- lane GARRISON-1 (the contain interface at module + 0x20; RW slots of the OpenContain table RW 0xC59AF0, GarrisonContain RW 0xC5C698, HordeGarrisonContain
 	// RW 0xC5C9F0). The defaults are OpenContain's answers; a contain class that is not ported answers through UnportedBehaviorModule (no contain at all) ----
 	// slot 0x10 isGarrisonable: GarrisonContain RW 0x8BD372 true, OpenContain RW 0x9188EB false (TunnelContain RW 0xC5DCE0 + 0x10: RW 0x9188EB false, lane UI-1)
+	// BFME2 contain slot 0x4C; null means use the object owner (S-1100).
+	virtual const Player *getApparentControllingPlayer(const Player *viewer) const { (void)viewer; return nullptr; }
 	virtual bool isGarrisonable() const { return false; }
 	// lane UI-1: slot 0xC8 isDisplayedOnControlBar (the control bar's transport inventory RW 0x943D6F -> RW 0x94251F asks it): OpenContain RW 0x9188EB false;
 	// GarrisonContain / HordeGarrisonContain, TransportContain / HordeTransportContain, SiegeEngineContain / HordeSiegeEngineContain and TunnelContain RW 0x8BD372
@@ -128,6 +145,9 @@ public:
 		(void)checkPath;
 		return false;
 	}
+	// lane SCRIPT-4: slot 0x144 getPlayerWhoEntered (RW 0x5F2DC6 `mov eax, [ecx + 0x58]` in the OpenContain, GarrisonContain and HordeGarrisonContain
+	// tables RW 0xC59AF0 / 0xC5C698 / 0xC5C9F0): the mask of the player whose units entered (OpenContain overrides); 0 for a contain without that field
+	virtual std::uint32_t getPlayerWhoEntered() const { return 0; }
 	// slot 0xB0 (RW 0x865C15): the module data's ObjectStatusOfContained mask (OpenContain data + 0x58); null for a contain without one
 	virtual const ObjectStatusMaskType *getObjectStatusOfContained() const { return nullptr; }
 	// lane DECOMP-3 (Object::isAbleToAttack RW 0x691269): slot 0xB0 asked for a rider (OpenContain RW 0x865C15, SiegeEngineContain RW 0x87ED55); null as above
@@ -213,6 +233,8 @@ public:
 	virtual SpawnUnitBehaviorInterface *getSpawnUnitBehaviorInterface() { return nullptr; }
 	// RW slot 0x50 / 4 = 20 of the +0xC interface: the exit interface of a production exit module (Object::getObjectExitInterface, RW 0x68BB14)
 	virtual ExitInterface *getExitInterface() { return nullptr; }
+	// lane LUMBER1: slot 0x58 of the +0xC interface: the dock interface of a DockUpdate (Object::getDockUpdateInterface, RW 0x68C383)
+	virtual class DockUpdateInterface *getDockUpdateInterface() { return nullptr; }
 	// the production queue of a ProductionUpdate (RW 0x68C327 asks for it)
 	virtual ProductionUpdateInterface *getProductionUpdateInterface() { return nullptr; }
 	// lane BUILD-1: the FoundationAIUpdate interface (RW 0x68C3C3 asks every module through slot 38 of its +0xC interface)
@@ -225,6 +247,10 @@ public:
 	virtual UpgradeMux *getUpgrade() { return nullptr; }
 	// ZH BehaviorModuleInterface::getProjectileUpdateInterface (lane PROJ-2: the client snapshot asks the projectile's look-ahead point and its launch)
 	virtual ProjectileUpdateInterface *getProjectileUpdateInterface() { return nullptr; }
+	// lane WALL-2: RW slot 45 (+ 0xB4) of the +0xC interface, with the map object's properties or null: Object RW 0x694692 (Object::friend_onMapPlacement)
+	// broadcasts it after the map objects are placed (RW 0x62F36B / 0x62F8EA) and after FoundationAIUpdate places a structure (RW 0x858A94). Default nothing
+	// (DynamicPortalBehaviour's RW 0x864341 generates its portals there)
+	virtual void onMapPlacement(const Dict *properties) { (void)properties; }
 
 protected:
 	// lane SAVE-4b: BehaviorModule::xfer, version (1, 1) (RW 0x8CD4AA, the base xfer every UpdateModule / UpgradeModule xfer calls; inference: it is

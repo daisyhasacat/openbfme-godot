@@ -67,16 +67,24 @@ all rows. Cumulative heights, selection and per-insertion scrolling still run
 in their original order, including auto-scroll and purge skins. The cache ends
 before the current map is selected and never spans a rendered frame.
 
-The shell also resolves the mounted maps' display labels during boot, warming
-its existing map-string cache before the main menu becomes interactive. This
-moves first-use `map.str` reads (including probes for absent files) out of the
-Skirmish click. It uses the mounted map list and existing localization rules,
-including installed maps; it does not instantiate a hidden lobby or run its
-scripts. The cache has the same shell-session lifetime as before.
+The shell warms mounted maps' display labels while the main menu is idle,
+with at most eight names and a one-millisecond scheduling budget per frame.
+A single file lookup can exceed that budget; subsequent lookups wait for the
+next frame. Warming no longer blocks shell boot. It uses the existing
+shell-session map-string cache and localization rules, including installed
+maps and absent `map.str` files. Opening Skirmish immediately still resolves
+any remaining labels on demand. Warming pauses outside the main menu.
+
+Optional tool scripts (the map editor, benchmark, update UI, and gameplay
+helpers) and automation checks load when used instead of being parsed as
+main-scene dependencies. Startup logs now distinguish object-world setup,
+audio readiness and main-menu readiness. The loading artwork remains during
+required archive verification and initialization; these checks are not skipped.
 
 Temporary timing probes on the same Apple Silicon scripted menu transition
 measured map-list population at 307 ms before the changes and 5.2 ms after
-both changes (map-name work 0.7 ms, the rest mostly row population). This is
+the original eager warming and row-measurement changes (map-name work 0.7 ms,
+the rest mostly row population). This is
 one headless before/after observation, not a whole-frame latency guarantee;
 first-use textures and renderer work are separate costs. The probes were
 removed from the final build.

@@ -2,6 +2,7 @@
 // See GodotHud6Draw.h (lane HUD-6).
 
 #include "GodotDevice/GodotHud6Draw.h"
+#include "GodotDevice/GodotShaderBudget.h"
 
 #include "GameClient/GUI/AptScreens/AptImageMode.h"
 
@@ -14,6 +15,8 @@
 #include "GodotDevice/GodotAptPlayer.h"
 
 #include <godot_cpp/classes/rendering_server.hpp>
+#include <godot_cpp/classes/control.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/classes/theme_db.hpp>
 #include <godot_cpp/variant/packed_color_array.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
@@ -192,9 +195,9 @@ void Hud6Draw::drawRadial(RID parent)
 		// INFERENCE (S-2701): radial cameos use the ellipse as their mask. Their texture alpha masks foreground art;
 		// the RGB underneath contains the full button background (notably builders and heroes).
 		// Keep the rim/clock on the ordinary alpha-blended item.
-		m_grayShader->set_code(String(aptImageModeShader(APT_IMAGE_SOLID_GRAYSCALE).c_str()));
+		SetShaderCode(m_grayShader.ptr(), String(aptImageModeShader(APT_IMAGE_SOLID_GRAYSCALE).c_str()), "HUD6 grayscale cameo");
 		m_iconShader.instantiate();
-		m_iconShader->set_code(String(aptImageModeShader(APT_IMAGE_SOLID).c_str()));
+		SetShaderCode(m_iconShader.ptr(), String(aptImageModeShader(APT_IMAGE_SOLID).c_str()), "HUD6 icon");
 		m_iconMaterial.instantiate();
 		m_iconMaterial->set_shader(m_iconShader);
 		m_iconItem = rs->canvas_item_create();
@@ -414,6 +417,7 @@ Dictionary Hud6Draw::state() const
 		side["calls"] = sc;
 	}
 	out["side_bar"] = side;
+	out["message_top"] = m_messageTop;
 	return out;
 }
 
@@ -428,6 +432,10 @@ void Hud6Draw::drawMessages(RID parent)
 	}
 	rs->canvas_item_clear(m_messageItem);
 	if (m_hud.menuCoversStage()) return;
+	// BATCH-P4: InGameUI's message lines have one drawer. CHAT-1's HudDevice::drawMessageLines (GameClient/InGameUIMessages.h) draws the same GUI
+	// labels as this log plus the chat lines in their players' colours, at the same Message* position: drawing both put every label on screen twice.
+	// PlayerMessageLog stays the HUD state's player_messages record (its tests read it); unifying the two stores is a follow-up.
+	return;
 	const auto &log = m_hud.playerMessages();
 	const auto &settings = log.settings;
 	const int px = GlobalLanguage::adjustFontSize(settings.pointSize, m_hud.windowWidth());
@@ -438,6 +446,18 @@ void Hud6Draw::drawMessages(RID parent)
 	const int size = (int)std::lround(drawSize);
 	const int x = (int)std::floor(m_hud.windowWidth() * settings.position.x / 1024.0f + .5f);
 	float y = std::floor(m_hud.windowHeight() * settings.position.y / 768.0f + .5f);
+	// RW 0x6A0BC0 (tier A, BFME2 InGameUIPostDraw.cpp) uses the configured origin. Reserve our non-retail watermark's measured bounds.
+	const Array obstacles = m_player->get_tree()->get_nodes_in_group("player_message_obstacles");
+	for (int i = 0; i < obstacles.size(); ++i)
+	{
+		const Control *control = Object::cast_to<Control>(obstacles[i]);
+		if (control && control->is_visible_in_tree() && control->get_viewport() == m_player->get_viewport())
+		{
+			const Rect2 rect = control->get_global_transform_with_canvas().xform(Rect2(Vector2(), control->get_size()).grow(2.0f));
+			y = std::max(y, (float)std::ceil(rect.get_end().y));
+		}
+	}
+	m_messageTop = y;
 	for (auto it = log.entries().rbegin(); it != log.entries().rend(); ++it)
 	{
 		const String text = toGodot(u16ToUtf8(it->text));

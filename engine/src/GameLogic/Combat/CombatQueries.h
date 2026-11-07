@@ -27,6 +27,10 @@ bool isBox(const Object &obj);                   // RW 0xAD22C0
 float edgeDistanceSquared2D(const Object &a, const Coord3D &posA, const Object &b, const Coord3D &posB);
 // the same with the radii given (RW 0x66352C passes this object's + 0xB8, then the other's)
 float edgeDistanceSquared2D(const Coord3D &posA, float radiusA, const Coord3D &posB, float radiusB);
+// lane STARTRANGE-1: RW 0x68F430 (thiscall on the BOX object; the wrapper RW 0x8513FD passes its position, the other object and the other's position):
+// the squared 2D distance from `other`'s bounding circle (+ 0xB8) to `box`'s box (its basis' X / Y axes, GeometryInfo + 0x24 / + 0x28 the half sizes of the
+// box around its active shapes, RW 0xAD2860), 0 when `other`'s centre is inside the box
+float boxDistanceSquared2D(const Object &box, const Object &other);
 // center distance squared in the ground plane
 float centerDistanceSquared2D(const Coord3D &a, const Coord3D &b);
 // lane HERO-1 (Sol review): RW 0xA39340 with sort mode 1 -> RW 0xA3A750 -> RW 0xA3A6B0: the scan's objects in ascending distance from `center` (the pair
@@ -37,6 +41,10 @@ void sortByCenterDistance2D(std::vector<Object *> &objects, const Coord3D &cente
 bool isAlive(const Object &obj);
 // the object can be attacked at all (not UNATTACKABLE / INERT; a structure under construction can: lane AI-2 r6)
 bool isAttackable(const Object &obj);
+// BFME2 PartitionFilterRejectBuildings (RVA 0x261B7E) and
+// PartitionFilterInsignificantBuildings (RVA 0x261246), respectively.
+bool allowsBuildingTarget(const Object &seeker, const Object &target);
+bool isSignificantBuildingTarget(const Object &target);
 // RW 0x691269 (Object::isAbleToAttack; BFME2 decomp Object_isAbleToAttack.cpp, tier B same-shape): lane DECOMP-3 ported it in full (Object::isAbleToAttack,
 // Object.cpp); this forwards to it
 bool isAbleToAttack(const Object &obj);

@@ -12,12 +12,19 @@
 #include "Common/Player.h"
 #include "Common/StateHash.h"
 #include "Common/Thing/ModuleFactory.h"
+#include "Common/Thing/ThingTemplate.h"
 #include "GameClient/MapChunks.h"
+#include "GameLogic/AI/AIPathfindHost.h"
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/GameLogicDispatch.h"
 #include "GameLogic/GameMessage.h"
+#include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/Module/NotifyCrushModules.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/ObjectGeometry.h"
+#include "GameLogic/Object/PartitionManager.h"
+#include "GameLogic/ObjectTemplateInfo.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
 #include "GameLogic/SimMath.h"
 #include "GameLogic/SkirmishAI/SkirmishAIManager.h"
@@ -79,6 +86,34 @@ void clearAndSet(Object &obj, int clearBit, int setBit)
 	obj.setModelConditionState(setBit, true);
 }
 
+// template + 0xB0: the geometry's bounding circle radius (GeometryInfo + 0x10, RW 0xAD2860), as ReplaceSelfUpgrade reads it
+float templateBoundingCircle(const ThingTemplate &tt)
+{
+	PathfindGeometry g;
+	ObjectGeometry::fillPathfindGeometry(*tt.getFinalOverride(), g);
+	return g.boundingCircleRadius();
+}
+
+// RW 0x68BBE0 (inference, as EmotionModules: the AI's pathfinder layer; ground when the object has none)
+int layerOf(Object &obj)
+{
+	if (AIWorld *w = obj.logic().aiWorld())
+	{
+		if (ObjectPathfindAdapter *a = w->findAdapter(obj.getID()))
+		{
+			return (int)a->getLayer();
+		}
+	}
+	return (int)LAYER_GROUND;
+}
+
+// RW 0x89C33A: not IMMOBILE (template KindOf byte + 0x108 bit 2) and on the ground layer
+bool repelsUnit(const Object &unit)
+{
+	static const int immobile = ObjectTemplateInfoBuilder::kindOfIndex("IMMOBILE");
+	return !unit.isKindOf((unsigned)immobile) && layerOf(const_cast<Object &>(unit)) == (int)LAYER_GROUND;
+}
+
 template <class Runtime, class Data>
 void bind(ModuleFactory &modules, const char *name)
 {
@@ -117,6 +152,48 @@ GateOpenAndCloseBehavior::GateOpenAndCloseBehavior(Thing *thing, const GateOpenA
 	m_geometryState = GEOMETRY_NONE;
 	m_request = -1;
 	m_soundPlayed = false;
+	// RW 0x89C0F1: the manager's gate list (+ 0xA74) takes the module (RW 0x8EDA39, no duplicate)
+	if (getObject())
+	{
+		getObject()->logic().skirmishAI().registerGate(*this);
+	}
+}
+
+// RW 0x8ED772 (the manager's gate list drops the module; RW 0x89BF87 in the destructor)
+GateOpenAndCloseBehavior::~GateOpenAndCloseBehavior()
+{
+	if (getObject())
+	{
+		getObject()->logic().skirmishAI().unregisterGate(*this);
+	}
+}
+
+// RW 0x89C12F: true while the gate's OPEN (passable) geometry is the one in the pathfinder's map, so the AI walks RW 0x8ED6DC / 0x8ED726 only close a gate
+// whose geometry is currently passable and restore it after the group's AIs. Opening: the open shapes are active from above PercentOpenForPathing percent;
+// open: always; closing: until the percent is above 100 - PercentOpenForPathing; closed: never.
+bool GateOpenAndCloseBehavior::openGeometryInPathfindMap() const
+{
+	switch (m_state)
+	{
+		case OPENING:
+			return m_percent > (float)m_data->m_percentOpenForPathing;
+		case OPEN:
+			return true;
+		case CLOSING:
+			return m_percent <= (float)(100u - m_data->m_percentOpenForPathing);
+		case CLOSED:
+			return false;
+		default:
+			return false;
+	}
+}
+
+// RW 0x89C18E: Player::getRelationship(gate object) (RW 0x6ADC43; an object without a controlling player is NEUTRAL)
+Relationship GateOpenAndCloseBehavior::relationshipTo(const Player &player) const
+{
+	const Object *obj = getObject();
+	const Player *owner = obj ? obj->getControllingPlayer() : nullptr;
+	return owner ? player.getRelationship(owner) : NEUTRAL;
 }
 
 GateOpenAndCloseBehavior *GateOpenAndCloseBehavior::findGate(const Object &obj)
@@ -129,6 +206,7 @@ void GateOpenAndCloseBehavior::open()
 {
 	if (isSettled() && !isOpen())
 	{
+		pushOut(); // RW 0x89C759
 		setOpenCloseState(OPENING);
 		m_settled = false;
 		m_percent = 0.0f;
@@ -141,6 +219,7 @@ void GateOpenAndCloseBehavior::close()
 {
 	if (isSettled() && isOpen())
 	{
+		pushOut(); // RW 0x89C759
 		setOpenCloseState(CLOSING);
 		m_settled = false;
 		m_percent = 0.0f;
@@ -222,20 +301,116 @@ void GateOpenAndCloseBehavior::playFinishedSound()
 	m_soundPlayed = true;
 }
 
-// RW 0x89CA84 (open geometry) / RW 0x89C9FA (closed geometry). `scan`: the push-out scan RW 0x89C759 runs first (not ported, S-1940)
-void GateOpenAndCloseBehavior::setGeometry(bool openGeometry, bool scan)
+// RW 0x89C759 (BFME2 0x898FAA, GateOpenAndCloseBehavior.cpp): see GateModules.h
+void GateOpenAndCloseBehavior::pushOut()
 {
-	(void)scan;
-	const int wanted = openGeometry ? GEOMETRY_OPEN : GEOMETRY_CLOSED;
-	if (m_geometryState == wanted)
+	Object *us = getObject();
+	if (!us)
 	{
 		return;
+	}
+	GameLogic &logic = us->logic();
+	const float radius = templateBoundingCircle(*us->getTemplate()); // template + 0xB0
+	PathfindGeometry cylinder; // RW 0x450429(CYLINDER, not small, 30, radius, radius)
+	cylinder.type = PATHFIND_GEOMETRY_CYLINDER;
+	cylinder.isSmall = false;
+	cylinder.height = 30.0f; // RW 0xBDAE54
+	cylinder.majorRadius = radius;
+	cylinder.minorRadius = radius;
+	// RW 0x89C7C5: fld circle (+0x10); fmul double 0.66 (RW 0xBDE9C8); fstp dword
+	const float offset = SimMath::fstpDword(SimMath::pc24MulW((double)cylinder.boundingCircleRadius(), 0.66));
+	const float angle = us->getOrientation();
+	const float dirX = SimMath::cosDet(angle); // RW 0x70BA23 -> 0x70B9E0
+	const float dirY = SimMath::sinDet(angle);
+	Coord3D pos = *us->getPosition();
+	pos.x = SimMath::addf32(pos.x, SimMath::mulf32(dirX, offset)); // mulss / addss; z stays
+	pos.y = SimMath::addf32(pos.y, SimMath::mulf32(dirY, offset));
+	const float range = SimMath::mulf32(cylinder.boundingSphereRadius(), 1.1f); // + 0x14, mulss RW 0xBE4398
+
+	static const int inert = ObjectTemplateInfoBuilder::kindOfIndex("INERT");                             // 0x59
+	static const int baseFoundation = ObjectTemplateInfoBuilder::kindOfIndex("BASE_FOUNDATION");          // 0x68
+	static const int walkOnTopOfWall = ObjectTemplateInfoBuilder::kindOfIndex("WALK_ON_TOP_OF_WALL");     // 0x3C
+	static const int immobile = ObjectTemplateInfoBuilder::kindOfIndex("IMMOBILE");                       // 2
+	static const int hordeMember = ObjectTemplateInfoBuilder::objectStatusIndex("HORDE_MEMBER");          // 0x26
+	ObjectGeometry::Shape shape;
+	shape.type = ObjectGeometry::SHAPE_CYLINDER;
+	shape.height = cylinder.height;
+	shape.majorRadius = radius;
+	shape.minorRadius = radius;
+	const std::vector<ObjectGeometry::Shape> shapes = { shape };
+	PartitionFilterFn alive([](Object &o) { return !o.isDestroyed(); });                  // RW 0x660E71
+	PartitionFilterFn hasAI([](Object &o) { return o.getAIUpdateInterface() != nullptr; }); // RW 0x660E5F
+	PartitionFilterFn kinds([](Object &o) {                                                 // RW 0x445139
+		return !o.isKindOf((unsigned)inert) && !o.isKindOf((unsigned)baseFoundation) && !o.isKindOf((unsigned)walkOnTopOfWall) && !o.isKindOf((unsigned)immobile);
+	});
+	PartitionFilterFn status([](Object &o) { return !o.testStatus((unsigned)hordeMember); }); // RW 0x76A28D
+	PartitionFilterFn wouldCollide([&](Object &o) { // RW 0x67C5F3 (vtable RW 0xC112C8 -> 0x66139C): the overlap equals the filter's flag (true)
+		return NotifyCrushModules::geometriesOverlap(shapes, pos, angle, o.geometryShapes(), *o.getPosition(), o.getOrientation());
+	});
+	const PartitionHits hits = logic.partition().iterateObjectsInRange(pos, range, FROM_BOUNDINGSPHERE_3D, { &alive, &hasAI, &kinds, &status, &wouldCollide }, ITER_FASTEST);
+	for (const PartitionHit &h : hits)
+	{
+		moveAway(*h.object);
+	}
+}
+
+// RW 0x89C5A2: a unit with an AI not already moving away from the gate (RW 0x662B80) is asked to (RW 0x66C66E, CMD_FROM_AI)
+bool GateOpenAndCloseBehavior::moveAway(Object &unit)
+{
+	Object *us = getObject();
+	AIUpdateInterface *ai = unit.getAIUpdateInterface();
+	if (!us || !ai || ai->isMovingAwayFrom(us->getID()))
+	{
+		return false;
+	}
+	ai->aiMoveAwayFromUnit(us, *us->getPosition(), CMD_FROM_AI);
+	++m_pushOutRequests;
+	return true;
+}
+
+// RW 0x89C6F5
+void GateOpenAndCloseBehavior::onCollide(Object *other, const Coord3D *, const Coord3D *)
+{
+	if (!other || !m_data->m_repelCollidingUnits || m_geometryState != GEOMETRY_CLOSED || !repelsUnit(*other))
+	{
+		return;
+	}
+	const ObjectID us = getObject()->getID();
+	if (AIUpdateInterface *ai = other->getAIUpdateInterface())
+	{
+		const AIStateMachine *machine = ai->stateMachineOrNull();
+		if ((machine && machine->goalObjectID() == us) || ai->currentVictimId() == us) // RW 0x8DBACE / 0x668303
+		{
+			return;
+		}
+	}
+	moveAway(*other); // the float argument (RW 0xC669AC) is unused
+}
+
+// RW 0x89C35E
+bool GateOpenAndCloseBehavior::wouldLikeToCollideWith(const Object &other) const
+{
+	return m_geometryState == GEOMETRY_CLOSED && repelsUnit(other);
+}
+
+// RW 0x89CA84 (open geometry) / RW 0x89C9FA (closed geometry). `scan`: the push-out scan RW 0x89C759 runs first
+void GateOpenAndCloseBehavior::setGeometry(bool openGeometry, bool scan, bool force)
+{
+	const int wanted = openGeometry ? GEOMETRY_OPEN : GEOMETRY_CLOSED;
+	// RW 0x89C9FA (closed) always returns for its state; RW 0x89CA84 (open) only when its first argument is 0
+	if (m_geometryState == wanted && (!openGeometry || !force))
+	{
+		return;
+	}
+	if (scan)
+	{
+		pushOut();
 	}
 	Object *obj = getObject();
 	AIWorld *ai = obj->logic().aiWorld();
 	if (ai)
 	{
-		ai->removeObjectFromPathfindMap(*obj); // RW 0x6E861E
+		ai->removeObjectFromPathfindMapKeepGateFlag(*obj); // RW 0x6E861E (lane WALLFOOT-1: the keeping removal, the box's bit 17 stays)
 	}
 	m_geometryState = wanted;
 	for (const std::string &n : m_data->m_geometryForOpen)
@@ -246,9 +421,10 @@ void GateOpenAndCloseBehavior::setGeometry(bool openGeometry, bool scan)
 	{
 		obj->setGeometryActive(n, !openGeometry);
 	}
+	obj->geometryChanged(true); // RW 0x68B244(1) (closed RW 0x89CA6A, the open twin in RW 0x89CA84) (shroud and partition dirty, pathfinder map out / in; lane MODCOMPAT-MOD1)
 	if (ai)
 	{
-		ai->addObjectToPathfindMap(*obj); // RW 0x68B244(1), RW 0x6E85E9
+		ai->addObjectToPathfindMap(*obj); // RW 0x6E85E9 (after the refresh, as retail: a second insert)
 	}
 }
 
@@ -276,12 +452,15 @@ UpdateSleepTime GateOpenAndCloseBehavior::update()
 	}
 	if (obj->isEffectivelyDead())
 	{
+		// RW 0x89CC6B .. 0x89CD59: a non-open gate becomes opening at 100 %, the geometry opens inline with the "already open" early-out (the force 0
+		// call; the object-created open call RW 0x89CB4A with force 1 is not this path), and the module leaves the manager's gate list
 		if (m_state != OPEN)
 		{
 			m_state = OPENING;
 			m_percent = 100.0f;
 		}
-		setGeometry(true, true);
+		setGeometry(true, true, false);
+		obj->logic().skirmishAI().unregisterGate(*this); // RW 0x89CD4D .. 0x89CD59 -> 0x8ED772
 		m_settled = false;
 		return UPDATE_SLEEP_NONE;
 	}
@@ -375,8 +554,8 @@ AIGateUpdate::AIGateUpdate(Thing *thing, const AIGateUpdateModuleData *data)
 {
 }
 
-// RW 0x8B4BB7 (the corners RW 0x8B4B31)
-void AIGateUpdate::loadTrigger()
+// RW 0x8B4BB7 (the corners RW 0x8B4B31). lane CASTLEAREA-1: savedIndex >= 0 is a snapshot load's (the trigger goes back at the index it had)
+void AIGateUpdate::loadTrigger(int savedIndex)
 {
 	const float zero = 0.0f;
 	if (m_data->m_triggerWidthX > zero && m_data->m_triggerWidthY > zero)
@@ -401,14 +580,26 @@ void AIGateUpdate::loadTrigger()
 		}
 		GameLogic &logic = obj->logic();
 		const ObjectID gateId = obj->getID();
-		m_trigger = logic.scriptEngine().addPolygonTrigger(area, [&logic, gateId](Object &other, bool entered) {
+		auto callback = [&logic, gateId](Object &other, bool entered) {
 			Object *gate = logic.findObjectByID(gateId);
 			AIGateUpdate *u = gate ? dynamic_cast<AIGateUpdate *>(gate->findModule("AIGateUpdate")) : nullptr;
 			if (u)
 			{
 				u->onTrigger(other, entered);
 			}
-		});
+		};
+		if (savedIndex >= 0)
+		{
+			logic.scriptEngine().addPolygonTriggerAt(savedIndex, area, callback);
+		}
+		else
+		{
+			m_trigger = logic.scriptEngine().addPolygonTrigger(area, callback);
+		}
+	}
+	else if (savedIndex >= 0)
+	{
+		throw XferException("the snapshot's AI gate " + std::to_string(getObject()->getID()) + " has a trigger, its data makes none");
 	}
 	m_loaded = true;
 }
@@ -513,10 +704,12 @@ std::vector<std::string> GateModules::acceptanceStops()
 {
 	return {
 		"[S-1940] gates (HUD-5): GateOpenAndCloseBehavior's states, timing, model conditions and open / closed geometry (RW 0x89CC29), MSG_OPEN_GATE / MSG_CLOSE_GATE "
-		"(RW 0x77BF7B / 0x77C037), the gate buttons (RW 0x9410D7 / 0x9436E9) and AIGateUpdate (RW 0x8B4D34) run; not ported: the push-out scan of the units in "
-		"the gate's way (RW 0x89C759), the collide interface's repel (RW 0x89C6F5, RepelCollidingUnits), the object interface call RW 0x68C3E6 at the start of the "
-		"update, the AI notification RW 0x68BE59(9), the pathfinder's gate-flag keeping removal (RW 0x6E861E: the plain removal here), the skirmish AI's gate list "
-		"(TheSkirmishAIManager + 0xA74) and FakePathfindPortalBehaviour",
+		"(RW 0x77BF7B / 0x77C037), the gate buttons (RW 0x9410D7 / 0x9436E9), AIGateUpdate (RW 0x8B4D34), the push-out scan of the units in the gate's way "
+		"(RW 0x89C759, lane GATEPUSH-1) and the skirmish AI's gate list (TheSkirmishAIManager + 0xA74, RW 0x89C04B / 0x8ED6DC / 0x8ED726 / 0x89C12F / 0x89C18E) run; "
+		"the collide interface's repel (RW 0x89C6F5, RepelCollidingUnits) is ported but meets no contact: the port's collision "
+		"pass pairs AI units only (S-581); not ported: the object interface call RW 0x68C3E6 at the start of the "
+		"update and the AI notification RW 0x68BE59(9); the pathfinder's gate-flag keeping removal (RW 0x6E861E) runs since lane WALLFOOT-1 and "
+		"FakePathfindPortalBehaviour since lane WALL-2 (PortalModules.h)",
 		"[S-1941] GateProxyBehavior and the Proxy link of GateOpenAndCloseBehavior (onObjectCreated RW 0x89CB19, Orthanc) are not ported: the messages and buttons find "
 		"only a GateOpenAndCloseBehavior",
 		"[S-1942] the gate sounds (SoundOpeningGateLoop / SoundFinishedOpeningGate / SoundClosingGateLoop / SoundFinishedClosingGate, RW 0x89C261 / 0x89C1A4) are "
@@ -553,4 +746,8 @@ void AIGateUpdate::xfer(Xfer &x)
 	x.xferInt(&m_enemies);
 	x.xferBool(&m_loaded);
 	x.xferBool(&m_enabled);
+	if (x.isLoading() && m_loaded && m_trigger >= 0)
+	{
+		loadTrigger(m_trigger); // lane CASTLEAREA-1: the trigger back in the script engine's list (the transform is loaded before the modules)
+	}
 }

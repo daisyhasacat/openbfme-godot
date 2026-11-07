@@ -17,12 +17,14 @@
 #include "GameClient/AptView3D.h"
 
 #include <godot_cpp/classes/camera3d.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/core/object.hpp>
 #include <godot_cpp/classes/shader.hpp>
 #include <godot_cpp/classes/shader_material.hpp>
 #include <godot_cpp/classes/sub_viewport.hpp>
 #include <godot_cpp/variant/rect2.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/string.hpp>
 
@@ -47,12 +49,15 @@ public:
 	AptView3DViewers &operator=(const AptView3DViewers &) = delete;
 
 	void setOwner(Node *owner, const Ref<RetailFileSystem> &fs);
-	// A canvas build starts: every viewer is marked unused (an unused one stops rendering at endBuild).
-	void beginBuild();
+	// A canvas build starts: every viewer is marked unused (an unused one stops rendering at endBuild). Lane HUDREDRAW-1: `paths` (non-null) limits that
+	// to the viewers of those clip paths (the level ranges drawn again; the kept ones' viewers stay in use)
+	void beginBuild(const std::set<std::string> *paths = nullptr);
 	// The View3D placeholder `op` (nativeTag, symbolName "View3D") drawn into `item` over `rect` (window pixels). Creates the viewer on first use.
 	// `stretchWithStage`: Sol r1 (ONLINE-5, S-4555): the clip is on a shell menu screen (AptView3DOnMenuLevel): it stretches with the stage
 	void draw(RID item, const Rect2 &rect, const AptCanvasOp &op, bool stretchWithStage);
 	void endBuild();
+	// Both editions' presentation: retained membership survives owner hiding, but hidden scenes do no GPU or pose work.
+	void syncVisibility(bool forceHidden = false);
 	// Per render frame: the animation clocks, the poses and the cameras.
 	void advance();
 	const std::set<std::string> &errors() const { return m_errors; }
@@ -61,14 +66,22 @@ public:
 	float animationFrame(const std::string &path) const;
 	std::uint64_t renderUpdates() const;
 	String sourceStyle() const;
+	// Active viewers only; read the animation clock without advancing it.
+	Dictionary animationFrames() const;
 
 private:
 	struct Slot
 	{
-		SubViewport *black = nullptr, *white = nullptr;
+		SubViewport *black = nullptr, *white = nullptr, *reflection = nullptr;
+		ObjectID reflectionId;
+		Camera3D *camReflection = nullptr;
+		float reflectionPlane = 0;
+		float fadeAdd = -1;
+		Transform3D sceneTransform;
 		ObjectID blackId, whiteId;
 		Camera3D *camBlack = nullptr, *camWhite = nullptr;
 		W3DInstancer *inst = nullptr;
+		ObjectID instId;
 		int64_t model = -1, instance = -1;
 		int cameraBone = -1;
 		std::string renderObject, clip;
@@ -85,6 +98,7 @@ private:
 		Ref<ShaderMaterial> material;
 	};
 	bool create(Slot &slot, const AptCanvasOp &op);
+	bool ownerVisible() const;
 	void pose(Slot &slot, double nowMs);
 	void release(Slot &slot);
 

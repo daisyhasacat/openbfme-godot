@@ -28,9 +28,11 @@
 class Object;
 class Player;
 class PlayerList;
+class SpecialPowerTemplate;
 class StateHasher;
 class TeamFactory;
 class TeamPrototype;
+class GameLogic;
 
 typedef std::uint32_t TeamID;
 enum
@@ -65,6 +67,10 @@ public:
 	// lane MODULES-2: RW 0x7A1C4D / 0x7A207B (team + 0x118 / + 0x11C non-empty): the team has a team or player relationship override (the partition layer
 	// of its objects is then -1, RW 0x68EE53)
 	bool hasRelationshipOverrides() const { return !m_teamRelations.empty() || !m_playerRelations.empty(); }
+	// lane UBER-2A: the partition layers (PartitionFilter::playerLayerMask, bit k: player k) that can hold an object getRelationship sees as ENEMIES. An
+	// object on player k's layer belongs to a team of player k without overrides, so the answer depends on k alone unless this team or its player has a
+	// TEAM override (then every bit is set)
+	std::uint32_t enemyLayerMask() const;
 
 	// lane SCRIPT-2: the script state (team + 0x44, TEAM_SET_STATE RW 0x7BF72E / TEAM_STATE_IS RW 0x7EA28F) and the custom states (RW 0x7A6BD3 set /
 	// clear, RW 0x7A6A01 test)
@@ -133,6 +139,23 @@ public:
 	}
 	bool isActive() const { return m_script.active; }
 
+	// lane RAI-POW: the team's special-power registry (Team + 0x140). Retail keeps a circular list of five-word records (the power template, the
+	// frame, two zeros and the caster's object id; RW 0x7A5582 appends one, RW 0x7A3EF5 looks one up and answers the caster the id resolves to).
+	// AIPOW-1's SOUL_FREEZE decision writes it, and RW 0x9E6941 (ATTACK_HEAL_AOE) reads it.
+	struct SpecialPowerRecord
+	{
+		int powerType = 0;                           ///< + 0x08: the power's type (SpecialPowerTemplate + 0x1C, the decision's + 0x08 set by RW 0x8B714F)
+		std::uint32_t frame = 0;                      ///< + 0x0C
+		ObjectID caster = INVALID_ID;                 ///< + 0x18 (the record's fifth word; the two between stay 0)
+	};
+	// RW 0x7A3EF5: the first record of the power, in insertion order. `caster` null answers the object the record's id resolves to; a caster that
+	// does not match the record continues the walk (retail loops forever on that path, which no caller reaches: both pass null). The logic resolves
+	// the record's id (retail's GameLogic::findObjectByID through TheGameLogic, which the port passes)
+	Object *findSpecialPowerRecord(int powerType, const Object *caster, GameLogic &logic) const;
+	// RW 0x7A5582: appended at the end of the registry (retail's circular list insert before its sentinel)
+	void addSpecialPowerRecord(int powerType, std::uint32_t frame, ObjectID caster);
+	const std::vector<SpecialPowerRecord> &specialPowerRecords() const { return m_specialPowers; }
+
 	// the members, in insertion order
 	Object *getFirstMember() const { return m_head; }
 	// lane AIPOW-1: retail's member list (Team + 0x38, walked by RW 0x66362D / 0x6632C9) starts at the NEWEST member (Object::prependToTeamMemberList RW
@@ -161,6 +184,7 @@ private:
 	int m_currentWaypoint = -1;             ///< lane SCRIPT-3: + 0x6C
 	bool m_hadMembers = false;              ///< lane CAMP-1: + 0x128
 	ScriptState m_script;                   ///< lane CAMP-1H
+	std::vector<SpecialPowerRecord> m_specialPowers; ///< lane RAI-POW: + 0x140, in insertion order (never cleared in a game)
 };
 
 // lane CAMP-1H: the team scripts of a prototype's TeamTemplateInfo (prototype + 0x12C), read from the map's team dict by RW 0x7A2C96 with the keys of RW
@@ -176,6 +200,10 @@ struct TeamTemplateScripts
 	std::int32_t initialIdleFrames = 0;
 	float destroyedThreshold = 0.0f;
 	std::string generic[32];
+	// lane TEAMEVENTS-1: teamProductionCondition + 0x110 (RW 0x7A38A3, key RW 0xDA2CCC) and teamExecutesActionsOnCreate + 0x114 (RW 0x7A38D9, key
+	// RW 0xDA2D14, the bool read RW 0x714A66: missing = false); the prototype's + 0x23C / + 0x240 that RW 0x7A6E8E reads
+	std::string productionCondition;
+	bool executeActionsOnCreate = false;
 };
 
 class TeamPrototype
@@ -197,6 +225,10 @@ public:
 	bool getIsSingleton() const { return m_singleton; }
 	int getID() const { return m_id; }
 	const Dict &getDict() const { return m_dict; }
+	// lane BFME2CAMP1: + 0x318, the attack priority set TEAM_APPLY_ATTACK_PRIORITY_SET gave the team (RW 0x7A1BCF; RW 0x691F0C reads it): an object that
+	// joins one of the prototype's teams takes it (Object::applyTeamAttackPriority); "" none
+	void setAttackPriorityName(const std::string &n) { m_attackPriorityName = n; }
+	const std::string &attackPriorityName() const { return m_attackPriorityName; }
 	const std::vector<Team *> &teams() const { return m_teams; }
 	Team *getFirstTeam() const { return m_teams.empty() ? nullptr : m_teams.front(); }
 	// lane CAMP-1: the head of retail's instance list (prototype + 0x334): a new team is PREPENDED (RW 0x79FA5C -> RW 0x79F9D0), so the head is the newest
@@ -211,6 +243,7 @@ private:
 	bool m_singleton;
 	int m_id;
 	Dict m_dict;
+	std::string m_attackPriorityName; ///< lane BFME2CAMP1: + 0x318
 	std::vector<Team *> m_teams;
 	mutable std::unique_ptr<TeamTemplateScripts> m_scripts; ///< lane CAMP-1H: templateScripts()
 };
@@ -227,7 +260,17 @@ public:
 	TeamPrototype *initTeam(const std::string &name, Player *owner, bool singleton, const Dict *dict = nullptr);
 	// a new team of a prototype (ZH createInactiveTeam / createTeam: a singleton prototype has exactly one). lane CAMP-1H: `activate` is RW 0x7A6FCB's
 	// createTeam (active) against RW 0x7A6E8E's createInactiveTeam (the singleton's existing team is activated too, RW 0x7A70CE with its flag)
+	// lane TEAMEVENTS-1: RW 0x7A6E8E runs the production-condition script's actions (see setCreateActionsHook) on both paths, the singleton's existing
+	// team too, after the new team is linked into its prototype and before RW 0x7A6FCB's activation
 	Team *createTeam(TeamPrototype *proto, bool activate = false);
+	// lane TEAMEVENTS-1: RW 0x7A6E8E's action run for a prototype with teamExecutesActionsOnCreate: the script engine's lookup (RW 0x758ECB) and action
+	// run (RW 0x60D053 with no team). The hook answers false while the engine has no scripts yet: the prototype is queued (in creation order) and
+	// takePendingCreateActions hands the queue to the engine once its scripts are built. Retail looks the script up in TheSidesList (RW 0x604986
+	// reads TheSidesList + 0x3C sides), which exists while PlayerList::newGame makes the map's teams; ours builds the script engine after the players
+	// (and the objects), so a team made before that (a map singleton, RW 0x7A73DB -> 0x7A6E8E, or an object's team, RW 0x7A7147) runs its actions
+	// when the engine starts. INFERENCE: no RotWK 2.01 map has a singleton or an object-owned team with the flag (the census: only AI-built teams).
+	void setCreateActionsHook(std::function<bool(TeamPrototype &)> hook) { m_createActionsHook = std::move(hook); }
+	std::vector<TeamPrototype *> takePendingCreateActions();
 
 	TeamPrototype *findTeamPrototype(const std::string &name) const;
 	// lane SCRIPT-2: RW 0x7A2C47, the prototype of that name owned by the player of that name (the maps reuse a team name under several owners:
@@ -249,6 +292,8 @@ public:
 	// lane SAVE-4b: the member ids each team's load read, in team order (GameLogic::xferObjects loads the teams a second time after making the objects; the
 	// post-process must link the snapshot's members, not the ones that second load reads from the live lists)
 	std::vector<std::vector<ObjectID>> friend_loadedMembers() const;
+	// lane BFME2CAMP1: the id the next team gets (every id below it was issued; a load checks a saved team id against it)
+	TeamID nextTeamID() const { return m_nextTeamID; }
 	void friend_setLoadedMembers(const std::vector<std::vector<ObjectID>> &members);
 
 private:
@@ -258,4 +303,7 @@ private:
 	TeamID m_nextTeamID = 1;
 	int m_nextPrototypeID = 1;
 	size_t m_loadedTeamCount = (size_t)-1; ///< lane SAVE-4e: the teams the snapshot being loaded holds (-1: no load)
+	std::function<bool(TeamPrototype &)> m_createActionsHook; ///< lane TEAMEVENTS-1
+	std::vector<TeamPrototype *> m_pendingCreateActions;      ///< lane TEAMEVENTS-1: runs the hook could not take yet
+	void runCreateActions(TeamPrototype *proto);
 };

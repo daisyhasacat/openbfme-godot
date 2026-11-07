@@ -111,7 +111,7 @@ TEST_CASE("FACT-A stops: S-1980 .. S-1986 are reported where they apply")
 		CHECK(reported(r.logic(), "[S-1983]"));
 		CHECK(treb->testStatus((unsigned)ObjectTemplateInfoBuilder::objectStatusIndex("NO_AUTO_ACQUIRE")));
 
-		// S-1984: the Demolisher's deploy modules are counted unported (S-140's census reaches the report)
+		// S-1984: the Demolisher's deploy modules are ported since lane SIEGE-1 (their remaining stop S-4945 reaches the report)
 	}
 	// (the Men rig has ended)
 	{
@@ -119,8 +119,10 @@ TEST_CASE("FACT-A stops: S-1980 .. S-1986 are reported where they apply")
 		Object *demo = d.make("DwarvenDemolisher", d.spot(2000.0f, 1300.0f, 300.0f));
 		d.frames(2);
 		const std::vector<std::string> unp = unportedModules(*demo);
-		CHECK(std::find(unp.begin(), unp.end(), "ToggleDeploySpecialAbilityUpdate") != unp.end());
-		CHECK(d.logic().report().unportedModules.count("ToggleDeploySpecialAbilityUpdate") == 1);
+		CHECK(std::find(unp.begin(), unp.end(), "ToggleDeploySpecialAbilityUpdate") == unp.end());
+		CHECK(std::find(unp.begin(), unp.end(), "DeployStyleAIUpdate") == unp.end());
+		CHECK(d.logic().report().unportedModules.count("ToggleDeploySpecialAbilityUpdate") == 0);
+		CHECK(reported(d.logic(), "[S-4945]"));
 
 	}
 	// ObjectCreationUpgrade runs (the Elven citadel's Crystal Moat appears one frame after its Delay of 0, RW 0x8B8464); since merge q2 the module is
@@ -148,4 +150,41 @@ TEST_CASE("FACT-A stops: S-1980 .. S-1986 are reported where they apply")
 	citadel->giveUpgrade("Upgrade_ElvenFortressCrystalMoat");
 	e.frames(3);
 	CHECK(moats() == 1);
+	e.frames(30); // a live fortress must keep its moat
+	CHECK(moats() == 1);
+	const ObjectID fortressId = citadel->getID();
+	citadel->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
+	for (int frame = 0; frame < 300 && e.logic().findObjectByID(fortressId); ++frame) e.frames(1);
+	CHECK(e.logic().findObjectByID(fortressId) == nullptr);
+	e.frames(10); // allow the moat's authored death behavior to finish
+	CHECK(moats() == 0);
+}
+
+TEST_CASE("fortress trebuchet emplacements lose their spawned trebuchet when destroyed")
+{
+ if (!hudtest::haveWorld("fortress trebuchet cleanup")) return;
+ SharedWorld &s = hudtest::shared();
+ for (const char *name : {"MenTrebuchetExpansion", "MenTrebuchetSideExpansion"})
+ {
+  CAPTURE(std::string(name));
+  FactRig e(s, "FactionMen");
+  Object *emplacement = e.make(name, e.spot(2400.0f, 1300.0f, 400.0f));
+  emplacement->giveUpgrade("Upgrade_TrebuchetTurret");
+  e.frames(10);
+  auto trebuchets = [&]() {
+   int count = 0;
+   for (Object *o = e.logic().getFirstObject(); o; o = o->getNextObject())
+    if (o->getTemplate()->getName() == "MenTrebuchetFortress") ++count;
+   return count;
+  };
+  REQUIRE(trebuchets() == 1);
+  e.frames(30);
+  CHECK(trebuchets() == 1);
+  const ObjectID id = emplacement->getID();
+  emplacement->kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
+  for (int frame = 0; frame < 300 && e.logic().findObjectByID(id); ++frame) e.frames(1);
+  CHECK(e.logic().findObjectByID(id) == nullptr);
+  e.frames(120); // inherited SlowDeathBehavior has a 23000 ms destruction delay
+  CHECK(trebuchets() == 0);
+ }
 }

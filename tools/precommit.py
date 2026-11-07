@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Commit gate for the rebuild. Two checks that keep a public repo legal:
+"""Commit gate for the rebuild:
 
   1. no retail-format bytes staged (the game's files never enter git), judged by suffix AND by content: a RIFF/WAVE, ID3 or
      MPEG Layer III stream, a BIG archive or a DDS texture is refused under any file name (renaming does not bypass the gate;
@@ -17,16 +17,25 @@
      (GDScript `# tolerance: <reason>`) comment with a non-empty reason, on the same line or the line above, justifies it. Unchanged lines
      are never flagged; in a merge (MERGE_HEAD set) a line is added only when it is new against both parents (lane PLAY-4 r3: a merge of
      the archive brought every line the archive gained as "added", those of commits made before this rule among them).
+  6. no conflict-marker lines in staged text: lines starting with seven '<' or '>', or consisting of exactly seven '='.
+     Binary blobs (containing NUL) are skipped by this check. No paths are exempt, including documentation and test fixtures.
+  7. no unexplained golden pin: a staged change that adds lines to a file matching engine/tests/data/**/*.hashes needs an added line, in a
+     staged C++ file under engine/tests/, that holds the comment `// pin: <reason>` (non-empty reason). A comment already in the tree or the
+     same text in a string literal does not count.
+     Lines are judged as in check 5 (in a merge, a line counts as added only when it is new against both parents), so a merge that takes
+     one parent's pin is not flagged; removing pin lines or renaming a pin file adds none.
 
-Pure renames are skipped: their content already passed this gate. The legacy
+Pure renames are checked too. Staged blobs are read through one cat-file process. The legacy
 gate lives at archive/tools/fleet/precommit.py. Exit non-zero blocks the commit.
 """
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -97,15 +106,31 @@ def container_allowlist() -> set[tuple[str, str]]:
 MACHINE_PATH = re.compile(r"[A-Za-z]:\\Users\\|/home/[a-z]|/Users/[A-Z]")
 
 
+def mp3_frame_size(data: bytes) -> int:
+    if len(data) < 4 or data[0] != 0xFF or data[1] & 0xE0 != 0xE0:
+        return 0
+    version, layer = (data[1] >> 3) & 3, (data[1] >> 1) & 3
+    bitrate, sample = data[2] >> 4, (data[2] >> 2) & 3
+    if version == 1 or layer != 1 or bitrate in (0, 15) or sample == 3:
+        return 0
+    rates = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320) if version == 3 else (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160)
+    hz = (44100, 48000, 32000)[sample] // {3: 1, 2: 2, 0: 4}[version]
+    return (144000 if version == 3 else 72000) * rates[bitrate] // hz + ((data[2] >> 1) & 1)
+
+
 def retail_content(data: bytes) -> str:
     """Names the retail format the leading bytes announce, or ''. Independent of the file name."""
     if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
         return "RIFF/WAVE audio"
     if data[:3] == b"ID3":
         return "ID3-tagged MP3 audio"
-    if len(data) >= 4 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
-        version, layer = (data[1] >> 3) & 3, (data[1] >> 1) & 3
-        if version != 1 and layer == 1 and (data[2] >> 4) != 15 and ((data[2] >> 2) & 3) != 3:
+    frame = mp3_frame_size(data)
+    if frame and len(data) >= frame + 4:
+        following = data[frame:]
+        next_frame = mp3_frame_size(following)
+        # A sync word alone also occurs in random Ed25519 signatures. Require two
+        # complete, consecutive frames with the same MPEG version and sample rate.
+        if next_frame and len(following) >= next_frame and data[1] & 0x1E == following[1] & 0x1E and data[2] & 0x0C == following[2] & 0x0C:
             return "MPEG Layer III audio"
     if data[:4] in (b"BIGF", b"BIG4"):
         return "BIG archive"
@@ -118,14 +143,60 @@ def git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=REPO, capture_output=True)
 
 
-def staged() -> list[str]:
-    out = git("diff", "--cached", "--name-status", "-M", "--diff-filter=ACMR").stdout.decode("utf-8", "replace")
+def staged() -> list[tuple[str, str]]:
+    """Changed (path, staged object ID) pairs, including rename destinations; NUL framing preserves unusual file names."""
+    result = git("diff", "--cached", "--raw", "--no-abbrev", "-z", "-M", "--diff-filter=ACMR")
+    result.check_returncode()
+    entries = iter(result.stdout.split(b"\0")[:-1])
     files = []
-    for line in out.splitlines():
-        parts = line.split("\t")
-        # every destination is checked, pure renames (R100) included: a rename can move bytes out of an exemption or behind another suffix
-        files.append(parts[-1].replace("\\", "/"))
+    for entry in entries:
+        _, mode, _, oid, status = entry.split()
+        path = next(entries)
+        if status.startswith((b"R", b"C")):
+            path = next(entries)
+        if mode != b"160000":  # a gitlink names a commit, not a staged file
+            files.append((os.fsdecode(path), oid.decode("ascii")))
     return files
+
+
+def staged_blobs(files: list[tuple[str, str]]) -> Iterator[tuple[str, bytes]]:
+    """Read one blob at a time with a single Git process, bounded by the largest staged file rather than the whole commit."""
+    if not files:
+        return
+    with subprocess.Popen(["git", "cat-file", "--batch"], cwd=REPO, stdin=subprocess.PIPE, stdout=subprocess.PIPE) as batch:
+        assert batch.stdin is not None and batch.stdout is not None
+        try:
+            for rel, oid in files:
+                batch.stdin.write(oid.encode("ascii") + b"\n")
+                batch.stdin.flush()
+                header = batch.stdout.readline().split()
+                if len(header) != 3 or header[0] != oid.encode("ascii") or header[1] != b"blob":
+                    raise ValueError(f"cannot read staged blob: {rel}")
+                size = int(header[2])
+                data = batch.stdout.read(size)
+                if len(data) != size or batch.stdout.read(1) != b"\n":
+                    raise ValueError(f"incomplete staged blob: {rel}")
+                yield rel, data
+        finally:
+            batch.stdin.close()
+        if batch.wait():
+            raise ValueError("git cat-file failed while reading staged blobs")
+
+
+_CONFLICT_MARKER = re.compile(rb"^(?:<{7}|>{7}|={7}\r?$)", re.MULTILINE)
+
+
+def conflict_problems(rel: str, data: bytes) -> list[str]:
+    """Flag whole-blob marker lines, not diff additions. NUL-containing files are binary; other underline lengths are not markers."""
+    if b"\0" in data:
+        return []
+    problems = []
+    number, offset = 1, 0
+    for match in _CONFLICT_MARKER.finditer(data):
+        number += data.count(b"\n", offset, match.start())
+        offset = match.start()
+        problems.append(f"{rel}:{number}: conflict marker in staged text")
+    return problems
 
 
 def check_file(rel: str, data: bytes | None = None, verb: str = "staged") -> str:
@@ -159,7 +230,9 @@ def commit_only_checks(rel: str, data: bytes) -> str:
 
 TEST_ROOTS = ("engine/tests/", "godot/tests/")
 CPP_SUFFIXES = {".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".inl"}
-TOLERANCE_FIX = "assert the exact value, or justify the bound with `// tolerance: <reason>` (GDScript `# tolerance: <reason>`)"
+TOLERANCE_FIX = (
+    "bounds and approximations can hide wrong results; assert the exact value, or justify the bound with `// tolerance: <reason>` "
+    "(GDScript `# tolerance: <reason>`); example for an expected count of 3: `CHECK(count == 3);` (GDScript `assert(count == 3)`)")
 _STRING = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
 _TEMPLATE = re.compile(r"\b[A-Za-z_][\w:]*<[^<>();&|=!]*>")
 _COMPARE = re.compile(r"[<>]=?|!=\s*0(?![\w.])|!=\s*0\.0*f?(?![\w.])")
@@ -226,16 +299,71 @@ def tolerance_problems(rel: str, text: str, added: set[int]) -> list[str]:
     return problems
 
 
+PIN_FIX = (
+    "a re-measured pin needs the change that explains it: stage the gameplay change and add `// pin: <reason>` (what changed and why the "
+    "hashes move) to a C++ test under engine/tests/ in the same commit; a comment already in the tree does not count")
+_PIN_JUSTIFIED = re.compile(r"//\s*pin:\s*\S")
+# whichever starts first wins, so a raw string's opening inside a comment or string is not one; a ' after a hex digit is a digit separator
+_CPP_TOKEN = re.compile(r"""//[^\n]*|/\*.*?\*/|(?<!\w)(?:u8|[uUL])?R"([^()\\\s]*)\(.*?\)\1"|"(?:\\.|[^"\\\n])*"|(?<![0-9A-Fa-f])'(?:\\.|[^'\\\n])*'""", re.S)
+
+
+def is_pin_file(rel: str) -> bool:
+    """A golden hash pin: engine/tests/data/**/*.hashes."""
+    return rel.startswith("engine/tests/data/") and rel.lower().endswith(".hashes")
+
+
+def _cpp_without_strings(text: str) -> str:
+    """`text` with its string and character literals and block comments emptied, line numbers kept; line comments stay."""
+    return _CPP_TOKEN.sub(lambda m: m.group(0) if m.group(0).startswith("//") else "\n" * m.group(0).count("\n") + '""', text)
+
+
+def has_pin_reason(rel: str, text: str, added: set[int]) -> bool:
+    """True when the staged C++ test `rel` under engine/tests/ has a `// pin: <reason>` line comment among its `added` (1-based) lines. Text
+    inside a string, a multi-line raw string or a block comment does not count."""
+    if not (rel.startswith("engine/tests/") and Path(rel).suffix.lower() in CPP_SUFFIXES):
+        return False
+    lines = _cpp_without_strings(text).split("\n")
+    return any(1 <= number <= len(lines) and _PIN_JUSTIFIED.search(lines[number - 1]) for number in added)
+
+
+def pin_problems(pins: list[str], justified: bool) -> list[str]:
+    """One problem per changed pin file when no staged C++ test adds a `// pin: <reason>` comment."""
+    if justified:
+        return []
+    return [f"{rel}: golden hash pin changed without a `// pin: <reason>` comment added to a staged C++ test under engine/tests/: {PIN_FIX}"
+            for rel in pins]
+
+
+_C_ESCAPES = {b"a": b"\a", b"b": b"\b", b"t": b"\t", b"n": b"\n", b"v": b"\v", b"f": b"\f", b"r": b"\r"}
+
+
+def diff_new_path(header: str) -> str:
+    """The path of a `+++ ` diff header, '' for /dev/null: Git C-quotes a name with special characters, writing raw bytes as octal escapes, and
+    ends a name holding whitespace with a tab."""
+    name = header[4:]
+    quoted = re.match(r'"((?:\\.|[^"\\])*)"', name)
+    if quoted:
+        name = re.sub(rb"\\([0-3][0-7]{2}|.)", lambda m: bytes([int(m.group(1), 8)]) if len(m.group(1)) == 3 else _C_ESCAPES.get(m.group(1), m.group(1)),
+                      quoted.group(1).encode("utf-8")).decode("utf-8", "replace")
+    else:
+        name = name.split("\t", 1)[0]
+    return "" if name == "/dev/null" else name.removeprefix("b/")
+
+
 def added_lines_against(*base: str) -> dict[str, set[int]]:
     """{path: new line numbers} the staged diff against `base` (HEAD when empty) adds under the test roots (a pure rename adds none)."""
     out = git("-c", "core.quotepath=false", "diff", "--cached", "-U0", "-M", "--no-color", "--diff-filter=ACMR", *base, "--",
               *TEST_ROOTS).stdout.decode("utf-8", "replace")
     result: dict[str, set[int]] = {}
     path = ""
+    in_header = False  # an added line "++ x" prints as "+++ x": only the lines before a file's first hunk are headers
     for line in out.splitlines():
-        if line.startswith("+++ "):
-            path = line[4:].removeprefix("b/") if line != "+++ /dev/null" else ""
+        if line.startswith("diff --git "):
+            path, in_header = "", True
+        elif in_header and line.startswith("+++ "):
+            path = diff_new_path(line)
         elif line.startswith("@@") and path:
+            in_header = False
             match = re.match(r"@@ -\S+ \+(\d+)(?:,(\d+))? @@", line)
             if match:
                 start, count = int(match.group(1)), int(match.group(2) if match.group(2) is not None else 1)
@@ -254,17 +382,51 @@ def added_lines() -> dict[str, set[int]]:
     return result
 
 
+def shader_problems(files: list[tuple[str, str]]) -> list[str]:
+    """Every Godot shader the index holds must fit Intel's varying budget once a shader file or a GDScript file with an inline shader is staged
+    (check_shader_varyings.py)."""
+    if not any(rel.startswith("godot/") and rel.endswith((".gdshader", ".gdshaderinc", ".gd")) for rel, _ in files):
+        return []
+    sys.path.insert(0, str(REPO / "tools"))
+    import check_shader_varyings  # noqa: PLC0415 - only commits that touch a shader need it
+
+    def indexed(pattern: str) -> list[str]:
+        listed = git("ls-files", "-z", "--", pattern).stdout.split(b"\0")
+        return [os.fsdecode(p).removeprefix("godot/") for p in listed if p]
+
+    shaders = indexed("godot/*.gdshader")
+    scripts = indexed("godot/*.gd")
+
+    def load(rel: str) -> str:
+        out = git("show", f":godot/{rel}")
+        if out.returncode != 0:
+            raise OSError(f"godot/{rel} is not in the index")
+        return out.stdout.decode("utf-8", "replace")
+
+    loaded = {rel: load(rel) for rel in scripts}
+    return [f"godot/{line}" for line in check_shader_varyings.problems(shaders, load) + check_shader_varyings.inline_problems(loaded, load)]
+
+
 def main() -> int:
     problems = []
-    files = staged()
-    for rel, numbers in sorted(added_lines().items()):
-        text = git("show", f":{rel}").stdout.decode("utf-8", "replace")
-        problems += tolerance_problems(rel, text, numbers)
-    for rel in files:
-        data = git("show", f":{rel}").stdout
-        problem = check_file(rel) or commit_only_checks(rel, data) or check_file(rel, data)
-        if problem:
-            problems.append(problem)
+    try:
+        files = staged()
+        added = added_lines()
+        pins, pin_reason = [], False
+        for rel, data in staged_blobs(files):
+            if rel in added:
+                problems += tolerance_problems(rel, data.decode("utf-8", "replace"), added[rel])
+                pin_reason = pin_reason or has_pin_reason(rel, data.decode("utf-8", "replace"), added[rel])
+                if added[rel] and is_pin_file(rel):
+                    pins.append(rel)
+            problems += conflict_problems(rel, data)
+            problem = check_file(rel) or commit_only_checks(rel, data) or check_file(rel, data)
+            if problem:
+                problems.append(problem)
+        problems += pin_problems(pins, pin_reason)
+        problems += shader_problems(files)
+    except (subprocess.CalledProcessError, ValueError, OSError) as exc:
+        problems.append(f"cannot check staged files: {exc}")
     if problems:
         print("COMMIT GATE FAILED")
         for problem in problems:

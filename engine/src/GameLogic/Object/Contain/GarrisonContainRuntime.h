@@ -31,7 +31,7 @@
 // apparent controller is the owner), the radar, the passenger damage of DamagePercentToUnits (contain slot 0x148), healSingleObject (HealObjects: no 2.01 garrison
 // sets it, reported when one does), MobileGarrison (RW 0x87C273), the killing branch of GarrisonContain::onRemoving (KillPassengersOnDeath, RW 0x87C09A: the fling
 // and kill of an ejected rider), the contain's rally point of the exit path (exit slots 0x1C / 0x20, S-1620; the exit itself, RW 0x87CA2B with the cell test
-// RW 0x6E8707 and the adjustment RW 0x6F3C87, is lane GARRISON-3's). Lane BACKLOG-1 (BFME2 decomp GarrisonContainValidateRallyPoint.cpp, tier A for RW
+// RW 0x6E8707 and the adjustment RW 0x6F3C87, is lane GARRISON-3's). Lane BACKLOG-1 (BFME2 decomp GarrisonContain.cpp, tier A for RW
 // 0x87B3EC; the decomp's removeInvalidObjectsFromGarrisonPoints attempt for RW 0x87C5D8): the exit position search of removeAllContained (validateRallyPoint: two
 // findPositionAround calls, the second's random start angle draws the logic RNG) and the points' weapon test RW 0x441B59 (the current weapon's MeleeWeapon). Determinism: the
 // contained list keeps insertion order, the points are an array, the members on the way a set ordered by id.
@@ -46,6 +46,7 @@
 #include <vector>
 
 class ModuleFactory;
+class CitadelSlaughterHordeContainBehaviorData;
 struct DieMuxData;
 struct GarrisonContainModuleData;
 struct HordeGarrisonContainModuleData;
@@ -169,11 +170,16 @@ private:
 	void createInitialRoster();                       // RW 0x87BA4C
 	void validateRallyPoint();                        // RW 0x87B3EC
 	static bool currentWeaponIsMelee(const Object &obj); // RW 0x68B58C(0) -> RW 0x441B59
+	// lane GARRISONWEAPON-1: the WeaponSetType CONTAINED (RW 0x87BF44 `push 0x14`) of onContaining / onRemoving
+	static constexpr int kWeaponSetContained = 20;
+	static bool hasContainedWeaponSet(const Object &obj);    // RW 0x691014(20)
+	static void setContainedOnHordeMembers(Object &rider);   // RW 0x87BF5D .. 0x87BF9D / 0x87C225 .. 0x87C267
 
 	const GarrisonContainModuleData *m_garrison;
 	const HordeGarrisonContainModuleData *m_horde;
 	bool m_rosterCreated = false;
 	bool m_hiddenFlag = false;                        // RW + 0x9BD
+	std::uint32_t m_originalTeam = 0;                 // RW + 0xDC (a TeamID) (lane GARRISON-4): the team the container goes back to when empty
 	std::array<GarrisonPoint, MAX_GARRISON_POINTS> m_points{};
 	int m_pointsInUse = 0;                            // RW + 0x420
 	std::array<std::array<Coord3D, MAX_GARRISON_POINTS>, GARRISON_POINT_CONDITIONS> m_pointPositions{}; // RW + 0x424
@@ -184,4 +190,24 @@ private:
 	UnsignedInt m_nextExitFrame = 0;                  // HordeGarrisonContain RW + 0x9E0
 	Stats m_stats;
 	ExitStats m_exitStats;
+};
+
+// Ring-entry branch of the citadel contain. The unrelated troop-slaughter branch
+// remains an explicit stop; ordinary units must not become fortress garrisons.
+class CitadelSlaughterHordeContain : public GarrisonContain
+{
+public:
+	OBFME_MODULE_XFER(CitadelSlaughterHordeContain)
+	CitadelSlaughterHordeContain(Thing *thing, const CitadelSlaughterHordeContainBehaviorData *data);
+	bool isValidContainerFor(const Object &obj, bool checkCapacity, bool checkPath) const override;
+	bool addToContain(Object *obj) override;
+	UpdateSleepTime update() override;
+	void crc(StateHasher &h) const override;
+	static const char *stopLine();
+	ObjectID pendingRingExit() const { return m_ringExit; } // the carrier the next update sends out (RW 0x884244)
+private:
+	bool hasRingStatus(const Object &obj) const;
+	void deliverRing(Object &obj);
+	const CitadelSlaughterHordeContainBehaviorData *m_citadel;
+	ObjectID m_ringExit = INVALID_ID;
 };

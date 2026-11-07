@@ -43,9 +43,14 @@ public:
 		std::string desyncDirectory;
 		std::string exeName = "openbfme";
 		std::string playerName;
+		// the incident report (GameNetwork/NetIncidentReport.h) goes to desyncDirectory too; `build` names the build in it
+		bool incidentReport = true;
+		std::string build;
 		bool adaptiveRunAhead = true; ///< lane MP-2: the local command delay follows the measured round trip (Network::updateRunAhead)
+		bool earlyOrders = true;      ///< lane NETLAG-2: NetworkConfig::earlyOrders (an order runs a frame sooner where the link allows)
 		std::uint32_t rejoinWindowMs = 300000; ///< lane ONLINE-3: an online game's rejoin window (NetworkConfig::rejoinWindowMs)
 		bool census = false;          ///< lane MP-3: LockstepDriver::setCensus (the per-frame census of the measurements)
+		bool hashEveryFrame = false; ///< ONLINE16-FIX: the driver hashes every frame without a replay (a rejoined incarnation's evidence in tests)
 	};
 	NetGameSession(UDP &socket, const LobbyStart &start, const Options &options);
 	~NetGameSession();
@@ -128,6 +133,8 @@ public:
 	// the local player stops (ZH leave); the replay gets its end record. An unjoined rejoin (above) sends nothing: no frame counts for frames it never
 	// played and no PLAYERLEAVE (the player keeps the slot, as after a crash, and can rejoin again)
 	void finish(LiveGame &game);
+	// WOTR2 milestone 8: the logic frame finish's PLAYERLEAVE executes on (the departure frame the other peers record for the local slot), 0xFFFFFFFF none sent
+	UnsignedInt leaveFrame() const { return m_leaveFrame; }
 	// true when every command sent so far was acked by every peer (a finished peer stays until then)
 	bool allAcked() const;
 	// lane MP-2: the disconnect path asks the local player to leave (dropped by the others, its own connection failed, the last one left, or Quit on the
@@ -137,6 +144,10 @@ public:
 	const std::vector<std::string> &desyncDumps() const { return m_desyncDumps; }
 	const std::vector<std::string> &desyncDumpErrors() const { return m_desyncDumpErrors; }
 	std::string quitReason() const { return m_network ? m_network->quitReason() : std::string(); }
+	// the incident report (GameNetwork/NetIncidentReport.h): its file once something went wrong ("" before), rewritten as more happens and when the
+	// game ends; the failures to write it
+	const std::string &incidentReport() const { return m_incidentPath; }
+	const std::vector<std::string> &incidentReportErrors() const { return m_incidentErrors; }
 	// the recording's errors (a command that could not be encoded, a failed write): never silent
 	std::vector<std::string> recordingErrors() const { return m_writer ? m_writer->errors() : std::vector<std::string>(); }
 
@@ -156,12 +167,19 @@ private:
 	LiveGame *m_game = nullptr;
 	std::unique_ptr<Transport> m_transport;
 	std::unique_ptr<Network> m_network;
+	UnsignedInt m_leaveFrame = 0xFFFFFFFFu; ///< WOTR2 milestone 8: leaveFrame()
 	std::unique_ptr<ReplayWriter> m_writer;
 	std::unique_ptr<LockstepDriver> m_driver;
 	CommandList m_empty;
 	std::vector<std::string> m_desyncDumps, m_desyncDumpErrors; ///< lane MP-2
 	std::vector<size_t> m_dumpedHalves;                         ///< per desync report, the halves its dump holds + 1 (0 = none written)
 	void writeDesyncDumps();
+	// the incident report: written when its facts changed (or `ended` is new) and something worth reporting happened
+	void writeIncidentReport(bool ended);
+	std::string m_incidentPath, m_incidentStamp, m_incidentStarted, m_incidentSignature;
+	std::vector<std::string> m_incidentErrors;
+	std::uint64_t m_incidentStartMs = 0;
+	bool m_incidentEnded = false;
 	bool setUp(LiveGame &game, std::string *error); ///< begin's common part: the config, the transport, the network, the driver (not installed)
 	// lane ONLINE-3
 	std::unique_ptr<RelayLogFetch> m_fetch;

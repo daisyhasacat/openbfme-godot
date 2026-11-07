@@ -125,6 +125,8 @@ public:
 	bool disconnectFrameReceived(int slot) const { return slot >= 0 && slot < MAX_SLOTS && m_disconnectFramesReceived[(size_t)slot]; }
 	bool loadScreenUp() const { return m_loadScreenUp; }
 	State state() const { return m_state; }
+	// lane CHEAT-1: heard (RW 0x8D335D) for the network's resend check (Network.cpp: a relayed Cheat Mode command of an owner still in the game)
+	bool slotHeard(Network &net, int slot, std::uint64_t now, std::uint32_t logicFrame) const { return heard(net, slot, now, logicFrame); }
 	bool anySilent() const { return m_anySilent; }
 	int silentEpisodes(int slot) const { return m_silentEpisodes[(size_t)slot]; }
 	int countVotesForPlayer(Network &net, int slot, std::uint64_t now) const;
@@ -133,6 +135,13 @@ public:
 	const std::string &quitReason() const { return m_quitReason; }
 	// what happened, one line each (screen on / off, votes, drops), for the peer reports
 	const std::vector<std::string> &log() const { return m_log; }
+	// when each log line was noted: the logic frame and the Network's clock of the update or command that noted it (the incident report's timeline)
+	struct LogTime
+	{
+		std::uint32_t frame = 0;
+		std::uint64_t ms = 0;
+	};
+	const std::vector<LogTime> &logTimes() const { return m_logTimes; }
 	// the slots this peer dropped as the next packet router
 	const std::vector<int> &dropped() const { return m_dropped; }
 
@@ -199,7 +208,7 @@ private:
 	{
 		int sender = -1, target = -1;
 		std::uint32_t frame = 0;
-		std::uint8_t gone = 0;
+		std::uint16_t gone = 0;
 		std::uint64_t arrived = 0; ///< lane MP-DROP-1: when it arrived (a claim not confirmed within NetworkPlayerTimeoutTime is refused)
 	};
 	std::vector<PendingDrop> m_pendingDrops;
@@ -208,6 +217,8 @@ private:
 	Screen m_screen;
 	std::string m_quitReason;
 	std::vector<std::string> m_log;
+	std::vector<LogTime> m_logTimes; ///< parallel to m_log
+	LogTime m_noteTime;              ///< the frame and clock of the call in progress (update, a command, a vote, a rejoin)
 	std::vector<int> m_dropped;
 	std::array<std::string, MAX_SLOTS> m_dropWait; ///< lane MP-DROP-1: the last logged reason a due drop of the slot waits
 	std::array<bool, MAX_SLOTS> m_announcedBy{};                 ///< lane MP-DROP-1: the slot sent a DISCONNECTFRAME to this peer (validateDrop)
@@ -215,4 +226,14 @@ private:
 	bool m_announcedEver = false;        ///< lane MP-DROP-1: m_announcedFrame holds an announcement of this game (it is kept after the frame ran)
 	bool m_loadScreenUp = true;          ///< lane MP-DROP-1: RotWK's multiplayer load screen (TheGameLogic + 0x120), see update()
 	std::vector<NetCommandMsg> m_decided; ///< lane MP-DROP-1: the drops this peer decided (sent again to a player that announces a frame at or before one)
+	// OpenBFME (S-1127, WOTR2's 120 s stall): this player's own hang. A game that did not update for longer than the others wait before they drop a
+	// silent player (NetworkDisconnectTime + NetworkPlayerTimeoutTime) was the silent one; while it hung, the others' resends to it filled its socket's
+	// receive buffer and the kernel dropped what came last, their DISCONNECTPLAYER among it. MPDROP-3's answer to its traffic needs the decider still
+	// running: once it has left, nothing tells it. So after such a hang it drops and votes out nobody for that span again; then it leaves as dropped when
+	// no player was heard since (a datagram read after the update that ended the hang, which drained the socket), when every player heard voted it out,
+	// or when no frame ran since and nobody is heard any more (only a dropped slot's kept backlog came).
+	std::uint64_t m_lastUpdateMs = 0; ///< the clock of the previous update (0: none yet)
+	std::uint64_t m_hangEndMs = 0;    ///< the update that ended this player's hang (0: no hang being answered)
+	std::uint64_t m_hangMs = 0;       ///< how long it hung
+	void checkOwnHang(Network &net, std::uint64_t now, std::uint32_t logicFrame);
 };

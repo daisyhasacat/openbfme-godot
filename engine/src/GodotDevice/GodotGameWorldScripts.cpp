@@ -5,21 +5,30 @@
 #include "GodotDevice/GodotGameWorld.h"
 
 #include "Common/ArchiveFileSystem.h"
+#include "GameClient/CommandButtonHelp.h"
 #include "GameClient/GameText.h"
 #include "GameClient/LiveGame.h"
 #include "GameClient/LiveGameAudio.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Damage.h"
 #include "GameLogic/Module/BehaviorModule.h"
 #include "GameClient/MapChunks.h"
 #include "GameClient/ScriptCameraDirector.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/ScriptEngine/MissionObjectiveTracker.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
 #include "GameLogic/ScriptEngine/ScriptTemplates.h"
 #include "GameLogic/ScriptEngine/Scripts.h"
 #include "GameLogic/ScriptEngine/ScriptConditions.h"
 #include "Common/Team.h"
+#include "Common/Player.h"
+#include "Common/PlayerList.h"
+#include "GameLogic/Economy.h"
+#include "GameLogic/GameMessage.h"
+#include "Common/Thing/ThingTemplate.h"
+#include "Common/Thing/ThingFactory.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
 
 #include <godot_cpp/core/class_db.hpp>
@@ -51,9 +60,13 @@ const GameTextTable *gameText(ArchiveFileSystem *fs)
 
 void GameWorld::bindScriptMethods()
 {
+	ClassDB::bind_method(D_METHOD("set_objectives_open", "open"), &GameWorld::set_objectives_open);
 	ClassDB::bind_method(D_METHOD("take_script_requests"), &GameWorld::take_script_requests);
 	ClassDB::bind_method(D_METHOD("update_script_view", "delta_ms", "camera"), &GameWorld::update_script_view);
 	ClassDB::bind_method(D_METHOD("get_script_report"), &GameWorld::get_script_report);
+	ClassDB::bind_method(D_METHOD("get_military_caption_settings"), &GameWorld::get_military_caption_settings); // lane CAMPUI-1
+	ClassDB::bind_method(D_METHOD("get_mission_objectives"), &GameWorld::get_mission_objectives); // lane CAMPUI-1
+	ClassDB::bind_method(D_METHOD("get_template_button_image", "name"), &GameWorld::get_template_button_image); // lane CAMPUI-1
 	ClassDB::bind_method(D_METHOD("get_waypoint", "name"), &GameWorld::get_waypoint);
 	ClassDB::bind_method(D_METHOD("debug_script_place", "name", "where"), &GameWorld::debug_script_place);
 	ClassDB::bind_method(D_METHOD("debug_script_kill", "name"), &GameWorld::debug_script_kill);
@@ -61,11 +74,120 @@ void GameWorld::bindScriptMethods()
 	ClassDB::bind_method(D_METHOD("debug_script_unit", "name"), &GameWorld::debug_script_unit);
 	ClassDB::bind_method(D_METHOD("debug_script_team", "name"), &GameWorld::debug_script_team);
 	ClassDB::bind_method(D_METHOD("debug_script_place_at", "name", "x", "y"), &GameWorld::debug_script_place_at);
+	ClassDB::bind_method(D_METHOD("debug_script_move_to", "name", "team", "x", "y"), &GameWorld::debug_script_move_to); // lane BFME2CAMP1
+	ClassDB::bind_method(D_METHOD("debug_script_teleport", "name", "team", "x", "y"), &GameWorld::debug_script_teleport);
 	ClassDB::bind_method(D_METHOD("debug_script_kill_team", "name"), &GameWorld::debug_script_kill_team);
 	ClassDB::bind_method(D_METHOD("debug_defer_script_audio", "sound"), &GameWorld::debug_defer_script_audio); // RENDERWAIT-1 r3 (tests)
 	ClassDB::bind_method(D_METHOD("get_pending_script_audio"), &GameWorld::get_pending_script_audio);
 	ClassDB::bind_method(D_METHOD("get_script_audio_applied"), &GameWorld::get_script_audio_applied);
 	ClassDB::bind_method(D_METHOD("debug_script_action", "name", "params"), &GameWorld::debug_script_action); // lane BACKLOG3
+}
+
+Dictionary GameWorld::get_military_caption_settings() const
+{
+	Dictionary d;
+	d["ok"] = false;
+	ArchiveFileSystem *fs = m_fs.is_valid() ? m_fs->archive_fs() : nullptr;
+	if (!fs)
+	{
+		d["error"] = "no game file system";
+		return d;
+	}
+	MilitaryCaptionSettings c;
+	std::string error;
+	if (!MilitaryCaptionSettings::load(*fs, c, &error))
+	{
+		d["error"] = g(error);
+		return d;
+	}
+	d["ok"] = true;
+	d["color"] = Color(c.color.red / 255.0f, c.color.green / 255.0f, c.color.blue / 255.0f, c.color.alpha / 255.0f);
+	d["position"] = Vector2(c.position.x, c.position.y);
+	d["centered"] = c.centered;
+	d["font"] = g(c.text.name);
+	d["point_size"] = c.text.pointSize;
+	d["bold"] = c.text.bold;
+	d["title_font"] = g(c.title.name);
+	d["title_point_size"] = c.title.pointSize;
+	d["title_bold"] = c.title.bold;
+	d["delay_ms"] = c.delayMs;
+	return d;
+}
+
+Dictionary GameWorld::get_template_button_image(const String &name) const
+{
+	Dictionary d;
+	d["ok"] = false;
+	d["image"] = String();
+	if (!m_game)
+	{
+		return d;
+	}
+	// template data only (never changed by the logic): no wait for the logic worker
+	const ThingTemplate *tt = const_cast<LiveGame &>(*m_game).logic().things().findTemplate(name.utf8().get_data());
+	if (!tt)
+	{
+		return d;
+	}
+	d["ok"] = true;
+	if (const FieldValue *v = tt->findField("ButtonImage"))
+	{
+		if (const std::string *str = std::get_if<std::string>(v))
+		{
+			d["image"] = g(*str);
+		}
+	}
+	return d;
+}
+
+Dictionary GameWorld::get_mission_objectives()
+{
+	if (!m_game)
+	{
+		Dictionary d;
+		d["has_list"] = false;
+		d["screen_enabled"] = true;
+		d["objectives"] = Array();
+		d["held"] = false;
+		return d;
+	}
+	if (!m_game->logicHeld())
+	{
+		Dictionary d = m_objectivesView.duplicate();
+		d["held"] = false; // lane RENDERWAIT-1: no wait for the logic worker: the last held frame's copy
+		if (!d.has("objectives"))
+		{
+			d["has_list"] = false;
+			d["screen_enabled"] = true;
+			d["objectives"] = Array();
+		}
+		return d;
+	}
+	const MissionObjectiveTracker &t = m_game->logic().missionObjectives();
+	const GameTextTable *table = gameText(m_fs.is_valid() ? m_fs->archive_fs() : nullptr);
+	Array list;
+	for (const MissionObjective &o : t.objectives())
+	{
+		Dictionary od;
+		std::string text;
+		if (!table || !table->lookup(o.label, text))
+		{
+			text = "MISSING: '" + o.label + "'"; // GameText::fetch of an unknown label
+		}
+		od["label"] = g(o.label);
+		od["text"] = g(text);
+		od["bonus"] = o.bonus;
+		od["shown"] = o.shown;
+		od["completed"] = o.completed;
+		list.push_back(od);
+	}
+	Dictionary d;
+	d["has_list"] = t.hasList();
+	d["screen_enabled"] = t.screenEnabled();
+	d["objectives"] = list;
+	m_objectivesView = d.duplicate(true);
+	d["held"] = true;
+	return d;
 }
 
 Dictionary GameWorld::get_waypoint(const String &name) const
@@ -193,7 +315,9 @@ Dictionary GameWorld::update_script_view(double delta_ms, const Dictionary &came
 		m_scriptView->apply(r, cur, angle);
 	}
 	m_pendingScriptRequests.clear();
-	m_scriptView->update(delta_ms);
+	// lane FADETIME-1: the fade steps per published logic frame (RW 0x60CC67) and lerps by the frame fraction (GameEngine + 0x3C,
+	// LiveGame::alpha); no game: no frames and no fade
+	m_scriptView->update(delta_ms, m_game ? m_game->frame() : 0u, m_game ? m_game->alpha() : 0.0);
 	const ScriptCameraDirector &v = *m_scriptView;
 	Dictionary d;
 	d["moving"] = v.moving();
@@ -242,11 +366,13 @@ Dictionary GameWorld::update_script_view(double delta_ms, const Dictionary &came
 				const auto *table = gameText(m_fs.is_valid() ? m_fs->archive_fs() : nullptr);
 				if (!table || !table->lookup(definition.first, text)) text = definition.first;
 				od["text"] = g(text);
+				od["label"] = g(definition.first);
 				od["bonus"] = definition.second;
 			}
 			objectives.push_back(od);
 		}
 		d["objectives"] = objectives;
+		d["objectives_enabled"] = v.objectivesEnabled();
 	}
 	d["has_angle"] = v.hasAngle();
 	d["angle"] = v.angle();
@@ -254,6 +380,8 @@ Dictionary GameWorld::update_script_view(double delta_ms, const Dictionary &came
 	d["letterbox"] = v.letterbox();
 	d["input_disabled"] = v.inputDisabled();
 	d["caption"] = g(v.captionLabel());
+	d["caption_serial"] = (int64_t)v.captionSerial(); // lane CAMPUI-1: a new SHOW_MILITARY_CAPTION (the typing restarts, RW 0x69FF85)
+	d["caption_duration_ms"] = v.captionDurationMs();
 	std::string text;
 	if (!v.captionLabel().empty())
 	{
@@ -266,6 +394,7 @@ Dictionary GameWorld::update_script_view(double delta_ms, const Dictionary &came
 	d["caption_text"] = g(text);
 	d["caption_ms"] = v.captionMsLeft();
 	d["fade"] = v.fade();
+	d["fade_type"] = (int64_t)v.fadeType(); // lane FADETIME-1: retail TFade (0 none, 1 subtract, 2 add, 3 saturate, 4 multiply)
 	return d;
 }
 
@@ -290,7 +419,7 @@ void killThroughMembers(::Object &o)
 	{
 		o.getBodyModule()->setIndestructible(false);
 	}
-	o.kill(DEATH_NORMAL);
+	o.kill(DAMAGE_UNRESISTABLE, DEATH_NORMAL);
 }
 } // namespace
 
@@ -377,8 +506,18 @@ Dictionary GameWorld::debug_script_victory()
 		out["error"] = "the mission has ended already";
 		return out;
 	}
-	engine.addEndRequest(true, "QUICKVICTORY");
-	out["ok"] = true;
+	// lane BFME2CAMP1: the QUICKVICTORY action itself (ScriptActions: the end request and RW 0x7BE0C6's onCurrentMissionWon, so a campaign's
+	// carry-over records the mission as its own win does)
+	ScriptActionRec a;
+	a.internalName = "QUICKVICTORY";
+	a.type = a.resolved = ScriptTemplates::findAction(a.internalName.c_str());
+	if (a.resolved < 0)
+	{
+		out["error"] = "no QUICKVICTORY action template";
+		return out;
+	}
+	engine.executeAction(a);
+	out["ok"] = !engine.endRequests().empty();
 	return out;
 }
 
@@ -410,10 +549,12 @@ Dictionary GameWorld::debug_script_unit(const String &name)
 	if (o)
 	{
 		out["ok"] = true;
+		out["id"] = (int64_t)o->getID();
 		out["x"] = o->getPosition()->x;
 		out["y"] = o->getPosition()->y;
 		out["z"] = o->getPosition()->z;
 		out["dead"] = o->isEffectivelyDead();
+		out["id"] = (int64_t)o->getID(); // lane CAMPUI-1: the proof run selects it (InGameHudNode.select_object)
 	}
 	return out;
 }
@@ -497,6 +638,81 @@ Dictionary GameWorld::debug_script_place_at(const String &name, double x, double
 	return out;
 }
 
+// lane BFME2CAMP1: see GodotGameWorld.h
+Dictionary GameWorld::debug_script_move_to(const String &name, bool team, double x, double y)
+{
+	Dictionary out;
+	out["ok"] = false;
+	if (hooksRefused(m_game.get(), m_testHooks, m_netHost || m_netClient || m_netStarted || m_netSession, out))
+	{
+		return out;
+	}
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	std::vector<::Object *> units;
+	if (team)
+	{
+		if (Team *t = ScriptConditions::team(m_game->logic().scriptEngine(), name.utf8().get_data()))
+		{
+			units = ScriptConditions::members(*t);
+		}
+	}
+	else if (::Object *o = m_game->logic().scriptEngine().getUnitNamed(name.utf8().get_data()))
+	{
+		units.push_back(o);
+	}
+	int64_t n = 0;
+	for (::Object *o : units)
+	{
+		AIUpdateInterface *ai = o->isEffectivelyDead() ? nullptr : o->getAIUpdateInterface();
+		if (ai)
+		{
+			ai->aiMoveToPosition(Coord3D{ (float)x, (float)y, 0.0f }, CMD_FROM_PLAYER);
+			++n;
+		}
+	}
+	out["ok"] = n > 0;
+	out["count"] = n;
+	return out;
+}
+
+Dictionary GameWorld::debug_script_teleport(const String &name, bool team, double x, double y)
+{
+	Dictionary out;
+	out["ok"] = false;
+	if (hooksRefused(m_game.get(), m_testHooks, m_netHost || m_netClient || m_netStarted || m_netSession, out))
+	{
+		return out;
+	}
+	const auto worldContext = m_world ? m_world->enterContext() : nullptr;
+	std::vector<::Object *> units;
+	if (team)
+	{
+		if (Team *t = ScriptConditions::team(m_game->logic().scriptEngine(), name.utf8().get_data()))
+		{
+			units = ScriptConditions::members(*t);
+		}
+	}
+	else if (::Object *o = m_game->logic().scriptEngine().getUnitNamed(name.utf8().get_data()))
+	{
+		units.push_back(o);
+	}
+	int64_t n = 0;
+	for (::Object *o : units)
+	{
+		if (o->isEffectivelyDead() || o->getContainedBy())
+		{
+			continue; // a horde's members go with their horde (its contain re-places them)
+		}
+		Coord3D p{ (float)x, (float)y, 0.0f };
+		p.z = m_game->logic().getGroundHeight(p.x, p.y);
+		o->teleportTo(&p, false);
+		++n;
+	}
+	out["ok"] = n > 0;
+	out["count"] = n;
+	return out;
+}
+
 Dictionary GameWorld::debug_script_kill_team(const String &name)
 {
 	Dictionary out;
@@ -529,6 +745,8 @@ Dictionary GameWorld::get_script_report() const
 	const GameLogic &logic = m_game->logic();
 	const ScriptEngine &e = logic.scriptEngine();
 	d["loaded"] = e.loaded();
+	d["camera_scroll_distance"] = e.cameraTravel();
+	d["objectives_open"] = e.objectivesOpen();
 	const ScriptEngine::Stats &s = e.stats();
 	d["scripts"] = (int64_t)s.scripts;
 	d["groups"] = (int64_t)s.groups;
@@ -588,4 +806,16 @@ Dictionary GameWorld::get_script_report() const
 	}
 	d["setup"] = setup;
 	return d;
+}
+
+// UI state enters the same deterministic command stream as player input.
+bool GameWorld::set_objectives_open(bool open)
+{
+	if (!m_game || bfme_network_game()) return false;
+	const auto snapshot = m_game->presentedSnapshot();
+	if (!snapshot || !snapshot->players || snapshot->players->localIndex < 0) return false;
+	GameMessage message(MSG_OPENBFME_OBJECTIVES_OPEN, snapshot->players->localIndex);
+	message.appendBooleanArgument(open);
+	m_game->commands().append(message);
+	return true;
 }

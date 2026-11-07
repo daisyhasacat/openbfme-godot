@@ -59,6 +59,7 @@ public:
 	const GameSorter &sorter() const { return m_sorter; } // lane MENUWORK-1
 	int listFills() const { return m_listFills; }          // lane MENUWORK-1: the game list's refills
 	static const char16_t *const kStrategicUnavailable;    // lane MENUWORK-1 (S-4753)
+	static const char16_t *const kStrategicStable;         // lane STABLEQA-1: a Stable build (ShellEnvironment::warOfTheRingOffered false)
 	const std::vector<std::string> &chatLines() const { return m_chat; }
 	const std::vector<std::string> &boxesShown() const { return m_boxes; } ///< lane UBERJOIN-1: the mode box's text (tests)
 
@@ -85,6 +86,7 @@ private:
 	void enterSetup(bool host);
 	void backToLobby();
 	void pruneLan();
+	void applyNameEntry(); ///< the name box's text as the player's LAN name (at Enter, Host and Join)
 	void requestJoinSelected();
 	void restoreMode(); // lane UBERJOIN-1
 	void refreshJoinButton();

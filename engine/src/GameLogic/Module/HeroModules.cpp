@@ -29,8 +29,10 @@
 #include "Common/PlayerTemplate.h"
 #include "GameLogic/FXEvents.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Map/TaintManager.h"
 #include "GameLogic/HeroSystem.h"
 #include "GameLogic/Module/ActiveBody.h"
+#include "GameLogic/AI/AIGuard.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/ExitInterface.h"
 #include "GameLogic/Module/SpecialPowerModules.h"
@@ -588,7 +590,9 @@ UpdateSleepTime RespawnUpdate::update()
 		m_state = STATE_ALIVE;
 		Object *producer = logic.findObjectByID(obj->getProducerID()); // RW 0x8B3AF1: Object + 0x78
 		AIUpdateInterface *ai = obj->getAIUpdateInterface();
-		if (producer && ai && ai->isIdle()) // AI vslot 0x1B8 or RW 0x660AC1 == 16 (S-854: taken as isIdle)
+		// KINDFIX-1: RW 0x8B3ABC .. 0x8B3AD0: AI vslot 0x1B8 (isIdle) or the state machine's current state id (RW 0x660AC1) == 16, AI_GUARD. Donor:
+		// Open-BFME-2 RespawnUpdate.cpp:473 (BFME2 0x8AF92F, same shape); both editions
+		if (producer && ai && (ai->isIdle() || ai->stateId() == AI_GUARD))
 		{
 			if (ExitInterface *exit = producer->getObjectExitInterface())
 			{
@@ -806,10 +810,22 @@ void AttributeModifierAuraUpdate::affect(Object &o, const Pulse &pulse)
 	}
 	if (d->m_requiredConditions & 6u)
 	{
-		// RW 0x89F1F8 .. 0x89F271: TAINT / ELVEN_WOOD need the terrain area at the object (RW 0xAD49B0) to be of that kind and owned by an ally; the areas are
-		// not ported, so no object is in one (S-856)
-		logic.noteStop("[S-856] AttributeModifierAuraUpdate: RequiredConditions TAINT / ELVEN_WOOD need the terrain areas (RW 0xAD49B0), not ported: no object is in one");
-		return;
+		// RW 0x89F1F8 .. 0x89F271 (BFME2 AttributeModifierAuraUpdateUpdate.cpp, TheTaintManager 0x006C0850): TAINT (bit 2) needs the cell under the object on
+		// the taint side (2), else ELVEN_WOOD (bit 4) on the elven wood side (1); a cell with an owner needs that object alive and not an enemy of this one
+		int owner = -1;
+		const int side = logic.taint().sideAt(o.getPosition()->x, o.getPosition()->y, &owner);
+		if (side != ((d->m_requiredConditions & 2u) ? 2 : 1))
+		{
+			return;
+		}
+		if (owner != -1)
+		{
+			const Object *area = logic.findObjectByID((ObjectID)owner);
+			if (!area || area->getRelationship(o) == ENEMIES)
+			{
+				return;
+			}
+		}
 	}
 	static const int kHorde = ObjectTemplateInfoBuilder::kindOfIndex("HORDE");
 	if (pulse.containedMode && kHorde >= 0 && o.isKindOf((unsigned)kHorde))
@@ -1048,7 +1064,7 @@ UpdateSleepTime AutoHealBehavior::update()
 				{
 					if ((int)horde->payloadCount() < horde->getSlotCapacity())
 					{
-						if (Object *member = horde->spawnReplacementMember(*o->getPosition()))
+						if (Object *member = horde->spawnReplacementMember(*o->getPosition(), o->getOrientation()))
 						{
 							member->updateShroudNow();
 							emitFX(logic, "AutoHealBehavior RespawnFXList", d->m_respawnFXList, *member);

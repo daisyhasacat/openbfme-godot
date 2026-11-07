@@ -424,11 +424,15 @@ TEST_CASE("AOTR profile: raw threat categories remain isolated from standard mod
 	block.lines.push_back(line);
 	auto &blocks = const_cast<std::vector<RawBlock> &>(tt.rawBlocks());
 	blocks.push_back(block);
-	CHECK(AIThreatFinder::threatCategory(tt) == -1);
+	const auto fresh = [&tt]() { // the answer is kept on the template once loaded; these blocks change under it
+		tt.threatCategoryCache().value.store(ThingTemplate::RawBlockAnswer::kUnset, std::memory_order_relaxed);
+		return AIThreatFinder::threatCategory(tt);
+	};
+	CHECK(fresh() == -1);
 	blocks.back().aotrData = true;
-	CHECK(AIThreatFinder::threatCategory(tt) == 17);
+	CHECK(fresh() == 17);
 	blocks.back().lines.back().text = "AIKindOf = INFANTRY";
-	CHECK(AIThreatFinder::threatCategory(tt) == 0);
+	CHECK(fresh() == 0);
 	blocks.back().aotrData = false;
-	CHECK(AIThreatFinder::threatCategory(tt) == 0);
+	CHECK(fresh() == 0);
 }

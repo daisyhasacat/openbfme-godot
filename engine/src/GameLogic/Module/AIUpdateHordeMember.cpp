@@ -31,8 +31,8 @@
 //      container: the ground; else not below it); the locomotor's speed takes the distance moved, at most a step (RW 0x5E4C40). 1 frame.
 // Before this port a busy member (made busy by the hub, RW 0x87479C) was moved by the ordinary doLocomotor: its locomotor turned and accelerated it, and a
 // type 4 goal kept a path that ended short of the goal for good (QA-2 rank 1's companion: produced members stranded behind their formation).
-// NOT PORTED (S-1751): the layer of the target (RW 0x680A75 / 0x68BBF4) and the pathfinder's layer update RW 0x6F0741 (2.01 maps have the ground layer only,
-// S-161); the in-machine-update byte AI + 0x3E0; the wall-scaling exclusion (AI + 0x3CE, SCALING_WALL: wall scaling is S-084).
+// Lane WALL-4 ported the layer of the target (RW 0x680A75 / 0x68BBF4) and the pathfinder's AdjustLayer (RW 0x6F0741) at its two calls.
+// NOT PORTED (S-1751): the in-machine-update byte AI + 0x3E0; the wall-scaling exclusion (AI + 0x3CE, SCALING_WALL: wall scaling is S-084).
 
 #include "GameLogic/Module/AIUpdate.h"
 
@@ -76,9 +76,9 @@ const MemberBits &memberBits()
 
 const unsigned kMemberSleep = 5; // RW 0xD9F608 (LOGICFRAMES_PER_SECOND)
 const char *const kStopMemberUpdate =
-	"S-1751 the horde member update (RW 0x66C748, lane EXIT-1) is ported without the layer of its target (RW 0x680A75 / 0x68BBF4), the pathfinder's layer update (RW "
-	"0x6F0741) and the wall-scaling exclusion of RW 0x66E58F (AI + 0x3CE); obj + 0x458 bit 0 is taken as the effectively dead flag (inference) and a waypoint node of a "
-	"type 4 path (never made by the port, S-161) takes the ordinary doLocomotor";
+	"S-1751 the horde member update (RW 0x66C748, lane EXIT-1) is ported without the wall-scaling exclusion of RW 0x66E58F (AI + 0x3CE); obj + 0x458 bit 0 is taken as "
+	"the effectively dead flag (inference) and a waypoint node of a type 4 path (a portal's, lane WALL-2) takes the ordinary doLocomotor and then the layer of the "
+	"path's last node (RW 0x66CD39)";
 
 void clearCondition(Object &o, int bit)
 {
@@ -164,7 +164,7 @@ unsigned AIUpdateInterface::hordeMemberUpdate()
 	GameLogic &logic = obj->logic();
 	if (m_memberUpdates++ == 0)
 	{
-		m_world->noteStop(kStopMemberUpdate); // every run skips the target's layer (S-1751); noted once per object (the world keeps the set)
+		m_world->noteStop(kStopMemberUpdate); // every run skips the wall-scaling exclusion (S-1751); noted once per object (the world keeps the set)
 	}
 	// 1. RW 0x66C755 .. 0x66C7C7
 	for (int bit : { b.climbing, b.turnLeft, b.turnRight, b.turnLeftHigh, b.turnRightHigh })
@@ -267,6 +267,10 @@ unsigned AIUpdateInterface::hordeMemberUpdate()
 	{
 		step = obj->testModelCondition(b.backingUp) ? backingUpSpeed(*m_curLocomotor, m_locomotorSetSpeed) : m_curLocomotor->getMaxSpeedForCondition(locomotorHost());
 	}
+	if (m_world->mapReady())
+	{
+		m_mover->refreshLayer(); // lane WALL-1 / WALL-4: a member whose wall top went away is on the ground (S-1750); RotWK sets no layer here
+	}
 	const Coord3D start = *obj->getPosition();
 	Coord3D target = start;
 	if (!(goal == AIGOAL_EXPLICIT_WITH_PATH && m_mover->path()))
@@ -303,11 +307,13 @@ unsigned AIUpdateInterface::hordeMemberUpdate()
 		{
 			target = goalPos;
 		}
-		// RW 0x66CC42 .. 0x66CCE7: from a valid cell, a step RW 0x6F1B3E refuses drops the path and asks RW 0x6F74D0 (RW 0x6F0741 first: S-1751)
+		// RW 0x66CC42 .. 0x66CCE7: from a valid cell, a step RW 0x6F1B3E refuses drops the path, puts the member on its layer (AdjustLayer RW 0x6F0741, the call
+		// RW 0x66CCB4; lane WALL-4) and asks RW 0x6F74D0
 		if (m_world->mapReady() && m_world->pathfinder().validMovementPosition(&adapter(), locomotorInfo(), adapter().getLayer(), &start) &&
 			!m_mover->stepValid(start, target))
 		{
 			m_mover->destroyPath();
+			setLayer(m_world->pathfinder().adjustLayer(adapter(), adapter().getLayer()));
 			Path *p = m_mover->pathReachingGoal(start);
 			m_mover->setPath(p);
 			if (!p)
@@ -323,13 +329,27 @@ unsigned AIUpdateInterface::hordeMemberUpdate()
 		const LocomotorPathPoint ahead = path->computePointAhead(m_curLocomotor ? m_curLocomotor->speed() : 40.0f); // RW 0x766173 (RW 0x5E36F7, else 40)
 		if (path->hasExplicitZ())
 		{
-			// RW 0x66CD25: a waypoint node (never made by the port, S-161): doLocomotor with the path goal
+			// RW 0x66CD25: a waypoint node (a portal, lane WALL-2): doLocomotor with the path goal, then (RW 0x66CD39 .. 0x66CD5F) with a path left the member
+			// takes the layer of the path's last node (RW 0x680A75 on path + 8, the tail; Object::setLayer RW 0x68BBF4)
 			m_mover->setGoalTypeRaw(AIGOAL_ON_PATH);
 			m_mover->doLocomotor();
 			m_mover->setGoalTypeRaw(AIGOAL_EXPLICIT_WITH_PATH);
+			if (Path *left = m_mover->path())
+			{
+				if (const PathNode *tail = left->getLastNode())
+				{
+					const Coord3D &tp = *tail->getPosition();
+					setLayer(m_world->pathfinder().getLayerAt(tp.x, tp.y, tp.z));
+				}
+			}
 		}
 		else if (m_curLocomotor)
 		{
+			// lane WALL-4: AdjustLayer (RW 0x6F0741, the call RW 0x66CD6F) before the step along the path
+			if (m_world->mapReady())
+			{
+				setLayer(m_world->pathfinder().adjustLayer(adapter(), adapter().getLayer()));
+			}
 			// RW 0x66CD74 .. 0x66CDAA: fld remaining (RW 0x765972), fadd the extra distance, fstp; 1.5 steps
 			const float rem = NumericState::fstpDword(NumericState::pc24AddW((double)path->remainingDistanceFrom(ahead), (double)m_mover->pathExtraDistance()));
 			m_curLocomotor->locomotorMoveTowardsPosition(locomotorHost(), ahead.position, rem, SimMath::mulf32(step, 1.5f));
@@ -373,18 +393,41 @@ unsigned AIUpdateInterface::hordeMemberUpdate()
 		}
 	}
 	const float c = SimMath::cosf32(facing), s = SimMath::sinf32(facing); // MSVCR71 cos / sin (RW 0xA3CF84 / 0xA3CF90; the deterministic pair, S-081)
+	// lane WALL-4, RW 0x66CFD6 .. 0x66CFDE: the member's layer is the one RW 0x680A75 names at the target, stored straight (RW 0x68BBF4)
+	if (m_world->mapReady())
+	{
+		const PathfindLayerEnum here = m_world->pathfinder().getLayerAt(adapter(), target);
+		if (here != adapter().getLayer())
+		{
+			setLayer(here);
+		}
+	}
 	if (!(goal == AIGOAL_EXPLICIT_WITH_PATH && m_mover->path()) && m_world->mapReady() &&
 		m_world->pathfinder().validMovementPosition(&adapter(), locomotorInfo(), adapter().getLayer(), &target))
 	{
-		const float ground = logic.getGroundHeight(target.x, target.y);
+		// RW 0x66D02F .. 0x66D0D7 (lane WALL-4 read it in full): TheTerrainLogic's height at the member's layer (vslot 0x1C: a wall top's, a ramp's, the terrain
+		// on the ground). Below it: up onto it (x87 fcompi). On a ramp less than 20 (RW 0xBDBC6C) above it: 9 (RW 0xC10438) lower, not below it (SSE). A ground
+		// member of a container on the ground: on it
+		const PathfindLayerEnum layer = adapter().getLayer();
+		const float ground = layerHeightAt(target.x, target.y);
 		if (ground > target.z)
 		{
 			target.z = ground;
 		}
-		// RW 0x66D0B5: a ground-layer member (layer 1) of a ground-layer container stands on the ground (the port's layers are the ground: S-161)
-		if (container)
+		else if (layer == LAYER_RAMP && 20.0f > SimMath::subf32(target.z, ground))
 		{
-			target.z = ground;
+			const float lower = SimMath::subf32(target.z, 9.0f);
+			target.z = ground > lower ? ground : lower;
+		}
+		if (layer == LAYER_GROUND && container)
+		{
+			// RW 0x66D0C8 reads the container's own layer (RW 0x68BBE0); the port keeps a layer for an object with an AI only, so a container without one is
+			// taken as on the ground (INFERENCE, S-4840)
+			const AIUpdateInterface *cai = container->getAIUpdateInterface();
+			if (!cai || cai->adapter().getLayer() == LAYER_GROUND)
+			{
+				target.z = ground;
+			}
 		}
 	}
 	// RW 0x66D100 (RW 0x70BA76): the identity rotated by the facing about z (exact: the products with 0 and 1), the target as translation

@@ -3,6 +3,9 @@
 
 #include "GameClient/ControlBarRadialMenu.h"
 
+#include "Common/Audio/AudioEntryPoints.h"
+#include "Common/Audio/AudioLog.h"
+
 #include "GameClient/Drawable.h"
 #include "GameClient/DrawableManager.h"
 #include "GameClient/GUI/GameWindowManager.h"
@@ -28,6 +31,7 @@ const float kTwoPi = 6.28318548f;           // RW 0xBDD38C
 const float kMinRadius = 0.6666667f;        // RW 0xBDAD60
 const float kRadiusBias = 0.1f;             // RW 0xBD83D4
 const float kClockScale = 46.0f / 48.0f;    // W3DPushButton.cpp RADIAL_CLOCK_SCALE
+const int kRetailButtonSize = 48;            // the radial buttons' retail size (the overlays' / 48 above; ControlBar.wnd's command windows)
 const int kOffView = -999;                  // RW 0x9458FE (0xFFFFFC19)
 // INFERENCE (S-2701): the clock colours (the control bar's clock colour and GlobalData + 0x1160 / + 0x1164) are not identified
 const std::uint32_t kClockColor = 0x80000000u, kClockRimColor = 0xFFFFFFFFu;
@@ -276,6 +280,12 @@ bool ControlBarRadialMenu::mouseButton(bool left, bool down, int x, int y, Contr
 		}
 	}
 	const bool enabled = b && (b->source.state == ButtonState::Enabled || b->source.state == ButtonState::Active);
+	// RW 0x72A027 (BFME2 Rva003285D4Input, tier A): left/right down, not release; a disabled cancelable right press uses the enabled cue.
+	const bool cancelable = b && b->source.button && b->source.button->hasOption(COMMAND_OPTION_CANCELABLE);
+	{
+		AudioLog::Scope sound("HUD radial press");
+		AudioApi::playUiSound(enabled || (!left && cancelable) ? "Gui_PalantirCommandButtonClick" : "Gui_PalantirCommandButtonDisabledClick");
+	}
 	if (left)
 	{
 		if (enabled)
@@ -402,6 +412,12 @@ void ControlBarRadialMenu::countOp(const Button &b, bool enabled)
 	t.kind = RadialDrawOp::TEXT;
 	t.text = std::to_string(b.source.productionCount); // L"%d" (RW 0xBDF1B0)
 	t.font = m_countLook.font;
+	// OpenBFME (S-2701): the font grows with the bubble beyond retail's 48 pixels (a high-resolution display's ring), so the count keeps retail's
+	// proportion: at the window's own point size it sat inside the RadialBorder rim drawn over it and could not be seen
+	if (b.rect.h > kRetailButtonSize)
+	{
+		t.font.pointSize = (int)std::lround((float)t.font.pointSize * (float)b.rect.h / (float)kRetailButtonSize);
+	}
 	// getButtonTextColors (RW 0x4A43A2; decomp W3DPushButton.cpp): WIN_STATUS_ENABLED clear -> the disabled pair, WIN_STATE_HILITED -> the hilite pair
 	if (!enabled)
 	{
@@ -571,7 +587,6 @@ std::vector<std::string> ControlBarRadialMenu::acceptanceStops()
 		"[S-2701] radial command bubbles (HUD-6): ported RW 0x9459D1 / 0x9D6521 / 0x9D6320 / 0x9D5CCE / 0x9457FE (count, size, radius, ring, centre) and the "
 		"look of W3DGadgetPushButtonImageDrawOne RW 0x4A5112; not identified: the clock colours (the control bar's clock colour, GlobalData + 0x1160 / + 0x1164), "
 		"the 0x808080 multiplier condition (RW 0x327E0E's flag; lane HUD-7: the grey-overlay and always-colour statuses are RotWK's availability 0 / 6 / 7 / 8); not ported: the ring's button flash animations (RW 0x9D5BDC / "
-		"0x9D6250); the right press cancels only a CANCELABLE button's queue (RW 0x940C70; upgrade cancels not ported: "
-		"ControlBar::cancelQueued is UNIT_BUILD and REVIVE), the hit area is the window rectangle with inclusive edges (RW 0x715A84); INFERENCE: a point outside the view rectangle is off the frustum, the ring is drawn under the Palantir movie; radial icon fills ignore texture alpha inside the ellipse to retain their RGB backgrounds (target blend state unverified)"
+		"0x9D6250); the right press cancels only a CANCELABLE button's queue (RW 0x940C70; an upgrade's RW 0x940E77 / 0x940FB3, lane FBSIM-1), the hit area is the window rectangle with inclusive edges (RW 0x715A84); INFERENCE: a point outside the view rectangle is off the frustum, the ring is drawn under the Palantir movie; radial icon fills ignore texture alpha inside the ellipse to retain their RGB backgrounds (target blend state unverified)"
 	};
 }

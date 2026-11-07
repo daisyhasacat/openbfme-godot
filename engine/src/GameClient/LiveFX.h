@@ -17,6 +17,7 @@
 //     bone's model-space position (drawable scale applied) turned by the bone's Z rotation and attached to the drawable). Construction dust, fires and smoke
 //     of damaged buildings and projectile trails are this path.
 //   * sounds of Sound nuggets through AudioApi::playSoundAtPosition.
+//   * TransitionDamageFX's attached particle systems (lane FX-4: ATTACH / DESTROY_PARTICLE_SYSTEM events, kept per (object, slot) as the module keeps them).
 //   * the FXEvent entries of the current ANIMATION state of every model draw (RW 0x4BCE68, called from W3DModelDraw::doDrawModule RW 0x4C72BE): per entry
 //     {FrameStep +0, Frame +4, FrameStop +8, FireWhenSkipped +0xC, Bone +0x10, FXList +0x14} against the animation's integer frame (+0x114) and previous
 //     frame (+0x118, direction +0x124); a firing entry plays through RW 0x4BABBA: no bone -> doFXObj(fx, the drawable's object, null), a bone ->
@@ -91,6 +92,7 @@ public:
 	// lane VISUAL-2: the shroud as the presented snapshot shows it to the local player (the view the drawn shroud is made of)
 	int shroudStatusAt(const Coord3D &pos) override;
 	bool objectShroudedForLocalPlayer(const FXObject &obj) override;
+	int mapWeather() const override { return m_mapWeather; } // lane WEATHER-1
 	FXParticleSystem::ParticleAttachInfo attachedDrawable(std::uint32_t drawableId, const std::string &boneName) override;
 	FXParticleSystem::ParticleAttachInfo attachedObject(std::uint32_t objectId, const std::string &boneName, int localPlayerIndex) override;
 	bool boneWorldMatrix(const FXObject &obj, const std::string &boneName, Matrix3D &out) override;
@@ -99,6 +101,21 @@ public:
 	// lane SPELL-4: the BuffNugget's buffs (GameClient/BuffDraw.h): the template's W3DBuffDraw model on the object's drawable
 	bool turnOnBuff(const FXObject &obj, int type, const std::string &thingTemplate, int lifeFrames) override;
 	bool turnOffBuff(const FXObject &obj, int type) override;
+	// lane FX-4: the ViewShake calls the effects made (W3DView::shake RW 0x486D86 with the client stream's angle), for the view: the HUD takes them before its
+	// camera's client frame (TacticalCamera::shake). Bounded: without a view taking them, the oldest are dropped
+	struct ViewShake
+	{
+		Coord3D epicenter;
+		int type = 0;
+		float angle = 0.0f;
+	};
+	bool viewShake(const Coord3D &epicenter, int type, float angle) override;
+	std::vector<ViewShake> takeViewShakes()
+	{
+		std::vector<ViewShake> out;
+		out.swap(m_viewShakes);
+		return out;
+	}
 	ClientBuffs &buffs() { return m_buffs; }
 	const ClientBuffs &buffs() const { return m_buffs; }
 	// the buff templates refused (BuffLogic::addBuff RW 0x707FFF: "No draw module specified for Buff!", "Buff <name> requires a W3DBuffDrawModule.")
@@ -118,6 +135,8 @@ public:
 		unsigned long long sounds = 0;
 		unsigned long long frameEventsFired = 0;           ///< animation state FXEvent entries fired (RW 0x4BCE68)
 		unsigned long long uncapturedFilters = 0;          ///< SMOOTH-1: an object filter asked at play time that the capture at the call did not evaluate (fails)
+		unsigned long long transitionSystemsCreated = 0, transitionSystemsDestroyed = 0; ///< lane FX-4: TransitionDamageFX's attached systems
+		unsigned long long viewShakes = 0, viewShakesDropped = 0; ///< lane FX-4: ViewShake calls queued for the view / dropped (no view took them)
 	};
 	const Stats &stats() const { return m_stats; }
 	// RW 0x4B337B, the single-frame test of a FireWhenSkipped FXEvent (mode: W3D_ANIM_MODE_*, direction +1 / -1)
@@ -139,6 +158,7 @@ private:
 		std::shared_ptr<Captured> primary, secondary;
 	};
 	void play(const Pending &p);
+	void playTransitionSystem(const FXEvent &e); // lane FX-4
 	bool playEnteringStateFX(DrawableID id, const std::string &fx);
 	std::vector<Pending> m_pending;                                     ///< filled on the simulation owner, drained at idle points
 	std::vector<std::pair<DrawableID, std::string>> m_pendingStates;    ///< EnteringStateFX of drawables (render side), played at idle points
@@ -158,12 +178,15 @@ private:
 	void fireFrameEvent(Drawable &d, const FXEventInfo &ev, const RenderObjPrototype *model);
 
 	LiveGame &m_game;
+	int m_mapWeather = 0; ///< lane WEATHER-1: the map's WorldInfo weather (GameLogicSettings::snowy), read at construction (the logic is idle then)
 	FXPlayback &m_playback;
 	ClientBuffs m_buffs;                 // lane SPELL-4
+	std::vector<ViewShake> m_viewShakes; // lane FX-4
 	std::set<std::string> m_buffErrors;  // lane SPELL-4
 	std::map<std::string, std::string> m_buffModels; // lane SPELL-4: template -> ModelName (looked up only)
 	Stats m_stats;
 	std::map<DrawableID, Attached> m_attached;
+	std::map<std::pair<ObjectID, std::uint32_t>, FXParticleSystem::ParticleSystemID> m_transitionSystems; // lane FX-4: (object, slot) -> system; looked up only
 	FrameEventMap m_frameEvents; // looked up only (and pruned), never ordered by pointer
 	W3DDrawFrame m_eventFrame;   // lane PERF-3: frameEvents' frame of the entry (its storage reused)
 	std::vector<const void *> m_states; // lane PERF-3: updateAttachedSystems' states of the drawable (its storage reused)

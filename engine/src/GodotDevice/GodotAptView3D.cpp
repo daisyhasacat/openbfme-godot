@@ -2,6 +2,7 @@
 // See GodotDevice/GodotAptView3D.h.
 
 #include "GodotDevice/GodotAptView3D.h"
+#include "GodotDevice/GodotShaderBudget.h"
 
 #include "GodotDevice/GodotGammaComposite.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
@@ -10,6 +11,8 @@
 #include <godot_cpp/classes/environment.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/canvas_item.hpp>
+
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/viewport_texture.hpp>
@@ -18,6 +21,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+
+static constexpr int kView3DPixelBudget = 1920 * 1080; // lane PERF-2: see AptView3DViewers::draw
 
 namespace godot
 {
@@ -30,11 +35,12 @@ render_mode blend_disabled;
 uniform sampler2D screen_tex : hint_screen_texture, filter_nearest;
 uniform sampler2D over_black : filter_linear;
 uniform sampler2D over_white : filter_linear;
+uniform float fade_add = 0.0;
 void fragment() {
 	vec3 d = texture(screen_tex, SCREEN_UV).rgb;
 	vec3 a = texture(over_black, UV).rgb;
 	vec3 m = texture(over_white, UV).rgb - a;
-	COLOR = vec4(clamp(a + d * m, vec3(0.0), vec3(1.0)), 1.0);
+	COLOR = vec4(clamp(a + d * m + vec3(fade_add), vec3(0.0), vec3(1.0)), 1.0);
 }
 )";
 
@@ -117,7 +123,7 @@ void AptView3DViewers::release(Slot &slot)
 {
 	// the viewports own their children (cameras, the instancer). Godot frees a node's children when the node is deleted (NOTIFICATION_PREDELETE,
 	// before the player's destructor runs): a viewport that is gone already is skipped
-	for (ObjectID id : { slot.whiteId, slot.blackId })
+	for (ObjectID id : { slot.reflectionId, slot.whiteId, slot.blackId })
 	{
 		SubViewport *v = Object::cast_to<SubViewport>(ObjectDB::get_instance(id));
 		if (v)
@@ -129,7 +135,7 @@ void AptView3DViewers::release(Slot &slot)
 			memdelete(v);
 		}
 	}
-	slot.black = slot.white = nullptr;
+	slot.black = slot.white = slot.reflection = nullptr;
 	slot.inst = nullptr;
 }
 
@@ -146,7 +152,7 @@ bool AptView3DViewers::create(Slot &slot, const AptCanvasOp &op)
 	if (m_shader.is_null())
 	{
 		m_shader.instantiate();
-		m_shader->set_code(kView3DShader);
+		SetShaderCode(m_shader.ptr(), kView3DShader, "Apt View3D composite");
 	}
 	slot.black = memnew(SubViewport);
 	slot.black->set_use_own_world_3d(true);
@@ -173,34 +179,72 @@ bool AptView3DViewers::create(Slot &slot, const AptCanvasOp &op)
 	// pose() owns the animation clock and uploads; a second _process is redundant.
 	slot.inst->set_auto_update(false);
 	slot.inst->set_playing(false);
+	slot.instId = slot.inst->get_instance_id();
+
 	slot.black->add_child(slot.inst);
-	const Dictionary setup = slot.inst->setup_menu(m_fs);
+	const Dictionary setup = slot.inst->setup_menu(m_fs, op.path == "_openbfme_shell_scene");
 	if (!bool(setup.get("ok", false)))
 	{
 		m_errors.insert("View3D " + op.renderObject + ": the W3D instancer did not set up");
+		const Array errors = setup.get("errors", Array());
+		for (int64_t i = 0; i < errors.size(); ++i)
+			m_errors.insert(String(errors[i]).utf8().get_data());
 		return false;
 	}
-	// RW 0xB54D33: the render object by name, at the identity
-	slot.model = slot.inst->add_model(String(op.renderObject.c_str()));
-	slot.instance = slot.model >= 0 ? slot.inst->add_instance(slot.model, Transform3D(), String(), 0.0, 1.0) : -1;
+	slot.sceneTransform = setup.get("shell_transform", Transform3D());
+	// RW 0xB54D33: menu render objects use identity; shell actors retain map placement.
+	slot.model = slot.inst->add_model(setup.get("shell_model", String(op.renderObject.c_str())));
+	slot.instance = slot.model >= 0 ? slot.inst->add_instance(slot.model, slot.sceneTransform, String(), 0.0, 1.0) : -1;
 	if (slot.instance < 0)
 	{
 		m_errors.insert("View3D " + op.renderObject + ": the W3D model did not load");
 		return false;
 	}
+	// lane INGAMEBG-1: the viewer's scene is its own (RW 0xB5442B news one; its constructor RW 0x5424E0 sets FogEnabled (+ 0x1C) false and nothing turns it
+	// on), so the map's hardware fog of a running game does not reach the model (it turned the quit menu's in-game background SFE_MenuOverlay cream)
+	slot.inst->set_instance_scene_fog(slot.instance, false);
 	slot.cameraBone = slot.inst->get_bone_index_native(slot.model, "CAMERA");
-	if (slot.cameraBone < 0)
+	Transform3D authoredCamera; float authoredFov;
+	if (slot.cameraBone < 0 && !slot.inst->shell_camera(authoredCamera, authoredFov))
 	{
 		// retail keeps the camera of RW 0xB5442B (turned about two axes by -pi and pi) when the model has no CAMERA bone; not ported
 		m_errors.insert("View3D " + op.renderObject + ": the model has no CAMERA bone (the viewer's default camera is not ported) [S-1483]");
 	}
 	// RW 0xB54C1A: the animation "<name>.<name>" (none: the bind pose)
-	slot.clip = op.renderObject + "." + op.renderObject;
+	slot.clip = String(setup.get("shell_clip", String((op.renderObject + "." + op.renderObject).c_str()))).utf8().get_data();
 	const Dictionary info = slot.inst->get_clip_info(slot.model, String(slot.clip.c_str()));
 	if (bool(info.get("ok", false)))
 	{
 		slot.numFrames = (int)(int64_t)info.get("frames", 0);
 		slot.frameRate = (float)(double)info.get("frame_rate", 30.0);
+	}
+	if (bool(setup.get("reflection_on", false)))
+	{
+		// BFME2 map.ini WaterTransparency: reflected scene at ReflectionPlaneZ.
+		// Keep the water out of its own reflection pass (dedicated visibility layer).
+		slot.reflectionPlane = (float)(double)setup.get("reflection_plane", 0.0);
+		slot.reflection = memnew(SubViewport);
+		slot.reflection->set_name("ShellMapReflection");
+		slot.reflection->set_size(Vector2i(4,4));
+		slot.reflection->set_update_mode(SubViewport::UPDATE_DISABLED);
+		slot.reflectionId = slot.reflection->get_instance_id();
+		m_owner->add_child(slot.reflection);
+		slot.reflection->set_world_3d(slot.black->find_world_3d());
+		slot.camReflection = makeCamera(slot.reflection, Color(0,0,0,1));
+		slot.camReflection->set_cull_mask(1);
+		const Array meshes = slot.inst->find_children("*", "MeshInstance3D", true, false);
+		for (int64_t i=0;i<meshes.size();++i)
+		{
+			auto *mesh = Object::cast_to<MeshInstance3D>(meshes[i]);
+			if (!mesh || !mesh->get_parent() || mesh->get_parent()->get_name() != StringName("StandingWater")) continue;
+			mesh->set_layer_mask(2);
+			Ref<ShaderMaterial> material = mesh->get_mesh()->surface_get_material(0);
+			if (material.is_valid())
+			{
+				material->set_shader_parameter("planar_reflection", slot.reflection->get_texture());
+				material->set_shader_parameter("planar_reflection_enabled", true);
+			}
+		}
 	}
 	slot.material.instantiate();
 	slot.material->set_shader(m_shader);
@@ -209,11 +253,14 @@ bool AptView3DViewers::create(Slot &slot, const AptCanvasOp &op)
 	return true;
 }
 
-void AptView3DViewers::beginBuild()
+void AptView3DViewers::beginBuild(const std::set<std::string> *paths)
 {
 	for (auto &kv : m_slots)
 	{
-		kv.second.used = false;
+		if (!paths || paths->count(kv.first.substr(0, kv.first.find('|')))) // the key is "<clip path>|<render object>" (draw)
+		{
+			kv.second.used = false;
+		}
 	}
 }
 
@@ -266,6 +313,10 @@ void AptView3DViewers::draw(RID item, const Rect2 &rect, const AptCanvasOp &op, 
 	// stays around its panels; any other View3D (GuiFX's end-screen rings) keeps retail's aspect
 	int imageW = 1, imageH = 1;
 	AptView3DImageSize(rect.size.x, rect.size.y, op.scaleX, op.scaleY, slot.keepAspect, stretchWithStage, imageW, imageH);
+	// lane PERF-2 (not retail): each viewer renders its scene twice (black and white clears) into images the clip's size, every frame; a menu frame
+	// covering a 2880x1800 window was four 5-6 megapixel 3D renders a frame and held an integrated GPU at 16 fps. The images are drawn stretched over
+	// the clip anyway, so they render at most kView3DPixelBudget pixels (1920x1080's count) with the clip's aspect kept
+	AptView3DPixelBudget(imageW, imageH, kView3DPixelBudget);
 	// Diagnostic simulator exports use CPU rasterization. Bound the embedded
 	// scene independently of the canvas; preserve its aspect and camera framing.
 	const int maxDimension = std::max(0, (int)ProjectSettings::get_singleton()->get_setting("openbfme/rendering/menu_3d_max_dimension", 0));
@@ -280,6 +331,7 @@ void AptView3DViewers::draw(RID item, const Rect2 &rect, const AptCanvasOp &op, 
 	{
 		slot.black->set_size(size);
 		slot.white->set_size(size);
+		if (slot.reflection) slot.reflection->set_size(size);
 		slot.forceRender = true;
 	}
 	RenderingServer *rs = RenderingServer::get_singleton();
@@ -291,27 +343,65 @@ void AptView3DViewers::draw(RID item, const Rect2 &rect, const AptCanvasOp &op, 
 
 void AptView3DViewers::endBuild()
 {
+	syncVisibility();
+}
+
+bool AptView3DViewers::ownerVisible() const
+{
+	const CanvasItem *owner = Object::cast_to<CanvasItem>(m_owner);
+	return owner && owner->is_inside_tree() && owner->is_visible_in_tree();
+}
+
+void AptView3DViewers::syncVisibility(bool forceHidden)
+{
+	const bool visible = !forceHidden && ownerVisible();
 	for (auto &kv : m_slots)
 	{
 		Slot &slot = kv.second;
-		if (!slot.black)
+		const SubViewport::UpdateMode mode = slot.used && !slot.failed && visible ? SubViewport::UPDATE_ALWAYS : SubViewport::UPDATE_DISABLED;
+		// Children can already be gone when the owner's destructor clears its retained canvas.
+		for (ObjectID id : { slot.blackId, slot.whiteId })
 		{
-			continue;
+			SubViewport *view = Object::cast_to<SubViewport>(ObjectDB::get_instance(id));
+			if (view && view->get_update_mode() != mode)
+			{
+				view->set_update_mode(mode);
+			}
+		}
+		W3DInstancer *inst = Object::cast_to<W3DInstancer>(ObjectDB::get_instance(slot.instId));
+		if (inst)
+		{
+			inst->set_presentation_updates(mode == SubViewport::UPDATE_ALWAYS);
 		}
 		if (!slot.used || slot.failed)
 		{
 			slot.black->set_update_mode(SubViewport::UPDATE_DISABLED);
 			slot.white->set_update_mode(SubViewport::UPDATE_DISABLED);
+			if (slot.reflection) slot.reflection->set_update_mode(SubViewport::UPDATE_DISABLED);
 		}
 		slot.wasUsed = slot.used;
+
 	}
 }
 
 void AptView3DViewers::pose(Slot &slot, double now)
 {
-	if (!slot.inst || slot.instance < 0)
+	// Keep the existing incremental clock (including LOOP/PINGPONG boundaries) running while hidden.
+	// Only evaluating/uploading the model pose and updating its cameras depends on visibility.
+	slot.anim.progress(now, slot.frameRate);
+	if (!ownerVisible() || !ObjectDB::get_instance(slot.blackId) || !ObjectDB::get_instance(slot.whiteId) ||
+		!ObjectDB::get_instance(slot.instId) || slot.instance < 0)
 	{
 		return;
+	}
+	// Fade composition is inexpensive and runs at display cadence, even when
+	// the model, particles and reflection pass wait for their render deadline.
+	slot.inst->advance_shell_effects((now - slot.createdMs) * 0.001);
+	const float fade = slot.inst->shell_fade_add();
+	if (fade != slot.fadeAdd)
+	{
+		slot.material->set_shader_parameter("fade_add", fade);
+		slot.fadeAdd = fade;
 	}
 	// A decoration's cadence is independent of input and the Apt movie clock.
 	// Accumulated real time is used on the next update; animation does not slow down.
@@ -329,25 +419,47 @@ void AptView3DViewers::pose(Slot &slot, double now)
 		const float scale = m_owner->get_viewport()->get_scaling_3d_scale();
 		slot.black->set_scaling_3d_scale(scale);
 		slot.white->set_scaling_3d_scale(scale);
+		if (slot.reflection) slot.reflection->set_scaling_3d_scale(scale);
 	}
 	slot.inst->set_global_time((now - slot.createdMs) * 0.001);
+	slot.inst->advance_shell_scene((now - slot.createdMs) * 0.001);
 	slot.black->set_update_mode(SubViewport::UPDATE_ONCE);
 	slot.white->set_update_mode(SubViewport::UPDATE_ONCE);
 	slot.anim.progress(now, slot.frameRate);
+
 	if (slot.numFrames > 0)
 	{
 		slot.inst->set_instance_pose_native(slot.instance, slot.clip, (double)slot.anim.frame(), std::string(), 0.0, 0.0);
 	}
 	slot.inst->update_now();
 	::Matrix3D m;
-	if (slot.cameraBone >= 0 && slot.inst->get_bone_transform_native(slot.instance, slot.cameraBone, m))
+	Transform3D authoredCamera; float authoredFov;
+	const bool namedCamera = slot.inst->shell_camera(authoredCamera, authoredFov);
+	if (namedCamera || (slot.cameraBone >= 0 && slot.inst->get_bone_transform_native(slot.instance, slot.cameraBone, m)))
 	{
 		// the bone's transform is the camera's (W3D cameras look down -Z with +Y up, as Godot's); Godot's frame is (x, z, -y) (HUD-2's globe camera)
 		auto toGodot3 = [](float x, float y, float z) { return Vector3(x, z, -y); };
 		const Basis basis(toGodot3(m.Row[0][0], m.Row[1][0], m.Row[2][0]), toGodot3(m.Row[0][1], m.Row[1][1], m.Row[2][1]), toGodot3(m.Row[0][2], m.Row[1][2], m.Row[2][2]));
-		const Transform3D xf(basis, toGodot3(m.Row[0][3], m.Row[1][3], m.Row[2][3]));
+		Transform3D xf = namedCamera ? authoredCamera : slot.sceneTransform * Transform3D(basis, toGodot3(m.Row[0][3], m.Row[1][3], m.Row[2][3]));
+		if (namedCamera)
+		{
+			slot.camBlack->set_fov(authoredFov);
+			slot.camWhite->set_fov(authoredFov);
+			if (slot.camReflection) slot.camReflection->set_fov(authoredFov);
+		}
 		slot.camBlack->set_transform(xf);
 		slot.camWhite->set_transform(xf);
+		if (slot.reflection)
+		{
+			Transform3D reflected = xf;
+			reflected.origin.y = 2.0f * slot.reflectionPlane - xf.origin.y;
+			for (int i=0;i<3;++i) { Vector3 axis=reflected.basis.get_column(i); axis.y=-axis.y; reflected.basis.set_column(i,axis); }
+			// Camera bases remain right-handed; the water shader reverses image X.
+			reflected.basis.set_column(0,-reflected.basis.get_column(0));
+			slot.camReflection->set_transform(reflected);
+			slot.reflection->set_update_mode(SubViewport::UPDATE_ONCE);
+			GammaComposite::ensure(slot.camReflection);
+		}
 	}
 	GammaComposite::ensure(slot.camBlack);
 	GammaComposite::ensure(slot.camWhite);
@@ -368,8 +480,22 @@ float AptView3DViewers::animationFrame(const std::string &path) const
 	return -1;
 }
 
+Dictionary AptView3DViewers::animationFrames() const
+{
+	Dictionary frames;
+	for (const auto &entry : m_slots)
+	{
+		if (entry.second.used && !entry.second.failed)
+		{
+			frames[String(entry.first.c_str())] = entry.second.anim.frame();
+		}
+	}
+	return frames;
+}
+
 void AptView3DViewers::advance()
 {
+	syncVisibility();
 	const double now = nowMs();
 	for (auto &kv : m_slots)
 	{

@@ -57,9 +57,14 @@ public:
 	virtual AIMover *containerMover() { return nullptr; }
 	virtual float speedOf(const PathfindObject &o) const = 0; // RW 0x68B34C: the locomotor's current speed or 0
 	virtual Coord2D unitDirectionOf(const PathfindObject &o) const = 0; // RW 0x70BA23 (cos, sin)
-	virtual int pathPriority() const = 0;           // RW 0x663F48
+	virtual int pathPriority() const = 0;           // RW 0x663F48: (DOZER ? 100 : 0) + 10 * crushable level + (CAVALRY ? 5 : 0)
+	// RW 0x66E233's early exits: the unit may path through units (AI + 0x3BA), a deployed SIEGE_TOWER (template + 0x113 bit 0x20, status 0x3B); default no
+	virtual bool canPathThroughUnits() const { return false; }
+	virtual bool isDeployedSiegeTower() const { return false; }
 	// RW 0x68B36F: the object (or its container) the unit is attacking or approaching, 0 when none
 	virtual PathfindObjectID attackTargetOf(const PathfindObject &o) const = 0;
+	// AI vslot 0x1FC (RW 0x664D12, ZH getEnterTarget): the object the unit `o` is entering (its machine's goal in an enter state), 0 when none; default none
+	virtual PathfindObjectID enterTargetOf(const PathfindObject &o) const { (void)o; return PATHFIND_INVALID_ID; }
 	// lane ATTACK-1: RW 0x69519A(other, 2) with this unit as the crusher (ECX), the crush exemption of blockedBy RW 0x66D16E: the object's crusher level
 	// (RW 0x695070: MountedCrusherLevel while MOUNTED, the CRUSHER_LEVEL modifiers) above the other's crushable level (RW 0x68D4D0), then the policy's
 	// status, relationship and weapon tests
@@ -68,7 +73,25 @@ public:
 	virtual float closeEnoughDist() const = 0;      // locomotor +0x3C
 	virtual float locomotorSpeed() const = 0;       // locomotor +0x40 (RW getter 0x5E36F7), per frame
 	virtual bool movingBackwards() const = 0;       // locomotor flags bit 7
+	// lane BUMP-1: the object facts RW 0x66D16E tests (defaults: none): KindOf INFANTRY (template + 0x109 bit 0), status 0x46
+	// SPECIAL_ABILITY_PACKING_UNPACKING_OR_USING, Object + 0x458 bit 3 (OFF_MAP), KindOf LARGE_RECTANGLE_PATHFIND (template + 0x11F bit 2), the
+	// formation id (Object + 0x42C) and the formation offset's x (+ 0x430)
+	virtual bool isInfantryKind() const { return false; }
+	virtual bool isUsingSpecialAbility() const { return false; }
+	virtual bool isOffMapObject() const { return false; }
+	virtual bool isLargeRectanglePathfind() const { return false; }
+	virtual int objectFormationId() const { return 0; }
+	virtual float objectFormationOffsetX() const { return 0.0f; }
+	// lane LOCODIST-1, getLocomotorDistanceToGoal (RW 0x664127): the object's template KindOf PROJECTILE (RW template + 0x10B bit 1), AI vslot 0x25C
+	// getTreatAsAircraftForLocoDistToGoal (RW 0x6629D3) and the state machine's goal position (AI + 0x30, machine + 0x24)
+	virtual bool isProjectile() const = 0;
+	virtual bool treatAsAircraftForLocoDistToGoal() const = 0;
+	virtual Coord3D machineGoalPosition() const = 0;
 	virtual bool setModelCondition(const char *name, bool on) = 0; // MOVING, CLIMBING, RAPPELLING, BACKING_UP
+	// RW 0x666FA3, called at the end of every doLocomotor pass (RW 0x66A4B7): the SAIL_* model conditions of a SHIP
+	virtual void updateSailModelConditions() {}
+	// lane AIRBORNE-1, RW 0x66A49E .. 0x66A4A0: Object::setStatus(AIRBORNE_TARGET (6), on) (RW 0x62684D)
+	virtual void setAirborneTarget(bool on) { (void)on; }
 	virtual float relativeAngleTo(const Coord3D &p) const = 0;     // RW relAngle2D(obj, p)
 	virtual bool isCellTypeTwo(const Coord3D &p, PathfindLayerEnum layer) const { (void)p; (void)layer; return false; } // RW 0x6EAD0E
 	// ---- lane PHYS-1 ----
@@ -76,6 +99,13 @@ public:
 	virtual bool attackRangeFrom(const Coord3D &from, PathfindObjectID victim, const Coord3D &victimPos, float extra) { (void)from; (void)victim; (void)victimPos; (void)extra; return false; }
 	// lane PHYS-1: the same test with the victim taken at `victimPos` (RW 0x6CC07C's explicit position argument)
 	virtual bool attackRangeFromTo(const Coord3D &from, PathfindObjectID victim, const Coord3D &victimPos, float extra) { (void)from; (void)victim; (void)victimPos; (void)extra; return false; }
+	// AI vslot 0x224 (RW 0x667144, AIUpdateInterface::canFollowTeamPath): a ground mover that is not held; the attack path's in-reach test asks the view test
+	// (RW 0x6F4557) only for one (RW 0x666992)
+	virtual bool canFollowTeamPath() const { return false; }
+	// lane ATTACKPATH-1: RW 0x6CA974 Weapon::getAttackDistance(unit, victim, victimPos) of the current weapon (RW 0x68B58C(0)); 0 without a weapon
+	virtual float attackDistanceTo(PathfindObjectID victim, const Coord3D &victimPos) { (void)victim; (void)victimPos; return 0.0f; }
+	// lane ATTACKPATH-1: RW 0x441B59 on the current weapon: its template's MeleeWeapon (+ 0x125); false without a weapon
+	virtual bool currentWeaponIsMelee() { return false; }
 	// the pathfinder's view of any object (null when gone)
 	virtual const PathfindObject *findPathfindObject(PathfindObjectID id) { (void)id; return nullptr; }
 	// the allied clearing of a new path: the gates of RW 0x666EEA .. 0x666F67 (and 0x66670F, 0x669459), then RW 0x6F503B; default nothing
@@ -95,6 +125,16 @@ public:
 	virtual bool moveToPositionFromAI(const Coord3D &p) { (void)p; return false; }
 	virtual void startMoveSound() {}
 	virtual void stopMoveSound() {}
+	// ---- lane WALL-2 ----
+	// RW 0x66A143 .. 0x66A166 (a Climb portal steeply up or down): a disguised unit (its StealthUpdate, RW 0x68FBD3, + 0x3C) is marked detected (RW 0x7767A9(0, 1,
+	// null, horde)); default nothing
+	virtual void revealDisguiseOnClimb() {}
+	// RW 0x662A0E (a type 7 portal, after destroyPath RW 0x66276B): the AI's vslot 0x60 with CMD_FROM_AI (RW 0x66D8F5, the AI's private idle: INFERENCE S-4857,
+	// the port's aiIdle(CMD_FROM_AI)); default nothing
+	virtual void idleFromAI() {}
+	// RW 0x66606E .. 0x66607C: computePath made the exit-production straight path: the AI's path-through-units flag is dropped (AI + 0x3BA = 0, RW 0x666079) and
+	// the machine's goal becomes the destination (RW 0x6654AD with CMD_FROM_AI: no clip, then RW 0x8DB810: unless the machine is locked, angle FLT_MAX); default nothing
+	virtual void finishExitQuickPath(const Coord3D &destination) { (void)destination; }
 };
 
 enum AIGoalType
@@ -203,13 +243,18 @@ public:
 	bool computePath(const Coord3D &dest);
 	bool computeQuickPath(const Coord3D &dest);
 	// lane EXIT-1 (factored out of doLocomotor for the horde member update RW 0x66C748): RW 0x6F1B3E, the straight step `from` -> `to` toward the locomotor goal is
-	// valid; RW 0x6F74D0, a path from `from` that reaches the locomotor goal, else null
+	// valid (lane WALL-4: its end on the layer there, and a change of layer only as RotWK allows it); RW 0x6F74D0, a path from `from` that reaches the locomotor
+	// goal, else null
 	bool stepValid(const Coord3D &from, const Coord3D &to);
 	Path *pathReachingGoal(const Coord3D &from);
 	// lane EXIT-1: the horde member update's switch to the path goal around doLocomotor (RW 0x66CD29 / 0x66CD41 write AI + 0x1FC directly)
 	void setGoalTypeRaw(AIGoalType t) { m_goalType = t; }
 	// distance left to the goal for the current goal type (RW 0x664127)
 	float locomotorDistanceToGoal() const;
+	// lane WALL-1 / WALL-4: a unit whose wall top, walkway or ramp went away under it takes the ground (Pathfinder::layerAfterSurfaceLoss, INFERENCE S-1750),
+	// then stands on the terrain (lane WALL-5: no per-frame AdjustLayer, S-4840). doLocomotor's branches make RotWK's layer changes: a path goal's UpdateLayer (RW 0x669D3D .. 0x669D66, the
+	// point ahead's layer), an explicit goal's RW 0x680A75 after its step (RW 0x669B95), the horde member update's (RW 0x66C748). The member update calls it too
+	void refreshLayer();
 
 	// ---- the per-frame locomotor step (RW 0x669932): returns the number of frames until the next call is needed ----
 	unsigned doLocomotor();
@@ -231,6 +276,7 @@ public:
 
 	// ---- the model-condition helper used by the move state ----
 	void setMoveCondition(const char *name, bool on);
+	void updateMoveConditions(float distanceToGoal);
 
 	// Acceptance-stop lines (docs/STOPS.md) raised so far; empty when none applied.
 	const std::vector<std::string> &stops() const { return m_stops; }
@@ -251,6 +297,12 @@ private:
 	void note(const char *stop);
 	bool isDoingGroundMovement() const;
 	bool pointAheadIsPortal() const;
+	// lane WALL-2: RW 0x669E8F .. 0x66A27E, the portal branch of doLocomotor: the unit walks (is put on) the point ahead of its path, by the waypoint's type
+	void moveThroughPortal(Locomotor &loco, const PathfindWaypoint &portal, float speed, const LocomotorPathPoint &first);
+public:
+	bool onPortal() const { return m_onPortal; } // RW AI + 0x3BB
+private:
+	bool m_onPortal = false;
 
 	void queuePathRequest(); // retry queue overflow with the existing serialized timer
 	AIMoveHost &m_host;
@@ -289,6 +341,7 @@ private:
 	unsigned m_colliderFrames[4] = {};
 	int m_colliderCount = 0;
 	std::vector<std::string> m_stops;
+	unsigned m_notedBits = 0; // note: the known stops already in m_stops
 };
 
 // AIInternalMoveToState (RW vtable 0xC27448): move to a position, then optionally turn to a final angle.

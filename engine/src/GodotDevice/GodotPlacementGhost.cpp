@@ -3,6 +3,13 @@
 
 #include "GodotDevice/GodotPlacementGhost.h"
 #include "GameClient/CommandButtonHelp.h"
+#include "GameClient/FormationAssistant.h"
+#include "GameLogic/Object/Contain/HordeContainRuntime.h"
+#include "GameLogic/Object/Object.h"
+#include "Common/Player.h"
+#include "Common/PlayerList.h"
+#include <godot_cpp/classes/time.hpp>
+#include <godot_cpp/classes/immediate_mesh.hpp>
 #include "GameClient/GUI/Image.h"
 #include <godot_cpp/classes/viewport.hpp>
 #include <cmath>
@@ -43,6 +50,7 @@
 #include <godot_cpp/classes/viewport.hpp>
 #include <cmath>
 #include <godot_cpp/classes/decal.hpp>
+
 #include <godot_cpp/classes/geometry_instance3d.hpp>
 #include <godot_cpp/classes/multi_mesh_instance3d.hpp>
 #include <godot_cpp/core/object.hpp>
@@ -137,25 +145,29 @@ void PlacementGhostRenderer::error(const std::string &e)
 	UtilityFunctions::push_error(toGodotString("[placement ghost] " + e));
 }
 
-void PlacementGhostRenderer::clear()
+void PlacementGhostRenderer::clearTransient()
 {
 	freeNode(m_exitDirectionsId);
 	m_exitDirectionsId = 0;
 	m_exitDirections = nullptr;
 	m_exitDirectionCount = 0;
 	freeNode(m_formationId); m_formationId=0; m_formation=nullptr;
-	freeNode(m_resourceDecalId);
+	m_formationSlots.clear(); m_formationTextures.clear();
 	freeNode(m_resourceLabelId);
-	m_resourceDecalId = m_resourceLabelId = 0;
-	m_resourceDecal = nullptr;
+	m_resourceLabelId = 0;
 	m_resourceLabel = nullptr;
+}
+
+void PlacementGhostRenderer::clear()
+{
+	clearTransient();
 	for (IconView &v : m_views)
 	{
 		freeNode(v.instId);
 		freeNode(v.bibId);
-		freeNode(v.shadowDecalId); // lane OWNERFIX-2
 	}
 	m_views.clear();
+	m_shown = false;
 	freeNode(m_footprintId);
 	m_footprintId = 0;
 	m_footprint = nullptr;
@@ -175,11 +187,16 @@ void PlacementGhostRenderer::clear()
 	for (auto &ring : m_existingResourceRings) freeNode(ring.nodeId);
 	m_existingResourceRings.clear();
 	m_existingResourceState.clear();
-	freeNode(m_resourceDecalId);
-	freeNode(m_resourceLabelId);
-	m_resourceDecalId = m_resourceLabelId = 0;
-	m_resourceDecal = nullptr;
-	m_resourceLabel = nullptr;
+	for (auto &kv : m_parked)
+
+	{
+		for (IconView &v : kv.second)
+		{
+			freeNode(v.instId);
+			freeNode(v.bibId);
+		}
+	}
+	m_parked.clear();
 }
 
 void PlacementGhostRenderer::prewarm(LiveGame &game, const std::vector<std::string> &templates, unsigned source)
@@ -194,11 +211,64 @@ void PlacementGhostRenderer::prewarm(LiveGame &game, const std::vector<std::stri
 	preview.placeBuildAvailable("", INVALID_ID);
 	sync(game, preview, 0, 0, true);
 	UtilityFunctions::print("PERF preloaded building previews: ", (int64_t)templates.size(), "; models=", (int64_t)m_modelLoads);
+
+}
+
+void PlacementGhostRenderer::parkViews(const std::string &templateName)
+{
+	// lane FOGFX-1 (FB-0055, "a brief 30-40% FPS drop when selecting a building"): the icons' instancers keep their models, textures and materials when
+	// the placement ends or changes template (hidden, kept by template name); the next placement of that template takes them back instead of loading the
+	// model again (9 - 14 ms on the frame the ghost appeared, measured on a GTX 1060). DONOR (ZH InGameUI::placeBuildAvailable, W3DAssetManager): RotWK's
+	// place icons are new drawables whose render objects come from the asset manager's prototypes, which keep a model once loaded
+	for (IconView &v : m_views)
+	{
+		if (v.inst)
+		{
+			v.inst->set_visible(false);
+		}
+		if (v.bib)
+		{
+			v.bib->set_visible(false); // kept with its template's quad (updateBib shows it again)
+		}
+		v.shadowTexture.clear(); // drawn again by updateShadowDecal
+	}
+	if (!templateName.empty() && !m_views.empty())
+	{
+		if (m_parked.size() >= kMaxParked)
+		{
+			for (auto &kv : m_parked)
+			{
+				for (IconView &v : kv.second)
+				{
+					freeNode(v.instId);
+					freeNode(v.bibId);
+				}
+			}
+			m_parked.clear();
+		}
+		std::vector<IconView> &slot = m_parked[templateName];
+		for (IconView &v : slot)
+		{
+			freeNode(v.instId);
+			freeNode(v.bibId);
+		}
+		slot = std::move(m_views);
+	}
+	else
+	{
+		for (IconView &v : m_views)
+		{
+			freeNode(v.instId);
+			freeNode(v.bibId);
+		}
+	}
+	m_views.clear();
 }
 
 W3DInstancer *PlacementGhostRenderer::newInstancer(const char *name)
 {
 	W3DInstancer *inst = memnew(W3DInstancer);
+	++m_instancersMade;
 	inst->set_name(name);
 	m_parent->add_child(inst);
 	const Dictionary s = inst->setup(m_fs);
@@ -217,6 +287,7 @@ W3DInstancer *PlacementGhostRenderer::newInstancer(const char *name)
 
 void PlacementGhostRenderer::drawIcon(size_t i, PlacementIcons::Icon &icon, IconView &view)
 {
+	const uint64_t tIcon = Time::get_singleton()->get_ticks_usec();
 	if (view.tt != icon.tt)
 	{
 		// The destination hub moves between slots as a wall span changes length.
@@ -270,6 +341,7 @@ void PlacementGhostRenderer::drawIcon(size_t i, PlacementIcons::Icon &icon, Icon
 				auto it = view.models.find(model);
 				if (it == view.models.end()) ++m_modelLoads;
 				int64_t mid = it == view.models.end() ? view.inst->add_model(toGodotString(*f.modelName)) : it->second;
+				m_modelsBuilt += it == view.models.end() ? 1 : 0;
 				view.models[model] = mid;
 				if (mid < 0)
 				{
@@ -321,7 +393,9 @@ void PlacementGhostRenderer::drawIcon(size_t i, PlacementIcons::Icon &icon, Icon
 		view.inst->set_instance_opacity(ev.instance, d.drawOpacity()); // 0.45 (RW 0xC12408)
 	}
 	view.instances = instances;
+	const uint64_t tu = Time::get_singleton()->get_ticks_usec();
 	view.inst->update_now();
+	const uint64_t tt = Time::get_singleton()->get_ticks_usec();
 	// the tint (Drawable::colorTint RW 0x6757BB): IllegalBuildColor (1, 0, 0) or (0, 0, 0.5 / 1.7) for code 9
 	Color tint(0, 0, 0, 0);
 	if (icon.tint == PlacementIcons::TINT_ILLEGAL)
@@ -337,8 +411,16 @@ void PlacementGhostRenderer::drawIcon(size_t i, PlacementIcons::Icon &icon, Icon
 		tint = Color(.45f, .35f, 0, 1); // a warm gold added to the lighting, distinct from the red / blue refusals
 	}
 	applyTint(view, tint);
+	const uint64_t tb = Time::get_singleton()->get_ticks_usec();
 	updateBib(icon, view);
+	const uint64_t ts = Time::get_singleton()->get_ticks_usec();
 	updateShadowDecal(icon, view);
+	const uint64_t te = Time::get_singleton()->get_ticks_usec();
+	m_partMs[0] += (double)(tu - tIcon) / 1000.0; // lane FOGFX-1: the draw's parts (the HUD's frame timings)
+	m_partMs[1] += (double)(tt - tu) / 1000.0;
+	m_partMs[2] += (double)(tb - tt) / 1000.0;
+	m_partMs[3] += (double)(ts - tb) / 1000.0;
+	m_partMs[4] += (double)(te - ts) / 1000.0;
 }
 
 void PlacementGhostRenderer::updateShadowDecal(PlacementIcons::Icon &icon, IconView &view)
@@ -346,60 +428,62 @@ void PlacementGhostRenderer::updateShadowDecal(PlacementIcons::Icon &icon, IconV
 	// lane OWNERFIX-2: a model state's decal shadow (W3DModelDraw's Shadow = SHADOW_ALPHA_DECAL 0x20 / SHADOW_ADDITIVE_DECAL 0x40 / their _DYNAMIC forms 0x400 /
 	// 0x800, bits of RW 0xD99EB0; ShadowTexture, ShadowSizeX / Y, ShadowOffsetX / Y; RW 0x4B92D3 parses them) is a projected decal under the drawable: the
 	// retail data gives the well's / statue's BUILD_PLACEMENT_CURSOR state its area of effect (decal_hero_good, GONDOR_WELL_AOE_RADIUS_DECAL = 440).
-	// INFERENCE (stop S-5032): drawn as the selection decals are (a Godot Decal on the terrain layer, S-2522) at the texture's own alpha, not faded by the
-	// drawable's 0.45 opacity (the shadow's ShadowOpacity* fade is not run); only the placement ghost draws them (every other drawable's shadow is S-3304)
+	// Lane PLACEDECAL-1: a drawable's decal shadow is on renderShadows' list + 4, drawn before the addDecal list (+ 8: the selection's and the resource
+	// claims' decals; RW 0x50D92C), with flushDecals' shaders (RW 0x509A1F); it turns with the drawable and is not terrain only (+ 0x64 stays 0). The HUD
+	// draws it in the selection decals' grid (appendShadowDecals; lane ECOCIRCLE-2: an additive type is added to the surface, RotWK's 0x10000 is refused there with its error), white at ShadowOpacityPeak whatever
+	// the drawable's 0.45 opacity (DecalShadowColor). INFERENCE (stop S-5032): the _DYNAMIC types' fade is not run; addShadow's gate (RW 0x50BF7B:
+	// UseShadowDecals or ShadowOverrideLODVisibility) is not applied; only the placement ghost draws them (every other drawable's shadow is S-3304)
 	const ModelShadowInfo *sh = nullptr;
+	unsigned peak = 0xFF;
 	for (DrawEntry &e : icon.drawable->entries())
 	{
 		if (e.kind == W3D_DRAWKIND_MODEL && e.draw && !e.moduleHidden)
 		{
 			const ModelConditionInfo *info = e.draw->currentModelState();
-			if (info && info->hasShadow && (info->shadow.type & 0xC60) && !info->shadow.texture.empty())
+			if (info && info->hasShadow && (info->shadow.type & 0x10C60) && !info->shadow.texture.empty())
 			{
 				sh = &info->shadow;
+				peak = info->shadowOpacityPeak;
 				break;
 			}
 		}
 	}
-	Decal *decal = view.shadowDecalId ? Object::cast_to<Decal>(ObjectDB::get_instance(godot::ObjectID(view.shadowDecalId))) : nullptr;
 	if (!sh)
 	{
-		if (decal)
-		{
-			decal->set_visible(false);
-		}
 		view.shadowTexture.clear();
 		return;
 	}
 	const std::string file = sh->texture.find('.') == std::string::npos ? sh->texture + ".tga" : sh->texture;
-	Ref<Texture2D> tex = texture(file);
-	if (tex.is_null())
-	{
-		return; // texture() reported it
-	}
-	if (!decal)
-	{
-		decal = memnew(Decal);
-		decal->set_name("PlacementShadowDecal");
-		m_parent->add_child(decal);
-		view.shadowDecalId = decal->get_instance_id();
-	}
-	if (view.shadowTexture != file)
-	{
-		decal->set_texture(Decal::TEXTURE_ALBEDO, tex);
-		view.shadowTexture = file;
-	}
 	const Coord3D &p = *icon.drawable->getPosition();
-	// SAGE (x, y, z up) -> Godot (x, z, -y); projected down over a box 200 units deep
-	decal->set_position(Vector3(p.x + sh->offsetX, p.z, -(p.y + sh->offsetY)));
-	decal->set_size(Vector3(sh->sizeX, 200.0f, sh->sizeY));
-	decal->set_albedo_mix(1.0f);
-	decal->set_cull_mask(1u << 19); // the terrain's layer (GodotMapTerrain)
-	decal->set_upper_fade(0.0f);
-	decal->set_lower_fade(0.0f);
-	decal->set_visible(true);
+	const float angle = icon.drawable->getOrientation(); // the shadow turns with its drawable (+ 0x30 = 1, RW 0x4C4F53)
+	SelectionDecal &d = view.shadowDecal;
+	d = SelectionDecal();
+	d.texture = file;
+	d.style = (std::uint32_t)sh->type & 0x10C60u;
+	d.color = DecalShadowColor(peak);
+	d.size = sh->sizeX;
+	d.sizeY = sh->sizeY;
+	d.angle = angle;
+	d.position = DecalShadowCentre(p, sh->offsetX, sh->offsetY, angle);
+	d.drawZ = p.z;
+	view.shadowTexture = file;
 	view.shadowSizeX = sh->sizeX;
 	view.shadowSizeY = sh->sizeY;
+}
+
+void PlacementGhostRenderer::appendShadowDecals(std::vector<SelectionDecal> &out) const
+{
+	if (!m_shown)
+	{
+		return;
+	}
+	for (size_t i = 0; i < m_views.size() && i < m_icons->icons().size(); ++i)
+	{
+		if (!m_views[i].shadowTexture.empty())
+		{
+			out.push_back(m_views[i].shadowDecal);
+		}
+	}
 }
 
 void PlacementGhostRenderer::applyTint(IconView &view, const Color &tint)
@@ -436,6 +520,21 @@ Ref<Texture2D> PlacementGhostRenderer::texture(const std::string &name)
 	}
 	m_textures[name] = t;
 	return t;
+}
+
+Ref<StandardMaterial3D> PlacementGhostRenderer::bibMaterial(const std::string &tex, const Ref<Texture2D> &t)
+{
+	Ref<StandardMaterial3D> &m = m_bibMaterials[tex];
+	if (m.is_null())
+	{
+		m.instantiate();
+		m->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+		m->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA); // ZH W3DBibBuffer: SRCBLEND_SRC_ALPHA, DSTBLEND_ONE_MINUS_SRC_ALPHA, no depth write
+		m->set_depth_draw_mode(BaseMaterial3D::DEPTH_DRAW_DISABLED);
+		m->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
+		m->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, t);
+	}
+	return m;
 }
 
 void PlacementGhostRenderer::updateBib(PlacementIcons::Icon &icon, IconView &view)
@@ -498,20 +597,14 @@ void PlacementGhostRenderer::updateBib(PlacementIcons::Icon &icon, IconView &vie
 		view.bib->set_name("PlacementBib");
 		view.bib->set_mesh(mesh);
 		view.bib->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
-		Ref<StandardMaterial3D> m;
-		m.instantiate();
-		m->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
-		m->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA); // ZH W3DBibBuffer: SRCBLEND_SRC_ALPHA, DSTBLEND_ONE_MINUS_SRC_ALPHA, no depth write
-		m->set_depth_draw_mode(BaseMaterial3D::DEPTH_DRAW_DISABLED);
-		m->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
-		view.bib->set_material_override(m);
 		m_parent->add_child(view.bib);
 		view.bibId = view.bib->get_instance_id();
 	}
 	if (view.bibTexture != tex)
 	{
-		Ref<StandardMaterial3D> m = view.bib->get_material_override();
-		m->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, t);
+		// lane FOGFX-1 (FB-0055): one material per bib texture for the renderer's life (a new StandardMaterial3D and its texture cost about 9 ms of the
+		// main thread on the first frame of every placement, measured on a GTX 1060)
+		view.bib->set_material_override(bibMaterial(tex, t));
 		view.bibTexture = tex;
 	}
 	const Drawable &d = *icon.drawable;
@@ -622,7 +715,8 @@ void PlacementGhostRenderer::sync(LiveGame &game, const InGameUI &ui, double del
 	const unsigned loadsBefore = m_modelLoads;
 	if ((&game != m_game || !m_icons) && !judge)
 	{
-		return; // the drawables are made on an idle frame
+		m_shown = false; // lane PLACEDECAL-1: no shadow of another game's ghost
+		return;          // the drawables are made on an idle frame
 	}
 	if (&game != m_game || !m_icons)
 	{
@@ -630,8 +724,30 @@ void PlacementGhostRenderer::sync(LiveGame &game, const InGameUI &ui, double del
 		m_game = &game;
 		m_icons.reset(new PlacementIcons(game.drawables().services(), game.logic()));
 		m_icons->setCastleStore(m_castles.get());
+		// lane FOGFX-1: the two bib materials made with the game (its first idle frame), not on the first placement: Godot builds a material's shader
+		// when a node first takes it, so a hidden node takes each once (measured: 12 ms of the main thread otherwise)
+		for (const char *tex : { "TBBib.tga", "TBRedBib.tga" })
+		{
+			const Ref<Texture2D> t = texture(tex);
+			if (t.is_valid())
+			{
+				MeshInstance3D *warm = memnew(MeshInstance3D);
+				warm->set_visible(false);
+				m_parent->add_child(warm);
+				warm->set_material_override(bibMaterial(tex, t));
+				warm->queue_free();
+			}
+		}
 	}
+	const std::string before = m_icons->templateName();
+	const uint64_t t0 = Time::get_singleton()->get_ticks_usec();
 	m_icons->update(ui, deltaSeconds * 1000.0, ghostOptions, judge);
+	const uint64_t t1 = Time::get_singleton()->get_ticks_usec();
+	m_lastIconsMs = (double)(t1 - t0) / 1000.0; // lane FOGFX-1: the icons' update apart from their draw (the HUD's frame timings)
+	for (double &p : m_partMs)
+	{
+		p = 0.0;
+	}
 	for (const std::string &e : m_icons->errors())
 	{
 		error(e);
@@ -641,6 +757,25 @@ void PlacementGhostRenderer::sync(LiveGame &game, const InGameUI &ui, double del
 	// building must not reread its textures and recreate its GPU resources.
 	if (m_icons->icons().size() > m_views.size())
 	{
+		// a new template (or none): the previous template's instancers are parked, the new one's taken back when it was placed before (lane FOGFX-1)
+		clearTransient();
+		parkViews(before);
+		auto parked = m_parked.find(m_icons->templateName());
+		if (parked != m_parked.end())
+		{
+			m_views = std::move(parked->second);
+			m_parked.erase(parked);
+		}
+	}
+	if (m_icons->icons().size() != m_views.size())
+	{
+		// community PR #37: a wall span's tile count changes as the cursor moves; the slots that stay keep their instancers and models (drawIcon swaps a
+		// slot's template), only the slots past the new count are freed
+		for (size_t i = m_icons->icons().size(); i < m_views.size(); ++i)
+		{
+			freeNode(m_views[i].instId);
+			freeNode(m_views[i].bibId);
+		}
 		m_views.resize(m_icons->icons().size());
 	}
 	if (ui.isPlacing() && ui.placeHasGhost())
@@ -660,6 +795,7 @@ void PlacementGhostRenderer::sync(LiveGame &game, const InGameUI &ui, double del
 			}
 		}
 	}
+	m_shown = ui.isPlacing() && ui.placeHasGhost();
 	for (size_t i = 0; i < m_views.size(); ++i)
 	{
 		IconView &v = m_views[i];
@@ -671,8 +807,10 @@ void PlacementGhostRenderer::sync(LiveGame &game, const InGameUI &ui, double del
 		if (!visible && v.bib)
 		{
 			v.bib->set_visible(false);
+
 		}
 	}
+	m_lastDrawMs = (double)(Time::get_singleton()->get_ticks_usec() - t1) / 1000.0; // the icons' instancers, tints, bibs
 	updateArrow(ui);
 	updateExitDirections();
 	updateResources(ui, judge);
@@ -1029,7 +1167,6 @@ void PlacementGhostRenderer::updateResources(const InGameUI &ui, bool idle)
 	{
 		for (auto &ring : m_existingResourceRings) ring.decal->hide();
 		m_existingResourceState.clear();
-		if (m_resourceDecal) m_resourceDecal->hide();
 		if (m_resourceLabel) m_resourceLabel->hide();
 		return;
 	}
@@ -1115,6 +1252,10 @@ Dictionary PlacementGhostRenderer::state() const
 	s["resource_share"] = m_icons ? m_icons->resourceShare() : 0;
 	s["resource_visible"] = m_resourceLabel && m_resourceLabel->is_visible();
 	s["castle"] = m_icons && m_icons->castle();
+	s["parked"] = (int64_t)m_parked.size();       // lane FOGFX-1: templates whose instancers are kept
+	s["models_built"] = (int64_t)m_modelsBuilt;   // lane FOGFX-1: add_model calls so far (a placement of a kept template adds none)
+	s["instancers_made"] = (int64_t)m_instancersMade;
+	s["bib_materials"] = (int64_t)m_bibMaterials.size(); // lane FOGFX-1: shared per bib texture (2: TBBib, TBRedBib)
 	s["anchored"] = m_anchored;
 	s["arrow"] = m_arrowShown;
 	s["unit_exit_arrows"] = m_exitDirectionCount;

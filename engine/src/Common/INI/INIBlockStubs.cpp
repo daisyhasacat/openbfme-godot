@@ -59,6 +59,36 @@ bool isColumnZero(const std::string &line)
 	return !line.empty() && line[0] != ' ' && line[0] != '\t' && line[0] != '\v' && line[0] != '\f';
 }
 
+// `Keyword` or `Keyword Name ...` (a block header), not `Keyword = value` (a field)
+bool isHeaderForm(const std::string &line)
+{
+	const size_t b = line.find_first_not_of(" \n\r\t=");
+	if (b == std::string::npos)
+	{
+		return false;
+	}
+	const size_t e = line.find_first_of(" \n\r\t=", b);
+	if (e == std::string::npos)
+	{
+		return true;
+	}
+	const size_t next = line.find_first_not_of(" \t", e);
+	return next == std::string::npos || line[next] != '=';
+}
+
+// the text before a ';' comment, trimmed of whitespace; "" for a blank or comment-only line
+std::string significantText(const std::string &line)
+{
+	std::string text = line.substr(0, line.find(';'));
+	const size_t b = text.find_first_not_of(" \t\r\n\v\f");
+	if (b == std::string::npos)
+	{
+		return std::string();
+	}
+	const size_t e = text.find_last_not_of(" \t\r\n\v\f");
+	return text.substr(b, e - b + 1);
+}
+
 std::string firstTokenOf(const std::string &line)
 {
 	const size_t b = line.find_first_not_of(" \n\r\t=");
@@ -96,7 +126,7 @@ bool isSingleLineKeyword(const std::string &keyword)
 }
 }
 
-void RegisterRecordingBlockStubs(INIBlockRegistry &registry, INIBlockRecorder &recorder, const std::vector<std::string> &skip, StubExtent mode)
+void RegisterRecordingBlockStubs(INIBlockRegistry &registry, INIBlockRecorder &recorder, const std::vector<std::string> &skip, StubExtent mode, bool realParsers)
 {
 	for (const std::string &keyword : RotwkBlockKeywords())
 	{
@@ -104,13 +134,17 @@ void RegisterRecordingBlockStubs(INIBlockRegistry &registry, INIBlockRecorder &r
 		{
 			continue;
 		}
-		if (keyword == "Locomotor")
+		if (!realParsers)
+		{
+			// fall through to the recording stub below
+		}
+		else if (keyword == "Locomotor")
 		{
 			// HORDE-1: a real parser (RW 0x5E8276) into TheLocomotorStore, not a recording stub.
 			registry.registerBlock(keyword, [](INI *ini) { LocomotorStore::parseLocomotorTemplateDefinitionGlobal(ini); });
 			continue;
 		}
-		if (keyword == "FXList")
+		else if (keyword == "FXList")
 		{
 			// FX-1: a real parser (RW 0x5e2518) into TheFXListStore; the recorder's store stands in when none is installed.
 			registry.registerBlock(keyword, [&recorder](INI *ini) {
@@ -136,7 +170,7 @@ void RegisterRecordingBlockStubs(INIBlockRegistry &registry, INIBlockRecorder &r
 			});
 			continue;
 		}
-		if (keyword == "FXParticleSystem")
+		else if (keyword == "FXParticleSystem")
 		{
 			// FX-1: a real parser (RW 0x5fc7db) into the template store of TheFXParticleSystemManager.
 			registry.registerBlock(keyword, [&recorder](INI *ini) {
@@ -162,18 +196,18 @@ void RegisterRecordingBlockStubs(INIBlockRegistry &registry, INIBlockRecorder &r
 			});
 			continue;
 		}
-		if (keyword == "Weapon")
+		else if (keyword == "Weapon")
 		{
 			// WEAPON-1: a real parser (RW 0x6CED65) into TheWeaponStore, not a recording stub.
 			registry.registerBlock(keyword, [](INI *ini) { WeaponStore::parseWeaponTemplateDefinitionGlobal(ini); });
 			continue;
 		}
-		if (keyword == "Armor")
+		else if (keyword == "Armor")
 		{
 			registry.registerBlock(keyword, [](INI *ini) { ArmorStore::parseArmorDefinitionGlobal(ini); }); // RW 0x5D8D1F
 			continue;
 		}
-		if (keyword == "DamageFX")
+		else if (keyword == "DamageFX")
 		{
 			registry.registerBlock(keyword, [](INI *ini) { DamageFXStore::parseDamageFXDefinitionGlobal(ini); }); // RW 0x762799
 			continue;
@@ -211,6 +245,7 @@ void RegisterRecordingBlockStubs(INIBlockRegistry &registry, INIBlockRecorder &r
 			}
 			else
 			{
+				bool previousIsEnd = false; // the last significant line consumed (blank and comment lines do not count) is an End
 				for (;;)
 				{
 					const std::string *next = ini->peekNextLine();
@@ -222,9 +257,18 @@ void RegisterRecordingBlockStubs(INIBlockRegistry &registry, INIBlockRecorder &r
 					{
 						break;
 					}
+					if (mode == StubExtent::LenientAfterEnd && previousIsEnd && isHeaderForm(*next) && ini->environment().blocks.contains(firstTokenOf(*next)))
+					{
+						break;
+					}
 					ini->readLine();
 					lastLine = *next;
 					++record.extentLines;
+					const std::string significant = significantText(*next);
+					if (!significant.empty())
+					{
+						previousIsEnd = AsciiStringUtil::compareNoCase(firstTokenOf(significant), "End") == 0;
+					}
 				}
 			}
 			record.endsWithEnd = !lastLine.empty() && AsciiStringUtil::compareNoCase(firstTokenOf(lastLine), "End") == 0;

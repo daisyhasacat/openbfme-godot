@@ -1,5 +1,6 @@
 // OpenBFME. GPL-3.0.
 #include "GameLogic/Module/AmbientAIUpdate.h"
+#include "Common/ModelState.h"
 #include "Common/RandomValue.h"
 #include "Common/StateHash.h"
 #include "Common/Thing/RawModuleData.h"
@@ -13,9 +14,21 @@
 #include <cctype>
 #include <stdexcept>
 
+namespace
+{
+// TARGET: Coord3D::GetLengthEstimate, RW 0x4035AC: |the larger of x, y| + 0.25 * |the smaller|, then the same with that result and |z|
+// (0.25 is the float at RW 0xBD1904; every step is stored as a float32, the x87 runs at 24-bit precision).
+float lengthEstimate3D(float x, float y, float z)
+{
+	const auto absf = [](float a) { return a < 0.0f ? SimMath::subf32(0.0f, a) : a; };
+	const auto estimate = [](float a, float b) { return a > b ? SimMath::addf32(a, SimMath::mulf32(b, 0.25f)) : SimMath::addf32(b, SimMath::mulf32(a, 0.25f)); };
+	return estimate(estimate(absf(x), absf(y)), absf(z));
+}
+} // namespace
+
 const char *AmbientAIUpdate::stopLine()
 {
-	return "[S-5910] ambient wandering uses BFME2 AnimalAIUpdate / WanderAIUpdate donor semantics; RotWK parity is unverified. Animal enemy fleeing and special-layer return checks are not ported; normal pathfinding validates wander destinations. WanderAIUpdate WildBeast acquisition is not ported and reports a stop instead of issuing a wander order.";
+	return "[S-5910] ambient wandering is ported from RotWK AnimalAIUpdate::update (RW 0x882058) and WanderAIUpdate::update (RW 0x8ACAFA): the idle gate, the RNG draws and their order, the SALT_LICK scan, the return-to-origin test (Coord3D::GetLengthEstimate, RW 0x4035AC) and ConditionForEntry. Not ported: the enemy flee scan every UpdateTimer frames, the special-layer check (RW 0x881FCC, with the returning state) and WanderAIUpdate WildBeast acquisition, which reports this stop and issues no wander order; the ordinary pathfinder validates wander destinations.";
 }
 
 AmbientAIUpdate::AmbientAIUpdate(Thing *thing, const ModuleData *data, bool animal)
@@ -47,8 +60,20 @@ AmbientAIUpdate::AmbientAIUpdate(Thing *thing, const ModuleData *data, bool anim
 			}
 			else if (key == "conditionforentry")
 			{
-				m_condition = ObjectTemplateInfoBuilder::kindOfIndex(value);
-				if (m_condition < 0) throw std::logic_error("AmbientAIUpdate: unknown ConditionForEntry " + value);
+				// TARGET: RW WanderAIUpdate field table 0xC05828 -> parser RW 0x869F22 (shared with TransportContain): the first token (separators
+				// space, tab, colon) must be "ModelConditionState", the next one is looked up in the model condition names (RW 0x4B3B5B, -1 when unknown:
+				// no gate). RW 0x8ACAFA tests the object's model condition bit (RW 0x46E918), not a KindOf.
+				std::istringstream tokens(text.substr(eq + 1));
+				std::string tag, name;
+				const auto next = [&tokens](std::string &out) {
+					out.clear();
+					int c;
+					while ((c = tokens.peek()) != EOF && (c == ' ' || c == '\t' || c == ':')) tokens.get();
+					while ((c = tokens.peek()) != EOF && c != ' ' && c != '\t' && c != ':') out += (char)tokens.get();
+				};
+				next(tag); next(name);
+				if (tag != "ModelConditionState") throw std::logic_error("AmbientAIUpdate: ConditionForEntry expects 'ModelConditionState <name>', got " + tag); // RW 0xC5A644
+				m_condition = ModelCondition::indexOf(name);
 			}
 			else if (key == "wildbeast" || key == "selectable")
 			{
@@ -63,16 +88,20 @@ AmbientAIUpdate::AmbientAIUpdate(Thing *thing, const ModuleData *data, bool anim
 
 UpdateSleepTime AmbientAIUpdate::update()
 {
-	// DONOR: BFME2 AnimalAIUpdate::update 0x87EDC9: capture the state BEFORE the base
+	// TARGET: RW AnimalAIUpdate::update 0x882058 (2916 bytes), checked against
+	// BFME2 donor 0x87EDC9: same instruction sequence after image addresses,
+	// source paths and the +0xC4 runtime-layout shift are normalized. Capture the state BEFORE the base
 	// update; first processed position AFTER it; one [0,100] draw per idle update,
 	// then angle [-15,15] and distance [0,MaxWanderDistance] only on success.
+	// RW WanderAIUpdate::update 0x8ACAFA (499 bytes) matches BFME2 0x8A9424
+	// except image addresses and source paths. See docs/AMBIENT_MOVEMENT.md.
+	// S-001: the available target image has disputed provenance.
 	const unsigned state = currentStateId();
 	AIUpdateInterface::update();
 	Object &obj = *getObject();
-	if (obj.isEffectivelyDead()) return UPDATE_SLEEP_FOREVER;
 	if (!m_processed) { m_origin = *obj.getPosition(); m_processed = true; }
 	if (m_animal ? state != AI_IDLE : !isIdle()) return UPDATE_SLEEP_NONE;
-	if (!m_animal && m_condition >= 0 && !obj.isKindOf((unsigned)m_condition)) return UPDATE_SLEEP_NONE;
+	if (!m_animal && m_condition >= 0 && !obj.testModelCondition(m_condition)) return UPDATE_SLEEP_NONE; // RW 0x8ACAFA: bit test RW 0x46E918
 	GameLogic &logic = obj.logic();
 	Coord3D dest = *obj.getPosition();
 	if (!m_animal)
@@ -91,7 +120,7 @@ UpdateSleepTime AmbientAIUpdate::update()
 		const Coord3D center = emitter ? *emitter->getPosition() : m_origin;
 		const float dx = SimMath::subf32(center.x, dest.x), dy = SimMath::subf32(center.y, dest.y), dz = SimMath::subf32(center.z, dest.z);
 		const float radius = (float)m_radius;
-		const bool returnToCenter = emitter ? SimMath::sumSquares2(dx, dy) > SimMath::mulf32(radius, radius) : SimMath::length3d(dx, dy, dz) > (double)radius;
+		const bool returnToCenter = emitter ? SimMath::sumSquares2(dx, dy) > SimMath::mulf32(radius, radius) : lengthEstimate3D(dx, dy, dz) > radius;
 		chooseLocomotorSet(LOCOMOTORSET_NORMAL);
 		if (returnToCenter) dest = center;
 		else

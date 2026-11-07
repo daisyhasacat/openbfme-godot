@@ -339,8 +339,8 @@ void parseLocomotorSet(INI *ini, void *instance, void *store, const void *userDa
 //   0x5E76AC for NO_Z_MOTIVE_FORCE, FLOATING_Z, SCALING_WALLS (off a wall), SEA_LEVEL, SURFACE_RELATIVE_HEIGHT and ABSOLUTE_HEIGHT; HOVER 0x5E742E and
 //   SHIP 0x5E613F (lane SHIP-1).
 // NOT ported (reported through Locomotor::unverified(), acceptance stops S-081, S-084):
-//   x87/SSE parity of the CRT trigonometry, the ScalesWalls look-ahead of the dispatcher (RW 0x5E8956-0x5E8FF8), the ZAxisBehaviors
-//   FIXED_* and RELATIVE_TO_HIGHEST_LAYER, the cliff / wading
+//   x87/SSE parity of the CRT trigonometry, the ScalesWalls look-ahead of the dispatcher (RW 0x5E8956-0x5E8FF8), the remaining ZAxisBehaviors
+//   FIXED_RELATIVE_TO_GROUND_AND_BUILDINGS and RELATIVE_TO_HIGHEST_LAYER, the cliff / wading
 //   condition updates of RW 0x5E5785, and the HORDE mover's formation path nodes (types 2, 3, 7, 8).
 // =====================================================================================================
 
@@ -415,6 +415,8 @@ public:
 	virtual unsigned logicFrame() const = 0;                 // TheGameLogic+0x40
 	virtual bool containerAllowsBackingUp() const = 0;       // RW 0x5E6530-0x5E655A (HORDE_MEMBER inside a container whose template flag +0xD8 is set)
 	virtual float groundHeightAt(float x, float y) const = 0; // terrain height for NO_Z_MOTIVE_FORCE
+	// lane WALL-4: the object's layer is the ramp's (0x10) or a raised walkway's (2 .. 15; RW 0x5E2F24), for NO_Z_MOTIVE_FORCE's height hold (RW 0x5E77C2)
+	virtual bool isOnRampOrRaisedLayer() const { return false; }
 	virtual LocomotorPath *getPath() = 0;                    // RW 0x5E3884
 	// obj+0x94 ObjectStatus bits and obj+0x10C model condition bits (by index into the registries).
 	virtual bool testObjectStatus(int bit) const = 0;
@@ -495,7 +497,8 @@ enum LocomotorFlags
 	LOCOMOTOR_FLAG_BIT2 = 0x04,         // cleared by the dispatcher on entry (RW 0x5E8875); set by maintainCurrentPosition with the held position (RW 0x5E7D2A, lane EXIT-1)
 	LOCOMOTOR_FLAG_NO_BRAKE = 0x10,     // moveForward does not start braking while it is set (setter not located)
 	LOCOMOTOR_FLAG_OVER_WATER = 0x20,   // the HOVER mover's last water test (RW 0x5E745D, ZH OVER_WATER; lane SHIP-1)
-	LOCOMOTOR_FLAG_BACKING_UP = 0x80    // Legs / Wheels / HORDE movers
+	LOCOMOTOR_FLAG_BACKING_UP = 0x80,   // Legs / Wheels / HORDE movers
+	LOCOMOTOR_FLAG_CLOSE_ENOUGH_DIST_3D = 0x400 // ZH CLOSE_ENOUGH_DIST_3D: the constructor's RW 0x5E2CC1(10, template + 0xC8 CloseEnoughDist3D) (lane LOCODIST-1)
 };
 
 class Locomotor
@@ -509,6 +512,7 @@ public:
 	// ---- getters (per-frame units) ----
 	float getMaxSpeedForCondition(const LocomotorHost &host) const; // RW 0x5E3F49
 	float getMaxAcceleration(const LocomotorHost &host) const;      // RW 0x5E40AD
+	float getMaxAccelerationForSpeed(float maxSpeed) const;       // getMaxAcceleration with getMaxSpeedForCondition(host) given (a caller needing both)
 	float getBraking(const LocomotorHost &host) const;              // RW 0x5E40F2
 	float getMaxTurnRate(const LocomotorHost &host) const;          // RW 0x5E372D
 	bool isCharging(const LocomotorHost &host) const;               // RW 0x5E3EF7
@@ -532,8 +536,10 @@ public:
 	void moveTowardsPositionHover(LocomotorHost &host, const Coord3D &goal, float onPathDistToGoal, float desiredSpeed);  // RW 0x5E742E (lane SHIP-1)
 	void moveTowardsPositionShip(LocomotorHost &host, const Coord3D &goal, float onPathDistToGoal, float desiredSpeed);   // RW 0x5E613F (lane SHIP-1)
 	void moveForward(LocomotorHost &host, const Coord3D &goal, float onPathDistToGoal, float desiredSpeed);              // RW 0x5E586F
-	// RW 0x5E4F44 (ground branch): turns the working matrix by at most `maxTurnRate` radians towards `goal`.
+	// RW 0x5E4F44: turns the working matrix by at most `maxTurnRate` radians towards `goal`.
 	void rotateTowardsPosition(LocomotorHost &host, const Coord3D &goal, float maxTurnRate, float *outRelAngle);
+	// RW 0x5E4FD0 .. 0x5E5413 (lane TAKEOVER-1): its GIANT_BIRD branch (the transform turned about the pivot); false: nothing to turn
+	bool rotateGiantBird(LocomotorHost &host, const Coord3D &goal, float maxTurnRate, float *outRelAngle);
 	// RW 0x5E60C7: copy the object's transform into the working matrix, then rotateTowardsPosition with this
 	// locomotor's turn rate.
 	void rotateTowardsWrapper(LocomotorHost &host, const Coord3D &goal, float *outRelAngle);
@@ -587,10 +593,12 @@ public:
 	// Acceptance-stop lines raised by the moves made so far (S-081, S-084); empty when none applied.
 	const std::vector<std::string> &unverified() const { return m_unverified; }
 	// The stops this component can raise at all (tests pin the exact text).
-	static std::vector<std::string> allStops();
+	static const std::vector<std::string> &allStops();
 
 private:
 	void noteStop(const char *line);
+	// allStops()[index], noted once: the movers raise these on every move, so the text is compared only the first time (a bit per index)
+	void noteStopOf(unsigned index);
 
 	const LocomotorTemplate *m_template;
 	float m_lookAheadMult = 1.0f;       // +0x20
@@ -622,4 +630,5 @@ private:
 	float m_preferredHeightDamping = 1.0f;
 	int m_attackHeightState = 0;
 	std::vector<std::string> m_unverified;
+	unsigned m_notedStopBits = 0; // noteStopOf: the allStops() indices already in m_unverified
 };

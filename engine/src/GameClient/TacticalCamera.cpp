@@ -306,6 +306,9 @@ void TacticalCamera::buildPose(Coord3D &eye, Coord3D &target) const
 {
 	// RW 0x502858 mode 0 (ZH W3DView::buildCameraTransform)
 	Coord3D pos = m_pos;
+	// lane FX-4, RW 0x502936 .. 0x502950: the shake offset (state + 0x70 / + 0x74 = W3DView + 0x118 / + 0x11C, RW 0x489F96) moves the pivot's x, y first
+	pos.x = m_shakeOffsetX + pos.x;
+	pos.y = m_shakeOffsetY + pos.y;
 	if (m_constraintValid)
 	{
 		pos.x = std::min(m_constraintHi[0], std::max(m_constraintLo[0], pos.x));
@@ -426,10 +429,23 @@ void TacticalCamera::startMap(const GameLogic &logic, const WorldHeightMap &heig
 
 void TacticalCamera::lookAt(const Coord3D &world)
 {
+	// RW 0x48CEA3 / BFME2 W3DView::lookAt (0x48D55D): refresh the destination ground before rebuilding the view.
 	m_pos.x = world.x;
 	m_pos.y = world.y;
 	m_pos.z = 0.0f;
+	const float height = sampleTerrainHeight(m_pos.x, m_pos.y);
+	if (height != m_groundLevel)
+	{
+		m_groundLevel = height;
+		m_constraintValid = false;
+	}
 	setCameraTransform();
+	// Retail jumps do not traverse the old view; both render endpoints must be the new pose, even between client frames.
+	snapInterpolation();
+	if (m_jumpHandler)
+	{
+		m_jumpHandler();
+	}
 }
 
 void TacticalCamera::setAngle(float angle)
@@ -537,7 +553,7 @@ float TacticalCamera::freeMaxHeight() const
 
 float TacticalCamera::farPlane() const
 {
-	const float baseline = 1800.0f + 2.0f * fogShift(); // RW 0x48B7B1; PLAY-1 / ZOOM-1 extension.
+	const float baseline = m_clipDepthMultiplier * 1800.0f + 2.0f * fogShift(); // RW 0x48B7B1: GlobalData + 0x950 (1.0) times 1800; PLAY-1 / ZOOM-1 extension.
 	// Presentation fix: a mountain lifts the eye above distant valley terrain.
 	// Reach the lowest terrain along the top-centre ray instead of clipping it
 	// to black at retail's fixed far plane. Far clipping uses forward depth,
@@ -594,6 +610,7 @@ void TacticalCamera::setZoomToDefault()
 void TacticalCamera::resetCamera(const Coord3D *location)
 {
 	// BFME1 W3DView::resetCamera (retail 0x743640) with no duration (RW's click on the middle button: 0x83AD90, the game start: RW 0x63135B -> view slot 0xC8 = RW 0x48D26B)
+	m_scrollDistance = 0.0f; // lane BFME2CAMP1: RW 0x48D286 -> RW 0x485126
 	if (location)
 	{
 		m_pos = *location;
@@ -621,6 +638,7 @@ int TacticalCamera::scrollBy(float dx, float dy)
 	{
 		return 0;
 	}
+	const Coord3D before = m_pos;
 	m_scrollX = dx;
 	m_scrollY = dy;
 	const ICoord2D s = m_pinhole.size();
@@ -639,6 +657,8 @@ int TacticalCamera::scrollBy(float dx, float dy)
 	const float S = m_zoom * 0.25f * m_scrollScalar;
 	const float moveX = (dx * fy + (-fx) * dy) * S;
 	const float moveY = (dx * (-fx) * aspectInt + (-fy) * dy) * S;
+	// lane BFME2CAMP1, RW 0x48C9B9 .. 0x48C9D4: + 0x24F4 += the move's length (Coord3D::length RW 0x403111, the z part 0), x87, stored as a float
+	m_scrollDistance = (float)(std::sqrt((double)moveX * (double)moveX + (double)moveY * (double)moveY) + (double)m_scrollDistance);
 	m_pos.x += moveX;
 	m_pos.y += moveY;
 	int mask = 0;
@@ -662,6 +682,8 @@ int TacticalCamera::scrollBy(float dx, float dy)
 		}
 	}
 	setCameraTransform();
+	const float travelledX = m_pos.x - before.x, travelledY = m_pos.y - before.y;
+	m_userScrollDistance += std::sqrt(travelledX * travelledX + travelledY * travelledY);
 	return mask;
 }
 
@@ -772,6 +794,25 @@ void TacticalCamera::update(bool uiScrolling, bool gamePaused)
 		}
 	}
 
+	// lane FX-4, RW 0x48C0E8 .. 0x48C16E: the shake. At or below 0.01 (RW 0xBE5600) it ends (intensity and offset 0, the view is not rebuilt for it); above,
+	// the offset is the intensity along the angle, and (GlobalData + 0xEA6 / + 0xEA7, the panorama screenshot's slice flags, false / true outside one) the
+	// intensity decays by 0.75 (RW 0xBDC628) and the angle turns half a turn; the view is rebuilt (RW vslot 0x198 asks for a scripted camera move: none here)
+	if (m_shakeIntensity <= 0.01f)
+	{
+		m_shakeIntensity = 0.0f;
+		m_shakeOffsetX = 0.0f;
+		m_shakeOffsetY = 0.0f;
+	}
+	else
+	{
+		m_shakeOffsetX = m_shakeIntensity * m_shakeCos;
+		m_shakeOffsetY = m_shakeSin * m_shakeIntensity;
+		m_shakeIntensity = m_shakeIntensity * 0.75f;
+		m_shakeCos = 0.0f - m_shakeCos;
+		m_shakeSin = 0.0f - m_shakeSin;
+		recalc = true;
+	}
+
 	if (m_lockObject == INVALID_ID)
 	{
 		const float height = sampleTerrainHeight(m_pos.x, m_pos.y);
@@ -848,11 +889,36 @@ void TacticalCamera::update(bool uiScrolling, bool gamePaused)
 	}
 }
 
+// lane FX-4: RW 0x486D86 W3DView::shake
+void TacticalCamera::shake(const Coord3D &epicenter, int type, float angle)
+{
+	if (!m_gd.haveShake())
+	{
+		++m_shakesWithoutData;
+		return;
+	}
+	m_shakeCos = (float)std::cos((double)angle); // MSVCR71 cos / sin (x87, double), stored as float
+	m_shakeSin = (float)std::sin((double)angle);
+	const float base = type >= 0 && type < 6 ? m_gd.shakeIntensity[type] : 0.0f;
+	const float dx = epicenter.x - m_pos.x, dy = epicenter.y - m_pos.y;
+	const float dist = (float)std::sqrt((double)(dx * dx + dy * dy));
+	// a MaxShakeRange of 0 (no retail data) with the epicenter at the view would be 0 / 0 (a NaN view in retail too): presentation code, not shaken here
+	if (dist <= m_gd.maxShakeRange && m_gd.maxShakeRange > 0.0f)
+	{
+		m_shakeIntensity = (1.0f - dist / m_gd.maxShakeRange) * base + m_shakeIntensity;
+		if (m_gd.maxShakeIntensity <= m_shakeIntensity && m_shakeIntensity != m_gd.maxShakeIntensity)
+		{
+			m_shakeIntensity = m_gd.maxShakeIntensity;
+		}
+	}
+}
+
 std::vector<std::string> TacticalCamera::acceptanceStops()
 {
 	return {
 		"[S-450] camera pose: the eye / target maths is RW 0x502858's mode 0 read against ZH W3DView::buildCameraTransform (the rotation about X then Z, the ground level factor); the movement "
-		"modes 1 .. 4 of the state (scripted moves, rotate / zoom / pitch cameras, the waypoint path), the slave camera, the shake and the FXPitch / real-zoom variants are not ported",
+		"modes 1 .. 4 of the state (scripted moves, rotate / zoom / pitch cameras, the waypoint path), the slave camera and the FXPitch / real-zoom variants are not ported; the "
+		"shake (RW 0x486D86, lane FX-4) needs the GameData shake fields (a GameData without them does not shake); CameraShakerVolume (FXList, the scripted shakers) is not ported",
 		"[S-451] GameData: the camera keys must all be present in the install's GameData (their constructor defaults at RW 0x642A00 .. 0x6437FF were resolved for the height, pitch and "
 		"scroll limits only); a mod that deletes one gets an error here, retail would keep the constructor value",
 		"[S-452] scrolling: RW 0x441C56 (the normalisation of the heading of the centre pick ray) is a fast inverse square root (magic 0xBE6EB508 and two Newton steps), the port divides by "
@@ -888,4 +954,3 @@ void DisplayedCameraView::present(int width, int height, double alpha)
 	setFov(cam->verticalFov());
 	set(mix(cam->previousEye(), cam->eye()), mix(cam->previousTarget(), cam->target()));
 }
-

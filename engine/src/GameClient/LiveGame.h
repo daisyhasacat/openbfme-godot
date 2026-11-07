@@ -15,13 +15,16 @@
 
 #pragma once
 
+#include "GameLogic/CampaignCarryover.h"
 #include "Common/GameCommon.h"
 #include "Common/LogicFrameClock.h"
 #include "Common/PlayerList.h"
 #include "Common/SimulationProfile.h"
 #include "Common/Team.h"
 #include "GameClient/ClientEvents.h"
+#include "GameClient/ClientPoolPolicy.h"
 #include "GameClient/DrawableLaunchBones.h"
+#include "GameClient/DrawableWallMeshes.h"
 #include "GameClient/LogicSnapshot.h"
 #include "GameClient/DrawableManager.h"
 #include "GameClient/LiveGameFrameDriver.h"
@@ -63,13 +66,47 @@
 #include <vector>
 
 class ArchiveFileSystem;
+class SdkScriptHost;
 class ArchiveW3DFileSource;
 class WW3DAssetManager;
+struct LinearCampaign; // lane BFME2CAMP1: campaignCarryoverOptions
 
 
 class LiveGame
 {
 public:
+	// lane BFME2CAMP1: the HUD that answers the script engine's client-view conditions (CAMERA_SCROLL_DISTANCE, OBJECTIVES_SCREEN_IS_OPEN); null: none
+	// (main thread). The logic, which may run on the worker, never reads the view itself: publishScriptLocalView copies its answers into atomics at
+	// every frame request (advance / advanceWithDriver / stepFrame, the main thread), and the script host reads only those (lane BFME2CAMP1 review)
+	void setScriptLocalView(const ScriptLocalView *view)
+	{
+		m_scriptLocalView = view;
+		publishScriptLocalView();
+	}
+	const ScriptLocalView *scriptLocalView() const { return m_scriptLocalView; }
+	struct Options;
+	// lane BFME2CAMP1: a campaign mission start's carry-over options, the one rule GameWorld::start_campaign_mission and openbfme_peer's campaign save check
+	// share. `carryText` is the campaign's carry-over state text (a save header's campaignCarryover, campaign_progress_step's "carryover"): parsed;
+	// without one the first mission begins the campaign (beginCampaign RW 0x5EC4EC); a later mission without one gets no carry-over step and `stop` its
+	// [S-4904] line. The mission's DelayCarryoverSpawningOf list is always set. false (with `error`) for a text that does not parse or a mission the
+	// campaign does not have
+	static bool campaignCarryoverOptions(const LinearCampaign &campaign, int mission, const std::string &carryText, Options &lo, std::string &stop,
+										 std::string &error);
+	void publishScriptLocalView()
+	{
+		const ScriptLocalView *v = m_scriptLocalView;
+		m_viewScroll.store(v ? v->cameraScrollDistance() : 0.0f, std::memory_order_relaxed);
+		m_viewObjectivesOpen.store(v && v->objectivesScreenOpen(), std::memory_order_relaxed);
+		m_viewPresent.store(v != nullptr, std::memory_order_release);
+	}
+	// the published answers (any thread)
+	bool publishedCameraScroll(float &distance) const
+	{
+		const bool present = m_viewPresent.load(std::memory_order_acquire);
+		distance = present ? m_viewScroll.load(std::memory_order_relaxed) : 0.0f;
+		return present;
+	}
+	bool publishedObjectivesOpen() const { return m_viewPresent.load(std::memory_order_acquire) && m_viewObjectivesOpen.load(std::memory_order_relaxed); }
 	struct Options
 	{
 		std::string heroStatsProfile; // client profile only, supplied by the hero manager
@@ -108,9 +145,17 @@ public:
 		// map load (viewers, object tests); 0 never; 1 always. A campaign mission is a single player game (GameLogic + 0x110 = 0) with the map's own sides.
 		int mapScripts = -1;
 		bool campaign = false;
+		// lane BFME2CAMP1: a tutorial map (AptMainMenu::OnTutorial Basic / Advanced, RW 0x91B825): a campaign-style single player game of mode 6 (GameLogic + 0x110)
+		bool tutorial = false;
 		// lane CAMP-1: the campaign's difficulty (0 easy, 1 normal, 2 hard: the main menu command's first character, RW 0x91C108): lane CAMP-1H: the
 		// new game message's difficulty, TheGameLogic + 0xA4 (prepareNewGame RW 0x77948E; the script engine's stays 1); -1 leaves GameLogic's reset value (1)
 		int difficulty = -1;
+		// lane BFME2CAMP1: the campaign's carry-over at this mission's start (GameLogic/CampaignCarryover.h, addCarryoverStuffToMap RW 0x5EBD76 from
+		// startNewGame RW 0x6315E8): the campaign's state (beginCampaign RW 0x5EC4EC for its first mission, the previous mission's won state after) and the
+		// mission's DelayCarryoverSpawningOf. The game keeps the state (GameLogic::campaignCarryover) and changes it; off: no carry-over step
+		bool campaignCarryover = false;
+		CampaignCarryover::State carryover;
+		std::vector<std::string> carryoverDelayed;
 		// lane UBER-1: the simulation profile of a game without a start message (a started game takes its setup's, SkirmishGameInfo::simulationProfile)
 		SimulationProfile simulationProfile = SimulationProfile::Faithful;
 	};
@@ -129,6 +174,9 @@ public:
 	// being computed. The drawables belong to the render side and need no wait. Lane RENDERWAIT-1: each accessor passes its caller's file and line
 	// (filled in by the compiler) to waitIdle, which names the site of every blocking wait (logicWaitSites)
 	GameLogic &logic(const char *file = __builtin_FILE(), int line = __builtin_LINE()) { holdLogic(file, line); return *m_logic; }
+	// lane SDK-2: the mod scripts' banners (ui.banner) and report lines since the last call; any thread (GameLogic/Sdk/SdkScriptHost.h)
+	std::vector<std::string> takeSdkBanners();
+	std::vector<std::string> takeSdkReports();
 	DrawableManager &drawables() { return *m_drawables; }
 	// RENDER-2: the launch bone provider the logic's projectile launches ask (CombatState::setLaunchOffsets)
 	DrawableLaunchBones &launchBones(const char *file = __builtin_FILE(), int line = __builtin_LINE()) { holdLogic(file, line); return *m_launchBones; }
@@ -148,7 +196,7 @@ public:
 	AIWorld &ai(const char *file = __builtin_FILE(), int line = __builtin_LINE()) { holdLogic(file, line); return *m_ai; }
 	// VIS-1: TheShroudManager (attached to the logic) and the GameData / MultiplayerSettings values it was made from
 	ShroudManager &shroud(const char *file = __builtin_FILE(), int line = __builtin_LINE()) { holdLogic(file, line); return *m_shroud; }
-	// lane ONLINE-3 (retail PlayerList::observeNextPlayer, RW 0x6A8D2B; BFME2 decomp reverse/attempts/0x002a8306.cpp, tier B same-shape): when the local
+	// lane ONLINE-3 (retail PlayerList::observeNextPlayer, RW 0x6A8D2B; BFME2 decomp PlayerList_getNthPlayer.cpp, tier B same-shape): when the local
 	// player is not active (an observer, a spectator's ReplayObserver side, or defeated: RW 0x6A87F5 with isPlayerActive RW 0x6AAC52), the view steps
 	// from the observed player (TheControlBar + 0x218, RW 0x6A8839; none: the local player) to the next / prior human player (Player + 0x5C == 0, read
 	// as PLAYER_HUMAN: inference, S-3902) that is active, or to the observer itself ("all"), wrapping; the observed player becomes the shroud's view
@@ -180,7 +228,8 @@ public:
 	// refreshes their interpolated poses. Returns the logic frames run.
 	// the milestones of Options::progress with what runs before each, for reports and tests
 	static std::vector<std::pair<int, std::string>> progressMilestones();
-	int advance(double seconds);
+	// wallSeconds supplies the unscaled render delta at accelerated speed; omitted callers run at normal speed.
+	int advance(double seconds, double wallSeconds = -1.0);
 	// lane MP-1: installs (or with null removes) the frame driver; the driver must outlive its installation. SMOOTH-1 (review r4): called by the protocol
 	// owner (the thread that calls advance); it first drains the previous driver (every batch already queued runs, its completions are consumed by that
 	// driver: complete batches only, so this never waits for the network), then takes the new driver's capture spec and starts its cursors at the logic's
@@ -203,7 +252,8 @@ public:
 	UnsignedInt protocolFrame() const { return m_protocolFrame; }
 	UnsignedInt nextBatchFrame() const { return m_nextBatchFrame; }
 	// frames that were due but could not run because the driver held them (the lockstep waited); their time is not caught up (ZH Network::timeForNewFrame
-	// resets its frame time when it falls more than two frames behind). Only the clock's time is dropped: an authoritative batch is never skipped
+	// resets its frame time when it falls more than two frames behind), except the frame that waited: lane NETLAG-2 keeps it due, so it runs as soon as
+	// its input is complete. Only the clock's time is dropped: an authoritative batch is never skipped
 	unsigned long long stalledFrames() const { return m_stalledFrames; }
 	// SMOOTH-1: batches the driver handed out, and completions it consumed (each exactly once, in frame order)
 	unsigned long long batchesAcquired() const { return m_batchesAcquired; }
@@ -212,6 +262,8 @@ public:
 	static constexpr size_t kMaxQueuedBatches = 16;
 	// the fraction of the logic frame elapsed, in [0, 1): the 5 Hz clock's, or in six tick pacing the phases done plus the tick's fraction over six
 	double alpha() const;
+	// lane NETLAG-2: whole milliseconds until the 5 Hz clock makes the next logic frame due (presentation timing for the frame driver, LiveGameRunner.cpp)
+	std::uint32_t msUntilNextFrame() const;
 	// lane SMOOTH-1: the drawables are posed between two logic frames by alpha (default), or, off, at the current logic transform: the stepped 5 Hz
 	// look of a client without interpolation (the before / after comparison of the benchmark and the video). Presentation only, never the logic.
 	void setRenderInterpolation(bool enabled) { m_renderInterpolation = enabled; }
@@ -243,6 +295,16 @@ public:
 	void setClientWindowParkMs(double ms);
 	// diagnostic (tests): the worker sleeps this long before each frame (Options::workerFrameDelayMs); only while the worker is off
 	void setWorkerFrameDelayMs(int ms) { m_options.workerFrameDelayMs = m_threaded ? m_options.workerFrameDelayMs : ms; }
+	// lane WORKERFAIL-1: a frame that throws on the worker stops the logic. With a handler (the game: GameWorld, set before the worker runs) the handler gets
+	// the text on the worker thread, logicFailure() keeps it and the waits return with the worker idle: a wait can sit under a Godot-bound method (HUD input),
+	// where a rethrown exception has no catch and ends the process through std::terminate, its text lost. Without a handler (tests, tools) the waits rethrow it.
+	void setLogicFailureHandler(std::function<void(const std::string &)> handler);
+	// the text of the exception that stopped the logic worker ("" while it runs)
+	std::string logicFailure() const;
+	// the exception's what(), or a name for one that is no std::exception
+	static std::string describeWorkerFailure(std::exception_ptr failure);
+	// diagnostic (tests, --crash-test-logic): the worker's next frame throws std::runtime_error(text)
+	void setWorkerFrameFailure(const std::string &text);
 	struct ClientWindowStats
 	{
 		unsigned long long opened = 0;   ///< render frames whose window opened
@@ -304,11 +366,20 @@ public:
 		const std::unique_lock<std::mutex> lock = lockPublication("lastWorkerFrameMs"); // the worker writes it under the same mutex (review r2)
 		return m_lastWorkerFrameMs;
 	}
+	// lane PERF-CLIENT: whether the logic worker is behind its clock (ClientPoolPolicy, fed by the worker with every frame it completes); the client
+	// pool's size follows it. False while the logic runs on the calling thread
+	bool workerBehind() const
+	{
+		const std::unique_lock<std::mutex> lock = lockPublication("workerBehind");
+		return m_clientPoolPolicy.behind();
+	}
 	unsigned long long droppedFrames() const { return m_droppedFrames; }
 
 	// lane SCRIPT-1: the script engine's client requests (camera, UI, audio ...) published with the frames, in execution order (render side; taken once)
 	std::vector<ScriptClientRequest> takeScriptRequests();
 	bool mapScriptsRunning() const { return m_mapScripts; }
+	// lane CHEAT-1: the Cheat Mode lines (GameLogic/CheatMode.h) published with the frames, in execution order (render side; taken once)
+	std::vector<CheatMode::LogEntry> takeCheatAnnouncements();
 
 	struct Report
 	{
@@ -322,8 +393,10 @@ public:
 		std::vector<std::string> startSlotPlayers;           ///< per slot: the player name ("" for an unoccupied slot)
 		std::vector<StartingBase::Placed> startingObjects;   ///< the starting structures and units, in placement order
 		int createAHeroes = 0;                               ///< lane HERO-2: the slots whose Create-a-Hero the game start installed
+		int carryoverObjects = 0;                            ///< lane BFME2CAMP1: the campaign's carry-over objects the mission start made
 		size_t spellBooks = 0;                               ///< SPELL-1: the players' spell book objects made at the game start (RW 0x6B183D)
 		std::vector<std::string> startErrors;                ///< problems of the start (a slot without waypoint, a template that does not exist ...)
+		std::vector<std::string> startNotes;                 ///< lane WOTR-1: what the start skipped as retail does (reported, not an error)
 		std::vector<int> progressCalls;                      ///< the percentages reported
 		GameLogic::Report logic;
 		DrawableManager::Report drawables;
@@ -333,6 +406,7 @@ public:
 		std::vector<std::string> movement;     ///< MOVE-1: the AI world's movement-data errors
 		std::vector<std::string> movementStops; ///< MOVE-1: the stops the movers raised
 		std::vector<std::string> launchBoneProblems; ///< RENDER-2: the launch-bone provider's data problems (missing models / bones / pose animations); counted in its S-460 stop
+		std::vector<std::string> wallMeshProblems;   ///< WALL-1: the wall-mesh provider's data problems (a missing wall model, in errors too; a named mesh the model lacks)
 	};
 	// the load-time part is fixed; logic and drawables are read when this is called
 	Report report() const;
@@ -356,10 +430,16 @@ private:
 	std::unique_ptr<PlayerList> m_players;
 	std::unique_ptr<WW3DDrawAssets> m_launchAssets;      // RENDER-2: the launch bone provider's view of the assets
 	std::unique_ptr<DrawableLaunchBones> m_launchBones; // RENDER-2: the drawables' launch bones (RW 0x6756A1) for the logic's projectile launches; before the logic
+	std::unique_ptr<DrawableWallMeshes> m_wallMeshes;   // WALL-1: the wall pieces' walkable surfaces for the pathfinder (RW 0x936B7D); before the AI world
 	std::unique_ptr<DrawableManager> m_drawables; // before the logic: the logic deletes its objects (and calls the manager) in its destructor first
 	std::unique_ptr<LiveScripting> m_scripting;   // likewise: the objects' destructors call the world hooks
+	std::unique_ptr<SdkScriptHost> m_sdkScripts; // lane SDK-2: the mod's sim Luau scripts (before the logic: they listen to it)
 	std::unique_ptr<class MapScriptSetup> m_scriptSetup; // lane SCRIPT-1: the libraries the script engine's lists point into (outlive the logic)
 	std::unique_ptr<ScriptEngineHost> m_scriptHost;      // lane SCRIPT-1
+	const ScriptLocalView *m_scriptLocalView = nullptr; // lane BFME2CAMP1 (the HUD's; it unregisters itself; main thread only)
+	std::atomic<bool> m_viewPresent{ false };            // lane BFME2CAMP1 (review): the view's answers as published for the logic
+	std::atomic<bool> m_viewObjectivesOpen{ false };
+	std::atomic<float> m_viewScroll{ 0.0f };
 	bool m_mapScripts = false;
 	BuildCommands m_buildCommands;                // BUILD-1: the construction messages
 	AICommands m_aiCommands;                      // MOVE-1: before the logic; its handlers are registered on m_dispatch
@@ -384,6 +464,8 @@ private:
 	std::string m_cahHeroID;
 	int m_cahMode = -1;
 	bool m_cahResultRecorded = false;
+	bool m_cahStatisticsDirty = false;
+	std::string m_cahSaveError;
 	std::vector<std::string> m_cahEarned;
 	void consumeHeroStatistics(const std::vector<ClientEvent> &events, const LogicSnapshot *snapshot);
 
@@ -393,6 +475,8 @@ private:
 	unsigned long long m_droppedFrames = 0;
 	LiveGameFrameDriver *m_frameDriver = nullptr; ///< lane MP-1 (protocol owner; the worker sees it only through a queued WorkItem)
 	unsigned long long m_stalledFrames = 0;
+	int m_owedFrames = 0;   ///< lane NETLAG-2: a frame the clock made due that waited for the lockstep: due at the next advance
+	int m_owedThisCall = 0; ///< lane NETLAG-2: the owed frames included in this advance's due count
 	bool m_loaded = false;
 	bool m_closed = false; ///< lane SAVE-4e (loadSnapshot)
 	// ---- SMOOTH-1 + MP-1 (review r4): numbered batches and completion records ----
@@ -413,10 +497,14 @@ private:
 	std::shared_ptr<const FrameCompletion> captureCompletion(const WorkItem &item, std::int64_t simUs = -1); ///< simulation owner, after the frame
 
 	// lane SCRIPT-1: the sides' lists and libraries into the logic's ScriptEngine (before the map's objects exist)
+	static bool mapScriptsWanted(const Options &options);
+	bool buildMapScriptSetup(const SidesList &sidesUsed, const std::set<std::string> &slotSides, std::string *error);
 	bool setupMapScripts(const Options &options, const SidesList &sidesUsed, const std::set<std::string> &slotSides, std::string *error);
 	// ---- lane SMOOTH-1: the simulation owner, the publication and the presentation ----
 	void runFrameOwned(const WorkItem &item); ///< one logic frame, its hash, its snapshot and events published (on the owner's thread)
 	void publish(std::shared_ptr<const FrameCompletion> completion = nullptr); ///< the completed state as a snapshot plus the events since the last one
+	void updatePresentationRate(double seconds, double wallSeconds);
+	void keepPresentationSnapshotLocked(const std::shared_ptr<const LogicSnapshot> &snapshot);
 	void present(double seconds);         ///< the render side: events, animations, poses from the presented snapshot
 	void endWindowForPresent();           ///< RENDERWAIT-1: the render thread's events made in its client window are taken, then the window ends
 	// RENDERWAIT-1 r2 (Sol r1 #1): pending input apart from the simulation's command list. What the render thread appended to commands() while it held
@@ -436,7 +524,10 @@ private:
 	mutable std::mutex m_pubMutex;
 	mutable std::condition_variable m_pubCv;
 	std::shared_ptr<const LogicSnapshot> m_published, m_publishedPrev; ///< guarded by m_pubMutex
+	std::deque<std::shared_ptr<const LogicSnapshot>> m_presentationHistory; ///< guarded; bounded delayed-presentation snapshots
+	double m_presentationRate = 1.0; ///< guarded for publication; simulation seconds per wall second, presentation only
 	std::vector<ClientEvent> m_publishedEvents;                         ///< guarded: published, not yet taken by the render side
+	std::vector<CheatMode::LogEntry> m_publishedCheatLines;               ///< guarded: lane CHEAT-1, published, not yet taken
 	std::vector<ScriptClientRequest> m_publishedScriptRequests;         ///< guarded: lane SCRIPT-1, published, not yet taken
 	std::vector<std::pair<UnsignedInt, std::uint32_t>> m_frameHashes;   ///< guarded
 	std::deque<WorkItem> m_work;          ///< guarded: frames requested from the worker (numbered batches with a driver), not started
@@ -444,7 +535,11 @@ private:
 	bool m_running = false;               ///< guarded: the worker is inside a frame
 	bool m_stop = false;                  ///< guarded
 	std::exception_ptr m_workerError;     ///< guarded
+	std::string m_logicFailure;           ///< guarded: lane WORKERFAIL-1, m_workerError's text
+	std::function<void(const std::string &)> m_logicFailureHandler; ///< guarded
+	std::string m_workerFrameFailure;     ///< guarded: setWorkerFrameFailure
 	double m_lastWorkerFrameMs = 0.0;     ///< guarded
+	ClientPoolPolicy m_clientPoolPolicy;  ///< guarded: lane PERF-CLIENT, the worker's frames against the logic clock (reset when the worker starts)
 	std::thread m_worker;
 	std::atomic<std::thread::id> m_workerId{};
 	bool m_threaded = false;

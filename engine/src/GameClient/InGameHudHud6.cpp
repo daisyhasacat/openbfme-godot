@@ -289,9 +289,12 @@ void InGameHud::bootHud6()
 	});
 	if (isBfme1Data(m_config.fs))
 	{
-		// BFME1 has no OnHelpBoxLoaded callback/content-frame protocol.
-		// Its native tooltip is drawn by the device over the HUD.
-		m_helpBox.loaded("_level" + std::to_string(palantir->movieLevel()) + ".BFME1Help", [](const auto &, const auto &, const auto &) { return true; });
+		// BFME1 has no OnHelpBoxLoaded callback. Its Palantir movie owns the
+		// bordered HelpBox and invokes the fixed HelpBoxText render callback
+		// (BFME1 0x593E60 / 0x5649A0 / 0x592640).
+		m_helpBox.loadedBfme1("_level" + std::to_string(palantir->movieLevel()), [palantir](const std::string &path, const std::string &fn, const std::vector<std::string> &args) {
+			return palantir->invoke(path, fn, args);
+		});
 	}
 
 }
@@ -458,6 +461,22 @@ void InGameHud::updateHud6(ObjectID context, const std::string &faction, double 
 	{
 		have = hoveredAptButton(p, hovered);
 	}
+	// lane CAMPUI-1: a stance item of the toggle's radial: its help (RW 0x96F33E) is the toggle's TextLabel / DescriptLabel at the item stance's index in the
+	// toggle's Stances (RW 0x96F2DA), made as a command button help with no cost (RW 0x975070 with empty cost / command point texts); provider kind 5, keyed
+	// by the stance. INFERENCE: its delay is the arc's (the item provider's vslot 2 was not read)
+	AptPalantir::StanceItemHit stanceItem;
+	if (!have && m_wm && m_palantirRef)
+	{
+		AptButtonInst *button = m_wm->apt().input().currentButton();
+		if (button && m_palantirRef->stanceItemAt(button->targetPath(), stanceItem))
+		{
+			p.bar = 5;
+			p.slot = stanceItem.slot;
+			p.button = stanceItem.toggle;
+			p.object = (std::uint32_t)stanceItem.stance;
+			have = true;
+		}
+	}
 	ObjectID unit = INVALID_ID;
 	if (!have)
 	{
@@ -513,6 +532,20 @@ void InGameHud::updateHud6(ObjectID context, const std::string &faction, double 
 				const UnitHelpSource::Text u = UnitHelpSource::compose(*o, text, logic, local);
 				return std::make_shared<CommandButtonHelp>(CommandButtonHelp::simple(u.title, u.text, u.unported));
 			}
+			if (p.bar == 5)
+			{
+				CommandButtonHelp::Text t;
+				const size_t k = stanceItem.listIndex < 0 ? (size_t)-1 : (size_t)stanceItem.listIndex;
+				const CommandButton &toggle = *stanceItem.toggle;
+				// RW 0x75CE90 / 0x75CEFC: the label of the slot (an index past the lists, or a stance not in them, gives the missing-label text)
+				t.name = fetchOrMissing(text, k < toggle.m_textLabel.size() ? toggle.m_textLabel[k] : std::string());
+				t.description = fetchOrMissing(text, k < toggle.m_descriptLabel.size() ? toggle.m_descriptLabel[k] : std::string());
+				if (k >= toggle.m_textLabel.size() || k >= toggle.m_descriptLabel.size())
+				{
+					t.unported.push_back("stance " + std::to_string(stanceItem.stance) + " has no label slot in " + toggle.m_name);
+				}
+				return std::make_shared<CommandButtonHelp>(t, text, imageSizeOf, (void *)images);
+			}
 			CommandButtonHelp::Text t = CommandButtonHelp::compose(hovered, text, logic, player, local, selection, faction, &selected);
 			return std::make_shared<CommandButtonHelp>(t, text, imageSizeOf, (void *)images);
 		});
@@ -528,6 +561,10 @@ void InGameHud::updateHud6(ObjectID context, const std::string &faction, double 
 	const float pixelPerStageX = (float)m_windowW / (sx1 - sx0), pixelPerStageY = (float)m_windowH / (sy1 - sy0);
 	const float fontScale = pixelPerStageX < pixelPerStageY ? pixelPerStageX : pixelPerStageY;
 	const HelpBoxSettings &settings = m_helpSettings;
+	// The attached live HUD can update before Palantir.apt has loaded its first
+	// frame. BFME1 has no OnHelpBoxLoaded handshake: wait for OnInitialized
+	// before requesting the native text-width sample, or it is lost forever.
+	if (isBfme1Data(m_config.fs) && (!m_palantirRef || !m_palantirRef->initialized())) return;
 	m_helpBox.update(
 		[&](CommandButtonHelp &h, int width) { return h.setWidthAndComputeHeight(width, settings, fontScale, pixelPerStageX, pixelPerStageY, metrics); },
 		stagePerPixelY);

@@ -34,6 +34,7 @@ class GameLogic;
 class ThingTemplate;
 struct EndGameView;
 
+// every field is pinned by test_perf2_snapshot.cpp's bytesOf (the pool's build against the serial one): a field added here goes there too
 struct ObjectSnapshot
 {
 	ObjectID id = INVALID_ID;
@@ -88,16 +89,24 @@ struct ObjectSnapshot
 	// an ALWAYS_VISIBLE object and for one without a record (a contained object); FXList::doFXObj asks the cell at the position of the latter (RW 0x5E22C4)
 	bool shroudRecord = false;
 	bool effectivelyDead = false;  ///< lane VISUAL-2: Object::isEffectivelyDead (the drawable's shroud grace is 3 s longer, RW 0x64849E: GameClient/DrawableShroud.h)
+	// lane OCCLUDE-1: the behind-building roles the object qualifies for at this frame (RTS3DSceneOcclusion::eligibility bits: occluder, occludee)
+	std::uint8_t occlusion = 0;
 	// lane STEALTH-1: the invisibility look for the local player (InvisibilityManager::clientLook, RW 0x81AA03): 0 normal, 1 / 4 the friend's opacity pulse, 3 detected
 	// for an enemy, 5 invisible for an enemy (not drawn, not picked)
 	int stealthLook = 0;
 	// lane GARRISON-1: Object::isDrawableHidden (RW 0x6718FB, set by the contains): the device layer draws nothing for it
 	bool drawableHidden = false;
+	// lane FBSIM-1: a dozer's phantom structure (status PHANTOM_STRUCTURE, DozerAIUpdate slot 0x64 RW 0x88D272): its drawable is drawn at 0.4 opacity (RW 0xBE0DE4) when
+	// its owner is the local player (RW 0x6AA7B2) and hidden for everyone else (drawableHidden set; RW 0x6718FB(1))
+	bool phantomStructure = false;
 	// lane COMBAT-4: the object this one is contained in (Object + 0x27C; INVALID_ID when none): the drawable of a rider / crew member takes its container's
 	// DependencySharedModelFlags (RW 0x4BF2D8, DrawableManager::syncTransforms)
 	ObjectID containedBy = INVALID_ID;
-	float stealthOpacityMin = 1.0f, stealthOpacityMax = 1.0f; ///< the friend's pulse range (InvisibilityManager::clientOpacityRange), set for looks 1 / 4
-	unsigned stealthCycleFrames = 0;
+	float stealthOpacityMin = 1.0f, stealthOpacityMax = 1.0f; ///< the friend's pulse range (InvisibilityManager::clientOpacityRange)
+	float stealthCycleSeconds = 1.0f;                      ///< the pulse / blend cycle in seconds (InvisibilityManager::clientOpacityRange)
+	// lane STEALTHLOOK-1: the object's stealth parent (Object::getHordeObject(false), RW 0x693A1A): a horde member's drawable imitates its
+	// opacity / hidden / look each client frame (RW 0x673114); INVALID_ID for the horde itself and unparented objects
+	ObjectID stealthParent = INVALID_ID;
 	// lane PROJ-2: a launched projectile (ProjectileUpdateInterface::projectileClientInfo): the frame of its last launch or bounce, its launcher, the end
 	// of its flight and the segment count; the drawable's fade (GameClient/DrawableFade, RW 0x85EE00 .. 0x85EF31) starts from them
 	bool projectile = false;
@@ -124,6 +133,16 @@ struct ShroudView
 	unsigned displayLevel(CellShroudStatus s) const { return levels[(int)s]; }
 };
 
+// TheTaintManager's cells as the client draws them (W3DTaint: the visitor 0x006C0DA0 / setTaintLevel BFME2 0x00073CC0 per cell): the kind bytes, copied only when the
+// grid's revision moved (otherwise the previous snapshot's is shared)
+struct TaintView
+{
+	int countX = 0, countY = 0;
+	float cellSize = 1.0f, originX = 0.0f, originY = 0.0f;
+	std::uint64_t revision = 0;
+	std::vector<std::uint8_t> kinds; ///< TaintManager::kindAt per cell, row y * countX + x (0x80 neutral)
+};
+
 // The players as the client's per-frame readers ask them (the audio manager's shouldPlayLocally queries)
 struct PlayerView
 {
@@ -139,11 +158,20 @@ struct PlayerView
 struct LogicSnapshot
 {
 	UnsignedInt frame = 0;          ///< the completed logic frame
+	bool showBehindBuildingMarkers = true; ///< lane OCCLUDE-1: TheGameLogic + 0x99 (script action 298)
+	// lane OCCLUDE-1: GameData UseBehindBuildingMarker and OccludedColorLuminanceScale, carried here so the renderer never waits for the logic to read them
+	bool useBehindBuildingMarker = true;
+	float occludedColorLuminanceScale = 0.5f;
 	ObjectID nextObjectId = 1;      ///< the logic's next object id at that frame: an id below it that the snapshot lacks is gone, one at or above it is not published yet
+	int globalWeather = 0;          ///< lane WEATHER-1: TheGlobalWeatherSystem + 0x10 at that frame (0 NONE .. 4 SUNNY), read by the client weather
 	bool hashed = false;
 	std::uint32_t stateHash = 0;    ///< the state hash of the frame (when hashed)
 	std::vector<ObjectSnapshot> objects; ///< ascending id
+	// id -> index in objects, -1 when that id is absent. Built once the id sort finishes and dropped with the snapshot.
+	// find checks the stored id, so a stale slot cannot return another object's pose.
+	std::vector<int> idToIndex;
 	std::shared_ptr<const ShroudView> shroud;   ///< null without a shroud manager
+	std::shared_ptr<const TaintView> taint;     ///< TheTaintManager's cells
 	std::shared_ptr<const PlayerView> players;
 	std::shared_ptr<const EndGameView> endGame; ///< lane END-1: the victory state the end sequence reads (GameClient/EndGame.h)
 	std::vector<ObjectID> observedSelection; ///< CASTER-1: recorded command selection, never a new selection command
@@ -152,7 +180,9 @@ struct LogicSnapshot
 	const ObjectSnapshot *find(ObjectID id) const;
 
 	// Builds the snapshot of the logic's current (completed) state. `previous` gives lastMovedFrame its history (null: the first snapshot).
-	// Must run on the thread that owns the simulation, between frames.
+	// Must run on the thread that owns the simulation, between frames (lane PERF-SNAP: the records are filled on the logic job pool under the
+	// canonical floating-point environment, which build sets for its lifetime and restores; a dispatch from another environment would throw
+	// std::logic_error from the pool).
 	// lane ONLINE-3: viewPlayer >= 0: the shroud of that player instead of the local player's (the player an observer looks at, LiveGame::observeNextPlayer)
 	static std::shared_ptr<const LogicSnapshot> build(GameLogic &logic, const LogicSnapshot *previous, bool hashed, std::uint32_t stateHash, int viewPlayer = -1,
 		bool teamVision = false); ///< viewPlayer -2: omniscient presentation (no simulation mutation)

@@ -1,6 +1,9 @@
+#include "Common/AsciiString.h"
 // OpenBFME. GPL-3.0. See GodotGameAudio.h.
 
 #include "GodotDevice/GodotGameAudio.h"
+#include "Common/NumericState.h"
+#include "Common/PathIO.h"
 
 #include "GameClient/Eva.h"
 #include "GameClient/LiveGameAudio.h"
@@ -388,10 +391,62 @@ size_t GodotAudioDevice::activeVoices() const
 // ---------------------------------------------------------------------------------------------------------------------------------
 // GameAudio
 // ---------------------------------------------------------------------------------------------------------------------------------
+struct GameAudio::PreparedAudio
+{
+	std::unique_ptr<INIEnvironment> environment;
+	std::unique_ptr<AudioIniState> ini;
+	std::string error;
+};
+
+Dictionary GameAudio::begin_boot(const Ref<RetailFileSystem> &fs, bool shellOnly)
+{
+	Dictionary result;
+	PackedStringArray errors;
+	if (m_bootTask.valid() || m_ini) errors.push_back("audio boot has already started");
+	else if (fs.is_null() || !fs->is_mounted()) errors.push_back("retail file system is not mounted");
+	else
+	{
+		m_bootFs = fs;
+		m_bootShellOnly = shellOnly;
+		ArchiveFileSystem *archives = fs->archive();
+		try
+		{
+			m_bootTask = std::async(std::launch::async, [archives, shellOnly] {
+				auto data = std::make_unique<PreparedAudio>();
+				try
+				{
+					NumericState::normalizeFloatingPointEnvironment();
+					data->environment = std::make_unique<INIEnvironment>();
+					data->environment->fileSystem = archives;
+					data->ini = std::make_unique<AudioIniState>();
+					data->ini->registerBlocks(data->environment->blocks);
+					INI ini(*data->environment);
+					data->ini->loadAll(ini);
+					if (!shellOnly) { data->ini->loadEva(ini); data->ini->loadLargeGroupAudio(ini); }
+				}
+				catch (const INIException &e) { data->error = "audio INI: " + e.message(); }
+				catch (const std::exception &e) { data->error = "menu music: " + std::string(e.what()); }
+				catch (...) { data->error = "unknown exception during background audio parsing"; }
+				return data;
+			});
+		}
+		catch (const std::exception &e) { m_bootFs.unref(); errors.push_back(toGodot(e.what())); }
+	}
+	result["ok"] = errors.is_empty(); result["errors"] = errors;
+	return result;
+}
+
+bool GameAudio::is_boot_ready() const
+{
+	return m_bootTask.valid() && m_bootTask.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+}
+
 GameAudio::GameAudio() = default;
 
 GameAudio::~GameAudio()
 {
+	if (m_bootTask.valid()) { m_bootTask.wait(); m_bootTask = {}; }
+	m_bootFs.unref();
 	tearDown();
 }
 
@@ -447,6 +502,8 @@ void GameAudio::_notification(int what)
 
 void GameAudio::_bind_methods()
 {
+	ClassDB::bind_method(D_METHOD("begin_boot", "fs", "shell_only"), &GameAudio::begin_boot);
+	ClassDB::bind_method(D_METHOD("is_boot_ready"), &GameAudio::is_boot_ready);
 	ClassDB::bind_method(D_METHOD("boot", "fs", "config"), &GameAudio::boot);
 	ClassDB::bind_method(D_METHOD("set_shell_source", "fs"), &GameAudio::set_shell_source);
 	ClassDB::bind_method(D_METHOD("is_booted"), &GameAudio::is_booted);
@@ -499,6 +556,18 @@ Dictionary GameAudio::boot(const Ref<RetailFileSystem> &fs, const Dictionary &co
 	Dictionary result;
 	PackedStringArray errors;
 	result["ok"] = false;
+	std::unique_ptr<PreparedAudio> prepared;
+	if (m_bootTask.valid())
+	{
+		if (fs != m_bootFs || !is_boot_ready() || (bool)config.get("shell_only", false) != m_bootShellOnly)
+		{
+			errors.push_back("background audio boot is running or belongs to different inputs");
+			result["errors"] = errors; return result;
+		}
+		prepared = m_bootTask.get();
+		m_bootFs.unref();
+		if (!prepared->error.empty()) { errors.push_back(toGodot(prepared->error)); result["errors"] = errors; return result; }
+	}
 	tearDown();
 	if (fs.is_null() || !fs->is_mounted())
 	{
@@ -509,33 +578,41 @@ Dictionary GameAudio::boot(const Ref<RetailFileSystem> &fs, const Dictionary &co
 	m_fs = fs;
 	m_shellOnly = (bool)config.get("shell_only", false);
 	ArchiveFileSystem *archive = fs->archive();
-	m_env = std::make_unique<INIEnvironment>();
-	m_env->fileSystem = archive;
-	m_ini = std::make_unique<AudioIniState>();
-	m_ini->registerBlocks(m_env->blocks);
-	try
+	if (prepared)
 	{
-		INI ini(*m_env);
-		m_ini->loadAll(ini);
-		if (!m_shellOnly)
+		m_env = std::move(prepared->environment);
+		m_ini = std::move(prepared->ini);
+	}
+	else
+	{
+		m_env = std::make_unique<INIEnvironment>();
+		m_env->fileSystem = archive;
+		m_ini = std::make_unique<AudioIniState>();
+		m_ini->registerBlocks(m_env->blocks);
+		try
 		{
-			m_ini->loadEva(ini); // AUDIO-2: TheEva's tables (Default\Eva.ini then Eva.ini, RW 0x5DE837) for the in-game announcer
-			m_ini->loadLargeGroupAudio(ini); // AUDIO-2: LargeGroupAudio.ini (RW 0x60D70E) for the group sounds of a live game
+			INI ini(*m_env);
+			m_ini->loadAll(ini);
+			if (!m_shellOnly)
+			{
+				m_ini->loadEva(ini); // AUDIO-2: TheEva's tables (Default\Eva.ini then Eva.ini, RW 0x5DE837) for the in-game announcer
+				m_ini->loadLargeGroupAudio(ini); // AUDIO-2: LargeGroupAudio.ini (RW 0x60D70E) for the group sounds of a live game
+			}
 		}
-	}
-	catch (const INIException &e)
-	{
-		errors.push_back(toGodot(std::string("audio INI: ") + e.message()));
-		result["errors"] = errors;
-		tearDown();
-		return result;
-	}
-	catch (const std::exception &e)
-	{
-		errors.push_back(toGodot(std::string("menu music: ") + e.what()));
-		result["errors"] = errors;
-		tearDown();
-		return result;
+		catch (const INIException &e)
+		{
+			errors.push_back(toGodot(std::string("audio INI: ") + e.message()));
+			result["errors"] = errors;
+			tearDown();
+			return result;
+		}
+		catch (const std::exception &e)
+		{
+			errors.push_back(toGodot(std::string("menu music: ") + e.what()));
+			result["errors"] = errors;
+			tearDown();
+			return result;
+		}
 	}
 	// the RotWK game.dat's own generator (RW 0x6D315D, audio array 0xDA1C8C) unless the config names the ZH one: audio draws never touch the logic RNG
 	RandomAlgorithm algorithm = RandomAlgorithm::RotWK_GameDat_LCG;
@@ -545,7 +622,35 @@ Dictionary GameAudio::boot(const Ref<RetailFileSystem> &fs, const Dictionary &co
 	}
 	const std::uint32_t seed = config.has("seed") ? (std::uint32_t)(int64_t)config["seed"] : 1u;
 	const std::uint64_t budgetMb = config.has("decoded_budget_mb") ? (std::uint64_t)(int64_t)config["decoded_budget_mb"] : 128u;
-	m_cache = std::make_unique<AudioAssetCache>(archive, budgetMb << 20);
+	std::string audioLanguage;
+	if (fs->is_bfme1())
+	{
+		for (const MountedArchive &mounted : fs->mountedArchives())
+		{
+			std::string path = AsciiStringUtil::lowered(mounted.canonicalPath);
+			for (char &c : path) if (c == '\\') c = '/';
+			if (path.rfind("lang/", 0) == 0 && path.size() > 14 && path.substr(path.size() - 9) == "audio.big")
+			{
+				const std::string language = path.substr(5, path.size() - 14);
+				if (!audioLanguage.empty() && audioLanguage != language)
+				{
+					errors.push_back("BFME1 audio has multiple mounted language archives");
+					result["errors"] = errors;
+					tearDown();
+					return result;
+				}
+				audioLanguage = language;
+			}
+		}
+		if (audioLanguage.empty())
+		{
+			errors.push_back("BFME1 audio has no mounted language audio archive");
+			result["errors"] = errors;
+			tearDown();
+			return result;
+		}
+	}
+	m_cache = std::make_unique<AudioAssetCache>(archive, budgetMb << 20, audioLanguage);
 	m_cache->setMenuFiles(fs->menu_archive_fs());
 	const AudioSettings &s = m_ini->settings;
 	m_device = std::make_unique<GodotAudioDevice>(this, m_cache.get(), std::max(8, s.sampleCount2D) + std::max(8, s.sampleCount3D) + std::max(4, s.streamCount) + 8);
@@ -563,9 +668,9 @@ Dictionary GameAudio::boot(const Ref<RetailFileSystem> &fs, const Dictionary &co
 	// lane OPTS-4: the request log from the first menu on (AUDIO-3's log began with the game: the Options screen's samples and volumes were not in it)
 	m_logPath.clear();
 	if (!m_shellOnly)
-	if (const char *logPath = std::getenv("OPENBFME_AUDIO_LOG"); logPath && *logPath)
+	if (const std::string logPath = PathIO::environment("OPENBFME_AUDIO_LOG"); !logPath.empty())
 	{
-		if (std::FILE *f = std::fopen(logPath, "w"))
+		if (std::FILE *f = PathIO::open(logPath, "w"))
 		{
 			std::fprintf(f, "%s\n", LiveGameAudio::eventLogHeader());
 			std::fclose(f);
@@ -688,7 +793,7 @@ void GameAudio::flushLog()
 	{
 		return;
 	}
-	std::FILE *f = std::fopen(m_logPath.c_str(), "a");
+	std::FILE *f = PathIO::open(m_logPath, "a");
 	if (!f)
 	{
 		UtilityFunctions::push_error("GameAudio: cannot append to the audio log ", toGodot(m_logPath));
@@ -824,7 +929,9 @@ int64_t GameAudio::play_misc(const String &field)
 
 int64_t GameAudio::play_shell_sound(const String &n)
 {
-	return play_sound(n);
+	// lane MENUSND-1: the menus' FSCommand PlaySound, as RotWK adds it (AudioManager::playUiSound, RW 0x815772)
+	REQUIRE_BOOTED(AHSV_Error)
+	return (int64_t)m_manager->playUiSound(toNative(n));
 }
 
 int64_t GameAudio::play_shell_music(bool shell_map)

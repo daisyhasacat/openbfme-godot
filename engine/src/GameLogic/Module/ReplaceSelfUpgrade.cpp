@@ -9,6 +9,7 @@
 #include "GameLogic/AI/AIWorld.h"
 #include "GameLogic/SnapshotXfer.h"
 
+#include "Common/ModEngineFeatures.h"
 #include "Common/Player.h"
 #include "Common/Thing/ModuleFactory.h"
 #include "Common/Thing/ThingFactory.h"
@@ -17,6 +18,7 @@
 #include "GameLogic/AI/AIPathfindHost.h"
 #include "GameLogic/Construction.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Module/CastleModules.h"
 #include "GameLogic/Module/NotifyCrushModules.h"
 #include "GameLogic/Object/Object.h"
 #include "GameLogic/Object/ObjectGeometry.h"
@@ -176,7 +178,7 @@ bool ReplaceSelfUpgrade::wouldUpgrade(const UpgradeMaskType &mask) const
 	const float across = SimMath::subf32(0.0f, d.y); // RW 0x8BB341
 	// the line's start: the position + across * total (RW 0x8BB345 .. 0x8BB397)
 	Coord3D cur{ SimMath::addf32(pos.x, SimMath::mulf32(across, total)), SimMath::addf32(pos.y, SimMath::mulf32(d.x, total)), SimMath::addf32(pos.z, SimMath::mulf32(d.z, total)) };
-	static const int wallUpgrade = kindBit("WALL_UPGRADE"), wallHub = kindBit("WALL_HUB"), keepKind = kindBit("CASTLE_KEEP");
+	static const int wallUpgrade = kindBit("WALL_UPGRADE"), wallHub = kindBit("WALL_HUB");
 	for (const ThingTemplate *tt : list)
 	{
 		const float step = SimMath::subf32(0.0f, WallSpan::halfExtentY(*tt)); // RW 0x8BB3F1
@@ -193,13 +195,15 @@ bool ReplaceSelfUpgrade::wouldUpgrade(const UpgradeMaskType &mask) const
 			{
 				return false;
 			}
-			const ThingTemplate *ot = static_cast<const ThingTemplate *>(o.getTemplate())->getFinalOverride();
-			return NotifyCrushModules::geometriesOverlap(shapes, pos, angle, ObjectGeometry::shapesOf(*ot), *o.getPosition(), o.getOrientation());
+			return NotifyCrushModules::geometriesOverlap(shapes, pos, angle, o.geometryShapes(), *o.getPosition(), o.getOrientation());
 		});
 		const float radius = SimMath::mulf32(boundingCircle(*tt), 3.0f); // RW 0xBDD42C
 		for (const PartitionHit &h : logic.partition().iterateObjectsInRange(pos, radius, FROM_BOUNDINGSPHERE_3D, { &inTheWay }, ITER_FASTEST))
 		{
-			if (!templateKindOf(*tt, keepKind) || (h.object && h.object->isKindOf((unsigned)keepKind))) // RW 0x8BB4D9 .. 0x8BB4F3
+			// KINDFIX-1: RW 0x8BB4D9 .. 0x8BB4F3 `mov ecx, 0x10000000; test [tmpl + 0x118], ecx` on the piece and the found object's template: KindOf
+			// mask word 4 (+ 0x108 + 0x10) bit 28 = KindOf 156 WALL_HUB (was read as CASTLE_KEEP 28). Donor: Open-BFME-2 ReplaceSelfUpgrade.cpp:360
+			// (BFME2 0x8B7110, same shape; its local struct starts the mask at + 0x118); both editions
+			if (!templateKindOf(*tt, wallHub) || (h.object && h.object->isKindOf((unsigned)wallHub)))
 			{
 				return false;
 			}
@@ -241,6 +245,27 @@ void ReplaceSelfUpgrade::upgradeImplementation()
 	// Destruction is deferred until the end of the frame. Release the old
 	// footprint now, before replacement pieces try to claim the same cells.
 	if (AIWorld *ai = logic.aiWorld()) ai->removeObjectFromPathfindMap(*obj);
+	// lane MODS-3: edain-unchained.foundation-rebind (its 0xEDA020 before RW 0x62BBAB): the plot or castle whose occupant this object is keeps it for the
+	// first piece; the object's producer link goes before the destroy
+	const ObjectID replaced = obj->getID();
+	Object *plot = nullptr;
+	CastleMemberBehavior *plotMember = nullptr;
+	CastleBehavior *plotCastle = nullptr;
+	if (ModEngineFeatures::has(ModEngineFeature::EdainUnchainedFoundationRebind))
+	{
+		if (Object *p = logic.findObjectByID(obj->getProducerID()))
+		{
+			CastleMemberBehavior *m = dynamic_cast<CastleMemberBehavior *>(p->findModule("CastleMemberBehavior"));
+			CastleBehavior *c = dynamic_cast<CastleBehavior *>(p->findModule("CastleBehavior"));
+			if ((m && m->occupantId() == replaced) || (c && c->keepId() == replaced))
+			{
+				plot = p;
+				plotMember = m;
+				plotCastle = c;
+				obj->setProducer(nullptr);
+			}
+		}
+	}
 	logic.destroyObject(obj); // RW 0x68C18F, 0x68C6EE, the drawable, RW 0x6E85FB, RW 0x62BBAB
 	std::vector<const ThingTemplate *> list;
 	float total = 0.0f;
@@ -279,10 +304,7 @@ void ReplaceSelfUpgrade::upgradeImplementation()
 			const float radius = SimMath::mulf32(segmentSpacing, 1.5f);
 			for (const PartitionHit &h : logic.partition().iterateObjectsInRange(cur, radius, FROM_BOUNDINGSPHERE_2D, { &covered }, ITER_FASTEST))
 			{
-				if (h.object && !h.object->isEffectivelyDead())
-				{
-					h.object->kill(0); // RW 0x698EC3(8, 0)
-				}
+				h.object->kill(DAMAGE_UNRESISTABLE, 0); // RW 0x8BB8A0: kill(8, 0)
 			}
 		}
 		Object *piece = Construction::buildObjectNow(logic, obj, *tt, cur, angle, *owner); // RW 0x8BB8D9
@@ -301,6 +323,31 @@ void ReplaceSelfUpgrade::upgradeImplementation()
 		if (trigger)
 		{
 			piece->setBuildCostPaid((float)trigger->getBuildCost()); // RW 0x8BB948: + 0x33C
+		}
+		if (plot)
+		{
+			// lane MODS-3: its 0xEDA097 at RW 0x8BB965, the first piece only: a castle's keep piece takes the keep, else the plot's occupant becomes the
+			// piece (when it is empty or still the replaced object); the piece's producer is the plot, and a plot built by the replaced object is built
+			// by the piece
+			static const int keep = kindBit("CASTLE_KEEP");
+			const ObjectID occupant = plotMember ? plotMember->occupantId() : (plotCastle ? plotCastle->keepId() : (ObjectID)INVALID_ID);
+			if (occupant == INVALID_ID || occupant == replaced)
+			{
+				if (plotCastle && piece->isKindOf((unsigned)keep))
+				{
+					plotCastle->rebindKeep(replaced, *piece);
+				}
+				else if (plotMember)
+				{
+					plotMember->setOccupantId(piece->getID());
+				}
+				piece->setProducer(plot);
+				if (plot->getBuilderID() == replaced)
+				{
+					plot->setBuilder(piece);
+				}
+			}
+			plot = nullptr;
 		}
 		logic.noteStop(stopLines()[0]); // RW 0x8BB96D .. 0x8BB9DF: the wall links
 	}
